@@ -5,8 +5,10 @@ on:
   push:
     branches:
       - refactor/frontend-runtime-stabilization
+      - feature/external-algorithm-publishing
     paths:
       - 'app.py'
+      - 'platform_core/upload_batches.py'
       - 'platform_core/storage/local.py'
       - 'platform_core/material_repository_batch.py'
       - 'platform_core/cleaning.py'
@@ -102,7 +104,8 @@ jobs:
           grep -Fq 'resource_queue_position_exact === true' static/modules/cleaning.js
           grep -Fq '_v50_begin_image_batch(project_id)' app.py
           grep -Fq 'annotation_repository.upsert_many(' app.py
-          grep -Fq 'return repository.upsert_many(records)' app.py
+          grep -Fq 'with material_annotation_lifecycle_fence(project_dir(project_id)):' app.py
+          grep -Fq 'persisted_materials = repository.upsert_many(records)' app.py
           grep -Fq 'def _v50_storage_manager(project_id: str) -> StorageManager:' app.py
           grep -Fq 'source_config = manager.sources.get(storage_source_id)' app.py
           grep -Fq 'metadata = manager.upload_object(' app.py
@@ -117,5 +120,5 @@ jobs:
             exit 1
           fi
           grep -Fq 'assert direct_stream_sources == [True] * 12' tests/api/test_upload_batch_performance_truth.py
-          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          python -m platform_core.build_identity --check-version-file VERSION.txt
           git diff --check

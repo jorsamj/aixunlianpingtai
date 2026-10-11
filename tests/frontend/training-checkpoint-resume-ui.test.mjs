@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 
 import {
   checkpointResumeBadge,
@@ -107,4 +108,12 @@ test('completed resume shows archive complete without exposing a manual retry bu
   const job = {...running, status: 'done', task_status: 'SUCCEEDED', recovery_state: 'completed', current_epoch: 100};
   assert.equal(checkpointResumeBadge(job), '已从 Epoch 36 恢复');
   assert.deepEqual(checkpointResumeTimeline(job).map(step => step.state), ['done', 'done', 'done', 'done', 'done']);
+});
+
+
+test('checkpoint detail fallback calls the named recovery runtime instead of a captured previous window owner', () => {
+  const source = fs.readFileSync(new URL('../../static/modules/training-checkpoint-resume-ui.js', import.meta.url), 'utf8');
+  assert.equal(source.includes('originalOpenDetail'), false);
+  assert.match(source, /window\.TrainingRecoveryRuntime\?\.openDetail\?\.\(taskId\)/);
+  assert.match(source, /const recoveryOpen = window\.TrainingRecoveryRuntime\?\.openDetail/);
 });

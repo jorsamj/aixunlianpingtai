@@ -16,7 +16,7 @@ def png_bytes() -> bytes:
 def create_project_with_dataset(client):
     project = client.post(
         "/api/projects",
-        json={"name": f"atomic-{uuid.uuid4().hex[:8]}", "labels": []},
+        json={"name": f"atomic-{uuid.uuid4().hex[:8]}", "labels": ["target"]},
     ).json()
     dataset = client.post(
         f"/api/projects/{project['id']}/datasets",

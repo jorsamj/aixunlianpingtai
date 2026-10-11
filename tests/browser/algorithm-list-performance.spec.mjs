@@ -11,8 +11,8 @@ test('algorithm cards expand locally and focused refresh avoids full bootstrap r
   await expect(page.locator('#alg412List')).toBeVisible({timeout: 10_000});
 
   await expect.poll(async () => page.evaluate(() => window.AlgorithmListRuntime?.build || null))
-    .toBe('algorithm-list-runtime-422503');
-  await expect.poll(async () => page.evaluate(() => Boolean(state.uiReady) && !state.__extras412))
+    .toMatch(/^algorithm-list-runtime-\d+$/);
+  await expect.poll(async () => page.evaluate(() => Boolean(state.uiReady) && window.AlgorithmListRuntime?.state?.().inflight === false))
     .toBe(true);
 
   await page.evaluate(() => {
@@ -47,6 +47,18 @@ test('algorithm cards expand locally and focused refresh avoids full bootstrap r
 
   const card = page.locator('.alg428-card').filter({hasText: '性能验收算法'});
   await expect(card).toBeVisible();
+  await page.evaluate(() => {
+    window.__stableAlgorithmCard = document.querySelector('[data-algorithm-id="algo-perf-1"]');
+    window.AlgorithmListRuntime.setFilters({query: '性能验收'}, {render: true});
+  });
+  await expect(card).toBeVisible();
+  expect(await page.evaluate(() => (
+    window.__stableAlgorithmCard === document.querySelector('[data-algorithm-id="algo-perf-1"]')
+  ))).toBe(true);
+  await page.evaluate(() => window.AlgorithmListRuntime.setFilters({query: ''}, {render: true}));
+  expect(await page.evaluate(() => (
+    window.__stableAlgorithmCard === document.querySelector('[data-algorithm-id="algo-perf-1"]')
+  ))).toBe(true);
   await card.locator('.alg428-main').click();
   await expect(card).toHaveClass(/open/);
   await expect(card.locator('.alg428-version-row')).toHaveCount(1);
@@ -101,6 +113,45 @@ test('algorithm cards expand locally and focused refresh avoids full bootstrap r
   expect(pageErrors).toEqual([]);
 });
 
+test('algorithm registry cards expand from non-action areas and can show only trainable algorithms', async ({page}) => {
+  await page.goto('/');
+  await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
+  await page.evaluate(() => window.setPage('算法列表'));
+  await expect(page.locator('#alg412List')).toBeVisible({timeout: 10_000});
+
+  await page.evaluate(() => {
+    state.algorithms = [
+      {id:'trainable-card',name:'可训练烟火算法',remark:'可直接训练',industry:'测试',algorithm_type:'yolo_ultralytics',versions:[]},
+      {id:'blocked-card',name:'不可训练传统算法',remark:'仅用于查看',industry:'测试',algorithm_type:'opencv',versions:[]},
+    ];
+    state.jobs = [];
+    state.alg428Expanded = {};
+    window.AlgorithmListRuntime?.resetFilters?.();
+    window.AlgorithmListRuntime?.render?.();
+  });
+
+  await expect(page.locator('[data-algorithm-list-owner="AlgorithmListRuntime"]')).toHaveCount(1);
+  const trainable = page.locator('[data-algorithm-id="trainable-card"]');
+  const blocked = page.locator('[data-algorithm-id="blocked-card"]');
+  await expect(trainable).toBeVisible();
+  await expect(blocked).toBeVisible();
+  const cardGridTracks = await page.locator('.algorithm-card-grid').evaluate(node => getComputedStyle(node).gridTemplateColumns.trim().split(/\s+/).filter(Boolean).length);
+  expect(cardGridTracks).toBe(1);
+  await expect(trainable.locator('.algorithm-card-overview')).toBeVisible();
+  await expect(trainable.locator('.algorithm-card-stats')).toBeVisible();
+  await expect(trainable.locator('.algorithm-card-side')).toBeVisible();
+
+  await trainable.locator('.algorithm-card-description').click();
+  await expect(trainable).toHaveClass(/open/);
+  await trainable.locator('.algorithm-card-description').click();
+  await expect(trainable).not.toHaveClass(/open/);
+
+  await page.getByRole('button', {name: /仅看可训练/}).click();
+  await expect(trainable).toBeVisible();
+  await expect(blocked).toBeHidden();
+  await expect(page.getByRole('button', {name: /仅看可训练/})).toHaveClass(/on/);
+});
+
 test('algorithm version deletion uses focused refresh without full reload', async ({page}) => {
   const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(error));
@@ -109,6 +160,8 @@ test('algorithm version deletion uses focused refresh without full reload', asyn
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
   await page.evaluate(() => window.setPage('算法列表'));
   await expect(page.locator('#alg412List')).toBeVisible({timeout: 10_000});
+  await expect(page.locator('.algorithm-card-grid')).toBeVisible();
+  await expect(page.getByRole('button', {name: /仅看可训练/})).toBeVisible();
 
   const projectId = await page.evaluate(() => state.project?.id);
   expect(projectId).toBeTruthy();
@@ -163,6 +216,10 @@ test('algorithm version deletion uses focused refresh without full reload', asyn
 
   await expect(page.locator('#modal')).not.toHaveClass(/hidden/);
   await expect(page.locator('#modalBody')).toContainText('20260912100000');
+  // Algorithm-list startup may prewarm common training inputs once. The mutation
+  // itself must remain focused and must not trigger another training-options GET.
+  await page.waitForTimeout(150);
+  requests.length = 0;
   page.once('dialog', dialog => dialog.accept());
   await page.locator('#modalBody').getByRole('button', {name: '删除版本'}).click();
 
@@ -196,104 +253,17 @@ test('algorithm version deletion uses focused refresh without full reload', asyn
   expect(pageErrors).toEqual([]);
 });
 
-test('publishing a pending model as an algorithm version keeps the live publish flow functional', async ({page}) => {
+test('retired test-publish route stays normalized to quality center without restoring the legacy publisher', async ({page}) => {
   const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(error));
 
   await page.goto('/');
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
   await page.evaluate(() => window.setPage('测试发布'));
-  await expect(page.locator('#title')).toContainText('测试发布');
 
-  const projectId = await page.evaluate(() => state.project?.id);
-  expect(projectId).toBeTruthy();
-  const encoded = encodeURIComponent(projectId);
-  let submittedBody = null;
-  await page.route(`**/api/v12/projects/${encoded}/algorithms/algo-publish-r20b/versions`, async route => {
-    submittedBody = route.request().postDataJSON();
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({
-        ok: true,
-        version: {
-          id: 'version-publish-r20b',
-          version_name: '20260912143000',
-          model_name: 'publish-r20b.pt',
-          model_key: 'project::publish-r20b.pt',
-          size_mb: 8.5,
-          created_at: '2026-09-12T14:30:00Z',
-        },
-      }),
-    });
-  });
-
-  await page.evaluate(() => {
-    state.algorithms = [{
-      id: 'algo-publish-r20b',
-      name: '发布验收算法',
-      remark: 'R20b publish baseline',
-      industry: '测试',
-      algorithm_type: 'yolo_ultralytics',
-      versions: [],
-    }];
-    state.pending = [{
-      name: 'publish-r20b.pt',
-      model_key: 'project::publish-r20b.pt',
-      type: 'pt',
-      framework: 'ultralytics',
-      size_mb: 8.5,
-      job_id: 'job-publish-r20b',
-      job_name: 'R20b publish baseline',
-    }];
-    window.assignVersion('publish-r20b.pt');
-  });
-
-  await expect(page.locator('#modal')).not.toHaveClass(/hidden/);
-  await expect(page.locator('#modalBody input[disabled]').first()).toHaveValue('publish-r20b.pt');
-  await expect(page.locator('#algoSel')).toHaveValue('algo-publish-r20b');
-  await page.locator('#verName').fill('R20B-PUBLISH');
-  await page.locator('#verRemark').fill('发布行为基线');
-  await expect.poll(async () => page.evaluate(() => !state.__extras412)).toBe(true);
-  const requests = [];
-  page.on('request', request => {
-    const url = new URL(request.url());
-    if (url.pathname.startsWith('/api/')) requests.push(`${request.method()} ${url.pathname}${url.search}`);
-  });
-  await page.locator('#modalBody').getByRole('button', {name: '发布为算法版本'}).click();
-
-  await expect(page.locator('#modal')).toHaveClass(/hidden/);
-  await expect(page.locator('#toast')).toContainText('已发布为算法版本');
-  expect(submittedBody).toMatchObject({
-    model_name: 'publish-r20b.pt',
-    model_source: 'project',
-    version_name: 'R20B-PUBLISH',
-    remark: '发布行为基线',
-    job_id: 'job-publish-r20b',
-  });
-  await expect.poll(async () => page.evaluate(() => state.algorithms.find(x => x.id === 'algo-publish-r20b')?.versions?.[0]?.id || null)).toBe('version-publish-r20b');
-  await expect.poll(async () => page.evaluate(() => state.pending.some(x => x.name === 'publish-r20b.pt'))).toBe(false);
-  const publishRequest = `POST /api/v12/projects/${projectId}/algorithms/algo-publish-r20b/versions`;
-  expect(requests.filter(row => row === publishRequest)).toEqual([publishRequest]);
-  const forbiddenReloadRequests = requests.filter(row => {
-    const path = row.slice(row.indexOf(' ') + 1).split('?')[0];
-    return path === '/api/projects'
-      || path === `/api/projects/${projectId}`
-      || path.startsWith(`/api/projects/${projectId}/datasets`)
-      || path.startsWith(`/api/projects/${projectId}/images`)
-      || path.startsWith(`/api/projects/${projectId}/jobs`)
-      || path.startsWith(`/api/projects/${projectId}/models`)
-      || path.startsWith(`/api/v12/projects/${projectId}/labels`)
-      || path.startsWith(`/api/v12/projects/${projectId}/algorithms`) && path !== `/api/v12/projects/${projectId}/algorithms/algo-publish-r20b/versions`
-      || path.startsWith(`/api/v12/projects/${projectId}/publish/pending`)
-      || path.startsWith(`/api/v12/projects/${projectId}/test_models`)
-      || path === '/api/training_options'
-      || path === '/api/v16/inference_envs'
-      || path === '/api/system/recommendation'
-      || path === '/api/local_models'
-      || path.includes('/bootstrap/snapshot');
-  });
-  expect(forbiddenReloadRequests).toEqual([]);
+  await expect.poll(async () => page.evaluate(() => state.page)).toBe('质量中心');
+  await expect(page.locator('#title')).toContainText('质量中心');
+  await expect(page.getByRole('button', {name: '发布为算法版本'})).toHaveCount(0);
   expect(pageErrors).toEqual([]);
 });
 
@@ -305,7 +275,7 @@ test('algorithm create edit delete uses authoritative local state without broad 
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
   await page.evaluate(() => window.setPage('算法列表'));
   await expect(page.locator('#alg412List')).toBeVisible({timeout: 10_000});
-  await expect.poll(async () => page.evaluate(() => Boolean(state.uiReady) && !state.__extras412)).toBe(true);
+  await expect.poll(async () => page.evaluate(() => Boolean(state.uiReady) && window.AlgorithmListRuntime?.state?.().inflight === false)).toBe(true);
 
   const projectId = await page.evaluate(() => state.project?.id);
   expect(projectId).toBeTruthy();
@@ -363,6 +333,7 @@ test('algorithm create edit delete uses authoritative local state without broad 
   await expect.poll(async () => page.evaluate(() => state.algorithms.some(x => x.id === 'algo-r20h-crud'))).toBe(true);
 
   const card = page.locator('.alg428-card').filter({hasText: 'R20h 创建算法'});
+  await card.locator('details.entity-more summary').click();
   await card.getByRole('button', {name: '编辑'}).click();
   await expect(page.locator('#alg414EditName')).toHaveValue('R20h 创建算法');
   await page.locator('#alg414EditName').fill('R20h 已编辑算法');
@@ -372,6 +343,7 @@ test('algorithm create edit delete uses authoritative local state without broad 
 
   page.once('dialog', dialog => dialog.accept());
   const editedCard = page.locator('.alg428-card').filter({hasText: 'R20h 已编辑算法'});
+  await editedCard.locator('details.entity-more summary').click();
   await editedCard.getByRole('button', {name: '删除'}).click();
   await expect(page.locator('#alg412List')).not.toContainText('R20h 已编辑算法');
   await expect.poll(async () => page.evaluate(() => state.algorithms.some(x => x.id === 'algo-r20h-crud'))).toBe(false);
@@ -399,4 +371,247 @@ test('algorithm create edit delete uses authoritative local state without broad 
   });
   expect(forbiddenBroadRefresh).toEqual([]);
   expect(pageErrors).toEqual([]);
+});
+
+
+test('algorithm version exposes persisted training lineage without job refetch', async ({page}) => {
+  const pageErrors = [];
+  page.on('pageerror', error => pageErrors.push(error));
+
+  await page.goto('/');
+  await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
+  await expect.poll(async () => page.evaluate(() => window.AlgorithmListRuntime?.build || null))
+    .toMatch(/^algorithm-list-runtime-\d+$/);
+  await expect.poll(async () => page.evaluate(() => Boolean(state.uiReady) && window.AlgorithmListRuntime?.state?.().inflight === false))
+    .toBe(true);
+
+  const projectId = await page.evaluate(() => state.project?.id);
+  expect(projectId).toBeTruthy();
+  const encoded = encodeURIComponent(projectId);
+  const lineageAlgorithm = {
+    id:'algo-lineage-1',name:'溯源验收算法',industry:'测试',
+    algorithm_type:'yolo_ultralytics',current_version_id:'version-lineage-1',
+    versions:[{
+      id:'version-lineage-1',version_name:'20260919103000',training_status:'SUCCEEDED',
+      model_name:'best.pt',stored_path:'/models/best.pt',created_at:'2026-09-19T10:30:00Z',
+      training_lineage:{
+        schema_version:1,task_id:'train-lineage-1',dataset_revision_id:'a'.repeat(64),
+        snapshot_id:'b'.repeat(64),framework:'ultralytics',
+        base:{model:'yolo11n.pt',selection_reason:'mother_model'},
+        execution:{mode:'agent',worker_id:'agent:node-7',node_id:'node-7',execution_generation:4,actual_device:'cuda:0'},
+        parameters:{actual:{epochs:30,batch:4,imgsz:640}},
+        artifacts:[{role:'best',file_name:'best.pt',sha256:'c'.repeat(64),size_bytes:1234}],
+      },
+      evaluation:{
+        schema_version:1,evaluation_id:'d'.repeat(64),status:'succeeded',
+        task_id:'train-lineage-1',dataset_revision_id:'a'.repeat(64),snapshot_id:'b'.repeat(64),
+        model_sha256:'c'.repeat(64),image_count:12,
+        benchmark_scope:{
+          schema_version:1,scope_id:'4'.repeat(64),test_image_count:12,
+          content_digest:'3'.repeat(64),ground_truth_digest:'2'.repeat(64),label_schema_digest:'1'.repeat(64),
+          binding_level:'bundle_verified',evaluation_input_digest:'f'.repeat(64),
+          training_input_policy:'ultralytics_jpeg_repair_v1',
+        },
+        evaluation_protocol_version:1,evaluation_protocol_id:'0'.repeat(64),
+        metrics:{'metrics/precision(B)':0.82,'metrics/recall(B)':0.70,'metrics/mAP50(B)':0.76,'metrics/mAP50-95(B)':0.55},
+        per_class:[{class_id:0,label:'smoke',precision:0.82,recall:0.70,map50:0.76,map50_95:0.55,true_positive:7,false_positive:2,false_negative:3}],
+        weak_labels:['smoke'],
+        error_samples:[{image:'test-smoke.jpg',fp_count:2,fn_count:3,fp_labels:['smoke'],fn_labels:['smoke']}],
+        protocol:{mode:'blind_image_only_inference_then_hidden_ground_truth_scoring',operating_conf:0.25,matching_iou:0.5},
+      },
+      feedback_adoption_outcome:{
+        schema_version:1,outcome_id:'9'.repeat(64),status:'comparable',
+        source_version_id:'version-source-0',new_version_id:'version-lineage-1',
+        candidate_set_id:'8'.repeat(64),adoption_id:'7'.repeat(64),action_id:'6'.repeat(64),
+        source_evaluation_id:'5'.repeat(64),new_evaluation_id:'d'.repeat(64),
+        comparison_mode:'strict',strictly_comparable:true,comparison_reason_codes:[],
+        source_benchmark_scope_id:'4'.repeat(64),new_benchmark_scope_id:'4'.repeat(64),
+        source_benchmark_binding_level:'bundle_verified',new_benchmark_binding_level:'bundle_verified',
+        source_evaluation_protocol_id:'0'.repeat(64),new_evaluation_protocol_id:'0'.repeat(64),
+        source_candidate_count:3,adopted_candidate_count:2,
+        overall_metrics:{
+          'metrics/mAP50(B)':{before:0.61,after:0.76,delta:0.15},
+          'metrics/recall(B)':{before:0.58,after:0.70,delta:0.12},
+        },
+        source_weak_labels:['smoke'],
+        weak_label_effects:[{
+          label:'smoke',comparable:true,direction:'improved',
+          weak_signal:{before:0.58,after:0.70,delta:0.12},
+          metrics:{
+            map50:{before:0.61,after:0.76,delta:0.15},
+            recall:{before:0.58,after:0.70,delta:0.12},
+          },
+          false_positive:{before:4,after:2},false_negative:{before:5,after:3},
+        }],
+        reason_codes:[],descriptive_only:true,automatic_execution:false,
+      },
+      iteration_decision:{
+        schema_version:1,decision_id:'e'.repeat(64),evaluation_id:'d'.repeat(64),
+        decision:'needs_data',
+        quality_gate:{metric:'map50',metric_key:'metrics/mAP50(B)',metric_value:0.76,continue_threshold:0.65,stop_threshold:0.90},
+        weak_labels:['smoke'],
+        signals:{false_positive:2,false_negative:3,error_sample_count:1},
+        reason_codes:['weak_labels_present'],
+        recommended_actions:['supplement_weak_label_data','review_fp_fn_samples'],
+        automatic_execution:false,requires_confirmation:true,
+      },
+    }],
+  };
+
+  await page.route(`**/api/v12/projects/${encoded}/algorithms`, async route => {
+    await route.fulfill({
+      status:200,contentType:'application/json',
+      body:JSON.stringify({items:[lineageAlgorithm]}),
+    });
+  });
+  await page.route(`**/api/projects/${encoded}/jobs`, async route => {
+    await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify([])});
+  });
+  await page.route(`**/api/v63/projects/${encoded}/algorithms/algo-lineage-1/versions/version-lineage-1/supplement-data-candidates`, async route => {
+    if(route.request().method()!=='GET')return route.continue();
+    await route.fulfill({
+      status:200,contentType:'application/json',
+      body:JSON.stringify({
+        ok:true,action_id:'f'.repeat(64),total:0,returned:0,truncated:false,
+        eligible:0,annotation_required:0,candidate_set:null,items:[],
+      }),
+    });
+  });
+
+  await page.evaluate(() => window.setPage('算法列表'));
+  await expect(page.locator('#alg412List')).toBeVisible({timeout: 10_000});
+  await page.evaluate(async () => {
+    await window.AlgorithmListRuntime.refresh({render:false});
+    state.alg428Expanded = {};
+    window.renderAlgorithms423();
+  });
+
+  const card=page.locator('.alg428-card').filter({hasText:'溯源验收算法'});
+  await expect(card).toBeVisible();
+  await card.locator('.alg428-main').click();
+  await expect(card).toHaveClass(/open/);
+  await expect(card.getByRole('button',{name:'训练溯源'})).toBeVisible();
+
+  let confirmedActionBody=null;
+  const persistedAction={
+    schema_version:1,action_id:'f'.repeat(64),action:'supplement_data',status:'confirmed',
+    source:{decision_id:'e'.repeat(64),evaluation_id:'d'.repeat(64),algorithm_id:'algo-lineage-1',
+      version_id:'version-lineage-1',dataset_revision_id:'a'.repeat(64),snapshot_id:'b'.repeat(64)},
+    weak_labels:['smoke'],automatic_execution:false,requires_user_submit:false,confirmed_at:'2026-09-19T05:10:00Z',
+    data_draft:{weak_labels:['smoke'],problem_samples:[{image:'test-smoke.jpg',fp_count:2,fn_count:3}],
+      dataset_revision_id:'a'.repeat(64),snapshot_id:'b'.repeat(64)},
+  };
+  await page.route(`**/api/v12/projects/${encoded}/algorithms/algo-lineage-1/versions/version-lineage-1/iteration-actions/confirm`, async route=>{
+    confirmedActionBody=route.request().postDataJSON();
+    lineageAlgorithm.versions[0].confirmed_iteration_action=persistedAction;
+    await route.fulfill({
+      status:200,contentType:'application/json',
+      body:JSON.stringify({ok:true,action:persistedAction}),
+    });
+  });
+  const requests=[];
+  page.on('request',request=>{
+    const url=new URL(request.url());
+    if(url.pathname.startsWith('/api/'))requests.push(url.pathname);
+  });
+  await card.getByRole('button',{name:'训练溯源'}).click();
+  await expect(page.locator('#modalBody')).toContainText('数据版本');
+  await expect(page.locator('#modalBody')).toContainText('train-lineage-1');
+  await expect(page.locator('#modalBody')).toContainText('node-7');
+  await expect(page.locator('#modalBody')).toContainText('yolo11n.pt');
+  await expect(page.locator('#modalBody')).toContainText('实际训练参数');
+  await page.evaluate(() => closeModal());
+  await card.getByRole('button',{name:'独立评测'}).click();
+  await expect(page.locator('#modalBody')).toContainText('冻结 Test Split');
+  await expect(page.locator('#modalBody')).toContainText('mAP50');
+  await expect(page.locator('#modalBody')).toContainText('smoke');
+  await expect(page.locator('#modalBody')).toContainText('test-smoke.jpg');
+  await expect(page.locator('#modalBody')).toContainText('FP / FN');
+  await expect(page.locator('#modalBody')).toContainText('迭代决策');
+  await expect(page.locator('#modalBody')).toContainText('需补充数据');
+  await expect(page.locator('#modalBody')).toContainText('补充弱标签数据');
+  await expect(page.locator('#modalBody')).toContainText('系统仅给出建议，不会自动发起下一次训练');
+  await expect(page.locator('#modalBody')).toContainText('补数据效果');
+  await expect(page.locator('#modalBody')).toContainText('严格可比');
+  await expect(page.locator('#modalBody')).toContainText('评测基准');
+  await expect(page.locator('#modalBody')).toContainText('已校验 Test Bundle');
+  await expect(page.locator('#modalBody')).toContainText('采用反馈');
+  await expect(page.locator('#modalBody')).toContainText('+15.0 pp');
+  await expect(page.locator('#modalBody')).toContainText('改善');
+  await expect(page.locator('#modalBody')).toContainText('仅描述本次采用反馈后的评测变化，不会自动触发下一轮训练');
+  await expect(page.locator('#modalBody').getByRole('button',{name:'确认准备补数据'})).toBeVisible();
+  await page.locator('#modalBody').getByRole('button',{name:'确认准备补数据'}).click();
+  await expect.poll(()=>confirmedActionBody).toEqual({
+    decision_id:'e'.repeat(64),action:'supplement_data',
+  });
+  await expect.poll(async()=>page.evaluate(()=>state.iterationDataDraft?.weak_labels||[])).toEqual(['smoke']);
+  expect(requests.filter(path=>path.includes('/train/start'))).toEqual([]);
+
+  // Simulate a fresh UI state: the draft must be recoverable from persisted
+  // version truth without confirming the action a second time.
+  await page.evaluate(async()=>{
+    state.iterationDataDraft=null;
+    window.setPage('算法列表');
+    await window.AlgorithmListRuntime.refresh({render:false});
+    state.alg428Expanded={};
+    window.renderAlgorithms423();
+  });
+  const refreshed=page.locator('.alg428-card').filter({hasText:'溯源验收算法'});
+  await refreshed.locator('.alg428-main').click();
+  await refreshed.getByRole('button',{name:'独立评测'}).click();
+  await expect(page.locator('#modalBody')).toContainText('已确认：补数据');
+  await expect(page.locator('#modalBody').getByRole('button',{name:'继续补数据'})).toBeVisible();
+  const confirmCallsBefore=requests.filter(path=>path.includes('/iteration-actions/confirm')).length;
+  await page.locator('#modalBody').getByRole('button',{name:'继续补数据'}).click();
+  await expect.poll(async()=>page.evaluate(()=>state.iterationDataDraft?.weak_labels||[])).toEqual(['smoke']);
+  expect(requests.filter(path=>path.includes('/iteration-actions/confirm')).length).toBe(confirmCallsBefore);
+  expect(requests.filter(path=>path.includes('/train/start'))).toEqual([]);
+  expect(requests.filter(path=>path.includes('/jobs/'))).toEqual([]);
+  expect(pageErrors).toEqual([]);
+});
+
+
+test('category picker responds from the whole row for drill-down and leaf selection', async ({page}) => {
+  await page.goto('/');
+  await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
+  await page.evaluate(() => window.setPage('算法列表'));
+  await expect(page.locator('#alg412List')).toBeVisible({timeout: 10_000});
+  await expect.poll(async () => page.evaluate(() => window.AlgorithmListRuntime?.build || null))
+    .toMatch(/^algorithm-list-runtime-\d+$/);
+
+  await page.evaluate(() => {
+    window.AlgorithmListRuntime.setExternalProvider({
+      snapshot: () => ({
+        categories: [],
+        externalMode: true,
+        categoryRows: [
+          {id:'root-category',name:'安全治理',parentId:'',ancestorIds:[],path:'安全治理',hasChildren:true},
+          {id:'leaf-category',name:'烟火检测',parentId:'root-category',ancestorIds:['root-category'],path:'安全治理 / 烟火检测',hasChildren:false},
+        ],
+      }),
+      matches: () => true,
+      meta: () => ({external:false,sourceLabel:'本平台',readiness:{ready:true,status:'local',message:''}}),
+    });
+    window.AlgorithmListRuntime.openCategoryPicker();
+  });
+
+  const picker = page.locator('[data-category-popover]');
+  const rootRow = picker.locator('[data-category-row="root-category"]');
+  await expect(rootRow).toBeVisible();
+  await rootRow.click();
+  const leafRow = picker.locator('[data-category-row="leaf-category"]');
+  await expect(leafRow).toBeVisible();
+
+  await leafRow.click();
+  await expect(leafRow.locator('[data-category-check="leaf-category"]')).toBeChecked();
+
+  await leafRow.press('Space');
+  await expect(leafRow.locator('[data-category-check="leaf-category"]')).not.toBeChecked();
+
+  const search = picker.locator('[data-category-search]');
+  await search.fill('安全治理');
+  const searchParent = picker.locator('.algorithm-category-search-row[data-category-row="root-category"]');
+  await expect(searchParent).toBeVisible();
+  await searchParent.click();
+  await expect(picker.locator('[data-category-row="leaf-category"]')).toBeVisible();
 });

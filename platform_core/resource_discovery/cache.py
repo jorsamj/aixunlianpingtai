@@ -270,10 +270,35 @@ class DiscoveryCache:
             database.close()
             raise
 
+    def _read_schema_version_fast(self) -> int | None:
+        """Read an already-created schema without joining the init-lock queue."""
+        if not self.path.is_file():
+            return None
+        try:
+            with closing(
+                sqlite3.connect(self.path, timeout=0.25, isolation_level=None)
+            ) as database:
+                database.execute("PRAGMA busy_timeout=250")
+                return int(database.execute("PRAGMA user_version").fetchone()[0])
+        except sqlite3.Error:
+            # Another process may still be creating/migrating the database.
+            # The single-owner initialization path below remains authoritative.
+            return None
+
     def _initialize(self) -> None:
         # journal_mode is persistent database state. Reasserting WAL on every
         # connection can participate in startup lock races, so schema/WAL setup
-        # has one cross-process owner and is version-gated.
+        # has one cross-process owner and is version-gated. Once the schema is
+        # current, later Worker processes do not need to serialize on FileLock.
+        version = self._read_schema_version_fast()
+        if version is not None:
+            if version > _SCHEMA_VERSION:
+                raise RuntimeError(
+                    f"resource discovery cache schema {version} is newer than supported {_SCHEMA_VERSION}"
+                )
+            if version == _SCHEMA_VERSION:
+                return
+
         lock = FileLock(f"{self.path}.init.lock", timeout=_INIT_LOCK_TIMEOUT)
         with lock:
             with closing(self._connect()) as database:

@@ -3,22 +3,34 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 import uuid
-from contextlib import closing
+from contextlib import closing, nullcontext
 from dataclasses import asdict, replace
 from enum import Enum
 from pathlib import Path
 
 from filelock import FileLock
 
+from .annotation_repository import AnnotationRepository
+from .annotation_quality import audit_cleaning_annotations
 from .cleaning import DurableHashIndex, clean_options
-from .cleaning_batches import clean_batch
-from .material_repository import MaterialRepository
+from .cleaning import ImageDecodeError
+from .cleaning_analysis_runtime import CleaningAnalysisRuntime
+from .cleaning_batches import clean_batch, reset_stale_clean_successes
+from .labels import active_project_label_ids, label_governance_fence
+from .material_repository import (
+    MATERIAL_BATCH_DELETE_CLAIM_FIELD,
+    MaterialTaskInputConflictError,
+    MaterialRepository,
+    material_annotation_lifecycle_fence,
+)
 from .material_repository_batch import _transform_many
+from .online_feedback import OnlineFeedbackRepository
 from .material_selection import MaterialSelectionSpec, SelectionScope
 from .materials import mark_ready
-from .storage.errors import redact_storage_error
+from .storage.errors import StorageError, redact_storage_error
 from .storage.import_tasks import _provider
 from .storage.manager import StorageManager
 from .storage.source_repository import StorageSource, StorageSourceRepository
@@ -27,9 +39,13 @@ from .task_runtime.models import utc_now
 from .task_runtime.task_logs import append_task_log
 
 BATCH_SIZE = 500
+REMAP_BATCH_SIZE = 100
+MAX_REMAP_SELECTION = 100000
+MAX_LARGE_EXPLICIT_SELECTION = 100000
 SELECTION_REF = "selection.sqlite3"
 CHECKPOINT_REF = "checkpoints/worker.json"
 RESULT_REF = "result.json"
+MATERIAL_INTEGRITY_REF = "material-integrity.sqlite3"
 
 
 class BatchOperation(str, Enum):
@@ -39,6 +55,10 @@ class BatchOperation(str, Enum):
     DELETE_SOURCE = "DELETE_SOURCE"
     ADD_LABELS = "ADD_LABELS"
     REMOVE_LABELS = "REMOVE_LABELS"
+    REMAP_ANNOTATION_LABELS = "REMAP_ANNOTATION_LABELS"
+    REPAIR_ANNOTATION_PROJECTIONS = "REPAIR_ANNOTATION_PROJECTIONS"
+    AUDIT_LABEL_INTEGRITY = "AUDIT_LABEL_INTEGRITY"
+    AUDIT_MATERIAL_INTEGRITY = "AUDIT_MATERIAL_INTEGRITY"
     AI_ANNOTATE = "AI_ANNOTATE"
 
 
@@ -51,13 +71,80 @@ class BatchRequestError(ValueError):
         self.code, self.status_code = code, status_code
 
 
+_MATERIAL_INTEGRITY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS audit_metadata (
+    key TEXT PRIMARY KEY,
+    value_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS issue_items (
+    group_key TEXT NOT NULL,
+    issue_type TEXT NOT NULL,
+    content_sha256 TEXT NOT NULL DEFAULT '',
+    image_id TEXT NOT NULL,
+    details_json TEXT NOT NULL,
+    PRIMARY KEY(group_key, image_id)
+);
+CREATE INDEX IF NOT EXISTS ix_material_integrity_items
+    ON issue_items(issue_type, group_key, image_id);
+CREATE TABLE IF NOT EXISTS issue_groups (
+    group_key TEXT PRIMARY KEY,
+    issue_type TEXT NOT NULL,
+    content_sha256 TEXT NOT NULL DEFAULT '',
+    image_count INTEGER NOT NULL,
+    details_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS ix_material_integrity_groups
+    ON issue_groups(issue_type, group_key);
+"""
+
+
+def _safe_project_path(data_dir, project_id):
+    project = str(project_id or "").strip()
+    if (
+        not project
+        or any(character in project for character in ("/", "\\"))
+        or not all(character.isalnum() or character in {"_", "-"} for character in project)
+    ):
+        raise ValueError("project id must be one safe path component")
+    projects_root = (Path(data_dir).resolve() / "projects").resolve()
+    project_path = (projects_root / project).resolve()
+    if project_path.parent != projects_root:
+        raise ValueError("project id escaped projects root")
+    return project, project_path
+
+
 def parse_request(payload):
     if not isinstance(payload, dict):
         raise ValueError("material batch request must be an object")
     operation = BatchOperation(str(payload.get("operation") or "").upper())
+    if operation is BatchOperation.AUDIT_LABEL_INTEGRITY:
+        raise BatchRequestError(
+            "LABEL_INTEGRITY_DEDICATED_PREPARE_REQUIRED",
+            "标签完整性审计必须通过项目级专用入口创建，不能伪造普通素材 selection",
+            422,
+        )
+    if operation is BatchOperation.REPAIR_ANNOTATION_PROJECTIONS:
+        raise BatchRequestError(
+            "LABEL_PREVIEW_REPAIR_DEDICATED_PREPARE_REQUIRED",
+            "历史缩略图修复只能由已完成的标签完整性审计创建",
+            422,
+        )
+    if operation is BatchOperation.AUDIT_MATERIAL_INTEGRITY:
+        raise BatchRequestError(
+            "MATERIAL_INTEGRITY_DEDICATED_PREPARE_REQUIRED",
+            "素材完整性审计必须通过项目级专用入口创建，不能伪造普通素材 selection",
+            422,
+        )
     selection = MaterialSelectionSpec.from_mapping(payload.get("selection_spec"))
-    if len(selection.image_ids) > BATCH_SIZE:
-        raise ValueError("explicit selection is limited to 500 IDs; use FILTERED for larger selections")
+    explicit_limit = (
+        MAX_LARGE_EXPLICIT_SELECTION
+        if operation in {BatchOperation.CLEAN, BatchOperation.MARK_CLEAN_SKIPPED}
+        else BATCH_SIZE
+    )
+    if len(selection.image_ids) > explicit_limit:
+        if explicit_limit == BATCH_SIZE:
+            raise ValueError("explicit selection is limited to 500 IDs; use FILTERED for larger selections")
+        raise ValueError(f"explicit selection is limited to {explicit_limit} IDs")
     if len(selection.filters.labels) > BATCH_SIZE or len(selection.filters.storage_source_ids) > BATCH_SIZE:
         raise ValueError("filter arrays are limited to 500 values")
     options = payload.get("options", {})
@@ -84,6 +171,22 @@ def _predicate(materials, selection):
     return ["m.id IN (" + ",".join("?" for _ in selection.image_ids) + ")"], list(selection.image_ids)
 
 
+def _explicit_selection_count(database, image_ids):
+    database.execute(
+        "CREATE TEMP TABLE IF NOT EXISTS material_batch_explicit_selection ("
+        "image_id TEXT PRIMARY KEY) WITHOUT ROWID"
+    )
+    database.execute("DELETE FROM material_batch_explicit_selection")
+    database.executemany(
+        "INSERT INTO material_batch_explicit_selection(image_id) VALUES (?)",
+        ((str(image_id),) for image_id in image_ids),
+    )
+    return int(database.execute(
+        "SELECT COUNT(*) FROM materials m "
+        "JOIN material_batch_explicit_selection s ON s.image_id=m.id"
+    ).fetchone()[0])
+
+
 def _confirmation_token(project_id, operation, selection, options):
     body = [project_id, operation.value, selection.as_dict(),
             {key: value for key, value in options.items() if key != "confirmation_token"}]
@@ -93,12 +196,15 @@ def _confirmation_token(project_id, operation, selection, options):
 
 def estimate_batch(project_id, materials, payload):
     operation, selection, options = parse_request(payload)
-    clauses, params = _predicate(materials, selection)
-    where = " WHERE " + " AND ".join(clauses) if clauses else ""
     with closing(materials._connect()) as database:
         database.execute("BEGIN")
         revision = materials._revision(database)
-        count = int(database.execute("SELECT COUNT(*) FROM materials m" + where, params).fetchone()[0])
+        if selection.scope is SelectionScope.FILTERED:
+            clauses, params = _predicate(materials, selection)
+            where = " WHERE " + " AND ".join(clauses) if clauses else ""
+            count = int(database.execute("SELECT COUNT(*) FROM materials m" + where, params).fetchone()[0])
+        else:
+            count = _explicit_selection_count(database, selection.image_ids)
     confirmed_selection = replace(selection, repository_revision=revision)
     result = {"operation": operation.value, "count": count, "total": count,
               "repository_revision": revision, "revision": revision,
@@ -126,6 +232,63 @@ def prepare_batch(project_id, materials, artifacts, payload, *, task_id=None):
         "selection_spec": selection.as_dict(),
         "options": options,
     }
+    execution_mode = str(payload.get("execution_mode") or "").strip().lower()
+    remote_execution = payload.get("remote_execution")
+    scheduling = payload.get("scheduling")
+    if scheduling is not None:
+        if operation is not BatchOperation.CLEAN or not isinstance(scheduling, dict):
+            raise BatchRequestError(
+                "BATCH_SCHEDULING_INVALID",
+                "node scheduling is supported only for CLEAN material batches",
+                422,
+            )
+        scheduling_mode = str(scheduling.get("mode") or "auto").strip().lower()
+        scheduling_node = str(scheduling.get("node_id") or "").strip()
+        queue_policy = str(scheduling.get("queue_policy") or "normal").strip().lower()
+        if scheduling_mode not in {"auto", "node"}:
+            raise BatchRequestError("BATCH_SCHEDULING_INVALID", "cleaning scheduling mode must be auto or node", 422)
+        if scheduling_mode == "auto" and (scheduling_node or queue_policy != "normal"):
+            raise BatchRequestError("BATCH_SCHEDULING_INVALID", "automatic cleaning scheduling cannot pin a node or queue policy", 422)
+        if scheduling_mode == "node" and (not scheduling_node or queue_policy not in {"normal", "front", "preempt"}):
+            raise BatchRequestError("BATCH_SCHEDULING_INVALID", "manual cleaning scheduling requires node_id and a valid queue policy", 422)
+        request_payload["scheduling"] = {
+            "mode": scheduling_mode,
+            "node_id": scheduling_node,
+            "queue_policy": queue_policy,
+        }
+    if execution_mode or remote_execution is not None:
+        if operation is not BatchOperation.CLEAN:
+            raise BatchRequestError(
+                "BATCH_REMOTE_EXECUTION_UNSUPPORTED",
+                "remote execution is currently supported only for CLEAN material batches",
+                422,
+            )
+        if execution_mode not in {"local", "agent"}:
+            raise BatchRequestError(
+                "BATCH_EXECUTION_MODE_INVALID",
+                "cleaning execution_mode must be local or agent",
+                422,
+            )
+        request_payload["execution_mode"] = execution_mode
+        if execution_mode == "agent":
+            if not isinstance(remote_execution, dict):
+                raise BatchRequestError(
+                    "BATCH_REMOTE_EXECUTION_REQUIRED",
+                    "Agent cleaning requires an explicit portable remote_execution contract",
+                    422,
+                )
+            request_payload["remote_execution"] = dict(remote_execution)
+        elif remote_execution is not None:
+            raise BatchRequestError(
+                "BATCH_REMOTE_EXECUTION_INVALID",
+                "local cleaning cannot publish a remote_execution contract",
+                422,
+            )
+    required_capabilities = (
+        ("agent.remote",)
+        if operation is BatchOperation.CLEAN and request_payload.get("execution_mode") == "agent"
+        else ("materials.batch",)
+    )
     selection_path = artifacts.artifact_path(task_id, SELECTION_REF)
     existing_request = artifacts.read_json(task_id, "request.json", default=None)
     if existing_request is not None:
@@ -136,25 +299,35 @@ def prepare_batch(project_id, materials, artifacts, payload, *, task_id=None):
                 raise BatchRequestError("BATCH_SELECTION_NOT_FROZEN", "prepared batch selection is incomplete", 409)
         return TaskRecord.new(
             task_id, project_id, TaskKind.MATERIAL_BATCH, "request.json",
-            f"materials:{project_id}", required_capabilities=("materials.batch",),
+            f"materials:{project_id}", required_capabilities=required_capabilities,
         )
     try:
         with closing(BatchSelection(selection_path)):
             pass
-        clauses, params = _predicate(materials, selection)
-        where = " WHERE " + " AND ".join(clauses) if clauses else ""
         with closing(materials._connect()) as database:
             database.execute("ATTACH DATABASE ? AS batch_selection", (str(selection_path),))
             database.execute("PRAGMA batch_selection.synchronous=FULL")
             database.execute("BEGIN IMMEDIATE")
             if materials._revision(database) != selection.repository_revision:
                 raise BatchRequestError("MATERIAL_REVISION_CHANGED", "material repository changed; re-estimate before confirming", 409)
-            inserted = database.execute(
-                "INSERT INTO batch_selection.selection(image_id) SELECT m.id FROM main.materials m" + where,
-                params,
-            ).rowcount
-            if selection.scope is not SelectionScope.FILTERED and inserted != len(selection.image_ids):
-                raise BatchRequestError("MATERIAL_SELECTION_CHANGED", "selected materials are missing; re-estimate before confirming", 409)
+            if selection.scope is SelectionScope.FILTERED:
+                clauses, params = _predicate(materials, selection)
+                where = " WHERE " + " AND ".join(clauses) if clauses else ""
+                inserted = database.execute(
+                    "INSERT INTO batch_selection.selection(image_id) SELECT m.id FROM main.materials m" + where,
+                    params,
+                ).rowcount
+            else:
+                database.executemany(
+                    "INSERT INTO batch_selection.selection(image_id) VALUES (?)",
+                    ((str(image_id),) for image_id in selection.image_ids),
+                )
+                inserted = int(database.execute(
+                    "SELECT COUNT(*) FROM batch_selection.selection s "
+                    "JOIN main.materials m ON m.id=s.image_id"
+                ).fetchone()[0])
+                if inserted != len(selection.image_ids):
+                    raise BatchRequestError("MATERIAL_SELECTION_CHANGED", "selected materials are missing; re-estimate before confirming", 409)
             database.executemany(
                 "INSERT INTO batch_selection.meta(key,value) VALUES (?,?)",
                 (("frozen", utc_now()), ("repository_revision", str(selection.repository_revision))),
@@ -165,7 +338,7 @@ def prepare_batch(project_id, materials, artifacts, payload, *, task_id=None):
             artifacts.atomic_write_json(task_id, CHECKPOINT_REF, manifest.summary())
         return TaskRecord.new(
             task_id, project_id, TaskKind.MATERIAL_BATCH, "request.json",
-            f"materials:{project_id}", required_capabilities=("materials.batch",),
+            f"materials:{project_id}", required_capabilities=required_capabilities,
         )
     except Exception as error:
         try:
@@ -203,7 +376,228 @@ def publish_prepared_batch(task, repository, artifacts):
 
 def create_batch(project_id, materials, repository, artifacts, payload):
     task = prepare_batch(project_id, materials, artifacts, payload)
+    operation, _, _ = parse_request(payload)
+    if operation in {BatchOperation.DELETE_INDEX, BatchOperation.DELETE_SOURCE}:
+        path = artifacts.artifact_path(task.task_id, SELECTION_REF)
+        with closing(BatchSelection(path)) as manifest:
+            rows = manifest.database.execute(
+                "SELECT image_id FROM selection ORDER BY image_id"
+            ).fetchall()
+            image_ids = [str(row[0]) for row in rows]
+        with material_annotation_lifecycle_fence(materials.project_path):
+            _assert_not_referenced_by_active_tasks(
+                project_id, image_ids, materials, repository, artifacts
+            )
+            return publish_prepared_batch(task, repository, artifacts)
     return publish_prepared_batch(task, repository, artifacts)
+
+
+def create_material_integrity_audit(project_id, repository, artifacts):
+    """Publish one project-level audit without inventing a material selection."""
+    task_id = uuid.uuid4().hex
+    request = {
+        "operation": BatchOperation.AUDIT_MATERIAL_INTEGRITY.value,
+        "audit_scope": "PROJECT",
+    }
+    checkpoint = {
+        "total": None,
+        "processed": 0,
+        "succeeded": 0,
+        "failed": 0,
+        "selection_frozen": False,
+        "audit_ref": MATERIAL_INTEGRITY_REF,
+    }
+    artifacts.atomic_write_json(task_id, "request.json", request)
+    artifacts.atomic_write_json(task_id, CHECKPOINT_REF, checkpoint)
+    task = TaskRecord.new(
+        task_id,
+        str(project_id),
+        TaskKind.MATERIAL_BATCH,
+        "request.json",
+        f"materials:{project_id}",
+        required_capabilities=("materials.batch",),
+    )
+    return repository.create(task, artifacts=artifacts)
+
+
+def _training_payload_image_ids(payload):
+    if not isinstance(payload, dict):
+        return set()
+    ids = set()
+    for key in (
+        "train_image_ids", "test_image_ids", "selected_train_image_ids",
+        "effective_train_image_ids", "pending_annotation_image_ids",
+    ):
+        value = payload.get(key)
+        if isinstance(value, (list, tuple)):
+            ids.update(str(item) for item in value if str(item or "").strip())
+    for key in ("requested_split", "admission_request", "split", "selection"):
+        ids.update(_training_payload_image_ids(payload.get(key)))
+    return ids
+
+
+_ACTIVE_INPUT_STATUSES = (
+    TaskStatus.QUEUED,
+    TaskStatus.RUNNING,
+    TaskStatus.CANCEL_REQUESTED,
+)
+
+
+def _conversion_calibration_references(payload):
+    if not isinstance(payload, dict):
+        return {}, set()
+    remote = payload.get("remote_execution")
+    conversion = remote.get("conversion") if isinstance(remote, dict) else None
+    calibration = conversion.get("calibration") if isinstance(conversion, dict) else None
+    items = calibration.get("items") if isinstance(calibration, dict) else None
+    by_id = {}
+    object_refs = set()
+    for item in items or ():
+        if not isinstance(item, dict):
+            continue
+        image_id = str(item.get("image_id") or "").strip()
+        source_id = str(item.get("storage_source_id") or "").strip()
+        object_key = str(item.get("object_key") or "")
+        if image_id:
+            by_id[image_id] = dict(item)
+        if source_id and object_key:
+            object_refs.add((source_id, object_key))
+    return by_id, object_refs
+
+
+def _assert_not_referenced_by_active_tasks(
+    project_id, image_ids, materials, repository, artifacts,
+):
+    candidates = {str(value) for value in image_ids if str(value or "").strip()}
+    if not candidates:
+        return
+    candidate_ids_by_ref = {}
+    candidate_list = sorted(candidates)
+    for offset in range(0, len(candidate_list), BATCH_SIZE):
+        for row in materials.get_many(candidate_list[offset:offset + BATCH_SIZE]):
+            reference = (
+                str(row.get("storage_source_id") or ""),
+                str(row.get("object_key") or ""),
+            )
+            if reference[0] and reference[1]:
+                candidate_ids_by_ref.setdefault(reference, set()).add(
+                    str(row.get("id") or "")
+                )
+    candidate_refs = set(candidate_ids_by_ref)
+    cursor = None
+    while True:
+        page = repository.list(
+            project_id=str(project_id),
+            kinds=(TaskKind.TRAINING, TaskKind.MODEL_CONVERSION),
+            statuses=_ACTIVE_INPUT_STATUSES,
+            limit=100,
+            cursor=cursor,
+        )
+        for task in page.items:
+            payload = artifacts.read_json(task.task_id, task.payload_ref, default={})
+            if task.kind is TaskKind.TRAINING:
+                referenced = _training_payload_image_ids(payload)
+                frozen = artifacts.read_json(task.task_id, "input-freeze.json", default={})
+                referenced.update(_training_payload_image_ids(frozen))
+                conflict = sorted(candidates.intersection(referenced))
+                code = "MATERIAL_ACTIVE_TRAINING_REFERENCE"
+                message = "该素材正在被活动训练任务引用，不能删除："
+            else:
+                referenced, object_refs = _conversion_calibration_references(payload)
+                conflict_ids = set(candidates.intersection(referenced))
+                for reference in candidate_refs.intersection(object_refs):
+                    conflict_ids.update(candidate_ids_by_ref.get(reference, ()))
+                conflict = sorted(conflict_ids)
+                code = "MATERIAL_ACTIVE_CONVERSION_REFERENCE"
+                message = "该素材正在被活动 RKNN 校准任务引用，不能删除："
+            if conflict:
+                raise BatchRequestError(
+                    code,
+                    message + ", ".join(conflict[:10]),
+                    409,
+                )
+        cursor = page.next_cursor
+        if not cursor:
+            break
+
+
+def _active_delete_selection_conflicts(project_id, image_ids, repository, artifacts):
+    candidates = list(dict.fromkeys(
+        str(value).strip() for value in image_ids if str(value).strip()
+    ))
+    if not candidates:
+        return []
+    conflicts = set()
+    cursor = None
+    while True:
+        page = repository.list(
+            project_id=str(project_id),
+            kinds=(TaskKind.MATERIAL_BATCH,),
+            statuses=_ACTIVE_INPUT_STATUSES,
+            limit=100,
+            cursor=cursor,
+        )
+        for task in page.items:
+            request = artifacts.read_json(task.task_id, task.payload_ref, default={})
+            if str((request or {}).get("operation") or "") not in {
+                BatchOperation.DELETE_INDEX.value,
+                BatchOperation.DELETE_SOURCE.value,
+            }:
+                continue
+            path = artifacts.artifact_path(task.task_id, SELECTION_REF)
+            if not path.is_file():
+                raise BatchRequestError(
+                    "MATERIAL_DELETE_STATE_UNAVAILABLE",
+                    "活动素材删除任务缺少选择清单，已拒绝新的任务受理",
+                    409,
+                )
+            with closing(BatchSelection(path)) as manifest:
+                for offset in range(0, len(candidates), BATCH_SIZE):
+                    chunk = candidates[offset:offset + BATCH_SIZE]
+                    placeholders = ",".join("?" for _ in chunk)
+                    conflicts.update(
+                        str(row[0])
+                        for row in manifest.database.execute(
+                            f"SELECT image_id FROM selection WHERE image_id IN ({placeholders})",
+                            chunk,
+                        ).fetchall()
+                    )
+        cursor = page.next_cursor
+        if not cursor:
+            break
+    return sorted(conflicts)
+
+
+def assert_material_input_admission(
+    project_id,
+    image_ids,
+    materials,
+    repository,
+    artifacts,
+    *,
+    expected_inputs=None,
+):
+    """Final admission check for tasks that still need canonical source bytes."""
+    candidates = list(dict.fromkeys(
+        str(value).strip() for value in image_ids if str(value).strip()
+    ))
+    with material_annotation_lifecycle_fence(materials.project_path):
+        conflicts = _active_delete_selection_conflicts(
+            project_id, candidates, repository, artifacts,
+        )
+        if conflicts:
+            raise BatchRequestError(
+                "MATERIAL_ACTIVE_DELETE_REFERENCE",
+                "该素材已进入活动删除任务，不能受理新的训练或转换："
+                + ", ".join(conflicts[:10]),
+                409,
+            )
+        try:
+            materials.assert_task_input_admission(
+                candidates, expected_inputs=expected_inputs,
+            )
+        except MaterialTaskInputConflictError as error:
+            raise BatchRequestError(error.code, str(error), 409) from error
 
 
 _SCHEMA = """
@@ -252,7 +646,7 @@ class BatchSelection:
             (*states, BATCH_SIZE),
         ).fetchall()
 
-    def transition(self, ids, state, error=None):
+    def transition(self, ids, state, error=None, *, commit_guard=None):
         if len(ids) > BATCH_SIZE:
             raise ValueError("selection updates are limited to 500")
         with self.transaction():
@@ -260,6 +654,8 @@ class BatchSelection:
                 "UPDATE selection SET state=?, error=?, attempts=attempts+? WHERE image_id=?",
                 ((state, error, int(state == "running"), image_id) for image_id in ids),
             )
+            if commit_guard is not None:
+                commit_guard()
 
     def transaction(self):
         from contextlib import contextmanager
@@ -286,6 +682,294 @@ class BatchSelection:
                 "current": current, "errors": errors, "error_examples": errors,
                 "flagged": int(flagged[0]) if flagged else 0,
                 "selection_frozen": self.frozen()}
+
+    def remap_result(self):
+        changed_images = changed_boxes = changed_scope_images = noop_resolved = 0
+        for row in self.database.execute(
+            "SELECT tombstone_json FROM selection "
+            "WHERE state='succeeded' AND tombstone_json IS NOT NULL"
+        ):
+            try:
+                plan = json.loads(row[0])
+            except (TypeError, ValueError):
+                continue
+            if plan.get("operation") != BatchOperation.REMAP_ANNOTATION_LABELS.value:
+                continue
+            if plan.get("noop_resolved"):
+                noop_resolved += 1
+                continue
+            boxes = max(0, int(plan.get("changed_boxes") or 0))
+            scope_changed = int(bool(plan.get("changed_scope")))
+            changed_boxes += boxes
+            changed_scope_images += scope_changed
+            changed_images += int(boxes > 0 or scope_changed)
+        failure_reasons = {
+            str(row[0]): int(row[1])
+            for row in self.database.execute(
+                "SELECT error,COUNT(*) FROM selection "
+                "WHERE state='failed' AND error IS NOT NULL GROUP BY error"
+            )
+        }
+        return {
+            "changed_images": changed_images,
+            "changed_boxes": changed_boxes,
+            "changed_scope_images": changed_scope_images,
+            "noop_resolved": noop_resolved,
+            "failure_reasons": failure_reasons,
+        }
+
+
+def create_annotation_remap_by_labels(
+    project_id, materials, repository, artifacts, source_labels, target_label,
+    *, retire_sources_on_success=True,
+):
+    """Freeze the live AnnotationRepository union of canonical source labels."""
+    sources = list(dict.fromkeys(
+        str(value).strip() for value in (source_labels or [])
+        if str(value).strip()
+    ))
+    target = str(target_label or "").strip()
+    if not sources or not target:
+        raise BatchRequestError(
+            "MATERIAL_REMAP_LABEL_REQUIRED",
+            "原标签和目标标签不能为空",
+            400,
+        )
+    if len(sources) > 50:
+        raise BatchRequestError(
+            "MATERIAL_REMAP_TOO_MANY_LABELS",
+            "一次最多统一 50 个来源标签",
+            422,
+        )
+    if target in sources:
+        raise BatchRequestError(
+            "MATERIAL_REMAP_INVALID",
+            "目标标签不能同时作为来源标签",
+            400,
+        )
+
+    annotations = AnnotationRepository(materials.project_path)
+    with label_governance_fence(materials.project_path):
+        active = active_project_label_ids(materials.project_path) or {}
+        unavailable = [
+            code for code in [*sources, target] if code not in active
+        ]
+        if unavailable:
+            raise BatchRequestError(
+                "MATERIAL_REMAP_TARGET_UNAVAILABLE",
+                "来源或目标标签已不存在或已停用，请刷新后重新确认",
+                409,
+            )
+        if retire_sources_on_success and OnlineFeedbackRepository(
+            materials.project_path
+        ).pending_label_reference(sources):
+            raise BatchRequestError(
+                "ONLINE_FEEDBACK_LABEL_ACTIVE",
+                "来源标签仍有待审核的线上正确预测反馈，请先处理反馈再统一退役",
+                409,
+            )
+        frozen = annotations.live_reference_snapshot(sources)
+
+    image_ids = list(frozen["image_ids"])
+    total = len(image_ids)
+    if total <= 0:
+        raise BatchRequestError(
+            "MATERIAL_REMAP_SOURCE_UNUSED",
+            "当前没有正式标注引用所选来源标签",
+            409,
+        )
+    if total > MAX_REMAP_SELECTION:
+        raise BatchRequestError(
+            "MATERIAL_REMAP_SELECTION_TOO_LARGE",
+            f"一次标签变换最多支持 {MAX_REMAP_SELECTION} 张素材",
+            422,
+        )
+
+    task_id = uuid.uuid4().hex
+    selection_path = artifacts.artifact_path(task_id, SELECTION_REF)
+    request_payload = {
+        "operation": BatchOperation.REMAP_ANNOTATION_LABELS.value,
+        "options": {
+            "source_labels": sources,
+            "source_label": sources[0] if len(sources) == 1 else "",
+            "target_label": target,
+            "retire_sources_on_success": bool(retire_sources_on_success),
+        },
+        "selection_spec": {
+            "scope": "LABEL_REFERENCE",
+            "source_labels": sources,
+            "reference_owner": "annotation_repository",
+            "annotation_revision": int(frozen["revision"]),
+        },
+    }
+    try:
+        with closing(BatchSelection(selection_path)) as manifest:
+            manifest.database.execute("BEGIN IMMEDIATE")
+            try:
+                for offset in range(0, total, BATCH_SIZE):
+                    chunk = image_ids[offset:offset + BATCH_SIZE]
+                    material_ids = {
+                        str(item["id"]) for item in materials.get_many(chunk)
+                    }
+                    missing = [
+                        image_id for image_id in chunk
+                        if image_id not in material_ids
+                    ]
+                    if missing:
+                        sample = ", ".join(missing[:10])
+                        raise BatchRequestError(
+                            "MATERIAL_REMAP_ORPHAN_ANNOTATION",
+                            "正式标注存在但素材记录缺失，请先运行标签完整性审计："
+                            + sample,
+                            409,
+                        )
+                    manifest.database.executemany(
+                        "INSERT OR IGNORE INTO selection(image_id) VALUES (?)",
+                        ((image_id,) for image_id in chunk),
+                    )
+                manifest.database.executemany(
+                    "INSERT INTO meta(key,value) VALUES (?,?)",
+                    (
+                        ("frozen", utc_now()),
+                        ("repository_revision", str(frozen["revision"])),
+                        ("reference_owner", "annotation_repository"),
+                        ("selection_kind", "annotation_label_reference"),
+                        ("source_labels", json.dumps(sources, ensure_ascii=False)),
+                        ("target_label", target),
+                    ),
+                )
+                manifest.database.execute("COMMIT")
+            except Exception:
+                manifest.database.execute("ROLLBACK")
+                raise
+        artifacts.atomic_write_json(task_id, "request.json", request_payload)
+        with closing(BatchSelection(selection_path)) as manifest:
+            artifacts.atomic_write_json(
+                task_id, CHECKPOINT_REF, manifest.summary()
+            )
+        task = TaskRecord.new(
+            task_id, project_id, TaskKind.MATERIAL_BATCH, "request.json",
+            f"materials:{project_id}",
+            required_capabilities=("materials.batch",),
+        )
+        return repository.create(task, artifacts=artifacts)
+    except BatchRequestError:
+        raise
+    except Exception as error:
+        raise BatchRequestError(
+            "MATERIAL_REMAP_CREATE_FAILED",
+            f"标签变换任务创建失败：{redact_storage_error(error)}",
+            500,
+        ) from error
+
+
+def create_annotation_remap_by_label(
+    project_id, materials, repository, artifacts, source_label, target_label,
+):
+    return create_annotation_remap_by_labels(
+        project_id,
+        materials,
+        repository,
+        artifacts,
+        [source_label],
+        target_label,
+        retire_sources_on_success=True,
+    )
+
+def create_annotation_remap_batch(
+    project_id, materials, repository, artifacts, image_ids,
+    source_label, target_label,
+):
+    ids = list(dict.fromkeys(
+        str(value).strip() for value in (image_ids or []) if str(value).strip()
+    ))
+    if not ids:
+        raise BatchRequestError(
+            "MATERIAL_REMAP_SELECTION_REQUIRED",
+            "请选择需要调整标签的素材",
+            400,
+        )
+    if len(ids) > MAX_REMAP_SELECTION:
+        raise BatchRequestError(
+            "MATERIAL_REMAP_SELECTION_TOO_LARGE",
+            f"一次标签变换最多支持 {MAX_REMAP_SELECTION} 张素材",
+            422,
+        )
+    source = str(source_label or "").strip()
+    target = str(target_label or "").strip()
+    if not source or not target:
+        raise BatchRequestError(
+            "MATERIAL_REMAP_LABEL_REQUIRED",
+            "原标签和目标标签不能为空",
+            400,
+        )
+    task_id = uuid.uuid4().hex
+    selection_path = artifacts.artifact_path(task_id, SELECTION_REF)
+    request_payload = {
+        "operation": BatchOperation.REMAP_ANNOTATION_LABELS.value,
+        "options": {"source_label": source, "target_label": target},
+    }
+    try:
+        with closing(BatchSelection(selection_path)):
+            pass
+        with closing(materials._connect()) as database:
+            database.execute(
+                "ATTACH DATABASE ? AS batch_selection", (str(selection_path),)
+            )
+            database.execute("PRAGMA batch_selection.synchronous=FULL")
+            database.execute("BEGIN IMMEDIATE")
+            try:
+                revision = materials._revision(database)
+                for offset in range(0, len(ids), BATCH_SIZE):
+                    chunk = ids[offset:offset + BATCH_SIZE]
+                    database.executemany(
+                        "INSERT OR IGNORE INTO batch_selection.selection(image_id) "
+                        "VALUES (?)",
+                        ((image_id,) for image_id in chunk),
+                    )
+                missing = database.execute(
+                    "SELECT s.image_id FROM batch_selection.selection s "
+                    "LEFT JOIN main.materials m ON m.id=s.image_id "
+                    "WHERE m.id IS NULL ORDER BY s.image_id LIMIT 11"
+                ).fetchall()
+                if missing:
+                    sample = ", ".join(str(row[0]) for row in missing[:10])
+                    raise BatchRequestError(
+                        "MATERIAL_REMAP_SELECTION_CHANGED",
+                        f"部分素材不存在，请刷新后重试：{sample}",
+                        409,
+                    )
+                database.executemany(
+                    "INSERT INTO batch_selection.meta(key,value) VALUES (?,?)",
+                    (
+                        ("frozen", utc_now()),
+                        ("repository_revision", str(revision)),
+                        ("selection_kind", "annotation_label_remap"),
+                    ),
+                )
+                database.execute("COMMIT")
+            except Exception:
+                database.execute("ROLLBACK")
+                raise
+        artifacts.atomic_write_json(task_id, "request.json", request_payload)
+        with closing(BatchSelection(selection_path)) as manifest:
+            artifacts.atomic_write_json(
+                task_id, CHECKPOINT_REF, manifest.summary()
+            )
+        task = TaskRecord.new(
+            task_id, project_id, TaskKind.MATERIAL_BATCH, "request.json",
+            f"materials:{project_id}",
+            required_capabilities=("materials.batch",),
+        )
+        return repository.create(task, artifacts=artifacts)
+    except BatchRequestError:
+        raise
+    except Exception as error:
+        raise BatchRequestError(
+            "MATERIAL_REMAP_CREATION_FAILED",
+            f"标签变换任务创建失败：{redact_storage_error(error)}",
+            500,
+        ) from error
 
 
 def _check_active(context, stage="processing", current=None, progress=None):
@@ -317,11 +1001,161 @@ def _object_missing(error):
     return False
 
 
+def _atomic_write_json_file(path: Path, value) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary.open("x", encoding="utf-8") as stream:
+            json.dump(value, stream, ensure_ascii=False, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _retire_merged_source_labels(
+    data_dir: Path, project_id: str, sources, target: str,
+) -> list[str]:
+    sources = list(dict.fromkeys(
+        str(value).strip() for value in (sources or []) if str(value).strip()
+    ))
+    if not sources:
+        return []
+    project_path = data_dir / "projects" / project_id
+    meta_path = project_path / "meta.json"
+    projects_path = data_dir / "projects.json"
+    with label_governance_fence(project_path):
+        annotation_remaining = AnnotationRepository(project_path).label_reference_preview(
+            sources
+        )
+        if int(annotation_remaining.get("affected_images") or 0) != 0:
+            raise BatchRequestError(
+                "ANNOTATION_REMAP_REFERENCES_REMAIN",
+                "ANNOTATION_REMAP_REFERENCES_REMAIN: 标签统一完成后又出现新的 AnnotationRepository 来源标签引用，已阻止来源标签退役",
+                409,
+            )
+        material_remaining = MaterialRepository(project_path).label_reference_preview(
+            sources
+        )
+        if int(material_remaining.get("affected_images") or 0) != 0:
+            raise BatchRequestError(
+                "MATERIAL_REMAP_REFERENCES_REMAIN",
+                "MATERIAL_REMAP_REFERENCES_REMAIN: 标签统一完成后又出现新的 MaterialRepository 来源标签引用，已阻止来源标签退役",
+                409,
+            )
+        with FileLock(str(projects_path) + ".lock", timeout=60):
+            with FileLock(str(meta_path) + ".lock", timeout=60):
+                project = json.loads(meta_path.read_text(encoding="utf-8"))
+                labels = list(project.get("labels") or [])
+                metadata = project.setdefault("label_meta", [])
+                while len(metadata) < len(labels):
+                    metadata.append({})
+                if target not in labels:
+                    raise BatchRequestError(
+                        "MATERIAL_REMAP_TARGET_UNAVAILABLE",
+                        "目标标签已不存在，不能完成来源标签退役",
+                        409,
+                    )
+                target_index = labels.index(target)
+                frozen_label_names = list(sources)
+                for source_code in sources:
+                    if source_code in labels:
+                        source_meta = metadata[labels.index(source_code)]
+                        if isinstance(source_meta, dict):
+                            frozen_label_names.append(str(source_meta.get("display_name") or ""))
+                if OnlineFeedbackRepository(project_path).pending_label_reference(
+                    frozen_label_names
+                ):
+                    raise BatchRequestError(
+                        "ONLINE_FEEDBACK_LABEL_ACTIVE",
+                        "来源标签仍有待审核的线上正确预测反馈，已阻止来源标签退役",
+                        409,
+                    )
+                target_meta = (
+                    metadata[target_index]
+                    if isinstance(metadata[target_index], dict)
+                    else {}
+                )
+                metadata[target_index] = target_meta
+                if (
+                    str(target_meta.get("status") or "active").lower() != "active"
+                    or target_meta.get("active") is False
+                ):
+                    raise BatchRequestError(
+                        "MATERIAL_REMAP_TARGET_UNAVAILABLE",
+                        "目标标签已停用，不能完成来源标签退役",
+                        409,
+                    )
+                retired = []
+                merged_at = utc_now()
+                for source in sources:
+                    if source not in labels:
+                        raise BatchRequestError(
+                            "MATERIAL_REMAP_SOURCE_SCHEMA_CHANGED",
+                            f"来源标签 {source} 已从标签配置中消失",
+                            409,
+                        )
+                    index = labels.index(source)
+                    row = metadata[index] if isinstance(metadata[index], dict) else {}
+                    metadata[index] = row
+                    status = str(row.get("status") or "active").lower()
+                    if row.get("active") is False and status == "active":
+                        status = "inactive"
+                    if status == "merged" and str(row.get("merged_into") or "") == target:
+                        retired.append(source)
+                        continue
+                    if status != "active":
+                        raise BatchRequestError(
+                            "MATERIAL_REMAP_SOURCE_SCHEMA_CHANGED",
+                            f"来源标签 {source} 状态已变化，请人工复核",
+                            409,
+                        )
+                    row["status"] = "merged"
+                    row["merged_into"] = target
+                    row["merged_at"] = merged_at
+                    retired.append(source)
+                project["updated_at"] = merged_at
+                _atomic_write_json_file(meta_path, project)
+
+                projects = []
+                if projects_path.is_file():
+                    try:
+                        value = json.loads(projects_path.read_text(encoding="utf-8"))
+                        projects = value if isinstance(value, list) else []
+                    except Exception:
+                        projects = []
+                replaced = False
+                for index, item in enumerate(projects):
+                    if str(item.get("id") or "") == str(project_id):
+                        projects[index] = project
+                        replaced = True
+                        break
+                if not replaced:
+                    projects.append(project)
+                _atomic_write_json_file(projects_path, projects)
+        return retired
+
 class MaterialBatchHandler:
     def __init__(self, data_dir):
         self.data_dir = Path(data_dir).resolve()
 
     def run(self, context):
+        payload = context.artifacts.read_json(
+            context.task.task_id, context.task.payload_ref, default={}
+        )
+        if str((payload or {}).get("operation") or "").upper() == BatchOperation.AUDIT_LABEL_INTEGRITY.value:
+            try:
+                return self._run_label_integrity_audit(context)
+            except BaseException as error:
+                append_task_log(context, "error", f"{type(error).__name__}: {error}")
+                raise
+        if str((payload or {}).get("operation") or "").upper() == BatchOperation.AUDIT_MATERIAL_INTEGRITY.value:
+            try:
+                return self._run_material_integrity_audit(context)
+            except BaseException as error:
+                append_task_log(context, "error", f"{type(error).__name__}: {error}")
+                raise
         selection_path = context.artifacts.artifact_path(context.task.task_id, SELECTION_REF)
         selection_path.parent.mkdir(parents=True, exist_ok=True)
         with FileLock(str(selection_path) + ".lock", timeout=60):
@@ -336,7 +1170,18 @@ class MaterialBatchHandler:
 
     def _run(self, context, manifest):
         payload = context.artifacts.read_json(context.task.task_id, context.task.payload_ref)
+        if str((payload or {}).get("operation") or "").upper() == BatchOperation.REMAP_ANNOTATION_LABELS.value:
+            return self._run_annotation_remap(context, manifest, payload)
+        if str((payload or {}).get("operation") or "").upper() == BatchOperation.REPAIR_ANNOTATION_PROJECTIONS.value:
+            return self._run_annotation_projection_repair(context, manifest, payload)
         operation, selection, options = parse_request(payload)
+        if operation is BatchOperation.AI_ANNOTATE:
+            confirmation = context.artifacts.read_json(
+                context.task.task_id, "review/confirmation.json", default=None,
+            )
+            if isinstance(confirmation, dict) and confirmation.get("accepted") is True:
+                from .annotation_task_service import commit_confirmed_review
+                return commit_confirmed_review(context)
         project = str(context.task.project_id or '').strip()
         if (
             not project
@@ -353,7 +1198,11 @@ class MaterialBatchHandler:
         if not manifest.frozen() or confirmed_revision is None or confirmed_revision[0] != str(selection.repository_revision):
             raise BatchRequestError("BATCH_SELECTION_NOT_FROZEN", "batch has no confirmed immutable selection; create and confirm a new batch", 409)
         if context.task.retry_of:
-            while batch := manifest.rows(("failed",)):
+            # A CLEAN task may be safely preempted between the durable
+            # selection transition to "running" and result persistence. Reset
+            # only incomplete rows; succeeded rows remain immutable.
+            retry_states = ("failed", "running") if operation is BatchOperation.CLEAN else ("failed",)
+            while batch := manifest.rows(retry_states):
                 _check_active(context)
                 manifest.transition([row["image_id"] for row in batch], "pending")
         append_task_log(context, "processing", f"operation={operation.value} total={manifest.summary()['total']}")
@@ -367,9 +1216,16 @@ class MaterialBatchHandler:
             manager = StorageManager(data_dir=self.data_dir, project_id=project, materials=materials,
                 provider_resolver=lambda source, _secret: _provider(self.data_dir, project, source))
             index = DurableHashIndex(manifest.database, lambda: _check_active(context, "duplicate_lookup"))
+            if context.task.retry_of:
+                reset_stale_clean_successes(context, manifest, materials, _check_active)
         while batch := manifest.rows():
             _check_active(context)
             ids = [row["image_id"] for row in batch]
+            if operation in {BatchOperation.DELETE_INDEX, BatchOperation.DELETE_SOURCE}:
+                with material_annotation_lifecycle_fence(project_path):
+                    _assert_not_referenced_by_active_tasks(
+                        project, ids, materials, context.repository, context.artifacts
+                    )
             manifest.transition(ids, "running")
             current = ids[0]
             context.save_checkpoint(manifest.summary(current))
@@ -392,7 +1248,10 @@ class MaterialBatchHandler:
                     elif operation is BatchOperation.REMOVE_LABELS:
                         materials.remove_labels_many(found, options["labels"], batch_size=BATCH_SIZE)
                     elif operation is BatchOperation.DELETE_INDEX:
-                        materials.remove_many(found, batch_size=BATCH_SIZE)
+                        self._delete_index_rows(
+                            context, manifest, materials, ids, project_path
+                        )
+                        found, missing = [], []
                     else:
                         raise BatchRequestError("BATCH_OPERATION_NOT_READY", operation.value)
                     manifest.transition(found, "succeeded")
@@ -408,11 +1267,25 @@ class MaterialBatchHandler:
             checkpoint = manifest.summary()
             context.save_checkpoint(checkpoint)
             append_task_log(context, "checkpoint", f"processed={checkpoint['processed']} succeeded={checkpoint['succeeded']} failed={checkpoint['failed']}")
+        audit_summary = None
+        if operation is BatchOperation.CLEAN:
+            audit_summary = audit_cleaning_annotations(
+                project_path,
+                manifest.database,
+                materials,
+                enabled=bool(options.get("annotation_audit", True)),
+            )
         summary = manifest.summary()
         if operation is BatchOperation.CLEAN:
-            summary.update({"clean_results_ref": SELECTION_REF,
-                            "review_required": bool(summary["flagged"]),
-                            "scan_only": True})
+            summary.update({
+                "clean_results_ref": SELECTION_REF,
+                "annotation_audit": audit_summary,
+                "review_required": bool(
+                    summary["flagged"]
+                    or (audit_summary or {}).get("review_images")
+                ),
+                "scan_only": True,
+            })
         context.save_checkpoint(summary)
         context.artifacts.atomic_write_json(context.task.task_id, RESULT_REF, summary)
         if annotation is not None:
@@ -421,12 +1294,820 @@ class MaterialBatchHandler:
         append_task_log(context, "finished", status.value)
         return status, RESULT_REF
 
+    def _run_label_integrity_audit(self, context):
+        from .label_integrity import AUDIT_REF, run_label_integrity_audit
+
+        project = str(context.task.project_id or "").strip()
+        if (
+            not project
+            or any(character in project for character in ("/", "\\"))
+            or not all(character.isalnum() or character in {"_", "-"} for character in project)
+        ):
+            raise ValueError("project id must be one safe path component")
+        projects_root = (self.data_dir / "projects").resolve()
+        project_path = (projects_root / project).resolve()
+        if project_path.parent != projects_root:
+            raise ValueError("project id escaped projects root")
+
+        append_task_log(context, "processing", "operation=AUDIT_LABEL_INTEGRITY scope=PROJECT")
+
+        def progress(scanned):
+            checkpoint = {
+                "total": None,
+                "processed": int(scanned),
+                "succeeded": int(scanned),
+                "failed": 0,
+                "selection_frozen": False,
+                "audit_ref": AUDIT_REF,
+            }
+            context.save_checkpoint(checkpoint)
+            _check_active(
+                context,
+                "AUDITING_LABEL_INTEGRITY",
+                f"已审计 {int(scanned)} 条标注真相",
+                50.0,
+            )
+
+        result = run_label_integrity_audit(
+            project_path,
+            context.artifacts.artifact_path(context.task.task_id, AUDIT_REF),
+            progress=progress,
+        )
+        checkpoint = {
+            "total": int(result["scanned_images"]),
+            "processed": int(result["scanned_images"]),
+            "succeeded": int(result["scanned_images"]),
+            "failed": 0,
+            "selection_frozen": False,
+            "audit_ref": AUDIT_REF,
+            "affected_images": int(result["affected_images"]),
+            "issue_count": int(result["issue_count"]),
+        }
+        context.save_checkpoint(checkpoint)
+        context.artifacts.atomic_write_json(context.task.task_id, RESULT_REF, result)
+        _check_active(
+            context,
+            "AUDITING_LABEL_INTEGRITY",
+            f"审计完成 · {result['affected_images']} 张素材存在问题",
+            99.0,
+        )
+        append_task_log(context, "finished", TaskStatus.SUCCEEDED.value)
+        return TaskStatus.SUCCEEDED, RESULT_REF
+
+    def _run_material_integrity_audit(self, context):
+        """Audit indexed duplicates and stored bytes under the existing batch owner."""
+        project, project_path = _safe_project_path(self.data_dir, context.task.project_id)
+        materials = MaterialRepository(project_path)
+        annotations = AnnotationRepository(project_path)
+        manager = StorageManager(
+            data_dir=self.data_dir,
+            project_id=project,
+            materials=materials,
+            provider_resolver=lambda source, _secret: _provider(
+                self.data_dir, project, source
+            ),
+        )
+        artifact_path = context.artifacts.artifact_path(
+            context.task.task_id, MATERIAL_INTEGRITY_REF
+        )
+        artifact_path.parent.mkdir(parents=True, exist_ok=True)
+        material_revision = materials.current_revision()
+        annotation_revision = annotations.current_revision()
+        total = materials.summary()["total"]
+        processed = scan_failures = 0
+        append_task_log(
+            context,
+            "processing",
+            f"operation={BatchOperation.AUDIT_MATERIAL_INTEGRITY.value} scope=PROJECT total={total}",
+        )
+
+        def checkpoint(stage, current=None):
+            progress = int(processed * 100 / max(1, total))
+            value = {
+                "total": total,
+                "processed": processed,
+                "succeeded": processed - scan_failures,
+                "failed": scan_failures,
+                "selection_frozen": False,
+                "audit_ref": MATERIAL_INTEGRITY_REF,
+            }
+            context.save_checkpoint(value)
+            _check_active(context, stage, current, progress)
+
+        with closing(sqlite3.connect(artifact_path)) as audit:
+            audit.executescript(_MATERIAL_INTEGRITY_SCHEMA)
+            audit.execute("BEGIN IMMEDIATE")
+            audit.execute("DELETE FROM audit_metadata")
+            audit.execute("DELETE FROM issue_items")
+            audit.execute("DELETE FROM issue_groups")
+
+            # Duplicate candidates come only from the existing indexed content
+            # hash.  AnnotationRepository remains the annotation truth owner.
+            duplicate_groups: dict[str, list[str]] = {}
+            with closing(materials._connect()) as database:
+                rows = database.execute(
+                    "SELECT lower(trim(m.content_sha256)) AS digest,m.id "
+                    "FROM materials m JOIN ("
+                    " SELECT lower(trim(content_sha256)) AS digest FROM materials "
+                    " WHERE trim(content_sha256)<>'' GROUP BY lower(trim(content_sha256)) HAVING COUNT(*)>1"
+                    ") d ON lower(trim(m.content_sha256))=d.digest "
+                    "ORDER BY digest,m.id"
+                ).fetchall()
+            for row in rows:
+                duplicate_groups.setdefault(str(row["digest"]), []).append(str(row["id"]))
+            for digest, image_ids in duplicate_groups.items():
+                records: dict[str, dict] = {}
+                for offset in range(0, len(image_ids), BATCH_SIZE):
+                    records.update(annotations.get_many(image_ids[offset:offset + BATCH_SIZE]))
+                annotation_digests = {
+                    annotations.record_digest(records[image_id])
+                    for image_id in image_ids
+                }
+                issue_type = (
+                    "DUPLICATE_IDENTICAL"
+                    if len(annotation_digests) == 1
+                    else "DUPLICATE_ANNOTATION_CONFLICT"
+                )
+                group_key = f"{issue_type}:{digest}"
+                indexed = {
+                    str(row["id"]): row
+                    for row in materials.get_many(image_ids)
+                }
+                for image_id in image_ids:
+                    record = records[image_id]
+                    row = indexed.get(image_id) or {}
+                    details = {
+                        "filename": row.get("filename") or image_id,
+                        "storage_source_id": row.get("storage_source_id") or "",
+                        "import_batch_id": row.get("import_batch_id") or row.get("batch_id") or "",
+                        "split": row.get("split") or "unassigned",
+                        "annotation_state": record.get("annotation_state") or "unannotated",
+                        "annotation_scope": list(record.get("annotation_scope") or []),
+                        "box_count": len(record.get("boxes") or []),
+                        "labels": sorted({
+                            str(box.get("label") or box.get("code") or "")
+                            for box in (record.get("boxes") or [])
+                            if str(box.get("label") or box.get("code") or "")
+                        }),
+                        "annotation_digest": annotations.record_digest(record),
+                    }
+                    audit.execute(
+                        "INSERT INTO issue_items(group_key,issue_type,content_sha256,image_id,details_json) "
+                        "VALUES (?,?,?,?,?)",
+                        (group_key, issue_type, digest, image_id, json.dumps(details, ensure_ascii=False, sort_keys=True)),
+                    )
+
+            # Stored-object/hash/decode verification is intentionally background
+            # work and reuses StorageManager plus the cleaning decoder owner.
+            analysis = CleaningAnalysisRuntime()
+            cursor = None
+            try:
+                while True:
+                    page = materials.list_page(cursor=cursor, limit=BATCH_SIZE)
+                    if not page.items:
+                        break
+                    for row in page.items:
+                        image_id = str(row.get("id") or "")
+                        issue_type = ""
+                        detail = ""
+                        try:
+                            local = manager.materialize(row)
+                            analysis.analyze(
+                                local.path,
+                                require_blur=False,
+                                content_sha256=local.content_sha256,
+                                check_active=lambda: _check_active(
+                                    context, "AUDITING_MATERIAL_INTEGRITY", image_id
+                                ),
+                            )
+                        except ImageDecodeError as error:
+                            issue_type, detail = "INVALID_IMAGE", redact_storage_error(error)
+                        except StorageError as error:
+                            code = str(getattr(error, "code", ""))
+                            if code in {"SOURCE_CONTENT_CHANGED", "STORAGE_SHA256_MISMATCH"}:
+                                issue_type = "CONTENT_HASH_MISMATCH"
+                            elif code in {
+                                "STORAGE_OBJECT_NOT_FOUND", "SOURCE_UNAVAILABLE",
+                                "STORAGE_SOURCE_NOT_FOUND", "NoSuchKey", "NotFound", "404",
+                            }:
+                                issue_type = "MATERIAL_OBJECT_MISSING"
+                            else:
+                                scan_failures += 1
+                            detail = redact_storage_error(error)
+                        except FileNotFoundError as error:
+                            issue_type, detail = "MATERIAL_OBJECT_MISSING", redact_storage_error(error)
+                        except Exception as error:
+                            scan_failures += 1
+                            detail = redact_storage_error(error)
+                        if issue_type:
+                            group_key = f"{issue_type}:{image_id}"
+                            details = {
+                                "filename": row.get("filename") or image_id,
+                                "storage_source_id": row.get("storage_source_id") or "",
+                                "import_batch_id": row.get("import_batch_id") or row.get("batch_id") or "",
+                                "split": row.get("split") or "unassigned",
+                                "detail": detail,
+                            }
+                            audit.execute(
+                                "INSERT OR REPLACE INTO issue_items"
+                                "(group_key,issue_type,content_sha256,image_id,details_json) VALUES (?,?,?,?,?)",
+                                (
+                                    group_key,
+                                    issue_type,
+                                    str(row.get("content_sha256") or "").lower(),
+                                    image_id,
+                                    json.dumps(details, ensure_ascii=False, sort_keys=True),
+                                ),
+                            )
+                        processed += 1
+                        if processed % 25 == 0:
+                            checkpoint("AUDITING_MATERIAL_INTEGRITY", image_id)
+                    cursor = page.next_cursor
+                    if not cursor:
+                        break
+            finally:
+                analysis.close()
+                manager._providers.clear()
+
+            audit.execute(
+                "INSERT INTO issue_groups(group_key,issue_type,content_sha256,image_count,details_json) "
+                "SELECT group_key,issue_type,content_sha256,COUNT(*),'{}' FROM issue_items "
+                "GROUP BY group_key,issue_type,content_sha256"
+            )
+            group_count = int(audit.execute("SELECT COUNT(*) FROM issue_groups").fetchone()[0])
+            affected_images = int(audit.execute("SELECT COUNT(DISTINCT image_id) FROM issue_items").fetchone()[0])
+            issue_counts = {
+                str(row[0]): int(row[1])
+                for row in audit.execute(
+                    "SELECT issue_type,COUNT(*) FROM issue_items GROUP BY issue_type ORDER BY issue_type"
+                ).fetchall()
+            }
+            metadata = {
+                "created_at": utc_now(),
+                "material_revision": material_revision,
+                "annotation_revision": annotation_revision,
+                "snapshot_only": True,
+            }
+            audit.executemany(
+                "INSERT INTO audit_metadata(key,value_json) VALUES (?,?)",
+                ((key, json.dumps(value, ensure_ascii=False, sort_keys=True)) for key, value in metadata.items()),
+            )
+            audit.execute("COMMIT")
+
+        result = {
+            "scanned_images": processed,
+            "affected_images": affected_images,
+            "issue_groups": group_count,
+            "issue_counts": issue_counts,
+            "scan_failures": scan_failures,
+            "audit_ref": MATERIAL_INTEGRITY_REF,
+            "metadata": metadata,
+        }
+        checkpoint("AUDITING_MATERIAL_INTEGRITY")
+        context.artifacts.atomic_write_json(context.task.task_id, RESULT_REF, result)
+        append_task_log(context, "finished", TaskStatus.SUCCEEDED.value)
+        return TaskStatus.SUCCEEDED, RESULT_REF
+
+    def _run_annotation_projection_repair(self, context, manifest, payload):
+        """Reconcile stale Material previews from frozen formal GT, never edit GT."""
+        from .annotations import annotation_summary
+
+        _project_id, project_path = _safe_project_path(self.data_dir, context.task.project_id)
+        if not manifest.frozen():
+            raise BatchRequestError(
+                "BATCH_SELECTION_NOT_FROZEN", "缩略图修复缺少冻结范围", 409,
+            )
+        if context.task.retry_of:
+            while stale := manifest.rows(("failed", "running")):
+                _check_active(context, "REPAIRING_ANNOTATION_PREVIEWS")
+                manifest.transition([item["image_id"] for item in stale], "pending")
+        annotations = AnnotationRepository(project_path)
+        materials = MaterialRepository(project_path)
+        total = int(manifest.summary().get("total") or 0)
+        append_task_log(
+            context, "processing",
+            f"operation={BatchOperation.REPAIR_ANNOTATION_PROJECTIONS.value} total={total}",
+        )
+        while batch := manifest.rows():
+            _check_active(context, "REPAIRING_ANNOTATION_PREVIEWS")
+            batch = list(batch[:REMAP_BATCH_SIZE])
+            ids = [str(row["image_id"]) for row in batch]
+            manifest.transition(ids, "running")
+            # Shared lifecycle fence prevents concurrent human GT updates or
+            # source deletion between the CAS check and derived projection write.
+            with material_annotation_lifecycle_fence(project_path):
+                current = annotations.get_many(ids)
+                projected = {
+                    str(row["id"]): row for row in materials.get_many(ids)
+                }
+                for item in batch:
+                    image_id = str(item["image_id"])
+                    plan = {}
+                    try:
+                        plan = json.loads(item["tombstone_json"] or "{}")
+                        if plan.get("operation") != BatchOperation.REPAIR_ANNOTATION_PROJECTIONS.value:
+                            raise ValueError("PROJECTION_REPAIR_PLAN_INVALID")
+                        record = current[image_id]
+                        material = projected.get(image_id)
+                        if material is None:
+                            raise ValueError("MATERIAL_NOT_FOUND")
+                        if (
+                            int(record.get("version") or 0) != int(plan.get("expected_version") or 0)
+                            or annotations.record_digest(record) != str(plan.get("expected_digest") or "")
+                        ):
+                            raise ValueError("ANNOTATION_CHANGED_DURING_PROJECTION_REPAIR")
+                        if int(record.get("version") or 0) <= 0:
+                            raise ValueError("LEGACY_ANNOTATION_REQUIRES_FORMAL_MIGRATION")
+                        formal = annotation_summary(
+                            record.get("boxes") or [], record.get("annotation_state"),
+                        )
+                        expected_preview = formal["annotation_preview"]
+                        if (material.get("annotation_preview") or []) == expected_preview:
+                            plan["noop_resolved"] = True
+                        else:
+                            projection = {
+                                key: formal[key]
+                                for key in (
+                                    "annotation_preview", "labels", "label_counts",
+                                    "box_count", "annotation_state", "annotated",
+                                )
+                            }
+                            projection.update({
+                                "annotation_scope": list(record.get("annotation_scope") or []),
+                                "annotation_version": int(record["version"]),
+                                "annotation_hash": annotations.record_digest(record),
+                            })
+                            materials.patch_annotation_projections({image_id: projection})
+                            updated = materials.get(image_id)
+                            if updated is None or (updated.get("annotation_preview") or []) != expected_preview:
+                                raise ValueError("PROJECTION_REPAIR_NOT_PERSISTED")
+                            plan["projection_repaired"] = True
+                        manifest.database.execute(
+                            "UPDATE selection SET tombstone_json=? WHERE image_id=?",
+                            (json.dumps(plan, ensure_ascii=False, sort_keys=True), image_id),
+                        )
+                        manifest.transition([image_id], "succeeded")
+                    except (PermissionError, InterruptedError):
+                        raise
+                    except Exception as error:
+                        public_error = redact_storage_error(error)
+                        manifest.transition([image_id], "failed", public_error)
+                        append_task_log(
+                            context, "projection_repair_conflict",
+                            f"image_id={image_id} error={public_error}",
+                        )
+            checkpoint = manifest.summary()
+            context.save_checkpoint(checkpoint)
+            _check_active(
+                context, "REPAIRING_ANNOTATION_PREVIEWS",
+                f"正在校验缩略图派生框 {checkpoint['processed']}/{max(1, total)}",
+                min(99.0, round(checkpoint["processed"] * 99.0 / max(1, total), 1)),
+            )
+        summary = manifest.summary()
+        repaired = noop = 0
+        for row in manifest.database.execute(
+            "SELECT tombstone_json FROM selection WHERE state='succeeded'"
+        ):
+            plan = json.loads(row[0] or "{}")
+            repaired += int(bool(plan.get("projection_repaired")))
+            noop += int(bool(plan.get("noop_resolved")))
+        summary.update({
+            "changed_images": repaired,
+            "noop_resolved": noop,
+            "audit_task_id": str((payload.get("options") or {}).get("audit_task_id") or ""),
+        })
+        context.save_checkpoint(summary)
+        context.artifacts.atomic_write_json(context.task.task_id, RESULT_REF, summary)
+        status = (
+            TaskStatus.PARTIAL_SUCCESS if summary["failed"] and summary["succeeded"]
+            else TaskStatus.FAILED if summary["failed"]
+            else TaskStatus.SUCCEEDED
+        )
+        append_task_log(context, "finished", status.value)
+        return status, RESULT_REF
+
+    def _run_annotation_remap(self, context, manifest, payload):
+        options = dict((payload or {}).get("options") or {})
+        repair_mode = bool(options.get("repair_mode"))
+        mapping_options = [
+            dict(item) for item in (options.get("mappings") or [])
+            if isinstance(item, dict)
+        ]
+        multi_mapping_mode = repair_mode and bool(mapping_options)
+        sources = list(dict.fromkeys(
+            str(value).strip()
+            for value in (
+                [item.get("source_label") for item in mapping_options]
+                if multi_mapping_mode
+                else options.get("source_labels")
+                or [options.get("source_label")]
+            )
+            if str(value or "").strip()
+        ))
+        target = str(options.get("target_label") or "").strip()
+        if (
+            not sources
+            or (not multi_mapping_mode and (not target or target in sources))
+            or any(
+                not str(item.get("target_label") or "").strip()
+                or str(item.get("target_label") or "").strip()
+                == str(item.get("source_label") or "").strip()
+                for item in mapping_options
+            )
+        ):
+            raise BatchRequestError(
+                "MATERIAL_REMAP_INVALID",
+                "标签变换任务的来源标签和目标标签无效",
+                409,
+            )
+        source_text = "、".join(sources[:3])
+        if len(sources) > 3:
+            source_text += f" 等 {len(sources)} 个标签"
+        project = str(context.task.project_id or "").strip()
+        if (
+            not project
+            or any(character in project for character in ('/', '\\'))
+            or not all(character.isalnum() or character in {'_', '-'} for character in project)
+        ):
+            raise ValueError('project id must be one safe path component')
+        projects_root = (self.data_dir / 'projects').resolve()
+        project_path = (projects_root / project).resolve()
+        if project_path.parent != projects_root:
+            raise ValueError('project id escaped projects root')
+        if not manifest.frozen():
+            raise BatchRequestError(
+                "BATCH_SELECTION_NOT_FROZEN",
+                "标签变换任务缺少已冻结素材范围",
+                409,
+            )
+        if context.task.retry_of:
+            while failed := manifest.rows(("failed",)):
+                _check_active(context, "REMAPPING_ANNOTATION_LABELS")
+                manifest.transition(
+                    [row["image_id"] for row in failed], "pending"
+                )
+
+        annotations = AnnotationRepository(project_path)
+        materials = MaterialRepository(project_path)
+        total = max(0, int(manifest.summary().get("total") or 0))
+        append_task_log(
+            context, "processing",
+            f"operation={BatchOperation.REMAP_ANNOTATION_LABELS.value} total={total}",
+        )
+
+        expected_targets = {
+            str(item.get("source_label") or "").strip():
+            str(item.get("target_label") or "").strip()
+            for item in mapping_options
+        }
+        if multi_mapping_mode and len(expected_targets) != len(mapping_options):
+            raise BatchRequestError(
+                "MATERIAL_REMAP_INVALID",
+                "同一个来源标签不能在一个修复任务中映射到多个目标",
+                409,
+            )
+
+        def target_class_ids(targets):
+            meta_path = project_path / "meta.json"
+            if not meta_path.is_file():
+                raise BatchRequestError(
+                    "MATERIAL_REMAP_PROJECT_MISSING",
+                    "项目标签配置不存在",
+                    409,
+                )
+            project_meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            labels = list(project_meta.get("labels") or [])
+            metadata = list(project_meta.get("label_meta") or [])
+            wanted = set(targets)
+            resolved = {}
+            for index, code in enumerate(labels):
+                code = str(code)
+                if code not in wanted:
+                    continue
+                info = (
+                    metadata[index]
+                    if index < len(metadata) and isinstance(metadata[index], dict)
+                    else {}
+                )
+                if (
+                    str(info.get("status") or "active").lower() == "active"
+                    and info.get("active") is not False
+                ):
+                    resolved[code] = index
+            if set(resolved) != wanted:
+                raise BatchRequestError(
+                    "MATERIAL_REMAP_TARGET_UNAVAILABLE",
+                    "目标标签已不存在或已停用，请重新确认标签映射",
+                    409,
+                )
+            return resolved
+
+        while batch := manifest.rows():
+            _check_active(context, "REMAPPING_ANNOTATION_LABELS")
+            batch = list(batch[:REMAP_BATCH_SIZE])
+            ids = [str(row["image_id"]) for row in batch]
+            manifest.transition(ids, "running")
+            target_ids = target_class_ids(
+                set(expected_targets.values()) if multi_mapping_mode else {target}
+            )
+            current_target_id = target_ids.get(target)
+            existing = (
+                set(ids)
+                if repair_mode
+                else {str(item["id"]) for item in materials.get_many(ids)}
+            )
+            missing_ids = [image_id for image_id in ids if image_id not in existing]
+            if missing_ids:
+                manifest.transition(missing_ids, "failed", "MATERIAL_NOT_FOUND")
+                for image_id in missing_ids:
+                    append_task_log(
+                        context, "remap_missing_material",
+                        f"image_id={image_id}",
+                    )
+            active_rows = [
+                row for row in batch if str(row["image_id"]) in existing
+            ]
+            active_ids = [str(row["image_id"]) for row in active_rows]
+            snapshots = annotations.get_many(active_ids) if active_ids else {}
+            executable = []
+            plans = {}
+            failed = []
+            for row in active_rows:
+                image_id = str(row["image_id"])
+                current = snapshots[image_id]
+                current_digest = annotations.record_digest(current)
+                plan = None
+                if row["tombstone_json"]:
+                    try:
+                        plan = json.loads(row["tombstone_json"])
+                    except (TypeError, ValueError):
+                        plan = None
+                if not isinstance(plan, dict):
+                    if multi_mapping_mode:
+                        failed.append((image_id, "MATERIAL_REMAP_PLAN_CONFLICT"))
+                        continue
+                    preview = annotations.plan_label_remap(
+                        current,
+                        source_labels=sources,
+                        target_label=target,
+                        target_class_id=current_target_id,
+                    )
+                    plan = {
+                        "operation": BatchOperation.REMAP_ANNOTATION_LABELS.value,
+                        "source_labels": sources,
+                        "source_label": sources[0] if len(sources) == 1 else "",
+                        "target_label": target,
+                        "source_digest": current_digest,
+                        "result_digest": preview["content_digest"],
+                        "changed_boxes": int(preview["changed_boxes"]),
+                        "changed_scope": int(preview.get("changed_scope") or 0),
+                        "target_class_id": int(current_target_id),
+                        "planned_at": utc_now(),
+                    }
+                    manifest.database.execute(
+                        "UPDATE selection SET tombstone_json=? WHERE image_id=?",
+                        (json.dumps(plan, ensure_ascii=False), image_id),
+                    )
+                plan_sources = list(dict.fromkeys(
+                    str(value).strip()
+                    for value in (
+                        plan.get("source_labels")
+                        or [plan.get("source_label")]
+                    )
+                    if str(value or "").strip()
+                ))
+                plan_mappings = [
+                    dict(item) for item in (plan.get("mappings") or [])
+                    if isinstance(item, dict)
+                ]
+                if multi_mapping_mode:
+                    plan_targets = {
+                        str(item.get("source_label") or "").strip():
+                        str(item.get("target_label") or "").strip()
+                        for item in plan_mappings
+                    }
+                    plan_valid = bool(plan_mappings) and all(
+                        expected_targets.get(source) == mapped_target
+                        for source, mapped_target in plan_targets.items()
+                    ) and set(plan_sources) == set(plan_targets)
+                else:
+                    plan_valid = (
+                        plan_sources == sources
+                        and str(plan.get("target_label") or "") == target
+                    )
+                if (
+                    plan.get("operation") != BatchOperation.REMAP_ANNOTATION_LABELS.value
+                    or not plan_valid
+                ):
+                    failed.append((image_id, "MATERIAL_REMAP_PLAN_CONFLICT"))
+                    continue
+                source_digest = str(plan.get("source_digest") or "")
+                result_digest = str(plan.get("result_digest") or "")
+                try:
+                    if multi_mapping_mode:
+                        target_identity_changed = any(
+                            int(item.get("target_class_id"))
+                            != int(target_ids.get(str(item.get("target_label") or "")))
+                            for item in plan_mappings
+                        )
+                    else:
+                        planned_target_id = plan.get("target_class_id")
+                        target_identity_changed = (
+                            planned_target_id is not None
+                            and int(planned_target_id) != int(current_target_id)
+                        )
+                except (TypeError, ValueError):
+                    failed.append((image_id, "MATERIAL_REMAP_PLAN_CONFLICT"))
+                    continue
+                if target_identity_changed and repair_mode:
+                    failed.append((
+                        image_id,
+                        "LABEL_INTEGRITY_TARGET_IDENTITY_CHANGED",
+                    ))
+                    continue
+                if current_digest == source_digest and target_identity_changed:
+                    preview = annotations.plan_label_remap(
+                        current,
+                        source_labels=sources,
+                        target_label=target,
+                        target_class_id=current_target_id,
+                    )
+                    plan.update({
+                        "result_digest": preview["content_digest"],
+                        "changed_boxes": int(preview["changed_boxes"]),
+                        "changed_scope": int(preview.get("changed_scope") or 0),
+                        "target_class_id": int(current_target_id),
+                        "replanned_at": utc_now(),
+                    })
+                    result_digest = str(plan["result_digest"])
+                    manifest.database.execute(
+                        "UPDATE selection SET tombstone_json=? WHERE image_id=?",
+                        (json.dumps(plan, ensure_ascii=False), image_id),
+                    )
+                if current_digest not in {source_digest, result_digest}:
+                    current_references = {
+                        str(box.get("label") or box.get("code") or "").strip()
+                        for box in (current.get("boxes") or [])
+                        if str(box.get("label") or box.get("code") or "").strip()
+                    }
+                    current_references.update(
+                        str(value).strip()
+                        for value in (current.get("annotation_scope") or [])
+                        if str(value or "").strip()
+                    )
+                    if repair_mode and not (
+                        set(plan_sources) & current_references
+                    ):
+                        plan.update({
+                            "noop_resolved": True,
+                            "resolved_at": utc_now(),
+                        })
+                        manifest.database.execute(
+                            "UPDATE selection SET tombstone_json=? WHERE image_id=?",
+                            (json.dumps(plan, ensure_ascii=False), image_id),
+                        )
+                        manifest.transition([image_id], "succeeded")
+                        continue
+                    failed.append((
+                        image_id,
+                        "ANNOTATION_CHANGED_DURING_REMAP",
+                    ))
+                    continue
+                plans[image_id] = plan
+                executable.append({
+                    "image_id": image_id,
+                    "expected_digest": current_digest,
+                    **({"mappings": plan_mappings} if multi_mapping_mode else {}),
+                })
+
+            if executable:
+                outcomes = annotations.remap_labels_if_digests(
+                    executable,
+                    source_labels=sources,
+                    target_label=target,
+                    target_class_id=current_target_id,
+                    project_material=True,
+                )
+                for outcome in outcomes:
+                    image_id = str(outcome["image_id"])
+                    plan = plans[image_id]
+                    if outcome.get("status") == "stale":
+                        failed.append((
+                            image_id,
+                            "ANNOTATION_CHANGED_DURING_REMAP",
+                        ))
+                        continue
+                    if str(outcome.get("content_digest") or "") != str(
+                        plan.get("result_digest") or ""
+                    ):
+                        failed.append((
+                            image_id,
+                            "ANNOTATION_REMAP_RESULT_MISMATCH",
+                        ))
+                        continue
+                    manifest.transition([image_id], "succeeded")
+
+            for image_id, error in failed:
+                manifest.transition([image_id], "failed", error)
+                append_task_log(
+                    context, "remap_conflict",
+                    f"image_id={image_id} error={error}",
+                )
+
+            checkpoint = manifest.summary()
+            processed = max(0, int(checkpoint.get("processed") or 0))
+            progress = min(
+                99.0, round(processed * 99.0 / max(1, total), 1)
+            )
+            current_item = (
+                f"正在批量修复标签 {processed}/{max(1, total)} · "
+                f"{len(mapping_options)} 个映射"
+                if multi_mapping_mode else
+                f"正在批量统一标签 {processed}/{max(1, total)} · "
+                f"{source_text} → {target}"
+            )
+            context.save_checkpoint(checkpoint)
+            _check_active(
+                context,
+                "REMAPPING_ANNOTATION_LABELS",
+                current_item,
+                progress,
+            )
+            append_task_log(
+                context, "checkpoint",
+                f"processed={processed} succeeded={checkpoint['succeeded']} "
+                f"failed={checkpoint['failed']}",
+            )
+
+        summary = manifest.summary()
+        summary.update(manifest.remap_result())
+        summary.update({
+            "source_labels": sources,
+            "source_label": sources[0] if len(sources) == 1 else "",
+            "target_label": target,
+            "mappings": mapping_options if multi_mapping_mode else [],
+            "mapping_count": len(mapping_options) if multi_mapping_mode else 1,
+            **{
+                key: int(options.get(key) or 0)
+                for key in (
+                    "candidate_images", "still_requires_repair",
+                )
+                if options.get(key) is not None
+            },
+        })
+        summary["already_resolved"] = (
+            int(options.get("already_resolved") or 0)
+            + int(summary.get("noop_resolved") or 0)
+        )
+        if (
+            not summary["failed"]
+            and bool(options.get("retire_sources_on_success"))
+        ):
+            annotation_remaining = annotations.label_reference_preview(sources)
+            if int(annotation_remaining.get("affected_images") or 0) != 0:
+                raise BatchRequestError(
+                    "ANNOTATION_REMAP_REFERENCES_REMAIN",
+                    "ANNOTATION_REMAP_REFERENCES_REMAIN: 标签统一已处理完成，但 AnnotationRepository 仍有来源标签引用，已阻止自动退役",
+                    409,
+                )
+            material_remaining = materials.label_reference_preview(sources)
+            if int(material_remaining.get("affected_images") or 0) != 0:
+                raise BatchRequestError(
+                    "MATERIAL_REMAP_REFERENCES_REMAIN",
+                    "MATERIAL_REMAP_REFERENCES_REMAIN: 标签统一已处理完成，但 MaterialRepository 投影仍有来源标签引用，已阻止自动退役",
+                    409,
+                )
+            summary["retirement_verification"] = {
+                "annotation_repository": annotation_remaining,
+                "material_repository": material_remaining,
+            }
+            summary["retired_source_labels"] = _retire_merged_source_labels(
+                self.data_dir, project, sources, target,
+            )
+        context.save_checkpoint(summary)
+        context.artifacts.atomic_write_json(
+            context.task.task_id, RESULT_REF, summary
+        )
+        status = (
+            TaskStatus.PARTIAL_SUCCESS
+            if summary["failed"] and summary["succeeded"]
+            else TaskStatus.FAILED
+            if summary["failed"]
+            else TaskStatus.SUCCEEDED
+        )
+        append_task_log(context, "finished", status.value)
+        return status, RESULT_REF
+
     def _delete_sources(self, context, manifest, materials, batch, sources, source_cache, providers):
         ids = [row["image_id"] for row in batch]
         indexed = {row["id"]: row for row in materials.get_many(ids)}
-        deletable = []
         for item in batch:
             image_id = item["image_id"]
+            claim_token = (
+                f"material_batch_delete_{context.task.task_id[:32]}_"
+                + hashlib.sha256(str(image_id).encode("utf-8")).hexdigest()[:24]
+            )
+            tombstone = None
             _check_active(context, "deleting_source", image_id)
             context.save_checkpoint(manifest.summary(image_id))
             try:
@@ -468,6 +2149,45 @@ class MaterialBatchHandler:
                     material = tombstone["material"]
                     provider = providers[cache_key]
                     object_key = str(material["object_key"])
+                    with closing(materials._connect()) as database:
+                        shared_references = int(database.execute(
+                            "SELECT COUNT(*) FROM materials "
+                            "WHERE storage_source_id=? AND object_key=?",
+                            (str(material["storage_source_id"]), object_key),
+                        ).fetchone()[0])
+                    if shared_references > 1:
+                        raise BatchRequestError(
+                            "SHARED_STORAGE_OBJECT",
+                            "该物理素材仍被其他素材记录引用，不能删除共享对象",
+                            409,
+                        )
+                    with material_annotation_lifecycle_fence(materials.project_path):
+                        _assert_not_referenced_by_active_tasks(
+                            context.task.project_id,
+                            [image_id],
+                            materials,
+                            context.repository,
+                            context.artifacts,
+                        )
+                        current = materials.get(image_id)
+                        if current is None:
+                            raise BatchRequestError(
+                                "MATERIAL_NOT_FOUND",
+                                "素材索引已不存在，不能继续删除源对象",
+                                409,
+                            )
+                        existing_claim = str(
+                            current.get(MATERIAL_BATCH_DELETE_CLAIM_FIELD) or ""
+                        )
+                        if existing_claim and existing_claim != claim_token:
+                            raise BatchRequestError(
+                                "MATERIAL_DELETE_IN_PROGRESS",
+                                "素材已被其他删除任务占用",
+                                409,
+                            )
+                        materials.patch({
+                            image_id: {MATERIAL_BATCH_DELETE_CLAIM_FIELD: claim_token}
+                        })
                     previously_attempted = bool(tombstone.get("delete_attempted_at"))
                     if not previously_attempted:
                         tombstone["delete_attempted_at"] = utc_now()
@@ -482,19 +2202,108 @@ class MaterialBatchHandler:
                             raise
                         append_task_log(context, "source_already_deleted", f"image_id={image_id}")
                     manifest.database.execute("UPDATE selection SET source_deleted=1 WHERE image_id=?", (image_id,))
-                deletable.append(image_id)
+                # Source deletion is irreversible.  Do not introduce a
+                # cancellation point between it and canonical index/GT commit.
+                self._delete_index_rows(
+                    context,
+                    manifest,
+                    materials,
+                    [image_id],
+                    materials.project_path,
+                    required_claim=claim_token,
+                )
             except Exception as error:
+                delete_attempted = bool(
+                    isinstance(tombstone, dict)
+                    and tombstone.get("delete_attempted_at")
+                )
+                if not delete_attempted and not bool(item["source_deleted"]):
+                    try:
+                        with material_annotation_lifecycle_fence(materials.project_path):
+                            current = materials.get(image_id)
+                            if (
+                                current is not None
+                                and str(current.get(MATERIAL_BATCH_DELETE_CLAIM_FIELD) or "")
+                                == claim_token
+                            ):
+                                materials.patch({
+                                    image_id: {MATERIAL_BATCH_DELETE_CLAIM_FIELD: None}
+                                })
+                    except Exception:
+                        pass
                 public_error = redact_storage_error(error)
                 manifest.transition([image_id], "failed", public_error)
                 append_task_log(context, "source_delete_error", f"image_id={image_id} {public_error}")
-        if deletable:
-            _check_active(context, "deleting_index")
+
+    def _delete_index_rows(
+        self,
+        context,
+        manifest,
+        materials,
+        image_ids,
+        project_path,
+        *,
+        required_claim=None,
+    ):
+        """Delete material identity and Ground Truth through their existing owners."""
+        annotations = AnnotationRepository(project_path)
+        for image_id in image_ids:
+            token = (
+                f"material_delete_{context.task.task_id[:32]}_"
+                + hashlib.sha256(str(image_id).encode("utf-8")).hexdigest()[:24]
+            )
+            legacy = Path(project_path) / "annotations" / f"{image_id}.json"
+            legacy_bytes = legacy.read_bytes() if legacy.is_file() else None
             try:
-                materials.remove_many(deletable, batch_size=BATCH_SIZE)
-                manifest.transition(deletable, "succeeded")
+                with material_annotation_lifecycle_fence(project_path):
+                    _assert_not_referenced_by_active_tasks(
+                        context.task.project_id,
+                        [image_id],
+                        materials,
+                        context.repository,
+                        context.artifacts,
+                    )
+                    current = materials.get(image_id)
+                    if required_claim is not None and (
+                        current is None
+                        or str(current.get(MATERIAL_BATCH_DELETE_CLAIM_FIELD) or "")
+                        != str(required_claim)
+                    ):
+                        raise BatchRequestError(
+                            "MATERIAL_DELETE_CLAIM_LOST",
+                            "素材源删除占用已丢失，已阻止索引提交",
+                            409,
+                        )
+                    annotations.prepare_delete(token, [image_id])
+                    legacy.unlink(missing_ok=True)
+                    annotations.finalize_delete(token)
+                    try:
+                        materials.remove_many([image_id], batch_size=1)
+                    except Exception:
+                        annotations.restore_delete(token)
+                        if legacy_bytes is not None and not legacy.exists():
+                            legacy.parent.mkdir(parents=True, exist_ok=True)
+                            legacy.write_bytes(legacy_bytes)
+                        raise
+                    annotations.complete_delete(token)
+                    manifest.transition([image_id], "succeeded")
+            except (PermissionError, InterruptedError):
+                raise
             except Exception as error:
-                manifest.transition(deletable, "failed", redact_storage_error(error))
-                append_task_log(context, "index_delete_error", str(error))
+                if materials.get(image_id) is not None:
+                    try:
+                        annotations.restore_delete(token)
+                    except Exception:
+                        pass
+                    if legacy_bytes is not None and not legacy.exists():
+                        legacy.parent.mkdir(parents=True, exist_ok=True)
+                        legacy.write_bytes(legacy_bytes)
+                manifest.transition([image_id], "failed", redact_storage_error(error))
+                append_task_log(
+                    context,
+                    "index_delete_error",
+                    f"image_id={image_id} {redact_storage_error(error)}",
+                )
 
     def recover(self, context):
         return self.run(context)
@@ -503,12 +2312,42 @@ class MaterialBatchHandler:
 def public_batch(task, artifacts, repository=None):
     checkpoint = artifacts.read_json(task.task_id, CHECKPOINT_REF, default={})
     request = artifacts.read_json(task.task_id, task.payload_ref, default={})
+    result = (
+        artifacts.read_json(task.task_id, RESULT_REF, default={})
+        if request.get("operation") in {
+            BatchOperation.REMAP_ANNOTATION_LABELS.value,
+            BatchOperation.REPAIR_ANNOTATION_PROJECTIONS.value,
+            BatchOperation.AUDIT_LABEL_INTEGRITY.value,
+            BatchOperation.AUDIT_MATERIAL_INTEGRITY.value,
+        }
+        else {}
+    )
     truth = task_to_public(task, repository) if repository is not None else None
     frozen = bool(checkpoint.get("selection_frozen"))
     error_examples = checkpoint.get("error_examples", [])[:10]
     if task.error and not error_examples:
         error_examples = [{"error": redact_storage_error(task.error)}]
     available = artifacts.artifact_path(task.task_id, task.log_ref).is_file()
+    options = dict(request.get("options") or {})
+    remap_sources = []
+    remap_target = ""
+    retire_sources = False
+    if request.get("operation") == BatchOperation.REMAP_ANNOTATION_LABELS.value:
+        remap_sources = [
+            str(value).strip()
+            for value in (options.get("source_labels") or [options.get("source_label")])
+            if str(value or "").strip()
+        ]
+        remap_target = str(options.get("target_label") or "").strip()
+        retire_sources = bool(options.get("retire_sources_on_success"))
+    repair_stats = {
+        key: int(result.get(key, options.get(key)) or 0)
+        for key in (
+            "candidate", "candidate_images", "still_requires_repair",
+            "already_resolved", "mapping_count", "noop_resolved",
+        )
+        if result.get(key, options.get(key)) is not None
+    }
     return {"id": task.task_id, "task_id": task.task_id, "project_id": task.project_id,
             "kind": task.kind.value, "operation": request.get("operation"),
             "status": truth["status"] if truth else task.status.value,
@@ -535,15 +2374,30 @@ def public_batch(task, artifacts, repository=None):
             "results_url": (f"/api/v62/projects/{task.project_id}/material-batches/{task.task_id}/results"
                             if request.get("operation") == BatchOperation.CLEAN.value else None),
             "error_examples": error_examples, "selection_frozen": frozen,
+            "result": result if result else None,
+            "source_labels": remap_sources,
+            "target_label": remap_target,
+            "mappings": list(options.get("mappings") or []),
+            "retire_sources_on_success": retire_sources,
+            "changed_images": result.get("changed_images"),
+            "changed_boxes": result.get("changed_boxes"),
+            **repair_stats,
             "log_available": available, "log_ref": task.log_ref if available else None,
             "created_at": task.created_at, "updated_at": task.updated_at, "finished_at": task.finished_at}
 
 
-def material_batch_router(get_project, material_store, task_repository, task_artifacts):
+def material_batch_router(
+    get_project,
+    material_store,
+    task_repository,
+    task_artifacts,
+    storage_source_fence=None,
+):
     from fastapi import APIRouter, Body, HTTPException
     from fastapi.responses import FileResponse
 
     router = APIRouter(prefix="/api/v62/projects/{project_id}/material-batches")
+    integrity = APIRouter(prefix="/api/v62/projects/{project_id}/material-integrity")
 
     def invoke(function, *args):
         try:
@@ -560,6 +2414,13 @@ def material_batch_router(get_project, material_store, task_repository, task_art
             raise HTTPException(404, detail="material batch not found")
         return task
 
+    def require_integrity_audit(project_id, task_id):
+        task = require_task(project_id, task_id)
+        request = task_artifacts().read_json(task_id, task.payload_ref, default={})
+        if request.get("operation") != BatchOperation.AUDIT_MATERIAL_INTEGRITY.value:
+            raise HTTPException(404, detail="material integrity audit not found")
+        return task
+
     @router.post("/estimate")
     def estimate(project_id: str, payload: dict = Body(...)):
         get_project(project_id)
@@ -568,8 +2429,46 @@ def material_batch_router(get_project, material_store, task_repository, task_art
     @router.post("", status_code=202)
     def create(project_id: str, payload: dict = Body(...)):
         get_project(project_id)
-        task = invoke(create_batch, project_id, material_store(project_id), task_repository(), task_artifacts(), payload)
+        fence = storage_source_fence() if storage_source_fence else nullcontext()
+        with fence:
+            task = invoke(
+                create_batch,
+                project_id,
+                material_store(project_id),
+                task_repository(),
+                task_artifacts(),
+                payload,
+            )
         return public_batch(task, task_artifacts(), task_repository())
+
+    @router.get("")
+    def list_batches(project_id: str, active_only: bool = False, limit: int = 50, cursor: str = ""):
+        get_project(project_id)
+        statuses = (
+            [
+                TaskStatus.QUEUED,
+                TaskStatus.RUNNING,
+                TaskStatus.CANCEL_REQUESTED,
+            ]
+            if active_only else None
+        )
+        try:
+            page = task_repository().list(
+                project_id=project_id,
+                kinds=[TaskKind.MATERIAL_BATCH],
+                statuses=statuses,
+                limit=limit,
+                cursor=cursor or None,
+            )
+        except ValueError as error:
+            raise HTTPException(422, detail=str(error)) from error
+        return {
+            "items": [
+                public_batch(task, task_artifacts(), task_repository())
+                for task in page.items
+            ],
+            "next_cursor": page.next_cursor,
+        }
 
     @router.get("/{task_id}")
     def get(project_id: str, task_id: str):
@@ -610,7 +2509,10 @@ def material_batch_router(get_project, material_store, task_repository, task_art
         if task.status not in {TaskStatus.FAILED, TaskStatus.PARTIAL_SUCCESS, TaskStatus.CANCELLED,
                                TaskStatus.BLOCKED_BY_ENVIRONMENT, TaskStatus.BLOCKED_BY_HARDWARE}:
             raise HTTPException(409, detail="only incomplete terminal batches can be retried")
-        return public_batch(task_repository().retry(task_id), task_artifacts(), task_repository())
+        fence = storage_source_fence() if storage_source_fence else nullcontext()
+        with fence:
+            retried = task_repository().retry(task_id)
+        return public_batch(retried, task_artifacts(), task_repository())
 
     @router.get("/{task_id}/log")
     def log(project_id: str, task_id: str):
@@ -620,12 +2522,114 @@ def material_batch_router(get_project, material_store, task_repository, task_art
             raise HTTPException(404, detail="task log unavailable")
         return FileResponse(path, media_type="text/plain", filename=f"{task_id}.log")
 
+    @integrity.post("/audits", status_code=202)
+    def create_integrity_audit(project_id: str):
+        get_project(project_id)
+        task = create_material_integrity_audit(
+            project_id, task_repository(), task_artifacts()
+        )
+        return public_batch(task, task_artifacts(), task_repository())
+
+    @integrity.get("/audits/{task_id}/groups")
+    def integrity_groups(
+        project_id: str, task_id: str, cursor: str = "", limit: int = 50,
+        issue_type: str = "",
+    ):
+        require_integrity_audit(project_id, task_id)
+        if not 1 <= int(limit) <= 100:
+            raise HTTPException(422, detail="limit must be between 1 and 100")
+        path = task_artifacts().artifact_path(task_id, MATERIAL_INTEGRITY_REF)
+        if not path.is_file():
+            raise HTTPException(409, detail="material integrity audit is not ready")
+        clauses, params = ["group_key>?"], [str(cursor or "")]
+        if issue_type:
+            clauses.append("issue_type=?")
+            params.append(str(issue_type).upper())
+        with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as database:
+            database.row_factory = sqlite3.Row
+            rows = database.execute(
+                "SELECT * FROM issue_groups WHERE " + " AND ".join(clauses)
+                + " ORDER BY group_key LIMIT ?",
+                (*params, int(limit) + 1),
+            ).fetchall()
+        visible = rows[:int(limit)]
+        return {
+            "items": [
+                {
+                    "group_key": str(row["group_key"]),
+                    "issue_type": str(row["issue_type"]),
+                    "content_sha256": str(row["content_sha256"]),
+                    "image_count": int(row["image_count"]),
+                    "details": json.loads(row["details_json"] or "{}"),
+                }
+                for row in visible
+            ],
+            "next_cursor": str(visible[-1]["group_key"]) if len(rows) > int(limit) else None,
+        }
+
+    @integrity.get("/audits/{task_id}/groups/{group_key:path}/items")
+    def integrity_group_items(
+        project_id: str, task_id: str, group_key: str,
+        cursor: str = "", limit: int = 50,
+    ):
+        require_integrity_audit(project_id, task_id)
+        if not 1 <= int(limit) <= 100:
+            raise HTTPException(422, detail="limit must be between 1 and 100")
+        path = task_artifacts().artifact_path(task_id, MATERIAL_INTEGRITY_REF)
+        if not path.is_file():
+            raise HTTPException(409, detail="material integrity audit is not ready")
+        with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as database:
+            database.row_factory = sqlite3.Row
+            rows = database.execute(
+                "SELECT * FROM issue_items WHERE group_key=? AND image_id>? "
+                "ORDER BY image_id LIMIT ?",
+                (str(group_key), str(cursor or ""), int(limit) + 1),
+            ).fetchall()
+        visible = rows[:int(limit)]
+        ids = [str(row["image_id"]) for row in visible]
+        materials = material_store(project_id)
+        current_materials = {
+            str(row.get("id")): row for row in materials.get_many(ids)
+        }
+        annotations = AnnotationRepository(materials.project_path)
+        current_annotations = annotations.get_many(ids)
+        items = []
+        for row in visible:
+            image_id = str(row["image_id"])
+            material = current_materials.get(image_id) or {}
+            annotation = current_annotations.get(image_id) or {}
+            snapshot = json.loads(row["details_json"] or "{}")
+            items.append({
+                "image_id": image_id,
+                "filename": material.get("filename") or snapshot.get("filename") or image_id,
+                "storage_source_id": material.get("storage_source_id") or snapshot.get("storage_source_id") or "",
+                "import_batch_id": material.get("import_batch_id") or material.get("batch_id") or snapshot.get("import_batch_id") or "",
+                "split": material.get("split") or snapshot.get("split") or "unassigned",
+                "width": int(material.get("width") or 0),
+                "height": int(material.get("height") or 0),
+                "content_url": f"/api/v61/projects/{project_id}/materials/{image_id}/content",
+                "annotation_state": annotation.get("annotation_state") or snapshot.get("annotation_state") or "unannotated",
+                "annotation_scope": list(annotation.get("annotation_scope") or []),
+                "boxes": list(annotation.get("boxes") or []),
+                "snapshot": snapshot,
+            })
+        return {
+            "group_key": str(group_key),
+            "items": items,
+            "next_cursor": ids[-1] if len(rows) > int(limit) else None,
+        }
+
     # app.py has one additive runtime-router mount today.  Keep material-batch
     # URLs untouched while composing the independent training recovery API at
     # that existing integration point instead of adding route side effects.
     from .training_recovery_api import training_recovery_router
+    from .label_integrity import label_integrity_router
     root = APIRouter()
     root.include_router(router)
+    root.include_router(integrity)
+    root.include_router(label_integrity_router(
+        get_project, material_store, task_repository, task_artifacts,
+    ))
     root.include_router(training_recovery_router(get_project, task_repository, task_artifacts))
     return root
 

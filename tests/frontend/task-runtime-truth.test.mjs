@@ -7,6 +7,7 @@ import {
   canonicalTaskStatus,
   exactTaskQueuePosition,
   isCanonicalTaskActive,
+  isCanonicalTaskTerminal,
   taskRuntimeTruth,
   trainingDisplayStatus,
 } from '../../static/modules/task-runtime-truth.js';
@@ -26,6 +27,15 @@ test('canonical durable task fields win over stale legacy aliases', () => {
   assert.equal(canonicalTaskProgressPercent(task), 17);
   assert.equal(trainingDisplayStatus(task), 'waiting');
   assert.equal(isCanonicalTaskActive(task), true);
+});
+
+test('all historical training success aliases canonicalize to terminal SUCCEEDED truth', () => {
+  for (const status of ['done', 'finished', 'completed', 'succeeded', 'success']) {
+    assert.equal(canonicalTaskStatus({status}), 'SUCCEEDED', status);
+    assert.equal(isCanonicalTaskTerminal({status}), true, status);
+    assert.equal(trainingDisplayStatus({status}), 'completed', status);
+    assert.equal(taskRuntimeTruth({status}).status, 'SUCCEEDED', status);
+  }
 });
 
 test('browser never invents durable task percentage from item counts', () => {

@@ -151,17 +151,6 @@ function apiErrorMessage(body, status) {
   return String(body || `HTTP ${status}`);
 }
 
-async function fetchSources(fetchImpl) {
-  const response = await fetchImpl('/api/v61/storage-sources');
-  if (!response.ok) {
-    let body = null;
-    try { body = await response.json(); } catch (_) { body = await response.text(); }
-    throw new Error(apiErrorMessage(body, response.status));
-  }
-  const payload = await response.json();
-  return Array.isArray(payload?.items) ? payload.items : [];
-}
-
 async function fetchWorkerRuntime(fetchImpl) {
   const response = await fetchImpl('/api/v62/workers', {cache: 'no-store'});
   if (!response.ok) return [];
@@ -274,7 +263,7 @@ function decorateEditor() {
 
 export function installStorageCacheRuntime({fetchImpl = globalThis.fetch, notify = () => {}} = {}) {
   if (typeof window === 'undefined' || typeof document === 'undefined') {
-    return {refresh: async () => [], decorateEditor};
+    return {refresh: async () => [], decorate: () => [], decorateEditor};
   }
   if (window.__storageCacheRuntimeInstalled) return window.StorageCacheRuntime;
   window.__storageCacheRuntimeInstalled = true;
@@ -282,75 +271,77 @@ export function installStorageCacheRuntime({fetchImpl = globalThis.fetch, notify
     window.PlatformCore.storage.buildStorageSourcePayload = hardenedBuildStorageSourcePayload;
   }
 
+  const WORKER_CACHE_TTL_MS = 2 * 60 * 1000;
   let latestSources = [];
   let latestWorkers = [];
+  let workersLoadedAt = 0;
+  let workerInflight = null;
 
-  const decorate = async () => {
-    try {
-      const [sources, workers] = await Promise.all([
-        fetchSources(fetchImpl),
-        fetchWorkerRuntime(fetchImpl),
-      ]);
-      latestSources = sources;
-      latestWorkers = workers;
-      const container = document.getElementById('storage61Rows');
-      if (container) {
-        const rows = [...container.children].filter(row => row.classList?.contains('storage61-row'));
-        latestSources.forEach((source, index) => appendTruth(rows[index], source));
-      }
-      updatePageNote(latestSources);
-      renderCacheRuntime(latestWorkers);
-      decorateEditor();
-      return latestSources;
-    } catch (error) {
-      notify(error?.message || String(error));
-      renderCacheRuntime(latestWorkers);
-      return latestSources;
-    }
+  const snapshotSources = provided => {
+    if (Array.isArray(provided)) return provided;
+    const pageSnapshot = window.getStorageSourcesSnapshot61?.();
+    return Array.isArray(pageSnapshot) ? pageSnapshot : latestSources;
   };
 
-  const originalRender = window.renderStorageSources61;
-  if (typeof originalRender === 'function') {
-    const wrapped = async function(...args) {
-      const result = await originalRender.apply(this, args);
-      await decorate();
-      return result;
-    };
-    wrapped.__storageCacheRuntimeWrapped = true;
-    window.renderStorageSources61 = wrapped;
-  }
+  const decorate = providedSources => {
+    latestSources = [...snapshotSources(providedSources)];
+    const container = document.getElementById('storage61Rows');
+    if (container) {
+      const rows = [...container.children].filter(row => row.classList?.contains('storage61-row'));
+      latestSources.forEach((source, index) => appendTruth(rows[index], source));
+    }
+    updatePageNote(latestSources);
+    renderCacheRuntime(latestWorkers);
+    decorateEditor();
+    return latestSources;
+  };
 
-  const originalOpen = window.openStorageSource61;
-  if (typeof originalOpen === 'function') {
-    window.openStorageSource61 = async function(...args) {
-      const result = await originalOpen.apply(this, args);
-      decorateEditor();
-      return result;
-    };
-  }
+  const refreshWorkers = async ({force = false} = {}) => {
+    const age = Date.now() - workersLoadedAt;
+    if (!force && workersLoadedAt > 0 && age >= 0 && age < WORKER_CACHE_TTL_MS) return latestWorkers;
+    if (workerInflight) return workerInflight;
+    workerInflight = fetchWorkerRuntime(fetchImpl)
+      .then(workers => {
+        latestWorkers = workers;
+        workersLoadedAt = Date.now();
+        return latestWorkers;
+      })
+      .finally(() => { workerInflight = null; });
+    return workerInflight;
+  };
 
-  const originalTypeChanged = window.storageTypeChanged61;
-  if (typeof originalTypeChanged === 'function') {
-    window.storageTypeChanged61 = function(...args) {
-      const result = originalTypeChanged.apply(this, args);
-      queueMicrotask(decorateEditor);
-      return result;
-    };
-  }
+  const refresh = async ({sources = null, force = false} = {}) => {
+    decorate(sources);
+    try {
+      await refreshWorkers({force});
+    } catch (error) {
+      notify(error?.message || String(error));
+    }
+    decorate(sources);
+    return latestSources;
+  };
 
   const runtime = Object.freeze({
-    refresh: decorate,
+    refresh,
+    decorate,
     decorateEditor,
     storageCacheTruth,
     storageCacheSummary,
     materialCacheStatusView,
     materialCacheNodeRuntimeView,
+    state() {
+      return {
+        sourceCount: latestSources.length,
+        workerCount: latestWorkers.length,
+        workersLoadedAt,
+        workerInflight: Boolean(workerInflight),
+      };
+    },
   });
   window.StorageCacheRuntime = runtime;
-  if (document.getElementById('storage61Rows')) void decorate();
+  if (document.getElementById('storage61Rows')) void refresh({sources: snapshotSources()});
   return runtime;
 }
-
 if (typeof window !== 'undefined' && typeof document !== 'undefined') {
   installStorageCacheRuntime({
     fetchImpl: (...args) => window.fetch(...args),

@@ -17,10 +17,13 @@ def test_public_status_and_kind_values_are_locked():
         "BLOCKED_BY_HARDWARE",
     ]
     assert [item.value for item in TaskKind] == [
+        "RESOURCE_DISCOVERY",
         "MATERIAL_IMPORT",
+        "MATERIAL_BATCH",
         "CLEANING",
         "AI_ANNOTATION",
         "VIDEO_FRAMES",
+        "TRAINING_PREPARE",
         "TRAINING",
         "MODEL_CONVERSION",
         "DEPLOYMENT_TEST",

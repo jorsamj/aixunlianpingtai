@@ -1,4 +1,5 @@
 """Focused detection quality, source boundary and disk-backed discovery cases."""
+import hashlib
 import io
 from types import SimpleNamespace
 
@@ -75,6 +76,16 @@ def test_discovery_labels_and_bounded_summary(tmp_path):
     assert quality["issues"]["NONFINITE_BOX"] == 1
     assert len(store.quality_summary(1)["examples"]) == 1
     assert "candidates" not in quality
+    identities = store.inventory_for_keys(
+        ["data.yaml", "labels/train/a.txt", "labels/train/b.txt"]
+    )
+    assert identities["data.yaml"]["sha256"] == hashlib.sha256(
+        provider.files["data.yaml"]
+    ).hexdigest()
+    assert identities["labels/train/a.txt"]["sha256"] == hashlib.sha256(
+        provider.files["labels/train/a.txt"]
+    ).hexdigest()
+    assert identities["labels/train/b.txt"]["sha256"] == hashlib.sha256(b"").hexdigest()
 
 
 def test_yaml_and_label_ambiguity(tmp_path):
@@ -102,3 +113,60 @@ def test_list_file_same_directory_and_safe_yaml(tmp_path):
     with pytest.raises(YoloImportError) as error:
         scanner.prepare("yolo")
     assert error.value.code == "YOLO_INVALID_YAML"
+
+def test_label_source_identity_batches_without_scalar_inventory_lookup(tmp_path, monkeypatch):
+    total = 201
+    files = {
+        "data.yaml": b"names: [cat]\ntrain: images/train\n",
+    }
+    for index in range(total):
+        files[f"images/train/image-{index:04d}.jpg"] = b"image"
+        files[f"labels/train/image-{index:04d}.txt"] = b"0 .5 .5 .2 .2\n"
+
+    provider = MemoryProvider(files)
+    store = ImportCandidateStore(tmp_path / "batched-label-identities.sqlite3")
+    scanner = YoloImportScanner(provider, store, objects)
+    assert scanner.prepare("yolo") == "yolo"
+
+    original_write = store.inventory_many
+    write_batches = []
+
+    def forbidden_scalar_lookup(_keys):
+        raise AssertionError("scan_annotations must reuse its bounded label inventory page")
+
+    def counted_write(rows):
+        rows = list(rows)
+        write_batches.append(len(rows))
+        return original_write(rows)
+
+    monkeypatch.setattr(store, "inventory_for_keys", forbidden_scalar_lookup)
+    monkeypatch.setattr(store, "inventory_many", counted_write)
+
+    quality = scanner.scan_annotations()
+    assert write_batches == [100, 100, 1]
+    assert quality["images"] == total
+    assert quality["boxes"] == total
+
+
+def test_yolo_text_identity_rejects_known_hash_change_with_same_size(tmp_path):
+    original_label = b"0 .5 .5 .2 .2\n"
+    provider = MemoryProvider({
+        "data.yaml": b"names: [cat]\ntrain: images/train\n",
+        "images/train/a.jpg": b"image",
+        "labels/train/a.txt": original_label,
+    })
+    store = ImportCandidateStore(tmp_path / "label-hash-fence.sqlite3")
+    scanner = YoloImportScanner(provider, store, objects)
+    assert scanner.prepare("yolo") == "yolo"
+
+    store.inventory_many([{
+        "object_key": "labels/train/a.txt",
+        "size_bytes": len(original_label),
+        "etag": "",
+        "sha256": "f" * 64,
+    }])
+    with pytest.raises(YoloImportError) as error:
+        scanner.scan_annotations()
+    assert error.value.code == "YOLO_SOURCE_CHANGED"
+    assert "hash changed" in str(error.value)
+

@@ -3,11 +3,14 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-from contextlib import closing
+import threading
+from contextlib import closing, contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
+
+from filelock import FileLock
 
 from .errors import redact_storage_error
 from .models import StorageType
@@ -20,6 +23,7 @@ CREATE TABLE IF NOT EXISTS storage_sources (
     type TEXT NOT NULL,
     config_json TEXT NOT NULL DEFAULT '{}',
     secret_ref TEXT NOT NULL DEFAULT '',
+    runtime_revision INTEGER NOT NULL DEFAULT 1,
     enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
     is_default INTEGER NOT NULL DEFAULT 0 CHECK (is_default IN (0, 1)),
     health_status TEXT NOT NULL DEFAULT 'UNKNOWN',
@@ -36,6 +40,48 @@ ON storage_sources(type, enabled);
 
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 _SENSITIVE = re.compile(r"(?i)(secret|password|token|api[_-]?key|access[_-]?key)")
+_INITIALIZATION_LOCKS: dict[str, threading.Lock] = {}
+_INITIALIZATION_LOCKS_GUARD = threading.Lock()
+_SOURCE_LIFECYCLE_LOCK = ".storage-source-lifecycle.lock"
+_SOURCE_LIFECYCLE_LOCAL = threading.local()
+
+
+@contextmanager
+def storage_source_lifecycle_fence(
+    repository_path: str | Path, *, timeout: float = 60,
+):
+    """Serialize short source-config commits with durable task admission.
+
+    The fence owns no business state.  Network/storage I/O must stay outside;
+    callers use it only for a final source-generation check plus Task/Source
+    repository commits.
+    """
+    database_path = Path(repository_path).resolve()
+    lock_path = str(database_path.parent / _SOURCE_LIFECYCLE_LOCK)
+    held = getattr(_SOURCE_LIFECYCLE_LOCAL, "held", None)
+    if held is None:
+        held = {}
+        _SOURCE_LIFECYCLE_LOCAL.held = held
+    depth = held.get(lock_path)
+    if depth is not None:
+        held[lock_path] = depth + 1
+        try:
+            yield
+        finally:
+            held[lock_path] -= 1
+        return
+    with FileLock(lock_path, timeout=timeout):
+        held[lock_path] = 1
+        try:
+            yield
+        finally:
+            held.pop(lock_path, None)
+
+
+def _initialization_lock(path: Path) -> threading.Lock:
+    key = str(path.resolve())
+    with _INITIALIZATION_LOCKS_GUARD:
+        return _INITIALIZATION_LOCKS.setdefault(key, threading.Lock())
 
 
 def _now() -> str:
@@ -69,6 +115,7 @@ class StorageSource:
     last_checked_at: str | None = None
     created_at: str = ""
     updated_at: str = ""
+    runtime_revision: int = 1
 
     def to_public_dict(
         self, *, secret_configured: bool = False, secret_masked: str = ""
@@ -98,6 +145,7 @@ def _from_row(row: sqlite3.Row) -> StorageSource:
         type=str(row["type"]),
         config=dict(json.loads(row["config_json"] or "{}")),
         secret_ref=str(row["secret_ref"] or ""),
+        runtime_revision=int(row["runtime_revision"]),
         enabled=bool(row["enabled"]),
         is_default=bool(row["is_default"]),
         health_status=str(row["health_status"] or "UNKNOWN"),
@@ -118,24 +166,51 @@ class StorageSourceRepository:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.reference_counter = reference_counter or (lambda _source_id: 0)
-        with closing(self._connect()) as database:
-            database.executescript(_SCHEMA)
-            stamp = _now()
-            database.execute(
-                """
-                INSERT OR IGNORE INTO storage_sources
-                (id, name, type, config_json, enabled, is_default, created_at, updated_at)
-                VALUES ('default_local', '平台本地存储', 'local', '{}', 1, 1, ?, ?)
-                """,
-                (stamp, stamp),
-            )
+        # The storage page can load source and artifact configuration in
+        # parallel. Serialize only first/schema initialization for this exact
+        # database path so concurrent constructors cannot race the WAL switch.
+        with _initialization_lock(self.path):
+            with closing(self._connect()) as database:
+                database.executescript(_SCHEMA)
+                # Upgrade existing Storage Source owner in place. SQLite's
+                # RESERVED write lock serializes schema admission across Web
+                # workers, without introducing another revision table.
+                database.execute("BEGIN IMMEDIATE")
+                try:
+                    columns = {
+                        str(column["name"])
+                        for column in database.execute("PRAGMA table_info(storage_sources)").fetchall()
+                    }
+                    if "runtime_revision" not in columns:
+                        database.execute(
+                            "ALTER TABLE storage_sources "
+                            "ADD COLUMN runtime_revision INTEGER NOT NULL DEFAULT 1"
+                        )
+                    stamp = _now()
+                    database.execute(
+                        """
+                        INSERT OR IGNORE INTO storage_sources
+                        (id, name, type, config_json, enabled, is_default, created_at, updated_at)
+                        VALUES ('default_local', '平台本地存储', 'local', '{}', 1, 1, ?, ?)
+                        """,
+                        (stamp, stamp),
+                    )
+                    database.execute("COMMIT")
+                except Exception:
+                    database.execute("ROLLBACK")
+                    raise
 
     def _connect(self) -> sqlite3.Connection:
         database = sqlite3.connect(self.path, timeout=5, isolation_level=None)
         database.row_factory = sqlite3.Row
-        database.execute("PRAGMA journal_mode=WAL")
-        database.execute("PRAGMA foreign_keys=ON")
+        # Configure lock waiting before any pragma that may need a schema/write
+        # lock. Re-applying journal_mode=WAL on every short-lived repository
+        # connection can itself contend with concurrent requests.
         database.execute("PRAGMA busy_timeout=5000")
+        current_mode = str(database.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+        if current_mode != "wal":
+            database.execute("PRAGMA journal_mode=WAL")
+        database.execute("PRAGMA foreign_keys=ON")
         return database
 
     def journal_mode(self) -> str:
@@ -219,11 +294,19 @@ class StorageSourceRepository:
             enabled=bool(changes.get("enabled", current.enabled)),
             updated_at=_now(),
         )
+        # A->B->A must change the durable epoch even if the final config
+        # bytes match the original. Renaming alone leaves this epoch stable.
+        bump_runtime_revision = int(
+            updated.config != current.config
+            or updated.secret_ref != current.secret_ref
+            or updated.enabled != current.enabled
+        )
         with closing(self._connect()) as database:
             database.execute(
                 """
                 UPDATE storage_sources
-                SET name = ?, config_json = ?, secret_ref = ?, enabled = ?, updated_at = ?
+                SET name = ?, config_json = ?, secret_ref = ?, enabled = ?,
+                    updated_at = ?, runtime_revision = runtime_revision + ?
                 WHERE id = ?
                 """,
                 (
@@ -232,6 +315,7 @@ class StorageSourceRepository:
                     updated.secret_ref,
                     int(updated.enabled),
                     updated.updated_at,
+                    bump_runtime_revision,
                     updated.id,
                 ),
             )

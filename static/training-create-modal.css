@@ -109,3 +109,155 @@
 .train-create-saas .estimate424:empty{display:none}
 @media(max-width:1100px){.training-create-modal-card{width:min(980px,96vw)!important;max-height:94vh!important}.training-create-modal-card .modal-body{padding:0 18px}.train-create-layout{grid-template-columns:1fr}.train-create-right{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.train-create-saas .train428-footer{margin:0 -18px;padding-left:18px;padding-right:18px}}
 @media(max-width:760px){.training-create-modal-layer{padding:8px}.training-create-modal-card{width:100%!important;max-height:96vh!important}.training-create-modal-card .modal-head{min-height:58px;padding:0 16px}.training-create-modal-card .modal-title{font-size:18px}.training-create-modal-card .modal-title:before{width:32px;height:32px;font-size:21px}.training-create-modal-card .modal-body{padding:0 12px}.train-create-layout{padding-top:12px}.train-create-right{display:flex}.train-ui-algorithm-card .form.two,.train-ui-device-card .form.two,.train-ui-split-fields,.train-ui-advanced .train428-config-summary{grid-template-columns:1fr}.train-v3-summary{grid-template-columns:1fr}.train-create-saas .train428-footer{margin:0 -12px;padding:12px}.train-create-saas .train428-footer .btn{min-width:92px}}
+
+/* v42.24.340 — quiet first-open view; advanced controls stay mounted, not duplicated. */
+.train-create-saas{font-size:15px;line-height:1.5}
+.train-create-saas .train-ui-algorithm-card>header small,
+.train-create-saas .train-ui-data-card>header small,
+.train-create-saas .train-ui-labels-card>header small,
+.train-create-saas .train-ui-advanced>summary small,
+.train-create-saas .train-v3-note,
+.train-create-saas .train-v3-summary em,
+.train-create-saas .train428-panel>header small{display:none!important}
+.train-create-saas .field>label,.train-create-saas .field>span{font-size:14px;font-weight:700;line-height:1.4}
+.train-create-saas .input,.train-create-saas .select{height:48px;font-size:15px}
+.train-create-saas .train-ui-card>header b,.train-create-saas .train428-panel>header b,.train-create-saas .train-ui-split>header b{font-size:18px}
+.train-create-saas .train-ui-label-search{height:46px}
+.train-create-saas .train-ui-label-search input{font-size:15px}
+.train-create-saas .training-label-contract-title{font-size:14px!important}
+.train-create-saas .training-label-choice b{font-size:15px!important}
+.train-create-saas .training-label-choice small{font-size:12px!important}
+.train-create-saas .training-label-inherited{font-size:13px!important}
+.train-create-saas .training-label-warning{font-size:13px!important}
+.train-create-saas .train-v3-summary span,.train-create-saas .train-v3-summary em{font-size:13px}
+.train-create-saas .train-v3-summary b{font-size:19px}
+.train-create-saas .train428-footer .btn{font-size:15px;min-height:46px}
+.train-create-saas .train428-footer{align-items:center;gap:10px}
+.train-create-saas .train428-footer .train-create-advanced-toggle{margin-right:auto;border:0;background:transparent;color:#34548c}
+.train-create-saas .train-ui-summary-card[hidden]{display:none!important}
+.train-create-saas .train-create-primary{display:grid;grid-template-columns:minmax(0,1.8fr) minmax(120px,.7fr);gap:12px}
+.train-create-saas .train-create-primary .field{min-width:0}
+.train-create-saas .train-create-technical{margin-top:14px;border-top:1px solid #e3eaf6}
+.train-create-saas .train-create-technical>summary,.train-create-saas .train-create-split-details>summary{padding:12px 0;cursor:pointer;color:#355a91;font-weight:700;font-size:14px}
+.train-create-saas .train-create-technical>.form{padding:4px 0 12px}
+.train-create-saas .train-create-technical .field small{font-size:12px}
+.train-create-saas:not(.train-create-show-advanced) .train-v3-resources,
+.train-create-saas:not(.train-create-show-advanced) .train-v3-resource-strategy{display:none!important}
+.train-create-saas .train-create-split-details{padding:0}
+.train-create-saas .train-create-split-details>summary{padding:10px 0}
+.train-create-saas .train-create-split-details[open]>summary{margin-bottom:6px}
+.train-create-saas .train-v3-mode .check{font-size:14px}
+.train-create-saas .train-ui-split-fields>label>span{font-size:13px}
+.train-create-saas .train-create-split-details .train-ui-split{margin-top:10px}
+.train-create-saas .train-ui-labels-card{min-height:190px}
+.train-create-saas .training-label-choice{min-height:46px}
+.train-create-saas .train-v3-summary{gap:10px}
+.train-create-saas .train-v3-summary>div{padding:10px 13px}
+.train-create-saas .train-ui-card,.train-create-saas .train428-panel{padding:16px 18px}
+@media(max-width:760px){
+ .train-create-saas .train-create-primary{grid-template-columns:1fr}
+ .train-create-saas .train428-footer{flex-wrap:wrap}
+ .train-create-saas .train428-footer .train-create-advanced-toggle{margin-right:auto}
+ .train-create-saas .train-create-technical>.form{grid-template-columns:1fr}
+}
+
+
+/* v42.24.344 — compact creation flow; existing label/draft/split owners are retained. */
+.training-create-modal-card{width:min(1280px,calc(100vw - 40px))!important;height:min(94dvh,1000px)!important;max-height:calc(100dvh - 32px)!important;border-radius:20px!important;box-shadow:0 25px 80px rgba(12,30,68,.19)!important}
+.training-create-modal-card .modal-head{min-height:64px;padding:0 26px;background:#fff}
+.training-create-modal-card .modal-title{font-size:22px;letter-spacing:-.03em;font-weight:800}
+.training-create-modal-card .modal-body{flex:1 1 auto;min-height:0;padding:0 26px;background:#fff;overflow:auto}
+.train-create-saas-v2{font-size:16px;line-height:1.5;color:#23304a}
+.train-create-saas-v2 .train-create-layout{display:grid;grid-template-columns:minmax(0,1.08fr) minmax(0,.92fr);grid-template-areas:"algorithm algorithm" "materials labels" "modes labels";gap:16px 20px;align-items:start;padding:18px 0 20px}
+.train-create-saas-v2 .train-create-left,.train-create-saas-v2 .train-create-right{display:contents}
+.train-create-saas-v2 .train-ui-algorithm-card{grid-area:algorithm}
+.train-create-saas-v2 .train-ui-data-card{grid-area:materials}
+.train-create-saas-v2 .train-ui-labels-card{grid-area:labels;align-self:start}
+.train-create-saas-v2 .train-v3-mode-card{grid-area:modes}
+.train-create-saas-v2 .train-ui-card,.train-create-saas-v2 .train428-panel{padding:19px 22px;background:#fff;border:1px solid #e4eaf3;border-radius:15px;box-shadow:0 2px 9px rgba(24,52,96,.025)}
+.train-create-saas-v2 .train-ui-card:hover,.train-create-saas-v2 .train428-panel:hover{border-color:#dbe4f2}
+.train-create-saas-v2 .train-ui-card>header,.train-create-saas-v2 .train428-panel>header{margin-bottom:15px}
+.train-create-saas-v2 .train-ui-card>header b,.train-create-saas-v2 .train428-panel>header b{font-size:18px;font-weight:800;color:#142447}
+.train-create-saas-v2 .train-ui-card-icon{width:34px;height:34px;border-radius:11px;background:#edf4ff;color:#2465de;font-size:18px}
+.train-create-saas-v2 .field>label,.train-create-saas-v2 .field>span{font-size:14px;line-height:1.5;margin-bottom:8px;color:#596782}
+.train-create-saas-v2 .input,.train-create-saas-v2 .select{height:46px;min-width:0;font-size:15px;font-weight:600;border:1px solid #dce5f2;border-radius:10px;color:#1d2e4f}
+.train-create-saas-v2 .train-v3-algorithm-line{display:flex;align-items:center;justify-content:space-between;gap:16px}
+.train-create-saas-v2 .train-v3-algorithm-name{display:flex;align-items:center;flex-wrap:wrap;gap:10px;min-width:0}
+.train-create-saas-v2 .train-v3-algorithm-name strong{font-size:18px;line-height:1.4;word-break:break-word;color:#192b50}
+.train-create-saas-v2 .train-v3-algorithm-name span{border-radius:100px;background:#edf5ff;color:#2465de;padding:5px 9px;font-size:13px;font-weight:650;white-space:nowrap}
+.train-create-saas-v2 .train-v3-priority{width:125px;flex:0 0 125px}
+.train-create-saas-v2 .train-v3-mother-row{max-width:100%;margin-top:10px}
+.train-create-saas-v2 .train-v3-mother-row>.field{max-width:100%}
+.train-create-saas-v2 .train-v3-mother-row .select{width:100%}
+.train-create-saas-v2 .train-v3-internals[hidden]{display:none!important}
+.train-create-saas-v2 .train-v3-summary{grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-bottom:13px}
+.train-create-saas-v2 .train-v3-summary>div{padding:13px 14px;background:#f4f7fc;border:0;border-radius:11px;min-width:0}
+.train-create-saas-v2 .train-v3-summary span{font-size:13px;color:#74819a;font-weight:650}
+.train-create-saas-v2 .train-v3-summary b{font-size:20px;color:#122852;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.train-create-saas-v2 .train-v3-summary em{display:none!important}
+.train-create-saas-v2 .train-ui-dataset-actions{gap:10px}
+.train-create-saas-v2 .btn{min-height:42px;font-size:15px;font-weight:650;border-radius:10px}
+.train-create-saas-v2 .train-create-split-details{margin-top:2px;border-top:1px solid #edf0f6}
+.train-create-saas-v2 .train-create-split-details>summary{display:flex;align-items:center;justify-content:space-between;padding:13px 0 1px;font-size:15px;color:#385988}
+.train-create-saas-v2 .train-create-split-details>summary span{margin-left:auto;color:#71809a;font-weight:550;font-size:14px}
+.train-create-saas-v2 .train-v3-mode-options{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px}
+.train-create-saas-v2 .train-v3-mode-option{position:relative;display:flex;flex-direction:column;align-items:flex-start;justify-content:center;min-height:82px;padding:13px 11px;gap:6px;text-align:left;border:1.5px solid #dfe7f3;border-radius:12px;background:#fff;color:#243453;cursor:pointer;transition:border-color .15s,background .15s,box-shadow .15s}
+.train-create-saas-v2 .train-v3-mode-option:hover{border-color:#a9c1ed;background:#f9fbff}
+.train-create-saas-v2 .train-v3-mode-option b{font-size:15px;font-weight:800;line-height:1.25}
+.train-create-saas-v2 .train-v3-mode-option span{font-size:13px;line-height:1.4;color:#71819b}
+.train-create-saas-v2 .train-v3-mode-option.is-selected{border-color:#2563eb;background:#edf5ff;box-shadow:0 0 0 1px rgba(37,99,235,.08)}
+.train-create-saas-v2 .train-v3-mode-option.is-selected b{color:#1655ca}
+.train-create-saas-v2 .train-v3-mode-option.is-selected:after{content:"✓";position:absolute;top:6px;right:9px;color:#2563eb;font-size:15px;font-weight:900}
+.train-create-saas-v2 .train-v3-mode-brief{margin-top:13px;padding:12px 14px;border-radius:10px;background:#f2f6fd;color:#3a547b;font-size:14px;font-weight:700}
+.train-create-saas-v2 .train-v3-custom-slot[hidden]{display:none!important}
+.train-create-saas-v2 .train-v3-custom-slot{display:flex;flex-direction:column;gap:12px;margin-top:13px;padding-top:13px;border-top:1px solid #e8edf6}
+.train-create-saas-v2 .train-v3-custom-slot .train-ui-device-card,.train-create-saas-v2 .train-v3-custom-slot .train-v3-resource-strategy{display:block!important}
+.train-create-saas-v2 .train-v3-custom-slot .train-ui-device-card{order:1}
+.train-create-saas-v2 .train-v3-custom-slot .train-v3-resource-strategy{order:2}
+.train-create-saas-v2 .train-v3-custom-slot .train-v3-all-settings{order:3;width:100%}
+.train-create-saas-v2 .train-v3-custom-slot .train-v3-resources,.train-create-saas-v2 .train-v3-custom-slot .train-v3-resource-strategy{padding:12px 14px!important;border-radius:12px;background:#f8fbff}
+.train-create-saas-v2 .train-v3-custom-slot .train-v3-resources>small,.train-create-saas-v2 .train-v3-custom-slot .train-v3-resource-strategy>small{display:none}
+.train-create-saas-v2 .train-v3-custom-slot .train-v3-resource-strategy>.form.two{display:none}
+.train-create-saas-v2 .train-v3-custom-slot .train-v3-manual-resource{display:block}
+.train-create-saas-v2 .train-v3-custom-slot .train-v3-manual-resource[hidden]{display:none}
+.train-create-saas-v2 .train-ui-labels-card{min-height:0;border-color:#bad3fa;background:linear-gradient(180deg,#f5f9ff 0,#fff 120px);box-shadow:0 4px 20px rgba(29,78,216,.055)}
+.train-create-saas-v2 .train-ui-labels-card>header small{display:block!important;max-width:600px;margin-top:4px;color:#5c708f;font-size:14px;font-weight:550;line-height:1.5}
+.train-create-saas-v2 .train-ui-label-search{height:45px;margin-bottom:12px;border-radius:10px}
+.train-create-saas-v2 .train-ui-label-search input{font-size:15px}
+.train-create-saas-v2 .train-ui-label-slot{min-height:110px;max-height:min(49dvh,520px);overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;padding-right:5px}
+.train-create-saas-v2 .train-ui-label-wait{min-height:64px;font-size:14px}
+.train-create-saas-v2 .training-label-contract{border:0!important;background:transparent!important}
+.train-create-saas-v2 .training-label-contract-head{display:none}
+.train-create-saas-v2 .training-label-contract-title{font-size:15px!important}
+.train-create-saas-v2 .training-label-contract-list{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px!important}
+.train-create-saas-v2 .training-label-choice{min-height:48px;padding:10px 12px!important;border-radius:10px!important}
+.train-create-saas-v2 .training-label-choice b{font-size:15px!important}
+.train-create-saas-v2 .training-label-choice small{font-size:13px!important}
+.train-create-saas-v2 .training-label-inherited{font-size:14px!important}
+.train-create-saas-v2 .training-label-warning{font-size:14px!important}
+.train-create-saas-v2 .train428-footer{position:sticky;bottom:0;z-index:5;margin:0 -26px;padding:15px 26px;background:rgba(255,255,255,.98);border-top:1px solid #e9edf5;gap:11px}
+.train-create-saas-v2 .train428-footer .btn{min-height:46px;font-size:16px}
+.train-create-saas-v2 .train428-footer .train-ui-submit{min-width:168px}
+@media(max-width:1050px){
+ .train-create-saas-v2 .train-create-layout{grid-template-columns:minmax(0,1fr);grid-template-areas:"algorithm" "materials" "labels" "modes";gap:14px}
+ .train-create-saas-v2 .train-ui-label-slot{max-height:min(38dvh,400px)}
+}
+@media(max-width:790px){
+ .training-create-modal-card{width:calc(100vw - 16px)!important;height:calc(100dvh - 16px)!important;max-height:calc(100dvh - 16px)!important}
+ .training-create-modal-card .modal-body{padding:0 14px}
+ .train-create-saas-v2 .train-create-layout{padding:12px 0 16px}
+ .train-create-saas-v2 .train-ui-card,.train-create-saas-v2 .train428-panel{padding:15px}
+ .train-create-saas-v2 .train-v3-mode-options{grid-template-columns:repeat(2,minmax(0,1fr))}
+ .train-create-saas-v2 .train-v3-mode-option{min-height:76px}
+ .train-create-saas-v2 .training-label-contract-list{grid-template-columns:repeat(2,minmax(0,1fr))}
+ .train-create-saas-v2 .train428-footer{margin:0 -14px;padding:12px 14px}
+}
+@media(max-width:480px){
+ .train-create-saas-v2 .train-v3-summary{grid-template-columns:repeat(2,minmax(0,1fr))}
+ .train-create-saas-v2 .train-v3-algorithm-line{flex-wrap:wrap}
+ .train-create-saas-v2 .train-v3-priority{width:100%;flex:1 1 100%}
+ .train-create-saas-v2 .training-label-contract-list{grid-template-columns:1fr}
+ .train-create-saas-v2 .train428-footer .train-ui-submit{min-width:0;flex:1}
+}
+
+.train-create-saas-v2 .train350-auto-schedule{margin-left:auto;display:inline-flex;align-items:center;gap:8px;border-radius:99px;border:1px solid #b9d8fa;padding:7px 12px;background:linear-gradient(120deg,#ebf5ff,#e9faf6);color:#18609b;font-size:14px;font-weight:800;white-space:nowrap}.train350-auto-schedule i{width:8px;height:8px;border-radius:50%;background:#19ac83;box-shadow:0 0 0 4px #b8eddf6e}@media(max-width:640px){.train-create-saas-v2 .train350-auto-schedule{font-size:12px;padding:6px 8px}}

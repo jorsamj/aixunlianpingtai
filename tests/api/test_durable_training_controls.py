@@ -17,6 +17,7 @@ def test_durable_training_pause_resume_and_stop_use_verified_process_identity(cl
     artifacts = app_module.shared_task_artifacts()
     repository = app_module.shared_task_repository()
     artifacts.atomic_write_json(task_id, "payload.json", {"framework": "ultralytics"})
+    capability = f"training.control.{task_id}"
     repository.create(
         TaskRecord.new(
             task_id,
@@ -24,11 +25,11 @@ def test_durable_training_pause_resume_and_stop_use_verified_process_identity(cl
             TaskKind.TRAINING,
             "payload.json",
             f"training:control:{task_id}",
-            required_capabilities=("training.ultralytics",),
+            required_capabilities=(capability,),
         )
     )
     lease = repository.claim_next(
-        "control-test", {TaskKind.TRAINING}, {"training.ultralytics"}, lease_seconds=60
+        "control-test", {TaskKind.TRAINING}, {capability}, lease_seconds=60
     )
     assert lease is not None
     launched = launch_process(
@@ -82,3 +83,210 @@ def test_durable_training_pause_resume_and_stop_use_verified_process_identity(cl
             controller.terminate_tree(launched.identity)
         except Exception:
             pass
+
+
+
+def test_direct_delete_cancels_durable_training_before_hiding_job(client, seeded_project):
+    import app as app_module
+
+    project_id, _ = seeded_project
+    task_id = f"delete-{uuid.uuid4().hex[:8]}"
+    artifacts = app_module.shared_task_artifacts()
+    repository = app_module.shared_task_repository()
+    artifacts.atomic_write_json(task_id, "payload.json", {"framework": "ultralytics"})
+    capability = f"training.delete.{task_id}"
+    repository.create(
+        TaskRecord.new(
+            task_id,
+            project_id,
+            TaskKind.TRAINING,
+            "payload.json",
+            f"training:delete:{task_id}",
+            required_capabilities=(capability,),
+        )
+    )
+    lease = repository.claim_next(
+        "delete-control-test", {TaskKind.TRAINING}, {capability}, lease_seconds=60
+    )
+    assert lease is not None
+    launched = launch_process(
+        [sys.executable, "-c", "import time\nwhile True: time.sleep(0.1)"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    repository.bind_process(task_id, lease.lease_token, launched.identity)
+    job_dir = app_module.project_dir(project_id) / "jobs" / task_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    (job_dir / "job.json").write_text(
+        json.dumps({"id": task_id, "task_id": task_id, "status": "running", "target": "local"}),
+        encoding="utf-8",
+    )
+    controller = ProcessController()
+    try:
+        deleted = client.delete(f"/api/v12/projects/{project_id}/jobs/{task_id}")
+        assert deleted.status_code == 200, deleted.text
+        durable = repository.get(task_id)
+        assert durable is not None
+        assert durable.status is TaskStatus.CANCEL_REQUESTED
+        assert durable.stage == "cancelling"
+        assert not job_dir.exists()
+
+        for _ in range(30):
+            if not psutil.pid_exists(launched.identity.pid):
+                break
+            time.sleep(0.05)
+        assert not psutil.pid_exists(launched.identity.pid)
+    finally:
+        try:
+            controller.terminate_tree(launched.identity)
+        except Exception:
+            pass
+
+def test_legacy_waiting_and_pending_stop_as_never_started_without_version_archive(client, seeded_project, monkeypatch):
+    import app as app_module
+
+    project_id, _ = seeded_project
+    archived = []
+
+    def fake_archive(project_id_value, job):
+        archived.append((project_id_value, dict(job)))
+        return {"id": "unexpected-version"}
+
+    monkeypatch.setattr(app_module, "_v48_archive_training_version", fake_archive)
+
+    for status in ("waiting", "pending"):
+        job_id = f"legacy-{status}-{uuid.uuid4().hex[:8]}"
+        job_dir = app_module.project_dir(project_id) / "jobs" / job_id
+        job_dir.mkdir(parents=True, exist_ok=True)
+        job_file = job_dir / "job.json"
+        job_file.write_text(
+            json.dumps({
+                "id": job_id,
+                "status": status,
+                "asset_algorithm_id": "algorithm-one",
+                "created_at": "2026-09-21T00:00:00+00:00",
+            }),
+            encoding="utf-8",
+        )
+
+        stopped = client.post(f"/api/v48/projects/{project_id}/jobs/{job_id}/stop")
+        assert stopped.status_code == 200, stopped.text
+        persisted = json.loads(job_file.read_text(encoding="utf-8"))
+        assert persisted["status"] == "stopped"
+        assert persisted["message"] == "用户取消排队"
+        assert persisted["never_started"] is True
+
+    assert archived == []
+
+
+def test_legacy_terminal_stop_fails_closed_without_version_archive(client, seeded_project, monkeypatch):
+    import app as app_module
+
+    project_id, _ = seeded_project
+    job_id = f"legacy-terminal-{uuid.uuid4().hex[:8]}"
+    job_dir = app_module.project_dir(project_id) / "jobs" / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    job_file = job_dir / "job.json"
+    job_file.write_text(
+        json.dumps({
+            "id": job_id,
+            "status": "failed",
+            "asset_algorithm_id": "algorithm-one",
+            "created_at": "2026-09-21T00:00:00+00:00",
+        }),
+        encoding="utf-8",
+    )
+
+    archived = []
+    monkeypatch.setattr(
+        app_module,
+        "_v48_archive_training_version",
+        lambda project_id_value, job: archived.append((project_id_value, dict(job))),
+    )
+
+    stopped = client.post(f"/api/v48/projects/{project_id}/jobs/{job_id}/stop")
+    assert stopped.status_code == 409, stopped.text
+    assert "未修改本地状态" in stopped.text
+    persisted = json.loads(job_file.read_text(encoding="utf-8"))
+    assert persisted["status"] == "failed"
+    assert archived == []
+
+
+def test_legacy_remote_training_stop_fails_closed_when_remote_rejects(client, seeded_project, monkeypatch):
+    import app as app_module
+
+    project_id, _ = seeded_project
+    job_id = f"legacy-remote-stop-{uuid.uuid4().hex[:8]}"
+    job_dir = app_module.project_dir(project_id) / "jobs" / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    job_file = job_dir / "job.json"
+    job_file.write_text(
+        json.dumps({
+            "id": job_id,
+            "status": "running",
+            "target": "remote",
+            "remote": {
+                "base_url": "http://remote-agent.invalid:9000",
+                "job_id": "remote-job-1",
+                "api_key": "test-key",
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    class FailedResponse:
+        ok = False
+        status_code = 409
+        text = "remote process still running"
+
+    calls = []
+    monkeypatch.setattr(
+        app_module.requests,
+        "post",
+        lambda url, **kwargs: calls.append((url, kwargs)) or FailedResponse(),
+    )
+
+    stopped = client.post(f"/api/v48/projects/{project_id}/jobs/{job_id}/stop")
+    assert stopped.status_code == 502, stopped.text
+    assert "本地状态保持不变" in stopped.text
+    persisted = json.loads(job_file.read_text(encoding="utf-8"))
+    assert persisted["status"] == "running"
+    assert len(calls) == 1
+    assert calls[0][0].endswith("/api/remote/jobs/remote-job-1/stop")
+
+
+def test_legacy_remote_training_stop_commits_local_state_only_after_remote_ack(client, seeded_project, monkeypatch):
+    import app as app_module
+
+    project_id, _ = seeded_project
+    job_id = f"legacy-remote-stop-ok-{uuid.uuid4().hex[:8]}"
+    job_dir = app_module.project_dir(project_id) / "jobs" / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    job_file = job_dir / "job.json"
+    job_file.write_text(
+        json.dumps({
+            "id": job_id,
+            "status": "running",
+            "target": "remote",
+            "remote": {
+                "base_url": "http://remote-agent.invalid:9000",
+                "job_id": "remote-job-2",
+                "api_key": "test-key",
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    class OkResponse:
+        ok = True
+        status_code = 200
+        text = ""
+
+    monkeypatch.setattr(app_module.requests, "post", lambda *args, **kwargs: OkResponse())
+
+    stopped = client.post(f"/api/v48/projects/{project_id}/jobs/{job_id}/stop")
+    assert stopped.status_code == 200, stopped.text
+    persisted = json.loads(job_file.read_text(encoding="utf-8"))
+    assert persisted["status"] == "stopped"
+    assert persisted["message"] == "用户手动停止"
+

@@ -1,5 +1,13 @@
 import {test, expect} from '@playwright/test';
 
+async function selectIsolatedTestProject(page, projectId) {
+  await page.route('**/api/v53/bootstrap/snapshot**', async route => {
+    const url = new URL(route.request().url());
+    url.searchParams.set('preferred_project_id', projectId);
+    await route.continue({url: url.toString()});
+  });
+}
+
 function bmp(width = 100, height = 80, rgb = [90, 140, 210]) {
   const rowBytes = Math.ceil(width * 3 / 4) * 4;
   const buffer = Buffer.alloc(54 + rowBytes * height);
@@ -41,7 +49,7 @@ async function seedProject(request) {
       class_id: label === 'fire' ? 0 : 1,
       label,
       x1: 10, y1: 10, x2: 70, y2: 60,
-    }]}});
+    }], expected_version: image.annotation_version, source_content_sha256: image.content_sha256}});
     expect(save.ok()).toBeTruthy();
   }
   const created = await (await request.post(`/api/v12/projects/${project.id}/algorithms`, {data: {
@@ -60,7 +68,7 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
     body: JSON.stringify({targets: [{
       id: 'browser-ultralytics', name: '浏览器测试 Ultralytics', type: 'local', framework: 'ultralytics', status: 'ready',
       algorithms: [{key: 'yolo_detect', name: 'Ultralytics Detect', base_model: 'yolo11n.pt', default_epochs: 10, default_imgsz: 640, default_batch: 2}],
-      base_models: [{value: 'yolo11n.pt', label: 'YOLO11n'}],
+      base_models: [{value: 'yolo11n.pt', label: 'YOLO11n', model_status: 'FOUND'}],
     }]})
   }));
   await page.route('**/api/v62/training-devices', route => route.fulfill({
@@ -68,26 +76,50 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
     contentType: 'application/json',
     body: JSON.stringify({recommended: 'cpu', options: [{id: 'cpu', label: 'CPU', available: true}]}),
   }));
+  await page.route('**/api/system/recommendation', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ok: true, recommendation: {
+      device: 'cpu', batch: 2, workers: 0, precision: 'auto', safe_batch_max: 32,
+    }}),
+  }));
+  await page.route('**/api/v62/projects/*/training-materials/compatibility', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      compatible: true, issue_count: 0, items: [], issue_counts: {},
+      filtered_count: 0, next_cursor: null,
+    }),
+  }));
   await page.route(`**/api/v12/projects/${project.id}/train/start`, async route => {
     submitted = route.request().postDataJSON();
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({ok: true, job: {id: 'label-browser-job', status: 'queued'}}),
+      body: JSON.stringify({ok: true, task: {
+        task_id: submitted.task_id,
+        kind: 'TRAINING',
+        task_type: 'TRAINING',
+        status: 'QUEUED',
+        persisted_status: 'QUEUED',
+        phase: 'queued',
+        progress_percent: 0,
+      }}),
     });
   });
 
-  await page.addInitScript(projectId => {
-    localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({projectId, page: '算法列表'}));
-  }, project.id);
+  await selectIsolatedTestProject(page, project.id);
+  await page.addInitScript(() => {
+    localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({page: '算法列表'}));
+  });
 
   await page.goto('/');
   await expect.poll(async () => page.evaluate(() => window.TrainingDraftRuntime?.build || null))
-    .toBe('training-draft-runtime-422516');
+    .toBe('training-draft-runtime-422519');
   await expect.poll(async () => page.evaluate(() => window.TrainingLabelRuntime?.build || null))
-    .toBe('module-422513');
-  await expect.poll(async () => page.evaluate(() => window.TrainingSubmitRuntime?.build || null))
-    .toBe('training-submit-422505');
+    .toBe('module-422569');
+  await expect.poll(async () => page.evaluate(() => window.TrainingSubmitRuntime?.build || ''))
+    .toMatch(/^training-submit-\d+$/);
   expect(await page.evaluate(() => ({
     draftOwnsNetwork: window.TrainingDraftRuntime.state().networkOwner,
     draftOwnsClassicWrapper: window.TrainingDraftRuntime.state().classicWrapperOwner,
@@ -105,14 +137,16 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   await page.getByRole('button', {name: /算法列表/}).click();
   const card = page.locator('.alg428-card', {hasText: '烟火标签算法'});
   await card.getByRole('button', {name: '训练'}).click();
-  const dialog = page.getByRole('dialog', {name: '训练 · 烟火标签算法'});
+  const dialog = page.getByRole('dialog', {name: '创建训练任务'});
   await expect(dialog).toBeVisible({timeout: 10_000});
   await expect(dialog.locator('.train-create-saas')).toBeVisible();
   await expect(dialog.locator('.train-create-layout')).toBeVisible();
   await expect(dialog.locator('.train-create-left')).toBeVisible();
   await expect(dialog.locator('.train-create-right')).toBeVisible();
-  await expect(dialog.locator('#trainUiSummary')).toBeVisible();
-  await expect(dialog.locator('details.train-ui-advanced')).toBeVisible();
+  await expect(dialog.locator('#trainUiSummary')).toBeHidden();
+  await expect(dialog.locator('.train-v3-mode-option')).toHaveCount(4);
+  await expect(dialog.locator('[data-mode="full"]')).toHaveAttribute('aria-pressed', 'true');
+  await expect(dialog.locator('#trainUiLabelSlot')).toBeVisible();
 
   await dialog.getByRole('button', {name: '选择训练素材'}).click();
   const picker = page.getByRole('dialog', {name: '选择本次训练素材'});
@@ -126,28 +160,31 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   await expect(labels).toContainText('烟雾');
   await expect(labels).toHaveCSS('display', 'block');
   await expect(dialog.locator('.train-ui-labels-card #trainingLabelContractPanel')).toBeVisible();
+  const fire = labels.locator('input[data-training-label-code="fire"]');
   const smoke = labels.locator('input[data-training-label-code="smoke"]');
-  await smoke.uncheck();
+  await expect(fire).not.toBeChecked();
+  await expect(smoke).not.toBeChecked();
+  await fire.check();
 
+  await dialog.locator('[data-mode="custom"]').click();
+  await expect(dialog.locator('#trV3ManualBatch')).toBeVisible();
+  await dialog.locator('details.train-create-split-details > summary').click();
   await dialog.locator('#trV3Experiment').fill('35');
   await dialog.locator('#trV3Validation').fill('18');
   await dialog.locator('#tr429Priority').fill('7');
-  await dialog.locator('#trV3ResourceStrategy').selectOption('manual');
-  await dialog.locator('#trV3GpuPolicy').selectOption('exclusive');
+  await expect(dialog.locator('#trV3ResourceStrategy')).toHaveValue('manual');
+  await expect(dialog.locator('#trV3GpuPolicy')).toHaveValue('exclusive');
 
-  const advancedConfig = dialog.locator('details.train-ui-advanced');
-  await advancedConfig.locator('summary').click();
-  await expect(advancedConfig).toHaveAttribute('open', '');
-  await dialog.getByRole('button', {name: '编辑全部训练参数'}).click();
+  await dialog.getByRole('button', {name: '配置更多专业参数'}).click();
   const settings = page.getByRole('dialog', {name: '训练配置设置'});
   await settings.locator('#ts428Epoch').fill('30');
-  await settings.locator('#ts428Batch').fill('16');
-  await settings.locator('details.advanced427-box summary').click();
-  await settings.locator('#ts428Workers').fill('4');
+  await settings.getByText('高级训练参数', {exact: true}).click();
   await settings.locator('#ts428Opt').selectOption('AdamW');
   await settings.locator('#ts428Cache').selectOption('False');
   await settings.getByRole('button', {name: '应用配置'}).click();
   await expect(dialog).toBeVisible();
+  await dialog.locator('#trV3ManualBatch').fill('16');
+  await dialog.locator('#trV3ManualWorkers').fill('4');
   await expect(dialog.locator('#trainUiSummary')).toContainText('YOLO11n');
   await expect(dialog.locator('#trainUiSummary')).toContainText('30');
   await expect(dialog.locator('#trainUiSummary')).toContainText('16');
@@ -202,8 +239,8 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
     batch: state.trainingDraft.resource.batch,
     optimizer: state.trainingDraft.config.optimizer,
   }))).toEqual({algorithmId, materials: imageIds, device: 'cpu', batch: 16, optimizer: 'AdamW'});
-  await expect(dialog.getByRole('button', {name: '开始训练'})).toBeEnabled();
-  expect(await dialog.getByRole('button', {name: '开始训练'}).getAttribute('data-training-submit-owner')).toBe('TrainingSubmitRuntime');
+  await expect(dialog.getByRole('button', {name: '创建训练任务'})).toBeEnabled();
+  expect(await dialog.getByRole('button', {name: '创建训练任务'}).getAttribute('data-training-submit-owner')).toBe('TrainingSubmitRuntime');
 
   submitted = undefined;
   await page.evaluate(async projectId => {
@@ -218,7 +255,7 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
 
   submitted = undefined;
   expect(await page.evaluate(() => window.submitTrain429?.__trainingSubmitRuntime === true)).toBe(true);
-  await dialog.getByRole('button', {name: '开始训练'}).click();
+  await dialog.getByRole('button', {name: '创建训练任务'}).click();
   await expect.poll(async () => {
     if (submitted) return 'submitted';
     const runtime = await page.evaluate(() => window.TrainingSubmitRuntime?.state?.() || null);
@@ -233,6 +270,7 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   expect(submitted.experiment_percent).toBe(35);
   expect(submitted.validation_percent).toBe(18);
   expect(submitted.queue_priority).toBe(7);
+  expect(submitted.training_mode).toBe('custom');
   expect(submitted.resource_strategy).toBe('manual');
   expect(submitted.device).toBe('cpu');
   expect(submitted.gpu_policy).toBe('exclusive');
@@ -249,7 +287,7 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   await page.getByRole('button', {name: /算法列表/}).click();
   const secondCard = page.locator('.alg428-card', {hasText: '烟火标签算法'});
   await secondCard.getByRole('button', {name: '训练'}).click();
-  const secondDialog = page.getByRole('dialog', {name: '训练 · 烟火标签算法'});
+  const secondDialog = page.getByRole('dialog', {name: '创建训练任务'});
   await expect(secondDialog).toBeVisible({timeout: 10_000});
   await secondDialog.getByRole('button', {name: '选择训练素材'}).click();
   const secondPicker = page.getByRole('dialog', {name: '选择本次训练素材'});
@@ -257,7 +295,7 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   await secondPicker.getByRole('button', {name: '确认选择'}).click();
 
   const secondLabels = secondDialog.locator('#trainingLabelContractPanel');
-  await expect(secondLabels.locator('input[data-training-label-code="fire"]')).toBeChecked();
-  await expect(secondLabels.locator('input[data-training-label-code="smoke"]')).toBeChecked();
-  await expect.poll(async () => page.evaluate(() => state.trainingDraft?.newLabelCodes || [])).toEqual(['fire', 'smoke']);
+  await expect(secondLabels.locator('input[data-training-label-code="fire"]')).not.toBeChecked();
+  await expect(secondLabels.locator('input[data-training-label-code="smoke"]')).not.toBeChecked();
+  await expect.poll(async () => page.evaluate(() => state.trainingDraft?.newLabelCodes || [])).toEqual([]);
 });

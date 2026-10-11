@@ -17,11 +17,20 @@ def main():
     parser.add_argument("--input", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--conf", type=float, default=0.25)
+    parser.add_argument("--device", default="")
     args = parser.parse_args()
 
     start = time.perf_counter()
     model = YOLO(args.model)
-    results = model.predict(source=args.input, conf=args.conf, save=False, verbose=False)
+    predict_args = {
+        "source": args.input,
+        "conf": args.conf,
+        "save": False,
+        "verbose": False,
+    }
+    if str(args.device or "").strip():
+        predict_args["device"] = str(args.device).strip()
+    results = model.predict(**predict_args)
     result = results[0]
     speed = getattr(result, "speed", {}) or {}
     names = result.names

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import mimetypes
 import os
 import time
+import zipfile
 from contextlib import closing
 from dataclasses import asdict
 from pathlib import Path
@@ -14,13 +16,14 @@ from PIL import Image, UnidentifiedImageError
 from platform_core.material_repository import MaterialRepository
 from platform_core.annotation_repository import AnnotationRepository
 from platform_core.annotations import annotation_summary
+from platform_core.labels import active_project_label_ids, label_governance_fence
 from platform_core.secrets import KeyringSecretStore, SecretCredentialStore
 from platform_core.task_runtime import ArtifactStore, TaskKind, TaskStatus
 
 from .errors import redact_storage_error
 from .factory import StorageProviderFactory
 from .import_candidates import ImportCandidateStore
-from .import_confirmation import mapping_suggestions
+from .import_confirmation import external_label_facts
 from .models import StorageType
 from .source_repository import StorageSourceRepository
 from .yolo_import import YoloImportError, YoloImportScanner, YoloScanCancelled
@@ -36,12 +39,33 @@ from .zip_import import (
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 MANIFEST_REF = "scan/candidates.sqlite3"
+
+
+def _confirmed_import_label_ids(
+    project_path: Path, annotation_scope: Iterable[str],
+) -> dict[str, int]:
+    label_ids = active_project_label_ids(project_path) or {}
+    inactive = [
+        str(code).strip()
+        for code in annotation_scope
+        if str(code).strip() and str(code).strip() not in label_ids
+    ]
+    if inactive:
+        raise ValueError(
+            "confirmed platform label is no longer active; "
+            "resolve the label before retrying: "
+            + ", ".join(sorted(set(inactive))[:10])
+        )
+    return label_ids
+
+
 SCAN_RESULT_REF = "scan/result.json"
 FINAL_RESULT_REF = "scan/final.json"
 ERROR_RESULT_REF = "scan/error.json"
 BATCH_SIZE = 500
 
 
+INDEX_BATCH_SIZE = 50
 def _sha256_stream(stream, *, cancelled=None) -> str:
     digest = hashlib.sha256()
     for chunk in iter(lambda: stream.read(1024 * 1024), b""):
@@ -347,7 +371,7 @@ class StorageImportHandler:
             meta = json.loads(meta_path.read_text(encoding='utf-8'))
             labels = [{**(meta.get('label_meta', [])[i] if i < len(meta.get('label_meta', [])) else {}), 'code': code}
                       for i, code in enumerate(meta.get('labels') or [])]
-            result['external_classes'] = mapping_suggestions(store.external_classes(), labels)
+            result['external_classes'] = external_label_facts(store.external_classes())
         context.repository.heartbeat(
             context.task.task_id,
             context.lease.lease_token,
@@ -594,6 +618,140 @@ class StorageImportHandler:
         reconcile_page()
         return selected, indexed, imported
 
+    def _remote_material_publisher(self, context, request):
+        if str(request.get("execution_mode") or "local").strip().lower() != "agent":
+            return None
+        if not context.task.result_ref:
+            raise RuntimeError("confirmed Agent material import has no verified review result")
+        result = context.artifacts.read_json(
+            context.task.task_id,
+            context.task.result_ref,
+            default={},
+        )
+        if not isinstance(result, dict):
+            raise RuntimeError("confirmed Agent material review result is unavailable")
+        archive_ref = str(result.get("material_review_archive_ref") or "")
+        staging_ref = str(result.get("material_staging_ref") or "")
+        expected_sha = str(result.get("output_sha256") or "").strip().lower()
+        expected_size = int(result.get("output_size_bytes") or 0)
+        if not archive_ref or not staging_ref or len(expected_sha) != 64 or expected_size <= 0:
+            raise RuntimeError("confirmed Agent material review metadata is incomplete")
+        archive_path = context.artifacts.artifact_path(
+            context.task.task_id,
+            archive_ref,
+        )
+        if not archive_path.is_file() or archive_path.is_symlink():
+            raise RuntimeError("verified Agent material review archive is missing")
+        if int(archive_path.stat().st_size) != expected_size:
+            raise RuntimeError("verified Agent material review archive size changed")
+        with archive_path.open("rb") as stream:
+            if _sha256_stream(stream) != expected_sha:
+                raise RuntimeError("verified Agent material review archive hash changed")
+
+        from platform_core.remote_material_import import RemoteMaterialStagingStore
+        _source, provider = self._source_and_provider(context, request)
+        remote = request.get("remote_execution")
+        material = remote.get("material_import") if isinstance(remote, dict) else {}
+        remote_mode = (
+            str(material.get("mode") or "zip_scan")
+            if isinstance(material, dict)
+            else "zip_scan"
+        )
+        if remote_mode == "storage_scan":
+            def publish_existing(rows):
+                for row in rows:
+                    if context.cancel_requested():
+                        raise InterruptedError(
+                            "material import cancelled before source verification"
+                        )
+                    key = str(row["object_key"])
+                    if not provider.exists(key):
+                        raise RuntimeError(
+                            "confirmed storage_scan source object is missing"
+                        )
+                    metadata = provider.stat(key)
+                    expected_size = int(row["size_bytes"] or 0)
+                    expected_etag = str(row.get("etag") or "").strip().strip('"')
+                    actual_etag = str(metadata.etag or "").strip().strip('"')
+                    if int(metadata.size_bytes) != expected_size:
+                        raise RuntimeError(
+                            "storage_scan source size changed after review"
+                        )
+                    if (
+                        not expected_etag
+                        or not actual_etag
+                        or expected_etag != actual_etag
+                    ):
+                        raise RuntimeError(
+                            "storage_scan source identity changed after review"
+                        )
+                    actual_sha = str(metadata.sha256 or "").strip().lower()
+                    expected_sha = str(row.get("content_sha256") or "").strip().lower()
+                    if actual_sha and actual_sha != expected_sha:
+                        raise RuntimeError(
+                            "storage_scan source hash changed after review"
+                        )
+            return publish_existing
+
+        staging = RemoteMaterialStagingStore(
+            context.artifacts.artifact_path(
+                context.task.task_id,
+                staging_ref,
+            )
+        )
+
+        def publish(rows):
+            rows = list(rows)
+            if not rows:
+                return
+            mappings = staging.get_many(row["object_key"] for row in rows)
+            with zipfile.ZipFile(archive_path, "r") as review:
+                for row in rows:
+                    if context.cancel_requested():
+                        raise InterruptedError("material import cancelled before object publication")
+                    key = str(row["object_key"])
+                    mapping = mappings.get(key)
+                    if mapping is None:
+                        raise RuntimeError("confirmed material has no verified review payload mapping")
+                    expected_row_sha = str(row["content_sha256"] or "").strip().lower()
+                    expected_row_size = int(row["size_bytes"] or 0)
+                    if (
+                        str(mapping.get("sha256") or "").lower() != expected_row_sha
+                        or int(mapping.get("size_bytes") or 0) != expected_row_size
+                    ):
+                        raise RuntimeError("verified review payload evidence changed before publication")
+                    if provider.exists(key):
+                        metadata = provider.stat(key)
+                    else:
+                        member = str(mapping.get("payload_member") or "")
+                        try:
+                            info = review.getinfo(member)
+                        except KeyError as error:
+                            raise RuntimeError("verified review payload member is missing") from error
+                        if int(info.file_size) != expected_row_size:
+                            raise RuntimeError("verified review ZIP member size changed")
+                        with review.open(info, "r") as stream:
+                            metadata = provider.upload(
+                                key,
+                                stream,
+                                content_type=(
+                                    mimetypes.guess_type(str(row.get("filename") or key))[0]
+                                    or "application/octet-stream"
+                                ),
+                                metadata={
+                                    "sha256": expected_row_sha,
+                                    "purpose": "confirmed-agent-material-import",
+                                },
+                            )
+                    if (
+                        int(metadata.size_bytes) != expected_row_size
+                        or str(metadata.sha256 or "").strip().lower() != expected_row_sha
+                    ):
+                        raise RuntimeError(
+                            "published material object does not match verified review evidence"
+                        )
+        return publish
+
     def _index_confirmed(self, context, request):
         confirmation = context.artifacts.read_json(
             context.task.task_id, "scan/confirmation.json", default=None,
@@ -629,27 +787,52 @@ class StorageImportHandler:
         store.assign_image_ids(context.task.task_id, batch_size=BATCH_SIZE)
         if context.cancel_requested():
             return TaskStatus.CANCELLED, None
-        materials = MaterialRepository(
-            self.data_dir / "projects" / context.task.project_id
+        project_path = self.data_dir / "projects" / context.task.project_id
+        materials = MaterialRepository(project_path)
+        annotations = AnnotationRepository(project_path)
+        confirmed_label_mapping = {
+            str(source): str(target).strip()
+            for source, target in dict(confirmation.get('label_mapping') or {}).items()
+            if str(source).strip() and str(target).strip()
+        }
+        imported_annotation_scope = sorted(set(confirmed_label_mapping.values()))
+        label_ids = _confirmed_import_label_ids(
+            project_path, imported_annotation_scope,
         )
-        annotations = AnnotationRepository(self.data_dir / 'projects' / context.task.project_id)
-        project_meta_path = self.data_dir / 'projects' / context.task.project_id / 'meta.json'
-        project_meta = json.loads(project_meta_path.read_text(encoding='utf-8'))
-        label_ids = {code: i for i, code in enumerate(project_meta.get('labels') or [])
-                     if i >= len(project_meta.get('label_meta') or [])
-                     or (project_meta['label_meta'][i] or {}).get('status', 'active') == 'active'}
+        external_label_names = {
+            str(item.get('class_id')): str(item.get('name') or '')
+            for item in confirmation.get('external_classes') or []
+            if isinstance(item, dict)
+        }
+        scan_result = context.artifacts.read_json(
+            context.task.task_id, SCAN_RESULT_REF, default={},
+        )
+        source_format = str(
+            (scan_result or {}).get('import_format')
+            or request.get('import_format')
+            or 'images'
+        ).strip().lower()
         checkpoint = context.load_checkpoint()
         newly_imported = max(0, int(checkpoint.get("newly_imported", 0) or 0))
         index_duplicates = max(0, int(checkpoint.get("index_duplicates", 0) or 0))
         indexed_at_least = max(0, int(checkpoint.get("indexed_at_least", 0) or 0))
         progress_counts = store.indexing_counts()
+        remote_publisher = self._remote_material_publisher(context, request)
 
         while True:
             if context.cancel_requested():
                 return TaskStatus.CANCELLED, None
-            batch = store.pending_index_batch(BATCH_SIZE)
+            batch = store.pending_index_batch(INDEX_BATCH_SIZE)
             if not batch:
                 break
+            batch_start = indexed_at_least + 1
+            batch_end = min(selected_count, indexed_at_least + len(batch))
+            context.repository.heartbeat(
+                context.task.task_id, context.lease.lease_token,
+                progress=(50.0 if selected_count <= 0 else min(98.0, 50.0 + 49.0 * indexed_at_least / selected_count)),
+                stage="mapping_labels",
+                current_item=f"正在转换标签：{batch_start} - {batch_end} / {selected_count}",
+            )
             by_reference = materials.get_by_storage_references(
                 (row["storage_source_id"], row["object_key"]) for row in batch
             )
@@ -678,12 +861,19 @@ class StorageImportHandler:
                 resolved.append(row)
             if context.cancel_requested():
                 return TaskStatus.CANCELLED, None
+            if remote_publisher is not None:
+                remote_publisher(resolved)
+            if context.cancel_requested():
+                return TaskStatus.CANCELLED, None
             store.bind_index_batch(resolved)
             by_id = {r['id']: r for r in materials.get_many(row['image_id'] for row in resolved)}
             imported_annotations = store.annotations_for_keys(row['object_key'] for row in resolved)
             skipped = store.skipped_boxes_for_keys(row['object_key'] for row in resolved)
             if context.cancel_requested():
                 return TaskStatus.CANCELLED, None
+            label_ids = _confirmed_import_label_ids(
+                project_path, imported_annotation_scope,
+            )
             records, annotation_rows = [], []
             for row in resolved:
                 current = by_id.get(row['image_id'])
@@ -698,20 +888,55 @@ class StorageImportHandler:
                     record['imported_split'] = candidate['split']
                     boxes = []
                     for box in candidate['boxes']:
-                        code = (confirmation.get('label_mapping') or {}).get(str(box['class_id']))
+                        code = confirmed_label_mapping.get(str(box['class_id']))
                         if code not in label_ids:
                             raise ValueError('confirmed platform label is no longer active; resolve the label before retrying')
                         width, height = float(row['width']), float(row['height'])
-                        boxes.append({'id': f"{row['image_id']}-{box['line_number']}",
-                            'label': code, 'class_id': label_ids[code],
+                        source_class_id = str(box['class_id'])
+                        boxes.append({
+                            'id': f"{row['image_id']}-{box['line_number']}",
+                            'label': code,
+                            'class_id': label_ids[code],
                             'x1': max(0.0, (box['cx']-box['w']/2)*width),
                             'y1': max(0.0, (box['cy']-box['h']/2)*height),
                             'x2': min(width, (box['cx']+box['w']/2)*width),
-                            'y2': min(height, (box['cy']+box['h']/2)*height)})
+                            'y2': min(height, (box['cy']+box['h']/2)*height),
+                            # Keep source taxonomy separate from canonical/project
+                            # class ids. Training export will build its own
+                            # contiguous 0..N-1 mapping from canonical labels.
+                            'source': 'imported',
+                            'source_task_id': context.task.task_id,
+                            'import_batch_id': context.task.task_id,
+                            'source_format': source_format,
+                            'source_class_id': source_class_id,
+                            'source_label_name': external_label_names.get(source_class_id, ''),
+                            'canonical_label_id': code,
+                            'canonical_project_class_id': label_ids[code],
+                            'mapping_method': 'manual',
+                            'confirmed_at': confirmation.get('confirmed_at'),
+                        })
                     state = 'annotated' if boxes else ('confirmed_empty' if candidate['annotation_status'] == 'confirmed_empty' else 'unannotated')
+                    # A structured annotation is exhaustive only for the source
+                    # dataset classes that the user explicitly mapped. Never let
+                    # AnnotationRepository widen an empty sidecar to every active
+                    # project label, because that would create false negatives for
+                    # unrelated classes in later multi-class training.
+                    if state in {'annotated', 'confirmed_empty'} and not imported_annotation_scope:
+                        raise ValueError(
+                            'structured annotation has no confirmed platform label scope'
+                        )
                     # A missing/invalid sidecar cannot erase an existing annotation.
                     if boxes or state == 'confirmed_empty' or not current:
-                        annotation_rows.append({'image_id': row['image_id'], 'boxes': boxes, 'annotation_state': state})
+                        annotation_rows.append({
+                            'image_id': row['image_id'],
+                            'boxes': boxes,
+                            'annotation_state': state,
+                            'annotation_scope': (
+                                list(imported_annotation_scope)
+                                if state in {'annotated', 'confirmed_empty'}
+                                else []
+                            ),
+                        })
                         record.update(annotation_summary(boxes, state))
                         record['annotation_summary_at'] = confirmation['confirmed_at']
                         if state != 'unannotated':
@@ -719,14 +944,36 @@ class StorageImportHandler:
                         row.update(annotations_written=int(state != 'unannotated'),
                                    boxes_imported=len(boxes), negative_samples=int(state == 'confirmed_empty'))
                 records.append(record)
-            # Material identity is durable before annotation writes. Replaying the
-            # same deterministic boxes preserves annotation version/content digest.
+            # Material identity remains first for replay compatibility, but the
+            # durable pair is fenced so cancellation/label mutation cannot split it.
             if context.cancel_requested():
                 return TaskStatus.CANCELLED, None
-            materials.upsert_many(records)
+            context.repository.heartbeat(
+                context.task.task_id, context.lease.lease_token,
+                progress=(50.0 if selected_count <= 0 else min(98.5, 50.0 + 49.0 * (indexed_at_least + len(batch) * 0.55) / selected_count)),
+                stage="writing_annotations",
+                current_item=f"正在写入标签与标注：{batch_start} - {batch_end} / {selected_count}",
+            )
             if context.cancel_requested():
                 return TaskStatus.CANCELLED, None
-            annotations.upsert_many(annotation_rows)
+            with label_governance_fence(project_path):
+                commit_label_ids = _confirmed_import_label_ids(
+                    project_path, imported_annotation_scope,
+                )
+                for annotation in annotation_rows:
+                    for box in annotation.get("boxes") or []:
+                        code = str(box.get("label") or "").strip()
+                        class_id = commit_label_ids.get(code)
+                        if class_id is None:
+                            raise ValueError(
+                                "confirmed platform label is no longer active; "
+                                "resolve the label before retrying"
+                            )
+                        box["class_id"] = class_id
+                        if "canonical_project_class_id" in box:
+                            box["canonical_project_class_id"] = class_id
+                materials.upsert_many(records)
+                annotations.upsert_many(annotation_rows)
             if context.cancel_requested():
                 return TaskStatus.CANCELLED, None
             store.record_annotation_outcomes(resolved)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import tempfile
 from pathlib import Path, PureWindowsPath
 from typing import Any
@@ -80,3 +81,16 @@ class ArtifactStore:
         with path.open("a", encoding="utf-8", newline="") as stream:
             stream.write(str(text))
             stream.flush()
+
+    def delete_task(self, task_id: str) -> bool:
+        safe_task_id = self._validate_task_id(task_id)
+        task_root = (self.root / safe_task_id).resolve()
+        if task_root.parent != self.root:
+            raise ValueError("task artifact root escaped")
+        if task_root.is_symlink():
+            task_root.unlink(missing_ok=True)
+            return True
+        if not task_root.exists():
+            return False
+        shutil.rmtree(task_root)
+        return True

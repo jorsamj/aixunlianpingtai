@@ -90,10 +90,10 @@ def test_failed_provider_upload_does_not_create_material_index(client, tmp_path)
         files=[("files", ("failed.jpg", image_bytes(), "image/jpeg"))],
         data={"storage_source_id": source_id},
     )
-    assert response.status_code == 200
-    assert response.json()["uploaded_count"] == 0
-    assert response.json()["failed_count"] == 1
-    assert "停用" in response.json()["failed"][0]["reason"]
+    # A disabled storage provider is a request-level safety failure, not a
+    # partial-success upload; it must fail before Material/Annotation commit.
+    assert response.status_code == 409, response.text
+    assert "UPLOAD_STORAGE_SOURCE_UNAVAILABLE" in response.text
     assert app_module.material_store(project["id"]).count() == 0
 
 

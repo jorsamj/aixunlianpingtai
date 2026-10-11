@@ -1,6 +1,7 @@
 import {canonicalTaskPhase, canonicalTaskStatus, isCanonicalTaskActive} from './task-runtime-truth.js';
 
 const SUCCESS_TASK_STATUSES = new Set(['SUCCEEDED', 'PARTIAL_SUCCESS']);
+const RESOURCE_CACHE_TTL_MS = 5 * 60 * 1000;
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, character => ({
@@ -40,16 +41,72 @@ function dateText(value) {
   return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString('zh-CN');
 }
 
-function abortableDelay(milliseconds, signal) {
-  return new Promise((resolve, reject) => {
-    if (signal.aborted) return reject(new DOMException('Aborted', 'AbortError'));
-    const timer = setTimeout(resolve, milliseconds);
-    signal.addEventListener('abort', () => {
-      clearTimeout(timer);
-      reject(new DOMException('Aborted', 'AbortError'));
-    }, {once: true});
-  });
+function discoveryScopeLabel(task) {
+  const scope = String(task.discovery_scope || '').trim().toLowerCase();
+  if (scope === 'full') return '全机（仅本地文件系统）';
+  if (scope === 'directory') return '指定目录';
+  if (scope === 'fast') return '指定环境快速检测';
+  if (scope === 'auto') return '自动检测';
+  return scope || '未返回';
 }
+
+function discoveryFailureMessage(task) {
+  const taskStatus = canonicalTaskStatus(task);
+  if (taskStatus === 'CANCELLED') return '任务已取消，扫描已停止；已完成的扫描计数仅用于诊断。';
+  const raw = String(task.error?.message || task.error || '').trim();
+  const normalized = raw.toLocaleLowerCase();
+  if (normalized.includes('requires at least one explicit root') || normalized.includes('no safe local scan roots')) {
+    return '当前未发现可安全扫描的本地文件系统根目录。网络盘和虚拟文件系统不会自动纳入扫描；请确认本机磁盘已正确挂载后重试。';
+  }
+  if (normalized.includes('permission') || normalized.includes('access is denied') || normalized.includes('permission denied')) {
+    return '资源检测因路径权限不足失败。请确认 Worker 对目标目录具有读取权限后重试；网络盘和虚拟文件系统不会因提权而自动纳入扫描。';
+  }
+  return '资源检测失败。请根据任务日志中的失败阶段与错误代码排查；如涉及路径访问，请确认目录存在且 Worker 具有读取权限后重试。';
+}
+
+function progressBody(task, kind) {
+  const metrics = task.metrics || task;
+  const environment = kind === 'environment';
+  const taskStatus = canonicalTaskStatus(task);
+  const roots = Array.isArray(task.scan_roots) ? task.scan_roots.filter(Boolean) : [];
+  const permissionErrors = Number(metrics.permission_errors) || 0;
+  const terminalMessage = taskStatus === 'FAILED' || taskStatus === 'CANCELLED' ? discoveryFailureMessage(task) : '';
+  const active = isCanonicalTaskActive(task);
+  const shape = [active ? 1 : 0, environment ? 'env' : 'model', roots.length, permissionErrors ? 1 : 0, terminalMessage ? 1 : 0].join(':');
+  return `<div class="rd-task" id="resourceDiscoveryTask" data-task-id="${escapeHtml(task.id || task.task_id || '')}" data-rd-shape="${shape}">
+    <div class="rd-task-state"><span data-rd-field="status" class="pill ${SUCCESS_TASK_STATUSES.has(taskStatus) ? 'ok' : taskStatus === 'FAILED' ? 'err' : taskStatus === 'CANCELLED' ? 'warn' : 'run'}">${escapeHtml(taskStatus || 'QUEUED')}</span><b data-rd-field="phase">${escapeHtml(canonicalTaskPhase(task) || '等待 Worker 领取')}</b></div>
+    ${active ? '<div class="rd-indeterminate"><i></i></div>' : ''}
+    <div class="rd-current"><span>扫描范围</span><b data-rd-field="scope">${escapeHtml(discoveryScopeLabel(task))}</b></div>
+    ${roots.length ? `<div class="rd-current"><span>实际扫描根目录（任务创建时已冻结，共 ${roots.length} 个）</span><code>${roots.map(root => escapeHtml(root)).join('<br>')}</code></div>` : ''}
+    <div class="rd-task-counts"><div><span>已扫描目录</span><b data-rd-field="scanned_dirs">${Number(metrics.scanned_dirs) || 0}</b></div>${environment ? `<div><span>Python 候选</span><b data-rd-field="python_candidates">${Number(metrics.python_candidates) || 0}</b></div><div><span>已验证环境</span><b data-rd-field="validated_environments">${Number(metrics.validated_environments) || 0}</b></div>` : `<div><span>发现模型</span><b data-rd-field="models_found">${Number(metrics.models_found) || 0}</b></div>`}<div><span>权限失败</span><b data-rd-field="permission_errors">${permissionErrors}</b></div></div>
+    <div class="rd-current"><span>当前路径</span><code data-rd-field="current_item">${escapeHtml(task.current_item || metrics.current_item || '等待扫描')}</code></div>
+    ${permissionErrors ? '<div class="hint">部分目录因权限不足已跳过；如果关键目录未被扫描，请为 Worker 补充只读权限后重试。</div>' : ''}
+    ${terminalMessage ? `<div class="error-box422"><b>${taskStatus === 'CANCELLED' ? '任务已取消' : '检测失败'}</b><span>${escapeHtml(terminalMessage)}</span></div>` : ''}
+    <div class="row end"><button class="btn" onclick="closeModal()">关闭</button></div>
+  </div>`;
+}
+
+export function patchResourceDiscoveryProgress(current, task, kind) {
+  if (!current) return false;
+  const holder = document.createElement('div');
+  holder.innerHTML = progressBody(task, kind).trim();
+  const next = holder.firstElementChild;
+  if (!next) return false;
+  if (current.dataset.rdShape !== next.dataset.rdShape) {
+    current.dataset.rdShape = next.dataset.rdShape || '';
+    current.innerHTML = next.innerHTML;
+    return true;
+  }
+  for (const nextField of next.querySelectorAll('[data-rd-field]')) {
+    const key = nextField.dataset.rdField;
+    const currentField = current.querySelector(`[data-rd-field="${key}"]`);
+    if (!currentField) continue;
+    currentField.textContent = nextField.textContent;
+    if (key === 'status') currentField.className = nextField.className;
+  }
+  return true;
+}
+
 
 export function installResourceDiscoveryRuntime(dependencies = {}) {
   if (window.ResourceDiscoveryRuntime?.installed) return window.ResourceDiscoveryRuntime;
@@ -59,21 +116,25 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
   const showModal = dependencies.modal;
   const refreshApplication = dependencies.refresh || (async () => {});
   const getPage = dependencies.getPage || (() => '');
-  if (typeof request !== 'function' || typeof showModal !== 'function') return null;
+  const registry = dependencies.pollRegistry || window.PollRegistryRuntime;
+  if (typeof request !== 'function' || typeof showModal !== 'function' || !registry?.startTimeout || !registry?.clear) return null;
 
-  const previousRenderResources = window.renderResources;
+  const renderBase = dependencies.renderBase || (() => window.renderResourceBasePage?.());
   const runtime = {
     installed: true,
     environments: [],
     activeEnvironment: {},
     environmentMeta: {},
     officialModels: [],
+    preparedModels: [],
     models: [],
     modelMeta: {},
     modelCursor: null,
     modelNextCursor: null,
     modelCursorStack: [],
     cacheGeneration: 0,
+    cacheLoadedAt: 0,
+    cacheRefreshPromise: null,
     pollControllers: new Set()
   };
 
@@ -100,9 +161,20 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
     return `<div class="rd-official-models"><b>官方基础模型</b>${runtime.officialModels.map(model => {
       const found = status(model.model_status) === 'FOUND' || Boolean(model.found);
       const failed = Boolean(model.download_error || model.error);
-      const text = found ? '已发现' : failed ? '下载失败' : model.downloadable ? '未下载 · 可自动下载' : '未发现';
+      const text = found ? '已发现' : failed ? '下载失败' : model.downloadable ? '未预置 · 请先上传' : '未发现';
       return `<span class="pill ${found ? 'ok' : failed ? 'err' : 'warn'}" title="${escapeHtml(model.note || model.download_error || model.error || '')}">${escapeHtml(model.value || model.label || '')} · ${text}</span>`;
     }).join('')}</div>`;
+  }
+
+  function preparedMotherModels() {
+    const rows = runtime.preparedModels;
+    const summary = rows.length
+      ? rows.map(model => `<article class="item"><div><b>${escapeHtml(model.name || model.label || '')}</b><div class="item-sub">${bytes(model.size_bytes)} · 已预置 · 可供首次训练及 GPU Agent 分发</div></div><span class="pill ok">已就绪</span></article>`).join('')
+      : '<div class="empty">尚未预置母模型。先将官方 YOLO11n/s/m 或可信自定义 .pt 权重下载到电脑，再从这里上传；训练任务不会自动从 GitHub 下载。</div>';
+    return `<div class="rd-cache-head"><div><b>训练母模型库</b><span>持久存储 · 只选择本机真实存在的 .pt · 上传后可用于 GPU 集群</span></div>
+        <div class="row"><input id="rdMotherModelFile" type="file" accept=".pt" style="display:none" onchange="uploadResourceMotherModel(this)">
+        <button class="btn primary small" onclick="document.getElementById('rdMotherModelFile')?.click()">上传母模型 .pt</button></div></div>
+        <div class="item-sub">仅上传可信来源权重。已同名的不同文件不会覆盖，上传结束前不会加入训练列表。</div><div class="card-list">${summary}</div>`;
   }
 
   function modelRows() {
@@ -114,6 +186,7 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
     const root = document.getElementById('resourceDiscoveryCache');
     if (!root) return;
     root.innerHTML = `<div class="rd-cache-head"><div><b>本机资源发现</b><span>读取上次成功缓存；刷新页面不会重新扫描全机。</span></div><button class="btn small" onclick="refreshResourceDiscoveryCache()">刷新缓存</button></div>
+      <section class="rd-cache-section" data-rd-prepared-models>${preparedMotherModels()}</section>
       <section class="rd-cache-section"><header><div><b>Ultralytics 环境</b><span>上次检测：${escapeHtml(dateText(runtime.environmentMeta.updated_at))} · 来源 ${escapeHtml(runtime.environmentMeta.scan_id || '历史配置')}</span></div><button class="btn small" onclick="deepDetectResourceEnvironment()">全机深度检测</button></header>${environmentCards()}${officialModelRows()}</section>
       <section class="rd-cache-section"><header><div><b>本机模型</b><span>共 ${Number(runtime.modelMeta.total) || 0} 个 · 上次检测：${escapeHtml(dateText(runtime.modelMeta.updated_at))} · 来源 ${escapeHtml(runtime.modelMeta.scan_id || '历史缓存')}</span></div></header>${modelRows()}<footer class="rd-pager"><button class="btn mini" ${runtime.modelCursorStack.length ? '' : 'disabled'} onclick="resourceModelsPage(-1)">上一页</button><span>本页 ${runtime.models.length} 个</span><button class="btn mini" ${runtime.modelNextCursor ? '' : 'disabled'} onclick="resourceModelsPage(1)">下一页</button></footer></section>`;
   }
@@ -129,6 +202,7 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
     if (activePath && !runtime.environments.some(candidate => String(candidate.python_path || candidate.python_executable || '').toLocaleLowerCase() === activePath)) runtime.environments.unshift(runtime.activeEnvironment);
     runtime.environmentMeta = environment || {};
     runtime.officialModels = (baseModels?.items || []).filter(model => model.source === 'official');
+    runtime.preparedModels = (baseModels?.items || []).filter(model => model.source === 'preinstalled' && model.model_status === 'FOUND');
   }
 
   async function loadModelCache(cursor = runtime.modelCursor) {
@@ -141,18 +215,32 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
     runtime.modelNextCursor = response?.next_cursor || null;
   }
 
-  async function refreshCache(resetModels = true) {
+  async function refreshCache(resetModels = true, {force = false} = {}) {
+    const age = Date.now() - Number(runtime.cacheLoadedAt || 0);
+    if (!force && runtime.cacheLoadedAt > 0 && age >= 0 && age < RESOURCE_CACHE_TTL_MS) {
+      if (getPage() === '训练资源') renderCachePanel();
+      return runtime;
+    }
+    if (runtime.cacheRefreshPromise) return runtime.cacheRefreshPromise;
     const generation = ++runtime.cacheGeneration;
     if (resetModels) {
       runtime.modelCursor = null;
       runtime.modelCursorStack = [];
     }
-    try {
-      await Promise.all([loadEnvironmentCache(), loadModelCache(runtime.modelCursor)]);
-      if (generation === runtime.cacheGeneration && getPage() === '训练资源') renderCachePanel();
-    } catch (error) {
-      if (generation === runtime.cacheGeneration) notify(error.message || '读取本机资源缓存失败');
-    }
+    runtime.cacheRefreshPromise = (async () => {
+      try {
+        await Promise.all([loadEnvironmentCache(), loadModelCache(runtime.modelCursor)]);
+        runtime.cacheLoadedAt = Date.now();
+        if (generation === runtime.cacheGeneration && getPage() === '训练资源') renderCachePanel();
+        return runtime;
+      } catch (error) {
+        if (generation === runtime.cacheGeneration) notify(error.message || '读取本机资源缓存失败');
+        return null;
+      } finally {
+        runtime.cacheRefreshPromise = null;
+      }
+    })();
+    return runtime.cacheRefreshPromise;
   }
 
   function enhanceResourcePage() {
@@ -174,49 +262,6 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
     renderCachePanel();
   }
 
-  function discoveryScopeLabel(task) {
-    const scope = String(task.discovery_scope || '').trim().toLowerCase();
-    if (scope === 'full') return '全机（仅本地文件系统）';
-    if (scope === 'directory') return '指定目录';
-    if (scope === 'fast') return '指定环境快速检测';
-    if (scope === 'auto') return '自动检测';
-    return scope || '未返回';
-  }
-
-  function discoveryFailureMessage(task) {
-    const taskStatus = canonicalTaskStatus(task);
-    if (taskStatus === 'CANCELLED') return '任务已取消，扫描已停止；已完成的扫描计数仅用于诊断。';
-    const raw = String(task.error?.message || task.error || '').trim();
-    const normalized = raw.toLocaleLowerCase();
-    if (normalized.includes('requires at least one explicit root') || normalized.includes('no safe local scan roots')) {
-      return '当前未发现可安全扫描的本地文件系统根目录。网络盘和虚拟文件系统不会自动纳入扫描；请确认本机磁盘已正确挂载后重试。';
-    }
-    if (normalized.includes('permission') || normalized.includes('access is denied') || normalized.includes('permission denied')) {
-      return '资源检测因路径权限不足失败。请确认 Worker 对目标目录具有读取权限后重试；网络盘和虚拟文件系统不会因提权而自动纳入扫描。';
-    }
-    return '资源检测失败。请根据任务日志中的失败阶段与错误代码排查；如涉及路径访问，请确认目录存在且 Worker 具有读取权限后重试。';
-  }
-
-  function progressBody(task, kind) {
-    const metrics = task.metrics || task;
-    const environment = kind === 'environment';
-    const taskStatus = canonicalTaskStatus(task);
-    const roots = Array.isArray(task.scan_roots) ? task.scan_roots.filter(Boolean) : [];
-    const permissionErrors = Number(metrics.permission_errors) || 0;
-    const terminalMessage = taskStatus === 'FAILED' || taskStatus === 'CANCELLED' ? discoveryFailureMessage(task) : '';
-    return `<div class="rd-task" id="resourceDiscoveryTask" data-task-id="${escapeHtml(task.id || task.task_id || '')}">
-      <div class="rd-task-state"><span class="pill ${SUCCESS_TASK_STATUSES.has(taskStatus) ? 'ok' : taskStatus === 'FAILED' ? 'err' : taskStatus === 'CANCELLED' ? 'warn' : 'run'}">${escapeHtml(taskStatus || 'QUEUED')}</span><b>${escapeHtml(canonicalTaskPhase(task) || '等待 Worker 领取')}</b></div>
-      ${isCanonicalTaskActive(task) ? '<div class="rd-indeterminate"><i></i></div>' : ''}
-      <div class="rd-current"><span>扫描范围</span><b>${escapeHtml(discoveryScopeLabel(task))}</b></div>
-      ${roots.length ? `<div class="rd-current"><span>实际扫描根目录（任务创建时已冻结，共 ${roots.length} 个）</span><code>${roots.map(root => escapeHtml(root)).join('<br>')}</code></div>` : ''}
-      <div class="rd-task-counts"><div><span>已扫描目录</span><b>${Number(metrics.scanned_dirs) || 0}</b></div>${environment ? `<div><span>Python 候选</span><b>${Number(metrics.python_candidates) || 0}</b></div><div><span>已验证环境</span><b>${Number(metrics.validated_environments) || 0}</b></div>` : `<div><span>发现模型</span><b>${Number(metrics.models_found) || 0}</b></div>`}<div><span>权限失败</span><b>${permissionErrors}</b></div></div>
-      <div class="rd-current"><span>当前路径</span><code>${escapeHtml(task.current_item || metrics.current_item || '等待扫描')}</code></div>
-      ${permissionErrors ? '<div class="hint">部分目录因权限不足已跳过；如果关键目录未被扫描，请为 Worker 补充只读权限后重试。</div>' : ''}
-      ${terminalMessage ? `<div class="error-box422"><b>${taskStatus === 'CANCELLED' ? '任务已取消' : '检测失败'}</b><span>${escapeHtml(terminalMessage)}</span></div>` : ''}
-      <div class="row end"><button class="btn" onclick="closeModal()">关闭</button></div>
-    </div>`;
-  }
-
   function watchModalClose(taskId, controller) {
     const observer = new MutationObserver(() => {
       const current = document.getElementById('resourceDiscoveryTask');
@@ -230,40 +275,60 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
     let task = initial;
     const taskId = task.id || task.task_id;
     if (!taskId) throw new Error('后台任务未返回 task_id');
+    const pollKey = `resource-discovery:${taskId}`;
     showModal(kind === 'environment' ? '检测本机 Ultralytics 环境' : '扫描本机模型', progressBody(task, kind), true);
     const root = document.getElementById('resourceDiscoveryTask');
     const controller = new AbortController();
     runtime.pollControllers.add(controller);
     if (root) watchModalClose(taskId, controller);
-    try {
-      while (!controller.signal.aborted && isCanonicalTaskActive(task)) {
-        await abortableDelay(1100, controller.signal);
-        task = await request(`/api/resource-discovery/tasks/${encodeURIComponent(taskId)}`, {signal: controller.signal});
-        const live = document.getElementById('resourceDiscoveryTask');
-        if (!live || live.dataset.taskId !== String(taskId)) {
-          controller.abort();
-          break;
-        }
-        live.outerHTML = progressBody(task, kind);
-      }
-      if (!controller.signal.aborted) {
+
+    return new Promise(resolve => {
+      let settled = false;
+      const cleanup = value => {
+        if (settled) return;
+        settled = true;
+        registry.clear(pollKey);
+        runtime.pollControllers.delete(controller);
+        if (!controller.signal.aborted) controller.abort();
+        resolve(value);
+      };
+      const finish = async () => {
+        if (controller.signal.aborted) return cleanup(null);
         if (SUCCESS_TASK_STATUSES.has(canonicalTaskStatus(task))) {
-          await refreshCache(true);
+          await refreshCache(true, {force: true});
           notify(kind === 'environment' ? '环境检测完成，请确认要使用的环境' : '模型扫描完成');
         } else if (canonicalTaskStatus(task) === 'FAILED') {
           notify(discoveryFailureMessage(task), 'error');
         } else if (canonicalTaskStatus(task) === 'CANCELLED') {
           notify(discoveryFailureMessage(task), 'info');
         }
-      }
-      return task;
-    } catch (error) {
-      if (error?.name !== 'AbortError') notify(error.message || '读取检测进度失败');
-      return null;
-    } finally {
-      runtime.pollControllers.delete(controller);
-      controller.abort();
-    }
+        cleanup(task);
+      };
+      const tick = async () => {
+        if (controller.signal.aborted) return cleanup(null);
+        try {
+          task = await request(`/api/resource-discovery/tasks/${encodeURIComponent(taskId)}`, {signal: controller.signal});
+          const live = document.getElementById('resourceDiscoveryTask');
+          if (!live || live.dataset.taskId !== String(taskId)) return cleanup(null);
+          patchResourceDiscoveryProgress(live, task, kind);
+          if (isCanonicalTaskActive(task)) registry.startTimeout(pollKey, '训练资源', tick, 1100);
+          else await finish();
+        } catch (error) {
+          if (error?.name !== 'AbortError') notify(error.message || '读取检测进度失败');
+          cleanup(null);
+        }
+      };
+      controller.signal.addEventListener('abort', () => {
+        registry.clear(pollKey);
+        runtime.pollControllers.delete(controller);
+        if (!settled) {
+          settled = true;
+          resolve(null);
+        }
+      }, {once: true});
+      if (isCanonicalTaskActive(task)) registry.startTimeout(pollKey, '训练资源', tick, 1100);
+      else void finish();
+    });
   }
 
   async function createTask(endpoint, payload, kind) {
@@ -279,6 +344,32 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
   runtime.detectEnvironment = ({scope = 'auto', roots = []} = {}) => createTask('/api/ultralytics_env/detect', {scope, roots}, 'environment');
   runtime.scanModels = ({scope = 'directory', roots = []} = {}) => createTask('/api/local_models/scan', {scope, roots}, 'models');
   runtime.refreshCache = refreshCache;
+  runtime.uploadMotherModel = async input => {
+    const file = input?.files?.[0];
+    if (!file) return null;
+    if (!/\.pt$/i.test(file.name)) { input.value=''; notify('请选择 .pt 权重文件'); return null; }
+    if (file.size > 1024 * 1024 * 1024) { input.value=''; notify('母模型最大允许 1 GiB'); return null; }
+    const form = new FormData();
+    form.append('file', file);
+    input.disabled = true;
+    try {
+      notify('母模型正在上传并校验，请勿重复提交');
+      const result = await request('/api/v63/base-models/upload', {method:'POST',body:form});
+      if (result?.ok !== true || result?.model_status !== 'FOUND') throw new Error('服务器未确认母模型预置成功');
+      runtime.cacheLoadedAt = 0;
+      await refreshCache(true, {force:true});
+      await refreshApplication();
+      notify(`母模型 ${result.name} 已预置，可在创建训练任务时选择`);
+      return result;
+    } catch (error) {
+      notify(error?.message || '上传母模型失败');
+      return null;
+    } finally {
+      input.disabled = false;
+      input.value = '';
+    }
+  };
+  window.uploadResourceMotherModel = input => runtime.uploadMotherModel(input);
 
   window.quickUltraDetect = () => runtime.detectEnvironment({scope: 'auto'});
   window.deepDetectResourceEnvironment = () => runtime.detectEnvironment({scope: 'full'});
@@ -292,15 +383,16 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
     return runtime.scanModels({scope: 'directory', roots: [root]});
   };
   window.scanAllModels = () => runtime.scanModels({scope: 'full'});
-  window.refreshResourceDiscoveryCache = () => refreshCache(true);
+  window.refreshResourceDiscoveryCache = () => refreshCache(true, {force: true});
   window.selectResourceEnvironment = async index => {
     const candidate = runtime.environments[Number(index)];
     if (!candidate || status(candidate.status) !== 'AVAILABLE') return notify('该环境不可用，无法启用');
     try {
       await request('/api/ultralytics_env/select', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({python_path: candidate.python_path || candidate.python_executable, root: candidate.root || '', yolo_path: candidate.yolo_path || ''})});
+      window.invalidateTrainingDeviceCacheV3?.();
       notify('已启用所选 Ultralytics 环境');
       await refreshApplication();
-      await refreshCache(true);
+      await refreshCache(true, {force: true});
     } catch (error) {
       notify(error.message || '启用环境失败');
     }
@@ -321,9 +413,9 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
   };
 
   window.renderResources = function resourceDiscoveryRenderResources() {
-    previousRenderResources?.();
+    renderBase?.();
     enhanceResourcePage();
-    refreshCache(true);
+    void refreshCache(true);
   };
   runtime.render = window.renderResources;
   window.ResourceDiscoveryRuntime = runtime;

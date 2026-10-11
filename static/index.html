@@ -5,19 +5,20 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <meta name="theme-color" content="#f6f8fc" />
   <title>畅联云算法训练</title>
-  <link rel="stylesheet" href="/static/styles.css?v=42.24.0" />
-  <link rel="stylesheet" href="/static/training-create-modal.css?v=422400" />
+  <link rel="stylesheet" href="/static/styles.css?v=42.24.356" />
+  <link rel="stylesheet" href="/static/training-create-modal.css?v=4226353" />
+  <link rel="stylesheet" href="/static/service-nodes.css?v=422533" />
+  <link rel="stylesheet" href="/static/auth.css?v=4226348" />
+  <link rel="stylesheet" href="/static/overview-tabs.css?v=4226355" />
+  <link rel="stylesheet" href="/static/prison-night-inspection-entry.css?v=20261011a" />
 </head>
 <body>
   <div id="toast" class="toast hidden"></div>
   <div id="sideBackdrop" class="side-backdrop" onclick="toggleMobileSidebarV37(false)"></div>
   <aside class="side" id="sidebar">
-    <div class="brand">
-      <div class="brand-logo">CL</div>
-      <div class="brand-text">
-        <div class="brand-name">畅联云算法训练</div>
-        <div class="brand-sub">VISION TRAINING STUDIO</div>
-      </div>
+    <div class="brand brand-company" aria-label="贵州中南交通科技有限公司">
+      <img class="brand-company-image" src="/static/company-logo.png?v=4226348" width="825" height="96" alt="贵州高速 · 贵州中南交通科技有限公司" />
+      <span class="brand-company-symbol" aria-hidden="true"></span>
     </div>
     <nav id="nav" class="nav"></nav>
     <button class="side-collapse" type="button" onclick="toggleSidebarV37()" title="收起/展开菜单"><span>‹</span><b>收起菜单</b></button>
@@ -27,6 +28,7 @@
     <header class="top">
       <div class="top-left">
         <button class="menu-toggle" type="button" onclick="toggleMobileSidebarV37()" aria-label="打开菜单">☰</button>
+        <button id="aiFoundationMenuToggle" class="ai-foundation-menu-toggle" type="button" onclick="toggleSidebarV37()" aria-label="展开或收起平台菜单" title="展开或收起平台菜单"></button>
         <div class="page-heading">
           <div class="crumb" id="crumb">工作台</div>
           <div class="title-row"><h1 id="title">工作台</h1><span id="pageDesc" class="page-desc"></span></div>
@@ -34,8 +36,13 @@
       </div>
       <div class="top-right">
         <div id="projectBadge" class="project-badge"><span class="project-dot"></span><span>默认空间</span></div>
-        <span id="versionBadge" class="version-badge">v42.24.0</span>
+        <span id="versionBadge" class="version-badge">v—</span>
+        <div class="auth-user-chip" id="authIdentity" title="当前畅联云登录账号">
+          <span class="auth-user-avatar">CL</span>
+          <span class="auth-user-copy"><b id="authUsername">畅联云用户</b><small id="authSessionLife">已登录</small></span>
+        </div>
         <button class="btn ghost small" id="refreshBtn">刷新</button>
+        <button class="btn ghost small auth-logout-btn" id="logoutBtn" type="button" onclick="window.logoutChangLianAuth?.()">退出</button>
       </div>
     </header>
     <section id="summary" class="summary"></section>
@@ -48,13 +55,15 @@
       <div id="modalBody" class="modal-body"></div>
     </div>
   </div>
+  <script src="/static/browser-runtime.js?v=422600"></script>
+  <script src="/static/auth-session.js?v=422601"></script>
   <script src="/static/material-pagination-bootstrap.js?v=42.24.0"></script>
-  <script src="/static/app.js?v=42.25.99"></script>
-  <script type="module" src="/static/main.mjs?v=42.25.99"></script>
-  <script type="module" src="/static/material-upload-bootstrap.mjs?v=422529"></script>
-  <script type="module" src="/static/zip-import-bootstrap.mjs?v=422530"></script>
-  <script type="module" src="/static/modules/storage-cache-runtime.js?v=422527"></script>
-  <script type="module" src="/static/modules/training-task-visibility-runtime.js?v=422523"></script>
-  <script type="module" src="/static/training-checkpoint-resume-bootstrap.mjs?v=422531"></script>
+  <script src="/static/app.js?v=42.25.362"></script>
+  <script type="module" src="/static/main.mjs?v=42.25.363"></script>
+  <script type="module" src="/static/material-upload-bootstrap.mjs?v=422533"></script>
+  <script type="module" src="/static/zip-import-bootstrap.mjs?v=4226357"></script>
+  <script type="module" src="/static/modules/storage-cache-runtime.js?v=422540"></script>
+  <script type="module" src="/static/training-checkpoint-resume-bootstrap.mjs?v=422541"></script>
+  <script type="module" src="/static/service-node-bootstrap.mjs?v=422550"></script>
 </body>
 </html>

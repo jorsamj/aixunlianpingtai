@@ -5,19 +5,25 @@ on:
   push:
     branches:
       - refactor/frontend-runtime-stabilization
+      - feature/external-algorithm-publishing
     paths:
       - .github/workflows/material-annotation-atomicity.yml
       - app.py
       - platform_core/annotation_repository.py
+      - platform_core/labels.py
+      - platform_core/annotations.py
       - platform_core/material_repository.py
       - platform_core/material_repository_batch.py
       - platform_core/storage/source_repository.py
       - tests/api/test_annotation_sqlite_dataset_delete_atomicity.py
+      - tests/unit/test_annotation_repository_scope.py
       - tests/api/test_material_batching.py
       - tests/api/test_material_repository_connection_lifecycle.py
       - tests/api/test_storage_source_repository_connection_lifecycle.py
       - tests/api/test_material_selection_atomicity.py
       - tests/api/test_annotation_flow.py
+      - tests/api/test_legacy_annotated_import_guard.py
+      - tests/unit/test_annotations.py
       - tests/api/test_v19_import_scalability.py
       - tests/api/test_v19_import_failure_rollback.py
       - tests/api/test_v19_job_atomic_persistence.py
@@ -47,15 +53,18 @@ jobs:
           python -m py_compile \
             app.py \
             platform_core/annotation_repository.py \
+            platform_core/labels.py \
+            platform_core/annotations.py \
             platform_core/material_repository.py \
             platform_core/material_repository_batch.py \
             platform_core/storage/source_repository.py
-          test "$(tr -d '\r\n' < VERSION.txt)" = "42.24.0"
+          python -m platform_core.build_identity --check-version-file VERSION.txt
           git diff --check
       - name: Annotation SQLite and material atomicity contracts
         run: >-
           python -m pytest -q
           tests/api/test_annotation_sqlite_dataset_delete_atomicity.py
+          tests/unit/test_annotation_repository_scope.py
           tests/api/test_material_batching.py
           tests/api/test_material_repository_connection_lifecycle.py
           tests/api/test_storage_source_repository_connection_lifecycle.py
@@ -67,10 +76,20 @@ jobs:
           tests/api/test_zip_processing_p2a_annotation_connections.py
           tests/api/test_zip_processing_p2b_single_final_annotation.py
           tests/api/test_zip_processing_p2c_structured_single_final_annotation.py
+      - name: Canonical GT governance guard
+        shell: bash
+        run: |
+          grep -Fq 'with label_governance_fence(self.project_path):' platform_core/annotation_repository.py
+          grep -Fq '_BACKUP_REFERENCE_CTE' platform_core/annotation_repository.py
+          grep -Fq 'AnnotationLabelStateError' platform_core/annotation_repository.py
+          grep -Fq 'test_annotation_upsert_rechecks_active_labels_after_governance_wait' tests/unit/test_annotation_repository_scope.py
+          grep -Fq 'test_delete_backup_remains_label_reference_and_restore_fails_closed' tests/unit/test_annotation_repository_scope.py
       - name: Annotation and ZIP import regressions
         run: >-
           python -m pytest -q
+          tests/unit/test_annotations.py
           tests/api/test_annotation_flow.py
+          tests/api/test_legacy_annotated_import_guard.py
           tests/api/test_v19_import_scalability.py
           tests/api/test_storage_sources.py
           tests/api/test_storage_upload.py

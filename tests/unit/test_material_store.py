@@ -100,6 +100,24 @@ def test_read_reuses_index_until_images_file_changes(tmp_path, monkeypatch):
     assert calls == 2
 
 
+def test_read_detects_same_metadata_same_size_external_rewrite(tmp_path, monkeypatch):
+    path = tmp_path / "images.json"
+    first = json.dumps([{"id": "one", "filename": "one.jpg"}])
+    second = json.dumps([{"id": "two", "filename": "two.jpg"}])
+    assert len(first.encode("utf-8")) == len(second.encode("utf-8"))
+    path.write_text(first, encoding="utf-8")
+
+    fixed_metadata = (1, 1, len(first.encode("utf-8")), 1, 1)
+    monkeypatch.setattr(material_store_module, "_file_metadata", lambda _path: fixed_metadata)
+
+    store = MaterialStore(path)
+    assert store.read().rows == [{"id": "one", "filename": "one.jpg"}]
+
+    path.write_text(second, encoding="utf-8")
+
+    assert store.read().rows == [{"id": "two", "filename": "two.jpg"}]
+
+
 def test_count_tracks_cached_and_external_rows(tmp_path):
     path = tmp_path / "images.json"
     path.write_text(json.dumps([{"id": "one"}]), encoding="utf-8")

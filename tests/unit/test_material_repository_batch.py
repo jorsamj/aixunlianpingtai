@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from platform_core.material_repository import MaterialRepository
 
 
@@ -52,3 +54,30 @@ def test_legacy_mutate_chunks_large_deletions(tmp_path):
 
     assert deleted == 1200
     assert repository.count() == 100
+
+
+def test_cleaning_projection_fields_are_batch_mutable_but_unknown_fields_still_fail(tmp_path):
+    repository = MaterialRepository(tmp_path)
+    row = material(1)
+    repository.upsert(row)
+
+    changed = repository.patch_many(
+        [row["id"]],
+        {
+            "processing_status": "processed",
+            "cleaned_at": "2026-09-26T12:00:00Z",
+            "clean_skipped": True,
+            "clean_decision": "skipped",
+            "clean_decision_at": "2026-09-26T12:00:00Z",
+            "clean_task_id": "clean-task-1",
+        },
+    )
+
+    assert changed == 1
+    saved = repository.get(row["id"])
+    assert saved["clean_task_id"] == "clean-task-1"
+    assert saved["clean_skipped"] is True
+    assert saved["clean_decision"] == "skipped"
+
+    with pytest.raises(ValueError, match="material fields are not mutable"):
+        repository.patch_many([row["id"]], {"unexpected_projection_field": True})

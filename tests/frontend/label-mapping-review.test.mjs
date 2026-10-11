@@ -1,0 +1,163 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+
+import {
+  bulkSetLabelMapping,
+  buildManualLabelMapping,
+  createLabelMappingReview,
+  filterCanonicalLabels,
+  labelMappingReviewPage,
+  labelMappingReviewSummary,
+  labelSampleOverlay,
+  reconcileLabelMappingReview,
+  setLabelMapping,
+  setLabelMappingReviewPage,
+  setLabelMappingReviewSearch,
+  setLabelMappingSelected,
+  applyExactLabelCodeMatches,
+  planOriginalLabelMappings,
+} from '../../static/modules/label-mapping-review.js';
+
+function classes(count) {
+  return Array.from({length: count}, (_, index) => ({
+    class_id: String(index),
+    name: 'external_' + String(index).padStart(5, '0'),
+    image_count: 2,
+    box_count: 3,
+  }));
+}
+
+test('10k external labels render in bounded 50-row pages', () => {
+  const review = createLabelMappingReview(classes(10000));
+  let page = labelMappingReviewPage(review);
+  assert.equal(page.rows.length, 50);
+  assert.equal(page.total, 10000);
+  assert.equal(page.pageCount, 200);
+  setLabelMappingReviewPage(review, 200);
+  page = labelMappingReviewPage(review);
+  assert.equal(page.rows.length, 50);
+  assert.equal(page.rows[0].classId, '9950');
+});
+
+test('search changes only the view and preserves mappings outside the current page', () => {
+  const review = createLabelMappingReview(classes(300));
+  setLabelMapping(review, '299', 'smoke');
+  setLabelMappingReviewSearch(review, 'external_00299');
+  const page = labelMappingReviewPage(review);
+  assert.equal(page.rows.length, 1);
+  assert.equal(page.rows[0].classId, '299');
+  assert.equal(page.rows[0].code, 'smoke');
+  setLabelMappingReviewSearch(review, '');
+  assert.equal(labelMappingReviewSummary(review).mapped, 1);
+});
+
+test('bulk mapping applies only to explicitly checked external labels', () => {
+  const review = createLabelMappingReview(classes(5));
+  setLabelMappingSelected(review, '1', true);
+  setLabelMappingSelected(review, '3', true);
+  bulkSetLabelMapping(review, 'smoke');
+  assert.deepEqual(review.mapping, {'1': 'smoke', '3': 'smoke'});
+  assert.equal(labelMappingReviewSummary(review).selected, 0);
+});
+
+test('confirmation remains blocked until every external label is manually mapped', () => {
+  const review = createLabelMappingReview(classes(2));
+  setLabelMapping(review, '0', 'helmet');
+  assert.throws(() => buildManualLabelMapping(review), /1 个外部标签未映射/);
+  setLabelMapping(review, '1', 'helmet');
+  assert.deepEqual(buildManualLabelMapping(review), {'0': 'helmet', '1': 'helmet'});
+});
+
+test('reconcile preserves user decisions but never creates decisions for new external labels', () => {
+  let review = createLabelMappingReview(classes(2));
+  setLabelMapping(review, '0', 'helmet');
+  review = reconcileLabelMappingReview(review, classes(3));
+  assert.equal(review.mapping['0'], 'helmet');
+  assert.equal(review.mapping['2'], undefined);
+  assert.equal(labelMappingReviewSummary(review).unmapped, 2);
+});
+
+test('canonical label search is factual filtering and keeps already selected codes visible', () => {
+  const labels = [
+    {code: 'helmet', display_name: '安全头盔', status: 'active'},
+    {code: 'smoke', display_name: '烟雾', aliases: ['抽烟'], status: 'active'},
+    {code: 'old', display_name: '旧类', status: 'inactive'},
+  ];
+  assert.deepEqual(filterCanonicalLabels(labels, '烟').map(row => row.code), ['smoke']);
+  assert.deepEqual(filterCanonicalLabels(labels, 'nomatch', ['helmet']).map(row => row.code), ['helmet']);
+  assert.equal(filterCanonicalLabels(labels, '').some(row => row.code === 'old'), false);
+});
+
+
+test('sample overlay clamps normalized boxes to the visible image', () => {
+  assert.deepEqual(labelSampleOverlay({cx:0.5,cy:0.5,w:0.4,h:0.2}), {
+    left:30, top:40, width:40, height:20,
+  });
+  assert.deepEqual(labelSampleOverlay({cx:0.05,cy:0.05,w:0.2,h:0.2}), {
+    left:0, top:0, width:15, height:15,
+  });
+});
+
+test('changing ZIP review page size preserves manual choices and selected classes across pages',()=>{
+  const review=createLabelMappingReview(classes(250));
+  setLabelMapping(review,'149','helmet');
+  setLabelMappingSelected(review,'149',true);
+  review.pageSize=20;
+  setLabelMappingReviewPage(review,8);
+  let page=labelMappingReviewPage(review);
+  assert.equal(page.page,8);
+  assert.equal(page.rows[9].classId,'149');
+  assert.equal(page.rows[9].code,'helmet');
+  assert.equal(page.rows[9].selected,true);
+  review.pageSize=100;
+  review.page=1;
+  page=labelMappingReviewPage(review);
+  assert.equal(page.pageCount,3);
+  setLabelMappingReviewPage(review,2);
+  page=labelMappingReviewPage(review);
+  assert.equal(page.rows[49].classId,'149');
+  assert.equal(page.rows[49].code,'helmet');
+  assert.equal(page.rows[49].selected,true);
+  assert.equal(labelMappingReviewSummary(review).mapped,1);
+});
+
+test('exact English code matching reuses active canonical label only',()=>{
+ const review=createLabelMappingReview([{class_id:'0',name:'smoke'},{class_id:'1',name:'Smoke2'},{class_id:'2',name:'旧标签'},{class_id:'3',name:'helmet'}]);
+ const count=applyExactLabelCodeMatches(review,[{code:'smoke',status:'active'},{code:'helmet',status:'disabled'}]);
+ assert.equal(count,1);assert.deepEqual(review.mapping,{'0':'smoke'});
+ assert.throws(()=>buildManualLabelMapping(review),/3 个外部标签未映射/);
+});
+
+test('one-click source code preview separates existing, create and unsafe labels across every page',()=>{
+  const review=createLabelMappingReview([
+    {class_id:'0',name:'smoke'},{class_id:'1',name:'helmet'},
+    {class_id:'2',name:'安全帽'},{class_id:'3',name:'class_0'},
+    ...classes(130),
+  ],{pageSize:10});
+  setLabelMapping(review,'5','approved');
+  const plan=planOriginalLabelMappings(review,[{code:'smoke',status:'active'}]);
+  assert.deepEqual(plan.reuse.map(x=>x.classId),['0']);
+  assert.equal(plan.create.some(x=>x.classId==='1'),true);
+  assert.deepEqual(plan.manual.map(x=>x.classId),['2','3']);
+  assert.equal(plan.preserved.some(x=>x.classId==='5'),true);
+  assert.equal(plan.total,130);
+  assert.equal(labelMappingReviewSummary(review).mapped,1);
+  assert.equal(plan.create.some(x=>x.classId==='129'),true);
+});
+test('one-click plan cannot overwrite manually combined source labels',()=>{
+  const review=createLabelMappingReview([{class_id:'0',name:'helmet'},{class_id:'1',name:'person'}]);
+  setLabelMapping(review,'0','safetyhelmet');
+  setLabelMapping(review,'1','safetyhelmet');
+  const plan=planOriginalLabelMappings(review,[]);
+  assert.equal(plan.preserved.length,2);
+  assert.equal(plan.create.length,0);
+  assert.deepEqual(buildManualLabelMapping(review),{'0':'safetyhelmet','1':'safetyhelmet'});
+});
+
+test('placeholder source class_0 is never auto-bound even when a same-name platform code exists',()=>{
+  const review=createLabelMappingReview([{class_id:'0',name:'class_0'},{class_id:'1',name:'helmet'}]);
+  const matched=applyExactLabelCodeMatches(review,[{code:'class_0',status:'active'},{code:'helmet',status:'active'}]);
+  assert.equal(matched,1);
+  assert.equal(review.mapping['0'],undefined);
+  assert.equal(review.mapping['1'],'helmet');
+});

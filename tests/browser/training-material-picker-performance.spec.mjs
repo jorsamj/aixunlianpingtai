@@ -7,9 +7,13 @@ function material(index, page = 1) {
   return {
     id,
     filename: `${id}.jpg`,
-    labels: index % 2 ? ['person'] : ['smoke'],
-    annotated: true,
-    box_count: 1,
+    labels: index === 59 ? [] : (index % 2 ? ['person'] : ['smoke']),
+    annotated: index !== 59,
+    box_count: index === 59 ? 0 : 1,
+    width: 400,
+    height: 200,
+    annotation_state: index === 59 ? 'unannotated' : 'annotated',
+    boxes: index === 59 ? [] : [{id: `box-${id}`, label: index % 2 ? 'person' : 'smoke', x1: 40, y1: 20, x2: 200, y2: 100}],
     processing_status: 'processed',
     thumbnail_url: `/thumb/${id}.png`,
     content_url: `/full/${id}.png`,
@@ -23,7 +27,8 @@ test('training material picker opens immediately, renders larger previews, and p
   await page.goto('/');
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
   await expect.poll(async () => page.evaluate(() => window.TrainingMaterialPickerRuntime?.build || null))
-    .toBe('training-material-picker-runtime-422504');
+    .toBe('training-material-picker-runtime-422506');
+  await expect.poll(async () => page.evaluate(() => state.uiReady === true)).toBe(true);
 
   const projectId = await page.evaluate(() => state.project?.id);
   expect(projectId).toBeTruthy();
@@ -44,22 +49,29 @@ test('training material picker opens immediately, renders larger previews, and p
   await page.route('**/full/*.png', route => route.fulfill({status: 200, contentType: 'image/png', body: PIXEL}));
   await page.route(`**/api/v62/projects/${encoded}/training-materials?*`, async route => {
     const url = new URL(route.request().url());
-    const cursor = url.searchParams.get('cursor');
+    const requestedPage = Number(url.searchParams.get('page') || 1);
+    const pageSize = Number(url.searchParams.get('page_size') || 60);
     const query = url.searchParams.get('query') || '';
-    const isSecond = cursor === 'page-2';
-    if (!cursor && !query && firstPageHeld) {
+    if (requestedPage === 1 && !query && firstPageHeld) {
       firstPageHeld = false;
       await firstPageGate;
     }
-    const rows = Array.from({length: query ? 8 : 60}, (_, index) => material(index, isSecond ? 2 : 1));
+    const total = query ? 8 : 10_000;
+    const totalPages = Math.ceil(total / pageSize);
+    const rows = Array.from({length: query ? 8 : pageSize}, (_, index) => material(index, requestedPage));
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({
         items: rows,
-        total: query ? 8 : 10_000,
-        limit: 60,
-        next_cursor: query || isSecond ? null : 'page-2',
+        total,
+        page: requestedPage,
+        page_size: pageSize,
+        total_pages: totalPages,
+        has_previous: requestedPage > 1,
+        has_next: requestedPage < totalPages,
+        limit: pageSize,
+        next_cursor: null,
         repository_revision: 88,
       }),
     });
@@ -103,6 +115,13 @@ test('training material picker opens immediately, renders larger previews, and p
   const firstImage = firstCard.locator('img');
   const ratio = await firstImage.evaluate(element => getComputedStyle(element).aspectRatio);
   expect(ratio).toContain('4');
+  expect(await firstImage.evaluate(element => getComputedStyle(element).objectFit)).toBe('contain');
+  await expect(firstCard.locator('svg.train-v3-box-layer')).toHaveAttribute('viewBox', '0 0 400 200');
+  await expect(firstCard.locator('svg.train-v3-box-layer rect[data-label="smoke"]')).toHaveAttribute('x', '40');
+  await expect(firstCard.locator('.train-v3-annotation-state[data-annotation-state="annotated"]')).toContainText('已标注 · 1 框');
+  const pendingCard = page.locator('[data-material-id="picker-1-059"]');
+  await expect(pendingCard.locator('.train-v3-annotation-state[data-annotation-state="unannotated"]')).toContainText('已清洗 · 待标注');
+  await expect(pendingCard.locator('input')).toBeEnabled();
 
   await page.locator('#trV3Grid').evaluate(element => { element.scrollTop = element.scrollHeight; element.dispatchEvent(new Event('scroll')); });
   await expect.poll(() => thumbnailRequests.length).toBeGreaterThan(firstViewportThumbnailCount);
@@ -114,9 +133,15 @@ test('training material picker opens immediately, renders larger previews, and p
   await page.getByRole('button', {name: '下一页'}).click();
   await expect(page.locator('.train-v3-card')).toHaveCount(60);
   await expect(page.locator('#trV3Pager')).toContainText('第 2 页');
-  expect(requests.some(value => value.includes('cursor=page-2'))).toBe(true);
+  expect(requests.some(value => value.includes('page=2') && value.includes('page_size=60'))).toBe(true);
 
-  await page.getByRole('button', {name: '上一页'}).click();
+  await page.getByLabel('指定页码').fill('100');
+  await page.getByRole('button', {name: '跳转'}).click();
+  await expect(page.locator('#trV3Pager')).toContainText('当前第 100 页');
+  expect(requests.some(value => value.includes('page=100'))).toBe(true);
+
+  await page.getByLabel('指定页码').fill('1');
+  await page.getByLabel('指定页码').press('Enter');
   await expect(page.locator(`[data-material-id="${firstId}"] input`)).toBeChecked();
 
   await page.locator('#trV3Q').fill('smoke');
@@ -139,6 +164,13 @@ test('training material picker opens immediately, renders larger previews, and p
   await expect(page.locator('.train-v3-picker.server-paged')).not.toBeVisible();
   await expect.poll(async () => page.evaluate(() => window.TrainingDraftRuntime?.materialIds?.() || []))
     .toContain(firstId);
+
+  await page.evaluate(() => { window.openTrainMaterialPickerV3('test'); });
+  await expect(page.locator('.train-v3-card')).toHaveCount(60, {timeout: 5_000});
+  const pendingTestCard = page.locator('[data-material-id="picker-1-059"]');
+  await expect(pendingTestCard.locator('input')).toBeDisabled();
+  await expect(pendingTestCard).toHaveAttribute('data-block-reason', '试验集必须已标注');
+  await page.getByRole('button', {name: '取消'}).click();
 
   expect(pageErrors).toEqual([]);
 });
