@@ -67,6 +67,7 @@ on:
       - 'tests/integration/test_training_task_worker.py'
       - 'tests/integration/test_ultralytics_loader_resource_contract.py'
       - 'tests/api/test_training_request.py'
+      - 'tests/api/test_evaluation_diagnostic_image.py'
       - 'tests/api/test_mother_model_preinstall.py'
       - 'tests/frontend/mother-model-preinstall.test.mjs'
       - 'static/modules/resource-discovery.js'
@@ -138,6 +139,7 @@ on:
       - 'tests/integration/test_training_task_worker.py'
       - 'tests/integration/test_ultralytics_loader_resource_contract.py'
       - 'tests/api/test_training_request.py'
+      - 'tests/api/test_evaluation_diagnostic_image.py'
       - 'tests/api/test_mother_model_preinstall.py'
       - 'tests/frontend/mother-model-preinstall.test.mjs'
       - 'static/modules/resource-discovery.js'
@@ -307,6 +309,7 @@ jobs:
         run: >-
           python -m pytest -q
           tests/api/test_training_request.py
+          tests/api/test_evaluation_diagnostic_image.py
           tests/api/test_mother_model_preinstall.py
           tests/api/test_agent_result_upload_api.py
           tests/unit/test_training_scheduler_target.py

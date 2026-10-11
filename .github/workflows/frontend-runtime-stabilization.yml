@@ -444,6 +444,7 @@ jobs:
           tests/browser/overview-tabs.spec.mjs
           tests/browser/prison-night-isolation.spec.mjs
           tests/browser/quality-detection-workbench.spec.mjs
+          tests/browser/training-evaluation-diagnostics.spec.mjs
           tests/browser/navigation-readiness.spec.mjs
           tests/browser/training-label-selector.spec.mjs
           tests/browser/auto-label-polling.spec.mjs
