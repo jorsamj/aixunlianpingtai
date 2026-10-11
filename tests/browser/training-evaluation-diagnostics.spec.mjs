@@ -43,6 +43,9 @@ test('frozen evaluation diagnoses zero-TP class and previews real GT/FP/FN layer
   await expect(dialog.locator('.evaluation429-diagnosis-grid')).toContainText('关键类别未检出');
   await expect(dialog.locator('.evaluation429-gallery')).toContainText('共 205 张问题图片');
   await expect(dialog.locator('.evaluation429-image-card').first()).toContainText('highest-severity.jpg');
+  await expect(dialog.locator('.evaluation429-thumb img')).toHaveCount(2);
+  await expect(dialog.locator('.evaluation429-image-card').first().locator('.evaluation429-thumb img'))
+    .toHaveAttribute('src', /evaluation\/images\/highest-severity\.jpg$/);
   await dialog.locator('.evaluation429-image-card').first().click();
   const preview = page.getByRole('dialog', {name: '问题图片核验'});
   await expect(preview).toBeVisible();
@@ -75,4 +78,29 @@ test('legacy error records never invent GT overlays or silently claim a preview 
   const preview = page.getByRole('dialog', {name: '问题图片核验'});
   await expect(preview).toContainText('历史评测仅有 FP/FN 数量');
   await expect(preview.locator('.evaluation429-overlay')).toHaveCount(0);
+});
+
+
+test('failed frozen-image preview hides stale GT and prediction overlays', async ({page}) => {
+  await page.route('**/evaluation/images/**', route => route.fulfill({
+    status: 409, contentType: 'text/plain', body: 'snapshot mismatch'
+  }));
+  await page.goto('/');
+  await expect.poll(() => page.evaluate(() => Boolean(state?.uiReady && window.openVersionEvaluation429)), {timeout: 20000}).toBe(true);
+  await page.evaluate(() => {
+    state.algorithms = [{id: 'guarded-algo', name: '安全帽', versions: [{
+      id: 'guarded-version', evaluation: {status: 'succeeded', error_sample_count: 1,
+        error_samples: [{image: 'drift.jpg', image_width: 100, image_height: 80,
+          fp_count: 1, fn_count: 1,
+          gt_boxes: [{box: [10, 10, 40, 40], label: 'No_helmet', matched: false}],
+          pred_boxes: [{box: [60, 10, 90, 40], label: 'helmet', matched: false, confidence: 0.9}]}]},
+      iteration_decision: {}
+    }]}];
+    window.openVersionEvaluation429('guarded-algo','guarded-version');
+  });
+  await page.getByRole('dialog', {name: '独立评测'}).locator('.evaluation429-image-card').first().click();
+  const dialog = page.getByRole('dialog', {name: '问题图片核验'});
+  await expect(dialog.locator('.evaluation429-image-error')).toBeVisible();
+  await expect(dialog.locator('.evaluation429-overlay')).toBeHidden();
+  await expect(dialog.locator('.evaluation429-media img')).toBeHidden();
 });
