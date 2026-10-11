@@ -30,7 +30,18 @@ test('independent night inspection menu and iframe cannot replace training platf
     window.addEventListener('click',event=>record('WindowClick',event),true);
     document.addEventListener('click',event=>record('DocumentClick',event),true);
   });
-  const frameNavEvents=[];
+  const navBounds=await page.frameLocator('#nightInspectionIsolated iframe').locator('.sidebar .nav button[data-page="events"]').evaluate(el=>el.getBoundingClientRect().toJSON());
+  const parentHitTest=await page.evaluate(box=>{
+    const frame=document.querySelector('#nightInspectionIsolated iframe'),r=frame.getBoundingClientRect();
+    const x=r.left+box.left+box.width/2,y=r.top+box.top+box.height/2;
+    const hits=document.elementsFromPoint(x,y);
+    return {x,y,frameRect:r.toJSON(),iframeFirst:hits[0]===frame,
+      hits:hits.slice(0,6).map(el=>({tag:el.tagName,id:el.id,cls:String(el.className||'').slice(0,90),outer:el.outerHTML.slice(0,170)})),
+      activeElement:document.activeElement?.outerHTML.slice(0,200),
+      iframePointerEvents:getComputedStyle(frame).pointerEvents};
+  },navBounds);
+  console.log('[ai-foundation-parent-hit-test]',JSON.stringify(parentHitTest));
+    const frameNavEvents=[];
   const onFrameNavigated=frame=>{if(frame.parentFrame())frameNavEvents.push(frame.url())};
   page.on('framenavigated',onFrameNavigated);
     await page.frameLocator('#nightInspectionIsolated iframe').locator('[data-page="events"]').first().click();
