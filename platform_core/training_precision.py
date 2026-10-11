@@ -108,15 +108,23 @@ def _reference_amp_check(torch, ultralytics, train_model, path: Path) -> bool:
     """Run Ultralytics' original check; skipped checks are NOT a pass."""
     from ultralytics import YOLO
     from ultralytics.engine import trainer as trainer_module
+    from ultralytics.nn import tasks as tasks_module
     from ultralytics.utils import ASSETS, LOGGER
 
     if not (Path(ASSETS) / "bus.jpg").is_file():
         raise RuntimeError("AMP_REFERENCE_ASSET_MISSING")
     if not path.is_file() or not os.access(path, os.R_OK):
         raise RuntimeError("AMP_REFERENCE_UNREADABLE")
-    # Fully load before entering check_amp, so it cannot treat a missing model
-    # as an implicit asset-download request. A corrupted reference fails closed.
-    YOLO(str(path))
+
+    # Bound to this reference preflight only: even a rename/delete race must
+    # fail locally instead of invoking Ultralytics' asset downloader.
+    original_asset_loader = tasks_module.attempt_download_asset
+    def local_asset_only(filename, *args, **kwargs):
+        local = Path(filename)
+        if not local.is_file():
+            raise FileNotFoundError("AMP_REFERENCE_DOWNLOAD_BLOCKED: " + str(filename))
+        return str(local)
+
     class SuccessLog(logging.Handler):
         passed = False
         def emit(self, record):
@@ -125,15 +133,22 @@ def _reference_amp_check(torch, ultralytics, train_model, path: Path) -> bool:
                 self.passed = True
     success_log = SuccessLog()
     module = train_model.model
-    module.to("cuda:0")
+    tasks_module.attempt_download_asset = local_asset_only
     LOGGER.addHandler(success_log)
     try:
-        with _reference_directory(path.parent):
-            checked = bool(trainer_module.check_amp(module))
-        return checked and success_log.passed
+        # A genuinely local file is loaded and validated BEFORE the reference
+        # checker is allowed to run. No network retry is reachable here.
+        YOLO(str(path))
+        module.to("cuda:0")
+        try:
+            with _reference_directory(path.parent):
+                checked = bool(trainer_module.check_amp(module))
+            return checked and success_log.passed
+        finally:
+            module.cpu()
     finally:
         LOGGER.removeHandler(success_log)
-        module.cpu()
+        tasks_module.attempt_download_asset = original_asset_loader
 
 
 def cuda_numeric_amp_probe(torch) -> bool:
