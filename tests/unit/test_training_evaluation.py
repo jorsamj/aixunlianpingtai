@@ -573,3 +573,105 @@ def test_evaluation_benchmark_scope_rejects_manifest_cohort_or_source_mismatch()
         evaluation.build_evaluation_benchmark_scope(
             _benchmark_snapshot(), wrong_source,
         )
+
+
+def test_blind_evaluation_preserves_true_error_count_and_ranks_late_high_severity(tmp_path: Path):
+    images, gt = tmp_path / "images", tmp_path / "hidden"
+    images.mkdir()
+    gt.mkdir()
+    for index in range(205):
+        name = f"img_{index:03d}"
+        Image.new("RGB", (100, 80)).save(images / f"{name}.jpg")
+        boxes = ["0 0.5 0.5 0.3 0.3"]
+        if index == 204:
+            boxes *= 12
+        (gt / f"{name}.txt").write_text("\n".join(boxes) + "\n", encoding="utf-8")
+
+    result = evaluation.evaluate_blind_detection(images, gt, lambda _: [], names={0: "person"})
+    assert result["image_count"] == 205
+    assert result["error_sample_count"] == 205
+    assert len(result["error_samples"]) == 200
+    assert result["error_samples"][0]["image"] == "img_204.jpg"
+    assert result["error_samples"][0]["fn_count"] == 12
+    assert result["error_samples"][0]["image_width"] == 100
+    assert len(result["error_samples"][0]["gt_boxes"]) == 12
+    assert all(not x["matched"] for x in result["error_samples"][0]["gt_boxes"])
+    assert all(row["pred_boxes"] == [] for row in result["error_samples"])
+
+
+def test_evaluation_evidence_is_bounded_safe_and_retains_true_error_count():
+    raw = {
+        "status": "succeeded",
+        "metrics": {"metrics/mAP50(B)": 0.31},
+        "per_class": [{"class_id": 0, "label": "No_helmet",
+                       "ground_truth_count": 85, "true_positive": 0,
+                       "false_positive": 0, "false_negative": 85,
+                       "recall": 0, "map50": 0.002}],
+        "weak_labels": ["No_helmet"],
+        "error_sample_count": 230,
+        "error_samples": [{"image": "../test.png", "fp_count": 1, "fn_count": 1,
+                           "image_width": 100, "image_height": 80,
+                           "gt_boxes": [{"class_id": 0, "label": "No_helmet",
+                                          "box": [10, 15, 40, 60], "matched": False},
+                                         {"box": [float("nan"), 1, 2, 3]}],
+                           "pred_boxes": [{"class_id": 1, "label": "helmet",
+                                            "box": [11, 15, 42, 60], "matched": False,
+                                            "confidence": 0.8}],
+                           "hidden_path": "/server/private/file.txt"}],
+    }
+    truth = evaluation.build_evaluation_truth(raw, task_id="training-test")
+    assert truth["error_sample_count"] == 230
+    assert truth["error_samples"][0]["image"] == "test.png"
+    assert truth["error_samples"][0]["gt_boxes"] == [{
+        "class_id": 0, "label": "No_helmet", "box": [10., 15., 40., 60.],
+        "matched": False, "kind": "ground_truth"
+    }]
+    assert "hidden_path" not in str(truth)
+    assert truth["error_samples"][0]["pred_boxes"][0]["confidence"] == 0.8
+
+
+def test_zero_true_positive_class_requires_diagnosis_not_data_confirmation():
+    truth = evaluation.build_evaluation_truth({
+        "status": "succeeded",
+        "metrics": {"metrics/mAP50(B)": 0.298},
+        "per_class": [
+            {"class_id": 0, "label": "No_helmet", "true_positive": 0,
+             "false_positive": 0, "false_negative": 85, "ground_truth_count": 85,
+             "precision": 0.0, "recall": 0.0, "map50": 0.002},
+            {"class_id": 1, "label": "helmet", "true_positive": 195,
+             "false_positive": 88, "false_negative": 164, "ground_truth_count": 359,
+             "precision": 0.689, "recall": 0.543, "map50": 0.594}
+        ],
+        "weak_labels": ["No_helmet", "helmet"],
+    }, task_id="helmet-test")
+    decision = evaluation.build_iteration_decision(truth, quality_gate={"metric": "map50", "stop_threshold": 0.9})
+    assert decision["decision"] == "review_required"
+    assert "critical_class_zero_true_positives" in decision["reason_codes"]
+    assert decision["critical_labels"] == ["No_helmet"]
+    assert decision["class_diagnostics"][0]["code"] == "zero_true_positives"
+    assert decision["class_diagnostics"][0]["root_cause_confirmed"] is False
+    assert "inspect_class_mapping" in decision["recommended_actions"]
+    assert "supplement_weak_label_data" not in decision["recommended_actions"]
+    assert decision["automatic_execution"] is False
+
+
+def test_fire_class_diagnosis_preserves_smoke_success_without_fabricating_cause():
+    truth = evaluation.build_evaluation_truth({
+        "status": "succeeded",
+        "metrics": {"metrics/mAP50(B)": 0.772},
+        "per_class": [
+            {"class_id": 0, "label": "fire1", "true_positive": 2073,
+             "false_positive": 1085, "false_negative": 870, "ground_truth_count": 2943,
+             "recall": 0.704, "map50": 0.709},
+            {"class_id": 1, "label": "smoke1", "true_positive": 1984,
+             "false_positive": 616, "false_negative": 406, "ground_truth_count": 2390,
+             "recall": 0.83, "map50": 0.835},
+        ],
+        "weak_labels": ["fire1"],
+    }, task_id="fire-test")
+    decision = evaluation.build_iteration_decision(truth, quality_gate={"metric": "map50", "stop_threshold": 0.95})
+    assert decision["decision"] == "needs_data"
+    assert [row["label"] for row in decision["class_diagnostics"]] == ["fire1"]
+    assert decision["class_diagnostics"][0]["code"] == "class_detection_below_reference"
+    assert "review_fp_fn_samples" in decision["recommended_actions"]
+    assert decision["class_diagnostics"][0]["root_cause_confirmed"] is False
