@@ -13,6 +13,8 @@ from platform_core.training_precision import (
     normalize_training_precision,
     ultralytics_amp_value,
     verify_effective_training_precision,
+    preflight_worker_amp,
+    scoped_worker_amp_check,
 )
 
 
@@ -837,6 +839,7 @@ def main():
     pretrained = as_bool(args.pretrained)
     cache_value = parse_cache(args.cache)
     precision = normalize_training_precision(args.precision)
+    runtime_precision = precision
     amp_value = ultralytics_amp_value(precision, as_bool(args.amp))
 
     def recorded_train_params(values):
@@ -845,7 +848,8 @@ def main():
             "resource_strategy": args.resource_strategy,
             "resource_profile": args.resource_profile,
             "gpu_policy": args.gpu_policy,
-            "precision": precision,
+            "precision": runtime_precision,
+            "resolved_precision": precision,
         }
 
     actual_model = resolve_training_model(args.model, pretrained)
@@ -895,7 +899,7 @@ def main():
     print(f"[{now_iso()}] 开始训练", flush=True)
     print(f"模型: {actual_model}", flush=True)
     print(f"数据集: {args.data}", flush=True)
-    print("实际训练参数:", flush=True)
+    print("请求训练参数（AMP 预检前）:", flush=True)
     print(json.dumps(train_args, ensure_ascii=False, indent=2, default=str), flush=True)
 
     telemetry = None
@@ -965,6 +969,25 @@ def main():
             )
         publish_startup_stage(job_file, "resources_ready", "使用后台已核验的 Batch / Workers / Precision / Cache", 25)
         train_args.update(batch=resolved["resolved_batch"], workers=resolved["resolved_workers"], cache=resolved["resolved_cache"])
+        publish_startup_stage(job_file, "amp_offline_preflight", "检查 Worker 本地 AMP 与 CUDA FP16 能力", 25.5)
+        amp_decision = preflight_worker_amp(
+            requested_amp=bool(train_args["amp"]), torch=torch, ultralytics=ultralytics,
+            train_model=model, project_dir=project_dir,
+        )
+        train_args["amp"] = bool(amp_decision.enabled)
+        runtime_precision = "fp16" if amp_decision.enabled else "fp32"
+        fallback_reason = amp_decision.reason if amp_value and not amp_decision.enabled else ""
+        update_job(job_file,
+                   amp_preflight=amp_decision.to_dict(),
+                   amp_check_method=amp_decision.method,
+                   amp_check_result=amp_decision.result,
+                   precision_fallback_reason=fallback_reason,
+                   resolved_precision=precision,
+                   runtime_precision=runtime_precision)
+        print(f"[AMP离线预检] 检查方式={amp_decision.method} 结果={amp_decision.result} "
+              f"实际精度={runtime_precision} 回退原因={fallback_reason or '-'}", flush=True)
+        print("实际训练参数（AMP 预检后）:", flush=True)
+        print(json.dumps(recorded_train_params(train_args), ensure_ascii=False, indent=2, default=str), flush=True)
         evidence["effective_args"] = recorded_train_params(train_args)
         update_job(job_file, resolved_resources=resolved, actual_train_params=recorded_train_params(train_args), device_evidence=evidence)
         telemetry = TrainingMetrics(args.metrics_db or job_file.parent / "training-metrics.sqlite3", resolved,
@@ -1031,7 +1054,7 @@ def main():
                 if str(trainer.device) != runtime_device:
                     raise RuntimeError(f"TRAINING_DEVICE_RUNTIME_MISMATCH: expected={runtime_device}; actual={trainer.device}")
                 effective_precision = verify_effective_training_precision(
-                    precision, getattr(trainer, "amp", False)
+                    runtime_precision, getattr(trainer, "amp", False)
                 )
                 runtime_resources = {
                     **runtime_resources,
@@ -1092,7 +1115,8 @@ def main():
                 device_evidence=evidence,
                 actual_train_params=recorded_train_params(train_args),
             )
-            train_result = model.train(**train_args)
+            with scoped_worker_amp_check(amp_decision):
+                train_result = model.train(**train_args)
         except Exception as train_error:
             is_oom = (
                 isinstance(train_error, torch.cuda.OutOfMemoryError)
@@ -1125,7 +1149,8 @@ def main():
                 cont_args=dict(train_args);cont_args.update({"data":next_data,"epochs":extra,"name":args.run_name+f"_ai{ai_rounds}","project":str(runs_dir),"exist_ok":True})
                 model=YOLO(str(resume_model))
                 attach_ai_continuation_callbacks(model,job_file,telemetry,base_completed_epochs=base_completed_epochs,extra_epochs=extra,attach_resource_callbacks=lambda target: attach_resource_callbacks(target,cont_args))
-                train_result=model.train(**cont_args)
+                with scoped_worker_amp_check(amp_decision):
+                    train_result=model.train(**cont_args)
                 phase["finished_at"]=now_iso()
                 update_job(job_file,ai_continuation=phase,progress_percent=95.0,current_epoch=cumulative_total_epochs,total_epochs=cumulative_total_epochs,current_batch=None,total_batches=None,current_item="AI追加训练完成，正在校验模型产物",message="AI追加训练完成，正在校验模型产物")
         run_dir = Path(getattr(model.trainer,"save_dir",runs_dir/args.run_name))
