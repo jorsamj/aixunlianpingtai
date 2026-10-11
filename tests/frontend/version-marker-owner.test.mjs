@@ -59,7 +59,7 @@ test('entry bundles use cache-bust markers independently from formal release tru
   assert.equal(main.includes("./modules/training-task-visibility-runtime.js?v=422607"), true);
   assert.equal(main.includes("./modules/material-pagination-runtime.js?v=422608"), true);
   assert.equal(main.includes("./modules/material-batches.js?v=422403"), true);
-  assert.equal(index.includes('/static/zip-import-bootstrap.mjs?v=4226356'), true);
+  assert.equal(index.includes('/static/zip-import-bootstrap.mjs?v=4226357'), true);
   assert.equal(index.includes('/static/training-checkpoint-resume-bootstrap.mjs?v=422541'), true);
   assert.equal(index.includes('<span id="versionBadge" class="version-badge">v—</span>'), true);
 });

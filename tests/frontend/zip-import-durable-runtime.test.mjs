@@ -208,7 +208,7 @@ test('ZIP exact label reuse and explicit source-code creation preserve manual co
 
 test('ZIP browser bootstrap loads the refreshed exact-code and side-evidence module',()=>{
  const boot=readFileSync(new URL('../../static/zip-import-bootstrap.mjs',import.meta.url),'utf8');
- assert.match(boot,/zip-import-runtime\.js\?v=4226356/);
+ assert.match(boot,/zip-import-runtime\.js\?v=4226357/);
 });
 
 
