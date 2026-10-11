@@ -9,7 +9,7 @@ const training = readFileSync(new URL('../../static/app.js',import.meta.url), 'u
 const modalStyles = readFileSync(new URL('../../static/training-create-modal.css',import.meta.url), 'utf8');
 
 test('ZIP source class offers real source image and box preview before manual mapping', () => {
-  assert.match(zip,/showLabelSamples\('/);
+  assert.match(zip,/showLabelSamples\(\$\{jsArg\(id\)\},\$\{jsArg\(row\.classId\)\},\$\{jsArg\(encodeURIComponent\(source\)\)\}\)/);
   assert.match(zip,/data-zip-class-samples/);
   assert.match(zip,/sample\.bboxes/);
   assert.match(zip,/label-mapping-sample-load-error/);
