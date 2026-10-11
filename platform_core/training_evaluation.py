@@ -260,21 +260,28 @@ def evaluate_blind_detection(
         image_name = image_path.name
         image_predictions = predictions_by_image.get(image_name, [])
         image_targets = targets_by_image.get(image_name, [])
-        pairs = []
-        for prediction_index, prediction in enumerate(image_predictions):
-            for target_index, target in enumerate(image_targets):
-                if int(prediction["class_id"]) != int(target["class_id"]):
-                    continue
-                overlap = _iou(prediction["box"], target["box"])
-                if overlap >= 0.5:
-                    pairs.append((overlap, prediction_index, target_index))
+        # Keep visual FP/FN evidence identical to the class-level scorer:
+        # confidence-first, highest-IoU unmatched GT of the same class.
+        # IoU-first pairing can disagree with _match_flags and hide true errors.
         matched_predictions: set[int] = set()
         matched_targets: set[int] = set()
-        for _overlap, prediction_index, target_index in sorted(pairs, reverse=True):
-            if prediction_index in matched_predictions or target_index in matched_targets:
-                continue
-            matched_predictions.add(prediction_index)
-            matched_targets.add(target_index)
+        for prediction_index in sorted(
+            range(len(image_predictions)),
+            key=lambda index: -float(image_predictions[index]["confidence"]),
+        ):
+            prediction = image_predictions[prediction_index]
+            best_target = -1
+            best_overlap = -1.0
+            for target_index, target in enumerate(image_targets):
+                if target_index in matched_targets or int(prediction["class_id"]) != int(target["class_id"]):
+                    continue
+                overlap = _iou(prediction["box"], target["box"])
+                if overlap >= 0.5 and overlap > best_overlap:
+                    best_overlap = overlap
+                    best_target = target_index
+            if best_target >= 0:
+                matched_predictions.add(prediction_index)
+                matched_targets.add(best_target)
         fp = [row for index, row in enumerate(image_predictions) if index not in matched_predictions]
         fn = [row for index, row in enumerate(image_targets) if index not in matched_targets]
         if fp or fn:

@@ -675,3 +675,35 @@ def test_fire_class_diagnosis_preserves_smoke_success_without_fabricating_cause(
     assert decision["class_diagnostics"][0]["code"] == "class_detection_below_reference"
     assert "review_fp_fn_samples" in decision["recommended_actions"]
     assert decision["class_diagnostics"][0]["root_cause_confirmed"] is False
+
+
+def test_overlapping_objects_use_identical_tp_fp_fn_for_class_score_and_image_evidence(tmp_path: Path):
+    """Higher confidence wins first, even when IoU-first would match both boxes."""
+    images = tmp_path / "images"
+    hidden = tmp_path / "hidden"
+    images.mkdir()
+    hidden.mkdir()
+    Image.new("RGB", (100, 100), (20, 30, 40)).save(images / "overlap.jpg")
+    # GT: [20,20,60,60] and [40,20,80,60].
+    (hidden / "overlap.txt").write_text(
+        "0 0.4 0.4 0.4 0.4\n0 0.6 0.4 0.4 0.4\n",
+        encoding="utf-8",
+    )
+
+    result = evaluation.evaluate_blind_detection(
+        images, hidden,
+        lambda _: [
+            {"class_id": 0, "confidence": 0.95, "box": [30, 20, 70, 60]},
+            {"class_id": 0, "confidence": 0.65, "box": [20, 20, 60, 60]},
+        ],
+        names={0: "person"},
+    )
+    score = result["per_class"][0]
+    assert (score["true_positive"], score["false_positive"], score["false_negative"]) == (1, 1, 1)
+    assert result["error_sample_count"] == 1
+    sample, = result["error_samples"]
+    assert (sample["fp_count"], sample["fn_count"]) == (1, 1)
+    assert [row["matched"] for row in sample["pred_boxes"]] == [True, False]
+    assert [row["matched"] for row in sample["gt_boxes"]] == [True, False]
+    assert sum(row["fp_count"] for row in result["error_samples"]) == score["false_positive"]
+    assert sum(row["fn_count"] for row in result["error_samples"]) == score["false_negative"]
