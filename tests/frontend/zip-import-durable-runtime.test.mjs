@@ -210,3 +210,12 @@ test('ZIP browser bootstrap loads the refreshed exact-code and side-evidence mod
  const boot=readFileSync(new URL('../../static/zip-import-bootstrap.mjs',import.meta.url),'utf8');
  assert.match(boot,/zip-import-runtime\.js\?v=4226356/);
 });
+
+
+test('ZIP original label callbacks escape archive-supplied names as JS arguments and reject placeholder labels',()=>{
+  const source=readFileSync(new URL('../../static/modules/zip-import-runtime.js',import.meta.url),'utf8');
+  assert.match(source,/const jsArg = value => esc\(JSON\.stringify\(/);
+  assert.match(source,/showLabelSamples\(\$\{jsArg\(id\)\},\$\{jsArg\(row\.classId\)\},\$\{jsArg\(encodeURIComponent\(source\)\)\}\)/);
+  assert.match(source,/\^\(\?:class\|label\)/);
+  assert.doesNotMatch(source,/button\.textContent='确认标签并开始导入'/);
+});

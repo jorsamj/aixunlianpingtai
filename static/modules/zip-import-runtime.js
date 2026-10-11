@@ -8,6 +8,7 @@ export const LEGACY_START_GRACE_MS = 8000;
 const status = job => String(job?.status || '').toLowerCase();
 const time = value => Number.isFinite(Date.parse(value || '')) ? Date.parse(value) : 0;
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const jsArg = value => esc(JSON.stringify(String(value ?? '')));
 const clamp = value => Math.max(0, Math.min(100, Number(value) || 0));
 export const PLATFORM_LABEL_CODE_RE = /^[A-Za-z][A-Za-z0-9_-]*$/;
 
@@ -280,11 +281,11 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
       const source=String(row.name||''),mapped=String(row.code||'');
       const codeLabel=mapped?esc(mapped):'<span class="zip-label-unmapped">待确认</span>';
       return `<div class="zip-label-item label-mapping-review-row" data-zip-class="${esc(row.classId)}" data-source-name="${esc(source)}">
-        <button type="button" class="zip-label-source" onclick="window.ZipImportRuntime?.showLabelSamples('${esc(id)}','${esc(row.classId)}','${encodeURIComponent(source)}')"><strong>${esc(source||('class_'+row.classId))}</strong><small>class_id ${esc(row.classId)} · ${Number(row.imageCount||0)} 图 / ${Number(row.boxCount||0)} 框</small></button>
+        <button type="button" class="zip-label-source" onclick="window.ZipImportRuntime?.showLabelSamples(${jsArg(id)},${jsArg(row.classId)},${jsArg(encodeURIComponent(source))})"><strong>${esc(source||('class_'+row.classId))}</strong><small>class_id ${esc(row.classId)} · ${Number(row.imageCount||0)} 图 / ${Number(row.boxCount||0)} 框</small></button>
         <span class="zip-label-arrow">→</span><div class="zip-label-destination"><b>${codeLabel}</b>
-        <select class="select zip-label-target-select" data-zip-target onchange="window.ZipImportRuntime?.setLabelMapping('${esc(id)}','${esc(row.classId)}',this.value)">${options(row.code)}</select>
-        </div><div class="zip-label-row-actions"><button type="button" class="btn mini" onclick="window.ZipImportRuntime?.useSourceLabel('${esc(id)}','${esc(row.classId)}')">使用原标签</button><button type="button" class="btn mini" onclick="window.openInlineLabelCreate414?.('zip','${encodeURIComponent(String(row.classId))}')">新建平台标签</button>
-        <label class="label-mapping-review-check"><input type="checkbox" ${row.selected?'checked':''} onchange="window.ZipImportRuntime?.toggleLabelRow('${esc(id)}','${esc(row.classId)}',this.checked)">批量选择</label></div></div>`;
+        <select class="select zip-label-target-select" data-zip-target onchange="window.ZipImportRuntime?.setLabelMapping(${jsArg(id)},${jsArg(row.classId)},this.value)">${options(row.code)}</select>
+        </div><div class="zip-label-row-actions"><button type="button" class="btn mini" onclick="window.ZipImportRuntime?.useSourceLabel(${jsArg(id)},${jsArg(row.classId)})">使用原标签</button><button type="button" class="btn mini" onclick="window.openInlineLabelCreate414?.('zip',${jsArg(encodeURIComponent(String(row.classId)))})">新建平台标签</button>
+        <label class="label-mapping-review-check"><input type="checkbox" ${row.selected?'checked':''} onchange="window.ZipImportRuntime?.toggleLabelRow(${jsArg(id)},${jsArg(row.classId)},this.checked)">批量选择</label></div></div>`;
     }).join('');
     const plan=review.sourcePlan;
     const names=items=>(items||[]).slice(0,10).map(item=>`<span>${esc(item.source||item.name||item.code)}</span>`).join('')+((items||[]).length>10?`<span>等 ${items.length} 个</span>`:'');
@@ -503,7 +504,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
     const job=reviewJob(jobId),review=mappingReview(job),row=review.rows.find(item=>String(item.classId)===String(classId));
     if(!row)return notify?.('外部标签不存在');
     const source=String(row.name||'').trim();
-    if(!PLATFORM_LABEL_CODE_RE.test(source))return notify?.('原标签不符合平台英文编码规则，请手动新建合法标签');
+    if(!PLATFORM_LABEL_CODE_RE.test(source)||/^(?:class|label)[_-]?\d+$/i.test(source)||/^unknown$/i.test(source))return notify?.('原标签为无意义占位符或不符合平台英文编码规则，请手动确认');
     try{
       const existing=labelItems().find(label=>String(label.code).toLowerCase()===source.toLowerCase());
       if(!existing&&!window.confirm?.(`正式创建平台标签 ${source} 并映射当前类别？`))return null;
@@ -587,7 +588,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
       await reconcile('label-confirmation');open();return response;
     }catch(error){
       started.delete(id);writeIntent(project,id,'');
-      if(button){button.disabled=false;button.textContent='确认标签并开始导入'}
+      if(button){button.disabled=false;button.textContent='确认标签并导入'}
       document.querySelectorAll('.zip-label-confirm select,.zip-label-confirm input').forEach(input=>{input.disabled=false});
       if(statusNode)statusNode.textContent=String(error?.message||error);
       notify?.(error?.message||error);throw error;
