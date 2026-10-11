@@ -548,3 +548,30 @@ test('failed detail prioritizes worker root cause and keeps requested resolved r
   assert.equal(model.runtimeCache, 'ram');
   assert.equal(model.batch, 11);
 });
+
+
+test('offline AMP failure displays Worker FP32 instead of frozen FP16 and explains fallback',()=>{
+  const job={
+    id:'training-offline-amp', status:'running',
+    requested_resources:{precision:'fp16',batch:16},
+    resolved_resources:{resolved_precision:'fp16',resolved_batch:16},
+    runtime_resources:{actual_precision:'fp32',runtime_batch:16},
+    actual_train_params:{precision:'fp32',effective_precision:'fp32',batch:16,amp:false},
+    amp_check_method:'cuda_numeric',amp_check_result:'failed',
+    precision_fallback_reason:'CUDA_FP16_PROBE_FAILED',
+  };
+  const model=trainingRecoveryDetailModel(job,{});
+  assert.equal(model.requestedPrecision,'fp16');
+  assert.equal(model.resolvedPrecision,'fp16');
+  assert.equal(model.runtimePrecision,'fp32');
+  assert.equal(model.precision,'fp32');
+  assert.equal(model.ampCheckMethod,'cuda_numeric');
+  assert.equal(model.ampCheckResult,'failed');
+  assert.equal(model.precisionFallbackReason,'CUDA_FP16_PROBE_FAILED');
+
+  const unstarted=trainingRecoveryDetailModel({
+    ...job,runtime_resources:{},actual_train_params:{precision:'fp32'},
+  },{});
+  assert.equal(unstarted.runtimePrecision,'fp32');
+  assert.equal(unstarted.ampCheckResult,'failed');
+});

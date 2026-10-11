@@ -204,6 +204,10 @@ export function trainingRecoveryDetailModel(job = {}, recovery = {}) {
     || requested.profile
     || ''
   ).trim();
+  const ampPreflight = job?.amp_preflight && typeof job.amp_preflight === 'object' ? job.amp_preflight : {};
+  const ampCheckMethod = String(job?.amp_check_method || ampPreflight.method || '').trim();
+  const ampCheckResult = String(job?.amp_check_result || ampPreflight.result || '').trim();
+  const precisionFallbackReason = String(job?.precision_fallback_reason || '').trim();
   const requestedPrecision = String(requested.precision || job?.precision || '').trim().toLowerCase();
   const resolvedPrecision = String(
     resolved.resolved_precision
@@ -285,6 +289,9 @@ export function trainingRecoveryDetailModel(job = {}, recovery = {}) {
     requestedPrecisionText: requestedPrecision === 'auto' ? '自动' : (requestedPrecision || '-'),
     resolvedPrecision,
     runtimePrecision,
+    ampCheckMethod,
+    ampCheckResult,
+    precisionFallbackReason,
     requestedBatch: requestedBatchValue,
     requestedBatchText: resourceStrategy === 'auto' && requestedBatchValue != null
       ? '偏好 ' + requestedBatchValue
@@ -401,7 +408,7 @@ function detailHtml(job, recovery, log = '', inputIssues = null) {
             <div><small>已用 / 剩余</small><b>${esc(model.elapsedText)} / ${esc(model.etaText)}</b><span>${esc(model.stage || model.statusMessage || '-')}</span></div>
             <div><small>实际设备</small><b>${esc(model.actualDevice || model.assignedDevice || model.requestedDevice || '-')}</b><span>${esc(model.gpuName || model.workerId || '-')}</span></div>
             <div><small>资源档位</small><b>${esc(model.resourceProfileLabel)}</b><span>${esc(`${model.resourceStrategy || 'auto'} · ${model.gpuPolicy || 'auto'}`)}</span></div>
-            <div><small>实际 Batch / Workers / Cache</small><b>${esc(`${model.batch ?? '-'} / ${model.workers ?? '-'} / ${model.cache ?? '-'}`)}</b><span>${esc(model.precision || '-')}</span></div>
+            <div><small>实际 Batch / Workers / Cache</small><b>${esc(`${model.batch ?? '-'} / ${model.workers ?? '-'} / ${model.cache ?? '-'}`)}</b><span>${esc(model.runtimePrecision || '尚未启动 Trainer')}</span></div>
           </section>
           ${statusHtml}${failureSummaryHtml}${inputIssuesHtml(inputIssues)}${technicalFailureHtml}${warningHtml}
           <div class="training-recovery-columns">
@@ -414,6 +421,8 @@ function detailHtml(job, recovery, log = '', inputIssues = null) {
               <div class="training-recovery-kv"><span>用户请求资源</span><b>${esc('Batch ' + (model.requestedBatchText ?? '-') + ' · Workers ' + (model.requestedWorkersText ?? '-') + ' · Precision ' + (model.requestedPrecisionText ?? '-') + ' · Cache ' + (model.requestedCacheText ?? '-'))}</b></div>
               <div class="training-recovery-kv"><span>${model.resourceStrategy === 'manual' ? '资源核验' : '自动资源决议'}</span><b>${esc('Batch ' + (model.resolvedBatch ?? '-') + ' · Workers ' + (model.resolvedWorkers ?? '-') + ' · Precision ' + (model.resolvedPrecision || '-') + ' · Cache ' + (model.resolvedCache ?? '-'))}</b></div>
               <div class="training-recovery-kv"><span>实际 Runtime</span><b>${esc('Batch ' + (model.runtimeBatch ?? '-') + ' · Workers ' + (model.runtimeWorkers ?? '-') + ' · Precision ' + (model.runtimePrecision || '-') + ' · Cache ' + (model.runtimeCache ?? '-'))}</b></div>
+              <div class="training-recovery-kv"><span>AMP 检查</span><b>${esc((model.ampCheckMethod || "未记录") + " · " + (model.ampCheckResult || "未验证"))}</b></div>
+              ${model.precisionFallbackReason ? `<div class="training-recovery-kv"><span>精度回退原因</span><b>${esc(model.precisionFallbackReason)}</b></div>` : ""}
               <div class="training-recovery-kv"><span>数据量</span><b>${esc(`训练 ${model.datasetCounts.train} · 验证 ${model.datasetCounts.validation} · 评测 ${model.datasetCounts.test}`)}</b></div>
               <div class="training-recovery-kv"><span>成果模型</span><b title="${esc(artifacts)}">${esc(artifacts)}</b></div>
             </section>
