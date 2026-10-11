@@ -278,15 +278,37 @@ def evaluate_blind_detection(
         fp = [row for index, row in enumerate(image_predictions) if index not in matched_predictions]
         fn = [row for index, row in enumerate(image_targets) if index not in matched_targets]
         if fp or fn:
+            width, height = dimensions[image_name]
+            def evidence_box(row: Mapping[str, Any], matched: bool, kind: str) -> dict[str, Any]:
+                return {
+                    "class_id": int(row["class_id"]),
+                    "label": _label_name(names, int(row["class_id"])),
+                    "box": [round(float(value), 3) for value in row["box"]],
+                    "matched": bool(matched),
+                    "kind": kind,
+                    **({"confidence": round(float(row["confidence"]), 6)} if kind == "prediction" else {}),
+                }
             error_samples.append({
                 "image": image_name,
+                "image_width": width,
+                "image_height": height,
                 "fp_count": len(fp),
                 "fn_count": len(fn),
                 "fp_labels": sorted({_label_name(names, int(row["class_id"])) for row in fp}),
                 "fn_labels": sorted({_label_name(names, int(row["class_id"])) for row in fn}),
+                # The scorer has finished EVERY model prediction before reading
+                # hidden Test GT. This is diagnostic evidence, never training input.
+                "pred_boxes": [evidence_box(row, index in matched_predictions, "prediction")
+                               for index, row in enumerate(image_predictions[:120])],
+                "gt_boxes": [evidence_box(row, index in matched_targets, "ground_truth")
+                             for index, row in enumerate(image_targets[:120])],
+                "boxes_truncated": len(image_predictions) > 120 or len(image_targets) > 120,
             })
-        if len(error_samples) >= 200:
-            break
+    # The old first-200 traversal hid later, more serious failures and reported
+    # a false total. Keep all counts, persist only a bounded severity-ranked view.
+    error_sample_count = len(error_samples)
+    error_samples.sort(key=lambda row: (-row["fn_count"], -row["fp_count"], row["image"]))
+    error_samples = error_samples[:200]
 
     weak_label_threshold = 0.75
     weak_labels = [
@@ -301,7 +323,7 @@ def evaluate_blind_detection(
         "per_class": per_class,
         "weak_labels": weak_labels[:100],
         "error_samples": error_samples,
-        "error_sample_count": len(error_samples),
+        "error_sample_count": error_sample_count,
         "image_count": len(images),
         "ground_truth_box_count": len(targets),
         "prediction_box_count": len(predictions),
@@ -556,12 +578,42 @@ def build_evaluation_truth(
     for row in list(raw.get("error_samples") or [])[:200]:
         if not isinstance(row, Mapping):
             continue
+        def bounded_boxes(key: str, kind: str) -> list[dict[str, Any]]:
+            clean = []
+            for item in list(row.get(key) or [])[:120]:
+                if not isinstance(item, Mapping):
+                    continue
+                coords = item.get("box")
+                if not isinstance(coords, (list, tuple)) or len(coords) != 4:
+                    continue
+                try:
+                    numbers = [float(x) for x in coords]
+                except (TypeError, ValueError):
+                    continue
+                if not all(math.isfinite(x) for x in numbers):
+                    continue
+                entry = {
+                    "class_id": int(item.get("class_id") or 0),
+                    "label": str(item.get("label") or "")[:100],
+                    "box": [round(x, 3) for x in numbers],
+                    "matched": item.get("matched") is True,
+                    "kind": kind,
+                }
+                if kind == "prediction":
+                    entry["confidence"] = round(min(1., max(0., _finite(item.get("confidence")))), 6)
+                clean.append(entry)
+            return clean
         error_samples.append({
             "image": Path(str(row.get("image") or "")).name[:240],
+            "image_width": max(0, int(row.get("image_width") or 0)),
+            "image_height": max(0, int(row.get("image_height") or 0)),
             "fp_count": max(0, int(row.get("fp_count") or 0)),
             "fn_count": max(0, int(row.get("fn_count") or 0)),
             "fp_labels": [str(value)[:1000] for value in list(row.get("fp_labels") or [])[:100]],
             "fn_labels": [str(value)[:1000] for value in list(row.get("fn_labels") or [])[:100]],
+            "pred_boxes": bounded_boxes("pred_boxes", "prediction"),
+            "gt_boxes": bounded_boxes("gt_boxes", "ground_truth"),
+            "boxes_truncated": row.get("boxes_truncated") is True,
         })
     protocol_raw = raw.get("protocol") if isinstance(raw.get("protocol"), Mapping) else {}
     protocol = {
