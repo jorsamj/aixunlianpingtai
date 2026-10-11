@@ -108,7 +108,7 @@ def _reference_amp_check(torch, ultralytics, train_model, path: Path) -> bool:
     """Run Ultralytics' original check; skipped checks are NOT a pass."""
     from ultralytics import YOLO
     from ultralytics.engine import trainer as trainer_module
-    from ultralytics.nn import tasks as tasks_module
+    from ultralytics.utils import downloads as downloads_module
     from ultralytics.utils import ASSETS, LOGGER
 
     if not (Path(ASSETS) / "bus.jpg").is_file():
@@ -118,7 +118,7 @@ def _reference_amp_check(torch, ultralytics, train_model, path: Path) -> bool:
 
     # Bound to this reference preflight only: even a rename/delete race must
     # fail locally instead of invoking Ultralytics' asset downloader.
-    original_asset_loader = tasks_module.attempt_download_asset
+    original_asset_loader = downloads_module.attempt_download_asset
     def local_asset_only(filename, *args, **kwargs):
         local = Path(filename)
         if not local.is_file():
@@ -133,7 +133,7 @@ def _reference_amp_check(torch, ultralytics, train_model, path: Path) -> bool:
                 self.passed = True
     success_log = SuccessLog()
     module = train_model.model
-    tasks_module.attempt_download_asset = local_asset_only
+    downloads_module.attempt_download_asset = local_asset_only
     LOGGER.addHandler(success_log)
     try:
         # A genuinely local file is loaded and validated BEFORE the reference
@@ -148,7 +148,7 @@ def _reference_amp_check(torch, ultralytics, train_model, path: Path) -> bool:
             module.cpu()
     finally:
         LOGGER.removeHandler(success_log)
-        tasks_module.attempt_download_asset = original_asset_loader
+        downloads_module.attempt_download_asset = original_asset_loader
 
 
 def cuda_numeric_amp_probe(torch) -> bool:
