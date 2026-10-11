@@ -44,6 +44,13 @@ def _job(project: Path):
         "resolved_resources": {"resolved_batch": 11, "resolved_workers": 0, "resolved_cache": "ram"},
         "runtime_resources": {"runtime_batch": 11, "runtime_workers": 0, "runtime_cache": "ram"},
         "actual_train_params": {"batch": 11, "workers": 0, "cache": "ram"},
+        "requested_precision": "fp16",
+        "resolved_precision": "fp16",
+        "runtime_precision": "fp32",
+        "amp_check_method": "cuda_numeric",
+        "amp_check_result": "failed",
+        "precision_fallback_reason": "CUDA_FP16_PROBE_FAILED",
+        "amp_preflight": {"enabled": False, "method": "cuda_numeric", "result": "failed", "reason": "CUDA_FP16_PROBE_FAILED"},
         "finished_at": "2026-09-18T02:00:00+00:00",
     }
 
@@ -82,6 +89,11 @@ def test_training_result_archive_round_trip_verifies_identity_and_models(tmp_pat
     assert verified.manifest["completion"]["runtime_resources"]["runtime_batch"] == 11
     assert verified.manifest["completion"]["runtime_resources"]["runtime_workers"] == 0
     assert verified.manifest["completion"]["actual_train_params"]["batch"] == 11
+    assert verified.manifest["completion"]["requested_precision"] == "fp16"
+    assert verified.manifest["completion"]["resolved_precision"] == "fp16"
+    assert verified.manifest["completion"]["runtime_precision"] == "fp32"
+    assert verified.manifest["completion"]["precision_fallback_reason"] == "CUDA_FP16_PROBE_FAILED"
+    assert verified.manifest["completion"]["amp_preflight"]["enabled"] is False
     assert verified.manifest["training_report"]["metrics"]["metrics/mAP50(B)"] == 0.75
     assert {row["role"] for row in verified.models} == {"best", "last"}
     assert all((verified.root / row["ref"]).is_file() for row in verified.models)
