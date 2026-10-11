@@ -1,3 +1,11 @@
+## 2026-10-11｜Worker 离线 AMP / FP16 决议与 AI 底座 iframe 点击保护（真实 A800 验收待执行）
+
+- 保持 VERSION.txt=42.24.350、唯一长期分支；控制端、本地 Worker、远程 Agent 均复用 `train_worker.py` 和已有 `platform_core/training_precision.py`。实际 CUDA Worker 在训练开始前预检：本地存在 yolo26n.pt 时先验证模型、执行 Ultralytics 8.4.127 原生 check_amp；无模型时执行无额外权重的 CUDA FP16 前向/反向/GradScaler 数值检查；失败自动回退 FP32。检查只允许读取本地资源，限定作用域拦截 AMP asset downloader 与 Trainer check_amp，finally 恢复；不得将跳过检查误记为通过。
+- 保留原 yolo11n.pt 母模型路径、冻结资源与模型 SHA256 合同；保留 requested / resolved / runtime precision 及 amp_preflight、检查结果、回退原因，并经已有 Agent 结果与训练归档链传递。Trainer on_train_start 核验实际 AMP 后才写 runtime_resources.actual_precision。
+- AI 底座 iframe 在菜单收放时禁用父容器 margin-left 过渡，防止目标在 pointerdown / click 期间位移；Chrome 真点击回归保留。
+- 已对齐 Ultralytics CI 版本（原 8.4.143 → requirements.txt 8.4.127），增加离线/损坏模型/CPU/回退/Scoped patch 恢复/结果归档等测试。完整 CI、真实 A800 离线训练与前端现场 UAT 必须精确最终 HEAD 再验收；不得因 queued 或 mock 测试宣布完成。本轮未合并 main、tag、release 或部署。
+- 详细设计、风险和 UAT：`docs/AMP_OFFLINE_COMPATIBILITY_2026_10_11.md`。
+
 ## 2026-10-10｜四模式训练创建 CI 修复（42.24.345，待全量复验）
 
 - 实际核对基线 `2e01bde1ee362060c23a82be1fad2c5e44341bf3` / `42.24.344` 的 6 个失败 Workflow、对应失败 Job 的原始日志；Remote Material Import 两次触发为同一缓存键测试根因。
