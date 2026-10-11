@@ -219,7 +219,7 @@ export function trainingRecoveryDetailModel(job = {}, recovery = {}) {
     runtime.actual_precision
     || runtime.runtime_precision
     || actual.effective_precision
-    || actual.precision
+    || ((job?.training_started === true || ['done','completed','succeeded'].includes(String(job?.status || '').toLowerCase())) ? actual.precision : '')
     || ''
   ).trim().toLowerCase();
   const requestedBatchValue = requested.batch ?? job?.batch ?? null;

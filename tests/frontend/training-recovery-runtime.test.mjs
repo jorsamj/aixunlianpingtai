@@ -572,6 +572,6 @@ test('offline AMP failure displays Worker FP32 instead of frozen FP16 and explai
   const unstarted=trainingRecoveryDetailModel({
     ...job,runtime_resources:{},actual_train_params:{precision:'fp32'},
   },{});
-  assert.equal(unstarted.runtimePrecision,'fp32');
+  assert.equal(unstarted.runtimePrecision,'');
   assert.equal(unstarted.ampCheckResult,'failed');
 });
