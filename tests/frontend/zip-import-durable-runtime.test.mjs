@@ -131,7 +131,7 @@ test('ZIP label confirmation never preselects, recommends, or implicitly creates
 
 test('ZIP runtime exposes recoverable reopen and visible confirmation state',()=>{
   const source=readFileSync(new URL('../../static/modules/zip-import-runtime.js',import.meta.url),'utf8');
-  assert.match(source,/英文编码一致时自动关联已有平台标签/);
+  assert.match(source,/一键使用原始标签/);
   assert.match(source,/applyExactLabelCodeMatches\(review,labelItems\(\)\)/);
   assert.match(source,/buildManualLabelMapping\(review\)/);
   assert.doesNotMatch(source,/自动匹配/);
@@ -208,5 +208,5 @@ test('ZIP exact label reuse and explicit source-code creation preserve manual co
 
 test('ZIP browser bootstrap loads the refreshed exact-code and side-evidence module',()=>{
  const boot=readFileSync(new URL('../../static/zip-import-bootstrap.mjs',import.meta.url),'utf8');
- assert.match(boot,/zip-import-runtime\.js\?v=4226353/);
+ assert.match(boot,/zip-import-runtime\.js\?v=4226356/);
 });

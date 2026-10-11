@@ -23,7 +23,7 @@ test('durable ZIP runtime exclusively owns doUploadZip426 and does not replace i
 
 test('bootstrap bridges classic ZIP submit to durable runtime',()=>{
   assert.match(bootstrap,/window\.doImportUploadV19 = durableUploadFromImportModal/);
-  assert.match(bootstrap,/runtime\.upload\(input\)/);
+  assert.match(bootstrap,/runtime\.uploadBatch\(input\)/);
 });
 
 

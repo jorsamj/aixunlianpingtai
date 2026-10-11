@@ -24,6 +24,12 @@ test('independent night inspection menu and iframe cannot replace training platf
   await expect(page.frameLocator('#nightInspectionIsolated iframe').getByText('夜间离床风险智能研判大屏').first()).toBeVisible();
 
   const iframeTimeBefore=await page.frameLocator('#nightInspectionIsolated iframe').locator('body').evaluate(()=>performance.timeOrigin);
+  await page.frameLocator('#nightInspectionIsolated iframe').locator('body').evaluate(()=>{
+    const record=(kind,event)=>{document.documentElement.dataset['aiProbe'+kind]=String(event.target?.outerHTML||event.target?.nodeName||'').slice(0,160)};
+    window.addEventListener('pointerdown',event=>record('Pointer',event),true);
+    window.addEventListener('click',event=>record('WindowClick',event),true);
+    document.addEventListener('click',event=>record('DocumentClick',event),true);
+  });
   const frameNavEvents=[];
   const onFrameNavigated=frame=>{if(frame.parentFrame())frameNavEvents.push(frame.url())};
   page.on('framenavigated',onFrameNavigated);
@@ -37,7 +43,9 @@ test('independent night inspection menu and iframe cannot replace training platf
       activePages:[...document.querySelectorAll('.page.active')].map(node=>node.id),
       buttonActive:button?.classList.contains('active'),
       targetClass:target?.className,targetDisplay:target&&getComputedStyle(target).display,
-      bodyClass:document.body.className,ownerScripts:document.querySelectorAll('script').length,timeOrigin:performance.timeOrigin,observed:document.documentElement.dataset.aiNavObserved,after:document.documentElement.dataset.aiNavAfter,init:document.documentElement.dataset.aiNavInitialized,captured:document.documentElement.dataset.aiNavCaptured,firstNode:document.querySelector('[data-page="events"]')?.outerHTML?.slice(0,180),navCount:document.querySelectorAll('.sidebar .nav button[data-page="events"]').length};
+      bodyClass:document.body.className,ownerScripts:document.querySelectorAll('script').length,timeOrigin:performance.timeOrigin,
+      probePointer:document.documentElement.dataset.aiProbePointer,probeWindowClick:document.documentElement.dataset.aiProbeWindowClick,probeDocumentClick:document.documentElement.dataset.aiProbeDocumentClick,
+      hitTest:(()=>{const rect=button?.getBoundingClientRect();if(!rect)return null;const x=rect.left+rect.width/2,y=rect.top+rect.height/2;const hit=document.elementFromPoint(x,y);return {x,y,hit:hit?.outerHTML?.slice(0,160),withinButton:button.contains(hit),rect:rect.toJSON()};})(),observed:document.documentElement.dataset.aiNavObserved,after:document.documentElement.dataset.aiNavAfter,init:document.documentElement.dataset.aiNavInitialized,captured:document.documentElement.dataset.aiNavCaptured,firstNode:document.querySelector('[data-page="events"]')?.outerHTML?.slice(0,180),navCount:document.querySelectorAll('.sidebar .nav button[data-page="events"]').length};
   });
   console.log('[ai-foundation-nav-diagnostic]',JSON.stringify({...navDebug,iframeTimeBefore,frameNavEvents}));
   await expect(page.frameLocator('#nightInspectionIsolated iframe').locator('#events')).toBeVisible();

@@ -127,7 +127,7 @@ test('exact English source label reuses existing canonical code without recreati
     res.request().method() === 'POST' &&
     new URL(res.url()).pathname === `/api/v19/projects/${project.id}/import/jobs/${job.id}/start`
   );
-  await importDialog.getByRole('button', {name: '确认标签并开始导入'}).click();
+  await importDialog.getByRole('button', {name: '确认标签并导入'}).click();
   const startRequest = await startRequestPromise;
   const startResponse = await startResponsePromise;
   expect(startResponse.ok()).toBeTruthy();
@@ -209,7 +209,7 @@ test('explicit source label creation survives refresh and exact mapping is resto
     new URL(res.url()).pathname === `/api/v19/projects/${project.id}/import/jobs/${job.id}/start`
   );
 
-  await importDialog.getByRole('button', {name: '确认标签并开始导入'}).click();
+  await importDialog.getByRole('button', {name: '确认标签并导入'}).click();
   const startRequest = await startRequestPromise;
   const startResponse = await startResponsePromise;
   expect(startResponse.ok()).toBeTruthy();
