@@ -9116,6 +9116,23 @@ def list_algorithms_internal(project_id: str) -> List[Dict[str, Any]]:
                     fresh=job_report(project_id,v.get("job_id",""),sp)
                     if fresh: v["report"]=fresh; v["report_updated_at"]=now_iso(); changed=True
                 except Exception: pass
+            # Historical evaluations keep their persisted decision_id unchanged.
+            # Expose ONLY a read-only diagnosis projection from their frozen
+            # class metrics so the UI can flag older zero-TP safety classes.
+            old_eval = v.get("evaluation")
+            if isinstance(old_eval, dict) and old_eval.get("status") == "succeeded":
+                from platform_core.training_evaluation import build_iteration_decision
+                prior_decision = v.get("iteration_decision") or {}
+                projection = build_iteration_decision(
+                    old_eval,
+                    quality_gate=prior_decision.get("quality_gate") if isinstance(prior_decision, dict) else None,
+                )
+                v["evaluation_class_advisory"] = {
+                    "class_diagnostics": projection.get("class_diagnostics") or [],
+                    "critical_labels": projection.get("critical_labels") or [],
+                    "derived_from_evaluation_id": old_eval.get("evaluation_id") or "",
+                    "read_only": True,
+                }
     # A GET must never overwrite a concurrent rollback/current-pointer update.
     # Legacy defaults remain a read projection and are persisted on the next
     # explicit algorithm/version mutation through platform_core.algorithms.
