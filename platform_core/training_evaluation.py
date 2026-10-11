@@ -682,6 +682,7 @@ def build_evaluation_truth(
         "per_class": per_class,
         "weak_labels": weak_labels,
         "error_samples": error_samples,
+        "error_sample_count": max(len(error_samples), int(raw.get("error_sample_count") or 0)),
         "image_count": max(0, int(raw.get("image_count") or 0)),
         "ground_truth_box_count": max(0, int(raw.get("ground_truth_box_count") or 0)),
         "prediction_box_count": max(0, int(raw.get("prediction_box_count") or 0)),
@@ -732,10 +733,7 @@ def build_iteration_decision(
     per_class = [row for row in list(value.get("per_class") or []) if isinstance(row, Mapping)]
     total_fp = sum(max(0, int(row.get("false_positive") or 0)) for row in per_class)
     total_fn = sum(max(0, int(row.get("false_negative") or 0)) for row in per_class)
-    error_sample_count = len([
-        row for row in list(value.get("error_samples") or [])[:200]
-        if isinstance(row, Mapping)
-    ])
+    error_sample_count = max(0, int(value.get("error_sample_count") or 0), len(value.get("error_samples") or []))
 
     diagnoses: list[dict[str, Any]] = []
     critical_labels: list[str] = []
