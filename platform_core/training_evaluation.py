@@ -279,15 +279,6 @@ def evaluate_blind_detection(
         fn = [row for index, row in enumerate(image_targets) if index not in matched_targets]
         if fp or fn:
             width, height = dimensions[image_name]
-            def evidence_box(row: Mapping[str, Any], matched: bool, kind: str) -> dict[str, Any]:
-                return {
-                    "class_id": int(row["class_id"]),
-                    "label": _label_name(names, int(row["class_id"])),
-                    "box": [round(float(value), 3) for value in row["box"]],
-                    "matched": bool(matched),
-                    "kind": kind,
-                    **({"confidence": round(float(row["confidence"]), 6)} if kind == "prediction" else {}),
-                }
             error_samples.append({
                 "image": image_name,
                 "image_width": width,
@@ -296,19 +287,36 @@ def evaluate_blind_detection(
                 "fn_count": len(fn),
                 "fp_labels": sorted({_label_name(names, int(row["class_id"])) for row in fp}),
                 "fn_labels": sorted({_label_name(names, int(row["class_id"])) for row in fn}),
-                # The scorer has finished EVERY model prediction before reading
-                # hidden Test GT. This is diagnostic evidence, never training input.
-                "pred_boxes": [evidence_box(row, index in matched_predictions, "prediction")
-                               for index, row in enumerate(image_predictions[:120])],
-                "gt_boxes": [evidence_box(row, index in matched_targets, "ground_truth")
-                             for index, row in enumerate(image_targets[:120])],
-                "boxes_truncated": len(image_predictions) > 120 or len(image_targets) > 120,
+                # Keep lightweight per-image evidence until severity ranking.
+                # Only the top 200 images need costly box serialization.
+                "_matched_predictions": sorted(matched_predictions),
+                "_matched_targets": sorted(matched_targets),
             })
     # The old first-200 traversal hid later, more serious failures and reported
     # a false total. Keep all counts, persist only a bounded severity-ranked view.
     error_sample_count = len(error_samples)
     error_samples.sort(key=lambda row: (-row["fn_count"], -row["fp_count"], row["image"]))
     error_samples = error_samples[:200]
+    def evidence_box(row: Mapping[str, Any], matched: bool, kind: str) -> dict[str, Any]:
+        return {
+            "class_id": int(row["class_id"]),
+            "label": _label_name(names, int(row["class_id"])),
+            "box": [round(float(value), 3) for value in row["box"]],
+            "matched": bool(matched),
+            "kind": kind,
+            **({"confidence": round(float(row["confidence"]), 6)} if kind == "prediction" else {}),
+        }
+    for sample in error_samples:
+        name = sample["image"]
+        pred = predictions_by_image.get(name, [])
+        truth = targets_by_image.get(name, [])
+        matched_pred = set(sample.pop("_matched_predictions"))
+        matched_gt = set(sample.pop("_matched_targets"))
+        sample["pred_boxes"] = [evidence_box(row, index in matched_pred, "prediction")
+                                for index, row in enumerate(pred[:120])]
+        sample["gt_boxes"] = [evidence_box(row, index in matched_gt, "ground_truth")
+                              for index, row in enumerate(truth[:120])]
+        sample["boxes_truncated"] = len(pred) > 120 or len(truth) > 120
 
     weak_label_threshold = 0.75
     weak_labels = [
