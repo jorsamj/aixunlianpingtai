@@ -1350,3 +1350,9 @@ radial-gradient(circle at 1px 1px,rgba(148,163,184,.14) 1px,transparent 0) 0 0/1
 .evaluation429-legend input{width:18px;height:18px}
 .evaluation429-notice{padding:12px 14px;border-radius:10px;background:#fff7ed;color:#9a3412;font-size:13px}
 @media(max-width:700px){.modal:has(.evaluation429) .modal-card,.modal:has(.evaluation429-detail) .modal-card{width:100vw;max-width:100vw;max-height:100dvh;height:100dvh;border-radius:0}.modal:has(.evaluation429) .modal-body,.modal:has(.evaluation429-detail) .modal-body{max-height:calc(100dvh - 62px);padding:14px}.evaluation429 .report429-head{padding:16px}.evaluation429 .report429-head h2{font-size:21px}.evaluation429 .report429-card{padding:14px}.evaluation429-gallery-grid{grid-template-columns:1fr}.evaluation429-image-card{min-height:106px}.evaluation429-diagnosis-grid{grid-template-columns:1fr}.evaluation429-detail>header{display:block}.evaluation429-stage img{max-height:62dvh}}
+
+/* Overlay geometry belongs to the real rendered image, never the full modal. */
+.evaluation429-media{position:relative;display:inline-block;max-width:100%;line-height:0}
+.evaluation429-media img{display:block;width:auto;max-width:100%;height:auto;max-height:70dvh;object-fit:contain}
+.evaluation429-media .evaluation429-overlay{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+@media(max-width:700px){.evaluation429-media img{max-height:62dvh}}
