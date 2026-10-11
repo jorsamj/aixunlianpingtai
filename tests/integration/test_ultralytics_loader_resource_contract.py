@@ -111,3 +111,45 @@ def test_missing_reference_with_pinned_library_never_enters_asset_download(tmp_p
         train_model=object(), project_dir=project)
     assert invoked == [fake_torch]
     assert result.method == "cuda_numeric" and result.enabled and result.reference_model == ""
+
+
+
+def test_reference_preflight_blocks_download_and_restores_pinned_downloader(tmp_path, monkeypatch):
+    """Exercise the real v8.4.127 downloader import seam without requiring a GPU."""
+    from types import SimpleNamespace
+    import ultralytics
+    from ultralytics.engine import trainer
+    from ultralytics.utils import downloads
+    import ultralytics.utils as utils
+    from platform_core.training_precision import _reference_amp_check
+
+    check_file = tmp_path / "yolo26n.pt"
+    check_file.write_bytes(b"fixture")
+    (tmp_path / "bus.jpg").write_bytes(b"fixture")
+    monkeypatch.setattr(utils, "ASSETS", tmp_path)
+    loaded = []
+    monkeypatch.setattr(ultralytics, "YOLO", lambda path: loaded.append(path) or object())
+
+    class Model:
+        def to(self, device):
+            assert device == "cuda:0"
+            return self
+        def cpu(self):
+            return self
+
+    original_download = downloads.attempt_download_asset
+
+    def assert_no_network(model):
+        assert model is train_model.model
+        # This is the actual downloader that torch_safe_load imports at runtime.
+        with pytest.raises(FileNotFoundError, match="AMP_REFERENCE_DOWNLOAD_BLOCKED"):
+            downloads.attempt_download_asset("missing-check-weight.pt")
+        return True
+
+    monkeypatch.setattr(trainer, "check_amp", assert_no_network)
+    train_model = SimpleNamespace(model=Model())
+    assert not _reference_amp_check(None, ultralytics, train_model, check_file)
+    assert loaded == [str(check_file)]
+    assert downloads.attempt_download_asset is original_download
+    # Success is NOT claimed merely because a library function returned True:
+    # the original checker must also have emitted its passing result.
