@@ -1,3 +1,10 @@
+## 2026-10-12｜P0 后续核验：阈值可见、真实缩略图、评分匹配一致性（CI 待跑）
+
+- 最新分支已提交 P0 三类定向修复：置信度优先一对一 GT/预测匹配统一类别 TP/FP/FN 与逐图框证据；问题图片卡片改为真实冻结 Test 只读缩略图，不可读时不伪造图；原图失败时隐藏 GT/预测 SVG 防止脱离图片显示假证据。
+- 版本独立评测总体指标直接显示 `protocol.operating_conf` 与 `protocol.matching_iou`，区分 mAP 与固定阈值 TP/FP/FN；历史无可确认协议 mode 时显示「未记录」，不得暗填 0.25/0.5。
+- 增加真实重叠目标评分一致性单元测试、Chrome 缩略图及 409 失效保护、评测阈值和历史降级断言；static app/style cache key 更新。版本 42.24.350 不变。
+- P0 判定仍 BLOCKED：对应精确 HEAD Actions 若 queued/in_progress/failed 不算成功；真实 3 组业务 Test 素材、真 GPU/Storage、1k/10k/20k 压力仍未完成现场验收。P1 不得在这个 P0 门槛通过前当作已实现；未合并 main/tag/release/生产部署。
+
 ## 2026-10-12｜独立评测 P0 质量诊断与问题图片工作台（CI / 真机场景验收待核实）
 
 - 用户实测三类问题：person Recall 64% / FN4491、fire1 Recall 70.4% vs smoke1 83%、No_helmet TP0 / FN85；旧平台一律显示“需补充数据”，存在误导。本批只改善诊断与只读核验，未自动补样、未改训练数据冻结、不部署。

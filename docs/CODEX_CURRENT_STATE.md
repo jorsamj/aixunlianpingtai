@@ -1,3 +1,10 @@
+## 2026-10-12｜P0 后续核验：阈值可见、真实缩略图、评分匹配一致性（CI 待跑）
+
+- 最新分支已提交 P0 三类定向修复：置信度优先一对一 GT/预测匹配统一类别 TP/FP/FN 与逐图框证据；问题图片卡片改为真实冻结 Test 只读缩略图，不可读时不伪造图；原图失败时隐藏 GT/预测 SVG 防止脱离图片显示假证据。
+- 版本独立评测总体指标直接显示 `protocol.operating_conf` 与 `protocol.matching_iou`，区分 mAP 与固定阈值 TP/FP/FN；历史无可确认协议 mode 时显示「未记录」，不得暗填 0.25/0.5。
+- 增加真实重叠目标评分一致性单元测试、Chrome 缩略图及 409 失效保护、评测阈值和历史降级断言；static app/style cache key 更新。版本 42.24.350 不变。
+- P0 判定仍 BLOCKED：对应精确 HEAD Actions 若 queued/in_progress/failed 不算成功；真实 3 组业务 Test 素材、真 GPU/Storage、1k/10k/20k 压力仍未完成现场验收。P1 不得在这个 P0 门槛通过前当作已实现；未合并 main/tag/release/生产部署。
+
 ## 2026-10-10｜P0 Chrome 导航 Owner 收敛（待精确 HEAD CI 验收）
 
 - 核验长期分支基线 HEAD `13f27c7ff0ae2f2c7f75190b745bb0e4b028632f`、VERSION 42.24.350，现有 37 个 Actions 中仅 Frontend Runtime Stabilization 的 browser-navigation 失败（78/79 Chrome 测试通过）。

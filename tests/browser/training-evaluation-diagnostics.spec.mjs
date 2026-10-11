@@ -11,6 +11,8 @@ test('frozen evaluation diagnoses zero-TP class and previews real GT/FP/FN layer
     state.algorithms = [{id: 'diagnostic-algo', name: '安全帽异常检测', versions: [{
       id: 'version-1', version_name: 'V1', evaluation: {
         status: 'succeeded', snapshot_id: 'a'.repeat(64), image_count: 283,
+        protocol: {mode: 'blind_image_only_inference_then_hidden_ground_truth_scoring',
+          operating_conf: 0.25, matching_iou: 0.5},
         error_sample_count: 205,
         metrics: {'metrics/mAP50(B)': 0.298, 'metrics/recall(B)': 0.272},
         per_class: [{class_id: 0, label: 'No_helmet', precision: 0, recall: 0, map50: 0.002,
@@ -41,6 +43,8 @@ test('frozen evaluation diagnoses zero-TP class and previews real GT/FP/FN layer
   await expect(dialog).toBeVisible();
   await expect(dialog.locator('.evaluation429-diagnosis-grid')).toContainText('No_helmet');
   await expect(dialog.locator('.evaluation429-diagnosis-grid')).toContainText('关键类别未检出');
+  await expect(dialog).toContainText('Conf ≥ 0.250');
+  await expect(dialog).toContainText('IoU ≥ 0.500');
   await expect(dialog.locator('.evaluation429-gallery')).toContainText('共 205 张问题图片');
   await expect(dialog.locator('.evaluation429-image-card').first()).toContainText('highest-severity.jpg');
   await expect(dialog.locator('.evaluation429-thumb img')).toHaveCount(2);
@@ -74,6 +78,8 @@ test('legacy error records never invent GT overlays or silently claim a preview 
     }]}];
     window.openVersionEvaluation429('legacy-a','legacy-v');
   });
+  await expect(page.getByRole('dialog', {name: '独立评测'})).toContainText('Conf 未记录');
+  await expect(page.getByRole('dialog', {name: '独立评测'})).toContainText('IoU 未记录');
   await page.getByRole('dialog', {name: '独立评测'}).locator('.evaluation429-image-card').first().click();
   const preview = page.getByRole('dialog', {name: '问题图片核验'});
   await expect(preview).toContainText('历史评测仅有 FP/FN 数量');
