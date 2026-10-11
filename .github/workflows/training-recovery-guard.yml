@@ -108,7 +108,7 @@ jobs:
           grep -Fq 'job["task_error"] = durable.error' app.py
           grep -Fq 'old_resource_context = context.artifacts.read_json(' platform_core/training_recovery_tasks.py
           grep -Fq '"resource-context.json"' platform_core/training_recovery_tasks.py
-          grep -Fq "training-recovery-runtime.js?v=422603" static/main.mjs
+          grep -Fq "training-recovery-runtime.js?v=4226363" static/main.mjs
           grep -Eq 'main\.mjs\?v=[0-9]+(\.[0-9]+)*' static/index.html
           grep -Fq '100/100 epochs never grant recovery without backend recovery truth' tests/frontend/training-recovery-runtime.test.mjs
           if grep -F -n -E 'setTimeout\(|setInterval\(' static/modules/training-recovery-runtime.js; then
