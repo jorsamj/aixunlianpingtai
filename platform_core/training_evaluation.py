@@ -737,6 +737,40 @@ def build_iteration_decision(
         if isinstance(row, Mapping)
     ])
 
+    diagnoses: list[dict[str, Any]] = []
+    critical_labels: list[str] = []
+    for row in per_class:
+        label = str(row.get("label") or row.get("class_id") or "-")
+        gt = max(0, int(row.get("ground_truth_count") or 0))
+        tp = max(0, int(row.get("true_positive") or 0))
+        fp = max(0, int(row.get("false_positive") or 0))
+        fn = max(0, int(row.get("false_negative") or 0))
+        recall_value = _finite(row.get("recall"))
+        ap_value = _finite(row.get("map50"))
+        if gt > 0 and tp == 0 and fn > 0:
+            code, level = "zero_true_positives", "critical"
+            critical_labels.append(label)
+            next_steps = ["inspect_class_mapping", "inspect_prediction_threshold", "review_fp_fn_samples"]
+        elif gt > 0 and (recall_value < 0.75 or ap_value < 0.75):
+            code, level = "class_detection_below_reference", "warning"
+            next_steps = ["review_fp_fn_samples", "inspect_annotations", "review_training_coverage"]
+        elif gt == 0 and fp > 0:
+            code, level = "predicted_class_without_test_gt", "review"
+            next_steps = ["inspect_class_mapping", "review_fp_fn_samples"]
+        else:
+            continue
+        diagnoses.append({
+            "label": label, "class_id": int(row.get("class_id") or 0),
+            "code": code, "severity": level,
+            "true_positive": tp, "false_positive": fp, "false_negative": fn,
+            "ground_truth_count": gt,
+            "recall": round(recall_value, 6), "map50": round(ap_value, 6),
+            "recommended_actions": next_steps,
+            "root_cause_confirmed": False,
+        })
+    diagnoses.sort(key=lambda item: (0 if item["severity"] == "critical" else 1,
+                                     -item["false_negative"], item["label"]))
+
     reasons: list[str] = []
     actions: list[str] = []
     if evaluation_status == "not_requested":
@@ -751,10 +785,17 @@ def build_iteration_decision(
         decision = "review_required"
         reasons.append("decision_metric_unavailable")
         actions.append("review_evaluation_configuration")
+    elif critical_labels:
+        # A class with real GT and zero TP must never be sent directly to
+        # a supplement-data/ready-for-business flow without diagnosis.
+        decision = "review_required"
+        reasons.append("critical_class_zero_true_positives")
+        actions.extend(("inspect_class_mapping", "inspect_prediction_threshold", "review_fp_fn_samples"))
     elif weak_labels:
         decision = "needs_data"
         reasons.append("weak_labels_present")
-        actions.extend(("supplement_weak_label_data", "review_fp_fn_samples"))
+        actions.extend(("review_fp_fn_samples", "inspect_annotations", "review_training_coverage",
+                        "supplement_weak_label_data"))
         if continue_threshold > 0 and metric_value < continue_threshold:
             reasons.append("metric_below_continue_threshold")
     elif continue_threshold > 0 and metric_value < continue_threshold:
@@ -788,6 +829,8 @@ def build_iteration_decision(
             "stop_threshold": round(stop_threshold, 6),
         },
         "weak_labels": weak_labels,
+        "class_diagnostics": diagnoses[:100],
+        "critical_labels": critical_labels[:100],
         "signals": {
             "false_positive": total_fp,
             "false_negative": total_fn,
