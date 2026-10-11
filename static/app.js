@@ -3690,8 +3690,8 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     if(!e)return toast('该历史版本没有独立评测记录');
     const metrics=e.metrics||{},perClass=Array.isArray(e.per_class)?e.per_class:[],errors=Array.isArray(e.error_samples)?e.error_samples:[],weak=Array.isArray(e.weak_labels)?e.weak_labels:[];
 
-    const diagnosis=Array.isArray(v?.iteration_decision?.class_diagnostics)?v.iteration_decision.class_diagnostics:[];
-    const critical=Array.isArray(v?.iteration_decision?.critical_labels)?v.iteration_decision.critical_labels:[];
+    const diagnosis=Array.isArray(v?.evaluation_class_advisory?.class_diagnostics)?v.evaluation_class_advisory.class_diagnostics:(Array.isArray(v?.iteration_decision?.class_diagnostics)?v.iteration_decision.class_diagnostics:[]);
+    const critical=Array.isArray(v?.evaluation_class_advisory?.critical_labels)?v.evaluation_class_advisory.critical_labels:(Array.isArray(v?.iteration_decision?.critical_labels)?v.iteration_decision.critical_labels:[]);
     const order=state.eval429Order||'fn',pageSize=24;
     const rankedErrors=errors.map((row,index)=>({row,index})).sort((x,y)=>{
       const a=x.row,b=y.row;
@@ -3707,14 +3707,16 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     const errorsHtml=`<section class="report429-card evaluation429-gallery"><header><b>FP / FN 问题图片</b><span>共 ${errorCount} 张问题图片，最多展示 200 张高风险证据</span></header><div class="evaluation429-gallery-bar"><span>按严重程度筛选</span><select class="select" aria-label="问题图片排序" onchange="eval429SetOrder('${aid}','${vid}',this.value)"><option value="fn" ${order==='fn'?'selected':''}>漏检优先</option><option value="fp" ${order==='fp'?'selected':''}>误检优先</option><option value="total" ${order==='total'?'selected':''}>错误总数优先</option></select></div><div class="evaluation429-gallery-grid">${rankedErrors.slice(page*pageSize,(page+1)*pageSize).map(({row,index})=>`<button class="evaluation429-image-card" type="button" onclick="openEvaluationSample429('${aid}','${vid}',${index})"><span class="evaluation429-icon">▧</span><b title="${esc(row.image||'')}">${esc(row.image||'-')}</b><span class="evaluation429-counts"><i>漏检 ${Number(row.fn_count||0)}</i><i>误检 ${Number(row.fp_count||0)}</i></span><small>${esc([...(row.fn_labels||[]),...(row.fp_labels||[])].filter((x,i,a)=>a.indexOf(x)===i).join('、')||'-')}</small><em>查看原图与检测框 →</em></button>`).join('')||'<div class="empty">暂无 FP / FN 问题样本</div>'}</div><div class="evaluation429-pagination"><span>第 ${page+1} / ${totalPages} 页</span><button class="btn mini" ${page===0?'disabled':''} onclick="eval429SetPage('${aid}','${vid}',${page-1})">上一页</button><button class="btn mini" ${page>=totalPages-1?'disabled':''} onclick="eval429SetPage('${aid}','${vid}',${page+1})">下一页</button></div><p class="item-sub">图片仅用于错误审查；正式 Test Split 不直接回流训练。历史评测如缺框数据，详情将明确说明。</p></section>`;
     const status=({succeeded:'已完成',not_requested:'未配置独立试验集',failed:'评测失败'})[String(e.status||'').toLowerCase()]||String(e.status||'-');
     const decision=v?.iteration_decision||{},gate=decision.quality_gate||{},signals=decision.signals||{};
-    const decisionLabel=({ready_for_business_validation:'可进入业务验证',needs_data:'优先诊断薄弱类别',continue_training:'建议继续训练',review_required:'需优先核查'})[decision.decision]||'尚未形成决策';
+    const decisionLabel=critical.length&&decision.decision==='needs_data'?'历史补样决策 · 核查关键类别':(({ready_for_business_validation:'可进入业务验证',needs_data:'优先诊断薄弱类别',continue_training:'建议继续训练',review_required:'需优先核查'})[decision.decision]||'尚未形成决策');
     const actionLabel={proceed_to_business_validation:'进入业务验证',supplement_weak_label_data:'诊断后补充薄弱类别数据',supplement_training_data:'补充训练数据',review_fp_fn_samples:'复核 FP / FN 问题样本',inspect_class_mapping:'核查标签映射',inspect_prediction_threshold:'核查预测阈值',inspect_annotations:'检查标注',review_training_coverage:'核对训练素材覆盖',continue_from_current_version:'基于当前版本继续训练',configure_quality_gate:'配置训练质量门槛',configure_independent_test_split:'配置独立试验集',inspect_evaluation_failure:'检查评测失败原因',review_evaluation_configuration:'检查评测配置'};
     const m50=metrics['metrics/mAP50(B)'],m95=metrics['metrics/mAP50-95(B)'],precision=metrics['metrics/precision(B)'],recall=metrics['metrics/recall(B)'];
     const confirmed=v?.confirmed_iteration_action||null;
     const confirmedMatches=!!(confirmed&&confirmed.status==='confirmed'&&String(confirmed.source?.decision_id||'')===String(decision.decision_id||''));
     const confirmedLabel=({supplement_data:'补数据',continue_training:'继续训练',business_validation:'业务验证',manual_review:'人工处理'})[confirmed?.action]||'下一步';
     const resumeLabel=({supplement_data:'继续补数据',continue_training:'继续创建训练',business_validation:'继续业务验证',manual_review:'查看人工处理记录'})[confirmed?.action]||'继续处理';
-    const actionControl=confirmedMatches
+    const actionControl=critical.length&&decision.decision==='needs_data'&&!confirmedMatches
+      ?'<div class="evaluation429-notice">当前版本保留原有补样决策，但新诊断发现关键类别零检出。请先核查标签、阈值与问题图片，重新形成评测决策后再确认补样。</div>'
+      :confirmedMatches
       ?`<div class="alert ok iteration-action-confirmed429"><b>已确认：${esc(confirmedLabel)}</b><span>确认时间 ${esc(confirmed.confirmed_at||'-')} · 后续页面可随时从该版本恢复，不依赖临时页面状态。</span><div class="row end"><button class="btn primary iteration-action-resume429" onclick="resumeConfirmedIterationAction429('${aid}','${vid}')">${esc(resumeLabel)}</button></div></div>`
       :(decision.requires_confirmation===true?`<div class="row end"><button class="btn primary iteration-action-confirm429" onclick="confirmIterationAction429('${aid}','${vid}')">${esc(({needs_data:'确认准备补数据',continue_training:'确认继续训练',ready_for_business_validation:'确认进入业务验证',review_required:'确认人工处理'})[decision.decision]||'确认下一步')}</button></div>`:'');
     const effect=v?.feedback_adoption_outcome||{},effectRows=Array.isArray(effect.weak_label_effects)?effect.weak_label_effects:[],effectOverall=effect.overall_metrics||{},benchmark=e?.benchmark_scope||{};
