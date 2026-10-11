@@ -1,3 +1,13 @@
+## 2026-10-12｜独立评测 P0 质量诊断与问题图片工作台（CI / 真机场景验收待核实）
+
+- 用户实测三类问题：person Recall 64% / FN4491、fire1 Recall 70.4% vs smoke1 83%、No_helmet TP0 / FN85；旧平台一律显示“需补充数据”，存在误导。本批只改善诊断与只读核验，未自动补样、未改训练数据冻结、不部署。
+- `platform_core/training_evaluation.py`：全部图片先执行预测，完成后才读取隐藏 GT；收集完整 FP/FN 计数、图片尺寸、真实框/预测框/置信度/匹配状态，按 FN→FP 排序仅保留最严重 200 张（超 200 的真实图片数量仍计入 `error_sample_count`）；仅为 top200 生成框明细，防 20k 内存膨胀；历史无框记录不伪造框。零 TP 且 GT>0 的类别优先 `review_required`，附具体诊断 action 与未确认原因，不得假定“缺数据”。
+- `app.py`：新增严格只读 `.../versions/{version_id}/evaluation/images/{image_name}`，核验算法版本、评测问题图片白名单、冻结 Snapshot 身份及所属素材 SHA256；只读返回图像，禁止任意路径、训练回流；历史版本额外返回不持久化的 `evaluation_class_advisory`，不改旧 Decision ID。
+- `static/app.js` + `static/styles.css`：现有独立评测 owner 增加分类异常、严重错误列表、FN/FP 排序与 24 张/页、图片/GT/预测框独立显示；手机端字号及横向表格体验改善；图像无法验证时明确空态。旧版 critical + needs_data 的补样按钮被只读诊断提示替代，原持久化结果不重写。
+- 测试：`tests/unit/test_training_evaluation.py` 新增严重程度排序、205 张计数、框证据、No_helmet 0TP/fire1 差异；`tests/api/test_evaluation_diagnostic_image.py` 预览拒绝非法路径、非 test 图片、重复名和快照/摘要漂移；`tests/browser/training-evaluation-diagnostics.spec.mjs` Chrome 图层开关和历史无框退化。已接入 Remote Training Runtime 和 Frontend Runtime Stabilization workflows，确保跑到新增测试。
+- VERSION.txt 保持 `42.24.350`，不得合并 main/tag/release/生产部署。最终 HEAD 的 Actions `queued` 不等于通过，需 completed/success 后才确认；真正生产数据 GT 精度、图像存储兼容、A800/Worker 训练及 10k/20k 压力依旧待现场 UAT。
+- 详细方案与验收限制：`docs/EVALUATION_DIAGNOSTICS_P0_2026_10_12.md`。
+
 ## 2026-10-11｜Worker 离线 AMP / FP16 决议与 AI 底座 iframe 点击保护（真实 A800 验收待执行）
 
 - 保持 VERSION.txt=42.24.350、唯一长期分支；控制端、本地 Worker、远程 Agent 均复用 `train_worker.py` 和已有 `platform_core/training_precision.py`。实际 CUDA Worker 在训练开始前预检：本地存在 yolo26n.pt 时先验证模型、执行 Ultralytics 8.4.127 原生 check_amp；无模型时执行无额外权重的 CUDA FP16 前向/反向/GradScaler 数值检查；失败自动回退 FP32。检查只允许读取本地资源，限定作用域拦截 AMP asset downloader 与 Trainer check_amp，finally 恢复；不得将跳过检查误记为通过。
