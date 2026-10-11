@@ -10656,6 +10656,56 @@ def _algorithm_version_for_action(project_id: str, algorithm_id: str, version_id
     return algorithm, version
 
 
+
+@app.get("/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/evaluation/images/{image_name}")
+def evaluation_diagnostic_image_v1(project_id: str, algorithm_id: str, version_id: str, image_name: str):
+    """Read-only frozen Test Split preview, never a source of training candidates.
+
+    Authorize the version/evaluation and the exact snapshot/material digest
+    before returning bytes. Historical or unbound test snapshots fail closed.
+    """
+    algorithm, version = _algorithm_version_for_action(project_id, algorithm_id, version_id)
+    evaluation = version.get("evaluation") or {}
+    if not isinstance(evaluation, dict) or evaluation.get("status") != "succeeded":
+        raise HTTPException(status_code=404, detail="评测记录不存在")
+    if image_name != Path(image_name).name or not image_name or image_name in {".", ".."}:
+        raise HTTPException(status_code=404, detail="评测图片不存在")
+    matches = [row for row in list(evaluation.get("error_samples") or [])
+               if isinstance(row, dict) and row.get("image") == image_name]
+    if len(matches) != 1:
+        raise HTTPException(status_code=404, detail="图片不属于本版本的问题样本")
+    snapshot_id = str(evaluation.get("snapshot_id") or "").lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", snapshot_id):
+        raise HTTPException(status_code=409, detail="历史评测缺少可验证的冻结快照")
+    path = project_dir(project_id) / "snapshots" / f"{snapshot_id}.json"
+    snapshot = read_json(path, {}) if path.is_file() else {}
+    if snapshot.get("snapshot_id") != snapshot_id:
+        raise HTTPException(status_code=409, detail="冻结快照身份已变化")
+    ids = snapshot.get("test_image_ids")
+    if ids is None and isinstance(snapshot.get("ids"), dict):
+        ids = snapshot["ids"].get("test")
+    test_ids = tuple(dict.fromkeys(str(x) for x in (ids or []) if str(x)))
+    if not test_ids or len(test_ids) > 30000:
+        raise HTTPException(status_code=409, detail="冻结测试集身份无法验证")
+    frozen = {str(row.get("image_id")): row for row in (snapshot.get("images") or [])
+              if isinstance(row, dict) and str(row.get("image_id") or "") in test_ids}
+    material_rows = MaterialRepository(project_dir(project_id)).get_many(test_ids)
+    candidates = [row for row in material_rows if str(row.get("id") or "") in frozen
+                  and str(row.get("stored_name") or "") == image_name
+                  and str(row.get("content_sha256") or "").lower() ==
+                      str(frozen[str(row.get("id"))].get("content_sha256") or "").lower()
+                  and str(row.get("content_sha256") or "")]
+    if len(candidates) != 1:
+        raise HTTPException(status_code=409, detail="冻结图片不存在或其内容已变化，不能预览")
+    manager = storage_manager(project_id)
+    try:
+        material = manager.material(str(candidates[0]["id"]))
+        resolved = manager.materialize(material)
+    except StorageError as error:
+        _raise_storage_error(error, status_code=404 if error.code in {"MATERIAL_NOT_FOUND", "STORAGE_OBJECT_NOT_FOUND"} else 503)
+    return FileResponse(resolved.path, headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
+
+
 @app.post("/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/iteration-actions/confirm")
 def confirm_iteration_action(project_id: str, algorithm_id: str, version_id: str,
                              payload: ConfirmIterationActionReq):
