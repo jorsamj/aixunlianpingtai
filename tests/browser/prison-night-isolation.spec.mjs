@@ -18,6 +18,7 @@ test('independent night inspection menu and iframe cannot replace training platf
   await expect(page.locator('body')).not.toHaveClass(/sidebar-collapsed/);
   await expand.click();
   await expect(page.locator('body')).toHaveClass(/sidebar-collapsed/);
+  await expect.poll(()=>page.locator('.main').evaluate(node=>getComputedStyle(node).transitionDuration)).toBe('0s');
   const frame=page.locator('#nightInspectionIsolated iframe');
   await expect(frame).toHaveAttribute('sandbox','allow-scripts allow-modals');
   await expect(frame).toHaveAttribute('title','AI算法底座（独立演示）');

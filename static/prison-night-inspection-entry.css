@@ -25,3 +25,7 @@ body:has(#nightInspectionIsolated) .ai-foundation-menu-toggle::before{content:'�
 body:has(#nightInspectionIsolated) .ai-foundation-menu-toggle::after{content:'收起平台菜单'}
 body.sidebar-collapsed:has(#nightInspectionIsolated) .ai-foundation-menu-toggle::after{content:'展开平台菜单'}
 @media(max-width:900px){body:has(#nightInspectionIsolated) .ai-foundation-menu-toggle{display:none}}
+
+/* During AI foundation menu collapse, a moving iframe can lose a pointer sequence.
+   Keep the isolated iframe stationary while the user navigates inside it. */
+body:has(#nightInspectionIsolated) .main{transition:none!important}

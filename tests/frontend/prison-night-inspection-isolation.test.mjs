@@ -25,6 +25,7 @@ test('the imported demo cannot access or pollute the parent DOM, CSS or storage'
   assert.match(html,/__nightDemoStorage/);
   assert.doesNotMatch(html,/(^|[^\w])localStorage(?:\.|\[)/);
   assert.match(css,/#nightInspectionIsolated iframe/);
+  assert.match(css,/body:has\(#nightInspectionIsolated\) \.main\{transition:none!important\}/);
   assert.doesNotMatch(entry,/TrainingSubmit|MaterialBatch|PollRegistry|setInterval|setTimeout/);
   assert.match(entry,/aria-label="AI算法底座"/);
   assert.match(entry,/classList.add\('sidebar-collapsed'\)/);
