@@ -92,3 +92,54 @@ def test_duplicate_source_filenames_are_not_ambiguously_served(monkeypatch, tmp_
     with pytest.raises(HTTPException) as ex:
         platform.evaluation_diagnostic_image_v1("evaluation-project", "algo", "v1", image.name)
     assert ex.value.status_code == 409
+
+
+def test_20k_named_frozen_test_preview_only_fetches_one_material(monkeypatch, tmp_path):
+    platform, version, rows, root, image = _setup(monkeypatch, tmp_path)
+    snapshot_path = root / "snapshots" / ("a" * 64 + ".json")
+    snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    snapshot["images"][0]["stored_name"] = image.name
+    snapshot["images"][1]["stored_name"] = "train.jpg"
+    for index in range(20_000):
+        image_id = f"test-other-{index:05d}"
+        snapshot["test_image_ids"].append(image_id)
+        snapshot["images"].append({
+            "image_id": image_id, "stored_name": f"test-other-{index:05d}.jpg",
+            "content_sha256": "d" * 64,
+        })
+    snapshot_path.write_text(json.dumps(snapshot), encoding="utf-8")
+    original = platform.MaterialRepository
+    read_ids = []
+    class ObservedRepository(original):
+        def get_many(self, ids):
+            read_ids.append(tuple(ids))
+            return super().get_many(ids)
+    monkeypatch.setattr(platform, "MaterialRepository", ObservedRepository)
+
+    result = platform.evaluation_diagnostic_image_v1("evaluation-project", "algo", "v1", image.name)
+    assert Path(result.path) == image
+    assert read_ids == [("test-image",)]
+
+
+def test_legacy_unnamed_frozen_test_preview_reads_bounded_batches(monkeypatch, tmp_path):
+    platform, version, rows, root, image = _setup(monkeypatch, tmp_path)
+    snapshot_path = root / "snapshots" / ("a" * 64 + ".json")
+    snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    for index in range(1_201):
+        image_id = f"legacy-{index:05d}"
+        snapshot["test_image_ids"].append(image_id)
+        snapshot["images"].append({"image_id": image_id, "content_sha256": "d" * 64})
+    snapshot_path.write_text(json.dumps(snapshot), encoding="utf-8")
+    original = platform.MaterialRepository
+    calls = []
+    class ObservedRepository(original):
+        def get_many(self, ids):
+            calls.append(tuple(ids))
+            assert len(ids) <= 500
+            return super().get_many(ids)
+    monkeypatch.setattr(platform, "MaterialRepository", ObservedRepository)
+
+    result = platform.evaluation_diagnostic_image_v1("evaluation-project", "algo", "v1", image.name)
+    assert Path(result.path) == image
+    assert len(calls) == 3
+    assert sum(len(ids) for ids in calls) == len(snapshot["test_image_ids"])

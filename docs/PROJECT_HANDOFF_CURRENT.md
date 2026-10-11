@@ -1,3 +1,10 @@
+## 2026-10-12｜P0 图片预览 20k 性能与冻结身份最小修复（CI 待验）
+
+- 复核只读图片预览接口发现：`image_id in test_ids` 在 20k Test IDs 的 tuple 内执行 20k 次，形成 O(N²)；随后单次 API `MaterialRepository.get_many(test_ids)` 反复读取最多 20k 材料，图片卡片 24 张会倍增 DB 压力，老 SQLite 还可能因 IN 占位符过多失败。
+- 保持原 Snapshot/Material/Storage Owner，不建索引缓存第二真相：先用 Test ID set 做快照成员校验；要求 Snapshot 内 Test 身份完整、不可重复。V3 snapshot `stored_name` 完备时，仅将唯一名称对应的冻结 image_id 发给现有 `get_many`；历史无名 snapshot 退化为 500 ID 分批读取，继续执行原素材 SHA256 和身份校验。
+- API 回归新增 20,002 Test IDs 的精确单素材读取，以及 1,203 历史无名 Test IDs 的 500 分批读取，保留已有跨版本/非法路径/摘要漂移用例。此处 20k 是结构与调用计数测试，不代表真 OSS/真 GPU/真 20k 性能压测已通过。
+- HEAD 最终 Actions completed/success 与现场 UAT 仍待核验；P1 仍未进入，禁止 main/tag/release/生产部署。
+
 ## 2026-10-12｜P0 后续核验：阈值可见、真实缩略图、评分匹配一致性（CI 待跑）
 
 - 最新分支已提交 P0 三类定向修复：置信度优先一对一 GT/预测匹配统一类别 TP/FP/FN 与逐图框证据；问题图片卡片改为真实冻结 Test 只读缩略图，不可读时不伪造图；原图失败时隐藏 GT/预测 SVG 防止脱离图片显示假证据。

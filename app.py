@@ -10704,9 +10704,26 @@ def evaluation_diagnostic_image_v1(project_id: str, algorithm_id: str, version_i
     test_ids = tuple(dict.fromkeys(str(x) for x in (ids or []) if str(x)))
     if not test_ids or len(test_ids) > 30000:
         raise HTTPException(status_code=409, detail="冻结测试集身份无法验证")
-    frozen = {str(row.get("image_id")): row for row in (snapshot.get("images") or [])
-              if isinstance(row, dict) and str(row.get("image_id") or "") in test_ids}
-    material_rows = MaterialRepository(project_dir(project_id)).get_many(test_ids)
+    # Set lookup avoids O(Test^2) membership scans at 10k/20k scale.
+    test_id_set = set(test_ids)
+    frozen_rows = [row for row in (snapshot.get("images") or [])
+                   if isinstance(row, dict) and str(row.get("image_id") or "") in test_id_set]
+    frozen = {str(row["image_id"]): row for row in frozen_rows}
+    if len(frozen_rows) != len(test_ids) or len(frozen) != len(test_ids):
+        raise HTTPException(status_code=409, detail="冻结测试集图片身份不完整")
+    # V3 frozen snapshots carry stored_name. Resolve a unique frozen ID
+    # before querying MaterialRepository; legacy snapshots use bounded reads.
+    if all(str(row.get("stored_name") or "") for row in frozen.values()):
+        selected_ids = [image_id for image_id, row in frozen.items()
+                        if str(row.get("stored_name")) == image_name]
+        if len(selected_ids) != 1:
+            raise HTTPException(status_code=409, detail="冻结图片文件名不唯一或已变化")
+    else:
+        selected_ids = list(test_ids)
+    repository = MaterialRepository(project_dir(project_id))
+    material_rows = []
+    for offset in range(0, len(selected_ids), 500):
+        material_rows.extend(repository.get_many(selected_ids[offset:offset + 500]))
     candidates = [row for row in material_rows if str(row.get("id") or "") in frozen
                   and str(row.get("stored_name") or "") == image_name
                   and str(row.get("content_sha256") or "").lower() ==
