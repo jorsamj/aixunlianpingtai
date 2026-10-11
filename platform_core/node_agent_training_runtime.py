@@ -1123,6 +1123,13 @@ class AgentTrainingRunner:
             "resolved_resources",
             "runtime_resources",
             "actual_train_params",
+            "resolved_precision",
+            "runtime_precision",
+            "requested_precision",
+            "amp_preflight",
+            "amp_check_method",
+            "amp_check_result",
+            "precision_fallback_reason",
             "progress_percent",
             "finished_at",
         )

@@ -977,7 +977,9 @@ def main():
         train_args["amp"] = bool(amp_decision.enabled)
         runtime_precision = "fp16" if amp_decision.enabled else "fp32"
         fallback_reason = amp_decision.reason if amp_value and not amp_decision.enabled else ""
+        user_precision = (read_json(job_file, {}).get("requested_resources") or {}).get("precision") or precision
         update_job(job_file,
+                   requested_precision=str(user_precision),
                    amp_preflight=amp_decision.to_dict(),
                    amp_check_method=amp_decision.method,
                    amp_check_result=amp_decision.result,
