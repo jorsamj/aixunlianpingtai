@@ -250,7 +250,7 @@ test('ZIP modal shows selected task only and batch upload uses independent contr
   const source=readFileSync(new URL('../../static/modules/zip-import-runtime.js',import.meta.url),'utf8');
   assert.doesNotMatch(source,/zipBatchQueueList/);
   assert.doesNotMatch(source,/function queueRowsMarkup/);
-  assert.match(source,/batchTransfers\.set\(item\.id,control\)/);
+  assert.match(source,/batchTransfers\.set\(id,control\)/);
   assert.match(source,/await mapZipUploadsConcurrent\(files/);
   assert.match(source,/const session=await createZipUploadSession\(project,file/);
   assert.match(source,/let selectionMounted=false/);
