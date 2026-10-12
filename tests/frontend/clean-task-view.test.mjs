@@ -292,6 +292,16 @@ test('clean retry source changes invalidate both entrypoint and cleaning module 
     appCacheVersion[1].localeCompare('42.25.315', undefined, {numeric: true}) >= 0,
     '清洗重试修复后的 app.js 缓存版本不能回退',
   );
-  assert.ok(html.includes('/static/main.mjs?v=42.25.364'));
-  assert.ok(main.includes('./modules/cleaning.js?v=422569'));
+  const mainCacheVersion = html.match(/\/static\/main\.mjs\?v=(\d+(?:\.\d+){2})/);
+  assert.ok(mainCacheVersion, '正式入口必须为 main.mjs 设置版本缓存键');
+  assert.ok(
+    mainCacheVersion[1].localeCompare('42.25.364', undefined, {numeric: true}) >= 0,
+    '清洗重试修复后的 main.mjs 缓存版本不能回退',
+  );
+  const cleaningCacheVersion = main.match(/\.\/modules\/cleaning\.js\?v=(\d+)/);
+  assert.ok(cleaningCacheVersion, '正式主模块必须为 cleaning.js 设置版本缓存键');
+  assert.ok(
+    Number(cleaningCacheVersion[1]) >= 422569,
+    '清洗重试修复后的 cleaning.js 缓存版本不能回退',
+  );
 });
