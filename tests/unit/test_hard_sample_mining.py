@@ -110,3 +110,40 @@ def test_changed_model_hash_fails_before_loading_or_downloading(monkeypatch, tmp
             "mining_model_path": str(model),
             "mining_model_sha256": "f" * 64, "labels": ["person"],
         }, {"width": 100, "height": 100})
+
+
+def test_confidence_first_formal_gt_detects_both_fp_and_fn_without_guessing_cause():
+    from platform_core.hard_sample_mining import compare_formal_gt
+
+    gt = [
+        {"label": "person", "x1": 20, "y1": 20, "x2": 60, "y2": 60},
+        {"label": "person", "x1": 40, "y1": 20, "x2": 80, "y2": 60},
+    ]
+    predictions = [
+        {"label": "person", "box": [30, 20, 70, 60], "confidence": 0.95},
+        {"label": "person", "box": [20, 20, 60, 60], "confidence": 0.65},
+    ]
+    assert compare_formal_gt(predictions, gt) == {
+        "true_positive": 1, "false_positive": 1, "false_negative": 1,
+    }
+
+
+def test_formal_gt_requires_complete_label_scope_before_claiming_comparison(monkeypatch, tmp_path):
+    from platform_core.hard_sample_mining import inspect_formal_annotation
+
+    class Repository:
+        def __init__(self, path):
+            assert Path(path) == tmp_path
+        def get(self, image_id):
+            return {"annotation_state": "annotated",
+                    "annotation_scope": ["person"],
+                    "boxes": [{"label": "person", "x1": 5, "y1": 5, "x2": 30, "y2": 30}]}
+    monkeypatch.setattr("platform_core.annotation_repository.AnnotationRepository", Repository)
+    base = difficulty_signals([], width=100, height=100)
+    incomplete = inspect_formal_annotation(tmp_path, "sample", [], ["person", "helmet"], base)
+    assert incomplete["ground_truth_compared"] is False
+    complete = inspect_formal_annotation(tmp_path, "sample", [], ["person"], base)
+    assert complete["ground_truth_compared"] is True
+    assert complete["gt_comparison"]["false_negative"] == 1
+    assert "gt_disagreement_fn" in complete["signals"]
+    assert complete["root_cause_confirmed"] is False

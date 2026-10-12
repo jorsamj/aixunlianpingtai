@@ -146,6 +146,7 @@ def run_ai_annotation(
         if current != frozen_hashes:
             raise HardSampleSafetyError("HARD_SAMPLE_SOURCE_CHANGED")
         assert_not_frozen_test(project_dir(context.task.project_id), image_ids, current)
+        runtime_request["_project_dir"] = str(project_dir(context.task.project_id))
         from .hard_sample_mining import sha256_file
         snapshot_id = str(runtime_request.get("mining_snapshot_id") or "")
         expected = str(runtime_request.get("mining_snapshot_sha256") or "").lower()
@@ -235,7 +236,7 @@ def run_ai_annotation(
                     **{key: generated.get(key) for key in (
                         "raw_response_hash", "request_id", "latency_ms", "provider", "model",
                         "hard_sample_signals", "hard_sample_priority",
-                        "ground_truth_compared", "root_cause_confirmed",
+                        "ground_truth_compared", "gt_comparison", "root_cause_confirmed",
                     ) if generated.get(key) is not None and generated.get(key) != ""},
                 }
                 next_succeeded = succeeded + 1

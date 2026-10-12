@@ -116,6 +116,89 @@ def difficulty_signals(
     }
 
 
+
+def compare_formal_gt(
+    predictions: Sequence[Mapping[str, Any]],
+    formal_boxes: Sequence[Mapping[str, Any]],
+    *,
+    operating_conf: float = 0.25,
+    matching_iou: float = 0.5,
+) -> dict[str, int]:
+    """Confidence-first one-to-one GT comparison on already-reviewed training data."""
+    def overlap(a, b):
+        x1, y1 = max(a[0], b[0]), max(a[1], b[1])
+        x2, y2 = min(a[2], b[2]), min(a[3], b[3])
+        intersection = max(0.0, x2 - x1) * max(0.0, y2 - y1)
+        aa = max(0.0, a[2] - a[0]) * max(0.0, a[3] - a[1])
+        bb = max(0.0, b[2] - b[0]) * max(0.0, b[3] - b[1])
+        return intersection / max(1e-12, aa + bb - intersection)
+
+    truth = [
+        {"label": str(box.get("label") or ""),
+         "box": [float(box[k]) for k in ("x1", "y1", "x2", "y2")]}
+        for box in formal_boxes
+        if all(k in box for k in ("x1", "y1", "x2", "y2"))
+    ]
+    operating = sorted(
+        [row for row in predictions if float(row.get("confidence") or 0) >= operating_conf],
+        key=lambda row: -float(row.get("confidence") or 0),
+    )
+    matched = set()
+    tp = 0
+    for prediction in operating:
+        label = str(prediction.get("label") or "")
+        best, best_iou = None, -1.0
+        for i, gt in enumerate(truth):
+            if i in matched or gt["label"] != label:
+                continue
+            candidate = overlap(prediction["box"], gt["box"])
+            if candidate >= matching_iou and candidate > best_iou:
+                best, best_iou = i, candidate
+        if best is not None:
+            matched.add(best)
+            tp += 1
+    return {"true_positive": tp, "false_positive": len(operating)-tp,
+            "false_negative": len(truth)-tp}
+
+
+def inspect_formal_annotation(
+    project_path: str | Path,
+    image_id: str,
+    predictions: Sequence[Mapping[str, Any]],
+    label_scope: Sequence[str],
+    initial_signals: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Read formal training GT only after inference; incomplete scopes stay unverified."""
+    from .annotation_repository import AnnotationRepository
+    record = AnnotationRepository(project_path).get(str(image_id))
+    if not isinstance(record, dict):
+        return dict(initial_signals)
+    scope = set(str(v) for v in record.get("annotation_scope") or [])
+    state = str(record.get("annotation_state") or "").lower()
+    if state not in {"annotated", "confirmed_empty"} or (
+        "*" not in scope and not set(label_scope).issubset(scope)
+    ):
+        return dict(initial_signals)
+    stats = compare_formal_gt(predictions, record.get("boxes") or [])
+    signals = list(initial_signals.get("signals") or [])
+    if stats["false_positive"]:
+        signals.append("gt_disagreement_fp")
+    if stats["false_negative"]:
+        signals.append("gt_disagreement_fn")
+    if not predictions and stats["false_negative"] == 0:
+        signals = [code for code in signals if code != "no_detection_unverified"]
+    return {
+        **dict(initial_signals),
+        "signals": list(dict.fromkeys(signals)),
+        "review_priority": min(100, int(initial_signals.get("review_priority") or 0)
+                               + 25 * int(bool(stats["false_positive"]))
+                               + 30 * int(bool(stats["false_negative"]))),
+        "ground_truth_compared": True,
+        "gt_comparison": stats,
+        "root_cause_confirmed": False,
+    }
+
+
 def infer_with_frozen_yolo(request: dict[str, Any], image: Mapping[str, Any]) -> dict[str, Any]:
     """Worker-only inference on a locally available, SHA-frozen trained PT.
 
@@ -167,7 +250,7 @@ def infer_with_frozen_yolo(request: dict[str, Any], image: Mapping[str, Any]) ->
                 raise HardSampleSafetyError("HARD_SAMPLE_UNKNOWN_MODEL_CLASS")
             x1, y1, x2, y2 = [float(value) for value in coord]
             label = names[class_id]
-            row = {"box": [x1, y1, x2, y2], "confidence": float(conf)}
+            row = {"box": [x1, y1, x2, y2], "confidence": float(conf), "label": label}
             predictions.append(row)
             candidates.append({
                 "id": hashlib.sha256(f"{image.get('id')}:{index}:{model_hash}".encode()).hexdigest()[:16],
@@ -178,12 +261,18 @@ def infer_with_frozen_yolo(request: dict[str, Any], image: Mapping[str, Any]) ->
             })
     signals = difficulty_signals(predictions, width=int(image.get("width") or 0),
                                  height=int(image.get("height") or 0))
+    if request.get("_project_dir"):
+        signals = inspect_formal_annotation(
+            str(request["_project_dir"]), str(image.get("id") or ""),
+            predictions, list(names.values()), signals,
+        )
     return {
         "boxes": candidates,
         "provider": "ultralytics",
         "model": str(request.get("mining_version_id") or ""),
         "hard_sample_signals": signals["signals"],
         "hard_sample_priority": signals["review_priority"],
-        "ground_truth_compared": False,
+        "ground_truth_compared": bool(signals["ground_truth_compared"]),
+        "gt_comparison": signals.get("gt_comparison"),
         "root_cause_confirmed": False,
     }
