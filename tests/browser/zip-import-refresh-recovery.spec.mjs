@@ -220,3 +220,44 @@ test('explicit source label creation survives refresh and exact mapping is resto
   // The retired single-task ZIP dock must stay hidden when the unified task center owns visibility.
   await expect(page.locator('#zipImportDurableDock')).toBeHidden();
 });
+
+test('two selected ZIP archives upload their multipart data concurrently while label review stays single-task',async({page,request})=>{
+  const project=await createProject(request);
+  await selectIsolatedTestProject(page,project.id);
+  await page.goto('/');
+  await expect.poll(()=>page.evaluate(()=>Boolean(window.ZipImportRuntime?.uploadBatch))).toBe(true);
+  const urls=[];
+  let releaseUploads;
+  const gate=new Promise(resolve=>{releaseUploads=resolve});
+  await page.route('**/api/v19/projects/*/import/uploads/*/parts/*',async route=>{
+    const url=new URL(route.request().url());
+    if(url.pathname.includes('/projects/'+project.id+'/')) {
+      urls.push(url.pathname);
+      await gate;
+    }
+    await route.continue();
+  });
+  const makeArchive=label=>storedZip([
+    ['images/train/'+label+'.jpg',Buffer.from('sample-image-content')],
+    ['data.yaml',Buffer.from('train: images/train\\nnames: ['+label+']\\n')],
+  ]);
+  try{
+    await page.evaluate(()=>window.importData());
+    await page.locator('#importFile').setInputFiles([
+      {name:'parallel-one.zip',mimeType:'application/zip',buffer:makeArchive('helmet')},
+      {name:'parallel-two.zip',mimeType:'application/zip',buffer:makeArchive('smoke')},
+    ]);
+    await page.evaluate(()=>{void window.doImportUploadV19()});
+    await expect.poll(()=>new Set(urls.map(url=>url.split('/import/uploads/')[1]?.split('/')[0])).size,{timeout:30000}).toBe(2);
+    const dialog=page.getByRole('dialog',{name:'ZIP 数据导入'});
+    await expect(dialog).toBeVisible();
+    await expect(dialog.locator('#zipBatchQueueList')).toHaveCount(0);
+  }finally{
+    releaseUploads();
+  }
+  await expect.poll(async()=>page.evaluate(()=>{
+    const names=window.ZipImportRuntime?.snapshot?.().jobs.map(job=>job.file_name)||[];
+    return ['parallel-one.zip','parallel-two.zip'].filter(name=>names.includes(name)).length;
+  }),{timeout:30000}).toBe(2);
+  await expect(page.locator('.zip-label-confirm')).toHaveCount(1,{timeout:30000});
+});
