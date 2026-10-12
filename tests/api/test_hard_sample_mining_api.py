@@ -15,6 +15,11 @@ def _setup(monkeypatch, tmp_path: Path):
     path.write_bytes(b"trusted pretrained weight fixture")
     project = tmp_path / "project"
     (project / "snapshots").mkdir(parents=True)
+    (project / "snapshots" / ("c" * 64 + ".json")).write_text(json.dumps({
+        "snapshot_id": "c" * 64,
+        "label_schema": [{"code": "person", "class_id": 0}],
+        "test_image_ids": [], "images": [],
+    }), encoding="utf-8")
 
     rows = [
         {"id": "training-a", "content_sha256": "a" * 64,
@@ -40,7 +45,8 @@ def _setup(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(platform, "get_project", lambda _: {"id": "project"})
     monkeypatch.setattr(platform, "project_dir", lambda _: project)
     monkeypatch.setattr(platform, "_algorithm_version_for_action",
-                        lambda p, a, v: ({"id": a}, {"id": v, "best_path": str(path)}))
+                        lambda p, a, v: ({"id": a}, {"id": v, "best_path": str(path),
+                                              "snapshot_id": "c" * 64}))
     monkeypatch.setattr(platform, "material_store", lambda _: Material())
     monkeypatch.setattr(platform, "_annotation_label_catalog",
                         lambda _: [{"code": "person", "class_id": 0}])
@@ -66,6 +72,8 @@ def test_one_durable_annotation_task_is_created_for_existing_training_material(m
     assert request["source_hashes"] == {"training-a": "a" * 64}
     assert request["labels"] == ["person"]
     assert request["overwrite"] is False
+    assert request["mining_snapshot_id"] == "c" * 64
+    assert request["mining_snapshot_sha256"]
     assert request["mining_model_sha256"]
     assert len(tasks) == 1
 

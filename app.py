@@ -21534,14 +21534,29 @@ def _enqueue_hard_sample_mining(
         assert_not_frozen_test(project_dir(project_id), requested, source_hashes)
     except HardSampleSafetyError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
-    # The frozen model's class names must match canonical label codes on the
-    # Worker. No class_id guessing, silent alias mapping or auto-GT import.
-    labels = [
-        str(row["code"]) for row in _annotation_label_catalog(get_project(project_id))
-        if str(row.get("code") or "")
-    ]
-    if not labels:
-        raise HTTPException(status_code=409, detail="项目没有可用的正式标签")
+    # Scope a human confirmation to the source model's TRAINING schema,
+    # not every label on the project. Never mis-mark unrelated labels empty.
+    snapshot_id = str(version.get("snapshot_id") or "").lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", snapshot_id):
+        raise HTTPException(status_code=409, detail="算法版本缺少可信训练标签快照")
+    snapshot_path = project_dir(project_id) / "snapshots" / f"{snapshot_id}.json"
+    source_snapshot = read_json(snapshot_path, {}) if snapshot_path.is_file() else {}
+    if (not isinstance(source_snapshot, dict)
+        or source_snapshot.get("snapshot_id") != snapshot_id
+        or not isinstance(source_snapshot.get("label_schema"), list)):
+        raise HTTPException(status_code=409, detail="算法版本的冻结标签结构无法验证")
+    labels = list(dict.fromkeys(
+        str(row.get("code") or "").strip()
+        for row in source_snapshot["label_schema"]
+        if isinstance(row, dict) and str(row.get("code") or "").strip()
+    ))
+    active_codes = {
+        str(row.get("code") or "")
+        for row in _annotation_label_catalog(get_project(project_id))
+    }
+    if not labels or not set(labels).issubset(active_codes):
+        raise HTTPException(status_code=409, detail="冻结模型标签与当前 canonical 标签不一致，请先核查")
+    snapshot_hash = sha256_file(snapshot_path)
     digest = sha256_file(path)
     identity = {
         "algorithm_id": str(algorithm_id),
@@ -21575,6 +21590,8 @@ def _enqueue_hard_sample_mining(
         "mining_version_id": str(version_id),
         "mining_model_path": str(path),
         "mining_model_sha256": digest,
+        "mining_snapshot_id": snapshot_id,
+        "mining_snapshot_sha256": snapshot_hash,
         "source_request_key": str(request_key or "")[:120],
     }
     with _storage_source_fence():

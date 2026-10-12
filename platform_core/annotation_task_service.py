@@ -146,6 +146,14 @@ def run_ai_annotation(
         if current != frozen_hashes:
             raise HardSampleSafetyError("HARD_SAMPLE_SOURCE_CHANGED")
         assert_not_frozen_test(project_dir(context.task.project_id), image_ids, current)
+        from .hard_sample_mining import sha256_file
+        snapshot_id = str(runtime_request.get("mining_snapshot_id") or "")
+        expected = str(runtime_request.get("mining_snapshot_sha256") or "").lower()
+        if len(snapshot_id) != 64 or len(expected) != 64:
+            raise HardSampleSafetyError("HARD_SAMPLE_LABEL_SNAPSHOT_MISSING")
+        path = project_dir(context.task.project_id) / "snapshots" / f"{snapshot_id}.json"
+        if not path.is_file() or sha256_file(path) != expected:
+            raise HardSampleSafetyError("HARD_SAMPLE_LABEL_SNAPSHOT_CHANGED")
     elif annotate is annotate_one:
         runtime_request = _prepare_runtime_request(
             context.task.project_id,
