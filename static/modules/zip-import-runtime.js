@@ -413,11 +413,6 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
     if(!replaceOpenRuntime(html))window.modal?.('ZIP 数据导入',html,true);
     restoreImportModal();
     if(current)mountLabelReviewPagination(current.id);
-    if(current&&zipNeedsLabelConfirmation(current)){
-      const panel=document.querySelector('.zip-label-confirm[data-review-key] [data-zip-class-samples]');
-      const first=mappingReview(current).rows[0];
-      if(panel&&!panel.dataset.sampleClass&&first)void showLabelSamples(current.id,first.classId,encodeURIComponent(first.name)).catch(()=>{});
-    }
     return true;
   }
   function updateOpenModal(job,active){
