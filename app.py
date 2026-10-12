@@ -4944,6 +4944,41 @@ async def upload_images(
     )
 
 
+
+def _plain_upload_mining_outcome(
+    response: Dict[str, Any], project_id: str,
+    algorithm_id: str, version_id: str,
+) -> Dict[str, Any]:
+    """Upload truth is committed independently of the optional mining job."""
+    if not algorithm_id or not version_id:
+        return response
+    ids = [str(value) for value in response.get("uploaded_image_ids") or [] if str(value)]
+    if not ids:
+        return {**response, "mining_status": "skipped_no_images"}
+    try:
+        task = _enqueue_hard_sample_mining(
+            project_id, algorithm_id, version_id, ids,
+            source="upload", request_key=str(response.get("batch_id") or ""),
+        )
+        return {
+            **response,
+            "mining_status": str(task.get("status") or "QUEUED").lower(),
+            "mining_task_id": str(task["id"]),
+        }
+    except HTTPException as error:
+        return {**response, "mining_status": "not_queued",
+                "mining_error": str(error.detail)}
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception(
+            "Optional hard-sample mining admission failed after image upload commit"
+        )
+        return {
+            **response, "mining_status": "not_queued",
+            "mining_error": "图片已入库，挖掘任务未成功排队；可从独立评测重新创建",
+        }
+
+
 async def _plain_upload_images_claimed(
     project_id: str, files: List[UploadFile] = File(...),
     dataset_id: str = Form("default"), storage_source_id: str = Form("default_local"),
@@ -4974,7 +5009,10 @@ async def _plain_upload_images_claimed(
         if not receipt_created:
             request_status = str(receipt.get("upload_request_status") or "").upper()
             if request_status == "SUCCEEDED":
-                return _plain_upload_replay_response(project_id, receipt)
+                replay = _plain_upload_replay_response(project_id, receipt)
+                return _plain_upload_mining_outcome(
+                    replay, project_id, mining_algorithm_id, mining_version_id,
+                )
             if request_status == "PROCESSING":
                 return _plain_upload_recover_receipt(project_id, store, receipt)
             raise PlatformError(
@@ -5064,26 +5102,15 @@ async def _plain_upload_images_claimed(
             raise rollback_error from error
         raise
 
-    mining_result = {}
-    if mining_algorithm_id and uploaded:
-        try:
-            mining_task = _enqueue_hard_sample_mining(
-                project_id, mining_algorithm_id, mining_version_id,
-                [str(row.get("id")) for row in uploaded],
-                source="upload", request_key=batch_id,
-            )
-            mining_result = {"mining_status": "queued", "mining_task_id": mining_task["id"]}
-        except HTTPException as error:
-            # Upload has already committed: never claim rollback or fake an
-            # accepted mining task. Keep the material result independently true.
-            mining_result = {"mining_status": "not_queued", "mining_error": str(error.detail)}
-    return {
+    result = {
         "batch_id": batch_id, "uploaded": uploaded, "failed": failed,
-        **mining_result,
         "uploaded_image_ids": [str(item.get("id")) for item in uploaded],
         "uploaded_count": len(uploaded), "failed_count": len(failed),
         "elapsed_seconds": elapsed_seconds, "total": material_total, "replayed": False,
     }
+    return _plain_upload_mining_outcome(
+        result, project_id, mining_algorithm_id, mining_version_id,
+    )
 
 
 _ANNOTATION_INDEX_LOCK = threading.Lock()
