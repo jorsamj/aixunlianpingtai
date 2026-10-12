@@ -201,11 +201,27 @@ test('restored ZIP completion cannot auto-open stale import-cleaning decision',(
   assert.match(source,/foregroundImports\.add\(id\);started\.add\(id\)/);
 });
 
-test('ZIP exact label reuse and explicit source-code creation preserve manual confirmation',()=>{
- const source=readFileSync(new URL('../../static/modules/zip-import-runtime.js',import.meta.url),'utf8');
- assert.match(source,/applyExactLabelCodeMatches\(review,labelItems\(\)\)/);
- assert.match(source,/async function useSourceLabel/);
- assert.match(source,/buildManualLabelMapping\(review\)/);
+test('ZIP source label selection only stages an explicit mapping until final confirmation',()=>{
+  const source=readFileSync(new URL('../../static/modules/zip-import-runtime.js',import.meta.url),'utf8');
+  assert.match(source,/applyExactLabelCodeMatches\(review,labelItems\(\)\)/);
+  const start=source.indexOf('function useSourceLabel(jobId,classId)');
+  const end=source.indexOf('function previewOriginalLabels(jobId)',start);
+  assert.ok(start>=0 && end>start,'source label handler exists');
+  const selection=source.slice(start,end);
+  assert.match(selection,/setLabelMapping\(review,classId,existing\?\.code\|\|source\)/);
+  assert.match(selection,/review\.pendingCreate\[String\(classId\)\]=source/);
+  assert.doesNotMatch(selection,/createPlatformLabel\(/,'selection cannot persist new labels');
+  assert.doesNotMatch(selection,/startZipJob\(/,'selection cannot start import');
+
+  const confirmStart=source.indexOf('async function confirmLabels(jobId)');
+  const confirmEnd=source.indexOf('async function maybeStart(project)',confirmStart);
+  assert.ok(confirmStart>=0 && confirmEnd>confirmStart,'canonical import confirmation exists');
+  const confirmation=source.slice(confirmStart,confirmEnd);
+  assert.match(confirmation,/buildManualLabelMapping\(review\)/);
+  const create=confirmation.indexOf('await createPlatformLabel(code,name)');
+  const verify=confirmation.indexOf('verified.has(String(code))');
+  const submit=confirmation.indexOf('await startZipJob(project,id,{fetchImpl,confirmation:{label_mapping}})');
+  assert.ok(create>=0 && create<verify && verify<submit,'new labels must be created and verified before import admission');
 });
 
 test('ZIP browser bootstrap loads the refreshed exact-code and side-evidence module',()=>{
