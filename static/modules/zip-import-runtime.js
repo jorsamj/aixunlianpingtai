@@ -813,11 +813,25 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
                 if(pid()===project)window.UploadTaskCenterRuntime?.upsert?.({id:'zip:'+item.id,kind:'zip',title:item.file.name,status:'MERGING',progress:null,stage:phase.stage,detail:phase.message,browserTransfer:false,resumeRequired:false,pollOwner:'zip-import-runtime'});
               },
             });
-            const provisional={...response,id:String(response.id||item.id),file_name:response.file_name||item.file.name,status:response.status||'selecting',created_at:response.created_at||new Date().toISOString()};
+            // Multipart upload ID and the durable import job ID are distinct
+            // identities. Completion must move all post-upload ownership to
+            // the server-returned job ID; otherwise the job never starts and
+            // the imported material completion cannot be observed.
+            const jobId=String(response.id||'');
+            if(!jobId)throw new Error('ZIP 合并完成但未返回正式导入任务 ID，请在任务中心核对，勿重复上传');
+            const provisional={...response,id:jobId,file_name:response.file_name||item.file.name,status:response.status||'selecting',created_at:response.created_at||new Date().toISOString()};
             if(pid()===project){
-              knownJobs.set(item.id,provisional);foregroundImports.add(item.id);writeIntent(project,item.id,'deferred');
+              if(jobId!==item.id){
+                knownJobs.delete(item.id);
+                jobs=jobs.filter(row=>String(row?.id||'')!==item.id);
+                window.UploadTaskCenterRuntime?.remove?.('zip:'+item.id);
+              }
+              knownJobs.set(jobId,provisional);
+              foregroundImports.add(jobId);
+              writeIntent(project,jobId,'deferred');
+              if(selectedJobId===item.id)selectedJobId=jobId;
               await reconcile('upload').catch(()=>{});
-              if(selectedJobId===item.id&&document.querySelector('.zip411[data-zip-runtime="1"]'))open();
+              if(selectedJobId===jobId&&document.querySelector('.zip411[data-zip-runtime="1"]'))open();
             }
             batchFiles.delete(item.id);
             return response;

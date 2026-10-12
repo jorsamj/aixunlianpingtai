@@ -405,6 +405,12 @@ test('v19 background import completion uses scoped labels and material refresh w
   requests.length = 0;
   await page.locator('#zipImportPane').getByRole('button', {name: '开始导入'}).click();
   await expect(page.locator('#toast')).toContainText('后台导入完成：2 张图片', {timeout: 10_000});
+  // The multipart session is not a second import job. Its temporary task
+  // must be retired when the server returns the canonical job identity.
+  await expect.poll(async () => page.evaluate(() => ({
+    jobId: state.import411?.jobId || '',
+    ids: window.ZipImportRuntime?.snapshot?.().jobs.map(job => job.id) || [],
+  }))).toEqual({jobId: 'zip-r20k-job', ids: ['zip-r20k-job']});
   await expect.poll(async () => page.evaluate(() => window.MaterialPaginationRuntime61?.state?.().refreshBusy ?? null)).toBe(false);
   await expect(page.locator('#data412Grid')).toContainText('imported-r20k.jpg');
 

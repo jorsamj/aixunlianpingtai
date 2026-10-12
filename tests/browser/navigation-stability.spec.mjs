@@ -570,6 +570,8 @@ test('ZIP import completion surfaces review action and auto-opens review', async
   });
 
   await expect.poll(async () => page.evaluate(() => state.import411?.stage || ''), {timeout: 10_000}).toBe('导入完成');
+  await expect.poll(async () => page.evaluate(() => state.import411?.jobId || '')).toBe('zip-r20g-scoped');
+  await expect.poll(async () => page.evaluate(() => state.import411?.jobId || '')).toBe('zip-browser-1');
   await expect.poll(async () => page.evaluate(() => ({
     bound: Boolean(state.import411?.__reviewBound),
     opened: window.__zipReviewOpened,
