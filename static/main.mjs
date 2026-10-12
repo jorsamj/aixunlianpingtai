@@ -15,7 +15,7 @@ import {installChangLianDataBrowserRuntime} from './modules/changlian-data-brows
 import {installExternalAlgorithmPublishRuntime} from './modules/external-algorithm-publish.js?v=64006';
 import {installModelArtifactRuntime} from './modules/model-artifact-runtime.js?v=65009';
 import {installTrainingRecoveryRuntime} from './modules/training-recovery-runtime.js?v=4226363';
-import {installTrainingMaterialPickerRuntime} from './modules/training-material-picker-runtime.js?v=422604';
+import {installTrainingMaterialPickerRuntime} from './modules/training-material-picker-runtime.js?v=422610';
 import {installTrainingMaterialSummaryRuntime} from './modules/training-material-summary-runtime.js?v=422603';
 import {installTrainingTaskRuntime} from './modules/training-task-runtime.js?v=422607';
 import {installTrainingTaskVisibilityRuntime} from './modules/training-task-visibility-runtime.js?v=422607';
@@ -42,7 +42,7 @@ import {isActiveVideoTask, normalizeVideoTask, videoTaskFormValues} from './modu
 import {buildStorageSourcePayload, defaultStorageSource, enabledStorageSources, sourceMatches, storageSourceLabel} from './modules/storage.js?v=422202';
 import {buildMaterialQuery, installMaterialPaginationRuntime, requiresFullMaterialPool} from './modules/material-pagination-runtime.js?v=422609';
 import {installStorageImportProgressRuntime, storageImportProgressText} from './modules/storage-import-progress.js?v=422525';
-import {installUploadTaskCenter} from './modules/upload-task-center.js?v=66009';
+import {installUploadTaskCenter} from './modules/upload-task-center.js?v=66010';
 import {buildServerImportRequest, buildImportConfirmation, serverImportView} from './modules/server-material-import.js?v=422526';
 import {applyExactLabelCodeMatches, bulkSetLabelMapping, buildManualLabelMapping, createLabelMappingReview, filterCanonicalLabels, labelMappingReviewPage, labelMappingReviewSummary, labelSampleOverlay, reconcileLabelMappingReview, setLabelMapping, setLabelMappingReviewPage, setLabelMappingReviewSearch, setLabelMappingSelected, setLabelMappingTargetSearch} from './modules/label-mapping-review.js?v=4226353';
 import {installResourceDiscoveryRuntime} from './modules/resource-discovery.js?v=422402';
