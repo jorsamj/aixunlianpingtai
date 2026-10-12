@@ -1596,7 +1596,7 @@ window.installUsability417=function(){
     modal('导入素材 / 标注',`<div class="form">
       <div class="seg small-seg"><button class="on" id="impZipTab" onclick="showImportTabV36('zip')">上传压缩包</button><button id="impSourceTab" onclick="showImportTabV36('source')">地址读取</button></div>
       <div id="zipImportPane">
-        <div class="field"><label>选择压缩包</label><input id="importFile" type="file" class="file" accept=".zip" multiple></div>
+        <div class="field"><label>选择 ZIP 文件（支持多选并发）</label><input id="importFile" type="file" class="file" accept=".zip" multiple></div>
         <div id="importProgressWrap" class="progress-wrap hidden"><div class="progress-line"><span id="importProgressText">准备上传</span><b id="importProgressPercent">0%</b></div><div class="progress-bar"><i id="importProgressBar" style="width:0%"></i></div></div>
         <div id="importResult"></div>
         <div class="row end"><button class="btn primary" onclick="doImportUploadV19()">开始导入</button></div>
