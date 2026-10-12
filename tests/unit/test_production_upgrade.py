@@ -50,10 +50,14 @@ def test_upgrade_refuses_queued_running_and_pending_confirmation_tasks(tmp_path)
     database.parent.mkdir()
     with sqlite3.connect(database) as db:
         db.execute("CREATE TABLE tasks (task_id TEXT, status TEXT)")
-        db.execute("INSERT INTO tasks VALUES ('done', 'SUCCEEDED')")
-        db.execute("INSERT INTO tasks VALUES ('partial', 'PARTIAL_SUCCESS')")
+        for task_id, status in enumerate((
+            "SUCCEEDED", "PARTIAL_SUCCESS", "FAILED", "CANCELLED",
+            "BLOCKED_BY_ENVIRONMENT", "BLOCKED_BY_HARDWARE",
+        )):
+            db.execute("INSERT INTO tasks VALUES (?,?)", (f"terminal-{task_id}", status))
+    # Six terminal states must all bind successfully and allow an idle upgrade.
     require_idle_tasks(tmp_path)
-    for status in ("QUEUED", "RUNNING", "AWAITING_CONFIRMATION", "CANCEL_REQUESTED"):
+    for status in ("QUEUED", "RUNNING", "AWAITING_CONFIRMATION", "CANCEL_REQUESTED", "UNKNOWN", None):
         with sqlite3.connect(database) as db:
             db.execute("INSERT INTO tasks VALUES (?,?)", ("active-1", status))
         with pytest.raises(UpgradeRefused, match="ACTIVE_TASKS_BLOCK_UPGRADE"):

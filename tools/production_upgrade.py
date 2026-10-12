@@ -49,10 +49,14 @@ def require_idle_tasks(data_dir: Path) -> None:
     try:
         with sqlite3.connect(uri, uri=True, timeout=3) as db:
             db.execute("PRAGMA busy_timeout=3000")
+            # Keep the bound parameters in sync with the declared terminal
+            # states. Unknown and NULL statuses must fail closed.
+            terminal_states = tuple(sorted(TERMINAL_STATES))
+            placeholders = ",".join("?" for _ in terminal_states)
             rows = db.execute(
                 "SELECT task_id, status FROM tasks "
-                "WHERE status NOT IN (?,?,?,?,?) LIMIT 6",
-                tuple(sorted(TERMINAL_STATES)),
+                f"WHERE status IS NULL OR status NOT IN ({placeholders}) LIMIT 6",
+                terminal_states,
             ).fetchall()
     except sqlite3.Error as exc:
         raise UpgradeRefused(f"TASK_STATUS_UNAVAILABLE: {exc}") from exc
