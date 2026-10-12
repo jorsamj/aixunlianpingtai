@@ -123,8 +123,10 @@ def infer_with_frozen_yolo(request: dict[str, Any], image: Mapping[str, Any]) ->
     model_hash = str(request.get("mining_model_sha256") or "").lower()
     if model_path.suffix.lower() != ".pt" or not model_path.is_file() or model_path.name.lower() == "last.pt":
         raise HardSampleSafetyError("HARD_SAMPLE_MODEL_UNAVAILABLE_ON_WORKER")
-    if len(model_hash) != 64 or sha256_file(model_path) != model_hash:
-        raise HardSampleSafetyError("HARD_SAMPLE_MODEL_IDENTITY_CHANGED")
+    if not request.get("_hard_sample_model_verified"):
+        if len(model_hash) != 64 or sha256_file(model_path) != model_hash:
+            raise HardSampleSafetyError("HARD_SAMPLE_MODEL_IDENTITY_CHANGED")
+        request["_hard_sample_model_verified"] = True
     import torch
     if not torch.cuda.is_available():
         raise HardSampleSafetyError("HARD_SAMPLE_CUDA_WORKER_REQUIRED")
