@@ -568,7 +568,8 @@ export function installMaterialPaginationRuntime() {
     const filters = window.materialBatchFilters61?.() || {};
     const narrowed = Boolean(
       String(filters.query || '').trim() || (filters.labels || []).length
-      || (filters.storage_source_ids || []).length || filters.annotated !== null
+      || (filters.storage_source_ids || []).length
+      || (state.data412Tab === 'processed' && String(state.materialAnnotated61 || 'all') !== 'all')
     );
     if (!narrowed) return window.toast?.('请先按标签、名称、来源或标注状态筛选，不能一键删除整个素材池');
     return window.runMaterialBatch62?.('DELETE_INDEX', {scope: 'FILTERED'});

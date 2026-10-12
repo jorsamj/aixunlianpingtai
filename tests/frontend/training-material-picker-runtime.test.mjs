@@ -16,6 +16,7 @@ test('training material picker query is cursor paged and server filtered', () =>
   assert.equal(query.get('limit'), '60');
   assert.equal(query.get('cursor'), 'cursor-2');
   assert.equal(query.get('query'), 'smoke 01');
+  assert.equal(query.get('sort_order'), 'newest');
   assert.deepEqual(query.getAll('label'), ['smoke', 'person']);
 });
 
@@ -25,7 +26,9 @@ test('training material picker supports authoritative page-number queries', () =
     pageSize: 20,
     query: 'smoke',
     labels: ['smoke'],
+    sortOrder: 'oldest',
   }));
+  assert.equal(query.get('sort_order'), 'oldest');
   assert.equal(query.get('page'), '7');
   assert.equal(query.get('page_size'), '20');
   assert.equal(query.has('cursor'), false);
@@ -145,4 +148,12 @@ test('cleaned unannotated materials are selectable for train but fenced from ind
   assert.match(source, /试验集必须已标注/);
   assert.match(source, /待标注素材会保留在任务中/);
   assert.doesNotMatch(source, /blocked\.has\(id\) \|\| String\(row\.annotation_state \|\| ''\) === 'unannotated'/);
+});
+
+test('picker exposes a time ordering control with server paging and filter persistence', () => {
+  const liveSource = fs.readFileSync(new URL('../../static/modules/training-material-picker-runtime.js', import.meta.url), 'utf8');
+  assert.match(liveSource, /id="trV3Sort"/);
+  assert.match(liveSource, /trainMaterialSortV3\(this.value\)/);
+  assert.match(liveSource, /sortOrder: picker.sortOrder/);
+  assert.match(liveSource, /function setSortOrder\(value\)/);
 });
