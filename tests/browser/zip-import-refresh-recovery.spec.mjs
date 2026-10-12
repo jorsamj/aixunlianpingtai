@@ -239,7 +239,7 @@ test('two selected ZIP archives upload their multipart data concurrently while l
   });
   const makeArchive=label=>storedZip([
     ['images/train/'+label+'.jpg',Buffer.from('sample-image-content')],
-    ['data.yaml',Buffer.from('train: images/train\\nnames: ['+label+']\\n')],
+    ['data.yaml',Buffer.from('train: images/train\nnames: ['+label+']\n')],
   ]);
   try{
     await page.evaluate(()=>window.importData());
