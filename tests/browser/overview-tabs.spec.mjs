@@ -61,6 +61,9 @@ test('three overview tabs preserve production owner, render scoped facts and fai
   // Three consecutive clicks on the algorithm tab show complete UI-only fixtures.
   for(let i=0;i<3;i++)await tabs.getByRole('tab',{name:'算法一张图'}).click();
   await expect(page.locator('[data-overview-demo="true"]')).toBeVisible();
+  await expect(page.locator('#view')).not.toContainText('演示数据模式');
+  await expect(page.locator('#view')).not.toContainText('不参与真实统计或任务调度');
+  await expect(page.locator('[data-overview-demo-exit]')).toBeVisible();
   await expect(page.locator('.ov348-stat').filter({hasText:'算法总数'})).toContainText('8');
   await expect(page.locator('.ov348-stat').filter({hasText:'策略准确率'})).toContainText('94.6%');
   await expect(page.locator('.ov348-panel').filter({hasText:'高频使用算法排行'})).toContainText('12,840 次');
@@ -95,6 +98,9 @@ test('three overview tabs preserve production owner, render scoped facts and fai
   await tabs.getByRole('tab',{name:'算力一张图'}).click();
   await tabs.getByRole('tab',{name:'算力一张图'}).click();
   await expect(page.locator('[data-overview-demo="true"]')).toBeVisible();
+  await expect(page.locator('#view')).not.toContainText('演示数据模式');
+  await expect(page.locator('#view')).not.toContainText('不参与真实统计或任务调度');
+  await expect(page.locator('[data-overview-demo-exit]')).toBeVisible();
   await expect(page.locator('.ov348-node')).toHaveCount(3);
   await expect(page.locator('#view')).toContainText('GPU 训练服务器 A');
   await expect(page.locator('#view')).toContainText('820.5 GB');

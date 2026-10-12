@@ -249,7 +249,8 @@ test('each overview tab switches into isolated demo fixtures and restores live d
     const requestsBeforeDemo=requests.length;
     const liveRenders=productionRenders;
     for(let i=0;i<3;i++)click('algorithm');
-    assert.match(view.innerHTML,/演示数据模式/);
+    assert.match(view.innerHTML,/data-overview-demo="true"/);
+    assert.doesNotMatch(view.innerHTML,/演示数据模式|不参与真实统计或任务调度|所有服务器、GPU、利用率、容量均为模拟/);
     assert.match(view.innerHTML,/12,840 次/);
     assert.match(view.innerHTML,/94.6%/);
     assert.doesNotMatch(view.innerHTML,/真实模型|真实生产看板/);
@@ -259,13 +260,14 @@ test('each overview tab switches into isolated demo fixtures and restores live d
     assert.match(view.innerHTML,/真实模型/);
     assert.match(view.innerHTML,/真实生产看板/);
     click('compute');await new Promise(resolve=>setImmediate(resolve));
-    assert.doesNotMatch(view.innerHTML,/演示数据模式/);
+    assert.doesNotMatch(view.innerHTML,/data-overview-demo="true"/);
     for(let i=0;i<2;i++)click('compute');
-    assert.match(view.innerHTML,/演示数据模式/);
+    assert.match(view.innerHTML,/data-overview-demo="true"/);
+    assert.doesNotMatch(view.innerHTML,/演示数据模式|不参与真实统计或任务调度|所有服务器、GPU、利用率、容量均为模拟/);
     assert.match(view.innerHTML,/GPU 训练服务器 A/);
     assert.doesNotMatch(view.innerHTML,/94.6%/);
     click('algorithm');await new Promise(resolve=>setImmediate(resolve));
-    assert.doesNotMatch(view.innerHTML,/演示数据模式/);
+    assert.doesNotMatch(view.innerHTML,/data-overview-demo="true"/);
     assert.match(view.innerHTML,/真实模型/);
   }finally{globalThis.document=previous}
 });

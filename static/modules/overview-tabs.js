@@ -275,7 +275,9 @@ export function installOverviewTabsRuntime({
     let content=algorithm?(algorithmSample?overviewAlgorithm(algorithmSample,true):
       has?overviewAlgorithm(buildAlgorithmMap(cache.algorithms.items,cache.quality)):empty('算法资产尚未取得')):
       overviewCompute(buildComputeMap(computeSample?computeSample.nodes:(cache.nodes ? cache.nodes.items : null),computeSample?computeSample.storage:cache.storage?.items,computeSample?computeSample.gpuRuntime:cache.gpuRuntime),placementFilter,computeSample?computeSample.local:cache.local,!!computeSample);
-    if(demoMode)content='<div class="ov351-demo-banner" data-overview-demo="true"><b>演示数据模式</b><span>'+(algorithm?'当前算法资产、质量、运行排行与任务统计均为模拟。':'所有服务器、GPU、利用率、容量均为模拟。')+'不参与真实统计或任务调度。</span><button type="button" data-overview-demo-exit="1">退出演示</button></div>'+content;
+    // Keep the existing escape action without covering demo dashboards in a
+    // large explanatory banner. Fixtures remain isolated from live state.
+    if(demoMode)content='<div class="ov351-demo-actions" data-overview-demo="true"><button type="button" data-overview-demo-exit="1">退出演示</button></div>'+content;
     if(!demoMode&&!has&&!cache.loadedAt[algorithm?'algorithms':'nodes'])content='<div class="ov348-loading">正在读取'+(algorithm?'算法资产':'算力资源')+'数据…</div>'+content;
     const errors=Object.entries(cache.errors).filter(([key,value])=>
       (algorithm?['quality','algorithms'].includes(key):!['quality','algorithms'].includes(key))&&value);
