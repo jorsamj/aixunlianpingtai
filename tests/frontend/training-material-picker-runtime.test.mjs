@@ -157,3 +157,9 @@ test('picker exposes a time ordering control with server paging and filter persi
   assert.match(liveSource, /sortOrder: picker.sortOrder/);
   assert.match(liveSource, /function setSortOrder\(value\)/);
 });
+
+test('training candidate labels are fully readable and filter chips wrap', () => {
+  assert.match(source, /train-v3-label-list/);
+  assert.match(source, /\.train-v3-label-list\{white-space:normal;overflow:visible/);
+  assert.match(source, /#trV3Chips\{grid-column:1 \/ -1;max-height:none/);
+});
