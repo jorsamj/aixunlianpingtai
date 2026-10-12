@@ -59,7 +59,7 @@ test('entry bundles use cache-bust markers independently from formal release tru
   assert.equal(main.includes("./modules/training-task-visibility-runtime.js?v=422607"), true);
   assert.equal(main.includes("./modules/material-pagination-runtime.js?v=422609"), true);
   assert.equal(main.includes("./modules/material-batches.js?v=422404"), true);
-  assert.equal(index.includes('/static/zip-import-bootstrap.mjs?v=4226359'), true);
+  assert.equal(index.includes('/static/zip-import-bootstrap.mjs?v=4226360'), true);
   assert.equal(index.includes('/static/training-checkpoint-resume-bootstrap.mjs?v=422541'), true);
   assert.equal(index.includes('<span id="versionBadge" class="version-badge">v—</span>'), true);
 });
@@ -74,5 +74,5 @@ test('negative sample runtime is cache-busted with canonical owner retirement', 
 });
 
 test('training material picker canonical confirm asset is current', () => {
-  assert.equal(main.includes("./modules/training-material-picker-runtime.js?v=422604"), true);
+  assert.equal(main.includes("./modules/training-material-picker-runtime.js?v=422610"), true);
 });
