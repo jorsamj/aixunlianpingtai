@@ -170,7 +170,7 @@ def _valid_annotation(row: Mapping[str, Any]) -> bool:
     return False
 
 
-def _annotation_digest(row: Mapping[str, Any]) -> str:
+def training_annotation_digest(row: Mapping[str, Any]) -> str:
     boxes = sorted(
         (_canonical_box(box) for box in (row.get("boxes") or [])),
         key=lambda box: json.dumps(box, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
@@ -220,7 +220,7 @@ def _deduplicate_selected(
             canonical_rows.append(ordered[0])
             continue
 
-        digests = {_annotation_digest(row) for row in ordered}
+        digests = {training_annotation_digest(row) for row in ordered}
         ids = tuple(str(row.get("id") or "") for row in ordered)
         duplicate_groups[content_hash] = ids
         if len(digests) != 1:

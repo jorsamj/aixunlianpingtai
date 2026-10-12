@@ -1401,26 +1401,16 @@ class MaterialBatchHandler:
             audit.execute("DELETE FROM issue_items")
             audit.execute("DELETE FROM issue_groups")
 
-            # Duplicate candidates come only from the existing indexed content
-            # hash.  AnnotationRepository remains the annotation truth owner.
-            duplicate_groups: dict[str, list[str]] = {}
-            with closing(materials._connect()) as database:
-                rows = database.execute(
-                    "SELECT lower(trim(m.content_sha256)) AS digest,m.id "
-                    "FROM materials m JOIN ("
-                    " SELECT lower(trim(content_sha256)) AS digest FROM materials "
-                    " WHERE trim(content_sha256)<>'' GROUP BY lower(trim(content_sha256)) HAVING COUNT(*)>1"
-                    ") d ON lower(trim(m.content_sha256))=d.digest "
-                    "ORDER BY digest,m.id"
-                ).fetchall()
-            for row in rows:
-                duplicate_groups.setdefault(str(row["digest"]), []).append(str(row["id"]))
+            # Share one canonical Material SHA256 grouping with label Full Audit.
+            # Training admission and both audits use the same GT comparison.
+            from .training_splits import training_annotation_digest
+            duplicate_groups = materials.duplicate_content_groups()
             for digest, image_ids in duplicate_groups.items():
                 records: dict[str, dict] = {}
                 for offset in range(0, len(image_ids), BATCH_SIZE):
                     records.update(annotations.get_many(image_ids[offset:offset + BATCH_SIZE]))
                 annotation_digests = {
-                    annotations.record_digest(records[image_id])
+                    training_annotation_digest(records[image_id])
                     for image_id in image_ids
                 }
                 issue_type = (

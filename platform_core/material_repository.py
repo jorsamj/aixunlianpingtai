@@ -499,6 +499,26 @@ class MaterialRepository:
             row = database.execute("SELECT payload_json FROM materials WHERE id = ?", (str(image_id),)).fetchone()
         return self._row_payload(row) if row else None
 
+    def duplicate_content_groups(self) -> dict[str, list[str]]:
+        """Indexed duplicate-image identities, shared by project audits.
+
+        Hashes come from canonical MaterialRepository, not annotation previews.
+        This read-only query does not inspect or materialize image objects.
+        """
+        groups: dict[str, list[str]] = {}
+        with closing(self._connect()) as database:
+            rows = database.execute(
+                "SELECT lower(trim(m.content_sha256)) AS digest,m.id "
+                "FROM materials m JOIN ("
+                " SELECT lower(trim(content_sha256)) AS digest FROM materials "
+                " WHERE trim(content_sha256)<>'' GROUP BY lower(trim(content_sha256)) HAVING COUNT(*)>1"
+                ") d ON lower(trim(m.content_sha256))=d.digest "
+                "ORDER BY digest,m.id"
+            ).fetchall()
+        for row in rows:
+            groups.setdefault(str(row["digest"]), []).append(str(row["id"]))
+        return groups
+
     def get_by_content_sha256(self, content_sha256: str) -> dict[str, Any] | None:
         content_sha256 = str(content_sha256 or "").strip().lower()
         if (
