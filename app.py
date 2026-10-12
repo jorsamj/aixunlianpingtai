@@ -4920,6 +4920,7 @@ async def upload_images(
     project_id: str, files: List[UploadFile] = File(...),
     dataset_id: str = Form("default"), storage_source_id: str = Form("default_local"),
     upload_request_id: Optional[str] = Form(None),
+    mining_algorithm_id: str = Form(""), mining_version_id: str = Form(""),
 ):
     request_id = str(upload_request_id or "").strip()
     if request_id:
@@ -4928,6 +4929,7 @@ async def upload_images(
             async with store.claim_upload_request(request_id):
                 return await _plain_upload_images_claimed(
                     project_id, files, dataset_id, storage_source_id, request_id,
+                    mining_algorithm_id, mining_version_id,
                 )
         except UploadRequestBusy as error:
             raise PlatformError(
@@ -4938,6 +4940,7 @@ async def upload_images(
             raise HTTPException(status_code=409, detail=str(error)) from error
     return await _plain_upload_images_claimed(
         project_id, files, dataset_id, storage_source_id, None,
+        mining_algorithm_id, mining_version_id,
     )
 
 
@@ -4945,8 +4948,11 @@ async def _plain_upload_images_claimed(
     project_id: str, files: List[UploadFile] = File(...),
     dataset_id: str = Form("default"), storage_source_id: str = Form("default_local"),
     upload_request_id: Optional[str] = Form(None),
+    mining_algorithm_id: str = "", mining_version_id: str = "",
 ):
     get_project(project_id)
+    if bool(mining_algorithm_id) != bool(mining_version_id):
+        raise HTTPException(status_code=422, detail="上传困难样本挖掘必须同时指定算法与版本")
     uploaded, failed = [], []
     store = upload_batch_store(project_id)
     request_id = str(upload_request_id or "").strip()
@@ -5058,8 +5064,22 @@ async def _plain_upload_images_claimed(
             raise rollback_error from error
         raise
 
+    mining_result = {}
+    if mining_algorithm_id and uploaded:
+        try:
+            mining_task = _enqueue_hard_sample_mining(
+                project_id, mining_algorithm_id, mining_version_id,
+                [str(row.get("id")) for row in uploaded],
+                source="upload", request_key=batch_id,
+            )
+            mining_result = {"mining_status": "queued", "mining_task_id": mining_task["id"]}
+        except HTTPException as error:
+            # Upload has already committed: never claim rollback or fake an
+            # accepted mining task. Keep the material result independently true.
+            mining_result = {"mining_status": "not_queued", "mining_error": str(error.detail)}
     return {
         "batch_id": batch_id, "uploaded": uploaded, "failed": failed,
+        **mining_result,
         "uploaded_image_ids": [str(item.get("id")) for item in uploaded],
         "uploaded_count": len(uploaded), "failed_count": len(failed),
         "elapsed_seconds": elapsed_seconds, "total": material_total, "replayed": False,
@@ -21464,6 +21484,116 @@ def _annotation_create_payload(project_id: str, payload: AnnotationTaskCreateReq
     if not provider_key:
         raise HTTPException(status_code=400, detail="AI_MODEL_CONFIG_NOT_FOUND: 请选择可用模型配置")
     return prepared, provider_key
+
+
+
+# P1 hard samples extend the existing AI_ANNOTATION task, CandidateStore and
+# formal annotation review; no independent task/annotation owner is introduced.
+class HardSampleMiningCreateReq(BaseModel):
+    image_ids: List[str]
+    source: Literal["existing", "upload"] = "existing"
+    request_key: str = ""
+
+
+def _enqueue_hard_sample_mining(
+    project_id: str, algorithm_id: str, version_id: str, image_ids: Sequence[str],
+    *, source: str, request_key: str = "",
+):
+    from platform_core.hard_sample_mining import (
+        HardSampleSafetyError, assert_not_frozen_test, sha256_file,
+    )
+    from platform_core.task_runtime import TaskRecord, TaskKind
+    if source not in {"existing", "upload"}:
+        raise HTTPException(status_code=422, detail="困难样本来源无效")
+    algorithm, version = _algorithm_version_for_action(project_id, algorithm_id, version_id)
+    path = _testable_version_pt_path(version)
+    if path is None:
+        raise HTTPException(status_code=409, detail="当前算法版本没有可用的本地正式 PT，不能挖掘")
+    requested = list(dict.fromkeys(str(value).strip() for value in image_ids if str(value).strip()))
+    if not requested or len(requested) > 500:
+        raise HTTPException(status_code=422, detail="单次困难样本挖掘必须选择 1 至 500 张素材")
+    rows = []
+    for offset in range(0, len(requested), 500):
+        rows.extend(material_store(project_id).get_many(requested[offset:offset + 500]))
+    by_id = {str(row.get("id") or ""): row for row in rows}
+    if set(by_id) != set(requested):
+        raise HTTPException(status_code=409, detail="选择的素材已经变化或不存在，请刷新")
+    source_hashes = {key: str(by_id[key].get("content_sha256") or "").strip().lower() for key in requested}
+    if any(not re.fullmatch(r"[0-9a-f]{64}", value) for value in source_hashes.values()):
+        raise HTTPException(status_code=409, detail="素材缺少可信内容 SHA256，无法挖掘")
+    if any(by_id[key].get("source_available") is False
+           or by_id[key].get("dataset_delete_claim")
+           or by_id[key].get("material_batch_delete_claim") for key in requested):
+        raise HTTPException(status_code=409, detail="素材处于不可用或删除状态")
+    if source == "upload" and any(
+        str(by_id[key].get("annotation_state") or "").lower() in {"annotated", "confirmed_empty"}
+        or int(by_id[key].get("box_count") or 0) > 0 for key in requested
+    ):
+        raise HTTPException(status_code=409, detail="上传自动筛选仅允许未标注的正式素材")
+    try:
+        assert_not_frozen_test(project_dir(project_id), requested, source_hashes)
+    except HardSampleSafetyError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    # The frozen model's class names must match canonical label codes on the
+    # Worker. No class_id guessing, silent alias mapping or auto-GT import.
+    labels = [
+        str(row["code"]) for row in _annotation_label_catalog(get_project(project_id))
+        if str(row.get("code") or "")
+    ]
+    if not labels:
+        raise HTTPException(status_code=409, detail="项目没有可用的正式标签")
+    digest = sha256_file(path)
+    identity = {
+        "algorithm_id": str(algorithm_id),
+        "version_id": str(version_id),
+        "model_sha256": digest,
+        "image_ids": requested,
+        "source_hashes": source_hashes,
+        "source": source,
+        "request_key": str(request_key or "")[:120],
+    }
+    # Deduplicate retry for the same upload receipt without adding another
+    # persistent idempotency table. The existing TaskRepository remains truth.
+    key = json.dumps(identity, sort_keys=True, ensure_ascii=False)
+    task_id = "hm" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:14] if request_key else "hm" + uuid.uuid4().hex[:14]
+    repository = shared_task_repository()
+    previous = repository.get(task_id)
+    if previous is not None:
+        if previous.project_id != project_id or previous.kind is not TaskKind.AI_ANNOTATION:
+            raise HTTPException(status_code=409, detail="困难样本任务身份冲突")
+        return public_annotation_task(previous)
+    request = {
+        "schema_version": 2,
+        "mode": "hard_sample_yolo",
+        "source": source,
+        "task_name": "YOLO 困难样本挖掘",
+        "image_ids": requested,
+        "source_hashes": source_hashes,
+        "labels": labels,
+        "overwrite": False,
+        "mining_algorithm_id": str(algorithm_id),
+        "mining_version_id": str(version_id),
+        "mining_model_path": str(path),
+        "mining_model_sha256": digest,
+        "source_request_key": str(request_key or "")[:120],
+    }
+    with _storage_source_fence():
+        shared_task_artifacts().atomic_write_json(task_id, "request.json", request)
+        task = repository.create(TaskRecord.new(
+            task_id, project_id, TaskKind.AI_ANNOTATION,
+            "request.json", f"mining:{digest[:16]}",
+            priority=60, required_capabilities=("mining.ultralytics",),
+        ))
+    return public_annotation_task(task)
+
+
+@app.post("/api/v64/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/hard-sample-mining", status_code=202)
+def create_hard_sample_mining(project_id: str, algorithm_id: str, version_id: str,
+                              payload: HardSampleMiningCreateReq):
+    return _enqueue_hard_sample_mining(
+        project_id, algorithm_id, version_id, payload.image_ids,
+        source=payload.source, request_key=payload.request_key,
+    )
 
 
 @app.post("/api/v60/projects/{project_id}/annotation-tasks")
