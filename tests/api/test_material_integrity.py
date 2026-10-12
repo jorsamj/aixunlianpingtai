@@ -159,3 +159,55 @@ def test_durable_index_delete_removes_annotation_truth_but_keeps_shared_object(
     assert not annotations.exists(second["id"])
     assert materials.get(first["id"]) is not None
     assert object_path.is_file()
+
+
+def test_filtered_dog_delete_removes_only_dog_material_and_its_annotation_files(
+    client, seeded_project, tmp_path, monkeypatch
+):
+    project_id, original = seeded_project
+    materials = app_module.material_store(project_id)
+    source = materials.get(original["id"])
+    project = app_module.project_dir(project_id)
+    annotations = AnnotationRepository(project)
+    rows = [
+        {**source, "id": f"filtered-{name}", "filename": f"{name}.jpg",
+         "labels": [name], "annotated": True, "box_count": 1,
+         "processing_status": "processed"}
+        for name in ("dog", "cat")
+    ]
+    materials.upsert_many(rows)
+    for name in ("dog", "cat"):
+        image_id = f"filtered-{name}"
+        annotations.upsert(
+            image_id,
+            [{"label": name, "class_id": 0, "x1": 1, "y1": 1,
+              "x2": 12, "y2": 12}],
+            annotation_state="annotated",
+        )
+        legacy = project / "annotations" / f"{image_id}.json"
+        legacy.parent.mkdir(parents=True, exist_ok=True)
+        legacy.write_text('{"boxes":[]}', encoding="utf-8")
+    _repo, _artifacts, scheduler = _runtime(tmp_path, monkeypatch)
+    payload = {
+        "operation": "DELETE_INDEX",
+        "selection_spec": {"scope": "FILTERED", "filters": {
+            "labels": ["dog"], "processing_status": "processed",
+        }},
+    }
+    estimate = client.post(
+        f"/api/v62/projects/{project_id}/material-batches/estimate",
+        json=payload,
+    )
+    assert estimate.status_code == 200, estimate.text
+    assert estimate.json()["count"] == 1
+    payload["selection_spec"] = estimate.json()["selection_spec"]
+    task = client.post(f"/api/v62/projects/{project_id}/material-batches", json=payload)
+    assert task.status_code == 202, task.text
+    assert scheduler.run_once() is True
+    assert materials.get("filtered-dog") is None
+    assert not annotations.exists("filtered-dog")
+    assert not (project / "annotations" / "filtered-dog.json").exists()
+    assert materials.get("filtered-cat") is not None
+    assert annotations.exists("filtered-cat")
+    assert (project / "annotations" / "filtered-cat.json").exists()
+    assert materials.get(original["id"]) is not None
