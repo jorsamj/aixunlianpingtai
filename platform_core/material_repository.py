@@ -845,7 +845,11 @@ class MaterialRepository:
         storage_source_ids: Sequence[str] | None = None, processing_status: str | None = None,
         labels: Sequence[str] | None = None, annotated: bool | None = None,
         split: str | None = None, annotation_state: str | None = None,
+        sort_order: str = "oldest",
     ) -> MaterialPage:
+        if sort_order not in ("oldest", "newest"):
+            raise ValueError("sort_order must be oldest or newest")
+        descending = sort_order == "newest"
         bounded = max(1, min(1000, int(limit)))
         if page is not None and cursor:
             raise ValueError("page and cursor cannot be used together")
@@ -885,15 +889,15 @@ class MaterialRepository:
                 params = list(base_params)
                 if cursor:
                     created_at, image_id = _decode_cursor(cursor)
-                    clauses.append(
-                        "(m.created_at > ? OR (m.created_at = ? AND m.id > ?))"
-                    )
+                    op = "<" if descending else ">"
+                    clauses.append(f"(m.created_at {op} ? OR (m.created_at = ? AND m.id {op} ?))")
                     params.extend((created_at, created_at, image_id))
                 where = " WHERE " + " AND ".join(clauses) if clauses else ""
                 sql = (
                     "SELECT m.id, m.created_at, m.payload_json FROM materials m"
                     + where
-                    + " ORDER BY m.created_at, m.id LIMIT ?"
+                    + (" ORDER BY m.created_at DESC, m.id DESC LIMIT ?" if descending
+                       else " ORDER BY m.created_at, m.id LIMIT ?")
                 )
                 query_params = [*params, bounded + 1]
                 if offset is not None:

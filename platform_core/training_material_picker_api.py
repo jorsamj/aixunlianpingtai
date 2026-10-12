@@ -117,6 +117,7 @@ def _gt_material_filter_page(
     labels: tuple[str, ...] = (),
     require_ground_truth: bool = False,
     include_payload: bool = False,
+    sort_order: str = "oldest",
 ) -> dict:
     """Page processed materials while label/GT predicates come from formal GT.
 
@@ -125,6 +126,9 @@ def _gt_material_filter_page(
     transaction without hydrating annotation JSON or trusting material labels.
     """
     bounded = max(1, min(MAX_SELECTION_SUMMARY_IDS, int(limit)))
+    if sort_order not in ("oldest", "newest"):
+        raise ValueError("sort_order must be oldest or newest")
+    descending = sort_order == "newest"
     if page is not None and cursor:
         raise ValueError("page and cursor cannot be used together")
     selected_labels = tuple(dict.fromkeys(
@@ -182,9 +186,8 @@ def _gt_material_filter_page(
             params = list(base_params)
             if cursor:
                 created_at, image_id = decode_material_cursor(cursor)
-                clauses.append(
-                    "(m.created_at > ? OR (m.created_at = ? AND m.id > ?))"
-                )
+                op = "<" if descending else ">"
+                clauses.append(f"(m.created_at {op} ? OR (m.created_at = ? AND m.id {op} ?))")
                 params.extend((created_at, created_at, image_id))
             where = " WHERE " + " AND ".join(clauses)
             columns = (
@@ -195,7 +198,8 @@ def _gt_material_filter_page(
             sql = (
                 f"SELECT {columns} FROM materials m"
                 + where
-                + " ORDER BY m.created_at, m.id LIMIT ?"
+                + (" ORDER BY m.created_at DESC, m.id DESC LIMIT ?" if descending
+                   else " ORDER BY m.created_at, m.id LIMIT ?")
             )
             query_params = [*params, bounded + 1]
             if offset is not None:
@@ -511,6 +515,7 @@ def training_material_picker_router(
         page_size: int | None = None,
         query: str = "",
         label: list[str] | None = Query(default=None),
+        sort_order: str = "oldest",
     ):
         numbered = page is not None or page_size is not None
         requested_page = int(page or 1) if numbered else None
@@ -533,6 +538,7 @@ def training_material_picker_router(
                     query=str(query or "").strip(),
                     labels=selected_labels,
                     include_payload=True,
+                    sort_order=sort_order,
                 )
                 rows = [dict(row) for row in page["items"]]
                 next_cursor = page["next_cursor"]
@@ -546,6 +552,7 @@ def training_material_picker_router(
                     limit=requested_size,
                     query=str(query or "").strip(),
                     processing_status="processed",
+                    sort_order=sort_order,
                 )
                 rows = [dict(row) for row in material_page.items]
                 next_cursor = material_page.next_cursor
