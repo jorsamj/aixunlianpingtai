@@ -114,7 +114,7 @@ test('failed frozen-image preview hides stale GT and prediction overlays', async
 
 test('hard sample action queues one canonical annotation task without pretending review succeeded', async ({page}) => {
   let posted = null;
-  await page.route('**/api/v61/projects/*/materials/ids?*', route => route.fulfill({
+  await page.route('**/hard-sample-mining/eligible?*', route => route.fulfill({
     status: 200, contentType: 'application/json',
     body: JSON.stringify({items:['train-eligible-a','train-eligible-b'],total:2,next_cursor:null})
   }));

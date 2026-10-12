@@ -21604,6 +21604,47 @@ def _enqueue_hard_sample_mining(
     return public_annotation_task(task)
 
 
+
+@app.get("/api/v64/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/hard-sample-mining/eligible")
+def eligible_hard_sample_materials(project_id: str, algorithm_id: str, version_id: str, limit: int = 100):
+    """A bounded read-only filter over canonical Materials and frozen Test truth.
+
+    This is not a separate candidate database. Final POST revalidates everything.
+    """
+    from platform_core.hard_sample_mining import (
+        HardSampleSafetyError, frozen_test_identifiers,
+    )
+    _algorithm_version_for_action(project_id, algorithm_id, version_id)
+    count = max(1, min(100, int(limit)))
+    try:
+        blocked_ids, blocked_hashes = frozen_test_identifiers(project_dir(project_id))
+    except HardSampleSafetyError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    materials = material_store(project_id)
+    eligible: list[str] = []
+    cursor = None
+    # Two fixed 500-ID pages: no unbounded Material scan on the API thread.
+    for _ in range(2):
+        page = materials.list_ids(cursor=cursor, limit=500, annotated=False)
+        ids = [str(value) for value in page.items if str(value) and str(value) not in blocked_ids]
+        for offset in range(0, len(ids), 500):
+            for item in materials.get_many(ids[offset:offset + 500]):
+                image_id = str(item.get("id") or "")
+                digest = str(item.get("content_sha256") or "").lower()
+                if (image_id in blocked_ids or digest in blocked_hashes
+                    or not re.fullmatch(r"[0-9a-f]{64}", digest)
+                    or item.get("source_available") is False):
+                    continue
+                eligible.append(image_id)
+                if len(eligible) >= count:
+                    break
+            if len(eligible) >= count:
+                break
+        if len(eligible) >= count or not page.next_cursor:
+            break
+        cursor = page.next_cursor
+    return {"items": eligible, "returned": len(eligible), "limit": count}
+
 @app.post("/api/v64/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/hard-sample-mining", status_code=202)
 def create_hard_sample_mining(project_id: str, algorithm_id: str, version_id: str,
                               payload: HardSampleMiningCreateReq):

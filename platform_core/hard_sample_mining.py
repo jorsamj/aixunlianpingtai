@@ -24,28 +24,14 @@ def sha256_file(path: str | Path) -> str:
     return digest.hexdigest()
 
 
-def assert_not_frozen_test(
-    project_path: str | Path,
-    image_ids: Sequence[str],
-    content_hashes: Mapping[str, str] | None = None,
-) -> None:
-    """Fail closed if selected IDs or exact content are in ANY frozen Test Split.
-
-    Existing dataset snapshots remain the only truth. No mutable blacklist,
-    cache or independent test-data database is introduced.
-    """
-    requested = {str(value) for value in image_ids if str(value)}
-    if not requested:
-        raise HardSampleSafetyError("HARD_SAMPLE_EMPTY_SELECTION")
-    hashes = {
-        str(value).strip().lower()
-        for key, value in (content_hashes or {}).items()
-        if str(key) in requested and str(value).strip()
-    }
-    snapshot_dir = Path(project_path) / "snapshots"
-    if not snapshot_dir.exists():
-        return
-    for file in sorted(snapshot_dir.glob("*.json")):
+def frozen_test_identifiers(project_path: str | Path) -> tuple[set[str], set[str]]:
+    """Read one immutable snapshot-owned Test identity projection, never persist it."""
+    test_ids: set[str] = set()
+    test_hashes: set[str] = set()
+    directory = Path(project_path) / "snapshots"
+    if not directory.exists():
+        return test_ids, test_hashes
+    for file in sorted(directory.glob("*.json")):
         try:
             snapshot = json.loads(file.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, ValueError) as error:
@@ -53,19 +39,36 @@ def assert_not_frozen_test(
         if not isinstance(snapshot, dict):
             raise HardSampleSafetyError("HARD_SAMPLE_SNAPSHOT_INVALID")
         roles = snapshot.get("ids") if isinstance(snapshot.get("ids"), dict) else {}
-        test_ids = set(str(value) for value in (snapshot.get("test_image_ids") or roles.get("test") or []))
-        if not test_ids:
-            continue
-        if requested & test_ids:
-            raise HardSampleSafetyError("HARD_SAMPLE_FROZEN_TEST_FORBIDDEN")
-        if not hashes:
+        frozen_ids = set(str(v) for v in (snapshot.get("test_image_ids") or roles.get("test") or []))
+        test_ids.update(frozen_ids)
+        if not frozen_ids:
             continue
         for row in snapshot.get("images") or []:
-            if not isinstance(row, dict) or str(row.get("image_id") or "") not in test_ids:
-                continue
-            digest = str(row.get("content_sha256") or "").lower().strip()
-            if digest and digest in hashes:
-                raise HardSampleSafetyError("HARD_SAMPLE_FROZEN_TEST_DUPLICATE_FORBIDDEN")
+            if isinstance(row, dict) and str(row.get("image_id") or "") in frozen_ids:
+                digest = str(row.get("content_sha256") or "").lower().strip()
+                if digest:
+                    test_hashes.add(digest)
+    return test_ids, test_hashes
+
+
+def assert_not_frozen_test(
+    project_path: str | Path,
+    image_ids: Sequence[str],
+    content_hashes: Mapping[str, str] | None = None,
+) -> None:
+    """Block frozen Test IDs and exact byte duplicates at submit and commit."""
+    selected = {str(value) for value in image_ids if str(value)}
+    if not selected:
+        raise HardSampleSafetyError("HARD_SAMPLE_EMPTY_SELECTION")
+    test_ids, test_hashes = frozen_test_identifiers(project_path)
+    if selected & test_ids:
+        raise HardSampleSafetyError("HARD_SAMPLE_FROZEN_TEST_FORBIDDEN")
+    hashes = {
+        str(value).strip().lower() for key, value in (content_hashes or {}).items()
+        if str(key) in selected and str(value).strip()
+    }
+    if hashes & test_hashes:
+        raise HardSampleSafetyError("HARD_SAMPLE_FROZEN_TEST_DUPLICATE_FORBIDDEN")
 
 
 def difficulty_signals(
