@@ -41,7 +41,7 @@ export function trainingMaterialSelectionPatch({role = 'train', selectedIds = []
     };
 }
 
-export function buildTrainingMaterialQuery({cursor = null, page = null, pageSize = DEFAULT_PAGE_SIZE, query = '', labels = []} = {}) {
+export function buildTrainingMaterialQuery({cursor = null, page = null, pageSize = DEFAULT_PAGE_SIZE, query = '', labels = [], sortOrder = 'newest'} = {}) {
   const params = new URLSearchParams();
   if (page != null) {
     params.set('page', String(page));
@@ -52,6 +52,7 @@ export function buildTrainingMaterialQuery({cursor = null, page = null, pageSize
   }
   if (String(query || '').trim()) params.set('query', String(query).trim());
   uniqueIds(labels).forEach(label => params.append('label', label));
+  params.set('sort_order', sortOrder === 'oldest' ? 'oldest' : 'newest');
   return params.toString();
 }
 
@@ -173,6 +174,7 @@ export function installTrainingMaterialPickerRuntime({
       project: projectId(),
       query: picker?.query || '',
       labels: picker ? [...picker.labels].sort() : [],
+      sortOrder: picker?.sortOrder || 'newest',
       pageSize: picker?.pageSize || DEFAULT_PAGE_SIZE,
     });
   }
@@ -197,7 +199,7 @@ export function installTrainingMaterialPickerRuntime({
       : '独立试验集必须具备正式 Ground Truth，未标注素材只展示但不可选择';
     return `<div class="train-v3-picker server-paged">
       <header><div><b>${title}</b><span>${rule}</span></div><strong id="trV3PickerCount">正在读取素材…</strong></header>
-      <div class="train-v3-filter"><input id="trV3Q" class="input" placeholder="搜索图片名称" oninput="trainMaterialSearchV3(this.value)"><div id="trV3Chips" class="data426-chips"><button class="data426-chip clear on" data-label="" onclick="clearTrainMaterialLabelsV3()">全部标签</button>${chips}</div></div>
+      <div class="train-v3-filter"><input id="trV3Q" class="input" placeholder="搜索图片名称" oninput="trainMaterialSearchV3(this.value)"><select id="trV3Sort" class="select" aria-label="按加入时间排序" onchange="trainMaterialSortV3(this.value)"><option value="newest">最新加入优先</option><option value="oldest">最早加入优先</option></select><div id="trV3Chips" class="data426-chips"><button class="data426-chip clear on" data-label="" onclick="clearTrainMaterialLabelsV3()">全部标签</button>${chips}</div></div>
       <div class="picker412-actions train-v3-batch"><button class="btn mini" data-picker-action="select-filtered" onclick="trainMaterialSelectV3('select-filtered')">全选当前筛选</button><button class="btn mini" data-picker-action="invert-filtered" onclick="trainMaterialSelectV3('invert-filtered')">反选当前筛选</button><button class="btn mini" data-picker-action="select-all" onclick="trainMaterialSelectV3('select-all')">全选全部可用素材</button><button class="btn mini" onclick="trainMaterialSelectV3('clear-all')">全部不选</button><span id="trV3PageMeta" class="train-v3-page-meta"></span></div>
       <div id="trV3Grid" class="train-v3-grid"></div>
       <div id="trV3Pager" class="data426-pager"></div>
@@ -375,6 +377,7 @@ export function installTrainingMaterialPickerRuntime({
         pageSize: picker.pageSize,
         query: picker.query,
         labels: [...picker.labels],
+        sortOrder: picker.sortOrder,
       });
       const response = await fetchImpl(`/api/v62/projects/${encodeURIComponent(pid)}/training-materials?${query}`, {
         signal: activeController.signal,
@@ -460,7 +463,7 @@ export function installTrainingMaterialPickerRuntime({
     injectStyles();
     picker = {
       role: role === 'test' ? 'test' : 'train',
-      query: '', labels: new Set(), selected: new Set(),
+      query: '', labels: new Set(), sortOrder: 'newest', selected: new Set(),
       pageSize: DEFAULT_PAGE_SIZE, page: 1, totalPages: 1,
       items: [], total: 0, loading: false, repositoryRevision: null,
     };
@@ -476,6 +479,12 @@ export function installTrainingMaterialPickerRuntime({
     picker.query = String(value || '').trim();
     clearTimeout(searchTimer);
     searchTimer = setTimeout(() => resetFiltersAndLoad(), 220);
+  }
+
+  function setSortOrder(value) {
+    if (!picker) return;
+    picker.sortOrder = value === 'oldest' ? 'oldest' : 'newest';
+    resetFiltersAndLoad();
   }
 
   function toggleLabel(code) {
@@ -521,6 +530,7 @@ export function installTrainingMaterialPickerRuntime({
 
   window.openTrainMaterialPickerV3 = open;
   window.trainMaterialSearchV3 = setSearch;
+  window.trainMaterialSortV3 = setSortOrder;
   window.toggleTrainMaterialLabelV3 = toggleLabel;
   window.clearTrainMaterialLabelsV3 = clearLabels;
   window.toggleTrainMaterialV3 = toggle;
@@ -551,6 +561,7 @@ export function installTrainingMaterialPickerRuntime({
         role: picker.role,
         query: picker.query,
         labels: [...picker.labels],
+        sortOrder: picker.sortOrder,
         selected: picker.selected.size,
         pageIndex: picker.page - 1,
         page: picker.page,
