@@ -65,12 +65,13 @@ def derive_version_conversion_defaults(
         except (TypeError, ValueError, OverflowError):
             pass
 
+    # Requested precision and AMP preference are not observed runtime facts.
+    # Historical versions without actual evidence must remain explicitly unknown.
     precision, precision_source = None, "历史版本未记录实际训练精度"
     for label, raw in (
         ("训练任务实际运行精度", job.get("runtime_precision")),
         ("训练版本实际参数", actual.get("effective_precision") or actual.get("precision")),
-        ("训练任务实际参数", job_actual.get("precision")),
-        ("训练版本请求精度", requested.get("effective_precision") or requested.get("precision")),
+        ("训练任务实际参数", job_actual.get("effective_precision") or job_actual.get("precision")),
     ):
         value = str(raw or "").strip().lower()
         if value in {"fp32", "fp16"}:

@@ -596,9 +596,29 @@ test('label management create and edit stay page-scoped without loading the full
   await expect(dialog).toBeVisible();
   await dialog.locator('#label414Cn').fill('安全头盔');
   await dialog.locator('#label414Aliases').fill('toukui1、helmet_old');
+  const editResponses = [];
+  const observeEditResponse = response => {
+    const url = new URL(response.url());
+    if (response.request().method() === 'PUT' &&
+        url.pathname.startsWith(`/api/v12/projects/${project.id}/labels/`)) {
+      editResponses.push(response);
+    }
+  };
+  page.on('response', observeEditResponse);
   await dialog.getByRole('button', {name: '保存', exact: true}).click();
 
-  await expect(dialog).toBeHidden();
+  try {
+    await expect(dialog).toBeHidden();
+  } catch (error) {
+    const responseDetails = await Promise.all(editResponses.map(async response => ({
+      status: response.status(),
+      body: (await response.text().catch(() => 'body unavailable')).slice(0, 1000),
+    })));
+    const toast = await page.locator('#toast').textContent().catch(() => '');
+    throw new Error(`${error.message}\n编辑标签 PUT 反馈: ${JSON.stringify(responseDetails)}；页面提示: ${toast}`);
+  } finally {
+    page.off('response', observeEditResponse);
+  }
   const edited = page.locator('.label414-row', {hasText: 'helmet'}).last();
   await expect(edited).toContainText('安全头盔');
   await expect(edited).toContainText('helmet_old');

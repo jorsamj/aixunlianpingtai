@@ -64,6 +64,29 @@ def test_conversion_defaults_amp_flag_is_not_proof_of_runtime_precision():
     assert derive_version_conversion_defaults(v, {"runtime_precision": "fp16"})["training_precision"] == "fp16"
 
 
+def test_conversion_defaults_requested_precision_never_claims_actual_runtime():
+    v = {"training_lineage": {"parameters": {
+        "requested": {"imgsz": 800, "precision": "fp32", "effective_precision": "fp32", "amp": False}
+    }}}
+    unknown = derive_version_conversion_defaults(v, {"imgsz": 800, "precision": "fp32"})
+    assert unknown["input_size"] == 800
+    assert unknown["training_precision"] is None
+    assert "未记录实际" in unknown["precision_source"]
+    confirmed = derive_version_conversion_defaults(
+        v, {"runtime_precision": "fp16", "actual_train_params": {"precision": "fp32"}},
+    )
+    assert confirmed["training_precision"] == "fp16"
+    assert confirmed["precision_source"] == "训练任务实际运行精度"
+
+
+def test_conversion_defaults_actual_train_effective_precision():
+    actual = derive_version_conversion_defaults(
+        {"training_lineage": {"parameters": {"requested": {"precision": "fp32"}}}},
+        {"actual_train_params": {"effective_precision": "fp16"}},
+    )
+    assert actual["training_precision"] == "fp16"
+
+
 def test_conversion_defaults_missing_corrupt_metadata_and_fp16_actual():
     x = derive_version_conversion_defaults({"training_lineage": {"parameters": {"actual": {"imgsz": -1, "precision": "auto"}}}})
     assert x["input_size"] == 640
