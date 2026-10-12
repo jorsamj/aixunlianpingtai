@@ -205,4 +205,41 @@ def test_training_scratch_yaml_remains_supported_without_weights():
 def test_train_worker_checks_weight_before_yolo_loader():
     from pathlib import Path
     code = (Path(__file__).resolve().parents[2] / "train_worker.py").read_text(encoding="utf-8")
-    assert code.index("actual_model = require_local_training_weight(actual_model)") < code.index("model = YOLO(actual_model)")
+    assert code.index("actual_model = require_local_training_weight(") < code.index("model = YOLO(actual_model)")
+
+
+
+def test_offline_weight_finds_platform_managed_model_library(tmp_path, monkeypatch):
+    from platform_core.training_precision import require_local_training_weight
+    project = tmp_path / "platform-data" / "projects" / "project-one"
+    library = tmp_path / "platform-data" / "models"
+    library.mkdir(parents=True)
+    model = library / "yolo11n.pt"
+    model.write_bytes(b"pre-positioned-pt-asset")
+    monkeypatch.chdir(tmp_path)
+    assert require_local_training_weight(
+        "yolo11n.pt", project_dir=project
+    ) == str(model.resolve())
+
+
+def test_offline_explicit_pt_path_is_never_silently_replaced_by_library(tmp_path):
+    from platform_core.training_precision import require_local_training_weight
+    project = tmp_path / "projects" / "one"
+    (project / "models").mkdir(parents=True)
+    (project / "models" / "yolo11n.pt").write_bytes(b"valid-pre-positioned")
+    with pytest.raises(TrainingPrecisionError, match="TRAINING_MODEL_OFFLINE_MISSING"):
+        require_local_training_weight(
+            str(tmp_path / "absent" / "yolo11n.pt"), project_dir=project
+        )
+
+
+def test_offline_weight_finds_explicit_ultralytics_weights_dir(tmp_path, monkeypatch):
+    from platform_core.training_precision import require_local_training_weight
+    weights = tmp_path / "ultralytics-weights"
+    weights.mkdir()
+    model = weights / "yolo11n.pt"
+    model.write_bytes(b"local")
+    monkeypatch.chdir(tmp_path)
+    assert require_local_training_weight(
+        "yolo11n.pt", weights_dir=weights
+    ) == str(model.resolve())

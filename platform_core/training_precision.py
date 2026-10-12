@@ -94,11 +94,16 @@ def _local_amp_reference(project_dir: Path, ultralytics) -> Path | None:
 
 
 
-def require_local_training_weight(model_argument: str) -> str:
-    """Resolve existing .pt weights before calling YOLO; never download at runtime.
+def require_local_training_weight(
+    model_argument: str, *, project_dir: Path | None = None,
+    weights_dir: Path | str | None = None,
+) -> str:
+    """Resolve only pre-existing .pt weights before YOLO can download assets.
 
-    Official bare names (such as yolo11n.pt) are NOT download instructions.
-    YAML architecture definitions are allowed for deliberate scratch training.
+    Bare official filenames may be in the project/platform model library or
+    the pinned Ultralytics weights directory. Explicit paths never fall back
+    to another artifact. No scanning, copying or network requests take place.
+    YAML remains supported for deliberate scratch architecture training.
     """
     import stat
 
@@ -110,23 +115,40 @@ def require_local_training_weight(model_argument: str) -> str:
     path = Path(value).expanduser()
     if path.suffix.lower() != ".pt":
         return value
-    try:
-        info = path.stat()
+    candidates = [path]
+    if not path.is_absolute() and path.parent == Path("."):
+        if project_dir is not None:
+            project = Path(project_dir).resolve()
+            candidates.append(project / "models" / path.name)
+            if len(project.parents) >= 2:
+                candidates.append(project.parents[1] / "models" / path.name)
+        if weights_dir:
+            candidates.append(Path(weights_dir).expanduser() / path.name)
+    for candidate in dict.fromkeys(candidates):
+        try:
+            info = candidate.stat()
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError) as exc:
+            raise TrainingPrecisionError(
+                "TRAINING_MODEL_OFFLINE_UNREADABLE: selected .pt cannot be accessed: "
+                + str(candidate)
+            ) from exc
         if not stat.S_ISREG(info.st_mode) or info.st_size <= 0:
             raise TrainingPrecisionError(
-                "TRAINING_MODEL_OFFLINE_INVALID: selected .pt is empty or not a file: " + value
+                "TRAINING_MODEL_OFFLINE_INVALID: selected .pt is empty or not a file: "
+                + str(candidate)
             )
-        if not os.access(path, os.R_OK):
+        if not os.access(candidate, os.R_OK):
             raise TrainingPrecisionError(
-                "TRAINING_MODEL_OFFLINE_UNREADABLE: Worker cannot read selected .pt: " + value
+                "TRAINING_MODEL_OFFLINE_UNREADABLE: Worker cannot read selected .pt: "
+                + str(candidate)
             )
-        return str(path.resolve(strict=True))
-    except (OSError, ValueError) as exc:
-        raise TrainingPrecisionError(
-            "TRAINING_MODEL_OFFLINE_MISSING: selected .pt is not available to this Worker; "
-            "prepare it in the platform model library before starting training: " + value
-        ) from exc
-
+        return str(candidate.resolve())
+    raise TrainingPrecisionError(
+        "TRAINING_MODEL_OFFLINE_MISSING: selected .pt is not available to this Worker; "
+        "prepare it in the platform model library before starting training: " + value
+    )
 
 @contextmanager
 def _reference_directory(path: Path):
