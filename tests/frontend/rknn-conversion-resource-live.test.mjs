@@ -37,6 +37,7 @@ function setup(getResource) {
   const radio = {value: 'rockchip'};
   const calls = [];
   let opened = false;
+  let modalMarkup = '';
   const actions = {
     loadVersionConversionResources428: async force => {calls.push(force); return getResource();},
     loadVersionConversionHistory428: async () => ({
@@ -56,7 +57,7 @@ function setup(getResource) {
     api: async () => {throw new Error('unexpected legacy resource API');},
     toast: message => warning.textContent = message,
     esc: value => String(value ?? ''),
-    modal: () => {opened = true;},
+    modal: (_title, markup) => {opened = true;modalMarkup = String(markup);},
     setTimeout: fn => fn(),
     localStorage: {
       getItem: key => storage.get(key) ?? null,
@@ -66,7 +67,8 @@ function setup(getResource) {
   // In browsers, window properties are also global name bindings.
   ctx.window = ctx;
   vm.runInNewContext(runtimeSource, ctx, {filename: 'app.js:canonical-conversion'});
-  return {win:ctx, state, select, chip, precision, warning, status, submit, radio, calls, storage};
+  return {win:ctx, state, select, chip, precision, warning, status, submit, radio, calls, storage,
+    get modalMarkup(){return modalMarkup}};
 }
 const resource = (id, chips, state = 'ready', mode='local') => ({
   id, name: id, kind: 'rockchip', mode, status: state,
@@ -157,4 +159,22 @@ test('T10 and T13: RKNN FP16 remains eligible, unsupported FP32 is not selectabl
   assert.equal(h.precision.value,'fp16');
   assert.equal(h.precision.options.find(option=>option.value==='fp32').disabled,true);
   assert.equal(h.submit.disabled,false);
+});
+
+test('new conversion UI inherits PT actual precision and size, but RKNN uses only supported output precision',async()=>{
+  const h=setup(async()=>ready());
+  h.win.loadVersionConversionHistory428=async()=>({
+    algorithm:{name:'A'},version:{stored_path:'/tmp/best.pt',version_name:'v2',
+      conversion_defaults:{input_size:800,training_precision:'fp32',precision_source:'训练任务实际运行精度'}}
+  });
+  await h.win.openNewConvertCore416('algo','v2');
+  assert.match(h.modalMarkup,/id="conv428Input"[^>]*value="800"/);
+  assert.match(h.modalMarkup,/源模型训练：FP32 · 800 px/);
+  // This mock resource supports RKNN FP16, not FP32.
+  assert.equal(h.precision.value,'fp16');
+  assert.equal(h.precision.options.find(option=>option.value==='fp32').disabled,true);
+  h.radio.value='onnx';
+  h.win.refreshConvertResource428();
+  assert.equal(h.precision.value,'fp32');
+  assert.equal(h.state.conv428ModelDefaults.input_size,800);
 });

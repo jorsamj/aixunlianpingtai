@@ -40,3 +40,34 @@ def test_manifest_records_source_tool_outputs_and_validation_state(tmp_path):
     assert manifest["outputs"][0]["sha256"]
     assert manifest["status"] == "converted_unverified"
     assert manifest["hardware_verified"] is False
+
+
+from platform_core.conversion import derive_version_conversion_defaults
+
+
+def test_conversion_defaults_actual_lineage_and_runtime_precision():
+    v = {"job_id": "job1", "training_lineage": {"parameters": {
+        "requested": {"imgsz": 640, "precision": "auto"},
+        "actual": {"imgsz": 800, "precision": "fp32"},
+    }}}
+    observed = derive_version_conversion_defaults(v, {"runtime_precision": "fp32", "imgsz": 640})
+    assert observed["input_size"] == 800
+    assert observed["training_precision"] == "fp32"
+    assert observed["source_job_id"] == "job1"
+
+
+def test_conversion_defaults_amp_flag_is_not_proof_of_runtime_precision():
+    v = {"training_lineage": {"parameters": {"requested": {"imgsz": 800, "precision": "auto", "amp": True}}}}
+    unknown = derive_version_conversion_defaults(v)
+    assert unknown["input_size"] == 800
+    assert unknown["training_precision"] is None
+    assert derive_version_conversion_defaults(v, {"runtime_precision": "fp16"})["training_precision"] == "fp16"
+
+
+def test_conversion_defaults_missing_corrupt_metadata_and_fp16_actual():
+    x = derive_version_conversion_defaults({"training_lineage": {"parameters": {"actual": {"imgsz": -1, "precision": "auto"}}}})
+    assert x["input_size"] == 640
+    assert x["training_precision"] is None
+    v = {"training_lineage": {"parameters": {"actual": {"imgsz": "800", "precision": "fp16"}, "requested": {"imgsz": 640, "precision": "fp32"}}}}
+    assert derive_version_conversion_defaults(v)["training_precision"] == "fp16"
+    assert derive_version_conversion_defaults(v)["input_size"] == 800

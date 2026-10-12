@@ -72,7 +72,7 @@ from platform_core.annotation_runtime import prepare_request as prepare_annotati
 from platform_core.bootstrap import choose_project, choose_requested_project
 from platform_core.runtime_paths import resolve_data_dir
 from platform_core.build_identity import resolve_build_id
-from platform_core.conversion import sha256_file, validate_target
+from platform_core.conversion import sha256_file, validate_target, derive_version_conversion_defaults
 from platform_core.errors import PlatformError, error_body
 from platform_core.changlian_login_auth import (
     DEFAULT_CHANGLIAN_LOGIN_BASE_URL,
@@ -17822,6 +17822,32 @@ def _v39_create_deploy_job_under_version_fence(
         # Ultralytics/Paddle 内置资源只做直接导出；芯片转换必须选择对应芯片资源。
         raise HTTPException(status_code=400, detail=f"该资源不支持 {payload.target}。当前支持：{', '.join(resource.get('targets') or []) or '无'}")
     params=dict(payload.params or {})
+    if str(source.get("kind") or "") == "algorithm_version":
+        algorithm = next(
+            (a for a in list_algorithms_internal(project_id) if str(a.get("id") or "") == str(source.get("algorithm_id") or "")),
+            None,
+        )
+        version = next(
+            (v for v in (algorithm.get("versions") or []) if str(v.get("id") or "") == str(source.get("version_id") or "")),
+            None,
+        ) if algorithm else None
+        if version:
+            defaults = _version_deploy_conversion_defaults(project_id, version)
+            if not str(params.get("input_size") or "").strip():
+                params["input_size"] = defaults["input_size"]
+            if not str(params.get("precision") or "").strip():
+                inherited = defaults.get("training_precision") or "fp16"
+                if str(payload.target or "").lower() == "rockchip":
+                    supported = {
+                        str(value or "").lower()
+                        for value in (resource.get("supported_precisions") or ["fp16", "int8"])
+                    }
+                    inherited = inherited if inherited in supported else ("fp16" if "fp16" in supported else "")
+                    if not inherited:
+                        raise HTTPException(status_code=400, detail="RKNN 资源不支持训练精度且未提供 FP16 兼容精度；请检查转换资源。")
+                params["precision"] = inherited
+            params["source_training_precision"] = defaults.get("training_precision") or ""
+            params["source_training_imgsz"] = defaults["input_size"]
     if str(payload.target or "").strip().lower() == "rockchip":
         from platform_core.rknn_runtime import REMOTE_RKNN_CHIPS
         precision = str(params.get("precision") or "fp16").strip().lower()
@@ -18948,6 +18974,13 @@ V423_DEPLOY_TARGET_NAMES = {
     "rockchip": "瑞芯微 RKNN",
 }
 
+
+def _version_deploy_conversion_defaults(project_id: str, version: Mapping[str, Any]) -> dict[str, Any]:
+    job_id = str(version.get("job_id") or version.get("task_id") or "").strip()
+    job = read_json(project_dir(project_id) / "jobs" / job_id / "job.json", {}) if re.fullmatch(r"[A-Za-z0-9_-]{1,128}", job_id) else {}
+    return derive_version_conversion_defaults(version, job)
+
+
 @app.get('/api/v42/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/deployments')
 def v423_version_deployments(project_id: str, algorithm_id: str, version_id: str):
     get_project(project_id)
@@ -18995,7 +19028,9 @@ def v423_version_deployments(project_id: str, algorithm_id: str, version_id: str
             'message': job.get('message') or '', 'error': job.get('error') or ''
         })
     rows.sort(key=lambda x: x.get('created_at') or '', reverse=True)
-    return {'ok': True, 'algorithm': {'id': algo.get('id'), 'name': algo.get('name')}, 'version': version, 'items': rows}
+    visible_version = dict(version)
+    visible_version["conversion_defaults"] = _version_deploy_conversion_defaults(project_id, version)
+    return {'ok': True, 'algorithm': {'id': algo.get('id'), 'name': algo.get('name')}, 'version': visible_version, 'items': rows}
 
 
 class V42SourceReq(BaseModel):
