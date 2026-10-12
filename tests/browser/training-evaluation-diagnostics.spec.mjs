@@ -110,3 +110,28 @@ test('failed frozen-image preview hides stale GT and prediction overlays', async
   await expect(dialog.locator('.evaluation429-overlay')).toBeHidden();
   await expect(dialog.locator('.evaluation429-media img')).toBeHidden();
 });
+
+
+test('hard sample action queues one canonical annotation task without pretending review succeeded', async ({page}) => {
+  let posted = null;
+  await page.route('**/api/v61/projects/*/materials/ids?*', route => route.fulfill({
+    status: 200, contentType: 'application/json',
+    body: JSON.stringify({items:['train-eligible-a','train-eligible-b'],total:2,next_cursor:null})
+  }));
+  await page.route('**/hard-sample-mining', async route => {
+    posted = route.request().postDataJSON();
+    await route.fulfill({status:202,contentType:'application/json',body:JSON.stringify({
+      id:'hmtest-queued',status:'QUEUED',kind:'AI_ANNOTATION'
+    })});
+  });
+  await page.goto('/');
+  await expect.poll(() => page.evaluate(() => Boolean(state?.uiReady && window.openVersionEvaluation429)), {timeout:20000}).toBe(true);
+  await page.evaluate(() => {
+    state.algorithms=[{id:'a-mine',name:'人形检测',versions:[{id:'v-mine',version_name:'V2',
+      evaluation:{status:'succeeded',metrics:{'metrics/mAP50(B)':0.5},error_samples:[]}}]}];
+    window.openVersionEvaluation429('a-mine','v-mine');
+  });
+  await page.getByRole('dialog',{name:'独立评测'}).getByRole('button',{name:'挖掘已有未标注素材'}).click();
+  await expect.poll(()=>Boolean(posted)).toBe(true);
+  expect(posted).toEqual({image_ids:['train-eligible-a','train-eligible-b'],source:'existing'});
+});

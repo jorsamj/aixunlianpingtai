@@ -1367,3 +1367,9 @@ radial-gradient(circle at 1px 1px,rgba(148,163,184,.14) 1px,transparent 0) 0 0/1
 .evaluation429-image-card b{font-size:14px}
 .evaluation429-image-card em{font-size:13px}
 @media(max-width:700px){.evaluation429-gallery-grid{grid-template-columns:repeat(auto-fill,minmax(155px,1fr));gap:10px}.evaluation429-image-card{min-height:205px}}
+
+/* P1 additive control surfaces: no nested dialogs, preserve canonical owners. */
+.storage61-upload-location label[for="uploadMineVersion61"]{display:block;font-weight:650;margin:12px 0 7px}
+.evaluation429-mining-action header{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap}
+.evaluation429-mining-action .btn{font-size:14px;min-height:40px}
+@media(max-width:700px){.evaluation429-mining-action header{align-items:stretch}.evaluation429-mining-action button{width:100%}}
