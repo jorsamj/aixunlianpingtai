@@ -10,6 +10,7 @@ import {
   normalizeDurableUploadTask,
   patchUploadTaskCenterRows,
   renderUploadTaskCenterRow,
+  stableUploadTaskOrder,
 } from '../../static/modules/upload-task-center.js';
 
 test('mergeUploadTask keeps truthful progress and terminal success becomes 100%', () => {
@@ -165,4 +166,20 @@ test('paused ZIP task remains visible and can be resumed after page refresh', ()
   });
   assert.match(html,/已暂停/);
   assert.match(html,/utc-reopenable/);
+});
+
+test('concurrent uploads keep identity order across changing server timestamps', () => {
+  const first = mergeUploadTask({}, {id:'zip:first',createdAt:'2026-10-12T09:00:00Z',updatedAt:'2026-10-12T09:20:00Z'});
+  const second = mergeUploadTask({}, {id:'zip:second',createdAt:'2026-10-12T09:01:00Z',updatedAt:'2026-10-12T09:02:00Z'});
+  assert.deepEqual(stableUploadTaskOrder([first,second]).map(row=>row.id), ['zip:second','zip:first']);
+  const changed = mergeUploadTask(first, {progress:75,updatedAt:'2026-10-12T09:30:00Z'});
+  assert.deepEqual(stableUploadTaskOrder([changed,second]).map(row=>row.id), ['zip:second','zip:first']);
+});
+
+test('task dock stays clickable over upload modal and supports stable ID rekeying', () => {
+  const source = readFileSync(new URL('../../static/modules/upload-task-center.js', import.meta.url), 'utf8');
+  assert.match(source, /utc-root\{position:fixed;right:20px;bottom:18px;z-index:1300/);
+  assert.match(source, /function rekey\(oldId, newId\)/);
+  assert.match(source, /rows = stableUploadTaskOrder\(rows\)/);
+  assert.doesNotMatch(source, /rows\.sort\(\(a,b\) => String\(b\.updatedAt\)/);
 });
