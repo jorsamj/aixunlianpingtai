@@ -561,6 +561,18 @@ export function installMaterialPaginationRuntime() {
   };
   window.materialCurrentPageIds61 = () => (state.images || []).map(row => String(row.id));
   window.materialSelectedIds61 = () => [...(state.data412Selected || new Set())].map(String);
+  // The durable batch owner estimates and freezes all matching IDs at one
+  // repository revision; visible page cards are never the deletion truth.
+  window.deleteFilteredMaterials61 = async () => {
+    if (!isPagedDataset() || !state.data412DeleteMode) return window.toast?.('请先进入数据集批量操作');
+    const filters = window.materialBatchFilters61?.() || {};
+    const narrowed = Boolean(
+      String(filters.query || '').trim() || (filters.labels || []).length
+      || (filters.storage_source_ids || []).length || filters.annotated !== null
+    );
+    if (!narrowed) return window.toast?.('请先按标签、名称、来源或标注状态筛选，不能一键删除整个素材池');
+    return window.runMaterialBatch62?.('DELETE_INDEX', {scope: 'FILTERED'});
+  };
   window.reloadMaterialPage61 = async () => {
     invalidateFullPool61();
     const result = await loadMaterialPage61({reset: true});

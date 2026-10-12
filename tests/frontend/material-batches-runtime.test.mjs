@@ -49,3 +49,14 @@ test('restoring finished clean/skip task does not open AI review modal',()=>{
   assert.match(source,/poll\(taskId\);/);
   assert.match(source,/poll\(task\.task_id, \{foreground: true\}\)/);
 });
+
+test('filtered material deletion estimates and freezes server-owned scope with annotation cleanup', () => {
+  const app = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+  const pagination = readFileSync(new URL('../../static/modules/material-pagination-runtime.js', import.meta.url), 'utf8');
+  assert.match(app, /删除筛选结果/);
+  assert.match(pagination, /window.deleteFilteredMaterials61 = async/);
+  assert.match(pagination, /scope: 'FILTERED'/);
+  assert.match(pagination, /if \(!narrowed\)/);
+  assert.match(source, /payload.selection_spec = estimate.selection_spec/);
+  assert.match(source, /Ground Truth 与标注文件/);
+});
