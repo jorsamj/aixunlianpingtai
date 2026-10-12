@@ -51,6 +51,7 @@ def test_upgrade_refuses_queued_running_and_pending_confirmation_tasks(tmp_path)
     with sqlite3.connect(database) as db:
         db.execute("CREATE TABLE tasks (task_id TEXT, status TEXT)")
         db.execute("INSERT INTO tasks VALUES ('done', 'SUCCEEDED')")
+        db.execute("INSERT INTO tasks VALUES ('partial', 'PARTIAL_SUCCESS')")
     require_idle_tasks(tmp_path)
     for status in ("QUEUED", "RUNNING", "AWAITING_CONFIRMATION", "CANCEL_REQUESTED"):
         with sqlite3.connect(database) as db:

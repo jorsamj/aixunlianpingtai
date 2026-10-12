@@ -21,7 +21,7 @@ from pathlib import Path
 
 BRANCH = "feature/external-algorithm-publishing"
 TERMINAL_STATES = frozenset({
-    "SUCCEEDED", "FAILED", "CANCELLED",
+    "SUCCEEDED", "PARTIAL_SUCCESS", "FAILED", "CANCELLED",
     "BLOCKED_BY_ENVIRONMENT", "BLOCKED_BY_HARDWARE",
 })
 
