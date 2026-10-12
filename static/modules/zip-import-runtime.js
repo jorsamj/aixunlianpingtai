@@ -382,7 +382,8 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
     return true;
   }
   function open(){
-    const html=uploading?uploadBody():(current?body(current):'');
+    const showSingleUpload=uploading&&(!selectedJobId||String(uploading.uploadId||'')===selectedJobId);
+    const html=showSingleUpload?uploadBody():(current?body(current):'');
     if(!html)return false;
     if(!replaceOpenRuntime(html))window.modal?.('ZIP 数据导入',html,true);
     if(current)mountLabelReviewPagination(current.id);
@@ -414,7 +415,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
   function render(){
     const d=dock(),active=activeZipJobs(jobs);
     if(window.UploadTaskCenterRuntime)d.classList.add('hidden');
-    if(uploading){
+    if(uploading&&(!selectedJobId||String(uploading.uploadId||'')===selectedJobId)){
       if(!window.UploadTaskCenterRuntime)d.classList.remove('hidden');
       updateDockContent(d,'正在上传 ZIP',`${Math.round(uploading.progress)}% · ${uploading.message}`);
       const pct=document.getElementById('zipDurableUploadPct'),bar=document.getElementById('zipDurableUploadBar'),msg=document.getElementById('zipDurableUploadMsg');
@@ -628,7 +629,9 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
   }
   function publishTaskCenterJob(project,job){
     const v=zipView(job,jobs),s=status(job),localUpload=Boolean(uploading?.uploadId)&&String(uploading.uploadId)===String(job.id||'');
-    const task={id:`zip:${job.id}`,kind:'zip',title:job.file_name||'ZIP 数据导入',status:String(job.status||'').toUpperCase(),progress:v.progress,stage:v.stage,detail:v.message,serverUrl:`/api/v19/projects/${encodeURIComponent(project)}/import/jobs/${encodeURIComponent(String(job.id))}`,pollOwner:'zip-import-runtime'};
+    const transfer=batchTransfers.get(String(job.id||''));
+    const transferActive=transfer?.state==='active';
+    const task={id:`zip:${job.id}`,kind:'zip',title:job.file_name||'ZIP 数据导入',status:String(job.status||'').toUpperCase(),progress:transferActive?transfer.progress:v.progress,stage:transferActive?'正在上传 ZIP':v.stage,detail:transferActive?transfer.message:v.message,serverUrl:`/api/v19/projects/${encodeURIComponent(project)}/import/jobs/${encodeURIComponent(String(job.id))}`,pollOwner:'zip-import-runtime'};
     if(s==='uploading'&&(localUpload||batchTransfers.get(String(job.id||''))?.state==='active')){task.browserTransfer=true;task.resumeRequired=false}
     else if(s!=='uploading'){task.browserTransfer=false;task.resumeRequired=false}
     window.UploadTaskCenterRuntime?.upsert?.(task);
