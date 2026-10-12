@@ -71,3 +71,14 @@ def test_conversion_defaults_missing_corrupt_metadata_and_fp16_actual():
     v = {"training_lineage": {"parameters": {"actual": {"imgsz": "800", "precision": "fp16"}, "requested": {"imgsz": 640, "precision": "fp32"}}}}
     assert derive_version_conversion_defaults(v)["training_precision"] == "fp16"
     assert derive_version_conversion_defaults(v)["input_size"] == 800
+
+
+def test_auto_version_conversion_does_not_override_source_training_defaults():
+    from pathlib import Path
+    app_source = (Path(__file__).resolve().parents[2] / "app.py").read_text(encoding="utf-8")
+    begin = app_source.index("def _v48_auto_convert_version(")
+    end = app_source.index("\\ndef _v48_archive_training_version(", begin)
+    code = app_source[begin:end]
+    assert "params={}" in code
+    assert 'params={"input_size":int(job.get("imgsz") or 640),"precision":"fp16"}' not in code
+    assert "v39_create_deploy_job(" in code

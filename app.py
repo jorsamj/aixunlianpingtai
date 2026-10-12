@@ -11803,7 +11803,10 @@ def _v48_auto_convert_version(project_id: str, algorithm_id: str, version: Dict[
         resource=next((r for r in resources if r.get("status")=="ready" and target in (r.get("targets") or [])),None)
         if not resource:
             summary["errors"].append({"target":target,"message":"没有已检测通过的对应部署资源"});continue
-        params={"input_size":int(job.get("imgsz") or 640),"precision":"fp16"}
+        # Version-source conversion inherits frozen training runtime defaults in
+        # _v39_create_deploy_job_under_version_fence, including AMP FP32 fallback.
+        # Do not override that contract with an unconditional FP16 here.
+        params={}
         if target=="sophon":
             params["chip"]="bm1684x"
         elif target=="rockchip":

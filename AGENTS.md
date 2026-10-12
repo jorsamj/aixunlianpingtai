@@ -1,5 +1,9 @@
 修复前一笔总览变更触发的两条 CI 合同回归：前端/Remote Cleaning Runtime 的 clean-task-view 测试静态校验 main.mjs 旧缓存键 .363；本轮只将严格断言更新为真实入口 .364，不改清洗业务或删断言。
 
+## 2026-10-12｜自动转换也继承源 PT 的训练配置
+
+原 `_v48_auto_convert_version` 自动转换仍把 precision 写死为 FP16；本次移除该硬编码，统一由既有版本转换任务创建入口按训练 lineage、实际 runtime_precision 与目标资源能力决议。手工转换的精度/尺寸显式覆盖不变；自动转换与手动转换共用同一来源合同，避免默认不一致。
+
 ## 2026-10-12｜转换默认跟随正式 PT 版本训练参数
 
 - 版本转换 API 从冻结的 `training_lineage.parameters.actual.imgsz` 读取图片尺寸，从源训练任务 `runtime_precision`（包括离线 AMP 回退结果）或 lineage 实际精度读取默认 FP32/FP16；无事实时不从 PT 权重 dtype、请求 AMP 开关猜测运行精度。转换前端以所选版本原始参数填充（800/640 等），历史未记精度则告知未知。
