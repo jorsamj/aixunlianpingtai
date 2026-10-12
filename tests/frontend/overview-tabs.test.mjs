@@ -208,3 +208,64 @@ test('local controller stays visible if service-node API fails without claiming 
     assert.doesNotMatch(view.innerHTML,/服务节点<\/span><strong>0/);
   }finally{globalThis.document=original}
 });
+
+// The same triple-click gesture is scoped to the active tab and never mutates
+// backend snapshots, live statistics or production dashboard ownership.
+test('each overview tab switches into isolated demo fixtures and restores live data',async()=>{
+  const previous=globalThis.document;
+  let tabHandler,exitHandler,productionRenders=0;
+  const view={
+    innerHTML:'',
+    insertAdjacentHTML(position,html){this.innerHTML=position==='afterbegin'?html+this.innerHTML:this.innerHTML+html},
+    querySelector(selector){
+      if(selector==='[data-overview-tabs]')return {addEventListener(_,cb){tabHandler=cb}};
+      if(selector==='[data-overview-demo-exit]')return {addEventListener(_,cb){exitHandler=cb}};
+      return null;
+    },
+    querySelectorAll(){return []},
+  };
+  globalThis.document={getElementById(id){return id==='view'?view:null}};
+  const state={page:'总览',project:{id:'test-project'}};
+  const requests=[];
+  try{
+    const rt=installOverviewTabsRuntime({
+      getState:()=>state,
+      renderProduction(){productionRenders++;view.innerHTML='<section>真实生产看板</section>'},
+      request:async url=>{
+        requests.push(url);
+        if(url.includes('/algorithms'))return {items:[{id:'real-a',name:'真实模型',algorithm_type:'yolo',versions:[]}]};
+        if(url.includes('quality-overview'))return {algorithms:[]};
+        if(url.endsWith('/service-nodes'))return {items:[]};
+        if(url.includes('storage-sources'))return {items:[]};
+        if(url.includes('gpu-runtime'))return {gpus:[]};
+        return {name:'控制端（本机）',sampled_at:'2026-10-12T02:00:00Z',resources:{cpu:{usage_percent:12},gpu:{gpus:[]}}};
+      },
+    });
+    const click=tab=>tabHandler({target:{closest(selector){
+      return selector==='[data-overview-tab]'?{dataset:{overviewTab:tab}}:null;
+    }}});
+    rt.render();await new Promise(resolve=>setImmediate(resolve));
+    assert.match(view.innerHTML,/真实模型/);
+    const requestsBeforeDemo=requests.length;
+    const liveRenders=productionRenders;
+    for(let i=0;i<3;i++)click('algorithm');
+    assert.match(view.innerHTML,/演示数据模式/);
+    assert.match(view.innerHTML,/12,840 次/);
+    assert.match(view.innerHTML,/94.6%/);
+    assert.doesNotMatch(view.innerHTML,/真实模型|真实生产看板/);
+    assert.equal(productionRenders,liveRenders+2);
+    assert.equal(requests.length,requestsBeforeDemo);
+    exitHandler();await new Promise(resolve=>setImmediate(resolve));
+    assert.match(view.innerHTML,/真实模型/);
+    assert.match(view.innerHTML,/真实生产看板/);
+    click('compute');await new Promise(resolve=>setImmediate(resolve));
+    assert.doesNotMatch(view.innerHTML,/演示数据模式/);
+    for(let i=0;i<2;i++)click('compute');
+    assert.match(view.innerHTML,/演示数据模式/);
+    assert.match(view.innerHTML,/GPU 训练服务器 A/);
+    assert.doesNotMatch(view.innerHTML,/94.6%/);
+    click('algorithm');await new Promise(resolve=>setImmediate(resolve));
+    assert.doesNotMatch(view.innerHTML,/演示数据模式/);
+    assert.match(view.innerHTML,/真实模型/);
+  }finally{globalThis.document=previous}
+});

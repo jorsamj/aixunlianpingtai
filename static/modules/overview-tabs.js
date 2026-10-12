@@ -107,7 +107,7 @@ export function buildComputeMap(nodes=[],storage=[],gpuRuntime=null) {
     // Cloud provider configuration is not provider usage telemetry.
     storageBytes:null,cloudBytes:null};
 }
-function overviewAlgorithm(m) {
+function overviewAlgorithm(m,demo=false) {
   const biggest=Math.max(1,...m.types.map(x=>x.count));
   const industryMax=Math.max(1,...m.industries.map(x=>x.count));
   const typePanel=panel('算法类型数量排行',m.types.length?
@@ -121,21 +121,30 @@ function overviewAlgorithm(m) {
     rows(scored,x=>'<div class="ov348-accuracy"><button type="button" class="ov348-algo-link" data-overview-algorithm-id="'+esc(x.id)+'">'+esc(x.name)+'</button><div>'+
        '<span>mAP50 '+pct(x.map50)+'</span><span>Precision '+pct(x.precision)+'</span><span>Recall '+pct(x.recall)+'</span><span>策略准确率 —</span></div></div>'):
     empty(m.total?'暂未取得已完成的真实模型评测':'暂无算法资产'),'已评测算法优先 · 仅展示真实指标');
+  const application=demo?
+    '<div class="ov348-grid">'+
+      panel('高频使用算法排行',rows(m.usage,x=>bar(x.name,x.count,m.usage[0].count,fmt(x.count)+' 次')),'模拟推理调用量')+
+      panel('各单位算法运行状况',rows(m.units,x=>'<div class="ov348-accuracy"><b>'+esc(x.name)+'</b><div><span>'+esc(x.status)+'</span><span>'+fmt(x.count)+' 个部署算法</span></div></div>'),'模拟单位运行实例')+
+    '</div><div class="ov348-grid">'+
+      panel('单位算法数量排行',rows(m.units,x=>bar(x.name,x.count,m.units[0].count,fmt(x.count)+' 项')),'模拟单位部署分布')+
+      panel('训练任务概览','<div class="ov348-kpis ov348-kpis-small">'+metric('训练中','2','模拟训练任务')+metric('排队任务','3','模拟调度队列')+metric('已完成','27','模拟累计任务')+'</div>','模拟生产概览')+
+    '</div>':
+    '<details class="ov351-pending"><summary>待接入指标 <span>高频排行、单位运行与部署 · 展开</span></summary><div class="ov348-grid">'+
+      panel('高频使用算法排行',empty('尚未接入生产推理调用次数'),'生产运行次数 · 待接入')+
+      panel('各单位算法运行状况',empty('尚未接入单位与部署实例运行数据'),'单位维度 · 待接入')+'</div>'+
+    '<div class="ov348-grid">'+panel('单位算法数量排行',empty('尚无可信的单位归属记录'),'单位维度 · 待接入')+'</div></details>';
   return '<div class="ov348-stack ov351-algorithm"><div class="ov351-algorithm-intro"><div><span>ALGORITHM INTELLIGENCE</span><h3>算法资产全景</h3><p>模型质量 · 算法类型 · 场景分布 · 生产运行</p></div><strong>'+fmt(m.measured)+' <small>已评测算法</small></strong></div><div class="ov348-kpis">'+
     metric('算法总数',fmt(m.total),'当前空间已登记算法')+
     metric('算法类型',fmt(m.types.length),'按 algorithm_type 归类')+
     metric('有版本算法',fmt(m.withVersions),'累计 '+fmt(m.versionCount)+' 个版本')+
     metric('模型评测覆盖',fmt(m.measured)+' / '+fmt(m.total),'具备 Precision / Recall / mAP')+
-    metric('策略准确率','—','尚无策略判定结果事实源')+'</div>'+
+    metric('策略准确率',demo?pct(m.strategyAccuracy/100):'—',demo?'模拟策略判定指标':'尚无策略判定结果事实源')+'</div>'+
     '<div class="ov350-section"><h3>算法资产与模型表现</h3><span>有效数据优先</span></div>'+
     '<div class="ov348-grid ov350-leader-grid">'+accuracy+typePanel+'</div>'+
     '<div class="ov348-grid">'+industryPanel+panel('算法资产清单',m.scores.length?rows(m.scores.slice(0,30),x=>'<div class="ov348-accuracy"><button type="button" class="ov348-algo-link" data-overview-algorithm-id="'+esc(x.id)+'">'+esc(x.name)+'</button><div><span>'+((x.map50!==null||x.precision!==null||x.recall!==null)?'已有模型评测':'待评测')+'</span></div></div>'):empty('尚无算法资产'),'含待评测算法 · 最多显示 30 项')+'</div>'+
-    '<div class="ov350-section"><h3>运行与应用</h3><span>待接入数据源</span></div>'+
-    '<details class="ov351-pending"><summary>待接入指标 <span>高频排行、单位运行与部署 · 展开</span></summary><div class="ov348-grid">'+
-      panel('高频使用算法排行',empty('尚未接入生产推理调用次数'),'生产运行次数 · 待接入')+
-      panel('各单位算法运行状况',empty('尚未接入单位与部署实例运行数据'),'单位维度 · 待接入')+'</div>'+
-    '<div class="ov348-grid">'+panel('单位算法数量排行',empty('尚无可信的单位归属记录'),'单位维度 · 待接入')+'</div></details>'+
-    '</div><div class="ov348-footnote">统计口径：算法数量来自当前空间算法资产；模型指标来自质量概览。策略准确率、调用量及单位运行数据没有可信来源时显示“—”，不会以训练成功率或模型精度冒充。</div></div>';
+    '<div class="ov350-section"><h3>运行与应用</h3><span>'+(demo?'演示数据 · 非真实采样':'待接入数据源')+'</span></div>'+
+    application+
+    '</div><div class="ov348-footnote">'+(demo?'当前为界面演示：算法资产、评测质量、策略准确率、调用排行、单位运行和任务数全部为模拟值，不代表平台真实运行状况。':'统计口径：算法数量来自当前空间算法资产；模型指标来自质量概览。策略准确率、调用量及单位运行数据没有可信来源时显示“—”，不会以训练成功率或模型精度冒充。')+'</div></div>';
 }
 function overviewCompute(m,placementFilter='all',controller=null,demo=false) {
   const statusName={ONLINE:'在线',OFFLINE:'心跳超时',DISABLED:'已禁用',NEVER_CONNECTED:'未连接'};
@@ -188,6 +197,28 @@ function overviewCompute(m,placementFilter='all',controller=null,demo=false) {
     '<div class="ov348-footnote">数据口径：GPU/CPU/内存/磁盘来自现有服务节点 Agent；闲置候选仅在调度记录与设备采样均新鲜时显示。云存储实际用量和历史告警率未采集时保持未知，避免虚构实时数据。</div></div>';
 }
 
+// Display-only fixtures. Neither fixture enters the API, scheduler, store or source cache.
+function demoAlgorithmSnapshot() {
+  const definitions=[
+    ['demo-helmet','安全帽检测','YOLO','施工安全',0.96,0.94,0.95,3],
+    ['demo-smoke','烟雾检测','YOLO','消防安全',0.94,0.92,0.93,3],
+    ['demo-fire','火焰检测','YOLO','消防安全',0.92,0.90,0.91,2],
+    ['demo-intrusion','区域入侵','YOLO','园区安防',0.94,0.91,0.92,3],
+    ['demo-absence','人员脱岗','YOLO','值班管理',0.89,0.87,0.88,2],
+    ['demo-sleep','睡岗检测','YOLO','值班管理',0.88,0.84,0.86,1],
+    ['demo-water','积水检测','YOLO','防汛管理',0.91,0.89,0.90,2],
+    ['demo-occupancy','车位占用','YOLO','停车管理',0.93,0.90,0.92,2],
+  ];
+  const algorithms=definitions.map(([id,name,algorithm_type,industry,precision,recall,map50,versions])=>({
+    id,name,algorithm_type,industry,versions:Array.from({length:versions},(_,i)=>({id:id+'-v'+(i+1)}))
+  }));
+  const quality={algorithms:definitions.map(([id,,,,precision,recall,map50])=>({id,metrics:{precision,recall,map50}}))};
+  return Object.assign(buildAlgorithmMap(algorithms,quality),{
+    strategyAccuracy:94.6,
+    usage:[{name:'安全帽检测',count:12840},{name:'区域入侵',count:9762},{name:'烟雾检测',count:8325},{name:'火焰检测',count:6950},{name:'人员脱岗',count:4128}],
+    units:[{name:'生产车间',count:8,status:'运行正常'},{name:'园区管理中心',count:6,status:'运行正常'},{name:'消防控制室',count:5,status:'运行正常'},{name:'地下停车场',count:3,status:'运行正常'}],
+  });
+}
 // Display-only fixture. Never write demo values to telemetry, scheduler or API caches.
 function demoComputeSnapshot() {
   const GB=1024**3;
@@ -223,31 +254,33 @@ export function installOverviewTabsRuntime({
   },
 }={}) {
   if(typeof document==='undefined')return null;
-  let active='algorithm',placementFilter='all',demoMode=false,computeClicks=0,lastComputeClick=0,cache={project:'',algorithms:null,quality:null,nodes:null,storage:null,gpuRuntime:null,local:null,loadedAt:{},errors:{}},loading={};
+  let active='algorithm',placementFilter='all',demoMode=false,tabClicks=0,lastTabClick=0,lastClickedTab='',cache={project:'',algorithms:null,quality:null,nodes:null,storage:null,gpuRuntime:null,local:null,loadedAt:{},errors:{}},loading={};
   const ttl=60000;
   const state=()=>getState?.()||{};
   const project=()=>String(state().project?.id||'');
   function resetIfProjectChanged() {
     if(cache.project===project())return;
     cache={project:project(),algorithms:null,quality:null,nodes:null,storage:null,gpuRuntime:null,local:null,loadedAt:{},errors:{}};
-    loading={};demoMode=false;computeClicks=0;lastComputeClick=0;
+    loading={};demoMode=false;tabClicks=0;lastTabClick=0;lastClickedTab='';
   }
   function render({load=true}={}) {
     const view=document.getElementById('view');
     if(!view||state().page!=='总览')return false;
     resetIfProjectChanged();
-    const algorithm=active==='algorithm',has=algorithm?cache.algorithms!==null:cache.nodes!==null;
-    // Keep existing production dashboard owner and prepend algorithm intelligence.
-    if(algorithm)renderProduction?.();
-    const sample=demoMode&&!algorithm?demoComputeSnapshot():null;
-    let content=algorithm?(has?overviewAlgorithm(buildAlgorithmMap(cache.algorithms.items,cache.quality)):empty('算法资产尚未取得')):
-      overviewCompute(buildComputeMap(sample?sample.nodes:(cache.nodes ? cache.nodes.items : null),sample?sample.storage:cache.storage?.items,sample?sample.gpuRuntime:cache.gpuRuntime),placementFilter,sample?sample.local:cache.local,!!sample);
-    if(sample)content='<div class="ov351-demo-banner" data-overview-demo="true"><b>演示数据模式</b><span>所有服务器、GPU、利用率、容量均为模拟；不参与资源调度和真实统计。</span><button type="button" data-overview-demo-exit="1">退出演示</button></div>'+content;
-    if(!sample&&!has&&!cache.loadedAt[algorithm?'algorithms':'nodes'])content='<div class="ov348-loading">正在读取'+(algorithm?'算法资产':'算力资源')+'数据…</div>'+content;
+    const algorithm=active==='algorithm',algorithmSample=demoMode&&algorithm?demoAlgorithmSnapshot():null;
+    const computeSample=demoMode&&!algorithm?demoComputeSnapshot():null;
+    const has=algorithm?cache.algorithms!==null:cache.nodes!==null;
+    // The canonical production dashboard owns real data only. Never mix it into demo.
+    if(algorithm&&!demoMode)renderProduction?.();
+    let content=algorithm?(algorithmSample?overviewAlgorithm(algorithmSample,true):
+      has?overviewAlgorithm(buildAlgorithmMap(cache.algorithms.items,cache.quality)):empty('算法资产尚未取得')):
+      overviewCompute(buildComputeMap(computeSample?computeSample.nodes:(cache.nodes ? cache.nodes.items : null),computeSample?computeSample.storage:cache.storage?.items,computeSample?computeSample.gpuRuntime:cache.gpuRuntime),placementFilter,computeSample?computeSample.local:cache.local,!!computeSample);
+    if(demoMode)content='<div class="ov351-demo-banner" data-overview-demo="true"><b>演示数据模式</b><span>'+(algorithm?'当前算法资产、质量、运行排行与任务统计均为模拟。':'所有服务器、GPU、利用率、容量均为模拟。')+'不参与真实统计或任务调度。</span><button type="button" data-overview-demo-exit="1">退出演示</button></div>'+content;
+    if(!demoMode&&!has&&!cache.loadedAt[algorithm?'algorithms':'nodes'])content='<div class="ov348-loading">正在读取'+(algorithm?'算法资产':'算力资源')+'数据…</div>'+content;
     const errors=Object.entries(cache.errors).filter(([key,value])=>
       (algorithm?['quality','algorithms'].includes(key):!['quality','algorithms'].includes(key))&&value);
-    if(errors.length&&!sample)content='<div class="ov348-error">部分数据读取失败：'+esc(errors.map(([key,value])=>key+': '+value).join(' · '))+'</div>'+content;
-    if(algorithm)view.insertAdjacentHTML('afterbegin',content+'<div class="ov350-section ov350-production-heading"><h3>生产运行</h3></div>');
+    if(errors.length&&!demoMode)content='<div class="ov348-error">部分数据读取失败：'+esc(errors.map(([key,value])=>key+': '+value).join(' · '))+'</div>'+content;
+    if(algorithm&&!demoMode)view.insertAdjacentHTML('afterbegin',content+'<div class="ov350-section ov350-production-heading"><h3>生产运行</h3></div>');
     else view.innerHTML=content;
     view.querySelectorAll?.('[data-overview-placement]').forEach(button=>button.addEventListener('click',()=>{
       placementFilter=button.dataset.overviewPlacement;render({load:false});
@@ -268,15 +301,24 @@ export function installOverviewTabsRuntime({
       const selected=event.target.closest('[data-overview-tab]');
       if(selected){
         const tab=selected.dataset.overviewTab;
-        if(tab==='compute'){
-          const now=Date.now();computeClicks=now-lastComputeClick<=2000?computeClicks+1:1;lastComputeClick=now;
-          if(computeClicks>=3){demoMode=!demoMode;computeClicks=0;}
-        }else{computeClicks=0;lastComputeClick=0;demoMode=false;}
-        active=tab;render({load:!demoMode});return;
+        const now=Date.now();
+        if(tab!==active){
+          active=tab;demoMode=false;tabClicks=1;lastClickedTab=tab;lastTabClick=now;
+        }else{
+          tabClicks=lastClickedTab===tab&&now-lastTabClick<=2000?tabClicks+1:1;
+          lastClickedTab=tab;lastTabClick=now;
+          if(tabClicks>=3){demoMode=!demoMode;tabClicks=0;lastTabClick=0;}
+        }
+        render({load:!demoMode});return;
       }
-      if(event.target.closest('[data-overview-refresh]')){if(demoMode){demoMode=false;computeClicks=0;render();}void loadTab(active,true);}
+      if(event.target.closest('[data-overview-refresh]')){
+        demoMode=false;tabClicks=0;lastTabClick=0;lastClickedTab='';
+        render({load:false});void loadTab(active,true);
+      }
     });
-        view.querySelector('[data-overview-demo-exit]')?.addEventListener('click',()=>{demoMode=false;computeClicks=0;render();});
+    view.querySelector('[data-overview-demo-exit]')?.addEventListener('click',()=>{
+      demoMode=false;tabClicks=0;lastTabClick=0;lastClickedTab='';render();
+    });
     if(load&&!demoMode)void loadTab(active);
     return true;
   }
@@ -342,6 +384,6 @@ export function installOverviewTabsRuntime({
     ]);
     if(state().page==='总览'&&active===tab&&project()===id)render({load:false});
   }
-  return Object.freeze({render,select(tab){const target=tab==='production'?'algorithm':tab;if(OVERVIEW_TABS.some(x=>x.id===target)){active=target;demoMode=false;computeClicks=0;return render()}return false},
+  return Object.freeze({render,select(tab){const target=tab==='production'?'algorithm':tab;if(OVERVIEW_TABS.some(x=>x.id===target)){active=target;demoMode=false;tabClicks=0;lastTabClick=0;lastClickedTab='';return render()}return false},
     get activeTab(){return active},refresh(){return loadTab(active,true)}});
 }

@@ -58,6 +58,20 @@ test('three overview tabs preserve production owner, render scoped facts and fai
   await expect(page.locator('#view')).toContainText('尚未接入生产推理调用次数');
   expect(algorithmGets).toBeGreaterThan(0);
 
+  // Three consecutive clicks on the algorithm tab show complete UI-only fixtures.
+  for(let i=0;i<3;i++)await tabs.getByRole('tab',{name:'算法一张图'}).click();
+  await expect(page.locator('[data-overview-demo="true"]')).toBeVisible();
+  await expect(page.locator('.ov348-stat').filter({hasText:'算法总数'})).toContainText('8');
+  await expect(page.locator('.ov348-stat').filter({hasText:'策略准确率'})).toContainText('94.6%');
+  await expect(page.locator('.ov348-panel').filter({hasText:'高频使用算法排行'})).toContainText('12,840 次');
+  await expect(page.locator('.ov348-panel').filter({hasText:'各单位算法运行状况'})).toContainText('生产车间');
+  await expect(page.locator('#view')).not.toContainText('算法生产总览');
+  await page.locator('[data-overview-demo-exit]').click();
+  await expect(page.locator('[data-overview-demo]')).toHaveCount(0);
+  await expect(page.locator('#view')).toContainText('算法生产总览');
+  await expect(page.locator('.ov348-stat').filter({hasText:'算法总数'})).toContainText('2');
+  await expect(page.locator('.ov348-stat').filter({hasText:'策略准确率'})).toContainText('—');
+
   await tabs.getByRole('tab',{name:'算力一张图'}).click();
   await expect(page.locator('#view')).toContainText('控制端 · 本机资源');
   await expect(page.locator('.ov348-gpu')).toContainText('NVIDIA A800');
@@ -83,6 +97,8 @@ test('three overview tabs preserve production owner, render scoped facts and fai
   await expect(page.locator('[data-overview-demo="true"]')).toBeVisible();
   await expect(page.locator('.ov348-node')).toHaveCount(3);
   await expect(page.locator('#view')).toContainText('GPU 训练服务器 A');
+  await expect(page.locator('#view')).toContainText('820.5 GB');
+  await expect(page.locator('#view')).not.toContainText('中央 GPU 节点');
   await page.locator('[data-overview-demo-exit]').click();
   await expect(page.locator('[data-overview-demo]')).toHaveCount(0);
   await expect(page.locator('.ov348-node')).toHaveCount(2);
