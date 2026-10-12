@@ -296,8 +296,9 @@ test('three ZIPs finish upload and independently await human label confirmation'
   expect(startRequests).toHaveLength(0);
   const dialog=page.getByRole('dialog',{name:'ZIP 数据导入'});
   await expect(dialog.locator('.zip-label-confirm')).toHaveCount(1);
-  await expect(page.locator('#uploadTaskCenter')).toContainText(filenames[2]);
   await dialog.getByRole('button',{name:'关闭窗口'}).click();
+  await page.locator('#uploadTaskCenter [data-utc-toggle]').click();
+  await expect(page.locator('#uploadTaskCenter')).toContainText(filenames[2]);
   const rows=(await (await request.get(jobsUrl)).json()).items||[];
   const third=rows.find(row=>row.file_name===filenames[2]);
   expect(third?.id).toBeTruthy();
