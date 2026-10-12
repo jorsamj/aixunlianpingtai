@@ -432,6 +432,14 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
       updateDockContent(d,v.stage,`${Math.round(v.progress)}% · ${active.length} 个活动任务`);
     }
     updateOpenModal(current,active);
+    // The selected archive may finish scanning while another upload or status
+    // refresh is still in flight. Mount its review when it becomes ready,
+    // without ever opening a second modal or switching to a different task.
+    if(current&&zipNeedsLabelConfirmation(current)){
+      const modalRoot=document.querySelector('.zip411[data-zip-runtime="1"]');
+      const review=document.querySelector('.zip-label-confirm[data-review-key]');
+      if(modalRoot&&String(review?.getAttribute('data-review-key')||'')!==String(current.id||''))open();
+    }
   }
   function clearPoll(){if(window.PollRegistryRuntime?.clear)window.PollRegistryRuntime.clear('zip-import-runtime');else if(timer)clearTimeout(timer);timer=null}
   function arm(){clearPoll();if(destroyed||!activeZipJobs(jobs).length)return;const callback=()=>reconcile('poll').catch(()=>{});if(window.PollRegistryRuntime?.startTimeout){timer=window.PollRegistryRuntime.startTimeout('zip-import-runtime',[String((getState()||{}).page||'数据集')],callback,pollMs)}else timer=setTimeout(callback,pollMs)}
