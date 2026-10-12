@@ -5408,7 +5408,19 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
   const statusLabel416=s=>({ready:'可用',missing:'不可用',unchecked:'未检测',configured:'待检测'}[s]||s||'未知');
   const matching416=(rows,t)=>(rows||[]).filter(x=>(x.targets||[]).includes(t)||String(x.kind||'').toLowerCase()===targetKind416(t));
   async function resources416(){return window.loadVersionConversionResources428(true)}
-  async function history416(aid,vid){if(typeof window.loadVersionConversionHistory428==='function')return window.loadVersionConversionHistory428(aid,vid,true);const k=historyCacheKey416(aid,vid),cached=read416(k);if(cached)return cached;const r=await api(`/api/v42/projects/${pid()}/algorithms/${aid}/versions/${vid}/deployments`);write416(k,r);return r}
+  async function history416(aid,vid){
+    if(typeof window.loadVersionConversionHistory428==='function'){
+      const history=await window.loadVersionConversionHistory428(aid,vid,false);
+      // Version identity is immutable, so a complete contract is cache-safe.
+      // Old cached responses lack training defaults: refresh exactly once.
+      if(history?.version&&Object.prototype.hasOwnProperty.call(history.version,'conversion_defaults'))return history;
+      return window.loadVersionConversionHistory428(aid,vid,true);
+    }
+    const k=historyCacheKey416(aid,vid),cached=read416(k);
+    if(cached?.version&&Object.prototype.hasOwnProperty.call(cached.version,'conversion_defaults'))return cached;
+    const r=await api(`/api/v42/projects/${pid()}/algorithms/${aid}/versions/${vid}/deployments`);
+    write416(k,r);return r;
+  }
   function resourceStatusHtml416(rows,target){
     if(!rows.length)return `<div class="convert428-resource-status-empty"><b>尚未配置 ${esc(targetLabel416(target))} 转换资源</b><span>请到“高级功能 → 部署资源”新增本机工具链或远程转换服务器，再执行检测。</span></div>`;
     return rows.map(r=>{const ready=r.status==='ready'&&(r.targets||[]).includes(target),detail=r.message||(!ready?'请执行资源检测并确认目标能力':'可以创建真实转换任务'),chips=target==='rockchip'?(r.supported_chips||[]).map(x=>String(x||'').toUpperCase()).filter(Boolean):[],capability=chips.length?`支持芯片：${chips.join(' / ')}`:'';return `<div class="convert428-resource-status-row ${ready?'ready':'not-ready'}"><div><b>${esc(r.name||r.id||'未命名资源')}</b><span>${esc(r.mode==='agent'?'服务节点 Agent':r.mode==='remote'?'远程服务器':'本机')} · ${esc(statusLabel416(r.status))}</span></div><p>${esc(detail)}${capability?` · ${esc(capability)}`:''}</p></div>`}).join('');
