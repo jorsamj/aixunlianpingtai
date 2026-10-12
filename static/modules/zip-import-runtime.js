@@ -36,6 +36,26 @@ export async function mapZipUploadsConcurrent(items,upload,limit=2) {
   }));
   return results;
 }
+// A slot covers only browser transfer. Release it as soon as all parts
+// arrive, without waiting for server-side merge/scan or human label review.
+export function createZipTransferLimiter(limit=2) {
+  const maximum=Math.max(1,Math.floor(Number(limit)||1)),waiters=[];
+  let busy=0;
+  return async function withSlot(work) {
+    if(busy<maximum)busy++;
+    else await new Promise(resolve=>waiters.push(resolve));
+    let released=false;
+    const release=()=>{
+      if(released)return;
+      released=true;
+      const next=waiters.shift();
+      if(next)next();
+      else busy--;
+    };
+    try{return await work(release)}
+    finally{release()}
+  };
+}
 export function zipQueueInfo(job,jobs) {
   // Only v19 server truth determines position in the formal FIFO queue.
   // Unconfirmed ZIPs are outside that queue, even if uploaded first.
@@ -257,14 +277,8 @@ export function isZipBootstrapReconcile(reason='') {
 export function installZipImportRuntime({getState=()=>({}),projectId=()=>getState()?.project?.id,notify=m=>window.toast?.(m),fetchImpl=globalThis.fetch,pollMs=1000}={}) {
   if(typeof window==='undefined'||typeof document==='undefined') return null;
   let jobs=[],current=null,timer=null,busy=false,destroyed=false,uploading=null,uploadControl=null,resumeFile=null;
-  let selectedJobId='',batchSlotCount=0;
-  const batchSlotWaiters=[],batchTransfers=new Map(),batchFiles=new Map();
-  async function withBatchSlot(fn){
-    if(batchSlotCount<2)batchSlotCount++;
-    else await new Promise(resolve=>batchSlotWaiters.push(resolve));
-    try{return await fn()}
-    finally{const next=batchSlotWaiters.shift();if(next)next();else batchSlotCount--}
-  }
+  let selectedJobId='';
+  const batchTransfers=new Map(),batchFiles=new Map(),withBatchSlot=createZipTransferLimiter(2);
   const eligibleSince=new Map(),started=new Set(),knownJobs=new Map(),completionEffects=new Set(),foregroundImports=new Set(),labelReviews=new Map(),classSampleCache=new Map();
   const pid=()=>String(projectId?.()||'');
   const intentKey=(p,id)=>`mc_zip_import_start_v1:${p}:${id}`;
@@ -761,39 +775,39 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
     try{
       const fingerprints=await Promise.all(files.map(file=>zipFingerprint(file)));
       if(new Set(fingerprints).size!==files.length)throw new Error('本批次选择了重复 ZIP 文件');
-      const sessions=await Promise.all(files.map(async file=>{
+      let selectionMounted=false;
+      // Every archive receives its own durable session. A failing session or
+      // a review awaiting human input cannot hold the other browser uploads.
+      const results=await mapZipUploadsConcurrent(files,async file=>withBatchSlot(async releaseSlot=>{
         const session=await createZipUploadSession(project,file,{fetchImpl});
         const id=String(session.upload_id||'');
         if(!id)throw new Error('服务器未返回 ZIP 上传会话 ID');
-        return {id,file};
-      }));
-      if(new Set(sessions.map(x=>x.id)).size!==sessions.length)throw new Error('ZIP 会话身份重复，禁止并发覆盖');
-      if(sessions.some(x=>batchTransfers.has(x.id)||uploadControl?.uploadId===x.id))throw new Error('选中的 ZIP 已在上传，请勿重复提交');
-      for(const item of sessions){
-        const control={state:'active',xhrs:new Set(),uploadId:item.id,expectedUploadId:item.id,progress:0,message:'准备网络上传'};
-        batchTransfers.set(item.id,control);batchFiles.set(item.id,item.file);
-        const fallback={id:item.id,file_name:item.file.name,status:'uploading',created_at:new Date().toISOString(),uploaded_bytes:0};
-        knownJobs.set(item.id,fallback);
+        if(pid()!==project)throw new Error('项目已切换，请从原项目任务中心恢复');
+        if(batchTransfers.has(id)||uploadControl?.uploadId===id)throw new Error('选中的 ZIP 已在上传，请勿重复提交');
+        const item={id,file};
+        const control={state:'active',xhrs:new Set(),uploadId:id,expectedUploadId:id,progress:0,message:'准备网络上传'};
+        batchTransfers.set(id,control);
+        batchFiles.set(id,file);
+        const fallback={id,file_name:file.name,status:'uploading',created_at:new Date().toISOString(),uploaded_bytes:0};
+        knownJobs.set(id,fallback);
         if(pid()===project)publishTaskCenterJob(project,fallback);
-      }
-      if(pid()!==project)throw new Error('项目已切换，请从原项目任务中心恢复');
-      selectedJobId=sessions[0].id;
-      jobs=mergeJobs(jobs);current=jobs.find(x=>String(x.id||'')===selectedJobId)||null;
-      if(current)patchState(current);
-      const chooserBody=chooser?.querySelector('.modal-body');
-      if(chooserBody){
-        const html=current?body(current):'';
-        if(window.ModalContentRuntime?.replace)window.ModalContentRuntime.replace(chooserBody,html);
-        else chooserBody.innerHTML=html;
-        const title=chooser.querySelector('.modal-title');if(title)title.textContent='ZIP 数据导入';
-      }
-      render();
-      const results=await mapZipUploadsConcurrent(sessions,async item=>{
-        const control=batchTransfers.get(item.id);
-        if(!control||control.state!=='active')return null;
-        return withBatchSlot(async()=>{
-          if(control.state!=='active')return null;
-          try{
+        if(!selectionMounted&&pid()===project){
+          selectionMounted=true;
+          selectedJobId=id;
+          jobs=mergeJobs(jobs);
+          current=jobs.find(x=>String(x.id||'')===selectedJobId)||null;
+          if(current)patchState(current);
+          const chooserBody=chooser?.querySelector('.modal-body');
+          if(chooserBody){
+            const html=current?body(current):'';
+            if(window.ModalContentRuntime?.replace)window.ModalContentRuntime.replace(chooserBody,html);
+            else chooserBody.innerHTML=html;
+            const title=chooser.querySelector('.modal-title');
+            if(title)title.textContent='ZIP 数据导入';
+          }
+          render();
+        }
+        try{
             const response=await uploadZipMultipartJob(project,item.file,{
               fetchImpl,control,
               onSession:session=>{
@@ -809,6 +823,8 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
                 }
               },
               onPhase:phase=>{
+                // Scanning/label decisions never consume a browser transfer slot.
+                releaseSlot();
                 control.progress=100;control.message=phase.message;
                 if(pid()===project)window.UploadTaskCenterRuntime?.upsert?.({id:'zip:'+item.id,kind:'zip',title:item.file.name,status:'MERGING',progress:null,stage:phase.stage,detail:phase.message,browserTransfer:false,resumeRequired:false,pollOwner:'zip-import-runtime'});
               },
@@ -848,8 +864,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
             if(batchTransfers.get(item.id)===control)batchTransfers.delete(item.id);
             if(pid()===project)render();
           }
-        });
-      },Math.min(2,sessions.length));
+      }),files.length);
       const failed=results.filter(x=>x.status==='rejected');
       if(failed.length)notify?.('有 '+failed.length+' 个 ZIP 上传中断，其他文件不受影响；可从任务中心续传');
       await reconcile('batch-finished').catch(()=>{});

@@ -6,6 +6,7 @@ import {
   LEGACY_START_GRACE_MS,
   activeZipJobs,
   mapZipUploadsConcurrent,
+  createZipTransferLimiter,
   backendZipProgress,
   overallZipProgress,
   pickZipJob,
@@ -209,7 +210,7 @@ test('ZIP exact label reuse and explicit source-code creation preserve manual co
 
 test('ZIP browser bootstrap loads the refreshed exact-code and side-evidence module',()=>{
  const boot=readFileSync(new URL('../../static/zip-import-bootstrap.mjs',import.meta.url),'utf8');
- assert.match(boot,/zip-import-runtime\.js\?v=4226358/);
+ assert.match(boot,/zip-import-runtime\.js\?v=4226359/);
 });
 
 
@@ -250,7 +251,37 @@ test('ZIP modal shows selected task only and batch upload uses independent contr
   assert.doesNotMatch(source,/zipBatchQueueList/);
   assert.doesNotMatch(source,/function queueRowsMarkup/);
   assert.match(source,/batchTransfers\.set\(item\.id,control\)/);
-  assert.match(source,/await mapZipUploadsConcurrent\(sessions/);
-  assert.match(source,/selectedJobId=sessions\[0\]\.id/);
+  assert.match(source,/await mapZipUploadsConcurrent\(files/);
+  assert.match(source,/const session=await createZipUploadSession\(project,file/);
+  assert.match(source,/let selectionMounted=false/);
+  assert.match(source,/releaseSlot\(\)/);
   assert.match(source,/zipNeedsLabelConfirmation\(row\)/);
+});
+
+test('network upload slot is released before scan or label confirmation finishes',async()=>{
+  const withSlot=createZipTransferLimiter(2);
+  let finishScan;
+  const waitingForLabel=new Promise(resolve=>{finishScan=resolve});
+  const events=[];
+  const tasks=['dog','cat','helmet'].map(name=>withSlot(async releaseNetworkSlot=>{
+    events.push(name+':upload');
+    releaseNetworkSlot();
+    await waitingForLabel;
+    events.push(name+':review-finished');
+  }));
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(events,['dog:upload','cat:upload','helmet:upload']);
+  finishScan();
+  await Promise.all(tasks);
+  assert.equal(events.filter(x=>x.endsWith(':review-finished')).length,3);
+});
+
+test('an individual session failure releases a slot without aborting sibling ZIPs',async()=>{
+  const withSlot=createZipTransferLimiter(1);
+  const result=await Promise.allSettled([
+    withSlot(async()=>{throw new Error('first session denied')}),
+    withSlot(async()=> 'second ZIP accepted'),
+  ]);
+  assert.deepEqual(result.map(x=>x.status),['rejected','fulfilled']);
+  assert.equal(result[1].value,'second ZIP accepted');
 });

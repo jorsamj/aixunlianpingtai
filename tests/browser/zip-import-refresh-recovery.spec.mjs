@@ -261,3 +261,48 @@ test('two selected ZIP archives upload their multipart data concurrently while l
   }),{timeout:30000}).toBe(2);
   await expect(page.locator('.zip-label-confirm')).toHaveCount(1,{timeout:30000});
 });
+
+test('three ZIPs finish upload and independently await human label confirmation',async({page,request})=>{
+  const project=await createProject(request);
+  await selectIsolatedTestProject(page,project.id);
+  await page.goto('/');
+  await expect.poll(()=>page.evaluate(()=>Boolean(window.ZipImportRuntime?.uploadBatch))).toBe(true);
+  const startRequests=[];
+  page.on('request',req=>{
+    if(req.method()==='POST'&&new URL(req.url()).pathname.includes('/projects/'+project.id+'/import/jobs/')&&
+       new URL(req.url()).pathname.endsWith('/start'))startRequests.push(req);
+  });
+  const zip=label=>storedZip([
+    ['images/train/'+label+'.jpg',Buffer.from('scan-only-image')],
+    ['data.yaml',Buffer.from('train: images/train\nnames: ['+label+']\n')],
+  ]);
+  const filenames=['await-dog.zip','await-cat.zip','await-helmet.zip'];
+  await page.evaluate(()=>window.importData());
+  await page.locator('#importFile').setInputFiles([
+    {name:filenames[0],mimeType:'application/zip',buffer:zip('dog')},
+    {name:filenames[1],mimeType:'application/zip',buffer:zip('cat')},
+    {name:filenames[2],mimeType:'application/zip',buffer:zip('helmet')},
+  ]);
+  await page.evaluate(()=>{void window.doImportUploadV19()});
+  const jobsUrl='/api/v19/projects/'+project.id+'/import/jobs';
+  await expect.poll(async()=>{
+    const response=await request.get(jobsUrl);
+    if(!response.ok())return [];
+    const rows=(await response.json()).items||[];
+    return filenames.filter(name=>rows.some(row=>
+      row.file_name===name&&row.status==='selecting'&&row.label_confirmation_required
+    ));
+  },{timeout:60000}).toEqual(filenames);
+  expect(startRequests).toHaveLength(0);
+  const dialog=page.getByRole('dialog',{name:'ZIP 数据导入'});
+  await expect(dialog.locator('.zip-label-confirm')).toHaveCount(1);
+  await expect(page.locator('#uploadTaskCenter')).toContainText(filenames[2]);
+  await dialog.getByRole('button',{name:'关闭窗口'}).click();
+  const rows=(await (await request.get(jobsUrl)).json()).items||[];
+  const third=rows.find(row=>row.file_name===filenames[2]);
+  expect(third?.id).toBeTruthy();
+  await page.locator('[data-utc-id="zip:'+third.id+'"]').click();
+  await expect(dialog).toContainText(filenames[2]);
+  await expect(dialog.locator('.zip-label-confirm')).toHaveCount(1);
+  expect(startRequests).toHaveLength(0);
+});
