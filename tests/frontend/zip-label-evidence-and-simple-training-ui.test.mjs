@@ -65,3 +65,11 @@ test('ZIP labels have one batch source plan with explicit durable creation and r
   assert.match(zip,/zip-label-workspace/);
   assert.match(css,/\.zip-label-confirm \.zip-label-workspace/);
 });
+
+test('ZIP labels have one direct mapping screen and pending formal creation summary',()=>{
+  assert.match(zip,/每行可以直接修改目标标签/);
+  assert.match(zip,/确认导入时将新建/);
+  assert.match(zip,/创建标签并导入/);
+  assert.doesNotMatch(zip,/原始标签批量确认预览/);
+  assert.doesNotMatch(zip,/完成手动调整/);
+});
