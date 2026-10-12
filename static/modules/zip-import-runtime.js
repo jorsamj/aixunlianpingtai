@@ -564,7 +564,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
     const job=reviewJob(jobId),review=mappingReview(job),row=review.rows.find(item=>String(item.classId)===String(classId));
     if(!row)return notify?.('外部标签不存在');
     const source=String(row.name||'').trim();
-    if(!PLATFORM_LABEL_CODE_RE.test(source)||/^(?:class|label)[_-]?\\d+$/i.test(source)||/^unknown$/i.test(source))return notify?.('原标签无法直接作为平台编码，请在右侧下拉框选择已有标签或新建合法标签');
+    if(!PLATFORM_LABEL_CODE_RE.test(source)||/^(?:class|label)[_-]?\d+$/i.test(source)||/^unknown$/i.test(source))return notify?.('原标签无法直接作为平台编码，请在右侧下拉框选择已有标签或新建合法标签');
     const existing=labelItems().find(label=>String(label.code).toLowerCase()===source.toLowerCase());
     setLabelMapping(review,classId,existing?.code||source);
     if(existing)delete review.pendingCreate[String(classId)];
