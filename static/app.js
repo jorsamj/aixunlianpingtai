@@ -3671,13 +3671,17 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
 
   // Read-only extension of the existing Algorithm Version Evaluation owner.
   // It never materializes a Test Split image as a training candidate.
-  window.eval429SetOrder=function(aid,vid,order){
+  // Re-open the existing evaluation owner only after closing its current
+  // presentation. Sorting and pagination must not stack duplicate dialogs.
+  window.eval429SetOrder=async function(aid,vid,order){
     state.eval429Order=['fn','fp','total'].includes(order)?order:'fn';
     state.eval429Page=0;
+    if(await window.closeModal()===false)return;
     window.openVersionEvaluation429(aid,vid);
   };
-  window.eval429SetPage=function(aid,vid,page){
+  window.eval429SetPage=async function(aid,vid,page){
     state.eval429Page=Math.max(0,Math.floor(Number(page)||0));
+    if(await window.closeModal()===false)return;
     window.openVersionEvaluation429(aid,vid);
   };
   window.eval429ToggleLayer=function(key,enabled){
@@ -3700,7 +3704,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     };
     const overlays=boxesAvailable?`<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" class="evaluation429-overlay" aria-label="GT与预测框">${(sample.gt_boxes||[]).map(box=>rect(box,'gt')).join('')}${(sample.pred_boxes||[]).map(box=>rect(box,'pred')).join('')}</svg>`:'';
     const url=`/api/v12/projects/${encodeURIComponent(pid())}/algorithms/${encodeURIComponent(aid)}/versions/${encodeURIComponent(vid)}/evaluation/images/${encodeURIComponent(String(sample.image||''))}`;
-    modal('问题图片核验',`<div class="evaluation429-detail"><header><div><strong>${esc(sample.image||'')}</strong><p>冻结 Test Split · 只读诊断，不能直接加入训练集</p></div><div class="evaluation429-counts"><b>漏检 ${Number(sample.fn_count||0)}</b><b>误检 ${Number(sample.fp_count||0)}</b></div></header><div class="evaluation429-stage"><div class="evaluation429-media"><img src="${esc(url)}" alt="独立评测问题图片" loading="eager" onerror="this.hidden=true;this.parentElement.querySelector('.evaluation429-overlay')?.setAttribute('hidden','');this.parentElement.querySelector('.evaluation429-image-error').hidden=false;"><div class="evaluation429-image-error" hidden>图片不可预览：冻结素材已变化、历史快照不完整或存储暂不可用</div>${overlays}</div></div><div class="evaluation429-legend"><label><input type="checkbox" checked onchange="eval429ToggleLayer('gt',this.checked)"> GT 真实框（红色漏检）</label><label><input type="checkbox" checked onchange="eval429ToggleLayer('pred',this.checked)"> 预测框（橙色误检）</label><span>绿色：已匹配</span></div>${!boxesAvailable?'<p class="evaluation429-notice">历史评测仅有 FP/FN 数量，没有可还原的框级证据；重新评测新版本后才能显示 GT 和预测框。</p>':''}${sample.boxes_truncated?'<p class="evaluation429-notice">该图目标框较多，详细展示已限量；FP/FN 计数仍为真实总量。</p>':''}<div class="row end"><button class="btn" onclick="openVersionEvaluation429('${aid}','${vid}')">返回独立评测</button></div></div>`,true);
+    modal('问题图片核验',`<div class="evaluation429-detail"><header><div><strong>${esc(sample.image||'')}</strong><p>冻结 Test Split · 只读诊断，不能直接加入训练集</p></div><div class="evaluation429-counts"><b>漏检 ${Number(sample.fn_count||0)}</b><b>误检 ${Number(sample.fp_count||0)}</b></div></header><div class="evaluation429-stage"><div class="evaluation429-media"><img src="${esc(url)}" alt="独立评测问题图片" loading="eager" onerror="this.hidden=true;this.parentElement.querySelector('.evaluation429-overlay')?.setAttribute('hidden','');this.parentElement.querySelector('.evaluation429-image-error').hidden=false;"><div class="evaluation429-image-error" hidden>图片不可预览：冻结素材已变化、历史快照不完整或存储暂不可用</div>${overlays}</div></div><div class="evaluation429-legend"><label><input type="checkbox" checked onchange="eval429ToggleLayer('gt',this.checked)"> GT 真实框（红色漏检）</label><label><input type="checkbox" checked onchange="eval429ToggleLayer('pred',this.checked)"> 预测框（橙色误检）</label><span>绿色：已匹配</span></div>${!boxesAvailable?'<p class="evaluation429-notice">历史评测仅有 FP/FN 数量，没有可还原的框级证据；重新评测新版本后才能显示 GT 和预测框。</p>':''}${sample.boxes_truncated?'<p class="evaluation429-notice">该图目标框较多，详细展示已限量；FP/FN 计数仍为真实总量。</p>':''}<div class="row end"><button class="btn" onclick="closeModal()">返回独立评测</button></div></div>`,true);
   };
 
   window.startHardSampleMining429=async function(aid,vid){

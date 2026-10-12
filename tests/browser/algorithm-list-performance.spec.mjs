@@ -528,8 +528,8 @@ test('algorithm version exposes persisted training lineage without job refetch',
   await expect(page.locator('#modalBody')).toContainText('test-smoke.jpg');
   await expect(page.locator('#modalBody')).toContainText('FP / FN');
   await expect(page.locator('#modalBody')).toContainText('迭代决策');
-  await expect(page.locator('#modalBody')).toContainText('需补充数据');
-  await expect(page.locator('#modalBody')).toContainText('补充弱标签数据');
+  await expect(page.locator('#modalBody')).toContainText('优先诊断薄弱类别');
+  await expect(page.locator('#modalBody')).toContainText('诊断后补充薄弱类别数据');
   await expect(page.locator('#modalBody')).toContainText('系统仅给出建议，不会自动发起下一次训练');
   await expect(page.locator('#modalBody')).toContainText('补数据效果');
   await expect(page.locator('#modalBody')).toContainText('严格可比');
