@@ -77,7 +77,7 @@ def test_auto_version_conversion_does_not_override_source_training_defaults():
     from pathlib import Path
     app_source = (Path(__file__).resolve().parents[2] / "app.py").read_text(encoding="utf-8")
     begin = app_source.index("def _v48_auto_convert_version(")
-    end = app_source.index("\\ndef _v48_archive_training_version(", begin)
+    end = app_source.index("def _v48_archive_training_version(", begin)
     code = app_source[begin:end]
     assert "params={}" in code
     assert 'params={"input_size":int(job.get("imgsz") or 640),"precision":"fp16"}' not in code
