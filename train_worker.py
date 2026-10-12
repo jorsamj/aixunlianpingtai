@@ -15,6 +15,7 @@ from platform_core.training_precision import (
     verify_effective_training_precision,
     preflight_worker_amp,
     scoped_worker_amp_check,
+    require_local_training_weight,
 )
 
 
@@ -951,6 +952,8 @@ def main():
         update_job(job_file, requested_device=requested, assigned_device=assigned, actual_device=assigned,
                    device_evidence=evidence, ultralytics_version=getattr(ultralytics, "__version__", "unknown"))
         publish_startup_stage(job_file, "loading_model", "加载训练模型", 24)
+        # Fail before Ultralytics can silently download a missing official .pt.
+        actual_model = require_local_training_weight(actual_model)
         model = YOLO(actual_model)
         resolution_path = Path(args.resource_resolution) if args.resource_resolution else job_file.parent / "resolved-resources.json"
         resolved = read_json(resolution_path, {})

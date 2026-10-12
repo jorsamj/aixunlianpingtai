@@ -93,6 +93,41 @@ def _local_amp_reference(project_dir: Path, ultralytics) -> Path | None:
     return None
 
 
+
+def require_local_training_weight(model_argument: str) -> str:
+    """Resolve existing .pt weights before calling YOLO; never download at runtime.
+
+    Official bare names (such as yolo11n.pt) are NOT download instructions.
+    YAML architecture definitions are allowed for deliberate scratch training.
+    """
+    import stat
+
+    value = str(model_argument or "").strip()
+    if not value or "://" in value:
+        raise TrainingPrecisionError(
+            "TRAINING_MODEL_REMOTE_DOWNLOAD_FORBIDDEN: select a locally prepared model"
+        )
+    path = Path(value).expanduser()
+    if path.suffix.lower() != ".pt":
+        return value
+    try:
+        info = path.stat()
+        if not stat.S_ISREG(info.st_mode) or info.st_size <= 0:
+            raise TrainingPrecisionError(
+                "TRAINING_MODEL_OFFLINE_INVALID: selected .pt is empty or not a file: " + value
+            )
+        if not os.access(path, os.R_OK):
+            raise TrainingPrecisionError(
+                "TRAINING_MODEL_OFFLINE_UNREADABLE: Worker cannot read selected .pt: " + value
+            )
+        return str(path.resolve(strict=True))
+    except (OSError, ValueError) as exc:
+        raise TrainingPrecisionError(
+            "TRAINING_MODEL_OFFLINE_MISSING: selected .pt is not available to this Worker; "
+            "prepare it in the platform model library before starting training: " + value
+        ) from exc
+
+
 @contextmanager
 def _reference_directory(path: Path):
     """Only the short preflight inference runs with a different cwd."""

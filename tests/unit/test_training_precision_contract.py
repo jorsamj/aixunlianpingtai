@@ -175,3 +175,34 @@ def test_scoped_prevalidated_check_is_cuda_only_and_is_restored(monkeypatch):
             trainer.check_amp(Model("cuda"))
             raise ValueError("original training failure")
     assert trainer.check_amp is original
+
+
+def test_training_weight_requires_a_real_local_pt_before_ultralytics_can_download(tmp_path, monkeypatch):
+    from platform_core.training_precision import require_local_training_weight
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(TrainingPrecisionError, match="TRAINING_MODEL_OFFLINE_MISSING"):
+        require_local_training_weight("yolo11n.pt")
+    weight = tmp_path / "yolo11n.pt"
+    weight.write_bytes(b"")
+    with pytest.raises(TrainingPrecisionError, match="TRAINING_MODEL_OFFLINE_INVALID"):
+        require_local_training_weight("yolo11n.pt")
+    weight.write_bytes(b"local-weights-fixture")
+    assert require_local_training_weight("yolo11n.pt") == str(weight.resolve())
+
+
+@pytest.mark.parametrize("source", ["https://example.invalid/yolo11n.pt", "http://example.invalid/yolo11n.pt", ""])
+def test_worker_never_admits_network_training_weight_urls(source):
+    from platform_core.training_precision import require_local_training_weight
+    with pytest.raises(TrainingPrecisionError, match="TRAINING_MODEL_REMOTE_DOWNLOAD_FORBIDDEN"):
+        require_local_training_weight(source)
+
+
+def test_training_scratch_yaml_remains_supported_without_weights():
+    from platform_core.training_precision import require_local_training_weight
+    assert require_local_training_weight("yolo11n.yaml") == "yolo11n.yaml"
+
+
+def test_train_worker_checks_weight_before_yolo_loader():
+    from pathlib import Path
+    code = (Path(__file__).resolve().parents[2] / "train_worker.py").read_text(encoding="utf-8")
+    assert code.index("actual_model = require_local_training_weight(actual_model)") < code.index("model = YOLO(actual_model)")
