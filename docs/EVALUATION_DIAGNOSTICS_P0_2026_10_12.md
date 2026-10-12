@@ -66,3 +66,12 @@
 - API 回归新增 20,002 Test IDs 的精确单素材读取，以及 1,203 历史无名 Test IDs 的 500 分批读取，保留已有跨版本/非法路径/摘要漂移用例。此处 20k 是结构与调用计数测试，不代表真 OSS/真 GPU/真 20k 性能压测已通过。
 - HEAD 最终 Actions completed/success 与现场 UAT 仍待核验；P1 仍未进入，禁止 main/tag/release/生产部署。
 
+
+## 2026-10-12｜P1 首批：复用 AI_ANNOTATION 实现困难样本候选（运行验收未完成）
+
+- 新增无状态 hard_sample_mining.py：冻结 Test ID/同内容 SHA 防训练回流、无 Ground Truth 仅标记低置信度/小目标/密集/无检测待核查，不冒充已证实 FP/FN。
+- 新增唯一创建入口 POST /api/v64/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/hard-sample-mining，单批 1-500 张，验证模型 PT 文件、来源 SHA、算法版本和标签；任务直接为原 TaskKind.AI_ANNOTATION，不建第二套 Queue/Candidate/Annotation Owner。
+- 现有 annotation Worker 在具备真实 CUDA/Ultralytics 条件下声明 mining.ultralytics，使用版本 best.pt 做真实推理，模型 SHA 冻结且 worker 运行时校验；缺能力任务继续 QUEUED，不能声称推理完成。生成结果进入原 CandidateStore，用户在原 AI 审核界面调整/确认后由原 AnnotationRepository Commit；Commit 前二次挡住冻结 Test、素材哈希变化。
+- 来源入口：独立评测页一键筛选当前未标注素材（单次最多 100 张，按正式 Material ID）；普通图片上传弹窗按需选模型，上传入库成功后自动尝试排队，同一次上传请求的挖掘任务幂等。上传成功而挖掘失败须分开报告。
+- 已增加纯逻辑和 API 合同、Chrome 请求合同；尚未接 ZIP 导入完成后的自动排队、远端 Agent 的模型分发、定向增强与新旧同 Benchmark 续训验收，不宣称全链路 P1 完成。
+- P0 Actions 仍 queued；新 HEAD 全量 CI、GPU Worker 离线 PT、真实数据 1k/10k/20k、长时间 Worker 运行及手机现场浏览器为待验，严禁生产部署。
