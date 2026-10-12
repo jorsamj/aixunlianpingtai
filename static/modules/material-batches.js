@@ -131,10 +131,20 @@ export function installMaterialBatchRuntime({projectId, currentPageIds, selected
       if (!labels?.trim()) return null;
       options = {...options, labels_text: labels};
     }
-    const payload = {operation, selection_spec: selection(chosen, imageIds), options};
-    const estimate = await json(await fetch(`${base()}/estimate`, {
+    const projectAtStart = pid();
+    const selectionAtStart = selection(chosen, imageIds);
+    const selectionSignature = JSON.stringify(selectionAtStart);
+    const batchUrl = `/api/v62/projects/${encodeURIComponent(projectAtStart)}/material-batches`;
+    const assertScopeUnchanged = () => {
+      if (pid() !== projectAtStart || JSON.stringify(selection(chosen, imageIds)) !== selectionSignature) {
+        throw new Error('项目或筛选条件已变更，已取消操作，请重新预览删除范围');
+      }
+    };
+    const payload = {operation, selection_spec: selectionAtStart, options};
+    const estimate = await json(await fetch(`${batchUrl}/estimate`, {
       method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload),
     }));
+    assertScopeUnchanged();
     if (!estimate.supported) throw new Error(estimate.message || (estimate.error_code === 'BATCH_OPERATION_NOT_READY' ? '该批量操作尚未具备安全后台执行链路' : '当前操作不可用'));
     if (!Number(estimate.count || 0)) throw new Error('当前范围没有可处理素材');
     const cleanNote = operation === 'CLEAN' ? '清洗将检查并记录问题，不自动删除或确认素材。\n' : '';
@@ -143,9 +153,10 @@ export function installMaterialBatchRuntime({projectId, currentPageIds, selected
       : operation === 'DELETE_SOURCE'
         ? '将尝试删除原始图片对象及对应标注，操作不可撤销。\n' : '';
     if (!skipConfirm && !window.confirm(`${deleteNote}${cleanNote}本次将${deleteNote ? '删除' : '处理'} ${estimate.count} 张素材（${chosen === 'CURRENT_PAGE' ? '当前页' : chosen === 'SELECTED' ? '当前已选' : '全部筛选结果'}），确认继续？`)) return null;
+    assertScopeUnchanged();
     payload.selection_spec = estimate.selection_spec;
     if (operation === 'DELETE_SOURCE') payload.options.confirmation_token = estimate.confirmation_token;
-    const task = await json(await fetch(base(), {
+    const task = await json(await fetch(batchUrl, {
       method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload),
     }));
     remember(task);
