@@ -75,3 +75,12 @@ test('review commit stages are explicit and remain active', () => {
   assert.match(applying.runtimeText, /12\/20/);
   assert.equal(applying.percent, 84);
 });
+
+
+test('hard-sample signals reuse the canonical review owner rather than a second annotation UI', () => {
+  const app = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+  assert.match(app, /if\(filter==='hard'\)/);
+  assert.match(app, /hard_sample_signals/);
+  assert.match(app, /原因待确认/);
+  assert.match(app, /setAiReviewFilter60\('hard'\)/);
+});

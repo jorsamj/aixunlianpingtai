@@ -1373,3 +1373,5 @@ radial-gradient(circle at 1px 1px,rgba(148,163,184,.14) 1px,transparent 0) 0 0/1
 .evaluation429-mining-action header{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap}
 .evaluation429-mining-action .btn{font-size:14px;min-height:40px}
 @media(max-width:700px){.evaluation429-mining-action header{align-items:stretch}.evaluation429-mining-action button{width:100%}}
+
+.ai66-hard-signals{display:block;margin-top:8px;font-size:13px;line-height:1.45;color:#9a3412;font-weight:650}
