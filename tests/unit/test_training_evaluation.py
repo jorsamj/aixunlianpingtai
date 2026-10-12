@@ -693,7 +693,7 @@ def test_overlapping_objects_use_identical_tp_fp_fn_for_class_score_and_image_ev
     result = evaluation.evaluate_blind_detection(
         images, hidden,
         lambda _: [
-            {"class_id": 0, "confidence": 0.95, "box": [30, 20, 70, 60]},
+            {"class_id": 0, "confidence": 0.95, "box": [28, 20, 68, 60]},
             {"class_id": 0, "confidence": 0.65, "box": [20, 20, 60, 60]},
         ],
         names={0: "person"},
