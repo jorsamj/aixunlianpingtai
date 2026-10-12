@@ -137,88 +137,62 @@ test('exact English source label reuses existing canonical code without recreati
   expect(labelPosts).toHaveLength(0);
 });
 
-test('explicit source label creation survives refresh and exact mapping is restored safely', async ({page, request}) => {
+test('single-step original label mapping creates formal labels only at final import confirmation', async ({page, request}) => {
   const project = await createProject(request);
-  const job = await createSelectingZipJob(request, project.id, {className: 'helmet', fileName: 'refresh-recovery.zip'});
-  expect(job.id).toBeTruthy();
+  const job = await createSelectingZipJob(request, project.id, {className: 'helmet', fileName: 'one-step-helmet.zip'});
   expect(job.label_confirmation_required).toBeTruthy();
-  expect(job.external_classes?.[0]?.name).toBe('helmet');
-
   await selectIsolatedTestProject(page, project.id);
   await page.addInitScript(() => {
     localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({page: '数据集'}));
   });
-
+  const labelPosts = [];
+  page.on('request', req => {
+    if (req.method() === 'POST' && new URL(req.url()).pathname === `/api/projects/${project.id}/labels`) labelPosts.push(req);
+  });
   await page.goto('/');
   await page.getByRole('button', {name: /数据集/}).click();
   const taskCenter = page.locator('#uploadTaskCenter');
   await expect(taskCenter).toBeVisible({timeout: 10_000});
-  await expect(taskCenter).toContainText('数据导入 / 上传');
-
   await taskCenter.locator('[data-utc-toggle]').click();
-  await expect(taskCenter).toContainText('refresh-recovery.zip');
-  await expect(taskCenter).toContainText(/等待确认标注|等待中|后台/);
-  let zipRow = taskCenter.locator(`[data-utc-id="zip:${job.id}"]`);
-  await expect(zipRow).toBeVisible();
-  await zipRow.click();
+  await expect(taskCenter).toContainText('one-step-helmet.zip');
+  await taskCenter.locator(`[data-utc-id="zip:${job.id}"]`).click();
 
-  let importDialog = page.getByRole('dialog', {name: 'ZIP 数据导入'});
+  const importDialog = page.getByRole('dialog', {name: 'ZIP 数据导入'});
   await expect(importDialog).toBeVisible();
-  await expect(importDialog.locator('.zip-label-unmapped')).toBeVisible();
-  let target = importDialog.locator('[data-zip-target]');
+  const target = importDialog.locator('[data-zip-target]');
+  await expect(target).toBeVisible();
   await expect(target).toHaveValue('');
+  await importDialog.getByRole('button',{name:'一键使用原始标签'}).click();
+  await expect(target).toHaveValue('helmet');
+  await expect(importDialog.locator('.zip-label-pending')).toContainText('helmet');
+  await expect(importDialog.getByRole('button',{name:'创建标签并导入'})).toBeEnabled();
+  expect(labelPosts).toHaveLength(0);
 
-  const labelRequestPromise = page.waitForRequest(req =>
-    req.method() === 'POST' &&
-    new URL(req.url()).pathname === `/api/projects/${project.id}/labels`
+  const before = await request.get(`/api/v12/projects/${project.id}/labels`);
+  expect(before.ok()).toBeTruthy();
+  expect(((await before.json()).items || []).some(label => label.code === 'helmet')).toBeFalsy();
+
+  const createResponse = page.waitForResponse(res =>
+    res.request().method() === 'POST' && new URL(res.url()).pathname === `/api/projects/${project.id}/labels`
   );
-  await importDialog.getByRole('button', {name: '手动调整'}).click();
-  await importDialog.getByRole('button', {name: '新建平台标签', exact: true}).click();
-  const createDialog = page.getByRole('dialog', {name: '新建平台标签'});
-  await expect(createDialog).toBeVisible();
-  await createDialog.locator('#inlineLabel414Code').fill('helmet');
-  await createDialog.locator('#inlineLabel414Name').fill('安全帽');
-  await createDialog.getByRole('button', {name: '创建并使用'}).click();
-  const labelRequest = await labelRequestPromise;
-  expect(labelRequest.postDataJSON().label).toBe('helmet');
-
-  const labelsResponse = await request.get(`/api/v12/projects/${project.id}/labels`);
-  expect(labelsResponse.ok()).toBeTruthy();
-  const labels = (await labelsResponse.json()).items || [];
-  expect(labels.some(label => label.code === 'helmet')).toBeTruthy();
+  const startRequest = page.waitForRequest(req =>
+    req.method() === 'POST' && new URL(req.url()).pathname === `/api/v19/projects/${project.id}/import/jobs/${job.id}/start`
+  );
+  const startResponse = page.waitForResponse(res =>
+    res.request().method() === 'POST' && new URL(res.url()).pathname === `/api/v19/projects/${project.id}/import/jobs/${job.id}/start`
+  );
+  await importDialog.getByRole('button',{name:'创建标签并导入'}).click();
+  expect((await createResponse).ok()).toBeTruthy();
+  const requestStart = await startRequest;
+  expect((await startResponse).ok()).toBeTruthy();
+  expect(labelPosts).toHaveLength(1);
+  expect(labelPosts[0].postDataJSON().label).toBe('helmet');
+  expect(requestStart.postDataJSON().label_mapping[String(job.external_classes[0].class_id)]).toBe('helmet');
 
   await page.reload();
-  await expect(taskCenter).toBeVisible({timeout: 10_000});
-  await taskCenter.locator('[data-utc-toggle]').click();
-  await expect(taskCenter).toContainText('refresh-recovery.zip');
-  zipRow = taskCenter.locator(`[data-utc-id="zip:${job.id}"]`);
-  await expect(zipRow).toBeVisible();
-  await zipRow.click();
-
-  importDialog = page.getByRole('dialog', {name: 'ZIP 数据导入'});
-  await expect(importDialog).toBeVisible();
-  target = importDialog.locator('[data-zip-target]');
-  await expect(target).toHaveValue('helmet');
-  await expect(importDialog.locator('.zip-label-destination b').first()).toHaveText(/object|helmet/);
-
-  const startRequestPromise = page.waitForRequest(req =>
-    req.method() === 'POST' &&
-    new URL(req.url()).pathname === `/api/v19/projects/${project.id}/import/jobs/${job.id}/start`
-  );
-  const startResponsePromise = page.waitForResponse(res =>
-    res.request().method() === 'POST' &&
-    new URL(res.url()).pathname === `/api/v19/projects/${project.id}/import/jobs/${job.id}/start`
-  );
-
-  await importDialog.getByRole('button', {name: '确认标签并导入'}).click();
-  const startRequest = await startRequestPromise;
-  const startResponse = await startResponsePromise;
-  expect(startResponse.ok()).toBeTruthy();
-  const mapping = startRequest.postDataJSON().label_mapping;
-  expect(mapping[String(job.external_classes[0].class_id)]).toBe('helmet');
-
-  // The retired single-task ZIP dock must stay hidden when the unified task center owns visibility.
-  await expect(page.locator('#zipImportDurableDock')).toBeHidden();
+  const persisted = await request.get(`/api/v12/projects/${project.id}/labels`);
+  expect(persisted.ok()).toBeTruthy();
+  expect(((await persisted.json()).items || []).some(label => label.code === 'helmet')).toBeTruthy();
 });
 
 test('two selected ZIP archives upload their multipart data concurrently while label review stays single-task',async({page,request})=>{
@@ -252,6 +226,19 @@ test('two selected ZIP archives upload their multipart data concurrently while l
     const dialog=page.getByRole('dialog',{name:'ZIP 数据导入'});
     await expect(dialog).toBeVisible();
     await expect(dialog.locator('#zipBatchQueueList')).toHaveCount(0);
+    // The dock must remain clickable above the still-open upload modal.
+    const toggle=page.locator('#uploadTaskCenter [data-utc-toggle]');
+    await expect(toggle).toBeVisible();
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-expanded','true');
+    const taskRows=page.locator('#uploadTaskCenter .utc-row[data-utc-kind="zip"]');
+    await expect(taskRows).toHaveCount(2);
+    // Reopening from a minimized upload modal must restore the same dialog.
+    await dialog.locator('[data-import-minimize]').click();
+    await expect(dialog).toHaveClass(/import350-minimized/);
+    await taskRows.first().click();
+    await expect(dialog).not.toHaveClass(/import350-minimized/);
+    await expect(page.getByRole('dialog',{name:'ZIP 数据导入'})).toHaveCount(1);
   }finally{
     releaseUploads();
   }
