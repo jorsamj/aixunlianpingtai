@@ -113,6 +113,7 @@ test('exact English source label reuses existing canonical code without recreati
 
   const importDialog = page.getByRole('dialog', {name: 'ZIP 数据导入'});
   await expect(importDialog).toBeVisible();
+  await expect(importDialog.locator('#zipBatchQueueList')).toHaveCount(0);
   await expect(importDialog.locator('.zip-label-destination b').first()).toHaveText(/object|helmet/);
   const target = importDialog.locator('[data-zip-target]');
   await expect(target).toHaveValue('object');

@@ -5,6 +5,7 @@ import {
   ACTIVE_ZIP_STATUSES,
   LEGACY_START_GRACE_MS,
   activeZipJobs,
+  mapZipUploadsConcurrent,
   backendZipProgress,
   overallZipProgress,
   pickZipJob,
@@ -208,7 +209,7 @@ test('ZIP exact label reuse and explicit source-code creation preserve manual co
 
 test('ZIP browser bootstrap loads the refreshed exact-code and side-evidence module',()=>{
  const boot=readFileSync(new URL('../../static/zip-import-bootstrap.mjs',import.meta.url),'utf8');
- assert.match(boot,/zip-import-runtime\.js\?v=4226357/);
+ assert.match(boot,/zip-import-runtime\.js\?v=4226358/);
 });
 
 
@@ -218,4 +219,38 @@ test('ZIP original label callbacks escape archive-supplied names as JS arguments
   assert.match(source,/showLabelSamples\(\$\{jsArg\(id\)\},\$\{jsArg\(row\.classId\)\},\$\{jsArg\(encodeURIComponent\(source\)\)\}\)/);
   assert.match(source,/\^\(\?:class\|label\)/);
   assert.doesNotMatch(source,/button\.textContent='确认标签并开始导入'/);
+});
+
+test('ZIP multi-file transfer overlaps and does not cancel independent files on failure',async()=>{
+  let active=0,peak=0;
+  const waiting=[];
+  const task=mapZipUploadsConcurrent(['a','b','c'],async name=>{
+    active++;peak=Math.max(peak,active);
+    await new Promise(resolve=>waiting.push({name,resolve}));
+    active--;
+    if(name==='b')throw Error('network b');
+    return name;
+  },2);
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(waiting.map(x=>x.name),['a','b']);
+  waiting.find(x=>x.name==='b').resolve();
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.ok(waiting.some(x=>x.name==='c'));
+  waiting.find(x=>x.name==='a').resolve();
+  await new Promise(resolve=>setImmediate(resolve));
+  waiting.find(x=>x.name==='c').resolve();
+  const outcomes=await task;
+  assert.equal(peak,2);
+  assert.deepEqual(outcomes.map(x=>x.status),['fulfilled','rejected','fulfilled']);
+  assert.equal(outcomes[2].value,'c');
+});
+
+test('ZIP modal shows selected task only and batch upload uses independent controls',()=>{
+  const source=readFileSync(new URL('../../static/modules/zip-import-runtime.js',import.meta.url),'utf8');
+  assert.doesNotMatch(source,/zipBatchQueueList/);
+  assert.doesNotMatch(source,/function queueRowsMarkup/);
+  assert.match(source,/batchTransfers\.set\(item\.id,control\)/);
+  assert.match(source,/await mapZipUploadsConcurrent\(sessions/);
+  assert.match(source,/selectedJobId=sessions\[0\]\.id/);
+  assert.match(source,/zipNeedsLabelConfirmation\(row\)/);
 });
