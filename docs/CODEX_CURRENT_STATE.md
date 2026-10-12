@@ -1,3 +1,12 @@
+## 2026-10-12｜P1 YOLO 困难样本挖掘第一批（未完成完整验收）
+
+- 最新阶段沿用 `TaskKind.AI_ANNOTATION` + 原 Worker / CandidateStore / AnnotationRepository：只支持显式选已有素材、普通图片上传选择版本后自动排队两种入口；同一套审核 UI 新增困难信号筛选，没有第二套任务或标注 Owner。
+- `platform_core/hard_sample_mining.py` 为无状态计算：全项目历史快照 Test ID 和 SHA 禁入；YOLO 推理仅输出低置信度/小目标/密集目标/无检测待核查，绝不把无 GT 直接断言为真实 FP/FN。已有训练 PT + 训练快照 label_schema + 内容哈希冻结，Worker 再次校验数据/模型/标签，需 `mining.ultralytics` 能力及真实 CUDA；远端无模型或无 GPU 不假成功。
+- 后端统一创建入口：`POST /api/v64/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/hard-sample-mining`；普通图片上传可选 `mining_algorithm_id/mining_version_id`，上传与挖掘结果独立，挖掘失败不谎称已撤销上传；同批 upload receipt 重试幂等。
+- 现有独立评测 UI 一键选择未标注素材前 100 张；上传 UI 一项可选版本；原人工审核卡片展示困难信号和未确认原因，仍需人工接受、修改或拒绝后才入正式 GT。
+- 安全与缺口：冻结 Test 快照/内容防护在任务创建、Worker 启动、审核 commit 前三次执行；暂不提供 ZIP 导入自动触发、Remote Agent 权重分发、模型间增强/严格基准续训闭环；未完成真实 GPU、20k 压力或浏览器实机验收。这个批次不能宣称 P1 fully delivered / CI passed。
+- `VERSION.txt=42.24.350` 不改，只长期分支；本轮不合并 main、tag、release 或部署生产。GitHub Actions `queued` 不等于 success，最终 HEAD 需重新核验。
+
 ## 2026-10-12｜P0 后续核验：阈值可见、真实缩略图、评分匹配一致性（CI 待跑）
 
 - 最新分支已提交 P0 三类定向修复：置信度优先一对一 GT/预测匹配统一类别 TP/FP/FN 与逐图框证据；问题图片卡片改为真实冻结 Test 只读缩略图，不可读时不伪造图；原图失败时隐藏 GT/预测 SVG 防止脱离图片显示假证据。

@@ -49,3 +49,64 @@ def test_source_file_hash_is_reproducible(tmp_path):
     file = tmp_path / "model.pt"
     file.write_bytes(b"frozen-model")
     assert sha256_file(file) == __import__("hashlib").sha256(b"frozen-model").hexdigest()
+
+
+def test_frozen_yolo_inference_produces_reviewable_canonical_candidates(monkeypatch, tmp_path):
+    import sys
+    from types import SimpleNamespace
+    from platform_core.hard_sample_mining import infer_with_frozen_yolo
+
+    model = tmp_path / "best.pt"
+    model.write_bytes(b"verified trusted internal PT")
+    image = tmp_path / "unlabeled.jpg"
+    image.write_bytes(b"image passed as filepath, not raw GT")
+
+    class Tensor:
+        def __init__(self, rows):
+            self.rows = rows
+        def cpu(self):
+            return self
+        def tolist(self):
+            return self.rows
+
+    class YOLO:
+        names = {0: "person"}
+        def __init__(self, filename):
+            assert filename == str(model)
+        def predict(self, **kwargs):
+            assert kwargs["source"] == str(image)
+            assert kwargs["save"] is False
+            assert kwargs["device"] == 0
+            return [SimpleNamespace(boxes=SimpleNamespace(
+                xyxy=Tensor([[10, 20, 40, 50]]),
+                conf=Tensor([0.32]), cls=Tensor([0.0]),
+            ))]
+
+    monkeypatch.setitem(sys.modules, "torch",
+                        SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: True)))
+    monkeypatch.setitem(sys.modules, "ultralytics", SimpleNamespace(YOLO=YOLO))
+    request = {
+        "mining_model_path": str(model), "mining_model_sha256": sha256_file(model),
+        "mining_version_id": "v1", "labels": ["person"],
+    }
+    result = infer_with_frozen_yolo(request, {
+        "id": "material-1", "path": str(image), "width": 640, "height": 480,
+    })
+    assert result["provider"] == "ultralytics"
+    assert result["hard_sample_signals"] == ["low_confidence", "small_target"]
+    assert result["root_cause_confirmed"] is False
+    assert result["boxes"][0]["label"] == "person"
+    assert result["boxes"][0]["source"] == "ai_candidate"
+    assert result["boxes"][0]["confidence"] == 0.32
+
+
+def test_changed_model_hash_fails_before_loading_or_downloading(monkeypatch, tmp_path):
+    from platform_core.hard_sample_mining import infer_with_frozen_yolo
+
+    model = tmp_path / "best.pt"
+    model.write_bytes(b"original")
+    with pytest.raises(HardSampleSafetyError, match="MODEL_IDENTITY_CHANGED"):
+        infer_with_frozen_yolo({
+            "mining_model_path": str(model),
+            "mining_model_sha256": "f" * 64, "labels": ["person"],
+        }, {"width": 100, "height": 100})
