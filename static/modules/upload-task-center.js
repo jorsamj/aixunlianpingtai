@@ -293,6 +293,7 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
       }
       return row;
     });
+    rows = stableUploadTaskOrder(rows);
   }
 
   function ensureShell(root) {
