@@ -1,3 +1,11 @@
+## 2026-10-12｜CI 止血阶段：精确 HEAD 复核与修复（完整验收未完成）
+
+- 交接 HEAD `b7c59d9` 的 47 条 Actions：42 成功、5 失败。重复失败集中于评测页面 JS 异常、IoU 对抗样本、ZIP 上传额外 GET、旧诊断文案断言以及存储页 Worker 请求；原始日志已分别核查。
+- 已直接提交到唯一长期分支的四批增量修复：`037e786a` 修复 `previewUrl=row` 错误及无歧义重叠 GT 测试；`12ff43bd` 上传弹窗算法版本选择改为显式聚焦才查询、标签编辑成功响应另核验正式标签；`bbebf341` Worker 获取失败时也适用短期缓存抑制重复 GET；`23fd6704` 问题图返回与排序不重复堆叠评测模态层、历史 lineage Chrome 断言对齐真实“先诊断，再考虑补样”的新语义。
+- 模态层回归覆盖返回/排序后同名弹窗唯一性；绝不取消浏览器测试或将原多余请求列为白名单。最终分支 HEAD 的所有 Actions 必须 `completed/success`，不能凭旧 HEAD 测试或排队任务声称全绿。
+- P1 审计中观察到现有 YOLO 推理仍将普通预测框全部写入 CandidateStore（虽附困难信号和优先级），困难性过滤、候选数量控制、模型标签顺序严格校验、Remote GPU 实际模型可达性和 1k/10k/20k 真正压测均尚未验收；必须在核心 CI 通过后继续，不能宣称困难样本功能已闭环。
+- 严守原 Worker、CandidateStore、AnnotationRepository、Snapshot/Test 唯一事实源；`VERSION.txt=42.24.350` 不变。不合并 main、不建 tag/release、不部署生产。
+
 ## 2026-10-12｜P1 YOLO 困难样本挖掘第一批（未完成完整验收）
 
 - 最新阶段沿用 `TaskKind.AI_ANNOTATION` + 原 Worker / CandidateStore / AnnotationRepository：只支持显式选已有素材、普通图片上传选择版本后自动排队两种入口；同一套审核 UI 新增困难信号筛选，没有第二套任务或标注 Owner。

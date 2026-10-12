@@ -61,8 +61,11 @@ test('frozen evaluation diagnoses zero-TP class and previews real GT/FP/FN layer
   await expect(preview.locator('[data-layer="pred"]')).not.toHaveCSS('display','none');
   await expect(preview).toContainText('不能直接加入训练集');
   await preview.getByRole('button', {name: '返回独立评测'}).click();
+  await expect(page.getByRole('dialog', {name: '独立评测'})).toHaveCount(1);
+  await expect(page.getByRole('dialog', {name: '问题图片核验'})).toHaveCount(0);
   await expect(page.getByRole('dialog', {name: '独立评测'})).toBeVisible();
   await page.getByRole('dialog', {name: '独立评测'}).getByLabel('问题图片排序').selectOption('fp');
+  await expect(page.getByRole('dialog', {name: '独立评测'})).toHaveCount(1);
   await expect(page.getByRole('dialog', {name: '独立评测'}).locator('.evaluation429-image-card').first()).toContainText('highest-severity.jpg');
 });
 
