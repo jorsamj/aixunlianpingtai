@@ -140,6 +140,9 @@ export function installTrainingMaterialPickerRuntime({
       .train-v3-picker.server-paged .train-v3-annotation-state.unannotated{background:rgba(100,116,139,.88)}
       .train-v3-picker.server-paged .train-v3-card b{display:block;margin-top:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;line-height:20px;color:#172033}
       .train-v3-picker.server-paged .train-v3-card span{display:block;min-height:18px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;line-height:18px;color:#64748b}
+      .train-v3-picker.server-paged .train-v3-card .train-v3-label-list{white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere;font-size:12px;line-height:1.5;min-height:20px;color:#334155;padding-bottom:5px}
+      .train-v3-picker.server-paged #trV3Chips{grid-column:1 / -1;max-height:none;overflow:visible;align-content:start}
+      .train-v3-picker.server-paged #trV3Chips .data426-chip{max-width:100%;white-space:normal;overflow-wrap:anywhere;line-height:1.4;text-align:left}
       .train-v3-picker.server-paged .train-v3-card.blocked{opacity:.5;cursor:not-allowed}
       .train-v3-picker.server-paged .train-v3-card.blocked:after{content:attr(data-block-reason);position:absolute;left:14px;top:14px;padding:3px 7px;border-radius:7px;background:rgba(15,23,42,.82);color:#fff;font-size:10px;z-index:2}
       .train-v3-picker.server-paged .train-v3-skeleton{height:210px;border:1px solid #e5eaf2;border-radius:14px;background:linear-gradient(100deg,#f1f5f9 20%,#f8fafc 45%,#f1f5f9 70%);background-size:220% 100%;animation:trainPickerShimmer 1.1s linear infinite}
@@ -334,7 +337,7 @@ export function installTrainingMaterialPickerRuntime({
       return `<label class="train-v3-card ${selected ? 'on' : ''} ${unavailable ? 'blocked' : ''}" data-material-id="${esc(id)}" data-block-reason="${esc(blockReason)}">
         <input type="checkbox" ${selected ? 'checked' : ''} ${unavailable ? 'disabled' : ''} onchange="toggleTrainMaterialV3('${esc(id)}',this.checked,this)">
         ${renderTrainingMaterialPreview(row, {loading, priority})}
-        <b title="${esc(row.filename || '')}">${esc(row.filename || id)}</b><span title="${esc(labelText)}">${esc(labelText)}</span>
+        <b title="${esc(row.filename || '')}">${esc(row.filename || id)}</b><span class="train-v3-label-list" title="${esc(labelText)}">${esc(labelText)}</span>
       </label>`;
     }).join('') || '<div class="empty">没有符合筛选条件的已清洗素材</div>';
     updateCounts();
