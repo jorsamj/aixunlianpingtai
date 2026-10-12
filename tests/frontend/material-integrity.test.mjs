@@ -21,3 +21,11 @@ test('material integrity provides overlay evidence and explicit human actions', 
   assert.match(app, /批量删除/);
   assert.match(app, /openAnnotation/);
 });
+
+test('material audit paginates all issue groups and visibly discloses scan failures', () => {
+  assert.ok(app.includes('window.loadMoreMaterialIntegrityGroups47=async function'));
+  assert.ok(app.includes("audit.nextCursor=page.next_cursor||''"));
+  assert.ok(app.includes('materialIntegrityGroupList47'));
+  assert.ok(app.includes('加载更多问题组'));
+  assert.ok(app.includes('素材审计未完全核验'));
+});
