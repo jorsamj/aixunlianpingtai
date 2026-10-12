@@ -210,7 +210,7 @@ test('ZIP exact label reuse and explicit source-code creation preserve manual co
 
 test('ZIP browser bootstrap loads the refreshed exact-code and side-evidence module',()=>{
  const boot=readFileSync(new URL('../../static/zip-import-bootstrap.mjs',import.meta.url),'utf8');
- assert.match(boot,/zip-import-runtime\.js\?v=4226359/);
+ assert.match(boot,/zip-import-runtime\.js\?v=4226360/);
 });
 
 
@@ -284,4 +284,18 @@ test('an individual session failure releases a slot without aborting sibling ZIP
   ]);
   assert.deepEqual(result.map(x=>x.status),['rejected','fulfilled']);
   assert.equal(result[1].value,'second ZIP accepted');
+});
+
+test('ZIP label mapping is editable immediately and creates labels only upon final import confirmation',()=>{
+  const source=readFileSync(new URL('../../static/modules/zip-import-runtime.js',import.meta.url),'utf8');
+  const css=readFileSync(new URL('../../static/styles.css',import.meta.url),'utf8');
+  assert.match(source,/review\.pendingCreate=Object\.fromEntries/);
+  assert.match(source,/for\(const item of \[\.\.\.plan\.reuse,\.\.\.plan\.create\]\)setLabelMapping/);
+  assert.match(source,/for\(const \[code,name\] of toCreate\)await createPlatformLabel\(code,name\)/);
+  assert.match(source,/await startZipJob\(project,id,\{fetchImpl,confirmation:\{label_mapping\}\}\)/);
+  assert.match(source,/submittingLabelJobs\.has\(id\)/);
+  assert.doesNotMatch(source,/if\(codes\.length&&!window\.confirm/);
+  assert.match(css,/\.zip-label-confirm \.zip-label-target-select\{display:block/);
+  assert.match(source,/restoreImportModal\(\)/);
+  assert.match(source,/UploadTaskCenterRuntime\?\.rekey\?\./);
 });
