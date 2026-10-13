@@ -1312,9 +1312,13 @@ radial-gradient(circle at 1px 1px,rgba(148,163,184,.14) 1px,transparent 0) 0 0/1
 .zip-label-confirm .zip-label-advanced{border:1px solid #e2e8f0;border-radius:12px;margin-top:14px;padding:12px 14px}
 .zip-label-confirm .zip-label-advanced summary{font-size:14px;font-weight:650;cursor:pointer}
 .zip-label-confirm .zip-label-footer{position:sticky;bottom:0;z-index:3;border-top:1px solid #e2e8f0;background:white;margin-top:15px;padding:13px 0;display:flex;align-items:center;justify-content:space-between;gap:12px}
-.zip-label-confirm .zip-label-footer small{font-size:14px;color:#475569}.zip-label-confirm .zip-label-footer>div{display:flex;gap:9px}
-.zip-label-confirm .zip-label-footer .btn{min-height:42px;font-size:15px!important}
+.zip-label-confirm .zip-label-footer small{font-size:14px;color:#475569}
+.zip-label-confirm .zip-label-footer-actions{display:flex;align-items:center;gap:12px}
+.zip-label-confirm .zip-label-footer .btn{min-height:44px;font-size:15px!important}
+.zip-label-confirm .zip-label-cancel{margin-right:8px}
+.zip-label-confirm button:focus-visible,.zip-label-confirm select:focus-visible,.zip-label-confirm input:focus-visible{outline:3px solid #93c5fd;outline-offset:2px}
 @media(max-width:980px){.zip-label-confirm .zip-label-workspace{grid-template-columns:1fr}.zip-label-confirm .zip-label-metrics{grid-template-columns:repeat(2,1fr)}.zip-label-confirm .zip-label-source-summary{grid-template-columns:1fr}}
+@media (max-width:680px){.zip-label-confirm .zip-label-heading,.zip-label-confirm .zip-label-footer{align-items:stretch;flex-direction:column}.zip-label-confirm .zip-label-footer-actions{display:grid;grid-template-columns:1fr}.zip-label-confirm .zip-label-cancel{margin-right:0}.zip-label-confirm .zip-label-actions .btn,.zip-label-confirm .zip-label-footer .btn{width:100%;min-height:44px}.zip411-head>.row{flex-wrap:wrap;justify-content:flex-end}}
 
 
 /* Independent evaluation: read-only diagnostic evidence, large touch targets. */

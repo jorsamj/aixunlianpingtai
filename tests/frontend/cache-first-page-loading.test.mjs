@@ -2,8 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
-const source = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
-const main = fs.readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8');
+const source = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+const main = fs.readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 
 function block(start, end) {
   const from = source.indexOf(start);

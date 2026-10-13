@@ -2,9 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 
-const app = await readFile(new URL('../../static/app.js', import.meta.url), 'utf8');
-const hydration = await readFile(new URL('../../static/modules/training-create-hydration.js', import.meta.url), 'utf8');
-const main = await readFile(new URL('../../static/main.mjs', import.meta.url), 'utf8');
+const app = (await readFile(new URL('../../static/app.js', import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
+const hydration = (await readFile(new URL('../../static/modules/training-create-hydration.js', import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
+const main = (await readFile(new URL('../../static/main.mjs', import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
 
 test('training creation uses one canonical app owner instead of start-owner wrapper chains', () => {
   for (const token of [

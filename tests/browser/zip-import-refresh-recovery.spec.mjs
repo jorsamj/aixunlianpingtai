@@ -84,6 +84,7 @@ async function createSelectingZipJob(request, projectId, {className = 'object', 
 }
 
 test('exact English source label reuses existing canonical code without recreating it', async ({page, request}) => {
+  await page.setViewportSize({width: 1366, height: 768});
   const project = await createProject(request, [
     {code: 'object', display_name: '对象', color: '#3b82f6'}
   ]);
@@ -114,11 +115,18 @@ test('exact English source label reuses existing canonical code without recreati
   const importDialog = page.getByRole('dialog', {name: 'ZIP 数据导入'});
   await expect(importDialog).toBeVisible();
   await expect(importDialog.locator('#zipBatchQueueList')).toHaveCount(0);
+  await expect(importDialog.locator('.zip-label-workspace')).toBeVisible();
+  await expect(importDialog.locator('[data-zip-class-samples]')).toBeVisible();
   await expect(importDialog.locator('.zip-label-destination b').first()).toHaveText(/object|helmet/);
   const target = importDialog.locator('[data-zip-target]');
   await expect(target).toHaveValue('object');
   await expect(target.locator('option[value="__create__"]')).toHaveCount(0);
-  await expect(importDialog.getByRole('button',{name:'确认标签并导入'})).toBeEnabled();
+  const confirmButton = importDialog.getByRole('button',{name:'确认标签并导入'});
+  await expect(confirmButton).toBeEnabled();
+  await expect(confirmButton).toBeInViewport();
+  const confirmBox = await confirmButton.boundingBox();
+  expect(confirmBox).not.toBeNull();
+  expect(confirmBox.y + confirmBox.height).toBeLessThanOrEqual(768);
   await expect(taskCenter).toHaveCSS('z-index','900');
 
   const startRequestPromise = page.waitForRequest(req =>
@@ -296,4 +304,93 @@ test('three ZIPs finish upload and independently await human label confirmation'
   await expect(dialog).toContainText(filenames[2]);
   await expect(dialog.locator('.zip-label-confirm')).toHaveCount(1);
   expect(startRequests).toHaveLength(0);
+});
+
+test('late ZIP inventory response cannot cross a project switch',async({page})=>{
+  await page.goto('/');
+  const result=await page.evaluate(async()=>{
+    window.ZipImportRuntime?.destroy?.();
+    const {installZipImportRuntime}=await import('/static/modules/zip-import-runtime.js?v=project-fence-test');
+    const state={project:{id:'project-a'},labels:[],page:'数据集'};
+    let releaseProjectA;
+    const requests=[];
+    const response=body=>({ok:true,status:200,json:async()=>body});
+    const fetchImpl=url=>{
+      const value=String(url);requests.push(value);
+      if(value.includes('/projects/project-a/import/jobs'))return new Promise(resolve=>{releaseProjectA=()=>resolve(response({items:[{id:'job-a',status:'done',file_name:'A.zip'}]}))});
+      if(value.includes('/projects/project-b/import/jobs'))return Promise.resolve(response({items:[{id:'job-b',status:'done',file_name:'B.zip'}]}));
+      return Promise.resolve(response({items:[]}));
+    };
+    const runtime=installZipImportRuntime({getState:()=>state,projectId:()=>state.project.id,fetchImpl,pollMs:60000});
+    for(let index=0;index<20&&!releaseProjectA;index++)await new Promise(resolve=>setTimeout(resolve,0));
+    state.project={id:'project-b'};
+    void runtime.reconcile('project-switch-test');
+    releaseProjectA();
+    for(let index=0;index<50;index++){
+      const ids=runtime.snapshot().jobs.map(job=>job.id);
+      if(ids.includes('job-b'))break;
+      await new Promise(resolve=>setTimeout(resolve,10));
+    }
+    const ids=runtime.snapshot().jobs.map(job=>job.id);
+    runtime.destroy();
+    return {ids,requests};
+  });
+  expect(result.ids).toEqual(['job-b']);
+  expect(result.ids).not.toContain('job-a');
+  expect(result.requests.some(url=>url.includes('/projects/project-b/import/jobs'))).toBeTruthy();
+});
+
+test('narrow label review cancels one server job without touching its sibling',async({page,request})=>{
+  const project=await createProject(request);
+  const first=await createSelectingZipJob(request,project.id,{className:'helmet',fileName:'cancel-only-this.zip'});
+  const second=await createSelectingZipJob(request,project.id,{className:'smoke',fileName:'keep-this.zip'});
+  await page.setViewportSize({width:375,height:812});
+  await selectIsolatedTestProject(page,project.id);
+  await page.addInitScript(()=>localStorage.setItem('mc_train_ui_state_v34',JSON.stringify({page:'数据集'})));
+  await page.goto('/');
+  await expect.poll(()=>page.evaluate(()=>window.ZipImportRuntime?.snapshot?.().jobs.length||0)).toBeGreaterThanOrEqual(2);
+  await page.evaluate(()=>window.PollRegistryRuntime?.clear?.('zip-import-runtime'));
+  await page.waitForTimeout(200);
+  const observationReads=[];
+  const captureObservation=requestEvent=>{
+    const url=new URL(requestEvent.url());
+    if(requestEvent.method()==='GET'&&url.pathname===`/api/v19/projects/${project.id}/import/jobs`)observationReads.push(url.pathname);
+  };
+  page.on('request',captureObservation);
+  await page.evaluate(()=>window.ZipImportRuntime.reconcile('request-count-audit'));
+  page.off('request',captureObservation);
+  expect(observationReads).toHaveLength(1);
+  console.log(`[zip-reconcile-inventory] observation-only list GET before=2 after=${observationReads.length}`);
+  const taskCenter=page.locator('#uploadTaskCenter');
+  await expect(taskCenter).toBeVisible({timeout:10000});
+  await taskCenter.locator('[data-utc-toggle]').click();
+  await taskCenter.locator(`[data-utc-id="zip:${first.id}"]`).click();
+
+  const dialog=page.getByRole('dialog',{name:'ZIP 数据导入'});
+  await expect(dialog.locator('.zip-label-confirm')).toBeVisible();
+  await expect(dialog.locator('.zip-label-footer-actions')).toHaveCSS('display','grid');
+  expect(await dialog.evaluate(node=>node.scrollWidth<=node.clientWidth+1)).toBeTruthy();
+
+  page.once('dialog',confirmation=>confirmation.accept());
+  const cancelledResponse=page.waitForResponse(response=>
+    response.request().method()==='POST'&&
+    new URL(response.url()).pathname===`/api/v19/projects/${project.id}/import/jobs/${first.id}/cancel`
+  );
+  await dialog.getByRole('button',{name:'取消当前 ZIP 导入任务'}).click();
+  const cancelResult=await cancelledResponse;
+  expect(cancelResult.ok()).toBeTruthy();
+  expect((await cancelResult.json()).cleanup_status).toBe('complete');
+
+  await expect.poll(async()=>{
+    const response=await request.get(`/api/v19/projects/${project.id}/import/jobs`);
+    const items=(await response.json()).items||[];
+    return {
+      first:items.find(item=>item.id===first.id)?.status,
+      second:items.find(item=>item.id===second.id)?.status,
+    };
+  }).toEqual({first:'cancelled',second:'selecting'});
+
+  await taskCenter.locator(`[data-utc-id="zip:${second.id}"]`).click();
+  await expect(dialog).toContainText('keep-this.zip');
+  await expect(dialog.locator('.zip-label-confirm')).toBeVisible();
 });

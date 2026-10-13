@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
-const app = fs.readFileSync('static/app.js', 'utf8');
+const app = fs.readFileSync('static/app.js', 'utf8').replace(/\r\n/g, '\n');
 
 function historicalImportBlock() {
   const start = app.indexOf('window.doImportData=');

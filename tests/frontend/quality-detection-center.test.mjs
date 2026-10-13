@@ -2,10 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 
-const app = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
-const main = readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8');
-const navigation = readFileSync(new URL('../../static/modules/navigation-stability.js', import.meta.url), 'utf8');
-const backend = readFileSync(new URL('../../app.py', import.meta.url), 'utf8');
+const app = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+const main = readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+const navigation = readFileSync(new URL('../../static/modules/navigation-stability.js', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+const backend = readFileSync(new URL('../../app.py', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 
 test('collapsed product navigation has only overview, algorithm generation and data center groups', () => {
   const start = app.lastIndexOf('const icon414=');

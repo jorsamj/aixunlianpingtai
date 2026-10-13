@@ -1,4 +1,4 @@
-import {installZipImportRuntime} from './modules/zip-import-runtime.js?v=4226360';
+import {installZipImportRuntime} from './modules/zip-import-runtime.js?v=4226361';
 
 const runtime = installZipImportRuntime({
   getState: () => state,
@@ -31,7 +31,20 @@ if (runtime) {
       window.toast?.('请选择压缩包');
       return null;
     }
-    return runtime.uploadBatch(input).catch(() => null);
+    return (async () => {
+      // The bridge can be invoked programmatically before the first canonical
+      // project snapshot has painted. Join that single readiness promise rather
+      // than rejecting a valid file selection as "当前项目未加载".
+      if (!state.project?.id) {
+        const ready = window.__v53InitPromise || window.__clInit?.();
+        if (ready) await ready;
+      }
+      if (!state.project?.id) {
+        window.toast?.('当前项目尚未加载完成，请稍后重试');
+        return null;
+      }
+      return runtime.uploadBatch(input).catch(() => null);
+    })();
   };
   durableUploadFromImportModal.__zipImportRuntimeBridge = true;
   window.doImportUploadV19 = durableUploadFromImportModal;

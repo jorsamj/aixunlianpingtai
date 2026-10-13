@@ -136,7 +136,8 @@ test('interrupted ZIP view exposes pause resume and safe cancellation without st
   const source=fs.readFileSync(new URL('../../static/modules/zip-import-runtime.js',import.meta.url),'utf8');
   assert.match(source,/pauseUpload\('/);
   assert.match(source,/promptResume\('/);
-  assert.match(source,/cancelUpload\('/);
+  assert.match(source,/cancelJob\('/);
+  assert.match(source,/\/import\/jobs\/\$\{encodeURIComponent\(jobId\)\}\/cancel/);
   assert.match(source,/input\.closest\?\.\('\.modal'\)/);
   assert.doesNotMatch(source,/window\.closeModal\?\.\(\);open\(\);render\(\)/);
   assert.match(source,/xhr\.timeout=180000/);
@@ -147,5 +148,7 @@ test('failed ZIP network transfer releases stale active controller so same-file 
   const source=fs.readFileSync(new URL('../../static/modules/zip-import-runtime.js',import.meta.url),'utf8');
   // Paused/cancelled sessions deliberately retain control for later resumption;
   // only failed active transfers should drop the stale browser-owned controller.
-  assert.match(source,/catch\(e\)\{const lastUploadProgress=Number\(uploading\?\.progress\|\|0\);uploading=null;[\s\S]*?if\(uploadControl===control&&control\.state==='active'\)uploadControl=null;[\s\S]*?if\(control\.state==='paused'\|\|control\.state==='cancelled'\)return null;/);
+  assert.match(source,/catch\(e\)\{const lastUploadProgress=Number\(uploading\?\.progress\|\|0\)/);
+  assert.match(source,/if\(uploadControl===control&&control\.state==='active'\)uploadControl=null/);
+  assert.match(source,/if\(control\.state==='paused'\|\|control\.state==='cancelled'\)return null/);
 });

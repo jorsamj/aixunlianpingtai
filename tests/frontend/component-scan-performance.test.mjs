@@ -2,8 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 
-const source=readFileSync(new URL('../../static/app.js',import.meta.url),'utf8');
-const styles=readFileSync(new URL('../../static/styles.css',import.meta.url),'utf8');
+const source=readFileSync(new URL('../../static/app.js',import.meta.url),'utf8').replace(/\r\n/g,'\n');
+const styles=readFileSync(new URL('../../static/styles.css',import.meta.url),'utf8').replace(/\r\n/g,'\n');
 
 test('component scan active progress patches a stable shell and uses central polling',()=>{
   const start=source.lastIndexOf("const COMPONENT_SCAN_POLL_KEY='component-scan-v40'");

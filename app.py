@@ -14123,6 +14123,83 @@ def _v19_check_stop(project_id: str, job_id: str) -> None:
         raise _V19ImportStopped("用户中断了尚未提交的 ZIP 素材导入")
 
 
+def _v19_cleanup_uncommitted_job(project_id: str, job_id: str) -> Dict[str, Any]:
+    """Delete only files owned by one pre-commit ZIP job; keep job.json audit."""
+    jobs_root = v19_import_jobs_dir(project_id).resolve()
+    job_root = (jobs_root / str(job_id)).resolve()
+    if job_root.parent != jobs_root:
+        raise RuntimeError("非法 ZIP 导入任务标识，已拒绝清理")
+
+    released = 0
+    removed: List[str] = []
+    for name in (
+        "source.zip", "source.zip.assembling", "scan-images.json",
+        "scan-class-samples.json", "report.json",
+    ):
+        path = job_root / name
+        if not path.exists():
+            continue
+        try:
+            if path.is_file():
+                released += path.stat().st_size
+            path.unlink(missing_ok=True)
+            removed.append(name)
+        except OSError as error:
+            raise RuntimeError(f"无法清理任务文件 {name}: {error}") from error
+
+    for name in ("extracted", "staging", "previews", "thumbnails"):
+        path = job_root / name
+        if not path.exists():
+            continue
+        try:
+            for owned in path.rglob("*"):
+                if owned.is_file():
+                    try:
+                        released += owned.stat().st_size
+                    except OSError:
+                        pass
+            shutil.rmtree(path)
+            removed.append(name + "/")
+        except OSError as error:
+            raise RuntimeError(f"无法清理任务目录 {name}: {error}") from error
+
+    upload_root = project_dir(project_id) / "import_uploads" / str(job_id)
+    if upload_root.exists():
+        try:
+            released += _v19_multipart_repository(project_id).discard(job_id)
+            removed.append("multipart-session/")
+        except (OSError, ValueError) as error:
+            raise RuntimeError(f"无法清理任务分片会话: {error}") from error
+    return {"released_bytes": int(released), "removed": removed}
+
+
+def _v19_finish_cancel(project_id: str, job_id: str, *, message: str) -> Dict[str, Any]:
+    """Finish a pre-commit cancellation or persist a visible retryable failure."""
+    try:
+        cleanup = _v19_cleanup_uncommitted_job(project_id, job_id)
+    except Exception as error:
+        job = v19_read_job(project_id, job_id)
+        job.update(
+            status="failed", stage="取消清理失败，可重试", phase="FAILED",
+            cleanup_status="failed", cleanup_error=str(error),
+            error=str(error), message="未删除任何正式素材；请重试取消清理",
+            finished_at=now_iso(),
+        )
+        v19_write_job(project_id, job)
+        return job
+    job = v19_read_job(project_id, job_id)
+    job.update(
+        status="cancelled", stage="已取消并清理未提交缓存",
+        phase="CANCELLED", progress=0, cancel_requested=True,
+        cleanup_status="complete", cleanup_error="",
+        cleanup_released_bytes=int(cleanup["released_bytes"]),
+        cleanup_removed=list(cleanup["removed"]),
+        error="", message=message, finished_at=now_iso(),
+    )
+    v19_write_job(project_id, job)
+    return job
+
+
 
 def _v19_fifo_import_jobs(project_id: str) -> List[Dict[str, Any]]:
     """Read existing v19 durable job files; no separate queue store or scheduler."""
@@ -14398,12 +14475,8 @@ def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_pa
                 report=report, finished_at=now_iso(),
             )
         else:
-            zip_path.unlink(missing_ok=True)
-            v19_update_job(
-                project_id, job_id, status="cancelled", stage="用户已停止导入",
-                phase="CANCELLED", progress=0, report=report,
-                error="", message=str(stopped), finished_at=now_iso(),
-            )
+            v19_update_job(project_id, job_id, report=report)
+            _v19_finish_cancel(project_id, job_id, message=str(stopped))
     except HTTPException as e:
         current = v19_read_job(project_id, job_id)
         failed_progress = v19_zip_display_progress(current)["overall_progress"]
@@ -14545,25 +14618,20 @@ def v19_pause_multipart_upload(project_id: str, upload_id: str):
 
 @app.post("/api/v19/projects/{project_id}/import/uploads/{upload_id}/cancel")
 def v19_cancel_multipart_upload(project_id: str, upload_id: str):
-    get_project(project_id)
-    job = v19_read_job(project_id, upload_id)
-    if str(job.get("status") or "") not in {"uploading", "paused", "cancelled"}:
-        raise HTTPException(
-            status_code=409,
-            detail="任务已进入合并、解析或正式入库阶段，不可直接清理源文件；请先进行数据完整性核验。",
-        )
+    # Compatibility route for older clients.  Cancellation ownership and its
+    # safety/cleanup contract remain in the one unified job service below.
     try:
-        session = _v19_multipart_repository(project_id).cancel(upload_id)
-    except (FileNotFoundError, ValueError) as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-    v19_update_job(
-        project_id, upload_id, status="cancelled", stage="用户取消上传",
-        phase="CANCELLED", progress=0,
-        uploaded_bytes=0, upload_progress=0, phase_completed=0,
-        message="已取消上传并清理未提交的 ZIP 分片缓存",
-        finished_at=now_iso(),
-    )
-    return {"ok": True, **session}
+        session = _v19_multipart_repository(project_id).get(upload_id)
+    except FileNotFoundError:
+        session = {}
+    result = _v19_cancel_import_job(project_id, upload_id)
+    legacy_result = {**session, **result, "ok": True}
+    if (
+        str(result.get("status") or "").strip().lower() in {"cancelled", "canceled"}
+        and result.get("cleanup_status") == "complete"
+    ):
+        legacy_result.update(completed_parts=[], received_bytes=0)
+    return legacy_result
 
 
 _V19_UPLOAD_FINALIZE_GUARD = threading.Lock()
@@ -14572,15 +14640,29 @@ _V19_UPLOAD_FINALIZE_ACTIVE: set[Tuple[str, str]] = set()
 
 def _v19_finalize_multipart_upload(project_id: str, upload_id: str):
     key = (str(project_id), str(upload_id))
+    jd = v19_job_dir(project_id, upload_id)
+    jd.mkdir(parents=True, exist_ok=True)
+    finalize_lock = FileLock(str(jd / ".finalize.lock"), timeout=-1)
+    finalize_lock_acquired = False
     try:
+        # The in-memory guard only coordinates threads in this process.  The
+        # file lock is the durable ownership fence when more than one API
+        # process observes the same completed multipart upload.
+        finalize_lock.acquire()
+        finalize_lock_acquired = True
+        initial = v19_read_job(project_id, upload_id)
+        if str(initial.get("status") or "").strip().lower() in {
+            "cancelled", "canceled", "done", "failed",
+        }:
+            return
+        _v19_check_stop(project_id, upload_id)
         repository = _v19_multipart_repository(project_id)
         session = repository.get(upload_id)
         job = v19_read_job(project_id, upload_id)
-        jd = v19_job_dir(project_id, upload_id)
-        jd.mkdir(parents=True, exist_ok=True)
         zip_path = jd / "source.zip"
 
         merge_started = time.time()
+        _v19_check_stop(project_id, upload_id)
         v19_update_job(
             project_id, upload_id,
             status="merging", stage="正在合并 ZIP 分片", progress=35,
@@ -14612,11 +14694,15 @@ def _v19_finalize_multipart_upload(project_id: str, upload_id: str):
                     message=f"正在合并分片 {part_number}/{total_parts}",
                     **metrics,
                 )
-            repository.assemble(upload_id, zip_path, on_progress=merge_progress)
+            repository.assemble(
+                upload_id, zip_path, on_progress=merge_progress,
+                cancel_check=lambda: _v19_check_stop(project_id, upload_id),
+            )
             session = repository.get(upload_id)
 
         verify_started = time.time()
         scan_started: Optional[float] = None
+        _v19_check_stop(project_id, upload_id)
         v19_update_job(
             project_id, upload_id,
             status="validating", stage="正在校验 ZIP 结构", progress=40,
@@ -14628,6 +14714,7 @@ def _v19_finalize_multipart_upload(project_id: str, upload_id: str):
         last_verify_emit = 0.0
         def scan_progress(phase, done, total_files, current_name):
             nonlocal last_verify_emit, scan_started
+            _v19_check_stop(project_id, upload_id)
             if phase == "VERIFY":
                 tick = time.monotonic()
                 if done != total_files and tick - last_verify_emit < 0.5:
@@ -14663,6 +14750,7 @@ def _v19_finalize_multipart_upload(project_id: str, upload_id: str):
 
         scan_total_started = time.time()
         scan = _v19_prepare_scan(project_id, v19_scan_zip(zip_path, scan_progress))
+        _v19_check_stop(project_id, upload_id)
         scan_seconds = round(max(0.0, time.time() - scan_total_started), 2)
         if scan.get("image_count", 0) == 0:
             raise ValueError("ZIP 内容不匹配：压缩包内没有识别到支持的图片文件。")
@@ -14701,27 +14789,45 @@ def _v19_finalize_multipart_upload(project_id: str, upload_id: str):
             "uploaded_at": latest.get("uploaded_at") or now_iso(),
             "updated_at": now_iso(),
         }
-        v19_write_job(project_id, finished)
+        with _v19_stop_fence(project_id, upload_id):
+            _v19_check_stop(project_id, upload_id)
+            v19_write_job(project_id, finished)
+    except _V19ImportStopped as stopped:
+        _v19_finish_cancel(project_id, upload_id, message=str(stopped))
     except zipfile.BadZipFile:
-        current = v19_read_job(project_id, upload_id)
-        failed_progress = v19_zip_display_progress(current)["overall_progress"]
-        v19_update_job(
-            project_id, upload_id,
-            status="failed", stage="ZIP 校验失败", progress=failed_progress,
-            phase="FAILED", upload_progress=100,
-            error="压缩包已损坏、格式不正确或不是有效 ZIP。",
-            message="ZIP 校验失败", finished_at=now_iso(),
-        )
+        with _v19_stop_fence(project_id, upload_id):
+            current = v19_read_job(project_id, upload_id)
+            terminal = str(current.get("status") or "").strip().lower()
+            if terminal not in {"cancelled", "canceled", "done"}:
+                if current.get("cancel_requested"):
+                    _v19_finish_cancel(project_id, upload_id, message="已取消 ZIP 校验并清理未提交缓存")
+                else:
+                    failed_progress = v19_zip_display_progress(current)["overall_progress"]
+                    current.update(
+                        status="failed", stage="ZIP 校验失败", progress=failed_progress,
+                        phase="FAILED", upload_progress=100,
+                        error="压缩包已损坏、格式不正确或不是有效 ZIP。",
+                        message="ZIP 校验失败", finished_at=now_iso(),
+                    )
+                    v19_write_job(project_id, current)
     except Exception as error:
-        current = v19_read_job(project_id, upload_id)
-        failed_progress = v19_zip_display_progress(current)["overall_progress"]
-        v19_update_job(
-            project_id, upload_id,
-            status="failed", stage="ZIP 处理失败", progress=failed_progress,
-            phase="FAILED", upload_progress=100, error=str(error), message=str(error),
-            finished_at=now_iso(),
-        )
+        with _v19_stop_fence(project_id, upload_id):
+            current = v19_read_job(project_id, upload_id)
+            terminal = str(current.get("status") or "").strip().lower()
+            if terminal not in {"cancelled", "canceled", "done"}:
+                if current.get("cancel_requested"):
+                    _v19_finish_cancel(project_id, upload_id, message="已取消 ZIP 处理并清理未提交缓存")
+                else:
+                    failed_progress = v19_zip_display_progress(current)["overall_progress"]
+                    current.update(
+                        status="failed", stage="ZIP 处理失败", progress=failed_progress,
+                        phase="FAILED", upload_progress=100, error=str(error), message=str(error),
+                        finished_at=now_iso(),
+                    )
+                    v19_write_job(project_id, current)
     finally:
+        if finalize_lock_acquired:
+            finalize_lock.release()
         with _V19_UPLOAD_FINALIZE_GUARD:
             _V19_UPLOAD_FINALIZE_ACTIVE.discard(key)
 
@@ -14750,13 +14856,15 @@ def _v19_recover_multipart_finalize(project_id: str, job: Mapping[str, Any]) -> 
 @app.post("/api/v19/projects/{project_id}/import/uploads/{upload_id}/complete")
 def v19_complete_multipart_upload(project_id: str, upload_id: str):
     get_project(project_id)
+    job = v19_read_job(project_id, upload_id)
+    status = str(job.get("status") or "").strip().lower()
+    if status in {"cancelled", "canceled"} or job.get("cancel_requested"):
+        raise HTTPException(status_code=409, detail="ZIP 任务已取消，无法合并")
     repository = _v19_multipart_repository(project_id)
     try:
         session = repository.get(upload_id)
     except FileNotFoundError as error:
         raise HTTPException(status_code=404, detail="ZIP 上传会话不存在") from error
-    job = v19_read_job(project_id, upload_id)
-    status = str(job.get("status") or "").strip().lower()
     if str(session.get("status") or "") in {"paused", "cancelled"}:
         raise HTTPException(status_code=409, detail="ZIP 会话已暂停或取消，无法合并")
 
@@ -14770,15 +14878,18 @@ def v19_complete_multipart_upload(project_id: str, upload_id: str):
                 status_code=409,
                 detail=f"ZIP 分片尚未全部上传：{completed}/{total}",
             )
-        v19_update_job(
-            project_id, upload_id,
-            status="merging", stage="正在合并 ZIP 分片", progress=35,
-            upload_progress=100,
-            phase="MERGE", phase_completed=0,
-            phase_total=int(session.get("file_size") or 0), phase_unit="bytes",
-            phase_progress=0, phase_elapsed_seconds=0, eta_seconds=None,
-            message="所有分片已上传，后台正在合并 ZIP；页面可以关闭",
-        )
+        with _v19_stop_fence(project_id, upload_id):
+            if v19_read_job(project_id, upload_id).get("cancel_requested"):
+                raise HTTPException(status_code=409, detail="ZIP 任务正在取消，不能继续合并")
+            v19_update_job(
+                project_id, upload_id,
+                status="merging", stage="正在合并 ZIP 分片", progress=35,
+                upload_progress=100,
+                phase="MERGE", phase_completed=0,
+                phase_total=int(session.get("file_size") or 0), phase_unit="bytes",
+                phase_progress=0, phase_elapsed_seconds=0, eta_seconds=None,
+                message="所有分片已上传，后台正在合并 ZIP；页面可以关闭",
+            )
 
     _v19_schedule_multipart_finalize(project_id, upload_id)
     current = v19_read_job(project_id, upload_id)
@@ -14855,35 +14966,101 @@ async def v19_create_import_job(project_id: str, dataset_id: str, file: UploadFi
     return v19_public_job(project_id, job, image_limit=500)
 
 
-@app.post("/api/v19/projects/{project_id}/import/jobs/{job_id}/stop")
-def v19_stop_import_job(project_id: str, job_id: str):
+def _v19_cancel_import_job(project_id: str, job_id: str) -> Dict[str, Any]:
     get_project(project_id)
+    schedule_finalize = False
     with _v19_stop_fence(project_id, job_id):
         job = v19_read_job(project_id, job_id)
-        if str(job.get("status") or "") == "running" and job.get("cancel_requested"):
+        status = str(job.get("status") or "").strip().lower()
+        phase = str(job.get("phase") or "").strip().upper()
+
+        if status in {"cancelled", "canceled"} and job.get("cleanup_status") == "complete":
             return v19_public_job(project_id, job)
-        if (
-            str(job.get("status") or "") != "running"
-            or str(job.get("phase") or "") not in {"QUEUE", "EXTRACT", "ANNOTATION_PARSE"}
-        ):
+        if status == "done" or phase == "DB_COMMIT":
             raise HTTPException(
                 status_code=409,
-                detail="仅可停止尚未提交的后台导入；已进入正式提交或终态的任务必须先完成完整性审计。",
+                detail="该任务已进入正式提交或已完成，不能伪装为取消；如需撤销必须使用独立的安全撤销流程。",
             )
-        job.update(cancel_requested=True, stage="正在安全停止后台导入", message="收到停止请求，等待 Worker 回滚未提交的素材")
+        if status == "failed" and job.get("cleanup_status") != "failed":
+            raise HTTPException(
+                status_code=409,
+                detail="失败任务可能已产生正式数据，必须先完成完整性审计，不能直接取消清理。",
+            )
+
+        cleanup_retry = status in {"cancelled", "canceled"} or (
+            status == "failed" and job.get("cleanup_status") == "failed"
+        )
+        worker_cancellable = status in {"running", "queued", "waiting"} and phase in {
+            "QUEUE", "EXTRACT", "ANNOTATION_PARSE", "UPLOAD", "MERGE", "VERIFY", "SCAN",
+        }
+        if status not in {"uploading", "paused", "selecting", "merging", "validating"} and not cleanup_retry and not worker_cancellable:
+            raise HTTPException(
+                status_code=409,
+                detail="当前任务阶段不能安全取消；服务器未删除任何任务或正式数据。",
+            )
+
+        job.update(
+            cancel_requested=True, cancel_requested_at=job.get("cancel_requested_at") or now_iso(),
+            stage="正在安全取消并清理", message="服务器已收到取消请求，正在停止当前阶段",
+        )
         v19_write_job(project_id, job)
-        return v19_public_job(project_id, job)
+
+        if status in {"uploading", "paused"}:
+            try:
+                _v19_multipart_repository(project_id).cancel(job_id)
+            except FileNotFoundError:
+                pass
+            except ValueError as error:
+                raise HTTPException(status_code=409, detail=str(error)) from error
+            job = _v19_finish_cancel(
+                project_id, job_id,
+                message="已取消上传并清理本任务尚未提交的 ZIP 分片缓存",
+            )
+            return v19_public_job(project_id, job)
+
+        if status == "selecting" or cleanup_retry:
+            job = _v19_finish_cancel(
+                project_id, job_id,
+                message="已取消导入并清理本任务尚未提交的 ZIP 与扫描缓存",
+            )
+            return v19_public_job(project_id, job)
+
+        if status in {"merging", "validating"}:
+            schedule_finalize = True
+        elif worker_cancellable:
+            return v19_public_job(project_id, v19_read_job(project_id, job_id))
+
+    if schedule_finalize:
+        _v19_schedule_multipart_finalize(project_id, job_id)
+    return v19_public_job(project_id, v19_read_job(project_id, job_id))
+
+
+@app.post("/api/v19/projects/{project_id}/import/jobs/{job_id}/cancel")
+def v19_cancel_import_job(project_id: str, job_id: str):
+    return _v19_cancel_import_job(project_id, job_id)
+
+
+@app.post("/api/v19/projects/{project_id}/import/jobs/{job_id}/stop")
+def v19_stop_import_job(project_id: str, job_id: str):
+    # Backward-compatible alias for historical clients; one service owns safety.
+    return _v19_cancel_import_job(project_id, job_id)
 
 
 @app.post("/api/v19/projects/{project_id}/import/jobs/{job_id}/start")
 def v19_start_import_job(project_id: str, job_id: str, payload: V19ImportStartReq):
     # Same-project submit is one atomic operation even across API processes.
     with FileLock(str(v19_import_jobs_dir(project_id) / ".enqueue.lock"), timeout=120):
-        return _v19_start_import_job_locked(project_id, job_id, payload)
+        # Starting and cancelling share the same per-job fence.  Once a
+        # cancellation request is durable no concurrent tab/process can queue
+        # the job or freeze a new label mapping behind it.
+        with _v19_stop_fence(project_id, job_id):
+            return _v19_start_import_job_locked(project_id, job_id, payload)
 
 
 def _v19_start_import_job_locked(project_id: str, job_id: str, payload: V19ImportStartReq):
     job = v19_read_job(project_id, job_id)
+    if job.get("cancel_requested"):
+        raise HTTPException(status_code=409, detail="该 ZIP 任务正在取消，不能确认标签或启动正式导入")
     if job.get("status") == "running":
         return v19_public_job(project_id, job)
     if job.get("status") not in {"selecting", "failed"}:
@@ -14978,8 +15155,7 @@ def _v19_start_import_job_locked(project_id: str, job_id: str, payload: V19Impor
          for filename in v19_import_jobs_dir(project_id).glob("*/job.json")),
         default=0,
     )
-    v19_update_job(
-        project_id, job_id,
+    job.update(
         enqueued_at=now_iso(), enqueue_sequence=highest_sequence + 1,
         status="running",
         stage="等待项目导入资源",
@@ -14989,6 +15165,7 @@ def _v19_start_import_job_locked(project_id: str, job_id: str, payload: V19Impor
         selected_count=len(selected_paths) or job.get("image_count", 0),
         message="标签确认已冻结，正在等待项目级导入锁",
     )
+    v19_write_job(project_id, job)
     th = threading.Thread(
         target=v19_import_worker,
         args=(project_id, job.get("dataset_id") or "default", job_id, selected_paths),

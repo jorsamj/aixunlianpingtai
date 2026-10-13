@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 
-const app = await readFile(new URL('../../static/app.js', import.meta.url), 'utf8');
+const app = (await readFile(new URL('../../static/app.js', import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
 
 test('dataset and annotation public owners are unique', () => {
   for (const name of [

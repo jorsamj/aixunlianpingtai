@@ -144,6 +144,32 @@ def test_multipart_assemble_reports_real_byte_progress(tmp_path: Path):
     assert all(current[0] >= previous[0] for previous, current in zip(events, events[1:]))
 
 
+def test_multipart_assemble_honors_cancel_check_without_leaving_partial_zip(tmp_path: Path):
+    repository = ZipMultipartRepository(tmp_path)
+    payload = b'a' * (4 * 1024 * 1024) + b'b' * (4 * 1024 * 1024)
+    session = repository.create_or_resume(
+        dataset_id='default', file_name='cancel-merge.zip', file_size=len(payload),
+        fingerprint='cancel-merge', part_size=4 * 1024 * 1024,
+    )
+    repository.write_part(session['upload_id'], 0, BytesIO(payload[:4 * 1024 * 1024]))
+    repository.write_part(session['upload_id'], 1, BytesIO(payload[4 * 1024 * 1024:]))
+    target = tmp_path / 'cancel-merge.zip'
+    checks = 0
+
+    def cancel_during_merge():
+        nonlocal checks
+        checks += 1
+        if checks >= 2:
+            raise RuntimeError('cancel merge')
+
+    with pytest.raises(RuntimeError, match='cancel merge'):
+        repository.assemble(session['upload_id'], target, cancel_check=cancel_during_merge)
+
+    assert not target.exists()
+    assert not target.with_suffix('.zip.assembling').exists()
+    assert repository.get(session['upload_id'])['status'] == 'uploading'
+
+
 def test_pause_preserves_parts_and_cancel_erases_only_temporary_bytes(tmp_path: Path):
     repository = ZipMultipartRepository(tmp_path)
     data = b'z' * (4 * 1024 * 1024)

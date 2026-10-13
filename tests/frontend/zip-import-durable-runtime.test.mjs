@@ -107,7 +107,7 @@ test('ZIP bootstrap-ready is the same single-read bootstrap phase',()=>{
   assert.equal(isZipBootstrapReconcile('poll'),false);
   assert.equal(isZipBootstrapReconcile('manual'),false);
   const source=readFileSync(new URL('../../static/modules/zip-import-runtime.js',import.meta.url),'utf8');
-  assert.match(source,/if\(!isZipBootstrapReconcile\(reason\)\)server=await listZipJobs/);
+  assert.match(source,/if\(!isZipBootstrapReconcile\(reason\)&&startedNow\)\{server=await listZipJobs/);
   assert.doesNotMatch(source,/if\(reason!=='bootstrap'\)server=await listZipJobs/);
 });
 
@@ -147,7 +147,6 @@ test('ZIP runtime exposes recoverable reopen and visible confirmation state',()=
   assert.match(source,/bulkMapLabels/);
   assert.doesNotMatch(source,/create_labels/);
 });
-
 
 test('canonical ZIP projection owns stage message percent and ETA for new jobs',()=>{
   const job={
@@ -218,7 +217,7 @@ test('ZIP source label selection only stages an explicit mapping until final con
   assert.ok(confirmStart>=0 && confirmEnd>confirmStart,'canonical import confirmation exists');
   const confirmation=source.slice(confirmStart,confirmEnd);
   assert.match(confirmation,/buildManualLabelMapping\(review\)/);
-  const create=confirmation.indexOf('await createPlatformLabel(code,name)');
+  const create=confirmation.indexOf('await createPlatformLabel(project,code,name)');
   const verify=confirmation.indexOf('verified.has(String(code))');
   const submit=confirmation.indexOf('await startZipJob(project,id,{fetchImpl,confirmation:{label_mapping}})');
   assert.ok(create>=0 && create<verify && verify<submit,'new labels must be created and verified before import admission');
@@ -226,7 +225,7 @@ test('ZIP source label selection only stages an explicit mapping until final con
 
 test('ZIP browser bootstrap loads the refreshed exact-code and side-evidence module',()=>{
  const boot=readFileSync(new URL('../../static/zip-import-bootstrap.mjs',import.meta.url),'utf8');
- assert.match(boot,/zip-import-runtime\.js\?v=4226360/);
+ assert.match(boot,/zip-import-runtime\.js\?v=4226361/);
 });
 
 
@@ -307,7 +306,7 @@ test('ZIP label mapping is editable immediately and creates labels only upon fin
   const css=readFileSync(new URL('../../static/styles.css',import.meta.url),'utf8');
   assert.match(source,/review\.pendingCreate=Object\.fromEntries/);
   assert.match(source,/for\(const item of \[\.\.\.plan\.reuse,\.\.\.plan\.create\]\)setLabelMapping/);
-  assert.match(source,/for\(const \[code,name\] of toCreate\)await createPlatformLabel\(code,name\)/);
+  assert.match(source,/for\(const \[code,name\] of toCreate\)\{[\s\S]*?await createPlatformLabel\(project,code,name\)/);
   assert.match(source,/await startZipJob\(project,id,\{fetchImpl,confirmation:\{label_mapping\}\}\)/);
   assert.match(source,/submittingLabelJobs\.has\(id\)/);
   assert.doesNotMatch(source,/if\(codes\.length&&!window\.confirm/);

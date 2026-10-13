@@ -2,8 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-const source = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
-const main = readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8');
+const source = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+const main = readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 
 test('final AI annotation owner uses durable v60 candidate review flow', () => {
   const legacyV33 = source.lastIndexOf('/api/v33/projects/${pid()}/prelabel-tasks');
