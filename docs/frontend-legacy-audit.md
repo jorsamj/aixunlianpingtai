@@ -1217,3 +1217,10 @@ Status: **CLOSED** on `refactor/frontend-runtime-stabilization`.
 - The existing evaluation image modal owns both A/B panes. Zoom/reset is synchronized, scroll position is ratio-synchronized, and each pane has independent fullscreen; no nested modal or duplicate image state exists.
 - Frontend evidence: Node 24.14 952/952 and focused Real Chrome 7/7. Full Chrome first run was 140/149; after the VNext contract fixes and isolated reruns, 3 original failures pass and 6 legacy-fixture/environment cases remain red. The screenshots are fixture-labelled; production imagery is not implied.
 
+## 2026-10-13 VNext final differential audit
+
+- The clean detached `30f83c48` browser baseline completes 142/148 with six failures. VNext has the same six deterministic failures at the same assertions; login passes 2/2 under its dedicated auth config, while model/conversion and action-fencing failures are stale fixture contracts with preserved traces.
+- A seventh VNext full-suite failure counted two label-schema GETs because the fixture navigated away after request start but before successful cache commit. It now waits for the existing cache timestamp and passes repeat 5/5 plus the 22-test material slice. The baseline-reproducible service-node isolated startup race now sets the existing advanced preference before navigation and passes repeat 3/3. No timeout, retry, cache wrapper, production owner, or weakened business assertion was added.
+- Node 24.19 direct frontend selection is 952/952 and the VNext quality/recovery Chrome slice is 7/7. The equal-request 1000/720 benchmark is `40×full=11.3042 MiB` versus `1×full+39×compact=0.2985 MiB`, including initial history.
+- Final VNext Node 24 full Chrome is 143/149, leaving only the same six baseline failures. `docs/VNEXT_FINAL_DIFFERENTIAL_AUDIT_2026_10_13.md` owns the per-test evidence. Production imagery, OSS, GPU and GitHub Ubuntu remain `NOT VERIFIED`.
+

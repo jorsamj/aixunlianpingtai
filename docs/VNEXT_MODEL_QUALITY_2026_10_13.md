@@ -75,6 +75,6 @@
 
 八项审查发现已在既有 owner 内修复：历史图片身份改为显式 Image ID / 唯一冻结 stored_name；场景实测统一进入质量中心 detect；训练历史按需一次加载、轮询仅取 summary；比较按 class_id；Snapshot 元数据有界缓存；训练 Tab 完整 ARIA 键盘模式；A/B 同倍率缩放与同步定位、单侧全屏；缺失差值与真实零严格区分。
 
-1000 Epoch + 720 采样的合成基准为 296,333 B 全量、428 B 精简；40 次/分钟并计首次历史加载从 11.30 MiB 降至 0.30 MiB，SQLite SELECT 从每轮 4 次降为 1 次。20k Snapshot 的 24 张页从 24 次解析降为 1 次，23 次缓存命中合计 5.23 ms；文件变化会重新解析。
+1000 Epoch + 720 采样的合成基准为 296,333 B 全量、428 B 精简。统一按首分钟 40 次总请求计算：旧 `40×全量=11.3042 MiB`，新 `1×全量+39×精简=0.2985 MiB`，完整历史首次加载已计入，下降 97.36%；稳态 40 次 compact 为 0.0163 MiB。SQLite SELECT 从每轮 4 次降为 1 次。20k Snapshot 的 24 张页从 24 次解析降为 1 次，23 次缓存命中合计 5.23 ms；文件变化会重新解析。
 
-本地证据：受影响 Python 54 passed / 1 skipped；Node 24.14 952/952；定向 Real Chrome 7/7，并输出 1920、1440、1366、375 截图且标注验收夹具。Windows 全量 pytest 为 2323 passed / 12 skipped / 64 failed；Full Chrome 首轮 140/149，完成本轮相关合同修复及隔离复测后，首轮失败项 3 pass / 6 fail。失败包含旧 v47/标签夹具合同、Windows MAX_PATH/信号/worker 差异及现有登录、模型配置、清洗夹具/E2E 环境项，未标记为通过。真实生产历史图片、OSS、GPU、GitHub Ubuntu CI 仍未验证。
+本地证据：受影响 Python 60 passed / 1 skipped；Node 24.19 952/952；定向 Real Chrome 7/7，并输出 1920、1440、1366、375 截图且标注验收夹具。新鲜 Windows 全量 pytest 为 2325 passed / 12 skipped / 62 failed，独立 `30f83c48` 基线对照 62/62 同根因；旧 64 项报告没有可反查 JUnit。旧基线 Full Chrome 为 142/148、6 fail；最终 VNext Node 24 Full Chrome 为 143/149、6 fail，六项同名同断点。首轮多出的标签管理项已按真实缓存提交时点修复测试夹具，repeat 5/5、相关素材集合 22/22；服务节点旧基线启动竞态亦只修测试前置状态，repeat 3/3。真实生产历史图片、OSS、GPU、GitHub Ubuntu CI 仍未验证，详见 `VNEXT_FINAL_DIFFERENTIAL_AUDIT_2026_10_13.md`。

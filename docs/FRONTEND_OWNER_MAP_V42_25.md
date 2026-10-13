@@ -1032,3 +1032,10 @@ Status: **CLOSED** on `refactor/frontend-runtime-stabilization`.
 - Existing quality modal owners retain evaluation/report/image UI. A/B controls act on the two existing evidence panes, and accessible training tabs update the current DOM without rebuilding it on user tab clicks.
 - No second cache framework, poller, evaluation engine, training status owner, quality-center renderer or annotation flow was added.
 
+## 2026-10-13 VNext final differential acceptance
+
+- Owner map is unchanged. Node 24.19 frontend contracts are 952/952 and the quality/recovery Chrome slice is 7/7.
+- Clean `30f83c48` full Chrome is 142 passed / 6 failed; final VNext Node 24 full Chrome is 143 passed / 6 failed, with all six names and breakpoints matching. The additional label-schema request-count failure came from leaving the page after request start but before successful cache commit; the fixture now waits for the existing cache timestamp and passes repeat 5/5 plus the 22-test material slice. A baseline-reproducible service-node startup race is fixed by setting the existing advanced-navigation preference before navigation and passes repeat 3/3. No wrapper, retry, timeout, owner, or production cache was added.
+- Training-detail traffic is compared with equal request counts: first-minute 40 requests are `40×296,333 B` legacy versus `296,333 B + 39×428 B` current. The first history read is included.
+- Full evidence and trace paths are recorded in `docs/VNEXT_FINAL_DIFFERENTIAL_AUDIT_2026_10_13.md`; GitHub Ubuntu and production data remain unverified.
+

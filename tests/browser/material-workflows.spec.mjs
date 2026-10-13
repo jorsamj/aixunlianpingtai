@@ -545,6 +545,7 @@ test('label management create and edit stay page-scoped without loading the full
   await page.getByRole('button', {name: /标签管理/}).click();
   await expect(page.locator('.label414-shell')).toBeVisible();
   await expect.poll(() => usageGets).toBeGreaterThan(0);
+  await expect.poll(() => page.evaluate(() => Number(state.label414UsageLoadedAt || 0))).toBeGreaterThan(0);
   const firstVisitUsageGets = usageGets;
 
   await page.evaluate(() => window.setPage('工作台'));

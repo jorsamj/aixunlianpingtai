@@ -490,7 +490,7 @@ Resource Discovery SQLite 仍保持 **CODE-LEVEL CLOSED / production soak OPEN**
 ## 2026-10-13｜VNext 独立审查修复（LOCAL VERIFIED / CI OPEN）
 
 - 历史评测图片不再把 filename stem 当 Image ID；显式 `image_id` 严格绑定冻结成员，缺 ID 时只接受 Snapshot 中唯一 `stored_name`，重复、缺失、SHA 漂移或真实响应字节不一致均拒绝。20k Snapshot 身份索引只缓存已解析元数据（上限 8），响应仍逐次校验真实字节 SHA；24 张页由 24 次解析降为 1 次，文件变化后重新解析。
-- `TrainingRecoveryRuntime` 仍是唯一训练详情 owner；完整 1000 Epoch / 720 采样仅在曲线或资源页首次需要时加载，此后 1.5s 轮询读取 summary 并合并 `latest_epoch/latest`。合成基准：296,333 B → 428 B/轮询，40 次/分钟并计一次历史加载为 11.30 → 0.30 MiB（-97.36%），SQLite SELECT 4 → 1/轮询。
+- `TrainingRecoveryRuntime` 仍是唯一训练详情 owner；完整 1000 Epoch / 720 采样仅在曲线或资源页首次需要时加载，此后 1.5s 轮询读取 summary 并合并 `latest_epoch/latest`。合成基准：296,333 B → 428 B/轮询；统一按首分钟 40 次总请求计算，旧实现 `40×全量=11.3042 MiB`，新实现 `1×全量+39×精简=0.2985 MiB`（完整历史首次加载已计入，-97.36%），SQLite SELECT 4 → 1/轮询。
 - 版本比较以 `class_id` 为主键；旧数据仅在显示标签双方唯一时兼容，重复或无法对应时标记不可严格比较。缺失 delta 为“未记录”，真实 0 为 `0.0 pp`。
 - 质量中心导航、A/B 双侧同步缩放/定位与单侧全屏、训练页签键盘/ARIA、完成态最佳已记录 mAP50、1366/375 布局已由真实 Chrome 验证；没有新增页面、评测引擎、轮询器或事实源。
-- 验证：受影响 Python `54 passed, 1 skipped`；Node 24.14 `952/952`；定向 Real Chrome `7/7`。Windows 全量 pytest 实际执行为 `2323 passed, 12 skipped, 64 failed`；全量 Chrome 首轮 `140/149`，完成本轮相关合同修复及隔离复测后，首轮失败项 3 项转绿、6 项仍失败。失败含旧 v47 合同、标签夹具、Windows MAX_PATH/信号/worker 差异及既有登录/模型配置/E2E 环境项，不能写成通过，且本轮修改区域的定向集合全绿。GitHub CI、生产历史对象、真实 OSS 与 GPU 训练仍为 `NOT VERIFIED`。
+- 最终差异审计：新鲜 Windows 全量 pytest 为 `2325 passed, 12 skipped, 62 failed`；这 62 项在独立干净 `30f83c48` 工作树中以相同异常类型/首失败位置 `62/62` 复现，VNext 新增 Python 回归为 0。旧 `64 failed` 报告没有保留可反查两项的 JUnit，不再沿用。短 basetemp 证明其中 30 项为 Windows 路径长度。旧基线全量 Chrome `142 passed, 6 failed`，与 VNext 最终 Node 24 全量 `143 passed, 6 failed` 的六项同名同断点。首轮多出的标签管理项已通过等待真实缓存写入修复夹具（repeat 5/5、相关素材集合 22/22）；服务节点旧基线独立运行竞态也以显式高级功能前置状态收敛（repeat 3/3）。两处均未改生产代码或放宽业务断言。详细证据见 `docs/VNEXT_FINAL_DIFFERENTIAL_AUDIT_2026_10_13.md`。GitHub CI、生产历史对象、真实 OSS 与 GPU 训练仍为 `NOT VERIFIED`。

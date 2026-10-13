@@ -5468,5 +5468,5 @@ GitHub 当前没有 CI status，不能把“测试代码已写”表述成“已
 
 - P0：历史错误样本只按显式冻结 Image ID 或唯一冻结 `stored_name` 取图；stem 冲突对抗样本返回正确 stored-name 字节，同名/不完整/漂移安全拒绝，失败图片不显示框。
 - P1：训练报告与独立评测均进入 `质量中心 → detect`；训练详情完整历史一次按需加载，后续 summary 增量合并；比较按 class_id，重复旧标签不可严格比较。
-- P2/UI：20k Snapshot 有界索引、键盘页签、A/B 双侧操作、缺失 delta、核心指标层级和移动端提示已完成。性能：11.30 → 0.30 MiB/分钟，SQLite SELECT 4 → 1/轮询。
-- 验证：Python focused 54 passed / 1 skipped；Node 24.14 952/952；Chrome focused 7/7；Windows full pytest 2323 passed / 12 skipped / 64 failed。Full Chrome 首轮 140/149；完成本轮相关合同修复及隔离复测后，首轮失败项 3 项转绿、6 项仍失败。失败清单保留为既有合同/平台/环境待办，未伪装全绿。生产历史素材、OSS、GPU、Linux CI 未验证。VERSION 42.24.355 不改，未 push/merge/deploy。
+- P2/UI：20k Snapshot 有界索引、键盘页签、A/B 双侧操作、缺失 delta、核心指标层级和移动端提示已完成。性能按首分钟同为 40 次请求计算：旧 `40×全量=11.3042 MiB`，新 `1×全量+39×精简=0.2985 MiB`，已计首次历史加载；SQLite SELECT 4 → 1/轮询。
+- 最终差异审计：Python focused 60 passed / 1 skipped；Node 24.19 952/952；Chrome focused 7/7。Windows full pytest 2325 passed / 12 skipped / 62 failed，干净 `30f83c48` 对照 62/62 同根因。基线 Full Chrome 142/148、6 fail；最终 VNext Node 24 Full Chrome 143/149、6 fail，六项同名同断点。首轮额外标签管理失败已按真实缓存提交时点修复测试夹具（repeat 5/5、相关素材集合 22/22）；旧基线同样可复现的服务节点启动竞态只修测试前置状态（repeat 3/3）。无生产代码改动或业务断言放宽。详细清单与 Trace 位于 `docs/VNEXT_FINAL_DIFFERENTIAL_AUDIT_2026_10_13.md`。生产历史素材、OSS、GPU、Linux CI 未验证。VERSION 42.24.355 不改，未 push/merge/deploy。
