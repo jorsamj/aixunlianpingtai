@@ -36,6 +36,11 @@ test('upload task center opens above ZIP modal but yields to unrelated dialogs',
   assert.ok(otherDialogGuard, 'unrelated dialogs must take precedence over the ZIP upload dock');
   assert.ok(Number(dock[1]) > Number(modal[1]), 'upload task center must remain clickable while ZIP modal is open');
   assert.ok(Number(otherDialogGuard[1]) < Number(modal[1]), 'unrelated dialogs must stay above the upload task center');
+  const decisionGuard = taskCenter.match(/body:has\(\.modal\.import350-modal:not\(\.hidden\):not\(\.import350-minimized\) \.zip-label-confirm\) \.utc-root\{z-index:(\d+)\}/);
+  assert.ok(decisionGuard, 'ZIP label confirmation must take precedence over the upload dock');
+  assert.ok(Number(decisionGuard[1]) < Number(modal[1]), 'ZIP label confirmation buttons must not be covered');
+  assert.doesNotMatch(taskCenter, /body:has\(\.modal\.import350-modal:not\(\.hidden\)\) \.utc-root\{z-index:900\}/,
+    'active uploads without label decisions must keep the dock clickable');
 });
 
 test('import modal remains mounted while minimized without creating a second uploader',()=>{
