@@ -494,3 +494,11 @@ Resource Discovery SQLite 仍保持 **CODE-LEVEL CLOSED / production soak OPEN**
 - 版本比较以 `class_id` 为主键；旧数据仅在显示标签双方唯一时兼容，重复或无法对应时标记不可严格比较。缺失 delta 为“未记录”，真实 0 为 `0.0 pp`。
 - 质量中心导航、A/B 双侧同步缩放/定位与单侧全屏、训练页签键盘/ARIA、完成态最佳已记录 mAP50、1366/375 布局已由真实 Chrome 验证；没有新增页面、评测引擎、轮询器或事实源。
 - 最终差异审计：新鲜 Windows 全量 pytest 为 `2325 passed, 12 skipped, 62 failed`；这 62 项在独立干净 `30f83c48` 工作树中以相同异常类型/首失败位置 `62/62` 复现，VNext 新增 Python 回归为 0。旧 `64 failed` 报告没有保留可反查两项的 JUnit，不再沿用。短 basetemp 证明其中 30 项为 Windows 路径长度。旧基线全量 Chrome `142 passed, 6 failed`，与 VNext 最终 Node 24 全量 `143 passed, 6 failed` 的六项同名同断点。首轮多出的标签管理项已通过等待真实缓存写入修复夹具（repeat 5/5、相关素材集合 22/22）；服务节点旧基线独立运行竞态也以显式高级功能前置状态收敛（repeat 3/3）。两处均未改生产代码或放宽业务断言。详细证据见 `docs/VNEXT_FINAL_DIFFERENTIAL_AUDIT_2026_10_13.md`。GitHub CI、生产历史对象、真实 OSS 与 GPU 训练仍为 `NOT VERIFIED`。
+
+## 2026-10-13｜多文件上传队列与任务中心（LOCAL VERIFIED / CI OPEN）
+
+- 根因是 ZIP 批次先完成全批指纹，再由两槽 limiter 创建上传会话和登记任务；第 3 个及之后虽在闭包中等待，却没有任务中心身份。现改为文件选择后同步登记每个文件，再按唯一 `createZipTransferLimiter(2)` FIFO 获取浏览器传输槽；分片上传完成即释放槽位，合并、扫描与标签确认不占浏览器槽，也不新增正式导入队列或 Owner。
+- 任务中心保留所有活动任务，终态历史有界；显示文件名、大小、真实进度、排队序号、错误与状态动作。排队/准备任务可单独取消，持久会话继续复用原暂停、续传和安全取消。刷新后仅浏览器 `File` 的任务明确标记“需要重新选择文件”，不得伪装可自动恢复；项目切换会隔离并停止原项目本地传输。
+- 同批无效/空文件、指纹失败、会话失败和完全重复内容均逐文件可见；同名不同内容仍可受理，一个失败不阻断后续 FIFO。普通素材入口审计确认全部选择项由既有分块 Owner 接收，新增 130 文件 Node 合同和 65 文件真实 Chrome 回归，不创建第二套队列。
+- 正式版本升级为 `VERSION.txt=42.24.356`；同步 app/main/ZIP bootstrap/任务中心缓存标识，健康接口、UI 版本与静态资源合同一致。
+- 最终本地证据：Node.js 24 frontend `962/962`；Python ZIP/multipart/路由/健康合同 `35/35`；Chrome `16/16`（包含 3/5/10 ZIP、两槽并发、跨批次 FIFO、传输中/排队取消、失败放行、刷新、项目隔离、普通素材分块）。GitHub CI、生产 OSS/大文件网络和部署仍为 `NOT VERIFIED`；本批禁止 push、merge main 或部署。

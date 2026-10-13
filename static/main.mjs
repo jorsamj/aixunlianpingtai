@@ -42,7 +42,7 @@ import {isActiveVideoTask, normalizeVideoTask, videoTaskFormValues} from './modu
 import {buildStorageSourcePayload, defaultStorageSource, enabledStorageSources, sourceMatches, storageSourceLabel} from './modules/storage.js?v=422202';
 import {buildMaterialQuery, installMaterialPaginationRuntime, requiresFullMaterialPool} from './modules/material-pagination-runtime.js?v=422609';
 import {installStorageImportProgressRuntime, storageImportProgressText} from './modules/storage-import-progress.js?v=422525';
-import {installUploadTaskCenter} from './modules/upload-task-center.js?v=66011';
+import {installUploadTaskCenter} from './modules/upload-task-center.js?v=66012';
 import {buildServerImportRequest, buildImportConfirmation, serverImportView} from './modules/server-material-import.js?v=422526';
 import {applyExactLabelCodeMatches, bulkSetLabelMapping, buildManualLabelMapping, createLabelMappingReview, filterCanonicalLabels, labelMappingReviewPage, labelMappingReviewSummary, labelSampleOverlay, reconcileLabelMappingReview, setLabelMapping, setLabelMappingReviewPage, setLabelMappingReviewSearch, setLabelMappingSelected, setLabelMappingTargetSearch} from './modules/label-mapping-review.js?v=4226353';
 import {installResourceDiscoveryRuntime} from './modules/resource-discovery.js?v=422402';
@@ -553,6 +553,10 @@ window.PlatformCore.runtime.renderRouter = {
 
 const canonicalStartupPromise = window.__clInit?.();
 Promise.resolve(canonicalStartupPromise).then(() => {
+  // The task center is installed before bootstrap project truth is available.
+  // Load that project's persisted upload rows once readiness resolves so a
+  // browser-only queued File becomes an explicit re-selection request.
+  uploadTaskCenterRuntime.switchProject?.();
   const startupPage = String(state.page || '');
   adoptPageExtrasInflight(startupPage, state.__extras412);
   if (!state.__startupCanonicalPainted && navigationStabilityRuntime.hasPageOwner(startupPage)) {

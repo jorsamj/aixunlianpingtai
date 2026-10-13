@@ -3002,3 +3002,11 @@ Current code candidate is VERSION `42.24.300`. Formal Ground Truth cannot commit
 <!-- LABEL_PREVIEW_AUDIT_REPAIR_2026_10_09_END -->
 
 - 安全入口追加：普通素材批处理 `parse_request` 明确拒绝直接创建 `REPAIR_ANNOTATION_PROJECTIONS`（422）；只有已完成且同项目授权的 Full Audit 专用路由可冻结候选并创建任务。新增通用 API 绕过防护测试。
+
+## 2026-10-13｜多文件上传队列与任务中心交接
+
+- 修复 ZIP `uploadBatch()` 的登记时序：所有被选文件先同步进入现有 `UploadTaskCenterRuntime`，再由全局共享的两槽浏览器传输 limiter 按 FIFO 启动。分片上传结束即放行下一项，服务器合并/扫描/标签确认/正式导入仍使用原 Durable Upload 与 FIFO Import，不新增 Owner。
+- 任务中心不再只展示前 10 条；活动任务不会因历史上限被裁掉，展开区固定高度滚动。每项展示文件大小、真实上传百分比、排队位次、错误和可用操作。排队任务取消只影响自身；已有 Upload ID 的任务继续走原暂停/续传/取消清理合同。
+- 刷新后浏览器本地 `File` 无法恢复时明确要求重新选择；已有服务器会话可按原分片合同续传。项目切换停止并隔离本地传输。无效、空文件、重复内容、指纹/会话/网络失败均逐文件留痕且不阻断同批后续文件。
+- 普通素材入口沿用原分块 Owner，Node 130 文件和 Chrome 65 文件均确认没有静默丢失。版本升级为 `42.24.356`，健康接口/前端标识/缓存键一致。
+- 新鲜验证：Node 24 `962/962`，Python `35/35`，Chrome `16/16`（传输中与排队取消均覆盖）。GitHub CI、生产大文件/OSS 与部署为 `NOT VERIFIED`；未 push、未合并 main、未部署。

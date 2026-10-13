@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import {zipFingerprint, zipPartPlan} from '../../static/modules/zip-import-runtime.js';
+import {zipBatchDuplicateKey, zipFingerprint, zipPartPlan} from '../../static/modules/zip-import-runtime.js';
 
 test('large ZIP is divided into deterministic resumable parts', () => {
   const parts = zipPartPlan(21, 8, [0,2]);
@@ -35,6 +35,21 @@ test('resume fingerprint includes sampled content so same name size and mtime ca
 
   assert.match(a, /^v2:same\.zip:8:123456:/);
   assert.notEqual(a, b);
+});
+
+test('batch duplicate key ignores browser mtime but preserves name size and sampled content identity', () => {
+  assert.equal(
+    zipBatchDuplicateKey('v2:same.zip:8:1000:abc123'),
+    zipBatchDuplicateKey('v2:same.zip:8:2000:abc123'),
+  );
+  assert.notEqual(
+    zipBatchDuplicateKey('v2:same.zip:8:1000:abc123'),
+    zipBatchDuplicateKey('v2:same.zip:8:1000:def456'),
+  );
+  assert.notEqual(
+    zipBatchDuplicateKey('v2:same.zip:8:1000:abc123'),
+    zipBatchDuplicateKey('v2:renamed.zip:8:1000:abc123'),
+  );
 });
 
 

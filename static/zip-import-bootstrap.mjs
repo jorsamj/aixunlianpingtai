@@ -1,4 +1,4 @@
-import {installZipImportRuntime} from './modules/zip-import-runtime.js?v=4226361';
+import {installZipImportRuntime} from './modules/zip-import-runtime.js?v=4226362';
 
 const runtime = installZipImportRuntime({
   getState: () => state,
@@ -43,7 +43,10 @@ if (runtime) {
         window.toast?.('当前项目尚未加载完成，请稍后重试');
         return null;
       }
-      return runtime.uploadBatch(input).catch(() => null);
+      return runtime.uploadBatch(input).catch(error => {
+        window.toast?.(`ZIP 批次处理失败：${error?.message || error}`);
+        return null;
+      });
     })();
   };
   durableUploadFromImportModal.__zipImportRuntimeBridge = true;

@@ -1,8 +1,8 @@
-const ACTIVE_STATUSES = new Set(['UPLOADING','PAUSED','MERGING','VALIDATING','SELECTING','QUEUED','WAITING','WAITING_RESOURCE','RUNNING','SCANNING','EXTRACTING','MAPPING_LABELS','WRITING_ANNOTATIONS','INDEXING','FINALIZING']);
+const ACTIVE_STATUSES = new Set(['WAITING_UPLOAD','UPLOADING','PAUSED','MERGING','VALIDATING','SELECTING','QUEUED','WAITING','WAITING_RESOURCE','RUNNING','SCANNING','EXTRACTING','MAPPING_LABELS','WRITING_ANNOTATIONS','INDEXING','FINALIZING']);
 const TERMINAL_STATUSES = new Set(['DONE','SUCCEEDED','COMPLETED','FINISHED','FAILED','CANCELLED','CANCELED','INTERRUPTED']);
 const STORAGE_PREFIX = 'mc_upload_task_center_v1:';
 const POLL_MS = 1200;
-const MAX_ROWS = 20;
+const MAX_ROWS = 100;
 
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 const clamp = value => Math.max(0, Math.min(100, Number(value) || 0));
@@ -15,12 +15,21 @@ function formatTime(value) {
   return date.toLocaleTimeString('zh-CN', {hour12:false, hour:'2-digit', minute:'2-digit', second:'2-digit'});
 }
 
+function formatBytes(value) {
+  const bytes = Math.max(0, Number(value) || 0);
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`;
+}
+
 function statusPresentation(status) {
   const key = upper(status);
   if (['DONE','SUCCEEDED','COMPLETED','FINISHED'].includes(key)) return {label:'已完成', cls:'ok'};
   if (['FAILED','INTERRUPTED'].includes(key)) return {label:'失败', cls:'bad'};
   if (['CANCELLED','CANCELED'].includes(key)) return {label:'已取消', cls:'muted'};
   if (key === 'PAUSED') return {label:'已暂停', cls:'warn'};
+  if (key === 'WAITING_UPLOAD') return {label:'排队中', cls:'warn'};
   if (['QUEUED','WAITING','WAITING_RESOURCE','SELECTING'].includes(key)) return {label:'等待中', cls:'warn'};
   return {label:'进行中', cls:'run'};
 }
@@ -45,6 +54,28 @@ export function stableUploadTaskOrder(tasks = []) {
     String(b?.createdAt || '').localeCompare(String(a?.createdAt || ''))
     || String(a?.id || '').localeCompare(String(b?.id || ''))
   );
+}
+
+/** Never hide active work merely because terminal history reached its bound. */
+export function retainUploadTaskRows(tasks = [], maximum = MAX_ROWS) {
+  const ordered = stableUploadTaskOrder(Array.isArray(tasks) ? tasks : []);
+  const active = ordered.filter(isUploadTaskActive);
+  const limit = Math.max(1, Number(maximum) || MAX_ROWS);
+  if (active.length >= limit) return active;
+  const terminal = ordered.filter(task => !isUploadTaskActive(task)).slice(0, limit - active.length);
+  const retained = new Set([...active, ...terminal].map(task => String(task.id || '')));
+  return ordered.filter(task => retained.has(String(task.id || '')));
+}
+
+export function summarizeUploadTasks(tasks = []) {
+  const rows = Array.isArray(tasks) ? tasks : [];
+  return {
+    total:rows.length,
+    active:rows.filter(isUploadTaskActive).length,
+    uploading:rows.filter(row => upper(row.status) === 'UPLOADING' && row.browserTransfer).length,
+    queued:rows.filter(row => upper(row.status) === 'WAITING_UPLOAD').length,
+    terminal:rows.filter(row => TERMINAL_STATUSES.has(upper(row.status))).length,
+  };
 }
 
 export function mergeUploadTask(previous = {}, next = {}) {
@@ -91,6 +122,45 @@ export function normalizeDurableUploadTask(task, row) {
   });
 }
 
+export function recoverUploadTaskAfterRefresh(row = {}) {
+  if (row.kind === 'zip' && row.localOnly && isUploadTaskActive(row)) {
+    return mergeUploadTask(row, {
+      status:'INTERRUPTED',
+      stage:'需要重新选择文件',
+      detail:'页面刷新后浏览器文件内容不可恢复；请重新选择该 ZIP，尚未创建服务器上传会话。',
+      resumeRequired:false,
+      browserTransfer:false,
+      queuePosition:null,
+    });
+  }
+  if (row.kind === 'zip' && row.browserTransfer && isUploadTaskActive(row)) {
+    return mergeUploadTask(row, {
+      status:'WAITING',
+      stage:'上传已暂停，等待继续',
+      detail:'页面刷新后浏览器已释放文件对象；重新选择同一个 ZIP 后会从已完成分片继续。',
+      resumeRequired:true,
+      browserTransfer:false,
+    });
+  }
+  if (row.kind === 'browser-upload' && isUploadTaskActive(row) && !row.serverUrl) {
+    return mergeUploadTask(row, {status:'INTERRUPTED', stage:'上传已中断', detail:'页面刷新后需重新选择文件；已创建的后台任务会自动恢复显示。'});
+  }
+  return row;
+}
+
+function taskActionMarkup(row) {
+  if (String(row.kind || '') !== 'zip') return '';
+  const status = upper(row.status);
+  const button = (action, label, cls = '') => `<button type="button" class="utc-action ${cls}" data-utc-action="${action}">${label}</button>`;
+  if (row.localOnly && ['WAITING_UPLOAD','UPLOADING','VALIDATING'].includes(status)) return button('cancel-local','取消','danger');
+  if (row.localOnly && ['FAILED','INTERRUPTED'].includes(status)) return button('reselect','重新选择');
+  if (status === 'UPLOADING' && row.browserTransfer) return button('pause','暂停') + button('cancel','取消','danger');
+  if (status === 'PAUSED' || row.resumeRequired) return button('resume','继续') + button('cancel','取消','danger');
+  if (status === 'SELECTING') return button('open','查看标签确认','primary');
+  if (!row.localOnly) return button('open','查看任务');
+  return '';
+}
+
 export function renderUploadTaskCenterRow(row = {}) {
   const presentation = statusPresentation(row.status);
   const progress = clamp(row.progress);
@@ -98,8 +168,12 @@ export function renderUploadTaskCenterRow(row = {}) {
   const detail = row.detail
     ? `<div class="utc-detail" title="${esc(row.detail)}">${esc(row.detail)}</div>`
     : '';
-  const reopenable=String(row.kind||'')==='zip';
-  return `<div class="utc-row${reopenable?' utc-reopenable':''}" data-utc-id="${esc(row.id)}" data-utc-kind="${esc(row.kind||'')}" ${reopenable?'role="button" tabindex="0" aria-label="重新打开 ZIP 导入任务"':''}><div class="utc-top"><div class="utc-name"><b>${esc(row.title)}</b><small>${esc(row.stage || presentation.label)}</small></div><span class="utc-pill ${presentation.cls}">${presentation.label}</span></div><div class="utc-progress"><i data-progress="${progress.toFixed(2)}" style="transform:scaleX(${scale.toFixed(4)})"></i></div><div class="utc-meta"><span>${progress.toFixed(progress % 1 ? 1 : 0)}%</span><span>${esc(formatTime(row.updatedAt))}</span></div>${detail}</div>`;
+  const reopenable=String(row.kind||'')==='zip'&&!row.localOnly;
+  const size=Number(row.fileSize)>0?formatBytes(row.fileSize):'';
+  const queue=Number(row.queuePosition)>0?`排队第 ${Number(row.queuePosition)} 位`:'';
+  const leftMeta=[`${progress.toFixed(progress % 1 ? 1 : 0)}%`,size,queue].filter(Boolean).join(' · ');
+  const actions=taskActionMarkup(row);
+  return `<div class="utc-row${reopenable?' utc-reopenable':''}" data-utc-id="${esc(row.id)}" data-utc-kind="${esc(row.kind||'')}" data-utc-local="${row.localOnly?'1':'0'}" ${reopenable?'role="button" tabindex="0" aria-label="重新打开 ZIP 导入任务"':''}><div class="utc-top"><div class="utc-name"><b>${esc(row.title)}</b><small>${esc(row.stage || presentation.label)}</small></div><span class="utc-pill ${presentation.cls}">${presentation.label}</span></div><div class="utc-progress"><i data-progress="${progress.toFixed(2)}" style="transform:scaleX(${scale.toFixed(4)})"></i></div><div class="utc-meta"><span>${esc(leftMeta)}</span><span>${esc(formatTime(row.updatedAt))}</span></div>${detail}${actions?`<div class="utc-actions">${actions}</div>`:''}</div>`;
 }
 
 function createUploadTaskCenterRow(body, html) {
@@ -134,6 +208,18 @@ function patchUploadTaskCenterRow(currentRow, nextRow) {
   currentBar.style.transform = nextBar.style.transform;
   if (currentMeta[0] && nextMeta[0]) currentMeta[0].textContent = nextMeta[0].textContent;
   if (currentMeta[1] && nextMeta[1]) currentMeta[1].textContent = nextMeta[1].textContent;
+  currentRow.className = nextRow.className;
+  currentRow.dataset.utcKind = nextRow.dataset.utcKind || '';
+  currentRow.dataset.utcLocal = nextRow.dataset.utcLocal || '0';
+  if (nextRow.hasAttribute?.('role')) {
+    currentRow.setAttribute('role', nextRow.getAttribute('role'));
+    currentRow.setAttribute('tabindex', nextRow.getAttribute('tabindex'));
+    currentRow.setAttribute('aria-label', nextRow.getAttribute('aria-label'));
+  } else {
+    currentRow.removeAttribute?.('role');
+    currentRow.removeAttribute?.('tabindex');
+    currentRow.removeAttribute?.('aria-label');
+  }
 
   const currentDetail = currentRow.querySelector?.('.utc-detail');
   const nextDetail = nextRow.querySelector?.('.utc-detail');
@@ -145,6 +231,11 @@ function patchUploadTaskCenterRow(currentRow, nextRow) {
   } else if (!currentDetail && nextDetail) {
     currentRow.appendChild(nextDetail.cloneNode(true));
   }
+  const currentActions = currentRow.querySelector?.('.utc-actions');
+  const nextActions = nextRow.querySelector?.('.utc-actions');
+  if (currentActions && nextActions) currentActions.replaceWith(nextActions.cloneNode(true));
+  else if (currentActions && !nextActions) currentActions.remove();
+  else if (!currentActions && nextActions) currentRow.appendChild(nextActions.cloneNode(true));
   return currentRow;
 }
 
@@ -215,7 +306,7 @@ async function responseJson(response) {
 
 export function installUploadTaskCenter({getState, projectId, notify, fetchImpl = globalThis.fetch, pollRegistry, ownerPages} = {}) {
   if (typeof window === 'undefined' || typeof document === 'undefined') return null;
-  if (window.UploadTaskCenterRuntime?.build === 'upload-task-center-3') return window.UploadTaskCenterRuntime;
+  if (window.UploadTaskCenterRuntime?.build === 'upload-task-center-4') return window.UploadTaskCenterRuntime;
 
   let rows = [];
   let expanded = false;
@@ -251,6 +342,7 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
       .utc-pill{flex:none;padding:3px 8px;border-radius:999px;font-size:11px;font-weight:800}.utc-pill.ok{background:#ecfdf3;color:#15803d}.utc-pill.bad{background:#fff1f2;color:#be123c}.utc-pill.warn{background:#fff7ed;color:#c2410c}.utc-pill.run{background:#eff6ff;color:#2563eb}.utc-pill.muted{background:#f1f5f9;color:#64748b}
       .utc-progress{height:6px;border-radius:999px;background:#edf1f5;overflow:hidden;margin:9px 0 7px}.utc-progress i{display:block;width:100%;height:100%;background:linear-gradient(90deg,#2563eb,#60a5fa);border-radius:inherit;transform-origin:left center;transition:transform .22s cubic-bezier(.22,1,.36,1);will-change:transform}
       .utc-meta{display:flex;justify-content:space-between;gap:10px;color:#738197;font-size:11px}.utc-detail{margin-top:5px;color:#64748b;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.utc-empty{padding:24px;text-align:center;color:#8995a7}.utc-reopenable{cursor:pointer}.utc-reopenable:hover{transform:translateY(-1px)}
+      .utc-actions{display:flex;justify-content:flex-end;gap:7px;margin-top:9px}.utc-action{min-height:32px;padding:5px 10px;border:1px solid #d6deea;border-radius:8px;background:#fff;color:#334155;font-size:12px;font-weight:700;cursor:pointer}.utc-action:hover{background:#f8fafc}.utc-action.primary{border-color:#bfdbfe;background:#eff6ff;color:#1d4ed8}.utc-action.danger{border-color:#fecdd3;background:#fff1f2;color:#be123c}
       @media (prefers-reduced-motion: reduce){.utc-progress i{transition:none!important}}
       @media(max-width:720px){.utc-root{right:10px;bottom:10px;width:calc(100vw - 20px)}}
     `;
@@ -272,7 +364,7 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
   function persist() {
     const project = pid();
     if (!project) return;
-    const persistedRows = rows.slice(0, MAX_ROWS).map(row => { const value = {...row}; delete value.pollOwner; return value; });
+    const persistedRows = retainUploadTaskRows(rows).map(row => { const value = {...row}; delete value.pollOwner; return value; });
     try { localStorage.setItem(storageKey(project), JSON.stringify(persistedRows)); } catch (_) {}
   }
 
@@ -281,23 +373,9 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
     if (!project) return;
     try {
       const parsed = JSON.parse(localStorage.getItem(storageKey(project)) || '[]');
-      if (Array.isArray(parsed)) rows = parsed.map(row => mergeUploadTask({}, row)).slice(0, MAX_ROWS);
+      if (Array.isArray(parsed)) rows = retainUploadTaskRows(parsed.map(row => mergeUploadTask({}, row)));
     } catch (_) { rows = []; }
-    rows = rows.map(row => {
-      if (row.kind === 'zip' && row.browserTransfer && isUploadTaskActive(row)) {
-        return mergeUploadTask(row, {
-          status:'WAITING',
-          stage:'上传已暂停，等待继续',
-          detail:'页面刷新后浏览器已释放文件对象；重新选择同一个 ZIP 后会从已完成分片继续。',
-          resumeRequired:true,
-          browserTransfer:false,
-        });
-      }
-      if (row.kind === 'browser-upload' && isUploadTaskActive(row) && !row.serverUrl) {
-        return mergeUploadTask(row, {status:'INTERRUPTED', stage:'上传已中断', detail:'页面刷新后需重新选择文件；已创建的后台任务会自动恢复显示。'});
-      }
-      return row;
-    });
+    rows = rows.map(recoverUploadTaskAfterRefresh);
     rows = stableUploadTaskOrder(rows);
   }
 
@@ -306,7 +384,7 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
     if (shell) return shell;
 
     root.innerHTML = `<div class="utc-shell">
-      <div class="utc-head"><button class="utc-toggle" type="button" data-utc-toggle aria-expanded="false"><div><strong>数据导入 / 上传</strong><span data-utc-summary></span></div></button><div class="utc-head-actions"><button class="utc-clear" type="button" data-utc-clear disabled>清空已结束</button><div class="utc-count" data-utc-count>0</div></div></div>
+      <div class="utc-head"><button class="utc-toggle" type="button" data-utc-toggle aria-expanded="false"><div><strong data-utc-title>上传任务 0 个</strong><span data-utc-summary role="status" aria-live="polite"></span></div></button><div class="utc-head-actions"><button class="utc-clear" type="button" data-utc-clear disabled>清空已结束</button><div class="utc-count" data-utc-count>0</div></div></div>
       <div class="utc-body" data-utc-body style="display:none"></div>
     </div>`;
     shell = root.querySelector?.('.utc-shell');
@@ -319,7 +397,22 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
       void clearCompleted();
     });
     const openZipTask=event=>{
+      const action=event.target?.closest?.('[data-utc-action]');
+      if(action){
+        event.preventDefault();event.stopPropagation();
+        const row=action.closest?.('.utc-row[data-utc-kind="zip"]');
+        const id=String(row?.dataset?.utcId||'').replace(/^zip:/,'');
+        const name=action.dataset.utcAction;
+        if(name==='cancel-local')void window.ZipImportRuntime?.cancelQueuedUpload?.(id);
+        else if(name==='pause')void window.ZipImportRuntime?.pauseUpload?.(id);
+        else if(name==='cancel')void window.ZipImportRuntime?.cancelUpload?.(id);
+        else if(name==='resume')void window.ZipImportRuntime?.promptResume?.(id);
+        else if(name==='reselect')window.importData?.();
+        else if(name==='open')void window.ZipImportRuntime?.openTask?.(id);
+        return;
+      }
       const row=event.target?.closest?.('.utc-row[data-utc-kind="zip"]');if(!row)return;
+      if(row.dataset.utcLocal==='1')return;
       event.preventDefault();event.stopPropagation();
       void window.ZipImportRuntime?.openTask?.(row.dataset.utcId);
     };
@@ -337,18 +430,22 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
 
     root.style.display = '';
     ensureShell(root);
+    const stats = summarizeUploadTasks(rows);
     const active = rows.filter(isUploadTaskActive);
-    const visible = expanded ? rows.slice(0, 10) : [];
+    const visible = expanded ? rows : [];
     const latest = active[0] || rows[0];
     const terminalCount = rows.filter(row => TERMINAL_STATUSES.has(upper(row.status))).length;
     const summary = root.querySelector?.('[data-utc-summary]');
+    const title = root.querySelector?.('[data-utc-title]');
     const count = root.querySelector?.('[data-utc-count]');
     const clear = root.querySelector?.('[data-utc-clear]');
     const toggle = root.querySelector?.('[data-utc-toggle]');
     const body = root.querySelector?.('[data-utc-body]');
+    const processing = Math.max(0, stats.active - stats.uploading - stats.queued);
 
+    if (title) title.textContent = `上传任务 ${stats.total} 个`;
     if (summary) summary.textContent = active.length
-      ? `${active.length} 个任务进行中`
+      ? [`上传中 ${stats.uploading}`,`排队 ${stats.queued}`,processing>0?`处理中 ${processing}`:''].filter(Boolean).join(' · ')
       : `最近任务 · ${latest ? formatTime(latest.updatedAt) : ''}`;
     if (count) count.textContent = String(active.length || rows.length);
     if (clear) clear.disabled = terminalCount <= 0;
@@ -389,8 +486,7 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
     const index = rows.findIndex(row => row.id === incoming.id);
     if (index >= 0) rows[index] = mergeUploadTask(rows[index], incoming);
     else rows.unshift(incoming);
-    rows = stableUploadTaskOrder(rows);
-    rows = rows.slice(0, MAX_ROWS);
+    rows = retainUploadTaskRows(rows);
     persist();
     render();
     arm();
@@ -404,7 +500,7 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
     const merged = target ? mergeUploadTask(source, target) : {...source};
     merged.id = String(newId);
     merged.createdAt = source.createdAt;
-    rows = stableUploadTaskOrder([...rows.filter(row => row.id !== String(oldId) && row.id !== String(newId)), merged]).slice(0, MAX_ROWS);
+    rows = retainUploadTaskRows([...rows.filter(row => row.id !== String(oldId) && row.id !== String(newId)), merged]);
     persist();
     render();
     return merged;
@@ -439,7 +535,7 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
         const index = rows.findIndex(row => row.id === updated.id);
         if (index >= 0) rows[index] = updated;
       }
-      rows = stableUploadTaskOrder(rows);
+      rows = retainUploadTaskRows(rows);
       persist();
       render();
     }
@@ -473,7 +569,7 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
   document.addEventListener?.('visibilitychange', onVisibilityChange);
 
   const runtime = Object.freeze({
-    build:'upload-task-center-3',
+    build:'upload-task-center-4',
     upsert,
     rekey,
     remove,

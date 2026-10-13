@@ -259,6 +259,253 @@ test('two selected ZIP archives upload their multipart data concurrently while l
   await expect(page.locator('.zip-label-confirm')).toHaveCount(1,{timeout:30000});
 });
 
+for (const fileCount of [3,5,10]) test(`${fileCount} selected ZIP archives are all visible while only two browser transfers run`,async({page,request})=>{
+  const pageErrors=[];
+  page.on('pageerror',error=>pageErrors.push(String(error?.stack||error)));
+  await page.setViewportSize({width:1366,height:768});
+  const project=await createProject(request);
+  await selectIsolatedTestProject(page,project.id);
+  await page.goto('/');
+  await expect.poll(()=>page.evaluate(()=>Boolean(window.ZipImportRuntime?.uploadBatch))).toBe(true);
+  const partUrls=[];
+  let releaseUploads;
+  const gate=new Promise(resolve=>{releaseUploads=resolve});
+  await page.route('**/api/v19/projects/*/import/uploads/*/parts/*',async route=>{
+    const url=new URL(route.request().url());
+    if(url.pathname.includes('/projects/'+project.id+'/')){
+      partUrls.push(url.pathname);
+      await gate;
+    }
+    await route.continue();
+  });
+  const filenames=Array.from({length:fileCount},(_,index)=>`visible-${fileCount}-${index+1}.zip`);
+  const archive=index=>storedZip([
+    [`images/train/sample-${index}.jpg`,Buffer.from(`sample-${fileCount}-${index}`)],
+    ['data.yaml',Buffer.from(`train: images/train\nnames: [label_${index}]\n`)],
+  ]);
+  try{
+    await page.evaluate(()=>window.importData());
+    await page.locator('#importFile').setInputFiles(filenames.map((name,index)=>({
+      name,mimeType:'application/zip',buffer:archive(index),
+    })));
+    await page.evaluate(()=>{void window.doImportUploadV19()});
+    const toggle=page.locator('#uploadTaskCenter [data-utc-toggle]');
+    await expect(toggle).toBeVisible();
+    await toggle.click();
+    const rows=page.locator('#uploadTaskCenter .utc-row[data-utc-kind="zip"]');
+    await expect(rows).toHaveCount(fileCount,{timeout:10_000});
+    for(const name of filenames)await expect(page.locator('#uploadTaskCenter')).toContainText(name);
+    await page.waitForTimeout(100);
+    expect(pageErrors).toEqual([]);
+    await expect.poll(()=>new Set(partUrls.map(url=>url.split('/import/uploads/')[1]?.split('/')[0])).size,{timeout:30_000}).toBe(2);
+    const summary=page.locator('#uploadTaskCenter [data-utc-summary]');
+    await expect(summary).toContainText('上传中 2');
+    if(fileCount>2)await expect(summary).toContainText(`排队 ${fileCount-2}`);
+    if(fileCount===10){
+      const cancelledRow=page.locator('#uploadTaskCenter .utc-row',{hasText:filenames[2]});
+      await cancelledRow.getByRole('button',{name:'取消',exact:true}).click();
+      await expect(cancelledRow).toContainText('已取消');
+    }
+  }finally{
+    releaseUploads();
+  }
+  const jobsUrl='/api/v19/projects/'+project.id+'/import/jobs';
+  await expect.poll(async()=>{
+    const response=await request.get(jobsUrl);
+    if(!response.ok())return 0;
+    const rows=(await response.json()).items||[];
+    return filenames.filter(name=>rows.some(row=>row.file_name===name)).length;
+  },{timeout:60_000}).toBe(fileCount===10?9:fileCount);
+});
+
+test('cancelling one active browser transfer releases its slot without affecting siblings',async({page,request})=>{
+  const project=await createProject(request);
+  await selectIsolatedTestProject(page,project.id);
+  await page.goto('/');
+  await expect.poll(()=>page.evaluate(()=>Boolean(window.ZipImportRuntime?.uploadBatch))).toBe(true);
+  const partUrls=[];
+  let releaseUploads;
+  const gate=new Promise(resolve=>{releaseUploads=resolve});
+  await page.route('**/api/v19/projects/*/import/uploads/*/parts/*',async route=>{
+    const url=new URL(route.request().url());
+    if(url.pathname.includes('/projects/'+project.id+'/')){partUrls.push(url.pathname);await gate}
+    await route.continue();
+  });
+  const makeArchive=index=>storedZip([
+    [`images/train/cancel-active-${index}.jpg`,Buffer.from(`cancel-active-${index}`)],
+    ['data.yaml',Buffer.from(`train: images/train\nnames: [cancel_active_${index}]\n`)],
+  ]);
+  const filenames=['cancel-active.zip','cancel-sibling.zip','cancel-successor.zip'];
+  try{
+    await page.evaluate(()=>window.importData());
+    await page.locator('#importFile').setInputFiles(filenames.map((name,index)=>({
+      name,mimeType:'application/zip',buffer:makeArchive(index),
+    })));
+    await page.evaluate(()=>{void window.doImportUploadV19()});
+    await expect.poll(()=>new Set(partUrls.map(url=>url.split('/import/uploads/')[1]?.split('/')[0])).size,{timeout:30_000}).toBe(2);
+    const toggle=page.locator('#uploadTaskCenter [data-utc-toggle]');
+    await expect(toggle).toBeVisible();
+    await toggle.click();
+    const cancelledRow=page.locator('#uploadTaskCenter .utc-row',{hasText:filenames[0]});
+    await expect(cancelledRow).toContainText('正在上传 ZIP');
+    page.once('dialog',dialog=>dialog.accept());
+    const cancelledResponse=page.waitForResponse(response=>response.request().method()==='POST'&&
+      new URL(response.url()).pathname.includes('/projects/'+project.id+'/import/jobs/')&&
+      new URL(response.url()).pathname.endsWith('/cancel'));
+    await cancelledRow.getByRole('button',{name:'取消',exact:true}).click();
+    const response=await cancelledResponse;
+    expect(response.ok()).toBeTruthy();
+    expect((await response.json()).cleanup_status).toBe('complete');
+    await expect(cancelledRow).toContainText('已取消',{timeout:30_000});
+    await expect.poll(()=>new Set(partUrls.map(url=>url.split('/import/uploads/')[1]?.split('/')[0])).size,{timeout:30_000}).toBe(3);
+  }finally{releaseUploads()}
+  await expect.poll(async()=>{
+    const response=await request.get('/api/v19/projects/'+project.id+'/import/jobs');
+    if(!response.ok())return null;
+    const rows=(await response.json()).items||[];
+    return {
+      cancelled:rows.find(row=>row.file_name===filenames[0])?.status||'',
+      siblings:filenames.slice(1).filter(name=>rows.some(row=>row.file_name===name)).length,
+    };
+  },{timeout:60_000}).toEqual({cancelled:'cancelled',siblings:2});
+});
+
+test('one ZIP session failure stays visible and the next queued file still uploads',async({page,request})=>{
+  const project=await createProject(request);
+  await selectIsolatedTestProject(page,project.id);
+  let rejected=false;
+  await page.route('**/api/v19/projects/*/datasets/default/import/uploads',async route=>{
+    const url=new URL(route.request().url());
+    if(!rejected&&route.request().method()==='POST'&&url.pathname.includes('/projects/'+project.id+'/')){
+      rejected=true;
+      await route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({detail:'模拟上传会话不可用'})});
+      return;
+    }
+    await route.continue();
+  });
+  await page.goto('/');
+  await expect.poll(()=>page.evaluate(()=>Boolean(window.ZipImportRuntime?.uploadBatch))).toBe(true);
+  const zip=index=>storedZip([
+    [`images/train/failure-${index}.jpg`,Buffer.from(`failure-${index}`)],
+    ['data.yaml',Buffer.from(`train: images/train\nnames: [failure_${index}]\n`)],
+  ]);
+  const filenames=['session-fails.zip','continues-two.zip','continues-three.zip'];
+  await page.evaluate(()=>window.importData());
+  await page.locator('#importFile').setInputFiles(filenames.map((name,index)=>({name,mimeType:'application/zip',buffer:zip(index)})));
+  await page.evaluate(()=>{void window.doImportUploadV19()});
+  const toggle=page.locator('#uploadTaskCenter [data-utc-toggle]');
+  await expect(toggle).toBeVisible();
+  await toggle.click();
+  const failedRow=page.locator('#uploadTaskCenter .utc-row',{hasText:filenames[0]});
+  await expect(failedRow).toContainText('失败',{timeout:30_000});
+  await expect(failedRow).toContainText('模拟上传会话不可用');
+  const jobsUrl='/api/v19/projects/'+project.id+'/import/jobs';
+  await expect.poll(async()=>{
+    const response=await request.get(jobsUrl);
+    if(!response.ok())return [];
+    const rows=(await response.json()).items||[];
+    return filenames.slice(1).filter(name=>rows.some(row=>row.file_name===name));
+  },{timeout:60_000}).toEqual(filenames.slice(1));
+});
+
+test('a second file selection joins the same two-slot FIFO without dropping either batch',async({page,request})=>{
+  const project=await createProject(request);
+  await selectIsolatedTestProject(page,project.id);
+  await page.goto('/');
+  await expect.poll(()=>page.evaluate(()=>Boolean(window.ZipImportRuntime?.uploadBatch))).toBe(true);
+  const partUrls=[];
+  let releaseUploads;
+  const gate=new Promise(resolve=>{releaseUploads=resolve});
+  await page.route('**/api/v19/projects/*/import/uploads/*/parts/*',async route=>{
+    const url=new URL(route.request().url());
+    if(url.pathname.includes('/projects/'+project.id+'/')){partUrls.push(url.pathname);await gate}
+    await route.continue();
+  });
+  const makeArchive=index=>storedZip([
+    [`images/train/batch-${index}.jpg`,Buffer.from(`batch-${index}`)],
+    ['data.yaml',Buffer.from(`train: images/train\nnames: [batch_${index}]\n`)],
+  ]);
+  const first=['batch-one-a.zip','batch-one-b.zip'];
+  const second=['batch-two-a.zip','batch-two-b.zip','batch-two-c.zip'];
+  const choose=async(names,offset)=>{
+    await page.evaluate(()=>window.importData());
+    await page.locator('#importFile').setInputFiles(names.map((name,index)=>({name,mimeType:'application/zip',buffer:makeArchive(offset+index)})));
+    await page.evaluate(()=>{void window.doImportUploadV19()});
+  };
+  try{
+    await choose(first,0);
+    await expect.poll(()=>new Set(partUrls.map(url=>url.split('/import/uploads/')[1]?.split('/')[0])).size,{timeout:30_000}).toBe(2);
+    await choose(second,2);
+    const toggle=page.locator('#uploadTaskCenter [data-utc-toggle]');
+    await expect(toggle).toBeVisible();
+    await toggle.click();
+    await expect(page.locator('#uploadTaskCenter .utc-row[data-utc-kind="zip"]')).toHaveCount(5);
+    await expect(page.locator('#uploadTaskCenter [data-utc-summary]')).toContainText('上传中 2');
+    await expect(page.locator('#uploadTaskCenter [data-utc-summary]')).toContainText('排队 3');
+    expect(new Set(partUrls.map(url=>url.split('/import/uploads/')[1]?.split('/')[0])).size).toBe(2);
+  }finally{releaseUploads()}
+  const filenames=[...first,...second];
+  await expect.poll(async()=>{
+    const response=await request.get('/api/v19/projects/'+project.id+'/import/jobs');
+    if(!response.ok())return 0;
+    const rows=(await response.json()).items||[];
+    return filenames.filter(name=>rows.some(row=>row.file_name===name)).length;
+  },{timeout:60_000}).toBe(5);
+});
+
+test('exact duplicate ZIP is rejected per file while same-name different content remains accepted',async({page,request})=>{
+  const project=await createProject(request);
+  await selectIsolatedTestProject(page,project.id);
+  await page.goto('/');
+  await expect.poll(()=>page.evaluate(()=>Boolean(window.ZipImportRuntime?.uploadBatch))).toBe(true);
+  const archive=label=>storedZip([
+    ['images/train/sample.jpg',Buffer.from(`sample-${label}`)],
+    ['data.yaml',Buffer.from(`train: images/train\nnames: [${label}]\n`)],
+  ]);
+  const first=archive('alpha'),different=archive('bravo');
+  await page.evaluate(()=>window.importData());
+  await page.locator('#importFile').setInputFiles([
+    {name:'same-name.zip',mimeType:'application/zip',buffer:first},
+    {name:'same-name.zip',mimeType:'application/zip',buffer:first},
+    {name:'same-name.zip',mimeType:'application/zip',buffer:different},
+  ]);
+  await page.evaluate(()=>{void window.doImportUploadV19()});
+  const toggle=page.locator('#uploadTaskCenter [data-utc-toggle]');
+  await expect(toggle).toBeVisible();
+  await toggle.click();
+  await expect(page.locator('#uploadTaskCenter .utc-row[data-utc-kind="zip"]')).toHaveCount(3);
+  await expect(page.locator('#uploadTaskCenter .utc-row .utc-pill.bad')).toHaveCount(1,{timeout:30_000});
+  await expect(page.locator('#uploadTaskCenter')).toContainText('本批次已选择内容相同的 ZIP 文件');
+  await expect.poll(async()=>{
+    const response=await request.get('/api/v19/projects/'+project.id+'/import/jobs');
+    if(!response.ok())return 0;
+    const rows=(await response.json()).items||[];
+    return rows.filter(row=>row.file_name==='same-name.zip').length;
+  },{timeout:60_000}).toBe(2);
+});
+
+test('refresh never pretends a browser-only queued ZIP still owns its original file',async({page,request})=>{
+  const project=await createProject(request);
+  await selectIsolatedTestProject(page,project.id);
+  await page.goto('/');
+  await expect.poll(()=>page.evaluate(()=>Boolean(window.UploadTaskCenterRuntime?.upsert))).toBe(true);
+  await expect(page.locator('#projectBadge')).toContainText(project.name);
+  await page.evaluate(()=>window.UploadTaskCenterRuntime.upsert({
+    id:'zip:local-refresh-only',kind:'zip',title:'refresh-queued-3.zip',status:'WAITING_UPLOAD',
+    progress:0,stage:'等待上传 · 第 1 位',detail:'已受理，等待浏览器上传槽位',
+    fileSize:292,queuePosition:1,localOnly:true,browserTransfer:false,resumeRequired:false,
+  }));
+  await page.reload({waitUntil:'domcontentloaded'});
+  await expect.poll(()=>page.evaluate(()=>window.UploadTaskCenterRuntime?.list?.().find(row=>row.title==='refresh-queued-3.zip')?.stage||''),{timeout:10_000}).toContain('重新选择文件');
+  const toggle=page.locator('#uploadTaskCenter [data-utc-toggle]');
+  await expect(toggle).toBeVisible();
+  await toggle.click();
+  const queuedRow=page.locator('#uploadTaskCenter .utc-row',{hasText:'refresh-queued-3.zip'});
+  await expect(queuedRow).toContainText('需要重新选择文件');
+  await expect(queuedRow).toContainText('浏览器文件内容不可恢复');
+  await expect(queuedRow.getByRole('button',{name:'重新选择'})).toBeVisible();
+});
+
 test('three ZIPs finish upload and independently await human label confirmation',async({page,request})=>{
   const project=await createProject(request);
   await selectIsolatedTestProject(page,project.id);
@@ -390,6 +637,9 @@ test('narrow label review cancels one server job without touching its sibling',a
     };
   }).toEqual({first:'cancelled',second:'selecting'});
 
+  // Close the cancelled task before selecting its sibling from the dock; the
+  // active modal deliberately owns pointer input while expanded.
+  await dialog.getByRole('button',{name:'关闭窗口'}).click();
   await taskCenter.locator(`[data-utc-id="zip:${second.id}"]`).click();
   await expect(dialog).toContainText('keep-this.zip');
   await expect(dialog.locator('.zip-label-confirm')).toBeVisible();

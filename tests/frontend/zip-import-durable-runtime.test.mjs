@@ -225,7 +225,7 @@ test('ZIP source label selection only stages an explicit mapping until final con
 
 test('ZIP browser bootstrap loads the refreshed exact-code and side-evidence module',()=>{
  const boot=readFileSync(new URL('../../static/zip-import-bootstrap.mjs',import.meta.url),'utf8');
- assert.match(boot,/zip-import-runtime\.js\?v=4226361/);
+ assert.match(boot,/zip-import-runtime\.js\?v=4226362/);
 });
 
 
@@ -266,11 +266,41 @@ test('ZIP modal shows selected task only and batch upload uses independent contr
   assert.doesNotMatch(source,/zipBatchQueueList/);
   assert.doesNotMatch(source,/function queueRowsMarkup/);
   assert.match(source,/batchTransfers\.set\(id,control\)/);
-  assert.match(source,/await mapZipUploadsConcurrent\(files/);
+  assert.match(source,/await mapZipUploadsConcurrent\(validEntries/);
   assert.match(source,/const session=await createZipUploadSession\(project,file/);
   assert.match(source,/let selectionMounted=false/);
   assert.match(source,/releaseSlot\(\)/);
   assert.match(source,/zipNeedsLabelConfirmation\(row\)/);
+});
+
+test('ZIP batch intake registers every selected file before hashing or transfer slots',()=>{
+  const source=readFileSync(new URL('../../static/modules/zip-import-runtime.js',import.meta.url),'utf8');
+  const uploadBatch=source.slice(source.indexOf('async function uploadBatch('),source.indexOf('function forgetTerminal('));
+  const register=uploadBatch.indexOf('registerQueuedUpload');
+  const fingerprints=uploadBatch.indexOf('fingerprintPromises');
+  const transfer=uploadBatch.indexOf('withBatchSlot');
+  assert.ok(register>=0&&register<fingerprints&&fingerprints<transfer);
+  assert.match(source,/status:'WAITING_UPLOAD'/);
+  assert.match(source,/localOnly:true/);
+  assert.match(source,/function refreshQueuedUploadPositions/);
+  assert.match(source,/function cancelQueuedUpload/);
+});
+
+test('ZIP public upload entry points do not silently swallow intake failures',()=>{
+  const runtime=readFileSync(new URL('../../static/modules/zip-import-runtime.js',import.meta.url),'utf8');
+  const bootstrap=readFileSync(new URL('../../static/zip-import-bootstrap.mjs',import.meta.url),'utf8');
+  const app=readFileSync(new URL('../../static/app.js',import.meta.url),'utf8');
+  assert.doesNotMatch(runtime,/uploadBatch\(input\)\.catch\(\(\)=>/);
+  assert.doesNotMatch(bootstrap,/runtime\.uploadBatch\(input\)\.catch\(\(\) => null\)/);
+  assert.doesNotMatch(app,/ZipImportRuntime\.uploadBatch\(input\)\.catch\(\(\)=>null\)/);
+});
+
+test('ZIP chooser accepts multiple files and invalid selections stay per-file visible',()=>{
+  const app=readFileSync(new URL('../../static/app.js',import.meta.url),'utf8');
+  const runtime=readFileSync(new URL('../../static/modules/zip-import-runtime.js',import.meta.url),'utf8');
+  assert.match(app,/id="importFile"[^>]*accept="\.zip"[^>]*multiple/);
+  assert.match(runtime,/failLocalUpload\(entry,'仅支持 ZIP 压缩包'\)/);
+  assert.doesNotMatch(runtime,/files\.some\(file=>!\/\\\.zip/);
 });
 
 test('network upload slot is released before scan or label confirmation finishes',async()=>{

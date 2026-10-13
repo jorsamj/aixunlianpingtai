@@ -444,3 +444,10 @@ same SHA + different GT
 ### Next measured candidate
 
 当前源码确认 `_v18_import_coco()` 与 `_v18_import_voc()` 仍存在 `add_image_record()` 后再 `write_annotation()` 的双 durable write 结构。下一批若继续，应作为 **P2c COCO/VOC structured-import single-write** 独立建立 RED、原子性合同与真实 benchmark；不要直接复用 YOLO 结论。
+
+## 2026-10-13｜ZIP 多文件上传与任务中心修复
+
+- 原问题来自登记晚于两槽 limiter：第 3 个及之后已等待但不可见。现在文件选择后立即逐项登记，所有批次共享同一浏览器上传 FIFO；服务器 Durable Upload 和正式 FIFO Import 保持唯一事实源。
+- 任务中心展示全部活动项及排队位次，提供按状态操作；本地 File 刷新后明确重选，持久会话沿用原续传/取消，项目间队列不混用。错误逐项可见且不阻断同批后续项。
+- 普通素材仍由既有分块上传 Owner 处理，没有复制 ZIP 队列。正式版本 `42.24.356`，入口缓存键同步。
+- 本地最终验收：Node 24 962/962、Python 35/35、Chrome 16/16（含 3/5/10 ZIP、跨批次 FIFO、故障放行、传输中/排队取消、刷新、项目隔离、65 文件素材上传）。GitHub CI 与生产为 `NOT VERIFIED`；未 push、merge 或部署。

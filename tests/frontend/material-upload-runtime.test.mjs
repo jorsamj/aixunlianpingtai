@@ -202,6 +202,21 @@ test('large upload keeps server-paged dataset state bounded and avoids huge inli
   assert.match(runtime, /failed\.slice\(0, 100\)/);
 });
 
+test('ordinary material upload accounts for every selected file instead of treating chunk size as intake limit', async () => {
+  const files=Array.from({length:130},(_,index)=>({name:`image-${index}.jpg`,size:1024}));
+  const chunks=[];
+  const result=await uploadMaterialFilesSequentially(files,{
+    maxFiles:64,
+    requestChunk:async rows=>{
+      chunks.push(rows.map(row=>row.name));
+      return {uploaded:rows.map(row=>({id:row.name})),failed:[]};
+    },
+  });
+  assert.deepEqual(chunks.map(rows=>rows.length),[64,64,2]);
+  assert.equal(result.confirmedFiles,130);
+  assert.equal(result.uploaded.length,130);
+});
+
 test('upload follow-up batch review renders a bounded page instead of every uploaded image', () => {
   const app = fs.readFileSync('static/app.js', 'utf8');
   const start = app.indexOf('const BATCH414_PAGE_SIZE=96;');

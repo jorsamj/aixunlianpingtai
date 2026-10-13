@@ -5470,3 +5470,10 @@ GitHub 当前没有 CI status，不能把“测试代码已写”表述成“已
 - P1：训练报告与独立评测均进入 `质量中心 → detect`；训练详情完整历史一次按需加载，后续 summary 增量合并；比较按 class_id，重复旧标签不可严格比较。
 - P2/UI：20k Snapshot 有界索引、键盘页签、A/B 双侧操作、缺失 delta、核心指标层级和移动端提示已完成。性能按首分钟同为 40 次请求计算：旧 `40×全量=11.3042 MiB`，新 `1×全量+39×精简=0.2985 MiB`，已计首次历史加载；SQLite SELECT 4 → 1/轮询。
 - 最终差异审计：Python focused 60 passed / 1 skipped；Node 24.19 952/952；Chrome focused 7/7。Windows full pytest 2325 passed / 12 skipped / 62 failed，干净 `30f83c48` 对照 62/62 同根因。基线 Full Chrome 142/148、6 fail；最终 VNext Node 24 Full Chrome 143/149、6 fail，六项同名同断点。首轮额外标签管理失败已按真实缓存提交时点修复测试夹具（repeat 5/5、相关素材集合 22/22）；旧基线同样可复现的服务节点启动竞态只修测试前置状态（repeat 3/3）。无生产代码改动或业务断言放宽。详细清单与 Trace 位于 `docs/VNEXT_FINAL_DIFFERENTIAL_AUDIT_2026_10_13.md`。生产历史素材、OSS、GPU、Linux CI 未验证。VERSION 42.24.355 不改，未 push/merge/deploy。
+
+## 2026-10-13 多文件上传队列修复交接
+
+- 选择 ZIP 后先为每个文件创建可见任务，再计算指纹/创建服务器会话；跨批次共享现有两槽 limiter，严格 FIFO。分片传完立即释放槽位，后续合并、扫描、标签确认和正式导入继续由既有 Durable/FIFO Owner 负责。
+- 右下角任务中心展示全部活动项、大小、排队序号、真实进度、错误及暂停/继续/取消/重选/查看动作；活动项不被终态历史上限截断。排队取消和项目切换均按文件、项目隔离；刷新后没有服务器会话的浏览器 File 明确要求重选，不虚构恢复。
+- 单项格式、空文件、重复内容、哈希、会话或传输失败不会吞错或阻断其他文件；同名不同内容仍允许。普通素材原分块 Owner 经 130 文件 Node 与 65 文件 Chrome 回归确认完整受理。
+- `VERSION.txt=42.24.356`；静态缓存与版本健康合同同步。Node 24 frontend 962/962、Python 35/35、Chrome 16/16（含传输中与排队取消）。仅本地提交，CI/生产未验证，未 push/merge/deploy。
