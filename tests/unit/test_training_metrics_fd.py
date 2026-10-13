@@ -36,6 +36,19 @@ def test_training_job_status_keeps_history_opt_in():
     assert 'include_history=include_history' in source
 
 
+def test_remote_training_preparation_installs_app_import_dependencies():
+    workflow = (
+        Path(__file__).resolve().parents[2]
+        / ".github"
+        / "workflows"
+        / "remote-training-runtime.yml"
+    ).read_text(encoding="utf-8")
+    install_step = workflow.split(
+        "- name: Install focused training preparation dependencies", 1
+    )[1].split("- name: Compile remote training preparation chain", 1)[0]
+    assert "python-multipart" in install_step
+
+
 class TrackingConnection:
     def __init__(self, connection, counters):
         self._connection = connection

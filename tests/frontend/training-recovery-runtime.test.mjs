@@ -688,3 +688,14 @@ test('offline AMP failure displays Worker FP32 instead of frozen FP16 and explai
   assert.equal(unstarted.runtimePrecision,'');
   assert.equal(unstarted.ampCheckResult,'failed');
 });
+
+test('recovery workflow guard follows the real runtime cache marker', async()=>{
+  const {readFileSync}=await import('node:fs');
+  const main=readFileSync(new URL('../../static/main.mjs',import.meta.url),'utf8');
+  const workflow=readFileSync(new URL('../../.github/workflows/training-recovery-guard.yml',import.meta.url),'utf8');
+  const marker=main.match(/training-recovery-runtime\.js\?v=([0-9]+)/);
+
+  assert.ok(marker,'main.mjs must expose a versioned recovery runtime import');
+  assert.match(workflow,new RegExp(`training-recovery-runtime\\.js\\?v=${marker[1]}`));
+  assert.doesNotMatch(workflow,/grep -F -n -E/,'timer guard must use one grep matcher mode');
+});
