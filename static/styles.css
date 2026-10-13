@@ -1297,6 +1297,8 @@ radial-gradient(circle at 1px 1px,rgba(148,163,184,.14) 1px,transparent 0) 0 0/1
 .zip-label-confirm .zip-label-pending span{display:flex;flex-wrap:wrap;gap:7px}
 .zip-label-confirm .zip-label-pending code{padding:3px 7px;border-radius:6px;background:#fff;border:1px solid #dbeafe;font-size:13px;overflow-wrap:anywhere}
 .zip-label-confirm .zip-label-pending small{font-size:12px;color:#475569}
+/* The ZIP preview must stay inside its own column, not use the shared fixed evidence overlay. */
+.zip-label-confirm .zip-label-workspace .label-mapping-sample-panel:not([hidden]){position:static;inset:auto;width:100%;max-height:490px;z-index:auto;box-shadow:none;border:0;border-radius:0;padding:14px;min-height:220px;margin:0}
 .zip-label-confirm .zip-label-preview-column>[data-zip-class-samples]{padding:14px;max-height:490px;overflow:auto;min-height:220px;font-size:14px;color:#64748b}
 .zip-label-confirm .label-mapping-sample-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
 .zip-label-confirm .label-mapping-sample-card img{object-fit:contain;width:100%;height:auto}
