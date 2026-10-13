@@ -133,7 +133,7 @@ function overviewAlgorithm(m,demo=false) {
       panel('高频使用算法排行',empty('尚未接入生产推理调用次数'),'生产运行次数 · 待接入')+
       panel('各单位算法运行状况',empty('尚未接入单位与部署实例运行数据'),'单位维度 · 待接入')+'</div>'+
     '<div class="ov348-grid">'+panel('单位算法数量排行',empty('尚无可信的单位归属记录'),'单位维度 · 待接入')+'</div></details>';
-  return '<div class="ov348-stack ov351-algorithm ov352-dashboard ov352-algorithm"><div class="ov351-algorithm-intro"><div><span>ALGORITHM INTELLIGENCE</span><h3>算法资产全景</h3><p>模型质量 · 算法类型 · 场景分布 · 生产运行</p></div><strong>'+fmt(m.measured)+' <small>已评测算法</small></strong></div><div class="ov348-kpis">'+
+  return '<div class="ov348-stack ov351-algorithm ov352-dashboard ov352-algorithm"'+(demo?' data-overview-demo="true"':'')+'><div class="ov351-algorithm-intro"><div><span>ALGORITHM INTELLIGENCE</span><h3>算法资产全景</h3><p>模型质量 · 算法类型 · 场景分布 · 生产运行</p></div><strong>'+fmt(m.measured)+' <small>已评测算法</small></strong></div><div class="ov348-kpis">'+
     metric('算法总数',fmt(m.total),'当前空间已登记算法')+
     metric('算法类型',fmt(m.types.length),'按 algorithm_type 归类')+
     metric('有版本算法',fmt(m.withVersions),'累计 '+fmt(m.versionCount)+' 个版本')+
@@ -184,7 +184,7 @@ function overviewCompute(m,placementFilter='all',controller=null,demo=false) {
       '<span>本机无可探测 NVIDIA GPU</span>')+'</div>':
     empty('本机资源尚未采样'),'独立观察 · 不计入 Agent 节点或训练可调度 GPU');
   const trend=demo?'<section class="ov351-trend-panel"><div class="ov351-trend-heading"><div><b>算力负载趋势</b><span>GPU-A / GPU-B / GPU-C · 12 个采样点</span></div><strong>负载概览</strong></div><svg viewBox="0 0 900 160" preserveAspectRatio="none" role="img" aria-label="GPU 样例负载走势"><defs><linearGradient id="ov351-trend-fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stop-color="#5b9cff" stop-opacity=".20"/><stop offset="100%" stop-color="#5b9cff" stop-opacity="0"/></linearGradient></defs><path d="M0 35H900M0 77H900M0 119H900" stroke="#dce8f4" stroke-dasharray="5 7"/><path d="M0 110L82 103L164 99L246 83L328 96L410 70L492 73L574 48L656 60L738 37L820 52L900 31L900 160L0 160Z" fill="url(#ov351-trend-fill)"/><polyline points="0,110 82,103 164,99 246,83 328,96 410,70 492,73 574,48 656,60 738,37 820,52 900,31" fill="none" stroke="#427cde" stroke-width="3"/><polyline points="0,128 82,116 164,120 246,110 328,112 410,105 492,112 574,99 656,104 738,92 820,94 900,87" fill="none" stroke="#21b7a6" stroke-width="3"/><polyline points="0,140 82,143 164,138 246,143 328,137 410,139 492,130 574,134 656,136 738,130 820,132 900,125" fill="none" stroke="#f5a85b" stroke-width="3"/></svg><div class="ov351-trend-legend"><span>● GPU-A 72%</span><span>● GPU-B 23%</span><span>● GPU-C 4%</span></div></section>':'';
-  return '<div class="ov348-stack ov352-dashboard ov352-compute">'+
+  return '<div class="ov348-stack ov352-dashboard ov352-compute"'+(demo?' data-overview-demo="true"':'')+'>'+
     '<div class="ov352-compute-intro"><div><span>COMPUTE CAPACITY</span><h3>算力资源全景</h3><p>中心算力 · 边缘节点 · GPU 资源 · 存储</p></div>'+
     '<strong>'+(m.nodesKnown?fmt(m.gpuCount):'—')+'<small>在线 GPU</small></strong></div>'+
     '<div class="ov348-kpis">'+
@@ -252,7 +252,7 @@ function demoComputeSnapshot() {
   ];
   return {nodes,storage:[{type:'local'},{type:'oss'}],
     gpuRuntime:{gpus,memory_safety_bytes:2*GB,max_concurrent_per_gpu:1},
-    local:{name:'控制端 · 资源概况',sampled_at:'样例数据',
+    local:{name:'控制端 · 资源概况',sampled_at:'',
       resources:{cpu:{usage_percent:16},memory:{usage_percent:32,used_bytes:10*GB,total_bytes:32*GB},
         disk:{usage_percent:42,used_bytes:210*GB,total_bytes:500*GB},gpu:{gpus:[]}}}};
 }
@@ -285,9 +285,8 @@ export function installOverviewTabsRuntime({
     let content=algorithm?(algorithmSample?overviewAlgorithm(algorithmSample,true):
       has?overviewAlgorithm(buildAlgorithmMap(cache.algorithms.items,cache.quality)):empty('算法资产尚未取得')):
       overviewCompute(buildComputeMap(computeSample?computeSample.nodes:(cache.nodes ? cache.nodes.items : null),computeSample?computeSample.storage:cache.storage?.items,computeSample?computeSample.gpuRuntime:cache.gpuRuntime),placementFilter,computeSample?computeSample.local:cache.local,!!computeSample);
-    // Keep the existing escape action without covering demo dashboards in a
-    // large explanatory banner. Fixtures remain isolated from live state.
-    // Render the unobtrusive source marker alongside the page header.
+    // Sample data stays isolated from production state. Keep attribution in the
+    // dashboard footer, without duplicating it in the header or action controls.
     if(!demoMode&&!has&&!cache.loadedAt[algorithm?'algorithms':'nodes'])content='<div class="ov348-loading">正在读取'+(algorithm?'算法资产':'算力资源')+'数据…</div>'+content;
     const errors=Object.entries(cache.errors).filter(([key,value])=>
       (algorithm?['quality','algorithms'].includes(key):!['quality','algorithms'].includes(key))&&value);
@@ -303,7 +302,7 @@ export function installOverviewTabsRuntime({
       else window.setPage?.('算法列表');
     }));
     view.insertAdjacentHTML('afterbegin','<div class="ov348-header" data-overview-tabs="1">'+
-      '<div class="ov348-title"><span>ALGORITHM & CAPACITY INTELLIGENCE</span><h2>'+esc(algorithm?'算法一张图':'算力一张图')+'</h2></div>'+(demoMode?'<div class="ov352-source" data-overview-demo="true"><span>样例数据</span><button type="button" data-overview-demo-exit="1">返回实时</button></div>':'')+
+      '<div class="ov348-title"><span>ALGORITHM & CAPACITY INTELLIGENCE</span><h2>'+esc(algorithm?'算法一张图':'算力一张图')+'</h2></div>'+
       '<div class="ov348-toolbar" role="tablist" aria-label="总览类型">'+OVERVIEW_TABS.map(x=>
         '<button type="button" role="tab" data-overview-tab="'+x.id+'" aria-selected="'+(active===x.id)+'"'+
         ' class="'+(active===x.id?'active':'')+'">'+esc(x.label)+'</button>').join('')+
@@ -327,9 +326,6 @@ export function installOverviewTabsRuntime({
         demoMode=false;tabClicks=0;lastTabClick=0;lastClickedTab='';
         render({load:false});void loadTab(active,true);
       }
-    });
-    view.querySelector('[data-overview-demo-exit]')?.addEventListener('click',()=>{
-      demoMode=false;tabClicks=0;lastTabClick=0;lastClickedTab='';render();
     });
     if(load&&!demoMode)void loadTab(active);
     return true;
