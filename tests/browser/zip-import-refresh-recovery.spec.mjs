@@ -119,6 +119,7 @@ test('exact English source label reuses existing canonical code without recreati
   await expect(target).toHaveValue('object');
   await expect(target.locator('option[value="__create__"]')).toHaveCount(0);
   await expect(importDialog.getByRole('button',{name:'确认标签并导入'})).toBeEnabled();
+  await expect(taskCenter).toHaveCSS('z-index','900');
 
   const startRequestPromise = page.waitForRequest(req =>
     req.method() === 'POST' &&
@@ -166,6 +167,7 @@ test('single-step original label mapping creates formal labels only at final imp
   await expect(target).toHaveValue('helmet');
   await expect(importDialog.locator('.zip-label-pending')).toContainText('helmet');
   await expect(importDialog.getByRole('button',{name:'创建标签并导入'})).toBeEnabled();
+  await expect(taskCenter).toHaveCSS('z-index','900');
   expect(labelPosts).toHaveLength(0);
 
   const before = await request.get(`/api/v12/projects/${project.id}/labels`);
@@ -283,6 +285,7 @@ test('three ZIPs finish upload and independently await human label confirmation'
   expect(startRequests).toHaveLength(0);
   const dialog=page.getByRole('dialog',{name:'ZIP 数据导入'});
   await expect(dialog.locator('.zip-label-confirm')).toHaveCount(1);
+  await expect(dialog.locator('[data-zip-class-samples]')).toHaveCSS('position','static');
   await dialog.getByRole('button',{name:'关闭窗口'}).click();
   await page.locator('#uploadTaskCenter [data-utc-toggle]').click();
   await expect(page.locator('#uploadTaskCenter')).toContainText(filenames[2]);
