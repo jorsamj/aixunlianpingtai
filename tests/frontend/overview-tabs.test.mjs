@@ -213,13 +213,12 @@ test('local controller stays visible if service-node API fails without claiming 
 // backend snapshots, live statistics or production dashboard ownership.
 test('each overview tab switches into isolated demo fixtures and restores live data',async()=>{
   const previous=globalThis.document;
-  let tabHandler,exitHandler,productionRenders=0;
+  let tabHandler,productionRenders=0;
   const view={
     innerHTML:'',
     insertAdjacentHTML(position,html){this.innerHTML=position==='afterbegin'?html+this.innerHTML:this.innerHTML+html},
     querySelector(selector){
       if(selector==='[data-overview-tabs]')return {addEventListener(_,cb){tabHandler=cb}};
-      if(selector==='[data-overview-demo-exit]')return {addEventListener(_,cb){exitHandler=cb}};
       return null;
     },
     querySelectorAll(){return []},
@@ -252,7 +251,7 @@ test('each overview tab switches into isolated demo fixtures and restores live d
     assert.match(view.innerHTML,/data-overview-demo="true"/);
     assert.match(view.innerHTML,/ov352-dashboard/);
     assert.match(view.innerHTML,/样例数据/);
-    assert.match(view.innerHTML,/返回实时/);
+    assert.doesNotMatch(view.innerHTML,/data-overview-demo-exit|返回实时|ov352-source/);
     assert.doesNotMatch(view.innerHTML,/演示|模拟/);
     assert.doesNotMatch(view.innerHTML,/演示数据模式|不参与真实统计或任务调度|所有服务器、GPU、利用率、容量均为模拟/);
     assert.match(view.innerHTML,/12,840 次/);
@@ -260,7 +259,9 @@ test('each overview tab switches into isolated demo fixtures and restores live d
     assert.doesNotMatch(view.innerHTML,/真实模型|真实生产看板/);
     assert.equal(productionRenders,liveRenders+2);
     assert.equal(requests.length,requestsBeforeDemo);
-    exitHandler();await new Promise(resolve=>setImmediate(resolve));
+    // Refresh the active overview to restore the real production snapshot.
+    tabHandler({target:{closest(selector){return selector==='[data-overview-refresh]'?{}:null;}}});
+    await new Promise(resolve=>setImmediate(resolve));
     assert.match(view.innerHTML,/真实模型/);
     assert.match(view.innerHTML,/真实生产看板/);
     click('compute');await new Promise(resolve=>setImmediate(resolve));
@@ -269,7 +270,7 @@ test('each overview tab switches into isolated demo fixtures and restores live d
     assert.match(view.innerHTML,/data-overview-demo="true"/);
     assert.match(view.innerHTML,/ov352-dashboard/);
     assert.match(view.innerHTML,/样例数据/);
-    assert.match(view.innerHTML,/返回实时/);
+    assert.doesNotMatch(view.innerHTML,/data-overview-demo-exit|返回实时|ov352-source/);
     assert.doesNotMatch(view.innerHTML,/演示|模拟/);
     assert.doesNotMatch(view.innerHTML,/演示数据模式|不参与真实统计或任务调度|所有服务器、GPU、利用率、容量均为模拟/);
     assert.match(view.innerHTML,/GPU 训练服务器 A/);
@@ -293,4 +294,13 @@ test('both overview pages use consistent responsive dashboard sections and visib
   assert.match(css,/\.ov352-dashboard \.ov348-kpis\{display:grid;grid-template-columns:repeat\(5,minmax\(0,1fr\)\)/);
   assert.match(css,/@media\(max-width:900px\)/);
   assert.match(css,/\.ov352-source\{/);
+});
+
+test('overview samples have no header actions and keep concise source attribution',()=>{
+  const script=readFileSync(new URL('../../static/modules/overview-tabs.js',import.meta.url),'utf8');
+  const css=readFileSync(new URL('../../static/overview-tabs.css',import.meta.url),'utf8');
+  assert.match(script,/data-overview-demo="true"/);
+  assert.match(script,/数据来源：界面样例数据/);
+  assert.doesNotMatch(script,/data-overview-demo-exit|返回实时|ov352-source/);
+  assert.doesNotMatch(css,/\.ov352-source\{/);
 });
