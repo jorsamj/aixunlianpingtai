@@ -27,6 +27,15 @@ def test_detail_metrics_history_is_bounded_chronological_and_summary_default_sta
     assert result["samples"][0]["epoch"] == 381
 
 
+def test_training_job_status_keeps_history_opt_in():
+    import inspect
+    import app
+    signature = inspect.signature(app.job_status)
+    assert signature.parameters['include_history'].default is False
+    source = inspect.getsource(app.job_status)
+    assert 'include_history=include_history' in source
+
+
 class TrackingConnection:
     def __init__(self, connection, counters):
         self._connection = connection

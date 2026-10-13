@@ -339,6 +339,44 @@ test('terminal live event performs one final canonical detail and log reconcilia
   cleanup();
 });
 
+test('detail history loads once and compact polling merges latest epoch without retransferring history', async () => {
+  const state = {project:{id:'p-history'},jobs:[{
+    id:'history-task',task_id:'history-task',status:'running',task_status:'RUNNING',progress_percent:10,
+  }]};
+  const calls=[];
+  globalThis.window={PollRegistryRuntime:{clear(){},startTimeout(){}}};
+  const runtime=installTrainingRecoveryRuntime({
+    getState:()=>state,
+    projectId:()=>state.project.id,
+    fetchImpl:async url=>{
+      calls.push(String(url));
+      if(String(url).endsWith('/log'))return {ok:true,status:200,async text(){return 'running';}};
+      const full=String(url).includes('include_history=true');
+      return response({id:'history-task',task_id:'history-task',status:'running',task_status:'RUNNING',
+        runtime_metrics:full?{
+          epochs:[{epoch:1,sampled_at:'2026-10-13T01:00:00Z'}],
+          samples:[{sampled_at:'2026-10-13T01:00:00Z',gpu_utilization:50}],
+          latest_epoch:{epoch:1,sampled_at:'2026-10-13T01:00:00Z'},
+          latest:{sampled_at:'2026-10-13T01:00:00Z',gpu_utilization:50},
+        }:{
+          latest_epoch:{epoch:2,sampled_at:'2026-10-13T01:01:00Z'},
+          latest:{sampled_at:'2026-10-13T01:01:00Z',gpu_utilization:60},
+        }});
+    },
+  });
+  await runtime.openDetail('history-task');
+  await runtime.refreshOpenDetail();
+  await runtime.refreshOpenDetail();
+  runtime.closeDetail();
+  await runtime.openDetail('history-task');
+  assert.equal(calls.filter(url=>url.includes('include_history=true')).length,1);
+  assert.equal(calls.filter(url=>url.includes('/jobs/history-task')&&!url.endsWith('/log')&&!url.includes('include_history=true')).length,3);
+  assert.deepEqual(state.jobs[0].runtime_metrics.epochs.map(row=>row.epoch),[1,2]);
+  assert.equal(state.jobs[0].runtime_metrics.samples.length,2);
+  runtime.destroy();
+  cleanup();
+});
+
 test('detail model exposes live metrics resources and dataset evidence', () => {
   const model = trainingRecoveryDetailModel({
     id: 'train-live-detail',
@@ -386,6 +424,23 @@ test('detail model exposes live metrics resources and dataset evidence', () => {
   assert.equal(model.datasetCounts.train, 800);
   assert.match(model.metricLine, /mAP50 0\.810/);
   assert.match(model.metricLine, /92\.4 img\/s/);
+});
+
+test('completed detail derives its best recorded mAP50 without inventing absent metrics',()=>{
+  const model=trainingRecoveryDetailModel({
+    id:'completed-history',status:'done',task_status:'SUCCEEDED',current_epoch:3,total_epochs:3,
+    runtime_metrics:{epochs:[
+      {epoch:1,metrics:{'metrics/mAP50(B)':.4}},
+      {epoch:2,metrics:{'metrics/mAP50(B)':.7}},
+      {epoch:3,metrics:{'metrics/mAP50(B)':.6}},
+    ]},
+  },{});
+  assert.equal(model.bestEpoch,2);
+  assert.equal(model.bestMetricLine,'最佳 mAP50 70.0%');
+  assert.equal(model.metricLine,'mAP50 60.0% · Epoch 3');
+  const absent=trainingRecoveryDetailModel({id:'completed-no-metrics',status:'done',task_status:'SUCCEEDED'},{});
+  assert.equal(absent.bestEpoch,null);
+  assert.equal(absent.bestMetricLine,'');
 });
 
 test('detail model keeps requested resolved and runtime precision truth distinct', () => {
@@ -503,6 +558,21 @@ test('failure detail shows one backend primary reason and collapses secondary di
   assert.match(source, /data-training-input-exclude/);
   assert.match(source, /data-training-input-review/);
   assert.match(source, /训练输入标签适配问题/);
+});
+
+test('training detail tabs implement the ARIA keyboard pattern without rerendering on click', async()=>{
+  const {readFileSync}=await import('node:fs');
+  const source=readFileSync(new URL('../../static/modules/training-recovery-runtime.js',import.meta.url),'utf8');
+  assert.match(source,/aria-controls="training-panel-\$\{key\}"/);
+  assert.match(source,/aria-labelledby="training-tab-curves"/);
+  assert.match(source,/tabindex="\$\{key===activeTab\?'0':'-1'\}"/);
+  assert.match(source,/ArrowRight/);
+  assert.match(source,/ArrowLeft/);
+  assert.match(source,/event\.key==='Home'/);
+  assert.match(source,/event\.key==='End'/);
+  const clickBlock=source.slice(source.indexOf('const onClick = event =>'),source.indexOf('const close =',source.indexOf('const onClick = event =>')));
+  assert.doesNotMatch(clickBlock,/renderOpenDetail/);
+  assert.match(clickBlock,/activateTrainingTab/);
 });
 
 test('failed detail prefers backend primary failure contract over frontend heuristics', () => {

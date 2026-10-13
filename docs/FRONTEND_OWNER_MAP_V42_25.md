@@ -1025,3 +1025,10 @@ Status: **CLOSED** on `refactor/frontend-runtime-stabilization`.
 - Backend v19 processing phase semantics were not changed; this closure fixes the frontend projection boundary only.
 - `VERSION.txt` remains exactly `42.24.0`; no main merge, tag, release, A800 RC, or genuine 10k acceptance was performed.
 
+## 2026-10-13 VNext review fixes
+
+- `TrainingRecoveryRuntime` remains the sole training-detail modal and polling owner. It owns a bounded per-project/task history cache; full history is opt-in, compact status polling merges `latest_epoch/latest`, and terminal status stops re-arming the timer.
+- `openScenarioWorkbench429` is a routing helper only: it closes the current workspace, calls the canonical `setPage('质量中心')`, then the existing `setQualityCenterTab411('detect')`; it does not own or render another page.
+- Existing quality modal owners retain evaluation/report/image UI. A/B controls act on the two existing evidence panes, and accessible training tabs update the current DOM without rebuilding it on user tab clicks.
+- No second cache framework, poller, evaluation engine, training status owner, quality-center renderer or annotation flow was added.
+

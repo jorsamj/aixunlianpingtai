@@ -1210,3 +1210,10 @@ Status: **CLOSED** on `refactor/frontend-runtime-stabilization`.
 - Backend v19 processing phase semantics were not changed; this closure fixes the frontend projection boundary only.
 - `VERSION.txt` remains exactly `42.24.0`; no main merge, tag, release, A800 RC, or genuine 10k acceptance was performed.
 
+## 2026-10-13 VNext review-fix audit
+
+- Retired `setPage('模型检测')` calls are absent from the quality workspaces. Both scenario buttons route through the current Quality Center detect tab, and a Real Chrome regression asserts that the destination DOM exists.
+- Training detail tab clicks no longer rebuild the dialog; selection, roving tabindex, focus, ArrowLeft/Right, Home/End, `aria-controls` and `aria-labelledby` stay inside the existing runtime.
+- The existing evaluation image modal owns both A/B panes. Zoom/reset is synchronized, scroll position is ratio-synchronized, and each pane has independent fullscreen; no nested modal or duplicate image state exists.
+- Frontend evidence: Node 24.14 952/952 and focused Real Chrome 7/7. Full Chrome first run was 140/149; after the VNext contract fixes and isolated reruns, 3 original failures pass and 6 legacy-fixture/environment cases remain red. The screenshots are fixture-labelled; production imagery is not implied.
+

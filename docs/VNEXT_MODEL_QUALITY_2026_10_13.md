@@ -70,3 +70,11 @@
 - 独立审查任务尝试两次均因指定模型容量不足未启动；最终结论不写成已获独立审查通过。
 
 本轮只做本地提交；正式 VERSION 保持 `42.24.355`，不 push、不合并 main、不部署。
+
+## 独立审查问题修复（2026-10-13）
+
+八项审查发现已在既有 owner 内修复：历史图片身份改为显式 Image ID / 唯一冻结 stored_name；场景实测统一进入质量中心 detect；训练历史按需一次加载、轮询仅取 summary；比较按 class_id；Snapshot 元数据有界缓存；训练 Tab 完整 ARIA 键盘模式；A/B 同倍率缩放与同步定位、单侧全屏；缺失差值与真实零严格区分。
+
+1000 Epoch + 720 采样的合成基准为 296,333 B 全量、428 B 精简；40 次/分钟并计首次历史加载从 11.30 MiB 降至 0.30 MiB，SQLite SELECT 从每轮 4 次降为 1 次。20k Snapshot 的 24 张页从 24 次解析降为 1 次，23 次缓存命中合计 5.23 ms；文件变化会重新解析。
+
+本地证据：受影响 Python 54 passed / 1 skipped；Node 24.14 952/952；定向 Real Chrome 7/7，并输出 1920、1440、1366、375 截图且标注验收夹具。Windows 全量 pytest 为 2323 passed / 12 skipped / 64 failed；Full Chrome 首轮 140/149，完成本轮相关合同修复及隔离复测后，首轮失败项 3 pass / 6 fail。失败包含旧 v47/标签夹具合同、Windows MAX_PATH/信号/worker 差异及现有登录、模型配置、清洗夹具/E2E 环境项，未标记为通过。真实生产历史图片、OSS、GPU、GitHub Ubuntu CI 仍未验证。

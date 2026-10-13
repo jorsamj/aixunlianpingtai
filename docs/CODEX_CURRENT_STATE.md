@@ -2777,3 +2777,10 @@ VERSION `42.24.300` adds one project-scoped coordination fence between canonical
 - 本地证据：Python 208 passed / 1 Linux-only skipped；Node 24 frontend 947/947；Real Chrome 51/51；1920×1080、1440×900、1366×768、375×812 的评测、图片、训练详情和报告均截图核验。正式 `VERSION.txt=42.24.355` 未改；未 push、未部署、未执行 GPU 训练。
 - P2 明确保留：全量错误索引、完整场景切片、全量尺寸统计、PDF 导出需要新增可靠证据或迁移；旧记录缺证据时只提示重新评测，不回算或虚构。
 - 本轮交付止于本地提交；GitHub CI、生产历史数据与 GPU 训练仍为 `NOT VERIFIED`。
+
+## 2026-10-13 VNext review-fix closure
+
+- Frozen diagnostic image identity now resolves explicit Image ID or one unique frozen `stored_name`; filename stem is never identity. Snapshot/test/SHA/bundle/storage/response-byte checks remain fail-closed. The bounded 20k identity projection cache holds metadata only and invalidates on file stat change.
+- Training detail keeps one `TrainingRecoveryRuntime`: history is opt-in once per project/task, compact polling merges only latest epoch/resource summary, terminal tasks do not re-arm the 1.5s timer. Synthetic 1000/720 result: 296,333 B full versus 428 B compact; one full + 40 compact requests is 0.30 MiB versus 11.30 MiB (-97.36%).
+- Strict comparison is keyed by `class_id`; ambiguous legacy duplicate labels are non-comparable. Navigation, missing delta, A/B controls, ARIA tabs and responsive visual hierarchy are covered by Node/Chrome regression.
+- Evidence: focused Python 54 passed / 1 skipped; Node 24.14 952/952; focused Chrome 7/7. Windows full pytest: 2323 passed / 12 skipped / 64 failed. Full Chrome first run: 140/149; after the VNext contract fixes and isolated reruns, 3 original failures pass and 6 legacy-fixture/environment cases remain red. No failure is relabeled pass. CI, production OSS/history and GPU remain NOT VERIFIED.

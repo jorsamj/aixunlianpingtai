@@ -943,16 +943,24 @@ def build_iteration_decision(
 FEEDBACK_ADOPTION_OUTCOME_SCHEMA_VERSION = 1
 
 
-def _evaluation_class_map(value: Mapping[str, Any] | None) -> dict[str, dict[str, Any]]:
+def _evaluation_class_map(value: Mapping[str, Any] | None) -> tuple[dict[Any, dict[str, Any]], bool, bool]:
     rows = value.get("per_class") if isinstance(value, Mapping) else []
-    result: dict[str, dict[str, Any]] = {}
-    for raw in list(rows or [])[:10000]:
-        if not isinstance(raw, Mapping):
-            continue
+    prepared = [dict(raw) for raw in list(rows or [])[:10000] if isinstance(raw, Mapping)]
+    has_legacy = any(raw.get('class_id') is None for raw in prepared)
+    result: dict[Any, dict[str, Any]] = {}
+    ambiguous = False
+    for raw in prepared:
         label = str(raw.get("label") or "").strip()
-        if label:
-            result[label] = dict(raw)
-    return result
+        if has_legacy:
+            key = ('label', label) if label else None
+        else:
+            class_id = raw.get('class_id')
+            key = ('id', str(class_id)) if class_id is not None else None
+        if key is None or key in result:
+            ambiguous = True
+            continue
+        result[key] = raw
+    return result, has_legacy, ambiguous
 
 
 def compare_evaluations(source: Mapping[str, Any], new: Mapping[str, Any]) -> dict[str, Any]:
@@ -978,23 +986,51 @@ def compare_evaluations(source: Mapping[str, Any], new: Mapping[str, Any]) -> di
         before, after = (source.get('metrics') or {}).get(key), (new.get('metrics') or {}).get(key)
         if before is not None and after is not None:
             metrics[key] = {'before': before, 'after': after, 'delta': round(_finite(after)-_finite(before), 6)}
-    before_classes = _evaluation_class_map(source)
-    after_classes = _evaluation_class_map(new)
+    before_classes, before_legacy, before_ambiguous = _evaluation_class_map(source)
+    after_classes, after_legacy, after_ambiguous = _evaluation_class_map(new)
+    if before_ambiguous or after_ambiguous:
+        return {'comparable': False, 'reason_codes': ['class_identity_ambiguous'], 'metrics': {}, 'classes': []}
+    if before_legacy != after_legacy:
+        # A mixed old/new comparison is safe only when both sides have unique
+        # display names; rebuild both maps by that explicitly bounded fallback.
+        def legacy_fallback(value):
+            mapped = {}
+            for raw in list((value or {}).get('per_class') or [])[:10000]:
+                if not isinstance(raw, Mapping):
+                    continue
+                label = str(raw.get('label') or '').strip()
+                if not label or label in mapped:
+                    return None
+                mapped[label] = dict(raw)
+            return mapped
+        before_fallback, after_fallback = legacy_fallback(source), legacy_fallback(new)
+        if before_fallback is None or after_fallback is None:
+            return {'comparable': False, 'reason_codes': ['class_identity_ambiguous'], 'metrics': {}, 'classes': []}
+        before_classes = {('label', key): value for key, value in before_fallback.items()}
+        after_classes = {('label', key): value for key, value in after_fallback.items()}
     classes = []
-    for label in sorted(set(before_classes) | set(after_classes)):
-        before, after = before_classes.get(label), after_classes.get(label)
+    labels = [str(row.get('label') or '') for row in list((source or {}).get('per_class') or []) + list((new or {}).get('per_class') or [])]
+    duplicate_labels = {label for label in labels if label and labels.count(label) > 2}
+    for identity in sorted(set(before_classes) | set(after_classes), key=str):
+        before, after = before_classes.get(identity), after_classes.get(identity)
+        label = str((after or before or {}).get('label') or identity[-1])
+        class_id = (after or before or {}).get('class_id')
         if before is None or after is None:
-            classes.append({'label': label, 'comparable': False})
+            classes.append({'class_id': class_id, 'label': label, 'comparable': False})
             continue
-        classes.append({'label': label, 'comparable': True, 'metrics': {
+        row = {'class_id': class_id, 'label': label, 'comparable': True, 'metrics': {
             key: {'before': before.get(key), 'after': after.get(key),
                   'delta': round(_finite(after[key])-_finite(before[key]), 6)}
             for key in ('precision', 'recall', 'map50', 'map50_95', 'false_positive', 'false_negative')
-            if key in before and key in after
-        }})
+            if key in before and key in after and before.get(key) is not None and after.get(key) is not None
+        }}
+        row['regressed'] = any(row['metrics'].get(key, {}).get('delta', 0) < 0 for key in ('recall', 'map50'))
+        classes.append(row)
+    regressed = [row for row in classes if row.get('comparable') and row.get('regressed')]
     return {'comparable': True, 'reason_codes': [], 'metrics': metrics, 'classes': classes,
-            'regressed_labels': [row['label'] for row in classes if row.get('comparable')
-                                 and any(row['metrics'].get(key, {}).get('delta', 0) < 0 for key in ('recall', 'map50'))]}
+            'regressed_class_ids': [row['class_id'] for row in regressed if row.get('class_id') is not None],
+            'regressed_labels': [f"{row['label']} · ID {row['class_id']}" if row['label'] in duplicate_labels else row['label']
+                                 for row in regressed]}
 
 
 def build_feedback_adoption_outcome(
@@ -1096,8 +1132,24 @@ def build_feedback_adoption_outcome(
                 "delta": round(after - before, 6),
             }
 
-    source_classes = _evaluation_class_map(source)
-    new_classes = _evaluation_class_map(new)
+    def unique_label_rows(value):
+        rows = {}
+        duplicates = set()
+        for raw in list((value or {}).get('per_class') or [])[:10000]:
+            if not isinstance(raw, Mapping):
+                continue
+            label = str(raw.get('label') or '').strip()
+            if not label:
+                continue
+            if label in rows:
+                duplicates.add(label)
+            else:
+                rows[label] = dict(raw)
+        for label in duplicates:
+            rows.pop(label, None)
+        return rows
+    source_classes = unique_label_rows(source)
+    new_classes = unique_label_rows(new)
     weak_labels = list(dict.fromkeys(
         str(value)[:1000]
         for value in list(source.get("weak_labels") or [])[:100]

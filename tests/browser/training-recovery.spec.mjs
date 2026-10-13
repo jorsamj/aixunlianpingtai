@@ -120,6 +120,7 @@ test('failed final validation exposes backend-approved checkpoint recovery and r
   await row.getByRole('button', {name: '详情'}).click();
   const dialog = page.locator('[data-training-recovery-overlay]');
   await expect(dialog).toBeVisible();
+  await page.evaluate(()=>document.body.insertAdjacentHTML('beforeend','<div id="training-acceptance-fixture-badge" style="position:fixed;right:12px;bottom:12px;z-index:10000;padding:7px 11px;border-radius:8px;background:#7c2d12;color:white;font:700 12px system-ui">验收夹具 · 非生产数据</div>'));
   await expect(dialog).toContainText('训练主体已完成 · 模型验证失败');
   await expect(dialog).toContainText('100 / 100');
   await expect(dialog).toContainText('最终模型验证');
@@ -212,6 +213,15 @@ test('successful training detail never presents completion text as an error', as
   await expect(dialog).not.toContainText('失败原因');
   await expect(dialog).not.toContainText('失败证据');
   await expect(dialog).not.toContainText('训练失败');
+  const curveTab=dialog.getByRole('tab',{name:'训练曲线',exact:true});
+  await curveTab.focus();
+  await curveTab.press('ArrowRight');
+  await expect(dialog.getByRole('tab',{name:'训练资源',exact:true})).toBeFocused();
+  await expect(dialog.getByRole('tab',{name:'训练资源',exact:true})).toHaveAttribute('aria-selected','true');
+  await dialog.getByRole('tab',{name:'训练资源',exact:true}).press('End');
+  await expect(dialog.getByRole('tab',{name:'日志与诊断',exact:true})).toBeFocused();
+  await dialog.getByRole('tab',{name:'日志与诊断',exact:true}).press('Home');
+  await expect(curveTab).toBeFocused();
 
   // Live detail refresh must update the canonical dialog in place. Replacing the
   // whole overlay every 1.5s causes visible flicker and resets browser UI state.
@@ -228,6 +238,7 @@ test('successful training detail never presents completion text as an error', as
     await expect(dialog.locator('.quality-chart')).toHaveCount(2);
     expect(await dialogShell.evaluate(el=>el.scrollWidth<=el.clientWidth+1)).toBe(true);
     await page.screenshot({path:path.resolve(process.env.CODEX_VISUAL_EVIDENCE_DIR||testInfo.outputPath('visuals'),'detail-'+width+'.png')});
+    if(width===375)await expect(dialog.locator('.training-tabs-scroll-hint')).toBeVisible();
     await dialog.getByRole('tab',{name:'训练资源',exact:true}).click();
     await expect(dialog.locator('[role=tabpanel]:visible')).toContainText('80.0%');
     await dialog.getByRole('button',{name:'立即刷新'}).click();

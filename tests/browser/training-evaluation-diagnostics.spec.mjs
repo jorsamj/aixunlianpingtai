@@ -163,7 +163,7 @@ test('quality workspaces preserve evidence, pagination, comparison and four resp
     comparisons++;
     return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({comparison:{
       comparable:true,regressed_labels:['No_helmet'],
-      metrics:{'metrics/mAP50(B)':{delta:.1}},
+      metrics:{'metrics/mAP50(B)':{delta:.1},'metrics/recall(B)':{delta:0},'metrics/mAP50-95(B)':{delta:null}},
       classes:[{label:'No_helmet',metrics:{recall:{delta:-.1},map50:{delta:-.1},false_positive:{delta:2},false_negative:{delta:3}}}]
     }})});
   });
@@ -192,8 +192,13 @@ test('quality workspaces preserve evidence, pagination, comparison and four resp
       {id:'previous',version_name:'V1',evaluation},
       {id:'current',version_name:'V2',job_id:'quality-visual',evaluation}]}];
     window.openVersionEvaluation429('quality-visual-a','current');
+    document.body.insertAdjacentHTML('beforeend','<div id="acceptance-fixture-badge" style="position:fixed;right:12px;bottom:12px;z-index:10000;padding:7px 11px;border-radius:8px;background:#7c2d12;color:white;font:700 12px system-ui">验收夹具 · 非生产数据</div>');
   });
   const dialog=page.getByRole('dialog',{name:'独立评测'});
+  await dialog.getByRole('button',{name:'场景算法实测'}).click();
+  await expect.poll(()=>page.evaluate(()=>({page:state.page,tab:state.qualityCenterTab411}))).toEqual({page:'质量中心',tab:'detect'});
+  await expect(page.locator('.quality411-tabs').getByRole('button',{name:'场景算法实测'})).toBeVisible();
+  await page.evaluate(()=>window.openVersionEvaluation429('quality-visual-a','current'));
   await dialog.getByRole('tab',{name:'错误样本',exact:true}).click();
   await expect(dialog.locator('.evaluation429-image-card')).toHaveCount(24);
   await dialog.getByRole('button',{name:'下一页',exact:true}).click();
@@ -208,11 +213,20 @@ test('quality workspaces preserve evidence, pagination, comparison and four resp
   await dialog.getByRole('tab',{name:'版本对比'}).click();
   await expect.poll(()=>comparisons).toBe(1);
   await expect(dialog.locator('[data-eval-comparison]')).toContainText('存在退化类别');
+  await expect(dialog.locator('[data-eval-comparison]')).toContainText('0.0 pp');
+  await expect(dialog.locator('[data-eval-comparison]')).toContainText('未记录');
+  await page.setViewportSize({width:1366,height:768});
+  await page.screenshot({path:path.resolve(process.env.CODEX_VISUAL_EVIDENCE_DIR||testInfo.outputPath('visuals'),'comparison-1366.png')});
   await dialog.getByRole('button',{name:'并排核验同一图片'}).click();
   const pair=page.getByRole('dialog',{name:'问题图片核验'});
   await expect(pair.locator('.evaluation429-stage img')).toHaveCount(2);
   await expect(pair.locator('.evaluation429-stage img').first()).toBeVisible();
   await expect(pair.locator('.evaluation429-stage img').last()).toBeVisible();
+  await expect(pair.getByRole('button',{name:'单独全屏'})).toHaveCount(2);
+  await pair.getByRole('button',{name:'同步放大 / 适配'}).click();
+  await expect.poll(()=>pair.locator('.evaluation429-media').evaluateAll(nodes=>nodes.map(node=>node.dataset.zoom))).toEqual(['2','2']);
+  await pair.getByRole('button',{name:'恢复比例'}).click();
+  await expect.poll(()=>pair.locator('.evaluation429-media').evaluateAll(nodes=>nodes.map(node=>node.dataset.zoom))).toEqual(['1','1']);
   await pair.getByRole('button',{name:'返回独立评测'}).click();
   for(const [width,height] of [[1920,1080],[1440,900],[1366,768],[375,812]]){
     await page.setViewportSize({width,height});
@@ -236,6 +250,8 @@ test('quality workspaces preserve evidence, pagination, comparison and four resp
     expect(geometry.x).toBeCloseTo(geometry.expectedX,0);
     expect(geometry.y).toBeCloseTo(geometry.expectedY,0);
     expect(geometry.overflow,JSON.stringify(await preview.evaluate(el=>Array.from(el.querySelectorAll('*')).filter(node=>node.scrollWidth>node.clientWidth+1).map(node=>({tag:node.tagName,cls:node.className,width:node.clientWidth,scroll:node.scrollWidth}))))).toBe(false);
+    await preview.locator('.modal-body').evaluate(el=>{el.scrollTop=0;});
+    await expect(preview.getByRole('button',{name:'同步放大 / 适配'})).toBeInViewport();
     await page.screenshot({path:path.resolve(path.dirname(screenshotPath),'image-'+width+'.png')});
     await preview.getByRole('button',{name:'下一张',exact:true}).click();
     await expect(preview.locator('.evaluation429-stage img')).toBeVisible();
@@ -246,6 +262,10 @@ test('quality workspaces preserve evidence, pagination, comparison and four resp
     await expect(page.getByRole('dialog')).toHaveCount(1);
     expect(await report.evaluate(el=>el.scrollWidth<=el.clientWidth+1)).toBe(true);
     await page.screenshot({path:path.resolve(path.dirname(screenshotPath),'report-'+width+'.png')});
-    await report.getByRole('button',{name:'查看独立评测'}).click();
+    await report.getByRole('button',{name:'场景算法实测'}).click();
+    await expect.poll(()=>page.evaluate(()=>({page:state.page,tab:state.qualityCenterTab411}))).toEqual({page:'质量中心',tab:'detect'});
+    await expect(page.locator('.quality411-tabs').getByRole('button',{name:'场景算法实测'})).toBeVisible();
+    await page.evaluate(()=>window.openVersionEvaluation429('quality-visual-a','current'));
+    await page.getByRole('dialog',{name:'独立评测'}).getByRole('tab',{name:'质量总览'}).click();
   }
 });

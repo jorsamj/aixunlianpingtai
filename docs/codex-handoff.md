@@ -5463,3 +5463,10 @@ GitHub 当前没有 CI status，不能把“测试代码已写”表述成“已
 - 本地证据：Python 208 passed / 1 Linux-only skipped；Node 24 frontend 947/947；Real Chrome 51/51；1920×1080、1440×900、1366×768、375×812 的评测、图片、训练详情和报告均截图核验。正式 `VERSION.txt=42.24.355` 未改；未 push、未部署、未执行 GPU 训练。
 - P2 明确保留：全量错误索引、完整场景切片、全量尺寸统计、PDF 导出需要新增可靠证据或迁移；旧记录缺证据时只提示重新评测，不回算或虚构。
 - 本轮交付止于本地提交；GitHub CI、生产历史数据与 GPU 训练仍为 `NOT VERIFIED`。
+
+## 2026-10-13 VNext 独立审查修复交接
+
+- P0：历史错误样本只按显式冻结 Image ID 或唯一冻结 `stored_name` 取图；stem 冲突对抗样本返回正确 stored-name 字节，同名/不完整/漂移安全拒绝，失败图片不显示框。
+- P1：训练报告与独立评测均进入 `质量中心 → detect`；训练详情完整历史一次按需加载，后续 summary 增量合并；比较按 class_id，重复旧标签不可严格比较。
+- P2/UI：20k Snapshot 有界索引、键盘页签、A/B 双侧操作、缺失 delta、核心指标层级和移动端提示已完成。性能：11.30 → 0.30 MiB/分钟，SQLite SELECT 4 → 1/轮询。
+- 验证：Python focused 54 passed / 1 skipped；Node 24.14 952/952；Chrome focused 7/7；Windows full pytest 2323 passed / 12 skipped / 64 failed。Full Chrome 首轮 140/149；完成本轮相关合同修复及隔离复测后，首轮失败项 3 项转绿、6 项仍失败。失败清单保留为既有合同/平台/环境待办，未伪装全绿。生产历史素材、OSS、GPU、Linux CI 未验证。VERSION 42.24.355 不改，未 push/merge/deploy。

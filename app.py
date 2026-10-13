@@ -11,6 +11,7 @@ import sys
 import time
 import threading
 import uuid
+from collections import OrderedDict
 from dataclasses import replace
 import zipfile
 import random
@@ -8727,7 +8728,7 @@ async def v64_training_events(project_id: str, request: Request):
 
 
 @app.get("/api/projects/{project_id}/jobs/{job_id}")
-def job_status(project_id: str, job_id: str):
+def job_status(project_id: str, job_id: str, include_history: bool = False):
     get_project(project_id)
     job_file = project_dir(project_id) / "jobs" / job_id / "job.json"
     if not job_file.exists():
@@ -8745,7 +8746,7 @@ def job_status(project_id: str, job_id: str):
     task = _durable_training_task(project_id, job_id)
     metrics_path = (shared_task_artifacts().artifact_path(job_id, "training-metrics.sqlite3")
                     if task else job_file.parent / "training-metrics.sqlite3")
-    response["runtime_metrics"] = read_metrics(metrics_path, include_history=True)
+    response["runtime_metrics"] = read_metrics(metrics_path, include_history=include_history)
     if task:
         artifacts = shared_task_artifacts()
         response["resolved_resources"] = artifacts.read_json(
@@ -10721,6 +10722,75 @@ def _algorithm_version_for_action(project_id: str, algorithm_id: str, version_id
 
 
 
+_EVALUATION_SNAPSHOT_INDEX_CACHE = OrderedDict()
+_EVALUATION_SNAPSHOT_INDEX_LOCK = threading.Lock()
+_EVALUATION_SNAPSHOT_INDEX_LIMIT = 8
+
+
+class _EvaluationSnapshotIndexError(ValueError):
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+def _evaluation_snapshot_identity_index(path: Path, snapshot_id: str):
+    """Return one bounded, immutable identity projection for a frozen Snapshot.
+
+    The cache owns only parsed Snapshot metadata. It never caches Material rows,
+    provider objects, decoded images, or response bytes. File stat identity makes
+    replacement invalidate the projection while every response still verifies
+    the selected material and actual file SHA256.
+    """
+    try:
+        stat = path.stat()
+    except OSError as error:
+        raise _EvaluationSnapshotIndexError('SNAPSHOT_MISSING', '冻结快照文件不存在') from error
+    key = (str(path.resolve()), snapshot_id, int(stat.st_mtime_ns), int(stat.st_size))
+    with _EVALUATION_SNAPSHOT_INDEX_LOCK:
+        cached = _EVALUATION_SNAPSHOT_INDEX_CACHE.get(key)
+        if cached is not None:
+            _EVALUATION_SNAPSHOT_INDEX_CACHE.move_to_end(key)
+            return cached
+    snapshot = read_json(path, {})
+    if snapshot.get('snapshot_id') != snapshot_id:
+        raise _EvaluationSnapshotIndexError('SNAPSHOT_INCOMPLETE', '冻结快照与评测身份不一致')
+    ids = snapshot.get('test_image_ids')
+    if ids is None and isinstance(snapshot.get('ids'), dict):
+        ids = snapshot['ids'].get('test')
+    test_ids = tuple(dict.fromkeys(str(value) for value in (ids or []) if str(value)))
+    if not test_ids or len(test_ids) > 30000:
+        raise _EvaluationSnapshotIndexError('SNAPSHOT_INCOMPLETE', '冻结测试集身份无法验证')
+    test_id_set = frozenset(test_ids)
+    frozen_rows = tuple(
+        dict(row) for row in (snapshot.get('images') or [])
+        if isinstance(row, dict) and str(row.get('image_id') or '') in test_id_set
+    )
+    frozen = {str(row['image_id']): row for row in frozen_rows}
+    if len(frozen_rows) != len(test_ids) or len(frozen) != len(test_ids):
+        raise _EvaluationSnapshotIndexError('SNAPSHOT_INCOMPLETE', '冻结测试集图片身份不完整')
+    stored_names = {}
+    for image_id, row in frozen.items():
+        stored_name = str(row.get('stored_name') or '')
+        if stored_name:
+            stored_names.setdefault(stored_name, []).append(image_id)
+    result = {
+        'test_ids': test_ids,
+        'frozen': frozen,
+        'stored_names': {name: tuple(values) for name, values in stored_names.items()},
+        'all_have_stored_name': len(stored_names) == len(test_ids),
+    }
+    with _EVALUATION_SNAPSHOT_INDEX_LOCK:
+        for old_key in tuple(_EVALUATION_SNAPSHOT_INDEX_CACHE):
+            if old_key[0] == key[0] and old_key != key:
+                _EVALUATION_SNAPSHOT_INDEX_CACHE.pop(old_key, None)
+        _EVALUATION_SNAPSHOT_INDEX_CACHE[key] = result
+        _EVALUATION_SNAPSHOT_INDEX_CACHE.move_to_end(key)
+        while len(_EVALUATION_SNAPSHOT_INDEX_CACHE) > _EVALUATION_SNAPSHOT_INDEX_LIMIT:
+            _EVALUATION_SNAPSHOT_INDEX_CACHE.popitem(last=False)
+    return result
+
+
 @app.get("/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/evaluation/images/{image_name}")
 def evaluation_diagnostic_image_v1(project_id: str, algorithm_id: str, version_id: str, image_name: str):
     """Read-only frozen Test Split preview, never a source of training candidates.
@@ -10753,41 +10823,36 @@ def evaluation_diagnostic_image_v1(project_id: str, algorithm_id: str, version_i
     path = project_dir(project_id) / "snapshots" / f"{snapshot_id}.json"
     if not path.is_file():
         reject('SNAPSHOT_MISSING', '冻结快照文件不存在')
-    snapshot = read_json(path, {})
-    if snapshot.get("snapshot_id") != snapshot_id:
-        reject('SNAPSHOT_INCOMPLETE', '冻结快照与评测身份不一致')
-    ids = snapshot.get("test_image_ids")
-    if ids is None and isinstance(snapshot.get("ids"), dict):
-        ids = snapshot["ids"].get("test")
-    test_ids = tuple(dict.fromkeys(str(x) for x in (ids or []) if str(x)))
-    if not test_ids or len(test_ids) > 30000:
-        reject('SNAPSHOT_INCOMPLETE', '冻结测试集身份无法验证')
-    # Set lookup avoids O(Test^2) membership scans at 10k/20k scale.
-    test_id_set = set(test_ids)
-    frozen_rows = [row for row in (snapshot.get("images") or [])
-                   if isinstance(row, dict) and str(row.get("image_id") or "") in test_id_set]
-    frozen = {str(row["image_id"]): row for row in frozen_rows}
-    if len(frozen_rows) != len(test_ids) or len(frozen) != len(test_ids):
-        reject('SNAPSHOT_INCOMPLETE', '冻结测试集图片身份不完整')
+    try:
+        snapshot_index = _evaluation_snapshot_identity_index(path, snapshot_id)
+    except _EvaluationSnapshotIndexError as error:
+        reject(error.code, error.message)
+    test_ids = snapshot_index['test_ids']
+    frozen = snapshot_index['frozen']
     # V3 frozen snapshots carry stored_name. Resolve a unique frozen ID
     # before querying MaterialRepository; legacy snapshots use bounded reads.
     stable_id = str(sample.get('image_id') or '')
     if stable_id and stable_id not in frozen:
         reject('IMAGE_NOT_IN_SNAPSHOT', '评测图片不属于冻结测试集')
-    # Portable datasets deliberately use <Image ID>.<suffix>, not stored_name.
-    # The ID must match a Test member exactly; never search by a partial stem.
-    portable_id = Path(image_name).stem
-    if stable_id or portable_id in frozen:
-        selected_ids = [stable_id or portable_id]
-    elif all(str(row.get("stored_name") or "") for row in frozen.values()):
-        selected_ids = [image_id for image_id, row in frozen.items()
-                        if str(row.get("stored_name")) == image_name]
-        if len(selected_ids) > 1:
-            reject('IMAGE_IDENTITY_AMBIGUOUS', '冻结图片文件名不唯一')
-        if not selected_ids:
-            reject('IMAGE_NOT_IN_SNAPSHOT', '图片不属于冻结测试集')
+    if stable_id:
+        selected_ids = [stable_id]
     else:
-        selected_ids = list(test_ids)
+        # Historical samples have no stable ID. A filename stem is not an
+        # identity: it may collide with a different frozen Image ID. Prefer a
+        # unique frozen stored_name and reject contradictory frozen evidence.
+        stored_ids = list(snapshot_index['stored_names'].get(image_name, ()))
+        if len(stored_ids) > 1:
+            reject('IMAGE_IDENTITY_AMBIGUOUS', '冻结图片文件名不唯一')
+        if len(stored_ids) == 1:
+            # A unique frozen stored_name is authoritative historical evidence;
+            # a conflicting filename stem is only an untrusted coincidence.
+            selected_ids = stored_ids
+        elif snapshot_index['all_have_stored_name']:
+            reject('IMAGE_NOT_IN_SNAPSHOT', '图片不属于冻结测试集')
+        else:
+            # Old Snapshots without stored_name can still recover a real image,
+            # but only through an exact Material stored_name match below.
+            selected_ids = list(test_ids)
     repository = MaterialRepository(project_dir(project_id))
     material_rows = []
     for offset in range(0, len(selected_ids), 500):

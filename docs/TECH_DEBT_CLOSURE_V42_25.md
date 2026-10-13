@@ -1735,3 +1735,9 @@ AUDIT-149 and the concurrent residuals of AUDIT-157/173 are code-level fixed by 
 - 本地证据：Python 208 passed / 1 Linux-only skipped；Node 24 frontend 947/947；Real Chrome 51/51；1920×1080、1440×900、1366×768、375×812 的评测、图片、训练详情和报告均截图核验。正式 `VERSION.txt=42.24.355` 未改；未 push、未部署、未执行 GPU 训练。
 - P2 明确保留：全量错误索引、完整场景切片、全量尺寸统计、PDF 导出需要新增可靠证据或迁移；旧记录缺证据时只提示重新评测，不回算或虚构。
 - 本轮交付止于本地提交；GitHub CI、生产历史数据与 GPU 训练仍为 `NOT VERIFIED`。
+
+## 2026-10-13 VNext independent-review findings
+
+The eight scoped findings are locally closed without a second owner: frozen-image stem guessing is removed; quality navigation uses the canonical Quality Center detect tab; training history is opt-in and compact polling remains under `TrainingRecoveryRuntime`; comparisons use class IDs; Snapshot parsing uses an eight-entry metadata cache; tabs implement the ARIA keyboard pattern; A/B panes synchronize zoom/scroll and retain independent fullscreen; missing deltas are not coerced to zero.
+
+Measured synthetic evidence: 1000 Epoch + 720 resource rows, 296,333 B full / 428 B compact, 40-poll minute including one full read 11.30 MiB → 0.30 MiB; SQLite SELECT 4 → 1 per poll. A 20k Snapshot page parses once for 24 reads (23 cache hits average 0.227 ms) and reparses after file change. Focused Python 54/1, Node 24 952/952 and focused Chrome 7/7 pass. Windows full pytest remains 2323 passed / 12 skipped / 64 failed and is not presented as green; GitHub/Linux CI is open.

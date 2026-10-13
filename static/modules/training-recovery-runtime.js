@@ -1,6 +1,6 @@
 import {canonicalTaskProgressPercent, canonicalTaskStatus, isCanonicalTaskActive} from './task-runtime-truth.js?v=422424';
 import {formatTrainingDuration, trainingApiErrorMessage, trainingProgressView} from './training-task-runtime.js?v=422562';
-import {trainingCharts} from './reports.js?v=4226373';
+import {trainingCharts} from './reports.js?v=4226374';
 
 const RECOVERY_ACTION_REVALIDATE = 'revalidate_checkpoint';
 const SUCCESS_TASK_STATUSES = new Set(['SUCCEEDED', 'PARTIAL_SUCCESS']);
@@ -230,6 +230,14 @@ export function trainingRecoveryDetailModel(job = {}, recovery = {}) {
     const number = Number(value);
     return Number.isFinite(number) ? number : null;
   };
+  const epochHistory = Array.isArray(runtimeMetrics.epochs) ? runtimeMetrics.epochs : [];
+  const epochMap50 = row => metricNumber(row?.map50 ?? row?.metrics?.['metrics/mAP50(B)']);
+  const recordedMap50 = epochHistory
+    .map(row => ({epoch: numberOrNull(row?.epoch), value: epochMap50(row)}))
+    .filter(row => row.epoch !== null && row.value !== null);
+  const latestMap50 = recordedMap50.at(-1) || null;
+  const bestMap50 = recordedMap50.reduce((best, row) => !best || row.value > best.value ? row : best, null);
+  const observedMetricLine = latestMap50 ? `mAP50 ${(latestMap50.value * 100).toFixed(1)}% · Epoch ${latestMap50.epoch}` : '';
   const intervalStart = Date.parse(job.started_at || '');
   const intervalEnd = Date.parse(job.finished_at || '');
   const terminal = !flags.active;
@@ -264,7 +272,9 @@ export function trainingRecoveryDetailModel(job = {}, recovery = {}) {
     etaSeconds: progressView.etaSeconds,
     elapsedText: formatTrainingDuration(progressView.elapsedSeconds),
     etaText: flags.success ? '-' : formatTrainingDuration(progressView.etaSeconds),
-    metricLine: progressView.metricLine,
+    metricLine: progressView.metricLine || observedMetricLine,
+    bestEpoch: bestMap50?.epoch ?? null,
+    bestMetricLine: bestMap50 ? `最佳 mAP50 ${(bestMap50.value * 100).toFixed(1)}%` : '',
     trainingLoopCompleted: recovery?.training_loop_completed === true || flags.success,
     checkpointAvailable: recovery?.checkpoint_available === true || flags.success,
     checkpoint: recovery?.checkpoint || null,
@@ -374,7 +384,7 @@ function inputIssuesHtml(inputIssues) {
   return `<section class="training-recovery-panel" data-training-input-issues><header><h4>训练输入标签适配问题</h4><span>${Number(inputIssues.issue_count)} 张 · ${start}-${end}</span></header><div class="training-compatibility-list">${items.map(item => `<article class="training-compatibility-item">${item.thumbnail_url ? `<img src="${esc(item.thumbnail_url)}" loading="lazy" alt="">` : ''}<div><b>${esc(item.filename || item.image_id || '-')}</b><p>已审核：${esc((item.annotation_scope || []).join('、') || '无')}</p><p>本次要求：${esc((item.required_label_codes || []).join('、') || '无')}</p><p class="warn">缺失：${esc((item.missing_label_codes || []).join('、') || '无')}</p>${item.image_id ? `<div class="row"><button class="btn mini primary" data-training-input-review="${esc(item.image_id)}">去补审</button><button class="btn mini" data-training-input-exclude="${esc(item.image_id)}">排除本次训练</button></div>` : ''}</div></article>`).join('')}</div><div data-training-input-pagination></div></section>`;
 }
 
-function detailHtml(job, recovery, log = '', inputIssues = null) {
+function detailHtml(job, recovery, log = '', inputIssues = null, activeTab = 'curves') {
   const model = trainingRecoveryDetailModel(job, recovery);
   const failed = model.statusKind === 'failed' || model.statusKind === 'recoverable';
   const statusTitle = model.statusKind === 'recoverable'
@@ -389,6 +399,9 @@ function detailHtml(job, recovery, log = '', inputIssues = null) {
   const checkpoint = model.checkpoint;
   const epochText = model.requestedEpochs ? `${model.completedEpochs} / ${model.requestedEpochs}` : (model.completedEpochs || '-');
   const batchText = model.totalBatches ? `${model.currentBatch ?? '-'} / ${model.totalBatches}` : '-';
+  const completed = model.statusKind === 'success' || model.statusKind === 'partial';
+  const epochSummary = completed && model.bestEpoch != null ? `${epochText} · 最佳 Epoch ${model.bestEpoch}` : `${epochText} · ${batchText}`;
+  const metricSummary = completed ? (model.bestMetricLine || model.metricLine || '指标未记录') : (model.metricLine || '等待训练指标');
   const actionHtml = model.recoverable ? `<button class="btn primary" data-training-recovery-action="${RECOVERY_ACTION_REVALIDATE}" data-task-id="${esc(model.taskId)}">重新验证 Checkpoint</button>` : '';
   const checkpointRecoveryState = model.checkpointAvailable
     ? (model.recoverable ? 'Checkpoint 已保留 · 可重新验证' : 'Checkpoint 已保留 · 当前不可自动恢复')
@@ -417,19 +430,20 @@ function detailHtml(job, recovery, log = '', inputIssues = null) {
           <button class="btn mini" data-training-recovery-close>关闭</button>
         </div>
         <div class="training-recovery-body">
-          <nav class="quality-tabs" role="tablist" aria-label="训练详情视图">${[['curves','训练曲线'],['resources','训练资源'],['data','数据与配置'],['diagnostics','日志与诊断']].map(([key,label])=>`<button class="btn" role="tab" data-training-tab="${key}" aria-selected="false">${label}</button>`).join('')}</nav>
+          <nav class="quality-tabs" role="tablist" aria-label="训练详情视图">${[['curves','训练曲线'],['resources','训练资源'],['data','数据与配置'],['diagnostics','日志与诊断']].map(([key,label])=>`<button id="training-tab-${key}" class="btn" role="tab" data-training-tab="${key}" aria-controls="training-panel-${key}" aria-selected="${key===activeTab}" tabindex="${key===activeTab?'0':'-1'}">${label}</button>`).join('')}</nav>
+          <span class="training-tabs-scroll-hint" aria-hidden="true">← 横向滚动查看更多 →</span>
           <section class="training-recovery-summary ${esc(model.statusKind)}">
             <div><small>整体进度</small><b>${model.progressPercent.toFixed(0)}%</b><i><span style="transform:scaleX(${(model.progressPercent / 100).toFixed(4)})"></span></i></div>
-            <div><small>Epoch / Batch</small><b>${esc(epochText)} · ${esc(batchText)}</b><span>${esc(model.metricLine || '等待训练指标')}</span></div>
+            <div><small>${completed ? '训练进度 / 最佳指标' : 'Epoch / Batch'}</small><b>${esc(epochSummary)}</b><span>${esc(metricSummary)}</span></div>
             <div><small>已用 / 剩余</small><b>${esc(model.elapsedText)} / ${esc(model.etaText)}</b><span>${esc(model.stage || model.statusMessage || '-')}</span></div>
             <div><small>实际设备</small><b>${esc(model.actualDevice || model.assignedDevice || model.requestedDevice || '-')}</b><span>${esc(model.gpuName || model.workerId || '-')}</span></div>
             <div><small>资源档位</small><b>${esc(model.resourceProfileLabel)}</b><span>${esc(`${model.resourceStrategy || 'auto'} · ${model.gpuPolicy || 'auto'}`)}</span></div>
             <div><small>实际 Batch / Workers / Cache</small><b>${esc(`${model.batch ?? '-'} / ${model.workers ?? '-'} / ${model.cache ?? '-'}`)}</b><span>${esc(model.runtimePrecision || '尚未启动 Trainer')}</span></div>
           </section>
           ${statusHtml}${failureSummaryHtml}${inputIssuesHtml(inputIssues)}${technicalFailureHtml}${warningHtml}
-          <section data-training-panel="curves" role="tabpanel">${trainingCharts(job?.runtime_metrics?.epochs || job?.training_report?.history || [])}</section>
+          <section id="training-panel-curves" data-training-panel="curves" role="tabpanel" aria-labelledby="training-tab-curves">${trainingCharts(job?.runtime_metrics?.epochs || job?.training_report?.history || [])}</section>
           <div class="training-recovery-columns">
-            <section class="training-recovery-panel" data-training-panel="data" role="tabpanel">
+            <section id="training-panel-data" class="training-recovery-panel" data-training-panel="data" role="tabpanel" aria-labelledby="training-tab-data">
               <header><h4>训练配置</h4><span>实际运行值优先</span></header>
               <div class="training-recovery-kv"><span>基础模型</span><b>${esc(model.model || '-')}</b></div>
               <div class="training-recovery-kv"><span>图片尺寸</span><b>${esc(model.imgsz ?? '-')}</b></div>
@@ -443,7 +457,7 @@ function detailHtml(job, recovery, log = '', inputIssues = null) {
               <div class="training-recovery-kv"><span>数据量</span><b>${esc(model.datasetCountsGenerated?`训练 ${model.datasetCounts.train} · 验证 ${model.datasetCounts.validation} · 评测 ${model.datasetCounts.test}`:'未生成')}</b></div>
               <div class="training-recovery-kv"><span>成果模型</span><b title="${esc(artifacts)}">${esc(artifacts)}</b></div>
             </section>
-            <section class="training-recovery-panel" data-training-panel="resources" role="tabpanel">
+            <section id="training-panel-resources" class="training-recovery-panel" data-training-panel="resources" role="tabpanel" aria-labelledby="training-tab-resources">
               <header><h4>运行证据</h4><span>${esc(model.resourceTimeBasis)} · ${model.resourceSampleCount} 个区间采样</span></header>
               <div class="training-recovery-kv"><span>Task Status</span><b>${esc(model.canonicalStatus || model.taskStatus || '-')}</b></div>
               <div class="training-recovery-kv"><span>执行节点</span><b>${esc(model.workerId || '-')}</b></div>
@@ -457,7 +471,7 @@ function detailHtml(job, recovery, log = '', inputIssues = null) {
               <div class="training-recovery-kv"><span>错误类型</span><b>${esc(model.errorType || '-')}</b></div>
             </section>
           </div>
-          <section class="training-recovery-panel" data-training-panel="data" role="tabpanel">
+          <section id="training-panel-data-trace" class="training-recovery-panel" data-training-panel="data" role="tabpanel" aria-labelledby="training-tab-data">
             <header><h4>数据与资源追踪</h4><span>用于复现本次训练</span></header>
             <div class="training-recovery-kv"><span>数据版本</span><b title="${esc(model.datasetRevisionId)}">${esc(model.datasetRevisionId || '-')}</b></div>
             <div class="training-recovery-kv"><span>训练快照</span><b title="${esc(model.snapshotId)}">${esc(model.snapshotId || '-')}</b></div>
@@ -467,11 +481,11 @@ function detailHtml(job, recovery, log = '', inputIssues = null) {
             ${model.resourceAdjustments.length ? `<div class="training-recovery-kv"><span>资源自动调整</span><b>${esc(model.resourceAdjustments.join('；'))}</b></div>` : ''}
             ${model.resourceReasons.length ? `<div class="training-recovery-kv"><span>资源决策依据</span><b>${esc(model.resourceReasons.join('；'))}</b></div>` : ''}
           </section>
-          <section class="training-recovery-panel" data-training-panel="diagnostics" role="tabpanel"><header><h4>执行阶段</h4><span>任务生命周期</span></header>${timelineHtml(model.timeline)}${logHtml}</section>
+          <section id="training-panel-diagnostics" class="training-recovery-panel" data-training-panel="diagnostics" role="tabpanel" aria-labelledby="training-tab-diagnostics"><header><h4>执行阶段</h4><span>任务生命周期</span></header>${timelineHtml(model.timeline)}${logHtml}</section>
           ${model.recoverable ? '<div class="training-recovery-callout">训练主体与可信 Checkpoint 已保留，可只重新执行最终模型验证，不需要重跑全部 Epoch。</div>' : ''}
         </div>
         <div class="training-recovery-actions">
-          <span>运行中每 1.5 秒同步详情；列表同时接收实时任务事件</span>
+          <span>${completed ? '任务已结束 · 不再进行高频轮询' : '运行中每 1.5 秒同步精简详情；历史曲线按需加载'}</span>
           <button class="btn" data-training-detail-refresh="${esc(model.taskId)}">立即刷新</button>
           ${job?.auto_version_id ? `<button class="btn" data-training-report-task="${esc(model.taskId)}">查看训练报告</button>` : ''}
           ${actionHtml}
@@ -504,7 +518,11 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
   let openFocus = 'overview';
   let openSnapshot = null;
   let detailRefreshPromise = null;
+  const detailHistoryCache = new Map();
+  const detailHistoryLoaded = new Set();
+  let detailHistoryProjectId = '';
   const DETAIL_POLL_KEY = 'training-task-detail';
+  const DETAIL_HISTORY_LIMIT = 8;
 
   async function json(response, fallback) {
     const raw = await response.text();
@@ -556,10 +574,53 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
     return body?.recovery || {};
   }
 
-  async function readJob(taskId) {
+  function detailHistoryKey(pid, taskId) {
+    return `${String(pid || '')}:${String(taskId || '')}`;
+  }
+
+  function rememberDetailHistory(key, metrics) {
+    const value = {
+      epochs: Array.isArray(metrics?.epochs) ? metrics.epochs.slice(-1000) : [],
+      samples: Array.isArray(metrics?.samples) ? metrics.samples.slice(-720) : [],
+    };
+    detailHistoryCache.delete(key);
+    detailHistoryCache.set(key, value);
+    detailHistoryLoaded.add(key);
+    while (detailHistoryCache.size > DETAIL_HISTORY_LIMIT) {
+      const oldest = detailHistoryCache.keys().next().value;
+      detailHistoryCache.delete(oldest);
+      detailHistoryLoaded.delete(oldest);
+    }
+    return value;
+  }
+
+  function mergeDetailHistory(job, pid, taskId, historyRequested = false) {
+    const key = detailHistoryKey(pid, taskId);
+    const metrics = job?.runtime_metrics && typeof job.runtime_metrics === 'object' ? job.runtime_metrics : {};
+    const previous = detailHistoryCache.get(key) || {epochs: [], samples: []};
+    const epochs = Array.isArray(metrics.epochs) ? [...metrics.epochs] : [...previous.epochs];
+    const samples = Array.isArray(metrics.samples) ? [...metrics.samples] : [...previous.samples];
+    const latestEpoch = metrics.latest_epoch;
+    if (latestEpoch && latestEpoch.epoch != null) {
+      const index = epochs.findIndex(row => Number(row?.epoch) === Number(latestEpoch.epoch));
+      if (index >= 0) epochs[index] = latestEpoch;
+      else epochs.push(latestEpoch);
+    }
+    const latestSample = metrics.latest;
+    if (latestSample?.sampled_at) {
+      const index = samples.findIndex(row => String(row?.sampled_at || '') === String(latestSample.sampled_at));
+      if (index >= 0) samples[index] = latestSample;
+      else samples.push(latestSample);
+    }
+    if (historyRequested || detailHistoryLoaded.has(key)) rememberDetailHistory(key, {epochs, samples});
+    return {...job, runtime_metrics: {...metrics, epochs: epochs.slice(-1000), samples: samples.slice(-720)}};
+  }
+
+  async function readJob(taskId, {includeHistory = false} = {}) {
     const pid = projectId?.();
     if (!pid) throw new Error('当前项目不可用');
-    const response = await nativeFetch(`/api/projects/${encodeURIComponent(pid)}/jobs/${encodeURIComponent(taskId)}`, {headers: {'Accept': 'application/json'}});
+    const query = includeHistory ? '?include_history=true' : '';
+    const response = await nativeFetch(`/api/projects/${encodeURIComponent(pid)}/jobs/${encodeURIComponent(taskId)}${query}`, {headers: {'Accept': 'application/json'}});
     return json(response, '读取训练任务详情失败');
   }
 
@@ -597,6 +658,27 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
     return true;
   }
 
+  function activateTrainingTab(key, {focus = false, root = null} = {}) {
+    const overlay = root || doc?.querySelector?.('[data-training-recovery-overlay]');
+    if (!overlay || !['curves', 'resources', 'data', 'diagnostics'].includes(key)) return false;
+    activeTab = key;
+    openFocus = key === 'diagnostics' ? openFocus : 'overview';
+    overlay.querySelectorAll?.('[data-training-panel]').forEach(node => {
+      node.hidden = node.dataset.trainingPanel !== activeTab;
+    });
+    overlay.querySelectorAll?.('[data-training-tab]').forEach(node => {
+      const selected = node.dataset.trainingTab === activeTab;
+      node.setAttribute('aria-selected', String(selected));
+      node.setAttribute('tabindex', selected ? '0' : '-1');
+      if (selected && focus) node.focus?.();
+    });
+    const historyKey = detailHistoryKey(openProjectId, openTaskId);
+    if ((key === 'curves' || key === 'resources') && !detailHistoryLoaded.has(historyKey)) {
+      void refreshOpenDetail().catch(error => notify?.(`训练详情刷新失败：${error?.message || error}`));
+    }
+    return true;
+  }
+
   function renderOpenDetail(job, recovery = {}, log = '', focus = openFocus) {
     if (!openTaskId || String(job?.id || job?.task_id || '') !== String(openTaskId)) return false;
     if (String(projectId?.() || '') !== openProjectId) { closeDetail(); return false; }
@@ -604,9 +686,10 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
     const oldDialog = old?.querySelector?.('.training-recovery-dialog');
     const scrollTop = Number(oldDialog?.scrollTop || 0);
     const logOpen = old?.querySelector?.('[data-training-tech-log]')?.open === true || focus === 'log';
+    const focusedTab = old?.querySelector?.('[data-training-tab]:focus')?.dataset?.trainingTab || '';
     const host = doc?.createElement?.('div');
     if (!host) return false;
-    host.innerHTML = detailHtml(job, recovery, log, openSnapshot?.inputIssues || null);
+    host.innerHTML = detailHtml(job, recovery, log, openSnapshot?.inputIssues || null, activeTab);
     const nextOverlay = host.firstElementChild;
     if (!nextOverlay) return false;
     const nextDialog = nextOverlay.querySelector?.('.training-recovery-dialog');
@@ -624,8 +707,7 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
     const logs = overlay.querySelector?.('[data-training-tech-log]');
     if (logs) logs.open = logOpen;
     if (focus === 'log') activeTab = 'diagnostics';
-    overlay.querySelectorAll?.('[data-training-panel]').forEach(node=>{node.hidden=node.dataset.trainingPanel!==activeTab;});
-    overlay.querySelectorAll?.('[data-training-tab]').forEach(node=>{node.setAttribute('aria-selected',String(node.dataset.trainingTab===activeTab));});
+    activateTrainingTab(activeTab, {focus: Boolean(focusedTab), root: overlay});
     const inputIssues = openSnapshot?.inputIssues;
     const paginationRoot = overlay.querySelector?.('[data-training-input-pagination]');
     if (paginationRoot && inputIssues) {
@@ -675,19 +757,22 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
     if (detailRefreshPromise) return detailRefreshPromise;
     detailRefreshPromise = (async () => {
       const cached = (state().jobs || []).find(item => String(item?.id || item?.task_id || '') === String(taskId)) || openSnapshot?.job || {};
+      const historyKey = detailHistoryKey(requestedProject, taskId);
+      const includeHistory = (activeTab === 'curves' || activeTab === 'resources') && !detailHistoryLoaded.has(historyKey);
       const recoveryPromise = includeRecovery
         ? readRecovery(taskId)
         : Promise.resolve(openSnapshot?.recovery || cached?.recovery || {});
       const inputIssuesPromise = FAILED_TASK_STATUSES.has(canonicalTaskStatus(cached))
         ? readInputIssues(taskId, openSnapshot?.inputIssues?.page || 1).catch(() => openSnapshot?.inputIssues || null)
         : Promise.resolve(null);
-      const [job, recovery, log, inputIssues] = await Promise.all([
-        readJob(taskId).catch(() => cached),
+      const [rawJob, recovery, log, inputIssues] = await Promise.all([
+        readJob(taskId, {includeHistory}).catch(() => cached),
         recoveryPromise.catch(() => openSnapshot?.recovery || cached?.recovery || {}),
         readLog(taskId).catch(() => openSnapshot?.log || ''),
         inputIssuesPromise,
       ]);
       if (String(openTaskId) !== String(taskId) || requestedProject !== openProjectId || String(projectId?.() || '') !== requestedProject) return false;
+      const job = mergeDetailHistory(rawJob, requestedProject, taskId, includeHistory);
       const flags = taskStatusFlags(job);
       const effectiveRecovery = flags.success ? {} : recovery;
       openSnapshot = {job, recovery: effectiveRecovery, log, inputIssues};
@@ -707,10 +792,16 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
     }
     openTaskId = String(taskId);
     openProjectId = String(projectId?.() || '');
+    if (detailHistoryProjectId && detailHistoryProjectId !== openProjectId) {
+      detailHistoryCache.clear();
+      detailHistoryLoaded.clear();
+    }
+    detailHistoryProjectId = openProjectId;
     activeTab = options?.focus === 'log' ? 'diagnostics' : 'curves';
     openFocus = options?.focus === 'log' ? 'log' : 'overview';
-    openSnapshot = {job, recovery: job?.recovery || {}, log: '', inputIssues: null};
-    renderOpenDetail(job, openSnapshot.recovery, '', openFocus);
+    const hydratedJob = mergeDetailHistory(job, openProjectId, openTaskId, false);
+    openSnapshot = {job: hydratedJob, recovery: job?.recovery || {}, log: '', inputIssues: null};
+    renderOpenDetail(hydratedJob, openSnapshot.recovery, '', openFocus);
     try {
       await refreshOpenDetail({includeRecovery: FAILED_TASK_STATUSES.has(canonicalTaskStatus(job))});
       return true;
@@ -789,9 +880,7 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
   const onClick = event => {
     const tab = event.target?.closest?.('[data-training-tab]');
     if (tab && openSnapshot) {
-      activeTab = tab.dataset.trainingTab;
-      openFocus = 'overview';
-      renderOpenDetail(openSnapshot.job, openSnapshot.recovery, openSnapshot.log || '');
+      activateTrainingTab(tab.dataset.trainingTab);
       return;
     }
     const close = event.target?.closest?.('[data-training-recovery-close]');
@@ -855,7 +944,22 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
       notify?.('已从当前训练草稿排除该素材');
     }
   };
+  const onKeydown = event => {
+    const tab = event.target?.closest?.('[data-training-tab]');
+    if (!tab) return;
+    const tabs = Array.from(tab.closest?.('[role="tablist"]')?.querySelectorAll?.('[data-training-tab]') || []);
+    const current = tabs.indexOf(tab);
+    let next = current;
+    if (event.key === 'ArrowRight') next = (current + 1) % tabs.length;
+    else if (event.key === 'ArrowLeft') next = (current - 1 + tabs.length) % tabs.length;
+    else if (event.key==='Home') next = 0;
+    else if (event.key==='End') next = tabs.length - 1;
+    else return;
+    event.preventDefault();
+    activateTrainingTab(tabs[next]?.dataset?.trainingTab, {focus: true});
+  };
   doc?.addEventListener?.('click', onClick);
+  doc?.addEventListener?.('keydown', onKeydown);
 
   window.openTrainingRecoveryDetail = taskId => openDetail(taskId, {focus: 'overview'});
   window.revalidateTrainingCheckpoint = recover;
@@ -877,7 +981,10 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
     closeDetail,
     destroy() {
       closeDetail();
+      detailHistoryCache.clear();
+      detailHistoryLoaded.clear();
       doc?.removeEventListener?.('click', onClick);
+      doc?.removeEventListener?.('keydown', onKeydown);
       for (const [name, value] of Object.entries(previous)) {
         if (value === undefined) delete window[name];
         else window[name] = value;

@@ -753,3 +753,50 @@ def test_version_comparison_requires_identical_verified_inputs_and_reports_class
         assert rejected["metrics"] == {}
     current["evaluation_protocol_id"]="e"*64
     assert evaluation.compare_evaluations(source,current)["comparable"] is False
+
+
+def test_version_comparison_uses_class_id_when_display_labels_are_duplicated():
+    import copy
+    scope = {key: 'c' * 64 for key in (
+        'scope_id', 'content_digest', 'ground_truth_digest',
+        'label_schema_digest', 'evaluation_input_digest',
+    )}
+    scope['binding_level'] = 'bundle_verified'
+    source = {
+        'status': 'succeeded', 'evaluation_id': 'a' * 64,
+        'evaluation_protocol_id': 'b' * 64, 'benchmark_scope': scope,
+        'metrics': {'metrics/mAP50(B)': .85},
+        'per_class': [
+            {'class_id': 0, 'label': 'same', 'recall': .9, 'map50': .9, 'false_negative': 1},
+            {'class_id': 1, 'label': 'same', 'recall': .8, 'map50': .8, 'false_negative': 2},
+        ],
+    }
+    current = copy.deepcopy(source)
+    current['per_class'][0].update(recall=.1, map50=.1, false_negative=9)
+    result = evaluation.compare_evaluations(source, current)
+    assert result['comparable'] is True
+    assert len(result['classes']) == 2
+    regressed = [row for row in result['classes'] if row.get('regressed')]
+    assert [(row['class_id'], row['label']) for row in regressed] == [(0, 'same')]
+    assert result['regressed_class_ids'] == [0]
+    assert result['regressed_labels'] == ['same · ID 0']
+
+
+def test_version_comparison_marks_ambiguous_legacy_duplicate_labels_non_comparable():
+    scope = {key: 'c' * 64 for key in (
+        'scope_id', 'content_digest', 'ground_truth_digest',
+        'label_schema_digest', 'evaluation_input_digest',
+    )}
+    scope['binding_level'] = 'bundle_verified'
+    value = {
+        'status': 'succeeded', 'evaluation_id': 'a' * 64,
+        'evaluation_protocol_id': 'b' * 64, 'benchmark_scope': scope,
+        'metrics': {},
+        'per_class': [
+            {'label': 'same', 'recall': .9, 'map50': .9},
+            {'label': 'same', 'recall': .8, 'map50': .8},
+        ],
+    }
+    result = evaluation.compare_evaluations(value, value)
+    assert result['comparable'] is False
+    assert 'class_identity_ambiguous' in result['reason_codes']

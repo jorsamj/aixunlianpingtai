@@ -8,6 +8,12 @@ export function reportPresentation(report = {}) {
 const escapeText = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 const finite = value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value)) ? Number(value) : null;
 
+export function formatPercentagePointDelta(value) {
+  const numeric = finite(value);
+  if (numeric === null) return '未记录';
+  return `${numeric > 0 ? '+' : ''}${(numeric * 100).toFixed(1)} pp`;
+}
+
 export function metricChart(rows = [], key, title, {xKey='epoch',percent=false} = {}) {
   const points=rows.slice(-1000).map(row=>({x:finite(row[xKey]),y:finite(row[key])}));
   const valid=points.filter(point=>point.x!==null&&point.y!==null);

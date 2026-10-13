@@ -85,8 +85,77 @@ def test_changed_frozen_image_fails_closed_before_file_read(monkeypatch, tmp_pat
 def test_portable_image_name_resolves_stable_id_after_source_rename(monkeypatch, tmp_path):
     platform, version, rows, root, image = _setup(monkeypatch, tmp_path)
     version['evaluation']['error_samples'][0]['image'] = 'test-image.jpg'
+    version['evaluation']['error_samples'][0]['image_id'] = 'test-image'
     rows[0]['stored_name'] = 'migrated-name.jpg'
     response = platform.evaluation_diagnostic_image_v1('evaluation-project', 'algo', 'v1', 'test-image.jpg')
+    assert Path(response.path) == image
+
+
+def test_legacy_filename_stem_never_overrides_unique_frozen_stored_name(monkeypatch, tmp_path):
+    """Regression for the reviewed foo-id / bar-stored-name evidence collision."""
+    platform, version, rows, root, image = _setup(monkeypatch, tmp_path)
+    wrong = root / 'wrong.jpg'
+    expected = root / 'expected.jpg'
+    Image.new('RGB', (120, 80), 'red').save(wrong)
+    Image.new('RGB', (120, 80), 'blue').save(expected)
+    wrong_hash = hashlib.sha256(wrong.read_bytes()).hexdigest()
+    expected_hash = hashlib.sha256(expected.read_bytes()).hexdigest()
+    snapshot_path = root / 'snapshots' / ('a' * 64 + '.json')
+    snapshot_path.write_text(json.dumps({
+        'snapshot_id': 'a' * 64,
+        'test_image_ids': ['foo', 'bar'],
+        'images': [
+            {'image_id': 'foo', 'stored_name': 'other.jpg', 'content_sha256': wrong_hash},
+            {'image_id': 'bar', 'stored_name': 'foo.jpg', 'content_sha256': expected_hash},
+        ],
+    }), encoding='utf-8')
+    version['evaluation']['error_samples'] = [{'image': 'foo.jpg', 'image_width': 120, 'image_height': 80}]
+    material_rows = [
+        {'id': 'foo', 'stored_name': 'other.jpg', 'content_sha256': wrong_hash},
+        {'id': 'bar', 'stored_name': 'foo.jpg', 'content_sha256': expected_hash},
+    ]
+
+    class Repository:
+        def __init__(self, _root): pass
+        def get_many(self, ids): return [row for row in material_rows if row['id'] in ids]
+        def get_by_content_sha256(self, digest):
+            return next((row for row in material_rows if row['content_sha256'] == digest), None)
+
+    class Manager:
+        def material(self, image_id): return next(row for row in material_rows if row['id'] == image_id)
+        def materialize(self, material):
+            return SimpleNamespace(path=wrong if material['id'] == 'foo' else expected)
+
+    monkeypatch.setattr(platform, 'MaterialRepository', Repository)
+    monkeypatch.setattr(platform, 'storage_manager', lambda _: Manager())
+    response = platform.evaluation_diagnostic_image_v1('evaluation-project', 'algo', 'v1', 'foo.jpg')
+    assert Path(response.path).read_bytes() == expected.read_bytes()
+    assert Path(response.path).read_bytes() != wrong.read_bytes()
+
+
+def test_legacy_filename_rejects_duplicate_frozen_stored_names(monkeypatch, tmp_path):
+    platform, version, rows, root, image = _setup(monkeypatch, tmp_path)
+    snapshot_path = root / 'snapshots' / ('a' * 64 + '.json')
+    snapshot = json.loads(snapshot_path.read_text(encoding='utf-8'))
+    snapshot['test_image_ids'] = ['readonly-test', 'other-id']
+    snapshot['images'] = [
+        {'image_id': 'readonly-test', 'stored_name': image.name, 'content_sha256': rows[0]['content_sha256']},
+        {'image_id': 'other-id', 'stored_name': image.name, 'content_sha256': rows[0]['content_sha256']},
+    ]
+    snapshot_path.write_text(json.dumps(snapshot), encoding='utf-8')
+    with pytest.raises(HTTPException) as captured:
+        platform.evaluation_diagnostic_image_v1('evaluation-project', 'algo', 'v1', image.name)
+    assert captured.value.detail['code'] == 'IMAGE_IDENTITY_AMBIGUOUS'
+
+
+def test_explicit_image_id_outranks_filename_and_remains_hash_bound(monkeypatch, tmp_path):
+    platform, version, rows, root, image = _setup(monkeypatch, tmp_path)
+    version['evaluation']['error_samples'][0]['image_id'] = 'test-image'
+    snapshot_path = root / 'snapshots' / ('a' * 64 + '.json')
+    snapshot = json.loads(snapshot_path.read_text(encoding='utf-8'))
+    snapshot['images'][0]['stored_name'] = 'another-name.jpg'
+    snapshot_path.write_text(json.dumps(snapshot), encoding='utf-8')
+    response = platform.evaluation_diagnostic_image_v1('evaluation-project', 'algo', 'v1', image.name)
     assert Path(response.path) == image
 
 
@@ -213,6 +282,44 @@ def test_20k_named_frozen_test_preview_only_fetches_one_material(monkeypatch, tm
     result = platform.evaluation_diagnostic_image_v1("evaluation-project", "algo", "v1", image.name)
     assert Path(result.path) == image
     assert read_ids == [("test-image",)]
+
+
+def test_20k_snapshot_identity_index_is_reused_and_invalidated_on_change(monkeypatch, tmp_path):
+    platform, version, rows, root, image = _setup(monkeypatch, tmp_path)
+    snapshot_path = root / 'snapshots' / ('a' * 64 + '.json')
+    snapshot = json.loads(snapshot_path.read_text(encoding='utf-8'))
+    snapshot['images'][0]['stored_name'] = image.name
+    snapshot['images'][1]['stored_name'] = 'train.jpg'
+    for index in range(20_000):
+        image_id = f'large-{index:05d}'
+        snapshot['test_image_ids'].append(image_id)
+        snapshot['images'].append({
+            'image_id': image_id,
+            'stored_name': f'{image_id}.jpg',
+            'content_sha256': 'd' * 64,
+        })
+    snapshot_path.write_text(json.dumps(snapshot), encoding='utf-8')
+    original_read_json = platform.read_json
+    reads = 0
+
+    def observed_read_json(path, default):
+        nonlocal reads
+        if Path(path) == snapshot_path:
+            reads += 1
+        return original_read_json(path, default)
+
+    monkeypatch.setattr(platform, 'read_json', observed_read_json)
+    for _ in range(24):
+        response = platform.evaluation_diagnostic_image_v1('evaluation-project', 'algo', 'v1', image.name)
+        assert Path(response.path) == image
+    assert reads == 1
+
+    snapshot['snapshot_id'] = 'b' * 64
+    snapshot_path.write_text(json.dumps(snapshot) + '\n', encoding='utf-8')
+    with pytest.raises(HTTPException) as captured:
+        platform.evaluation_diagnostic_image_v1('evaluation-project', 'algo', 'v1', image.name)
+    assert captured.value.detail['code'] == 'SNAPSHOT_INCOMPLETE'
+    assert reads == 2
 
 
 def test_legacy_unnamed_frozen_test_preview_reads_bounded_batches(monkeypatch, tmp_path):
