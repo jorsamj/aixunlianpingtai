@@ -250,6 +250,10 @@ test('each overview tab switches into isolated demo fixtures and restores live d
     const liveRenders=productionRenders;
     for(let i=0;i<3;i++)click('algorithm');
     assert.match(view.innerHTML,/data-overview-demo="true"/);
+    assert.match(view.innerHTML,/ov352-dashboard/);
+    assert.match(view.innerHTML,/样例数据/);
+    assert.match(view.innerHTML,/返回实时/);
+    assert.doesNotMatch(view.innerHTML,/演示|模拟/);
     assert.doesNotMatch(view.innerHTML,/演示数据模式|不参与真实统计或任务调度|所有服务器、GPU、利用率、容量均为模拟/);
     assert.match(view.innerHTML,/12,840 次/);
     assert.match(view.innerHTML,/94.6%/);
@@ -263,6 +267,10 @@ test('each overview tab switches into isolated demo fixtures and restores live d
     assert.doesNotMatch(view.innerHTML,/data-overview-demo="true"/);
     for(let i=0;i<2;i++)click('compute');
     assert.match(view.innerHTML,/data-overview-demo="true"/);
+    assert.match(view.innerHTML,/ov352-dashboard/);
+    assert.match(view.innerHTML,/样例数据/);
+    assert.match(view.innerHTML,/返回实时/);
+    assert.doesNotMatch(view.innerHTML,/演示|模拟/);
     assert.doesNotMatch(view.innerHTML,/演示数据模式|不参与真实统计或任务调度|所有服务器、GPU、利用率、容量均为模拟/);
     assert.match(view.innerHTML,/GPU 训练服务器 A/);
     assert.doesNotMatch(view.innerHTML,/94.6%/);
@@ -270,4 +278,19 @@ test('each overview tab switches into isolated demo fixtures and restores live d
     assert.doesNotMatch(view.innerHTML,/data-overview-demo="true"/);
     assert.match(view.innerHTML,/真实模型/);
   }finally{globalThis.document=previous}
+});
+
+test('both overview pages use consistent responsive dashboard sections and visible source attribution',()=>{
+  const js=readFileSync(new URL('../../static/modules/overview-tabs.js',import.meta.url),'utf8');
+  const css=readFileSync(new URL('../../static/overview-tabs.css',import.meta.url),'utf8');
+  assert.match(js,/ov352-dashboard ov352-algorithm/);
+  assert.match(js,/ov352-dashboard ov352-compute/);
+  assert.match(js,/ov352-compute-intro/);
+  assert.match(js,/ov352-device-grid/);
+  assert.match(js,/data-overview-demo="true"><span>样例数据/);
+  assert.match(js,/数据来源：界面样例数据/);
+  assert.doesNotMatch(js,/演示/);
+  assert.match(css,/\.ov352-dashboard \.ov348-kpis\{display:grid;grid-template-columns:repeat\(5,minmax\(0,1fr\)\)/);
+  assert.match(css,/@media\(max-width:900px\)/);
+  assert.match(css,/\.ov352-source\{/);
 });
