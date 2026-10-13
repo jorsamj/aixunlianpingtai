@@ -288,12 +288,13 @@ test('both overview pages use consistent responsive dashboard sections and visib
   assert.match(js,/ov352-dashboard ov352-compute/);
   assert.match(js,/ov352-compute-intro/);
   assert.match(js,/ov352-device-grid/);
-  assert.match(js,/data-overview-demo="true"><span>样例数据/);
+  assert.match(js,/data-overview-demo="true"/);
+  assert.doesNotMatch(js,/data-overview-demo-exit|返回实时|ov352-source/);
   assert.match(js,/数据来源：界面样例数据/);
   assert.doesNotMatch(js,/演示/);
   assert.match(css,/\.ov352-dashboard \.ov348-kpis\{display:grid;grid-template-columns:repeat\(5,minmax\(0,1fr\)\)/);
   assert.match(css,/@media\(max-width:900px\)/);
-  assert.match(css,/\.ov352-source\{/);
+  assert.doesNotMatch(css,/\.ov352-source\{/);
 });
 
 test('overview samples have no header actions and keep concise source attribution',()=>{
