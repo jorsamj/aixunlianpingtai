@@ -123,28 +123,28 @@ function overviewAlgorithm(m,demo=false) {
     empty(m.total?'暂未取得已完成的真实模型评测':'暂无算法资产'),'已评测算法优先 · 仅展示真实指标');
   const application=demo?
     '<div class="ov348-grid">'+
-      panel('高频使用算法排行',rows(m.usage,x=>bar(x.name,x.count,m.usage[0].count,fmt(x.count)+' 次')),'模拟推理调用量')+
-      panel('各单位算法运行状况',rows(m.units,x=>'<div class="ov348-accuracy"><b>'+esc(x.name)+'</b><div><span>'+esc(x.status)+'</span><span>'+fmt(x.count)+' 个部署算法</span></div></div>'),'模拟单位运行实例')+
+      panel('高频使用算法排行',rows(m.usage,x=>bar(x.name,x.count,m.usage[0].count,fmt(x.count)+' 次')),'调用次数分布')+
+      panel('各单位算法运行状况',rows(m.units,x=>'<div class="ov348-accuracy"><b>'+esc(x.name)+'</b><div><span>'+esc(x.status)+'</span><span>'+fmt(x.count)+' 个部署算法</span></div></div>'),'单位运行状态')+
     '</div><div class="ov348-grid">'+
-      panel('单位算法数量排行',rows(m.units,x=>bar(x.name,x.count,m.units[0].count,fmt(x.count)+' 项')),'模拟单位部署分布')+
-      panel('训练任务概览','<div class="ov348-kpis ov348-kpis-small">'+metric('训练中','2','模拟训练任务')+metric('排队任务','3','模拟调度队列')+metric('已完成','27','模拟累计任务')+'</div>','模拟生产概览')+
+      panel('单位算法数量排行',rows(m.units,x=>bar(x.name,x.count,m.units[0].count,fmt(x.count)+' 项')),'单位部署数量')+
+      panel('训练任务概览','<div class="ov348-kpis ov348-kpis-small">'+metric('训练中','2','任务进行中')+metric('排队任务','3','任务等待中')+metric('已完成','27','累计任务')+'</div>','训练任务状态')+
     '</div>':
     '<details class="ov351-pending"><summary>待接入指标 <span>高频排行、单位运行与部署 · 展开</span></summary><div class="ov348-grid">'+
       panel('高频使用算法排行',empty('尚未接入生产推理调用次数'),'生产运行次数 · 待接入')+
       panel('各单位算法运行状况',empty('尚未接入单位与部署实例运行数据'),'单位维度 · 待接入')+'</div>'+
     '<div class="ov348-grid">'+panel('单位算法数量排行',empty('尚无可信的单位归属记录'),'单位维度 · 待接入')+'</div></details>';
-  return '<div class="ov348-stack ov351-algorithm"><div class="ov351-algorithm-intro"><div><span>ALGORITHM INTELLIGENCE</span><h3>算法资产全景</h3><p>模型质量 · 算法类型 · 场景分布 · 生产运行</p></div><strong>'+fmt(m.measured)+' <small>已评测算法</small></strong></div><div class="ov348-kpis">'+
+  return '<div class="ov348-stack ov351-algorithm ov352-dashboard ov352-algorithm"><div class="ov351-algorithm-intro"><div><span>ALGORITHM INTELLIGENCE</span><h3>算法资产全景</h3><p>模型质量 · 算法类型 · 场景分布 · 生产运行</p></div><strong>'+fmt(m.measured)+' <small>已评测算法</small></strong></div><div class="ov348-kpis">'+
     metric('算法总数',fmt(m.total),'当前空间已登记算法')+
     metric('算法类型',fmt(m.types.length),'按 algorithm_type 归类')+
     metric('有版本算法',fmt(m.withVersions),'累计 '+fmt(m.versionCount)+' 个版本')+
     metric('模型评测覆盖',fmt(m.measured)+' / '+fmt(m.total),'具备 Precision / Recall / mAP')+
-    metric('策略准确率',demo?pct(m.strategyAccuracy/100):'—',demo?'模拟策略判定指标':'尚无策略判定结果事实源')+'</div>'+
+    metric('策略准确率',demo?pct(m.strategyAccuracy/100):'—',demo?'策略判定结果':'尚无策略判定结果事实源')+'</div>'+
     '<div class="ov350-section"><h3>算法资产与模型表现</h3><span>有效数据优先</span></div>'+
     '<div class="ov348-grid ov350-leader-grid">'+accuracy+typePanel+'</div>'+
     '<div class="ov348-grid">'+industryPanel+panel('算法资产清单',m.scores.length?rows(m.scores.slice(0,30),x=>'<div class="ov348-accuracy"><button type="button" class="ov348-algo-link" data-overview-algorithm-id="'+esc(x.id)+'">'+esc(x.name)+'</button><div><span>'+((x.map50!==null||x.precision!==null||x.recall!==null)?'已有模型评测':'待评测')+'</span></div></div>'):empty('尚无算法资产'),'含待评测算法 · 最多显示 30 项')+'</div>'+
-    '<div class="ov350-section"><h3>运行与应用</h3><span>'+(demo?'演示数据 · 非真实采样':'待接入数据源')+'</span></div>'+
+    '<div class="ov350-section"><h3>运行与应用</h3><span>'+(demo?'应用分布':'待接入数据源')+'</span></div>'+
     application+
-    '</div><div class="ov348-footnote">'+(demo?'当前为界面演示：算法资产、评测质量、策略准确率、调用排行、单位运行和任务数全部为模拟值，不代表平台真实运行状况。':'统计口径：算法数量来自当前空间算法资产；模型指标来自质量概览。策略准确率、调用量及单位运行数据没有可信来源时显示“—”，不会以训练成功率或模型精度冒充。')+'</div></div>';
+    '</div><div class="ov348-footnote">'+(demo?'数据来源：界面样例数据。算法、模型质量、调用量和单位数据不代表实际运行结果。':'统计口径：算法数量来自当前空间算法资产；模型指标来自质量概览。策略准确率、调用量及单位运行数据没有可信来源时显示“—”，不会以训练成功率或模型精度冒充。')+'</div></div>';
 }
 function overviewCompute(m,placementFilter='all',controller=null,demo=false) {
   const statusName={ONLINE:'在线',OFFLINE:'心跳超时',DISABLED:'已禁用',NEVER_CONNECTED:'未连接'};
@@ -165,8 +165,8 @@ function overviewCompute(m,placementFilter='all',controller=null,demo=false) {
     metric('调度证据覆盖',fmt(m.gpuMeasured)+' / '+fmt(m.gpuCount),'无法核验预约时显示未知')+'</div>',
     '最终可用性以任务调度器准入为准');
   const storage=panel('文件存储与云存储',
-    '<div class="ov348-kpis ov348-kpis-small">'+metric('文件存储用量',demo?'820.5 GB':'—',demo?'演示数据 · 非真实容量':'容量暂未接入')+
-    metric('普通云存储用量',demo?'236.2 GB':'—',demo?'演示数据 · 非真实容量':'OSS/S3 Bucket 容量暂未接入')+
+    '<div class="ov348-kpis ov348-kpis-small">'+metric('文件存储用量',demo?'820.5 GB':'—',demo?'容量统计':'容量暂未接入')+
+    metric('普通云存储用量',demo?'236.2 GB':'—',demo?'容量统计':'OSS/S3 Bucket 容量暂未接入')+
     metric('已配置存储源',fmt(m.storageCount),'本地 '+m.storageTypes.local+' · 云 '+(m.storageTypes.oss+m.storageTypes.s3))+'</div>'+
     '<div class="ov348-help">服务器磁盘已使用量仅代表节点挂载盘，不等于对象存储 Bucket 占用量。</div>','已配置来源 ≠ 容量');
   const resources=panel('资源风险节点占比',m.monitoredNodeCount?
@@ -183,18 +183,28 @@ function overviewCompute(m,placementFilter='all',controller=null,demo=false) {
       rows(host.gpu.gpus,g=>'<span>'+esc(g.name||'GPU')+' · 使用率 '+esc(percent(g.utilization_percent)==null?'—':percent(g.utilization_percent)+'%')+' · 显存 '+esc(bytes(g.memory_used_bytes))+' / '+esc(bytes(g.memory_total_bytes))+'</span>'):
       '<span>本机无可探测 NVIDIA GPU</span>')+'</div>':
     empty('本机资源尚未采样'),'独立观察 · 不计入 Agent 节点或训练可调度 GPU');
-  const trend=demo?'<section class="ov351-trend-panel"><div class="ov351-trend-heading"><div><b>算力负载趋势</b><span>GPU-A / GPU-B / GPU-C · 过去 12 个采样点（模拟）</span></div><strong>实时演示</strong></div><svg viewBox="0 0 900 160" preserveAspectRatio="none" role="img" aria-label="模拟 GPU 负载走势"><defs><linearGradient id="ov351-trend-fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stop-color="#5b9cff" stop-opacity=".20"/><stop offset="100%" stop-color="#5b9cff" stop-opacity="0"/></linearGradient></defs><path d="M0 35H900M0 77H900M0 119H900" stroke="#dce8f4" stroke-dasharray="5 7"/><path d="M0 110L82 103L164 99L246 83L328 96L410 70L492 73L574 48L656 60L738 37L820 52L900 31L900 160L0 160Z" fill="url(#ov351-trend-fill)"/><polyline points="0,110 82,103 164,99 246,83 328,96 410,70 492,73 574,48 656,60 738,37 820,52 900,31" fill="none" stroke="#427cde" stroke-width="3"/><polyline points="0,128 82,116 164,120 246,110 328,112 410,105 492,112 574,99 656,104 738,92 820,94 900,87" fill="none" stroke="#21b7a6" stroke-width="3"/><polyline points="0,140 82,143 164,138 246,143 328,137 410,139 492,130 574,134 656,136 738,130 820,132 900,125" fill="none" stroke="#f5a85b" stroke-width="3"/></svg><div class="ov351-trend-legend"><span>● GPU-A 72%</span><span>● GPU-B 23%</span><span>● GPU-C 4%</span></div></section>':'';
-  return '<div class="ov348-stack">'+trend+'<div class="ov348-kpis">'+
+  const trend=demo?'<section class="ov351-trend-panel"><div class="ov351-trend-heading"><div><b>算力负载趋势</b><span>GPU-A / GPU-B / GPU-C · 12 个采样点</span></div><strong>负载概览</strong></div><svg viewBox="0 0 900 160" preserveAspectRatio="none" role="img" aria-label="GPU 样例负载走势"><defs><linearGradient id="ov351-trend-fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stop-color="#5b9cff" stop-opacity=".20"/><stop offset="100%" stop-color="#5b9cff" stop-opacity="0"/></linearGradient></defs><path d="M0 35H900M0 77H900M0 119H900" stroke="#dce8f4" stroke-dasharray="5 7"/><path d="M0 110L82 103L164 99L246 83L328 96L410 70L492 73L574 48L656 60L738 37L820 52L900 31L900 160L0 160Z" fill="url(#ov351-trend-fill)"/><polyline points="0,110 82,103 164,99 246,83 328,96 410,70 492,73 574,48 656,60 738,37 820,52 900,31" fill="none" stroke="#427cde" stroke-width="3"/><polyline points="0,128 82,116 164,120 246,110 328,112 410,105 492,112 574,99 656,104 738,92 820,94 900,87" fill="none" stroke="#21b7a6" stroke-width="3"/><polyline points="0,140 82,143 164,138 246,143 328,137 410,139 492,130 574,134 656,136 738,130 820,132 900,125" fill="none" stroke="#f5a85b" stroke-width="3"/></svg><div class="ov351-trend-legend"><span>● GPU-A 72%</span><span>● GPU-B 23%</span><span>● GPU-C 4%</span></div></section>':'';
+  return '<div class="ov348-stack ov352-dashboard ov352-compute">'+
+    '<div class="ov352-compute-intro"><div><span>COMPUTE CAPACITY</span><h3>算力资源全景</h3><p>中心算力 · 边缘节点 · GPU 资源 · 存储</p></div>'+
+    '<strong>'+(m.nodesKnown?fmt(m.gpuCount):'—')+'<small>在线 GPU</small></strong></div>'+
+    '<div class="ov348-kpis">'+
     metric('服务节点',m.nodesKnown?fmt(m.nodeCount):'—',m.nodesKnown?fmt(m.online)+' 在线 · '+fmt(m.offline)+' 超时 · '+fmt(m.disabled)+' 禁用 · '+fmt(m.neverConnected)+' 未连接':'节点状态尚未取得')+
     metric('在线 GPU',m.nodesKnown?fmt(m.gpuCount):'—','离线 GPU 不计入')+
     metric('平均 CPU',m.cpuAvg==null?'—':m.cpuAvg.toFixed(1)+'%','仅统计在线且有采样的节点')+
     metric('平均内存',m.memoryAvg==null?'—':m.memoryAvg.toFixed(1)+'%','仅统计在线且有采样的节点')+
     metric('平均磁盘',m.diskAvg==null?'—':m.diskAvg.toFixed(1)+'%','仅统计在线且有采样的节点')+
-    '</div><div class="ov348-grid">'+localPanel+'</div><div class="ov348-grid">'+topology+availability+'</div>'+
-    '<div class="ov348-grid">'+panel('服务器运行情况',selector+nodeList,'CPU / 内存 / 磁盘 · Agent 心跳快照','ov348-wide')+'</div>'+
-    '<div class="ov348-grid">'+panel('GPU 设备明细',gpuRows,'型号 / 使用率 / 显存 · 当前在线设备')+resources+'</div>'+
-    '<div class="ov348-grid">'+storage+'</div>'+
-    '<div class="ov348-footnote">数据口径：GPU/CPU/内存/磁盘来自现有服务节点 Agent；闲置候选仅在调度记录与设备采样均新鲜时显示。云存储实际用量和历史告警率未采集时保持未知，避免虚构实时数据。</div></div>';
+    '</div>'+trend+
+    '<div class="ov350-section"><h3>资源分布</h3><span>GPU · 中心端 · 边缘端</span></div>'+
+    '<div class="ov348-grid ov352-core-grid">'+topology+availability+'</div>'+
+    '<div class="ov348-grid ov352-operations-grid">'+localPanel+storage+'</div>'+
+    '<div class="ov350-section"><h3>节点与设备</h3><span>资源监测与风险</span></div>'+
+    '<div class="ov348-grid ov352-device-grid">'+
+      panel('服务器运行情况',selector+nodeList,'CPU / 内存 / 磁盘 · Agent 心跳快照','ov348-wide')+
+      panel('GPU 设备明细',gpuRows,'型号 / 使用率 / 显存 · 当前在线设备')+
+    '</div><div class="ov348-grid ov352-risk-grid">'+resources+'</div>'+
+    '<div class="ov348-footnote">'+(demo?
+      '数据来源：界面样例数据，GPU、节点负载及存储用量不代表实际运行采样。':
+      '数据口径：GPU/CPU/内存/磁盘来自现有服务节点 Agent；闲置候选仅在调度记录与设备采样均新鲜时显示。云存储实际用量和历史告警率未采集时保持未知，避免虚构实时数据。')+'</div></div>';
 }
 
 // Display-only fixtures. Neither fixture enters the API, scheduler, store or source cache.
@@ -242,7 +252,7 @@ function demoComputeSnapshot() {
   ];
   return {nodes,storage:[{type:'local'},{type:'oss'}],
     gpuRuntime:{gpus,memory_safety_bytes:2*GB,max_concurrent_per_gpu:1},
-    local:{name:'控制端（演示）',sampled_at:'演示快照 · 非真实采样',
+    local:{name:'控制端 · 资源概况',sampled_at:'样例数据',
       resources:{cpu:{usage_percent:16},memory:{usage_percent:32,used_bytes:10*GB,total_bytes:32*GB},
         disk:{usage_percent:42,used_bytes:210*GB,total_bytes:500*GB},gpu:{gpus:[]}}}};
 }
@@ -277,7 +287,7 @@ export function installOverviewTabsRuntime({
       overviewCompute(buildComputeMap(computeSample?computeSample.nodes:(cache.nodes ? cache.nodes.items : null),computeSample?computeSample.storage:cache.storage?.items,computeSample?computeSample.gpuRuntime:cache.gpuRuntime),placementFilter,computeSample?computeSample.local:cache.local,!!computeSample);
     // Keep the existing escape action without covering demo dashboards in a
     // large explanatory banner. Fixtures remain isolated from live state.
-    if(demoMode)content='<div class="ov351-demo-actions" data-overview-demo="true"><button type="button" data-overview-demo-exit="1">退出演示</button></div>'+content;
+    // Render the unobtrusive source marker alongside the page header.
     if(!demoMode&&!has&&!cache.loadedAt[algorithm?'algorithms':'nodes'])content='<div class="ov348-loading">正在读取'+(algorithm?'算法资产':'算力资源')+'数据…</div>'+content;
     const errors=Object.entries(cache.errors).filter(([key,value])=>
       (algorithm?['quality','algorithms'].includes(key):!['quality','algorithms'].includes(key))&&value);
@@ -293,7 +303,7 @@ export function installOverviewTabsRuntime({
       else window.setPage?.('算法列表');
     }));
     view.insertAdjacentHTML('afterbegin','<div class="ov348-header" data-overview-tabs="1">'+
-      '<div class="ov348-title"><span>ALGORITHM & CAPACITY INTELLIGENCE</span><h2>'+esc(algorithm?'算法一张图':'算力一张图')+'</h2></div>'+
+      '<div class="ov348-title"><span>ALGORITHM & CAPACITY INTELLIGENCE</span><h2>'+esc(algorithm?'算法一张图':'算力一张图')+'</h2></div>'+(demoMode?'<div class="ov352-source" data-overview-demo="true"><span>样例数据</span><button type="button" data-overview-demo-exit="1">返回实时</button></div>':'')+
       '<div class="ov348-toolbar" role="tablist" aria-label="总览类型">'+OVERVIEW_TABS.map(x=>
         '<button type="button" role="tab" data-overview-tab="'+x.id+'" aria-selected="'+(active===x.id)+'"'+
         ' class="'+(active===x.id?'active':'')+'">'+esc(x.label)+'</button>').join('')+
