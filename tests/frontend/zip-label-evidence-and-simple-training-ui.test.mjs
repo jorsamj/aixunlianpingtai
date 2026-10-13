@@ -60,8 +60,23 @@ test('ZIP labels have one batch source plan with explicit durable creation and r
   assert.match(zip,/previewOriginalLabels/);
   assert.match(zip,/confirmOriginalLabels/);
   assert.match(zip,/planOriginalLabelMappings\(review,labelItems\(\)\)/);
-  assert.match(zip,/await createPlatformLabel\(item\.code,item\.source\)/);
-  assert.match(zip,/review\.mapping\[item\.classId\]/);
+  const previewStart=zip.indexOf('function previewOriginalLabels(jobId)');
+  const previewEnd=zip.indexOf('function cancelOriginalLabels(jobId)',previewStart);
+  assert.ok(previewStart>=0&&previewEnd>previewStart,'ZIP original-label selection must exist');
+  const preview=zip.slice(previewStart,previewEnd);
+  assert.match(preview,/setLabelMapping\(review,item\.classId,item\.code\)/);
+  assert.match(preview,/review\.pendingCreate\[item\.classId\]=item\.code/);
+  assert.doesNotMatch(preview,/createPlatformLabel\(/,'selection must not create platform labels prematurely');
+  const confirmStart=zip.indexOf('async function confirmLabels(jobId)');
+  const confirmEnd=zip.indexOf('async function maybeStart(project)',confirmStart);
+  assert.ok(confirmStart>=0&&confirmEnd>confirmStart,'ZIP final confirmation must exist');
+  const confirmation=zip.slice(confirmStart,confirmEnd);
+  assert.match(confirmation,/buildManualLabelMapping\(review\)/);
+  const create=confirmation.indexOf('await createPlatformLabel(code,name)');
+  const verify=confirmation.indexOf('verified.has(String(code))');
+  const submit=confirmation.indexOf('await startZipJob(project,id,{fetchImpl,confirmation:{label_mapping}})');
+  assert.ok(create>=0&&create<verify&&verify<submit,
+    'final confirmation creates and verifies canonical labels before admitting the ZIP import');
   assert.match(zip,/zip-label-workspace/);
   assert.match(css,/\.zip-label-confirm \.zip-label-workspace/);
 });
