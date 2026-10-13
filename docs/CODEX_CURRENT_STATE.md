@@ -2769,3 +2769,11 @@ VERSION `42.24.300` adds one project-scoped coordination fence between canonical
 >
 > VERSION `42.24.305`：数据集 MaterialRepository 真页码、训练任务 canonical snapshot 视图和 AI CandidateStore offset 审核均接入唯一 `pagination.js`。cursor consumer 保持兼容，未新增业务 owner。清洗/导入/模型及 phase 3 仍待后续独立批次；精确 HEAD CI 与生产部署为 PENDING。
 >
+## 2026-10-13｜VNext 模型质量工作台（LOCAL VERIFIED / PRODUCTION UAT OPEN）
+
+- 基线 `30f83c48`，唯一 owner 不变：`training_evaluation.py` 负责评测事实，`TrainingRecoveryRuntime` 负责训练详情，`trainingReportCore425` 负责训练报告；没有新增评测引擎、训练状态 owner、轮询器、素材库或标注流程。
+- P0 冻结图片读取按 Evaluation → Snapshot Test ID → SHA256 → 已验证 Bundle/Storage 实际字节闭环；拒绝同名替代、Snapshot 漂移、哈希变化与悬空检测框，安全错误码区分恢复/重试。隔离环境已验证，生产历史对象与真实 OSS 尚未验证。
+- 评测工作台包含总览、类别/真实混淆、Top200 错误图片、真实 Confidence 采样、严格同基准版本对比；同图并排还要求相同 Image ID 与实际字节哈希。训练详情沿用原 runtime 四 Tab，训练报告区分执行、停止、独立评测和业务验收。
+- 本地证据：Python 208 passed / 1 Linux-only skipped；Node 24 frontend 947/947；Real Chrome 51/51；1920×1080、1440×900、1366×768、375×812 的评测、图片、训练详情和报告均截图核验。正式 `VERSION.txt=42.24.355` 未改；未 push、未部署、未执行 GPU 训练。
+- P2 明确保留：全量错误索引、完整场景切片、全量尺寸统计、PDF 导出需要新增可靠证据或迁移；旧记录缺证据时只提示重新评测，不回算或虚构。
+- 本轮交付止于本地提交；GitHub CI、生产历史数据与 GPU 训练仍为 `NOT VERIFIED`。

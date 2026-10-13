@@ -1,5 +1,12 @@
 # Frontend Legacy Runtime Audit
 
+## 2026-10-13 VNext model-quality owner update
+
+- Canonical owners stay singular: classic `openVersionEvaluation429` presents version-owned evaluation truth; `trainingReportCore425` remains the report entry (aliases only delegate); `TrainingRecoveryRuntime` remains the only detail/log presentation owner.
+- Evaluation identity resets filters across project/version/evaluation changes. Image requests use one abort controller; paired comparison requires the API's strict benchmark result plus identical image ID/content SHA. No new polling or broad refresh owner was added.
+- Current asset keys: `app.js 42.25.373`, `main.mjs 42.25.373`, `styles.css 42.25.373`, reports/training-recovery module imports `4226373`. Formal `VERSION.txt 42.24.355` is unchanged.
+- Node 24 frontend 947/947 and selected Real Chrome 51/51 passed locally. Exact pushed-HEAD CI is not applicable because this batch is intentionally local-only.
+
 > Branch: `refactor/frontend-runtime-stabilization`  
 > Authority: `docs/TECH_DEBT_CLOSURE_V42_25.md`  
 > Goal: reduce classic `static/app.js` to bounded shell + named runtime owners before any future framework replacement.

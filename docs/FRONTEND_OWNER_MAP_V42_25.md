@@ -1,5 +1,17 @@
 # Frontend Final-Owner Map — v42.25
 
+## 2026-10-13 Model quality and training report owners
+
+```text
+training_evaluation.py             evaluation scoring/evidence truth
+openVersionEvaluation429           evaluation workspace presentation
+trainingReportCore425              canonical training report presentation
+TrainingRecoveryRuntime            training detail/log four-tab presentation
+PollRegistry/TrainingProgressStream unchanged lifecycle owners
+```
+
+`trainingReport425`, `trainingReport424`, and `openJobReport429` only delegate to `trainingReportCore425`; they are not parallel renderers. Version fallback reports show only persisted history/evaluation metrics and explicitly mark missing execution truth. No additional cache or polling owner was introduced.
+
 ## 2026-09-24 Training detail/log final-owner closure
 
 Final product owner chain:
