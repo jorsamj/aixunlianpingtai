@@ -97,6 +97,8 @@ jobs:
           grep -Fq 'resumeRequired' static/modules/upload-task-center.js
           grep -Fq 'z-index:1300' static/modules/upload-task-center.js
           grep -Fq 'body:has(.modal:not(.hidden):not(.import350-modal)) .utc-root{z-index:900}' static/modules/upload-task-center.js
+          grep -Fq 'body:has(.modal.import350-modal:not(.hidden):not(.import350-minimized) .zip-label-confirm) .utc-root{z-index:900}' static/modules/upload-task-center.js
+          grep -Fq '.zip-label-confirm .zip-label-workspace .label-mapping-sample-panel:not([hidden]){position:static;' static/styles.css
           grep -Fq 'upload task center opens above ZIP modal but yields to unrelated dialogs' tests/frontend/import-dock-style.test.mjs
           if grep -Fq 'setInterval(switchProject, 1500)' static/modules/upload-task-center.js; then echo "upload task center project switching must be navigation-owned" >&2; exit 1; fi
           grep -Fq 'uploadTaskCenterRuntime.switchProject?.()' static/main.mjs
