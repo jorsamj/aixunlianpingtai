@@ -36,7 +36,7 @@ test('upload task center opens above ZIP modal but yields to unrelated dialogs',
   assert.ok(otherDialogGuard, 'unrelated dialogs must take precedence over the ZIP upload dock');
   assert.ok(Number(dock[1]) > Number(modal[1]), 'upload task center must remain clickable while ZIP modal is open');
   assert.ok(Number(otherDialogGuard[1]) < Number(modal[1]), 'unrelated dialogs must stay above the upload task center');
-};
+});
 
 test('import modal remains mounted while minimized without creating a second uploader',()=>{
  const app=readFileSync(new URL('../../static/app.js',import.meta.url),'utf8');
