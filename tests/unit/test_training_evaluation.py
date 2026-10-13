@@ -75,6 +75,27 @@ def test_blind_evaluation_reports_test_fp_fn_weak_labels_and_error_samples(tmp_p
     assert samples["b.jpg"]["fn_count"] == 1
 
 
+def test_confusion_and_confidence_evidence_preserve_wrong_class_and_real_thresholds(tmp_path):
+    images, truth = tmp_path / 'images', tmp_path / 'truth'
+    images.mkdir(); truth.mkdir()
+    Image.new('RGB', (100, 100), 'white').save(images / 'image-id.jpg')
+    (truth / 'image-id.txt').write_text('0 0.5 0.5 0.4 0.4\n', encoding='utf-8')
+    result = evaluation.evaluate_blind_detection(images, truth, lambda _: [
+        {'class_id': 1, 'confidence': .8, 'box': [30, 30, 70, 70]},
+    ], names={0: 'helmet', 1: 'person'})
+    assert result['per_class'][0]['false_negative'] == 1
+    assert result['per_class'][1]['false_positive'] == 1
+    assert result['confusion_matrix']['cells'] == [
+        {'actual': 0, 'predicted': 1, 'count': 1, 'images': ['image-id.jpg']},
+    ]
+    assert result['confidence_curves'][0]['points'][0]['recall'] == 0
+    frozen = evaluation.build_evaluation_truth(result, task_id='train-evidence', snapshot_id='a' * 64)
+    assert frozen['confusion_matrix'] == result['confusion_matrix']
+    assert frozen['confidence_curves'] == result['confidence_curves']
+    assert frozen['error_samples'][0]['image_id'] == 'image-id'
+    assert len(frozen['error_samples'][0]['image_content_sha256']) == 64
+
+
 def test_evaluation_truth_is_deterministic_public_safe_and_bound_to_model_revision():
     raw = {
         "status": "succeeded",
@@ -707,3 +728,28 @@ def test_overlapping_objects_use_identical_tp_fp_fn_for_class_score_and_image_ev
     assert [row["matched"] for row in sample["gt_boxes"]] == [True, False]
     assert sum(row["fp_count"] for row in result["error_samples"]) == score["false_positive"]
     assert sum(row["fn_count"] for row in result["error_samples"]) == score["false_negative"]
+
+
+def test_version_comparison_requires_identical_verified_inputs_and_reports_class_regression():
+    import copy
+    source = {"status":"succeeded", "evaluation_id":"a"*64, "evaluation_protocol_id":"b"*64,
+              "benchmark_scope":{key:"c"*64 for key in
+                 ("scope_id","content_digest","ground_truth_digest","label_schema_digest","evaluation_input_digest")},
+              "metrics":{"metrics/mAP50(B)":.6},
+              "per_class":[{"label":"critical","recall":.8,"map50":.7,"false_negative":2}]}
+    source["benchmark_scope"]["binding_level"]="bundle_verified"
+    current=copy.deepcopy(source)
+    current["metrics"]["metrics/mAP50(B)"]=.7
+    current["per_class"][0].update(recall=.5,false_negative=5)
+    result=evaluation.compare_evaluations(source,current)
+    assert result["comparable"] is True
+    assert result["metrics"]["metrics/mAP50(B)"]["delta"] == .1
+    assert result["regressed_labels"] == ["critical"]
+    for key in ("scope_id","content_digest","ground_truth_digest","label_schema_digest","evaluation_input_digest"):
+        drift=copy.deepcopy(current)
+        drift["benchmark_scope"][key]="d"*64
+        rejected=evaluation.compare_evaluations(source,drift)
+        assert rejected["comparable"] is False
+        assert rejected["metrics"] == {}
+    current["evaluation_protocol_id"]="e"*64
+    assert evaluation.compare_evaluations(source,current)["comparable"] is False

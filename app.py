@@ -8745,7 +8745,7 @@ def job_status(project_id: str, job_id: str):
     task = _durable_training_task(project_id, job_id)
     metrics_path = (shared_task_artifacts().artifact_path(job_id, "training-metrics.sqlite3")
                     if task else job_file.parent / "training-metrics.sqlite3")
-    response["runtime_metrics"] = read_metrics(metrics_path)
+    response["runtime_metrics"] = read_metrics(metrics_path, include_history=True)
     if task:
         artifacts = shared_task_artifacts()
         response["resolved_resources"] = artifacts.read_json(
@@ -10728,63 +10728,163 @@ def evaluation_diagnostic_image_v1(project_id: str, algorithm_id: str, version_i
     Authorize the version/evaluation and the exact snapshot/material digest
     before returning bytes. Historical or unbound test snapshots fail closed.
     """
+    def reject(code, message, status=409, retryable=False):
+        raise HTTPException(status_code=status, detail={
+            'code': code, 'message': message, 'retryable': retryable,
+            'solution': '请稍后重试；持续失败时检查存储连接。' if retryable else '请恢复原始证据；无法恢复时需要重新评测。',
+        })
+
     algorithm, version = _algorithm_version_for_action(project_id, algorithm_id, version_id)
     evaluation = version.get("evaluation") or {}
     if not isinstance(evaluation, dict) or evaluation.get("status") != "succeeded":
         raise HTTPException(status_code=404, detail="评测记录不存在")
-    if image_name != Path(image_name).name or not image_name or image_name in {".", ".."}:
+    if image_name != Path(image_name).name or '\\' in image_name or not image_name or image_name in {".", ".."}:
         raise HTTPException(status_code=404, detail="评测图片不存在")
     matches = [row for row in list(evaluation.get("error_samples") or [])
                if isinstance(row, dict) and row.get("image") == image_name]
-    if len(matches) != 1:
+    if len(matches) > 1:
+        reject('IMAGE_IDENTITY_AMBIGUOUS', '评测样本图片身份不唯一')
+    if not matches:
         raise HTTPException(status_code=404, detail="图片不属于本版本的问题样本")
+    sample = matches[0]
     snapshot_id = str(evaluation.get("snapshot_id") or "").lower()
     if not re.fullmatch(r"[0-9a-f]{64}", snapshot_id):
-        raise HTTPException(status_code=409, detail="历史评测缺少可验证的冻结快照")
+        reject('SNAPSHOT_MISSING', '历史评测缺少可验证的冻结快照')
     path = project_dir(project_id) / "snapshots" / f"{snapshot_id}.json"
-    snapshot = read_json(path, {}) if path.is_file() else {}
+    if not path.is_file():
+        reject('SNAPSHOT_MISSING', '冻结快照文件不存在')
+    snapshot = read_json(path, {})
     if snapshot.get("snapshot_id") != snapshot_id:
-        raise HTTPException(status_code=409, detail="冻结快照身份已变化")
+        reject('SNAPSHOT_INCOMPLETE', '冻结快照与评测身份不一致')
     ids = snapshot.get("test_image_ids")
     if ids is None and isinstance(snapshot.get("ids"), dict):
         ids = snapshot["ids"].get("test")
     test_ids = tuple(dict.fromkeys(str(x) for x in (ids or []) if str(x)))
     if not test_ids or len(test_ids) > 30000:
-        raise HTTPException(status_code=409, detail="冻结测试集身份无法验证")
+        reject('SNAPSHOT_INCOMPLETE', '冻结测试集身份无法验证')
     # Set lookup avoids O(Test^2) membership scans at 10k/20k scale.
     test_id_set = set(test_ids)
     frozen_rows = [row for row in (snapshot.get("images") or [])
                    if isinstance(row, dict) and str(row.get("image_id") or "") in test_id_set]
     frozen = {str(row["image_id"]): row for row in frozen_rows}
     if len(frozen_rows) != len(test_ids) or len(frozen) != len(test_ids):
-        raise HTTPException(status_code=409, detail="冻结测试集图片身份不完整")
+        reject('SNAPSHOT_INCOMPLETE', '冻结测试集图片身份不完整')
     # V3 frozen snapshots carry stored_name. Resolve a unique frozen ID
     # before querying MaterialRepository; legacy snapshots use bounded reads.
-    if all(str(row.get("stored_name") or "") for row in frozen.values()):
+    stable_id = str(sample.get('image_id') or '')
+    if stable_id and stable_id not in frozen:
+        reject('IMAGE_NOT_IN_SNAPSHOT', '评测图片不属于冻结测试集')
+    # Portable datasets deliberately use <Image ID>.<suffix>, not stored_name.
+    # The ID must match a Test member exactly; never search by a partial stem.
+    portable_id = Path(image_name).stem
+    if stable_id or portable_id in frozen:
+        selected_ids = [stable_id or portable_id]
+    elif all(str(row.get("stored_name") or "") for row in frozen.values()):
         selected_ids = [image_id for image_id, row in frozen.items()
                         if str(row.get("stored_name")) == image_name]
-        if len(selected_ids) != 1:
-            raise HTTPException(status_code=409, detail="冻结图片文件名不唯一或已变化")
+        if len(selected_ids) > 1:
+            reject('IMAGE_IDENTITY_AMBIGUOUS', '冻结图片文件名不唯一')
+        if not selected_ids:
+            reject('IMAGE_NOT_IN_SNAPSHOT', '图片不属于冻结测试集')
     else:
         selected_ids = list(test_ids)
     repository = MaterialRepository(project_dir(project_id))
     material_rows = []
     for offset in range(0, len(selected_ids), 500):
         material_rows.extend(repository.get_many(selected_ids[offset:offset + 500]))
-    candidates = [row for row in material_rows if str(row.get("id") or "") in frozen
-                  and str(row.get("stored_name") or "") == image_name
-                  and str(row.get("content_sha256") or "").lower() ==
-                      str(frozen[str(row.get("id"))].get("content_sha256") or "").lower()
-                  and str(row.get("content_sha256") or "")]
-    if len(candidates) != 1:
-        raise HTTPException(status_code=409, detail="冻结图片不存在或其内容已变化，不能预览")
+    candidates = [row for row in material_rows if str(row.get('id') or '') in frozen
+                  and (len(selected_ids) == 1 or str(row.get('stored_name') or '') == image_name)]
+    if len(candidates) > 1:
+        reject('IMAGE_IDENTITY_AMBIGUOUS', '图片同名，无法唯一绑定冻结身份')
+    image_id = selected_ids[0] if len(selected_ids) == 1 else str(candidates[0]['id']) if candidates else ''
+    if not image_id:
+        reject('ORIGINAL_IMAGE_MISSING', '原始图片索引已不存在')
+    expected = str(frozen[image_id].get('content_sha256') or '').lower()
+    if not re.fullmatch(r'[0-9a-f]{64}', expected):
+        reject('SNAPSHOT_INCOMPLETE', '冻结图片缺少有效 SHA256')
+    from platform_core.storage.cache import file_sha256
+    # Prefer the actual evaluated portable bytes. Normalization or label-scope
+    # redaction can legitimately make their hash differ from the original.
+    # Both source and evaluated hashes must be bound by the frozen manifest.
+    task_id = str(evaluation.get('task_id') or version.get('job_id') or '')
+    evaluated_hash = str(sample.get('image_content_sha256') or '').lower()
+    preview_path = None
+    if re.fullmatch(r'[A-Za-z0-9_-]{1,160}', task_id):
+        bundle = shared_task_artifacts().artifact_path(task_id, 'work/bundle').resolve()
+        manifest_path = bundle / 'manifest.json'
+        manifest = read_json(manifest_path, {}) if manifest_path.is_file() else {}
+        if manifest.get('snapshot_id') == snapshot_id:
+            members = [row for row in (manifest.get('splits') or {}).get('test', [])
+                       if isinstance(row, dict) and str(row.get('image_id') or '') == image_id
+                       and Path(str(row.get('image_ref') or '')).name == image_name]
+            if len(members) == 1:
+                member = members[0]
+                ref = str(member.get('image_ref') or '')
+                candidate = (bundle / ref).resolve()
+                member_hash = str(member.get('content_sha256') or '').lower()
+                if (candidate.is_relative_to(bundle / 'dataset' / 'images' / 'test')
+                    and str(member.get('source_content_sha256') or '').lower() == expected
+                    and re.fullmatch(r'[0-9a-f]{64}', member_hash)
+                    and (not evaluated_hash or evaluated_hash == member_hash)
+                    and candidate.is_file()):
+                    if file_sha256(candidate) != member_hash:
+                        reject('IMAGE_HASH_MISMATCH', '已归档评测图片内容发生变化')
+                    preview_path = candidate
+    if preview_path is not None:
+        try:
+            from PIL import Image
+            with Image.open(preview_path) as decoded:
+                decoded.verify()
+        except (OSError, ValueError):
+            reject('IMAGE_DECODE_FAILED', '评测图片证据无法解码')
+        return FileResponse(preview_path, headers={'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff'})
+    if evaluated_hash and evaluated_hash != expected:
+        reject('ORIGINAL_IMAGE_MISSING', '本次评测使用了归一化图片，其原始评测字节已缺失')
     manager = storage_manager(project_id)
+    material = candidates[0] if candidates else None
+    if material is None and hasattr(repository, 'get_by_content_sha256'):
+        material = repository.get_by_content_sha256(expected)
+    if material is None:
+        reject('ORIGINAL_IMAGE_MISSING', '原始图片已不存在，未找到相同 SHA256 的可信对象')
+    if str(material.get('content_sha256') or '').lower() != expected:
+        reject('IMAGE_HASH_MISMATCH', '当前素材与冻结图片内容不同，禁止替代展示')
     try:
-        material = manager.material(str(candidates[0]["id"]))
-        resolved = manager.materialize(material)
+        resolved = manager.materialize(manager.material(str(material['id'])))
     except StorageError as error:
-        _raise_storage_error(error, status_code=404 if error.code in {"MATERIAL_NOT_FOUND", "STORAGE_OBJECT_NOT_FOUND"} else 503)
+        if error.code in {'SOURCE_CONTENT_CHANGED', 'STORAGE_SHA256_MISMATCH'}:
+            reject('IMAGE_HASH_MISMATCH', '存储对象与冻结图片哈希不同')
+        if error.code in {'MATERIAL_NOT_FOUND', 'STORAGE_OBJECT_NOT_FOUND', 'SOURCE_UNAVAILABLE'}:
+            reject('ORIGINAL_IMAGE_MISSING', '原始图片证据已不存在')
+        if 'DENIED' in error.code or 'AUTH' in error.code or 'CREDENTIAL' in error.code:
+            reject('ACCESS_DENIED', '当前存储凭据无法读取该图片', 403)
+        reject('STORAGE_UNAVAILABLE', '图片存储暂时不可用', 503, True)
+    if file_sha256(Path(resolved.path)) != expected:
+        reject('IMAGE_HASH_MISMATCH', '实际图片字节与冻结 SHA256 不一致')
+    try:
+        from PIL import Image
+        with Image.open(resolved.path) as decoded:
+            decoded.verify()
+    except (OSError, ValueError):
+        reject('IMAGE_DECODE_FAILED', '原始图片无法解码为有效图像')
     return FileResponse(resolved.path, headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
+
+
+@app.get('/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/evaluation/compare/{other_version_id}')
+def compare_version_evaluation(project_id: str, algorithm_id: str, version_id: str, other_version_id: str):
+    from platform_core.training_evaluation import compare_evaluations
+    _, current = _algorithm_version_for_action(project_id, algorithm_id, version_id)
+    _, previous = _algorithm_version_for_action(project_id, algorithm_id, other_version_id)
+    result = compare_evaluations(previous.get('evaluation') or {}, current.get('evaluation') or {})
+    before_params = (previous.get('training_lineage') or {}).get('parameters') or {}
+    after_params = (current.get('training_lineage') or {}).get('parameters') or {}
+    # Only public training parameters; never return model paths or storage secrets.
+    allowed = ('epochs', 'imgsz', 'batch', 'workers', 'precision', 'optimizer', 'lr0')
+    before = before_params.get('actual') or {}
+    after = after_params.get('actual') or {}
+    result['parameter_differences'] = {key: {'before': before.get(key), 'after': after.get(key)}
+                                       for key in allowed if before.get(key) != after.get(key)}
+    result.update(source_version_id=other_version_id, current_version_id=version_id)
+    return {'ok': True, 'comparison': result}
 
 
 @app.post("/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/iteration-actions/confirm")
@@ -19935,7 +20035,23 @@ def v44_training_report(project_id: str, job_id: str):
             'note': '该任务未生成逐类别评测明细；报告仅汇总已记录的训练结果。',
         }
     version_report=build_version_report({**job,'training_report':report})
-    version_report['history'] = report.get('history') or _v45_training_history(job)
+    from platform_core.training_metrics import read_metrics
+    task = _durable_training_task(project_id, job_id)
+    metrics_path = shared_task_artifacts().artifact_path(job_id, 'training-metrics.sqlite3') if task else jf.parent / 'training-metrics.sqlite3'
+    telemetry = read_metrics(metrics_path, include_history=True)
+    version_report['history'] = report.get('history') or _v45_training_history(job) or telemetry.get('epochs') or []
+    version_report['runtime_metrics'] = telemetry
+    version_report['generated_at'] = now_iso()
+    version_report['per_class'] = report.get('per_class') or []
+    from platform_core.reports import diagnose_training_history
+    version_report['quality_analysis'] = diagnose_training_history(version_report['history'])
+    snapshot_id = str(version_report.get('snapshot_id') or '')
+    if re.fullmatch(r'[0-9a-f]{64}', snapshot_id):
+        snapshot_path = project_dir(project_id) / 'snapshots' / f'{snapshot_id}.json'
+        frozen = read_json(snapshot_path, {}) if snapshot_path.is_file() else {}
+        if frozen.get('snapshot_id') == snapshot_id:
+            from platform_core.quality import frozen_data_quality
+            version_report['frozen_data_quality'] = frozen_data_quality(frozen)
     version_report['configuration'] = {
         'framework': job.get('framework') or '', 'algorithm_name': job.get('algorithm_name') or '', 'model': job.get('model') or '',
         'epochs': job.get('epochs') or 0, 'imgsz': job.get('imgsz') or 0, 'batch': job.get('batch'), 'device': job.get('device') or '',
@@ -19965,11 +20081,12 @@ def _v45_training_history(job: Dict[str, Any]) -> List[Dict[str, Any]]:
                                 try:return float(v)
                                 except:return None
                     return None
-                rows.append({'epoch':int(float(raw.get('epoch') or len(rows)+1))+1,
+                rows.append({'epoch':int(float(raw.get('epoch') or len(rows)+1)),
                              'precision':num('metrics/precision(B)'), 'recall':num('metrics/recall(B)'),
                              'map50':num('metrics/mAP50(B)'), 'map5095':num('metrics/mAP50-95(B)'),
                              'box_loss':num('train/box_loss'), 'cls_loss':num('train/cls_loss'), 'dfl_loss':num('train/dfl_loss'),
-                             'val_box_loss':num('val/box_loss'), 'val_cls_loss':num('val/cls_loss')})
+                             'val_box_loss':num('val/box_loss'), 'val_cls_loss':num('val/cls_loss'),
+                             'val_dfl_loss':num('val/dfl_loss'), 'learning_rate':num('lr/pg0')})
         return rows[-500:]
     except Exception:
         return []

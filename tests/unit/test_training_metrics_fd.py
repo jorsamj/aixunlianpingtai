@@ -8,6 +8,25 @@ import pytest
 import platform_core.training_metrics as training_metrics
 
 
+def test_detail_metrics_history_is_bounded_chronological_and_summary_default_stays_small(tmp_path):
+    import json
+    database = tmp_path / "metrics.sqlite3"
+    with sqlite3.connect(database) as db:
+        db.execute("CREATE TABLE summary(id INTEGER PRIMARY KEY,value TEXT)")
+        db.execute("INSERT INTO summary VALUES(1,?)", (json.dumps({"images_per_second":12}),))
+        for table in ("epochs", "samples"):
+            db.execute(f"CREATE TABLE {table}(id INTEGER PRIMARY KEY,value TEXT)")
+            db.executemany(f"INSERT INTO {table} VALUES(?,?)",
+                           [(i, json.dumps({"epoch":i})) for i in range(1,1101)])
+    assert training_metrics.read_metrics(database) == {"images_per_second":12}
+    result = training_metrics.read_metrics(database, include_history=True)
+    assert len(result["epochs"]) == 1000
+    assert result["epochs"][0]["epoch"] == 101
+    assert result["epochs"][-1]["epoch"] == 1100
+    assert len(result["samples"]) == 720
+    assert result["samples"][0]["epoch"] == 381
+
+
 class TrackingConnection:
     def __init__(self, connection, counters):
         self._connection = connection
@@ -187,3 +206,21 @@ def test_runtime_worker_truth_comes_from_train_loader(tmp_path):
 
     assert runtime["runtime_batch"] == 50
     assert runtime["runtime_workers"] == 2
+
+
+def test_resource_sample_records_system_memory_without_guessing(tmp_path):
+    metrics = training_metrics.TrainingMetrics(
+        tmp_path / "system-memory.sqlite3",
+        resolved_resources(),
+        gpu_uuid=None,
+        interval=999,
+    )
+    metrics.psutil = SimpleNamespace(
+        cpu_percent=lambda: 42.0,
+        cpu_times_percent=lambda: SimpleNamespace(iowait=3.0),
+        virtual_memory=lambda: SimpleNamespace(percent=61.5),
+    )
+    metrics.sample()
+    result = training_metrics.read_metrics(metrics.path, include_history=True)
+    assert result["latest"]["memory_percent"] == 61.5
+    assert result["samples"][-1]["memory_percent"] == 61.5

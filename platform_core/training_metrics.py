@@ -413,14 +413,23 @@ def diagnose_window(samples, oom=False):
                 gpu_utilization=gpu, gpu_memory_percent=memory, window_samples=len(samples))
 
 
-def read_metrics(path):
+def read_metrics(path, *, include_history=False):
     path = Path(path)
     if not path.is_file():
         return {}
     try:
         with closing(sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True, timeout=1)) as db, db:
             row = db.execute("SELECT value FROM summary WHERE id=1").fetchone()
-        return json.loads(row[0]) if row else {}
+            result = json.loads(row[0]) if row else {}
+            if include_history:
+                tables = {item[0] for item in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                if 'epochs' in tables:
+                    result['epochs'] = [json.loads(item[0]) for item in reversed(list(
+                        db.execute('SELECT value FROM epochs ORDER BY id DESC LIMIT 1000')))]
+                if 'samples' in tables:
+                    result['samples'] = [json.loads(item[0]) for item in reversed(list(
+                        db.execute('SELECT value FROM samples ORDER BY id DESC LIMIT 720')))]
+        return result
     except (sqlite3.Error, ValueError, OSError):
         return {}
 
@@ -542,9 +551,10 @@ class TrainingMetrics:
     def sample(self):
         sample = dict(sampled_at=datetime.now(timezone.utc).isoformat(), gpu_utilization=None,
                       gpu_memory_percent=None, gpu_used_bytes=None, gpu_total_bytes=None,
-                      cpu_percent=None, io_wait_percent=None)
+                      cpu_percent=None, memory_percent=None, io_wait_percent=None)
         if self.psutil:
             sample["cpu_percent"] = self.psutil.cpu_percent()
+            sample["memory_percent"] = self.psutil.virtual_memory().percent
             sample["io_wait_percent"] = getattr(self.psutil.cpu_times_percent(), "iowait", None)
         if self.gpu_uuid:
             gpu = next((row for row in sample_gpus() if row["uuid"] == self.gpu_uuid), None)

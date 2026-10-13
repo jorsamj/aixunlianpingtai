@@ -252,6 +252,8 @@ def evaluate_blind_detection(
     ]
     predictions_by_image: dict[str, list[dict[str, Any]]] = defaultdict(list)
     targets_by_image: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    confusion_counts: dict[tuple[int | None, int | None], int] = defaultdict(int)
+    confusion_images: dict[tuple[int | None, int | None], set[str]] = defaultdict(set)
     for row in operating_predictions:
         predictions_by_image[str(row["image"])].append(row)
     for row in targets:
@@ -260,6 +262,27 @@ def evaluate_blind_detection(
         image_name = image_path.name
         image_predictions = predictions_by_image.get(image_name, [])
         image_targets = targets_by_image.get(image_name, [])
+        # Class-agnostic spatial matching is a separate diagnostic protocol:
+        # wrong-class overlaps belong off diagonal, not fabricated from TP/FP/FN.
+        spatial_used: set[int] = set()
+        for prediction in sorted(image_predictions, key=lambda item: -item['confidence']):
+            overlaps = [(_iou(prediction['box'], target['box']), index)
+                        for index, target in enumerate(image_targets) if index not in spatial_used]
+            best = max(overlaps, default=(0., -1))
+            target_class = None
+            if best[0] >= 0.5:
+                spatial_used.add(best[1])
+                target_class = int(image_targets[best[1]]['class_id'])
+            key = (target_class, int(prediction['class_id']))
+            confusion_counts[key] += 1
+            if len(confusion_images[key]) < 200:
+                confusion_images[key].add(image_name)
+        for index, target in enumerate(image_targets):
+            if index not in spatial_used:
+                key = (int(target['class_id']), None)
+                confusion_counts[key] += 1
+                if len(confusion_images[key]) < 200:
+                    confusion_images[key].add(image_name)
         # Keep visual FP/FN evidence identical to the class-level scorer:
         # confidence-first, highest-IoU unmatched GT of the same class.
         # IoU-first pairing can disagree with _match_flags and hide true errors.
@@ -288,6 +311,7 @@ def evaluate_blind_detection(
             width, height = dimensions[image_name]
             error_samples.append({
                 "image": image_name,
+                "image_id": image_path.stem,
                 "image_width": width,
                 "image_height": height,
                 "fp_count": len(fp),
@@ -315,6 +339,11 @@ def evaluate_blind_detection(
         }
     for sample in error_samples:
         name = sample["image"]
+        digest = hashlib.sha256()
+        with (image_root / name).open('rb') as image_file:
+            for chunk in iter(lambda: image_file.read(1024 * 1024), b''):
+                digest.update(chunk)
+        sample['image_content_sha256'] = digest.hexdigest()
         pred = predictions_by_image.get(name, [])
         truth = targets_by_image.get(name, [])
         matched_pred = set(sample.pop("_matched_predictions"))
@@ -326,6 +355,26 @@ def evaluate_blind_detection(
         sample["boxes_truncated"] = len(pred) > 120 or len(truth) > 120
 
     weak_label_threshold = 0.75
+    confidence_curves = []
+    for class_id in class_ids[:100]:
+        class_predictions = sorted(
+            (row for row in predictions if int(row['class_id']) == class_id),
+            key=lambda row: -row['confidence'],
+        )
+        class_targets = [row for row in targets if int(row['class_id']) == class_id]
+        flags = _match_flags(class_predictions, class_targets, 0.5)
+        points = []
+        for index in range(21):
+            threshold = index / 20
+            selected = [flag for prediction, flag in zip(class_predictions, flags)
+                        if prediction['confidence'] >= threshold]
+            tp = sum(selected)
+            precision = tp / len(selected) if selected else 0.
+            recall = tp / len(class_targets) if class_targets else 0.
+            f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.
+            points.append({'confidence': threshold, 'precision': round(precision, 6),
+                           'recall': round(recall, 6), 'f1': round(f1, 6)})
+        confidence_curves.append({'class_id': class_id, 'label': _label_name(names, class_id), 'points': points})
     weak_labels = [
         str(row["label"])
         for row in sorted(per_class, key=lambda row: (float(row["recall"]), float(row["map50"])))
@@ -339,6 +388,15 @@ def evaluate_blind_detection(
         "weak_labels": weak_labels[:100],
         "error_samples": error_samples,
         "error_sample_count": error_sample_count,
+        "confusion_matrix": {
+            'protocol': 'confidence_first_class_agnostic_iou_0.5',
+            'operating_conf': float(operating_conf),
+            'cells': [{'actual': key[0], 'predicted': key[1], 'count': count,
+                       'images': sorted(confusion_images[key])}
+                      for key, count in confusion_counts.items()],
+        },
+        'confidence_curves': confidence_curves,
+        'confidence_curve_protocol': 'same_class_confidence_first_iou_0.5_grid_0.05',
         "image_count": len(images),
         "ground_truth_box_count": len(targets),
         "prediction_box_count": len(predictions),
@@ -620,6 +678,8 @@ def build_evaluation_truth(
             return clean
         error_samples.append({
             "image": Path(str(row.get("image") or "")).name[:240],
+            "image_id": str(row.get('image_id') or '')[:240],
+            "image_content_sha256": _sha256_identity(row.get('image_content_sha256'), 'image_content_sha256'),
             "image_width": max(0, int(row.get("image_width") or 0)),
             "image_height": max(0, int(row.get("image_height") or 0)),
             "fp_count": max(0, int(row.get("fp_count") or 0)),
@@ -706,6 +766,26 @@ def build_evaluation_truth(
         "evaluation_protocol_id": evaluation_protocol_id,
         **({"benchmark_scope": scope} if scope else {}),
     }
+    # Optional vNext evidence. Old reports remain honest missing-data states.
+    matrix = raw.get('confusion_matrix')
+    if isinstance(matrix, Mapping) and matrix.get('protocol') == 'confidence_first_class_agnostic_iou_0.5':
+        identity['confusion_matrix'] = {
+            'protocol': matrix['protocol'], 'operating_conf': _finite(matrix.get('operating_conf')),
+            'cells': [{'actual': int(cell['actual']) if cell.get('actual') is not None else None,
+                       'predicted': int(cell['predicted']) if cell.get('predicted') is not None else None,
+                       'count': max(0, int(cell.get('count') or 0)),
+                       'images': [Path(str(name)).name[:240] for name in list(cell.get('images') or [])[:200]]}
+                      for cell in list(matrix.get('cells') or [])[:10000] if isinstance(cell, Mapping)],
+        }
+    if raw.get('confidence_curve_protocol') == 'same_class_confidence_first_iou_0.5_grid_0.05':
+        identity['confidence_curve_protocol'] = raw['confidence_curve_protocol']
+        identity['confidence_curves'] = [
+            {'class_id': int(curve.get('class_id') or 0), 'label': str(curve.get('label') or '')[:1000],
+             'points': [{key: round(min(1., max(0., _finite(point.get(key)))), 6)
+                        for key in ('confidence', 'precision', 'recall', 'f1')}
+                       for point in list(curve.get('points') or [])[:21] if isinstance(point, Mapping)]}
+            for curve in list(raw.get('confidence_curves') or [])[:100] if isinstance(curve, Mapping)
+        ]
     evaluation_id = hashlib.sha256(json.dumps(
         identity, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
     ).encode("utf-8")).hexdigest()
@@ -873,6 +953,48 @@ def _evaluation_class_map(value: Mapping[str, Any] | None) -> dict[str, dict[str
         if label:
             result[label] = dict(raw)
     return result
+
+
+def compare_evaluations(source: Mapping[str, Any], new: Mapping[str, Any]) -> dict[str, Any]:
+    """Strict same-benchmark comparison of existing evaluation truth."""
+    reasons = []
+    for value in (source, new):
+        if value.get('status') != 'succeeded' or not value.get('evaluation_id'):
+            reasons.append('evaluation_missing')
+    source_scope, new_scope = source.get('benchmark_scope') or {}, new.get('benchmark_scope') or {}
+    for key in ('scope_id', 'content_digest', 'ground_truth_digest', 'label_schema_digest', 'evaluation_input_digest'):
+        if not source_scope.get(key) or not new_scope.get(key):
+            reasons.append('benchmark_evidence_missing')
+        elif source_scope[key] != new_scope[key]:
+            reasons.append('benchmark_scope_mismatch')
+    if source_scope.get('binding_level') != 'bundle_verified' or new_scope.get('binding_level') != 'bundle_verified':
+        reasons.append('benchmark_input_binding_missing')
+    if not source.get('evaluation_protocol_id') or source.get('evaluation_protocol_id') != new.get('evaluation_protocol_id'):
+        reasons.append('evaluation_protocol_mismatch')
+    if reasons:
+        return {'comparable': False, 'reason_codes': sorted(set(reasons)), 'metrics': {}, 'classes': []}
+    metrics = {}
+    for key in _EVALUATION_METRICS:
+        before, after = (source.get('metrics') or {}).get(key), (new.get('metrics') or {}).get(key)
+        if before is not None and after is not None:
+            metrics[key] = {'before': before, 'after': after, 'delta': round(_finite(after)-_finite(before), 6)}
+    before_classes = _evaluation_class_map(source)
+    after_classes = _evaluation_class_map(new)
+    classes = []
+    for label in sorted(set(before_classes) | set(after_classes)):
+        before, after = before_classes.get(label), after_classes.get(label)
+        if before is None or after is None:
+            classes.append({'label': label, 'comparable': False})
+            continue
+        classes.append({'label': label, 'comparable': True, 'metrics': {
+            key: {'before': before.get(key), 'after': after.get(key),
+                  'delta': round(_finite(after[key])-_finite(before[key]), 6)}
+            for key in ('precision', 'recall', 'map50', 'map50_95', 'false_positive', 'false_negative')
+            if key in before and key in after
+        }})
+    return {'comparable': True, 'reason_codes': [], 'metrics': metrics, 'classes': classes,
+            'regressed_labels': [row['label'] for row in classes if row.get('comparable')
+                                 and any(row['metrics'].get(key, {}).get('delta', 0) < 0 for key in ('recall', 'map50'))]}
 
 
 def build_feedback_adoption_outcome(

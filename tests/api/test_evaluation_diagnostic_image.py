@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from PIL import Image
 from fastapi import HTTPException
 
 
@@ -16,16 +18,17 @@ def _setup(monkeypatch, tmp_path: Path):
     digest = "a" * 64
     root = tmp_path / "projects" / project_id
     (root / "snapshots").mkdir(parents=True)
+    image = root / "readonly-test.jpg"
+    Image.new('RGB', (120, 80), 'navy').save(image)
+    content_hash = hashlib.sha256(image.read_bytes()).hexdigest()
     (root / "snapshots" / f"{digest}.json").write_text(json.dumps({
         "snapshot_id": digest,
         "test_image_ids": ["test-image", "train-image"],
         "images": [
-            {"image_id": "test-image", "content_sha256": "b" * 64},
+            {"image_id": "test-image", "content_sha256": content_hash},
             {"image_id": "train-image", "content_sha256": "c" * 64},
         ],
     }), encoding="utf-8")
-    image = root / "readonly-test.jpg"
-    image.write_bytes(b"frozen-image")
     version = {"id": version_id, "evaluation": {
         "status": "succeeded", "snapshot_id": digest,
         "error_samples": [{"image": "readonly-test.jpg", "fp_count": 1, "fn_count": 1}]
@@ -36,12 +39,14 @@ def _setup(monkeypatch, tmp_path: Path):
     }])
     monkeypatch.setattr(platform, "project_dir", lambda _: root)
     rows = [
-        {"id": "test-image", "stored_name": "readonly-test.jpg", "content_sha256": "b" * 64},
+        {"id": "test-image", "stored_name": "readonly-test.jpg", "content_sha256": content_hash},
         {"id": "train-image", "stored_name": "train.jpg", "content_sha256": "c" * 64},
     ]
     class Repository:
         def __init__(self, root): self.root = root
         def get_many(self, ids): return [row for row in rows if row["id"] in ids]
+        def get_by_content_sha256(self, digest):
+            return next((row for row in rows if row['content_sha256'] == digest), None)
     monkeypatch.setattr(platform, "MaterialRepository", Repository)
     class Manager:
         def material(self, image_id):
@@ -75,6 +80,95 @@ def test_changed_frozen_image_fails_closed_before_file_read(monkeypatch, tmp_pat
     with pytest.raises(HTTPException) as ex:
         platform.evaluation_diagnostic_image_v1("evaluation-project", "algo", "v1", image.name)
     assert ex.value.status_code == 409
+
+
+def test_portable_image_name_resolves_stable_id_after_source_rename(monkeypatch, tmp_path):
+    platform, version, rows, root, image = _setup(monkeypatch, tmp_path)
+    version['evaluation']['error_samples'][0]['image'] = 'test-image.jpg'
+    rows[0]['stored_name'] = 'migrated-name.jpg'
+    response = platform.evaluation_diagnostic_image_v1('evaluation-project', 'algo', 'v1', 'test-image.jpg')
+    assert Path(response.path) == image
+
+
+def test_actual_response_bytes_must_match_frozen_hash(monkeypatch, tmp_path):
+    platform, version, rows, root, image = _setup(monkeypatch, tmp_path)
+    Image.new('RGB', (120, 80), 'red').save(image)
+    with pytest.raises(HTTPException) as captured:
+        platform.evaluation_diagnostic_image_v1('evaluation-project', 'algo', 'v1', image.name)
+    assert captured.value.detail['code'] == 'IMAGE_HASH_MISMATCH'
+
+
+def test_normalized_bundle_bytes_are_verified_and_original_is_never_silently_substituted(monkeypatch, tmp_path):
+    platform, version, rows, root, image = _setup(monkeypatch, tmp_path)
+    bundle = tmp_path / "artifacts" / "work" / "bundle"
+    normalized = bundle / "dataset" / "images" / "test" / "test-image.jpg"
+    normalized.parent.mkdir(parents=True)
+    Image.new("RGB", (120, 80), "green").save(normalized)
+    evaluated_hash = hashlib.sha256(normalized.read_bytes()).hexdigest()
+    version["evaluation"]["task_id"] = "task-verified"
+    version["evaluation"]["error_samples"][0].update(
+        image="test-image.jpg", image_id="test-image", image_content_sha256=evaluated_hash)
+    manifest = {"snapshot_id":"a"*64,"splits":{"test":[{
+        "image_id":"test-image","image_ref":"dataset/images/test/test-image.jpg",
+        "source_content_sha256":rows[0]["content_sha256"],"content_sha256":evaluated_hash}]}}
+    (bundle / "manifest.json").write_text(json.dumps(manifest),encoding="utf-8")
+    monkeypatch.setattr(platform,"shared_task_artifacts",lambda:SimpleNamespace(artifact_path=lambda *_:bundle))
+    response=platform.evaluation_diagnostic_image_v1("evaluation-project","algo","v1","test-image.jpg")
+    assert Path(response.path) == normalized
+    assert Path(response.path).read_bytes() != image.read_bytes()
+    # Missing normalized evidence cannot fall back to original pixels.
+    normalized.unlink()
+    with pytest.raises(HTTPException) as captured:
+        platform.evaluation_diagnostic_image_v1("evaluation-project","algo","v1","test-image.jpg")
+    assert captured.value.detail["code"] == "ORIGINAL_IMAGE_MISSING"
+
+
+def test_snapshot_identity_mismatch_returns_specific_safe_error(monkeypatch, tmp_path):
+    platform, version, rows, root, image = _setup(monkeypatch, tmp_path)
+    path = root / 'snapshots' / ('a' * 64 + '.json')
+    snapshot = json.loads(path.read_text(encoding='utf-8'))
+    snapshot['snapshot_id'] = 'f' * 64
+    path.write_text(json.dumps(snapshot), encoding='utf-8')
+    with pytest.raises(HTTPException) as captured:
+        platform.evaluation_diagnostic_image_v1('evaluation-project', 'algo', 'v1', image.name)
+    assert captured.value.detail['code'] == 'SNAPSHOT_INCOMPLETE'
+    assert str(root) not in str(captured.value.detail)
+
+
+def test_missing_original_id_can_resolve_hash_identical_migrated_object(monkeypatch, tmp_path):
+    platform, version, rows, root, image = _setup(monkeypatch, tmp_path)
+    version['evaluation']['error_samples'][0].update(image='test-image.jpg', image_id='test-image')
+    migrated = {**rows.pop(0), 'id': 'migrated-id', 'stored_name': 'another.jpg', 'storage_source_id': 'archive-s3'}
+    monkeypatch.setattr(platform.MaterialRepository, 'get_by_content_sha256', lambda self, digest: migrated)
+    seen = []
+    class Manager:
+        def material(self, identity):
+            seen.append(identity)
+            return migrated
+        def materialize(self, material):
+            assert material['storage_source_id'] == 'archive-s3'
+            return SimpleNamespace(path=image)
+    monkeypatch.setattr(platform, 'storage_manager', lambda _: Manager())
+    response = platform.evaluation_diagnostic_image_v1('evaluation-project', 'algo', 'v1', 'test-image.jpg')
+    assert Path(response.path) == image
+    assert seen == ['migrated-id']
+
+
+def test_temporary_storage_failure_is_retryable_without_exposing_details(monkeypatch, tmp_path):
+    platform, version, rows, root, image = _setup(monkeypatch, tmp_path)
+    from platform_core.storage.errors import StorageError
+    class Manager:
+        def material(self, identity):
+            raise StorageError(code='STORAGE_NETWORK_ERROR', message='secret endpoint', detail=str(root))
+        def materialize(self, material):
+            raise AssertionError('unreachable after source access error')
+    monkeypatch.setattr(platform, 'storage_manager', lambda _: Manager())
+    with pytest.raises(HTTPException) as captured:
+        platform.evaluation_diagnostic_image_v1('evaluation-project', 'algo', 'v1', image.name)
+    assert captured.value.status_code == 503
+    assert captured.value.detail['code'] == 'STORAGE_UNAVAILABLE'
+    assert captured.value.detail['retryable'] is True
+    assert 'secret' not in str(captured.value.detail)
 
 
 def test_missing_snapshot_fails_closed_and_does_not_use_current_training_pool(monkeypatch, tmp_path):
