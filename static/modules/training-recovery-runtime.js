@@ -1,5 +1,6 @@
 import {canonicalTaskProgressPercent, canonicalTaskStatus, isCanonicalTaskActive} from './task-runtime-truth.js?v=422424';
 import {formatTrainingDuration, trainingApiErrorMessage, trainingProgressView} from './training-task-runtime.js?v=422562';
+import {trainingCharts} from './reports.js?v=4226373';
 
 const RECOVERY_ACTION_REVALIDATE = 'revalidate_checkpoint';
 const SUCCESS_TASK_STATUSES = new Set(['SUCCEEDED', 'PARTIAL_SUCCESS']);
@@ -224,11 +225,20 @@ export function trainingRecoveryDetailModel(job = {}, recovery = {}) {
   ).trim().toLowerCase();
   const requestedBatchValue = requested.batch ?? job?.batch ?? null;
   const runtimeMetrics = job?.runtime_metrics && typeof job.runtime_metrics === 'object' ? job.runtime_metrics : {};
-  const latestRuntime = runtimeMetrics?.latest && typeof runtimeMetrics.latest === 'object' ? runtimeMetrics.latest : {};
   const metricNumber = value => {
+    if (value === null || value === undefined || value === '') return null;
     const number = Number(value);
     return Number.isFinite(number) ? number : null;
   };
+  const intervalStart = Date.parse(job.started_at || '');
+  const intervalEnd = Date.parse(job.finished_at || '');
+  const terminal = !flags.active;
+  const intervalSamples = Array.isArray(runtimeMetrics.samples) && Number.isFinite(intervalStart) && (!terminal || Number.isFinite(intervalEnd))
+    ? runtimeMetrics.samples.filter(sample=>{const at=Date.parse(sample.sampled_at||'');return Number.isFinite(at)&&at>=intervalStart&&(!Number.isFinite(intervalEnd)||at<=intervalEnd);}) : [];
+  const latestRuntime = terminal ? Object.fromEntries(['gpu_utilization','gpu_memory_percent','cpu_percent','memory_percent','io_wait_percent'].map(key=>{
+    const values=intervalSamples.map(sample=>metricNumber(sample[key])).filter(value=>value!==null);
+    return [key,values.length?values.reduce((sum,value)=>sum+value,0)/values.length:null];
+  })) : runtimeMetrics?.latest && typeof runtimeMetrics.latest === 'object' ? runtimeMetrics.latest : {};
   return {
     taskId: String(job?.id || job?.task_id || recovery?.task_id || ''),
     canonicalStatus: flags.canonical,
@@ -327,9 +337,12 @@ export function trainingRecoveryDetailModel(job = {}, recovery = {}) {
     trainingOutcome: String(job?.training_outcome || '').trim(),
     completionReason: String(job?.completion_reason || '').trim(),
     diagnosticCode: String(runtimeMetrics?.diagnostic?.code || '').trim(),
+    resourceSampleCount: intervalSamples.length,
+    resourceTimeBasis: terminal ? '训练区间内已保留采样均值' : '最新运行采样',
     gpuUtilization: metricNumber(latestRuntime.gpu_utilization),
     gpuMemoryPercent: metricNumber(latestRuntime.gpu_memory_percent),
     cpuPercent: metricNumber(latestRuntime.cpu_percent),
+    memoryPercent: metricNumber(latestRuntime.memory_percent),
     ioWaitPercent: metricNumber(latestRuntime.io_wait_percent),
     imagesPerSecond: metricNumber(runtimeMetrics.images_per_second) ?? metricNumber(progress.images_per_second),
     latestEpochDuration: metricNumber(runtimeMetrics.epoch_duration_seconds),
@@ -404,6 +417,7 @@ function detailHtml(job, recovery, log = '', inputIssues = null) {
           <button class="btn mini" data-training-recovery-close>关闭</button>
         </div>
         <div class="training-recovery-body">
+          <nav class="quality-tabs" role="tablist" aria-label="训练详情视图">${[['curves','训练曲线'],['resources','训练资源'],['data','数据与配置'],['diagnostics','日志与诊断']].map(([key,label])=>`<button class="btn" role="tab" data-training-tab="${key}" aria-selected="false">${label}</button>`).join('')}</nav>
           <section class="training-recovery-summary ${esc(model.statusKind)}">
             <div><small>整体进度</small><b>${model.progressPercent.toFixed(0)}%</b><i><span style="transform:scaleX(${(model.progressPercent / 100).toFixed(4)})"></span></i></div>
             <div><small>Epoch / Batch</small><b>${esc(epochText)} · ${esc(batchText)}</b><span>${esc(model.metricLine || '等待训练指标')}</span></div>
@@ -413,8 +427,9 @@ function detailHtml(job, recovery, log = '', inputIssues = null) {
             <div><small>实际 Batch / Workers / Cache</small><b>${esc(`${model.batch ?? '-'} / ${model.workers ?? '-'} / ${model.cache ?? '-'}`)}</b><span>${esc(model.runtimePrecision || '尚未启动 Trainer')}</span></div>
           </section>
           ${statusHtml}${failureSummaryHtml}${inputIssuesHtml(inputIssues)}${technicalFailureHtml}${warningHtml}
+          <section data-training-panel="curves" role="tabpanel">${trainingCharts(job?.runtime_metrics?.epochs || job?.training_report?.history || [])}</section>
           <div class="training-recovery-columns">
-            <section class="training-recovery-panel">
+            <section class="training-recovery-panel" data-training-panel="data" role="tabpanel">
               <header><h4>训练配置</h4><span>实际运行值优先</span></header>
               <div class="training-recovery-kv"><span>基础模型</span><b>${esc(model.model || '-')}</b></div>
               <div class="training-recovery-kv"><span>图片尺寸</span><b>${esc(model.imgsz ?? '-')}</b></div>
@@ -428,8 +443,8 @@ function detailHtml(job, recovery, log = '', inputIssues = null) {
               <div class="training-recovery-kv"><span>数据量</span><b>${esc(model.datasetCountsGenerated?`训练 ${model.datasetCounts.train} · 验证 ${model.datasetCounts.validation} · 评测 ${model.datasetCounts.test}`:'未生成')}</b></div>
               <div class="training-recovery-kv"><span>成果模型</span><b title="${esc(artifacts)}">${esc(artifacts)}</b></div>
             </section>
-            <section class="training-recovery-panel">
-              <header><h4>运行证据</h4><span>后端真实状态</span></header>
+            <section class="training-recovery-panel" data-training-panel="resources" role="tabpanel">
+              <header><h4>运行证据</h4><span>${esc(model.resourceTimeBasis)} · ${model.resourceSampleCount} 个区间采样</span></header>
               <div class="training-recovery-kv"><span>Task Status</span><b>${esc(model.canonicalStatus || model.taskStatus || '-')}</b></div>
               <div class="training-recovery-kv"><span>执行节点</span><b>${esc(model.workerId || '-')}</b></div>
               <div class="training-recovery-kv"><span>GPU UUID</span><b title="${esc(model.gpuUuid || '')}">${esc(model.gpuUuid || '-')}</b></div>
@@ -437,12 +452,12 @@ function detailHtml(job, recovery, log = '', inputIssues = null) {
               <div class="training-recovery-kv"><span>完成原因</span><b>${esc(model.completionReason || '-')}</b></div>
               <div class="training-recovery-kv"><span>运行诊断</span><b>${esc(model.diagnosticCode || '-')}</b></div>
               <div class="training-recovery-kv"><span>GPU 利用率 / 显存</span><b>${esc(`${model.gpuUtilization == null ? '-' : model.gpuUtilization.toFixed(1) + '%'} / ${model.gpuMemoryPercent == null ? '-' : model.gpuMemoryPercent.toFixed(1) + '%'}`)}</b></div>
-              <div class="training-recovery-kv"><span>CPU / I/O Wait</span><b>${esc(`${model.cpuPercent == null ? '-' : model.cpuPercent.toFixed(1) + '%'} / ${model.ioWaitPercent == null ? '-' : model.ioWaitPercent.toFixed(1) + '%'}`)}</b></div>
+              <div class="training-recovery-kv"><span>CPU / 系统内存 / I/O Wait</span><b>${esc(`${model.cpuPercent == null ? '-' : model.cpuPercent.toFixed(1) + '%'} / ${model.memoryPercent == null ? '-' : model.memoryPercent.toFixed(1) + '%'} / ${model.ioWaitPercent == null ? '-' : model.ioWaitPercent.toFixed(1) + '%'}`)}</b></div>
               <div class="training-recovery-kv"><span>实时吞吐 / Epoch</span><b>${esc(`${model.imagesPerSecond == null ? '-' : model.imagesPerSecond.toFixed(1) + ' img/s'} / ${model.latestEpochDuration == null ? '-' : model.latestEpochDuration.toFixed(1) + 's'}`)}</b></div>
               <div class="training-recovery-kv"><span>错误类型</span><b>${esc(model.errorType || '-')}</b></div>
             </section>
           </div>
-          <section class="training-recovery-panel">
+          <section class="training-recovery-panel" data-training-panel="data" role="tabpanel">
             <header><h4>数据与资源追踪</h4><span>用于复现本次训练</span></header>
             <div class="training-recovery-kv"><span>数据版本</span><b title="${esc(model.datasetRevisionId)}">${esc(model.datasetRevisionId || '-')}</b></div>
             <div class="training-recovery-kv"><span>训练快照</span><b title="${esc(model.snapshotId)}">${esc(model.snapshotId || '-')}</b></div>
@@ -452,8 +467,7 @@ function detailHtml(job, recovery, log = '', inputIssues = null) {
             ${model.resourceAdjustments.length ? `<div class="training-recovery-kv"><span>资源自动调整</span><b>${esc(model.resourceAdjustments.join('；'))}</b></div>` : ''}
             ${model.resourceReasons.length ? `<div class="training-recovery-kv"><span>资源决策依据</span><b>${esc(model.resourceReasons.join('；'))}</b></div>` : ''}
           </section>
-          <section class="training-recovery-panel"><header><h4>执行阶段</h4><span>任务生命周期</span></header>${timelineHtml(model.timeline)}</section>
-          ${logHtml}
+          <section class="training-recovery-panel" data-training-panel="diagnostics" role="tabpanel"><header><h4>执行阶段</h4><span>任务生命周期</span></header>${timelineHtml(model.timeline)}${logHtml}</section>
           ${model.recoverable ? '<div class="training-recovery-callout">训练主体与可信 Checkpoint 已保留，可只重新执行最终模型验证，不需要重跑全部 Epoch。</div>' : ''}
         </div>
         <div class="training-recovery-actions">
@@ -485,6 +499,8 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
   };
   const locks = new Set();
   let openTaskId = '';
+  let openProjectId = '';
+  let activeTab = 'curves';
   let openFocus = 'overview';
   let openSnapshot = null;
   let detailRefreshPromise = null;
@@ -524,6 +540,7 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
     stopDetailTimer();
     doc?.querySelector?.('[data-training-recovery-overlay]')?.remove?.();
     openTaskId = '';
+    openProjectId = '';
     openFocus = 'overview';
     openSnapshot = null;
     detailRefreshPromise = null;
@@ -582,6 +599,7 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
 
   function renderOpenDetail(job, recovery = {}, log = '', focus = openFocus) {
     if (!openTaskId || String(job?.id || job?.task_id || '') !== String(openTaskId)) return false;
+    if (String(projectId?.() || '') !== openProjectId) { closeDetail(); return false; }
     const old = doc?.querySelector?.('[data-training-recovery-overlay]');
     const oldDialog = old?.querySelector?.('.training-recovery-dialog');
     const scrollTop = Number(oldDialog?.scrollTop || 0);
@@ -605,6 +623,9 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
     if (dialog) dialog.scrollTop = scrollTop;
     const logs = overlay.querySelector?.('[data-training-tech-log]');
     if (logs) logs.open = logOpen;
+    if (focus === 'log') activeTab = 'diagnostics';
+    overlay.querySelectorAll?.('[data-training-panel]').forEach(node=>{node.hidden=node.dataset.trainingPanel!==activeTab;});
+    overlay.querySelectorAll?.('[data-training-tab]').forEach(node=>{node.setAttribute('aria-selected',String(node.dataset.trainingTab===activeTab));});
     const inputIssues = openSnapshot?.inputIssues;
     const paginationRoot = overlay.querySelector?.('[data-training-input-pagination]');
     if (paginationRoot && inputIssues) {
@@ -649,6 +670,7 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
 
   async function refreshOpenDetail({includeRecovery = false} = {}) {
     const taskId = openTaskId;
+    const requestedProject = openProjectId;
     if (!taskId) return false;
     if (detailRefreshPromise) return detailRefreshPromise;
     detailRefreshPromise = (async () => {
@@ -665,7 +687,7 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
         readLog(taskId).catch(() => openSnapshot?.log || ''),
         inputIssuesPromise,
       ]);
-      if (String(openTaskId) !== String(taskId)) return false;
+      if (String(openTaskId) !== String(taskId) || requestedProject !== openProjectId || String(projectId?.() || '') !== requestedProject) return false;
       const flags = taskStatusFlags(job);
       const effectiveRecovery = flags.success ? {} : recovery;
       openSnapshot = {job, recovery: effectiveRecovery, log, inputIssues};
@@ -684,6 +706,8 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
       return false;
     }
     openTaskId = String(taskId);
+    openProjectId = String(projectId?.() || '');
+    activeTab = options?.focus === 'log' ? 'diagnostics' : 'curves';
     openFocus = options?.focus === 'log' ? 'log' : 'overview';
     openSnapshot = {job, recovery: job?.recovery || {}, log: '', inputIssues: null};
     renderOpenDetail(job, openSnapshot.recovery, '', openFocus);
@@ -763,6 +787,13 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
   }
 
   const onClick = event => {
+    const tab = event.target?.closest?.('[data-training-tab]');
+    if (tab && openSnapshot) {
+      activeTab = tab.dataset.trainingTab;
+      openFocus = 'overview';
+      renderOpenDetail(openSnapshot.job, openSnapshot.recovery, openSnapshot.log || '');
+      return;
+    }
     const close = event.target?.closest?.('[data-training-recovery-close]');
     if (close || event.target?.matches?.('[data-training-recovery-overlay]')) {
       closeDetail();

@@ -1,9 +1,17 @@
 import {test, expect} from '@playwright/test';
+import path from 'node:path';
+
+function diagnosticImage() {
+  const width=100,height=80,stride=300,data=Buffer.alloc(54+stride*height,90);
+  data.write('BM');data.writeUInt32LE(data.length,2);data.writeUInt32LE(54,10);
+  data.writeUInt32LE(40,14);data.writeInt32LE(width,18);data.writeInt32LE(height,22);
+  data.writeUInt16LE(1,26);data.writeUInt16LE(24,28);data.fill(0,30,54);
+  return data;
+}
 
 test('frozen evaluation diagnoses zero-TP class and previews real GT/FP/FN layers', async ({page}) => {
   await page.route('**/evaluation/images/**', route => route.fulfill({
-    status: 200, contentType: 'image/png',
-    body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/0ioAAAAASUVORK5CYII=', 'base64')
+    status: 200, contentType: 'image/bmp', body: diagnosticImage()
   }));
   await page.goto('/');
   await expect.poll(() => page.evaluate(() => Boolean(state?.uiReady && window.openVersionEvaluation429)), {timeout: 20000}).toBe(true);
@@ -45,6 +53,7 @@ test('frozen evaluation diagnoses zero-TP class and previews real GT/FP/FN layer
   await expect(dialog.locator('.evaluation429-diagnosis-grid')).toContainText('关键类别未检出');
   await expect(dialog).toContainText('Conf ≥ 0.250');
   await expect(dialog).toContainText('IoU ≥ 0.500');
+  await dialog.getByRole('tab', {name:'错误样本',exact:true}).click();
   await expect(dialog.locator('.evaluation429-gallery')).toContainText('共 205 张问题图片');
   await expect(dialog.locator('.evaluation429-image-card').first()).toContainText('highest-severity.jpg');
   await expect(dialog.locator('.evaluation429-thumb img')).toHaveCount(2);
@@ -83,10 +92,17 @@ test('legacy error records never invent GT overlays or silently claim a preview 
   });
   await expect(page.getByRole('dialog', {name: '独立评测'})).toContainText('Conf 未记录');
   await expect(page.getByRole('dialog', {name: '独立评测'})).toContainText('IoU 未记录');
+  await page.getByRole('dialog', {name: '独立评测'}).getByRole('tab',{name:'错误样本',exact:true}).click();
   await page.getByRole('dialog', {name: '独立评测'}).locator('.evaluation429-image-card').first().click();
   const preview = page.getByRole('dialog', {name: '问题图片核验'});
   await expect(preview).toContainText('历史评测仅有 FP/FN 数量');
   await expect(preview.locator('.evaluation429-overlay')).toHaveCount(0);
+  await preview.getByRole('button',{name:'返回独立评测'}).click();
+  await page.getByRole('dialog',{name:'独立评测'}).getByRole('button',{name:'训练报告',exact:true}).click();
+  const legacyReport=page.getByRole('dialog',{name:'版本训练报告'});
+  await expect(legacyReport).toContainText('mAP50');
+  await expect(legacyReport).not.toContainText('正确率');
+  await expect(legacyReport).toContainText('未保存完整训练任务');
 });
 
 
@@ -107,6 +123,7 @@ test('failed frozen-image preview hides stale GT and prediction overlays', async
     }]}];
     window.openVersionEvaluation429('guarded-algo','guarded-version');
   });
+  await page.getByRole('dialog', {name:'独立评测'}).getByRole('tab',{name:'错误样本',exact:true}).click();
   await page.getByRole('dialog', {name: '独立评测'}).locator('.evaluation429-image-card').first().click();
   const dialog = page.getByRole('dialog', {name: '问题图片核验'});
   await expect(dialog.locator('.evaluation429-image-error')).toBeVisible();
@@ -137,4 +154,98 @@ test('hard sample action queues one canonical annotation task without pretending
   await page.getByRole('dialog',{name:'独立评测'}).getByRole('button',{name:'挖掘已有未标注素材'}).click();
   await expect.poll(()=>Boolean(posted)).toBe(true);
   expect(posted).toEqual({image_ids:['train-eligible-a','train-eligible-b'],source:'existing'});
+});
+
+test('quality workspaces preserve evidence, pagination, comparison and four responsive layouts', async ({page},testInfo) => {
+  let comparisons=0;
+  await page.route('**/evaluation/images/**',route=>route.fulfill({status:200,contentType:'image/bmp',body:diagnosticImage()}));
+  await page.route('**/evaluation/compare/previous',route=>{
+    comparisons++;
+    return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({comparison:{
+      comparable:true,regressed_labels:['No_helmet'],
+      metrics:{'metrics/mAP50(B)':{delta:.1}},
+      classes:[{label:'No_helmet',metrics:{recall:{delta:-.1},map50:{delta:-.1},false_positive:{delta:2},false_negative:{delta:3}}}]
+    }})});
+  });
+  await page.route('**/jobs/quality-visual/report',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({
+    job:{id:'quality-visual',task_status:'SUCCEEDED',completed_epochs:20,requested_epochs:100,
+      completion_reason:'quality_target_reached',asset_algorithm_name:'本地验收 · 安全帽模型',auto_version_id:'current'},
+    report:{generated_at:'2026-10-13T03:00:00Z',metrics:{'metrics/mAP50(B)':.75},
+      history:Array.from({length:20},(_,i)=>({epoch:i+1,box_loss:1-i*.03,val_box_loss:.4+i*.01,map50:.4+i*.015})),
+      quality_analysis:{best_observed_epoch:20},dataset_counts:{train:100,validation:25,test:26}}
+  })}));
+  await page.goto('/');
+  await expect.poll(()=>page.evaluate(()=>Boolean(state?.uiReady && window.openVersionEvaluation429)),{timeout:20000}).toBe(true);
+  await page.evaluate(()=>{
+    const error_samples=Array.from({length:26},(_,i)=>({image:'evidence-'+i+'.bmp',image_id:'frozen-'+i,image_content_sha256:'c'.repeat(64),
+      fp_count:1,fn_count:1,fp_labels:['helmet'],fn_labels:['No_helmet'],image_width:100,image_height:80,
+      gt_boxes:[{box:[10,10,40,45],label:'No_helmet',matched:false}],
+      pred_boxes:[{box:[51,10,70,30],label:'helmet',matched:false,confidence:.8}]}));
+    const evaluation={status:'succeeded',evaluation_id:'a'.repeat(64),image_count:26,error_sample_count:26,error_samples,
+      protocol:{mode:'blind_image_only_inference_then_hidden_ground_truth_scoring',operating_conf:.25,matching_iou:.5},
+      metrics:{'metrics/precision(B)':.5,'metrics/recall(B)':.4,'metrics/mAP50(B)':.75,'metrics/mAP50-95(B)':.5},
+      per_class:[{class_id:0,label:'No_helmet',ground_truth_count:26,true_positive:0,false_positive:0,false_negative:26,precision:0,recall:0,map50:0},
+        {class_id:1,label:'helmet',ground_truth_count:40,true_positive:32,false_positive:26,false_negative:8,precision:.55,recall:.8,map50:.8}],
+      confusion_matrix:{protocol:'confidence_first_class_agnostic_iou_0.5',cells:[{actual:0,predicted:1,count:26,images:error_samples.map(s=>s.image)}]},
+      confidence_curves:[{label:'helmet',points:Array.from({length:21},(_,i)=>({confidence:i/20,precision:i/20,recall:1-i/20,f1:2*(i/20)*(1-i/20)}))}]};
+    state.algorithms=[{id:'quality-visual-a',name:'本地验收 · 安全帽模型',versions:[
+      {id:'previous',version_name:'V1',evaluation},
+      {id:'current',version_name:'V2',job_id:'quality-visual',evaluation}]}];
+    window.openVersionEvaluation429('quality-visual-a','current');
+  });
+  const dialog=page.getByRole('dialog',{name:'独立评测'});
+  await dialog.getByRole('tab',{name:'错误样本',exact:true}).click();
+  await expect(dialog.locator('.evaluation429-image-card')).toHaveCount(24);
+  await dialog.getByRole('button',{name:'下一页',exact:true}).click();
+  await expect(dialog.locator('.evaluation429-image-card')).toHaveCount(2);
+  await dialog.getByLabel('错误类型').selectOption('fn');
+  await expect(dialog.locator('.evaluation429-image-card')).toHaveCount(24);
+  await dialog.getByRole('tab',{name:'类别与混淆'}).click();
+  await dialog.locator('.quality-matrix').getByRole('button',{name:'26',exact:true}).click();
+  await expect(dialog.getByRole('tab',{name:'错误样本',exact:true})).toHaveAttribute('aria-selected','true');
+  await dialog.getByRole('tab',{name:'Confidence 分析'}).click();
+  await expect(dialog.locator('.quality-chart')).toHaveCount(4);
+  await dialog.getByRole('tab',{name:'版本对比'}).click();
+  await expect.poll(()=>comparisons).toBe(1);
+  await expect(dialog.locator('[data-eval-comparison]')).toContainText('存在退化类别');
+  await dialog.getByRole('button',{name:'并排核验同一图片'}).click();
+  const pair=page.getByRole('dialog',{name:'问题图片核验'});
+  await expect(pair.locator('.evaluation429-stage img')).toHaveCount(2);
+  await expect(pair.locator('.evaluation429-stage img').first()).toBeVisible();
+  await expect(pair.locator('.evaluation429-stage img').last()).toBeVisible();
+  await pair.getByRole('button',{name:'返回独立评测'}).click();
+  for(const [width,height] of [[1920,1080],[1440,900],[1366,768],[375,812]]){
+    await page.setViewportSize({width,height});
+    await dialog.getByRole('tab',{name:'质量总览'}).click();
+    await expect(dialog).toBeVisible();
+    expect(await dialog.evaluate(el=>el.scrollWidth<=el.clientWidth+1)).toBe(true);
+    const screenshotPath=path.resolve(process.env.CODEX_VISUAL_EVIDENCE_DIR||testInfo.outputPath('visuals'),'evaluation-'+width+'.png');
+    await page.screenshot({path:screenshotPath});
+    await dialog.getByRole('tab',{name:'错误样本',exact:true}).click();
+    await dialog.locator('.evaluation429-image-card').first().click();
+    const preview=page.getByRole('dialog',{name:'问题图片核验'});
+    await expect(preview.locator('.evaluation429-stage img')).toBeVisible();
+    const geometry=await preview.evaluate(el=>{
+      const image=el.querySelector('.evaluation429-stage img').getBoundingClientRect();
+      const rect=el.querySelector('svg rect');
+      const box=rect.getBBox(),mapped=new DOMPoint(box.x,box.y).matrixTransform(rect.getScreenCTM());
+      const scale=Math.min(image.width/100,image.height/80);
+      return {x:mapped.x,y:mapped.y,expectedX:image.left+(image.width-100*scale)/2+10*scale,
+        expectedY:image.top+(image.height-80*scale)/2+10*scale,overflow:el.scrollWidth>el.clientWidth+1};
+    });
+    expect(geometry.x).toBeCloseTo(geometry.expectedX,0);
+    expect(geometry.y).toBeCloseTo(geometry.expectedY,0);
+    expect(geometry.overflow,JSON.stringify(await preview.evaluate(el=>Array.from(el.querySelectorAll('*')).filter(node=>node.scrollWidth>node.clientWidth+1).map(node=>({tag:node.tagName,cls:node.className,width:node.clientWidth,scroll:node.scrollWidth}))))).toBe(false);
+    await page.screenshot({path:path.resolve(path.dirname(screenshotPath),'image-'+width+'.png')});
+    await preview.getByRole('button',{name:'下一张',exact:true}).click();
+    await expect(preview.locator('.evaluation429-stage img')).toBeVisible();
+    await preview.getByRole('button',{name:'返回独立评测'}).click();
+    await dialog.getByRole('button',{name:'训练报告',exact:true}).click();
+    const report=page.getByRole('dialog',{name:'训练报告'});
+    await expect(report.locator('.quality-chart')).toHaveCount(3);
+    await expect(page.getByRole('dialog')).toHaveCount(1);
+    expect(await report.evaluate(el=>el.scrollWidth<=el.clientWidth+1)).toBe(true);
+    await page.screenshot({path:path.resolve(path.dirname(screenshotPath),'report-'+width+'.png')});
+    await report.getByRole('button',{name:'查看独立评测'}).click();
+  }
 });

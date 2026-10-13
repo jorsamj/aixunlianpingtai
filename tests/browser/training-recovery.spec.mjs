@@ -1,4 +1,5 @@
 import {test, expect} from '@playwright/test';
+import path from 'node:path';
 
 test('failed final validation exposes backend-approved checkpoint recovery and requeues the same task', async ({page}) => {
   const pageErrors = [];
@@ -138,7 +139,7 @@ test('failed final validation exposes backend-approved checkpoint recovery and r
   expect(pageErrors).toEqual([]);
 });
 
-test('successful training detail never presents completion text as an error', async ({page}) => {
+test('successful training detail never presents completion text as an error', async ({page},testInfo) => {
   const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(error));
 
@@ -171,6 +172,9 @@ test('successful training detail never presents completion text as an error', as
     asset_algorithm_name: '成功状态详情测试',
     actual_device: 'cuda:0',
     actual_train_params: {batch: 32, workers: 8, cache: 'ram', effective_precision: 'fp16'},
+    runtime_metrics: {epochs:Array.from({length:30},(_,i)=>({epoch:i+1,losses:{box_loss:1-i*.02},metrics:{'metrics/mAP50(B)':i*.025}})),
+      samples:[{sampled_at:'2026-09-23T10:02:00Z',gpu_utilization:80,gpu_memory_percent:70,cpu_percent:40},
+        {sampled_at:'2026-09-23T10:32:00Z',gpu_utilization:0,gpu_memory_percent:0,cpu_percent:0}]},
     created_at: '2026-09-23T10:00:00Z',
     started_at: '2026-09-23T10:01:00Z',
     finished_at: '2026-09-23T10:31:00Z',
@@ -217,6 +221,22 @@ test('successful training detail never presents completion text as an error', as
   await dialog.getByRole('button', {name: '立即刷新'}).click();
   await expect(dialog).toHaveAttribute('data-identity-probe', 'overlay-stable');
   await expect(dialogShell).toHaveAttribute('data-identity-probe', 'dialog-stable');
+
+  for(const [width,height] of [[1920,1080],[1440,900],[1366,768],[375,812]]){
+    await page.setViewportSize({width,height});
+    await dialog.getByRole('tab',{name:'训练曲线',exact:true}).click();
+    await expect(dialog.locator('.quality-chart')).toHaveCount(2);
+    expect(await dialogShell.evaluate(el=>el.scrollWidth<=el.clientWidth+1)).toBe(true);
+    await page.screenshot({path:path.resolve(process.env.CODEX_VISUAL_EVIDENCE_DIR||testInfo.outputPath('visuals'),'detail-'+width+'.png')});
+    await dialog.getByRole('tab',{name:'训练资源',exact:true}).click();
+    await expect(dialog.locator('[role=tabpanel]:visible')).toContainText('80.0%');
+    await dialog.getByRole('button',{name:'立即刷新'}).click();
+    await expect(dialog.getByRole('tab',{name:'训练资源',exact:true})).toHaveAttribute('aria-selected','true');
+    await dialog.getByRole('tab',{name:'数据与配置',exact:true}).click();
+    await expect(dialog.locator('[data-training-panel=data]').first()).toContainText('32');
+    await dialog.getByRole('tab',{name:'日志与诊断',exact:true}).click();
+    await expect(dialog.locator('[data-training-tech-log] pre')).toContainText('training completed');
+  }
 
   expect(pageErrors).toEqual([]);
 });

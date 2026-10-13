@@ -21,6 +21,22 @@ function cleanup() {
   delete globalThis.document;
 }
 
+test('terminal resource evidence excludes post-training idle samples and refuses unknown end time', () => {
+  const job = {id:'bounded', status:'done', task_status:'SUCCEEDED',
+    started_at:'2026-10-13T01:00:00Z', finished_at:'2026-10-13T01:10:00Z',
+    runtime_metrics:{samples:[
+      {sampled_at:'2026-10-13T00:59:00Z',gpu_utilization:0},
+      {sampled_at:'2026-10-13T01:01:00Z',gpu_utilization:80},
+      {sampled_at:'2026-10-13T01:09:00Z',gpu_utilization:60,memory_percent:55},
+      {sampled_at:'2026-10-13T01:11:00Z',gpu_utilization:0}
+    ]}};
+  const model=trainingRecoveryDetailModel(job,{});
+  assert.equal(model.gpuUtilization,70);
+  assert.equal(model.resourceSampleCount,2);
+  assert.equal(model.memoryPercent,55);
+  assert.equal(trainingRecoveryDetailModel({...job,finished_at:null},{}).gpuUtilization,null);
+});
+
 test('100/100 epochs never grant recovery without backend recovery truth', () => {
   const job = {
     id: 'train-100',

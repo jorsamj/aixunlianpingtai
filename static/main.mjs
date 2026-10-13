@@ -14,7 +14,7 @@ import {installExternalAlgorithmPlatformRuntime} from './modules/external-algori
 import {installChangLianDataBrowserRuntime} from './modules/changlian-data-browser.js?v=63001';
 import {installExternalAlgorithmPublishRuntime} from './modules/external-algorithm-publish.js?v=64006';
 import {installModelArtifactRuntime} from './modules/model-artifact-runtime.js?v=65009';
-import {installTrainingRecoveryRuntime} from './modules/training-recovery-runtime.js?v=4226363';
+import {installTrainingRecoveryRuntime} from './modules/training-recovery-runtime.js?v=4226373';
 import {installTrainingMaterialPickerRuntime} from './modules/training-material-picker-runtime.js?v=422610';
 import {installTrainingMaterialSummaryRuntime} from './modules/training-material-summary-runtime.js?v=422603';
 import {installTrainingTaskRuntime} from './modules/training-task-runtime.js?v=422607';
@@ -37,7 +37,7 @@ import {uploadBatchFromResponse} from './modules/upload.js?v=421800';
 import {unwrapAlgorithmResponse} from './modules/algorithms.js?v=421800';
 import {applyMaterialSelection, buildTrainingPayload, filterTrainingMaterials, iterationBasePresentation, projectedRandomSplit} from './modules/training.js?v=422101';
 import {qualityChartModel} from './modules/quality.js?v=421800';
-import {reportPresentation} from './modules/reports.js?v=421800';
+import {reportPresentation, metricChart, trainingCharts} from './modules/reports.js?v=4226373';
 import {isActiveVideoTask, normalizeVideoTask, videoTaskFormValues} from './modules/video-tasks.js?v=421900';
 import {buildStorageSourcePayload, defaultStorageSource, enabledStorageSources, sourceMatches, storageSourceLabel} from './modules/storage.js?v=422202';
 import {buildMaterialQuery, installMaterialPaginationRuntime, requiresFullMaterialPool} from './modules/material-pagination-runtime.js?v=422609';
@@ -115,7 +115,7 @@ window.PlatformCore = {
   trainingDraft: {createTrainingDraft, trainingDraftToRequest, trainingBaseVersionFromAlgorithm},
   trainingSubmit: {buildTrainingEngineParameters, buildTrainingStartPayload, trainingSubmitReadiness, validateTrainingDevice},
   quality: {qualityChartModel},
-  reports: {reportPresentation},
+  reports: {reportPresentation, metricChart, trainingCharts},
   video: {isActiveVideoTask, normalizeVideoTask, videoTaskFormValues},
   storage: {buildStorageSourcePayload, defaultStorageSource, enabledStorageSources, sourceMatches, storageSourceLabel},
   materialPaging: {buildMaterialQuery, requiresFullMaterialPool},
