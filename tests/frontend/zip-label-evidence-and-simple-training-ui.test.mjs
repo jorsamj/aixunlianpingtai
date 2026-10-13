@@ -22,6 +22,11 @@ test('ZIP source class offers real source image and box preview before manual ma
   assert.match(app,/v19_write_class_samples\(project_id, upload_id, scan_class_samples\)/);
   assert.match(app,/v19_write_class_samples\(project_id, job_id, scan_class_samples\)/);
   assert.match(css,/\.label-mapping-sample-box/);
+  const scopedPreview=css.match(/\.zip-label-confirm \.zip-label-workspace \.label-mapping-sample-panel:not\(\[hidden\]\)\{([^}]*)\}/);
+  assert.ok(scopedPreview, 'ZIP sample viewer must be contained within its layout');
+  assert.match(scopedPreview[1],/position:static/);
+  assert.match(scopedPreview[1],/z-index:auto/);
+  assert.match(scopedPreview[1],/width:100%/);
 });
 
 test('ZIP category mapping preserves preview while user decides destination', () => {
