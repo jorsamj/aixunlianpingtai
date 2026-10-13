@@ -632,6 +632,9 @@ class TaskRepository:
         *,
         resource_key: str,
         required_capabilities: tuple[str, ...],
+        preparation_task_id: str | None = None,
+        preparation_lease_token: str | None = None,
+        preparation_execution_generation: int | None = None,
     ) -> TaskRecord:
         """Release one prepared TRAINING parent to the canonical scheduler.
 
@@ -648,6 +651,13 @@ class TaskRepository:
         )
         with closing(self._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
+            self._assert_preparation_execution_owner(
+                database,
+                preparation_task_id=preparation_task_id,
+                preparation_lease_token=preparation_lease_token,
+                preparation_execution_generation=preparation_execution_generation,
+                now=now,
+            )
             row = database.execute(
                 "SELECT * FROM tasks WHERE task_id=?",
                 (str(task_id),),
@@ -678,6 +688,46 @@ class TaskRepository:
             ).fetchone()
             database.commit()
         return _from_row(row)
+
+    @staticmethod
+    def _assert_preparation_execution_owner(
+        database,
+        *,
+        preparation_task_id: str | None,
+        preparation_lease_token: str | None,
+        preparation_execution_generation: int | None,
+        now: str,
+    ) -> None:
+        """Fence a parent mutation to one live TRAINING_PREPARE generation.
+
+        The check runs in the same IMMEDIATE transaction as the parent update,
+        so a reclaimed preparation task cannot race a stale Worker between the
+        ownership check and publication.
+        """
+        supplied = (
+            preparation_task_id is not None,
+            preparation_lease_token is not None,
+            preparation_execution_generation is not None,
+        )
+        if not any(supplied):
+            return
+        if not all(supplied):
+            raise ValueError("preparation execution owner requires task, lease and generation")
+        row = database.execute(
+            "SELECT kind, status, lease_token, lease_expires_at, attempt FROM tasks WHERE task_id=?",
+            (str(preparation_task_id),),
+        ).fetchone()
+        owned = (
+            row is not None
+            and str(row["kind"]) == TaskKind.TRAINING_PREPARE.value
+            and str(row["status"]) == TaskStatus.RUNNING.value
+            and str(row["lease_token"] or "") == str(preparation_lease_token)
+            and int(row["attempt"]) == int(preparation_execution_generation)
+            and bool(row["lease_expires_at"])
+            and str(row["lease_expires_at"]) > str(now)
+        )
+        if not owned:
+            raise PermissionError("preparation execution does not own parent mutation")
 
     def begin_finalization(
         self,
@@ -812,6 +862,9 @@ class TaskRepository:
         *,
         status: TaskStatus = TaskStatus.BLOCKED_BY_ENVIRONMENT,
         stage: str = "precondition_failed",
+        preparation_task_id: str | None = None,
+        preparation_lease_token: str | None = None,
+        preparation_execution_generation: int | None = None,
     ) -> TaskRecord:
         """Fail a task that never acquired an execution lease.
 
@@ -826,6 +879,14 @@ class TaskRepository:
             raise ValueError("queued precondition failure requires a terminal failure status")
         now = utc_now()
         with closing(self._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            self._assert_preparation_execution_owner(
+                database,
+                preparation_task_id=preparation_task_id,
+                preparation_lease_token=preparation_lease_token,
+                preparation_execution_generation=preparation_execution_generation,
+                now=now,
+            )
             changed = database.execute(
                 """
                 UPDATE tasks
@@ -842,9 +903,14 @@ class TaskRepository:
                     str(task_id),
                 ),
             ).rowcount
-        result = self.get(task_id)
-        if result is None:
+            row = database.execute(
+                "SELECT * FROM tasks WHERE task_id=?",
+                (str(task_id),),
+            ).fetchone()
+            database.commit()
+        if row is None:
             raise KeyError(task_id)
+        result = _from_row(row)
         if changed != 1 and result.status is TaskStatus.QUEUED:
             raise RuntimeError("queued task precondition state changed concurrently")
         return result

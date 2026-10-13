@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 from pathlib import Path
 
 from PIL import Image
@@ -20,11 +21,14 @@ from platform_core.storage.models import ObjectMetadata
 from platform_core.storage.source_repository import StorageSource, StorageSourceRepository
 from platform_core.task_runtime import (
     ArtifactStore,
+    ExecutionFencedError,
+    FencedTaskRepository,
     Scheduler,
     TaskKind,
     TaskRecord,
     TaskRepository,
     TaskStatus,
+    WorkerContext,
 )
 
 
@@ -200,9 +204,15 @@ def test_remote_official_filename_never_becomes_agent_download_contract(tmp_path
     assert captured.value.code == "REMOTE_TRAINING_BASE_MODEL_NOT_PREPARED"
 
 
-def _runtime(data_dir: Path, project_id: str, *, supplement_candidate_set=None):
+def _runtime(
+    data_dir: Path,
+    project_id: str,
+    *,
+    supplement_candidate_set=None,
+    repository_type=TaskRepository,
+):
     runtime = data_dir / "task_runtime"
-    repository = TaskRepository(runtime / "tasks.sqlite3")
+    repository = repository_type(runtime / "tasks.sqlite3")
     artifacts = ArtifactStore(runtime / "artifacts")
     target_id = "train_remote_target"
     prep_id = "trainprep_train_remote_target"
@@ -536,3 +546,242 @@ def test_remote_training_prepare_freezes_feedback_subset_without_agent_feedback_
     revision = artifacts.read_json(target_id, "dataset-revision.json")
     assert snapshot["supplement_provenance"]["adoption_id"] == provenance["adoption_id"]
     assert revision["supplement_provenance"]["adoption_id"] == provenance["adoption_id"]
+
+
+def test_reclaimed_training_prepare_attempt_validates_and_activates_once(tmp_path):
+    data_dir = tmp_path / "data"
+    project_id = _build_project(data_dir)
+    repository, artifacts, target_id, prep_id = _runtime(
+        data_dir,
+        project_id,
+        repository_type=FencedTaskRepository,
+    )
+    first = repository.claim_next(
+        "dead-preparer",
+        [TaskKind.TRAINING_PREPARE],
+        {"training.prepare"},
+        lease_seconds=1,
+    )
+    assert first is not None and first.task.task_id == prep_id
+    assert repository.release_expired("2999-01-01T00:00:00+00:00") == 1
+
+    source = _remote_source()
+    provider = FakeObjectProvider()
+    handler = RemoteTrainingPrepareHandler(
+        data_dir,
+        sources=FakeSources(source),
+        credentials=FakeCredentials(),
+        provider_factory=lambda _project_id, _source, _secret: provider,
+        model_artifacts=FakeModelArtifacts(source.id),
+    )
+    scheduler = Scheduler(
+        repository,
+        artifacts,
+        "recovery-preparer",
+        {TaskKind.TRAINING_PREPARE: handler},
+        {"training.prepare"},
+    )
+
+    assert scheduler.run_once() is True
+    prep = repository.get(prep_id)
+    target = repository.get(target_id)
+    assert prep is not None and prep.status is TaskStatus.SUCCEEDED, prep.error if prep else "missing"
+    assert prep.attempt == 2
+    assert target is not None and target.status is TaskStatus.QUEUED
+    assert target.required_capabilities == ("training.ultralytics",)
+    payload = artifacts.read_json(target_id, "payload.json")
+    assert payload["training_input_state"] == "READY"
+    assert payload["remote_prepare_task_id"] == prep_id
+    assert artifacts.read_json(prep_id, "result.json")["status"] == "ready"
+
+
+def test_recovery_validates_ready_artifacts_without_reuploading_or_reactivating(tmp_path):
+    data_dir = tmp_path / "data"
+    project_id = _build_project(data_dir)
+    repository, artifacts, target_id, prep_id = _runtime(
+        data_dir,
+        project_id,
+        repository_type=FencedTaskRepository,
+    )
+    source = _remote_source()
+    provider = FakeObjectProvider()
+    handler = RemoteTrainingPrepareHandler(
+        data_dir,
+        sources=FakeSources(source),
+        credentials=FakeCredentials(),
+        provider_factory=lambda _project_id, _source, _secret: provider,
+        model_artifacts=FakeModelArtifacts(source.id),
+    )
+    first = repository.claim_next(
+        "preparer-before-crash",
+        [TaskKind.TRAINING_PREPARE],
+        {"training.prepare"},
+        lease_seconds=30,
+    )
+    assert first is not None
+    context = WorkerContext(first.task, first, repository, artifacts, lease_seconds=30)
+    status, result_ref = handler.run(context)
+    assert status is TaskStatus.SUCCEEDED and result_ref == "result.json"
+    upload_count = len(provider.upload_calls)
+    activated = repository.get(target_id)
+    assert activated is not None
+    activated_contract = (activated.resource_key, activated.required_capabilities)
+
+    # Simulate process death after durable parent publication but before the
+    # preparation task itself was finished by Scheduler.
+    assert repository.release_expired("2999-01-01T00:00:00+00:00") == 1
+    Scheduler(
+        repository,
+        artifacts,
+        "recovery-preparer",
+        {TaskKind.TRAINING_PREPARE: handler},
+        {"training.prepare"},
+    ).run_once()
+
+    recovered = repository.get(prep_id)
+    parent = repository.get(target_id)
+    assert recovered is not None and recovered.status is TaskStatus.SUCCEEDED, (
+        recovered.error if recovered else "missing preparation task"
+    )
+    assert recovered.attempt == 2
+    assert parent is not None
+    assert (parent.resource_key, parent.required_capabilities) == activated_contract
+    assert len(provider.upload_calls) == upload_count
+    assert artifacts.read_json(prep_id, "result.json")["status"] == "ready"
+
+
+def test_recovery_rejects_corrupted_ready_bundle_instead_of_reusing_it(tmp_path):
+    data_dir = tmp_path / "data"
+    project_id = _build_project(data_dir)
+    repository, artifacts, target_id, prep_id = _runtime(
+        data_dir,
+        project_id,
+        repository_type=FencedTaskRepository,
+    )
+    source = _remote_source()
+    provider = FakeObjectProvider()
+    handler = RemoteTrainingPrepareHandler(
+        data_dir,
+        sources=FakeSources(source),
+        credentials=FakeCredentials(),
+        provider_factory=lambda _project_id, _source, _secret: provider,
+        model_artifacts=FakeModelArtifacts(source.id),
+    )
+    first = repository.claim_next(
+        "preparer-before-corruption",
+        [TaskKind.TRAINING_PREPARE],
+        {"training.prepare"},
+        lease_seconds=30,
+    )
+    assert first is not None
+    context = WorkerContext(first.task, first, repository, artifacts, lease_seconds=30)
+    assert handler.run(context)[0] is TaskStatus.SUCCEEDED
+    artifacts.artifact_path(
+        target_id, "remote-training/training-bundle.zip",
+    ).write_bytes(b"corrupted")
+    assert repository.release_expired("2999-01-01T00:00:00+00:00") == 1
+
+    Scheduler(
+        repository,
+        artifacts,
+        "recovery-preparer",
+        {TaskKind.TRAINING_PREPARE: handler},
+        {"training.prepare"},
+    ).run_once()
+
+    recovered = repository.get(prep_id)
+    parent = repository.get(target_id)
+    assert recovered is not None and recovered.status is TaskStatus.FAILED
+    assert "archive no longer matches durable evidence" in str(recovered.error)
+    assert parent is not None and parent.status is TaskStatus.FAILED
+    assert "REMOTE_TRAINING_ARCHIVE_EVIDENCE_MISMATCH" in str(parent.error)
+
+
+def test_fenced_training_preparer_cannot_fail_queued_parent(tmp_path):
+    data_dir = tmp_path / "data"
+    project_id = _build_project(data_dir)
+    repository, artifacts, target_id, prep_id = _runtime(
+        data_dir,
+        project_id,
+        repository_type=FencedTaskRepository,
+    )
+    lease = repository.claim_next(
+        "stale-preparer",
+        [TaskKind.TRAINING_PREPARE],
+        {"training.prepare"},
+    )
+    assert lease is not None
+    context = WorkerContext(lease.task, lease, repository, artifacts)
+    context.mark_lease_lost()
+    handler = RemoteTrainingPrepareHandler(data_dir)
+
+    with pytest.raises(ExecutionFencedError):
+        handler.run(context)
+
+    target = repository.get(target_id)
+    assert target is not None and target.status is TaskStatus.QUEUED
+    assert target.error is None
+
+
+def test_transient_prepare_sqlite_error_does_not_fail_parent(tmp_path, monkeypatch):
+    data_dir = tmp_path / "data"
+    project_id = _build_project(data_dir)
+    repository, artifacts, target_id, _prep_id = _runtime(
+        data_dir,
+        project_id,
+        repository_type=FencedTaskRepository,
+    )
+    lease = repository.claim_next(
+        "busy-preparer",
+        [TaskKind.TRAINING_PREPARE],
+        {"training.prepare"},
+    )
+    assert lease is not None
+    context = WorkerContext(lease.task, lease, repository, artifacts)
+    handler = RemoteTrainingPrepareHandler(data_dir)
+
+    def raise_busy(*_args, **_kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(handler, "_target", raise_busy)
+
+    with pytest.raises(sqlite3.OperationalError, match="locked"):
+        handler.run(context)
+
+    target = repository.get(target_id)
+    assert target is not None and target.status is TaskStatus.QUEUED
+    assert target.error is None
+
+
+def test_cancelled_training_parent_is_not_reactivated_by_prepare_recovery(tmp_path):
+    data_dir = tmp_path / "data"
+    project_id = _build_project(data_dir)
+    repository, artifacts, target_id, prep_id = _runtime(
+        data_dir,
+        project_id,
+        repository_type=FencedTaskRepository,
+    )
+    first = repository.claim_next(
+        "dead-preparer",
+        [TaskKind.TRAINING_PREPARE],
+        {"training.prepare"},
+        lease_seconds=1,
+    )
+    assert first is not None
+    assert repository.release_expired("2999-01-01T00:00:00+00:00") == 1
+    repository.request_cancel(target_id)
+
+    handler = RemoteTrainingPrepareHandler(data_dir)
+    Scheduler(
+        repository,
+        artifacts,
+        "recovery-preparer",
+        {TaskKind.TRAINING_PREPARE: handler},
+        {"training.prepare"},
+    ).run_once()
+
+    target = repository.get(target_id)
+    assert target is not None and target.status is TaskStatus.CANCELLED
+    assert target.required_capabilities == ("training.ultralytics",)
+    payload = artifacts.read_json(target_id, "payload.json")
+    assert payload["remote_input_state"] == "PREPARING"

@@ -417,6 +417,33 @@ test('detail model keeps requested resolved and runtime precision truth distinct
   assert.equal(model.gpuUuid, 'GPU-test');
 });
 
+test('preparation failure keeps runtime precision undecided and dataset counts ungenerated', async () => {
+  const model = trainingRecoveryDetailModel({
+    id: 'train-preparation-lease-lost',
+    status: 'failed',
+    task_status: 'FAILED',
+    task_stage: 'training_input_preparation_failed',
+    error: 'TRAINING_PREPARATION_FAILED: task execution lease was lost',
+    requested_resources: {precision: 'fp16', batch: 116, workers: 12},
+  }, {
+    primary_stage: 'training_input',
+    primary_message: '训练准备 Worker 的执行租约已失效，未进入模型训练。',
+  });
+
+  assert.equal(model.failureStage, 'training_input');
+  assert.equal(model.requestedPrecision, 'fp16');
+  assert.equal(model.resolvedPrecision, '');
+  assert.equal(model.runtimePrecision, '');
+  assert.equal(model.precision, '');
+  assert.equal(model.datasetCountsGenerated, false);
+  assert.deepEqual(model.datasetCounts, {train: null, validation: null, test: null});
+
+  const {readFileSync} = await import('node:fs');
+  const source = readFileSync(new URL('../../static/modules/training-recovery-runtime.js', import.meta.url), 'utf8');
+  assert.match(source, /model\.datasetCountsGenerated\?`训练/);
+  assert.match(source, /:'未生成'/);
+});
+
 test('detail model exposes runtime resource telemetry from backend metrics truth', () => {
   const model = trainingRecoveryDetailModel({
     id: 'train-resource-live',

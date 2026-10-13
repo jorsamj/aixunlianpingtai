@@ -5,6 +5,7 @@ import hashlib
 import json
 import mimetypes
 import re
+import sqlite3
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -20,7 +21,6 @@ from .errors import PlatformError
 from .material_repository import MaterialRepository
 from .model_artifacts import ModelArtifactService
 from .remote_training_transport import (
-    RemoteTrainingTransportError,
     create_training_bundle_archive,
     stage_training_bundle_object,
 )
@@ -28,7 +28,7 @@ from .resource_discovery import OFFICIAL_DOWNLOADABLE_MODELS
 from .secrets import KeyringSecretStore, SecretCredentialStore
 from .storage import StorageManager, StorageProviderFactory, StorageType
 from .storage.source_repository import StorageSourceRepository
-from .task_runtime import TaskKind, TaskStatus
+from .task_runtime import ExecutionFencedError, TaskKind, TaskStatus
 from .training_bundle_cache import TrainingBundleCache
 from .training_label_tasks import project_training_rows, resolve_training_label_contract
 from .training_compatibility import (
@@ -48,6 +48,7 @@ from .training_tasks import (
     _selected_project_images,
     freeze_training_inputs,
     materialize_portable_dataset,
+    resolve_remote_training_bundle,
     resolve_frozen_training_base,
     resolve_training_selection,
     resolve_training_input_freeze,
@@ -201,6 +202,68 @@ class TrainingPrepareHandler:
 
     def _heartbeat(self, context, progress: float, stage: str, current_item: str) -> None:
         context.heartbeat(progress=progress, stage=stage, current_item=current_item)
+
+    @staticmethod
+    def _owner(context) -> dict[str, object]:
+        return {
+            "preparation_task_id": context.task.task_id,
+            "preparation_lease_token": context.lease.lease_token,
+            "preparation_execution_generation": context.execution_generation,
+        }
+
+    def _activate_target(self, context, training_task_id: str, payload: Mapping[str, Any]) -> None:
+        context.assert_current_execution()
+        try:
+            context.repository.activate_prepared_training(
+                training_task_id,
+                resource_key=str(
+                    payload.get("target_resource_key")
+                    or (
+                        "training:remote:scheduler"
+                        if str(payload.get("target") or "local").lower() == "remote"
+                        else "training:auto"
+                    )
+                ),
+                required_capabilities=tuple(
+                    payload.get("target_required_capabilities") or ("training.ultralytics",)
+                ),
+                **self._owner(context),
+            )
+        except PermissionError as error:
+            context.mark_lease_lost()
+            raise ExecutionFencedError("training preparation lost parent publication ownership") from error
+        except ValueError as error:
+            current = context.repository.get(training_task_id)
+            if current is not None and current.status in {
+                TaskStatus.CANCELLED,
+                TaskStatus.CANCEL_REQUESTED,
+            }:
+                raise InterruptedError("target training task was cancelled during input preparation") from error
+            raise
+
+    def _fail_target_if_owned(
+        self,
+        context,
+        training_task_id: str,
+        error: str,
+        *,
+        status: TaskStatus,
+    ) -> None:
+        context.assert_current_execution()
+        current = context.repository.get(training_task_id)
+        if current is None or current.status is not TaskStatus.QUEUED:
+            return
+        try:
+            context.repository.fail_queued_precondition(
+                training_task_id,
+                error,
+                status=status,
+                stage="training_input_preparation_failed",
+                **self._owner(context),
+            )
+        except PermissionError as fenced:
+            context.mark_lease_lost()
+            raise ExecutionFencedError("training preparation lost parent failure ownership") from fenced
 
     def _refresh_external_algorithm(self, project_id: str, algorithm: Mapping[str, Any]):
         if (
@@ -1137,6 +1200,238 @@ class TrainingPrepareHandler:
             "base_training_mode": str(base.get("base_training_mode") or "previous_weights_init"),
         }
 
+    def _validate_ready_publication(
+        self,
+        context,
+        target,
+        payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Validate the durable commit evidence before a recovered publish.
+
+        Recovery never trusts the READY marker by itself. It proves that the
+        current preparation task owns the marker and that the frozen input,
+        snapshot, revision and portable bundle all agree. Remote preparation
+        additionally proves both immutable objects still match size/SHA256.
+        """
+        target_mode = str(payload.get("target") or "local").strip().lower()
+        owner_key = "remote_prepare_task_id" if target_mode == "remote" else "training_prepare_task_id"
+        if str(payload.get(owner_key) or "") != context.task.task_id:
+            raise RemoteTrainingPreparationError(
+                "TRAINING_PREPARED_OUTPUT_OWNER_MISMATCH",
+                "prepared training input belongs to a different preparation task",
+                target_status=TaskStatus.FAILED,
+            )
+        prepared = context.artifacts.read_json(target.task_id, "prepared-input.json", default={})
+        snapshot = context.artifacts.read_json(target.task_id, "snapshot.json", default={})
+        revision = context.artifacts.read_json(target.task_id, "dataset-revision.json", default={})
+        freeze_ref = str(payload.get("input_freeze_ref") or "").strip()
+        frozen = context.artifacts.read_json(target.task_id, freeze_ref, default={}) if freeze_ref else {}
+        remote = payload.get("remote_execution")
+        training = remote.get("training") if isinstance(remote, Mapping) else None
+        snapshot_id = str(
+            payload.get("snapshot_id")
+            or (training.get("snapshot_id") if isinstance(training, Mapping) else "")
+            or prepared.get("snapshot_id")
+            or ""
+        ).strip()
+        revision_id = str(
+            payload.get("dataset_revision_id")
+            or (training.get("dataset_revision_id") if isinstance(training, Mapping) else "")
+            or prepared.get("dataset_revision_id")
+            or ""
+        ).strip()
+        freeze_valid = not freeze_ref or (
+            isinstance(frozen, Mapping)
+            and str(frozen.get("input_freeze_id") or "")
+            == str(payload.get("input_freeze_id") or "")
+        )
+        valid_documents = (
+            isinstance(prepared, Mapping)
+            and isinstance(snapshot, Mapping)
+            and isinstance(revision, Mapping)
+            and isinstance(frozen, Mapping)
+            and str(prepared.get("training_task_id") or "") == target.task_id
+            and str(prepared.get("snapshot_id") or "") == snapshot_id
+            and str(prepared.get("dataset_revision_id") or "") == revision_id
+            and str(snapshot.get("snapshot_id") or "") == snapshot_id
+            and str(snapshot.get("dataset_revision_id") or "") == revision_id
+            and str(revision.get("dataset_revision_id") or "") == revision_id
+            and freeze_valid
+        )
+        bundle_root = context.artifacts.artifact_path(target.task_id, "work/bundle").resolve()
+        prepared_bundle = Path(str(prepared.get("bundle_path") or "")).expanduser().resolve()
+        if not valid_documents or prepared_bundle != bundle_root:
+            raise RemoteTrainingPreparationError(
+                "TRAINING_PREPARED_OUTPUT_INVALID",
+                "prepared training input evidence is incomplete or inconsistent",
+                target_status=TaskStatus.FAILED,
+            )
+        verified = resolve_remote_training_bundle(bundle_root / "manifest.json")
+        if verified.snapshot_id != snapshot_id:
+            raise RemoteTrainingPreparationError(
+                "TRAINING_PREPARED_BUNDLE_MISMATCH",
+                "prepared training bundle does not match the frozen snapshot",
+                target_status=TaskStatus.FAILED,
+            )
+
+        result = {
+            "training_task_id": target.task_id,
+            "status": "ready",
+            "snapshot_id": snapshot_id,
+            "dataset_revision_id": revision_id,
+            "target": target_mode,
+        }
+        if target_mode == "local":
+            evidence_ref = (
+                "resource-admission.json"
+                if payload.get("resource_resolution_deferred")
+                else "resolved-resources.json"
+            )
+            evidence = context.artifacts.read_json(target.task_id, evidence_ref, default={})
+            if not isinstance(evidence, Mapping) or not evidence:
+                raise RemoteTrainingPreparationError(
+                    "TRAINING_RESOURCE_EVIDENCE_MISSING",
+                    "prepared local training resources have no durable evidence",
+                    target_status=TaskStatus.FAILED,
+                )
+            return result
+
+        bundle_ref = training.get("bundle") if isinstance(training, Mapping) else None
+        model_ref = training.get("model") if isinstance(training, Mapping) else None
+        if not isinstance(bundle_ref, Mapping) or not isinstance(model_ref, Mapping):
+            raise RemoteTrainingPreparationError(
+                "REMOTE_TRAINING_PREPARED_OUTPUT_INVALID",
+                "remote training object evidence is incomplete",
+                target_status=TaskStatus.FAILED,
+            )
+        archive = context.artifacts.artifact_path(
+            target.task_id, "remote-training/training-bundle.zip",
+        )
+        if (
+            not archive.is_file()
+            or int(archive.stat().st_size) != int(bundle_ref.get("size_bytes") or 0)
+            or _sha256(archive) != str(bundle_ref.get("sha256") or "").lower()
+        ):
+            raise RemoteTrainingPreparationError(
+                "REMOTE_TRAINING_ARCHIVE_EVIDENCE_MISMATCH",
+                "local training bundle archive no longer matches durable evidence",
+                target_status=TaskStatus.FAILED,
+            )
+        source, provider = self._storage(target.project_id)
+        for reference in (bundle_ref, model_ref):
+            if str(reference.get("storage_source_id") or "") != str(source.id):
+                raise RemoteTrainingPreparationError(
+                    "REMOTE_TRAINING_STORAGE_EVIDENCE_MISMATCH",
+                    "prepared remote object belongs to a different storage source",
+                )
+            metadata = provider.stat(str(reference.get("object_key") or ""))
+            if (
+                int(metadata.size_bytes) != int(reference.get("size_bytes") or 0)
+                or str(metadata.sha256 or "").strip().lower()
+                != str(reference.get("sha256") or "").strip().lower()
+            ):
+                raise RemoteTrainingPreparationError(
+                    "REMOTE_TRAINING_OBJECT_EVIDENCE_MISMATCH",
+                    "prepared remote object no longer matches size/SHA256 evidence",
+                )
+        result.update({"bundle": dict(bundle_ref), "model": dict(model_ref)})
+        return result
+
+    def _complete_ready_recovery(self, context, target, payload: Mapping[str, Any]):
+        self._heartbeat(context, 94, "validating_prepared_input", "核验已生成的训练输入")
+        result = self._validate_ready_publication(context, target, payload)
+        current = context.repository.get(target.task_id)
+        if current is not None and current.status is TaskStatus.QUEUED:
+            expected_resource_key = str(
+                payload.get("target_resource_key")
+                or (
+                    "training:remote:scheduler"
+                    if str(payload.get("target") or "local").lower() == "remote"
+                    else "training:auto"
+                )
+            )
+            expected_capabilities = tuple(sorted(set(
+                payload.get("target_required_capabilities") or ("training.ultralytics",)
+            )))
+            if (
+                current.resource_key != expected_resource_key
+                or current.required_capabilities != expected_capabilities
+            ):
+                self._activate_target(context, target.task_id, payload)
+        elif current is None or current.status in {
+            TaskStatus.CANCELLED,
+            TaskStatus.CANCEL_REQUESTED,
+        }:
+            raise InterruptedError("target training task was cancelled during input preparation")
+        # RUNNING or terminal means the parent crossed its own scheduler
+        # boundary already. Recovery validates but never rewinds that state.
+        context.artifacts.atomic_write_json(context.task.task_id, "result.json", result)
+        self._heartbeat(context, 100, "ready", "训练输入恢复核验完成")
+        return TaskStatus.SUCCEEDED, "result.json"
+
+    def recover(self, context):
+        prep_payload = context.artifacts.read_json(
+            context.task.task_id, context.task.payload_ref, default={},
+        )
+        if not isinstance(prep_payload, Mapping):
+            raise ValueError("remote training preparation payload is invalid")
+        training_task_id = str(prep_payload.get("training_task_id") or "").strip()
+        if not training_task_id:
+            raise ValueError("remote training preparation has no target task id")
+        try:
+            return self._recover_target(context, training_task_id)
+        except ExecutionFencedError:
+            raise
+        except InterruptedError:
+            raise
+        except sqlite3.OperationalError:
+            raise
+        except RemoteTrainingPreparationError as error:
+            self._fail_target_if_owned(
+                context,
+                training_task_id,
+                f"{error.code}: {error}",
+                status=error.target_status,
+            )
+            raise
+        except Exception as error:
+            self._fail_target_if_owned(
+                context,
+                training_task_id,
+                f"TRAINING_PREPARATION_FAILED: {error}",
+                status=TaskStatus.FAILED,
+            )
+            raise
+
+    def _recover_target(self, context, training_task_id: str):
+        target = context.repository.get(training_task_id)
+        if target is None or target.kind is not TaskKind.TRAINING:
+            raise RemoteTrainingPreparationError(
+                "REMOTE_TRAINING_TASK_MISSING",
+                "target training task does not exist",
+                target_status=TaskStatus.FAILED,
+            )
+        if target.status in {TaskStatus.CANCELLED, TaskStatus.CANCEL_REQUESTED}:
+            raise InterruptedError("target training task was cancelled during input preparation")
+        payload = context.artifacts.read_json(training_task_id, target.payload_ref, default={})
+        if not isinstance(payload, Mapping):
+            raise RemoteTrainingPreparationError(
+                "REMOTE_TRAINING_PAYLOAD_INVALID",
+                "target training payload is invalid",
+                target_status=TaskStatus.FAILED,
+            )
+        if str(payload.get("training_input_state") or "").upper() == "READY":
+            return self._complete_ready_recovery(context, target, payload)
+        if target.status is not TaskStatus.QUEUED:
+            raise RemoteTrainingPreparationError(
+                "REMOTE_TRAINING_TASK_NOT_QUEUED",
+                f"target training task is no longer queued: {target.status.value}",
+                target_status=TaskStatus.FAILED,
+            )
+        # No READY commit exists. Deterministic target paths and content-addressed
+        # uploads make replay safe; run() revalidates all source truth first.
+        return self.run(context)
+
     def run(self, context):
         prep_payload = context.artifacts.read_json(
             context.task.task_id,
@@ -1193,26 +1488,7 @@ class TrainingPrepareHandler:
                 and str(existing.get("task_kind") or "") == "TRAINING"
                 and str(existing.get("transport") or "") == "object-storage-v1"
             ):
-                result = {
-                    "training_task_id": training_task_id,
-                    "status": "already_ready",
-                    "snapshot_id": str(
-                        ((existing.get("training") or {}).get("snapshot_id"))
-                        if isinstance(existing.get("training"), Mapping)
-                        else ""
-                    ),
-                    "dataset_revision_id": str(
-                        ((existing.get("training") or {}).get("dataset_revision_id"))
-                        if isinstance(existing.get("training"), Mapping)
-                        else ""
-                    ),
-                }
-                context.artifacts.atomic_write_json(
-                    context.task.task_id,
-                    "result.json",
-                    result,
-                )
-                return TaskStatus.SUCCEEDED, "result.json"
+                return self._complete_ready_recovery(context, target, payload)
 
             bundle, snapshot, split_manifest, images = self._prepare_bundle(
                 context,
@@ -1253,13 +1529,7 @@ class TrainingPrepareHandler:
                     target.payload_ref,
                     updated_payload,
                 )
-                context.repository.activate_prepared_training(
-                    training_task_id,
-                    resource_key=str(payload.get("target_resource_key") or "training:auto"),
-                    required_capabilities=tuple(
-                        payload.get("target_required_capabilities") or ("training.ultralytics",)
-                    ),
-                )
+                self._activate_target(context, training_task_id, updated_payload)
                 result = {**prepared_input, "status": "ready", "target": "local"}
                 context.artifacts.atomic_write_json(context.task.task_id, "result.json", result)
                 self._heartbeat(context, 100, "ready", "本地训练输入已就绪")
@@ -1387,13 +1657,7 @@ class TrainingPrepareHandler:
                 target.payload_ref,
                 updated_payload,
             )
-            context.repository.activate_prepared_training(
-                training_task_id,
-                resource_key=str(payload.get("target_resource_key") or "training:remote:scheduler"),
-                required_capabilities=tuple(
-                    payload.get("target_required_capabilities") or ("training.ultralytics",)
-                ),
-            )
+            self._activate_target(context, training_task_id, updated_payload)
             result = {
                 "training_task_id": training_task_id,
                 "status": "ready",
@@ -1409,26 +1673,30 @@ class TrainingPrepareHandler:
             )
             self._heartbeat(context, 100, "ready", "远程训练输入已就绪")
             return TaskStatus.SUCCEEDED, "result.json"
+        except ExecutionFencedError:
+            raise
         except InterruptedError:
             raise
+        except sqlite3.OperationalError:
+            # Scheduler owns retry classification. A temporary SQLite outage
+            # must not be converted into a terminal parent business failure.
+            raise
         except RemoteTrainingPreparationError as error:
-            current = context.repository.get(training_task_id) if training_task_id else None
-            if current is not None and current.status is TaskStatus.QUEUED:
-                context.repository.fail_queued_precondition(
+            if training_task_id:
+                self._fail_target_if_owned(
+                    context,
                     training_task_id,
                     f"{error.code}: {error}",
                     status=error.target_status,
-                    stage="training_input_preparation_failed",
                 )
             raise
-        except (RemoteTrainingTransportError, Exception) as error:
-            current = context.repository.get(training_task_id) if training_task_id else None
-            if current is not None and current.status is TaskStatus.QUEUED:
-                context.repository.fail_queued_precondition(
+        except Exception as error:
+            if training_task_id:
+                self._fail_target_if_owned(
+                    context,
                     training_task_id,
                     f"TRAINING_PREPARATION_FAILED: {error}",
                     status=TaskStatus.FAILED,
-                    stage="training_input_preparation_failed",
                 )
             raise
 

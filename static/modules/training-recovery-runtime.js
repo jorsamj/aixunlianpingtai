@@ -284,7 +284,7 @@ export function trainingRecoveryDetailModel(job = {}, recovery = {}) {
     resourceProfile,
     resourceProfileLabel: resourceProfileLabel(resourceProfile),
     gpuPolicy: String(actual.gpu_policy || resolved.gpu_policy || job?.gpu_policy || requested.gpu_policy || '').trim(),
-    precision: runtimePrecision || resolvedPrecision || requestedPrecision,
+    precision: runtimePrecision || resolvedPrecision,
     requestedPrecision,
     requestedPrecisionText: requestedPrecision === 'auto' ? '自动' : (requestedPrecision || '-'),
     resolvedPrecision,
@@ -314,10 +314,12 @@ export function trainingRecoveryDetailModel(job = {}, recovery = {}) {
     optimizer: String(actual.optimizer || job?.optimizer || requested.optimizer || '').trim(),
     lr0: actual.lr0 ?? job?.lr0 ?? requested.lr0 ?? null,
     timeLimit: actual.time ?? job?.time ?? requested.time ?? null,
+    datasetCountsGenerated: ['train', 'training', 'train_images', 'validation', 'val', 'validation_images', 'test', 'test_images']
+      .some((key) => Object.prototype.hasOwnProperty.call(counts, key) && counts[key] != null),
     datasetCounts: {
-      train: numberOrNull(counts.train ?? counts.training ?? counts.train_images) ?? 0,
-      validation: numberOrNull(counts.validation ?? counts.val ?? counts.validation_images) ?? 0,
-      test: numberOrNull(counts.test ?? counts.test_images) ?? 0,
+      train: numberOrNull(counts.train ?? counts.training ?? counts.train_images),
+      validation: numberOrNull(counts.validation ?? counts.val ?? counts.validation_images),
+      test: numberOrNull(counts.test ?? counts.test_images),
     },
     artifacts: artifactNames(job),
     snapshotId: String(job?.snapshot_id || '').trim(),
@@ -423,7 +425,7 @@ function detailHtml(job, recovery, log = '', inputIssues = null) {
               <div class="training-recovery-kv"><span>实际 Runtime</span><b>${esc('Batch ' + (model.runtimeBatch ?? '-') + ' · Workers ' + (model.runtimeWorkers ?? '-') + ' · Precision ' + (model.runtimePrecision || '-') + ' · Cache ' + (model.runtimeCache ?? '-'))}</b></div>
               <div class="training-recovery-kv"><span>AMP 检查</span><b>${esc((model.ampCheckMethod || "未记录") + " · " + (model.ampCheckResult || "未验证"))}</b></div>
               ${model.precisionFallbackReason ? `<div class="training-recovery-kv"><span>精度回退原因</span><b>${esc(model.precisionFallbackReason)}</b></div>` : ""}
-              <div class="training-recovery-kv"><span>数据量</span><b>${esc(`训练 ${model.datasetCounts.train} · 验证 ${model.datasetCounts.validation} · 评测 ${model.datasetCounts.test}`)}</b></div>
+              <div class="training-recovery-kv"><span>数据量</span><b>${esc(model.datasetCountsGenerated?`训练 ${model.datasetCounts.train} · 验证 ${model.datasetCounts.validation} · 评测 ${model.datasetCounts.test}`:'未生成')}</b></div>
               <div class="training-recovery-kv"><span>成果模型</span><b title="${esc(artifacts)}">${esc(artifacts)}</b></div>
             </section>
             <section class="training-recovery-panel">

@@ -200,6 +200,19 @@ def test_manual_resource_failure_is_the_single_primary_failure_before_worker_sta
     assert task.error in truth["secondary_diagnostics"]
 
 
+def test_legacy_prepare_lease_loss_is_reported_as_training_input_not_trainer_failure():
+    task = failed_training_task()
+    task.stage = "training_input_preparation_failed"
+    task.error = "TRAINING_PREPARATION_FAILED: task execution lease was lost"
+
+    truth = training_recovery_truth(task, FakeArtifacts({}))
+
+    assert truth["primary_error_code"] == "TRAINING_PREPARATION_FAILED"
+    assert truth["primary_stage"] == "training_input"
+    assert "lease was lost" in truth["primary_message"]
+    assert truth["recoverable"] is False
+
+
 def test_data_integrity_failure_outranks_process_completion_diagnostics():
     task = failed_training_task()
     task.error = "DUPLICATE_ANNOTATION_CONFLICT: duplicate annotations disagree"
