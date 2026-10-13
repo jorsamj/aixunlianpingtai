@@ -122,7 +122,12 @@ test('three overview tabs preserve production owner, render scoped facts and fai
   await page.reload();
   await expect.poll(()=>page.evaluate(()=>Boolean(state.uiReady)),{timeout:20000}).toBe(true);
   await page.evaluate(()=>window.setPage('总览'));
+  // Reload resets the in-memory active tab to algorithm, not the last compute tab.
+  // Check the live default first, then explicitly return to compute telemetry.
   await expect(page.locator('[data-overview-demo]')).toHaveCount(0);
+  await expect(tabs.getByRole('tab',{name:'算法一张图'})).toHaveAttribute('aria-selected','true');
+  await tabs.getByRole('tab',{name:'算力一张图'}).click();
+  await expect(tabs.getByRole('tab',{name:'算力一张图'})).toHaveAttribute('aria-selected','true');
   await expect(page.locator('.ov348-node')).toHaveCount(2);
   failNodes=true;
   await page.locator('[data-overview-refresh]').click();
