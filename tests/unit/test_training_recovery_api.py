@@ -211,6 +211,7 @@ def test_legacy_prepare_lease_loss_is_reported_as_training_input_not_trainer_fai
     assert truth["primary_stage"] == "training_input"
     assert "lease was lost" in truth["primary_message"]
     assert truth["recoverable"] is False
+    assert truth["diagnosis"]["code"] == "WORKER_LEASE_LOST"
 
 
 def test_data_integrity_failure_outranks_process_completion_diagnostics():
@@ -231,6 +232,167 @@ def test_data_integrity_failure_outranks_process_completion_diagnostics():
     assert truth["primary_message"] == "发现重复图片存在不同标注，训练已在启动 Worker 前阻止。"
     assert truth["completion_handshake"] == "job status is not done"
     assert "job status is not done" in truth["secondary_diagnostics"]
+
+
+def test_task_correlated_kernel_oom_is_confirmed_host_memory_failure():
+    task = failed_training_task(task_id="train-oom")
+    failure = {
+        "task_id": task.task_id,
+        "project_id": task.project_id,
+        "failure_stage": "training_process",
+        "process_returncode": -9,
+        "process_signal": "SIGKILL",
+        "process_pid": 501141,
+        "process_create_time": 1791904700.0,
+        "completion_error": "job status is not done",
+        "system_evidence": [{
+            "type": "linux_kernel_oom_kill",
+            "source": "linux_kernel_journal",
+            "process_pid": 501141,
+            "process_create_time": 1791904700.0,
+            "observed_at_epoch": 1791904782.5,
+            "correlated": True,
+        }],
+    }
+
+    truth = training_recovery_truth(task, FakeArtifacts(failure))
+
+    assert truth["diagnosis"]["code"] == "HOST_MEMORY_OOM"
+    assert truth["diagnosis"]["certainty"] == "confirmed"
+    assert truth["diagnosis"]["title"] == "训练失败：服务器内存不足"
+    assert any("Linux Kernel" in item for item in truth["diagnosis"]["evidence"])
+    assert truth["diagnosis"]["checkpoint_message"] == (
+        "当前没有可恢复的训练断点，需要重新创建训练任务。"
+    )
+
+
+def test_sigkill_without_correlated_oom_evidence_keeps_cause_unknown():
+    task = failed_training_task(task_id="train-sigkill")
+    task.error = "TRAINING_PROCESS_FAILED: training process terminated by SIGKILL"
+    failure = {
+        "task_id": task.task_id,
+        "project_id": task.project_id,
+        "failure_stage": "training_process",
+        "process_returncode": -9,
+        "process_signal": "SIGKILL",
+        "process_pid": 88,
+        "process_create_time": 100.0,
+        "system_evidence": [{
+            "type": "linux_kernel_oom_kill",
+            "source": "linux_kernel_journal",
+            "process_pid": 99,
+            "process_create_time": 100.0,
+            "correlated": True,
+        }],
+    }
+
+    truth = training_recovery_truth(task, FakeArtifacts(failure))
+
+    assert truth["diagnosis"]["code"] == "SIGKILL_CAUSE_UNKNOWN"
+    assert truth["diagnosis"]["certainty"] == "unknown"
+    assert truth["diagnosis"]["title"] == "训练被系统强制终止"
+    assert "系统内存不足" in truth["diagnosis"]["possible_causes"]
+    assert "服务器内存不足" not in truth["diagnosis"]["summary"]
+
+
+def test_cgroup_oom_requires_task_lifetime_counter_delta_not_cumulative_value():
+    task = failed_training_task(task_id="train-cgroup")
+    base_failure = {
+        "task_id": task.task_id,
+        "project_id": task.project_id,
+        "failure_stage": "training_process",
+        "process_returncode": -9,
+        "process_signal": "SIGKILL",
+        "process_pid": 55,
+        "process_create_time": 100.0,
+    }
+    cumulative_only = {
+        **base_failure,
+        "system_evidence": [{
+            "type": "cgroup_memory_oom",
+            "source": "cgroup_memory_events",
+            "process_pid": 55,
+            "process_create_time": 100.0,
+            "observed_at_epoch": 120.0,
+            "oom_kill": 7,
+            "correlated": True,
+        }],
+    }
+    correlated_delta = {
+        **base_failure,
+        "system_evidence": [{
+            "type": "cgroup_memory_oom",
+            "source": "cgroup_memory_events",
+            "process_pid": 55,
+            "process_create_time": 100.0,
+            "observed_at_epoch": 120.0,
+            "oom_kill_delta": 1,
+            "scope_identity": "worker/task/train-cgroup",
+            "correlated": True,
+        }],
+    }
+
+    assert training_recovery_truth(task, FakeArtifacts(cumulative_only))["diagnosis"]["code"] == "SIGKILL_CAUSE_UNKNOWN"
+    assert training_recovery_truth(task, FakeArtifacts(correlated_delta))["diagnosis"]["code"] == "CGROUP_MEMORY_OOM"
+
+
+def test_explicit_cuda_oom_is_not_misclassified_as_host_memory_oom():
+    task = failed_training_task(task_id="train-cuda-oom")
+    task.error = "torch.cuda.OutOfMemoryError: CUDA out of memory while allocating tensor"
+
+    truth = training_recovery_truth(task, FakeArtifacts({}))
+
+    assert truth["diagnosis"]["code"] == "GPU_MEMORY_OOM"
+    assert truth["diagnosis"]["certainty"] == "confirmed"
+    assert truth["diagnosis"]["title"] == "训练失败：GPU 显存不足"
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_code"),
+    [
+        ("WORKER_LEASE_LOST: task execution lease was lost", "WORKER_LEASE_LOST"),
+        ("TRAINING_CANCELLED: cancelled by user", "TRAINING_CANCELLED"),
+    ],
+)
+def test_worker_lease_and_cancellation_never_become_oom(error, expected_code):
+    task = failed_training_task()
+    task.error = error
+
+    truth = training_recovery_truth(task, FakeArtifacts({}))
+
+    assert truth["diagnosis"]["code"] == expected_code
+    assert "MEMORY_OOM" not in truth["diagnosis"]["code"]
+
+
+def test_memory_symptom_without_system_correlation_is_only_suspected():
+    task = failed_training_task()
+    task.error = "MemoryError: Cannot allocate memory"
+
+    truth = training_recovery_truth(task, FakeArtifacts({}))
+
+    assert truth["diagnosis"]["code"] == "HOST_MEMORY_PRESSURE_SUSPECTED"
+    assert truth["diagnosis"]["certainty"] == "suspected"
+    assert "疑似" in truth["diagnosis"]["title"]
+
+
+def test_public_diagnosis_and_technical_diagnostics_are_redacted():
+    task = failed_training_task()
+    task.error = (
+        r"TRAINING_PROCESS_FAILED: C:\\srv\\private\\dataset.yaml "
+        "token=super-secret Bearer abc.def.ghi"
+    )
+
+    truth = training_recovery_truth(task, FakeArtifacts({}))
+    public_text = repr({
+        "diagnosis": truth["diagnosis"],
+        "failure_reason": truth["failure_reason"],
+        "secondary_diagnostics": truth["secondary_diagnostics"],
+    })
+
+    assert "super-secret" not in public_text
+    assert "abc.def.ghi" not in public_text
+    assert r"C:\\srv\\private" not in public_text
+    assert "[REDACTED]" in public_text
 
 
 def test_training_input_issues_endpoint_reads_bounded_persisted_pages():

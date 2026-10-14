@@ -3010,3 +3010,12 @@ Current code candidate is VERSION `42.24.300`. Formal Ground Truth cannot commit
 - 刷新后浏览器本地 `File` 无法恢复时明确要求重新选择；已有服务器会话可按原分片合同续传。项目切换停止并隔离本地传输。无效、空文件、重复内容、指纹/会话/网络失败均逐文件留痕且不阻断同批后续文件。
 - 普通素材入口沿用原分块 Owner，Node 130 文件和 Chrome 65 文件均确认没有静默丢失。版本升级为 `42.24.356`，健康接口/前端标识/缓存键一致。
 - 新鲜验证：Node 24 `962/962`，Python `35/35`，Chrome `16/16`（传输中与排队取消均覆盖）。GitHub CI、生产大文件/OSS 与部署为 `NOT VERIFIED`；未 push、未合并 main、未部署。
+
+
+## 2026-10-14｜训练失败智能诊断（LOCAL VERIFIED / CI PENDING）
+
+- 事实源保持唯一：现有 Worker 在训练进程异常退出时只执行一次有界 Kernel journal 读取，并仅保存与 PID、进程创建时间及任务时间窗匹配的结构化 OOM 摘要；详情 API 不扫描系统日志，也未新增轮询器、诊断 Owner 或自动重试。
+- `training_recovery_truth` 输出后端判定的 `diagnosis`（code/certainty/title/summary/evidence/possible_causes/suggestions/checkpoint_message）。`HOST_MEMORY_OOM` 需要任务关联 Kernel 证据；cgroup 还要求同生命周期 `oom_kill_delta>0` 和 scope identity；纯 `SIGKILL/-9` 固定为 `SIGKILL_CAUSE_UNKNOWN`，CUDA OOM、租约丢失、取消、SQLite lock 等保持独立。
+- 对外诊断与折叠技术详情会脱敏路径、Bearer、token/password/secret/API key。旧任务只按已有证据投影，不回写状态或原始 artifact。没有可信恢复合同固定显示“当前没有可恢复的训练断点，需要重新创建训练任务。”，不出现恢复按钮。
+- 训练详情沿用现有四 Tab 和 `TrainingRecoveryRuntime`；桌面将依据/可能原因/建议紧凑分栏，窄屏回到单列。缓存标识和 Training Recovery Guard 同步，正式 `VERSION.txt=42.24.356` 不变。
+- 新鲜本地证据：核心 Python 33/33，相关训练/Worker/API Python 80/80，Node 24 frontend 964/964，真实 Chrome recovery 3/3（含 1366×768 截图与 375×812 无横向溢出）。真实 Linux journal 权限、生产历史任务和 GPU 训练仍为 NOT VERIFIED；GitHub CI 尚待推送后读取。

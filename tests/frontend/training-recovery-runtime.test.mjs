@@ -601,6 +601,48 @@ test('failed detail prefers backend primary failure contract over frontend heuri
   ]);
 });
 
+test('failed detail renders the backend diagnosis contract without frontend root-cause guessing', async () => {
+  const diagnosis = {
+    code: 'SIGKILL_CAUSE_UNKNOWN',
+    certainty: 'unknown',
+    title: '训练被系统强制终止',
+    summary: '训练进程收到 SIGKILL，但目前没有足够证据确认发送者或原因。',
+    evidence: ['训练进程收到 SIGKILL（returncode=-9）。'],
+    possible_causes: ['系统内存不足', '外部进程终止'],
+    suggestions: ['查看系统 OOM、Worker 和任务执行日志。'],
+    checkpoint_message: '当前没有可恢复的训练断点，需要重新创建训练任务。',
+  };
+  const model = trainingRecoveryDetailModel({
+    id: 'train-sigkill', status: 'failed', task_status: 'FAILED',
+    error: 'training process terminated by SIGKILL',
+  }, {diagnosis, checkpoint_available: false, recoverable: false});
+
+  assert.deepEqual(model.diagnosis, diagnosis);
+  assert.equal(model.diagnosisCertaintyLabel, '原因未明');
+  assert.equal(model.recoverable, false);
+
+  const {readFileSync} = await import('node:fs');
+  const source = readFileSync(new URL('../../static/modules/training-recovery-runtime.js', import.meta.url), 'utf8');
+  assert.match(source, /data-training-failure-diagnosis/);
+  assert.match(source, /data-training-diagnosis-evidence/);
+  assert.match(source, /data-training-diagnosis-suggestions/);
+  assert.match(source, /当前没有可恢复的训练断点，需要重新创建训练任务。/);
+  assert.doesNotMatch(source, /diagnosis.*cuda out of memory/i);
+});
+
+test('confirmed host oom and cuda oom keep distinct backend diagnosis identities', () => {
+  const host = trainingRecoveryDetailModel({id: 'host', status: 'failed'}, {
+    diagnosis: {code: 'HOST_MEMORY_OOM', certainty: 'confirmed', title: '训练失败：服务器内存不足'},
+  });
+  const gpu = trainingRecoveryDetailModel({id: 'gpu', status: 'failed'}, {
+    diagnosis: {code: 'GPU_MEMORY_OOM', certainty: 'confirmed', title: '训练失败：GPU 显存不足'},
+  });
+
+  assert.equal(host.diagnosis.code, 'HOST_MEMORY_OOM');
+  assert.equal(gpu.diagnosis.code, 'GPU_MEMORY_OOM');
+  assert.notEqual(host.diagnosis.title, gpu.diagnosis.title);
+});
+
 test('failed detail prioritizes worker root cause and keeps requested resolved runtime resource layers distinct', () => {
   const model = trainingRecoveryDetailModel({
     id: 'train-resource-mismatch',

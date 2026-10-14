@@ -15,7 +15,7 @@ test('failed final validation exposes backend-approved checkpoint recovery and r
   await page.evaluate(() => window.setPage('训练任务'));
   await expect(page.locator('.train428-page')).toBeVisible({timeout: 10_000});
   await expect.poll(async () => page.evaluate(() => window.TrainingRecoveryRuntime?.build || null))
-    .toBe('training-recovery-runtime-422597');
+    .toBe('training-recovery-runtime-4226380');
   await expect.poll(async () => page.evaluate(() => window.TrainingTaskRuntime?.build || null))
     .toMatch(/^training-task-runtime-/);
 
@@ -249,6 +249,107 @@ test('successful training detail never presents completion text as an error', as
     await expect(dialog.locator('[data-training-tech-log] pre')).toContainText('training completed');
   }
 
+  expect(pageErrors).toEqual([]);
+});
+
+test('failed SIGKILL detail shows backend uncertainty, actions, and no false recovery', async ({page}, testInfo) => {
+  const pageErrors = [];
+  page.on('pageerror', error => pageErrors.push(error));
+  await page.goto('/');
+  await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
+  await expect.poll(
+    () => page.evaluate(() => typeof window.setPage === 'function' && typeof state !== 'undefined' && state.uiReady === true),
+    {timeout: 15_000},
+  ).toBe(true);
+  await page.evaluate(() => window.setPage('训练任务'));
+  await expect(page.locator('.train428-page')).toBeVisible({timeout: 10_000});
+
+  const projectId = await page.evaluate(() => state.project?.id);
+  const encoded = encodeURIComponent(projectId);
+  const taskId = 'job-sigkill-unknown';
+  const job = {
+    id: taskId,
+    task_id: taskId,
+    status: 'failed',
+    task_status: 'FAILED',
+    task_stage: 'training_process',
+    failure_stage: 'training_process',
+    process_returncode: -9,
+    process_signal: 'SIGKILL',
+    current_epoch: 1,
+    total_epochs: 80,
+    asset_algorithm_name: '道路病害检测',
+    current_item: '训练进程异常终止',
+    actual_device: 'cuda:0',
+    actual_train_params: {batch: 117, workers: 11, cache: false, effective_precision: 'fp16'},
+  };
+  const recovery = {
+    task_id: taskId,
+    project_id: projectId,
+    task_status: 'FAILED',
+    available: false,
+    recoverable: false,
+    checkpoint_available: false,
+    failure_stage: 'training_process',
+    primary_stage: 'worker_process',
+    primary_message: 'training process terminated by SIGKILL',
+    process_returncode: -9,
+    process_signal: 'SIGKILL',
+    diagnosis: {
+      code: 'SIGKILL_CAUSE_UNKNOWN',
+      certainty: 'unknown',
+      title: '训练被系统强制终止',
+      summary: '训练进程收到 SIGKILL，但目前没有足够证据确认发送者或原因。',
+      evidence: ['训练进程收到 SIGKILL（returncode=-9）。', '未找到与本任务关联的 Kernel/cgroup OOM 证据。'],
+      possible_causes: ['系统内存不足', 'Worker 执行权限或租约变化', '外部进程终止', '服务或容器资源限制'],
+      suggestions: ['查看系统 OOM、Worker 和任务执行日志。', '确认运行环境后重新创建训练任务。'],
+      checkpoint_message: '当前没有可恢复的训练断点，需要重新创建训练任务。',
+    },
+  };
+
+  await page.route(`**/api/projects/${encoded}/jobs`, route => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify([job]),
+  }));
+  await page.route(`**/api/projects/${encoded}/jobs/${taskId}`, route => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify(job),
+  }));
+  await page.route(`**/api/projects/${encoded}/jobs/${taskId}/log`, route => route.fulfill({
+    status: 200, contentType: 'text/plain', body: 'training process terminated by SIGKILL',
+  }));
+  await page.route(`**/api/v62/projects/${encoded}/training-tasks/recovery-query`, route => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify({ok: true, items: {[taskId]: recovery}}),
+  }));
+  await page.route(`**/api/v62/projects/${encoded}/training-tasks/${taskId}/recovery`, route => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify({ok: true, recovery}),
+  }));
+
+  await page.locator('#refreshBtn').click();
+  await page.evaluate(() => window.setTrainTab428?.('history'));
+  const row = page.locator(`[data-job-id="${taskId}"]`);
+  await expect(row).toBeVisible();
+  await row.getByRole('button', {name: '详情'}).click();
+
+  const dialog = page.locator('[data-training-recovery-overlay]');
+  const diagnosis = dialog.locator('[data-training-failure-diagnosis]');
+  await expect(diagnosis).toBeVisible();
+  await expect(diagnosis).toContainText('训练被系统强制终止');
+  await expect(diagnosis).toContainText('原因未明');
+  await expect(diagnosis.locator('[data-training-diagnosis-evidence]')).toContainText('SIGKILL');
+  await expect(diagnosis.locator('[data-training-diagnosis-suggestions]')).toContainText('查看系统 OOM');
+  await expect(diagnosis).toContainText('当前没有可恢复的训练断点，需要重新创建训练任务。');
+  await expect(dialog.getByRole('button', {name: '重新验证 Checkpoint'})).toHaveCount(0);
+  await expect(dialog.locator('[data-training-failure-technical]')).not.toHaveAttribute('open', '');
+
+  await page.setViewportSize({width: 1366, height: 768});
+  const screenshotPath = path.resolve(
+    process.env.CODEX_VISUAL_EVIDENCE_DIR || testInfo.outputPath('visuals'),
+    'training-failure-diagnosis-1366x768.png',
+  );
+  await page.screenshot({path: screenshotPath, fullPage: false});
+  expect(await dialog.locator('.training-recovery-dialog').evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+  await page.setViewportSize({width: 375, height: 812});
+  await expect(diagnosis).toBeVisible();
+  expect(await dialog.locator('.training-recovery-dialog').evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
   expect(pageErrors).toEqual([]);
 });
 

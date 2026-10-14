@@ -2791,3 +2791,12 @@ VERSION `42.24.300` adds one project-scoped coordination fence between canonical
 - The existing upload task center shows every active file with size, real progress, queue position, reason and state-specific actions. Active rows are never truncated by terminal-history retention. Browser-only rows become explicit re-selection requests after refresh; persisted sessions retain the existing resume/cancel boundary. Project switches isolate local queue ownership.
 - Per-file invalid, duplicate-content, fingerprint, session and transfer failures remain visible and do not stop siblings. Same-name/different-content ZIPs are accepted. Ordinary material upload remains in its existing chunk owner and accounts for all selected files.
 - Formal `VERSION.txt` is `42.24.356`; cache keys for the changed entry points are aligned. Fresh local evidence: Node 24 frontend 962/962, Python affected contracts 35/35, Chrome 16/16 including 3/5/10 ZIPs, active/queued cancellation and 65 ordinary images. GitHub CI and production network/storage remain NOT VERIFIED; no push, main merge or deployment.
+
+
+## 2026-10-14｜训练失败智能诊断（LOCAL VERIFIED / CI PENDING）
+
+- 事实源保持唯一：现有 Worker 在训练进程异常退出时只执行一次有界 Kernel journal 读取，并仅保存与 PID、进程创建时间及任务时间窗匹配的结构化 OOM 摘要；详情 API 不扫描系统日志，也未新增轮询器、诊断 Owner 或自动重试。
+- `training_recovery_truth` 输出后端判定的 `diagnosis`（code/certainty/title/summary/evidence/possible_causes/suggestions/checkpoint_message）。`HOST_MEMORY_OOM` 需要任务关联 Kernel 证据；cgroup 还要求同生命周期 `oom_kill_delta>0` 和 scope identity；纯 `SIGKILL/-9` 固定为 `SIGKILL_CAUSE_UNKNOWN`，CUDA OOM、租约丢失、取消、SQLite lock 等保持独立。
+- 对外诊断与折叠技术详情会脱敏路径、Bearer、token/password/secret/API key。旧任务只按已有证据投影，不回写状态或原始 artifact。没有可信恢复合同固定显示“当前没有可恢复的训练断点，需要重新创建训练任务。”，不出现恢复按钮。
+- 训练详情沿用现有四 Tab 和 `TrainingRecoveryRuntime`；桌面将依据/可能原因/建议紧凑分栏，窄屏回到单列。缓存标识和 Training Recovery Guard 同步，正式 `VERSION.txt=42.24.356` 不变。
+- 新鲜本地证据：核心 Python 33/33，相关训练/Worker/API Python 80/80，Node 24 frontend 964/964，真实 Chrome recovery 3/3（含 1366×768 截图与 375×812 无横向溢出）。真实 Linux journal 权限、生产历史任务和 GPU 训练仍为 NOT VERIFIED；GitHub CI 尚待推送后读取。

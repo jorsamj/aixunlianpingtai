@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -165,6 +166,53 @@ def test_real_incident_shape_is_recoverable_final_validation_failure(tmp_path):
     assert "completion_handshake=job status is not done" in message
     assert "训练中 · Epoch 300/300" not in message
     assert "OOM" not in message
+
+
+def test_kernel_oom_capture_requires_exact_pid_and_task_time_window():
+    identity = SimpleNamespace(pid=501141, create_time=1791904700.0)
+    journal = SimpleNamespace(
+        returncode=0,
+        stdout=(
+            "1791904782.000 kernel: Out of memory: Killed process 501140 (python)\n"
+            "1791904782.500 kernel: Out of memory: Killed process 501141 (python)\n"
+        ),
+    )
+
+    evidence = hardened._collect_linux_kernel_oom_evidence(
+        identity,
+        finished_at=1791904783.0,
+        command_runner=lambda *_args, **_kwargs: journal,
+        platform_name="posix",
+    )
+
+    assert evidence == {
+        "type": "linux_kernel_oom_kill",
+        "source": "linux_kernel_journal",
+        "process_pid": 501141,
+        "process_create_time": 1791904700.0,
+        "observed_at_epoch": 1791904782.5,
+        "correlated": True,
+    }
+
+
+def test_kernel_oom_capture_rejects_unrelated_or_out_of_window_events():
+    identity = SimpleNamespace(pid=501141, create_time=1791904700.0)
+    journal = SimpleNamespace(
+        returncode=0,
+        stdout=(
+            "1791904690.000 kernel: Out of memory: Killed process 501141 (python)\n"
+            "1791904782.000 kernel: Out of memory: Killed process 999999 (python)\n"
+        ),
+    )
+
+    evidence = hardened._collect_linux_kernel_oom_evidence(
+        identity,
+        finished_at=1791904783.0,
+        command_runner=lambda *_args, **_kwargs: journal,
+        platform_name="posix",
+    )
+
+    assert evidence is None
 
 
 def test_training_loop_checkpoint_ready_before_final_validation_finishes(tmp_path):

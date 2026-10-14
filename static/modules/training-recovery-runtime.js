@@ -157,6 +157,18 @@ export function trainingRecoveryDetailModel(job = {}, recovery = {}) {
   const completedEpochs = numberOrNull(recovery?.completed_epochs) ?? numberOrNull(progress.epoch) ?? numberOrNull(job.current_epoch) ?? 0;
   const requestedEpochs = numberOrNull(recovery?.requested_epochs) ?? numberOrNull(progress.total_epochs) ?? numberOrNull(job.total_epochs) ?? numberOrNull(job.epochs);
   const recoverable = flags.failed && canRecoverTrainingTask(recovery);
+  const diagnosis = recovery?.diagnosis && typeof recovery.diagnosis === 'object'
+    ? {
+        code: String(recovery.diagnosis.code || '').trim(),
+        certainty: String(recovery.diagnosis.certainty || 'unknown').trim().toLowerCase(),
+        title: String(recovery.diagnosis.title || '').trim(),
+        summary: String(recovery.diagnosis.summary || '').trim(),
+        evidence: Array.isArray(recovery.diagnosis.evidence) ? recovery.diagnosis.evidence.map(String).filter(Boolean) : [],
+        possible_causes: Array.isArray(recovery.diagnosis.possible_causes) ? recovery.diagnosis.possible_causes.map(String).filter(Boolean) : [],
+        suggestions: Array.isArray(recovery.diagnosis.suggestions) ? recovery.diagnosis.suggestions.map(String).filter(Boolean) : [],
+        checkpoint_message: String(recovery.diagnosis.checkpoint_message || '').trim(),
+      }
+    : null;
   const backendPrimary = String(recovery?.primary_message || '').trim();
   const rootCause = flags.failed ? (backendPrimary || failureRootCause(job, recovery)) : '';
   const backendDiagnostics = Array.isArray(recovery?.secondary_diagnostics)
@@ -255,6 +267,8 @@ export function trainingRecoveryDetailModel(job = {}, recovery = {}) {
     statusKind: flags.success ? (flags.partial ? 'partial' : 'success') : recoverable ? 'recoverable' : flags.failed ? 'failed' : 'active',
     statusMessage: String(job?.message || job?.current_item || '').trim(),
     primaryErrorCode: String(recovery?.primary_error_code || '').trim(),
+    diagnosis,
+    diagnosisCertaintyLabel: ({confirmed: '已确认', suspected: '疑似', unknown: '原因未明'})[diagnosis?.certainty] || '原因未明',
     failureStage: recovery?.primary_stage || recovery?.failure_stage || job?.failure_stage || '',
     failureStageLabel: failureStageLabel(recovery?.primary_stage || recovery?.failure_stage || job?.failure_stage || ''),
     rootCause,
@@ -406,9 +420,22 @@ function detailHtml(job, recovery, log = '', inputIssues = null, activeTab = 'cu
   const checkpointRecoveryState = model.checkpointAvailable
     ? (model.recoverable ? 'Checkpoint 已保留 · 可重新验证' : 'Checkpoint 已保留 · 当前不可自动恢复')
     : '无可用 Checkpoint · 不可恢复';
-  const failureSummaryHtml = failed ? `<section class="training-recovery-panel" data-training-failure-summary>
+  const checkpointMessage = model.diagnosis?.checkpoint_message || (model.recoverable
+    ? '存在可信训练断点，可按当前恢复合同重新验证 Checkpoint。'
+    : '当前没有可恢复的训练断点，需要重新创建训练任务。');
+  const diagnosisList = (title, values, attribute) => values?.length ? `<div class="training-diagnosis-group" ${attribute}>
+    <b>${esc(title)}</b><ul>${values.map(value => `<li>${esc(value)}</li>`).join('')}</ul>
+  </div>` : '';
+  const failureSummaryHtml = failed && model.diagnosis ? `<section class="training-recovery-panel training-failure-diagnosis ${esc(model.diagnosis.certainty)}" data-training-failure-summary data-training-failure-diagnosis>
     <header><h4>失败原因</h4><span>${esc(model.failureStageLabel || model.failureStage || '训练任务')}</span></header>
-    <div class="training-recovery-message"><b>${esc(model.rootCause || '训练任务失败')}</b></div>
+    <div class="training-diagnosis-heading"><div><b>${esc(model.diagnosis.title || model.rootCause || '训练任务失败')}</b><p>${esc(model.diagnosis.summary || '')}</p></div><span class="training-diagnosis-certainty ${esc(model.diagnosis.certainty)}">${esc(model.diagnosisCertaintyLabel)}</span></div>
+    ${diagnosisList('诊断依据', model.diagnosis.evidence, 'data-training-diagnosis-evidence')}
+    ${diagnosisList('可能原因', model.diagnosis.possible_causes, 'data-training-diagnosis-possible-causes')}
+    ${diagnosisList('建议处理', model.diagnosis.suggestions, 'data-training-diagnosis-suggestions')}
+    <div class="training-diagnosis-checkpoint ${model.recoverable ? 'recoverable' : 'unavailable'}">${esc(checkpointMessage)}</div>
+  </section>` : failed ? `<section class="training-recovery-panel" data-training-failure-summary>
+    <header><h4>失败原因</h4><span>${esc(model.failureStageLabel || model.failureStage || '训练任务')}</span></header>
+    <div class="training-recovery-message"><b>${esc(model.rootCause || '训练任务失败')}</b><p>${esc(checkpointMessage)}</p></div>
   </section>` : '';
   const technicalFailureHtml = failed ? `<details class="training-recovery-log" data-training-failure-technical><summary>查看技术详情</summary>
     <div class="training-recovery-kv"><span>Error code</span><b>${esc(model.primaryErrorCode || model.errorType || '-')}</b></div>
@@ -972,7 +999,7 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
   };
 
   const runtime = {
-    build: 'training-recovery-runtime-422597',
+    build: 'training-recovery-runtime-4226380',
     hydrateJobs,
     openDetail,
     refreshOpenDetail,

@@ -5477,3 +5477,12 @@ GitHub 当前没有 CI status，不能把“测试代码已写”表述成“已
 - 右下角任务中心展示全部活动项、大小、排队序号、真实进度、错误及暂停/继续/取消/重选/查看动作；活动项不被终态历史上限截断。排队取消和项目切换均按文件、项目隔离；刷新后没有服务器会话的浏览器 File 明确要求重选，不虚构恢复。
 - 单项格式、空文件、重复内容、哈希、会话或传输失败不会吞错或阻断其他文件；同名不同内容仍允许。普通素材原分块 Owner 经 130 文件 Node 与 65 文件 Chrome 回归确认完整受理。
 - `VERSION.txt=42.24.356`；静态缓存与版本健康合同同步。Node 24 frontend 962/962、Python 35/35、Chrome 16/16（含传输中与排队取消）。仅本地提交，CI/生产未验证，未 push/merge/deploy。
+
+
+## 2026-10-14｜训练失败智能诊断（LOCAL VERIFIED / CI PENDING）
+
+- 事实源保持唯一：现有 Worker 在训练进程异常退出时只执行一次有界 Kernel journal 读取，并仅保存与 PID、进程创建时间及任务时间窗匹配的结构化 OOM 摘要；详情 API 不扫描系统日志，也未新增轮询器、诊断 Owner 或自动重试。
+- `training_recovery_truth` 输出后端判定的 `diagnosis`（code/certainty/title/summary/evidence/possible_causes/suggestions/checkpoint_message）。`HOST_MEMORY_OOM` 需要任务关联 Kernel 证据；cgroup 还要求同生命周期 `oom_kill_delta>0` 和 scope identity；纯 `SIGKILL/-9` 固定为 `SIGKILL_CAUSE_UNKNOWN`，CUDA OOM、租约丢失、取消、SQLite lock 等保持独立。
+- 对外诊断与折叠技术详情会脱敏路径、Bearer、token/password/secret/API key。旧任务只按已有证据投影，不回写状态或原始 artifact。没有可信恢复合同固定显示“当前没有可恢复的训练断点，需要重新创建训练任务。”，不出现恢复按钮。
+- 训练详情沿用现有四 Tab 和 `TrainingRecoveryRuntime`；桌面将依据/可能原因/建议紧凑分栏，窄屏回到单列。缓存标识和 Training Recovery Guard 同步，正式 `VERSION.txt=42.24.356` 不变。
+- 新鲜本地证据：核心 Python 33/33，相关训练/Worker/API Python 80/80，Node 24 frontend 964/964，真实 Chrome recovery 3/3（含 1366×768 截图与 375×812 无横向溢出）。真实 Linux journal 权限、生产历史任务和 GPU 训练仍为 NOT VERIFIED；GitHub CI 尚待推送后读取。
