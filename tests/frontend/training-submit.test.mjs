@@ -10,9 +10,46 @@ import {
   installTrainingSubmitRuntime,
   normalizeTrainingPrecision,
   supplementCandidateContext,
+  trainingSubmitPresentation,
   trainingSubmitReadiness,
   validateTrainingDevice,
 } from '../../static/modules/training-submit.js';
+
+test('training submit projects canonical stages into three truthful user steps', () => {
+  assert.deepEqual(trainingSubmitPresentation('validate-device'), {
+    tone: 'working', activeStep: 0, completedSteps: 0,
+    title: '正在校验训练配置', detail: '正在核验训练设备与算法版本',
+  });
+  assert.deepEqual(trainingSubmitPresentation('build-payload'), {
+    tone: 'working', activeStep: 1, completedSteps: 1,
+    title: '正在核验训练素材', detail: '正在确认素材、标签与训练范围',
+  });
+  assert.deepEqual(trainingSubmitPresentation('posting'), {
+    tone: 'working', activeStep: 2, completedSteps: 2,
+    title: '正在提交训练任务', detail: '服务端正在创建可恢复的持久任务',
+  });
+  assert.deepEqual(trainingSubmitPresentation('created'), {
+    tone: 'success', activeStep: 2, completedSteps: 3,
+    title: '训练任务创建成功', detail: '已加入训练任务队列，系统将自动安排执行',
+  });
+});
+
+test('training submit failure distinguishes safe validation errors from unknown POST outcome', () => {
+  assert.deepEqual(trainingSubmitPresentation('failed', {
+    error: '训练素材为空', failedAt: 'build-payload', taskId: 'train_aaaaaaaaaaaaaaaaaaaa',
+  }), {
+    tone: 'error', activeStep: 1, completedSteps: 1,
+    title: '训练任务未创建', detail: '训练素材为空', retrySafe: true,
+    taskId: 'train_aaaaaaaaaaaaaaaaaaaa',
+  });
+  const unknown = trainingSubmitPresentation('failed', {
+    error: 'Failed to fetch', failedAt: 'posting', taskId: 'train_aaaaaaaaaaaaaaaaaaaa',
+    outcomeUncertain: true,
+  });
+  assert.equal(unknown.tone, 'uncertain');
+  assert.equal(unknown.retrySafe, false);
+  assert.match(unknown.detail, /任务列表.*train_aaaaaaaaaaaaaaaaaaaa/);
+});
 
 function draft(overrides = {}) {
   return createTrainingDraft({
@@ -392,7 +429,7 @@ test('submit button exposes truthful creation stages while the durable POST is p
   const request = window.submitTrain429();
   assert.equal(runtime.state().lastStage, 'posting');
   assert.equal(submitButton.dataset.trainingSubmitStage, 'posting');
-  assert.equal(submitButton.textContent, '服务端正在核验并创建持久任务…');
+  assert.equal(submitButton.textContent, '正在提交训练任务…');
   assert.equal(submitButton.disabled, true);
 
   release();
@@ -440,6 +477,61 @@ test('double click cannot create two independent training tasks', async () => {
   assert.equal(runtime.isSubmitting(), false);
   assert.equal(submitButton.disabled, false);
   assert.equal(calls, 1);
+  cleanup(runtime);
+});
+
+test('network interruption verifies the planned task id before reporting failure', async () => {
+  const state = baseState();
+  const {submitButton} = installDom();
+  const accepted = [];
+  let calls = 0;
+  globalThis.window = {
+    submitTrain429: () => 'legacy',
+    fetch: async url => {
+      calls += 1;
+      if (String(url).includes('/train/start')) throw new TypeError('Failed to fetch');
+      return {ok: true, async json() { return durableTask().task; }};
+    },
+  };
+  const runtime = installTrainingSubmitRuntime({
+    getState: () => state,
+    projectId: () => 'project-1',
+    trainingDraftRuntime: {sync: () => draft(), current: () => draft(), base: () => ({blocked: false})},
+    trainingDraftToRequest,
+    trainingTaskRuntime: {acceptCreatedTask: task => accepted.push(task)},
+  });
+
+  const result = await window.submitTrain429();
+  assert.equal(calls, 2);
+  assert.equal(result.recovered, true);
+  assert.equal(accepted[0].task_id, 'train_aaaaaaaaaaaaaaaaaaaa');
+  assert.notEqual(runtime.state().lastStage, 'failed');
+  assert.equal(submitButton.disabled, false);
+  cleanup(runtime);
+});
+
+test('unverifiable POST outcome disables blind retry and keeps planned identity visible', async () => {
+  const state = baseState();
+  const {submitButton} = installDom();
+  const notices = [];
+  globalThis.window = {
+    submitTrain429: () => 'legacy',
+    fetch: async () => { throw new TypeError('Failed to fetch'); },
+  };
+  const runtime = installTrainingSubmitRuntime({
+    getState: () => state,
+    projectId: () => 'project-1',
+    trainingDraftRuntime: {sync: () => draft(), current: () => draft(), base: () => ({blocked: false})},
+    trainingDraftToRequest,
+    notify: message => notices.push(String(message)),
+  });
+
+  assert.equal(await window.submitTrain429(), null);
+  assert.equal(runtime.state().lastStage, 'failed');
+  assert.equal(runtime.state().presentation.tone, 'uncertain');
+  assert.equal(submitButton.disabled, true);
+  assert.equal(submitButton.dataset.trainingSubmitReason, 'outcome-uncertain');
+  assert.match(notices.at(-1), /任务列表.*train_aaaaaaaaaaaaaaaaaaaa/);
   cleanup(runtime);
 });
 

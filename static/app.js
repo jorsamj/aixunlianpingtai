@@ -4230,6 +4230,15 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
           <section class="train-ui-card train-ui-summary-card" hidden><div id="trainUiSummary" class="train-ui-summary"></div></section>
         </aside>
       </div>
+      <section class="train-submit-feedback" data-training-submit-feedback hidden aria-live="polite" aria-atomic="true" aria-busy="false">
+        <div class="train-submit-visual" aria-hidden="true"><i></i><span>✓</span></div>
+        <div class="train-submit-copy"><b data-training-submit-title>正在创建训练任务</b><span data-training-submit-detail>正在核验训练配置</span></div>
+        <ol class="train-submit-steps" aria-label="训练任务创建进度">
+          <li data-training-submit-step data-status="active"><i>1</i><span>配置校验</span></li>
+          <li data-training-submit-step data-status="pending"><i>2</i><span>素材检查</span></li>
+          <li data-training-submit-step data-status="pending"><i>3</i><span>任务提交</span></li>
+        </ol>
+      </section>
       <div class="row end train428-footer">
         <button type="button" class="btn train-ui-cancel" onclick="closeModal()">取消</button>
         <button type="button" class="btn primary train-ui-submit" onclick="submitTrain429()">创建训练任务</button>

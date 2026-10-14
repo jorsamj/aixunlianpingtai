@@ -1,5 +1,8 @@
 import {test, expect} from '@playwright/test';
 
+const visualOutput = process.env.CODEX_VISUAL_OUTPUT_DIR || '';
+const visualPath = name => visualOutput ? `${visualOutput}/${name}` : test.info().outputPath(name);
+
 async function selectIsolatedTestProject(page, projectId) {
   await page.route('**/api/v53/bootstrap/snapshot**', async route => {
     const url = new URL(route.request().url());
@@ -93,6 +96,7 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   }));
   await page.route(`**/api/v12/projects/${project.id}/train/start`, async route => {
     submitted = route.request().postDataJSON();
+    await new Promise(resolve => setTimeout(resolve, 1800));
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -114,6 +118,7 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   });
 
   await page.goto('/');
+  await page.setViewportSize({width: 1366, height: 768});
   await expect.poll(async () => page.evaluate(() => window.TrainingDraftRuntime?.build || null))
     .toBe('training-draft-runtime-422519');
   await expect.poll(async () => page.evaluate(() => window.TrainingLabelRuntime?.build || null))
@@ -256,6 +261,15 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   submitted = undefined;
   expect(await page.evaluate(() => window.submitTrain429?.__trainingSubmitRuntime === true)).toBe(true);
   await dialog.getByRole('button', {name: '创建训练任务'}).click();
+  const feedback = dialog.locator('[data-training-submit-feedback]');
+  await expect(feedback).toBeVisible();
+  await expect(feedback).toHaveAttribute('data-tone', 'working');
+  await expect(feedback).toContainText('正在提交训练任务');
+  await expect(feedback).toHaveCSS('opacity', '1');
+  await page.screenshot({path: visualPath('training-create-working.png'), fullPage: true});
+  await expect(feedback).toHaveAttribute('data-tone', 'success');
+  await expect(feedback).toContainText('已加入训练任务队列');
+  await page.screenshot({path: visualPath('training-create-success.png'), fullPage: true});
   await expect.poll(async () => {
     if (submitted) return 'submitted';
     const runtime = await page.evaluate(() => window.TrainingSubmitRuntime?.state?.() || null);
@@ -273,6 +287,7 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   expect(submitted.training_mode).toBe('custom');
   expect(submitted.resource_strategy).toBe('manual');
   expect(submitted.device).toBe('cpu');
+
   expect(submitted.gpu_policy).toBe('exclusive');
   expect(submitted.epochs).toBe(30);
   expect(submitted.batch).toBe(16);
@@ -298,4 +313,34 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   await expect(secondLabels.locator('input[data-training-label-code="fire"]')).not.toBeChecked();
   await expect(secondLabels.locator('input[data-training-label-code="smoke"]')).not.toBeChecked();
   await expect.poll(async () => page.evaluate(() => state.trainingDraft?.newLabelCodes || [])).toEqual([]);
+
+  await page.evaluate(() => window.closeModal());
+  await secondCard.getByRole('button', {name: '训练'}).click();
+  const failureDialog = page.getByRole('dialog', {name: '创建训练任务'});
+  await expect(failureDialog).toBeVisible();
+  await page.evaluate(() => {
+    document.getElementById('tr429TaskId').value = 'invalid-task-id';
+    void window.TrainingSubmitRuntime.submit();
+  });
+  const failure = failureDialog.locator('[data-training-submit-feedback]');
+  await expect(failure).toHaveAttribute('data-tone', 'error');
+  await expect(failure).toContainText('请选择训练素材');
+  await expect(failure).toHaveCSS('opacity', '1');
+  await page.screenshot({path: visualPath('training-create-failure.png'), fullPage: true});
+  for (const viewport of [
+    {width: 1920, height: 1080}, {width: 1440, height: 900},
+    {width: 1366, height: 768}, {width: 375, height: 812},
+  ]) {
+    await page.setViewportSize(viewport);
+    const bounds = await failure.evaluate(element => {
+      const rect = element.getBoundingClientRect();
+      return {left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, pageWidth: document.documentElement.clientWidth, pageHeight: document.documentElement.clientHeight};
+    });
+    expect(bounds.left).toBeGreaterThanOrEqual(0);
+    expect(bounds.right).toBeLessThanOrEqual(bounds.pageWidth);
+    expect(bounds.top).toBeGreaterThanOrEqual(0);
+    expect(bounds.bottom).toBeLessThanOrEqual(bounds.pageHeight);
+  }
+  await page.emulateMedia({reducedMotion: 'reduce'});
+  await expect(failure).toHaveCSS('animation-name', 'none');
 });

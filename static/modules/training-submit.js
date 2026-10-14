@@ -260,6 +260,50 @@ export function benchmarkReuseContext({asset, draft, base, benchmark} = {}) {
 
 const CREATED_TRAINING_STATUSES = new Set(['QUEUED', 'WAITING_RESOURCE', 'RUNNING', 'PAUSED']);
 
+const TRAINING_SUBMIT_PRESENTATIONS = Object.freeze({
+  configuration: Object.freeze({
+    tone: 'working', activeStep: 0, completedSteps: 0,
+    title: '正在校验训练配置', detail: '正在核验训练设备与算法版本',
+  }),
+  materials: Object.freeze({
+    tone: 'working', activeStep: 1, completedSteps: 1,
+    title: '正在核验训练素材', detail: '正在确认素材、标签与训练范围',
+  }),
+  submit: Object.freeze({
+    tone: 'working', activeStep: 2, completedSteps: 2,
+    title: '正在提交训练任务', detail: '服务端正在创建可恢复的持久任务',
+  }),
+  success: Object.freeze({
+    tone: 'success', activeStep: 2, completedSteps: 3,
+    title: '训练任务创建成功', detail: '已加入训练任务队列，系统将自动安排执行',
+  }),
+});
+
+export function trainingSubmitPresentation(stage, options = {}) {
+  const value = String(stage || 'idle');
+  if (value === 'created') return {...TRAINING_SUBMIT_PRESENTATIONS.success};
+  if (value === 'failed') {
+    const failedAt = String(options.failedAt || '');
+    const fallback = trainingSubmitPresentation(failedAt || 'sync-draft');
+    const uncertain = options.outcomeUncertain === true;
+    const taskId = String(options.taskId || '').trim();
+    return {
+      tone: uncertain ? 'uncertain' : 'error',
+      activeStep: fallback.activeStep,
+      completedSteps: fallback.completedSteps,
+      title: uncertain ? '正在核对创建结果' : '训练任务未创建',
+      detail: uncertain
+        ? `网络连接中断，不能确认任务是否已经创建。请先到任务列表核对 ${taskId || '本次任务 ID'}，不要重复提交。`
+        : String(options.error || '请检查训练配置后重试'),
+      retrySafe: !uncertain,
+      taskId,
+    };
+  }
+  if (value === 'build-payload') return {...TRAINING_SUBMIT_PRESENTATIONS.materials};
+  if (value === 'posting') return {...TRAINING_SUBMIT_PRESENTATIONS.submit};
+  return {...TRAINING_SUBMIT_PRESENTATIONS.configuration};
+}
+
 export function validateTrainingCreatedResponse(body, expectedTaskId = '') {
   const task = body?.task;
   const taskId = String(task?.task_id || '').trim();
@@ -324,6 +368,7 @@ export function installTrainingSubmitRuntime({
   let submitting = false;
   let lastStage = 'idle';
   let lastError = '';
+  let lastPresentation = null;
   const SUBMIT_STAGE_TEXT = Object.freeze({
     idle: '开始训练',
     'sync-draft': '正在读取训练配置…',
@@ -333,7 +378,7 @@ export function installTrainingSubmitRuntime({
     'resolve-engine': '正在核验训练引擎…',
     'validate-device': '正在核验训练设备…',
     'build-payload': '正在整理训练素材与参数…',
-    posting: '服务端正在核验并创建持久任务…',
+    posting: '正在提交训练任务…',
     created: '训练任务已创建',
   });
 
@@ -345,8 +390,41 @@ export function installTrainingSubmitRuntime({
     return buttons.find(button => /开始训练|正在.*训练|持久任务|训练任务已创建/.test(String(button.textContent || ''))) || null;
   }
 
-  function setSubmitStage(stage) {
+  function renderSubmitFeedback(stage, options = {}) {
+    const root = document.querySelector?.('.train429-create');
+    const panel = root?.querySelector?.('[data-training-submit-feedback]');
+    if (stage === 'idle') {
+      if (panel) {
+        panel.hidden = true;
+        panel.removeAttribute?.('data-tone');
+      }
+      root?.classList?.remove?.('training-submit-active', 'training-submit-complete', 'training-submit-failed');
+      return null;
+    }
+    const presentation = trainingSubmitPresentation(stage, options);
+    lastPresentation = presentation;
+    if (!panel) return presentation;
+    panel.hidden = false;
+    panel.dataset.tone = presentation.tone;
+    panel.setAttribute?.('aria-busy', presentation.tone === 'working' ? 'true' : 'false');
+    const title = panel.querySelector?.('[data-training-submit-title]');
+    const detail = panel.querySelector?.('[data-training-submit-detail]');
+    if (title) title.textContent = presentation.title;
+    if (detail) detail.textContent = presentation.detail;
+    [...(panel.querySelectorAll?.('[data-training-submit-step]') || [])].forEach((item, index) => {
+      const status = index < presentation.completedSteps ? 'done' : index === presentation.activeStep ? 'active' : 'pending';
+      item.dataset.status = status;
+      item.setAttribute?.('aria-current', status === 'active' ? 'step' : 'false');
+    });
+    root?.classList?.toggle?.('training-submit-active', presentation.tone === 'working');
+    root?.classList?.toggle?.('training-submit-complete', presentation.tone === 'success');
+    root?.classList?.toggle?.('training-submit-failed', ['error', 'uncertain'].includes(presentation.tone));
+    return presentation;
+  }
+
+  function setSubmitStage(stage, options = {}) {
     lastStage = String(stage || 'idle');
+    renderSubmitFeedback(lastStage, options);
     const button = submitButton();
     if (!button) return lastStage;
     if (!button.dataset.trainingSubmitIdleText) {
@@ -379,9 +457,12 @@ export function installTrainingSubmitRuntime({
     const externalReadiness = asset
       ? window.ExternalAlgorithmPlatformRuntime?.trainingReadiness?.(asset.id)
       : null;
-    const readiness = baseReadiness.ready && externalReadiness?.ready === false
+    let readiness = baseReadiness.ready && externalReadiness?.ready === false
       ? {ready: false, reason: externalReadiness.reason || 'external-master-data'}
       : baseReadiness;
+    if (lastStage === 'failed' && lastPresentation?.retrySafe === false) {
+      readiness = {ready: false, reason: 'outcome-uncertain'};
+    }
     let supplementContext = null;
     try {
       supplementContext = supplementCandidateContext({asset, draft, base});
@@ -394,7 +475,7 @@ export function installTrainingSubmitRuntime({
       button.disabled = !readiness.ready;
       button.dataset.trainingSubmitOwner = 'TrainingSubmitRuntime';
       button.dataset.trainingSubmitReason = readiness.reason;
-      if (!submitting) setSubmitStage('idle');
+      if (!submitting && !['failed', 'created'].includes(lastStage)) setSubmitStage('idle');
     }
     return readiness;
   }
@@ -407,6 +488,10 @@ export function installTrainingSubmitRuntime({
     }
     submitting = true;
     lastError = '';
+    lastPresentation = null;
+    let submittedTaskId = '';
+    let responseReceived = false;
+    const startedAt = typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
     setSubmitStage('sync-draft');
     updateReadiness();
     setSubmitStage('sync-draft');
@@ -502,11 +587,13 @@ export function installTrainingSubmitRuntime({
       }
 
       setSubmitStage('posting');
+      submittedTaskId = String(payload.task_id || '');
       const response = await window.fetch(`/api/v12/projects/${pid}/train/start`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify(payload),
       });
+      responseReceived = true;
       if (!response.ok) {
         const raw = await response.text();
         let body = {};
@@ -528,7 +615,6 @@ export function installTrainingSubmitRuntime({
         framework: String(payload.framework || target.framework || ''),
         queuePriority: payload.queue_priority,
       });
-      closeModal?.();
       state.alg428Expanded = state.alg428Expanded || {};
       state.alg428Expanded[asset.id] = true;
       const selection = body?.selection && typeof body.selection === 'object' ? body.selection : null;
@@ -548,10 +634,48 @@ export function installTrainingSubmitRuntime({
         console.warn?.('training task created but list refresh failed', refreshError);
         notify?.('训练任务已创建；列表刷新失败，请稍后手动刷新查看');
       }
+      const elapsed = (typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now()) - startedAt;
+      if (elapsed < 260) {
+        closeModal?.();
+        setSubmitStage('idle');
+      } else {
+        setTimeout(() => {
+          closeModal?.();
+          if (lastStage === 'created') setSubmitStage('idle');
+        }, 520);
+      }
       return body;
     } catch (error) {
       lastError = String(error?.message || error || '未知训练提交错误');
-      notify?.(lastError);
+      const failedAt = lastStage;
+      let outcomeUncertain = failedAt === 'posting' && !responseReceived;
+      if (outcomeUncertain && submittedTaskId) {
+        try {
+          const pid = projectId?.();
+          const verification = await window.fetch(
+            `/api/v62/projects/${encodeURIComponent(pid)}/tasks/${encodeURIComponent(submittedTaskId)}`,
+            {headers: {'Accept': 'application/json'}},
+          );
+          if (verification.ok) {
+            const taskBody = await verification.json();
+            const createdTask = validateTrainingCreatedResponse(
+              {ok: true, task: taskBody?.task || taskBody}, submittedTaskId,
+            );
+            setSubmitStage('created');
+            trainingTaskRuntime?.acceptCreatedTask?.(createdTask, {recoveredAfterNetworkError: true});
+            notify?.(`训练任务已创建并进入后台队列 · ${createdTask.task_id}`);
+            closeModal?.();
+            setSubmitStage('idle');
+            return {ok: true, task: createdTask, recovered: true};
+          }
+        } catch (_) {
+          outcomeUncertain = true;
+        }
+      }
+      setSubmitStage('failed', {
+        error: lastError, failedAt, taskId: submittedTaskId, outcomeUncertain,
+      });
+      notify?.(lastPresentation?.detail || lastError);
       return null;
     } finally {
       submitting = false;
@@ -570,7 +694,7 @@ export function installTrainingSubmitRuntime({
     isCanonicalTaskId: isCanonicalTrainingTaskId,
     updateReadiness,
     isSubmitting: () => submitting,
-    state: () => ({submitting, networkOwner: true, readiness: updateReadiness(), lastStage, lastError}),
+    state: () => ({submitting, networkOwner: true, readiness: updateReadiness(), lastStage, lastError, presentation: lastPresentation}),
     destroy() {
       destroyed = true;
       if (window.submitTrain429 === submit) window.submitTrain429 = originalSubmit;

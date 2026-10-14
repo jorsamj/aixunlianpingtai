@@ -460,3 +460,9 @@ same SHA + different GT
 - 对外诊断与折叠技术详情会脱敏路径、Bearer、token/password/secret/API key。旧任务只按已有证据投影，不回写状态或原始 artifact。没有可信恢复合同固定显示“当前没有可恢复的训练断点，需要重新创建训练任务。”，不出现恢复按钮。
 - 训练详情沿用现有四 Tab 和 `TrainingRecoveryRuntime`；桌面将依据/可能原因/建议紧凑分栏，窄屏回到单列。缓存标识和 Training Recovery Guard 同步，正式 `VERSION.txt=42.24.356` 不变。
 - 远端 HEAD `ab470e8c` 的 44 个实际 Actions 已终态：42 success、2 failure、0 running；Training Recovery Guard 与其余训练关键工作流通过。两项失败分别为 Frontend Runtime 守卫仍硬编码旧 `upload-task-center-3`，以及 ZIP Chrome 测试在标签确认模态框拥有交互焦点时点击其后方任务中心。最小测试/工作流修复已在本地完成并复验 Node 964/964、ZIP Chrome 14/14、诊断 Python 33/33，尚未获准再次 push。真实 Linux journal 权限、生产历史任务和 GPU 训练仍为 NOT VERIFIED。
+
+## 2026-10-14｜训练创建动效收口
+
+- 唯一 `TrainingSubmitRuntime` 原阶段映射为三段可信 UI；慢请求显示无虚假百分比的反馈层，快速请求不强制播放完整动画。
+- 成功仍依赖正式任务响应；POST 断线按 planned Task ID 回查，无法确认时阻止重复提交。失败不清空用户配置。
+- Node 968、Python 69、Chrome 1 均通过；四种目标视口和 reduced-motion 已验证。VERSION 42.24.356 不变，未 push/merge/deploy。

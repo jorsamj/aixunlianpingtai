@@ -511,3 +511,10 @@ Resource Discovery SQLite 仍保持 **CODE-LEVEL CLOSED / production soak OPEN**
 - 对外诊断与折叠技术详情会脱敏路径、Bearer、token/password/secret/API key。旧任务只按已有证据投影，不回写状态或原始 artifact。没有可信恢复合同固定显示“当前没有可恢复的训练断点，需要重新创建训练任务。”，不出现恢复按钮。
 - 训练详情沿用现有四 Tab 和 `TrainingRecoveryRuntime`；桌面将依据/可能原因/建议紧凑分栏，窄屏回到单列。缓存标识和 Training Recovery Guard 同步，正式 `VERSION.txt=42.24.356` 不变。
 - 远端 HEAD `ab470e8c` 的 44 个实际 Actions 已终态：42 success、2 failure、0 running；Training Recovery Guard 与其余训练关键工作流通过。两项失败分别为 Frontend Runtime 守卫仍硬编码旧 `upload-task-center-3`，以及 ZIP Chrome 测试在标签确认模态框拥有交互焦点时点击其后方任务中心。最小测试/工作流修复已在本地完成并复验 Node 964/964、ZIP Chrome 14/14、诊断 Python 33/33，尚未获准再次 push。真实 Linux journal 权限、生产历史任务和 GPU 训练仍为 NOT VERIFIED。
+
+## 2026-10-14｜训练创建反馈体验（LOCAL VERIFIED / CI OPEN）
+
+- `TrainingSubmitRuntime` 仍是唯一提交 Owner；九个原始技术阶段只投影为“配置校验 → 素材检查 → 任务提交”，不增加 API、轮询器、任务状态或虚假百分比。
+- 快速响应仅显示原位按钮 Spinner；慢响应在当前训练弹窗内显示克制的居中反馈层。成功必须通过 `validateTrainingCreatedResponse`，且只表述“已创建并进入队列”；失败保留配置与真实原因。
+- POST 网络中断会先按本次预生成 Task ID 查询 `/api/v62/projects/{project}/tasks/{task_id}`；仅在查到同一正式训练任务时恢复为成功，无法确认时锁住盲目重试并提示任务列表核对。
+- CSS 动效支持 `prefers-reduced-motion`；1920×1080、1440×900、1366×768、375×812 均通过真实 Chrome 边界断言。新鲜证据：Node `968/968`、训练 API Python `69/69`、Chrome `1/1`。`VERSION.txt=42.24.356` 未改，GitHub CI 与生产仍为 `NOT VERIFIED`。
