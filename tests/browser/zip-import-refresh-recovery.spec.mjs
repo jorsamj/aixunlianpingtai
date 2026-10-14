@@ -393,12 +393,6 @@ test('one ZIP session failure stays visible and the next queued file still uploa
   await page.evaluate(()=>window.importData());
   await page.locator('#importFile').setInputFiles(filenames.map((name,index)=>({name,mimeType:'application/zip',buffer:zip(index)})));
   await page.evaluate(()=>{void window.doImportUploadV19()});
-  const toggle=page.locator('#uploadTaskCenter [data-utc-toggle]');
-  await expect(toggle).toBeVisible();
-  await toggle.click();
-  const failedRow=page.locator('#uploadTaskCenter .utc-row',{hasText:filenames[0]});
-  await expect(failedRow).toContainText('失败',{timeout:30_000});
-  await expect(failedRow).toContainText('模拟上传会话不可用');
   const jobsUrl='/api/v19/projects/'+project.id+'/import/jobs';
   await expect.poll(async()=>{
     const response=await request.get(jobsUrl);
@@ -406,6 +400,16 @@ test('one ZIP session failure stays visible and the next queued file still uploa
     const rows=(await response.json()).items||[];
     return filenames.slice(1).filter(name=>rows.some(row=>row.file_name===name));
   },{timeout:60_000}).toEqual(filenames.slice(1));
+  const dialog=page.getByRole('dialog',{name:'ZIP 数据导入'});
+  await expect(dialog.locator('.zip-label-confirm')).toHaveCount(1,{timeout:30_000});
+  await dialog.getByRole('button',{name:'关闭窗口'}).click();
+  await expect(dialog).toBeHidden();
+  const toggle=page.locator('#uploadTaskCenter [data-utc-toggle]');
+  await expect(toggle).toBeVisible();
+  await toggle.click();
+  const failedRow=page.locator('#uploadTaskCenter .utc-row',{hasText:filenames[0]});
+  await expect(failedRow).toContainText('失败',{timeout:30_000});
+  await expect(failedRow).toContainText('模拟上传会话不可用');
 });
 
 test('a second file selection joins the same two-slot FIFO without dropping either batch',async({page,request})=>{
@@ -470,18 +474,22 @@ test('exact duplicate ZIP is rejected per file while same-name different content
     {name:'same-name.zip',mimeType:'application/zip',buffer:different},
   ]);
   await page.evaluate(()=>{void window.doImportUploadV19()});
-  const toggle=page.locator('#uploadTaskCenter [data-utc-toggle]');
-  await expect(toggle).toBeVisible();
-  await toggle.click();
-  await expect(page.locator('#uploadTaskCenter .utc-row[data-utc-kind="zip"]')).toHaveCount(3);
-  await expect(page.locator('#uploadTaskCenter .utc-row .utc-pill.bad')).toHaveCount(1,{timeout:30_000});
-  await expect(page.locator('#uploadTaskCenter')).toContainText('本批次已选择内容相同的 ZIP 文件');
   await expect.poll(async()=>{
     const response=await request.get('/api/v19/projects/'+project.id+'/import/jobs');
     if(!response.ok())return 0;
     const rows=(await response.json()).items||[];
     return rows.filter(row=>row.file_name==='same-name.zip').length;
   },{timeout:60_000}).toBe(2);
+  const dialog=page.getByRole('dialog',{name:'ZIP 数据导入'});
+  await expect(dialog.locator('.zip-label-confirm')).toHaveCount(1,{timeout:30_000});
+  await dialog.getByRole('button',{name:'关闭窗口'}).click();
+  await expect(dialog).toBeHidden();
+  const toggle=page.locator('#uploadTaskCenter [data-utc-toggle]');
+  await expect(toggle).toBeVisible();
+  await toggle.click();
+  await expect(page.locator('#uploadTaskCenter .utc-row[data-utc-kind="zip"]')).toHaveCount(3);
+  await expect(page.locator('#uploadTaskCenter .utc-row .utc-pill.bad')).toHaveCount(1,{timeout:30_000});
+  await expect(page.locator('#uploadTaskCenter')).toContainText('本批次已选择内容相同的 ZIP 文件');
 });
 
 test('refresh never pretends a browser-only queued ZIP still owns its original file',async({page,request})=>{
