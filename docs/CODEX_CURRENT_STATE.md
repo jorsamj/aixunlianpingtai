@@ -2813,3 +2813,9 @@ VERSION `42.24.300` adds one project-scoped coordination fence between canonical
 - SAFE_ALL auto-includes only exact-image/exact-annotation groups. Annotation conflicts require a manual keeper; scan failures/anomalies and groups with multiple protected history references are skipped. Training/conversion history, active input tasks, snapshots, algorithms/models and evaluation records are treated as fail-closed references.
 - Execution revalidates the whole plan, freezes the existing MaterialBatch selection, and publishes normal `DELETE_INDEX`. The worker rechecks keeper/delete identity and newly protected references before deletion. It removes index plus formal annotation only, never a shared source object, label dictionary or history record.
 - Local evidence: Python governance 11/11, related batching 19/19, Node 970/970, Real Chrome 1/1 at 1366×768. Scale cases cover 501 planned deletions and 120 groups across API pagination. VERSION remains 42.24.356; GitHub CI, production history/OSS and large-production performance are NOT VERIFIED.
+
+## 2026-10-15 training feedback CI follow-up
+
+- Run 38711917017 found one real Chrome regression: a retry-safe validation error left the new failure overlay intercepting every later configuration click. Training submission and the Ubuntu/Windows static contracts were otherwise successful.
+- Failure feedback is now an in-flow, non-blocking panel; only working/success states retain the modal scrim. Uncertain POST outcomes still disable retry through the existing runtime contract. Styles cache marker is 42.25.379; VERSION stays 42.24.356.
+- The exact failing test was observed RED, then passed 1/1; the workflow's full local Chrome command passed 12/12 and Node passed 970/970. Remote retest is pending.

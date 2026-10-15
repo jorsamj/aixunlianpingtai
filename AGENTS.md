@@ -525,3 +525,9 @@ Resource Discovery SQLite 仍保持 **CODE-LEVEL CLOSED / production soak OPEN**
 - 服务端计划冻结审计 ID、素材/标注 revision、完整 SHA256、正式标注摘要、每组 keeper 与删除项；自动范围仅纳入同图同标注、无扫描异常且无多重历史引用的组。同图不同标注必须人工指定 keeper，历史/活动任务、快照、模型与独立评测引用均 fail-closed 保护。
 - 执行前和 Worker 删除前均重验 keeper/delete 身份与新增引用；共享物理对象不删除，部分不安全组保持失败可见，其他安全组可继续沿用原重试/恢复合同。治理终态会失效素材分页、训练素材摘要/兼容性、标签审计、质量缓存与旧素材审计。
 - 新鲜本地证据：素材治理 Python `11/11`（含 5→1、501 删除、120 组跨分页、引用保护、并发漂移、幂等与凭证）；相关 MaterialBatch 回归 `19/19`；Node `970/970`；Real Chrome `1/1`，1366×768 预览、二次确认和组进度已截图核验。`VERSION.txt=42.24.356` 未改；GitHub CI、生产历史对象、真实 OSS 和大库耗时仍为 `NOT VERIFIED`。
+
+## 2026-10-15｜训练创建反馈 CI 修复（LOCAL VERIFIED / CI RETEST OPEN）
+
+- 首次远端 `418b6ed3` 的 Training Create First Open 真实 Chrome 暴露：普通配置校验失败沿用了提交中遮罩，`training-submit-failed` 会永久拦截后续配置点击。失败状态与业务提交本身无误，但违背“失败后保留配置并继续修正”。
+- 仅调整失败态展示：提交中/成功仍使用阻断层；可重试失败改为弹窗内联提示且不拦截配置；网络结果不确定仍由 `TrainingSubmitRuntime` 禁用盲目重试。样式缓存键更新为 `42.25.379`，正式 VERSION 不变。
+- 同一 Chrome 用例先稳定 RED，修复后单例 `1/1`、CI 完整 Chrome `12/12`、Node `970/970`、语法与 diff check 均通过；等待新提交远端 CI 终态。

@@ -3032,3 +3032,9 @@ Current code candidate is VERSION `42.24.300`. Formal Ground Truth cannot commit
 - 自动治理只处理同图同标注且无异常的重复组；冲突组须查看真实图片/GT 后人工选择 keeper。历史训练/转换、活动输入任务、Snapshot、算法/模型/评测引用受保护；同组多重保护、扫描失败或来源不可核验时整组跳过。
 - 执行复用唯一 `DELETE_INDEX` MaterialBatch。入队前全量重验，Worker 启动和逐项删除前再验 keeper、删除项及新增引用；共享物理源文件不删除。终态沿用现有轮询器并失效相关素材、训练、标签和质量缓存。
 - 验证：治理 Python 11/11、MaterialBatch 相关回归 19/19、Node 970/970、Real Chrome 1/1；覆盖 5→1、501 删除、120 组分页、凭证/幂等、历史保护与排队后 keeper 漂移。正式 VERSION 仍为 42.24.356；未 push、merge main 或部署，CI/生产 OSS 为 NOT VERIFIED。
+
+## 2026-10-15｜训练创建反馈 CI 跟进
+
+- `418b6ed3` 的 Training Create First Open run `38711917017` 唯一失败来自可重试配置错误后的反馈遮罩持续拦截指针；真实提交合同、Task ID 与静态合同均未失败。
+- 最小修复只把失败态改为弹窗内联非阻断提示，提交中/成功遮罩和未知 POST 禁止盲重试保持不变；样式缓存为 `42.25.379`，VERSION 仍为 `42.24.356`。
+- 原失败测试 RED 后 GREEN，完整 Chrome `12/12`、Node `970/970` 通过；待新 HEAD 远端 CI 验证。

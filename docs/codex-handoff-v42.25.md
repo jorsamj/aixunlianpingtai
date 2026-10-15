@@ -472,3 +472,8 @@ same SHA + different GT
 - 复用 Full Audit + 既有 `DELETE_INDEX` MaterialBatch/Worker，新增后端完整范围冻结计划；前端仅展示统计、最多 20 组推荐和二次确认，不传全量待删 ID。
 - 只自动处理 SHA256 与正式标注摘要均一致的安全组；冲突组人工指定 keeper，异常/扫描失败/多重历史引用组跳过。执行和 Worker 删除前重复校验 revision、内容、标注、keeper 与历史/活动引用。
 - 删除边界仍是素材索引及对应正式标注；共享对象、标签字典、任务历史不删。Node 970/970、Python 11/11 + 19/19、Chrome 1/1；501 删除与 120 组跨分页通过。VERSION 42.24.356，CI/生产未验证，未 push/merge/deploy。
+
+## 2026-10-15｜训练反馈 CI 修复
+
+- 远端真实 Chrome 发现配置校验错误后的失败遮罩会拦截继续编辑。失败态现改为内联非阻断提示；工作/成功遮罩与未知结果防重复提交合同不变。
+- 原用例 RED→GREEN，完整 Chrome 12/12、Node 970/970；styles 缓存键 42.25.379，VERSION 42.24.356，等待远端复验。
