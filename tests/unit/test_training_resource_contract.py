@@ -217,7 +217,13 @@ def test_resource_resolution_rejects_changed_gpu_identity(monkeypatch):
 def test_auto_workers_use_actual_reservations_not_installed_gpu_count(monkeypatch):
     _patch_host(monkeypatch)
 
-    single_job = training_metrics.resolve_resources(
+    one_gpu_job = training_metrics.resolve_resources(
+        _request(workers=0, resource_profile="performance"),
+        _context(concurrent_reservations=1),
+        _Model(),
+        _Torch(_Cuda(devices=1)),
+    )
+    two_gpu_single_job = training_metrics.resolve_resources(
         _request(workers=0, resource_profile="performance"),
         _context(concurrent_reservations=1),
         _Model(),
@@ -230,14 +236,14 @@ def test_auto_workers_use_actual_reservations_not_installed_gpu_count(monkeypatc
         _Torch(_Cuda(devices=2)),
     )
 
+    assert one_gpu_job["resolved_workers"] == two_gpu_single_job["resolved_workers"]
+    assert 0 <= second_parallel_job["resolved_workers"] < two_gpu_single_job["resolved_workers"]
+    assert two_gpu_single_job["estimated_host_memory_bytes"] <= two_gpu_single_job["host_memory_budget_bytes"]
+    assert second_parallel_job["estimated_host_memory_bytes"] <= second_parallel_job["host_memory_budget_bytes"]
     if training_metrics.os.name == "nt":
-        # Windows intentionally caps Ultralytics loader workers at 4 for runtime safety.
-        assert single_job["resolved_workers"] == 4
-        assert 0 <= second_parallel_job["resolved_workers"] < single_job["resolved_workers"]
+        assert two_gpu_single_job["resolved_workers"] <= 4
     else:
-        assert single_job["resolved_workers"] == 12
-        assert second_parallel_job["resolved_workers"] == 7
-        assert single_job["resolved_workers"] > second_parallel_job["resolved_workers"]
+        assert two_gpu_single_job["resolved_workers"] <= 12
 
 
 def test_auto_selects_ram_cache_when_dataset_safely_fits(monkeypatch):

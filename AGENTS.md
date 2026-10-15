@@ -545,4 +545,4 @@ Resource Discovery SQLite 仍保持 **CODE-LEVEL CLOSED / production soak OPEN**
 - 首轮 Training Recovery Guard 的真实失败为旧静态守卫仍要求已退役的 `oldDialog.replaceChildren`，以及 Ubuntu Chrome 字体度量使标签仅 68px；运行时原位 patch 与弹窗 Owner 未回退。守卫现要求 `patchTrainingDetailDom` 并禁止旧整树替换，详情标签显式最小宽度 80px。
 - 现有 Remote Training Runtime 增加 Ubuntu 专属具名步骤，直接运行实际 cgroup v2 `memory.max/memory.current` 对照和 `/proc/self/fd` 泄漏测试；不新建工作流。Windows 聚焦回归 `99 passed, 2 Linux-only skipped`，Node `971/971`，Chrome `5/5`。
 - CSS 缓存键为 `42.25.382`；正式 `VERSION.txt=42.24.356` 不变。修复提交与最终远端 CI 尚待核验；A800/GPU 实机仍为 `NOT VERIFIED`。
-- 修复 SHA `39157527` 的 Ubuntu 首跑进一步暴露单测夹具泄漏 Runner cgroup：`_patch_host` 只冻结旧 `host_resources()`，新决议仍读取真实 cgroup，导致预期的 31 GiB 单机夹具被 CI 容器上限收窄。夹具现冻结完整 `host_resource_snapshot()`；独立 Linux 专项测试仍读取真实文件，不放宽资源断言。
+- 修复 SHA `39157527` 的 Ubuntu 首跑暴露旧测试仍硬编码 Linux workers=12。完整冻结 31 GiB snapshot 后决议仍按 Batch×Workers×Prefetch 联合预算安全收敛为 8，证明不是 Runner cgroup 污染。测试改为验证 GPU 数量不影响 workers、并发预约会降低 workers、两种结果均不超内存预算；不固定新的 8/2 数字。独立 Linux 专项仍读取真实文件。

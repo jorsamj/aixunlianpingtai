@@ -490,4 +490,4 @@ same SHA + different GT
 - Training Recovery Guard 首轮失败来自退役静态合同和 Ubuntu Chrome 68px 标签宽度。最小修复锁定原位 DOM patch、禁止旧整树替换，并给详情标签 80px 最小宽度。
 - Linux cgroup v2 与 `/proc/self/fd` 两项真实环境测试已在现有 Remote Training Runtime 增加 Ubuntu 专属具名执行步骤。Windows 本地证据为 Python 99 passed / 2 skipped、Node 971/971、Chrome 5/5。
 - CSS 缓存键为 42.25.382；VERSION 42.24.356 不变。远端修复 CI 与 A800 实机待验收。
-- `39157527` Ubuntu 首跑暴露测试夹具只 mock 旧 host probe、未 mock 新 cgroup snapshot，导致受控 31 GiB 场景继承 Runner 限额；已补齐 fixture 隔离，真实 Linux 文件测试保持独立且严格。
+- `39157527` Ubuntu 首跑暴露旧 workers=12 精确断言与联合内存预算冲突；冻结 31 GiB 后安全结果仍为 8。现断言 GPU 数量无关、并发预约收敛与预算不超限，真实 Linux 文件测试保持独立且严格。
