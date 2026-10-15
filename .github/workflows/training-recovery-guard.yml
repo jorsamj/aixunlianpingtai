@@ -103,7 +103,11 @@ jobs:
           grep -Fq 'allow_version_archive=False' app.py
           grep -Fq 'terminal live event performs one final canonical detail and log reconciliation' tests/frontend/training-recovery-runtime.test.mjs
           grep -Fq 'incomingStatusSource = job?.task_status ?? job?.persisted_status ?? job?.status' static/modules/training-recovery-runtime.js
-          grep -Fq 'oldDialog.replaceChildren(...Array.from(nextDialog.childNodes))' static/modules/training-recovery-runtime.js
+          grep -Fq 'function patchTrainingDetailDom(current, next)' static/modules/training-recovery-runtime.js
+          if grep -Fq 'oldDialog.replaceChildren' static/modules/training-recovery-runtime.js; then
+            echo 'Training detail refresh must patch the canonical dialog in place' >&2
+            exit 1
+          fi
           grep -Fq "data-identity-probe', 'overlay-stable'" tests/browser/training-recovery.spec.mjs
           grep -Fq 'training_job_detail_never_archives_versions_from_read_poll' tests/api/test_training_unified_task_overlay.py
           grep -Fq 'test_training_job_detail_failed_overlay_preserves_worker_root_cause_and_exposes_task_error' tests/api/test_training_unified_task_overlay.py

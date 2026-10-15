@@ -484,3 +484,9 @@ same SHA + different GT
 - Auto 资源决议基于实际 Worker host/cgroup v2 余量，联合约束 Batch、Workers、Prefetch、imgsz、有效精度、Cache 与并发；Manual 超预算拒绝，预启动资源漂移失败且冻结参数不变。
 - 进程树内存优先 USS/PSS，RSS fallback 不跨父子求和；其他 PID 的 Kernel OOM 只报疑似并发事件。训练详情沿用单一 Owner，显示 requested/resolved/runtime 与 host/cgroup/进程树事实。
 - 居中桌面弹窗、移动端留边、内部滚动、稳定刷新、Esc/焦点/快速重开/reduced-motion 已验收。Node 971/971、Python 99 passed / 1 skipped、Chrome 4/4；VERSION 42.24.356，真实 GPU/Linux/生产/CI 未验证，未 push/merge/deploy。
+
+## 2026-10-15｜资源与训练详情 CI 首轮收敛
+
+- Training Recovery Guard 首轮失败来自退役静态合同和 Ubuntu Chrome 68px 标签宽度。最小修复锁定原位 DOM patch、禁止旧整树替换，并给详情标签 80px 最小宽度。
+- Linux cgroup v2 与 `/proc/self/fd` 两项真实环境测试已在现有 Remote Training Runtime 增加 Ubuntu 专属具名执行步骤。Windows 本地证据为 Python 99 passed / 2 skipped、Node 971/971、Chrome 5/5。
+- CSS 缓存键为 42.25.382；VERSION 42.24.356 不变。远端修复 CI 与 A800 实机待验收。

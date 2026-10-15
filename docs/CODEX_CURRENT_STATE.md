@@ -2827,3 +2827,9 @@ VERSION `42.24.300` adds one project-scoped coordination fence between canonical
 - Runtime memory evidence is task/node scoped and reports host/cgroup plus process-tree current/peak memory. USS/PSS is additive; RSS fallback is root-only to avoid shared-page double counting. A Kernel OOM for another PID in the same window remains suspected concurrent evidence, never a confirmed cause for this task.
 - The existing TrainingRecoveryRuntime owns a centered 1180px/94vw desktop dialog with internal scrolling, fixed header/footer, in-place refresh, four stable tabs, Escape/focus restoration, fast-reopen fencing and reduced-motion. Requested/resolved/runtime and host/cgroup/process-tree truth are shown without fabricated zeroes.
 - Fresh local evidence: Node 971/971; focused Python 99 passed / 1 Linux-only skipped; Real Chrome 4/4 at 1920×1080, 1440×900, 1366×768 and 375×812. VERSION remains 42.24.356. Real A800/GPU, Linux journal permissions, production cgroup/OSS and GitHub CI are NOT VERIFIED; no push, merge or deployment.
+
+## 2026-10-15 first CI follow-up for resource and training detail changes
+
+- The first Training Recovery Guard run exposed an obsolete static assertion for `oldDialog.replaceChildren` and a real Ubuntu Chrome geometry gap (68px tab width). The guard now requires `patchTrainingDetailDom` and rejects the retired whole-tree replacement; detail tabs have an explicit 80px minimum width.
+- Existing Remote Training Runtime now has a named Ubuntu-only step that reads real cgroup-v2 `memory.max/memory.current` truth and executes the `/proc/self/fd` stability test. No second workflow was added.
+- Fresh local evidence: Node 971/971, focused Windows Python 99 passed / 2 Linux-only skipped, Real Chrome 5/5. CSS cache marker is 42.25.382; VERSION stays 42.24.356. Remote repair CI and A800/GPU UAT remain pending.

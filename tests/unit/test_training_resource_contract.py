@@ -1,3 +1,5 @@
+import os
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -651,3 +653,49 @@ def test_host_budget_uses_resolved_fp32_truth_when_precision_is_auto(monkeypatch
 
     assert automatic["resolved_precision"] == "fp32"
     assert automatic["estimated_host_memory_bytes"] == explicit["estimated_host_memory_bytes"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Linux cgroup v2 runtime files required")
+def test_linux_cgroup_v2_snapshot_matches_runtime_memory_files():
+    relative = None
+    for line in Path("/proc/self/cgroup").read_text(encoding="utf-8").splitlines():
+        parts = line.split(":", 2)
+        if len(parts) == 3 and parts[0] == "0":
+            relative = parts[2].lstrip("/")
+            break
+    assert relative is not None, "Ubuntu training CI must expose the unified cgroup v2 hierarchy"
+    scope = Path("/sys/fs/cgroup") / relative
+    limit_file = scope / "memory.max"
+    current_file = scope / "memory.current"
+    assert limit_file.is_file()
+    assert current_file.is_file()
+
+    raw_limit = limit_file.read_text(encoding="utf-8").strip()
+    expected_limit = None if raw_limit == "max" else int(raw_limit)
+    current_before = int(current_file.read_text(encoding="utf-8").strip())
+    snapshot = training_metrics.host_resource_snapshot()
+    current_after = int(current_file.read_text(encoding="utf-8").strip())
+
+    assert snapshot["cgroup_limit_bytes"] == expected_limit
+    observed_current = snapshot["cgroup_current_bytes"]
+    assert observed_current is not None and observed_current > 0
+    current_delta = min(abs(observed_current - current_before), abs(observed_current - current_after))
+    current_tolerance = max(64 * 1024 ** 2, observed_current // 4)
+    assert current_delta <= current_tolerance
+    if expected_limit is None:
+        assert snapshot["cgroup_headroom_bytes"] is None
+        assert snapshot["memory_source"] == "host"
+    else:
+        assert snapshot["cgroup_headroom_bytes"] == max(
+            0, expected_limit - snapshot["cgroup_current_bytes"]
+        )
+        expected_available = min(
+            snapshot["host_available_bytes"], snapshot["cgroup_headroom_bytes"]
+        )
+        assert snapshot["effective_available_bytes"] == expected_available
+        expected_source = (
+            "cgroup_v2"
+            if snapshot["cgroup_headroom_bytes"] < snapshot["host_available_bytes"]
+            else "host"
+        )
+        assert snapshot["memory_source"] == expected_source

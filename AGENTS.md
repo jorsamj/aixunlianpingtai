@@ -539,3 +539,9 @@ Resource Discovery SQLite 仍保持 **CODE-LEVEL CLOSED / production soak OPEN**
 - 运行指标记录任务/节点、host/cgroup 与进程树当前/峰值内存；优先累加 USS/PSS，拿不到时只记录根进程 RSS，禁止父子进程共享页重复计数。Kernel 同时窗其他 PID 的 OOM 仅标记疑似并发事件，不冒充当前任务确诊。
 - 训练详情继续由唯一 `TrainingRecoveryRuntime` 管理：桌面居中 1180px/94vw、内部滚动、固定头尾，移动端保留 6px 页面语境；局部 DOM patch 保持 Tab/滚动状态，支持 Esc、焦点恢复、快速重开和 reduced-motion，并显示 requested/resolved/runtime 与 host/cgroup/进程树证据。
 - 新鲜本地证据：Node `971/971`；关键 Python `99 passed, 1 Linux-only skipped`；Real Chrome `4/4`，覆盖 1920×1080、1440×900、1366×768、375×812。正式 `VERSION.txt=42.24.356` 未改；真实 A800/GPU、Linux systemd journal 权限、生产 cgroup/OSS 与 GitHub CI 均为 `NOT VERIFIED`，未 push、merge main 或部署。
+
+## 2026-10-15｜资源与训练详情首轮 CI 修复（LOCAL VERIFIED / REMOTE RETEST PENDING）
+
+- 首轮 Training Recovery Guard 的真实失败为旧静态守卫仍要求已退役的 `oldDialog.replaceChildren`，以及 Ubuntu Chrome 字体度量使标签仅 68px；运行时原位 patch 与弹窗 Owner 未回退。守卫现要求 `patchTrainingDetailDom` 并禁止旧整树替换，详情标签显式最小宽度 80px。
+- 现有 Remote Training Runtime 增加 Ubuntu 专属具名步骤，直接运行实际 cgroup v2 `memory.max/memory.current` 对照和 `/proc/self/fd` 泄漏测试；不新建工作流。Windows 聚焦回归 `99 passed, 2 Linux-only skipped`，Node `971/971`，Chrome `5/5`。
+- CSS 缓存键为 `42.25.382`；正式 `VERSION.txt=42.24.356` 不变。修复提交与最终远端 CI 尚待核验；A800/GPU 实机仍为 `NOT VERIFIED`。

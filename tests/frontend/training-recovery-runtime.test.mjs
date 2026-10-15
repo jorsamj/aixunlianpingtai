@@ -746,6 +746,7 @@ test('training detail stays a centered modal and refreshes without replacing its
   const {readFileSync} = await import('node:fs');
   const source = readFileSync(new URL('../../static/modules/training-recovery-runtime.js', import.meta.url), 'utf8');
   const styles = readFileSync(new URL('../../static/styles.css', import.meta.url), 'utf8');
+  const workflow = readFileSync(new URL('../../.github/workflows/training-recovery-guard.yml', import.meta.url), 'utf8');
 
   assert.doesNotMatch(source, /oldDialog\.replaceChildren/);
   assert.match(source, /patchTrainingDetailDom/);
@@ -754,6 +755,9 @@ test('training detail stays a centered modal and refreshes without replacing its
   assert.match(styles, /\.training-recovery-dialog\{width:min\(1180px,calc\(100vw - 40px\)\)/);
   assert.doesNotMatch(styles, /\.training-recovery-dialog\{width:100vw;max-width:100vw;height:100dvh/);
   assert.match(styles, /\.training-recovery-overlay\.is-closing/);
+  assert.match(styles, /\.training-recovery-dialog \.quality-tabs \.btn\{min-width:80px/);
+  assert.match(workflow, /grep -Fq 'function patchTrainingDetailDom\(current, next\)'/);
+  assert.match(workflow, /if grep -Fq 'oldDialog\.replaceChildren'/);
   assert.match(
     styles,
     /@media\(prefers-reduced-motion:reduce\)\{[^}]*\.training-recovery-overlay,\.training-recovery-dialog/,

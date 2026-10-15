@@ -234,6 +234,12 @@ jobs:
           tests/unit/test_training_realtime_progress.py
           tests/unit/test_training_precision_contract.py
           tests/unit/test_training_completion_metadata.py
+      - name: Linux cgroup v2 and process FD resource evidence
+        if: runner.os == 'Linux'
+        run: >-
+          python -m pytest -vv --confcutdir=tests/unit
+          tests/unit/test_training_resource_contract.py::test_linux_cgroup_v2_snapshot_matches_runtime_memory_files
+          tests/unit/test_training_metrics_fd.py::test_training_metrics_sqlite_fd_count_does_not_grow
       - name: Agent portable training subprocess lifecycle
         run: >-
           python -m pytest -q --confcutdir=tests/unit

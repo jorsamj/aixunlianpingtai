@@ -3046,3 +3046,9 @@ Current code candidate is VERSION `42.24.300`. Formal Ground Truth cannot commit
 - 训练指标新增任务/节点、host/cgroup、进程树当前/峰值；USS/PSS 可累加，RSS 只取根进程。其他 PID 同时间窗 OOM 只作为未归因疑似事件，当前 PID/生命周期或 cgroup delta 不匹配时不得确诊。
 - 唯一训练详情 Owner 保持 `TrainingRecoveryRuntime`；桌面居中弹窗、移动端留边、内部滚动和固定头尾通过四档真实 Chrome 验收。刷新采用原位 patch，不重置 Tab/滚动；Esc、焦点恢复、快速重开与 reduced-motion 有回归覆盖。
 - 本地：Node 971/971、关键 Python 99 passed / 1 Linux-only skipped、Chrome 4/4。VERSION 42.24.356 不变；A800/GPU、Linux journal 权限、生产环境和 GitHub CI 未验证，未 push/merge/deploy。
+
+## 2026-10-15｜资源与训练详情 CI 修复交接
+
+- 首轮 Training Recovery Guard 真实日志显示：旧守卫仍要求已移除的整弹窗 `replaceChildren`；Ubuntu Chrome 下标签宽度为 68px。现改为守卫原位 patch 且禁止旧整树替换，并显式保障标签最小宽度 80px。
+- 既有 Remote Training Runtime 增加 Ubuntu 具名证据步骤，直接核验真实 cgroup v2 内存文件与 `/proc/self/fd` 测试，不另建 CI。Windows 本地为 Python 99 passed / 2 Linux-only skipped、Node 971/971、Chrome 5/5。
+- 样式缓存键 42.25.382，VERSION 42.24.356 未改；修复提交远端复验和 A800 实机仍待完成。

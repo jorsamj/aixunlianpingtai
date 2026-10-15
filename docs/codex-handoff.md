@@ -5512,3 +5512,9 @@ GitHub 当前没有 CI status，不能把“测试代码已写”表述成“已
 - 指标按任务/节点记录 host/cgroup 和进程树当前/峰值，USS/PSS 去重；无法取得时仅根 RSS。其他 PID 的 OOM 不归因当前任务。
 - `TrainingRecoveryRuntime` 仍是唯一详情 Owner；居中弹窗、内部滚动、原位刷新、四 Tab、Esc/焦点/快速重开/reduced-motion 已由四档 Chrome 验证，并呈现 requested/resolved/runtime 与资源证据。
 - 本地证据：Node 971/971、Python 99 passed / 1 Linux-only skipped、Chrome 4/4。VERSION 42.24.356 未改；A800/GPU、Linux journal 权限、生产与 CI 为 NOT VERIFIED，未 push/merge/deploy。
+
+## 2026-10-15｜资源与训练详情 CI 修复交接
+
+- 首轮远端失败仅定位到旧 `replaceChildren` 静态守卫与 Ubuntu Chrome 68px 标签宽度；现要求原位 patch、禁止旧整树替换，并显式设置 80px 标签最小宽度。
+- Remote Training Runtime 原工作流新增 Ubuntu 具名 cgroup v2 与 `/proc/self/fd` 证据步骤。Windows 本地 Python 99 passed / 2 Linux-only skipped、Node 971/971、Chrome 5/5。
+- 样式缓存键 42.25.382，VERSION 42.24.356 不变；最终远端 CI 和真实 A800/GPU 仍待核验。
