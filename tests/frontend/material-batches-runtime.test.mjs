@@ -9,7 +9,7 @@ test('material batch polling is centrally owned and resumes only on relevant pag
   assert.match(source, /pollRegistry \|\| window\.PollRegistryRuntime/);
   assert.match(source, /registry\.startTimeout\(pollKey\(id\), POLL_OWNERS, tick, 1500\)/);
   assert.match(source, /const POLL_OWNERS = \['数据集', '自动标注及清洗'\]/);
-  assert.match(source, /build: 'material-batch-runtime-422403'/);
+  assert.match(source, /build: 'material-batch-runtime-422405'/);
   assert.doesNotMatch(source, /setTimeout\(/);
   assert.doesNotMatch(source, /clearTimeout\(/);
   assert.doesNotMatch(source, /const timers = new Map/);
@@ -40,6 +40,10 @@ test('material batch terminal truth refreshes the canonical dataset page owner',
   assert.match(pollOwner, /if \(isMaterialBatchActive\(task\)\)/);
   assert.match(pollOwner, /else \{[\s\S]*stopPolling\(id\);[\s\S]*await refresh\?\.\(\)/);
   assert.match(main, /refresh: async \(\) => \{[\s\S]*await window\.reloadMaterialPage61\?\.\(\)/);
+  assert.match(pollOwner, /task\.material_integrity_plan_id/);
+  assert.match(pollOwner, /invalidateMaterialIntegrityGovernance47/);
+  assert.match(source, /完成组 \$\{Number\(task\.completed_groups \|\| 0\)\}/);
+  assert.match(source, /失败组 \$\{Number\(task\.failed_groups \|\| 0\)\}/);
 });
 
 

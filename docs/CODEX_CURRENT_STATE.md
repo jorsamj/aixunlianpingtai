@@ -2806,3 +2806,10 @@ VERSION `42.24.300` adds one project-scoped coordination fence between canonical
 - The sole `TrainingSubmitRuntime` now projects canonical execution into three human stages and renders an accessible in-dialog feedback layer only when work is slow. Fast completion keeps the existing button-level loading path.
 - Success remains gated by durable task identity. A lost POST response is reconciled by the planned Task ID; an unresolved outcome is explicitly non-retryable until the user checks the task list.
 - Node 968/968, affected Python 69/69, and focused Real Chrome 1/1 passed. Four responsive viewports plus reduced motion were checked. Formal version remains 42.24.356; CI/production are not verified.
+
+## 2026-10-15 material integrity governance
+
+- Full Audit remains the evidence source. A server-side SQLite plan now freezes full-scope duplicate groups, revisions, SHA256, annotation digests, keeper choices and DELETE actions; the browser receives only counts and a bounded 20-group preview.
+- SAFE_ALL auto-includes only exact-image/exact-annotation groups. Annotation conflicts require a manual keeper; scan failures/anomalies and groups with multiple protected history references are skipped. Training/conversion history, active input tasks, snapshots, algorithms/models and evaluation records are treated as fail-closed references.
+- Execution revalidates the whole plan, freezes the existing MaterialBatch selection, and publishes normal `DELETE_INDEX`. The worker rechecks keeper/delete identity and newly protected references before deletion. It removes index plus formal annotation only, never a shared source object, label dictionary or history record.
+- Local evidence: Python governance 11/11, related batching 19/19, Node 970/970, Real Chrome 1/1 at 1366×768. Scale cases cover 501 planned deletions and 120 groups across API pagination. VERSION remains 42.24.356; GitHub CI, production history/OSS and large-production performance are NOT VERIFIED.

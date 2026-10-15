@@ -518,3 +518,10 @@ Resource Discovery SQLite 仍保持 **CODE-LEVEL CLOSED / production soak OPEN**
 - 快速响应仅显示原位按钮 Spinner；慢响应在当前训练弹窗内显示克制的居中反馈层。成功必须通过 `validateTrainingCreatedResponse`，且只表述“已创建并进入队列”；失败保留配置与真实原因。
 - POST 网络中断会先按本次预生成 Task ID 查询 `/api/v62/projects/{project}/tasks/{task_id}`；仅在查到同一正式训练任务时恢复为成功，无法确认时锁住盲目重试并提示任务列表核对。
 - CSS 动效支持 `prefers-reduced-motion`；1920×1080、1440×900、1366×768、375×812 均通过真实 Chrome 边界断言。新鲜证据：Node `968/968`、训练 API Python `69/69`、Chrome `1/1`。`VERSION.txt=42.24.356` 未改，GitHub CI 与生产仍为 `NOT VERIFIED`。
+
+## 2026-10-15｜重复与异常素材全局治理（LOCAL VERIFIED / CI OPEN）
+
+- 继续复用 Full Audit、`MaterialBatchRuntime62`、服务端 `DELETE_INDEX` 与唯一 MaterialBatch Worker；浏览器不提交全量待删 Image ID，也没有新增素材库、删除引擎、任务 Owner 或轮询器。
+- 服务端计划冻结审计 ID、素材/标注 revision、完整 SHA256、正式标注摘要、每组 keeper 与删除项；自动范围仅纳入同图同标注、无扫描异常且无多重历史引用的组。同图不同标注必须人工指定 keeper，历史/活动任务、快照、模型与独立评测引用均 fail-closed 保护。
+- 执行前和 Worker 删除前均重验 keeper/delete 身份与新增引用；共享物理对象不删除，部分不安全组保持失败可见，其他安全组可继续沿用原重试/恢复合同。治理终态会失效素材分页、训练素材摘要/兼容性、标签审计、质量缓存与旧素材审计。
+- 新鲜本地证据：素材治理 Python `11/11`（含 5→1、501 删除、120 组跨分页、引用保护、并发漂移、幂等与凭证）；相关 MaterialBatch 回归 `19/19`；Node `970/970`；Real Chrome `1/1`，1366×768 预览、二次确认和组进度已截图核验。`VERSION.txt=42.24.356` 未改；GitHub CI、生产历史对象、真实 OSS 和大库耗时仍为 `NOT VERIFIED`。

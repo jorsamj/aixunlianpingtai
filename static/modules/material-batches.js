@@ -68,6 +68,10 @@ export function installMaterialBatchRuntime({projectId, currentPageIds, selected
     const processed = Number(task.processed || 0);
     const failed = Number(task.failed || 0);
     const cleaning = task.operation === 'CLEAN' ? `，发现问题 ${Number(task.flagged || 0)} 张（仅检查，待复核）` : '';
+    if (task.material_integrity_plan_id) {
+      tell(`批量去重：${materialBatchTaskText(task)} · 完成组 ${Number(task.completed_groups || 0)}/${Number(task.planned_groups || 0)} · 已保留 ${Number(task.kept_count || 0)} · 已清理 ${Number(task.succeeded || 0)} · 跳过 ${Number(task.skipped_groups || 0)}${Number(task.failed_groups || 0) ? ` · 失败组 ${Number(task.failed_groups || 0)}` : ''}`);
+      return;
+    }
     tell(`${task.operation || '批量任务'}：${materialBatchTaskText(task)} ${processed}/${total}${failed ? `，失败 ${failed}` : ''}${cleaning}`);
   }
 
@@ -93,6 +97,9 @@ export function installMaterialBatchRuntime({projectId, currentPageIds, selected
         } else {
           stopPolling(id);
           await refresh?.();
+          if (task.material_integrity_plan_id && typeof window.invalidateMaterialIntegrityGovernance47 === 'function') {
+            await window.invalidateMaterialIntegrityGovernance47(task);
+          }
           if (foreground && task.operation === 'AI_ANNOTATE' && task.review_required && typeof window.reviewAiLabel427 === 'function') {
             await window.reviewAiLabel427(task.task_id);
           }
@@ -178,7 +185,7 @@ export function installMaterialBatchRuntime({projectId, currentPageIds, selected
   window.stopMaterialBatchPolling62 = taskId => stopPolling(taskId);
 
   const runtime = Object.freeze({
-    build: 'material-batch-runtime-422403',
+    build: 'material-batch-runtime-422405',
     poll,
     resume,
     stop: stopPolling,

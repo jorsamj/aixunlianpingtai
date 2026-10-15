@@ -29,3 +29,24 @@ test('material audit paginates all issue groups and visibly discloses scan failu
   assert.ok(app.includes('加载更多问题组'));
   assert.ok(app.includes('素材审计未完全核验'));
 });
+
+test('global duplicate governance previews a server-frozen plan before durable execution', () => {
+  assert.match(app, /previewMaterialIntegrityGovernance47/);
+  assert.match(app, /\/dedup-plans/);
+  assert.match(app, /previewMaterialIntegrityGovernance47\('SAFE_ALL'\)/);
+  assert.match(app, /previewMaterialIntegrityGovernance47\('SELECTED_GROUPS'\)/);
+  assert.match(app, /confirmation_credential/);
+  assert.match(app, /executeMaterialIntegrityGovernance47/);
+  assert.match(app, /MaterialBatchRuntime62\?\.poll\?\.\(task\.task_id\)/);
+  assert.doesNotMatch(app, /dedup-plans[\s\S]{0,300}image_ids/);
+});
+
+test('annotation conflicts use an explicit keeper decision instead of direct bulk deletion', () => {
+  const start = app.indexOf('window.keepMaterialIntegrity47=');
+  const end = app.indexOf('const BATCH414_PAGE_SIZE', start);
+  assert.ok(start >= 0 && end > start);
+  const owner = app.slice(start, end);
+  assert.match(owner, /previewMaterialIntegrityGovernance47\('MANUAL_GROUPS'/);
+  assert.match(owner, /manualDecisions/);
+  assert.doesNotMatch(owner, /runMaterialBatch62/);
+});

@@ -466,3 +466,9 @@ same SHA + different GT
 - 唯一 `TrainingSubmitRuntime` 原阶段映射为三段可信 UI；慢请求显示无虚假百分比的反馈层，快速请求不强制播放完整动画。
 - 成功仍依赖正式任务响应；POST 断线按 planned Task ID 回查，无法确认时阻止重复提交。失败不清空用户配置。
 - Node 968、Python 69、Chrome 1 均通过；四种目标视口和 reduced-motion 已验证。VERSION 42.24.356 不变，未 push/merge/deploy。
+
+## 2026-10-15｜素材全局去重治理收口
+
+- 复用 Full Audit + 既有 `DELETE_INDEX` MaterialBatch/Worker，新增后端完整范围冻结计划；前端仅展示统计、最多 20 组推荐和二次确认，不传全量待删 ID。
+- 只自动处理 SHA256 与正式标注摘要均一致的安全组；冲突组人工指定 keeper，异常/扫描失败/多重历史引用组跳过。执行和 Worker 删除前重复校验 revision、内容、标注、keeper 与历史/活动引用。
+- 删除边界仍是素材索引及对应正式标注；共享对象、标签字典、任务历史不删。Node 970/970、Python 11/11 + 19/19、Chrome 1/1；501 删除与 120 组跨分页通过。VERSION 42.24.356，CI/生产未验证，未 push/merge/deploy。

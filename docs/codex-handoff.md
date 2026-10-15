@@ -5492,3 +5492,10 @@ GitHub 当前没有 CI status，不能把“测试代码已写”表述成“已
 - `TrainingSubmitRuntime` 唯一 Owner 保持不变，真实阶段合并为三步可读状态；慢请求展示同层反馈，快请求仅按钮 Loading。
 - 成功只认正式 Task ID 与队列状态；网络未知会先回查同一 Task ID，查不清则提示核对并禁止盲重试。失败保留全部训练草稿。
 - Node 968/968、Python 69/69、Real Chrome 1/1；1920/1440/1366/375 与 reduced-motion 通过。VERSION 42.24.356，未 push/merge/deploy。
+
+## 2026-10-15｜重复与异常素材治理交接
+
+- Full Audit 后可按全项目、所选组或单组人工 keeper 生成服务端冻结计划；浏览器不再负责推导或提交实际删除 ID。计划冻结 revision、SHA256、正式标注摘要及每组 KEEP/DELETE 决策，并要求一次性确认凭证。
+- 同图同标注才可自动建议；同图不同标注必须人工选择，异常、未核验和多重历史引用均 fail closed。训练/转换历史、活动任务、Snapshot、算法/模型/评测记录受保护，读不到历史时阻止计划。
+- 执行沿用 `DELETE_INDEX`、现有 selection/Worker/重试/取消/进度；入队与逐项删除均重验身份和引用。只删索引及对应正式标注，不删共享物理对象。治理终态会失效相关分页、训练、标签与质量缓存。
+- 本地通过：Python 11/11 + 19/19、Node 970/970、Real Chrome 1/1；包含 501 删除、120 组分页、幂等、错误凭证、引用保护和 keeper 漂移。VERSION 42.24.356；CI、生产 OSS/历史数据为 NOT VERIFIED，未 push/merge/deploy。

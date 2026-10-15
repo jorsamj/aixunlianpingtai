@@ -3025,3 +3025,10 @@ Current code candidate is VERSION `42.24.300`. Formal Ground Truth cannot commit
 - 复用 `TrainingSubmitRuntime` 的真实阶段，合并展示为配置、素材、提交三步；没有第二提交 Owner、第二 API 或模拟业务进度。
 - 慢创建显示当前弹窗内反馈层，快创建避免闪屏。正式任务身份校验后才展示入队成功；失败保持草稿。网络结果未知时按预生成 Task ID 回查，仍未知则禁止盲目重试。
 - 缓存标识仅更新受影响入口；正式 VERSION 仍为 `42.24.356`。Node 968/968、Python 69/69、Chrome 1/1，本地截图覆盖创建中/成功/失败；CI 与生产为 NOT VERIFIED。
+
+## 2026-10-15｜重复与异常素材治理交接
+
+- 现有 Full Audit 增加服务端冻结计划和二次确认：完整范围在后端遍历，不依赖前端首 100 组或浏览器 Image ID。计划记录素材/标注 revision、SHA256、正式标注摘要、keeper、删除项和跳过原因。
+- 自动治理只处理同图同标注且无异常的重复组；冲突组须查看真实图片/GT 后人工选择 keeper。历史训练/转换、活动输入任务、Snapshot、算法/模型/评测引用受保护；同组多重保护、扫描失败或来源不可核验时整组跳过。
+- 执行复用唯一 `DELETE_INDEX` MaterialBatch。入队前全量重验，Worker 启动和逐项删除前再验 keeper、删除项及新增引用；共享物理源文件不删除。终态沿用现有轮询器并失效相关素材、训练、标签和质量缓存。
+- 验证：治理 Python 11/11、MaterialBatch 相关回归 19/19、Node 970/970、Real Chrome 1/1；覆盖 5→1、501 删除、120 组分页、凭证/幂等、历史保护与排队后 keeper 漂移。正式 VERSION 仍为 42.24.356；未 push、merge main 或部署，CI/生产 OSS 为 NOT VERIFIED。
