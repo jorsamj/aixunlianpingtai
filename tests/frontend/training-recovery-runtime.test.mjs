@@ -741,3 +741,21 @@ test('recovery workflow guard follows the real runtime cache marker', async()=>{
   assert.match(workflow,new RegExp(`training-recovery-runtime\\.js\\?v=${marker[1]}`));
   assert.doesNotMatch(workflow,/grep -F -n -E/,'timer guard must use one grep matcher mode');
 });
+
+test('training detail stays a centered modal and refreshes without replacing its subtree', async () => {
+  const {readFileSync} = await import('node:fs');
+  const source = readFileSync(new URL('../../static/modules/training-recovery-runtime.js', import.meta.url), 'utf8');
+  const styles = readFileSync(new URL('../../static/styles.css', import.meta.url), 'utf8');
+
+  assert.doesNotMatch(source, /oldDialog\.replaceChildren/);
+  assert.match(source, /patchTrainingDetailDom/);
+  assert.match(source, /previouslyFocusedElement/);
+  assert.match(source, /event\.key === 'Escape'/);
+  assert.match(styles, /\.training-recovery-dialog\{width:min\(1180px,calc\(100vw - 40px\)\)/);
+  assert.doesNotMatch(styles, /\.training-recovery-dialog\{width:100vw;max-width:100vw;height:100dvh/);
+  assert.match(styles, /\.training-recovery-overlay\.is-closing/);
+  assert.match(
+    styles,
+    /@media\(prefers-reduced-motion:reduce\)\{[^}]*\.training-recovery-overlay,\.training-recovery-dialog/,
+  );
+});

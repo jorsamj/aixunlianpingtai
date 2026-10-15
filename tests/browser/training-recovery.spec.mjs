@@ -15,7 +15,7 @@ test('failed final validation exposes backend-approved checkpoint recovery and r
   await page.evaluate(() => window.setPage('训练任务'));
   await expect(page.locator('.train428-page')).toBeVisible({timeout: 10_000});
   await expect.poll(async () => page.evaluate(() => window.TrainingRecoveryRuntime?.build || null))
-    .toBe('training-recovery-runtime-4226380');
+    .toBe('training-recovery-runtime-4226381');
   await expect.poll(async () => page.evaluate(() => window.TrainingTaskRuntime?.build || null))
     .toMatch(/^training-task-runtime-/);
 
@@ -231,6 +231,14 @@ test('successful training detail never presents completion text as an error', as
   await dialog.getByRole('button', {name: '立即刷新'}).click();
   await expect(dialog).toHaveAttribute('data-identity-probe', 'overlay-stable');
   await expect(dialogShell).toHaveAttribute('data-identity-probe', 'dialog-stable');
+  const tabGeometry = await curveTab.evaluate(element => ({
+    width: element.getBoundingClientRect().width,
+    height: element.getBoundingClientRect().height,
+    color: getComputedStyle(element).color,
+  }));
+  expect(tabGeometry.width).toBeGreaterThan(70);
+  expect(tabGeometry.height).toBeGreaterThanOrEqual(40);
+  expect(tabGeometry.color).not.toBe('rgba(0, 0, 0, 0)');
 
   for(const [width,height] of [[1920,1080],[1440,900],[1366,768],[375,812]]){
     await page.setViewportSize({width,height});
@@ -250,6 +258,92 @@ test('successful training detail never presents completion text as an error', as
   }
 
   expect(pageErrors).toEqual([]);
+});
+
+test('running training detail shows frozen resource truth, closes with Escape, and restores focus', async ({page}, testInfo) => {
+  await page.goto('/');
+  await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
+  await expect.poll(
+    () => page.evaluate(() => typeof window.setPage === 'function' && typeof state !== 'undefined' && state.uiReady === true),
+    {timeout: 15_000},
+  ).toBe(true);
+  await page.evaluate(() => window.setPage('训练任务'));
+  const projectId = await page.evaluate(() => state.project?.id);
+  const encoded = encodeURIComponent(projectId);
+  const taskId = 'job-running-resource-truth';
+  const job = {
+    id: taskId,
+    task_id: taskId,
+    status: 'running',
+    task_status: 'RUNNING',
+    task_stage: 'training',
+    progress_percent: 18,
+    current_epoch: 3,
+    total_epochs: 80,
+    current_batch: 21,
+    total_batches: 103,
+    elapsed_seconds: 95,
+    eta_seconds: 2400,
+    asset_algorithm_name: '道路病害检测',
+    task_name: 'A800 自动资源训练',
+    created_at: '2026-10-15T12:00:00Z',
+    started_at: '2026-10-15T12:01:00Z',
+    requested_resources: {resource_strategy: 'auto', resource_profile: 'performance', batch: 75, workers: 11, precision: 'fp16', cache: false},
+    resolved_resources: {
+      resource_strategy: 'auto', resource_profile: 'performance', resolved_batch: 64, resolved_workers: 6,
+      resolved_precision: 'fp16', resolved_cache: false, host_memory_source: 'cgroup_v2',
+      available_ram_bytes: 20 * 1024 ** 3, host_memory_budget_bytes: 14 * 1024 ** 3,
+      estimated_host_memory_bytes: 12 * 1024 ** 3, cgroup_memory_limit_bytes: 31 * 1024 ** 3,
+      host_memory_prefetch_factor: 2, reasons: ['Execution-node host memory joint budget'],
+    },
+    runtime_resources: {runtime_batch: 64, runtime_workers: 6, runtime_cache: false, actual_precision: 'fp16'},
+    runtime_metrics: {latest: {
+      sampled_at: '2026-10-15T12:02:30Z', gpu_utilization: 81, gpu_memory_percent: 62,
+      cpu_percent: 45, memory_percent: 70, io_wait_percent: 2,
+      process_tree_memory_bytes: 9 * 1024 ** 3, process_tree_peak_memory_bytes: 10 * 1024 ** 3,
+      process_tree_count: 8, process_tree_memory_measure: 'uss',
+    }},
+  };
+  await page.route(`**/api/projects/${encoded}/jobs`, route => route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify([job])}));
+  await page.route(`**/api/projects/${encoded}/jobs/${taskId}*`, route => route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify(job)}));
+  await page.route(`**/api/projects/${encoded}/jobs/${taskId}/log`, route => route.fulfill({status: 200, contentType: 'text/plain', body: 'Epoch 3/80'}));
+
+  await page.locator('#refreshBtn').click();
+  await page.evaluate(() => window.setTrainTab428?.('active'));
+  const detailButton = page.locator(`[data-job-id="${taskId}"]`).getByRole('button', {name: '详情'});
+  await detailButton.click();
+  const dialog = page.locator('[data-training-recovery-overlay]');
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText('偏好 75');
+  await dialog.getByRole('tab', {name: '训练资源', exact: true}).click();
+  await expect(dialog).toContainText('12.00 GB / 14.00 GB');
+  await expect(dialog).toContainText('9.00 GB · 峰值 10.00 GB');
+  await expect(dialog).not.toContainText('mAP50 0.0%');
+  await page.setViewportSize({width: 1440, height: 900});
+  await page.waitForTimeout(240);
+  const runningTabs = await dialog.locator('[data-training-tab]').evaluateAll(elements => elements.map(element => ({
+    text: element.textContent?.trim(),
+    width: element.getBoundingClientRect().width,
+    height: element.getBoundingClientRect().height,
+    color: getComputedStyle(element).color,
+    display: getComputedStyle(element).display,
+    visibility: getComputedStyle(element).visibility,
+  })));
+  expect(runningTabs.map(tab => tab.text)).toEqual(['训练曲线', '训练资源', '数据与配置', '日志与诊断']);
+  expect(runningTabs.every(tab => tab.width > 70 && tab.height >= 40)).toBe(true);
+  expect(runningTabs.every(tab => tab.display !== 'none' && tab.visibility === 'visible')).toBe(true);
+  expect(runningTabs.every(tab => tab.color !== 'rgba(0, 0, 0, 0)')).toBe(true);
+  await page.screenshot({path: path.resolve(process.env.CODEX_VISUAL_EVIDENCE_DIR || testInfo.outputPath('visuals'), 'detail-running-1440.png')});
+  await page.keyboard.press('Escape');
+  // Reopening during the 190ms exit transition must cancel the stale removal
+  // timer instead of deleting the newly rendered detail dialog.
+  await detailButton.evaluate(button => button.click());
+  await expect(page.locator('[data-training-recovery-overlay]')).toBeVisible();
+  await page.waitForTimeout(240);
+  await expect(page.locator('[data-training-recovery-overlay]')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.locator('[data-training-recovery-overlay]')).toBeHidden();
+  await expect(detailButton).toBeFocused();
 });
 
 test('failed SIGKILL detail shows backend uncertainty, actions, and no false recovery', async ({page}, testInfo) => {
@@ -341,6 +435,7 @@ test('failed SIGKILL detail shows backend uncertainty, actions, and no false rec
   await expect(dialog.locator('[data-training-failure-technical]')).not.toHaveAttribute('open', '');
 
   await page.setViewportSize({width: 1366, height: 768});
+  await page.waitForTimeout(240);
   const screenshotPath = path.resolve(
     process.env.CODEX_VISUAL_EVIDENCE_DIR || testInfo.outputPath('visuals'),
     'training-failure-diagnosis-1366x768.png',

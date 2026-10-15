@@ -532,3 +532,10 @@ Resource Discovery SQLite 仍保持 **CODE-LEVEL CLOSED / production soak OPEN**
 - 仅调整失败态展示：提交中/成功仍使用阻断层；可重试失败改为弹窗内联提示且不拦截配置；网络结果不确定仍由 `TrainingSubmitRuntime` 禁用盲目重试。样式缓存键更新为 `42.25.379`，正式 VERSION 不变。
 - 同一 Chrome 用例先稳定 RED，修复后单例 `1/1`、CI 完整 Chrome `12/12`、Node `970/970`、语法与 diff check 均通过；等待新提交远端 CI 终态。
 - 新 HEAD `3718807f` 的 36 个运行中 35 个成功；Frontend Runtime Stabilization 暴露失败提示越出长表单视口，以及工作流仍校验旧 MaterialBatch build `422403`。失败提示保持视口内、无遮罩且点击穿透，守卫同步到实际 `422405`；同时为两个启动夹具补齐权威就绪等待，不放宽产品断言。styles 缓存键随本次 CSS 修复更新为 `42.25.380`。完整 Frontend Chrome `84/84`、Training Create Chrome `12/12`、Node `970/970` 已通过，待修复提交远端复验。
+
+## 2026-10-15｜自动资源决议 OOM 防护与训练详情弹窗（LOCAL VERIFIED / GPU UAT OPEN）
+
+- Auto 资源决议改为读取实际 Worker 节点 host/cgroup v2 可用内存，并按 Batch、Workers、Prefetch、imgsz、Precision、Cache 和并发任务联合估算；先收敛 Workers 再收敛 Batch。Manual 超预算直接拒绝，预启动只复核冻结结果，资源漂移时失败而不静默改参。
+- 运行指标记录任务/节点、host/cgroup 与进程树当前/峰值内存；优先累加 USS/PSS，拿不到时只记录根进程 RSS，禁止父子进程共享页重复计数。Kernel 同时窗其他 PID 的 OOM 仅标记疑似并发事件，不冒充当前任务确诊。
+- 训练详情继续由唯一 `TrainingRecoveryRuntime` 管理：桌面居中 1180px/94vw、内部滚动、固定头尾，移动端保留 6px 页面语境；局部 DOM patch 保持 Tab/滚动状态，支持 Esc、焦点恢复、快速重开和 reduced-motion，并显示 requested/resolved/runtime 与 host/cgroup/进程树证据。
+- 新鲜本地证据：Node `971/971`；关键 Python `99 passed, 1 Linux-only skipped`；Real Chrome `4/4`，覆盖 1920×1080、1440×900、1366×768、375×812。正式 `VERSION.txt=42.24.356` 未改；真实 A800/GPU、Linux systemd journal 权限、生产 cgroup/OSS 与 GitHub CI 均为 `NOT VERIFIED`，未 push、merge main 或部署。

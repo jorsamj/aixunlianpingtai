@@ -5505,3 +5505,10 @@ GitHub 当前没有 CI status，不能把“测试代码已写”表述成“已
 - 首轮远端 Chrome 的配置错误场景证明 `training-submit-failed` 遮罩会阻断后续编辑。修复后普通失败为内联非阻断反馈；提交中、成功以及未知 POST 的安全合同未放宽。
 - 同一失败用例 RED 后通过，完整 Chrome 12/12、Node 970/970。仅 styles 缓存标识升至 42.25.379，正式 VERSION 保持 42.24.356；新 CI 待验证。
 - `3718807f` 的 36 个运行中 35 个成功。Frontend 唯一失败的两个真实原因（长表单失败提示越出视口、守卫仍锁定 MaterialBatch 旧 build `422403`）均已最小修复；两个启动测试仅增加权威就绪等待，styles 缓存键为 `42.25.380`。新鲜本地证据：Frontend Chrome 84/84、Training Create Chrome 12/12、Node 970/970；正式 VERSION 仍为 42.24.356，待修复提交远端复验。
+
+## 2026-10-15｜自动资源决议与训练详情弹窗交接
+
+- Auto 在执行 Worker 内按 host/cgroup v2、Batch、Workers、Prefetch、imgsz、有效精度、Cache 与并发联合决议；Manual 不安全即失败。启动 Trainer 前只读复核冻结 host/GPU 预算，不做隐式降档。
+- 指标按任务/节点记录 host/cgroup 和进程树当前/峰值，USS/PSS 去重；无法取得时仅根 RSS。其他 PID 的 OOM 不归因当前任务。
+- `TrainingRecoveryRuntime` 仍是唯一详情 Owner；居中弹窗、内部滚动、原位刷新、四 Tab、Esc/焦点/快速重开/reduced-motion 已由四档 Chrome 验证，并呈现 requested/resolved/runtime 与资源证据。
+- 本地证据：Node 971/971、Python 99 passed / 1 Linux-only skipped、Chrome 4/4。VERSION 42.24.356 未改；A800/GPU、Linux journal 权限、生产与 CI 为 NOT VERIFIED，未 push/merge/deploy。

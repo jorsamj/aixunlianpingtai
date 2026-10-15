@@ -3039,3 +3039,10 @@ Current code candidate is VERSION `42.24.300`. Formal Ground Truth cannot commit
 - 最小修复只把失败态改为弹窗内联非阻断提示，提交中/成功遮罩和未知 POST 禁止盲重试保持不变；样式缓存为 `42.25.379`，VERSION 仍为 `42.24.356`。
 - 原失败测试 RED 后 GREEN，完整 Chrome `12/12`、Node `970/970` 通过；待新 HEAD 远端 CI 验证。
 - `3718807f` 的 36 个运行已结束：35 成功，唯一 Frontend 失败来自长表单失败提示越出视口和 CI 仍锁定旧 MaterialBatch build `422403`。现已保持失败提示视口可见、无阻断遮罩并允许点击穿透，守卫同步真实 `422405`；两个启动测试补充权威就绪等待，styles 缓存键为 `42.25.380`。完整 Frontend Chrome `84/84`、Training Create Chrome `12/12`、Node `970/970` 本地通过，待修复提交远端复验。
+
+## 2026-10-15｜自动资源决议与训练详情交接
+
+- Auto 在实际 Worker 节点读取 host/cgroup v2 余量，以 Batch×Workers×Prefetch×imgsz×Precision×Cache×并发联合预算；Manual 不安全即拒绝。Trainer/DataLoader 启动前再次只读校验冻结的 host/GPU 合同，资源漂移时失败且不改参。
+- 训练指标新增任务/节点、host/cgroup、进程树当前/峰值；USS/PSS 可累加，RSS 只取根进程。其他 PID 同时间窗 OOM 只作为未归因疑似事件，当前 PID/生命周期或 cgroup delta 不匹配时不得确诊。
+- 唯一训练详情 Owner 保持 `TrainingRecoveryRuntime`；桌面居中弹窗、移动端留边、内部滚动和固定头尾通过四档真实 Chrome 验收。刷新采用原位 patch，不重置 Tab/滚动；Esc、焦点恢复、快速重开与 reduced-motion 有回归覆盖。
+- 本地：Node 971/971、关键 Python 99 passed / 1 Linux-only skipped、Chrome 4/4。VERSION 42.24.356 不变；A800/GPU、Linux journal 权限、生产环境和 GitHub CI 未验证，未 push/merge/deploy。

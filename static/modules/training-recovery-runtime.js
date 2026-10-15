@@ -62,6 +62,38 @@ function bytesText(value) {
   return `${bytes} B`;
 }
 
+function patchTrainingDetailDom(current, next) {
+  if (!current || !next || current.nodeType !== next.nodeType || current.nodeName !== next.nodeName) return false;
+  if (current.nodeType === 3 || current.nodeType === 8) {
+    if (current.nodeValue !== next.nodeValue) current.nodeValue = next.nodeValue;
+    return true;
+  }
+  const currentAttributes = Array.from(current.attributes || []);
+  const nextAttributes = Array.from(next.attributes || []);
+  for (const attribute of currentAttributes) {
+    if (attribute.name === 'data-identity-probe') continue;
+    if (!next.hasAttribute?.(attribute.name)) current.removeAttribute?.(attribute.name);
+  }
+  for (const attribute of nextAttributes) {
+    if (current.getAttribute?.(attribute.name) !== attribute.value) {
+      current.setAttribute?.(attribute.name, attribute.value);
+    }
+  }
+  const currentChildren = Array.from(current.childNodes || []);
+  const nextChildren = Array.from(next.childNodes || []);
+  const length = Math.max(currentChildren.length, nextChildren.length);
+  for (let index = 0; index < length; index += 1) {
+    const oldChild = currentChildren[index];
+    const nextChild = nextChildren[index];
+    if (!nextChild) oldChild?.remove?.();
+    else if (!oldChild) current.appendChild?.(nextChild.cloneNode?.(true) || nextChild);
+    else if (!patchTrainingDetailDom(oldChild, nextChild)) {
+      oldChild.replaceWith?.(nextChild.cloneNode?.(true) || nextChild);
+    }
+  }
+  return true;
+}
+
 function failureStageLabel(stage) {
   return ({
     admission: '任务受理',
@@ -255,9 +287,12 @@ export function trainingRecoveryDetailModel(job = {}, recovery = {}) {
   const terminal = !flags.active;
   const intervalSamples = Array.isArray(runtimeMetrics.samples) && Number.isFinite(intervalStart) && (!terminal || Number.isFinite(intervalEnd))
     ? runtimeMetrics.samples.filter(sample=>{const at=Date.parse(sample.sampled_at||'');return Number.isFinite(at)&&at>=intervalStart&&(!Number.isFinite(intervalEnd)||at<=intervalEnd);}) : [];
-  const latestRuntime = terminal ? Object.fromEntries(['gpu_utilization','gpu_memory_percent','cpu_percent','memory_percent','io_wait_percent'].map(key=>{
+  const latestRuntime = terminal ? Object.fromEntries(['gpu_utilization','gpu_memory_percent','cpu_percent','memory_percent','io_wait_percent','process_tree_memory_bytes','process_tree_peak_memory_bytes','process_tree_count'].map(key=>{
     const values=intervalSamples.map(sample=>metricNumber(sample[key])).filter(value=>value!==null);
-    return [key,values.length?values.reduce((sum,value)=>sum+value,0)/values.length:null];
+    if (!values.length) return [key, null];
+    if (key === 'process_tree_peak_memory_bytes') return [key, Math.max(...values)];
+    if (key === 'process_tree_count') return [key, values.at(-1)];
+    return [key,values.reduce((sum,value)=>sum+value,0)/values.length];
   })) : runtimeMetrics?.latest && typeof runtimeMetrics.latest === 'object' ? runtimeMetrics.latest : {};
   return {
     taskId: String(job?.id || job?.task_id || recovery?.task_id || ''),
@@ -368,10 +403,20 @@ export function trainingRecoveryDetailModel(job = {}, recovery = {}) {
     cpuPercent: metricNumber(latestRuntime.cpu_percent),
     memoryPercent: metricNumber(latestRuntime.memory_percent),
     ioWaitPercent: metricNumber(latestRuntime.io_wait_percent),
+    processTreeMemory: metricNumber(latestRuntime.process_tree_memory_bytes),
+    processTreePeakMemory: metricNumber(latestRuntime.process_tree_peak_memory_bytes),
+    processTreeCount: metricNumber(latestRuntime.process_tree_count),
+    processTreeMemoryMeasure: String(runtimeMetrics?.latest?.process_tree_memory_measure || '').trim(),
     imagesPerSecond: metricNumber(runtimeMetrics.images_per_second) ?? metricNumber(progress.images_per_second),
     latestEpochDuration: metricNumber(runtimeMetrics.epoch_duration_seconds),
     resourceReasons: Array.isArray(resolved?.reasons) ? resolved.reasons.map(String) : [],
     resourceAdjustments: Array.isArray(resolved?.adjustments) ? resolved.adjustments.map(String) : [],
+    hostMemorySource: String(resolved.host_memory_source || '').trim(),
+    hostMemoryAvailable: numberOrNull(resolved.available_ram_bytes),
+    hostMemoryBudget: numberOrNull(resolved.host_memory_budget_bytes),
+    hostMemoryEstimate: numberOrNull(resolved.estimated_host_memory_bytes),
+    cgroupMemoryLimit: numberOrNull(resolved.cgroup_memory_limit_bytes),
+    prefetchFactor: numberOrNull(resolved.host_memory_prefetch_factor),
     createdAt: job?.created_at || null,
     startedAt: job?.started_at || null,
     finishedAt: job?.finished_at || null,
@@ -453,7 +498,7 @@ function detailHtml(job, recovery, log = '', inputIssues = null, activeTab = 'cu
     <div class="training-recovery-overlay" data-training-recovery-overlay>
       <div class="training-recovery-dialog" role="dialog" aria-modal="true" aria-label="训练任务详情">
         <div class="training-recovery-head">
-          <div class="training-recovery-title"><span class="training-recovery-status ${esc(model.statusKind)}">${esc(model.statusKind === 'success' ? '成功' : model.statusKind === 'partial' ? '完成 / 警告' : model.statusKind === 'recoverable' ? '可恢复失败' : model.statusKind === 'failed' ? '失败' : '运行中')}</span><div><h3>${esc(statusTitle)}</h3><span>${esc(model.algorithmName)} · ${esc(model.taskName)} · ${esc(model.taskId)}</span></div></div>
+          <div class="training-recovery-title"><span class="training-recovery-status ${esc(model.statusKind)}">${esc(model.statusKind === 'success' ? '成功' : model.statusKind === 'partial' ? '完成 / 警告' : model.statusKind === 'recoverable' ? '可恢复失败' : model.statusKind === 'failed' ? '失败' : '运行中')}</span><div><h3>${esc(statusTitle)}</h3><span>${esc(model.algorithmName)} · ${esc(model.taskName)}</span><small>任务 ID ${esc(model.taskId)} · ${esc(model.startedAt ? `开始 ${model.startedAt}` : model.createdAt ? `创建 ${model.createdAt}` : '时间未上报')}</small></div><button class="btn mini training-recovery-copy" data-training-copy-task="${esc(model.taskId)}" aria-label="复制任务 ID">复制 ID</button></div>
           <button class="btn mini" data-training-recovery-close>关闭</button>
         </div>
         <div class="training-recovery-body">
@@ -487,13 +532,16 @@ function detailHtml(job, recovery, log = '', inputIssues = null, activeTab = 'cu
             <section id="training-panel-resources" class="training-recovery-panel" data-training-panel="resources" role="tabpanel" aria-labelledby="training-tab-resources">
               <header><h4>运行证据</h4><span>${esc(model.resourceTimeBasis)} · ${model.resourceSampleCount} 个区间采样</span></header>
               <div class="training-recovery-kv"><span>Task Status</span><b>${esc(model.canonicalStatus || model.taskStatus || '-')}</b></div>
-              <div class="training-recovery-kv"><span>执行节点</span><b>${esc(model.workerId || '-')}</b></div>
-              <div class="training-recovery-kv"><span>GPU UUID</span><b title="${esc(model.gpuUuid || '')}">${esc(model.gpuUuid || '-')}</b></div>
+              <div class="training-recovery-kv"><span>执行节点</span><b>${esc(model.workerId || '未上报')}</b></div>
+              <div class="training-recovery-kv"><span>GPU UUID</span><b title="${esc(model.gpuUuid || '')}">${esc(model.gpuUuid || '未上报')}</b></div>
               <div class="training-recovery-kv"><span>训练结果</span><b>${esc(model.trainingOutcome || '-')}</b></div>
               <div class="training-recovery-kv"><span>完成原因</span><b>${esc(model.completionReason || '-')}</b></div>
               <div class="training-recovery-kv"><span>运行诊断</span><b>${esc(model.diagnosticCode || '-')}</b></div>
-              <div class="training-recovery-kv"><span>GPU 利用率 / 显存</span><b>${esc(`${model.gpuUtilization == null ? '-' : model.gpuUtilization.toFixed(1) + '%'} / ${model.gpuMemoryPercent == null ? '-' : model.gpuMemoryPercent.toFixed(1) + '%'}`)}</b></div>
-              <div class="training-recovery-kv"><span>CPU / 系统内存 / I/O Wait</span><b>${esc(`${model.cpuPercent == null ? '-' : model.cpuPercent.toFixed(1) + '%'} / ${model.memoryPercent == null ? '-' : model.memoryPercent.toFixed(1) + '%'} / ${model.ioWaitPercent == null ? '-' : model.ioWaitPercent.toFixed(1) + '%'}`)}</b></div>
+              <div class="training-recovery-kv"><span>GPU 利用率 / 显存</span><b>${esc(`${model.gpuUtilization == null ? '未上报' : model.gpuUtilization.toFixed(1) + '%'} / ${model.gpuMemoryPercent == null ? '未上报' : model.gpuMemoryPercent.toFixed(1) + '%'}`)}</b></div>
+              <div class="training-recovery-kv"><span>CPU / 系统内存 / I/O Wait</span><b>${esc(`${model.cpuPercent == null ? '未上报' : model.cpuPercent.toFixed(1) + '%'} / ${model.memoryPercent == null ? '未上报' : model.memoryPercent.toFixed(1) + '%'} / ${model.ioWaitPercent == null ? '未上报' : model.ioWaitPercent.toFixed(1) + '%'}`)}</b></div>
+              <div class="training-recovery-kv"><span>宿主内存决议</span><b>${esc(model.hostMemoryBudget == null ? '未上报' : `${bytesText(model.hostMemoryEstimate)} / ${bytesText(model.hostMemoryBudget)} · ${model.hostMemorySource || 'host'} · Prefetch ${model.prefetchFactor ?? '-'}`)}</b></div>
+              <div class="training-recovery-kv"><span>cgroup 限额</span><b>${esc(model.cgroupMemoryLimit == null ? '未上报' : bytesText(model.cgroupMemoryLimit))}</b></div>
+              <div class="training-recovery-kv"><span>训练进程树内存</span><b>${esc(model.processTreeMemory == null ? '未上报' : `${bytesText(model.processTreeMemory)} · 峰值 ${bytesText(model.processTreePeakMemory)} · ${model.processTreeCount ?? '-'} 进程 · ${model.processTreeMemoryMeasure || '已去重口径'}`)}</b></div>
               <div class="training-recovery-kv"><span>实时吞吐 / Epoch</span><b>${esc(`${model.imagesPerSecond == null ? '-' : model.imagesPerSecond.toFixed(1) + ' img/s'} / ${model.latestEpochDuration == null ? '-' : model.latestEpochDuration.toFixed(1) + 's'}`)}</b></div>
               <div class="training-recovery-kv"><span>错误类型</span><b>${esc(model.errorType || '-')}</b></div>
             </section>
@@ -548,6 +596,8 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
   const detailHistoryCache = new Map();
   const detailHistoryLoaded = new Set();
   let detailHistoryProjectId = '';
+  let previouslyFocusedElement = null;
+  let detailCloseTimer = null;
   const DETAIL_POLL_KEY = 'training-task-detail';
   const DETAIL_HISTORY_LIMIT = 8;
 
@@ -581,9 +631,28 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
     window.PollRegistryRuntime?.clear?.(DETAIL_POLL_KEY);
   }
 
-  function closeDetail() {
+  function closeDetail({immediate = false} = {}) {
     stopDetailTimer();
-    doc?.querySelector?.('[data-training-recovery-overlay]')?.remove?.();
+    const overlay = doc?.querySelector?.('[data-training-recovery-overlay]');
+    const restoreFocus = () => {
+      if (previouslyFocusedElement?.isConnected !== false) previouslyFocusedElement?.focus?.();
+      previouslyFocusedElement = null;
+    };
+    if (detailCloseTimer !== null) {
+      window.clearTimeout?.(detailCloseTimer);
+      detailCloseTimer = null;
+    }
+    if (overlay && !immediate && !window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches) {
+      overlay.classList?.add?.('is-closing');
+      detailCloseTimer = window.setTimeout?.(() => {
+        detailCloseTimer = null;
+        overlay.remove?.();
+        restoreFocus();
+      }, 190);
+    } else {
+      overlay?.remove?.();
+      restoreFocus();
+    }
     openTaskId = '';
     openProjectId = '';
     openFocus = 'overview';
@@ -723,12 +792,14 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
     let overlay = nextOverlay;
     let dialog = nextDialog;
     if (old && oldDialog && nextDialog) {
-      oldDialog.replaceChildren(...Array.from(nextDialog.childNodes));
+      if (!patchTrainingDetailDom(oldDialog, nextDialog)) oldDialog.innerHTML = nextDialog.innerHTML;
       overlay = old;
       dialog = oldDialog;
     } else {
       old?.remove?.();
       doc.body?.appendChild(nextOverlay);
+      nextOverlay.classList?.add?.('is-opening');
+      window.requestAnimationFrame?.(() => nextOverlay.classList?.remove?.('is-opening'));
     }
     if (dialog) dialog.scrollTop = scrollTop;
     const logs = overlay.querySelector?.('[data-training-tech-log]');
@@ -817,6 +888,12 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
       notify?.('训练任务不存在或列表尚未刷新');
       return false;
     }
+    if (detailCloseTimer !== null) {
+      window.clearTimeout?.(detailCloseTimer);
+      detailCloseTimer = null;
+      doc?.querySelector?.('[data-training-recovery-overlay]')?.classList?.remove?.('is-closing');
+    }
+    if (!openTaskId && !previouslyFocusedElement) previouslyFocusedElement = doc?.activeElement || null;
     openTaskId = String(taskId);
     openProjectId = String(projectId?.() || '');
     if (detailHistoryProjectId && detailHistoryProjectId !== openProjectId) {
@@ -829,6 +906,7 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
     const hydratedJob = mergeDetailHistory(job, openProjectId, openTaskId, false);
     openSnapshot = {job: hydratedJob, recovery: job?.recovery || {}, log: '', inputIssues: null};
     renderOpenDetail(hydratedJob, openSnapshot.recovery, '', openFocus);
+    doc?.querySelector?.('[data-training-recovery-close]')?.focus?.({preventScroll: true});
     try {
       await refreshOpenDetail({includeRecovery: FAILED_TASK_STATUSES.has(canonicalTaskStatus(job))});
       return true;
@@ -905,6 +983,16 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
   }
 
   const onClick = event => {
+    const copyTask = event.target?.closest?.('[data-training-copy-task]');
+    if (copyTask) {
+      event.preventDefault();
+      const value = String(copyTask.dataset.trainingCopyTask || '');
+      void window.navigator?.clipboard?.writeText?.(value).then?.(
+        () => notify?.('任务 ID 已复制'),
+        () => notify?.(`任务 ID：${value}`),
+      );
+      return;
+    }
     const tab = event.target?.closest?.('[data-training-tab]');
     if (tab && openSnapshot) {
       activateTrainingTab(tab.dataset.trainingTab);
@@ -972,6 +1060,11 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
     }
   };
   const onKeydown = event => {
+    if (event.key === 'Escape' && openTaskId) {
+      event.preventDefault();
+      closeDetail();
+      return;
+    }
     const tab = event.target?.closest?.('[data-training-tab]');
     if (!tab) return;
     const tabs = Array.from(tab.closest?.('[role="tablist"]')?.querySelectorAll?.('[data-training-tab]') || []);
@@ -999,7 +1092,7 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
   };
 
   const runtime = {
-    build: 'training-recovery-runtime-4226380',
+    build: 'training-recovery-runtime-4226381',
     hydrateJobs,
     openDetail,
     refreshOpenDetail,
@@ -1007,7 +1100,7 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
     recover,
     closeDetail,
     destroy() {
-      closeDetail();
+      closeDetail({immediate: true});
       detailHistoryCache.clear();
       detailHistoryLoaded.clear();
       doc?.removeEventListener?.('click', onClick);
