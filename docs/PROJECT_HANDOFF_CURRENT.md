@@ -3052,3 +3052,4 @@ Current code candidate is VERSION `42.24.300`. Formal Ground Truth cannot commit
 - 首轮 Training Recovery Guard 真实日志显示：旧守卫仍要求已移除的整弹窗 `replaceChildren`；Ubuntu Chrome 下标签宽度为 68px。现改为守卫原位 patch 且禁止旧整树替换，并显式保障标签最小宽度 80px。
 - 既有 Remote Training Runtime 增加 Ubuntu 具名证据步骤，直接核验真实 cgroup v2 内存文件与 `/proc/self/fd` 测试，不另建 CI。Windows 本地为 Python 99 passed / 2 Linux-only skipped、Node 971/971、Chrome 5/5。
 - 样式缓存键 42.25.382，VERSION 42.24.356 未改；修复提交远端复验和 A800 实机仍待完成。
+- `39157527` 的 Ubuntu 首跑在专项步骤前发现夹具未冻结新 cgroup-aware snapshot，31 GiB 人工环境被 Runner 容器限制污染。现仅补齐完整 snapshot fixture；真实 Linux 专项仍直接读系统 cgroup 文件。

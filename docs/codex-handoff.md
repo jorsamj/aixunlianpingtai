@@ -5518,3 +5518,4 @@ GitHub 当前没有 CI status，不能把“测试代码已写”表述成“已
 - 首轮远端失败仅定位到旧 `replaceChildren` 静态守卫与 Ubuntu Chrome 68px 标签宽度；现要求原位 patch、禁止旧整树替换，并显式设置 80px 标签最小宽度。
 - Remote Training Runtime 原工作流新增 Ubuntu 具名 cgroup v2 与 `/proc/self/fd` 证据步骤。Windows 本地 Python 99 passed / 2 Linux-only skipped、Node 971/971、Chrome 5/5。
 - 样式缓存键 42.25.382，VERSION 42.24.356 不变；最终远端 CI 和真实 A800/GPU 仍待核验。
+- `39157527` Ubuntu 首跑确认一处测试环境泄漏：受控 host fixture 未冻结新增 cgroup snapshot。现补齐完整 snapshot mock，真实 Linux cgroup `/proc` 验证仍单独读取 Runner 文件。

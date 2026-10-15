@@ -87,6 +87,21 @@ def _context(**overrides):
 def _patch_host(monkeypatch):
     monkeypatch.setattr(training_metrics, "host_resources", lambda: (16, 31 * GIB))
     monkeypatch.setattr(
+        training_metrics,
+        "host_resource_snapshot",
+        lambda: {
+            "cpu_cores": 16,
+            "host_available_bytes": 31 * GIB,
+            "host_total_bytes": 64 * GIB,
+            "cgroup_limit_bytes": None,
+            "cgroup_current_bytes": None,
+            "cgroup_headroom_bytes": None,
+            "effective_available_bytes": 31 * GIB,
+            "memory_source": "host",
+            "sampled_at": "2026-10-15T00:00:00+00:00",
+        },
+    )
+    monkeypatch.setattr(
         training_metrics.shutil,
         "disk_usage",
         lambda _path: SimpleNamespace(total=200 * GIB, used=20 * GIB, free=180 * GIB),
@@ -504,7 +519,21 @@ def test_auto_small_dataset_keeps_multiple_optimizer_updates(monkeypatch):
 
 def test_auto_workers_are_bounded_by_actual_host_ram(monkeypatch):
     _patch_host(monkeypatch)
-    monkeypatch.setattr(training_metrics, "host_resources", lambda: (16, 8 * GIB))
+    monkeypatch.setattr(
+        training_metrics,
+        "host_resource_snapshot",
+        lambda: {
+            "cpu_cores": 16,
+            "host_available_bytes": 8 * GIB,
+            "host_total_bytes": 64 * GIB,
+            "cgroup_limit_bytes": None,
+            "cgroup_current_bytes": None,
+            "cgroup_headroom_bytes": None,
+            "effective_available_bytes": 8 * GIB,
+            "memory_source": "host",
+            "sampled_at": "2026-10-15T00:00:00+00:00",
+        },
+    )
     resolved = training_metrics.resolve_resources(
         _request(batch=-1, workers=0, resource_profile="performance"),
         _context(),
