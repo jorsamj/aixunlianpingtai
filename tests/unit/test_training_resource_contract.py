@@ -216,7 +216,7 @@ def test_auto_workers_use_actual_reservations_not_installed_gpu_count(monkeypatc
     if training_metrics.os.name == "nt":
         # Windows intentionally caps Ultralytics loader workers at 4 for runtime safety.
         assert single_job["resolved_workers"] == 4
-        assert second_parallel_job["resolved_workers"] == 4
+        assert 0 <= second_parallel_job["resolved_workers"] < single_job["resolved_workers"]
     else:
         assert single_job["resolved_workers"] == 12
         assert second_parallel_job["resolved_workers"] == 7
@@ -510,3 +510,144 @@ def test_auto_workers_are_bounded_by_actual_host_ram(monkeypatch):
         _Torch(_Cuda()),
     )
     assert resolved["resolved_workers"] <= 2
+
+
+def test_real_a800_incident_shape_is_jointly_bounded_by_host_memory(monkeypatch):
+    """31 GiB must not repeat batch=75/workers=11 host-OOM conditions."""
+    _patch_host(monkeypatch)
+    resolved = training_metrics.resolve_resources(
+        _request(
+            batch=75,
+            workers=11,
+            imgsz=800,
+            resource_profile="performance",
+            precision="fp16",
+        ),
+        _context(train_image_count=8171, decoded_dataset_bytes=18 * GIB),
+        _Model(),
+        _Torch(_Cuda(free=int(30 * GIB), total=80 * GIB)),
+    )
+
+    assert not (
+        resolved["resolved_batch"] >= 75
+        and resolved["resolved_workers"] >= 11
+    )
+    assert resolved["estimated_host_memory_bytes"] <= resolved["host_memory_budget_bytes"]
+    assert resolved["host_memory_prefetch_factor"] >= 2
+    assert any("host memory" in reason.lower() for reason in resolved["reasons"])
+
+
+def test_auto_host_budget_scales_with_real_ram_instead_of_fixed_workers(monkeypatch):
+    workers = []
+    for ram_gib in (31, 64, 128, 256):
+        resolved = training_metrics.plan_host_training_resources(
+            _request(batch=75, workers=11, imgsz=800, resource_profile="performance"),
+            _context(train_image_count=8171, decoded_dataset_bytes=18 * GIB),
+            profile="performance",
+            batch=75,
+            workers=12,
+            cache=False,
+            snapshot={"effective_available_bytes": ram_gib * GIB},
+        )
+        workers.append(resolved["workers"])
+        assert resolved["estimated_bytes"] <= resolved["budget_bytes"]
+
+    assert workers == sorted(workers)
+    assert workers[0] < workers[-1]
+    assert len(set(workers)) >= 2
+
+
+def test_cgroup_headroom_is_stricter_than_host_available_memory(monkeypatch):
+    _patch_host(monkeypatch)
+    monkeypatch.setattr(
+        training_metrics,
+        "host_resource_snapshot",
+        lambda: {
+            "cpu_cores": 32,
+            "host_available_bytes": 128 * GIB,
+            "host_total_bytes": 128 * GIB,
+            "cgroup_limit_bytes": 32 * GIB,
+            "cgroup_current_bytes": 12 * GIB,
+            "cgroup_headroom_bytes": 20 * GIB,
+            "effective_available_bytes": 20 * GIB,
+            "memory_source": "cgroup_v2",
+            "sampled_at": "2026-10-15T00:00:00+00:00",
+        },
+    )
+    resolved = training_metrics.resolve_resources(
+        _request(batch=75, workers=11, imgsz=800, resource_profile="performance"),
+        _context(train_image_count=8171, decoded_dataset_bytes=18 * GIB),
+        _Model(),
+        _Torch(_Cuda(free=int(30 * GIB), total=80 * GIB)),
+    )
+
+    assert resolved["host_memory_source"] == "cgroup_v2"
+    assert resolved["available_ram_bytes"] == 20 * GIB
+    assert resolved["cgroup_memory_limit_bytes"] == 32 * GIB
+    assert resolved["estimated_host_memory_bytes"] <= resolved["host_memory_budget_bytes"]
+
+
+def test_prestart_validation_rejects_resource_drift_without_mutating_frozen_plan(monkeypatch):
+    frozen = {
+        "resolved_batch": 64,
+        "resolved_workers": 6,
+        "estimated_host_memory_bytes": 18 * GIB,
+        "host_memory_budget_bytes": 22 * GIB,
+        "host_memory_remaining_required_bytes": 14 * GIB,
+        "sampled_at": "2026-10-15T00:00:00+00:00",
+    }
+    monkeypatch.setattr(
+        training_metrics,
+        "host_resource_snapshot",
+        lambda: {
+            "cpu_cores": 16,
+            "host_available_bytes": 8 * GIB,
+            "host_total_bytes": 31 * GIB,
+            "cgroup_limit_bytes": None,
+            "cgroup_current_bytes": None,
+            "cgroup_headroom_bytes": None,
+            "effective_available_bytes": 8 * GIB,
+            "memory_source": "host",
+            "sampled_at": "2026-10-15T00:00:10+00:00",
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="RESOURCE_HOST_MEMORY_CHANGED"):
+        training_metrics.validate_frozen_resource_budget(frozen)
+    assert frozen["resolved_batch"] == 64
+    assert frozen["resolved_workers"] == 6
+
+
+def test_prestart_gpu_validation_rejects_changed_free_memory_without_downshifting():
+    frozen = {
+        "assigned_device": "cuda:0",
+        "estimated_gpu_memory_bytes": 12 * GIB,
+        "resolved_batch": 64,
+        "resolved_workers": 4,
+    }
+    torch = _Torch(_Cuda(free=10 * GIB, total=80 * GIB))
+
+    with pytest.raises(RuntimeError, match="RESOURCE_GPU_MEMORY_CHANGED"):
+        training_metrics.validate_frozen_gpu_budget(frozen, torch)
+    assert frozen["resolved_batch"] == 64
+    assert frozen["resolved_workers"] == 4
+
+
+def test_host_budget_uses_resolved_fp32_truth_when_precision_is_auto(monkeypatch):
+    _patch_host(monkeypatch)
+    context = _context(train_image_count=128, decoded_dataset_bytes=2 * GIB)
+    automatic = training_metrics.resolve_resources(
+        _request(device="cpu", precision="auto", batch=8, workers=0),
+        context,
+        _Model(),
+        _Torch(_Cuda()),
+    )
+    explicit = training_metrics.resolve_resources(
+        _request(device="cpu", precision="fp32", batch=8, workers=0),
+        context,
+        _Model(),
+        _Torch(_Cuda()),
+    )
+
+    assert automatic["resolved_precision"] == "fp32"
+    assert automatic["estimated_host_memory_bytes"] == explicit["estimated_host_memory_bytes"]

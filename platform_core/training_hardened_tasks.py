@@ -160,12 +160,16 @@ def _collect_linux_kernel_oom_evidence(
         r"(?:Out of memory:\s+)?Killed process\s+(?P<pid>\d+)\b",
         flags=re.IGNORECASE,
     )
+    concurrent_oom = None
     for line in str(getattr(completed, "stdout", "") or "").splitlines():
         match = pattern.search(line)
-        if not match or int(match.group("pid")) != pid:
+        if not match:
             continue
         observed_at = float(match.group("at"))
-        if since <= observed_at <= until:
+        killed_pid = int(match.group("pid"))
+        if not since <= observed_at <= until:
+            continue
+        if killed_pid == pid:
             return {
                 "type": "linux_kernel_oom_kill",
                 "source": "linux_kernel_journal",
@@ -174,7 +178,15 @@ def _collect_linux_kernel_oom_evidence(
                 "observed_at_epoch": observed_at,
                 "correlated": True,
             }
-    return None
+        concurrent_oom = {
+            "type": "linux_kernel_oom_concurrent",
+            "source": "linux_kernel_journal",
+            "process_pid": pid,
+            "process_create_time": created_at,
+            "observed_at_epoch": observed_at,
+            "correlated": False,
+        }
+    return concurrent_oom
 
 
 def _epoch_evidence(job: Mapping[str, Any], argv: Sequence[str], log_tail: str) -> tuple[int, int]:

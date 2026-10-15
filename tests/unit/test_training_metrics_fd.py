@@ -246,3 +246,51 @@ def test_resource_sample_records_system_memory_without_guessing(tmp_path):
     result = training_metrics.read_metrics(metrics.path, include_history=True)
     assert result["latest"]["memory_percent"] == 61.5
     assert result["samples"][-1]["memory_percent"] == 61.5
+
+
+def test_resource_sample_sums_unique_process_memory_not_shared_rss(tmp_path, monkeypatch):
+    class Process:
+        def __init__(self, uss, children=()):
+            self.uss = uss
+            self._children = list(children)
+
+        def children(self, recursive=False):
+            return list(self._children)
+
+        def memory_full_info(self):
+            return SimpleNamespace(uss=self.uss, pss=self.uss + 10)
+
+        def memory_info(self):
+            return SimpleNamespace(rss=2 * 1024 ** 3)
+
+    child = Process(200 * 1024 ** 2)
+    root = Process(500 * 1024 ** 2, [child])
+    metrics = training_metrics.TrainingMetrics(
+        tmp_path / "process-tree.sqlite3",
+        resolved_resources(node_id="node-a"),
+        interval=999,
+        task_id="train-a",
+    )
+    metrics.psutil = SimpleNamespace(
+        Process=lambda _pid: root,
+        cpu_percent=lambda: 42.0,
+        cpu_times_percent=lambda: SimpleNamespace(iowait=3.0),
+        virtual_memory=lambda: SimpleNamespace(percent=61.5),
+    )
+    monkeypatch.setattr(training_metrics, "host_resource_snapshot", lambda: {
+        "effective_available_bytes": 10 * 1024 ** 3,
+        "host_total_bytes": 31 * 1024 ** 3,
+        "cgroup_limit_bytes": 20 * 1024 ** 3,
+        "cgroup_current_bytes": 10 * 1024 ** 3,
+        "memory_source": "cgroup_v2",
+    })
+
+    metrics.sample()
+    latest = training_metrics.read_metrics(metrics.path)["latest"]
+    assert latest["process_tree_memory_bytes"] == 700 * 1024 ** 2
+    assert latest["process_tree_peak_memory_bytes"] == 700 * 1024 ** 2
+    assert latest["process_tree_memory_measure"] == "uss"
+    assert latest["process_tree_count"] == 2
+    assert latest["task_id"] == "train-a"
+    assert latest["node_id"] == "node-a"
+    assert latest["cgroup_memory_limit_bytes"] == 20 * 1024 ** 3

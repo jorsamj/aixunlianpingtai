@@ -929,7 +929,11 @@ def main():
         import ultralytics
         import torch
         from ultralytics import YOLO
-        from platform_core.training_metrics import TrainingMetrics
+        from platform_core.training_metrics import (
+            TrainingMetrics,
+            validate_frozen_gpu_budget,
+            validate_frozen_resource_budget,
+        )
         publish_startup_stage(job_file, "validating_runtime_device", "校验训练运行设备", 22)
         runtime_device = "cuda:0" if gpu_index is not None else "cpu"
         allocation = torch.empty(1, device=runtime_device)
@@ -973,6 +977,28 @@ def main():
             raise RuntimeError(
                 "RESOURCE_PREPARE_REQUIRED: Trainer precision does not match frozen resource contract"
             )
+        prestart_resources = validate_frozen_resource_budget(resolved)
+        prestart_gpu = validate_frozen_gpu_budget(
+            resolved,
+            torch,
+            runtime_index=0,
+        )
+        update_job(
+            job_file,
+            prestart_resource_validation={
+                "validated_at": prestart_resources.get("sampled_at"),
+                "memory_source": prestart_resources.get("memory_source"),
+                "effective_available_bytes": prestart_resources.get("effective_available_bytes"),
+                "cgroup_limit_bytes": prestart_resources.get("cgroup_limit_bytes"),
+                "cgroup_current_bytes": prestart_resources.get("cgroup_current_bytes"),
+                "required_bytes": resolved.get("host_memory_remaining_required_bytes"),
+                "frozen_batch": resolved.get("resolved_batch"),
+                "frozen_workers": resolved.get("resolved_workers"),
+                "gpu_free_bytes": (prestart_gpu or {}).get("free_bytes"),
+                "gpu_total_bytes": (prestart_gpu or {}).get("total_bytes"),
+                "gpu_required_bytes": (prestart_gpu or {}).get("required_bytes"),
+            },
+        )
         publish_startup_stage(job_file, "resources_ready", "使用后台已核验的 Batch / Workers / Precision / Cache", 25)
         train_args.update(batch=resolved["resolved_batch"], workers=resolved["resolved_workers"], cache=resolved["resolved_cache"])
         publish_startup_stage(job_file, "amp_offline_preflight", "检查 Worker 本地 AMP 与 CUDA FP16 能力", 25.5)
@@ -998,8 +1024,12 @@ def main():
         print(json.dumps(recorded_train_params(train_args), ensure_ascii=False, indent=2, default=str), flush=True)
         evidence["effective_args"] = recorded_train_params(train_args)
         update_job(job_file, resolved_resources=resolved, actual_train_params=recorded_train_params(train_args), device_evidence=evidence)
-        telemetry = TrainingMetrics(args.metrics_db or job_file.parent / "training-metrics.sqlite3", resolved,
-                                    gpu_uuid=resource_context.get("gpu_uuid"))
+        telemetry = TrainingMetrics(
+            args.metrics_db or job_file.parent / "training-metrics.sqlite3",
+            resolved,
+            gpu_uuid=resource_context.get("gpu_uuid"),
+            task_id=read_json(job_file, {}).get("id"),
+        )
         telemetry.start()
         publish_startup_stage(job_file, "initializing_trainer", "初始化训练器与数据加载器", 26)
         gate_events=[]

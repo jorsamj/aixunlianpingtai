@@ -195,7 +195,7 @@ def test_kernel_oom_capture_requires_exact_pid_and_task_time_window():
     }
 
 
-def test_kernel_oom_capture_rejects_unrelated_or_out_of_window_events():
+def test_kernel_oom_capture_marks_concurrent_event_as_uncorrelated():
     identity = SimpleNamespace(pid=501141, create_time=1791904700.0)
     journal = SimpleNamespace(
         returncode=0,
@@ -212,7 +212,22 @@ def test_kernel_oom_capture_rejects_unrelated_or_out_of_window_events():
         platform_name="posix",
     )
 
-    assert evidence is None
+    assert evidence == {
+        "type": "linux_kernel_oom_concurrent",
+        "source": "linux_kernel_journal",
+        "process_pid": 501141,
+        "process_create_time": 1791904700.0,
+        "observed_at_epoch": 1791904782.0,
+        "correlated": False,
+    }
+
+
+def test_worker_prestart_guard_validates_frozen_resources_before_dataloader():
+    source = Path(__file__).parents[2] / "train_worker.py"
+    text = source.read_text(encoding="utf-8")
+    guard = text.index("validate_frozen_resource_budget(resolved)")
+    dataloader = text.index('publish_startup_stage(job_file, "initializing_trainer"')
+    assert guard < dataloader
 
 
 def test_training_loop_checkpoint_ready_before_final_validation_finishes(tmp_path):

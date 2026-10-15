@@ -232,6 +232,13 @@ def _failure_diagnosis(
 
     host_oom = _correlated_system_evidence(failure, "linux_kernel_oom_kill")
     cgroup_oom = _correlated_system_evidence(failure, "cgroup_memory_oom")
+    concurrent_host_oom = next((
+        item for item in failure.get("system_evidence") or ()
+        if isinstance(item, Mapping)
+        and str(item.get("type") or "") == "linux_kernel_oom_concurrent"
+        and item.get("correlated") is False
+        and str(item.get("source") or "") == "linux_kernel_journal"
+    ), None)
     if host_oom is not None:
         return {
             "code": "HOST_MEMORY_OOM",
@@ -338,6 +345,17 @@ def _failure_diagnosis(
             "evidence": ["训练错误记录到内存分配失败。", checkpoint_message],
             "possible_causes": ["服务器可用内存不足", "服务或容器内存限制", "其他进程抢占内存"],
             "suggestions": ["检查系统 OOM、Worker 和任务执行日志。", "确认内存资源后重新创建训练任务。"],
+            "checkpoint_message": checkpoint_message,
+        }
+    if concurrent_host_oom is not None and (process_signal == "SIGKILL" or process_returncode == -9):
+        return {
+            "code": "HOST_OOM_CONCURRENT_UNATTRIBUTED",
+            "certainty": "suspected",
+            "title": "训练被强制终止：同时间窗存在主机 OOM",
+            "summary": "Kernel 在本任务运行时间窗内终止了其他进程，但没有证据证明当前训练进程就是 OOM 目标。",
+            "evidence": ["同一时间窗检测到其他进程的 Kernel OOM Kill。", "该事件未与当前任务 PID/生命周期匹配。", checkpoint_message],
+            "possible_causes": ["其他并发任务耗尽主机内存", "当前训练被其他机制终止", "服务或容器资源限制"],
+            "suggestions": ["核对同节点并发任务和 Kernel 日志。", "确认任务 PID/cgroup 证据后再判断是否为本任务 OOM。"],
             "checkpoint_message": checkpoint_message,
         }
     if process_signal == "SIGKILL" or process_returncode == -9:

@@ -295,6 +295,33 @@ def test_sigkill_without_correlated_oom_evidence_keeps_cause_unknown():
     assert "服务器内存不足" not in truth["diagnosis"]["summary"]
 
 
+def test_concurrent_kernel_oom_is_reported_but_never_confirmed_for_this_task():
+    task = failed_training_task(task_id="train-concurrent-oom")
+    task.error = "TRAINING_PROCESS_FAILED: training process terminated by SIGKILL"
+    failure = {
+        "task_id": task.task_id,
+        "project_id": task.project_id,
+        "failure_stage": "training_process",
+        "process_returncode": -9,
+        "process_signal": "SIGKILL",
+        "process_pid": 88,
+        "process_create_time": 100.0,
+        "system_evidence": [{
+            "type": "linux_kernel_oom_concurrent",
+            "source": "linux_kernel_journal",
+            "process_pid": 88,
+            "process_create_time": 100.0,
+            "observed_at_epoch": 120.0,
+            "correlated": False,
+        }],
+    }
+
+    diagnosis = training_recovery_truth(task, FakeArtifacts(failure))["diagnosis"]
+    assert diagnosis["code"] == "HOST_OOM_CONCURRENT_UNATTRIBUTED"
+    assert diagnosis["certainty"] == "suspected"
+    assert "没有证据证明" in diagnosis["summary"]
+
+
 def test_cgroup_oom_requires_task_lifetime_counter_delta_not_cumulative_value():
     task = failed_training_task(task_id="train-cgroup")
     base_failure = {
