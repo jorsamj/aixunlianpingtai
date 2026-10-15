@@ -531,3 +531,4 @@ Resource Discovery SQLite 仍保持 **CODE-LEVEL CLOSED / production soak OPEN**
 - 首次远端 `418b6ed3` 的 Training Create First Open 真实 Chrome 暴露：普通配置校验失败沿用了提交中遮罩，`training-submit-failed` 会永久拦截后续配置点击。失败状态与业务提交本身无误，但违背“失败后保留配置并继续修正”。
 - 仅调整失败态展示：提交中/成功仍使用阻断层；可重试失败改为弹窗内联提示且不拦截配置；网络结果不确定仍由 `TrainingSubmitRuntime` 禁用盲目重试。样式缓存键更新为 `42.25.379`，正式 VERSION 不变。
 - 同一 Chrome 用例先稳定 RED，修复后单例 `1/1`、CI 完整 Chrome `12/12`、Node `970/970`、语法与 diff check 均通过；等待新提交远端 CI 终态。
+- 新 HEAD `3718807f` 的 36 个运行中 35 个成功；Frontend Runtime Stabilization 暴露失败提示越出长表单视口，以及工作流仍校验旧 MaterialBatch build `422403`。失败提示保持视口内、无遮罩且点击穿透，守卫同步到实际 `422405`；同时为两个启动夹具补齐权威就绪等待，不放宽产品断言。styles 缓存键随本次 CSS 修复更新为 `42.25.380`。完整 Frontend Chrome `84/84`、Training Create Chrome `12/12`、Node `970/970` 已通过，待修复提交远端复验。

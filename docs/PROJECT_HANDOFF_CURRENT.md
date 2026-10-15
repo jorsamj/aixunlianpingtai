@@ -3038,3 +3038,4 @@ Current code candidate is VERSION `42.24.300`. Formal Ground Truth cannot commit
 - `418b6ed3` 的 Training Create First Open run `38711917017` 唯一失败来自可重试配置错误后的反馈遮罩持续拦截指针；真实提交合同、Task ID 与静态合同均未失败。
 - 最小修复只把失败态改为弹窗内联非阻断提示，提交中/成功遮罩和未知 POST 禁止盲重试保持不变；样式缓存为 `42.25.379`，VERSION 仍为 `42.24.356`。
 - 原失败测试 RED 后 GREEN，完整 Chrome `12/12`、Node `970/970` 通过；待新 HEAD 远端 CI 验证。
+- `3718807f` 的 36 个运行已结束：35 成功，唯一 Frontend 失败来自长表单失败提示越出视口和 CI 仍锁定旧 MaterialBatch build `422403`。现已保持失败提示视口可见、无阻断遮罩并允许点击穿透，守卫同步真实 `422405`；两个启动测试补充权威就绪等待，styles 缓存键为 `42.25.380`。完整 Frontend Chrome `84/84`、Training Create Chrome `12/12`、Node `970/970` 本地通过，待修复提交远端复验。

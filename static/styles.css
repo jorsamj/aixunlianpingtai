@@ -1426,3 +1426,4 @@ radial-gradient(circle at 1px 1px,rgba(148,163,184,.14) 1px,transparent 0) 0 0/1
 
 /* Keep creation feedback centered in the visible viewport even when the long form is scrolled. */
 .train429-create .train-submit-feedback{position:fixed;z-index:1101;width:min(520px,calc(100vw - 32px))}
+.train429-create.training-submit-failed .train-submit-feedback{position:fixed;left:50%;top:50%;width:min(520px,calc(100vw - 32px));margin:0;transform:translate(-50%,-50%);pointer-events:none;animation:none}

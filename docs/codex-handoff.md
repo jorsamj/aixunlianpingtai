@@ -5504,3 +5504,4 @@ GitHub 当前没有 CI status，不能把“测试代码已写”表述成“已
 
 - 首轮远端 Chrome 的配置错误场景证明 `training-submit-failed` 遮罩会阻断后续编辑。修复后普通失败为内联非阻断反馈；提交中、成功以及未知 POST 的安全合同未放宽。
 - 同一失败用例 RED 后通过，完整 Chrome 12/12、Node 970/970。仅 styles 缓存标识升至 42.25.379，正式 VERSION 保持 42.24.356；新 CI 待验证。
+- `3718807f` 的 36 个运行中 35 个成功。Frontend 唯一失败的两个真实原因（长表单失败提示越出视口、守卫仍锁定 MaterialBatch 旧 build `422403`）均已最小修复；两个启动测试仅增加权威就绪等待，styles 缓存键为 `42.25.380`。新鲜本地证据：Frontend Chrome 84/84、Training Create Chrome 12/12、Node 970/970；正式 VERSION 仍为 42.24.356，待修复提交远端复验。

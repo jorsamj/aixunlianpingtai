@@ -477,3 +477,4 @@ same SHA + different GT
 
 - 远端真实 Chrome 发现配置校验错误后的失败遮罩会拦截继续编辑。失败态现改为内联非阻断提示；工作/成功遮罩与未知结果防重复提交合同不变。
 - 原用例 RED→GREEN，完整 Chrome 12/12、Node 970/970；styles 缓存键 42.25.379，VERSION 42.24.356，等待远端复验。
+- `3718807f` 共 36 个运行，35 成功；唯一 Frontend 失败已按真实日志修复：失败面板不再越出长表单视口，仍无遮罩并可点击穿透；MaterialBatch 守卫从旧 `422403` 同步到实际 `422405`；启动夹具等待权威就绪，styles 缓存键为 `42.25.380`。Frontend Chrome 84/84、Training Create Chrome 12/12、Node 970/970，待新远端 SHA 终态。
