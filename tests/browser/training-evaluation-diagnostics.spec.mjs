@@ -57,8 +57,10 @@ test('frozen evaluation diagnoses zero-TP class and previews real GT/FP/FN layer
   await expect(dialog.locator('.evaluation429-gallery')).toContainText('共 205 张问题图片');
   await expect(dialog.locator('.evaluation429-image-card').first()).toContainText('highest-severity.jpg');
   await expect(dialog.locator('.evaluation429-thumb img')).toHaveCount(2);
+  await expect(dialog.locator('.evaluation429-image-card').first())
+    .toHaveAttribute('data-eval-url', /evaluation\/images\/highest-severity\.jpg$/);
   await expect(dialog.locator('.evaluation429-image-card').first().locator('.evaluation429-thumb img'))
-    .toHaveAttribute('src', /evaluation\/images\/highest-severity\.jpg$/);
+    .toHaveAttribute('src', /^blob:/);
   await dialog.locator('.evaluation429-image-card').first().click();
   const preview = page.getByRole('dialog', {name: '问题图片核验'});
   await expect(preview).toBeVisible();
@@ -132,6 +134,82 @@ test('failed frozen-image preview hides stale GT and prediction overlays', async
 });
 
 
+test('gallery thumbnails share structured preview diagnostics and retry transient storage errors', async ({page}) => {
+  let transientReads = 0;
+  await page.route('**/evaluation/images/**', route => {
+    if (route.request().url().includes('transient.webp')) {
+      transientReads++;
+      if (transientReads === 1) return route.fulfill({
+        status: 503,
+        contentType: 'application/json',
+        body: JSON.stringify({detail: {
+          code: 'STORAGE_UNAVAILABLE',
+          message: 'storage unavailable',
+          retryable: true,
+          solution: '请稍后重试；持续失败时检查存储连接。',
+        }}),
+      });
+      return route.fulfill({
+        status: 200,
+        contentType: 'image/bmp',
+        headers: {
+          'X-Evaluation-Image-Format': 'BMP',
+          'X-Evaluation-Image-Width': '100',
+          'X-Evaluation-Image-Height': '80',
+          'X-Evaluation-Evidence-Source': 'bundle',
+        },
+        body: diagnosticImage(),
+      });
+    }
+    return route.fulfill({
+      status: 409,
+      contentType: 'application/json',
+      body: JSON.stringify({detail: {
+        code: 'IMAGE_HASH_MISMATCH',
+        message: 'hash mismatch',
+        retryable: false,
+        solution: '请恢复原始证据；无法恢复时需要重新评测。',
+      }}),
+    });
+  });
+  await page.goto('/');
+  await expect.poll(() => page.evaluate(() => Boolean(state?.uiReady && window.openVersionEvaluation429)), {timeout: 20000}).toBe(true);
+  await page.evaluate(() => {
+    const base = {
+      image_width: 100, image_height: 80, fp_count: 1, fn_count: 2,
+      fp_labels: ['helmet'], fn_labels: ['No_helmet'],
+      gt_boxes: [{box: [10, 10, 40, 45], label: 'No_helmet', matched: false}],
+      pred_boxes: [{box: [51, 10, 70, 30], label: 'helmet', matched: false, confidence: .8}],
+    };
+    state.algorithms = [{id: 'preview-diagnostics', name: '预览诊断', versions: [{
+      id: 'v1', version_name: 'V1', iteration_decision: {}, evaluation: {
+        status: 'succeeded', evaluation_id: 'd'.repeat(64), error_sample_count: 2,
+        error_samples: [
+          {...base, image: 'transient.webp', image_id: 'image-a'},
+          {...base, image: 'drift.jpg', image_id: 'image-b'},
+        ],
+      },
+    }]}];
+    window.openVersionEvaluation429('preview-diagnostics', 'v1');
+  });
+  const dialog = page.getByRole('dialog', {name: '独立评测'});
+  await dialog.getByRole('tab', {name: '错误样本', exact: true}).click();
+  const transient = dialog.locator('.evaluation429-image-card').filter({hasText: 'transient.webp'});
+  const permanent = dialog.locator('.evaluation429-image-card').filter({hasText: 'drift.jpg'});
+  await expect(transient).toContainText('存储连接异常，可重试');
+  await expect(transient.getByRole('button', {name: '重新加载'})).toBeVisible();
+  await expect(permanent).toContainText('图片与评测时内容不一致');
+  await expect(permanent.getByRole('button', {name: '重新加载'})).toBeHidden();
+  await transient.getByRole('button', {name: '重新加载'}).click();
+  await expect(transient.locator('img')).toBeVisible();
+  await expect(transient.locator('[data-eval-thumb-status]')).toBeHidden();
+  await expect(transient).toContainText('BMP · 100 × 80');
+  await expect(transient).toContainText('GT No_helmet');
+  await expect(transient).toContainText('预测 helmet');
+  expect(transientReads).toBe(2);
+});
+
+
 test('hard sample action queues one canonical annotation task without pretending review succeeded', async ({page}) => {
   let posted = null;
   await page.route('**/hard-sample-mining/eligible?*', route => route.fulfill({
@@ -154,6 +232,40 @@ test('hard sample action queues one canonical annotation task without pretending
   await page.getByRole('dialog',{name:'独立评测'}).getByRole('button',{name:'挖掘已有未标注素材'}).click();
   await expect.poll(()=>Boolean(posted)).toBe(true);
   expect(posted).toEqual({image_ids:['train-eligible-a','train-eligible-b'],source:'existing'});
+});
+
+test('20k evaluation loads only 24 page previews and fences late images across versions', async ({page}) => {
+  const requests=[];
+  let releaseOld;
+  const oldGate=new Promise(resolve=>{releaseOld=resolve;});
+  await page.route('**/evaluation/images/**',async route=>{
+    const url=route.request().url();requests.push(url);
+    if(url.includes('/versions/old/'))await oldGate;
+    await route.fulfill({status:200,contentType:'image/bmp',headers:{
+      'X-Evaluation-Image-Format':url.includes('/versions/old/')?'OLD':'BMP',
+      'X-Evaluation-Evidence-Source':'bundle',
+    },body:diagnosticImage()}).catch(()=>{});
+  });
+  await page.goto('/');
+  await expect.poll(()=>page.evaluate(()=>Boolean(state?.uiReady&&window.openVersionEvaluation429)),{timeout:20000}).toBe(true);
+  await page.evaluate(()=>{
+    const samples=Array.from({length:200},(_,i)=>({image:'same-'+i+'.bmp',image_id:'frozen-'+i,fp_count:1,fn_count:1,image_width:100,image_height:80}));
+    state.algorithms=[{id:'page-fence',name:'隔离验收',versions:['old','new'].map(id=>({id,version_name:id,evaluation:{status:'succeeded',evaluation_id:id,image_count:20000,error_sample_count:20000,error_samples:samples}}))}];
+    window.openVersionEvaluation429('page-fence','old');
+  });
+  expect(requests).toHaveLength(0);
+  await page.getByRole('dialog',{name:'独立评测'}).getByRole('tab',{name:'错误样本',exact:true}).click();
+  await expect.poll(()=>requests.length).toBe(24);
+  await page.evaluate(async()=>{await closeModal();window.openVersionEvaluation429('page-fence','new');});
+  const dialog=page.getByRole('dialog',{name:'独立评测'});
+  await dialog.getByRole('tab',{name:'错误样本',exact:true}).click();
+  await expect(dialog.locator('.evaluation429-thumb-ready')).toHaveCount(24);
+  releaseOld();
+  await expect.poll(()=>requests.length).toBe(48);
+  await expect(dialog).not.toContainText('OLD');
+  await expect(dialog.locator('.evaluation429-image-card').first()).toHaveAttribute('data-eval-url',/\/versions\/new\//);
+  await expect(dialog).toContainText('共 20000 张问题图片');
+  await expect(dialog.locator('[data-eval-preview-summary]')).toContainText('可预览 24');
 });
 
 test('quality workspaces preserve evidence, pagination, comparison and four responsive layouts', async ({page},testInfo) => {
@@ -236,6 +348,8 @@ test('quality workspaces preserve evidence, pagination, comparison and four resp
     const screenshotPath=path.resolve(process.env.CODEX_VISUAL_EVIDENCE_DIR||testInfo.outputPath('visuals'),'evaluation-'+width+'.png');
     await page.screenshot({path:screenshotPath});
     await dialog.getByRole('tab',{name:'错误样本',exact:true}).click();
+    await expect(dialog.locator('.evaluation429-thumb-ready')).toHaveCount(24);
+    await page.screenshot({path:path.resolve(path.dirname(screenshotPath),'gallery-'+width+'.png')});
     await dialog.locator('.evaluation429-image-card').first().click();
     const preview=page.getByRole('dialog',{name:'问题图片核验'});
     await expect(preview.locator('.evaluation429-stage img')).toBeVisible();

@@ -75,3 +75,25 @@
 - 来源入口：独立评测页一键筛选当前未标注素材（单次最多 100 张，按正式 Material ID）；普通图片上传弹窗按需选模型，上传入库成功后自动尝试排队，同一次上传请求的挖掘任务幂等。上传成功而挖掘失败须分开报告。
 - 已增加纯逻辑和 API 合同、Chrome 请求合同；尚未接 ZIP 导入完成后的自动排队、远端 Agent 的模型分发、定向增强与新旧同 Benchmark 续训验收，不宣称全链路 P1 完成。
 - P0 Actions 仍 queued；新 HEAD 全量 CI、GPU Worker 离线 PT、真实数据 1k/10k/20k、长时间 Worker 运行及手机现场浏览器为待验，严禁生产部署。
+
+## 2026-10-16｜历史评测图片恢复与可视化诊断
+
+- 根因一：训练 Bundle 将图片规范化为 `{image_id}.{ext}`，Snapshot v3 保存原素材 `stored_name`。早期评测问题样本没有持久化 `image_id`，预览接口在检查 Bundle manifest 前按 `stored_name` 拒绝，导致仍存在且可验证的评测字节被误报 `IMAGE_NOT_IN_SNAPSHOT`。
+- 修复只允许通过同一 Task Bundle 中的唯一 test member 恢复：Snapshot ID、manifest Image ID、Snapshot 源 SHA256、manifest source SHA256、评测字节 SHA256、实际响应字节和安全相对路径必须全部一致。文件名或 stem 单独永远不能成为身份依据；归一化评测字节丢失时仍禁止用原图替代。
+- 根因二：问题图片缩略图直接使用 `<img src>`，HTTP 错误响应中的结构化错误码无法被列表读取，只能统一显示“图片不可预览”。列表现与详情共用同一错误映射，通过受控 fetch/blob 读取当前页最多 24 张；离开错误样本 Tab、切版本、翻页或打开详情会取消旧请求。
+- JPEG、PNG、WebP、BMP 均以真实 Pillow 解码格式设置 Content-Type；解决 Windows 将 WebP 推断为 `application/octet-stream` 的兼容问题。响应只增加格式、宽高和 bundle/material 证据来源头，不泄露对象键、路径或凭据。
+- 卡片现在优先展示真实大缩略图、实际格式与宽高、GT 类别、预测类别、FP/FN 和预览状态。永久身份/哈希/证据缺失不提供重试；临时存储错误允许单图重试。详情继续复用同一弹窗和 GT/预测图层，图片失败时所有框保持隐藏。
+- `scripts/diagnose_evaluation_previews.py` 可在平台主机只读汇总 Snapshot/Bundle 可用性、错误码、可恢复数量和证据来源；不修改数据库、Snapshot、素材、标注、标签或历史指标，也不输出图片字节和存储路径。
+- 正式 `VERSION.txt=42.24.356` 不变；仅将 app/styles/main 缓存标识更新为 `42.25.384`。生产 OSS、历史归档完整性和 A800 现场数据仍需只读诊断，不能由隔离测试推断为已恢复。
+
+- 共享原有 8 项有界元数据缓存，增加 Bundle 按名称定位及历史素材名称投影，分别按文件 stat 和 Material revision 失效。20k manifest 结构测试：首次解析 127.03ms，24 次缓存定位 5.70ms，解析 1 次；20k Snapshot 的 24 次响应同样只解析 1 次。该数字不包含生产网络、大图传输或 OSS 延迟。
+- StorageManager 新增显式 `read_only=True`，预览读取禁止补写正式素材哈希/大小。EXIF 展示使用内存 PNG 派生保留原始像素网格、原格式和原 SHA256，不旋转冻结框、不重写正式证据。
+- 现场只读核验：在平台目录执行 `python -m scripts.diagnose_evaluation_previews --project-id ID --algorithm-id ID --version-id ID`。报告包含 HTTP 状态/错误码分布、Snapshot/Bundle 是否存在、验证成功来源、可重试和待恢复证据数量；“待恢复”不等于已经证明永久丢失。StorageManager 可以写现有可丢弃的内容缓存，但不会写正式业务记录。
+
+### 本地验收证据与边界
+
+- Windows / Python 3.12.7：评测 API、评分事实、StorageManager 定向回归 65 passed；Node 20 npm test 与 Node 24.19.0 显式文件模式均 971/971；真实 Chrome 原规格 7/7，含四视口、框几何、分页、失败原因、单图重试及跨版本迟到结果。
+- 扩大 storage 回归首跑 426 passed / 2 skipped / 1 failed。唯一失败为 `tests/unit/storage/test_yolo_import.py:168::test_yolo_text_identity_rejects_known_hash_change_with_same_size`：期待 `YoloImportError` 向外抛出，实际 `scan_annotations` 捕获该错误并记录 invalid/YOLO_SOURCE_CHANGED。相同 OS、Python、命令在独立干净 `1de328cce343265e3b32f19eb361ae45a5afa062` 工作树稳定复现相同 DID NOT RAISE；本轮未改该逻辑/测试，不将该失败计入通过。
+- 截图目录：`C:/Users/jorsam/.codex/visualizations/2026/10/16/evaluation-preview`，包含 gallery/image 在 1920、1440、1366、375 四视口的截图。灰色 BMP 和框为明确标注“验收夹具·非生产数据”的隔离样例，只证明加载、错误诊断和框坐标，不证明生产图片恢复。
+- fetch 成功核验远端仍为 ca10efd53fb65a78bd8871cdb5d33ad66db88be8；本轮基于本地 1de328cc 增量修改，正式 VERSION 未变。GitHub CI、Linux、真实 OSS/S3、生产历史证据完整性均未执行。
+- 修改文件：app.py、platform_core/storage/manager.py、static/app.js、static/styles.css、static/index.html、scripts/diagnose_evaluation_previews.py；API/StorageManager/Chrome/缓存版本测试；本方案、执行计划、AGENTS.md 与四份当前交接文档。

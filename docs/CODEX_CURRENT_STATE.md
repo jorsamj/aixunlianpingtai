@@ -2834,3 +2834,11 @@ VERSION `42.24.300` adds one project-scoped coordination fence between canonical
 - Existing Remote Training Runtime now has a named Ubuntu-only step that reads real cgroup-v2 `memory.max/memory.current` truth and executes the `/proc/self/fd` stability test. No second workflow was added.
 - Fresh local evidence: Node 971/971, focused Windows Python 99 passed / 2 Linux-only skipped, Real Chrome 5/5. CSS cache marker is 42.25.382; VERSION stays 42.24.356. Remote repair CI and A800/GPU UAT remain pending.
 - Repair SHA 39157527 exposed an obsolete Linux-only exact assertion before the named evidence step. Even with a fully frozen 31 GiB snapshot, the new joint Batch×Workers×Prefetch budget safely selects 8 rather than the old fixed 12. The test now proves GPU count independence, reservation-aware reduction and both plans staying within memory budget, without replacing 12 with another fixed number. The separate Linux test still reads real cgroup files.
+
+## 2026-10-16｜独立评测图片预览专项（LOCAL VERIFIED / PRODUCTION OPEN）
+
+- 历史无 Image ID 的规范化 Bundle 名通过 Snapshot、manifest Image ID、源 SHA256 和评测字节 SHA256 闭环恢复；同名冲突、归一化证据丢失和内容变化继续拒绝。
+- JPEG/PNG/WebP/BMP 按真实格式返回 MIME；EXIF 仅产生保留原哈希的内存展示派生，保持冻结像素坐标。StorageManager.read_only 禁止预览补写正式素材元数据。
+- 列表与详情统一错误码、单图重试和失败隐藏框；仅错误样本 Tab 当前页最多 24 张。Snapshot、Bundle 和历史素材名称投影复用原上限 8 的元数据缓存，文件身份/素材 Revision 变化时失效，响应逐次校验实际字节。
+- Chrome 覆盖四视口、24/20k 按页请求、跨版本迟到结果、错误原因与重试。生产历史对象、OSS/A800 仍为 NOT VERIFIED；现场只读命令：`python -m scripts.diagnose_evaluation_previews --project-id ID --algorithm-id ID --version-id ID`。
+- VERSION=42.24.356，静态入口缓存=42.25.384；保留先前本地 1de328cc，不推送、不部署、不改历史评测或 Snapshot。详细证据见 docs/EVALUATION_DIAGNOSTICS_P0_2026_10_12.md。

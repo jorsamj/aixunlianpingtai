@@ -10792,6 +10792,58 @@ def _evaluation_snapshot_identity_index(path: Path, snapshot_id: str):
     return result
 
 
+def _evaluation_bundle_identity_index(path: Path, snapshot_id: str):
+    """Share the bounded metadata cache; never cache files or provider state."""
+    try:
+        stat = path.stat()
+    except OSError:
+        return {}
+    key = (str(path.resolve()), 'bundle:' + snapshot_id, int(stat.st_mtime_ns), int(stat.st_size))
+    with _EVALUATION_SNAPSHOT_INDEX_LOCK:
+        cached = _EVALUATION_SNAPSHOT_INDEX_CACHE.get(key)
+        if cached is not None:
+            _EVALUATION_SNAPSHOT_INDEX_CACHE.move_to_end(key)
+            return cached
+    manifest = read_json(path, {})
+    if not isinstance(manifest, dict) or manifest.get('snapshot_id') != snapshot_id:
+        return {}
+    members = (manifest.get('splits') or {}).get('test', [])
+    if not isinstance(members, list) or len(members) > 30000:
+        return {}
+    by_name = {}
+    for row in members:
+        if isinstance(row, dict):
+            by_name.setdefault(Path(str(row.get('image_ref') or '')).name, []).append(dict(row))
+    result = {'snapshot_id': snapshot_id, 'by_name': by_name}
+    with _EVALUATION_SNAPSHOT_INDEX_LOCK:
+        for old_key in tuple(_EVALUATION_SNAPSHOT_INDEX_CACHE):
+            if old_key[0] == key[0] and old_key != key:
+                _EVALUATION_SNAPSHOT_INDEX_CACHE.pop(old_key, None)
+        _EVALUATION_SNAPSHOT_INDEX_CACHE[key] = result
+        while len(_EVALUATION_SNAPSHOT_INDEX_CACHE) > _EVALUATION_SNAPSHOT_INDEX_LIMIT:
+            _EVALUATION_SNAPSHOT_INDEX_CACHE.popitem(last=False)
+    return result
+
+
+def _evaluation_legacy_name_index(path: Path, repository, test_ids):
+    stat = path.stat()
+    key = (str(path.resolve()), 'legacy:' + str(repository.current_revision()), int(stat.st_mtime_ns), int(stat.st_size))
+    with _EVALUATION_SNAPSHOT_INDEX_LOCK:
+        cached = _EVALUATION_SNAPSHOT_INDEX_CACHE.get(key)
+        if cached is not None:
+            _EVALUATION_SNAPSHOT_INDEX_CACHE.move_to_end(key)
+            return cached
+    names = {}
+    for offset in range(0, len(test_ids), 500):
+        for row in repository.get_many(test_ids[offset:offset + 500]):
+            names.setdefault(str(row.get('stored_name') or ''), []).append(str(row['id']))
+    with _EVALUATION_SNAPSHOT_INDEX_LOCK:
+        _EVALUATION_SNAPSHOT_INDEX_CACHE[key] = names
+        while len(_EVALUATION_SNAPSHOT_INDEX_CACHE) > _EVALUATION_SNAPSHOT_INDEX_LIMIT:
+            _EVALUATION_SNAPSHOT_INDEX_CACHE.popitem(last=False)
+    return names
+
+
 @app.get("/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/evaluation/images/{image_name}")
 def evaluation_diagnostic_image_v1(project_id: str, algorithm_id: str, version_id: str, image_name: str):
     """Read-only frozen Test Split preview, never a source of training candidates.
@@ -10804,6 +10856,55 @@ def evaluation_diagnostic_image_v1(project_id: str, algorithm_id: str, version_i
             'code': code, 'message': message, 'retryable': retryable,
             'solution': '请稍后重试；持续失败时检查存储连接。' if retryable else '请恢复原始证据；无法恢复时需要重新评测。',
         })
+
+    def verified_image_response(candidate: Path, evidence_source: str, evidence_sha256: str):
+        media_types = {
+            'JPEG': 'image/jpeg',
+            'PNG': 'image/png',
+            'WEBP': 'image/webp',
+            'BMP': 'image/bmp',
+        }
+        try:
+            from PIL import Image
+            with Image.open(candidate) as decoded:
+                image_format = str(decoded.format or '').upper()
+                width, height = decoded.size
+                decoded.verify()
+            with Image.open(candidate) as decoded:
+                orientation = decoded.getexif().get(274, 1)
+        except (OSError, ValueError):
+            reject('IMAGE_DECODE_FAILED', '评测图片证据无法解码')
+        if image_format not in media_types or width <= 0 or height <= 0:
+            reject('IMAGE_DECODE_FAILED', '评测图片格式不受支持')
+        headers = {
+            'Cache-Control': 'private, no-store',
+            'X-Content-Type-Options': 'nosniff',
+            'X-Evaluation-Image-Format': image_format,
+            'X-Evaluation-Image-Width': str(width),
+            'X-Evaluation-Image-Height': str(height),
+            'X-Evaluation-Evidence-Source': evidence_source,
+            'X-Evaluation-Original-SHA256': evidence_sha256,
+        }
+        if orientation not in (None, 1):
+            # The scorer records Pillow's raw pixel grid. Strip orientation in
+            # an in-memory display derivative so browser auto-rotation cannot
+            # move boxes; the frozen file and its identity remain unchanged.
+            try:
+                with Image.open(candidate) as decoded:
+                    with decoded.convert('RGBA' if 'A' in decoded.getbands() else 'RGB') as display:
+                        output = BytesIO()
+                        display.save(output, format='PNG', exif=b'')
+            except (OSError, ValueError):
+                reject('IMAGE_DECODE_FAILED', '评测图片证据无法解码')
+            headers.update({'X-Evaluation-Image-Format': 'PNG',
+                            'X-Evaluation-Original-Format': image_format,
+                            'X-Evaluation-Display-Derived': 'true'})
+            return Response(output.getvalue(), media_type='image/png', headers=headers)
+        return FileResponse(
+            candidate,
+            media_type=media_types[image_format],
+            headers=headers,
+        )
 
     algorithm, version = _algorithm_version_for_action(project_id, algorithm_id, version_id)
     evaluation = version.get("evaluation") or {}
@@ -10830,8 +10931,19 @@ def evaluation_diagnostic_image_v1(project_id: str, algorithm_id: str, version_i
         reject(error.code, error.message)
     test_ids = snapshot_index['test_ids']
     frozen = snapshot_index['frozen']
+    task_id = str(evaluation.get('task_id') or version.get('job_id') or '')
+    evaluated_hash = str(sample.get('image_content_sha256') or '').lower()
+    bundle = None
+    manifest = {}
+    if re.fullmatch(r'[A-Za-z0-9_-]{1,160}', task_id):
+        bundle = shared_task_artifacts().artifact_path(task_id, 'work/bundle').resolve()
+        manifest_path = bundle / 'manifest.json'
+        manifest = _evaluation_bundle_identity_index(manifest_path, snapshot_id)
+        if manifest.get('snapshot_id') != snapshot_id:
+            manifest = {}
     # V3 frozen snapshots carry stored_name. Resolve a unique frozen ID
     # before querying MaterialRepository; legacy snapshots use bounded reads.
+    repository = MaterialRepository(project_dir(project_id))
     stable_id = str(sample.get('image_id') or '')
     if stable_id and stable_id not in frozen:
         reject('IMAGE_NOT_IN_SNAPSHOT', '评测图片不属于冻结测试集')
@@ -10839,22 +10951,47 @@ def evaluation_diagnostic_image_v1(project_id: str, algorithm_id: str, version_i
         selected_ids = [stable_id]
     else:
         # Historical samples have no stable ID. A filename stem is not an
-        # identity: it may collide with a different frozen Image ID. Prefer a
-        # unique frozen stored_name and reject contradictory frozen evidence.
+        # identity: it may collide with a different frozen Image ID. Prefer
+        # proven evaluated Bundle identity, then unique frozen stored_name.
         stored_ids = list(snapshot_index['stored_names'].get(image_name, ()))
-        if len(stored_ids) > 1:
+        if manifest.get('by_name', {}).get(image_name):
+            # Portable training bundles rename members to {image_id}.{ext}.
+            # Old evaluation rows did not persist image_id, so a strict
+            # stored_name-only lookup rejects valid archived evidence. Recover
+            # through the bundle only when its snapshot, member identity and
+            # source/evaluated hashes form a complete proof chain.
+            portable = [
+                row for row in manifest.get('by_name', {}).get(image_name, [])
+                if isinstance(row, dict)
+                and Path(str(row.get('image_ref') or '')).name == image_name
+                and str(row.get('image_id') or '') in frozen
+            ]
+            if len(portable) > 1:
+                reject('IMAGE_IDENTITY_AMBIGUOUS', '归档评测图片身份不唯一')
+            if len(portable) != 1:
+                reject('IMAGE_NOT_IN_SNAPSHOT', '图片不属于冻结测试集')
+            portable_id = str(portable[0]['image_id'])
+            source_hash = str(portable[0].get('source_content_sha256') or '').lower()
+            member_hash = str(portable[0].get('content_sha256') or '').lower()
+            expected_source = str(frozen[portable_id].get('content_sha256') or '').lower()
+            if (not re.fullmatch(r'[0-9a-f]{64}', source_hash)
+                or source_hash != expected_source
+                or not re.fullmatch(r'[0-9a-f]{64}', member_hash)
+                or (evaluated_hash and evaluated_hash != member_hash)):
+                reject('IMAGE_HASH_MISMATCH', '归档评测图片与冻结身份不一致')
+            selected_ids = [portable_id]
+        elif len(stored_ids) > 1:
             reject('IMAGE_IDENTITY_AMBIGUOUS', '冻结图片文件名不唯一')
-        if len(stored_ids) == 1:
-            # A unique frozen stored_name is authoritative historical evidence;
-            # a conflicting filename stem is only an untrusted coincidence.
+        elif len(stored_ids) == 1:
             selected_ids = stored_ids
-        elif snapshot_index['all_have_stored_name']:
-            reject('IMAGE_NOT_IN_SNAPSHOT', '图片不属于冻结测试集')
         else:
+            if snapshot_index['all_have_stored_name']:
+                reject('IMAGE_NOT_IN_SNAPSHOT', '图片不属于冻结测试集')
             # Old Snapshots without stored_name can still recover a real image,
             # but only through an exact Material stored_name match below.
-            selected_ids = list(test_ids)
-    repository = MaterialRepository(project_dir(project_id))
+            selected_ids = _evaluation_legacy_name_index(path, repository, test_ids).get(image_name, [])
+            if len(selected_ids) > 1:
+                reject('IMAGE_IDENTITY_AMBIGUOUS', '图片同名，无法唯一绑定冻结身份')
     material_rows = []
     for offset in range(0, len(selected_ids), 500):
         material_rows.extend(repository.get_many(selected_ids[offset:offset + 500]))
@@ -10868,19 +11005,24 @@ def evaluation_diagnostic_image_v1(project_id: str, algorithm_id: str, version_i
     expected = str(frozen[image_id].get('content_sha256') or '').lower()
     if not re.fullmatch(r'[0-9a-f]{64}', expected):
         reject('SNAPSHOT_INCOMPLETE', '冻结图片缺少有效 SHA256')
+    if not evaluated_hash:
+        bound_members = [row for row in manifest.get('by_name', {}).get(image_name, [])
+                         if isinstance(row, dict) and str(row.get('image_id') or '') == image_id
+                         and Path(str(row.get('image_ref') or '')).name == image_name]
+        if len(bound_members) == 1:
+            member = bound_members[0]
+            if str(member.get('source_content_sha256') or '').lower() == expected:
+                member_hash = str(member.get('content_sha256') or '').lower()
+                if re.fullmatch(r'[0-9a-f]{64}', member_hash):
+                    evaluated_hash = member_hash
     from platform_core.storage.cache import file_sha256
     # Prefer the actual evaluated portable bytes. Normalization or label-scope
     # redaction can legitimately make their hash differ from the original.
     # Both source and evaluated hashes must be bound by the frozen manifest.
-    task_id = str(evaluation.get('task_id') or version.get('job_id') or '')
-    evaluated_hash = str(sample.get('image_content_sha256') or '').lower()
     preview_path = None
-    if re.fullmatch(r'[A-Za-z0-9_-]{1,160}', task_id):
-        bundle = shared_task_artifacts().artifact_path(task_id, 'work/bundle').resolve()
-        manifest_path = bundle / 'manifest.json'
-        manifest = read_json(manifest_path, {}) if manifest_path.is_file() else {}
+    if bundle is not None and manifest:
         if manifest.get('snapshot_id') == snapshot_id:
-            members = [row for row in (manifest.get('splits') or {}).get('test', [])
+            members = [row for row in manifest.get('by_name', {}).get(image_name, [])
                        if isinstance(row, dict) and str(row.get('image_id') or '') == image_id
                        and Path(str(row.get('image_ref') or '')).name == image_name]
             if len(members) == 1:
@@ -10897,13 +11039,7 @@ def evaluation_diagnostic_image_v1(project_id: str, algorithm_id: str, version_i
                         reject('IMAGE_HASH_MISMATCH', '已归档评测图片内容发生变化')
                     preview_path = candidate
     if preview_path is not None:
-        try:
-            from PIL import Image
-            with Image.open(preview_path) as decoded:
-                decoded.verify()
-        except (OSError, ValueError):
-            reject('IMAGE_DECODE_FAILED', '评测图片证据无法解码')
-        return FileResponse(preview_path, headers={'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff'})
+        return verified_image_response(preview_path, 'bundle', member_hash)
     if evaluated_hash and evaluated_hash != expected:
         reject('ORIGINAL_IMAGE_MISSING', '本次评测使用了归一化图片，其原始评测字节已缺失')
     manager = storage_manager(project_id)
@@ -10915,7 +11051,7 @@ def evaluation_diagnostic_image_v1(project_id: str, algorithm_id: str, version_i
     if str(material.get('content_sha256') or '').lower() != expected:
         reject('IMAGE_HASH_MISMATCH', '当前素材与冻结图片内容不同，禁止替代展示')
     try:
-        resolved = manager.materialize(manager.material(str(material['id'])))
+        resolved = manager.materialize(manager.material(str(material['id'])), read_only=True)
     except StorageError as error:
         if error.code in {'SOURCE_CONTENT_CHANGED', 'STORAGE_SHA256_MISMATCH'}:
             reject('IMAGE_HASH_MISMATCH', '存储对象与冻结图片哈希不同')
@@ -10926,13 +11062,7 @@ def evaluation_diagnostic_image_v1(project_id: str, algorithm_id: str, version_i
         reject('STORAGE_UNAVAILABLE', '图片存储暂时不可用', 503, True)
     if file_sha256(Path(resolved.path)) != expected:
         reject('IMAGE_HASH_MISMATCH', '实际图片字节与冻结 SHA256 不一致')
-    try:
-        from PIL import Image
-        with Image.open(resolved.path) as decoded:
-            decoded.verify()
-    except (OSError, ValueError):
-        reject('IMAGE_DECODE_FAILED', '原始图片无法解码为有效图像')
-    return FileResponse(resolved.path, headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
+    return verified_image_response(Path(resolved.path), 'material', expected)
 
 
 @app.get('/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/evaluation/compare/{other_version_id}')

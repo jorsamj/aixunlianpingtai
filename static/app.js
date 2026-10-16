@@ -3735,6 +3735,101 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     return true;
   };
   let evaluationPreviewController429=null;
+  let evaluationGalleryController429=null;
+  window.beforeCloseEvaluationPreview429=function(top){
+    top?.querySelectorAll('.evaluation429,.evaluation429-detail').forEach(root=>root.evaluationImageController429?.abort());
+  };
+  const EVALUATION_PREVIEW_ISSUES_429={
+    SNAPSHOT_MISSING:['冻结评测快照缺失','需要恢复该次评测的冻结 Snapshot；无法恢复时重新评测。'],
+    SNAPSHOT_INCOMPLETE:['冻结快照不完整或身份不一致','冻结身份无法安全确认，需要恢复原始 Snapshot 或重新评测。'],
+    ORIGINAL_IMAGE_MISSING:['评测图片证据已缺失','原始评测字节已不存在，需要恢复归档证据或重新评测。'],
+    IMAGE_HASH_MISMATCH:['图片与评测时内容不一致','为避免展示错误图片，已拒绝同名或已变化的内容。'],
+    IMAGE_IDENTITY_AMBIGUOUS:['图片身份无法唯一确认','存在同名或冲突身份，不能自动选择其中一张。'],
+    ACCESS_DENIED:['图片存储访问被拒绝','请检查当前存储源权限后重试。'],
+    STORAGE_UNAVAILABLE:['存储连接异常，可重试','请稍后重新加载；持续失败时检查存储连接。'],
+    IMAGE_DECODE_FAILED:['图片无法解码','评测字节已损坏或格式不受支持，需要恢复证据或重新评测。'],
+    IMAGE_NOT_IN_SNAPSHOT:['图片不属于本次冻结评测','该图片无法与本次 Test Split 建立可信身份。'],
+    PREVIEW_UNAVAILABLE:['图片证据读取失败','请检查冻结评测证据，无法恢复时重新评测。'],
+  };
+  function evaluationPreviewIssue429(detail={},fallbackCode='PREVIEW_UNAVAILABLE'){
+    const code=String(detail?.code||fallbackCode),known=EVALUATION_PREVIEW_ISSUES_429[code]||EVALUATION_PREVIEW_ISSUES_429.PREVIEW_UNAVAILABLE;
+    return {code,title:known[0],solution:String(detail?.solution||known[1]),retryable:detail?.retryable===true||code==='STORAGE_UNAVAILABLE'};
+  }
+  function evaluationFormat429(value){
+    const suffix=String(value||'').split('.').pop().toUpperCase();
+    return ({JPG:'JPEG',JPEG:'JPEG',PNG:'PNG',WEBP:'WEBP',BMP:'BMP'})[suffix]||'格式待验证';
+  }
+  function updateEvaluationGallerySummary429(card){
+    const root=card?.closest('.evaluation429-gallery'),summary=root?.querySelector('[data-eval-preview-summary]');if(!summary)return;
+    const counts=new Map();root.querySelectorAll('.evaluation429-image-card').forEach(node=>{const code=node.dataset.previewCode||'LOADING';counts.set(code,(counts.get(code)||0)+1)});
+    summary.textContent='当前页预览：'+[...counts].map(([code,count])=>`${code==='OK'?'可预览':code==='LOADING'?'加载中':evaluationPreviewIssue429({code}).title} ${count}`).join(' · ');
+  }
+  function renderEvaluationThumbnailIssue429(card,issue){
+    if(!card)return;
+    const image=card.querySelector('.evaluation429-thumb img'),status=card.querySelector('[data-eval-thumb-status]'),retry=card.querySelector('[data-eval-thumb-retry]'),stateNode=card.querySelector('[data-eval-thumb-state]');
+    if(image)image.hidden=true;
+    card.classList.remove('evaluation429-thumb-ready','evaluation429-thumb-loading');card.classList.add('evaluation429-thumb-failed');
+    if(status){status.hidden=false;status.innerHTML=`<b>${esc(issue.title)}</b><small>${esc(issue.solution)}</small>${issue.code?`<code>${esc(issue.code)}</code>`:''}`;}
+    if(retry)retry.hidden=!issue.retryable;
+    if(stateNode)stateNode.textContent=issue.retryable?'暂时无法访问':'暂不可预览';
+    card.dataset.previewCode=issue.code;updateEvaluationGallerySummary429(card);
+  }
+  async function loadEvaluationThumbnail429(card,controller,identity){
+    if(!card||!controller)return;
+    const current=()=>card.isConnected&&state.eval429View?.identity===identity&&!controller.signal.aborted;
+    const image=card.querySelector('.evaluation429-thumb img'),status=card.querySelector('[data-eval-thumb-status]'),retry=card.querySelector('[data-eval-thumb-retry]'),format=card.querySelector('[data-eval-thumb-format]'),stateNode=card.querySelector('[data-eval-thumb-state]');
+    card.classList.remove('evaluation429-thumb-failed','evaluation429-thumb-ready');card.classList.add('evaluation429-thumb-loading');
+    card.dataset.previewCode='LOADING';updateEvaluationGallerySummary429(card);
+    if(image)image.hidden=true;if(retry)retry.hidden=true;if(stateNode)stateNode.textContent='正在验证';
+    if(status){status.hidden=false;status.innerHTML='<i></i><span>正在读取冻结图片…</span>';}
+    let objectUrl='';
+    try{
+      const response=await fetch(card.dataset.evalUrl,{signal:controller.signal,headers:{Accept:'image/*'}});
+      if(!current())return;
+      if(!response.ok){
+        const body=await response.json().catch(()=>({}));
+        renderEvaluationThumbnailIssue429(card,evaluationPreviewIssue429(typeof body.detail==='object'?body.detail:{}));return;
+      }
+      const blob=await response.blob();objectUrl=URL.createObjectURL(blob);
+      if(!current()){URL.revokeObjectURL(objectUrl);return;}
+      image.onload=()=>{
+        URL.revokeObjectURL(objectUrl);if(!current())return;
+        const expectedWidth=Number(card.dataset.evalWidth)||0,expectedHeight=Number(card.dataset.evalHeight)||0;
+        if(expectedWidth&&expectedHeight&&(image.naturalWidth!==expectedWidth||image.naturalHeight!==expectedHeight)){
+          renderEvaluationThumbnailIssue429(card,evaluationPreviewIssue429({code:'IMAGE_IDENTITY_AMBIGUOUS'}));return;
+        }
+        image.hidden=false;if(status)status.hidden=true;
+        card.classList.remove('evaluation429-thumb-loading','evaluation429-thumb-failed');card.classList.add('evaluation429-thumb-ready');
+        const actualFormat=response.headers.get('X-Evaluation-Display-Derived')==='true'?`${response.headers.get('X-Evaluation-Original-Format')} → PNG 展示图`:response.headers.get('X-Evaluation-Image-Format')||evaluationFormat429(card.dataset.evalImage);
+        const actualWidth=response.headers.get('X-Evaluation-Image-Width')||image.naturalWidth;
+        const actualHeight=response.headers.get('X-Evaluation-Image-Height')||image.naturalHeight;
+        if(format)format.textContent=`${actualFormat} · ${actualWidth} × ${actualHeight}`;
+        if(stateNode)stateNode.textContent='可预览';
+        card.dataset.previewCode='OK';updateEvaluationGallerySummary429(card);
+      };
+      image.onerror=()=>{URL.revokeObjectURL(objectUrl);if(current())renderEvaluationThumbnailIssue429(card,evaluationPreviewIssue429({code:'IMAGE_DECODE_FAILED'}));};
+      image.src=objectUrl;
+    }catch(error){
+      if(objectUrl)URL.revokeObjectURL(objectUrl);
+      if(current())renderEvaluationThumbnailIssue429(card,evaluationPreviewIssue429({code:'STORAGE_UNAVAILABLE',retryable:true}));
+    }
+  }
+  function hydrateEvaluationGallery429(identity){
+    const root=document.querySelector('.evaluation429');if(!root)return;
+    if(root.dataset.galleryLoaded==='true')return;
+    root.dataset.galleryLoaded='true';
+    evaluationGalleryController429?.abort();
+    const controller=new AbortController();evaluationGalleryController429=controller;
+    root.evaluationImageController429=controller;
+    const gallery=root.querySelector('.evaluation429-gallery');
+    if(gallery&&!gallery.querySelector('[data-eval-preview-summary]'))gallery.querySelector('.evaluation429-gallery-bar')?.insertAdjacentHTML('afterend','<p class="item-sub" data-eval-preview-summary role="status"></p>');
+    root.querySelectorAll('.evaluation429-image-card[data-eval-url]').forEach(card=>loadEvaluationThumbnail429(card,controller,identity));
+  }
+  window.retryEvaluationThumbnail429=function(button){
+    const card=button?.closest?.('.evaluation429-image-card');if(!card)return;
+    if(!evaluationGalleryController429||evaluationGalleryController429.signal.aborted)evaluationGalleryController429=new AbortController();
+    loadEvaluationThumbnail429(card,evaluationGalleryController429,state.eval429View?.identity||'');
+  };
   window.eval429PreviewControl=function(action,index=0){
     const media=Array.from(document.querySelectorAll('.evaluation429-detail .evaluation429-media'));
     if(!media.length)return;
@@ -3754,7 +3849,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     };
     const overlays=boxesAvailable?`<svg hidden viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid meet" class="evaluation429-overlay" aria-label="GT与预测框">${(sample.gt_boxes||[]).map(box=>rect(box,'gt')).join('')}${(sample.pred_boxes||[]).map(box=>rect(box,'pred')).join('')}</svg>`:'';
 
-    return `<section class="evaluation429-pane"><header><h3>${esc(versionName||'本次评测')}</h3>${paired?`<button class="btn mini" onclick="eval429PreviewControl('fullscreen',${index})">单独全屏</button>`:''}</header><div class="evaluation429-inspection"><div class="evaluation429-stage"><div class="evaluation429-media" data-zoom="1" style="${width&&height?'aspect-ratio:'+width+'/'+height:''}"><img hidden alt="独立评测问题图片"><div class="evaluation429-image-error" role="status">正在读取冻结图片证据…</div>${overlays}</div></div><aside class="evaluation429-evidence"><h4>错误详情与人工复核</h4><p>GT ${sample.gt_boxes?.length??'未记录'} 个 · 漏检 ${Number(sample.fn_count||0)} · 误检 ${Number(sample.fp_count||0)}</p><p>图片身份：${esc(sample.image_id||'历史记录未保存')}</p>${['gt_boxes','pred_boxes'].map(key=>`<details><summary>${key==='gt_boxes'?'GT 正式标注':'模型预测'} · ${(sample[key]||[]).length}</summary>${(sample[key]||[]).map(box=>`<p><b>${esc(box.label)}</b> · ${box.matched?'已匹配':key==='gt_boxes'?'漏检':'误检'}${key==='pred_boxes'?' · '+(Number(box.confidence)*100).toFixed(1)+'%':''}<small>[${(box.box||[]).map(value=>Number(value).toFixed(1)).join(', ')}]</small></p>`).join('')||'<p>暂无框级证据</p>'}</details>`).join('')}<p>人工核查请进入正式素材与标注；此处只读，冻结 Test 不能直接回流训练。</p></aside></div></section>`;
+    return `<section class="evaluation429-pane"><header><h3>${esc(versionName||'本次评测')}</h3>${paired?`<button class="btn mini" onclick="eval429PreviewControl('fullscreen',${index})">单独全屏</button>`:''}</header><div class="evaluation429-inspection"><div class="evaluation429-stage"><div class="evaluation429-media" data-zoom="1" style="${width&&height?'aspect-ratio:'+width+'/'+height:''}"><img hidden alt="独立评测问题图片"><div class="evaluation429-image-error" role="status">正在读取冻结图片证据…</div>${overlays}</div></div><aside class="evaluation429-evidence"><h4>错误详情与人工复核</h4><p data-eval-preview-meta>${esc(evaluationFormat429(sample.image))} · 正在验证证据来源</p><p>GT ${sample.gt_boxes?.length??'未记录'} 个 · 漏检 ${Number(sample.fn_count||0)} · 误检 ${Number(sample.fp_count||0)}</p><p>图片身份：${esc(sample.image_id||'历史记录未保存')}</p>${['gt_boxes','pred_boxes'].map(key=>`<details><summary>${key==='gt_boxes'?'GT 正式标注':'模型预测'} · ${(sample[key]||[]).length}</summary>${(sample[key]||[]).map(box=>`<p><b>${esc(box.label)}</b> · ${box.matched?'已匹配':key==='gt_boxes'?'漏检':'误检'}${key==='pred_boxes'?' · '+(Number(box.confidence)*100).toFixed(1)+'%':''}<small>[${(box.box||[]).map(value=>Number(value).toFixed(1)).join(', ')}]</small></p>`).join('')||'<p>暂无框级证据</p>'}</details>`).join('')}<p>人工核查请进入正式素材与标注；此处只读，冻结 Test 不能直接回流训练。</p></aside></div></section>`;
   }
   async function loadEvaluationPreview429(root,url,sample,controller,project){
     const image=root.querySelector('img'),message=root.querySelector('.evaluation429-image-error'),overlay=root.querySelector('svg');
@@ -3766,11 +3861,9 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
       const response=await fetch(url,{signal:controller.signal,headers:{Accept:'image/*'}});
       if(!current())return;
       if(!response.ok){
-        const body=await response.json().catch(()=>({})),detail=typeof body.detail==='object'?body.detail:{};
-        const labels={SNAPSHOT_MISSING:'冻结快照缺失',SNAPSHOT_INCOMPLETE:'冻结快照不完整或身份不一致',IMAGE_NOT_IN_SNAPSHOT:'图片不属于该次评测',IMAGE_HASH_MISMATCH:'图片内容与冻结哈希不一致',IMAGE_IDENTITY_AMBIGUOUS:'图片身份存在歧义',ORIGINAL_IMAGE_MISSING:'原始图片证据已缺失',STORAGE_UNAVAILABLE:'存储暂时不可用',ACCESS_DENIED:'存储访问被拒绝',IMAGE_DECODE_FAILED:'图片解码失败'};
-        const code=detail.code||'PREVIEW_UNAVAILABLE';
-        message.textContent=(labels[code]||'图片证据读取失败')+' · '+(detail.solution||'请恢复原始证据或重新评测')+'（'+code+'）';
-        root.closest('.evaluation429-detail').querySelector('[data-eval-retry]').hidden=detail.retryable!==true;
+        const body=await response.json().catch(()=>({})),detail=typeof body.detail==='object'?body.detail:{},issue=evaluationPreviewIssue429(detail);
+        message.textContent=issue.title+' · '+issue.solution+'（'+issue.code+'）';
+        root.closest('.evaluation429-detail').querySelector('[data-eval-retry]').hidden=!issue.retryable;
         return;
       }
       objectUrl=URL.createObjectURL(await response.blob());
@@ -3782,6 +3875,9 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
           message.textContent='图片尺寸与框证据不一致，已停止展示（IMAGE_IDENTITY_AMBIGUOUS）';return;
         }
         image.hidden=false;message.hidden=true;if(overlay)overlay.removeAttribute('hidden');
+        const meta=root.querySelector('[data-eval-preview-meta]'),format=response.headers.get('X-Evaluation-Image-Format')||evaluationFormat429(sample.image),source=response.headers.get('X-Evaluation-Evidence-Source')==='bundle'?'评测 Bundle':'冻结素材';
+        if(meta)meta.textContent=`${format} · ${image.naturalWidth} × ${image.naturalHeight} · ${source}${response.headers.get('X-Evaluation-Display-Derived')==='true'?' · EXIF 展示派生，保留原评测像素坐标':''}`;
+        const digest=root.querySelector('[data-eval-preview-digest]');if(digest)digest.textContent=response.headers.get('X-Evaluation-Original-SHA256')||sample.image_content_sha256||'历史记录未提供';
       };
       image.onerror=()=>{URL.revokeObjectURL(objectUrl);if(current())message.textContent='图片无法解码，请恢复证据或重新评测（IMAGE_DECODE_FAILED）';};
       image.src=objectUrl;
@@ -3791,6 +3887,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     }
   }
   window.openEvaluationSample429=async function(aid,vid,index,compareVid=''){
+    evaluationGalleryController429?.abort();
     evaluationPreviewController429?.abort();
     const controller=new AbortController();evaluationPreviewController429=controller;
     const project=String(pid()),a=(state.algorithms||[]).find(x=>String(x.id)===String(aid));
@@ -3808,6 +3905,11 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     await closeModal();
     modal('问题图片核验',`<div class="evaluation429-detail"><header><div><strong>${esc(sample.image||'')}</strong><p>冻结 Test Split · 只读诊断，不能直接加入训练集</p></div><div class="evaluation429-counts"><b>漏检 ${Number(sample.fn_count||0)}</b><b>误检 ${Number(sample.fp_count||0)}</b></div></header><div class="evaluation429-preview-tools"><button class="btn" onclick="eval429PreviewControl('zoom')">同步放大 / 适配</button><button class="btn" onclick="eval429PreviewControl('reset')">恢复比例</button>${panels.length===1?`<button class="btn" onclick="eval429PreviewControl('fullscreen',0)">全屏</button>`:''}<span>${index+1} / ${samples.length}</span></div><div class="${panels.length>1?'quality-paired':''}">${panels.map((panel,panelIndex)=>evaluationPreviewMarkup429(panel.sample,panel.version.version_name,panelIndex,panels.length>1)).join('')}</div><div class="evaluation429-legend"><label><input type="checkbox" checked onchange="eval429ToggleLayer('gt',this.checked)"> GT 真实框（红色漏检）</label><label><input type="checkbox" checked onchange="eval429ToggleLayer('pred',this.checked)"> 预测框（橙色误检）</label><span>绿色：已匹配</span></div>${!boxesAvailable?'<p class="evaluation429-notice">历史评测仅有 FP/FN 数量，没有可还原的框级证据；重新评测新版本后才能显示 GT 和预测框。</p>':''}${sample.boxes_truncated?'<p class="evaluation429-notice">该图目标框较多，详细展示已限量；FP/FN 计数仍为真实总量。</p>':''}<div class="row end"><button class="btn" data-eval-previous ${index===0?'disabled':''}>上一张</button><button class="btn" data-eval-next ${index>=samples.length-1?'disabled':''}>下一张</button><button class="btn" data-eval-retry hidden>重试读取</button><button class="btn" data-eval-back>返回独立评测</button></div></div>`,true);
     const root=document.querySelector('.evaluation429-detail');
+    if(root)root.evaluationImageController429=controller;
+    root?.querySelectorAll('.evaluation429-evidence').forEach((aside,i)=>{
+      const evaluation=panels[i].version.evaluation||{};
+      aside.insertAdjacentHTML('beforeend',`<details><summary>冻结证据溯源</summary><p>Evaluation ID：${esc(evaluation.evaluation_id||'未记录')}</p><p>Snapshot：${esc(evaluation.snapshot_id||'未记录')}</p><p>评测任务：${esc(evaluation.task_id||panels[i].version.job_id||'未记录')}</p><p>原评测字节 SHA256：<small data-eval-preview-digest>${esc(panels[i].sample.image_content_sha256||'正在验证')}</small></p></details>`);
+    });
     const synchronizedMedia=Array.from(root?.querySelectorAll('.evaluation429-media')||[]);
     let synchronizingScroll=false;
     if(synchronizedMedia.length>1)synchronizedMedia.forEach(source=>source.addEventListener('scroll',()=>{
@@ -3863,6 +3965,8 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
         window.eval429Compare(section.dataset.algorithm,section.dataset.version,select.value);
       }
     }
+    if(key==='errors')hydrateEvaluationGallery429(state.eval429View.identity);
+    else {evaluationGalleryController429?.abort();root.dataset.galleryLoaded='false';}
   };
   window.eval429Cell=async function(aid,vid,index){
     const a=(state.algorithms||[]).find(x=>String(x.id)===String(aid)),v=a?.versions?.find(x=>String(x.id)===String(vid));
@@ -3920,7 +4024,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     // Same frozen Test image endpoint as the full-size preview: never a training path.
     const previewUrl=row=>`/api/v12/projects/${encodeURIComponent(pid())}/algorithms/${encodeURIComponent(aid)}/versions/${encodeURIComponent(vid)}/evaluation/images/${encodeURIComponent(String(row.image||''))}`;
     const errorCount=Math.max(errors.length,Number(e.error_sample_count||0));
-    const errorsHtml=`<section class="report429-card evaluation429-gallery"><header><b>FP / FN 问题图片</b><span>共 ${errorCount} 张问题图片，最多展示 200 张高风险证据</span></header><div class="evaluation429-gallery-bar"><span>按严重程度筛选</span><select class="select" aria-label="问题图片排序" onchange="eval429SetOrder('${aid}','${vid}',this.value)"><option value="fn" ${order==='fn'?'selected':''}>漏检优先</option><option value="fp" ${order==='fp'?'selected':''}>误检优先</option><option value="total" ${order==='total'?'selected':''}>错误总数优先</option></select></div><div class="evaluation429-gallery-grid">${rankedErrors.slice(page*pageSize,(page+1)*pageSize).map(({row,index})=>`<button class="evaluation429-image-card" type="button" onclick="openEvaluationSample429('${aid}','${vid}',${index})"><span class="evaluation429-thumb"><img src="${esc(previewUrl(row))}" alt="问题图片缩略图" loading="lazy" decoding="async" onerror="this.hidden=true;this.parentElement.classList.add('evaluation429-thumb-failed')"><span>图片不可预览</span></span><b title="${esc(row.image||'')}">${esc(row.image||'-')}</b><span class="evaluation429-counts"><i>漏检 ${Number(row.fn_count||0)}</i><i>误检 ${Number(row.fp_count||0)}</i></span><small>${esc([...(row.fn_labels||[]),...(row.fp_labels||[])].filter((x,i,a)=>a.indexOf(x)===i).join('、')||'-')}</small><em>查看原图与检测框 →</em></button>`).join('')||'<div class="empty">暂无 FP / FN 问题样本</div>'}</div><div class="evaluation429-pagination"><span>第 ${page+1} / ${totalPages} 页</span><button class="btn mini" ${page===0?'disabled':''} onclick="eval429SetPage('${aid}','${vid}',${page-1})">上一页</button><button class="btn mini" ${page>=totalPages-1?'disabled':''} onclick="eval429SetPage('${aid}','${vid}',${page+1})">下一页</button></div><p class="item-sub">图片仅用于错误审查；正式 Test Split 不直接回流训练。历史评测如缺框数据，详情将明确说明。</p></section>`;
+    const errorsHtml=`<section class="report429-card evaluation429-gallery"><header><b>FP / FN 问题图片</b><span>共 ${errorCount} 张问题图片，当前页最多验证 24 张真实证据</span></header><div class="evaluation429-gallery-bar"><span>按严重程度筛选</span><select class="select" aria-label="问题图片排序" onchange="eval429SetOrder('${aid}','${vid}',this.value)"><option value="fn" ${order==='fn'?'selected':''}>漏检优先</option><option value="fp" ${order==='fp'?'selected':''}>误检优先</option><option value="total" ${order==='total'?'selected':''}>错误总数优先</option></select></div><div class="evaluation429-gallery-grid">${rankedErrors.slice(page*pageSize,(page+1)*pageSize).map(({row,index})=>{const gt=[...new Set([...(row.gt_boxes||[]).map(box=>box.label),...(row.fn_labels||[])].filter(Boolean))],pred=[...new Set([...(row.pred_boxes||[]).map(box=>box.label),...(row.fp_labels||[])].filter(Boolean))];return `<article class="evaluation429-image-card evaluation429-thumb-loading" role="button" tabindex="0" data-eval-url="${esc(previewUrl(row))}" data-eval-image="${esc(row.image||'')}" data-eval-width="${Number(row.image_width)||0}" data-eval-height="${Number(row.image_height)||0}" onclick="if(!event.target.closest('button'))openEvaluationSample429('${aid}','${vid}',${index})" onkeydown="if((event.key==='Enter'||event.key===' ')&&!event.target.closest('button')){event.preventDefault();openEvaluationSample429('${aid}','${vid}',${index})}"><span class="evaluation429-thumb"><img hidden alt="${esc(row.image||'')} 问题图片缩略图" decoding="async"><span data-eval-thumb-status role="status"><i></i><span>正在读取冻结图片…</span></span><button type="button" class="btn mini" data-eval-thumb-retry hidden onclick="event.stopPropagation();retryEvaluationThumbnail429(this)">重新加载</button></span><div class="evaluation429-card-title"><b title="${esc(row.image||'')}">${esc(row.image||'-')}</b><span data-eval-thumb-state>正在验证</span></div><div class="evaluation429-card-meta"><span data-eval-thumb-format>${esc(evaluationFormat429(row.image))}</span><span>只读 Test 证据</span></div><span class="evaluation429-counts"><i>漏检 ${Number(row.fn_count||0)}</i><i>误检 ${Number(row.fp_count||0)}</i></span><div class="evaluation429-label-pairs"><span>GT ${esc(gt.join('、')||(Array.isArray(row.gt_boxes)&&!row.boxes_truncated?'已记录 GT：0 个':'未记录正式 GT'))}</span><span>预测 ${esc(pred.join('、')||(Array.isArray(row.pred_boxes)?'已记录预测：0 个':'未记录预测类别'))}</span></div><em>查看原图与检测框 →</em></article>`;}).join('')||'<div class="empty">暂无 FP / FN 问题样本</div>'}</div><div class="evaluation429-pagination"><span>第 ${page+1} / ${totalPages} 页</span><button class="btn mini" ${page===0?'disabled':''} onclick="eval429SetPage('${aid}','${vid}',${page-1})">上一页</button><button class="btn mini" ${page>=totalPages-1?'disabled':''} onclick="eval429SetPage('${aid}','${vid}',${page+1})">下一页</button></div><p class="item-sub">图片仅用于错误审查；正式 Test Split 不直接回流训练。历史评测如缺框数据，详情将明确说明。</p></section>`;
     const status=({succeeded:'已完成',not_requested:'未配置独立试验集',failed:'评测失败'})[String(e.status||'').toLowerCase()]||String(e.status||'-');
     const decision=v?.iteration_decision||{},gate=decision.quality_gate||{},signals=decision.signals||{};
     const decisionLabel=critical.length&&decision.decision==='needs_data'?'历史补样决策 · 核查关键类别':(({ready_for_business_validation:'可进入业务验证',needs_data:'优先诊断薄弱类别',continue_training:'建议继续训练',review_required:'需优先核查'})[decision.decision]||'尚未形成决策');
@@ -6488,6 +6592,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     const base=document.getElementById('modal');
     const top=layers.at(-1)||((base&&!base.classList.contains('hidden'))?base:null);
     window.beforeCloseAiTask60?.(top);
+    window.beforeCloseEvaluationPreview429?.(top);
     const annotationRoot=top?.querySelector('.ann420-stable');
     if(annotationRoot&&state.annotationWorkbench?.dirty){
       const ok=await window.saveAnn(true);

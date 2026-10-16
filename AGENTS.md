@@ -546,3 +546,11 @@ Resource Discovery SQLite 仍保持 **CODE-LEVEL CLOSED / production soak OPEN**
 - 现有 Remote Training Runtime 增加 Ubuntu 专属具名步骤，直接运行实际 cgroup v2 `memory.max/memory.current` 对照和 `/proc/self/fd` 泄漏测试；不新建工作流。Windows 聚焦回归 `99 passed, 2 Linux-only skipped`，Node `971/971`，Chrome `5/5`。
 - CSS 缓存键为 `42.25.382`；正式 `VERSION.txt=42.24.356` 不变。修复提交与最终远端 CI 尚待核验；A800/GPU 实机仍为 `NOT VERIFIED`。
 - 修复 SHA `39157527` 的 Ubuntu 首跑暴露旧测试仍硬编码 Linux workers=12。完整冻结 31 GiB snapshot 后决议仍按 Batch×Workers×Prefetch 联合预算安全收敛为 8，证明不是 Runner cgroup 污染。测试改为验证 GPU 数量不影响 workers、并发预约会降低 workers、两种结果均不超内存预算；不固定新的 8/2 数字。独立 Linux 专项仍读取真实文件。
+
+## 2026-10-16｜独立评测图片预览专项（LOCAL VERIFIED / PRODUCTION OPEN）
+
+- 历史无 Image ID 的规范化 Bundle 名通过 Snapshot、manifest Image ID、源 SHA256 和评测字节 SHA256 闭环恢复；同名冲突、归一化证据丢失和内容变化继续拒绝。
+- JPEG/PNG/WebP/BMP 按真实格式返回 MIME；EXIF 仅产生保留原哈希的内存展示派生，保持冻结像素坐标。StorageManager.read_only 禁止预览补写正式素材元数据。
+- 列表与详情统一错误码、单图重试和失败隐藏框；仅错误样本 Tab 当前页最多 24 张。Snapshot、Bundle 和历史素材名称投影复用原上限 8 的元数据缓存，文件身份/素材 Revision 变化时失效，响应逐次校验实际字节。
+- Chrome 覆盖四视口、24/20k 按页请求、跨版本迟到结果、错误原因与重试。生产历史对象、OSS/A800 仍为 NOT VERIFIED；现场只读命令：`python -m scripts.diagnose_evaluation_previews --project-id ID --algorithm-id ID --version-id ID`。
+- VERSION=42.24.356，静态入口缓存=42.25.384；保留先前本地 1de328cc，不推送、不部署、不改历史评测或 Snapshot。详细证据见 docs/EVALUATION_DIAGNOSTICS_P0_2026_10_12.md。

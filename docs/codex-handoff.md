@@ -5519,3 +5519,11 @@ GitHub 当前没有 CI status，不能把“测试代码已写”表述成“已
 - Remote Training Runtime 原工作流新增 Ubuntu 具名 cgroup v2 与 `/proc/self/fd` 证据步骤。Windows 本地 Python 99 passed / 2 Linux-only skipped、Node 971/971、Chrome 5/5。
 - 样式缓存键 42.25.382，VERSION 42.24.356 不变；最终远端 CI 和真实 A800/GPU 仍待核验。
 - `39157527` Ubuntu 首跑确认旧 Linux workers=12 精确断言已失效：31 GiB 下联合 Batch/Prefetch 预算会安全收敛到 8。测试现验证 GPU 数量无关、并发预约减配与预算不超限，不固定新数值；真实 cgroup `/proc` 验证仍读取 Runner 文件。
+
+## 2026-10-16｜独立评测图片预览专项（LOCAL VERIFIED / PRODUCTION OPEN）
+
+- 历史无 Image ID 的规范化 Bundle 名通过 Snapshot、manifest Image ID、源 SHA256 和评测字节 SHA256 闭环恢复；同名冲突、归一化证据丢失和内容变化继续拒绝。
+- JPEG/PNG/WebP/BMP 按真实格式返回 MIME；EXIF 仅产生保留原哈希的内存展示派生，保持冻结像素坐标。StorageManager.read_only 禁止预览补写正式素材元数据。
+- 列表与详情统一错误码、单图重试和失败隐藏框；仅错误样本 Tab 当前页最多 24 张。Snapshot、Bundle 和历史素材名称投影复用原上限 8 的元数据缓存，文件身份/素材 Revision 变化时失效，响应逐次校验实际字节。
+- Chrome 覆盖四视口、24/20k 按页请求、跨版本迟到结果、错误原因与重试。生产历史对象、OSS/A800 仍为 NOT VERIFIED；现场只读命令：`python -m scripts.diagnose_evaluation_previews --project-id ID --algorithm-id ID --version-id ID`。
+- VERSION=42.24.356，静态入口缓存=42.25.384；保留先前本地 1de328cc，不推送、不部署、不改历史评测或 Snapshot。详细证据见 docs/EVALUATION_DIAGNOSTICS_P0_2026_10_12.md。
