@@ -127,6 +127,15 @@ test('training polling preserves open menu, changed actions and pagination inval
   for (const [width,height] of [[1920,1080],[1440,900],[1366,768],[375,812]]) {
     await page.keyboard.press('Escape');
     await page.setViewportSize({width,height});
+    await page.locator('.main').evaluate(el => Promise.all(el.getAnimations().map(animation => animation.finished)));
+    const layout = await page.evaluate(() => ['.main','.train428-page','.training-table-surface','.training-table-surface > .table-wrap'].map(selector => {
+      const el = document.querySelector(selector);
+      return {selector, client:el.clientWidth, scroll:el.scrollWidth, x:el.getBoundingClientRect().x};
+    }));
+    console.log('TRAINING LAYOUT',width,JSON.stringify(layout));
+    expect(layout[0].scroll).toBeLessThanOrEqual(layout[0].client + 1);
+    expect(layout[1].scroll).toBeLessThanOrEqual(layout[1].client + 1);
+    if (width === 375) expect(layout[3].scroll).toBeGreaterThan(layout[3].client);
     await summary.scrollIntoViewIfNeeded();
     await summary.click();
     const menu = page.locator('.entity-action-menu');

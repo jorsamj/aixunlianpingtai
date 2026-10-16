@@ -11,6 +11,8 @@ on:
       - 'requirements.txt'
       - 'platform_core/secrets.py'
       - 'platform_core/zip_multipart.py'
+      - 'platform_core/annotations.py'
+      - 'tests/unit/test_annotations.py'
       - 'platform_core/storage/import_tasks.py'
       - 'static/index.html'
       - 'static/main.mjs'
@@ -57,6 +59,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install atomic persistence test dependency
+        run: python -m pip install --disable-pip-version-check pytest
+      - name: Cross-platform atomic JSON staging and Windows contention
+        run: python -m pytest -q --confcutdir=tests/unit tests/unit/test_annotations.py
       - name: Syntax check
         run: >-
           node --check static/modules/zip-import-runtime.js &&
@@ -168,6 +177,7 @@ jobs:
           PYTHONPATH=. pytest -q --confcutdir=tests/unit
           tests/unit/test_secrets.py
           tests/unit/test_zip_multipart.py
+          tests/unit/test_annotations.py
           tests/unit/test_audit_v19_partial_import.py
       - name: Durable v19 persistence and bounded 10k hot-state tests
         run: >-

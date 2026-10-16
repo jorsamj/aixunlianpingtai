@@ -1,5 +1,6 @@
 import json
 import math
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -12,12 +13,27 @@ PROVENANCE_FIELDS = ("source", "source_task_id", "candidate_id", "confidence", "
 
 def atomic_write_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_suffix(path.suffix + ".tmp")
-    temp.write_text(
-        json.dumps(value, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    temp.replace(path)
+    # Each writer owns its staging file. A shared .tmp lets concurrent ZIP
+    # progress writers truncate, replace, or clean up one another's payload.
+    temp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    created = False
+    try:
+        with temp.open("x", encoding="utf-8") as stream:
+            created = True
+            json.dump(value, stream, ensure_ascii=False, indent=2)
+        for attempt in range(4):
+            try:
+                temp.replace(path)
+                break
+            except PermissionError as error:
+                # Windows may briefly deny simultaneous atomic renames. Never
+                # retry unrelated permissions or hide a persistently locked file.
+                if getattr(error, "winerror", None) not in {5, 32, 33} or attempt == 3:
+                    raise
+                time.sleep(0.005 * (attempt + 1))
+    finally:
+        if created:
+            temp.unlink(missing_ok=True)
 
 
 def normalize_boxes(

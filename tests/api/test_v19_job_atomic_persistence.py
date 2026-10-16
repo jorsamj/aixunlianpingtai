@@ -1,4 +1,5 @@
 import threading
+import json
 from pathlib import Path
 
 
@@ -32,27 +33,23 @@ def test_v19_progress_reader_never_observes_partial_job_json(client, monkeypatch
     )
 
     job_path = app_module.v19_job_file(project_id, job_id)
-    temp_path = job_path.with_suffix(job_path.suffix + ".tmp")
-    original_write_text = Path.write_text
+    original_dump = json.dump
     write_started = threading.Event()
     allow_finish = threading.Event()
 
-    def slow_write_text(self, data, *args, **kwargs):
-        if self not in {job_path, temp_path}:
-            return original_write_text(self, data, *args, **kwargs)
-        encoding = kwargs.get("encoding") or "utf-8"
-        errors = kwargs.get("errors") or None
-        payload = str(data)
+    def slow_dump(data, handle, *args, **kwargs):
+        staging = Path(handle.name)
+        if staging.parent != job_path.parent or not staging.name.startswith(f".{job_path.name}."):
+            return original_dump(data, handle, *args, **kwargs)
+        payload = json.dumps(data, *args, **kwargs)
         midpoint = max(1, len(payload) // 2)
-        with self.open("w", encoding=encoding, errors=errors) as handle:
-            handle.write(payload[:midpoint])
-            handle.flush()
-            write_started.set()
-            assert allow_finish.wait(5), "test writer was not released"
-            handle.write(payload[midpoint:])
-        return len(payload)
+        handle.write(payload[:midpoint])
+        handle.flush()
+        write_started.set()
+        assert allow_finish.wait(5), "test writer was not released"
+        handle.write(payload[midpoint:])
 
-    monkeypatch.setattr(Path, "write_text", slow_write_text)
+    monkeypatch.setattr(json, "dump", slow_dump)
 
     writer = threading.Thread(
         target=app_module.v19_update_job,
@@ -66,11 +63,12 @@ def test_v19_progress_reader_never_observes_partial_job_json(client, monkeypatch
         daemon=True,
     )
     writer.start()
-    assert write_started.wait(5), "job writer did not enter persistence window"
-
-    observed = app_module.v19_read_job(project_id, job_id)
-    allow_finish.set()
-    writer.join(timeout=5)
+    try:
+        assert write_started.wait(5), "job writer did not enter persistence window"
+        observed = app_module.v19_read_job(project_id, job_id)
+    finally:
+        allow_finish.set()
+        writer.join(timeout=5)
     assert not writer.is_alive()
 
     assert observed["status"] == "running"

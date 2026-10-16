@@ -1,3 +1,9 @@
+## 2026-10-16｜菜单推送后 ZIP/窄屏核验
+
+- 原 3be88817 已安全推送，精确 SHA 40 workflows / 112 jobs 全部成功。后续修复的 CI 必须独立按其最终 SHA 验收。
+- atomic_write_json 使用独占 UUID staging，关闭句柄后替换，仅 Windows 5/32/33 最多四次，总等待30ms；持续失败仍抛出且仅清理本次 staging。4000并发写入无错无残留，7项重复五次通过。训练 Grid 收敛到页面宽度，375px仅表格内部滚动，不改桌面列宽。
+- 本地 Node24 972/972、Python75/75、Chrome44/44；VERSION42.24.356，styles缓存42.25.386，app/main不变。既有ZIP Ubuntu/Windows Job实际加入原子写入测试。详情见 docs/ROW_ACTION_MENU_ACCEPTANCE_2026_10_16.md；未部署。
+
 ## 2026-10-16｜列表操作菜单与导航简化（LOCAL VERIFIED / CI OPEN）
 
 - 常规 entity-more 仅算法/训练两处，统一由 RowActionMenuRuntime 管理一个原生顶层 Popover；只展示并委托原按钮，不增加 API、业务 Owner、轮询或删除语义。

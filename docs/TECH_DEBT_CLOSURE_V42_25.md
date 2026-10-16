@@ -2,6 +2,8 @@
 
 ## 2026-10-16 列表行菜单定向产品修复 — LOCAL VERIFIED / CI OPEN
 
+后续核验：原3be88817远端40/40已成功。确认并最小修复Windows原子文件争用及375px训练Grid溢出，未扩展债务清理；Node24 972/972、Python75/75、Chrome44/44，4000并发写入无错误/残留。styles42.25.386、VERSION不变；修复SHA须独立远端CI验证。
+
 原 entity-more 共用唯一 RowActionMenuRuntime 顶层展示；训练更新保留动作 DOM，清除冗余项目展示，不扩展技术债重构或业务 Owner。Node24 972/972、Chrome 44/44；VERSION 42.24.356 不变，本地提交不推送。证据及未验收边界见 ROW_ACTION_MENU_ACCEPTANCE_2026_10_16.md。
 
 ## 2026-10-08 统一分页 phase 2A — IMPLEMENTED / CI PENDING
