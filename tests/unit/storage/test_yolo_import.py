@@ -169,4 +169,8 @@ def test_yolo_text_identity_rejects_known_hash_change_with_same_size(tmp_path):
         scanner.scan_annotations()
     assert error.value.code == "YOLO_SOURCE_CHANGED"
     assert "hash changed" in str(error.value)
+    assert store.inventory_for_keys(['labels/train/a.txt'])['labels/train/a.txt']['sha256'] == 'f' * 64
+    evidence = store.annotations_for_keys(['images/train/a.jpg'])['images/train/a.jpg']
+    assert evidence['annotation_status'] != 'annotated'
+    assert evidence['boxes'] == []
 

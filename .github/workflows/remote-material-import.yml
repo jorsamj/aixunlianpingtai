@@ -170,6 +170,7 @@ jobs:
           tests/unit/test_annotation_schema.py
           tests/unit/test_remote_material_import.py
           tests/unit/storage/test_detection_import.py
+          tests/unit/storage/test_yolo_import.py
           tests/unit/test_remote_material_lifecycle.py
           tests/unit/test_remote_execution_transport.py
           tests/unit/storage/test_rescan_tasks.py

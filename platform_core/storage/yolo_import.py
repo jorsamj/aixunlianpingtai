@@ -588,6 +588,10 @@ class YoloImportScanner:
                                 self._tick(key)
                         state["annotation_status"] = "annotated" if state["box_count"] else ("invalid" if nonempty else "confirmed_empty")
                     except (OSError, StorageError) as error:
+                        if isinstance(error, YoloImportError) and error.code == 'YOLO_SOURCE_CHANGED':
+                            # Frozen source identity drift invalidates this scan,
+                            # rather than becoming an ordinary malformed-label row.
+                            raise
                         state["annotation_status"] = "invalid"
                         issues.append({"object_key": key, "line_number": 0,
                                        "code": error.code if isinstance(error, YoloImportError) else "YOLO_LABEL_READ_FAILED", "severity": "error"})
