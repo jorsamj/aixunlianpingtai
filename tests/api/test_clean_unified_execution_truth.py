@@ -3,6 +3,7 @@ import io
 import uuid
 from pathlib import Path
 
+import pytest
 from PIL import Image
 
 import app as app_module
@@ -15,6 +16,39 @@ from platform_core.task_runtime import (
     ArtifactStore, FencedTaskRepository, Scheduler, TaskKind, TaskStatus,
 )
 from platform_core.worker_registry import build_worker_registration
+
+
+def test_clean_selection_spec_uses_label_or_and_annotation_state_intersection():
+    selection, scope = app_module._v47_clean_selection_spec(
+        "annotated", [],
+        selection_spec={
+            "scope": "FILTERED",
+            "filters": {"labels": ["fire", "smoke"], "annotation_state": "annotated"},
+        },
+    )
+    assert scope == "labels"
+    assert selection == {
+        "scope": "FILTERED",
+        "filters": {"query": "", "storage_source_ids": [], "processing_status": None,
+                    "split": None, "labels": ["fire", "smoke"], "annotated": None,
+                    "annotation_state": "annotated"},
+        "image_ids": [], "repository_revision": None,
+    }
+
+
+def test_clean_selection_mode_rejects_disguised_or_empty_ranges():
+    with pytest.raises(ValueError, match="至少需要一个有效标签"):
+        app_module._v47_clean_selection_spec(
+            "all", [],
+            selection_spec={"scope": "FILTERED", "filters": {}},
+            selection_mode="labels",
+        )
+    with pytest.raises(ValueError, match="不能伪装"):
+        app_module._v47_clean_selection_spec(
+            "all", [],
+            selection_spec={"scope": "SELECTED", "image_ids": ["material-1"]},
+            selection_mode="all",
+        )
 
 
 def _png_bytes() -> bytes:
@@ -143,6 +177,84 @@ def test_clean_scope_filters_use_formal_annotation_state_not_box_count(client):
             task_id=task_id,
         )
         assert sorted(app_module._v47_frozen_clean_selection_ids(task_id)) == sorted(expected_ids)
+
+
+def test_clean_label_scope_freezes_or_matches_with_annotation_state_intersection(client):
+    response = client.post(
+        "/api/projects",
+        json={"name": "clean-label-or-scope", "labels": ["fire", "smoke", "person"]},
+    )
+    response.raise_for_status()
+    project_id = response.json()["id"]
+    uploaded = _upload(client, project_id, "fire.png", "smoke.png", "person.png", "raw.png")
+    fire_id, smoke_id, person_id, raw_id = [item["id"] for item in uploaded["uploaded"]]
+    for image_id, class_id, label in (
+        (fire_id, 0, "fire"), (smoke_id, 1, "smoke"), (person_id, 2, "person"),
+    ):
+        app_module.write_annotation(
+            project_id, image_id,
+            [{"class_id": class_id, "label": label, "x1": 5, "y1": 5, "x2": 80, "y2": 80}],
+            annotation_state="annotated", annotation_origin="manual",
+        )
+
+    payload = app_module.V47CleanReq(
+        clean_scope="annotated",
+        selection_mode="labels",
+        selection_spec={
+            "scope": "FILTERED",
+            "filters": {"labels": ["fire", "smoke"], "annotation_state": "annotated"},
+        },
+        task_name="labels-or-annotated",
+    )
+    batch_payload = app_module._v47_material_batch_payload(project_id, payload)
+    assert batch_payload["selection_spec"]["filters"]["labels"] == ["fire", "smoke"]
+    task_id = f"labels_or_{uuid.uuid4().hex[:8]}"
+    app_module.prepare_material_batch(
+        project_id, app_module.material_store(project_id),
+        app_module.shared_task_artifacts(), batch_payload, task_id=task_id,
+    )
+    frozen = sorted(app_module._v47_frozen_clean_selection_ids(task_id))
+    assert frozen == sorted([fire_id, smoke_id])
+    assert person_id not in frozen and raw_id not in frozen
+
+
+def test_clean_label_scope_rejects_unknown_or_inactive_formal_labels(client):
+    project_id = _create_project(client, "clean-label-validity")
+    payload = app_module.V47CleanReq(
+        clean_scope="all",
+        selection_mode="labels",
+        selection_spec={
+            "scope": "FILTERED",
+            "filters": {"labels": ["retired-label"]},
+        },
+    )
+    with pytest.raises(ValueError, match="当前有效正式标签"):
+        app_module._v47_material_batch_payload(project_id, payload)
+
+
+def test_selected_clean_scope_applies_secondary_state_inside_explicit_ids(client):
+    project_id = _create_project(client, "clean-selected-state-intersection")
+    uploaded = _upload(client, project_id, "marked.png", "raw.png")
+    marked_id, raw_id = [item["id"] for item in uploaded["uploaded"]]
+    app_module.write_annotation(
+        project_id, marked_id,
+        [{"class_id": 0, "label": "target", "x1": 5, "y1": 5, "x2": 80, "y2": 80}],
+        annotation_state="annotated", annotation_origin="manual",
+    )
+    payload = app_module.V47CleanReq(
+        clean_scope="unannotated",
+        selection_spec={
+            "scope": "SELECTED", "image_ids": [marked_id, raw_id],
+            "filters": {"annotation_state": "unannotated"},
+        },
+    )
+    batch_payload = app_module._v47_material_batch_payload(project_id, payload)
+    task_id = f"selected_state_{uuid.uuid4().hex[:8]}"
+    app_module.prepare_material_batch(
+        project_id, app_module.material_store(project_id),
+        app_module.shared_task_artifacts(), batch_payload, task_id=task_id,
+    )
+    assert app_module._v47_frozen_clean_selection_ids(task_id) == [raw_id]
 
 
 def test_filtered_clean_confirmation_stays_inside_frozen_selection_and_exposes_provenance(client):

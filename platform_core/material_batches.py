@@ -218,7 +218,7 @@ def _predicate(materials, selection):
     return ["m.id IN (" + ",".join("?" for _ in selection.image_ids) + ")"], list(selection.image_ids)
 
 
-def _explicit_selection_count(database, image_ids):
+def _explicit_selection_count(database, image_ids, materials=None, filters=None):
     database.execute(
         "CREATE TEMP TABLE IF NOT EXISTS material_batch_explicit_selection ("
         "image_id TEXT PRIMARY KEY) WITHOUT ROWID"
@@ -228,9 +228,12 @@ def _explicit_selection_count(database, image_ids):
         "INSERT INTO material_batch_explicit_selection(image_id) VALUES (?)",
         ((str(image_id),) for image_id in image_ids),
     )
+    clauses, params = materials._filters(filters) if materials is not None and filters is not None else ([], [])
+    where = " WHERE " + " AND ".join(clauses) if clauses else ""
     return int(database.execute(
         "SELECT COUNT(*) FROM materials m "
-        "JOIN material_batch_explicit_selection s ON s.image_id=m.id"
+        "JOIN material_batch_explicit_selection s ON s.image_id=m.id" + where,
+        params,
     ).fetchone()[0])
 
 
@@ -251,7 +254,9 @@ def estimate_batch(project_id, materials, payload):
             where = " WHERE " + " AND ".join(clauses) if clauses else ""
             count = int(database.execute("SELECT COUNT(*) FROM materials m" + where, params).fetchone()[0])
         else:
-            count = _explicit_selection_count(database, selection.image_ids)
+            count = _explicit_selection_count(
+                database, selection.image_ids, materials, selection.filters,
+            )
     confirmed_selection = replace(selection, repository_revision=revision)
     result = {"operation": operation.value, "count": count, "total": count,
               "repository_revision": revision, "revision": revision,
@@ -375,6 +380,16 @@ def prepare_batch(project_id, materials, artifacts, payload, *, task_id=None):
                 ).fetchone()[0])
                 if inserted != len(selection.image_ids):
                     raise BatchRequestError("MATERIAL_SELECTION_CHANGED", "selected materials are missing; re-estimate before confirming", 409)
+                clauses, params = materials._filters(selection.filters)
+                if clauses:
+                    database.execute(
+                        "DELETE FROM batch_selection.selection WHERE image_id NOT IN ("
+                        "SELECT m.id FROM main.materials m WHERE " + " AND ".join(clauses) + ")",
+                        params,
+                    )
+                    inserted = int(database.execute(
+                        "SELECT COUNT(*) FROM batch_selection.selection"
+                    ).fetchone()[0])
             database.executemany(
                 "INSERT INTO batch_selection.meta(key,value) VALUES (?,?)",
                 (("frozen", utc_now()), ("repository_revision", str(selection.repository_revision))),

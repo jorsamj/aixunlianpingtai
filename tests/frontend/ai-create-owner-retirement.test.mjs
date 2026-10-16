@@ -19,7 +19,8 @@ test('AI create owner composes core and decorators explicitly', () => {
   assert.match(app, /window\.createAiLabelCore429=function\(opts=\{\}\)/);
   assert.match(app, /window\.decorateAiReferenceLabels417=function\(\)/);
   assert.match(app, /window\.decorateAiReferenceBulk412=function\(\)/);
-  assert.match(app, /window\.createAiLabel429=async function createAiLabelCanonical429\(opts=\{\}\)/);
+  assert.match(app, /window\.createAiLabel429=function createAiLabelCanonical429\(opts=\{\}\)/);
+  assert.match(app, /queueMicrotask\(\(\)=>window\.hydrateAiCreate429\?\.\(result\)\)/);
   assert.match(app, /window\.createAiLabel427=window\.createAiLabel429/);
 });
 

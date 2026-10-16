@@ -38,8 +38,9 @@ test('canonical AI creation selects a saved model config and never exposes a tem
   const createBlock = app.slice(createStart, createEnd);
   assert.match(createBlock, /id="ai429Model"/);
   assert.match(createBlock, /任务创建时冻结/);
-  assert.match(createBlock, /不支持临时检测接口/);
-  assert.match(createBlock, /参考图只用于视觉示例，不会自动添加或改变本次标签/);
+  assert.match(createBlock, /只展示已配置模型/);
+  assert.match(createBlock, /参考图片（可选）/);
+  assert.match(createBlock, /仅作为视觉示例，不会自动添加或改变本次标签/);
   assert.doesNotMatch(createBlock, /id="preUrl"|id="preModelCfg"/);
 
   const submitStart = app.indexOf('window.submitAiLabel429=async function');
@@ -48,6 +49,10 @@ test('canonical AI creation selects a saved model config and never exposes a tem
   assert.match(submitBlock, /getElementById\('ai429Model'\)/);
   assert.match(submitBlock, /if\(!parsed\.text\)return toast\('请显式输入至少一个当前有效的平台标签 code'\)/);
   assert.match(submitBlock, /model_config_id:modelConfigId/);
+  assert.match(submitBlock, /prompt_template_id:/);
+  assert.match(submitBlock, /prompt_override:/);
+  assert.match(submitBlock, /business_instruction:/);
+  assert.match(submitBlock, /reference_image_ids:/);
   assert.doesNotMatch(submitBlock, /find\(item=>item\.default_for_annotation\)/);
 });
 

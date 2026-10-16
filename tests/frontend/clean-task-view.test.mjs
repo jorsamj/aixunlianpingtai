@@ -179,27 +179,40 @@ test('remote clean task view maps Agent stages without inventing progress', () =
 });
 
 
-test('clean scope choices use formal annotation states and selected IDs explicitly', () => {
-  const choices = cleaning.cleanScopeChoices({selectedCount: 2});
+test('clean scope choices separate primary selection from secondary formal annotation state', () => {
+  const choices = cleaning.cleanScopeChoices({selectedCount: 2, labelCount: 3});
   assert.deepEqual(
     choices.map(item => item.value),
-    ['all', 'annotated', 'unannotated', 'confirmed_empty', 'selected'],
+    ['all', 'selected', 'labels'],
   );
   assert.equal(choices.find(item => item.value === 'selected').available, true);
+  assert.equal(choices.find(item => item.value === 'labels').available, true);
   assert.deepEqual(
-    cleaning.cleanScopeRequest('annotated', ['should-not-leak']),
-    {clean_scope: 'annotated', image_ids: []},
+    cleaning.cleanScopeRequest('all', [], {annotationState: 'annotated', filters: {query: 'fire'}}),
+    {
+      selection_mode: 'all', clean_scope: 'annotated', image_ids: [],
+      selection_spec: {scope: 'FILTERED', filters: {query: 'fire', annotation_state: 'annotated'}},
+    },
   );
   assert.deepEqual(
-    cleaning.cleanScopeRequest('selected', ['a', 'a', 'b']),
-    {clean_scope: 'selected', image_ids: ['a', 'b']},
+    cleaning.cleanScopeRequest('selected', ['a', 'a', 'b'], {annotationState: 'all'}),
+    {
+      selection_mode: 'selected', clean_scope: 'selected', image_ids: ['a', 'b'],
+      selection_spec: {scope: 'SELECTED', image_ids: ['a', 'b']},
+    },
   );
-  assert.equal(cleaning.cleanScopeSupportsAnnotationAudit('all'), true);
-  assert.equal(cleaning.cleanScopeSupportsAnnotationAudit('annotated'), true);
-  assert.equal(cleaning.cleanScopeSupportsAnnotationAudit('selected'), true);
-  assert.equal(cleaning.cleanScopeSupportsAnnotationAudit('unannotated'), false);
-  assert.equal(cleaning.cleanScopeSupportsAnnotationAudit('confirmed_empty'), false);
+  assert.deepEqual(
+    cleaning.cleanScopeRequest('labels', [], {labels: ['smoke', 'fire', 'smoke'], annotationState: 'annotated'}),
+    {
+      selection_mode: 'labels', clean_scope: 'annotated', image_ids: [],
+      selection_spec: {scope: 'FILTERED', filters: {labels: ['smoke', 'fire'], annotation_state: 'annotated'}},
+    },
+  );
+  assert.equal(cleaning.cleanScopeSupportsAnnotationAudit('all', 'all'), true);
+  assert.equal(cleaning.cleanScopeSupportsAnnotationAudit('labels', 'annotated'), true);
+  assert.equal(cleaning.cleanScopeSupportsAnnotationAudit('selected', 'unannotated'), false);
   assert.throws(() => cleaning.cleanScopeRequest('selected', []), /没有选中的图片/);
+  assert.throws(() => cleaning.cleanScopeRequest('labels', [], {labels: []}), /至少选择一个标签/);
 
   const forced = cleaning.cleanScopeChoices({selectedCount: 1, forcedSelected: true});
   assert.equal(forced.find(item => item.value === 'selected').available, true);

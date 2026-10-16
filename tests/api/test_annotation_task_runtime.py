@@ -91,6 +91,32 @@ def test_annotation_task_create_is_private_and_worker_queued(
     assert request["model_config_revision"] == body["model_config_revision"]
 
 
+def test_annotation_task_freezes_template_version_and_task_prompt_override(
+    client, seeded_project, isolated_task_runtime, monkeypatch,
+):
+    project_id, image = seeded_project
+    monkeypatch.setattr(app_module, "_v35_model_items", lambda: [{
+        "id": "model-1", "name": "视觉模型", "model_name": "vision-v1",
+        "provider_type": "local_openai", "detect_url": "http://vision.local/v1",
+    }])
+    monkeypatch.setattr(app_module, "_v35_prompt_items", lambda: [{
+        "id": "tpl-1", "name": "火焰模板", "version": 7, "version_id": "tpl-v7",
+        "prompt": "模板 {{labels_json}} {{output_schema}}",
+    }])
+    response = client.post(f"/api/v60/projects/{project_id}/annotation-tasks", json={
+        "image_ids": [image["id"]], "labels_text": "fire",
+        "model_config_id": "model-1", "prompt_template_id": "tpl-1",
+        "prompt_override": "本任务 {{labels_json}} {{output_schema}}",
+    })
+    assert response.status_code == 202, response.text
+    public = response.json()
+    assert "rendered_prompt_preview" not in public
+    request = isolated_task_runtime[1].read_json(public["id"], "request.json")
+    assert request["prompt_template_snapshot"]["version_id"] == "tpl-v7"
+    assert request["effective_prompt_template"].startswith("本任务")
+    assert request["prompt_source"] == "task_override"
+
+
 def test_annotation_task_detail_reads_real_worker_checkpoint_counts(client, seeded_project, isolated_task_runtime):
     project_id, _image = seeded_project
     repository, artifacts = isolated_task_runtime

@@ -57,7 +57,10 @@ test('canonical pages do not hydrate the complete material pool during navigatio
   const app = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
   assert.match(picker, /fullPoolHydration: false/);
   assert.doesNotMatch(main, /FULL_MATERIAL_PAGES\.(?:add|delete)\(/);
-  assert.match(app, /await window\.MaterialPaginationRuntime61\?\.ensureFullPool\?\.\(\)/);
+  const createStart = app.indexOf('window.createAiLabel429=function createAiLabelCanonical429(opts={})');
+  const createEnd = app.indexOf('window.createAiLabel427=window.createAiLabel429;', createStart);
+  assert.ok(createStart >= 0 && createEnd > createStart);
+  assert.doesNotMatch(app.slice(createStart, createEnd), /ensureFullPool/);
 });
 
 

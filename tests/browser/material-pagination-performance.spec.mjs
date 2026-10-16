@@ -240,7 +240,7 @@ test('quality center navigation does not hydrate the full material pool', async 
 });
 
 
-test('auto-label task page avoids full hydration until the user creates a task', async ({page}) => {
+test('auto-label task creation stays paged and never hydrates the full material pool', async ({page}) => {
   const apiRequests = [];
   page.on('request', request => {
     const url = new URL(request.url());
@@ -264,13 +264,15 @@ test('auto-label task page avoids full hydration until the user creates a task',
   expect(apiRequests.some(row => /\/api\/projects\/[^/]+\/images(?:\?|$)/.test(row))).toBe(false);
   expect(await page.evaluate(() => window.MaterialPaginationRuntime61.state().fullPoolInflight)).toBe(false);
 
-  const fullPoolRequest = page.waitForRequest(request => {
+  const pageRequest = page.waitForRequest(request => {
     const url = new URL(request.url());
-    return request.method() === 'GET' && /\/api\/projects\/[^/]+\/images$/.test(url.pathname);
+    return request.method() === 'GET' && /\/api\/v61\/projects\/[^/]+\/materials$/.test(url.pathname);
   });
   await page.getByRole('button', {name: /创建AI标注任务/}).click();
-  await fullPoolRequest;
-  await expect(page.getByRole('dialog', {name: '创建AI自动标注任务'})).toBeVisible({timeout: 10_000});
+  await expect(page.getByRole('dialog', {name: '创建AI自动标注任务'})).toBeVisible();
+  await pageRequest;
+  expect(apiRequests.some(row => /\/api\/projects\/[^/]+\/images(?:\?|$)/.test(row))).toBe(false);
+  expect(await page.evaluate(() => window.MaterialPaginationRuntime61.state().fullPoolInflight)).toBe(false);
 });
 
 

@@ -705,6 +705,17 @@ export function installMaterialPaginationRuntime() {
     build: 'material-pagination-runtime-422212',
     load: loadMaterialPage61,
     ensureFullPool: ensureFullPool61,
+    selectionFilters() {
+      const value = filters61();
+      const result = {};
+      if (value.query) result.query = value.query;
+      if (value.sourceId && value.sourceId !== 'all') result.storage_source_ids = [value.sourceId];
+      if (value.processingStatus) result.processing_status = value.processingStatus;
+      if (Array.isArray(value.labels) && value.labels.length) result.labels = value.labels.slice();
+      if (value.annotated === 'marked') result.annotated = true;
+      if (value.annotated === 'unmarked') result.annotated = false;
+      return result;
+    },
     refresh: focusedRefresh61,
     invalidate() {
       invalidateFullPool61();

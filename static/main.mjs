@@ -29,7 +29,7 @@ import {installAutoLabelPollRuntime} from './modules/auto-label-poll-runtime.js?
 import {annotationReviewView, annotationSavePayload, createAnnotationWorkbench, queueWindow} from './modules/annotation-workbench.js?v=422594';
 import {createTaskPoller, isTaskActive, taskProgress, waitForTaskTerminal} from './modules/task-poller.js?v=422002';
 import {annotationTaskView, buildCandidateDecisions} from './modules/annotation-task-view.js?v=422002';
-import {applyCleanConfirmation, cleanExecutionChoices, cleanExecutionMode, cleanSchedulingRequest, cleanScopeChoices, cleanScopeRequest, cleanScopeSupportsAnnotationAudit, cleanTaskView, isActiveCleanTask} from './modules/cleaning.js?v=422569';
+import {applyCleanConfirmation, cleanExecutionChoices, cleanExecutionMode, cleanSchedulingRequest, cleanScopeChoices, cleanScopeRequest, cleanScopeSupportsAnnotationAudit, cleanTaskView, isActiveCleanTask} from './modules/cleaning.js?v=422570';
 import {deploymentTaskView} from './modules/deployment-tests.js?v=422518';
 import {activeLabelOptions} from './modules/labels.js?v=421800';
 import {filterByAnyLabel, labelDisplay, labelsFromReferences, replaceMaterial} from './modules/materials.js?v=421800';
@@ -40,7 +40,7 @@ import {qualityChartModel} from './modules/quality.js?v=421800';
 import {reportPresentation, metricChart, trainingCharts, formatPercentagePointDelta} from './modules/reports.js?v=4226374';
 import {isActiveVideoTask, normalizeVideoTask, videoTaskFormValues} from './modules/video-tasks.js?v=421900';
 import {buildStorageSourcePayload, defaultStorageSource, enabledStorageSources, sourceMatches, storageSourceLabel} from './modules/storage.js?v=422202';
-import {buildMaterialQuery, installMaterialPaginationRuntime, requiresFullMaterialPool} from './modules/material-pagination-runtime.js?v=422609';
+import {buildMaterialQuery, installMaterialPaginationRuntime, requiresFullMaterialPool} from './modules/material-pagination-runtime.js?v=422610';
 import {installStorageImportProgressRuntime, storageImportProgressText} from './modules/storage-import-progress.js?v=422525';
 import {installUploadTaskCenter} from './modules/upload-task-center.js?v=66012';
 import {buildServerImportRequest, buildImportConfirmation, serverImportView} from './modules/server-material-import.js?v=422526';

@@ -206,3 +206,50 @@ def test_reference_images_are_preserved_without_expanding_explicit_labels(tmp_pa
 
     assert frozen["reference_image_ids"] == reference_ids
     assert frozen["labels"] == ["fire"]
+
+
+def test_task_prompt_override_is_validated_and_frozen_for_recovery(tmp_path, monkeypatch):
+    _write_project(tmp_path)
+    template = {
+        "id": "tpl-1", "name": "基础模板", "version": 3,
+        "version_id": "v3", "prompt": "模板 {{labels_json}} {{output_schema}}",
+    }
+    override = "任务专用：{{labels_json}}，尺寸 {{image_width}}x{{image_height}}。{{output_schema}}"
+    frozen = annotation_runtime.prepare_request(
+        tmp_path, "p1", {
+            "image_ids": ["image-1"], "labels_text": "fire",
+            "model_config_id": "model-1", "prompt_template_id": "tpl-1",
+            "prompt_override": override,
+        },
+        runtime=False, model_configs=[_model()], prompt_templates=[template],
+    )
+    assert frozen["prompt_template_snapshot"]["prompt"] == template["prompt"]
+    assert frozen["effective_prompt_template"] == override
+    assert frozen["prompt_source"] == "task_override"
+    assert frozen["prompt_template_version_id"] == "v3"
+    assert "任务专用" in frozen["rendered_prompt_preview"]
+    assert '"code": "fire"' in frozen["rendered_prompt_preview"]
+
+    class FakeSecrets:
+        def get(self, _reference):
+            return "secret"
+
+    monkeypatch.setattr(annotation_runtime, "KeyringSecretStore", FakeSecrets)
+    monkeypatch.setattr(annotation_runtime, "provider_factory", lambda _config: object())
+    recovered = annotation_runtime.prepare_request(tmp_path, "p1", frozen, runtime=True)
+    assert recovered["prompt_template"] == override
+
+
+def test_task_prompt_override_rejects_unknown_variables_and_excessive_length(tmp_path):
+    _write_project(tmp_path)
+    base = {"image_ids": ["one"], "labels_text": "fire", "model_config_id": "model-1"}
+    with pytest.raises(ValueError, match="未知模板变量"):
+        annotation_runtime.prepare_request(
+            tmp_path, "p1", {**base, "prompt_override": "{{api_key}}"},
+            runtime=False, model_configs=[_model()], prompt_templates=[],
+        )
+    with pytest.raises(ValueError, match="AI_PROMPT_TOO_LONG"):
+        annotation_runtime.prepare_request(
+            tmp_path, "p1", {**base, "prompt_override": "x" * 12001},
+            runtime=False, model_configs=[_model()], prompt_templates=[],
+        )

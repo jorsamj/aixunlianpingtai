@@ -26,8 +26,8 @@ test('stable annotation workbench owns annotation public actions', () => {
 test('AI submit and reference selection keep current owners', () => {
   assert.match(app,/Persistent v60 AI annotation UI/);
   assert.match(app,/window\.submitAiLabel429=async function\(ids=\[\]\)/);
-  assert.match(app,/window\.toggleRefCore429=function\(id\)/);
   assert.match(app,/window\.toggleRef429=function\(id\)\{const key=String\(id\)/);
+  assert.match(app,/window\.aiCreateRenderReferences429=function\(\)/);
 });
 
 

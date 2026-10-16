@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from .auto_label import provider_factory
-from .prompts import render_prompt, version_template
+from .prompts import render_prompt, template_version_id, version_template
 from .secrets import KeyringSecretStore
 
 
@@ -33,6 +33,12 @@ _SECRET_HEADER_NAMES = frozenset({
     "x-access-key",
     "x-access-token",
 })
+MAX_TASK_PROMPT_LENGTH = 12_000
+DEFAULT_ANNOTATION_PROMPT = (
+    "你是视觉目标检测标注助手。只标注标签库中的目标：{{labels_json}}。"
+    "图片尺寸为 {{image_width}}x{{image_height}}。{{business_instruction}}"
+    "必须只返回符合此结构的 JSON，不要输出解释或 Markdown：{{output_schema}}"
+)
 
 
 def _read(path, default):
@@ -104,11 +110,7 @@ def label_catalog(project):
 def build_annotation_prompt(cfg, labels, *, width, height, business_instruction, template=""):
     template = (template or cfg.get("annotation_prompt_template") or "").strip()
     if not template:
-        template = (
-            "你是视觉目标检测标注助手。只标注标签库中的目标：{{labels_json}}。"
-            "图片尺寸为 {{image_width}}x{{image_height}}。{{business_instruction}}"
-            "必须只返回符合此结构的 JSON，不要输出解释或 Markdown：{{output_schema}}"
-        )
+        template = DEFAULT_ANNOTATION_PROMPT
     if "{{" in template:
         return render_prompt(
             template,
@@ -149,12 +151,19 @@ def prepare_request(
         "preview_count",
         "prompt_template_snapshot",
         "prompt_template_version_id",
+        "prompt_override",
+        "effective_prompt_template",
+        "effective_prompt_revision",
+        "prompt_source",
+        "rendered_prompt_preview",
         "image_ids",
         "schema_version",
         "model_config_snapshot",
         "model_config_revision",
         "model_config_name",
         "model_provider",
+        "label_schema_snapshot",
+        "label_schema_revision",
     }
     prepared = {key: value for key, value in request.items() if key in allowed}
     if not runtime:
@@ -165,6 +174,12 @@ def prepare_request(
         prepared.pop("model_config_revision", None)
         prepared.pop("model_config_name", None)
         prepared.pop("model_provider", None)
+        prepared.pop("effective_prompt_template", None)
+        prepared.pop("effective_prompt_revision", None)
+        prepared.pop("prompt_source", None)
+        prepared.pop("rendered_prompt_preview", None)
+        prepared.pop("label_schema_snapshot", None)
+        prepared.pop("label_schema_revision", None)
 
     labels = prepared.get("labels") or re.split(
         r"[、,，;；\n\t]+",
@@ -179,7 +194,12 @@ def prepare_request(
     if not labels:
         raise ValueError("AI_LABELS_REQUIRED: select annotation labels")
 
-    catalog = [item for item in label_catalog(project) if item["code"] in labels]
+    frozen_catalog = prepared.get("label_schema_snapshot") if runtime else None
+    catalog = (
+        _json_clone(frozen_catalog)
+        if isinstance(frozen_catalog, list)
+        else [item for item in label_catalog(project) if item["code"] in labels]
+    )
     available_codes = {item["code"] for item in catalog}
     if set(labels) != available_codes:
         unknown = [label for label in labels if label not in available_codes]
@@ -273,6 +293,55 @@ def prepare_request(
                     now=str(template.get("updated_at") or template.get("created_at") or ""),
                 )
 
+    if runtime:
+        effective_prompt = str(prepared.get("effective_prompt_template") or "").strip()
+        expected_prompt_revision = str(prepared.get("effective_prompt_revision") or "").strip()
+        if not effective_prompt or template_version_id(effective_prompt) != expected_prompt_revision:
+            raise ValueError(
+                "AI_PROMPT_SNAPSHOT_MISMATCH: frozen task prompt is missing or changed"
+            )
+        expected_schema_revision = str(prepared.get("label_schema_revision") or "").strip()
+        schema_body = json.dumps(catalog, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        if not expected_schema_revision or hashlib.sha256(schema_body.encode("utf-8")).hexdigest() != expected_schema_revision:
+            raise ValueError(
+                "AI_LABEL_SCHEMA_SNAPSHOT_MISMATCH: frozen label schema is missing or changed"
+            )
+    else:
+        prompt_override = str(prepared.get("prompt_override") or "").strip()
+        if len(prompt_override) > MAX_TASK_PROMPT_LENGTH:
+            raise ValueError(
+                f"AI_PROMPT_TOO_LONG: task prompt is limited to {MAX_TASK_PROMPT_LENGTH} characters"
+            )
+        template_prompt = str(template.get("prompt") or "").strip()
+        model_prompt = str(config.get("annotation_prompt_template") or "").strip()
+        effective_prompt = prompt_override or template_prompt or model_prompt or DEFAULT_ANNOTATION_PROMPT
+        if len(effective_prompt) > MAX_TASK_PROMPT_LENGTH:
+            raise ValueError(
+                f"AI_PROMPT_TOO_LONG: effective prompt is limited to {MAX_TASK_PROMPT_LENGTH} characters"
+            )
+        rendered_preview = build_annotation_prompt(
+            config,
+            catalog,
+            width=640,
+            height=480,
+            business_instruction=str(prepared.get("business_instruction") or ""),
+            template=effective_prompt,
+        )
+        schema_body = json.dumps(catalog, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        prepared.update({
+            "effective_prompt_template": effective_prompt,
+            "effective_prompt_revision": template_version_id(effective_prompt),
+            "prompt_source": (
+                "task_override" if prompt_override else
+                "prompt_template" if template_prompt else
+                "model_default" if model_prompt else "platform_default"
+            ),
+            "rendered_prompt_preview": rendered_preview,
+            "label_schema_snapshot": _json_clone(catalog),
+            "label_schema_revision": hashlib.sha256(schema_body.encode("utf-8")).hexdigest(),
+        })
+        prepared.pop("prompt_override", None)
+
     prepared.update({
         "labels": labels,
         "reference_image_ids": references,
@@ -323,6 +392,6 @@ def prepare_request(
             ))
             for item in catalog
         },
-        "prompt_template": str(template.get("prompt") or ""),
+        "prompt_template": effective_prompt,
     })
     return prepared
