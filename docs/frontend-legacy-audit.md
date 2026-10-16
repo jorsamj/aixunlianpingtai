@@ -2,6 +2,8 @@
 
 ## 2026-10-16 Row action menu presentation
 
+Final mobile status tabs keep readable single-line labels within the original scroll strip (<=760px); styles42.25.387, no new owner.
+
 Follow-up closes the verified training Grid overflow without altering desktop columns/owners. Original 3be88817 remote40 workflows/112 jobs passed; shared atomic staging contention was independently reproduced and minimally fixed. Local Node24 972/972, Python75/75, Chrome44/44; next SHA requires fresh CI. See the acceptance report.
 
 Existing algorithm/training entity-more markup now delegates to one RowActionMenuRuntime top-layer popover. It invokes original buttons; no CRUD, task, poll or navigation owner is duplicated. Training epoch patches preserve action markup identity; obsolete nav-project/projectBadge rendering/CSS is removed without changing project state. Node24 972/972, Chrome 44/44; formal VERSION unchanged. See ROW_ACTION_MENU_ACCEPTANCE_2026_10_16.md for evidence and limits.

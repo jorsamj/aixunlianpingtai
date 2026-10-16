@@ -2,6 +2,10 @@
 
 ## 本轮推送后专项核验（优先于下方首次本地报告）
 
+视觉收口补充：Grid 变窄后状态 Tab 曾被 flex 压成逐字换行。先补 Chrome 失败断言，再仅对 <=760px 的状态按钮设置 flex-shrink:0 / white-space:nowrap；状态栏自身横向滚动，页面和桌面列宽不变。最终 styles 缓存为42.25.387，正式 VERSION 与 app/main 不变。后续 CI 以最后提交 SHA 为准。
+
+14db6a2b 首次 CI 的 ZIP Ubuntu contract 失败日志已读取：新增 Python 步骤只安装 pytest，但 platform_core 包初始化会导入 AnnotationRepository/FileLock，测试收集报 ModuleNotFoundError:filelock；Windows contract 及 backend-persistence、real-chrome-refresh 实际成功。补齐同一步骤的 filelock 依赖，不绕过 package 初始化、不改产品代码或测试断言。最终 SHA 必须重新验收。
+
 - 3be8881710443cc615bca046c42dd2d85e6cfe39 已按用户授权普通快进推送；精确 SHA 的 push/pull_request 合计 40 个实际工作流、112 个 Job，全部 completed/success，无失败/取消/跳过。旧工作流名与未触发项不能重复计为通过。
 - 再次扫描全部实际静态入口：算法列表、训练任务使用 entity-more；素材、清洗、AI 任务、算法版本和质量列表是直接操作按钮，不存在另一套未升级的 92px 菜单，不新增无意义入口。现有 Chrome 算法版本删除、素材分页、AI 轮询、质量导航与训练报告回归均保留。
 - 375px 原训练 Grid 内容实际 1044px / 351px，宽表格撑大子项。仅设置训练页 minmax(0,1fr)、子项 min-width:0 与表格滚动包装 border-box。修复后 main=375/375、训练页=351/351、表格容器=347/1040，只有表格内部横向滚动；桌面三视口列宽不变。四视口菜单均完整、可点击，真实鼠标采样 18.7–26.5ms。

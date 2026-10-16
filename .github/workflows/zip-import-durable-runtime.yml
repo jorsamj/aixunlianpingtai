@@ -62,8 +62,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install atomic persistence test dependency
-        run: python -m pip install --disable-pip-version-check pytest
+      - name: Install atomic persistence test dependencies
+        run: python -m pip install --disable-pip-version-check pytest filelock
       - name: Cross-platform atomic JSON staging and Windows contention
         run: python -m pytest -q --confcutdir=tests/unit tests/unit/test_annotations.py
       - name: Syntax check

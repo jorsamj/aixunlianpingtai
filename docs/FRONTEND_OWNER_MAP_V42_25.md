@@ -2,6 +2,8 @@
 
 ## 2026-10-16 Row action menus
 
+Final mobile visual guard: status-tab buttons do not shrink or wrap; the existing tab strip scrolls internally. Style cache42.25.387; no owner or desktop column change.
+
 Follow-up: training Grid is constrained with minmax(0,1fr)/min-width:0, so only the 1040px table scrolls internally at 375px. No new menu, task or polling owner. Node24 972/972, Python75/75, Chrome44/44; original 3be88817 remote40/40 passed, follow-up CI must use its own SHA. Style cache42.25.386; VERSION unchanged.
 
 RowActionMenuRuntime is the sole entity-more popover presentation owner (algorithm + training lists). Original button handlers remain business owners; source permissions and confirmation are preserved. No API/poll/cache is owned by the menu. TrainingTaskVisibilityRuntime retains generated action markup across epoch updates and replaces it when business actions change. Sidebar/top project badges are removed; state.project and project-scoped APIs remain canonical. Local evidence: Node24 972/972, Chrome 44/44; remote/production NOT VERIFIED. See ROW_ACTION_MENU_ACCEPTANCE_2026_10_16.md.

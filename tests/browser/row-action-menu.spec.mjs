@@ -135,7 +135,10 @@ test('training polling preserves open menu, changed actions and pagination inval
     console.log('TRAINING LAYOUT',width,JSON.stringify(layout));
     expect(layout[0].scroll).toBeLessThanOrEqual(layout[0].client + 1);
     expect(layout[1].scroll).toBeLessThanOrEqual(layout[1].client + 1);
-    if (width === 375) expect(layout[3].scroll).toBeGreaterThan(layout[3].client);
+    if (width === 375) {
+      expect(layout[3].scroll).toBeGreaterThan(layout[3].client);
+      expect(await page.locator('.training-status-tabs button').first().evaluate(el => getComputedStyle(el).whiteSpace)).toBe('nowrap');
+    }
     await summary.scrollIntoViewIfNeeded();
     await summary.click();
     const menu = page.locator('.entity-action-menu');

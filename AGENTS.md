@@ -1,5 +1,9 @@
 ## 2026-10-16｜菜单推送后 ZIP/窄屏核验
 
+最终窄屏状态 Tab 不压缩/不逐字换行，使用原栏内横向滚动；styles缓存42.25.387。此视觉收口有先失败后通过的 Chrome 断言，最终CI须按最新SHA查证。
+
+14db6a2b ZIP Ubuntu 新测试步骤因缺 filelock 收集失败（真实日志已读），仅补齐 pytest/filelock 依赖；Windows同Job、后端与Chrome均成功，不放宽断言，最后SHA重新验收。
+
 - 原 3be88817 已安全推送，精确 SHA 40 workflows / 112 jobs 全部成功。后续修复的 CI 必须独立按其最终 SHA 验收。
 - atomic_write_json 使用独占 UUID staging，关闭句柄后替换，仅 Windows 5/32/33 最多四次，总等待30ms；持续失败仍抛出且仅清理本次 staging。4000并发写入无错无残留，7项重复五次通过。训练 Grid 收敛到页面宽度，375px仅表格内部滚动，不改桌面列宽。
 - 本地 Node24 972/972、Python75/75、Chrome44/44；VERSION42.24.356，styles缓存42.25.386，app/main不变。既有ZIP Ubuntu/Windows Job实际加入原子写入测试。详情见 docs/ROW_ACTION_MENU_ACCEPTANCE_2026_10_16.md；未部署。

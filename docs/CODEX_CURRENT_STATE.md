@@ -1,5 +1,7 @@
 ## 2026-10-16｜菜单推送后专项修复
 
+最后视觉收口：<=760px状态Tab不缩窄/不逐字换行，只在原栏内滚动；styles42.25.387。正式VERSION与app/main不变，最终CI按最新SHA。
+
 原3be88817远端40工作流/112Job全成功。后续最小修复：独占原子JSON staging与有界Windows替换重试、训练Grid窄屏只在表格内滚动。Node24 972/972、Python75/75、Chrome44/44；VERSION42.24.356，styles42.25.386。修复提交自己的远端CI尚需按最终SHA核验；不沿用原SHA结果。见 ROW_ACTION_MENU_ACCEPTANCE_2026_10_16.md。
 
 ## 2026-10-16｜行菜单与导航简化（LOCAL VERIFIED / REMOTE NOT RUN）
