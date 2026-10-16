@@ -24,6 +24,9 @@
 
 ## 验收边界
 
+- 首轮业务 SHA 36a62b01 实际触发 47 个 Actions，47 success / 0 failure / 0 queued或运行中。此状态不代替后续修复提交的最终 CI。
+- 覆盖审查补齐原 AI Annotation Recovery 的 annotation_runtime 文件路径触发与实际提示词冻结单测，以及原 Frontend Runtime 的 ai-create-experience.spec.mjs 真实 Chrome 清单；没有新建工作流。
+
 - 所有 Actions 统计按实际检出的最终 SHA；queued/in_progress/cancelled/skipped 不记为 success。
 - 生产 OSS/S3、A800/Linux 主机和历史图片完整性为受控 UAT，隔离数据不代表生产恢复。
 - 不部署、不修改 VERSION、不修改 main、正式数据库或历史 Snapshot。

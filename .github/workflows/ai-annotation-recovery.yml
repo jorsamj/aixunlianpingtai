@@ -10,6 +10,7 @@ on:
       - platform_core/labels.py
       - platform_core/annotation_candidates.py
       - platform_core/annotation_task_service.py
+      - platform_core/annotation_runtime.py
       - platform_core/annotations.py
       - static/app.js
       - static/styles.css
@@ -21,6 +22,7 @@ on:
       - tests/browser/auto-label-polling.spec.mjs
       - tests/unit/test_annotation_candidates.py
       - tests/unit/test_annotation_task_service.py
+      - tests/unit/test_annotation_runtime.py
       - tests/frontend/annotation-task-view.test.mjs
       - tests/frontend/annotation-runtime-source.test.mjs
       - tests/frontend/ai-review-label-usability.test.mjs
@@ -31,6 +33,7 @@ on:
       - platform_core/labels.py
       - platform_core/annotation_candidates.py
       - platform_core/annotation_task_service.py
+      - platform_core/annotation_runtime.py
       - platform_core/annotations.py
       - static/app.js
       - static/styles.css
@@ -40,6 +43,7 @@ on:
       - tests/integration/test_persistent_ai_annotation_e2e.py
       - tests/unit/test_annotation_candidates.py
       - tests/unit/test_annotation_task_service.py
+      - tests/unit/test_annotation_runtime.py
       - tests/frontend/annotation-task-view.test.mjs
       - tests/frontend/annotation-runtime-source.test.mjs
       - tests/frontend/ai-review-label-usability.test.mjs
@@ -140,6 +144,7 @@ jobs:
       - name: Durable annotation API truth
         run: >-
           python -m pytest -q
+          tests/unit/test_annotation_runtime.py
           tests/api/test_annotation_task_runtime.py
           tests/integration/test_persistent_ai_annotation_e2e.py
       - name: Version and diff guard
