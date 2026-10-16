@@ -497,7 +497,8 @@ test('refresh never pretends a browser-only queued ZIP still owns its original f
   await selectIsolatedTestProject(page,project.id);
   await page.goto('/');
   await expect.poll(()=>page.evaluate(()=>Boolean(window.UploadTaskCenterRuntime?.upsert))).toBe(true);
-  await expect(page.locator('#projectBadge')).toContainText(project.name);
+  await expect(page.locator('#projectBadge')).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => state.project?.id)).toBe(project.id);
   await page.evaluate(()=>window.UploadTaskCenterRuntime.upsert({
     id:'zip:local-refresh-only',kind:'zip',title:'refresh-queued-3.zip',status:'WAITING_UPLOAD',
     progress:0,stage:'等待上传 · 第 1 位',detail:'已受理，等待浏览器上传槽位',

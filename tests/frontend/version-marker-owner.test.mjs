@@ -49,9 +49,9 @@ test('entry bundles use cache-bust markers independently from formal release tru
   assert.match(index, /\/static\/app\.js\?v=\d+(?:\.\d+)*/);
   assert.match(index, /\/static\/main\.mjs\?v=\d+(?:\.\d+)*/);
   assert.match(index, /\/static\/styles\.css\?v=\d+(?:\.\d+)*/);
-  assert.equal(index.includes('/static/styles.css?v=42.25.384'), true);
-  assert.equal(index.includes('/static/app.js?v=42.25.384'), true);
-  assert.equal(index.includes('/static/main.mjs?v=42.25.384'), true);
+  assert.equal(index.includes('/static/styles.css?v=42.25.385'), true);
+  assert.equal(index.includes('/static/app.js?v=42.25.385'), true);
+  assert.equal(index.includes('/static/main.mjs?v=42.25.385'), true);
   assert.equal(index.includes('/static/modules/storage-cache-runtime.js?v=422540'), true);
   assert.match(main, /\.\/modules\/model-artifact-runtime\.js\?v=\d+/);
   assert.match(main, /\.\/modules\/training-task-runtime\.js\?v=\d+/);
@@ -59,7 +59,7 @@ test('entry bundles use cache-bust markers independently from formal release tru
   assert.equal(main.includes("./modules/training-submit.js?v=422598"), true);
   assert.equal(main.includes("./modules/auto-label-poll-runtime.js?v=422503"), true);
   assert.equal(index.includes('/static/modules/training-task-visibility-runtime.js'), false);
-  assert.equal(main.includes("./modules/training-task-visibility-runtime.js?v=422607"), true);
+  assert.equal(main.includes("./modules/training-task-visibility-runtime.js?v=4226385"), true);
   assert.equal(main.includes("./modules/material-pagination-runtime.js?v=422610"), true);
   assert.equal(main.includes("./modules/material-batches.js?v=422405"), true);
   assert.equal(index.includes('/static/zip-import-bootstrap.mjs?v=4226362'), true);

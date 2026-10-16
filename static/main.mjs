@@ -1,5 +1,6 @@
 import {renderPrisonNightInspectionPage} from './modules/prison-night-inspection-entry.mjs?v=20261010g';
 import {actionRegistry, invokeAction, registerAction} from './modules/actions.js?v=421800';
+import {installRowActionMenu} from './modules/row-action-menu.js?v=4226385';
 import {messageFromApiError} from './modules/api.js?v=421800';
 import {createModalStack} from './modules/modal.js?v=421800';
 import {annotationPreviewFromBoxes, applyAnnotationResult} from './modules/annotation.js?v=422502';
@@ -9,7 +10,7 @@ import {installNavigationStability} from './modules/navigation-stability.js?v=42
 import {persistUiState} from './modules/ui-state.js?v=422500';
 import {installPageRequestScope} from './modules/page-request-scope.js?v=422502';
 import {installPollRegistry} from './modules/poll-registry.js?v=422521';
-import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=422565';
+import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=4226385';
 import {installExternalAlgorithmPlatformRuntime} from './modules/external-algorithm-platform.js?v=63021';
 import {installChangLianDataBrowserRuntime} from './modules/changlian-data-browser.js?v=63001';
 import {installExternalAlgorithmPublishRuntime} from './modules/external-algorithm-publish.js?v=64006';
@@ -18,7 +19,7 @@ import {installTrainingRecoveryRuntime} from './modules/training-recovery-runtim
 import {installTrainingMaterialPickerRuntime} from './modules/training-material-picker-runtime.js?v=422610';
 import {installTrainingMaterialSummaryRuntime} from './modules/training-material-summary-runtime.js?v=422603';
 import {installTrainingTaskRuntime} from './modules/training-task-runtime.js?v=422607';
-import {installTrainingTaskVisibilityRuntime} from './modules/training-task-visibility-runtime.js?v=422607';
+import {installTrainingTaskVisibilityRuntime} from './modules/training-task-visibility-runtime.js?v=4226385';
 import {installTrainingProgressStream} from './modules/training-progress-stream.js?v=422570';
 import {createTrainingDraft, trainingDraftToRequest, trainingBaseVersionFromAlgorithm} from './modules/training-draft.js?v=422510';
 import {installTrainingDraftRuntime} from './modules/training-draft-runtime.js?v=422519';
@@ -53,6 +54,7 @@ import {mountPagination, normalizePagination, paginationPageSizes, paginationTok
 
 const UI_BUILD_VERSION = '42.25.0-dev';
 const modalStack = createModalStack();
+installRowActionMenu();
 
 function fallbackToast(message) {
   const element = document.getElementById('toast');
@@ -315,8 +317,6 @@ function renderNavigationChrome() {
       const label = String(button.querySelector('.nav-left b')?.textContent || '').trim();
       button.classList.toggle('active', label === currentPage);
     });
-    const project = nav.querySelector('.nav-project-v');
-    if (project) project.textContent = state.project?.name || '默认空间';
     const version = nav.querySelector('.nav-footer b');
     if (version) version.textContent = `v${String(state.versionInfo?.version || '—')}`;
   }

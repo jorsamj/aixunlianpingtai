@@ -394,7 +394,8 @@ test('training queue displays numeric priorities and orders each resource by pri
   await selectIsolatedTestProject(page, project.id, '训练任务');
   await page.goto('/');
   await waitForCanonicalApp(page);
-  await expect(page.locator('.nav-project-v')).toHaveText(project.name);
+  await expect(page.locator('.nav-project')).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => state.project?.id)).toBe(project.id);
   await expect.poll(async () => page.evaluate(() => typeof window.TrainingTaskRuntime?.refresh)).toBe('function');
   await page.evaluate(async () => {
     await window.setPage?.('训练任务');

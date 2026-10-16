@@ -1,5 +1,9 @@
 # Frontend Final-Owner Map — v42.25
 
+## 2026-10-16 Row action menus
+
+RowActionMenuRuntime is the sole entity-more popover presentation owner (algorithm + training lists). Original button handlers remain business owners; source permissions and confirmation are preserved. No API/poll/cache is owned by the menu. TrainingTaskVisibilityRuntime retains generated action markup across epoch updates and replaces it when business actions change. Sidebar/top project badges are removed; state.project and project-scoped APIs remain canonical. Local evidence: Node24 972/972, Chrome 44/44; remote/production NOT VERIFIED. See ROW_ACTION_MENU_ACCEPTANCE_2026_10_16.md.
+
 ## 2026-10-13 Model quality and training report owners
 
 ```text

@@ -334,7 +334,7 @@ test('algorithm create edit delete uses authoritative local state without broad 
 
   const card = page.locator('.alg428-card').filter({hasText: 'R20h 创建算法'});
   await card.locator('details.entity-more summary').click();
-  await card.getByRole('button', {name: '编辑'}).click();
+  await page.getByRole('menuitem', {name: '编辑'}).click();
   await expect(page.locator('#alg414EditName')).toHaveValue('R20h 创建算法');
   await page.locator('#alg414EditName').fill('R20h 已编辑算法');
   await page.locator('#modalBody').getByRole('button', {name: '保存'}).click();
@@ -344,7 +344,7 @@ test('algorithm create edit delete uses authoritative local state without broad 
   page.once('dialog', dialog => dialog.accept());
   const editedCard = page.locator('.alg428-card').filter({hasText: 'R20h 已编辑算法'});
   await editedCard.locator('details.entity-more summary').click();
-  await editedCard.getByRole('button', {name: '删除'}).click();
+  await page.getByRole('menuitem', {name: '删除'}).click();
   await expect(page.locator('#alg412List')).not.toContainText('R20h 已编辑算法');
   await expect.poll(async () => page.evaluate(() => state.algorithms.some(x => x.id === 'algo-r20h-crud'))).toBe(false);
 

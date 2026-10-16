@@ -1,3 +1,9 @@
+## 2026-10-16｜列表操作菜单与导航简化（LOCAL VERIFIED / CI OPEN）
+
+- 常规 entity-more 仅算法/训练两处，统一由 RowActionMenuRuntime 管理一个原生顶层 Popover；只展示并委托原按钮，不增加 API、业务 Owner、轮询或删除语义。
+- 训练动作单元格保留生成 HTML 签名，Epoch 更新不重建打开菜单；状态/权限变化仍关闭失效菜单。nav-project / 顶部重复 projectBadge 展示和 CSS 移除，项目状态不变。
+- Node24 972/972、真实 Chrome 44/44；四视口及 1200 条分页、实际训练刷新、原删除/停止确认已验证。VERSION=42.24.356；入口缓存=42.25.385。未 push、未部署。细节与 Windows ZIP 文件锁观察项见 docs/ROW_ACTION_MENU_ACCEPTANCE_2026_10_16.md。
+
 ## 2026-10-12｜版本转换弹窗来源默认值缓存一致性回归
 
 - 旧版版本详情缓存可能不含 conversion_defaults，本次仅对缺字段的历史缓存补请求；具有完整不可变版本训练默认值时复用原历史响应，转换资源仍每次打开实时刷新，避免额外重复 GET。

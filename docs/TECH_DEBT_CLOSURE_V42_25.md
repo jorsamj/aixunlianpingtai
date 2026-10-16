@@ -1,5 +1,9 @@
 # v42.25 技术债关闭总账
 
+## 2026-10-16 列表行菜单定向产品修复 — LOCAL VERIFIED / CI OPEN
+
+原 entity-more 共用唯一 RowActionMenuRuntime 顶层展示；训练更新保留动作 DOM，清除冗余项目展示，不扩展技术债重构或业务 Owner。Node24 972/972、Chrome 44/44；VERSION 42.24.356 不变，本地提交不推送。证据及未验收边界见 ROW_ACTION_MENU_ACCEPTANCE_2026_10_16.md。
+
 ## 2026-10-08 统一分页 phase 2A — IMPLEMENTED / CI PENDING
 
 - 版本：`42.24.305`。数据集、训练任务和 AI 审核迁移到唯一共享分页 presentation。

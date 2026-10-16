@@ -450,6 +450,7 @@ jobs:
           tests/browser/auto-label-polling.spec.mjs
           tests/browser/ai-create-experience.spec.mjs
           tests/browser/algorithm-list-performance.spec.mjs
+          tests/browser/row-action-menu.spec.mjs
           tests/browser/enterprise-list-navigation-focused.spec.mjs
           tests/browser/training-task-performance.spec.mjs
           tests/browser/material-pagination-performance.spec.mjs

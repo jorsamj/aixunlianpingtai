@@ -1,3 +1,7 @@
+## 2026-10-16｜行菜单与导航简化（LOCAL VERIFIED / REMOTE NOT RUN）
+
+基线 85dfb0f5；算法/训练菜单共享唯一展示 Owner，保留全部原业务按钮/权限/确认。nav-project 与顶部重复徽标移除但项目事实保留。Node24 972/972、Chrome 44/44；VERSION 42.24.356、入口缓存 42.25.385。fetch 连接重置，远端新鲜状态未核验，不 push/部署。报告：ROW_ACTION_MENU_ACCEPTANCE_2026_10_16.md（含 Windows ZIP 写文件日志与窄屏训练布局边界）。
+
 ## 2026-10-12｜CI 止血阶段：精确 HEAD 复核与修复（完整验收未完成）
 
 - 交接 HEAD `b7c59d9` 的 47 条 Actions：42 成功、5 失败。重复失败集中于评测页面 JS 异常、IoU 对抗样本、ZIP 上传额外 GET、旧诊断文案断言以及存储页 Worker 请求；原始日志已分别核查。

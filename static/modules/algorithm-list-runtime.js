@@ -542,7 +542,7 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
               <button onclick="window.AlgorithmListRuntime.openDetail('${esc(algorithm.id)}')">详情</button>
               <button onclick="algorithmReport429('${esc(algorithm.id)}')">报告</button>
               <button class="primary-link" data-algorithm-train="${esc(algorithm.id)}" onclick="startAlgorithmTraining429('${esc(algorithm.id)}')" ${trainability.ready ? '' : `disabled title="${esc(trainability.message || '当前不可训练')}"`}>训练</button>
-              <details class="entity-more"><summary>•••</summary><div><button onclick="editAlgorithm423('${esc(algorithm.id)}')" ${meta.external ? 'disabled' : ''}>编辑</button><button class="danger" onclick="delAlgorithm('${esc(algorithm.id)}')" ${meta.external ? 'disabled' : ''}>删除</button></div></details>
+              <details class="entity-more"><summary role="button" aria-label="更多操作" aria-haspopup="menu" aria-expanded="false">•••</summary><div><button onclick="editAlgorithm423('${esc(algorithm.id)}')" ${meta.external ? 'disabled' : ''}>编辑</button><button class="danger" onclick="delAlgorithm('${esc(algorithm.id)}')" ${meta.external ? 'disabled' : ''}>删除</button></div></details>
             </div>
           </aside>
         </div>

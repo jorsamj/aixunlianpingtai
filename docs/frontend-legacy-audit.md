@@ -1,5 +1,9 @@
 # Frontend Legacy Runtime Audit
 
+## 2026-10-16 Row action menu presentation
+
+Existing algorithm/training entity-more markup now delegates to one RowActionMenuRuntime top-layer popover. It invokes original buttons; no CRUD, task, poll or navigation owner is duplicated. Training epoch patches preserve action markup identity; obsolete nav-project/projectBadge rendering/CSS is removed without changing project state. Node24 972/972, Chrome 44/44; formal VERSION unchanged. See ROW_ACTION_MENU_ACCEPTANCE_2026_10_16.md for evidence and limits.
+
 ## 2026-10-13 VNext model-quality owner update
 
 - Canonical owners stay singular: classic `openVersionEvaluation429` presents version-owned evaluation truth; `trainingReportCore425` remains the report entry (aliases only delegate); `TrainingRecoveryRuntime` remains the only detail/log presentation owner.
