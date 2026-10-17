@@ -39,7 +39,7 @@ assert r.get(target).status.value=='SUCCEEDED' and r.get(target).attempt==1
 `, asynchronous);
 }
 
-test('real frozen scope, >100 image pagination, failed submit, queued repeat and durable deletion', async ({page, request}) => {
+test('real frozen scope, >100 image pagination, failed submit, queued repeat and durable deletion', async ({page, request}, testInfo) => {
   const otherProject=await createProject(request);
   const unrelatedAudit=await request.post(`/api/v62/projects/${otherProject.id}/material-integrity/audits`);
   const unrelatedId=(await unrelatedAudit.json()).task_id;
@@ -92,7 +92,7 @@ for row in m.list_page(limit=200).items:
   expect(geometry.hidden).toBe(false);
   expect(geometry.iw/geometry.ih).toBeCloseTo(16/9, 2);
   expect(geometry.iw).toBeCloseTo(geometry.sw, 2);expect(geometry.ih).toBeCloseTo(geometry.sh, 2);
-  const dir = path.join(process.env.USERPROFILE, '.codex/visualizations/2026/10/17/material-integrity-p0');
+  const dir = testInfo.outputPath('material-integrity-evidence');
   fs.mkdirSync(dir, {recursive: true});
   await page.screenshot({path:path.join(dir,'selection-desktop.png')});
   await page.getByRole('button', {name: '全选本组全部图片'}).click();
@@ -155,7 +155,7 @@ async function createProject(request) {
 }
 
 
-test('filtered anomaly selection, protected preview, aspect ratios and mobile recovery remain usable', async ({page, request}) => {
+test('filtered anomaly selection, protected preview, aspect ratios and mobile recovery remain usable', async ({page, request}, testInfo) => {
   const project = await createProject(request), auditId='isolated-anomaly-audit';
   const previews=[];
   for(const [width,height] of [[160,90],[90,160],[120,90]]){
@@ -178,7 +178,7 @@ test('filtered anomaly selection, protected preview, aspect ratios and mobile re
   await page.locator('#materialIntegrityFilter47').selectOption('INVALID_IMAGE');
   await page.getByRole('button',{name:'全选当前筛选结果'}).click();
   await expect(page.locator('#materialIntegrityGroupSelected47')).toContainText('10000 张');
-  const dir=path.join(process.env.USERPROFILE,'.codex/visualizations/2026/10/17/material-integrity-p0');
+  const dir=testInfo.outputPath('material-integrity-evidence');
   fs.mkdirSync(dir,{recursive:true});
   for(const [width,height] of [[1920,1080],[1440,900],[1366,768],[375,812]]){
     await page.setViewportSize({width,height});
@@ -211,7 +211,7 @@ test('filtered anomaly selection, protected preview, aspect ratios and mobile re
   await expect(page.locator('#materialIntegrityGroupSelected47')).toContainText('10000 张');
 });
 
-test('global duplicate governance previews, confirms, reports progress, and invalidates the audit', async ({page, request}) => {
+test('global duplicate governance previews, confirms, reports progress, and invalidates the audit', async ({page, request}, testInfo) => {
   await page.setViewportSize({width: 1366, height: 768});
   const project = await createProject(request);
   const auditId = 'audit-browser-governance';
@@ -345,10 +345,7 @@ test('global duplicate governance previews, confirms, reports progress, and inva
   const previewBox = await previewDialog.boundingBox();
   expect(previewBox.y + previewBox.height).toBeLessThanOrEqual(768);
 
-  const screenshotDir = path.join(
-    process.env.USERPROFILE || process.cwd(), '.codex', 'visualizations',
-    '2026', '10', '15', 'material-integrity-governance',
-  );
+  const screenshotDir = testInfo.outputPath('material-integrity-evidence');
   fs.mkdirSync(screenshotDir, {recursive: true});
   await page.screenshot({
     path: path.join(screenshotDir, 'dedup-plan-1366x768.png'),

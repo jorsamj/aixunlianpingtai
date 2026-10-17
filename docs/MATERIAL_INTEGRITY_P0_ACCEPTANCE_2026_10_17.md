@@ -67,6 +67,14 @@ Chrome：审查修复后的完整相关切片 21/21，包含素材治理 3 项�
 - `delete-queued.png`、`delete-running.png`、`delete-succeeded.png`
 - `isolated-delete-evidence.json`、`isolated-delete-task.log`（真实本地 API 响应与 Worker 日志）
 
+## 推送后 CI 可移植性修复
+
+9830f1de已普通快进推送，实际44次Actions运行43成功、1失败。唯一失败为 Frontend Runtime Stabilization / browser-navigation：新增治理用例两处截图路径直接使用USERPROFILE，Ubuntu变量缺失，导致93 passed / 2 failed。真实Job117411477205日志已读取，不将未执行完的后续删除步骤称为通过。
+
+先在本地移除USERPROFILE复现相同2 failed / 1 passed，再把三条治理用例证据目录统一改为Playwright `testInfo.outputPath('material-integrity-evidence')`。仅调整测试产物路径，不删断言、不改超时、不改产品或Workflow。修复后无USERPROFILE的真实Chrome相关21/21、完整Node24 978/978通过；推送前本轮Python41/41。Ubuntu Release Regression runtime-contracts实际456 passed，命令包含新增素材治理API文件。最终修复提交的CI另行核验，不能沿用9830的结果。
+
+红绿日志：`C:/Users/jorsam/.codex/tmp/integrity-ci-path-{red,green}-20261017.log`；CI原始快照与Job日志在原视觉证据目录。最终远端验收报告将保存为同目录 `CI_FINAL_ACCEPTANCE.md`。VERSION不变，生产边界不变。
+
 ## 修改文件与后续边界
 
 产品：`platform_core/material_batches.py`、`static/app.js`、`static/modules/material-batches.js`、`static/styles.css`；入口缓存：`static/index.html`、`static/main.mjs`。正式 VERSION 未变，app/main/styles cache 为 `42.25.388`，MaterialBatch build/import 为 `422406`。
