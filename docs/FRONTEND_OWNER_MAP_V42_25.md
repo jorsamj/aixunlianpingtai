@@ -1,4 +1,55 @@
+## 2026-10-17｜素材治理推送后的 Chrome 跨平台证据路径修复（FINAL SHA CI OPEN）
+
+- 已授权提交9830f1de快进推送；该 SHA 实际44次Actions运行中43成功、1失败。唯一失败为 Frontend browser-navigation：Ubuntu缺USERPROFILE，两条新增治理用例在截图路径处中止（93 passed / 2 failed），并非可计为通过的环境跳过。
+- 本地清除USERPROFILE稳定复现2 failed / 1 passed；现有三条治理Chrome统一使用Playwright testInfo.outputPath，证据按用例隔离，不依赖Windows或仓库内.codex目录。保留全部业务断言，无生产代码、静态缓存或VERSION变更。
+- 修复后相同无USERPROFILE条件下相关Chrome21/21、Node24完整978/978通过；本轮另有Python41/41。9830的Ubuntu Release runtime-contracts实际456 passed，包含test_material_integrity.py；最终修复SHA须重新验收，不能借用旧SHA成功。
+- VERSION42.24.356不变；不部署、不触碰生产素材/数据库。生产原两次删除Task及真实存储仍待只读现场核验。
+
+## 2026-10-17｜重复与异常素材删除 P0（LOCAL VERIFIED / CI OPEN）
+
+- 既有素材治理计划 Owner 增补 FILTERED / SELECTED_IMAGES / 异常组冻结；全筛选不下发全量 ID，重复 keeper、不同 GT 人工确认、Test/历史引用与扫描未核验保护不变。异常筛选不能绕过去重保护，DELETE_INDEX 不删除共享原始文件。
+- 素材治理在同一个弹窗内完成全选、跨页选择、预检与确认，失败保留上下文；MaterialBatchRuntime62 / PollRegistry 仍是唯一任务状态与轮询 Owner。所有索引删除终态刷新分页并失效旧审计；旧分组不再冒充当前素材。图片尺寸/加载失败时藏框，真实宽高比与 Content API 保持一致。
+- 独立代码复核的发布前失败重试、refresh 期间切换项目、Chrome Worker 跨用例领取三项 Important 已关闭并补回归。未发布 manifest 只有完整身份、归属和 pending 状态完全相同才复用；篡改 409。测试 Worker 唯一 capability 仅用于隔离目标临时 Task，生产调度未改变。
+- VERSION42.24.356 不变；入口 app/main/styles 缓存42.25.388，MaterialBatch build/import422406。最终 Node24 978/978、Python41/41、真实 Chrome21/21；详细结果和现场边界以 docs/MATERIAL_INTEGRITY_P0_ACCEPTANCE_2026_10_17.md 为准。现场原两次 Task ID/日志尚未取得，不声称生产删除数量或根因已核验；未 push、部署或操作生产数据。
+
 # Frontend Final-Owner Map — v42.25
+
+## 2026-10-16 Row action menus
+
+Final mobile visual guard: status-tab buttons do not shrink or wrap; the existing tab strip scrolls internally. Style cache42.25.387; no owner or desktop column change.
+
+Follow-up: training Grid is constrained with minmax(0,1fr)/min-width:0, so only the 1040px table scrolls internally at 375px. No new menu, task or polling owner. Node24 972/972, Python75/75, Chrome44/44; original 3be88817 remote40/40 passed, follow-up CI must use its own SHA. Style cache42.25.386; VERSION unchanged.
+
+RowActionMenuRuntime is the sole entity-more popover presentation owner (algorithm + training lists). Original button handlers remain business owners; source permissions and confirmation are preserved. No API/poll/cache is owned by the menu. TrainingTaskVisibilityRuntime retains generated action markup across epoch updates and replaces it when business actions change. Sidebar/top project badges are removed; state.project and project-scoped APIs remain canonical. Local evidence: Node24 972/972, Chrome 44/44; remote/production NOT VERIFIED. See ROW_ACTION_MENU_ACCEPTANCE_2026_10_16.md.
+
+## 2026-10-13 Model quality and training report owners
+
+```text
+training_evaluation.py             evaluation scoring/evidence truth
+openVersionEvaluation429           evaluation workspace presentation
+trainingReportCore425              canonical training report presentation
+TrainingRecoveryRuntime            training detail/log four-tab presentation
+PollRegistry/TrainingProgressStream unchanged lifecycle owners
+```
+
+`trainingReport425`, `trainingReport424`, and `openJobReport429` only delegate to `trainingReportCore425`; they are not parallel renderers. Version fallback reports show only persisted history/evaluation metrics and explicitly mark missing execution truth. No additional cache or polling owner was introduced.
+
+## 2026-09-24 Training detail/log final-owner closure
+
+Final product owner chain:
+
+```text
+TrainingTaskRuntime                list + task mutations
+TrainingProgressStream             durable SSE/live task events
+TrainingRecoveryRuntime            ONLY detail/log dialog visual owner
+PollRegistryRuntime                detail fallback polling lifecycle
+backend job detail/log endpoints   read-only enriched truth
+```
+
+Retired/forbidden as alternate owners: legacy `openTrainDetail423` renderer, legacy training run center, separate log modal renderer, private runtime CSS injector, raw timer loop. Success/failure semantics come from canonical `task_status`; an open detail receives SSE and performs one final canonical detail/log reconciliation at terminal transition. Detail polling must not dispatch queues, rebuild the jobs index, overwrite worker `job.json`, or archive algorithm versions.
+
+Permanent evidence is documented in `docs/CODEX_HANDOFF_2026-09-24_TRAINING_DETAIL_LOGS.md`. Code baseline before documentation: `8e50195f76d0aa58ccf6082bdbd7c93029b528b7`; formal `VERSION.txt` remains `42.24.0`.
+
 
 > Branch: `refactor/frontend-runtime-stabilization`  
 > Status: PAUSED AUDIT — non-blocking technical-debt cleanup deferred by user request
@@ -995,4 +1046,18 @@ Status: **CLOSED** on `refactor/frontend-runtime-stabilization`.
 - Active v19 ZIP UI truth is now one monotonic whole-task scale: browser upload `0..35`, upload/validation baseline `38`, backend processing phase projected to `38..99`, terminal success only `100`. Raw backend phase progress is no longer allowed to overwrite the whole-task percentage and cause `38 -> 8` regressions.
 - Backend v19 processing phase semantics were not changed; this closure fixes the frontend projection boundary only.
 - `VERSION.txt` remains exactly `42.24.0`; no main merge, tag, release, A800 RC, or genuine 10k acceptance was performed.
+
+## 2026-10-13 VNext review fixes
+
+- `TrainingRecoveryRuntime` remains the sole training-detail modal and polling owner. It owns a bounded per-project/task history cache; full history is opt-in, compact status polling merges `latest_epoch/latest`, and terminal status stops re-arming the timer.
+- `openScenarioWorkbench429` is a routing helper only: it closes the current workspace, calls the canonical `setPage('质量中心')`, then the existing `setQualityCenterTab411('detect')`; it does not own or render another page.
+- Existing quality modal owners retain evaluation/report/image UI. A/B controls act on the two existing evidence panes, and accessible training tabs update the current DOM without rebuilding it on user tab clicks.
+- No second cache framework, poller, evaluation engine, training status owner, quality-center renderer or annotation flow was added.
+
+## 2026-10-13 VNext final differential acceptance
+
+- Owner map is unchanged. Node 24.19 frontend contracts are 952/952 and the quality/recovery Chrome slice is 7/7.
+- Clean `30f83c48` full Chrome is 142 passed / 6 failed; final VNext Node 24 full Chrome is 143 passed / 6 failed, with all six names and breakpoints matching. The additional label-schema request-count failure came from leaving the page after request start but before successful cache commit; the fixture now waits for the existing cache timestamp and passes repeat 5/5 plus the 22-test material slice. A baseline-reproducible service-node startup race is fixed by setting the existing advanced-navigation preference before navigation and passes repeat 3/3. No wrapper, retry, timeout, owner, or production cache was added.
+- Training-detail traffic is compared with equal request counts: first-minute 40 requests are `40×296,333 B` legacy versus `296,333 B + 39×428 B` current. The first history read is included.
+- Full evidence and trace paths are recorded in `docs/VNEXT_FINAL_DIFFERENTIAL_AUDIT_2026_10_13.md`; GitHub Ubuntu and production data remain unverified.
 

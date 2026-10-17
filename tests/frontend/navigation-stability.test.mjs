@@ -34,6 +34,14 @@ test('navigation epoch invalidates work started on the previous page', () => {
 test('legacy navigation aliases normalize to canonical pages', () => {
   assert.equal(normalizeNavigationPage('自动标注'), '自动标注及清洗');
   assert.equal(normalizeNavigationPage('自动标注及清洗'), '自动标注及清洗');
+  assert.equal(normalizeNavigationPage('测试发布'), '质量中心');
+  assert.equal(normalizeNavigationPage('检测台'), '质量中心');
+  assert.equal(normalizeNavigationPage('部署转换'), '算法列表');
+  assert.equal(normalizeNavigationPage('部署产物'), '算法列表');
+  assert.equal(normalizeNavigationPage('部署资源'), '模型配置');
+  assert.equal(normalizeNavigationPage('部署插件'), '模型配置');
+  assert.equal(normalizeNavigationPage('新建算法'), '算法列表');
+  assert.equal(normalizeNavigationPage('自动迭代'), '算法列表');
   assert.equal(normalizeNavigationPage('数据集'), '数据集');
   assert.equal(normalizeNavigationPage(''), '');
 });
@@ -144,6 +152,67 @@ test('named performNavigation installs global setPage without a classic predeces
   assert.equal(state.page, '数据集');
   assert.equal(renders, 1);
   assert.equal(view.dataset.navigationPage, '数据集');
+
+  runtime.destroy();
+  cleanup();
+});
+
+test('registered page owner is the only renderer for its page', () => {
+  const state = {page: '算法列表'};
+  const calls = [];
+  globalThis.document = {getElementById() { return {dataset: {}}; }};
+  globalThis.window = {};
+  let runtime;
+  runtime = installNavigationStability({
+    getState: () => state,
+    performNavigation(page) {
+      state.page = page;
+      calls.push(`commit:${page}`);
+      if (runtime.hasPageOwner(page)) return runtime.renderPage(page, {source: 'navigation'});
+      calls.push(`classic:${page}`);
+      return undefined;
+    },
+  });
+  runtime.registerPageOwner('服务节点', ({source}) => calls.push(`service:${source}`));
+
+  globalThis.window.setPage('服务节点');
+
+  assert.equal(state.page, '服务节点');
+  assert.deepEqual(calls, ['commit:服务节点', 'service:navigation']);
+  runtime.destroy();
+  cleanup();
+});
+
+test('configured canonical business pages are known without a dedicated module owner', () => {
+  const state = {page: '算法列表'};
+  globalThis.document = {getElementById() { return {dataset: {}}; }};
+  globalThis.window = {};
+  const runtime = installNavigationStability({
+    getState: () => state,
+    knownPages: ['工作台', '服务节点', '平台对接', '部署产物'],
+    performNavigation(page) { state.page = page; },
+  });
+
+  assert.equal(runtime.isKnownPage('工作台'), true);
+  assert.equal(runtime.isKnownPage('服务节点'), true);
+  assert.equal(runtime.isKnownPage('平台对接'), true);
+  assert.equal(runtime.isKnownPage('部署产物'), true);
+  assert.equal(runtime.isKnownPage('完全未知页面'), false);
+
+  runtime.destroy();
+  cleanup();
+});
+
+test('unknown pages are not treated as known business pages', () => {
+  const state = {page: '算法列表'};
+  globalThis.document = {getElementById() { return {dataset: {}}; }};
+  globalThis.window = {};
+  const runtime = installNavigationStability({getState: () => state, performNavigation(page) { state.page = page; }});
+
+  assert.equal(runtime.isKnownPage('算法列表'), true);
+  assert.equal(runtime.isKnownPage('完全未知页面'), false);
+  runtime.registerPageOwner('服务节点', () => true);
+  assert.equal(runtime.isKnownPage('服务节点'), true);
 
   runtime.destroy();
   cleanup();

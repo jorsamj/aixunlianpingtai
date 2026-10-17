@@ -38,10 +38,15 @@ function save(items) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
 }
 
-export function installMaterialBatchRuntime({projectId, currentPageIds, selectedIds, filteredSpec, notify, refresh} = {}) {
+export function installMaterialBatchRuntime({projectId, currentPageIds, selectedIds, filteredSpec, notify, refresh, pollRegistry} = {}) {
   if (typeof window === 'undefined' || window.__materialBatchRuntime62Installed) return false;
   window.__materialBatchRuntime62Installed = true;
-  const timers = new Map();
+  const registry = pollRegistry || window.PollRegistryRuntime;
+  if (!registry?.startTimeout || !registry?.clear) {
+    window.__materialBatchRuntime62Installed = false;
+    return false;
+  }
+  const POLL_OWNERS = ['数据集', '自动标注及清洗'];
 
   const pid = () => String(projectId?.() || '');
   const base = () => `/api/v62/projects/${encodeURIComponent(pid())}/material-batches`;
@@ -54,49 +59,82 @@ export function installMaterialBatchRuntime({projectId, currentPageIds, selected
     save(items);
   }
 
-  async function get(taskId) {
-    return json(await fetch(`${base()}/${encodeURIComponent(taskId)}`));
+  async function get(taskId, project = pid()) {
+    return json(await fetch(`/api/v62/projects/${encodeURIComponent(project)}/material-batches/${encodeURIComponent(taskId)}`));
   }
 
   function announce(task) {
+    window.updateMaterialIntegrityTask47?.(task);
     const total = Number(task.total || 0);
     const processed = Number(task.processed || 0);
     const failed = Number(task.failed || 0);
     const cleaning = task.operation === 'CLEAN' ? `，发现问题 ${Number(task.flagged || 0)} 张（仅检查，待复核）` : '';
+    if (task.material_integrity_plan_id && Number(task.planned_groups || 0) > 0) {
+      tell(`批量去重：${materialBatchTaskText(task)} · 完成组 ${Number(task.completed_groups || 0)}/${Number(task.planned_groups || 0)} · 已保留 ${Number(task.kept_count || 0)} · 已清理 ${Number(task.succeeded || 0)} · 跳过 ${Number(task.skipped_groups || 0)}${Number(task.failed_groups || 0) ? ` · 失败组 ${Number(task.failed_groups || 0)}` : ''}`);
+      return;
+    }
     tell(`${task.operation || '批量任务'}：${materialBatchTaskText(task)} ${processed}/${total}${failed ? `，失败 ${failed}` : ''}${cleaning}`);
   }
 
-  function poll(taskId) {
-    clearTimeout(timers.get(taskId));
+  function pollKey(taskId) {
+    return `material-batch:${String(taskId || '')}`;
+  }
+
+  function stopPolling(taskId) {
+    return registry.clear(pollKey(taskId));
+  }
+
+  function poll(taskId, {foreground = false} = {}) {
+    const id = String(taskId || '');
+    if (!id) return false;
+    const projectAtStart = pid();
+    stopPolling(id);
     const tick = async () => {
       try {
-        const task = await get(taskId);
+        const task = await get(id, projectAtStart);
+        if (pid() !== projectAtStart) { stopPolling(id); return; }
         remember(task);
         announce(task);
         if (isMaterialBatchActive(task)) {
-          timers.set(taskId, setTimeout(tick, 1500));
+          registry.startTimeout(pollKey(id), POLL_OWNERS, tick, 1500);
         } else {
-          timers.delete(taskId);
+          stopPolling(id);
           await refresh?.();
-          if (task.review_required && typeof window.reviewAiLabel427 === 'function') {
+          if (pid() !== projectAtStart) return;
+          if (task.operation === 'DELETE_INDEX' && typeof window.invalidateMaterialIntegrityGovernance47 === 'function') {
+            await window.invalidateMaterialIntegrityGovernance47(task);
+          }
+          if (foreground && task.operation === 'AI_ANNOTATE' && task.review_required && typeof window.reviewAiLabel427 === 'function') {
             await window.reviewAiLabel427(task.task_id);
           }
         }
       } catch (error) {
-        timers.delete(taskId);
+        stopPolling(id);
+        if (pid() !== projectAtStart) return;
         tell(error.message || String(error));
       }
     };
-    tick();
+    void tick();
+    return true;
   }
 
-  function selection(scope) {
+  function resume() {
+    for (const [taskId, entry] of Object.entries(saved())) {
+      if (entry.project_id === pid()) poll(taskId);
+    }
+    return true;
+  }
+
+  function selection(scope, explicitIds = []) {
     if (scope === 'CURRENT_PAGE') return {scope, image_ids: (currentPageIds?.() || []).map(String)};
-    if (scope === 'SELECTED') return {scope, image_ids: (selectedIds?.() || []).map(String)};
+    if (scope === 'SELECTED') {
+      const source = explicitIds?.length ? explicitIds : (selectedIds?.() || []);
+      return {scope, image_ids: [...new Set(source.map(String).filter(Boolean))]};
+    }
     return {scope: 'FILTERED', filters: filteredSpec?.() || {}};
   }
 
-  async function run(operation, {scope, options = {}} = {}) {
+  async function run(operation, {scope, options = {}, imageIds = [], skipConfirm = false} = {}) {
     if (!pid()) throw new Error('请先选择项目');
     const chosen = scope || window.prompt('处理范围：CURRENT_PAGE 当前页 / FILTERED 全部筛选结果 / SELECTED 当前已选', 'CURRENT_PAGE');
     if (!['CURRENT_PAGE', 'FILTERED', 'SELECTED'].includes(chosen)) return null;
@@ -105,22 +143,37 @@ export function installMaterialBatchRuntime({projectId, currentPageIds, selected
       if (!labels?.trim()) return null;
       options = {...options, labels_text: labels};
     }
-    const payload = {operation, selection_spec: selection(chosen), options};
-    const estimate = await json(await fetch(`${base()}/estimate`, {
+    const projectAtStart = pid();
+    const selectionAtStart = selection(chosen, imageIds);
+    const selectionSignature = JSON.stringify(selectionAtStart);
+    const batchUrl = `/api/v62/projects/${encodeURIComponent(projectAtStart)}/material-batches`;
+    const assertScopeUnchanged = () => {
+      if (pid() !== projectAtStart || JSON.stringify(selection(chosen, imageIds)) !== selectionSignature) {
+        throw new Error('项目或筛选条件已变更，已取消操作，请重新预览删除范围');
+      }
+    };
+    const payload = {operation, selection_spec: selectionAtStart, options};
+    const estimate = await json(await fetch(`${batchUrl}/estimate`, {
       method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload),
     }));
+    assertScopeUnchanged();
     if (!estimate.supported) throw new Error(estimate.message || (estimate.error_code === 'BATCH_OPERATION_NOT_READY' ? '该批量操作尚未具备安全后台执行链路' : '当前操作不可用'));
     if (!Number(estimate.count || 0)) throw new Error('当前范围没有可处理素材');
     const cleanNote = operation === 'CLEAN' ? '清洗将检查并记录问题，不自动删除或确认素材。\n' : '';
-    if (!window.confirm(`${cleanNote}本次将处理 ${estimate.count} 张素材（${chosen === 'CURRENT_PAGE' ? '当前页' : chosen === 'SELECTED' ? '当前已选' : '全部筛选结果'}），确认继续？`)) return null;
+    const deleteNote = operation === 'DELETE_INDEX'
+      ? '将删除素材索引及对应全部标注（Ground Truth 与标注文件）；共享原图及平台标签字典不会被删除。\n'
+      : operation === 'DELETE_SOURCE'
+        ? '将尝试删除原始图片对象及对应标注，操作不可撤销。\n' : '';
+    if (!skipConfirm && !window.confirm(`${deleteNote}${cleanNote}本次将${deleteNote ? '删除' : '处理'} ${estimate.count} 张素材（${chosen === 'CURRENT_PAGE' ? '当前页' : chosen === 'SELECTED' ? '当前已选' : '全部筛选结果'}），确认继续？`)) return null;
+    assertScopeUnchanged();
     payload.selection_spec = estimate.selection_spec;
     if (operation === 'DELETE_SOURCE') payload.options.confirmation_token = estimate.confirmation_token;
-    const task = await json(await fetch(base(), {
+    const task = await json(await fetch(batchUrl, {
       method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload),
     }));
     remember(task);
     announce(task);
-    poll(task.task_id);
+    poll(task.task_id, {foreground: true});
     return task;
   }
 
@@ -134,10 +187,15 @@ export function installMaterialBatchRuntime({projectId, currentPageIds, selected
     const task = await json(await fetch(`${base()}/${encodeURIComponent(taskId)}/retry`, {method: 'POST'}));
     remember(task); poll(task.task_id); return task;
   };
-  window.stopMaterialBatchPolling62 = taskId => { clearTimeout(timers.get(taskId)); timers.delete(taskId); };
+  window.stopMaterialBatchPolling62 = taskId => stopPolling(taskId);
 
-  for (const [taskId, entry] of Object.entries(saved())) {
-    if (entry.project_id === pid()) poll(taskId);
-  }
+  const runtime = Object.freeze({
+    build: 'material-batch-runtime-422406',
+    poll,
+    resume,
+    stop: stopPolling,
+  });
+  window.MaterialBatchRuntime62 = runtime;
+  resume();
   return true;
 }

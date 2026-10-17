@@ -31,7 +31,8 @@ test('v42.7 direct route owner cannot return after alias normalization moved to 
     'v42.7 direct auto-label route owner must remain retired',
   );
   assert.equal(navigation.includes('export function normalizeNavigationPage(page)'), true, 'semantic page normalizer must remain');
-  assert.equal(navigation.includes("requested === '自动标注' ? '自动标注及清洗' : requested"), true, 'legacy auto-label alias must remain canonicalized');
+  assert.equal(navigation.includes("if (requested === '自动标注') return '自动标注及清洗';"), true, 'legacy auto-label alias must remain canonicalized');
+  assert.equal(navigation.includes("if (requested === '新建算法' || requested === '自动迭代') return '算法列表';"), true, 'retired algorithm subpages must normalize to the canonical algorithm list');
 });
 
 test('classic startup readiness owner cannot return after readiness moved to final navigation', () => {

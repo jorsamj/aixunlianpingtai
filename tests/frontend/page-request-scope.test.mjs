@@ -77,3 +77,19 @@ test('non-API requests are left untouched', async () => {
   fake.calls[0].resolve(response);
   assert.equal(await request, response);
 });
+
+test('bootstrap lifecycle GETs survive page navigation and are not page-scoped', async () => {
+  const fake = deferredFetch();
+  const scope = new PageRequestScope({page: '算法列表', fetchImpl: fake.fetchImpl});
+  const request = scope.fetch('/api/v53/bootstrap/snapshot');
+
+  assert.equal(fake.calls.length, 1);
+  assert.equal(fake.calls[0].init.signal, undefined);
+
+  scope.navigate('数据集');
+  const response = {ok: true, project: {id: 'project-1'}};
+  fake.calls[0].resolve(response);
+  assert.equal(await request, response);
+  assert.equal(scope.page, '数据集');
+  assert.equal(scope.abortedRequests, 0);
+});

@@ -1,4 +1,10 @@
-from platform_core.training_job_projection import apply_training_task_truth
+from pathlib import Path
+
+from platform_core.training_job_projection import (
+    apply_training_display_progress,
+    apply_training_task_truth,
+    build_training_display_progress,
+)
 
 
 def test_training_job_projection_keeps_legacy_aliases_but_exposes_canonical_truth():
@@ -51,3 +57,139 @@ def test_training_job_projection_clamps_progress_and_never_invents_queue_exactne
     assert job["progress_percent"] == 100.0
     assert job["resource_queue_position_exact"] is False
     assert job["task_worker_id"] == "worker-a"
+
+
+
+def test_training_display_progress_combines_durable_lifecycle_with_worker_telemetry():
+    job = {
+        "status": "running",
+        "progress_percent": 42.5,
+        "current_epoch": 5,
+        "total_epochs": 10,
+        "current_batch": 4,
+        "total_batches": 8,
+        "elapsed_seconds": 60,
+        "eta_seconds": 61,
+        "current_item": "Epoch 5/10 · Batch 4/8",
+        "updated_at": "2026-09-28 12:00:02",
+        "training_progress": {
+            "epoch": 5,
+            "total_epochs": 10,
+            "elapsed_seconds": 60,
+            "eta_seconds": 61,
+            "images_per_second": 10.25,
+        },
+    }
+    runtime = {
+        "status": "RUNNING",
+        "persisted_status": "RUNNING",
+        "phase": "training",
+        "progress_percent": 42.0,
+        "current_item": "Epoch 5/10 · Batch 3/8",
+        "updated_at": "2026-09-28T04:00:01+00:00",
+    }
+
+    display = build_training_display_progress(job, runtime, revision=123)
+
+    assert display["revision"] == 123
+    assert display["status"] == "RUNNING"
+    assert display["phase"] == "training"
+    assert display["phase_progress"] == 45.0
+    assert display["overall_progress"] == 42.5
+    assert display["current_epoch"] == 5
+    assert display["current_batch"] == 4
+    assert display["elapsed_seconds"] == 60.0
+    assert display["eta_seconds"] == 61.0
+    assert display["throughput"] == 10.25
+    assert display["message"] == "Epoch 5/10 · Batch 4/8"
+    assert display["telemetry_source"] == "worker_training_telemetry"
+
+
+def test_training_display_progress_reserves_100_for_terminal_durable_truth():
+    job = {
+        "status": "done",
+        "progress_percent": 100,
+        "current_epoch": 30,
+        "total_epochs": 30,
+    }
+    active = build_training_display_progress(
+        job,
+        {"status": "RUNNING", "phase": "finalizing_commit", "progress_percent": 98},
+        revision=1,
+    )
+    terminal = build_training_display_progress(
+        job,
+        {"status": "SUCCEEDED", "phase": "committed", "progress_percent": 100},
+        revision=2,
+    )
+
+    assert active["overall_progress"] == 99.0
+    assert terminal["overall_progress"] == 100.0
+    assert terminal["eta_seconds"] == 0.0
+
+
+def test_apply_training_display_progress_never_estimates_missing_eta():
+    job = {"status": "running", "progress_percent": 25, "current_epoch": 1, "total_epochs": 10}
+    runtime = {"status": "RUNNING", "phase": "training", "progress_percent": 25}
+
+    apply_training_display_progress(job, runtime)
+
+    assert job["eta_seconds"] is None
+    assert job["elapsed_seconds"] is None
+    assert job["training_display_progress"]["telemetry_source"] == "worker_training_telemetry"
+
+
+
+def test_display_projection_uses_frozen_worker_telemetry_after_durable_overlay():
+    worker = {
+        "status": "running",
+        "progress_percent": 48.5,
+        "current_epoch": 6,
+        "total_epochs": 10,
+        "current_batch": 7,
+        "total_batches": 10,
+        "elapsed_seconds": 75,
+        "eta_seconds": 80,
+        "current_item": "Epoch 6/10 · Batch 7/10",
+    }
+    overlaid = {
+        **worker,
+        "progress_percent": 46.0,
+        "current_item": "Epoch 6/10 · Batch 4/10",
+    }
+    runtime = {
+        "status": "RUNNING",
+        "phase": "training",
+        "progress_percent": 46.0,
+        "current_item": "Epoch 6/10 · Batch 4/10",
+    }
+
+    apply_training_display_progress(overlaid, runtime, telemetry_job=worker)
+
+    assert overlaid["progress_percent"] == 48.5
+    assert overlaid["current_item"] == "Epoch 6/10 · Batch 7/10"
+    assert overlaid["current_batch"] == 7
+    assert overlaid["elapsed_seconds"] == 75.0
+    assert overlaid["eta_seconds"] == 80.0
+
+
+
+def test_live_durable_training_progress_has_one_server_projection_and_no_log_inference():
+    root = Path(__file__).resolve().parents[2]
+    source = (root / "app.py").read_text(encoding="utf-8")
+    start = source.index("    if durable is not None and public_runtime is not None:", source.index("def enrich_job_runtime"))
+    historical = source.index("        # Historical pre-Durable compatibility/recovery", start)
+    end = source.index("    if (", historical)
+    durable_block = source[start:historical]
+    historical_block = source[historical:end]
+
+    assert "apply_training_display_progress(" in durable_block
+    assert "_job_log_text(" not in durable_block
+    assert "_infer_epoch_from_log(" not in durable_block
+    assert "_job_log_text(" in historical_block
+    assert "_infer_epoch_from_log(" in historical_block
+
+    stream = (root / "static/modules/training-progress-stream.js").read_text(encoding="utf-8")
+    assert "training_display_progress" in stream
+    assert "displayRevision(" in stream
+    assert "applyProgressCounters" not in stream

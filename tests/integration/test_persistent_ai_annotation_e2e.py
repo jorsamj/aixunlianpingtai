@@ -49,12 +49,23 @@ def test_persistent_ai_task_generates_review_then_commits_formal_annotation(
     artifacts = ArtifactStore(tmp_path / "artifacts")
     monkeypatch.setattr(app_module, "_SHARED_TASK_REPOSITORY", repository)
     monkeypatch.setattr(app_module, "_SHARED_TASK_ARTIFACTS", artifacts)
-    monkeypatch.setattr("platform_core.auto_label.provider_factory", lambda _value: FakeVisionProvider())
+    monkeypatch.setattr(app_module, "_v35_model_items", lambda: [{
+        "id": "fake-model-config",
+        "name": "Fake Vision",
+        "model_name": "fake-vlm",
+        "provider_type": "local_openai",
+        "provider_adapter": "local_openai",
+        "detect_url": "http://fake-vision.local/v1",
+    }])
+    monkeypatch.setattr(
+        "platform_core.annotation_runtime.provider_factory",
+        lambda _value: FakeVisionProvider(),
+    )
 
     created = client.post(f"/api/v60/projects/{project_id}/annotation-tasks", json={
         "image_ids": [image["id"]],
         "labels_text": "fire",
-        "provider_id": "fake-provider",
+        "model_config_id": "fake-model-config",
         "prompt_template_id": "default",
     })
     assert created.status_code == 202, created.text
@@ -71,7 +82,7 @@ def test_persistent_ai_task_generates_review_then_commits_formal_annotation(
     assert scheduler.run_once() is True
     waiting = client.get(f"/api/v60/projects/{project_id}/annotation-tasks/{task_id}").json()
     assert waiting["status"] == "AWAITING_CONFIRMATION"
-    assert waiting["progress"] == 100
+    assert waiting["progress"] == 70
     assert waiting["summary"]["boxes"] == 1
     assert client.get(f"/api/projects/{project_id}/annotations/{image['id']}").json()["boxes"] == []
 
@@ -84,13 +95,25 @@ def test_persistent_ai_task_generates_review_then_commits_formal_annotation(
             "decisions": [{"image_id": image["id"], "accepted": True}],
             "reject_unmentioned": True,
             "commit": True,
+            "label_mapping": {"fire": "smoke"},
         },
     )
     assert accepted.status_code == 200, accepted.text
-    assert accepted.json()["task"]["status"] == "SUCCEEDED"
+    assert accepted.json()["queued_for_commit"] is True
+    assert accepted.json()["task"]["status"] == "QUEUED"
+    assert accepted.json()["task"]["stage"] == "review_queued"
+    assert client.get(f"/api/projects/{project_id}/annotations/{image['id']}").json()["boxes"] == []
+    assert scheduler.run_once() is True
+    finished = client.get(f"/api/v60/projects/{project_id}/annotation-tasks/{task_id}").json()
+    assert finished["status"] == "SUCCEEDED"
     assert candidates[0]["request_id"] == "persistent-e2e"
     formal = client.get(f"/api/projects/{project_id}/annotations/{image['id']}").json()["boxes"]
     assert len(formal) == 1
     assert formal[0]["source"] == "ai_candidate_confirmed"
     assert formal[0]["source_task_id"] == task_id
+    assert formal[0]["label"] == "smoke"
+    assert formal[0]["class_id"] == 1
+    labels = client.get(f"/api/v12/projects/{project_id}/labels").json()["items"]
+    smoke = next(row for row in labels if row["code"] == "smoke")
+    assert "fire" not in smoke["aliases"]
     assert not source_path.exists()

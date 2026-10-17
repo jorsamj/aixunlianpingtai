@@ -4,6 +4,7 @@ import errno
 import hashlib
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -19,25 +20,42 @@ from typing import Any, Callable, Mapping, Sequence
 
 import psutil
 import yaml
-from PIL import Image, ImageFile, ImageOps, UnidentifiedImageError
+from PIL import Image, ImageDraw, ImageFile, ImageOps, ImageStat, UnidentifiedImageError
 
 from .annotations import atomic_write_json
+from .errors import PlatformError
 from .annotation_repository import AnnotationRepository
-from .algorithms import attach_version, choose_algorithm_iteration_base, list_algorithms
+from .algorithms import (
+    attach_version,
+    attach_version_if_current,
+    choose_algorithm_iteration_base,
+    list_algorithms,
+    resolve_current_version_id,
+)
 from .material_repository import MaterialRepository
 from .secrets import KeyringSecretStore, SecretCredentialStore
-from .snapshots import build_snapshot
+from .snapshots import (
+    build_snapshot,
+    dataset_revision_document,
+    ensure_dataset_revision,
+    is_training_ground_truth,
+    persist_dataset_revision,
+)
 from .storage import StorageManager
 from .task_runtime import ProcessController, TaskKind, TaskStatus, launch_process
 from .training_splits import SplitMode, SplitRequest, build_split_manifest
 from .training_devices import normalize_training_device, training_python, validate_training_device
 from .training_metrics import read_metrics
 from .training_bundle_cache import TrainingBundleCache
+from .training_lineage import build_training_lineage
+from .training_evaluation import build_evaluation_truth, build_iteration_decision
 
 
 TRAINING_BUNDLE_SAFETY_RESERVE_BYTES = 512 * 1024 * 1024
 TRAINING_BUNDLE_SAFETY_RESERVE_ENV = "TRAINING_BUNDLE_SAFETY_RESERVE_BYTES"
 TRAINING_BUNDLE_COPY_ORPHAN_AGE_SECONDS = 24 * 60 * 60
+TRAINING_PROJECTION_POLICY_V1 = "redact_excluded_objects_v1"
+TRAINING_PROJECTION_POLICY = "redact_excluded_objects_v2_preserve_selected"
 _TRAINING_BUNDLE_COPY_PREFIX = ".training-bundle-copy."
 TRAINING_COMPLETION_GRACE_SECONDS = 5.0
 TRAINING_INPUT_POLICY = "ultralytics_jpeg_repair_v1"
@@ -53,12 +71,42 @@ _SUCCESSFUL_TRAINING_OUTCOMES = {
 }
 
 
+def _request_external_publish_after_training(**kwargs) -> bool:
+    """Wake the existing external publisher without widening training-core imports."""
+    from .external_publish_request import request_external_auto_publish_if_enabled
+
+    return request_external_auto_publish_if_enabled(**kwargs)
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _copy2_with_sha256(source: Path, destination: Path) -> tuple[int, str]:
+    """Copy one artifact while hashing the exact bytes written to its destination."""
+    digest = hashlib.sha256()
+    size_bytes = 0
+
+    class CountingHashingReader(_HashingReader):
+        def read(self, size: int = -1):
+            nonlocal size_bytes
+            chunk = super().read(size)
+            if chunk:
+                size_bytes += len(chunk)
+            return chunk
+
+    with source.open("rb") as input_stream, destination.open("wb") as output_stream:
+        shutil.copyfileobj(
+            CountingHashingReader(input_stream, digest),
+            output_stream,
+            length=1024 * 1024,
+        )
+    shutil.copystat(source, destination)
+    return size_bytes, digest.hexdigest()
 
 
 def _portable_relative(reference: str) -> Path:
@@ -436,6 +484,116 @@ def _yolo_line(box: Mapping[str, Any], width: float, height: float, class_id: in
     return f"{class_id} " + " ".join(f"{value:.8f}" for value in values)
 
 
+def _apply_training_projection(
+    destination: Path,
+    row: Mapping[str, Any],
+    role: str,
+    image_identity: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Redact task-excluded objects while preserving selected positive pixels."""
+    identity = dict(image_identity)
+    excluded = [
+        dict(box) for box in (row.get("training_excluded_boxes") or [])
+        if isinstance(box, Mapping)
+    ]
+    if not excluded or role == "test":
+        return identity
+    policy = str(row.get("training_projection_policy") or "")
+    if policy not in {TRAINING_PROJECTION_POLICY_V1, TRAINING_PROJECTION_POLICY}:
+        raise ValueError("excluded training objects require a supported redaction policy")
+    projection_digest = str(row.get("training_projection_digest") or "").strip().lower()
+    if len(projection_digest) != 64:
+        raise ValueError("training projection digest is missing or invalid")
+
+    def pixel_bounds(
+        box: Mapping[str, Any], width: int, height: int,
+    ) -> tuple[int, int, int, int]:
+        if all(key in box for key in ("x1", "y1", "x2", "y2")):
+            x1, y1 = float(box["x1"]), float(box["y1"])
+            x2, y2 = float(box["x2"]), float(box["y2"])
+        else:
+            cx, cy = float(box.get("cx", 0)), float(box.get("cy", 0))
+            bw, bh = float(box.get("w", 0)), float(box.get("h", 0))
+            if max(abs(cx), abs(cy), abs(bw), abs(bh)) <= 1:
+                cx, cy, bw, bh = cx * width, cy * height, bw * width, bh * height
+            x1, y1 = cx - bw / 2, cy - bh / 2
+            x2, y2 = cx + bw / 2, cy + bh / 2
+        left = max(0, min(width, int(x1)))
+        top = max(0, min(height, int(y1)))
+        right = max(0, min(width, int(x2 + 0.999999)))
+        bottom = max(0, min(height, int(y2 + 0.999999)))
+        if right <= left or bottom <= top:
+            raise ValueError(
+                f"training projection box is outside image bounds: {row.get('id')}"
+            )
+        return left, top, right, bottom
+
+    temporary = destination.with_name(
+        f".{destination.name}.{uuid.uuid4().hex}.projection.tmp"
+    )
+    try:
+        with Image.open(destination) as source:
+            image_format = str(source.format or "").upper()
+            canvas = source.convert("RGB")
+            width, height = canvas.size
+            if width <= 0 or height <= 0:
+                raise ValueError(
+                    f"TRAINING_IMAGE_INVALID: filename={destination.name}; reason=empty_dimensions"
+                )
+            original = canvas.copy() if policy == TRAINING_PROJECTION_POLICY else None
+            median = tuple(int(value) for value in ImageStat.Stat(canvas).median[:3])
+            draw = ImageDraw.Draw(canvas)
+            redacted = 0
+            for box in excluded:
+                left, top, right, bottom = pixel_bounds(box, width, height)
+                draw.rectangle((left, top, right - 1, bottom - 1), fill=median)
+                redacted += 1
+            if redacted != len(excluded):
+                raise ValueError("not all excluded training objects were redacted")
+
+            # v2 restores each selected positive rectangle after excluded-object
+            # redaction. Without this, a large unselected box can erase the
+            # pixels of a nested selected target while its positive YOLO label
+            # remains, creating contradictory training truth.
+            if original is not None:
+                for box in (row.get("boxes") or []):
+                    if not isinstance(box, Mapping):
+                        continue
+                    left, top, right, bottom = pixel_bounds(box, width, height)
+                    canvas.paste(
+                        original.crop((left, top, right, bottom)),
+                        (left, top),
+                    )
+
+            save_format = image_format or (
+                "JPEG" if destination.suffix.lower() in _JPEG_SUFFIXES else "PNG"
+            )
+            save_options = (
+                {"quality": 100, "subsampling": 0}
+                if save_format in {"JPEG", "JPG"} else {}
+            )
+            canvas.save(temporary, format=save_format, **save_options)
+        if not temporary.is_file() or temporary.stat().st_size <= 0:
+            raise ValueError("training projection produced an empty image")
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+    previous_reason = str(identity.get("normalization_reason") or "").strip()
+    identity.update(
+        training_content_sha256=_sha256(destination),
+        training_size_bytes=destination.stat().st_size,
+        normalized=True,
+        normalization_reason=(
+            f"{previous_reason}+excluded_object_redaction"
+            if previous_reason else "excluded_object_redaction"
+        ),
+        training_projection_policy=policy,
+        training_projection_digest=projection_digest,
+        redacted_object_count=len(excluded),
+    )
+    return identity
+
 def materialize_portable_dataset(
     task_root: str | Path,
     snapshot: Mapping[str, Any],
@@ -524,6 +682,9 @@ def materialize_portable_dataset(
         image_identity = _normalize_training_image(
             destination, expected_hash, size_bytes
         )
+        image_identity = _apply_training_projection(
+            destination, row, role, image_identity
+        )
         training_hash = str(image_identity["training_content_sha256"])
         training_size_bytes = int(image_identity["training_size_bytes"])
         training_total_size_bytes += training_size_bytes
@@ -550,6 +711,9 @@ def materialize_portable_dataset(
                 "training_input_policy": TRAINING_INPUT_POLICY,
                 "normalized": bool(image_identity["normalized"]),
                 "normalization_reason": image_identity["normalization_reason"],
+                "training_projection_policy": image_identity.get("training_projection_policy"),
+                "training_projection_digest": image_identity.get("training_projection_digest"),
+                "redacted_object_count": int(image_identity.get("redacted_object_count") or 0),
                 "label_sha256": _sha256(label_path),
             }
         )
@@ -569,14 +733,26 @@ def materialize_portable_dataset(
         yaml.safe_dump(data_yaml, allow_unicode=True, sort_keys=False),
         durable=False,
     )
+    portable_snapshot = ensure_dataset_revision(snapshot)
     snapshot_path = root / "snapshot.json"
-    atomic_write_json(snapshot_path, dict(snapshot))
+    atomic_write_json(snapshot_path, portable_snapshot)
+    revision_path = root / "dataset-revision.json"
+    atomic_write_json(revision_path, dataset_revision_document(portable_snapshot))
     manifest = {
         "schema_version": 3,
-        "snapshot_id": str(snapshot.get("snapshot_id") or ""),
+        "snapshot_id": str(portable_snapshot.get("snapshot_id") or ""),
+        "dataset_revision_schema_version": int(
+            portable_snapshot.get("dataset_revision_schema_version") or 0
+        ),
+        "canonical_annotation_schema_version": int(
+            portable_snapshot.get("canonical_annotation_schema_version") or 0
+        ),
+        "dataset_revision_id": str(portable_snapshot.get("dataset_revision_id") or ""),
         "training_input_policy": TRAINING_INPUT_POLICY,
         "snapshot_ref": "snapshot.json",
         "snapshot_sha256": _sha256(snapshot_path),
+        "dataset_revision_ref": "dataset-revision.json",
+        "dataset_revision_sha256": _sha256(revision_path),
         "data_yaml_ref": "dataset/data.yaml",
         "total_size_bytes": training_total_size_bytes,
         "splits": splits,
@@ -626,6 +802,22 @@ def _verify_materialized_dataset_evidence(manifest_path: str | Path) -> dict[str
     expected_snapshot = str(manifest.get("snapshot_sha256") or "")
     if not snapshot.is_file() or not expected_snapshot or _sha256(snapshot) != expected_snapshot:
         raise ValueError("portable training snapshot SHA256 mismatch")
+    snapshot_value = json.loads(snapshot.read_text(encoding="utf-8"))
+    revision = _resolve_relative(
+        path.parent,
+        str(manifest.get("dataset_revision_ref") or ""),
+    )
+    expected_revision_sha = str(manifest.get("dataset_revision_sha256") or "")
+    if not revision.is_file() or not expected_revision_sha or _sha256(revision) != expected_revision_sha:
+        raise ValueError("portable dataset revision SHA256 mismatch")
+    revision_value = json.loads(revision.read_text(encoding="utf-8"))
+    revision_id = str(manifest.get("dataset_revision_id") or "")
+    if (
+        not revision_id
+        or str(snapshot_value.get("dataset_revision_id") or "") != revision_id
+        or str(revision_value.get("dataset_revision_id") or "") != revision_id
+    ):
+        raise ValueError("portable dataset revision identity mismatch")
     verified = 0
     for role in ("train", "validation", "test"):
         for member in (manifest.get("splits") or {}).get(role, []):
@@ -643,6 +835,7 @@ def _verify_materialized_dataset_evidence(manifest_path: str | Path) -> dict[str
             verified += 1
     return {
         "snapshot_id": manifest.get("snapshot_id"),
+        "dataset_revision_id": manifest.get("dataset_revision_id"),
         "verified_files": verified,
         "verification_mode": "materialization_evidence",
     }
@@ -652,6 +845,25 @@ def verify_portable_dataset(manifest_path: str | Path) -> dict[str, Any]:
     path = Path(manifest_path).resolve()
     manifest = json.loads(path.read_text(encoding="utf-8"))
     resolve_dataset_yaml(path)
+    snapshot_path = _resolve_relative(path.parent, str(manifest.get("snapshot_ref") or ""))
+    if not snapshot_path.is_file():
+        raise FileNotFoundError("portable training snapshot does not exist")
+    snapshot_value = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    revision_id = str(manifest.get("dataset_revision_id") or "").strip()
+    if revision_id:
+        revision_path = _resolve_relative(
+            path.parent,
+            str(manifest.get("dataset_revision_ref") or ""),
+        )
+        if not revision_path.is_file():
+            raise FileNotFoundError("portable dataset revision evidence is missing")
+        revision_value = json.loads(revision_path.read_text(encoding="utf-8"))
+        if (
+            str(snapshot_value.get("dataset_revision_id") or "") != revision_id
+            or str(revision_value.get("dataset_revision_id") or "") != revision_id
+            or str(manifest.get("dataset_revision_sha256") or "") != _sha256(revision_path)
+        ):
+            raise ValueError("portable dataset revision identity mismatch")
     verified = 0
     for role in ("train", "validation", "test"):
         for member in (manifest.get("splits") or {}).get(role, []):
@@ -671,7 +883,11 @@ def verify_portable_dataset(manifest_path: str | Path) -> dict[str, Any]:
             if not label_path.is_file() or _sha256(label_path) != str(member.get("label_sha256") or ""):
                 raise ValueError(f"portable label SHA256 mismatch: {member.get('image_id')}")
             verified += 1
-    return {"snapshot_id": manifest.get("snapshot_id"), "verified_files": verified}
+    return {
+        "snapshot_id": manifest.get("snapshot_id"),
+        "dataset_revision_id": revision_id,
+        "verified_files": verified,
+    }
 
 
 @dataclass(frozen=True)
@@ -680,7 +896,9 @@ class RemoteTrainingBundle:
     manifest: Path
     data_yaml: Path
     snapshot: Path
+    dataset_revision: Path | None
     snapshot_id: str
+    dataset_revision_id: str
     verified_files: int
 
 
@@ -705,12 +923,20 @@ def resolve_remote_training_bundle(manifest_path: str | Path) -> RemoteTrainingB
     snapshot_id = str(manifest.get("snapshot_id") or "")
     if not snapshot_id or str(snapshot_value.get("snapshot_id") or "") != snapshot_id:
         raise ValueError("portable training snapshot identity mismatch")
+    dataset_revision_id = str(verification.get("dataset_revision_id") or "")
+    dataset_revision = (
+        _resolve_relative(path.parent, str(manifest.get("dataset_revision_ref") or ""))
+        if dataset_revision_id
+        else None
+    )
     return RemoteTrainingBundle(
         root=path.parent,
         manifest=path,
         data_yaml=resolve_dataset_yaml(path),
         snapshot=snapshot,
+        dataset_revision=dataset_revision,
         snapshot_id=snapshot_id,
+        dataset_revision_id=dataset_revision_id,
         verified_files=int(verification["verified_files"]),
     )
 
@@ -747,7 +973,9 @@ def _selected_project_images(
     wanted = tuple(dict.fromkeys(str(value).strip() for value in image_ids if str(value).strip()))
     if not wanted:
         raise ValueError("train_image_ids 不能为空")
-    rows = materials.get_many(wanted)
+    rows: list[dict[str, Any]] = []
+    for offset in range(0, len(wanted), 500):
+        rows.extend(materials.get_many(wanted[offset:offset + 500]))
     found = {str(row.get("id")) for row in rows}
     missing = [image_id for image_id in wanted if image_id not in found]
     if missing:
@@ -755,11 +983,20 @@ def _selected_project_images(
     by_id = {str(row.get("id")): row for row in rows}
     result = []
     annotations = AnnotationRepository(project)
+    annotation_by_id: dict[str, dict[str, Any]] = {}
+    for offset in range(0, len(wanted), 500):
+        annotation_by_id.update(annotations.get_many(wanted[offset:offset + 500]))
     for image_id in wanted:
         row = dict(by_id[image_id])
         image_id = str(row.get("id") or "")
-        annotation = annotations.get(image_id)
+        annotation = annotation_by_id[image_id]
         row['annotation_state'] = annotation['annotation_state']
+        row['annotation_scope'] = list(annotation.get('annotation_scope') or [])
+        row['annotation_hash'] = str(
+            annotation.get('content_digest')
+            or row.get('annotation_hash')
+            or ''
+        )
         row['annotated'] = annotation['annotation_state'] in {'annotated', 'confirmed_empty'}
         row["boxes"] = list(annotation.get("boxes") or [])
         result.append(row)
@@ -773,14 +1010,577 @@ def _label_schema(project: Path) -> list[dict[str, Any]]:
         item = dict(value) if isinstance(value, dict) else {"code": str(value)}
         if item.get("active") is False or item.get('status', 'active') != 'active':
             continue
-        item["class_id"] = int(item.get("class_id", index))
-        if item.get("code"):
-            items.append(item)
+        if not item.get("code"):
+            continue
+        # Project/canonical class ids are durable governance identity and may
+        # contain gaps after soft-delete/unify. Training ids are a separate,
+        # frozen 0..N-1 namespace required by YOLO.
+        item["canonical_project_class_id"] = int(item.get("class_id", index))
+        item["class_id"] = len(items)
+        items.append(item)
     return items
+
+
+@dataclass(frozen=True)
+class TrainingSelectionResolution:
+    requested_split: SplitRequest
+    effective_split: SplitRequest
+    effective_images: tuple[dict[str, Any], ...]
+    selected_train_image_ids: tuple[str, ...]
+    pending_annotation_image_ids: tuple[str, ...]
+
+    def truth(self) -> dict[str, Any]:
+        return {
+            "selected_train_image_ids": list(self.selected_train_image_ids),
+            "effective_train_image_ids": list(self.effective_split.train_image_ids),
+            "pending_annotation_image_ids": list(self.pending_annotation_image_ids),
+            "test_image_ids": list(self.effective_split.test_image_ids),
+            "selected_train_count": len(self.selected_train_image_ids),
+            "effective_train_count": len(self.effective_split.train_image_ids),
+            "pending_annotation_count": len(self.pending_annotation_image_ids),
+            "test_count": len(self.effective_split.test_image_ids),
+        }
+
+
+def _processed_training_candidate(row: Mapping[str, Any]) -> bool:
+    return (
+        str(row.get("processing_status") or "").strip().lower() == "processed"
+        or bool(row.get("cleaned_at"))
+        or bool(row.get("clean_skipped"))
+    )
+
+
+def resolve_training_selection(
+    project: Path,
+    split_request: SplitRequest,
+) -> TrainingSelectionResolution:
+    """Separate user-selectable cleaned material from formal supervised truth.
+
+    Cleaned/unannotated training material is valid task intent, but it is never
+    converted into an empty YOLO label. Independent test material remains
+    Ground-Truth-only because evaluation without labels is meaningless.
+    """
+    image_ids = (*split_request.train_image_ids, *split_request.test_image_ids)
+    images = _selected_project_images(MaterialRepository(project), project, image_ids)
+    by_id = {str(row.get("id") or ""): row for row in images}
+
+    effective_train: list[str] = []
+    pending_annotation: list[str] = []
+    invalid_train: list[str] = []
+    for image_id in split_request.train_image_ids:
+        row = by_id[str(image_id)]
+        boxes = list(row.get("boxes") or [])
+        state = str(row.get("annotation_state") or "unannotated")
+        if is_training_ground_truth(state, boxes):
+            effective_train.append(str(image_id))
+        elif state == "unannotated" and not boxes and _processed_training_candidate(row):
+            pending_annotation.append(str(image_id))
+        else:
+            invalid_train.append(str(image_id))
+
+    if invalid_train:
+        raise ValueError(
+            "训练候选包含尚未清洗完成或标注状态不一致的素材: "
+            + ", ".join(invalid_train[:5])
+        )
+
+    invalid_test: list[str] = []
+    for image_id in split_request.test_image_ids:
+        row = by_id[str(image_id)]
+        if not is_training_ground_truth(
+            row.get("annotation_state"),
+            list(row.get("boxes") or []),
+        ):
+            invalid_test.append(str(image_id))
+    if invalid_test:
+        raise ValueError(
+            "独立试验素材必须具备正式 Ground Truth，以下素材仍待标注: "
+            + ", ".join(invalid_test[:5])
+        )
+
+    if not effective_train:
+        raise ValueError(
+            "已清洗未标注素材可以选入训练任务，但本轮没有任何正式标注素材可用于监督训练；"
+            "请先完成至少一部分人工标注或 AI 标注审核确认"
+        )
+
+    effective_split = SplitRequest(
+        mode=split_request.mode,
+        train_image_ids=tuple(effective_train),
+        test_image_ids=tuple(split_request.test_image_ids),
+        experiment_percent=split_request.experiment_percent,
+        validation_percent=split_request.validation_percent,
+    )
+    effective_ids = set((*effective_split.train_image_ids, *effective_split.test_image_ids))
+    effective_images = tuple(
+        row for row in images if str(row.get("id") or "") in effective_ids
+    )
+    return TrainingSelectionResolution(
+        requested_split=split_request,
+        effective_split=effective_split,
+        effective_images=effective_images,
+        selected_train_image_ids=tuple(split_request.train_image_ids),
+        pending_annotation_image_ids=tuple(pending_annotation),
+    )
+
+
+_TRAINING_INPUT_FREEZE_SCHEMA_VERSION = 1
+_TRAINING_INPUT_FREEZE_FIELDS = (
+    "id",
+    "dataset_id",
+    "filename",
+    "stored_name",
+    "stored_path",
+    "path",
+    "source_type",
+    "source_ref",
+    "video_task_id",
+    "group_id",
+    "source_group_id",
+    "near_duplicate_group_id",
+    "sequence_group_id",
+    "camera_session_id",
+    "capture_session_id",
+    "camera_id",
+    "session_id",
+    "content_sha256",
+    "size_bytes",
+    "width",
+    "height",
+    "storage_source_id",
+    "storage_type",
+    "object_key",
+    "source_available",
+    "annotation_needs_review",
+    "annotation_review_reason",
+    "annotation_source_content_sha256",
+    "negative_origin",
+    "source_annotation_state",
+    "source_annotation_hash",
+    "source_labels",
+    "training_excluded_boxes",
+    "training_projection_policy",
+    "training_projection_digest",
+    "external_annotation",
+    "external_annotation_needs_review",
+    "external_annotation_review_reason",
+    "annotation_state",
+    "annotation_scope",
+    "annotation_hash",
+    "annotated",
+    "boxes",
+)
+
+
+def _training_input_freeze_digest(value: Mapping[str, Any]) -> str:
+    payload = {
+        key: item
+        for key, item in value.items()
+        if key not in {"created_at", "input_freeze_id"}
+    }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _frozen_training_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    frozen = {
+        key: row.get(key)
+        for key in _TRAINING_INPUT_FREEZE_FIELDS
+        if key in row
+    }
+    frozen["id"] = str(row.get("id") or "")
+    frozen["content_sha256"] = str(row.get("content_sha256") or "").strip().lower()
+    frozen["annotation_state"] = str(row.get("annotation_state") or "unannotated")
+    frozen["annotation_scope"] = list(row.get("annotation_scope") or [])
+    frozen["annotation_hash"] = str(row.get("annotation_hash") or "")
+    frozen["boxes"] = [dict(box) for box in (row.get("boxes") or [])]
+    return frozen
+
+
+def _requested_new_training_labels(
+    label_contract: Mapping[str, Any] | None,
+) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(
+        str(code).strip()
+        for code in (
+            (label_contract or {}).get("requested_new_label_codes") or []
+        )
+        if str(code).strip()
+    ))
+
+
+def _training_split_quality(
+    images: Sequence[Mapping[str, Any]],
+    manifest: Any,
+    label_schema: Sequence[Mapping[str, Any]],
+    label_contract: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    by_id = {str(row.get("id") or ""): row for row in images}
+    role_box_counts: dict[str, int] = {}
+    role_label_counts: dict[str, dict[str, int]] = {}
+    for role in ("train", "validation", "test"):
+        counts: dict[str, int] = {}
+        box_total = 0
+        for image_id in manifest.ids[role]:
+            row = by_id.get(str(image_id)) or {}
+            for box in row.get("boxes") or []:
+                label = str(box.get("label") or box.get("code") or "").strip()
+                if not label:
+                    continue
+                counts[label] = counts.get(label, 0) + 1
+                box_total += 1
+        role_box_counts[role] = box_total
+        role_label_counts[role] = dict(sorted(counts.items()))
+    if role_box_counts["train"] <= 0:
+        raise ValueError("训练集没有任何正样本标注框；confirmed_empty 可作为负样本，但不能单独训练检测模型")
+    if role_box_counts["validation"] <= 0:
+        raise ValueError("验证集没有任何正样本标注框，无法得到有意义的检测指标；请增加正样本或调整划分")
+    active_codes = [
+        str(item.get("code") or "").strip()
+        for item in label_schema
+        if str(item.get("code") or "").strip()
+    ]
+    missing_train = [
+        code for code in active_codes
+        if role_label_counts["train"].get(code, 0) <= 0
+    ]
+    requested_new = _requested_new_training_labels(label_contract)
+    unknown_requested_new = [
+        code for code in requested_new if code not in set(active_codes)
+    ]
+    if unknown_requested_new:
+        raise ValueError(
+            "训练标签合同包含不在有效 schema 中的新增标签: "
+            + ", ".join(unknown_requested_new[:20])
+        )
+    missing_requested_new = [
+        code for code in requested_new
+        if role_label_counts["train"].get(code, 0) <= 0
+    ]
+    if missing_requested_new:
+        raise ValueError(
+            "本次新增训练标签在训练集没有正样本: "
+            + ", ".join(missing_requested_new[:20])
+            + "；请增加对应正样本或调整训练/验证/试验划分后重试"
+        )
+    train_labels = {
+        code for code, count in role_label_counts["train"].items()
+        if count > 0
+    }
+    missing_validation = [
+        code for code in sorted(train_labels)
+        if role_label_counts["validation"].get(code, 0) <= 0
+    ]
+    warnings = []
+    if missing_train:
+        warnings.append(
+            "启用标签在训练集缺少正样本: " + ", ".join(missing_train[:20])
+        )
+    if missing_validation:
+        warnings.append(
+            "训练标签在验证集缺少正样本，相关类别指标不可评估: "
+            + ", ".join(missing_validation[:20])
+        )
+    return {
+        "role_box_counts": role_box_counts,
+        "role_label_counts": role_label_counts,
+        "active_labels_without_train_positive": missing_train,
+        "train_labels_without_validation_positive": missing_validation,
+        "warnings": warnings,
+    }
+
+
+def freeze_training_inputs(
+    project: Path,
+    split_request: SplitRequest,
+    *,
+    seed: int,
+    supplement_candidate_set: Mapping[str, Any] | None = None,
+    selection_resolution: TrainingSelectionResolution | None = None,
+    effective_images: Sequence[Mapping[str, Any]] | None = None,
+    label_schema_override: Sequence[Mapping[str, Any]] | None = None,
+    label_contract: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Freeze formal DB truth at submit time without reading/copying source bytes."""
+    resolution = selection_resolution or resolve_training_selection(project, split_request)
+    if resolution.requested_split != split_request:
+        raise ValueError("training selection resolution does not match the requested split")
+    effective_split = resolution.effective_split
+    source_images = [dict(row) for row in resolution.effective_images]
+    images = (
+        [dict(row) for row in effective_images]
+        if effective_images is not None
+        else source_images
+    )
+    source_ids = [str(row.get("id") or "") for row in source_images]
+    projected_ids = [str(row.get("id") or "") for row in images]
+    if projected_ids != source_ids:
+        raise ValueError("projected training images must preserve frozen selection identity/order")
+    if not _indexed_content_identity_ready(images):
+        invalid = [
+            str(row.get("id") or "")
+            for row in images
+            if not _indexed_content_identity_ready([row])
+        ]
+        raise ValueError(
+            "训练素材缺少可冻结的 SHA256/size 身份: "
+            + ", ".join(invalid[:5])
+            + "；请先重新扫描/导入建立内容身份后再训练"
+        )
+    label_schema = (
+        [dict(item) for item in label_schema_override]
+        if label_schema_override is not None
+        else _label_schema(project)
+    )
+    if not label_schema:
+        raise ValueError("training label schema is empty")
+    manifest = build_split_manifest(
+        images,
+        effective_split,
+        seed=int(seed),
+        required_train_labels=_requested_new_training_labels(label_contract),
+    )
+    input_quality = _training_split_quality(
+        images, manifest, label_schema, label_contract=label_contract,
+    )
+    snapshot = build_snapshot(
+        images,
+        manifest,
+        label_schema,
+        supplement_candidate_set=supplement_candidate_set,
+    )
+    split_truth = {
+        "mode": effective_split.mode.value,
+        "train_image_ids": list(effective_split.train_image_ids),
+        "test_image_ids": list(effective_split.test_image_ids),
+        "experiment_percent": effective_split.experiment_percent,
+        "validation_percent": effective_split.validation_percent,
+        "seed": int(seed),
+    }
+    value = {
+        "schema_version": _TRAINING_INPUT_FREEZE_SCHEMA_VERSION,
+        "split": split_truth,
+        "images": [_frozen_training_row(row) for row in images],
+        "label_schema": [dict(item) for item in label_schema],
+        "snapshot_id": str(snapshot["snapshot_id"]),
+        "dataset_revision_id": str(snapshot["dataset_revision_id"]),
+        "input_quality": input_quality,
+        "selection": resolution.truth(),
+        **(
+            {"label_contract": {
+                key: item for key, item in dict(label_contract).items()
+                if key != "project_path"
+            }}
+            if label_contract is not None else {}
+        ),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    value["input_freeze_id"] = _training_input_freeze_digest(value)
+    return value
+
+
+def resolve_training_input_freeze(
+    value: Mapping[str, Any],
+    split_request: SplitRequest,
+    *,
+    seed: int,
+    supplement_candidate_set: Mapping[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], Any, dict[str, Any]]:
+    """Validate frozen submit truth and reproduce its split/snapshot deterministically."""
+    if int(value.get("schema_version") or 0) != _TRAINING_INPUT_FREEZE_SCHEMA_VERSION:
+        raise ValueError("training input freeze schema version is unsupported")
+    actual_freeze_id = str(value.get("input_freeze_id") or "").strip().lower()
+    expected_freeze_id = _training_input_freeze_digest(value)
+    if not actual_freeze_id or actual_freeze_id != expected_freeze_id:
+        raise ValueError("training input freeze digest mismatch")
+    expected_split = {
+        "mode": split_request.mode.value,
+        "train_image_ids": list(split_request.train_image_ids),
+        "test_image_ids": list(split_request.test_image_ids),
+        "experiment_percent": split_request.experiment_percent,
+        "validation_percent": split_request.validation_percent,
+        "seed": int(seed),
+    }
+    if dict(value.get("split") or {}) != expected_split:
+        raise ValueError("training payload no longer matches its frozen input selection")
+    images = [dict(row) for row in (value.get("images") or []) if isinstance(row, Mapping)]
+    expected_ids = tuple(dict.fromkeys(
+        str(item).strip()
+        for item in (*split_request.train_image_ids, *split_request.test_image_ids)
+        if str(item).strip()
+    ))
+    actual_ids = tuple(str(row.get("id") or "") for row in images)
+    if actual_ids != expected_ids:
+        raise ValueError("training input freeze image identity/order mismatch")
+    if not _indexed_content_identity_ready(images):
+        raise ValueError("training input freeze contains invalid content identity")
+    label_schema = [
+        dict(item)
+        for item in (value.get("label_schema") or [])
+        if isinstance(item, Mapping)
+    ]
+    frozen_contract = value.get("label_contract")
+    if isinstance(frozen_contract, Mapping) and frozen_contract:
+        contract_schema = [
+            dict(item)
+            for item in (frozen_contract.get("effective_label_schema") or [])
+            if isinstance(item, Mapping)
+        ]
+        if contract_schema != label_schema:
+            raise ValueError("training input freeze label contract/schema mismatch")
+    manifest = build_split_manifest(
+        images,
+        split_request,
+        seed=int(seed),
+        required_train_labels=_requested_new_training_labels(
+            frozen_contract if isinstance(frozen_contract, Mapping) else None
+        ),
+    )
+    input_quality = _training_split_quality(
+        images,
+        manifest,
+        label_schema,
+        label_contract=(
+            frozen_contract if isinstance(frozen_contract, Mapping) else None
+        ),
+    )
+    if dict(value.get("input_quality") or {}) != input_quality:
+        raise ValueError("training input freeze quality evidence mismatch")
+    snapshot = build_snapshot(
+        images,
+        manifest,
+        label_schema,
+        supplement_candidate_set=supplement_candidate_set,
+    )
+    if str(snapshot.get("snapshot_id") or "") != str(value.get("snapshot_id") or ""):
+        raise ValueError("training input freeze snapshot identity mismatch")
+    if str(snapshot.get("dataset_revision_id") or "") != str(
+        value.get("dataset_revision_id") or ""
+    ):
+        raise ValueError("training input freeze dataset revision mismatch")
+    return images, label_schema, manifest, snapshot
 
 
 def _training_python(data_dir: Path) -> str:
     return training_python(data_dir)
+
+
+def _resolve_resource_contract_subprocess(
+    python_executable: str,
+    request: Mapping[str, Any],
+    resource_context: Mapping[str, Any],
+    model_argument: str,
+) -> dict[str, Any]:
+    """Run the one canonical resolver in the selected Ultralytics runtime."""
+    root = Path(__file__).resolve().parent.parent
+    env = {
+        **os.environ,
+        "PYTHONUTF8": "1",
+        "PYTHONIOENCODING": "utf-8",
+    }
+    existing_pythonpath = str(env.get("PYTHONPATH") or "").strip()
+    env["PYTHONPATH"] = (
+        str(root) + (os.pathsep + existing_pythonpath if existing_pythonpath else "")
+    )
+    with tempfile.TemporaryDirectory(prefix="training-resource-resolve-") as temporary:
+        private_root = Path(temporary)
+        request_path = private_root / "resource-request.json"
+        context_path = private_root / "resource-context.json"
+        private_output = private_root / "resolved-resources.json"
+        request_path.write_text(
+            json.dumps(dict(request), ensure_ascii=False, sort_keys=True),
+            encoding="utf-8",
+        )
+        context_path.write_text(
+            json.dumps(dict(resource_context), ensure_ascii=False, sort_keys=True),
+            encoding="utf-8",
+        )
+        try:
+            completed = subprocess.run(
+                [
+                    str(python_executable),
+                    "-m",
+                    "platform_core.training_metrics",
+                    "--request", str(request_path),
+                    "--context", str(context_path),
+                    "--model", str(model_argument),
+                    "--output", str(private_output),
+                ],
+                cwd=root,
+                env=env,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=300,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            raise RuntimeError(
+                f"RESOURCE_PREPARE_FAILED: {type(error).__name__}: {error}"
+            ) from error
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout or "resource resolver failed").strip()
+            canonical = re.findall(r"\b([A-Z][A-Z0-9_]{2,}):\s*([^\r\n]+)", detail)
+            if canonical:
+                code, message = canonical[-1]
+                raise RuntimeError(f"{code}: {message.strip()}")
+            raise RuntimeError("RESOURCE_PREPARE_FAILED: " + detail[-4000:])
+        resolved = json.loads(private_output.read_text(encoding="utf-8"))
+    if not (
+        isinstance(resolved, dict)
+        and int(resolved.get("resolved_batch") or 0) > 0
+        and int(
+            resolved.get("resolved_workers")
+            if resolved.get("resolved_workers") is not None else -1
+        ) >= 0
+        and str(resolved.get("resource_strategy") or "")
+        == str(request.get("resource_strategy") or "auto")
+    ):
+        raise RuntimeError("RESOURCE_PREPARE_REQUIRED: resolved resource contract is missing or invalid")
+    return dict(resolved)
+
+
+def _freeze_deferred_resource_contract(
+    context,
+    *,
+    python_executable: str,
+    payload: Mapping[str, Any],
+    resource_context: Mapping[str, Any],
+    model_argument: str,
+    bundle: Path,
+    assigned_device: str,
+) -> dict[str, Any]:
+    """Resolve once against the owned assignment, then fenced-publish truth."""
+    context.heartbeat(
+        progress=19,
+        stage="resolving_resources",
+        current_item="按已分配 GPU 冻结 Batch / Workers / Precision / Cache",
+    )
+    request = {
+        **payload,
+        "data": str(Path(bundle) / "manifest.json"),
+        "device": assigned_device,
+        "assigned_device": assigned_device,
+    }
+    resolved = _resolve_resource_contract_subprocess(
+        python_executable,
+        request,
+        resource_context,
+        model_argument,
+    )
+    context.artifacts.atomic_write_json(
+        context.task.task_id,
+        "resolved-resources.json",
+        resolved,
+    )
+    return resolved
 
 
 def _bool(value: Any) -> str:
@@ -808,9 +1608,12 @@ def _training_argv(data_dir: Path, project: Path, task_id: str, payload: Mapping
         "--job-id", task_id,
         "--run-name", f"train_{task_id}",
         "--resource-strategy", str(payload.get("resource_strategy") or "auto"),
+        "--resource-profile", str(payload.get("resource_profile") or "performance"),
+        "--gpu-policy", str(payload.get("gpu_policy") or "exclusive"),
+        "--precision", str(payload.get("resolved_precision") or payload.get("precision") or "auto"),
     ]
     value_options = {
-        "patience": 100, "workers": 0, "optimizer": "auto", "lr0": 0.01,
+        "patience": 40, "workers": 0, "optimizer": "auto", "lr0": 0.01,
         "lrf": 0.01, "weight_decay": 0.0005, "close_mosaic": 10,
         "mosaic": 1.0, "cache": "False", "freeze": 0, "momentum": 0.937,
         "warmup_epochs": 3.0, "save_period": -1, "seed": 0,
@@ -823,9 +1626,11 @@ def _training_argv(data_dir: Path, project: Path, task_id: str, payload: Mapping
     for key, default in value_options.items():
         value = payload.get(f"resolved_{key}", payload.get(key, default)) if key in {"workers", "cache"} else payload.get(key, default)
         argv.extend([f"--{key.replace('_', '-')}", str(value)])
+    if payload.get("time") is not None:
+        argv.extend(["--time", str(float(payload.get("time")))])
     for key, default in {
         "single_cls": False, "pretrained": True, "rect": False, "amp": True,
-        "cos_lr": False, "deterministic": True, "auto_supplement": False,
+        "cos_lr": False, "deterministic": True, "early_stopping_enabled": False, "auto_supplement": False,
         "ai_intervention": False,
     }.items():
         payload_key = "ai_intervention_enabled" if key == "ai_intervention" else key
@@ -834,6 +1639,7 @@ def _training_argv(data_dir: Path, project: Path, task_id: str, payload: Mapping
     for option in ("resource_context", "resource_resolution", "metrics_db"):
         if payload.get(option):
             argv.extend(["--" + option.replace("_", "-"), str(payload[option])])
+    argv.extend(["--runtime-stop-policy", "target_only"])
     return argv
 
 
@@ -1074,6 +1880,127 @@ def _training_completion_metadata(job: Mapping[str, Any], payload: Mapping[str, 
     }
 
 
+def resolve_frozen_training_base(
+    payload: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Resolve and verify the submit-time base-model contract.
+
+    New durable tasks freeze the exact iteration checkpoint before queueing.
+    Historical tasks without this contract retain the compatibility reselect
+    path in TrainingHandler.
+    """
+    contract = payload.get("label_contract")
+    if not isinstance(contract, Mapping):
+        return None
+    if int(contract.get("base_model_contract_schema_version") or 0) != 1:
+        return None
+
+    framework = str(payload.get("framework") or "ultralytics").strip().lower()
+    contract_framework = str(contract.get("framework") or framework).strip().lower()
+    if contract_framework != framework:
+        raise ValueError(
+            "frozen training base framework does not match task framework"
+        )
+
+    mode = str(contract.get("base_training_mode") or "").strip()
+    version_id = str(contract.get("base_version_id") or "").strip()
+    version_name = str(contract.get("base_version_name") or "")
+    reference = str(contract.get("base_model_reference") or "").strip()
+    expected_sha = str(contract.get("base_model_sha256") or "").strip().lower()
+    try:
+        expected_size = int(contract.get("base_model_size_bytes") or 0)
+    except (TypeError, ValueError) as error:
+        raise ValueError("frozen training base size is invalid") from error
+
+    if mode == "previous_weights_init":
+        if not version_id or not reference or len(expected_sha) != 64 or expected_size <= 0:
+            raise ValueError("frozen iteration base model evidence is incomplete")
+    elif mode == "mother_model_init":
+        if version_id:
+            raise ValueError("mother-model training cannot freeze a previous version id")
+        if not reference:
+            raise ValueError("frozen mother model reference is empty")
+    else:
+        raise ValueError("frozen training base mode is invalid")
+
+    resolved_reference = reference
+    if expected_sha or expected_size:
+        candidate = Path(reference).expanduser().resolve()
+        if not candidate.is_file():
+            raise ValueError("frozen training base model file no longer exists")
+        actual_size = int(candidate.stat().st_size)
+        if expected_size <= 0 or actual_size != expected_size:
+            raise ValueError("frozen training base model size changed after task creation")
+        actual_sha = _sha256(candidate)
+        if len(expected_sha) != 64 or actual_sha != expected_sha:
+            raise ValueError("frozen training base model SHA256 changed after task creation")
+        allowed_suffixes = (
+            {".pt"}
+            if framework == "ultralytics"
+            else {".pdparams", ".pdmodel", ".pdiparams"}
+        )
+        if candidate.suffix.lower() not in allowed_suffixes:
+            raise ValueError("frozen training base model format does not match task framework")
+        resolved_reference = str(candidate)
+
+    return {
+        "base_version_id": version_id or None,
+        "base_version_name": version_name,
+        "base_model_path": resolved_reference,
+        "base_model_kind": str(contract.get("base_model_kind") or "mother_model"),
+        "base_selection_reason": str(
+            contract.get("base_selection_reason")
+            or ("current_verified_version" if version_id else "mother_model")
+        ),
+        "base_model_sha256": expected_sha,
+        "base_model_size_bytes": expected_size,
+        "base_training_mode": mode,
+        "framework": framework,
+    }
+
+
+def _training_finalization_existing_version(
+    algorithm: Mapping[str, Any],
+    *,
+    task_id: str,
+    expected_base_version_id: str | None,
+    framework: str,
+) -> Mapping[str, Any] | None:
+    """Fence stale local iteration commits and make post-attach recovery idempotent."""
+    task_value = str(task_id or "").strip()
+    existing = next(
+        (
+            version
+            for version in (algorithm.get("versions") or [])
+            if str(version.get("task_id") or version.get("job_id") or "") == task_value
+        ),
+        None,
+    )
+    if existing is not None:
+        return existing
+
+    expected = str(expected_base_version_id or "").strip()
+    current = str(
+        resolve_current_version_id(
+            algorithm,
+            framework=str(framework or "ultralytics").strip().lower(),
+        )
+        or ""
+    )
+    if expected:
+        if current != expected:
+            raise RuntimeError(
+                "TRAINING_BASE_VERSION_STALE: "
+                f"task was frozen on base {expected}, current version is {current or '<none>'}"
+            )
+    elif current:
+        raise RuntimeError(
+            "TRAINING_BASE_VERSION_STALE: "
+            f"first-run task was frozen without a base, but current version is now {current}"
+        )
+    return None
+
+
 class TrainingHandler:
     def __init__(
         self,
@@ -1115,6 +2042,9 @@ class TrainingHandler:
         if not isinstance(snapshot, dict) or not str(snapshot.get("snapshot_id") or ""):
             raise RuntimeError("completed training is missing its durable dataset snapshot")
         snapshot_id = str(snapshot["snapshot_id"])
+        dataset_revision_id = str(snapshot.get("dataset_revision_id") or "")
+        if not dataset_revision_id:
+            raise RuntimeError("completed training is missing its durable dataset revision")
         completion_error = _training_completion_error(
             job,
             expected_task_id=context.task.task_id,
@@ -1128,6 +2058,8 @@ class TrainingHandler:
         verification = verify_portable_dataset(manifest_path)
         if str(verification.get("snapshot_id") or "") != snapshot_id:
             raise RuntimeError("completed training dataset manifest does not match durable task snapshot")
+        if str(verification.get("dataset_revision_id") or "") != dataset_revision_id:
+            raise RuntimeError("completed training dataset manifest does not match durable dataset revision")
 
         cache_runtime = context.artifacts.read_json(
             context.task.task_id,
@@ -1148,6 +2080,29 @@ class TrainingHandler:
         algorithm = next((row for row in algorithms if str(row.get("id")) == algorithm_id), None)
         if algorithm is None:
             raise RuntimeError("completed training algorithm no longer exists")
+        framework = str(payload.get("framework") or "ultralytics").strip().lower()
+        expected_base_version_id = str(
+            job.get("base_version_id") or payload.get("base_version_id") or ""
+        ).strip()
+        existing_task_version = _training_finalization_existing_version(
+            algorithm,
+            task_id=context.task.task_id,
+            expected_base_version_id=expected_base_version_id,
+            framework=framework,
+        )
+        if existing_task_version is not None:
+            existing_snapshot_id = str(existing_task_version.get("snapshot_id") or "").strip()
+            existing_revision_id = str(
+                existing_task_version.get("dataset_revision_id") or ""
+            ).strip()
+            if existing_snapshot_id and existing_snapshot_id != snapshot_id:
+                raise RuntimeError(
+                    "TRAINING_VERSION_RECOVERY_MISMATCH: existing task version has another snapshot"
+                )
+            if existing_revision_id and existing_revision_id != dataset_revision_id:
+                raise RuntimeError(
+                    "TRAINING_VERSION_RECOVERY_MISMATCH: existing task version has another dataset revision"
+                )
 
         source_values = list(job.get("verified_models") or [])
         if not source_values:
@@ -1179,11 +2134,11 @@ class TrainingHandler:
             ref = f"outputs/{index:02d}_{source.name}"
             destination = context.artifacts.artifact_path(context.task.task_id, ref)
             destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, destination)
+            size_bytes, digest = _copy2_with_sha256(source, destination)
             artifact = {
                 "ref": ref,
-                "sha256": _sha256(destination),
-                "size_bytes": destination.stat().st_size,
+                "sha256": digest,
+                "size_bytes": size_bytes,
             }
             verified_models.append(artifact)
             output_by_source[str(source)] = destination.resolve()
@@ -1194,6 +2149,44 @@ class TrainingHandler:
         partial = (training_report.get("test_result") or {}).get("status") == "failed"
         final_status = TaskStatus.PARTIAL_SUCCESS if partial else TaskStatus.SUCCEEDED
         requested = snapshot.get("requested") if isinstance(snapshot.get("requested"), dict) else {}
+        frozen_label_schema = [
+            dict(item)
+            for item in (snapshot.get("label_schema") or [])
+            if isinstance(item, Mapping) and str(item.get("code") or "").strip()
+        ]
+        frozen_label_codes = [
+            str(item.get("code") or "").strip()
+            for item in frozen_label_schema
+        ]
+        freeze_ref = str(payload.get("input_freeze_ref") or "").strip()
+        frozen_input = (
+            context.artifacts.read_json(
+                context.task.task_id,
+                freeze_ref,
+                default={},
+            )
+            if freeze_ref else {}
+        )
+        frozen_label_contract = (
+            dict(frozen_input.get("label_contract") or {})
+            if isinstance(frozen_input, Mapping)
+            else {}
+        )
+        if not frozen_label_contract and isinstance(payload.get("label_contract"), Mapping):
+            # Compatibility only for early durable tasks that persisted the
+            # contract on the request before input-freeze became authoritative.
+            frozen_label_contract = dict(payload.get("label_contract") or {})
+        frozen_label_contract.pop("project_path", None)
+        quality_gate = job.get("quality_gate") if isinstance(job.get("quality_gate"), dict) else {
+            "runtime_stop_policy": "target_only",
+            "eval_interval": int(payload.get("eval_interval") or 0),
+            "metric": str(payload.get("eval_metric") or "map50"),
+            "continue_threshold": float(payload.get("continue_threshold") or 0),
+            "stop_threshold": float(payload.get("stop_threshold") or 0),
+            "stage_eval_samples": int(payload.get("val_max_samples") or 0),
+            "experiment_percent": float(payload.get("experiment_percent") or 0),
+            "split_seed": int(payload.get("seed") or 0),
+        }
         result = {
             "schema_version": 1,
             "requested_device": job.get("requested_device") or payload.get("requested_device") or payload.get("device"),
@@ -1202,20 +2195,33 @@ class TrainingHandler:
             "device_evidence": job.get("device_evidence"),
             "device_validation": job.get("device_evidence") or job.get("device_validation") or {},
             "actual_train_params": job.get("actual_train_params"),
+            "amp_preflight": job.get("amp_preflight"),
+            "amp_check_method": job.get("amp_check_method"),
+            "amp_check_result": job.get("amp_check_result"),
+            "precision_fallback_reason": job.get("precision_fallback_reason"),
+            "resolved_precision": job.get("resolved_precision"),
+            "runtime_precision": job.get("runtime_precision"),
+            "requested_precision": job.get("requested_precision"),
             **_training_completion_metadata(job, payload),
             "snapshot_id": snapshot_id,
+            "dataset_revision_id": dataset_revision_id,
             "snapshot_ref": "snapshot.json",
+            "dataset_revision_ref": "dataset-revision.json",
             "dataset_manifest_ref": manifest_ref,
             "counts": snapshot.get("counts") or {},
             "actual_ratios": snapshot.get("actual_ratios") or {},
             "test_source": requested.get("test_source"),
             "test_seed": snapshot.get("test_seed"),
             "validation_seed": snapshot.get("validation_seed"),
+            "label_schema": frozen_label_schema,
+            "label_codes": frozen_label_codes,
+            "label_contract": frozen_label_contract,
             "base_version_id": job.get("base_version_id"),
             "base_version_name": job.get("base_version_name"),
             "base_selection_reason": job.get("base_selection_reason"),
             "verified_models": verified_models,
             "training_report": training_report,
+            "quality_gate": quality_gate,
             "dataset_verification": verification,
             "bundle_cache": bundle_cache_evidence,
             "resolved_resources": context.artifacts.read_json(context.task.task_id, "resolved-resources.json", default={}),
@@ -1232,40 +2238,140 @@ class TrainingHandler:
             (model["ref"] for model in verified_models if last_output == context.artifacts.artifact_path(context.task.task_id, model["ref"]).resolve()),
             None,
         )
-        context.artifacts.atomic_write_json(context.task.task_id, "result.json", result)
-        primary = best_output or last_output or context.artifacts.artifact_path(
-            context.task.task_id, verified_models[0]["ref"]
-        ).resolve()
-        finished_at = str(job.get("finished_at") or datetime.now(timezone.utc).isoformat())
-        attach_version(
-            algorithms_path,
-            str(algorithm.get("id")),
-            {
-                "id": uuid.uuid4().hex[:12],
-                "version_name": datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S"),
-                "stored_path": str(primary),
-                "best_path": str(best_output) if best_output else "",
-                "last_path": str(last_output) if last_output else "",
-                "model_name": primary.name,
-                "verified_models": verified_models,
-                "training_status": final_status.value,
-                "training_outcome": job.get("training_outcome"),
-                "completion_reason": job.get("completion_reason"),
-                "base_version_id": job.get("base_version_id"),
-                "base_version_name": job.get("base_version_name"),
-                "base_selection_reason": job.get("base_selection_reason"),
-                "metrics": training_report.get("metrics") or {},
-                "artifact_verified": True,
-                "trainable": True,
-                "framework": "ultralytics",
-                "snapshot_id": snapshot_id,
-                "result_ref": "result.json",
-                "task_id": context.task.task_id,
-                "job_id": context.task.task_id,
-                "created_at": finished_at,
-                "finished_at": finished_at,
-            },
+        primary_ref = (
+            result["best_model_ref"]
+            or result["last_model_ref"]
+            or verified_models[0]["ref"]
         )
+        primary = context.artifacts.artifact_path(
+            context.task.task_id, primary_ref
+        ).resolve()
+        primary_evidence = next(
+            model for model in verified_models
+            if str(model.get("ref") or "") == str(primary_ref)
+        )
+        finished_at = str(job.get("finished_at") or datetime.now(timezone.utc).isoformat())
+        model_sha256 = str(primary_evidence["sha256"])
+        model_size_bytes = int(primary_evidence["size_bytes"])
+        completion = _training_completion_metadata(job, payload)
+        training_lineage = build_training_lineage(
+            task_id=context.task.task_id,
+            snapshot_id=snapshot_id,
+            dataset_revision_id=dataset_revision_id,
+            framework=str(payload.get("framework") or "ultralytics"),
+            base_version_id=job.get("base_version_id"),
+            base_version_name=job.get("base_version_name"),
+            base_model=job.get("model") or payload.get("model"),
+            base_selection_reason=job.get("base_selection_reason"),
+            execution={
+                "mode": str(payload.get("target") or "local"),
+                "worker_id": context.lease.worker_id,
+                "requested_device": job.get("requested_device") or payload.get("requested_device") or payload.get("device"),
+                "assigned_device": job.get("assigned_device"),
+                "actual_device": job.get("actual_device"),
+            },
+            requested_params=payload,
+            actual_params=job.get("actual_train_params"),
+            iteration_action=job.get("confirmed_iteration_action") or payload.get("iteration_action"),
+            supplement_provenance=job.get("supplement_provenance"),
+            artifacts=[{
+                "role": "primary",
+                "file_name": primary.name,
+                "sha256": model_sha256,
+                "size_bytes": model_size_bytes,
+                "verified": True,
+            }],
+            training_status=final_status.value,
+            training_outcome=completion.get("training_outcome"),
+            completion_reason=completion.get("completion_reason"),
+            finished_at=finished_at,
+        )
+        evaluation = build_evaluation_truth(
+            training_report.get("test_result"),
+            task_id=context.task.task_id,
+            snapshot_id=snapshot_id,
+            dataset_revision_id=dataset_revision_id,
+            model_sha256=model_sha256,
+            finished_at=finished_at,
+        )
+        iteration_decision = build_iteration_decision(
+            evaluation,
+            quality_gate=quality_gate,
+        )
+        result.update({
+            "training_lineage": training_lineage,
+            "evaluation": evaluation,
+            "iteration_decision": iteration_decision,
+        })
+        context.artifacts.atomic_write_json(context.task.task_id, "result.json", result)
+        version_name = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+        committed_version_id = (
+            str(existing_task_version.get("id") or "")
+            if isinstance(existing_task_version, Mapping)
+            else ""
+        )
+        if existing_task_version is None:
+            committed_version_id = uuid.uuid4().hex[:12]
+            try:
+                attach_version_if_current(
+                    algorithms_path,
+                    str(algorithm.get("id")),
+                    {
+                        "id": committed_version_id,
+                        "version_name": version_name,
+                        "version_no": version_name,
+                        "stored_path": str(primary),
+                        "best_path": str(best_output) if best_output else "",
+                        "last_path": str(last_output) if last_output else "",
+                        "model_name": primary.name,
+                        "verified_models": verified_models,
+                        "training_status": final_status.value,
+                        "training_outcome": job.get("training_outcome"),
+                        "completion_reason": job.get("completion_reason"),
+                        "base_version_id": job.get("base_version_id"),
+                        "base_version_name": job.get("base_version_name"),
+                        "base_selection_reason": job.get("base_selection_reason"),
+                        "metrics": training_report.get("metrics") or {},
+                        "artifact_verified": True,
+                        "trainable": True,
+                        "framework": "ultralytics",
+                        "label_schema": frozen_label_schema,
+                        "label_codes": frozen_label_codes,
+                        "label_contract": frozen_label_contract,
+                        "external_analysis_id": str(
+                            payload.get("external_analysis_id") or ""
+                        ).strip(),
+                        "snapshot_id": snapshot_id,
+                        "dataset_revision_id": dataset_revision_id,
+                        "training_lineage": training_lineage,
+                        "evaluation": evaluation,
+                        "iteration_decision": iteration_decision,
+                        "result_ref": "result.json",
+                        "task_id": context.task.task_id,
+                        "job_id": context.task.task_id,
+                        "created_at": finished_at,
+                        "finished_at": finished_at,
+                    },
+                    expected_current_version_id=(
+                        expected_base_version_id or None
+                    ),
+                )
+            except PlatformError as error:
+                if error.code == "ALGORITHM_VERSION_CONFLICT":
+                    raise RuntimeError(
+                        "TRAINING_BASE_VERSION_STALE: " + error.detail
+                    ) from error
+                raise
+
+        external_publish_requested = _request_external_publish_after_training(
+            data_dir=self.data_dir,
+            algorithms_path=algorithms_path,
+            algorithm_id=str(algorithm.get("id") or ""),
+            version_id=committed_version_id,
+            now=datetime.now(timezone.utc).isoformat(),
+        )
+        result["external_publish_requested"] = bool(external_publish_requested)
+
         # Seed the shared cache only after the official algorithm version has
         # been attached successfully. A task that fails before this point must
         # not become the source of a future fast-path training bundle.
@@ -1298,13 +2404,63 @@ class TrainingHandler:
         }
         result["bundle_cache"] = bundle_cache_evidence
         context.artifacts.atomic_write_json(context.task.task_id, "result.json", result)
-        context.save_checkpoint({"stage": "committed", "snapshot_id": snapshot_id, "result_ref": "result.json"})
+        context.save_checkpoint({
+            "stage": "committed",
+            "snapshot_id": snapshot_id,
+            "dataset_revision_id": dataset_revision_id,
+            "result_ref": "result.json",
+        })
         return final_status, "result.json"
 
     def run(self, context):
         payload = context.artifacts.read_json(context.task.task_id, context.task.payload_ref, default={})
         if not isinstance(payload, dict):
             raise ValueError("training payload is invalid")
+        if str(payload.get("training_input_state") or "").upper() != "READY":
+            raise ValueError("TRAINING_PREPARE_REQUIRED: training input is not ready")
+        deferred_resource_resolution = payload.get("resource_resolution_deferred") is True
+        prepared_resources = context.artifacts.read_json(
+            context.task.task_id,
+            "resolved-resources.json",
+            default={},
+        )
+        if not deferred_resource_resolution:
+            if not (
+                isinstance(prepared_resources, Mapping)
+                and int(prepared_resources.get("resolved_batch") or 0) > 0
+                and int(
+                    prepared_resources.get("resolved_workers")
+                    if prepared_resources.get("resolved_workers") is not None else -1
+                ) >= 0
+                and str(prepared_resources.get("resource_strategy") or "")
+                == str(payload.get("resource_strategy") or "auto")
+            ):
+                raise ValueError(
+                    "RESOURCE_PREPARE_REQUIRED: resolved resource contract is missing or invalid"
+                )
+            payload = {
+                **payload,
+                "resolved_batch": int(prepared_resources["resolved_batch"]),
+                "resolved_workers": int(prepared_resources["resolved_workers"]),
+                "resolved_cache": prepared_resources.get("resolved_cache", False),
+                "resolved_precision": str(
+                    prepared_resources.get("resolved_precision")
+                    or prepared_resources.get("precision")
+                    or payload.get("precision")
+                    or "auto"
+                ),
+            }
+        else:
+            if (
+                str(payload.get("resource_strategy") or "auto").strip().lower() != "auto"
+                or normalize_training_device(
+                    payload.get("requested_device", payload.get("device"))
+                ) != "auto"
+            ):
+                raise ValueError(
+                    "RESOURCE_DEFERRED_STRATEGY_INVALID: only local AUTO device/AUTO resources may defer resolution"
+                )
+            prepared_resources = {}
         if str(payload.get("target") or "local").lower() != "local":
             raise EnvironmentError("remote training requires a configured NVIDIA training worker")
         if str(payload.get("framework") or "ultralytics").lower() != "ultralytics":
@@ -1360,7 +2516,6 @@ class TrainingHandler:
         if payload.get("train_dataset_ids") or payload.get("test_dataset_ids"):
             raise ValueError("训练任务只接受 train_image_ids/test_image_ids，禁止数据集分组回退")
         materials = MaterialRepository(project)
-        images = _selected_project_images(materials, project, (*train_image_ids, *test_image_ids))
         split_request = SplitRequest(
             mode=SplitMode(str(payload.get("split_mode"))),
             train_image_ids=train_image_ids,
@@ -1368,23 +2523,73 @@ class TrainingHandler:
             experiment_percent=payload.get("experiment_percent"),
             validation_percent=float(payload.get("validation_percent") or 20),
         )
-        label_schema = _label_schema(project)
         seed = int(payload.get("seed") or 0)
+        freeze_ref = str(payload.get("input_freeze_ref") or "").strip()
+        if freeze_ref:
+            frozen = context.artifacts.read_json(
+                context.task.task_id,
+                freeze_ref,
+                default={},
+            )
+            if not isinstance(frozen, Mapping):
+                raise ValueError("training input freeze is invalid")
+            images, label_schema, manifest, snapshot = resolve_training_input_freeze(
+                frozen,
+                split_request,
+                seed=seed,
+                supplement_candidate_set=payload.get("supplement_candidate_set"),
+            )
+            if str(frozen.get("input_freeze_id") or "") != str(
+                payload.get("input_freeze_id") or ""
+            ):
+                raise ValueError("training payload freeze identity mismatch")
+        else:
+            # Compatibility only for tasks created before submit-time freezing.
+            images = _selected_project_images(
+                materials,
+                project,
+                (*train_image_ids, *test_image_ids),
+            )
+            label_schema = _label_schema(project)
+            manifest = build_split_manifest(images, split_request, seed=seed)
+            snapshot = build_snapshot(
+                images,
+                manifest,
+                label_schema,
+                supplement_candidate_set=payload.get("supplement_candidate_set"),
+            )
+        prepared_bundle = None
+        prepared_ref = str(payload.get("prepared_input_ref") or "").strip()
+        if str(payload.get("training_input_state") or "").upper() == "READY" and prepared_ref:
+            prepared = context.artifacts.read_json(
+                context.task.task_id,
+                prepared_ref,
+                default={},
+            )
+            candidate = Path(str((prepared or {}).get("bundle_path") or "")).resolve()
+            expected_work = context.artifacts.artifact_path(
+                context.task.task_id, "work",
+            ).resolve()
+            if (
+                isinstance(prepared, Mapping)
+                and str(prepared.get("snapshot_id") or "") == str(snapshot.get("snapshot_id") or "")
+                and (candidate == expected_work or expected_work in candidate.parents)
+                and (candidate / "manifest.json").is_file()
+            ):
+                prepared_bundle = candidate
         bundle_cache = TrainingBundleCache(self.data_dir, context.task.project_id)
-        manifest = None
-        snapshot = None
-        cache_entry = None
+        cache_entry = (
+            bundle_cache.resolve(str(snapshot["snapshot_id"]))
+            if prepared_bundle is None and _indexed_content_identity_ready(images)
+            else None
+        )
 
         # A completed cache entry is itself the verified materialization of the
         # indexed Snapshot. On a hit, do not re-read 10k source objects merely
         # to rediscover the same content hashes.
-        if _indexed_content_identity_ready(images):
-            manifest = build_split_manifest(images, split_request, seed=seed)
-            snapshot = build_snapshot(images, manifest, label_schema)
-            cache_entry = bundle_cache.resolve(str(snapshot["snapshot_id"]))
 
         materialized_paths: dict[str, Path] = {}
-        if cache_entry is None:
+        if cache_entry is None and prepared_bundle is None:
             credentials = SecretCredentialStore(KeyringSecretStore())
             storage = StorageManager(
                 data_dir=self.data_dir,
@@ -1397,8 +2602,12 @@ class TrainingHandler:
             for index, row in enumerate(images, start=1):
                 if context.cancel_requested():
                     raise InterruptedError("training cancelled during material preparation")
+                frozen_sha256 = str(row.get("content_sha256") or "").strip().lower()
                 resolved = storage.materialize(row)
-                row["content_sha256"] = resolved.content_sha256
+                if str(resolved.content_sha256 or "").strip().lower() != frozen_sha256:
+                    raise ValueError(
+                        f"training source content changed after submit: {row.get('id')}"
+                    )
                 row["size_bytes"] = resolved.size_bytes
                 materialized_paths[str(row.get("id"))] = Path(resolved.path).resolve()
                 if index == 1 or index == total_materials or index % material_progress_step == 0:
@@ -1410,20 +2619,41 @@ class TrainingHandler:
                         stage="preparing_materials",
                         current_item=f"校验训练素材 {index}/{total_materials}",
                     )
-            manifest = build_split_manifest(images, split_request, seed=seed)
-            snapshot = build_snapshot(images, manifest, label_schema)
 
         if manifest is None or snapshot is None:
             raise RuntimeError("training snapshot preparation did not produce a manifest")
 
+        revision = dataset_revision_document(snapshot)
+        persist_dataset_revision(project / "dataset_revisions", snapshot)
         context.artifacts.atomic_write_json(context.task.task_id, "snapshot.json", snapshot)
-        context.save_checkpoint({"stage": "snapshot_ready", "snapshot_id": snapshot["snapshot_id"]})
+        context.artifacts.atomic_write_json(
+            context.task.task_id,
+            "dataset-revision.json",
+            revision,
+        )
+        context.save_checkpoint({
+            "stage": "snapshot_ready",
+            "snapshot_id": snapshot["snapshot_id"],
+            "dataset_revision_id": snapshot["dataset_revision_id"],
+        })
         if context.cancel_requested():
             raise InterruptedError("training cancelled before dataset materialization")
 
         bundle_progress_step = max(1, len(images) // 100) if images else 1
 
-        if cache_entry is not None:
+        if prepared_bundle is not None:
+            bundle = prepared_bundle
+            context.artifacts.atomic_write_json(
+                context.task.task_id,
+                "bundle-cache.json",
+                {
+                    "cache_hit": False,
+                    "prepared_input_reused": True,
+                    "snapshot_id": snapshot["snapshot_id"],
+                    "source_validation": "training_prepare_verified",
+                },
+            )
+        elif cache_entry is not None:
             context.repository.heartbeat(
                 context.task.task_id,
                 context.lease.lease_token,
@@ -1507,16 +2737,32 @@ class TrainingHandler:
         if algorithm is None:
             raise ValueError("training algorithm no longer exists")
         mother = str(payload.get("model") or "").strip()
-        base = choose_algorithm_iteration_base(
-            algorithm,
-            mother,
-            "ultralytics",
-            strict_latest=bool(algorithm.get("versions")),
-            artifact_validator=lambda path: path.is_file() and path.stat().st_size > 0,
-        )
+        framework = str(payload.get("framework") or "ultralytics").strip().lower()
+        base = resolve_frozen_training_base(payload)
+        if base is None:
+            # Compatibility for tasks created before submit-time base freezing.
+            base = choose_algorithm_iteration_base(
+                algorithm,
+                mother,
+                framework,
+                strict_latest=bool(algorithm.get("versions")),
+                artifact_validator=lambda path: path.is_file() and path.stat().st_size > 0,
+            )
         model = str(base.get("base_model_path") or mother)
+        assignment_node = str(assignment.get("node_id") or "").strip()
+        active_at = datetime.now(timezone.utc).isoformat()
         with context.repository._connect() as database:
-            reservations = database.execute("SELECT * FROM gpu_reservations").fetchall()
+            if assignment_node:
+                reservations = database.execute(
+                    "SELECT * FROM gpu_reservations WHERE node_id=? AND expires_at>?",
+                    (assignment_node, active_at),
+                ).fetchall()
+            else:
+                # Compatibility for pre-node-scoped local runtimes.
+                reservations = database.execute(
+                    "SELECT * FROM gpu_reservations WHERE expires_at>?",
+                    (active_at,),
+                ).fetchall()
         resource_context = {
             "gpu_uuid": assignment.get("gpu_uuid"),
             "reserved_bytes": assignment.get("reserved_bytes"),
@@ -1530,9 +2776,40 @@ class TrainingHandler:
             "remote_cache_ready": True,  # All selected objects have been verified in the local portable bundle.
         }
         context.artifacts.atomic_write_json(context.task.task_id, "resource-context.json", resource_context)
-        payload.update(resource_context=str(context.artifacts.artifact_path(context.task.task_id, "resource-context.json")),
-                       resource_resolution=str(context.artifacts.artifact_path(context.task.task_id, "resolved-resources.json")),
-                       metrics_db=str(context.artifacts.artifact_path(context.task.task_id, "training-metrics.sqlite3")))
+        resolution_path = context.artifacts.artifact_path(
+            context.task.task_id, "resolved-resources.json",
+        )
+        if deferred_resource_resolution:
+            prepared_resources = _freeze_deferred_resource_contract(
+                context,
+                python_executable=python_executable,
+                payload=payload,
+                resource_context=resource_context,
+                model_argument=model,
+                bundle=bundle,
+                assigned_device=assigned_device,
+            )
+            payload = {
+                **payload,
+                "resolved_batch": int(prepared_resources["resolved_batch"]),
+                "resolved_workers": int(prepared_resources["resolved_workers"]),
+                "resolved_cache": prepared_resources.get("resolved_cache", False),
+                "resolved_precision": str(
+                    prepared_resources.get("resolved_precision")
+                    or prepared_resources.get("precision")
+                    or payload.get("precision")
+                    or "auto"
+                ),
+            }
+        payload.update(
+            resource_context=str(context.artifacts.artifact_path(
+                context.task.task_id, "resource-context.json",
+            )),
+            resource_resolution=str(resolution_path),
+            metrics_db=str(context.artifacts.artifact_path(
+                context.task.task_id, "training-metrics.sqlite3",
+            )),
+        )
         job_dir = project / "jobs" / context.task.task_id
         job_dir.mkdir(parents=True, exist_ok=True)
         job_file = job_dir / "job.json"
@@ -1540,16 +2817,27 @@ class TrainingHandler:
             "id": context.task.task_id,
             "task_id": context.task.task_id,
             "status": "queued",
-            "framework": "ultralytics",
+            "framework": framework,
             "asset_algorithm_id": algorithm.get("id"),
+            "algorithm_asset_id": algorithm.get("id"),
+            "asset_algorithm_name": str(
+                payload.get("asset_algorithm_name") or algorithm.get("name") or "已删除算法"
+            ),
             "algorithm_name": algorithm.get("name"),
             "model": model,
             "base_version_id": base.get("base_version_id"),
             "base_version_name": base.get("base_version_name"),
             "base_selection_reason": base.get("base_selection_reason"),
+            "base_model_sha256": base.get("base_model_sha256") or "",
+            "base_model_size_bytes": int(base.get("base_model_size_bytes") or 0),
+            "base_training_mode": base.get("base_training_mode") or (
+                "previous_weights_init" if base.get("base_version_id") else "mother_model_init"
+            ),
             "snapshot_id": snapshot["snapshot_id"],
+            "dataset_revision_id": snapshot["dataset_revision_id"],
+            "supplement_provenance": snapshot.get("supplement_provenance"),
             "dataset_counts": manifest.counts,
-            "epochs": int(payload.get("epochs") or 50),
+            "epochs": int(payload.get("epochs") or 150),
             "imgsz": int(payload.get("imgsz") or 640),
             "batch": int(payload.get("batch") or 8),
             "device": assigned_device,
@@ -1561,6 +2849,22 @@ class TrainingHandler:
             "created_at": context.task.created_at,
             "artifact_verified": False,
             "resource_strategy": payload.get("resource_strategy", "auto"),
+            "resource_profile": payload.get("resource_profile", "performance"),
+            "precision": payload.get("precision", "auto"),
+            "resolved_precision": payload.get("resolved_precision", payload.get("precision", "auto")),
+            "requested_resources": payload.get("requested_resources") or {},
+            "resolved_resources": dict(prepared_resources),
+            "max_train_hours": payload.get("time"),
+            "quality_gate": {
+                "runtime_stop_policy": "target_only",
+                "eval_interval": int(payload.get("eval_interval") or 0),
+                "metric": str(payload.get("eval_metric") or "map50"),
+                "continue_threshold": float(payload.get("continue_threshold") or 0),
+                "stop_threshold": float(payload.get("stop_threshold") or 0),
+                "stage_eval_samples": int(payload.get("val_max_samples") or 0),
+                "experiment_percent": float(payload.get("experiment_percent") or 0),
+                "split_seed": int(seed),
+            },
         }
         atomic_write_json(job_file, job)
         if context.cancel_requested():

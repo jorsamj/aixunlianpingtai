@@ -203,7 +203,10 @@ def discover_training_devices(python_executable: str) -> dict[str, Any]:
             "meaning": "由调度器分配可用 GPU；无可用 CUDA 环境时选择 CPU，设备繁忙时排队等待。"}
     return {"ok": not bool(report["error"]), **report, "devices": [*gpus, cpu],
             "options": [*gpus, cpu, auto], "auto": auto,
-            "recommended": "cuda:0" if any(gpu["id"] == "cuda:0" for gpu in usable) else "cpu"}
+            # Recommended mode must preserve scheduler ownership. Returning a
+            # concrete cuda:0 here would pin the browser before the allocator
+            # can select the least-contended GPU/node.
+            "recommended": "auto"}
 
 
 def validate_training_device(python_executable: str, assigned_device: str) -> dict[str, Any]:

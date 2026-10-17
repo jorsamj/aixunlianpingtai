@@ -90,12 +90,103 @@ def _best_checkpoint(evidence: Mapping[str, Any]) -> Mapping[str, Any] | None:
 
 
 def _process_signal(returncode: int | None) -> str | None:
-    if returncode is None or returncode >= 0 or os.name == "nt":
+    # subprocess uses negative return codes for POSIX signals.  Decode the
+    # persisted value itself so historical Linux evidence remains readable on
+    # a Windows control plane; this records the signal and does not infer OOM.
+    if returncode is None or returncode >= 0:
         return None
+    if int(returncode) == -9:
+        return "SIGKILL"
     try:
         return signal.Signals(-int(returncode)).name
     except (ValueError, OverflowError):
         return f"SIGNAL_{-int(returncode)}"
+
+
+def _collect_linux_kernel_oom_evidence(
+    identity,
+    *,
+    finished_at: float | None = None,
+    command_runner=subprocess.run,
+    platform_name: str | None = None,
+) -> dict[str, Any] | None:
+    """Read one bounded Kernel journal window after a SIGKILL.
+
+    Only an exact PID hit inside this process lifetime is returned.  The raw
+    journal is deliberately not persisted, and this helper is called by the
+    existing Worker failure path rather than by any detail/read API.
+    """
+
+    if (platform_name or os.name) != "posix" or identity is None:
+        return None
+    try:
+        pid = int(identity.pid)
+        created_at = float(identity.create_time)
+        ended_at = float(finished_at if finished_at is not None else time.time())
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if pid <= 0 or ended_at < created_at:
+        return None
+    since = max(0.0, created_at - 2.0)
+    until = ended_at + 2.0
+    try:
+        completed = command_runner(
+            [
+                "journalctl",
+                "--dmesg",
+                "--since",
+                f"@{since:.3f}",
+                "--until",
+                f"@{until:.3f}",
+                "--no-pager",
+                "--output",
+                "short-unix",
+                "--lines",
+                "200",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=4,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    if int(getattr(completed, "returncode", 1) or 0) != 0:
+        return None
+    pattern = re.compile(
+        r"^\s*(?P<at>\d+(?:\.\d+)?)\s+.*?"
+        r"(?:Out of memory:\s+)?Killed process\s+(?P<pid>\d+)\b",
+        flags=re.IGNORECASE,
+    )
+    concurrent_oom = None
+    for line in str(getattr(completed, "stdout", "") or "").splitlines():
+        match = pattern.search(line)
+        if not match:
+            continue
+        observed_at = float(match.group("at"))
+        killed_pid = int(match.group("pid"))
+        if not since <= observed_at <= until:
+            continue
+        if killed_pid == pid:
+            return {
+                "type": "linux_kernel_oom_kill",
+                "source": "linux_kernel_journal",
+                "process_pid": pid,
+                "process_create_time": created_at,
+                "observed_at_epoch": observed_at,
+                "correlated": True,
+            }
+        concurrent_oom = {
+            "type": "linux_kernel_oom_concurrent",
+            "source": "linux_kernel_journal",
+            "process_pid": pid,
+            "process_create_time": created_at,
+            "observed_at_epoch": observed_at,
+            "correlated": False,
+        }
+    return concurrent_oom
 
 
 def _epoch_evidence(job: Mapping[str, Any], argv: Sequence[str], log_tail: str) -> tuple[int, int]:
@@ -175,6 +266,8 @@ def build_training_failure_evidence(
     returncode: int | None,
     completion_error: str,
     log_path: Path,
+    process_identity=None,
+    system_evidence: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build bounded, evidence-only failure truth for a terminated trainer.
 
@@ -212,6 +305,9 @@ def build_training_failure_evidence(
         "failure_stage": failure_stage,
         "process_returncode": returncode,
         "process_signal": process_signal,
+        "process_pid": int(process_identity.pid) if process_identity is not None else None,
+        "process_create_time": float(process_identity.create_time) if process_identity is not None else None,
+        "system_evidence": [dict(item) for item in (system_evidence or ()) if isinstance(item, Mapping)],
         "completion_error": str(completion_error),
         "last_job_message": str(job.get("message") or "").strip() or None,
         "completed_epochs": completed_epochs,
@@ -500,6 +596,13 @@ def _run_checkpoint_validation(
         completion_error=completion_error or "final validation process failed",
         validation_result=result if isinstance(result, Mapping) else {},
     )
+    if launched is not None:
+        evidence["process_pid"] = int(launched.identity.pid)
+        evidence["process_create_time"] = float(launched.identity.create_time)
+        if launched.process.returncode == -int(signal.SIGKILL):
+            oom_evidence = _collect_linux_kernel_oom_evidence(launched.identity)
+            if oom_evidence is not None:
+                evidence["system_evidence"] = [oom_evidence]
     _persist_failure(context, job_file, job, evidence)
     raise RuntimeError(_failure_message(evidence))
 
@@ -671,6 +774,11 @@ def run_hardened_training_process(context, argv: Sequence[str], job_file: Path) 
         return job
 
     returncode = launched.process.returncode if launched is not None else None
+    system_evidence: list[dict[str, Any]] = []
+    if launched is not None and returncode == -int(signal.SIGKILL):
+        oom_evidence = _collect_linux_kernel_oom_evidence(launched.identity)
+        if oom_evidence is not None:
+            system_evidence.append(oom_evidence)
     evidence = build_training_failure_evidence(
         task_id=context.task.task_id,
         project_id=context.task.project_id,
@@ -680,6 +788,8 @@ def run_hardened_training_process(context, argv: Sequence[str], job_file: Path) 
         returncode=returncode,
         completion_error=completion_error,
         log_path=log_path,
+        process_identity=launched.identity if launched is not None else None,
+        system_evidence=system_evidence,
     )
     if evidence.get("recoverable") and _best_checkpoint(evidence) is not None:
         context.artifacts.atomic_write_json(

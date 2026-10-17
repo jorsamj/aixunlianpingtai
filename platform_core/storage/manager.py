@@ -80,7 +80,7 @@ class StorageManager:
             return normalize_material(row)
         return normalize_material(value)
 
-    def materialize(self, value: str | Mapping[str, object]) -> MaterializedFile:
+    def materialize(self, value: str | Mapping[str, object], *, read_only: bool = False) -> MaterializedFile:
         row = self.material(value)
         if row.get('source_available') is False:
             raise StorageError(code='SOURCE_UNAVAILABLE', message='素材源文件不可用',
@@ -101,7 +101,7 @@ class StorageManager:
                     solution="请在存储源配置中重新扫描，确认内容变化后恢复索引，并复核已有标注。",
                     context={"image_id": row["id"], "source_id": provider.source_id, "object_key": object_key},
                 )
-            if not expected or int(row.get("size_bytes") or 0) != metadata.size_bytes:
+            if not read_only and (not expected or int(row.get("size_bytes") or 0) != metadata.size_bytes):
                 self.materials.patch({str(row["id"]): {"content_sha256": actual, "size_bytes": metadata.size_bytes, "etag": metadata.etag}})
             if local_path is None:
                 return self.cache.materialize(provider, object_key, expected_sha256=actual, suffix=suffix)
@@ -116,7 +116,8 @@ class StorageManager:
                     solution="请重新扫描或重新上传素材以建立完整性信息。",
                     context={"image_id": row["id"], "source_id": provider.source_id},
                 )
-            self.materials.patch({str(row["id"]): {"content_sha256": expected, "size_bytes": metadata.size_bytes, "etag": metadata.etag}})
+            if not read_only:
+                self.materials.patch({str(row["id"]): {"content_sha256": expected, "size_bytes": metadata.size_bytes, "etag": metadata.etag}})
         try:
             return self.cache.materialize(provider, object_key, expected_sha256=expected, suffix=suffix)
         except StorageError as error:

@@ -146,3 +146,15 @@ test('report presentation keeps algorithm and version reports distinct', () => {
     title: '单版本训练报告', scope: 'version'
   });
 });
+
+
+test('training algorithm selection is owned by the canonical training draft', () => {
+  const source = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+  assert.equal(source.includes('window.applyAlg='), false);
+  assert.equal(source.includes('window.fillTrain='), false);
+  assert.equal(source.includes("const evalBox=$('#paddle_eval')"), false);
+  assert.match(source, /window\.openTrainingCreateCanonical429=async function\(aid\)/);
+  assert.match(source, /window\.TrainingDraftRuntime\?\.update\?\.\(\{algorithmId\}\)/);
+  assert.equal(source.includes('const oldApplyAlg = window.applyAlg;'), false);
+  assert.equal(source.includes('const oldApplyAlgV26 = window.applyAlg;'), false);
+});

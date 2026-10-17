@@ -1,4 +1,33 @@
+## 2026-10-17｜素材治理推送后的 Chrome 跨平台证据路径修复（FINAL SHA CI OPEN）
+
+- 已授权提交9830f1de快进推送；该 SHA 实际44次Actions运行中43成功、1失败。唯一失败为 Frontend browser-navigation：Ubuntu缺USERPROFILE，两条新增治理用例在截图路径处中止（93 passed / 2 failed），并非可计为通过的环境跳过。
+- 本地清除USERPROFILE稳定复现2 failed / 1 passed；现有三条治理Chrome统一使用Playwright testInfo.outputPath，证据按用例隔离，不依赖Windows或仓库内.codex目录。保留全部业务断言，无生产代码、静态缓存或VERSION变更。
+- 修复后相同无USERPROFILE条件下相关Chrome21/21、Node24完整978/978通过；本轮另有Python41/41。9830的Ubuntu Release runtime-contracts实际456 passed，包含test_material_integrity.py；最终修复SHA须重新验收，不能借用旧SHA成功。
+- VERSION42.24.356不变；不部署、不触碰生产素材/数据库。生产原两次删除Task及真实存储仍待只读现场核验。
+
+## 2026-10-17｜重复与异常素材删除 P0（LOCAL VERIFIED / CI OPEN）
+
+- 既有素材治理计划 Owner 增补 FILTERED / SELECTED_IMAGES / 异常组冻结；全筛选不下发全量 ID，重复 keeper、不同 GT 人工确认、Test/历史引用与扫描未核验保护不变。异常筛选不能绕过去重保护，DELETE_INDEX 不删除共享原始文件。
+- 素材治理在同一个弹窗内完成全选、跨页选择、预检与确认，失败保留上下文；MaterialBatchRuntime62 / PollRegistry 仍是唯一任务状态与轮询 Owner。所有索引删除终态刷新分页并失效旧审计；旧分组不再冒充当前素材。图片尺寸/加载失败时藏框，真实宽高比与 Content API 保持一致。
+- 独立代码复核的发布前失败重试、refresh 期间切换项目、Chrome Worker 跨用例领取三项 Important 已关闭并补回归。未发布 manifest 只有完整身份、归属和 pending 状态完全相同才复用；篡改 409。测试 Worker 唯一 capability 仅用于隔离目标临时 Task，生产调度未改变。
+- VERSION42.24.356 不变；入口 app/main/styles 缓存42.25.388，MaterialBatch build/import422406。最终 Node24 978/978、Python41/41、真实 Chrome21/21；详细结果和现场边界以 docs/MATERIAL_INTEGRITY_P0_ACCEPTANCE_2026_10_17.md 为准。现场原两次 Task ID/日志尚未取得，不声称生产删除数量或根因已核验；未 push、部署或操作生产数据。
+
 # Frontend Legacy Runtime Audit
+
+## 2026-10-16 Row action menu presentation
+
+Final mobile status tabs keep readable single-line labels within the original scroll strip (<=760px); styles42.25.387, no new owner.
+
+Follow-up closes the verified training Grid overflow without altering desktop columns/owners. Original 3be88817 remote40 workflows/112 jobs passed; shared atomic staging contention was independently reproduced and minimally fixed. Local Node24 972/972, Python75/75, Chrome44/44; next SHA requires fresh CI. See the acceptance report.
+
+Existing algorithm/training entity-more markup now delegates to one RowActionMenuRuntime top-layer popover. It invokes original buttons; no CRUD, task, poll or navigation owner is duplicated. Training epoch patches preserve action markup identity; obsolete nav-project/projectBadge rendering/CSS is removed without changing project state. Node24 972/972, Chrome 44/44; formal VERSION unchanged. See ROW_ACTION_MENU_ACCEPTANCE_2026_10_16.md for evidence and limits.
+
+## 2026-10-13 VNext model-quality owner update
+
+- Canonical owners stay singular: classic `openVersionEvaluation429` presents version-owned evaluation truth; `trainingReportCore425` remains the report entry (aliases only delegate); `TrainingRecoveryRuntime` remains the only detail/log presentation owner.
+- Evaluation identity resets filters across project/version/evaluation changes. Image requests use one abort controller; paired comparison requires the API's strict benchmark result plus identical image ID/content SHA. No new polling or broad refresh owner was added.
+- Current asset keys: `app.js 42.25.373`, `main.mjs 42.25.373`, `styles.css 42.25.373`, reports/training-recovery module imports `4226373`. Formal `VERSION.txt 42.24.355` is unchanged.
+- Node 24 frontend 947/947 and selected Real Chrome 51/51 passed locally. Exact pushed-HEAD CI is not applicable because this batch is intentionally local-only.
 
 > Branch: `refactor/frontend-runtime-stabilization`  
 > Authority: `docs/TECH_DEBT_CLOSURE_V42_25.md`  
@@ -1202,4 +1231,18 @@ Status: **CLOSED** on `refactor/frontend-runtime-stabilization`.
 - Active v19 ZIP UI truth is now one monotonic whole-task scale: browser upload `0..35`, upload/validation baseline `38`, backend processing phase projected to `38..99`, terminal success only `100`. Raw backend phase progress is no longer allowed to overwrite the whole-task percentage and cause `38 -> 8` regressions.
 - Backend v19 processing phase semantics were not changed; this closure fixes the frontend projection boundary only.
 - `VERSION.txt` remains exactly `42.24.0`; no main merge, tag, release, A800 RC, or genuine 10k acceptance was performed.
+
+## 2026-10-13 VNext review-fix audit
+
+- Retired `setPage('模型检测')` calls are absent from the quality workspaces. Both scenario buttons route through the current Quality Center detect tab, and a Real Chrome regression asserts that the destination DOM exists.
+- Training detail tab clicks no longer rebuild the dialog; selection, roving tabindex, focus, ArrowLeft/Right, Home/End, `aria-controls` and `aria-labelledby` stay inside the existing runtime.
+- The existing evaluation image modal owns both A/B panes. Zoom/reset is synchronized, scroll position is ratio-synchronized, and each pane has independent fullscreen; no nested modal or duplicate image state exists.
+- Frontend evidence: Node 24.14 952/952 and focused Real Chrome 7/7. Full Chrome first run was 140/149; after the VNext contract fixes and isolated reruns, 3 original failures pass and 6 legacy-fixture/environment cases remain red. The screenshots are fixture-labelled; production imagery is not implied.
+
+## 2026-10-13 VNext final differential audit
+
+- The clean detached `30f83c48` browser baseline completes 142/148 with six failures. VNext has the same six deterministic failures at the same assertions; login passes 2/2 under its dedicated auth config, while model/conversion and action-fencing failures are stale fixture contracts with preserved traces.
+- A seventh VNext full-suite failure counted two label-schema GETs because the fixture navigated away after request start but before successful cache commit. It now waits for the existing cache timestamp and passes repeat 5/5 plus the 22-test material slice. The baseline-reproducible service-node isolated startup race now sets the existing advanced preference before navigation and passes repeat 3/3. No timeout, retry, cache wrapper, production owner, or weakened business assertion was added.
+- Node 24.19 direct frontend selection is 952/952 and the VNext quality/recovery Chrome slice is 7/7. The equal-request 1000/720 benchmark is `40×full=11.3042 MiB` versus `1×full+39×compact=0.2985 MiB`, including initial history.
+- Final VNext Node 24 full Chrome is 143/149, leaving only the same six baseline failures. `docs/VNEXT_FINAL_DIFFERENTIAL_AUDIT_2026_10_13.md` owns the per-test evidence. Production imagery, OSS, GPU and GitHub Ubuntu remain `NOT VERIFIED`.
 

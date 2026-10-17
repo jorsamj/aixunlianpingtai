@@ -113,28 +113,32 @@ def write_recovery_journal(app_module, project_id: str, dataset_id: str, row: di
     stored_name = str(row.get("stored_name") or "")
     entries = []
     if stored_name:
+        image_source = (
+            app_module.project_dir(project_id) / "uploads" / stored_name
+        )
         entries.append(
             {
                 "image_id": image_id,
                 "kind": "image",
-                "source": str(
-                    app_module.project_dir(project_id) / "uploads" / stored_name
-                ),
+                "source": str(image_source),
                 "staged": str(row_dir / f"image{Path(stored_name).suffix}"),
-                "existed": True,
+                "existed": image_source.exists(),
             }
         )
+    annotation_source = (
+        app_module.project_dir(project_id)
+        / "annotations"
+        / f"{image_id}.json"
+    )
     entries.append(
         {
             "image_id": image_id,
             "kind": "annotation",
-            "source": str(
-                app_module.project_dir(project_id)
-                / "annotations"
-                / f"{image_id}.json"
-            ),
+            "source": str(annotation_source),
             "staged": str(row_dir / "annotation.json"),
-            "existed": True,
+            # SQLite is the annotation truth owner. Legacy JSON recovery
+            # evidence exists only when the legacy file actually existed.
+            "existed": annotation_source.exists(),
         }
     )
     journal = {
@@ -476,7 +480,7 @@ def test_recovery_restores_rows_and_files_after_finalize_interruption(
     assert rows[target["id"]]["stored_name"] == target["stored_name"]
     assert app_module._V50_DATASET_DELETE_CLAIM_FIELD not in rows[target["id"]]
     assert upload_path.exists()
-    assert annotation_path.exists()
+    assert app_module.AnnotationRepository(project_path).exists(target["id"])
     assert not journal_paths(app_module, project_id)
     assert not Path(journal["staging_dir"]).exists()
 
@@ -588,5 +592,9 @@ def test_malformed_dataset_metadata_preserves_claimed_row_and_staging(client):
         for row in app_module.material_store(project_id).read().rows
     }
     assert rows[target["id"]][claim_field] == token
-    assert all(Path(item["staged"]).exists() for item in journal["files"])
+    assert all(
+        Path(item["staged"]).exists()
+        for item in journal["files"]
+        if item.get("existed")
+    )
     assert app_module._v50_dataset_delete_journal_path(project_id, token).exists()

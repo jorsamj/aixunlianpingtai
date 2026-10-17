@@ -20,5 +20,5 @@ test('material summary timers are scoped to the live paged dataset page', () => 
   assert.equal(material.includes('const expectedPage = state.page;'), true);
   assert.equal(material.includes("if (state.page !== expectedPage || !isPagedDataset()) return;"), true);
   assert.equal(material.includes("if (!pid || transport.mode !== 'paged') return;"), false);
-  assert.equal(material.includes('setTimeout(refreshSummary61, 1200);'), true);
+  assert.equal(material.includes("setTimeout(() => { if (state.page !== '数据集') refreshSummary61(); }, 1200);"), true);
 });

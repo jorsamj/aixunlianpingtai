@@ -1,5 +1,7 @@
 export const DEFAULT_UPLOAD_CHUNK_SIZE = 64;
 export const DEFAULT_UPLOAD_CHUNK_BYTES = 128 * 1024 * 1024;
+export const DEFAULT_UPLOAD_RECOVERY_POLL_MS = 500;
+export const DEFAULT_UPLOAD_RECOVERY_MAX_POLLS = 240;
 
 function positiveInteger(value, fallback) {
   const parsed = Number(value);
@@ -61,6 +63,7 @@ export class MaterialUploadInterruptedError extends Error {
 export async function uploadMaterialFilesSequentially(files, {
   requestChunk,
   onEvent = () => {},
+  projectUploaded = item => item,
   maxFiles = DEFAULT_UPLOAD_CHUNK_SIZE,
   maxBytes = DEFAULT_UPLOAD_CHUNK_BYTES,
 } = {}) {
@@ -121,16 +124,16 @@ export async function uploadMaterialFilesSequentially(files, {
     }
     activeRequests -= 1;
 
-    const uploaded = responseRows(response, 'uploaded');
+    const responseUploaded = responseRows(response, 'uploaded');
     const failed = responseRows(response, 'failed');
-    const accounted = uploaded.length + failed.length;
+    const accounted = responseUploaded.length + failed.length;
     if (accounted !== chunk.length) {
       throw new MaterialUploadContractError(
         `服务器返回的本批处理数量不完整：${accounted}/${chunk.length}`,
         {chunkIndex: index, response, expected: chunk.length, accounted},
       );
     }
-    aggregate.uploaded.push(...uploaded);
+    aggregate.uploaded.push(...responseUploaded.map(item => projectUploaded(item)));
     aggregate.failed.push(...failed);
     if (response?.batch_id) aggregate.batchIds.push(String(response.batch_id));
     aggregate.confirmedFiles += accounted;
@@ -168,10 +171,82 @@ function formatBytes(value) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
+function uploadRequestError(message, status = 0, details = {}) {
+  const error = new Error(String(message || '上传请求失败'));
+  error.status = Number(status || 0);
+  error.details = details;
+  return error;
+}
+
+export function compactUploadedMaterial(item) {
+  const row = item || {};
+  return {
+    id: String(row.id || ''),
+    filename: String(row.filename || ''),
+    url: String(row.url || ''),
+    annotation_state: String(row.annotation_state || row.annotation_status || 'unannotated'),
+    annotation_index_pending: !!row.annotation_index_pending,
+    processing_status: String(row.processing_status || 'unprocessed'),
+    annotated: !!row.annotated,
+    cleaned_at: row.cleaned_at || null,
+    clean_skipped: !!row.clean_skipped,
+  };
+}
+
+function uploadRequestSeed() {
+  return globalThis.BrowserCapabilityRuntime.createClientId('up', 32);
+}
+
+function uploadRequestId(seed, chunkIndex) {
+  return `${seed}-${String(chunkIndex + 1).padStart(4, '0')}`.slice(0, 64);
+}
+
+export async function recoverMaterialUploadRequest({
+  projectId,
+  requestId,
+  fetchImpl = (...args) => fetch(...args),
+  sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
+  pollMs = DEFAULT_UPLOAD_RECOVERY_POLL_MS,
+  maxPolls = DEFAULT_UPLOAD_RECOVERY_MAX_POLLS,
+} = {}) {
+  if (!projectId || !requestId) return null;
+  const url = `/api/v55/projects/${encodeURIComponent(String(projectId))}/upload-batches/${encodeURIComponent(String(requestId))}`;
+  for (let attempt = 0; attempt < maxPolls; attempt += 1) {
+    let response;
+    try {
+      response = await fetchImpl(url, {cache: 'no-store'});
+    } catch (error) {
+      if (attempt + 1 >= maxPolls) throw error;
+      await sleep(pollMs);
+      continue;
+    }
+    if (response.status === 404) return null;
+    let body = {};
+    try { body = await response.json(); } catch (_) {}
+    if (!response.ok) throw uploadRequestError(body?.detail || body?.message || `HTTP ${response.status}`, response.status, body);
+    const status = String(body?.upload_request_status || 'SUCCEEDED').toUpperCase();
+    if (status === 'SUCCEEDED') {
+      const uploaded = responseRows(body, 'items').map(item => item?.image).filter(Boolean);
+      const failed = responseRows(body, 'upload_failed');
+      return {
+        batch_id: String(body?.id || requestId), uploaded, failed,
+        uploaded_image_ids: uploaded.map(item => String(item?.id || '')).filter(Boolean),
+        uploaded_count: uploaded.length, failed_count: failed.length,
+        elapsed_seconds: Number(body?.upload_elapsed_seconds || 0),
+        total: Number(body?.upload_material_total || 0), replayed: true, recovered: true,
+      };
+    }
+    if (status === 'FAILED') throw uploadRequestError(body?.upload_request_error || '服务器已确认当前上传批次失败', 409, body);
+    if (attempt + 1 < maxPolls) await sleep(pollMs);
+  }
+  throw uploadRequestError('服务器仍在处理当前批次，结果尚未确认；请勿重复选择上传，稍后可继续恢复', 409);
+}
+
 export function requestMaterialChunkXHR(files, {
   projectId,
   datasetId = 'default',
   storageSourceId = 'default_local',
+  requestId = '',
   onTransfer = () => {},
   xhrFactory = () => new XMLHttpRequest(),
 } = {}) {
@@ -180,26 +255,54 @@ export function requestMaterialChunkXHR(files, {
     for (const file of files || []) form.append('files', file);
     form.append('dataset_id', datasetId || 'default');
     form.append('storage_source_id', storageSourceId || 'default_local');
+    if (requestId) form.append('upload_request_id', String(requestId));
     const xhr = xhrFactory();
     xhr.open('POST', `/api/projects/${encodeURIComponent(String(projectId || ''))}/images`, true);
     xhr.upload.onprogress = event => {
       if (!event.lengthComputable) return;
       onTransfer({loadedBytes: event.loaded, totalBytes: event.total, ratio: event.total ? event.loaded / event.total : 0});
     };
-    xhr.onerror = () => reject(new Error('网络连接异常，当前批次结果未确认'));
-    xhr.onabort = () => reject(new Error('上传已取消，当前批次结果未确认'));
+    xhr.onerror = () => reject(uploadRequestError('网络连接异常，当前批次结果未确认'));
+    xhr.onabort = () => reject(uploadRequestError('上传已取消，当前批次结果未确认'));
     xhr.onload = () => {
       let body = {};
       try { body = JSON.parse(xhr.responseText || '{}'); } catch (_) {}
       if (xhr.status < 200 || xhr.status >= 300) {
         const detail = body?.error?.detail || body?.detail || xhr.responseText || `HTTP ${xhr.status}`;
-        reject(new Error(String(detail)));
+        reject(uploadRequestError(String(detail), xhr.status, body));
         return;
       }
       resolve(body);
     };
     xhr.send(form);
   });
+}
+
+export async function requestMaterialChunkRecoverable(files, options = {}) {
+  const requestId = String(options?.requestId || '');
+  try {
+    return await requestMaterialChunkXHR(files, options);
+  } catch (error) {
+    const status = Number(error?.status || 0);
+    if (!requestId || (status && status !== 409)) throw error;
+    const recoveryOptions = {
+      projectId: options.projectId, requestId,
+      fetchImpl: options.fetchImpl, sleep: options.sleep,
+      pollMs: options.pollMs, maxPolls: options.maxPolls,
+    };
+    const recovered = await recoverMaterialUploadRequest(recoveryOptions);
+    if (recovered) return recovered;
+    try {
+      return await requestMaterialChunkXHR(files, options);
+    } catch (retryError) {
+      const retryStatus = Number(retryError?.status || 0);
+      if (!retryStatus || retryStatus === 409) {
+        const recoveredAfterRetry = await recoverMaterialUploadRequest(recoveryOptions);
+        if (recoveredAfterRetry) return recoveredAfterRetry;
+      }
+      throw retryError;
+    }
+  }
 }
 
 export function installMaterialUploadRuntime({
@@ -215,15 +318,18 @@ export function installMaterialUploadRuntime({
     const node = document.getElementById(id);
     if (node) node.textContent = text;
   };
-  const setWidth = (id, percent) => {
+  const setProgress = (id, percent) => {
     const node = document.getElementById(id);
-    if (node) node.style.width = `${Math.max(0, Math.min(100, percent))}%`;
+    if (!node) return;
+    const value = Math.max(0, Math.min(100, Number(percent) || 0));
+    node.dataset.progress = value.toFixed(2);
+    node.style.transform = `scaleX(${(value / 100).toFixed(4)})`;
   };
   const renderShell = (total, chunkCount) => {
     window.closeModal?.();
     const body = `<div class="up411">
       <section><b>正在上传图片</b><span>${total} 个文件 · ${chunkCount} 批</span></section>
-      <div class="up411-bar"><i id="up411Bar" style="width:0%"></i></div>
+      <div class="up411-bar"><i id="up411Bar" data-progress="0.00" style="transform:scaleX(0)"></i></div>
       <div class="up411-line"><span id="up411Text">准备上传</span><b id="up411Pct">0%</b></div>
       <div class="item-sub" id="up411ServerText">服务器已处理 0 / ${total} · 成功入库 0 · 失败 0</div>
       <div class="item-sub" id="up411TransferText">当前批次尚未开始传输</div>
@@ -233,22 +339,28 @@ export function installMaterialUploadRuntime({
   };
   const patchState = uploaded => {
     const state = getState() || {};
-    const uploadedIds = new Set(uploaded.map(item => String(item?.id)));
+    const compact = uploaded.map(compactUploadedMaterial);
+    const uploadedIds = new Set(compact.map(item => String(item?.id)));
     const recent = new Map((state.recentUploadedMaterials61 || []).map(item => [String(item?.id), item]));
-    for (const item of uploaded) recent.set(String(item?.id), item);
+    for (const item of compact) recent.set(String(item?.id), item);
     state.recentUploadedMaterials61 = [...recent.values()];
-    state.images = [...uploaded, ...(state.images || []).filter(item => !uploadedIds.has(String(item?.id)))];
+    const pagedDataset = state.page === '数据集' && window.__materialPaging61?.mode === 'paged';
+    if (!pagedDataset) {
+      state.images = [...uploaded, ...(state.images || []).filter(item => !uploadedIds.has(String(item?.id)))];
+    }
   };
   const renderResult = (aggregate, elapsedSeconds) => {
     const out = document.getElementById('up411Result');
     if (!out) return;
     const uploaded = aggregate.uploaded || [];
     const failed = aggregate.failed || [];
-    const failedHtml = failed.map(item => `<div class="alert warn">${escapeHtml(item?.name || '文件')}：${escapeHtml(item?.reason || '处理失败')}</div>`).join('');
-    const ids = uploaded.map(row => String(row?.id || '')).filter(Boolean);
-    const idsJson = JSON.stringify(ids).replace(/'/g, '&#39;');
-    const decision = ids.length ? `<div class="upload414-decision"><div><b>本次上传 ${ids.length} 张素材</b><span>可以继续批量清洗或标记无需清洗。</span></div><div class="row"><button class="btn" onclick='closeModal();openBatch414("ready",${idsJson})'>批量无需清洗</button><button class="btn primary" onclick='closeModal();openBatch414("clean",${idsJson})'>批量清洗</button></div></div>` : '';
-    out.innerHTML = `<div class="alert ok">成功上传 ${uploaded.length} 张${failed.length ? `，失败 ${failed.length} 张` : ''} · 服务器已处理 ${aggregate.confirmedFiles}/${aggregate.totalFiles} · ${elapsedSeconds.toFixed(1)} 秒</div>${failedHtml}${decision}`;
+    const shownFailed = failed.slice(0, 100);
+    const failedHtml = shownFailed.map(item => `<div class="alert warn">${escapeHtml(item?.name || '文件')}：${escapeHtml(item?.reason || '处理失败')}</div>`).join('');
+    const failedOverflow = failed.length > shownFailed.length
+      ? `<div class="alert warn">另有 ${failed.length - shownFailed.length} 条失败记录未在弹窗中展开，可在任务记录中查看。</div>`
+      : '';
+    const decision = uploaded.length ? `<div class="upload414-decision"><div><b>本次上传 ${uploaded.length} 张素材</b><span>可以继续批量清洗或标记无需清洗；大批量素材会分页展示。</span></div><div class="row"><button class="btn" onclick='closeModal();openRecentUploadBatch414("ready")'>批量无需清洗</button><button class="btn primary" onclick='closeModal();openRecentUploadBatch414("clean")'>批量清洗</button></div></div>` : '';
+    out.innerHTML = `<div class="alert ok">成功上传 ${uploaded.length} 张${failed.length ? `，失败 ${failed.length} 张` : ''} · 服务器已处理 ${aggregate.confirmedFiles}/${aggregate.totalFiles} · ${elapsedSeconds.toFixed(1)} 秒</div>${failedHtml}${failedOverflow}${decision}`;
   };
 
   async function uploadFiles(files, {storageSourceId = 'default_local', datasetId = 'default', input = null} = {}) {
@@ -260,18 +372,78 @@ export function installMaterialUploadRuntime({
       return null;
     }
     const chunks = partitionMaterialFiles(rows, {maxFiles, maxBytes});
+    const requestSeed = uploadRequestSeed();
+    const chunkRequestIds = chunks.map((_, index) => uploadRequestId(requestSeed, index));
+    const uploadTaskId = globalThis.BrowserCapabilityRuntime.createClientId('images:', 32);
+    const chunkBytes = chunks.map(chunk => chunk.reduce((sum,file)=>sum+fileSize(file),0));
+    const totalBytes = Math.max(1, chunkBytes.reduce((sum,value)=>sum+value,0));
+    const bytesBefore = chunkBytes.map((_,index)=>chunkBytes.slice(0,index).reduce((sum,value)=>sum+value,0));
+    window.UploadTaskCenterRuntime?.upsert?.({id:uploadTaskId,kind:'browser-upload',title:`图片上传 · ${rows.length} 张`,status:'UPLOADING',progress:0,stage:'准备上传',detail:`${chunks.length} 个批次`});
     renderShell(rows.length, chunks.length);
     const started = performance.now();
     const state = getState() || {};
     state.recentUploadedMaterials61 = [];
+    let transferFrame = 0;
+    let pendingTransfer = null;
+    let lastTaskCenterProgressAt = 0;
+
+    const cancelTransferFrame = () => {
+      if (transferFrame && typeof window.cancelAnimationFrame === 'function') {
+        window.cancelAnimationFrame(transferFrame);
+      }
+      transferFrame = 0;
+      pendingTransfer = null;
+    };
+
+    const paintTransfer = (payload, timestamp = performance.now()) => {
+      if (!payload) return;
+      const {event, overallBytes, overallPercent} = payload;
+      const chunkPercent = Math.round((event.ratio || 0) * 100);
+      setProgress('up411Bar', overallPercent);
+      setText('up411Pct', `${Math.round(overallPercent)}%`);
+      const transferComplete = Number(event.ratio || 0) >= 1;
+      setText('up411TransferText', transferComplete
+        ? `当前批次已上传，等待服务器入库 · ${formatBytes(event.loadedBytes)} / ${formatBytes(event.totalBytes)}`
+        : `当前批次传输 ${chunkPercent}% · ${formatBytes(event.loadedBytes)} / ${formatBytes(event.totalBytes)}`);
+      if (timestamp - lastTaskCenterProgressAt >= 150 || transferComplete) {
+        lastTaskCenterProgressAt = timestamp;
+        window.UploadTaskCenterRuntime?.upsert?.({
+          id:uploadTaskId,
+          status:'UPLOADING',
+          progress:overallPercent,
+          stage:transferComplete ? `第 ${event.chunkNumber}/${event.chunkCount} 批已上传，等待服务器入库` : `上传第 ${event.chunkNumber}/${event.chunkCount} 批`,
+          detail:`${formatBytes(overallBytes)} / ${formatBytes(totalBytes)}`,
+        });
+      }
+    };
+
+    const scheduleTransferPaint = payload => {
+      pendingTransfer = payload;
+      if (transferFrame) return;
+      if (typeof window.requestAnimationFrame !== 'function') {
+        const latest = pendingTransfer;
+        pendingTransfer = null;
+        paintTransfer(latest);
+        return;
+      }
+      transferFrame = window.requestAnimationFrame(timestamp => {
+        transferFrame = 0;
+        const latest = pendingTransfer;
+        pendingTransfer = null;
+        paintTransfer(latest, timestamp);
+      });
+    };
+
     try {
       const aggregate = await uploadMaterialFilesSequentially(rows, {
         maxFiles,
         maxBytes,
-        requestChunk: (chunk, context) => requestMaterialChunkXHR(chunk, {
+        projectUploaded: compactUploadedMaterial,
+        requestChunk: (chunk, context) => requestMaterialChunkRecoverable(chunk, {
           projectId: pid,
           datasetId,
           storageSourceId,
+          requestId: chunkRequestIds[context.chunkIndex],
           onTransfer: context.onTransfer,
         }),
         onEvent: event => {
@@ -279,18 +451,35 @@ export function installMaterialUploadRuntime({
             setText('up411Text', `正在上传第 ${event.chunkNumber}/${event.chunkCount} 批`);
             setText('up411TransferText', `当前批次 ${event.chunkSize} 张 · 等待传输`);
           } else if (event.type === 'transfer') {
-            const percent = Math.round((event.ratio || 0) * 100);
-            setText('up411TransferText', `当前批次传输 ${percent}% · ${formatBytes(event.loadedBytes)} / ${formatBytes(event.totalBytes)}`);
+            const overallBytes = bytesBefore[event.chunkIndex] + chunkBytes[event.chunkIndex] * (event.ratio || 0);
+            scheduleTransferPaint({
+              event,
+              overallBytes,
+              overallPercent: Math.min(99, overallBytes / totalBytes * 100),
+            });
           } else if (event.type === 'chunk-committed') {
+            cancelTransferFrame();
             patchState(responseRows(event.response, 'uploaded'));
-            const percent = event.totalFiles ? Math.round(event.confirmedFiles / event.totalFiles * 100) : 100;
-            setWidth('up411Bar', percent);
-            setText('up411Pct', `${percent}%`);
+            const committedBytes = bytesBefore[event.chunkIndex] + chunkBytes[event.chunkIndex];
+            const percent = committedBytes / totalBytes * 100;
+            setProgress('up411Bar', percent);
+            setText('up411Pct', `${Math.round(percent)}%`);
             setText('up411Text', `第 ${event.chunkNumber}/${event.chunkCount} 批服务器处理完成`);
             setText('up411ServerText', `服务器已处理 ${event.confirmedFiles} / ${event.totalFiles} · 成功入库 ${event.uploadedCount} · 失败 ${event.failedCount}`);
+            window.UploadTaskCenterRuntime?.upsert?.({
+              id:uploadTaskId,
+              status:'UPLOADING',
+              progress:percent,
+              stage:`第 ${event.chunkNumber}/${event.chunkCount} 批服务器处理完成`,
+              detail:`已确认 ${event.confirmedFiles}/${event.totalFiles}`,
+            });
           }
         },
       });
+      cancelTransferFrame();
+      setProgress('up411Bar', 100);
+      setText('up411Pct', '100%');
+      window.UploadTaskCenterRuntime?.upsert?.({id:uploadTaskId,status:'SUCCEEDED',progress:100,stage:'上传完成',detail:`成功 ${aggregate.uploaded.length} · 失败 ${aggregate.failed.length}`});
       renderResult(aggregate, (performance.now() - started) / 1000);
       if (getState()?.page === '数据集') {
         if (typeof window.reloadMaterialPage61 === 'function') await window.reloadMaterialPage61();
@@ -298,11 +487,13 @@ export function installMaterialUploadRuntime({
       }
       return aggregate;
     } catch (error) {
+      cancelTransferFrame();
       const details = error?.details || {};
       const confirmed = Number(details.confirmedFiles || 0);
       const total = rows.length;
       const out = document.getElementById('up411Result');
       if (out) out.innerHTML = `<div class="alert err">上传中断：${escapeHtml(error?.message || error)}。服务器已确认处理 ${confirmed}/${total}。为避免网络响应丢失后重复入库，系统不会自动重试当前未确认批次。</div>`;
+      window.UploadTaskCenterRuntime?.upsert?.({id:uploadTaskId,status:'FAILED',stage:'上传中断',detail:String(error?.message||error)});
       setText('up411Text', '上传中断');
       throw error;
     } finally {

@@ -31,5 +31,5 @@ jobs:
         run: python tools/audit_r20g_import_contracts.py
       - name: Verify audit is read-only
         run: |
-          test "$(cat VERSION.txt)" = "42.24.0"
+          python -m platform_core.build_identity --check-version-file VERSION.txt
           git diff --exit-code

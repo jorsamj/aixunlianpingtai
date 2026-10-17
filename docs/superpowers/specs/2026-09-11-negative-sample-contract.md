@@ -133,3 +133,33 @@ Future Codex/engineers must not reintroduce any of these behaviors:
 ## 10. Remaining related work
 
 Algorithm-level stable label schema is still a separate v42.25 item. Until that is completed, the training Snapshot continues to receive the label schema supplied by the current training pipeline. The negative-sample contract is designed to become stricter, not looser, once each algorithm owns an explicit stable schema.
+
+
+## 11. 2026-09-17 Task-derived negative addendum
+
+The product contract distinguishes **material Ground Truth** from a **training-task projection**.
+
+- Selecting material decides whether the image participates in the training task.
+- Selecting training labels decides which classes belong to that task schema.
+- The source AnnotationRepository row is immutable: its original boxes and `annotation_state=annotated` remain unchanged.
+- A selected image containing selected and deselected classes keeps only selected-class boxes in the task target, but the deselected boxes remain frozen as `training_excluded_boxes`.
+- An image containing only deselected classes may become task-local `confirmed_empty` **only after** the task-local train/validation image copy removes those excluded object regions.
+- Such a projection uses `negative_origin=redacted_unselected_labels`, `training_projection_policy=redact_excluded_objects_v1`, and a deterministic `training_projection_digest`.
+- The portable dataset materializer must redact every frozen excluded bbox from train/validation pixels before Ultralytics receives the image. It must fail closed if the policy/digest is missing or an excluded rectangle cannot be applied.
+- The independent test/evaluation image is not pixel-redacted; evaluation simply uses the locked effective schema.
+- Explicit material-level `确认无目标` remains separate and is recorded as `negative_origin=explicit_confirmed_empty`.
+- Snapshot/Dataset Revision identity includes projection policy/digest/count so bundle-cache reuse cannot alias two different task projections.
+
+### Accuracy rationale
+
+Standard Ultralytics YOLO detection labels do not provide a native per-rectangle ignore target in the normal YOLO TXT dataset contract. Dropping a bbox while leaving that object visibly present can therefore make unmatched locations contribute background/negative supervision. The old `filtered_by_training_labels` empty-label projection is prohibited.
+
+Task-local redaction is a conservative compatibility mechanism: it keeps the whole image in the training task while removing the known deselected object pixels from train/validation loss input. It does **not** rewrite source Ground Truth and it is not claimed to be mathematically identical to a native ignore-region loss.
+
+### Permanent non-regression rules
+
+- Never recreate `negative_origin=filtered_by_training_labels`.
+- Never materialize an empty YOLO target for an annotated source image whose excluded object remains visible in train/validation pixels.
+- Never discard `training_excluded_boxes` before task-local projection is materialized.
+- Never omit projection evidence from Snapshot/Dataset Revision identity.
+- Never use test/evaluation-only labels to expand the training schema.

@@ -330,3 +330,81 @@ def test_upsert_rollback_on_bad_input_and_connection_settings(store):
         assert connection.row_factory is sqlite3.Row
     finally:
         connection.close()
+
+
+def test_external_class_samples_are_indexed_bounded_unique_and_authorized(store):
+    rows = []
+    manifest = []
+    boxes = []
+    for index in range(20):
+        key = f"images/{index:02}.jpg"
+        rows.append(candidate(
+            key,
+            filename=f"{index:02}.jpg",
+            storage_source_id="source-a",
+            storage_type="s3",
+            width=100,
+            height=80,
+        ))
+        manifest.append({
+            "object_key": key,
+            "split": "train",
+            "yaml_key": "data.yaml",
+        })
+        boxes.extend([
+            {
+                "object_key": key,
+                "line_number": 1,
+                "class_id": 7,
+                "cx": 0.5,
+                "cy": 0.5,
+                "w": 0.25,
+                "h": 0.25,
+                "clipped": False,
+            },
+            {
+                "object_key": key,
+                "line_number": 2,
+                "class_id": 7,
+                "cx": 0.25,
+                "cy": 0.25,
+                "w": 0.1,
+                "h": 0.1,
+                "clipped": False,
+            },
+        ])
+    store.upsert_many(rows)
+    store.manifest_many(manifest)
+    store.set_label_mapping({7: "smoke"})
+    store.annotation_batch(
+        [{
+            "object_key": row["object_key"],
+            "label_key": "labels/" + row["filename"].replace(".jpg", ".txt"),
+            "annotation_status": "annotated",
+            "box_count": 2,
+        } for row in rows],
+        boxes,
+        [],
+    )
+
+    samples = store.external_class_samples("7", limit=1000)
+    assert len(samples) == 12
+    assert len({row["object_key"] for row in samples}) == 12
+    assert all(row["class_id"] == 7 for row in samples)
+    assert samples[0]["line_number"] == 1
+
+    allowed = store.external_class_sample(7, samples[0]["object_key"])
+    assert allowed is not None
+    assert allowed["storage_source_id"] == "source-a"
+    assert store.external_class_sample(7, "images/not-in-class.jpg") is None
+    assert store.external_class_sample(8, samples[0]["object_key"]) is None
+
+    with sqlite3.connect(store.path) as connection:
+        indexes = {row[1] for row in connection.execute("PRAGMA index_list(candidate_annotations)")}
+    assert "ix_candidate_annotations_class" in indexes
+
+
+@pytest.mark.parametrize("value", ["", "-1", "not-a-class"])
+def test_external_class_sample_rejects_invalid_class_id(store, value):
+    with pytest.raises(ValueError, match="class_id"):
+        store.external_class_samples(value)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from contextlib import closing
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable
 
@@ -109,6 +109,24 @@ class CandidateStore:
                 boxes_count=excluded.boxes_count,item_json=excluded.item_json""",
             (image_id, str(item.get("status") or "failed"), accepted, len(item["boxes"]), json.dumps(item, ensure_ascii=False)))
 
+    def _append_items_transaction(
+        self,
+        db,
+        items: Iterable[dict[str, Any]],
+        *,
+        commit_guard: Callable[[], Any] | None = None,
+    ) -> None:
+        db.execute("BEGIN IMMEDIATE")
+        try:
+            for item in items:
+                self._put(db, item)
+            if commit_guard is not None:
+                commit_guard()
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+
     def append_items(
         self,
         items: Iterable[dict[str, Any]],
@@ -118,22 +136,41 @@ class CandidateStore:
         """Append/update candidates and optionally prove task ownership before commit.
 
         Candidate rows live in their own SQLite file, so obtaining the fenced
-        artifact path alone is not enough to fence a later SQLite commit.  The
+        artifact path alone is not enough to fence a later SQLite commit. The
         production AI annotation handler supplies a WorkerContext-backed guard
-        so a stale execution cannot commit model output after losing its lease.
+        so stale/late model output cannot commit after losing its lease.
         """
         self._ready(commit_guard=commit_guard)
         with closing(self._connect()) as db:
-            db.execute("BEGIN IMMEDIATE")
-            try:
-                for item in items:
-                    self._put(db, item)
-                if commit_guard is not None:
-                    commit_guard()
-                db.commit()
-            except Exception:
-                db.rollback()
-                raise
+            self._append_items_transaction(
+                db,
+                items,
+                commit_guard=commit_guard,
+            )
+
+    @contextmanager
+    def write_session(
+        self,
+        *,
+        commit_guard: Callable[[], Any] | None = None,
+    ):
+        """Reuse one connection while keeping every append independently durable.
+
+        AI generation must keep per-image recovery truth so an already-billed
+        provider call is not repeated after a crash. The session therefore
+        reuses only connection/schema setup; each append still executes its own
+        BEGIN IMMEDIATE, fencing guard, and COMMIT.
+        """
+        self._ready(commit_guard=commit_guard)
+        with closing(self._connect()) as db:
+            def append(items: Iterable[dict[str, Any]]) -> None:
+                self._append_items_transaction(
+                    db,
+                    items,
+                    commit_guard=commit_guard,
+                )
+
+            yield append
 
     def generation_prefix(
         self,
@@ -151,29 +188,47 @@ class CandidateStore:
         """
         expected = [str(value) for value in image_ids]
         self._ready(commit_guard=commit_guard)
-        with closing(self._connect()) as db:
-            rows = db.execute(
-                "SELECT image_id,status FROM candidates ORDER BY ordinal"
-            ).fetchall()
-        if len(rows) > len(expected):
-            raise ValueError("annotation candidate store contains more rows than task input")
         succeeded = 0
         failed = 0
-        for index, row in enumerate(rows):
-            image_id = str(row["image_id"])
-            if image_id != expected[index]:
+        next_index = 0
+        after_ordinal = 0
+        with closing(self._connect()) as db:
+            stored_total = int(
+                db.execute("SELECT COUNT(*) FROM candidates").fetchone()[0]
+            )
+            if stored_total > len(expected):
                 raise ValueError(
-                    "annotation candidate recovery order does not match immutable task input"
+                    "annotation candidate store contains more rows than task input"
                 )
-            status = str(row["status"])
-            if status == "failed":
-                failed += 1
-            elif status in {"success", "empty"}:
-                succeeded += 1
-            else:
-                raise ValueError(f"annotation candidate has invalid generation status: {status}")
+            while next_index < stored_total:
+                rows = db.execute(
+                    "SELECT ordinal,image_id,status FROM candidates "
+                    "WHERE ordinal>? ORDER BY ordinal LIMIT 500",
+                    (after_ordinal,),
+                ).fetchall()
+                if not rows:
+                    raise ValueError(
+                        "annotation candidate recovery rows changed during validation"
+                    )
+                for row in rows:
+                    image_id = str(row["image_id"])
+                    if image_id != expected[next_index]:
+                        raise ValueError(
+                            "annotation candidate recovery order does not match immutable task input"
+                        )
+                    status = str(row["status"])
+                    if status == "failed":
+                        failed += 1
+                    elif status in {"success", "empty"}:
+                        succeeded += 1
+                    else:
+                        raise ValueError(
+                            f"annotation candidate has invalid generation status: {status}"
+                        )
+                    next_index += 1
+                after_ordinal = int(rows[-1]["ordinal"])
         return {
-            "next_index": len(rows),
+            "next_index": next_index,
             "succeeded": succeeded,
             "failed": failed,
         }
@@ -189,6 +244,21 @@ class CandidateStore:
         with closing(self._connect()) as db:
             row = db.execute("SELECT * FROM candidates WHERE image_id=?", (str(image_id),)).fetchone()
         return self._decode(row) if row else None
+
+    def get_many(self, image_ids) -> dict[str, dict]:
+        ids = list(dict.fromkeys(str(value) for value in image_ids or [] if str(value)))
+        if not ids:
+            return {}
+        if len(ids) > 200:
+            raise ValueError("candidate batch lookup is limited to 200 image ids")
+        self._ready()
+        placeholders = ",".join("?" for _ in ids)
+        with closing(self._connect()) as db:
+            rows = db.execute(
+                f"SELECT * FROM candidates WHERE image_id IN ({placeholders})",
+                ids,
+            ).fetchall()
+        return {str(row["image_id"]): self._decode(row) for row in rows}
 
     def read_page(self, *, cursor: str | None, limit: int = 50) -> CandidatePage:
         self._ready()
@@ -206,27 +276,153 @@ class CandidateStore:
     def iter_items(self):
         self._ready()
         ordinal = 0
-        while True:
-            with closing(self._connect()) as db:
-                rows = db.execute("SELECT * FROM candidates WHERE ordinal>? ORDER BY ordinal LIMIT 200", (ordinal,)).fetchall()
-            if not rows:
-                return
-            for row in rows:
-                yield self._decode(row)
-            ordinal = rows[-1]["ordinal"]
+        with closing(self._connect()) as db:
+            while True:
+                rows = db.execute(
+                    "SELECT * FROM candidates WHERE ordinal>? ORDER BY ordinal LIMIT 200",
+                    (ordinal,),
+                ).fetchall()
+                if not rows:
+                    return
+                for row in rows:
+                    yield self._decode(row)
+                ordinal = int(rows[-1]["ordinal"])
+                if len(rows) < 200:
+                    return
 
-    def apply_decisions(self, decisions: Iterable[CandidateDecision]) -> None:
+    def iter_accepted_items(self):
+        """Stream only accepted review rows in bounded ordinal pages."""
         self._ready()
-        with closing(self._connect()) as db, db:
-            for decision in decisions:
-                row = db.execute("SELECT * FROM candidates WHERE image_id=?", (str(decision.image_id),)).fetchone()
-                if not row:
-                    continue
-                item = self._decode(row)
-                item["accepted"] = bool(decision.accepted)
-                if decision.boxes is not None:
-                    item["boxes"] = decision.boxes
-                self._put(db, item, normalize=False)
+        ordinal = 0
+        with closing(self._connect()) as db:
+            while True:
+                rows = db.execute(
+                    "SELECT * FROM candidates WHERE ordinal>? AND accepted=1 "
+                    "AND status IN ('success','empty') ORDER BY ordinal LIMIT 200",
+                    (ordinal,),
+                ).fetchall()
+                if not rows:
+                    return
+                for row in rows:
+                    yield self._decode(row)
+                ordinal = int(rows[-1]["ordinal"])
+                if len(rows) < 200:
+                    return
+
+    def get_commit_summaries(self, image_ids) -> dict[str, dict[str, Any]]:
+        ids = list(dict.fromkeys(str(value) for value in image_ids or [] if str(value)))
+        if len(ids) > 200:
+            raise ValueError("candidate commit batch lookup is limited to 200 image ids")
+        if not ids:
+            return {}
+        self._ready()
+        placeholders = ",".join("?" for _ in ids)
+        with closing(self._connect()) as db:
+            rows = db.execute(
+                f"SELECT image_id,summary_json FROM commits WHERE image_id IN ({placeholders})",
+                ids,
+            ).fetchall()
+        return {
+            str(row["image_id"]): json.loads(row["summary_json"])
+            for row in rows
+        }
+
+    def record_commit_summaries(
+        self,
+        summaries: Iterable[dict[str, Any]],
+        *,
+        commit_guard: Callable[[], Any] | None = None,
+    ) -> None:
+        rows = [dict(summary) for summary in summaries or []]
+        if len(rows) > 200:
+            raise ValueError("candidate commit journal batch is limited to 200 image ids")
+        if not rows:
+            return
+        image_ids = [str(row.get("image_id") or "") for row in rows]
+        if any(not image_id for image_id in image_ids) or len(set(image_ids)) != len(image_ids):
+            raise ValueError("candidate commit journal image ids must be present and unique")
+        self._ready(commit_guard=commit_guard)
+        with closing(self._connect()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                db.executemany(
+                    "INSERT OR REPLACE INTO commits(image_id,summary_json) VALUES (?,?)",
+                    (
+                        (str(row["image_id"]), json.dumps(row, ensure_ascii=False))
+                        for row in rows
+                    ),
+                )
+                if commit_guard is not None:
+                    commit_guard()
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+
+    def apply_decisions(
+        self,
+        decisions: Iterable[CandidateDecision],
+        *,
+        allowed_statuses: Iterable[str] | None = None,
+    ) -> None:
+        """Apply review decisions with bounded candidate reads in one transaction.
+
+        Review payloads can span many paginated candidate pages. Keep SQLite
+        lookups bounded to 200 ids instead of issuing one SELECT per image.
+        When allowed_statuses is provided, missing/failed candidates fail closed
+        before the transaction commits so the API cannot partially apply an
+        invalid review batch.
+        """
+        pending = list(decisions)
+        allowed = (
+            {str(value) for value in allowed_statuses}
+            if allowed_statuses is not None
+            else None
+        )
+        self._ready()
+        with closing(self._connect()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                for offset in range(0, len(pending), 200):
+                    batch = pending[offset:offset + 200]
+                    image_ids = list(dict.fromkeys(str(item.image_id) for item in batch))
+                    if not image_ids:
+                        continue
+                    placeholders = ",".join("?" for _ in image_ids)
+                    rows = db.execute(
+                        f"SELECT * FROM candidates WHERE image_id IN ({placeholders})",
+                        image_ids,
+                    ).fetchall()
+                    items = {
+                        str(row["image_id"]): self._decode(row)
+                        for row in rows
+                    }
+                    if allowed is not None:
+                        invalid = [
+                            image_id
+                            for image_id in image_ids
+                            if image_id not in items
+                            or str(items[image_id].get("status") or "") not in allowed
+                        ]
+                        if invalid:
+                            raise ValueError(
+                                "candidate decisions contain missing or unavailable review items"
+                            )
+                    for decision in batch:
+                        image_id = str(decision.image_id)
+                        item = items.get(image_id)
+                        if item is None:
+                            continue
+                        item = dict(item)
+                        item["accepted"] = bool(decision.accepted)
+                        if decision.boxes is not None:
+                            item["boxes"] = decision.boxes
+                        self._put(db, item, normalize=False)
+                        items[image_id] = item
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
 
     def decide_unmentioned(self, accepted, *, exclude=()):
         self._ready()
@@ -235,6 +431,85 @@ class CandidateStore:
             db.executemany("INSERT OR IGNORE INTO excluded VALUES (?)", ((str(value),) for value in exclude))
             db.execute("UPDATE candidates SET accepted=? WHERE status IN ('success','empty') "
                        "AND image_id NOT IN (SELECT image_id FROM excluded)", (bool(accepted),))
+
+    def remap_labels(self, mapping: dict[str, str], label_ids: dict[str, int]) -> None:
+        normalized = {
+            str(source): str(target)
+            for source, target in dict(mapping or {}).items()
+            if str(source) and str(target)
+        }
+        unknown_targets = sorted(set(normalized.values()) - set(label_ids))
+        if unknown_targets:
+            raise ValueError("annotation label mapping targets are unavailable: " + ", ".join(unknown_targets))
+        # Even an identity/no-op mapping must revalidate candidate labels against
+        # the current active project catalog. A label may have been disabled or
+        # its class_id may have changed after human confirmation but before the
+        # durable review commit is claimed by a Worker.
+        self._ready()
+        with closing(self._connect()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                after_ordinal = 0
+                while True:
+                    rows = db.execute(
+                        "SELECT * FROM candidates "
+                        "WHERE status IN ('success','empty') AND ordinal>? "
+                        "ORDER BY ordinal LIMIT 200",
+                        (after_ordinal,),
+                    ).fetchall()
+                    if not rows:
+                        break
+                    for row in rows:
+                        item = self._decode(row)
+                        changed = False
+                        boxes = []
+                        for box in item.get("boxes") or []:
+                            current = dict(box)
+                            source = str(current.get("label") or "").strip()
+                            if not source:
+                                raise ValueError("annotation candidate label is required")
+                            if source not in normalized and source not in label_ids:
+                                raise ValueError(
+                                    f"annotation candidate label is unavailable: {source}"
+                                )
+                            target = normalized.get(source, source)
+                            target_id = int(label_ids[target])
+                            try:
+                                current_id = int(current.get("class_id"))
+                            except (TypeError, ValueError, OverflowError):
+                                current_id = None
+                            if source != target or current_id != target_id:
+                                current["label"] = target
+                                current["class_id"] = target_id
+                                changed = True
+                            boxes.append(current)
+                        if changed:
+                            item["boxes"] = boxes
+                            self._put(db, item, normalize=False)
+                    after_ordinal = int(rows[-1]["ordinal"])
+                    if len(rows) < 200:
+                        break
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+
+    def label_summary(self) -> list[dict[str, Any]]:
+        summary: dict[str, dict[str, Any]] = {}
+        for item in self.iter_items():
+            if item.get("status") not in {"success", "empty"}:
+                continue
+            seen = set()
+            for box in item.get("boxes") or []:
+                label = str(box.get("label") or "").strip()
+                if not label:
+                    continue
+                row = summary.setdefault(label, {"label": label, "boxes": 0, "images": 0})
+                row["boxes"] += 1
+                if label not in seen:
+                    row["images"] += 1
+                    seen.add(label)
+        return sorted(summary.values(), key=lambda row: (-int(row["boxes"]), str(row["label"])))
 
     def summary(self) -> dict[str, int]:
         self._ready()

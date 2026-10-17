@@ -17,7 +17,8 @@ MUTABLE_MATERIAL_FIELDS = frozenset({
     "filename", "processing_status", "split", "labels", "label_counts",
     "box_count", "annotated", "annotation_state", "annotation_status",
     "annotation_preview", "annotation_summary_at", "negative_sample",
-    "cleaned_at", "updated_at", "width", "height", "dataset_id",
+    "cleaned_at", "clean_skipped", "clean_decision", "clean_decision_at",
+    "clean_task_id", "updated_at", "width", "height", "dataset_id",
 })
 
 # App-level upload paths construct repositories once per image. Schema creation
