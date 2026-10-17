@@ -1,3 +1,12 @@
+## 2026-10-17｜最新交接入口（代码已推送、生产待核验）
+
+- **优先阅读**：[HANDOFF_2026_10_17_CURRENT.md](./HANDOFF_2026_10_17_CURRENT.md)。此文件总结当前项目、近期关键提交、代码 SHA CI、素材治理 P0、安全约束、生产两次 DELETE_INDEX 尚未核验的 Task/日志，以及下一会话第一步。
+- 本轮代码基线 `7de5be0dbbe06953f6ecace2d92496569adcf4e4`、`VERSION.txt=42.24.356`。该代码 SHA 的 GitHub Actions 已独立查询 **24/24 completed/success**；另外 16 类工作流未触发（不计通过）。Codex 报告 **61/61 Jobs 成功**。新写入的交接文档提交**不是**该代码 SHA，不能自动继承它的 CI 结论。
+- 新版**未部署生产**，真实 A800/OSS/S3、历史评测图片及现场第一次/第二次异常素材删除任务未验证；先只读收集 Task ID、状态、错误码、Worker、素材索引/正式标注与旧审计信息。严禁为验证而再次删除生产图片。
+- 本批只更新交接 Markdown，不改程序、VERSION、main、部署、生产数据；后续推送/部署/删数据须依据用户当轮授权。
+
+---
+
 ## 2026-10-17｜素材治理推送后的 Chrome 跨平台证据路径修复（FINAL SHA CI OPEN）
 
 - 已授权提交9830f1de快进推送；该 SHA 实际44次Actions运行中43成功、1失败。唯一失败为 Frontend browser-navigation：Ubuntu缺USERPROFILE，两条新增治理用例在截图路径处中止（93 passed / 2 failed），并非可计为通过的环境跳过。
