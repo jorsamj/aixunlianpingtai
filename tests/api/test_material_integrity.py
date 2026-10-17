@@ -1,6 +1,10 @@
 import hashlib
 import json
 import uuid
+import pytest
+import time
+import sqlite3
+from contextlib import closing
 from types import SimpleNamespace
 
 import app as app_module
@@ -15,6 +19,220 @@ from platform_core.task_runtime import (
     TaskRecord,
     TaskRepository,
 )
+
+
+def test_anomaly_filtered_plan_freezes_full_scope_and_preserves_protected_items(
+    client, seeded_project, tmp_path, monkeypatch
+):
+    project_id, original = seeded_project
+    materials = app_module.material_store(project_id)
+    source = materials.get(original['id'])
+    materials.upsert_many([
+        _duplicate_material(source, f'missing-{index:03}', f'missing-{index}.jpg',
+                            content_sha256=hashlib.sha256(str(index).encode()).hexdigest(),
+                            split='test' if index == 0 else 'unassigned')
+        for index in range(125)
+    ])
+    original_materialize = material_batches_module.StorageManager.materialize
+    def materialize(manager, row):
+        if str(row['id']).startswith('missing-'):
+            raise FileNotFoundError('isolated missing object')
+        return original_materialize(manager, row)
+    monkeypatch.setattr(material_batches_module.StorageManager, 'materialize', materialize)
+    _repository, _artifacts, scheduler = _runtime(tmp_path, monkeypatch)
+    audit_id = _run_integrity_audit(client, scheduler, project_id)
+    base = f'/api/v62/projects/{project_id}/material-integrity/audits/{audit_id}'
+    groups = client.get(base + '/groups?limit=100&issue_type=MATERIAL_OBJECT_MISSING').json()
+    assert groups['total_images'] == 125
+    assert groups['stale'] is False
+    response = client.post(base + '/dedup-plans', json={
+        'scope': 'FILTERED', 'issue_type': 'MATERIAL_OBJECT_MISSING',
+    })
+    assert response.status_code == 201, response.text
+    plan = response.json()
+    assert plan['selected_count'] == 125
+    assert plan['delete_count'] == 124
+    assert plan['protected_item_count'] == 1
+    assert len(plan['preview_items']) <= 20
+    execute_url = base + f"/dedup-plans/{plan['plan_id']}/execute"
+    queued = client.post(execute_url, json={'confirmation_credential': plan['confirmation_credential']})
+    assert queued.status_code == 202, queued.text
+    # Simulate lost publication acknowledgement before metadata was committed.
+    path = _artifacts.artifact_path(audit_id, f"dedup-plans/{plan['plan_id']}.sqlite3")
+    with closing(sqlite3.connect(path)) as database:
+        database.execute("UPDATE plan_metadata SET value_json='null' WHERE key='execution_task_id'")
+        database.commit()
+    assert client.post(execute_url, json={'confirmation_credential': plan['confirmation_credential']}).json()['task_id'] == queued.json()['task_id']
+    assert scheduler.run_once()
+    finished = client.get(f"/api/v62/projects/{project_id}/material-batches/{queued.json()['task_id']}").json()
+    assert finished['status'] == 'SUCCEEDED', finished
+    assert finished['succeeded'] == 124
+    assert materials.get('missing-000') is not None
+    assert materials.get('missing-124') is None
+    assert client.get(base + '/groups').json()['stale'] is True
+    stale_items = client.get(base + '/groups/MATERIAL_OBJECT_MISSING:missing-124/items')
+    assert stale_items.status_code == 409
+    assert 'MATERIAL_INTEGRITY_AUDIT_STALE' in stale_items.text
+
+
+def test_unverified_anomaly_cannot_be_deleted_by_filtered_plan(
+    client, seeded_project, tmp_path, monkeypatch
+):
+    project_id, image = seeded_project
+    def unavailable(*_args):
+        raise PermissionError('isolated storage temporarily unavailable')
+    monkeypatch.setattr(material_batches_module.StorageManager, 'materialize', unavailable)
+    _repository, _artifacts, scheduler = _runtime(tmp_path, monkeypatch)
+    audit_id = _run_integrity_audit(client, scheduler, project_id)
+    response = client.post(
+        f'/api/v62/projects/{project_id}/material-integrity/audits/{audit_id}/dedup-plans',
+        json={'scope': 'FILTERED', 'issue_type': 'MATERIAL_SCAN_UNVERIFIED'},
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()['delete_count'] == 0
+    assert response.json()['unverifiable_count'] == 1
+
+
+@pytest.mark.parametrize('count', [1000, 10000])
+def test_large_anomaly_scope_stays_server_side_and_preview_is_bounded(
+    client, seeded_project, tmp_path, monkeypatch, count, record_property
+):
+    project_id, original = seeded_project
+    materials = app_module.material_store(project_id)
+    source = materials.get(original['id'])
+    materials.upsert_many([
+        _duplicate_material(source, f'scale-{index:05}', f'scale-{index}.jpg',
+                            content_sha256=hashlib.sha256(str(index).encode()).hexdigest())
+        for index in range(count)
+    ])
+    original_materialize = material_batches_module.StorageManager.materialize
+    def materialize(manager, row):
+        if str(row['id']).startswith('scale-'):
+            raise FileNotFoundError('isolated unavailable object')
+        return original_materialize(manager, row)
+    monkeypatch.setattr(material_batches_module.StorageManager, 'materialize', materialize)
+    _repository, _artifacts, scheduler = _runtime(tmp_path, monkeypatch)
+    audit_id = _run_integrity_audit(client, scheduler, project_id)
+    start = time.perf_counter()
+    response = client.post(
+        f'/api/v62/projects/{project_id}/material-integrity/audits/{audit_id}/dedup-plans',
+        json={'scope':'FILTERED', 'issue_type':'MATERIAL_OBJECT_MISSING',
+              'excluded_group_keys':['MATERIAL_OBJECT_MISSING:scale-00000']},
+    )
+    elapsed = time.perf_counter() - start
+    assert response.status_code == 201, response.text
+    plan = response.json()
+    assert plan['selected_count'] == count-1
+    assert plan['delete_count'] == count-1
+    assert len(plan['preview_items']) == 20
+    assert len(response.content) < 20000
+    assert 'image_ids' not in plan
+    record_property('freeze_seconds', elapsed)
+    print(f'FILTERED {count}: {elapsed:.3f}s, preview {len(response.content)} bytes')
+
+
+def test_anomaly_plan_partial_failure_keeps_changed_annotation_and_history(
+    client, seeded_project, tmp_path, monkeypatch
+):
+    project_id, original = seeded_project
+    materials = app_module.material_store(project_id)
+    source = materials.get(original['id'])
+    materials.upsert_many([
+        _duplicate_material(source, f'anomaly-{i}', f'anomaly-{i}.jpg',
+                            content_sha256=hashlib.sha256(str(i).encode()).hexdigest())
+        for i in range(3)
+    ])
+    snapshots = materials.project_path / 'snapshots'
+    snapshots.mkdir(exist_ok=True)
+    (snapshots / 'isolated-history.json').write_text(json.dumps({'test_image_ids':['anomaly-0']}))
+    def missing(*_args):
+        raise FileNotFoundError('isolated missing source')
+    monkeypatch.setattr(material_batches_module.StorageManager, 'materialize', missing)
+    _repository, _artifacts, scheduler = _runtime(tmp_path, monkeypatch)
+    audit_id = _run_integrity_audit(client, scheduler, project_id)
+    base = f'/api/v62/projects/{project_id}/material-integrity/audits/{audit_id}'
+    plan = client.post(base+'/dedup-plans', json={
+        'scope':'SELECTED_IMAGES', 'image_ids':['anomaly-0','anomaly-1','anomaly-2'],
+    }).json()
+    assert plan['delete_count'] == 2
+    assert plan['protected_item_count'] == 1
+    queued = client.post(base+f"/dedup-plans/{plan['plan_id']}/execute", json={'confirmation_credential':plan['confirmation_credential']}).json()
+    annotations = AnnotationRepository(materials.project_path)
+    annotations.upsert('anomaly-1', [], annotation_state='confirmed_empty')
+    assert scheduler.run_once()
+    finished = client.get(f"/api/v62/projects/{project_id}/material-batches/{queued['task_id']}").json()
+    assert finished['status'] == 'PARTIAL_SUCCESS', finished
+    assert finished['succeeded'] == 1
+    assert finished['failed'] == 1
+    assert materials.get('anomaly-0') and materials.get('anomaly-1')
+    assert materials.get('anomaly-2') is None
+    assert annotations.get('anomaly-1')['annotation_state'] == 'confirmed_empty'
+    assert finished['error_examples'][0]['image_id'] == 'anomaly-1'
+
+
+def test_anomaly_filter_cannot_bypass_duplicate_keeper_or_conflicting_gt(
+    client, seeded_project, tmp_path, monkeypatch
+):
+    project_id, original = seeded_project
+    materials = app_module.material_store(project_id)
+    materials.upsert(_duplicate_material(materials.get(original['id']), 'also-missing', 'also-missing.jpg'))
+    annotations = AnnotationRepository(materials.project_path)
+    annotations.upsert('also-missing', [], annotation_state='confirmed_empty')
+    def missing(*_args):
+        raise FileNotFoundError('isolated missing shared source')
+    monkeypatch.setattr(material_batches_module.StorageManager, 'materialize', missing)
+    _repository, _artifacts, scheduler = _runtime(tmp_path, monkeypatch)
+    audit_id = _run_integrity_audit(client, scheduler, project_id)
+    response = client.post(
+        f'/api/v62/projects/{project_id}/material-integrity/audits/{audit_id}/dedup-plans',
+        json={'scope':'FILTERED','issue_type':'MATERIAL_OBJECT_MISSING'},
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()['selected_count'] == 2
+    assert response.json()['delete_count'] == 0
+    assert response.json()['manual_required_count'] == 2
+
+
+@pytest.mark.parametrize('tamper_manifest', [False, True])
+def test_frozen_plan_retries_same_task_after_publication_failure(
+    client, seeded_project, tmp_path, monkeypatch, tamper_manifest
+):
+    project_id, original = seeded_project
+    materials = app_module.material_store(project_id)
+    materials.upsert(_duplicate_material(materials.get(original['id']), 'publication-copy', 'publication.jpg'))
+    repository, _artifacts, scheduler = _runtime(tmp_path, monkeypatch)
+    audit_id = _run_integrity_audit(client, scheduler, project_id)
+    base=f'/api/v62/projects/{project_id}/material-integrity/audits/{audit_id}'
+    plan=client.post(base+'/dedup-plans',json={'scope':'SAFE_ALL'}).json()
+    publish=material_batches_module.publish_prepared_batch
+    attempts=[]
+    def flaky_publish(task, *args):
+        attempts.append(task.task_id)
+        if len(attempts)==1:
+            raise material_batches_module.BatchRequestError('BATCH_PUBLICATION_FAILED','isolated publication unavailable',503)
+        return publish(task,*args)
+    monkeypatch.setattr(material_batches_module,'publish_prepared_batch',flaky_publish)
+    url=base+f"/dedup-plans/{plan['plan_id']}/execute"
+    payload={'confirmation_credential':plan['confirmation_credential']}
+    assert client.post(url,json=payload).status_code==503
+    assert repository.get(plan['plan_id']) is None
+    if tamper_manifest:
+        path=_artifacts.artifact_path(plan['plan_id'],material_batches_module.SELECTION_REF)
+        with closing(sqlite3.connect(path)) as database:
+            database.execute("UPDATE integrity_plan_items SET annotation_digest='isolated-tamper'")
+            database.commit()
+    retry=client.post(url,json=payload)
+    if tamper_manifest:
+        assert retry.status_code==409,retry.text
+        assert 'MATERIAL_INTEGRITY_EXECUTION_CONFLICT' in retry.text
+        assert repository.get(plan['plan_id']) is None
+        assert len(attempts)==1
+        return
+    assert retry.status_code==202,retry.text
+    assert retry.json()['task_id']==plan['plan_id']
+    assert attempts==[plan['plan_id'],plan['plan_id']]
+    assert scheduler.run_once()
+    assert client.get(f"/api/v62/projects/{project_id}/material-batches/{plan['plan_id']}").json()['succeeded']==1
 
 
 def _runtime(tmp_path, monkeypatch):
@@ -184,6 +402,7 @@ def test_durable_index_delete_removes_annotation_truth_but_keeps_shared_object(
     annotations.upsert(second["id"], [], annotation_state="confirmed_empty")
     object_path = app_module.project_dir(project_id) / str(first["object_key"])
     _repository, _artifacts, scheduler = _runtime(tmp_path, monkeypatch)
+    audit_id = _run_integrity_audit(client, scheduler, project_id)
 
     estimate = client.post(
         f"/api/v62/projects/{project_id}/material-batches/estimate",
@@ -205,6 +424,13 @@ def test_durable_index_delete_removes_annotation_truth_but_keeps_shared_object(
     assert not annotations.exists(second["id"])
     assert materials.get(first["id"]) is not None
     assert object_path.is_file()
+    stale = client.get(f'/api/v62/projects/{project_id}/material-integrity/audits/{audit_id}/groups').json()
+    assert stale['stale'] is True
+    repeated = client.post(f'/api/v62/projects/{project_id}/material-batches', json={
+        'operation':'DELETE_INDEX', 'selection_spec':estimate.json()['selection_spec'],
+    })
+    assert repeated.status_code == 409
+    assert 'MATERIAL_REVISION_CHANGED' in repeated.text
 
 
 def test_filtered_dog_delete_removes_only_dog_material_and_its_annotation_files(

@@ -49,7 +49,7 @@ import {applyExactLabelCodeMatches, bulkSetLabelMapping, buildManualLabelMapping
 import {installResourceDiscoveryRuntime} from './modules/resource-discovery.js?v=422402';
 import {installServiceNodeRuntime} from './modules/service-node-runtime.js?v=422550';
 import {installOverviewTabsRuntime} from './modules/overview-tabs.js?v=4226362';
-import {installMaterialBatchRuntime} from './modules/material-batches.js?v=422405';
+import {installMaterialBatchRuntime} from './modules/material-batches.js?v=422406';
 import {mountPagination, normalizePagination, paginationPageSizes, paginationTokens, renderPagination, validatePageInput} from './modules/pagination.js?v=422603';
 
 const UI_BUILD_VERSION = '42.25.0-dev';

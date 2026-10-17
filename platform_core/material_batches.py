@@ -89,6 +89,8 @@ CREATE TABLE IF NOT EXISTS issue_items (
 );
 CREATE INDEX IF NOT EXISTS ix_material_integrity_items
     ON issue_items(issue_type, group_key, image_id);
+CREATE INDEX IF NOT EXISTS ix_material_integrity_image
+    ON issue_items(image_id, group_key);
 CREATE TABLE IF NOT EXISTS issue_groups (
     group_key TEXT PRIMARY KEY,
     issue_type TEXT NOT NULL,
@@ -665,6 +667,16 @@ def _material_integrity_keeper(items, protected_ids, manual_keeper=None):
     return max(items, key=score)["image_id"]
 
 
+def _material_integrity_preview_items(project_id, materials, ids):
+    annotations = AnnotationRepository(materials.project_path).get_many(ids)
+    return [dict(
+        image_id=str(row['id']), filename=row.get('filename') or str(row['id']),
+        width=int(row.get('width') or 0), height=int(row.get('height') or 0),
+        content_url=f"/api/v61/projects/{project_id}/materials/{row['id']}/content",
+        boxes=list((annotations.get(str(row['id'])) or {}).get('boxes') or []),
+    ) for row in materials.get_many(ids)]
+
+
 def create_material_integrity_plan(
     project_id, audit_task, materials, repository, artifacts, payload,
 ):
@@ -675,15 +687,19 @@ def create_material_integrity_plan(
         )
     payload = payload if isinstance(payload, dict) else {}
     scope = str(payload.get("scope") or "SAFE_ALL").strip().upper()
-    if scope not in {"SAFE_ALL", "SELECTED_GROUPS", "MANUAL_GROUPS"}:
+    if scope not in {"SAFE_ALL", "SELECTED_GROUPS", "MANUAL_GROUPS", "FILTERED", "SELECTED_IMAGES"}:
         raise BatchRequestError(
             "MATERIAL_INTEGRITY_PLAN_SCOPE_INVALID", "素材治理范围无效", 422,
         )
+    for name in ('group_keys', 'image_ids', 'excluded_image_ids', 'excluded_group_keys'):
+        values = payload.get(name) or []
+        if not isinstance(values, list) or len(values) > 10000 or any(not isinstance(value, (str, int)) for value in values):
+            raise BatchRequestError('MATERIAL_INTEGRITY_SELECTION_INVALID', '选择范围必须是最多 10000 项的标识列表', 422)
     group_keys = list(dict.fromkeys(
         str(value).strip() for value in (payload.get("group_keys") or [])
         if str(value).strip()
     ))
-    if scope != "SAFE_ALL" and not group_keys:
+    if scope in {"SELECTED_GROUPS", "MANUAL_GROUPS"} and not group_keys:
         raise BatchRequestError(
             "MATERIAL_INTEGRITY_GROUPS_REQUIRED", "请选择需要治理的重复组", 422,
         )
@@ -696,6 +712,20 @@ def create_material_integrity_plan(
         raise BatchRequestError(
             "MATERIAL_INTEGRITY_DECISIONS_INVALID", "人工保留决策格式无效", 422,
         )
+
+    selected_images = set(str(value) for value in (payload.get("image_ids") or []))
+    excluded_images = set(str(value) for value in (payload.get('excluded_image_ids') or []))
+    excluded_groups = set(str(value) for value in (payload.get('excluded_group_keys') or []))
+    if max(len(excluded_images), len(excluded_groups)) > 10000:
+        raise BatchRequestError('MATERIAL_INTEGRITY_SELECTION_INVALID', '排除范围过大，请缩小筛选范围', 422)
+    if scope == "SELECTED_IMAGES" and not 0 < len(selected_images) <= 10000:
+        raise BatchRequestError("MATERIAL_INTEGRITY_SELECTION_INVALID", "请选择 1–10000 张素材", 422)
+    issue_type = str(payload.get("issue_type") or "").upper()
+    issue_types = {"DUPLICATE_IDENTICAL", "DUPLICATE_ANNOTATION_CONFLICT",
+                   "MATERIAL_OBJECT_MISSING", "CONTENT_HASH_MISMATCH",
+                   "INVALID_IMAGE", "MATERIAL_SCAN_UNVERIFIED"}
+    if issue_type and issue_type not in issue_types:
+        raise BatchRequestError("MATERIAL_INTEGRITY_FILTER_INVALID", "问题筛选无效", 422)
 
     audit_path = artifacts.artifact_path(audit_task.task_id, MATERIAL_INTEGRITY_REF)
     if not audit_path.is_file():
@@ -724,7 +754,21 @@ def create_material_integrity_plan(
         params = list(duplicate_types)
         where = "g.issue_type IN (?,?)"
         join = ""
-        if scope != "SAFE_ALL":
+        if scope in {"FILTERED", "SELECTED_IMAGES", "SELECTED_GROUPS"}:
+            where, params = "1=1", []
+        if scope == "FILTERED" and issue_type:
+            where, params = "g.issue_type=?", [issue_type]
+        if scope == 'FILTERED' and payload.get('group_key'):
+            where += ' AND g.group_key=?'
+            params.append(str(payload['group_key']))
+        if scope == "SELECTED_IMAGES":
+            audit.execute("CREATE TEMP TABLE selected_images(image_id TEXT PRIMARY KEY) WITHOUT ROWID")
+            audit.executemany("INSERT INTO selected_images VALUES (?)", ((value,) for value in selected_images))
+            where = "EXISTS (SELECT 1 FROM issue_items i JOIN selected_images s ON s.image_id=i.image_id WHERE i.group_key=g.group_key)"
+            found = audit.execute("SELECT COUNT(DISTINCT i.image_id) FROM issue_items i JOIN selected_images s ON s.image_id=i.image_id").fetchone()[0]
+            if found != len(selected_images):
+                raise BatchRequestError("MATERIAL_INTEGRITY_SELECTION_INVALID", "所选图片不属于当前审计", 409)
+        if scope in {"SELECTED_GROUPS", "MANUAL_GROUPS"}:
             audit.execute(
                 "CREATE TEMP TABLE selected_integrity_groups "
                 "(group_key TEXT PRIMARY KEY) WITHOUT ROWID"
@@ -739,7 +783,7 @@ def create_material_integrity_plan(
             f"WHERE {where} ORDER BY g.group_key",
             params,
         ).fetchall()
-        if scope != "SAFE_ALL" and len(groups) != len(group_keys):
+        if scope in {"SELECTED_GROUPS", "MANUAL_GROUPS"} and len(groups) != len(group_keys):
             raise BatchRequestError(
                 "MATERIAL_INTEGRITY_GROUPS_CHANGED",
                 "所选问题组已变化，请刷新审计结果后重试", 409,
@@ -750,14 +794,24 @@ def create_material_integrity_plan(
                 "WHERE issue_type NOT IN (?,?)", duplicate_types,
             ).fetchall()
         }
+        duplicate_ids = {
+            str(row[0]) for row in audit.execute(
+                "SELECT DISTINCT image_id FROM issue_items WHERE issue_type IN (?,?)",
+                duplicate_types,
+            )
+        }
         planned = []
         planned_groups = []
         skip_reasons = {}
         included_groups = kept_count = delete_count = 0
         manual_required_groups = protected_groups = anomaly_groups = 0
         skipped_item_count = protected_item_count = anomaly_item_count = 0
+        selected_ids, counted_protected, unverifiable_ids, manual_ids = set(), set(), set(), set()
+        planned_ids = set()
         for group in groups:
             group_key = str(group["group_key"])
+            if group_key in excluded_groups:
+                continue
             rows = audit.execute(
                 "SELECT image_id,content_sha256,details_json FROM issue_items "
                 "WHERE group_key=? ORDER BY image_id", (group_key,),
@@ -771,7 +825,35 @@ def create_material_integrity_plan(
                 for row in rows
             ]
             ids = {item["image_id"] for item in items}
-            group_protected = ids.intersection(protected)
+            chosen_ids = ids.intersection(selected_images) if scope == "SELECTED_IMAGES" else ids
+            chosen_ids = chosen_ids - excluded_images
+            if not chosen_ids:
+                continue
+            selected_ids.update(chosen_ids)
+            group_protected = ids.intersection(protected) | {
+                item['image_id'] for item in items if str(item['details'].get('split') or '').lower() == 'test'
+            }
+            counted_protected.update(chosen_ids.intersection(group_protected))
+            if str(group['issue_type']) not in duplicate_types:
+                for item in items:
+                    image_id = item['image_id']
+                    if image_id not in chosen_ids or image_id in planned_ids:
+                        continue
+                    if str(group['issue_type']) == 'MATERIAL_SCAN_UNVERIFIED':
+                        unverifiable_ids.add(image_id)
+                        continue
+                    # An anomaly filter must not become a back door around
+                    # the duplicate keeper and conflicting-GT review contract.
+                    if image_id in duplicate_ids:
+                        manual_ids.add(image_id)
+                        skip_reasons['DUPLICATE_REQUIRES_REVIEW'] = skip_reasons.get('DUPLICATE_REQUIRES_REVIEW', 0) + 1
+                        continue
+                    if image_id in group_protected:
+                        continue
+                    planned.append((group_key, image_id, 'DELETE', item['content_sha256'], str(item['details'].get('annotation_digest') or '')))
+                    planned_ids.add(image_id)
+                    delete_count += 1
+                continue
             reason = ""
             if ids.intersection(anomaly_ids):
                 reason = "ANOMALOUS_MATERIAL"
@@ -787,23 +869,28 @@ def create_material_integrity_plan(
             ):
                 reason = "MANUAL_DECISION_REQUIRED"
                 manual_required_groups += 1
+                manual_ids.update(chosen_ids)
             if reason:
                 skipped_item_count += len(ids)
                 skip_reasons[reason] = int(skip_reasons.get(reason) or 0) + 1
                 continue
+            # A partially selected duplicate group must retain an unselected item.
+            candidates = [item for item in items if item['image_id'] in group_protected] or [item for item in items if item['image_id'] not in chosen_ids] or items
             keeper = _material_integrity_keeper(
-                items, group_protected, decisions.get(group_key),
+                candidates, group_protected, decisions.get(group_key),
             )
             keeper_reason = (
                 "MANUAL_DECISION" if decisions.get(group_key)
                 else "HISTORICAL_REFERENCE" if keeper in group_protected
                 else "VERIFIED_SOURCE_AND_ANNOTATION"
             )
-            planned_groups.append((
-                group_key, keeper, keeper_reason, max(0, len(items) - 1),
-            ))
+            group_delete_count = len(chosen_ids - {keeper} - planned_ids)
+            planned_groups.append((group_key, keeper, keeper_reason, group_delete_count))
+            kept_count += len(items) - group_delete_count - 1
             for item in items:
                 action = "KEEP" if item["image_id"] == keeper else "DELETE"
+                if action == 'DELETE' and (item['image_id'] not in chosen_ids or item['image_id'] in planned_ids):
+                    continue
                 planned.append((
                     group_key, item["image_id"], action,
                     item["content_sha256"],
@@ -811,7 +898,17 @@ def create_material_integrity_plan(
                 ))
                 kept_count += int(action == "KEEP")
                 delete_count += int(action == "DELETE")
+                if action == 'DELETE':
+                    planned_ids.add(item['image_id'])
             included_groups += 1
+
+        # Freeze anomaly annotation truth too, through the same repository.
+        missing_digests = [row[1] for row in planned if not row[4]]
+        digests = {}
+        for offset in range(0, len(missing_digests), BATCH_SIZE):
+            digests.update({key: annotations.record_digest(record) for key, record in annotations.get_many(missing_digests[offset:offset+BATCH_SIZE]).items()})
+        planned = [(group, image_id, action, digest, annotation_digest or digests.get(image_id, ''))
+                   for group, image_id, action, digest, annotation_digest in planned]
 
     plan_id = uuid.uuid4().hex
     credential = secrets.token_urlsafe(32)
@@ -823,6 +920,9 @@ def create_material_integrity_plan(
         "operation": BatchOperation.DELETE_INDEX.value,
         "audit_task_id": audit_task.task_id,
         "scope": scope,
+        "selected_count": len(selected_ids),
+        "unverifiable_count": len(unverifiable_ids),
+        "manual_required_count": len(manual_ids),
         "material_revision": material_revision,
         "annotation_revision": annotation_revision,
         "included_groups": included_groups,
@@ -833,7 +933,7 @@ def create_material_integrity_plan(
         "protected_groups": protected_groups,
         "anomaly_groups": anomaly_groups,
         "skipped_item_count": skipped_item_count,
-        "protected_item_count": protected_item_count,
+        "protected_item_count": len(counted_protected),
         "anomaly_item_count": anomaly_item_count,
         "skip_reasons": skip_reasons,
         "created_at": utc_now(),
@@ -868,6 +968,14 @@ def create_material_integrity_plan(
         for group_key, keeper, reason, count in planned_groups[:20]
     ]
     public["preview_groups_truncated"] = len(planned_groups) > 20
+    preview_ids = [row[1] for row in planned if row[2] == 'DELETE'][:20]
+    public['preview_items'] = _material_integrity_preview_items(project_id, materials, preview_ids)
+    deletion_ids = sorted(planned_ids)
+    annotation_count = 0
+    for offset in range(0, len(deletion_ids), BATCH_SIZE):
+        records = annotations.get_many(deletion_ids[offset:offset+BATCH_SIZE])
+        annotation_count += sum(bool(record.get('content_digest')) or (annotations.project_path / 'annotations' / f'{image_id}.json').is_file() for image_id, record in records.items())
+    public['annotation_count'] = annotation_count
     public["confirmation_credential"] = credential
     return public
 
@@ -906,7 +1014,11 @@ def _execute_material_integrity_plan_locked(
                 "MATERIAL_INTEGRITY_CONFIRMATION_REQUIRED",
                 "治理确认凭证无效，请重新生成预览", 409,
             )
+        # The frozen plan owns one deterministic task identity, including a
+        # retry after publication succeeded but recording its ID was interrupted.
         existing_id = str(metadata.get("execution_task_id") or "")
+        if not existing_id and repository.get(str(plan_id)) is not None:
+            existing_id = str(plan_id)
         if existing_id:
             existing = repository.get(existing_id)
             if existing is None:
@@ -914,6 +1026,9 @@ def _execute_material_integrity_plan_locked(
                     "MATERIAL_INTEGRITY_EXECUTION_UNAVAILABLE",
                     "治理任务状态不可用，请联系管理员", 409,
                 )
+            existing_request = artifacts.read_json(existing.task_id, existing.payload_ref, default={})
+            if existing.project_id != str(project_id) or (existing_request.get('options') or {}).get('material_integrity_plan_id') != str(plan_id):
+                raise BatchRequestError('MATERIAL_INTEGRITY_EXECUTION_UNAVAILABLE', '治理任务归属不一致，已阻止执行', 409)
             return existing
         if (
             materials.current_revision() != int(metadata["material_revision"])
@@ -960,6 +1075,7 @@ def _execute_material_integrity_plan_locked(
             project_id, materials.project_path, repository, artifacts,
         )
         conflict = sorted(set(delete_ids).intersection(protected))
+        conflict.extend(image_id for image_id in delete_ids if str(current_materials[image_id].get('split') or '').lower() == 'test')
         if conflict:
             raise BatchRequestError(
                 "MATERIAL_INTEGRITY_REFERENCE_CHANGED",
@@ -967,7 +1083,7 @@ def _execute_material_integrity_plan_locked(
                 409,
             )
 
-        task_id = uuid.uuid4().hex
+        task_id = str(plan_id)
         request = {
             "operation": BatchOperation.DELETE_INDEX.value,
             "selection_spec": {
@@ -988,16 +1104,22 @@ def _execute_material_integrity_plan_locked(
             },
         }
         selection_path = artifacts.artifact_path(task_id, SELECTION_REF)
+        previous_request = artifacts.read_json(task_id, "request.json", default=None)
+        if previous_request is not None and previous_request != request:
+            raise BatchRequestError(
+                'MATERIAL_INTEGRITY_EXECUTION_CONFLICT',
+                '任务文件归属或冻结请求不一致，已阻止执行', 409,
+            )
         with closing(BatchSelection(selection_path)) as manifest:
             manifest.database.executescript(_MATERIAL_INTEGRITY_EXECUTION_SCHEMA)
             with manifest.transaction():
                 manifest.database.executemany(
-                    "INSERT INTO selection(image_id) VALUES (?)",
+                    "INSERT OR IGNORE INTO selection(image_id) VALUES (?)",
                     ((image_id,) for image_id in delete_ids),
                 )
                 by_id = {str(row["image_id"]): row for row in rows}
                 manifest.database.executemany(
-                    "INSERT INTO integrity_plan_items"
+                    "INSERT OR IGNORE INTO integrity_plan_items"
                     "(image_id,group_key,content_sha256,annotation_digest) VALUES (?,?,?,?)",
                     (
                         (
@@ -1008,7 +1130,7 @@ def _execute_material_integrity_plan_locked(
                     ),
                 )
                 manifest.database.executemany(
-                    "INSERT INTO integrity_plan_groups"
+                    "INSERT OR IGNORE INTO integrity_plan_groups"
                     "(group_key,keeper_image_id,keeper_content_sha256,"
                     "keeper_annotation_digest,keeper_reason,delete_count) "
                     "VALUES (?,?,?,?,?,?)",
@@ -1023,13 +1145,46 @@ def _execute_material_integrity_plan_locked(
                     ),
                 )
                 manifest.database.executemany(
-                    "INSERT INTO meta(key,value) VALUES (?,?)",
+                    "INSERT OR IGNORE INTO meta(key,value) VALUES (?,?)",
                     (
                         ("frozen", utc_now()),
                         ("repository_revision", str(metadata["material_revision"])),
                         ("material_integrity_plan_id", str(plan_id)),
                     ),
                 )
+                # A publication failure can leave a complete, unclaimed
+                # manifest. Reuse it only after comparing *all* immutable
+                # identities and untouched execution state with this plan.
+                expected_items = [
+                    (str(row['image_id']), str(row['group_key']),
+                     str(row['content_sha256']), str(row['annotation_digest']))
+                    for row in rows if row['action'] == 'DELETE'
+                ]
+                expected_groups = [
+                    (str(row['group_key']), str(row['keeper_image_id']),
+                     str(by_id[str(row['keeper_image_id'])]['content_sha256']),
+                     str(by_id[str(row['keeper_image_id'])]['annotation_digest']),
+                     str(row['keeper_reason']), int(row['delete_count']))
+                    for row in group_rows
+                ]
+                actual_selection = [tuple(row) for row in manifest.database.execute(
+                    'SELECT image_id,state,attempts,source_deleted,error FROM selection ORDER BY image_id'
+                )]
+                actual_items = [tuple(row) for row in manifest.database.execute(
+                    'SELECT image_id,group_key,content_sha256,annotation_digest FROM integrity_plan_items ORDER BY image_id'
+                )]
+                actual_groups = [tuple(row) for row in manifest.database.execute(
+                    'SELECT group_key,keeper_image_id,keeper_content_sha256,keeper_annotation_digest,keeper_reason,delete_count FROM integrity_plan_groups ORDER BY group_key'
+                )]
+                frozen_meta = dict(manifest.database.execute('SELECT key,value FROM meta'))
+                if (actual_selection != [(image_id, 'pending', 0, 0, None) for image_id in delete_ids]
+                        or actual_items != expected_items or actual_groups != expected_groups
+                        or frozen_meta.get('material_integrity_plan_id') != str(plan_id)
+                        or frozen_meta.get('repository_revision') != str(metadata['material_revision'])):
+                    raise BatchRequestError(
+                        'MATERIAL_INTEGRITY_EXECUTION_CONFLICT',
+                        '未发布任务的冻结范围或执行状态不一致，请重新生成预览', 409,
+                    )
             checkpoint = manifest.summary()
         artifacts.atomic_write_json(task_id, "request.json", request)
         artifacts.atomic_write_json(task_id, CHECKPOINT_REF, checkpoint)
@@ -1989,15 +2144,13 @@ class MaterialBatchHandler:
                 image_id, row["content_sha256"], row["annotation_digest"],
             ):
                 failed[image_id] = "MATERIAL_INTEGRITY_DELETE_IDENTITY_CHANGED"
+            if str((current_materials.get(image_id) or {}).get('split') or '').lower() == 'test':
+                failed[image_id] = 'MATERIAL_INTEGRITY_REFERENCE_CHANGED'
         protected = _historical_material_references(
             context.task.project_id, project_path, context.repository,
             context.artifacts, exclude_task_id=context.task.task_id,
         )
-        planned_delete_ids = {
-            image_id
-            for values in deletes_by_group.values()
-            for image_id in values
-        }
+        planned_delete_ids = {str(row['image_id']) for row in items}
         for image_id in planned_delete_ids.intersection(protected):
             failed[image_id] = "MATERIAL_INTEGRITY_REFERENCE_CHANGED"
         for reason in sorted(set(failed.values())):
@@ -2172,6 +2325,7 @@ class MaterialBatchHandler:
                     page = materials.list_page(cursor=cursor, limit=BATCH_SIZE)
                     if not page.items:
                         break
+                    page_annotations = annotations.get_many([str(row['id']) for row in page.items])
                     for row in page.items:
                         image_id = str(row.get("id") or "")
                         issue_type = ""
@@ -2215,6 +2369,7 @@ class MaterialBatchHandler:
                                 "import_batch_id": row.get("import_batch_id") or row.get("batch_id") or "",
                                 "split": row.get("split") or "unassigned",
                                 "detail": detail,
+                                "annotation_digest": annotations.record_digest(page_annotations[image_id]),
                             }
                             audit.execute(
                                 "INSERT OR REPLACE INTO issue_items"
@@ -3024,10 +3179,13 @@ class MaterialBatchHandler:
             "AND name='integrity_plan_items'"
         ).fetchone():
             return
+        current = materials.get(str(image_id))
+        if current and str(current.get('split') or '').lower() == 'test':
+            raise BatchRequestError('MATERIAL_INTEGRITY_REFERENCE_CHANGED', 'Test 素材受保护，已阻止删除', 409)
         row = manifest.database.execute(
             "SELECT i.content_sha256,i.annotation_digest,g.keeper_image_id,"
             "g.keeper_content_sha256,g.keeper_annotation_digest "
-            "FROM integrity_plan_items i JOIN integrity_plan_groups g "
+            "FROM integrity_plan_items i LEFT JOIN integrity_plan_groups g "
             "ON g.group_key=i.group_key WHERE i.image_id=?",
             (str(image_id),),
         ).fetchone()
@@ -3053,7 +3211,7 @@ class MaterialBatchHandler:
                 "MATERIAL_INTEGRITY_DELETE_IDENTITY_CHANGED",
                 "待清理素材身份已变化，已跳过该项", 409,
             )
-        if not matches(
+        if row['keeper_image_id'] and not matches(
             row["keeper_image_id"], row["keeper_content_sha256"],
             row["keeper_annotation_digest"],
         ):
@@ -3338,6 +3496,14 @@ def material_batch_router(
             params.append(str(issue_type).upper())
         with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as database:
             database.row_factory = sqlite3.Row
+            count_where = ' WHERE issue_type=?' if issue_type else ''
+            count_params = (str(issue_type).upper(),) if issue_type else ()
+            total_images = database.execute('SELECT COUNT(DISTINCT image_id) FROM issue_items' + count_where, count_params).fetchone()[0]
+            total_groups = database.execute('SELECT COUNT(*) FROM issue_groups' + count_where, count_params).fetchone()[0]
+            metadata = _audit_metadata(path)
+            materials = material_store(project_id)
+            stale = (metadata.get('material_revision') != materials.current_revision()
+                     or metadata.get('annotation_revision') != AnnotationRepository(materials.project_path).current_revision())
             rows = database.execute(
                 "SELECT * FROM issue_groups WHERE " + " AND ".join(clauses)
                 + " ORDER BY group_key LIMIT ?",
@@ -3345,6 +3511,9 @@ def material_batch_router(
             ).fetchall()
         visible = rows[:int(limit)]
         return {
+            "total_images": total_images,
+            "total_groups": total_groups,
+            "stale": stale,
             "items": [
                 {
                     "group_key": str(row["group_key"]),
@@ -3376,9 +3545,17 @@ def material_batch_router(
                 "ORDER BY image_id LIMIT ?",
                 (str(group_key), str(cursor or ""), int(limit) + 1),
             ).fetchall()
+            total_images = database.execute('SELECT COUNT(*) FROM issue_items WHERE group_key=?', (str(group_key),)).fetchone()[0]
         visible = rows[:int(limit)]
         ids = [str(row["image_id"]) for row in visible]
         materials = material_store(project_id)
+        metadata = _audit_metadata(path)
+        if (metadata.get('material_revision') != materials.current_revision()
+                or metadata.get('annotation_revision') != AnnotationRepository(materials.project_path).current_revision()):
+            raise HTTPException(409, detail={
+                'code': 'MATERIAL_INTEGRITY_AUDIT_STALE',
+                'message': '审计快照已过期，不能混用旧问题分组和当前图片标注，请重新审计',
+            })
         current_materials = {
             str(row.get("id")): row for row in materials.get_many(ids)
         }
@@ -3406,6 +3583,7 @@ def material_batch_router(
             })
         return {
             "group_key": str(group_key),
+            "total_images": total_images,
             "items": items,
             "next_cursor": ids[-1] if len(rows) > int(limit) else None,
         }

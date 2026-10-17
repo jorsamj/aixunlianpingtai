@@ -59,16 +59,17 @@ export function installMaterialBatchRuntime({projectId, currentPageIds, selected
     save(items);
   }
 
-  async function get(taskId) {
-    return json(await fetch(`${base()}/${encodeURIComponent(taskId)}`));
+  async function get(taskId, project = pid()) {
+    return json(await fetch(`/api/v62/projects/${encodeURIComponent(project)}/material-batches/${encodeURIComponent(taskId)}`));
   }
 
   function announce(task) {
+    window.updateMaterialIntegrityTask47?.(task);
     const total = Number(task.total || 0);
     const processed = Number(task.processed || 0);
     const failed = Number(task.failed || 0);
     const cleaning = task.operation === 'CLEAN' ? `，发现问题 ${Number(task.flagged || 0)} 张（仅检查，待复核）` : '';
-    if (task.material_integrity_plan_id) {
+    if (task.material_integrity_plan_id && Number(task.planned_groups || 0) > 0) {
       tell(`批量去重：${materialBatchTaskText(task)} · 完成组 ${Number(task.completed_groups || 0)}/${Number(task.planned_groups || 0)} · 已保留 ${Number(task.kept_count || 0)} · 已清理 ${Number(task.succeeded || 0)} · 跳过 ${Number(task.skipped_groups || 0)}${Number(task.failed_groups || 0) ? ` · 失败组 ${Number(task.failed_groups || 0)}` : ''}`);
       return;
     }
@@ -86,10 +87,12 @@ export function installMaterialBatchRuntime({projectId, currentPageIds, selected
   function poll(taskId, {foreground = false} = {}) {
     const id = String(taskId || '');
     if (!id) return false;
+    const projectAtStart = pid();
     stopPolling(id);
     const tick = async () => {
       try {
-        const task = await get(id);
+        const task = await get(id, projectAtStart);
+        if (pid() !== projectAtStart) { stopPolling(id); return; }
         remember(task);
         announce(task);
         if (isMaterialBatchActive(task)) {
@@ -97,7 +100,8 @@ export function installMaterialBatchRuntime({projectId, currentPageIds, selected
         } else {
           stopPolling(id);
           await refresh?.();
-          if (task.material_integrity_plan_id && typeof window.invalidateMaterialIntegrityGovernance47 === 'function') {
+          if (pid() !== projectAtStart) return;
+          if (task.operation === 'DELETE_INDEX' && typeof window.invalidateMaterialIntegrityGovernance47 === 'function') {
             await window.invalidateMaterialIntegrityGovernance47(task);
           }
           if (foreground && task.operation === 'AI_ANNOTATE' && task.review_required && typeof window.reviewAiLabel427 === 'function') {
@@ -106,6 +110,7 @@ export function installMaterialBatchRuntime({projectId, currentPageIds, selected
         }
       } catch (error) {
         stopPolling(id);
+        if (pid() !== projectAtStart) return;
         tell(error.message || String(error));
       }
     };
@@ -185,7 +190,7 @@ export function installMaterialBatchRuntime({projectId, currentPageIds, selected
   window.stopMaterialBatchPolling62 = taskId => stopPolling(taskId);
 
   const runtime = Object.freeze({
-    build: 'material-batch-runtime-422405',
+    build: 'material-batch-runtime-422406',
     poll,
     resume,
     stop: stopPolling,

@@ -1,3 +1,10 @@
+## 2026-10-17｜重复与异常素材删除 P0（LOCAL VERIFIED / CI OPEN）
+
+- 既有素材治理计划 Owner 增补 FILTERED / SELECTED_IMAGES / 异常组冻结；全筛选不下发全量 ID，重复 keeper、不同 GT 人工确认、Test/历史引用与扫描未核验保护不变。异常筛选不能绕过去重保护，DELETE_INDEX 不删除共享原始文件。
+- 素材治理在同一个弹窗内完成全选、跨页选择、预检与确认，失败保留上下文；MaterialBatchRuntime62 / PollRegistry 仍是唯一任务状态与轮询 Owner。所有索引删除终态刷新分页并失效旧审计；旧分组不再冒充当前素材。图片尺寸/加载失败时藏框，真实宽高比与 Content API 保持一致。
+- 独立代码复核的发布前失败重试、refresh 期间切换项目、Chrome Worker 跨用例领取三项 Important 已关闭并补回归。未发布 manifest 只有完整身份、归属和 pending 状态完全相同才复用；篡改 409。测试 Worker 唯一 capability 仅用于隔离目标临时 Task，生产调度未改变。
+- VERSION42.24.356 不变；入口 app/main/styles 缓存42.25.388，MaterialBatch build/import422406。最终 Node24 978/978、Python41/41、真实 Chrome21/21；详细结果和现场边界以 docs/MATERIAL_INTEGRITY_P0_ACCEPTANCE_2026_10_17.md 为准。现场原两次 Task ID/日志尚未取得，不声称生产删除数量或根因已核验；未 push、部署或操作生产数据。
+
 ## 2026-10-16｜菜单推送后专项修复
 
 最后视觉收口：<=760px状态Tab不缩窄/不逐字换行，只在原栏内滚动；styles42.25.387。正式VERSION与app/main不变，最终CI按最新SHA。
