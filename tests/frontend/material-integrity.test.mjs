@@ -37,8 +37,9 @@ test('terminal task truth does not describe a cleared Worker lease as still wait
   vm.runInNewContext(app.slice(start,end),context);
   context.window.updateMaterialIntegrityTask47({task_id:'deleted',operation:'DELETE_INDEX',status:'PARTIAL_SUCCESS',total:5,processed:5,succeeded:4,failed:1,worker_id:null});
   assert.match(box.innerHTML,/部分成功/);
-  assert.match(box.innerHTML,/成功 4/);
-  assert.doesNotMatch(box.innerHTML,/尚未分配 Worker/);
+  assert.match(box.innerHTML,/实际删除索引 4/);
+  assert.match(box.innerHTML,/执行节点未记录/);
+  assert.doesNotMatch(box.innerHTML,/Worker 执行标识未返回/);
 });
 
 test('material integrity stays inside material management and uses durable batch deletion', () => {
@@ -67,6 +68,17 @@ test('material audit paginates all issue groups and visibly discloses scan failu
   assert.ok(app.includes('materialIntegrityGroupList47'));
   assert.ok(app.includes('加载更多问题组'));
   assert.ok(app.includes('素材审计未完全核验'));
+});
+
+test('zero-deletion preview consolidates review links and issue rows remain paged', () => {
+  const start=app.indexOf('function decorateIntegrityPlan47(plan)');
+  const end=app.indexOf('window.previewMaterialIntegrityGovernance47=',start);
+  const owner=app.slice(start,end);
+  assert.ok(start>=0&&end>start);
+  assert.match(owner,/返回待核对问题组/);
+  assert.match(owner,/window\.returnMaterialIntegritySelection47/);
+  assert.doesNotMatch(owner,/for\(const group of plan\.review_groups/);
+  assert.match(app,/\/groups\?limit=25/);
 });
 
 test('global duplicate governance previews a server-frozen plan before durable execution', () => {
