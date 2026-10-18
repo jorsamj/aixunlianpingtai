@@ -26,6 +26,14 @@ def _test_result(map50=0.96, *, status="succeeded"):
         "status": status,
         "metrics": {"metrics/mAP50(B)": map50, "metrics/mAP50-95(B)": 0.7},
         "image_count": 120,
+        "per_class": [
+            {"class_id": 0, "label": "smoke", "ground_truth_count": 60,
+             "evaluation_status": "evaluated", "true_positive": 55,
+             "false_positive": 1, "false_negative": 5, "map50": .96},
+            {"class_id": 1, "label": "fire", "ground_truth_count": 50,
+             "evaluation_status": "evaluated", "true_positive": 47,
+             "false_positive": 2, "false_negative": 3, "map50": .96},
+        ],
         "class_coverage": {
             "schema_version": 1,
             "source": "declared_model_names",
@@ -62,7 +70,9 @@ def _input_quality():
         },
         "train_labels_without_validation_positive": [],
         "train_labels_without_test_positive": [],
+        "role_known_source_image_counts": {"train": 120, "validation": 40, "test": 120},
         "role_unknown_source_image_counts": {"train": 0, "validation": 0, "test": 0},
+        "active_label_codes": ["smoke", "fire"],
     }, "annotation_admission": {"severity_counts": {
         "blocking": 0, "manual_review": 0, "warning": 0,
     }}}
@@ -231,3 +241,33 @@ def test_metric_credibility_is_repeatable_and_does_not_change_input_evidence():
     assert first == second
     assert first["diagnostic_id"] == second["diagnostic_id"]
     assert (report, test, quality) == originals
+
+
+
+def test_high_test_map_without_scored_gt_classes_is_not_trusted():
+    test = _test_result(.99)
+    test["class_coverage"]["scored_class_ids"] = []
+    test["class_coverage"]["macro_average_class_count"] = 0
+    result = build_training_metric_credibility(
+        _report(.97), test, input_quality=_input_quality(),
+    )
+    assert "independent_test_no_scored_positive_classes" in result["reason_codes"]
+    assert result["status"] == "review_required"
+
+
+def test_high_map_with_partial_test_execution_is_not_trusted():
+    test = _test_result(.99)
+    test["image_count"] = 60
+    result = build_training_metric_credibility(
+        _report(.97), test, input_quality=_input_quality(),
+    )
+    assert "test_scored_images_differ_from_frozen_selection" in result["reason_codes"]
+
+
+def test_model_catalog_must_match_frozen_classes_for_high_map():
+    test = _test_result(.99)
+    test["class_coverage"]["total_classes"] = 1
+    result = build_training_metric_credibility(
+        _report(.97), test, input_quality=_input_quality(),
+    )
+    assert "model_class_catalog_differs_from_frozen_training_labels" in result["reason_codes"]

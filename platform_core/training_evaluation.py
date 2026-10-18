@@ -941,8 +941,13 @@ def build_training_metric_credibility(
             flag("validation_test_map50_gap_at_least_10pp", "inspect_val_test_distribution_and_protocol")
         if not coverage or coverage.get("source") != "declared_model_names":
             flag("test_class_coverage_unverified", "verify_model_class_catalog_and_test_gt")
-        elif coverage.get("class_ids_without_test_ground_truth"):
-            flag("independent_test_classes_without_gt", "add_independent_test_positive_samples")
+        else:
+            if not coverage.get("scored_class_ids") or (
+                count(coverage.get("macro_average_class_count")) in (None, 0)
+            ):
+                flag("independent_test_no_scored_positive_classes", "inspect_test_gt_positive_support")
+            if coverage.get("class_ids_without_test_ground_truth"):
+                flag("independent_test_classes_without_gt", "add_independent_test_positive_samples")
         if not split:
             flag("frozen_split_coverage_unavailable", "inspect_frozen_split_and_provenance")
         else:
@@ -952,7 +957,22 @@ def build_training_metric_credibility(
                 flag("validation_classes_without_gt", "review_validation_class_coverage")
             if missing_test:
                 flag("split_test_classes_without_gt", "review_independent_test_class_coverage")
+            frozen_labels = split.get("active_label_codes")
+            test_declared_count = count(coverage.get("total_classes"))
+            if (isinstance(frozen_labels, (list, tuple))
+                    and test_declared_count is not None
+                    and len(frozen_labels) != test_declared_count):
+                flag("model_class_catalog_differs_from_frozen_training_labels", "inspect_model_class_mapping")
+            known_by_role = split.get("role_known_source_image_counts")
             unknown_by_role = split.get("role_unknown_source_image_counts")
+            if isinstance(known_by_role, Mapping) and isinstance(unknown_by_role, Mapping):
+                known_test = count(known_by_role.get("test"))
+                unknown_test = count(unknown_by_role.get("test"))
+                actual_test_count = count(test.get("image_count"))
+                if (known_test is not None and unknown_test is not None
+                        and test_status == "succeeded"
+                        and actual_test_count != known_test + unknown_test):
+                    flag("test_scored_images_differ_from_frozen_selection", "inspect_test_materialization_completeness")
             if not isinstance(unknown_by_role, Mapping):
                 flag("capture_source_evidence_missing", "review_capture_source_metadata")
             elif any((count(value) or 0) > 0 for value in unknown_by_role.values()):
@@ -972,9 +992,11 @@ def build_training_metric_credibility(
                 flag("test_class_fewer_than_five_positive_images", "expand_test_positive_coverage")
 
         protocol = test.get("protocol") if isinstance(test.get("protocol"), Mapping) else {}
-        if test_status == "succeeded" and not all(
-            protocol.get(key) is not None
-            for key in ("predict_imgsz", "predict_conf", "predict_nms_iou")
+        if test_status == "succeeded" and (
+            protocol.get("mode") != "blind_image_only_inference_then_hidden_ground_truth_scoring"
+            or not all(protocol.get(key) is not None for key in (
+                "predict_imgsz", "predict_conf", "predict_nms_iou",
+            ))
         ):
             flag("independent_test_inference_protocol_incomplete", "verify_prediction_settings")
         benchmark = test.get("benchmark_scope") if isinstance(test.get("benchmark_scope"), Mapping) else {}
