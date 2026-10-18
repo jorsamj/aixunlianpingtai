@@ -1319,10 +1319,12 @@ def _training_split_quality(
     role_known_source_images: dict[str, int] = {}
     role_unknown_source_images: dict[str, int] = {}
     role_confirmed_negative_images: dict[str, int] = {}
+    # Relationship identifiers such as group_id / near_duplicate_group_id
+    # enforce leakage isolation but do NOT by themselves prove real
+    # provenance (camera, collection session, original video).
     known_source_fields = (
         "source_group_id", "video_task_id", "camera_session_id",
-        "capture_session_id", "near_duplicate_group_id",
-        "sequence_group_id", "group_id",
+        "capture_session_id",
     )
     for role in roles:
         positive_images: dict[str, int] = {}
@@ -1338,7 +1340,14 @@ def _training_split_quality(
             }
             if not code_set and str(row.get("annotation_state") or "") == "confirmed_empty":
                 negative += 1
-            if any(str(row.get(key) or "").strip() for key in known_source_fields):
+            reliable_source = (
+                any(str(row.get(key) or "").strip() for key in known_source_fields)
+                or (
+                    bool(str(row.get("camera_id") or "").strip())
+                    and bool(str(row.get("session_id") or "").strip())
+                )
+            )
+            if reliable_source:
                 known += 1
             else:
                 unknown += 1

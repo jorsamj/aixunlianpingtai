@@ -387,7 +387,8 @@ def test_training_split_quality_reports_class_images_components_and_unknown_sour
          "boxes": [{"label": "smoke"}, {"label": "smoke"}]},
         {"id": "b", "source_group_id": "video-1", "annotation_state": "annotated",
          "boxes": [{"label": "smoke"}]},
-        {"id": "c", "annotation_state": "annotated",
+        {"id": "c", "group_id": "automatic-cluster-without-camera-origin",
+         "annotation_state": "annotated",
          "boxes": [{"label": "smoke"}]},
         {"id": "d", "annotation_state": "annotated",
          "boxes": [{"label": "smoke"}]},
@@ -407,6 +408,9 @@ def test_training_split_quality_reports_class_images_components_and_unknown_sour
     assert coverage["label_independent_component_counts"]["train"]["smoke"] == 1
     assert coverage["role_known_source_image_counts"]["train"] == 2
     assert coverage["role_unknown_source_image_counts"]["validation"] == 1
+    # A split/group key is not proof that an actual camera or video
+    # capture source is known.
+    assert coverage["role_known_source_image_counts"]["validation"] == 0
     assert coverage["role_confirmed_negative_image_counts"]["test"] == 1
     assert coverage["provenance_status"] == "partial_unknown"
     assert quality["active_labels_without_train_positive"] == ["fire"]
