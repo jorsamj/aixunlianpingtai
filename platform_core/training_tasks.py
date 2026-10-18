@@ -1544,6 +1544,101 @@ def _training_annotation_admission(
     return result
 
 
+
+def _training_source_projection_admission(
+    project: Path,
+    original: Sequence[Mapping[str, Any]],
+    projected: Sequence[Mapping[str, Any]],
+    label_schema: Sequence[Mapping[str, Any]],
+    label_contract: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Check original GT *before* label filtering and verify task projection.
+
+    A projected-only box audit can miss an invalid excluded object that will be
+    redacted when building the training image. Never read mutable live GT here:
+    both sequences are from the same fenced training selection.
+    """
+    from .training_label_tasks import project_training_rows
+
+    meta = _json(project / "meta.json", {})
+    labels = list(meta.get("labels") or []) if isinstance(meta, Mapping) else []
+    label_meta = list(meta.get("label_meta") or []) if isinstance(meta, Mapping) else []
+    active_codes: list[str] = []
+    for index in range(max(len(labels), len(label_meta))):
+        item = label_meta[index] if index < len(label_meta) else {}
+        entry = dict(item) if isinstance(item, Mapping) else {}
+        raw = labels[index] if index < len(labels) else ""
+        code = str(entry.get("code") or (
+            (raw.get("code") or raw.get("name")) if isinstance(raw, Mapping) else raw
+        ) or "").strip()
+        if not code or entry.get("active") is False:
+            continue
+        if str(entry.get("status") or "active").strip().lower() != "active":
+            continue
+        active_codes.append(code)
+    # Existing test fixtures and legacy import projects can have no label
+    # catalog. Do not manufacture a false missing-label blocker in that case;
+    # their task-local effective schema remains the only asserted catalog.
+    source_schema = (
+        [{"code": code} for code in dict.fromkeys(active_codes)]
+        if active_codes else [
+            {"code": code} for code in dict.fromkeys([
+                *(str(item.get("code") or "").strip() for item in label_schema),
+                *(
+                    str(box.get("label") or box.get("code") or "").strip()
+                    for row in original for box in (row.get("boxes") or [])
+                    if isinstance(box, Mapping)
+                ),
+            ]) if code
+        ]
+    )
+    source_audit = _training_annotation_admission(original, source_schema)
+    effective_codes = (label_contract or {}).get("effective_label_codes") or ()
+    if effective_codes:
+        expected = project_training_rows(original, label_contract or {})
+    else:
+        expected = original
+    if len(expected) != len(projected):
+        raise ValueError(
+            "TRAINING_PROJECTION_MISMATCH: 原始 GT 与本次投影素材数量不一致"
+        )
+
+    # These fields are the actual label/pixel-redaction contract. Ignore
+    # unrelated UI annotations; never compare to live repository revisions.
+    protected = (
+        "id", "content_sha256", "size_bytes", "width", "height",
+        "annotation_state", "annotation_scope", "boxes", "annotated",
+        "negative_origin", "source_annotation_state", "source_annotation_hash",
+        "source_labels", "training_excluded_boxes",
+        "training_projection_policy", "training_projection_digest",
+    )
+    projected_negatives = excluded_objects = 0
+    for expected_row, actual_row in zip(expected, projected):
+        image_id = str(expected_row.get("id") or "")
+        for key in protected:
+            if expected_row.get(key) != actual_row.get(key):
+                raise ValueError(
+                    f"TRAINING_PROJECTION_MISMATCH: 素材 {image_id} 的 {key} "
+                    "与正式 GT 和训练标签投影合同不一致；请重新创建训练任务"
+                )
+        excluded_objects += len(actual_row.get("training_excluded_boxes") or [])
+        if str(actual_row.get("negative_origin") or "") == "redacted_unselected_labels":
+            projected_negatives += 1
+
+    return {
+        "schema_version": 1,
+        "source_ground_truth_admission": source_audit,
+        "projection_consistency": {
+            "schema_version": 1,
+            "verified_images": len(projected),
+            "excluded_source_object_count": excluded_objects,
+            "redacted_task_negative_image_count": projected_negatives,
+            "status": "verified_against_fenced_original_gt",
+            "original_source_retained_in_freeze": False,
+        },
+    }
+
+
 def freeze_training_inputs(
     project: Path,
     split_request: SplitRequest,
@@ -1607,6 +1702,11 @@ def freeze_training_inputs(
     )
     if not label_schema:
         raise ValueError("training label schema is empty")
+    # Source audit must precede projected GT audit. Legitimate dropped labels
+    # are validated against the project catalog, not the task's reduced schema.
+    source_projection = _training_source_projection_admission(
+        project, source_images, images, label_schema, label_contract,
+    )
     annotation_admission = _training_annotation_admission(images, label_schema)
     manifest = build_split_manifest(
         images,
@@ -1620,6 +1720,8 @@ def freeze_training_inputs(
         include_class_coverage=True,
     )
     input_quality["annotation_admission"] = annotation_admission
+    input_quality["source_ground_truth_admission"] = source_projection["source_ground_truth_admission"]
+    input_quality["projection_consistency"] = source_projection["projection_consistency"]
     snapshot = build_snapshot(
         images,
         manifest,
@@ -1748,6 +1850,24 @@ def resolve_training_input_freeze(
         input_quality["annotation_admission"] = _training_annotation_admission(
             images, label_schema,
         )
+    # The unfiltered original GT is intentionally not duplicated into the
+    # frozen worker payload. It cannot be re-audited from today's mutable DB.
+    # Instead, the source attestation is protected by input_freeze_id and
+    # anchored to original_ground_truth digests in this frozen contract.
+    if "source_ground_truth_admission" in frozen_quality:
+        original_evidence = value.get("original_ground_truth")
+        source_audit = frozen_quality["source_ground_truth_admission"]
+        projection_proof = frozen_quality.get("projection_consistency")
+        if (not isinstance(source_audit, Mapping)
+                or not isinstance(projection_proof, Mapping)
+                or not isinstance(original_evidence, list)
+                or len(original_evidence) != len(images)
+                or int(source_audit.get("audited_images") or -1) != len(images)
+                or int(projection_proof.get("verified_images") or -1) != len(images)
+                or str(projection_proof.get("status") or "") != "verified_against_fenced_original_gt"):
+            raise ValueError("training frozen source GT attestation is incomplete")
+        input_quality["source_ground_truth_admission"] = dict(source_audit)
+        input_quality["projection_consistency"] = dict(projection_proof)
     if dict(value.get("input_quality") or {}) != input_quality:
         raise ValueError("training input freeze quality evidence mismatch")
     snapshot = build_snapshot(

@@ -112,3 +112,15 @@
 - **单元/回归验收**：GitHub Actions `Training Input Integrity` 的 Windows latest 与 Ubuntu 24.04 两个 Job 均为 success。各平台拆分+标注准入组合测试 **34/34 passed**，其余同一作业批次 **30/30、62/62、2/2 passed**，未使用跳过。新测试验收及此前 TQ-01 23/23 分组回归均有证据。
 - **CI 范围声明**：代码 SHA `ae31b946` 最终读取的 GitHub 工作流首页 **20/20 success、0 failure、0 in progress**；Remote Training Runtime 实际 4/4 Job 成功。该检索接口只返回首页最多 20 条，未触发/未列出的其他工作流不得算作通过。完整首次 Actions、生产 A800 训练及真实素材来源还需另行验收。
 - **状态**：第一阶段只读阻断/复核与冻结证据**代码已完成，定向验收通过**。TQ-03 的原始 GT 与合法标签投影完整交叉核验、前端分级展示、现场回归属于后续阶段；TQ-03 不标记“完全解决”。
+
+
+## TQ-03 第二阶段：原始 GT → 任务投影一致性（2026-10-18）
+
+- **确认根因**：第一阶段的 `_training_annotation_admission` 针对投影后的训练标签做几何准入。被任务标签筛除的原始框没有进入该检查；但这些排除框仍用于训练图片像素遮挡/擦除，非法框可延迟到 Worker 的 `_apply_training_projection` 阶段才触发错误。已有 `project_training_rows` 是唯一合法投影算法，不应该再开发一套任务投影。
+- **本轮变更**：在现有 `freeze_training_inputs` 中增加 `_training_source_projection_admission`，复用现有单图审核：先对同次围栏读取的**完整来源 GT** 检查非法框、框坐标、来源类别，之后用原有 `project_training_rows` 从相同原始行重新计算合法投影并逐图片比较 `boxes`、`annotation_scope`、`source_annotation_hash`、`training_excluded_boxes`、投影政策、投影摘要、任务负样本标记及素材基本身份。禁止静默丢框或用伪造投影摘要绕过原始标注。
+- **保持合法规则**：任务不需要的标签允许被排除，仍必须保留 `training_excluded_boxes` 并执行原像素擦除；仅剩排除类的图片可以成为 `negative_origin=redacted_unselected_labels` 任务本地负样本。整个过程只读，原始 GT 不被回写/删除。已存在的独立 Test 和同 SHA 重复保护不放宽。
+- **新版冻结证据**：`input_quality.source_ground_truth_admission` 记录原始 GT 的审核结论，`projection_consistency` 记录核验图片数、排除框总数及任务本地负样本数。两者包含在 `input_freeze_id` 中；恢复不读取会变化的实时 GT，而是验证原始源 GT 摘要清单、审核元数据和冻结摘要。源 GT 原始框不会双份写入冻结合同，恢复时不能冒充重新审计了历史 GT。
+- **兼容性**：历史冻结不含此两字段，仍走原重放逻辑。旧任务、Snapshot、版本报告和 VERSION 不修改。
+- **新增测试**：原 GT 被排除框为零面积时冻结阻断；合法排除框与 task-local negative 不被误杀；伪造已选择框/排除框/政策摘要/审核范围/负样本标记无法通过；原始 GT 后来更改也不影响历史冻结重放。
+- **修改文件**：`platform_core/training_tasks.py`、`tests/unit/test_training_annotation_admission.py`、本文；继续使用已存在的 Training Input Integrity、Release Regression 测试入口，无需新建架构。
+- **待验收**：代码提交 SHA、定向 Python/Ubuntu/Windows、完整 GitHub CI 以及原 A800 生产数据均以实际核验为准；UI 对人工复核提示的集中展示仍需后续单独验收。
