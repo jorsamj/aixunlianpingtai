@@ -122,6 +122,11 @@ def build_version_report(record: Mapping[str, Any]) -> dict:
             if isinstance(training_report.get("test_result"), Mapping)
             else {}
         ),
+        # Do not compute or infer credibility here. Only finalized durable
+        # training truth may assert the high-mAP advisory; old reports stay
+        # explicitly unavailable instead of laundering current library data.
+        "metric_credibility": dict(record["metric_credibility"])
+        if isinstance(record.get("metric_credibility"), Mapping) else None,
         "error_samples": list(training_report.get("error_samples") or []),
         "artifacts": list(record.get("verified_models") or record.get("models") or []),
         "artifact_verified": bool(record.get("artifact_verified")),

@@ -162,3 +162,13 @@
 - **运行时链路**：`train_worker.py` 仍将 Val 指标写入 `training_report.metrics`，独立 Test 写入 `test_result`。`training_tasks.py` 在版本完成时读取既有 `input_quality` 和标准化 Test 结果，不修改原指标；新任务报告/模型版本记录 `metric_credibility`。高 Val 分数证据不足时 `iteration_decision` 只给人工复核建议，旧调用没有该参数时保持回放兼容。
 - **未完成/不能宣告真实验收的范围**：用户那次约 97% 的生产训练记录和 A800 原始冻结集未读取；真实来源未知的跨摄像头/相邻视频帧泄漏尚不能排除；现有训练最终提交没有对所有版本自动写入 `bundle_verified` 的独立 Test 不可变输入绑定，诊断会保留该待补证据；高分诊断 UI 独立可视化仍待开发；业务事件级的准确率/每摄像头小时误报率、RKNN 板端精度不由 mAP 代表。这是 **TQ-04 阶段一代码完成、真实泛化审计未完成**。
 - **安全与部署**：未删除/改写真实素材、正式 GT、历史 Test、Snapshot、模型指标，未连接生产 GPU，未部署、未修改 VERSION（`42.24.356`）；以上所有 Git 更新均为 Fast-forward。
+
+## TQ-04 第二阶段｜训练报告 API 与质量中心前后端真相统一（2026-10-19）
+
+- **核验出的真实断层**：`training_tasks.py::_finalize_completed_job` 已向完成态 Task `result.json` 和算法版本写入 `metric_credibility`，但原 `app.py::v44_training_report` 只根据遗留 `job.json` 构造报告，并没有读取相应持久化结果；`static/app.js` 的训练报告/独立评测也只显示原始 mAP。因此后端判定需复核时 UI 可能展示 97% 却不告知依据和风险，构成前后端真相断裂。
+- **后端唯一权威源**：`v44_training_report` 使用已校验 `_durable_training_task(project_id, job_id)` 的 TaskRecord 身份，再读取其 `result.json` 中已提交的 `training_report`、`evaluation` 与 `metric_credibility`；提交完成的 Val 数值不再被 `job.json.metrics` 的旧缓存覆盖。未关联该项目 TaskRecord 或未归档诊断的历史任务 **返回不可用**，不根据当下图片和当前状态重新生成假诊断，不重做 mAP 计算。
+- **复用而非嵌套**：仅在已有 `platform_core/reports.py::build_version_report` 补充权威诊断投影；`static/modules/reports.js::metricCredibilityHtml` 是唯一前端展示函数，直接由 `static/main.mjs` 注入已有 `PlatformCore.reports`，被 `trainingReportCore425` 与 `openVersionEvaluation429` 两处原业务入口复用。没有新建平行页面、定时器、状态镜像、API、数据库表或历史数据迁移。
+- **清晰区分**：训练报告指标栏明确 `Val mAP50`；可信度卡同时列 Val mAP50、独立 Test mAP50、差值（pp）、实际 Test 图片量与正式复核原因；独立评测从算法版本的原 `metric_credibility` 读取同一份证据。证据缺失明确写“历史证据缺失”，绝不填 0% 或假样本。所有动态文本 HTML 转义，避免 XSS。
+- **回归合同**：Python API 单测验证同任务持久化结果覆盖过期 job.metrics、Test/Val 指标不混淆、旧任务显式缺失、版本报告不推断诊断；Node 前端单测验证共用渲染入口、97% 与 72% 的算术展示、缺失值不伪填及未知 reason code 的 HTML 转义。API 单测列入 Release Regression，前端单测走现有 Frontend Runtime Stabilization 的 `node --test tests/frontend/*.test.mjs`。
+- **未验收项**：真实用户那次 97% Val 训练模型 / A800 环境仍需现场只读审计；尚未对所有历史 Report backfill 不可变 Test 输入绑定，也未验证真正业务告警准确率。TQ-04 **前后端逻辑待本次实际 CI 完成方可标记代码验收通过**。
+- **严守安全**：不改生产服务、GT、Snapshot、历史独立 Test、素材、版本号 `42.24.356`，所有修改限定长期开发分支，禁止强制推送。

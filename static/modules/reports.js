@@ -50,3 +50,58 @@ export function trainingCharts(history = []) {
   const missing=series.filter(([key])=>!recorded.some(item=>item[0]===key)).map(item=>item[1]);
   return `<div class="quality-chart-grid-layout">${recorded.map(([key,title,percent])=>metricChart(rows,key,title,{percent})).join('')}</div>${missing.length?`<p class="quality-chart-missing">未记录：${missing.map(escapeText).join('、')}</p>`:''}`;
 }
+
+const metricCredibilityReasons = Object.freeze({
+  independent_test_unavailable: '独立 Test 未完成，只有验证集结果',
+  independent_test_metric_or_samples_missing: '独立 Test 缺少有效指标或实际样本数',
+  validation_test_map50_gap_at_least_10pp: '验证集与独立 Test 的 mAP50 差距达到 10 个百分点',
+  test_class_coverage_unverified: '独立 Test 的模型类别目录未完整确认',
+  independent_test_classes_without_gt: '独立 Test 中部分模型类别没有正样本',
+  independent_test_no_scored_positive_classes: '独立 Test 没有真实参与评分的正样本类别',
+  frozen_split_coverage_unavailable: '缺少本轮冻结划分的类别覆盖证据',
+  validation_classes_without_gt: '验证集缺少已训练类别的正样本',
+  split_test_classes_without_gt: '冻结 Test 缺少已训练类别的正样本',
+  capture_source_evidence_missing: '缺少摄像头、视频或采集来源的完整记录',
+  capture_source_partly_unknown: '部分素材的拍摄来源未知',
+  test_independent_component_counts_missing: '无法确认 Test 的独立来源组数量',
+  test_class_fewer_than_three_independent_groups: '部分测试类别少于 3 个独立来源组',
+  test_positive_image_support_missing: '缺少 Test 各类别正样本图片数量',
+  test_class_fewer_than_five_positive_images: '部分测试类别少于 5 张正样本图片',
+  independent_test_inference_protocol_incomplete: '独立测试图片尺寸、置信度或推理协议不完整',
+  independent_test_input_binding_unverified: '测试图片与标注尚无不可变输入绑定证明',
+  source_or_projected_gt_needs_review: '原始或训练投影标注仍有待人工复核项',
+  model_class_catalog_differs_from_frozen_training_labels: '模型类别目录与本次冻结标签不一致',
+  test_scored_images_differ_from_frozen_selection: '实际 Test 图片数与冻结选择数量不符'
+});
+
+/** Render only the server's persisted TQ-04 evidence. No client-side scoring. */
+export function metricCredibilityHtml(value) {
+  if (!value || typeof value !== 'object' || value.schema_version !== 1) {
+    return '<section class="report429-card" data-metric-credibility="unavailable"><header><b>模型高分可信度</b><span>历史证据缺失</span></header><p>该版本没有冻结的可信度诊断，不能根据当前素材或高 mAP 推断真实泛化效果。</p></section>';
+  }
+  const percent = number => {
+    if (number === null || number === undefined || number === '' || !Number.isFinite(Number(number))) return '未记录';
+    return `${(Number(number) * 100).toFixed(1)}%`;
+  };
+  const gap = number => {
+    if (number === null || number === undefined || number === '' || !Number.isFinite(Number(number))) return '未记录';
+    const value = Number(number) * 100;
+    return `${value > 0 ? '+' : ''}${value.toFixed(1)} pp`;
+  };
+  const status = {
+    review_required: '需人工复核',
+    held_out_evidence_present: '已获得独立 Test 证据',
+    val_metric_unavailable: '验证指标缺失',
+    not_high_val_trigger: '未触发高分复核'
+  }[value.status] || '证据状态未知';
+  const reasons = Array.isArray(value.reason_codes) ? value.reason_codes : [];
+  const issues = reasons.slice(0, 25).map(code => `<li>${escapeText(metricCredibilityReasons[String(code)] || String(code))}</li>`).join('');
+  const val = percent(value.validation_map50);
+  const tst = percent(value.independent_test_map50);
+  return `<section class="report429-card" data-metric-credibility="${escapeText(value.status || 'unknown')}">
+    <header><b>模型高分可信度</b><span>${escapeText(status)}</span></header>
+    <div class="quality-metrics"><div><span>验证集 Val mAP50</span><b>${val}</b></div><div><span>独立 Test mAP50</span><b>${tst}</b></div><div><span>Val − Test</span><b>${gap(value.val_minus_test_map50)}</b></div><div><span>独立 Test 实际图片</span><b>${value.test_image_count === null || value.test_image_count === undefined ? '未记录' : escapeText(value.test_image_count)}</b></div></div>
+    ${issues ? `<p>待核实的证据（并非数据泄漏已被证实）：</p><ul>${issues}</ul>` : '<p>当前未触发已定义的高分复核项，但仍不代表生产场景已经验收。</p>'}
+    <p class="item-sub">mAP 是目标检测指标，不是事件告警准确率；本诊断不判断造假，也不替代现场业务验收。</p>
+  </section>`;
+}

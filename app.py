@@ -20251,9 +20251,31 @@ def v44_training_report(project_id: str, job_id: str):
             },
             'note': '该任务未生成逐类别评测明细；报告仅汇总已记录的训练结果。',
         }
-    version_report=build_version_report({**job,'training_report':report})
-    from platform_core.training_metrics import read_metrics
+    # Finalized TaskRecord artifacts own model-quality truth.  The mutable
+    # job.json may be stale or may predate TQ-04; it must never supply a
+    # synthetic credibility verdict.  A legacy report without durable
+    # evidence explicitly has no metric_credibility.
     task = _durable_training_task(project_id, job_id)
+    finalized = (
+        shared_task_artifacts().read_json(job_id, 'result.json', default={})
+        if task is not None else {}
+    )
+    if not isinstance(finalized, dict):
+        finalized = {}
+    committed_report = finalized.get('training_report')
+    if isinstance(committed_report, dict) and committed_report:
+        report = committed_report
+    canonical = {**job, 'training_report': report}
+    # The finalized validation metrics are the same evidence shown alongside
+    # the frozen credibility assessment, never an older job-level metric copy.
+    if isinstance(report.get('metrics'), dict) and report['metrics']:
+        canonical['metrics'] = report['metrics']
+    if isinstance(finalized.get('evaluation'), dict):
+        canonical['evaluation'] = finalized['evaluation']
+    if isinstance(finalized.get('metric_credibility'), dict):
+        canonical['metric_credibility'] = finalized['metric_credibility']
+    version_report = build_version_report(canonical)
+    from platform_core.training_metrics import read_metrics
     metrics_path = shared_task_artifacts().artifact_path(job_id, 'training-metrics.sqlite3') if task else jf.parent / 'training-metrics.sqlite3'
     telemetry = read_metrics(metrics_path, include_history=True)
     version_report['history'] = report.get('history') or _v45_training_history(job) or telemetry.get('epochs') or []
