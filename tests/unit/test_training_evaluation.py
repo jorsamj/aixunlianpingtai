@@ -863,10 +863,23 @@ def test_version_comparison_marks_ambiguous_legacy_duplicate_labels_non_comparab
 
 def test_finalization_passes_verified_frozen_test_bundle_into_independent_evaluation():
     """The durable version must not discard an already-verified Test binding."""
-    import inspect
-    from platform_core.training_tasks import TrainingHandler
+    import ast
 
-    source = inspect.getsource(TrainingHandler._finalize_completed_job)
+    # This is a source-level wiring guard. Do not import the heavy training
+    # runtime into the lightweight Algorithm SQL Store CI environment.
+    module = (Path(__file__).resolve().parents[2] / "platform_core" / "training_tasks.py").read_text(
+        encoding="utf-8"
+    )
+    tree = ast.parse(module)
+    handler = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "TrainingHandler"
+    )
+    finalizer = next(
+        node for node in handler.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_finalize_completed_job"
+    )
+    source = ast.get_source_segment(module, finalizer)
     assert "verification = verify_portable_dataset(manifest_path)" in source
     assert "benchmark_scope = build_evaluation_benchmark_scope(" in source
     assert "snapshot, _json(manifest_path, {})" in source

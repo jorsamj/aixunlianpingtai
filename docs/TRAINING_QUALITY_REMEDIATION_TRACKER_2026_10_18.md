@@ -200,3 +200,9 @@
 - 在 `c361d7dd` 的 `ChangLian Login Auth / browser` Job 发现真正的外部错误：`npm ci` 从 `registry.npmmirror.com/playwright-core/-/playwright-core-1.62.1.tgz` 下载时返回 **HTTP 503**，并非业务测试失败；同工作流 `contract` Job 成功，但浏览器作业依然不能视为通过。
 - 仓库 `package-lock.json` 有 4 处硬编码的第三方 npmmirror tarball 解析地址。仅改为 npm 官方 `registry.npmjs.org`，保持原依赖版本（Playwright 1.62.1、fsevents 2.3.2）以及**全部 SHA512 integrity 完全不变**，以减少第三方镜像的偶发 503。没有修改应用代码或生产依赖行为。
 - 该问题应以修改后提交的 GitHub CI 真正成功为验收依据，不能把 URL 修改本身写成已完成实际验收。
+
+
+## CI 轻量合同测试依赖隔离修复（2026-10-19）
+- **失败事实**：本轮代码 SHA `c1d201c9` 的 `Algorithm SQL Store / contracts` Job 中，`test_finalization_passes_verified_frozen_test_bundle_into_independent_evaluation` 执行 `from platform_core.training_tasks import TrainingHandler`，触发轻量测试环境缺少 `psutil`（`ModuleNotFoundError`）；同 Job 91 项已通过，该失败发生在源码连线断言的导入阶段，不是实际训练行为异常。
+- **根因修复**：此检查的目的仅是核对 `_finalize_completed_job` 的“verify → benchmark scope → evaluation”调用顺序。改为 Python 内置 `ast.parse` 定位 `TrainingHandler._finalize_completed_job` 并检查原源码片段，不导入训练运行时，也不在 SQL Store CI 增加无关运行时依赖。实际数据包/GT SHA256 行为仍由 `tests/unit/test_portable_dataset.py` 覆盖，避免只有静态断言。
+- **验收状态**：依赖隔离改动须以其准确提交 SHA 的 `Algorithm SQL Store` 与训练相关回归成功为准，不把旧 SHA 的失败计为已通过。
