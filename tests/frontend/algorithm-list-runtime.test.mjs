@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import vm from 'node:vm';
 
 import {
   algorithmCategoryColumns,
@@ -113,6 +115,44 @@ test('algorithm cards update before slow job history completes', async () => {
   assert.ok(runtime.state().timing.algorithmMs >= 0);
   assert.ok(runtime.state().timing.totalMs >= runtime.state().timing.algorithmMs);
   runtime.destroy();cleanup();
+});
+
+test('common prewarm still runs after the jobs response triggers a second card paint', () => {
+  const source = fs.readFileSync(new URL('../../static/modules/algorithm-list-runtime.js', import.meta.url), 'utf8');
+  const start = source.indexOf('  function cancelTrainingWarmup()');
+  const end = source.indexOf('  function algorithmMatches(', start);
+  assert.ok(start > 0 && end > start);
+  const scheduled = [];
+  let warmed = 0;
+  const project = {id: 'p1'};
+  const context = {
+    window: {setTimeout(callback) { scheduled.push(callback); return scheduled.length; }},
+    clearTimeout() {},
+    state: () => ({page: '算法列表'}),
+    projectId: () => project.id,
+    destroyed: false,
+    trainingWarmupHandle: null,
+    trainingWarmupGeneration: 0,
+    commonTrainingWarmupProjectId: '',
+    commonTrainingWarmupAt: 0,
+    commonTrainingWarmupPendingProjectId: '',
+    commonTrainingWarmupHandle: null,
+    COMMON_TRAINING_WARMUP_TTL_MS: 300000,
+    ALGORITHM_PAGE: '算法列表',
+    providerMeta: () => ({external: false}),
+    algorithmTrainability: () => ({ready: false}),
+    warmTrainingInputs() { warmed += 1; return Promise.resolve(); },
+  };
+  vm.createContext(context);
+  vm.runInContext(source.slice(start, end), context);
+  context.scheduleTrainingWarmup([]);
+  context.scheduleTrainingWarmup([]); // jobs response rerenders existing cards
+  assert.equal(scheduled.length, 1, 'prewarm must be coalesced while scheduled');
+  assert.equal(warmed, 0);
+  scheduled[0]();
+  assert.equal(warmed, 1, 'rerender must not invalidate an unsent prewarm');
+  context.scheduleTrainingWarmup([]);
+  assert.equal(scheduled.length, 1, 'warm data should not be redundantly queued');
 });
 
 test('concurrent focused refreshes share one request pair', async () => {

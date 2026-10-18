@@ -42,6 +42,22 @@ test('terminal task truth does not describe a cleared Worker lease as still wait
   assert.doesNotMatch(box.innerHTML,/Worker 执行标识未返回/);
 });
 
+test('successful task status never fabricates 100 percent if counters disagree', () => {
+  const start = app.indexOf('window.updateMaterialIntegrityTask47=');
+  const end = app.indexOf('window.selectMaterialIntegrityGroups47=', start);
+  const box = {innerHTML: ''};
+  const context = {window: {}, state: {}, pid: () => 'p', esc: String, document: {getElementById: () => box}};
+  vm.runInNewContext(app.slice(start, end), context);
+  context.window.updateMaterialIntegrityTask47({
+    task_id: 'inconsistent', operation: 'DELETE_INDEX', status: 'SUCCEEDED',
+    total: 8, processed: 2, succeeded: 2, failed: 0, worker_id: null,
+  });
+  assert.match(box.innerHTML, /max="8" value="2"/);
+  assert.match(box.innerHTML, /未处理 6/);
+  assert.match(box.innerHTML, /任务成功状态与已处理数量不一致/);
+  assert.doesNotMatch(box.innerHTML, /max="8" value="8"/);
+});
+
 test('material integrity stays inside material management and uses durable batch deletion', () => {
   assert.match(app, /重复与异常素材/);
   assert.match(app, /AUDIT_MATERIAL_INTEGRITY/);

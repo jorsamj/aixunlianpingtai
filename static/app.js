@@ -5598,10 +5598,11 @@ const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
     const errors={MATERIAL_INTEGRITY_DELETE_IDENTITY_CHANGED:'素材哈希或标注已变化，未删除，请重新审计',MATERIAL_INTEGRITY_KEEPER_CHANGED:'保留项已变化，本组未删除',MATERIAL_INTEGRITY_REFERENCE_CHANGED:'新增历史/活动任务引用或 Test 保护，未删除'};
     const terminal=['SUCCEEDED','PARTIAL_SUCCESS','FAILED','CANCELLED'].includes(String(task.status||''));
     const total=Math.max(0,Number(task.total||0)),processed=Math.max(0,Number(task.processed||0));
-    const finished=task.status==='SUCCEEDED'&&total>0&&Number(task.failed||0)===0;
-    const shownProcessed=finished?total:Math.min(processed,total);
+    // Report actual backend counters, even if task status is terminal.
+    const shownProcessed=Math.min(processed,total);
+    const progressDiscrepancy=task.status==='SUCCEEDED'&&processed<total;
     const workerLabel=task.worker_id?'Worker: '+esc(task.worker_id):terminal?'执行节点未记录（可查看任务日志）':'等待 Worker';
-    box.innerHTML=`<b>${esc(names[task.status]||task.status)} · ${terminal?'删除索引 '+Number(task.succeeded||0)+' 条':'删除任务处理中'}</b><code>Task ID: ${esc(task.task_id)}</code><span>${workerLabel} · ${esc(task.phase||task.stage||'')}</span><progress max="${Math.max(1,total)}" value="${shownProcessed}" aria-label="实际已处理数量"></progress><span>范围 ${total} · 已处理 ${shownProcessed} · 实际删除索引 ${Number(task.succeeded||0)} · 失败 ${Number(task.failed||0)} · 未处理 ${Math.max(0,total-shownProcessed)}</span>${(task.error_examples||[]).map(item=>`<span class="error">${esc(item.image_id||'')} ${esc(errors[item.error]||item.error||item.message||'')}</span>`).join('')}${task.log_available?`<a target="_blank" rel="noopener" href="/api/v62/projects/${encodeURIComponent(pid())}/material-batches/${encodeURIComponent(task.task_id)}/log">查看完整任务日志（上方最多展示 10 条失败样例）</a>`:''}`;
+    box.innerHTML=`<b>${esc(names[task.status]||task.status)} · ${terminal?'删除索引 '+Number(task.succeeded||0)+' 条':'删除任务处理中'}</b><code>Task ID: ${esc(task.task_id)}</code><span>${workerLabel} · ${esc(task.phase||task.stage||'')}</span><progress max="${Math.max(1,total)}" value="${shownProcessed}" aria-label="实际已处理数量"></progress><span>范围 ${total} · 已处理 ${shownProcessed} · 实际删除索引 ${Number(task.succeeded||0)} · 失败 ${Number(task.failed||0)} · 未处理 ${Math.max(0,total-shownProcessed)}</span>${progressDiscrepancy?'<span class="error">任务成功状态与已处理数量不一致，请查看任务日志核验</span>':''}${(task.error_examples||[]).map(item=>`<span class="error">${esc(item.image_id||'')} ${esc(errors[item.error]||item.error||item.message||'')}</span>`).join('')}${task.log_available?`<a target="_blank" rel="noopener" href="/api/v62/projects/${encodeURIComponent(pid())}/material-batches/${encodeURIComponent(task.task_id)}/log">查看完整任务日志（上方最多展示 10 条失败样例）</a>`:''}`;
   };
   window.selectMaterialIntegrityGroups47=function(mode){
     const audit=state.materialIntegrityAudit47;if(!audit)return;

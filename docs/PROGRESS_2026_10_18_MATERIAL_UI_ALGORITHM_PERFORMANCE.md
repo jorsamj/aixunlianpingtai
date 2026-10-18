@@ -40,6 +40,12 @@
 - `tests/frontend/algorithm-list-runtime.test.mjs`：慢 Jobs 时算法先更新。
 - `tests/frontend/version-marker-owner.test.mjs`：静态入口缓存版本与正式 VERSION 分离。
 
+## 代码复审与二次缺陷修复（2026-10-18）
+
+- **公共训练预热被二次渲染取消（已修复）**：算法卡片先绘制、Jobs 后更新会连续触发渲染。旧逻辑先标记“5 分钟内已预热”却只在延迟定时器实际执行时调用预热；第二次渲染让原定时器代际失效，造成训练配置未预热。现将公共预热定时器与卡片预检代际分离，合并待执行请求，并在真实执行时登记预热时间。
+- **删除任务成功进度被伪填为 100%（已修复）**：不再按终态将 `processed` 强制改为 `total`。所有进度按后台真实值展示，SUCCEEDED 与计数不一致时显示明确诊断提示。
+- 新增上述两条路径的 Node 回归测试。GitHub CI 及生产环境须以最终新 SHA 另行验收。
+
 ## 验证计划和未解决事项
 
 - 推送后必须以最终 SHA 验证 Node、Python、真实 Chrome 和所有实际触发的 GitHub Actions/Jobs，未触发工作流单列。

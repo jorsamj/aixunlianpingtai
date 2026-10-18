@@ -131,6 +131,8 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
   let trainingWarmupGeneration = 0;
   let commonTrainingWarmupProjectId = '';
   let commonTrainingWarmupAt = 0;
+  let commonTrainingWarmupPendingProjectId = '';
+  let commonTrainingWarmupHandle = null;
   const COMMON_TRAINING_WARMUP_TTL_MS = 5 * 60 * 1000;
   const renderedRows = new Map();
   const filters = {
@@ -321,15 +323,24 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
       && commonTrainingWarmupProjectId === currentProjectId
       && now - commonTrainingWarmupAt >= 0
       && now - commonTrainingWarmupAt < COMMON_TRAINING_WARMUP_TTL_MS;
-    if (!commonWarmupFresh) {
-      commonTrainingWarmupProjectId = currentProjectId;
-      commonTrainingWarmupAt = now;
+    if (!commonWarmupFresh && commonTrainingWarmupPendingProjectId !== currentProjectId) {
+      // Common project data is independent from per-card preflight.
+      // A second paint must not invalidate its timer or mark it warm.
+      if (commonTrainingWarmupHandle != null) {
+        if (typeof window.cancelIdleCallback === 'function') window.cancelIdleCallback(commonTrainingWarmupHandle);
+        else clearTimeout(commonTrainingWarmupHandle);
+      }
+      commonTrainingWarmupPendingProjectId = currentProjectId;
       const warmCommon = () => {
-        if (destroyed || generation !== trainingWarmupGeneration || String(state().page || '') !== ALGORITHM_PAGE) return;
+        commonTrainingWarmupHandle = null;
+        commonTrainingWarmupPendingProjectId = '';
+        if (destroyed || String(projectId?.() || '') !== currentProjectId || String(state().page || '') !== ALGORITHM_PAGE) return;
+        commonTrainingWarmupProjectId = currentProjectId;
+        commonTrainingWarmupAt = Date.now();
         void warmTrainingInputs('', {includePreflight: false});
       };
-      if (typeof window.requestIdleCallback === 'function') window.requestIdleCallback(warmCommon, {timeout: 1500});
-      else window.setTimeout(warmCommon, 500);
+      if (typeof window.requestIdleCallback === 'function') commonTrainingWarmupHandle = window.requestIdleCallback(warmCommon, {timeout: 1500});
+      else commonTrainingWarmupHandle = window.setTimeout(warmCommon, 500);
     }
     // Real-time ChangLian preflight remains authoritative. Move the latency
     // off the click path by warming a small visible window while the browser is idle.
@@ -802,6 +813,12 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
     destroy() {
       destroyed = true;
       cancelTrainingWarmup();
+      if (commonTrainingWarmupHandle != null) {
+        if (typeof window.cancelIdleCallback === 'function') window.cancelIdleCallback(commonTrainingWarmupHandle);
+        else clearTimeout(commonTrainingWarmupHandle);
+        commonTrainingWarmupHandle = null;
+        commonTrainingWarmupPendingProjectId = '';
+      }
       renderedRows.clear();
       externalProvider = null;
       doc?.removeEventListener?.('click', onRefreshCapture, true);
