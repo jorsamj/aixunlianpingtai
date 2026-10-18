@@ -179,12 +179,24 @@ app.shared_task_repository().create(replace(TaskRecord.new(task,p,TaskKind.TRAIN
   await page.addInitScript(()=>localStorage.setItem('mc_train_ui_state_v34',JSON.stringify({page:'数据集'})));
   await page.setViewportSize({width:1366,height:768});await page.goto('/');await page.getByRole('button',{name:/数据集/}).click();await page.getByRole('button',{name:'重复与异常素材',exact:true}).click();
   const previewResponse=page.waitForResponse(r=>r.request().method()==='POST'&&r.url().endsWith('/dedup-plans'));
+  const firstGroup=page.locator('#materialIntegrityGroupList47 > article').first();
+  await expect(firstGroup).toBeVisible();
+  await expect(firstGroup).toContainText(/同图|标注/);
+  for (const width of [1366,390,375]) {
+    await page.setViewportSize({width,height:width===1366?768:812});
+    const layout=await firstGroup.evaluate(el=>({height:el.getBoundingClientRect().height,text:el.innerText.trim(),button:el.querySelector('button')?.getBoundingClientRect().height}));
+    expect(layout.height,'problem-group rows must never collapse into lines').toBeGreaterThanOrEqual(width===1366?70:80);
+    expect(layout.button).toBeGreaterThanOrEqual(width===1366?70:80);
+    expect(layout.text.length).toBeGreaterThan(10);
+  }
+  await page.setViewportSize({width:1366,height:768});
   await page.getByRole('button',{name:'批量去重 · 每组保留 1 张',exact:true}).click();
   const plan=await (await previewResponse).json();expect(plan.delete_count).toBe(0);expect(plan.protected_groups).toBe(1);expect(plan.preview_items).toHaveLength(2);expect(plan.preview_items.every(item=>item.protection_reasons.length>0)).toBe(true);
   const preview=page.getByRole('dialog',{name:'异常素材删除预览',exact:true});await expect(preview).toContainText('没有可安全删除的素材');await expect(preview.getByRole('button',{name:/确认删除/})).toBeHidden();
   await expect(preview.locator('img')).toHaveCount(2);for(const img of await preview.locator('img').all())await expect.poll(()=>img.evaluate(el=>el.complete&&el.naturalWidth)).toBe(160);
   await page.screenshot({path:testInfo.outputPath('protected-zero-delete-desktop.png')});await page.setViewportSize({width:375,height:812});await page.screenshot({path:testInfo.outputPath('protected-zero-delete-mobile.png')});await page.setViewportSize({width:1366,height:768});
-  await preview.getByRole('button',{name:'查看并处理冲突 · 2 张',exact:true}).click();
+  await preview.getByRole('button',{name:'返回待核对问题组 · 已跳过 1 组',exact:true}).click();
+  await page.locator('#materialIntegrityGroupList47 > article').first().locator('button').click();
   await expect(page.locator('#materialIntegrityItems47 > article')).toHaveCount(2);
   await page.locator('#materialIntegrityItems47 > article').first().getByRole('button',{name:/标注|审核|核对/}).click();
   const workbench=page.getByRole('dialog',{name:'图片标注工作台',exact:true});await expect(workbench.locator('#annSaveState')).toHaveText('已保存');await expect(workbench.locator('.box424')).toHaveCount(1);
