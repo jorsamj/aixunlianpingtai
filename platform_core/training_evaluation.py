@@ -204,7 +204,24 @@ def evaluate_blind_detection(
             )
         )
 
-    class_ids = sorted({int(row["class_id"]) for row in targets} | {int(row["class_id"]) for row in predictions})
+    # Model class catalog is needed even when a class has ZERO positives
+    # and ZERO predictions. Otherwise a 97% macro mAP can hide an untested
+    # class because the old loop only saw observed ground truth/predictions.
+    catalog_ids: set[int] = set()
+    if isinstance(names, Mapping):
+        for key in names:
+            try:
+                class_id = int(key)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if 0 <= class_id < 10000:
+                catalog_ids.add(class_id)
+    elif isinstance(names, Sequence) and not isinstance(names, (str, bytes)):
+        catalog_ids = set(range(min(len(names), 10000)))
+    observed_ids = {int(row["class_id"]) for row in targets} | {
+        int(row["class_id"]) for row in predictions
+    }
+    class_ids = sorted(catalog_ids | observed_ids)
     per_class: list[dict[str, Any]] = []
     thresholds = tuple(float(value) for value in iou_thresholds) or _DEFAULT_IOUS
     for class_id in class_ids:
@@ -226,10 +243,13 @@ def evaluate_blind_detection(
             {
                 "class_id": class_id,
                 "label": _label_name(names, class_id),
-                "precision": round(precision, 6),
-                "recall": round(recall, 6),
-                "map50": round(aps[0] if aps else 0.0, 6),
-                "map50_95": round(_mean(aps), 6),
+                # Without any positive test ground truth, recall and AP are
+                # undefined (not a measured zero or measured 100%).
+                "evaluation_status": "evaluated" if class_targets else "no_test_ground_truth",
+                "precision": round(precision, 6) if class_targets else None,
+                "recall": round(recall, 6) if class_targets else None,
+                "map50": round(aps[0] if aps else 0.0, 6) if class_targets else None,
+                "map50_95": round(_mean(aps), 6) if class_targets else None,
                 "true_positive": true_positive,
                 "false_positive": false_positive,
                 "false_negative": false_negative,
@@ -245,6 +265,17 @@ def evaluate_blind_detection(
         "metrics/recall(B)": round(_mean([float(row["recall"]) for row in scored]), 6),
         "metrics/mAP50(B)": round(_mean([float(row["map50"]) for row in scored]), 6),
         "metrics/mAP50-95(B)": round(_mean([float(row["map50_95"]) for row in scored]), 6),
+    }
+    class_coverage = {
+        "schema_version": 1,
+        "source": "declared_model_names" if catalog_ids else "observed_only",
+        "total_classes": len(class_ids),
+        "scored_class_ids": [row["class_id"] for row in scored],
+        "class_ids_without_test_ground_truth": [
+            row["class_id"] for row in per_class
+            if row["ground_truth_count"] == 0
+        ],
+        "macro_average_class_count": len(scored),
     }
     error_samples: list[dict[str, Any]] = []
     operating_predictions = [
@@ -385,6 +416,7 @@ def evaluate_blind_detection(
         "status": "succeeded",
         "metrics": metrics,
         "per_class": per_class,
+        "class_coverage": class_coverage,
         "weak_labels": weak_labels[:100],
         "error_samples": error_samples,
         "error_sample_count": error_sample_count,
@@ -633,19 +665,44 @@ def build_evaluation_truth(
     for row in list(raw.get("per_class") or [])[:10000]:
         if not isinstance(row, Mapping):
             continue
+        no_test_gt = str(row.get("evaluation_status") or "") == "no_test_ground_truth"
         per_class.append({
             "class_id": int(row.get("class_id") or 0),
             "label": str(row.get("label") or "")[:1000],
-            "precision": round(_finite(row.get("precision")), 6),
-            "recall": round(_finite(row.get("recall")), 6),
-            "map50": round(_finite(row.get("map50")), 6),
-            "map50_95": round(_finite(row.get("map50_95")), 6),
+            "evaluation_status": (
+                "no_test_ground_truth" if no_test_gt
+                else "evaluated" if row.get("evaluation_status") == "evaluated"
+                else "legacy_unknown"
+            ),
+            "precision": None if no_test_gt else round(_finite(row.get("precision")), 6),
+            "recall": None if no_test_gt else round(_finite(row.get("recall")), 6),
+            "map50": None if no_test_gt else round(_finite(row.get("map50")), 6),
+            "map50_95": None if no_test_gt else round(_finite(row.get("map50_95")), 6),
             "true_positive": max(0, int(row.get("true_positive") or 0)),
             "false_positive": max(0, int(row.get("false_positive") or 0)),
             "false_negative": max(0, int(row.get("false_negative") or 0)),
             "ground_truth_count": max(0, int(row.get("ground_truth_count") or 0)),
             "prediction_count": max(0, int(row.get("prediction_count") or 0)),
         })
+    raw_coverage = raw.get("class_coverage") if isinstance(raw.get("class_coverage"), Mapping) else {}
+    class_coverage = {}
+    if raw_coverage and int(raw_coverage.get("schema_version") or 0) == 1:
+        class_coverage = {
+            "schema_version": 1,
+            "source": (
+                "declared_model_names"
+                if raw_coverage.get("source") == "declared_model_names"
+                else "observed_only"
+            ),
+            "total_classes": len(per_class),
+            "macro_average_class_count": sum(row["ground_truth_count"] > 0 for row in per_class),
+            "scored_class_ids": sorted(
+                row["class_id"] for row in per_class if row["ground_truth_count"] > 0
+            ),
+            "class_ids_without_test_ground_truth": sorted(
+                row["class_id"] for row in per_class if row["ground_truth_count"] == 0
+            ),
+        }
     weak_labels = [str(value)[:1000] for value in list(raw.get("weak_labels") or [])[:100] if str(value or "").strip()]
     error_samples = []
     for row in list(raw.get("error_samples") or [])[:200]:
@@ -755,6 +812,7 @@ def build_evaluation_truth(
         "model_sha256": model_digest,
         "metrics": metrics,
         "per_class": per_class,
+        **({"class_coverage": class_coverage} if class_coverage else {}),
         "weak_labels": weak_labels,
         "error_samples": error_samples,
         "error_sample_count": max(len(error_samples), int(raw.get("error_sample_count") or 0)),
@@ -826,6 +884,8 @@ def build_iteration_decision(
         if str(label or "").strip()
     ))
     per_class = [row for row in list(value.get("per_class") or []) if isinstance(row, Mapping)]
+    class_coverage = value.get("class_coverage") if isinstance(value.get("class_coverage"), Mapping) else {}
+    missing_test_classes = tuple(class_coverage.get("class_ids_without_test_ground_truth") or ())
     total_fp = sum(max(0, int(row.get("false_positive") or 0)) for row in per_class)
     total_fn = sum(max(0, int(row.get("false_negative") or 0)) for row in per_class)
     error_sample_count = max(0, int(value.get("error_sample_count") or 0), len(value.get("error_samples") or []))
@@ -884,6 +944,10 @@ def build_iteration_decision(
         decision = "review_required"
         reasons.append("critical_class_zero_true_positives")
         actions.extend(("inspect_class_mapping", "inspect_prediction_threshold", "review_fp_fn_samples"))
+    elif missing_test_classes:
+        decision = "review_required"
+        reasons.append("independent_test_class_coverage_incomplete")
+        actions.extend(("review_training_coverage", "expand_independent_test_data"))
     elif weak_labels:
         decision = "needs_data"
         reasons.append("weak_labels_present")

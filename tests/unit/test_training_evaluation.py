@@ -45,6 +45,44 @@ def test_blind_evaluation_finishes_all_predictions_before_reading_hidden_ground_
     assert result["per_class"][0]["label"] == "smoke"
 
 
+def test_high_map_does_not_mark_unmeasured_model_classes_as_accurate(tmp_path: Path):
+    images, ground_truth = tmp_path / "images", tmp_path / "hidden"
+    images.mkdir()
+    ground_truth.mkdir()
+    Image.new("RGB", (100, 100), (10, 20, 30)).save(images / "a.jpg")
+    (ground_truth / "a.txt").write_text("0 0.5 0.5 0.4 0.4\\n".replace("\\\\n", "\\n"), encoding="utf-8")
+
+    def prediction(_):
+        return [
+            {"class_id": 0, "confidence": 0.99, "box": [30, 30, 70, 70]},
+            # A false alarm for an otherwise untested class must stay visible.
+            {"class_id": 2, "confidence": 0.80, "box": [0, 0, 10, 10]},
+        ]
+
+    result = evaluation.evaluate_blind_detection(
+        images, ground_truth, prediction, names={0: "smoke", 1: "fire", 2: "helmet"}
+    )
+    assert result["metrics"]["metrics/mAP50(B)"] == 1.0
+    coverage = result["class_coverage"]
+    assert coverage["source"] == "declared_model_names"
+    assert coverage["macro_average_class_count"] == 1
+    assert coverage["scored_class_ids"] == [0]
+    assert coverage["class_ids_without_test_ground_truth"] == [1, 2]
+    per_class = {row["class_id"]: row for row in result["per_class"]}
+    assert per_class[1]["evaluation_status"] == "no_test_ground_truth"
+    assert per_class[1]["map50"] is None
+    assert per_class[2]["map50_95"] is None
+    assert per_class[2]["false_positive"] == 1
+    frozen = evaluation.build_evaluation_truth(result, task_id="test-high-map")
+    assert frozen["class_coverage"] == coverage
+    assert frozen["per_class"][1]["map50"] is None
+    decision = evaluation.build_iteration_decision(
+        frozen, quality_gate={"metric": "map50", "stop_threshold": 0.9}
+    )
+    assert decision["decision"] == "review_required"
+    assert "independent_test_class_coverage_incomplete" in decision["reason_codes"]
+
+
 def test_blind_evaluation_reports_test_fp_fn_weak_labels_and_error_samples(tmp_path: Path):
     images = tmp_path / "images"
     ground_truth = tmp_path / "hidden"
