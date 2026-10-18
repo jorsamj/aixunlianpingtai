@@ -172,3 +172,16 @@
 - **回归合同**：Python API 单测验证同任务持久化结果覆盖过期 job.metrics、Test/Val 指标不混淆、旧任务显式缺失、版本报告不推断诊断；Node 前端单测验证共用渲染入口、97% 与 72% 的算术展示、缺失值不伪填及未知 reason code 的 HTML 转义。API 单测列入 Release Regression，前端单测走现有 Frontend Runtime Stabilization 的 `node --test tests/frontend/*.test.mjs`。
 - **未验收项**：真实用户那次 97% Val 训练模型 / A800 环境仍需现场只读审计；尚未对所有历史 Report backfill 不可变 Test 输入绑定，也未验证真正业务告警准确率。TQ-04 **前后端逻辑待本次实际 CI 完成方可标记代码验收通过**。
 - **严守安全**：不改生产服务、GT、Snapshot、历史独立 Test、素材、版本号 `42.24.356`，所有修改限定长期开发分支，禁止强制推送。
+
+### 第二阶段 CI 首轮发现并明确的遗留指标冲突
+
+- 第一轮 `v42.25 Release Regression` 的训练数据合同实测 **291 passed / 1 failed**；失败仅在新增 `test_legacy_report_api_retains_real_record_but_marks_credibility_unavailable` 的历史假设：当 `job.metrics` 与 `job.training_report.metrics` 不同，旧断言要求前者。事实上 `training_report.metrics` 才是已有训练流程记录的 Val 复验结果，前端应采用后者，与 TQ-04 的 Val / Test 证据保持一致。
+- 因此**保留生产代码的统一指标优先规则**，将回归断言明确为：有已完成 `result.json` 时用其中的 Val 指标；只有历史 `job.json` 时使用其 `training_report.metrics`，不回退至过期 `job.metrics`；历史不持有 `metric_credibility` 时不擅自补造。
+- 此错误不是原有 291 项测试回归，不应通过跳过失败、删除测试、制造假数解决。最终 CI 应在修订后的精确 SHA 重新核验。
+
+### 第二阶段扩展：真实独立 Test 不可变输入绑定
+
+- **补上的最终链路**：已有 `training_evaluation.py::build_evaluation_benchmark_scope` 能将 Snapshot v3 的冻结 Test 身份与已物化的 `work/bundle/manifest.json` 的原图 SHA256、训练像素 SHA256、标签文件 SHA256 和 input policy 绑定，产生 `binding_level=bundle_verified`。以前 `TrainingHandler._finalize_completed_job` 在 `verify_portable_dataset` 成功后未调用它，导致高分诊断长期把独立 Test 输入绑定视为未知。
+- **修复**：在同一训练最终归档链路，先校验 materialized bundle 对应当前 Snapshot/Revision，随后用**同一个经过验证的 manifest** 生成 benchmark scope，作为 `build_evaluation_truth(..., benchmark_scope=benchmark_scope)` 的输入并跟随版本保留。新 Snapshot v3 + 完整 manifest 采用严格 `bundle_verified` 身份；v3 Test 实际执行图片数与冻结数不符时沿用现有禁止伪成功保护。旧 Snapshot Schema < 3 返回空 scope，不伪装成完成了真实 Test 身份绑定。该补丁仅加强真实证据，不自动改变历史模型报告、不迁移 Test。
+- **测试**：新增真实 bundle scope→evaluation truth→credibility 的端到端函数回归，保护最终归档确实使用已验证的 manifest；检查只改变 Train 而未改变 Test 的基准稳定性与误绑定失败，复用现有 `tests/unit/test_training_evaluation.py` 大量原合同，不重复建设计算逻辑。
+- **待验收**：必须在最新 SHA 的 Release Regression/Remote Training Runtime 上确认全绿，以及后续 A800 真正执行完整 independent Test 的现场表现。

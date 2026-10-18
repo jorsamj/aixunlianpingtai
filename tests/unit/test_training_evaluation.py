@@ -858,3 +858,53 @@ def test_version_comparison_marks_ambiguous_legacy_duplicate_labels_non_comparab
     result = evaluation.compare_evaluations(value, value)
     assert result['comparable'] is False
     assert 'class_identity_ambiguous' in result['reason_codes']
+
+
+
+def test_finalization_passes_verified_frozen_test_bundle_into_independent_evaluation():
+    """The durable version must not discard an already-verified Test binding."""
+    import inspect
+    from platform_core.training_tasks import TrainingHandler
+
+    source = inspect.getsource(TrainingHandler._finalize_completed_job)
+    assert "verification = verify_portable_dataset(manifest_path)" in source
+    assert "benchmark_scope = build_evaluation_benchmark_scope(" in source
+    assert "snapshot, _json(manifest_path, {})" in source
+    assert "benchmark_scope=benchmark_scope" in source
+    assert source.index("verification = verify_portable_dataset(manifest_path)") < source.index(
+        "benchmark_scope = build_evaluation_benchmark_scope("
+    )
+    assert source.index("benchmark_scope = build_evaluation_benchmark_scope(") < source.index(
+        "evaluation = build_evaluation_truth("
+    )
+
+
+def test_strict_bundle_bound_test_evidence_survives_credibility_and_does_not_fake_field_accuracy():
+    from platform_core.training_evaluation import build_training_metric_credibility
+
+    scope = evaluation.build_evaluation_benchmark_scope(
+        _benchmark_snapshot(), _benchmark_manifest(),
+    )
+    assert scope["binding_level"] == "bundle_verified"
+    truth = evaluation.build_evaluation_truth({
+        "status": "succeeded",
+        "image_count": 1,
+        "metrics": {"metrics/mAP50(B)": .98},
+        "protocol": {
+            "mode": "blind_image_only_inference_then_hidden_ground_truth_scoring",
+            "predict_imgsz": 800, "predict_conf": .001, "predict_nms_iou": .7,
+        },
+        "class_coverage": {
+            "schema_version": 1,
+            "source": "declared_model_names",
+        },
+    }, task_id="strict-bound-test",
+       snapshot_id="1" * 64, benchmark_scope=scope)
+    diagnosis = build_training_metric_credibility({
+        "metrics": {"metrics/mAP50(B)": .97},
+    }, truth, input_quality={})
+    assert "independent_test_input_binding_unverified" not in diagnosis["reason_codes"]
+    assert diagnosis["production_accuracy_verified"] is False
+
+    # Historical snapshot versions never impersonate a materialized Test.
+    assert evaluation.build_evaluation_benchmark_scope({"schema_version": 2}) == {}

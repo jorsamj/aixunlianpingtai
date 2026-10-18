@@ -49,7 +49,7 @@ from .training_devices import normalize_training_device, training_python, valida
 from .training_metrics import read_metrics
 from .training_bundle_cache import TrainingBundleCache
 from .training_lineage import build_training_lineage
-from .training_evaluation import build_evaluation_truth, build_iteration_decision, build_training_metric_credibility
+from .training_evaluation import build_evaluation_truth, build_iteration_decision, build_training_metric_credibility, build_evaluation_benchmark_scope
 
 
 TRAINING_BUNDLE_SAFETY_RESERVE_BYTES = 512 * 1024 * 1024
@@ -2489,6 +2489,12 @@ class TrainingHandler:
             raise RuntimeError("completed training dataset manifest does not match durable task snapshot")
         if str(verification.get("dataset_revision_id") or "") != dataset_revision_id:
             raise RuntimeError("completed training dataset manifest does not match durable dataset revision")
+        # The *verified* materialized Test bundle (exact pixels, YOLO labels,
+        # policy and original snapshot) is the sole source for a strict
+        # independent evaluation binding. Do not infer it from current materials.
+        benchmark_scope = build_evaluation_benchmark_scope(
+            snapshot, _json(manifest_path, {}),
+        )
 
         cache_runtime = context.artifacts.read_json(
             context.task.task_id,
@@ -2722,6 +2728,7 @@ class TrainingHandler:
             dataset_revision_id=dataset_revision_id,
             model_sha256=model_sha256,
             finished_at=finished_at,
+            benchmark_scope=benchmark_scope,
         )
         metric_credibility = build_training_metric_credibility(
             training_report,
