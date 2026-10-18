@@ -79,15 +79,23 @@ export function metricCredibilityHtml(value) {
   if (!value || typeof value !== 'object' || value.schema_version !== 1) {
     return '<section class="report429-card" data-metric-credibility="unavailable"><header><b>模型高分可信度</b><span>历史证据缺失</span></header><p>该版本没有冻结的可信度诊断，不能根据当前素材或高 mAP 推断真实泛化效果。</p></section>';
   }
-  const percent = number => {
-    if (number === null || number === undefined || number === '' || !Number.isFinite(Number(number))) return '未记录';
-    return `${(Number(number) * 100).toFixed(1)}%`;
+  // The backend owns the result. A malformed stored value is missing
+  // evidence, never a percentage invented from coercion (e.g. true -> 100%).
+  const unitScore = raw => {
+    if (typeof raw !== 'number' || !Number.isFinite(raw) || raw < 0 || raw > 1) return null;
+    return raw;
   };
-  const gap = number => {
-    if (number === null || number === undefined || number === '' || !Number.isFinite(Number(number))) return '未记录';
-    const value = Number(number) * 100;
+  const percent = raw => {
+    const score = unitScore(raw);
+    return score === null ? '未记录' : `${(score * 100).toFixed(1)}%`;
+  };
+  const gap = raw => {
+    if (typeof raw !== 'number' || !Number.isFinite(raw) || raw < -1 || raw > 1) return '未记录';
+    const value = raw * 100;
     return `${value > 0 ? '+' : ''}${value.toFixed(1)} pp`;
   };
+  const imageCount = Number.isSafeInteger(value.test_image_count) && value.test_image_count >= 0
+    ? String(value.test_image_count) : '未记录';
   const status = {
     review_required: '需人工复核',
     held_out_evidence_present: '已获得独立 Test 证据',
@@ -100,7 +108,7 @@ export function metricCredibilityHtml(value) {
   const tst = percent(value.independent_test_map50);
   return `<section class="report429-card" data-metric-credibility="${escapeText(value.status || 'unknown')}">
     <header><b>模型高分可信度</b><span>${escapeText(status)}</span></header>
-    <div class="quality-metrics"><div><span>验证集 Val mAP50</span><b>${val}</b></div><div><span>独立 Test mAP50</span><b>${tst}</b></div><div><span>Val − Test</span><b>${gap(value.val_minus_test_map50)}</b></div><div><span>独立 Test 实际图片</span><b>${value.test_image_count === null || value.test_image_count === undefined ? '未记录' : escapeText(value.test_image_count)}</b></div></div>
+    <div class="quality-metrics"><div><span>验证集 Val mAP50</span><b>${val}</b></div><div><span>独立 Test mAP50</span><b>${tst}</b></div><div><span>Val − Test</span><b>${gap(value.val_minus_test_map50)}</b></div><div><span>独立 Test 实际图片</span><b>${imageCount}</b></div></div>
     ${issues ? `<p>待核实的证据（并非数据泄漏已被证实）：</p><ul>${issues}</ul>` : '<p>当前未触发已定义的高分复核项，但仍不代表生产场景已经验收。</p>'}
     <p class="item-sub">mAP 是目标检测指标，不是事件告警准确率；本诊断不判断造假，也不替代现场业务验收。</p>
   </section>`;

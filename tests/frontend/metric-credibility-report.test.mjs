@@ -55,3 +55,21 @@ test('server-owned unknown diagnostic codes must be escaped, not injected into r
   assert.match(html, /&lt;script&gt;/);
   assert.match(html, /data-metric-credibility="&lt;img/);
 });
+
+
+test('malformed persisted numeric metrics render as missing, not false percentages', () => {
+  const html = metricCredibilityHtml({
+    schema_version: 1,
+    status: 'review_required',
+    validation_map50: 97,
+    independent_test_map50: true,
+    val_minus_test_map50: 4,
+    test_image_count: -3,
+    reason_codes: [],
+  });
+  assert.match(html, /验证集 Val mAP50<\/span><b>未记录<\/b>/);
+  assert.match(html, /独立 Test mAP50<\/span><b>未记录<\/b>/);
+  assert.match(html, /Val − Test<\/span><b>未记录<\/b>/);
+  assert.match(html, /独立 Test 实际图片<\/span><b>未记录<\/b>/);
+  assert.doesNotMatch(html, /9700\.0%|100\.0%|400\.0 pp/);
+});
