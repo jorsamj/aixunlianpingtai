@@ -49,7 +49,7 @@ from .training_devices import normalize_training_device, training_python, valida
 from .training_metrics import read_metrics
 from .training_bundle_cache import TrainingBundleCache
 from .training_lineage import build_training_lineage
-from .training_evaluation import build_evaluation_truth, build_iteration_decision
+from .training_evaluation import build_evaluation_truth, build_iteration_decision, build_training_metric_credibility
 
 
 TRAINING_BUNDLE_SAFETY_RESERVE_BYTES = 512 * 1024 * 1024
@@ -2723,13 +2723,23 @@ class TrainingHandler:
             model_sha256=model_sha256,
             finished_at=finished_at,
         )
+        metric_credibility = build_training_metric_credibility(
+            training_report,
+            evaluation,
+            input_quality=(
+                frozen_input.get("input_quality")
+                if isinstance(frozen_input, Mapping) else None
+            ),
+        )
         iteration_decision = build_iteration_decision(
             evaluation,
             quality_gate=quality_gate,
+            metric_credibility=metric_credibility,
         )
         result.update({
             "training_lineage": training_lineage,
             "evaluation": evaluation,
+            "metric_credibility": metric_credibility,
             "iteration_decision": iteration_decision,
         })
         context.artifacts.atomic_write_json(context.task.task_id, "result.json", result)
@@ -2774,6 +2784,7 @@ class TrainingHandler:
                         "dataset_revision_id": dataset_revision_id,
                         "training_lineage": training_lineage,
                         "evaluation": evaluation,
+                        "metric_credibility": metric_credibility,
                         "iteration_decision": iteration_decision,
                         "result_ref": "result.json",
                         "task_id": context.task.task_id,

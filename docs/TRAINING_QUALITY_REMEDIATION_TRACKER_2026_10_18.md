@@ -15,7 +15,7 @@
 | TQ-01 | P0 | Train/Val/Test 多类正样本及来源覆盖 | 现有分组隔离；完整分层不保证 | **阶段二已提交：Ubuntu/Windows 定向回归通过，生产数据待验收** | `training_splits.py`、`training_tasks.py`；按类独立图片/框/来源证据 |
 | TQ-02 | P0 | 视频邻帧、近重复和缺失来源元数据导致疑似泄漏 | 已隔离 SHA/已知关系；未知来源需保留未知状态 | 待核验 | 导入扫描与 split；不可跨组，不能假装未知已安全 |
 | TQ-03 | P0 | 训练选择的正式标注质量准入不统一 | CLEAN 审计不等同训练准入 | **第二阶段原始 GT/投影复核完成代码验收；生产及 UI 待验** | `annotation_quality.py` + freeze；按严重度区分阻断/人工复核 |
-| TQ-04 | P0 | 97% 高 Val mAP 的真实可信度 | 无实际任务报告，不能宣告指标伪造 | 待核验 | 指标口径、类别参与数、数据独立性、独立 Test |
+| TQ-04 | P0 | 97% 高 Val mAP 的真实可信度 | 无实际任务报告，不能宣告指标伪造 | **第一阶段可信度证据诊断已编码，真实 97% 任务仍待核验** | Val/Test 指标分离、分组来源、测试支持量、推理协议、人工复核 |
 | TQ-05 | P0 | Ultralytics `ap_class_index` 与 `box.maps` 类别对应有潜在错配 | 已证实 compact 数组与 dense `maps` 被按位置混用、NumPy 真值判定可能失败 | **修复与 CI 已通过；历史模型报告未重算** | `train_worker.py`、定向 Python 单测；丢类、稀疏 class_id |
 | TQ-06 | P0 | 无 GT 类别及独立测试结果可评估性提示 | 总体 mAP 可隐藏测试中无正样本的已声明类别 | **后端修复与 CI 已通过；页面展示待验收** | `training_evaluation.py`、质量中心；不得宣告零样本类别合格 |
 | TQ-07 | P0 | Val/Test 推理 `imgsz` 等协议证据未完全统一 | 常规 Val 与双路径盲测未全显式传 imgsz | **修复与 CI 已通过；A800 实际尺寸仍待实测** | `train_worker.py`、`checkpoint_validation_worker.py`；真实推理参数留证 |
@@ -135,3 +135,13 @@
 - **冻结合同兼容**：新 `input_quality.source_ground_truth_admission` 和 `projection_consistency` 参与冻结 SHA；Worker 恢复不查询可能已经变更的在线原始 GT，也不假装从冻结摘要重算全部源框；历史没有这两项的冻结继续兼容。
 - **仍待解决**：正式 UI 中阻断/警告/人工复核的可视化提示；全部图片来源标签治理目录缺失时只能使用兼容回退，不能声称来源目录完整；生产历史素材与 A800 真实运行仍未验收；没有证明 97% mAP 的真实泛化效果，TQ-04 保持未完成。
 - **安全**：未部署生产、未修改 VERSION、未修改或删除任何 GT/历史 Test/Snapshot/素材；Git 推送均使用 Fast-forward，未 force push。
+
+## TQ-04 第一阶段｜高 Val mAP 可信度诊断（2026-10-19）
+
+- **真实缺口**：`train_worker.py` 持久化的 `training_report.metrics` 属于完成后重跑的 **Validation** 指标；独立 Test 在 `training_report.test_result`，并经 `build_evaluation_truth` 冻结。这两个数不是同一统计对象，更不等于烟火等业务事件的实际告警准确率。目前在任务最终提交时尚没有联通“Val 高分→Test 正样本类别/数据来源/测试组/运行协议”的统一证据诊断。约 97% 是用户报告，尚无对应真实报告/模型可核证；不能视作伪造或真实泛化已达 97%。
+- **新增后端诊断**：`platform_core/training_evaluation.py::build_training_metric_credibility`，只消费已经存在的持久化 Val、独立 Test、冻结 `input_quality.class_coverage` 和 GT 人工复核证据；**绝不重新定义/覆盖 mAP**。mAP50 ≥ 0.95 仅作为**审阅触发阈值**，不是造假判定阈值。Val–Test ≥ 10 个百分点、独立 Test 缺失或失败、类别未测、来源元数据未知、类正样本图片 < 5、独立来源组件 < 3、推理协议或不可变输入绑定缺失、需人工复核标注等都生成可解释的 `reason_codes` 和操作建议。5/3 仅为保守人工复核提示阈值，不是统计置信区间或实际精度指标。
+- **决策联动**：新任务的诊断报告同时落到 `result.json` 与算法版本 `metric_credibility`。仅当高 Val 分数且存在证据风险时，既有 `build_iteration_decision` 不再建议 `ready_for_business_validation`，改为 `review_required`；不自动调参、不启动重训练、不替换独立 Test、不改 GT。历史调用/旧版本未携带 `metric_credibility` 时保持旧决策行为以便重放。
+- **证据边界**：来源未知不是泄漏已证实；没有证据也不是无泄漏。即使 Val/Test 都高且覆盖完善，仅给 `held_out_evidence_present`，明确 `leakage_conclusion=not_determined` 和 `production_accuracy_verified=false`，业务准确率要另行按事件级 FP/漏报/摄像头小时验收。独立 Test 默认没有不可变 bundle binding 的历史训练版本不能静默冒充已完成严格输入绑定。
+- **验收**：新增 `tests/unit/test_training_metric_credibility.py`（仅人工构造的**测试输入**，不冒充真实数据），覆盖 97% 无 Test、Val/Test 大差距、来源未知、Test 缺类、小类/少来源、缺协议/输入绑定、GT 人工复核、非法或 NaN 指标、阈值边界、历史兼容、建议联动、重复性。添加到双系统 Training Input Integrity 和 v42.25 Release Regression 的必跑测试。
+- **仍待现场**：按用户那次实际 97% 训练任务获取其冻结 Snapshot、Test 真值、各类别样本/组件数与相机视频来源，核验误报漏检与模型输出；不得假设能访问生产 A800 或原始图像。前端可读性和业务事件准确率属于下一阶段。
+- **版本及安全**：VERSION 保持 42.24.356；本轮仅远端长期开发分支代码和回归测试，未部署生产，未删改任何真实素材。

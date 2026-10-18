@@ -869,10 +869,164 @@ def build_evaluation_truth(
     }
 
 
+def build_training_metric_credibility(
+    training_report: Mapping[str, Any] | None,
+    evaluation: Mapping[str, Any] | None,
+    *,
+    input_quality: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Advisory evidence for unusually high Val mAP, NOT a fraud detector.
+
+    Val scores are model-selection metrics; independent blind Test is a
+    different measurement. Lack of data is never interpreted as passing a
+    reliability threshold. This only inspects already persisted evidence.
+    """
+    report = training_report if isinstance(training_report, Mapping) else {}
+    test = evaluation if isinstance(evaluation, Mapping) else {}
+    quality = input_quality if isinstance(input_quality, Mapping) else {}
+    val = report.get("metrics") if isinstance(report.get("metrics"), Mapping) else {}
+    test_metrics = test.get("metrics") if isinstance(test.get("metrics"), Mapping) else {}
+    split = quality.get("class_coverage") if isinstance(quality.get("class_coverage"), Mapping) else {}
+    coverage = test.get("class_coverage") if isinstance(test.get("class_coverage"), Mapping) else {}
+    admission = quality.get("annotation_admission") if isinstance(quality.get("annotation_admission"), Mapping) else {}
+    source_admission = quality.get("source_ground_truth_admission") if isinstance(quality.get("source_ground_truth_admission"), Mapping) else {}
+
+    def score(values: Mapping[str, Any], key: str) -> float | None:
+        try:
+            raw = values.get(key)
+            if raw is None or isinstance(raw, bool):
+                return None
+            result = float(raw)
+            if not math.isfinite(result) or result < 0 or result > 1:
+                return None
+            return round(result, 6)
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+    def count(value: Any) -> int | None:
+        try:
+            if value is None or isinstance(value, bool):
+                return None
+            number = int(value)
+            return number if number >= 0 else None
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+    val_map = score(val, "metrics/mAP50(B)")
+    test_map = score(test_metrics, "metrics/mAP50(B)")
+    val_map95 = score(val, "metrics/mAP50-95(B)")
+    test_map95 = score(test_metrics, "metrics/mAP50-95(B)")
+    test_status = str(test.get("status") or "not_requested").strip().lower()
+    is_high_val = val_map is not None and val_map >= 0.95
+    gap = (
+        round(val_map - test_map, 6)
+        if val_map is not None and test_map is not None and test_status == "succeeded"
+        else None
+    )
+    reasons: list[str] = []
+    actions: list[str] = []
+
+    def flag(reason: str, action: str) -> None:
+        if reason not in reasons:
+            reasons.append(reason)
+        if action not in actions:
+            actions.append(action)
+
+    if is_high_val:
+        if test_status != "succeeded":
+            flag("independent_test_unavailable", "run_independent_blind_test")
+        elif test_map is None or count(test.get("image_count")) in (None, 0):
+            flag("independent_test_metric_or_samples_missing", "inspect_test_execution_truth")
+        if gap is not None and gap >= 0.10:
+            flag("validation_test_map50_gap_at_least_10pp", "inspect_val_test_distribution_and_protocol")
+        if not coverage or coverage.get("source") != "declared_model_names":
+            flag("test_class_coverage_unverified", "verify_model_class_catalog_and_test_gt")
+        elif coverage.get("class_ids_without_test_ground_truth"):
+            flag("independent_test_classes_without_gt", "add_independent_test_positive_samples")
+        if not split:
+            flag("frozen_split_coverage_unavailable", "inspect_frozen_split_and_provenance")
+        else:
+            missing_val = split.get("train_labels_without_validation_positive") or []
+            missing_test = split.get("train_labels_without_test_positive") or []
+            if missing_val:
+                flag("validation_classes_without_gt", "review_validation_class_coverage")
+            if missing_test:
+                flag("split_test_classes_without_gt", "review_independent_test_class_coverage")
+            unknown_by_role = split.get("role_unknown_source_image_counts")
+            if not isinstance(unknown_by_role, Mapping):
+                flag("capture_source_evidence_missing", "review_capture_source_metadata")
+            elif any((count(value) or 0) > 0 for value in unknown_by_role.values()):
+                flag("capture_source_partly_unknown", "review_capture_source_metadata")
+            components = split.get("label_independent_component_counts")
+            test_components = components.get("test") if isinstance(components, Mapping) else None
+            if not isinstance(test_components, Mapping):
+                flag("test_independent_component_counts_missing", "review_independent_test_groups")
+            elif any((count(value) or 0) < 3 for value in test_components.values()):
+                # A heuristic warning only: it is NOT a statistical p-value.
+                flag("test_class_fewer_than_three_independent_groups", "expand_test_group_diversity")
+            image_counts = split.get("label_image_counts")
+            test_images_by_class = image_counts.get("test") if isinstance(image_counts, Mapping) else None
+            if not isinstance(test_images_by_class, Mapping):
+                flag("test_positive_image_support_missing", "review_test_positive_image_counts")
+            elif any((count(value) or 0) < 5 for value in test_images_by_class.values()):
+                flag("test_class_fewer_than_five_positive_images", "expand_test_positive_coverage")
+
+        protocol = test.get("protocol") if isinstance(test.get("protocol"), Mapping) else {}
+        if test_status == "succeeded" and not all(
+            protocol.get(key) is not None
+            for key in ("predict_imgsz", "predict_conf", "predict_nms_iou")
+        ):
+            flag("independent_test_inference_protocol_incomplete", "verify_prediction_settings")
+        benchmark = test.get("benchmark_scope") if isinstance(test.get("benchmark_scope"), Mapping) else {}
+        if test_status == "succeeded" and benchmark.get("binding_level") != "bundle_verified":
+            flag("independent_test_input_binding_unverified", "verify_immutable_test_input_binding")
+
+        for audit in (admission, source_admission):
+            severity = audit.get("severity_counts") if isinstance(audit.get("severity_counts"), Mapping) else {}
+            if (count(severity.get("manual_review")) or 0) > 0:
+                flag("source_or_projected_gt_needs_review", "review_training_annotation_issues")
+
+    # A 97% Val mAP is a trigger for scrutiny, not a conclusion of data
+    # leakage or model accuracy. Even complete held-out evidence does not
+    # verify business event precision or out-of-distribution generalization.
+    status = (
+        "review_required" if is_high_val and reasons
+        else "held_out_evidence_present" if is_high_val
+        else "val_metric_unavailable" if val_map is None
+        else "not_high_val_trigger"
+    )
+    details = {
+        "schema_version": 1,
+        "status": status,
+        "metric_kind": "object_detection_map_not_event_accuracy",
+        "validation_map50": val_map,
+        "validation_map50_95": val_map95,
+        "independent_test_map50": test_map if test_status == "succeeded" else None,
+        "independent_test_map50_95": test_map95 if test_status == "succeeded" else None,
+        "val_minus_test_map50": gap,
+        "test_status": test_status,
+        "test_image_count": count(test.get("image_count")),
+        "high_val_threshold": 0.95,
+        "val_test_gap_review_threshold": 0.10,
+        "high_val_triggered": bool(is_high_val),
+        "reason_codes": reasons,
+        "recommended_actions": actions,
+        "leakage_conclusion": "not_determined",
+        "production_accuracy_verified": False,
+        "automatic_execution": False,
+    }
+    encoded = json.dumps(details, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return {
+        **details,
+        "diagnostic_id": hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
+    }
+
+
 def build_iteration_decision(
     evaluation: Mapping[str, Any] | None,
     *,
     quality_gate: Mapping[str, Any] | None = None,
+    metric_credibility: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build one advisory, version-owned next-step decision from evaluation truth.
 
@@ -962,6 +1116,14 @@ def build_iteration_decision(
         decision = "review_required"
         reasons.append("independent_test_class_coverage_incomplete")
         actions.extend(("review_training_coverage", "expand_independent_test_data"))
+    elif (isinstance(metric_credibility, Mapping)
+          and metric_credibility.get("high_val_triggered") is True
+          and metric_credibility.get("status") == "review_required"):
+        # Only new results pass this advisory. Legacy iteration decisions
+        # replay unchanged when metric_credibility is absent.
+        decision = "review_required"
+        reasons.append("high_validation_map_evidence_needs_review")
+        actions.extend(("inspect_metric_credibility", "review_independent_test_evidence"))
     elif weak_labels:
         decision = "needs_data"
         reasons.append("weak_labels_present")
