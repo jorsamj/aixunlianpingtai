@@ -73,3 +73,22 @@ test('malformed persisted numeric metrics render as missing, not false percentag
   assert.match(html, /独立 Test 实际图片<\/span><b>未记录<\/b>/);
   assert.doesNotMatch(html, /9700\.0%|100\.0%|400\.0 pp/);
 });
+
+
+test('the report displays persisted Test binding level without guessing from high mAP', () => {
+  const base = {
+    schema_version: 1, status: 'held_out_evidence_present',
+    validation_map50: .97, independent_test_map50: .96,
+    reason_codes: []
+  };
+  const verified = metricCredibilityHtml({...base, independent_test_binding_level: 'bundle_verified'});
+  assert.match(verified, /独立 Test 输入绑定/);
+  assert.match(verified, /已绑定校验的数据包/);
+  const snapshot = metricCredibilityHtml({...base, independent_test_binding_level: 'snapshot_truth'});
+  assert.match(snapshot, /仅冻结 Test 来源/);
+  const absent = metricCredibilityHtml({...base, independent_test_binding_level: 'unavailable'});
+  assert.match(absent, /缺少绑定证明/);
+  const legacy = metricCredibilityHtml(base);
+  assert.match(legacy, /未记录/);
+  assert.doesNotMatch(legacy, /已绑定校验的数据包/);
+});

@@ -917,6 +917,13 @@ def build_training_metric_credibility(
     val_map95 = score(val, "metrics/mAP50-95(B)")
     test_map95 = score(test_metrics, "metrics/mAP50-95(B)")
     test_status = str(test.get("status") or "not_requested").strip().lower()
+    benchmark = test.get("benchmark_scope") if isinstance(test.get("benchmark_scope"), Mapping) else {}
+    binding_level = (
+        str(benchmark.get("binding_level"))
+        if test_status == "succeeded"
+        and benchmark.get("binding_level") in {"snapshot_truth", "bundle_verified"}
+        else "unavailable"
+    )
     is_high_val = val_map is not None and val_map >= 0.95
     gap = (
         round(val_map - test_map, 6)
@@ -999,8 +1006,7 @@ def build_training_metric_credibility(
             ))
         ):
             flag("independent_test_inference_protocol_incomplete", "verify_prediction_settings")
-        benchmark = test.get("benchmark_scope") if isinstance(test.get("benchmark_scope"), Mapping) else {}
-        if test_status == "succeeded" and benchmark.get("binding_level") != "bundle_verified":
+        if test_status == "succeeded" and binding_level != "bundle_verified":
             flag("independent_test_input_binding_unverified", "verify_immutable_test_input_binding")
 
         for audit in (admission, source_admission):
@@ -1027,6 +1033,9 @@ def build_training_metric_credibility(
         "independent_test_map50_95": test_map95 if test_status == "succeeded" else None,
         "val_minus_test_map50": gap,
         "test_status": test_status,
+        # One server-owned, persisted evidence level for every report UI.
+        # The browser never infers a binding from a high Test mAP score.
+        "independent_test_binding_level": binding_level,
         "test_image_count": count(test.get("image_count")),
         "high_val_threshold": 0.95,
         "val_test_gap_review_threshold": 0.10,

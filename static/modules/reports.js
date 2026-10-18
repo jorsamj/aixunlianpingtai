@@ -102,13 +102,18 @@ export function metricCredibilityHtml(value) {
     val_metric_unavailable: '验证指标缺失',
     not_high_val_trigger: '未触发高分复核'
   }[value.status] || '证据状态未知';
+  const bindingLevel = ({
+    bundle_verified: '已绑定校验的数据包',
+    snapshot_truth: '仅冻结 Test 来源',
+    unavailable: '缺少绑定证明'
+  })[value.independent_test_binding_level] || '未记录';
   const reasons = Array.isArray(value.reason_codes) ? value.reason_codes : [];
   const issues = reasons.slice(0, 25).map(code => `<li>${escapeText(metricCredibilityReasons[String(code)] || String(code))}</li>`).join('');
   const val = percent(value.validation_map50);
   const tst = percent(value.independent_test_map50);
   return `<section class="report429-card" data-metric-credibility="${escapeText(value.status || 'unknown')}">
     <header><b>模型高分可信度</b><span>${escapeText(status)}</span></header>
-    <div class="quality-metrics"><div><span>验证集 Val mAP50</span><b>${val}</b></div><div><span>独立 Test mAP50</span><b>${tst}</b></div><div><span>Val − Test</span><b>${gap(value.val_minus_test_map50)}</b></div><div><span>独立 Test 实际图片</span><b>${imageCount}</b></div></div>
+    <div class="quality-metrics"><div><span>验证集 Val mAP50</span><b>${val}</b></div><div><span>独立 Test mAP50</span><b>${tst}</b></div><div><span>Val − Test</span><b>${gap(value.val_minus_test_map50)}</b></div><div><span>独立 Test 实际图片</span><b>${imageCount}</b></div><div><span>独立 Test 输入绑定</span><b>${escapeText(bindingLevel)}</b></div></div>
     ${issues ? `<p>待核实的证据（并非数据泄漏已被证实）：</p><ul>${issues}</ul>` : '<p>当前未触发已定义的高分复核项，但仍不代表生产场景已经验收。</p>'}
     <p class="item-sub">mAP 是目标检测指标，不是事件告警准确率；本诊断不判断造假，也不替代现场业务验收。</p>
   </section>`;

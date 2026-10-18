@@ -185,3 +185,12 @@
 - **修复**：在同一训练最终归档链路，先校验 materialized bundle 对应当前 Snapshot/Revision，随后用**同一个经过验证的 manifest** 生成 benchmark scope，作为 `build_evaluation_truth(..., benchmark_scope=benchmark_scope)` 的输入并跟随版本保留。新 Snapshot v3 + 完整 manifest 采用严格 `bundle_verified` 身份；v3 Test 实际执行图片数与冻结数不符时沿用现有禁止伪成功保护。旧 Snapshot Schema < 3 返回空 scope，不伪装成完成了真实 Test 身份绑定。该补丁仅加强真实证据，不自动改变历史模型报告、不迁移 Test。
 - **测试**：新增真实 bundle scope→evaluation truth→credibility 的端到端函数回归，保护最终归档确实使用已验证的 manifest；检查只改变 Train 而未改变 Test 的基准稳定性与误绑定失败，复用现有 `tests/unit/test_training_evaluation.py` 大量原合同，不重复建设计算逻辑。
 - **待验收**：必须在最新 SHA 的 Release Regression/Remote Training Runtime 上确认全绿，以及后续 A800 真正执行完整 independent Test 的现场表现。
+
+
+## TQ-04 补强：独立 Test 输入绑定与报告展示一致性（2026-10-19）
+- **复用现有链路**：同一天另一开发提交已将 `verify_portable_dataset(manifest_path)` → `build_evaluation_benchmark_scope(snapshot, manifest)` → `build_evaluation_truth(...benchmark_scope=)` 串接到 `TrainingHandler._finalize_completed_job`。本轮不复制这套逻辑，也不重建 GT、版本或评测 API。
+- **跨层合同**：在唯一后端 `build_training_metric_credibility` 增加 `independent_test_binding_level`（`bundle_verified`、`snapshot_truth`、`unavailable`），参与诊断摘要；`static/modules/reports.js::metricCredibilityHtml` 仅显示持久化的后端等级，不据高 mAP 或缺省值推定“已校验”。旧版本未包含本字段时明示“未记录”。
+- **实际文件回归**：扩展已有 `tests/unit/test_portable_dataset.py`，构造真实 JPEG、任务冻结 Snapshot v3、隐藏 Test YOLO GT 及可移动数据包，先由 `verify_portable_dataset` 校验真实文件，再生成 `bundle_verified` 范围并冻结评测合同；篡改隐藏 Test 标注必须在 verifier 阶段失败，篡改 Test 图片也必须失败。无真实 GPU/生产素材参与，测试数据不得充作业务真实准确率。
+- **前端及决策回归**：扩展既有 Python `tests/unit/test_training_metric_credibility.py` 和 Node `tests/frontend/metric-credibility-report.test.mjs`，覆盖三种绑定状态与旧报告缺失字段，不新增页面、数据镜像、定时器或重复评分逻辑。
+- **遗留兼容**：当前线上历史没有严格绑定的报告继续保留原状，新数据的模型指标不会反写历史 Snapshot。现场 A800 与用户 97% 模型未验证；TQ-04 不标记真实泛化完成。
+- **待核验**：最新 HEAD 的 CI 及各脚本均以准确 SHA 验收结论为准；如编译或测试失败只修现有函数，保持 VERSION `42.24.356`，不部署生产。

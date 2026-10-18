@@ -113,6 +113,7 @@ def test_high_val_and_test_with_bounded_independent_evidence_is_not_field_accura
     assert result["status"] == "held_out_evidence_present"
     assert result["reason_codes"] == []
     assert result["production_accuracy_verified"] is False
+    assert result["independent_test_binding_level"] == "bundle_verified"
     assert result["val_minus_test_map50"] == .01
 
 
@@ -271,3 +272,24 @@ def test_model_catalog_must_match_frozen_classes_for_high_map():
         _report(.97), test, input_quality=_input_quality(),
     )
     assert "model_class_catalog_differs_from_frozen_training_labels" in result["reason_codes"]
+
+
+def test_test_binding_level_is_backend_evidence_not_a_high_score_inference():
+    test = _test_result(.99)
+    quality = _input_quality()
+    strict = build_training_metric_credibility(_report(.97), test, input_quality=quality)
+    assert strict["independent_test_binding_level"] == "bundle_verified"
+    assert "independent_test_input_binding_unverified" not in strict["reason_codes"]
+
+    snapshot_only = deepcopy(test)
+    snapshot_only["benchmark_scope"]["binding_level"] = "snapshot_truth"
+    limited = build_training_metric_credibility(_report(.97), snapshot_only, input_quality=quality)
+    assert limited["independent_test_binding_level"] == "snapshot_truth"
+    assert "independent_test_input_binding_unverified" in limited["reason_codes"]
+
+    unknown = deepcopy(test)
+    unknown.pop("benchmark_scope")
+    unavailable = build_training_metric_credibility(_report(.97), unknown, input_quality=quality)
+    assert unavailable["independent_test_binding_level"] == "unavailable"
+    assert "independent_test_input_binding_unverified" in unavailable["reason_codes"]
+    assert strict["diagnostic_id"] != limited["diagnostic_id"]
