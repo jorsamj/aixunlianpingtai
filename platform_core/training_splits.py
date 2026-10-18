@@ -551,6 +551,174 @@ def _select_grouped(
     return remaining, selected
 
 
+
+def _select_grouped_stratified(
+    rows: Sequence[Mapping[str, Any]],
+    component_keys: Mapping[str, str],
+    percent: float,
+    seed: int,
+    *,
+    min_remaining_groups: int = 1,
+    min_future_positive_groups: int = 1,
+    reserved_component_keys: Sequence[str] = (),
+) -> tuple[list[Mapping[str, Any]], list[Mapping[str, Any]]]:
+    """Deterministic multilabel holdout at indivisible component granularity.
+
+    Keep at least one positive component per label for training, and during
+    test selection keep two where available for later train/validation.
+    Prefer multi-class (and confirmed-empty) coverage before matching image
+    quotas; never split a correlated component to improve percentages.
+    Work scales with groups * labels, not a subset-sum over all combinations.
+    """
+    negative_label = "\x00confirmed_empty"
+    grouped: dict[str, list[Mapping[str, Any]]] = {}
+    label_images: dict[str, dict[str, int]] = {}
+    for row in rows:
+        key = component_keys[str(row.get("id") or "")]
+        grouped.setdefault(key, []).append(row)
+        labels = _row_label_codes(row)
+        if not labels and str(row.get("annotation_state") or "").strip().lower() == "confirmed_empty":
+            labels = {negative_label}
+        counts = label_images.setdefault(key, {})
+        for label in labels:
+            counts[label] = counts.get(label, 0) + 1
+    if len(grouped) <= int(min_remaining_groups):
+        raise ValueError("按不可拆分数据组件分组后组数不足，无法避免数据泄漏")
+
+    keys = sorted(grouped)
+    random.Random(int(seed)).shuffle(keys)
+    rank = {key: index for index, key in enumerate(keys)}
+    reserved = set(reserved_component_keys) & set(grouped)
+    sizes = {key: len(grouped[key]) for key in keys}
+    by_label: dict[str, list[str]] = {}
+    support: dict[str, int] = {}
+    total_label_images: dict[str, int] = {}
+    for key in keys:
+        for label, count in label_images.get(key, {}).items():
+            by_label.setdefault(label, []).append(key)
+            support[label] = support.get(label, 0) + 1
+            total_label_images[label] = total_label_images.get(label, 0) + count
+
+    # A rare class observed in only one independent group stays in training.
+    # Test can take a class only when >= 3 independent groups exist; validation
+    # can take it when >= 2 remain. Fixed independent Test is handled outside.
+    keep = {
+        label: min(count, int(min_future_positive_groups))
+        for label, count in support.items()
+    }
+    selected_keys: set[str] = set()
+    selected_image_count = 0
+    selected_label_images: dict[str, int] = {}
+    remaining_support = dict(support)
+    max_selected_groups = len(grouped) - int(min_remaining_groups)
+    target = max(1, min(len(rows) - 1, round(len(rows) * float(percent) / 100)))
+
+    def eligible(key: str, *, fit: bool = False) -> bool:
+        if key in selected_keys or key in reserved or len(selected_keys) >= max_selected_groups:
+            return False
+        if selected_image_count + sizes[key] >= len(rows):
+            return False
+        if fit and selected_image_count + sizes[key] > target:
+            return False
+        return all(
+            remaining_support[label] > keep[label]
+            for label in label_images.get(key, {})
+        )
+
+    def take(key: str) -> None:
+        nonlocal selected_image_count
+        selected_keys.add(key)
+        selected_image_count += sizes[key]
+        for label, count in label_images.get(key, {}).items():
+            remaining_support[label] -= 1
+            selected_label_images[label] = selected_label_images.get(label, 0) + count
+
+    # Cover rarer classes first; one mixed-label component can cover several.
+    for label in sorted(support, key=lambda item: (support[item], item)):
+        if selected_label_images.get(label, 0) or selected_image_count >= target:
+            continue
+        candidates = (key for key in by_label[label] if eligible(key))
+        best = min(
+            candidates,
+            key=lambda key: (
+                max(0, selected_image_count + sizes[key] - target),
+                sizes[key],
+                -len(label_images[key]),
+                rank[key],
+            ),
+            default=None,
+        )
+        if best is not None:
+            take(best)
+
+    # Deficit-driven pass balances positive image counts, not only presence.
+    desired = {
+        label: max(1, round(count * float(percent) / 100))
+        for label, count in total_label_images.items()
+    }
+    positions = {label: 0 for label in by_label}
+    exhausted: set[str] = set()
+    while selected_image_count < target:
+        pending = [
+            label for label in by_label
+            if label not in exhausted
+            and selected_label_images.get(label, 0) < desired[label]
+        ]
+        if not pending:
+            break
+        label = max(
+            pending,
+            key=lambda item: (
+                (desired[item] - selected_label_images.get(item, 0)) / desired[item],
+                -support[item],
+                item,
+            ),
+        )
+        candidates = by_label[label]
+        chosen = None
+        while positions[label] < len(candidates):
+            key = candidates[positions[label]]
+            positions[label] += 1
+            if eligible(key, fit=True):
+                chosen = key
+                break
+        if chosen is None:
+            exhausted.add(label)
+        else:
+            take(chosen)
+
+    # Complete the requested image quota with unlabeled/other components.
+    # A single final closest-overshoot choice is optional; isolation wins.
+    if selected_image_count < target:
+        for key in keys:
+            if selected_image_count >= target:
+                break
+            if eligible(key, fit=True):
+                take(key)
+    if selected_image_count < target:
+        best = min(
+            (key for key in keys if eligible(key)),
+            key=lambda key: (
+                abs(selected_image_count + sizes[key] - target),
+                sizes[key],
+                rank[key],
+            ),
+            default=None,
+        )
+        if best is not None and abs(selected_image_count + sizes[best] - target) < target - selected_image_count:
+            take(best)
+
+    if not selected_keys:
+        raise ValueError(
+            "无法在保留训练类别正样本、来源关联组及剩余集合的前提下划分留出集；"
+            "请补充独立来源素材或调整数据划分比例"
+        )
+    return (
+        [row for row in rows if component_keys[str(row.get("id") or "")] not in selected_keys],
+        [row for row in rows if component_keys[str(row.get("id") or "")] in selected_keys],
+    )
+
+
 def _assert_no_leakage(role_rows: Mapping[str, Sequence[Mapping[str, Any]]]) -> None:
     owners: dict[tuple[str, str], str] = {}
     for role, rows in role_rows.items():
@@ -571,7 +739,10 @@ def build_split_manifest(
     *,
     seed: int,
     required_train_labels: Sequence[str] = (),
+    split_strategy: str = "legacy_v1",
 ) -> SplitManifest:
+    if split_strategy not in {"legacy_v1", "multilabel_grouped_v2"}:
+        raise ValueError("unknown training split strategy")
     by_id: dict[str, Mapping[str, Any]] = {}
     for row in images:
         image_id = str(row.get("id") or "").strip()
@@ -629,9 +800,11 @@ def build_split_manifest(
     digest = hashlib.sha256(f"validation:{seed}".encode("utf-8")).digest()
     validation_seed = int.from_bytes(digest[:8], "big")
 
+    selector = _select_grouped_stratified if split_strategy == "multilabel_grouped_v2" else _select_grouped
+
     if request.mode == SplitMode.INDEPENDENT_TEST_SET:
         test_rows = independent_test_rows
-        train_rows, validation_rows = _select_grouped(
+        train_rows, validation_rows = selector(
             train_pool,
             component_keys,
             request.validation_percent,
@@ -640,19 +813,20 @@ def build_split_manifest(
         )
         test_source = "independent_materials"
     else:
-        after_test, test_rows = _select_grouped(
+        after_test, test_rows = selector(
             train_pool,
             component_keys,
             float(request.experiment_percent or 0),
             test_seed,
             min_remaining_groups=2,
+            **({"min_future_positive_groups": 2} if split_strategy == "multilabel_grouped_v2" else {}),
             reserved_component_keys=reserved_train_components,
         )
         # Percentages are measured against the complete frozen pool.
         # The test holdout is frozen first, so rebase the validation target
         # onto the remaining pool without weakening the leakage guard.
         validation_of_remaining = float(request.validation_percent) * 100.0 / (100.0 - float(request.experiment_percent))
-        train_rows, validation_rows = _select_grouped(
+        train_rows, validation_rows = selector(
             after_test,
             component_keys,
             validation_of_remaining,
@@ -685,6 +859,7 @@ def build_split_manifest(
         "validation_percent": request.validation_percent,
         "excluded_duplicate_ids": list(excluded_duplicate_ids),
         "duplicate_group_count": len(duplicate_groups),
+        **({"split_strategy": split_strategy} if split_strategy == "multilabel_grouped_v2" else {}),
         **(
             {
                 "required_train_labels": list(required_labels),

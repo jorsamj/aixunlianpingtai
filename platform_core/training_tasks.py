@@ -1393,6 +1393,34 @@ def _training_split_quality(
             if any(role_unknown_source_images.values()) else "declared_source_fields_present"
         ),
     }
+    if (getattr(manifest, "requested", None) or {}).get("split_strategy") == "multilabel_grouped_v2":
+        diagnostics: dict[str, Any] = {}
+        for code in measured_labels:
+            component_supply = sum(
+                role_label_components[role].get(code, 0) for role in roles
+            )
+            present = [
+                role for role in roles if role_label_components[role].get(code, 0)
+            ]
+            missing = [role for role in roles if role not in present]
+            if not missing:
+                reason = "all_roles_covered"
+            elif component_supply == 0:
+                reason = "no_positive_examples"
+            elif (manifest.mode == SplitMode.INDEPENDENT_TEST_SET and "test" in missing):
+                reason = "fixed_independent_test_has_no_positive"
+            elif component_supply < 3:
+                reason = "insufficient_independent_components"
+            else:
+                reason = "coupled_groups_or_holdout_quota"
+            diagnostics[code] = {
+                "independent_component_count": component_supply,
+                "positive_roles": present,
+                "missing_roles": missing,
+                "reason": reason,
+            }
+        quality["class_coverage"]["partition_diagnostics"] = diagnostics
+        quality["class_coverage"]["partition_strategy"] = "multilabel_grouped_v2"
     return quality
 
 
@@ -1464,6 +1492,7 @@ def freeze_training_inputs(
         effective_split,
         seed=int(seed),
         required_train_labels=_requested_new_training_labels(label_contract),
+        split_strategy="multilabel_grouped_v2",
     )
     input_quality = _training_split_quality(
         images, manifest, label_schema, label_contract=label_contract,
@@ -1485,6 +1514,7 @@ def freeze_training_inputs(
     }
     value = {
         "schema_version": _TRAINING_INPUT_FREEZE_SCHEMA_VERSION,
+        "split_strategy": "multilabel_grouped_v2",
         "split": split_truth,
         "images": [_frozen_training_row(row) for row in images],
         "label_schema": [dict(item) for item in label_schema],
@@ -1578,6 +1608,8 @@ def resolve_training_input_freeze(
         required_train_labels=_requested_new_training_labels(
             frozen_contract if isinstance(frozen_contract, Mapping) else None
         ),
+        # Pre-v2 freezes carry no marker: replay the historical split exactly.
+        split_strategy=str(value.get("split_strategy") or "legacy_v1"),
     )
     frozen_quality = value.get("input_quality") if isinstance(value.get("input_quality"), Mapping) else {}
     input_quality = _training_split_quality(

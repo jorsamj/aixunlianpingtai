@@ -38,6 +38,7 @@ on:
       - platform_core/training_compatibility.py
       - platform_core/training_splits.py
       - platform_core/training_recovery_api.py
+      - tests/unit/test_training_stratification_v2.py
       - tests/unit/test_training_duplicate_conflicts.py
       - tests/unit/test_material_reference_reasons.py
       - tests/api/test_material_integrity.py
@@ -234,6 +235,7 @@ jobs:
           tests/unit/test_negative_sample_contract.py
           tests/unit/test_annotation_repository_scope.py
           tests/unit/test_training_splits.py
+          tests/unit/test_training_stratification_v2.py
           tests/unit/test_training_duplicate_conflicts.py
           tests/unit/test_training_components.py
           tests/unit/test_snapshots.py

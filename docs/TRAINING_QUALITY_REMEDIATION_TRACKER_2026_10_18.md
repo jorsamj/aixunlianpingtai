@@ -12,7 +12,7 @@
 
 | ID | 优先级 | 问题 | 初始结论 | 状态 | 主要代码 / 验收 |
 | --- | --- | --- | --- | --- | --- |
-| TQ-01 | P0 | Train/Val/Test 多类正样本及来源覆盖 | 现有分组隔离；完整分层不保证 | **阶段一：新冻结质量分布证据已开发；待 CI，分层策略未改** | `training_splits.py`、`training_tasks.py`；按类独立图片/框/来源证据 |
+| TQ-01 | P0 | Train/Val/Test 多类正样本及来源覆盖 | 现有分组隔离；完整分层不保证 | **阶段二代码候选：分组多标签分层、冻结策略版本化；待测试/CI** | `training_splits.py`、`training_tasks.py`；按类独立图片/框/来源证据 |
 | TQ-02 | P0 | 视频邻帧、近重复和缺失来源元数据导致疑似泄漏 | 已隔离 SHA/已知关系；未知来源需保留未知状态 | 待核验 | 导入扫描与 split；不可跨组，不能假装未知已安全 |
 | TQ-03 | P0 | 训练选择的正式标注质量准入不统一 | CLEAN 审计不等同训练准入 | 待修复 | `annotation_quality.py` + freeze；按严重度区分阻断/人工复核 |
 | TQ-04 | P0 | 97% 高 Val mAP 的真实可信度 | 无实际任务报告，不能宣告指标伪造 | 待核验 | 指标口径、类别参与数、数据独立性、独立 Test |
@@ -78,3 +78,14 @@
 3. TQ-02、TQ-04、TQ-08：按真实生产来源、97% 模型实际报告和历史 2531 张保护引用做只读验收；不使用模拟数据宣称生产已解决。
 4. P1：困难样本、场景覆盖、RKNN 板端实测和业务准确率专项逐项完成。
 
+
+## TQ-01 阶段二｜2026-10-18 分组多标签分层代码候选
+
+- **根因（经代码审计）**：旧 `_select_grouped` 仅以单组图片数量做精确子集和优化，未把各类别正样本/confirmed_empty 负样本纳入目标，因此能出现某一类别全部进入 Train 或缺失 Test 的情况；已有去重和关联组件隔离本身正确，不得放松。
+- **修改文件**：`platform_core/training_splits.py`、`platform_core/training_tasks.py`、`tests/unit/test_training_stratification_v2.py`、`.github/workflows/v42.25-release-regression.yml`、本追踪文档。
+- **实施**：新冻结采用 `multilabel_grouped_v2`，以不可拆分组件为原子单元进行稀缺类别优先覆盖与多类图片数量欠额填充，负样本纳入平衡；随机 Test 阶段在可能时为训练/验证保留两组，Val 阶段为 Train 保留至少一组；仍保留 SHA/视频/拍摄会话/近重复关联组隔离、固定独立 Test 原名单和独占 Test 的不可变约束。
+- **旧任务兼容**：旧冻结无 `split_strategy` 标记时继续走 `legacy_v1`，不按新算法重排历史 Snapshot；新冻结在 digest 与恢复时记录、复核相同策略。
+- **诊断**：新策略在 `input_quality.class_coverage` 下留存 `partition_diagnostics`（类别组件供给、实际覆盖集合、缺口原因）。当类组件不足、固定 Test 缺少正样本或多类耦合/配额限制时，不谎称类别已独立评测通过。
+- **测试设计**：包含多类+负样本跨 Train/Val/Test、两组稀有类、同视频及已知近重复、固定 Test 不能迁移、旧策略重放、20k 不可拆分组规模。
+- **验收状态**：待本次具体 Git 提交、Python 测试和最终 GitHub Actions 实测后补录 SHA/通过数。生产 A800、真实来源分布、独立 Test 现场验收仍待完成；不得把代码通过等同真实泛化准确率已提高。
+- **安全边界**：未执行生产数据修正、素材删除、Test 迁移、生产部署或 VERSION 修改；TQ-02/TQ-03/TQ-04/TQ-08 等任务保持原有待办状态。
