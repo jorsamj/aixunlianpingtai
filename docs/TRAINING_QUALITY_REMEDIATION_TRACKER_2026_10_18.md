@@ -14,7 +14,7 @@
 | --- | --- | --- | --- | --- | --- |
 | TQ-01 | P0 | Train/Val/Test 多类正样本及来源覆盖 | 现有分组隔离；完整分层不保证 | **阶段二已提交：Ubuntu/Windows 定向回归通过，生产数据待验收** | `training_splits.py`、`training_tasks.py`；按类独立图片/框/来源证据 |
 | TQ-02 | P0 | 视频邻帧、近重复和缺失来源元数据导致疑似泄漏 | 已隔离 SHA/已知关系；未知来源需保留未知状态 | 待核验 | 导入扫描与 split；不可跨组，不能假装未知已安全 |
-| TQ-03 | P0 | 训练选择的正式标注质量准入不统一 | CLEAN 审计不等同训练准入 | **第一阶段代码验收：Ubuntu/Windows 定向测试通过；全量及生产验收待核验** | `annotation_quality.py` + freeze；按严重度区分阻断/人工复核 |
+| TQ-03 | P0 | 训练选择的正式标注质量准入不统一 | CLEAN 审计不等同训练准入 | **第二阶段原始 GT/投影复核完成代码验收；生产及 UI 待验** | `annotation_quality.py` + freeze；按严重度区分阻断/人工复核 |
 | TQ-04 | P0 | 97% 高 Val mAP 的真实可信度 | 无实际任务报告，不能宣告指标伪造 | 待核验 | 指标口径、类别参与数、数据独立性、独立 Test |
 | TQ-05 | P0 | Ultralytics `ap_class_index` 与 `box.maps` 类别对应有潜在错配 | 已证实 compact 数组与 dense `maps` 被按位置混用、NumPy 真值判定可能失败 | **修复与 CI 已通过；历史模型报告未重算** | `train_worker.py`、定向 Python 单测；丢类、稀疏 class_id |
 | TQ-06 | P0 | 无 GT 类别及独立测试结果可评估性提示 | 总体 mAP 可隐藏测试中无正样本的已声明类别 | **后端修复与 CI 已通过；页面展示待验收** | `training_evaluation.py`、质量中心；不得宣告零样本类别合格 |
@@ -124,3 +124,14 @@
 - **新增测试**：原 GT 被排除框为零面积时冻结阻断；合法排除框与 task-local negative 不被误杀；伪造已选择框/排除框/政策摘要/审核范围/负样本标记无法通过；原始 GT 后来更改也不影响历史冻结重放。
 - **修改文件**：`platform_core/training_tasks.py`、`tests/unit/test_training_annotation_admission.py`、本文；继续使用已存在的 Training Input Integrity、Release Regression 测试入口，无需新建架构。
 - **待验收**：代码提交 SHA、定向 Python/Ubuntu/Windows、完整 GitHub CI 以及原 A800 生产数据均以实际核验为准；UI 对人工复核提示的集中展示仍需后续单独验收。
+
+## TQ-03 第二阶段代码及 CI 最终实测（2026-10-18）
+
+- **根因确认**：只审核任务投影后的标签可能漏掉必须用于图片遮挡的原始排除框，导致原始无效几何直到 Worker 才失败。修复基于同次受锁保护的原始 GT 及原有投影函数，不新增 Repository。
+- **修复 SHA**：`87e223b74dd34705ceb16c5a0d80aa04ed7f959d`（原始 GT 与合法投影交叉验证）；`9eabbb56a116c1c439ccb7ee9e0a7fbb89363318`（项目标签目录存在但全部 inactive 时，排除类也必须 fail-closed）。
+- **代码修改**：`platform_core/training_tasks.py`，`tests/unit/test_training_annotation_admission.py`，以及本追踪文档。保留已存在的 `annotation_quality.py` 单图审计、`training_label_tasks.py::project_training_rows` 原有语义；没有添加第二套标注系统。
+- **定向 Python 测试**：最终代码 SHA `9eabbb56` 的 Training Input Integrity：**Ubuntu 24.04 和 Windows latest 各 43/43 passed**（训练切分、第一阶段质量准入、原始 GT/投影篡改/重放及 all-inactive 标签目录边界）；同一两 OS 作业另三批 **30/30、62/62、2/2 passed**，没有失败和跳过。
+- **GitHub CI**：在 `9eabbb56` 上通过连接器可查询的首页工作流 **20/20 success，0 failure，0 running**，只统计实际返回的前 20 个；其它未列出的工作流不作为通过证据。上一提交 `87e223b7` 的首页同样 20/20 success。
+- **冻结合同兼容**：新 `input_quality.source_ground_truth_admission` 和 `projection_consistency` 参与冻结 SHA；Worker 恢复不查询可能已经变更的在线原始 GT，也不假装从冻结摘要重算全部源框；历史没有这两项的冻结继续兼容。
+- **仍待解决**：正式 UI 中阻断/警告/人工复核的可视化提示；全部图片来源标签治理目录缺失时只能使用兼容回退，不能声称来源目录完整；生产历史素材与 A800 真实运行仍未验收；没有证明 97% mAP 的真实泛化效果，TQ-04 保持未完成。
+- **安全**：未部署生产、未修改 VERSION、未修改或删除任何 GT/历史 Test/Snapshot/素材；Git 推送均使用 Fast-forward，未 force push。
