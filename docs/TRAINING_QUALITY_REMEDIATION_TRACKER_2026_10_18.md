@@ -194,3 +194,9 @@
 - **前端及决策回归**：扩展既有 Python `tests/unit/test_training_metric_credibility.py` 和 Node `tests/frontend/metric-credibility-report.test.mjs`，覆盖三种绑定状态与旧报告缺失字段，不新增页面、数据镜像、定时器或重复评分逻辑。
 - **遗留兼容**：当前线上历史没有严格绑定的报告继续保留原状，新数据的模型指标不会反写历史 Snapshot。现场 A800 与用户 97% 模型未验证；TQ-04 不标记真实泛化完成。
 - **待核验**：最新 HEAD 的 CI 及各脚本均以准确 SHA 验收结论为准；如编译或测试失败只修现有函数，保持 VERSION `42.24.356`，不部署生产。
+
+### CI 依赖镜像失败及无版本变更修复（2026-10-19）
+
+- 在 `c361d7dd` 的 `ChangLian Login Auth / browser` Job 发现真正的外部错误：`npm ci` 从 `registry.npmmirror.com/playwright-core/-/playwright-core-1.62.1.tgz` 下载时返回 **HTTP 503**，并非业务测试失败；同工作流 `contract` Job 成功，但浏览器作业依然不能视为通过。
+- 仓库 `package-lock.json` 有 4 处硬编码的第三方 npmmirror tarball 解析地址。仅改为 npm 官方 `registry.npmjs.org`，保持原依赖版本（Playwright 1.62.1、fsevents 2.3.2）以及**全部 SHA512 integrity 完全不变**，以减少第三方镜像的偶发 503。没有修改应用代码或生产依赖行为。
+- 该问题应以修改后提交的 GitHub CI 真正成功为验收依据，不能把 URL 修改本身写成已完成实际验收。
