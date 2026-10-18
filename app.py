@@ -164,6 +164,7 @@ from platform_core.training_precision import TrainingPrecisionError, normalize_t
 from platform_core.training_compatibility import (
     compatibility_page,
     evaluate_training_compatibility,
+    normalize_benchmark_duplicate_review,
 )
 from platform_core.upload_batches import UploadBatchStore, UploadRequestBusy, apply_decisions
 from platform_core.training_job_projection import (
@@ -7972,6 +7973,15 @@ def _training_compatibility_request(
         "test_image_ids": list(test_ids),
         "experiment_percent": None,
     })
+    if request.get("duplicate_review") is not None:
+        resolved["duplicate_review"] = normalize_benchmark_duplicate_review(
+            project_dir(project_id), request, SplitRequest(
+                mode=SplitMode.INDEPENDENT_TEST_SET,
+                train_image_ids=effective_train_ids,
+                test_image_ids=test_ids,
+                validation_percent=float(request.get("validation_percent") or 20),
+            ),
+        )
     return resolved
 
 

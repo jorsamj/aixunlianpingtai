@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - refactor/frontend-runtime-stabilization
+      - feature/external-algorithm-publishing
     paths:
       - .github/workflows/v42.25-release-regression.yml
       - a800_rc_acceptance.py
@@ -34,6 +35,13 @@ on:
       - platform_core/training_metrics.py
       - platform_core/training_evaluation.py
       - platform_core/training_tasks.py
+      - platform_core/training_compatibility.py
+      - platform_core/training_splits.py
+      - platform_core/training_recovery_api.py
+      - tests/unit/test_training_duplicate_conflicts.py
+      - tests/unit/test_material_reference_reasons.py
+      - tests/api/test_material_integrity.py
+      - tests/api/test_runtime_router_app_mount.py
       - platform_core/upgrade_guard.py
       - platform_core/video_tasks.py
       - tests/api/test_durable_training_controls.py

@@ -1273,8 +1273,12 @@ def test_durable_training_requires_matching_supplement_candidate_set_identity(
     assert job["supplement_candidate_set_id"] == candidate_set["candidate_set_id"]
 
 
+@pytest.mark.parametrize("review_case", [
+    "none", "plain", "reserved", "exclude_reserved", "exclude_test",
+    "cross_role", "spoofed_test", "stale_review", "stale_expected",
+])
 def test_reusable_benchmark_is_resolved_server_side_into_exact_test_ids(
-    client, seeded_project,
+    client, seeded_project, review_case,
 ):
     import app as app_module
     from platform_core.algorithms import save_algorithms
@@ -1364,22 +1368,88 @@ def test_reusable_benchmark_is_resolved_server_side_into_exact_test_ids(
     assert availability.json()["test_image_count"] == 1
     assert "test_image_ids" not in availability.json()
 
-    response = client.post(
-        f"/api/v12/projects/{project_id}/train/start",
-        json={
-            "framework": "ultralytics",
-            "algorithm_asset_id": algorithm["id"],
-            "model": "yolo11n.pt",
-            "train_labels": ["fire"],
-            "split_mode": "random_test_from_training_pool",
-            "train_image_ids": [benchmark_image["id"], train_image["id"], train_image_2["id"]],
-            "validation_percent": 20,
-            "experiment_percent": 20,
-            "benchmark_source_version_id": "benchmark-v1",
-            "benchmark_scope_id": scope_id,
-        },
+    request = {
+        "framework": "ultralytics",
+        "algorithm_asset_id": algorithm["id"],
+        "model": "yolo11n.pt",
+        "train_labels": ["fire"],
+        "split_mode": "random_test_from_training_pool",
+        "train_image_ids": [benchmark_image["id"], train_image["id"], train_image_2["id"]],
+        "validation_percent": 20,
+        "experiment_percent": 20,
+        "benchmark_source_version_id": "benchmark-v1",
+        "benchmark_scope_id": scope_id,
+    }
+    if review_case != "none":
+        duplicate = _upload_training_ready(client, project_id, "benchmark-duplicate.jpg", (61, 91, 121))
+        source = benchmark_image if review_case in {"exclude_reserved", "exclude_test"} else train_image
+        app_module.material_store(project_id).patch({duplicate["id"]: {
+            "content_sha256": app_module.material_store(project_id).get(source["id"])["content_sha256"],
+        }})
+        app_module.AnnotationRepository(app_module.project_dir(project_id)).upsert_many([{
+            "image_id": duplicate["id"], "annotation_state": "annotated", "annotation_scope": ["fire"],
+            "boxes": [{"label": "fire", "class_id": 0, "x1": 20, "y1": 10, "x2": 80, "y2": 80}],
+        }])
+        original_train = [train_image["id"], train_image_2["id"], duplicate["id"]]
+        original_test = []
+        if review_case in {"reserved", "exclude_reserved", "exclude_test"}:
+            original_train.insert(0, benchmark_image["id"])
+        if review_case == "cross_role":
+            original_train.remove(duplicate["id"])
+            original_test = [duplicate["id"]]
+        if review_case == "spoofed_test":
+            # Knowing a Test identity must not let a client claim that the
+            # server already resolved its original review against Benchmark.
+            original_test = [benchmark_image["id"]]
+        excluded_id = benchmark_image["id"] if review_case == "exclude_test" else duplicate["id"]
+        request.update({
+            "train_image_ids": [value for value in original_train if value != excluded_id],
+            "test_image_ids": [],
+            "duplicate_review": {
+                "original_train_image_ids": original_train,
+                "original_test_image_ids": original_test,
+                "excluded_image_ids": [excluded_id],
+                "material_revision": app_module.material_store(project_id).current_revision(),
+                "annotation_revision": app_module.AnnotationRepository(app_module.project_dir(project_id)).current_revision(),
+            },
+        })
+        if review_case == "stale_review":
+            request["duplicate_review"]["annotation_revision"] -= 1
+        if review_case == "stale_expected":
+            request.update({
+                "expected_material_revision": request["duplicate_review"]["material_revision"] - 1,
+                "expected_annotation_revision": request["duplicate_review"]["annotation_revision"],
+            })
+    invalid_review = review_case not in {"none", "plain", "reserved"}
+    preflight = client.post(
+        f"/api/v62/projects/{project_id}/training-materials/compatibility", json=request,
     )
+    if not invalid_review:
+        assert preflight.status_code == 200, preflight.text
+        assert preflight.json()["compatible"] is True
+        assert benchmark_image["id"] not in preflight.text
+    response = client.post(f"/api/v12/projects/{project_id}/train/start", json=request)
+    if invalid_review:
+        assert preflight.status_code == 422, preflight.text
+        assert response.status_code == 409, response.text
+        if review_case == "cross_role":
+            assert "content hash leakage" in preflight.text
+        if review_case in {"stale_review", "stale_expected"}:
+            assert "revision changed" in preflight.text
+        # Worker re-runs the real frozen Benchmark resolver and must reject
+        # these reviews even if a caller bypasses final API admission.
+        from platform_core.remote_training_tasks import TrainingPrepareHandler
+        target = SimpleNamespace(task_id=f"invalid-benchmark-{review_case}", project_id=project_id)
+        with pytest.raises(ValueError):
+            TrainingPrepareHandler(app_module.DATA_DIR)._freeze_request_contract(
+                SimpleNamespace(artifacts=app_module.shared_task_artifacts()), target, request,
+            )
+        assert not app_module.shared_task_artifacts().artifact_path(target.task_id, "input-freeze.json").exists()
+        assert benchmark_image["id"] not in preflight.text
+        assert benchmark_image["id"] not in response.text
+        return
     assert response.status_code == 202, response.text
+    assert benchmark_image["id"] not in response.text
     task_id = response.json()["task"]["id"]
     payload = _freeze_admitted_training(app_module, task_id)
     assert payload["split_mode"] == "independent_test_set"
@@ -1388,9 +1458,18 @@ def test_reusable_benchmark_is_resolved_server_side_into_exact_test_ids(
     assert payload["benchmark_reuse"]["source_version_id"] == "benchmark-v1"
     assert payload["benchmark_reuse"]["scope_id"] == scope_id
     assert payload["benchmark_reuse"]["test_image_count"] == 1
-    assert payload["benchmark_reuse"]["selected_training_candidate_count"] == 3
-    assert payload["benchmark_reuse"]["reserved_training_candidate_count"] == 1
+    includes_reserved = review_case in {"none", "reserved"}
+    assert payload["benchmark_reuse"]["selected_training_candidate_count"] == (3 if includes_reserved else 2)
+    assert payload["benchmark_reuse"]["reserved_training_candidate_count"] == int(includes_reserved)
     assert payload["benchmark_reuse"]["effective_training_candidate_count"] == 2
+    if review_case != "none":
+        frozen = app_module.shared_task_artifacts().read_json(task_id, "input-freeze.json")
+        assert frozen["duplicate_review"]["excluded_image_ids"] == [duplicate["id"]]
+        assert frozen["duplicate_review"]["original_test_image_ids"] == [benchmark_image["id"]]
+        assert frozen["duplicate_review"]["material_revision"] == request["duplicate_review"]["material_revision"]
+        assert frozen["duplicate_review"]["annotation_revision"] == request["duplicate_review"]["annotation_revision"]
+        assert payload["admission_request"]["duplicate_review"] == request["duplicate_review"]
+        assert app_module.material_store(project_id).get(duplicate["id"]) is not None
 
 
 def test_reusable_benchmark_rejects_stale_observed_scope_at_admission(

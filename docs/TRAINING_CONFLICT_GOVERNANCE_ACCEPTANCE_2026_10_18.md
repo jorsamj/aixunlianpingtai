@@ -3,7 +3,15 @@
 日期：2026-10-18。基线：`5a28e4539b81c03b4eaa27fa4b6c718138542169`。
 本地运行条件：Windows、Python 3.12.7、Node 24.19.0、本机真实 Chrome（Playwright channel=chrome，单 Worker）。
 隔离工作树：`C:/Users/jorsam/.codex/worktrees/training-failure-diagnostics/畅联云算法训练_v42.14.0`。
-本轮仅本地开发/测试/提交；不推送、不部署、不连接生产、不改正式 VERSION。
+原开发阶段仅本地开发/测试/提交。用户现已授权普通 Fast-forward 推送与 CI 修复验收；仍不部署、不连接生产、不改正式 VERSION。
+
+## 本阶段追加：推送前独立复核
+
+- 完整代码提交 `5d3ad65bf7ff287521481a2ac6bfbd1f7caed52e` 的父提交与新 fetch 远端一致：`5a28e4539b81c03b4eaa27fa4b6c718138542169`，不存在分叉；42 个原变更文件属于本轮闭环。
+- 发现固定 Benchmark 复用时服务端注入的 Test 身份与客户端原始 duplicate_review 角色不一致，正常排除会被拒绝，客户端伪造已注入 Test 的合同反而被接受。真实 API 先复现 3 failed/3 passed；最小修复复用既有 Benchmark resolver 与角色/revision 校验，保留原 admission_request，禁止排除固定 Test 及保留同 SHA 别名，不向公开响应暴露 Test ID。9 场景及相关 Python 109 passed。
+- Release Regression 与 Training Final Validation Hardening 原来只监听旧分支；已加入长期分支，并补 Release 源码/测试路径，Node 先 RED 后 GREEN。全量 Node 981 passed。没有跳过或降低安全测试。
+- 本阶段真实 Chrome 再跑训练冲突与素材治理两份规格：6 passed / 0 failed / 0 skipped，1.6 分钟；包含真实准入、GT 修改、过期 revision、全保护零删除及实际隔离 Worker 删除闭环。日志 `C:/Users/jorsam/.codex/tmp/p0-ci-chrome-final-20261018.log`。
+- 本阶段最终远端 SHA、完整 Actions/Jobs、Chrome 及生产风险交接在 `C:/Users/jorsam/.codex/visualizations/2026/10/18/training-conflict-p0/CI_FINAL_HANDOFF.md`。此阶段提交前尚未运行远端 CI，必须以该报告的最终 SHA 实际结果为准。
 
 ## 根因及处理
 

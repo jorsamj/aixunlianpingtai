@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - refactor/frontend-runtime-stabilization
+      - feature/external-algorithm-publishing
     paths:
       - checkpoint_validation_worker.py
       - train_worker.py

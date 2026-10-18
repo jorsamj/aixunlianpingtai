@@ -20,7 +20,10 @@ from .training_label_tasks import (
     resolve_training_label_contract,
     training_material_scope_issue,
 )
-from .training_splits import SplitMode, SplitRequest, analyze_training_duplicates, training_annotation_digest
+from .training_splits import (
+    SplitMode, SplitRequest, analyze_training_duplicates,
+    exclude_reserved_test_components, training_annotation_digest,
+)
 from .training_tasks import resolve_training_selection, _selected_project_images
 
 
@@ -233,6 +236,38 @@ def validate_duplicate_review(project: Path, payload: Mapping[str, Any], split: 
     return {"original_train_image_ids": list(original_train), "original_test_image_ids": list(original_test),
             "excluded_image_ids": list(excluded), "material_revision": material_revision,
             "annotation_revision": annotation_revision, "ground_truth_source": "original_annotation"}
+
+
+def normalize_benchmark_duplicate_review(
+    project: Path, payload: Mapping[str, Any], resolved_split: SplitRequest,
+):
+    """Bind a client review to a Benchmark split resolved by a trusted caller.
+
+    Only the API/Worker Benchmark resolvers call this helper, after verifying
+    the frozen Benchmark. A payload field never grants that authority. Keep
+    the client revisions and validate its original roles before introducing
+    server-private Test identities into the internal freeze contract.
+    """
+    requested = _split_request(payload)
+    review = validate_duplicate_review(project, payload, requested)
+    if review is None:
+        return None
+    if requested.test_image_ids or review["original_test_image_ids"]:
+        raise ValueError("duplicate review cannot supply Test roles when reusing a fixed Benchmark")
+    original_train = tuple(review["original_train_image_ids"])
+    rows = _selected_project_images(MaterialRepository(project), project,
+        (*original_train, *resolved_split.test_image_ids))
+    original_train, reserved = exclude_reserved_test_components(
+        rows, original_train, resolved_split.test_image_ids,
+    )
+    if set(review["excluded_image_ids"]) & set(reserved):
+        raise ValueError("duplicate review cannot exclude fixed Benchmark reserved material")
+    normalized = {
+        **review,
+        "original_train_image_ids": list(original_train),
+        "original_test_image_ids": list(resolved_split.test_image_ids),
+    }
+    return validate_duplicate_review(project, {**payload, "duplicate_review": normalized}, resolved_split)
 
 
 def diagnose_training_duplicates(project: Path, payload: Mapping[str, Any]) -> TrainingCompatibilityResult:

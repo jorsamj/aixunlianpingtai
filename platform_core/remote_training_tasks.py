@@ -35,6 +35,7 @@ from .training_compatibility import (
     evaluate_selection_compatibility,
     persist_compatibility_issues,
     validate_duplicate_review,
+    normalize_benchmark_duplicate_review,
     diagnose_training_duplicates,
 )
 from .training_resource_policy import auto_admission_evidence
@@ -541,7 +542,10 @@ class TrainingPrepareHandler:
         # Benchmark, expected revisions, selection and publication atomically.
         with material_annotation_lifecycle_fence(project):
             split, benchmark_reuse = self._resolve_benchmark_reuse(project, algorithm, payload, split)
-            duplicate_review = validate_duplicate_review(project, payload, split)
+            duplicate_review = (
+                normalize_benchmark_duplicate_review(project, payload, split)
+                if benchmark_reuse else validate_duplicate_review(project, payload, split)
+            )
             compatibility = diagnose_training_duplicates(project, {
                 "split_mode": split.mode.value, "train_image_ids": list(split.train_image_ids),
                 "test_image_ids": list(split.test_image_ids), "experiment_percent": split.experiment_percent,
