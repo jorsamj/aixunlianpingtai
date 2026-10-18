@@ -12,7 +12,7 @@
 
 | ID | 优先级 | 问题 | 初始结论 | 状态 | 主要代码 / 验收 |
 | --- | --- | --- | --- | --- | --- |
-| TQ-01 | P0 | Train/Val/Test 多类正样本及来源覆盖 | 现有分组隔离；完整分层不保证 | **阶段二代码候选：分组多标签分层、冻结策略版本化；待测试/CI** | `training_splits.py`、`training_tasks.py`；按类独立图片/框/来源证据 |
+| TQ-01 | P0 | Train/Val/Test 多类正样本及来源覆盖 | 现有分组隔离；完整分层不保证 | **阶段二已提交：Ubuntu/Windows 定向回归通过，生产数据待验收** | `training_splits.py`、`training_tasks.py`；按类独立图片/框/来源证据 |
 | TQ-02 | P0 | 视频邻帧、近重复和缺失来源元数据导致疑似泄漏 | 已隔离 SHA/已知关系；未知来源需保留未知状态 | 待核验 | 导入扫描与 split；不可跨组，不能假装未知已安全 |
 | TQ-03 | P0 | 训练选择的正式标注质量准入不统一 | CLEAN 审计不等同训练准入 | 待修复 | `annotation_quality.py` + freeze；按严重度区分阻断/人工复核 |
 | TQ-04 | P0 | 97% 高 Val mAP 的真实可信度 | 无实际任务报告，不能宣告指标伪造 | 待核验 | 指标口径、类别参与数、数据独立性、独立 Test |
@@ -87,5 +87,14 @@
 - **旧任务兼容**：旧冻结无 `split_strategy` 标记时继续走 `legacy_v1`，不按新算法重排历史 Snapshot；新冻结在 digest 与恢复时记录、复核相同策略。
 - **诊断**：新策略在 `input_quality.class_coverage` 下留存 `partition_diagnostics`（类别组件供给、实际覆盖集合、缺口原因）。当类组件不足、固定 Test 缺少正样本或多类耦合/配额限制时，不谎称类别已独立评测通过。
 - **测试设计**：包含多类+负样本跨 Train/Val/Test、两组稀有类、同视频及已知近重复、固定 Test 不能迁移、旧策略重放、20k 不可拆分组规模。
-- **验收状态**：待本次具体 Git 提交、Python 测试和最终 GitHub Actions 实测后补录 SHA/通过数。生产 A800、真实来源分布、独立 Test 现场验收仍待完成；不得把代码通过等同真实泛化准确率已提高。
+- **提交 SHA**：算法、冻结版本化及首轮测试 `53fc6fcffd1621d90b54481454dd5e82023b6979`；将定向新测试加入 Ubuntu/Windows Training Input Integrity 的后续提交 `3c1d222550f711918cd249febd07e028ee711611`。
+- **定向测试实测**：Training Input Integrity 同一 Git SHA `3c1d2225` 的 Windows、Ubuntu 24.04 均通过；每系统 split 相关测试 **23/23 passed**（包含新增 6 个分层回归），其余同一作业测试批次分别 **30/30、62/62、2/2 passed**。新测试未跳过。
+- **CI 核验边界**：在代码/CI 补强提交 `3c1d2225`，GitHub Actions 连接器返回的首页 **20/20 success、0 failure、0 in progress**；该接口只返回首页 20 个工作流，未见到的其余可能触发工作流尚不能声称成功。生产 A800、真实来源分布、独立 Test 现场验收仍待完成；不得把代码通过等同真实泛化准确率已提高。
 - **安全边界**：未执行生产数据修正、素材删除、Test 迁移、生产部署或 VERSION 修改；TQ-02/TQ-03/TQ-04/TQ-08 等任务保持原有待办状态。
+
+## TQ-03 初步代码审计（暂未修复）
+
+- `platform_core/annotation_quality.py::_audit_boxes` 已有无效/越界/极小/重复框和标签目录检查，但是 `audit_cleaning_annotations` 只针对冻结 CLEAN 选择执行，所有单图问题默认以 warning 记录，并不能自动成为当前训练选择的分级准入。
+- `platform_core/training_splits.py::_valid_annotation` 只验证 annotated 非空和 confirmed_empty 无框/范围，不检查坐标是否有限、几何有效性及类别目录有效性；`freeze_training_inputs` 未复用 CLEAN 审核。
+- 因此 TQ-03 **真实缺口成立**。下一阶段应复用单图审计检查，对本次选择在 Freeze 前实现“阻断/警告/人工复核”准入，并把可重放的质量证据纳入新冻结合同。完整 GT/训练投影差异需区别合法训练任务标签过滤与非法丢框，不能简单要求投影与原始 GT 完全相同。
+- 保持生产只读、不得自动修改 Ground Truth。当前仅审计，**不声称 TQ-03 已修复**。
