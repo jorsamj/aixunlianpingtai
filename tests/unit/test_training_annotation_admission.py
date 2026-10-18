@@ -228,3 +228,23 @@ def test_new_freeze_source_projection_evidence_replays_after_original_gt_changes
     _, _, _, snapshot = resolve_training_input_freeze(frozen, request, seed=17)
     assert snapshot["snapshot_id"] == frozen["snapshot_id"]
 
+
+
+def test_disabled_entire_project_catalog_cannot_approve_excluded_source_gt(tmp_path):
+    import json
+    from platform_core.training_tasks import _training_source_projection_admission
+    from platform_core.training_label_tasks import project_training_rows
+
+    project = _catalog_project(tmp_path)
+    meta_file = project / "meta.json"
+    catalog = json.loads(meta_file.read_text(encoding="utf-8"))
+    for label in catalog["label_meta"]:
+        label["active"] = False
+    meta_file.write_text(json.dumps(catalog), encoding="utf-8")
+    source = [_original_row("inactive-source", ["fire", "person"])]
+    contract = _projected_contract()
+    projected = project_training_rows(source, contract)
+    with pytest.raises(ValueError, match="TRAINING_ANNOTATION_ADMISSION_BLOCKED"):
+        _training_source_projection_admission(
+            project, source, projected, contract["effective_label_schema"], contract,
+        )

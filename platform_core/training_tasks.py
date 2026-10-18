@@ -1429,6 +1429,8 @@ def _training_split_quality(
 def _training_annotation_admission(
     images: Sequence[Mapping[str, Any]],
     label_schema: Sequence[Mapping[str, Any]],
+    *,
+    strict_catalog: bool = False,
 ) -> dict[str, Any]:
     """Bounded, read-only quality admission of this exact projected GT selection.
 
@@ -1478,6 +1480,12 @@ def _training_annotation_admission(
             record("annotation_needs_review", image_id)
         if not raw_boxes:
             continue
+        if strict_catalog and not allowed:
+            # A declared project catalog with zero ACTIVE labels must never
+            # silently treat all excluded GT labels as acceptable.
+            for candidate in raw_boxes:
+                if isinstance(candidate, Mapping):
+                    record("label_unknown", image_id)
         try:
             width = int(row.get("width") or 0)
             height = int(row.get("height") or 0)
@@ -1579,9 +1587,10 @@ def _training_source_projection_admission(
     # Existing test fixtures and legacy import projects can have no label
     # catalog. Do not manufacture a false missing-label blocker in that case;
     # their task-local effective schema remains the only asserted catalog.
+    declared_catalog = bool(labels or label_meta)
     source_schema = (
         [{"code": code} for code in dict.fromkeys(active_codes)]
-        if active_codes else [
+        if declared_catalog else [
             {"code": code} for code in dict.fromkeys([
                 *(str(item.get("code") or "").strip() for item in label_schema),
                 *(
@@ -1592,7 +1601,9 @@ def _training_source_projection_admission(
             ]) if code
         ]
     )
-    source_audit = _training_annotation_admission(original, source_schema)
+    source_audit = _training_annotation_admission(
+        original, source_schema, strict_catalog=declared_catalog,
+    )
     effective_codes = (label_contract or {}).get("effective_label_codes") or ()
     if effective_codes:
         expected = project_training_rows(original, label_contract or {})
