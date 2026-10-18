@@ -16,7 +16,7 @@
 | TQ-02 | P0 | 视频邻帧、近重复和缺失来源元数据导致疑似泄漏 | 已隔离 SHA/已知关系；未知来源需保留未知状态 | 待核验 | 导入扫描与 split；不可跨组，不能假装未知已安全 |
 | TQ-03 | P0 | 训练选择的正式标注质量准入不统一 | CLEAN 审计不等同训练准入 | 待修复 | `annotation_quality.py` + freeze；按严重度区分阻断/人工复核 |
 | TQ-04 | P0 | 97% 高 Val mAP 的真实可信度 | 无实际任务报告，不能宣告指标伪造 | 待核验 | 指标口径、类别参与数、数据独立性、独立 Test |
-| TQ-05 | P0 | Ultralytics `ap_class_index` 与 `box.maps` 类别对应有潜在错配 | `build_report_from_metrics` 位置索引混用，先补失败用例 | **处理中（首项）** | `train_worker.py`、定向 Python 单测；丢类、稀疏 class_id |
+| TQ-05 | P0 | Ultralytics `ap_class_index` 与 `box.maps` 类别对应有潜在错配 | 已证实 compact 数组与 dense `maps` 被按位置混用、NumPy 真值判定可能失败 | **代码已修复；待最终 SHA CI** | `train_worker.py`、定向 Python 单测；丢类、稀疏 class_id |
 | TQ-06 | P0 | 无 GT 类别及独立测试结果可评估性提示 | 平均指标仅计有正 GT 类；报告覆盖不足 | 待修复 | `training_evaluation.py`、质量中心；不得宣告零样本类别合格 |
 | TQ-07 | P0 | Val/Test 推理 `imgsz` 等协议证据未完全统一 | `checkpoint_validation_worker.py` val 显式传尺寸，盲测未显式 | 待修复 | `train_worker.py`、`checkpoint_validation_worker.py`；真实推理参数留证 |
 | TQ-08 | P0 | 历史受保护重复素材与 GT 训练冲突 | 2531/1041/0 为用户生产截图，代码不应解除保护 | 待生产只读核验 | 历史 Task、Snapshot、重复审计，不删除真实素材 |
@@ -44,4 +44,5 @@
 
 ## 本轮结果区
 
-- 2026-10-18：登记全部 13 项，优先开始 TQ-05。此记录提交只包含文档，不代表任何代码修复、CI 验收或生产部署。
+- 2026-10-18：登记全部 13 项，专项问题登记提交 `632447488725797f16a87e033a41b1bfb56ed0f2`。
+- 2026-10-18：TQ-05 在 `train_worker.py::build_report_from_metrics` 修复：紧凑数组按 `ap_class_index` 关联真实 class_id；`box.ap` 按位置读取，`box.maps` 仅按 class_id 索引；NumPy 数组不再使用 `or []` 真值判断。缺少身份映射时不伪造每类指标，仅保留独立总体指标与明确的 `report_error`；新增稀疏类别、无指标类别、NumPy、无映射、非法索引单测。等待本次最终 SHA CI 证明。未处理历史版本指标重算。

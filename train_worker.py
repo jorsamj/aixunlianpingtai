@@ -151,29 +151,108 @@ def metric_value(metrics, key):
 
 
 def build_report_from_metrics(metrics_obj, names=None):
-    report={"metrics":{},"per_class":[],"weak_labels":[]}
-    try:
-        d=getattr(metrics_obj,"results_dict",{}) or {}
-        for k,v in d.items():
-            try: report["metrics"][str(k)]=round(float(v),6)
-            except Exception: pass
-        box=getattr(metrics_obj,"box",None)
-        pvals=list(getattr(box,"p",[]) or []) if box is not None else []
-        rvals=list(getattr(box,"r",[]) or []) if box is not None else []
-        ap50=list(getattr(box,"ap50",[]) or []) if box is not None else []
-        maps=list(getattr(box,"maps",[]) or []) if box is not None else []
-        names=names or getattr(metrics_obj,"names",{}) or {}
-        n=max(len(pvals),len(rvals),len(ap50),len(maps))
-        for i in range(n):
-            name=names.get(i,str(i)) if isinstance(names,dict) else (names[i] if i<len(names) else str(i))
-            row={"label":str(name),"precision":float(pvals[i]) if i<len(pvals) else None,"recall":float(rvals[i]) if i<len(rvals) else None,"map50":float(ap50[i]) if i<len(ap50) else None,"map50_95":float(maps[i]) if i<len(maps) else None}
-            report["per_class"].append(row)
-        ranked=sorted(report["per_class"], key=lambda x: (x.get("recall") if x.get("recall") is not None else 2, x.get("map50") if x.get("map50") is not None else 2))
-        report["weak_labels"]=[x["label"] for x in ranked[:3] if (x.get("recall") is not None and x["recall"]<0.75) or (x.get("map50") is not None and x["map50"]<0.75)]
-    except Exception as e:
-        report["report_error"]=str(e)
-    return report
+    """Report only measured Ultralytics classes, indexed by real class IDs.
 
+    box.p/r/ap50/ap are compact arrays in ap_class_index order. box.maps
+    is a dense array indexed by class_id, and its entries for unmeasured
+    classes are *not* independent AP observations. Never mix those shapes.
+    """
+    import math
+
+    report = {"metrics": {}, "per_class": [], "weak_labels": []}
+    try:
+        for key, value in (getattr(metrics_obj, "results_dict", {}) or {}).items():
+            try:
+                number = float(value)
+                if math.isfinite(number):
+                    report["metrics"][str(key)] = round(number, 6)
+            except (TypeError, ValueError, OverflowError):
+                continue
+
+        box = getattr(metrics_obj, "box", None)
+        if box is None:
+            return report
+
+        def values(name):
+            value = getattr(box, name, None)
+            if value is None:
+                return []
+            # NumPy arrays have an ambiguous truth value. In particular,
+            # "list(ndarray or [])" raises for multiple measured classes.
+            return list(value)
+
+        ids = [int(value) for value in values("ap_class_index")]
+        pvals = values("p")
+        rvals = values("r")
+        ap50 = values("ap50")
+        ap = values("ap")
+        maps = values("maps")
+        if not ids and not any((pvals, rvals, ap50, ap)):
+            return report
+        if not ids:
+            raise ValueError("Ultralytics per-class metrics lack ap_class_index")
+        if any(value < 0 for value in ids) or len(set(ids)) != len(ids):
+            raise ValueError("Ultralytics ap_class_index contains invalid or duplicate class IDs")
+        for label, data in (("p", pvals), ("r", rvals), ("ap50", ap50), ("ap", ap)):
+            if data and len(data) != len(ids):
+                raise ValueError(
+                    f"Ultralytics {label} and ap_class_index lengths disagree"
+                )
+        if not any((pvals, rvals, ap50, ap)):
+            raise ValueError("Ultralytics ap_class_index has no measured per-class metrics")
+
+        catalog = names if names is not None else (getattr(metrics_obj, "names", {}) or {})
+        def class_name(class_id):
+            if isinstance(catalog, dict):
+                return str(catalog.get(class_id, catalog.get(str(class_id), class_id)))
+            if isinstance(catalog, (list, tuple)) and class_id < len(catalog):
+                return str(catalog[class_id])
+            return str(class_id)
+
+        for position, class_id in enumerate(ids):
+            def measurement(data):
+                if not data:
+                    return None
+                value = float(data[position])
+                if not math.isfinite(value):
+                    raise ValueError("Ultralytics per-class metric is non-finite")
+                return value
+
+            # Prefer the compact AP@.5:.95 observation, never maps[position]:
+            # box.maps is indexed by actual class_id (and populates absent
+            # classes with a *global mean*, which must not become measured).
+            map95 = measurement(ap)
+            if map95 is None and class_id < len(maps):
+                map95 = float(maps[class_id])
+                if not math.isfinite(map95):
+                    raise ValueError("Ultralytics class mAP is non-finite")
+            report["per_class"].append({
+                "class_id": class_id,
+                "label": class_name(class_id),
+                "precision": measurement(pvals),
+                "recall": measurement(rvals),
+                "map50": measurement(ap50),
+                "map50_95": map95,
+            })
+        ranked = sorted(
+            report["per_class"],
+            key=lambda row: (
+                row["recall"] if row["recall"] is not None else 2,
+                row["map50"] if row["map50"] is not None else 2,
+            ),
+        )
+        report["weak_labels"] = [
+            row["label"] for row in ranked[:3]
+            if (row["recall"] is not None and row["recall"] < 0.75)
+            or (row["map50"] is not None and row["map50"] < 0.75)
+        ]
+    except Exception as error:
+        # Keep aggregate metrics but never present a partially misaligned
+        # per-class report as trusted category truth.
+        report["per_class"] = []
+        report["weak_labels"] = []
+        report["report_error"] = str(error)
+    return report
 
 def _iou_xyxy(a, b):
     x1=max(a[0],b[0]); y1=max(a[1],b[1]); x2=min(a[2],b[2]); y2=min(a[3],b[3])
