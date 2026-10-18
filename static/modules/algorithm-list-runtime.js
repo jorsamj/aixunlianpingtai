@@ -125,6 +125,7 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
   let inflight = null;
   let lastRefreshAt = 0;
   let refreshError = '';
+  let lastRefreshTiming = null;
   let externalProvider = null;
   let trainingWarmupHandle = null;
   let trainingWarmupGeneration = 0;
@@ -323,17 +324,19 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
     if (!commonWarmupFresh) {
       commonTrainingWarmupProjectId = currentProjectId;
       commonTrainingWarmupAt = now;
-      queueMicrotask(() => {
+      const warmCommon = () => {
         if (destroyed || generation !== trainingWarmupGeneration || String(state().page || '') !== ALGORITHM_PAGE) return;
         void warmTrainingInputs('', {includePreflight: false});
-      });
+      };
+      if (typeof window.requestIdleCallback === 'function') window.requestIdleCallback(warmCommon, {timeout: 1500});
+      else window.setTimeout(warmCommon, 500);
     }
     // Real-time ChangLian preflight remains authoritative. Move the latency
     // off the click path by warming a small visible window while the browser is idle.
     const candidates = rows.filter(row => {
       const meta = providerMeta(row);
       return meta.external && algorithmTrainability(row).ready;
-    }).slice(0, 6);
+    }).slice(0, 2);
     if (!candidates.length) return;
     const run = async () => {
       trainingWarmupHandle = null;
@@ -616,7 +619,7 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
   }
 
   function runtimeState() {
-    return {inflight: Boolean(inflight), lastRefreshAt, error: refreshError, ...filterState(), industry: filters.industry, type: filters.type, sort: viewState.sort, page: viewState.page, categoryOpen: viewState.categoryOpen, draftCategoryIds: [...viewState.draftCategoryIds]};
+    return {inflight: Boolean(inflight), lastRefreshAt, error: refreshError, timing: lastRefreshTiming, ...filterState(), industry: filters.industry, type: filters.type, sort: viewState.sort, page: viewState.page, categoryOpen: viewState.categoryOpen, draftCategoryIds: [...viewState.draftCategoryIds]};
   }
 
   function bindShell(root) {
@@ -709,25 +712,33 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
 
     inflight = (async () => {
       const encoded = encodeURIComponent(pid);
-      const [algorithmBody, jobBody] = await Promise.all([
-        fetchJson(`/api/v12/projects/${encoded}/algorithms`, fetchImpl),
-        fetchJson(`/api/projects/${encoded}/jobs`, fetchImpl),
-      ]);
-
-      const latestGeneration = window.PageRequestScopeRuntime?.stats?.().generation ?? null;
-      const navigationChanged = navigationGeneration != null
-        && latestGeneration != null
-        && latestGeneration !== navigationGeneration;
-      const sameProject = String(projectId?.() || '') === String(pid);
-      const s = state();
-      if (destroyed || navigationChanged || !sameProject) {
-        return {algorithms: s.algorithms || [], jobs: s.jobs || [], cached: false, stale: true};
-      }
-
+      const startedAt = Date.now();
+      // The algorithm catalog is the primary content. Job state is secondary:
+      // slow training task history must not block the first algorithm paint.
+      const algorithmPromise = fetchJson(`/api/v12/projects/${encoded}/algorithms`, fetchImpl);
+      const jobsPromise = fetchJson(`/api/projects/${encoded}/jobs`, fetchImpl)
+        .then(body => ({body}), error => ({error}));
+      const isStale = () => {
+        const latestGeneration = window.PageRequestScopeRuntime?.stats?.().generation ?? null;
+        return destroyed
+          || (navigationGeneration != null && latestGeneration != null && latestGeneration !== navigationGeneration)
+          || String(projectId?.() || '') !== String(pid);
+      };
+      const algorithmBody = await algorithmPromise;
+      const algorithmMs = Date.now() - startedAt;
+      let s = state();
+      if (isStale()) return {algorithms: s.algorithms || [], jobs: s.jobs || [], cached: false, stale: true};
       s.algorithms = listFrom(algorithmBody);
-      s.jobs = listFrom(jobBody);
-      lastRefreshAt = Date.now();
       refreshError = '';
+      if (render && String(s.page || '') === ALGORITHM_PAGE) renderPage();
+      const firstPaintMs = Date.now() - startedAt;
+      const result = await jobsPromise;
+      s = state();
+      if (isStale()) return {algorithms: s.algorithms || [], jobs: s.jobs || [], cached: false, stale: true};
+      lastRefreshTiming = {algorithmMs, firstPaintMs, totalMs: Date.now() - startedAt, projectId: String(pid)};
+      if (result.error) throw result.error;
+      s.jobs = listFrom(result.body);
+      lastRefreshAt = Date.now();
       if (render && String(s.page || '') === ALGORITHM_PAGE) renderPage();
       return {algorithms: s.algorithms, jobs: s.jobs, cached: false, stale: false};
     })();

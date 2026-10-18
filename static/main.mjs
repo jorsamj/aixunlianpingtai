@@ -551,6 +551,7 @@ window.PlatformCore.runtime.renderRouter = {
   },
 };
 
+const algorithmStartupBeganAt = Date.now();
 const canonicalStartupPromise = window.__clInit?.();
 Promise.resolve(canonicalStartupPromise).then(() => {
   // The task center is installed before bootstrap project truth is available.
@@ -558,6 +559,7 @@ Promise.resolve(canonicalStartupPromise).then(() => {
   // browser-only queued File becomes an explicit re-selection request.
   uploadTaskCenterRuntime.switchProject?.();
   const startupPage = String(state.page || '');
+  window.PlatformCore.runtime.startupTiming = {coreBootstrapMs: Date.now() - algorithmStartupBeganAt, page: startupPage};
   adoptPageExtrasInflight(startupPage, state.__extras412);
   if (!state.__startupCanonicalPainted && navigationStabilityRuntime.hasPageOwner(startupPage)) {
     void renderCanonicalOwner(startupPage, {source: 'startup-owner'});

@@ -90,6 +90,31 @@ test('focused refresh fetches only algorithms and jobs and updates the visible c
   cleanup();
 });
 
+test('algorithm cards update before slow job history completes', async () => {
+  const state = {page: '算法列表', project: {id: 'p1'}, algorithms: [{id: 'old'}], jobs: [{id: 'previous'}], alg428Expanded: {}};
+  let releaseJobs;
+  const slowJobs = new Promise(resolve => { releaseJobs = resolve; });
+  const seen = [];
+  globalThis.window = {fetch: async url => {
+    seen.push(url);
+    if (url.endsWith('/jobs')) { await slowJobs; return response([{id:'fresh-job'}]); }
+    return response({items:[{id:'new-algorithm',name:'先显示算法'}]});
+  }};
+  const runtime = installAlgorithmListRuntime({getState:()=>state,projectId:()=>state.project.id});
+  const pending = runtime.refresh({render:false});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(state.algorithms[0].id,'new-algorithm','catalog must paint without waiting for jobs');
+  assert.equal(state.jobs[0].id,'previous','job history must not be replaced before its response');
+  assert.equal(runtime.state().inflight,true);
+  releaseJobs();
+  await pending;
+  assert.equal(state.jobs[0].id,'fresh-job');
+  assert.equal(seen.length,2);
+  assert.ok(runtime.state().timing.algorithmMs >= 0);
+  assert.ok(runtime.state().timing.totalMs >= runtime.state().timing.algorithmMs);
+  runtime.destroy();cleanup();
+});
+
 test('concurrent focused refreshes share one request pair', async () => {
   const state = {
     page: '算法列表',
