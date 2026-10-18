@@ -300,10 +300,15 @@ class FakeSources:
         return self.value if str(source_id) == self.value.id else None
 
 
-def test_remote_training_prepare_handler_builds_bundle_and_activates_target(tmp_path):
+@pytest.mark.parametrize("schema_version", [3, 4])
+def test_remote_training_prepare_handler_builds_bundle_and_activates_target(tmp_path, monkeypatch, schema_version):
     data_dir = tmp_path / "data"
     project_id = _build_project(data_dir)
     repository, artifacts, target_id, prep_id = _runtime(data_dir, project_id)
+    if schema_version == 4:
+        payload = artifacts.read_json(target_id, "payload.json")
+        payload.update(schema_version=4, training_input_state="PREPARING", train_labels=["fire"])
+        artifacts.atomic_write_json(target_id, "payload.json", payload)
     source = _remote_source()
     provider = FakeObjectProvider()
     handler = RemoteTrainingPrepareHandler(
@@ -313,6 +318,43 @@ def test_remote_training_prepare_handler_builds_bundle_and_activates_target(tmp_
         provider_factory=lambda _project_id, _source, _secret: provider,
         model_artifacts=FakeModelArtifacts(source.id),
     )
+    from contextlib import contextmanager
+    original_fence = remote_training_tasks_module.material_annotation_lifecycle_fence
+    original_refresh = handler._refresh_external_algorithm
+    original_freeze = remote_training_tasks_module.freeze_training_inputs
+    locked = False
+    calls = []
+    @contextmanager
+    def tracked_fence(project):
+        nonlocal locked
+        with original_fence(project):
+            locked = True
+            try:
+                yield
+            finally:
+                locked = False
+    def refresh(*args):
+        assert not locked, "external HTTP must not block canonical GT editing"
+        calls.append("refresh")
+        return original_refresh(*args)
+    def freeze(*args, **kwargs):
+        if schema_version == 4:
+            assert locked, "canonical freeze must hold the annotation lifecycle fence"
+        calls.append("freeze")
+        return original_freeze(*args, **kwargs)
+    monkeypatch.setattr(remote_training_tasks_module, "material_annotation_lifecycle_fence", tracked_fence)
+    monkeypatch.setattr(remote_training_tasks_module, "freeze_training_inputs", freeze)
+    monkeypatch.setattr(handler, "_refresh_external_algorithm", refresh)
+    original_benchmark = handler._resolve_benchmark_reuse
+    original_review = remote_training_tasks_module.validate_duplicate_review
+    def benchmark(*args, **kwargs):
+        assert locked, "benchmark GT validation and selection must share the freeze fence"
+        return original_benchmark(*args, **kwargs)
+    def review(*args, **kwargs):
+        assert locked, "expected revisions must be validated within the selection fence"
+        return original_review(*args, **kwargs)
+    monkeypatch.setattr(handler, "_resolve_benchmark_reuse", benchmark)
+    monkeypatch.setattr(remote_training_tasks_module, "validate_duplicate_review", review)
     scheduler = Scheduler(
         repository,
         artifacts,
@@ -322,6 +364,8 @@ def test_remote_training_prepare_handler_builds_bundle_and_activates_target(tmp_
     )
 
     assert scheduler.run_once() is True
+    if schema_version == 4:
+        assert calls[:2] == ["refresh", "freeze"]
 
     prep = repository.get(prep_id)
     target = repository.get(target_id)
@@ -462,6 +506,24 @@ def test_training_prepare_persists_all_scope_drift_issues_before_failure(tmp_pat
     page = artifacts.read_json(target_id, manifest["pages"][0]["ref"])
     assert len(page) == 4
     assert all(item["missing_label_codes"] == ["smoke"] for item in page)
+
+
+def test_training_prepare_persists_revision_drift_error_without_creating_freeze(tmp_path):
+    data_dir = tmp_path / "data"
+    project_id = _build_project(data_dir)
+    repository, artifacts, target_id, prep_id = _runtime(data_dir, project_id)
+    payload = artifacts.read_json(target_id, "payload.json")
+    payload.update(schema_version=4, expected_material_revision=0, expected_annotation_revision=0)
+    artifacts.atomic_write_json(target_id, "payload.json", payload)
+    scheduler = Scheduler(repository, artifacts, "prep-revision-drift",
+        {TaskKind.TRAINING_PREPARE: RemoteTrainingPrepareHandler(data_dir)}, {"training.prepare"})
+    assert scheduler.run_once() is True
+    assert repository.get(target_id).status is TaskStatus.FAILED
+    evidence = artifacts.read_json(target_id, "input-preparation-error.json", default={})
+    assert evidence["code"] == "TRAINING_REVIEW_STALE"
+    assert evidence["input_freeze_created"] is False
+    assert evidence["task_id"] == target_id
+    assert not artifacts.artifact_path(target_id, "input-freeze.json").exists()
 
 
 def test_remote_training_prepare_freezes_feedback_subset_without_agent_feedback_dependency(tmp_path):

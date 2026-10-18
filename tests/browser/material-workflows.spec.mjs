@@ -235,6 +235,51 @@ test('annotation paints stale cached labels before authoritative label revalidat
 });
 
 
+test('image-first annotation workspace keeps one class picker and explicit collapsed review at every viewport', async ({page, request}, testInfo) => {
+  const project = await createMaterialProject(request, `标注冲突复核布局-${Date.now()}`);
+  const image = await uploadImage(request, project.id, 'review-layout.bmp', [72, 132, 198]);
+  await request.post(`/api/v52/projects/${project.id}/images/mark-ready`, {data: {image_ids: [image.id]}});
+  await selectProject(page, project.id);
+  await page.goto('/');
+  await page.getByRole('button', {name: /数据集/}).click();
+  await page.getByRole('button', {name: /已处理/}).click();
+  await page.locator('.data412-card', {hasText: 'review-layout.bmp'}).getByRole('button', {name: '标注'}).click();
+  const dialog = page.getByRole('dialog', {name: '图片标注工作台', exact: true});
+  const review = dialog.locator('#ann420ReviewPanel');
+  await expect(review).toHaveJSProperty('open', false);
+  await expect(review.locator('summary')).toContainText('未检查类别');
+  await expect(dialog.getByLabel('绘制标签')).toHaveCount(1);
+  await expect(dialog.locator('.ann420-inspector #ann420Label')).toBeVisible();
+  await expect(dialog.locator('#annLabels button')).toHaveCount(0);
+  const before = await (await request.get(`/api/projects/${project.id}/annotations/${image.id}`)).json();
+  await review.locator('summary').click();
+  await expect(review.locator('input:checked')).toHaveCount(0);
+  const after = await (await request.get(`/api/projects/${project.id}/annotations/${image.id}`)).json();
+  expect(after.annotation_scope).toEqual(before.annotation_scope);
+  await review.locator('summary').click();
+  await page.emulateMedia({reducedMotion: 'reduce'});
+  for (const [width, height] of [[1920,1080],[1440,900],[1366,768],[375,812]]) {
+    await page.setViewportSize({width,height});
+    await dialog.locator('#annImg').scrollIntoViewIfNeeded();
+    await dialog.getByRole('button', {name:'适应窗口',exact:true}).click();
+    const geometry = await dialog.evaluate(el => {
+      const canvas=el.querySelector('.ann-canvas-wrap').getBoundingClientRect();
+      const image=el.querySelector('#annImg').getBoundingClientRect();
+      return {canvasWidth:canvas.width,canvasHeight:canvas.height,imageWidth:image.width,pageWidth:document.documentElement.scrollWidth};
+    });
+    expect(geometry.pageWidth).toBeLessThanOrEqual(width);
+    expect(geometry.canvasWidth).toBeGreaterThan(width > 1000 ? width * .48 : 280);
+    expect(geometry.canvasHeight).toBeGreaterThan(width > 1000 ? 400 : 240);
+    expect(geometry.imageWidth).toBeGreaterThan(Math.min(geometry.canvasWidth * .65, 390));
+    expect(geometry.imageWidth).toBeLessThan(geometry.canvasWidth);
+    const fitZoom = await dialog.locator('#zoomText').textContent();
+    await dialog.getByTitle('放大', {exact:true}).click();
+    expect(parseInt(await dialog.locator('#zoomText').textContent())).toBeGreaterThanOrEqual(parseInt(fitZoom));
+    await dialog.getByRole('button', {name:'适应窗口',exact:true}).click();
+    await page.screenshot({path:testInfo.outputPath(`annotation-workspace-${width}.png`)});
+  }
+});
+
 test('professional annotation workbench survives repeated open-close cycles and keeps essential controls visible at 1366x768', async ({page, request}) => {
   await page.setViewportSize({width: 1366, height: 768});
   const project = await createMaterialProject(request, `标注台稳定性-${Date.now()}`);
@@ -375,7 +420,8 @@ test('batch annotation requires explicit label review before confirming consecut
   await expect(firstPending).toHaveCount(2);
   await expect(firstPending.nth(0)).not.toBeChecked();
   await expect(firstPending.nth(1)).not.toBeChecked();
-  await dialog.getByRole('button', {name: '显式全选待审核', exact: true}).click();
+  await dialog.locator('#ann420ReviewPanel > summary').click();
+  await dialog.getByRole('button', {name: '显式全选未检查类别', exact: true}).click();
   await firstConfirm.click();
   await expect(dialog.getByRole('button', {name: '✓ 已确认负样本'})).toBeVisible();
   await dialog.locator('#ann420Next').click();
@@ -389,7 +435,8 @@ test('batch annotation requires explicit label review before confirming consecut
   await expect(secondPending).toHaveCount(2);
   await expect(secondPending.nth(0)).not.toBeChecked();
   await expect(secondPending.nth(1)).not.toBeChecked();
-  await dialog.getByRole('button', {name: '显式全选待审核', exact: true}).click();
+  if(!await dialog.locator('#ann420ReviewPanel').evaluate(el=>el.open))await dialog.locator('#ann420ReviewPanel > summary').click();
+  await dialog.getByRole('button', {name: '显式全选未检查类别', exact: true}).click();
   await secondConfirm.click();
   await expect(dialog.getByRole('button', {name: '✓ 已确认负样本'})).toBeVisible();
 

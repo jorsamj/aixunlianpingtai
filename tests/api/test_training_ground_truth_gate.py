@@ -1,4 +1,5 @@
 import pytest
+from types import SimpleNamespace
 
 from platform_core.snapshots import build_snapshot, is_training_ground_truth
 from platform_core.training_splits import SplitManifest, SplitMode, _processed
@@ -223,7 +224,7 @@ def test_training_input_freeze_survives_later_gt_and_label_changes(monkeypatch, 
         }
     ]
 
-    monkeypatch.setattr(training_tasks, "MaterialRepository", lambda _project: object())
+    monkeypatch.setattr(training_tasks, "MaterialRepository", lambda _project: SimpleNamespace(current_revision=lambda: 1))
     monkeypatch.setattr(
         training_tasks,
         "_selected_project_images",
@@ -271,7 +272,7 @@ def test_training_input_freeze_rejects_tampering(monkeypatch, tmp_path):
     train_ids = ("train-1", "train-2", "train-3", "train-4")
     test_ids = ("test-1",)
     rows = _freeze_rows((*train_ids, *test_ids))
-    monkeypatch.setattr(training_tasks, "MaterialRepository", lambda _project: object())
+    monkeypatch.setattr(training_tasks, "MaterialRepository", lambda _project: SimpleNamespace(current_revision=lambda: 1))
     monkeypatch.setattr(
         training_tasks,
         "_selected_project_images",
@@ -314,7 +315,7 @@ def test_training_input_freeze_requires_indexed_content_identity(monkeypatch, tm
     test_ids = ("test-1",)
     rows = _freeze_rows((*train_ids, *test_ids))
     rows[2]["content_sha256"] = ""
-    monkeypatch.setattr(training_tasks, "MaterialRepository", lambda _project: object())
+    monkeypatch.setattr(training_tasks, "MaterialRepository", lambda _project: SimpleNamespace(current_revision=lambda: 1))
     monkeypatch.setattr(
         training_tasks,
         "_selected_project_images",
@@ -389,7 +390,7 @@ def test_training_input_freeze_rejects_all_negative_detection_training(monkeypat
         row["annotation_scope"] = ["smoke"]
         row["boxes"] = []
 
-    monkeypatch.setattr(training_tasks, "MaterialRepository", lambda _project: object())
+    monkeypatch.setattr(training_tasks, "MaterialRepository", lambda _project: SimpleNamespace(current_revision=lambda: 1))
     monkeypatch.setattr(
         training_tasks,
         "_selected_project_images",

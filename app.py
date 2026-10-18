@@ -7558,6 +7558,9 @@ def gpu_resources():
 
 class TrainReq(BaseModel):
     task_id: Optional[str] = None
+    expected_material_revision: Optional[int] = Field(default=None, ge=0)
+    expected_annotation_revision: Optional[int] = Field(default=None, ge=0)
+    duplicate_review: Optional[Dict[str, Any]] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -8447,11 +8450,19 @@ def _enqueue_explicit_training_locked(project_id: str, payload: TrainReq, task_i
             raise HTTPException(status_code=409, detail=str(error)) from error
         if compatibility.issues:
             page = compatibility_page(compatibility, limit=100)
+            duplicate_types = {item["issue_type"] for item in compatibility.issues}
+            error_code = (
+                "CONTENT_HASH_LEAKAGE" if "content_hash_leakage" in duplicate_types else
+                "DUPLICATE_ANNOTATION_CONFLICT" if "duplicate_annotation_conflict" in duplicate_types else
+                "TRAINING_MATERIAL_SCOPE_INCOMPATIBLE"
+            )
             raise HTTPException(
                 status_code=409,
                 detail={
-                    "code": "TRAINING_MATERIAL_SCOPE_INCOMPATIBLE",
-                    "message": "所选素材的审核范围未覆盖本次训练标签，请先补审或排除素材",
+                    "code": error_code,
+                    "message": ("训练与独立试验素材存在同内容图片，请重新划分素材角色" if error_code == "CONTENT_HASH_LEAKAGE" else
+                        "重复图片的原始标注不一致，请核对标注或明确排除本次训练输入" if error_code == "DUPLICATE_ANNOTATION_CONFLICT" else
+                        "所选素材的审核范围未覆盖本次训练标签，请先补审或排除素材"),
                     **compatibility.summary(),
                     **page,
                 },
@@ -23812,6 +23823,7 @@ app.include_router(training_recovery_router(
     get_project,
     shared_task_repository,
     shared_task_artifacts,
+    project_path_provider=project_dir,
     agent_execution_payload_resolver=_resolve_agent_execution_payload,
     agent_result_upload_preparer=_prepare_agent_result_upload,
     agent_result_upload_confirmer=_confirm_agent_result_upload,

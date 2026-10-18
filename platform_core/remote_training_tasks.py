@@ -18,7 +18,7 @@ from .external_algorithm_platform import (
     resolve_external_training_analysis,
 )
 from .errors import PlatformError
-from .material_repository import MaterialRepository
+from .material_repository import MaterialRepository, material_annotation_lifecycle_fence
 from .model_artifacts import ModelArtifactService
 from .remote_training_transport import (
     create_training_bundle_archive,
@@ -34,6 +34,8 @@ from .training_label_tasks import project_training_rows, resolve_training_label_
 from .training_compatibility import (
     evaluate_selection_compatibility,
     persist_compatibility_issues,
+    validate_duplicate_review,
+    diagnose_training_duplicates,
 )
 from .training_resource_policy import auto_admission_evidence
 from .training_splits import (
@@ -261,6 +263,22 @@ class TrainingPrepareHandler:
                 stage="training_input_preparation_failed",
                 **self._owner(context),
             )
+            context.assert_current_execution()
+            existing_evidence = context.artifacts.read_json(
+                training_task_id, "input-preparation-error.json", default=None,
+            )
+            if not isinstance(existing_evidence, Mapping):
+                codes = re.findall(r"\b[A-Z][A-Z0-9]+(?:_[A-Z0-9]+)+\b", str(error))
+                code = next((value for value in codes if value != "TRAINING_PREPARATION_FAILED"),
+                    "TRAINING_PREPARATION_FAILED")
+                context.artifacts.atomic_write_json(training_task_id, "input-preparation-error.json", {
+                    "schema_version": 1, "task_id": training_task_id,
+                    "project_id": current.project_id, "code": code,
+                    "stage": "training_input_preparation_failed",
+                    "input_freeze_created": context.artifacts.artifact_path(
+                        training_task_id, "input-freeze.json").is_file(),
+                    "preparation_task_id": context.task.task_id,
+                })
         except PermissionError as fenced:
             context.mark_lease_lost()
             raise ExecutionFencedError("training preparation lost parent failure ownership") from fenced
@@ -519,84 +537,107 @@ class TrainingPrepareHandler:
             experiment_percent=payload.get("experiment_percent"),
             validation_percent=float(payload.get("validation_percent") or 20),
         )
-        split, benchmark_reuse = self._resolve_benchmark_reuse(project, algorithm, payload, split)
-        selection = resolve_training_selection(project, split)
-        effective_split = selection.effective_split
-        supplement = self._resolve_supplement_candidate_set(project, algorithm, payload, effective_split)
-        label_request = dict(payload)
-        label_request.update(
-            train_image_ids=list(effective_split.train_image_ids),
-            test_image_ids=list(effective_split.test_image_ids),
-            selected_image_ids=list(effective_split.train_image_ids),
-        )
-        label_contract = resolve_training_label_contract(
-            self.data_dir, project, label_request, algorithm,
-        )
-        compatibility = evaluate_selection_compatibility(
-            project,
-            selection,
-            label_contract,
-        )
-        if compatibility.issues:
-            manifest = persist_compatibility_issues(
-                context.artifacts,
-                target.task_id,
-                compatibility,
+        # Keep network-backed refresh outside the project GT fence, but validate
+        # Benchmark, expected revisions, selection and publication atomically.
+        with material_annotation_lifecycle_fence(project):
+            split, benchmark_reuse = self._resolve_benchmark_reuse(project, algorithm, payload, split)
+            duplicate_review = validate_duplicate_review(project, payload, split)
+            compatibility = diagnose_training_duplicates(project, {
+                "split_mode": split.mode.value, "train_image_ids": list(split.train_image_ids),
+                "test_image_ids": list(split.test_image_ids), "experiment_percent": split.experiment_percent,
+                "validation_percent": split.validation_percent,
+            })
+            if not compatibility.issues:
+                selection = resolve_training_selection(project, split)
+                effective_split = selection.effective_split
+                supplement = self._resolve_supplement_candidate_set(project, algorithm, payload, effective_split)
+                label_request = dict(payload)
+                label_request.update(
+                    train_image_ids=list(effective_split.train_image_ids),
+                    test_image_ids=list(effective_split.test_image_ids),
+                    selected_image_ids=list(effective_split.train_image_ids),
+                )
+                label_contract = resolve_training_label_contract(
+                    self.data_dir, project, label_request, algorithm,
+                )
+                compatibility = evaluate_selection_compatibility(
+                    project,
+                    selection,
+                    label_contract,
+                )
+            if compatibility.issues:
+                manifest = persist_compatibility_issues(
+                    context.artifacts,
+                    target.task_id,
+                    compatibility,
+                )
+                types = manifest["issue_counts"]
+                code = ("CONTENT_HASH_LEAKAGE" if "content_hash_leakage" in types else
+                    "DUPLICATE_ANNOTATION_CONFLICT" if "duplicate_annotation_conflict" in types else
+                    "TRAINING_MATERIAL_SCOPE_INCOMPATIBLE")
+                context.artifacts.atomic_write_json(target.task_id, "input-preparation-error.json", {
+                    "schema_version": 1, "task_id": target.task_id, "project_id": target.project_id,
+                    "code": code, "stage": "training_input_preparation_failed",
+                    "ground_truth_source": "original_annotation", "issue_count": manifest["issue_count"],
+                    "issue_counts": manifest["issue_counts"], "material_revision": compatibility.material_revision,
+                    "annotation_revision": compatibility.annotation_revision,
+                    "issues_ref": "input-compatibility/manifest.json", "input_freeze_created": False,
+                })
+                raise RemoteTrainingPreparationError(
+                    code,
+                    f"{code}: "
+                    f"{manifest['issue_count']} 张训练素材需要补审或排除",
+                    target_status=TaskStatus.FAILED,
+                )
+            projected = project_training_rows(selection.effective_images, label_contract)
+            frozen = freeze_training_inputs(
+                project,
+                split,
+                seed=int(payload.get("seed") or 0),
+                supplement_candidate_set=supplement,
+                selection_resolution=selection,
+                effective_images=projected,
+                label_schema_override=label_contract["effective_label_schema"],
+                label_contract=label_contract,
+                duplicate_review=duplicate_review,
             )
-            raise RemoteTrainingPreparationError(
-                "TRAINING_MATERIAL_SCOPE_INCOMPATIBLE",
-                "TRAINING_MATERIAL_SCOPE_INCOMPATIBLE: "
-                f"{manifest['issue_count']} 张训练素材需要补审或排除",
-                target_status=TaskStatus.FAILED,
-            )
-        projected = project_training_rows(selection.effective_images, label_contract)
-        frozen = freeze_training_inputs(
-            project,
-            split,
-            seed=int(payload.get("seed") or 0),
-            supplement_candidate_set=supplement,
-            selection_resolution=selection,
-            effective_images=projected,
-            label_schema_override=label_contract["effective_label_schema"],
-            label_contract=label_contract,
-        )
-        context.artifacts.atomic_write_json(target.task_id, "input-freeze.json", frozen)
-        truth = selection.truth()
-        updated = {
-            **payload,
-            "schema_version": 4,
-            "split_mode": effective_split.mode.value,
-            "train_image_ids": list(effective_split.train_image_ids),
-            "test_image_ids": list(effective_split.test_image_ids),
-            "selected_train_image_ids": list(selection.selected_train_image_ids),
-            "pending_annotation_image_ids": list(selection.pending_annotation_image_ids),
-            "selection_counts": {
-                "selected_train_count": int(truth["selected_train_count"]),
-                "effective_train_count": int(truth["effective_train_count"]),
-                "pending_annotation_count": int(truth["pending_annotation_count"]),
-                "test_count": int(truth["test_count"]),
-            },
-            "selection_truth": truth,
-            "experiment_percent": effective_split.experiment_percent,
-            "validation_percent": effective_split.validation_percent,
-            "external_analysis_id": external_analysis_id,
-            "supplement_candidate_set": supplement,
-            "benchmark_reuse": benchmark_reuse,
-            "input_freeze_ref": "input-freeze.json",
-            "input_freeze_id": frozen["input_freeze_id"],
-            "snapshot_id": frozen["snapshot_id"],
-            "dataset_revision_id": frozen["dataset_revision_id"],
-            "input_quality": frozen["input_quality"],
-            "label_contract": frozen.get("label_contract") or {},
-            "base_version_id": label_contract.get("base_version_id") or None,
-            "base_version_name": label_contract.get("base_version_name") or "",
-            "base_training_mode": label_contract.get("base_training_mode") or "",
-            "base_model_reference": label_contract.get("base_model_reference") or "",
-            "base_model_sha256": label_contract.get("base_model_sha256") or "",
-            "base_model_size_bytes": int(label_contract.get("base_model_size_bytes") or 0),
-            "base_selection_reason": label_contract.get("base_selection_reason") or "",
-        }
-        return updated
+            context.artifacts.atomic_write_json(target.task_id, "input-freeze.json", frozen)
+            truth = selection.truth()
+            updated = {
+                **payload,
+                "schema_version": 4,
+                "split_mode": effective_split.mode.value,
+                "train_image_ids": list(effective_split.train_image_ids),
+                "test_image_ids": list(effective_split.test_image_ids),
+                "selected_train_image_ids": list(selection.selected_train_image_ids),
+                "pending_annotation_image_ids": list(selection.pending_annotation_image_ids),
+                "selection_counts": {
+                    "selected_train_count": int(truth["selected_train_count"]),
+                    "effective_train_count": int(truth["effective_train_count"]),
+                    "pending_annotation_count": int(truth["pending_annotation_count"]),
+                    "test_count": int(truth["test_count"]),
+                },
+                "selection_truth": truth,
+                "experiment_percent": effective_split.experiment_percent,
+                "validation_percent": effective_split.validation_percent,
+                "external_analysis_id": external_analysis_id,
+                "supplement_candidate_set": supplement,
+                "benchmark_reuse": benchmark_reuse,
+                "input_freeze_ref": "input-freeze.json",
+                "input_freeze_id": frozen["input_freeze_id"],
+                "snapshot_id": frozen["snapshot_id"],
+                "dataset_revision_id": frozen["dataset_revision_id"],
+                "input_quality": frozen["input_quality"],
+                "label_contract": frozen.get("label_contract") or {},
+                "base_version_id": label_contract.get("base_version_id") or None,
+                "base_version_name": label_contract.get("base_version_name") or "",
+                "base_training_mode": label_contract.get("base_training_mode") or "",
+                "base_model_reference": label_contract.get("base_model_reference") or "",
+                "base_model_sha256": label_contract.get("base_model_sha256") or "",
+                "base_model_size_bytes": int(label_contract.get("base_model_size_bytes") or 0),
+                "base_selection_reason": label_contract.get("base_selection_reason") or "",
+            }
+            return updated
 
     def _publish_prepared_job(self, target, payload: Mapping[str, Any]) -> None:
         job_file = (

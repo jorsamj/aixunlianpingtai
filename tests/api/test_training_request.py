@@ -1601,6 +1601,61 @@ def _training_create_replay_fixture(client, seeded_project):
     }
 
 
+@pytest.mark.parametrize("cross_role", [False, True])
+def test_duplicate_original_gt_conflict_is_rejected_before_task_or_payload_creation(client, seeded_project, cross_role):
+    from platform_core.annotation_repository import AnnotationRepository
+    from platform_core.task_runtime import TaskKind
+    import app as platform
+    project_id, payload = _training_create_replay_fixture(client, seeded_project)
+    a = payload["train_image_ids"][0]
+    b = payload["test_image_ids"][0] if cross_role else payload["train_image_ids"][1]
+    sha = platform.material_store(project_id).get(a)["content_sha256"]
+    platform.material_store(project_id).patch({b: {"content_sha256": sha}})
+    AnnotationRepository(platform.project_dir(project_id)).upsert_many([{
+        "image_id": b, "annotation_state": "annotated", "annotation_scope": ["fire"],
+        "boxes": [{"label": "fire", "x1": 20, "y1": 10, "x2": 80, "y2": 80}],
+    }])
+    before = len(platform.shared_task_repository().list(project_id=project_id, kinds=(TaskKind.TRAINING,), limit=100).items)
+    response = client.post(f"/api/v12/projects/{project_id}/train/start", json=payload)
+    assert response.status_code == 409, response.text
+    detail = json.loads(response.json()["detail"])
+    assert detail["code"] == ("CONTENT_HASH_LEAKAGE" if cross_role else "DUPLICATE_ANNOTATION_CONFLICT")
+    assert {item["image_id"] for item in detail["items"] if item["issue_type"] in {
+        "content_hash_leakage", "duplicate_annotation_conflict"}} == {a, b}
+    assert platform.shared_task_repository().get(payload["task_id"]) is None
+    assert not platform.shared_task_artifacts().artifact_path(payload["task_id"], "payload.json").exists()
+    assert before == len(platform.shared_task_repository().list(project_id=project_id, kinds=(TaskKind.TRAINING,), limit=100).items)
+
+
+def test_training_final_admission_rejects_stale_preflight_revision_before_task_creation(client, seeded_project):
+    import app as platform
+    project_id, payload = _training_create_replay_fixture(client, seeded_project)
+    response = client.post(f"/api/v12/projects/{project_id}/train/start", json={**payload,
+        "expected_material_revision": 0, "expected_annotation_revision": 0})
+    assert response.status_code == 409, response.text
+    assert "revision" in response.json()["detail"]
+    assert platform.shared_task_repository().get(payload["task_id"]) is None
+
+
+def test_training_rejects_leakage_before_unannotated_test_eligibility(client, seeded_project):
+    from platform_core.annotation_repository import AnnotationRepository
+    import app as platform
+    project_id, payload = _training_create_replay_fixture(client, seeded_project)
+    train = payload["train_image_ids"][0]
+    test = payload["test_image_ids"][0]
+    platform.material_store(project_id).patch({test: {"content_sha256": platform.material_store(project_id).get(train)["content_sha256"]}})
+    AnnotationRepository(platform.project_dir(project_id)).upsert_many([
+        {"image_id": test, "annotation_state": "unannotated", "annotation_scope": [], "boxes": []},
+    ])
+    response = client.post(f"/api/v12/projects/{project_id}/train/start", json=payload)
+    assert response.status_code == 409, response.text
+    detail = json.loads(response.json()["detail"])
+    assert detail["code"] == "CONTENT_HASH_LEAKAGE"
+    assert {item["image_id"] for item in detail["items"]} == {train, test}
+    assert platform.shared_task_repository().get(payload["task_id"]) is None
+    assert not platform.shared_task_artifacts().artifact_path(payload["task_id"], "payload.json").exists()
+
+
 def test_concurrent_same_training_id_does_not_overwrite_winner_immutable_payload(
     client, seeded_project, monkeypatch,
 ):

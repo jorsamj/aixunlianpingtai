@@ -485,6 +485,7 @@ def training_recovery_router(
     agent_material_scan_read_provider=None,
     agent_clean_selection_page_provider=None,
     agent_clean_selection_read_provider=None,
+    project_path_provider=None,
 ):
     from fastapi import APIRouter, Body, HTTPException, Query
 
@@ -496,6 +497,48 @@ def training_recovery_router(
         if task is None or task.project_id != project_id or task.kind is not TaskKind.TRAINING:
             raise HTTPException(status_code=404, detail="训练任务不存在")
         return task
+
+    @recovery_router.get("/{task_id}/input-diagnosis")
+    def input_diagnosis(project_id: str, task_id: str,
+        page: int = Query(default=1, ge=1), limit: int = Query(default=24, ge=1, le=100),
+        query: str = Query(default="", max_length=256)):
+        task = require_task(project_id, task_id)
+        if project_path_provider is None:
+            raise HTTPException(status_code=503, detail="训练输入诊断服务不可用")
+        from .training_compatibility import compatibility_page, diagnose_training_duplicates
+        from .training_tasks import _training_input_freeze_digest
+        from .material_batches import _historical_material_references, BatchRequestError
+        artifacts = task_artifacts()
+        payload = artifacts.read_json(task_id, task.payload_ref, default={})
+        frozen = artifacts.read_json(task_id, "input-freeze.json", default={})
+        valid_freeze = bool(isinstance(frozen, Mapping) and frozen.get("input_freeze_id")
+            and frozen.get("input_freeze_id") == _training_input_freeze_digest(frozen))
+        historical = {
+            "status": ("freeze_checksum_verified_not_source_revalidated" if valid_freeze else
+                "insufficient_invalid_input_freeze" if frozen else "insufficient_no_input_freeze"),
+            "input_freeze_id": str(frozen.get("input_freeze_id") or "") if valid_freeze else None,
+            "source_error": _public_text(getattr(task, "error", "")),
+            "message": ("冻结合同摘要已核验；当前素材诊断不代表历史标注。" if valid_freeze else
+                "历史冻结证据不足，不能用当前标注推断失败时的完整标注。"),
+            "preparation_error_recorded": isinstance(artifacts.read_json(task_id,
+                "input-preparation-error.json", default=None), Mapping),
+        }
+        current = {"evidence_basis": "current_canonical_annotations", "available": False}
+        project = Path(project_path_provider(project_id))
+        try:
+            result = diagnose_training_duplicates(project, payload if isinstance(payload, Mapping) else {})
+            current.update(available=True, **result.summary(), **compatibility_page(result, page=page, limit=limit, query=query))
+            reasons = _historical_material_references(project_id, project, task_repository(), artifacts,
+                with_reasons=True, reference_image_ids=[item["image_id"] for item in current["items"]])
+            current["items"] = [{**item,
+                "reference_reasons": reasons.get(item["image_id"], []),
+                "protected": bool(reasons.get(item["image_id"])),
+                "thumbnail_url": f"/api/v62/projects/{quote(project_id, safe='')}/training-materials/{quote(item['image_id'], safe='')}/thumbnail",
+                "content_url": f"/api/v61/projects/{quote(project_id, safe='')}/materials/{quote(item['image_id'], safe='')}/content",
+            } for item in current["items"]]
+        except (ValueError, KeyError, BatchRequestError) as error:
+            current.update(available=False, message=_public_text(error))
+        return {"ok": True, "task_id": task_id, "historical_evidence": historical, "current_diagnosis": current}
 
     @recovery_router.get("/{task_id}/input-issues")
     def input_issues(

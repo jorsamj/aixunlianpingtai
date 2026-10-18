@@ -49,8 +49,9 @@ test('manual annotation uses incremental box patching and explicit empty confirm
   assert.match(stable, /confirmEmptyAnnotationCanonical420/);
   assert.match(stable, /button\.textContent='提交中…'/);
   assert.match(stable, /confirmReview:true,reviewedLabelCodes:selected/);
-  assert.match(stable, /待审核标签（默认不勾选）/);
-  assert.match(stable, /显式全选待审核/);
+  assert.match(stable, /未检查类别（默认不勾选）/);
+  assert.match(stable, /<details[^>]*id="ann420ReviewPanel"/);
+  assert.match(stable, /显式全选未检查类别/);
   assert.match(stable, /restoreLabelSchema414/);
   assert.match(stable, /wheelZoomBound/);
   assert.match(stable, /resetAnnotationZoom420/);

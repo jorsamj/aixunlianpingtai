@@ -584,6 +584,8 @@ export function installTrainingSubmitRuntime({
           materialSummaryRuntime.openCompatibilityIssues?.();
           throw new Error(`仍有 ${Number(checked.issue_count)} 张素材需要补审或排除`);
         }
+        payload.expected_material_revision = checked.material_revision;
+        payload.expected_annotation_revision = checked.annotation_revision;
       }
 
       setSubmitStage('posting');

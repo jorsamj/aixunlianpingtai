@@ -48,6 +48,7 @@ def test_production_app_mounts_runtime_router_exactly_once():
     ]
     keywords = {item.arg: item.value for item in router_call.keywords if item.arg}
     assert set(keywords) == {
+        "project_path_provider",
         "agent_execution_payload_resolver",
         "agent_result_upload_preparer",
         "agent_result_upload_confirmer",
@@ -59,6 +60,11 @@ def test_production_app_mounts_runtime_router_exactly_once():
         "agent_clean_selection_page_provider",
         "agent_clean_selection_read_provider",
     }
+    assert isinstance(keywords["project_path_provider"], ast.Name)
+    assert keywords["project_path_provider"].id == "project_dir"
+    # Checking only app.py misses an earlier nested mount which shadows it.
+    material_source = (ROOT / "platform_core" / "material_batches.py").read_text(encoding="utf-8")
+    assert "training_recovery_router" not in material_source
     assert isinstance(keywords["agent_execution_payload_resolver"], ast.Name)
     assert keywords["agent_execution_payload_resolver"].id == "_resolve_agent_execution_payload"
     assert isinstance(keywords["agent_result_upload_preparer"], ast.Name)

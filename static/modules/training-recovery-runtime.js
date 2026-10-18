@@ -462,6 +462,8 @@ function detailHtml(job, recovery, log = '', inputIssues = null, activeTab = 'cu
   const epochSummary = completed && model.bestEpoch != null ? `${epochText} · 最佳 Epoch ${model.bestEpoch}` : `${epochText} · ${batchText}`;
   const metricSummary = completed ? (model.bestMetricLine || model.metricLine || '指标未记录') : (model.metricLine || '等待训练指标');
   const actionHtml = model.recoverable ? `<button class="btn primary" data-training-recovery-action="${RECOVERY_ACTION_REVALIDATE}" data-task-id="${esc(model.taskId)}">重新验证 Checkpoint</button>` : '';
+  const inputConflict = failed && /duplicate_annotation_conflict|content_hash_leakage|content hash leakage/i.test([model.primaryErrorCode,model.rootCause,...model.errors].join(' '));
+  const conflictHtml = inputConflict ? `<section class="training-recovery-panel" data-training-duplicate-conflict><header><h4>训练输入检查失败，训练尚未开始或未完成输入准备</h4></header><p>重复素材的正式标注冲突或数据角色泄漏不是 Checkpoint 故障。请检查真实图片及标注，安全修复当前 GT 或调整新训练输入，再重新预检创建任务；原任务与冻结历史保持不变。</p><button class="btn primary" onclick="TrainingMaterialSummaryRuntime.openTaskDiagnosis('${esc(model.taskId)}')">查看并处理冲突</button></section>` : '';
   const checkpointRecoveryState = model.checkpointAvailable
     ? (model.recoverable ? 'Checkpoint 已保留 · 可重新验证' : 'Checkpoint 已保留 · 当前不可自动恢复')
     : '无可用 Checkpoint · 不可恢复';
@@ -512,7 +514,7 @@ function detailHtml(job, recovery, log = '', inputIssues = null, activeTab = 'cu
             <div><small>资源档位</small><b>${esc(model.resourceProfileLabel)}</b><span>${esc(`${model.resourceStrategy || 'auto'} · ${model.gpuPolicy || 'auto'}`)}</span></div>
             <div><small>实际 Batch / Workers / Cache</small><b>${esc(`${model.batch ?? '-'} / ${model.workers ?? '-'} / ${model.cache ?? '-'}`)}</b><span>${esc(model.runtimePrecision || '尚未启动 Trainer')}</span></div>
           </section>
-          ${statusHtml}${failureSummaryHtml}${inputIssuesHtml(inputIssues)}${technicalFailureHtml}${warningHtml}
+          ${statusHtml}${conflictHtml}${failureSummaryHtml}${inputIssuesHtml(inputIssues)}${technicalFailureHtml}${warningHtml}
           <section id="training-panel-curves" data-training-panel="curves" role="tabpanel" aria-labelledby="training-tab-curves">${trainingCharts(job?.runtime_metrics?.epochs || job?.training_report?.history || [])}</section>
           <div class="training-recovery-columns">
             <section id="training-panel-data" class="training-recovery-panel" data-training-panel="data" role="tabpanel" aria-labelledby="training-tab-data">
@@ -1092,7 +1094,7 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
   };
 
   const runtime = {
-    build: 'training-recovery-runtime-4226381',
+    build: 'training-recovery-runtime-4226389',
     hydrateJobs,
     openDetail,
     refreshOpenDetail,

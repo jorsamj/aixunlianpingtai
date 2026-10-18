@@ -43,7 +43,7 @@ from .snapshots import (
 )
 from .storage import StorageManager
 from .task_runtime import ProcessController, TaskKind, TaskStatus, launch_process
-from .training_splits import SplitMode, SplitRequest, build_split_manifest
+from .training_splits import SplitMode, SplitRequest, build_split_manifest, assert_training_duplicate_safety, training_annotation_digest
 from .training_devices import normalize_training_device, training_python, validate_training_device
 from .training_metrics import read_metrics
 from .training_bundle_cache import TrainingBundleCache
@@ -992,6 +992,7 @@ def _selected_project_images(
         annotation = annotation_by_id[image_id]
         row['annotation_state'] = annotation['annotation_state']
         row['annotation_scope'] = list(annotation.get('annotation_scope') or [])
+        row['annotation_version'] = int(annotation.get('version') or 0)
         row['annotation_hash'] = str(
             annotation.get('content_digest')
             or row.get('annotation_hash')
@@ -1028,6 +1029,8 @@ class TrainingSelectionResolution:
     effective_images: tuple[dict[str, Any], ...]
     selected_train_image_ids: tuple[str, ...]
     pending_annotation_image_ids: tuple[str, ...]
+    material_revision: int | None = None
+    annotation_revision: int | None = None
 
     def truth(self) -> dict[str, Any]:
         return {
@@ -1060,8 +1063,12 @@ def resolve_training_selection(
     converted into an empty YOLO label. Independent test material remains
     Ground-Truth-only because evaluation without labels is meaningless.
     """
+    materials = MaterialRepository(project)
+    annotations = AnnotationRepository(project)
+    material_revision = materials.current_revision()
+    annotation_revision = annotations.current_revision()
     image_ids = (*split_request.train_image_ids, *split_request.test_image_ids)
-    images = _selected_project_images(MaterialRepository(project), project, image_ids)
+    images = _selected_project_images(materials, project, image_ids)
     by_id = {str(row.get("id") or ""): row for row in images}
 
     effective_train: list[str] = []
@@ -1115,12 +1122,16 @@ def resolve_training_selection(
     effective_images = tuple(
         row for row in images if str(row.get("id") or "") in effective_ids
     )
+    if materials.current_revision() != material_revision or annotations.current_revision() != annotation_revision:
+        raise ValueError("training selection changed during canonical truth read; repeat preflight")
     return TrainingSelectionResolution(
         requested_split=split_request,
         effective_split=effective_split,
         effective_images=effective_images,
         selected_train_image_ids=tuple(split_request.train_image_ids),
         pending_annotation_image_ids=tuple(pending_annotation),
+        material_revision=material_revision,
+        annotation_revision=annotation_revision,
     )
 
 
@@ -1165,6 +1176,7 @@ _TRAINING_INPUT_FREEZE_FIELDS = (
     "external_annotation_needs_review",
     "external_annotation_review_reason",
     "annotation_state",
+    "annotation_version",
     "annotation_scope",
     "annotation_hash",
     "annotated",
@@ -1306,13 +1318,32 @@ def freeze_training_inputs(
     effective_images: Sequence[Mapping[str, Any]] | None = None,
     label_schema_override: Sequence[Mapping[str, Any]] | None = None,
     label_contract: Mapping[str, Any] | None = None,
+    duplicate_review: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Freeze formal DB truth at submit time without reading/copying source bytes."""
+    if selection_resolution is None:
+        original_images = _selected_project_images(MaterialRepository(project), project,
+            (*split_request.train_image_ids, *split_request.test_image_ids))
+        assert_training_duplicate_safety(original_images,
+            split_request.train_image_ids, split_request.test_image_ids)
     resolution = selection_resolution or resolve_training_selection(project, split_request)
     if resolution.requested_split != split_request:
         raise ValueError("training selection resolution does not match the requested split")
+    if ((resolution.material_revision is not None and
+            MaterialRepository(project).current_revision() != resolution.material_revision)
+            or (resolution.annotation_revision is not None and
+            AnnotationRepository(project).current_revision() != resolution.annotation_revision)):
+        raise ValueError("training selection changed before input freeze; repeat preflight")
+    if duplicate_review:
+        from .training_compatibility import validate_duplicate_review
+        validate_duplicate_review(project, {"duplicate_review": duplicate_review}, split_request)
     effective_split = resolution.effective_split
     source_images = [dict(row) for row in resolution.effective_images]
+    # Original formal GT must be checked before task-label projection can hide
+    # an out-of-scope category, empty-state, or coordinate disagreement.
+    assert_training_duplicate_safety(
+        source_images, effective_split.train_image_ids, effective_split.test_image_ids,
+    )
     images = (
         [dict(row) for row in effective_images]
         if effective_images is not None
@@ -1372,6 +1403,16 @@ def freeze_training_inputs(
         "dataset_revision_id": str(snapshot["dataset_revision_id"]),
         "input_quality": input_quality,
         "selection": resolution.truth(),
+        "material_revision": resolution.material_revision,
+        "annotation_revision": resolution.annotation_revision,
+        "original_ground_truth": [{"image_id": str(row.get("id") or ""),
+            "annotation_state": str(row.get("annotation_state") or "unannotated"),
+            "annotation_scope": list(row.get("annotation_scope") or []),
+            "box_count": len(row.get("boxes") or []),
+            "annotation_digest": training_annotation_digest(row),
+            "content_sha256": str(row.get("content_sha256") or ""),
+        } for row in source_images],
+        **({"duplicate_review": dict(duplicate_review)} if duplicate_review else {}),
         **(
             {"label_contract": {
                 key: item for key, item in dict(label_contract).items()
@@ -1382,6 +1423,13 @@ def freeze_training_inputs(
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     value["input_freeze_id"] = _training_input_freeze_digest(value)
+    # Material index writers can advance a revision during split/snapshot work.
+    # Validate the same original selection again at the freeze publication point.
+    if ((resolution.material_revision is not None and
+            MaterialRepository(project).current_revision() != resolution.material_revision)
+            or (resolution.annotation_revision is not None and
+            AnnotationRepository(project).current_revision() != resolution.annotation_revision)):
+        raise ValueError("training selection changed while building input freeze; repeat preflight")
     return value
 
 

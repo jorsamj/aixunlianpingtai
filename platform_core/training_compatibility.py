@@ -5,7 +5,7 @@ import json
 import hashlib
 import math
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Mapping
@@ -20,8 +20,8 @@ from .training_label_tasks import (
     resolve_training_label_contract,
     training_material_scope_issue,
 )
-from .training_splits import SplitMode, SplitRequest
-from .training_tasks import resolve_training_selection
+from .training_splits import SplitMode, SplitRequest, analyze_training_duplicates, training_annotation_digest
+from .training_tasks import resolve_training_selection, _selected_project_images
 
 
 @dataclass(frozen=True)
@@ -31,19 +31,31 @@ class TrainingCompatibilityResult:
     material_revision: int
     annotation_revision: int
     selection_truth: dict[str, Any]
+    duplicate_review: dict[str, Any] | None = None
 
     def summary(self) -> dict[str, Any]:
         counts = Counter(str(item.get("issue_type") or "unknown") for item in self.issues)
         return {
             "compatible": not self.issues,
             "issue_count": len(self.issues),
+            "affected_image_count": len({item["image_id"] for item in self.issues}),
+            "duplicate_conflict_image_count": len({item["image_id"] for item in self.issues
+                if item.get("issue_type") == "duplicate_annotation_conflict"}),
+            "duplicate_conflict_group_count": len({item.get("content_sha256") for item in self.issues
+                if item.get("issue_type") == "duplicate_annotation_conflict"}),
             "issue_counts": dict(sorted(counts.items())),
             "effective_label_codes": list(
                 self.label_contract.get("effective_label_codes") or []
             ),
             "material_revision": self.material_revision,
             "annotation_revision": self.annotation_revision,
-            "selection_truth": dict(self.selection_truth),
+            "selection_truth": {key: value for key, value in self.selection_truth.items() if key.endswith("_count")},
+            "selection_truth_ids_omitted": True,
+            "duplicate_group_count": len({str(item.get("content_sha256")) for item in self.issues
+                if item.get("issue_type") in {"duplicate_annotation_conflict", "content_hash_leakage"}}),
+            "duplicate_review": ({"validated": True,
+                "excluded_count": len(self.duplicate_review.get("excluded_image_ids") or [])}
+                if self.duplicate_review else None),
         }
 
 
@@ -158,6 +170,11 @@ def evaluate_training_compatibility(
 ) -> TrainingCompatibilityResult:
     project_path = Path(project).resolve()
     split = _split_request(payload)
+    review = validate_duplicate_review(project_path, payload, split)
+    duplicates = diagnose_training_duplicates(project_path, payload)
+    if duplicates.issues:
+        return replace(duplicates, duplicate_review=review,
+            label_contract={"effective_label_codes": list(payload.get("train_labels") or [])})
     selection = resolve_training_selection(project_path, split)
     effective = selection.effective_split
     contract_payload = {
@@ -169,7 +186,69 @@ def evaluate_training_compatibility(
     contract = resolve_training_label_contract(
         data_dir, project_path, contract_payload, algorithm,
     )
-    return evaluate_selection_compatibility(project_path, selection, contract)
+    return replace(evaluate_selection_compatibility(project_path, selection, contract), duplicate_review=review)
+
+
+def validate_duplicate_review(project: Path, payload: Mapping[str, Any], split: SplitRequest):
+    """Validate an explicit adjustment of new input; never change canonical GT/history."""
+    material_revision = MaterialRepository(project).current_revision()
+    annotation_revision = AnnotationRepository(project).current_revision()
+    expected_material = payload.get("expected_material_revision")
+    expected_annotation = payload.get("expected_annotation_revision")
+    if expected_material is not None or expected_annotation is not None:
+        if (expected_material is None or expected_annotation is None
+                or expected_material != material_revision or expected_annotation != annotation_revision):
+            raise ValueError("TRAINING_REVIEW_STALE: material/annotation revision changed; repeat preflight")
+    raw = payload.get("duplicate_review")
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping):
+        raise ValueError("duplicate review must be an object")
+    if raw.get("material_revision") != material_revision or raw.get("annotation_revision") != annotation_revision:
+        raise ValueError("TRAINING_REVIEW_STALE: duplicate review revision changed; repeat preflight")
+    normalized_ids = {}
+    for field in ("original_train_image_ids", "original_test_image_ids", "excluded_image_ids"):
+        values = raw.get(field, [])
+        if (not isinstance(values, list)
+                or any(not isinstance(value, str) or not value.strip() or value != value.strip() for value in values)
+                or len(set(values)) != len(values)):
+            raise ValueError(f"duplicate review {field} must be an array of unique non-empty image ID strings")
+        normalized_ids[field] = tuple(values)
+    original_train = normalized_ids["original_train_image_ids"]
+    original_test = normalized_ids["original_test_image_ids"]
+    excluded = normalized_ids["excluded_image_ids"]
+    if not original_train or set(original_train) & set(original_test):
+        raise ValueError("duplicate review original selection has invalid roles")
+    rows = _selected_project_images(MaterialRepository(project), project, (*original_train, *original_test))
+    groups = analyze_training_duplicates(rows, original_train, original_test)
+    if any(group["issue_type"] == "content_hash_leakage" for group in groups):
+        raise ValueError("content hash leakage: original review crosses train/test; exclusions cannot conceal leakage")
+    eligible = {image_id for group in groups if group["issue_type"] == "duplicate_annotation_conflict"
+                for image_id in group["image_ids"]}
+    if len(set(excluded)) != len(excluded) or not excluded or not set(excluded) <= eligible:
+        raise ValueError("duplicate review exclusion must identify conflicting duplicate members")
+    if (tuple(value for value in original_train if value not in set(excluded)) != split.train_image_ids
+            or tuple(value for value in original_test if value not in set(excluded)) != split.test_image_ids):
+        raise ValueError("duplicate review exclusion does not match the final selection")
+    return {"original_train_image_ids": list(original_train), "original_test_image_ids": list(original_test),
+            "excluded_image_ids": list(excluded), "material_revision": material_revision,
+            "annotation_revision": annotation_revision, "ground_truth_source": "original_annotation"}
+
+
+def diagnose_training_duplicates(project: Path, payload: Mapping[str, Any]) -> TrainingCompatibilityResult:
+    """Read current original GT even when an old task has no usable label contract."""
+    request = dict(payload)
+    stored_split = payload.get("requested_split") or payload.get("split")
+    if isinstance(stored_split, Mapping):
+        request.update(stored_split)
+        request["split_mode"] = stored_split.get("mode") or stored_split.get("split_mode") or request.get("split_mode")
+    split = _split_request(request)
+    rows = _selected_project_images(MaterialRepository(project), project,
+        (*split.train_image_ids, *split.test_image_ids))
+    issues = _duplicate_issues(rows, split.train_image_ids, split.test_image_ids, _dataset_names(project))
+    return TrainingCompatibilityResult({}, tuple(issues), MaterialRepository(project).current_revision(),
+        AnnotationRepository(project).current_revision(), {"selected_train_count": len(split.train_image_ids),
+            "test_count": len(split.test_image_ids)})
 
 
 _COMPATIBILITY_PAGE_FIELDS = frozenset({
@@ -290,7 +369,10 @@ def evaluate_selection_compatibility(
             })
             by_id[image_id] = row
 
-    issues = tuple(
+    duplicate_issues = _duplicate_issues(
+        list(by_id.values()), selection.selected_train_image_ids, effective.test_image_ids, names,
+    )
+    issues = tuple(duplicate_issues) + tuple(
         issue
         for image_id in (*selection.selected_train_image_ids, *effective.test_image_ids)
         if (issue := _issue_for_row(by_id[image_id], contract, names)) is not None
@@ -302,6 +384,36 @@ def evaluate_selection_compatibility(
         annotation_revision=annotations.current_revision(),
         selection_truth=selection.truth(),
     )
+
+
+def _duplicate_issues(rows, train_ids, test_ids, dataset_names):
+    by_id = {str(row.get("id") or ""): row for row in rows}
+    test = set(test_ids)
+    issues = []
+    for group in analyze_training_duplicates(rows, train_ids, test_ids):
+        if group["issue_type"] == "duplicate_identical":
+            continue
+        for image_id in group["image_ids"]:
+            row = by_id[image_id]
+            labels = sorted({str(box.get("label") or box.get("code") or "")
+                             for box in row.get("boxes") or []})
+            dataset_id = str(row.get("dataset_id") or "")
+            issues.append({
+                "image_id": image_id, "filename": str(row.get("filename") or image_id),
+                "dataset_id": dataset_id, "dataset_name": dataset_names.get(dataset_id, dataset_id),
+                "issue_type": group["issue_type"], "content_sha256": group["content_sha256"],
+                "duplicate_group_id": group["content_sha256"], "duplicate_group_size": len(group["image_ids"]),
+                "conflict_types": group["conflict_types"], "ground_truth_conflict": group["ground_truth_conflict"],
+                "annotation_state": str(row.get("annotation_state") or "unannotated"),
+                "annotation_scope": list(row.get("annotation_scope") or [])[:100],
+                "labels": labels[:100], "labels_count": len(labels),
+                "box_count": len(row.get("boxes") or []),
+                "annotation_digest": training_annotation_digest(row),
+                "annotation_version": int(row.get("annotation_version") or row.get("version") or 0),
+                "role": "test" if image_id in test else "train",
+                "ground_truth_source": "original_annotation",
+            })
+    return issues
 
 
 def compatibility_page(
@@ -323,6 +435,8 @@ def compatibility_page(
             not normalized_query
             or normalized_query in str(item.get("image_id") or "").casefold()
             or normalized_query in str(item.get("filename") or "").casefold()
+            or normalized_query in str(item.get("content_sha256") or "").casefold()
+            or normalized_query in str(item.get("duplicate_group_id") or "").casefold()
         )
     ]
     bounded = int(page_size if page_size is not None else limit)

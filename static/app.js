@@ -111,7 +111,7 @@ window.saveAnnLegacyBase=async(silent=false,options={})=>{if(!state.activeImage)
 window.deleteActiveBox=()=>{if(state.activeBox==null)return toast('请选择一个框');pushHistory();state.ann.boxes.splice(state.activeBox,1);state.activeBox=null;markDirty();drawBoxes();renderAnnSide();const confirmEmpty=document.getElementById('ann420ConfirmEmpty');if(confirmEmpty)confirmEmpty.hidden=(state.ann.boxes?.length||0)>0};
 window.undoAnn=()=>{if(!state.annHistory.length)return;state.annRedo.push(JSON.stringify(state.ann.boxes||[]));state.ann.boxes=JSON.parse(state.annHistory.pop());state.activeBox=null;markDirty();drawBoxes();renderAnnSide()};
 window.redoAnn=()=>{if(!state.annRedo.length)return;pushHistory();state.ann.boxes=JSON.parse(state.annRedo.pop());state.activeBox=null;markDirty();drawBoxes();renderAnnSide()};
-window.zoomAnn=d=>{state.annZoom=Math.max(.5,Math.min(2.2,(state.annZoom||1)+d));const st=$('#annStage');if(st)st.style.transform=`scale(${state.annZoom})`;const z=$('#zoomText');if(z)z.textContent=Math.round(state.annZoom*100)+'%'};
+window.zoomAnn=d=>{state.annZoom=Math.max(.01,Math.min(4,(state.annZoom||1)+d));const st=$('#annStage');if(st)st.style.transform=`scale(${state.annZoom})`;const z=$('#zoomText');if(z)z.textContent=Math.round(state.annZoom*100)+'%'};
 window.prevImage=async()=>{const i=imgIndex();if(i>0){if(state.annDirty)await saveAnn(true);openAnnotation(state.images[i-1].id)}};
 window.nextImage=async()=>{const i=imgIndex();if(i>=0&&i<state.images.length-1){if(state.annDirty)await saveAnn(true);openAnnotation(state.images[i+1].id)}};
 document.addEventListener('keydown',e=>{if(!state.activeImage)return;const locked=!!state.annotationHydrating420||!!state.annotationLoadError420;if(!locked&&e.key>='1'&&e.key<='9'){const hit=state.labels.find(l=>l.hotkey===e.key)||state.labels[+e.key-1];if(hit){state.activeLabel=hit.class_id;renderAnnSide();toast(`当前标签：${hit.display_name}`)}}if(!locked&&e.key==='Delete')deleteActiveBox();if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='s'){e.preventDefault();if(!locked)saveAnn(false)}if(e.key==='ArrowLeft'){const stable=document.querySelector('.ann420-stable');if(stable)document.getElementById('ann420Prev')?.click();else prevImage()}if(e.key==='ArrowRight'){const stable=document.querySelector('.ann420-stable');if(stable)document.getElementById('ann420Next')?.click();else nextImage()}});
@@ -5366,7 +5366,7 @@ const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
       const signature=labels.map(l=>[l.class_id,l.code,l.display_name,l.color,l.hotkey,Number(state.activeLabel)===Number(l.class_id)?1:0].join(':')).join('|');
       if(a.dataset.signature!==signature){
         a.dataset.signature=signature;
-        a.innerHTML=labels.map(l=>`<button class="ann414-label ${Number(state.activeLabel)===Number(l.class_id)?'active':''}" onclick="state.activeLabel=${Number(l.class_id)};renderAnnSide()"><i style="background:${esc(l.color||'#64748b')}"></i><span><b>${esc(l.code)}</b><em>${esc(l.display_name||l.code)}</em></span><kbd>${esc(l.hotkey||'')}</kbd></button>`).join('')||'<div class="muted">暂无可用标签</div>';
+        a.innerHTML=`<label class="ann420-label-picker"><span>绘制标签</span><select id="ann420Label" class="select" onchange="selectAnnotationLabel420(this.value)" ${labels.length?'':'disabled'}>${labels.map(l=>`<option value="${Number(l.class_id)}" ${Number(state.activeLabel)===Number(l.class_id)?'selected':''}>${esc(l.display_name&&l.display_name!==l.code?`${l.display_name} · ${l.code}`:l.code)}</option>`).join('')||'<option>暂无可用标签</option>'}</select></label><small class="ann420-class-hint">选定类别后在图片空白处拖拽；对象改类在下方单独操作。</small>`;
       }
     }
     const boxes=state.ann?.boxes||[];
@@ -5523,6 +5523,33 @@ const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
     const reasons=Object.entries(plan.skip_reasons||{}),names={MANUAL_DECISION_REQUIRED:'同图不同标注待人工确认',MULTIPLE_PROTECTED_REFERENCES:'同组存在多个历史引用',ANOMALOUS_MATERIAL:'素材同时存在异常',DUPLICATE_REQUIRES_REVIEW:'异常素材同时属于重复组，须先人工核验保留项'},reasonNames={MANUAL_DECISION:'人工明确保留',HISTORICAL_REFERENCE:'历史任务或快照引用',VERIFIED_SOURCE_AND_ANNOTATION:'源文件、哈希与正式标注已核验'},previews=plan.preview_groups||[];
     materialIntegrityDialog47(Number(plan.included_groups||0)?'重复素材治理预览':'异常素材删除预览',`<div class="material-integrity47-plan"><div class="alert warn"><b>这一步尚未删除任何素材</b><span>计划已在服务端按审计快照、素材版本和标注版本冻结；正式执行前还会再次校验内容哈希、标注摘要与历史引用。</span></div><section class="material-integrity47-summary"><div><span>纳入重复组</span><b>${Number(plan.included_groups||0)}</b></div><div><span>明确保留</span><b>${Number(plan.kept_count||0)}</b></div><div><span>计划删索引</span><b>${Number(plan.delete_count||0)}</b></div></section>${`<section class="material-integrity47-summary"><div><span>选中图片</span><b>${Number(plan.selected_count||0)}</b></div><div><span>历史 / Test 保护</span><b>${Number(plan.protected_item_count||0)}</b></div><div><span>需人工判断 / 无法核验</span><b>${Number(plan.manual_required_count||0)} / ${Number(plan.unverifiable_count||0)}</b></div></section>`}${(plan.preview_items||[]).length?`<div class="material-integrity47-grid">${plan.preview_items.map(item=>`<article>${materialIntegrityImage47(item)}<div class="material-integrity47-meta">${esc(item.filename)}</div></article>`).join('')}</div>`:''}${previews.length?`<div class="material-integrity47-recommend"><b>推荐保留明细${plan.preview_groups_truncated?' · 前 20 组':''}</b>${previews.map(row=>`<span><code>${esc(row.keeper_image_id)}</code><em>${esc(reasonNames[row.keeper_reason]||row.keeper_reason)} · 清理 ${Number(row.delete_count||0)} 张</em></span>`).join('')}</div>`:''}<div class="material-integrity47-plan-boundary"><b>安全边界</b><span>只执行现有 DELETE_INDEX：删除素材索引及对应标注，共享物理对象不会被删除；不删除标签字典或任务历史。预计删除 ${Number(plan.delete_count||0)} 条索引、${Number(plan.annotation_count||0)} 条已持久化标注记录。</span></div>${reasons.length?`<div class="material-integrity47-skips"><b>已跳过 ${Number(plan.skipped_groups||0)} 组 · ${Number(plan.skipped_item_count||0)} 张不自动处理</b>${reasons.map(([key,count])=>`<span>${esc(names[key]||key)} · ${Number(count||0)} 组</span>`).join('')}</div>`:''}<div id="materialIntegrityError47" class="alert err" role="alert" hidden></div><div class="row end"><small class="material-integrity47-delete-note">仅删除素材索引及对应标注；共享原始物理文件不直接删除。</small><button class="btn" onclick="returnMaterialIntegritySelection47()">返回选择 · 保留勾选</button><button id="materialIntegrityExecute47" class="btn danger" onclick="executeMaterialIntegrityGovernance47('${esc(plan.plan_id)}','${esc(plan.confirmation_credential)}')" ${Number(plan.delete_count||0)?'':'disabled'}>确认删除 ${Number(plan.delete_count||0)} 条索引</button></div></div>`,true);
   }
+  window.materialIntegrityProtectionText47=function(reason){
+    const names={TRAINING_FAILED_NO_FREEZE:'失败任务的输入记录（未形成冻结证据，仍保守保护）',TRAINING_FAILED_WITH_FREEZE:'失败任务已有冻结输入记录',TRAINING_COMPLETED_HISTORY:'已完成训练历史',ACTIVE_TASK_INPUT:'活动任务正在引用',FROZEN_TEST_SNAPSHOT:'冻结 Test 快照',IMMUTABLE_SNAPSHOT:'不可变训练快照',MODEL_OR_EVALUATION_HISTORY:'模型或评测历史',MODEL_CONVERSION_HISTORY:'模型转换历史',TRAINING_HISTORY:'训练历史引用'};
+    return `${names[reason.reason]||reason.reason}${reason.task_id?' · Task '+reason.task_id:''}`;
+  };
+  window.openIntegrityAnnotation47=function(imageId){
+    state.trainingAnnotationReviewContext={imageId:String(imageId),returnSource:'integrity',projectId:pid()};
+    return window.openAnnotation(String(imageId));
+  };
+  function decorateIntegrityPlan47(plan){
+    const root=document.querySelector('.material-integrity47-plan');if(!root)return;
+    for(const [index,item] of (plan.preview_items||[]).entries()){
+      const card=root.querySelectorAll('.material-integrity47-grid article')[index];if(!card)continue;
+      const description=document.createElement('p');description.className='material-integrity47-protection';
+      description.textContent=(item.protection_reasons||[]).map(window.materialIntegrityProtectionText47).join('；')||'当前预览未发现历史引用；执行时仍会再次校验';card.appendChild(description);
+      const edit=document.createElement('button');edit.className='btn';edit.textContent='核对当前正式标注';edit.onclick=()=>window.openIntegrityAnnotation47(item.image_id);card.appendChild(edit);
+    }
+    if(Number(plan.delete_count||0))return;
+    const section=document.createElement('section');section.className='alert warn material-integrity47-zero-delete';section.setAttribute('role','status');
+    const title=document.createElement('b');title.textContent='没有可安全删除的素材 · 本次未创建删除任务';section.appendChild(title);
+    const help=document.createElement('p');help.textContent='受保护不等于标注正确。不能强制删除历史证据，但可以核对并修正允许编辑的当前标注，或在新训练中明确调整输入。失败任务记录不会自动解除保护。';section.appendChild(help);
+    for(const group of plan.review_groups||[]){
+      const button=document.createElement('button');button.className='btn primary';button.textContent=`查看并处理冲突 · ${group.image_count} 张`;
+      button.onclick=()=>window.openMaterialIntegrityGroup47(encodeURIComponent(state.materialIntegrityAudit47.task.task_id),encodeURIComponent(group.group_key));section.appendChild(button);
+    }
+    root.querySelector('.alert')?.after(section);
+    root.querySelector('#materialIntegrityExecute47')?.remove();
+  }
   window.previewMaterialIntegrityGovernance47=async function(scope='SAFE_ALL',config={}){
     const audit=state.materialIntegrityAudit47;if(!audit?.task?.task_id)return toast('请先完成素材完整性审计');
     if(audit.projectId&&audit.projectId!==pid())return toast('项目已变化，请重新审计');
@@ -5539,7 +5566,7 @@ const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
       const payload={scope,group_keys:groupKeys,...(scope==='FILTERED'?{issue_type:config.groupKey?'':audit.issueType||'',excluded_group_keys:config.groupKey?[]:[...(audit.excludedGroups||[])],...(config.groupKey?{group_key:config.groupKey,excluded_image_ids:[...(state.materialIntegrityGroup47?.excludedImages||[])]}:{})}:{}),...(config.imageIds?{image_ids:config.imageIds}:{}),...(config.manualDecisions?{manual_decisions:config.manualDecisions}:{})};
       const plan=await api(`/api/v62/projects/${pid()}/material-integrity/audits/${encodeURIComponent(audit.task.task_id)}/dedup-plans`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
       if(state.materialIntegrityAudit47!==audit||audit.projectId&&audit.projectId!==pid())return;
-      if(errorBox?.isConnected&&!errorBox.closest('.modal')?.classList.contains('hidden'))showMaterialIntegrityPlan47(plan);return plan;
+      if(errorBox?.isConnected&&!errorBox.closest('.modal')?.classList.contains('hidden')){showMaterialIntegrityPlan47(plan);decorateIntegrityPlan47(plan)}return plan;
     }catch(error){if(errorBox){errorBox.hidden=false;errorBox.textContent=error.message||String(error)}toast(error.message||error);return null}
     finally{audit.previewing=false;if(button){button.disabled=false;button.textContent=oldText}}
   };
@@ -5594,6 +5621,7 @@ const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
     const width=Number(item.width),height=Number(item.height),ratio=width>0&&height>0?width/height:4/3;
     return `<div class="material-integrity47-image" style="aspect-ratio:${ratio}"><img alt="${esc(item.filename||item.image_id)}" src="${esc(item.content_url)}" loading="lazy" data-width="${width||0}" data-height="${height||0}" onload="materialIntegrityImageLoaded47(this)" onerror="materialIntegrityImageFailed47(this)">${materialIntegrityOverlay47(item)}<span class="material-integrity47-image-note" hidden>图片坐标尺寸未核验，标注框已隐藏</span><div class="material-integrity47-image-error" hidden><span>图片读取失败：源文件缺失、内容校验或存储权限异常。标注框已隐藏。</span><button class="btn" onclick="retryMaterialIntegrityImage47(this)">重新加载</button></div></div>`;
   }
+  window.materialIntegrityImage47=materialIntegrityImage47;
   window.materialIntegrityImageLoaded47=function(image){
     const frame=image.parentElement,svg=frame.querySelector('svg'),verified=Number(image.dataset.width)===image.naturalWidth&&Number(image.dataset.height)===image.naturalHeight;
     frame.querySelector('.material-integrity47-image-error').hidden=true;image.hidden=false;
@@ -5615,7 +5643,7 @@ const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
   window.retryMaterialIntegrityImage47=function(button){const image=button.closest('.material-integrity47-image').querySelector('img');image.src=image.src;};
   function renderMaterialIntegrityItems47(items){
     const group=state.materialIntegrityGroup47,duplicate=String(group?.groupKey||'').startsWith('DUPLICATE_');
-    return items.map(item=>`<article><label><input type="checkbox" aria-label="选择 ${esc(item.filename)}" ${(group.allSelected&&!group.excludedImages?.has(String(item.image_id)))||group.selected.has(String(item.image_id))?'checked':''} onchange="toggleMaterialIntegrity47('${esc(item.image_id)}',this.checked)"> 选择图片</label>${materialIntegrityImage47(item)}<div class="material-integrity47-meta"><b>${esc(item.filename)}</b><span>${esc(item.image_id)}</span><small>${esc(item.storage_source_id||'未知来源')} · ${esc(item.annotation_state||'未标注')} · ${(item.boxes||[]).length} 框</small><div class="row"><button class="btn" onclick="closeModal();openAnnotation('${esc(item.image_id)}')">进入标注</button>${duplicate?`<button class="btn primary" onclick="keepMaterialIntegrity47('${esc(item.image_id)}')">保留这条</button>`:`<button class="btn danger" onclick="deleteMaterialIntegrity47(['${esc(item.image_id)}'])">预览删除</button>`}</div></div></article>`).join('');
+    return items.map(item=>`<article><label><input type="checkbox" aria-label="选择 ${esc(item.filename)}" ${(group.allSelected&&!group.excludedImages?.has(String(item.image_id)))||group.selected.has(String(item.image_id))?'checked':''} onchange="toggleMaterialIntegrity47('${esc(item.image_id)}',this.checked)"> 选择图片</label>${materialIntegrityImage47(item)}<div class="material-integrity47-meta"><b>${esc(item.filename)}</b><span>${esc(item.image_id)}</span><small>${esc(item.storage_source_id||'未知来源')} · ${esc(item.annotation_state||'未标注')} · ${(item.boxes||[]).length} 框</small><div class="row"><button class="btn" onclick="openIntegrityAnnotation47('${esc(item.image_id)}')">进入标注</button>${duplicate?`<button class="btn primary" onclick="keepMaterialIntegrity47('${esc(item.image_id)}')">保留这条</button>`:`<button class="btn danger" onclick="deleteMaterialIntegrity47(['${esc(item.image_id)}'])">预览删除</button>`}</div></div></article>`).join('');
   }
   window.openMaterialIntegrityGroup47=async function(taskToken,groupToken){
     const taskId=decodeURIComponent(taskToken),groupKey=decodeURIComponent(groupToken),previous=state.materialIntegrityGroup47,projectAtStart=pid();
@@ -6500,7 +6528,6 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
             <button id="ann420Prev" class="btn small" title="上一张 · ←">← 上一张</button>
             <button id="ann420Next" class="btn small" title="下一张 · →">下一张 →</button>
           </div>
-          <label class="ann417-label ann420-label-picker"><span>绘制标签</span><select id="ann420Label" class="select" onchange="selectAnnotationLabel420(this.value)"></select></label>
           <div class="ann420-toolbar-group ann420-toolbar-edit">
             <button data-ann420-edit="1" class="btn small" onclick="undoAnn()" title="撤销">撤销</button>
             <button data-ann420-edit="1" class="btn small" onclick="redoAnn()" title="重做">重做</button>
@@ -6515,9 +6542,9 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
         <div class="ann-canvas-wrap"><div id="annStage" class="ann-stage" style="transform:scale(1);transform-origin:top center"><img id="annImg" alt="当前标注图片"></div></div>
       </div>
       <aside class="side-panel ann-side ann420-inspector">
-        <section class="side-section ann420-label-panel"><div class="side-title"><span>标签</span><b id="ann420LabelCount">0</b></div><div id="annLabels"><div class="ann420-panel-empty">正在加载标签…</div></div></section>
+        <section class="side-section ann420-label-panel"><div class="side-title"><span>绘制类别</span><b id="ann420LabelCount">0</b></div><div id="annLabels"><div class="ann420-panel-empty">正在加载标签…</div></div></section>
         <section class="side-section ann420-object-panel"><div class="side-title"><span>标注对象 <em id="ann420OriginBadge" class="ann420-origin-badge pending">待标注</em></span><b id="ann420BoxCount">0</b></div><div id="annBoxes"></div></section>
-        <section class="side-section ann420-review-panel" id="ann420ReviewPanel"><div class="side-title"><span>类别审核范围</span><b id="ann420PendingReviewCount">0</b></div><div id="ann420ReviewedLabels"></div><div id="ann420PendingLabels"></div><div class="hint-card"><b>必须查看真实图片</b><span>若对应类别存在目标，请先补齐标注框。AI 未检出不能自动确认不存在。</span></div><div class="row"><button class="btn mini" type="button" onclick="selectAllAnnotationReview420()">显式全选待审核</button><button id="ann420SaveReview" class="btn mini primary" type="button" onclick="saveAndConfirmAnnotationReview420()">保存并确认审核</button></div></section>
+        <details class="side-section ann420-review-panel" id="ann420ReviewPanel"><summary class="side-title"><span>未检查类别</span><b id="ann420PendingReviewCount">0</b></summary><p class="ann420-review-help">尚未记录人工检查的类别，不表示图片没有这些目标。展开、勾选本身不会修改正式标注。</p><div id="ann420ReviewedLabels"></div><div id="ann420PendingLabels"></div><div class="hint-card"><b>必须查看真实图片</b><span>若对应类别存在目标，请先补齐标注框。AI 未检出不能自动确认不存在。</span></div><div class="row"><button class="btn mini" type="button" onclick="selectAllAnnotationReview420()">显式全选未检查类别</button><button id="ann420SaveReview" class="btn mini primary" type="button" onclick="saveAndConfirmAnnotationReview420()">保存并确认审核</button></div></details>
         <div class="hint-card ann420-shortcuts"><b>快捷操作</b><span>拖拽空白处新建框 · 拖动框移动 · 四角缩放 · 滚轮缩放 · Delete 删除 · Ctrl/⌘ + S 保存</span></div>
       </aside>
     </div>`,true);
@@ -6548,8 +6575,8 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     if(!reviewedRoot||!pendingRoot)return;
     const view=workbenchApi()?.annotationReviewView?.(state.ann||{},annotationReviewRequired420())||{reviewed:[],pending:[]},selected=state.annotationReviewSelected420 instanceof Set?state.annotationReviewSelected420:new Set();
     for(const code of [...selected])if(!view.pending.includes(code))selected.delete(code);state.annotationReviewSelected420=selected;
-    reviewedRoot.innerHTML=`<small>已审核标签</small><div class="ann420-review-tags">${view.reviewed.map(code=>`<span>${esc(code)}</span>`).join('')||'<em>尚无明确审核范围</em>'}</div>`;
-    pendingRoot.innerHTML=`<small>待审核标签（默认不勾选）</small><div class="ann420-review-checks">${view.pending.map(code=>`<label><input type="checkbox" ${selected.has(code)?'checked':''} onchange="toggleAnnotationReview420('${esc(code)}',this.checked)"><span>${esc(code)}</span></label>`).join('')||'<em>本次要求已全部覆盖</em>'}</div>`;
+    reviewedRoot.innerHTML=`<small>已检查范围</small><div class="ann420-review-tags">${view.reviewed.map(code=>`<span>${esc(code==='*'?'全部类别（历史明确范围）':code)}</span>`).join('')||'<em>尚无明确检查范围</em>'}</div>`;
+    pendingRoot.innerHTML=`<small>未检查类别（默认不勾选）</small><div class="ann420-review-checks">${view.pending.map(code=>`<label><input type="checkbox" ${selected.has(code)?'checked':''} onchange="toggleAnnotationReview420('${esc(code)}',this.checked)"><span>${esc(code)}</span></label>`).join('')||'<em>本次要求已全部覆盖</em>'}</div>`;
     if(count)count.textContent=String(view.pending.length);if(button)button.disabled=!selected.size||!!state.annotationHydrating420||!!state.annotationLoadError420;
   };
   window.saveAndConfirmAnnotationReview420=async function(){
@@ -6569,7 +6596,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     if(queue){const signature=visible.map(id=>{const row=imageById(id),transient=state.aiMaterialStates60?.[String(id)]?.state||'';return row?`${id}:${row.filename}:${row.url}:${row.annotated?1:0}:${row.box_count||0}:${row.annotation_state||row.annotation_status||''}:${row.annotation_origin||''}:${transient}:${id===String(image.id)?1:0}`:''}).join('|');if(queue.dataset.signature!==signature){queue.dataset.signature=signature;queue.innerHTML=visible.map(id=>{const row=imageById(id);if(!row)return '';const statusClass=window.materialAnnotationStatusClassV66?.(row)||'pending';return `<button class="${id===String(image.id)?'active':''}" onclick="goAnnotation417('${id}')"><img src="${row.url}" loading="lazy" decoding="async"><span><b>${esc(row.filename)}</b><em class="ann420-queue-status ${statusClass}">${esc(queueAnnotationStatus420(row))}</em></span></button>`}).join('')}}
     const position=document.getElementById('ann420Position');if(position)position.textContent=`${at+1} / ${ids.length}`;
     const filename=document.getElementById('ann420Filename');if(filename)filename.textContent=image.filename||'';
-    const select=document.getElementById('ann420Label');if(select){const labels=state.labels||[],signature=labels.map(label=>`${label.class_id}:${label.code}:${label.display_name||''}`).join('|');if(select.dataset.signature!==signature){select.dataset.signature=signature;select.innerHTML=labels.map(label=>`<option value="${Number(label.class_id)}">${esc(label.display_name||label.code)} · ${esc(label.code)}</option>`).join('')}if(state.activeLabel!=null)select.value=String(state.activeLabel);select.disabled=locked||!labels.length}
+    const select=document.getElementById('ann420Label');if(select){const labels=state.labels||[],signature=labels.map(label=>`${label.class_id}:${label.code}:${label.display_name||''}`).join('|');if(select.dataset.signature!==signature){select.dataset.signature=signature;select.innerHTML=labels.map(label=>`<option value="${Number(label.class_id)}">${esc(label.display_name&&label.display_name!==label.code?label.display_name+' · '+label.code:label.code)}</option>`).join('')}if(state.activeLabel!=null)select.value=String(state.activeLabel);select.disabled=locked||!labels.length}
     const previous=document.getElementById('ann420Prev'),next=document.getElementById('ann420Next');
     if(previous){previous.disabled=at<=0;previous.onclick=()=>at>0&&goAnnotation417(ids[at-1])}
     if(next){next.disabled=at>=ids.length-1;next.onclick=()=>at<ids.length-1&&goAnnotation417(ids[at+1])}
@@ -6677,8 +6704,8 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     const wrap=document.querySelector('.ann420-stable .ann-canvas-wrap'),image=document.getElementById('annImg'),stage=document.getElementById('annStage');
     if(!wrap||!image||!stage)return;
     const width=Math.max(1,image.offsetWidth||image.naturalWidth||1),height=Math.max(1,image.offsetHeight||image.naturalHeight||1);
-    const availableWidth=Math.max(1,wrap.clientWidth-36),availableHeight=Math.max(1,wrap.clientHeight-36);
-    state.annZoom=Math.max(.5,Math.min(2.2,Math.min(availableWidth/width,availableHeight/height)));
+    const padding=getComputedStyle(wrap),availableWidth=Math.max(1,wrap.clientWidth-parseFloat(padding.paddingLeft)-parseFloat(padding.paddingRight)),availableHeight=Math.max(1,wrap.clientHeight-parseFloat(padding.paddingTop)-parseFloat(padding.paddingBottom));
+    state.annZoom=Math.max(.01,Math.min(4,availableWidth/width,availableHeight/height));
     stage.style.transform=`scale(${state.annZoom})`;
     const text=document.getElementById('zoomText');if(text)text.textContent=Math.round(state.annZoom*100)+'%';
     wrap.scrollLeft=0;wrap.scrollTop=0;
@@ -6722,7 +6749,16 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
       if(typeof workbench?.cancel==='function')workbench.cancel();else workbench?.invalidate?.();
       state.annotationQueue414=[];state.activeImage=null;state.annotationHydrating420=false;state.annotationLoadError420='';
     }
-    return window.closeModalCore424?.();
+    const closed=window.closeModalCore424?.();
+    const context=annotationRoot?state.trainingAnnotationReviewContext:null;
+    if(context?.returnSource){
+      state.trainingAnnotationReviewContext=null;
+      if(String(context.projectId)===String(pid())){
+        if(context.returnSource==='training')void window.TrainingMaterialSummaryRuntime?.returnFromReview?.();
+        if(context.returnSource==='integrity'){window.invalidateMaterialIntegrityGovernance47?.();void window.openMaterialIntegrityAudit47?.()}
+      }
+    }
+    return closed;
   };
 })();
 

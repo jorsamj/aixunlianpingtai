@@ -547,9 +547,22 @@ def _collect_known_image_ids(value, output=None):
 
 def _historical_material_references(
     project_id, project_path, repository, artifacts, *, exclude_task_id=None,
+    with_reasons=False, reference_image_ids=None,
 ):
     """Conservatively preserve material inputs referenced by durable history."""
     protected = set()
+    references = {}
+    wanted = None if reference_image_ids is None else set(map(str, reference_image_ids))
+
+    def preserve(image_ids, reason, source, **evidence):
+        protected.update(image_ids)
+        if with_reasons:
+            for image_id in image_ids:
+                if wanted is None or image_id in wanted:
+                    item = {"reason": reason, "source": source, "protected": True, **evidence}
+                    if item not in references.setdefault(image_id, []):
+                        references[image_id].append(item)
+
     cursor = None
     while True:
         page = repository.list(
@@ -561,12 +574,25 @@ def _historical_material_references(
         for task in page.items:
             if task.task_id == exclude_task_id:
                 continue
-            protected.update(_collect_known_image_ids(
+            freeze = artifacts.read_json(task.task_id, "input-freeze.json", default={})
+            freeze_present = artifacts.artifact_path(task.task_id, "input-freeze.json").is_file()
+            reason = (
+                "ACTIVE_TASK_INPUT" if task.status in _ACTIVE_INPUT_STATUSES else
+                "MODEL_CONVERSION_HISTORY" if task.kind == TaskKind.MODEL_CONVERSION else
+                "TRAINING_FAILED_WITH_FREEZE" if task.status == TaskStatus.FAILED and freeze_present else
+                "TRAINING_FAILED_NO_FREEZE" if task.status == TaskStatus.FAILED else
+                "TRAINING_COMPLETED_HISTORY" if task.status == TaskStatus.SUCCEEDED else
+                "TRAINING_HISTORY"
+            )
+            evidence = {
+                "task_id": task.task_id, "task_kind": task.kind.value,
+                "task_status": task.status.value, "freeze_present": freeze_present,
+                "evidence_status": "recorded_not_revalidated" if freeze_present else "payload_reference_only",
+            }
+            preserve(_collect_known_image_ids(
                 artifacts.read_json(task.task_id, task.payload_ref, default={})
-            ))
-            protected.update(_collect_known_image_ids(
-                artifacts.read_json(task.task_id, "input-freeze.json", default={})
-            ))
+            ), reason, "task_payload", **evidence)
+            preserve(_collect_known_image_ids(freeze), reason, "input_freeze", **evidence)
         cursor = page.next_cursor
         if not cursor:
             break
@@ -584,9 +610,10 @@ def _historical_material_references(
         for task in page.items:
             if task.task_id == exclude_task_id:
                 continue
-            protected.update(_collect_known_image_ids(
+            preserve(_collect_known_image_ids(
                 artifacts.read_json(task.task_id, task.payload_ref, default={})
-            ))
+            ), "ACTIVE_TASK_INPUT", "task_payload", task_id=task.task_id,
+                task_kind=task.kind.value, task_status=task.status.value)
             selection_path = artifacts.artifact_path(task.task_id, SELECTION_REF)
             if selection_path.is_file():
                 with closing(sqlite3.connect(
@@ -595,11 +622,12 @@ def _historical_material_references(
                     if selection.execute(
                         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='selection'"
                     ).fetchone():
-                        protected.update(
+                        preserve({
                             str(row[0]) for row in selection.execute(
                                 "SELECT image_id FROM selection"
                             ).fetchall()
-                        )
+                        }, "ACTIVE_TASK_INPUT", "frozen_selection", task_id=task.task_id,
+                            task_kind=task.kind.value, task_status=task.status.value)
         cursor = page.next_cursor
         if not cursor:
             break
@@ -610,9 +638,17 @@ def _historical_material_references(
             try:
                 if snapshots not in path.resolve().parents:
                     continue
-                protected.update(_collect_known_image_ids(
-                    json.loads(path.read_text(encoding="utf-8"))
-                ))
+                snapshot = json.loads(path.read_text(encoding="utf-8"))
+                all_ids = _collect_known_image_ids(snapshot)
+                test_ids = set(map(str, snapshot.get("test_image_ids") or [])) if isinstance(snapshot, dict) else set()
+                if isinstance(snapshot, dict):
+                    for key in ("ids", "roles", "splits"):
+                        roles = snapshot.get(key) or {}
+                        if isinstance(roles, dict) and isinstance(roles.get("test"), list):
+                            test_ids.update(map(str, roles["test"]))
+                source = path.relative_to(snapshots).as_posix()
+                preserve(all_ids - test_ids, "IMMUTABLE_SNAPSHOT", source)
+                preserve(all_ids & test_ids, "FROZEN_TEST_SNAPSHOT", source)
             except (OSError, ValueError, TypeError) as error:
                 raise BatchRequestError(
                     "MATERIAL_INTEGRITY_HISTORY_UNAVAILABLE",
@@ -622,9 +658,9 @@ def _historical_material_references(
                 ) from error
     try:
         from .algorithms import list_algorithms
-        protected.update(_collect_known_image_ids(
+        preserve(_collect_known_image_ids(
             list_algorithms(Path(project_path) / "algorithms.json")
-        ))
+        ), "MODEL_OR_EVALUATION_HISTORY", "algorithm_versions")
     except Exception as error:
         raise BatchRequestError(
             "MATERIAL_INTEGRITY_MODEL_HISTORY_UNAVAILABLE",
@@ -632,7 +668,7 @@ def _historical_material_references(
             + redact_storage_error(error),
             409,
         ) from error
-    return protected
+    return references if with_reasons else protected
 
 
 def _material_integrity_keeper(items, protected_ids, manual_keeper=None):
@@ -671,8 +707,11 @@ def _material_integrity_preview_items(project_id, materials, ids):
     annotations = AnnotationRepository(materials.project_path).get_many(ids)
     return [dict(
         image_id=str(row['id']), filename=row.get('filename') or str(row['id']),
+        content_sha256=str(row.get('content_sha256') or ''),
         width=int(row.get('width') or 0), height=int(row.get('height') or 0),
         content_url=f"/api/v61/projects/{project_id}/materials/{row['id']}/content",
+        annotation_state=(annotations.get(str(row['id'])) or {}).get('annotation_state') or 'unannotated',
+        annotation_scope=list((annotations.get(str(row['id'])) or {}).get('annotation_scope') or []),
         boxes=list((annotations.get(str(row['id'])) or {}).get('boxes') or []),
     ) for row in materials.get_many(ids)]
 
@@ -802,6 +841,7 @@ def create_material_integrity_plan(
         }
         planned = []
         planned_groups = []
+        review_groups = []
         skip_reasons = {}
         included_groups = kept_count = delete_count = 0
         manual_required_groups = protected_groups = anomaly_groups = 0
@@ -871,6 +911,12 @@ def create_material_integrity_plan(
                 manual_required_groups += 1
                 manual_ids.update(chosen_ids)
             if reason:
+                if len(review_groups) < 20:
+                    review_groups.append({
+                        "group_key": group_key, "issue_type": str(group['issue_type']),
+                        "image_count": len(ids), "reason": reason,
+                        "protected_count": len(group_protected),
+                    })
                 skipped_item_count += len(ids)
                 skip_reasons[reason] = int(skip_reasons.get(reason) or 0) + 1
                 continue
@@ -968,8 +1014,17 @@ def create_material_integrity_plan(
         for group_key, keeper, reason, count in planned_groups[:20]
     ]
     public["preview_groups_truncated"] = len(planned_groups) > 20
+    public['review_groups'] = review_groups
     preview_ids = [row[1] for row in planned if row[2] == 'DELETE'][:20]
+    if not preview_ids:
+        preview_ids = sorted(selected_ids)[:20]
     public['preview_items'] = _material_integrity_preview_items(project_id, materials, preview_ids)
+    reference_reasons = _historical_material_references(
+        project_id, materials.project_path, repository, artifacts,
+        with_reasons=True, reference_image_ids=preview_ids,
+    )
+    for item in public['preview_items']:
+        item['protection_reasons'] = reference_reasons.get(item['image_id'], [])
     deletion_ids = sorted(planned_ids)
     annotation_count = 0
     for offset in range(0, len(deletion_ids), BATCH_SIZE):
@@ -3561,6 +3616,10 @@ def material_batch_router(
         }
         annotations = AnnotationRepository(materials.project_path)
         current_annotations = annotations.get_many(ids)
+        references = _historical_material_references(
+            project_id, materials.project_path, task_repository(), task_artifacts(),
+            with_reasons=True, reference_image_ids=ids,
+        )
         items = []
         for row in visible:
             image_id = str(row["image_id"])
@@ -3569,6 +3628,9 @@ def material_batch_router(
             snapshot = json.loads(row["details_json"] or "{}")
             items.append({
                 "image_id": image_id,
+                "content_sha256": str(material.get("content_sha256") or row['content_sha256'] or ''),
+                "annotation_version": int(annotation.get('version') or 0),
+                "protection_reasons": references.get(image_id, []),
                 "filename": material.get("filename") or snapshot.get("filename") or image_id,
                 "storage_source_id": material.get("storage_source_id") or snapshot.get("storage_source_id") or "",
                 "import_batch_id": material.get("import_batch_id") or material.get("batch_id") or snapshot.get("import_batch_id") or "",
@@ -3615,10 +3677,8 @@ def material_batch_router(
         )
         return public_batch(published, task_artifacts(), task_repository())
 
-    # app.py has one additive runtime-router mount today.  Keep material-batch
-    # URLs untouched while composing the independent training recovery API at
-    # that existing integration point instead of adding route side effects.
-    from .training_recovery_api import training_recovery_router
+    # Training/agent routes are mounted once by app.py with their dependencies.
+    # A nested mount here would shadow that configured owner.
     from .label_integrity import label_integrity_router
     root = APIRouter()
     root.include_router(router)
@@ -3626,7 +3686,6 @@ def material_batch_router(
     root.include_router(label_integrity_router(
         get_project, material_store, task_repository, task_artifacts,
     ))
-    root.include_router(training_recovery_router(get_project, task_repository, task_artifacts))
     return root
 
 

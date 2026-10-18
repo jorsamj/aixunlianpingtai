@@ -154,6 +154,45 @@ async function createProject(request) {
   return response.json();
 }
 
+test('real protected duplicate group offers review with zero deletions and preserves shared content',async({page,request},testInfo)=>{
+  const project=await createProject(request);
+  const buffer=execFileSync('python',['-c',"from PIL import Image; import io,sys; b=io.BytesIO(); Image.new('RGB',(160,90),'#9ec9e6').save(b,format='PNG'); sys.stdout.buffer.write(b.getvalue())"]);
+  const upload=await request.post(`/api/projects/${project.id}/images`,{multipart:{files:{name:'protected-original.png',mimeType:'image/png',buffer},dataset_id:'default'}});expect(upload.ok()).toBeTruthy();
+  const original=(await upload.json()).uploaded[0];
+  isolatedPython(project.id,`import os,app
+from dataclasses import replace
+from platform_core.annotation_repository import AnnotationRepository
+from platform_core.task_runtime import TaskRecord,TaskKind,TaskStatus
+p=os.environ['INTEGRITY_TEST_PROJECT']; m=app.material_store(p); first=m.get(${JSON.stringify(original.id)})
+row={k:v for k,v in first.items() if not k.startswith('annotation_')}; row.update(id='protected-copy',filename='protected-copy.png'); m.upsert(row)
+a=AnnotationRepository(m.project_path)
+for i in [first['id'],row['id']]:
+ a.upsert(i,[{'label':'target','class_id':0,'x1':16,'y1':9,'x2':80,'y2':45}],annotation_state='annotated',annotation_scope=['target'])
+artifacts=app.shared_task_artifacts(); task='train_protected_'+p
+artifacts.atomic_write_json(task,'payload.json',{'train_image_ids':[first['id'],row['id']]})
+app.shared_task_repository().create(replace(TaskRecord.new(task,p,TaskKind.TRAINING,'payload.json','isolated-protection'),status=TaskStatus.FAILED,error='DUPLICATE_ANNOTATION_CONFLICT'),artifacts=artifacts)
+`);
+  const content=await request.get(`/api/v61/projects/${project.id}/materials/${original.id}/content`);expect(content.ok()).toBeTruthy();const before=await content.body();
+  const audit=await request.post(`/api/v62/projects/${project.id}/material-integrity/audits`);expect(audit.status()).toBe(202);const auditId=(await audit.json()).task_id;runIsolatedWorker(project.id,auditId);
+  let executions=0;page.on('request',r=>{if(r.method()==='POST'&&r.url().includes('/execute'))executions++});
+  await page.route('**/api/v53/bootstrap/snapshot**',async route=>{const url=new URL(route.request().url());url.searchParams.set('preferred_project_id',project.id);await route.fallback({url:url.toString()})});
+  await page.addInitScript(()=>localStorage.setItem('mc_train_ui_state_v34',JSON.stringify({page:'数据集'})));
+  await page.setViewportSize({width:1366,height:768});await page.goto('/');await page.getByRole('button',{name:/数据集/}).click();await page.getByRole('button',{name:'重复与异常素材',exact:true}).click();
+  const previewResponse=page.waitForResponse(r=>r.request().method()==='POST'&&r.url().endsWith('/dedup-plans'));
+  await page.getByRole('button',{name:'批量去重 · 每组保留 1 张',exact:true}).click();
+  const plan=await (await previewResponse).json();expect(plan.delete_count).toBe(0);expect(plan.protected_groups).toBe(1);expect(plan.preview_items).toHaveLength(2);expect(plan.preview_items.every(item=>item.protection_reasons.length>0)).toBe(true);
+  const preview=page.getByRole('dialog',{name:'异常素材删除预览',exact:true});await expect(preview).toContainText('没有可安全删除的素材');await expect(preview.getByRole('button',{name:/确认删除/})).toBeHidden();
+  await expect(preview.locator('img')).toHaveCount(2);for(const img of await preview.locator('img').all())await expect.poll(()=>img.evaluate(el=>el.complete&&el.naturalWidth)).toBe(160);
+  await page.screenshot({path:testInfo.outputPath('protected-zero-delete-desktop.png')});await page.setViewportSize({width:375,height:812});await page.screenshot({path:testInfo.outputPath('protected-zero-delete-mobile.png')});await page.setViewportSize({width:1366,height:768});
+  await preview.getByRole('button',{name:'查看并处理冲突 · 2 张',exact:true}).click();
+  await expect(page.locator('#materialIntegrityItems47 > article')).toHaveCount(2);
+  await page.locator('#materialIntegrityItems47 > article').first().getByRole('button',{name:/标注|审核|核对/}).click();
+  const workbench=page.getByRole('dialog',{name:'图片标注工作台',exact:true});await expect(workbench.locator('#annSaveState')).toHaveText('已保存');await expect(workbench.locator('.box424')).toHaveCount(1);
+  expect(executions).toBe(0);expect(isolatedPython(project.id,"import os,app; print(app.material_store(os.environ['INTEGRITY_TEST_PROJECT']).summary()['total'])")).toBe('2');
+  expect(await (await request.get(`/api/v61/projects/${project.id}/materials/${original.id}/content`)).body()).toEqual(before);
+  expect(await (await request.get(`/api/v61/projects/${project.id}/materials/protected-copy/content`)).body()).toEqual(before);
+});
+
 
 test('filtered anomaly selection, protected preview, aspect ratios and mobile recovery remain usable', async ({page, request}, testInfo) => {
   const project = await createProject(request), auditId='isolated-anomaly-audit';

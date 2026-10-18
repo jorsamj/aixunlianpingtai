@@ -16,6 +16,14 @@ test('selection signature is stable and duplicate independent', () => {
   );
 });
 
+test('duplicate exclusions preserve explicit original scope and canonical revisions without deleting materials', () => {
+  const draft={materialIds:['a','b','c'],testMaterialIds:[]};
+  const truth={material_revision:12,annotation_revision:7,items:[{image_id:'b',issue_type:'duplicate_annotation_conflict'}]};
+  const result=excludeTrainingMaterialFromDraft({update:patch=>patch},draft,'b',truth);
+  assert.deepEqual(result.materialIds,['a','c']);
+  assert.deepEqual(result.duplicateReview,{original_train_image_ids:['a','b','c'],original_test_image_ids:[],excluded_image_ids:['b'],material_revision:12,annotation_revision:7});
+});
+
 test('task compatibility signature changes with labels and selected material truth', () => {
   const base = {
     algorithmId: 'alg-1', materialIds: ['b', 'a'], testMaterialIds: [],

@@ -7,6 +7,16 @@ import {
   trainingDraftToRequest,
 } from '../../static/modules/training-draft.js';
 
+test('explicit duplicate exclusion audit survives canonical draft and final request normalization', () => {
+  const duplicateReview = {original_train_image_ids:['a','b','c'],original_test_image_ids:[],excluded_image_ids:['b'],material_revision:12,annotation_revision:7};
+  const draft=createTrainingDraft({algorithmId:'alg',materialIds:['a','c'],newLabelCodes:['target'],duplicateReview});
+  assert.deepEqual(draft.duplicateReview,duplicateReview);
+  const request=trainingDraftToRequest(draft);
+  assert.deepEqual(request.duplicate_review,duplicateReview);
+  assert.equal(request.expected_material_revision,12);
+  assert.equal(request.expected_annotation_revision,7);
+});
+
 test('canonical draft deduplicates materials and only stores explicit user label choices', () => {
   const draft = createTrainingDraft({
     algorithmId: 'alg-1',

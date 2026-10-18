@@ -637,6 +637,10 @@ def test_material_integrity_safe_plan_skips_groups_with_multiple_training_refere
     assert response.json()["delete_count"] == 0
     assert response.json()["protected_groups"] == 1
     assert response.json()["skip_reasons"]["MULTIPLE_PROTECTED_REFERENCES"] == 1
+    assert response.json()["review_groups"][0]["group_key"].startswith('DUPLICATE_')
+    assert response.json()["review_groups"][0]["reason"] == 'MULTIPLE_PROTECTED_REFERENCES'
+    assert {item['image_id'] for item in response.json()['preview_items']} == {original['id'], duplicate_id}
+    assert all(item['protection_reasons'] for item in response.json()['preview_items'])
 
 
 def test_material_integrity_plan_keeps_snapshot_referenced_identity(

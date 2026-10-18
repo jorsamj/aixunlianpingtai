@@ -206,7 +206,7 @@ export function installTrainingMaterialPickerRuntime({
       <div class="picker412-actions train-v3-batch"><button class="btn mini" data-picker-action="select-filtered" onclick="trainMaterialSelectV3('select-filtered')">全选当前筛选</button><button class="btn mini" data-picker-action="invert-filtered" onclick="trainMaterialSelectV3('invert-filtered')">反选当前筛选</button><button class="btn mini" data-picker-action="select-all" onclick="trainMaterialSelectV3('select-all')">全选全部可用素材</button><button class="btn mini" onclick="trainMaterialSelectV3('clear-all')">全部不选</button><span id="trV3PageMeta" class="train-v3-page-meta"></span></div>
       <div id="trV3Grid" class="train-v3-grid"></div>
       <div id="trV3Pager" class="data426-pager"></div>
-      <div class="row end"><button class="btn" onclick="closeModal()">取消</button><button class="btn primary" onclick="confirmTrainMaterialPickerV3()">确认选择</button></div>
+      <div class="row end"><button class="btn" onclick="closeModal()">取消</button><button class="btn primary" data-picker-confirm onclick="confirmTrainMaterialPickerV3()">确认选择</button></div>
     </div>`;
   }
 
@@ -434,28 +434,33 @@ export function installTrainingMaterialPickerRuntime({
   }
 
   async function bulkAction(action) {
-    if (!picker) return;
+    if (!picker || picker.bulkPending) return;
     if (action === 'clear-all') {
       picker.selected.clear();
       renderPage();
       return;
     }
-    const buttons = document.querySelectorAll('[data-picker-action]');
-    buttons.forEach(button => button.classList.add('train-v3-loading'));
+    const activePicker = picker, pid = projectId();
+    activePicker.bulkPending = true;
+    const buttons = document.querySelectorAll('[data-picker-action], [data-picker-confirm]');
+    buttons.forEach(button => {button.disabled = true;button.classList.add('train-v3-loading');});
     const count = document.getElementById('trV3PickerCount');
     if (count) count.textContent = '正在解析批量选择…';
     try {
       const ids = await resolveBulkSelection({allAvailable: action === 'select-all'});
+      if (picker !== activePicker || projectId() !== pid) return;
       const blocked = blockedIds(picker.role);
       const eligible = ids.filter(id => !blocked.has(id));
       if (action === 'select-filtered' || action === 'select-all') eligible.forEach(id => picker.selected.add(id));
       else if (action === 'invert-filtered') eligible.forEach(id => picker.selected.has(id) ? picker.selected.delete(id) : picker.selected.add(id));
       renderPage();
     } catch (error) {
+      if (picker !== activePicker || projectId() !== pid) return;
       notify(error?.message || '批量选择失败');
       updateCounts();
     } finally {
-      buttons.forEach(button => button.classList.remove('train-v3-loading'));
+      activePicker.bulkPending = false;
+      buttons.forEach(button => {button.disabled = false;button.classList.remove('train-v3-loading');});
     }
   }
 
@@ -540,7 +545,7 @@ export function installTrainingMaterialPickerRuntime({
   window.trainMaterialSelectV3 = bulkAction;
   window.trainMaterialPageV3 = page;
   window.confirmTrainMaterialPickerV3 = function confirmPicker() {
-    if (!picker) return false;
+    if (!picker || picker.bulkPending) return false;
     const current = draft();
     const patch = trainingMaterialSelectionPatch({
       role: picker.role,
@@ -555,7 +560,7 @@ export function installTrainingMaterialPickerRuntime({
   };
 
   const runtime = {
-    build: 'training-material-picker-runtime-422506',
+    build: 'training-material-picker-runtime-422507',
     open,
     loadPage,
     bulkAction,

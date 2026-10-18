@@ -306,7 +306,13 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   await expect(secondDialog).toBeVisible({timeout: 10_000});
   await secondDialog.getByRole('button', {name: '选择训练素材'}).click();
   const secondPicker = page.getByRole('dialog', {name: '选择本次训练素材'});
+  let releaseBulk;
+  const bulkGate = new Promise(resolve => {releaseBulk = resolve;});
+  await page.route('**/training-materials/bulk-selection', async route => {await bulkGate;await route.fallback();});
   await secondPicker.getByRole('button', {name: '全选全部可用素材'}).click();
+  await expect(secondPicker.getByRole('button', {name: '确认选择'})).toBeDisabled();
+  releaseBulk();
+  await expect(secondPicker.locator('#trV3PickerCount')).toContainText(`已选 ${imageIds.length} 张`);
   await secondPicker.getByRole('button', {name: '确认选择'}).click();
 
   const secondLabels = secondDialog.locator('#trainingLabelContractPanel');
