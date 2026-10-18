@@ -50,7 +50,7 @@ def test_high_map_does_not_mark_unmeasured_model_classes_as_accurate(tmp_path: P
     images.mkdir()
     ground_truth.mkdir()
     Image.new("RGB", (100, 100), (10, 20, 30)).save(images / "a.jpg")
-    (ground_truth / "a.txt").write_text("0 0.5 0.5 0.4 0.4\\n".replace("\\\\n", "\\n"), encoding="utf-8")
+    (ground_truth / "a.txt").write_text("0 0.5 0.5 0.4 0.4\n", encoding="utf-8")
 
     def prediction(_):
         return [
