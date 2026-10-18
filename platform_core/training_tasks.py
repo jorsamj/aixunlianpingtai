@@ -3,6 +3,7 @@ from __future__ import annotations
 import errno
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -1424,6 +1425,125 @@ def _training_split_quality(
     return quality
 
 
+
+def _training_annotation_admission(
+    images: Sequence[Mapping[str, Any]],
+    label_schema: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Bounded, read-only quality admission of this exact projected GT selection.
+
+    Existing CLEAN audits are historical artifacts, not proof that the current
+    train/validation/test input passes. Do not mutate the source annotation.
+    """
+    from .annotation_quality import _audit_boxes
+
+    allowed = {
+        str(item.get("code") or "").strip()
+        for item in label_schema if str(item.get("code") or "").strip()
+    }
+    counts: dict[str, int] = {}
+    severities = {"blocking": 0, "manual_review": 0, "warning": 0}
+    samples: dict[str, list[str]] = {key: [] for key in severities}
+    missing_dimensions = 0
+    blocker_codes = {
+        "label_missing", "label_unknown", "label_disabled",
+        "box_invalid", "box_out_of_bounds", "annotation_state_inconsistent",
+    }
+    review_codes = {
+        "box_tiny", "box_large", "box_duplicate_exact",
+        "box_duplicate_iou", "box_pairwise_unchecked",
+        "dimensions_unknown", "annotation_needs_review",
+    }
+
+    def record(code: str, image_id: str, multiplicity: int = 1) -> None:
+        severity = (
+            "blocking" if code in blocker_codes else
+            "manual_review" if code in review_codes else "warning"
+        )
+        count = max(1, int(multiplicity))
+        counts[code] = counts.get(code, 0) + count
+        severities[severity] += count
+        if len(samples[severity]) < 10 and image_id not in samples[severity]:
+            samples[severity].append(image_id)
+
+    for row in images:
+        image_id = str(row.get("id") or "")
+        raw_boxes = list(row.get("boxes") or [])
+        state = str(row.get("annotation_state") or ("annotated" if raw_boxes else "unannotated")).strip().lower()
+        if (state == "annotated" and not raw_boxes or
+                state == "confirmed_empty" and raw_boxes or
+                state not in {"annotated", "confirmed_empty"}):
+            record("annotation_state_inconsistent", image_id)
+        if row.get("annotation_needs_review") or row.get("external_annotation_needs_review"):
+            record("annotation_needs_review", image_id)
+        if not raw_boxes:
+            continue
+        try:
+            width = int(row.get("width") or 0)
+            height = int(row.get("height") or 0)
+        except (TypeError, ValueError, OverflowError):
+            width = height = 0
+        if width <= 0 or height <= 0:
+            missing_dimensions += 1
+            record("dimensions_unknown", image_id)
+        translated: list[dict[str, Any]] = []
+        for box in raw_boxes:
+            if not isinstance(box, Mapping):
+                translated.append({})
+                continue
+            candidate = dict(box)
+            if not all(key in candidate for key in ("x1", "y1", "x2", "y2")):
+                if all(key in candidate for key in ("cx", "cy", "w", "h")):
+                    try:
+                        cx, cy, bw, bh = (
+                            float(candidate[key]) for key in ("cx", "cy", "w", "h")
+                        )
+                        if all(math.isfinite(value) for value in (cx, cy, bw, bh)):
+                            # Match _yolo_line's normalized-vs-pixel semantics.
+                            if max(abs(cx), abs(cy), abs(bw), abs(bh)) <= 1:
+                                cx, cy = cx * max(1, width), cy * max(1, height)
+                                bw, bh = bw * max(1, width), bh * max(1, height)
+                            candidate.update(
+                                x1=cx - bw / 2, y1=cy - bh / 2,
+                                x2=cx + bw / 2, y2=cy + bh / 2,
+                            )
+                    except (TypeError, ValueError, OverflowError):
+                        pass
+            translated.append(candidate)
+        issues, _density, _per_class, _heatmap = _audit_boxes(
+            translated,
+            width=width, height=height,
+            known_labels=allowed, disabled_labels=set(),
+            pairwise_box_limit=32,
+        )
+        for issue in issues:
+            record(
+                str(issue.get("code") or "unknown"),
+                image_id,
+                int(issue.get("count") or 1),
+            )
+
+    result = {
+        "schema_version": 1,
+        "scope": "projected_frozen_training_selection",
+        "audited_images": len(images),
+        "issue_counts": dict(sorted(counts.items())),
+        "severity_counts": severities,
+        "sample_image_ids_by_severity": samples,
+        "images_with_unverified_dimensions": missing_dimensions,
+        "gt_mutated": False,
+    }
+    if severities["blocking"]:
+        reason_codes = sorted(code for code in counts if code in blocker_codes)
+        raise ValueError(
+            "TRAINING_ANNOTATION_ADMISSION_BLOCKED: 当前训练选择包含无效正式标注 "
+            + ", ".join(reason_codes[:8])
+            + "；素材示例 " + ", ".join(samples["blocking"][:5])
+            + "；请人工修正正式 GT 后重新创建任务"
+        )
+    return result
+
+
 def freeze_training_inputs(
     project: Path,
     split_request: SplitRequest,
@@ -1487,6 +1607,7 @@ def freeze_training_inputs(
     )
     if not label_schema:
         raise ValueError("training label schema is empty")
+    annotation_admission = _training_annotation_admission(images, label_schema)
     manifest = build_split_manifest(
         images,
         effective_split,
@@ -1498,6 +1619,7 @@ def freeze_training_inputs(
         images, manifest, label_schema, label_contract=label_contract,
         include_class_coverage=True,
     )
+    input_quality["annotation_admission"] = annotation_admission
     snapshot = build_snapshot(
         images,
         manifest,
@@ -1621,6 +1743,11 @@ def resolve_training_input_freeze(
         ),
         include_class_coverage="class_coverage" in frozen_quality,
     )
+    if "annotation_admission" in frozen_quality:
+        # Only new freezes carry this key; keep legacy input_quality byte-for-byte.
+        input_quality["annotation_admission"] = _training_annotation_admission(
+            images, label_schema,
+        )
     if dict(value.get("input_quality") or {}) != input_quality:
         raise ValueError("training input freeze quality evidence mismatch")
     snapshot = build_snapshot(

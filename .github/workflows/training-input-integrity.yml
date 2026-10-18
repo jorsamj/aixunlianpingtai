@@ -15,6 +15,7 @@ on:
       - tests/api/test_training_request.py
       - tests/unit/test_training_splits.py
       - tests/unit/test_training_stratification_v2.py
+      - tests/unit/test_training_annotation_admission.py
       - tests/unit/test_training_bundle_isolation.py
       - tests/unit/test_training_bundle_cache.py
       - tests/unit/test_training_label_contract.py
@@ -35,6 +36,7 @@ on:
       - tests/api/test_training_request.py
       - tests/unit/test_training_splits.py
       - tests/unit/test_training_stratification_v2.py
+      - tests/unit/test_training_annotation_admission.py
       - tests/unit/test_training_bundle_isolation.py
       - tests/unit/test_training_bundle_cache.py
       - tests/unit/test_training_label_contract.py
@@ -78,12 +80,14 @@ jobs:
           tests/unit/test_training_label_contract.py
           tests/unit/test_negative_sample_contract.py
           tests/unit/test_training_stratification_v2.py
+          tests/unit/test_training_annotation_admission.py
           tests/integration/test_training_input_integrity_chain.py
       - name: Fixed benchmark reservation component guard
         run: >-
           python -m pytest --confcutdir=tests/unit -q
           tests/unit/test_training_splits.py
           tests/unit/test_training_stratification_v2.py
+          tests/unit/test_training_annotation_admission.py
       - name: Existing JPEG and cache isolation guards
         run: >-
           python -m pytest --confcutdir=tests/unit -q

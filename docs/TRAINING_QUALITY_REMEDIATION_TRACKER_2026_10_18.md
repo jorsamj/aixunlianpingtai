@@ -14,7 +14,7 @@
 | --- | --- | --- | --- | --- | --- |
 | TQ-01 | P0 | Train/Val/Test 多类正样本及来源覆盖 | 现有分组隔离；完整分层不保证 | **阶段二已提交：Ubuntu/Windows 定向回归通过，生产数据待验收** | `training_splits.py`、`training_tasks.py`；按类独立图片/框/来源证据 |
 | TQ-02 | P0 | 视频邻帧、近重复和缺失来源元数据导致疑似泄漏 | 已隔离 SHA/已知关系；未知来源需保留未知状态 | 待核验 | 导入扫描与 split；不可跨组，不能假装未知已安全 |
-| TQ-03 | P0 | 训练选择的正式标注质量准入不统一 | CLEAN 审计不等同训练准入 | 待修复 | `annotation_quality.py` + freeze；按严重度区分阻断/人工复核 |
+| TQ-03 | P0 | 训练选择的正式标注质量准入不统一 | CLEAN 审计不等同训练准入 | **第一阶段：训练冻结只读准入代码候选，待 CI** | `annotation_quality.py` + freeze；按严重度区分阻断/人工复核 |
 | TQ-04 | P0 | 97% 高 Val mAP 的真实可信度 | 无实际任务报告，不能宣告指标伪造 | 待核验 | 指标口径、类别参与数、数据独立性、独立 Test |
 | TQ-05 | P0 | Ultralytics `ap_class_index` 与 `box.maps` 类别对应有潜在错配 | 已证实 compact 数组与 dense `maps` 被按位置混用、NumPy 真值判定可能失败 | **修复与 CI 已通过；历史模型报告未重算** | `train_worker.py`、定向 Python 单测；丢类、稀疏 class_id |
 | TQ-06 | P0 | 无 GT 类别及独立测试结果可评估性提示 | 总体 mAP 可隐藏测试中无正样本的已声明类别 | **后端修复与 CI 已通过；页面展示待验收** | `training_evaluation.py`、质量中心；不得宣告零样本类别合格 |
@@ -98,3 +98,14 @@
 - `platform_core/training_splits.py::_valid_annotation` 只验证 annotated 非空和 confirmed_empty 无框/范围，不检查坐标是否有限、几何有效性及类别目录有效性；`freeze_training_inputs` 未复用 CLEAN 审核。
 - 因此 TQ-03 **真实缺口成立**。下一阶段应复用单图审计检查，对本次选择在 Freeze 前实现“阻断/警告/人工复核”准入，并把可重放的质量证据纳入新冻结合同。完整 GT/训练投影差异需区别合法训练任务标签过滤与非法丢框，不能简单要求投影与原始 GT 完全相同。
 - 保持生产只读、不得自动修改 Ground Truth。当前仅审计，**不声称 TQ-03 已修复**。
+
+## TQ-03 第一阶段｜训练前正式标注只读质量准入（2026-10-18）
+
+- **真实根因**：CLEAN 标注审核具有图片框校验，但没有用于本次训练输入 Freeze；旧冻结只检查标注状态/重复冲突，不提前对越界、零面积、非有限坐标、标签目录不一致做分级阻断。
+- **修改文件**：`platform_core/annotation_quality.py`、`platform_core/training_tasks.py`、`tests/unit/test_training_annotation_admission.py`、`.github/workflows/training-input-integrity.yml`、`.github/workflows/v42.25-release-regression.yml`、本文件。
+- **修复原则**：对当前冻结、已完成训练标签投影的正式 GT 进行只读扫描；阻断确定性无效框/标签/状态，极小框、极大框、疑似重复框及未复核标志归入人工复核，未知尺寸等归人工复核；`confirmed_empty` 明确支持合法负样本。对 `xyxy` 与 `cxcywh`（归一化或像素）按现有 YOLO 导出语义判断。不得自动删除、改写正式 GT 或修改固定 Test。
+- **性能**：只遍历本次已在 Freeze 内存中的选择、不重复全项目查询；每图最多 32 框做高成本两两 IoU，超出时仍检查所有框的精确重复和非法几何，并明确记录 `box_pairwise_unchecked`，不得谎称完成全量近重检查。
+- **冻结证据**：新冻结 `input_quality.annotation_admission` 留存 severity counts、issue counts、少量示例 ID、审核范围和未知尺寸数量；恢复时从相同冻结行重算证据；老冻结不具有此键时继续旧质量合同验证。
+- **验收项**：越界、零面积、NaN、无效类、归一化中心宽高越界；负样本、合法框、极小/重复框人工复核；大量框降级判定；新旧输入冻结兼容。需进一步核对 GT 到投影的合法标签过滤和历史留存语义；本阶段只核查**投影后的本次训练 GT**，不宣称对被合法过滤的所有来源框完成审核。
+- **待办/风险**：未在 A800/生产 103455 张素材上执行；缺失尺寸仅提示人工复核，不会假装已完成边界检查；对同 SHA 不同原始 GT 冲突仍交给现有重复安全审计；UI 阻断/警告/复核展示与实际正式数据验收尚待继续。
+- **状态**：待本批提交 SHA 和 CI 记录补录，当前为代码候选而非完成/全绿。
