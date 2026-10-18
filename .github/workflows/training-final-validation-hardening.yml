@@ -20,6 +20,7 @@ on:
       - platform_core/worker_registry.py
       - platform_core/task_runtime/process_control.py
       - platform_core/task_runtime/scheduler.py
+      - tests/unit/test_train_worker_metrics_class_mapping.py
       - tests/unit/test_training_final_validation_oom_hardening.py
       - tests/unit/test_training_finalization_handshake.py
       - tests/unit/test_training_resource_contract.py
@@ -72,6 +73,7 @@ jobs:
       - name: Focused training finalization and startup regressions
         run: >-
           python -m pytest -q
+          tests/unit/test_train_worker_metrics_class_mapping.py
           tests/unit/test_training_final_validation_oom_hardening.py
           tests/unit/test_training_finalization_handshake.py
           tests/unit/test_training_resource_contract.py

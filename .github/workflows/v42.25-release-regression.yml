@@ -96,6 +96,7 @@ on:
       - tests/unit/task_runtime/test_public_projection.py
       - tests/unit/test_a800_rc_acceptance.py
       - tests/unit/test_training_metrics_fd.py
+      - tests/unit/test_train_worker_metrics_class_mapping.py
 
 # Durable public truth guard: RUNNING + phase=paused must project as PAUSED while persisted_status stays RUNNING.
 # Durable control guard: once cancellation is durable truth, a late resume cannot revive the task stage/process.
@@ -195,6 +196,7 @@ jobs:
           tests/unit/task_runtime/test_artifact_fencing.py
           tests/unit/test_training_resource_contract.py
           tests/unit/test_training_metrics_fd.py
+          tests/unit/test_train_worker_metrics_class_mapping.py
       - name: Worker execution-fencing smoke check
         run: >-
           python task_worker.py --check --data-dir "${RUNNER_TEMP}/platform-data"
