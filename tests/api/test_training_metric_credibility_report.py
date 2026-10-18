@@ -90,6 +90,8 @@ def test_training_report_api_prefers_durable_result_test_and_matching_validation
 def test_legacy_report_api_retains_real_record_but_marks_credibility_unavailable(monkeypatch, tmp_path):
     platform = _setup_report(monkeypatch, tmp_path)
     report = platform.v44_training_report("p", "training-1")["report"]
-    assert report["metrics"]["metrics/mAP50(B)"] == .80
+    # training_report.metrics is this legacy task's real finalized Val result;
+    # job.metrics (.80) is an older cache, not the authoritative report value.
+    assert report["metrics"]["metrics/mAP50(B)"] == .96
     assert report["metric_credibility"] is None
     assert report["evaluation"]["status"] == "not_requested"
