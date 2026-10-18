@@ -87,7 +87,9 @@ jobs:
 
       - name: Permanent hardening guards
         run: |
-          grep -Fq '"training": "platform_core.training_recovery_tasks"' platform_core/worker_registry.py
+          grep -Fq '"training": "platform_core.training_runtime_tasks"' platform_core/worker_registry.py
+          grep -Fq 'class ProductionTrainingHandler(CheckpointResumeRecoveryHandler)' platform_core/training_runtime_tasks.py
+          grep -Fq 'class CheckpointResumeRecoveryHandler(recovery.RecoveryHardenedLabelContractTrainingHandler)' platform_core/training_checkpoint_resume_tasks.py
           grep -Fq 'RecoveryHardenedLabelContractTrainingHandler' platform_core/training_recovery_tasks.py
           grep -Fq 'failure_stage' platform_core/training_recovery_tasks.py
           grep -Fq 'verify_portable_dataset' platform_core/training_recovery_tasks.py

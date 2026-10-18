@@ -1,5 +1,6 @@
 ## 2026-10-18｜安全推送验收阶段（用户已授权 / CI 待最终 SHA 验收）
 
+- 首轮 `edee5fb6fcd32812ee62b0197728dc7ab51d8b0f` CI 发现恢复/素材选择 Chrome build 断言与实际资源不一致，以及新接入 Hardening 守卫锁定退役的注册模块。最小修复只同步精确版本和真实 Production→CheckpointResume→Recovery 继承合同，并增强真实注册对象断言；恢复 Chrome 5/5、素材选择 Chrome 2/2、Node 982/982、两个原始 Bash 永久守卫通过。扩展 Windows 测试的 14 项长路径失败在短 basetemp 消失（19 passed/1 Linux-only skipped）；另 1 项 manual workers=8 与既有 Windows 上限4冲突，不改生产资源保护；相同未变源码的 Ubuntu 124项已实际通过。最终 SHA 仍需重新完整 CI。
 - 用户已授权本轮普通 Fast-forward 推送及必要 CI 修复；禁止强推、main 合并、Release、生产服务/数据操作和正式 VERSION 修改。此前 LOCAL ONLY 记录是上一阶段，不再作为本阶段推送限制。
 - 代码提交基线 `5d3ad65bf7ff287521481a2ac6bfbd1f7caed52e`，远端父提交 `5a28e4539b81c03b4eaa27fa4b6c718138542169`。范围审查确认只涉及图片标注、类别检查、素材治理和训练冲突闭环，复用原 Repository、TrainingCompatibility、Snapshot 与 Task Owner。
 - 推送前独立复核补齐固定 Benchmark 与 duplicate_review 合同：API/Worker 只在真实 Benchmark 解析后正规化；保留原 revision，拒绝客户端 Test 角色及保留素材排除，不暴露私有 Test ID。9 个真实 API→Worker 场景通过，相关 Python 109 passed；Node 全量 981 passed。

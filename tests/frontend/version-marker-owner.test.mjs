@@ -78,4 +78,19 @@ test('negative sample runtime is cache-busted with canonical owner retirement', 
 
 test('training material picker canonical confirm asset is current', () => {
   assert.equal(main.includes("./modules/training-material-picker-runtime.js?v=422611"), true);
+  const runtime = fs.readFileSync(new URL('../../static/modules/training-material-picker-runtime.js', import.meta.url), 'utf8');
+  const browser = fs.readFileSync(new URL('../browser/training-material-picker-performance.spec.mjs', import.meta.url), 'utf8');
+  assert.ok(runtime.includes("build: 'training-material-picker-runtime-422507'"));
+  assert.ok(browser.includes(".toBe('training-material-picker-runtime-422507')"));
+});
+
+test('recovery browser and CI guards match the exact loaded runtime build', () => {
+  const build = 'training-recovery-runtime-4226389';
+  const runtime = fs.readFileSync(new URL('../../static/modules/training-recovery-runtime.js', import.meta.url), 'utf8');
+  const browser = fs.readFileSync(new URL('../browser/training-recovery.spec.mjs', import.meta.url), 'utf8');
+  const workflow = fs.readFileSync(new URL('../../.github/workflows/training-recovery-guard.yml', import.meta.url), 'utf8');
+  assert.ok(main.includes('./modules/training-recovery-runtime.js?v=4226389'));
+  assert.ok(runtime.includes(`build: '${build}'`));
+  assert.ok(browser.includes(`.toBe('${build}')`));
+  assert.ok(workflow.includes(`grep -Fq "build: '${build}'" static/modules/training-recovery-runtime.js`));
 });

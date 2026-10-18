@@ -13,10 +13,16 @@ def test_all_roles_skip_unimplemented_optional_packages_without_losing_real_hand
 
 
 def test_worker_registration_reports_roles_that_actually_loaded(tmp_path):
+    from platform_core.training_runtime_tasks import ProductionTrainingHandler
+    from platform_core.training_recovery_tasks import RecoveryHardenedLabelContractTrainingHandler
+
     registration = resolve_worker_registration(tmp_path, {"training"})
 
     assert registration.roles == frozenset({"training"})
     assert TaskKind.TRAINING in registration.handlers
+    handler = registration.handlers[TaskKind.TRAINING]
+    assert type(handler) is ProductionTrainingHandler
+    assert isinstance(handler, RecoveryHardenedLabelContractTrainingHandler)
     assert "training.ultralytics" in registration.capabilities
 
 

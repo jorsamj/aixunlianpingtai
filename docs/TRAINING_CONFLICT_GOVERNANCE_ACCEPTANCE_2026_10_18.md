@@ -7,6 +7,9 @@
 
 ## 本阶段追加：推送前独立复核
 
+- 首轮 `edee5fb6fcd32812ee62b0197728dc7ab51d8b0f` CI 发现恢复/素材选择 Chrome build 断言与实际资源不一致，以及新接入 Hardening 守卫锁定退役的注册模块。最小修复只同步精确版本和真实 Production→CheckpointResume→Recovery 继承合同，并增强真实注册对象断言；恢复 Chrome 5/5、素材选择 Chrome 2/2、Node 982/982、两个原始 Bash 永久守卫通过。扩展 Windows 测试的 14 项长路径失败在短 basetemp 消失（19 passed/1 Linux-only skipped）；另 1 项 manual workers=8 与既有 Windows 上限4冲突，不改生产资源保护；相同未变源码的 Ubuntu 124项已实际通过。最终 SHA 仍需重新完整 CI。
+- 首轮失败日志：Training Recovery Chrome Job `117553998395`、恢复永久守卫 `117553998620`、Picker Chrome `117553998540`、Hardening `117553998440`。后者实际 Python `124 passed` 后在第一个过期静态 guard 退出；修复仍要求正式 Production Handler 继承 Recovery，不绕过恢复逻辑。
+- Windows 扩展首跑 `105 passed/15 failed/4 skipped`，原始日志 `p0-ci-hardening-python-20261018.log`；短路径 cache/注册复测 `19 passed/1 skipped`，日志 `p0-ci-windows-shortpath-20261018.log`。不把失败/跳过计入成功，不将该额外 Windows 组合冒充全绿。
 - 完整代码提交 `5d3ad65bf7ff287521481a2ac6bfbd1f7caed52e` 的父提交与新 fetch 远端一致：`5a28e4539b81c03b4eaa27fa4b6c718138542169`，不存在分叉；42 个原变更文件属于本轮闭环。
 - 发现固定 Benchmark 复用时服务端注入的 Test 身份与客户端原始 duplicate_review 角色不一致，正常排除会被拒绝，客户端伪造已注入 Test 的合同反而被接受。真实 API 先复现 3 failed/3 passed；最小修复复用既有 Benchmark resolver 与角色/revision 校验，保留原 admission_request，禁止排除固定 Test 及保留同 SHA 别名，不向公开响应暴露 Test ID。9 场景及相关 Python 109 passed。
 - Release Regression 与 Training Final Validation Hardening 原来只监听旧分支；已加入长期分支，并补 Release 源码/测试路径，Node 先 RED 后 GREEN。全量 Node 981 passed。没有跳过或降低安全测试。
