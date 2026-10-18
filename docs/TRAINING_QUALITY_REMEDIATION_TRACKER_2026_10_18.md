@@ -18,7 +18,7 @@
 | TQ-04 | P0 | 97% 高 Val mAP 的真实可信度 | 无实际任务报告，不能宣告指标伪造 | 待核验 | 指标口径、类别参与数、数据独立性、独立 Test |
 | TQ-05 | P0 | Ultralytics `ap_class_index` 与 `box.maps` 类别对应有潜在错配 | 已证实 compact 数组与 dense `maps` 被按位置混用、NumPy 真值判定可能失败 | **代码已修复；待最终 SHA CI** | `train_worker.py`、定向 Python 单测；丢类、稀疏 class_id |
 | TQ-06 | P0 | 无 GT 类别及独立测试结果可评估性提示 | 总体 mAP 可隐藏测试中无正样本的已声明类别 | **后端评测真相已修复；待最新 SHA CI、UI 核验** | `training_evaluation.py`、质量中心；不得宣告零样本类别合格 |
-| TQ-07 | P0 | Val/Test 推理 `imgsz` 等协议证据未完全统一 | `checkpoint_validation_worker.py` val 显式传尺寸，盲测未显式 | 待修复 | `train_worker.py`、`checkpoint_validation_worker.py`；真实推理参数留证 |
+| TQ-07 | P0 | Val/Test 推理 `imgsz` 等协议证据未完全统一 | 常规 Val 与双路径盲测未全显式传 imgsz | **代码已修复；待新 SHA CI 与 A800 现场测量** | `train_worker.py`、`checkpoint_validation_worker.py`；真实推理参数留证 |
 | TQ-08 | P0 | 历史受保护重复素材与 GT 训练冲突 | 2531/1041/0 为用户生产截图，代码不应解除保护 | 待生产只读核验 | 历史 Task、Snapshot、重复审计，不删除真实素材 |
 | TQ-09 | P1 | 正负与困难样本质量及补充闭环 | 现有困难样本模块；正式 GT 不自动重写 | 待设计 | `hard_sample_mining.py`；误报漏报来源及可复核证据 |
 | TQ-10 | P1 | 场景、夜间、相机等分布完整性 | 依赖元数据，不可捏造 | 待设计 | 聚合统计明确已知/未知 |
@@ -45,6 +45,7 @@
 ## 本轮结果区
 
 - 2026-10-18：登记全部 13 项，专项问题登记提交 `632447488725797f16a87e033a41b1bfb56ed0f2`。
+- 2026-10-18：TQ-07 显式传递 `imgsz` 到常规 Val 和双路径盲测，新增实际推理 `predict_imgsz`、`predict_conf`、`predict_nms_iou` 的协议归档；协议 SHA 随图片尺寸变化而变化，旧报告不伪补协议参数；增加 Python AST 调用链保护及协议身份回归测试。未在 A800 上实测，等待最新 SHA CI。
 - 2026-10-18：TQ-06 首轮 CI 曾有明确回归：对 no-GT 类别的 `None` 召回率执行 `float()` 导致盲测失败，Release Regression / Remote Training Runtime 实际日志均命中。现修改弱类别排序只遍历已有正 GT 的 `scored`，保留 no-GT 类别单独诊断并重跑最终 CI。
 - 2026-10-18：TQ-06 补全独立测试类别覆盖合同：按模型类别目录补齐无 GT、无预测类别；无正 GT 类的 Precision/Recall/AP 标记 N/A，不再伪装为实测 0；保留 FP 证据；宏观 mAP 仍仅基于 GT 正样本类别；新版 evaluation truth 持久化 `class_coverage`，决策层将缺少 Test GT 的类别列为人工复核，不更改历史评测；已添加高分但缺少类别覆盖的回归测试，待 CI。
 - 2026-10-18：TQ-05 在 `train_worker.py::build_report_from_metrics` 修复：紧凑数组按 `ap_class_index` 关联真实 class_id；`box.ap` 按位置读取，`box.maps` 仅按 class_id 索引；NumPy 数组不再使用 `or []` 真值判断。缺少身份映射时不伪造每类指标，仅保留独立总体指标与明确的 `report_error`；新增稀疏类别、无指标类别、NumPy、无映射、非法索引单测。已加入 Training Final Validation Hardening 和 Release Regression 的真实 Python 测试步骤，需以最终 SHA 验收。未处理历史版本指标重算。

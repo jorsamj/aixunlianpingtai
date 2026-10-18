@@ -134,6 +134,26 @@ def test_confusion_and_confidence_evidence_preserve_wrong_class_and_real_thresho
     assert len(frozen['error_samples'][0]['image_content_sha256']) == 64
 
 
+def test_inference_size_is_part_of_evaluation_protocol_identity():
+    from copy import deepcopy
+    raw = {
+        "status": "succeeded", "image_count": 1,
+        "metrics": {"metrics/mAP50(B)": 0.97},
+        "protocol": {
+            "mode": "blind_image_only_inference_then_hidden_ground_truth_scoring",
+            "predict_imgsz": 800, "predict_conf": 0.001, "predict_nms_iou": 0.7,
+        },
+    }
+    other = deepcopy(raw)
+    other["protocol"]["predict_imgsz"] = 640
+    a = evaluation.build_evaluation_truth(raw, task_id="imgsz-test")
+    b = evaluation.build_evaluation_truth(other, task_id="imgsz-test")
+    assert a["protocol"]["predict_imgsz"] == 800
+    assert b["protocol"]["predict_imgsz"] == 640
+    assert a["evaluation_protocol_id"] != b["evaluation_protocol_id"]
+    assert a["evaluation_id"] != b["evaluation_id"]
+
+
 def test_evaluation_truth_is_deterministic_public_safe_and_bound_to_model_revision():
     raw = {
         "status": "succeeded",

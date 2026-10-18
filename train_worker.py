@@ -1299,7 +1299,7 @@ def main():
         training_report={"generated_at":now_iso(),"gate_events":gate_events,"quality_gate_reason":gate_reason,"metrics":{},"per_class":[],"weak_labels":[],"test_metrics":{},"test_result":{"status":"not_requested","metrics":{}},"ai_intervention_events":ai_events}
         try:
             best_model=YOLO(verified[0])
-            val_metrics=best_model.val(data=args.data, split="val", verbose=False)
+            val_metrics=best_model.val(data=args.data, split="val", imgsz=int(args.imgsz), device=args.device, verbose=False)
             training_report.update(build_report_from_metrics(val_metrics,getattr(best_model,"names",None)))
             try:
                 import yaml
@@ -1324,6 +1324,7 @@ def main():
                 def blind_predict(image_path):
                     results=best_model.predict(
                         source=str(image_path),
+                        imgsz=int(args.imgsz),
                         conf=0.001,
                         iou=0.7,
                         device=args.device,
@@ -1352,6 +1353,12 @@ def main():
                     blind_predict,
                     names=getattr(best_model,"names",None),
                 )
+                if blind_result.get("status") == "succeeded":
+                    blind_result["protocol"].update({
+                        "predict_imgsz": int(args.imgsz),
+                        "predict_conf": 0.001,
+                        "predict_nms_iou": 0.7,
+                    })
                 training_report["test_metrics"]=blind_result.get("metrics") or {}
                 training_report["test_result"]=blind_result
                 training_report["test_per_class"]=blind_result.get("per_class") or []

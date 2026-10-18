@@ -755,6 +755,20 @@ def build_evaluation_truth(
         "weak_label_threshold": round(_finite(protocol_raw.get("weak_label_threshold"), 0.75), 6),
         "iou_thresholds": [round(_finite(value), 6) for value in list(protocol_raw.get("iou_thresholds") or [])[:20]],
     }
+    # Only new evaluations that actually record their inference settings
+    # include these fields in the protocol ID. Historic reports remain
+    # readable but are not assumed equivalent to 640/800 evaluations.
+    if protocol_raw.get("predict_imgsz") is not None:
+        predict_imgsz = int(protocol_raw["predict_imgsz"])
+        if predict_imgsz < 128:
+            raise ValueError("evaluation predict_imgsz is invalid")
+        protocol["predict_imgsz"] = predict_imgsz
+    for parameter in ("predict_conf", "predict_nms_iou"):
+        if protocol_raw.get(parameter) is not None:
+            value = float(protocol_raw[parameter])
+            if not math.isfinite(value) or not 0 <= value <= 1:
+                raise ValueError(f"evaluation {parameter} is invalid")
+            protocol[parameter] = round(value, 6)
     evaluation_protocol_identity = {
         "schema_version": EVALUATION_PROTOCOL_SCHEMA_VERSION,
         "protocol": protocol,
