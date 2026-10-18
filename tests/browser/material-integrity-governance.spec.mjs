@@ -287,7 +287,7 @@ test('global duplicate governance previews, confirms, reports progress, and inva
       result: {scanned_images: 15, affected_images: 8, issue_groups: 3, scan_failures: 0},
     }]}),
   }));
-  await page.route(`**/api/v62/projects/${project.id}/material-integrity/audits/${auditId}/groups?limit=100`, route => route.fulfill({
+  await page.route(`**/api/v62/projects/${project.id}/material-integrity/audits/${auditId}/groups?limit=25`, route => route.fulfill({
     status: 200,
     contentType: 'application/json',
     body: JSON.stringify({
