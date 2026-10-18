@@ -110,7 +110,7 @@ for row in m.list_page(limit=200).items:
   await page.screenshot({path:path.join(dir,'submit-failed-selection-preserved.png')});
   await page.getByRole('button', {name: '使用同一凭证重试 · 不会重复建任务'}).click();
   await expect(page.locator('#materialIntegrityTask47')).toContainText('排队中');
-  await expect(page.locator('#materialIntegrityTask47')).toContainText('成功 0');
+  await expect(page.locator('#materialIntegrityTask47')).toContainText('实际删除索引 0');
   await page.screenshot({path:path.join(dir,'delete-queued.png')});
   await page.getByRole('button', {name: '返回审计与选择'}).click();
   await page.getByRole('button', {name: '批量去重 · 每组保留 1 张'}).click();
@@ -123,7 +123,7 @@ for row in m.list_page(limit=200).items:
   await page.screenshot({path:path.join(dir,'delete-running.png')});
   await worker;
   await expect(page.locator('#materialIntegrityTask47')).toContainText('已成功',{timeout:15000});
-  await expect(page.locator('#materialIntegrityTask47')).toContainText('成功 125');
+  await expect(page.locator('#materialIntegrityTask47')).toContainText('实际删除索引 125');
   await page.screenshot({path:path.join(dir,'delete-succeeded.png')});
   const groups = await request.get(`/api/v62/projects/${project.id}/material-integrity/audits/${auditId}/groups`);
   expect((await groups.json()).stale).toBe(true);
@@ -138,7 +138,7 @@ for row in m.list_page(limit=200).items:
   await page.reload();
   await page.getByRole('button', {name:'重复与异常素材'}).click();
   await expect(page.getByText('审计快照已过期',{exact:true})).toBeVisible();
-  await expect(page.locator('#materialIntegrityTask47')).toContainText('成功 125');
+  await expect(page.locator('#materialIntegrityTask47')).toContainText('实际删除索引 125');
 });
 
 
