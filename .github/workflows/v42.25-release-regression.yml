@@ -81,6 +81,7 @@ on:
       - tests/unit/test_training_blind_test_contract.py
       - tests/unit/test_training_early_stopping_reason.py
       - tests/unit/test_training_evaluation.py
+      - tests/api/test_training_ground_truth_gate.py
       - tests/unit/test_training_progress_v2.py
       - tests/unit/test_training_realtime_progress.py
       - tests/unit/test_training_resource_contract.py
@@ -239,6 +240,7 @@ jobs:
           tests/unit/test_portable_dataset.py
           tests/unit/test_training_blind_test_contract.py
           tests/unit/test_training_evaluation.py
+          tests/api/test_training_ground_truth_gate.py
           tests/unit/test_training_resource_contract.py
           tests/unit/test_launcher_workers.py
           tests/unit/test_a800_rc_acceptance.py
