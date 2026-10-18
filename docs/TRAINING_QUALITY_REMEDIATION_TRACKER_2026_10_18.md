@@ -152,3 +152,13 @@
 - 在定向测试第一轮 Ubuntu/Windows **均 62/62 passed** 的基础上，再补防伪证据校验：独立 Test 必须有至少一个真实参与评分的正 GT 类别（不能仅返回高分指标却没有 `scored_class_ids`）；真实盲测图片总数与本次冻结选择的已知/未知来源图片数量合计必须一致；模型 Test 类别总量与冻结的任务类目录不一致时给出明确映射复核。三者均属于诊断证据，不能臆断高分错误或自动替换标注。
 - 补充回归分别覆盖：成功状态但零计分类、只跑一半 Test 图片、模型标签目录少于冻结目录。合法的高 Val + 高 Test 且类别/来源/图片数齐全情况保持有界通过。
 - 注：两次代码更新之间的 CI 必须用各自 SHA 判定，不因上一 SHA 测试通过而宣布最新 SHA 已验证；后续记录最终代码 SHA 的真实 CI 结果。
+
+## TQ-04 第一阶段｜代码提交与最终 CI 实测（2026-10-19）
+
+- **首版代码 SHA**：`7abb8f73122aba508f6aa3dd0b0f335ac717cb3c`，补 Val/Test 分离、mAP ≥95% 审阅诊断、冻结来源和类别证据、人工复核决策、新版结果及版本的 `metric_credibility` 归档。
+- **最终代码 SHA**：`acb3e999d83669899601072781690341adffcb99`，新增测试无真实计分类/只执行部分 Test/模型类别与冻结目录不一致时不能把高分归入证据完备；同期补强 `tests/unit/test_training_metric_credibility.py` 和追踪文档。
+- **最终 SHA GitHub Actions 全量查询**：基于 `head_sha=acb3e999...` 的 GitHub Actions REST 列表，返回 `total_count=25`、**25/25 workflow success、0 failure、0 running**，没有把未触发的工作流算作成功。重点 `Training Input Integrity`、`v42.25 Release Regression`、`Remote Training Runtime`、`Frontend Runtime Stabilization` 均成功。
+- **跨平台定向测试**：同一最终代码 SHA 的 `Training Input Integrity` 两个 Job（Ubuntu 24.04 与 Windows latest）分别 **65/65 passed**；两系统内其它测试批次分别 **30/30、62/62、2/2 passed**，未见失败。
+- **运行时链路**：`train_worker.py` 仍将 Val 指标写入 `training_report.metrics`，独立 Test 写入 `test_result`。`training_tasks.py` 在版本完成时读取既有 `input_quality` 和标准化 Test 结果，不修改原指标；新任务报告/模型版本记录 `metric_credibility`。高 Val 分数证据不足时 `iteration_decision` 只给人工复核建议，旧调用没有该参数时保持回放兼容。
+- **未完成/不能宣告真实验收的范围**：用户那次约 97% 的生产训练记录和 A800 原始冻结集未读取；真实来源未知的跨摄像头/相邻视频帧泄漏尚不能排除；现有训练最终提交没有对所有版本自动写入 `bundle_verified` 的独立 Test 不可变输入绑定，诊断会保留该待补证据；高分诊断 UI 独立可视化仍待开发；业务事件级的准确率/每摄像头小时误报率、RKNN 板端精度不由 mAP 代表。这是 **TQ-04 阶段一代码完成、真实泛化审计未完成**。
+- **安全与部署**：未删除/改写真实素材、正式 GT、历史 Test、Snapshot、模型指标，未连接生产 GPU，未部署、未修改 VERSION（`42.24.356`）；以上所有 Git 更新均为 Fast-forward。
