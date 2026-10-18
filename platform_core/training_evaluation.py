@@ -408,7 +408,7 @@ def evaluate_blind_detection(
         confidence_curves.append({'class_id': class_id, 'label': _label_name(names, class_id), 'points': points})
     weak_labels = [
         str(row["label"])
-        for row in sorted(per_class, key=lambda row: (float(row["recall"]), float(row["map50"])))
+        for row in sorted(scored, key=lambda row: (float(row["recall"]), float(row["map50"])))
         if int(row["ground_truth_count"]) > 0
         and (float(row["recall"]) < weak_label_threshold or float(row["map50"]) < weak_label_threshold)
     ]
