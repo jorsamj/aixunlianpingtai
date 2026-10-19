@@ -3288,7 +3288,9 @@ def test_weight_labels_recover_only_hash_verified_training_snapshot(tmp_path: Pa
     path = tmp_path / "task_runtime" / "artifacts" / "task-verified" / "snapshot.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"snapshot_id": digest, "created_at": "2026-10-19", **signed}), encoding="utf-8")
-    service = _service(tmp_path, MemorySecretStore())
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    service = _service(tmp_path, memory)
     assert service.discover_artifacts("p1", algorithm, version)[0]["weight_metadata"]["tags"] == ["smoke", "fire"]
     path.write_text(json.dumps({"snapshot_id": digest, "label_schema": [{"class_id": 0, "code": "dog"}], "dataset_revision_id": "b" * 64}), encoding="utf-8")
     assert "tags" not in service.discover_artifacts("p1", algorithm, version)[0]["weight_metadata"]
@@ -3306,7 +3308,9 @@ def test_weight_schema_rejects_invalid_class_id_mappings():
 def test_upload_refuses_modified_source_with_unchanged_file_size(tmp_path: Path):
     model = _seed_external_algorithm(tmp_path)
     algorithm, version = _version(tmp_path)
-    service = _service(tmp_path, MemorySecretStore())
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    service = _service(tmp_path, memory)
     artifact = service.discover_artifacts("p1", algorithm, version)[0]
     model.write_bytes(b"source-modex")
     assert model.stat().st_size == artifact["size_bytes"]
