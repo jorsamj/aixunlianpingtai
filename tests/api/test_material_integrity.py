@@ -1185,3 +1185,95 @@ def test_gt_source_review_freezes_all_26_real_groups_without_loading_visible_ids
     assert repository.get(queued.json()['task_id']).status is TaskStatus.SUCCEEDED
     assert materials.count() == 27
     assert all(path.read_bytes() == data for path, data in files)
+
+
+
+def test_discard_gt_conflicts_requires_explicit_confirmation_and_deletes_only_index_and_annotations(
+    client, seeded_project, tmp_path, monkeypatch,
+):
+    project_id, original = seeded_project
+    materials = app_module.material_store(project_id)
+    source = materials.get(original['id'])
+    copies = ['discard-copy-1', 'discard-copy-2']
+    materials.upsert_many([
+        _duplicate_material(source, image_id, image_id + '.jpg')
+        for image_id in copies
+    ])
+    annotations = AnnotationRepository(materials.project_path)
+    all_ids = [original['id'], *copies]
+    for image_id, x in zip(all_ids, [0, 8, 16]):
+        annotations.upsert(image_id, [
+            {'label': 'fire', 'x1': x, 'y1': 0, 'x2': x + 10, 'y2': 10},
+        ], annotation_state='annotated', annotation_scope=['fire'])
+    repository, artifacts, scheduler = _runtime(tmp_path, monkeypatch)
+    audit_id = _run_integrity_audit(client, scheduler, project_id)
+    base = f'/api/v62/projects/{project_id}/material-integrity/audits/{audit_id}'
+    denied = client.post(base + '/dedup-plans', json={'scope': 'DISCARD_CONFLICTS'})
+    assert denied.status_code == 422
+    assert 'MATERIAL_INTEGRITY_DISCARD_CONFIRMATION_REQUIRED' in denied.text
+    plan_response = client.post(base + '/dedup-plans', json={
+        'scope': 'DISCARD_CONFLICTS', 'confirm_discard_conflicts': True,
+    })
+    assert plan_response.status_code == 201, plan_response.text
+    plan = plan_response.json()
+    assert plan['discard_mode'] is True
+    assert plan['delete_count'] == len(all_ids)
+    assert plan['retained_count'] == 0
+    assert plan['preview_groups'][0]['keeper_image_id'] == ''
+    assert plan['preview_groups'][0]['keeper_reason'] == 'EXPLICIT_DISCARD_UNPROTECTED'
+    queued = client.post(base + f"/dedup-plans/{plan['plan_id']}/execute", json={
+        'confirmation_credential': plan['confirmation_credential'],
+    })
+    assert queued.status_code == 202, queued.text
+    assert scheduler.run_once()
+    finished = client.get(f"/api/v62/projects/{project_id}/material-batches/{queued.json()['task_id']}").json()
+    assert finished['status'] == 'SUCCEEDED', finished
+    assert finished['succeeded'] == len(all_ids)
+    assert all(materials.get(image_id) is None for image_id in all_ids)
+    assert all(not annotations.get(image_id) for image_id in all_ids)
+    assert client.get(base + '/groups').json()['stale'] is True
+
+
+def test_discard_gt_conflicts_never_deletes_test_or_historical_protected_identities(
+    client, seeded_project, tmp_path, monkeypatch,
+):
+    project_id, original = seeded_project
+    materials = app_module.material_store(project_id)
+    source = materials.get(original['id'])
+    materials.upsert_many([
+        _duplicate_material(source, 'discard-free', 'discard-free.jpg'),
+        _duplicate_material(source, 'discard-kept', 'discard-kept.jpg'),
+    ])
+    materials.patch({original['id']: {'split': 'test'}})
+    annotations = AnnotationRepository(materials.project_path)
+    for image_id, x in [(original['id'], 0), ('discard-free', 7), ('discard-kept', 14)]:
+        annotations.upsert(image_id, [
+            {'label': 'fire', 'x1': x, 'y1': 0, 'x2': x + 10, 'y2': 10},
+        ], annotation_state='annotated', annotation_scope=['fire'])
+    repository, artifacts, scheduler = _runtime(tmp_path, monkeypatch)
+    artifacts.atomic_write_json('protected-training', 'payload.json', {
+        'train_image_ids': ['discard-kept'],
+    })
+    repository.create(
+        TaskRecord.new('protected-training', project_id, TaskKind.TRAINING,
+                       'payload.json', 'isolated-test-training'), artifacts=artifacts,
+    )
+    audit_id = _run_integrity_audit(client, scheduler, project_id)
+    base = f'/api/v62/projects/{project_id}/material-integrity/audits/{audit_id}'
+    plan_response = client.post(base + '/dedup-plans', json={
+        'scope': 'DISCARD_CONFLICTS', 'confirm_discard_conflicts': True,
+    })
+    assert plan_response.status_code == 201, plan_response.text
+    plan = plan_response.json()
+    assert plan['discard_mode'] is True
+    assert plan['delete_count'] == 1
+    assert plan['protected_item_count'] == 2
+    queued = client.post(base + f"/dedup-plans/{plan['plan_id']}/execute", json={
+        'confirmation_credential': plan['confirmation_credential'],
+    })
+    assert queued.status_code == 202, queued.text
+    assert scheduler.run_once()
+    assert materials.get('discard-free') is None
+    assert materials.get(original['id']) is not None
+    assert materials.get('discard-kept') is not None
+    assert repository.get('protected-training') is not None
