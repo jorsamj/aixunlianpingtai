@@ -17,7 +17,7 @@ import {installExternalAlgorithmPublishRuntime} from './modules/external-algorit
 import {installModelArtifactRuntime} from './modules/model-artifact-runtime.js?v=65009';
 import {installTrainingRecoveryRuntime} from './modules/training-recovery-runtime.js?v=4226389';
 import {installTrainingMaterialPickerRuntime} from './modules/training-material-picker-runtime.js?v=422611';
-import {installTrainingMaterialSummaryRuntime} from './modules/training-material-summary-runtime.js?v=422605';
+import {installTrainingMaterialSummaryRuntime} from './modules/training-material-summary-runtime.js?v=422606';
 import {installTrainingTaskRuntime} from './modules/training-task-runtime.js?v=422607';
 import {installTrainingTaskVisibilityRuntime} from './modules/training-task-visibility-runtime.js?v=4226385';
 import {installTrainingProgressStream} from './modules/training-progress-stream.js?v=422570';

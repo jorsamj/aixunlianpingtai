@@ -1008,3 +1008,180 @@ def test_material_integrity_server_plan_covers_more_than_100_groups_across_sourc
     assert plan["delete_count"] == 120
     assert len(plan["preview_groups"]) == 20
     assert plan["preview_groups_truncated"] is True
+def test_gt_conflict_review_is_complete_read_only_revision_bound_and_uses_existing_plan(
+    client, seeded_project, tmp_path, monkeypatch,
+):
+    project_id, original = seeded_project
+    materials = app_module.material_store(project_id)
+    source = materials.get(original['id'])
+    materials.upsert_many([_duplicate_material(source, name, name + '.jpg', import_batch_id=batch)
+                           for name, batch in [('review-b', 'zip-b'), ('review-c', 'zip-a')]])
+    materials.patch({original['id']: {'split': 'test', 'import_batch_id': 'zip-a'}})
+    annotations = AnnotationRepository(materials.project_path)
+    for image_id, x in [(original['id'], 0), ('review-b', 5), ('review-c', 8)]:
+        annotations.upsert(image_id, [{'label': 'fire', 'x1': x, 'y1': 0, 'x2': x + 10, 'y2': 10}],
+                           annotation_state='annotated', annotation_scope=['fire'])
+    repository, artifacts, scheduler = _runtime(tmp_path, monkeypatch)
+    audit_id = _run_integrity_audit(client, scheduler, project_id)
+    base = f'/api/v62/projects/{project_id}/material-integrity/audits/{audit_id}'
+    before = annotations.current_revision(), materials.current_revision()
+    response = client.get(base + '/conflict-review?limit=1')
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body['total_groups'] == 1 and body['total_images'] == 3
+    assert body['protected_image_count'] == 1
+    assert body['proven_mapping_groups'] == 0
+    assert body['manual_review_groups'] == 1
+    assert body['observation_counts']['COORDINATE_DIFFERENCE'] == 1
+    row = body['items'][0]
+    assert row['diagnosis']['iou_summary']['matched_count'] == 2
+    assert row['diagnosis']['root_cause_status'] == 'UNDETERMINED'
+    assert set(row['import_batches']) == {'zip-a', 'zip-b'}
+    assert before == (annotations.current_revision(), materials.current_revision())
+    plan = client.post(base + '/dedup-plans', json={
+        'scope': 'MANUAL_GROUPS', 'group_keys': [row['group_key']],
+        'manual_decisions': {row['group_key']: 'review-b'},
+    })
+    assert plan.status_code == 201, plan.text
+    assert plan.json()['delete_count'] == 1
+    assert plan.json()['protected_item_count'] == 1
+    basis = {'confirmed_all_filtered': True, 'import_batch_id': 'zip-b',
+             'observation': 'COORDINATE_DIFFERENCE', 'material_revision': body['material_revision'],
+             'annotation_revision': body['annotation_revision']}
+    rejected = client.post(base + '/dedup-plans', json={'review_basis': {**basis, 'confirmed_all_filtered': False}})
+    assert rejected.status_code == 422
+    batch = client.post(base + '/dedup-plans', json={'review_basis': basis})
+    assert batch.status_code == 409 and 'GT_REVIEW_NO_UNIQUE_SOURCE' in batch.text
+    ambiguous = client.post(base + '/dedup-plans', json={'review_basis': {**basis, 'import_batch_id': 'zip-a'}})
+    assert ambiguous.status_code == 409 and 'GT_REVIEW_NO_UNIQUE_SOURCE' in ambiguous.text
+    comparison = client.post(f'/api/v62/projects/{project_id}/material-integrity/gt-comparison', json={
+        'image_ids': [original['id'], 'review-b'], 'expected_annotation_revision': body['annotation_revision']})
+    assert comparison.status_code == 200, comparison.text
+    assert any(item['protected'] for item in comparison.json()['items'][0]['protection_reasons'])
+    annotations.upsert('review-b', [], annotation_state='confirmed_empty', annotation_scope=['fire'])
+    stale = client.get(base + '/conflict-review')
+    assert stale.status_code == 409 and 'MATERIAL_INTEGRITY_AUDIT_STALE' in stale.text
+
+
+def test_gt_conflict_import_provenance_uses_owned_confirmation_not_untrusted_box_metadata(
+    client, seeded_project, tmp_path, monkeypatch,
+):
+    project_id, original = seeded_project
+    materials = app_module.material_store(project_id)
+    source = materials.get(original['id'])
+    materials.upsert(_duplicate_material(source, 'mapping-copy', 'mapping.jpg'))
+    annotations = AnnotationRepository(materials.project_path)
+    repository, artifacts, scheduler = _runtime(tmp_path, monkeypatch)
+    from dataclasses import replace
+    for image_id, task_id, label in [(original['id'], 'owned-import-a', 'fire'), ('mapping-copy', 'owned-import-b', 'smoke')]:
+        annotations.upsert(image_id, [{'label': label, 'source_class_id': '0', 'source_task_id': task_id,
+            'import_batch_id': task_id, 'x1': 0, 'y1': 0, 'x2': 10, 'y2': 10}],
+            annotation_state='annotated', annotation_scope=[label])
+        artifacts.atomic_write_json(task_id, 'payload.json', {})
+        artifacts.atomic_write_json(task_id, 'scan/confirmation.json', {'accepted': True,
+            'external_classes': [{'class_id': '0', 'name': 'source-person'}], 'label_mapping': {'0': label}})
+        repository.create(replace(TaskRecord.new(task_id, project_id, TaskKind.MATERIAL_IMPORT, 'payload.json', 'import'),
+                                  status=TaskStatus.SUCCEEDED), artifacts=artifacts)
+        from platform_core.storage.import_candidates import ImportCandidateStore
+        store = ImportCandidateStore(artifacts.artifact_path(task_id, 'scan/candidates.sqlite3'))
+        candidate = {**source, 'object_key': 'source.png', 'filename': 'source.png', 'status': 'IMPORTABLE'}
+        store.upsert_many([candidate])
+        store.manifest_many([{'object_key': 'source.png', 'split': 'train', 'label_key': 'label.txt',
+                              'annotation_status': 'annotated', 'box_count': 1, 'yaml_key': 'data.yaml'}])
+        store.annotation_batch([], [{'object_key': 'source.png', 'line_number': 1, 'class_id': 0,
+            'cx': 5 / source['width'], 'cy': 5 / source['height'], 'w': 10 / source['width'], 'h': 10 / source['height']}], [])
+        store.confirm(['source.png'], details={'external_classes': [{'class_id': '0', 'name': 'source-person'}],
+                                             'label_mapping': {'0': label}})
+        store.bind_index_batch([{'object_key': 'source.png', 'image_id': image_id}])
+        store.mark_indexed([{'object_key': 'source.png'}])
+    audit_id = _run_integrity_audit(client, scheduler, project_id)
+    url = f'/api/v62/projects/{project_id}/material-integrity/audits/{audit_id}/conflict-review'
+    report = client.get(url)
+    assert report.status_code == 200, report.text
+    assert report.json()['proven_mapping_groups'] == 1
+    assert report.json()['observation_counts']['VERIFIED_IMPORT_MAPPING_DIFFERENCE'] == 1
+    row = report.json()['items'][0]
+    assert set(row['import_batches']) == {'owned-import-a', 'owned-import-b'}
+    assert row['diagnosis']['verified_import_mapping_difference_count'] == 1
+    assert report.json()['source_assisted_review_groups'] == 1
+    batch = client.post(url.replace('/conflict-review', '/dedup-plans'), json={'review_basis': {
+        'confirmed_all_filtered': True, 'import_batch_id': 'owned-import-a',
+        'annotation_revision': report.json()['annotation_revision'], 'material_revision': report.json()['material_revision'],
+        'observation': 'VERIFIED_IMPORT_MAPPING_DIFFERENCE'}})
+    assert batch.status_code == 201, batch.text
+    assert batch.json()['delete_count'] == 1 and batch.json()['review_basis']['confirmed_group_count'] == 1
+    # A forged reference to another project's actual import must not count.
+    foreign = client.post('/api/projects', json={'name': 'foreign-provenance', 'labels': ['fire']}).json()['id']
+    artifacts.atomic_write_json('foreign-import', 'payload.json', {})
+    artifacts.atomic_write_json('foreign-import', 'scan/confirmation.json', {'accepted': True,
+        'external_classes': [{'class_id': '0', 'name': 'source-person'}], 'label_mapping': {'0': 'smoke'}})
+    repository.create(replace(TaskRecord.new('foreign-import', foreign, TaskKind.MATERIAL_IMPORT, 'payload.json', 'import'),
+                              status=TaskStatus.SUCCEEDED), artifacts=artifacts)
+    annotations.upsert('mapping-copy', [{'label': 'smoke', 'source_class_id': '0', 'import_batch_id': 'foreign-import',
+        'x1': 0, 'y1': 0, 'x2': 10, 'y2': 10}], annotation_state='annotated', annotation_scope=['smoke'])
+    fresh = _run_integrity_audit(client, scheduler, project_id)
+    assert client.get(url.replace(audit_id, fresh)).json()['proven_mapping_groups'] == 0
+
+def test_gt_source_review_freezes_all_26_real_groups_without_loading_visible_ids(
+    client, seeded_project, tmp_path, monkeypatch,
+):
+    from dataclasses import replace
+    from PIL import Image
+    from platform_core.storage.import_candidates import ImportCandidateStore
+    project_id, original = seeded_project
+    materials = app_module.material_store(project_id)
+    source = materials.get(original['id'])
+    annotations = AnnotationRepository(materials.project_path)
+    repository, artifacts, scheduler = _runtime(tmp_path, monkeypatch)
+    rows, gt_rows, candidates, files = [], [], [], []
+    for index in range(26):
+        path = materials.project_path / 'images' / f'gt-real-{index}.png'
+        path.parent.mkdir(exist_ok=True)
+        Image.new('RGB', (16, 16), (index, 10, 20)).save(path)
+        data = path.read_bytes()
+        key = path.relative_to(materials.project_path).as_posix()
+        files.append((path, data))
+        for task_id, label in [('batch-real-a', 'fire'), ('batch-real-b', 'smoke')]:
+            image_id = f'{task_id}-{index}'
+            item = _duplicate_material(source, image_id, path.name, object_key=key,
+                content_sha256=hashlib.sha256(data).hexdigest(), width=16, height=16, size_bytes=len(data))
+            rows.append(item)
+            gt_rows.append({'image_id': image_id, 'annotation_state': 'annotated', 'annotation_scope': [label],
+                'boxes': [{'label': label, 'source_class_id': '0', 'source_task_id': task_id,
+                           'import_batch_id': task_id, 'x1': 2, 'y1': 2, 'x2': 6, 'y2': 6}]})
+            candidates.append({**item, 'status': 'IMPORTABLE', 'task_id': task_id})
+    materials.upsert_many(rows)
+    annotations.upsert_many(gt_rows)
+    for task_id, label in [('batch-real-a', 'fire'), ('batch-real-b', 'smoke')]:
+        artifacts.atomic_write_json(task_id, 'payload.json', {})
+        repository.create(replace(TaskRecord.new(task_id, project_id, TaskKind.MATERIAL_IMPORT, 'payload.json', 'import'),
+                                  status=TaskStatus.SUCCEEDED), artifacts=artifacts)
+        store = ImportCandidateStore(artifacts.artifact_path(task_id, 'scan/candidates.sqlite3'))
+        selected = [row for row in candidates if row['task_id'] == task_id]
+        keys = [row['object_key'] for row in selected]
+        store.upsert_many(selected)
+        store.manifest_many([{'object_key': key, 'split': 'train', 'yaml_key': 'data.yaml'} for key in keys])
+        store.annotation_batch([], [{'object_key': key, 'line_number': 1, 'class_id': 0,
+            'cx': 0.25, 'cy': 0.25, 'w': 0.25, 'h': 0.25} for key in keys], [])
+        details = {'external_classes': [{'class_id': '0', 'name': 'source-object'}], 'label_mapping': {'0': label}}
+        store.confirm(keys, details=details)
+        store.bind_index_batch([{'object_key': row['object_key'], 'image_id': row['id']} for row in selected])
+        store.mark_indexed([{'object_key': key} for key in keys])
+        artifacts.atomic_write_json(task_id, 'scan/confirmation.json', {**details, 'accepted': True})
+    audit_id = _run_integrity_audit(client, scheduler, project_id)
+    base = f'/api/v62/projects/{project_id}/material-integrity/audits/{audit_id}'
+    report = client.get(base + '/conflict-review?limit=1').json()
+    assert len(report['items']) == 1 and report['next_cursor']
+    assert report['total_groups'] == report['proven_mapping_groups'] == report['source_assisted_review_groups'] == 26
+    plan = client.post(base + '/dedup-plans', json={'review_basis': {'confirmed_all_filtered': True,
+        'import_batch_id': 'batch-real-a', 'material_revision': report['material_revision'],
+        'annotation_revision': report['annotation_revision'], 'observation': 'VERIFIED_IMPORT_MAPPING_DIFFERENCE'}})
+    assert plan.status_code == 201, plan.text
+    body = plan.json()
+    assert body['included_groups'] == body['delete_count'] == body['review_basis']['confirmed_group_count'] == 26
+    queued = client.post(base + f"/dedup-plans/{body['plan_id']}/execute", json={'confirmation_credential': body['confirmation_credential']})
+    assert queued.status_code == 202, queued.text
+    assert scheduler.run_once()
+    assert repository.get(queued.json()['task_id']).status is TaskStatus.SUCCEEDED
+    assert materials.count() == 27
+    assert all(path.read_bytes() == data for path, data in files)

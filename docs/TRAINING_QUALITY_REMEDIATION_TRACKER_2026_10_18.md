@@ -2,6 +2,25 @@
 
 ## 接手信息
 
+### 2026-10-19 P0 批量 GT 冲突辅助治理（本轮 / 最终 SHA CI 待验收）
+
+同步起点 `9e0d330ac653502b5ec22a67ee1327cd208fa336`，实际长期工作树与 origin 一致。正式 VERSION=42.24.356；此前只读工具 stash 保留、不混入。用户授权普通快进推送和必要 CI 修复；禁止生产连接、标注覆盖、素材删除和部署。
+
+实施顺序：①原 TrainingCompatibility 纯诊断 RED→GREEN；②原审计 SQLite 增加可废弃派生分类、原 MaterialBatch 只读 API 与正式来源校验；③两个既有入口共享 GT 差异/叠加组件、人工来源审核进入原冻结计划；④API→Worker、Node、真实 Chrome、安全复核；⑤文档、fetch/FF、最终 SHA 全部实际 CI 验收。没有第二套 GT、引用系统、删除执行器、任务 Owner 或轮询。
+
+- 分类只证明标签/范围/数量/坐标/角色差异，不把差异自动叫漏标、多标或错误。原 ZIP class_id 不等于项目类别 ID；明确 canonical_project_class_id 与当前 schema 冲突才记录其错误证据。
+- 导入映射追溯必须有同项目 MATERIAL_IMPORT Task、accepted 确认、同源类别表和已选/已入库候选清单；当前正式 GT 的类别、坐标、完整数量和范围必须与原确认吻合。只读复用 ImportCandidateStore 现有 SQLite，mode=ro，不调用创建/迁移构造器。历史来源缺失、外项目 Task、仅字段相似不产生确定根因或整批候选。
+- IoU 是固定参考身份到其他成员的一对一贪心候选比较，包含跨类别、未匹配数量、像素偏差、直方图及无法核验项；不是质量评测 AP，不证明哪个 GT 正确。每组计算预算10万对，超预算明确未核验。全量统计来自原服务端审计范围，成员/组分页不冒充全量。
+- 两个入口共用 TrainingMaterialSummaryRuntime 的真实图、A/B 叠加、框坐标/IoU、来源与保护视图。保留身份建议仅沿用原 protected/keeper 排序，不自动推荐正确 GT。来源批次整批审核须明确人工确认，服务端解析全筛选并冻结；未知/多候选组不入整批计划。原人工逐组决策可跨分页保存。
+- 仍通过原冻结预览、二次凭证、MaterialBatch DELETE_INDEX、执行与 Worker 重验处理；GT/素材/schema 变化拒绝旧审核。历史/Test/Snapshot/模型保护仍优先，保留保护身份及 keeper，不改历史 GT，不删共享物理文件。训练预检、准入、冻结仍使用原正式 GT 合同，无训练热路径额外诊断。
+- 本地 Python/API/训练请求/保护/导入存储组合341 passed；Node24完整995 passed。新增26组真实 PNG/API→Worker 回归只读取1组可见页，仍冻结/治理完整26组，保留26身份及全部原始物理字节。真实 Chrome 两个旧计数断言与新增叠加图冲突，已分别锁定2个原图及1个叠加图，未放宽业务检查。只读复核发现迟到 review 请求会重开已关闭弹窗，已用真实 Chrome RED 复现并按发起内容身份修复；最终 Chrome/CI 结果见最终附件。
+
+最终本地 Chrome 专项11/11通过；最终中文分类筛选和重合A/B标签错开后新增核心真实链路再次1/1通过（与11重叠，不相加），Node最终995/995重跑通过。Windows测试服务有一次客户端断开产生的Proactor ConnectionReset日志，但全部11用例业务断言实际通过；未屏蔽异常或据此替代Linux CI验证。四视口真实截图已检查。未执行完整pytest，不宣称其全绿。
+
+生产结论边界：629复合组中映射原因数、172组实际 IoU 分布、155组实际根因、可按证据整批审核数/逐组人工数，目前均 NOT VERIFIED，不能用隔离样例外推为0或960。新增 conflict-review 接口按实际新审计给出 cohort、来源和完整统计；旧审计缺诊断版本要求重新审计，不篡改旧证据。412保护是去重并集、不能与其他原因简单相加。本轮没有读取生产私有数据；生产治理效果须另行授权部署后只读复验。
+
+最终完整 SHA、实际推送列表、全部 Actions/Jobs/跳过/未触发以及截图统一归档：`C:/Users/jorsam/.codex/visualizations/2026/10/19/gt-conflict-assisted-review/CI_FINAL_ACCEPTANCE.md`。不继承前一 SHA 的绿色，不为记录本提交 SHA 再制造未经 CI 的文档提交。
+
 ### 2026-10-19 P0 远程清理同步锁误保护（精准修复 / 最终 CI 待验收）
 
 同步基线 `9ab88ad88a64a370ad50d58b0413e3488a1345a0`，长期分支与 origin 一致、工作区干净。上一阶段只读诊断工具和文档单独保留在本地 stash，不混入本次提交。正式 VERSION 保持 42.24.356。

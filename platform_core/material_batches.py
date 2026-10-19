@@ -835,6 +835,44 @@ def _material_integrity_preview_items(project_id, materials, ids):
     ) for row in materials.get_many(ids)]
 
 
+def _material_integrity_import_evidence(project_id, rows, repository, artifacts, evidence=None):
+    """Read bounded, non-secret provenance from the existing import Task Owner."""
+    from .training_compatibility import annotation_import_batches
+
+    evidence = {} if evidence is None else evidence
+    for row in rows:
+        for task_id in annotation_import_batches(row):
+            if task_id not in evidence:
+                task = repository.get(task_id)
+                evidence[task_id] = {'verified_task_owner': False, 'status': 'UNVERIFIED'}
+                if task is None or task.project_id != project_id or task.kind is not TaskKind.MATERIAL_IMPORT:
+                    continue
+                try:
+                    confirmation = artifacts.read_json(task_id, 'scan/confirmation.json', default=None)
+                except (OSError, ValueError, TypeError):
+                    evidence[task_id]['status'] = 'CONFIRMATION_UNREADABLE'
+                    continue
+                if isinstance(confirmation, dict) and confirmation.get('accepted') is True:
+                    evidence[task_id] = {'verified_task_owner': True, 'status': 'CONFIRMED_IMPORT_OWNER',
+                        'external_classes': confirmation.get('external_classes') or [],
+                        'label_mapping': confirmation.get('label_mapping') or {}, 'members': {}, 'checked_hashes': set()}
+            current = evidence[task_id]
+            sha = str(row.get('content_sha256') or '')
+            if not current.get('verified_task_owner') or sha in current['checked_hashes']:
+                continue
+            current['checked_hashes'].add(sha)
+            try:
+                from .storage.import_candidates import ImportCandidateStore
+                manifest = ImportCandidateStore.read_annotation_provenance(
+                    artifacts.artifact_path(task_id, 'scan/candidates.sqlite3'), sha)
+            except (OSError, ValueError, TypeError, sqlite3.Error):
+                current['status'] = 'MANIFEST_UNVERIFIED'
+                continue
+            if manifest and manifest['label_mapping'] == current['label_mapping'] and manifest['external_classes'] == current['external_classes']:
+                current['members'].update(manifest['members'])
+    return evidence
+
+
 def create_material_integrity_plan(
     project_id, audit_task, materials, repository, artifacts, payload,
     *, candidate_image_ids=None, persist=True,
@@ -914,6 +952,43 @@ def create_material_integrity_plan(
     )
     protected = {image_id for image_id, reasons in reference_reasons.items()
                  if any(reason.get('protected') is True for reason in reasons)}
+    review_basis = payload.get('review_basis')
+    if review_basis is not None:
+        from .training_compatibility import _file_digest
+        if (not isinstance(review_basis, dict) or review_basis.get('confirmed_all_filtered') is not True
+                or not isinstance(review_basis.get('import_batch_id'), str) or not review_basis['import_batch_id']
+                or len(review_basis['import_batch_id']) > 200):
+            raise BatchRequestError('GT_REVIEW_CONFIRMATION_REQUIRED', '请明确核对来源批次及全部筛选范围后确认', 422)
+        if (review_basis.get('annotation_revision') != annotation_revision
+                or review_basis.get('material_revision') != material_revision
+                or metadata.get('label_schema_digest') != _file_digest(materials.project_path / 'meta.json')):
+            raise BatchRequestError('MATERIAL_INTEGRITY_AUDIT_STALE', '审核版本已变化，请重新审计', 409)
+        scope, group_keys, decisions = 'MANUAL_GROUPS', [], {}
+        observation = str(review_basis.get('observation') or '')
+        review_group_count = 0
+        with closing(sqlite3.connect(audit_path.as_uri() + '?mode=ro', uri=True)) as review:
+            review.row_factory = sqlite3.Row
+            candidates = review.execute("SELECT g.group_key,g.details_json,i.image_id,COUNT(*) AS candidates "
+                "FROM issue_groups g JOIN issue_items i ON i.group_key=g.group_key "
+                "WHERE g.issue_type='DUPLICATE_ANNOTATION_CONFLICT' "
+                "AND json_extract(i.details_json,'$.import_batch_id')=? "
+                "GROUP BY g.group_key", (review_basis['import_batch_id'],)).fetchall()
+            for row in candidates:
+                diagnosis = json.loads(row['details_json']).get('gt_diagnosis') or {}
+                if observation and observation != diagnosis.get('cohort') and observation not in diagnosis.get('observations', []):
+                    continue
+                review_group_count += 1
+                if row['candidates'] != 1 or row['image_id'] not in diagnosis.get('verified_source_image_ids', []):
+                    continue
+                group_keys.append(row['group_key'])
+                decisions[row['group_key']] = row['image_id']
+        if not group_keys:
+            raise BatchRequestError('GT_REVIEW_NO_UNIQUE_SOURCE', '没有可唯一定位该来源GT的组；请逐组人工核对', 409)
+        review_basis = {'kind': 'HUMAN_CONFIRMED_SOURCE_NOT_AUTOMATIC_GT_TRUTH',
+            'import_batch_id': review_basis['import_batch_id'], 'observation': observation,
+            'confirmed_group_count': len(group_keys), 'annotation_revision': annotation_revision,
+            'filtered_group_count': review_group_count, 'unverified_or_ambiguous_group_count': review_group_count - len(group_keys),
+            'material_revision': material_revision}
     with closing(sqlite3.connect(audit_path.as_uri() + "?mode=ro", uri=True)) as audit:
         audit.row_factory = sqlite3.Row
         duplicate_types = ("DUPLICATE_IDENTICAL", "DUPLICATE_ANNOTATION_CONFLICT")
@@ -1101,6 +1176,7 @@ def create_material_integrity_plan(
         "operation": BatchOperation.DELETE_INDEX.value,
         "audit_task_id": audit_task.task_id,
         "scope": scope,
+        "review_basis": review_basis,
         "selected_count": len(selected_ids),
         "retained_count": len(selected_ids - planned_ids),
         "unverifiable_count": len(unverifiable_ids),
@@ -2468,6 +2544,11 @@ class MaterialBatchHandler:
             # Share one canonical Material SHA256 grouping with label Full Audit.
             # Training admission and both audits use the same GT comparison.
             from .training_splits import training_annotation_digest
+            from .training_compatibility import diagnose_annotation_conflict, annotation_import_batches, _file_digest
+            conflict_diagnoses = {}
+            import_evidence = {}
+            label_ids = active_project_label_ids(project_path)
+            label_schema_digest = _file_digest(project_path / 'meta.json')
             duplicate_groups = materials.duplicate_content_groups()
             for digest, image_ids in duplicate_groups.items():
                 records: dict[str, dict] = {}
@@ -2487,13 +2568,27 @@ class MaterialBatchHandler:
                     str(row["id"]): row
                     for row in materials.get_many(image_ids)
                 }
+                if issue_type == 'DUPLICATE_ANNOTATION_CONFLICT':
+                    comparison_rows = [
+                        {**indexed.get(image_id, {}), **records[image_id], 'id': image_id,
+                         'content_sha256': digest} for image_id in image_ids
+                    ]
+                    _material_integrity_import_evidence(project, comparison_rows, context.repository,
+                        context.artifacts, import_evidence)
+                    diagnosis = diagnose_annotation_conflict(comparison_rows, label_ids, import_evidence)
+                    # Persist only a disposable audit projection. Detailed box
+                    # candidate pairs are read on demand from formal GT.
+                    diagnosis.pop('pairs')
+                    conflict_diagnoses[group_key] = diagnosis
                 for image_id in image_ids:
                     record = records[image_id]
                     row = indexed.get(image_id) or {}
                     details = {
                         "filename": row.get("filename") or image_id,
                         "storage_source_id": row.get("storage_source_id") or "",
-                        "import_batch_id": row.get("import_batch_id") or row.get("batch_id") or "",
+                        "import_batch_id": (annotation_import_batches({**row, **record}) or [''])[0]
+                            if len(annotation_import_batches({**row, **record})) <= 1 else '',
+                        "import_batch_ids": annotation_import_batches({**row, **record}),
                         "split": row.get("split") or "unassigned",
                         "annotation_state": record.get("annotation_state") or "unannotated",
                         "annotation_scope": list(record.get("annotation_scope") or []),
@@ -2594,6 +2689,9 @@ class MaterialBatchHandler:
                 "SELECT group_key,issue_type,content_sha256,COUNT(*),'{}' FROM issue_items "
                 "GROUP BY group_key,issue_type,content_sha256"
             )
+            audit.executemany('UPDATE issue_groups SET details_json=? WHERE group_key=?',
+                ((json.dumps({'gt_diagnosis': value}, ensure_ascii=False), key)
+                 for key, value in conflict_diagnoses.items()))
             group_count = int(audit.execute("SELECT COUNT(*) FROM issue_groups").fetchone()[0])
             affected_images = int(audit.execute("SELECT COUNT(DISTINCT image_id) FROM issue_items").fetchone()[0])
             issue_counts = {
@@ -2607,6 +2705,8 @@ class MaterialBatchHandler:
                 "material_revision": material_revision,
                 "annotation_revision": annotation_revision,
                 "snapshot_only": True,
+                "gt_diagnosis_version": 1,
+                "label_schema_digest": label_schema_digest,
             }
             audit.executemany(
                 "INSERT INTO audit_metadata(key,value_json) VALUES (?,?)",
@@ -3599,6 +3699,137 @@ def create_training_integrity_plan(project_id, audit_task, materials, repository
     return plan
 
 
+def material_integrity_gt_comparison(project_id, materials, repository, artifacts, payload):
+    from .training_compatibility import diagnose_annotation_conflict
+
+    ids = payload.get('image_ids')
+    if (not isinstance(ids, list) or not 1 <= len(ids) <= 100
+            or any(not isinstance(value, str) or not value for value in ids) or len(set(ids)) != len(ids)):
+        raise BatchRequestError('GT_COMPARISON_SELECTION_INVALID', '请选择1–100张同SHA素材', 422)
+    annotations = AnnotationRepository(materials.project_path)
+    revisions = materials.current_revision(), annotations.current_revision()
+    for name, revision in zip(('expected_material_revision', 'expected_annotation_revision'), revisions):
+        if payload.get(name) is not None and payload[name] != revision:
+            raise BatchRequestError('MATERIAL_INTEGRITY_AUDIT_STALE', '素材或GT已变化，请重新检查', 409)
+    current = {str(row['id']): row for row in materials.get_many(ids)}
+    if set(current) != set(ids):
+        raise BatchRequestError('GT_COMPARISON_IDENTITY_CHANGED', '部分素材不属于当前项目或已删除', 409)
+    formal = annotations.get_many(ids)
+    reasons = _historical_material_references(project_id, materials.project_path, repository, artifacts,
+        with_reasons=True, reference_image_ids=ids)
+    rows = []
+    for image_id in ids:
+        material, gt = current[image_id], formal.get(image_id) or {}
+        protection = list(reasons.get(image_id, []))
+        if str(material.get('split') or '').lower() == 'test':
+            protection.append({'reason': 'CURRENT_TEST_ROLE', 'protected': True, 'source': 'material_index'})
+        rows.append({'image_id': image_id, 'content_sha256': material.get('content_sha256'),
+            'filename': material.get('filename') or image_id, 'width': material.get('width'), 'height': material.get('height'),
+            'storage_source_id': material.get('storage_source_id'),
+            'import_batch_id': material.get('import_batch_id') or material.get('batch_id'), 'split': material.get('split'),
+            'annotation_state': gt.get('annotation_state'), 'annotation_scope': gt.get('annotation_scope') or [],
+            'boxes': gt.get('boxes') or [], 'annotation_version': gt.get('version'),
+            'reference_reasons': protection, 'protection_reasons': protection,
+            'content_url': f'/api/v61/projects/{project_id}/materials/{image_id}/content'})
+    if any(not row['content_sha256'] for row in rows):
+        raise BatchRequestError('GT_COMPARISON_UNVERIFIED_HASH', '缺少SHA256，不能叠加比较', 409)
+    diagnosis = diagnose_annotation_conflict(rows, active_project_label_ids(materials.project_path),
+        _material_integrity_import_evidence(project_id, rows, repository, artifacts))
+    if revisions != (materials.current_revision(), annotations.current_revision()):
+        raise BatchRequestError('MATERIAL_INTEGRITY_AUDIT_STALE', '读取期间GT变化，请重新检查', 409)
+    return {'items': rows, 'diagnosis': diagnosis, 'material_revision': revisions[0], 'annotation_revision': revisions[1]}
+
+
+def material_integrity_conflict_review(project_id, audit_task, materials, repository, artifacts,
+                                     cursor='', limit=25, observation='', import_batch=''):
+    """Page existing audit evidence; no GT writes, extra jobs or plan Owner."""
+    from collections import Counter
+    from .training_compatibility import _file_digest
+
+    path = artifacts.artifact_path(audit_task.task_id, MATERIAL_INTEGRITY_REF)
+    metadata = _audit_metadata(path)
+    if (metadata.get('material_revision') != materials.current_revision()
+            or metadata.get('annotation_revision') != AnnotationRepository(materials.project_path).current_revision()
+            or metadata.get('label_schema_digest', _file_digest(materials.project_path / 'meta.json'))
+               != _file_digest(materials.project_path / 'meta.json')):
+        raise BatchRequestError('MATERIAL_INTEGRITY_AUDIT_STALE', '素材、GT或标签已变化，请重新审计', 409)
+    if metadata.get('gt_diagnosis_version') != 1:
+        return {'available': False, 'message': '历史审计未包含GT分类证据，请重新审计；原证据不改写', 'items': []}
+    reasons = _historical_material_references(project_id, materials.project_path, repository, artifacts, with_reasons=True)
+    protected = {key for key, values in reasons.items() if any(value.get('protected') for value in values)}
+    observations, all_images, protected_images = Counter(), set(), set()
+    batch_counts = Counter()
+    cohort_counts, cohort_mapping_counts = Counter(), Counter()
+    summaries, proven, source_reviewable = [], 0, 0
+    with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)) as audit:
+        audit.row_factory = sqlite3.Row
+        members = {}
+        for row in audit.execute("SELECT group_key,image_id,details_json FROM issue_items WHERE issue_type='DUPLICATE_ANNOTATION_CONFLICT' ORDER BY group_key,image_id"):
+            members.setdefault(row['group_key'], []).append({'image_id': row['image_id'], **json.loads(row['details_json'])})
+        for group in audit.execute("SELECT * FROM issue_groups WHERE issue_type='DUPLICATE_ANNOTATION_CONFLICT' ORDER BY group_key"):
+            items = members.get(group['group_key'], [])
+            diagnosis = json.loads(group['details_json']).get('gt_diagnosis') or {}
+            ids = {item['image_id'] for item in items}
+            protected_here = ids & protected | {item['image_id'] for item in items if str(item.get('split') or '').lower() == 'test'}
+            batches = sorted({str(batch) for item in items for batch in item.get('import_batch_ids') or
+                              ([item['import_batch_id']] if item.get('import_batch_id') else [])})
+            batch_counts.update(batches)
+            all_images.update(ids)
+            protected_images.update(protected_here)
+            observations.update(diagnosis.get('observations') or [])
+            mapping_proven = bool(diagnosis.get('proven_mapping_error_count') or diagnosis.get('verified_import_mapping_difference_count'))
+            proven += mapping_proven
+            cohort_counts[diagnosis.get('cohort', 'OTHER')] += 1
+            cohort_mapping_counts[diagnosis.get('cohort', 'OTHER')] += mapping_proven
+            verified_ids = set(diagnosis.get('verified_source_image_ids') or [])
+            unique_verified_batch = any(sum(item.get('import_batch_id') == batch for item in items) == 1
+                and any(item['image_id'] in verified_ids and item.get('import_batch_id') == batch for item in items) for batch in batches)
+            source_reviewable += unique_verified_batch
+            if observation and observation != diagnosis.get('cohort') and observation not in diagnosis.get('observations', []):
+                continue
+            if import_batch and import_batch not in batches:
+                continue
+            summaries.append({'group_key': group['group_key'], 'content_sha256': group['content_sha256'],
+                'image_count': len(ids), 'protected_count': len(protected_here), 'diagnosis': diagnosis,
+                'import_batches': batches,
+                'recommendation': {'purpose': 'IDENTITY_RETENTION_NOT_GT_CORRECTNESS',
+                    'image_id': _material_integrity_keeper([
+                        {'image_id': item['image_id'], 'details': item} for item in items], protected_here),
+                    'reason': 'RETAIN_PROTECTED_IDENTITY' if protected_here else 'EXISTING_VERIFIED_KEEPER_RULE'},
+                'members': [{'image_id': item['image_id'], 'filename': item.get('filename'),
+                    'import_batch_id': item.get('import_batch_id'), 'split': item.get('split'),
+                    'annotation_state': item.get('annotation_state'), 'box_count': item.get('box_count'),
+                    'labels': item.get('labels'), 'protected': item['image_id'] in protected_here} for item in items[:20]],
+                'members_truncated': len(items) > 20})
+    visible = [row for row in summaries if row['group_key'] > cursor][:limit + 1]
+    metrics = [row['diagnosis'].get('iou_summary') or {} for row in summaries]
+    matched = sum(metric.get('matched_count', 0) for metric in metrics)
+    coordinate_statistics = {'population': 'DETERMINISTIC_REFERENCE_TO_OTHER_MEMBERS_GREEDY_CANDIDATES',
+        'matched_count': matched,
+        'min_iou': min((metric['min'] for metric in metrics if metric.get('min') is not None), default=None),
+        'mean_iou': sum(metric['mean'] * metric['matched_count'] for metric in metrics if metric.get('mean') is not None) / matched if matched else None,
+        'max_pixel_delta': max((metric['max_pixel_delta'] for metric in metrics if metric.get('max_pixel_delta') is not None), default=None),
+        'unverifiable_pairs': sum(metric.get('unverifiable_pairs', 0) for metric in metrics),
+        'histogram': dict(sum((Counter(metric.get('histogram') or {}) for metric in metrics), Counter()))}
+    if (metadata['material_revision'] != materials.current_revision()
+            or metadata['annotation_revision'] != AnnotationRepository(materials.project_path).current_revision()
+            or metadata['label_schema_digest'] != _file_digest(materials.project_path / 'meta.json')):
+        raise BatchRequestError('MATERIAL_INTEGRITY_AUDIT_STALE', '读取期间素材或GT发生变化，请重新审计', 409)
+    return {'available': True, 'audit_task_id': audit_task.task_id,
+        'material_revision': metadata['material_revision'], 'annotation_revision': metadata['annotation_revision'],
+        'label_schema_digest': metadata['label_schema_digest'],
+        'total_groups': len(members),
+        'filtered_groups': len(summaries), 'total_images': len(all_images),
+        'protected_image_count': len(protected_images), 'proven_mapping_groups': proven,
+        'manual_review_groups': len(members), 'source_assisted_review_groups': source_reviewable,
+        'individual_only_review_groups': len(members) - source_reviewable,
+        'observation_counts': dict(observations), 'import_batch_group_counts': dict(batch_counts), 'items': visible[:limit],
+        'cohort_counts': dict(cohort_counts), 'cohort_proven_mapping_counts': dict(cohort_mapping_counts),
+        'filtered_coordinate_statistics': coordinate_statistics,
+        'next_cursor': visible[limit - 1]['group_key'] if len(visible) > limit else None,
+        'automatic_gt_write_allowed': False}
+
+
 def material_integrity_governance_summary(project_id, audit_task, materials, repository, artifacts):
     if audit_task.status is not TaskStatus.SUCCEEDED:
         raise BatchRequestError('MATERIAL_INTEGRITY_AUDIT_NOT_READY', '素材审计尚未完整成功，请查看原任务', 409)
@@ -3668,6 +3899,12 @@ def material_batch_router(
         if request.get("operation") != BatchOperation.AUDIT_MATERIAL_INTEGRITY.value:
             raise HTTPException(404, detail="material integrity audit not found")
         return task
+
+    @integrity.post('/gt-comparison')
+    def integrity_gt_comparison(project_id: str, payload: dict = Body(...)):
+        get_project(project_id)
+        return invoke(material_integrity_gt_comparison, project_id, material_store(project_id),
+            task_repository(), task_artifacts(), payload)
 
     @router.post("/estimate")
     def estimate(project_id: str, payload: dict = Body(...)):
@@ -3887,10 +4124,16 @@ def material_batch_router(
                 "boxes": list(annotation.get("boxes") or []),
                 "snapshot": snapshot,
             })
+        from .training_compatibility import diagnose_annotation_conflict
         return {
             "group_key": str(group_key),
             "total_images": total_images,
             "items": items,
+            "comparison_scope": "PAGE_MEMBERS",
+            "gt_diagnosis": diagnose_annotation_conflict(
+                items, active_project_label_ids(materials.project_path),
+                _material_integrity_import_evidence(project_id, items, task_repository(), task_artifacts()))
+                if str(group_key).startswith('DUPLICATE_') else None,
             "next_cursor": ids[-1] if len(rows) > int(limit) else None,
         }
 
@@ -3899,6 +4142,15 @@ def material_batch_router(
         task = require_integrity_audit(project_id, task_id)
         return invoke(create_training_integrity_plan, project_id, task, material_store(project_id),
             task_repository(), task_artifacts(), payload, training_selection_provider)
+
+    @integrity.get('/audits/{task_id}/conflict-review')
+    def integrity_conflict_review(project_id: str, task_id: str, cursor: str = '', limit: int = 25,
+                                 observation: str = '', import_batch: str = ''):
+        task = require_integrity_audit(project_id, task_id)
+        if not 1 <= limit <= 50:
+            raise HTTPException(422, detail='limit must be between 1 and 50')
+        return invoke(material_integrity_conflict_review, project_id, task, material_store(project_id),
+            task_repository(), task_artifacts(), cursor, limit, observation, import_batch)
 
     @integrity.get("/audits/{task_id}/governance-summary")
     def integrity_governance_summary(project_id: str, task_id: str):

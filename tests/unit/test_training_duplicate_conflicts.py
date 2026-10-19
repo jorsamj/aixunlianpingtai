@@ -358,3 +358,64 @@ def test_canonical_duplicate_preflight_has_bounded_page_at_scale(tmp_path, size)
     assert len(response["items"]) == 24
     assert len(json.dumps(response)) < 50000
     print(f"canonical_preflight size={size} elapsed={elapsed:.3f}s response_bytes={len(json.dumps(response))}")
+def test_gt_conflict_diagnosis_separates_observation_from_cause_and_measures_iou():
+    from platform_core.training_compatibility import diagnose_annotation_conflict
+    first = {'id': 'a', 'content_sha256': 'same', 'width': 100, 'height': 100,
+             'annotation_state': 'annotated', 'annotation_scope': ['person'],
+             'import_batch_id': 'zip-a', 'boxes': [{'label': 'person', 'x1': 0, 'y1': 0, 'x2': 10, 'y2': 10}]}
+    second = {**first, 'id': 'b', 'import_batch_id': 'zip-b',
+              'boxes': [{'label': 'person', 'x1': 5, 'y1': 0, 'x2': 15, 'y2': 10}]}
+    result = diagnose_annotation_conflict([first, second], {'person': 0})
+    assert 'COORDINATE_DIFFERENCE' in result['observations']
+    assert 'DIFFERENT_IMPORT_BATCHES' in result['observations']
+    assert result['pairs'][0]['matches'][0]['iou'] == pytest.approx(1 / 3)
+    assert result['pairs'][0]['matches'][0]['max_pixel_delta'] == 5
+    assert result['root_cause_status'] == 'UNDETERMINED'
+    assert result['proven_mapping_error_count'] == 0
+    assert result['requires_human_review'] is True
+
+
+def test_gt_mapping_evidence_requires_canonical_id_not_zip_source_id():
+    from platform_core.training_compatibility import diagnose_annotation_conflict
+    row = {'id': 'a', 'content_sha256': 'same', 'annotation_state': 'annotated',
+           'annotation_scope': ['person'], 'boxes': [
+               {'label': 'person', 'class_id': 7, 'x1': 0, 'y1': 0, 'x2': 10, 'y2': 10}]}
+    assert diagnose_annotation_conflict([row], {'person': 0})['proven_mapping_error_count'] == 0
+    canonical = {**row, 'boxes': [{**row['boxes'][0], 'canonical_project_class_id': 7}]}
+    result = diagnose_annotation_conflict([canonical], {'person': 0})
+    assert result['proven_mapping_error_count'] == 1
+    assert result['mapping_evidence'][0]['expected_class_id'] == 0
+    assert result['root_cause_status'] == 'CANONICAL_ID_MISMATCH_PROVEN'
+
+
+def test_gt_comparison_invalid_geometry_and_missing_provenance_remain_unknown():
+    from platform_core.training_compatibility import diagnose_annotation_conflict
+    a = {'id': 'a', 'content_sha256': 'same', 'annotation_scope': ['vehicle'],
+         'boxes': [{'label': 'person', 'x1': float('nan'), 'y1': 0, 'x2': 2, 'y2': 2}]}
+    result = diagnose_annotation_conflict([a, {**a, 'id': 'b', 'boxes': []}], {'person': 0})
+    assert 'SCOPE_BOX_MISMATCH' in result['observations']
+    assert 'BOX_COUNT_DIFFERENCE' in result['observations']
+    assert result['pairs'][0]['geometry_status'] == 'UNVERIFIABLE'
+    assert result['pairs'][0]['matches'] == []
+    assert result['provenance_status'] == 'INCOMPLETE'
+
+def test_gt_import_mapping_difference_uses_verified_confirmation_and_source_taxonomy():
+    from platform_core.training_compatibility import diagnose_annotation_conflict
+    common = {'content_sha256': 'same', 'annotation_state': 'annotated'}
+    rows = [{**common, 'id': task, 'annotation_scope': [label], 'boxes': [
+        {'label': label, 'source_task_id': task, 'import_batch_id': task, 'source_class_id': '0',
+         'x1': 0, 'y1': 0, 'x2': 10, 'y2': 10}]}
+        for task, label in [('zip-a', 'fire'), ('zip-b', 'smoke')]]
+    confirmations = {task: {'external_classes': [{'class_id': '0', 'name': 'source-person'}],
+        'label_mapping': {'0': label}, 'verified_task_owner': True,
+        'members': {task: [('0', (0, 0, 10, 10))]}}
+        for task, label in [('zip-a', 'fire'), ('zip-b', 'smoke')]}
+    result = diagnose_annotation_conflict(rows, {'fire': 0, 'smoke': 1}, confirmations)
+    assert 'VERIFIED_IMPORT_MAPPING_DIFFERENCE' in result['observations']
+    assert result['verified_import_mapping_difference_count'] == 1
+    assert result['requires_human_review']
+    assert result['provenance_status'] == 'RECORDED'
+    unverified = diagnose_annotation_conflict(rows, {'fire': 0, 'smoke': 1})
+    assert unverified['verified_import_mapping_difference_count'] == 0
+    confirmations['zip-b']['external_classes'][0]['name'] = 'different-taxonomy'
+    assert diagnose_annotation_conflict(rows, {}, confirmations)['verified_import_mapping_difference_count'] == 0

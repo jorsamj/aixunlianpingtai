@@ -204,6 +204,33 @@ class Confirmation:
 
 
 class ImportCandidateStore:
+    @staticmethod
+    def read_annotation_provenance(path, content_sha256):
+        """Read existing indexed evidence without constructor DDL or WAL writes."""
+        path = Path(path)
+        if not path.is_file():
+            return None
+        with closing(sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True)) as db:
+            db.row_factory = sqlite3.Row
+            saved = db.execute('SELECT payload FROM confirmation_details WHERE singleton=1').fetchone()
+            if saved is None:
+                return None
+            rows = db.execute('SELECT c.image_id,c.width,c.height,a.class_id,a.cx,a.cy,a.w,a.h '
+                'FROM candidates c JOIN candidate_annotations a USING(object_key) '
+                'WHERE c.content_sha256=? AND c.selected=1 AND c.indexed=1',
+                (str(content_sha256),)).fetchmany(100001)
+        if len(rows) > 100000:
+            return None
+        members = {}
+        for row in rows:
+            width, height = float(row['width']), float(row['height'])
+            coordinates = (max(0.0, (row['cx']-row['w']/2)*width), max(0.0, (row['cy']-row['h']/2)*height),
+                           min(width, (row['cx']+row['w']/2)*width), min(height, (row['cy']+row['h']/2)*height))
+            members.setdefault(str(row['image_id']), []).append((str(row['class_id']), coordinates))
+        confirmed = json.loads(saved['payload'])
+        return {'members': members, 'label_mapping': confirmed.get('label_mapping') or {},
+                'external_classes': confirmed.get('external_classes') or []}
+
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)

@@ -190,7 +190,8 @@ a=AnnotationRepository(app.project_dir(${JSON.stringify(f.project.id)}));a.upser
   await expect(page.locator('[data-conflict-exclude]').first()).toBeDisabled();
   await expect(page.locator('[data-duplicate-compare]').first()).toBeEnabled();
   await page.locator('[data-duplicate-compare]').first().click();
-  await expect(page.locator('.training-duplicate-comparison img')).toHaveCount(2);
+  await expect(page.locator('.training-duplicate-comparison .material-integrity47-grid img')).toHaveCount(2);
+  await expect(page.locator('.training-duplicate-comparison [data-gt-overlay] img')).toHaveCount(1);
   for(const button of await page.locator('.training-duplicate-comparison [data-conflict-exclude]').all())await expect(button).toBeDisabled();
   await page.locator('[data-comparison-back]').click();
   await page.getByRole('button',{name:'全选当前页',exact:true}).click();
@@ -248,7 +249,8 @@ test('real duplicate GT comparison edits the original annotation and rechecks be
   await page.evaluate(()=>window.TrainingMaterialSummaryRuntime.openCompatibilityIssues());
   await page.locator('[data-duplicate-compare]').first().click();
   const comparison=page.locator('.training-duplicate-comparison');await expect(comparison.locator('.material-integrity47-grid > article')).toHaveCount(2);
-  await expect(comparison).toContainText(f.sha);await expect(comparison.locator('svg')).toHaveCount(2);
+  await expect(comparison).toContainText(f.sha);await expect(comparison.locator('.material-integrity47-grid svg')).toHaveCount(2);
+  await expect(comparison.locator('[data-gt-overlay] svg')).toHaveCount(1);
   for(const img of await comparison.locator('img').all())await expect.poll(()=>img.evaluate(el=>el.complete&&el.naturalWidth)).toBe(160);
   await evidence(page,testInfo,'comparison-desktop');await page.setViewportSize({width:375,height:812});await evidence(page,testInfo,'comparison-mobile');await page.setViewportSize({width:1366,height:768});
   await comparison.locator('[data-conflict-review="duplicate-copy"]').click();
@@ -283,4 +285,70 @@ test('explicit exclusion remains auditable, stale revisions reject admission, an
   await page.evaluate(task=>window.TrainingMaterialSummaryRuntime.openTaskDiagnosis(task),f.oldTask);await expect(page.locator('[data-training-compatibility-dialog]')).toContainText('insufficient_no_input_freeze');
   await evidence(page,testInfo,'failed-task-diagnosis-desktop');await page.setViewportSize({width:375,height:812});await evidence(page,testInfo,'failed-task-diagnosis-mobile');
   const cross=await request.post(`/api/v62/projects/${f.project.id}/training-materials/compatibility`,{data:{...payload,duplicate_review:undefined,train_image_ids:f.ids.filter(id=>id!=='duplicate-copy'),test_image_ids:['duplicate-copy'],split_mode:'independent_test_set'}});expect(cross.ok()).toBeTruthy();expect((await cross.json()).items.some(item=>item.issue_type==='content_hash_leakage')).toBe(true);
+});
+test('verified import GT review shares comparison, freezes source scope and removes only reviewed conflicts',async({page,request},testInfo)=>{
+  const f=await fixture(request);
+  isolatedPython(f.project.id,`import app,json
+from dataclasses import replace
+from platform_core.task_runtime import TaskRecord,TaskKind,TaskStatus
+from platform_core.storage.import_candidates import ImportCandidateStore
+from platform_core.annotation_repository import AnnotationRepository
+p=${JSON.stringify(f.project.id)};m=app.material_store(p);a=AnnotationRepository(m.project_path);r=app.shared_task_repository();art=app.shared_task_artifacts()
+for image_id,task_id,target in [(${JSON.stringify(f.ids[0])},'review-approved','person'),('duplicate-copy','review-other','vehicle')]:
+ gt=a.get(image_id);row=m.get(image_id);box=gt['boxes'][0]
+ box.update(source_task_id=task_id,import_batch_id=task_id,source_class_id='0',canonical_label_id=target,canonical_project_class_id=0 if target=='person' else 1)
+ a.upsert(image_id,[box],annotation_state='annotated',annotation_scope=['person','vehicle'])
+ art.atomic_write_json(task_id,'payload.json',{})
+ r.create(replace(TaskRecord.new(task_id,p,TaskKind.MATERIAL_IMPORT,'payload.json','isolated-import'),status=TaskStatus.SUCCEEDED),artifacts=art)
+ details={'label_mapping':{'0':target,'1':'vehicle' if target=='person' else 'person'},'external_classes':[{'class_id':'0','name':'source-object'},{'class_id':'1','name':'source-other'}]}
+ store=ImportCandidateStore(art.artifact_path(task_id,'scan/candidates.sqlite3'));store.upsert_many([{**row,'object_key':'source.png','filename':'source.png','status':'IMPORTABLE'}])
+ store.manifest_many([{'object_key':'source.png','split':'train','yaml_key':'data.yaml'}])
+ store.annotation_batch([], [{'object_key':'source.png','line_number':1,'class_id':0,'cx':48/160,'cy':27/90,'w':64/160,'h':36/90}], [])
+ store.confirm(['source.png'],details=details);store.bind_index_batch([{'object_key':'source.png','image_id':image_id}]);store.mark_indexed([{'object_key':'source.png'}])
+ art.atomic_write_json(task_id,'scan/confirmation.json',{**details,'accepted':True})
+`);
+  const keeperBefore=await (await request.get(`/api/projects/${f.project.id}/annotations/${f.ids[0]}`)).json();
+  const auditId=(await (await request.post(`/api/v62/projects/${f.project.id}/material-integrity/audits`)).json()).task_id;
+  runIsolatedBatch(f.project.id,auditId);
+  await openDraft(page,f);await page.evaluate(()=>window.TrainingMaterialSummaryRuntime.openCompatibilityIssues());
+  let releaseReview;const reviewGate=new Promise(resolve=>{releaseReview=resolve});
+  let reviewIntercepted;const reviewStarted=new Promise(resolve=>{reviewIntercepted=resolve});
+  await page.route('**/conflict-review?*',async route=>{const response=await route.fetch();reviewIntercepted();await reviewGate;await route.fulfill({response})},{times:1});
+  await page.locator('[data-project-gt-review]').click();
+  await reviewStarted;await page.evaluate(()=>closeModal());
+  const lateReview=page.waitForResponse(response=>response.url().includes('/conflict-review?'));releaseReview();await lateReview;
+  await page.waitForTimeout(100);await expect(page.locator('.gt-review-workbench')).toHaveCount(0);
+  await page.evaluate(async()=>{await openMaterialIntegrityAudit47();await openGtConflictReview47()});
+  let review=page.locator('.gt-review-workbench');await expect(review).toContainText('已证实映射差异');
+  await expect(review.locator('[data-gt-review-group]')).toHaveCount(1);
+  await review.locator('#gtReviewBatch47').selectOption('review-approved');await review.locator('[data-gt-review-filter]').click();
+  await expect(review.locator('#gtReviewBatch47')).toHaveValue('review-approved');
+  for(const [width,height] of [[1920,1080],[1440,900],[1366,768],[375,812]]){
+    await page.setViewportSize({width,height});await expect(review).toBeVisible();
+    expect(await review.evaluate(el=>el.scrollWidth<=el.clientWidth+1)).toBe(true);
+    await evidence(page,testInfo,`gt-review-${width}`);
+  }
+  await page.setViewportSize({width:1366,height:768});
+  await review.locator('[data-gt-review-open]').click();
+  await expect(page.locator('[data-gt-evidence]')).toContainText('已核验导入确认映射不同');
+  await expect(page.locator('[data-gt-overlay] img')).toBeVisible();
+  const overlayLabels=page.locator('[data-gt-overlay] svg text');await expect(overlayLabels).toHaveCount(2);
+  expect(await overlayLabels.nth(0).getAttribute('y')).not.toBe(await overlayLabels.nth(1).getAttribute('y'));
+  await evidence(page,testInfo,'gt-overlay-source-comparison');
+  await page.getByRole('button',{name:'返回批量审核 · 保留选择',exact:true}).click();
+  review=page.locator('.gt-review-workbench');await review.locator('[data-gt-source-confirm]').check();
+  await review.locator('[data-gt-review-source]').click();
+  await expect(page.getByRole('button',{name:'确认删除 1 条索引',exact:true})).toBeVisible();
+  await evidence(page,testInfo,'gt-source-review-frozen-preview');
+  await page.getByRole('button',{name:'确认删除 1 条索引',exact:true}).click();
+  await expect(page.locator('#materialIntegrityTask47')).toContainText('排队中');
+  const taskId=await page.evaluate(()=>state.materialIntegrityTask47.task_id);runIsolatedBatch(f.project.id,taskId);
+  await expect(page.locator('#materialIntegrityTask47')).toContainText('实际删除索引 1');
+  expect(await (await request.get(`/api/projects/${f.project.id}/annotations/${f.ids[0]}`)).json()).toEqual(keeperBefore);
+  const clean=await request.post(`/api/v62/projects/${f.project.id}/training-materials/compatibility`,{data:{algorithm_asset_id:f.algorithmId,
+    train_image_ids:f.ids.filter(id=>id!=='duplicate-copy'),train_labels:['person','vehicle'],split_mode:'random_test_from_training_pool',experiment_percent:20,validation_percent:20}});
+  expect(clean.ok(),await clean.text()).toBeTruthy();expect((await clean.json()).items.some(item=>item.issue_type==='duplicate_annotation_conflict')).toBe(false);
+  const freshId=(await (await request.post(`/api/v62/projects/${f.project.id}/material-integrity/audits`)).json()).task_id;runIsolatedBatch(f.project.id,freshId);
+  const result=await request.get(`/api/v62/projects/${f.project.id}/material-integrity/audits/${freshId}/conflict-review`);
+  expect(result.ok()).toBeTruthy();expect((await result.json()).total_groups).toBe(0);
 });

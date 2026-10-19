@@ -460,6 +460,157 @@ def _duplicate_issues(rows, train_ids, test_ids, dataset_names):
     return issues
 
 
+def annotation_import_batches(row):
+    return sorted({str(value) for value in (
+        row.get('import_batch_id'), row.get('batch_id'),
+        *(box.get('import_batch_id') or box.get('source_task_id') for box in row.get('boxes') or []),
+    ) if value})
+
+
+def diagnose_annotation_conflict(rows, label_ids=None, import_confirmations=None):
+    """Disposable evidence projection, never a vote on which GT is correct.
+
+    Compare each member with a deterministic reference (not a recommended GT).
+    Greedy IoU pairs are candidates only, not proof of object identity/missed GT.
+    """
+    from .annotation_quality import _finite_box, _iou
+
+    rows = sorted(({**row, 'id': str(row.get('id') or row.get('image_id') or '')} for row in rows), key=lambda row: row['id'])
+    if len({str(row.get('content_sha256') or '').lower() for row in rows}) > 1:
+        raise ValueError('GT comparison requires the same content SHA256')
+    duplicate = analyze_training_duplicates(rows, [row['id'] for row in rows])
+    dimensions = set(duplicate[0]['conflict_types']) if duplicate else set()
+    cohort = ('LABEL_SCOPE_COUNT_COMPOUND' if {'labels', 'annotation_scope', 'box_count'} <= dimensions else
+              'COORDINATE_ONLY' if 'coordinates' in dimensions and not dimensions & {'labels', 'annotation_scope', 'box_count'} else
+              'SCOPE_AND_GEOMETRY' if {'annotation_scope', 'coordinates'} <= dimensions else 'OTHER')
+    observations, mappings, pairs = set(), [], []
+    labels, scopes, counts, origins, roles = set(), set(), set(), set(), set()
+    import_targets = {}
+    verified_sources = []
+    for row in rows:
+        boxes = row.get('boxes') or []
+        scope = set(map(str, row.get('annotation_scope') or []))
+        names = {str(box.get('label') or box.get('code') or '') for box in boxes}
+        labels.add(tuple(sorted(names)))
+        scopes.add(tuple(sorted(scope)))
+        counts.add(len(boxes))
+        origins.update(annotation_import_batches(row) or [''])
+        roles.add(str(row.get('split') or row.get('role') or 'unassigned').lower())
+        if scope and names - scope:
+            observations.add('SCOPE_BOX_MISMATCH')
+        per_class = Counter(str(box.get('label') or box.get('code') or '') for box in boxes)
+        row_counts = tuple(sorted(per_class.items()))
+        # Numeric source ZIP IDs are not project IDs. Only an explicitly
+        # canonical identity can prove a contradiction with the formal schema.
+        verified_boxes = 0
+        for index, box in enumerate(boxes):
+            name = str(box.get('canonical_label_id') or box.get('label') or box.get('code') or '')
+            canonical = box.get('canonical_project_class_id')
+            if label_ids is not None and canonical is not None and name in label_ids and canonical != label_ids[name]:
+                mappings.append({'image_id': str(row.get('id') or row.get('image_id') or ''),
+                    'box_index': index, 'label': name, 'recorded_class_id': canonical,
+                    'expected_class_id': label_ids[name], 'basis': 'EXPLICIT_CANONICAL_ID_VS_ACTIVE_SCHEMA'})
+            task_id = str(box.get('import_batch_id') or box.get('source_task_id') or '')
+            confirmation = (import_confirmations or {}).get(task_id) or {}
+            taxonomy = confirmation.get('external_classes') or []
+            coordinates = _finite_box(box)
+            if (not confirmation.get('verified_task_owner') or not taxonomy or coordinates is None
+                    or not all(math.isfinite(value) for value in coordinates)
+                    or any(not str(item.get('name') or '').strip() for item in taxonomy)):
+                continue
+            source = str(box.get('source_class_id', ''))
+            imported = (confirmation.get('members') or {}).get(str(row.get('id') or row.get('image_id') or ''), [])
+            if not any(str(source_id) == source and all(abs(x-y) <= 1e-6 for x,y in zip(coordinates, original))
+                       for source_id, original in imported):
+                continue
+            target = (confirmation.get('label_mapping') or {}).get(source)
+            label = str(box.get('label') or box.get('code') or '')
+            if target != label:
+                observations.add('CURRENT_GT_DIFFERS_FROM_IMPORT_CONFIRMATION')
+                continue
+            verified_boxes += 1
+            schema = tuple(sorted((str(item.get('class_id')), str(item['name'])) for item in taxonomy))
+            key = (schema, source, tuple(round(value, 6) for value in coordinates))
+            import_targets.setdefault(key, set()).add((task_id, label))
+        batches = annotation_import_batches(row)
+        if len(batches) == 1 and boxes and verified_boxes == len(boxes):
+            source_record = (import_confirmations or {}).get(batches[0]) or {}
+            original = (source_record.get('members') or {}).get(str(row.get('id') or row.get('image_id') or ''), [])
+            actual_boxes = Counter((str(box.get('source_class_id', '')), tuple(round(v, 6) for v in _finite_box(box))) for box in boxes)
+            source_boxes = Counter((str(source), tuple(round(v, 6) for v in coords)) for source, coords in original)
+            if actual_boxes == source_boxes and scope == set((source_record.get('label_mapping') or {}).values()):
+                verified_sources.append(str(row.get('id') or row.get('image_id') or ''))
+        if row is rows[0]:
+            first_counts = row_counts
+        elif row_counts != first_counts:
+            observations.add('PER_CLASS_BOX_COUNT_DIFFERENCE')
+    if len(labels) > 1:
+        observations.add('LABEL_SET_DIFFERENCE')
+    if len(scopes) > 1:
+        observations.add('SCOPE_DIFFERENCE')
+    if len(counts) > 1:
+        observations.add('BOX_COUNT_DIFFERENCE')
+    if len(origins - {''}) > 1:
+        observations.add('DIFFERENT_IMPORT_BATCHES')
+    if len(roles - {'unassigned', ''}) > 1:
+        observations.add('CROSS_SPLIT_IDENTITY')
+    if mappings:
+        observations.add('CANONICAL_ID_MISMATCH')
+    mapping_differences = sum(len({label for _task, label in values}) > 1
+        and len({task for task, _label in values}) > 1 for values in import_targets.values())
+    if mapping_differences:
+        observations.add('VERIFIED_IMPORT_MAPPING_DIFFERENCE')
+    comparison_budget = 100000
+    for row in rows[1:]:
+        base = rows[0]
+        left, right = base.get('boxes') or [], row.get('boxes') or []
+        a, b = [_finite_box(box) for box in left], [_finite_box(box) for box in right]
+        valid = all(box is not None and box[2] > box[0] and box[3] > box[1] for box in (*a, *b))
+        pair = {'reference_image_id': str(base.get('id') or base.get('image_id') or ''),
+                'image_id': str(row.get('id') or row.get('image_id') or ''), 'matches': [],
+                'geometry_status': 'VERIFIED' if valid else 'UNVERIFIABLE',
+                'matching_method': 'GREEDY_IOU_CANDIDATES_NOT_OBJECT_IDENTITY'}
+        comparison_budget -= len(left) * len(right)
+        if comparison_budget < 0:
+            pair['geometry_status'] = 'DETAIL_REQUIRED_BUDGET_LIMIT'
+        if pair['geometry_status'] == 'VERIFIED':
+            candidates = sorted(((_iou(x, y), i, j) for i, x in enumerate(a) for j, y in enumerate(b)), reverse=True)
+            used_a, used_b = set(), set()
+            for iou, i, j in candidates:
+                if iou <= 0 or i in used_a or j in used_b:
+                    continue
+                used_a.add(i)
+                used_b.add(j)
+                pair['matches'].append({'reference_box': i, 'box': j, 'iou': iou,
+                    'same_label': str(left[i].get('label') or left[i].get('code') or '') == str(right[j].get('label') or right[j].get('code') or ''),
+                    'max_pixel_delta': max(abs(x - y) for x, y in zip(a[i], b[j])),
+                    'reference_coordinates': a[i], 'coordinates': b[j]})
+            pair['unmatched_reference_boxes'] = len(left) - len(used_a)
+            pair['unmatched_boxes'] = len(right) - len(used_b)
+            if any(match['max_pixel_delta'] > 0 for match in pair['matches']):
+                observations.add('COORDINATE_DIFFERENCE')
+            if pair['unmatched_reference_boxes'] or pair['unmatched_boxes']:
+                observations.add('UNMATCHED_BOXES_REVIEW_REQUIRED')
+        pairs.append(pair)
+    matches = [match for pair in pairs for match in pair['matches']]
+    scores = [match['iou'] for match in matches]
+    iou_summary = {'matched_count': len(matches), 'min': min(scores) if scores else None,
+        'max': max(scores) if scores else None, 'mean': sum(scores) / len(scores) if scores else None,
+        'max_pixel_delta': max((match['max_pixel_delta'] for match in matches), default=None),
+        'unmatched_count': sum(pair.get('unmatched_boxes', 0) + pair.get('unmatched_reference_boxes', 0) for pair in pairs),
+        'unverifiable_pairs': sum(pair['geometry_status'] != 'VERIFIED' for pair in pairs),
+        'histogram': {name: sum(low <= score < high for score in scores) for name, low, high in
+            [('lt_0_5', 0, 0.5), ('0_5_to_0_75', 0.5, 0.75), ('0_75_to_0_9', 0.75, 0.9), ('gte_0_9', 0.9, 1.0000001)]}}
+    return {'observations': sorted(observations), 'cohort': cohort, 'mapping_evidence': mappings, 'iou_summary': iou_summary,
+        'proven_mapping_error_count': len(mappings), 'pairs': pairs,
+        'verified_import_mapping_difference_count': mapping_differences,
+        'verified_source_image_ids': verified_sources,
+        'root_cause_status': ('CANONICAL_ID_MISMATCH_PROVEN' if mappings else
+                              'IMPORT_CONFIRMATIONS_DIFFER' if mapping_differences else 'UNDETERMINED'),
+        'provenance_status': 'RECORDED' if origins and '' not in origins else 'INCOMPLETE',
+        'requires_human_review': True, 'automatic_gt_write_allowed': False}
+
+
 def compatibility_page(
     result: TrainingCompatibilityResult,
     *,

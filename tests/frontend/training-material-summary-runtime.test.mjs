@@ -7,8 +7,20 @@ import {
   trainingCompatibilitySignature,
   trainingMaterialSelectionSignature,
   updateTrainingGovernanceSelection,
+  renderGtConflictEvidence,
 } from '../../static/modules/training-material-summary-runtime.js';
 import {resolveClientTrainingLabels} from '../../static/modules/training-labels.js';
+
+test('shared GT evidence distinguishes unknown cause and null metrics without trusting HTML', () => {
+  const html=renderGtConflictEvidence({observations:['COORDINATE_DIFFERENCE'],root_cause_status:'UNDETERMINED',
+    iou_summary:{matched_count:0,min:null,max_pixel_delta:null}}, [{image_id:'a',filename:'<img onerror=bad()>',
+    annotation_scope:['<script>'],boxes:[],content_sha256:'same'}]);
+  assert.match(html,/根因待核验/);
+  assert.match(html,/坐标不同/);
+  assert.match(html,/未核验/);
+  assert.ok(!html.includes('<img onerror=bad()>'));
+  assert.match(html,/不会自动覆盖GT/);
+});
 
 test('governance selection retains cross-page choices and all-filtered exclusions without hydrating 99 pages', () => {
   let selected = updateTrainingGovernanceSelection(null, {mode:'page', ids:['a','b'], key:'project/filter/rev', total:2376});

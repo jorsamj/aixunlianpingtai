@@ -27,6 +27,41 @@ function htmlEscape(value) {
   })[char]);
 }
 
+export const GT_CONFLICT_NAMES = Object.freeze({
+  LABEL_SCOPE_COUNT_COMPOUND:'类别、范围与框数量复合冲突', COORDINATE_ONLY:'仅框坐标不同',
+  SCOPE_AND_GEOMETRY:'范围与框坐标同时不同', OTHER:'其他差异组合',
+  LABEL_SET_DIFFERENCE:'标签类别不同', SCOPE_DIFFERENCE:'标注范围不同', BOX_COUNT_DIFFERENCE:'框数量不同',
+  PER_CLASS_BOX_COUNT_DIFFERENCE:'同类别框数不同', COORDINATE_DIFFERENCE:'坐标不同',
+  SCOPE_BOX_MISMATCH:'框类别不在标注范围内', CANONICAL_ID_MISMATCH:'正式类别ID映射矛盾',
+  DIFFERENT_IMPORT_BATCHES:'来自不同导入批次', CROSS_SPLIT_IDENTITY:'跨Train/Val/Test身份',
+  UNMATCHED_BOXES_REVIEW_REQUIRED:'未配对框 · 漏标/多标待核验',
+  VERIFIED_IMPORT_MAPPING_DIFFERENCE:'已核验导入确认映射不同',
+  CURRENT_GT_DIFFERS_FROM_IMPORT_CONFIRMATION:'当前GT已偏离导入确认 · 不判定为错误',
+});
+
+export function renderGtConflictEvidence(diagnosis={}, items=[]) {
+  const metric=diagnosis.iou_summary||{}, show=value=>value==null?'未核验':htmlEscape(Number(value).toFixed(3));
+  const options=items.map((item,index)=>`<option value="${index}">${htmlEscape(item.filename||item.image_id)}</option>`).join('');
+  return `<section class="gt-conflict-evidence" data-gt-evidence><header><b>GT 差异证据</b><span>${(diagnosis.proven_mapping_error_count||diagnosis.verified_import_mapping_difference_count)?'已证实映射差异；其他根因仍需核验':'根因待核验'}</span></header><div class="gt-conflict-facts">${(diagnosis.observations||[]).map(code=>`<span>${htmlEscape(GT_CONFLICT_NAMES[code]||code)}</span>`).join('')}</div><div class="gt-conflict-metrics"><span>候选配对 ${Number(metric.matched_count||0)}</span><span>最小 IoU ${show(metric.min)}</span><span>最大坐标差 ${show(metric.max_pixel_delta)} px</span><span>未配对 ${Number(metric.unmatched_count||0)}</span></div>${items.length>1?`<div class="row"><label>A <select class="select" data-gt-source="a" aria-label="叠加参考GT">${options}</select></label><label>B <select class="select" data-gt-source="b" aria-label="叠加对比GT">${options}</select></label><span>A 实线 · B 虚线；框标签分别标明来源</span></div><div data-gt-overlay></div>`:''}<details><summary>来源、状态与坐标明细</summary>${items.map(item=>`<article><b>${htmlEscape(item.filename||item.image_id)}</b><p>来源 ${htmlEscape(item.storage_source_id||'未记录')} · 导入批次 ${htmlEscape(item.import_batch_id||'未记录')} · ${htmlEscape(item.annotation_state||'未记录')} · ${htmlEscape(item.split||item.role||'角色未记录')}</p><p>范围 ${htmlEscape((item.annotation_scope||[]).join('、'))}</p><code>${htmlEscape(JSON.stringify(item.boxes||[]))}</code></article>`).join('')}</details><small>IoU 为候选配对，不证明同一目标或哪份正确；不会自动覆盖GT。</small></section>`;
+}
+
+export function bindGtConflictEvidence(root, items) {
+  const section=root?.querySelector('[data-gt-evidence]');if(!section)return;
+  const a=section.querySelector('[data-gt-source="a"]'),b=section.querySelector('[data-gt-source="b"]');
+  if(!a||!b)return;b.value=String(Math.min(1,items.length-1));
+  const update=()=>{
+    const first=items[Number(a.value)],second=items[Number(b.value)],target=section.querySelector('[data-gt-overlay]');
+    const same=first?.content_sha256&&first.content_sha256===second?.content_sha256&&first.width>0&&first.height>0&&first.width===second.width&&first.height===second.height;
+    const valid=box=>['x1','y1','x2','y2'].every(key=>Number.isFinite(Number(box[key])))&&box.x2>box.x1&&box.y2>box.y1;
+    if(!same||![...(first.boxes||[]),...(second.boxes||[])].every(valid)){target.textContent='原图身份、尺寸或坐标未核验，暂不叠加';return}
+    target.innerHTML=window.materialIntegrityImage47({...first,boxes:[
+      ...(first.boxes||[]).map(box=>({...box,label:`A · ${box.label||box.code||''}`,review_source:1})),
+      ...(second.boxes||[]).map(box=>({...box,label:`B · ${box.label||box.code||''}`,review_source:2})),
+    ]});
+  };
+  a.onchange=update;b.onchange=update;update();
+}
+
 export function trainingCompatibilitySignature(draft = {}) {
   return JSON.stringify({
     algorithmId: String(draft?.algorithmId || ''),
@@ -497,6 +532,18 @@ return `<article class="training-compatibility-item"><img src="${htmlEscape(item
 
   function bindDiagnosticActions() {
     const root=document.querySelector('[data-training-compatibility-dialog]');if(!root)return;
+    if(comparison)bindGtConflictEvidence(root,comparison.items);
+    if(!root.querySelector('[data-project-gt-review]')){
+      const reviewButton=document.createElement('button');reviewButton.className='btn';reviewButton.dataset.projectGtReview='';reviewButton.textContent='项目GT冲突 · 批量辅助审核';
+      reviewButton.onclick=async()=>{
+        const pid=String(projectId()||'');await window.openMaterialIntegrityAudit47();
+        if(String(projectId()||'')!==pid||destroyed)return;
+        await window.openGtConflictReview47();
+        const workbench=document.querySelector('.gt-review-workbench');
+        if(workbench){const back=document.createElement('button');back.className='btn';back.textContent='返回训练输入检查';back.onclick=()=>returnFromReview();workbench.querySelector('footer')?.append(back)}
+      };
+      root.prepend(reviewButton);
+    }
     if(historicalDiagnosis&&!comparison&&!root.querySelector('.training-governance-tools')) {
       root.querySelector('.training-compatibility-list')?.insertAdjacentHTML('afterbegin',`<div class="row"><input id="trainingCompatibilityQuery" class="input" aria-label="搜索当前冲突" placeholder="搜索文件名 / SHA256 / Image ID" value="${htmlEscape(compatibilityQuery)}"><select id="trainingCompatibilityType" class="select" aria-label="冲突类型"><option value="">全部冲突</option><option value="duplicate_annotation_conflict">同图不同标注</option><option value="content_hash_leakage">Train / Test 内容冲突</option></select><button class="btn" data-history-filter>筛选</button></div>`+governanceTools(historicalDiagnosis.current_diagnosis||{},`task:${historicalDiagnosis.task_id}`));
       const select=root.querySelector('#trainingCompatibilityType');if(select)select.value=compatibilityIssueType;
@@ -572,19 +619,19 @@ return `<article class="training-compatibility-item"><img src="${htmlEscape(item
         result=await refreshCompatibility({force:true,query:String(hash),issueType,page,pageSize:2});
       }
       if(!result||String(projectId()||'')!==pid||sequence!==diagnosticSequence)return false;
-      const rows=await Promise.all(result.items.map(async item=>{
-        const detail=await readJson(await fetchImpl(`/api/projects/${encodeURIComponent(pid)}/annotations/${encodeURIComponent(item.image_id)}`), '正式标注读取失败');
-        if(String(detail.image?.id)!==String(item.image_id)||String(detail.image?.content_sha256||'').toLowerCase()!==String(item.content_sha256||'').toLowerCase())throw new Error('素材身份已变化，请重新预检');
-        const annotation=detail.annotation||detail;
-        if(item.annotation_version!=null&&Number(annotation.version)!==Number(item.annotation_version))throw new Error('正式标注版本已变化，请重新预检');
-        return {...item,width:detail.image.width,height:detail.image.height,boxes:annotation.boxes||[],annotation_scope:annotation.annotation_scope||[]};
-      }));
+      const evidence=result.items.length?await readJson(await fetchImpl(`/api/v62/projects/${encodeURIComponent(pid)}/material-integrity/gt-comparison`,{
+        method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({image_ids:result.items.map(item=>item.image_id),
+          expected_material_revision:result.material_revision,expected_annotation_revision:result.annotation_revision}),
+      }), '正式GT差异读取失败'):{items:[],diagnosis:{}};
+      const rows=result.items.map(item=>({...item,...evidence.items.find(row=>row.image_id===item.image_id)}));
       if(String(projectId()||'')!==pid||destroyed||sequence!==diagnosticSequence||anchor&&(!anchor.isConnected||anchor.closest('.hidden')))return false;
       comparison={hash:String(hash),page,items:rows,origin};historicalDiagnosis=sourceTask?history:null;
       const decisionRevision=JSON.stringify([pid,result.material_revision,result.annotation_revision]);
       if(governanceDecisionRevision!==decisionRevision){governanceDecisions={};governanceDecisionRevision=decisionRevision;}
       const cards=rows.map(item=>`<article>${window.materialIntegrityImage47?.(item)||`<img src="${htmlEscape(item.content_url)}" alt="${htmlEscape(item.filename)}">`}<div class="material-integrity47-meta"><b>${htmlEscape(item.filename)}</b><code>${htmlEscape(item.image_id)}</code><p>原始正式 GT · ${htmlEscape(item.role)} · ${htmlEscape(item.annotation_state)} · ${Number(item.box_count)} 框</p><p>类别 ${htmlEscape((item.labels||[]).join('、'))} · 范围 ${htmlEscape((item.annotation_scope||[]).join('、'))}</p><small>差异 ${htmlEscape((item.conflict_types||[]).join('、'))}</small><code>${htmlEscape(item.annotation_digest)}</code><p>${htmlEscape((item.reference_reasons||[]).map(reason=>window.materialIntegrityProtectionText47?.(reason)||reason.reason).join('；')||'本页未返回历史保护原因；不是删除许可')}</p><div class="row"><button class="btn primary" data-conflict-review="${htmlEscape(item.image_id)}">人工核对这份标注</button><button class="btn" data-conflict-exclude="${htmlEscape(item.image_id)}">仅排除本次训练</button></div></div></article>`).join('');
       showDiagnosticDialog('重复素材标注差异',`<div data-training-compatibility-dialog class="training-duplicate-comparison"><div class="alert warn"><b>同一图片内容，不同正式 Ground Truth</b><p>系统不判断哪份正确，也不会覆盖历史模型、Snapshot 或 Test。修改通过原标注工作台保存；排除只影响本次新训练，保留可审计记录。</p><code>SHA256 ${htmlEscape(hash)}</code></div>${rows.length?`<div class="material-integrity47-grid">${cards}</div>`:'<div class="alert ok">本组当前冲突已解除，请重新检查完整训练选择。</div>'}<div class="row between"><button class="btn" data-comparison-back>返回完整预检</button><div class="row"><button class="btn" data-comparison-page="${page-1}" ${page>1?'':'disabled'}>上一页对比</button><span>第 ${page} / ${result.total_pages||1} 页 · 每页最多 2 张</span><button class="btn" data-comparison-page="${page+1}" ${result.has_next?'':'disabled'}>下一页对比</button></div><button class="btn" data-training-recheck>重新预检</button></div></div>`);
+      const comparisonRoot=document.querySelector('.training-duplicate-comparison');
+      if(comparisonRoot)comparisonRoot.insertAdjacentHTML('afterbegin',renderGtConflictEvidence(evidence.diagnosis,rows));
       bindDiagnosticActions();return true;
     }catch(error){notify(String(error.message||error));return false}
   }
@@ -700,7 +747,7 @@ return `<article class="training-compatibility-item"><img src="${htmlEscape(item
   observer?.observe(document.body, {childList: true, subtree: true});
 
   const runtime = {
-    build: 'training-material-summary-runtime-422605',
+    build: 'training-material-summary-runtime-422606',
     refresh,
     refreshCompatibility,
     invalidateCompatibility,
@@ -710,6 +757,9 @@ return `<article class="training-compatibility-item"><img src="${htmlEscape(item
     applyIssueFilters,
     openReview,
     openDuplicateComparison,
+    renderGtConflictEvidence,
+    bindGtConflictEvidence,
+    gtConflictNames: GT_CONFLICT_NAMES,
     openTaskDiagnosis,
     returnFromReview,
     excludeFromDraft,

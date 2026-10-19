@@ -1,5 +1,13 @@
 # 训练重复冲突、标注工作台与素材治理闭环验收
 
+## 2026-10-19 追加｜批量 GT 冲突分类、可视化与人工来源审核
+
+本轮基线9e0d330；真实生产汇总由用户提供，不冒充已读取960组正式GT。根因分类、来源校验、人工确认、原冻结计划/Worker及生产边界详见唯一追踪文档本轮节。Python341、Node995通过，包含26真实组服务端全范围冻结及索引/标注删除安全验证。两个既有浏览器入口复用同一个GT差异组件，真实图片/框、来源、IoU和保护信息可见；四视口1920/1440/1366/375留图。最终 Chrome 和最终 SHA 全量 CI 记录于 `C:/Users/jorsam/.codex/visualizations/2026/10/19/gt-conflict-assisted-review/CI_FINAL_ACCEPTANCE.md`。
+
+只读诊断合同：`GET /api/v62/projects/{project}/material-integrity/audits/{audit}/conflict-review`，支持 cursor/limit/observation/import_batch；observation 也接受 COORDINATE_ONLY、LABEL_SCOPE_COUNT_COMPOUND、SCOPE_AND_GEOMETRY 等 cohort。响应全量 cohort_counts、cohort_proven_mapping_counts、source_assisted_review_groups、individual_only_review_groups、filtered_coordinate_statistics；后者明确候选匹配口径和无法核验项。旧审计提示重新审计。单组 `POST .../material-integrity/gt-comparison` 使用实际正式GT并校验同SHA/项目及revision。
+
+整批来源审核不是标注覆盖：用户核对并显式确认来源→服务端原 dedup-plans review_basis 冻结筛选→原安全预览与二次凭证→原 DELETE_INDEX/Worker→失效旧审计→重新审计及原训练预检。没有可核验来源的组保持逐组人工，不自动求并集/选GT。412历史/Test保护继续优先；Snapshot/Test/模型和历史GT不可变。未在生产执行任何操作，未修改正式VERSION。
+
 ## 2026-10-19 追加｜远程清理 NO_OBJECTS 同步锁误保护
 
 用户提供的真实只读证据已将五个 attempt0/无冻结、进程、结果的失败任务定位到唯一额外文件 `remote-material/staging-cleanup.json.lock`。`cleanup_task()` 在确定无对象之前获取 FileLock；Linux 可残留此锁。原历史引用扫描把它当作未知产物，错误投影 `TRAINING_FAILED_DURABLE_DEPENDENCY`。任务 ID 和重叠引用数量记录在唯一追踪文档顶部，不将各任务计数相加。
