@@ -1230,7 +1230,7 @@ def test_discard_gt_conflicts_requires_explicit_confirmation_and_deletes_only_in
     assert finished['status'] == 'SUCCEEDED', finished
     assert finished['succeeded'] == len(all_ids)
     assert all(materials.get(image_id) is None for image_id in all_ids)
-    assert all(not annotations.get(image_id) for image_id in all_ids)
+    assert all(annotations.get(image_id)['version'] == 0 and not annotations.get(image_id)['boxes'] for image_id in all_ids)
     assert client.get(base + '/groups').json()['stale'] is True
 
 
