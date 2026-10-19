@@ -5488,7 +5488,16 @@ const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
       const query=new URLSearchParams({limit:'25',cursor,observation:review.observation,import_batch:review.batch});
       const data=await api(`/api/v62/projects/${project}/material-integrity/audits/${encodeURIComponent(audit.task.task_id)}/conflict-review?${query}`);
       if(audit!==state.materialIntegrityAudit47||project!==pid()||review.sequence!==sequence||!content?.isConnected||anchor.firstElementChild!==content||!anchor.closest('.modal:not(.hidden)'))return;
-      if(!data.available){toast(data.message);return}
+      if(!data.available){
+        const view=activeMaterialIntegrityRoot47('.gt-review-workbench')||activeMaterialIntegrityRoot47('.gt-review-loading');
+        if(view){
+          view.setAttribute('aria-busy','false');
+          const notice=view.querySelector('[data-gt-review-progress]')||view.querySelector('[role="status"]');
+          if(notice){notice.hidden=false;notice.textContent=data.message||'这次审计缺少可核验的GT分类，请先重新审计。';}
+          view.querySelectorAll('button').forEach(button=>button.disabled=false);
+        }
+        toast(data.message||'当前审计暂不可用于 GT 分类审核');return;
+      }
       const revision=JSON.stringify([project,data.material_revision,data.annotation_revision,data.label_schema_digest]);
       if(review.revision&&review.revision!==revision){review.decisions={};review.discardGroups=new Set();}review.revision=revision;review.data=data;
       const names=window.TrainingMaterialSummaryRuntime.gtConflictNames||{},metric=value=>value==null?'未核验':Number(value).toFixed(3);
@@ -5636,6 +5645,8 @@ materialIntegrityDialog47('GT冲突 · 分类与批量审核',`<div class="mater
   window.openMaterialIntegrityAudit47=async function(){
     state.materialIntegrityTrainingContext47=null;
     const projectAtStart=pid();
+    materialIntegrityDialog47('重复与异常素材',
+      '<div class="material-integrity47-running" data-integrity-audit-loading><div class="alert soft" role="status" aria-live="polite">正在加载当前项目审计与后台任务状态…</div><button class="btn" onclick="closeModal()">关闭</button></div>');
     try{
       const body=await api(`/api/v62/projects/${pid()}/material-batches?limit=50`),task=(body.items||[]).find(item=>String(item.operation||'')==='AUDIT_MATERIAL_INTEGRITY');
       if(!task){return materialIntegrityDialog47('重复与异常素材','<div class="material-integrity47-empty"><b>尚未运行素材完整性审计</b><span>后台核验重复图片、标注冲突、源文件缺失、内容变化和无效图片。审计不会自动删除或决定哪份标注正确。</span><div class="row end"><button class="btn" onclick="closeModal()">取消</button><button id="materialIntegrityStart47" class="btn primary" onclick="startMaterialIntegrityAudit47()">运行 Full Audit</button></div></div>',true)}
@@ -5653,7 +5664,16 @@ materialIntegrityDialog47('重复与异常素材',`<div class="material-integrit
       document.getElementById('materialIntegrityGroupSelected47').textContent=state.materialIntegrityAudit47.allSelected?`已选全部筛选结果 · ${state.materialIntegrityAudit47.totalImages} 张`:`已选 ${state.materialIntegrityAudit47.selectedGroups.size} 组`;
       if(state.materialIntegrityTask47)window.updateMaterialIntegrityTask47(state.materialIntegrityTask47);
       void loadMaterialIntegrityClassification47(state.materialIntegrityAudit47);
-    }catch(error){toast(error.message||error)}
+    }catch(error){
+      const status=activeMaterialIntegrityRoot47('[data-integrity-audit-loading] [role="status"]');
+      if(status)status.textContent='审计状态读取失败：'+(error.message||String(error))+'。请检查网络或重新尝试。';
+      const view=activeMaterialIntegrityRoot47('[data-integrity-audit-loading]');
+      if(view&&!view.querySelector('[data-integrity-audit-retry]')){
+        const retry=document.createElement('button');retry.className='btn primary';retry.dataset.integrityAuditRetry='';
+        retry.textContent='重新加载';retry.onclick=()=>window.openMaterialIntegrityAudit47();view.append(retry);
+      }
+      toast(error.message||error);
+    }
   };
   async function loadMaterialIntegrityClassification47(audit){
     const root=document.querySelector('.material-integrity47');if(!root)return;
