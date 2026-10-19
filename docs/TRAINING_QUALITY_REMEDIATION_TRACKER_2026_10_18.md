@@ -10,7 +10,7 @@
 - [x] GREEN：`training_evaluation.py::build_evaluation_truth` 在同一标准化入口共用有界数值校验，不新增评测器。no_test_ground_truth 保持null与FP证据，不读写旧Snapshot/历史结果。
 - [x] API：在 `test_training_metric_credibility_report.py` 将真实标准化结果交给现有报告API，断言null/0与Val/Test源保持一致。
 - [x] Chrome RED→GREEN：`training-evaluation-diagnostics.spec.mjs` 覆盖无GT/旧缺失/真实零的F1；仅调整原页面已有F1投影，必要时同步既有资源缓存合同。
-- [ ] 定向Python、API、完整Node、真实Chrome与现有bundle/Worker集成；检查Diff、更新本文、fetch确认无并行提交后普通提交推送，并按新SHA验收全部实际Actions/Jobs。生产97%模型、OSS/A800/摄像头证据仍待现场只读验收。
+- [x] 类别指标批次已完成定向Python/API/bundle/Worker、完整Node、真实Chrome、范围审查、普通推送及准确SHA CI；后续metadata提交独立按最终HEAD验收，不借用首批绿色。生产97%模型、OSS/A800/摄像头证据仍待现场只读验收。
 
 ### 本批已证明的缺陷与本地验收
 
@@ -31,6 +31,13 @@
 - **新增/复用测试**：同一原测试文件增加6种真实篡改×本地/远端2入口；原17项portable测试通过。短路径运行portable、bundle cache/isolation、Worker、input-integrity chain、metric credibility/evaluation、报告API八文件：150 passed/3 skipped，日志 `C:/Users/jorsam/.codex/tmp/tq04-bundle-metadata-final-20261019.log`；全部新篡改场景实际执行。3跳过不计通过，待对应Ubuntu测试执行核验。
 - **如实保留本地差异**：扩大初跑为43 passed/2 failed/2 skipped（`tq04-bundle-metadata-green-20261019.log`），两失败分别为既有Windows手动8 Workers超过4上限，以及默认长临时目录WinError206。原资源代码/用例本轮未修改，不为全绿取消限制；改用新短目录后cache/chain通过，手动8 Workers差异沿用既有审计且不冒充本地全仓通过。该Linux专项以最终Ubuntu CI为准。
 - **独立复核**：确认v3问题关闭，旧格式兼容；无剩余可报告P0/P1/P2。本轮未访问生产，实际97%任务、A800、相机邻帧/未知来源仍待现场。
+
+### 本轮准确提交与验收证据索引（2026-10-19）
+
+- 类别标准化/报告/API/UI代码提交：`2f6a19bfce1605baca6fa4e92606bf9149178328`。本地Python111 passed、Node991 passed、真实Chrome14 passed；准确SHA的全部41次Actions **41 success/0 failure/0 running/0 queued/0 cancelled**，114/114 Jobs success。初次停留checkout的Remote Cleaning作业最终正常完成，未取消、跳过或改CI。原始完整列表：`C:/Users/jorsam/.codex/visualizations/2026/10/19/tq04-class-boundaries/CI_CODE_2f6a19bf.json`。
+- Snapshot/YAML共享校验代码提交：`02884bfe0fdc971a463dc4a416f73f8104a9d89a`。17项portable真实篡改/旧兼容通过；相关组合150 passed/3 skipped。三个Windows跳过实际是符号链接文件/目录创建权限，不是新增篡改用例跳过；最终Ubuntu必须核实这些原用例实际执行。
+- **最后交接提交与CI**：本索引所在提交包含上述两个代码提交；为避免文档自引用SHA伪造，推送后按真实最终SHA导出的 `CI_FINAL.json` 和 `CI_FINAL_ACCEPTANCE.md`（同一附件目录）记录准确HEAD、全部Actions/Jobs、触发路径、关键日志与未触发清单。本段不将metadata代码未经执行的CI提前写绿，也不沿用2f6a19bf结果。该目录仅保留本文的原始验收附件，不是平行问题清单。
+- 正式VERSION仍42.24.356；未修改生产GT/Test/Snapshot、服务或数据库。下一项仍按本文TQ-04持续核对成功Test完整性/推理协议与模型目录证据，以及TQ-02真实来源/邻帧/近重复；没有真实97%任务时只标记待现场只读验收，不声称泛化或事件准确率已验证。
 
 - 仓库：`jorsamj/aixunlianpingtai`；唯一长期开发分支：`feature/external-algorithm-publishing`。
 - 开发起点 HEAD：`e30a676276b741d14c30e1674edf5fc86a6e377b`；正式 `VERSION.txt`：`42.24.356`（不得擅改）。
