@@ -95,3 +95,17 @@ def test_legacy_report_api_retains_real_record_but_marks_credibility_unavailable
     assert report["metrics"]["metrics/mAP50(B)"] == .96
     assert report["metric_credibility"] is None
     assert report["evaluation"]["status"] == "not_requested"
+
+
+def test_version_and_algorithm_reports_prefer_finalized_val_over_stale_job_cache():
+    from platform_core.reports import build_algorithm_report
+    record = {
+        "id": "v1",
+        "version_name": "v1",
+        "metrics": {"metrics/mAP50(B)": 0.80},
+        "training_report": {"metrics": {"metrics/mAP50(B)": 0.96}},
+    }
+    assert build_version_report(record)["metrics"]["metrics/mAP50(B)"] == 0.96
+    assert build_algorithm_report([record])["trend"][0]["map50"] == 0.96
+    legacy = {"id": "v0", "metrics": {"metrics/mAP50(B)": 0.80}}
+    assert build_version_report(legacy)["metrics"]["metrics/mAP50(B)"] == 0.80

@@ -78,13 +78,17 @@ def diagnose_training_history(history: Sequence[Mapping[str, Any]]) -> dict:
 
 
 def _metrics(record: Mapping[str, Any]) -> dict:
+    # A finalized training report outranks the legacy top-level Job cache.
+    # Versions without a training report keep their persisted direct metrics.
+    finalized = record.get("training_report")
+    if isinstance(finalized, Mapping) and isinstance(finalized.get("metrics"), Mapping):
+        return dict(finalized["metrics"])
     direct = record.get("metrics")
     if isinstance(direct, Mapping):
         return dict(direct)
-    for container_key in ("training_report", "report"):
-        container = record.get(container_key)
-        if isinstance(container, Mapping) and isinstance(container.get("metrics"), Mapping):
-            return dict(container["metrics"])
+    report = record.get("report")
+    if isinstance(report, Mapping) and isinstance(report.get("metrics"), Mapping):
+        return dict(report["metrics"])
     return {}
 
 

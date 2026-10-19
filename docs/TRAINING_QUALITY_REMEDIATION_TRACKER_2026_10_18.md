@@ -222,3 +222,12 @@
 - **定向测试**：在现有 `tests/unit/test_training_metric_credibility.py` 增加 6 类非法成功指标、失败评测非法值不伪补零、真实零值保持三类回归。无新的评分模块、API、前端状态或适配层。
 - **代码与测试基准 SHA**：`f950bc8390944aa2f93163282478eb067f64bc84`；该基准 SHA 的 GitHub Actions **23/23 工作流成功、61/61 Job 成功**（实际触发，非全仓所有工作流）。本次修复提交的 SHA、CI 结果须随后按远端实际提交追加，不能沿用基准的全绿结论。
 - **待核验**：新修复 SHA 的 Python/Node/浏览器相关 CI，以及 A800 实际任务证据；真实 97% 训练任务仍缺独立 Test 现场输入与误报漏报证据。未部署生产、未修改 `VERSION.txt`、未动历史数据。
+
+
+## TQ-04 报告数据合同补强｜正式 Val 指标优先（2026-10-19）
+
+- **根因**：公共 `platform_core/reports.py::_metrics` 先读记录顶层 `metrics`，后读 `training_report.metrics`。历史 Job 的顶层指标可能是旧缓存（如 .80），正式已完成训练报告为 .96，这使版本报告及算法趋势可能与任务报告 API 的正式 Val 指标不一致。
+- **修复**：仅调整现有 `_metrics` 的取值优先级为正式 `training_report.metrics` → 直接记录 `metrics` → 后备 `report.metrics`。版本只有直接指标时保持原结果；不重新计算任何历史 mAP，不新增 API 或前端状态。
+- **新增 API/报告回归**：`tests/api/test_training_metric_credibility_report.py` 同时覆盖单版本指标、算法历史趋势和只有旧版顶层指标的兼容场景。
+- **前置修复 SHA**：`b0e95b42e56de98d68e3f4d0a580395ba31bdeda`。本项代码提交及其 CI 以 GitHub 当前 HEAD 为准，旧 SHA 的绿色结论不能用于新提交。
+- **剩余边界**：生产 97% 训练任务、冻结 Test 的真实样本与板端推理未现场验收；不修改 VERSION、历史结果或生产数据。
