@@ -227,7 +227,7 @@ class ChangLianWeightMutationPayload(BaseModel):
     imageWidth: int | None = Field(default=None, ge=1)
     imageHeight: int | None = Field(default=None, ge=1)
     yoloVersion: str | None = Field(default=None, pattern=r"^YOLOv\d+[nsmlx]$")
-    fileSize: int | None = Field(default=None, ge=1)
+    fileSize: int | None = Field(default=None, ge=1, le=9223372036854775807)
     fileSha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     tags: list[str] | None = None
 

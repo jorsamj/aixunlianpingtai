@@ -168,6 +168,8 @@ class MutationSession:
             return FakeResponse({"code": 200, "data": 501})
         if url.endswith("/internal/algorithm/algorithm-weight/add"):
             return FakeResponse({"code": 200, "data": 701})
+        if url.endswith("/internal/algorithm/algorithm-weight/edit"):
+            return FakeResponse({"code": 200, "data": True})
         raise AssertionError(url)
 
 
@@ -1999,3 +2001,34 @@ def test_weight_dto_rejects_bad_yolo_model_name_and_zero_file_size():
     assert ChangLianWeightMutationPayload(
         algoVersionId=501, yoloVersion="YOLOv11n", fileSize=123
     ).yoloVersion == "YOLOv11n"
+
+
+def test_changlian_weight_add_and_edit_wire_payloads_preserve_metadata_semantics():
+    session = MutationSession()
+    client = _authenticated_mutation_client(session)
+    added = {
+        "algoVersionId": 501, "computePlatformId": 91,
+        "fileName": "model.rknn", "filePath": "https://models.example/model.rknn",
+        "chipCode": "RK3568", "imageWidth": 640, "imageHeight": 800,
+        "yoloVersion": "YOLOv11n", "fileSize": 14567890,
+        "fileSha256": "b" * 64, "tags": ["smoke", "fire"],
+    }
+    assert client.weight_create(added)["data"] == 701
+    _, path, kwargs = session.calls[-1]
+    assert path.endswith("/internal/algorithm/algorithm-weight/add")
+    assert kwargs["json"] == added
+    assert "weightId" not in kwargs["json"]
+
+    assert client.weight_edit({"weightId": 701, "algoVersionId": 501, "tags": []})["code"] == 200
+    _, path, kwargs = session.calls[-1]
+    assert path.endswith("/internal/algorithm/algorithm-weight/edit")
+    assert kwargs["json"] == {"weightId": 701, "algoVersionId": 501, "tags": []}
+    client.weight_edit({"weightId": 701, "tags": None})
+    assert session.calls[-1][2]["json"] == {"weightId": 701}
+
+
+def test_weight_dto_rejects_out_of_int64_file_size():
+    from pydantic import ValidationError
+    from platform_core.external_algorithm_platform import ChangLianWeightMutationPayload
+    with pytest.raises(ValidationError):
+        ChangLianWeightMutationPayload(algoVersionId=501, fileSize=9223372036854775808)
