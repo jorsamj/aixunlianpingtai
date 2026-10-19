@@ -415,3 +415,45 @@ test('global duplicate governance previews, confirms, reports progress, and inva
   await expect.poll(() => polls, {timeout: 5_000}).toBeGreaterThan(1);
   await expect(page.locator('#toast')).toContainText('旧审计已失效');
 });
+
+test('latest Full Audit remains discoverable after 60 later batch tasks', async ({page,request}) => {
+  const project=await createProject(request);
+  const base='/api/v62/projects/'+project.id+'/material-integrity/audits';
+  const buffer=execFileSync('python',['-c',"from PIL import Image; import io,sys; b=io.BytesIO(); Image.new('RGB',(48,48),'#b8cfdf').save(b,format='PNG'); sys.stdout.buffer.write(b.getvalue())"]);
+  const upload=await request.post('/api/projects/'+project.id+'/images',{multipart:{files:{name:'latest-audit.png',mimeType:'image/png',buffer},dataset_id:'default'}});
+  expect(upload.ok()).toBeTruthy();
+  const auditResponse=await request.post(base);
+  expect(auditResponse.status()).toBe(202);
+  const auditId=(await auditResponse.json()).task_id;
+  runIsolatedWorker(project.id,auditId);
+  const script=[
+    'import os,uuid,app',
+    'from dataclasses import replace',
+    'from platform_core.task_runtime import TaskKind,TaskRecord,TaskStatus',
+    'p=os.environ["INTEGRITY_TEST_PROJECT"]',
+    'repository=app.shared_task_repository(); artifacts=app.shared_task_artifacts()',
+    'for index in range(60):',
+    ' task_id=uuid.uuid4().hex',
+    ' artifacts.atomic_write_json(task_id,"request.json",{"operation":"CLEAN"})',
+    ' original=TaskRecord.new(task_id,p,TaskKind.MATERIAL_BATCH,"request.json","materials:"+p)',
+    ' repository.create(replace(original,status=TaskStatus.SUCCEEDED),artifacts=artifacts)',
+  ].join('\n');
+  isolatedPython(project.id,script);
+  const lastPage=await (await request.get('/api/v62/projects/'+project.id+'/material-batches?limit=50')).json();
+  expect(lastPage.items).toHaveLength(50);
+  expect(lastPage.items.some(task=>task.task_id===auditId)).toBe(false);
+  const latest=await request.get(base+'/latest');
+  expect(latest.ok()).toBeTruthy();
+  expect((await latest.json()).task.task_id).toBe(auditId);
+  await page.route('**/api/v53/bootstrap/snapshot**',async route=>{
+    const url=new URL(route.request().url());url.searchParams.set('preferred_project_id',project.id);
+    await route.fallback({url:url.toString()});
+  });
+  await page.addInitScript(()=>localStorage.setItem('mc_train_ui_state_v34',JSON.stringify({page:'数据集'})));
+  await page.goto('/');
+  await page.getByRole('button',{name:/数据集/}).click();
+  await page.getByRole('button',{name:'重复与异常素材',exact:true}).click();
+  await expect(page.getByRole('dialog',{name:'重复与异常素材',exact:true})).toBeVisible();
+  await expect(page.getByText('尚未运行素材完整性审计')).toHaveCount(0);
+  await expect(page.getByText('已核验素材')).toBeVisible();
+});
