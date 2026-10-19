@@ -5902,6 +5902,8 @@ materialIntegrityDialog47(Number(plan.included_groups||0)?'重复素材治理预
   }
   window.openMaterialIntegrityGroup47=async function(taskToken,groupToken){
     const taskId=decodeURIComponent(taskToken),groupKey=decodeURIComponent(groupToken),previous=state.materialIntegrityGroup47,projectAtStart=pid();
+    materialIntegrityDialog47('查看原图与 GT 差异',
+      '<div class="material-integrity47-group" data-integrity-group-loading><div class="alert soft" role="status" aria-live="polite">正在读取原始图片、正式标注框和历史保护信息…</div><div class="row"><button class="btn" onclick="openGtConflictReview47()">返回批量审核</button></div></div>');
     try{
       const body=await api(`/api/v62/projects/${pid()}/material-integrity/audits/${encodeURIComponent(taskId)}/groups/${encodeURIComponent(groupKey)}/items?limit=100`);
       if(pid()!==projectAtStart)return;
@@ -5918,7 +5920,18 @@ materialIntegrityDialog47(Number(plan.included_groups||0)?'重复素材治理预
         const back=document.createElement('button');back.className='btn';back.textContent='返回批量审核 · 保留选择';back.onclick=()=>window.openGtConflictReview47();root.prepend(back);
       }
       updateMaterialIntegritySelection47();
-    }catch(error){toast(error.message||error)}
+    }catch(error){
+      const message=error.message||String(error);
+      const loader=activeMaterialIntegrityRoot47('[data-integrity-group-loading] [role="status"]');
+      if(loader)loader.textContent='GT 图片及标注读取失败：'+message+'。可重试或返回审核列表。';
+      const root=activeMaterialIntegrityRoot47('[data-integrity-group-loading]');
+      if(root&&!root.querySelector('[data-integrity-group-retry]')){
+        const retry=document.createElement('button');retry.className='btn primary';retry.dataset.integrityGroupRetry='';
+        retry.textContent='重新加载组详情';retry.onclick=()=>window.openMaterialIntegrityGroup47(taskToken,groupToken);
+        root.querySelector('.row')?.prepend(retry);
+      }
+      toast(message);
+    }
   };
   function updateMaterialIntegritySelection47(){
     const group=state.materialIntegrityGroup47,label=document.getElementById('materialIntegritySelected47');
