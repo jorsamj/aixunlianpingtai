@@ -290,3 +290,20 @@ test('audit overview binds the related delete Task ID before restoring its progr
   const update=app.slice(app.indexOf('window.updateMaterialIntegrityTask47='),app.indexOf('window.selectMaterialIntegrityGroups47='));
   assert.match(update,/root\.dataset\.integrityDeleteTaskId!==String\(task\.task_id/);
 });
+
+test('audit stale flag follows project and Task ID rather than leaking across workspaces', () => {
+  const owner=app.slice(app.indexOf('window.openMaterialIntegrityAudit47='),app.indexOf('async function loadMaterialIntegrityClassification47'));
+  assert.match(owner,/same=previous\?\.projectId===projectAtStart&&previous\?\.task\?\.task_id===task.task_id/);
+  assert.match(owner,/groups.stale\|\|\(same&&state.materialIntegrityAuditStale47\)/);
+  assert.match(owner,/governanceTask&&Number\(governanceTask.succeeded\|\|0\)>0/);
+  assert.doesNotMatch(owner,/groups.stale\|\|state.materialIntegrityAuditStale47/);
+});
+
+test('GT conflict detail and every image page render and bind evidence from the same page', () => {
+  const helper=app.slice(app.indexOf('function updateMaterialIntegrityGtEvidence47('),app.indexOf('window.openMaterialIntegrityGroup47='));
+  assert.match(helper,/runtime.renderGtConflictEvidence\(diagnosis,items\)/);
+  assert.match(helper,/existing.outerHTML=html/);
+  assert.match(helper,/runtime.bindGtConflictEvidence\(root,items\)/);
+  const paging=app.slice(app.indexOf('window.loadMoreMaterialIntegrityItems47='),app.indexOf('window.toggleMaterialIntegrity47='));
+  assert.match(paging,/updateMaterialIntegrityGtEvidence47\(grid.closest\('\.material-integrity47-group'\),body.gt_diagnosis\|\|\{\},group.items\)/);
+});

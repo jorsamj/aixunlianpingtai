@@ -457,3 +457,48 @@ test('latest Full Audit remains discoverable after 60 later batch tasks', async 
   await expect(page.getByText('尚未运行素材完整性审计')).toHaveCount(0);
   await expect(page.getByText('已核验素材')).toBeVisible();
 });
+
+test('cross-project audit staleness and GT paged evidence remain scoped to the visible project',async({page,request})=>{
+  const project=await createProject(request);
+  const auditId='isolated-cross-project-audit';
+  const groupKey='DUPLICATE_ANNOTATION_CONFLICT:'+('c'.repeat(64));
+  await page.route('**/api/v53/bootstrap/snapshot**',async route=>{
+    const url=new URL(route.request().url());url.searchParams.set('preferred_project_id',project.id);
+    await route.fallback({url:url.toString()});
+  });
+  await page.route('**/api/v62/projects/'+project.id+'/material-integrity/audits/latest',route=>route.fulfill({json:{
+    task:{task_id:auditId,project_id:project.id,operation:'AUDIT_MATERIAL_INTEGRITY',status:'SUCCEEDED',
+      result:{scanned_images:4,affected_images:4,issue_groups:1}},
+    governance_task:null,deletion_task:null,
+  }}));
+  await page.route('**/material-integrity/audits/'+auditId+'/groups?**',route=>route.fulfill({json:{
+    items:[{group_key:groupKey,issue_type:'DUPLICATE_ANNOTATION_CONFLICT',content_sha256:'c'.repeat(64),image_count:4}],
+    total_images:4,total_groups:1,next_cursor:null,stale:false,
+  }}));
+  await page.route('**/material-integrity/audits/'+auditId+'/groups/**/items?**',route=>{
+    const second=Boolean(new URL(route.request().url()).searchParams.get('cursor'));
+    const prefix=second?'second':'first';
+    const items=[1,2].map(i=>({image_id:prefix+'-'+i,filename:prefix+'-'+i+'.png',
+      width:0,height:0,content_sha256:'c'.repeat(64),boxes:[],annotation_state:'annotated',
+      content_url:'/static/company-logo.png'}));
+    return route.fulfill({json:{items,total_images:4,next_cursor:second?null:'after-first',
+      gt_diagnosis:{observations:[second?'PAGE_TWO_GT':'PAGE_ONE_GT'],iou_summary:{matched_count:1}}}});
+  });
+  await page.addInitScript(()=>localStorage.setItem('mc_train_ui_state_v34',JSON.stringify({page:'数据集'})));
+  await page.goto('/');await page.getByRole('button',{name:/数据集/}).click();
+  // Regression: old project had an invalidated audit, new project's own audit is fresh.
+  await page.evaluate(()=>{state.materialIntegrityAuditStale47=true;
+    state.materialIntegrityAudit47={projectId:'prior-project',task:{task_id:'prior-audit'}};});
+  await page.getByRole('button',{name:'重复与异常素材',exact:true}).click();
+  await expect(page.locator('#materialIntegrityGroupList47 > article')).toHaveCount(1);
+  await expect(page.getByText('审计快照已过期',{exact:true})).toHaveCount(0);
+  await expect(page.getByRole('button',{name:'批量去重 · 保留安全身份'})).toBeEnabled();
+  await page.locator('#materialIntegrityGroupList47 > article button').click();
+  const evidence=page.locator('[data-gt-evidence]');
+  await expect(evidence).toContainText('PAGE_ONE_GT');
+  await page.getByRole('button',{name:'下一页图片'}).click();
+  await expect(evidence).toContainText('PAGE_TWO_GT');
+  await expect(evidence).not.toContainText('PAGE_ONE_GT');
+  await expect(page.locator('#materialIntegrityItems47 > article')).toHaveCount(2);
+  await expect(page.locator('#materialIntegrityItems47')).toContainText('second-1.png');
+});
