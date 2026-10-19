@@ -55,7 +55,7 @@ test('material batch polling is centrally owned and resumes only on relevant pag
   assert.match(source, /pollRegistry \|\| window\.PollRegistryRuntime/);
   assert.match(source, /registry\.startTimeout\(pollKey\(id\), POLL_OWNERS, tick, 1500\)/);
   assert.match(source, /const POLL_OWNERS = \['数据集', '自动标注及清洗', '训练任务', '算法列表'\]/);
-  assert.match(source, /build: 'material-batch-runtime-422407'/);
+  assert.match(source, /build: 'material-batch-runtime-422408'/);
   assert.doesNotMatch(source, /setTimeout\(/);
   assert.doesNotMatch(source, /clearTimeout\(/);
   assert.doesNotMatch(source, /const timers = new Map/);

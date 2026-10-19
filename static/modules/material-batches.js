@@ -47,6 +47,7 @@ export function installMaterialBatchRuntime({projectId, currentPageIds, selected
     return false;
   }
   const POLL_OWNERS = ['数据集', '自动标注及清洗', '训练任务', '算法列表'];
+  const auditAnnouncementStatus = new Map();
 
   const pid = () => String(projectId?.() || '');
   const base = () => `/api/v62/projects/${encodeURIComponent(pid())}/material-batches`;
@@ -66,6 +67,14 @@ export function installMaterialBatchRuntime({projectId, currentPageIds, selected
   function announce(task) {
     window.updateTrainingIntegrityAudit47?.(task);
     window.updateMaterialIntegrityTask47?.(task);
+    window.updateMaterialIntegrityAudit47?.(task);
+    if (task.operation === 'AUDIT_MATERIAL_INTEGRITY') {
+      const status = canonicalTaskStatus(task);
+      if (auditAnnouncementStatus.get(task.task_id) === status) return;
+      auditAnnouncementStatus.set(task.task_id, status);
+      tell(`素材完整性审计：${materialBatchTaskText(task)} · Task ${task.task_id}`);
+      return;
+    }
     const total = Number(task.total || 0);
     const processed = Number(task.processed || 0);
     const failed = Number(task.failed || 0);
@@ -191,7 +200,7 @@ export function installMaterialBatchRuntime({projectId, currentPageIds, selected
   window.stopMaterialBatchPolling62 = taskId => stopPolling(taskId);
 
   const runtime = Object.freeze({
-    build: 'material-batch-runtime-422407',
+    build: 'material-batch-runtime-422408',
     poll,
     resume,
     stop: stopPolling,
