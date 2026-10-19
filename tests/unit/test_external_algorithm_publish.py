@@ -3401,6 +3401,10 @@ def test_existing_remote_weight_id_cannot_silently_move_to_new_chip_node(tmp_pat
     # The real repository owner retains the current external weight mapping.
     with sqlite3.connect(repo.db_path) as db:
         db.execute(
+            "INSERT INTO external_version_publications (publication_key, project_id, algorithm_id, version_id, external_product_id, version_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (publication["publication_key"], "p1", "a1", "v1", "product-1", "v1", "2026-10-19T00:00:00Z", "2026-10-19T00:00:00Z"),
+        )
+        db.execute(
             "INSERT INTO external_artifact_publications (mapping_id, provider, artifact_id, publication_key, compute_platform_id, remote_chip_code, sync_status, external_weight_id, created_at, updated_at)"
             " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             ("owned-chip", PROVIDER_CHANGLIAN, artifact["artifact_id"],
