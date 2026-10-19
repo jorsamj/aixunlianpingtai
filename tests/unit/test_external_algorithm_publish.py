@@ -3317,3 +3317,99 @@ def test_upload_refuses_modified_source_with_unchanged_file_size(tmp_path: Path)
     with pytest.raises(PlatformError) as captured:
         service._upload_artifact(artifact, algorithm, version)
     assert captured.value.code == "MODEL_ARTIFACT_SOURCE_IDENTITY_CHANGED"
+
+
+def _hierarchical_compute_cache(root: Path):
+    external = ExternalPlatformRepository(root)
+    cached = external.cache()
+    cached["compute_platforms"] = [
+        {"computePlatformId": "cp-rk", "computePlatformName": "瑞芯微", "parentId": 0, "delFlag": 0},
+        {"computePlatformId": "rk-edge", "computePlatformName": "边缘通用环境", "parentId": "cp-rk", "delFlag": 0},
+        {"computePlatformId": "rk-3568", "computePlatformName": "客户自定义 RK 边缘分类", "parentId": "cp-rk", "delFlag": 0},
+        {"computePlatformId": "rk-3576", "computePlatformName": "ARM 芯片档位", "parentId": "cp-rk", "delFlag": 0},
+        {"computePlatformId": "cp-onnx", "computePlatformName": "ONNX 通用", "parentId": 0, "delFlag": 0},
+    ]
+    external.save_cache(cached)
+
+
+def test_child_compute_platform_mapping_uses_actual_rknn_chip_not_remote_name(tmp_path: Path):
+    _seed_external_algorithm(tmp_path)
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _hierarchical_compute_cache(tmp_path)
+    service = _service(tmp_path, memory)
+    service.save_config(ExternalPublishConfigPayload(target_mappings={
+        "original": TargetMapping(compute_platform_id="cp-onnx"),
+        "rockchip": TargetMapping(
+            compute_platform_id="cp-rk",
+            chip_mappings={"rk-3568": "rk-edge", "RK3576": "rk-3576"},
+        ),
+    }))
+    by_chip = lambda chip: service._artifact_mapping_state({"target": "rockchip", "chip_code": chip})
+    first = by_chip("rk3568")
+    assert first["status"] == "mapped"
+    assert first["mapping"]["compute_platform_id"] == "rk-edge"
+    assert by_chip("RK3576")["mapping"]["compute_platform_id"] == "rk-3576"
+    assert by_chip("rk3578")["code"] == "EXTERNAL_COMPUTE_CHIP_MAPPING_REQUIRED"
+    assert by_chip("")["code"] == "MODEL_ARTIFACT_CHIP_REQUIRED"
+    assert service._artifact_mapping_state({"target": "original"})["mapping"]["compute_platform_id"] == "cp-onnx"
+
+
+def test_hierarchical_root_without_chip_binding_never_publishes_as_chip(tmp_path: Path):
+    _seed_external_algorithm(tmp_path)
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _hierarchical_compute_cache(tmp_path)
+    service = _service(tmp_path, memory)
+    blocked = service._artifact_mapping_state({"target": "rockchip", "chip_code": "rk3568"})
+    assert blocked["status"] == "blocked"
+    assert blocked["code"] == "EXTERNAL_COMPUTE_CHIP_MAPPING_REQUIRED"
+
+
+def test_mapping_config_rejects_wrong_parent_deleted_child_and_duplicate_chip_keys(tmp_path: Path):
+    _seed_external_algorithm(tmp_path)
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _hierarchical_compute_cache(tmp_path)
+    service = _service(tmp_path, memory)
+    for mappings in (
+        {"RK3568": "cp-onnx"},
+        {"RK3568": "rk-edge", "rk-3568": "rk-3568"},
+    ):
+        with pytest.raises(PlatformError):
+            service.save_config(ExternalPublishConfigPayload(target_mappings={
+                "rockchip": TargetMapping(compute_platform_id="cp-rk", chip_mappings=mappings),
+            }))
+    external = ExternalPlatformRepository(tmp_path)
+    cached = external.cache()
+    next(row for row in cached["compute_platforms"] if row["computePlatformId"] == "rk-edge")["delFlag"] = 1
+    external.save_cache(cached)
+    with pytest.raises(PlatformError) as captured:
+        service.save_config(ExternalPublishConfigPayload(target_mappings={
+            "rockchip": TargetMapping(compute_platform_id="cp-rk", chip_mappings={"RK3568": "rk-edge"}),
+        }))
+    assert captured.value.code == "EXTERNAL_COMPUTE_CHILD_MAPPING_INVALID"
+
+
+def test_existing_remote_weight_id_cannot_silently_move_to_new_chip_node(tmp_path: Path):
+    repo = ExternalPublicationRepository(tmp_path)
+    publication = {"publication_key": "pub-mapping", "project_id": "p1", "algorithm_id": "a1", "version_id": "v1"}
+    artifact = {
+        "artifact_id": "artifact-chip", "project_id": "p1", "algorithm_id": "a1",
+        "version_id": "v1", "target": "rockchip", "chip_code": "rk3568",
+    }
+    # The real repository owner retains the current external weight mapping.
+    with sqlite3.connect(repo.db_path) as db:
+        db.execute(
+            "INSERT INTO external_artifact_publications (mapping_id, provider, artifact_id, publication_key, compute_platform_id, remote_chip_code, sync_status, external_weight_id, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("owned-chip", PROVIDER_CHANGLIAN, artifact["artifact_id"],
+             publication["publication_key"], "rk-edge", "RK3568", "SYNCED", "weight-701",
+             "2026-10-19T00:00:00Z", "2026-10-19T00:00:00Z"),
+        )
+    with pytest.raises(PlatformError) as captured:
+        repo.ensure_artifact_publication(publication["publication_key"], artifact, {
+            "compute_platform_id": "rk-3576", "chip_mappings": {"RK3568": "rk-3576"},
+        })
+    assert captured.value.code == "EXTERNAL_WEIGHT_PLATFORM_REMAP_REVIEW_REQUIRED"
+    assert repo.artifact_publication("artifact-chip")["compute_platform_id"] == "rk-edge"

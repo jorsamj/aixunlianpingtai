@@ -4,6 +4,9 @@ import {readFileSync} from 'node:fs';
 
 import {
   normalizePublishConfig,
+  computePlatformTreeRows,
+  childPlatformChoices,
+  localChipKey,
   publicationActionLabel,
   publicationPreflight,
 } from '../../static/modules/external-algorithm-publish.js';
@@ -233,4 +236,34 @@ test('version rollback is destructive and external deletion is explained in the 
   assert.match(appSource, /delete_current_version:true/);
   assert.match(appSource, /先删除新畅联对应算法版本及其权重/);
   assert.doesNotMatch(appSource, /id="rollbackDeleteCurrent"/);
+});
+
+
+test('compute platform tree shows full names but never equates a label with a local chip identity', () => {
+  const remote = [
+    {computePlatformId: 100, computePlatformName: '瑞芯微', parentId: 0, delFlag: 0},
+    {computePlatformId: 101, computePlatformName: '边缘设备环境', parentId: 100, delFlag: 0},
+    {computePlatformId: 102, computePlatformName: 'RK 设备档位', parentId: 100, delFlag: 1},
+    {computePlatformId: 200, computePlatformName: 'ONNX', parentId: 0, delFlag: 0},
+  ];
+  const rows = computePlatformTreeRows(remote);
+  assert.equal(rows.find(row => row.id === '101').path, '瑞芯微 / 边缘设备环境');
+  assert.equal(rows.find(row => row.id === '101').active, true);
+  assert.equal(rows.find(row => row.id === '102').active, false);
+  assert.deepEqual(childPlatformChoices(remote, '100').map(row => row.id), ['101']);
+  assert.equal(localChipKey('rk-3568'), 'RK3568');
+  assert.equal(localChipKey('RK3576'), 'RK3576');
+});
+
+test('chip dictionary and individual child mappings survive frontend normalization', () => {
+  const model = normalizePublishConfig({
+    config: {target_mappings: {rockchip: {
+      compute_platform_id: 'parent-rk',
+      chip_mappings: {RK3568: 'child-edge', RK3576: 'child-model'},
+    }}},
+    chip_dictionary: {rockchip: ['RK3568', 'RK3576', 'RK3578']},
+  });
+  assert.deepEqual(model.targetMappings.rockchip.chip_mappings,
+    {RK3568: 'child-edge', RK3576: 'child-model'});
+  assert.deepEqual(model.chipDictionary.rockchip, ['RK3568', 'RK3576', 'RK3578']);
 });

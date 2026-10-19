@@ -2032,3 +2032,27 @@ def test_weight_dto_rejects_out_of_int64_file_size():
     from platform_core.external_algorithm_platform import ChangLianWeightMutationPayload
     with pytest.raises(ValidationError):
         ChangLianWeightMutationPayload(algoVersionId=501, fileSize=9223372036854775808)
+
+
+def test_compute_platform_catalog_rejects_cycles_orphans_and_duplicate_ids():
+    from platform_core.compute_platform_catalog import compute_platform_catalog
+    valid = [
+        {"computePlatformId": 100, "parentId": 0, "delFlag": 0},
+        {"computePlatformId": 101, "parentId": 100, "delFlag": 0},
+    ]
+    assert set(compute_platform_catalog(valid)) == {"100", "101"}
+    with pytest.raises(ValueError):
+        compute_platform_catalog([valid[0], valid[0]])
+    with pytest.raises(ValueError):
+        compute_platform_catalog([{"computePlatformId": 101, "parentId": 999}])
+    with pytest.raises(ValueError):
+        compute_platform_catalog([{"computePlatformId": 101, "parentId": 102}, {"computePlatformId": 102, "parentId": 101}])
+
+
+def test_compute_platform_list_all_explicitly_requests_children():
+    session = FakeSession()
+    client = _authenticated_mutation_client(session)
+    client.compute_platforms()
+    _, path, kwargs = session.calls[-1]
+    assert path.endswith("/internal/base/compute-platform/listAll")
+    assert kwargs["params"]["showChildren"] == "true"
