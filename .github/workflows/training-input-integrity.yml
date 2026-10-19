@@ -9,6 +9,12 @@ on:
       - app.py
       - platform_core/training_tasks.py
       - platform_core/training_splits.py
+      - platform_core/material_batches.py
+      - platform_core/training_compatibility.py
+      - platform_core/training_material_picker_api.py
+      - platform_core/training_recovery_api.py
+      - tests/unit/test_training_duplicate_conflicts.py
+      - tests/api/test_training_conflict_governance.py
       - platform_core/training_bundle_cache.py
       - platform_core/training_label_tasks.py
       - platform_core/snapshots.py
@@ -32,6 +38,12 @@ on:
       - app.py
       - platform_core/training_tasks.py
       - platform_core/training_splits.py
+      - platform_core/material_batches.py
+      - platform_core/training_compatibility.py
+      - platform_core/training_material_picker_api.py
+      - platform_core/training_recovery_api.py
+      - tests/unit/test_training_duplicate_conflicts.py
+      - tests/api/test_training_conflict_governance.py
       - platform_core/training_bundle_cache.py
       - platform_core/training_label_tasks.py
       - platform_core/snapshots.py

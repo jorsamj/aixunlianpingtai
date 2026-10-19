@@ -1,5 +1,34 @@
 # 训练重复冲突、标注工作台与素材治理闭环验收
 
+## 2026-10-19 P0 追加｜素材治理与训练冲突删除统一闭环
+
+本批从 GitHub 长期分支实际 fetch 的 `5a8d559faf20c46a4ceeca172b792920f1f86f57` 开始，正确工作树为 `C:/Users/jorsam/.codex/worktrees/external-algorithm-publishing/畅联云算法训练_v42.14.0`。下方 2026-10-18 的“保守保护全部 FAILED/no-freeze”是历史阶段，本批按可验证依赖收紧分类，不应再作为当前语义。
+
+### 已定位的真实缺口
+
+1. 原历史保护按任务 Payload 的 Image ID 无差别保留 FAILED/no-freeze，不能区分请求溯源与现存输入依赖；同组多个保护身份又导致整个组跳过。隔离 API RED 稳定复现 request-only 0→期望1、部分保护 0→期望2；并不证明现场1041组都属于这一原因。
+2. 训练诊断没有兼容审计计划的删除桥接，API 首轮6项失败；训练弹窗缺少可见多选。新增桥接仍由同一 MaterialBatch Owner 从 TrainingCompatibility 当前事实解析范围，再调用同一计划，不把浏览器问题 ID 当成审计许可。
+3. 真实 Chrome 发现结构化后端错误被公共 API 显示为 `[object Object]`、预览返回叠加弹窗拦截按钮；独立复核补齐筛选保持、人工决定 Revision、固定 Benchmark 同口径、部分失败选择与迟到响应围栏。
+
+### 当前安全合同
+
+- 只有终态失败、有效请求可读、无冻结/产物/恢复/重试/未知契约及其他依赖时，标记 `TRAINING_FAILED_REQUEST_ONLY`、`protected=false`。原 Payload、日志和已验证的纯诊断分页保持不变。进程/尝试/未知依赖仍 fail closed，不是一概解除 FAILED 保护。
+- 成功模型、独立评测、Snapshot、冻结/当前 Test、活动训练/清洗/标注/准备任务、持久输入包和 checkpoint 继续保护；执行发布及 Worker 删除前重新核验。多个保护身份全部保留，同 GT 冗余未保护索引可治理；不同 GT 必须明确人工 keeper，且人工决定不能覆盖历史保护。
+- 两个入口共用既有审计和计划 SQLite、DELETE_INDEX、Material/Annotation Repository、MaterialBatchRuntime62 和 PollRegistry。历史任务诊断只治理当前索引，不改原输入。全筛选通过服务端解析冻结，99页不逐页拉取全部ID。部分成功后复用原任务非成功 Selection 的服务端范围，重新审计/预览/人工核对，不把成功项再加入。
+- 预览列出保护、人工判断、无法核验和真实计划数；0条计划服务端也拒绝创建空任务。审计分类使用同一计划的只读模式，实际已删/失败来自持久任务，旧 Revision 不显示伪实时待治理数。完整审计继续展示真实历史重复，不隐藏或修改SHA/GT。
+- 正式 VERSION=42.24.356；app/main/styles入口缓存42.25.392，训练摘要422605，MaterialBatch422407。缓存与测试/工作流精确守卫同步；没有新请求包装层或第二套轮询。
+
+### 验收证据与边界
+
+本地 Windows/Python3.12、Node24、真实Chrome。原始日志位于 `C:/Users/jorsam/.codex/tmp/p0-*-1019.log`；最终截图、测试结果、准确提交列表和全部实际 Actions/Jobs 的原始 JSON 归档于 `C:/Users/jorsam/.codex/visualizations/2026/10/19/p0-material-governance/`。该目录仅为唯一追踪文档的验收附件，不新增问题清单或业务真相源。
+
+- 已实测 Python/API 组合122 passed；追加原子性和最终API25 passed（与122有重叠，不相加），5条既有弃用warning；Node24全量994 passed；真实Chrome两规格10 passed，追加迟到预览围栏1 passed。均0失败、0跳过。桌面1920/1440/1366与375px手机截图已归档；手机预览为刻意注入503后仍保留选择和真实计划的状态，不是将错误隐藏。两轮独立规格/安全复核未发现剩余可确认P0/P1/P2。旧阶段及旧 SHA 的绿色不能继承为本次成功。
+- 本段所在提交与后续必要CI修复仅普通FF推送；最终完整SHA、提交清单、全部实际Actions/Jobs及未触发清单，推送后写入同一证据目录 `CI_FINAL.json` 和 `CI_FINAL_ACCEPTANCE.md`，不预先将尚未运行的CI写为通过。
+- 真实浏览器覆盖单张/多选/全筛选/跨99页/失败保留勾选/人工决定失效/异步返回/真实Worker成功和部分成功；2531全保护是隔离模拟，保留2531、可删0、完整审计仍报2531，绝不是生产删除。
+- **生产未核验**：现场2531张、1041组的具体保护引用分布、原两次Task ID/日志、实际OSS历史对象、10万素材+海量历史任务并发、A800实机。没有只读现场证据，不能宣称1041组已清空或真实训练冲突已全面消失。
+- 仍可能合理返回0：真正不可变/活动/Test依赖、GT冲突未人工复核、素材/标注/引用漂移、存储未核验。处理入口为原标注工作台核对合法当前GT，或新训练草稿调整输入；禁止强制删除和改写历史证据。
+- 本轮允许普通FF推送与CI修复；不部署、不重启生产、不连接/修改生产数据库，不执行任何生产素材删除。
+
 日期：2026-10-18。基线：`5a28e4539b81c03b4eaa27fa4b6c718138542169`。
 本地运行条件：Windows、Python 3.12.7、Node 24.19.0、本机真实 Chrome（Playwright channel=chrome，单 Worker）。
 隔离工作树：`C:/Users/jorsam/.codex/worktrees/training-failure-diagnostics/畅联云算法训练_v42.14.0`。

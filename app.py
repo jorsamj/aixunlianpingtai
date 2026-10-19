@@ -7939,6 +7939,11 @@ def _training_compatibility_request(
     request: Mapping[str, Any],
 ) -> Dict[str, Any]:
     """Resolve server-private Benchmark IDs before the shared scope check."""
+    if asset_algorithm is None:
+        asset_algorithm = next((row for row in list_algorithms_internal(project_id)
+            if str(row.get('id') or '') == str(request.get('algorithm_asset_id') or '')), None)
+        if asset_algorithm is None:
+            raise HTTPException(status_code=404, detail='训练算法不存在')
     resolved = dict(request)
     benchmark = _training_reusable_benchmark(
         project_id,
@@ -23837,6 +23842,7 @@ app.include_router(material_batch_router(
     shared_task_repository,
     shared_task_artifacts,
     _storage_source_fence,
+    training_selection_provider=_training_compatibility_request,
 ))
 app.include_router(training_material_picker_router(
     get_project,

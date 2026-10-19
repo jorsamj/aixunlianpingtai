@@ -2,6 +2,21 @@ function uniqueIds(values) {
   return [...new Set((values || []).map(value => String(value || '').trim()).filter(Boolean))];
 }
 
+export function updateTrainingGovernanceSelection(previous, {mode='read', key, total=0, ids=[], id='', checked=false}) {
+  const value = previous?.key === key ? previous : {key, all_filtered:false, image_ids:[], excluded_image_ids:[]};
+  const selected = new Set(value.image_ids), excluded = new Set(value.excluded_image_ids);
+  let all = value.all_filtered;
+  if (mode === 'all' || mode === 'clear') { all = mode === 'all'; selected.clear(); excluded.clear(); }
+  if (mode === 'page') ids.forEach(imageId => all ? excluded.delete(String(imageId)) : selected.add(String(imageId)));
+  if (mode === 'toggle') {
+    if (all) checked ? excluded.delete(id) : excluded.add(id);
+    else checked ? selected.add(id) : selected.delete(id);
+  }
+  return {key, all_filtered:all, image_ids:[...selected], excluded_image_ids:[...excluded],
+    ...(mode==='read'&&value.previous_execution_task_id?{previous_execution_task_id:value.previous_execution_task_id}:{}),
+    count:mode==='read'&&value.previous_execution_task_id ? value.count : all ? Math.max(0,total-excluded.size) : selected.size};
+}
+
 export function trainingMaterialSelectionSignature(ids = []) {
   return uniqueIds(ids).sort().join('\u0000');
 }
@@ -23,6 +38,8 @@ export function trainingCompatibilitySignature(draft = {}) {
     experimentPercent: draft?.experimentPercent ?? null,
     validationPercent: draft?.validationPercent ?? null,
     duplicateReview: draft?.duplicateReview || null,
+    benchmarkReuseEnabled: Boolean(draft?.benchmarkReuseEnabled),
+    baseVersionId: String(draft?.baseVersionId || ''),
   });
 }
 
@@ -72,6 +89,7 @@ export function installTrainingMaterialSummaryRuntime({
   getState,
   projectId,
   trainingDraftRuntime,
+  resolveBenchmarkContext,
   notify = () => {},
   fetchImpl = (...args) => fetch(...args),
 } = {}) {
@@ -102,6 +120,80 @@ export function installTrainingMaterialSummaryRuntime({
   let comparison = null;
   let historicalDiagnosis = null;
   let diagnosticSequence = 0;
+  let governanceSelection = null;
+  let governanceContext = null;
+  let governanceDecisions = {};
+  let governanceDecisionRevision = '';
+  let governanceRetainedTask = null;
+
+  function governanceTools(truth, source='draft') {
+    const decisionRevision=JSON.stringify([projectId(),truth.material_revision,truth.annotation_revision]);
+    if(governanceDecisionRevision!==decisionRevision){governanceDecisions={};governanceDecisionRevision=decisionRevision;}
+    const key=JSON.stringify([projectId(),source,compatibilityQuery,compatibilityIssueType,
+      truth.material_revision,truth.annotation_revision,source==='draft'?trainingCompatibilitySignature(currentDraft()):'']);
+    governanceContext={key,total:Number(truth.governance_eligible_count||0),rows:truth.items||[],truth,source};
+    governanceSelection=updateTrainingGovernanceSelection(governanceSelection,{key,total:governanceContext.total});
+    if(governanceRetainedTask?.projectId===String(projectId()||'')&&governanceRetainedTask.source===source){
+      governanceSelection={...governanceSelection,all_filtered:false,image_ids:[],excluded_image_ids:[],
+        count:governanceRetainedTask.count,previous_execution_task_id:governanceRetainedTask.task_id};
+      governanceRetainedTask=null;
+    }
+    return `<section class="training-governance-tools"><div class="row"><button class="btn" data-governance-mode="page">全选当前页</button><button class="btn" data-governance-mode="all">全选当前筛选结果</button><button class="btn" data-governance-mode="clear">取消全选</button><span data-governance-selected aria-live="polite">已选 ${governanceSelection.count} 张 · 排除 ${governanceSelection.excluded_image_ids.length} 张</span><button class="btn danger" data-governance-preview>删除已选 · 安全预览</button></div><p>只治理当前素材索引，不修改历史任务；不同标注须先在“查看标注差异”明确保留项。全部筛选由服务端冻结，保护资格以预览和执行复验为准。</p><div data-governance-error role="alert" hidden></div></section>`;
+  }
+
+  function refreshGovernanceChecks() {
+    const root=document.querySelector('[data-training-compatibility-dialog]');
+    root?.querySelectorAll('[data-governance-check]').forEach(input=>{
+      input.checked=governanceSelection?.all_filtered
+        ? !governanceSelection.excluded_image_ids.includes(input.dataset.governanceCheck)
+        : governanceSelection?.image_ids.includes(input.dataset.governanceCheck);
+    });
+    const label=root?.querySelector('[data-governance-selected]');
+    if(label)label.textContent=governanceSelection.previous_execution_task_id
+      ? `原任务未删除 ${governanceSelection.count} 张 · 服务端冻结选择已保留（重新勾选可调整）`
+      : `已选 ${governanceSelection.count} 张 · 排除 ${governanceSelection.excluded_image_ids.length} 张`;
+  }
+
+  async function previewGovernance(imageId) {
+    if(!governanceContext)return;
+    const selected=imageId?{all_filtered:false,image_ids:[imageId],excluded_image_ids:[],count:1}:governanceSelection;
+    if(!selected?.count)return notify('请先选择素材');
+    const context=governanceContext,pid=String(projectId()||''),sourceTask=historicalDiagnosis?.task_id;
+    const sequence=diagnosticSequence,draftSignature=trainingCompatibilitySignature(currentDraft());
+    const dialog=document.querySelector('[data-training-compatibility-dialog]')?.closest('[role="dialog"]');
+    const filters={query:compatibilityQuery,issueType:compatibilityIssueType};
+    const body={...selected, query:compatibilityQuery,issue_type:compatibilityIssueType,
+      expected_material_revision:context.truth.material_revision,
+      expected_annotation_revision:context.truth.annotation_revision,manual_decisions:governanceDecisions,
+      ...(sourceTask?{training_task_id:sourceTask}:{training_selection:compatibilityPayload()})};
+    const errorBox=document.querySelector('[data-governance-error]');
+    const buttons=[...document.querySelectorAll('[data-governance-preview],[data-conflict-delete]')];
+    buttons.forEach(button=>button.disabled=true);
+    if(errorBox)errorBox.hidden=true;
+    try {
+      await window.previewTrainingIntegrityGovernance47({payload:body,projectId:pid,
+        isCurrent:()=>!destroyed&&String(projectId()||'')===pid&&governanceContext===context&&diagnosticSequence===sequence
+          &&Boolean(dialog?.isConnected&&!dialog.closest('.hidden'))
+          &&[...document.querySelectorAll('.modal:not(.hidden)')].at(-1)===dialog
+          &&(sourceTask||trainingCompatibilitySignature(currentDraft())===draftSignature),
+        onReturn:async(task)=>{
+          if(task&&['PARTIAL_SUCCESS','FAILED','CANCELLED'].includes(task.status)&&Number(task.total||0)>Number(task.succeeded||0)){
+            governanceRetainedTask={projectId:pid,source:context.source,task_id:task.task_id,count:Number(task.total||0)-Number(task.succeeded||0)};
+          }
+          if(sourceTask)return openTaskDiagnosis(sourceTask);
+          // Only change this new draft. A server deletion never rewrites historical input.
+          const draft=currentDraft(),signature=trainingCompatibilitySignature(draft);
+          const existing=await readJson(await fetchImpl(`/api/v62/projects/${encodeURIComponent(pid)}/training-materials/selection-summary`,{
+            method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({image_ids:uniqueIds([...(draft?.materialIds||[]),...(draft?.testMaterialIds||[])])})}), '当前训练选择读取失败');
+          if(String(projectId()||'')!==pid||trainingCompatibilitySignature(currentDraft())!==signature)return;
+          const missing=new Set(existing.missing_image_ids||[]);
+          if(missing.size)trainingDraftRuntime.update({materialIds:uniqueIds(draft?.materialIds).filter(id=>!missing.has(id)),
+            testMaterialIds:uniqueIds(draft?.testMaterialIds).filter(id=>!missing.has(id)),duplicateReview:null});
+          const result=await refreshCompatibility({force:true,...filters});if(result)openCompatibilityIssues();
+        }});
+    } catch(error) { if(errorBox?.isConnected){errorBox.hidden=false;errorBox.textContent=error.message||String(error)}notify(error.message||String(error)); }
+    finally {buttons.forEach(button=>button.disabled=false);}
+  }
 
   function currentIds() {
     return uniqueIds(trainingDraftRuntime.materialIds?.() || state().trainingDraft?.materialIds || []);
@@ -112,6 +204,9 @@ export function installTrainingMaterialSummaryRuntime({
   }
 
   function compatibilityPayload(draft = currentDraft(), overrides = {}) {
+    const benchmark = draft?.benchmarkReuseEnabled ? resolveBenchmarkContext?.({draft,
+      asset:(state().algorithms||[]).find(item=>String(item.id)===String(draft.algorithmId)),benchmark:state().trainingBenchmarkReuse}) : null;
+    if(draft?.benchmarkReuseEnabled&&!benchmark)throw new Error('固定评测基准尚未就绪，不能生成治理范围');
     return {
       algorithm_asset_id: String(draft?.algorithmId || ''),
       split_mode: String(draft?.splitMode || 'random_test_from_training_pool'),
@@ -123,6 +218,7 @@ export function installTrainingMaterialSummaryRuntime({
       experiment_percent: draft?.experimentPercent ?? 20,
       validation_percent: draft?.validationPercent ?? 20,
       ...(draft?.duplicateReview ? {duplicate_review: draft.duplicateReview} : {}),
+      ...(benchmark?{benchmark_source_version_id:benchmark.sourceVersionId,benchmark_scope_id:benchmark.scopeId}:{}),
       limit: 50,
       ...overrides,
     };
@@ -343,7 +439,7 @@ export function installTrainingMaterialSummaryRuntime({
   function issueHtml(item) {
     if (['duplicate_annotation_conflict','content_hash_leakage'].includes(item?.issue_type)) {
       const leakage = item.issue_type === 'content_hash_leakage';
-      return `<article class="training-compatibility-item"><img src="${htmlEscape(item.thumbnail_url||item.content_url||'')}" alt="${htmlEscape(item.filename||item.image_id)}" loading="lazy"><div><b>${htmlEscape(item.filename||item.image_id)}</b><small>${htmlEscape(item.image_id)} · ${htmlEscape(item.role||'')}</small><p>${leakage?'同 SHA 跨训练/试验集：必须调整数据角色，不能直接忽略':'原始正式标注冲突：'+htmlEscape((item.conflict_types||[]).join('、'))}</p><p>${htmlEscape(item.annotation_state)} · 范围 ${htmlEscape((item.annotation_scope||[]).join('、'))} · ${Number(item.box_count||0)} 框</p><code>${htmlEscape(item.content_sha256)}</code><div class="row"><button class="btn primary" data-duplicate-compare="${htmlEscape(item.content_sha256)}" ${leakage?'disabled':''}>查看标注差异</button><button class="btn" data-conflict-review="${htmlEscape(item.image_id)}">去补审 / 核对当前标注</button><button class="btn" data-conflict-exclude="${htmlEscape(item.image_id)}" ${leakage?'disabled':''}>仅排除本次训练</button></div></div></article>`;
+return `<article class="training-compatibility-item"><img src="${htmlEscape(item.thumbnail_url||item.content_url||'')}" alt="${htmlEscape(item.filename||item.image_id)}" loading="lazy"><div><b>${htmlEscape(item.filename||item.image_id)}</b><small>${htmlEscape(item.image_id)} · ${htmlEscape(item.role||'')}</small><p>${leakage?'同 SHA 跨训练/试验集：必须调整数据角色，不能直接忽略':'原始正式标注冲突：'+htmlEscape((item.conflict_types||[]).join('、'))}</p><p>${htmlEscape(item.annotation_state)} · 范围 ${htmlEscape((item.annotation_scope||[]).join('、'))} · ${Number(item.box_count||0)} 框</p><code>${htmlEscape(item.content_sha256)}</code><div class="row"><button class="btn primary" data-duplicate-compare="${htmlEscape(item.content_sha256)}">查看标注差异</button><button class="btn" data-conflict-review="${htmlEscape(item.image_id)}">去补审 / 核对当前标注</button><button class="btn" data-conflict-exclude="${htmlEscape(item.image_id)}" ${leakage?'disabled':''}>仅排除本次训练</button></div></div></article>`;
     }
     const reviewed = uniqueIds(item?.annotation_scope).join('、') || '无';
     const required = uniqueIds(item?.required_label_codes).join('、') || '无';
@@ -362,7 +458,8 @@ export function installTrainingMaterialSummaryRuntime({
     const rows = truth.items || [];
     const issueTypes = Object.keys(truth.issue_counts || {});
     const offset = Math.max(0, (compatibilityPage - 1) * compatibilityPageSize);
-    const html = `<div class="training-compatibility-list"><div class="alert warn"><b>${truth.issue_count} 张素材不适配本次训练</b><span>补审只记录你明确检查过的标签；AI 未检出不会自动确认不存在。</span></div><div class="row"><input id="trainingCompatibilityQuery" class="input" value="${htmlEscape(compatibilityQuery)}" placeholder="搜索文件名 / image_id"><select id="trainingCompatibilityType" class="select"><option value="">全部异常</option>${issueTypes.map(type=>`<option value="${htmlEscape(type)}" ${type===compatibilityIssueType?'selected':''}>${htmlEscape(type)} · ${Number(truth.issue_counts[type]||0)}</option>`).join('')}</select><button class="btn" type="button" onclick="TrainingMaterialSummaryRuntime.applyIssueFilters()">筛选</button></div><div class="item-sub">筛选结果 ${Number(truth.filtered_count||0)} 条 · 当前 ${rows.length?offset+1:0}-${offset+rows.length}</div>${rows.map(issueHtml).join('') || '<div class="empty">当前筛选没有问题素材</div>'}<div id="trainingCompatibilityPager"></div></div>`;
+    const tools=governanceTools(truth);
+    const html = `<div class="training-compatibility-list"><div class="alert warn"><b>${truth.issue_count} 张素材不适配本次训练</b><span>补审只记录你明确检查过的标签；AI 未检出不会自动确认不存在。</span></div><div class="row"><input id="trainingCompatibilityQuery" class="input" value="${htmlEscape(compatibilityQuery)}" placeholder="搜索文件名 / image_id"><select id="trainingCompatibilityType" class="select"><option value="">全部异常</option>${issueTypes.map(type=>`<option value="${htmlEscape(type)}" ${type===compatibilityIssueType?'selected':''}>${htmlEscape(type)} · ${Number(truth.issue_counts[type]||0)}</option>`).join('')}</select><button class="btn" type="button" onclick="TrainingMaterialSummaryRuntime.applyIssueFilters()">筛选</button></div>${tools}<div class="item-sub">筛选结果 ${Number(truth.filtered_count||0)} 条 · 当前 ${rows.length?offset+1:0}-${offset+rows.length}</div>${rows.map(issueHtml).join('') || '<div class="empty">当前筛选没有问题素材</div>'}<div id="trainingCompatibilityPager"></div></div>`;
     showDiagnosticDialog(Number(truth.duplicate_conflict_group_count||truth.duplicate_group_count||0)?'训练素材冲突诊断':'训练标签适配问题', `<div data-training-compatibility-dialog>${html}<div class="row end"><button class="btn" data-training-recheck>重新预检</button>${currentDraft()?.duplicateReview?'<button class="btn" data-training-undo-exclusions>撤销本次排除并重新检查</button>':''}<button class="btn" onclick="closeModal()">返回训练配置 · 保留草稿</button></div></div>`);
     bindDiagnosticActions();
     window.PlatformCore?.pagination?.mountPagination?.(
@@ -390,7 +487,9 @@ export function installTrainingMaterialSummaryRuntime({
   }
 
   function showDiagnosticDialog(title, html) {
-    const existing=[...document.querySelectorAll('[data-training-compatibility-dialog]')].find(root=>!root.closest('.hidden'));
+    const top=[...document.querySelectorAll('.modal:not(.hidden)')].at(-1);
+    const existing=top?.querySelector('[data-training-compatibility-dialog]')
+      ||(state().materialIntegrityTrainingContext47?.projectId===String(projectId()||'')?top?.querySelector('.material-integrity47-plan'):null);
     const body=existing?.closest('.modal-body');
     if(body){body.innerHTML=html;const heading=body.parentElement.querySelector('.modal-title');if(heading)heading.textContent=title}
     else window.modal?.(title,html,true);
@@ -398,22 +497,69 @@ export function installTrainingMaterialSummaryRuntime({
 
   function bindDiagnosticActions() {
     const root=document.querySelector('[data-training-compatibility-dialog]');if(!root)return;
+    if(historicalDiagnosis&&!comparison&&!root.querySelector('.training-governance-tools')) {
+      root.querySelector('.training-compatibility-list')?.insertAdjacentHTML('afterbegin',`<div class="row"><input id="trainingCompatibilityQuery" class="input" aria-label="搜索当前冲突" placeholder="搜索文件名 / SHA256 / Image ID" value="${htmlEscape(compatibilityQuery)}"><select id="trainingCompatibilityType" class="select" aria-label="冲突类型"><option value="">全部冲突</option><option value="duplicate_annotation_conflict">同图不同标注</option><option value="content_hash_leakage">Train / Test 内容冲突</option></select><button class="btn" data-history-filter>筛选</button></div>`+governanceTools(historicalDiagnosis.current_diagnosis||{},`task:${historicalDiagnosis.task_id}`));
+      const select=root.querySelector('#trainingCompatibilityType');if(select)select.value=compatibilityIssueType;
+      root.querySelector('[data-history-filter]')?.addEventListener('click',()=>{
+        compatibilityQuery=String(root.querySelector('#trainingCompatibilityQuery')?.value||'').trim();
+        compatibilityIssueType=String(root.querySelector('#trainingCompatibilityType')?.value||'');
+        void openTaskDiagnosis(historicalDiagnosis.task_id);
+      });
+    }
     root.querySelectorAll('[data-duplicate-compare]').forEach(button=>button.onclick=()=>openDuplicateComparison(button.dataset.duplicateCompare));
     root.querySelectorAll('[data-conflict-review]').forEach(button=>button.onclick=()=>openReview(button.dataset.conflictReview));
-    root.querySelectorAll('[data-conflict-exclude]').forEach(button=>{if(historicalDiagnosis)button.disabled=true;button.onclick=()=>excludeFromDraft(button.dataset.conflictExclude)});
-    root.querySelector('[data-training-recheck]')?.addEventListener('click',async()=>{if(historicalDiagnosis)return openTaskDiagnosis(historicalDiagnosis.task_id);const result=await refreshCompatibility({force:true});if(result)openCompatibilityIssues()});
+    root.querySelectorAll('[data-conflict-exclude]').forEach(button=>{
+      if(historicalDiagnosis||comparison?.items.some(item=>item.image_id===button.dataset.conflictExclude&&item.issue_type==='content_hash_leakage'))button.disabled=true;
+      button.onclick=()=>{if(!button.disabled)excludeFromDraft(button.dataset.conflictExclude)};
+    });
+    root.querySelector('[data-training-recheck]')?.addEventListener('click',async()=>{
+      if(historicalDiagnosis)return openTaskDiagnosis(historicalDiagnosis.task_id);
+      const controls=[...root.querySelectorAll('[data-governance-check],[data-governance-mode],[data-governance-preview],[data-conflict-delete],[data-training-recheck]')];
+      const disabled=controls.map(control=>control.disabled);controls.forEach(control=>control.disabled=true);root.setAttribute('aria-busy','true');
+      const result=await refreshCompatibility({force:true,query:compatibilityQuery,issueType:compatibilityIssueType});
+      if(result&&root.isConnected&&!root.closest('.hidden'))openCompatibilityIssues();
+      else if(root.isConnected){controls.forEach((control,index)=>control.disabled=disabled[index]);root.removeAttribute('aria-busy');}
+    });
     root.querySelector('[data-training-undo-exclusions]')?.addEventListener('click',async()=>{
       const review=currentDraft()?.duplicateReview;if(!review)return;
       trainingDraftRuntime.update({materialIds:review.original_train_image_ids,testMaterialIds:review.original_test_image_ids,duplicateReview:null});
       invalidateCompatibility();const result=await refreshCompatibility({force:true});if(result)openCompatibilityIssues();
     });
-    root.querySelector('[data-comparison-back]')?.addEventListener('click',async()=>{if(historicalDiagnosis)return openTaskDiagnosis(historicalDiagnosis.task_id);const result=await refreshCompatibility({force:true});if(result)openCompatibilityIssues()});
+    root.querySelector('[data-comparison-back]')?.addEventListener('click',async()=>{if(historicalDiagnosis)return openTaskDiagnosis(historicalDiagnosis.task_id);const result=await refreshCompatibility({force:true,...comparison?.origin});if(result)openCompatibilityIssues()});
     root.querySelectorAll('[data-comparison-page]').forEach(button=>button.onclick=()=>openDuplicateComparison(comparison.hash,Number(button.dataset.comparisonPage)));
     root.querySelectorAll('[data-task-diagnosis-page]').forEach(button=>button.onclick=()=>openTaskDiagnosis(historicalDiagnosis.task_id,Number(button.dataset.taskDiagnosisPage)));
+    if(!comparison){
+      root.querySelectorAll('.training-compatibility-item').forEach((article,index)=>{
+        const item=governanceContext?.rows[index];
+        if(!item||!['duplicate_annotation_conflict','content_hash_leakage'].includes(item.issue_type))return;
+        const label=document.createElement('label');label.className='training-governance-check';
+        const input=document.createElement('input');input.type='checkbox';input.dataset.governanceCheck=item.image_id;
+        input.setAttribute('aria-label',`选择 ${item.filename||item.image_id}`);
+        input.onchange=()=>{governanceSelection=updateTrainingGovernanceSelection(governanceSelection,{...governanceContext,mode:'toggle',id:item.image_id,checked:input.checked});refreshGovernanceChecks()};
+        label.append(input,document.createTextNode('选择图片'));article.prepend(label);
+        const button=document.createElement('button');button.className='btn danger';button.textContent='单张删除 · 先预览';button.dataset.conflictDelete=item.image_id;button.onclick=()=>previewGovernance(item.image_id);article.querySelector('.row')?.append(button);
+      });
+    }
+    root.querySelectorAll('[data-governance-mode]').forEach(button=>button.onclick=()=>{
+      governanceSelection=updateTrainingGovernanceSelection(governanceSelection,{...governanceContext,mode:button.dataset.governanceMode,ids:governanceContext.rows.filter(item=>['duplicate_annotation_conflict','content_hash_leakage'].includes(item.issue_type)).map(item=>item.image_id)});
+      refreshGovernanceChecks();
+    });
+    root.querySelector('[data-governance-preview]')?.addEventListener('click',()=>previewGovernance());
+    root.querySelectorAll('[data-conflict-review]').forEach(button=>{
+      if(!comparison)return;
+      const item=comparison.items.find(row=>row.image_id===button.dataset.conflictReview);if(!item)return;
+      const keeper=document.createElement('button');keeper.className='btn';keeper.dataset.conflictKeeper=item.image_id;
+      keeper.textContent='人工确认 · 作为本组保留项';keeper.onclick=()=>{
+        governanceDecisions[`DUPLICATE_ANNOTATION_CONFLICT:${item.content_sha256}`]=item.image_id;
+        keeper.textContent='已明确保留 · 删除仍须安全预览';notify('已记录本组人工保留项，不会覆盖历史保护');
+      };button.parentElement.append(keeper);
+    });
+    refreshGovernanceChecks();
   }
 
   async function openDuplicateComparison(hash, page=1) {
     const pid=String(projectId()||'');
+    const origin=comparison?.origin||{query:compatibilityQuery,issueType:compatibilityIssueType,page:compatibilityPage,pageSize:compatibilityPageSize};
     const sequence=++diagnosticSequence,sourceTask=historicalDiagnosis?.task_id;
     const anchor=document.querySelector('[data-training-compatibility-dialog]');
     try{
@@ -434,7 +580,9 @@ export function installTrainingMaterialSummaryRuntime({
         return {...item,width:detail.image.width,height:detail.image.height,boxes:annotation.boxes||[],annotation_scope:annotation.annotation_scope||[]};
       }));
       if(String(projectId()||'')!==pid||destroyed||sequence!==diagnosticSequence||anchor&&(!anchor.isConnected||anchor.closest('.hidden')))return false;
-      comparison={hash:String(hash),page,items:rows};historicalDiagnosis=sourceTask?history:null;
+      comparison={hash:String(hash),page,items:rows,origin};historicalDiagnosis=sourceTask?history:null;
+      const decisionRevision=JSON.stringify([pid,result.material_revision,result.annotation_revision]);
+      if(governanceDecisionRevision!==decisionRevision){governanceDecisions={};governanceDecisionRevision=decisionRevision;}
       const cards=rows.map(item=>`<article>${window.materialIntegrityImage47?.(item)||`<img src="${htmlEscape(item.content_url)}" alt="${htmlEscape(item.filename)}">`}<div class="material-integrity47-meta"><b>${htmlEscape(item.filename)}</b><code>${htmlEscape(item.image_id)}</code><p>原始正式 GT · ${htmlEscape(item.role)} · ${htmlEscape(item.annotation_state)} · ${Number(item.box_count)} 框</p><p>类别 ${htmlEscape((item.labels||[]).join('、'))} · 范围 ${htmlEscape((item.annotation_scope||[]).join('、'))}</p><small>差异 ${htmlEscape((item.conflict_types||[]).join('、'))}</small><code>${htmlEscape(item.annotation_digest)}</code><p>${htmlEscape((item.reference_reasons||[]).map(reason=>window.materialIntegrityProtectionText47?.(reason)||reason.reason).join('；')||'本页未返回历史保护原因；不是删除许可')}</p><div class="row"><button class="btn primary" data-conflict-review="${htmlEscape(item.image_id)}">人工核对这份标注</button><button class="btn" data-conflict-exclude="${htmlEscape(item.image_id)}">仅排除本次训练</button></div></div></article>`).join('');
       showDiagnosticDialog('重复素材标注差异',`<div data-training-compatibility-dialog class="training-duplicate-comparison"><div class="alert warn"><b>同一图片内容，不同正式 Ground Truth</b><p>系统不判断哪份正确，也不会覆盖历史模型、Snapshot 或 Test。修改通过原标注工作台保存；排除只影响本次新训练，保留可审计记录。</p><code>SHA256 ${htmlEscape(hash)}</code></div>${rows.length?`<div class="material-integrity47-grid">${cards}</div>`:'<div class="alert ok">本组当前冲突已解除，请重新检查完整训练选择。</div>'}<div class="row between"><button class="btn" data-comparison-back>返回完整预检</button><div class="row"><button class="btn" data-comparison-page="${page-1}" ${page>1?'':'disabled'}>上一页对比</button><span>第 ${page} / ${result.total_pages||1} 页 · 每页最多 2 张</span><button class="btn" data-comparison-page="${page+1}" ${result.has_next?'':'disabled'}>下一页对比</button></div><button class="btn" data-training-recheck>重新预检</button></div></div>`);
       bindDiagnosticActions();return true;
@@ -443,11 +591,12 @@ export function installTrainingMaterialSummaryRuntime({
 
   async function openTaskDiagnosis(taskId,page=1) {
     const pid=String(projectId()||'');
+    if(historicalDiagnosis?.task_id!==taskId){compatibilityQuery='';compatibilityIssueType='';}
     const sequence=++diagnosticSequence;
     showDiagnosticDialog('训练输入冲突诊断','<div data-training-compatibility-dialog role="status">正在读取持久任务证据和当前正式标注…</div>');
     const anchor=document.querySelector('[data-training-compatibility-dialog]');
     try{
-      const body=await readJson(await fetchImpl(`/api/v62/projects/${encodeURIComponent(pid)}/training-tasks/${encodeURIComponent(taskId)}/input-diagnosis?page=${page}&limit=24`),'训练输入诊断读取失败');
+      const body=await readJson(await fetchImpl(`/api/v62/projects/${encodeURIComponent(pid)}/training-tasks/${encodeURIComponent(taskId)}/input-diagnosis?page=${page}&limit=24&query=${encodeURIComponent(compatibilityQuery)}&issue_type=${encodeURIComponent(compatibilityIssueType)}`),'训练输入诊断读取失败');
       if(String(projectId()||'')!==pid||destroyed||sequence!==diagnosticSequence||!anchor?.isConnected||anchor.closest('.hidden'))return false;
       historicalDiagnosis=body;comparison=null;
       const current=body.current_diagnosis||{},history=body.historical_evidence||{};
@@ -551,7 +700,7 @@ export function installTrainingMaterialSummaryRuntime({
   observer?.observe(document.body, {childList: true, subtree: true});
 
   const runtime = {
-    build: 'training-material-summary-runtime-422604',
+    build: 'training-material-summary-runtime-422605',
     refresh,
     refreshCompatibility,
     invalidateCompatibility,

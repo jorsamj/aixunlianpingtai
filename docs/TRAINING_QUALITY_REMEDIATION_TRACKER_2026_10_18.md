@@ -2,6 +2,21 @@
 
 ## 接手信息
 
+### 2026-10-19 P0 素材重复治理闭环（本地验收完成，最终 SHA CI 待核验）
+
+基线 `5a8d559faf20c46a4ceeca172b792920f1f86f57`，fetch 核实远端一致、工作区干净、VERSION=42.24.356。此项覆盖附件完整指令和用户补充，不继续开发已完成 TQ-04。
+
+- [x] 引用分类 RED→GREEN：原 `_historical_material_references` 对 FAILED/no-freeze 无条件保护；先检查真实持久化依赖，再决定是否仅为可追溯请求引用。活动任务、冻结、Test、模型和恢复依赖始终保护。
+- [x] 计划 RED→GREEN：原 `MULTIPLE_PROTECTED_REFERENCES` 整组跳过；同 GT 仅保留所有保护项与 keeper，安全处理其余候选；不同 GT 仍需人工决定且不能绕过保护。复用原计划与 DELETE_INDEX 执行前复验。
+- [x] 两入口联调：训练冲突分页选择和全部筛选结果由服务端解析冻结；共用治理预览/执行/MaterialBatchRuntime62，不将训练问题 ID 直接交给不兼容审计接口。
+- [x] 服务端真实分类与终态刷新：待治理、历史保留、已治理证据不混淆；删除完成失效旧审计及训练选择，失败保留选择和准确计数。
+- [x] Python/API/Node/真实 Chrome 验证：单张、多选、99页、2531全保护、GT/引用漂移、Test/历史保护、共享源文件、部分失败、桌面/手机截图。
+- [ ] 更新既有治理文档，独立安全复核，重新 fetch 后普通 FF 推送；按最终 SHA 查询全部实际 Actions/Jobs 并等待终态，不继承旧绿色。
+
+本地验收：Node24完整994/994；Python/API组合122/122，追加原子性及最终API25/25（有重叠，不相加）；真实Chrome两规格10/10，追加迟到预览不得覆盖标注工作台1/1。全部0失败、0跳过，Python有5条既有弃用warning。两轮独立安全/规格复核无剩余可确认P0/P1/P2。新增分类只读模式不写计划文件；0计划服务端拒绝空任务；2531全保护保留数量真实为2531。截图、原始日志及最终准确SHA的CI列表统一归档在 `C:/Users/jorsam/.codex/visualizations/2026/10/19/p0-material-governance/`；提交推送后的 `CI_FINAL.json` / `CI_FINAL_ACCEPTANCE.md` 记录完整SHA、实际提交、所有Actions/Jobs终态和未触发清单，避免文档自引用SHA或借用旧绿色。
+
+现场2531张/1041组的实际引用分布：尚无生产只读证据，待现场核验；不执行生产删除，不修改历史证据或正式VERSION。
+
 ### 2026-10-19 接续执行计划（TQ-04 类别指标边界）
 
 基线 `e1d4582187e0d405df14caaa9db0bde11a08519c`，已重新 fetch，长期分支工作树纯快进同步且干净；准确 SHA 的22次 Actions均success。执行采用现有 Owner 内最小修复，不重做已完成的总体指标/Val优先级/绑定。
@@ -56,7 +71,7 @@
 | TQ-05 | P0 | Ultralytics `ap_class_index` 与 `box.maps` 类别对应有潜在错配 | 已证实 compact 数组与 dense `maps` 被按位置混用、NumPy 真值判定可能失败 | **修复与 CI 已通过；历史模型报告未重算** | `train_worker.py`、定向 Python 单测；丢类、稀疏 class_id |
 | TQ-06 | P0 | 无 GT 类别及独立测试结果可评估性提示 | 总体 mAP 可隐藏测试中无正样本的已声明类别 | **后端修复与 CI 已通过；页面展示待验收** | `training_evaluation.py`、质量中心；不得宣告零样本类别合格 |
 | TQ-07 | P0 | Val/Test 推理 `imgsz` 等协议证据未完全统一 | 常规 Val 与双路径盲测未全显式传 imgsz | **修复与 CI 已通过；A800 实际尺寸仍待实测** | `train_worker.py`、`checkpoint_validation_worker.py`；真实推理参数留证 |
-| TQ-08 | P0 | 历史受保护重复素材与 GT 训练冲突 | 2531/1041/0 为用户生产截图，代码不应解除保护 | 待生产只读核验 | 历史 Task、Snapshot、重复审计，不删除真实素材 |
+| TQ-08 | P0 | 历史受保护重复素材与 GT 训练冲突 | 2531/1041/0 为用户生产截图；仅可验证 request-only 失败引用可释放，真实依赖不解除 | **本地统一治理闭环已验收；最终SHA CI及生产引用分布另核验** | 同一MaterialBatch/DELETE_INDEX、历史 Task/Snapshot/Test保护；不删除真实素材 |
 | TQ-09 | P1 | 正负与困难样本质量及补充闭环 | 现有困难样本模块；正式 GT 不自动重写 | 待设计 | `hard_sample_mining.py`；误报漏报来源及可复核证据 |
 | TQ-10 | P1 | 场景、夜间、相机等分布完整性 | 依赖元数据，不可捏造 | 待设计 | 聚合统计明确已知/未知 |
 | TQ-11 | P1 | best.pt→ONNX→RKNN 转换后精度与板端验证 | RKNN converted_unverified 不等于精度合格 | 待硬件核验 | 同测试集/预处理/后处理及芯片实测 |

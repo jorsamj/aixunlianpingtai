@@ -165,14 +165,15 @@ def test_failed_task_current_diagnosis_never_pretends_to_be_historical_truth(tmp
     from types import SimpleNamespace
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
-    from platform_core.task_runtime import ArtifactStore, TaskKind, TaskStatus
+    from platform_core.task_runtime import ArtifactStore, TaskKind, TaskStatus, TaskRecord
+    from dataclasses import replace
     from platform_core.training_recovery_api import training_recovery_router
     project = seed(tmp_path, [row("a"), row("b", x=3), row("c", sha="c" * 64),
         row("d", sha="b" * 64), row("e", sha="b" * 64, x=3)])
     artifacts = ArtifactStore(tmp_path / "tasks")
     artifacts.atomic_write_json("old", "payload.json", request(("a", "b", "c", "d", "e")))
-    task = SimpleNamespace(task_id="old", project_id="p", kind=TaskKind.TRAINING,
-        status=TaskStatus.FAILED, payload_ref="payload.json", error="duplicate_annotation_conflict token=secret123")
+    task = replace(TaskRecord.new('old','p',TaskKind.TRAINING,'payload.json','history-contract'),
+        status=TaskStatus.FAILED, error="duplicate_annotation_conflict token=secret123")
     class Repository:
         def get(self, task_id):
             return task if task_id == "old" else None
@@ -189,6 +190,8 @@ def test_failed_task_current_diagnosis_never_pretends_to_be_historical_truth(tmp
     assert body["current_diagnosis"]["evidence_basis"] == "current_canonical_annotations"
     assert body["current_diagnosis"]["issue_count"] == 4
     assert len(body["current_diagnosis"]["items"]) == 1
+    assert body['current_diagnosis']['items'][0]['protected'] is False
+    assert body['current_diagnosis']['items'][0]['reference_reasons'][0]['reason'] == 'TRAINING_FAILED_REQUEST_ONLY'
     filtered = TestClient(app).get("/api/v62/projects/p/training-tasks/old/input-diagnosis",
         params={"query": "b" * 64, "limit": 2, "page": 1})
     assert filtered.status_code == 200
@@ -328,6 +331,19 @@ def test_historical_requested_split_does_not_inherit_effective_benchmark_mode(tm
             "test_image_ids": [], "experiment_percent": 20, "validation_percent": 20})
     result = diagnose_training_duplicates(project, payload)
     assert result.summary()["affected_image_count"] == 2
+
+
+def test_current_history_diagnosis_omits_deleted_indices_without_rewriting_original_selection(tmp_path):
+    from platform_core.training_compatibility import diagnose_training_duplicates
+    project = seed(tmp_path, [row('a'), row('b', x=3)])
+    payload = request(('a', 'b', 'deleted-old-index'))
+    original = copy.deepcopy(payload)
+    result = diagnose_training_duplicates(project, payload, current_only=True)
+    assert result.summary()['affected_image_count'] == 2
+    assert result.selection_truth['missing_current_image_count'] == 1
+    assert payload == original
+    with pytest.raises(ValueError):
+        diagnose_training_duplicates(project, payload)
 
 
 @pytest.mark.parametrize("size", [100, 1000, 10000])

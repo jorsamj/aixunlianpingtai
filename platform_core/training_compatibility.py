@@ -270,7 +270,7 @@ def normalize_benchmark_duplicate_review(
     return validate_duplicate_review(project, {**payload, "duplicate_review": normalized}, resolved_split)
 
 
-def diagnose_training_duplicates(project: Path, payload: Mapping[str, Any]) -> TrainingCompatibilityResult:
+def diagnose_training_duplicates(project: Path, payload: Mapping[str, Any], *, current_only=False) -> TrainingCompatibilityResult:
     """Read current original GT even when an old task has no usable label contract."""
     request = dict(payload)
     stored_split = payload.get("requested_split") or payload.get("split")
@@ -278,12 +278,21 @@ def diagnose_training_duplicates(project: Path, payload: Mapping[str, Any]) -> T
         request.update(stored_split)
         request["split_mode"] = stored_split.get("mode") or stored_split.get("split_mode") or request.get("split_mode")
     split = _split_request(request)
-    rows = _selected_project_images(MaterialRepository(project), project,
-        (*split.train_image_ids, *split.test_image_ids))
+    materials = MaterialRepository(project)
+    ids = (*split.train_image_ids, *split.test_image_ids)
+    missing_count = 0
+    if current_only:
+        # History remains immutable. Its current-data view may omit indices
+        # actually removed by governance; training admission stays strict.
+        current_ids = {str(row['id']) for offset in range(0,len(ids),500)
+            for row in materials.get_many(ids[offset:offset+500])}
+        missing_count = len(set(ids)-current_ids)
+        ids = tuple(image_id for image_id in ids if image_id in current_ids)
+    rows = _selected_project_images(materials, project, ids) if ids else []
     issues = _duplicate_issues(rows, split.train_image_ids, split.test_image_ids, _dataset_names(project))
     return TrainingCompatibilityResult({}, tuple(issues), MaterialRepository(project).current_revision(),
         AnnotationRepository(project).current_revision(), {"selected_train_count": len(split.train_image_ids),
-            "test_count": len(split.test_image_ids)})
+            "test_count": len(split.test_image_ids), "missing_current_image_count": missing_count})
 
 
 _COMPATIBILITY_PAGE_FIELDS = frozenset({
@@ -504,6 +513,7 @@ def compatibility_page(
     return {
         "items": [dict(item) for item in items],
         "filtered_count": total,
+        "governance_eligible_count": sum(item.get('issue_type') in {'duplicate_annotation_conflict', 'content_hash_leakage'} for item in filtered),
         "total": total,
         "page": page_number,
         "page_size": bounded,

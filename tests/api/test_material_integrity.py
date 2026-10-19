@@ -18,6 +18,7 @@ from platform_core.task_runtime import (
     TaskKind,
     TaskRecord,
     TaskRepository,
+    TaskStatus,
 )
 
 
@@ -641,6 +642,226 @@ def test_material_integrity_safe_plan_skips_groups_with_multiple_training_refere
     assert response.json()["review_groups"][0]["reason"] == 'MULTIPLE_PROTECTED_REFERENCES'
     assert {item['image_id'] for item in response.json()['preview_items']} == {original['id'], duplicate_id}
     assert all(item['protection_reasons'] for item in response.json()['preview_items'])
+
+
+@pytest.mark.parametrize('diagnostics', [False, True])
+def test_failed_request_only_releases_index_and_retains_original_evidence(
+    client, seeded_project, tmp_path, monkeypatch, diagnostics
+):
+    project_id, original = seeded_project
+    materials = app_module.material_store(project_id)
+    materials.upsert(_duplicate_material(materials.get(original['id']), 'request-copy', 'request.jpg'))
+    repository, artifacts, scheduler = _runtime(tmp_path, monkeypatch)
+    task_id = 'failed-request'
+    request = {'task_id': task_id, 'train_image_ids': [original['id'], 'request-copy']}
+    artifacts.atomic_write_json(task_id, 'payload.json', request)
+    repository.create(TaskRecord.new(task_id, project_id, TaskKind.TRAINING, 'payload.json', 'training'), artifacts=artifacts)
+    repository.fail_queued_precondition(task_id, 'input conflict', status=TaskStatus.FAILED)
+    if diagnostics:
+        artifacts.atomic_write_json(task_id, 'input-preparation-error.json', {
+            'schema_version': 1, 'task_id': task_id, 'project_id': project_id,
+            'stage': 'training_input_preparation_failed', 'input_freeze_created': False,
+            'issues_ref': 'input-compatibility/manifest.json',
+        })
+        artifacts.atomic_write_json(task_id, 'input-compatibility/manifest.json', {
+            'pages': [{'page': 1, 'ref': 'input-compatibility/pages/000001.json'}],
+        })
+        artifacts.atomic_write_json(task_id, 'input-compatibility/pages/000001.json', [
+            {'image_id': 'request-copy', 'issue_type': 'duplicate_annotation_conflict'},
+        ])
+        artifacts.atomic_write_json('prepare-child', 'payload.json', {'training_task_id': task_id})
+        repository.create(TaskRecord.new('prepare-child', project_id, TaskKind.TRAINING_PREPARE, 'payload.json', 'prepare'), artifacts=artifacts)
+        repository.fail_queued_precondition('prepare-child', 'input conflict', status=TaskStatus.FAILED)
+    evidence_before = {path.relative_to(artifacts.root).as_posix(): path.read_bytes()
+                       for path in artifacts.artifact_path(task_id, '.').rglob('*') if path.is_file()}
+    audit_id = _run_integrity_audit(client, scheduler, project_id)
+    base = f'/api/v62/projects/{project_id}/material-integrity/audits/{audit_id}'
+    response = client.post(base + '/dedup-plans', json={'scope': 'SAFE_ALL'})
+    assert response.status_code == 201, response.text
+    plan = response.json()
+    assert plan['delete_count'] == 1
+    assert plan['protected_item_count'] == 0
+    assert all(any(reason['reason'] == 'TRAINING_FAILED_REQUEST_ONLY'
+                   and reason['protected'] is False for reason in item['protection_reasons'])
+               for item in plan['preview_items'])
+    keeper = plan['preview_groups'][0]['keeper_image_id']
+    before = client.get(f'/api/v61/projects/{project_id}/materials/{keeper}/content')
+    assert before.status_code == 200
+    queued = client.post(base + f"/dedup-plans/{plan['plan_id']}/execute", json={
+        'confirmation_credential': plan['confirmation_credential'],
+    })
+    assert queued.status_code == 202, queued.text
+    assert scheduler.run_once()
+    assert materials.count() == 1
+    assert client.get(f'/api/v61/projects/{project_id}/materials/{keeper}/content').content == before.content
+    assert artifacts.read_json(task_id, 'payload.json') == request
+    assert repository.get(task_id).status is TaskStatus.FAILED
+    assert {path.relative_to(artifacts.root).as_posix(): path.read_bytes()
+            for path in artifacts.artifact_path(task_id, '.').rglob('*') if path.is_file()} == evidence_before
+
+
+@pytest.mark.parametrize('dependency', [
+    'input-freeze.json', 'snapshot.json', 'work/bundle/manifest.json',
+    'checkpoints/worker.json', 'checkpoint-resume.json', 'result.json',
+    'unknown-dependency.json', 'payload_ref', 'retry', 'test', 'snapshot_test',
+    'model_task_reference', 'evaluation_ids', 'active_prepare',
+])
+def test_failed_no_freeze_dependencies_remain_protected(
+    client, seeded_project, tmp_path, monkeypatch, dependency
+):
+    project_id, original = seeded_project
+    materials = app_module.material_store(project_id)
+    materials.upsert(_duplicate_material(materials.get(original['id']), 'dependency-copy', 'dependency.jpg'))
+    repository, artifacts, scheduler = _runtime(tmp_path, monkeypatch)
+    task_id = 'failed-dependency'
+    payload = {'train_image_ids': [original['id'], 'dependency-copy']}
+    if dependency == 'payload_ref':
+        payload['prepared_input_ref'] = 'missing-prepared-input.json'
+    artifacts.atomic_write_json(task_id, 'payload.json', payload)
+    repository.create(TaskRecord.new(task_id, project_id, TaskKind.TRAINING, 'payload.json', 'training'), artifacts=artifacts)
+    repository.fail_queued_precondition(task_id, 'input failure', status=TaskStatus.FAILED)
+    if dependency == 'retry':
+        repository.retry(task_id)
+        repository.fail_queued_precondition(task_id, 'retry failure', status=TaskStatus.FAILED)
+    elif dependency == 'test':
+        materials.patch({image_id: {'split': 'test'} for image_id in payload['train_image_ids']})
+    elif dependency == 'snapshot_test':
+        snapshots = materials.project_path / 'snapshots'
+        snapshots.mkdir(exist_ok=True)
+        from platform_core.annotations import atomic_write_json
+        atomic_write_json(snapshots / 'test.json', {'test_image_ids': payload['train_image_ids']})
+    elif dependency in {'model_task_reference', 'evaluation_ids'}:
+        from platform_core.algorithms import save_algorithms
+        save_algorithms(materials.project_path / 'algorithms.json', [{
+            'id': 'historical-model', 'name': 'Historical model', 'versions': [{
+                'id': 'historical-version',
+                'training_lineage': {'task_id': task_id} if dependency == 'model_task_reference' else {},
+                'evaluation': {'test_image_ids': payload['train_image_ids']} if dependency == 'evaluation_ids' else {},
+            }],
+        }])
+    elif dependency == 'active_prepare':
+        artifacts.atomic_write_json('prepare-child', 'payload.json', {'training_task_id': task_id})
+        repository.create(TaskRecord.new('prepare-child', project_id, TaskKind.TRAINING_PREPARE, 'payload.json', 'prepare'), artifacts=artifacts)
+    elif dependency != 'payload_ref':
+        artifacts.atomic_write_json(task_id, dependency, {'train_image_ids': payload['train_image_ids']})
+    audit_id = _run_integrity_audit(client, scheduler, project_id)
+    response = client.post(f'/api/v62/projects/{project_id}/material-integrity/audits/{audit_id}/dedup-plans', json={'scope': 'SAFE_ALL'})
+    assert response.status_code == 201, response.text
+    assert response.json()['delete_count'] == 0
+    assert response.json()['protected_item_count'] == 2
+
+
+def test_same_gt_mixed_protected_group_deletes_only_unprotected_redundants(
+    client, seeded_project, tmp_path, monkeypatch
+):
+    project_id, original = seeded_project
+    materials = app_module.material_store(project_id)
+    materials.upsert_many([_duplicate_material(materials.get(original['id']), image_id, image_id + '.jpg')
+                           for image_id in ['protected-copy', 'safe-copy-a', 'safe-copy-b']])
+    repository, artifacts, scheduler = _runtime(tmp_path, monkeypatch)
+    artifacts.atomic_write_json('active-training', 'payload.json', {'train_image_ids': [original['id'], 'protected-copy']})
+    repository.create(TaskRecord.new('active-training', project_id, TaskKind.TRAINING, 'payload.json', 'training'), artifacts=artifacts)
+    audit_id = _run_integrity_audit(client, scheduler, project_id)
+    base = f'/api/v62/projects/{project_id}/material-integrity/audits/{audit_id}'
+    response = client.post(base + '/dedup-plans', json={'scope': 'SAFE_ALL'})
+    assert response.status_code == 201, response.text
+    plan = response.json()
+    assert plan['delete_count'] == 2
+    assert plan['kept_count'] == 2
+    assert plan['protected_item_count'] == 2
+    assert plan['protection_reason_counts'] == {'ACTIVE_TASK_INPUT': 2}
+    queued = client.post(base + f"/dedup-plans/{plan['plan_id']}/execute", json={'confirmation_credential': plan['confirmation_credential']})
+    assert queued.status_code == 202, queued.text
+    assert scheduler.run_once()
+    assert materials.get(original['id']) and materials.get('protected-copy')
+    assert materials.get('safe-copy-a') is None and materials.get('safe-copy-b') is None
+
+
+def test_governance_summary_uses_plan_rules_without_persisting_a_plan(
+    client, seeded_project, tmp_path, monkeypatch
+):
+    project_id, original = seeded_project
+    materials = app_module.material_store(project_id)
+    materials.upsert(_duplicate_material(materials.get(original['id']), 'summary-copy', 'summary.jpg'))
+    repository, artifacts, scheduler = _runtime(tmp_path, monkeypatch)
+    audit_id = _run_integrity_audit(client, scheduler, project_id)
+    before = {path.relative_to(artifacts.root).as_posix() for path in artifacts.root.rglob('*')}
+    summary = material_batches_module.create_material_integrity_plan(
+        project_id, repository.get(audit_id), materials, repository, artifacts,
+        {'scope': 'SAFE_ALL'}, persist=False,
+    )
+    assert summary['delete_count'] == 1
+    assert summary['selected_count'] == 2
+    assert 'plan_id' not in summary and 'confirmation_credential' not in summary
+    assert {path.relative_to(artifacts.root).as_posix() for path in artifacts.root.rglob('*')} == before
+
+
+@pytest.mark.parametrize('all_protected', [False, True])
+def test_conflicting_gt_manual_keeper_preserves_all_protected_identities(
+    client, seeded_project, tmp_path, monkeypatch, all_protected
+):
+    project_id, original = seeded_project
+    materials = app_module.material_store(project_id)
+    materials.upsert_many([_duplicate_material(materials.get(original['id']), image_id, image_id + '.jpg')
+                           for image_id in ['protected-copy', 'manual-keeper', 'safe-copy']])
+    AnnotationRepository(materials.project_path).upsert('manual-keeper', [], annotation_state='confirmed_empty')
+    repository, artifacts, scheduler = _runtime(tmp_path, monkeypatch)
+    protected_ids = [original['id'], 'protected-copy', 'manual-keeper', 'safe-copy'] if all_protected else [original['id'], 'protected-copy']
+    artifacts.atomic_write_json('active-training', 'payload.json', {'train_image_ids': protected_ids})
+    repository.create(TaskRecord.new('active-training', project_id, TaskKind.TRAINING, 'payload.json', 'training'), artifacts=artifacts)
+    audit_id = _run_integrity_audit(client, scheduler, project_id)
+    base = f'/api/v62/projects/{project_id}/material-integrity/audits/{audit_id}'
+    automatic = client.post(base + '/dedup-plans', json={'scope': 'SAFE_ALL'}).json()
+    assert automatic['delete_count'] == 0
+    assert automatic['manual_required_groups'] == 1
+    group_key = automatic['review_groups'][0]['group_key']
+    manual = client.post(base + '/dedup-plans', json={
+        'scope': 'MANUAL_GROUPS', 'group_keys': [group_key],
+        'manual_decisions': {group_key: 'manual-keeper'},
+    })
+    assert manual.status_code == 201, manual.text
+    plan = manual.json()
+    if all_protected:
+        assert plan['delete_count'] == 0 and plan['protected_item_count'] == 4
+        return
+    assert plan['delete_count'] == 1 and plan['kept_count'] == 3
+    queued = client.post(base + f"/dedup-plans/{plan['plan_id']}/execute", json={'confirmation_credential': plan['confirmation_credential']})
+    assert queued.status_code == 202, queued.text
+    assert scheduler.run_once()
+    assert materials.get(original['id']) and materials.get('protected-copy') and materials.get('manual-keeper')
+    assert materials.get('safe-copy') is None
+
+
+@pytest.mark.parametrize('changed_at', ['execute', 'worker'])
+def test_request_only_release_is_revalidated_when_durable_reference_appears(
+    client, seeded_project, tmp_path, monkeypatch, changed_at
+):
+    project_id, original = seeded_project
+    materials = app_module.material_store(project_id)
+    materials.upsert(_duplicate_material(materials.get(original['id']), 'changing-copy', 'changing.jpg'))
+    repository, artifacts, scheduler = _runtime(tmp_path, monkeypatch)
+    artifacts.atomic_write_json('failed-request', 'payload.json', {'train_image_ids': [original['id'], 'changing-copy']})
+    repository.create(TaskRecord.new('failed-request', project_id, TaskKind.TRAINING, 'payload.json', 'training'), artifacts=artifacts)
+    repository.fail_queued_precondition('failed-request', 'input conflict', status=TaskStatus.FAILED)
+    audit_id = _run_integrity_audit(client, scheduler, project_id)
+    base = f'/api/v62/projects/{project_id}/material-integrity/audits/{audit_id}'
+    plan = client.post(base + '/dedup-plans', json={'scope': 'SAFE_ALL'}).json()
+    assert plan['delete_count'] == 1
+    url = base + f"/dedup-plans/{plan['plan_id']}/execute"
+    credential = {'confirmation_credential': plan['confirmation_credential']}
+    if changed_at == 'worker':
+        queued = client.post(url, json=credential)
+        assert queued.status_code == 202, queued.text
+    artifacts.atomic_write_json('failed-request', 'snapshot.json', {'train_image_ids': [original['id'], 'changing-copy']})
+    if changed_at == 'execute':
+        blocked = client.post(url, json=credential)
+        assert blocked.status_code == 409, blocked.text
+        assert 'MATERIAL_INTEGRITY_REFERENCE_CHANGED' in blocked.text
+    else:
+        assert scheduler.run_once()
+        finished = repository.get(queued.json()['task_id'])
+        assert finished.status is TaskStatus.FAILED
+    assert materials.get(original['id']) and materials.get('changing-copy')
 
 
 def test_material_integrity_plan_keeps_snapshot_referenced_identity(

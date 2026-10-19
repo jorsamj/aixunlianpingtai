@@ -44,6 +44,7 @@ on:
       - tests/unit/test_training_duplicate_conflicts.py
       - tests/unit/test_material_reference_reasons.py
       - tests/api/test_material_integrity.py
+      - tests/api/test_training_conflict_governance.py
       - tests/api/test_runtime_router_app_mount.py
       - platform_core/upgrade_guard.py
       - platform_core/video_tasks.py
@@ -154,6 +155,7 @@ jobs:
           tests/api/test_durable_training_controls.py
           tests/api/test_clean_unified_execution_truth.py
           tests/api/test_material_integrity.py
+          tests/api/test_training_conflict_governance.py
           tests/unit/test_material_reference_reasons.py
           tests/api/test_runtime_router_app_mount.py
           tests/api/test_deployment_test_runtime.py

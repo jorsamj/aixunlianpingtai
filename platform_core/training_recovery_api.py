@@ -501,7 +501,7 @@ def training_recovery_router(
     @recovery_router.get("/{task_id}/input-diagnosis")
     def input_diagnosis(project_id: str, task_id: str,
         page: int = Query(default=1, ge=1), limit: int = Query(default=24, ge=1, le=100),
-        query: str = Query(default="", max_length=256)):
+        query: str = Query(default="", max_length=256), issue_type: str = Query(default="", max_length=80)):
         task = require_task(project_id, task_id)
         if project_path_provider is None:
             raise HTTPException(status_code=503, detail="训练输入诊断服务不可用")
@@ -526,13 +526,13 @@ def training_recovery_router(
         current = {"evidence_basis": "current_canonical_annotations", "available": False}
         project = Path(project_path_provider(project_id))
         try:
-            result = diagnose_training_duplicates(project, payload if isinstance(payload, Mapping) else {})
-            current.update(available=True, **result.summary(), **compatibility_page(result, page=page, limit=limit, query=query))
+            result = diagnose_training_duplicates(project, payload if isinstance(payload, Mapping) else {}, current_only=True)
+            current.update(available=True, **result.summary(), **compatibility_page(result, page=page, limit=limit, query=query, issue_type=issue_type))
             reasons = _historical_material_references(project_id, project, task_repository(), artifacts,
                 with_reasons=True, reference_image_ids=[item["image_id"] for item in current["items"]])
             current["items"] = [{**item,
                 "reference_reasons": reasons.get(item["image_id"], []),
-                "protected": bool(reasons.get(item["image_id"])),
+                "protected": any(reason.get('protected', True) for reason in reasons.get(item["image_id"], [])),
                 "thumbnail_url": f"/api/v62/projects/{quote(project_id, safe='')}/training-materials/{quote(item['image_id'], safe='')}/thumbnail",
                 "content_url": f"/api/v61/projects/{quote(project_id, safe='')}/materials/{quote(item['image_id'], safe='')}/content",
             } for item in current["items"]]

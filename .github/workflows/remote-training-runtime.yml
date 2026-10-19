@@ -21,6 +21,10 @@ on:
       - 'platform_core/remote_material_lifecycle.py'
       - 'platform_core/model_artifacts.py'
       - 'platform_core/training_recovery_api.py'
+      - 'platform_core/material_batches.py'
+      - 'platform_core/training_compatibility.py'
+      - 'tests/unit/test_material_reference_reasons.py'
+      - 'tests/unit/test_training_duplicate_conflicts.py'
       - 'node_agent.py'
       - 'platform_core/remote_training_tasks.py'
       - 'platform_core/training_tasks.py'
@@ -234,6 +238,11 @@ jobs:
           tests/unit/test_training_realtime_progress.py
           tests/unit/test_training_precision_contract.py
           tests/unit/test_training_completion_metadata.py
+      - name: Material governance references and training-conflict contracts
+        run: >-
+          python -m pytest -q --confcutdir=tests/unit
+          tests/unit/test_material_reference_reasons.py
+          tests/unit/test_training_duplicate_conflicts.py
       - name: Linux cgroup v2 and process FD resource evidence
         if: runner.os == 'Linux'
         run: >-

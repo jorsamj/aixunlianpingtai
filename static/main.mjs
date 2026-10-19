@@ -17,14 +17,14 @@ import {installExternalAlgorithmPublishRuntime} from './modules/external-algorit
 import {installModelArtifactRuntime} from './modules/model-artifact-runtime.js?v=65009';
 import {installTrainingRecoveryRuntime} from './modules/training-recovery-runtime.js?v=4226389';
 import {installTrainingMaterialPickerRuntime} from './modules/training-material-picker-runtime.js?v=422611';
-import {installTrainingMaterialSummaryRuntime} from './modules/training-material-summary-runtime.js?v=422604';
+import {installTrainingMaterialSummaryRuntime} from './modules/training-material-summary-runtime.js?v=422605';
 import {installTrainingTaskRuntime} from './modules/training-task-runtime.js?v=422607';
 import {installTrainingTaskVisibilityRuntime} from './modules/training-task-visibility-runtime.js?v=4226385';
 import {installTrainingProgressStream} from './modules/training-progress-stream.js?v=422570';
 import {createTrainingDraft, trainingDraftToRequest, trainingBaseVersionFromAlgorithm} from './modules/training-draft.js?v=422511';
 import {installTrainingDraftRuntime} from './modules/training-draft-runtime.js?v=422520';
 import {TRAINING_DRAFT_CONTROL_IDS, installTrainingDraftControls} from './modules/training-draft-controls.js?v=422502';
-import {buildTrainingEngineParameters, buildTrainingStartPayload, installTrainingSubmitRuntime, trainingSubmitReadiness, validateTrainingDevice} from './modules/training-submit.js?v=422599';
+import {benchmarkReuseContext, buildTrainingEngineParameters, buildTrainingStartPayload, installTrainingSubmitRuntime, trainingSubmitReadiness, validateTrainingDevice} from './modules/training-submit.js?v=422599';
 import {installTrainingCreateHydrationRuntime} from './modules/training-create-hydration.js?v=422556';
 import {installAutoLabelPollRuntime} from './modules/auto-label-poll-runtime.js?v=422503';
 import {annotationReviewView, annotationSavePayload, createAnnotationWorkbench, queueWindow} from './modules/annotation-workbench.js?v=422594';
@@ -49,7 +49,7 @@ import {applyExactLabelCodeMatches, bulkSetLabelMapping, buildManualLabelMapping
 import {installResourceDiscoveryRuntime} from './modules/resource-discovery.js?v=422402';
 import {installServiceNodeRuntime} from './modules/service-node-runtime.js?v=422550';
 import {installOverviewTabsRuntime} from './modules/overview-tabs.js?v=4226362';
-import {installMaterialBatchRuntime} from './modules/material-batches.js?v=422406';
+import {installMaterialBatchRuntime} from './modules/material-batches.js?v=422407';
 import {mountPagination, normalizePagination, paginationPageSizes, paginationTokens, renderPagination, validatePageInput} from './modules/pagination.js?v=422603';
 
 const UI_BUILD_VERSION = '42.25.0-dev';
@@ -136,6 +136,7 @@ const trainingMaterialSummaryRuntime = installTrainingMaterialSummaryRuntime({
   getState: () => state,
   projectId: () => state.project?.id,
   trainingDraftRuntime,
+  resolveBenchmarkContext: benchmarkReuseContext,
   notify,
 });
 window.PlatformCore.runtime.trainingMaterialSummaryRuntime = trainingMaterialSummaryRuntime;

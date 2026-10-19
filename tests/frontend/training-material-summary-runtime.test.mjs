@@ -6,8 +6,24 @@ import {
   excludeTrainingMaterialFromDraft,
   trainingCompatibilitySignature,
   trainingMaterialSelectionSignature,
+  updateTrainingGovernanceSelection,
 } from '../../static/modules/training-material-summary-runtime.js';
 import {resolveClientTrainingLabels} from '../../static/modules/training-labels.js';
+
+test('governance selection retains cross-page choices and all-filtered exclusions without hydrating 99 pages', () => {
+  let selected = updateTrainingGovernanceSelection(null, {mode:'page', ids:['a','b'], key:'project/filter/rev', total:2376});
+  selected = updateTrainingGovernanceSelection(selected, {mode:'page', ids:['c'], key:'project/filter/rev', total:2376});
+  assert.deepEqual(selected.image_ids, ['a','b','c']);
+  selected = updateTrainingGovernanceSelection(selected, {mode:'all', key:'project/filter/rev', total:2376});
+  selected = updateTrainingGovernanceSelection(selected, {mode:'toggle', id:'c', checked:false, key:'project/filter/rev', total:2376});
+  assert.equal(selected.count, 2375);
+  assert.equal(selected.all_filtered, true);
+  assert.deepEqual(selected.image_ids, []);
+  assert.deepEqual(selected.excluded_image_ids, ['c']);
+  assert.equal(JSON.stringify(selected).length < 250, true);
+  assert.equal(updateTrainingGovernanceSelection(selected, {mode:'read', key:'other-project/filter/rev', total:1}).count, 0);
+  assert.equal(updateTrainingGovernanceSelection(selected, {mode:'read', key:'project/filter/new-rev', total:2376}).count, 0);
+});
 
 test('selection signature is stable and duplicate independent', () => {
   assert.equal(

@@ -320,6 +320,9 @@ def _selection_summary(
             "WHERE m.processing_status='processed' "
             "ORDER BY m.id"
         ).fetchall()
+        missing_ids = [str(item[0]) for item in database.execute(
+            'SELECT r.id FROM requested_training_material_ids r LEFT JOIN materials m ON m.id=r.id '
+            'WHERE m.id IS NULL ORDER BY r.id')]
 
     processed_ids = [str(item["id"]) for item in processed_rows]
     size_by_id = {
@@ -343,6 +346,7 @@ def _selection_summary(
     return {
         "requested_count": len(image_ids),
         "matched_count": int(row["matched_count"] or 0),
+        "missing_image_ids": missing_ids,
         "selectable_count": selectable_count,
         "eligible_count": eligible_count,
         "pending_annotation_count": max(0, selectable_count - eligible_count),

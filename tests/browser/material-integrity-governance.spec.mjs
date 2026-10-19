@@ -113,7 +113,7 @@ for row in m.list_page(limit=200).items:
   await expect(page.locator('#materialIntegrityTask47')).toContainText('实际删除索引 0');
   await page.screenshot({path:path.join(dir,'delete-queued.png')});
   await page.getByRole('button', {name: '返回审计与选择'}).click();
-  await page.getByRole('button', {name: '批量去重 · 每组保留 1 张'}).click();
+  await page.getByRole('button', {name: '批量去重 · 保留安全身份'}).click();
   await expect(page.getByRole('dialog', {name:'素材删除任务',exact:true})).toBeVisible();
   expect(calls).toBe(2);
   const deleteTaskId=(await page.locator('#materialIntegrityTask47 code').innerText()).replace('Task ID: ','');
@@ -170,6 +170,11 @@ for i in [first['id'],row['id']]:
  a.upsert(i,[{'label':'target','class_id':0,'x1':16,'y1':9,'x2':80,'y2':45}],annotation_state='annotated',annotation_scope=['target'])
 artifacts=app.shared_task_artifacts(); task='train_protected_'+p
 artifacts.atomic_write_json(task,'payload.json',{'train_image_ids':[first['id'],row['id']]})
+# This case tests real immutable dependency, not the retired blanket protection
+# of a FAILED request that never froze. Keep both identities in an actual Snapshot.
+import json
+snapshots=m.project_path/'snapshots'; snapshots.mkdir(exist_ok=True)
+(snapshots/'browser-protected.json').write_text(json.dumps({'train_image_ids':[first['id'],row['id']]}),encoding='utf-8')
 app.shared_task_repository().create(replace(TaskRecord.new(task,p,TaskKind.TRAINING,'payload.json','isolated-protection'),status=TaskStatus.FAILED,error='DUPLICATE_ANNOTATION_CONFLICT'),artifacts=artifacts)
 `);
   const content=await request.get(`/api/v61/projects/${project.id}/materials/${original.id}/content`);expect(content.ok()).toBeTruthy();const before=await content.body();
@@ -190,7 +195,7 @@ app.shared_task_repository().create(replace(TaskRecord.new(task,p,TaskKind.TRAIN
     expect(layout.text.length).toBeGreaterThan(10);
   }
   await page.setViewportSize({width:1366,height:768});
-  await page.getByRole('button',{name:'批量去重 · 每组保留 1 张',exact:true}).click();
+  await page.getByRole('button',{name:'批量去重 · 保留安全身份',exact:true}).click();
   const plan=await (await previewResponse).json();expect(plan.delete_count).toBe(0);expect(plan.protected_groups).toBe(1);expect(plan.preview_items).toHaveLength(2);expect(plan.preview_items.every(item=>item.protection_reasons.length>0)).toBe(true);
   const preview=page.getByRole('dialog',{name:'异常素材删除预览',exact:true});await expect(preview).toContainText('没有可安全删除的素材');await expect(preview.getByRole('button',{name:/确认删除/})).toBeHidden();
   await expect(preview.locator('img')).toHaveCount(2);for(const img of await preview.locator('img').all())await expect.poll(()=>img.evaluate(el=>el.complete&&el.naturalWidth)).toBe(160);
@@ -383,7 +388,7 @@ test('global duplicate governance previews, confirms, reports progress, and inva
   await page.getByRole('button', {name: '重复与异常素材'}).click();
   const auditDialog = page.getByRole('dialog', {name: '重复与异常素材', exact: true});
   await expect(auditDialog).toBeVisible();
-  const globalPreview = auditDialog.getByRole('button', {name: '批量去重 · 每组保留 1 张'});
+  const globalPreview = auditDialog.getByRole('button', {name: '批量去重 · 保留安全身份'});
   await expect(globalPreview).toBeVisible();
   await globalPreview.click();
 

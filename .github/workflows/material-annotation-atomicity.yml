@@ -14,6 +14,9 @@ on:
       - platform_core/annotations.py
       - platform_core/material_repository.py
       - platform_core/material_repository_batch.py
+      - platform_core/material_batches.py
+      - tests/api/test_material_integrity.py
+      - tests/api/test_training_conflict_governance.py
       - platform_core/storage/source_repository.py
       - tests/api/test_annotation_sqlite_dataset_delete_atomicity.py
       - tests/unit/test_annotation_repository_scope.py
@@ -66,6 +69,8 @@ jobs:
           tests/api/test_annotation_sqlite_dataset_delete_atomicity.py
           tests/unit/test_annotation_repository_scope.py
           tests/api/test_material_batching.py
+          tests/api/test_material_integrity.py
+          tests/api/test_training_conflict_governance.py
           tests/api/test_material_repository_connection_lifecycle.py
           tests/api/test_storage_source_repository_connection_lifecycle.py
           tests/api/test_material_selection_atomicity.py

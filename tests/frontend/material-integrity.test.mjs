@@ -5,6 +5,29 @@ import vm from 'node:vm';
 
 const app = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
 
+test('shared API preserves structured governance failure reason and code', async () => {
+  const source=app.split('\n')[1];
+  const context={FormData,fetch:async()=>new Response(JSON.stringify({detail:{code:'MATERIAL_INTEGRITY_PLAN_STALE',message:'标注已变化，请重新预检'}}),{status:409}),result:null};
+  vm.createContext(context);
+  vm.runInContext(source+';result=api("/api/test").catch(error=>({message:error.message,code:error.code}));',context);
+  const error=await context.result;
+  assert.match(error.message,/标注已变化，请重新预检/);
+  assert.equal(error.code,'MATERIAL_INTEGRITY_PLAN_STALE');
+  assert.doesNotMatch(error.message,/object Object/);
+});
+
+test('returning from governance surfaces failed recheck and keeps the current dialog',async()=>{
+  const start=app.indexOf('window.returnMaterialIntegritySelection47=');
+  const end=app.indexOf('window.invalidateMaterialIntegrityGovernance47=',start);
+  const box={hidden:true,textContent:''},messages=[];
+  const context={window:{},state:{materialIntegrityTrainingContext47:{projectId:'p',onReturn:async()=>{throw new Error('当前选择读取失败 HTTP503')}}},
+    pid:()=> 'p',document:{getElementById:()=>box},toast:message=>messages.push(message)};
+  vm.runInNewContext(app.slice(start,end),context);
+  await context.window.returnMaterialIntegritySelection47();
+  assert.equal(box.hidden,false);assert.match(box.textContent,/当前选择读取失败 HTTP503/);
+  assert.deepEqual(messages,['当前选择读取失败 HTTP503']);
+});
+
 test('anomaly delete retains the selection modal and uses a frozen server preview', async () => {
   const start = app.indexOf('window.deleteMaterialIntegrity47=');
   const end = app.indexOf('window.deleteSelectedMaterialIntegrity47=', start);
