@@ -3178,9 +3178,6 @@ def test_weight_extended_metadata_uses_actual_training_and_conversion_input(tmp_
     memory = MemorySecretStore()
     _configure_external(tmp_path, memory)
     service = _service(tmp_path, memory)
-    service.repository.save_config({
-        **service.repository.config(), "publish_original_model": True,
-    })
     discovered = service.discover_artifacts("p1", algorithm, version)
     original = next(row for row in discovered if row["target"] == "original")
     converted = next(row for row in discovered if row["target"] == "rockchip")
