@@ -265,3 +265,19 @@ test('GT selection return prefers batch review over stale group detail',()=>{
     assert.equal(gt,1);assert.equal(group,0);
   });
 });
+
+test('governance return distinguishes audit overview from individual group detail',async()=>{
+  const source=app.slice(app.indexOf('window.returnMaterialIntegritySelection47='),app.indexOf('window.invalidateMaterialIntegrityGovernance47='));
+  const seen=[];
+  const state={materialIntegritySelectionOrigin47:'AUDIT',materialIntegrityGroup47:{taskId:'previous',groupKey:'previous-key'}};
+  const ctx={window:{},state,pid:()=> 'p',document:{getElementById:()=>null},toast:()=>{}};
+  ctx.window.openMaterialIntegrityAudit47=async()=>seen.push('AUDIT');
+  ctx.window.openMaterialIntegrityGroup47=async()=>seen.push('GROUP');
+  vm.runInNewContext(source,ctx);
+  await ctx.window.returnMaterialIntegritySelection47();
+  state.materialIntegritySelectionOrigin47='GROUP';
+  await ctx.window.returnMaterialIntegritySelection47();
+  assert.deepEqual(seen,['AUDIT','GROUP']);
+  const groupOpen=app.slice(app.indexOf('window.openMaterialIntegrityGroup47='),app.indexOf('function updateMaterialIntegritySelection47()'));
+  assert.match(groupOpen,/materialIntegritySelectionOrigin47!=='GT_REVIEW'/);
+});

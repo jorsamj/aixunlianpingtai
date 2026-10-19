@@ -5889,6 +5889,9 @@ materialIntegrityDialog47(Number(plan.included_groups||0)?'重复素材治理预
       if(state.materialIntegritySelectionOrigin47==='GT_REVIEW'&&state.materialIntegrityAudit47?.gtReview47){
         return await window.openGtConflictReview47();
       }
+      if(state.materialIntegritySelectionOrigin47==='AUDIT'){
+        return await window.openMaterialIntegrityAudit47();
+      }
       const group=state.materialIntegrityGroup47;
       if(group)return await window.openMaterialIntegrityGroup47(encodeURIComponent(group.taskId),encodeURIComponent(group.groupKey));
       return await window.openMaterialIntegrityAudit47();
@@ -5948,6 +5951,7 @@ materialIntegrityDialog47(Number(plan.included_groups||0)?'重复素材治理预
     return items.map(item=>`<article><label><input type="checkbox" aria-label="选择 ${esc(item.filename)}" ${(group.allSelected&&!group.excludedImages?.has(String(item.image_id)))||group.selected.has(String(item.image_id))?'checked':''} onchange="toggleMaterialIntegrity47('${esc(item.image_id)}',this.checked)"> 选择图片</label>${materialIntegrityImage47(item)}<div class="material-integrity47-meta"><b>${esc(item.filename)}</b><span>${esc(item.image_id)}</span><small>${esc(item.storage_source_id||'未知来源')} · ${esc(item.annotation_state||'未标注')} · ${(item.boxes||[]).length} 框</small><div class="row"><button class="btn" onclick="openIntegrityAnnotation47('${esc(item.image_id)}')">进入标注</button>${duplicate?`<button class="btn primary" onclick="keepMaterialIntegrity47('${esc(item.image_id)}')">保留这条</button>`:`<button class="btn danger" onclick="deleteMaterialIntegrity47(['${esc(item.image_id)}'])">预览删除</button>`}</div></div></article>`).join('');
   }
   window.openMaterialIntegrityGroup47=async function(taskToken,groupToken){
+    if(state.materialIntegritySelectionOrigin47!=='GT_REVIEW')state.materialIntegritySelectionOrigin47='GROUP';
     const taskId=decodeURIComponent(taskToken),groupKey=decodeURIComponent(groupToken),previous=state.materialIntegrityGroup47,projectAtStart=pid();
     materialIntegrityDialog47('查看原图与 GT 差异',
       '<div class="material-integrity47-group" data-integrity-group-loading><div class="alert soft" role="status" aria-live="polite">正在读取原始图片、正式标注框和历史保护信息…</div><div class="row"><button class="btn" onclick="openGtConflictReview47()">返回批量审核</button></div></div>');
