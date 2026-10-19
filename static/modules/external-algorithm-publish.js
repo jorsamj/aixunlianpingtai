@@ -45,6 +45,47 @@ function escapeHtml(value) {
   }[match]));
 }
 
+export function localChipKey(value) {
+  return String(value || '').replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+}
+
+export function computePlatformTreeRows(platforms = []) {
+  const byId = new Map();
+  for (const item of platforms) {
+    const id = String(item.computePlatformId ?? item.id ?? '').trim();
+    if (!id || byId.has(id)) continue;
+    byId.set(id, {
+      id,
+      name: String(item.computePlatformName || item.name || id),
+      code: String(item.computePlatformCode || item.code || ''),
+      parentId: String(item.parentId ?? '').trim().replace(/^(0|-1)$/, ''),
+      deleted: item.delFlag != null && String(item.delFlag) !== '0',
+    });
+  }
+  return [...byId.values()].map(node => {
+    const ancestors = [];
+    const names = [node.name];
+    const seen = new Set([node.id]);
+    let parent = node.parentId;
+    let active = !node.deleted;
+    while (parent && byId.has(parent) && !seen.has(parent)) {
+      const item = byId.get(parent);
+      ancestors.unshift(parent);
+      names.unshift(item.name);
+      active = active && !item.deleted;
+      seen.add(parent);
+      parent = item.parentId;
+    }
+    if (parent && (seen.has(parent) || !byId.has(parent))) active = false;
+    return {...node, ancestorIds: ancestors, path: names.join(' / '), active};
+  }).sort((a, b) => a.path.localeCompare(b.path, 'zh-CN'));
+}
+
+export function childPlatformChoices(platforms = [], parentId = '') {
+  const parent = String(parentId || '');
+  return computePlatformTreeRows(platforms).filter(row => row.active && row.ancestorIds.includes(parent));
+}
+
 export function normalizePublishConfig(body = {}) {
   const config = body.config || {};
   const mappings = config.target_mappings || {};
@@ -57,10 +98,12 @@ export function normalizePublishConfig(body = {}) {
     targetMappings: Object.fromEntries(TARGETS.map(([key]) => [key, {
       compute_platform_id: mappings[key]?.compute_platform_id || '',
       chip_code: mappings[key]?.chip_code || '',
+      chip_mappings: {...(mappings[key]?.chip_mappings || {})},
       enabled: mappings[key]?.enabled !== false,
     }])),
     storageSources: Array.isArray(body.storage_sources) ? body.storage_sources : [],
     computePlatforms: Array.isArray(body.compute_platforms) ? body.compute_platforms : [],
+    chipDictionary: body.chip_dictionary && typeof body.chip_dictionary === 'object' ? body.chip_dictionary : {},
   };
 }
 
@@ -163,14 +206,37 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
     }
   }
 
-  function computeOptions(selected = '') {
-    const rows = config?.computePlatforms || [];
-    return `<option value="">请选择畅联云厂商 / 算力环境</option>${rows.map(row => {
-      const id = String(row.computePlatformId || row.id || '');
-      const name = row.computePlatformName || row.name || row.computePlatformCode || id;
-      const code = row.computePlatformCode || row.code || '';
-      return `<option value="${escapeHtml(id)}" data-name="${escapeHtml(name)}" data-code="${escapeHtml(code)}" ${id === selected ? 'selected' : ''}>${escapeHtml(name)}${code ? ` · ${escapeHtml(code)}` : ''} · ID ${escapeHtml(id)}</option>`;
-    }).join('')}`;
+  function computeOptions(selected = '', {rootsOnly = false} = {}) {
+    const rows = computePlatformTreeRows(config?.computePlatforms || []);
+    const options = rows.filter(item => item.active && (!rootsOnly || !item.parentId || item.id === selected));
+    return `<option value="">请选择畅联云算力环境</option>${options.map(row =>
+      `<option value="${escapeHtml(row.id)}" data-name="${escapeHtml(row.path)}" data-code="${escapeHtml(row.code)}" ${row.id === selected ? 'selected' : ''}>${escapeHtml(row.path)}${row.code ? ` · ${escapeHtml(row.code)}` : ''} · ID ${escapeHtml(row.id)}</option>`
+    ).join('')}`;
+  }
+
+  function childOptions(parentId, selected = '') {
+    const rows = childPlatformChoices(config?.computePlatforms || [], parentId);
+    return `<option value="">请选择该父级下的子分类</option>${rows.map(row =>
+      `<option value="${escapeHtml(row.id)}" ${row.id === selected ? 'selected' : ''}>${escapeHtml(row.path)} · ID ${escapeHtml(row.id)}</option>`
+    ).join('')}`;
+  }
+
+  function chipRow(code, remoteId, parentId, removable = false) {
+    return `<div class="field" data-publish-chip-row data-local-chip="${escapeHtml(code)}" style="margin-top:8px">
+      <label>本地 ${escapeHtml(code)} → 畅联云子分类</label>
+      <div style="display:flex;gap:8px;align-items:center">
+        <select class="select" data-publish-chip-child style="min-width:0;flex:1">${childOptions(parentId, remoteId)}</select>
+        ${removable ? '<button type="button" class="btn small" data-publish-remove-chip>移除</button>' : ''}
+      </div>
+    </div>`;
+  }
+
+  function chipBindingRows(target, row, parentId) {
+    const suggestions = config?.chipDictionary?.[target] || [];
+    const bound = row.chip_mappings || {};
+    const known = new Set(suggestions.map(localChipKey));
+    const codes = [...new Set([...suggestions, ...Object.keys(bound)].map(localChipKey).filter(Boolean))];
+    return codes.map(code => chipRow(code, bound[code] || bound[code.toLowerCase()] || '', parentId, !known.has(code))).join('');
   }
 
   function storageOptions(selected = '') {
@@ -189,7 +255,8 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
       const selected = String(row.compute_platform_id || '');
       const selectedPlatform = (config?.computePlatforms || []).find(item => String(item.computePlatformId || item.id || '') === selected) || {};
       const selectedName = selectedPlatform.computePlatformName || selectedPlatform.name || selectedPlatform.computePlatformCode || '';
-      const selectedCode = selectedPlatform.computePlatformCode || selectedPlatform.code || row.chip_code || '';
+      const selectedCode = selectedPlatform.computePlatformCode || selectedPlatform.code || '';
+      const hasChipOptions = key !== 'original';
       const enabled = original || row.enabled !== false;
       return `<article class="external-vendor-card ${enabled ? 'enabled' : 'disabled'}" data-publish-target="${escapeHtml(key)}">
         <div class="external-vendor-card-head">
@@ -200,9 +267,17 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
         <p>${escapeHtml(meta.note)}</p>
         <div class="field">
           <label>关联畅联云厂商 / 算力环境</label>
-          <select class="select" data-publish-platform>${computeOptions(selected)}</select>
+          <select class="select" data-publish-platform>${computeOptions(selected, {rootsOnly: key === 'rockchip'})}</select>
         </div>
-        <input type="hidden" data-publish-chip value="${escapeHtml(row.chip_code || selectedCode || '')}">
+        <input type="hidden" data-publish-chip value="${escapeHtml(row.chip_code || '')}">
+        ${hasChipOptions ? `<details class="external-vendor-advanced" data-publish-chip-details ${key === 'rockchip' ? 'open' : ''}>
+          <summary>芯片 / 环境子分类绑定${key === 'rockchip' ? '（RKNN 必须按实际芯片匹配）' : '（按需配置）'}</summary>
+          <div data-publish-chip-rows>${chipBindingRows(key, row, selected)}</div>
+          <div style="display:flex;gap:8px;margin-top:10px">
+            <input class="input" placeholder="添加本地芯片型号（如 RKxxxx）" data-publish-new-chip style="min-width:0;flex:1">
+            <button type="button" class="btn small" data-publish-add-chip>添加绑定</button>
+          </div>
+        </details>` : ''}
         <div class="external-vendor-meta">
           <span>畅联云 ID <code data-vendor-id>${escapeHtml(selected || '未配置')}</code></span>
           <span>平台编码 <code data-vendor-code>${escapeHtml(selectedCode || '-')}</code></span>
@@ -222,7 +297,7 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
       <div class="panel-head external-vendor-panel-head">
         <div>
           <div class="panel-title">厂商对应表</div>
-          <div class="subline">维护“本平台转换厂商 → 畅联云厂商 / 算力环境 ID”的全局对应关系。模型发布时自动按这里取 computePlatformId，不需要每个算法重复配置。</div>
+          <div class="subline">维护“本地转换目标 → 畅联云父级环境 → 真实芯片对应子分类”的全局映射。发布时按产物真实芯片选取 computePlatformId。</div>
         </div>
         <div class="external-vendor-head-actions">
           <span class="pill ${configured ? 'ok' : 'warn'}">已配置 ${configured} / ${TARGETS.length}</span>
@@ -232,7 +307,7 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
       <div class="panel-body">
         <div class="external-vendor-guide">
           <div><span class="external-vendor-guide-icon">通</span><p><b>通用是特殊映射</b><small>训练刚完成、尚未转换的原始模型没有真实硬件厂商，统一使用“通用”对应的畅联云 ID。</small></p></div>
-          <div><span class="external-vendor-guide-icon">厂</span><p><b>转换结果按厂商分流</b><small>RKNN 走瑞芯微，TensorRT 走 NVIDIA，Ascend 走华为；具体芯片型号优先读取真实转换产物。</small></p></div>
+          <div><span class="external-vendor-guide-icon">厂</span><p><b>转换结果按厂商分流</b><small>RKNN 走瑞芯微，TensorRT 走 NVIDIA，Ascend 走华为；具体芯片型号只读取真实转换产物，不能用父分类或名称代替。</small></p></div>
         </div>
         <div class="external-vendor-grid">${mappingRows()}</div>
         <div class="external-vendor-reference">
@@ -260,10 +335,17 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
     const mappings = {};
     for (const row of document.querySelectorAll('[data-publish-target]')) {
       const key = row.dataset.publishTarget;
+      const chipMappings = {};
+      for (const item of row.querySelectorAll('[data-publish-chip-row]')) {
+        const code = localChipKey(item.dataset.localChip);
+        const chosen = item.querySelector('[data-publish-chip-child]')?.value || '';
+        if (code && chosen) chipMappings[code] = chosen;
+      }
       mappings[key] = {
         enabled: key === 'original' ? true : Boolean(row.querySelector('[data-publish-enabled]')?.checked),
         compute_platform_id: row.querySelector('[data-publish-platform]')?.value || '',
         chip_code: row.querySelector('[data-publish-chip]')?.value.trim() || '',
+        chip_mappings: chipMappings,
       };
     }
     return {
@@ -314,6 +396,11 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
       try {
         await window.ExternalAlgorithmPlatformRuntime?.syncNow?.();
         await loadConfig({silent: true});
+        const panel = document.querySelector('[data-external-publish-panel="1"]');
+        if (panel) {
+          panel.outerHTML = panelHtml();
+          bindPanel();
+        }
         notify?.('畅联云厂商 / 算力环境已刷新');
       } catch (error) {
         notify?.(error?.message || error);
@@ -325,7 +412,6 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
     for (const row of document.querySelectorAll('[data-publish-target]')) {
       const enabled = row.querySelector('[data-publish-enabled]');
       const select = row.querySelector('[data-publish-platform]');
-      const chip = row.querySelector('[data-publish-chip]');
       const syncMeta = () => {
         const option = select?.selectedOptions?.[0];
         const id = String(select?.value || '');
@@ -335,12 +421,33 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
         const codeNode = row.querySelector('[data-vendor-code]');
         const nameNode = row.querySelector('[data-vendor-name]');
         if (idNode) idNode.textContent = id || '未配置';
-        if (codeNode) codeNode.textContent = code || chip?.value || '-';
+        if (codeNode) codeNode.textContent = code || '-';
         if (nameNode) nameNode.textContent = name || '尚未关联';
-        if (chip && code) chip.value = code;
+        for (const child of row.querySelectorAll('[data-publish-chip-child]')) {
+          const previous = child.value;
+          child.innerHTML = childOptions(id, previous);
+          if (!child.querySelector('option:checked')) child.value = '';
+        }
       };
       if (select) select.onchange = syncMeta;
       if (enabled) enabled.onchange = () => row.classList.toggle('disabled', !enabled.checked);
+      const add = row.querySelector('[data-publish-add-chip]');
+      if (add) add.onclick = () => {
+        const input = row.querySelector('[data-publish-new-chip]');
+        const code = localChipKey(input?.value);
+        if (!/^[A-Z0-9]{2,64}$/.test(code)) return notify?.('请填写有效的芯片型号或环境编号');
+        if ([...row.querySelectorAll('[data-publish-chip-row]')].some(node => localChipKey(node.dataset.localChip) === code)) {
+          return notify?.('该型号已在当前转换环境中列出');
+        }
+        row.querySelector('[data-publish-chip-rows]')?.insertAdjacentHTML('beforeend',
+          chipRow(code, '', select?.value || '', true));
+        if (input) input.value = '';
+      };
+      row.onclick = event => {
+        if (event.target.closest('[data-publish-remove-chip]')) {
+          event.target.closest('[data-publish-chip-row]')?.remove();
+        }
+      };
     }
   }
 
