@@ -352,3 +352,37 @@ for image_id,task_id,target in [(${JSON.stringify(f.ids[0])},'review-approved','
   const result=await request.get(`/api/v62/projects/${f.project.id}/material-integrity/audits/${freshId}/conflict-review`);
   expect(result.ok()).toBeTruthy();expect((await result.json()).total_groups).toBe(0);
 });
+
+
+test('GT review can explicitly discard all unprotected conflict identities through existing frozen Worker',async({page,request})=>{
+  const f=await fixture(request);
+  const audit=await request.post(`/api/v62/projects/${f.project.id}/material-integrity/audits`);
+  expect(audit.status()).toBe(202);
+  const auditId=(await audit.json()).task_id;
+  runIsolatedBatch(f.project.id,auditId);
+  await openDraft(page,f);
+  await page.evaluate(()=>closeModal());
+  await page.evaluate(async()=>await window.openMaterialIntegrityAudit47());
+  await page.locator('[data-gt-bulk-review]').click();
+  const review=page.locator('.modal:not(.hidden) .gt-review-workbench');
+  await expect(review.locator('[data-gt-review-discard]')).toHaveCount(1);
+  await review.locator('[data-gt-review-discard]').check();
+  await expect(review.locator('[data-gt-review-count]')).toContainText('已选批量放弃 1 组');
+  page.once('dialog',dialog=>dialog.accept());
+  await review.locator('[data-gt-review-discard-selected]').click();
+  const plan=await page.evaluate(()=>state.materialIntegrityPlan47);
+  expect(plan.discard_mode).toBe(true);
+  expect(plan.delete_count).toBe(2);
+  expect(plan.preview_groups[0].keeper_image_id).toBe('');
+  const execute=page.getByRole('button',{name:'确认删除 2 条索引',exact:true});
+  await expect(execute).toBeVisible();
+  await execute.click();
+  await expect(page.locator('#materialIntegrityTask47')).toContainText('排队中');
+  const taskId=await page.evaluate(()=>state.materialIntegrityTask47.task_id);
+  runIsolatedBatch(f.project.id,taskId);
+  await expect(page.locator('#materialIntegrityTask47')).toContainText('实际删除索引 2');
+  const remaining=JSON.parse(isolatedPython(f.project.id,`import app,json
+m=app.material_store(${JSON.stringify(f.project.id)})
+print(json.dumps([m.get(${JSON.stringify(f.ids[0])}) is None,m.get('duplicate-copy') is None]))`));
+  expect(remaining).toEqual([true,true]);
+});

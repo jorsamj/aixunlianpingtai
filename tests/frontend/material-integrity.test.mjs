@@ -140,3 +140,23 @@ test('annotation conflicts use an explicit keeper decision instead of direct bul
   assert.match(owner, /manualDecisions/);
   assert.doesNotMatch(owner, /runMaterialBatch62/);
 });
+
+
+test('GT review uses only visible modal ownership, offers explicit discard and asynchronous status', () => {
+  assert.match(app, /function activeMaterialIntegrityRoot47\(selector\)/);
+  assert.match(app, /activeMaterialIntegrityRoot47\('\.gt-review-workbench'\)/);
+  assert.match(app, /data-gt-review-discard-selected/);
+  assert.match(app, /data-gt-review-discard-all/);
+  assert.match(app, /data-gt-review-progress/);
+  assert.match(app, /confirm_discard_conflicts:true/);
+  assert.match(app, /scope='DISCARD_CONFLICTS'|previewMaterialIntegrityGovernance47\('DISCARD_CONFLICTS'/);
+  assert.match(app, /groupKeys:keys/);
+});
+
+test('audit acceptance leaves visible progress and uses existing material batch polling owner', () => {
+  assert.match(app, /materialIntegrityAuditProgressDialog47/);
+  assert.match(app, /window.updateMaterialIntegrityAudit47=function\(task\)/);
+  assert.match(app, /id="materialIntegrityAuditProgress47"/);
+  assert.match(app, /data-integrity-audit-open/);
+  assert.doesNotMatch(app.slice(app.indexOf('window.startMaterialIntegrityAudit47='), app.indexOf('function materialIntegrityDuplicate47')), /closeModal\(\)/);
+});
