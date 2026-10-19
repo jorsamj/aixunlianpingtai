@@ -12,7 +12,7 @@ const TARGETS = [
 
 const VENDOR_META = {
   original: {mark: '通', scene: '原始训练模型', note: '训练完成但尚未转换的模型统一走“通用”对应关系。', required: true},
-  rockchip: {mark: 'RK', scene: 'RKNN 转换', note: '当前产品支持 RK3568 / RK3576；具体芯片型号始终以真实转换产物为准。'},
+  rockchip: {mark: 'RK', scene: 'RKNN 转换', note: '芯片字典包含 RK3568 / RK3576 / RK3578 等可绑定身份；具体可转换能力和实际芯片以转换运行时及产物为准。'},
   tensorrt: {mark: 'NV', scene: 'TensorRT 转换', note: '用于 NVIDIA GPU / TensorRT 交付产物。'},
   ascend: {mark: '昇', scene: 'Ascend / OM', note: '用于华为 Ascend 转换产物。'},
   sophon: {mark: '算', scene: 'Sophon / BModel', note: '用于算能转换产物。'},
@@ -233,10 +233,11 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
 
   function chipBindingRows(target, row, parentId) {
     const suggestions = config?.chipDictionary?.[target] || [];
-    const bound = row.chip_mappings || {};
+    const bound = Object.fromEntries(Object.entries(row.chip_mappings || {})
+      .map(([code, id]) => [localChipKey(code), id]));
     const known = new Set(suggestions.map(localChipKey));
     const codes = [...new Set([...suggestions, ...Object.keys(bound)].map(localChipKey).filter(Boolean))];
-    return codes.map(code => chipRow(code, bound[code] || bound[code.toLowerCase()] || '', parentId, !known.has(code))).join('');
+    return codes.map(code => chipRow(code, bound[code] || '', parentId, !known.has(code))).join('');
   }
 
   function storageOptions(selected = '') {

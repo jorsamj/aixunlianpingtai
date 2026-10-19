@@ -27,7 +27,7 @@ def compute_platform_catalog(rows: Iterable[Mapping[str, Any]]) -> dict[str, dic
         if not isinstance(source, Mapping):
             raise ValueError("算力环境记录必须是对象")
         row = dict(source)
-        node_id = str(row.get("computePlatformId") or row.get("id") or "").strip()
+        node_id = str(row.get("computePlatformId") or row.get("compute_platform_id") or row.get("id") or "").strip()
         if not node_id or node_id in catalog:
             raise ValueError("算力环境 ID 缺失或重复")
         catalog[node_id] = row

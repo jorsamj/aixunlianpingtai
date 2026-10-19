@@ -3417,3 +3417,19 @@ def test_existing_remote_weight_id_cannot_silently_move_to_new_chip_node(tmp_pat
         })
     assert captured.value.code == "EXTERNAL_WEIGHT_PLATFORM_REMAP_REVIEW_REQUIRED"
     assert repo.artifact_publication("artifact-chip")["compute_platform_id"] == "rk-edge"
+
+
+def test_direct_child_selected_without_explicit_chip_binding_is_not_chip_identity(tmp_path: Path):
+    _seed_external_algorithm(tmp_path)
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _hierarchical_compute_cache(tmp_path)
+    service = _service(tmp_path, memory)
+    # An old direct-category selection cannot be treated as RK3576 just
+    # because the class has a name resembling a hardware model.
+    service.save_config(ExternalPublishConfigPayload(target_mappings={
+        "rockchip": TargetMapping(compute_platform_id="rk-3568", chip_code="RK3568"),
+    }))
+    result = service._artifact_mapping_state({"target": "rockchip", "chip_code": "RK3576"})
+    assert result["status"] == "blocked"
+    assert result["code"] == "EXTERNAL_COMPUTE_CHIP_MAPPING_REQUIRED"

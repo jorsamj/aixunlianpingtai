@@ -24,6 +24,7 @@ from .compute_platform_catalog import (
     compute_platform_catalog,
     compute_platform_has_children,
     compute_platform_is_descendant,
+    compute_platform_parent,
     local_chip_key,
 )
 from .errors import PlatformError
@@ -1904,12 +1905,16 @@ class ExternalAlgorithmPublishService:
                 return self._blocked_chip_state(error.code, error.message, error.solution)
             return {**state, "mapping": {**mapping, "compute_platform_id": valid[actual_chip]},
                     "detail": valid[actual_chip]}
-        if target == "rockchip" and compute_platform_has_children(self._compute_catalog(), parent):
-            return self._blocked_chip_state(
-                "EXTERNAL_COMPUTE_CHIP_MAPPING_REQUIRED",
-                f"瑞芯微 {actual_chip} 尚未绑定父分类下的具体子分类",
-                "现有父级绑定不能代表具体芯片，请选择该父级下对应的子分类。",
-            )
+        if target == "rockchip":
+            catalog = self._compute_catalog()
+            is_parent = compute_platform_has_children(catalog, parent)
+            is_leaf = compute_platform_parent(catalog.get(parent, {})) != ""
+            if is_parent or is_leaf:
+                return self._blocked_chip_state(
+                    "EXTERNAL_COMPUTE_CHIP_MAPPING_REQUIRED",
+                    f"瑞芯微 {actual_chip} 尚未显式绑定具体子分类",
+                    "请先选择一级父分类，再绑定本地芯片和实际子分类；不能直接把已有子分类当作任意芯片。",
+                )
         # Historical flat mappings stay compatible. New hierarchical Rockchip
         # environments must use an explicit chip mapping and never guess a child.
         return state
