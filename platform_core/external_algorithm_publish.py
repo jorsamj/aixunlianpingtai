@@ -2170,8 +2170,8 @@ class ExternalAlgorithmPublishService:
                 value = metadata[source]
                 if isinstance(value, int) and 32 <= value <= 8192:
                     payload[field] = value
-        yolo_version = str(metadata.get("yolo_version") or "").strip().lower()
-        if re.fullmatch(r"yolov\d+[nsmlx]", yolo_version):
+        yolo_version = str(metadata.get("yolo_version") or "").strip()
+        if re.fullmatch(r"YOLOv\d+[nsmlx]", yolo_version):
             payload["yoloVersion"] = yolo_version
         if "tags" in metadata and isinstance(metadata["tags"], list):
             payload["tags"] = list(metadata["tags"])
