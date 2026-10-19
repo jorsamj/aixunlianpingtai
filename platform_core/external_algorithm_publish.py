@@ -1550,12 +1550,81 @@ class ExternalAlgorithmPublishService:
         return any(str(job.get("status") or "").strip().lower() in ACTIVE_CONVERSION_STATUSES for job in self._conversion_jobs(project_id, algorithm_id, version_id))
 
     @staticmethod
-    def _weight_model_metadata(version: Mapping[str, Any], conversion_params: Mapping[str, Any] | None = None) -> Dict[str, Any]:
-        """Only transmit input shape/YOLO lineage confirmed by source records.
+    def _yolo_architecture(version: Mapping[str, Any], algorithm: Mapping[str, Any] | None = None) -> str:
+        """Resolve exact YOLO generation AND scale from immutable training lineage.
 
-        Never use the training shape for a converted artifact that has a
-        different input_size; unknown metadata remains omitted, not invented.
+        Fine-tuned versions commonly use best.pt as their base, so walk their
+        explicit base_version_id chain, never guess a scale from v11 alone.
         """
+        versions = {
+            str(row.get("id") or ""): row
+            for row in (algorithm or {}).get("versions", [])
+            if isinstance(row, Mapping) and str(row.get("id") or "")
+        }
+        seen: set[str] = set()
+        current: Mapping[str, Any] = version
+        for _ in range(len(versions) + 1):
+            current_id = str(current.get("id") or "")
+            if current_id:
+                if current_id in seen:
+                    break
+                seen.add(current_id)
+            lineage = current.get("training_lineage") or {}
+            lineage = lineage if isinstance(lineage, Mapping) else {}
+            base = lineage.get("base") or {}
+            base = base if isinstance(base, Mapping) else {}
+            for candidate in (current.get("yolo_version"), base.get("model")):
+                name = Path(str(candidate or "").replace("\\", "/")).name
+                name = re.sub(r"\.pt$", "", name, flags=re.IGNORECASE)
+                match = re.fullmatch(r"yolo(?:v)?(\d+)([nsmlx])", name, re.IGNORECASE)
+                if match:
+                    return f"YOLOv{match.group(1)}{match.group(2).lower()}"
+            parent_id = str(
+                current.get("base_version_id")
+                or base.get("version_id")
+                or ""
+            ).strip()
+            if not parent_id or parent_id in seen or parent_id not in versions:
+                break
+            current = versions[parent_id]
+        return ""
+
+    @staticmethod
+    def _frozen_weight_labels(version: Mapping[str, Any]) -> list[str] | None:
+        """The model classes are frozen at training, not today's project catalog."""
+        codes = version.get("label_codes")
+        schema = version.get("label_schema")
+        frozen_codes: list[str] | None = None
+        if isinstance(schema, list) and schema:
+            if not all(isinstance(row, Mapping) and str(row.get("code") or "").strip() for row in schema):
+                return None
+            try:
+                ordered = sorted(schema, key=lambda row: int(row.get("class_id", 10**9)))
+            except (TypeError, ValueError, OverflowError):
+                return None
+            frozen_codes = [str(row["code"]).strip() for row in ordered]
+            if len(set(frozen_codes)) != len(frozen_codes):
+                return None
+        if isinstance(codes, list) and codes:
+            if not all(isinstance(code, str) and code.strip() for code in codes):
+                return None
+            declared = [code.strip() for code in codes]
+            if len(set(declared)) != len(declared):
+                return None
+            if frozen_codes is not None and set(declared) != set(frozen_codes):
+                return None
+            return frozen_codes if frozen_codes is not None else declared
+        return frozen_codes
+
+    @classmethod
+    def _weight_model_metadata(
+        cls,
+        version: Mapping[str, Any],
+        conversion_params: Mapping[str, Any] | None = None,
+        *,
+        algorithm: Mapping[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        """Resolve weight facts from the frozen training and conversion contracts."""
         result: Dict[str, Any] = {}
         lineage = version.get("training_lineage") or {}
         lineage = lineage if isinstance(lineage, Mapping) else {}
@@ -1583,20 +1652,12 @@ class ExternalAlgorithmPublishService:
         except (TypeError, ValueError, OverflowError):
             pass
 
-        explicit = str(version.get("yolo_version") or "").strip().lower()
-        base = lineage.get("base") or {}
-        model_name = str(base.get("model") or "") if isinstance(base, Mapping) else ""
-        detected = re.search(r"yolo(?:v)?(\d+)", model_name, re.IGNORECASE)
-        if re.fullmatch(r"v\d+", explicit):
-            result["yolo_version"] = explicit
-        elif detected:
-            result["yolo_version"] = f"v{detected.group(1)}"
-
-        # An absent list means no change. [] is an explicit clear only when
-        # version metadata actually supplied an empty list.
-        tags = version.get("tags")
-        if isinstance(tags, list) and all(isinstance(tag, str) for tag in tags):
-            result["tags"] = list(dict.fromkeys(tag.strip() for tag in tags if tag.strip()))
+        architecture = cls._yolo_architecture(version, algorithm)
+        if architecture:
+            result["yolo_version"] = architecture
+        labels = cls._frozen_weight_labels(version)
+        if labels:
+            result["tags"] = labels
         return result
 
     def discover_artifacts(self, project_id: str, algorithm: Mapping[str, Any], version: Mapping[str, Any]) -> list[Dict[str, Any]]:
@@ -1652,7 +1713,7 @@ class ExternalAlgorithmPublishService:
                 "sha256": digest,
                 "size_bytes": path.stat().st_size,
                 "chip_code": chip_identity,
-                "weight_metadata": self._weight_model_metadata(version, conversion_params),
+                "weight_metadata": self._weight_model_metadata(version, conversion_params, algorithm=algorithm),
             })
         return result
 
@@ -2110,7 +2171,7 @@ class ExternalAlgorithmPublishService:
                 if isinstance(value, int) and 32 <= value <= 8192:
                     payload[field] = value
         yolo_version = str(metadata.get("yolo_version") or "").strip().lower()
-        if re.fullmatch(r"v\d+", yolo_version):
+        if re.fullmatch(r"yolov\d+[nsmlx]", yolo_version):
             payload["yoloVersion"] = yolo_version
         if "tags" in metadata and isinstance(metadata["tags"], list):
             payload["tags"] = list(metadata["tags"])

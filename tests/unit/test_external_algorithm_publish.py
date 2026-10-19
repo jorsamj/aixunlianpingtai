@@ -3169,7 +3169,12 @@ def test_weight_extended_metadata_uses_actual_training_and_conversion_input(tmp_
         "base": {"model": "yolo11n.pt"},
         "parameters": {"actual": {"imgsz": 800}},
     }
-    version["tags"] = ["smoke", "fire"]
+    version["label_schema"] = [
+        {"class_id": 0, "code": "smoke"},
+        {"class_id": 1, "code": "fire"},
+    ]
+    version["label_codes"] = ["smoke", "fire"]
+    version["tags"] = ["unrelated-ui-tag"]
     output = _seed_conversion(tmp_path, target="rockchip", job_id="convert-size-640")
     job_path = _project_dir(tmp_path, "p1") / "deployment/jobs/convert-size-640/job.json"
     job = json.loads(job_path.read_text(encoding="utf-8"))
@@ -3183,11 +3188,11 @@ def test_weight_extended_metadata_uses_actual_training_and_conversion_input(tmp_
     converted = next(row for row in discovered if row["target"] == "rockchip")
     assert original["weight_metadata"] == {
         "image_width": 800, "image_height": 800,
-        "yolo_version": "v11", "tags": ["smoke", "fire"],
+        "yolo_version": "YOLOv11n", "tags": ["smoke", "fire"],
     }
     assert converted["weight_metadata"] == {
         "image_width": 640, "image_height": 640,
-        "yolo_version": "v11", "tags": ["smoke", "fire"],
+        "yolo_version": "YOLOv11n", "tags": ["smoke", "fire"],
     }
     for artifact in (original, converted):
         payload = service._weight_artifact_payload({
@@ -3198,7 +3203,7 @@ def test_weight_extended_metadata_uses_actual_training_and_conversion_input(tmp_
         })
         assert payload["fileSize"] == artifact["size_bytes"]
         assert payload["fileSha256"] == artifact["sha256"]
-        assert payload["yoloVersion"] == "v11"
+        assert payload["yoloVersion"] == "YOLOv11n"
         assert payload["tags"] == ["smoke", "fire"]
     assert original["source_path"] == str(model.resolve())
     assert converted["source_path"] == str(output.resolve())
@@ -3215,4 +3220,53 @@ def test_weight_extended_metadata_never_invents_unknown_values():
     assert payload["fileSha256"] == "f" * 64
     assert payload["fileSize"] == 32
     assert not set(payload).intersection({"imageWidth", "imageHeight", "yoloVersion", "tags"})
-    assert ExternalAlgorithmPublishService._weight_model_metadata({"tags": []})["tags"] == []
+    assert "tags" not in ExternalAlgorithmPublishService._weight_model_metadata({"tags": []})
+    assert "yolo_version" not in ExternalAlgorithmPublishService._weight_model_metadata({
+        "yolo_version": "v11",
+    })
+
+
+def test_weight_tags_use_frozen_training_classes_and_not_project_metadata():
+    version = {
+        "label_schema": [
+            {"class_id": 1, "code": "fire"},
+            {"class_id": 0, "code": "smoke"},
+        ],
+        "label_codes": ["smoke", "fire"],
+        "tags": ["generic", "wrong-user-tag"],
+        "training_lineage": {"base": {"model": "/models/yolo11n.pt"}},
+    }
+    values = ExternalAlgorithmPublishService._weight_model_metadata(version)
+    assert values["tags"] == ["smoke", "fire"]
+    assert values["yolo_version"] == "YOLOv11n"
+    assert ExternalAlgorithmPublishService._frozen_weight_labels({
+        **version, "label_codes": ["smoke", "helmet"],
+    }) is None
+    assert "tags" not in ExternalAlgorithmPublishService._weight_model_metadata({
+        "tags": ["not-model-label"],
+    })
+
+
+def test_weight_yolo_architecture_follows_version_lineage_for_best_pt_iterations():
+    initial = {
+        "id": "v1", "training_lineage": {"base": {"model": "yolo11s.pt"}},
+    }
+    second = {
+        "id": "v2", "base_version_id": "v1",
+        "training_lineage": {"base": {"model": "best.pt", "version_id": "v1"}},
+    }
+    third = {
+        "id": "v3", "base_version_id": "v2",
+        "training_lineage": {"base": {"model": "best.pt", "version_id": "v2"}},
+    }
+    algorithm = {"versions": [initial, second, third]}
+    assert ExternalAlgorithmPublishService._yolo_architecture(third, algorithm) == "YOLOv11s"
+    assert ExternalAlgorithmPublishService._yolo_architecture(second, algorithm) == "YOLOv11s"
+    assert ExternalAlgorithmPublishService._yolo_architecture(third) == ""
+    assert ExternalAlgorithmPublishService._yolo_architecture({
+        "id": "v1", "base_version_id": "v1",
+        "training_lineage": {"base": {"model": "best.pt"}},
+    }, algorithm) == ""
+    assert ExternalAlgorithmPublishService._yolo_architecture({
+        "training_lineage": {"base": {"model": "yolov8m.pt"}},
+    }) == "YOLOv8m"
