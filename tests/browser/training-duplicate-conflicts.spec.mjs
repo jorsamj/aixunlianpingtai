@@ -370,6 +370,7 @@ test('GT review can explicitly discard all unprotected conflict identities throu
   await expect(review.locator('[data-gt-review-count]')).toContainText('已选批量放弃 1 组');
   page.once('dialog',dialog=>dialog.accept());
   await review.locator('[data-gt-review-discard-selected]').click();
+  await expect.poll(()=>page.evaluate(()=>state.materialIntegrityPlan47?.discard_mode)).toBe(true);
   const plan=await page.evaluate(()=>state.materialIntegrityPlan47);
   expect(plan.discard_mode).toBe(true);
   expect(plan.delete_count).toBe(2);
