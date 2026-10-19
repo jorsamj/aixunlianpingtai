@@ -1881,7 +1881,7 @@ class ExternalAlgorithmPublishService:
         actual_chip = local_chip_key(artifact.get("chip_code"))
         if target == "rockchip" and not actual_chip:
             return self._blocked_chip_state(
-                "MODEL_ARTIFACT_CHIP_REQUIRED", "RKNN 产物缺少真实芯片身份",
+                "MODEL_ARTIFACT_CHIP_REQUIRED", "RKNN 产物缺少芯片身份：缺少真实转换硬件身份",
                 "请检查转换任务的 chip/soc_version，不能从畅联云分类名称反推芯片。",
             )
         bindings = mapping.get("chip_mappings") or {}

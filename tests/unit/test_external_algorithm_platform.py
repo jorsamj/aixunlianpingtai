@@ -2050,7 +2050,15 @@ def test_compute_platform_catalog_rejects_cycles_orphans_and_duplicate_ids():
 
 
 def test_compute_platform_list_all_explicitly_requests_children():
-    session = FakeSession()
+    class ComputePlatformSession:
+        def __init__(self):
+            self.calls = []
+
+        def request(self, method, url, **kwargs):
+            self.calls.append((method, url, kwargs))
+            return FakeResponse({"code": 200, "data": []})
+
+    session = ComputePlatformSession()
     client = _authenticated_mutation_client(session)
     client.compute_platforms()
     _, path, kwargs = session.calls[-1]
