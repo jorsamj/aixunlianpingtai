@@ -22,6 +22,16 @@
 - **范围**：本批关闭类别分数、诊断及F1的已证实缺口；总体分数前置修复和正式Val优先级不重复修改。Snapshot v3/manifest/图像/隐藏GT的既有verifier及训练最终归档调用保持不变，真实文件/篡改与Worker回归通过，不把静态连线检查当成全部实测。相机来源/近重复、协议现场输入及97%生产模型尚不能宣告验收。
 - **提交/CI**：提交后记录实际代码SHA；只以最终HEAD的全部实际触发Actions/Jobs为验收。CI原始证据位于 `C:/Users/jorsam/.codex/visualizations/2026/10/19/tq04-class-boundaries/`，它是本文的测试附件，不是另一份专项问题清单。
 
+### 同批 P0-3：Snapshot/YAML 冻结合同补缺
+
+- **首批代码提交**：`2f6a19bfce1605baca6fa4e92606bf9149178328`；类别指标与报告展示的代码及本地验收已完成，后续提交不借用该SHA的CI结果。
+- **真实缺陷**：用现有 `test_portable_dataset::_source` 创建真实JPEG/YOLO包，修改Snapshot类别而不更新manifest SHA，完整verifier仍通过（远端resolver会拒绝）；修改data.yaml的names或Train/Val路径时，两入口均误通过。训练最终归档只调用完整verifier，存在冻结身份与实际执行类别/划分不一致风险。定向先跑12场景为11 failed/1 passed；没有操作真实素材。
+- **修复位置**：只改 `training_tasks.py` 已有construction/full verifier；完整验证补Snapshot SHA与身份检查，同文件私有YAML合同片段由原两入口共享。对manifest≥3且Snapshot≥3核对冻结类别目录、原生成器path/train/val布局及禁止Test进入训练YAML。仍逐文件验证图片/隐藏GT；不创建第二验证器、Owner或并行绑定字段，不改变划分、GT、Snapshot及调度。
+- **历史兼容**：严格YAML合同仅适用已有v3冻结证据；旧Snapshot/manifest保留原布局与缺字段语义，不偷偷重写或升级。独立复核实际验证manifest2缺Snapshot SHA与schema2自定义布局继续通过；这些旧数据不因此获得bundle_verified新证明。
+- **新增/复用测试**：同一原测试文件增加6种真实篡改×本地/远端2入口；原17项portable测试通过。短路径运行portable、bundle cache/isolation、Worker、input-integrity chain、metric credibility/evaluation、报告API八文件：150 passed/3 skipped，日志 `C:/Users/jorsam/.codex/tmp/tq04-bundle-metadata-final-20261019.log`；全部新篡改场景实际执行。3跳过不计通过，待对应Ubuntu测试执行核验。
+- **如实保留本地差异**：扩大初跑为43 passed/2 failed/2 skipped（`tq04-bundle-metadata-green-20261019.log`），两失败分别为既有Windows手动8 Workers超过4上限，以及默认长临时目录WinError206。原资源代码/用例本轮未修改，不为全绿取消限制；改用新短目录后cache/chain通过，手动8 Workers差异沿用既有审计且不冒充本地全仓通过。该Linux专项以最终Ubuntu CI为准。
+- **独立复核**：确认v3问题关闭，旧格式兼容；无剩余可报告P0/P1/P2。本轮未访问生产，实际97%任务、A800、相机邻帧/未知来源仍待现场。
+
 - 仓库：`jorsamj/aixunlianpingtai`；唯一长期开发分支：`feature/external-algorithm-publishing`。
 - 开发起点 HEAD：`e30a676276b741d14c30e1674edf5fc86a6e377b`；正式 `VERSION.txt`：`42.24.356`（不得擅改）。
 - 本文为**跨会话持久化的唯一专项进度入口**。每一项必须写明复现证据、影响边界、修复提交、测试结果及后续事项。

@@ -110,6 +110,32 @@ def test_manifest_resolver_rejects_path_traversal(tmp_path: Path):
         resolve_dataset_yaml(manifest)
 
 
+@pytest.mark.parametrize("mutation", ["snapshot", "names", "train", "val", "path", "test"])
+@pytest.mark.parametrize("entrypoint", [verify_portable_dataset, resolve_remote_training_bundle])
+def test_portable_verifier_rejects_frozen_metadata_drift(tmp_path, mutation, entrypoint):
+    project, rows, snapshot = _source(tmp_path)
+    snapshot["schema_version"] = 3
+    bundle = materialize_portable_dataset(
+        tmp_path / "task", snapshot, rows,
+        lambda row: project / "uploads" / row["stored_name"],
+    )
+    if mutation == "snapshot":
+        frozen = bundle / "snapshot.json"
+        value = json.loads(frozen.read_text(encoding="utf-8"))
+        value["label_schema"][0]["code"] = "wrong-class"
+        frozen.write_text(json.dumps(value), encoding="utf-8")
+    else:
+        data_path = bundle / "dataset" / "data.yaml"
+        data = yaml.safe_load(data_path.read_text(encoding="utf-8"))
+        data[mutation] = {
+            "names": {0: "wrong-class"}, "train": "images/validation",
+            "val": "images/test", "path": "..", "test": "images/test",
+        }[mutation]
+        data_path.write_text(yaml.safe_dump(data), encoding="utf-8")
+    with pytest.raises(ValueError, match="snapshot|YAML"):
+        entrypoint(bundle / "manifest.json")
+
+
 def test_real_materialized_test_bytes_bind_to_immutable_snapshot_and_hidden_gt(tmp_path: Path):
     """Not just a synthetic digest: verify the exact created image/GT files."""
     from platform_core.training_evaluation import (

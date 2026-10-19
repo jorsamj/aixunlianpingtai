@@ -791,6 +791,30 @@ def materialize_runtime_yaml(manifest_path: str | Path, destination: str | Path)
     return output
 
 
+def _verify_portable_training_yaml(path: Path, manifest: Mapping[str, Any], snapshot: Mapping[str, Any]) -> None:
+    """Check the existing v3 training layout against its frozen class catalog."""
+    if str(snapshot.get("snapshot_id") or "") != str(manifest.get("snapshot_id") or ""):
+        raise ValueError("portable training snapshot identity mismatch")
+    # Old snapshots have no complete class contract. Do not upgrade or
+    # reinterpret their training layout during historical recovery.
+    if int(manifest.get("schema_version") or 0) < 3 or int(snapshot.get("schema_version") or 0) < 3:
+        return
+    data_path = resolve_dataset_yaml(path)
+    data = yaml.safe_load(data_path.read_text(encoding="utf-8"))
+    if not isinstance(data, Mapping):
+        raise ValueError("portable training YAML must be a mapping")
+    schema = snapshot.get("label_schema") or []
+    names = {int(row["class_id"]): str(row["code"]) for row in schema}
+    if not names or len(names) != len(schema) or data.get("names") != names:
+        raise ValueError("portable training YAML names differ from frozen snapshot")
+    if any(data.get(key) != value for key, value in (
+        ("path", "."), ("train", "images/train"), ("val", "images/validation"),
+    )) or "test" in data:
+        raise ValueError("portable training YAML split paths violate frozen isolation")
+    if "nc" in data and data["nc"] != len(names):
+        raise ValueError("portable training YAML class count differs from frozen snapshot")
+
+
 def _verify_materialized_dataset_evidence(manifest_path: str | Path) -> dict[str, Any]:
     # Fresh copies SHA256 the exact source bytes while streaming them into their
     # isolated temporary destination; reused destinations are SHA256 checked
@@ -804,6 +828,7 @@ def _verify_materialized_dataset_evidence(manifest_path: str | Path) -> dict[str
     if not snapshot.is_file() or not expected_snapshot or _sha256(snapshot) != expected_snapshot:
         raise ValueError("portable training snapshot SHA256 mismatch")
     snapshot_value = json.loads(snapshot.read_text(encoding="utf-8"))
+    _verify_portable_training_yaml(path, manifest, snapshot_value)
     revision = _resolve_relative(
         path.parent,
         str(manifest.get("dataset_revision_ref") or ""),
@@ -849,7 +874,13 @@ def verify_portable_dataset(manifest_path: str | Path) -> dict[str, Any]:
     snapshot_path = _resolve_relative(path.parent, str(manifest.get("snapshot_ref") or ""))
     if not snapshot_path.is_file():
         raise FileNotFoundError("portable training snapshot does not exist")
+    expected_snapshot = str(manifest.get("snapshot_sha256") or "")
+    if (expected_snapshot or int(manifest.get("schema_version") or 0) >= 3) and (
+        not expected_snapshot or _sha256(snapshot_path) != expected_snapshot
+    ):
+        raise ValueError("portable training snapshot SHA256 mismatch")
     snapshot_value = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    _verify_portable_training_yaml(path, manifest, snapshot_value)
     revision_id = str(manifest.get("dataset_revision_id") or "").strip()
     if revision_id:
         revision_path = _resolve_relative(
