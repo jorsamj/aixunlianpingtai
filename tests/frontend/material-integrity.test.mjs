@@ -238,7 +238,7 @@ test('governance preview is not gated on an error box and cannot overwrite a rep
   const audit={task:{task_id:'a'},projectId:'p'};
   const ctx={window:{},pid:()=> 'p',state:{materialIntegrityAudit47:audit},
     api:()=>response,toast:()=>{},activeMaterialIntegrityRoot47:()=>null,
-    document:{querySelectorAll:()=>[modal]},showMaterialIntegrityPlan47:()=>{rendered++;},
+    document:{querySelectorAll:()=>[modal],getElementById:()=>null},showMaterialIntegrityPlan47:()=>{rendered++;},
     decorateIntegrityPlan47:()=>{}};
   vm.runInNewContext(source,ctx);
   const first=ctx.window.previewMaterialIntegrityGovernance47('DISCARD_CONFLICTS',{confirmDiscardConflicts:true});
