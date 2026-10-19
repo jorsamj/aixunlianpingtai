@@ -293,3 +293,33 @@ def test_test_binding_level_is_backend_evidence_not_a_high_score_inference():
     assert unavailable["independent_test_binding_level"] == "unavailable"
     assert "independent_test_input_binding_unverified" in unavailable["reason_codes"]
     assert strict["diagnostic_id"] != limited["diagnostic_id"]
+
+
+@pytest.mark.parametrize("invalid", [float("nan"), float("inf"), -0.01, 1.01, True, "invalid"])
+def test_successful_independent_test_rejects_invalid_numeric_metrics(invalid):
+    with pytest.raises(ValueError, match="not a finite unit score"):
+        build_evaluation_truth(
+            {"status": "succeeded", "metrics": {"metrics/mAP50(B)": invalid}},
+            task_id="tq-04-invalid-test-metric",
+        )
+
+
+def test_failed_evaluation_omits_invalid_metrics_without_inventing_zero():
+    result = build_evaluation_truth(
+        {
+            "status": "failed",
+            "metrics": {"metrics/mAP50(B)": float("nan"), "metrics/recall(B)": 0.0},
+        },
+        task_id="tq-04-failed-metric",
+    )
+    assert result["status"] == "failed"
+    assert "metrics/mAP50(B)" not in result["metrics"]
+    assert result["metrics"]["metrics/recall(B)"] == 0.0
+
+
+def test_successful_evaluation_preserves_genuine_zero_metric():
+    result = build_evaluation_truth(
+        {"status": "succeeded", "metrics": {"metrics/mAP50(B)": 0.0}},
+        task_id="tq-04-genuine-zero",
+    )
+    assert result["metrics"]["metrics/mAP50(B)"] == 0.0

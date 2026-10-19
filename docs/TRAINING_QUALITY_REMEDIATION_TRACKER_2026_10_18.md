@@ -213,3 +213,12 @@
 - **修复对象明确**：只调整原有集成测试的模拟训练结果，由当前任务已物化、冻结且本身进入 verifier 的 `work/bundle/manifest.json` 读取 `splits.test` 数量，并把 `image_count` 写入模拟的成功 Test 记录。不降低 `build_evaluation_truth` 对真正成功评测的数量门禁，不给生产代码加特殊路径。
 - **防退化断言**：完整训练准备/训练归档一体化测试核实 `image_count=2`、`benchmark_scope.binding_level=bundle_verified`、`test_image_count=2`，以及 `result.json` 与归档算法版本使用相同 Test scope。测试使用人工生成的模拟 mAP，并不代表用户那次 97% 训练是真实精度。
 - **验收**：须以包含这项修复的实际 HEAD 上 Ubuntu/Windows 的 `Remote Training Runtime` 及其他 GitHub CI 工作流结果为准。仍不部署生产、不修改或删除生产素材、GT、Snapshot、历史模型；VERSION 仍为 42.24.356。
+
+
+## TQ-04 第三阶段｜独立 Test 指标数值真相门禁（2026-10-19）
+
+- **新确认的代码缺陷**：`build_evaluation_truth` 原来对已提供但非法的 Test 指标使用 `_finite(...)` 的 0.0 默认值。即使评测结果声称 `status=succeeded`，`NaN`、`Infinity`、非法字符串或布尔值也可能被归档成看似实测的 0.0；负数或超过 1 的数值也没有阻断。此问题不能通过前端隐藏解决。
+- **最小修复**：仅在现有 `platform_core/training_evaluation.py::build_evaluation_truth` 标准化入口核验 4 种总体目标检测指标；成功 Test 中如出现非有限、非数值、布尔或不在 [0,1] 的已提供指标，明确拒绝归档。失败/未请求评测则保留原状态但不再把非法值写成 0.0；合法的真实 0.0 仍保留。缺失指标继续缺失，不凭空生成。未改独立 Test 绑定、Snapshot、训练数据或旧持久化报告。
+- **定向测试**：在现有 `tests/unit/test_training_metric_credibility.py` 增加 6 类非法成功指标、失败评测非法值不伪补零、真实零值保持三类回归。无新的评分模块、API、前端状态或适配层。
+- **代码与测试基准 SHA**：`f950bc8390944aa2f93163282478eb067f64bc84`；该基准 SHA 的 GitHub Actions **23/23 工作流成功、61/61 Job 成功**（实际触发，非全仓所有工作流）。本次修复提交的 SHA、CI 结果须随后按远端实际提交追加，不能沿用基准的全绿结论。
+- **待核验**：新修复 SHA 的 Python/Node/浏览器相关 CI，以及 A800 实际任务证据；真实 97% 训练任务仍缺独立 Test 现场输入与误报漏报证据。未部署生产、未修改 `VERSION.txt`、未动历史数据。

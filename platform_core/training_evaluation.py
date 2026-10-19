@@ -657,10 +657,23 @@ def build_evaluation_truth(
     revision = _sha256_identity(dataset_revision_id, "dataset_revision_id")
     model_digest = _sha256_identity(model_sha256, "model_sha256")
     raw_metrics = raw.get("metrics") if isinstance(raw.get("metrics"), Mapping) else {}
-    metrics = {
-        key: round(_finite(raw_metrics.get(key)), 6)
-        for key in _EVALUATION_METRICS if raw_metrics.get(key) is not None
-    }
+    # Invalid evidence must never become an apparently measured 0.0.
+    # Reject bad metrics from successful Test runs, while retaining failed or
+    # unavailable historical results without manufacturing numeric scores.
+    metrics = {}
+    for key in _EVALUATION_METRICS:
+        value = raw_metrics.get(key)
+        if value is None:
+            continue
+        try:
+            numeric = float(value) if not isinstance(value, bool) else None
+        except (TypeError, ValueError, OverflowError):
+            numeric = None
+        if numeric is None or not math.isfinite(numeric) or not 0 <= numeric <= 1:
+            if status == "succeeded":
+                raise ValueError(f"evaluation {key} is not a finite unit score")
+            continue
+        metrics[key] = round(numeric, 6)
     per_class = []
     for row in list(raw.get("per_class") or [])[:10000]:
         if not isinstance(row, Mapping):
