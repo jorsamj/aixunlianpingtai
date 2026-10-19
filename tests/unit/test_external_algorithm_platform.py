@@ -1957,3 +1957,30 @@ def test_bulk_analysis_index_never_overrides_authoritative_detail_training_statu
     assert algorithm["external_analysis_ids"] == []
     assert algorithm["external_analyses"][0]["status"] == "0"
     assert service.current_sync_operation("bulk-detail-truth")["analysis_list_source"] == "list_all"
+
+
+def test_weight_new_dto_fields_preserve_null_versus_explicit_empty_tags():
+    from platform_core.external_algorithm_platform import ChangLianWeightMutationPayload
+    full = ChangLianWeightMutationPayload(
+        algoVersionId=501, computePlatformId=91, imageWidth=800, imageHeight=640,
+        yoloVersion="v11", fileSize=14567890, fileSha256="a" * 64,
+        tags=["smoke", "fire"],
+    )
+    payload = full.model_dump(exclude_none=True)
+    assert payload["imageWidth"] == 800
+    assert payload["imageHeight"] == 640
+    assert payload["fileSize"] == 14567890
+    assert payload["fileSha256"] == "a" * 64
+    assert payload["tags"] == ["smoke", "fire"]
+    assert "tags" not in ChangLianWeightMutationPayload(algoVersionId=501).model_dump(exclude_none=True)
+    assert ChangLianWeightMutationPayload(algoVersionId=501, tags=[]).model_dump(exclude_none=True)["tags"] == []
+
+    session = MutationSession()
+    client = _authenticated_mutation_client(session)
+    client.weight_create(payload)
+    _, url, kwargs = session.calls[-1]
+    assert url.endswith("/internal/algorithm/algorithm-weight/add")
+    assert kwargs["json"]["imageWidth"] == 800
+    assert kwargs["json"]["tags"] == ["smoke", "fire"]
+    client.weight_edit({"weightId": 71, "algoVersionId": 501, "tags": []})
+    assert session.calls[-1][2]["json"]["tags"] == []

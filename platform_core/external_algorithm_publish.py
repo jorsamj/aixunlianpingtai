@@ -1549,15 +1549,65 @@ class ExternalAlgorithmPublishService:
     def conversion_active(self, project_id: str, algorithm_id: str, version_id: str) -> bool:
         return any(str(job.get("status") or "").strip().lower() in ACTIVE_CONVERSION_STATUSES for job in self._conversion_jobs(project_id, algorithm_id, version_id))
 
+    @staticmethod
+    def _weight_model_metadata(version: Mapping[str, Any], conversion_params: Mapping[str, Any] | None = None) -> Dict[str, Any]:
+        """Only transmit input shape/YOLO lineage confirmed by source records.
+
+        Never use the training shape for a converted artifact that has a
+        different input_size; unknown metadata remains omitted, not invented.
+        """
+        result: Dict[str, Any] = {}
+        lineage = version.get("training_lineage") or {}
+        lineage = lineage if isinstance(lineage, Mapping) else {}
+        parameters = lineage.get("parameters") or {}
+        parameters = parameters if isinstance(parameters, Mapping) else {}
+        actual = parameters.get("actual") or {}
+        actual = actual if isinstance(actual, Mapping) else {}
+        if conversion_params is None:
+            raw_shape = actual.get("imgsz")
+            width = height = raw_shape
+        else:
+            params = conversion_params
+            width = params.get("input_width")
+            height = params.get("input_height")
+            if width is None or height is None:
+                size = params.get("input_size")
+                if isinstance(size, (list, tuple)) and len(size) == 2:
+                    width, height = size
+                else:
+                    width = height = size
+        try:
+            width, height = int(width), int(height)
+            if 32 <= width <= 8192 and 32 <= height <= 8192:
+                result.update(image_width=width, image_height=height)
+        except (TypeError, ValueError, OverflowError):
+            pass
+
+        explicit = str(version.get("yolo_version") or "").strip().lower()
+        base = lineage.get("base") or {}
+        model_name = str(base.get("model") or "") if isinstance(base, Mapping) else ""
+        detected = re.search(r"yolo(?:v)?(\d+)", model_name, re.IGNORECASE)
+        if re.fullmatch(r"v\d+", explicit):
+            result["yolo_version"] = explicit
+        elif detected:
+            result["yolo_version"] = f"v{detected.group(1)}"
+
+        # An absent list means no change. [] is an explicit clear only when
+        # version metadata actually supplied an empty list.
+        tags = version.get("tags")
+        if isinstance(tags, list) and all(isinstance(tag, str) for tag in tags):
+            result["tags"] = list(dict.fromkeys(tag.strip() for tag in tags if tag.strip()))
+        return result
+
     def discover_artifacts(self, project_id: str, algorithm: Mapping[str, Any], version: Mapping[str, Any]) -> list[Dict[str, Any]]:
         algorithm_id = str(algorithm.get("id") or "")
         version_id = str(version.get("id") or "")
         config = self.repository.config()
-        candidates: list[tuple[str, Path, str]] = []
+        candidates: list[tuple[str, Path, str, Mapping[str, Any] | None]] = []
         if bool(config.get("publish_original_model")):
             raw = next((str(version.get(key) or "").strip() for key in ("stored_path", "best_path", "last_path", "path") if str(version.get(key) or "").strip()), "")
             if raw:
-                candidates.append(("original", Path(raw).expanduser(), ""))
+                candidates.append(("original", Path(raw).expanduser(), "", None))
         for job in self._conversion_jobs(project_id, algorithm_id, version_id):
             status = str(job.get("status") or "").strip().lower()
             if status and status not in SUCCESSFUL_CONVERSION_STATUSES:
@@ -1572,10 +1622,10 @@ class ExternalAlgorithmPublishService:
                 if raw:
                     output_path = Path(raw).expanduser()
                     if _is_publishable_conversion_output(target, output_path):
-                        candidates.append((target, output_path, chip))
+                        candidates.append((target, output_path, chip, params if isinstance(params, Mapping) else {}))
         dedupe: set[tuple[str, str, str]] = set()
         result: list[Dict[str, Any]] = []
-        for target, path, chip in candidates:
+        for target, path, chip, conversion_params in candidates:
             try:
                 path = path.resolve()
             except (OSError, RuntimeError):
@@ -1602,6 +1652,7 @@ class ExternalAlgorithmPublishService:
                 "sha256": digest,
                 "size_bytes": path.stat().st_size,
                 "chip_code": chip_identity,
+                "weight_metadata": self._weight_model_metadata(version, conversion_params),
             })
         return result
 
@@ -2002,7 +2053,8 @@ class ExternalAlgorithmPublishService:
             "source_path": str(artifact["source_path"]),
             "sha256": str(artifact.get("source_sha256") or artifact.get("sha256") or ""),
             "size_bytes": int(artifact["size_bytes"]),
-            "metadata": {"chip_code": str(artifact.get("chip_code") or "")},
+            "metadata": {"chip_code": str(artifact.get("chip_code") or ""),
+                         **dict(artifact.get("weight_metadata") or {})},
         }
         stored = self._reuse_uploaded_model_asset(artifact) or self.model_assets.ensure_uploaded(discovered)
         if str(stored.get("storage_status") or "").upper() != "UPLOADED":
@@ -2030,17 +2082,38 @@ class ExternalAlgorithmPublishService:
             stored = self.model_assets.repository.patch(
                 str(stored["artifact_id"]), public_url=public_url,
             )
-        return stored
+        # Include fresh verified input metadata even when the OSS file is
+        # reused; the canonical object bytes and identity remain unchanged.
+        return {**stored, "metadata": {**dict(stored.get("metadata") or {}), **discovered["metadata"]}}
 
     @staticmethod
-    def _weight_artifact_payload(artifact: Mapping[str, Any]) -> Dict[str, str]:
+    def _weight_artifact_payload(artifact: Mapping[str, Any]) -> Dict[str, Any]:
         target = str(artifact.get("target") or "").strip().lower()
         chip_code = _canonical_chip_code(artifact.get("remote_chip_code") or "")
-        payload: Dict[str, str] = {
+        payload: Dict[str, Any] = {
             "computePlatformId": str(artifact.get("compute_platform_id") or "").strip(),
             "fileName": str(artifact.get("file_name") or "").strip(),
             "filePath": str(artifact.get("public_url") or "").strip(),
         }
+        if artifact.get("size_bytes") is not None:
+            size = int(artifact["size_bytes"])
+            if size > 0:
+                payload["fileSize"] = size
+        digest = str(artifact.get("sha256") or "").strip().lower()
+        if re.fullmatch(r"[0-9a-f]{64}", digest):
+            payload["fileSha256"] = digest
+        metadata = artifact.get("metadata") or {}
+        metadata = metadata if isinstance(metadata, Mapping) else {}
+        for field, source in (("imageWidth", "image_width"), ("imageHeight", "image_height")):
+            if source in metadata:
+                value = metadata[source]
+                if isinstance(value, int) and 32 <= value <= 8192:
+                    payload[field] = value
+        yolo_version = str(metadata.get("yolo_version") or "").strip().lower()
+        if re.fullmatch(r"v\d+", yolo_version):
+            payload["yoloVersion"] = yolo_version
+        if "tags" in metadata and isinstance(metadata["tags"], list):
+            payload["tags"] = list(metadata["tags"])
         if chip_code:
             payload["chipCode"] = chip_code
         missing = [field for field in ("computePlatformId", "fileName", "filePath") if not payload.get(field)]
@@ -2057,7 +2130,7 @@ class ExternalAlgorithmPublishService:
         return payload
 
     @classmethod
-    def _weight_payload(cls, artifact: Mapping[str, Any], external_version_id: str) -> Dict[str, str]:
+    def _weight_payload(cls, artifact: Mapping[str, Any], external_version_id: str) -> Dict[str, Any]:
         payload = {
             "algoVersionId": str(external_version_id or "").strip(),
             **cls._weight_artifact_payload(artifact),
@@ -2233,7 +2306,7 @@ class ExternalAlgorithmPublishService:
         )
 
     def _sync_weight(self, artifact: Mapping[str, Any], external_version_id: str, client: PublishingChangLianClient) -> Dict[str, Any]:
-        current = self._artifact_projection(str(artifact["artifact_id"])) or dict(artifact)
+        current = {**(self._artifact_projection(str(artifact["artifact_id"])) or {}), **dict(artifact)}
         attempts = int(current.get("attempts") or 0) + 1
         mapping = self.repository.patch_artifact_publication(
             str(current["artifact_id"]),

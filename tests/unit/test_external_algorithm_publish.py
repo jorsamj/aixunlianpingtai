@@ -3159,3 +3159,60 @@ def test_remote_delete_timeout_fails_closed_when_version_still_exists(tmp_path: 
     assert blocked.value.code == "EXTERNAL_VERSION_DELETE_FAILED"
     assert TimeoutBeforeDeletePublishingClient.version_removes == 1
     assert TimeoutBeforeDeletePublishingClient.versions[0]["algoVersionId"] == "remote-version-still-there"
+
+
+def test_weight_extended_metadata_uses_actual_training_and_conversion_input(tmp_path):
+    model = _seed_external_algorithm(tmp_path)
+    algorithm = list_algorithms(_algorithms_file(tmp_path, "p1"))[0]
+    version = algorithm["versions"][0]
+    version["training_lineage"] = {
+        "base": {"model": "yolo11n.pt"},
+        "parameters": {"actual": {"imgsz": 800}},
+    }
+    version["tags"] = ["smoke", "fire"]
+    output = _seed_conversion(tmp_path, target="rockchip", job_id="convert-size-640")
+    job_path = _project_dir(tmp_path, "p1") / "deployment/jobs/convert-size-640/job.json"
+    job = json.loads(job_path.read_text(encoding="utf-8"))
+    job["params"]["input_size"] = 640
+    job_path.write_text(json.dumps(job), encoding="utf-8")
+    service = _service(tmp_path, MemorySecretStore())
+    service.repository.save_config({
+        **service.repository.config(), "publish_original_model": True,
+    })
+    discovered = service.discover_artifacts("p1", algorithm, version)
+    original = next(row for row in discovered if row["target"] == "original")
+    converted = next(row for row in discovered if row["target"] == "rockchip")
+    assert original["weight_metadata"] == {
+        "image_width": 800, "image_height": 800,
+        "yolo_version": "v11", "tags": ["smoke", "fire"],
+    }
+    assert converted["weight_metadata"] == {
+        "image_width": 640, "image_height": 640,
+        "yolo_version": "v11", "tags": ["smoke", "fire"],
+    }
+    for artifact in (original, converted):
+        payload = service._weight_artifact_payload({
+            **artifact, "compute_platform_id": "91",
+            "public_url": f"https://models.example/{artifact['file_name']}",
+            "metadata": artifact["weight_metadata"],
+        })
+        assert payload["fileSize"] == artifact["size_bytes"]
+        assert payload["fileSha256"] == artifact["sha256"]
+        assert payload["yoloVersion"] == "v11"
+        assert payload["tags"] == ["smoke", "fire"]
+    assert original["source_path"] == str(model.resolve())
+    assert converted["source_path"] == str(output.resolve())
+
+
+def test_weight_extended_metadata_never_invents_unknown_values():
+    metadata = ExternalAlgorithmPublishService._weight_model_metadata({"id": "legacy"})
+    assert metadata == {}
+    payload = ExternalAlgorithmPublishService._weight_artifact_payload({
+        "target": "original", "compute_platform_id": "91", "file_name": "best.pt",
+        "public_url": "https://models.example/best.pt",
+        "sha256": "f" * 64, "size_bytes": 32, "metadata": {},
+    })
+    assert payload["fileSha256"] == "f" * 64
+    assert payload["fileSize"] == 32
+    assert not set(payload).intersection({"imageWidth", "imageHeight", "yoloVersion", "tags"})
+    assert ExternalAlgorithmPublishService._weight_model_metadata({"tags": []})["tags"] == []
