@@ -56,7 +56,9 @@ test('unknown image dimensions never produce an untrustworthy SVG', () => {
 test('terminal task truth does not describe a cleared Worker lease as still waiting', () => {
   const start=app.indexOf('window.updateMaterialIntegrityTask47=');
   const end=app.indexOf('window.selectMaterialIntegrityGroups47=',start);
-  const box={innerHTML:''},context={window:{},state:{},pid:()=> 'p',esc:String,document:{getElementById:()=>box}};
+  const box={innerHTML:''},modal={},root={dataset:{integrityDeleteTaskId:'deleted'},closest:()=>modal,querySelector:()=>box};
+  const context={window:{},state:{},pid:()=> 'p',esc:String,
+    activeMaterialIntegrityRoot47:()=>root,document:{querySelectorAll:()=>[modal]}};
   vm.runInNewContext(app.slice(start,end),context);
   context.window.updateMaterialIntegrityTask47({task_id:'deleted',operation:'DELETE_INDEX',status:'PARTIAL_SUCCESS',total:5,processed:5,succeeded:4,failed:1,worker_id:null});
   assert.match(box.innerHTML,/部分成功/);
@@ -68,8 +70,10 @@ test('terminal task truth does not describe a cleared Worker lease as still wait
 test('successful task status never fabricates 100 percent if counters disagree', () => {
   const start = app.indexOf('window.updateMaterialIntegrityTask47=');
   const end = app.indexOf('window.selectMaterialIntegrityGroups47=', start);
-  const box = {innerHTML: ''};
-  const context = {window: {}, state: {}, pid: () => 'p', esc: String, document: {getElementById: () => box}};
+  const box = {innerHTML: ''},modal={};
+  const root={dataset:{integrityDeleteTaskId:'inconsistent'},closest:()=>modal,querySelector:()=>box};
+  const context={window:{},state:{},pid:()=> 'p',esc:String,
+    activeMaterialIntegrityRoot47:()=>root,document:{querySelectorAll:()=>[modal]}};
   vm.runInNewContext(app.slice(start, end), context);
   context.window.updateMaterialIntegrityTask47({
     task_id: 'inconsistent', operation: 'DELETE_INDEX', status: 'SUCCEEDED',
@@ -178,4 +182,86 @@ test('audit progress without a numeric backend value stays indeterminate', () =>
   const progress=app.slice(app.indexOf('window.updateMaterialIntegrityAudit47='),app.indexOf('window.startMaterialIntegrityAudit47='));
   assert.match(progress,/task\.progress_percent==null\?NaN/);
   assert.match(progress,/progress\.removeAttribute\('value'\)/);
+});
+
+test('latest durable Full Audit lookup is shared by material UI and training precheck', () => {
+  const open=app.slice(app.indexOf('window.openMaterialIntegrityAudit47='),app.indexOf('async function loadMaterialIntegrityClassification47'));
+  const training=app.slice(app.indexOf('window.previewTrainingIntegrityGovernance47='),app.indexOf('window.updateTrainingIntegrityAudit47='));
+  for(const owner of [open,training]){
+    assert.match(owner,/material-integrity\/audits\/latest/);
+    assert.doesNotMatch(owner,/material-batches\?limit=50/);
+  }
+});
+
+test('audit progress rejects other Task IDs, even from the same project', () => {
+  const source=app.slice(app.indexOf('window.updateMaterialIntegrityAudit47='),app.indexOf('window.startMaterialIntegrityAudit47='));
+  const modal={},box={textContent:''},progress={value:0,removeAttribute(name){this.removed=name;}};
+  const button={hidden:true},retry={hidden:true};
+  const root={dataset:{integrityAuditTaskId:'audit-current'},closest:()=>modal,
+    querySelector:selector=>selector==='#materialIntegrityAuditProgress47'?box:selector==='progress'?progress:
+      selector==='[data-integrity-audit-open]'?button:selector==='[data-integrity-audit-retry]'?retry:null};
+  const context={window:{},pid:()=> 'project-one',activeMaterialIntegrityRoot47:()=>root,
+    document:{querySelectorAll:()=>[modal]}};
+  vm.runInNewContext(source,context);
+  context.window.updateMaterialIntegrityAudit47({task_id:'audit-old',project_id:'project-one',operation:'AUDIT_MATERIAL_INTEGRITY',status:'FAILED'});
+  assert.equal(box.textContent,'');
+  context.window.updateMaterialIntegrityAudit47({task_id:'audit-current',project_id:'project-one',operation:'AUDIT_MATERIAL_INTEGRITY',status:'FAILED'});
+  assert.match(box.textContent,/审计失败/);
+  assert.equal(retry.hidden,false);
+  assert.equal(button.hidden,true);
+});
+
+test('delete progress rejects task updates owned by another modal or task',()=>{
+  const source=app.slice(app.indexOf('window.updateMaterialIntegrityTask47='),app.indexOf('window.selectMaterialIntegrityGroups47='));
+  const modal={},anotherModal={},box={innerHTML:''};
+  const root={dataset:{integrityDeleteTaskId:'delete-A'},closest:()=>modal,querySelector:()=>box};
+  const ctx={window:{},state:{},pid:()=> 'p',esc:String,
+    activeMaterialIntegrityRoot47:()=>root,document:{querySelectorAll:()=>[modal]}};
+  vm.runInNewContext(source,ctx);
+  const task=(id)=>({task_id:id,operation:'DELETE_INDEX',project_id:'p',status:'RUNNING',total:5,processed:1});
+  ctx.window.updateMaterialIntegrityTask47(task('delete-B'));
+  assert.equal(box.innerHTML,'');
+  ctx.document.querySelectorAll=()=>[modal,anotherModal];
+  ctx.window.updateMaterialIntegrityTask47(task('delete-A'));
+  assert.equal(box.innerHTML,'');
+  ctx.document.querySelectorAll=()=>[modal];
+  ctx.window.updateMaterialIntegrityTask47(task('delete-A'));
+  assert.match(box.innerHTML,/delete-A/);
+});
+
+test('governance preview is not gated on an error box and cannot overwrite a replaced modal',async()=>{
+  const source=app.slice(app.indexOf('window.previewMaterialIntegrityGovernance47='),app.indexOf('window.previewTrainingIntegrityGovernance47='));
+  let resolvePlan;
+  const response=new Promise(resolve=>{resolvePlan=resolve;});
+  const pane={isConnected:true},body={firstElementChild:pane},modal={isConnected:true,querySelector:()=>body};
+  let rendered=0;
+  const audit={task:{task_id:'a'},projectId:'p'};
+  const ctx={window:{},pid:()=> 'p',state:{materialIntegrityAudit47:audit},
+    api:()=>response,toast:()=>{},activeMaterialIntegrityRoot47:()=>null,
+    document:{querySelectorAll:()=>[modal]},showMaterialIntegrityPlan47:()=>{rendered++;},
+    decorateIntegrityPlan47:()=>{}};
+  vm.runInNewContext(source,ctx);
+  const first=ctx.window.previewMaterialIntegrityGovernance47('DISCARD_CONFLICTS',{confirmDiscardConflicts:true});
+  resolvePlan({delete_count:2});
+  await first;
+  assert.equal(rendered,1,'GT review has no preexisting error box and must still render the frozen plan');
+  const second=ctx.window.previewMaterialIntegrityGovernance47('SAFE_ALL');
+  // New navigation replaced the same modal body while its request was in flight.
+  body.firstElementChild={isConnected:true};
+  await second;
+  assert.equal(rendered,1);
+});
+
+test('GT selection return prefers batch review over stale group detail',()=>{
+  const source=app.slice(app.indexOf('window.returnMaterialIntegritySelection47='),app.indexOf('window.invalidateMaterialIntegrityGovernance47='));
+  let gt=0,group=0;
+  const ctx={window:{},state:{materialIntegritySelectionOrigin47:'GT_REVIEW',
+    materialIntegrityAudit47:{gtReview47:{}},materialIntegrityGroup47:{taskId:'a',groupKey:'k'}},
+    pid:()=> 'p',document:{getElementById:()=>null},toast:()=>{}};
+  ctx.window.openGtConflictReview47=async()=>{gt++};
+  ctx.window.openMaterialIntegrityGroup47=async()=>{group++};
+  vm.runInNewContext(source,ctx);
+  return ctx.window.returnMaterialIntegritySelection47().then(()=>{
+    assert.equal(gt,1);assert.equal(group,0);
+  });
 });

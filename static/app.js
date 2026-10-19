@@ -5471,6 +5471,7 @@ const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
     return [...document.querySelectorAll('.modal:not(.hidden) '+selector)].at(-1)||null;
   }
   window.openGtConflictReview47=async function(cursor=''){
+    state.materialIntegritySelectionOrigin47='GT_REVIEW';
     const audit=state.materialIntegrityAudit47;if(!audit?.task?.task_id)return toast('请先完成项目素材审计');
     if(audit.projectId!==pid())return;
     const review=audit.gtReview47||={decisions:{},discardGroups:new Set(),observation:'',batch:'',sequence:0},sequence=++review.sequence;
@@ -5571,15 +5572,19 @@ materialIntegrityDialog47('GT冲突 · 分类与批量审核',`<div class="mater
       }
     }
   };
-  function materialIntegrityAuditProgressDialog47(){
+  function materialIntegrityAuditProgressDialog47(taskId=''){
     materialIntegrityDialog47('素材完整性审计 · 任务进度',
-      '<div class="material-integrity47-running" data-integrity-audit-progress><div class="alert soft" id="materialIntegrityAuditProgress47" role="status" aria-live="polite">正在提交审计任务…</div><progress max="100" aria-label="素材审计处理进度"></progress><div class="row"><button class="btn" data-integrity-audit-open hidden onclick="openMaterialIntegrityAudit47()">查看审计结果</button><button class="btn" onclick="closeModal()">关闭 · 后台继续</button></div></div>');
+      '<div class="material-integrity47-running" data-integrity-audit-progress><div class="alert soft" id="materialIntegrityAuditProgress47" role="status" aria-live="polite">正在提交审计任务…</div><progress max="100" aria-label="素材审计处理进度"></progress><div class="row"><button class="btn primary" data-integrity-audit-retry hidden onclick="startMaterialIntegrityAudit47()">重新运行 Full Audit</button><button class="btn" data-integrity-audit-open hidden onclick="openMaterialIntegrityAudit47()">查看审计结果</button><button class="btn" onclick="closeModal()">关闭 · 后台继续</button></div></div>');
+    const root=activeMaterialIntegrityRoot47('[data-integrity-audit-progress]');
+    if(root)root.dataset.integrityAuditTaskId=String(taskId);
+    return root;
   }
   window.updateMaterialIntegrityAudit47=function(task){
     if(String(task?.operation||'')!=='AUDIT_MATERIAL_INTEGRITY')return;
     if(task.project_id&&String(task.project_id)!==String(pid()))return;
     const root=activeMaterialIntegrityRoot47('[data-integrity-audit-progress]');
-    if(!root)return;
+    if(!root||root.dataset.integrityAuditTaskId!==String(task.task_id||''))return;
+    if(root.closest('.modal')!==[...document.querySelectorAll('.modal:not(.hidden)')].at(-1))return;
     const box=root.querySelector('#materialIntegrityAuditProgress47');
     const value=task.progress_percent==null?NaN:Number(task.progress_percent);
     const total=Number(task.total||0),processed=Number(task.processed||0);
@@ -5595,27 +5600,34 @@ materialIntegrityDialog47('GT冲突 · 分类与批量审核',`<div class="mater
     }
     const open=root.querySelector('[data-integrity-audit-open]');
     if(open)open.hidden=active||task.status!=='SUCCEEDED';
+    const retry=root.querySelector('[data-integrity-audit-retry]');
+    if(retry)retry.hidden=!['FAILED','CANCELLED','PARTIAL_SUCCESS'].includes(String(task.status||''));
   };
   window.startMaterialIntegrityAudit47=async function(){
+    if(state.materialIntegrityAuditSubmitting47)return;
+    state.materialIntegrityAuditSubmitting47=true;
     const projectAtStart=pid();
-    materialIntegrityAuditProgressDialog47();
+    const root=materialIntegrityAuditProgressDialog47();
     try{
       const task=await api(`/api/v62/projects/${projectAtStart}/material-integrity/audits`,{method:'POST'});
       if(pid()!==projectAtStart)return;
       state.materialIntegrityAuditStale47=false;
-      window.updateMaterialIntegrityAudit47(task);
+      if(root?.isConnected&&root===activeMaterialIntegrityRoot47('[data-integrity-audit-progress]')){
+        root.dataset.integrityAuditTaskId=String(task.task_id);
+        window.updateMaterialIntegrityAudit47(task);
+      }
       window.MaterialBatchRuntime62?.poll?.(task.task_id);
     }catch(error){
       if(pid()!==projectAtStart)return;
-      const box=activeMaterialIntegrityRoot47('#materialIntegrityAuditProgress47');
-      if(box)box.textContent='审计任务提交失败：'+(error.message||String(error))+'。没有创建新的审计任务。';
-      const root=activeMaterialIntegrityRoot47('[data-integrity-audit-progress]');
-      if(root&&!root.querySelector('[data-integrity-audit-retry]')){
-        const retry=document.createElement('button');retry.className='btn primary';retry.dataset.integrityAuditRetry='';
-        retry.textContent='重新提交审计';retry.onclick=()=>window.startMaterialIntegrityAudit47();
-        root.querySelector('.row')?.prepend(retry);
+      if(root?.isConnected&&root===activeMaterialIntegrityRoot47('[data-integrity-audit-progress]')){
+        const box=root.querySelector('#materialIntegrityAuditProgress47');
+        if(box)box.textContent='审计任务提交失败：'+(error.message||String(error))+'。没有创建新的审计任务。';
+        const retry=root.querySelector('[data-integrity-audit-retry]');
+        if(retry)retry.hidden=false;
       }
       toast(error.message||error);
+    }finally{
+      state.materialIntegrityAuditSubmitting47=false;
     }
   };
 
@@ -5651,6 +5663,7 @@ materialIntegrityDialog47('GT冲突 · 分类与批量审核',`<div class="mater
     finally{audit.loading=false;if(more)more.disabled=false}
   };
   window.openMaterialIntegrityAudit47=async function(){
+    state.materialIntegritySelectionOrigin47='AUDIT';
     state.materialIntegrityTrainingContext47=null;
     const projectAtStart=pid();
     materialIntegrityDialog47('重复与异常素材',
@@ -5658,13 +5671,13 @@ materialIntegrityDialog47('GT冲突 · 分类与批量审核',`<div class="mater
     const loading=activeMaterialIntegrityRoot47('[data-integrity-audit-loading]');
     const current=()=>pid()===projectAtStart&&loading?.isConnected&&!!loading.closest('.modal:not(.hidden)');
     try{
-      const body=await api(`/api/v62/projects/${pid()}/material-batches?limit=50`),task=(body.items||[]).find(item=>String(item.operation||'')==='AUDIT_MATERIAL_INTEGRITY');
+      const body=await api(`/api/v62/projects/${projectAtStart}/material-integrity/audits/latest`),task=body.task;
       if(!current())return;
       if(!task){return materialIntegrityDialog47('重复与异常素材','<div class="material-integrity47-empty"><b>尚未运行素材完整性审计</b><span>后台核验重复图片、标注冲突、源文件缺失、内容变化和无效图片。审计不会自动删除或决定哪份标注正确。</span><div class="row end"><button class="btn" onclick="closeModal()">取消</button><button id="materialIntegrityStart47" class="btn primary" onclick="startMaterialIntegrityAudit47()">运行 Full Audit</button></div></div>',true)}
-      if(['QUEUED','WAITING_RESOURCE','RUNNING','CANCEL_REQUESTED'].includes(String(task.status||''))){materialIntegrityAuditProgressDialog47();window.updateMaterialIntegrityAudit47(task);window.MaterialBatchRuntime62?.poll?.(task.task_id);return}
+      if(['QUEUED','WAITING_RESOURCE','RUNNING','CANCEL_REQUESTED'].includes(String(task.status||''))){materialIntegrityAuditProgressDialog47(task.task_id);window.updateMaterialIntegrityAudit47(task);window.MaterialBatchRuntime62?.poll?.(task.task_id);return}
       if(String(task.status||'')!=='SUCCEEDED')return materialIntegrityDialog47('重复与异常素材',`<div class="alert err"><b>最近一次审计未完成</b><span>${esc(task.error_examples?.[0]?.error||'请重新运行审计')}</span></div><div class="row end"><button id="materialIntegrityStart47" class="btn primary" onclick="startMaterialIntegrityAudit47()">重新运行</button></div>`,true);
       if(pid()!==projectAtStart)return;
-      const governanceTask=(body.items||[]).find(item=>String(item.material_integrity_audit_id||'')===String(task.task_id));const deletionTask=(body.items||[]).find(item=>item.operation==='DELETE_INDEX');state.materialIntegrityTask47=deletionTask||null;if(governanceTask&&Number(governanceTask.succeeded||0)>0)state.materialIntegrityAuditStale47=true;
+      const governanceTask=body.governance_task,deletionTask=body.deletion_task;state.materialIntegrityTask47=deletionTask||null;if(governanceTask&&Number(governanceTask.succeeded||0)>0)state.materialIntegrityAuditStale47=true;
       const previous=state.materialIntegrityAudit47,same=previous?.task?.task_id===task.task_id,issueType=same?previous.issueType||'':'';
       const groups=await api(`/api/v62/projects/${projectAtStart}/material-integrity/audits/${encodeURIComponent(task.task_id)}/groups?limit=25${issueType?`&issue_type=${encodeURIComponent(issueType)}`:''}`),result=task.result||{};
       if(!current())return;state.materialIntegrityAuditStale47=Boolean(groups.stale||state.materialIntegrityAuditStale47);state.materialIntegrityAudit47={task,projectId:projectAtStart,issueType,groups:groups.items||[],nextCursor:groups.next_cursor||'',loading:false,selectedGroups:same?previous.selectedGroups:new Set(),allSelected:same&&previous.allSelected,excludedGroups:same?previous.excludedGroups:new Set(),totalImages:Number(groups.total_images||0)};
@@ -5754,6 +5767,12 @@ materialIntegrityDialog47(Number(plan.included_groups||0)?'重复素材治理预
     const groupKeys=scope==='SELECTED_GROUPS'?[...(audit.selectedGroups||[])]:config.groupKeys||[];
     if(scope==='SELECTED_GROUPS'&&!groupKeys.length)return toast('请先选择至少一个问题组');
     audit.previewing=true;const button=config.triggerButton||window.event?.currentTarget,oldText=button?.textContent;if(button){button.disabled=true;button.textContent='正在预检查…'}
+    const modalAtStart=[...document.querySelectorAll('.modal:not(.hidden)')].at(-1);
+    const viewAtStart=modalAtStart?.querySelector('.modal-body')?.firstElementChild;
+    const current=()=>state.materialIntegrityAudit47===audit&&pid()===audit.projectId
+      &&viewAtStart?.isConnected&&modalAtStart?.isConnected
+      &&modalAtStart.querySelector('.modal-body')?.firstElementChild===viewAtStart
+      &&modalAtStart===[...document.querySelectorAll('.modal:not(.hidden)')].at(-1);
     const reviewStatus=activeMaterialIntegrityRoot47('[data-gt-review-progress]');
     if(reviewStatus){reviewStatus.hidden=false;reviewStatus.textContent='正在让服务端冻结当前审计范围、核对历史保护与 GT，稍后展示真实可删数量…';}
     const errorBox=activeMaterialIntegrityRoot47('#materialIntegrityError47')||document.getElementById('materialIntegrityError47');if(errorBox)errorBox.hidden=true;
@@ -5761,11 +5780,19 @@ materialIntegrityDialog47(Number(plan.included_groups||0)?'重复素材治理预
       const payload={scope,group_keys:groupKeys,...(scope==='FILTERED'?{issue_type:config.groupKey?'':audit.issueType||'',excluded_group_keys:config.groupKey?[]:[...(audit.excludedGroups||[])],...(config.groupKey?{group_key:config.groupKey,excluded_image_ids:[...(state.materialIntegrityGroup47?.excludedImages||[])]}:{})}:{}),...(config.imageIds?{image_ids:config.imageIds}:{}),...(config.manualDecisions?{manual_decisions:config.manualDecisions}:{}),...(config.confirmDiscardConflicts?{confirm_discard_conflicts:true}:{})};
       if(config.reviewBasis)payload.review_basis=config.reviewBasis;
       const plan=await api(`/api/v62/projects/${pid()}/material-integrity/audits/${encodeURIComponent(audit.task.task_id)}/dedup-plans`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
-      if(state.materialIntegrityAudit47!==audit||audit.projectId&&audit.projectId!==pid())return;
-      if(errorBox?.isConnected&&!errorBox.closest('.modal')?.classList.contains('hidden')){showMaterialIntegrityPlan47(plan);decorateIntegrityPlan47(plan)}return plan;
-    }catch(error){if(errorBox){errorBox.hidden=false;errorBox.textContent=error.message||String(error)}toast(error.message||error);return null}
-    finally{audit.previewing=false;if(button?.isConnected){button.disabled=false;button.textContent=oldText}
-      if(reviewStatus?.isConnected){reviewStatus.hidden=false;reviewStatus.textContent='预检结束；请根据冻结计划确认是否执行。'}}
+      if(!current())return null;
+      showMaterialIntegrityPlan47(plan);decorateIntegrityPlan47(plan);return plan;
+    }catch(error){
+      if(current()){
+        if(errorBox?.isConnected){errorBox.hidden=false;errorBox.textContent=error.message||String(error)}
+        if(reviewStatus?.isConnected){reviewStatus.hidden=false;reviewStatus.textContent='预检失败：'+(error.message||String(error))+'；请重试'}
+        toast(error.message||error);
+      }
+      return null;
+    }finally{
+      audit.previewing=false;
+      if(button?.isConnected){button.disabled=false;button.textContent=oldText}
+    }
 
   };
   window.previewTrainingIntegrityGovernance47=async function(config){
@@ -5774,9 +5801,9 @@ materialIntegrityDialog47(Number(plan.included_groups||0)?'重复素材治理预
     if(active&&String(active.project_id||'')===String(pid())&&['QUEUED','WAITING_RESOURCE','RUNNING','CANCEL_REQUESTED'].includes(active.status)){
       state.materialIntegrityTrainingContext47=config;showMaterialIntegrityTask47(active);return active;
     }
-    const body=await api(`/api/v62/projects/${pid()}/material-batches?limit=50`);
+    const body=await api(`/api/v62/projects/${pid()}/material-integrity/audits/latest`);
     if(!config.isCurrent())return;
-    let audit=(body.items||[]).find(task=>task.operation==='AUDIT_MATERIAL_INTEGRITY');
+    let audit=body.task;
     let groups=null;
     if(audit?.status==='SUCCEEDED')groups=await api(`/api/v62/projects/${pid()}/material-integrity/audits/${encodeURIComponent(audit.task_id)}/groups?limit=1`);
     if(!config.isCurrent())return;
@@ -5821,7 +5848,8 @@ materialIntegrityDialog47(Number(plan.included_groups||0)?'重复素材治理预
     finally{if(plan)plan.submitting=false}
   };
   function showMaterialIntegrityTask47(task){
-    materialIntegrityDialog47('素材删除任务',`<div class="material-integrity47-plan"><div id="materialIntegrityTask47" aria-live="polite"></div><div class="alert soft">任务受理不等于删除完成。只删除素材索引及对应标注；共享原始物理文件不直接删除。</div><div class="row end"><button class="btn" onclick="openMaterialIntegrityAudit47()">返回审计与选择</button><button class="btn" onclick="closeModal()">关闭 · 后台继续</button></div></div>`,true);
+    state.materialIntegrityTask47=task;
+    materialIntegrityDialog47('素材删除任务',`<div class="material-integrity47-plan" data-integrity-delete-progress data-integrity-delete-task-id="${esc(task.task_id)}"><div id="materialIntegrityTask47" aria-live="polite"></div><div class="alert soft">任务受理不等于删除完成。只删除素材索引及对应标注；共享原始物理文件不直接删除。</div><div class="row end"><button class="btn" onclick="openMaterialIntegrityAudit47()">返回审计与选择</button><button class="btn" onclick="closeModal()">关闭 · 后台继续</button></div></div>`,true);
     window.updateMaterialIntegrityTask47(task);
     if(state.materialIntegrityTrainingContext47){
       const button=document.querySelector('.material-integrity47-plan button');
@@ -5830,9 +5858,11 @@ materialIntegrityDialog47(Number(plan.included_groups||0)?'重复素材治理预
   }
   window.updateMaterialIntegrityTask47=function(task){
     if(task.operation!=='DELETE_INDEX'||task.project_id&&String(task.project_id)!==String(pid()))return;
-    if(state.materialIntegrityTask47?.task_id&&state.materialIntegrityTask47.task_id!==task.task_id)return;
+    const root=activeMaterialIntegrityRoot47('[data-integrity-delete-progress]');
+    if(!root||root.dataset.integrityDeleteTaskId!==String(task.task_id||''))return;
+    if(root.closest('.modal')!==[...document.querySelectorAll('.modal:not(.hidden)')].at(-1))return;
     state.materialIntegrityTask47=task;
-    const box=document.getElementById('materialIntegrityTask47');if(!box)return;
+    const box=root.querySelector('#materialIntegrityTask47');if(!box)return;
     const names={QUEUED:'排队中 · 等待 Worker',WAITING_RESOURCE:'等待 Worker',RUNNING:'删除中',SUCCEEDED:'已成功',PARTIAL_SUCCESS:'部分成功',FAILED:'失败',CANCELLED:'已取消'};
     const errors={MATERIAL_INTEGRITY_DELETE_IDENTITY_CHANGED:'素材哈希或标注已变化，未删除，请重新审计',MATERIAL_INTEGRITY_KEEPER_CHANGED:'保留项已变化，本组未删除',MATERIAL_INTEGRITY_REFERENCE_CHANGED:'新增历史/活动任务引用或 Test 保护，未删除'};
     const terminal=['SUCCEEDED','PARTIAL_SUCCESS','FAILED','CANCELLED'].includes(String(task.status||''));
@@ -5856,6 +5886,9 @@ materialIntegrityDialog47(Number(plan.included_groups||0)?'重复素材治理预
     try{
       const context=state.materialIntegrityTrainingContext47;
       if(context?.projectId===projectAtStart)return await context.onReturn?.(state.materialIntegrityPlan47?.task?.task_id===state.materialIntegrityTask47?.task_id?state.materialIntegrityTask47:null);
+      if(state.materialIntegritySelectionOrigin47==='GT_REVIEW'&&state.materialIntegrityAudit47?.gtReview47){
+        return await window.openGtConflictReview47();
+      }
       const group=state.materialIntegrityGroup47;
       if(group)return await window.openMaterialIntegrityGroup47(encodeURIComponent(group.taskId),encodeURIComponent(group.groupKey));
       return await window.openMaterialIntegrityAudit47();

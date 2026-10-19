@@ -221,7 +221,7 @@ test('filtered anomaly selection, protected preview, aspect ratios and mobile re
     previews.push({image_id:item.id,filename:item.filename,width,height,content_url:`/api/v61/projects/${project.id}/materials/${item.id}/content`,boxes:[{label:'target',x1:10,y1:10,x2:40,y2:50}]});
   }
   await page.route('**/api/v53/bootstrap/snapshot**',async route=>{const url=new URL(route.request().url());url.searchParams.set('preferred_project_id',project.id);await route.fallback({url:url.toString()})});
-  await page.route(`**/api/v62/projects/${project.id}/material-batches?limit=50`,route=>route.fulfill({json:{items:[{task_id:auditId,operation:'AUDIT_MATERIAL_INTEGRITY',status:'SUCCEEDED',result:{scanned_images:10000,affected_images:10000,issue_groups:10000}}]}}));
+  await page.route(`**/api/v62/projects/${project.id}/material-integrity/audits/latest`,route=>route.fulfill({json:{task:{task_id:auditId,operation:'AUDIT_MATERIAL_INTEGRITY',status:'SUCCEEDED',result:{scanned_images:10000,affected_images:10000,issue_groups:10000}},governance_task:null,deletion_task:null}}));
   await page.route(`**/material-integrity/audits/${auditId}/groups?**`,route=>route.fulfill({json:{items:[{group_key:'INVALID_IMAGE:one',issue_type:'INVALID_IMAGE',image_count:1}],total_images:10000,next_cursor:null,stale:false}}));
   let payload;
   await page.route(`**/material-integrity/audits/${auditId}/dedup-plans`,route=>{payload=route.request().postDataJSON();return route.fulfill({status:201,json:{plan_id:'0123456789abcdef0123456789abcdef',confirmation_credential:'isolated-confirmation',selected_count:10000,delete_count:9990,annotation_count:30,protected_item_count:10,manual_required_count:0,unverifiable_count:0,preview_items:previews}})});
@@ -282,15 +282,15 @@ test('global duplicate governance previews, confirms, reports progress, and inva
     url.searchParams.set('preferred_project_id', project.id);
     await route.fallback({url: url.toString()});
   });
-  await page.route(`**/api/v62/projects/${project.id}/material-batches?limit=50`, route => route.fulfill({
+  await page.route(`**/api/v62/projects/${project.id}/material-integrity/audits/latest`, route => route.fulfill({
     status: 200,
     contentType: 'application/json',
-    body: JSON.stringify({items: [{
+    body: JSON.stringify({task: {
       task_id: auditId,
       operation: 'AUDIT_MATERIAL_INTEGRITY',
       status: 'SUCCEEDED',
       result: {scanned_images: 15, affected_images: 8, issue_groups: 3, scan_failures: 0},
-    }]}),
+    }, governance_task: null, deletion_task: null}),
   }));
   await page.route(`**/api/v62/projects/${project.id}/material-integrity/audits/${auditId}/groups?limit=25`, route => route.fulfill({
     status: 200,

@@ -1329,3 +1329,35 @@ def test_duplicate_gt_delete_rejects_missing_group_manifest_without_blocking_ord
         handler._assert_integrity_delete_identity(manifest, materials, annotations, image_id)
         assert materials.get(image_id) is not None
 
+
+
+def test_latest_integrity_audit_finds_old_audit_after_more_than_fifty_other_batches(
+    client, seeded_project, tmp_path, monkeypatch,
+):
+    project_id, _ = seeded_project
+    repository, artifacts, _ = _runtime(tmp_path, monkeypatch)
+    endpoint = f"/api/v62/projects/{project_id}/material-integrity/audits/latest"
+    assert client.get(endpoint).json()["task"] is None
+    created = client.post(f"/api/v62/projects/{project_id}/material-integrity/audits")
+    assert created.status_code == 202, created.text
+    audit_id = created.json()["task_id"]
+    for index in range(61):
+        task_id = uuid.uuid4().hex
+        artifacts.atomic_write_json(task_id, "request.json", {"operation": "CLEAN"})
+        repository.create(
+            TaskRecord.new(task_id, project_id, TaskKind.MATERIAL_BATCH,
+                           "request.json", f"materials:{project_id}",
+                           required_capabilities=("materials.batch",)),
+            artifacts=artifacts,
+        )
+    first_page = repository.list(project_id=project_id,
+                                 kinds=[TaskKind.MATERIAL_BATCH], limit=50)
+    assert audit_id not in {task.task_id for task in first_page.items}
+    latest = client.get(endpoint)
+    assert latest.status_code == 200, latest.text
+    assert latest.json()["task"]["task_id"] == audit_id
+    assert latest.json()["governance_task"] is None
+    other_project = client.post("/api/projects", json={"name": "isolated-second-project"})
+    if other_project.status_code in (200, 201):
+        other_id = other_project.json()["id"]
+        assert client.get(f"/api/v62/projects/{other_id}/material-integrity/audits/latest").json()["task"] is None

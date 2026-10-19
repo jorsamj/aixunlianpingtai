@@ -4080,6 +4080,42 @@ def material_batch_router(
             raise HTTPException(404, detail="task log unavailable")
         return FileResponse(path, media_type="text/plain", filename=f"{task_id}.log")
 
+
+    @integrity.get("/audits/latest")
+    def latest_integrity_audit(project_id: str):
+        """Find the newest durable audit across all task pages, never only the first 50."""
+        get_project(project_id)
+        repository, artifacts = task_repository(), task_artifacts()
+        cursor = None
+        newer_deletions = []
+        while True:
+            page = repository.list(
+                project_id=project_id, kinds=[TaskKind.MATERIAL_BATCH],
+                limit=100, cursor=cursor,
+            )
+            for task in page.items:
+                request = artifacts.read_json(task.task_id, task.payload_ref, default={})
+                operation = request.get("operation") if isinstance(request, dict) else None
+                if operation == BatchOperation.AUDIT_MATERIAL_INTEGRITY.value:
+                    related = next(
+                        (item for item, audit_id in newer_deletions
+                         if audit_id == task.task_id), None,
+                    )
+                    published = public_batch(related, artifacts, repository) if related else None
+                    return {
+                        "task": public_batch(task, artifacts, repository),
+                        "governance_task": published,
+                        "deletion_task": published,
+                    }
+                if operation == BatchOperation.DELETE_INDEX.value:
+                    options = request.get("options") or {}
+                    newer_deletions.append((
+                        task, str(options.get("material_integrity_audit_id") or ""),
+                    ))
+            cursor = page.next_cursor
+            if not cursor:
+                return {"task": None, "governance_task": None, "deletion_task": None}
+
     @integrity.post("/audits", status_code=202)
     def create_integrity_audit(project_id: str):
         get_project(project_id)
