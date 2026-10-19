@@ -1485,8 +1485,8 @@ def _execute_material_integrity_plan_locked(
                 ]
                 expected_groups = [
                     (str(row['group_key']), str(row['keeper_image_id']),
-                     str(by_id[str(row['keeper_image_id'])]['content_sha256']),
-                     str(by_id[str(row['keeper_image_id'])]['annotation_digest']),
+                     str(by_id[str(row['keeper_image_id'])]['content_sha256']) if row['keeper_image_id'] else '',
+                     str(by_id[str(row['keeper_image_id'])]['annotation_digest']) if row['keeper_image_id'] else '',
                      str(row['keeper_reason']), int(row['delete_count']))
                     for row in group_rows
                 ]
@@ -3535,8 +3535,8 @@ class MaterialBatchHandler:
         if current and str(current.get('split') or '').lower() == 'test':
             raise BatchRequestError('MATERIAL_INTEGRITY_REFERENCE_CHANGED', 'Test 素材受保护，已阻止删除', 409)
         row = manifest.database.execute(
-            "SELECT i.content_sha256,i.annotation_digest,g.keeper_image_id,"
-            "g.keeper_content_sha256,g.keeper_annotation_digest,g.keeper_reason "
+            "SELECT i.content_sha256,i.annotation_digest,g.group_key AS keeper_group_key,"
+            "g.keeper_image_id,g.keeper_content_sha256,g.keeper_annotation_digest,g.keeper_reason "
             "FROM integrity_plan_items i LEFT JOIN integrity_plan_groups g "
             "ON g.group_key=i.group_key WHERE i.image_id=?",
             (str(image_id),),
@@ -3563,7 +3563,7 @@ class MaterialBatchHandler:
                 "MATERIAL_INTEGRITY_DELETE_IDENTITY_CHANGED",
                 "待清理素材身份已变化，已跳过该项", 409,
             )
-        if not row['keeper_image_id'] and row['keeper_reason'] != "EXPLICIT_DISCARD_UNPROTECTED":
+        if row['keeper_group_key'] is not None and not row['keeper_image_id'] and row['keeper_reason'] != "EXPLICIT_DISCARD_UNPROTECTED":
             raise BatchRequestError(
                 "MATERIAL_INTEGRITY_EXECUTION_INCOMPLETE",
                 "治理计划缺少有效保留项或人工放弃确认", 409,
