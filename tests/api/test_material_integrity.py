@@ -1277,3 +1277,55 @@ def test_discard_gt_conflicts_never_deletes_test_or_historical_protected_identit
     assert materials.get(original['id']) is not None
     assert materials.get('discard-kept') is not None
     assert repository.get('protected-training') is not None
+
+def test_duplicate_gt_delete_rejects_missing_group_manifest_without_blocking_ordinary_anomaly(
+    client, seeded_project,
+):
+    project_id, image = seeded_project
+    materials = app_module.material_store(project_id)
+    annotations = AnnotationRepository(materials.project_path)
+    image_id = str(image['id'])
+    annotations.upsert(image_id, [
+        {'label': 'fire', 'x1': 0, 'y1': 0, 'x2': 10, 'y2': 10},
+    ], annotation_state='annotated', annotation_scope=['fire'])
+    material = materials.get(image_id)
+    digest = annotations.record_digest(annotations.get(image_id))
+    with closing(sqlite3.connect(':memory:')) as db:
+        db.row_factory = sqlite3.Row
+        db.executescript("""
+            CREATE TABLE integrity_plan_items (
+                group_key TEXT, image_id TEXT, content_sha256 TEXT, annotation_digest TEXT
+            );
+            CREATE TABLE integrity_plan_groups (
+                group_key TEXT, keeper_image_id TEXT, keeper_content_sha256 TEXT,
+                keeper_annotation_digest TEXT, keeper_reason TEXT
+            );
+        """)
+        db.execute("INSERT INTO integrity_plan_items VALUES (?,?,?,?)", (
+            'DUPLICATE_ANNOTATION_CONFLICT:broken', image_id,
+            material['content_sha256'], digest,
+        ))
+        handler = MaterialBatchHandler(app_module.DATA_DIR)
+        manifest = SimpleNamespace(database=db)
+        with pytest.raises(material_batches_module.BatchRequestError, match='缺少冻结'):
+            handler._assert_integrity_delete_identity(
+                manifest, materials, annotations, image_id,
+            )
+        # Keeperless GT discard is allowed only when the frozen group exists
+        # and records the explicit discard decision.
+        db.execute("INSERT INTO integrity_plan_groups VALUES (?,?,?,?,?)", (
+            'DUPLICATE_ANNOTATION_CONFLICT:broken', '', '', '',
+            'EXPLICIT_DISCARD_UNPROTECTED',
+        ))
+        handler._assert_integrity_delete_identity(manifest, materials, annotations, image_id)
+        db.execute("UPDATE integrity_plan_groups SET keeper_reason='UNVERIFIED'")
+        with pytest.raises(material_batches_module.BatchRequestError, match='缺少有效保留项'):
+            handler._assert_integrity_delete_identity(
+                manifest, materials, annotations, image_id,
+            )
+        # Single-item anomalies intentionally have no group keeper.
+        db.execute("DELETE FROM integrity_plan_groups")
+        db.execute("UPDATE integrity_plan_items SET group_key='MATERIAL_OBJECT_MISSING:single'")
+        handler._assert_integrity_delete_identity(manifest, materials, annotations, image_id)
+        assert materials.get(image_id) is not None
+

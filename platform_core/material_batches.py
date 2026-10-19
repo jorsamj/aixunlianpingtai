@@ -2442,6 +2442,7 @@ class MaterialBatchHandler:
                 str(row["image_id"])
             )
         failed = {}
+        group_keys = {str(row['group_key']) for row in groups}
 
         def identity_matches(image_id, expected_hash, expected_annotation):
             material = current_materials.get(str(image_id))
@@ -2468,6 +2469,11 @@ class MaterialBatchHandler:
                     failed[image_id] = "MATERIAL_INTEGRITY_KEEPER_CHANGED"
         for row in items:
             image_id = str(row["image_id"])
+            # Ordinary anomaly deletes have no keeper row. Duplicate groups
+            # must always have a frozen group decision, including explicit discard.
+            if (str(row['group_key']).startswith('DUPLICATE_')
+                    and str(row['group_key']) not in group_keys):
+                failed[image_id] = 'MATERIAL_INTEGRITY_EXECUTION_INCOMPLETE'
             if image_id not in failed and not identity_matches(
                 image_id, row["content_sha256"], row["annotation_digest"],
             ):
@@ -3535,7 +3541,8 @@ class MaterialBatchHandler:
         if current and str(current.get('split') or '').lower() == 'test':
             raise BatchRequestError('MATERIAL_INTEGRITY_REFERENCE_CHANGED', 'Test 素材受保护，已阻止删除', 409)
         row = manifest.database.execute(
-            "SELECT i.content_sha256,i.annotation_digest,g.group_key AS keeper_group_key,"
+            "SELECT i.group_key AS planned_group_key,i.content_sha256,i.annotation_digest,"
+            "g.group_key AS keeper_group_key,"
             "g.keeper_image_id,g.keeper_content_sha256,g.keeper_annotation_digest,g.keeper_reason "
             "FROM integrity_plan_items i LEFT JOIN integrity_plan_groups g "
             "ON g.group_key=i.group_key WHERE i.image_id=?",
@@ -3562,6 +3569,12 @@ class MaterialBatchHandler:
             raise BatchRequestError(
                 "MATERIAL_INTEGRITY_DELETE_IDENTITY_CHANGED",
                 "待清理素材身份已变化，已跳过该项", 409,
+            )
+        if (str(row['planned_group_key']).startswith('DUPLICATE_')
+                and row['keeper_group_key'] is None):
+            raise BatchRequestError(
+                'MATERIAL_INTEGRITY_EXECUTION_INCOMPLETE',
+                '重复 GT 组缺少冻结的保留或放弃决策，已阻止删除', 409,
             )
         if row['keeper_group_key'] is not None and not row['keeper_image_id'] and row['keeper_reason'] != "EXPLICIT_DISCARD_UNPROTECTED":
             raise BatchRequestError(
