@@ -3192,6 +3192,7 @@ def test_weight_extended_metadata_uses_actual_training_and_conversion_input(tmp_
     for artifact in (original, converted):
         payload = service._weight_artifact_payload({
             **artifact, "compute_platform_id": "91",
+            "remote_chip_code": artifact["chip_code"] if artifact["target"] == "rockchip" else "",
             "public_url": f"https://models.example/{artifact['file_name']}",
             "metadata": artifact["weight_metadata"],
         })
