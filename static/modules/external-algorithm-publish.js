@@ -209,14 +209,18 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
   function computeOptions(selected = '', {rootsOnly = false} = {}) {
     const rows = computePlatformTreeRows(config?.computePlatforms || []);
     const options = rows.filter(item => item.active && (!rootsOnly || !item.parentId || item.id === selected));
-    return `<option value="">请选择畅联云算力环境</option>${options.map(row =>
+    const stale = selected && !options.some(row => row.id === selected)
+      ? `<option value="${escapeHtml(selected)}" selected disabled>原绑定 ID ${escapeHtml(selected)} 已失效，请重新选择</option>` : '';
+    return `<option value="">请选择畅联云算力环境</option>${stale}${options.map(row =>
       `<option value="${escapeHtml(row.id)}" data-name="${escapeHtml(row.path)}" data-code="${escapeHtml(row.code)}" ${row.id === selected ? 'selected' : ''}>${escapeHtml(row.path)}${row.code ? ` · ${escapeHtml(row.code)}` : ''} · ID ${escapeHtml(row.id)}</option>`
     ).join('')}`;
   }
 
   function childOptions(parentId, selected = '') {
     const rows = childPlatformChoices(config?.computePlatforms || [], parentId);
-    return `<option value="">请选择该父级下的子分类</option>${rows.map(row =>
+    const stale = selected && !rows.some(row => row.id === selected)
+      ? `<option value="${escapeHtml(selected)}" selected disabled>旧绑定 ${escapeHtml(selected)} 不属于当前有效父级，请重新选择</option>` : '';
+    return `<option value="">请选择该父级下的子分类</option>${stale}${rows.map(row =>
       `<option value="${escapeHtml(row.id)}" ${row.id === selected ? 'selected' : ''}>${escapeHtml(row.path)} · ID ${escapeHtml(row.id)}</option>`
     ).join('')}`;
   }

@@ -7,6 +7,7 @@ on:
       - requirements.txt
       - platform_core/secrets.py
       - platform_core/external_algorithm_platform.py
+      - platform_core/compute_platform_catalog.py
       - platform_core/external_algorithm_auto_sync.py
       - task_worker.py
       - platform_core/algorithm_sql_store.py
@@ -48,6 +49,7 @@ on:
       - requirements.txt
       - platform_core/secrets.py
       - platform_core/external_algorithm_platform.py
+      - platform_core/compute_platform_catalog.py
       - platform_core/external_algorithm_auto_sync.py
       - task_worker.py
       - platform_core/algorithm_sql_store.py

@@ -15,6 +15,7 @@ on:
       - platform_core/algorithms.py
       - platform_core/external_algorithm_platform.py
       - platform_core/external_algorithm_publish.py
+      - platform_core/compute_platform_catalog.py
       - static/app.js
       - static/modules/training-submit.js
       - tests/browser/algorithm-list-performance.spec.mjs

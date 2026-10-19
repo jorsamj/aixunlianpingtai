@@ -6,6 +6,7 @@ on:
     paths:
       - app.py
       - platform_core/external_algorithm_publish.py
+      - platform_core/compute_platform_catalog.py
       - platform_core/external_publish_request.py
       - platform_core/deployment/conversion_tasks.py
       - platform_core/remote_execution_transport.py
@@ -38,6 +39,7 @@ on:
     paths:
       - app.py
       - platform_core/external_algorithm_publish.py
+      - platform_core/compute_platform_catalog.py
       - platform_core/external_publish_request.py
       - platform_core/deployment/conversion_tasks.py
       - platform_core/remote_execution_transport.py
