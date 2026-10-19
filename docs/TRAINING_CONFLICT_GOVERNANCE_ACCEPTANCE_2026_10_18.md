@@ -1,5 +1,19 @@
 # 训练重复冲突、标注工作台与素材治理闭环验收
 
+## 2026-10-19 追加｜远程清理 NO_OBJECTS 同步锁误保护
+
+用户提供的真实只读证据已将五个 attempt0/无冻结、进程、结果的失败任务定位到唯一额外文件 `remote-material/staging-cleanup.json.lock`。`cleanup_task()` 在确定无对象之前获取 FileLock；Linux 可残留此锁。原历史引用扫描把它当作未知产物，错误投影 `TRAINING_FAILED_DURABLE_DEPENDENCY`。任务 ID 和重叠引用数量记录在唯一追踪文档顶部，不将各任务计数相加。
+
+仅在原 FAILED TRAINING/no-freeze 路径中精确允许该同步锁；不删除锁，不修改远程清理流程。真实 `staging-cleanup.json` 台账、其他 `.lock`、Bundle、Checkpoint、Snapshot、Payload 内部依赖和其他任务恢复/重试关联仍保护。attempt1、进程、冻结、成功/活动训练、模型/评测、独立 Test 的规则未改；有有效冻结和实际产物的现场第六任务仍必须保护。原任务 Payload/日志/状态不变，无新 Owner、执行器、接口或前端缓存规则变化。
+
+- RED：实际 `cleanup_task()` 返回 NO_OBJECTS 路径持有真实 FileLock 时，原函数错误保护 a/b，业务断言失败；不是手工创建同名文件。
+- GREEN：真实清理与14类依赖组合，连同既有远程清理/保护单元测试46/46；GitHub同命令 `--confcutdir=tests/unit` 46/46。
+- API/Worker/训练请求与上述单元组合191/191；追加训练冲突、SQLite 删除原子性与标注作用域27/27。API 在真实持锁期间建立计划，再以原凭证和 Worker 执行隔离 DELETE_INDEX，验证保留一张、共享源字节和原历史证据不变；台账及其他锁仍0可删。
+- Node24完整994/994；真实Chrome最终清理夹具10/10（0失败/跳过），桌面/375px截图验证；Windows浏览器服务器产生连接断开日志但测试及后端业务断言全部通过，不屏蔽日志。最终SHA的全部Actions/Jobs结果待验收，最终准确记录见本地外部 `C:/Users/jorsam/.codex/visualizations/2026/10/19/cleanup-lock-p0/CI_FINAL_ACCEPTANCE.md`，禁止沿用上一SHA。
+- 独立只读复核未发现可确认问题；复核另跑原保护单元27/27与API19/19（与上方集合重叠，不相加）。
+
+未连接生产，不删除生产锁/素材，不改历史 Snapshot/Test，不改 VERSION=42.24.356。部署后还需重新只读审计现场保护原因和新计划；既有审计不能代表修复后的当前事实。不会将“消除一个错误保护原因”等同于“全部2531张可删除”；其他保护重叠、人工标注冲突与每组 keeper 必须保留。
+
 ## 2026-10-19 P0 追加｜素材治理与训练冲突删除统一闭环
 
 本批从 GitHub 长期分支实际 fetch 的 `5a8d559faf20c46a4ceeca172b792920f1f86f57` 开始，正确工作树为 `C:/Users/jorsam/.codex/worktrees/external-algorithm-publishing/畅联云算法训练_v42.14.0`。下方 2026-10-18 的“保守保护全部 FAILED/no-freeze”是历史阶段，本批按可验证依赖收紧分类，不应再作为当前语义。

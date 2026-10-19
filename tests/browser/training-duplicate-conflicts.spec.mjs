@@ -42,6 +42,10 @@ payload={'algorithm_asset_id':${JSON.stringify(algorithm.algorithm.id)},'train_i
 r=app.shared_task_repository(); artifacts=app.shared_task_artifacts(); task='train_browser_old_'+p
 artifacts.atomic_write_json(task,'payload.json',payload)
 r.create(replace(TaskRecord.new(task,p,TaskKind.TRAINING,'payload.json','isolated-history'),status=TaskStatus.FAILED,error='DUPLICATE_ANNOTATION_CONFLICT: original GT differs'),artifacts=artifacts)
+from platform_core.remote_material_lifecycle import RemoteExecutionStagingLifecycle
+def no_provider(project_id,reference):
+ raise AssertionError('request-only cleanup must not access storage')
+assert RemoteExecutionStagingLifecycle(r,artifacts,no_provider).cleanup_task(r.get(task))['status']=='NO_OBJECTS'
 print(json.dumps({'ids':ids,'sha':first['content_sha256'],'oldTask':task,'history':payload}))
 `));
   return {project,algorithmId:algorithm.algorithm.id,...result};

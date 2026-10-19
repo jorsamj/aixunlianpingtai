@@ -665,6 +665,10 @@ def _historical_material_references(
                 )
                 task_root = artifacts.artifact_path(task.task_id, '.')
                 allowed = {task.payload_ref, task.log_ref}
+                # cleanup_task() creates this exact synchronization lock even
+                # for NO_OBJECTS. The ledger itself and every other lock/output
+                # remain durable evidence; symlink checks below still apply.
+                allowed.add('remote-material/staging-cleanup.json.lock')
                 preparation_error = artifacts.read_json(task.task_id, 'input-preparation-error.json', default=None)
                 diagnostic_only = bool(isinstance(preparation_error, dict)
                     and preparation_error.get('task_id') == task.task_id

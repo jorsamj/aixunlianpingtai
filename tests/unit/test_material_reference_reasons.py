@@ -4,7 +4,74 @@ from dataclasses import replace
 import pytest
 
 from platform_core.material_batches import BatchRequestError, _historical_material_references
+from platform_core.remote_material_lifecycle import RemoteExecutionStagingLifecycle
 from platform_core.task_runtime import ArtifactStore, TaskKind, TaskRecord, TaskRepository, TaskStatus
+
+
+@pytest.mark.parametrize('dependency', [
+    None, 'remote-material/staging-cleanup.json', 'work/bundle/manifest.json',
+    'checkpoint.pt', 'unknown.lock', 'staging-cleanup.json.lock',
+    'remote-material/other.json.lock', 'input-freeze.json',
+    'payload', 'recovery', 'retry_reference', 'attempt', 'running', 'succeeded',
+])
+def test_remote_cleanup_lock_does_not_override_real_training_dependencies(tmp_path, monkeypatch, dependency):
+    project = tmp_path / 'project'
+    project.mkdir()
+    repository = TaskRepository(tmp_path / 'tasks.sqlite3')
+    artifacts = ArtifactStore(tmp_path / 'artifacts')
+    artifacts.atomic_write_json('failed', 'payload.json', {'train_image_ids': ['a', 'b']})
+    task = replace(TaskRecord.new('failed', 'p', TaskKind.TRAINING, 'payload.json', 'training'),
+                   status=TaskStatus.FAILED)
+    if dependency == 'attempt':
+        task = replace(task, attempt=1)
+    elif dependency in {'running', 'succeeded'}:
+        task = replace(task, status=TaskStatus.RUNNING if dependency == 'running' else TaskStatus.SUCCEEDED)
+    repository.create(task, artifacts=artifacts)
+
+    def no_provider(project_id, reference):
+        pytest.fail('request-only cleanup must not access storage')
+
+    lifecycle = RemoteExecutionStagingLifecycle(repository, artifacts, no_provider)
+    task_root = artifacts.artifact_path('failed', '.')
+    build_ledger = lifecycle._build_terminal_ledger
+
+    def inspect_locked_cleanup(record, **kwargs):
+        assert build_ledger(record, **kwargs) is None
+        # Inspect the real FileLock while held: Windows removes it on release,
+        # whereas Linux can leave this exact synchronization file behind.
+        assert (task_root / 'remote-material/staging-cleanup.json.lock').is_file()
+        assert not (task_root / 'remote-material/staging-cleanup.json').exists()
+        if dependency == 'payload':
+            artifacts.atomic_write_json('failed', 'payload.json', {
+                'train_image_ids': ['a', 'b'], 'execution': {'checkpoint_ref': 'missing.pt'},
+            })
+        elif dependency in {'recovery', 'retry_reference'}:
+            artifacts.atomic_write_json('related', 'payload.json', {'recovery_task_id': 'failed'})
+            related = TaskRecord.new('related', 'p', TaskKind.TRAINING, 'payload.json', 'training')
+            if dependency == 'retry_reference':
+                artifacts.atomic_write_json('related', 'payload.json', {})
+                related = replace(related, retry_of='failed')
+            repository.create(related, artifacts=artifacts)
+        elif dependency and dependency not in {'attempt', 'running', 'succeeded'}:
+            artifacts.atomic_write_json('failed', dependency, {'train_image_ids': ['a', 'b']})
+        before = {path.relative_to(task_root): path.read_bytes() for path in task_root.rglob('*')
+                  if path.is_file() and path.name != 'staging-cleanup.json.lock'}
+        expected = {'a', 'b'} if dependency else set()
+        assert _historical_material_references('p', project, repository, artifacts) == expected
+        reasons = _historical_material_references('p', project, repository, artifacts, with_reasons=True)
+        assert set(reasons) == {'a', 'b'}
+        assert all(any(item['protected'] is bool(dependency) for item in items) for items in reasons.values())
+        if not dependency:
+            assert all(item['reason'] == 'TRAINING_FAILED_REQUEST_ONLY' and not item['protected']
+                       for items in reasons.values() for item in items)
+        assert {path.relative_to(task_root): path.read_bytes() for path in task_root.rglob('*')
+                if path.is_file() and path.name != 'staging-cleanup.json.lock'} == before
+        return None
+
+    monkeypatch.setattr(lifecycle, '_build_terminal_ledger', inspect_locked_cleanup)
+    assert lifecycle.cleanup_task(task)['status'] == 'NO_OBJECTS'
+    assert _historical_material_references('p', project, repository, artifacts) == ({'a', 'b'} if dependency else set())
+    assert repository.get('failed') == task
 
 
 @pytest.mark.parametrize('status,freeze,reason', [

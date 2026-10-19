@@ -11,6 +11,7 @@ import app as app_module
 
 from platform_core.annotation_repository import AnnotationRepository
 from platform_core.material_batches import MaterialBatchHandler
+from platform_core.remote_material_lifecycle import RemoteExecutionStagingLifecycle
 import platform_core.material_batches as material_batches_module
 from platform_core.task_runtime import (
     ArtifactStore,
@@ -672,11 +673,26 @@ def test_failed_request_only_releases_index_and_retains_original_evidence(
         artifacts.atomic_write_json('prepare-child', 'payload.json', {'training_task_id': task_id})
         repository.create(TaskRecord.new('prepare-child', project_id, TaskKind.TRAINING_PREPARE, 'payload.json', 'prepare'), artifacts=artifacts)
         repository.fail_queued_precondition('prepare-child', 'input conflict', status=TaskStatus.FAILED)
-    evidence_before = {path.relative_to(artifacts.root).as_posix(): path.read_bytes()
-                       for path in artifacts.artifact_path(task_id, '.').rglob('*') if path.is_file()}
     audit_id = _run_integrity_audit(client, scheduler, project_id)
     base = f'/api/v62/projects/{project_id}/material-integrity/audits/{audit_id}'
-    response = client.post(base + '/dedup-plans', json={'scope': 'SAFE_ALL'})
+    def no_provider(project_id, reference):
+        pytest.fail('request-only cleanup must not access storage')
+
+    lifecycle = RemoteExecutionStagingLifecycle(repository, artifacts, no_provider)
+    build_ledger = lifecycle._build_terminal_ledger
+    previews = []
+
+    def preview_during_cleanup(task, **kwargs):
+        assert build_ledger(task, **kwargs) is None
+        assert artifacts.artifact_path(task_id, 'remote-material/staging-cleanup.json.lock').is_file()
+        previews.append(client.post(base + '/dedup-plans', json={'scope': 'SAFE_ALL'}))
+        return None
+
+    monkeypatch.setattr(lifecycle, '_build_terminal_ledger', preview_during_cleanup)
+    assert lifecycle.cleanup_task(repository.get(task_id))['status'] == 'NO_OBJECTS'
+    evidence_before = {path.relative_to(artifacts.root).as_posix(): path.read_bytes()
+                       for path in artifacts.artifact_path(task_id, '.').rglob('*') if path.is_file()}
+    response, = previews
     assert response.status_code == 201, response.text
     plan = response.json()
     assert plan['delete_count'] == 1
@@ -705,6 +721,8 @@ def test_failed_request_only_releases_index_and_retains_original_evidence(
     'checkpoints/worker.json', 'checkpoint-resume.json', 'result.json',
     'unknown-dependency.json', 'payload_ref', 'retry', 'test', 'snapshot_test',
     'model_task_reference', 'evaluation_ids', 'active_prepare',
+    'remote-material/staging-cleanup.json', 'unknown.lock',
+    'remote-material/unknown.json.lock',
 ])
 def test_failed_no_freeze_dependencies_remain_protected(
     client, seeded_project, tmp_path, monkeypatch, dependency

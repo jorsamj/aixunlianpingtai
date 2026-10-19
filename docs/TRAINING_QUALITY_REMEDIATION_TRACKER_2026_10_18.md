@@ -2,6 +2,35 @@
 
 ## 接手信息
 
+### 2026-10-19 P0 远程清理同步锁误保护（精准修复 / 最终 CI 待验收）
+
+同步基线 `9ab88ad88a64a370ad50d58b0413e3488a1345a0`，长期分支与 origin 一致、工作区干净。上一阶段只读诊断工具和文档单独保留在本地 stash，不混入本次提交。正式 VERSION 保持 42.24.356。
+
+用户已提供真实生产只读诊断：项目 `f1fb1e6fa373`、审计 `104cb1c3b2a1466b839c62b379f7f66f`，2531 张/1041 组、可删除0。以下引用计数有重叠，不相加，不等于修复后可删除数量：
+
+| 训练任务 | 引用图片 | 用户提供的现场证据 | 处理边界 |
+| --- | ---: | --- | --- |
+| train_9a0d5368da0945ed8c641316 | 2369 | attempt0、无冻结/进程/结果，额外文件仅精确清理同步锁 | 仅消除锁的误判，仍逐项复验其他依赖 |
+| train_3b9c105816b0409b88e11a16 | 2369 | 同上 | 同上 |
+| train_bae0c8e07e9b41068f45250b | 1560 | 同上 | 同上 |
+| train_06337f34acc84801bfb4af69 | 162 | 同上 | 同上 |
+| train_8945092dee564300bdc6698d | 162 | 同上 | 同上 |
+| train_0e5d1e30e3da460db579d262 | 162 | attempt1、有效冻结及大量实际产物 | 必须保留历史保护 |
+
+实施与验收计划（不新增业务 Owner）：
+
+1. 先通过真实 `RemoteExecutionStagingLifecycle.cleanup_task()` / FileLock 触发 NO_OBJECTS，调用原历史引用函数稳定复现误保护；不是手工放置同名文件。
+2. 在原 FAILED TRAINING/no-freeze 分支的允许列表中，只新增精确相对路径 `remote-material/staging-cleanup.json.lock`。原有 symlink 拒绝、Payload 递归依赖、其他任务关联、attempt/进程/结果等检查不变。
+3. 真实台账 `staging-cleanup.json`、其他路径/名称的 .lock、Snapshot、Bundle、Checkpoint、冻结、恢复/重试、模型/Test、活动及成功任务继续保护；API 预览、执行和 Worker 仍使用同一函数重验。
+4. 实际持锁期间进行 API 安全计划，再执行隔离 DELETE_INDEX，验证保留一张、共享源字节不变、原始任务状态/Payload/历史证据不改；运行相关 Python/API、完整 Node24 和真实 Chrome。
+5. 独立只读复核、更新原验收文档、fetch/FF 检查、普通推送；按最终完整 SHA 查询全部实际 Actions/Jobs 并等待终态。
+
+已验证根因：原函数在清理 NO_OBJECTS 的真实锁存在时错误返回 `{'a','b'}`，期望空保护集合，RED 在业务断言处失败。Windows FileLock 在 release 时移除锁且持锁不可读；测试在真实持锁回调中检查，Linux 同样执行该路径并在释放后再次复验。只对历史 Payload/产物读取字节断言，不尝试读取 Windows 独占锁字节。
+
+本地已执行：Python/API/Worker/训练请求/保护与远程清理组合191/191；追加训练冲突/删除原子性/标注作用域27/27；Node24完整994/994；真实Chrome清理夹具最终复跑10/10；保护与远程清理按CI confcutdir命令46/46（与191重叠）。独立只读复核无确认问题，另验证27保护单元和19 API（重叠不相加）。全部0失败/跳过，未宣称完整pytest全绿。最终SHA CI待结果，最终准确统计归档 `C:/Users/jorsam/.codex/visualizations/2026/10/19/cleanup-lock-p0/CI_FINAL_ACCEPTANCE.md`。不新增或放宽CI条件，现有Remote Training Ubuntu/Windows矩阵执行新增单元，Atomicity/Release执行真实API，Frontend执行真实Chrome。
+
+生产边界：本轮未连接生产、未删除锁或素材、未重写历史任务。用户提供证据已定位跨模块根因，但修复部署后的现场最终分类、全量交叉引用和真实可删数量仍需用户授权部署后只读复验。独立 Test、其他有效历史依赖、GT 冲突人工判断、每组 keeper 仍会阻止或减少删除，不承诺2531张全部释放。
+
 ### 2026-10-19 P0 素材重复治理闭环（本地验收完成，最终 SHA CI 待核验）
 
 基线 `5a8d559faf20c46a4ceeca172b792920f1f86f57`，fetch 核实远端一致、工作区干净、VERSION=42.24.356。此项覆盖附件完整指令和用户补充，不继续开发已完成 TQ-04。
@@ -15,7 +44,7 @@
 
 本地验收：Node24完整994/994；Python/API组合122/122，追加原子性及最终API25/25（有重叠，不相加）；真实Chrome两规格10/10，追加迟到预览不得覆盖标注工作台1/1。全部0失败、0跳过，Python有5条既有弃用warning。两轮独立安全/规格复核无剩余可确认P0/P1/P2。新增分类只读模式不写计划文件；0计划服务端拒绝空任务；2531全保护保留数量真实为2531。截图、原始日志及最终准确SHA的CI列表统一归档在 `C:/Users/jorsam/.codex/visualizations/2026/10/19/p0-material-governance/`；提交推送后的 `CI_FINAL.json` / `CI_FINAL_ACCEPTANCE.md` 记录完整SHA、实际提交、所有Actions/Jobs终态和未触发清单，避免文档自引用SHA或借用旧绿色。
 
-现场2531张/1041组的实际引用分布：尚无生产只读证据，待现场核验；不执行生产删除，不修改历史证据或正式VERSION。
+本段此前验收时尚无现场只读证据；后续用户已提供具体任务与同步锁证据，最新诊断/修复以顶部精准修复节为准。部署后实际分类仍需只读复验；不执行生产删除，不修改历史证据或正式VERSION。
 
 ### 2026-10-19 接续执行计划（TQ-04 类别指标边界）
 

@@ -1,3 +1,8 @@
+## 2026-10-19｜P0 远程清理同步锁误保护精准修复
+
+- 现场只读证据由用户提供；精确豁免 `remote-material/staging-cleanup.json.lock`，不豁免真实台账或其他锁。实际清理调用的 RED→GREEN、API/Worker 和 CI 证据统一见 `docs/TRAINING_QUALITY_REMEDIATION_TRACKER_2026_10_18.md` 顶部专项。
+- 复用原历史引用、MaterialBatch/DELETE_INDEX Owner；Payload/关联任务/执行记录/冻结/Test/Snapshot/模型/未知依赖仍保护，不改任务历史，不操作生产，不改 VERSION=42.24.356。最终 SHA/Actions/Jobs 以独立最终 CI 验收附件为准，不沿用前一 SHA 绿色。
+
 ## 2026-10-19｜P0 素材治理与训练冲突删除闭环
 
 - 当前专项唯一进度仍为 `docs/TRAINING_QUALITY_REMEDIATION_TRACKER_2026_10_18.md` 顶部 P0 节；TQ-04 已完成批次不重做。既有素材治理验收文档追加本次证据，最终准确 SHA/Actions/Jobs 以其关联的 CI 附件为准，不继承旧绿色。
