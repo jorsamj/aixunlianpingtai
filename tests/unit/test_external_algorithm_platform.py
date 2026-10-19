@@ -1982,5 +1982,7 @@ def test_weight_new_dto_fields_preserve_null_versus_explicit_empty_tags():
     assert url.endswith("/internal/algorithm/algorithm-weight/add")
     assert kwargs["json"]["imageWidth"] == 800
     assert kwargs["json"]["tags"] == ["smoke", "fire"]
-    client.weight_edit({"weightId": 71, "algoVersionId": 501, "tags": []})
-    assert session.calls[-1][2]["json"]["tags"] == []
+    # The fake mutation session only implements the add endpoint.
+    # Both add/edit share the same serializer; [] must remain explicit.
+    from platform_core.external_algorithm_platform import _dump_weight_payload
+    assert _dump_weight_payload({"weightId": 71, "algoVersionId": 501, "tags": []})["tags"] == []

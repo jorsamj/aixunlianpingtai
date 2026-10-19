@@ -3176,6 +3176,7 @@ def test_weight_extended_metadata_uses_actual_training_and_conversion_input(tmp_
     job["params"]["input_size"] = 640
     job_path.write_text(json.dumps(job), encoding="utf-8")
     service = _service(tmp_path, MemorySecretStore())
+    _configure_external(tmp_path, MemorySecretStore())
     service.repository.save_config({
         **service.repository.config(), "publish_original_model": True,
     })
