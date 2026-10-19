@@ -5686,7 +5686,14 @@ materialIntegrityDialog47('重复与异常素材',`<div class="material-integrit
       state.materialIntegrityAudit47.gtReview47=same?previous.gtReview47:null;
       const gtReviewButton=document.createElement('button');gtReviewButton.className='btn';gtReviewButton.textContent='GT冲突 · 分类与批量审核';gtReviewButton.dataset.gtBulkReview='';gtReviewButton.onclick=()=>window.openGtConflictReview47();activeMaterialIntegrityRoot47('.material-integrity47')?.querySelector('.material-integrity47-tools')?.append(gtReviewButton);
       document.getElementById('materialIntegrityGroupSelected47').textContent=state.materialIntegrityAudit47.allSelected?`已选全部筛选结果 · ${state.materialIntegrityAudit47.totalImages} 张`:`已选 ${state.materialIntegrityAudit47.selectedGroups.size} 组`;
-      if(state.materialIntegrityTask47)window.updateMaterialIntegrityTask47(state.materialIntegrityTask47);
+      if(state.materialIntegrityTask47){
+        const summaryRoot=activeMaterialIntegrityRoot47('.material-integrity47');
+        if(summaryRoot){
+          summaryRoot.dataset.integrityDeleteProgress='';
+          summaryRoot.dataset.integrityDeleteTaskId=String(state.materialIntegrityTask47.task_id);
+        }
+        window.updateMaterialIntegrityTask47(state.materialIntegrityTask47);
+      }
       void loadMaterialIntegrityClassification47(state.materialIntegrityAudit47);
     }catch(error){
       if(!current())return;

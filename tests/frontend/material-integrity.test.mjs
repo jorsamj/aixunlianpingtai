@@ -281,3 +281,12 @@ test('governance return distinguishes audit overview from individual group detai
   const groupOpen=app.slice(app.indexOf('window.openMaterialIntegrityGroup47='),app.indexOf('function updateMaterialIntegritySelection47()'));
   assert.match(groupOpen,/materialIntegritySelectionOrigin47!=='GT_REVIEW'/);
 });
+
+test('audit overview binds the related delete Task ID before restoring its progress',()=>{
+  const owner=app.slice(app.indexOf('window.openMaterialIntegrityAudit47='),app.indexOf('async function loadMaterialIntegrityClassification47'));
+  assert.match(owner,/summaryRoot\.dataset\.integrityDeleteTaskId=String\(state\.materialIntegrityTask47\.task_id\)/);
+  assert.match(owner,/summaryRoot\.dataset\.integrityDeleteProgress=''/);
+  assert.match(owner,/window\.updateMaterialIntegrityTask47\(state\.materialIntegrityTask47\)/);
+  const update=app.slice(app.indexOf('window.updateMaterialIntegrityTask47='),app.indexOf('window.selectMaterialIntegrityGroups47='));
+  assert.match(update,/root\.dataset\.integrityDeleteTaskId!==String\(task\.task_id/);
+});
