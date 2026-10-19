@@ -192,3 +192,34 @@
 - `tests/browser/training-duplicate-conflicts.spec.mjs`
 - `tests/unit/test_material_reference_reasons.py`
 - `tests/unit/test_training_duplicate_conflicts.py`
+
+
+## 2026-10-19 接续增量：GT 审核与审计弹窗异步归属
+
+本轮从远端 `6df6c8b62aab9e768fad35e2b718226171818c49` 接手，与上一记录的
+`3a4a7e38760e10b25a28e1f73c136535b31b8367` 相比 fast-forward 领先 4 个提交；
+当时 VERSION 为 `42.24.356`，该 SHA 的 GitHub Actions 已核验为 35/35 成功，
+GitHub Checks 97/97 成功。这是上一 SHA 的证据，不自动适用于本轮修复。
+
+已核对 `DISCARD_CONFLICTS` 仍沿用服务端冻结计划、`DELETE_INDEX`、标注仓库
+和现有 Worker。审计范围由服务端展开，删除前核对索引身份、正式 GT 摘要、
+历史/不可变 Snapshot、Test 身份及活动任务。未在本轮擅自删除素材、修改生产数据库
+或绕过保护边界。其已有 API 和隔离 Chrome 用例随最终提交重新由 CI 复验。
+
+新增修复提交：`4a9203dc827164784079732df6d4229a2240f7bd`。
+
+- `static/app.js`：GT 组详情、审计结果加载、GT 批量审核错误、问题组分页/
+  筛选和组内图片翻页现在验证请求原始弹窗仍可见，旧响应不能覆盖已切换弹窗。
+  图片翻页显示等待、失败和重试状态；未知进度不再把 null 伪装成 0%。
+- `tests/frontend/material-integrity.test.mjs`：补充异步弹窗归属和未知进度约束。
+- `tests/browser/training-duplicate-conflicts.spec.mjs`：新增真实 Chrome 延迟 GT
+  详情响应场景，验证用户返回批量审核后旧响应不能覆盖列表。
+- `static/index.html` 与 `tests/frontend/version-marker-owner.test.mjs`：
+  更新静态资源缓存参数 `42.25.395`，正式 VERSION 不变。
+
+本轮提交后的 GitHub Actions 需按**最终 HEAD**分别核验，不得将前一提交的
+成功标记沿用到最终提交。现阶段 CI 验收中；仅凭源代码审计及前一 SHA 的
+全绿结果，不能承诺该新 SHA 已完成 Chrome 和全工作流验收。
+
+**生产安全边界**：本轮只变更 GitHub 长期开发分支；未部署、不重启服务、
+不修改生产数据，也不在生产真实执行 GT 放弃或远端权重发布。
