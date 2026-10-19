@@ -1963,7 +1963,7 @@ def test_weight_new_dto_fields_preserve_null_versus_explicit_empty_tags():
     from platform_core.external_algorithm_platform import ChangLianWeightMutationPayload
     full = ChangLianWeightMutationPayload(
         algoVersionId=501, computePlatformId=91, imageWidth=800, imageHeight=640,
-        yoloVersion="v11", fileSize=14567890, fileSha256="a" * 64,
+        yoloVersion="YOLOv11n", fileSize=14567890, fileSha256="a" * 64,
         tags=["smoke", "fire"],
     )
     payload = full.model_dump(exclude_none=True)
@@ -1986,3 +1986,16 @@ def test_weight_new_dto_fields_preserve_null_versus_explicit_empty_tags():
     # Both add/edit share the same serializer; [] must remain explicit.
     from platform_core.external_algorithm_platform import _dump_weight_payload
     assert _dump_weight_payload({"weightId": 71, "algoVersionId": 501, "tags": []})["tags"] == []
+
+
+def test_weight_dto_rejects_bad_yolo_model_name_and_zero_file_size():
+    from pydantic import ValidationError
+    from platform_core.external_algorithm_platform import ChangLianWeightMutationPayload
+    for invalid in ("v11", "ultralytics", "best.pt", "YOLOv11", "yolov11n"):
+        with pytest.raises(ValidationError):
+            ChangLianWeightMutationPayload(algoVersionId=501, yoloVersion=invalid)
+    with pytest.raises(ValidationError):
+        ChangLianWeightMutationPayload(algoVersionId=501, fileSize=0)
+    assert ChangLianWeightMutationPayload(
+        algoVersionId=501, yoloVersion="YOLOv11n", fileSize=123
+    ).yoloVersion == "YOLOv11n"

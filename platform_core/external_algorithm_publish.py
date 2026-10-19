@@ -1599,8 +1599,14 @@ class ExternalAlgorithmPublishService:
             if not all(isinstance(row, Mapping) and str(row.get("code") or "").strip() for row in schema):
                 return None
             try:
-                ordered = sorted(schema, key=lambda row: int(row.get("class_id", 10**9)))
-            except (TypeError, ValueError, OverflowError):
+                ids = [
+                    int(row["class_id"]) if type(row.get("class_id")) in (int, str) else -1
+                    for row in schema
+                ]
+                if sorted(ids) != list(range(len(schema))):
+                    return None
+                ordered = sorted(schema, key=lambda row: int(row["class_id"]))
+            except (KeyError, TypeError, ValueError, OverflowError):
                 return None
             frozen_codes = [str(row["code"]).strip() for row in ordered]
             if len(set(frozen_codes)) != len(frozen_codes):
@@ -1615,6 +1621,44 @@ class ExternalAlgorithmPublishService:
                 return None
             return frozen_codes if frozen_codes is not None else declared
         return frozen_codes
+
+    def _snapshot_weight_labels(self, version: Mapping[str, Any]) -> list[str] | None:
+        """Only recover labels from a hash-verified task Snapshot of this version."""
+        if version.get("label_schema") or version.get("label_codes"):
+            return None
+        lineage = version.get("training_lineage") or {}
+        if not isinstance(lineage, Mapping):
+            return None
+        task_id = str(lineage.get("task_id") or "").strip()
+        snapshot_id = str(lineage.get("snapshot_id") or "").strip()
+        version_snapshot_id = str(version.get("snapshot_id") or "").strip()
+        if (
+            not re.fullmatch(r"[A-Za-z0-9._-]{1,128}", task_id)
+            or task_id in {".", ".."}
+            or not re.fullmatch(r"[0-9a-f]{64}", snapshot_id)
+            or (version_snapshot_id and version_snapshot_id != snapshot_id)
+        ):
+            return None
+        root = (self.data_dir / "task_runtime" / "artifacts").resolve()
+        try:
+            path = (root / task_id / "snapshot.json").resolve(strict=True)
+            if root not in path.parents:
+                return None
+            snapshot = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(snapshot, dict) or snapshot.get("snapshot_id") != snapshot_id:
+                return None
+            revision = str(version.get("dataset_revision_id") or "").strip()
+            if revision and snapshot.get("dataset_revision_id") != revision:
+                return None
+            signed = {key: value for key, value in snapshot.items() if key not in ("snapshot_id", "created_at")}
+            digest = hashlib.sha256(
+                json.dumps(signed, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+            if digest != snapshot_id:
+                return None
+            return self._frozen_weight_labels({"label_schema": snapshot.get("label_schema")})
+        except (OSError, TypeError, ValueError, RuntimeError):
+            return None
 
     @classmethod
     def _weight_model_metadata(
@@ -1686,6 +1730,11 @@ class ExternalAlgorithmPublishService:
                         candidates.append((target, output_path, chip, params if isinstance(params, Mapping) else {}))
         dedupe: set[tuple[str, str, str]] = set()
         result: list[Dict[str, Any]] = []
+        snapshot_labels = (
+            self._snapshot_weight_labels(version)
+            if not self._frozen_weight_labels(version)
+            else None
+        )
         for target, path, chip, conversion_params in candidates:
             try:
                 path = path.resolve()
@@ -1702,6 +1751,9 @@ class ExternalAlgorithmPublishService:
             artifact_id = hashlib.sha256(
                 f"{project_id}:{algorithm_id}:{version_id}:{target}:{chip_identity}:{digest}".encode("utf-8")
             ).hexdigest()[:32]
+            weight_metadata = self._weight_model_metadata(version, conversion_params, algorithm=algorithm)
+            if snapshot_labels and "tags" not in weight_metadata:
+                weight_metadata["tags"] = list(snapshot_labels)
             result.append({
                 "artifact_id": artifact_id,
                 "project_id": project_id,
@@ -1713,7 +1765,7 @@ class ExternalAlgorithmPublishService:
                 "sha256": digest,
                 "size_bytes": path.stat().st_size,
                 "chip_code": chip_identity,
-                "weight_metadata": self._weight_model_metadata(version, conversion_params, algorithm=algorithm),
+                "weight_metadata": weight_metadata,
             })
         return result
 
@@ -2101,7 +2153,29 @@ class ExternalAlgorithmPublishService:
             return row
         return None
 
+    @staticmethod
+    def _assert_upload_source_identity(artifact: Mapping[str, Any]) -> None:
+        """Reject replaced model bytes after discovery, including same-size changes."""
+        path = Path(str(artifact.get("source_path") or "")).expanduser()
+        expected_sha = str(artifact.get("source_sha256") or artifact.get("sha256") or "").lower()
+        expected_size = int(artifact.get("size_bytes") or 0)
+        if (
+            not re.fullmatch(r"[0-9a-f]{64}", expected_sha)
+            or expected_size <= 0
+            or not path.is_file()
+            or path.stat().st_size != expected_size
+            or _sha256(path) != expected_sha
+        ):
+            raise PlatformError(
+                "MODEL_ARTIFACT_SOURCE_IDENTITY_CHANGED",
+                "模型源文件内容与发现时的产物身份不一致",
+                str(artifact.get("file_name") or ""),
+                "请重新发现并发布当前产物，不允许沿用旧文件的大小和 SHA256。",
+                409,
+            )
+
     def _upload_artifact(self, artifact: Mapping[str, Any], algorithm: Mapping[str, Any], version: Mapping[str, Any]) -> Dict[str, Any]:
+        self._assert_upload_source_identity(artifact)
         discovered = {
             "artifact_id": str(artifact["artifact_id"]),
             "project_id": str(artifact["project_id"]),
@@ -2143,6 +2217,7 @@ class ExternalAlgorithmPublishService:
             stored = self.model_assets.repository.patch(
                 str(stored["artifact_id"]), public_url=public_url,
             )
+        self._assert_upload_source_identity(artifact)
         # Include fresh verified input metadata even when the OSS file is
         # reused; the canonical object bytes and identity remain unchanged.
         return {**stored, "metadata": {**dict(stored.get("metadata") or {}), **discovered["metadata"]}}

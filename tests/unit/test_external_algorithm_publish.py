@@ -3270,3 +3270,46 @@ def test_weight_yolo_architecture_follows_version_lineage_for_best_pt_iterations
     assert ExternalAlgorithmPublishService._yolo_architecture({
         "training_lineage": {"base": {"model": "yolov8m.pt"}},
     }) == "YOLOv8m"
+
+
+def test_weight_labels_recover_only_hash_verified_training_snapshot(tmp_path: Path):
+    _seed_external_algorithm(tmp_path)
+    algorithm, version = _version(tmp_path)
+    signed = {
+        "label_schema": [{"class_id": 0, "code": "smoke"}, {"class_id": 1, "code": "fire"}],
+        "dataset_revision_id": "b" * 64,
+    }
+    digest = hashlib.sha256(
+        json.dumps(signed, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    version["snapshot_id"] = digest
+    version["dataset_revision_id"] = "b" * 64
+    version["training_lineage"] = {"task_id": "task-verified", "snapshot_id": digest}
+    path = tmp_path / "task_runtime" / "artifacts" / "task-verified" / "snapshot.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"snapshot_id": digest, "created_at": "2026-10-19", **signed}), encoding="utf-8")
+    service = _service(tmp_path, MemorySecretStore())
+    assert service.discover_artifacts("p1", algorithm, version)[0]["weight_metadata"]["tags"] == ["smoke", "fire"]
+    path.write_text(json.dumps({"snapshot_id": digest, "label_schema": [{"class_id": 0, "code": "dog"}], "dataset_revision_id": "b" * 64}), encoding="utf-8")
+    assert "tags" not in service.discover_artifacts("p1", algorithm, version)[0]["weight_metadata"]
+    version["snapshot_id"] = "f" * 64
+    assert "tags" not in service.discover_artifacts("p1", algorithm, version)[0]["weight_metadata"]
+
+
+def test_weight_schema_rejects_invalid_class_id_mappings():
+    frozen = ExternalAlgorithmPublishService._frozen_weight_labels
+    assert frozen({"label_schema": [{"class_id": 0, "code": "smoke"}, {"class_id": 0, "code": "fire"}]}) is None
+    assert frozen({"label_schema": [{"class_id": 0, "code": "smoke"}, {"class_id": 2, "code": "fire"}]}) is None
+    assert frozen({"label_schema": [{"class_id": 1, "code": "fire"}, {"class_id": 0, "code": "smoke"}]}) == ["smoke", "fire"]
+
+
+def test_upload_refuses_modified_source_with_unchanged_file_size(tmp_path: Path):
+    model = _seed_external_algorithm(tmp_path)
+    algorithm, version = _version(tmp_path)
+    service = _service(tmp_path, MemorySecretStore())
+    artifact = service.discover_artifacts("p1", algorithm, version)[0]
+    model.write_bytes(b"source-modex")
+    assert model.stat().st_size == artifact["size_bytes"]
+    with pytest.raises(PlatformError) as captured:
+        service._upload_artifact(artifact, algorithm, version)
+    assert captured.value.code == "MODEL_ARTIFACT_SOURCE_IDENTITY_CHANGED"
