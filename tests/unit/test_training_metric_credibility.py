@@ -29,10 +29,12 @@ def _test_result(map50=0.96, *, status="succeeded"):
         "per_class": [
             {"class_id": 0, "label": "smoke", "ground_truth_count": 60,
              "evaluation_status": "evaluated", "true_positive": 55,
-             "false_positive": 1, "false_negative": 5, "map50": .96},
+             "false_positive": 1, "false_negative": 5, "map50": .96,
+             "precision": 55/56, "recall": 55/60, "map50_95": .7},
             {"class_id": 1, "label": "fire", "ground_truth_count": 50,
              "evaluation_status": "evaluated", "true_positive": 47,
-             "false_positive": 2, "false_negative": 3, "map50": .96},
+             "false_positive": 2, "false_negative": 3, "map50": .96,
+             "precision": 47/49, "recall": 47/50, "map50_95": .7},
         ],
         "class_coverage": {
             "schema_version": 1,
@@ -323,3 +325,77 @@ def test_successful_evaluation_preserves_genuine_zero_metric():
         task_id="tq-04-genuine-zero",
     )
     assert result["metrics"]["metrics/mAP50(B)"] == 0.0
+
+
+@pytest.mark.parametrize("metric", ["precision", "recall", "map50", "map50_95"])
+@pytest.mark.parametrize("invalid", [float("nan"), float("inf"), -0.01, 1.01, True, "invalid"])
+def test_successful_test_rejects_invalid_class_scores(metric, invalid):
+    with pytest.raises(ValueError, match="not a finite unit score"):
+        build_evaluation_truth(
+            {"status": "succeeded", "per_class": [{"class_id": 2, metric: invalid}]},
+            task_id="invalid-class-metric",
+        )
+
+
+@pytest.mark.parametrize("status", ["failed", "not_requested", "succeeded"])
+def test_class_missing_metrics_never_become_measured_zero(status):
+    value = build_evaluation_truth(
+        {"status": status, "per_class": [{"class_id": 2, "precision": 0.0}]},
+        task_id="missing-class-metric",
+    )
+    row = value["per_class"][0]
+    assert row["precision"] == 0.0
+    assert all(row[key] is None for key in ("recall", "map50", "map50_95"))
+    assert row["evaluation_status"] == "legacy_unknown"
+
+
+def test_failed_class_scores_keep_invalid_as_null_and_real_zero_as_zero():
+    value = build_evaluation_truth(
+        {"status": "failed", "per_class": [{
+            "class_id": 2, "precision": float("nan"), "recall": True,
+            "map50": -1, "map50_95": 0.0,
+        }]}, task_id="failed-class-metric",
+    )
+    row = value["per_class"][0]
+    assert all(row[key] is None for key in ("precision", "recall", "map50"))
+    assert row["map50_95"] == 0.0
+    assert value["status"] == "failed"
+
+
+@pytest.mark.parametrize("missing", ["precision", "recall", "map50", "map50_95"])
+def test_explicit_evaluated_class_requires_complete_scores(missing):
+    row = {"class_id": 2, "evaluation_status": "evaluated",
+           "precision": 0.0, "recall": 0.0, "map50": 0.0, "map50_95": 0.0}
+    row.pop(missing)
+    with pytest.raises(ValueError, match="evaluated class.*missing"):
+        build_evaluation_truth({"status": "succeeded", "per_class": [row]}, task_id="partial-class")
+
+
+def test_no_test_gt_preserves_unavailable_scores_and_false_positive_evidence():
+    row = {"class_id": 2, "evaluation_status": "no_test_ground_truth",
+           "precision": 0.8, "recall": 0.6, "map50": 0.5, "map50_95": 0.4,
+           "ground_truth_count": 0, "false_positive": 3}
+    value = build_evaluation_truth({"status": "succeeded", "per_class": [row]}, task_id="no-gt")
+    result = value["per_class"][0]
+    assert all(result[key] is None for key in ("precision", "recall", "map50", "map50_95"))
+    assert result["false_positive"] == 3
+    decision = build_iteration_decision(value)
+    assert decision["class_diagnostics"][0]["recall"] is None
+    assert decision["class_diagnostics"][0]["map50"] is None
+
+
+def test_missing_class_metrics_require_review_not_fake_below_reference_scores():
+    truth = build_evaluation_truth({
+        "status": "succeeded", "metrics": {"metrics/mAP50(B)": .97},
+        "per_class": [{"class_id": 0, "label": "legacy",
+                       "ground_truth_count": 10, "true_positive": 8,
+                       "false_negative": 2, "precision": .8}],
+    }, task_id="partial-legacy-class")
+    decision = build_iteration_decision(
+        truth, quality_gate={"metric": "map50", "stop_threshold": .95},
+    )
+    assert decision["decision"] == "review_required"
+    row = decision["class_diagnostics"][0]
+    assert row["code"] == "class_metrics_unavailable"
+    assert row["recall"] is None
+    assert row["map50"] is None

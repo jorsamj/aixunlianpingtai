@@ -9,6 +9,39 @@ function diagnosticImage() {
   return data;
 }
 
+test('class metrics distinguish unavailable, invalid and genuine zero scores', async ({page}, testInfo) => {
+  await page.goto('/');
+  await expect.poll(() => page.evaluate(() => Boolean(state?.uiReady && window.openVersionEvaluation429))).toBe(true);
+  await page.evaluate(() => {
+    state.algorithms = [{id:'score-a', name:'指标边界', versions:[{id:'score-v', evaluation:{
+      status:'succeeded', image_count:3,
+      metrics:{'metrics/precision(B)':true, 'metrics/recall(B)':Infinity, 'metrics/mAP50(B)':1.5},
+      per_class:[
+        {class_id:0,label:'no-gt',ground_truth_count:0,evaluation_status:'no_test_ground_truth',precision:null,recall:null,map50:null,map50_95:null,false_positive:3},
+        {class_id:1,label:'real-zero',ground_truth_count:2,true_positive:0,false_negative:2,precision:0,recall:0,map50:0,map50_95:0},
+        {class_id:2,label:'legacy-missing',ground_truth_count:1,true_positive:1,precision:.5,recall:null,map50:null,map50_95:null},
+      ]
+    }, iteration_decision:{decision:'review_required', class_diagnostics:[{
+      label:'legacy-missing', code:'class_metrics_unavailable', severity:'review',
+      ground_truth_count:1, true_positive:1, false_positive:1, false_negative:0,
+      recall:null, map50:null, recommended_actions:['review_evaluation_configuration']
+    }]}}]}];
+    window.openVersionEvaluation429('score-a','score-v');
+  });
+  const dialog=page.getByRole('dialog',{name:'独立评测',exact:true});
+  await expect(dialog.locator('.evaluation429-key-metrics')).not.toContainText('100.0%');
+  await expect(dialog.locator('.evaluation429-key-metrics')).not.toContainText('Infinity%');
+  await expect(dialog.locator('.evaluation429-key-metrics')).not.toContainText('1.5%');
+  await expect(dialog.locator('.evaluation429-diagnosis-grid')).toContainText('类别指标证据缺失');
+  await dialog.getByRole('tab',{name:'类别与混淆',exact:true}).click();
+  const row=label=>dialog.getByRole('row').filter({hasText:label});
+  await expect(row('no-gt').getByRole('cell').nth(5)).toHaveText('-');
+  await expect(row('legacy-missing').getByRole('cell').nth(5)).toHaveText('-');
+  await expect(row('real-zero').getByRole('cell').nth(5)).toHaveText('0.0%');
+  await expect(row('no-gt').getByRole('cell').nth(2)).toContainText('3');
+  await page.screenshot({path:testInfo.outputPath('class-metric-truth.png')});
+});
+
 test('frozen evaluation diagnoses zero-TP class and previews real GT/FP/FN layers', async ({page}) => {
   await page.route('**/evaluation/images/**', route => route.fulfill({
     status: 200, contentType: 'image/bmp', body: diagnosticImage()

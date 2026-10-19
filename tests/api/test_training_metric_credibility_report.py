@@ -109,3 +109,28 @@ def test_version_and_algorithm_reports_prefer_finalized_val_over_stale_job_cache
     assert build_algorithm_report([record])["trend"][0]["map50"] == 0.96
     legacy = {"id": "v0", "metrics": {"metrics/mAP50(B)": 0.80}}
     assert build_version_report(legacy)["metrics"]["metrics/mAP50(B)"] == 0.80
+
+
+def test_report_api_preserves_normalized_class_null_zero_and_failure(monkeypatch, tmp_path):
+    from platform_core.training_evaluation import build_evaluation_truth
+    truth = build_evaluation_truth({
+        "status": "failed",
+        "metrics": {"metrics/mAP50(B)": None},
+        "per_class": [
+            {"class_id": 0, "precision": 0.0, "recall": None},
+            {"class_id": 1, "evaluation_status": "no_test_ground_truth",
+             "ground_truth_count": 0, "false_positive": 3},
+        ],
+    }, task_id="training-1")
+    durable = {"training_report": {"metrics": {"metrics/mAP50(B)": .97}},
+               "evaluation": truth}
+    platform = _setup_report(monkeypatch, tmp_path, durable_result=durable)
+    response = platform.v44_training_report("p", "training-1")
+    report = response["report"]
+    assert report["evaluation"] == truth
+    assert report["evaluation"]["status"] == "failed"
+    assert report["evaluation"]["per_class"][0]["precision"] == 0.0
+    assert report["evaluation"]["per_class"][0]["recall"] is None
+    assert report["evaluation"]["per_class"][1]["false_positive"] == 3
+    assert report["metrics"]["metrics/mAP50(B)"] == .97
+    assert build_version_report(durable)["evaluation"] == truth

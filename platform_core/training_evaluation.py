@@ -46,6 +46,21 @@ def _finite(value: Any, default: float = 0.0) -> float:
     return number if math.isfinite(number) else default
 
 
+def _evaluation_score(value: Any, *, status: str, field: str) -> float | None:
+    """Keep unavailable evidence distinct from a measured zero."""
+    if value is None:
+        return None
+    try:
+        numeric = float(value) if not isinstance(value, bool) else None
+    except (TypeError, ValueError, OverflowError):
+        numeric = None
+    if numeric is None or not math.isfinite(numeric) or not 0 <= numeric <= 1:
+        if status == "succeeded":
+            raise ValueError(f"evaluation {field} is not a finite unit score")
+        return None
+    return round(numeric, 6)
+
+
 def _label_name(names: Mapping[int | str, str] | Sequence[str] | None, class_id: int) -> str:
     if isinstance(names, Mapping):
         return str(names.get(class_id, names.get(str(class_id), str(class_id))))
@@ -662,23 +677,23 @@ def build_evaluation_truth(
     # unavailable historical results without manufacturing numeric scores.
     metrics = {}
     for key in _EVALUATION_METRICS:
-        value = raw_metrics.get(key)
-        if value is None:
-            continue
-        try:
-            numeric = float(value) if not isinstance(value, bool) else None
-        except (TypeError, ValueError, OverflowError):
-            numeric = None
-        if numeric is None or not math.isfinite(numeric) or not 0 <= numeric <= 1:
-            if status == "succeeded":
-                raise ValueError(f"evaluation {key} is not a finite unit score")
-            continue
-        metrics[key] = round(numeric, 6)
+        value = _evaluation_score(raw_metrics.get(key), status=status, field=key)
+        if value is not None:
+            metrics[key] = value
     per_class = []
     for row in list(raw.get("per_class") or [])[:10000]:
         if not isinstance(row, Mapping):
             continue
         no_test_gt = str(row.get("evaluation_status") or "") == "no_test_ground_truth"
+        scores = {
+            key: None if no_test_gt else _evaluation_score(
+                row.get(key), status=status, field=f"class {row.get('class_id')} {key}",
+            )
+            for key in ("precision", "recall", "map50", "map50_95")
+        }
+        if (status == "succeeded" and row.get("evaluation_status") == "evaluated"
+                and any(value is None for value in scores.values())):
+            raise ValueError("evaluation evaluated class has missing scores")
         per_class.append({
             "class_id": int(row.get("class_id") or 0),
             "label": str(row.get("label") or "")[:1000],
@@ -687,10 +702,7 @@ def build_evaluation_truth(
                 else "evaluated" if row.get("evaluation_status") == "evaluated"
                 else "legacy_unknown"
             ),
-            "precision": None if no_test_gt else round(_finite(row.get("precision")), 6),
-            "recall": None if no_test_gt else round(_finite(row.get("recall")), 6),
-            "map50": None if no_test_gt else round(_finite(row.get("map50")), 6),
-            "map50_95": None if no_test_gt else round(_finite(row.get("map50_95")), 6),
+            **scores,
             "true_positive": max(0, int(row.get("true_positive") or 0)),
             "false_positive": max(0, int(row.get("false_positive") or 0)),
             "false_negative": max(0, int(row.get("false_negative") or 0)),
@@ -1110,12 +1122,15 @@ def build_iteration_decision(
         tp = max(0, int(row.get("true_positive") or 0))
         fp = max(0, int(row.get("false_positive") or 0))
         fn = max(0, int(row.get("false_negative") or 0))
-        recall_value = _finite(row.get("recall"))
-        ap_value = _finite(row.get("map50"))
+        recall_value = _evaluation_score(row.get("recall"), status="not_requested", field="class recall")
+        ap_value = _evaluation_score(row.get("map50"), status="not_requested", field="class map50")
         if gt > 0 and tp == 0 and fn > 0:
             code, level = "zero_true_positives", "critical"
             critical_labels.append(label)
             next_steps = ["inspect_class_mapping", "inspect_prediction_threshold", "review_fp_fn_samples"]
+        elif gt > 0 and (recall_value is None or ap_value is None):
+            code, level = "class_metrics_unavailable", "review"
+            next_steps = ["review_evaluation_configuration", "review_fp_fn_samples"]
         elif gt > 0 and (recall_value < 0.75 or ap_value < 0.75):
             code, level = "class_detection_below_reference", "warning"
             next_steps = ["review_fp_fn_samples", "inspect_annotations", "review_training_coverage"]
@@ -1129,7 +1144,7 @@ def build_iteration_decision(
             "code": code, "severity": level,
             "true_positive": tp, "false_positive": fp, "false_negative": fn,
             "ground_truth_count": gt,
-            "recall": round(recall_value, 6), "map50": round(ap_value, 6),
+            "recall": recall_value, "map50": ap_value,
             "recommended_actions": next_steps,
             "root_cause_confirmed": False,
         })
@@ -1156,6 +1171,10 @@ def build_iteration_decision(
         decision = "review_required"
         reasons.append("critical_class_zero_true_positives")
         actions.extend(("inspect_class_mapping", "inspect_prediction_threshold", "review_fp_fn_samples"))
+    elif any(row["code"] == "class_metrics_unavailable" for row in diagnoses):
+        decision = "review_required"
+        reasons.append("class_metrics_unavailable")
+        actions.append("review_evaluation_configuration")
     elif missing_test_classes:
         decision = "review_required"
         reasons.append("independent_test_class_coverage_incomplete")

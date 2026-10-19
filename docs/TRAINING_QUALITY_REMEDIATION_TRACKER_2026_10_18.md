@@ -2,6 +2,26 @@
 
 ## 接手信息
 
+### 2026-10-19 接续执行计划（TQ-04 类别指标边界）
+
+基线 `e1d4582187e0d405df14caaa9db0bde11a08519c`，已重新 fetch，长期分支工作树纯快进同步且干净；准确 SHA 的22次 Actions均success。执行采用现有 Owner 内最小修复，不重做已完成的总体指标/Val优先级/绑定。
+
+- [x] RED：扩展 `tests/unit/test_training_metric_credibility.py`，对四类 per_class 指标的 NaN/Inf/越界/bool/非法字符串要求成功评测拒绝，失败/旧缺失保留 null，真实0保留；明确 evaluated 行缺关键指标不得归档为完整评分。
+- [x] GREEN：`training_evaluation.py::build_evaluation_truth` 在同一标准化入口共用有界数值校验，不新增评测器。no_test_ground_truth 保持null与FP证据，不读写旧Snapshot/历史结果。
+- [x] API：在 `test_training_metric_credibility_report.py` 将真实标准化结果交给现有报告API，断言null/0与Val/Test源保持一致。
+- [x] Chrome RED→GREEN：`training-evaluation-diagnostics.spec.mjs` 覆盖无GT/旧缺失/真实零的F1；仅调整原页面已有F1投影，必要时同步既有资源缓存合同。
+- [ ] 定向Python、API、完整Node、真实Chrome与现有bundle/Worker集成；检查Diff、更新本文、fetch确认无并行提交后普通提交推送，并按新SHA验收全部实际Actions/Jobs。生产97%模型、OSS/A800/摄像头证据仍待现场只读验收。
+
+### 本批已证明的缺陷与本地验收
+
+- **复现**：逐类指标仍用 `_finite(...,0)`，首轮定向32 failed/2 passed（30 deselected），成功非法值未拒绝、缺失伪0、显式evaluated缺关键项；Chrome首轮在布尔值被显示为100%处稳定失败。沿调用链再复现2项：无GT诊断的Recall/AP被伪造为0，类别缺证据仍可建议ready_for_business_validation。
+- **最小修改**：既有evaluation标准化入口的总体/类别共用同一有界分数检查；明确evaluated成功行必须四项完整，未声明的旧行保留legacy_unknown和null。失败状态不改变；真实0保留；noGT保持N/A及FP。现有iteration decision的未知值不再用0比较，增加class_metrics_unavailable人工复核；真实GT零TP诊断仍优先。已归档旧报告只读展示，不批量重算。
+- **前端**：原pct429在本IIFE统一校验单位分数，保留合法历史数值字符串，拒绝bool/数组/空白/非有限/越界；F1缺任一值保持不可用，不把null算成零。沿用原诊断卡片展示“类别指标证据缺失”。正式accuracy写入源为Ultralytics单位mAP，未发现需要0..100猜测式兼容的正式合同。仅app.js入口缓存改为42.25.391，main/styles仍42.25.390，VERSION仍42.24.356。
+- **测试与原始日志**：7份Python单元/API/真实bundle/盲测/Worker测试111 passed（5条既有弃用warning），`C:/Users/jorsam/.codex/tmp/tq04-class-python-final-20261019.log`；完整Node991 passed/0 failed/0 skipped，`tq04-class-node-20261019.log`；真实Chrome两规格最终结果见`tq04-class-chrome-green-20261019.log`。未删除失败用例或放宽断言。两条旧模拟夹具自称evaluated却仅给AP，现提供完整模拟Precision/Recall/AP50/AP50-95，而非回退生产门禁。
+- **独立复核**：只读审查未发现剩余P0/P1/P2；确认唯一正式评测生产者始终提供四项分数，旧行兼容与Production/failed/zero优先级不被破坏。
+- **范围**：本批关闭类别分数、诊断及F1的已证实缺口；总体分数前置修复和正式Val优先级不重复修改。Snapshot v3/manifest/图像/隐藏GT的既有verifier及训练最终归档调用保持不变，真实文件/篡改与Worker回归通过，不把静态连线检查当成全部实测。相机来源/近重复、协议现场输入及97%生产模型尚不能宣告验收。
+- **提交/CI**：提交后记录实际代码SHA；只以最终HEAD的全部实际触发Actions/Jobs为验收。CI原始证据位于 `C:/Users/jorsam/.codex/visualizations/2026/10/19/tq04-class-boundaries/`，它是本文的测试附件，不是另一份专项问题清单。
+
 - 仓库：`jorsamj/aixunlianpingtai`；唯一长期开发分支：`feature/external-algorithm-publishing`。
 - 开发起点 HEAD：`e30a676276b741d14c30e1674edf5fc86a6e377b`；正式 `VERSION.txt`：`42.24.356`（不得擅改）。
 - 本文为**跨会话持久化的唯一专项进度入口**。每一项必须写明复现证据、影响边界、修复提交、测试结果及后续事项。
