@@ -387,3 +387,37 @@ m=app.material_store(${JSON.stringify(f.project.id)})
 print(json.dumps([m.get(${JSON.stringify(f.ids[0])}) is None,m.get('duplicate-copy') is None]))`));
   expect(remaining).toEqual([true,true]);
 });
+
+test('late GT group response cannot replace the review after returning',async({page,request})=>{
+  const f=await fixture(request);
+  const task=(await (await request.post(`/api/v62/projects/${f.project.id}/material-integrity/audits`)).json()).task_id;
+  runIsolatedBatch(f.project.id,task);
+  await openDraft(page,f);
+  await page.evaluate(()=>closeModal());
+  await page.evaluate(()=>{void window.openMaterialIntegrityAudit47()});
+  const reviewButton=page.locator('.modal:not(.hidden) [data-gt-bulk-review]');
+  await expect(reviewButton).toBeVisible();
+  await reviewButton.click();
+  const review=page.locator('.modal:not(.hidden) .gt-review-workbench');
+  await expect(review.locator('[data-gt-review-open]')).toHaveCount(1);
+  const key=await review.locator('[data-gt-review-open]').first().getAttribute('data-gt-review-open');
+  let releaseRequest,signalRequest;
+  const requestGate=new Promise(resolve=>{releaseRequest=resolve});
+  const requestStarted=new Promise(resolve=>{signalRequest=resolve});
+  await page.route('**/material-integrity/audits/*/groups/*/items?*',async route=>{
+    signalRequest();
+    await requestGate;
+    await route.continue();
+  });
+  await page.evaluate(args=>{
+    window.__integrityDelayedGroup=window.openMaterialIntegrityGroup47(encodeURIComponent(args.task),encodeURIComponent(args.key));
+  },{task,key});
+  await requestStarted;
+  await expect(page.locator('.modal:not(.hidden) [data-integrity-group-loading]')).toBeVisible();
+  await page.evaluate(()=>{void window.openGtConflictReview47()});
+  await expect(review.locator('[data-gt-review-open]')).toHaveCount(1);
+  releaseRequest();
+  await page.evaluate(()=>window.__integrityDelayedGroup);
+  await expect(review).toBeVisible();
+  await expect(page.locator('.modal:not(.hidden) .material-integrity47-group')).toHaveCount(0);
+});

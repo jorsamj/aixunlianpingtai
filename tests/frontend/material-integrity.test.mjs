@@ -160,3 +160,22 @@ test('audit acceptance leaves visible progress and uses existing material batch 
   assert.match(app, /data-integrity-audit-open/);
   assert.doesNotMatch(app.slice(app.indexOf('window.startMaterialIntegrityAudit47='), app.indexOf('function materialIntegrityDuplicate47')), /closeModal\(\)/);
 });
+
+test('asynchronous material integrity actions are owned by the current visible modal', () => {
+  const group=app.slice(app.indexOf('window.openMaterialIntegrityGroup47='),app.indexOf('function updateMaterialIntegritySelection47()'));
+  assert.match(group,/const loading=activeMaterialIntegrityRoot47/);
+  assert.match(group,/if\(!current\(\)\)return/);
+  const audit=app.slice(app.indexOf('window.openMaterialIntegrityAudit47='),app.indexOf('async function loadMaterialIntegrityClassification47'));
+  assert.match(audit,/const current=\(\)=>pid\(\)===projectAtStart/);
+  assert.match(audit,/if\(!current\(\)\)return/);
+  const groups=app.slice(app.indexOf('window.loadMoreMaterialIntegrityGroups47='),app.indexOf('window.openMaterialIntegrityAudit47='));
+  assert.match(groups,/!list\.isConnected/);
+  const images=app.slice(app.indexOf('window.loadMoreMaterialIntegrityItems47='),app.indexOf('window.toggleMaterialIntegrity47='));
+  assert.match(images,/!grid\.isConnected/);
+});
+
+test('audit progress without a numeric backend value stays indeterminate', () => {
+  const progress=app.slice(app.indexOf('window.updateMaterialIntegrityAudit47='),app.indexOf('window.startMaterialIntegrityAudit47='));
+  assert.match(progress,/task\.progress_percent==null\?NaN/);
+  assert.match(progress,/progress\.removeAttribute\('value'\)/);
+});
