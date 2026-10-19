@@ -884,7 +884,7 @@ def create_material_integrity_plan(
         )
     payload = payload if isinstance(payload, dict) else {}
     scope = str(payload.get("scope") or "SAFE_ALL").strip().upper()
-    if scope not in {"SAFE_ALL", "SELECTED_GROUPS", "MANUAL_GROUPS", "FILTERED", "SELECTED_IMAGES"}:
+    if scope not in {"SAFE_ALL", "SELECTED_GROUPS", "MANUAL_GROUPS", "FILTERED", "SELECTED_IMAGES", "DISCARD_CONFLICTS"}:
         raise BatchRequestError(
             "MATERIAL_INTEGRITY_PLAN_SCOPE_INVALID", "素材治理范围无效", 422,
         )
@@ -899,6 +899,11 @@ def create_material_integrity_plan(
     if scope in {"SELECTED_GROUPS", "MANUAL_GROUPS"} and not group_keys:
         raise BatchRequestError(
             "MATERIAL_INTEGRITY_GROUPS_REQUIRED", "请选择需要治理的重复组", 422,
+        )
+    if scope == "DISCARD_CONFLICTS" and payload.get("confirm_discard_conflicts") is not True:
+        raise BatchRequestError(
+            "MATERIAL_INTEGRITY_DISCARD_CONFIRMATION_REQUIRED",
+            "放弃冲突组需要明确确认；删除只涉及可删索引及标注，历史和 Test 保持保护", 422,
         )
     if len(group_keys) > 10000:
         raise BatchRequestError(
@@ -1009,7 +1014,7 @@ def create_material_integrity_plan(
             found = audit.execute("SELECT COUNT(DISTINCT i.image_id) FROM issue_items i JOIN selected_images s ON s.image_id=i.image_id").fetchone()[0]
             if found != len(selected_images):
                 raise BatchRequestError("MATERIAL_INTEGRITY_SELECTION_INVALID", "所选图片不属于当前审计", 409)
-        if scope in {"SELECTED_GROUPS", "MANUAL_GROUPS"}:
+        if scope in {"SELECTED_GROUPS", "MANUAL_GROUPS"} or (scope == "DISCARD_CONFLICTS" and group_keys):
             audit.execute(
                 "CREATE TEMP TABLE selected_integrity_groups "
                 "(group_key TEXT PRIMARY KEY) WITHOUT ROWID"
@@ -1019,12 +1024,14 @@ def create_material_integrity_plan(
                 ((group_key,) for group_key in group_keys),
             )
             join = " JOIN selected_integrity_groups s ON s.group_key=g.group_key"
+        if scope == "DISCARD_CONFLICTS":
+            where, params = "g.issue_type=?", ["DUPLICATE_ANNOTATION_CONFLICT"]
         groups = audit.execute(
             f"SELECT g.group_key,g.issue_type FROM issue_groups g{join} "
             f"WHERE {where} ORDER BY g.group_key",
             params,
         ).fetchall()
-        if scope in {"SELECTED_GROUPS", "MANUAL_GROUPS"} and len(groups) != len(group_keys):
+        if (scope in {"SELECTED_GROUPS", "MANUAL_GROUPS"} or (scope == "DISCARD_CONFLICTS" and group_keys)) and len(groups) != len(group_keys):
             raise BatchRequestError(
                 "MATERIAL_INTEGRITY_GROUPS_CHANGED",
                 "所选问题组已变化，请刷新审计结果后重试", 409,
@@ -1099,6 +1106,48 @@ def create_material_integrity_plan(
                         continue
                     planned.append((group_key, image_id, 'DELETE', item['content_sha256'], str(item['details'].get('annotation_digest') or '')))
                     planned_ids.add(image_id)
+                    delete_count += 1
+                continue
+            if scope == "DISCARD_CONFLICTS":
+                if ids.intersection(anomaly_ids):
+                    reason = "ANOMALOUS_MATERIAL"
+                    anomaly_groups += 1
+                    anomaly_item_count += len(ids)
+                    if len(review_groups) < 20:
+                        review_groups.append({
+                            "group_key": group_key, "issue_type": str(group["issue_type"]),
+                            "image_count": len(ids), "reason": reason,
+                            "protected_count": len(group_protected),
+                        })
+                    skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
+                    skipped_item_count += len(ids)
+                    continue
+                disposable = chosen_ids - group_protected - planned_ids
+                if not disposable:
+                    protected_groups += 1
+                    if len(review_groups) < 20:
+                        review_groups.append({
+                            "group_key": group_key, "issue_type": str(group["issue_type"]),
+                            "image_count": len(ids), "reason": "MULTIPLE_PROTECTED_REFERENCES",
+                            "protected_count": len(group_protected),
+                        })
+                    skip_reasons["MULTIPLE_PROTECTED_REFERENCES"] = skip_reasons.get("MULTIPLE_PROTECTED_REFERENCES", 0) + 1
+                    skipped_item_count += len(ids)
+                    continue
+                # No fabricated keeper: this is an explicit discard, including
+                # all unprotected copies when no immutable/Test keeper exists.
+                planned_groups.append((group_key, "", "EXPLICIT_DISCARD_UNPROTECTED", len(disposable)))
+                included_groups += 1
+                kept_count += len(ids - disposable)
+                for item in items:
+                    if item["image_id"] not in disposable:
+                        continue
+                    planned.append((
+                        group_key, item["image_id"], "DELETE",
+                        item["content_sha256"],
+                        str(item["details"].get("annotation_digest") or ""),
+                    ))
+                    planned_ids.add(item["image_id"])
                     delete_count += 1
                 continue
             reason = ""
@@ -1177,6 +1226,7 @@ def create_material_integrity_plan(
         "audit_task_id": audit_task.task_id,
         "scope": scope,
         "review_basis": review_basis,
+        "discard_mode": scope == "DISCARD_CONFLICTS",
         "selected_count": len(selected_ids),
         "retained_count": len(selected_ids - planned_ids),
         "unverifiable_count": len(unverifiable_ids),
@@ -1410,8 +1460,8 @@ def _execute_material_integrity_plan_locked(
                     (
                         (
                             str(row["group_key"]), str(row["keeper_image_id"]),
-                            str(by_id[str(row["keeper_image_id"])]["content_sha256"]),
-                            str(by_id[str(row["keeper_image_id"])]["annotation_digest"]),
+                            str(by_id[str(row["keeper_image_id"])]["content_sha256"]) if row["keeper_image_id"] else "",
+                            str(by_id[str(row["keeper_image_id"])]["annotation_digest"]) if row["keeper_image_id"] else "",
                             str(row["keeper_reason"]), int(row["delete_count"]),
                         )
                         for row in group_rows
@@ -2376,7 +2426,7 @@ class MaterialBatchHandler:
         items = manifest.database.execute(
             "SELECT * FROM integrity_plan_items ORDER BY image_id"
         ).fetchall()
-        all_ids = [str(row["keeper_image_id"]) for row in groups]
+        all_ids = [str(row["keeper_image_id"]) for row in groups if row["keeper_image_id"]]
         all_ids.extend(str(row["image_id"]) for row in items)
         current_materials = {}
         current_annotations = {}
@@ -2405,6 +2455,11 @@ class MaterialBatchHandler:
             )
 
         for row in groups:
+            if not row["keeper_image_id"]:
+                if str(row["keeper_reason"]) != "EXPLICIT_DISCARD_UNPROTECTED":
+                    for image_id in deletes_by_group.get(str(row["group_key"]), ()):
+                        failed[image_id] = "MATERIAL_INTEGRITY_KEEPER_CHANGED"
+                continue
             if not identity_matches(
                 row["keeper_image_id"], row["keeper_content_sha256"],
                 row["keeper_annotation_digest"],
@@ -3507,6 +3562,11 @@ class MaterialBatchHandler:
             raise BatchRequestError(
                 "MATERIAL_INTEGRITY_DELETE_IDENTITY_CHANGED",
                 "待清理素材身份已变化，已跳过该项", 409,
+            )
+        if not row['keeper_image_id'] and row['keeper_reason'] != "EXPLICIT_DISCARD_UNPROTECTED":
+            raise BatchRequestError(
+                "MATERIAL_INTEGRITY_EXECUTION_INCOMPLETE",
+                "治理计划缺少有效保留项或人工放弃确认", 409,
             )
         if row['keeper_image_id'] and not matches(
             row["keeper_image_id"], row["keeper_content_sha256"],
