@@ -642,6 +642,8 @@ test('label management create and edit stay page-scoped without loading the full
   await row.getByRole('button', {name: '编辑'}).click();
   dialog = page.getByRole('dialog', {name: '编辑标签'});
   await expect(dialog).toBeVisible();
+  await expect(dialog.locator('#label414Code')).toHaveValue('helmet');
+  await expect(dialog.locator('#label414Cn')).toHaveValue('安全帽');
   await dialog.locator('#label414Cn').fill('安全头盔');
   await dialog.locator('#label414Aliases').fill('toukui1、helmet_old');
   const editResponses = [];

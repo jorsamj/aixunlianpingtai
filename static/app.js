@@ -5299,7 +5299,10 @@ const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
   };
 
   window.openLabel414=function(classId=null){
-    const l=classId===null?null:(state.labels||[]).find(x=>Number(x.class_id)===Number(classId));
+    const id=Number(classId);
+    const rows=state.label414UsageLoadedAt>0?state.label414Usage||[]:[];
+    const l=classId===null?null:rows.find(x=>Number(x.class_id)===id)||(state.labels||[]).find(x=>Number(x.class_id)===id);
+    if(classId!==null&&!l)return toast('标签信息未同步，请刷新标签列表后重试编辑');
     modal(l?'编辑标签':'新建标签',`<div class="label414-form"><div class="field"><label>英文标签 <em>*</em></label><input id="label414Code" class="input" value="${esc(l?.code||'')}" placeholder="例如 fire / smoke / helmet"><small>用于训练类别、模型输出、YOLO/COCO 导入导出；只允许英文、数字、_、-，且必须以英文字母开头。</small></div><div class="field"><label>中文名称</label><input id="label414Cn" class="input" value="${esc(l?.display_name||'')}" placeholder="例如 明火 / 烟雾 / 安全帽"></div><div class="field"><label>标签别名</label><input id="label414Aliases" class="input" value="${esc((l?.aliases||[]).join('、'))}" placeholder="例如 toukui1、toukui2、helmet_old"><small>用于搜索、历史来源展示和审计；不会用于导入时自动选择或推荐平台标签。</small></div><div class="form two"><div class="field"><label>显示颜色</label><input id="label414Color" class="input color414" type="color" value="${esc(l?.color||'#ef4444')}"></div><div class="field"><label>快捷键</label><input id="label414Hotkey" class="input" maxlength="1" value="${esc(l?.hotkey||'')}" placeholder="1-9"></div></div><div class="label414-preview"><span style="background:${esc(l?.color||'#ef4444')}"></span><b>${esc(l?.code||'fire')}</b><em>${esc(l?.display_name||'明火')}</em></div></div><div class="row end"><button class="btn" onclick="closeModal()">取消</button><button class="btn primary" onclick="saveLabel414(${classId===null?'null':Number(classId)})">保存</button></div>`,false);
   };
   window.saveLabel414=async function(classId){
