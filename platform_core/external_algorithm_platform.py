@@ -18,6 +18,7 @@ from filelock import FileLock, Timeout
 from pydantic import BaseModel, Field
 
 from .algorithm_sql_store import AlgorithmSqlStore
+from .compute_platform_catalog import compute_platform_catalog
 from .algorithms import list_algorithms
 from .annotations import atomic_write_json
 from .errors import PlatformError
@@ -862,7 +863,9 @@ class ChangLianClient:
         return self._request("GET", self.endpoints.compute_platform_list_page, auth=True, params=_compact_params(params))
 
     def compute_platforms(self, **filters: Any) -> Any:
-        return self._request("GET", self.endpoints.compute_platform_list, auth=True, params=_compact_params(filters))
+        # listAll must carry every child; a root-only cache cannot safely bind chips.
+        return self._request("GET", self.endpoints.compute_platform_list, auth=True,
+                             params=_compact_params({"showChildren": "true", **filters}))
 
     def version_create(self, payload: Mapping[str, Any]) -> Any:
         body = _dump_version_payload(payload)
@@ -1051,6 +1054,22 @@ def _validated_external_items(
             "请核对新畅联接口字段契约；平台不会静默跳过缺少业务 ID 的主数据。",
             502,
         )
+    return rows
+
+
+def _validated_compute_platforms(value: Any) -> list[Dict[str, Any]]:
+    rows = _validated_external_items(
+        value, id_resolver=_compute_platform_id,
+        error_code="EXTERNAL_COMPUTE_PLATFORM_ID_MISSING", entity_name="算力环境",
+    )
+    try:
+        compute_platform_catalog(rows)
+    except ValueError as error:
+        raise PlatformError(
+            "EXTERNAL_COMPUTE_PLATFORM_HIERARCHY_INVALID",
+            "新畅联算力环境父子关系不完整",
+            str(error), "请确认 listAll(showChildren=true) 返回完整且无环的节点。", 502,
+        ) from error
     return rows
 
 
@@ -2154,12 +2173,7 @@ class ExternalAlgorithmPlatformService:
             record(
                 "compute_platforms",
                 "算力环境",
-                lambda: _validated_external_items(
-                    client.compute_platforms(),
-                    id_resolver=_compute_platform_id,
-                    error_code="EXTERNAL_COMPUTE_PLATFORM_ID_MISSING",
-                    entity_name="算力环境",
-                ),
+                lambda: _validated_compute_platforms(client.compute_platforms()),
                 count_items=True,
             )
             self._append_algorithm_readonly_diagnostics(
@@ -2218,12 +2232,7 @@ class ExternalAlgorithmPlatformService:
         record(
             "compute_platforms",
             "算力环境",
-            lambda: _validated_external_items(
-                client.compute_platforms(),
-                id_resolver=_compute_platform_id,
-                error_code="EXTERNAL_COMPUTE_PLATFORM_ID_MISSING",
-                entity_name="算力环境",
-            ),
+            lambda: _validated_compute_platforms(client.compute_platforms()),
             count_items=True,
         )
         self._append_algorithm_readonly_diagnostics(
@@ -2504,12 +2513,7 @@ class ExternalAlgorithmPlatformService:
             )
 
             request_started = time.perf_counter()
-            compute_platforms = _validated_external_items(
-                client.compute_platforms(),
-                id_resolver=_compute_platform_id,
-                error_code="EXTERNAL_COMPUTE_PLATFORM_ID_MISSING",
-                entity_name="算力环境",
-            )
+            compute_platforms = _validated_compute_platforms(client.compute_platforms())
             self._update_sync_operation(
                 project_id,
                 str(operation_id),

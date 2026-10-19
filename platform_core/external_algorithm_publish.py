@@ -18,6 +18,14 @@ from filelock import FileLock, Timeout
 from pydantic import BaseModel, Field
 
 from .algorithms import list_algorithms, update_algorithm_version
+from .compute_platform_catalog import (
+    CHIP_BINDING_DICTIONARY,
+    compute_platform_active,
+    compute_platform_catalog,
+    compute_platform_has_children,
+    compute_platform_is_descendant,
+    local_chip_key,
+)
 from .errors import PlatformError
 from .external_publish_request import (
     request_external_auto_publish_for_conversion_if_enabled,
@@ -196,7 +204,8 @@ def _is_publishable_conversion_output(target: Any, path: Path) -> bool:
 
 class TargetMapping(BaseModel):
     compute_platform_id: str = ""
-    chip_code: str = ""
+    chip_code: str = ""  # Legacy single-target compatibility only.
+    chip_mappings: Dict[str, str] = Field(default_factory=dict)
     enabled: bool = True
 
 
@@ -860,6 +869,18 @@ class ExternalPublicationRepository:
         artifact_id = str(artifact["artifact_id"])
         existing = self.artifact_publication(artifact_id, provider=provider_id)
         compute_platform_id = str(mapping.get("compute_platform_id") or "").strip()
+        if (
+            existing and str(existing.get("external_weight_id") or "")
+            and mapping.get("chip_mappings")
+            and str(existing.get("compute_platform_id") or "") != compute_platform_id
+        ):
+            raise PlatformError(
+                "EXTERNAL_WEIGHT_PLATFORM_REMAP_REVIEW_REQUIRED",
+                "已有远端权重不能随新的芯片字典静默改挂",
+                f"artifact_id={artifact_id}",
+                "请核对已有 weightId 的归属，必要时执行单独的远端权重迁移流程。",
+                409,
+            )
         # Persist the provider-facing value separately from the local artifact
         # identity. Existing per-target config supplies non-chip formats while
         # RKNN artifacts retain their explicit generated chip identity.
@@ -1359,29 +1380,25 @@ class ExternalAlgorithmPublishService:
             "config": config,
             "storage_sources": sources,
             "compute_platforms": external_cache.get("compute_platforms") or [],
+            "chip_dictionary": {key: list(values) for key, values in CHIP_BINDING_DICTIONARY.items()},
         }
 
-    def _current_compute_platform_ids(self) -> set[str]:
+    def _compute_catalog(self) -> dict[str, dict[str, Any]]:
         rows = self.external_repository.cache().get("compute_platforms") or []
-        result: set[str] = set()
-        for row in rows:
-            if not isinstance(row, Mapping):
-                continue
-            value = str(
-                row.get("computePlatformId")
-                or row.get("compute_platform_id")
-                or row.get("id")
-                or ""
-            ).strip()
-            if value:
-                result.add(value)
-        return result
+        try:
+            return compute_platform_catalog(rows)
+        except ValueError as error:
+            raise PlatformError(
+                "EXTERNAL_COMPUTE_PLATFORM_HIERARCHY_INVALID",
+                "畅联云算力环境层级数据无效",
+                str(error), "请重新同步完整的算力环境主数据并检查 parentId。", 409,
+            ) from error
 
     def _assert_current_compute_platform(self, compute_platform_id: Any, *, target: str = "") -> str:
         value = str(compute_platform_id or "").strip()
         if not value:
             return ""
-        current = self._current_compute_platform_ids()
+        current = self._compute_catalog()
         if not current:
             raise PlatformError(
                 "EXTERNAL_COMPUTE_PLATFORM_CACHE_REQUIRED",
@@ -1390,15 +1407,39 @@ class ExternalAlgorithmPublishService:
                 "请先在“配置中心 → 平台对接”执行“立即同步”，再重新选择算力环境。",
                 409,
             )
-        if value not in current:
+        if not compute_platform_active(current, value):
             raise PlatformError(
                 "EXTERNAL_COMPUTE_PLATFORM_MAPPING_STALE",
                 "畅联云算力环境映射已失效",
-                f"转换目标 {target or '-'} 当前映射的 computePlatformId={value} 已不在最近一次同步的算力环境中。",
-                "请先重新同步畅联云主数据，然后重新选择该转换目标对应的算力环境。",
+                f"转换目标 {target or '-'} 对应的 computePlatformId={value} 已不存在、被删除或其父级失效。",
+                "请先同步畅联云主数据，重新确认父子分类绑定；平台不会自动改挂。",
                 409,
             )
         return value
+
+    def _validated_chip_bindings(
+        self, target: str, parent_id: str, bindings: Mapping[str, str],
+    ) -> dict[str, str]:
+        catalog = self._compute_catalog()
+        normalized: dict[str, str] = {}
+        for local_code, remote_id in bindings.items():
+            chip = local_chip_key(local_code)
+            if not chip or not re.fullmatch(r"[A-Z0-9]{2,64}", chip) or chip in normalized:
+                raise PlatformError(
+                    "EXTERNAL_COMPUTE_CHIP_MAPPING_INVALID",
+                    "本地芯片字典编号重复或不合法", f"{target}: {local_code}",
+                    "同一转换目标的芯片编号归一化后必须唯一。", 422,
+                )
+            leaf = str(remote_id or "").strip()
+            if not compute_platform_active(catalog, leaf) or not compute_platform_is_descendant(catalog, leaf, parent_id):
+                raise PlatformError(
+                    "EXTERNAL_COMPUTE_CHILD_MAPPING_INVALID",
+                    "芯片绑定不属于指定的有效父级算力环境",
+                    f"{target}/{chip}: {parent_id} -> {leaf}",
+                    "请从该父级算力环境下的有效子分类中明确选择，不能根据名称猜测。", 409,
+                )
+            normalized[chip] = leaf
+        return normalized
 
     def save_config(self, payload: ExternalPublishConfigPayload) -> Dict[str, Any]:
         source_id = str(payload.storage_source_id or "").strip()
@@ -1413,8 +1454,18 @@ class ExternalAlgorithmPublishService:
                 "请填写以 http:// 或 https:// 开头的本平台外部访问地址。", 422,
             )
         for target, mapping in payload.target_mappings.items():
-            if mapping.enabled and str(mapping.compute_platform_id or "").strip():
-                self._assert_current_compute_platform(mapping.compute_platform_id, target=str(target))
+            if not mapping.enabled:
+                continue
+            parent = str(mapping.compute_platform_id or "").strip()
+            if parent:
+                self._assert_current_compute_platform(parent, target=str(target))
+            if mapping.chip_mappings:
+                if not parent:
+                    raise PlatformError(
+                        "EXTERNAL_COMPUTE_PARENT_REQUIRED", "芯片绑定缺少父级算力环境",
+                        str(target), "请先绑定父级环境，再绑定该环境下的子分类。", 422,
+                    )
+                self._validated_chip_bindings(str(target), parent, mapping.chip_mappings)
         saved = self.repository.save_config(payload)
         # Legacy compatibility only. Runtime reads the StorageSource and the
         # artifact binding; this moves old values to those owners once.
@@ -1825,23 +1876,51 @@ class ExternalAlgorithmPublishService:
         target = str(artifact.get("target") or "").strip().lower()
         state = self._mapping_state(target)
         mapping = state.get("mapping")
-        if mapping and target == "rockchip":
-            # The canonical RKNN artifact identity must come from the conversion
-            # result itself. A provider mapping may translate the remote code,
-            # but must never invent the chip identity of a local .rknn file.
-            chip_code = _canonical_chip_code(artifact.get("chip_code") or "")
-            if not chip_code:
-                return {
-                    "status": "blocked",
-                    "enabled": True,
-                    "mapping": None,
-                    "detail": "RKNN 产物缺少芯片身份",
-                    "code": "MODEL_ARTIFACT_CHIP_REQUIRED",
-                    "message": "RKNN 产物缺少芯片身份",
-                    "solution": "请重新生成或修复该 RKNN 转换结果，确保转换任务自身保留真实 chip/soc_version（当前优先 RK3568/RK3578，兼容 RK3576）；厂商映射不能替代产物真实芯片身份。",
-                    "status_code": 409,
-                }
+        if not mapping:
+            return state
+        actual_chip = local_chip_key(artifact.get("chip_code"))
+        if target == "rockchip" and not actual_chip:
+            return self._blocked_chip_state(
+                "MODEL_ARTIFACT_CHIP_REQUIRED", "RKNN 产物缺少真实芯片身份",
+                "请检查转换任务的 chip/soc_version，不能从畅联云分类名称反推芯片。",
+            )
+        bindings = mapping.get("chip_mappings") or {}
+        if not isinstance(bindings, Mapping):
+            return self._blocked_chip_state(
+                "EXTERNAL_COMPUTE_CHIP_MAPPING_INVALID", "芯片字典格式错误", "请重新保存厂商对应表。",
+            )
+        parent = str(mapping.get("compute_platform_id") or "")
+        if actual_chip and bindings:
+            bound = {local_chip_key(code): str(pid) for code, pid in bindings.items()}.get(actual_chip)
+            if not bound:
+                return self._blocked_chip_state(
+                    "EXTERNAL_COMPUTE_CHIP_MAPPING_REQUIRED",
+                    f"{target} / {actual_chip} 尚未绑定畅联云子分类",
+                    "请在平台对接的厂商对应表中绑定该真实芯片型号。",
+                )
+            try:
+                valid = self._validated_chip_bindings(target, parent, {actual_chip: bound})
+            except PlatformError as error:
+                return self._blocked_chip_state(error.code, error.message, error.solution)
+            return {**state, "mapping": {**mapping, "compute_platform_id": valid[actual_chip]},
+                    "detail": valid[actual_chip]}
+        if target == "rockchip" and compute_platform_has_children(self._compute_catalog(), parent):
+            return self._blocked_chip_state(
+                "EXTERNAL_COMPUTE_CHIP_MAPPING_REQUIRED",
+                f"瑞芯微 {actual_chip} 尚未绑定父分类下的具体子分类",
+                "现有父级绑定不能代表具体芯片，请选择该父级下对应的子分类。",
+            )
+        # Historical flat mappings stay compatible. New hierarchical Rockchip
+        # environments must use an explicit chip mapping and never guess a child.
         return state
+
+    @staticmethod
+    def _blocked_chip_state(code: str, message: str, solution: str) -> Dict[str, Any]:
+        return {
+            "status": "blocked", "enabled": True, "mapping": None,
+            "detail": message, "code": code, "message": message,
+            "solution": solution, "status_code": 409,
+        }
 
     @staticmethod
     def _remote_version_id(row: Mapping[str, Any]) -> str:
