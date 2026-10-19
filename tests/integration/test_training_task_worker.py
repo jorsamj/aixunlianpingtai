@@ -142,6 +142,14 @@ def test_training_prepare_then_handler_runs_and_commits_verified_result(tmp_path
 
     def fake_runner(context, argv, job_file):
         observed_argv["value"] = list(argv)
+        # This fixture simulates a fully completed independent Test. Its
+        # claimed image_count must come from the *frozen materialized cohort*,
+        # not a guessed count or the mutable project's current materials.
+        test_bundle = context.artifacts.read_json(
+            context.task.task_id, "work/bundle/manifest.json",
+        )
+        test_count = len(test_bundle["splits"]["test"])
+        assert test_count == 2
         model = project / "models" / "fake-trained.pt"
         model.parent.mkdir(parents=True, exist_ok=True)
         model.write_bytes(b"verified-model")
@@ -158,6 +166,7 @@ def test_training_prepare_then_handler_runs_and_commits_verified_result(tmp_path
                     "metrics": {"metrics/mAP50(B)": 0.75},
                     "test_result": {
                         "status": "succeeded",
+                        "image_count": test_count,
                         "metrics": {
                             "metrics/precision(B)": 0.80,
                             "metrics/recall(B)": 0.78,
@@ -290,6 +299,10 @@ def test_training_prepare_then_handler_runs_and_commits_verified_result(tmp_path
     assert versions[0]["training_lineage"]["snapshot_id"] == result["snapshot_id"]
     assert versions[0]["training_lineage"]["dataset_revision_id"] == result["dataset_revision_id"]
     assert versions[0]["evaluation"]["status"] == "succeeded"
+    assert versions[0]["evaluation"]["image_count"] == len(bundle_manifest["splits"]["test"]) == 2
+    assert versions[0]["evaluation"]["benchmark_scope"]["binding_level"] == "bundle_verified"
+    assert versions[0]["evaluation"]["benchmark_scope"]["test_image_count"] == 2
+    assert result["evaluation"]["benchmark_scope"] == versions[0]["evaluation"]["benchmark_scope"]
     assert versions[0]["evaluation"]["metrics"]["metrics/mAP50(B)"] == 0.75
     assert versions[0]["iteration_decision"]["decision"] == "continue_training"
     assert versions[0]["iteration_decision"]["quality_gate"]["continue_threshold"] == 0.6

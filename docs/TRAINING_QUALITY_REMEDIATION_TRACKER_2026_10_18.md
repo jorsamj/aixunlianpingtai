@@ -206,3 +206,10 @@
 - **失败事实**：本轮代码 SHA `c1d201c9` 的 `Algorithm SQL Store / contracts` Job 中，`test_finalization_passes_verified_frozen_test_bundle_into_independent_evaluation` 执行 `from platform_core.training_tasks import TrainingHandler`，触发轻量测试环境缺少 `psutil`（`ModuleNotFoundError`）；同 Job 91 项已通过，该失败发生在源码连线断言的导入阶段，不是实际训练行为异常。
 - **根因修复**：此检查的目的仅是核对 `_finalize_completed_job` 的“verify → benchmark scope → evaluation”调用顺序。改为 Python 内置 `ast.parse` 定位 `TrainingHandler._finalize_completed_job` 并检查原源码片段，不导入训练运行时，也不在 SQL Store CI 增加无关运行时依赖。实际数据包/GT SHA256 行为仍由 `tests/unit/test_portable_dataset.py` 覆盖，避免只有静态断言。
 - **验收状态**：依赖隔离改动须以其准确提交 SHA 的 `Algorithm SQL Store` 与训练相关回归成功为准，不把旧 SHA 的失败计为已通过。
+
+
+## Remote Training Runtime 集成测试与冻结 Test 合同回归修复（2026-10-19）
+- **证据**：`03e1baf11b621b066e01d8faae656e7858f551a7` 的 GitHub Actions 经准确 `head_sha` 查得 24 个工作流，22 success、2 failure，失败均为 `Remote Training Runtime` 的 Ubuntu/Windows `preparation-contract`。真实报错来自 `tests/integration/test_training_task_worker.py::test_training_prepare_then_handler_runs_and_commits_verified_result`：`ValueError: evaluation image_count does not match frozen benchmark scope`；该测试先前的 `fake_runner` 声称 Test `status=succeeded`、mAP50=0.75，但未记录 `image_count`，在 Snapshot v3 严格绑定启用后与 2 张冻结 Test 图片不匹配。
+- **修复对象明确**：只调整原有集成测试的模拟训练结果，由当前任务已物化、冻结且本身进入 verifier 的 `work/bundle/manifest.json` 读取 `splits.test` 数量，并把 `image_count` 写入模拟的成功 Test 记录。不降低 `build_evaluation_truth` 对真正成功评测的数量门禁，不给生产代码加特殊路径。
+- **防退化断言**：完整训练准备/训练归档一体化测试核实 `image_count=2`、`benchmark_scope.binding_level=bundle_verified`、`test_image_count=2`，以及 `result.json` 与归档算法版本使用相同 Test scope。测试使用人工生成的模拟 mAP，并不代表用户那次 97% 训练是真实精度。
+- **验收**：须以包含这项修复的实际 HEAD 上 Ubuntu/Windows 的 `Remote Training Runtime` 及其他 GitHub CI 工作流结果为准。仍不部署生产、不修改或删除生产素材、GT、Snapshot、历史模型；VERSION 仍为 42.24.356。
