@@ -3536,7 +3536,7 @@ class MaterialBatchHandler:
             raise BatchRequestError('MATERIAL_INTEGRITY_REFERENCE_CHANGED', 'Test 素材受保护，已阻止删除', 409)
         row = manifest.database.execute(
             "SELECT i.content_sha256,i.annotation_digest,g.keeper_image_id,"
-            "g.keeper_content_sha256,g.keeper_annotation_digest "
+            "g.keeper_content_sha256,g.keeper_annotation_digest,g.keeper_reason "
             "FROM integrity_plan_items i LEFT JOIN integrity_plan_groups g "
             "ON g.group_key=i.group_key WHERE i.image_id=?",
             (str(image_id),),
