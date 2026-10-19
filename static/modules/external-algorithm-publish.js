@@ -372,7 +372,7 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(collectConfig()),
     });
-    config = {...config, ...normalizePublishConfig({config: body.config, storage_sources: config?.storageSources, compute_platforms: config?.computePlatforms})};
+    config = {...config, ...normalizePublishConfig({config: body.config, storage_sources: config?.storageSources, compute_platforms: config?.computePlatforms, chip_dictionary: config?.chipDictionary})};
     notify?.('训练成果发布配置已保存');
   }
 

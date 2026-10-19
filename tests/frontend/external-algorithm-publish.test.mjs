@@ -267,3 +267,11 @@ test('chip dictionary and individual child mappings survive frontend normalizati
     {RK3568: 'child-edge', RK3576: 'child-model'});
   assert.deepEqual(model.chipDictionary.rockchip, ['RK3568', 'RK3576', 'RK3578']);
 });
+
+
+test('save refresh retains backend chip dictionary rather than replacing it with empty UI defaults', () => {
+  const source = readFileSync(new URL('../../static/modules/external-algorithm-publish.js', import.meta.url), 'utf8');
+  assert.match(source, /chip_dictionary: config\?\.chipDictionary/);
+  assert.match(source, /chip_mappings: chipMappings/);
+  assert.doesNotMatch(source, /if \(chip && code\) chip\.value = code/);
+});
