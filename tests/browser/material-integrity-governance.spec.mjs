@@ -39,6 +39,49 @@ assert r.get(target).status.value=='SUCCEEDED' and r.get(target).attempt==1
 `, asynchronous);
 }
 
+for(const outcome of ['success','failure']) test(`delayed delete submission ${outcome} preserves the returned group dialog`, async ({page,request})=>{
+  const project=await createProject(request);
+  const png=execFileSync('python',['-c',"from PIL import Image; import io,sys; b=io.BytesIO(); Image.new('RGB',(32,32),'white').save(b,format='PNG'); sys.stdout.buffer.write(b.getvalue())"]);
+  const upload=await request.post(`/api/projects/${project.id}/images`,{multipart:{files:{name:'race.png',mimeType:'image/png',buffer:png},dataset_id:'default'}});
+  expect(upload.ok()).toBeTruthy();
+  isolatedPython(project.id,`import os,app
+p=os.environ['INTEGRITY_TEST_PROJECT']; m=app.material_store(p); first=m.list_page(limit=1).items[0]
+row={k:v for k,v in first.items() if not k.startswith('annotation_')}; row.update(id='race-copy',filename='copy.png'); m.upsert(row)
+`);
+  const audit=await request.post(`/api/v62/projects/${project.id}/material-integrity/audits`);
+  const auditId=(await audit.json()).task_id;
+  runIsolatedWorker(project.id,auditId);
+  await page.route('**/api/v53/bootstrap/snapshot**',async route=>{
+    const url=new URL(route.request().url());url.searchParams.set('preferred_project_id',project.id);await route.fallback({url:url.toString()});
+  });
+  await page.addInitScript(()=>localStorage.setItem('mc_train_ui_state_v34',JSON.stringify({page:'数据集'})));
+  await page.goto('/');
+  await page.getByRole('button',{name:/数据集/}).click();
+  await page.getByRole('button',{name:'重复与异常素材'}).click();
+  await page.getByRole('button',{name:/查看证据/}).click();
+  await page.getByRole('button',{name:'全选本组全部图片'}).click();
+  await page.getByRole('button',{name:'批量删除 · 先预检查'}).click();
+  let release,entered;
+  const gate=new Promise(resolve=>{release=resolve;}),started=new Promise(resolve=>{entered=resolve;});
+  await page.route('**/dedup-plans/*/execute',async route=>{
+    const response=outcome==='success'?await route.fetch():null;
+    entered();await gate;
+    if(response)await route.fulfill({response});
+    else await route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({message:'delayed obsolete failure'})});
+  });
+  await page.getByRole('button',{name:'确认删除 1 条索引'}).click();
+  await started;
+  await page.getByRole('button',{name:'返回选择 · 保留勾选'}).click();
+  await expect(page.locator('.modal:not(.hidden) #materialIntegrityItems47')).toBeVisible();
+  const completed=page.waitForResponse(response=>response.url().includes('/execute')&&response.request().method()==='POST');
+  release();await completed;
+  // The queued task remains real; only its obsolete UI completion is discarded.
+  await expect.poll(()=>page.evaluate(()=>Boolean(state.materialIntegrityPlan47?.submitting))).toBe(false);
+  await expect(page.locator('.modal:not(.hidden) #materialIntegrityItems47')).toBeVisible();
+  await expect(page.locator('.modal:not(.hidden) [data-integrity-delete-progress]')).toHaveCount(0);
+  await expect(page.locator('body')).not.toContainText('delayed obsolete failure');
+});
+
 test('real frozen scope, >100 image pagination, failed submit, queued repeat and durable deletion', async ({page, request}, testInfo) => {
   const otherProject=await createProject(request);
   const unrelatedAudit=await request.post(`/api/v62/projects/${otherProject.id}/material-integrity/audits`);

@@ -1293,6 +1293,7 @@ def test_duplicate_gt_delete_rejects_missing_group_manifest_without_blocking_ord
     with closing(sqlite3.connect(':memory:')) as db:
         db.row_factory = sqlite3.Row
         db.executescript("""
+            CREATE TABLE meta (key TEXT PRIMARY KEY,value TEXT);
             CREATE TABLE integrity_plan_items (
                 group_key TEXT, image_id TEXT, content_sha256 TEXT, annotation_digest TEXT
             );
@@ -1301,6 +1302,8 @@ def test_duplicate_gt_delete_rejects_missing_group_manifest_without_blocking_ord
                 keeper_annotation_digest TEXT, keeper_reason TEXT
             );
         """)
+        from platform_core.training_compatibility import _file_digest
+        db.execute("INSERT INTO meta VALUES ('label_schema_digest',?)", (_file_digest(materials.project_path / 'meta.json'),))
         db.execute("INSERT INTO integrity_plan_items VALUES (?,?,?,?)", (
             'DUPLICATE_ANNOTATION_CONFLICT:broken', image_id,
             material['content_sha256'], digest,
@@ -1328,7 +1331,96 @@ def test_duplicate_gt_delete_rejects_missing_group_manifest_without_blocking_ord
         db.execute("UPDATE integrity_plan_items SET group_key='MATERIAL_OBJECT_MISSING:single'")
         handler._assert_integrity_delete_identity(manifest, materials, annotations, image_id)
         assert materials.get(image_id) is not None
+        db.execute("DELETE FROM meta WHERE key='label_schema_digest'")
+        with pytest.raises(material_batches_module.BatchRequestError, match='标签映射已变化'):
+            handler._assert_integrity_delete_identity(manifest, materials, annotations, image_id)
 
+
+
+@pytest.mark.parametrize('stage', ['preview', 'execute', 'worker', 'delete'])
+def test_integrity_label_mapping_drift_blocks_each_delete_boundary(
+    client, seeded_project, tmp_path, monkeypatch, stage,
+):
+    project_id, original = seeded_project
+    materials = app_module.material_store(project_id)
+    materials.upsert(_duplicate_material(materials.get(original['id']), 'mapping-copy', 'copy.jpg'))
+    repository, artifacts, scheduler = _runtime(tmp_path, monkeypatch)
+    audit_id = _run_integrity_audit(client, scheduler, project_id)
+    base = f'/api/v62/projects/{project_id}/material-integrity/audits/{audit_id}'
+    if stage != 'preview':
+        preview = client.post(base + '/dedup-plans', json={'scope': 'SAFE_ALL'})
+        assert preview.status_code == 201, preview.text
+        plan = preview.json()
+        execute_url = base + f"/dedup-plans/{plan['plan_id']}/execute"
+        credential = {'confirmation_credential': plan['confirmation_credential']}
+        if stage in {'worker', 'delete'}:
+            queued = client.post(execute_url, json=credential)
+            assert queued.status_code == 202, queued.text
+    # Change only the canonical project label mapping, not Material/GT revisions.
+    meta_path = materials.project_path / 'meta.json'
+    meta = json.loads(meta_path.read_text(encoding='utf-8'))
+    meta['labels'] = ['smoke', 'fire']
+    meta['label_meta'] = [{'code': 'smoke', 'display_name': '烟雾'}, {'code': 'fire', 'display_name': '明火'}]
+    if stage == 'delete':
+        validate = MaterialBatchHandler._validate_material_integrity_execution
+        def change_after_validation(handler, *args):
+            validate(handler, *args)
+            meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding='utf-8')
+        monkeypatch.setattr(MaterialBatchHandler, '_validate_material_integrity_execution', change_after_validation)
+    else:
+        meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding='utf-8')
+    if stage == 'preview':
+        assert client.get(base + '/groups').json()['stale'] is True
+        group = client.get(base + '/groups').json()['items'][0]['group_key']
+        assert client.get(base + f'/groups/{group}/items').status_code == 409
+        response = client.post(base + '/dedup-plans', json={'scope': 'SAFE_ALL'})
+        assert response.status_code == 409, response.text
+        assert 'MATERIAL_INTEGRITY_AUDIT_STALE' in response.text
+    elif stage == 'execute':
+        response = client.post(execute_url, json=credential)
+        assert response.status_code == 409, response.text
+        assert 'MATERIAL_INTEGRITY_PLAN_STALE' in response.text
+    else:
+        assert scheduler.run_once()
+        finished = client.get(f"/api/v62/projects/{project_id}/material-batches/{queued.json()['task_id']}").json()
+        assert finished['status'] == 'FAILED', finished
+        assert finished['failed'] == 1 and finished['succeeded'] == 0, finished
+    assert materials.count() == 2
+
+
+def test_integrity_partial_delete_retry_preserves_prior_success_counters(
+    client, seeded_project, tmp_path, monkeypatch,
+):
+    project_id, original = seeded_project
+    materials = app_module.material_store(project_id)
+    source = materials.get(original['id'])
+    materials.upsert_many([_duplicate_material(source, f'retry-copy-{i}', f'{i}.jpg') for i in range(2)])
+    repository, artifacts, scheduler = _runtime(tmp_path, monkeypatch)
+    audit_id = _run_integrity_audit(client, scheduler, project_id)
+    base = f'/api/v62/projects/{project_id}/material-integrity/audits/{audit_id}'
+    plan = client.post(base + '/dedup-plans', json={'scope': 'SAFE_ALL'}).json()
+    queued = client.post(base + f"/dedup-plans/{plan['plan_id']}/execute", json={
+        'confirmation_credential': plan['confirmation_credential'],
+    }).json()
+    remove = material_batches_module.MaterialRepository.remove_many
+    failed_ids = []
+    def fail_once(store, ids, **kwargs):
+        if not failed_ids:
+            failed_ids.extend(ids)
+            raise OSError('isolated transient delete failure')
+        return remove(store, ids, **kwargs)
+    monkeypatch.setattr(material_batches_module.MaterialRepository, 'remove_many', fail_once)
+    assert scheduler.run_once()
+    task_url = f"/api/v62/projects/{project_id}/material-batches/{queued['task_id']}"
+    first = client.get(task_url).json()
+    assert first['status'] == 'PARTIAL_SUCCESS' and first['succeeded'] == first['failed'] == 1, first
+    retry = client.post(task_url + '/retry')
+    assert retry.status_code == 202, retry.text
+    assert scheduler.run_once()
+    finished = client.get(task_url).json()
+    assert finished['status'] == 'SUCCEEDED', finished
+    assert finished['succeeded'] == 2 and finished['failed'] == 0, finished
+    assert materials.count() == 1
 
 
 def test_latest_integrity_audit_finds_old_audit_after_more_than_fifty_other_batches(

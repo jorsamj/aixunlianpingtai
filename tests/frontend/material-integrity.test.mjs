@@ -252,6 +252,36 @@ test('governance preview is not gated on an error box and cannot overwrite a rep
   assert.equal(rendered,1);
 });
 
+for(const outcome of ['success','failure']) for(const change of ['replace','close','cover','project','current']) test(`delete submission ${outcome} respects ${change} ownership`,async()=>{
+  const source=app.slice(app.indexOf('window.executeMaterialIntegrityGovernance47='),app.indexOf('function showMaterialIntegrityTask47('));
+  let resolve,reject;
+  const response=new Promise((yes,no)=>{resolve=yes;reject=no;});
+  const error={isConnected:true,hidden:true,textContent:''},button={isConnected:true,textContent:'确认删除'},pane={isConnected:true};
+  const body={firstElementChild:pane},modal={isConnected:true,querySelector:()=>body};
+  const audit={task:{task_id:'audit'},projectId:'p'},plan={plan_id:'plan'};
+  button.closest=()=>modal;
+  const seen=[];let project='p',modals=[modal],calls=0;
+  const ctx={window:{MaterialBatchRuntime62:{poll:id=>seen.push('poll:'+id)}},state:{materialIntegrityAudit47:audit,materialIntegrityPlan47:plan},
+    pid:()=>project,api:()=>{calls++;return response;},toast:()=>seen.push('toast'),showMaterialIntegrityTask47:()=>seen.push('render'),
+    activeMaterialIntegrityRoot47:selector=>selector==='#materialIntegrityExecute47'?button:error,
+    document:{getElementById:id=>id==='materialIntegrityExecute47'?button:error,querySelectorAll:()=>modals}};
+  vm.runInNewContext(source,ctx);
+  const pending=ctx.window.executeMaterialIntegrityGovernance47('plan','credential');
+  await ctx.window.executeMaterialIntegrityGovernance47('plan','credential');
+  assert.equal(calls,1,'double click must not submit a second task');
+  if(change==='replace')body.firstElementChild={isConnected:true};
+  if(change==='close')modals=[];
+  if(change==='cover')modals=[modal,{}];
+  if(change==='project')project='other';
+  if(outcome==='success')resolve({task_id:'delete',project_id:'p'});else reject(new Error('old failure'));
+  await pending;
+  assert.equal(seen.includes('render'),change==='current'&&outcome==='success');
+  assert.equal(seen.includes('toast'),change==='current'&&outcome==='failure');
+  assert.equal(error.hidden,!(change==='current'&&outcome==='failure'));
+  assert.equal(plan.submitting,false);
+  if(outcome==='success')assert.equal(plan.task.task_id,'delete','accepted task remains durable and reusable');
+});
+
 test('GT selection return prefers batch review over stale group detail',()=>{
   const source=app.slice(app.indexOf('window.returnMaterialIntegritySelection47='),app.indexOf('window.invalidateMaterialIntegrityGovernance47='));
   let gt=0,group=0;

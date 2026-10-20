@@ -877,6 +877,7 @@ def create_material_integrity_plan(
     project_id, audit_task, materials, repository, artifacts, payload,
     *, candidate_image_ids=None, persist=True,
 ):
+    from .training_compatibility import _file_digest
     if audit_task.status is not TaskStatus.SUCCEEDED:
         raise BatchRequestError(
             "MATERIAL_INTEGRITY_AUDIT_NOT_READY",
@@ -945,6 +946,7 @@ def create_material_integrity_plan(
     if (
         int(metadata.get("material_revision") or -1) != material_revision
         or int(metadata.get("annotation_revision") or -1) != annotation_revision
+        or metadata.get('label_schema_digest') != _file_digest(materials.project_path / 'meta.json')
     ):
         raise BatchRequestError(
             "MATERIAL_INTEGRITY_AUDIT_STALE",
@@ -1233,6 +1235,7 @@ def create_material_integrity_plan(
         "manual_required_count": len(manual_ids),
         "material_revision": material_revision,
         "annotation_revision": annotation_revision,
+        "label_schema_digest": metadata['label_schema_digest'],
         "included_groups": included_groups,
         "kept_count": kept_count,
         "delete_count": delete_count,
@@ -1317,6 +1320,7 @@ def execute_material_integrity_plan(
 def _execute_material_integrity_plan_locked(
     project_id, audit_task, plan_id, credential, materials, repository, artifacts,
 ):
+    from .training_compatibility import _file_digest
     plan_path = artifacts.artifact_path(
         audit_task.task_id, _material_integrity_plan_ref(plan_id)
     )
@@ -1354,6 +1358,7 @@ def _execute_material_integrity_plan_locked(
         if (
             materials.current_revision() != int(metadata["material_revision"])
             or annotations.current_revision() != int(metadata["annotation_revision"])
+            or metadata.get('label_schema_digest') != _file_digest(materials.project_path / 'meta.json')
         ):
             raise BatchRequestError(
                 "MATERIAL_INTEGRITY_PLAN_STALE",
@@ -1473,6 +1478,7 @@ def _execute_material_integrity_plan_locked(
                         ("frozen", utc_now()),
                         ("repository_revision", str(metadata["material_revision"])),
                         ("material_integrity_plan_id", str(plan_id)),
+                        ("label_schema_digest", metadata['label_schema_digest']),
                     ),
                 )
                 # A publication failure can leave a complete, unclaimed
@@ -1503,6 +1509,7 @@ def _execute_material_integrity_plan_locked(
                 if (actual_selection != [(image_id, 'pending', 0, 0, None) for image_id in delete_ids]
                         or actual_items != expected_items or actual_groups != expected_groups
                         or frozen_meta.get('material_integrity_plan_id') != str(plan_id)
+                        or frozen_meta.get('label_schema_digest') != metadata['label_schema_digest']
                         or frozen_meta.get('repository_revision') != str(metadata['material_revision'])):
                     raise BatchRequestError(
                         'MATERIAL_INTEGRITY_EXECUTION_CONFLICT',
@@ -2424,8 +2431,12 @@ class MaterialBatchHandler:
             "SELECT * FROM integrity_plan_groups ORDER BY group_key"
         ).fetchall()
         items = manifest.database.execute(
-            "SELECT * FROM integrity_plan_items ORDER BY image_id"
+            "SELECT i.* FROM integrity_plan_items i JOIN selection s ON s.image_id=i.image_id "
+            "WHERE s.state!='succeeded' ORDER BY i.image_id"
         ).fetchall()
+        from .training_compatibility import _file_digest
+        schema = manifest.database.execute("SELECT value FROM meta WHERE key='label_schema_digest'").fetchone()
+        schema_changed = not schema or schema[0] != _file_digest(project_path / 'meta.json')
         all_ids = [str(row["keeper_image_id"]) for row in groups if row["keeper_image_id"]]
         all_ids.extend(str(row["image_id"]) for row in items)
         current_materials = {}
@@ -2469,6 +2480,8 @@ class MaterialBatchHandler:
                     failed[image_id] = "MATERIAL_INTEGRITY_KEEPER_CHANGED"
         for row in items:
             image_id = str(row["image_id"])
+            if schema_changed:
+                failed[image_id] = 'MATERIAL_INTEGRITY_PLAN_STALE'
             # Ordinary anomaly deletes have no keeper row. Duplicate groups
             # must always have a frozen group decision, including explicit discard.
             if (str(row['group_key']).startswith('DUPLICATE_')
@@ -3476,7 +3489,7 @@ class MaterialBatchHandler:
             legacy = Path(project_path) / "annotations" / f"{image_id}.json"
             legacy_bytes = legacy.read_bytes() if legacy.is_file() else None
             try:
-                with material_annotation_lifecycle_fence(project_path):
+                with label_governance_fence(project_path), material_annotation_lifecycle_fence(project_path):
                     self._assert_integrity_delete_identity(
                         manifest, materials, annotations, image_id,
                     )
@@ -3537,6 +3550,12 @@ class MaterialBatchHandler:
             "AND name='integrity_plan_items'"
         ).fetchone():
             return
+        from .training_compatibility import _file_digest
+        schema = manifest.database.execute("SELECT value FROM meta WHERE key='label_schema_digest'").fetchone()
+        if not schema or schema[0] != _file_digest(materials.project_path / 'meta.json'):
+            raise BatchRequestError(
+                'MATERIAL_INTEGRITY_PLAN_STALE', '标签映射已变化，请重新审计和生成治理预览', 409,
+            )
         current = materials.get(str(image_id))
         if current and str(current.get('split') or '').lower() == 'test':
             raise BatchRequestError('MATERIAL_INTEGRITY_REFERENCE_CHANGED', 'Test 素材受保护，已阻止删除', 409)
@@ -4129,6 +4148,7 @@ def material_batch_router(
         project_id: str, task_id: str, cursor: str = "", limit: int = 50,
         issue_type: str = "",
     ):
+        from .training_compatibility import _file_digest
         require_integrity_audit(project_id, task_id)
         if not 1 <= int(limit) <= 100:
             raise HTTPException(422, detail="limit must be between 1 and 100")
@@ -4148,7 +4168,8 @@ def material_batch_router(
             metadata = _audit_metadata(path)
             materials = material_store(project_id)
             stale = (metadata.get('material_revision') != materials.current_revision()
-                     or metadata.get('annotation_revision') != AnnotationRepository(materials.project_path).current_revision())
+                     or metadata.get('annotation_revision') != AnnotationRepository(materials.project_path).current_revision()
+                     or metadata.get('label_schema_digest') != _file_digest(materials.project_path / 'meta.json'))
             rows = database.execute(
                 "SELECT * FROM issue_groups WHERE " + " AND ".join(clauses)
                 + " ORDER BY group_key LIMIT ?",
@@ -4177,6 +4198,7 @@ def material_batch_router(
         project_id: str, task_id: str, group_key: str,
         cursor: str = "", limit: int = 50,
     ):
+        from .training_compatibility import _file_digest
         require_integrity_audit(project_id, task_id)
         if not 1 <= int(limit) <= 100:
             raise HTTPException(422, detail="limit must be between 1 and 100")
@@ -4196,7 +4218,8 @@ def material_batch_router(
         materials = material_store(project_id)
         metadata = _audit_metadata(path)
         if (metadata.get('material_revision') != materials.current_revision()
-                or metadata.get('annotation_revision') != AnnotationRepository(materials.project_path).current_revision()):
+                or metadata.get('annotation_revision') != AnnotationRepository(materials.project_path).current_revision()
+                or metadata.get('label_schema_digest') != _file_digest(materials.project_path / 'meta.json')):
             raise HTTPException(409, detail={
                 'code': 'MATERIAL_INTEGRITY_AUDIT_STALE',
                 'message': '审计快照已过期，不能混用旧问题分组和当前图片标注，请重新审计',

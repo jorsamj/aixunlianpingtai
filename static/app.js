@@ -5841,17 +5841,26 @@ materialIntegrityDialog47(Number(plan.included_groups||0)?'重复素材治理预
     }else if(['FAILED','CANCELLED','PARTIAL_SUCCESS'].includes(task.status)&&box){box.textContent=`审计未完整成功：${task.error_examples?.[0]?.error||task.status}。原选择已保留，请返回后重试。`}
   };
   window.executeMaterialIntegrityGovernance47=async function(planId,credential){
-    const audit=state.materialIntegrityAudit47,plan=state.materialIntegrityPlan47,button=document.getElementById('materialIntegrityExecute47');
+    const audit=state.materialIntegrityAudit47,plan=state.materialIntegrityPlan47,button=activeMaterialIntegrityRoot47('#materialIntegrityExecute47');
     if(!audit?.task?.task_id||audit.projectId&&audit.projectId!==pid())return toast('审计上下文已失效，请重新打开');
+    const projectAtStart=pid(),modalAtStart=[...document.querySelectorAll('.modal:not(.hidden)')].at(-1);
+    const viewAtStart=modalAtStart?.querySelector('.modal-body')?.firstElementChild;
+    const current=()=>pid()===projectAtStart&&state.materialIntegrityAudit47===audit&&state.materialIntegrityPlan47===plan
+      &&viewAtStart?.isConnected&&modalAtStart?.isConnected
+      &&modalAtStart.querySelector('.modal-body')?.firstElementChild===viewAtStart
+      &&modalAtStart===[...document.querySelectorAll('.modal:not(.hidden)')].at(-1);
+    if(!button||button.closest('.modal')!==modalAtStart||!current()||plan?.plan_id!==planId)return;
+    const errorBox=activeMaterialIntegrityRoot47('#materialIntegrityError47');
     if(plan?.submitting)return;
     if(plan?.task){showMaterialIntegrityTask47(plan.task);return plan.task}
     if(plan)plan.submitting=true;if(button){button.disabled=true;button.textContent='正在提交后台任务…'}
     try{
       const task=await api(`/api/v62/projects/${pid()}/material-integrity/audits/${encodeURIComponent(audit.task.task_id)}/dedup-plans/${encodeURIComponent(planId)}/execute`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirmation_credential:credential})});
-      if(audit.projectId&&audit.projectId!==pid())return task;
-      if(plan)plan.task=task;state.materialIntegrityTask47=task;
-      if(button?.isConnected)showMaterialIntegrityTask47(task);window.MaterialBatchRuntime62?.poll?.(task.task_id);return task;
-    }catch(error){const box=document.getElementById('materialIntegrityError47');if(box){box.hidden=false;box.textContent=error.message||String(error)}toast(error.message||error);if(button){button.disabled=false;button.textContent='使用同一凭证重试 · 不会重复建任务'}return null}
+      if(plan)plan.task=task;
+      if(pid()!==projectAtStart||state.materialIntegrityAudit47!==audit||state.materialIntegrityPlan47!==plan)return task;
+      state.materialIntegrityTask47=task;
+      if(current())showMaterialIntegrityTask47(task);window.MaterialBatchRuntime62?.poll?.(task.task_id);return task;
+    }catch(error){if(current()){if(errorBox?.isConnected){errorBox.hidden=false;errorBox.textContent=error.message||String(error)}toast(error.message||error);button.disabled=false;button.textContent='使用同一凭证重试 · 不会重复建任务'}return null}
     finally{if(plan)plan.submitting=false}
   };
   function showMaterialIntegrityTask47(task){
