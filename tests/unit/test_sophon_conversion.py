@@ -108,7 +108,8 @@ def _tool_fixture(root, *, chips="bm1684x,bm1688,cv186x", broken=False):
             script += "if '--help' in a: print('--model_def --input_shapes --mlir'); sys.exit(0)\n"
             script += "Path(a[a.index('--mlir')+1]).write_text('isolated-MLIR-protocol-fixture')\n"
         elif name == "model_tool":
-            script += "if '--help' in a: print('--info model.bmodel'); sys.exit(0)\n"
+            script += "if '--help' in a: print('Usage: model_tool --info model_file'); sys.exit(1)\n"
+            script += "if '--version' in a: print('version 1.30.2'); sys.exit(0)\n"
             script += "print('chip: '+('BM1688' if 'bm1688' in a[-1] else 'BM1684X'))\n"
         else:
             script += "print('--dataset --input_num')\n"
@@ -170,6 +171,7 @@ def test_sophon_worker_isolated_tool_protocol_records_manifest_and_unverified_st
     log=(tmp_path/"convert.log").read_text(encoding="utf-8")
     assert "--chip "+chip in log and "--input_shapes" in log
     assert "--mean" not in log and "--fuse_preprocess" not in log
+    assert "--info " in log and record["name"] in log
 
 
 def test_sophon_worker_failure_never_publishes_stale_bmodel(tmp_path,monkeypatch):
@@ -186,3 +188,77 @@ def test_sophon_worker_failure_never_publishes_stale_bmodel(tmp_path,monkeypatch
     finished=json.loads((tmp_path/"job.json").read_text(encoding="utf-8"))
     assert finished["status"] == "failed"
     assert not list((tmp_path/"artifacts").glob("*.bmodel"))
+
+
+@pytest.mark.parametrize("version_output", ["1.30.2", "version 1.30.2-20251020", "TPU-MLIR version 1.30.2"])
+def test_sophon_model_tool_official_cli_uses_version_not_help(tmp_path, version_output):
+    import subprocess
+    from platform_core.sophon_runtime import probe_sophon_toolchain, tool_argv
+    resource = _tool_fixture(tmp_path)
+    path = Path(resource["model_tool_path"])
+    calls = tmp_path / "model-tool-calls.jsonl"
+    path.write_text("import sys,json\nfrom pathlib import Path\n"
+        + f"with Path({str(calls)!r}).open('a',encoding='utf-8') as f: f.write(json.dumps(sys.argv[1:])+'\\n')\n"
+        + f"if sys.argv[1:] == ['--version']: print({version_output!r}); sys.exit(0)\n"
+        + "print('Usage: model_tool --info model_file'); sys.exit(1)\n", encoding="utf-8")
+    actual_help = subprocess.run(tool_argv(resource["python_path"], "model_tool", str(path), "--help"), capture_output=True)
+    assert actual_help.returncode != 0 and b"Usage:" in actual_help.stdout
+    calls.unlink()
+    facts = probe_sophon_toolchain(resource)
+    assert facts["available"], facts["error"]
+    assert facts["supported_chips"] == ["bm1684x", "bm1688"] and facts["supported_precisions"] == ["fp16"]
+    assert [json.loads(line) for line in calls.read_text(encoding="utf-8").splitlines()] == [["--version"]]
+
+
+@pytest.mark.parametrize("output,exit_code", [("", 0), ("version unknown", 0),
+    ("Usage: model_tool --info model_file 1.30.2", 0), ("not a tool", 0),
+    ("error loading shared library 1.30.2", 0), ("version 1.30.2", 1), ("version 1.30.2", 139)])
+def test_sophon_model_tool_rejects_invalid_version_or_nonzero_exit(tmp_path, output, exit_code):
+    from platform_core.sophon_runtime import probe_sophon_toolchain
+    resource = _tool_fixture(tmp_path)
+    Path(resource["model_tool_path"]).write_text(f"import sys\nprint({output!r})\nsys.exit({exit_code})\n", encoding="utf-8")
+    facts = probe_sophon_toolchain(resource)
+    assert not facts["available"] and facts["error_code"] == "TPU_MLIR_UNAVAILABLE"
+    assert "model_tool" in facts["error"] and "--version" in facts["error"]
+    assert facts["supported_chips"] == [] and facts["supported_precisions"] == []
+
+
+@pytest.mark.parametrize("failure", ["timeout", "oserror", "signal"])
+def test_sophon_model_tool_probe_process_errors_remain_unavailable(tmp_path, monkeypatch, failure):
+    import subprocess
+    import platform_core.sophon_runtime as runtime
+    resource = _tool_fixture(tmp_path)
+    real_run = subprocess.run
+    def run(argv, **kwargs):
+        if str(resource["model_tool_path"]) in argv:
+            if failure == "timeout": raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+            if failure == "oserror": raise OSError("model_tool executable format error")
+            return subprocess.CompletedProcess(argv, -11, stdout="version 1.30.2", stderr="segmentation fault")
+        return real_run(argv, **kwargs)
+    monkeypatch.setattr(runtime.subprocess, "run", run)
+    facts = runtime.probe_sophon_toolchain(resource, timeout=1)
+    assert not facts["available"] and facts["error_code"] == "TPU_MLIR_UNAVAILABLE"
+    assert facts["supported_chips"] == []
+
+
+def test_sophon_model_tool_missing_is_not_found(tmp_path, monkeypatch):
+    from platform_core.sophon_runtime import probe_sophon_toolchain
+    resource = _tool_fixture(tmp_path)
+    Path(resource["model_tool_path"]).unlink()
+    monkeypatch.setenv("PATH", "")
+    facts = probe_sophon_toolchain(resource)
+    assert not facts["available"] and facts["error_code"] == "TPU_MLIR_NOT_FOUND"
+    assert "model_tool" in facts["error"]
+
+
+@pytest.mark.parametrize("inspection,exit_code", [("chip: BM1684X", 0), ("invalid BMODEL", 1)])
+def test_sophon_model_tool_version_success_does_not_replace_artifact_info_check(tmp_path, inspection, exit_code):
+    resource = _tool_fixture(tmp_path)
+    Path(resource["model_tool_path"]).write_text("import sys\n"
+        + "if sys.argv[1:] == ['--version']: print('version 1.30.2'); sys.exit(0)\n"
+        + f"print({inspection!r}); sys.exit({exit_code})\n", encoding="utf-8")
+    source = tmp_path / "model.onnx"
+    source.write_bytes(b"isolated-onnx-already-checked-by-caller")
+    with pytest.raises((worker.ConversionError, RuntimeError), match="芯片|命令执行失败"):
+        worker.build_sophon(source, tmp_path, resource, {"chip":"bm1688","precision":"fp16"}, None, tmp_path / "log")
+    assert not (tmp_path / "sophon_validation.json").exists()

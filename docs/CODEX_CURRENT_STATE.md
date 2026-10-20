@@ -1,3 +1,11 @@
+## 2026-10-20｜Sophon model_tool CLI兼容（本地测试通过 / 最终SHA CI待提交 / 现场依赖未验证）
+
+- 本轮基线c44752934524dcfc86f89d8cf24fc34f32cee011，完整fetch/pull远端一致。该历史SHA的48/48 Actions、131/131 Checks已归档Sophon专项；不当作本轮CI。
+- 现场TPU-MLIR1.30.2的model_tool不支持--help，Usage后非零不能判工具损坏；仅修共享probe为官方--version+退出码/版本输出校验，保留编译后--info及其他严格合同。
+- RED11 failed/6 passed→最终限定Python98 passed/0 failed/0 skipped（含--info错误芯片/失败保护）；py_compile及diff检查通过。只改共享probe与原Sophon回归测试，无前端变化，不扩跑本地Node/Chrome/硬件。
+- 不安装依赖、不破坏训练环境、不部署、不调用真实新畅联接口。服务器实际缺失依赖与修复后现场health待明确Sophon SSH目标或pip check/traceback核验，NOT VERIFIED。最终CI附件见专项本轮E节。
+- 唯一专项docs/SOPHON_BMODEL_CONVERSION_ACCEPTANCE_2026_10_20.md；VERSION42.24.358与前端缓存均不变。
+
 ## 2026-10-20｜Sophon BMODEL（A-D测试通过 / 最终SHA CI待提交 / 生产与硬件未验证）
 
 - 起始62647aeea258a26ba423f0a9db23d8f6f8ba3b1a；上轮23/23 Actions、59/59 Checks已归档原tags专项，不代表本轮绿色。VERSION42.24.358不变。

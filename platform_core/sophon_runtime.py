@@ -60,13 +60,23 @@ def probe_sophon_toolchain(resource: Mapping[str, Any], *, timeout: float = 10) 
         return result
     try:
         help_texts = {}
-        for role in ("model_transform", "model_deploy", "model_tool"):
+        for role in ("model_transform", "model_deploy"):
             cp = subprocess.run(tool_argv(python_path, role, tools[role], "--help"),
                                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
             output = (cp.stdout or "") + (cp.stderr or "")
             if cp.returncode != 0 or not output.strip():
                 raise RuntimeError(f"{role}自检失败(exit={cp.returncode})：{output[-1000:]}")
             help_texts[role] = output
+        # model_tool does not support --help: official builds print Usage and
+        # exit nonzero. --version is its supported read-only executable probe.
+        cp = subprocess.run(tool_argv(python_path, "model_tool", tools["model_tool"], "--version"),
+                            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+        output = (cp.stdout or "") + (cp.stderr or "")
+        model_tool_version = re.search(
+            r"^\s*(?:(?:TPU-MLIR|model_tool)\s+)?(?:version\s*[:=]?\s*)?v?\d+\.\d+\.\d+(?:[-+._][A-Za-z0-9]+)*(?:\s|$)",
+            output, re.I | re.M)
+        if cp.returncode != 0 or not model_tool_version:
+            raise RuntimeError(f"model_tool --version自检失败(exit={cp.returncode})：{output[-1000:]}")
         cp = subprocess.run(tool_argv(python_path, "model_deploy", tools["model_deploy"], "--version"),
                             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
         output = (cp.stdout or "") + (cp.stderr or "")

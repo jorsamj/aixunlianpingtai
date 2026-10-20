@@ -1,5 +1,21 @@
 # Sophon BMODEL转换验收｜2026-10-20
 
+## 2026-10-20｜model_tool官方CLI兼容修复（A-D测试通过 / E待推送CI / 现场依赖待只读核验）
+
+- 已完整fetch/prune及pull --ff-only，起始HEAD c44752934524dcfc86f89d8cf24fc34f32cee011，远端一致、工作树干净，VERSION42.24.358。上轮最终48/48 Actions、131/131 Checks通过已核验独立附件并归档于本节；仅为历史证据。
+- 现场用户报告：Ubuntu22.04 x86_64，Python3.10.22，TPU-MLIR1.30.2，setuptools80.9.0，psutil6.1.1；解释器/opt/sophon-mlir/env/bin/python，工具/opt/sophon-mlir/env/bin。transform/deploy --help退出0，deploy --version正常；model_tool --help打印Usage退出1。
+- 官方v1.30.2源码tools/model_tool/model_tool.cpp main明确支持--version并打印MLIR_VERSION，未知选项走usage/exit(-1)。现有共享probe统一对三个工具执行--help是误判根因，旧协议fixture错误模拟help退出0。
+- 最小计划：先真实子进程CLI协议RED，再仅将model_tool探测改为--version，要求退出0且有合理版本输出；transform/deploy/calibration及Python/chip/FP16合同不放松，编译后--info真实BMODEL结构与芯片检查保留。
+- 范围仅共享probe、现有Sophon测试、进度文档及必要CI；不安装依赖，不改训练环境，不部署、不调用真实新畅联接口、不执行生产转换。
+- 服务器依赖：现有信息证明上述已安装版本与CLI行为，尚无pip check/完整导入错误或明确Sophon服务器访问资料；不能据此编造“实际缺失包”。已请求只读访问或诊断输出，待核验项明确NOT VERIFIED。
+- B RED：仅原Sophon测试文件probe/model_tool用例，11 failed / 6 passed / 18 deselected。旧fixture改为官方行为help退出1、version退出0后复现误判；同时捕获原探测对“help退出0但输出垃圾”的错误放行。日志C:/Users/jorsam/.codex/tmp/sophon-cli-red.log。非零现场退出1和源码exit(-1)都不能当作工具损坏。
+- C 最小修复：仅sophon_runtime.py共享probe改model_tool --version，退出0且输出匹配合理三段版本（可含version/TPU-MLIR前缀及构建后缀），保留错误退出码与输出诊断；不改Worker --info、Task、API、UI、芯片白名单或FP16约束。测试仍是真实子进程协议夹具，不冒充真实SDK编译。
+- D GREEN：限定5文件test_sophon_conversion/test_conversion/test_sophon_remote_durable/test_remote_conversion_transport/test_sophon_remote_admission，98 passed / 0 failed / 0 skipped，10.57s（5项已有依赖弃用警告）。首轮96通过后只增补2项产物--info失败/错误芯片保护；最终98覆盖。日志C:/Users/jorsam/.codex/tmp/sophon-cli-final.log。py_compile、git diff --check通过。本轮无前端修改，不本地扩跑Node/Chrome/硬件。
+- E：待普通FF推送长期分支；最终SHA CI不能借用上轮48/131。本轮独立验收附件为C:/Users/jorsam/.codex/visualizations/2026/10/20/01a156ca-1ca0-7b70-8497-bd255da4345e/sophon-cli-ci-final-20261020.json，下一次受验证提交归档。
+- F：未连接Sophon现场服务器、未安装/升级任何依赖，未部署/调用真实新畅联/转换模型。版本信息为用户现场报告；实际完整依赖缺口与修复后的服务器health均NOT VERIFIED。可由明确的只读现场会话运行 `/opt/sophon-mlir/env/bin/python -m pip check`，并提供失败traceback；ONNX/ONNX Runtime、PT导出解释器的Ultralytics等应按各自执行环境核验，不因包名猜测安装到训练环境。
+- 官方证据：[v1.30.2 model_tool.cpp](https://github.com/sophgo/tpu-mlir/blob/v1.30.2/tools/model_tool/model_tool.cpp)，main的--version与未知选项分支。未提供Sophon SSH目标，不能将已有a800-server别名当作本次Sophon服务器。
+
+
 ## 2026-10-20｜Sophon BMODEL正式转换（阶段A-D测试通过 / 最终CI待提交 / 生产与硬件未验证）
 
 - 分支feature/external-algorithm-publishing，完整fetch/pull后起始HEAD62647aeea258a26ba423f0a9db23d8f6f8ba3b1a、远端一致、初始工作树干净；VERSION42.24.358。
