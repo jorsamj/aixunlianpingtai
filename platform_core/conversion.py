@@ -110,21 +110,39 @@ def derive_version_conversion_defaults(
     }
 
 
-def validate_target(kind: str, params: Mapping[str, Any]) -> dict[str, Any]:
+def validate_target(kind: str, params: Mapping[str, Any], *, require_calibration: bool = True) -> dict[str, Any]:
     target = str(kind or "").strip().lower()
     values = dict(params or {})
     precision = str(values.get("precision") or "fp16").strip().lower()
     if target in {"rockchip", "rknn"}:
         chip = str(values.get("chip") or "").strip().lower()
-        if chip not in SUPPORTED_ROCKCHIP_CHIPS:
+        import re
+        if chip not in SUPPORTED_ROCKCHIP_CHIPS and not (values.get("constraint_id")=="rknn-verified" and re.fullmatch(r"rk\d{4}",chip)):
             raise ValueError("当前产品瑞芯微转换只支持 rk3568 或 rk3576")
         values.update({"kind": "rockchip", "chip": chip, "precision": precision})
+        import math
+        for key,default in (("mean","0,0,0"),("rknn_std","255,255,255")):
+            raw=values.get(key,default)
+            try:
+                parts=raw.split(",") if isinstance(raw,str) else list(raw)
+                if len(parts)!=3 or any(isinstance(v,bool) or not math.isfinite(float(v)) for v in parts):
+                    raise ValueError()
+                if key=="rknn_std" and any(float(v)<=0 for v in parts):
+                    raise ValueError()
+            except (TypeError,ValueError,OverflowError):
+                raise ValueError(f"RKNN {key}必须包含3个有效数值；Std须大于0")
+            values[key]=",".join(str(v) for v in parts)
     elif target == "sophon":
         chip = str(values.get("chip") or "").strip().lower()
-        if chip not in SUPPORTED_SOPHON_CHIPS:
-            raise ValueError("Sophon必须明确选择bm1684x或bm1688，不使用默认芯片")
-        if precision != "fp16":
-            raise ValueError("Sophon首期仅开放FP16；INT8须完成冻结校准与质量验收后启用")
+        import re
+        from .sophon_runtime import SOPHON_1302_FLOAT_RULES
+        if not re.fullmatch(r"[a-z][a-z0-9]{2,31}", chip):
+            raise ValueError("Sophon必须明确选择有效SDK芯片编码，不使用默认芯片")
+        if chip not in SUPPORTED_SOPHON_CHIPS and values.get("constraint_id") != "tpu-mlir-1.30.2":
+            raise ValueError("Sophon新芯片缺少已验证的约束引用")
+        allowed = SOPHON_1302_FLOAT_RULES.get(chip, [])
+        if precision not in allowed or (chip in SUPPORTED_SOPHON_CHIPS and precision != "fp16" and values.get("constraint_id") != "tpu-mlir-1.30.2"):
+            raise ValueError("Sophon芯片精度缺少兼容证据；INT8须完成冻结校准与质量验收后启用")
         for field in ("batch", "num_core"):
             if type(values.get(field, 1)) not in (int, str) or str(values.get(field, 1)) != "1":
                 raise ValueError(f"Sophon首期{field}必须为1")
@@ -132,6 +150,9 @@ def validate_target(kind: str, params: Mapping[str, Any]) -> dict[str, Any]:
             raise ValueError("Sophon首期仅支持静态输入")
         height, width = conversion_input_shape(values)
         preprocessing = dict(values.get("preprocessing") or {})
+        for field,expected in (("pad_value",114),("channel_format","nchw"),("nms","external"),("fuse_preprocess",False)):
+            if field in preprocessing and (type(preprocessing[field]) is not type(expected) or preprocessing[field]!=expected):
+                raise ValueError(f"Sophon {field}与当前Adapter支持的预处理/后处理合同不一致")
         if preprocessing.get("owner", "caller") != "caller":
             raise ValueError("Sophon首期预处理由caller执行，不重复融合到ONNX或BMODEL")
         pixel = str(preprocessing.get("pixel_format", values.get("pixel_format", "rgb"))).lower()
@@ -171,7 +192,10 @@ def validate_target(kind: str, params: Mapping[str, Any]) -> dict[str, Any]:
         values.update({"kind": "onnx"})
     else:
         values.update({"kind": target})
-    if precision == "int8" and not str(values.get("calibration_snapshot") or "").strip():
+    if target in {"rockchip","rknn","ascend","atlas"}:
+        height,width=conversion_input_shape(values)
+        values.update(input_height=height,input_width=width)
+    if require_calibration and precision == "int8" and not str(values.get("calibration_snapshot") or "").strip():
         raise ValueError("INT8 转换必须关联不可变 calibration_snapshot")
     return values
 

@@ -210,6 +210,10 @@ def _rknn_int8_contract(snapshot=None):
 
 
 def _patch_creation(monkeypatch, tmp_path, transport):
+    from platform_core.model_artifacts import ModelArtifactRepository
+    monkeypatch.setattr(app_module,"DATA_DIR",tmp_path)
+    ModelArtifactRepository(tmp_path).save_conversion_catalog({"vendors":[{"id":"rk","name":"瑞芯微","template_id":"rknn"}],
+        "chips":[{"id":chip,"vendor_id":"rk","name":chip,"code":chip,"sdk_code":chip,"constraint_id":"rknn-verified"} for chip in ("rk3568","rk3576")]},expected_revision=0)
     model = tmp_path / "source.pt"
     model.write_bytes(b"model-data")
     jobs = {}
@@ -795,6 +799,7 @@ def _local_rknn_resource(chips=None, status="ready"):
         "status": status,
         "targets": ["rockchip"] if status == "ready" else [],
         "supported_chips": chips if chips is not None else ["rk3568", "rk3576"],
+        "supported_precisions": ["fp16", "int8"],
     }
 
 

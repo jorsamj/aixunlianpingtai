@@ -1586,6 +1586,64 @@ def _metadata_model(tmp_path):
             "training_lineage":{"task_id":"train-v1","base":{"model":"yolo11s.pt"},
                 "parameters":{"actual":{"imgsz":[384,800],"precision":"fp32"}}}}
 
+@pytest.mark.parametrize("manifest_matches",[True,False])
+def test_model_artifact_persists_only_manifest_io_bound_to_actual_output(tmp_path,monkeypatch,manifest_matches):
+    service=_service(tmp_path);version=_metadata_model(tmp_path)
+    path=tmp_path/"model_bm1684_fp32.bmodel";path.write_bytes(b"compiled-fixture")
+    manifest=tmp_path/"manifest.json"
+    source_sha=hashlib.sha256(Path(version["stored_path"]).read_bytes()).hexdigest()
+    manifest.write_text(json.dumps({"job_id":"c1","source":{"sha256":source_sha},
+        "tool":{"name":"tpu-mlir","version":"1.30.2"},"onnx":{"input_shapes":[[1,3,384,640]],"output_names":["output0"],"output_count":1},
+        "sophon_validation":{"structure":"passed","chip":"bm1684","model_validation_status":"incomplete"},
+        "outputs":[{"name":path.name,"sha256":hashlib.sha256(path.read_bytes()).hexdigest() if manifest_matches else "0"*64,"size_bytes":path.stat().st_size}]}),encoding="utf-8")
+    job={"id":"c1","target":"sophon","status":"done","params":{"chip":"bm1684","precision":"fp32"},
+         "manifest_path":str(manifest),"source_trace":{"sha256":source_sha},"outputs":[{"path":str(path)}]}
+    monkeypatch.setattr(service,"_conversion_jobs",lambda *a:[job])
+    rows=service.discover_version_artifacts("p1",{"id":"a1"},version)
+    row=next(r for r in rows if r["target"]=="sophon")
+    saved=service.repository.upsert(row)
+    if manifest_matches:
+        assert saved["metadata"]["model_io"]["onnx"]["input_shapes"]==[[1,3,384,640]]
+        assert saved["metadata"]["model_io"]["compiled_model"] is None
+        assert saved["metadata"]["sdk_name"]=="tpu-mlir" and saved["metadata"]["sdk_version"]=="1.30.2"
+        assert saved["metadata"]["model_validation_status"]=="incomplete"
+    else:
+        assert saved["metadata"].get("model_io") is None
+        assert "不匹配" in saved["metadata"]["manifest_metadata_error"]
+    assert saved["metadata"]["tags"]==["smoke","fire"]
+
+
+def test_sophon_two_chip_assets_keep_frozen_template_and_local_identity(tmp_path,monkeypatch):
+    service=_service(tmp_path);version=_metadata_model(tmp_path)
+    original_sha=hashlib.sha256(Path(version["stored_path"]).read_bytes()).hexdigest()
+    jobs=[]
+    for index,(chip,precision) in enumerate((("bm1684","fp32"),("bm1688","fp16"))):
+        path=tmp_path/(chip+".bmodel");path.write_bytes(("fixture-"+chip).encode())
+        jobs.append({"id":"c"+str(index),"status":"done","target":"sophon","validation_status":"converted_unverified",
+                     "source_trace":{"sha256":original_sha},
+                     "params":{"chip":chip,"precision":precision,"input_width":640,"input_height":384,
+                               "local_vendor_id":"local-s","local_chip_id":"local-"+chip,"sdk_chip_code":chip,
+                               "template_id":"tpu-mlir","template_version":1,"sdk_version":"1.30.2","resource_id":"remote-s"},
+                     "outputs":[{"path":str(path)}]})
+    monkeypatch.setattr(service,"_conversion_jobs",lambda *a:jobs)
+    for item in service.discover_version_artifacts("p1",{"id":"a1","versions":[version]},version):
+        service.repository.upsert(item)
+    rows=service.repository.list(project_id="p1")
+    converted=[r for r in rows if r["target"]=="sophon"]
+    assert len(converted)==2 and len({r["artifact_id"] for r in converted})==2
+    assert {r["chip_code"] for r in converted}=={"bm1684","bm1688"}
+    for row in converted:
+        assert row["version_id"]=="v1" and row["metadata"]["tags"]==["smoke","fire"]
+        assert row["metadata"]["local_chip_id"]=="local-"+row["chip_code"]
+        assert row["metadata"]["template_version"]==1
+        assert row["metadata"]["sdk_version"]=="1.30.2"
+        assert row["metadata"]["conversion_params"]["input_height"]==384
+    # Changing the current catalog never rewrites a committed conversion snapshot.
+    service.repository.save_conversion_catalog({"vendors":[],"chips":[]},expected_revision=0)
+    from platform_core.model_artifacts import ModelArtifactRepository
+    assert ModelArtifactRepository(tmp_path).list(project_id="p1")==rows
+
+
 
 @pytest.mark.parametrize("target,suffix,chip", [("original",".pt",""),("onnx",".onnx",""),("rockchip",".rknn","rk3568"),("sophon",".bmodel","bm1684x")])
 def test_local_model_metadata_persists_without_external_or_storage_config(tmp_path, monkeypatch, target, suffix, chip):

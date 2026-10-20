@@ -11,22 +11,22 @@ _PLUGINS: List[Dict[str, Any]] = [
         'id':'rockchip','name':'瑞芯微 RKNN','vendor':'Rockchip','output':'.rknn',
         'source_formats':['.pt','.pth','.onnx','.pdparams','.pdmodel','.pdiparams'],
         'targets':['rockchip'],'sdk':'RKNN-Toolkit2','environment':'linux_x86_64_or_arm64',
-        'chips':['rk3588','rk3576','rk3566','rk3568','rk3562','rv1103','rv1106','rv1103b','rv1106b','rv1126b','rk2118'],
+        'chips':[],
         'description':'PC/转换节点使用 RKNN-Toolkit2 生成 .rknn；开发板 Runtime 仅负责运行，不是第二次转换。'
     },
     {
         'id':'ascend','name':'华为 Atlas / Ascend','vendor':'Huawei','output':'.om',
         'source_formats':['.pt','.pth','.onnx','.pdparams','.pdmodel','.pdiparams'],
         'targets':['ascend'],'sdk':'CANN Toolkit / ATC','environment':'linux',
-        'chips':['Ascend310P3','Ascend310P1','Ascend310B','Ascend310B4','Ascend910B'],
+        'chips':[],
         'description':'CANN ATC 将 ONNX 编译为目标 Ascend SoC 对应的 OM。'
     },
     {
         'id':'sophon','name':'算能 Sophon','vendor':'SOPHGO','output':'.bmodel',
         'source_formats':['.pt','.pth','.onnx','.pdparams','.pdmodel','.pdiparams'],
         'targets':['sophon'],'sdk':'TPU-MLIR','environment':'linux_or_docker',
-        'chips':['bm1684x','bm1688'],
-        'description':'独立 TPU-MLIR 环境生成 BM1684X / BM1688 BMODEL；首期 FP16 / Batch 1，具体能力以资源实测报告为准。'
+        'chips':[],
+        'description':'独立 TPU-MLIR 编译真实目标 BMODEL；芯片来自本地字典，精度按版本相关SDK证据决议，硬件验证独立记录。'
     },
     {
         'id':'tensorrt','name':'NVIDIA TensorRT','vendor':'NVIDIA','output':'.engine',

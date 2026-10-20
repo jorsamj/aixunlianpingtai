@@ -48,7 +48,9 @@ test('version conversion keeps chip choice capability-owned and submit returns t
   assert.ok(createStart >= 0 && createEnd > createStart);
   const createLayer = source.slice(createStart, createEnd);
   assert.match(createLayer, /<select id="conv428Chip" class="select"><\/select>/);
-  assert.match(source, /rockchipOrder428=\['rk3568','rk3576'\]/);
+  assert.match(source, /state\.conv428Catalog\?\.chips/);
+  assert.match(source, /deploy\/resolve/);
+  assert.doesNotMatch(source, /rockchipOrder428/);
   assert.doesNotMatch(source, /RK3578/i);
   assert.match(source, /平台不会让用户手工猜型号/);
 

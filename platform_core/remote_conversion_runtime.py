@@ -79,7 +79,7 @@ def validate_remote_artifacts(directory, job):
             or onnx.get("checker") != "passed" or onnx.get("runtime") != "onnxruntime"):
         raise ValueError("远程 ONNX 实际输入形状或验证证据不匹配")
     structure = manifest.get("sophon_validation") or {}
-    observed_chips = set(re.findall(r"\bbm\d+[a-z]*\b", str(structure.get("inspection") or "").lower()))
+    observed_chips = set(re.findall(r"\b(?:bm|cv)\d+[a-z]*\b", str(structure.get("inspection") or "").lower()))
     if (structure.get("structure") != "passed" or structure.get("chip") != expected["chip"]
             or observed_chips != {expected["chip"]} or structure.get("preprocessing") != expected["preprocessing"]):
         raise ValueError("远程 BMODEL 缺少匹配本次转换的结构检查证据")
@@ -235,6 +235,8 @@ def synchronize_remote_conversion(context, request, *, recovering=False, http=re
                             target = artifacts / path.relative_to(staged)
                             target.parent.mkdir(parents=True, exist_ok=True)
                             os.replace(path, target)
+                if (manifest.get("tool") or {}).get("version"):
+                    job["params"]={**job.get("params",{}),"sdk_version":manifest["tool"]["version"]}
                 job.update(status="blocked_by_hardware", hardware_verified=False, conversion_status="converted",
                     stage="等待目标硬件验证", progress=100, manifest_path=str(artifacts / "manifest.json"),
                     outputs=[{"name":p.name,"path":str(p),"rel":str(p.relative_to(jd)),"size_bytes":p.stat().st_size}

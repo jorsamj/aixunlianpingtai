@@ -61,7 +61,7 @@ def test_remote_request_identity_is_idempotent_and_rejects_changed_content(tmp_p
     (tmp_path/'config.json').write_text(json.dumps({'api_key':'secret','python_path':'isolated-python'}))
     monkeypatch.setattr(server,'JOBS_DIR',tmp_path/'jobs')
     monkeypatch.setattr(server,'PROCESS_REGISTRY',{})
-    monkeypatch.setattr(server,'probe_sophon_toolchain',lambda *a,**k:{'available':True,'supported_chips':['bm1688']})
+    monkeypatch.setattr(server,'probe_sophon_toolchain',lambda *a,**k:{'available':True,'supported_chips':['bm1688'],'chip_capabilities':{'bm1688':{'precisions':['fp16']}}})
     launches=[]
     monkeypatch.setattr(server,'launch_process',lambda *a,**k:launches.append(a) or SimpleNamespace(process=SimpleNamespace(poll=lambda:None),identity=server.ProcessIdentity(123,1.5,'hash')))
     with TestClient(server.app) as client:

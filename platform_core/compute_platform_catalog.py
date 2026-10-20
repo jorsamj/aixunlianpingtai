@@ -9,16 +9,159 @@ import re
 from typing import Any, Iterable, Mapping
 
 
-CHIP_BINDING_DICTIONARY: dict[str, tuple[str, ...]] = {
-    "rockchip": ("RK3568", "RK3576", "RK3578"),
-    "sophon": ("BM1684X", "BM1688"),
-}
 _ROOT_PARENT_IDS = frozenset({"", "0", "-1"})
 
 
 def local_chip_key(value: Any) -> str:
     """Stable matching key: rk-3568 and RK3568 are the same local chip."""
     return re.sub(r"[^A-Za-z0-9]", "", str(value or "")).upper()
+
+# SDK templates describe supported Adapter fields, never shell commands or business vendors.
+CONVERSION_TEMPLATES = (
+    {"id":"rknn","name":"瑞芯微 RKNN","adapter":"rockchip","version":1,"implemented":True,"default_precision":"fp16"},
+    {"id":"atlas-atc","name":"华为 Atlas ATC","adapter":"ascend","version":1,"implemented":True,"default_precision":"fp16"},
+    {"id":"huawei","name":"华为（待关联真实适配器）","adapter":"","version":1,"implemented":False},
+    {"id":"tpu-mlir","name":"算能 TPU-MLIR","adapter":"sophon","version":1,"implemented":True,"default_precision":"fp16"},
+    {"id":"cambricon","name":"寒武纪（待适配）","adapter":"","version":1,"implemented":False},
+)
+
+
+def conversion_templates():
+    fields={
+        "tpu-mlir":[{"key":"num_core","label":"核心数","type":"number","default":1,"locked":True},
+                    {"key":"dynamic","label":"动态Shape","type":"checkbox","default":False,"locked":True}],
+        "rknn":[{"key":"mean","label":"RKNN Mean（三通道）","type":"text","default":"0,0,0"},
+                {"key":"rknn_std","label":"RKNN Std（三通道）","type":"text","default":"255,255,255"}],
+        "atlas-atc":[{"key":"input_name","label":"ONNX输入名","type":"text","default":"images"}],
+    }
+    return [{**item,"advanced_fields":[dict(f) for f in fields.get(item["id"],[])]} for item in CONVERSION_TEMPLATES]
+
+
+def validate_conversion_catalog(payload):
+    """One local identity catalog; external provider classifications are not part of it."""
+    import json
+    if not isinstance(payload, Mapping) or set(payload)-{"vendors","chips","revision"}:
+        raise ValueError("字典只允许vendors/chips/revision")
+    result = {"vendors":[], "chips":[]}
+    templates = {x["id"] for x in CONVERSION_TEMPLATES}
+    for kind, allowed in (
+        ("vendors", {"id","name","template_id","enabled"}),
+        ("chips", {"id","vendor_id","name","code","sdk_code","enabled","constraint_id"}),
+    ):
+        rows = payload.get(kind, [])
+        if not isinstance(rows,list) or len(rows)>1000: raise ValueError("字典必须为有限数组")
+        ids, codes = set(), set()
+        for source in rows:
+            if not isinstance(source,Mapping) or set(source)-allowed: raise ValueError("字典字段非法，不支持任意SDK命令")
+            row = json.loads(json.dumps(source))
+            for key in ("id","vendor_id","code","sdk_code","constraint_id") if kind=="chips" else ("id","template_id"):
+                value = str(row.get(key) or "")
+                if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,95}",value): raise ValueError(f"字典{key}格式非法")
+                row[key]=value
+            if row["id"] in ids: raise ValueError("字典ID重复")
+            ids.add(row["id"])
+            if not str(row.get("name") or "").strip() or len(str(row["name"]))>120: raise ValueError("字典名称缺失或过长")
+            if type(row.get("enabled", True)) is not bool: raise ValueError("enabled必须为布尔值")
+            row.setdefault("enabled",True)
+            if kind=="vendors" and row["template_id"] not in templates: raise ValueError("模板不存在")
+            if kind=="chips":
+                if row["vendor_id"] not in {v["id"] for v in result["vendors"]}: raise ValueError("芯片所属厂商不存在")
+                identity=(row["vendor_id"],row["code"].lower())
+                sdk_identity=(row["vendor_id"],row["sdk_code"].lower())
+                if identity in codes or sdk_identity in codes: raise ValueError("芯片编码重复")
+                codes.update((identity,sdk_identity))
+            result[kind].append(row)
+    return result
+
+
+def resolve_conversion_contract(catalog, *, vendor_id, chip_id, resource, version, params, training_job=None):
+    """The same backend contract drives preview and job admission; no execution here."""
+    from .conversion import derive_version_conversion_defaults, validate_target
+    vendors={v["id"]:v for v in catalog.get("vendors",[])}
+    vendor=vendors.get(vendor_id)
+    chip=next((c for c in catalog.get("chips",[]) if c["id"]==chip_id and c["vendor_id"]==vendor_id),None)
+    template=next((t for t in conversion_templates() if vendor and t["id"]==vendor.get("template_id")),{})
+    result={"ready":False,"status":"not_convertible","errors":[],"params":{},"parameter_sources":{},
+            "vendor_id":vendor_id,"chip_id":chip_id,"template":dict(template),"allowed_precisions":[]}
+    def reject(status,message):
+        result.update(status=status,errors=[message])
+        return result
+    if vendor and not chip_id:
+        return reject("pending_detection","请选择目标芯片")
+    if not vendor or not vendor.get("enabled",True) or not chip or not chip.get("enabled",True):
+        return reject("not_convertible","本地厂商或芯片不存在、已停用或归属不符")
+    target=template.get("adapter")
+    if not template.get("implemented") or not target:
+        return reject("not_adapted","厂商模板尚无可执行Adapter")
+    if resource.get("kind")!=target or resource.get("status")!="ready" or target not in resource.get("targets",[]):
+        return reject("service_unavailable","对应转换资源未就绪或服务不可用")
+    sdk=chip["sdk_code"].lower() if target!="ascend" else chip["sdk_code"]
+    remote=resource.get("remote_health") or {}
+    supported=resource.get("supported_chips",[]) if target!="ascend" else (
+        resource.get("detected_soc_versions") or (remote.get("tools") or {}).get("soc_versions") or remote.get("soc_versions") or [])
+    if sdk not in supported:
+        return reject("not_convertible","当前SDK未声明支持所选目标芯片")
+    if target=="sophon":
+        from .sophon_runtime import sophon_chip_capabilities
+        probe=resource.get("sophon_probe") or (resource.get("remote_health",{}).get("tools") or {}).get("sophon") or {}
+        caps=sophon_chip_capabilities(probe)
+        if "chip_capabilities" in probe:
+            caps={code:{**cap,"precisions":[p for p in cap["precisions"] if p in (probe["chip_capabilities"].get(code) or {}).get("precisions",[])]}
+                  for code,cap in caps.items() if (probe["chip_capabilities"].get(code) or {}).get("precisions")}
+        cap=caps.get(sdk) or {}
+        if not cap or chip.get("constraint_id") not in {"tpu-mlir-1.30.2","sophon-fp16-verified"}:
+            return reject("pending_detection","缺少版本相关SDK/芯片精度兼容证据，请重新检测或核对约束引用")
+        if chip["constraint_id"]=="tpu-mlir-1.30.2":
+            if not re.search(r"(?<![0-9.])1\.30\.2(?:[^0-9.]|$)",str(probe.get("version") or "")):
+                return reject("pending_detection","当前SDK版本与芯片兼容证据1.30.2不匹配")
+            allowed=cap["precisions"]
+        else:
+            from .conversion import SUPPORTED_SOPHON_CHIPS
+            allowed=[p for p in cap["precisions"] if p=="fp16" and sdk in SUPPORTED_SOPHON_CHIPS]
+    elif target=="rockchip":
+        if chip.get("constraint_id")!="rknn-verified":
+            return reject("pending_detection","缺少RKNN芯片约束证据")
+        allowed=[p for p in resource.get("supported_precisions",[]) if p in {"fp16","int8"}]
+    else:
+        if chip.get("constraint_id")!="atc-detected": return reject("pending_detection","缺少ATC SoC检测证据")
+        allowed=["fp16","fp32"]
+    result["allowed_precisions"]=list(allowed)
+    if not allowed: return reject("pending_detection","所选芯片未确认合法精度")
+    defaults=derive_version_conversion_defaults(version,training_job)
+    values={key:params[key] for key in params}
+    input_contract=version.get("model_input_contract") or {}
+    if not isinstance(input_contract,Mapping):
+        return reject("not_convertible","冻结模型输入合同损坏")
+    inherited_preprocessing=input_contract.get("preprocessing")
+    if inherited_preprocessing and "preprocessing" not in values:
+        if not isinstance(inherited_preprocessing,Mapping):
+            return reject("not_convertible","冻结预处理合同损坏")
+        values["preprocessing"]=dict(inherited_preprocessing)
+    if input_contract.get("postprocessing"):
+        if not isinstance(input_contract["postprocessing"],Mapping):
+            return reject("not_convertible","冻结后处理合同损坏")
+        values["model_output_contract"]=dict(input_contract["postprocessing"])
+    for field in template["advanced_fields"]:
+        values.setdefault(field["key"],field["default"])
+    precision=str(values.get("precision") or (template.get("default_precision") if template.get("default_precision") in allowed else allowed[0])).lower()
+    if precision not in allowed: return reject("not_convertible","所选精度不受此芯片及SDK支持："+precision)
+    if precision=="int8" and target=="sophon": return reject("not_convertible","Sophon INT8仍须冻结校准与质量验收，不允许通过字典绕过")
+    if not any(key in values for key in ("input_height","input_width","input_size")):
+        values.update(input_height=defaults["input_height"],input_width=defaults["input_width"])
+    values.update(chip=sdk,precision=precision,local_vendor_id=vendor_id,local_chip_id=chip_id,
+                  sdk_chip_code=sdk,template_id=template["id"],template_version=template["version"],
+                  constraint_id=chip["constraint_id"],resource_id=str(resource.get("id") or ""),
+                  sdk_version=str(resource.get("version") or ""),source_training_precision=defaults.get("training_precision"))
+    if target=="ascend": values["soc_version"]=sdk
+    try: values=validate_target(target,values,require_calibration=False)
+    except ValueError as error: return reject("not_convertible",str(error))
+    result.update(ready=True,status="convertible",params=values,
+                  calibration_required=precision=="int8",
+                  parameter_sources={"precision":"用户自定义" if params.get("precision") else "SDK/芯片约束",
+                                     "input_shape":"用户自定义" if any(k in params for k in ("input_size","input_width","input_height")) else defaults["input_size_source"],
+                                     "batch":"SDK/芯片约束","preprocessing":"用户自定义" if params.get("preprocessing") else "训练成果继承" if inherited_preprocessing else "厂商默认"})
+    return result
+
 
 
 def compute_platform_catalog(rows: Iterable[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:

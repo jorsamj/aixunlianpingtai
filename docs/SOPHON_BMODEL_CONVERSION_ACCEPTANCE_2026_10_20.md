@@ -1,3 +1,7 @@
+## 2026-10-20｜动态字典与SDK参数整合接续
+
+本轮统一验收见 [动态厂商/真实转换能力专项](DYNAMIC_CONVERSION_CATALOG_ACCEPTANCE_2026_10_20.md)。正式VERSION42.24.359，一次递增；Sophon复用原探测/Worker/远程Durable任务，以TPU-MLIR1.30.2官方芯片浮点矩阵与实际探测交集解析，BM1684 F32，原BM1684X/BM1688 F16；版本变化不复用该版本约束。真实芯片命令、矩形Batch1、SHA/唯一芯片检查与原硬件验证边界保留。最终限定Python262、Node70、Chrome8通过，最终SHA CI见新专项指定独立附件；本轮无真实SDK/板卡新验收、无生产部署。
+
 # Sophon BMODEL转换验收｜2026-10-20
 
 ## 2026-10-20｜Sophon资源与页面一致性（A-D测试通过 / E待推送及最终CI / 生产未部署）

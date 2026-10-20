@@ -28,12 +28,14 @@ test('final deployment test consumes unified durable queue and progress truth wh
 });
 
 
-test('rockchip conversion UI only permits canonical RK3568 and RK3576',()=>{
-  assert.doesNotMatch(source,/rk3588/i);
-  assert.match(source,/rockchipOrder428=\['rk3568','rk3576'\]/);
-  assert.match(source,/请选择当前转换资源实际支持的瑞芯微芯片/);
-  assert.match(source,/rk3568/);
-  assert.match(source,/rk3576/);
+test('conversion UI uses local dictionary and backend contract instead of a chip enum',()=>{
+  const canonical=source.slice(source.indexOf('/* v42.16 conversion resource readiness'));
+  assert.match(canonical,/api\/v39\/deploy\/catalog/);
+  assert.match(canonical,/deploy\/resolve/);
+  assert.match(canonical,/state\.conv428Catalog\?\.chips/);
+  assert.doesNotMatch(canonical,/rockchipOrder428|\['bm1684x','bm1688'\]/);
+  assert.match(canonical,/state\.conv428Resolved=result/);
+  assert.match(canonical,/button\.disabled=!result\.ready/);
 });
 
 

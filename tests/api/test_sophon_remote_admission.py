@@ -19,10 +19,16 @@ def test_sophon_creation_requires_live_chip_support(tmp_path, monkeypatch, param
 
 
 def test_remote_sophon_admission_uses_existing_durable_owner(tmp_path,monkeypatch):
-    source=tmp_path/'model.onnx';source.write_bytes(b'onnx')
+    from tests.unit.test_sophon_conversion import _onnx_identity
+    from tests.unit.test_dynamic_conversion_catalog import catalog, live
+    from platform_core.model_artifacts import ModelArtifactRepository
+    monkeypatch.setattr(api,'DATA_DIR',tmp_path)
+    ModelArtifactRepository(tmp_path).save_conversion_catalog(catalog(),expected_revision=0)
+    source=tmp_path/'model.onnx';_onnx_identity(source,[1,3,640,640])
     monkeypatch.setattr(api,'_resolve_deploy_source',lambda *a:{'kind':'imported','path':str(source)})
     resource={'id':'sophon-remote','kind':'sophon','mode':'remote','status':'ready','targets':['sophon'],
               'supported_chips':['bm1688'],'supported_precisions':['fp16'],'secret_ref':'test-secret','base_url':'http://isolated.invalid'}
+    resource.update(version='v1.30.2-20260831',sophon_probe=live()['sophon_probe'])
     monkeypatch.setattr(api,'_deploy_resource_by_id',lambda *a:resource)
     monkeypatch.setattr(api,'_detect_remote_deploy_resource',lambda r:dict(r))
     monkeypatch.setattr(api,'_deploy_resource_public',lambda r:{k:v for k,v in r.items() if k!='secret_ref'})

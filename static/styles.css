@@ -1554,3 +1554,4 @@ radial-gradient(circle at 1px 1px,rgba(148,163,184,.14) 1px,transparent 0) 0 0/1
 .gt-review-actions .row{flex-wrap:wrap;gap:8px}
 .gt-review-actions button{min-height:40px}
 @media(max-width:600px){.gt-review-actions .row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}.gt-review-actions button{white-space:normal}}
+.convert428-create [hidden]{display:none!important}

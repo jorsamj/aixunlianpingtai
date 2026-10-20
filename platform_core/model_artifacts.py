@@ -397,6 +397,38 @@ class ModelArtifactRepository:
         database.execute("PRAGMA busy_timeout=5000")
         return database
 
+    def conversion_catalog(self):
+        with closing(self._connect()) as database:
+            database.execute("CREATE TABLE IF NOT EXISTS conversion_catalog (id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, payload_json TEXT NOT NULL)")
+            row=database.execute("SELECT revision,payload_json FROM conversion_catalog WHERE id=1").fetchone()
+        return {**json.loads(row["payload_json"]),"revision":row["revision"]} if row else {"vendors":[],"chips":[],"revision":0}
+
+    def save_conversion_catalog(self, payload, *, expected_revision):
+        from .compute_platform_catalog import validate_conversion_catalog
+        value=validate_conversion_catalog(payload)
+        self.conversion_catalog()
+        with closing(self._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            row=database.execute("SELECT revision,payload_json FROM conversion_catalog WHERE id=1").fetchone()
+            revision=row["revision"] if row else 0
+            if type(expected_revision) is not int or expected_revision!=revision:
+                database.rollback()
+                raise ValueError("字典revision已变化，请刷新后重试（并发保护）")
+            old={c["id"]:c for c in json.loads(row["payload_json"]).get("chips",[])} if row else {}
+            previous=json.loads(row["payload_json"]) if row else {"vendors":[],"chips":[]}
+            if any({item["id"] for item in previous[key]}-{item["id"] for item in value[key]} for key in ("vendors","chips")):
+                database.rollback()
+                raise ValueError("已有字典身份不可删除，请停用以保留历史追溯")
+            for chip in value["chips"]:
+                if chip["id"] in old and any(chip[k]!=old[chip["id"]][k] for k in ("vendor_id","code","sdk_code")):
+                    database.rollback()
+                    raise ValueError("已有芯片身份不可改挂，请停用旧条目并创建新身份")
+            database.execute("INSERT INTO conversion_catalog(id,revision,payload_json) VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,payload_json=excluded.payload_json",
+                             (revision+1,json.dumps(value,ensure_ascii=False)))
+            database.commit()
+        return {**value,"revision":revision+1}
+
+
     def config(self) -> dict[str, Any]:
         with self.lock:
             stored = _json_load(self.config_path, {})
@@ -538,6 +570,8 @@ class ModelArtifactRepository:
             previous = json.loads(existing["metadata_json"] or "{}") if existing is not None else {}
             owned = {"tags", "class_mapping", "label_source", "label_validation_status", "label_error", "label_version_id",
                      "image_width", "image_height", "yolo_version", "precision", "conversion_params", "source_artifact_id",
+                     "local_vendor_id", "local_chip_id", "sdk_chip_code", "template_id", "template_version", "constraint_id", "resource_id", "sdk_version", "parameter_sources",
+                     "manifest_path", "sdk_name", "model_io", "model_validation_status",
                      "snapshot_id", "task_id", "framework", "framework_version", "finished_at", "last_label_conflict", "training_precision", "class_count",
                      "remote_training", "object_identity_verified", "execution_generation", "role"}
             for key in owned:
@@ -1470,6 +1504,7 @@ class ModelArtifactService:
                                 "conversion_status": str(job.get("conversion_status") or status),
                                 "runtime_verified": job.get("runtime_verified") is True,
                                 "hardware_verified": job.get("hardware_verified") is True,
+                                "manifest_path": str(job.get("manifest_path") or ""),
                             },
                         ))
         seen: set[tuple[str, str, str]] = set()
@@ -1482,6 +1517,21 @@ class ModelArtifactService:
             if not path.is_file() or path.stat().st_size <= 0:
                 continue
             digest = _sha256(path)
+            if kind == "conversion" and metadata.get("manifest_path"):
+                manifest = _json_load(Path(metadata["manifest_path"]), {})
+                outputs = [r for r in manifest.get("outputs",[]) if Path(str(r.get("name") or "")).name==path.name] if isinstance(manifest,dict) else []
+                source_sha = str(metadata.get("source_sha256") or "")
+                matches = (len(outputs)==1 and outputs[0].get("sha256")==digest and outputs[0].get("size_bytes")==path.stat().st_size
+                           and manifest.get("job_id")==job_id and source_sha and (manifest.get("source") or {}).get("sha256")==source_sha)
+                if matches:
+                    onnx = manifest.get("onnx") or {}
+                    metadata["model_io"] = {"onnx":{k:onnx[k] for k in ("input_shapes","input_names","output_names","output_count") if k in onnx},"compiled_model":None}
+                    tool = manifest.get("tool") or {}
+                    metadata.update(sdk_name=str(tool.get("name") or ""),sdk_version=str(tool.get("version") or ""),
+                                    model_validation_status=str((manifest.get("sophon_validation") or {}).get("model_validation_status") or "unknown"),
+                                    manifest_metadata_error="")
+                else:
+                    metadata["manifest_metadata_error"]="Manifest与真实产物SHA/大小、任务或源模型不匹配，未采信其模型IO信息"
             chip_code = str(metadata.get("chip_code") or "").strip().lower()
             identity = (target, chip_code, digest)
             if identity in seen:

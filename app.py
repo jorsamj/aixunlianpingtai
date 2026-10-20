@@ -12103,18 +12103,6 @@ def _v48_quality_reached(job: Dict[str, Any]) -> bool:
     return value is not None and value>=target
 
 
-def _v48_supported_rockchip_chips(resource: Dict[str, Any]) -> List[str]:
-    remote_health = resource.get("remote_health")
-    remote_health = remote_health if isinstance(remote_health, dict) else {}
-    values = list(resource.get("supported_chips") or remote_health.get("supported_chips") or [])
-    chips = {
-        str(value or "").strip().lower()
-        for value in values
-        if str(value or "").strip().lower() in SUPPORTED_PORTABLE_RKNN_CHIPS
-    }
-    return sorted(chips)
-
-
 def _v48_auto_convert_version(project_id: str, algorithm_id: str, version: Dict[str, Any], job: Dict[str, Any]) -> Dict[str, Any]:
     targets=list(job.get("auto_convert_targets") or [])
     summary={"requested":targets,"jobs":[],"errors":[]}
@@ -12129,7 +12117,7 @@ def _v48_auto_convert_version(project_id: str, algorithm_id: str, version: Dict[
         # _v39_create_deploy_job_under_version_fence, including AMP FP32 fallback.
         # Do not override that contract with an unconditional FP16 here.
         params={}
-        if target=="sophon":
+        if target in {"sophon","rockchip","ascend"}:
             runtime = _deploy_resource_runtime(resource)
             mode = str(runtime.get("mode") or "local").lower()
             try:
@@ -12139,26 +12127,21 @@ def _v48_auto_convert_version(project_id: str, algorithm_id: str, version: Dict[
             except Exception as error:
                 summary["errors"].append({"target":target,"message":str(error)})
                 continue
-            chips = sorted(set(resource.get("supported_chips") or []) & {"bm1684x", "bm1688"})
-            if resource.get("status") != "ready" or len(chips) != 1:
-                summary["errors"].append({"target":target,"message":"算能自动转换需要实时检测到唯一目标芯片；请明确选择 BM1684X 或 BM1688 后手动转换。"})
+            from platform_core.compute_platform_catalog import resolve_conversion_contract, conversion_templates
+            catalog=_conversion_catalog_repository(DATA_DIR).conversion_catalog()
+            template_ids={t["id"] for t in conversion_templates() if t.get("adapter")==target}
+            vendors={v["id"] for v in catalog["vendors"] if v.get("enabled",True) and v.get("template_id") in template_ids}
+            candidates=[]
+            for chip in catalog["chips"]:
+                if chip["vendor_id"] not in vendors:
+                    continue
+                contract=resolve_conversion_contract(catalog,vendor_id=chip["vendor_id"],chip_id=chip["id"],resource=resource,version=version,params={})
+                if contract["ready"]:
+                    candidates.append(contract)
+            if len(candidates)!=1:
+                summary["errors"].append({"target":target,"message":"自动转换必须有唯一已就绪本地芯片合同；请在版本转换中明确选择目标。"})
                 continue
-            params.update(chip=chips[0], precision="fp16")
-        elif target=="rockchip":
-            chips=_v48_supported_rockchip_chips(resource)
-            if len(chips)!=1:
-                detail="、".join(chip.upper() for chip in chips) or "无"
-                summary["errors"].append({
-                    "target":target,
-                    "message":f"瑞芯微自动转换不能猜测目标芯片；当前可用：{detail}。请明确使用 RK3568 或 RK3576 后手动转换。",
-                })
-                continue
-            params["chip"]=chips[0]
-        elif target=="ascend":
-            socs=resource.get("detected_soc_versions") or (resource.get("remote_health") or {}).get("soc_versions") or []
-            if not socs:
-                summary["errors"].append({"target":target,"message":"Atlas 自动转换需要部署资源检测出 soc_version"});continue
-            params["soc_version"]=socs[0]
+            params=candidates[0]["params"]
         try:
             r=v39_create_deploy_job(project_id,DeployJobReq(source_id=f"version::{algorithm_id}::{version.get('id')}",target=target,resource_id=str(resource.get("id")),params=params,dataset_id="default",calibration_split="train",calibration_count=100))
             summary["jobs"].append({"target":target,"job_id":(r.get("job") or {}).get("id"),"resource_name":resource.get("name")})
@@ -17890,13 +17873,16 @@ def _detect_remote_deploy_resource(item: Dict[str, Any]) -> Dict[str, Any]:
         item.update(status="ready", targets=data.get("targets", []), version=data.get("version", ""), message="远程部署转换服务可用", remote_health=data, last_checked_at=now_iso())
         if str(item.get("kind") or "").lower() == "sophon":
             probe = (data.get("tools") or {}).get("sophon") or {}
-            item["supported_chips"] = [chip for chip in (probe.get("supported_chips") or []) if chip in {"bm1684x", "bm1688"}]
-            item["supported_precisions"] = [p for p in (probe.get("supported_precisions") or []) if p == "fp16"]
+            from platform_core.sophon_runtime import sophon_chip_capabilities
+            capabilities=sophon_chip_capabilities(probe)
+            item["sophon_probe"]={**probe,"chip_capabilities":capabilities}
+            item["supported_chips"] = sorted(capabilities)
+            item["supported_precisions"] = sorted({p for c in capabilities.values() for p in c["precisions"]})
             item["version"] = str(probe.get("version") or "")
             if not probe.get("available") or "sophon" not in item["targets"] or not item["supported_chips"] or not item["supported_precisions"]:
                 item.update(status="missing", targets=[], supported_chips=[], supported_precisions=[], message=probe.get("error") or "TPU-MLIR remote probe unavailable")
             else:
-                item["message"] = "远程算能资源可用：" + " / ".join(chip.upper() for chip in item["supported_chips"]) + " · FP16"
+                item["message"] = "远程算能资源可用：" + " / ".join(chip.upper() for chip in item["supported_chips"]) + " · " + "/".join(item["supported_precisions"])
         if str(item.get("kind") or "").lower() == "rockchip":
             item["supported_chips"] = list(data.get("supported_chips") or [])
     except Exception as e:
@@ -18192,6 +18178,100 @@ class DeployJobReq(BaseModel):
     calibration_count: int = 100
 
 
+from functools import lru_cache
+
+
+@lru_cache(maxsize=4)
+def _conversion_catalog_repository(data_dir):
+    from platform_core.model_artifacts import ModelArtifactRepository
+    return ModelArtifactRepository(data_dir)
+
+
+@app.get("/api/v39/deploy/catalog")
+def v39_conversion_catalog():
+    from platform_core.compute_platform_catalog import conversion_templates
+    return {"ok":True, **_conversion_catalog_repository(DATA_DIR).conversion_catalog(), "templates":conversion_templates(),
+            "constraint_ids":["tpu-mlir-1.30.2","sophon-fp16-verified","rknn-verified","atc-detected"]}
+
+
+@app.put("/api/v39/deploy/catalog")
+def v39_save_conversion_catalog(payload: Dict[str, Any]):
+    try:
+        return {"ok":True, **_conversion_catalog_repository(DATA_DIR).save_conversion_catalog(
+            {k:v for k,v in payload.items() if k!="expected_revision"},
+            expected_revision=payload.get("expected_revision"))}
+    except ValueError as error:
+        raise HTTPException(status_code=409 if "revision" in str(error) else 400,detail=str(error)) from error
+
+
+def _conversion_contract_for_source(project_id, source, resource, params, target):
+    from platform_core.compute_platform_catalog import resolve_conversion_contract, conversion_templates
+    catalog=_conversion_catalog_repository(DATA_DIR).conversion_catalog()
+    vendor_id=str(params.get("local_vendor_id") or "")
+    chip_id=str(params.get("local_chip_id") or "")
+    # Existing API clients may use SDK code only, but still require one enabled local identity.
+    if not vendor_id and not chip_id:
+        template_ids={t["id"] for t in conversion_templates() if t.get("adapter")==target}
+        vendors={v["id"] for v in catalog["vendors"] if v.get("enabled",True) and v.get("template_id") in template_ids}
+        candidates=[c for c in catalog["chips"] if c["vendor_id"] in vendors and c.get("enabled",True)
+                    and c["sdk_code"].lower()==str(params.get("chip") or params.get("soc_version") or "").lower()]
+        if len(candidates)==1: vendor_id,chip_id=candidates[0]["vendor_id"],candidates[0]["id"]
+    version={}
+    if source.get("algorithm_id") and source.get("version_id"):
+        algorithm=next((a for a in list_algorithms_internal(project_id) if str(a.get("id"))==str(source["algorithm_id"])),{})
+        version=next((v for v in algorithm.get("versions",[]) if str(v.get("id"))==str(source["version_id"])),{})
+    onnx_shapes=None
+    shape_from_onnx=False
+    path=Path(str(source.get("path") or ""))
+    if path.suffix.lower()==".onnx" and path.is_file():
+        try:
+            import onnx
+            model=onnx.load(str(path),load_external_data=False)
+            onnx_shapes=[[d.dim_value for d in item.type.tensor_type.shape.dim] for item in model.graph.input
+                         if item.name not in {i.name for i in model.graph.initializer}]
+            if not any(k in params for k in ("input_height","input_width","input_size")) and len(onnx_shapes)==1 and len(onnx_shapes[0])==4:
+                params={**params,"input_height":onnx_shapes[0][2],"input_width":onnx_shapes[0][3]}
+                shape_from_onnx=True
+        except Exception as error:
+            return {"ready":False,"status":"not_convertible","errors":["无法核验ONNX输入合同："+str(error)],"params":{},"allowed_precisions":[],"chip_options":[]}
+    training_job=_version_deploy_training_job(project_id,version)
+    result=resolve_conversion_contract(catalog,vendor_id=vendor_id,chip_id=chip_id,resource=resource,version=version,params=params,training_job=training_job)
+    status_labels={"convertible":"可转换","not_convertible":"不可转换","pending_detection":"待检测","not_adapted":"暂未适配","service_unavailable":"转换服务不可用"}
+    result["chip_options"]=[]
+    for entry in catalog["chips"]:
+        if entry["vendor_id"]!=vendor_id:
+            continue
+        capability=resolve_conversion_contract(catalog,vendor_id=vendor_id,chip_id=entry["id"],resource=resource,version=version,params={},training_job=training_job)
+        result["chip_options"].append({"id":entry["id"],"name":entry["name"],"enabled":entry.get("enabled",True),
+            "status":capability["status"],"status_label":status_labels[capability["status"]],"reason":"；".join(capability["errors"])})
+    if result["ready"] and result["template"].get("adapter")!=target:
+        result.update(ready=False,status="not_convertible",errors=["厂商模板与请求target不一致"])
+    if result["ready"]:
+        from platform_core.model_metadata import model_metadata
+        result["source_metadata"]=model_metadata(DATA_DIR,version)
+        if onnx_shapes is not None:
+            from platform_core.conversion import conversion_input_shape
+            height,width=conversion_input_shape(result["params"])
+            result["source_input_shapes"]=onnx_shapes
+            if onnx_shapes!=[[int(result["params"].get("batch") or 1),3,height,width]]:
+                result.update(ready=False,status="not_convertible",errors=["现有ONNX真实输入Shape与所选参数不一致，需重新导出"])
+            elif shape_from_onnx:
+                result["parameter_sources"]["input_shape"]="真实ONNX输入Shape"
+    return result
+
+
+@app.post("/api/v39/projects/{project_id}/deploy/resolve")
+def v39_resolve_conversion(project_id: str, payload: DeployJobReq):
+    source=_resolve_deploy_source(project_id,payload.source_id)
+    resource=_deploy_resource_by_id(payload.resource_id) if payload.resource_id else {}
+    mode=str(resource.get("mode") or "local")
+    if payload.resource_id:
+        resource=(_detect_remote_deploy_resource(resource) if mode=="remote" else
+                  _detect_agent_deploy_resource(resource) if mode=="agent" else _detect_local_deploy_resource(resource))
+    return _conversion_contract_for_source(project_id,source,resource,dict(payload.params or {}),payload.target)
+
+
+
 def _write_deploy_job(project_id: str, job: Dict[str, Any]):
     jd=_deploy_job_dir(project_id,job["id"]); jd.mkdir(parents=True,exist_ok=True); write_json(jd/"job.json",job)
 
@@ -18339,7 +18419,7 @@ def _v39_create_deploy_job_under_version_fence(
         )
     resource=_deploy_resource_by_id(payload.resource_id)
     resource_mode = str(resource.get("mode") or "local").strip().lower()
-    if str(payload.target or "").strip().lower() in {"rockchip", "sophon"}:
+    if str(payload.target or "").strip().lower() in {"rockchip", "sophon", "ascend"}:
         if str(resource.get("kind") or "").strip().lower() != str(payload.target).strip().lower():
             raise HTTPException(status_code=400, detail=f"{payload.target} 转换必须选择对应芯片部署资源")
         if resource_mode == "agent":
@@ -18356,12 +18436,15 @@ def _v39_create_deploy_job_under_version_fence(
         # Ultralytics/Paddle 内置资源只做直接导出；芯片转换必须选择对应芯片资源。
         raise HTTPException(status_code=400, detail=f"该资源不支持 {payload.target}。当前支持：{', '.join(resource.get('targets') or []) or '无'}")
     params=dict(payload.params or {})
-    if payload.target == "sophon":
-        chip = str(params.get("chip") or "").strip().lower()
-        if not chip or chip not in (resource.get("supported_chips") or []):
-            raise HTTPException(status_code=400, detail="Sophon chip must be explicitly selected from live supported_chips")
-        params["chip"] = chip
-        params["precision"] = str(params.get("precision") or "fp16").strip().lower()
+    if payload.target in {"sophon","rockchip","ascend"}:
+        # Discard inherited deployment precision: training dtype is not a compiler default.
+        if not (payload.params or {}).get("precision"):
+            params.pop("precision", None)
+        contract=_conversion_contract_for_source(project_id,source,resource,params,payload.target)
+        if not contract["ready"]:
+            raise HTTPException(status_code=400,detail="；".join(contract["errors"])+"（请求芯片："+str(params.get("chip") or params.get("local_chip_id") or "未选择")+"）")
+        params=contract["params"]
+        params["parameter_sources"]=contract["parameter_sources"]
     version = None
     if str(source.get("kind") or "") == "algorithm_version":
         algorithm = next(
@@ -18393,13 +18476,12 @@ def _v39_create_deploy_job_under_version_fence(
             params["source_training_precision"] = defaults.get("training_precision") or ""
             params["source_training_imgsz"] = defaults["input_size"]
     if str(payload.target or "").strip().lower() == "rockchip":
-        from platform_core.rknn_runtime import REMOTE_RKNN_CHIPS
         precision = str(params.get("precision") or "fp16").strip().lower()
         chip = str(params.get("chip") or "").strip().lower()
         supported_chips = {
             str(value or "").strip().lower()
             for value in (resource.get("supported_chips") or [])
-            if str(value or "").strip().lower() in REMOTE_RKNN_CHIPS
+            if re.fullmatch(r"rk\d{4}",str(value or "").strip().lower())
         }
         supported_precisions = {
             str(value or "").strip().lower()
@@ -19311,7 +19393,11 @@ from platform_core.rknn_runtime import probe_rknn_toolkit
 
 
 def _v41_rknn_info(py: str) -> Dict[str, Any]:
-    result=probe_rknn_toolkit(py)
+    from platform_core.compute_platform_catalog import conversion_templates
+    catalog=_conversion_catalog_repository(DATA_DIR).conversion_catalog()
+    vendors={v["id"] for v in catalog["vendors"] if v.get("template_id")=="rknn" and v.get("enabled",True)}
+    candidates=[c["sdk_code"].lower() for c in catalog["chips"] if c["vendor_id"] in vendors and c.get("enabled",True)]
+    result=probe_rknn_toolkit(py,**({"target_chips":candidates} if candidates else {}))
     return {
         'ok':bool(result.get('available')),
         'version':str(result.get('version') or ''),
@@ -19331,7 +19417,7 @@ def _detect_local_deploy_resource(item: Dict[str, Any]) -> Dict[str, Any]:
     row['rknn_version']=str(info.get('version') or '')
     row['supported_chips']=list(info.get('supported_chips') or [])
     if info.get('ok'):
-        row.update(status='ready',targets=['rockchip'],version=row['rknn_version'],message='RKNN-Toolkit2 可用；无需开发板即可把 ONNX 转为 RKNN')
+        row.update(status='ready',targets=['rockchip'],supported_precisions=['fp16','int8'],version=row['rknn_version'],message='RKNN-Toolkit2 可用；无需开发板即可把 ONNX 转为 RKNN')
     else:
         row.update(status='missing',message='未检测到 RKNN-Toolkit2：'+str(info.get('error') or ''))
     return row
@@ -19341,7 +19427,12 @@ def _detect_local_deploy_resource(item: Dict[str, Any]) -> Dict[str, Any]:
 def v41_deploy_plugins():
     saved=_load_saved_deploy_resources(); builtin=_builtin_deploy_resources(); resources=builtin+saved
     rows=[]
+    from platform_core.compute_platform_catalog import conversion_templates
+    catalog=_conversion_catalog_repository(DATA_DIR).conversion_catalog()
+    templates={t['id']:t.get('adapter') for t in conversion_templates()}
     for p in _v41_plugin_catalog():
+        vendor_ids={v['id'] for v in catalog['vendors'] if v.get('enabled',True) and templates.get(v.get('template_id'))==p['id']}
+        p['chips']=[c['name'] for c in catalog['chips'] if c['vendor_id'] in vendor_ids]
         matches=[r for r in resources if str(r.get('kind'))==p['id'] or (p['id']=='onnx' and str(r.get('kind')) in {'ultralytics','paddle'})]
         ready=[]
         for r in matches:
@@ -19537,10 +19628,13 @@ V423_DEPLOY_TARGET_NAMES = {
 }
 
 
-def _version_deploy_conversion_defaults(project_id: str, version: Mapping[str, Any]) -> dict[str, Any]:
+def _version_deploy_training_job(project_id: str, version: Mapping[str, Any]) -> dict[str, Any]:
     job_id = str(version.get("job_id") or version.get("task_id") or "").strip()
-    job = read_json(project_dir(project_id) / "jobs" / job_id / "job.json", {}) if re.fullmatch(r"[A-Za-z0-9_-]{1,128}", job_id) else {}
-    return derive_version_conversion_defaults(version, job)
+    return read_json(project_dir(project_id) / "jobs" / job_id / "job.json", {}) if re.fullmatch(r"[A-Za-z0-9_-]{1,128}", job_id) else {}
+
+
+def _version_deploy_conversion_defaults(project_id: str, version: Mapping[str, Any]) -> dict[str, Any]:
+    return derive_version_conversion_defaults(version, _version_deploy_training_job(project_id,version))
 
 
 @app.get('/api/v42/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/deployments')

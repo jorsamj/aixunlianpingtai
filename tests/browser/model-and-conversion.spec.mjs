@@ -1,5 +1,34 @@
 import {test, expect} from '@playwright/test';
 
+// Isolated UI contract fixtures. These are not SDK compilation or hardware evidence.
+const uiCatalog={
+  revision:1,
+  vendors:[{id:'v-atlas',name:'华为 Atlas',template_id:'atlas-atc'},{id:'v-rk',name:'瑞芯微',template_id:'rknn'},{id:'v-s',name:'算能',template_id:'tpu-mlir'}],
+  templates:[{id:'atlas-atc',adapter:'ascend'},{id:'rknn',adapter:'rockchip'},{id:'tpu-mlir',adapter:'sophon'}],
+  chips:[['Ascend310P3','v-atlas'],['rk3568','v-rk'],['rk3576','v-rk'],['bm1684x','v-s'],['bm1688','v-s']].map(([id,vendor_id])=>({id,vendor_id,name:id.startsWith('bm')||id.startsWith('rk')?id.toUpperCase():id,sdk_code:id,enabled:true}))
+};
+test.beforeEach(async({page})=>{
+  await page.route('**/api/v39/deploy/catalog',route=>route.fulfill({json:uiCatalog}));
+  await page.route('**/api/v39/projects/*/deploy/resolve',async route=>{
+    const body=route.request().postDataJSON(),p=body.params||{};
+    const context=await page.evaluate(()=>({resources:state.conv428Resources||[],defaults:state.conv428ModelDefaults||{}}));
+    const resource=context.resources.find(r=>r.id===body.resource_id);
+    const chips=uiCatalog.chips.filter(c=>c.vendor_id===p.local_vendor_id),chip=chips.find(c=>c.id===p.local_chip_id);
+    const supported=resource?.status==='ready'&&[...(resource.supported_chips||[]),...(resource.detected_soc_versions||[])].includes(chip?.sdk_code);
+    const allowed=body.target==='sophon'?['fp16']:body.target==='rockchip'?['fp16','int8']:['fp16','fp32'];
+    const precision=p.precision||allowed[0],ready=!!supported&&allowed.includes(precision);
+    const height=p.input_height||p.input_size||context.defaults.input_height||context.defaults.input_size||640;
+    const width=p.input_width||p.input_size||context.defaults.input_width||context.defaults.input_size||640;
+    await route.fulfill({json:{ready,status:ready?'convertible':'not_convertible',errors:ready?[]:['没有已检测通过的芯片合同或尚未选择目标'],
+      allowed_precisions:allowed,parameter_sources:{precision:p.precision?'用户自定义':'SDK/芯片约束'},
+      params:{...p,chip:chip?.sdk_code,soc_version:body.target==='ascend'?chip?.sdk_code:undefined,precision,
+        input_width:width,input_height:height,batch:1,num_core:1,dynamic:false,
+        preprocessing:p.preprocessing||{owner:'caller',pixel_format:'rgb',mean:[0,0,0],scale:[1/255,1/255,1/255],letterbox:true}},
+      chip_options:chips.map(c=>({...c,status_label:resource?.status==='ready'?'可转换':'转换服务不可用'}))}});
+  });
+});
+
+
 async function selectIsolatedTestProject(page, projectId) {
   await page.route('**/api/v53/bootstrap/snapshot**', async route => {
     const url = new URL(route.request().url());
@@ -141,7 +170,9 @@ test('vision providers, candidate review, and vendor target parameters are expli
   await expect(conversionDialog.locator('#conv428Chip')).toHaveValue('Ascend310P3');
 
   await conversionDialog.locator('input[name="conv428Target"][value="rockchip"]').check();
-  await expect(conversionDialog.locator('#conv428Chip')).toHaveValue('rk3568');
+  await expect(conversionDialog.locator('#conv428Chip')).toHaveValue('');
+  await expect(conversionDialog.locator('[data-convert-submit]')).toBeDisabled();
+  await conversionDialog.locator('#conv428Chip').selectOption('rk3568');
   await expect(conversionDialog.locator('.convert428-resource-status')).toContainText('RKNN Toolkit');
 
   await conversionDialog.locator('input[name="conv428Target"][value="tensorrt"]').check();
@@ -151,7 +182,7 @@ test('vision providers, candidate review, and vendor target parameters are expli
   await conversionDialog.locator('input[name="conv428Target"][value="sophon"]').check();
   await expect(conversionDialog.locator('#conv428Precision option[value="bf16"]')).toBeDisabled();
   await expect(conversionDialog.locator('#conv428Precision option[value="int8"]')).toBeDisabled();
-  await expect(conversionDialog.locator('#conv428Chip option')).toHaveText(['BM1684X','BM1688']);
+  await expect(conversionDialog.locator('#conv428Chip option')).toHaveText(['请选择目标芯片',/BM1684X.*可转换/,/BM1688.*可转换/]);
   await conversionDialog.locator('#conv428Chip').selectOption('bm1688');
   await expect(conversionDialog.locator('#conv428Chip')).toHaveValue('bm1688');
   await conversionDialog.locator('#conv428Chip').selectOption('bm1684x');
@@ -287,9 +318,11 @@ test('deployment resource editor exposes service-node Agent for RKNN', async ({p
   await createDialog.locator('input[name="conv428Target"][value="rockchip"]').check();
   await expect(createDialog.locator('#conv428Resource')).toHaveValue('rknn-agent-ui');
   await expect(createDialog.locator('#conv428Resource')).toContainText('RKNN 服务节点 Agent');
-  await expect(createDialog.locator('#conv428Chip')).toHaveValue('rk3568');
+  await expect(createDialog.locator('#conv428Chip')).toHaveValue('');
+  await expect(createDialog.locator('[data-convert-submit]')).toBeDisabled();
+  await createDialog.locator('#conv428Chip').selectOption('rk3568');
   expect(await createDialog.locator('#conv428Chip').evaluate(node => node.tagName)).toBe('SELECT');
-  await expect(createDialog.locator('#conv428Chip option')).toHaveText(['RK3568', 'RK3576']);
+  await expect(createDialog.locator('#conv428Chip option')).toHaveText(['请选择目标芯片',/RK3568.*可转换/,/RK3576.*可转换/]);
   await expect(createDialog.locator('.convert428-resource-status')).toContainText('RK3568');
   await expect(createDialog.locator('.convert428-resource-status')).toContainText('RK3576');
 });
@@ -569,7 +602,9 @@ test('RKNN Agent INT8 conversion submits frozen calibration selection from the U
   const dialog = page.getByRole('dialog', {name: '新建版本转换'});
   await dialog.locator('input[name="conv428Target"][value="rockchip"]').check();
   await expect(dialog.locator('#conv428Resource')).toHaveValue('rknn-agent-int8');
-  await expect(dialog.locator('#conv428Chip')).toHaveValue('rk3568');
+  await expect(dialog.locator('#conv428Chip')).toHaveValue('');
+  await expect(dialog.locator('[data-convert-submit]')).toBeDisabled();
+  await dialog.locator('#conv428Chip').selectOption('rk3568');
   await expect(dialog.locator('#conv428Precision option[value="fp32"]')).toBeDisabled();
   await expect(dialog.locator('#conv428Precision option[value="int8"]')).toBeEnabled();
 
@@ -632,11 +667,12 @@ test('Sophon submits explicit rectangular FP16 parameters and keeps BMODEL hardw
   await expect(dialog.locator('#conv428ResourceStatus')).toContainText('model_deploy.py缺失');
   ready=true;await dialog.getByRole('button',{name:'刷新资源',exact:true}).click();
   await expect(dialog.locator('#conv428ResourceStatus')).toContainText('v1.30.2-20260831');
-  await expect(dialog.locator('#conv428Chip option')).toHaveText(['BM1684X','BM1688']);
+  await expect(dialog.locator('#conv428Chip option')).toHaveText(['请选择目标芯片',/BM1684X.*可转换/,/BM1688.*可转换/]);
   await expect(dialog.locator('#conv428Width')).toHaveValue('800');
   await expect(dialog.locator('#conv428Height')).toHaveValue('800');
   await dialog.locator('#conv428Chip').selectOption('bm1688');
-  await dialog.locator('#conv428Width').fill('640');await dialog.locator('#conv428Height').fill('384');
+  await dialog.locator('#conv428Width').fill('640');await dialog.locator('#conv428Height').fill('384');await dialog.locator('#conv428Height').blur();
+  await expect(dialog.locator('[data-convert-submit]')).toBeEnabled();
   await expect(dialog.locator('#conv428Precision')).toHaveValue('fp16');
   await expect(dialog.locator('#conv428Precision option[value="int8"]')).toBeDisabled();
   await expect(dialog.locator('#conv428Calibration')).toBeHidden();
@@ -650,4 +686,53 @@ test('Sophon submits explicit rectangular FP16 parameters and keeps BMODEL hardw
   const history=page.getByRole('dialog',{name:'版本转换'});
   await expect(history).toContainText('model_bm1688_fp16.bmodel');
   await expect(history).toContainText('尚未实机验证');
+});
+
+test('local two-vendor dictionary selects BM1684 FP32 through the existing conversion dialog',async({page,request},testInfo)=>{
+  const current=await (await request.get('/api/v39/deploy/catalog')).json();
+  const data={vendors:[{id:'local-s',name:'算能',template_id:'tpu-mlir',enabled:true},{id:'local-r',name:'瑞芯微',template_id:'rknn',enabled:true}],
+    chips:[{id:'chip-84',vendor_id:'local-s',name:'BM1684',code:'local84',sdk_code:'bm1684',constraint_id:'tpu-mlir-1.30.2',enabled:true},
+           {id:'chip-88',vendor_id:'local-s',name:'BM1688',code:'local88',sdk_code:'bm1688',constraint_id:'tpu-mlir-1.30.2',enabled:true}],
+    expected_revision:current.revision};
+  const saved=await request.put('/api/v39/deploy/catalog',{data});
+  expect(saved.ok(),await saved.text()).toBeTruthy();
+  await page.unroute('**/api/v39/deploy/catalog');
+  const project=await (await request.post('/api/projects',{data:{name:'动态BM1684-'+Date.now(),labels:[{code:'fire'}]}})).json();
+  await selectIsolatedTestProject(page,project.id);
+  await page.route('**/api/v39/deploy/resources',r=>r.fulfill({json:{items:[{id:'sdk',kind:'sophon',name:'独立SDK',mode:'remote',status:'ready',targets:['sophon'],version:'v1.30.2-20260831',supported_chips:['bm1684','bm1688'],supported_precisions:['fp16','fp32']}]}}));
+  await page.route('**/api/v42/projects/*/algorithms/dynamic-a/versions/v1/deployments',r=>r.fulfill({json:{algorithm:{id:'dynamic-a',name:'动态转换'},version:{id:'v1',model_name:'best.pt',stored_path:'/isolated/best.pt',conversion_defaults:{input_size:800,input_width:800,input_height:800,training_precision:'fp32'}},items:[]}}));
+  await page.route('**/api/v39/projects/*/deploy/resolve',async route=>{
+    const p=route.request().postDataJSON().params,chip=data.chips.find(c=>c.id===p.local_chip_id),precision=chip?.sdk_code==='bm1684'?'fp32':'fp16';
+    await route.fulfill({json:{ready:!!chip&&(!p.precision||p.precision===precision),errors:chip?[]:['请选择目标芯片'],allowed_precisions:[precision],
+      template:current.templates.find(t=>t.id==='tpu-mlir'),parameter_sources:{precision:'SDK/芯片约束',input_shape:'训练成果继承'},
+      chip_options:data.chips.map(c=>({...c,status_label:'可转换'})),
+      params:{...p,chip:chip?.sdk_code,precision,batch:1,num_core:1,dynamic:false,input_width:p.input_width||800,input_height:p.input_height||800,
+        template_id:'tpu-mlir',template_version:1,preprocessing:{owner:'caller',pixel_format:'rgb',mean:[0,0,0],scale:[1/255,1/255,1/255],letterbox:true}}}});
+  });
+  let submitted;
+  await page.route('**/api/v39/projects/*/deploy/jobs',async route=>{submitted=route.request().postDataJSON();await route.fulfill({json:{ok:true,job:{id:'isolated'}}})});
+  await page.goto('/');await expect.poll(()=>page.evaluate(()=>state.uiReady===true)).toBe(true);
+  await page.evaluate(()=>window.openConversionCatalog428());
+  const editor=page.getByRole('dialog',{name:'厂商与芯片字典'});
+  await expect(editor.locator('[data-catalog-vendor]')).toHaveCount(2);
+  await expect(editor.locator('[data-catalog-chip]')).toHaveCount(2);
+  await editor.getByRole('button',{name:'取消',exact:true}).click();
+  await page.evaluate(()=>window.openNewConvert428('dynamic-a','v1'));
+  const dialog=page.getByRole('dialog',{name:'新建版本转换'});
+  await expect(dialog.locator('[name="conv428Target"]')).toHaveCount(5);
+  await dialog.locator('[data-vendor-id="local-s"]').check();
+  await expect(dialog.locator('#conv428Chip')).toHaveValue('');
+  await expect(dialog.locator('[data-convert-submit]')).toBeDisabled();
+  await dialog.locator('#conv428Chip').selectOption('chip-84');
+  await expect(dialog.locator('#conv428Precision')).toHaveValue('fp32');
+  await expect(dialog.locator('#conv428Precision option[value="fp16"]')).toBeDisabled();
+  await expect(dialog.locator('#conv428Warn')).toContainText('SDK/芯片约束');
+  await dialog.locator('#conv428Width').fill('640');await dialog.locator('#conv428Height').fill('384');await dialog.locator('#conv428Height').blur();
+  await expect(dialog.locator('[data-convert-submit]')).toBeEnabled();
+  await expect(dialog.locator('#conv428OnnxFields')).toBeHidden();
+  await expect(dialog.locator('#conv428TensorRtFields')).toBeHidden();
+  await page.screenshot({path:testInfo.outputPath('dynamic-bm1684-ui.png'),fullPage:false});
+  await dialog.getByRole('button',{name:'开始转换',exact:true}).click();
+  await expect.poll(()=>submitted).toBeTruthy();
+  expect(submitted.params).toMatchObject({local_vendor_id:'local-s',local_chip_id:'chip-84',chip:'bm1684',precision:'fp32',input_width:640,input_height:384,batch:1});
 });

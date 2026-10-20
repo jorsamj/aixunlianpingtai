@@ -1906,7 +1906,7 @@ window.installUsability417=function(){
   }
   window.renderDeployResources=function(){
     if(!primeDeployRenderV39('部署资源',window.renderDeployResources,'首次读取部署资源...'))return;
-    document.getElementById('view').innerHTML=`<section class="panel"><div class="panel-head"><div><div class="panel-title">部署资源</div><div class="subline">只把真实检测通过的编译器标记为可用</div></div><div class="panel-actions"><button class="btn" onclick="autoDetectDeployResources()">检测本机工具</button><button class="btn primary" onclick="openDeployResourceModal()">新增部署资源</button></div></div><div class="panel-body"><div class="deploy-resource-grid">${(state.deployResources||[]).map(deployResourceCard).join('')||'<div class="empty">暂无部署资源</div>'}</div></div></section><section class="panel"><div class="panel-head"><div class="panel-title">远程转换服务器</div></div><div class="panel-body"><div class="compact-note">瑞芯微 RKNN-Toolkit2、算能 TPU-MLIR、华为 CANN/ATC 都按厂商真实工具链执行。Windows 主机可直接完成 ONNX；RKNN 可使用 Linux/WSL2、远程转换服务器或已安装 RKNN-Toolkit2 的服务节点 Agent。Agent 模式由中央调度，不向节点下发中央 SQLite/NFS 路径。</div></div></section>`;
+    document.getElementById('view').innerHTML=`<section class="panel"><div class="panel-head"><div><div class="panel-title">部署资源</div><div class="subline">只把真实检测通过的编译器标记为可用</div></div><div class="panel-actions"><button class="btn" onclick="openConversionCatalog428()">厂商与芯片字典</button><button class="btn" onclick="autoDetectDeployResources()">检测本机工具</button><button class="btn primary" onclick="openDeployResourceModal()">新增部署资源</button></div></div><div class="panel-body"><div class="deploy-resource-grid">${(state.deployResources||[]).map(deployResourceCard).join('')||'<div class="empty">暂无部署资源</div>'}</div></div></section><section class="panel"><div class="panel-head"><div class="panel-title">远程转换服务器</div></div><div class="panel-body"><div class="compact-note">瑞芯微 RKNN-Toolkit2、算能 TPU-MLIR、华为 CANN/ATC 都按厂商真实工具链执行。Windows 主机可直接完成 ONNX；RKNN 可使用 Linux/WSL2、远程转换服务器或已安装 RKNN-Toolkit2 的服务节点 Agent。Agent 模式由中央调度，不向节点下发中央 SQLite/NFS 路径。</div></div></section>`;
   };
   window.autoDetectDeployResources=async()=>{const b=document.querySelector('[onclick="autoDetectDeployResources()"]');if(b){b.disabled=true;b.innerHTML='<span class="tiny-spinner"></span>检测中'}try{const r=await api('/api/v39/deploy/local/auto-detect',{method:'POST'});state.deployResources=r.items||[];window.invalidateDeployPluginCacheV41?.();window.invalidateVersionConversionResources428?.();renderDeployResources();toast(r.found?.length?`检测到 ${r.found.length} 个本机部署工具`:'未检测到额外的芯片编译器')}catch(e){toast(e.message||e)}finally{if(b){b.disabled=false;b.textContent='检测本机工具'}}};
   window.detectDeployResource=async id=>{const card=[...document.querySelectorAll('.deploy-resource-card')].find(x=>x.innerText.includes((state.deployResources.find(r=>r.id===id)||{}).name||''));try{const r=await api(`/api/v39/deploy/resources/${id}/detect`,{method:'POST'});const i=state.deployResources.findIndex(x=>x.id===id);if(i>=0)state.deployResources[i]=r;window.invalidateDeployPluginCacheV41?.();window.invalidateVersionConversionResources428?.();renderDeployResources();toast(r.status==='ready'?'部署资源可用':r.message||'检测未通过')}catch(e){toast(e.message||e)}};
@@ -3525,18 +3525,9 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     const target=document.querySelector('input[name="conv428Target"]:checked')?.value||'onnx',rid=document.getElementById('conv428Resource')?.value,button=window.event?.currentTarget;
     if(!rid||state.conv428ResourcesCurrent!==true)return toast('转换资源尚未完成实时核验，请点击刷新资源');
     const precision=document.getElementById('conv428Precision')?.value||'fp16',size=Number(document.getElementById('conv428Input')?.value||640),chip=document.getElementById('conv428Chip')?.value.trim()||'',selectedResource=(state.conv428Resources||[]).find(x=>x.id===rid),rockchipChip=target==='rockchip'?chip.toLowerCase():chip,targetEnvironment=document.getElementById('conv428TargetEnvironment')?.value.trim()||'';
-    if(target==='rockchip'&&!['rk3568','rk3576'].includes(rockchipChip))return toast('请选择当前转换资源实际支持的瑞芯微芯片');
-    if(target==='rockchip'){
-      const supported=(selectedResource?.supported_chips||[]).map(x=>String(x||'').toLowerCase());
-      if(selectedResource?.status!=='ready'||!(selectedResource?.targets||[]).includes(target)||!supported.includes(rockchipChip))
-        return toast('当前资源未实际上报所选芯片，请刷新部署资源后重试');
-      const precisions=(selectedResource?.supported_precisions||[]).map(x=>String(x||'').toLowerCase());
-      if(precisions.length&&!precisions.includes(precision))return toast('该 RKNN 资源不支持所选精度：'+precision.toUpperCase());
-    }
     if(target==='ascend'&&!chip)return toast('请选择目标 Atlas SoC');
     if(target==='tensorrt'&&!targetEnvironment)return toast('请填写目标 GPU、CUDA 和 TensorRT 环境');
-    if(target==='sophon'&&(!['bm1684x','bm1688'].includes(chip.toLowerCase())||!(selectedResource?.supported_chips||[]).some(x=>String(x).toLowerCase()===chip.toLowerCase())))return toast('请选择资源实际支持的 BM1684X / BM1688');
-    if(target==='sophon'&&precision!=='fp16')return toast('算能首期仅开放 FP16，INT8 校准尚待验收');
+    if(['sophon','rockchip','ascend'].includes(target)&&!state.conv428Resolved?.ready)return toast('请选择厂商、芯片并等待后端参数核验');
     const params={precision,input_size:size};
     if(target==='sophon'){
       const width=Number(document.getElementById('conv428Width')?.value),height=Number(document.getElementById('conv428Height')?.value);
@@ -3559,12 +3550,9 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
       const live=(verified.items||[]).find(x=>String(x.id)===String(rid));
       if(!live||live.status!=='ready'||!(live.targets||[]).includes(target))
         throw new Error('部署资源已下线或能力已改变，请刷新资源后重新选择');
-      if(target==='rockchip'&&!(live.supported_chips||[]).some(x=>String(x).trim().toLowerCase()===rockchipChip))
-        throw new Error('该 RKNN 资源已不支持当前芯片，请重新选择并检测');
-      if(target==='sophon'&&!(live.supported_chips||[]).some(x=>String(x).trim().toLowerCase()===chip.toLowerCase()))
-        throw new Error('该算能资源已不支持当前芯片，请重新选择并检测');
       state.conv428Resources=verified.items||[];
       state.conv428ResourcesCurrent=true;
+      if(['sophon','rockchip','ascend'].includes(target)){const r=state.conv428Resolved;if(!r?.ready)throw new Error('后端参数合同未确认');Object.assign(params,r.params,{precision});params.local_chip_id=chip;params.local_vendor_id=document.querySelector('input[name="conv428Target"]:checked')?.dataset?.vendorId||''}
       await api(`/api/v39/projects/${pid()}/deploy/jobs`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source_id:`version::${aid}::${vid}`,target,resource_id:rid,params,dataset_id:datasetId,calibration_split:calibrationSplit,calibration_count:calibrationCount})});
       localStorage.removeItem(cacheKey428('verdeploy',aid,vid));
       closeModal();
@@ -6357,16 +6345,16 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
   window.refreshConvertCalibration428=function(){
     const target=document.querySelector('input[name="conv428Target"]:checked')?.value||'onnx',resourceId=document.getElementById('conv428Resource')?.value||'',resource=(state.conv428Resources||[]).find(x=>x.id===resourceId),precision=document.getElementById('conv428Precision'),panel=document.getElementById('conv428Calibration'),supported=(resource?.supported_precisions||[]).map(x=>String(x||'').toLowerCase()).filter(Boolean);
     if(precision){
+      const vendorMode=['rockchip','sophon','ascend','unadapted'].includes(target)||!!document.querySelector('input[name="conv428Target"]:checked')?.dataset?.vendorId;
       [...precision.options].forEach(option=>{
-        if(target==='rockchip')option.disabled=!(supported.length?supported:['fp16','int8']).includes(option.value);
-        else if(target==='tensorrt')option.disabled=!['fp16','fp32'].includes(option.value);
-        else if(target==='sophon')option.disabled=option.value!=='fp16'||(supported.length&&!supported.includes('fp16'));
+        if(vendorMode){option.disabled=!(state.conv428Resolved?.allowed_precisions||[]).includes(option.value);return;}
+        if(target==='tensorrt')option.disabled=!['fp16','fp32'].includes(option.value);
         else option.disabled=option.value==='bf16'||option.value==='int8';
       });
       const preferred=String(state.conv428ModelDefaults?.training_precision||'').toLowerCase();
-      if(!state.conv428PrecisionUserEdited&&preferred&&[...precision.options].some(option=>option.value===preferred&&!option.disabled))
+      if(!vendorMode&&!state.conv428PrecisionUserEdited&&preferred&&[...precision.options].some(option=>option.value===preferred&&!option.disabled))
         precision.value=preferred;
-      if(precision.selectedOptions?.[0]?.disabled)precision.value=[...precision.options].find(option=>!option.disabled)?.value||'';
+      if(!vendorMode&&(!precision.selectedOptions?.[0]||precision.selectedOptions[0].disabled))precision.value=[...precision.options].find(option=>!option.disabled)?.value||'';
     }
     const sourceNote=document.getElementById('conv428InheritedHint'),defaults=state.conv428ModelDefaults||{};
     if(sourceNote){
@@ -6384,32 +6372,78 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
     const dataset=document.getElementById('conv428CalibrationDataset');
     if(dataset&&!dataset.options.length){const rows=state.datasets||[];dataset.innerHTML=rows.length?rows.map(x=>`<option value="${esc(x.id||'default')}">${esc(x.name||x.id||'默认数据集')}</option>`).join(''):'<option value="default">默认数据集</option>';const wanted=state.datasetId||'default';dataset.value=[...dataset.options].some(option=>option.value===wanted)?wanted:(dataset.options[0]?.value||'default')}
   };
-  const rockchipOrder428=['rk3568','rk3576'];
   let conversionResourcesLoading416=false;
   let conversionResourcesTicket416=0;
   function conversionChipOptions428(target,resource){
-    if(target==='rockchip'){
-      const reported=(resource?.supported_chips||[]).map(x=>String(x||'').trim().toLowerCase()).filter(Boolean);
-      return rockchipOrder428.filter(chip=>reported.includes(chip)).map(chip=>({value:chip,label:chip.toUpperCase()}));
-    }
-    if(target==='sophon'){const reported=(resource?.supported_chips||[]).map(x=>String(x).toLowerCase());return ['bm1684x','bm1688'].filter(chip=>reported.includes(chip)).map(chip=>({value:chip,label:chip.toUpperCase()}));}
-    if(target==='ascend'){
-      const detected=(resource?.detected_soc_versions||resource?.remote_health?.tools?.soc_versions||resource?.remote_health?.soc_versions||[]).map(x=>String(x||'').trim()).filter(Boolean);
-      const defaults=['Ascend310P3','Ascend310P1','Ascend310B','Ascend310B4','Ascend910B'];
-      return [...new Set([...detected,...defaults])].map(chip=>({value:chip,label:chip}));
-    }
-    return [];
+    const vendor=document.querySelector('input[name="conv428Target"]:checked')?.dataset?.vendorId;
+    return (state.conv428Catalog?.chips||[]).filter(c=>c.vendor_id===vendor).map(c=>({value:c.id,label:c.name,enabled:c.enabled!==false}));
   }
   function applyConversionChipOptions428(target,resource,preferred=''){
-    const chip=document.getElementById('conv428Chip'),field=document.getElementById('conv428ChipField'),label=field?.querySelector('label');
-    if(!chip)return [];
+    const chip=document.getElementById('conv428Chip');if(!chip)return [];
     const options=conversionChipOptions428(target,resource);
-    chip.innerHTML=options.map(item=>`<option value="${esc(item.value)}">${esc(item.label)}</option>`).join('')||`<option value="">${conversionResourcesLoading416?'正在读取资源能力…':'当前资源未上报可用型号'}</option>`;
-    chip.value=options.some(item=>item.value===preferred)?preferred:(options[0]?.value||'');
-    if(label)label.textContent=target==='rockchip'?'目标芯片':target==='ascend'?'Atlas SoC':target==='sophon'?'目标芯片':'芯片 / SoC';
+    chip.innerHTML='<option value="">请选择目标芯片</option>'+options.map(c=>`<option value="${esc(c.value)}" ${c.enabled?'':'disabled'}>${esc(c.label)}${c.enabled?' · 待检测':' · 已停用'}</option>`).join('');
+    chip.value=options.some(c=>c.value===preferred&&c.enabled)?preferred:(options.length===1&&options[0].enabled?options[0].value:'');
+    chip.onchange=()=>{state.conv428PrecisionUserEdited=false;state.conv428Resolved=null;window.refreshConvertContract428()};
     return options;
   }
+  let conversionContractTicket428=0;
+  window.openConversionCatalog428=async function(){
+    try{
+      const c=await api('/api/v39/deploy/catalog');state.convCatalogEditor=c;
+      modal('厂商与芯片字典',`<div class="form"><p>本地身份独立于外部分类。模板关联已有转换器；SDK不支持的芯片仍不能转换。停用不改变历史任务。</p><div id="conversionCatalogVendors"></div><button class="btn" onclick="addConversionCatalogVendor428()">新增厂商</button><div id="conversionCatalogChips"></div><button class="btn" onclick="addConversionCatalogChip428()">新增芯片</button><div id="conversionCatalogError" class="alert err" hidden></div><div class="row end"><button class="btn" onclick="closeModal()">取消</button><button class="btn primary" onclick="saveConversionCatalog428()">保存字典</button></div></div>`,true);
+      for(const row of c.vendors||[])window.addConversionCatalogVendor428(row);
+      for(const row of c.chips||[])window.addConversionCatalogChip428(row);
+    }catch(e){toast(e.message||e)}
+  };
+  window.addConversionCatalogVendor428=function(row={}){
+    const options=(state.convCatalogEditor.templates||[]).map(t=>`<option value="${esc(t.id)}" ${row.template_id===t.id?'selected':''}>${esc(t.name)}</option>`).join('');
+    document.getElementById('conversionCatalogVendors').insertAdjacentHTML('beforeend',`<div data-catalog-vendor class="form three"><label>稳定厂商ID<input data-key="id" class="input" value="${esc(row.id||'')}" ${row.id?'readonly':''}></label><label>厂商名称<input data-key="name" class="input" value="${esc(row.name||'')}"></label><label>SDK模板<select data-key="template_id" class="select">${options}</select></label><label><input data-key="enabled" type="checkbox" ${row.enabled!==false?'checked':''}>启用</label></div>`);
+  };
+  window.addConversionCatalogChip428=function(row={}){
+    const vendors=[...document.querySelectorAll('[data-catalog-vendor]')].map(n=>({id:n.querySelector('[data-key="id"]').value,name:n.querySelector('[data-key="name"]').value})).filter(v=>v.id);
+    const constraints=state.convCatalogEditor.constraint_ids||[];
+    document.getElementById('conversionCatalogChips').insertAdjacentHTML('beforeend',`<div data-catalog-chip class="form three"><label>稳定芯片ID<input data-key="id" class="input" value="${esc(row.id||'')}" ${row.id?'readonly':''}></label><label>所属厂商<select data-key="vendor_id" class="select">${vendors.map(v=>`<option value="${esc(v.id)}" ${row.vendor_id===v.id?'selected':''}>${esc(v.name||v.id)}</option>`).join('')}</select></label><label>芯片名称<input data-key="name" class="input" value="${esc(row.name||'')}"></label><label>本地芯片编码<input data-key="code" class="input" value="${esc(row.code||'')}"></label><label>SDK目标编码<input data-key="sdk_code" class="input" value="${esc(row.sdk_code||'')}"></label><label>兼容性证据<select data-key="constraint_id" class="select">${constraints.map(id=>`<option value="${esc(id)}" ${row.constraint_id===id?'selected':''}>${esc(id)}</option>`).join('')}</select></label><label><input data-key="enabled" type="checkbox" ${row.enabled!==false?'checked':''}>启用</label></div>`);
+  };
+  window.saveConversionCatalog428=async function(){
+    const rows=selector=>[...document.querySelectorAll(selector)].map(n=>Object.fromEntries([...n.querySelectorAll('[data-key]')].map(e=>[e.dataset.key,e.type==='checkbox'?e.checked:e.value.trim()])));
+    try{
+      await api('/api/v39/deploy/catalog',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({vendors:rows('[data-catalog-vendor]'),chips:rows('[data-catalog-chip]'),expected_revision:state.convCatalogEditor.revision})});
+      state.conv428Catalog=null;closeModal();window.invalidateVersionConversionResources428?.();toast('本地字典已保存；转换时仍会检测实际SDK能力');
+    }catch(e){const box=document.getElementById('conversionCatalogError');if(box){box.hidden=false;box.textContent=e.message||String(e)}}
+  };
+
+  window.refreshConvertContract428=async function(){
+    const project=pid(),ticket=++conversionContractTicket428,radio=document.querySelector('input[name="conv428Target"]:checked');
+    const vendorId=radio?.dataset?.vendorId,target=radio?.value,resourceId=document.getElementById('conv428Resource')?.value||'';
+    if(!vendorId)return null;
+    const button=document.querySelector('.convert428-create [data-convert-submit]');if(button)button.disabled=true;
+    const chip=document.getElementById('conv428Chip'),precision=document.getElementById('conv428Precision');
+    state.conv428Resolved=null;
+    const params={local_vendor_id:vendorId,local_chip_id:chip?.value||''};
+    Object.assign(params,state.conv428AdvancedValues||{});
+    if(state.conv428PrecisionUserEdited)params.precision=precision?.value;
+    if(state.conv428PreprocessEdited)params.preprocessing={owner:'caller',pixel_format:document.getElementById('conv428Pixel')?.value||'rgb',mean:String(document.getElementById('conv428Mean')?.value||'').split(',').map(Number),scale:String(document.getElementById('conv428Scale')?.value||'').split(',').map(Number),letterbox:!!document.getElementById('conv428Letterbox')?.checked};
+    if(state.conv428ShapeEdited){if(target==='sophon'){params.input_width=Number(document.getElementById('conv428Width')?.value);params.input_height=Number(document.getElementById('conv428Height')?.value)}else params.input_size=Number(document.getElementById('conv428Input')?.value)}
+    try{
+      const result=await api(`/api/v39/projects/${pid()}/deploy/resolve`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source_id:state.conv428SourceId,target,resource_id:resourceId,params})});
+      if(project!==pid()||ticket!==conversionContractTicket428||!document.querySelector('.convert428-create'))return null;
+      state.conv428Resolved=result;
+      const advanced=document.getElementById('conv428TemplateAdvanced');
+      if(advanced){advanced.innerHTML=(result.template?.advanced_fields||[]).map(f=>`<label>${esc(f.label)}<input class="input" data-conversion-param="${esc(f.key)}" type="${esc(f.type)}" ${f.type==='checkbox'?(result.params?.[f.key]?'checked':''):`value="${esc(state.conv428AdvancedValues?.[f.key]??result.params?.[f.key]??f.default)}"`} ${f.locked?'disabled':''}></label>`).join('');for(const e of advanced.querySelectorAll('[data-conversion-param]'))e.onchange=()=>{state.conv428AdvancedValues[e.dataset.conversionParam]=e.type==='checkbox'?e.checked:e.type==='number'?Number(e.value):e.value;window.refreshConvertContract428()}}
+
+      for(const option of [...(chip?.options||[])]){const row=(result.chip_options||[]).find(c=>c.id===option.value);if(row){option.textContent=row.name+' · '+row.status_label;option.disabled=row.enabled===false}}
+      if(precision){for(const o of [...precision.options])o.disabled=!(result.allowed_precisions||[]).includes(o.value);if(result.ready)precision.value=result.params.precision}
+      if(result.ready&&!state.conv428PreprocessEdited&&result.params.preprocessing){const p=result.params.preprocessing;for(const [id,key] of [['conv428Pixel','pixel_format'],['conv428Mean','mean'],['conv428Scale','scale']]){const e=document.getElementById(id);if(e)e.value=Array.isArray(p[key])?p[key].join(','):p[key]}const letterbox=document.getElementById('conv428Letterbox');if(letterbox)letterbox.checked=p.letterbox===true}
+      const outputContract=document.getElementById('conv428OutputContract');if(outputContract)outputContract.textContent=result.params?.model_output_contract?JSON.stringify(result.params.model_output_contract,null,2):'历史版本未记录完整输出/后处理合同；模型级质量验证尚未完成';
+      if(result.ready&&target==='sophon'&&!state.conv428ShapeEdited){for(const [id,key] of [['conv428Width','input_width'],['conv428Height','input_height']]){const e=document.getElementById(id);if(e)e.value=result.params[key]}}
+      const warn=document.getElementById('conv428Warn');if(warn)warn.textContent=result.ready?'可转换 · '+Object.entries(result.parameter_sources||{}).map(([k,v])=>k+'：'+v).join('；')+'。编译、模型验证和板卡验证分别记录。':(result.errors||[]).join('；');
+      window.refreshConvertCalibration428();
+      if(button)button.disabled=!result.ready||state.conv428ResourcesCurrent!==true;
+      return result;
+    }catch(e){if(ticket!==conversionContractTicket428)return null;const warn=document.getElementById('conv428Warn');if(warn)warn.textContent=e.message||String(e);return null}
+  };
   window.refreshConvertResource428=function(){
+    ++conversionContractTicket428;state.conv428Resolved=null;
     const target=document.querySelector('input[name="conv428Target"]:checked')?.value||'onnx';
     refreshConvertTargetFields428(target);
     const all=state.conv428ResourcesCurrent===true?(state.conv428Resources||[]):[],configured=matching416(all,target),ready=configured.filter(x=>x.status==='ready'&&(x.targets||[]).includes(target)),sel=document.getElementById('conv428Resource'),warn=document.getElementById('conv428Warn'),status=document.getElementById('conv428ResourceStatus');
@@ -6432,7 +6466,7 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
       else if(state.conv428ResourcesCurrent!==true)warn.textContent='最新资源状态获取失败，禁止使用浏览器旧缓存创建转换任务。';
       else if(ready.length){
         const readyMessages={
-          sophon:options.length?'已检测到可运行 TPU-MLIR；选择真实芯片，首期 FP16 / Batch 1。编译完成后仍需目标设备验证。':'资源未上报受支持的算能芯片，请重新检测工具环境。',
+          sophon:options.length?'已检测到可运行 TPU-MLIR；芯片和精度须通过后端兼容性决议，编译完成后仍需目标设备验证。':'资源未上报受支持的算能芯片，请重新检测工具环境。',
           ascend:'已检测到可用 Atlas/CANN 资源；SoC 从资源能力和平台支持列表中选择。',
           tensorrt:'已检测到 TensorRT trtexec；Engine 与目标 GPU / CUDA / TensorRT 环境绑定。',
           onnx:'已检测到可用 ONNX 导出环境。',
@@ -6447,7 +6481,8 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
           : `当前没有已检测通过的${targetLabel416(target)}资源；已配置资源的状态和处理建议见下方。`;
       }
     }
-    refreshConvertCalibration428();
+    if(document.querySelector('input[name="conv428Target"]:checked')?.dataset?.vendorId)window.refreshConvertContract428();
+    else refreshConvertCalibration428();
   };
 
   window.refreshVersionConversionResources428=async function(){
@@ -6473,12 +6508,14 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
       return null;
     }
   };
+  function conversionTargetChoices428(items,selectFirst){return items.map((t,i)=>`<label><input type="radio" name="conv428Target" value="${t.id}" data-vendor-id="${esc(t.vendorId||'')}" ${selectFirst&&i===0?'checked':''} onchange="refreshConvertResource428()"><i></i><b>${esc(t.name)}</b><span>${esc(targetOutput416(t.id))}</span></label>`).join('')}
   window.openNewConvertCore416=async function(aid,vid){
     try{
-      const ticket=++conversionResourcesTicket416;
+      const ticket=++conversionResourcesTicket416;++conversionContractTicket428;
       conversionResourcesLoading416=true;
       state.conv428ResourcesCurrent=false;
-      const [rr,hist]=await Promise.all([resources416(),history416(aid,vid)]);
+      const [rr,hist,catalog]=await Promise.all([resources416(),history416(aid,vid),api('/api/v39/deploy/catalog')]);
+      state.conv428Catalog=catalog;state.conv428SourceId=`version::${aid}::${vid}`;state.conv428ShapeEdited=false;state.conv428PreprocessEdited=false;state.conv428AdvancedValues={};
       if(ticket!==conversionResourcesTicket416)return;
       conversionResourcesLoading416=false;
       const v=hist.version||{};
@@ -6487,8 +6524,9 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
       state.conv428PrecisionUserEdited=false;
       const inheritedSize=Number(state.conv428ModelDefaults.input_size);
       const defaultSize=Number.isInteger(inheritedSize)&&inheritedSize>=32&&inheritedSize<=4096?inheritedSize:640;
-      const targets=['onnx','paddle_inference','tensorrt','ascend','rockchip','sophon'];
-      modal('新建版本转换',`<div class="convert428-create"><section><b>源版本</b><div class="convert428-source"><span>${esc(hist.algorithm?.name||'-')}</span><strong>${esc(v.version_name||'-')}</strong><em>${esc(v.model_name||'')}</em></div><div class="convert428-source-note">源模型训练：${esc(String(state.conv428ModelDefaults.training_precision||'未知').toUpperCase())} · ${esc(defaultSize)} px</div></section><section><b>转换目标</b><div class="convert428-targets">${targets.map((t,i)=>`<label><input type="radio" name="conv428Target" value="${t}" ${i===0?'checked':''} onchange="refreshConvertResource428()"><i></i><b>${esc(targetLabel416(t))}</b><span>${esc(targetOutput416(t))}</span></label>`).join('')}</div></section><section><div class="form two"><div class="field"><label>转换资源</label><select id="conv428Resource" class="select"></select></div><div class="field" id="conv428PrecisionField"><label>精度</label><select id="conv428Precision" class="select" onchange="state.conv428PrecisionUserEdited=true;refreshConvertCalibration428()"><option value="fp16">FP16</option><option value="bf16">BF16（Sophon）</option><option value="fp32">FP32</option><option value="int8">INT8（校准量化）</option></select></div><div class="field" id="conv428InputField"><label>输入尺寸</label><input id="conv428Input" class="input" type="number" min="32" max="4096" value="${defaultSize}"></div><div class="field" id="conv428ChipField"><label>芯片 / SoC</label><select id="conv428Chip" class="select"></select></div></div><div id="conv428OnnxFields" class="form two" hidden><div class="field"><label>ONNX Opset</label><input id="conv428Opset" class="input" type="number" min="7" value="12"></div><div class="field check"><label><input id="conv428Dynamic" type="checkbox"> 动态 Shape</label><label><input id="conv428Simplify" type="checkbox"> Simplify</label></div></div><div id="conv428SophonFields" hidden><div class="form three"><div class="field"><label>输入宽度</label><input id="conv428Width" class="input" type="number" min="32" max="8192" step="32" value="${Number(state.conv428ModelDefaults.input_width)||defaultSize}"></div><div class="field"><label>输入高度</label><input id="conv428Height" class="input" type="number" min="32" max="8192" step="32" value="${Number(state.conv428ModelDefaults.input_height)||defaultSize}"></div><div class="field"><label>Batch</label><input id="conv428SophonBatch" class="input" value="1" readonly></div></div><details id="conv428Preprocess"><summary>预处理配置（推理端执行）</summary><p>输入为 NCHW 张量。ONNX / BMODEL 不重复融合预处理；推理端按以下约定执行，解码与 NMS 在模型外。包含预处理的自定义 ONNX 请先核对合同。</p><div class="form two"><div class="field"><label>通道顺序</label><select id="conv428Pixel" class="select"><option value="rgb">RGB</option><option value="bgr">BGR</option></select></div><div class="field"><label>Mean</label><input id="conv428Mean" class="input" value="0,0,0"></div><div class="field"><label>Scale</label><input id="conv428Scale" class="input" value="0.00392156862745098,0.00392156862745098,0.00392156862745098"></div><label><input id="conv428Letterbox" type="checkbox" checked> Letterbox（Pad 114）</label></div></details><p>FP16 是目标输出精度，独立于训练精度。INT8 待冻结校准集与质量比较验收后开放；当前不使用独立 Test 集拟合。</p></div><div id="conv428TensorRtFields" class="form two" hidden><div class="field"><label>Workspace(MB)</label><input id="conv428Workspace" class="input" type="number" min="64" value="2048"></div><div class="field"><label>Batch</label><input id="conv428Batch" class="input" type="number" min="1" value="1"></div><div class="field full"><label>目标环境</label><input id="conv428TargetEnvironment" class="input" placeholder="例如 RTX 4090 · CUDA 12.8 · TensorRT 10.9"><small>TensorRT Engine 与 GPU / CUDA / TensorRT 环境绑定，必须明确记录。</small></div></div><div id="conv428Calibration" class="convert428-calibration" hidden><div class="form three"><div class="field"><label>校准数据集</label><select id="conv428CalibrationDataset" class="select"></select></div><div class="field"><label>校准分组</label><select id="conv428CalibrationSplit" class="select"><option value="train">训练集</option><option value="val">验证集</option><option value="test">试验集</option><option value="all">全部</option></select></div><div class="field"><label>校准图片数量</label><input id="conv428CalibrationCount" class="input" type="number" min="1" max="1000" value="100"></div></div><p>任务创建时冻结校准图片清单，远程节点仅通过对象存储短期地址读取这些图片。</p></div><p id="conv428InheritedHint" class="convert428-source-note"></p></section><div id="conv428Warn" class="alert soft"></div><section><b>已配置资源状态</b><div id="conv428ResourceStatus" class="convert428-resource-status"></div></section><div class="row end"><button class="btn" onclick="refreshVersionConversionResources428()">刷新资源</button><button class="btn" onclick="closeModal()">取消</button><button class="btn primary" data-convert-submit onclick="submitConvert428('${aid}','${vid}')">开始转换</button></div></div>`,true);
+      const defaultSizeLabel=state.conv428ModelDefaults.input_height&&state.conv428ModelDefaults.input_width&&state.conv428ModelDefaults.input_height!==state.conv428ModelDefaults.input_width?`${state.conv428ModelDefaults.input_height}×${state.conv428ModelDefaults.input_width}`:defaultSize;
+      const targets=[...['onnx','paddle_inference','tensorrt'].map(id=>({id,name:targetLabel416(id)})),...(catalog.vendors||[]).filter(v=>v.enabled!==false).map(v=>({id:(catalog.templates||[]).find(t=>t.id===v.template_id)?.adapter||'unadapted',vendorId:v.id,name:v.name}))];
+      modal('新建版本转换',`<div class="convert428-create"><section><b>源版本</b><div class="convert428-source"><span>${esc(hist.algorithm?.name||'-')}</span><strong>${esc(v.version_name||'-')}</strong><em>${esc(v.model_name||'')}</em></div><div class="convert428-source-note">源模型训练：${esc(String(state.conv428ModelDefaults.training_precision||'未知').toUpperCase())} · ${esc(defaultSizeLabel)} px · ${esc(state.conv428ModelDefaults.input_size_source||'历史未记录来源')} · ${esc(v.model_metadata?.yolo_version||'架构未记录')} · 类别 ${esc(v.model_metadata?.class_count??'未知')}</div></section><section><b>通用模型格式</b><div class="convert428-targets">${conversionTargetChoices428(targets.filter(t=>!t.vendorId),true)}</div></section><section data-conversion-vendors><b>目标厂商（本地字典）</b><div class="convert428-targets">${conversionTargetChoices428(targets.filter(t=>t.vendorId),false)||'<p>暂无已启用厂商，请到部署资源维护本地厂商与芯片字典。</p>'}</div></section><section><div class="form two"><div class="field"><label>转换资源</label><select id="conv428Resource" class="select"></select></div><div class="field" id="conv428PrecisionField"><label>精度</label><select id="conv428Precision" class="select" onchange="state.conv428PrecisionUserEdited=true;refreshConvertContract428()"><option value="fp16">FP16</option><option value="bf16">BF16（Sophon）</option><option value="fp32">FP32</option><option value="int8">INT8（校准量化）</option></select></div><div class="field" id="conv428InputField"><label>输入尺寸</label><input id="conv428Input" onchange="state.conv428ShapeEdited=true;refreshConvertContract428()" class="input" type="number" min="32" max="4096" value="${defaultSize}"></div><div class="field" id="conv428ChipField"><label>芯片 / SoC</label><select id="conv428Chip" class="select"></select></div></div><div id="conv428OnnxFields" class="form two" hidden><div class="field"><label>ONNX Opset</label><input id="conv428Opset" class="input" type="number" min="7" value="12"></div><div class="field check"><label><input id="conv428Dynamic" type="checkbox"> 动态 Shape</label><label><input id="conv428Simplify" type="checkbox"> Simplify</label></div></div><div id="conv428SophonFields" hidden><div class="form three"><div class="field"><label>输入宽度</label><input id="conv428Width" onchange="state.conv428ShapeEdited=true;refreshConvertContract428()" class="input" type="number" min="32" max="8192" step="32" value="${Number(state.conv428ModelDefaults.input_width)||defaultSize}"></div><div class="field"><label>输入高度</label><input id="conv428Height" onchange="state.conv428ShapeEdited=true;refreshConvertContract428()" class="input" type="number" min="32" max="8192" step="32" value="${Number(state.conv428ModelDefaults.input_height)||defaultSize}"></div><div class="field"><label>Batch</label><input id="conv428SophonBatch" class="input" value="1" readonly></div></div><details id="conv428Preprocess"><summary>预处理配置（推理端执行）</summary><p>输入为 NCHW 张量。ONNX / BMODEL 不重复融合预处理；推理端按以下约定执行，解码与 NMS 在模型外。包含预处理的自定义 ONNX 请先核对合同。</p><div class="form two"><div class="field"><label>通道顺序</label><select id="conv428Pixel" onchange="state.conv428PreprocessEdited=true;refreshConvertContract428()" class="select"><option value="rgb">RGB</option><option value="bgr">BGR</option></select></div><div class="field"><label>Mean</label><input id="conv428Mean" onchange="state.conv428PreprocessEdited=true;refreshConvertContract428()" class="input" value="0,0,0"></div><div class="field"><label>Scale</label><input id="conv428Scale" onchange="state.conv428PreprocessEdited=true;refreshConvertContract428()" class="input" value="0.00392156862745098,0.00392156862745098,0.00392156862745098"></div><label><input id="conv428Letterbox" onchange="state.conv428PreprocessEdited=true;refreshConvertContract428()" type="checkbox" checked> Letterbox（Pad 114）</label></div></details><p>目标精度由后端按实际芯片和SDK决议，独立于训练精度。INT8 待冻结校准集与质量比较验收后开放；当前不使用独立 Test 集拟合。</p></div><div id="conv428TensorRtFields" class="form two" hidden><div class="field"><label>Workspace(MB)</label><input id="conv428Workspace" class="input" type="number" min="64" value="2048"></div><div class="field"><label>Batch</label><input id="conv428Batch" class="input" type="number" min="1" value="1"></div><div class="field full"><label>目标环境</label><input id="conv428TargetEnvironment" class="input" placeholder="例如 RTX 4090 · CUDA 12.8 · TensorRT 10.9"><small>TensorRT Engine 与 GPU / CUDA / TensorRT 环境绑定，必须明确记录。</small></div></div><div id="conv428Calibration" class="convert428-calibration" hidden><div class="form three"><div class="field"><label>校准数据集</label><select id="conv428CalibrationDataset" class="select"></select></div><div class="field"><label>校准分组</label><select id="conv428CalibrationSplit" class="select"><option value="train">训练集</option><option value="val">验证集</option><option value="test">试验集</option><option value="all">全部</option></select></div><div class="field"><label>校准图片数量</label><input id="conv428CalibrationCount" class="input" type="number" min="1" max="1000" value="100"></div></div><p>任务创建时冻结校准图片清单，远程节点仅通过对象存储短期地址读取这些图片。</p></div><details><summary>目标模板高级参数</summary><div id="conv428TemplateAdvanced" class="form two"></div></details><details><summary>输出与后处理合同</summary><pre id="conv428OutputContract" class="log small-log"></pre></details><p id="conv428InheritedHint" class="convert428-source-note"></p></section><div id="conv428Warn" class="alert soft"></div><section><b>已配置资源状态</b><div id="conv428ResourceStatus" class="convert428-resource-status"></div></section><div class="row end"><button class="btn" onclick="refreshVersionConversionResources428()">刷新资源</button><button class="btn" onclick="closeModal()">取消</button><button class="btn primary" data-convert-submit onclick="submitConvert428('${aid}','${vid}')">开始转换</button></div></div>`,true);
       state.conv428Resources=rr.items||[];state.conv428ResourcesCurrent=true;setTimeout(refreshConvertResource428,20)
     }catch(e){conversionResourcesLoading416=false;state.conv428ResourcesCurrent=false;toast('转换资源加载失败：'+(e.message||e))}
   };

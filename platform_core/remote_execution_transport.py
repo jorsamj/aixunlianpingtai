@@ -849,13 +849,25 @@ class RemoteExecutionTransportService:
                 422,
             )
 
+        shape = None
+        if "input_height" in values or "input_width" in values or isinstance(values.get("input_size"),(list,tuple)):
+            from .conversion import conversion_input_shape
+            try:
+                shape=conversion_input_shape(values)
+            except ValueError as error:
+                raise RemoteExecutionTransportError("REMOTE_CONVERSION_PARAMS_INVALID",str(error),422) from error
         common = {
-            "input_size": integer("input_size", 640, 32, 4096),
+            "input_size": (shape[0] if shape[0]==shape[1] else list(shape)) if shape else integer("input_size", 640, 32, 4096),
             "batch": integer("batch", 1, 1, 128),
             "opset": integer("opset", 12, 7, 24),
             "dynamic": boolean("dynamic", False),
             "simplify": boolean("simplify", False),
         }
+        if shape:
+            common.update(input_height=shape[0],input_width=shape[1])
+        for key in ("local_vendor_id","local_chip_id","sdk_chip_code","template_id","template_version","constraint_id","resource_id","sdk_version","source_training_precision","parameter_sources"):
+            if key in values:
+                common[key]=values[key]
         if target == "onnx":
             return common
 

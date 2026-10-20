@@ -21,7 +21,6 @@ from pydantic import BaseModel, Field
 
 from .algorithms import list_algorithms, update_algorithm_version
 from .compute_platform_catalog import (
-    CHIP_BINDING_DICTIONARY,
     compute_platform_active,
     compute_platform_catalog,
     compute_platform_has_children,
@@ -1391,8 +1390,20 @@ class ExternalAlgorithmPublishService:
             "config": config,
             "storage_sources": sources,
             "compute_platforms": external_cache.get("compute_platforms") or [],
-            "chip_dictionary": {key: list(values) for key, values in CHIP_BINDING_DICTIONARY.items()},
+            "chip_dictionary": self._local_chip_dictionary(),
         }
+
+    def _local_chip_dictionary(self):
+        from .compute_platform_catalog import conversion_templates
+        catalog=self.model_assets.repository.conversion_catalog()
+        templates={t["id"]:t.get("adapter") for t in conversion_templates()}
+        vendors={v["id"]:templates.get(v.get("template_id")) for v in catalog["vendors"] if v.get("enabled",True)}
+        result={}
+        for chip in catalog["chips"]:
+            adapter=vendors.get(chip["vendor_id"])
+            if adapter and chip.get("enabled",True):
+                result.setdefault(adapter,[]).append(chip["sdk_code"].upper())
+        return result
 
     def _compute_catalog(self) -> dict[str, dict[str, Any]]:
         rows = self.external_repository.cache().get("compute_platforms") or []

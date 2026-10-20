@@ -186,7 +186,11 @@ def model_metadata(data_dir, version, conversion_params=None, *, algorithm=None)
         result["class_mapping"] = [{"class_id":i,"code":code} for i,code in enumerate(labels)]
     params = conversion_params if isinstance(conversion_params, Mapping) else None
     if params is not None:
-        result["conversion_params"] = {key:params[key] for key in ("chip","soc_version","precision","input_width","input_height","input_size","batch","num_core","dynamic","opset","simplify","preprocessing","workspace_mb","target_environment","calibration_snapshot_id") if key in params}
+        result["conversion_params"] = {key:params[key] for key in ("chip","soc_version","precision","input_width","input_height","input_size","batch","num_core","dynamic","opset","simplify","preprocessing","workspace_mb","target_environment","calibration_snapshot_id","model_output_contract","source_training_precision") if key in params}
+        for key in ("local_vendor_id","local_chip_id","sdk_chip_code","template_id","template_version","constraint_id","resource_id","sdk_version","parameter_sources"):
+            if key in params:
+                result[key]=params[key]
+                result["conversion_params"][key]=params[key]
         if params.get("precision"):
             result["precision"] = params["precision"]
     for key in ("snapshot_id", "task_id", "framework", "framework_version", "finished_at"):
@@ -195,6 +199,8 @@ def model_metadata(data_dir, version, conversion_params=None, *, algorithm=None)
     parameters = lineage.get("parameters") if isinstance(lineage, Mapping) else None
     actual = parameters.get("actual") if isinstance(parameters, Mapping) else None
     training_precision = actual.get("precision") if isinstance(actual, Mapping) else None
+    if params is not None and isinstance(params.get("source_training_precision"),str) and params["source_training_precision"] in {"fp32","fp16","bf16"}:
+        training_precision=params["source_training_precision"]
     result["training_precision"] = training_precision if isinstance(training_precision,str) and training_precision in {"fp32","fp16","bf16"} else None
     result["class_count"] = len(labels) if labels else None
     for key in ("image_width","image_height","yolo_version","framework_version","precision"):

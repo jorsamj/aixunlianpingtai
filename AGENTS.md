@@ -1,3 +1,11 @@
+## 2026-10-20｜动态厂商字典与真实SDK目标（本地限定验收通过 / 最终SHA CI待推送 / 生产未部署）
+
+- 完整fetch/pull基线7a2492b24de5d6259bf792ed074f1548e66d6eda，原39/109绿色归档不是本轮CI。复用初始干净长期分支工作树，其他工作树/会话未覆盖。
+- 唯一专项docs/DYNAMIC_CONVERSION_CATALOG_ACCEPTANCE_2026_10_20.md保存完整用户V2/第十八条、产品合同、架构、RED、已完成与剩余计划。原ModelArtifactRepository/compute_platform_catalog/Adapter/Worker/Durable MODEL_CONVERSION/发布Owner复用，无平行模型库/队列/调度/轮询。
+- 动态本地厂商/芯片表初始为空，模板不等于业务记录；SDK/本地/外部ID分开。BM1684按1.30.2官方矩阵+实检开放F32、原X/88 F16保留；未知组合不乐观放行。后端统一resolve和POST，真实目标/参数/命名、结构/hash、资产快照可追溯，硬件验证独立。
+- 正式VERSION本轮已一次42.24.358→42.24.359；必要app/main/styles缓存42.25.407、发布模块64010。正式显示继续读后端版本。最终Python262、Node70、Chrome8通过，另7项发布安全定向用例通过；版本七入口一致、语法/diff/原永久守卫通过。最终完整SHA CI待推送，记录于专项指定独立附件。
+- 未部署/重启/安装SDK/改生产密钥或数据库/操作OSS/历史Weight；本机Windows未找到TPU-MLIR工具，真实BM1684编译、模型质量与板卡NOT VERIFIED。生产17项元数据/7Weight补齐仍未执行，须独立授权。
+
 ## 2026-10-20｜Weight tags及本地元数据（本地通过 / 最终SHA CI待提交 / 生产补齐未执行）
 
 - 基线0cf65c48bf6c6d0ec0df852128c2faccf4072f8e已完整fetch/pull；历史48/131绿色归档，不代表本轮。VERSION42.24.358，app405/styles402保持，仅main406/发布模块64009必要更新。

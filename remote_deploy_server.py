@@ -168,7 +168,7 @@ async def convert(source_model:UploadFile=File(...), target:str=Form(...), param
         cfg=read_json(CONFIG_FILE,{})
         if target == 'sophon':
             probe=probe_sophon_toolchain(cfg)
-            if not probe.get('available') or params.get('chip') not in probe.get('supported_chips',[]):
+            if not probe.get('available') or params.get('chip') not in probe.get('supported_chips',[]) or params.get('precision') not in probe.get('chip_capabilities',{}).get(params.get('chip'),{}).get('precisions',[]):
                 raise HTTPException(status_code=400,detail={'code':probe.get('error_code') or 'TPU_MLIR_UNAVAILABLE','error':probe.get('error') or '当前 TPU-MLIR 不支持指定芯片','solution':probe.get('solution') or '检查 TPU-MLIR 环境'})
         srcd=jd/'source';srcd.mkdir(parents=True,exist_ok=False)
         src=srcd/Path(source_model.filename or 'model.bin').name;src.write_bytes(body)

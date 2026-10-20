@@ -18,7 +18,6 @@ from platform_core.sophon_runtime import (find_sophon_tools, require_sophon_tool
 
 from platform_core.conversion import (
     ConversionError,
-    SUPPORTED_ROCKCHIP_CHIPS,
     build_manifest,
     file_record,
     sha256_file,
@@ -227,12 +226,12 @@ def preflight_vendor_tool(target: str, resource: Dict[str, Any], params: Dict[st
         if not tool:
             raise ConversionError('ATC_NOT_FOUND', '未检测到 CANN ATC，无法生成 Ascend OM。', solution='请在 Linux 转换服务器安装华为 CANN Toolkit，并配置 ATC 路径和环境脚本。')
     elif target == 'sophon':
-        require_sophon_toolchain(resource, chip=str(params.get('chip') or '').lower())
+        require_sophon_toolchain(resource, chip=str(params.get('chip') or '').lower(), precision=str(params.get('precision') or 'fp16'))
     elif target == 'rockchip':
         py = str(resource.get('python_path') or params.get('rknn_python') or sys.executable)
         if not py or not Path(py).exists():
             raise ConversionError('RKNN_TOOLKIT_NOT_FOUND', '瑞芯微转换需要一个安装了 RKNN-Toolkit2 的 Python 环境。', solution='请在 Linux x86_64 转换环境安装官方 RKNN-Toolkit2，并配置该环境的 Python 路径。')
-        probe = probe_rknn_toolkit(py)
+        probe = probe_rknn_toolkit(py,**({"target_chips":[params["chip"]]} if params.get("constraint_id")=="rknn-verified" else {}))
         if not probe["available"]:
             if probe.get("error_code") == RKNN_ONNX_DEPENDENCY_CODE:
                 raise ConversionError(
@@ -350,14 +349,14 @@ def find_tpu_tools(resource: Dict[str, Any]):
 
 def build_sophon(onnx: Path, out_dir: Path, resource: Dict[str, Any], params: Dict[str, Any], calibration_dir: Optional[Path], log_file: Path) -> Path:
     params = validate_target("sophon", params)
-    environment = require_sophon_toolchain(resource, chip=params["chip"])
+    environment = require_sophon_toolchain(resource, chip=params["chip"], precision=params["precision"])
     tools, py = environment["tools"], environment["python_path"]
     height, width = conversion_input_shape(params)
     # The ONNX tensor is already RGB/NCHW normalized by its caller. Do not fuse
     # mean/scale/letterbox again. The exact caller contract travels in manifest.
     name = safe_name(str(params.get("model_name") or onnx.stem))
     mlir = out_dir / f"{name}.mlir"
-    model = out_dir / f"{name}_{params['chip']}_fp16.bmodel"
+    model = out_dir / f"{name}_{params['chip']}_{params['precision']}.bmodel"
     # A failed retry must not inherit an old compiled file from the work folder.
     mlir.unlink(missing_ok=True)
     model.unlink(missing_ok=True)
@@ -366,14 +365,18 @@ def build_sophon(onnx: Path, out_dir: Path, resource: Dict[str, Any], params: Di
         "--model_name", name, "--model_def", str(onnx),
         "--input_shapes", f"[[1,3,{height},{width}]]", "--mlir", str(mlir)), out_dir, log_file, timeout=timeout)
     file_record(mlir)
+    chip_option = environment.get("chip_option") or "--chip"
+    if chip_option not in {"--chip", "--processor"}:
+        raise ValueError("TPU-MLIR目标选项未经Adapter映射")
+    sdk_precision = {"fp16":"F16", "fp32":"F32"}[params["precision"]]
     run_cmd(tool_argv(py, "model_deploy", tools["model_deploy"],
-        "--mlir", str(mlir), "--quantize", "F16", "--chip", params["chip"],
+        "--mlir", str(mlir), "--quantize", sdk_precision, chip_option, params["chip"],
         "--num_core", "1", "--model", str(model)), out_dir, log_file, timeout=timeout)
     file_record(model)
     info = run_cmd(tool_argv(py, "model_tool", tools["model_tool"], "--info", str(model)),
                    out_dir, log_file, timeout=min(timeout, 30))
     import re
-    observed_chips = set(re.findall(r"\bbm\d+[a-z]*\b", info.lower()))
+    observed_chips = set(re.findall(r"\b(?:bm|cv)\d+[a-z]*\b", info.lower()))
     if observed_chips != {params["chip"]}:
         raise ConversionError("SOPHON_MODEL_CHIP_MISMATCH", "BMODEL结构检查未确认唯一目标芯片",
                               solution="请检查model_tool与编译工具版本，拒绝把BMODEL登记为其他芯片。")
@@ -381,6 +384,8 @@ def build_sophon(onnx: Path, out_dir: Path, resource: Dict[str, Any], params: Di
         "structure": "passed", "chip": params["chip"], "hardware_verified": False,
         "toolchain": environment, "inspection": info[-8000:], "artifact": file_record(model),
         "preprocessing": params["preprocessing"],
+        "precision": params["precision"], "input_shape": [1,3,height,width],
+        "model_validation_status": "incomplete", "model_validation_reason": "芯片结构已确认；尚未完成编译产物输入输出与数值对照验证",
     })
     return model
 
@@ -431,12 +436,11 @@ def build_ascend(onnx: Path, out_dir: Path, resource: Dict[str, Any], params: Di
 
 
 def build_rockchip(onnx: Path, out_dir: Path, resource: Dict[str, Any], params: Dict[str, Any], calibration_dir: Optional[Path], log_file: Path) -> Path:
+    params = validate_target("rockchip", params)
     py = str(resource.get('python_path') or params.get('rknn_python') or sys.executable)
     # Direct callers need the same environment gate as the task-level preflight.
     preflight_vendor_tool('rockchip', resource, params)
     chip = str(params.get('chip') or '').strip().lower()
-    if chip not in SUPPORTED_ROCKCHIP_CHIPS:
-        raise RuntimeError('当前产品瑞芯微转换只支持 rk3568 或 rk3576，且必须明确选择目标芯片')
     precision = str(params.get('precision') or 'fp16').lower()
     quant = precision in {'int8','i8','u8'}
     dataset_txt = None
@@ -577,6 +581,8 @@ def main():
         manifest['job_id'] = job.get('id')
         if target == 'sophon':
             sophon_facts = read_json(work/'sophon_validation.json', {})
+            params["sdk_version"]=str((sophon_facts.get('toolchain') or {}).get('version') or '')
+            manifest['parameters']=dict(params)
             manifest['sophon_validation'] = sophon_facts
             manifest['tool'].update(version=sophon_facts.get('toolchain', {}).get('version', ''),
                                     python_path=sophon_facts.get('toolchain', {}).get('python_path', ''))
@@ -589,7 +595,7 @@ def main():
             if p.is_file():
                 output_rows.append({'name':p.name,'path':str(p),'rel':str(p.relative_to(job_dir)),'size_mb':round(p.stat().st_size/1024/1024,3)})
         runtime_verified = target == 'onnx'
-        update(job_file, status='done', progress=100, stage='转换完成', message='ONNX Runtime 已真实加载验证' if runtime_verified else '部署模型已生成（尚未实机验证）', finished_at=now(), outputs=output_rows, validation_status='runtime_verified' if runtime_verified else 'converted_unverified', runtime_verified=runtime_verified, manifest_path=str(artifacts/'manifest.json'))
+        update(job_file, status='done', progress=100, stage='转换完成', message='ONNX Runtime 已真实加载验证' if runtime_verified else '部署模型已生成（尚未实机验证）', finished_at=now(), outputs=output_rows, params=params, validation_status='runtime_verified' if runtime_verified else 'converted_unverified', runtime_verified=runtime_verified, manifest_path=str(artifacts/'manifest.json'))
         append_log(log_file, '转换完成。')
     except Exception as e:
         append_log(log_file, '转换失败：' + str(e))

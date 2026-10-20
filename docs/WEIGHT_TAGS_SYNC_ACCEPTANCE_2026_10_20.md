@@ -1,3 +1,7 @@
+## 上轮最终CI归档（2026-10-20）
+
+已读取独立验收附件weight-tags-persistence-ci-final-20261020.json：完整SHA `7a2492b24de5d6259bf792ed074f1548e66d6eda`，普通FF推送、远端一致/干净，VERSION42.24.358，Actions39/39、Checks109/109成功，失败/待运行0。属于上轮Weight tags任务最终结果，不代替后续动态字典任务CI；生产17项/7Weight补齐仍未执行。附件位置在CODEX_CURRENT_STATE及本轮动态字典专项记录的visualizations同目录。
+
 ## 2026-10-20｜Weight tags历史补齐及本地元数据（A-D通过 / E待推送CI / 生产补齐未执行）
 
 - 已完整fetch/prune、pull --ff-only，起始0cf65c48bf6c6d0ec0df852128c2faccf4072f8e，远端一致、工作树干净；历史48/48 Actions、131/131 Checks已核验，不能借用为本轮CI。VERSION42.24.358。

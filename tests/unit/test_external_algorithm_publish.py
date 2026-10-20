@@ -4120,3 +4120,14 @@ def test_tags_readback_evidence_is_distinct_from_confirmed_receipt(tmp_path):
     row=service.publication_status('p1','a1','v1')['artifacts'][0]
     assert row['remote_tags']==['wrong'] and row['remote_tags_status']=='READ_BACK'
     assert row['confirmed_tags']==['smoke','fire'] and row['metadata_sync_status']=='PENDING'
+
+def test_external_chip_bindings_read_the_local_catalog_without_changing_saved_mappings(tmp_path):
+    from tests.unit.test_dynamic_conversion_catalog import catalog
+    memory=MemorySecretStore()
+    _configure_external(tmp_path,memory)
+    service=_service(tmp_path,memory)
+    original=service.repository.config()
+    assert service._local_chip_dictionary()=={}
+    service.model_assets.repository.save_conversion_catalog(catalog(),expected_revision=0)
+    assert service._local_chip_dictionary()=={"sophon":["BM1684","BM1688"]}
+    assert service.repository.config()==original
