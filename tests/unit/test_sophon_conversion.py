@@ -155,12 +155,22 @@ def test_sophon_worker_isolated_tool_protocol_records_manifest_and_unverified_st
          "resource":resource,"params":{"chip":chip,"input_height":384,"input_width":640}}
     (tmp_path/"job.json").write_text(json.dumps(job))
     monkeypatch.setattr("sys.argv",["deployment_worker.py","--job-dir",str(tmp_path)])
+    probes=[];require=worker.require_sophon_toolchain
+    def record_probe(*args,**kwargs):
+        probes.append(True);return require(*args,**kwargs)
+    monkeypatch.setattr(worker,"require_sophon_toolchain",record_probe)
     worker.main()
+    assert len(probes)==1
     finished=json.loads((tmp_path/"job.json").read_text(encoding="utf-8"))
     manifest=json.loads((tmp_path/"artifacts/manifest.json").read_text(encoding="utf-8"))
     assert finished["status"] == "done" and finished["validation_status"] == "converted_unverified"
     assert conversion_outcome(finished) is TaskStatus.BLOCKED_BY_HARDWARE
     assert manifest["target"]["chip"] == chip
+    assert finished["execution_evidence"] == manifest["execution_evidence"]
+    evidence = manifest["execution_evidence"]
+    assert evidence["compiler_precision"] == "F16"
+    assert evidence["artifact_precision"] is None
+    assert evidence["onnx_export"] == "reused_existing_onnx"
     assert manifest["source"] == trace
     assert manifest["onnx"]["input_shapes"] == [[1,3,384,640]]
     assert manifest["tool"]["version"] == "1.18.0-fixture"
@@ -273,3 +283,46 @@ def test_sophon_probe_preserves_full_v_prefixed_version(tmp_path, banner):
     facts = probe_sophon_toolchain(resource)
     assert facts["available"], facts["error"]
     assert facts["version"] == "v1.30.2-20260831"
+
+
+@pytest.mark.parametrize("kind,precision,half", [("onnx","fp16",True),("onnx","fp32",False),("sophon","fp16",False)])
+def test_onnx_export_precision_is_explicit_and_separate_from_compiler(tmp_path,monkeypatch,kind,precision,half):
+    source=tmp_path/"model.pt";source.write_bytes(b"isolated")
+    output=tmp_path/"out";output.mkdir()
+    commands=[]
+    monkeypatch.setattr(worker,"find_ultra_python",lambda resource:"python")
+    def run(argv,*args,**kwargs):
+        commands.append(argv);source.with_suffix(".onnx").write_bytes(b"exported")
+    monkeypatch.setattr(worker,"run_cmd",run)
+    worker.export_pt_to_onnx(source,output,{}, {"kind":kind,"precision":precision,"input_height":384,"input_width":640}, tmp_path/"log")
+    script=commands[0][2]
+    assert f"half={half}" in script
+    assert "imgsz=[384, 640]" in script
+
+
+@pytest.mark.parametrize("precision,mode", [("fp32","force_fp32"),("fp16","allow_fp32_to_fp16")])
+def test_ascend_command_uses_validated_precision_mode(tmp_path,monkeypatch,precision,mode):
+    source=tmp_path/"input.onnx";source.write_bytes(b"isolated")
+    monkeypatch.setattr(worker,"which",lambda candidates:"atc")
+    commands=[]
+    def run(argv,*args,**kwargs):
+        commands.append(argv)
+        prefix=next(arg.split("=",1)[1] for arg in argv if arg.startswith("--output="))
+        Path(prefix+".om").write_bytes(b"compiled-protocol")
+    monkeypatch.setattr(worker,"run_cmd",run)
+    worker.build_ascend(source,tmp_path,{}, {"precision":precision,"soc_version":"Ascend310P3","input_height":384,"input_width":640},tmp_path/"log")
+    assert "--precision_mode="+mode in commands[0]
+    assert "--input_shape=images:1,3,384,640" in commands[0]
+
+
+def test_onnx_fp16_request_cannot_succeed_with_only_fp32_tensors(tmp_path):
+    source=tmp_path/"model.onnx";_onnx_identity(source,[1,3,384,640])
+    with pytest.raises(worker.ConversionError,match="ONNX.*precision"):
+        worker.validate_onnx_runtime(source,{"input_height":384,"input_width":640},tmp_path/"log",expected_precision="fp16")
+
+
+@pytest.mark.parametrize("kind", ["rockchip","ascend","tensorrt"])
+def test_vendor_worker_rejects_static_onnx_shape_mismatch_before_compile(tmp_path,kind):
+    source=tmp_path/"model.onnx";_onnx_identity(source,[1,3,384,640])
+    with pytest.raises(worker.ConversionError,match="input shape"):
+        worker.validate_onnx_runtime(source,{"kind":kind,"input_height":800,"input_width":800},tmp_path/"log")

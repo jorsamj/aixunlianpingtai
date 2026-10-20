@@ -469,3 +469,22 @@ test('training report shows requested epochs actual epochs stop reason and targe
   await expect(facts.locator('div', {hasText: '停止原因'}).locator('b')).toHaveText('达到目标指标，提前完成');
   await expect(facts.locator('div', {hasText: '目标状态'}).locator('b')).toHaveText('已达标');
 });
+
+
+test('training precision remains visible and canonical across all four modes',async({page,request},testInfo)=>{
+  const {project}=await seedTrainingProject(request);await routeReadyTrainingRuntime(page);
+  await selectIsolatedTestProject(page,project.id);await page.goto('/');await waitForCanonicalApp(page);
+  await page.locator('[data-algorithm-card]',{hasText:'烟火迭代算法'}).getByRole('button',{name:'训练',exact:true}).click();
+  const dialog=page.getByRole('dialog',{name:'创建训练任务'}),precision=dialog.locator('#trV3ManualPrecision');
+  await expect(precision).toBeVisible();await expect(precision).toHaveValue('auto');
+  await precision.selectOption('fp32');
+  for(const mode of ['quick','complex','custom','full']){
+    await dialog.locator(`[data-mode="${mode}"]`).click();
+    await expect(precision).toBeVisible();await expect(precision).toHaveValue('fp32');
+    expect(await page.evaluate(()=>state.trainingDraft.config.precision)).toBe('fp32');
+    expect(await page.evaluate(()=>state.trainingDraft.config.amp)).toBe(false);
+  }
+  await expect(precision.locator('option')).toHaveText(['自动 AMP（推荐）','FP16 AMP','FP32 全精度']);
+  await precision.scrollIntoViewIfNeeded();
+  await page.screenshot({path:testInfo.outputPath('training-precision.png')});
+});

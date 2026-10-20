@@ -84,10 +84,10 @@ export function buildTrainingEngineParameters({draft, target, algorithm} = {}) {
   const mode = String(draft.trainingMode || (draft.resource?.strategy === 'manual' ? 'custom' : 'full'));
   const preset = trainingModePreset(mode, Boolean(draft.baseVersionId));
   // Presets never inherit hidden manual/advanced values from a previous custom
-  // task or an old dialog session. Keep only the explicitly selected mother model;
+  // task or an old dialog session. Keep the explicitly selected mother model and precision;
   // existing optimizer, augmentation and quality defaults remain canonical here.
   const config = preset
-    ? {model: rawConfig.model, stop_threshold: .90, eval_interval: 10, eval_metric: 'map50'}
+    ? {model: rawConfig.model, precision: rawConfig.precision, amp: rawConfig.amp, stop_threshold: .90, eval_interval: 10, eval_metric: 'map50'}
     : rawConfig;
   return {
     framework: target.framework === 'paddle' ? 'paddle' : 'ultralytics',
@@ -126,7 +126,7 @@ export function buildTrainingEngineParameters({draft, target, algorithm} = {}) {
     fliplr: config.fliplr ?? .5,
     cache: draft.resource?.cache ?? config.cache ?? false,
     pretrained: config.pretrained !== false,
-    amp: config.amp !== false,
+    amp: normalizeTrainingPrecision(config.precision) === 'fp32' ? false : normalizeTrainingPrecision(config.precision) === 'fp16' ? true : config.amp !== false,
     single_cls: Boolean(config.single_cls),
     rect: Boolean(config.rect),
     cos_lr: Boolean(config.cos_lr),

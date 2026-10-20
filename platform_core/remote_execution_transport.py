@@ -811,6 +811,10 @@ class RemoteExecutionTransportService:
                 409,
             )
 
+        if target == "onnx" and values.get("onnx_source_reused") is True:
+            return {"onnx_source_reused": True, **{key:values[key] for key in
+                ("local_vendor_id","local_chip_id","resource_id","sdk_version","source_training_precision") if key in values}}
+
         def integer(name: str, default: int, minimum: int, maximum: int) -> int:
             raw = values.get(name)
             if raw in (None, ""):
@@ -869,6 +873,11 @@ class RemoteExecutionTransportService:
             if key in values:
                 common[key]=values[key]
         if target == "onnx":
+            if values.get("precision") is not None:
+                precision = str(values["precision"]).strip().lower()
+                if precision not in {"fp16", "fp32"}:
+                    raise RemoteExecutionTransportError("REMOTE_CONVERSION_PARAMS_INVALID", "ONNX export precision must be fp16 or fp32", 422)
+                common["precision"] = precision
             return common
 
         chip = str(values.get("chip") or "").strip().lower()
@@ -3444,6 +3453,12 @@ class RemoteExecutionTransportService:
             target,
             conversion.get("params") if isinstance(conversion.get("params"), Mapping) else {},
         )
+        runtime = confirmed.get("runtime_result") or {}
+        execution_evidence = dict(runtime.get("execution_evidence") or {}) if isinstance(runtime, Mapping) else {}
+        if execution_evidence:
+            expected_mode = 'do_quantization=' + str(params.get('precision') == 'int8').lower() if target == 'rockchip' else None
+            if execution_evidence.get('resolved_precision') != params.get('precision') or execution_evidence.get('compiler_precision') != expected_mode:
+                raise RemoteExecutionTransportError("REMOTE_CONVERSION_PARAMETERS_MISMATCH", "Agent compiler evidence differs from admitted parameters", 409)
         result = confirmed.get("result")
         if not isinstance(result, Mapping):
             raise RemoteExecutionTransportError(
@@ -3577,6 +3592,12 @@ class RemoteExecutionTransportService:
             )
             manifest = {
                 "schema_version": 1,
+                "job_id": str(task.task_id),
+                "source": dict(conversion.get("source_trace") or {}),
+                "outputs": [{"name": file_name, "sha256": expected_sha, "size_bytes": expected_size}],
+                "tool": {"name": "onnxruntime" if target == "onnx" else "rknn-toolkit2", "version": execution_evidence.get("sdk_version") or ""},
+                "execution_evidence": execution_evidence,
+                "onnx": {"input_shapes": [execution_evidence["onnx_input_shape"]]} if execution_evidence.get("onnx_input_shape") else {},
                 "task_id": str(task.task_id),
                 "execution_generation": generation,
                 "target": target_manifest,
@@ -3625,6 +3646,7 @@ class RemoteExecutionTransportService:
                     (conversion.get("source_trace") or {}).get("source_id") or job.get("source_id") or ""
                 ) if isinstance(conversion.get("source_trace"), Mapping) else str(job.get("source_id") or ""),
                 "params": params,
+                "execution_evidence": execution_evidence,
                 "status": "done",
                 "progress": 100,
                 "stage": "转换完成",

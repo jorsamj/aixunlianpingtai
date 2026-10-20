@@ -1,3 +1,7 @@
+## 2026-10-21｜VERSION42.24.366 一致性修复（本地通过 / 最终SHA CI待核验）
+
+现有厂商/芯片CRUD、稳定身份与引用保护复用；只补原TPU模板固定导出参数。转换芯片状态按当前资源合同，单资源重检复用原detect、失败不清空其他资源、迟到响应不回滚选择。无第二字典/页面或外部映射变更。 完整需求、根因、参数矩阵、RED→GREEN、UI与生产边界统一见 [一致性专项](CONVERSION_PARAMETER_CONSISTENCY_2026_10_21.md)。最终SHA/CI按独立回执归档，不借用历史结果。
+
 ## 2026-10-21｜历史job.json缺失不阻断普通编辑（限定实现与验收完成 / 待最终SHA CI）
 
 基线8d74588d95ffa3549f0769431d92072dfa1300cc/VERSION42.24.364，已fetch/prune及pull --ff-only，工作树干净；可见同仓库无其他活动开发，不动其他工作树。前轮Weight最终22/22 Actions、57/57 Checks回执已核验归档（weight-auto-replacement-ci-final-20261020.json），不作为本轮验收。

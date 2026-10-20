@@ -28,7 +28,9 @@ CONVERSION_TEMPLATES = (
 
 def conversion_templates():
     fields={
-        "tpu-mlir":[{"key":"num_core","label":"核心数","type":"number","default":1,"locked":True},
+        "tpu-mlir":[{"key":"opset","label":"ONNX Opset","type":"number","default":12,"locked":True},
+                    {"key":"simplify","label":"ONNX Simplify","type":"checkbox","default":False,"locked":True},
+                    {"key":"num_core","label":"核心数","type":"number","default":1,"locked":True},
                     {"key":"dynamic","label":"动态Shape","type":"checkbox","default":False,"locked":True}],
         "rknn":[{"key":"mean","label":"RKNN Mean（三通道）","type":"text","default":"0,0,0"},
                 {"key":"rknn_std","label":"RKNN Std（三通道）","type":"text","default":"255,255,255"}],

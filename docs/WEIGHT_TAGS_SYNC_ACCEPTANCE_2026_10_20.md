@@ -1,3 +1,7 @@
+## 2026-10-21｜VERSION42.24.366 一致性修复（本地通过 / 最终SHA CI待核验）
+
+空准备映射不再过滤可信canonical tags；UNKNOWN/CONFLICT继续保护，未知不发[]。HTTP请求审计、确认回执和远端tags分开展示；发布180与隔离HTTP JSON验收通过。生产17/7因只读SSH连接失败仍未核验、未补齐。 完整需求、根因、参数矩阵、RED→GREEN、UI与生产边界统一见 [一致性专项](CONVERSION_PARAMETER_CONSISTENCY_2026_10_21.md)。最终SHA/CI按独立回执归档，不借用历史结果。
+
 ## 上轮最终CI归档（2026-10-20）
 
 已读取独立验收附件weight-tags-persistence-ci-final-20261020.json：完整SHA `7a2492b24de5d6259bf792ed074f1548e66d6eda`，普通FF推送、远端一致/干净，VERSION42.24.358，Actions39/39、Checks109/109成功，失败/待运行0。属于上轮Weight tags任务最终结果，不代替后续动态字典任务CI；生产17项/7Weight补齐仍未执行。附件位置在CODEX_CURRENT_STATE及本轮动态字典专项记录的visualizations同目录。

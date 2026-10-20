@@ -299,8 +299,8 @@ test('weight details distinguish frozen, local, prepared, confirmed and read-bac
   const html=publicationWeightDetails({artifacts:[{file_name:'best.pt',sync_status:'SYNCED',remote_registered:true,
     metadata_sync_status:'PENDING',metadata:{tags:['fire1','smoke1'],label_validation_status:'VERIFIED'},
     frozen_tags:['fire1','smoke1'],local_tags:['fire1','smoke1'],prepared_tags:['fire1','smoke1'],
-    confirmed_tags:null,remote_tags:null,remote_tags_status:'NOT_RETURNED'}]});
-  for(const text of ['冻结类别','本地类别','准备提交','已确认提交','远端未返回 tags','标签补齐待处理','同步成功','2 类'])assert.ok(html.includes(text),text);
+    request_tags:['fire1','smoke1'],request_status:'UNKNOWN',confirmed_tags:null,remote_tags:null,remote_tags_status:'NOT_RETURNED'}]});
+  for(const text of ['冻结类别','本地类别','准备提交','HTTP 请求记录','UNKNOWN','已确认提交','远端未返回 tags','标签补齐待处理','同步成功','2 类'])assert.ok(html.includes(text),text);
   assert.ok(!html.includes('远端已验证：fire1'));
 });
 

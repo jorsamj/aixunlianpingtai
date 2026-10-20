@@ -526,7 +526,7 @@ class AgentConversionRunner:
             "input_size", "batch", "opset", "dynamic", "simplify",
             "input_height", "input_width", "local_vendor_id", "local_chip_id", "sdk_chip_code",
             "template_id", "template_version", "constraint_id", "resource_id", "sdk_version", "source_training_precision", "parameter_sources",
-            "chip", "precision", "mean", "rknn_std",
+            "chip", "precision", "mean", "rknn_std", "onnx_source_reused",
             "calibration_count", "calibration_snapshot",
         )
         safe_params = {
@@ -1081,6 +1081,8 @@ class AgentConversionRunner:
                     if isinstance(params, Mapping)
                     else ""
                 )
+            if isinstance(job.get("execution_evidence"), Mapping) and job["execution_evidence"]:
+                runtime_result["execution_evidence"] = dict(job["execution_evidence"])
             confirmed = self.client.confirm_result_upload(
                 lease,
                 runtime_result=runtime_result,

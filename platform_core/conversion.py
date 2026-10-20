@@ -148,6 +148,8 @@ def validate_target(kind: str, params: Mapping[str, Any], *, require_calibration
                 raise ValueError(f"Sophon首期{field}必须为1")
         if values.get("dynamic") not in (None, False):
             raise ValueError("Sophon首期仅支持静态输入")
+        if values.get("opset", 12) != 12 or values.get("simplify", False) is not False:
+            raise ValueError("Sophon export requires opset=12 and simplify=false")
         height, width = conversion_input_shape(values)
         preprocessing = dict(values.get("preprocessing") or {})
         for field,expected in (("pad_value",114),("channel_format","nchw"),("nms","external"),("fuse_preprocess",False)):
@@ -180,7 +182,15 @@ def validate_target(kind: str, params: Mapping[str, Any], *, require_calibration
         soc = str(values.get("soc_version") or "").strip()
         if not soc:
             raise ValueError("Atlas 转换必须填写与部署硬件一致的 soc_version")
-        values.update({"kind": "ascend", "soc_version": soc, "precision": precision})
+        modes = {"fp32": "force_fp32", "fp16": "allow_fp32_to_fp16"}
+        if precision not in modes:
+            raise ValueError("Ascend precision must be fp16 or fp32")
+        mode = modes[precision]
+        selected_mode = values.get("precision_mode", mode)
+        allowed_modes = {mode} if precision == "fp32" else {mode, "must_keep_origin_dtype", "allow_mix_precision"}
+        if selected_mode not in allowed_modes:
+            raise ValueError("precision_mode conflicts with requested precision")
+        values.update(kind="ascend", soc_version=soc, precision=precision, precision_mode=selected_mode)
     elif target == "tensorrt":
         if precision not in {"fp32", "fp16", "int8"}:
             raise ValueError("TensorRT precision 必须为 fp32、fp16 或 int8")

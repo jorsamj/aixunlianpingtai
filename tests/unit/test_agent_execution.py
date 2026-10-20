@@ -606,3 +606,12 @@ def test_runtime_result_sanitizer_accepts_bounded_rknn_board_evidence():
         _sanitize_runtime_result_metadata({
             "output_shapes": [[1] * 9],
         })
+
+
+def test_conversion_execution_evidence_is_bounded_and_never_claims_artifact_dtype():
+    from platform_core.agent_execution import _sanitize_runtime_result_metadata
+    facts={"resolved_precision":"fp16","compiler_precision":"do_quantization=false","onnx_export":"exported","artifact_precision":None,"compiler_completed":True}
+    assert _sanitize_runtime_result_metadata({"execution_evidence":facts})["execution_evidence"] == facts
+    for bad in [{"artifact_precision":"fp16"},{"compiler_completed":"true"},{"compiler_precision":"x"*121},{"onnx_input_shape":[1,3,"guess",640]},{"onnx_input_shape":[1,3,0,640]}]:
+        with pytest.raises(Exception):
+            _sanitize_runtime_result_metadata({"execution_evidence":bad})

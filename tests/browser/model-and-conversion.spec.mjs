@@ -907,3 +907,69 @@ test('catalog missing historical job permits ordinary editing while identity and
   await page.reload();await expect(row).toContainText('00 Renamed despite missing job');await expect(row).toContainText('已启用');
   const saved=await (await request.get('/api/v39/deploy/catalog')).json();expect(saved.vendors.find(v=>v.id===id)).toMatchObject({name:'00 Renamed despite missing job',template_id:'rknn',enabled:true});
 });
+
+
+test('Sophon FP32 user parameters survive SDK recheck and truthful execution details',async({page,request},testInfo)=>{
+  const project=await (await request.post('/api/projects',{data:{name:`precision-${Date.now()}`,labels:[{code:'smoke'}]}})).json();
+  await selectIsolatedTestProject(page,project.id);
+  const resource={id:'precision-sdk',kind:'sophon',name:'独立 TPU-MLIR',mode:'remote',status:'ready',targets:['sophon'],
+    supported_chips:['bm1684x','bm1688'],supported_precisions:['fp16','fp32'],version:'v1.30.2-20260831'};
+  let submitted=null,detects=0,posts=0;
+  await page.route('**/api/v39/deploy/resources',r=>r.fulfill({json:{items:[resource]}}));
+  await page.route('**/api/v39/deploy/resources/precision-sdk/detect',r=>{detects++;return r.fulfill({json:resource})});
+  await page.route('**/api/v42/projects/*/algorithms/precision-a/versions/v1/deployments',r=>r.fulfill({json:{
+    algorithm:{id:'precision-a',name:'参数一致性'},version:{id:'v1',version_name:'v1',model_name:'best.pt',stored_path:'/isolated/best.pt',
+      conversion_defaults:{input_size:800,input_width:800,input_height:800,training_precision:'fp16'}},
+    items:submitted?[{id:'pjob',target:'sophon',resource_name:resource.name,status:'blocked_by_hardware',progress:100,
+      params:submitted.params,requested_params:submitted.params,validation_status:'converted_unverified',
+      execution_evidence:{source_training_precision:'fp16',compiler_precision:'F32',artifact_precision:null,onnx_export:'exported'},
+      outputs:[{name:'latest.bmodel',available:true,path:'/isolated/latest.bmodel'}]}]:[]}}));
+  await page.route('**/api/v39/projects/*/deploy/resolve',async r=>{
+    const p=r.request().postDataJSON().params,precision=p.precision||'fp16',ready=!!p.local_chip_id;
+    await r.fulfill({json:{ready,status:ready?'convertible':'pending_configuration',errors:ready?[]:['请选择芯片'],
+      allowed_precisions:['fp16','fp32'],params:{...p,chip:p.local_chip_id,precision,input_width:p.input_width||800,input_height:p.input_height||800,
+        preprocessing:p.preprocessing||{owner:'caller',pixel_format:'rgb',mean:[0,0,0],scale:[1/255,1/255,1/255],letterbox:true}},
+      parameter_sources:{precision:p.precision?'用户自定义':'SDK/芯片默认'},template:{advanced_fields:[
+        {key:'opset',label:'ONNX Opset',type:'number',default:12,locked:true},{key:'num_core',label:'核心数',type:'number',default:1,locked:true}]},
+      chip_options:uiCatalog.chips.filter(c=>c.vendor_id==='v-s').map(c=>({...c,status_label:'可转换'}))}});
+  });
+  await page.route('**/api/v39/projects/*/deploy/jobs',r=>{posts++;submitted=r.request().postDataJSON();return r.fulfill({json:{ok:true,job:{id:'pjob'}}})});
+  await page.goto('/');await expect.poll(()=>page.evaluate(()=>state.uiReady===true)).toBe(true);
+  await page.evaluate(()=>window.openNewConvert428('precision-a','v1'));
+  const dialog=page.getByRole('dialog',{name:'新建版本转换'});
+  await dialog.locator('[name="conv428Target"][value="sophon"]').check();
+  await dialog.locator('#conv428Chip').selectOption('bm1684x');
+  await expect(dialog.locator('#conv428Precision')).toHaveValue('fp16');
+  await dialog.getByRole('button',{name:'检测当前资源',exact:true}).click();
+  await expect.poll(()=>detects).toBe(1);await expect(dialog.locator('#conv428Chip')).toHaveValue('bm1684x');
+  await dialog.locator('#conv428Precision').selectOption('fp32');
+  await dialog.locator('#conv428Width').fill('640');await dialog.locator('#conv428Height').fill('384');await dialog.locator('#conv428Height').blur();
+  await expect(dialog.locator('#conv428Precision')).toHaveValue('fp32');
+  await dialog.locator('#conv428Preprocess > summary').click();
+  await dialog.locator('#conv428Pixel').selectOption('bgr');await dialog.locator('#conv428Letterbox').uncheck();
+  await expect(dialog.locator('[data-convert-submit]')).toBeEnabled();
+  await page.screenshot({path:testInfo.outputPath('sophon-precision-form.png')});
+  await dialog.locator('[data-convert-submit]').click();await expect.poll(()=>submitted).not.toBeNull();
+  expect(posts).toBe(1);expect(submitted.params).toMatchObject({precision:'fp32',chip:'bm1684x',input_width:640,input_height:384,
+    preprocessing:{pixel_format:'bgr',letterbox:false}});
+  const history=page.getByRole('dialog',{name:'版本转换'});await history.locator('.convert428-evidence > summary').click();
+  await expect(history).toContainText('F32');await expect(history).toContainText('未核验');await expect(history).toContainText('未实机验证');
+  await page.screenshot({path:testInfo.outputPath('sophon-precision-evidence.png')});
+});
+
+
+test('existing ONNX keeps its graph and hides inapplicable export controls',async({page,request})=>{
+  const project=await (await request.post('/api/projects',{data:{name:`onnx-reuse-${Date.now()}`,labels:[{code:'fire'}]}})).json();
+  await selectIsolatedTestProject(page,project.id);let submitted;
+  await page.route('**/api/v39/deploy/resources',r=>r.fulfill({json:{items:[{id:'onnx',name:'ONNX',kind:'ultralytics',status:'ready',targets:['onnx']}]}}));
+  await page.route('**/api/v42/projects/*/algorithms/reuse-a/versions/v1/deployments',r=>r.fulfill({json:{algorithm:{id:'reuse-a'},
+    version:{id:'v1',version_name:'source-onnx',model_name:'model.onnx',stored_path:'/isolated/model.onnx',conversion_defaults:{source_format:'onnx',input_width:640,input_height:384}},items:[]}}));
+  await page.route('**/api/v39/projects/*/deploy/jobs',r=>{submitted=r.request().postDataJSON();return r.fulfill({json:{ok:true,job:{id:'reuse'}}})});
+  await page.goto('/');await expect.poll(()=>page.evaluate(()=>state.uiReady===true)).toBe(true);
+  await page.evaluate(()=>window.openNewConvert428('reuse-a','v1'));
+  const dialog=page.getByRole('dialog',{name:'新建版本转换'});
+  for(const id of ['conv428PrecisionField','conv428OnnxFields','conv428InputField'])await expect(dialog.locator('#'+id)).toBeHidden();
+  await expect(dialog.locator('#conv428InheritedHint')).toContainText('保留原图');
+  await dialog.locator('[data-convert-submit]').click();await expect.poll(()=>submitted).toBeTruthy();
+  for(const key of ['precision','opset','dynamic','simplify','input_size'])expect(submitted.params).not.toHaveProperty(key);
+});

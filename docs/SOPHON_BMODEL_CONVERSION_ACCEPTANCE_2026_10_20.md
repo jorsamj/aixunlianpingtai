@@ -1,3 +1,7 @@
+## 2026-10-21｜VERSION42.24.366 一致性修复（本地通过 / 最终SHA CI待核验）
+
+源训练精度独立于目标F16/F32；当前资源默认/能力决议、矩形尺寸与调用端预处理保留。固定opset12/simplify=false/Core1/Batch1/static只读并拒绝冲突；Worker复用一次SDK预检，BMODEL结构/chip与硬件未验证边界保留。FP32浏览器与隔离命令/manifest事实通过，真实SDK/板卡本轮未执行。 完整需求、根因、参数矩阵、RED→GREEN、UI与生产边界统一见 [一致性专项](CONVERSION_PARAMETER_CONSISTENCY_2026_10_21.md)。最终SHA/CI按独立回执归档，不借用历史结果。
+
 ## 2026-10-20｜动态字典与SDK参数整合接续
 
 本轮统一验收见 [动态厂商/真实转换能力专项](DYNAMIC_CONVERSION_CATALOG_ACCEPTANCE_2026_10_20.md)。正式VERSION42.24.359，一次递增；Sophon复用原探测/Worker/远程Durable任务，以TPU-MLIR1.30.2官方芯片浮点矩阵与实际探测交集解析，BM1684 F32，原BM1684X/BM1688 F16；版本变化不复用该版本约束。真实芯片命令、矩形Batch1、SHA/唯一芯片检查与原硬件验证边界保留。最终限定Python262、Node70、Chrome8通过，最终SHA CI见新专项指定独立附件；本轮无真实SDK/板卡新验收、无生产部署。

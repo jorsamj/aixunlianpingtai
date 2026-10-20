@@ -1,3 +1,7 @@
+## 2026-10-21｜VERSION42.24.366 一致性修复（本地通过 / 最终SHA CI待核验）
+
+四训练模式保留明确精度；Auto AMP/FP16 AMP/FP32在原训练模式卡片直接可选，FP32请求/设置amp=false，FP16=true，Auto仍由原Worker实测。现有离线预检、禁下载、最终AMP不一致报错及参考模型合同保留；真实GPU训练未执行。 完整需求、根因、参数矩阵、RED→GREEN、UI与生产边界统一见 [一致性专项](CONVERSION_PARAMETER_CONSISTENCY_2026_10_21.md)。最终SHA/CI按独立回执归档，不借用历史结果。
+
 # 畅联云算法训练平台｜FP16 / AMP Worker 离线兼容性与 iframe 交互修复
 
 日期：2026-10-11。目标分支：`feature/external-algorithm-publishing`；VERSION.txt：`42.24.350`，保持不变。

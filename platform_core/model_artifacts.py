@@ -1614,6 +1614,8 @@ class ModelArtifactService:
                             {
                                 **model_metadata(self.data_dir, version, params, algorithm=algorithm),
                                 "chip_code": chip,
+                                "requested_parameters": dict(job.get("requested_params") or {}),
+                                "conversion_parameters": dict(params),
                                 "finished_at":str(job.get("conversion_finished_at") or job.get("finished_at") or ""),
                                 "conversion_output_sha256":str(output.get("sha256") or ""),
                                 "conversion_output_size":output.get("size_bytes"),
@@ -1647,7 +1649,15 @@ class ModelArtifactService:
                     metadata["conversion_identity_verified"]=True
                     metadata["finished_at"]=str(manifest.get("completed_at") or manifest.get("created_at") or metadata.get("finished_at") or "")
                     onnx = manifest.get("onnx") or {}
+                    shapes = onnx.get("input_shapes") or []
+                    if target == "onnx" and isinstance(shapes,list) and len(shapes)==1 and isinstance(shapes[0],(list,tuple)) and len(shapes[0])==4:
+                        height, width = shapes[0][2:]
+                        if type(height) is int and type(width) is int and 32<=height<=8192 and 32<=width<=8192:
+                            metadata.update(image_height=height, image_width=width)
                     metadata["model_io"] = {"onnx":{k:onnx[k] for k in ("input_shapes","input_names","output_names","output_count") if k in onnx},"compiled_model":None}
+                    execution = manifest.get("execution_evidence") or {}
+                    metadata["execution_evidence"] = dict(execution) if isinstance(execution, Mapping) else {}
+                    metadata["execution_evidence_note"] = "" if isinstance(execution, Mapping) else "可选执行证据格式无效，已忽略；文件身份核验不受影响"
                     tool = manifest.get("tool") or {}
                     metadata.update(sdk_name=str(tool.get("name") or ""),sdk_version=str(tool.get("version") or ""),
                                     model_validation_status=str((manifest.get("sophon_validation") or {}).get("model_validation_status") or "unknown"),

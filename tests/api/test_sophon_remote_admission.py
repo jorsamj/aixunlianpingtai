@@ -49,6 +49,8 @@ def test_remote_sophon_admission_uses_existing_durable_owner(tmp_path,monkeypatc
     assert payloads[0]['remote_connection']['secret_ref']=='test-secret'
     assert 'secret_ref' not in result['job']['resource']
     assert result['job']['params']['precision']=='fp16'
+    assert result['job']['requested_params']=={'chip':'bm1688'}
+    assert jobs[0]['requested_params']==result['job']['requested_params']
 
 
 def test_auto_sophon_does_not_default_to_bm1684x(tmp_path,monkeypatch):

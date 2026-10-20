@@ -130,10 +130,11 @@ def export_pt_to_onnx(source: Path, out_dir: Path, resource: Dict[str, Any], par
     dynamic = bool(params.get('dynamic', False))
     simplify = bool(params.get('simplify', False))
     batch = max(1, int(params.get('batch') or 1))
+    half = params.get('kind') == 'onnx' and params.get('precision') == 'fp16'
     script = (
         "import sys; from pathlib import Path; from ultralytics import YOLO; "
         "p=Path(sys.argv[1]).resolve(strict=True); m=YOLO(str(p)); "
-        f"print(m.export(format='onnx', imgsz={imgsz}, batch={batch}, opset={opset}, dynamic={dynamic}, simplify={simplify}))"
+        f"print(m.export(format='onnx', imgsz={imgsz}, batch={batch}, opset={opset}, dynamic={dynamic}, simplify={simplify}, half={half}))"
     )
     run_cmd([py, '-c', script, str(source.resolve())], source.parent, log_file)
     candidates = [source.with_suffix('.onnx')]
@@ -226,7 +227,7 @@ def preflight_vendor_tool(target: str, resource: Dict[str, Any], params: Dict[st
         if not tool:
             raise ConversionError('ATC_NOT_FOUND', '未检测到 CANN ATC，无法生成 Ascend OM。', solution='请在 Linux 转换服务器安装华为 CANN Toolkit，并配置 ATC 路径和环境脚本。')
     elif target == 'sophon':
-        require_sophon_toolchain(resource, chip=str(params.get('chip') or '').lower(), precision=str(params.get('precision') or 'fp16'))
+        return require_sophon_toolchain(resource, chip=str(params.get('chip') or '').lower(), precision=str(params.get('precision') or 'fp16'))
     elif target == 'rockchip':
         py = str(resource.get('python_path') or params.get('rknn_python') or sys.executable)
         if not py or not Path(py).exists():
@@ -248,9 +249,10 @@ def preflight_vendor_tool(target: str, resource: Dict[str, Any], params: Dict[st
                 'RKNN 转换 Python 环境未就绪：' + str(probe.get('error') or 'RKNN-Toolkit2 不可用')[-500:],
                 solution='请检查转换节点的 RKNN Python 路径及 Toolkit2 安装。',
             )
+        return probe
 
 
-def validate_onnx_runtime(onnx_path: Path, params: Dict[str, Any], log_file: Path) -> Dict[str, Any]:
+def validate_onnx_runtime(onnx_path: Path, params: Dict[str, Any], log_file: Path, *, expected_precision: str | None = None) -> Dict[str, Any]:
     try:
         import numpy as np
         import onnx
@@ -258,6 +260,12 @@ def validate_onnx_runtime(onnx_path: Path, params: Dict[str, Any], log_file: Pat
 
         model = onnx.load(str(onnx_path))
         onnx.checker.check_model(model)
+        floating_types = {t.data_type for t in model.graph.initializer}
+        floating_types.update(t.type.tensor_type.elem_type for t in model.graph.input)
+        if expected_precision == 'fp16' and onnx.TensorProto.FLOAT16 not in floating_types:
+            raise ValueError('ONNX requested precision FP16 was not applied by the exporter')
+        if expected_precision == 'fp32' and floating_types.intersection({onnx.TensorProto.FLOAT16, onnx.TensorProto.BFLOAT16}):
+            raise ValueError('ONNX requested precision FP32 differs from exported tensors')
         session = ort.InferenceSession(str(onnx_path), providers=['CPUExecutionProvider'])
         feeds = {}
         height, width = conversion_input_shape(params)
@@ -275,6 +283,8 @@ def validate_onnx_runtime(onnx_path: Path, params: Dict[str, Any], log_file: Pat
         for input_meta in session.get_inputs():
             if params.get('kind') == 'sophon' and list(input_meta.shape) != expected_shape:
                 raise ValueError(f'ONNX input shape {input_meta.shape} 与编译尺寸 {expected_shape} 不一致')
+            if params.get('kind') in {'rockchip','ascend','tensorrt'} and len(input_meta.shape)==4 and any(type(d) is int and d>0 and d!=expected_shape[i] for i,d in enumerate(input_meta.shape)):
+                raise ValueError(f'ONNX input shape {input_meta.shape} differs from requested shape {expected_shape}')
             actual_shapes.append(list(input_meta.shape))
             dtype = dtype_map.get(input_meta.type)
             if dtype is None:
@@ -297,6 +307,9 @@ def validate_onnx_runtime(onnx_path: Path, params: Dict[str, Any], log_file: Pat
             'input_shapes': actual_shapes,
             'output_names': [item.name for item in session.get_outputs()],
             'output_count': len(outputs),
+            'input_types': [item.type for item in session.get_inputs()],
+            'floating_tensor_types': sorted({onnx.TensorProto.DataType.Name(t.data_type) for t in model.graph.initializer if t.data_type in (onnx.TensorProto.FLOAT, onnx.TensorProto.FLOAT16, onnx.TensorProto.DOUBLE, onnx.TensorProto.BFLOAT16)}),
+            'opset_imports': {item.domain: item.version for item in model.opset_import},
         }
         append_log(log_file, 'ONNX Checker 与 ONNX Runtime 空白输入推理验证通过。')
         return result
@@ -323,6 +336,7 @@ def build_tensorrt(onnx: Path, out_dir: Path, resource: Dict[str, Any], params: 
     engine = out_dir / f'{safe_name(onnx.stem)}_{precision}.engine'
     cmd = [trtexec, f'--onnx={onnx}', f'--saveEngine={engine}']
     if precision == 'fp16': cmd.append('--fp16')
+    if precision == 'fp32': cmd.append('--noTF32')
     workspace = int(params.get('workspace_mb') or 2048)
     # TensorRT 10 使用 --memPoolSize；较老版本使用 --workspace。先读帮助信息，避免固定参数导致真实环境转换失败。
     try:
@@ -347,9 +361,9 @@ def find_tpu_tools(resource: Dict[str, Any]):
     return tools["model_transform"], tools["model_deploy"], tools["run_calibration"]
 
 
-def build_sophon(onnx: Path, out_dir: Path, resource: Dict[str, Any], params: Dict[str, Any], calibration_dir: Optional[Path], log_file: Path) -> Path:
+def build_sophon(onnx: Path, out_dir: Path, resource: Dict[str, Any], params: Dict[str, Any], calibration_dir: Optional[Path], log_file: Path, *, verified_toolchain: Dict[str, Any] | None = None) -> Path:
     params = validate_target("sophon", params)
-    environment = require_sophon_toolchain(resource, chip=params["chip"], precision=params["precision"])
+    environment = verified_toolchain if verified_toolchain is not None else require_sophon_toolchain(resource, chip=params["chip"], precision=params["precision"])
     tools, py = environment["tools"], environment["python_path"]
     height, width = conversion_input_shape(params)
     # The ONNX tensor is already RGB/NCHW normalized by its caller. Do not fuse
@@ -409,11 +423,9 @@ def build_ascend(onnx: Path, out_dir: Path, resource: Dict[str, Any], params: Di
     input_name = str(params.get('input_name') or 'images').strip()
     prefix = out_dir / f'{safe_name(onnx.stem)}_{safe_name(soc)}'
     cmd = [atc, f'--model={onnx}', '--framework=5', f'--output={prefix}', f'--soc_version={soc}', f'--input_shape={input_name}:{batch},3,{h},{w}']
-    precision_mode = str(params.get('precision_mode') or '').strip()
-    if precision_mode:
-        cmd.append(f'--precision_mode={precision_mode}')
-    elif str(params.get('precision') or '').lower() == 'fp16':
-        cmd.append('--precision_mode=allow_fp32_to_fp16')
+    # Use the same validated contract as API admission and the persisted manifest.
+    precision_mode = validate_target('ascend', params)['precision_mode']
+    cmd.append(f'--precision_mode={precision_mode}')
     if bool(params.get('aipp_enabled', False)):
         content = str(params.get('aipp_config') or '').strip()
         if not content:
@@ -435,11 +447,12 @@ def build_ascend(onnx: Path, out_dir: Path, resource: Dict[str, Any], params: Di
 
 
 
-def build_rockchip(onnx: Path, out_dir: Path, resource: Dict[str, Any], params: Dict[str, Any], calibration_dir: Optional[Path], log_file: Path) -> Path:
+def build_rockchip(onnx: Path, out_dir: Path, resource: Dict[str, Any], params: Dict[str, Any], calibration_dir: Optional[Path], log_file: Path, *, verified_toolchain: Dict[str, Any] | None = None) -> Path:
     params = validate_target("rockchip", params)
     py = str(resource.get('python_path') or params.get('rknn_python') or sys.executable)
     # Direct callers need the same environment gate as the task-level preflight.
-    preflight_vendor_tool('rockchip', resource, params)
+    if verified_toolchain is None:
+        preflight_vendor_tool('rockchip', resource, params)
     chip = str(params.get('chip') or '').strip().lower()
     precision = str(params.get('precision') or 'fp16').lower()
     quant = precision in {'int8','i8','u8'}
@@ -505,15 +518,14 @@ def main():
         if target == 'sophon' and recorded_source_sha and recorded_source_sha != sha256_file(source):
             raise ConversionError('SOURCE_IDENTITY_MISMATCH', '源模型SHA256与选定版本不一致', solution='请重新选择已验证算法版本并创建转换任务。')
         target_contract = validate_target(target, params)
-        if target == 'sophon':
-            params = target_contract
-        preflight_vendor_tool(target, resource, params)
+        params = target_contract
+        toolchain = preflight_vendor_tool(target, resource, params) or {}
         outputs = []
         onnx_validation = {}
         if target == 'onnx':
             update(job_file, progress=18, stage='导出 ONNX', message='正在生成通用 ONNX')
             onnx = prepare_onnx(source, work, resource, params, log_file)
-            onnx_validation = validate_onnx_runtime(onnx, params, log_file)
+            onnx_validation = validate_onnx_runtime(onnx, params, log_file, expected_precision=params.get('precision') if source.suffix.lower() in {'.pt','.pth'} else None)
             outputs.append(copy_artifact(onnx, artifacts))
         elif target == 'paddle_inference':
             update(job_file, progress=18, stage='导出 Paddle Inference', message='正在导出飞桨推理模型')
@@ -531,7 +543,7 @@ def main():
             onnx = prepare_onnx(source, work, resource, params, log_file)
             onnx_validation = validate_onnx_runtime(onnx, params, log_file)
             update(job_file, progress=45 if str(params.get('precision')).lower()!='int8' else 30, stage='TPU-MLIR 编译', message='正在生成 BMODEL')
-            bmodel = build_sophon(onnx, work, resource, params, calibration_dir, log_file)
+            bmodel = build_sophon(onnx, work, resource, params, calibration_dir, log_file, verified_toolchain=toolchain)
             outputs.extend([copy_artifact(onnx, artifacts), copy_artifact(bmodel, artifacts)])
         elif target == 'ascend':
             update(job_file, progress=12, stage='准备 ONNX', message='正在生成 ATC 输入模型')
@@ -545,7 +557,7 @@ def main():
             onnx = prepare_onnx(source, work, resource, params, log_file)
             onnx_validation = validate_onnx_runtime(onnx, params, log_file)
             update(job_file, progress=52, stage='RKNN 编译', message='正在调用 RKNN-Toolkit2 生成 RKNN')
-            rknn = build_rockchip(onnx, work, resource, params, calibration_dir, log_file)
+            rknn = build_rockchip(onnx, work, resource, params, calibration_dir, log_file, verified_toolchain=toolchain)
             outputs.extend([copy_artifact(onnx, artifacts), copy_artifact(rknn, artifacts)])
         else:
             raise RuntimeError(f'不支持的转换目标：{target}')
@@ -572,7 +584,7 @@ def main():
             parameters=params,
             tool={
                 'name': tool_names.get(target, target),
-                'version': str(resource.get('version') or ''),
+                'version': str(toolchain.get('version') or resource.get('version') or ''),
                 'resource_id': resource.get('id') or '',
             },
             outputs=output_records,
@@ -589,13 +601,34 @@ def main():
         if target == 'onnx':
             manifest['status'] = 'runtime_verified'
             manifest['runtime_verified'] = True
+        compiler_precision = {
+            'sophon': {'fp16': 'F16', 'fp32': 'F32'}.get(params.get('precision')),
+            'rockchip': 'do_quantization=' + str(params.get('precision') == 'int8').lower(),
+            'ascend': params.get('precision_mode'),
+            'tensorrt': '--fp16' if params.get('precision') == 'fp16' else '--noTF32',
+        }.get(target)
+        evidence = {
+            'source_training_precision': params.get('source_training_precision'),
+            'resolved_precision': params.get('precision'),
+            'compiler_precision': compiler_precision,
+            'artifact_precision': None,  # No dtype inspection; compiler mode is not an artifact dtype.
+            'onnx_export': 'reused_existing_onnx' if source.suffix.lower() == '.onnx' else 'exported',
+            'onnx_export_parameters_applied': source.suffix.lower() != '.onnx',
+            'sdk_version': manifest['tool']['version'],
+            'compiler_completed': target in {'sophon','rockchip','ascend','tensorrt'},
+            'onnx_input_shape': next((shape for shape in onnx_validation.get('input_shapes', []) if len(shape)==4 and all(type(d) is int and 0<d<=8192 for d in shape)), None) if len(onnx_validation.get('input_shapes', []))==1 else None,
+            'onnx_input_types': onnx_validation.get('input_types') or [],
+            'onnx_floating_tensor_types': onnx_validation.get('floating_tensor_types') or [],
+            'onnx_opset_imports': onnx_validation.get('opset_imports') or {},
+        }
+        manifest['execution_evidence'] = evidence
         write_json(artifacts/'manifest.json', manifest)
         output_rows=[]
         for p in artifacts.rglob('*'):
             if p.is_file():
                 output_rows.append({'name':p.name,'path':str(p),'rel':str(p.relative_to(job_dir)),'size_mb':round(p.stat().st_size/1024/1024,3)})
         runtime_verified = target == 'onnx'
-        update(job_file, status='done', progress=100, stage='转换完成', message='ONNX Runtime 已真实加载验证' if runtime_verified else '部署模型已生成（尚未实机验证）', finished_at=now(), outputs=output_rows, params=params, validation_status='runtime_verified' if runtime_verified else 'converted_unverified', runtime_verified=runtime_verified, manifest_path=str(artifacts/'manifest.json'))
+        update(job_file, status='done', progress=100, stage='转换完成', message='ONNX Runtime 已真实加载验证' if runtime_verified else '部署模型已生成（尚未实机验证）', finished_at=now(), outputs=output_rows, params=params, execution_evidence=evidence, validation_status='runtime_verified' if runtime_verified else 'converted_unverified', runtime_verified=runtime_verified, manifest_path=str(artifacts/'manifest.json'))
         append_log(log_file, '转换完成。')
     except Exception as e:
         append_log(log_file, '转换失败：' + str(e))

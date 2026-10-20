@@ -141,8 +141,7 @@
 .train-create-saas .train-create-technical>summary,.train-create-saas .train-create-split-details>summary{padding:12px 0;cursor:pointer;color:#355a91;font-weight:700;font-size:14px}
 .train-create-saas .train-create-technical>.form{padding:4px 0 12px}
 .train-create-saas .train-create-technical .field small{font-size:12px}
-.train-create-saas:not(.train-create-show-advanced) .train-v3-resources,
-.train-create-saas:not(.train-create-show-advanced) .train-v3-resource-strategy{display:none!important}
+.train-create-saas:not(.train-create-show-advanced) .train-v3-resources{display:none!important}
 .train-create-saas .train-create-split-details{padding:0}
 .train-create-saas .train-create-split-details>summary{padding:10px 0}
 .train-create-saas .train-create-split-details[open]>summary{margin-bottom:6px}
@@ -217,7 +216,7 @@
 .train-create-saas-v2 .train-v3-custom-slot .train-v3-all-settings{order:3;width:100%}
 .train-create-saas-v2 .train-v3-custom-slot .train-v3-resources,.train-create-saas-v2 .train-v3-custom-slot .train-v3-resource-strategy{padding:12px 14px!important;border-radius:12px;background:#f8fbff}
 .train-create-saas-v2 .train-v3-custom-slot .train-v3-resources>small,.train-create-saas-v2 .train-v3-custom-slot .train-v3-resource-strategy>small{display:none}
-.train-create-saas-v2 .train-v3-custom-slot .train-v3-resource-strategy>.form.two{display:none}
+.train-create-saas-v2 .train-v3-resource-strategy>.form.two{display:none}
 .train-create-saas-v2 .train-v3-custom-slot .train-v3-manual-resource{display:block}
 .train-create-saas-v2 .train-v3-custom-slot .train-v3-manual-resource[hidden]{display:none}
 .train-create-saas-v2 .train-ui-labels-card{min-height:0;border-color:#bad3fa;background:linear-gradient(180deg,#f5f9ff 0,#fff 120px);box-shadow:0 4px 20px rgba(29,78,216,.055)}
@@ -261,3 +260,9 @@
 }
 
 .train-create-saas-v2 .train350-auto-schedule{margin-left:auto;display:inline-flex;align-items:center;gap:8px;border-radius:99px;border:1px solid #b9d8fa;padding:7px 12px;background:linear-gradient(120deg,#ebf5ff,#e9faf6);color:#18609b;font-size:14px;font-weight:800;white-space:nowrap}.train350-auto-schedule i{width:8px;height:8px;border-radius:50%;background:#19ac83;box-shadow:0 0 0 4px #b8eddf6e}@media(max-width:640px){.train-create-saas-v2 .train350-auto-schedule{font-size:12px;padding:6px 8px}}
+
+.train-create-saas-v2 .train-v3-mode-card>.train-v3-resource-strategy{margin-top:14px;padding:0!important;border:0;background:transparent;border-radius:0}
+.train-create-saas-v2 .train-v3-resource-strategy .field small,.train-create-saas-v2 .train-v3-resource-strategy>small{font-size:12px;line-height:1.6}
+
+.train-create-saas-v2 .train-v3-resource-strategy .train-v3-auto-resource{display:flex;flex-wrap:wrap;gap:6px 16px;margin:8px 0;color:#5b6f91;font-size:12px}
+.train-create-saas-v2[data-training-mode="custom"] .train-v3-resource-strategy .train-v3-auto-resource{display:none}

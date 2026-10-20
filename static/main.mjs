@@ -14,7 +14,7 @@ import {installPollRegistry} from './modules/poll-registry.js?v=422521';
 import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=4226387';
 import {installExternalAlgorithmPlatformRuntime} from './modules/external-algorithm-platform.js?v=63021';
 import {installChangLianDataBrowserRuntime} from './modules/changlian-data-browser.js?v=63001';
-import {installExternalAlgorithmPublishRuntime} from './modules/external-algorithm-publish.js?v=64012';
+import {installExternalAlgorithmPublishRuntime} from './modules/external-algorithm-publish.js?v=64013';
 import {installModelArtifactRuntime} from './modules/model-artifact-runtime.js?v=65009';
 import {installTrainingRecoveryRuntime} from './modules/training-recovery-runtime.js?v=4226389';
 import {installTrainingMaterialPickerRuntime} from './modules/training-material-picker-runtime.js?v=422611';
@@ -25,7 +25,7 @@ import {installTrainingProgressStream} from './modules/training-progress-stream.
 import {createTrainingDraft, trainingDraftToRequest, trainingBaseVersionFromAlgorithm} from './modules/training-draft.js?v=422511';
 import {installTrainingDraftRuntime} from './modules/training-draft-runtime.js?v=422520';
 import {TRAINING_DRAFT_CONTROL_IDS, installTrainingDraftControls} from './modules/training-draft-controls.js?v=422502';
-import {benchmarkReuseContext, buildTrainingEngineParameters, buildTrainingStartPayload, installTrainingSubmitRuntime, trainingSubmitReadiness, validateTrainingDevice} from './modules/training-submit.js?v=422599';
+import {benchmarkReuseContext, buildTrainingEngineParameters, buildTrainingStartPayload, installTrainingSubmitRuntime, trainingSubmitReadiness, validateTrainingDevice} from './modules/training-submit.js?v=422600';
 import {installTrainingCreateHydrationRuntime} from './modules/training-create-hydration.js?v=422556';
 import {installAutoLabelPollRuntime} from './modules/auto-label-poll-runtime.js?v=422503';
 import {annotationReviewView, annotationSavePayload, createAnnotationWorkbench, queueWindow} from './modules/annotation-workbench.js?v=422594';

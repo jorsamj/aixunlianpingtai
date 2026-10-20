@@ -205,3 +205,41 @@ def test_missing_job_record_http_allows_rename_and_toggle_but_never_identity_or_
         denied=client.post('/api/v39/deploy/catalog/operations',json={"entity":"vendors","action":action,"id":vendor["id"],"operation_id":"danger-"+action,"expected_revision":repo.conversion_catalog()["revision"],"record":record,"confirm_delete":True})
         assert denied.status_code==409 and denied.json()["code"]=="CATALOG_REFERENCE_CHECK_FAILED"
     assert repo.conversion_catalog()["chips"][0]["id"]==chip["id"]
+
+
+@pytest.mark.parametrize("suffix", [".onnx",".pt"])
+def test_onnx_admission_records_requested_options_and_only_marks_actual_reuse(tmp_path,monkeypatch,suffix):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+    from platform_core.remote_execution_transport import RemoteExecutionTransportService
+    monkeypatch.setattr(api,"DATA_DIR",tmp_path)
+    source=tmp_path/("model"+suffix);source.write_bytes(b"isolated source")
+    monkeypatch.setattr(api,"_resolve_deploy_source",lambda *a:{"kind":"imported","path":str(source)})
+    resource={"id":"agent","kind":"ultralytics","mode":"agent","status":"ready","targets":["onnx"]}
+    monkeypatch.setattr(api,"_deploy_resource_by_id",lambda *a:resource)
+    monkeypatch.setattr(api,"_detect_agent_deploy_resource",lambda r:r)
+    monkeypatch.setattr(api,"_deploy_resource_public",lambda r:dict(r))
+    monkeypatch.setattr(api,"get_active_ultralytics_env",lambda:{})
+    monkeypatch.setattr(api,"get_active_paddle_env",lambda:{})
+    monkeypatch.setattr(api,"project_dir",lambda *a:tmp_path)
+    monkeypatch.setattr(api,"_deploy_job_dir",lambda p,j:tmp_path/"jobs"/j)
+    monkeypatch.setattr(api,"_storage_source_fence",lambda:nullcontext())
+    jobs=[];staged=[]
+    def stage(**kwargs):
+        staged.append(kwargs)
+        return {"params":RemoteExecutionTransportService._portable_conversion_params("onnx",kwargs["params"])}
+    monkeypatch.setattr(api,"_remote_execution_transport_service",lambda:SimpleNamespace(stage_model_conversion=stage))
+    monkeypatch.setattr(api,"_write_deploy_job",lambda p,j:jobs.append(j))
+    monkeypatch.setattr(api,"shared_task_repository",lambda:SimpleNamespace(create=lambda t:None))
+    monkeypatch.setattr(api,"shared_task_artifacts",lambda:SimpleNamespace(atomic_write_json=lambda *a:None))
+    requested={"precision":"fp32","opset":17,"dynamic":True,"simplify":True,"onnx_source_reused":True}
+    result=api._v39_create_deploy_job_under_version_fence("p",api.DeployJobReq(source_id="s",target="onnx",resource_id="agent",params=requested))
+    assert result["job"]["requested_params"]==requested
+    params=result["job"]["params"]
+    if suffix==".onnx":
+        assert params["onnx_source_reused"] is True
+        assert not set(params).intersection({"precision","opset","dynamic","simplify","input_size"})
+    else:
+        assert "onnx_source_reused" not in params
+        assert params["precision"]=="fp32" and params["opset"]==17
+    assert staged[0]["params"]==params

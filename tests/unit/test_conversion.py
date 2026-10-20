@@ -105,3 +105,24 @@ def test_auto_version_conversion_does_not_override_source_training_defaults():
     assert "params={}" in code
     assert 'params={"input_size":int(job.get("imgsz") or 640),"precision":"fp16"}' not in code
     assert "v39_create_deploy_job(" in code
+
+
+@pytest.mark.parametrize("precision,mode", [("fp32","force_fp32"),("fp16","allow_fp32_to_fp16")])
+def test_ascend_precision_is_an_explicit_compiler_contract(precision, mode):
+    resolved=validate_target("ascend", {"soc_version":"Ascend310P3", "precision":precision})
+    assert resolved["precision_mode"] == mode
+    with pytest.raises(ValueError, match="precision_mode"):
+        validate_target("ascend", {"soc_version":"Ascend310P3", "precision":precision,
+                                   "precision_mode":"force_fp16"})
+
+@pytest.mark.parametrize("override", [{"opset":17},{"simplify":True}])
+def test_sophon_fixed_export_parameters_are_not_silently_overwritten(override):
+    with pytest.raises(ValueError):
+        validate_target("sophon", {"chip":"bm1684x", "precision":"fp16", **override})
+
+
+@pytest.mark.parametrize("mode", ["must_keep_origin_dtype","allow_mix_precision"])
+def test_ascend_explicit_legacy_modes_remain_visible_as_compiler_policy(mode):
+    assert validate_target("ascend",{"soc_version":"Ascend310P3","precision":"fp16","precision_mode":mode})["precision_mode"]==mode
+    with pytest.raises(ValueError,match="precision_mode"):
+        validate_target("ascend",{"soc_version":"Ascend310P3","precision":"fp32","precision_mode":mode})

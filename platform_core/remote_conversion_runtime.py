@@ -237,6 +237,8 @@ def synchronize_remote_conversion(context, request, *, recovering=False, http=re
                             os.replace(path, target)
                 if (manifest.get("tool") or {}).get("version"):
                     job["params"]={**job.get("params",{}),"sdk_version":manifest["tool"]["version"]}
+                execution = manifest.get("execution_evidence") or {}
+                job["execution_evidence"]=dict(execution) if isinstance(execution,dict) else {}
                 job.update(status="blocked_by_hardware", hardware_verified=False, conversion_status="converted",
                     stage="等待目标硬件验证", progress=100, manifest_path=str(artifacts / "manifest.json"),
                     outputs=[{"name":p.name,"path":str(p),"rel":str(p.relative_to(jd)),"size_bytes":p.stat().st_size}

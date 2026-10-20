@@ -2301,8 +2301,8 @@ class ExternalAlgorithmPublishService:
         if re.fullmatch(r"YOLOv\d+[nsmlx]", yolo_version):
             payload["yoloVersion"] = yolo_version
         prepared = artifact.get('weight_metadata')
-        if (metadata.get('label_validation_status') != 'CONFLICT'
-                and (not isinstance(prepared, Mapping) or bool(prepared.get('tags')))
+        if (metadata.get('label_validation_status') not in {'CONFLICT', 'UNKNOWN'}
+                and (not isinstance(prepared, Mapping) or not prepared or bool(prepared.get('tags')))
                 and isinstance(metadata.get('tags'), list) and metadata['tags']
                 and all(isinstance(tag, str) and tag.strip() == tag and tag for tag in metadata['tags'])
                 and len(set(metadata['tags'])) == len(metadata['tags'])):
@@ -2827,6 +2827,7 @@ class ExternalAlgorithmPublishService:
         ]
         conversion_active = self.conversion_active(project_id, algorithm_id, version_id)
         stored = self._publication_artifacts(str(publication['publication_key']),include_inactive=True) if publication else []
+        requests = self.audit.latest_weight_requests(project_id, algorithm_id, version_id)
         weights = []
         local_assets = self.model_assets.repository.list(project_id=project_id,algorithm_id=algorithm_id,version_id=version_id,limit=500)
         choices=self._automatic_delivery_choices(version,classified)
@@ -2863,6 +2864,10 @@ class ExternalAlgorithmPublishService:
                 prepared.pop('tags', None)
                 row['metadata_sync_status'] = 'CONFLICT'
                 row['metadata_note'] = str(row['metadata'].get('label_error') or '历史模型标签冲突，禁止自动补齐')
+            request = requests.get(str(row.get('artifact_id') or ''), {})
+            request_body = (request.get('request') or {}).get('json') or {}
+            row.update(request_tags=request_body.get('tags'), request_status=request.get('status'),
+                       request_audit_id=request.get('log_id'), request_endpoint=request.get('endpoint'))
             row.update(local_tags=row['metadata'].get('tags'), prepared_tags=prepared.get('tags'),
                        confirmed_tags=confirmed.get('tags'), remote_tags=observed.get('tags'),
                        remote_tags_status='READ_BACK' if observed.get('tags_present') else 'NOT_RETURNED' if observed else 'NOT_VERIFIED',

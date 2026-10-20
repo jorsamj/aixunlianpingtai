@@ -40,6 +40,7 @@ function setup(getResource) {
     chips:['rk3568','rk3576'].map(id=>({id,vendor_id:'rockchip',name:id.toUpperCase()})).concat(['bm1684x','bm1688'].map(id=>({id,vendor_id:'sophon',name:id.toUpperCase()})))};
   const calls = [];
   let opened = false;
+  let form = null;
   let modalMarkup = '';
   const actions = {
     loadVersionConversionResources428: async force => {calls.push(force); return getResource();},
@@ -51,7 +52,7 @@ function setup(getResource) {
   const doc = {
     getElementById: id => elems[id] || null,
     querySelector: key => key.includes('conv428Target') ? radio :
-      key === '.convert428-create' ? (opened ? {} : null) :
+      key === '.convert428-create' ? form :
       key.includes('[data-convert-submit]') ? submit : null,
   };
   const storage = new Map();
@@ -70,7 +71,7 @@ function setup(getResource) {
     },
     toast: message => warning.textContent = message,
     esc: value => String(value ?? ''),
-    modal: (_title, markup) => {opened = true;modalMarkup = String(markup);},
+    modal: (_title, markup) => {opened = true;form={};modalMarkup = String(markup);},
     setTimeout: fn => fn(),
     localStorage: {
       getItem: key => storage.get(key) ?? null,
@@ -301,4 +302,71 @@ test('Sophon remote resource recovery preserves source and full SDK version in t
   mode='none';await h.win.refreshVersionConversionResources428();
   assert.match(h.status.innerHTML,/尚未配置/);
   assert.equal(h.submit.disabled,true);
+});
+
+
+test('an older dialog response cannot replace a newly opened source catalog or defaults',async()=>{
+  const h=setup(async()=>ready());
+  let deliver;let count=0;
+  h.win.loadVersionConversionHistory428=()=>++count===1?new Promise(r=>deliver=r):Promise.resolve({algorithm:{},version:{version_name:'new',conversion_defaults:{input_width:384,input_height:640}}});
+  const old=h.win.openNewConvertCore416('a','old');
+  await h.win.openNewConvertCore416('a','new');
+  deliver({algorithm:{},version:{version_name:'old',conversion_defaults:{input_width:800,input_height:800}}});
+  await old;
+  assert.equal(h.state.conv428SourceId,'version::a::new');
+});
+
+
+test('selected resource detection uses one existing detect call and restores the chosen chip',async()=>{
+  const h=setup(async()=>ready());await h.win.openNewConvertCore416('a','v');
+  h.chip.value='rk3568';await h.win.refreshConvertContract428();
+  const api=h.win.api,posts=[];let finish;
+  h.win.api=(url,options)=>{if(url.endsWith('/detect')){posts.push(url);return new Promise(r=>finish=r)}return api(url,options)};
+  const pending=h.win.refreshVersionConversionResources428(true);
+  await h.win.refreshVersionConversionResources428(true);
+  assert.equal(posts.length,1);assert.equal(posts[0],'/api/v39/deploy/resources/a800/detect');
+  finish({...resource('a800',['rk3568']),version:'2.3.2'});await pending;
+  assert.equal(h.select.value,'a800');assert.equal(h.chip.value,'rk3568');
+  assert.equal(h.state.conv428Resources[0].version,'2.3.2');
+});
+
+
+test('selected SDK response cannot restore a chip changed while detection is pending',async()=>{
+  const h=setup(async()=>ready());await h.win.openNewConvertCore416('a','v');
+  h.chip.value='rk3568';await h.win.refreshConvertContract428();
+  const api=h.win.api;let finish;
+  h.win.api=(url,options)=>url.endsWith('/detect')?new Promise(r=>finish=r):api(url,options);
+  const pending=h.win.refreshVersionConversionResources428(true);
+  h.chip.value='rk3576';
+  finish(resource('a800',['rk3568','rk3576']));await pending;
+  assert.equal(h.chip.value,'rk3576');
+});
+
+
+test('failed SDK contract shows a terminal diagnostic instead of a stuck detecting chip',async()=>{
+  const h=setup(async()=>ready());await h.win.openNewConvertCore416('a','v');
+  h.chip.value='rk3568';h.win.api=async()=>{throw new Error('SDK authentication failed')};
+  await h.win.refreshConvertContract428();
+  assert.equal(h.submit.disabled,true);assert.match(h.warning.textContent,/authentication failed/);
+  assert.match(h.chip.options.find(o=>o.value==='rk3568').textContent,/检测失败/);
+});
+
+
+test('failed older dialog load cannot invalidate a newer ready source',async()=>{
+  const h=setup(async()=>ready());let fail;let calls=0;
+  h.win.loadVersionConversionHistory428=()=>++calls===1?new Promise((_,reject)=>fail=reject):Promise.resolve({version:{stored_path:'/tmp/new.pt'},algorithm:{}});
+  const pending=h.win.openNewConvertCore416('a','old');await h.win.openNewConvertCore416('a','new');
+  fail(new Error('old history failed'));await pending;
+  assert.equal(h.state.conv428ResourcesCurrent,true);assert.equal(h.state.conv428SourceId,'version::a::new');
+  assert.doesNotMatch(h.warning.textContent,/old history failed/);
+});
+
+test('failed selected detection cannot erase a different ready resource',async()=>{
+  const h=setup(async()=>({items:[resource('a',['rk3568']),resource('b',['rk3576'])]}));
+  await h.win.openNewConvertCore416('a','v');let fail;const api=h.win.api;
+  h.win.api=(url,options)=>url.endsWith('/detect')?new Promise((_,reject)=>fail=reject):api(url,options);
+  const pending=h.win.refreshVersionConversionResources428(true);h.select.value='b';h.chip.value='rk3576';
+  fail(new Error('resource a unauthorized'));await pending;
+  assert.equal(h.select.value,'b');assert.equal(h.state.conv428ResourcesCurrent,true);
+  assert.equal(h.state.conv428Resources.find(r=>r.id==='b').status,'ready');
 });

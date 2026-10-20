@@ -1586,14 +1586,16 @@ def _metadata_model(tmp_path):
             "training_lineage":{"task_id":"train-v1","base":{"model":"yolo11s.pt"},
                 "parameters":{"actual":{"imgsz":[384,800],"precision":"fp32"}}}}
 
+@pytest.mark.parametrize("execution", [{"compiler_precision":"F32","artifact_precision":None}, "bad optional evidence"], ids=["valid_optional","invalid_optional"])
 @pytest.mark.parametrize("manifest_matches",[True,False])
-def test_model_artifact_persists_only_manifest_io_bound_to_actual_output(tmp_path,monkeypatch,manifest_matches):
+def test_model_artifact_persists_only_manifest_io_bound_to_actual_output(tmp_path,monkeypatch,manifest_matches,execution):
     service=_service(tmp_path);version=_metadata_model(tmp_path)
     path=tmp_path/"model_bm1684_fp32.bmodel";path.write_bytes(b"compiled-fixture")
     manifest=tmp_path/"manifest.json"
     source_sha=hashlib.sha256(Path(version["stored_path"]).read_bytes()).hexdigest()
     manifest.write_text(json.dumps({"job_id":"c1","source":{"sha256":source_sha},
         "tool":{"name":"tpu-mlir","version":"1.30.2"},"onnx":{"input_shapes":[[1,3,384,640]],"output_names":["output0"],"output_count":1},
+        "execution_evidence":execution,
         "sophon_validation":{"structure":"passed","chip":"bm1684","model_validation_status":"incomplete"},
         "outputs":[{"name":path.name,"sha256":hashlib.sha256(path.read_bytes()).hexdigest() if manifest_matches else "0"*64,"size_bytes":path.stat().st_size}]}),encoding="utf-8")
     job={"id":"c1","target":"sophon","status":"done","params":{"chip":"bm1684","precision":"fp32"},
@@ -1607,8 +1609,13 @@ def test_model_artifact_persists_only_manifest_io_bound_to_actual_output(tmp_pat
         assert saved["metadata"]["model_io"]["compiled_model"] is None
         assert saved["metadata"]["sdk_name"]=="tpu-mlir" and saved["metadata"]["sdk_version"]=="1.30.2"
         assert saved["metadata"]["model_validation_status"]=="incomplete"
+        assert saved["metadata"]["execution_evidence"]==(execution if isinstance(execution,dict) else {})
+        assert saved["metadata"]["manifest_metadata_error"]==""
+        if not isinstance(execution,dict):
+            assert saved["metadata"]["execution_evidence_note"]
     else:
         assert saved["metadata"].get("model_io") is None
+        assert saved["metadata"].get("execution_evidence") is None
         assert "不匹配" in saved["metadata"]["manifest_metadata_error"]
     assert saved["metadata"]["tags"]==["smoke","fire"]
 
@@ -1779,3 +1786,19 @@ def test_original_discovery_keeps_persisted_path_when_best_has_same_bytes(tmp_pa
     best=tmp_path/"training-best.pt";best.write_bytes(Path(version["stored_path"]).read_bytes());version["best_path"]=str(best)
     originals=[r for r in service.discover_version_artifacts("p1",{"id":"a1"},version) if r["target"]=="original"]
     assert len(originals)==1 and originals[0]["source_path"]==version["stored_path"]
+
+
+def test_reused_onnx_metadata_uses_verified_graph_shape_without_export_defaults(tmp_path,monkeypatch):
+    from tests.unit.test_sophon_conversion import _onnx_identity
+    service=_service(tmp_path);version=_metadata_model(tmp_path)
+    path=tmp_path/"existing.onnx";_onnx_identity(path,[1,3,384,640])
+    manifest=tmp_path/"manifest.json";source_sha=hashlib.sha256(Path(version["stored_path"]).read_bytes()).hexdigest()
+    manifest.write_text(json.dumps({"job_id":"reuse","source":{"sha256":source_sha},
+        "onnx":{"input_shapes":[[1,3,384,640]]},"execution_evidence":{"onnx_export":"reused_existing_onnx"},
+        "outputs":[{"name":path.name,"sha256":hashlib.sha256(path.read_bytes()).hexdigest(),"size_bytes":path.stat().st_size}]}),encoding="utf-8")
+    job={"id":"reuse","target":"onnx","status":"done","params":{"onnx_source_reused":True},
+        "source_trace":{"sha256":source_sha},"manifest_path":str(manifest),"outputs":[{"path":str(path)}]}
+    monkeypatch.setattr(service,"_conversion_jobs",lambda *a:[job])
+    artifact=next(r for r in service.discover_version_artifacts("p1",{"id":"a1"},version) if r["target"]=="onnx")
+    assert artifact["metadata"]["image_width"]==640 and artifact["metadata"]["image_height"]==384
+    assert artifact["metadata"]["execution_evidence"]["onnx_export"]=="reused_existing_onnx"

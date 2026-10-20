@@ -4546,3 +4546,34 @@ def test_absent_old_id_then_add_timeout_recovers_new_id_without_second_write(tmp
     recovered=service.repository.artifact_publication(old["artifact_id"])
     assert recovered["sync_status"]=="SYNCED" and recovered["external_weight_id"]=="new-after-timeout"
     assert len(requests)==1 and FakePublishingClient.weight_edits==0
+
+
+def test_canonical_verified_tags_survive_empty_prepared_metadata():
+    artifact = {"size_bytes": 32, "sha256": "a" * 64,
+                "metadata": {"tags": ["smoke", "fire"]}, "weight_metadata": {}}
+    assert ExternalAlgorithmPublishService._weight_metadata_payload(artifact)["tags"] == ["smoke", "fire"]
+    artifact["metadata"]["label_validation_status"] = "CONFLICT"
+    assert "tags" not in ExternalAlgorithmPublishService._weight_metadata_payload(artifact)
+
+
+def test_tags_status_distinguishes_transport_request_receipt_and_remote_readback(tmp_path):
+    memory=MemorySecretStore();_configure_external(tmp_path,memory);_seed_external_algorithm(tmp_path);_tags_frozen_version(tmp_path,["smoke","fire"])
+    service,backend,writes=_tags_wire_service(tmp_path,memory)
+    result=service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
+    row=service.publication_status("p1","a1","v1")["artifacts"][0]
+    sent=next(body for path,body in writes if path.endswith("/algorithm-weight/add"))
+    assert row["request_tags"] == sent["tags"] == row["confirmed_tags"] == ["smoke","fire"]
+    assert row["request_status"] == "SUCCESS" and row["request_audit_id"]
+    assert row["remote_tags"] == ["smoke","fire"] and row["remote_tags_status"] == "READ_BACK"
+
+
+def test_tags_wire_canonical_metadata_survives_empty_prepared_mapping(tmp_path,monkeypatch):
+    memory=MemorySecretStore();_configure_external(tmp_path,memory);_seed_external_algorithm(tmp_path);_tags_frozen_version(tmp_path,["smoke","fire"])
+    service,backend,writes=_tags_wire_service(tmp_path,memory)
+    discover=service.discover_artifacts
+    monkeypatch.setattr(service,"discover_artifacts",lambda *args,**kwargs:[{**row,"weight_metadata":{}} for row in discover(*args,**kwargs)])
+    first=service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
+    sent=next(body for path,body in writes if path.endswith("/algorithm-weight/add"))
+    assert sent["tags"] == ["smoke","fire"]
+    assert first["artifacts"][0]["sync_status"] == "SYNCED"
+    assert backend.weights[0]["tags"] == sent["tags"]

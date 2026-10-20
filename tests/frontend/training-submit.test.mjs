@@ -931,3 +931,15 @@ test('first-training explicit label rule remains active for every training mode'
     assert.throws(() => buildTrainingStartPayload({draft:d,target,algorithm,trainingDraftToRequest}), /至少选择一个训练标签/);
   }
 });
+
+
+test('all training modes preserve explicit precision and matching AMP intent', () => {
+  for (const trainingMode of ['quick','full','complex','custom']) {
+    for (const precision of ['auto','fp16','fp32']) {
+      const d=draft({trainingMode,config:{model:'custom.pt',precision,amp:true}});
+      const payload=buildTrainingStartPayload({draft:d,target,algorithm,trainingDraftToRequest});
+      assert.equal(payload.precision,precision,trainingMode);
+      assert.equal(payload.amp,precision!=='fp32',trainingMode);
+    }
+  }
+});

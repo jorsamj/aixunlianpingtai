@@ -18499,6 +18499,7 @@ def _v39_create_deploy_job_under_version_fence(
         # Ultralytics/Paddle 内置资源只做直接导出；芯片转换必须选择对应芯片资源。
         raise HTTPException(status_code=400, detail=f"该资源不支持 {payload.target}。当前支持：{', '.join(resource.get('targets') or []) or '无'}")
     params=dict(payload.params or {})
+    params.pop("onnx_source_reused", None)
     if payload.target in {"sophon","rockchip","ascend"}:
         # Discard inherited deployment precision: training dtype is not a compiler default.
         if not (payload.params or {}).get("precision"):
@@ -18620,6 +18621,10 @@ def _v39_create_deploy_job_under_version_fence(
             calibration_hash.update(image_path.name.encode('utf-8'))
             calibration_hash.update(sha256_file(image_path).encode('ascii'))
         params["calibration_snapshot"] = calibration_hash.hexdigest()
+    if payload.target == "onnx" and src.suffix.lower() == ".onnx":
+        for key in ("precision", "opset", "simplify", "dynamic", "input_size", "input_width", "input_height", "batch"):
+            params.pop(key, None)
+        params["onnx_source_reused"] = True
     try:
         params = validate_target(payload.target, params)
     except ValueError as error:
@@ -18634,7 +18639,7 @@ def _v39_create_deploy_job_under_version_fence(
         for field in ("label_schema", "label_codes", "yolo", "training_lineage", "snapshot_id", "snapshot"):
             if field in version:
                 source_trace[field] = json.loads(json.dumps(version[field], ensure_ascii=False))
-    job={"id":job_id,"project_id":project_id,"source_id":payload.source_id,"source_name":src.name,"source_path":str(local_src),"source_meta":source,"source_trace":source_trace,"target":payload.target,"resource_id":payload.resource_id,"resource":resource_for_job,"params":params,"dataset_id":payload.dataset_id,"calibration_split":payload.calibration_split,"calibration_dir":str(cal_dir) if cal_dir else "","status":"queued","stage":"等待启动","progress":0,"message":"等待启动","created_at":now_iso(),"updated_at":now_iso(),"outputs":[]}
+    job={"id":job_id,"project_id":project_id,"source_id":payload.source_id,"source_name":src.name,"source_path":str(local_src),"source_meta":source,"source_trace":source_trace,"target":payload.target,"resource_id":payload.resource_id,"resource":resource_for_job,"params":params,"requested_params":dict(payload.params or {}),"dataset_id":payload.dataset_id,"calibration_split":payload.calibration_split,"calibration_dir":str(cal_dir) if cal_dir else "","status":"queued","stage":"等待启动","progress":0,"message":"等待启动","created_at":now_iso(),"updated_at":now_iso(),"outputs":[]}
     portable_conversion = None
     conversion_target = str(payload.target or "").strip().lower()
     should_stage_portable = (
@@ -19697,7 +19702,9 @@ def _version_deploy_training_job(project_id: str, version: Mapping[str, Any]) ->
 
 
 def _version_deploy_conversion_defaults(project_id: str, version: Mapping[str, Any]) -> dict[str, Any]:
-    return derive_version_conversion_defaults(version, _version_deploy_training_job(project_id,version))
+    defaults = derive_version_conversion_defaults(version, _version_deploy_training_job(project_id,version))
+    defaults["source_format"] = Path(str(version.get("stored_path") or version.get("model_name") or "")).suffix.lower().lstrip(".")
+    return defaults
 
 
 @app.get('/api/v42/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/deployments')
