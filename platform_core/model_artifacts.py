@@ -572,6 +572,7 @@ class ModelArtifactRepository:
                      "image_width", "image_height", "yolo_version", "precision", "conversion_params", "source_artifact_id",
                      "local_vendor_id", "local_chip_id", "sdk_chip_code", "template_id", "template_version", "constraint_id", "resource_id", "sdk_version", "parameter_sources",
                      "manifest_path", "sdk_name", "model_io", "model_validation_status",
+                     "source_sha256", "validation_status", "conversion_status", "runtime_verified", "hardware_verified",
                      "snapshot_id", "task_id", "framework", "framework_version", "finished_at", "last_label_conflict", "training_precision", "class_count",
                      "remote_training", "object_identity_verified", "execution_generation", "role"}
             for key in owned:
@@ -1572,30 +1573,33 @@ class ModelArtifactService:
     def register_version_metadata(self, project_id, algorithm_id, version_id):
         """Persist local facts without configuring or contacting any remote target."""
         with model_delivery_version_fence(self.data_dir, project_id, algorithm_id, version_id):
-            algorithm, version = self._current_version(project_id, algorithm_id, version_id)
-            if not algorithm or not version or algorithm.get("external_delete_pending") is True:
-                return []
-            rows = []
-            stored_rows = self.repository.list(project_id=project_id,algorithm_id=algorithm_id,version_id=version_id,limit=500)
-            for item in self.discover_version_artifacts(project_id, algorithm, version):
-                targets = {"original","training","best","last"} if item["target"]=="original" else {item["target"]}
-                candidates = [r for r in stored_rows if r["target"] in targets and r["sha256"]==item["sha256"]
-                              and str(r.get("chip_code") or "").lower()==str(item.get("chip_code") or "").lower()]
-                if len(candidates)>1:
-                    candidates = [r for r in candidates if r.get("source_path")==item["source_path"]]
-                if len(candidates)>1:
-                    raise PlatformError("MODEL_ARTIFACT_IDENTITY_AMBIGUOUS", "模型元数据补齐身份不唯一", version_id, "请人工核对原Artifact。", 409)
-                # Metadata repair never renames/rebinds a delivered file or object.
-                value = {**candidates[0], "metadata":item["metadata"]} if candidates else item
-                rows.append(self.repository.upsert(value))
-            found = {r["artifact_id"] for r in rows}
-            for stored in self.repository.list(project_id=project_id,algorithm_id=algorithm_id,version_id=version_id,limit=500):
-                meta = stored.get("metadata") or {}
-                if (stored["artifact_id"] not in found and meta.get("object_identity_verified") is True
-                        and meta.get("task_id") == str(version.get("task_id") or version.get("job_id") or "")
-                        and stored.get("storage_status") == "UPLOADED"):
-                    rows.append(self.repository.upsert({**stored,"metadata":{**meta,**model_metadata(self.data_dir,version,algorithm=algorithm)}}))
-            return rows
+            return self._register_version_metadata_under_fence(project_id,algorithm_id,version_id)
+
+    def _register_version_metadata_under_fence(self, project_id, algorithm_id, version_id):
+        algorithm, version = self._current_version(project_id, algorithm_id, version_id)
+        if not algorithm or not version or algorithm.get("external_delete_pending") is True:
+            return []
+        rows = []
+        stored_rows = self.repository.list(project_id=project_id,algorithm_id=algorithm_id,version_id=version_id,limit=500)
+        for item in self.discover_version_artifacts(project_id, algorithm, version):
+            targets = {"original","training","best","last"} if item["target"]=="original" else {item["target"]}
+            candidates = [r for r in stored_rows if r["target"] in targets and r["sha256"]==item["sha256"]
+                          and str(r.get("chip_code") or "").lower()==str(item.get("chip_code") or "").lower()]
+            if len(candidates)>1:
+                candidates = [r for r in candidates if r.get("source_path")==item["source_path"]]
+            if len(candidates)>1:
+                raise PlatformError("MODEL_ARTIFACT_IDENTITY_AMBIGUOUS", "模型元数据补齐身份不唯一", version_id, "请人工核对原Artifact。", 409)
+            # Metadata repair never renames/rebinds a delivered file or object.
+            value = {**candidates[0], "metadata":item["metadata"]} if candidates else item
+            rows.append(self.repository.upsert(value))
+        found = {r["artifact_id"] for r in rows}
+        for stored in self.repository.list(project_id=project_id,algorithm_id=algorithm_id,version_id=version_id,limit=500):
+            meta = stored.get("metadata") or {}
+            if (stored["artifact_id"] not in found and meta.get("object_identity_verified") is True
+                    and meta.get("task_id") == str(version.get("task_id") or version.get("job_id") or "")
+                    and stored.get("storage_status") == "UPLOADED"):
+                rows.append(self.repository.upsert({**stored,"metadata":{**meta,**model_metadata(self.data_dir,version,algorithm=algorithm)}}))
+        return rows
 
     def ensure_uploaded(self, discovered: Mapping[str, Any], *, force: bool = False) -> dict[str, Any]:
         row = self.repository.upsert(discovered)

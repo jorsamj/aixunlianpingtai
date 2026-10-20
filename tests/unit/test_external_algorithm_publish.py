@@ -4131,3 +4131,191 @@ def test_external_chip_bindings_read_the_local_catalog_without_changing_saved_ma
     service.model_assets.repository.save_conversion_catalog(catalog(),expected_revision=0)
     assert service._local_chip_dictionary()=={"sophon":["BM1684","BM1688"]}
     assert service.repository.config()==original
+
+
+@pytest.mark.parametrize("target,chip", [("sophon","bm1684x"),("rockchip","rk3568")])
+@pytest.mark.parametrize("same_name", [True,False])
+def test_current_weight_replacement_requires_review_without_merging_or_add(tmp_path, target, chip, same_name):
+    FakePublishingClient.reset()
+    memory=MemorySecretStore();_configure_external(tmp_path,memory);_seed_external_algorithm(tmp_path)
+    _seed_conversion(tmp_path,target=target,chip=chip,job_id="old",content=b"old")
+    service=_service(tmp_path,memory)
+    if target=="sophon":
+        service.save_config(ExternalPublishConfigPayload(target_mappings={"sophon":TargetMapping(compute_platform_id="cp-rk",chip_code="BM1684X")}))
+    first=service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
+    assert not first.get("conversion_failures") and not first.get("deferred_conversions"), first
+    old=next(r for r in service._publication_artifacts(service.repository.publication("p1","a1","v1")["publication_key"]) if r["target"]==target)
+    new=_seed_conversion(tmp_path,target=target,chip=chip,job_id="new",content=b"new")
+    if not same_name:
+        renamed=new.with_name("recompiled"+new.suffix);new.rename(renamed)
+        job=new.parents[1]/"job.json";body=json.loads(job.read_text(encoding="utf-8"));body["outputs"][0]["path"]=str(renamed);job.write_text(json.dumps(body),encoding="utf-8")
+    count=FakePublishingClient.weight_creates
+    result=service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
+    rows=service._publication_artifacts(result["publication"]["publication_key"])
+    converted=[r for r in rows if r["target"]==target]
+    assert len(converted)==2 and len({r["sha256"] for r in converted})==2
+    assert FakePublishingClient.weight_creates==count and FakePublishingClient.weight_edits==0
+    assert service.repository.artifact_publication(old["artifact_id"])["external_weight_id"]==old["external_weight_id"]
+    assert service.repository.artifact_publication(old["artifact_id"])["sync_status"]=="SYNCED"
+    pending=next(r for r in converted if r["artifact_id"]!=old["artifact_id"])
+    assert pending["sync_status"]=="UNKNOWN" and "REPLACEMENT_REVIEW_REQUIRED" in pending["last_error"]
+    algorithm,version=service._algorithm_version("p1","a1","v1")
+    assert not service.publication_requires_sync("p1",algorithm,version,result["publication"])
+    status=service.publication_status("p1","a1","v1")
+    review=next(r for r in status["artifacts"] if r["artifact_id"]==pending["artifact_id"])
+    assert review["review_required"] and review["recovery_plan"]["old_weight_id"]==old["external_weight_id"]
+    assert review["recovery_plan"]["old_sha256"]!=review["recovery_plan"]["new_sha256"]
+    assert review["recovery_plan"]["remote_identity_status"]=="NOT_VERIFIED"
+    assert result["publication"]["status"]=="PARTIAL"
+    from scripts.audit_weight_metadata import audit
+    report=audit(tmp_path,"p1")
+    record=next(r for r in report["artifacts"] if r["artifact_id"]==pending["artifact_id"])
+    assert record["recovery_plan"]["conversion_job_facts"]["id"]=="new"
+    assert record["recovery_plan"]["conversion_job_facts"]["params"]["chip"]==chip
+    assert record["recovery_plan"]["job_output_file_identity_verified"] is True
+    assert record["recovery_plan"]["old_weight_id"]==old["external_weight_id"]
+
+
+def test_metadata_registration_error_still_wakes_publish_owner(tmp_path,monkeypatch,caplog):
+    import platform_core.model_artifacts as assets
+    import platform_core.external_publish_request as request
+    memory=MemorySecretStore();_configure_external(tmp_path,memory);_seed_external_algorithm(tmp_path)
+    monkeypatch.setattr(assets,"record_version_model_metadata",lambda *a: (_ for _ in ()).throw(RuntimeError("isolated-metadata-error")))
+    request._EXTERNAL_PUBLISH_WAKE_EVENT.clear()
+    assert request_external_auto_publish_if_enabled(data_dir=tmp_path,algorithms_path=_algorithms_file(tmp_path,"p1"),algorithm_id="a1",version_id="v1",now="2026-10-20T12:00:00Z")
+    assert request._EXTERNAL_PUBLISH_WAKE_EVENT.is_set()
+    assert "isolated-metadata-error" in caplog.text
+    request._EXTERNAL_PUBLISH_WAKE_EVENT.clear()
+
+
+def test_local_delivery_selection_is_fenced_and_does_not_write_remote(tmp_path):
+    FakePublishingClient.reset();memory=MemorySecretStore();_configure_external(tmp_path,memory);_seed_external_algorithm(tmp_path)
+    _seed_conversion(tmp_path,job_id="first",content=b"first")
+    _seed_conversion(tmp_path,job_id="second",content=b"second")
+    service=_service(tmp_path,memory)
+    algorithm,version=service._algorithm_version("p1","a1","v1")
+    items=[r for r in service.model_assets.register_version_metadata("p1","a1","v1") if r["target"]=="rockchip"]
+    chosen=next(r for r in items if r["conversion_job_id"]=="second")
+    result=service.select_publication_artifact("p1","a1","v1",artifact_id=chosen["artifact_id"],sha256=chosen["sha256"],expected_selection="")
+    assert result["selection"]["artifact_id"]==chosen["artifact_id"] and not result["remote_write_performed"]
+    _,version=service._algorithm_version("p1","a1","v1")
+    assert version["external_publish_artifact_selection"]["rockchip:RK3568"]["sha256"]==chosen["sha256"]
+    assert FakePublishingClient.weight_creates==FakePublishingClient.weight_edits==0
+    with pytest.raises(PlatformError) as err:
+        service.select_publication_artifact("p1","a1","v1",artifact_id=items[0]["artifact_id"],sha256=items[0]["sha256"],expected_selection="")
+    assert err.value.code=="EXTERNAL_WEIGHT_SELECTION_CHANGED"
+    assert len(service.model_assets.repository.list(project_id="p1",version_id="v1"))==3
+
+
+def test_historical_parent_mapping_preserves_synced_fact_and_exposes_migration_review(tmp_path):
+    FakePublishingClient.reset();memory=MemorySecretStore();_configure_external(tmp_path,memory);_seed_external_algorithm(tmp_path)
+    _seed_conversion(tmp_path)
+    service=_service(tmp_path,memory);service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
+    pub=service.repository.publication("p1","a1","v1")
+    old=next(r for r in service._publication_artifacts(pub["publication_key"]) if r["target"]=="rockchip")
+    _hierarchical_compute_cache(tmp_path)
+    service.save_config(ExternalPublishConfigPayload(target_mappings={"rockchip":TargetMapping(compute_platform_id="cp-rk",chip_mappings={"RK3568":"rk-3568"})}))
+    result=service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
+    row=next(r for r in service.publication_status("p1","a1","v1")["artifacts"] if r["artifact_id"]==old["artifact_id"])
+    assert row["sync_status"]=="SYNCED" and row["compute_platform_id"]=="cp-rk"
+    assert row["review_required"] and row["recovery_plan"]["target_compute_platform_id"]=="rk-3568"
+    assert row["recovery_plan"]["suggested_operation"]=="REVIEW_PLATFORM_MIGRATION"
+    assert row["recovery_plan"]["remote_identity_status"]=="NOT_VERIFIED"
+    assert result["publication"]["status"]=="PARTIAL" and FakePublishingClient.weight_edits==0
+    algorithm,version=service._algorithm_version("p1","a1","v1")
+    assert not service.publication_requires_sync("p1",algorithm,version,result["publication"])
+
+
+def test_conversion_provenance_survives_sparse_publication_metadata(tmp_path):
+    from platform_core.model_artifacts import ModelArtifactRepository
+    repo=ModelArtifactRepository(tmp_path)
+    value={"artifact_id":"converted","project_id":"p","algorithm_id":"a","version_id":"v","artifact_kind":"conversion","target":"rockchip","chip_code":"rk3568","conversion_job_id":"job1","file_name":"a.rknn","source_path":str(tmp_path/"a.rknn"),"sha256":"a"*64,"size_bytes":4,
+           "metadata":{"source_sha256":"b"*64,"validation_status":"converted_unverified","conversion_status":"done","hardware_verified":False,"runtime_verified":False}}
+    repo.upsert(value);row=repo.upsert({**value,"metadata":{"tags":["smoke"]}})
+    assert row["metadata"]["source_sha256"]=="b"*64 and row["metadata"]["conversion_status"]=="done"
+    assert row["metadata"]["hardware_verified"] is False
+
+
+def test_weight_review_dry_run_requires_exact_remote_identity_and_never_writes(tmp_path):
+    from platform_core.external_algorithm_publish import weight_recovery_plan
+    old={"artifact_id":"old","algorithm_id":"a","version_id":"v","target":"rockchip","chip_code":"rk3568","remote_chip_code":"RK3568","sha256":"a"*64,"external_weight_id":"w-old","compute_platform_id":"parent","file_name":"same.rknn","public_url":"https://objects/old","publication_key":"pub"}
+    new={**old,"artifact_id":"new","external_weight_id":"","sha256":"b"*64,"public_url":"https://objects/new","sync_status":"UNKNOWN"}
+    remote={"weightId":"w-old","algoVersionId":"remote-v","computePlatformId":"parent","chipCode":"RK3568","fileName":"same.rknn","filePath":"https://objects/old","fileSha256":"a"*64}
+    plan=weight_recovery_plan(new,[old],"child",remote_rows=[remote],external_version_id="remote-v")
+    assert plan["remote_identity_status"]=="MATCHED_READ_ONLY" and plan["automatic_write_allowed"] is False
+    assert plan["replacement_contract_status"]=="NOT_VERIFIED"
+    mismatch=weight_recovery_plan(new,[old],"child",remote_rows=[{**remote,"algoVersionId":"wrong"}],external_version_id="remote-v")
+    assert mismatch["remote_identity_status"]=="MISMATCH_OR_AMBIGUOUS"
+    assert plan["old_file_path"]!=plan["new_file_path"] and plan["old_weight_id"]=="w-old"
+
+
+def test_recovered_weight_cannot_be_claimed_by_two_active_artifacts(tmp_path):
+    FakePublishingClient.reset();memory=MemorySecretStore();_configure_external(tmp_path,memory);_seed_external_algorithm(tmp_path)
+    _seed_conversion(tmp_path)
+    service=_service(tmp_path,memory);service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
+    pub=service.repository.publication("p1","a1","v1")
+    old=next(r for r in service._publication_artifacts(pub["publication_key"]) if r["target"]=="rockchip")
+    with pytest.raises(PlatformError) as error:
+        service._bind_recovered_weight({**old,"artifact_id":"unregistered-other"},old["external_weight_id"],pub["external_algo_version_id"],FakePublishingClient(),{})
+    assert error.value.code=="EXTERNAL_WEIGHT_OWNER_CONFLICT" and FakePublishingClient.weight_edits==0
+
+
+def test_explicit_first_delivery_selects_one_hash_and_retains_unselected_history(tmp_path):
+    FakePublishingClient.reset();memory=MemorySecretStore();_configure_external(tmp_path,memory);_seed_external_algorithm(tmp_path)
+    _seed_conversion(tmp_path,job_id="first",content=b"first");_seed_conversion(tmp_path,job_id="second",content=b"second")
+    service=_service(tmp_path,memory)
+    initial=service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
+    assert initial["publication"]["status"]=="PARTIAL" and FakePublishingClient.weight_creates==1
+    rows=[r for r in service.model_assets.repository.list(project_id="p1") if r["target"]=="rockchip"]
+    chosen=next(r for r in rows if r["conversion_job_id"]=="second")
+    service.select_publication_artifact("p1","a1","v1",artifact_id=chosen["artifact_id"],sha256=chosen["sha256"],expected_selection="")
+    # A review-only decision has zero write attempts; explicit selection can use normal first registration.
+    again=service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
+    assert FakePublishingClient.weight_creates==2 and again["publication"]["status"]=="PUBLISHED"
+    assert FakePublishingClient.weight_edits==0
+    status=service.publication_status("p1","a1","v1")
+    history=next(r for r in status["artifacts"] if r["artifact_id"]!=chosen["artifact_id"] and r["target"]=="rockchip")
+    assert history["included_in_delivery"] is False and history["delivery_role"]=="HISTORICAL"
+    assert len(rows)==2 and service.model_assets.repository.get(chosen["artifact_id"])["sha256"]==chosen["sha256"]
+    Path(history["source_path"]).unlink()
+    missing=next(r for r in service.publication_status("p1","a1","v1")["artifacts"] if r["artifact_id"]==history["artifact_id"])
+    assert missing["included_in_delivery"] is False and missing["delivery_role"]=="HISTORICAL"
+    assert "源文件缺失" in missing["last_error"]
+
+
+@pytest.mark.parametrize("change", [{"filePath":"","fileSha256":None},{"algoVersionId":"other"},{"fileSha256":"c"*64}])
+def test_converted_recovery_requires_content_identity_not_filename_only(tmp_path,change):
+    memory=MemorySecretStore();_configure_external(tmp_path,memory);service=_service(tmp_path,memory)
+    artifact={"target":"sophon","file_name":"same.bmodel","compute_platform_id":"cp-rk","remote_chip_code":"BM1684X","public_url":"https://objects/current","sha256":"b"*64,"external_algo_version_id":"v"}
+    remote={"weightId":"w","fileName":"same.bmodel","computePlatformId":"cp-rk","chipCode":"BM1684X","filePath":"https://objects/current","algoVersionId":"v","fileSha256":"b"*64,**change}
+    with pytest.raises(PlatformError) as error:service._recover_weight_from_rows([remote],artifact)
+    assert error.value.code=="EXTERNAL_WEIGHT_RECOVERY_AMBIGUOUS"
+
+
+def test_selection_http_contract_writes_only_version_intent(tmp_path,monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    import platform_core.external_algorithm_publish as publishing
+    memory=MemorySecretStore();_configure_external(tmp_path,memory);_seed_external_algorithm(tmp_path);_seed_conversion(tmp_path)
+    service=_service(tmp_path,memory)
+    asset=next(r for r in service.model_assets.register_version_metadata("p1","a1","v1") if r["target"]=="rockchip")
+    with monkeypatch.context() as scope:
+        scope.setattr(publishing.threading.Thread,"start",lambda self:None)
+        router=publishing.external_algorithm_publish_router(data_dir=tmp_path,get_project=lambda pid:{"id":pid},
+            project_dir=lambda pid:_project_dir(tmp_path,pid),algorithms_file=lambda pid:_algorithms_file(tmp_path,pid),
+            external_secret_store_factory=lambda:memory,storage_sources_factory=service.storage_sources_factory,storage_credentials_factory=service.storage_credentials_factory)
+    app=FastAPI();app.include_router(router)
+    client=TestClient(app)
+    response=client.put('/api/v64/external-publish/projects/p1/algorithms/a1/versions/v1/selection',json={"artifact_id":asset["artifact_id"],"sha256":asset["sha256"],"expected_selection":""})
+    assert response.status_code==200 and response.json()["remote_write_performed"] is False
+    assert response.json()["selection"]["artifact_id"]==asset["artifact_id"]
+    _,version=service._algorithm_version("p1","a1","v1")
+    assert version["external_publish_artifact_selection"]["rockchip:RK3568"]["sha256"]==asset["sha256"]
+
+
+def test_converted_remote_parent_weight_prevents_duplicate_child_add_without_local_receipt(tmp_path):
+    memory=MemorySecretStore();_configure_external(tmp_path,memory);service=_service(tmp_path,memory)
+    artifact={"target":"rockchip","file_name":"new.rknn","compute_platform_id":"rk-child","remote_chip_code":"RK3568","public_url":"https://objects/new","sha256":"b"*64,"external_algo_version_id":"v"}
+    remote={"weightId":"old-weight","fileName":"old.rknn","computePlatformId":"cp-rk","chipCode":"RK3568","filePath":"https://objects/old","algoVersionId":"v","fileSha256":"a"*64}
+    with pytest.raises(PlatformError) as error:service._recover_weight_from_rows([remote],artifact)
+    assert error.value.code=="EXTERNAL_WEIGHT_RECOVERY_AMBIGUOUS"

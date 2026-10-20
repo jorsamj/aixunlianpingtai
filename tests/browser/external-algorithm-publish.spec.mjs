@@ -8,7 +8,7 @@ async function selectIsolatedTestProject(page, projectId) {
   });
 }
 
-for(const reason of ['identity','optional']) test(`changlian publish respects core identity and optional metadata: ${reason}`, async ({page, request}) => {
+for(const reason of ['identity','optional','review']) test(`changlian publish respects core identity and optional metadata: ${reason}`, async ({page, request}) => {
   const project = await (await request.post('/api/projects', {data: {
     name: `畅联云发布预检-${Date.now()}`,
     labels: [{code: 'smoke', display_name: '烟雾'}],
@@ -23,11 +23,16 @@ for(const reason of ['identity','optional']) test(`changlian publish respects co
   const versionId = 'v-stale-analysis';
   let statusReads = 0;
   let publishWrites = 0;
+  let selections = [];
   let releasePublish;
   const publishGate=new Promise(resolve=>{releasePublish=resolve;});
 
   await page.route('**/api/v64/external-publish/projects/**', async route => {
     const url = new URL(route.request().url());
+    if(url.pathname.endsWith('/selection')){
+      selections.push(route.request().postDataJSON());
+      return route.fulfill({json:{ok:true,remote_write_performed:false,message:'已保存本地交付意向；远端替换待审核'}});
+    }
     if (url.pathname.endsWith('/publish')) {
       publishWrites += 1;
       if(reason==='optional')await publishGate;
@@ -43,10 +48,15 @@ for(const reason of ['identity','optional']) test(`changlian publish respects co
       contentType: 'application/json',
       body: JSON.stringify({
         ok: true,
+        project_id:project.id,
         algorithm: {id: algorithmId, name: '抽烟检测', external_product_id: 'product-1'},
         version: {id: versionId, version_name: '20260919233000', external_publish_status: ''},
-        publication: null,
-        artifacts: reason==='optional'?[
+        publication: reason==='review'?{status:'PARTIAL'}:null,
+        weight_delivery_status:reason==='review'?'PARTIAL':undefined,
+        artifacts: reason==='review'?[
+          {artifact_id:'old-artifact',target:'sophon',file_name:'same.bmodel',external_weight_id:'old-weight',sync_status:'SYNCED',storage_status:'UPLOADED',compute_platform_id:'parent',chip_code:'BM1684X',sha256:'a'.repeat(64)},
+          {artifact_id:'new-artifact',target:'sophon',file_name:'same.bmodel',sync_status:'UNKNOWN',storage_status:'UPLOADED',chip_code:'BM1684X',sha256:'b'.repeat(64),review_required:true,requested_artifact_id:selections.length?'new-artifact':'',recovery_plan:{old_weight_id:'old-weight',target_compute_platform_id:'child',reason:'替换合同待确认',suggested_operation:'REVIEW_CONTENT_REPLACEMENT'}}
+        ]:reason==='optional'?[
           {target:'original',file_name:'best.pt',sync_status:publishWrites?'SYNCED':'PENDING',metadata_complete:false,metadata_sync_status:'PENDING',metadata_note:'部分扩展信息未提供：yoloVersion、tags'},
           {target:'rockchip',file_name:'model.rknn',remote_registered:true,sync_status:'SYNCED',compute_platform_id:'rk-child',mapped_chip_code:'RK3576',metadata_sync_status:'PENDING',
             frozen_tags:['smoke','fire'],local_tags:['smoke','fire'],prepared_tags:['smoke','fire'],confirmed_tags:null,remote_tags_status:'NOT_RETURNED',size_bytes:123,sha256:'a'.repeat(64),metadata:{image_width:640,image_height:384,yolo_version:'YOLOv11s',tags:['smoke','fire']}},
@@ -120,6 +130,20 @@ for(const reason of ['identity','optional']) test(`changlian publish respects co
   await expect(publishButton).toHaveText('发布');
 
   await publishButton.click();
+
+  if(reason==='review'){
+    const details=versionRow.locator('[data-weight-publication-details]');
+    await expect(details).toContainText('Version PARTIAL / Weight PARTIAL');
+    for(const text of ['old-weight','UNKNOWN','UPLOADED','child','替换合同待确认','远端身份未读回验证'])await expect(details).toContainText(text);
+    await details.locator('[data-weight-select="new-artifact"]').click();
+    await expect.poll(()=>selections.length).toBe(1);
+    expect(selections[0]).toEqual({artifact_id:'new-artifact',sha256:'b'.repeat(64),expected_selection:''});
+    await expect(versionRow.locator('[data-weight-publication-details]')).toContainText('old-weight');
+    await expect.poll(()=>statusReads).toBe(2);
+    expect(publishWrites).toBe(0);
+    await expect(page.locator('#toast')).toContainText('本地交付意向');
+    return;
+  }
 
   if(reason==='optional'){
     await expect.poll(()=>publishWrites).toBe(1);

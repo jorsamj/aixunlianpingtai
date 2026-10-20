@@ -303,3 +303,12 @@ test('weight details distinguish frozen, local, prepared, confirmed and read-bac
   for(const text of ['冻结类别','本地类别','准备提交','已确认提交','远端未返回 tags','标签补齐待处理','同步成功','2 类'])assert.ok(html.includes(text),text);
   assert.ok(!html.includes('远端已验证：fire1'));
 });
+
+
+test('conversion delivery review shows independent owner selection and upload facts',()=>{
+  const html=publicationWeightDetails({project_id:'p',algorithm:{id:'a'},version:{id:'v'},publication:{status:'PARTIAL'},artifacts:[
+    {artifact_id:'old',file_name:'same.bmodel',target:'sophon',external_weight_id:'w-old',sync_status:'SYNCED',storage_status:'UPLOADED',compute_platform_id:'parent',chip_code:'bm1684x',sha256:'a'.repeat(64),remote_identity_status:'NOT_VERIFIED',review_required:true,recovery_plan:{suggested_operation:'REVIEW_PLATFORM_MIGRATION',target_compute_platform_id:'child',reason:'待核对真实分类关系'}},
+    {artifact_id:'new',file_name:'same.bmodel',target:'sophon',sync_status:'UNKNOWN',storage_status:'UPLOADED',chip_code:'bm1684x',sha256:'b'.repeat(64),review_required:true,recovery_plan:{old_weight_id:'w-old',old_sha256:'a'.repeat(64),new_sha256:'b'.repeat(64),suggested_operation:'REVIEW_CONTENT_REPLACEMENT',reason:'替换合同待确认'}}]});
+  for(const value of ['PARTIAL','old','new','w-old','UPLOADED','UNKNOWN','child','替换合同待确认','远端身份未读回验证','data-weight-select','仅保存本地交付意向'])assert.ok(html.includes(value),value);
+  assert.match(html,/同步成功/);
+});

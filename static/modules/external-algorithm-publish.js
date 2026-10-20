@@ -52,13 +52,17 @@ export function localChipKey(value) {
 export function publicationWeightDetails(status={}) {
   const names={SYNCED:'补充信息已同步',PENDING:'可同步已确定的补充信息',UNKNOWN:'结果未知 · 需要人工核对',CONFLICT:'标签来源冲突 · 需要人工核对'};
   const rows=status.artifacts||status.discovered||[];
-  return `<details open data-weight-publication-details style="grid-column:1/-1;min-width:0"><summary>权重发布状态</summary><div style="overflow:auto"><table class="table"><thead><tr><th>权重 / 算力 / 芯片</th><th>登记与元数据</th><th>模型事实</th></tr></thead><tbody>${rows.map(row=>{
+  return `<details open data-weight-publication-details style="grid-column:1/-1;min-width:0"><summary>权重发布状态 · Version ${escapeHtml(status.publication?.status||'未登记')} / Weight ${escapeHtml(status.weight_delivery_status||status.publication?.status||'待核验')}</summary><div style="overflow:auto"><table class="table"><thead><tr><th>权重 / 算力 / 芯片</th><th>登记与元数据</th><th>模型事实</th></tr></thead><tbody>${rows.map(row=>{
     const meta=row.metadata||row.weight_metadata||{};
     const tagsText=value=>Array.isArray(value)?`${value.length} 类 · ${value.join(', ')||'[]'}`:'未记录';
     const pending=row.remote_registered&&Array.isArray(row.prepared_tags)&&JSON.stringify(row.prepared_tags)!==JSON.stringify(row.confirmed_tags);
     const tagsFacts=`冻结类别：${escapeHtml(tagsText(row.frozen_tags))}<br>本地类别：${escapeHtml(tagsText(row.local_tags??meta.tags))}<br>准备提交：${escapeHtml(tagsText(row.prepared_tags))}<br>已确认提交：${escapeHtml(tagsText(row.confirmed_tags))}<br>${row.remote_tags_status==='READ_BACK'?`远端读回：${escapeHtml(tagsText(row.remote_tags))} ${escapeHtml(row.remote_tags_checked_at||'')}`:row.remote_tags_status==='NOT_RETURNED'?'远端未返回 tags（不能视为读回验证）':'远端 tags 未读回验证'}${pending?'<br>标签补齐待处理':''}`;
+    const plan=row.recovery_plan||{};
+    const selection=row.target&&row.target!=='original'&&row.artifact_id?`<button class="btn" data-weight-select="${escapeHtml(row.artifact_id)}" data-sha256="${escapeHtml(row.sha256||'')}" data-previous="${escapeHtml(row.requested_artifact_id||'')}" data-project="${escapeHtml(status.project_id||'')}" data-algorithm="${escapeHtml(status.algorithm?.id||'')}" data-version="${escapeHtml(status.version?.id||'')}">选择交付成果</button><br><small>仅保存本地交付意向，不执行远端替换</small>`:'';
+    const review=row.review_required?`<br>待人工审核：${escapeHtml(plan.reason||row.last_error||'远端身份未确认')}<br>建议 ${escapeHtml(plan.suggested_operation||'READ_ONLY_RECOVERY')}<br>目标分类 ${escapeHtml(plan.target_compute_platform_id||'未确认')}<br>原Weight ${escapeHtml(plan.old_weight_id||'未确认')}`:'';
+    const facts=`Artifact ${escapeHtml(row.artifact_id||'未登记')}<br>Weight ${escapeHtml(row.external_weight_id||'未确认')}<br>OSS ${escapeHtml(row.storage_status||'未登记')}<br>登记状态 ${escapeHtml(row.sync_status||'PENDING')}<br>交付角色 ${escapeHtml(row.delivery_role||'待核验')}<br>远端身份未读回验证${review}<br>${selection}`;
     const delivery=row.sync_status==='SYNCED'?'同步成功':row.remote_registered?'已登记 · 待确认':'尚未登记';
-    return `<tr><td>${escapeHtml(row.file_name||row.target)}<br>${escapeHtml(row.compute_platform_id||'未配置')} / ${escapeHtml(row.remote_chip_code||row.mapped_chip_code||row.chip_code||'通用')}</td><td>${delivery}<br>${escapeHtml(names[row.metadata_sync_status]||'待同步')}<br>${escapeHtml(row.metadata_note||'')}<br>${escapeHtml(row.last_error||'')}<br>${tagsFacts}</td><td>宽 ${escapeHtml(meta.image_width??'未记录')} / 高 ${escapeHtml(meta.image_height??'未记录')} · ${escapeHtml(meta.yolo_version||'YOLO型号未记录')}<br>${escapeHtml(row.size_bytes??'未知')} bytes<br><code style="overflow-wrap:anywhere">${escapeHtml(row.sha256||'SHA256未记录')}</code><br>类别：${escapeHtml(Array.isArray(meta.tags)?meta.tags.join(', '):'未记录')}</td></tr>`;
+    return `<tr><td>${escapeHtml(row.file_name||row.target)}<br>${escapeHtml(row.compute_platform_id||'未配置')} / ${escapeHtml(row.remote_chip_code||row.mapped_chip_code||row.chip_code||'通用')}</td><td>${delivery}<br>${facts}<br>${escapeHtml(names[row.metadata_sync_status]||'待同步')}<br>${escapeHtml(row.metadata_note||'')}<br>${escapeHtml(row.last_error||'')}<br>${tagsFacts}</td><td>宽 ${escapeHtml(meta.image_width??'未记录')} / 高 ${escapeHtml(meta.image_height??'未记录')} · ${escapeHtml(meta.yolo_version||'YOLO型号未记录')}<br>${escapeHtml(row.size_bytes??'未知')} bytes<br><code style="overflow-wrap:anywhere">${escapeHtml(row.sha256||'SHA256未记录')}</code><br>类别：${escapeHtml(Array.isArray(meta.tags)?meta.tags.join(', '):'未记录')}</td></tr>`;
   }).join('')}</tbody></table></div><small>转换产物登记与目标硬件验证分别记录，登记成功不表示实机验证通过。</small></details>`;
 }
 
@@ -498,6 +502,27 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
     return {algorithm, version};
   }
 
+  async function selectWeightArtifact(event) {
+    const button=event.target.closest?.('[data-weight-select]');
+    if(!button)return;
+    const {project:pid,algorithm,version}=button.dataset;
+    if(!pid||currentProjectId()!==pid)return;
+    button.disabled=true;
+    const url=`${API_ROOT}/projects/${encodeURIComponent(pid)}/algorithms/${encodeURIComponent(algorithm)}/versions/${encodeURIComponent(version)}`;
+    try {
+      const result=await requestJson(`${url}/selection`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({artifact_id:button.dataset.weightSelect,sha256:button.dataset.sha256,expected_selection:button.dataset.previous})});
+      if(currentProjectId()!==pid||!button.isConnected)return;
+      notify?.(result.message);
+      const status=await requestJson(url);
+      if(currentProjectId()!==pid||!button.isConnected)return;
+      const old=button.closest('[data-weight-publication-details]');
+      old.insertAdjacentHTML('afterend',publicationWeightDetails(status));
+      old.nextElementSibling?.addEventListener('click',selectWeightArtifact);
+      old.remove();
+    } catch(error) {if(currentProjectId()===pid)notify?.(error?.message||error);}
+    finally {if(button.isConnected)button.disabled=false;}
+  }
+
   async function publishVersion(algorithmId, versionId, button) {
     const pid = currentProjectId();
     if (!pid) return notify?.('当前项目不可用，请刷新页面后重试');
@@ -511,6 +536,7 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
       if(!row)return;
       row.querySelector('[data-weight-publication-details]')?.remove();
       row.insertAdjacentHTML('beforeend',publicationWeightDetails(status));
+      row.querySelector('[data-weight-publication-details]')?.addEventListener('click',selectWeightArtifact);
     };
     try {
       const status = await requestJson(

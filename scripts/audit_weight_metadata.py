@@ -31,7 +31,7 @@ def object_json(raw):
     except (ValueError,TypeError): return {}
 
 
-def audit(data_dir, project_id):
+def audit(data_dir, project_id, *, remote_snapshot=None):
     root=Path(data_dir).resolve()
     if not re.fullmatch(r'[A-Za-z0-9_-]+',project_id): raise ValueError('project_id非法')
     project=root/'projects'/project_id
@@ -45,6 +45,14 @@ def audit(data_dir, project_id):
                 algorithms.append(store._read_one_conn(db,row['id']))
     artifacts=read_rows(root/'model_artifacts'/'artifacts.sqlite3','SELECT * FROM model_artifacts WHERE project_id=?',(project_id,))
     mappings=read_rows(root/'external_algorithm_publish'/'publications.sqlite3','SELECT * FROM external_artifact_publications WHERE active=1')
+    from platform_core.external_algorithm_publish import weight_recovery_plan
+    from platform_core.compute_platform_catalog import compute_platform_catalog,compute_platform_active,compute_platform_is_descendant,local_chip_key
+    config_path=root/'external_algorithm_publish'/'config.json'
+    config=object_json(config_path.read_text(encoding='utf-8')) if config_path.is_file() else {}
+    cache_path=root/'external_algorithm_platform'/'master-data-cache.json'
+    cache=object_json(cache_path.read_text(encoding='utf-8')) if cache_path.is_file() else {}
+    publications=read_rows(root/'external_algorithm_publish'/'publications.sqlite3','SELECT * FROM external_version_publications WHERE project_id=?',(project_id,))
+    merged=[{**a,**next((m for m in mappings if m['artifact_id']==a['artifact_id'] and m['provider']=='CHANG_LIAN'),{}),'metadata':object_json(a.get('metadata_json'))} for a in artifacts]
     result=[]
     for asset in artifacts:
         algorithm=next((a for a in algorithms if a['id']==asset['algorithm_id']),{})
@@ -64,13 +72,35 @@ def audit(data_dir, project_id):
         confirmed=object_json(mapping.get('synced_payload_json'))
         conflict=bool(meta.get('tags') and expected and meta['tags']!=expected)
         state='CONFLICT' if conflict or frozen.get('label_validation_status')=='CONFLICT' else 'IDENTITY_UNVERIFIED' if not verified else 'LABELS_UNKNOWN' if not expected else 'LOCAL_REPAIR_REQUIRED' if meta.get('tags')!=expected else 'LOCAL_VERIFIED'
+        target=config.get('target_mappings',{}).get(asset['target'],{}) or {}
+        chip=local_chip_key(asset.get('chip_code') or mapping.get('remote_chip_code'))
+        bindings={local_chip_key(k):str(v) for k,v in (target.get('chip_mappings') or {}).items()}
+        desired=bindings.get(chip) or str(target.get('compute_platform_id') or '')
+        publication=next((r for r in publications if r.get('publication_key')==mapping.get('publication_key')), {})
+        remote_version=str(publication.get('external_algo_version_id') or '')
+        snapshot=remote_snapshot or {}
+        remote_rows=snapshot.get('weights') if remote_version and str(snapshot.get('algoVersionId') or '')==remote_version else None
+        peers=[r for r in merged if (r['algorithm_id'],r['version_id'])==(asset['algorithm_id'],asset['version_id'])]
+        plan=weight_recovery_plan({**asset,**mapping,'metadata':meta},peers,desired,remote_rows=remote_rows,external_version_id=remote_version)
+        try:
+            graph=compute_platform_catalog(cache.get('compute_platforms') or [])
+            if plan['old_compute_platform_id'] and desired:
+                plan['platform_relation_status']='CACHED_VALID_PARENT_CHILD' if all(compute_platform_active(graph,k) for k in [plan['old_compute_platform_id'],desired]) and compute_platform_is_descendant(graph,desired,plan['old_compute_platform_id']) else 'UNCONFIRMED_OR_DIFFERENT_BRANCH'
+        except ValueError as error:
+            plan['platform_relation_status']='INVALID_CACHE: '+str(error)
+        plan['file_identity_verified']=verified
+        job_id=str(asset.get('conversion_job_id') or '')
+        job_path=project/'deployment'/'jobs'/job_id/'job.json'
+        job=object_json(job_path.read_text(encoding='utf-8')) if re.fullmatch(r'[A-Za-z0-9_-]+',job_id) and job_path.is_file() else {}
+        plan['conversion_job_facts']={k:job.get(k) for k in ('id','status','source_id','source_meta','source_trace','params','manifest_path','created_at','finished_at','validation_status','conversion_status','hardware_verified')}
+        plan['job_output_file_identity_verified']=verified and any(str(output.get('path') or '')==str(asset.get('source_path') or '') for output in job.get('outputs',[]) if isinstance(output,dict))
         result.append({**{key:asset.get(key) for key in ('artifact_id','algorithm_id','version_id','target','sha256','size_bytes','storage_source_id','object_key','public_url')},
             'file_identity_verified':verified,'frozen_tags':expected,'local_tags':meta.get('tags'),'local_state':state,
             'external_weight_id':mapping.get('external_weight_id'),'compute_platform_id':mapping.get('compute_platform_id'),
             'chip_code':mapping.get('remote_chip_code'),'sync_status':mapping.get('sync_status'),
             'confirmed_tags':confirmed.get('tags'),'remote_tags_status':'NOT_VERIFIED',
             'external_action':'EDIT_CANDIDATE_REQUIRES_REMOTE_IDENTITY' if expected and verified and not conflict and len(candidates)==1 and mapping.get('external_weight_id') and mapping.get('sync_status')!='UNKNOWN' and confirmed.get('tags')!=expected else 'UNKNOWN_REQUIRES_READBACK' if mapping.get('sync_status')=='UNKNOWN' else 'NO_AUTOMATIC_WRITE',
-            'note':frozen.get('label_error') or ''})
+            'note':frozen.get('label_error') or '', 'recovery_plan':plan, 'conversion_job_id':asset.get('conversion_job_id'), 'conversion_metadata':meta})
     return {'project_id':project_id,'read_only':True,'artifacts':result,'external_requests_sent':0}
 
 
@@ -80,8 +110,10 @@ def main(argv=None):
     parser.add_argument('--project',required=True)
     parser.add_argument('--apply-local',action='store_true',help='Explicitly authorized local canonical repair only; never external/OSS writes')
     parser.add_argument('--output')
+    parser.add_argument('--remote-weight-snapshot',help='Read-only JSON export {algoVersionId, weights}; never contacts the provider')
     args=parser.parse_args(argv)
-    report=audit(args.data_dir,args.project)
+    snapshot=json.loads(Path(args.remote_weight_snapshot).read_text(encoding='utf-8')) if args.remote_weight_snapshot else None
+    report=audit(args.data_dir,args.project,remote_snapshot=snapshot)
     if args.apply_local:
         from platform_core.model_artifacts import record_version_model_metadata
         versions={(r['algorithm_id'],r['version_id']) for r in report['artifacts'] if r['local_state']=='LOCAL_REPAIR_REQUIRED'}
