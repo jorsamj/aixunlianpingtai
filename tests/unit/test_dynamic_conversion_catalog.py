@@ -191,16 +191,18 @@ def test_frozen_preprocessing_is_inherited_and_unsupported_semantics_are_rejecte
     bad={**result["params"],"preprocessing":{**result["params"]["preprocessing"],"pad_value":0}}
     with pytest.raises(ValueError,match="pad_value"): validate_target("sophon",bad)
 
-def test_chip_constraints_are_version_bound_and_legacy_fp16_does_not_advertise_fp32():
+def test_chip_constraints_are_resolved_from_version_and_never_invent_fp32():
     data=catalog();r=live();r["sophon_probe"]["version"]="v1.31.0"
-    changed=resolve_conversion_contract(data,vendor_id="local-s",chip_id="chip-88",resource=r,version={},params={})
-    assert not changed["ready"] and changed["status"]=="pending_detection"
+    unproved=resolve_conversion_contract(data,vendor_id="local-s",chip_id="chip-84",resource=r,version={},params={})
+    assert not unproved["ready"] and unproved["status"]=="pending_detection"
+    fallback=resolve_conversion_contract(data,vendor_id="local-s",chip_id="chip-88",resource=r,version={},params={"precision":"fp32"})
+    assert not fallback["ready"] and fallback["allowed_precisions"]==["fp16"]
     data["chips"][1]["constraint_id"]="sophon-fp16-verified"
-    r=live()
-    r["sophon_probe"]["supported_precisions"]=["fp16","fp32"]
+    r=live();r["sophon_probe"]["supported_precisions"]=["fp16","fp32"]
     r["sophon_probe"]["chip_capabilities"]["bm1688"]["precisions"]=["fp16","fp32"]
-    legacy=resolve_conversion_contract(data,vendor_id="local-s",chip_id="chip-88",resource=r,version={},params={})
-    assert legacy["ready"] and legacy["allowed_precisions"]==["fp16"]
+    verified=resolve_conversion_contract(data,vendor_id="local-s",chip_id="chip-88",resource=r,version={},params={"precision":"fp32"})
+    assert verified["ready"] and verified["allowed_precisions"]==["fp16","fp32"]
+    assert verified["params"]["constraint_id"]=="tpu-mlir-1.30.2"
 
 
 def test_unknown_chip_can_be_saved_without_inventing_sdk_and_never_passes_admission(tmp_path):
@@ -208,7 +210,7 @@ def test_unknown_chip_can_be_saved_without_inventing_sdk_and_never_passes_admiss
     data=catalog()
     data["chips"].append({"id":"chip-pending","vendor_id":"local-s","name":"Unconfirmed 9000",
                           "code":"pending-9000","sdk_code":"","constraint_id":"","enabled":True})
-    data["chips"].append({**data["chips"][-1],"id":"pending-second","code":"pending-second"})
+    data["chips"].append({**data["chips"][-1],"id":"pending-second","code":"pending-second","name":"Unconfirmed 9001"})
     saved=repo.save_conversion_catalog(data,expected_revision=0)
     assert saved["chips"][-1]["sdk_code"]==saved["chips"][-1]["constraint_id"]==""
     result=resolve_conversion_contract(saved,vendor_id="local-s",chip_id="chip-pending",resource=live(),version={},params={})
@@ -243,3 +245,22 @@ def test_existing_vendor_template_cannot_reinterpret_historical_chips(tmp_path):
     with pytest.raises(ValueError,match="身份|模板"):
         repo.save_conversion_catalog(data,expected_revision=1)
     assert repo.conversion_catalog()["vendors"][0]["template_id"]=="tpu-mlir"
+
+
+@pytest.mark.parametrize("version,configured,expected",[
+    ("v1.29.0","tpu-mlir-1.30.2",["fp16"]),
+    ("v1.30.2-20260831","sophon-fp16-verified",["fp16","fp32"]),
+])
+def test_automatic_constraint_uses_actual_sdk_evidence_instead_of_manual_reference(version,configured,expected):
+    data=catalog();data["chips"][0].update(name="BM1684X",sdk_code="bm1684x",constraint_id=configured)
+    resource=live();resource["supported_chips"]=["bm1684x"]
+    resource["sophon_probe"].update(version=version,supported_chips=["bm1684x"],supported_precisions=["fp16","fp32"],
+        chip_capabilities={"bm1684x":{"precisions":["fp16","fp32"],"chip_option":"--chip"}})
+    result=resolve_conversion_contract(data,vendor_id="local-s",chip_id="chip-84",resource=resource,version={},params={})
+    assert result["ready"] and result["allowed_precisions"]==expected
+    effective="tpu-mlir-1.30.2" if "1.30.2" in version else "sophon-fp16-verified"
+    assert result["params"]["constraint_id"]==effective
+    assert result["params"]["sdk_version"]==version
+    requested=resolve_conversion_contract(data,vendor_id="local-s",chip_id="chip-84",resource=resource,version={},params={"precision":"fp32"})
+    assert requested["ready"]==("fp32" in expected)
+    assert data["chips"][0]["constraint_id"]==configured, "read/resolve must not rewrite history"

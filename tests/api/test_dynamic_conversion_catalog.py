@@ -127,3 +127,58 @@ def test_catalog_management_never_admits_jobs_without_verified_sdk_evidence(tmp_
         api._v39_create_deploy_job_under_version_fence("p",api.DeployJobReq(source_id="s",target="sophon",resource_id="s",
             params={"local_vendor_id":"local-s","local_chip_id":"chip-84"}))
     assert error.value.status_code==400
+
+
+def test_catalog_crud_api_uses_one_record_operations_and_authoritative_query(tmp_path,monkeypatch):
+    monkeypatch.setattr(api,"DATA_DIR",tmp_path)
+    monkeypatch.setattr(api,"v39_list_deploy_resources",lambda:{"items":[]})
+    body={"entity":"vendors","action":"create","operation_id":"api-create","expected_revision":0,"record":{"name":"vendor","template_id":"rknn"}}
+    result=api.v39_catalog_operation(body)
+    replay=api.v39_catalog_operation(body)
+    assert result["id"]==replay["id"] and replay["replayed"]
+    page=api.v39_catalog_records(entity="vendors",query="vendor",template_id="rknn",enabled="true",page=1,page_size=10,sort="name",vendor_id="")
+    assert page["total"]==1 and page["items"][0]["chip_count"]==0
+    detail=api.v39_catalog_record("vendors",result["id"])
+    assert detail["references"]["can_delete"]
+    assert api.v39_catalog_operation_result("api-create")["after"]["id"]==result["id"]
+
+
+def test_original_conversion_admission_holds_catalog_fence_until_durable_acceptance(tmp_path,monkeypatch):
+    from contextlib import nullcontext
+    from filelock import FileLock,Timeout
+    monkeypatch.setattr(api,"DATA_DIR",tmp_path)
+    monkeypatch.setattr(api,"_resolve_deploy_source",lambda *a:{})
+    monkeypatch.setattr(api,"_algorithm_version_reference_fence",lambda *a:nullcontext())
+    def admitted(*args):
+        with pytest.raises(Timeout):
+            FileLock(str(tmp_path/"model_artifacts"/".conversion-catalog.lock")).acquire(timeout=0)
+        return {"accepted":True}
+    monkeypatch.setattr(api,"_v39_create_deploy_job_under_version_fence",admitted)
+    assert api.v39_create_deploy_job("p",api.DeployJobReq(source_id="s",target="sophon",resource_id="r"))["accepted"]
+
+
+def test_chip_detection_reuses_resource_owner_once_and_keeps_each_sdk_fact(tmp_path,monkeypatch):
+    from platform_core.model_artifacts import ModelArtifactRepository
+    from platform_core.errors import PlatformError
+    monkeypatch.setattr(api,"DATA_DIR",tmp_path)
+    ModelArtifactRepository(tmp_path).save_conversion_catalog(catalog(),expected_revision=0)
+    good={**live(),"id":"good","name":"remote good","mode":"remote"}
+    bad={**live(),"id":"bad","name":"local invalid","mode":"local","status":"missing","message":"API Key 鉴权失败","targets":[],"supported_chips":[],"sophon_probe":{"available":False,"version":"1.29.0","error":"authentication failed"}}
+    resources=[good,bad];seen=[]
+    monkeypatch.setattr(api,"v39_list_deploy_resources",lambda:{"items":resources})
+    def detect(identity):
+        seen.append(identity);return next(r for r in resources if r["id"]==identity)
+    monkeypatch.setattr(api,"v39_detect_deploy_resource",detect)
+    result=api.v39_catalog_detect_chip("chip-84",{})
+    assert seen==["good","bad"] and result["capability"]["sdk_ready"]
+    facts={f["resource_id"]:f for f in result["capability"]["resources"]}
+    assert facts["good"]["ready"] and not facts["bad"]["ready"]
+    assert facts["good"]["mode"]=="remote" and facts["bad"]["mode"]=="local"
+    assert facts["bad"]["message"]==bad["message"]
+    assert facts["good"]["sdk_version"]!=facts["bad"]["sdk_version"]
+    seen.clear();api.v39_catalog_detect_chip("chip-84",{"resource_ids":["good","good"]});assert seen==["good"]
+    with pytest.raises(PlatformError) as error: api.v39_catalog_detect_chip("chip-84",{"resource_ids":["missing"]})
+    assert error.value.code=="CATALOG_RESOURCE_MISMATCH"
+    resources.clear()
+    with pytest.raises(PlatformError) as error: api.v39_catalog_detect_chip("chip-84",{})
+    assert error.value.code=="CATALOG_RESOURCE_UNAVAILABLE"

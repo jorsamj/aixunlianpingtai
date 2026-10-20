@@ -93,8 +93,8 @@ def resolve_chip_capability(catalog, *, vendor_id, chip_id, resource):
     target=template.get("adapter")
     if not template.get("implemented") or not target:
         return reject("not_adapted","厂商模板尚无可执行Adapter")
-    if not chip.get("sdk_code") or not chip.get("constraint_id"):
-        return reject("pending_configuration","尚未配置可信SDK目标编码或兼容性约束；请核对高级配置与实际SDK检测")
+    if not chip.get("sdk_code"):
+        return reject("pending_configuration","尚未配置可信SDK目标编码；请核对高级配置与实际SDK检测")
     if resource.get("kind")!=target or resource.get("status")!="ready" or target not in resource.get("targets",[]):
         return reject("service_unavailable","对应转换资源未就绪或服务不可用")
     sdk=chip["sdk_code"].lower() if target!="ascend" else chip["sdk_code"]
@@ -106,27 +106,23 @@ def resolve_chip_capability(catalog, *, vendor_id, chip_id, resource):
     if target=="sophon":
         from .sophon_runtime import sophon_chip_capabilities
         probe=resource.get("sophon_probe") or (resource.get("remote_health",{}).get("tools") or {}).get("sophon") or {}
+        result["sdk_version"]=str(probe.get("version") or "")
         caps=sophon_chip_capabilities(probe)
         if "chip_capabilities" in probe:
             caps={code:{**cap,"precisions":[p for p in cap["precisions"] if p in (probe["chip_capabilities"].get(code) or {}).get("precisions",[])]}
                   for code,cap in caps.items() if (probe["chip_capabilities"].get(code) or {}).get("precisions")}
         cap=caps.get(sdk) or {}
-        if not cap or chip.get("constraint_id") not in {"tpu-mlir-1.30.2","sophon-fp16-verified"}:
-            return reject("pending_detection","缺少版本相关SDK/芯片精度兼容证据，请重新检测或核对约束引用")
-        if chip["constraint_id"]=="tpu-mlir-1.30.2":
-            if not re.search(r"(?<![0-9.])1\.30\.2(?:[^0-9.]|$)",str(probe.get("version") or "")):
-                return reject("pending_detection","当前SDK版本与芯片兼容证据1.30.2不匹配")
-            allowed=cap["precisions"]
-        else:
-            from .conversion import SUPPORTED_SOPHON_CHIPS
-            allowed=[p for p in cap["precisions"] if p=="fp16" and sdk in SUPPORTED_SOPHON_CHIPS]
+        if not cap or not str(probe.get("version") or "").strip():
+            return reject("pending_detection","缺少版本相关SDK/芯片精度兼容证据，请重新检测工具环境")
+        allowed=cap["precisions"]
+        effective="tpu-mlir-1.30.2" if cap.get("evidence")=="tpu-mlir-v1.30.2-regression/chip.py" else "sophon-fp16-verified"
     elif target=="rockchip":
-        if chip.get("constraint_id")!="rknn-verified":
-            return reject("pending_detection","缺少RKNN芯片约束证据")
         allowed=[p for p in resource.get("supported_precisions",[]) if p in {"fp16","int8"}]
+        effective="rknn-verified"
     else:
-        if chip.get("constraint_id")!="atc-detected": return reject("pending_detection","缺少ATC SoC检测证据")
         allowed=["fp16","fp32"]
+        effective="atc-detected"
+    result["constraint_id"]=effective
     result["allowed_precisions"]=list(allowed)
     if not allowed: return reject("pending_detection","所选芯片未确认合法精度")
     result.update(ready=True,status="convertible")
@@ -169,8 +165,8 @@ def resolve_conversion_contract(catalog, *, vendor_id, chip_id, resource, versio
         values.update(input_height=defaults["input_height"],input_width=defaults["input_width"])
     values.update(chip=sdk,precision=precision,local_vendor_id=vendor_id,local_chip_id=chip_id,
                   sdk_chip_code=sdk,template_id=template["id"],template_version=template["version"],
-                  constraint_id=chip["constraint_id"],resource_id=str(resource.get("id") or ""),
-                  sdk_version=str(resource.get("version") or ""),source_training_precision=defaults.get("training_precision"))
+                  constraint_id=result["constraint_id"],resource_id=str(resource.get("id") or ""),
+                  sdk_version=result.get("sdk_version",str(resource.get("version") or "")),source_training_precision=defaults.get("training_precision"))
     if target=="ascend": values["soc_version"]=sdk
     try: values=validate_target(target,values,require_calibration=False)
     except ValueError as error: return reject("not_convertible",str(error))
@@ -199,12 +195,63 @@ def conversion_catalog_metadata(catalog, *, resources):
                  for t,n,s,c in _CONVERSION_CHIP_SUGGESTIONS]
     capabilities={}
     for chip in catalog.get("chips",[]):
-        facts=[resolve_chip_capability(catalog,vendor_id=chip["vendor_id"],chip_id=chip["id"],resource=r)
-               for r in resources] or [resolve_chip_capability(catalog,vendor_id=chip["vendor_id"],chip_id=chip["id"],resource={})]
-        fact=next((f for f in facts if f["ready"]),None) or next((f for f in facts if f["status"]!="service_unavailable"),facts[0])
-        capabilities[chip["id"]]={"sdk_ready":fact["ready"],"status":fact["status"],
-                                  "allowed_precisions":fact["allowed_precisions"],"errors":fact["errors"]}
+        vendor=next((v for v in catalog.get("vendors",[]) if v["id"]==chip["vendor_id"]),{})
+        adapter=next((t["adapter"] for t in conversion_templates() if t["id"]==vendor.get("template_id")),"")
+        matching=[r for r in resources if r.get("kind")==adapter]
+        facts=[]
+        for resource in matching:
+            fact=resolve_chip_capability(catalog,vendor_id=chip["vendor_id"],chip_id=chip["id"],resource=resource)
+            facts.append({**fact,"resource_id":resource.get("id",""),"resource_name":resource.get("name") or resource.get("id",""),
+                          "mode":resource.get("mode","local"),"sdk_version":(resource.get("sophon_probe") or {}).get("version") or fact.get("sdk_version",resource.get("version") or ""),
+                          "supported_chips":resource.get("supported_chips") or resource.get("detected_soc_versions") or [],
+                          "last_checked_at":resource.get("last_checked_at"),"message":resource.get("message", ""),"solution":resource.get("solution") or "请在部署资源中检测对应SDK、解释器及目标芯片支持。"})
+        fallback=resolve_chip_capability(catalog,vendor_id=chip["vendor_id"],chip_id=chip["id"],resource={})
+        fact=next((f for f in facts if f["ready"]),None) or next((f for f in facts if f["status"]!="service_unavailable"),facts[0] if facts else fallback)
+        capabilities[chip["id"]]={"sdk_ready":fact["ready"],"status":fact["status"],"allowed_precisions":fact["allowed_precisions"],
+                                  "errors":fact["errors"],"resources":facts,"constraint_id":fact.get("constraint_id","")}
     return {"chip_suggestions":suggestions,"chip_capabilities":capabilities}
+
+
+def conversion_catalog_records(catalog, *, entity, query="", vendor_id="", template_id="", enabled="", page=1, page_size=20, sort="name"):
+    """One server query contract; filtered results never become a replacement catalog."""
+    if entity not in {"vendors","chips"}: raise ValueError("字典类型必须为vendors或chips")
+    if enabled not in {"","true","false"}: raise ValueError("启停筛选非法")
+    if sort not in {"name","name_desc","id"}: raise ValueError("排序非法")
+    if type(page) is not int or page<1 or type(page_size) is not int or not 1<=page_size<=100: raise ValueError("分页范围非法")
+    vendors={v["id"]:v for v in catalog["vendors"]};templates={t["id"]:t for t in conversion_templates()}
+    rows=[]
+    for source in catalog[entity]:
+        row=dict(source);vendor=row if entity=="vendors" else vendors.get(row["vendor_id"],{})
+        if query.strip().casefold() not in str(row["name"]).casefold(): continue
+        if vendor_id and entity=="chips" and row["vendor_id"]!=vendor_id: continue
+        if template_id and vendor.get("template_id")!=template_id: continue
+        if enabled and row.get("enabled",True)!=(enabled=="true"): continue
+        template=templates.get(vendor.get("template_id"),{})
+        row.update(template_id=vendor.get("template_id",""),template_name=template.get("name",""),implemented=bool(template.get("implemented")))
+        if entity=="vendors":
+            children=[c for c in catalog["chips"] if c["vendor_id"]==row["id"]]
+            row.update(chip_count=len(children),enabled_chip_count=sum(c.get("enabled",True) for c in children))
+        rows.append(row)
+    rows.sort(key=lambda r:(str(r["id"]) if sort=="id" else str(r["name"]).casefold(),r["id"]),reverse=sort=="name_desc")
+    total=len(rows);page=min(page,max(1,(total+page_size-1)//page_size));offset=(page-1)*page_size
+    return {"items":rows[offset:offset+page_size],"total":total,"page":page,"page_size":page_size,"revision":catalog["revision"],"templates":conversion_templates()}
+
+
+def new_conversion_catalog_record(catalog, entity, values):
+    """Automatic local identities and only explicit, verified model-name suggestions."""
+    import uuid
+    allowed={"name","template_id","enabled"} if entity=="vendors" else {"name","vendor_id","code","sdk_code","constraint_id","enabled"}
+    if set(values)-allowed: raise ValueError("新增字段非法，稳定ID由系统生成")
+    identity=("vendor-" if entity=="vendors" else "chip-")+str(uuid.uuid4())
+    row={"id":identity,"enabled":True,**values}
+    if entity=="chips":
+        vendor=next((v for v in catalog["vendors"] if v["id"]==values.get("vendor_id")),{})
+        key=lambda n:re.sub(r"[\s_-]","",str(n or "").strip()).casefold()
+        suggestion=next((s for s in _CONVERSION_CHIP_SUGGESTIONS if s[0]==vendor.get("template_id") and key(s[1])==key(values.get("name"))),None)
+        row["code"]=row.get("code") or (suggestion[2] if suggestion else identity)
+        row["sdk_code"]=row.get("sdk_code") or (suggestion[2] if suggestion else "")
+        row["constraint_id"]=row.get("constraint_id") or (suggestion[3] if suggestion else "")
+    return row
 
 
 def compute_platform_catalog(rows: Iterable[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:

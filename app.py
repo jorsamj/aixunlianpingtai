@@ -18208,6 +18208,63 @@ def v39_save_conversion_catalog(payload: Dict[str, Any]):
         raise HTTPException(status_code=409 if "revision" in str(error) else 400,detail=str(error)) from error
 
 
+@app.get("/api/v39/deploy/catalog/records")
+def v39_catalog_records(entity: str="vendors", query: str="", vendor_id: str="", template_id: str="", enabled: str="", page: int=1, page_size: int=20, sort: str="name"):
+    from platform_core.compute_platform_catalog import conversion_catalog_records, conversion_catalog_metadata
+    catalog=_conversion_catalog_repository(DATA_DIR).conversion_catalog()
+    try: result=conversion_catalog_records(catalog,entity=entity,query=query,vendor_id=vendor_id,template_id=template_id,enabled=enabled,page=page,page_size=page_size,sort=sort)
+    except ValueError as error: raise PlatformError("CATALOG_INVALID_QUERY",str(error),"",status_code=422) from error
+    if entity=="chips":
+        facts=conversion_catalog_metadata({**catalog,"chips":result["items"]},resources=v39_list_deploy_resources()["items"])
+        result["items"]=[{**r,"capability":facts["chip_capabilities"][r["id"]]} for r in result["items"]]
+    return {"ok":True,**result}
+
+
+@app.get("/api/v39/deploy/catalog/records/{entity}/{identity}")
+def v39_catalog_record(entity: str, identity: str):
+    from platform_core.compute_platform_catalog import conversion_catalog_records, conversion_catalog_metadata
+    repository=_conversion_catalog_repository(DATA_DIR)
+    catalog=repository.conversion_catalog()
+    if entity not in {"vendors","chips"}: raise PlatformError("CATALOG_INVALID_QUERY","字典类型非法",entity,status_code=422)
+    row=next((r for r in catalog[entity] if r["id"]==identity),None)
+    if not row: raise PlatformError("CATALOG_NOT_FOUND","记录不存在",identity,status_code=404)
+    rows=conversion_catalog_records({**catalog,entity:[row]},entity=entity)["items"]
+    item=rows[0]
+    if entity=="chips": item["capability"]=conversion_catalog_metadata({**catalog,"chips":[row]},resources=v39_list_deploy_resources()["items"])["chip_capabilities"][identity]
+    return {"ok":True,"item":item,"revision":catalog["revision"],"references":repository.conversion_catalog_references(entity,identity)}
+
+
+@app.post("/api/v39/deploy/catalog/operations")
+def v39_catalog_operation(payload: Dict[str, Any]):
+    return _conversion_catalog_repository(DATA_DIR).mutate_conversion_catalog(payload)
+
+
+@app.get("/api/v39/deploy/catalog/operations/{operation_id}")
+def v39_catalog_operation_result(operation_id: str):
+    return _conversion_catalog_repository(DATA_DIR).conversion_catalog_operation(operation_id)
+
+
+@app.post("/api/v39/deploy/catalog/chips/{identity}/detect")
+def v39_catalog_detect_chip(identity: str, payload: Dict[str, Any]):
+    from platform_core.compute_platform_catalog import conversion_templates, conversion_catalog_metadata
+    if set(payload)-{"resource_ids"}: raise PlatformError("CATALOG_INVALID_REQUEST","检测参数非法","",status_code=422)
+    catalog=_conversion_catalog_repository(DATA_DIR).conversion_catalog()
+    chip=next((c for c in catalog["chips"] if c["id"]==identity),None)
+    if not chip: raise PlatformError("CATALOG_NOT_FOUND","芯片不存在",identity,status_code=404)
+    vendor=next(v for v in catalog["vendors"] if v["id"]==chip["vendor_id"])
+    adapter=next(t["adapter"] for t in conversion_templates() if t["id"]==vendor["template_id"])
+    resources=[r for r in v39_list_deploy_resources()["items"] if r.get("kind")==adapter]
+    ids=payload.get("resource_ids")
+    if ids is not None:
+        if not isinstance(ids,list) or any(not isinstance(i,str) for i in ids): raise PlatformError("CATALOG_INVALID_REQUEST","资源ID必须为数组","",status_code=422)
+        if set(ids)-{r["id"] for r in resources}: raise PlatformError("CATALOG_RESOURCE_MISMATCH","资源不存在或不属于该SDK模板","",status_code=422)
+        resources=[r for r in resources if r["id"] in ids]
+    if not resources: raise PlatformError("CATALOG_RESOURCE_UNAVAILABLE","暂无该模板的可检测资源","", "请先登记本机、远程或Agent部署资源。",409)
+    checked=[v39_detect_deploy_resource(r["id"]) for r in resources]
+    facts=conversion_catalog_metadata({**catalog,"chips":[chip]},resources=checked)["chip_capabilities"][identity]
+    return {"ok":True,"id":identity,"revision":catalog["revision"],"capability":facts,"detected_resource_ids":[r["id"] for r in checked]}
+
+
 def _conversion_contract_for_source(project_id, source, resource, params, target):
     from platform_core.compute_platform_catalog import resolve_conversion_contract, conversion_templates
     catalog=_conversion_catalog_repository(DATA_DIR).conversion_catalog()
@@ -18399,10 +18456,12 @@ def v39_create_deploy_job(project_id: str, payload: DeployJobReq):
     source = _resolve_deploy_source(project_id, payload.source_id)
     algorithm_id = str(source.get("algorithm_id") or "").strip()
     version_id = str(source.get("version_id") or "").strip()
+    from platform_core.model_artifacts import conversion_catalog_fence
     with _algorithm_version_reference_fence(
         project_id, algorithm_id, version_id,
     ):
-        return _v39_create_deploy_job_under_version_fence(project_id, payload)
+        with conversion_catalog_fence(DATA_DIR):
+            return _v39_create_deploy_job_under_version_fence(project_id, payload)
 
 
 def _v39_create_deploy_job_under_version_fence(

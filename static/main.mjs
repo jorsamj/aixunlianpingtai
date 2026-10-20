@@ -1,3 +1,4 @@
+import {installConversionCatalogRuntime} from './modules/conversion-catalog-runtime.js?v=1';
 import {renderPrisonNightInspectionPage} from './modules/prison-night-inspection-entry.mjs?v=20261010g';
 import {actionRegistry, invokeAction, registerAction} from './modules/actions.js?v=421800';
 import {installRowActionMenu} from './modules/row-action-menu.js?v=4226385';
@@ -172,6 +173,8 @@ const changLianDataBrowserRuntime = installChangLianDataBrowserRuntime({
   notify,
 });
 window.PlatformCore.runtime.changLianDataBrowserRuntime = changLianDataBrowserRuntime;
+
+const conversionCatalogRuntime = installConversionCatalogRuntime({api,getState:()=>state,modal:(...args)=>modal(...args),closeModal:()=>closeModal()});
 
 const externalAlgorithmPublishRuntime = installExternalAlgorithmPublishRuntime({
   getState: () => state,
@@ -432,7 +435,7 @@ const navigationStabilityRuntime = installNavigationStability({
     if (!state.uiReady && window.__v53InitPromise) return window.__v53InitPromise;
     return null;
   },
-  beforeInvokeNavigation: () => window.toggleMobileSidebarV37?.(false),
+  beforeInvokeNavigation: () => { conversionCatalogRuntime.leave(); window.toggleMobileSidebarV37?.(false); },
   knownPages: window.PlatformCore?.navigation?.knownPages || [],
   performNavigation: page => {
     const materialNavigation = window.MaterialPaginationRuntime61?.beforeNavigate?.(page);

@@ -1,3 +1,56 @@
+## 2026-10-20｜厂商与芯片完整CRUD及质量治理（A-D限定验收通过 / E待最终SHA CI）
+
+基线ed946c9b43ba7c5e014c60076d5539b6cbdf20b8 / VERSION42.24.362；已fetch/prune及pull --ff-only，干净且唯一同仓库活动会话。前轮40/40 Actions、112/112 Checks、Node1037/Chrome112绿色回执已核验归档，仅为历史。本轮升级上次简化需求，不再把短弹窗视为完整管理。
+
+完整产品合同：部署资源页内正式“厂商与芯片管理”区域，不加一级菜单；旧字典按钮只定位同一区域，移除旧独立编辑保存实现。厂商/芯片真实列表、名称搜索、SDK/启停筛选、分页/排序、数量、查看/新增/编辑/删除/启停；独立短表单，自动稳定ID/可信配置建议，高级折叠，已有身份保护。物理删除须确认且后端核对关联芯片、全部历史转换任务、ModelArtifact、发布记录及外部映射/业务引用；有引用明确拒绝并可停用，不能隐去/级联删除或伪造归档成功。保留历史ID、任务快照、模型/Weight/SHA、外部分类及全部记录。
+
+SDK合同：列表按每个资源分别展示名称/位置/实际版本/芯片/精度/最后检测时间/错误及建议；显式检测复用原resources/{id}/detect和原probe，零新探测器/轮询。由原SDK版本矩阵及真实探测自动决议有效constraint；手工选错constraint不得阻止已有充分证据的合法转换，但未知SDK/芯片/精度严格拒绝。配置约束和有效决议分开，执行参数与日志/Manifest取有效结果，绝不改历史快照或默认假可用。
+
+架构与最小实施方案（writing-plans，沿用用户指定文档位置）：
+- 唯一ModelArtifactRepository/conversion_catalog继续存储；保留GET/PUT整体合同和防误删保护。增加原catalog命名空间records查询/详情、operations单条变更及操作读回、chip检测合同；明确code/revision/operation_id、确认、原子性与幂等。
+- Repo在原artifacts.sqlite3添加必要操作回执/审计ledger（不是第二字典表/数据库），成功保存前后行及动作；相同operation_id相同请求可安全重放，异请求冲突；单条变更由最新完整catalog生成，不能丢隐藏项。未引用才允许受控DELETE，整体PUT仍不能删。
+- 删除只读扫描原任务payload/两种job目录、算法版本快照、model_artifacts、原发布表及config；支持local ID精确匹配和旧target+SDK身份匹配。损坏/无法核验来源fail closed并列明原因，不能吞错。删除与原转换准入复用同一catalog生命周期锁，避免先预检后删除的并发竞态；不创建执行器/队列。
+- 前端将原app.js字典Owner迁至一个专用模块（移除原实现），在renderDeployResources直接挂载正式管理区，主导航直接清理生命周期。单一事件委托/AbortController和请求代次保护；只刷新本区域/当前表格，不调用页面render造成循环；短表单/查看/删除确认只开一层modal。搜索/筛选只查后端，不从DOM拼全量提交。
+- 只用原模板/可信建议/真实probe作SDK判定；SDK有效约束由共享resolve_chip_capability决议，未知保守、多个资源独立，不增加另一套适配规则。
+
+实施与限定测试清单：
+- [x] B RED：原Repo/API无安全单条CRUD、未引用不能物理删除、SDK手错约束阻止充分证据转换；补必要Python复现。Node覆盖一次提交/幂等重试/迟到响应/退出清理；Chrome正式管理区域、CRUD/详情/搜索筛选分页/确认删除与引用拒绝/失败重试/刷新/前后端一致。
+- [x] C：原Repo/SDK模块/原API最小增量，安全引用核验和事务审计；前端退役旧弹窗实现并直接维护页面Owner，不加wrapper、重复注册、重复请求或平行状态机。
+- [x] D：只跑变更模块与直接依赖的最小Python/API/Node/Chrome；通过且未受新修改影响不重跑。旧合同确与新业务冲突时迁移到新事实源并保留或加强业务断言，禁止删/skip/降标准。
+- [x] 质量审查：实际检查唯一Owner、无覆盖链/循环调用/渲染循环、单次事件绑定/写请求、异步取消及结果归属、无无用模块/硬编码业务结果、历史/事务/幂等保护及UI桌面/窄屏；整改后提交。
+- [ ] E：提交前再fetch按最终版本一次递增、必要缓存与七版本入口一致；普通push长期分支，核验最终实际SHA既有CI，不加大型工作流/触发范围或重跑无关CI。最终外部回执catalog-crud-ci-final-20261020.json，下一受验证提交归档。
+- [x] F：同步本专项、CODEX_CURRENT_STATE/Owner/技术债摘要、真实测试/接口/文件/剩余风险/生产未验证，不只在聊天记录。
+
+永久工程约束补充：原始入口/Owner/调用链先读清再改；禁止wrapper叠加、多套实现/覆盖、循环渲染、重复事件/请求/提示/任务、重复observer/轮询或嵌套弹窗；单事实源和既有执行Owner，清除本范围旧实现。字段/默认/校验/状态/日志/产物/Worker必须同后端事实，异常明确可恢复，禁止静默吞错/无限重试/假成功。UI复用企业风格变量/组件，表格/短表单/对齐/可滚动响应式，加载/空/错/成功/禁用齐全。相关旧技术债可安全消除则消除，否则记影响和后续，不无界重构。所有修改必须历史安全、定向测试/实际审查/最终CI；不得新增技术债或用mock冒充生产SDK验收。
+
+本轮仍不授权生产数据库/配置/密钥/OSS/Weight变更、生产删除迁移/真实转换/部署重启。仅隔离数据验收；真实现场仍NOT VERIFIED。
+
+本轮实际实施与诊断（2026-10-20）：
+- 原有能力：正式部署资源Owner、整体GET/PUT及revision、SDK工具探测、共享resolve、ModelArtifact/历史任务/发布Repository均存在。真实缺口是没有安全的单条CRUD/物理删除/审计回执/服务端分页，旧前端仍全量PUT；配置的constraint也会误拒绝实际可用SDK。
+- 原ModelArtifactRepository增加mutate_conversion_catalog/records查询/引用核验/操作回执，沿用conversion_catalog同表；同一SQLite增加operations审计账本，将字典变更+before/after+回执原子提交。服务端UUID，完整字典候选不因筛选损失。已引用身份拒绝改挂或物理删除，未引用允许；停用保留所有历史。整体PUT继续不可误删/改身份。
+- 引用扫描为只读叶子函数conversion_catalog_references.py；所有状态及全部SQL游标，覆盖两个job目录、durable payload/job_dir、算法版本、ModelArtifact、发布记录及外部映射。损坏证据明确409。显式本地ID仅在单条合同作用域优先；旧SDK回退不跨兄弟版本失效，也不把他厂商明确归属误绑定。版本→catalog→durable原准入锁顺序保留，外部配置保存仅加同一catalog fence以避免引用写入竞争，不改变映射合同/Weight行为。
+- 原renderDeployResources直接mount新conversion-catalog-runtime，main原导航退出直接leave；已删除app旧整表编辑实现及无用catalog428 CSS。一个嵌入区、短表单/详情/确认单层弹窗、专用事件属性及单次委托，无第二UI/Owner/轮询/Observer/全局覆盖链。列表局部更新，请求ticket+epoch+项目归属+AbortSignal，表单归属阻止迟到请求关闭新草稿。
+- SDK列表与resolve同源，实际probe版本与可信矩阵自动选择有效constraint，不写回历史配置；每资源独立版本/位置/芯片/精度/时间/真实错误与建议。显式检测只调用原资源detect一次，无新探测器；未知芯片仍不可转换。未引用的待配置芯片高级SDK可编辑，有引用保持锁定。
+
+接口（原catalog命名空间，错误统一PlatformError）：
+| 方法/路径 | 合同 |
+|---|---|
+| GET /api/v39/deploy/catalog/records | entity/query/vendor_id/template_id/enabled/page/page_size/sort，真实items/total/revision/templates及每芯片能力 |
+| GET /api/v39/deploy/catalog/records/{entity}/{id} | 当前item/revision、完整引用数量与最多50条证据样本、能力明细 |
+| POST /api/v39/deploy/catalog/operations | create/update/delete/enable/disable；operation_id/expected_revision；delete必须confirm_delete=true |
+| GET /api/v39/deploy/catalog/operations/{operation_id} | 可追溯回执及before/after；同ID同请求重放，不同请求409 |
+| POST /api/v39/deploy/catalog/chips/{id}/detect | 可选resource_ids，同SDK资源去重检测，返回各资源真实事实 |
+
+限定测试证据（分批、不重复累计，不代表生产验收）：
+- Python RED catcrud-python-red.log：14失败；API/fence RED3失败；实际probe版本RED1失败；损坏算法证据RED3失败；兄弟版本引用作用域RED1失败。均已最小修复/对应GREEN，未删skip或弱化断言。
+- 后端仅原字典unit/API与新增CRUD单元：首个直接合同集48通过2失败，旧业务升级的2处测试迁移后各通过；随后新边界4通过，检测/引用修正6通过；最终受影响引用范围13通过、检测真实错误1通过。后端代码未再变化的通过项不重跑。>500资产和>100 durable任务后段引用、job_dir缺失、坏JSON、跨厂商同SDK、历史SDK与兄弟版本、并发revision、重复回执、物理删除/引用拒绝已覆盖。
+- Node新Owner接线1项、生命周期/HTTP无randomUUID/唯一操作ID/离开和重挂4项通过；必要版本缓存断言1项通过（8项未选中）。旧浏览器自造recordID/建议/全表草稿断言迁移到后端事实源测试，未知别名前缀、模板隔离、稳定身份和隐藏数据无损断言保留/加强。
+- 真实Chrome只选本文件4个相关流程：正式菜单/BM1684 FP32矩形640×384提交、完整CRUD/引用拒绝/刷新返回/并发revision、迟到保存保留新表单/专用动作、服务端搜索筛选分页/503业务码未知结果同ID重放。全部通过；首次菜单测试因异步列表尚三行时strict locator失败，增加先等待一行而不削弱内容断言后通过。修改样式后仅复验受影响CRUD；最后1通过。
+- 本轮只做上述必要Python/Node/Chrome、语法和diff检查；未执行全仓库测试，未新增或扩大CI工作流。日志在本机.codex/tmp/catcrud-*，桌面/窄屏截图归档既有visualizations目录catalog-crud-desktop.png / catalog-crud-narrow.png；实际截图已人工检查，稳定ID移至详情与高级配置，表格内部滚动避免窄屏压缩。
+- 实际差异审查发现并整改：JSON损坏误放行、localID跨版本作用域漏引用、通用动作重复分发、迟到POST关闭新表单、检测读回后生命周期、未引用SDK不可编辑、5xx业务码误清幂等ID。没有新增重复Owner/wrapper/注册/请求或外部写入路径。未证明现场SDK/生产数据行为，不能用隔离fixture冒充。
+
+正式版本及待交付：再次fetch远端仍ed946c9b43ba7c5e014c60076d5539b6cbdf20b8/VERSION362；本轮一次递增42.24.363。后端七个正式版本入口一致、前端显示仍读后端；必要缓存app411/main410/styles409，新增catalog模块v1。未修改生产环境/字典/密钥、OSS、Weight、训练转换或服务。待安全提交/普通推送及最终实际SHA CI。CI回执写上述外部catalog-crud-ci-final-20261020.json（不能借用历史绿色）；下一会话先核对该回执、最新远端SHA/VERSION及工作树。部署后仍需授权现场真实资源多SDK及生产引用规模/性能、实际用户权限与字典交互复验；本轮不授权部署。
+
 ## 2026-10-20｜字典管理UI/UX简化（A-D限定验收通过 / E待最终SHA CI）
 
 基线6f34efd3ef09741147f90dadadb37591751c3c41 / VERSION42.24.361，fetch/prune及pull --ff-only一致且工作树干净；唯一同仓库活动会话为本会话。其他worktree/WIP不变。上一轮21/21 Actions、55/55最新Checks、Chrome112/112已按独立回执核验并归档为历史，不借用本轮CI。

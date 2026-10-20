@@ -1,3 +1,10 @@
+## 2026-10-20｜厂商与芯片完整CRUD（A-D限定验收通过 / CI待最终SHA）
+
+最新ed946c9b43ba7c5e014c60076d5539b6cbdf20b8/VERSION362已fetch/pull干净，无其他同仓库活动会话；前轮40/112绿色按附件核验归档，不借用。本轮升级为部署资源内正式区域及真实单条CRUD/引用安全删除/幂等审计/搜索分页/每资源SDK自动决议；原Repo/字典表/检测/resolve/Worker复用，旧编辑实现退役不并存。完整需求、架构、限定RED→GREEN及质量审查清单见docs/DYNAMIC_CONVERSION_CATALOG_ACCEPTANCE_2026_10_20.md顶部。仅实际受影响测试，通过未受新变更影响不重跑；不加大型CI或扩触发。本轮生产/外部写入/部署仍禁止。
+
+- 本轮VERSION42.24.363一次递增，app411/main410/styles409；七正式入口一致。原Repo/API/detect/resolve唯一Owner，单条CRUD+同库原子审计/全引用安全删除/服务端分页/自动SDK约束，部署页嵌入管理区，旧编辑及CSS移除。无引用待适配SDK可编辑，历史身份受保护。
+- RED→GREEN、Python分批限定结果、Node5+版本断言1、Chrome4流程及实际质量审查整改，详见专项顶部；不重复累计/不跑无关测试。现阶段提交前fetch远端未变，最终CI仍待实际SHA；生产未操作、现场未验证。
+
 ## 2026-10-20｜字典管理UI/UX简化（限定验收通过 / 最终SHA CI待提交 / 生产未部署）
 
 - 基线6f34efd3ef09741147f90dadadb37591751c3c41/VERSION361已fetch/pull且工作树初始干净；无其他同仓库活动会话，原WIP/worktree不改。上轮21/55最终绿色回执已核验归档，不代表本轮。

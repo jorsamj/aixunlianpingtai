@@ -104,6 +104,17 @@ def model_delivery_version_fence(
             pass
 
 
+@contextmanager
+def conversion_catalog_fence(data_dir, *, timeout=30):
+    """Serialize dictionary identity changes with conversion admission and binding writes."""
+    root=Path(data_dir)/"model_artifacts"
+    root.mkdir(parents=True,exist_ok=True)
+    try:
+        with FileLock(str(root/".conversion-catalog.lock"),timeout=timeout): yield
+    except Timeout as error:
+        raise PlatformError("CATALOG_BUSY","厂商芯片配置正在变更","", "请稍后重试同一操作。",409) from error
+
+
 def _json_load(path: Path, default: Any) -> Any:
     if not path.exists():
         return default
@@ -400,37 +411,119 @@ class ModelArtifactRepository:
     def conversion_catalog(self):
         with closing(self._connect()) as database:
             database.execute("CREATE TABLE IF NOT EXISTS conversion_catalog (id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, payload_json TEXT NOT NULL)")
+            database.execute("CREATE TABLE IF NOT EXISTS conversion_catalog_operations (operation_id TEXT PRIMARY KEY, request_digest TEXT NOT NULL, result_json TEXT NOT NULL, before_json TEXT NOT NULL, after_json TEXT NOT NULL, created_at TEXT NOT NULL)")
             row=database.execute("SELECT revision,payload_json FROM conversion_catalog WHERE id=1").fetchone()
         return {**json.loads(row["payload_json"]),"revision":row["revision"]} if row else {"vendors":[],"chips":[],"revision":0}
 
-    def save_conversion_catalog(self, payload, *, expected_revision):
+    @staticmethod
+    def _catalog_snapshot(database):
+        row=database.execute("SELECT revision,payload_json FROM conversion_catalog WHERE id=1").fetchone()
+        return {**json.loads(row["payload_json"]),"revision":row["revision"]} if row else {"vendors":[],"chips":[],"revision":0}
+
+    @staticmethod
+    def _commit_catalog(database, previous, value, *, allow_delete=False, allow_rebind=False):
         from .compute_platform_catalog import validate_conversion_catalog
-        value=validate_conversion_catalog(payload)
+        clean=validate_conversion_catalog(value)
+        for kind in ("vendors","chips"):
+            old={r["id"]:r for r in previous[kind]}
+            if not allow_delete and set(old)-{r["id"] for r in clean[kind]}:
+                raise ValueError("已有字典身份不可删除，请停用以保留历史追溯")
+            identity_fields=("template_id",) if kind=="vendors" else ("vendor_id","code","sdk_code")
+            for row in clean[kind]:
+                prior=old.get(row["id"])
+                if not allow_rebind and prior and any(row[k]!=prior[k] for k in identity_fields):
+                    raise ValueError("已有字典身份不可改挂，请停用旧条目并创建新身份")
+                if not prior or row["name"]!=prior["name"]:
+                    name=str(row["name"]).strip().casefold()
+                    peers=[r for r in clean[kind] if r["id"]!=row["id"] and (kind=="vendors" or r["vendor_id"]==row["vendor_id"])]
+                    if any(str(r["name"]).strip().casefold()==name for r in peers):
+                        raise PlatformError("CATALOG_DUPLICATE_NAME","同一范围内名称已存在",str(row["name"]),"请使用不同名称。",409)
+        revision=previous["revision"]+1
+        database.execute("INSERT INTO conversion_catalog(id,revision,payload_json) VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,payload_json=excluded.payload_json",
+            (revision,json.dumps(clean,ensure_ascii=False)))
+        return {**clean,"revision":revision}
+
+    def save_conversion_catalog(self, payload, *, expected_revision):
+        self.conversion_catalog()
+        with conversion_catalog_fence(self.root.parent), closing(self._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            previous=self._catalog_snapshot(database)
+            if type(expected_revision) is not int or expected_revision!=previous["revision"]:
+                raise ValueError("字典revision已变化，请刷新后重试（并发保护）")
+            result=self._commit_catalog(database,previous,payload)
+            database.commit()
+            return result
+
+    def conversion_catalog_references(self, entity, identity):
+        from .conversion_catalog_references import catalog_references
+        if entity not in {"vendors","chips"}: raise PlatformError("CATALOG_INVALID_REQUEST","字典类型非法",entity,status_code=422)
+        with conversion_catalog_fence(self.root.parent):
+            catalog=self.conversion_catalog()
+            row=next((r for r in catalog[entity] if r["id"]==identity),None)
+            if not row: raise PlatformError("CATALOG_NOT_FOUND","记录不存在",identity,status_code=404)
+            return {"entity":entity,"id":identity,"revision":catalog["revision"],**catalog_references(self.root.parent,catalog,entity,row)}
+
+    def conversion_catalog_operation(self, operation_id):
         self.conversion_catalog()
         with closing(self._connect()) as database:
+            row=database.execute("SELECT * FROM conversion_catalog_operations WHERE operation_id=?",(str(operation_id),)).fetchone()
+        if not row: raise PlatformError("CATALOG_OPERATION_NOT_FOUND","未找到已确认的操作回执",str(operation_id),status_code=404)
+        return {**json.loads(row["result_json"]),"before":json.loads(row["before_json"]),"after":json.loads(row["after_json"]),"created_at":row["created_at"]}
+
+    def mutate_conversion_catalog(self, payload):
+        from .compute_platform_catalog import new_conversion_catalog_record
+        from .conversion_catalog_references import catalog_references
+        entity=payload.get("entity");action=payload.get("action");operation_id=str(payload.get("operation_id") or "")
+        allowed={"entity","action","operation_id","expected_revision","id","record","confirm_delete"}
+        if set(payload)-allowed or entity not in {"vendors","chips"} or action not in {"create","update","delete","enable","disable"} or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,95}",operation_id):
+            raise PlatformError("CATALOG_INVALID_REQUEST","字典操作参数非法","需要合法entity/action/operation_id",status_code=422)
+        values=payload.get("record") or {}
+        if not isinstance(values,dict) or (action not in {"create","update"} and values): raise PlatformError("CATALOG_VALIDATION_FAILED","当前操作配置字段非法","",status_code=422)
+        digest=hashlib.sha256(json.dumps(payload,sort_keys=True,ensure_ascii=False,separators=(",",":")).encode()).hexdigest()
+        self.conversion_catalog()
+        with conversion_catalog_fence(self.root.parent), closing(self._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
-            row=database.execute("SELECT revision,payload_json FROM conversion_catalog WHERE id=1").fetchone()
-            revision=row["revision"] if row else 0
-            if type(expected_revision) is not int or expected_revision!=revision:
+            receipt=database.execute("SELECT request_digest,result_json FROM conversion_catalog_operations WHERE operation_id=?",(operation_id,)).fetchone()
+            if receipt:
+                if receipt["request_digest"]!=digest: raise PlatformError("CATALOG_OPERATION_CONFLICT","同一操作标识不能提交不同内容",operation_id,"请核对原操作回执。",409)
                 database.rollback()
-                raise ValueError("字典revision已变化，请刷新后重试（并发保护）")
-            old={c["id"]:c for c in json.loads(row["payload_json"]).get("chips",[])} if row else {}
-            previous=json.loads(row["payload_json"]) if row else {"vendors":[],"chips":[]}
-            if any({item["id"] for item in previous[key]}-{item["id"] for item in value[key]} for key in ("vendors","chips")):
-                database.rollback()
-                raise ValueError("已有字典身份不可删除，请停用以保留历史追溯")
-            old_vendors={v["id"]:v for v in previous["vendors"]}
-            if any(v["id"] in old_vendors and v["template_id"]!=old_vendors[v["id"]]["template_id"] for v in value["vendors"]):
-                database.rollback()
-                raise ValueError("已有厂商模板身份不可改挂，请停用旧条目并创建新身份")
-            for chip in value["chips"]:
-                if chip["id"] in old and any(chip[k]!=old[chip["id"]][k] for k in ("vendor_id","code","sdk_code")):
-                    database.rollback()
-                    raise ValueError("已有芯片身份不可改挂，请停用旧条目并创建新身份")
-            database.execute("INSERT INTO conversion_catalog(id,revision,payload_json) VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,payload_json=excluded.payload_json",
-                             (revision+1,json.dumps(value,ensure_ascii=False)))
+                return {**json.loads(receipt["result_json"]),"replayed":True}
+            previous=self._catalog_snapshot(database)
+            if type(payload.get("expected_revision")) is not int or payload["expected_revision"]!=previous["revision"]:
+                raise PlatformError("CATALOG_REVISION_CONFLICT","字典revision已变化，请刷新后重试","", "请重新读取当前记录，禁止覆盖其他用户的修改。",409)
+            identity=str(payload.get("id") or "")
+            before=next((r for r in previous[entity] if r["id"]==identity),None)
+            if action!="create" and not before: raise PlatformError("CATALOG_NOT_FOUND","记录不存在",identity,status_code=404)
+            if action=="create" and identity: raise PlatformError("CATALOG_INVALID_REQUEST","新增记录不能指定稳定ID",identity,status_code=422)
+            after=None;rebind=False
+            if action=="create":
+                try: after=new_conversion_catalog_record(previous,entity,values)
+                except ValueError as error: raise PlatformError("CATALOG_VALIDATION_FAILED",str(error),"",status_code=422) from error
+            elif action=="delete":
+                if payload.get("confirm_delete") is not True: raise PlatformError("CATALOG_DELETE_CONFIRMATION_REQUIRED","请确认物理删除","",status_code=422)
+            else:
+                if "id" in values: raise PlatformError("CATALOG_ID_IMMUTABLE","稳定ID不可修改",identity,status_code=422)
+                after={**before,**values}
+                if action in {"enable","disable"}: after["enabled"]=action=="enable"
+                fields=("template_id",) if entity=="vendors" else ("vendor_id","code","sdk_code")
+                rebind=any(after.get(k)!=before.get(k) for k in fields)
+            if action=="delete" or rebind:
+                refs=catalog_references(self.root.parent,previous,entity,before)
+                if not refs["can_delete"]: raise PlatformError("CATALOG_REFERENCED","存在业务引用，不能物理删除或改挂",json.dumps(refs,ensure_ascii=False),refs["solution"],409)
+            candidate={"vendors":list(previous["vendors"]),"chips":list(previous["chips"])}
+            if action=="create": candidate[entity].append(after)
+            else: candidate[entity]=[after if r["id"]==identity else r for r in candidate[entity] if action!="delete" or r["id"]!=identity]
+            if after is not None:
+                if not isinstance(after.get("name"),str): raise PlatformError("CATALOG_VALIDATION_FAILED","名称必须是文本","",status_code=422)
+                after["name"]=after["name"].strip()
+            try: saved=self._commit_catalog(database,previous,candidate,allow_delete=action=="delete",allow_rebind=rebind)
+            except ValueError as error:
+                code="CATALOG_DUPLICATE_CODE" if "编码重复" in str(error) else "CATALOG_VALIDATION_FAILED"
+                raise PlatformError(code,str(error),"",status_code=422) from error
+            result={"ok":True,"operation_id":operation_id,"entity":entity,"action":action,"id":(after or before)["id"],"item":after,"revision":saved["revision"],"replayed":False}
+            database.execute("INSERT INTO conversion_catalog_operations VALUES(?,?,?,?,?,?)",(operation_id,digest,json.dumps(result,ensure_ascii=False),json.dumps(before,ensure_ascii=False),json.dumps(after,ensure_ascii=False),utc_now()))
             database.commit()
-        return {**value,"revision":revision+1}
+            return result
 
 
     def config(self) -> dict[str, Any]:

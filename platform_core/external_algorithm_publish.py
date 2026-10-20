@@ -549,59 +549,61 @@ class ExternalPublicationRepository:
         return result
 
     def save_config(self, payload: ExternalPublishConfigPayload) -> Dict[str, Any]:
-        previous = self.config()
-        body = payload.model_dump()
-        # These fields are accepted only so old clients can trigger migration
-        # in ExternalAlgorithmPublishService. This repository is not their
-        # durable owner and must never write them into config.json again.
-        body.pop("storage_source_id", None)
-        body.pop("public_base_url", None)
-        merged_mappings = {
-            str(key): dict(value)
-            for key, value in (previous.get("target_mappings") or {}).items()
-            if isinstance(value, dict)
-        }
-        for key, value in (body.get("target_mappings") or {}).items():
-            merged_mappings[str(key)] = dict(value or {})
-        body["target_mappings"] = merged_mappings
-        body["schema_version"] = PUBLICATION_SCHEMA_VERSION
-        body["publish_original_model"] = True
-        mappings = body.setdefault("target_mappings", {})
-        original = dict(mappings.get("original") or {})
-        original["enabled"] = True
-        mappings["original"] = original
-        body["version_list_by_product"] = ChangLianEndpoints.version_list_by_product
-        body["weight_list_by_version"] = ChangLianEndpoints.weight_list_by_version
-        body["updated_at"] = utc_now()
-        mapping_changed = (
-            previous.get("target_mappings") != body.get("target_mappings")
-        )
-        with self.lock:
-            temp = self.config_path.with_suffix(".tmp")
-            temp.write_text(json.dumps(body, ensure_ascii=False, indent=2), encoding="utf-8")
-            temp.replace(self.config_path)
-        # Configuration-blocked publications are dormant until the canonical
-        # publish mapping actually changes. Keep attempts as immutable audit truth.
-        if mapping_changed:
-            with closing(self._connect()) as database:
-                stamp = utc_now()
-                database.execute(
-                    """
-                    UPDATE external_version_publications
-                    SET status='PENDING', last_error='', updated_at=?
-                    WHERE status='BLOCKED_CONFIG'
-                    """,
-                    (stamp,),
-                )
-                database.execute(
-                    """
-                    UPDATE external_artifact_publications
-                    SET sync_status='PENDING', last_error='', updated_at=?
-                    WHERE sync_status='BLOCKED_CONFIG'
-                    """,
-                    (stamp,),
-                )
-        return self.config()
+        from .model_artifacts import conversion_catalog_fence
+        with conversion_catalog_fence(self.root.parent):
+            previous = self.config()
+            body = payload.model_dump()
+            # These fields are accepted only so old clients can trigger migration
+            # in ExternalAlgorithmPublishService. This repository is not their
+            # durable owner and must never write them into config.json again.
+            body.pop("storage_source_id", None)
+            body.pop("public_base_url", None)
+            merged_mappings = {
+                str(key): dict(value)
+                for key, value in (previous.get("target_mappings") or {}).items()
+                if isinstance(value, dict)
+            }
+            for key, value in (body.get("target_mappings") or {}).items():
+                merged_mappings[str(key)] = dict(value or {})
+            body["target_mappings"] = merged_mappings
+            body["schema_version"] = PUBLICATION_SCHEMA_VERSION
+            body["publish_original_model"] = True
+            mappings = body.setdefault("target_mappings", {})
+            original = dict(mappings.get("original") or {})
+            original["enabled"] = True
+            mappings["original"] = original
+            body["version_list_by_product"] = ChangLianEndpoints.version_list_by_product
+            body["weight_list_by_version"] = ChangLianEndpoints.weight_list_by_version
+            body["updated_at"] = utc_now()
+            mapping_changed = (
+                previous.get("target_mappings") != body.get("target_mappings")
+            )
+            with self.lock:
+                temp = self.config_path.with_suffix(".tmp")
+                temp.write_text(json.dumps(body, ensure_ascii=False, indent=2), encoding="utf-8")
+                temp.replace(self.config_path)
+            # Configuration-blocked publications are dormant until the canonical
+            # publish mapping actually changes. Keep attempts as immutable audit truth.
+            if mapping_changed:
+                with closing(self._connect()) as database:
+                    stamp = utc_now()
+                    database.execute(
+                        """
+                        UPDATE external_version_publications
+                        SET status='PENDING', last_error='', updated_at=?
+                        WHERE status='BLOCKED_CONFIG'
+                        """,
+                        (stamp,),
+                    )
+                    database.execute(
+                        """
+                        UPDATE external_artifact_publications
+                        SET sync_status='PENDING', last_error='', updated_at=?
+                        WHERE sync_status='BLOCKED_CONFIG'
+                        """,
+                        (stamp,),
+                    )
+            return self.config()
 
     @classmethod
     def publication_key(
