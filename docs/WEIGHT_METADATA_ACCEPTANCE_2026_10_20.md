@@ -47,5 +47,5 @@
 
 ## 首次SHA CI修正
 
-- 首次SHA 6f83076f的CI发现精简Job缺TestClient依赖、浏览器文本守卫未适配参数化；仅补httpx2及更新守卫匹配，保留核心身份零POST断言与全部实际测试。最终SHA重新验收。
+- 首次SHA 6f83076f的CI发现精简Job缺TestClient依赖、浏览器文本守卫未适配参数化；仅补httpx2及更新守卫匹配，保留核心身份零POST断言与全部实际测试。后续1faa9693的后端200项与Chrome3项已通过，另将唤醒信号守卫同步到既有真实Event.set发出断言及消费后无重复断言；最终SHA重新验收。
 External Publish实际Chrome 3 passed；失败发生在后置文本守卫。SQL发布合同108 passed/1依赖导入失败，Publish合同199 passed/1相同依赖导入失败；没有删除测试或降低断言。
