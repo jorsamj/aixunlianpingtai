@@ -9,7 +9,25 @@ import {
   localChipKey,
   publicationActionLabel,
   publicationPreflight,
+  publicationWeightDetails,
+  publicationResultMessage,
 } from '../../static/modules/external-algorithm-publish.js';
+
+test('weight status shows known facts and optional gaps without downgrading successful delivery',()=>{
+  const html=publicationWeightDetails({artifacts:[{target:'rockchip',file_name:'model.rknn',remote_registered:true,
+    compute_platform_id:'rk-child',mapped_chip_code:'RK3576',metadata_sync_status:'PENDING',size_bytes:123,sha256:'a'.repeat(64),
+    metadata:{image_width:640,image_height:384,yolo_version:'YOLOv11s',tags:['smoke','fire']}}]});
+  for(const fact of ['RK3576','rk-child','640','384','YOLOv11s','123','a'.repeat(64),'smoke','fire','可同步已确定的补充信息'])assert.ok(html.includes(fact),fact);
+  const incomplete=publicationWeightDetails({artifacts:[{file_name:'best.pt',sync_status:'SYNCED',metadata_sync_status:'SYNCED',metadata_note:'部分扩展信息未提供：yoloVersion <unknown>'}]});
+  assert.ok(incomplete.includes('部分扩展信息未提供：yoloVersion &lt;unknown&gt;'));
+  assert.match(incomplete,/同步成功/);
+  assert.doesNotMatch(incomplete,/同步失败|阻断/);
+  const failed=publicationWeightDetails({artifacts:[{file_name:'model.rknn',metadata_note:'部分扩展信息未提供：tags',last_error:'真实远端错误 FIELD_REJECTED'}]});
+  assert.match(failed,/部分扩展信息未提供：tags/);
+  assert.match(failed,/真实远端错误 FIELD_REJECTED/);
+  assert.match(publicationResultMessage({publication:{status:'PUBLISHED'},metadata_note:'tags未提供'}),/已同步到新畅联/);
+  assert.match(publicationResultMessage({publication:{status:'PARTIAL'},conversion_failures:['真实接口失败']}),/尚未完整同步/);
+});
 
 test('publish config normalizes storage, compute mappings and recovery paths', () => {
   const config = normalizePublishConfig({

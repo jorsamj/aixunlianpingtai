@@ -49,6 +49,23 @@ export function localChipKey(value) {
   return String(value || '').replace(/[^A-Za-z0-9]/g, '').toUpperCase();
 }
 
+export function publicationWeightDetails(status={}) {
+  const names={SYNCED:'补充信息已同步',PENDING:'可同步已确定的补充信息',UNKNOWN:'结果未知 · 需要人工核对'};
+  const rows=status.artifacts||status.discovered||[];
+  return `<details open data-weight-publication-details style="grid-column:1/-1;min-width:0"><summary>权重发布状态</summary><div style="overflow:auto"><table class="table"><thead><tr><th>权重 / 算力 / 芯片</th><th>登记与元数据</th><th>模型事实</th></tr></thead><tbody>${rows.map(row=>{
+    const meta=row.metadata||row.weight_metadata||{};
+    const delivery=row.sync_status==='SYNCED'?'同步成功':row.remote_registered?'已登记 · 待确认':'尚未登记';
+    return `<tr><td>${escapeHtml(row.file_name||row.target)}<br>${escapeHtml(row.compute_platform_id||'未配置')} / ${escapeHtml(row.remote_chip_code||row.mapped_chip_code||row.chip_code||'通用')}</td><td>${delivery}<br>${escapeHtml(names[row.metadata_sync_status]||'待同步')}<br>${escapeHtml(row.metadata_note||'')}<br>${escapeHtml(row.last_error||'')}</td><td>宽 ${escapeHtml(meta.image_width??'未记录')} / 高 ${escapeHtml(meta.image_height??'未记录')} · ${escapeHtml(meta.yolo_version||'YOLO型号未记录')}<br>${escapeHtml(row.size_bytes??'未知')} bytes<br><code style="overflow-wrap:anywhere">${escapeHtml(row.sha256||'SHA256未记录')}</code><br>类别：${escapeHtml(Array.isArray(meta.tags)?meta.tags.join(', '):'未记录')}</td></tr>`;
+  }).join('')}</tbody></table></div><small>转换产物登记与目标硬件验证分别记录，登记成功不表示实机验证通过。</small></details>`;
+}
+
+export function publicationResultMessage(result={}) {
+  if(result.publication?.status==='PARTIAL'||result.conversion_failures?.length)
+    return '部分权重尚未完整同步，请查看权重发布状态中的具体原因';
+  if(result.deferred_conversions?.length)return '原始模型已同步；部分转换权重等待配置，请查看发布状态';
+  return '模型版本和转换产物已同步到新畅联';
+}
+
 export function computePlatformTreeRows(platforms = []) {
   const byId = new Map();
   for (const item of platforms) {
@@ -482,10 +499,23 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
     const pid = currentProjectId();
     if (!pid) return notify?.('当前项目不可用，请刷新页面后重试');
     if (button) { button.disabled = true; button.textContent = '正在检查…'; }
+    const current=()=>currentProjectId()===pid&&String(state().page||'')==='算法列表';
+    const showStatus=status=>{
+      if(!current())return;
+      const owner=[...document.querySelectorAll('[data-external-publish-action]')]
+        .find(node=>node.dataset.externalPublishAction===`${algorithmId}:${versionId}`)||button;
+      const row=owner?.isConnected?owner.closest('.alg428-version-row'):null;
+      if(!row)return;
+      row.querySelector('[data-weight-publication-details]')?.remove();
+      row.insertAdjacentHTML('beforeend',publicationWeightDetails(status));
+    };
     try {
       const status = await requestJson(
         `${API_ROOT}/projects/${encodeURIComponent(pid)}/algorithms/${encodeURIComponent(algorithmId)}/versions/${encodeURIComponent(versionId)}`
       );
+      if(!current())return;
+      showStatus(status);
+      if(status.publication?.status==='PUBLISHED'&&status.requires_sync===false)return;
       const preflight = publicationPreflight(status);
       if (!preflight.ready) {
         notify?.(preflight.message);
@@ -493,16 +523,23 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
       }
       notify?.(preflight.message);
       if (button) button.textContent = '正在同步…';
-      await requestJson(`${API_ROOT}/projects/${encodeURIComponent(pid)}/algorithms/${encodeURIComponent(algorithmId)}/versions/${encodeURIComponent(versionId)}/publish`, {method: 'POST'});
-      notify?.('模型版本和转换产物已同步到新畅联');
+      const result=await requestJson(`${API_ROOT}/projects/${encodeURIComponent(pid)}/algorithms/${encodeURIComponent(algorithmId)}/versions/${encodeURIComponent(versionId)}/publish`, {method: 'POST'});
+      if(!current())return;
+      notify?.(publicationResultMessage(result));
       await algorithmListRuntime?.refresh?.({render: true});
+      if(!current())return;
+      showStatus(await requestJson(`${API_ROOT}/projects/${encodeURIComponent(pid)}/algorithms/${encodeURIComponent(algorithmId)}/versions/${encodeURIComponent(versionId)}`));
     } catch (error) {
+      if(!current())return;
       notify?.(error?.message || error);
       await algorithmListRuntime?.refresh?.({render: true});
+      if(current()){
+        try{showStatus(await requestJson(`${API_ROOT}/projects/${encodeURIComponent(pid)}/algorithms/${encodeURIComponent(algorithmId)}/versions/${encodeURIComponent(versionId)}`));}catch(_){/* original error remains visible */}
+      }
     } finally {
       if (button?.isConnected) {
         const {version} = versionFromIds(algorithmId, versionId);
-        button.disabled = String(version?.external_publish_status || '').toLowerCase() === 'published';
+        button.disabled = false;
         button.textContent = publicationActionLabel(version || {});
       }
     }

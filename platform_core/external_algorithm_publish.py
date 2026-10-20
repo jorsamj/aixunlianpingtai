@@ -304,6 +304,7 @@ CREATE TABLE IF NOT EXISTS external_artifact_publications (
     compute_platform_id TEXT NOT NULL DEFAULT '',
     remote_chip_code TEXT NOT NULL DEFAULT '',
     sync_status TEXT NOT NULL DEFAULT 'PENDING',
+    synced_payload_json TEXT NOT NULL DEFAULT '{}',
     attempts INTEGER NOT NULL DEFAULT 0,
     last_error TEXT NOT NULL DEFAULT '',
     active INTEGER NOT NULL DEFAULT 1,
@@ -364,6 +365,10 @@ class ExternalPublicationRepository:
             str(row["name"])
             for row in database.execute("PRAGMA table_info(external_artifact_publications)").fetchall()
         }
+        if 'synced_payload_json' not in artifact_publication_columns:
+            database.execute(
+                "ALTER TABLE external_artifact_publications ADD COLUMN synced_payload_json TEXT NOT NULL DEFAULT '{}'"
+            )
         if "active" not in artifact_publication_columns:
             database.execute(
                 "ALTER TABLE external_artifact_publications ADD COLUMN active INTEGER NOT NULL DEFAULT 1"
@@ -926,7 +931,7 @@ class ExternalPublicationRepository:
     ) -> Dict[str, Any]:
         allowed = {
             "external_weight_id", "compute_platform_id", "remote_chip_code",
-            "sync_status", "attempts", "last_error", "updated_at",
+            "sync_status", "attempts", "last_error", "updated_at", "synced_payload_json",
         }
         values = {key: value for key, value in changes.items() if key in allowed}
         values.setdefault("updated_at", utc_now())
@@ -1669,7 +1674,7 @@ class ExternalAlgorithmPublishService:
             declared = [code.strip() for code in codes]
             if len(set(declared)) != len(declared):
                 return None
-            if frozen_codes is not None and set(declared) != set(frozen_codes):
+            if frozen_codes is not None and declared != frozen_codes:
                 return None
             return frozen_codes if frozen_codes is not None else declared
         return frozen_codes
@@ -1730,18 +1735,23 @@ class ExternalAlgorithmPublishService:
         actual = actual if isinstance(actual, Mapping) else {}
         if conversion_params is None:
             raw_shape = actual.get("imgsz")
-            width = height = raw_shape
+            if isinstance(raw_shape, (list, tuple)) and len(raw_shape) == 2:
+                height, width = raw_shape
+            else:
+                width = height = raw_shape
         else:
             params = conversion_params
             width = params.get("input_width")
             height = params.get("input_height")
-            if width is None or height is None:
+            if width is None and height is None:
                 size = params.get("input_size")
                 if isinstance(size, (list, tuple)) and len(size) == 2:
-                    width, height = size
+                    height, width = size
                 else:
                     width = height = size
         try:
+            if any(type(value) not in (int, str) or not str(value).isdigit() for value in (width, height)):
+                raise ValueError('input shape is not an exact integer pair')
             width, height = int(width), int(height)
             if 32 <= width <= 8192 and 32 <= height <= 8192:
                 result.update(image_width=width, image_height=height)
@@ -1806,7 +1816,7 @@ class ExternalAlgorithmPublishService:
             weight_metadata = self._weight_model_metadata(version, conversion_params, algorithm=algorithm)
             if snapshot_labels and "tags" not in weight_metadata:
                 weight_metadata["tags"] = list(snapshot_labels)
-            result.append({
+            row = {
                 "artifact_id": artifact_id,
                 "project_id": project_id,
                 "algorithm_id": algorithm_id,
@@ -1818,7 +1828,12 @@ class ExternalAlgorithmPublishService:
                 "size_bytes": path.stat().st_size,
                 "chip_code": chip_identity,
                 "weight_metadata": weight_metadata,
-            })
+            }
+            provided = self._weight_metadata_payload({**row, 'metadata': weight_metadata})
+            missing = [field for field in ('imageWidth','imageHeight','yoloVersion','fileSize','fileSha256','tags') if field not in provided]
+            row.update(metadata_complete=not missing,
+                metadata_note='部分扩展信息未提供：' + ', '.join(missing) if missing else '')
+            result.append(row)
         return result
 
     def _mapping(self, target: str) -> Dict[str, Any] | None:
@@ -2304,21 +2319,18 @@ class ExternalAlgorithmPublishService:
         self._assert_upload_source_identity(artifact)
         # Include fresh verified input metadata even when the OSS file is
         # reused; the canonical object bytes and identity remain unchanged.
-        return {**stored, "metadata": {**dict(stored.get("metadata") or {}), **discovered["metadata"]}}
+        metadata = {key: value for key, value in dict(stored.get('metadata') or {}).items()
+                    if key not in {'image_width', 'image_height', 'yolo_version', 'tags'}}
+        metadata.update(discovered['metadata'])
+        return self.model_assets.repository.upsert({**stored, 'metadata': metadata})
 
     @staticmethod
-    def _weight_artifact_payload(artifact: Mapping[str, Any]) -> Dict[str, Any]:
-        target = str(artifact.get("target") or "").strip().lower()
-        chip_code = _canonical_chip_code(artifact.get("remote_chip_code") or "")
-        payload: Dict[str, Any] = {
-            "computePlatformId": str(artifact.get("compute_platform_id") or "").strip(),
-            "fileName": str(artifact.get("file_name") or "").strip(),
-            "filePath": str(artifact.get("public_url") or "").strip(),
-        }
-        if artifact.get("size_bytes") is not None:
-            size = int(artifact["size_bytes"])
-            if size > 0:
-                payload["fileSize"] = size
+    def _weight_metadata_payload(artifact: Mapping[str, Any]) -> Dict[str, Any]:
+        """Encode only verified optional facts; absence never gates delivery."""
+        payload: Dict[str, Any] = {}
+        size = artifact.get('size_bytes')
+        if type(size) is int and 0 < size < 2**63:
+            payload['fileSize'] = size
         digest = str(artifact.get("sha256") or "").strip().lower()
         if re.fullmatch(r"[0-9a-f]{64}", digest):
             payload["fileSha256"] = digest
@@ -2327,13 +2339,26 @@ class ExternalAlgorithmPublishService:
         for field, source in (("imageWidth", "image_width"), ("imageHeight", "image_height")):
             if source in metadata:
                 value = metadata[source]
-                if isinstance(value, int) and 32 <= value <= 8192:
+                if type(value) is int and 32 <= value <= 8192:
                     payload[field] = value
         yolo_version = str(metadata.get("yolo_version") or "").strip()
         if re.fullmatch(r"YOLOv\d+[nsmlx]", yolo_version):
             payload["yoloVersion"] = yolo_version
-        if "tags" in metadata and isinstance(metadata["tags"], list):
+        if (isinstance(metadata.get('tags'), list) and metadata['tags']
+                and all(isinstance(tag, str) and tag.strip() == tag and tag for tag in metadata['tags'])
+                and len(set(metadata['tags'])) == len(metadata['tags'])):
             payload["tags"] = list(metadata["tags"])
+        return payload
+
+    @classmethod
+    def _weight_artifact_payload(cls, artifact: Mapping[str, Any]) -> Dict[str, Any]:
+        target = str(artifact.get("target") or "").strip().lower()
+        chip_code = _canonical_chip_code(artifact.get("remote_chip_code") or "")
+        payload: Dict[str, Any] = {
+            "computePlatformId": str(artifact.get("compute_platform_id") or "").strip(),
+            "fileName": str(artifact.get("file_name") or "").strip(),
+            "filePath": str(artifact.get("public_url") or "").strip(),
+        }
         if chip_code:
             payload["chipCode"] = chip_code
         missing = [field for field in ("computePlatformId", "fileName", "filePath") if not payload.get(field)]
@@ -2347,7 +2372,7 @@ class ExternalAlgorithmPublishService:
                 "algoVersionId、computePlatformId、fileName、filePath 按平台业务合同必须具备；chipCode 仅在 RKNN/rockchip 等芯片相关产物上强制要求，original 通用模型允许为空。",
                 409,
             )
-        return payload
+        return {**payload, **cls._weight_metadata_payload(artifact)}
 
     @classmethod
     def _weight_payload(cls, artifact: Mapping[str, Any], external_version_id: str) -> Dict[str, Any]:
@@ -2430,14 +2455,22 @@ class ExternalAlgorithmPublishService:
         artifact: Mapping[str, Any],
         *,
         weight_id: str = "",
+        confirmed_payload: Mapping[str, Any] | None = None,
     ) -> bool:
         if weight_id and cls._remote_weight_id(row) != str(weight_id):
             return False
-        return (
+        base_matches = (
             str(row.get("fileName") or row.get("name") or "") == str(artifact.get("file_name") or "")
             and str(row.get("computePlatformId") or "") == str(artifact.get("compute_platform_id") or "")
             and _canonical_chip_code(row.get("chipCode") or "") == _canonical_chip_code(artifact.get("remote_chip_code") or "")
             and str(row.get("filePath") or "") == str(artifact.get("public_url") or "")
+        )
+        if not base_matches:
+            return False
+        expected = cls._weight_metadata_payload(artifact)
+        return all(
+            row.get(key) == value if key in row else (confirmed_payload or {}).get(key) == value
+            for key, value in expected.items()
         )
 
     def _edit_existing_weight(
@@ -2457,6 +2490,8 @@ class ExternalAlgorithmPublishService:
                 409,
             )
         edit_payload = {"weightId": external_weight_id, **dict(payload)}
+        self.repository.patch_artifact_publication(str(current['artifact_id']), sync_status='UNKNOWN',
+            last_error='EXTERNAL_WEIGHT_EDIT_UNKNOWN: 编辑请求待确认')
         try:
             client.edit_weight(edit_payload)
         except Exception as error:
@@ -2479,6 +2514,7 @@ class ExternalAlgorithmPublishService:
                     provider=PROVIDER_CHANGLIAN,
                     sync_status="SYNCED",
                     last_error="",
+                    synced_payload_json=json.dumps(dict(payload), ensure_ascii=False, sort_keys=True),
                 )
                 return {**dict(current), **patched}
             self.repository.patch_artifact_publication(
@@ -2499,6 +2535,7 @@ class ExternalAlgorithmPublishService:
             provider=PROVIDER_CHANGLIAN,
             sync_status="SYNCED",
             last_error="",
+            synced_payload_json=json.dumps(dict(payload), ensure_ascii=False, sort_keys=True),
         )
         return {**dict(current), **patched}
 
@@ -2527,6 +2564,11 @@ class ExternalAlgorithmPublishService:
 
     def _sync_weight(self, artifact: Mapping[str, Any], external_version_id: str, client: PublishingChangLianClient) -> Dict[str, Any]:
         current = {**(self._artifact_projection(str(artifact["artifact_id"])) or {}), **dict(artifact)}
+        payload = self._weight_payload(current, external_version_id)
+        external_weight_id = str(current.get('external_weight_id') or '')
+        confirmed = json.loads(str(current.get('synced_payload_json') or '{}'))
+        if external_weight_id and str(current.get('sync_status') or '').upper() == 'SYNCED' and all(confirmed.get(key) == value for key, value in payload.items()):
+            return current
         attempts = int(current.get("attempts") or 0) + 1
         mapping = self.repository.patch_artifact_publication(
             str(current["artifact_id"]),
@@ -2534,11 +2576,23 @@ class ExternalAlgorithmPublishService:
             attempts=attempts,
         )
         current = {**current, **mapping}
-        payload = self._weight_payload(current, external_version_id)
-        external_weight_id = str(current.get("external_weight_id") or "")
         if external_weight_id:
-            if str(current.get("sync_status") or "").upper() == "SYNCED":
-                return current
+            if str(current.get('sync_status') or '').upper() == 'SYNCED':
+                rows = extract_items(client.list_version_weights(external_version_id))
+                if any(self._remote_weight_contract_matches(row, current, weight_id=external_weight_id) for row in rows):
+                    patched = self.repository.patch_artifact_publication(str(current['artifact_id']),
+                        synced_payload_json=json.dumps(payload, ensure_ascii=False, sort_keys=True))
+                    return {**current, **patched}
+            if str(current.get('sync_status') or '').upper() == 'UNKNOWN':
+                rows = extract_items(client.list_version_weights(external_version_id))
+                if any(self._remote_weight_contract_matches(row, current, weight_id=external_weight_id) for row in rows):
+                    patched = self.repository.patch_artifact_publication(
+                        str(current['artifact_id']), sync_status='SYNCED', last_error='',
+                        synced_payload_json=json.dumps(payload, ensure_ascii=False, sort_keys=True),
+                    )
+                    return {**current, **patched}
+                raise PlatformError('EXTERNAL_WEIGHT_EDIT_UNKNOWN', '权重元数据更新结果未确认',
+                    external_weight_id, '远端未返回足够字段证明更新成功；请人工核对该weightId，平台不会盲目再次编辑或新增。', 409)
             return self._edit_existing_weight(
                 current,
                 external_version_id,
@@ -2550,7 +2604,9 @@ class ExternalAlgorithmPublishService:
         except PlatformError as error:
             self.repository.patch_artifact_publication(
                 str(current["artifact_id"]), provider=PROVIDER_CHANGLIAN,
-                sync_status="UNKNOWN", last_error=str(error)
+                sync_status=('PENDING' if error.code == 'EXTERNAL_WEIGHT_RECOVERY_UNAVAILABLE'
+                             and str(current.get('sync_status') or '').upper() != 'UNKNOWN' else 'UNKNOWN'),
+                last_error=str(error)
             )
             raise
         if recovered:
@@ -2561,6 +2617,11 @@ class ExternalAlgorithmPublishService:
                 client,
                 payload,
             )
+        if str(current.get('sync_status') or '').upper() == 'UNKNOWN':
+            raise PlatformError('EXTERNAL_WEIGHT_CREATE_UNKNOWN', '新畅联权重登记结果未确认',
+                str(current.get('file_name') or ''), '尚未恢复唯一weightId，不能重复新增；请稍后查询或人工核对远端。', 409)
+        self.repository.patch_artifact_publication(str(current['artifact_id']), sync_status='UNKNOWN',
+            last_error='EXTERNAL_WEIGHT_CREATE_UNKNOWN: 新增请求待确认')
         try:
             response = client.create_weight(payload)
         except Exception as error:
@@ -2614,6 +2675,7 @@ class ExternalAlgorithmPublishService:
         patched = self.repository.patch_artifact_publication(
             str(current["artifact_id"]), provider=PROVIDER_CHANGLIAN,
             external_weight_id=weight_id, sync_status="SYNCED", last_error="",
+            synced_payload_json=json.dumps(payload, ensure_ascii=False, sort_keys=True),
         )
         return {**current, **patched}
 
@@ -2719,6 +2781,30 @@ class ExternalAlgorithmPublishService:
             if _artifact_target_identity(row.get("target")) != "training"
         ]
         conversion_active = self.conversion_active(project_id, algorithm_id, version_id)
+        stored = self._publication_artifacts(str(publication['publication_key'])) if publication else []
+        weights = []
+        for item in classified:
+            current = next((row for row in stored if row.get('target') == item.get('target')
+                            and row.get('sha256') == item.get('sha256')
+                            and _canonical_chip_code(row.get('chip_code')) == _canonical_chip_code(item.get('chip_code'))), {})
+            row = {**current, **item, 'artifact_id': current.get('artifact_id') or item['artifact_id'],
+                   'metadata': item['weight_metadata']}
+            row['remote_registered'] = bool(current.get('external_weight_id'))
+            if str(current.get('sync_status') or '').upper() == 'UNKNOWN':
+                row['metadata_sync_status'] = 'UNKNOWN'
+            elif current.get('external_weight_id'):
+                confirmed = json.loads(str(current.get('synced_payload_json') or '{}'))
+                expected = self._weight_metadata_payload(row)
+                row['metadata_sync_status'] = 'SYNCED' if all(confirmed.get(key) == value for key, value in expected.items()) else 'PENDING'
+            else:
+                row['metadata_sync_status'] = 'PENDING'
+            weights.append(row)
+        for current in stored:
+            if any(row.get('artifact_id') == current.get('artifact_id') for row in weights):
+                continue
+            weights.append({**current, 'remote_registered': bool(current.get('external_weight_id')),
+                'metadata_complete': False, 'metadata_sync_status': 'UNKNOWN',
+                'last_error': '已登记产物当前无法核验：源文件缺失或内容身份已改变，请人工核对'})
         transport = self._publish_transport_state()
         identity = self._external_identity_state(algorithm, version)
         return {
@@ -2736,7 +2822,8 @@ class ExternalAlgorithmPublishService:
                 "external_publish_status": str((publication or {}).get("status") or "").lower(),
             },
             "publication": publication,
-            "artifacts": self._publication_artifacts(str(publication["publication_key"])) if publication else [],
+            "artifacts": weights,
+            "requires_sync": self.publication_requires_sync(project_id, algorithm, version, publication),
             "discovered": classified,
             "mapped_artifact_count": len(mapped),
             "blocked_artifact_count": len(blocked),
@@ -3120,6 +3207,15 @@ class ExternalAlgorithmPublishService:
             expected_public_url = self.model_assets.public_url(model_asset)
             if not expected_public_url or str(current.get("public_url") or "") != expected_public_url:
                 return True
+            expected_payload = self._weight_payload({
+                **current, 'file_name': item['file_name'], 'size_bytes': item['size_bytes'],
+                'sha256': item['sha256'], 'metadata': item['weight_metadata'],
+                'compute_platform_id': expected_compute_platform_id, 'remote_chip_code': expected_chip_code,
+                'public_url': expected_public_url,
+            }, str(publication.get('external_algo_version_id') or ''))
+            confirmed = json.loads(str(current.get('synced_payload_json') or '{}'))
+            if any(confirmed.get(key) != value for key, value in expected_payload.items()):
+                return True
         return False
 
     def delete_version_for_rollback(
@@ -3355,6 +3451,7 @@ class ExternalAlgorithmPublishService:
             drifted = 0
             blocked = False
             blocked_errors: list[str] = []
+            discovered = self.discover_artifacts(project_id, algorithm, version)
             for artifact in self._publication_artifacts(publication_key):
                 if str(artifact.get("sync_status") or "").upper() != "SYNCED":
                     continue
@@ -3370,8 +3467,14 @@ class ExternalAlgorithmPublishService:
                     continue
                 remote = remote_by_id.get(weight_id)
                 if remote is not None:
+                    current_facts = next((item for item in discovered if item['target'] == artifact.get('target')
+                        and item['sha256'] == artifact.get('sha256') and _canonical_chip_code(item['chip_code']) == _canonical_chip_code(artifact.get('chip_code'))), None)
+                    if current_facts is None:
+                        continue
+                    artifact = {**artifact, 'metadata': current_facts['weight_metadata']}
                     if not self._remote_weight_contract_matches(
                         remote, artifact, weight_id=weight_id,
+                        confirmed_payload=json.loads(str(artifact.get('synced_payload_json') or '{}')),
                     ):
                         self.repository.patch_artifact_publication(
                             str(artifact["artifact_id"]),

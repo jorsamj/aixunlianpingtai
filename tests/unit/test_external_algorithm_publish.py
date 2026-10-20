@@ -504,6 +504,9 @@ def _seed_external_algorithm(root: Path, *, project_id="p1", version_id="v1"):
             "stored_path": str(model),
             "model_name": model.name,
             "external_analysis_id": "analysis-1",
+            "training_lineage": {"base": {"model": "yolo11n.pt"}, "parameters": {"actual": {"imgsz": 800}}},
+            "label_schema": [{"class_id": 0, "code": "smoke"}],
+            "label_codes": ["smoke"],
         }],
         "current_version_id": version_id,
     }]
@@ -539,7 +542,7 @@ def _seed_conversion(
         "target": target,
         "source_id": f"version::{algorithm_id}::{version_id}",
         "source_meta": {"algorithm_id": algorithm_id, "version_id": version_id},
-        "params": {"chip": chip},
+        "params": {"chip": chip, "input_size": 640},
         "outputs": [{"path": str(output), "available": True}],
     }), encoding="utf-8")
     return output
@@ -1157,6 +1160,9 @@ def test_synced_changlian_identity_survives_training_choice_conversion_and_publi
         "stored_path": str(model),
         "model_name": model.name,
         "external_analysis_id": selected_analysis,
+        "training_lineage": {"base": {"model": "yolo11n.pt"}, "parameters": {"actual": {"imgsz": 800}}},
+        "label_schema": [{"class_id": 0, "code": "smoke"}],
+        "label_codes": ["smoke"],
     }]
     algorithm["current_version_id"] = "v-live"
     save_algorithms(algorithms_path, algorithms)
@@ -1417,7 +1423,7 @@ def test_rockchip_publish_ignores_intermediate_onnx_and_manifest_outputs(tmp_pat
         "target": "rockchip",
         "source_id": "version::a1::v1",
         "source_meta": {"algorithm_id": "a1", "version_id": "v1"},
-        "params": {"chip": "rk3568"},
+        "params": {"chip": "rk3568", "input_size": 640},
         "outputs": [
             {"path": str(intermediate), "available": True},
             {"path": str(final), "available": True},
@@ -1917,7 +1923,7 @@ def test_weight_recovery_rejects_same_identity_with_different_returned_file_path
         **discovered,
         "artifact_kind": "original",
         "conversion_job_id": "",
-        "metadata": {},
+        "metadata": discovered["weight_metadata"],
     })
     canonical = service.model_assets.repository.patch(
         canonical["artifact_id"],
@@ -1963,7 +1969,7 @@ def test_weight_recovery_never_downgrades_when_remote_chip_code_is_empty(tmp_pat
         **discovered,
         "artifact_kind": "original",
         "conversion_job_id": "",
-        "metadata": {},
+        "metadata": discovered["weight_metadata"],
     })
     canonical = service.model_assets.repository.patch(
         canonical["artifact_id"],
@@ -2132,9 +2138,16 @@ def test_blocked_config_does_not_auto_retry_until_publish_config_changes(tmp_pat
     assert service.repository.auto_retry_due(reactivated) is True
 
 
-def test_auto_publish_request_only_marks_external_version_when_enabled(tmp_path: Path):
+def test_auto_publish_request_only_marks_external_version_when_enabled(tmp_path: Path, monkeypatch):
     # Drain any signal left by a prior request in the same pytest process.
     wait_for_external_publish_owner(0)
+    import platform_core.external_publish_request as request_module
+    emitted = []
+    signal = request_module._EXTERNAL_PUBLISH_WAKE_EVENT.set
+    def record_signal():
+        emitted.append(True)
+        signal()
+    monkeypatch.setattr(request_module._EXTERNAL_PUBLISH_WAKE_EVENT, 'set', record_signal)
     memory = MemorySecretStore()
     _configure_external(tmp_path, memory, auto_publish=True)
     _seed_external_algorithm(tmp_path)
@@ -2151,7 +2164,10 @@ def test_auto_publish_request_only_marks_external_version_when_enabled(tmp_path:
     version = list_algorithms(_algorithms_file(tmp_path, "p1"))[0]["versions"][0]
     assert version["external_publish_requested_at"] == "2026-09-17T12:00:00Z"
     assert "external_publish_status" not in version
-    assert wait_for_external_publish_owner(0) is True
+    # The real background owner may already have consumed the single-consumer
+    # signal. Observe emission, preserving the actual Event.set call.
+    assert emitted == [True]
+    wait_for_external_publish_owner(0)
     assert wait_for_external_publish_owner(0) is False
 
 
@@ -2926,7 +2942,7 @@ def test_durable_remote_conversion_root_is_discovered_and_appended(tmp_path: Pat
         "status": "done",
         "target": "rockchip",
         "source_trace": {"algorithm_id": "a1", "version_id": "v1"},
-        "params": {"chip": "rk3576"},
+        "params": {"chip": "rk3576", "input_size": 640},
         "outputs": [{"path": str(output), "available": True}],
     }), encoding="utf-8")
 
@@ -2959,7 +2975,7 @@ def test_publish_prefers_durable_remote_conversion_when_job_id_exists_in_both_ro
         "status": "queued",
         "target": "rockchip",
         "source_trace": {"algorithm_id": "a1", "version_id": "v1"},
-        "params": {"chip": "rk3576"},
+        "params": {"chip": "rk3576", "input_size": 640},
         "outputs": [],
     }), encoding="utf-8")
 
@@ -2972,7 +2988,7 @@ def test_publish_prefers_durable_remote_conversion_when_job_id_exists_in_both_ro
         "status": "done",
         "target": "rockchip",
         "source_trace": {"algorithm_id": "a1", "version_id": "v1"},
-        "params": {"chip": "rk3576"},
+        "params": {"chip": "rk3576", "input_size": 640},
         "outputs": [{"path": str(output), "available": True}],
     }), encoding="utf-8")
 
@@ -3161,6 +3177,282 @@ def test_remote_delete_timeout_fails_closed_when_version_still_exists(tmp_path: 
     assert TimeoutBeforeDeletePublishingClient.versions[0]["algoVersionId"] == "remote-version-still-there"
 
 
+def _seed_complete_weight_version(root):
+    _seed_external_algorithm(root)
+    rows = list_algorithms(_algorithms_file(root, 'p1'))
+    rows[0]['versions'][0].update({
+        'training_lineage': {'base': {'model': 'yolo11s.pt'}, 'parameters': {'actual': {'imgsz': 800}}},
+        'label_schema': [{'class_id': 1, 'code': 'fire'}, {'class_id': 0, 'code': 'smoke'}],
+        'label_codes': ['smoke', 'fire'],
+    })
+    save_algorithms(_algorithms_file(root, 'p1'), rows)
+
+
+def test_synced_legacy_weight_backfills_by_edit_once_when_list_omits_metadata(tmp_path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_complete_weight_version(tmp_path)
+    service = _service(tmp_path, memory)
+    first = service.publish(project_id='p1', algorithm_id='a1', version_id='v1')
+    artifact = first['artifacts'][0]
+    # Simulate an old registration: base identity is durable, extended fields
+    # and the new acknowledgement receipt are absent, not guessed from lists.
+    service.repository.patch_artifact_publication(artifact['artifact_id'], synced_payload_json='{}')
+    extended = {'imageWidth', 'imageHeight', 'yoloVersion', 'fileSize', 'fileSha256', 'tags'}
+    for key in extended:
+        FakePublishingClient.weights[0].pop(key, None)
+    algorithm, version = _version(tmp_path)
+    assert service.publication_requires_sync('p1', algorithm, version, first['publication'])
+    repaired = service.publish(project_id='p1', algorithm_id='a1', version_id='v1')
+    assert FakePublishingClient.weight_edits == 1
+    assert FakePublishingClient.weight_creates == FakePublishingClient.version_creates == 1
+    assert FakePublishingClient.last_weight_edit_payload['weightId'] == artifact['external_weight_id']
+    assert FakePublishingClient.last_weight_edit_payload['tags'] == ['smoke', 'fire']
+    for key in extended:
+        FakePublishingClient.weights[0].pop(key, None)
+    assert not service.publication_requires_sync('p1', algorithm, version, repaired['publication'])
+    assert not service.reconcile_published_remote(project_id='p1', algorithm_id='a1', version_id='v1', client=FakePublishingClient(), remote_versions=FakePublishingClient.versions)['drifted']
+    service.publish(project_id='p1', algorithm_id='a1', version_id='v1')
+    assert FakePublishingClient.weight_edits == 1
+
+
+def test_synced_weight_metadata_change_rearms_existing_mapping(tmp_path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_complete_weight_version(tmp_path)
+    service = _service(tmp_path, memory)
+    first = service.publish(project_id='p1', algorithm_id='a1', version_id='v1')
+    service.repository.patch_artifact_publication(first['artifacts'][0]['artifact_id'], synced_payload_json='{}')
+    service.publish(project_id='p1', algorithm_id='a1', version_id='v1')
+    assert FakePublishingClient.weight_edits == 0, 'full remote proof avoids an unnecessary edit'
+    rows = list_algorithms(_algorithms_file(tmp_path, 'p1'))
+    rows[0]['versions'][0]['training_lineage']['parameters']['actual']['imgsz'] = 960
+    save_algorithms(_algorithms_file(tmp_path, 'p1'), rows)
+    algorithm, version = _version(tmp_path)
+    assert service.publication_requires_sync('p1', algorithm, version, first['publication'])
+    service.publish(project_id='p1', algorithm_id='a1', version_id='v1')
+    assert FakePublishingClient.last_weight_edit_payload['imageWidth'] == 960
+    assert FakePublishingClient.weight_creates == 1
+
+
+def test_metadata_edit_timeout_requires_full_remote_proof_and_never_blindly_retries(tmp_path, monkeypatch):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_complete_weight_version(tmp_path)
+    service = _service(tmp_path, memory)
+    first = service.publish(project_id='p1', algorithm_id='a1', version_id='v1')
+    artifact = first['artifacts'][0]
+    service.repository.patch_artifact_publication(artifact['artifact_id'], synced_payload_json='{}')
+    FakePublishingClient.weights[0].pop('tags')
+    calls = []
+    edit = FakePublishingClient.edit_weight
+    def timeout(_self, payload):
+        calls.append(payload)
+        raise TimeoutError('isolated timeout before metadata commit')
+    monkeypatch.setattr(FakePublishingClient, 'edit_weight', timeout)
+    for _ in range(2):
+        with pytest.raises(PlatformError) as captured:
+            service.publish(project_id='p1', algorithm_id='a1', version_id='v1')
+        assert captured.value.code == 'EXTERNAL_WEIGHT_EDIT_UNKNOWN'
+    assert len(calls) == 1
+    assert service.repository.artifact_publication(artifact['artifact_id'])['sync_status'] == 'UNKNOWN'
+    assert FakePublishingClient.weight_creates == 1
+    # Complete the delayed remote operation through the same isolated client.
+    edit(FakePublishingClient(), calls[0])
+    recovered = service.publish(project_id='p1', algorithm_id='a1', version_id='v1')
+    assert recovered['artifacts'][0]['sync_status'] == 'SYNCED'
+    assert len(calls) == 1
+
+
+def test_core_only_weight_registers_without_optional_metadata_or_empty_tags():
+    FakePublishingClient.reset()
+    payload = ExternalAlgorithmPublishService._weight_payload({
+        'target': 'original', 'compute_platform_id': 'cp', 'file_name': 'best.pt',
+        'public_url': 'https://isolated.example/best.pt', 'metadata': {},
+    }, 'remote-v1')
+    assert payload == {'algoVersionId':'remote-v1','computePlatformId':'cp',
+                       'fileName':'best.pt','filePath':'https://isolated.example/best.pt'}
+    assert FakePublishingClient().create_weight(payload)['data']['weightId'] == 'w-1'
+    assert 'tags' not in FakePublishingClient.weights[0]
+
+
+@pytest.mark.parametrize('missing', ['yolo', 'tags'])
+def test_missing_optional_model_facts_stay_synced_and_never_clear_remote_tags(tmp_path, missing):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_complete_weight_version(tmp_path)
+    rows = list_algorithms(_algorithms_file(tmp_path, 'p1'))
+    version = rows[0]['versions'][0]
+    if missing == 'yolo':
+        version.pop('training_lineage')
+    else:
+        version.pop('label_schema')
+        version.pop('label_codes')
+    save_algorithms(_algorithms_file(tmp_path, 'p1'), rows)
+    (_project_dir(tmp_path, 'p1') / 'meta.json').write_text(json.dumps({'labels':['helmet']}))
+    service = _service(tmp_path, memory)
+    result = service.publish(project_id='p1', algorithm_id='a1', version_id='v1')
+    field = 'yoloVersion' if missing == 'yolo' else 'tags'
+    assert result['publication']['status'] == 'PUBLISHED'
+    assert result['artifacts'][0]['sync_status'] == 'SYNCED'
+    assert field not in FakePublishingClient.last_weight_payload
+    service.publish(project_id='p1', algorithm_id='a1', version_id='v1')
+    assert FakePublishingClient.weight_creates == 1 and FakePublishingClient.weight_edits == 0
+    if missing == 'tags':
+        FakePublishingClient.weights[0]['tags'] = ['remote-existing']
+        version['training_lineage']['parameters']['actual']['imgsz'] = 960
+        save_algorithms(_algorithms_file(tmp_path, 'p1'), rows)
+        service.publish(project_id='p1', algorithm_id='a1', version_id='v1')
+        assert 'tags' not in FakePublishingClient.last_weight_edit_payload
+        assert FakePublishingClient.weights[0]['tags'] == ['remote-existing']
+    else:
+        assert FakePublishingClient.last_weight_payload['tags'] == ['smoke','fire']
+
+
+def test_read_only_recovery_failure_does_not_poison_first_weight_creation(tmp_path, monkeypatch):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_complete_weight_version(tmp_path)
+    service = _service(tmp_path, memory)
+    lists = FakePublishingClient.list_version_weights
+    def unavailable(*_):
+        raise ConnectionError('isolated read-only query outage')
+    monkeypatch.setattr(FakePublishingClient, 'list_version_weights', unavailable)
+    with pytest.raises(PlatformError):
+        service.publish(project_id='p1', algorithm_id='a1', version_id='v1')
+    assert FakePublishingClient.weight_creates == 0
+    assert service.repository.artifact_publications(service.repository.publication('p1','a1','v1')['publication_key'])[0]['sync_status'] == 'PENDING'
+    monkeypatch.setattr(FakePublishingClient, 'list_version_weights', lists)
+    result = service.publish(project_id='p1', algorithm_id='a1', version_id='v1')
+    assert result['publication']['status'] == 'PUBLISHED'
+    assert FakePublishingClient.weight_creates == FakePublishingClient.version_creates == 1
+
+
+def test_rectangular_original_input_retains_height_width_order():
+    facts = ExternalAlgorithmPublishService._weight_model_metadata({
+        'training_lineage': {'parameters': {'actual': {'imgsz': [384, 640]}}},
+    })
+    assert facts['image_width'] == 640 and facts['image_height'] == 384
+
+
+def test_unknown_add_waits_for_unique_recovery_instead_of_recreating(tmp_path, monkeypatch):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_complete_weight_version(tmp_path)
+    service = _service(tmp_path, memory)
+    create = FakePublishingClient.create_weight
+    def timeout_after_commit(client, payload):
+        create(client, payload)
+        raise TimeoutError('isolated lost acknowledgement')
+    monkeypatch.setattr(FakePublishingClient, 'create_weight', timeout_after_commit)
+    monkeypatch.setattr(FakePublishingClient, 'list_version_weights', lambda *_: {'code': 200, 'data': []})
+    for _ in range(2):
+        with pytest.raises(PlatformError):
+            service.publish(project_id='p1', algorithm_id='a1', version_id='v1')
+    assert FakePublishingClient.weight_creates == 1
+    monkeypatch.setattr(FakePublishingClient, 'list_version_weights', lambda *_: {'code': 200, 'data': FakePublishingClient.weights})
+    recovered = service.publish(project_id='p1', algorithm_id='a1', version_id='v1')
+    assert recovered['artifacts'][0]['external_weight_id'] == FakePublishingClient.weights[0]['weightId']
+    assert FakePublishingClient.weight_creates == FakePublishingClient.version_creates == 1
+
+
+@pytest.mark.parametrize('chip,scale', [('rk3568','n'), ('rk3576','s')])
+def test_late_rectangular_conversion_metadata_is_complete_without_changing_conversion_status(tmp_path, chip, scale):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_complete_weight_version(tmp_path)
+    rows = list_algorithms(_algorithms_file(tmp_path, 'p1'))
+    rows[0]['versions'][0]['training_lineage']['base']['model'] = f'yolo11{scale}.pt'
+    save_algorithms(_algorithms_file(tmp_path, 'p1'), rows)
+    service = _service(tmp_path, memory)
+    first = service.publish(project_id='p1', algorithm_id='a1', version_id='v1')
+    assert first['artifacts'][0]['metadata']['image_width'] == 800
+    output = _seed_conversion(tmp_path, chip=chip, content=b'actual-rknn-bytes-unequal-to-pt')
+    path = _project_dir(tmp_path, 'p1') / 'deployment/jobs/convert-1/job.json'
+    job = json.loads(path.read_text())
+    job.update(status='blocked_by_hardware', hardware_verified=False)
+    job['params'].pop('input_size')
+    path.write_text(json.dumps(job))
+    incomplete = service.publish(project_id='p1', algorithm_id='a1', version_id='v1')
+    assert incomplete['publication']['status'] == 'PUBLISHED'
+    assert 'imageWidth' not in FakePublishingClient.last_weight_payload
+    assert 'imageHeight' not in FakePublishingClient.last_weight_payload
+    assert FakePublishingClient.weight_creates == 2
+    status = service.publication_status('p1', 'a1', 'v1')
+    rknn = next(row for row in status['artifacts'] if row['target'] == 'rockchip')
+    assert rknn['sync_status'] == 'SYNCED'
+    assert 'imageWidth' in rknn['metadata_note']
+    job['params'].update(input_width=640, input_height=384)
+    path.write_text(json.dumps(job))
+    complete = service.publish(project_id='p1', algorithm_id='a1', version_id='v1')
+    payload = {key: value for key, value in FakePublishingClient.last_weight_edit_payload.items() if key != 'weightId'}
+    assert set(payload) == {'algoVersionId','computePlatformId','chipCode','fileName','filePath','imageWidth','imageHeight','yoloVersion','fileSize','fileSha256','tags'}
+    assert (payload['imageWidth'], payload['imageHeight']) == (640, 384)
+    assert payload['fileSize'] == output.stat().st_size != first['artifacts'][0]['size_bytes']
+    assert payload['fileSha256'] == hashlib.sha256(output.read_bytes()).hexdigest()
+    assert payload['yoloVersion'] == f'YOLOv11{scale}' and payload['tags'] == ['smoke','fire']
+    assert payload['chipCode'] == chip.upper()
+    assert complete['publication']['status'] == 'PUBLISHED'
+    assert FakePublishingClient.version_creates == 1 and FakePublishingClient.weight_creates == 2
+    assert json.loads(path.read_text())['status'] == 'blocked_by_hardware'
+    assert not json.loads(path.read_text())['hardware_verified']
+
+
+def test_remote_metadata_drift_is_detected_after_model_asset_rediscovery(tmp_path):
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_complete_weight_version(tmp_path)
+    service = _service(tmp_path, memory)
+    first = service.publish(project_id='p1', algorithm_id='a1', version_id='v1')
+    asset = service.model_assets.repository.get(first['artifacts'][0]['artifact_id'])
+    service.model_assets.repository.upsert({**asset, 'metadata': {'chip_code': ''}})
+    FakePublishingClient.weights[0]['tags'] = ['wrong-project-label']
+    result = service.reconcile_published_remote(project_id='p1', algorithm_id='a1', version_id='v1',
+        client=FakePublishingClient(), remote_versions=FakePublishingClient.versions)
+    assert result['drifted'] == 1
+    assert FakePublishingClient.weight_edits == 0
+
+
+def test_weight_status_api_projects_missing_facts_without_remote_writes(tmp_path, monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    import platform_core.external_algorithm_publish as publish_module
+    FakePublishingClient.reset()
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    rows = list_algorithms(_algorithms_file(tmp_path, 'p1'))
+    rows[0]['versions'][0].pop('training_lineage')
+    save_algorithms(_algorithms_file(tmp_path, 'p1'), rows)
+    service = _service(tmp_path, memory)
+    api = FastAPI()
+    # This test owns its one isolated service; disable only router background
+    # startup while wiring the real route, before starting TestClient's threads.
+    with monkeypatch.context() as patch:
+        patch.setattr(publish_module, 'ExternalAlgorithmPublishService', lambda **_: service)
+        patch.setattr(publish_module.threading.Thread, 'start', lambda _self: None)
+        router = publish_module.external_algorithm_publish_router(data_dir=tmp_path,
+            get_project=lambda pid: {'id': pid}, project_dir=lambda pid: _project_dir(tmp_path, pid),
+            algorithms_file=lambda pid: _algorithms_file(tmp_path, pid), external_secret_store_factory=lambda: memory,
+            storage_sources_factory=service.storage_sources_factory, storage_credentials_factory=service.storage_credentials_factory)
+    api.include_router(router)
+    with TestClient(api) as client:
+        response = client.get('/api/v64/external-publish/projects/p1/algorithms/a1/versions/v1')
+    assert response.status_code == 200
+    status = response.json()
+    assert status['publish_ready']
+    assert 'yoloVersion' in status['artifacts'][0]['metadata_note']
+    assert FakePublishingClient.weight_creates == FakePublishingClient.weight_edits == 0
+
+
 def test_weight_extended_metadata_uses_actual_training_and_conversion_input(tmp_path):
     model = _seed_external_algorithm(tmp_path)
     algorithm = list_algorithms(_algorithms_file(tmp_path, "p1"))[0]
@@ -3213,13 +3505,12 @@ def test_weight_extended_metadata_never_invents_unknown_values():
     metadata = ExternalAlgorithmPublishService._weight_model_metadata({"id": "legacy"})
     assert metadata == {}
     payload = ExternalAlgorithmPublishService._weight_artifact_payload({
-        "target": "original", "compute_platform_id": "91", "file_name": "best.pt",
-        "public_url": "https://models.example/best.pt",
-        "sha256": "f" * 64, "size_bytes": 32, "metadata": {},
-    })
-    assert payload["fileSha256"] == "f" * 64
-    assert payload["fileSize"] == 32
-    assert not set(payload).intersection({"imageWidth", "imageHeight", "yoloVersion", "tags"})
+            "target": "original", "compute_platform_id": "91", "file_name": "best.pt",
+            "public_url": "https://models.example/best.pt",
+            "sha256": "f" * 64, "size_bytes": 32, "metadata": {},
+        })
+    assert payload['fileSize'] == 32 and payload['fileSha256'] == 'f' * 64
+    assert not set(payload).intersection({'imageWidth','imageHeight','yoloVersion','tags'})
     assert "tags" not in ExternalAlgorithmPublishService._weight_model_metadata({"tags": []})
     assert "yolo_version" not in ExternalAlgorithmPublishService._weight_model_metadata({
         "yolo_version": "v11",
@@ -3275,6 +3566,8 @@ def test_weight_yolo_architecture_follows_version_lineage_for_best_pt_iterations
 def test_weight_labels_recover_only_hash_verified_training_snapshot(tmp_path: Path):
     _seed_external_algorithm(tmp_path)
     algorithm, version = _version(tmp_path)
+    version.pop('label_schema', None)
+    version.pop('label_codes', None)
     signed = {
         "label_schema": [{"class_id": 0, "code": "smoke"}, {"class_id": 1, "code": "fire"}],
         "dataset_revision_id": "b" * 64,
@@ -3303,16 +3596,22 @@ def test_weight_schema_rejects_invalid_class_id_mappings():
     assert frozen({"label_schema": [{"class_id": 0, "code": "smoke"}, {"class_id": 0, "code": "fire"}]}) is None
     assert frozen({"label_schema": [{"class_id": 0, "code": "smoke"}, {"class_id": 2, "code": "fire"}]}) is None
     assert frozen({"label_schema": [{"class_id": 1, "code": "fire"}, {"class_id": 0, "code": "smoke"}]}) == ["smoke", "fire"]
+    assert frozen({'label_schema': [{'class_id': 0, 'code': 'smoke'}, {'class_id': 1, 'code': 'fire'}],
+                   'label_codes': ['fire', 'smoke']}) is None
 
 
-def test_upload_refuses_modified_source_with_unchanged_file_size(tmp_path: Path):
+@pytest.mark.parametrize('target', ['original', 'rockchip'])
+def test_upload_refuses_modified_source_with_unchanged_file_size(tmp_path: Path, target):
     model = _seed_external_algorithm(tmp_path)
     algorithm, version = _version(tmp_path)
     memory = MemorySecretStore()
     _configure_external(tmp_path, memory)
     service = _service(tmp_path, memory)
-    artifact = service.discover_artifacts("p1", algorithm, version)[0]
-    model.write_bytes(b"source-modex")
+    if target == 'rockchip':
+        model = _seed_conversion(tmp_path)
+    artifact = next(row for row in service.discover_artifacts("p1", algorithm, version) if row['target'] == target)
+    content = model.read_bytes()
+    model.write_bytes(content[:-1] + bytes([content[-1] ^ 1]))
     assert model.stat().st_size == artifact["size_bytes"]
     with pytest.raises(PlatformError) as captured:
         service._upload_artifact(artifact, algorithm, version)

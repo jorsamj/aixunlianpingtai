@@ -8,7 +8,7 @@ async function selectIsolatedTestProject(page, projectId) {
   });
 }
 
-test('changlian manual publish preflight blocks stale version analysis before POST', async ({page, request}) => {
+for(const reason of ['identity','optional']) test(`changlian publish respects core identity and optional metadata: ${reason}`, async ({page, request}) => {
   const project = await (await request.post('/api/projects', {data: {
     name: `畅联云发布预检-${Date.now()}`,
     labels: [{code: 'smoke', display_name: '烟雾'}],
@@ -23,15 +23,18 @@ test('changlian manual publish preflight blocks stale version analysis before PO
   const versionId = 'v-stale-analysis';
   let statusReads = 0;
   let publishWrites = 0;
+  let releasePublish;
+  const publishGate=new Promise(resolve=>{releasePublish=resolve;});
 
   await page.route('**/api/v64/external-publish/projects/**', async route => {
     const url = new URL(route.request().url());
     if (url.pathname.endsWith('/publish')) {
       publishWrites += 1;
+      if(reason==='optional')await publishGate;
       return route.fulfill({
-        status: 500,
+        status: reason==='optional'?200:500,
         contentType: 'application/json',
-        body: JSON.stringify({detail: 'publish must not be called'}),
+        body: JSON.stringify(reason==='optional'?{ok:true,publication:{status:'PUBLISHED'}}:{detail:'publish must not be called'}),
       });
     }
     statusReads += 1;
@@ -43,21 +46,25 @@ test('changlian manual publish preflight blocks stale version analysis before PO
         algorithm: {id: algorithmId, name: '抽烟检测', external_product_id: 'product-1'},
         version: {id: versionId, version_name: '20260919233000', external_publish_status: ''},
         publication: null,
-        artifacts: [],
+        artifacts: reason==='optional'?[
+          {target:'original',file_name:'best.pt',sync_status:publishWrites?'SYNCED':'PENDING',metadata_complete:false,metadata_sync_status:'PENDING',metadata_note:'部分扩展信息未提供：yoloVersion、tags'},
+          {target:'rockchip',file_name:'model.rknn',remote_registered:true,sync_status:'SYNCED',compute_platform_id:'rk-child',mapped_chip_code:'RK3576',metadata_sync_status:'PENDING',
+            size_bytes:123,sha256:'a'.repeat(64),metadata:{image_width:640,image_height:384,yolo_version:'YOLOv11s',tags:['smoke','fire']}},
+        ]:[],
         discovered: [{target: 'rockchip', file_name: 'model.rknn', publish_mapping_status: 'mapped'}],
         mapped_artifact_count: 1,
         blocked_artifact_count: 0,
         ignored_artifact_count: 0,
         transport_ready: true,
         transport_issues: [],
-        identity_ready: false,
+        identity_ready: reason==='optional',
         identity_issues: [{
           code: 'EXTERNAL_VERSION_ANALYSIS_STALE',
           message: '该训练版本绑定的畅联云分析方式已失效',
           detail: 'analysis-old',
           solution: '请立即同步并核对分析方式',
         }],
-        publish_ready: false,
+        publish_ready: reason==='optional',
         conversion_active: false,
       }),
     });
@@ -114,9 +121,22 @@ test('changlian manual publish preflight blocks stale version analysis before PO
 
   await publishButton.click();
 
-  await expect.poll(() => statusReads).toBe(1);
-  await expect.poll(() => publishWrites).toBe(0);
-  await expect(page.getByText(/分析方式已失效/)).toBeVisible();
+  if(reason==='optional'){
+    await expect.poll(()=>publishWrites).toBe(1);
+    const details=versionRow.locator('[data-weight-publication-details]');
+    await expect(details).toBeVisible();
+    for(const text of ['部分扩展信息未提供：yoloVersion、tags','RK3576','rk-child','640','384','YOLOv11s','123','a'.repeat(64),'smoke, fire','同步成功'])
+      await expect(details).toContainText(text);
+    await expect(details).not.toContainText('阻断发布');
+    releasePublish();
+  }
+
+  await expect.poll(() => statusReads).toBe(reason==='identity'?1:2);
+  await expect.poll(() => publishWrites).toBe(reason==='identity'?0:1);
+  if(reason==='identity')await expect(page.getByText(/分析方式已失效/)).toBeVisible();
+  else{
+    await expect(page.locator('#toast')).toContainText('模型版本和转换产物已同步到新畅联');
+  }
 });
 
 
@@ -218,7 +238,7 @@ test('changlian manual publish succeeds through the canonical algorithm version 
 
   await publishButton.click();
 
-  await expect.poll(() => statusReads).toBe(1);
+  await expect.poll(() => statusReads).toBe(2);
   await expect.poll(() => publishWrites).toBe(1);
   await expect(page.locator('#toast')).toContainText('模型版本和转换产物已同步到新畅联');
 });
