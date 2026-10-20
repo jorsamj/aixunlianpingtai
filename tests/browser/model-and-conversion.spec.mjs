@@ -688,11 +688,12 @@ test('Sophon submits explicit rectangular FP16 parameters and keeps BMODEL hardw
   await expect(history).toContainText('尚未实机验证');
 });
 
-test('local two-vendor dictionary selects BM1684 FP32 through the existing conversion dialog',async({page,request},testInfo)=>{
+test('formal deployment menu persists vendor chips and selects BM1684 FP32 through the existing conversion dialog',async({page,request},testInfo)=>{
   const current=await (await request.get('/api/v39/deploy/catalog')).json();
-  const data={vendors:[{id:'local-s',name:'算能',template_id:'tpu-mlir',enabled:true},{id:'local-r',name:'瑞芯微',template_id:'rknn',enabled:true}],
+  const data={vendors:[{id:'local-s',name:'算能',template_id:'tpu-mlir',enabled:true},{id:'local-other',name:'其他厂商',template_id:'rknn',enabled:true}],
     chips:[{id:'chip-84',vendor_id:'local-s',name:'BM1684',code:'local84',sdk_code:'bm1684',constraint_id:'tpu-mlir-1.30.2',enabled:true},
-           {id:'chip-88',vendor_id:'local-s',name:'BM1688',code:'local88',sdk_code:'bm1688',constraint_id:'tpu-mlir-1.30.2',enabled:true}],
+           {id:'chip-88',vendor_id:'local-s',name:'BM1688',code:'local88',sdk_code:'bm1688',constraint_id:'tpu-mlir-1.30.2',enabled:true},
+           {id:'chip-84x',vendor_id:'local-s',name:'BM1684X',code:'local84x',sdk_code:'bm1684x',constraint_id:'tpu-mlir-1.30.2',enabled:true}],
     expected_revision:current.revision};
   const saved=await request.put('/api/v39/deploy/catalog',{data});
   expect(saved.ok(),await saved.text()).toBeTruthy();
@@ -705,21 +706,58 @@ test('local two-vendor dictionary selects BM1684 FP32 through the existing conve
     const p=route.request().postDataJSON().params,chip=data.chips.find(c=>c.id===p.local_chip_id),precision=chip?.sdk_code==='bm1684'?'fp32':'fp16';
     await route.fulfill({json:{ready:!!chip&&(!p.precision||p.precision===precision),errors:chip?[]:['请选择目标芯片'],allowed_precisions:[precision],
       template:current.templates.find(t=>t.id==='tpu-mlir'),parameter_sources:{precision:'SDK/芯片约束',input_shape:'训练成果继承'},
-      chip_options:data.chips.map(c=>({...c,status_label:'可转换'})),
+      chip_options:data.chips.filter(c=>c.vendor_id===p.local_vendor_id).map(c=>({...c,status_label:'可转换'})),
       params:{...p,chip:chip?.sdk_code,precision,batch:1,num_core:1,dynamic:false,input_width:p.input_width||800,input_height:p.input_height||800,
         template_id:'tpu-mlir',template_version:1,preprocessing:{owner:'caller',pixel_format:'rgb',mean:[0,0,0],scale:[1/255,1/255,1/255],letterbox:true}}}});
   });
   let submitted;
   await page.route('**/api/v39/projects/*/deploy/jobs',async route=>{submitted=route.request().postDataJSON();await route.fulfill({json:{ok:true,job:{id:'isolated'}}})});
   await page.goto('/');await expect.poll(()=>page.evaluate(()=>state.uiReady===true)).toBe(true);
-  await page.evaluate(()=>window.openConversionCatalog428());
+  const nav=page.locator('#nav');
+  await nav.getByRole('button',{name:'展开高级功能',exact:true}).click();
+  await expect(nav.getByRole('button',{name:/部署资源/})).toBeVisible({timeout:5000});
+  await nav.getByRole('button',{name:/部署资源/}).click();
+  await expect(page.locator('#title')).toHaveText('部署资源');
+  await expect(nav.getByRole('button',{name:/部署资源/})).toHaveClass(/active/);
+  for(const name of ['厂商与芯片字典','检测本机工具','新增部署资源'])await expect(page.getByRole('button',{name,exact:true})).toBeVisible();
+  await page.getByRole('button',{name:'厂商与芯片字典',exact:true}).click();
   const editor=page.getByRole('dialog',{name:'厂商与芯片字典'});
   await expect(editor.locator('[data-catalog-vendor]')).toHaveCount(2);
-  await expect(editor.locator('[data-catalog-chip]')).toHaveCount(2);
+  await expect(editor.locator('[data-catalog-chip]')).toHaveCount(3);
+  for(const chip of ['BM1684','BM1684X'])await expect(editor.locator(`[data-catalog-chip] [data-key="name"][value="${chip}"]`)).toBeVisible();
+  await editor.getByRole('button',{name:'新增厂商',exact:true}).click();
+  const vendor=editor.locator('[data-catalog-vendor]').last();
+  await vendor.locator('[data-key="id"]').fill('local-r');await vendor.locator('[data-key="name"]').fill('瑞芯微');
+  await vendor.locator('[data-key="template_id"]').selectOption('rknn');
+  await editor.getByRole('button',{name:'新增芯片',exact:true}).click();
+  const chip=editor.locator('[data-catalog-chip]').last();
+  for(const [key,value] of Object.entries({id:'chip-rk',name:'RK3568',code:'localrk',sdk_code:'rk3568'}))await chip.locator(`[data-key="${key}"]`).fill(value);
+  await chip.locator('[data-key="vendor_id"]').selectOption('local-r');await chip.locator('[data-key="constraint_id"]').selectOption('rknn-verified');
+  await editor.getByRole('button',{name:'保存字典',exact:true}).click();
+  await expect(editor).toBeHidden();
+  const persisted=await (await request.get('/api/v39/deploy/catalog')).json();
+  expect(persisted.vendors).toHaveLength(3);expect(persisted.chips).toHaveLength(4);
+  expect(persisted.chips.map(c=>c.id)).toEqual(expect.arrayContaining(['chip-84','chip-88','chip-84x','chip-rk']));
+  Object.assign(data,{vendors:persisted.vendors,chips:persisted.chips});
+  await page.reload();await expect(page.locator('#title')).toHaveText('部署资源');
+  await expect(nav.getByRole('button',{name:/部署资源/})).toHaveClass(/active/);
+  await nav.getByRole('button',{name:/模型配置/}).click();
+  await expect(page.locator('#title')).toHaveText('模型配置');
+  await expect(page.getByRole('button',{name:'厂商与芯片字典',exact:true})).toHaveCount(0);
+  await nav.getByRole('button',{name:/部署资源/}).click();
+  await page.getByRole('button',{name:'厂商与芯片字典',exact:true}).click();
+  await expect(editor.locator('[data-catalog-vendor]')).toHaveCount(3);
+  await expect(editor.locator('[data-catalog-chip]')).toHaveCount(4);
+  for(const name of ['BM1684','BM1684X','RK3568'])await expect(editor.locator(`[data-catalog-chip] [data-key="name"][value="${name}"]`)).toBeVisible();
+  await page.screenshot({path:testInfo.outputPath('deployment-catalog-formal-menu.png'),fullPage:false});
   await editor.getByRole('button',{name:'取消',exact:true}).click();
   await page.evaluate(()=>window.openNewConvert428('dynamic-a','v1'));
   const dialog=page.getByRole('dialog',{name:'新建版本转换'});
-  await expect(dialog.locator('[name="conv428Target"]')).toHaveCount(5);
+  await expect(dialog.locator('[name="conv428Target"]')).toHaveCount(6);
+  await dialog.locator('[data-vendor-id="local-r"]').check();
+  await expect(dialog.locator('#conv428Chip option[value="chip-rk"]')).toContainText('RK3568');
+  await dialog.locator('#conv428Chip').selectOption('chip-rk');
+  await expect(dialog.locator('#conv428Chip')).toHaveValue('chip-rk');
   await dialog.locator('[data-vendor-id="local-s"]').check();
   await expect(dialog.locator('#conv428Chip')).toHaveValue('');
   await expect(dialog.locator('[data-convert-submit]')).toBeDisabled();

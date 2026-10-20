@@ -1,3 +1,7 @@
+## 2026-10-20 部署资源正式入口修复
+
+部署资源正式Owner为main canonicalWindowPageRenderers→已有renderDeployResources；模型配置仍为renderModelConfigPageV35。复用原高级导航/启动恢复/字典弹窗及/api/v39/deploy/catalog，无新页面、Owner、嵌套包装或后端更改。VERSION42.24.361，app408/main409/nav422518；限定验收与接续见docs/DYNAMIC_CONVERSION_CATALOG_ACCEPTANCE_2026_10_20.md顶部，最终CI单独归档。
+
 ## 2026-10-20 转换Weight恢复增量
 
 原发布Owner/版本SQL payload/ModelArtifact复用；行内交付意向选择、原/目标分类与Weight/OSS/UNKNOWN审核投影，单一后端合同，无第二队列、弹窗或轮询。详细架构/证据/进度以docs/CONVERSION_WEIGHT_PUBLISH_RECOVERY_2026_10_20.md为准；生产替换未开放，VERSION42.24.360，main408/发布模块64011。

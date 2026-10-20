@@ -6,7 +6,7 @@ import {createModalStack} from './modules/modal.js?v=421800';
 import {annotationPreviewFromBoxes, applyAnnotationResult} from './modules/annotation.js?v=422502';
 import {installNegativeSampleRuntime} from './modules/negative-samples.js?v=422544';
 import {installTrainingLabelRuntime} from './modules/training-labels.js?v=422569';
-import {installNavigationStability} from './modules/navigation-stability.js?v=422517';
+import {installNavigationStability} from './modules/navigation-stability.js?v=422518';
 import {persistUiState} from './modules/ui-state.js?v=422500';
 import {installPageRequestScope} from './modules/page-request-scope.js?v=422502';
 import {installPollRegistry} from './modules/poll-registry.js?v=422521';
@@ -462,6 +462,7 @@ const canonicalWindowPageRenderers = new Map([
   ['素材接入', 'renderSources422'],
   ['标签管理', 'renderLabelManagement414'],
   ['模型配置', 'renderModelConfigPageV35'],
+  ['部署资源', 'renderDeployResources'],
   ['训练资源', 'renderResources'],
   ['存储配置', 'renderStorageSources61'],
 ]);

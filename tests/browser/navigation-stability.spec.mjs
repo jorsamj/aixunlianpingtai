@@ -1220,6 +1220,7 @@ test('formal utility pages avoid unknown-module fallback and retired deployment 
     '质量中心',
     '标签管理',
     '模型配置',
+    '部署资源',
     '组件检测',
     '平台对接',
     '服务节点',
@@ -1242,7 +1243,6 @@ test('formal utility pages avoid unknown-module fallback and retired deployment 
   const aliases = [
     ['部署转换', '算法列表'],
     ['部署产物', '算法列表'],
-    ['部署资源', '模型配置'],
     ['部署插件', '模型配置'],
   ];
   for (const [legacy, canonical] of aliases) {

@@ -1,3 +1,15 @@
+## 2026-10-20｜正式部署资源入口补修（A-D完成 / E待推送最终SHA CI）
+
+本轮用户完整要求：从正式菜单进入部署资源，复用renderDeployResources和原Owner体系，正常展示厂商与芯片字典/检测本机工具/新增部署资源；模型配置保持独立。进入/返回/刷新状态一致；字典GET/PUT仍使用/api/v39/deploy/catalog，新增与已有BM1684/BM1684X/RK3568保存后重载、转换选择可见；不改/清空生产字典，不建页面/模块/Owner封装，不扩跑无关测试，更新文档与正式版本，安全推送唯一长期分支并验收最终SHA，不部署生产。
+
+- A：完整fetch/prune及pull --ff-only，基线8366b4edf79e8a4231fe5033a8c86ec92858bd80，VERSION42.24.360，初始工作树干净；可见同仓库只有本会话active/一历史notLoaded，无其他在线待合并需求。其他工作树不修改。上轮转换Weight最终23/23 Actions、59/59 Checks及10关键Jobs已按独立附件读回核验，属于上轮，不借用为本轮。
+- 原页面、字典弹窗、GET/PUT、持久化与转换读取已存在，不重复开发。根因明确四处：normalizeNavigationPage将部署资源误重定向；最终renderNav没有该菜单；启动RESTORABLE_PAGES及恢复逻辑排除/改写该页面；main canonical map没注册现有renderer。
+- B：Node修改旧错误别名期望并新增单菜单/独立Owner/恢复合同，17通过2失败；Chrome原动态字典用例改为菜单点击，真实在“部署资源”按钮缺失处超时失败（deploy-nav-red.log、deploy-nav-chrome-red-corrected.log）。未删除/跳过/减弱断言。
+- C：仅补原正式菜单（展开高级功能后的现有配置项组）、原canonicalWindowPageRenderers中的renderDeployResources、启动白名单与恢复条件、导航别名；模型配置仍指向renderModelConfigPageV35，部署插件旧别名不变。无第二页面/轮询/包装。
+- D：浏览器使用隔离本地字典API，保留原BM1684矩形F32提交断言并补普通菜单打开、BM1684/BM1684X显示、UI新增厂商/芯片RK3568、真实GET/PUT保存、刷新恢复、模型配置返回、保存后转换字典选项。SDK/资源接口夹具只验证UI合同，不冒充SDK或生产验证。最终Node导航/恢复/版本4文件29通过；Chrome限定3项通过（原模型配置、正式字典导航及原页面Owner用例；部署资源从旧别名升为正式页面并保留具体renderer断言），字典/API限定8通过18未选中；0失败0跳过。BM1684X/BM1684/RK3568显示，新增RK3568可选，原BM1684 F32矩形提交断言保留。首次浏览器夹具重复厂商ID被后端拒绝，修正夹具后通过，未改后端校验。日志deploy-nav-node-final.log、deploy-nav-chrome-final.log、deploy-nav-python-final.log均在本机.codex/tmp。
+- E：提交前fetch确认远端仍为上述基线；VERSION以最新42.24.360一次递增42.24.361，后端/health/app-info/OpenAPI/远程服务共七入口均为361；前端从bootstrap读正式版本，必要app408/main409/nav422518缓存更新，styles407不变。语法与git diff --check通过；限定只读代码审查确认canonical Owner/启动桥接/缓存一致，无可操作问题。完整最终SHA/CI保存独立附件deployment-catalog-navigation-ci-final-20261020.json（此前各轮附件同visualizations目录），下一受验证提交归档，避免自引用另造未验收HEAD。
+- F：未连接或修改生产数据库/厂商芯片字典/OSS/新畅联Weight，未部署/重启/重转换。现场已有三芯片实际记录显示仍需用户部署后只读核验，不能用隔离测试宣称已读取生产字典。
+
 # 动态厂商字典、SDK目标与转换参数整合｜2026-10-20
 
 ## A 需求与现状（本地实现与验收完成）
