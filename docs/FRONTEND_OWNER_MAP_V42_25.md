@@ -1,3 +1,9 @@
+## 2026-10-20｜Weight tags HTTP链路验收（测试补全待最终CI / 生产未验证）
+
+- 唯一业务范围为Weight tags；冻结类别、PT/ONNX/RKNN、原IDedit与UNKNOWN原机制已存在，不改生产业务/上传人/身份/OSS对象标签/VERSION/静态缓存。
+- 新增6项真实requests JSON编码链路回归，最终限定Python200/200、Node16/16、Chrome3/3；单/双/四类别、class_id顺序、多版本、RK3568/3576、未知省略、旧ID补齐与零重复写。初次5项失败为夹具问题，非业务RED。
+- 持续进度总入口 docs/CODEX_CURRENT_STATE.md，唯一专项 docs/WEIGHT_TAGS_SYNC_ACCEPTANCE_2026_10_20.md；最终SHA CI独立验证，无生产操作。
+
 ## 2026-10-20｜权重补充元数据发布（最终合同：可选、非阻断）
 
 - 首次SHA 6f83076f的CI发现精简Job缺TestClient依赖、浏览器文本守卫未适配参数化；仅补httpx2及更新守卫匹配，保留核心身份零POST断言与全部实际测试。后续1faa9693的后端200项与Chrome3项已通过，另将唤醒信号守卫同步到既有真实Event.set发出断言及消费后无重复断言；最终SHA重新验收。

@@ -3732,3 +3732,209 @@ def test_direct_child_selected_without_explicit_chip_binding_is_not_chip_identit
     result = service._artifact_mapping_state({"target": "rockchip", "chip_code": "RK3576"})
     assert result["status"] == "blocked"
     assert result["code"] == "EXTERNAL_COMPUTE_CHIP_MAPPING_REQUIRED"
+
+
+# Exercise the real requests JSON encoder; only the network transport is fake.
+def _tags_wire_service(root, memory):
+    import requests
+    from urllib.parse import urlsplit
+    from platform_core.external_algorithm_publish import PublishingChangLianClient
+
+    backend_type = type("TagsWireBackend", (FakePublishingClient,), {})
+    backend_type.reset()
+    backend = backend_type()
+    writes = []
+
+    class IsolatedAdapter(requests.adapters.BaseAdapter):
+        def send(self, request, **kwargs):
+            assert urlsplit(request.url).hostname == "changlian.example"
+            path = urlsplit(request.url).path
+            body = json.loads(request.body) if request.body else None
+            if path.endswith("/internal/auth/test-sign"):
+                result = {"code": 200, "data": {"timestamp": "100", "nonce": "abc", "signature": "sig"}}
+            elif path.endswith("/internal/auth/token"):
+                result = {"code": 200, "data": {"accessToken": "isolated-token", "expiresIn": 3600}}
+            else:
+                assert request.headers["Authorization"] == "Bearer isolated-token"
+                if request.method == "POST":
+                    assert request.headers["Content-Type"] == "application/json"
+                    writes.append((path, body))
+                if "/algorithm-version/listByProduct/" in path:
+                    result = backend.list_product_versions(path.rsplit("/", 1)[1])
+                elif "/algorithm-version/listByAnalysis/" in path:
+                    result = backend.list_analysis_versions(path.rsplit("/", 1)[1])
+                elif path.endswith("/algorithm-version/add"):
+                    result = backend.create_algorithm_version(body)
+                elif "/algorithm-weight/listByVersion/" in path:
+                    version_id = path.rsplit("/", 1)[1]
+                    result = {"code": 200, "data": [row for row in backend.weights if row["algoVersionId"] == version_id]}
+                elif path.endswith("/algorithm-weight/add"):
+                    result = backend.create_weight(body)
+                elif path.endswith("/algorithm-weight/edit"):
+                    result = backend.edit_weight(body)
+                else:
+                    raise AssertionError(path)
+            response = requests.Response()
+            response.status_code = 200
+            response._content = json.dumps(result).encode("utf-8")
+            response.request = request
+            return response
+
+        def close(self):
+            pass
+
+    session = requests.Session()
+    session.trust_env = False
+    adapter = IsolatedAdapter()
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    service = _service(root, memory, client_factory=lambda **kwargs: PublishingChangLianClient(session=session, **kwargs))
+    config = service.repository.config()
+    config["target_mappings"]["onnx"] = {"compute_platform_id": "cp-onnx", "chip_code": ""}
+    service.save_config(ExternalPublishConfigPayload(**config))
+    return service, backend_type, writes
+
+
+def _tags_frozen_version(root, codes, *, version_id="v1", previous_id=None):
+    from platform_core.algorithms import attach_version_if_current
+    from platform_core.snapshots import build_snapshot
+
+    path = _algorithms_file(root, "p1")
+    rows = list_algorithms(path)
+    template = dict(rows[0]["versions"][0])
+    model = _project_dir(root, "p1") / "algorithm_versions" / "a1" / version_id / "best.pt"
+    model.parent.mkdir(parents=True, exist_ok=True)
+    model.write_bytes(("trained-" + version_id).encode())
+    version = {**template, "id": version_id, "task_id": "train-" + version_id,
+               "stored_path": str(model), "model_name": "best.pt", "base_version_id": previous_id,
+               "version_name": "model-" + version_id, "version_no": "model-" + version_id}
+    version.pop("label_schema", None)
+    version.pop("label_codes", None)
+    if codes is not None:
+        # Same canonical Snapshot/schema and conditional version writer used by training.
+        snapshot = build_snapshot([], [], [], list(reversed([
+            {"class_id": index, "code": code} for index, code in enumerate(codes)
+        ])), seed=19)
+        version.update(label_schema=snapshot["label_schema"],
+                       label_codes=[row["code"] for row in snapshot["label_schema"]],
+                       snapshot_id=snapshot["snapshot_id"])
+    if previous_id is None:
+        rows[0]["versions"] = []
+        rows[0]["current_version_id"] = ""
+        save_algorithms(path, rows)
+    attach_version_if_current(path, "a1", version, expected_current_version_id=previous_id)
+    return version
+
+
+@pytest.mark.parametrize("codes", [["smoke"], ["smoke", "fire"], ["helmet", "fire", "smoke", "vest"], None])
+def test_tags_wire_training_and_completed_onnx_rknn_keep_frozen_classes(tmp_path, codes, monkeypatch):
+    from types import SimpleNamespace
+    from platform_core.deployment.conversion_tasks import _finalize_conversion_job
+    from platform_core.task_runtime import TaskStatus
+    from platform_core import external_publish_request as request_module
+
+    emitted = []
+    signal = request_module._EXTERNAL_PUBLISH_WAKE_EVENT.set
+    def record_signal():
+        emitted.append(True)
+        signal()
+    monkeypatch.setattr(request_module._EXTERNAL_PUBLISH_WAKE_EVENT, "set", record_signal)
+
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    _tags_frozen_version(tmp_path, codes)
+    (tmp_path / "projects.json").write_text(json.dumps([{"id": "p1", "labels": [{"code": "current-only"}]}]))
+    service, backend, writes = _tags_wire_service(tmp_path, memory)
+    assert request_external_auto_publish_if_enabled(data_dir=tmp_path, algorithms_path=_algorithms_file(tmp_path, "p1"),
+                                                   algorithm_id="a1", version_id="v1", now="2026-10-20T04:00:00Z")
+    assert len(emitted) == 1
+    assert service.run_auto_publish_once()["published"] == 1
+    for index, (target, chip) in enumerate([("onnx", ""), ("rockchip", "rk3568"), ("rockchip", "rk3576")]):
+        job_id = f"wire-convert-{index}"
+        output = _seed_conversion(tmp_path, target=target, chip=chip, job_id=job_id,
+                                  content=(target + chip).encode())
+        job_file = output.parents[1] / "job.json"
+        job = json.loads(job_file.read_text())
+        context = SimpleNamespace(task=SimpleNamespace(task_id=job_id, project_id="p1"),
+                                  artifacts=SimpleNamespace(atomic_write_json=lambda *args: None),
+                                  assert_current_execution=lambda: None, heartbeat=lambda **kwargs: None)
+        status, _ = _finalize_conversion_job(context, job_file, job, recovered_from_completed_work=False, data_dir=tmp_path)
+        assert status is (TaskStatus.SUCCEEDED if target == "onnx" else TaskStatus.BLOCKED_BY_HARDWARE)
+        assert len(emitted) == index + 2
+        assert _version(tmp_path)[1]["external_publish_requested_at"]
+        assert service.run_auto_publish_once()["published"] == 1
+    weights = [body for path, body in writes if path.endswith("/algorithm-weight/add")]
+    assert len(weights) == 4 and backend.version_creates == 1
+    assert {row["fileName"] for row in weights} == {"best.pt", "model.onnx", "model.rknn"}
+    assert len({row["algoVersionId"] for row in weights}) == 1
+    assert {row["chipCode"] for row in weights if row["fileName"] == "model.rknn"} == {"RK3568", "RK3576"}
+    for row in weights:
+        if codes is None:
+            assert "tags" not in row
+        else:
+            assert type(row["tags"]) is list and row["tags"] == codes
+            assert all(type(code) is str for code in row["tags"])
+        assert row["fileSize"] > 0 and len(row["fileSha256"]) == 64
+        assert row["imageWidth"] == row["imageHeight"] == (800 if row["fileName"] == "best.pt" else 640)
+    assert service.repository.publication("p1", "a1", "v1")["status"] == "PUBLISHED"
+    before = len(writes)
+    service.run_auto_publish_once()
+    service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+    assert len(writes) == before and backend.weight_edits == 0
+
+
+def test_tags_wire_old_weight_backfills_same_id_and_unknown_never_clears(tmp_path, monkeypatch):
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    _tags_frozen_version(tmp_path, None)
+    service, backend, writes = _tags_wire_service(tmp_path, memory)
+    first = service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+    artifact_id = first["artifacts"][0]["artifact_id"]
+    weight_id = backend.weights[0]["weightId"]
+    uploaded_at = first["artifacts"][0]["uploaded_at"]
+    assert "tags" not in backend.weights[0]
+    service.repository.patch_artifact_publication(artifact_id, synced_payload_json="{}")
+    def unexpected_upload(*args, **kwargs):
+        raise AssertionError("metadata edit must reuse the uploaded file")
+    monkeypatch.setattr(service.model_assets, "ensure_uploaded", unexpected_upload)
+    rows = list_algorithms(_algorithms_file(tmp_path, "p1"))
+    version = rows[0]["versions"][0]
+    version.update(label_schema=[{"class_id": 1, "code": "fire"}, {"class_id": 0, "code": "smoke"}],
+                   label_codes=["smoke", "fire"])
+    save_algorithms(_algorithms_file(tmp_path, "p1"), rows)
+    assert service.publication_requires_sync("p1", rows[0], version, first["publication"])
+    second = service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+    edits = [body for path, body in writes if path.endswith("/algorithm-weight/edit")]
+    assert len(edits) == 1 and edits[0]["tags"] == ["smoke", "fire"]
+    assert edits[0]["weightId"] == weight_id and edits[0]["algoVersionId"] == backend.versions[0]["algoVersionId"]
+    assert second["artifacts"][0]["uploaded_at"] == uploaded_at
+    assert second["artifacts"][0]["artifact_id"] == artifact_id
+    service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+    assert backend.weight_creates == backend.version_creates == backend.weight_edits == 1
+    version.pop("label_schema")
+    version.pop("label_codes")
+    version["training_lineage"]["parameters"]["actual"]["imgsz"] = 960
+    save_algorithms(_algorithms_file(tmp_path, "p1"), rows)
+    final = service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+    edits = [body for path, body in writes if path.endswith("/algorithm-weight/edit")]
+    assert len(edits) == 2 and "tags" not in edits[-1]
+    assert backend.weights[0]["tags"] == ["smoke", "fire"]
+    assert final["artifacts"][0]["sync_status"] == "SYNCED"
+
+
+def test_tags_wire_model_iterations_keep_each_versions_own_classes(tmp_path):
+    memory = MemorySecretStore()
+    _configure_external(tmp_path, memory)
+    _seed_external_algorithm(tmp_path)
+    _tags_frozen_version(tmp_path, ["smoke", "fire"])
+    service, backend, writes = _tags_wire_service(tmp_path, memory)
+    service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+    _tags_frozen_version(tmp_path, ["fire", "helmet", "smoke"], version_id="v2", previous_id="v1")
+    service.publish(project_id="p1", algorithm_id="a1", version_id="v2")
+    weights = [body for path, body in writes if path.endswith("/algorithm-weight/add")]
+    assert [row["tags"] for row in weights] == [["smoke", "fire"], ["fire", "helmet", "smoke"]]
+    assert len({row["algoVersionId"] for row in weights}) == 2
+    service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
+    assert backend.version_creates == backend.weight_creates == 2 and backend.weight_edits == 0

@@ -1,3 +1,13 @@
+## 2026-10-20｜训练与转换 Weight tags 专项（A-D测试通过 / E待提交与最终CI / 生产未验证）
+
+- 需求：核验冻结训练类别经原始PT/ONNX/RKNN到新畅联add/edit实际HTTP JSON；tags原生字符串数组、class_id顺序、未知省略且不阻断。上传人/身份/OSS对象标签不在范围。
+- 已完整fetch/pull；分支feature/external-algorithm-publishing，起始HEAD 2cb3ba1617551f59abdc9c66115a0cde29d463f5，远端一致、工作树原始干净，VERSION42.24.358。
+- 已有：冻结类别/Snapshot提取、可选扩展字段、旧ID edit、synced_payload_json与UNKNOWN恢复、转换完成唤醒。待核验：真实训练冻结格式、完整HTTP JSON、ONNX/多类/多版本与历史补齐链路；已确认链路原本实现；真实缺口为贯穿到PreparedRequest.body的验收覆盖。6项链路测试已通过，不制造业务RED，不改业务代码。
+- 预计范围：既有发布/平台/转换通知测试与必要的最小修复、现有handoff；不新建Owner，不部署、不调用真实新畅联写接口、不操作生产OSS或历史数据、不运行真实训练/转换。禁止测试发散。
+- 本地限定Python200/200、Node16/16、Chrome3/3，0失败0跳过；无业务修复、无真实业务RED，初次夹具失败如实记录。最终SHA CI尚未执行，不得提前称全绿。
+- 只读复核关闭1项CI依赖遗漏：原SQL精简Job补psutil；转换链路强化真实Event.set发出断言。最终SHA需独立CI。
+- 当前状态与下一步统一见 docs/WEIGHT_TAGS_SYNC_ACCEPTANCE_2026_10_20.md；阶段变化持续持久化，最终CI须对应最终SHA。
+
 ## 2026-10-20｜权重补充元数据发布（最终合同：可选、非阻断）
 
 - 首次SHA 6f83076f的CI发现精简Job缺TestClient依赖、浏览器文本守卫未适配参数化；仅补httpx2及更新守卫匹配，保留核心身份零POST断言与全部实际测试。后续1faa9693的后端200项与Chrome3项已通过，另将唤醒信号守卫同步到既有真实Event.set发出断言及消费后无重复断言；最终SHA重新验收。
