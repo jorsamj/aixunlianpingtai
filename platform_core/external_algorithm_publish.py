@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .model_metadata import (yolo_architecture, frozen_weight_labels, snapshot_weight_labels, weight_model_metadata, model_metadata)
+
 import hashlib
 import json
 import mimetypes
@@ -367,6 +369,8 @@ class ExternalPublicationRepository:
             str(row["name"])
             for row in database.execute("PRAGMA table_info(external_artifact_publications)").fetchall()
         }
+        if 'remote_metadata_json' not in artifact_publication_columns:
+            database.execute("ALTER TABLE external_artifact_publications ADD COLUMN remote_metadata_json TEXT NOT NULL DEFAULT '{}'")
         if 'synced_payload_json' not in artifact_publication_columns:
             database.execute(
                 "ALTER TABLE external_artifact_publications ADD COLUMN synced_payload_json TEXT NOT NULL DEFAULT '{}'"
@@ -670,8 +674,7 @@ class ExternalPublicationRepository:
                     external_product_id=excluded.external_product_id,
                     external_analysis_id=excluded.external_analysis_id,
                     version_name=excluded.version_name,
-                    version_no=excluded.version_no,
-                    updated_at=excluded.updated_at
+                    version_no=excluded.version_no
                 """,
                 (
                     key, provider_id, project_id, algorithm_id, version_id,
@@ -933,7 +936,7 @@ class ExternalPublicationRepository:
     ) -> Dict[str, Any]:
         allowed = {
             "external_weight_id", "compute_platform_id", "remote_chip_code",
-            "sync_status", "attempts", "last_error", "updated_at", "synced_payload_json",
+            "sync_status", "attempts", "last_error", "updated_at", "synced_payload_json", "remote_metadata_json",
         }
         values = {key: value for key, value in changes.items() if key in allowed}
         values.setdefault("updated_at", utc_now())
@@ -1608,165 +1611,16 @@ class ExternalAlgorithmPublishService:
     def conversion_active(self, project_id: str, algorithm_id: str, version_id: str) -> bool:
         return any(str(job.get("status") or "").strip().lower() in ACTIVE_CONVERSION_STATUSES for job in self._conversion_jobs(project_id, algorithm_id, version_id))
 
-    @staticmethod
-    def _yolo_architecture(version: Mapping[str, Any], algorithm: Mapping[str, Any] | None = None) -> str:
-        """Resolve exact YOLO generation AND scale from immutable training lineage.
 
-        Fine-tuned versions commonly use best.pt as their base, so walk their
-        explicit base_version_id chain, never guess a scale from v11 alone.
-        """
-        versions = {
-            str(row.get("id") or ""): row
-            for row in (algorithm or {}).get("versions", [])
-            if isinstance(row, Mapping) and str(row.get("id") or "")
-        }
-        seen: set[str] = set()
-        current: Mapping[str, Any] = version
-        for _ in range(len(versions) + 1):
-            current_id = str(current.get("id") or "")
-            if current_id:
-                if current_id in seen:
-                    break
-                seen.add(current_id)
-            lineage = current.get("training_lineage") or {}
-            lineage = lineage if isinstance(lineage, Mapping) else {}
-            base = lineage.get("base") or {}
-            base = base if isinstance(base, Mapping) else {}
-            for candidate in (current.get("yolo_version"), base.get("model")):
-                name = Path(str(candidate or "").replace("\\", "/")).name
-                name = re.sub(r"\.pt$", "", name, flags=re.IGNORECASE)
-                match = re.fullmatch(r"yolo(?:v)?(\d+)([nsmlx])", name, re.IGNORECASE)
-                if match:
-                    return f"YOLOv{match.group(1)}{match.group(2).lower()}"
-            parent_id = str(
-                current.get("base_version_id")
-                or base.get("version_id")
-                or ""
-            ).strip()
-            if not parent_id or parent_id in seen or parent_id not in versions:
-                break
-            current = versions[parent_id]
-        return ""
 
-    @staticmethod
-    def _frozen_weight_labels(version: Mapping[str, Any]) -> list[str] | None:
-        """The model classes are frozen at training, not today's project catalog."""
-        codes = version.get("label_codes")
-        schema = version.get("label_schema")
-        frozen_codes: list[str] | None = None
-        if isinstance(schema, list) and schema:
-            if not all(isinstance(row, Mapping) and str(row.get("code") or "").strip() for row in schema):
-                return None
-            try:
-                ids = [
-                    int(row["class_id"]) if type(row.get("class_id")) in (int, str) else -1
-                    for row in schema
-                ]
-                if sorted(ids) != list(range(len(schema))):
-                    return None
-                ordered = sorted(schema, key=lambda row: int(row["class_id"]))
-            except (KeyError, TypeError, ValueError, OverflowError):
-                return None
-            frozen_codes = [str(row["code"]).strip() for row in ordered]
-            if len(set(frozen_codes)) != len(frozen_codes):
-                return None
-        if isinstance(codes, list) and codes:
-            if not all(isinstance(code, str) and code.strip() for code in codes):
-                return None
-            declared = [code.strip() for code in codes]
-            if len(set(declared)) != len(declared):
-                return None
-            if frozen_codes is not None and declared != frozen_codes:
-                return None
-            return frozen_codes if frozen_codes is not None else declared
-        return frozen_codes
 
-    def _snapshot_weight_labels(self, version: Mapping[str, Any]) -> list[str] | None:
-        """Only recover labels from a hash-verified task Snapshot of this version."""
-        if version.get("label_schema") or version.get("label_codes"):
-            return None
-        lineage = version.get("training_lineage") or {}
-        if not isinstance(lineage, Mapping):
-            return None
-        task_id = str(lineage.get("task_id") or "").strip()
-        snapshot_id = str(lineage.get("snapshot_id") or "").strip()
-        version_snapshot_id = str(version.get("snapshot_id") or "").strip()
-        if (
-            not re.fullmatch(r"[A-Za-z0-9._-]{1,128}", task_id)
-            or task_id in {".", ".."}
-            or not re.fullmatch(r"[0-9a-f]{64}", snapshot_id)
-            or (version_snapshot_id and version_snapshot_id != snapshot_id)
-        ):
-            return None
-        root = (self.data_dir / "task_runtime" / "artifacts").resolve()
-        try:
-            path = (root / task_id / "snapshot.json").resolve(strict=True)
-            if root not in path.parents:
-                return None
-            snapshot = json.loads(path.read_text(encoding="utf-8"))
-            if not isinstance(snapshot, dict) or snapshot.get("snapshot_id") != snapshot_id:
-                return None
-            revision = str(version.get("dataset_revision_id") or "").strip()
-            if revision and snapshot.get("dataset_revision_id") != revision:
-                return None
-            signed = {key: value for key, value in snapshot.items() if key not in ("snapshot_id", "created_at")}
-            digest = hashlib.sha256(
-                json.dumps(signed, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-            ).hexdigest()
-            if digest != snapshot_id:
-                return None
-            return self._frozen_weight_labels({"label_schema": snapshot.get("label_schema")})
-        except (OSError, TypeError, ValueError, RuntimeError):
-            return None
 
-    @classmethod
-    def _weight_model_metadata(
-        cls,
-        version: Mapping[str, Any],
-        conversion_params: Mapping[str, Any] | None = None,
-        *,
-        algorithm: Mapping[str, Any] | None = None,
-    ) -> Dict[str, Any]:
-        """Resolve weight facts from the frozen training and conversion contracts."""
-        result: Dict[str, Any] = {}
-        lineage = version.get("training_lineage") or {}
-        lineage = lineage if isinstance(lineage, Mapping) else {}
-        parameters = lineage.get("parameters") or {}
-        parameters = parameters if isinstance(parameters, Mapping) else {}
-        actual = parameters.get("actual") or {}
-        actual = actual if isinstance(actual, Mapping) else {}
-        if conversion_params is None:
-            raw_shape = actual.get("imgsz")
-            if isinstance(raw_shape, (list, tuple)) and len(raw_shape) == 2:
-                height, width = raw_shape
-            else:
-                width = height = raw_shape
-        else:
-            params = conversion_params
-            width = params.get("input_width")
-            height = params.get("input_height")
-            if width is None and height is None:
-                size = params.get("input_size")
-                if isinstance(size, (list, tuple)) and len(size) == 2:
-                    height, width = size
-                else:
-                    width = height = size
-        try:
-            if any(type(value) not in (int, str) or not str(value).isdigit() for value in (width, height)):
-                raise ValueError('input shape is not an exact integer pair')
-            width, height = int(width), int(height)
-            if 32 <= width <= 8192 and 32 <= height <= 8192:
-                result.update(image_width=width, image_height=height)
-        except (TypeError, ValueError, OverflowError):
-            pass
+    _yolo_architecture = staticmethod(yolo_architecture)
+    _frozen_weight_labels = staticmethod(frozen_weight_labels)
+    _weight_model_metadata = staticmethod(weight_model_metadata)
 
-        architecture = cls._yolo_architecture(version, algorithm)
-        if architecture:
-            result["yolo_version"] = architecture
-        labels = cls._frozen_weight_labels(version)
-        if labels:
-            result["tags"] = labels
-        return result
+    def _snapshot_weight_labels(self, version):
+        return snapshot_weight_labels(self.data_dir, version)
 
     def discover_artifacts(self, project_id: str, algorithm: Mapping[str, Any], version: Mapping[str, Any]) -> list[Dict[str, Any]]:
         algorithm_id = str(algorithm.get("id") or "")
@@ -1815,7 +1669,8 @@ class ExternalAlgorithmPublishService:
             artifact_id = hashlib.sha256(
                 f"{project_id}:{algorithm_id}:{version_id}:{target}:{chip_identity}:{digest}".encode("utf-8")
             ).hexdigest()[:32]
-            weight_metadata = self._weight_model_metadata(version, conversion_params, algorithm=algorithm)
+            full_metadata = model_metadata(self.data_dir, version, conversion_params, algorithm=algorithm)
+            weight_metadata = {key:value for key,value in full_metadata.items() if key in {"image_width","image_height","yolo_version","tags"}}
             if snapshot_labels and "tags" not in weight_metadata:
                 weight_metadata["tags"] = list(snapshot_labels)
             row = {
@@ -1830,6 +1685,7 @@ class ExternalAlgorithmPublishService:
                 "size_bytes": path.stat().st_size,
                 "chip_code": chip_identity,
                 "weight_metadata": weight_metadata,
+                "model_metadata": full_metadata,
             }
             provided = self._weight_metadata_payload({**row, 'metadata': weight_metadata})
             missing = [field for field in ('imageWidth','imageHeight','yoloVersion','fileSize','fileSha256','tags') if field not in provided]
@@ -2293,6 +2149,7 @@ class ExternalAlgorithmPublishService:
             "sha256": str(artifact.get("source_sha256") or artifact.get("sha256") or ""),
             "size_bytes": int(artifact["size_bytes"]),
             "metadata": {"chip_code": str(artifact.get("chip_code") or ""),
+                         **dict(artifact.get("model_metadata") or {}),
                          **dict(artifact.get("weight_metadata") or {})},
         }
         stored = self._reuse_uploaded_model_asset(artifact) or self.model_assets.ensure_uploaded(discovered)
@@ -2327,7 +2184,8 @@ class ExternalAlgorithmPublishService:
         metadata = {key: value for key, value in dict(stored.get('metadata') or {}).items()
                     if key not in {'image_width', 'image_height', 'yolo_version', 'tags'}}
         metadata.update(discovered['metadata'])
-        return self.model_assets.repository.upsert({**stored, 'metadata': metadata})
+        return {**self.model_assets.repository.upsert({**stored, 'metadata': metadata}),
+                'weight_metadata': dict(artifact.get('weight_metadata') or {})}
 
     @staticmethod
     def _weight_metadata_payload(artifact: Mapping[str, Any]) -> Dict[str, Any]:
@@ -2349,7 +2207,10 @@ class ExternalAlgorithmPublishService:
         yolo_version = str(metadata.get("yolo_version") or "").strip()
         if re.fullmatch(r"YOLOv\d+[nsmlx]", yolo_version):
             payload["yoloVersion"] = yolo_version
-        if (isinstance(metadata.get('tags'), list) and metadata['tags']
+        prepared = artifact.get('weight_metadata')
+        if (metadata.get('label_validation_status') != 'CONFLICT'
+                and (not isinstance(prepared, Mapping) or bool(prepared.get('tags')))
+                and isinstance(metadata.get('tags'), list) and metadata['tags']
                 and all(isinstance(tag, str) and tag.strip() == tag and tag for tag in metadata['tags'])
                 and len(set(metadata['tags'])) == len(metadata['tags'])):
             payload["tags"] = list(metadata["tags"])
@@ -2497,9 +2358,28 @@ class ExternalAlgorithmPublishService:
                 "只能对已经唯一恢复到 weightId 的远端权重执行更新。",
                 409,
             )
+        # A remembered ID alone is not permission to edit an ambiguous remote
+        # identity. Use the last confirmed core contract when names were changed.
+        previous = json.loads(str(current.get("synced_payload_json") or "{}"))
+        reference = {**current,
+            "file_name": previous.get("fileName", current.get("file_name")),
+            "compute_platform_id": previous.get("computePlatformId", current.get("compute_platform_id")),
+            "remote_chip_code": previous.get("chipCode", current.get("remote_chip_code")),
+            "public_url": previous.get("filePath", current.get("public_url"))}
+        try:
+            rows = extract_items(client.list_version_weights(external_version_id))
+            if self._recover_weight_from_rows(rows, reference) != external_weight_id:
+                raise PlatformError("EXTERNAL_WEIGHT_EDIT_IDENTITY_UNCONFIRMED", "无法唯一确认原Weight身份", external_weight_id,
+                    "请只读核对原Weight ID与文件映射；未发送edit或add。", 409)
+        except Exception as error:
+            changes = {"last_error":str(error)}
+            if isinstance(error, PlatformError):
+                changes["sync_status"] = "UNKNOWN"
+            self.repository.patch_artifact_publication(str(current["artifact_id"]), **changes)
+            raise
         edit_payload = {"weightId": external_weight_id, **dict(payload)}
         self.repository.patch_artifact_publication(str(current['artifact_id']), sync_status='UNKNOWN',
-            last_error='EXTERNAL_WEIGHT_EDIT_UNKNOWN: 编辑请求待确认')
+            last_error='EXTERNAL_WEIGHT_EDIT_UNKNOWN: 编辑请求待确认', remote_metadata_json='{}')
         try:
             client.edit_weight(edit_payload)
         except Exception as error:
@@ -2791,20 +2671,39 @@ class ExternalAlgorithmPublishService:
         conversion_active = self.conversion_active(project_id, algorithm_id, version_id)
         stored = self._publication_artifacts(str(publication['publication_key'])) if publication else []
         weights = []
+        local_assets = self.model_assets.repository.list(project_id=project_id,algorithm_id=algorithm_id,version_id=version_id,limit=500)
         for item in classified:
-            current = next((row for row in stored if row.get('target') == item.get('target')
+            current = next((row for row in stored if _artifact_target_identity(row.get('target')) == _artifact_target_identity(item.get('target'))
                             and row.get('sha256') == item.get('sha256')
                             and _canonical_chip_code(row.get('chip_code')) == _canonical_chip_code(item.get('chip_code'))), {})
-            row = {**current, **item, 'artifact_id': current.get('artifact_id') or item['artifact_id'],
-                   'metadata': item['weight_metadata']}
+            local = next((asset for asset in local_assets if _artifact_target_identity(asset.get('target'))==_artifact_target_identity(item.get('target'))
+                          and asset.get('sha256')==item.get('sha256') and _canonical_chip_code(asset.get('chip_code'))==_canonical_chip_code(item.get('chip_code'))), {})
+            row = {**local, **current, **item, 'artifact_id': current.get('artifact_id') or local.get('artifact_id') or item['artifact_id'],
+                   'metadata': local.get('metadata') or current.get('metadata') or {}, 'frozen_tags': item['weight_metadata'].get('tags')}
             row['remote_registered'] = bool(current.get('external_weight_id'))
             if str(current.get('sync_status') or '').upper() == 'UNKNOWN':
                 row['metadata_sync_status'] = 'UNKNOWN'
             elif current.get('external_weight_id'):
                 confirmed = json.loads(str(current.get('synced_payload_json') or '{}'))
-                expected = self._weight_metadata_payload(row)
+                expected = self._weight_metadata_payload({**row, 'metadata': item['weight_metadata']})
                 row['metadata_sync_status'] = 'SYNCED' if all(confirmed.get(key) == value for key, value in expected.items()) else 'PENDING'
             else:
+                row['metadata_sync_status'] = 'PENDING'
+            confirmed = json.loads(str(current.get('synced_payload_json') or '{}'))
+            observed = json.loads(str(current.get('remote_metadata_json') or '{}'))
+            if observed.get('weight_id') != str(current.get('external_weight_id') or ''):
+                observed = {}
+            prepared = self._weight_metadata_payload({**row, 'metadata': item['weight_metadata']})
+            if (row['metadata'].get('label_validation_status') == 'CONFLICT'):
+                prepared.pop('tags', None)
+                row['metadata_sync_status'] = 'CONFLICT'
+                row['metadata_note'] = str(row['metadata'].get('label_error') or '历史模型标签冲突，禁止自动补齐')
+            row.update(local_tags=row['metadata'].get('tags'), prepared_tags=prepared.get('tags'),
+                       confirmed_tags=confirmed.get('tags'), remote_tags=observed.get('tags'),
+                       remote_tags_status='READ_BACK' if observed.get('tags_present') else 'NOT_RETURNED' if observed else 'NOT_VERIFIED',
+                       remote_tags_checked_at=observed.get('checked_at'))
+            if (observed.get('tags_present') and prepared.get('tags') is not None
+                    and observed.get('tags') != prepared['tags'] and row['metadata_sync_status'] not in {'UNKNOWN','CONFLICT'}):
                 row['metadata_sync_status'] = 'PENDING'
             weights.append(row)
         for current in stored:
@@ -2828,6 +2727,8 @@ class ExternalAlgorithmPublishService:
                 "version_no": version.get("version_no") or "",
                 "external_algo_version_id": str((publication or {}).get("external_algo_version_id") or ""),
                 "external_publish_status": str((publication or {}).get("status") or "").lower(),
+                "model_metadata": version.get("model_metadata") or {},
+                "label_codes": self._frozen_weight_labels(version),
             },
             "publication": publication,
             "artifacts": weights,
@@ -3217,7 +3118,8 @@ class ExternalAlgorithmPublishService:
                 return True
             expected_payload = self._weight_payload({
                 **current, 'file_name': item['file_name'], 'size_bytes': item['size_bytes'],
-                'sha256': item['sha256'], 'metadata': item['weight_metadata'],
+                'sha256': item['sha256'], 'metadata': {**item['weight_metadata'],
+                    **({'label_validation_status':'CONFLICT'} if (model_asset.get('metadata') or {}).get('label_validation_status')=='CONFLICT' else {})},
                 'compute_platform_id': expected_compute_platform_id, 'remote_chip_code': expected_chip_code,
                 'public_url': expected_public_url,
             }, str(publication.get('external_algo_version_id') or ''))
@@ -3479,7 +3381,12 @@ class ExternalAlgorithmPublishService:
                         and item['sha256'] == artifact.get('sha256') and _canonical_chip_code(item['chip_code']) == _canonical_chip_code(artifact.get('chip_code'))), None)
                     if current_facts is None:
                         continue
-                    artifact = {**artifact, 'metadata': current_facts['weight_metadata']}
+                    if self._recover_weight_from_rows(weight_rows, artifact) == weight_id:
+                        self.repository.patch_artifact_publication(str(artifact['artifact_id']),
+                            remote_metadata_json=json.dumps({'weight_id':weight_id, 'tags_present':'tags' in remote,
+                                'tags':remote.get('tags'), 'checked_at':utc_now(), 'source':'listByVersion'}, ensure_ascii=False))
+                    artifact = {**artifact, 'metadata': {**current_facts['weight_metadata'],
+                        **({'label_validation_status':'CONFLICT'} if (artifact.get('metadata') or {}).get('label_validation_status')=='CONFLICT' else {})}}
                     if not self._remote_weight_contract_matches(
                         remote, artifact, weight_id=weight_id,
                         confirmed_payload=json.loads(str(artifact.get('synced_payload_json') or '{}')),

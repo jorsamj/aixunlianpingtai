@@ -53,6 +53,8 @@ def request_external_auto_publish_if_enabled(
     now: str,
 ) -> bool:
     try:
+        from .model_artifacts import record_version_model_metadata
+        record_version_model_metadata(algorithms_path, algorithm_id, version_id)
         if not _external_auto_publish_enabled(Path(data_dir)):
             return False
         algorithms = list_algorithms(Path(algorithms_path))

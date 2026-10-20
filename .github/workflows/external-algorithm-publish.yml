@@ -14,6 +14,8 @@ on:
       - platform_core/algorithm_sql_store.py
       - platform_core/training_tasks.py
       - platform_core/model_artifacts.py
+      - platform_core/model_metadata.py
+      - scripts/audit_weight_metadata.py
       - platform_core/integration_audit.py
       - static/main.mjs
       - static/index.html
@@ -47,6 +49,8 @@ on:
       - platform_core/algorithm_sql_store.py
       - platform_core/training_tasks.py
       - platform_core/model_artifacts.py
+      - platform_core/model_metadata.py
+      - scripts/audit_weight_metadata.py
       - platform_core/integration_audit.py
       - static/main.mjs
       - static/index.html

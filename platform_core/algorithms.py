@@ -322,11 +322,19 @@ def attach_version_if_current(
     expected_current_version_id: str | None,
 ) -> dict:
     """Atomically attach a training version only if its frozen base is still current."""
-    return AlgorithmSqlStore(Path(path)).attach_version_if_current(
+    from .model_metadata import model_metadata
+    algorithm = next((row for row in list_algorithms(Path(path)) if str(row.get("id")) == str(algorithm_id)), {})
+    version = {**version, "model_metadata": model_metadata(Path(path).parent.parent.parent, version, algorithm=algorithm)}
+    result = AlgorithmSqlStore(Path(path)).attach_version_if_current(
         str(algorithm_id),
         version,
         expected_current_version_id=expected_current_version_id,
     )
+    if result.get("artifact_verified") is True:
+        from .model_artifacts import record_version_model_metadata
+        record_version_model_metadata(path, algorithm_id, result["id"])
+    return result
+
 
 def update_algorithm_version(
     path: Path,

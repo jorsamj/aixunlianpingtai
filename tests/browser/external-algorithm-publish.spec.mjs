@@ -49,7 +49,7 @@ for(const reason of ['identity','optional']) test(`changlian publish respects co
         artifacts: reason==='optional'?[
           {target:'original',file_name:'best.pt',sync_status:publishWrites?'SYNCED':'PENDING',metadata_complete:false,metadata_sync_status:'PENDING',metadata_note:'部分扩展信息未提供：yoloVersion、tags'},
           {target:'rockchip',file_name:'model.rknn',remote_registered:true,sync_status:'SYNCED',compute_platform_id:'rk-child',mapped_chip_code:'RK3576',metadata_sync_status:'PENDING',
-            size_bytes:123,sha256:'a'.repeat(64),metadata:{image_width:640,image_height:384,yolo_version:'YOLOv11s',tags:['smoke','fire']}},
+            frozen_tags:['smoke','fire'],local_tags:['smoke','fire'],prepared_tags:['smoke','fire'],confirmed_tags:null,remote_tags_status:'NOT_RETURNED',size_bytes:123,sha256:'a'.repeat(64),metadata:{image_width:640,image_height:384,yolo_version:'YOLOv11s',tags:['smoke','fire']}},
         ]:[],
         discovered: [{target: 'rockchip', file_name: 'model.rknn', publish_mapping_status: 'mapped'}],
         mapped_artifact_count: 1,
@@ -127,6 +127,7 @@ for(const reason of ['identity','optional']) test(`changlian publish respects co
     await expect(details).toBeVisible();
     for(const text of ['部分扩展信息未提供：yoloVersion、tags','RK3576','rk-child','640','384','YOLOv11s','123','a'.repeat(64),'smoke, fire','同步成功'])
       await expect(details).toContainText(text);
+    for(const text of ['冻结类别','本地类别','准备提交','已确认提交','远端未返回 tags','标签补齐待处理'])await expect(details).toContainText(text);
     await expect(details).not.toContainText('阻断发布');
     releasePublish();
   }

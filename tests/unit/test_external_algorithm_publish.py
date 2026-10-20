@@ -3991,3 +3991,132 @@ def test_sophon_bmodels_share_version_and_frozen_tags_but_keep_each_chip_identit
     assert len(edits)==1 and edits[0]["weightId"]==old_id and edits[0]["tags"]==["smoke","fire"]
     service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
     assert backend.weight_creates==3 and backend.weight_edits==1 and backend.version_creates==1
+
+
+HISTORICAL_TAGS_CASES = [
+    ("ext_chang_lian_43b94d739f1bf25b","f4dfedadcce7","2110796556046307328","original",["fire"],True),
+    ("ext_chang_lian_43b94d739f1bf25b","f4dfedadcce7","2110966591775707136","rockchip",["fire"],True),
+    ("ext_chang_lian_72d63086777561b7","4ef40723d87e","2108753027757379584","original",["fire1","smoke1"],True),
+    ("ext_chang_lian_72d63086777561b7","4ef40723d87e","2108823477988495360","rockchip",["fire1","smoke1"],True),
+    ("ext_chang_lian_92e659f3e8a7f3bd","3ea046f276b0","2109230402605551616","original",["person"],True),
+    ("ext_chang_lian_92e659f3e8a7f3bd","3ea046f276b0","2109232532909330432","rockchip",["person"],True),
+    ("ext_chang_lian_aa52b57d1ecbe054","a0e1f035909b","2110401842730110976","original",["tcckongdi","tcccar"],True),
+] + [("control-a"+str(i),"control-v"+str(i),"isolated-control-"+str(i),"original",
+      [["fire"],["Employee_is_Sleeping"],["No_helmet","helmet"],["Car"]][i%4],False) for i in range(10)]
+
+
+@pytest.mark.parametrize("aid,vid,wid,target,codes,missing",HISTORICAL_TAGS_CASES,ids=["historical-"+str(i) for i in range(17)])
+def test_historical_17_weights_restore_local_tags_and_edit_only_seven_same_ids(tmp_path,monkeypatch,aid,vid,wid,target,codes,missing):
+    memory=MemorySecretStore();_configure_external(tmp_path,memory);_seed_external_algorithm(tmp_path,version_id=vid)
+    (tmp_path / "projects.json").write_text(json.dumps([{"id":"p1"}]), encoding="utf-8")
+    rows=list_algorithms(_algorithms_file(tmp_path,"p1"));rows[0]["id"]=aid
+    version=rows[0]["versions"][0];version.update(label_codes=codes,
+        label_schema=list(reversed([{"class_id":i,"code":c} for i,c in enumerate(codes)])))
+    save_algorithms(_algorithms_file(tmp_path,"p1"),rows)
+    if target=="rockchip":_seed_conversion(tmp_path,version_id=vid,algorithm_id=aid)
+    service,backend,writes=_tags_wire_service(tmp_path,memory)
+    sources=service.storage_sources_factory();source=sources.get("default_local")
+    sources.update("default_local",{"config":{**source.config,"root":str(tmp_path/"s")}})
+    service.model_assets.save_config(ModelArtifactConfigPayload(storage_source_id="default_local",root_prefix="a",auto_upload_enabled=True))
+    first=service.publish(project_id="p1",algorithm_id=aid,version_id=vid)
+    selected=next(a for a in first["artifacts"] if a["target"]==target)
+    old_id=selected["external_weight_id"]
+    remote=next(w for w in backend.weights if w["weightId"]==old_id);remote["weightId"]=wid
+    receipt=json.loads(selected["synced_payload_json"])
+    if missing: receipt.pop("tags",None);remote.pop("tags",None)
+    service.repository.patch_artifact_publication(selected["artifact_id"],external_weight_id=wid,synced_payload_json=json.dumps(receipt))
+    # Isolated historical database fixture only: reproduce the supplied empty metadata.
+    with sqlite3.connect(service.model_assets.repository.db_path) as db:
+        db.execute("UPDATE model_artifacts SET metadata_json='{}'")
+    service.repository.patch_publication(first["publication"]["publication_key"],status="PARTIAL" if missing and vid!="a0e1f035909b" else "PUBLISHED", updated_at="2000-01-01T00:00:00Z")
+    identity={k:selected[k] for k in ("artifact_id","sha256","object_key","public_url","compute_platform_id","remote_chip_code","uploaded_at")}
+    before=len(writes);before_versions=backend.version_creates;before_weights=backend.weight_creates
+    monkeypatch.setattr(service.model_assets,"ensure_uploaded",lambda *a,**kw:pytest.fail("metadata repair must not upload"))
+    from scripts.audit_weight_metadata import audit
+    report=audit(tmp_path,"p1")
+    audited=next(r for r in report['artifacts'] if r['artifact_id']==selected['artifact_id'])
+    assert audited['local_state']=='LOCAL_REPAIR_REQUIRED' and audited['frozen_tags']==codes
+    assert audited['external_action']==('EDIT_CANDIDATE_REQUIRES_REMOTE_IDENTITY' if missing else 'NO_AUTOMATIC_WRITE')
+    local=service.model_assets.register_version_metadata("p1",aid,vid)
+    assert all(a["metadata"]["tags"]==codes for a in local)
+    # Exercise the existing Owner, including PUBLISHED and PARTIAL versions.
+    summary=service.run_auto_publish_once()
+    assert summary["checked"]==1 and summary["failed"]==0, summary
+    after=service._artifact_projection(selected["artifact_id"])
+    assert {k:after[k] for k in identity}==identity
+    assert after["external_weight_id"]==wid and after["metadata"]["tags"]==codes
+    edits=[body for path,body in writes[before:] if path.endswith("/algorithm-weight/edit")]
+    assert len(edits)==int(missing)
+    if edits:
+        assert str(edits[0]["weightId"])==wid and edits[0]["tags"]==codes
+        assert edits[0]["filePath"]==identity["public_url"]
+    assert backend.version_creates==before_versions and backend.weight_creates==before_weights
+    count=len(writes);service.run_auto_publish_once()
+    assert len(writes)==count
+
+
+def test_synced_tags_backfill_requires_unique_remote_identity_before_edit(tmp_path):
+    FakePublishingClient.reset();memory=MemorySecretStore();_configure_external(tmp_path,memory);_seed_complete_weight_version(tmp_path)
+    service=_service(tmp_path,memory);first=service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
+    artifact=first["artifacts"][0]
+    receipt=json.loads(artifact["synced_payload_json"]);receipt.pop("tags")
+    service.repository.patch_artifact_publication(artifact["artifact_id"],synced_payload_json=json.dumps(receipt))
+    FakePublishingClient.weights[0].pop("tags")
+    FakePublishingClient.weights.append({**FakePublishingClient.weights[0],"weightId":"ambiguous-id"})
+    with pytest.raises(PlatformError,match="唯一|确认"):
+        service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
+    assert FakePublishingClient.weight_edits==0 and FakePublishingClient.weight_creates==1
+
+
+def test_ensure_publication_does_not_reset_partial_retry_clock(tmp_path):
+    repo=ExternalPublicationRepository(tmp_path)
+    algorithm={"id":"a1","external_product_id":"product-1"};version={"id":"v1","version_name":"v1"}
+    publication=repo.ensure_publication(project_id="p1",algorithm=algorithm,version=version)
+    repo.patch_publication(publication["publication_key"],status="PARTIAL",updated_at="2000-01-01T00:00:00Z")
+    refreshed=repo.ensure_publication(project_id="p1",algorithm=algorithm,version=version)
+    assert refreshed["updated_at"]=="2000-01-01T00:00:00Z"
+    assert repo.auto_retry_due(refreshed) is True
+
+
+def test_label_conflict_preserves_local_tags_without_repeated_external_edit(tmp_path):
+    FakePublishingClient.reset();memory=MemorySecretStore();_configure_external(tmp_path,memory);_seed_complete_weight_version(tmp_path)
+    service=_service(tmp_path,memory);first=service.publish(project_id='p1',algorithm_id='a1',version_id='v1')
+    rows=list_algorithms(_algorithms_file(tmp_path,'p1'));version=rows[0]['versions'][0]
+    version.update(label_codes=['wrong-project'],label_schema=[{'class_id':0,'code':'wrong-project'}])
+    save_algorithms(_algorithms_file(tmp_path,'p1'),rows)
+    service.model_assets.register_version_metadata('p1','a1','v1')
+    stored=service.model_assets.repository.get(first['artifacts'][0]['artifact_id'])
+    assert stored['metadata']['tags']==['smoke','fire'] and stored['metadata']['label_validation_status']=='CONFLICT'
+    service.publish(project_id='p1',algorithm_id='a1',version_id='v1')
+    assert FakePublishingClient.weight_edits==0
+    assert service.publication_requires_sync('p1',rows[0],version,first['publication']) is False
+    status=service.publication_status('p1','a1','v1')['artifacts'][0]
+    assert status['local_tags']==['smoke','fire'] and status['prepared_tags'] is None
+    assert status['metadata_sync_status']=='CONFLICT'
+
+
+def test_publication_status_reads_local_metadata_without_any_external_publication(tmp_path):
+    memory=MemorySecretStore();_configure_external(tmp_path,memory);_seed_complete_weight_version(tmp_path)
+    service=_service(tmp_path,memory)
+    local=service.model_assets.register_version_metadata('p1','a1','v1')
+    assert local[0]['metadata']['tags']==['smoke','fire']
+    assert service.repository.publication('p1','a1','v1') is None
+    status=service.publication_status('p1','a1','v1')['artifacts'][0]
+    assert status['local_tags']==['smoke','fire']
+    assert status['prepared_tags']==['smoke','fire'] and status['confirmed_tags'] is None
+    assert status['remote_registered'] is False and status['remote_tags_status']=='NOT_VERIFIED'
+
+
+def test_tags_readback_evidence_is_distinct_from_confirmed_receipt(tmp_path):
+    FakePublishingClient.reset();memory=MemorySecretStore();_configure_external(tmp_path,memory);_seed_complete_weight_version(tmp_path)
+    service=_service(tmp_path,memory);service.publish(project_id='p1',algorithm_id='a1',version_id='v1')
+    FakePublishingClient.weights[0].pop('tags')
+    service.reconcile_published_remote(project_id='p1',algorithm_id='a1',version_id='v1',client=FakePublishingClient(),remote_versions=FakePublishingClient.versions)
+    row=service.publication_status('p1','a1','v1')['artifacts'][0]
+    assert row['confirmed_tags']==['smoke','fire'] and row['remote_tags'] is None
+    assert row['remote_tags_status']=='NOT_RETURNED' and row['metadata_sync_status']=='SYNCED'
+    FakePublishingClient.weights[0]['tags']=['wrong']
+    service.reconcile_published_remote(project_id='p1',algorithm_id='a1',version_id='v1',client=FakePublishingClient(),remote_versions=FakePublishingClient.versions)
+    row=service.publication_status('p1','a1','v1')['artifacts'][0]
+    assert row['remote_tags']==['wrong'] and row['remote_tags_status']=='READ_BACK'
+    assert row['confirmed_tags']==['smoke','fire'] and row['metadata_sync_status']=='PENDING'

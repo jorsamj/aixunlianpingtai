@@ -1575,3 +1575,123 @@ def test_artifact_oss_malformed_endpoint_yields_structured_422(endpoint):
     assert failure.value.code == 'MODEL_ARTIFACT_OSS_ENDPOINT_INVALID'
     assert failure.value.status_code == 422
     assert 'oss-cn-hangzhou.aliyuncs.com:bad-port' not in failure.value.detail
+
+
+
+def _metadata_model(tmp_path):
+    model = tmp_path / "best.pt"
+    model.write_bytes(b"metadata-model")
+    return {"id":"v1","stored_path":str(model),"artifact_verified":True,"training_status":"FINISHED",
+            "label_codes":["smoke","fire"],"label_schema":[{"class_id":1,"code":"fire"},{"class_id":0,"code":"smoke"}],
+            "training_lineage":{"task_id":"train-v1","base":{"model":"yolo11s.pt"},
+                "parameters":{"actual":{"imgsz":[384,800],"precision":"fp32"}}}}
+
+
+@pytest.mark.parametrize("target,suffix,chip", [("original",".pt",""),("onnx",".onnx",""),("rockchip",".rknn","rk3568"),("sophon",".bmodel","bm1684x")])
+def test_local_model_metadata_persists_without_external_or_storage_config(tmp_path, monkeypatch, target, suffix, chip):
+    from platform_core.model_artifacts import ModelArtifactRepository
+    service = _service(tmp_path)
+    service.repository.config_path.write_text('{}',encoding='utf-8')
+    version = _metadata_model(tmp_path)
+    converted=tmp_path/("converted"+suffix);converted.write_bytes(b"target-model")
+    jobs=[] if target=="original" else [{"id":"c1","status":"done","target":target,
+        "params":{"chip":chip,"precision":"fp16","input_width":640,"input_height":384},
+        "source_trace":{"sha256":hashlib.sha256(Path(version["stored_path"]).read_bytes()).hexdigest()},
+        "outputs":[{"path":str(converted)}],"validation_status":"converted_unverified"}]
+    monkeypatch.setattr(service,"_conversion_jobs",lambda *a:jobs)
+    algorithm={"id":"a1","versions":[version]}
+    for discovered in service.discover_version_artifacts("p1",algorithm,version):
+        service.ensure_uploaded(discovered)
+    rows=ModelArtifactRepository(tmp_path).list(project_id="p1")
+    artifact=next(r for r in rows if r["target"]==target)
+    assert artifact["metadata"]["tags"]==["smoke","fire"]
+    assert artifact["metadata"]["image_width"]==(800 if target=="original" else 640)
+    assert artifact["metadata"]["image_height"]==384
+    assert artifact["metadata"]["yolo_version"]=="YOLOv11s"
+    assert artifact["metadata"]["label_validation_status"]=="VERIFIED"
+    assert artifact["storage_status"]=="PENDING"
+    if target!="original":
+        assert artifact["metadata"]["precision"]=="fp16"
+        assert artifact["metadata"]["source_artifact_id"] in {r["artifact_id"] for r in rows if r["target"]=="original"}
+
+
+def test_model_artifact_upsert_does_not_erase_verified_metadata_and_reports_conflict(tmp_path):
+    service=_service(tmp_path);version=_metadata_model(tmp_path)
+    item=service.discover_version_artifacts("p1",{"id":"a1"},version)[0]
+    item["metadata"].update(tags=["smoke","fire"],label_validation_status="VERIFIED",label_source="version_frozen")
+    row=service.repository.upsert(item)
+    service.repository.patch(row["artifact_id"],object_key="immutable/model.pt",public_url="https://models.example/immutable/model.pt",storage_status="UPLOADED")
+    replay=service.repository.upsert({**item,"metadata":{"version_field":"stored_path","tags":None}})
+    assert replay["metadata"]["tags"]==["smoke","fire"]
+    assert replay["metadata"]["label_validation_status"]=="VERIFIED"
+    conflict=service.repository.upsert({**item,"metadata":{**item["metadata"],"tags":["wrong-project"]}})
+    assert conflict["metadata"]["tags"]==["smoke","fire"]
+    assert conflict["metadata"]["label_validation_status"]=="CONFLICT"
+    assert conflict["metadata"]["label_error"]
+    assert conflict["object_key"]=="immutable/model.pt" and conflict["public_url"]==replay["public_url"]
+    assert conflict["artifact_id"]==row["artifact_id"] and conflict["sha256"]==row["sha256"]
+
+
+def test_training_attach_records_canonical_metadata_before_external_sync(tmp_path):
+    from platform_core.algorithms import attach_version_if_current
+    from platform_core.model_artifacts import ModelArtifactRepository
+    version=_metadata_model(tmp_path)
+    version.update(task_id="train-v1",framework="ultralytics")
+    path=_algorithms_file(tmp_path,"p1")
+    save_algorithms(path,[{"id":"a1","name":"local algorithm","versions":[]}])
+    saved=attach_version_if_current(path,"a1",version,expected_current_version_id=None)
+    assert saved["label_codes"]==["smoke","fire"]
+    assert saved["model_metadata"]["yolo_version"]=="YOLOv11s"
+    rows=ModelArtifactRepository(tmp_path).list(project_id="p1")
+    assert len(rows)==1 and rows[0]["metadata"]["tags"]==["smoke","fire"]
+    assert rows[0]["storage_status"]=="PENDING"
+
+
+def test_metadata_registration_reuses_verified_remote_primary_identity(tmp_path):
+    service=_service(tmp_path);version=_metadata_model(tmp_path)
+    save_algorithms(_algorithms_file(tmp_path,"p1"),[{"id":"a1","versions":[version]}])
+    item=service.discover_version_artifacts("p1",{"id":"a1"},version)[0]
+    remote=service.repository.upsert({**item,"artifact_id":"old-remote-primary","target":"best","metadata":{"remote_training":True}})
+    service.repository.patch(remote["artifact_id"],storage_status="UPLOADED",object_key="old/best.pt",public_url="https://models.example/old/best.pt")
+    registered=service.register_version_metadata("p1","a1","v1")
+    assert len(registered)==1 and registered[0]["artifact_id"]=="old-remote-primary"
+    assert registered[0]["object_key"]=="old/best.pt"
+    assert registered[0]["metadata"]["tags"]==["smoke","fire"]
+    assert len(service.repository.list(project_id="p1"))==1
+
+
+def test_conversion_notification_records_local_facts_even_when_external_mode_disabled(tmp_path,monkeypatch):
+    from platform_core.external_publish_request import request_external_auto_publish_for_conversion_if_enabled
+    service=_service(tmp_path);version=_metadata_model(tmp_path)
+    save_algorithms(_algorithms_file(tmp_path,"p1"),[{"id":"a1","versions":[version]}])
+    job_dir=_project_dir(tmp_path,"p1")/'deployment/jobs/c1';job_dir.mkdir(parents=True)
+    output=job_dir/'model.bmodel';output.write_bytes(b'converted-bmodel')
+    job={'id':'c1','status':'blocked_by_hardware','target':'sophon','source_id':'version::a1::v1',
+         'params':{'chip':'bm1684x','precision':'fp16','input_size':640},'outputs':[{'path':str(output)}]}
+    (job_dir/'job.json').write_text(json.dumps(job),encoding='utf-8')
+    assert request_external_auto_publish_for_conversion_if_enabled(data_dir=tmp_path,project_id='p1',conversion_job=job) is False
+    rows=service.repository.list(project_id='p1')
+    assert {r['target'] for r in rows}=={'original','sophon'}
+    assert all(r['metadata']['tags']==['smoke','fire'] and r['storage_status']=='PENDING' for r in rows)
+
+
+def test_metadata_cli_dry_run_is_read_only_and_local_apply_is_idempotent(tmp_path,capsys):
+    from scripts.audit_weight_metadata import audit,main
+    service=_service(tmp_path);version=_metadata_model(tmp_path)
+    save_algorithms(_algorithms_file(tmp_path,"p1"),[{"id":"a1","versions":[version]}])
+    item=service.discover_version_artifacts('p1',{'id':'a1'},version)[0]
+    row=service.repository.upsert({**item,'metadata':{}})
+    paths=[service.repository.db_path,_project_dir(tmp_path,'p1')/'algorithms.sqlite3']
+    before=[hashlib.sha256(p.read_bytes()).hexdigest() for p in paths]
+    report=audit(tmp_path,'p1')
+    assert report['read_only'] is True and report['external_requests_sent']==0
+    assert report['artifacts'][0]['local_state']=='LOCAL_REPAIR_REQUIRED'
+    assert report['artifacts'][0]['frozen_tags']==['smoke','fire']
+    assert before==[hashlib.sha256(p.read_bytes()).hexdigest() for p in paths]
+    assert main(['--data-dir',str(tmp_path),'--project','p1','--apply-local'])==0
+    capsys.readouterr()
+    assert service.repository.get(row['artifact_id'])['metadata']['tags']==['smoke','fire']
+    assert audit(tmp_path,'p1')['artifacts'][0]['local_state']=='LOCAL_VERIFIED'
+    assert main(['--data-dir',str(tmp_path),'--project','p1','--apply-local'])==0
+    result=json.loads(capsys.readouterr().out)
+    assert result['local_repair_results']==[] and len(service.repository.list(project_id='p1'))==1
