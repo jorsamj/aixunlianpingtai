@@ -382,14 +382,14 @@ jobs:
           if grep -Fq 'id="externalPublishWeightList"' static/modules/external-algorithm-publish.js; then echo "official ChangLian weight endpoint must not be user-editable" >&2; exit 1; fi
           grep -q "publish UI locks recovery endpoints to official OpenAPI" tests/frontend/external-algorithm-publish.test.mjs
           grep -Fq '测试存储' tests/frontend/external-algorithm-publish.test.mjs
-          grep -q "chip_identity = _canonical_chip_code(chip)" platform_core/external_algorithm_publish.py
-          grep -q "key = (target, chip_identity, digest)" platform_core/external_algorithm_publish.py
+          grep -Fq '"chip_code":_canonical_chip_code(source.get("chip_code"))' platform_core/external_algorithm_publish.py
+          grep -Fq 'rows=self.model_assets.discover_version_artifacts(project_id,algorithm,version)' platform_core/external_algorithm_publish.py
           grep -Fq 'len({row["sha256"] for row in artifacts}) == 1' tests/unit/test_external_algorithm_publish.py
           grep -Fq 'assert {row["remote_chip_code"] for row in artifacts} == {"RK3568", "RK3576"}' tests/unit/test_external_algorithm_publish.py
           grep -Fq 'chip_code TEXT NOT NULL DEFAULT' platform_core/model_artifacts.py
           grep -Fq 'ON model_artifacts(' platform_core/model_artifacts.py
           grep -Fq 'project_id, algorithm_id, version_id, target, chip_code, sha256' platform_core/model_artifacts.py
-          grep -Fq 'identity = (target, chip_code, digest)' platform_core/model_artifacts.py
+          grep -Fq 'identity=(row["target"],row["chip_code"],row["sha256"])' platform_core/model_artifacts.py
           grep -Fq 'test_same_sha_rockchip_artifacts_remain_distinct_by_chip' tests/unit/test_model_artifacts.py
           grep -Fq 'test_repository_migrates_legacy_identity_index_to_chip_scope' tests/unit/test_model_artifacts.py
           grep -Fq '芯片绑定身份读取本地字典；可转换能力和实际芯片以SDK检测及真实产物为准。' static/modules/external-algorithm-publish.js

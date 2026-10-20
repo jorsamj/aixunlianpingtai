@@ -6,6 +6,8 @@
 
 - 首SHA26856b02 CI发现selection HTTP测试导入整个app引入精简环境无yaml；仅夹具改复用轻量error_body，无新增依赖/测试扩围，VERSION364不二次递增；最终后续SHA CI待核验。
 
+- ac4229f3发布CI动态Python282/Node25通过，旧源码行守卫未随统一发现Owner迁移；仅更新既有3项守卫至真实ModelArtifact/芯片/接线，保留全部动态断言及测试范围。VERSION364不变，最终后续SHA CI核验中。
+
 ## 2026-10-20｜厂商与芯片完整CRUD（A-D限定验收通过 / CI待最终SHA）
 
 最新ed946c9b43ba7c5e014c60076d5539b6cbdf20b8/VERSION362已fetch/pull干净，无其他同仓库活动会话；前轮40/112绿色按附件核验归档，不借用。本轮升级为部署资源内正式区域及真实单条CRUD/引用安全删除/幂等审计/搜索分页/每资源SDK自动决议；原Repo/字典表/检测/resolve/Worker复用，旧编辑实现退役不并存。完整需求、架构、限定RED→GREEN及质量审查清单见docs/DYNAMIC_CONVERSION_CATALOG_ACCEPTANCE_2026_10_20.md顶部。仅实际受影响测试，通过未受新变更影响不重跑；不加大型CI或扩触发。本轮生产/外部写入/部署仍禁止。

@@ -41,6 +41,9 @@
 
 - 首提交26856b02831e218436ed117efec49b5e209d9613的精简CI在selection HTTP测试暴露无关app.py导入要求yaml；实际失败仅这项（发布合同281通过/1失败，SQL发布176通过/1失败）。修正测试复用platform_core.errors.error_body注册轻量异常响应，不为测试增加依赖或扩大CI；本地只复测该HTTP合同。VERSION仍364不二次递增，必须核验修正后实际SHA，不引用首提交绿色。
 
+
+- 修正SHA ac4229f37e194f44961b35dcf1f0fd029d307e3c发布CI的Python282、Node25均通过，随后原静态守卫仍要求已删除的第二套发现去重变量。仅把三项原守卫迁至真实Owner/接线：canonical discover委托、远端chip规范化、ModelArtifact按target/chip/SHA去重；保留原同SHA不同芯片动态断言和全部其他守卫，不恢复重复业务实现、不减弱身份规则、不扩触发/测试集合。本地执行原整段Syntax and wiring guards，后续实际SHA仍需全CI。新增修改文件为既有.github/workflows/external-algorithm-publish.yml，最终共16文件，VERSION364不再递增。
+
 生产证据继续以本文后续原BM1684X/RK3568 Artifact、SHA、Weight ID和父子分类清单保留。真实远端这些ID是否存在及替换结果仍NOT VERIFIED；新代码开发验收不代表生产历史已修复。需要生产操作时先只读dry-run报告并单独取得授权。
 
 # 转换 Weight 发布身份恢复专项｜2026-10-20
