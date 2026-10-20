@@ -27,6 +27,17 @@ from .storage import (
 )
 
 
+def conversion_completion_rank(metadata, job_id="", sha256=""):
+    """Order only timezone-qualified task completion facts; never file mtime."""
+    raw=str(metadata.get("finished_at") or "")
+    try:
+        stamp=datetime.fromisoformat(raw.replace("Z","+00:00"))
+        if stamp.tzinfo is None: return None
+        return (stamp.timestamp(),str(job_id),str(sha256))
+    except (ValueError,TypeError,OverflowError):
+        return None
+
+
 SUCCESSFUL_CONVERSION_STATUSES = {
     "done", "finished", "completed", "success", "succeeded", "partial_success", "blocked_by_hardware",
 }
@@ -671,7 +682,7 @@ class ModelArtifactRepository:
                      "manifest_path", "sdk_name", "model_io", "model_validation_status",
                      "source_sha256", "validation_status", "conversion_status", "runtime_verified", "hardware_verified",
                      "snapshot_id", "task_id", "framework", "framework_version", "finished_at", "last_label_conflict", "training_precision", "class_count",
-                     "remote_training", "object_identity_verified", "execution_generation", "role"}
+                     "remote_training", "object_identity_verified", "execution_generation", "role", "conversion_identity_verified"}
             for key in owned:
                 if metadata.get(key) is None and key in previous:
                     metadata[key] = previous[key]
@@ -1571,7 +1582,7 @@ class ModelArtifactService:
         version_id = str(version.get("id") or "")
         candidates: list[tuple[str, str, Path, str, dict[str, Any]]] = []
         frozen_metadata = model_metadata(self.data_dir, version, algorithm=algorithm)
-        for key in ("best_path", "stored_path", "last_path", "path"):
+        for key in ("stored_path", "best_path", "last_path", "path"):
             raw = str(version.get(key) or "").strip()
             if raw:
                 candidates.append(("original", "original", Path(raw).expanduser(), "", {"version_field": key, **frozen_metadata}))
@@ -1597,6 +1608,9 @@ class ModelArtifactService:
                             {
                                 **model_metadata(self.data_dir, version, params, algorithm=algorithm),
                                 "chip_code": chip,
+                                "finished_at":str(job.get("conversion_finished_at") or job.get("finished_at") or ""),
+                                "conversion_output_sha256":str(output.get("sha256") or ""),
+                                "conversion_output_size":output.get("size_bytes"),
                                 "source_sha256": str((job.get("source_trace") or {}).get("sha256") or ""),
                                 "validation_status": str(job.get("validation_status") or ""),
                                 "conversion_status": str(job.get("conversion_status") or status),
@@ -1615,6 +1629,8 @@ class ModelArtifactService:
             if not path.is_file() or path.stat().st_size <= 0:
                 continue
             digest = _sha256(path)
+            if kind == "conversion":
+                metadata["conversion_identity_verified"]=bool(metadata.get("conversion_output_sha256")==digest and metadata.get("conversion_output_size")==path.stat().st_size)
             if kind == "conversion" and metadata.get("manifest_path"):
                 manifest = _json_load(Path(metadata["manifest_path"]), {})
                 outputs = [r for r in manifest.get("outputs",[]) if Path(str(r.get("name") or "")).name==path.name] if isinstance(manifest,dict) else []
@@ -1622,6 +1638,8 @@ class ModelArtifactService:
                 matches = (len(outputs)==1 and outputs[0].get("sha256")==digest and outputs[0].get("size_bytes")==path.stat().st_size
                            and manifest.get("job_id")==job_id and source_sha and (manifest.get("source") or {}).get("sha256")==source_sha)
                 if matches:
+                    metadata["conversion_identity_verified"]=True
+                    metadata["finished_at"]=str(manifest.get("completed_at") or manifest.get("created_at") or metadata.get("finished_at") or "")
                     onnx = manifest.get("onnx") or {}
                     metadata["model_io"] = {"onnx":{k:onnx[k] for k in ("input_shapes","input_names","output_names","output_count") if k in onnx},"compiled_model":None}
                     tool = manifest.get("tool") or {}
@@ -1629,12 +1647,9 @@ class ModelArtifactService:
                                     model_validation_status=str((manifest.get("sophon_validation") or {}).get("model_validation_status") or "unknown"),
                                     manifest_metadata_error="")
                 else:
+                    metadata["conversion_identity_verified"]=False
                     metadata["manifest_metadata_error"]="Manifest与真实产物SHA/大小、任务或源模型不匹配，未采信其模型IO信息"
             chip_code = str(metadata.get("chip_code") or "").strip().lower()
-            identity = (target, chip_code, digest)
-            if identity in seen:
-                continue
-            seen.add(identity)
             artifact_id = hashlib.sha256(
                 f"{project_id}:{algorithm_id}:{version_id}:{target}:{chip_code}:{digest}".encode("utf-8")
             ).hexdigest()[:32]
@@ -1653,6 +1668,15 @@ class ModelArtifactService:
                 "size_bytes": path.stat().st_size,
                 "metadata": metadata,
             })
+        # The same bytes can be compiled by several tasks. Choose their proven
+        # latest completion deterministically, without changing content identity.
+        result.sort(key=lambda row:conversion_completion_rank(row.get("metadata") or {},row.get("conversion_job_id"),row["sha256"]) or (0,"",""),reverse=True)
+        unique=[]
+        for row in result:
+            identity=(row["target"],row["chip_code"],row["sha256"])
+            if identity not in seen:
+                seen.add(identity);unique.append(row)
+        result=unique
         # Link only an evidenced source digest, never the first PT found.
         originals = [r for r in result if r["target"] == "original"]
         stored = self.repository.list(project_id=project_id,algorithm_id=algorithm_id,version_id=version_id,limit=500)

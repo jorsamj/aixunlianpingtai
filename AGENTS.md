@@ -1,3 +1,9 @@
+## 2026-10-20｜Weight自动覆盖发布（A-D限定验收完成 / E待最终SHA CI）
+
+最新b74834c4a8d87090aad64876df50bbf548f2bdac/VERSION363已fetch/pull干净；其他同项目会话未活动、原WIP不动。用户已正式取消常规人工审核：每版本/芯片一个Weight，可信任务完成时间确定最新有效成果，完整性与OSS成功后原ID edit/唯一首次add，全部写后查询确认；本地多SHA和历史审计保留。真实官方edit/detail/list OpenAPI已通过下载入口解析，包含filePath/computePlatformId/chipCode和可选元数据；生产写接口未调用。
+
+完整需求、原始根因、架构/限定TDD计划、生产边界及证据见docs/CONVERSION_WEIGHT_PUBLISH_RECOVERY_2026_10_20.md顶部。只复用原Repo/版本fence/发布Owner/恢复/审计，旧审核UI已改自动交付；官方字段合同已核验，文件身份/跨Artifact未知请求/单Owner/同ID编辑/读回/迟到防回滚已实现并完成分批RED→GREEN，最终限定发布175+2复测、资产11、Node18+缓存1、Chrome4通过；最终历史投影及optional读回补断言定向复验记录见专项；本轮生产数据库/OSS/Weight写入/批量迁移/部署仍禁止。本轮VERSION一次递增364，main411/发布模块64012；上一轮31/83 CI已归档，不代表本轮。
+
 ## 2026-10-20｜厂商与芯片完整CRUD（A-D限定验收通过 / CI待最终SHA）
 
 最新ed946c9b43ba7c5e014c60076d5539b6cbdf20b8/VERSION362已fetch/pull干净，无其他同仓库活动会话；前轮40/112绿色按附件核验归档，不借用。本轮升级为部署资源内正式区域及真实单条CRUD/引用安全删除/幂等审计/搜索分页/每资源SDK自动决议；原Repo/字典表/检测/resolve/Worker复用，旧编辑实现退役不并存。完整需求、架构、限定RED→GREEN及质量审查清单见docs/DYNAMIC_CONVERSION_CATALOG_ACCEPTANCE_2026_10_20.md顶部。仅实际受影响测试，通过未受新变更影响不重跑；不加大型CI或扩触发。本轮生产/外部写入/部署仍禁止。

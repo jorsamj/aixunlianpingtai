@@ -1753,3 +1753,29 @@ def test_metadata_cli_dry_run_is_read_only_and_local_apply_is_idempotent(tmp_pat
     assert main(['--data-dir',str(tmp_path),'--project','p1','--apply-local'])==0
     result=json.loads(capsys.readouterr().out)
     assert result['local_repair_results']==[] and len(service.repository.list(project_id='p1'))==1
+
+
+def test_conversion_discovery_selects_latest_same_content_lineage_and_manifest_utc(tmp_path,monkeypatch):
+    service=_service(tmp_path);version=_metadata_model(tmp_path)
+    path=tmp_path/"model.rknn";path.write_bytes(b"same-content")
+    digest=hashlib.sha256(path.read_bytes()).hexdigest()
+    source_sha=hashlib.sha256(Path(version["stored_path"]).read_bytes()).hexdigest()
+    manifest=tmp_path/"manifest.json"
+    manifest.write_text(json.dumps({"job_id":"new","created_at":"2026-10-20T02:00:00Z","source":{"sha256":source_sha},"outputs":[{"name":path.name,"sha256":digest,"size_bytes":path.stat().st_size}]}),encoding="utf-8")
+    common={"target":"rockchip","status":"done","params":{"chip":"rk3568"},"outputs":[{"path":str(path),"sha256":digest,"size_bytes":path.stat().st_size}],"source_trace":{"sha256":source_sha}}
+    jobs=[{**common,"id":"new","finished_at":"2026-10-20T10:00:00","manifest_path":str(manifest)},{**common,"id":"old","finished_at":"2026-10-20T01:00:00Z"}]
+    monkeypatch.setattr(service,"_conversion_jobs",lambda *a:jobs)
+    for order in [jobs,list(reversed(jobs))]:
+        monkeypatch.setattr(service,"_conversion_jobs",lambda *a:order)
+        rows=service.discover_version_artifacts("p1",{"id":"a1"},version)
+        converted=[r for r in rows if r["target"]=="rockchip"]
+        assert len(converted)==1 and converted[0]["conversion_job_id"]=="new"
+        assert converted[0]["metadata"]["finished_at"]=="2026-10-20T02:00:00Z"
+        assert converted[0]["metadata"]["conversion_identity_verified"] is True
+
+
+def test_original_discovery_keeps_persisted_path_when_best_has_same_bytes(tmp_path):
+    service=_service(tmp_path);version=_metadata_model(tmp_path)
+    best=tmp_path/"training-best.pt";best.write_bytes(Path(version["stored_path"]).read_bytes());version["best_path"]=str(best)
+    originals=[r for r in service.discover_version_artifacts("p1",{"id":"a1"},version) if r["target"]=="original"]
+    assert len(originals)==1 and originals[0]["source_path"]==version["stored_path"]

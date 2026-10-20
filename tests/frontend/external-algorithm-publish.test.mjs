@@ -305,10 +305,12 @@ test('weight details distinguish frozen, local, prepared, confirmed and read-bac
 });
 
 
-test('conversion delivery review shows independent owner selection and upload facts',()=>{
-  const html=publicationWeightDetails({project_id:'p',algorithm:{id:'a'},version:{id:'v'},publication:{status:'PARTIAL'},artifacts:[
-    {artifact_id:'old',file_name:'same.bmodel',target:'sophon',external_weight_id:'w-old',sync_status:'SYNCED',storage_status:'UPLOADED',compute_platform_id:'parent',chip_code:'bm1684x',sha256:'a'.repeat(64),remote_identity_status:'NOT_VERIFIED',review_required:true,recovery_plan:{suggested_operation:'REVIEW_PLATFORM_MIGRATION',target_compute_platform_id:'child',reason:'待核对真实分类关系'}},
-    {artifact_id:'new',file_name:'same.bmodel',target:'sophon',sync_status:'UNKNOWN',storage_status:'UPLOADED',chip_code:'bm1684x',sha256:'b'.repeat(64),review_required:true,recovery_plan:{old_weight_id:'w-old',old_sha256:'a'.repeat(64),new_sha256:'b'.repeat(64),suggested_operation:'REVIEW_CONTENT_REPLACEMENT',reason:'替换合同待确认'}}]});
-  for(const value of ['PARTIAL','old','new','w-old','UPLOADED','UNKNOWN','child','替换合同待确认','远端身份未读回验证','data-weight-select','仅保存本地交付意向'])assert.ok(html.includes(value),value);
-  assert.match(html,/同步成功/);
+test('automatic delivery facts preserve historical identity and confirmed remote readback without manual selection',()=>{
+  const html=publicationWeightDetails({project_id:'p',algorithm:{id:'a'},version:{id:'v'},publication:{status:'PUBLISHED'},weight_delivery_status:'PUBLISHED',artifacts:[
+    {artifact_id:'old',file_name:'same.bmodel',target:'sophon',external_weight_id:'w-old',sync_status:'SYNCED',storage_status:'UPLOADED',compute_platform_id:'parent',chip_code:'bm1684x',sha256:'a'.repeat(64),delivery_role:'HISTORICAL',included_in_delivery:false,remote_identity_status:'HISTORICAL_RECEIPT'},
+    {artifact_id:'new',file_name:'same.bmodel',target:'sophon',external_weight_id:'w-old',sync_status:'SYNCED',storage_status:'UPLOADED',chip_code:'bm1684x',sha256:'b'.repeat(64),delivery_role:'AUTOMATIC_CURRENT',remote_identity_status:'READ_BACK',review_required:false}]});
+  for(const value of ['PUBLISHED','old','new','w-old','UPLOADED','同步成功','历史成果','自动当前交付','远端读回已确认'])assert.ok(html.includes(value),value);
+  assert.doesNotMatch(html,/data-weight-select|选择交付成果|仅保存本地交付意向|待人工审核/);
+  const error=publicationWeightDetails({publication:{status:'PARTIAL'},artifacts:[{file_name:'model.rknn',sync_status:'UNKNOWN',review_required:true,recovery_plan:{reason:'同一芯片两个Weight ID',target_compute_platform_id:'child'}}]});
+  for(const value of ['PARTIAL','UNKNOWN','同一芯片两个Weight ID','child','管理员'])assert.ok(error.includes(value),value);
 });

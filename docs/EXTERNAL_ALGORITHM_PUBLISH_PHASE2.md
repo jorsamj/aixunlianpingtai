@@ -1,3 +1,11 @@
+## 2026-10-20｜自动单Weight交付合同（替代旧人工选择策略）
+
+同算法版本/目标芯片仅一个当前远端Weight，本地不同SHA历史独立保留。ModelArtifact统一发现和校验，可信带时区任务完成时间（或绑定源/任务/产物的Manifest UTC）加任务ID/SHA确定顺序；原版本fence与selection/history保证迟到回调不回滚，OSS确认后才推进意向。
+
+复用原发布Owner、Repository、add/edit及UNKNOWN恢复：已有唯一真实ID核对Version/chip/分类后同ID edit；列表及历史ID详情确认不存在后唯一首次add。官方OpenAPI已核验支持filePath/computePlatformId/chipCode/扩展元数据，实际服务拒绝时保留原错误，不delete/add绕过。写前持久化before/desired，写后list/getInfo读回成功才SYNCED并原事务切换单一活动Owner；历史映射仍保留成功回执和superseded关系。未知写（含其他同芯片Artifact）先只读恢复，禁止重复写。元数据仍可选、未知tags省略，不能用[]清空；文件完整性/核心映射严格保留。
+
+UI按同一后端投影显示自动当前、历史、真实Weight ID/上传/读回/异常；无常规手选或人工审批入口。生产历史批量替换、生产数据库/OSS/接口写入及部署仍须单独授权。完整官方来源、原始故障证据、限定测试及接续见[专项](CONVERSION_WEIGHT_PUBLISH_RECOVERY_2026_10_20.md)顶部；后续旧段落仅作历史决策记录。
+
 # 外部算法平台 Phase 2：训练成果发布 / 回退 / 对账 / GC 当前合同
 
 本文记录新畅联训练成果发布链的**长期技术合同**。会话级 SHA、VERSION 和 CI 状态以 `docs/codex-handoff.md` 最新章节和实时 GitHub 为准，不在本文写死历史版本。

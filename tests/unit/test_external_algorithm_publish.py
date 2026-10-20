@@ -283,6 +283,9 @@ class FakePublishingClient:
         type(self).weight_lists += 1
         return {"code": 200, "data": list(self.weights)}
 
+    def weight_info(self, weight_id):
+        return {"code":200,"data":next((dict(r) for r in self.weights if str(r.get("weightId"))==str(weight_id)),None)}
+
     def version_remove(self, algo_version_ids):
         ids = [str(value) for value in algo_version_ids]
         type(self).version_removes += 1
@@ -539,11 +542,12 @@ def _seed_conversion(
     (job_root / "job.json").write_text(json.dumps({
         "id": job_id,
         "status": "done",
+        "finished_at":datetime.now(timezone.utc).isoformat(),
         "target": target,
         "source_id": f"version::{algorithm_id}::{version_id}",
         "source_meta": {"algorithm_id": algorithm_id, "version_id": version_id},
         "params": {"chip": chip, "input_size": 640},
-        "outputs": [{"path": str(output), "available": True}],
+        "outputs": [{"path": str(output), "available": True,"sha256":hashlib.sha256(content).hexdigest(),"size_bytes":len(content)}],
     }), encoding="utf-8")
     return output
 
@@ -1344,12 +1348,13 @@ def test_published_weight_mapping_change_edits_existing_weight_without_duplicate
     assert FakePublishingClient.weight_creates == 2
     assert FakePublishingClient.weight_edits == 0
 
+    _hierarchical_compute_cache(tmp_path)
     service.save_config(ExternalPublishConfigPayload(
         storage_source_id="default_local",
         public_base_url="https://platform.example",
         target_mappings={
             "original": TargetMapping(compute_platform_id="cp-rk", chip_code="PYTORCH"),
-            "rockchip": TargetMapping(compute_platform_id="cp-onnx", chip_code="RK3568"),
+            "rockchip": TargetMapping(compute_platform_id="cp-rk", chip_mappings={"RK3568":"rk-3568"}),
         },
     ))
     algorithm = list_algorithms(_algorithms_file(tmp_path, "p1"))[0]
@@ -1364,7 +1369,7 @@ def test_published_weight_mapping_change_edits_existing_weight_without_duplicate
     assert FakePublishingClient.weight_edits == 1
     assert FakePublishingClient.last_weight_edit_path == "/internal/algorithm/algorithm-weight/edit"
     remote = next(row for row in FakePublishingClient.weights if row["fileName"] == "model.rknn")
-    assert remote["computePlatformId"] == "cp-onnx"
+    assert remote["computePlatformId"] == "rk-3568"
     artifact = next(row for row in second["artifacts"] if row["target"] == "rockchip")
     assert artifact["external_weight_id"] == remote["weightId"]
     assert artifact["sync_status"] == "SYNCED"
@@ -1420,13 +1425,14 @@ def test_rockchip_publish_ignores_intermediate_onnx_and_manifest_outputs(tmp_pat
     (job_root / "job.json").write_text(json.dumps({
         "id": "convert-rockchip-realistic",
         "status": "done",
+        "finished_at": "2026-10-20T01:00:00Z",
         "target": "rockchip",
         "source_id": "version::a1::v1",
         "source_meta": {"algorithm_id": "a1", "version_id": "v1"},
         "params": {"chip": "rk3568", "input_size": 640},
         "outputs": [
             {"path": str(intermediate), "available": True},
-            {"path": str(final), "available": True},
+            {"path": str(final), "available": True,"sha256":hashlib.sha256(final.read_bytes()).hexdigest(),"size_bytes":final.stat().st_size},
             {"path": str(manifest), "available": True},
         ],
     }), encoding="utf-8")
@@ -2942,10 +2948,11 @@ def test_durable_remote_conversion_root_is_discovered_and_appended(tmp_path: Pat
     (job_root / "job.json").write_text(json.dumps({
         "id": "remote-rknn",
         "status": "done",
+        "finished_at": "2026-10-20T01:00:00Z",
         "target": "rockchip",
         "source_trace": {"algorithm_id": "a1", "version_id": "v1"},
         "params": {"chip": "rk3576", "input_size": 640},
-        "outputs": [{"path": str(output), "available": True}],
+        "outputs": [{"path": str(output), "available": True,"sha256":hashlib.sha256(output.read_bytes()).hexdigest(),"size_bytes":output.stat().st_size}],
     }), encoding="utf-8")
 
     second = service.publish(project_id="p1", algorithm_id="a1", version_id="v1", automatic=True)
@@ -2988,10 +2995,11 @@ def test_publish_prefers_durable_remote_conversion_when_job_id_exists_in_both_ro
     (remote_job / "job.json").write_text(json.dumps({
         "id": job_id,
         "status": "done",
+        "finished_at": "2026-10-20T01:00:00Z",
         "target": "rockchip",
         "source_trace": {"algorithm_id": "a1", "version_id": "v1"},
         "params": {"chip": "rk3576", "input_size": 640},
-        "outputs": [{"path": str(output), "available": True}],
+        "outputs": [{"path": str(output), "available": True,"sha256":hashlib.sha256(output.read_bytes()).hexdigest(),"size_bytes":output.stat().st_size}],
     }), encoding="utf-8")
 
     status = service.publication_status("p1", "a1", "v1")
@@ -3770,6 +3778,8 @@ def _tags_wire_service(root, memory):
                 elif "/algorithm-weight/listByVersion/" in path:
                     version_id = path.rsplit("/", 1)[1]
                     result = {"code": 200, "data": [row for row in backend.weights if row["algoVersionId"] == version_id]}
+                elif "/algorithm-weight/getInfo/" in path:
+                    result=backend.weight_info(path.rsplit("/",1)[1])
                 elif path.endswith("/algorithm-weight/add"):
                     result = backend.create_weight(body)
                 elif path.endswith("/algorithm-weight/edit"):
@@ -4137,7 +4147,7 @@ def test_external_chip_bindings_read_the_local_catalog_without_changing_saved_ma
 
 @pytest.mark.parametrize("target,chip", [("sophon","bm1684x"),("rockchip","rk3568")])
 @pytest.mark.parametrize("same_name", [True,False])
-def test_current_weight_replacement_requires_review_without_merging_or_add(tmp_path, target, chip, same_name):
+def test_current_weight_replacement_automatically_edits_without_merging_or_add(tmp_path, target, chip, same_name):
     FakePublishingClient.reset()
     memory=MemorySecretStore();_configure_external(tmp_path,memory);_seed_external_algorithm(tmp_path)
     _seed_conversion(tmp_path,target=target,chip=chip,job_id="old",content=b"old")
@@ -4153,22 +4163,22 @@ def test_current_weight_replacement_requires_review_without_merging_or_add(tmp_p
         job=new.parents[1]/"job.json";body=json.loads(job.read_text(encoding="utf-8"));body["outputs"][0]["path"]=str(renamed);job.write_text(json.dumps(body),encoding="utf-8")
     count=FakePublishingClient.weight_creates
     result=service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
-    rows=service._publication_artifacts(result["publication"]["publication_key"])
+    rows=service._publication_artifacts(result["publication"]["publication_key"],include_inactive=True)
     converted=[r for r in rows if r["target"]==target]
     assert len(converted)==2 and len({r["sha256"] for r in converted})==2
-    assert FakePublishingClient.weight_creates==count and FakePublishingClient.weight_edits==0
-    assert service.repository.artifact_publication(old["artifact_id"])["external_weight_id"]==old["external_weight_id"]
-    assert service.repository.artifact_publication(old["artifact_id"])["sync_status"]=="SYNCED"
+    assert FakePublishingClient.weight_creates==count and FakePublishingClient.weight_edits==1
+    assert next(r for r in service.repository.artifact_publications(result["publication"]["publication_key"],include_inactive=True) if r["artifact_id"]==old["artifact_id"])["external_weight_id"]==old["external_weight_id"]
+    assert next(r for r in service.repository.artifact_publications(result["publication"]["publication_key"],include_inactive=True) if r["artifact_id"]==old["artifact_id"])["sync_status"]=="SYNCED"
     pending=next(r for r in converted if r["artifact_id"]!=old["artifact_id"])
-    assert pending["sync_status"]=="UNKNOWN" and "REPLACEMENT_REVIEW_REQUIRED" in pending["last_error"]
+    assert pending["sync_status"]=="SYNCED" and pending["external_weight_id"]==old["external_weight_id"]
+    assert next(r for r in service.repository.artifact_publications(result["publication"]["publication_key"],include_inactive=True) if r["artifact_id"]==old["artifact_id"])["active"]==0
     algorithm,version=service._algorithm_version("p1","a1","v1")
     assert not service.publication_requires_sync("p1",algorithm,version,result["publication"])
     status=service.publication_status("p1","a1","v1")
     review=next(r for r in status["artifacts"] if r["artifact_id"]==pending["artifact_id"])
-    assert review["review_required"] and review["recovery_plan"]["old_weight_id"]==old["external_weight_id"]
-    assert review["recovery_plan"]["old_sha256"]!=review["recovery_plan"]["new_sha256"]
-    assert review["recovery_plan"]["remote_identity_status"]=="NOT_VERIFIED"
-    assert result["publication"]["status"]=="PARTIAL"
+    assert not review["review_required"] and review["external_weight_id"]==old["external_weight_id"]
+    assert review["remote_identity_status"]=="READ_BACK"
+    assert result["publication"]["status"]=="PUBLISHED"
     from scripts.audit_weight_metadata import audit
     report=audit(tmp_path,"p1")
     record=next(r for r in report["artifacts"] if r["artifact_id"]==pending["artifact_id"])
@@ -4198,18 +4208,16 @@ def test_local_delivery_selection_is_fenced_and_does_not_write_remote(tmp_path):
     algorithm,version=service._algorithm_version("p1","a1","v1")
     items=[r for r in service.model_assets.register_version_metadata("p1","a1","v1") if r["target"]=="rockchip"]
     chosen=next(r for r in items if r["conversion_job_id"]=="second")
-    result=service.select_publication_artifact("p1","a1","v1",artifact_id=chosen["artifact_id"],sha256=chosen["sha256"],expected_selection="")
-    assert result["selection"]["artifact_id"]==chosen["artifact_id"] and not result["remote_write_performed"]
-    _,version=service._algorithm_version("p1","a1","v1")
-    assert version["external_publish_artifact_selection"]["rockchip:RK3568"]["sha256"]==chosen["sha256"]
-    assert FakePublishingClient.weight_creates==FakePublishingClient.weight_edits==0
     with pytest.raises(PlatformError) as err:
-        service.select_publication_artifact("p1","a1","v1",artifact_id=items[0]["artifact_id"],sha256=items[0]["sha256"],expected_selection="")
-    assert err.value.code=="EXTERNAL_WEIGHT_SELECTION_CHANGED"
+        service.select_publication_artifact("p1","a1","v1",artifact_id=chosen["artifact_id"],sha256=chosen["sha256"],expected_selection="")
+    assert err.value.code=="EXTERNAL_WEIGHT_AUTOMATIC_SELECTION"
+    _,version=service._algorithm_version("p1","a1","v1")
+    assert not version.get("external_publish_artifact_selection")
+    assert FakePublishingClient.weight_creates==FakePublishingClient.weight_edits==0
     assert len(service.model_assets.repository.list(project_id="p1",version_id="v1"))==3
 
 
-def test_historical_parent_mapping_preserves_synced_fact_and_exposes_migration_review(tmp_path):
+def test_historical_parent_mapping_is_edited_only_after_remote_identity_and_parent_child_proof(tmp_path):
     FakePublishingClient.reset();memory=MemorySecretStore();_configure_external(tmp_path,memory);_seed_external_algorithm(tmp_path)
     _seed_conversion(tmp_path)
     service=_service(tmp_path,memory);service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
@@ -4219,11 +4227,12 @@ def test_historical_parent_mapping_preserves_synced_fact_and_exposes_migration_r
     service.save_config(ExternalPublishConfigPayload(target_mappings={"rockchip":TargetMapping(compute_platform_id="cp-rk",chip_mappings={"RK3568":"rk-3568"})}))
     result=service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
     row=next(r for r in service.publication_status("p1","a1","v1")["artifacts"] if r["artifact_id"]==old["artifact_id"])
-    assert row["sync_status"]=="SYNCED" and row["compute_platform_id"]=="cp-rk"
-    assert row["review_required"] and row["recovery_plan"]["target_compute_platform_id"]=="rk-3568"
-    assert row["recovery_plan"]["suggested_operation"]=="REVIEW_PLATFORM_MIGRATION"
-    assert row["recovery_plan"]["remote_identity_status"]=="NOT_VERIFIED"
-    assert result["publication"]["status"]=="PARTIAL" and FakePublishingClient.weight_edits==0
+    assert row["sync_status"]=="SYNCED" and row["compute_platform_id"]=="rk-3568"
+    assert not row["review_required"] and row["remote_identity_status"]=="READ_BACK"
+    assert result["publication"]["status"]=="PUBLISHED" and FakePublishingClient.weight_edits==1
+    assert FakePublishingClient.weight_creates==2 and row["external_weight_id"]==old["external_weight_id"]
+    audit=json.loads(service.repository.artifact_publication(old["artifact_id"])["remote_metadata_json"])
+    assert audit["readback_confirmed"] is True
     algorithm,version=service._algorithm_version("p1","a1","v1")
     assert not service.publication_requires_sync("p1",algorithm,version,result["publication"])
 
@@ -4245,7 +4254,7 @@ def test_weight_review_dry_run_requires_exact_remote_identity_and_never_writes(t
     remote={"weightId":"w-old","algoVersionId":"remote-v","computePlatformId":"parent","chipCode":"RK3568","fileName":"same.rknn","filePath":"https://objects/old","fileSha256":"a"*64}
     plan=weight_recovery_plan(new,[old],"child",remote_rows=[remote],external_version_id="remote-v")
     assert plan["remote_identity_status"]=="MATCHED_READ_ONLY" and plan["automatic_write_allowed"] is False
-    assert plan["replacement_contract_status"]=="NOT_VERIFIED"
+    assert plan["replacement_contract_status"]=="OPENAPI_FIELDS_CONFIRMED"
     mismatch=weight_recovery_plan(new,[old],"child",remote_rows=[{**remote,"algoVersionId":"wrong"}],external_version_id="remote-v")
     assert mismatch["remote_identity_status"]=="MISMATCH_OR_AMBIGUOUS"
     assert plan["old_file_path"]!=plan["new_file_path"] and plan["old_weight_id"]=="w-old"
@@ -4262,16 +4271,14 @@ def test_recovered_weight_cannot_be_claimed_by_two_active_artifacts(tmp_path):
     assert error.value.code=="EXTERNAL_WEIGHT_OWNER_CONFLICT" and FakePublishingClient.weight_edits==0
 
 
-def test_explicit_first_delivery_selects_one_hash_and_retains_unselected_history(tmp_path):
+def test_automatic_first_delivery_selects_one_hash_and_retains_unselected_history(tmp_path):
     FakePublishingClient.reset();memory=MemorySecretStore();_configure_external(tmp_path,memory);_seed_external_algorithm(tmp_path)
     _seed_conversion(tmp_path,job_id="first",content=b"first");_seed_conversion(tmp_path,job_id="second",content=b"second")
     service=_service(tmp_path,memory)
     initial=service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
-    assert initial["publication"]["status"]=="PARTIAL" and FakePublishingClient.weight_creates==1
+    assert initial["publication"]["status"]=="PUBLISHED" and FakePublishingClient.weight_creates==2
     rows=[r for r in service.model_assets.repository.list(project_id="p1") if r["target"]=="rockchip"]
     chosen=next(r for r in rows if r["conversion_job_id"]=="second")
-    service.select_publication_artifact("p1","a1","v1",artifact_id=chosen["artifact_id"],sha256=chosen["sha256"],expected_selection="")
-    # A review-only decision has zero write attempts; explicit selection can use normal first registration.
     again=service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
     assert FakePublishingClient.weight_creates==2 and again["publication"]["status"]=="PUBLISHED"
     assert FakePublishingClient.weight_edits==0
@@ -4307,12 +4314,13 @@ def test_selection_http_contract_writes_only_version_intent(tmp_path,monkeypatch
             project_dir=lambda pid:_project_dir(tmp_path,pid),algorithms_file=lambda pid:_algorithms_file(tmp_path,pid),
             external_secret_store_factory=lambda:memory,storage_sources_factory=service.storage_sources_factory,storage_credentials_factory=service.storage_credentials_factory)
     app=FastAPI();app.include_router(router)
+    from app import platform_error_handler
+    app.add_exception_handler(PlatformError,platform_error_handler)
     client=TestClient(app)
     response=client.put('/api/v64/external-publish/projects/p1/algorithms/a1/versions/v1/selection',json={"artifact_id":asset["artifact_id"],"sha256":asset["sha256"],"expected_selection":""})
-    assert response.status_code==200 and response.json()["remote_write_performed"] is False
-    assert response.json()["selection"]["artifact_id"]==asset["artifact_id"]
+    assert response.status_code==410 and response.json()["code"]=="EXTERNAL_WEIGHT_AUTOMATIC_SELECTION"
     _,version=service._algorithm_version("p1","a1","v1")
-    assert version["external_publish_artifact_selection"]["rockchip:RK3568"]["sha256"]==asset["sha256"]
+    assert not version.get("external_publish_artifact_selection")
 
 
 def test_converted_remote_parent_weight_prevents_duplicate_child_add_without_local_receipt(tmp_path):
@@ -4321,3 +4329,217 @@ def test_converted_remote_parent_weight_prevents_duplicate_child_add_without_loc
     remote={"weightId":"old-weight","fileName":"old.rknn","computePlatformId":"cp-rk","chipCode":"RK3568","filePath":"https://objects/old","algoVersionId":"v","fileSha256":"a"*64}
     with pytest.raises(PlatformError) as error:service._recover_weight_from_rows([remote],artifact)
     assert error.value.code=="EXTERNAL_WEIGHT_RECOVERY_AMBIGUOUS"
+
+
+def _timed_conversion(root, *, job_id, completed, content, target="rockchip", chip="rk3568"):
+    output=_seed_conversion(root,job_id=job_id,target=target,chip=chip,content=content)
+    path=output.parents[1]/"job.json";job=json.loads(path.read_text(encoding="utf-8"))
+    job["conversion_finished_at"]=completed;job["finished_at"]=completed
+    job["outputs"][0].update(sha256=hashlib.sha256(content).hexdigest(),size_bytes=len(content))
+    path.write_text(json.dumps(job),encoding="utf-8")
+    return output
+
+
+@pytest.mark.parametrize("target,chip",[("sophon","bm1684x"),("rockchip","rk3568")])
+def test_automatic_weight_replacement_keeps_id_and_reads_back_without_manual_selection(tmp_path,target,chip):
+    FakePublishingClient.reset();memory=MemorySecretStore();_configure_external(tmp_path,memory);_seed_external_algorithm(tmp_path)
+    _timed_conversion(tmp_path,job_id="old",completed="2026-10-20T01:00:00Z",content=b"old",target=target,chip=chip)
+    service=_service(tmp_path,memory)
+    if target=="sophon":service.save_config(ExternalPublishConfigPayload(target_mappings={"sophon":TargetMapping(compute_platform_id="cp-rk",chip_code="BM1684X")}))
+    first=service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
+    assert not first.get("conversion_failures") and not first.get("deferred_conversions"), first
+    old=next(r for r in service._publication_artifacts(first["publication"]["publication_key"]) if r["target"]==target)
+    created=FakePublishingClient.weight_creates
+    _timed_conversion(tmp_path,job_id="new",completed="2026-10-20T02:00:00Z",content=b"new",target=target,chip=chip)
+    result=service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
+    assert result["publication"]["status"]=="PUBLISHED",result
+    assert FakePublishingClient.weight_creates==created and FakePublishingClient.weight_edits==1
+    assert FakePublishingClient.last_weight_edit_payload["weightId"]==old["external_weight_id"]
+    current=[r for r in service._publication_artifacts(first["publication"]["publication_key"]) if r["target"]==target]
+    assert len(current)==1 and current[0]["sha256"]==hashlib.sha256(b"new").hexdigest()
+    assert current[0]["external_weight_id"]==old["external_weight_id"] and current[0]["sync_status"]=="SYNCED"
+    assert json.loads(current[0]["remote_metadata_json"])["readback_confirmed"] is True
+    assets=service.model_assets.repository.list(project_id="p1",algorithm_id="a1",version_id="v1")
+    assert {r["sha256"] for r in assets if r["target"]==target}=={hashlib.sha256(x).hexdigest() for x in [b"old",b"new"]}
+    before=(FakePublishingClient.weight_creates,FakePublishingClient.weight_edits)
+    service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
+    assert (FakePublishingClient.weight_creates,FakePublishingClient.weight_edits)==before
+
+
+def test_automatic_selection_uses_completion_not_callback_or_job_name_order(tmp_path):
+    FakePublishingClient.reset();memory=MemorySecretStore();_configure_external(tmp_path,memory);_seed_external_algorithm(tmp_path)
+    _timed_conversion(tmp_path,job_id="aaa-new",completed="2026-10-20T02:00:00Z",content=b"newest")
+    service=_service(tmp_path,memory);first=service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
+    _timed_conversion(tmp_path,job_id="zzz-late",completed="2026-10-20T01:00:00Z",content=b"late-old")
+    result=service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
+    assert result["publication"]["status"]=="PUBLISHED"
+    assert FakePublishingClient.weight_creates==2 and FakePublishingClient.weight_edits==0
+    _,version=service._algorithm_version("p1","a1","v1")
+    assert version["external_publish_artifact_selection"]["rockchip:RK3568"]["sha256"]==hashlib.sha256(b"newest").hexdigest()
+
+
+@pytest.mark.parametrize("operation",["add","edit"])
+def test_http_success_without_weight_readback_never_marks_synced(tmp_path,monkeypatch,operation):
+    FakePublishingClient.reset();memory=MemorySecretStore();_configure_external(tmp_path,memory);_seed_external_algorithm(tmp_path)
+    service=_service(tmp_path,memory)
+    if operation=="edit":
+        _timed_conversion(tmp_path,job_id="old",completed="2026-10-20T01:00:00Z",content=b"old")
+        service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
+        _timed_conversion(tmp_path,job_id="new",completed="2026-10-20T02:00:00Z",content=b"new")
+        monkeypatch.setattr(FakePublishingClient,"edit_weight",lambda *_:{"code":200,"data":1})
+    else:
+        monkeypatch.setattr(FakePublishingClient,"create_weight",lambda *_:{"code":200,"data":{"weightId":"not-persisted"}})
+    try:service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
+    except PlatformError:pass
+    mappings=service._publication_artifacts(service.repository.publication("p1","a1","v1")["publication_key"])
+    target="rockchip" if operation=="edit" else "original"
+    assert any(r["sync_status"]=="UNKNOWN" for r in mappings if r["target"]==target)
+    assert service.repository.publication("p1","a1","v1")["status"]!="PUBLISHED"
+
+
+def test_unknown_replacement_recovers_by_existing_readonly_owner_without_rewriting(tmp_path,monkeypatch):
+    FakePublishingClient.reset();memory=MemorySecretStore();_configure_external(tmp_path,memory);_seed_external_algorithm(tmp_path)
+    _timed_conversion(tmp_path,job_id="old",completed="2026-10-20T01:00:00Z",content=b"old")
+    service=_service(tmp_path,memory);service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
+    _timed_conversion(tmp_path,job_id="new",completed="2026-10-20T02:00:00Z",content=b"new")
+    original=FakePublishingClient.edit_weight;pending={}
+    def delayed(self,payload):pending.update(payload);type(self).weight_edits+=1;raise TimeoutError("isolated response unknown")
+    monkeypatch.setattr(FakePublishingClient,"edit_weight",delayed)
+    result=service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
+    assert result["publication"]["status"]=="PARTIAL" and FakePublishingClient.weight_edits==1
+    for row in FakePublishingClient.weights:
+        if row["weightId"]==pending["weightId"]:row.update(pending)
+    publication=service.repository.publication("p1","a1","v1")
+    assert service.repository.remote_reconcile_due(publication,now=datetime.now(timezone.utc)+timedelta(hours=1))
+    reconciled=service.reconcile_published_remote(project_id="p1",algorithm_id="a1",version_id="v1",client=FakePublishingClient(),remote_versions=FakePublishingClient.versions)
+    assert reconciled["checked"] and not reconciled.get("blocked"),reconciled
+    assert service.repository.publication("p1","a1","v1")["status"]=="PUBLISHED"
+    assert FakePublishingClient.weight_edits==1 and FakePublishingClient.weight_creates==2
+    rows=service._publication_artifacts(publication["publication_key"],include_inactive=True)
+    old=next(r for r in rows if r["target"]=="rockchip" and r["sha256"]==hashlib.sha256(b"old").hexdigest())
+    current=next(r for r in rows if r["target"]=="rockchip" and r["active"]==1)
+    assert old["active"]==0 and old["sync_status"]=="SYNCED" and old["superseded_by_artifact_id"]==current["artifact_id"]
+    assert old["external_weight_id"]==current["external_weight_id"]
+
+
+def test_equal_completion_time_uses_deterministic_task_identity_and_invalid_manifest_stops(tmp_path):
+    FakePublishingClient.reset();memory=MemorySecretStore();_configure_external(tmp_path,memory);_seed_external_algorithm(tmp_path)
+    _timed_conversion(tmp_path,job_id="a",completed="2026-10-20T01:00:00Z",content=b"a")
+    _timed_conversion(tmp_path,job_id="z",completed="2026-10-20T01:00:00Z",content=b"z")
+    service=_service(tmp_path,memory);result=service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
+    assert result["publication"]["status"]=="PUBLISHED" and FakePublishingClient.weight_creates==2
+    _,v=service._algorithm_version("p1","a1","v1");assert v["external_publish_artifact_selection"]["rockchip:RK3568"]["conversion_job_id"]=="z"
+    newer=_timed_conversion(tmp_path,job_id="newer",completed="2026-10-20T02:00:00Z",content=b"bad")
+    newer.write_bytes(b"BAD")
+    result=service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
+    assert result["publication"]["status"]=="PARTIAL" and FakePublishingClient.weight_edits==0 and FakePublishingClient.weight_creates==2
+    _,v=service._algorithm_version("p1","a1","v1");assert v["external_publish_artifact_selection"]["rockchip:RK3568"]["conversion_job_id"]=="z"
+
+
+@pytest.mark.parametrize("operation",["add","edit"])
+def test_unknown_write_blocks_newer_artifact_in_same_delivery_slot(tmp_path,monkeypatch,operation):
+    FakePublishingClient.reset();memory=MemorySecretStore();_configure_external(tmp_path,memory);_seed_external_algorithm(tmp_path)
+    service=_service(tmp_path,memory)
+    if operation=="edit":
+        _timed_conversion(tmp_path,job_id="base",completed="2026-10-20T00:00:00Z",content=b"base")
+        service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
+    else:service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
+    _timed_conversion(tmp_path,job_id="first",completed="2026-10-20T01:00:00Z",content=b"first")
+    calls=[]
+    def unknown(self,payload):calls.append(dict(payload));raise TimeoutError("isolated request still in flight")
+    monkeypatch.setattr(FakePublishingClient,"edit_weight" if operation=="edit" else "create_weight",unknown)
+    service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
+    assert len(calls)==1
+    _timed_conversion(tmp_path,job_id="second",completed="2026-10-20T02:00:00Z",content=b"second")
+    result=service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
+    assert len(calls)==1 and result["publication"]["status"]=="PARTIAL"
+    assert any("UNKNOWN" in str(x) or "未确认" in str(x) for x in result["conversion_failures"])
+
+
+@pytest.mark.parametrize("completion",["2026-10-20T01:00:00Z","","2026-10-20T01:00:00"])
+def test_single_candidate_with_replaced_bytes_or_missing_completion_is_not_uploaded(tmp_path,completion):
+    FakePublishingClient.reset();memory=MemorySecretStore();_configure_external(tmp_path,memory);_seed_external_algorithm(tmp_path)
+    output=_timed_conversion(tmp_path,job_id="single",completed=completion,content=b"old")
+    if completion.endswith("Z"):output.write_bytes(b"BAD")
+    service=_service(tmp_path,memory);result=service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
+    assert result["publication"]["status"]=="PARTIAL" and FakePublishingClient.weight_creates==1
+    assets=service.model_assets.repository.list(project_id="p1",algorithm_id="a1",version_id="v1")
+    assert all(r["storage_status"]!="UPLOADED" for r in assets if r["target"]=="rockchip")
+
+
+@pytest.mark.parametrize("conflict",["duplicate","wrong_version","unrelated_platform","unsupported_edit"])
+def test_auto_replacement_stops_for_real_identity_or_provider_contract_errors(tmp_path,monkeypatch,conflict):
+    FakePublishingClient.reset();memory=MemorySecretStore();_configure_external(tmp_path,memory);_seed_external_algorithm(tmp_path)
+    _timed_conversion(tmp_path,job_id="old",completed="2026-10-20T01:00:00Z",content=b"old")
+    service=_service(tmp_path,memory);first=service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
+    old=next(r for r in service._publication_artifacts(first["publication"]["publication_key"]) if r["target"]=="rockchip")
+    remote=next(r for r in FakePublishingClient.weights if r["weightId"]==old["external_weight_id"])
+    if conflict=="duplicate":FakePublishingClient.weights.append({**remote,"weightId":"ambiguous"})
+    elif conflict=="wrong_version":
+        info=FakePublishingClient.weight_info
+        monkeypatch.setattr(FakePublishingClient,"weight_info",lambda self,w:{"code":200,"data":{**remote,"algoVersionId":"other"}} if w==old["external_weight_id"] else info(self,w))
+    elif conflict=="unrelated_platform":remote["computePlatformId"]="cp-onnx"
+    else:
+        def unsupported(self,payload):
+            type(self).weight_edits+=1
+            raise PlatformError("REMOTE_FIELD_NOT_SUPPORTED","filePath unsupported","isolated remote contract rejection",status_code=422)
+        monkeypatch.setattr(FakePublishingClient,"edit_weight",unsupported)
+    _timed_conversion(tmp_path,job_id="new",completed="2026-10-20T02:00:00Z",content=b"new")
+    result=service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
+    assert result["publication"]["status"]=="PARTIAL" and FakePublishingClient.weight_creates==2
+    assert FakePublishingClient.weight_edits==(1 if conflict=="unsupported_edit" else 0)
+    historical=service.repository.artifact_publication(old["artifact_id"])
+    assert historical["sync_status"]=="SYNCED" and historical["external_weight_id"]==remote["weightId"]
+    new=next(r for r in service._publication_artifacts(first["publication"]["publication_key"]) if r["target"]=="rockchip" and r["artifact_id"]!=old["artifact_id"])
+    assert new["last_error"] and new["sync_status"]!="SYNCED"
+    service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
+    assert FakePublishingClient.weight_edits==(1 if conflict=="unsupported_edit" else 0) and FakePublishingClient.weight_creates==2
+
+
+def test_confirmed_remote_absence_allows_one_new_weight_and_retires_only_old_owner(tmp_path):
+    FakePublishingClient.reset();memory=MemorySecretStore();_configure_external(tmp_path,memory);_seed_external_algorithm(tmp_path)
+    _timed_conversion(tmp_path,job_id="old",completed="2026-10-20T01:00:00Z",content=b"old")
+    service=_service(tmp_path,memory);first=service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
+    old=next(r for r in service._publication_artifacts(first["publication"]["publication_key"]) if r["target"]=="rockchip")
+    FakePublishingClient.weights[:]=[r for r in FakePublishingClient.weights if r["weightId"]!=old["external_weight_id"]]
+    _timed_conversion(tmp_path,job_id="new",completed="2026-10-20T02:00:00Z",content=b"new")
+    result=service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
+    assert result["publication"]["status"]=="PUBLISHED" and FakePublishingClient.weight_creates==3 and FakePublishingClient.weight_edits==0
+    current=next(r for r in service._publication_artifacts(first["publication"]["publication_key"]) if r["target"]=="rockchip")
+    assert current["external_weight_id"]!=old["external_weight_id"] and current["sync_status"]=="SYNCED"
+    assert service.repository.artifact_publication(old["artifact_id"]) is None
+    assert any(r["artifact_id"]==old["artifact_id"] and r["sync_status"]=="SYNCED" for r in service._publication_artifacts(first["publication"]["publication_key"],include_inactive=True))
+
+    status=service.publication_status("p1","a1","v1")
+    shown=next(r for r in status["artifacts"] if r["artifact_id"]==current["artifact_id"])
+    assert shown["review_required"] is False and shown["remote_identity_status"]=="READ_BACK"
+
+
+def test_current_weight_id_cannot_silently_rebind_to_another_remote_weight(tmp_path):
+    FakePublishingClient.reset();memory=MemorySecretStore();_configure_external(tmp_path,memory);_seed_external_algorithm(tmp_path)
+    _timed_conversion(tmp_path,job_id="old",completed="2026-10-20T01:00:00Z",content=b"old")
+    service=_service(tmp_path,memory);first=service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
+    old=next(r for r in service._publication_artifacts(first["publication"]["publication_key"]) if r["target"]=="rockchip")
+    remote=next(r for r in FakePublishingClient.weights if r["weightId"]==old["external_weight_id"])
+    remote.update(weightId="different-owner",filePath="https://objects/unrelated")
+    result=service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
+    assert result["publication"]["status"]=="PARTIAL" and FakePublishingClient.weight_edits==0 and FakePublishingClient.weight_creates==2
+    assert service.repository.artifact_publication(old["artifact_id"])["external_weight_id"]==old["external_weight_id"]
+
+
+def test_absent_old_id_then_add_timeout_recovers_new_id_without_second_write(tmp_path,monkeypatch):
+    FakePublishingClient.reset();memory=MemorySecretStore();_configure_external(tmp_path,memory);_seed_external_algorithm(tmp_path)
+    _timed_conversion(tmp_path,job_id="old",completed="2026-10-20T01:00:00Z",content=b"old")
+    service=_service(tmp_path,memory);first=service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
+    old=next(r for r in service._publication_artifacts(first["publication"]["publication_key"]) if r["target"]=="rockchip")
+    FakePublishingClient.weights[:]=[r for r in FakePublishingClient.weights if r["weightId"]!=old["external_weight_id"]]
+    requests=[]
+    def timeout(self,payload):requests.append(dict(payload));raise TimeoutError("delayed add")
+    monkeypatch.setattr(FakePublishingClient,"create_weight",timeout)
+    result=service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
+    assert result["publication"]["status"]=="PARTIAL" and len(requests)==1
+    FakePublishingClient.weights.append({"weightId":"new-after-timeout",**requests[0]})
+    service.reconcile_published_remote(project_id="p1",algorithm_id="a1",version_id="v1",client=FakePublishingClient(),remote_versions=FakePublishingClient.versions)
+    recovered=service.repository.artifact_publication(old["artifact_id"])
+    assert recovered["sync_status"]=="SYNCED" and recovered["external_weight_id"]=="new-after-timeout"
+    assert len(requests)==1 and FakePublishingClient.weight_edits==0

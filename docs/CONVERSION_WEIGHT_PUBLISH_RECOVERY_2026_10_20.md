@@ -1,3 +1,45 @@
+## 2026-10-20｜Weight自动覆盖发布规则变更（A-D限定验收完成 / E待最终SHA CI）
+
+基线b74834c4a8d87090aad64876df50bbf548f2bdac / VERSION42.24.363。已fetch/prune、pull --ff-only，工作树干净；当前仅本会话在该项目活动，原WIP及其他工作树不动。上一轮catalog CRUD最终31/83绿色以catalog-crud-ci-final-20261020.json归档，不代表本轮。
+
+用户正式替代旧人工审核规则：同算法版本/目标芯片一个当前有效远端Weight，本地多SHA历史均保留；合法转换完成+文件完整性+OSS确认后自动交付最新有效成果，无手选/人工审核常规门槛。已有唯一Weight原ID edit，无Weight唯一确认后首次add；新增/替换都须远端查询读回，不凭HTTP成功置SYNCED。仅身份歧义、合同不支持或证据不足等安全异常停止。不得delete/add绕过；现有发布Owner/幂等恢复/审计/ModelArtifact复用，前后端一致。生产历史批量替换、生产数据库/OSS/Weight写入及部署仍未授权。
+
+官方真实合同核验：Apifox裸.md返回空，但.md?download=1入口成功获取并解析OpenAPI3.0.1。edit路径/internal/algorithm/algorithm-weight/edit，ProductAlgorithmAnalysisAlgoWeightDTO含weightId、algoVersionId、computePlatformId、chipCode、fileName、filePath及imageWidth/imageHeight/yoloVersion/fileSize/fileSha256/tags；getInfo/{weightId}与listByVersion/{algoVersionId}的VO返回相应字段。tags仍null/省略不改、[]清空，其他可选元数据仍尽力而为，不新增完整度门禁。文档声明字段可编辑不等于生产接口已实测；真实写入不在本轮执行。
+来源https://s.apifox.cn/c5c8b6af-b230-4873-8094-717498d6b5b6/515837707e0.md?download=1（edit SHA256 84ee0953bdae8dacdec0eee4dac974a11fbc6f0207eb8b6316523aa1a8efd988）；detail515837713e0（f64d46999576ebeeac92b1294fcc1f08fce8e65d6dc03ac933061fa1cd375a5e）；list515837711e0（e9c5938e23a9b5510e514eb263f1b3c6d644aa4b4d181eb1c28d36c45409bddc）。完整下载证据保存在本机.codex/tmp/weight-auto-*.md。
+
+原有能力及真实缺口：原add/edit/上传/Version复用/UNKNOWN查询恢复/任务完成唤醒均已有；_artifact_review与_sync_weight仍按旧规则拦截不同SHA，publication_requires_sync跳过UNKNOWN；edit/add正常HTTP返回直接SYNCED，未强制读回。发现函数按文件遍历顺序去重，同SHA多任务的完成血缘缺少确定排序；当前UI仍手选及固定“远端未验证”。必须修改这些原始根因，不新建发布执行器。
+
+实施计划（writing-plans，沿用本专项，不建立第二文档Owner）：
+- [x] B：在原发布单测构造BM1684X/RK3568同名异SHA，先RED验证原ID edit/自动当前成果/远端读回。补唯一初次add、HTTP成功但读回旧值、超时已持久化、远端身份冲突、未知字段/不支持错误、无重复上传/add/edit、旧回调/并发完成及完成时间并列的确定性。
+- [x] C1：model_artifacts原发现保留可信完成时间/任务/Manifest身份，复用现有Manifest生成时记录的UTC完成事实，不修改Worker；原service按(可信完成时间,确定任务ID,SHA)决议候选，沿用版本fence与existing selection/history字段持久化单调交付意向。非当前历史保留且不重试；缺可信时间或文件任务身份的成果停止并说明，不能用mtime/发现顺序猜测。OSS确认前不得声称新成果已交付。
+- [x] C2：原_sync_weight/恢复/edit复用，写前list+详情核实唯一Version/芯片/原ID及旧文件回执；写前记录before/desired及UNKNOWN，写后query核实。超时只读恢复，未知结果不盲目重写。读回成功后原Repo同事务切换单一活动发布Owner，历史映射/旧SHA/成功回执保留，禁止不同内容rebind合并。旧分类保护保留，只有真实父子关系及唯一身份可确认的更新才允许。
+- [x] C3：原publication_requires_sync/auto owner/reconcile和现有API/UI投影统一自动交付、历史、待读回、真实错误；移除旧手选常规入口/重复事件，不增加新按钮/轮询/状态Owner。
+- [x] D：仅实际改动及直接依赖的Python/Node/API/Chrome用例，RED→GREEN并审查Owner、锁顺序、幂等、异步、唯一请求与历史安全；不跑全仓库、不重复未受影响已通过测试，不删/skip/弱化断言。旧业务规则测试按明确新合同迁移且保留/加强安全断言。
+- [ ] E/F：最终fetch核对远端并安全整合，按最终VERSION一次递增、必要缓存/版本合同；更新专项/技术合同/CODEX_CURRENT_STATE/AGENTS，普通推送长期分支，核验最终实际SHA全CI与关键Jobs。外部CI回执weight-auto-replacement-ci-final-20261020.json，下一受验证提交归档，不借用历史CI。
+
+### 本轮已实施与审查证据（2026-10-20，尚待最终CI）
+
+- model_artifacts原发现统一计算真实文件SHA/大小，保留任务完成时间和任务输出/Manifest身份；只采信带时区时间，匹配任务/源SHA/输出SHA/大小的Manifest UTC可作为旧任务完成证据。同字节多任务按完成时间、任务ID、SHA确定血缘；不同SHA保留。发布不再维护第二套发现/哈希逻辑，原始模型优先持久化stored_path。
+- 原publish版本fence下自动决议最新有效成果，OSS成功后写原selection/history，单调顺序拒绝迟到回滚；非当前历史不写远端。硬件converted_unverified边界不变。缺时间/完整性证据是交付安全异常，不是可选元数据门禁。
+- 原_sync_weight分发转换槽位检查，list+getInfo核对真实唯一ID/Version/chip/分类；current及peers全部已知ID共同防止静默改绑。父→子只在可信分类关系确认后edit；原ensure的危险改挂保护保留。写前原remote_metadata_json保存旧remote/desired，新增同ID编辑结果未知守卫；未知旧请求未恢复前暂停较新Artifact写入。
+- add/edit均必须查询读回后同库事务confirm_weight_publication切换活动Owner；旧映射active=0/superseded_by仍保存旧SHA、旧成功payload/Weight ID，不合并内容或删除历史。ADD新请求旧ID留在prior_weight_id证据，防止超时恢复永久追查已不存在旧ID。超时精确恢复仅读回，不增加无意义edit；metadata-only超时缺远端完整证明仍UNKNOWN。
+- 原reconcile适用PARTIAL/UNKNOWN，沿用既有间隔/Owner只读恢复；无第二队列、轮询、缓存或状态系统。原UI移除选择按钮和事件，显示自动当前/历史/远端已读回/待读回及管理员异常；旧selection API明确410，不保存过时手选意向。
+- RED原始发布用例4失败，Node1失败；首轮审查3失败、二轮审查2失败均已真实复现。修复后对应限定GREEN分别记录weight-auto-review-green.log、weight-auto-review2-green.log；旧人工规则测试迁移到明确自动规则，保留独立历史/唯一ID/无重复写/完整性和回滚断言。日志在本机.codex/tmp，不冒充生产验收。
+- 已通过迁移合同8、身份/接口/缺时间及资产证据12、第二审查及相关恢复6；这些为分批开发证据，不相加冒充最终测试总数。最终共享发布合同文件、直接资产发现、Node/Chrome结果待下方登记。未运行全仓库或无关训练/素材测试，CI仍按原工作流。
+- 审查实际整改current ID冲突、跨Artifact未知写竞争、单候选文件替换、ADD超时旧ID追查、metadata-only证明、缺失历史本地资产展示。原发现重复逻辑已消除，无新wrapper链/事件/观察器/定时器；不改变真实转换执行或外部写接口合同。正式VERSION364（最终fetch仍b74834c4），只更新main缓存411和发布模块64012，app411/styles409不动。
+
+### 最终限定验收与交付接续
+
+- 发布Python完整受影响文件终验175通过/2夹具失败（weight-auto-final-publish.log）；两处旧durable fixture缺少真实完成UTC/输出SHA/大小，在实际隔离文件上补事实后原全部断言不变，定向2通过（weight-auto-durable-fixture-green.log）。因此177个用例均完成通过验证，没有重复运行其余175项。后续仅active历史投影改动的6项定向复验，记录weight-auto-history-projection.log。
+- ModelArtifact直接发现/同SHA芯片/上传幂等/两种durable目录/稀疏血缘/Manifest/源路径11通过（weight-auto-model-assets-final.log）。发布Node18通过，必要缓存版本断言1通过/8项未选中；Chrome原发布页面4通过，覆盖核心失败、可选缺失成功、真实身份异常停写、单次发布/状态请求及无手选入口（weight-auto-chrome-final.log）。追加读回当前交付文字断言只复验受影响optional流程，不扩大浏览器模块。
+- 隔离正式版本投影8项一致42.24.364（APP_VERSION、FastAPI、OpenAPI、health、system/version、app_info、plugins、bootstrap；SDK与数据源依赖隔离，不执行真实检测或生产写入）。主入口缓存main411、发布模块64012；前端正式显示继续取后端事实。
+- 第二轮只读审查发现current Weight ID未纳入唯一冲突检查、ADD超时追查旧ID，两项独立RED2失败→相关GREEN6通过。复审确认两项闭合、无新必修风险；仍由实际测试/CI决定完成，不以审查代替测试。最终历史状态投影排除inactive旧ID，防止合法重建后虚报多个活动Owner。
+- 实际修改15文件：原service/Repo同文件external_algorithm_publish.py、model_artifacts.py、原发布UI；两Python/两Node/一Chrome测试；VERSION、main/index缓存；本专项/phase2技术合同/CODEX_CURRENT_STATE/AGENTS。无新增模块/数据库/Worker/队列/轮询/依赖。发现重复哈希逻辑被复用原ModelArtifact取代；旧手选UI及事件删除，API明确退役410。无新增全局覆盖、事件重复绑定、渲染循环或重复写请求。
+- 已完成原分支fetch且未变化，VERSION基于363一次递增364；提交前再fetch、diff检查，普通FF推送。最终实际HEAD及CI结果不自引用写进待验证提交；独立回执weight-auto-replacement-ci-final-20261020.json写既有visualizations附件目录，下一受验证提交归档。尚未完成：最终SHA全部既有Actions/Checks与关键Jobs核验。
+- 生产旧BM1684X/RK3568及父分类真实ID/任务时间/Manifest/源SHA/远端是否存在、edit真实持久化/列表过滤/权限和OSS URL仍未现场实测。代码支持正常自动同ID替换及历史UNKNOWN恢复，不宣称这些生产对象已修复。本轮无生产DB/OSS/Weight写入或部署；历史批量替换必须先只读dry-run（下文完整字段）及单独授权，不能把部署代码等同于授权执行批量恢复。
+
+生产证据继续以本文后续原BM1684X/RK3568 Artifact、SHA、Weight ID和父子分类清单保留。真实远端这些ID是否存在及替换结果仍NOT VERIFIED；新代码开发验收不代表生产历史已修复。需要生产操作时先只读dry-run报告并单独取得授权。
+
 # 转换 Weight 发布身份恢复专项｜2026-10-20
 
 ## A 最新基线、范围与证据
