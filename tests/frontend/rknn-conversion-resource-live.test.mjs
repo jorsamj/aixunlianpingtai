@@ -199,3 +199,26 @@ test('Sophon cannot submit when a nominally ready resource omits actual chips', 
   assert.equal(h.chip.value,'');
   assert.equal(h.submit.disabled,true);
 });
+
+
+test('Sophon remote resource recovery preserves source and full SDK version in the conversion dialog', async () => {
+  let mode='missing';
+  const h=setup(async()=>({items:mode==='none'?[]:[{id:'remote-sophon',name:'独立算能资源',kind:'sophon',mode:'remote',
+    status:mode,targets:mode==='ready'?['sophon']:[],supported_chips:mode==='ready'?['bm1684x','bm1688']:[],
+    supported_precisions:mode==='ready'?['fp16']:[],version:mode==='ready'?'v1.30.2-20260831':'',
+    message:mode==='missing'?'HTTP 401：远程资源不可用':'远程算能资源可用'}]}));
+  await h.win.openNewConvertCore416('algo','v1');
+  h.radio.value='sophon';h.win.refreshConvertResource428();
+  assert.equal(h.submit.disabled,true);
+  assert.match(h.status.innerHTML,/401/);
+  mode='ready';await h.win.refreshVersionConversionResources428();
+  assert.equal(h.submit.disabled,false);
+  assert.match(h.status.innerHTML,/远程服务器/);
+  assert.match(h.status.innerHTML,/v1\.30\.2-20260831/);
+  assert.deepEqual(h.chip.options.map(o=>o.value),['bm1684x','bm1688']);
+  mode='missing';await h.win.refreshVersionConversionResources428();
+  assert.equal(h.submit.disabled,true);
+  mode='none';await h.win.refreshVersionConversionResources428();
+  assert.match(h.status.innerHTML,/尚未配置/);
+  assert.equal(h.submit.disabled,true);
+});

@@ -262,3 +262,14 @@ def test_sophon_model_tool_version_success_does_not_replace_artifact_info_check(
     with pytest.raises((worker.ConversionError, RuntimeError), match="芯片|命令执行失败"):
         worker.build_sophon(source, tmp_path, resource, {"chip":"bm1688","precision":"fp16"}, None, tmp_path / "log")
     assert not (tmp_path / "sophon_validation.json").exists()
+
+
+@pytest.mark.parametrize("banner", ["v1.30.2-20260831", "TPU-MLIR v1.30.2-20260831"])
+def test_sophon_probe_preserves_full_v_prefixed_version(tmp_path, banner):
+    from platform_core.sophon_runtime import probe_sophon_toolchain
+    resource = _tool_fixture(tmp_path)
+    path = Path(resource["model_deploy_path"])
+    path.write_text(path.read_text(encoding="utf-8").replace("TPU-MLIR 1.18.0-fixture", banner), encoding="utf-8")
+    facts = probe_sophon_toolchain(resource)
+    assert facts["available"], facts["error"]
+    assert facts["version"] == "v1.30.2-20260831"

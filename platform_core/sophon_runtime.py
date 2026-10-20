@@ -80,7 +80,7 @@ def probe_sophon_toolchain(resource: Mapping[str, Any], *, timeout: float = 10) 
         cp = subprocess.run(tool_argv(python_path, "model_deploy", tools["model_deploy"], "--version"),
                             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
         output = (cp.stdout or "") + (cp.stderr or "")
-        version = re.search(r"\b\d+\.\d+(?:\.\d+)?(?:[.a-zA-Z0-9_-]*)", output)
+        version = re.search(r"(?<![\w.])v?\d+\.\d+(?:\.\d+)?(?:[.a-zA-Z0-9_-]*)", output)
         if cp.returncode != 0 or not version:
             raise RuntimeError("model_deploy --version未返回有效TPU-MLIR版本")
         # Only actual argparse chip choices may advertise product capabilities.

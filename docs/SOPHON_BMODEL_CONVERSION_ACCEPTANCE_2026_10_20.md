@@ -1,5 +1,20 @@
 # Sophon BMODEL转换验收｜2026-10-20
 
+## 2026-10-20｜Sophon资源与页面一致性（A-D测试通过 / E待推送及最终CI / 生产未部署）
+
+- 完整fetch/prune与pull --ff-only，起始a36b9cdec1cd4aa07c9cde2d9c84bc98bb66b479，远端一致、初始干净；该历史SHA22/22 Actions、59/59 Checks已核验附件并归档，不当作本轮CI。VERSION42.24.358。
+- 用户现场新证据：A800 TPU-MLIR1.30.2、两chip YOLO11 FP16真实编译、8030服务鉴权health、远程BM1684X转换done/converted_unverified、本机probe available。此为用户提供的现场事实；本轮不重跑生产转换，不把它解释为实机HARDWARE_VERIFIED。
+- 现有链路复核：扫描和plugins调用远程探测时未解析secret_ref；扫描新状态未持久化，转换弹窗仍只读资源列表；本机工具组件与远程能力分离但缺少明确来源说明；版本正则在v1.30.2中错误从30.2匹配。local auto-detect已有保留独立Python配置逻辑，不重复开发。
+- 计划：先RED；复用资源detect原入口统一鉴权、保存与公共投影，修正版本提取；本机组件明确本机范围，Sophon总能力按有效资源汇总；原UI增加来源/版本事实，复用现有弹窗与轮询。限定相关Python/Node/Chrome，VERSION不变，缓存仅按必要调整。
+- 不修改生产密钥、不连接生产执行写操作、不重装环境、不调用真实新畅联接口、不增加调度器。
+- B RED：后端8 failed/1 passed/41 deselected（扫描/插件未鉴权、未持久化、错误服务版本、无资源计数、v前缀被截断）；独立Python保留原本通过。Node新用例1 failed/10 passed，转换详情漏版本；Chrome新用例1 failed，能力卡不显示本机/远程事实说明。日志均位于C:/Users/jorsam/.codex/tmp/sophon-state-{red,node-red,chrome-red}.log。不是生产调用，无测试删除/跳过/降低断言。
+- C：扫描/插件统一调用现有v39_detect_deploy_resource，解析原secret_ref、保存结果、返回公共投影，保持密钥隔离；GET资源列表与弹窗随后读取同一保存事实。Sophon health必须同时报告target/chip/FP16；鉴权或SDK失败清空能力，恢复后重新登记能力。远程卡版本取工具probe.version而非平台服务版本。共享版本正则完整保留v1.30.2-20260831。
+- C：本机三工具卡明确“本机”并显示本机未配置/失败原因，不能填远程路径；calibration只反映实际calibration_available且说明FP16不依赖。总Sophon能力统计有效资源数/配置资源数，展示本机和远程来源、真实芯片/FP16/版本；本机SDK失败不覆盖健康远程资源。未新增探测器/调度器/轮询或弹窗。
+- D GREEN：限定Python7文件136 passed/0 failed/0 skipped，12.57s（5项原依赖弃用警告）；Node2文件20 passed/0 failed/0 skipped；Chrome原component-scan-performance与model-and-conversion两规格10 passed/0 failed/0 skipped，19.6s。最后增加本机SDK失败但远程健康边界，再跑同一限定Python集合136通过。py_compile、node --check、git diff --check、原Remote Conversion永久守卫通过。日志sophon-state-python-final2.log、sophon-state-node-green.log、sophon-state-chrome-green.log。
+- E：VERSION42.24.358、main404/styles402不变；仅实际变动app.js缓存404→405，并同步精确版本断言。普通FF推送后核验完整SHA全部实际Actions/Checks，独立附件C:/Users/jorsam/.codex/visualizations/2026/10/20/01a156ca-1ca0-7b70-8497-bd255da4345e/sophon-resource-state-ci-final-20261020.json，下一受验证提交归档，不为写入自引用SHA制造新HEAD。
+- F：本轮未修改现场服务、密钥、Python或依赖，未操作生产GPU/OSS/S3/新畅联写接口。用户确认的真实FP16编译/远程done属于现场提供证据；本轮隔离测试不冒充新增实编译或板卡实测。上线后的网页展示/实际资源登记效果需用户部署后复验，硬件HARDWARE_VERIFIED仍未提供。
+
+
 ## 2026-10-20｜model_tool官方CLI兼容修复（A-D测试通过 / E待推送CI / 现场依赖待只读核验）
 
 - 已完整fetch/prune及pull --ff-only，起始HEAD c44752934524dcfc86f89d8cf24fc34f32cee011，远端一致、工作树干净，VERSION42.24.358。上轮最终48/48 Actions、131/131 Checks通过已核验独立附件并归档于本节；仅为历史证据。

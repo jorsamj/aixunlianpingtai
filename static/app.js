@@ -2046,7 +2046,7 @@ window.installUsability417=function(){
   restoreComponentScanCacheV40();
   const compStatus=s=>`<span class="pill ${s==='ready'?'ok':s==='missing'?'err':'warn'}">${s==='ready'?'满足':s==='missing'?'缺失':'需确认'}</span>`;
   function compRow(c){return `<div class="component-row"><div class="component-state">${compStatus(c.status)}</div><div class="grow"><div class="item-title">${esc(c.name)}</div><div class="item-sub">${esc(c.version||'')}${c.path?` · ${esc(c.path)}`:''}</div>${c.detail?`<div class="component-detail">${esc(c.detail)}</div>`:''}${c.status!=='ready'&&c.fix?`<div class="component-fix">${esc(c.fix)}</div>`:''}</div></div>`}
-  function capCard(c){return `<div class="capability-card ${c.status}"><div class="capability-head"><b>${esc(c.name)}</b>${compStatus(c.status)}</div><div class="item-sub">${c.remote?'远程部署资源可用':'本机/已配置资源'} · ${c.ready||0}/${c.total||0}</div></div>`}
+  function capCard(c){return `<div class="capability-card ${c.status}"><div class="capability-head"><b>${esc(c.name)}</b>${compStatus(c.status)}</div><div class="item-sub">${esc(c.detail||(c.remote?'远程部署资源可用':'本机/已配置资源'))} · ${c.ready||0}/${c.total||0}</div></div>`}
   const COMPONENT_SCAN_POLL_KEY='component-scan-v40';
   function componentScanActive(s=state.componentScan){return ['queued','running'].includes(String(s?.status||'').toLowerCase())}
   function componentProgressValue(s=state.componentScan){return Math.max(0,Math.min(100,Number(s?.progress||0)))}
@@ -6343,7 +6343,7 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
   }
   function resourceStatusHtml416(rows,target){
     if(!rows.length)return `<div class="convert428-resource-status-empty"><b>尚未配置 ${esc(targetLabel416(target))} 转换资源</b><span>请到“高级功能 → 部署资源”新增本机工具链或远程转换服务器，再执行检测。</span></div>`;
-    return rows.map(r=>{const ready=r.status==='ready'&&(r.targets||[]).includes(target),detail=r.message||(!ready?'请执行资源检测并确认目标能力':'可以创建真实转换任务'),chips=['rockchip','sophon'].includes(target)?(r.supported_chips||[]).map(x=>String(x||'').toUpperCase()).filter(Boolean):[],capability=chips.length?`支持芯片：${chips.join(' / ')}`:'';return `<div class="convert428-resource-status-row ${ready?'ready':'not-ready'}"><div><b>${esc(r.name||r.id||'未命名资源')}</b><span>${esc(r.mode==='agent'?'服务节点 Agent':r.mode==='remote'?'远程服务器':'本机')} · ${esc(statusLabel416(r.status))}</span></div><p>${esc(detail)}${capability?` · ${esc(capability)}`:''}</p></div>`}).join('');
+    return rows.map(r=>{const ready=r.status==='ready'&&(r.targets||[]).includes(target),detail=r.message||(!ready?'请执行资源检测并确认目标能力':'可以创建真实转换任务'),chips=['rockchip','sophon'].includes(target)?(r.supported_chips||[]).map(x=>String(x||'').toUpperCase()).filter(Boolean):[],capability=chips.length?`支持芯片：${chips.join(' / ')}`:'';return `<div class="convert428-resource-status-row ${ready?'ready':'not-ready'}"><div><b>${esc(r.name||r.id||'未命名资源')}</b><span>${esc(r.mode==='agent'?'服务节点 Agent':r.mode==='remote'?'远程服务器':'本机')} · ${esc(statusLabel416(r.status))}${r.version?` · ${esc(r.version)}`:''}</span></div><p>${esc(detail)}${capability?` · ${esc(capability)}`:''}</p></div>`}).join('');
   }
   function refreshConvertTargetFields428(target){
     const show=(id,visible)=>{const node=document.getElementById(id);if(node)node.hidden=!visible};

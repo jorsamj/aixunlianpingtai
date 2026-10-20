@@ -608,7 +608,7 @@ test('Sophon submits explicit rectangular FP16 parameters and keeps BMODEL hardw
   await page.route('**/api/v39/deploy/resources',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({items:[{
     id:'sophon-remote',name:'独立 TPU-MLIR',kind:'sophon',mode:'remote',status:ready?'ready':'missing',
     targets:ready?['sophon']:[],supported_chips:ready?['bm1684x','bm1688']:[],supported_precisions:ready?['fp16']:[],
-    message:ready?'TPU-MLIR自检通过':'TPU_MLIR_NOT_FOUND：model_deploy.py缺失'}]})}));
+    version:ready?'v1.30.2-20260831':'',message:ready?'TPU-MLIR自检通过':'TPU_MLIR_NOT_FOUND：model_deploy.py缺失'}]})}));
   await page.route(`**/api/v42/projects/${project.id}/algorithms/sophon-a/versions/v1/deployments`,route=>route.fulfill({
     status:200,contentType:'application/json',body:JSON.stringify({algorithm:{id:'sophon-a',name:'烟火算法'},
       version:{id:'v1',version_name:'v1',model_name:'best.pt',stored_path:'/isolated/best.pt',
@@ -631,6 +631,7 @@ test('Sophon submits explicit rectangular FP16 parameters and keeps BMODEL hardw
   await expect(dialog.locator('[data-convert-submit]')).toBeDisabled();
   await expect(dialog.locator('#conv428ResourceStatus')).toContainText('model_deploy.py缺失');
   ready=true;await dialog.getByRole('button',{name:'刷新资源',exact:true}).click();
+  await expect(dialog.locator('#conv428ResourceStatus')).toContainText('v1.30.2-20260831');
   await expect(dialog.locator('#conv428Chip option')).toHaveText(['BM1684X','BM1688']);
   await expect(dialog.locator('#conv428Width')).toHaveValue('800');
   await expect(dialog.locator('#conv428Height')).toHaveValue('800');

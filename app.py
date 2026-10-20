@@ -17876,6 +17876,9 @@ def _detect_local_deploy_resource(item: Dict[str, Any]) -> Dict[str, Any]:
 def _detect_remote_deploy_resource(item: Dict[str, Any]) -> Dict[str, Any]:
     item = dict(item)
     base = str(item.get("base_url") or "").rstrip("/")
+    if str(item.get("kind") or "").lower() == "sophon":
+        item.update(targets=[], supported_chips=[], supported_precisions=[])
+    item.pop("remote_health", None)
     if not base:
         item.update(status="missing", targets=[], message="未填写远程服务地址", last_checked_at=now_iso())
         return item
@@ -17889,8 +17892,11 @@ def _detect_remote_deploy_resource(item: Dict[str, Any]) -> Dict[str, Any]:
             probe = (data.get("tools") or {}).get("sophon") or {}
             item["supported_chips"] = [chip for chip in (probe.get("supported_chips") or []) if chip in {"bm1684x", "bm1688"}]
             item["supported_precisions"] = [p for p in (probe.get("supported_precisions") or []) if p == "fp16"]
-            if not probe.get("available") or not item["supported_chips"] or not item["supported_precisions"]:
-                item.update(status="missing", targets=[], message=probe.get("error") or "TPU-MLIR remote probe unavailable")
+            item["version"] = str(probe.get("version") or "")
+            if not probe.get("available") or "sophon" not in item["targets"] or not item["supported_chips"] or not item["supported_precisions"]:
+                item.update(status="missing", targets=[], supported_chips=[], supported_precisions=[], message=probe.get("error") or "TPU-MLIR remote probe unavailable")
+            else:
+                item["message"] = "远程算能资源可用：" + " / ".join(chip.upper() for chip in item["supported_chips"]) + " · FP16"
         if str(item.get("kind") or "").lower() == "rockchip":
             item["supported_chips"] = list(data.get("supported_chips") or [])
     except Exception as e:
@@ -19189,7 +19195,7 @@ def _v40_run_component_scan(scan_id: str):
             if str(r.get("mode")) in {"remote", "agent"}:
                 continue
             try:
-                cr=_detect_local_deploy_resource(r)
+                cr=v39_detect_deploy_resource(str(r["id"]))
             except Exception as e:
                 cr={**r,"status":"missing","message":str(e),"targets":[]}
             checked.append(cr)
@@ -19203,14 +19209,16 @@ def _v40_run_component_scan(scan_id: str):
         for r in checked:
             if r.get("kind")=="tensorrt" and r.get("trtexec_path"):trt=r.get("trtexec_path")
             if r.get("kind")=="sophon" and r.get("status")=="ready":
-                transform=r.get("model_transform_path") or transform;deploy=r.get("model_deploy_path") or deploy;cali=r.get("run_calibration_path") or cali
+                transform=r.get("model_transform_path") or transform;deploy=r.get("model_deploy_path") or deploy;cali=(r.get("run_calibration_path") or "") if (r.get("sophon_probe") or {}).get("calibration_available") else cali
                 sophon_version=r.get("version") or sophon_version
             if r.get("kind")=="ascend":
                 atc=r.get("atc_path") or atc;nsmi=r.get("npu_smi_path") or nsmi
         components.append(_v40_component_item("trtexec","TensorRT trtexec","ready" if trt else "missing",False,version=_deploy_cmd_version(str(trt or "")),path=str(trt or ""),fix="在 NVIDIA 部署机安装 TensorRT" if not trt else ""))
-        components.append(_v40_component_item("tpu_transform","TPU-MLIR model_transform","ready" if transform else "missing",False,path=str(transform or ""),fix="在算能转换机安装并 source TPU-MLIR 环境" if not transform else ""))
-        components.append(_v40_component_item("tpu_deploy","TPU-MLIR model_deploy","ready" if deploy else "missing",False,version=sophon_version,path=str(deploy or ""),fix="配置 TPU-MLIR" if not deploy else ""))
-        components.append(_v40_component_item("tpu_calibration","TPU-MLIR run_calibration","ready" if cali else "missing",False,path=str(cali or ""),detail="INT8 量化需要" if cali else "INT8 BMODEL 需要该组件",fix="配置 TPU-MLIR calibration 工具" if not cali else ""))
+        local_sophon=[r for r in checked if r.get("kind")=="sophon"]
+        local_sophon_detail=("本机未配置独立 TPU-MLIR；不影响远程资源使用" if not local_sophon else "；".join(str(r.get("message") or "") for r in local_sophon))
+        components.append(_v40_component_item("tpu_transform","本机 TPU-MLIR model_transform","ready" if transform else "missing",False,path=str(transform or ""),detail=local_sophon_detail,fix="配置本机独立 TPU-MLIR 资源，或使用已就绪远程算能资源" if not transform else ""))
+        components.append(_v40_component_item("tpu_deploy","本机 TPU-MLIR model_deploy","ready" if deploy else "missing",False,version=sophon_version,path=str(deploy or ""),detail=local_sophon_detail,fix="配置本机独立 TPU-MLIR 资源，或使用已就绪远程算能资源" if not deploy else ""))
+        components.append(_v40_component_item("tpu_calibration","本机 TPU-MLIR run_calibration","ready" if cali else "missing",False,path=str(cali or ""),detail=local_sophon_detail+"；仅 INT8 校准需要，FP16 不依赖此项",fix="配置 TPU-MLIR calibration 工具" if not cali else ""))
         components.append(_v40_component_item("atc","CANN ATC","ready" if atc else "missing",False,version=_deploy_cmd_version(str(atc or "")),path=str(atc or ""),detail="Atlas/Ascend OM 编译器",fix="在华为转换机安装 CANN Toolkit 或配置 ATC 路径" if not atc else ""))
         npu_text="";socs=[]
         if nsmi:
@@ -19227,7 +19235,7 @@ def _v40_run_component_scan(scan_id: str):
         remote_rows=[]
         for r in saved:
             if str(r.get("mode"))!="remote":continue
-            try: cr=_detect_remote_deploy_resource(r)
+            try: cr=v39_detect_deploy_resource(str(r["id"]))
             except Exception as e: cr={**r,"status":"missing","message":str(e),"targets":[]}
             remote_rows.append(cr)
             components.append(_v40_component_item("remote_"+str(r.get("id")),"远程部署 · "+str(r.get("name") or r.get("id")),"ready" if cr.get("status")=="ready" else "missing",False,version=str(cr.get("version") or ""),path=str(cr.get("base_url") or ""),detail=str(cr.get("message") or ""),fix="检查远程转换服务与网络/API Key" if cr.get("status")!="ready" else ""))
@@ -19249,7 +19257,17 @@ def _v40_run_component_scan(scan_id: str):
             if r.get("status")=="ready":remote_targets += list(r.get("targets") or [])
         for cap in capabilities:
             if cap["name"].startswith("华为") and "ascend" in remote_targets:cap.update(status="ready",remote=True)
-            if cap["name"].startswith("算能") and "sophon" in remote_targets:cap.update(status="ready",remote=True)
+            if cap["name"].startswith("算能"):
+                configured=[r for r in checked+remote_rows if r.get("kind")=="sophon"]
+                available=[r for r in configured if r.get("status")=="ready" and "sophon" in (r.get("targets") or [])]
+                remote_sophon=[r for r in available if r.get("mode")=="remote"]
+                local_ready=any(r.get("mode")!="remote" for r in available)
+                detail="本机工具可用" if local_ready else ("本机工具未就绪" if local_sophon else "本机未配置")
+                if remote_sophon:
+                    detail+="；远程算能资源可用："+"；".join(str(r.get("name") or r.get("id"))+" · "+str(r.get("version") or "")+" · "+" / ".join(str(c).upper() for c in r.get("supported_chips") or [])+" · FP16" for r in remote_sophon)
+                elif not available:
+                    detail+="；"+("已配置算能资源检测未通过，请查看资源错误" if configured else "未配置算能转换资源")
+                cap.update(status="ready" if available else "missing",remote=bool(remote_sophon),ready=len(available),total=len(configured),detail=detail)
             if cap["name"].startswith("NVIDIA") and "tensorrt" in remote_targets:cap.update(status="ready",remote=True)
         ready=sum(1 for x in components if x.get("status")=="ready")
         missing=sum(1 for x in components if x.get("status")=="missing")
@@ -19328,15 +19346,15 @@ def v41_deploy_plugins():
         ready=[]
         for r in matches:
             try:
-                mode=str(r.get('mode') or 'local')
-                chk=(_detect_remote_deploy_resource(r) if mode=='remote'
-                     else _detect_agent_deploy_resource(r) if mode=='agent'
-                     else _detect_local_deploy_resource(r))
+                # Reuse the authenticated detect owner and persist fresh facts so
+                # resource lists and conversion dialogs see the same result.
+                chk=(v39_detect_deploy_resource(str(r['id'])) if r in saved else
+                     _detect_local_deploy_resource(r))
             except Exception:chk={**r,'status':'missing','targets':[]}
             if p['id']=='rockchip':
                 if chk.get('status')=='ready' and 'rockchip' in (chk.get('targets') or []) and chk.get('supported_chips'):
                     ready.append(chk)
-            elif p['id'] in (chk.get('targets') or []) or (p['id']=='onnx' and 'onnx' in (chk.get('targets') or [])):
+            elif chk.get('status')=='ready' and (p['id'] in (chk.get('targets') or []) or (p['id']=='onnx' and 'onnx' in (chk.get('targets') or []))):
                 ready.append(chk)
         p['status']='ready' if ready else 'missing'; p['resources']=ready; p['configured_count']=len(matches)
         rows.append(p)
