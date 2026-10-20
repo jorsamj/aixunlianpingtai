@@ -413,7 +413,7 @@ class RecoveringPublishingClient(FakePublishingClient):
 
     def create_weight(self, payload):
         type(self).weight_creates += 1
-        row = {"weightId": "recovered-weight", **dict(payload)}
+        row = {"weightId": "recovered-weight" if type(self).weight_creates == 1 else f"recovered-weight-{type(self).weight_creates}", **dict(payload)}
         type(self).weights.append(row)
         raise RuntimeError("connection reset after server commit")
 
@@ -1726,6 +1726,8 @@ def test_timeout_after_remote_commit_recovers_ids_without_duplicate(tmp_path: Pa
     assert result["artifacts"][0]["external_weight_id"] == "recovered-weight"
     assert RecoveringPublishingClient.version_creates == 1
     assert RecoveringPublishingClient.weight_creates == 2
+    assert len({row["external_weight_id"] for row in result["artifacts"]}) == 2
+    assert {row["weightId"] for row in RecoveringPublishingClient.weights} == {"recovered-weight", "recovered-weight-2"}
 
 
 def test_publish_uses_distinct_durable_version_name_and_number(tmp_path: Path):

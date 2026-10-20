@@ -114,3 +114,8 @@ python scripts/audit_weight_metadata.py --data-dir /data/platform-data --project
 最终差异只读审查未发现可确认P0/P1，包含同chip跨平台恢复保护；审查未改文件/跑测试/联网。最后涉及selection/历史源文件缺失/状态/dry-run的12项通过（weight-recovery-final-focus.log），跨平台与旧恢复/两芯片/唯一Owner/父子分类12项通过（weight-parent-identity-green.log），均与主集合有重叠，不累加为独立总数。真实selection路由API用例另覆盖PUT JSON合同。Python/Node语法、正式版本/缓存、差异检查通过。
 
 提交前再次fetch：远端仍a3a99ec1760366ddda5193ca60b200c3b719c2d5，无新增提交，未覆盖其他版本变更。可见项目会话只有本会话active及历史notLoaded会话；未声明能发现离线客户端。其他worktree不修改。正式版本42.24.360只递增一次；接下来普通FF推送，再核验本轮完整SHA所有实际Actions/Checks及关键Jobs。
+
+
+### 首次SHA CI反馈：无效超时夹具的唯一ID修正
+
+首个提交af3d4f331a245819ff6eb69996083e2f15637862的Algorithm SQL Store CI在原发布规格157通过/1失败：RecoveringPublishingClient两次create_weight将PT与RKNN都返回同一个recovered-weight ID，新单活动Owner保护拒绝跨资产认领，版本因此PARTIAL。属于旧隔离夹具不满足唯一Weight ID合同，不是生产远端响应或丢失路径；禁止为过测放宽Owner保护。现夹具首次仍recovered-weight、第二次recovered-weight-2；原PUBLISHED/版本恢复/第一个ID/一次Version和两次Weight创建断言全保留，新增全部成果两个唯一ID及远端ID集合断言。超时恢复/重复Owner/UNKNOWN不重发/两芯片7项复验通过（weight-recovery-ci-timeout.log）。只修改测试夹具与本文档，VERSION42.24.360不再次递增。最终以修正后完整SHA的全部CI验收。
