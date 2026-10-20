@@ -72,6 +72,10 @@ BM1684 F32/INT8与FP16禁止有官方矩阵证据，但本次尚无现场bm1684 
 
 本轮Windows没有真实TPU-MLIR，**真实BM1684编译、BMODEL板卡加载/推理、数值精度比较与生产页面部署效果均NOT VERIFIED**。可进入经授权的现场验收准备，不能宣称实机完成。用户历史X/88 FP16成功不替代本轮BM1684证据。未部署、未改生产密钥/依赖/数据库、未调用新畅联写接口或操作OSS；历史17项/7Weight生产补齐仍未执行。
 
+## 首次SHA CI反馈收敛
+
+首次推送e4e723a2934da446d39403715380636c2c7d1fe1的Training Request API Job暴露原两项Rockchip自动转换夹具仍缺新字典/实检能力。补显式本地RKNN字典、资源kind/precision及原检测入口隔离夹具，不恢复固定业务芯片、不绕过实检。保留原唯一候选一次提交、歧义零提交/零job及RK3568/RK3576存在、未配置RK3588不出现的断言；错误信息由实际已就绪候选生成，并新增local_chip_id/fp16断言。针对两项本地2通过（dynamic-ci-autork2.log），共享catalog API/unit26项复验通过（dynamic-ci-catalog.log）；不扩大到无关训练测试。VERSION仍42.24.359。同时外部发布两次contract Job的文本守卫仍要求已移除固定CHIP_BINDING_DICTIONARY/旧说明文字，改为原Repository读取动态字典、校验入口及新增真实绑定回归守卫，保留全部发布/身份/UNKNOWN安全守卫；完整原两段守卫本地运行GuardExit=0（dynamic-publish-guards.log）。最终以修复后完整SHA全部CI为准。
+
 ## 已确认产品需求V2（用户原文归档，后续实现以此及第十八条为准）
 
 # 畅联云算法训练平台｜2026-10-20 动态厂商字典、芯片真实转换能力与转换参数体系整合开发指令 V2

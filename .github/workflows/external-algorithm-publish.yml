@@ -227,7 +227,9 @@ jobs:
           grep -q "test_rockchip_missing_chip_is_deferred_until_new_chip_bound_artifact_arrives" tests/unit/test_external_algorithm_publish.py
           grep -Fq 'actual_chip = local_chip_key(artifact.get("chip_code"))' platform_core/external_algorithm_publish.py
           grep -Fq 'compute_platform_is_descendant(catalog, leaf, parent_id)' platform_core/external_algorithm_publish.py
-          grep -Fq 'CHIP_BINDING_DICTIONARY' platform_core/compute_platform_catalog.py
+          grep -Fq 'catalog=self.model_assets.repository.conversion_catalog()' platform_core/external_algorithm_publish.py
+          grep -Fq 'test_external_chip_bindings_read_the_local_catalog_without_changing_saved_mappings' tests/unit/test_external_algorithm_publish.py
+          grep -Fq 'def validate_conversion_catalog(' platform_core/compute_platform_catalog.py
           grep -q "test_publish_allows_empty_version_no_and_omits_it_from_remote_payload" tests/unit/test_external_algorithm_publish.py
           grep -q "test_empty_local_version_no_recovers_unique_name_and_analysis_without_duplicate" tests/unit/test_external_algorithm_publish.py
           grep -q "test_empty_local_version_no_fails_closed_when_name_and_analysis_are_not_unique" tests/unit/test_external_algorithm_publish.py
@@ -390,7 +392,7 @@ jobs:
           grep -Fq 'identity = (target, chip_code, digest)' platform_core/model_artifacts.py
           grep -Fq 'test_same_sha_rockchip_artifacts_remain_distinct_by_chip' tests/unit/test_model_artifacts.py
           grep -Fq 'test_repository_migrates_legacy_identity_index_to_chip_scope' tests/unit/test_model_artifacts.py
-          grep -Fq '具体可转换能力和实际芯片以转换运行时及产物为准。' static/modules/external-algorithm-publish.js
+          grep -Fq '芯片绑定身份读取本地字典；可转换能力和实际芯片以SDK检测及真实产物为准。' static/modules/external-algorithm-publish.js
           grep -q "model_artifacts" platform_core/model_artifacts.py
           grep -q "storage-test" platform_core/external_algorithm_publish.py
           grep -q "run-auto" platform_core/external_algorithm_publish.py

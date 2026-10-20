@@ -12139,7 +12139,8 @@ def _v48_auto_convert_version(project_id: str, algorithm_id: str, version: Dict[
                 if contract["ready"]:
                     candidates.append(contract)
             if len(candidates)!=1:
-                summary["errors"].append({"target":target,"message":"自动转换必须有唯一已就绪本地芯片合同；请在版本转换中明确选择目标。"})
+                candidate_codes = ", ".join(c["params"]["chip"].upper() for c in candidates) or "无"
+                summary["errors"].append({"target":target,"message":f"自动转换必须有唯一已就绪本地芯片合同；当前候选：{candidate_codes}。请在版本转换中明确选择目标。"})
                 continue
             params=candidates[0]["params"]
         try:

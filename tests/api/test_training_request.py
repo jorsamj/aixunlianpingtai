@@ -1504,8 +1504,18 @@ def test_reusable_benchmark_rejects_stale_observed_scope_at_admission(
 
 
 
-def test_rockchip_auto_conversion_uses_single_detected_supported_chip(monkeypatch):
+def test_rockchip_auto_conversion_uses_single_detected_supported_chip(tmp_path, monkeypatch):
     import app as app_module
+
+    from platform_core.model_artifacts import ModelArtifactRepository
+    monkeypatch.setattr(app_module, "DATA_DIR", tmp_path)
+    ModelArtifactRepository(tmp_path).save_conversion_catalog({
+        "vendors": [{"id": "local-rk", "name": "Rockchip", "template_id": "rknn", "enabled": True}],
+        "chips": [{"id": "local-"+code, "vendor_id": "local-rk", "name": code.upper(), "code": code, "sdk_code": code,
+                   "constraint_id": "rknn-verified", "enabled": True} for code in ['rk3568']],
+    }, expected_revision=0)
+    monkeypatch.setattr(app_module, "_deploy_resource_runtime", lambda r: r)
+    monkeypatch.setattr(app_module, "_detect_local_deploy_resource", lambda r: {**r, "kind": "rockchip", "supported_precisions": ["fp16", "int8"]})
 
     created = []
 
@@ -1539,10 +1549,22 @@ def test_rockchip_auto_conversion_uses_single_detected_supported_chip(monkeypatc
     assert result["jobs"][0]["job_id"] == "convert-rk3568"
     assert len(created) == 1
     assert created[0][1].params["chip"] == "rk3568"
+    assert created[0][1].params["local_chip_id"] == "local-rk3568"
+    assert created[0][1].params["precision"] == "fp16"
 
 
-def test_rockchip_auto_conversion_fails_closed_when_chip_is_ambiguous(monkeypatch):
+def test_rockchip_auto_conversion_fails_closed_when_chip_is_ambiguous(tmp_path, monkeypatch):
     import app as app_module
+
+    from platform_core.model_artifacts import ModelArtifactRepository
+    monkeypatch.setattr(app_module, "DATA_DIR", tmp_path)
+    ModelArtifactRepository(tmp_path).save_conversion_catalog({
+        "vendors": [{"id": "local-rk", "name": "Rockchip", "template_id": "rknn", "enabled": True}],
+        "chips": [{"id": "local-"+code, "vendor_id": "local-rk", "name": code.upper(), "code": code, "sdk_code": code,
+                   "constraint_id": "rknn-verified", "enabled": True} for code in ['rk3568', 'rk3576']],
+    }, expected_revision=0)
+    monkeypatch.setattr(app_module, "_deploy_resource_runtime", lambda r: r)
+    monkeypatch.setattr(app_module, "_detect_local_deploy_resource", lambda r: {**r, "kind": "rockchip", "supported_precisions": ["fp16", "int8"]})
 
     created = []
 
