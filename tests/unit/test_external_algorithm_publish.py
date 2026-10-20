@@ -4314,7 +4314,10 @@ def test_selection_http_contract_writes_only_version_intent(tmp_path,monkeypatch
             project_dir=lambda pid:_project_dir(tmp_path,pid),algorithms_file=lambda pid:_algorithms_file(tmp_path,pid),
             external_secret_store_factory=lambda:memory,storage_sources_factory=service.storage_sources_factory,storage_credentials_factory=service.storage_credentials_factory)
     app=FastAPI();app.include_router(router)
-    from app import platform_error_handler
+    from fastapi.responses import JSONResponse
+    from platform_core.errors import error_body
+    async def platform_error_handler(_request,error):
+        return JSONResponse(status_code=error.status_code,content=error_body(error))
     app.add_exception_handler(PlatformError,platform_error_handler)
     client=TestClient(app)
     response=client.put('/api/v64/external-publish/projects/p1/algorithms/a1/versions/v1/selection',json={"artifact_id":asset["artifact_id"],"sha256":asset["sha256"],"expected_selection":""})
