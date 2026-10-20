@@ -435,9 +435,10 @@ const navigationStabilityRuntime = installNavigationStability({
     if (!state.uiReady && window.__v53InitPromise) return window.__v53InitPromise;
     return null;
   },
-  beforeInvokeNavigation: () => { conversionCatalogRuntime.leave(); window.toggleMobileSidebarV37?.(false); },
+  beforeInvokeNavigation: () => window.toggleMobileSidebarV37?.(false),
   knownPages: window.PlatformCore?.navigation?.knownPages || [],
   performNavigation: page => {
+    conversionCatalogRuntime.leave();
     const materialNavigation = window.MaterialPaginationRuntime61?.beforeNavigate?.(page);
     state.page = page;
     uploadTaskCenterRuntime.switchProject?.();

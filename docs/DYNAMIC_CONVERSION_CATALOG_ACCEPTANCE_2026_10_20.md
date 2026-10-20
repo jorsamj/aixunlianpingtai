@@ -29,7 +29,7 @@ SDK合同：列表按每个资源分别展示名称/位置/实际版本/芯片/�
 - 原有能力：正式部署资源Owner、整体GET/PUT及revision、SDK工具探测、共享resolve、ModelArtifact/历史任务/发布Repository均存在。真实缺口是没有安全的单条CRUD/物理删除/审计回执/服务端分页，旧前端仍全量PUT；配置的constraint也会误拒绝实际可用SDK。
 - 原ModelArtifactRepository增加mutate_conversion_catalog/records查询/引用核验/操作回执，沿用conversion_catalog同表；同一SQLite增加operations审计账本，将字典变更+before/after+回执原子提交。服务端UUID，完整字典候选不因筛选损失。已引用身份拒绝改挂或物理删除，未引用允许；停用保留所有历史。整体PUT继续不可误删/改身份。
 - 引用扫描为只读叶子函数conversion_catalog_references.py；所有状态及全部SQL游标，覆盖两个job目录、durable payload/job_dir、算法版本、ModelArtifact、发布记录及外部映射。损坏证据明确409。显式本地ID仅在单条合同作用域优先；旧SDK回退不跨兄弟版本失效，也不把他厂商明确归属误绑定。版本→catalog→durable原准入锁顺序保留，外部配置保存仅加同一catalog fence以避免引用写入竞争，不改变映射合同/Weight行为。
-- 原renderDeployResources直接mount新conversion-catalog-runtime，main原导航退出直接leave；已删除app旧整表编辑实现及无用catalog428 CSS。一个嵌入区、短表单/详情/确认单层弹窗、专用事件属性及单次委托，无第二UI/Owner/轮询/Observer/全局覆盖链。列表局部更新，请求ticket+epoch+项目归属+AbortSignal，表单归属阻止迟到请求关闭新草稿。
+- 原renderDeployResources直接mount新conversion-catalog-runtime，main原实际导航Owner在页面变更前直接leave；已删除app旧整表编辑实现及无用catalog428 CSS。一个嵌入区、短表单/详情/确认单层弹窗、专用事件属性及单次委托，无第二UI/Owner/轮询/Observer/全局覆盖链。列表局部更新，请求ticket+epoch+项目归属+AbortSignal，表单归属阻止迟到请求关闭新草稿。
 - SDK列表与resolve同源，实际probe版本与可信矩阵自动选择有效constraint，不写回历史配置；每资源独立版本/位置/芯片/精度/时间/真实错误与建议。显式检测只调用原资源detect一次，无新探测器；未知芯片仍不可转换。未引用的待配置芯片高级SDK可编辑，有引用保持锁定。
 
 接口（原catalog命名空间，错误统一PlatformError）：
@@ -50,6 +50,8 @@ SDK合同：列表按每个资源分别展示名称/位置/实际版本/芯片/�
 - 实际差异审查发现并整改：JSON损坏误放行、localID跨版本作用域漏引用、通用动作重复分发、迟到POST关闭新表单、检测读回后生命周期、未引用SDK不可编辑、5xx业务码误清幂等ID。没有新增重复Owner/wrapper/注册/请求或外部写入路径。未证明现场SDK/生产数据行为，不能用隔离fixture冒充。
 
 正式版本及待交付：再次fetch远端仍ed946c9b43ba7c5e014c60076d5539b6cbdf20b8/VERSION362；本轮一次递增42.24.363。后端七个正式版本入口一致、前端显示仍读后端；必要缓存app411/main410/styles409，新增catalog模块v1。未修改生产环境/字典/密钥、OSS、Weight、训练转换或服务。待安全提交/普通推送及最终实际SHA CI。CI回执写上述外部catalog-crud-ci-final-20261020.json（不能借用历史绿色）；下一会话先核对该回执、最新远端SHA/VERSION及工作树。部署后仍需授权现场真实资源多SDK及生产引用规模/性能、实际用户权限与字典交互复验；本轮不授权部署。
+
+- CI接续：首提交2284615ac1d9ede7c4480967af0bfe78abc1afe3的frontend静态守卫要求原beforeInvokeNavigation侧栏hook完整保留。已将catalog.leave移入原performNavigation且先于state.page变更；不改/削弱守卫或工作流。新增定向Node1 RED→GREEN、原CI导航源守卫及Chrome CRUD刷新返回1通过。VERSION保持本轮363不二次递增；需核验后续修正实际SHA，首SHA不能作为最终绿色。
 
 ## 2026-10-20｜字典管理UI/UX简化（A-D限定验收通过 / E待最终SHA CI）
 

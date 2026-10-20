@@ -5,6 +5,8 @@
 - 本轮VERSION42.24.363一次递增，app411/main410/styles409；七正式入口一致。原Repo/API/detect/resolve唯一Owner，单条CRUD+同库原子审计/全引用安全删除/服务端分页/自动SDK约束，部署页嵌入管理区，旧编辑及CSS移除。无引用待适配SDK可编辑，历史身份受保护。
 - RED→GREEN、Python分批限定结果、Node5+版本断言1、Chrome4流程及实际质量审查整改，详见专项顶部；不重复累计/不跑无关测试。现阶段提交前fetch远端未变，最终CI仍待实际SHA；生产未操作、现场未验证。
 
+- CI接续：首提交2284615ac1d9ede7c4480967af0bfe78abc1afe3的frontend静态守卫要求原beforeInvokeNavigation侧栏hook完整保留。已将catalog.leave移入原performNavigation且先于state.page变更；不改/削弱守卫或工作流。新增定向Node1 RED→GREEN、原CI导航源守卫及Chrome CRUD刷新返回1通过。VERSION保持本轮363不二次递增；需核验后续修正实际SHA，首SHA不能作为最终绿色。
+
 ## 2026-10-20｜字典管理UI/UX简化（限定验收通过 / 最终SHA CI待提交 / 生产未部署）
 
 - 基线6f34efd3ef09741147f90dadadb37591751c3c41/VERSION361已fetch/pull且工作树初始干净；无其他同仓库活动会话，原WIP/worktree不改。上轮21/55最终绿色回执已核验归档，不代表本轮。
