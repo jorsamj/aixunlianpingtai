@@ -178,3 +178,24 @@ test('new conversion UI inherits PT actual precision and size, but RKNN uses onl
   assert.equal(h.precision.value,'fp32');
   assert.equal(h.state.conv428ModelDefaults.input_size,800);
 });
+
+
+test('Sophon uses only the live BM1684X/BM1688 capability and FP16', async () => {
+  const h=setup(async()=>({items:[{id:'sophon',name:'TPU-MLIR',kind:'sophon',mode:'remote',status:'ready',
+    targets:['sophon'],supported_chips:['bm1688','cv186x'],supported_precisions:['fp16']}]}));
+  await h.win.openNewConvertCore416('algo','v1');
+  h.radio.value='sophon';h.win.refreshConvertResource428();
+  assert.deepEqual(h.chip.options.map(o=>o.value),['bm1688']);
+  assert.equal(h.precision.options.find(o=>o.value==='int8').disabled,true);
+  assert.equal(h.precision.options.find(o=>o.value==='fp32').disabled,true);
+  assert.match(h.modalMarkup,/conv428Width/);
+  assert.match(h.modalMarkup,/conv428Preprocess/);
+});
+
+test('Sophon cannot submit when a nominally ready resource omits actual chips', async () => {
+  const h=setup(async()=>({items:[{id:'sophon',name:'broken tools',kind:'sophon',mode:'remote',status:'ready',targets:['sophon']}]}));
+  await h.win.openNewConvertCore416('algo','v1');
+  h.radio.value='sophon';h.win.refreshConvertResource428();
+  assert.equal(h.chip.value,'');
+  assert.equal(h.submit.disabled,true);
+});

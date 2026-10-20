@@ -12130,7 +12130,20 @@ def _v48_auto_convert_version(project_id: str, algorithm_id: str, version: Dict[
         # Do not override that contract with an unconditional FP16 here.
         params={}
         if target=="sophon":
-            params["chip"]="bm1684x"
+            runtime = _deploy_resource_runtime(resource)
+            mode = str(runtime.get("mode") or "local").lower()
+            try:
+                resource = (_detect_remote_deploy_resource(runtime) if mode == "remote"
+                            else _detect_agent_deploy_resource(runtime) if mode == "agent"
+                            else _detect_local_deploy_resource(runtime))
+            except Exception as error:
+                summary["errors"].append({"target":target,"message":str(error)})
+                continue
+            chips = sorted(set(resource.get("supported_chips") or []) & {"bm1684x", "bm1688"})
+            if resource.get("status") != "ready" or len(chips) != 1:
+                summary["errors"].append({"target":target,"message":"算能自动转换需要实时检测到唯一目标芯片；请明确选择 BM1684X 或 BM1688 后手动转换。"})
+                continue
+            params.update(chip=chips[0], precision="fp16")
         elif target=="rockchip":
             chips=_v48_supported_rockchip_chips(resource)
             if len(chips)!=1:
@@ -17777,16 +17790,23 @@ def _detect_local_deploy_resource(item: Dict[str, Any]) -> Dict[str, Any]:
         else:
             item["message"] = "未检测到 trtexec"
     elif kind == "sophon":
-        root = Path(str(item.get("tool_root") or "")) if item.get("tool_root") else None
-        roots = [root, root / "python" / "tools"] if root else []
-        transform = _deploy_which(*[str(r / "model_transform.py") for r in roots], "model_transform.py", "model_transform")
-        deploy = _deploy_which(*[str(r / "model_deploy.py") for r in roots], "model_deploy.py", "model_deploy")
-        cali = _deploy_which(*[str(r / "run_calibration.py") for r in roots], "run_calibration.py", "run_calibration")
-        item.update(model_transform_path=transform, model_deploy_path=deploy, run_calibration_path=cali)
-        if transform and deploy:
-            item.update(status="ready", targets=["sophon"], version=_deploy_cmd_version(deploy), message="TPU-MLIR 可用；可生成 BMODEL")
+        from platform_core.sophon_runtime import probe_sophon_toolchain
+        probe = probe_sophon_toolchain(item)
+        tools = probe.get("tools") or {}
+        item.update(
+            model_transform_path=tools.get("model_transform", ""),
+            model_deploy_path=tools.get("model_deploy", ""),
+            run_calibration_path=tools.get("run_calibration", ""),
+            model_tool_path=tools.get("model_tool", ""),
+            supported_chips=list(probe.get("supported_chips") or []),
+            supported_precisions=list(probe.get("supported_precisions") or []),
+            version=probe.get("version", ""), sophon_probe=probe,
+            error_code=probe.get("error_code", ""),
+        )
+        if probe.get("available"):
+            item.update(status="ready", targets=["sophon"], message="TPU-MLIR CLI probe passed")
         else:
-            item["message"] = "未检测到 TPU-MLIR model_transform/model_deploy"
+            item["message"] = probe.get("error") or "TPU-MLIR unavailable"
     elif kind == "ascend":
         root = Path(str(item.get("tool_root") or "")) if item.get("tool_root") else None
         ascend_home = str(os.environ.get("ASCEND_HOME_PATH") or os.environ.get("ASCEND_TOOLKIT_HOME") or "").strip()
@@ -17865,6 +17885,12 @@ def _detect_remote_deploy_resource(item: Dict[str, Any]) -> Dict[str, Any]:
             raise RuntimeError(f"HTTP {r.status_code}: {r.text[:500]}")
         data = r.json()
         item.update(status="ready", targets=data.get("targets", []), version=data.get("version", ""), message="远程部署转换服务可用", remote_health=data, last_checked_at=now_iso())
+        if str(item.get("kind") or "").lower() == "sophon":
+            probe = (data.get("tools") or {}).get("sophon") or {}
+            item["supported_chips"] = [chip for chip in (probe.get("supported_chips") or []) if chip in {"bm1684x", "bm1688"}]
+            item["supported_precisions"] = [p for p in (probe.get("supported_precisions") or []) if p == "fp16"]
+            if not probe.get("available") or not item["supported_chips"] or not item["supported_precisions"]:
+                item.update(status="missing", targets=[], message=probe.get("error") or "TPU-MLIR remote probe unavailable")
         if str(item.get("kind") or "").lower() == "rockchip":
             item["supported_chips"] = list(data.get("supported_chips") or [])
     except Exception as e:
@@ -18307,9 +18333,9 @@ def _v39_create_deploy_job_under_version_fence(
         )
     resource=_deploy_resource_by_id(payload.resource_id)
     resource_mode = str(resource.get("mode") or "local").strip().lower()
-    if str(payload.target or "").strip().lower() == "rockchip":
-        if str(resource.get("kind") or "").strip().lower() != "rockchip":
-            raise HTTPException(status_code=400, detail="RKNN 转换必须选择瑞芯微部署资源")
+    if str(payload.target or "").strip().lower() in {"rockchip", "sophon"}:
+        if str(resource.get("kind") or "").strip().lower() != str(payload.target).strip().lower():
+            raise HTTPException(status_code=400, detail=f"{payload.target} 转换必须选择对应芯片部署资源")
         if resource_mode == "agent":
             resource = _detect_agent_deploy_resource(resource)
         elif resource_mode == "remote":
@@ -18324,6 +18350,13 @@ def _v39_create_deploy_job_under_version_fence(
         # Ultralytics/Paddle 内置资源只做直接导出；芯片转换必须选择对应芯片资源。
         raise HTTPException(status_code=400, detail=f"该资源不支持 {payload.target}。当前支持：{', '.join(resource.get('targets') or []) or '无'}")
     params=dict(payload.params or {})
+    if payload.target == "sophon":
+        chip = str(params.get("chip") or "").strip().lower()
+        if not chip or chip not in (resource.get("supported_chips") or []):
+            raise HTTPException(status_code=400, detail="Sophon chip must be explicitly selected from live supported_chips")
+        params["chip"] = chip
+        params["precision"] = str(params.get("precision") or "fp16").strip().lower()
+    version = None
     if str(source.get("kind") or "") == "algorithm_version":
         algorithm = next(
             (a for a in list_algorithms_internal(project_id) if str(a.get("id") or "") == str(source.get("algorithm_id") or "")),
@@ -18335,6 +18368,9 @@ def _v39_create_deploy_job_under_version_fence(
         ) if algorithm else None
         if version:
             defaults = _version_deploy_conversion_defaults(project_id, version)
+            if payload.target == "sophon" and not any(params.get(k) for k in ("input_size", "input_height", "input_width")):
+                params["input_height"] = defaults["input_height"]
+                params["input_width"] = defaults["input_width"]
             if not str(params.get("input_size") or "").strip():
                 params["input_size"] = defaults["input_size"]
             if not str(params.get("precision") or "").strip():
@@ -18443,6 +18479,10 @@ def _v39_create_deploy_job_under_version_fence(
         "algorithm_id": source.get("algorithm_id") or "",
         "sha256": sha256_file(local_src),
     }
+    if version and payload.target == "sophon":
+        for field in ("label_schema", "label_codes", "yolo", "training_lineage", "snapshot_id", "snapshot"):
+            if field in version:
+                source_trace[field] = json.loads(json.dumps(version[field], ensure_ascii=False))
     job={"id":job_id,"project_id":project_id,"source_id":payload.source_id,"source_name":src.name,"source_path":str(local_src),"source_meta":source,"source_trace":source_trace,"target":payload.target,"resource_id":payload.resource_id,"resource":resource_for_job,"params":params,"dataset_id":payload.dataset_id,"calibration_split":payload.calibration_split,"calibration_dir":str(cal_dir) if cal_dir else "","status":"queued","stage":"等待启动","progress":0,"message":"等待启动","created_at":now_iso(),"updated_at":now_iso(),"outputs":[]}
     portable_conversion = None
     conversion_target = str(payload.target or "").strip().lower()
@@ -18483,7 +18523,7 @@ def _v39_create_deploy_job_under_version_fence(
                 "code": error.code,
                 "message": str(error),
             }
-    if resource_mode=="remote":
+    if resource_mode=="remote" and conversion_target != "sophon":
         _write_deploy_job(project_id,job)
         th=threading.Thread(target=_sync_remote_deploy_job,args=(project_id,job_id),daemon=True);DEPLOY_REMOTE_THREADS[job_id]=th;th.start()
     else:
@@ -18491,9 +18531,11 @@ def _v39_create_deploy_job_under_version_fence(
             "job_dir": str(jd),
             "worker_path": str(BASE_DIR / "deployment_worker.py"),
             "python_path": sys.executable,
-            "execution_mode": "agent" if resource_mode == "agent" else "local",
+            "execution_mode": resource_mode,
             "target": conversion_target,
         }
+        if resource_mode == "remote":
+            request_payload["remote_connection"] = {"base_url": resource.get("base_url"), "secret_ref": resource.get("secret_ref")}
         if portable_conversion is not None:
             request_payload["remote_execution"] = portable_conversion
         calibration_items = list(
@@ -19153,20 +19195,21 @@ def _v40_run_component_scan(scan_id: str):
             checked.append(cr)
         # Also discover common commands even when the user has not created resource cards yet.
         trt=_deploy_which("trtexec")
-        transform=_deploy_which("model_transform.py","model_transform")
-        deploy=_deploy_which("model_deploy.py","model_deploy")
-        cali=_deploy_which("run_calibration.py","run_calibration")
+        # Sophon availability comes exclusively from the shared CLI probe of
+        # an explicitly configured isolated Python environment.
+        transform="";deploy="";cali="";sophon_version=""
         atc=_deploy_which("atc","atc.bin")
         nsmi=_deploy_which("npu-smi")
         for r in checked:
             if r.get("kind")=="tensorrt" and r.get("trtexec_path"):trt=r.get("trtexec_path")
-            if r.get("kind")=="sophon":
+            if r.get("kind")=="sophon" and r.get("status")=="ready":
                 transform=r.get("model_transform_path") or transform;deploy=r.get("model_deploy_path") or deploy;cali=r.get("run_calibration_path") or cali
+                sophon_version=r.get("version") or sophon_version
             if r.get("kind")=="ascend":
                 atc=r.get("atc_path") or atc;nsmi=r.get("npu_smi_path") or nsmi
         components.append(_v40_component_item("trtexec","TensorRT trtexec","ready" if trt else "missing",False,version=_deploy_cmd_version(str(trt or "")),path=str(trt or ""),fix="在 NVIDIA 部署机安装 TensorRT" if not trt else ""))
         components.append(_v40_component_item("tpu_transform","TPU-MLIR model_transform","ready" if transform else "missing",False,path=str(transform or ""),fix="在算能转换机安装并 source TPU-MLIR 环境" if not transform else ""))
-        components.append(_v40_component_item("tpu_deploy","TPU-MLIR model_deploy","ready" if deploy else "missing",False,version=_deploy_cmd_version(str(deploy or "")),path=str(deploy or ""),fix="配置 TPU-MLIR" if not deploy else ""))
+        components.append(_v40_component_item("tpu_deploy","TPU-MLIR model_deploy","ready" if deploy else "missing",False,version=sophon_version,path=str(deploy or ""),fix="配置 TPU-MLIR" if not deploy else ""))
         components.append(_v40_component_item("tpu_calibration","TPU-MLIR run_calibration","ready" if cali else "missing",False,path=str(cali or ""),detail="INT8 量化需要" if cali else "INT8 BMODEL 需要该组件",fix="配置 TPU-MLIR calibration 工具" if not cali else ""))
         components.append(_v40_component_item("atc","CANN ATC","ready" if atc else "missing",False,version=_deploy_cmd_version(str(atc or "")),path=str(atc or ""),detail="Atlas/Ascend OM 编译器",fix="在华为转换机安装 CANN Toolkit 或配置 ATC 路径" if not atc else ""))
         npu_text="";socs=[]
@@ -19197,8 +19240,7 @@ def _v40_run_component_scan(scan_id: str):
         capabilities.append(_v40_capability("PaddleDetection 训练",["paddle","paddledet_train"],components))
         capabilities.append(_v40_capability("Paddle → Inference",["paddle","paddledet_export"],components))
         capabilities.append(_v40_capability("Paddle → ONNX",["paddle","paddledet_export","paddle2onnx"],components))
-        capabilities.append(_v40_capability("算能 BMODEL (F16/BF16/F32)",["tpu_transform","tpu_deploy"],components))
-        capabilities.append(_v40_capability("算能 BMODEL (INT8)",["tpu_transform","tpu_deploy","tpu_calibration"],components))
+        capabilities.append(_v40_capability("算能 BMODEL (FP16)",["tpu_transform","tpu_deploy"],components))
         capabilities.append(_v40_capability("华为 Atlas / Ascend OM",["atc"],components,optional_keys=["npu_smi"]))
         capabilities.append(_v40_capability("NVIDIA TensorRT",["trtexec"],components))
         # Remote resource capabilities can make a target usable even when the platform host lacks local compilers.

@@ -14,6 +14,8 @@ from platform_core.rknn_runtime import (
     probe_rknn_toolkit,
 )
 
+from platform_core.sophon_runtime import (find_sophon_tools, require_sophon_toolchain, tool_argv)
+
 from platform_core.conversion import (
     ConversionError,
     SUPPORTED_ROCKCHIP_CHIPS,
@@ -21,6 +23,7 @@ from platform_core.conversion import (
     file_record,
     sha256_file,
     validate_target,
+    conversion_input_shape,
 )
 
 
@@ -122,17 +125,18 @@ def export_pt_to_onnx(source: Path, out_dir: Path, resource: Dict[str, Any], par
     if source.suffix.lower() not in {'.pt', '.pth'}:
         raise RuntimeError(f'当前源模型 {source.suffix} 不能直接导出 ONNX。请先生成 ONNX 或 Paddle Inference 模型。')
     py = find_ultra_python(resource)
-    imgsz = int(params.get('input_size') or 640)
+    height, width = conversion_input_shape(params)
+    imgsz = [height, width] if height != width else height
     opset = int(params.get('opset') or 12)
     dynamic = bool(params.get('dynamic', False))
     simplify = bool(params.get('simplify', False))
     batch = max(1, int(params.get('batch') or 1))
     script = (
-        "from ultralytics import YOLO; "
-        f"m=YOLO(r'''{source}'''); "
+        "import sys; from pathlib import Path; from ultralytics import YOLO; "
+        "p=Path(sys.argv[1]).resolve(strict=True); m=YOLO(str(p)); "
         f"print(m.export(format='onnx', imgsz={imgsz}, batch={batch}, opset={opset}, dynamic={dynamic}, simplify={simplify}))"
     )
-    run_cmd([py, '-c', script], source.parent, log_file)
+    run_cmd([py, '-c', script, str(source.resolve())], source.parent, log_file)
     candidates = [source.with_suffix('.onnx')]
     candidates += sorted(source.parent.glob(source.stem + '*.onnx'), key=lambda x: x.stat().st_mtime, reverse=True)
     exported = next((p for p in candidates if p.exists()), None)
@@ -222,6 +226,8 @@ def preflight_vendor_tool(target: str, resource: Dict[str, Any], params: Dict[st
         tool = which([str(resource.get('atc_path') or ''), str(Path(root_raw)/'bin'/'atc') if root_raw else '', 'atc'])
         if not tool:
             raise ConversionError('ATC_NOT_FOUND', '未检测到 CANN ATC，无法生成 Ascend OM。', solution='请在 Linux 转换服务器安装华为 CANN Toolkit，并配置 ATC 路径和环境脚本。')
+    elif target == 'sophon':
+        require_sophon_toolchain(resource, chip=str(params.get('chip') or '').lower())
     elif target == 'rockchip':
         py = str(resource.get('python_path') or params.get('rknn_python') or sys.executable)
         if not py or not Path(py).exists():
@@ -255,7 +261,9 @@ def validate_onnx_runtime(onnx_path: Path, params: Dict[str, Any], log_file: Pat
         onnx.checker.check_model(model)
         session = ort.InferenceSession(str(onnx_path), providers=['CPUExecutionProvider'])
         feeds = {}
-        size = int(params.get('input_size') or 640)
+        height, width = conversion_input_shape(params)
+        expected_shape = [int(params.get('batch') or 1), 3, height, width]
+        actual_shapes = []
         dtype_map = {
             'tensor(float)': np.float32,
             'tensor(float16)': np.float16,
@@ -263,7 +271,12 @@ def validate_onnx_runtime(onnx_path: Path, params: Dict[str, Any], log_file: Pat
             'tensor(int64)': np.int64,
             'tensor(int32)': np.int32,
         }
+        if params.get('kind') == 'sophon' and len(session.get_inputs()) != 1:
+            raise ValueError('Sophon首期只支持单一NCHW输入')
         for input_meta in session.get_inputs():
+            if params.get('kind') == 'sophon' and list(input_meta.shape) != expected_shape:
+                raise ValueError(f'ONNX input shape {input_meta.shape} 与编译尺寸 {expected_shape} 不一致')
+            actual_shapes.append(list(input_meta.shape))
             dtype = dtype_map.get(input_meta.type)
             if dtype is None:
                 raise ValueError(f'暂不支持 ONNX 输入类型：{input_meta.type}')
@@ -272,7 +285,7 @@ def validate_onnx_runtime(onnx_path: Path, params: Dict[str, Any], log_file: Pat
                 if isinstance(dimension, int) and dimension > 0:
                     shape.append(dimension)
                 elif len(input_meta.shape) == 4:
-                    shape.append([1, 3, size, size][index])
+                    shape.append(expected_shape[index])
                 else:
                     shape.append(1)
             feeds[input_meta.name] = np.zeros(shape, dtype=dtype)
@@ -282,6 +295,7 @@ def validate_onnx_runtime(onnx_path: Path, params: Dict[str, Any], log_file: Pat
             'runtime': 'onnxruntime',
             'runtime_version': ort.__version__,
             'input_names': [item.name for item in session.get_inputs()],
+            'input_shapes': actual_shapes,
             'output_names': [item.name for item in session.get_outputs()],
             'output_count': len(outputs),
         }
@@ -330,59 +344,44 @@ def build_tensorrt(onnx: Path, out_dir: Path, resource: Dict[str, Any], params: 
 
 
 def find_tpu_tools(resource: Dict[str, Any]):
-    root = Path(str(resource.get('tool_root') or '')) if resource.get('tool_root') else None
-    roots = []
-    if root:
-        roots += [root, root/'python'/'tools', root/'python'/'utils']
-    def f(name):
-        cands=[]
-        for r in roots: cands.append(str(r/name))
-        cands += [name, name.replace('.py','')]
-        return which(cands)
-    return f('model_transform.py'), f('model_deploy.py'), f('run_calibration.py')
+    tools = find_sophon_tools(resource)
+    return tools["model_transform"], tools["model_deploy"], tools["run_calibration"]
 
 
 def build_sophon(onnx: Path, out_dir: Path, resource: Dict[str, Any], params: Dict[str, Any], calibration_dir: Optional[Path], log_file: Path) -> Path:
-    transform, deploy, cali = find_tpu_tools(resource)
-    if not transform or not deploy:
-        raise RuntimeError('未检测到 TPU-MLIR 的 model_transform.py / model_deploy.py。请在算能转换服务器配置 TPU-MLIR 环境。')
-    py = str(resource.get('python_path') or sys.executable)
-    chip = str(params.get('chip') or 'bm1684x').lower()
-    precision = str(params.get('precision') or 'fp16').lower()
-    qmap = {'fp32':'F32','f32':'F32','fp16':'F16','f16':'F16','bf16':'BF16','int8':'INT8'}
-    quant = qmap.get(precision, precision.upper())
-    h = int(params.get('input_height') or params.get('input_size') or 640)
-    w = int(params.get('input_width') or params.get('input_size') or 640)
-    batch = int(params.get('batch') or 1)
-    mean = str(params.get('mean') or '0.0,0.0,0.0')
-    scale = str(params.get('scale') or '0.0039216,0.0039216,0.0039216')
-    pixel = str(params.get('pixel_format') or 'rgb').lower()
-    name = safe_name(params.get('model_name') or onnx.stem)
-    mlir = out_dir / f'{name}.mlir'
-    cmd = [py, transform, '--model_name', name, '--model_def', str(onnx), '--input_shapes', f'[[{batch},3,{h},{w}]]', '--mean', mean, '--scale', scale, '--pixel_format', pixel]
-    if bool(params.get('keep_aspect_ratio', True)): cmd.append('--keep_aspect_ratio')
-    cmd += ['--mlir', str(mlir)]
-    run_cmd(cmd, out_dir, log_file)
-    if not mlir.exists(): raise RuntimeError('TPU-MLIR model_transform 没有生成 .mlir。')
-    cali_table = None
-    if quant == 'INT8':
-        if not cali or not calibration_dir or not calibration_dir.exists():
-            raise RuntimeError('INT8 BMODEL 必须提供真实校准数据，并且部署资源需包含 run_calibration.py。')
-        cali_table = out_dir / f'{name}_cali_table'
-        input_num = int(params.get('calibration_count') or 100)
-        ccmd = [py, cali, str(mlir), '--dataset', str(calibration_dir), '--input_num', str(input_num), '--processor', chip, '-o', str(cali_table)]
-        method = str(params.get('calibration_method') or '').strip()
-        if method: ccmd += ['--cali_method', method]
-        run_cmd(ccmd, out_dir, log_file)
-        if not cali_table.exists(): raise RuntimeError('INT8 校准执行结束，但没有生成 calibration table。')
-    model = out_dir / f'{name}_{chip}_{precision}.bmodel'
-    dcmd = [py, deploy, '--mlir', str(mlir), '--quantize', quant, '--processor', chip, '--model', str(model)]
-    if cali_table: dcmd += ['--calibration_table', str(cali_table)]
-    if bool(params.get('dynamic', False)): dcmd.append('--dynamic')
-    num_core = int(params.get('num_core') or 1)
-    if num_core > 1: dcmd += ['--num_core', str(num_core)]
-    run_cmd(dcmd, out_dir, log_file)
-    if not model.exists(): raise RuntimeError('TPU-MLIR 编译结束，但没有生成 .bmodel。')
+    params = validate_target("sophon", params)
+    environment = require_sophon_toolchain(resource, chip=params["chip"])
+    tools, py = environment["tools"], environment["python_path"]
+    height, width = conversion_input_shape(params)
+    # The ONNX tensor is already RGB/NCHW normalized by its caller. Do not fuse
+    # mean/scale/letterbox again. The exact caller contract travels in manifest.
+    name = safe_name(str(params.get("model_name") or onnx.stem))
+    mlir = out_dir / f"{name}.mlir"
+    model = out_dir / f"{name}_{params['chip']}_fp16.bmodel"
+    # A failed retry must not inherit an old compiled file from the work folder.
+    mlir.unlink(missing_ok=True)
+    model.unlink(missing_ok=True)
+    timeout = int(params.get("timeout") or 3600)
+    run_cmd(tool_argv(py, "model_transform", tools["model_transform"],
+        "--model_name", name, "--model_def", str(onnx),
+        "--input_shapes", f"[[1,3,{height},{width}]]", "--mlir", str(mlir)), out_dir, log_file, timeout=timeout)
+    file_record(mlir)
+    run_cmd(tool_argv(py, "model_deploy", tools["model_deploy"],
+        "--mlir", str(mlir), "--quantize", "F16", "--chip", params["chip"],
+        "--num_core", "1", "--model", str(model)), out_dir, log_file, timeout=timeout)
+    file_record(model)
+    info = run_cmd(tool_argv(py, "model_tool", tools["model_tool"], "--info", str(model)),
+                   out_dir, log_file, timeout=min(timeout, 30))
+    import re
+    observed_chips = set(re.findall(r"\bbm\d+[a-z]*\b", info.lower()))
+    if observed_chips != {params["chip"]}:
+        raise ConversionError("SOPHON_MODEL_CHIP_MISMATCH", "BMODEL结构检查未确认唯一目标芯片",
+                              solution="请检查model_tool与编译工具版本，拒绝把BMODEL登记为其他芯片。")
+    write_json(out_dir / "sophon_validation.json", {
+        "structure": "passed", "chip": params["chip"], "hardware_verified": False,
+        "toolchain": environment, "inspection": info[-8000:], "artifact": file_record(model),
+        "preprocessing": params["preprocessing"],
+    })
     return model
 
 
@@ -498,7 +497,12 @@ def main():
         append_log(log_file, f"转换目标：{job.get('target')} / 资源：{resource.get('name','')}")
         if not source.exists(): raise RuntimeError(f'源模型不存在：{source}')
         target = str(job.get('target') or '').lower()
+        recorded_source_sha = str((job.get('source_trace') or {}).get('sha256') or '')
+        if target == 'sophon' and recorded_source_sha and recorded_source_sha != sha256_file(source):
+            raise ConversionError('SOURCE_IDENTITY_MISMATCH', '源模型SHA256与选定版本不一致', solution='请重新选择已验证算法版本并创建转换任务。')
         target_contract = validate_target(target, params)
+        if target == 'sophon':
+            params = target_contract
         preflight_vendor_tool(target, resource, params)
         outputs = []
         onnx_validation = {}
@@ -571,6 +575,11 @@ def main():
             hardware_verified=False,
         )
         manifest['job_id'] = job.get('id')
+        if target == 'sophon':
+            sophon_facts = read_json(work/'sophon_validation.json', {})
+            manifest['sophon_validation'] = sophon_facts
+            manifest['tool'].update(version=sophon_facts.get('toolchain', {}).get('version', ''),
+                                    python_path=sophon_facts.get('toolchain', {}).get('python_path', ''))
         if target == 'onnx':
             manifest['status'] = 'runtime_verified'
             manifest['runtime_verified'] = True

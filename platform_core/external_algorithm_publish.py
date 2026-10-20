@@ -170,6 +170,8 @@ def _canonical_chip_code(value: Any) -> str:
     compact = re.sub(r"[^A-Za-z0-9]+", "", text).upper()
     if compact in {"RK3568", "RK3578", "RK3576"}:
         return compact
+    if compact in {"BM1684X", "BM1688"}:
+        return compact
     return text
 
 
@@ -1895,6 +1897,9 @@ class ExternalAlgorithmPublishService:
         if not mapping:
             return state
         actual_chip = local_chip_key(artifact.get("chip_code"))
+        if target == "sophon" and actual_chip not in {"BM1684X", "BM1688"}:
+            return self._blocked_chip_state("MODEL_ARTIFACT_CHIP_REQUIRED",
+                "BMODEL缺少经过确认的BM1684X/BM1688芯片身份", "请核对真实转换任务芯片，不能借用厂商映射猜测。")
         if target == "rockchip" and not actual_chip:
             return self._blocked_chip_state(
                 "MODEL_ARTIFACT_CHIP_REQUIRED", "RKNN 产物缺少芯片身份：缺少真实转换硬件身份",
@@ -1920,7 +1925,7 @@ class ExternalAlgorithmPublishService:
                 return self._blocked_chip_state(error.code, error.message, error.solution)
             return {**state, "mapping": {**mapping, "compute_platform_id": valid[actual_chip]},
                     "detail": valid[actual_chip]}
-        if target == "rockchip":
+        if target in {"rockchip", "sophon"}:
             catalog = self._compute_catalog()
             is_parent = compute_platform_has_children(catalog, parent)
             is_leaf = compute_platform_parent(catalog.get(parent, {})) != ""
@@ -2362,6 +2367,9 @@ class ExternalAlgorithmPublishService:
         if chip_code:
             payload["chipCode"] = chip_code
         missing = [field for field in ("computePlatformId", "fileName", "filePath") if not payload.get(field)]
+        if target == "sophon" and chip_code not in {"BM1684X", "BM1688"}:
+            raise PlatformError("MODEL_ARTIFACT_CHIP_REQUIRED", "BMODEL真实芯片身份不正确", chip_code,
+                "必须由实际转换任务提供BM1684X/BM1688，不能复用瑞芯微或未知芯片。", 409)
         if target == "rockchip" and not chip_code:
             missing.append("chipCode")
         if missing:

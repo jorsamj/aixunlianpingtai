@@ -3938,3 +3938,56 @@ def test_tags_wire_model_iterations_keep_each_versions_own_classes(tmp_path):
     assert len({row["algoVersionId"] for row in weights}) == 2
     service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
     assert backend.version_creates == backend.weight_creates == 2 and backend.weight_edits == 0
+
+
+@pytest.mark.parametrize("chip", ["", "RK3568", "bm1690"])
+def test_sophon_weight_cannot_use_missing_or_other_vendor_chip(chip):
+    with pytest.raises(PlatformError):
+        ExternalAlgorithmPublishService._weight_artifact_payload({"target":"sophon","remote_chip_code":chip,
+            "compute_platform_id":"cp-sophon","file_name":"model.bmodel","public_url":"https://models.example/model.bmodel"})
+
+
+def test_sophon_bmodels_share_version_and_frozen_tags_but_keep_each_chip_identity(tmp_path):
+    memory=MemorySecretStore();_configure_external(tmp_path,memory);_seed_external_algorithm(tmp_path)
+    _tags_frozen_version(tmp_path,["smoke","fire"])
+    service,backend,writes=_tags_wire_service(tmp_path,memory)
+    # Keep this local test provider below Windows path limits; OSS keys are unchanged.
+    sources=service.storage_sources_factory()
+    local=sources.get("default_local")
+    sources.update("default_local", {"config":{**local.config,"root":str(tmp_path/"s")}})
+    service.model_assets.save_config(ModelArtifactConfigPayload(storage_source_id="default_local", root_prefix="a", auto_upload_enabled=True))
+    cache=service.external_repository.cache()
+    cache["compute_platforms"] += [{"computePlatformId":"cp-sophon","computePlatformName":"算能"},
+        {"computePlatformId":"cp-bm1684x","computePlatformName":"BM1684X","parentId":"cp-sophon"},
+        {"computePlatformId":"cp-bm1688","computePlatformName":"BM1688","parentId":"cp-sophon"}]
+    service.external_repository.save_cache(cache)
+    config=service.repository.config();config["target_mappings"]["sophon"]={"compute_platform_id":"cp-sophon",
+        "chip_mappings":{"BM1684X":"cp-bm1684x","BM1688":"cp-bm1688"},"enabled":True}
+    service.save_config(ExternalPublishConfigPayload(**config))
+    for chip in ("bm1684x","bm1688"):
+        _seed_conversion(tmp_path,target="sophon",chip=chip,job_id="convert-"+chip,content=b"isolated-same-bmodel-bytes")
+    result=service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
+    assert result["publication"]["status"] == "PUBLISHED", result
+    weights=[body for path,body in writes if path.endswith("/algorithm-weight/add")]
+    assert len(weights)==3 and backend.version_creates==1
+    bmodels=[row for row in weights if row["fileName"].endswith(".bmodel")]
+    assert {row["chipCode"] for row in bmodels} == {"BM1684X","BM1688"}
+    assert {row["computePlatformId"] for row in bmodels} == {"cp-bm1684x","cp-bm1688"}
+    for row in bmodels:
+        assert row["tags"] == ["smoke","fire"] and type(row["tags"]) is list
+        assert row["fileSize"] == len(b"isolated-same-bmodel-bytes")
+        assert row["fileSha256"] == hashlib.sha256(b"isolated-same-bmodel-bytes").hexdigest()
+        assert row["imageWidth"] == row["imageHeight"] == 640
+    assert len({row["algoVersionId"] for row in weights})==1
+    service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
+    assert backend.weight_creates == 3 and backend.weight_edits == 0
+    # An old BMODEL receipt must use the same Weight ID for tags backfill.
+    existing=next(row for row in result["artifacts"] if row.get("remote_chip_code")=="BM1688")
+    old_id=existing["external_weight_id"]
+    service.repository.patch_artifact_publication(existing["artifact_id"],synced_payload_json="{}")
+    next(row for row in backend.weights if row["weightId"]==old_id).pop("tags")
+    service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
+    edits=[body for path,body in writes if path.endswith("/algorithm-weight/edit")]
+    assert len(edits)==1 and edits[0]["weightId"]==old_id and edits[0]["tags"]==["smoke","fire"]
+    service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
+    assert backend.weight_creates==3 and backend.weight_edits==1 and backend.version_creates==1

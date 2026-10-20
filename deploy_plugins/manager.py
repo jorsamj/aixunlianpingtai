@@ -25,8 +25,8 @@ _PLUGINS: List[Dict[str, Any]] = [
         'id':'sophon','name':'算能 Sophon','vendor':'SOPHGO','output':'.bmodel',
         'source_formats':['.pt','.pth','.onnx','.pdparams','.pdmodel','.pdiparams'],
         'targets':['sophon'],'sdk':'TPU-MLIR','environment':'linux_or_docker',
-        'chips':['bm1684x','bm1688','bm1690','cv186x'],
-        'description':'TPU-MLIR 完成 MLIR lowering、量化和 BMODEL 编译。'
+        'chips':['bm1684x','bm1688'],
+        'description':'独立 TPU-MLIR 环境生成 BM1684X / BM1688 BMODEL；首期 FP16 / Batch 1，具体能力以资源实测报告为准。'
     },
     {
         'id':'tensorrt','name':'NVIDIA TensorRT','vendor':'NVIDIA','output':'.engine',

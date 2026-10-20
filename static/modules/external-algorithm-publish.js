@@ -289,11 +289,11 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
         <p>${escapeHtml(meta.note)}</p>
         <div class="field">
           <label>关联畅联云厂商 / 算力环境</label>
-          <select class="select" data-publish-platform>${computeOptions(selected, {rootsOnly: key === 'rockchip'})}</select>
+          <select class="select" data-publish-platform>${computeOptions(selected, {rootsOnly: ['rockchip','sophon'].includes(key)})}</select>
         </div>
         <input type="hidden" data-publish-chip value="${escapeHtml(row.chip_code || '')}">
-        ${hasChipOptions ? `<details class="external-vendor-advanced" data-publish-chip-details ${key === 'rockchip' ? 'open' : ''}>
-          <summary>芯片 / 环境子分类绑定${key === 'rockchip' ? '（RKNN 必须按实际芯片匹配）' : '（按需配置）'}</summary>
+        ${hasChipOptions ? `<details class="external-vendor-advanced" data-publish-chip-details ${['rockchip','sophon'].includes(key) ? 'open' : ''}>
+          <summary>芯片 / 环境子分类绑定${['rockchip','sophon'].includes(key) ? '（必须按实际芯片匹配）' : '（按需配置）'}</summary>
           <div data-publish-chip-rows>${chipBindingRows(key, row, selected)}</div>
           <div style="display:flex;gap:8px;margin-top:10px">
             <input class="input" placeholder="添加本地芯片型号（如 RKxxxx）" data-publish-new-chip style="min-width:0;flex:1">

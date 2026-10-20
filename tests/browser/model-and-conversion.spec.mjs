@@ -35,9 +35,10 @@ test('vision providers, candidate review, and vendor target parameters are expli
     dataset_id: 'default', files: {name: 'candidate.bmp', mimeType: 'image/bmp', buffer: bmp()}
   }});
   const image = (await upload.json()).uploaded[0];
-  await request.post(`/api/projects/${project.id}/annotations/${image.id}`, {data: {boxes: [{
+  const annotation = await request.post(`/api/projects/${project.id}/annotations/${image.id}`, {data: {boxes: [{
     class_id: 0, label: 'fire', x1: 10, y1: 8, x2: 90, y2: 70
   }], expected_version: image.annotation_version, source_content_sha256: image.content_sha256}});
+  expect(annotation.ok(), await annotation.text()).toBeTruthy();
   const configured = await request.post('/api/v35/model-configs', {data: {
     name: '浏览器默认视觉模型', provider_type: 'ollama', provider_adapter: 'ollama',
     model_kind: 'vlm', detect_url: 'http://127.0.0.1:11434', model_name: 'qwen2.5vl:3b',
@@ -64,13 +65,15 @@ test('vision providers, candidate review, and vendor target parameters are expli
       {id:'trt-ready', name:'TensorRT 4090', kind:'tensorrt', mode:'local', status:'ready', targets:['tensorrt'], message:'TensorRT ready'},
       {id:'atlas-ready', name:'Atlas CANN', kind:'ascend', mode:'local', status:'ready', targets:['ascend'], detected_soc_versions:['Ascend310P3'], message:'CANN ready'},
       {id:'rknn-ready', name:'RKNN Toolkit', kind:'rockchip', mode:'local', status:'ready', targets:['rockchip'], supported_chips:['rk3568','rk3576'], supported_precisions:['fp16','int8'], message:'RKNN ready'},
-      {id:'sophon-ready', name:'TPU-MLIR', kind:'sophon', mode:'local', status:'ready', targets:['sophon'], message:'Sophon ready'}
+      {id:'sophon-ready', name:'TPU-MLIR', kind:'sophon', mode:'local', status:'ready', targets:['sophon'], supported_chips:['bm1684x','bm1688','cv186x'], supported_precisions:['fp16'], message:'Sophon ready'}
     ]})
   }));
   await page.addInitScript(projectId => {
     localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({projectId, page: '模型配置'}));
   }, project.id);
+  await selectIsolatedTestProject(page, project.id);
   await page.goto('/');
+  await expect.poll(() => page.evaluate(() => state.uiReady === true)).toBe(true);
 
   await page.evaluate(() => window.setPage('模型配置'));
   await page.getByRole('button', {name: /新增模型/}).click();
@@ -87,14 +90,15 @@ test('vision providers, candidate review, and vendor target parameters are expli
   await page.getByRole('button', {name: /创建AI标注任务/}).click();
   const createAiDialog = page.getByRole('dialog', {name: '创建AI自动标注任务'});
   await expect(createAiDialog.getByText('浏览器默认视觉模型', {exact: true})).toBeVisible();
-  const keptReferenceNode = await page.evaluate(() => {
-    const button = document.querySelector('#ai429RefGrid button');
-    button.click();
-    return document.querySelector('#ai429RefGrid button') === button;
-  });
-  expect(keptReferenceNode).toBe(true);
+  await createAiDialog.locator('#ai429LabelGrid button', {hasText:'fire'}).click();
   await expect(createAiDialog.locator('#ai429Labels')).toHaveValue('fire');
-  await expect(createAiDialog.locator('#ai417ReferenceLabels')).toContainText('fire · 明火');
+  await createAiDialog.locator('summary').filter({hasText:'高级设置'}).click();
+  const reference=createAiDialog.locator('#ai429RefGrid button').first();
+  await expect(reference).toBeVisible();
+  await reference.click();
+  await expect.poll(()=>page.evaluate(()=>state.ai429RefSelected.size)).toBe(1);
+  await expect(createAiDialog.locator('#ai429Labels')).toHaveValue('fire');
+  await expect(createAiDialog.locator('#ai429ReferenceCount')).toContainText('仅作视觉示例，不改变任务标签');
   await createAiDialog.getByRole('button', {name: '取消'}).click();
 
   await page.route(`**/api/v60/projects/${project.id}/annotation-tasks/fake-task/candidates?*`, route => route.fulfill({
@@ -112,7 +116,7 @@ test('vision providers, candidate review, and vendor target parameters are expli
     })
   }));
   await page.evaluate(() => window.reviewAiLabel427('fake-task'));
-  const candidateDialog = page.getByRole('dialog', {name: /AI待确认标注/});
+  const candidateDialog = page.getByRole('dialog', {name: 'AI标注审核工作台 · 待确认'});
   await expect(candidateDialog.getByText(/不会自动写入正式标注/)).toBeVisible();
   await expect(candidateDialog.locator('.data412-box')).toBeVisible();
   await expect(candidateDialog.getByRole('button', {name: '全部接受'})).toBeVisible();
@@ -145,7 +149,16 @@ test('vision providers, candidate review, and vendor target parameters are expli
   await expect(conversionDialog.locator('#conv428Precision option[value="bf16"]')).toBeDisabled();
 
   await conversionDialog.locator('input[name="conv428Target"][value="sophon"]').check();
-  await expect(conversionDialog.locator('#conv428Precision option[value="bf16"]')).toBeEnabled();
+  await expect(conversionDialog.locator('#conv428Precision option[value="bf16"]')).toBeDisabled();
+  await expect(conversionDialog.locator('#conv428Precision option[value="int8"]')).toBeDisabled();
+  await expect(conversionDialog.locator('#conv428Chip option')).toHaveText(['BM1684X','BM1688']);
+  await conversionDialog.locator('#conv428Chip').selectOption('bm1688');
+  await expect(conversionDialog.locator('#conv428Chip')).toHaveValue('bm1688');
+  await conversionDialog.locator('#conv428Chip').selectOption('bm1684x');
+  await expect(conversionDialog.locator('#conv428Width')).toBeVisible();
+  await expect(conversionDialog.locator('#conv428Height')).toBeVisible();
+  await expect(conversionDialog.locator('#conv428SophonBatch')).toHaveValue('1');
+  await expect(conversionDialog.locator('#conv428Preprocess')).toBeVisible();
 });
 
 test('version conversion shows configured compiler resources and their readiness', async ({page, request}) => {
@@ -175,7 +188,9 @@ test('version conversion shows configured compiler resources and their readiness
   await page.addInitScript(projectId => {
     localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({projectId, page: '工作台'}));
   }, project.id);
+  await selectIsolatedTestProject(page, project.id);
   await page.goto('/');
+  await expect.poll(() => page.evaluate(() => state.uiReady === true)).toBe(true);
   await page.evaluate(async () => { if (window.__clInit) await window.__clInit(); });
   await expect(page.getByRole('button', {name: /算法列表/})).toBeVisible();
   await page.evaluate(([aid, vid]) => window.openVersionConvert428(aid, vid), [algorithmId, versionId]);
@@ -197,6 +212,7 @@ test('module graph is cache-busted and exposes platform helpers', async ({page, 
   expect(await main.text()).toMatch(/\.\/modules\/materials\.js\?v=\d+/);
 
   await page.goto('/');
+  await expect.poll(() => page.evaluate(() => state.uiReady === true)).toBe(true);
   await expect.poll(() => page.evaluate(() => typeof window.PlatformCore?.materials?.labelDisplay)).toBe('function');
 });
 
@@ -239,6 +255,7 @@ test('deployment resource editor exposes service-node Agent for RKNN', async ({p
     localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({page: '算法列表'}));
   });
   await page.goto('/');
+  await expect.poll(() => page.evaluate(() => state.uiReady === true)).toBe(true);
   await expect.poll(
     () => page.evaluate(() => typeof state !== 'undefined' && state.uiReady === true && typeof window.openDeployResourceModal === 'function'),
     {timeout: 20_000},
@@ -421,6 +438,7 @@ test('RKNN converted_unverified job exposes board verification and upgrades afte
     }));
   });
   await page.goto('/');
+  await expect.poll(() => page.evaluate(() => state.uiReady === true)).toBe(true);
   await expect.poll(async () => page.evaluate(expectedProjectId => ({
     uiReady: state.uiReady === true,
     projectId: String(state.project?.id || ''),
@@ -536,6 +554,7 @@ test('RKNN Agent INT8 conversion submits frozen calibration selection from the U
     localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({page: '工作台'}));
   });
   await page.goto('/');
+  await expect.poll(() => page.evaluate(() => state.uiReady === true)).toBe(true);
   await page.evaluate(async () => { if (window.__clInit) await window.__clInit(); });
   await page.evaluate(() => {
     state.datasets = [{id: 'calibration-dataset', name: 'INT8 校准集'}];
@@ -579,4 +598,55 @@ test('RKNN Agent INT8 conversion submits frozen calibration selection from the U
     calibration_split: 'val',
     calibration_count: 64
   });
+});
+
+
+test('Sophon submits explicit rectangular FP16 parameters and keeps BMODEL hardware validation pending', async ({page,request}) => {
+  const project=await (await request.post('/api/projects',{data:{name:`Sophon UI-${Date.now()}`,labels:[{code:'smoke'}]}})).json();
+  let ready=false,submitted=null,created=false;
+  await selectIsolatedTestProject(page,project.id);
+  await page.route('**/api/v39/deploy/resources',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({items:[{
+    id:'sophon-remote',name:'独立 TPU-MLIR',kind:'sophon',mode:'remote',status:ready?'ready':'missing',
+    targets:ready?['sophon']:[],supported_chips:ready?['bm1684x','bm1688']:[],supported_precisions:ready?['fp16']:[],
+    message:ready?'TPU-MLIR自检通过':'TPU_MLIR_NOT_FOUND：model_deploy.py缺失'}]})}));
+  await page.route(`**/api/v42/projects/${project.id}/algorithms/sophon-a/versions/v1/deployments`,route=>route.fulfill({
+    status:200,contentType:'application/json',body:JSON.stringify({algorithm:{id:'sophon-a',name:'烟火算法'},
+      version:{id:'v1',version_name:'v1',model_name:'best.pt',stored_path:'/isolated/best.pt',
+        conversion_defaults:{input_size:800,input_width:800,input_height:800,training_precision:'fp32'}},
+      items:created?[{id:'sophon-job',target:'sophon',target_name:'算能 Sophon',resource_name:'独立 TPU-MLIR',
+        status:'blocked_by_hardware',task_status:'BLOCKED_BY_HARDWARE',validation_status:'converted_unverified',
+        task_id:'sophon-job',progress:100,stage:'等待目标硬件验证',message:'BMODEL已生成，尚未实机验证',
+        params:{chip:'bm1688',precision:'fp16',input_width:640,input_height:384},
+        outputs:[{name:'model_bm1688_fp16.bmodel',available:true,path:'/isolated/model.bmodel',size_bytes:123,download_url:'/isolated/model.bmodel'}]}]:[]})}));
+  await page.route(`**/api/v39/projects/${project.id}/deploy/jobs`,async route=>{
+    submitted=route.request().postDataJSON();created=true;
+    await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({ok:true,job:{id:'sophon-job',task_status:'QUEUED'}})});
+  });
+  await page.goto('/');
+  await expect.poll(()=>page.evaluate(()=>state.uiReady===true)).toBe(true);
+  await page.evaluate(()=>window.openNewConvert428('sophon-a','v1'));
+  const dialog=page.getByRole('dialog',{name:'新建版本转换'});
+  await dialog.locator('[name="conv428Target"][value="sophon"]').check();
+  await expect(dialog.locator('#conv428Warn')).toContainText('没有已检测通过');
+  await expect(dialog.locator('[data-convert-submit]')).toBeDisabled();
+  await expect(dialog.locator('#conv428ResourceStatus')).toContainText('model_deploy.py缺失');
+  ready=true;await dialog.getByRole('button',{name:'刷新资源',exact:true}).click();
+  await expect(dialog.locator('#conv428Chip option')).toHaveText(['BM1684X','BM1688']);
+  await expect(dialog.locator('#conv428Width')).toHaveValue('800');
+  await expect(dialog.locator('#conv428Height')).toHaveValue('800');
+  await dialog.locator('#conv428Chip').selectOption('bm1688');
+  await dialog.locator('#conv428Width').fill('640');await dialog.locator('#conv428Height').fill('384');
+  await expect(dialog.locator('#conv428Precision')).toHaveValue('fp16');
+  await expect(dialog.locator('#conv428Precision option[value="int8"]')).toBeDisabled();
+  await expect(dialog.locator('#conv428Calibration')).toBeHidden();
+  await dialog.getByRole('button',{name:'开始转换',exact:true}).click();
+  await expect.poll(()=>submitted).not.toBeNull();
+  expect(submitted).toMatchObject({source_id:'version::sophon-a::v1',target:'sophon',resource_id:'sophon-remote',
+    params:{chip:'bm1688',precision:'fp16',input_width:640,input_height:384,batch:1,num_core:1,dynamic:false,
+      preprocessing:{owner:'caller',pixel_format:'rgb',mean:[0,0,0],letterbox:true}}});
+  expect(submitted.params).not.toHaveProperty('input_size');
+  expect(submitted.params.preprocessing.scale).toHaveLength(3);
+  const history=page.getByRole('dialog',{name:'版本转换'});
+  await expect(history).toContainText('model_bm1688_fp16.bmodel');
+  await expect(history).toContainText('尚未实机验证');
 });

@@ -1,3 +1,7 @@
+## 上一轮最终CI归档（由Sophon接续核对，属于历史证据）
+
+最终SHA 62647aeea258a26ba423f0a9db23d8f6f8ba3b1a，远端一致；Actions23/23、Checks59/59成功。Publish后端206通过、Chrome3通过；SQL中的发布115通过。VERSION42.24.358，未部署。原独立CI附件已核对；本归档关闭上一轮E/F，不代表Sophon本轮CI通过。
+
 # 训练与转换 Weight tags 专项验收｜2026-10-20
 
 ## 2026-10-20｜训练与转换 Weight tags 专项（阶段D测试通过 / 阶段E待推送CI / 生产未验证）

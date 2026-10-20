@@ -11,6 +11,7 @@ from typing import Any, Iterable, Mapping
 
 CHIP_BINDING_DICTIONARY: dict[str, tuple[str, ...]] = {
     "rockchip": ("RK3568", "RK3576", "RK3578"),
+    "sophon": ("BM1684X", "BM1688"),
 }
 _ROOT_PARENT_IDS = frozenset({"", "0", "-1"})
 

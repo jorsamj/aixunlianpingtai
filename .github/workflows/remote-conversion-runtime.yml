@@ -13,6 +13,14 @@ on:
       - 'platform_core/rknn_runtime.py'
       - 'platform_core/service_nodes.py'
       - 'platform_core/conversion.py'
+      - 'platform_core/sophon_runtime.py'
+      - 'platform_core/remote_conversion_runtime.py'
+      - 'remote_deploy_server.py'
+      - 'tests/unit/test_sophon_conversion.py'
+      - 'tests/unit/test_sophon_remote_durable.py'
+      - 'tests/unit/test_remote_conversion_transport.py'
+      - 'tests/api/test_sophon_remote_admission.py'
+      - 'tests/hardware/test_vendor_conversion.py'
       - 'static/app.js'
       - 'static/styles.css'
       - 'static/index.html'
@@ -53,6 +61,14 @@ on:
       - 'platform_core/rknn_runtime.py'
       - 'platform_core/service_nodes.py'
       - 'platform_core/conversion.py'
+      - 'platform_core/sophon_runtime.py'
+      - 'platform_core/remote_conversion_runtime.py'
+      - 'remote_deploy_server.py'
+      - 'tests/unit/test_sophon_conversion.py'
+      - 'tests/unit/test_sophon_remote_durable.py'
+      - 'tests/unit/test_remote_conversion_transport.py'
+      - 'tests/api/test_sophon_remote_admission.py'
+      - 'tests/hardware/test_vendor_conversion.py'
       - 'static/app.js'
       - 'static/styles.css'
       - 'static/index.html'
@@ -170,6 +186,10 @@ jobs:
           tests/unit/test_remote_execution_transport.py
           tests/unit/test_conversion_tasks.py
           tests/unit/test_model_artifacts.py
+          tests/unit/test_sophon_conversion.py
+          tests/unit/test_sophon_remote_durable.py
+          tests/unit/test_remote_conversion_transport.py
+          tests/api/test_sophon_remote_admission.py
       - name: Portable creation and result commit contracts
         run: >-
           python -m pytest -q
@@ -179,6 +199,10 @@ jobs:
           tests/unit/test_remote_execution_transport.py
           tests/unit/test_conversion_tasks.py
           tests/unit/test_model_artifacts.py
+          tests/unit/test_sophon_conversion.py
+          tests/unit/test_sophon_remote_durable.py
+          tests/unit/test_remote_conversion_transport.py
+          tests/api/test_sophon_remote_admission.py
       - name: Permanent Remote Conversion guards
         shell: bash
         run: |
@@ -239,7 +263,9 @@ jobs:
           grep -Fq 'runners["MODEL_CONVERSION"] = AgentConversionRunner' node_agent.py
           grep -Fq 'mode: Literal["local", "remote", "agent"] = "local"' app.py
           grep -Fq 'def _detect_agent_deploy_resource' app.py
-          grep -Fq '"execution_mode": "agent" if resource_mode == "agent" else "local"' app.py
+          grep -Fq '"execution_mode": resource_mode' app.py
+          grep -Fq 'if resource_mode=="remote" and conversion_target != "sophon":' app.py
+          grep -Fq 'request_payload["remote_connection"]' app.py
           grep -Fq '("agent.remote",)' app.py
           grep -Fq 'def _commit_conversion_result' platform_core/remote_execution_transport.py
           grep -Fq 'conversion_artifact_committed' platform_core/remote_execution_transport.py
@@ -287,10 +313,10 @@ jobs:
           boto3 oss2 cryptography pydantic
       - name: Install frontend dependencies
         run: npm ci
-      - name: Real Chrome model and RKNN Agent resource flow
+      - name: Real Chrome model and RKNN Agent and Sophon resource flow
         run: >-
           npx playwright test tests/browser/model-and-conversion.spec.mjs
-          --grep "deployment resource editor exposes service-node Agent for RKNN|RKNN Agent INT8 conversion submits frozen calibration selection from the UI"
+          --grep "deployment resource editor exposes service-node Agent for RKNN|RKNN Agent INT8 conversion submits frozen calibration selection from the UI|Sophon submits explicit rectangular FP16 parameters and keeps BMODEL hardware validation pending"
           &&
           npx playwright test tests/browser/deployment-progress-performance.spec.mjs
           &&

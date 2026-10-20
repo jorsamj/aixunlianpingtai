@@ -4,6 +4,9 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 
+SUPPORTED_SOPHON_CHIPS = frozenset({"bm1684x", "bm1688"})
+
+
 SUPPORTED_ROCKCHIP_CHIPS = frozenset({"rk3568", "rk3576"})
 
 
@@ -35,6 +38,20 @@ def file_record(path: Path, *, relative_to: Path | None = None) -> dict[str, Any
 
 
 
+def conversion_input_shape(params: Mapping[str, Any]) -> tuple[int, int]:
+    """Return exact NCHW spatial dimensions; a partial explicit pair is invalid."""
+    h, w = params.get("input_height"), params.get("input_width")
+    if h is None and w is None:
+        value = params.get("input_size", 640)
+        h, w = value if isinstance(value, (list, tuple)) and len(value) == 2 else (value, value)
+    if any(type(v) not in (int, str) or not str(v).isdigit() for v in (h, w)):
+        raise ValueError("输入宽高必须为完整的整数尺寸")
+    h, w = int(h), int(w)
+    if not all(32 <= v <= 8192 and v % 32 == 0 for v in (h, w)):
+        raise ValueError("输入宽高必须为32的倍数，范围32到8192")
+    return h, w
+
+
 def derive_version_conversion_defaults(
     version: Mapping[str, Any],
     training_job: Mapping[str, Any] | None = None,
@@ -58,6 +75,10 @@ def derive_version_conversion_defaults(
         ("训练版本请求参数", requested.get("imgsz")),
     ):
         try:
+            if isinstance(raw, (list, tuple)) and len(raw) == 2:
+                height, width = conversion_input_shape({"input_size": raw})
+                size, size_source = [height, width], label
+                break
             candidate = int(raw)
             if 32 <= candidate <= 4096:
                 size, size_source = candidate, label
@@ -80,6 +101,8 @@ def derive_version_conversion_defaults(
 
     return {
         "input_size": size,
+        "input_height": size[0] if isinstance(size, list) else size,
+        "input_width": size[1] if isinstance(size, list) else size,
         "training_precision": precision,
         "input_size_source": size_source,
         "precision_source": precision_source,
@@ -96,6 +119,42 @@ def validate_target(kind: str, params: Mapping[str, Any]) -> dict[str, Any]:
         if chip not in SUPPORTED_ROCKCHIP_CHIPS:
             raise ValueError("当前产品瑞芯微转换只支持 rk3568 或 rk3576")
         values.update({"kind": "rockchip", "chip": chip, "precision": precision})
+    elif target == "sophon":
+        chip = str(values.get("chip") or "").strip().lower()
+        if chip not in SUPPORTED_SOPHON_CHIPS:
+            raise ValueError("Sophon必须明确选择bm1684x或bm1688，不使用默认芯片")
+        if precision != "fp16":
+            raise ValueError("Sophon首期仅开放FP16；INT8须完成冻结校准与质量验收后启用")
+        for field in ("batch", "num_core"):
+            if type(values.get(field, 1)) not in (int, str) or str(values.get(field, 1)) != "1":
+                raise ValueError(f"Sophon首期{field}必须为1")
+        if values.get("dynamic") not in (None, False):
+            raise ValueError("Sophon首期仅支持静态输入")
+        height, width = conversion_input_shape(values)
+        preprocessing = dict(values.get("preprocessing") or {})
+        if preprocessing.get("owner", "caller") != "caller":
+            raise ValueError("Sophon首期预处理由caller执行，不重复融合到ONNX或BMODEL")
+        pixel = str(preprocessing.get("pixel_format", values.get("pixel_format", "rgb"))).lower()
+        if pixel not in {"rgb", "bgr"}:
+            raise ValueError("Sophon pixel_format必须为rgb或bgr")
+        import math
+        for key, default in (("mean", [0.0]*3), ("scale", [1.0/255]*3)):
+            raw = preprocessing.get(key, values.get(key, default))
+            raw = raw.split(",") if isinstance(raw, str) else raw
+            try:
+                if len(raw) != 3 or any(isinstance(v, bool) or not math.isfinite(float(v)) for v in raw):
+                    raise ValueError()
+                preprocessing[key] = [float(v) for v in raw]
+            except (TypeError, ValueError, OverflowError):
+                raise ValueError(f"Sophon {key}必须包含3个有限数值")
+        letterbox = preprocessing.get("letterbox", values.get("keep_aspect_ratio", True))
+        if type(letterbox) is not bool:
+            raise ValueError("Sophon letterbox必须为布尔值")
+        preprocessing.update(owner="caller", pixel_format=pixel, letterbox=letterbox,
+                             pad_value=114, channel_format="nchw", nms="external", fuse_preprocess=False)
+        values.update(kind="sophon", chip=chip, precision=precision, batch=1, num_core=1,
+                      dynamic=False, input_height=height, input_width=width, preprocessing=preprocessing,
+                      opset=12, simplify=False)
     elif target in {"ascend", "atlas"}:
         soc = str(values.get("soc_version") or "").strip()
         if not soc:
