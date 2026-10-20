@@ -79,7 +79,7 @@ jobs:
         with:
           node-version: '22'
       - name: Install focused Python dependencies
-        run: python -m pip install --disable-pip-version-check pytest fastapi requests filelock keyring psutil
+        run: python -m pip install --disable-pip-version-check pytest fastapi httpx2 requests filelock keyring psutil
       - name: Backend external-publish and model-asset contracts
         run: |
           PYTHONPATH=. pytest -q --confcutdir=tests/unit \
@@ -443,7 +443,7 @@ jobs:
         run: npx playwright test tests/browser/external-algorithm-publish.spec.mjs
       - name: Browser permanent guards
         run: |
-          grep -Fq "changlian manual publish preflight blocks stale version analysis before POST" tests/browser/external-algorithm-publish.spec.mjs
-          grep -Fq "identity_ready: false" tests/browser/external-algorithm-publish.spec.mjs
+          grep -Fq "changlian publish respects core identity and optional metadata:" tests/browser/external-algorithm-publish.spec.mjs
+          grep -Fq "identity_ready: reason==='optional'" tests/browser/external-algorithm-publish.spec.mjs
           grep -Fq "publishWrites).toBe(0)" tests/browser/external-algorithm-publish.spec.mjs
           python -m platform_core.build_identity --check-version-file VERSION.txt

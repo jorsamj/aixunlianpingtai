@@ -44,3 +44,8 @@
 提交后最终完整SHA、全部实际触发Actions/分页Checks与关键Job结果将记录在独立验收附件：C:/Users/jorsam/.codex/visualizations/2026/10/20/01a156ca-1ca0-7b70-8497-bd255da4345e/weight-metadata-acceptance-20261020.md，不能借用93c56659的绿色。
 
 未运行无关本地全仓库测试，遵循用户“禁止测试发散”。真实新畅联对可选字段的业务响应、生产旧Weight/历史模型来源、OSS/S3长期地址与目标硬件加载仍待单独现场验证。现有成功转换/硬件待验证状态未改；发布登记成功不代表实机验证通过。
+
+## 首次SHA CI修正
+
+- 首次SHA 6f83076f的CI发现精简Job缺TestClient依赖、浏览器文本守卫未适配参数化；仅补httpx2及更新守卫匹配，保留核心身份零POST断言与全部实际测试。最终SHA重新验收。
+External Publish实际Chrome 3 passed；失败发生在后置文本守卫。SQL发布合同108 passed/1依赖导入失败，Publish合同199 passed/1相同依赖导入失败；没有删除测试或降低断言。

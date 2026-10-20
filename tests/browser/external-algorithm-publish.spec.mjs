@@ -133,7 +133,10 @@ for(const reason of ['identity','optional']) test(`changlian publish respects co
 
   await expect.poll(() => statusReads).toBe(reason==='identity'?1:2);
   await expect.poll(() => publishWrites).toBe(reason==='identity'?0:1);
-  if(reason==='identity')await expect(page.getByText(/分析方式已失效/)).toBeVisible();
+  if(reason==='identity'){
+    await expect.poll(() => publishWrites).toBe(0);
+    await expect(page.getByText(/分析方式已失效/)).toBeVisible();
+  }
   else{
     await expect(page.locator('#toast')).toContainText('模型版本和转换产物已同步到新畅联');
   }

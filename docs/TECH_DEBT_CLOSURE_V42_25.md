@@ -1,5 +1,6 @@
 ## 2026-10-20｜权重补充元数据发布（最终合同：可选、非阻断）
 
+- 首次SHA 6f83076f的CI发现精简Job缺TestClient依赖、浏览器文本守卫未适配参数化；仅补httpx2及更新守卫匹配，保留核心身份零POST断言与全部实际测试。最终SHA重新验收。
 - 基线93c56659，复用ExternalPublicationRepository / ModelArtifact / 原发布与转换通知Owner。六扩展字段可信则传、未知省略，tags未知不发[]；缺失不阻断交付、不改转换成功状态。
 - 原ID edit补齐与确认payload回执、UNKNOWN写入只读恢复、矩形尺寸及冻结标签解析、原版本行内联事实/真实错误展示。无第二队列/数据库/轮询/弹窗Owner；不操作生产。
 - 聚焦Python三文件194 passed、Node三文件41 passed、Chrome单规格3 passed，末次schema/存量19 passed。原始RED/失败及纠偏记录见 docs/WEIGHT_METADATA_ACCEPTANCE_2026_10_20.md。
