@@ -7,6 +7,7 @@
 - B：Node修改旧错误别名期望并新增单菜单/独立Owner/恢复合同，17通过2失败；Chrome原动态字典用例改为菜单点击，真实在“部署资源”按钮缺失处超时失败（deploy-nav-red.log、deploy-nav-chrome-red-corrected.log）。未删除/跳过/减弱断言。
 - C：仅补原正式菜单（展开高级功能后的现有配置项组）、原canonicalWindowPageRenderers中的renderDeployResources、启动白名单与恢复条件、导航别名；模型配置仍指向renderModelConfigPageV35，部署插件旧别名不变。无第二页面/轮询/包装。
 - D：浏览器使用隔离本地字典API，保留原BM1684矩形F32提交断言并补普通菜单打开、BM1684/BM1684X显示、UI新增厂商/芯片RK3568、真实GET/PUT保存、刷新恢复、模型配置返回、保存后转换字典选项。SDK/资源接口夹具只验证UI合同，不冒充SDK或生产验证。最终Node导航/恢复/版本4文件29通过；Chrome限定3项通过（原模型配置、正式字典导航及原页面Owner用例；部署资源从旧别名升为正式页面并保留具体renderer断言），字典/API限定8通过18未选中；0失败0跳过。BM1684X/BM1684/RK3568显示，新增RK3568可选，原BM1684 F32矩形提交断言保留。首次浏览器夹具重复厂商ID被后端拒绝，修正夹具后通过，未改后端校验。日志deploy-nav-node-final.log、deploy-nav-chrome-final.log、deploy-nav-python-final.log均在本机.codex/tmp。
+- CI补验：CI首提交2df5d413的frontend Job实际1031通过/2失败：render-owner-retirement仍将部署资源列为退役且固定旧菜单；按本轮明确产品合同改为唯一正式Owner/包含部署资源菜单，其余退役页面保护保留。两条定向用例GREEN（39条未选中，未修改skip）；日志deploy-nav-ci-contract-fix.log。正式版本仍361，不重复递增。
 - E：提交前fetch确认远端仍为上述基线；VERSION以最新42.24.360一次递增42.24.361，后端/health/app-info/OpenAPI/远程服务共七入口均为361；前端从bootstrap读正式版本，必要app408/main409/nav422518缓存更新，styles407不变。语法与git diff --check通过；限定只读代码审查确认canonical Owner/启动桥接/缓存一致，无可操作问题。完整最终SHA/CI保存独立附件deployment-catalog-navigation-ci-final-20261020.json（此前各轮附件同visualizations目录），下一受验证提交归档，避免自引用另造未验收HEAD。
 - F：未连接或修改生产数据库/厂商芯片字典/OSS/新畅联Weight，未部署/重启/重转换。现场已有三芯片实际记录显示仍需用户部署后只读核验，不能用隔离测试宣称已读取生产字典。
 
