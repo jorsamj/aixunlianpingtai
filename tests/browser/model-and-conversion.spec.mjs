@@ -878,3 +878,32 @@ test('catalog server filters pages and safely replays an unknown save outcome',a
  await host.getByRole('button',{name:'+ 新增厂商',exact:true}).click();await form.locator('[name="name"]').fill('Retry once');await form.getByRole('button',{name:'保存厂商'}).click();await expect(form.getByRole('alert')).toContainText('名称已存在');await expect(form.locator('[name="name"]')).toBeEnabled();await form.getByRole('button',{name:'取消',exact:true}).click();
  await expect(page.locator('body')).not.toContainText('动作未注册');
 });
+
+
+test('catalog missing historical job permits ordinary editing while identity and delete stay protected',async({page,request},testInfo)=>{
+  await page.unroute('**/api/v39/deploy/catalog');
+  const project=await (await request.post('/api/projects',{data:{name:'历史引用编辑-'+Date.now(),labels:[]}})).json();await selectIsolatedTestProject(page,project.id);
+  const catalog=await (await request.get('/api/v39/deploy/catalog')).json();
+  const created=await (await request.post('/api/v39/deploy/catalog/operations',{data:{entity:'vendors',action:'create',operation_id:'missing-ref-'+Date.now(),expected_revision:catalog.revision,record:{name:'00 Missing job vendor',template_id:'rknn'}}})).json();
+  const id=created.id;let reads=0;const writes=[];
+  // Isolated UI projection from the separately tested real missing-file API contract.
+  await page.route(`**/api/v39/deploy/catalog/records/vendors/${id}`,async route=>{
+    reads++;const response=await route.fetch(),body=await response.json();
+    await route.fulfill({json:{...body,references:{check_status:'UNVERIFIED',can_delete:false,reference_count:null,references:[],diagnostic:{code:'CATALOG_REFERENCE_CHECK_FAILED',message:'历史引用未核验',detail:'TASK_JOB_MISSING_CONTRACT_INCOMPLETE: /projects/p/deployment/jobs/old/job.json',solution:'请管理员核验历史任务证据'}}}});
+  });
+  page.on('request',r=>{if(r.url().endsWith('/catalog/operations')&&r.method()==='POST')writes.push(r.postDataJSON())});
+  await page.goto('/');await expect.poll(()=>page.evaluate(()=>state.uiReady===true)).toBe(true);
+  const nav=page.locator('#nav');if(await nav.getByRole('button',{name:'展开高级功能',exact:true}).count())await nav.getByRole('button',{name:'展开高级功能',exact:true}).click();await nav.getByRole('button',{name:/部署资源/}).click();
+  const host=page.locator('#conversion-catalog-host'),row=host.locator(`[data-catalog-vendor="${id}"]`),form=page.locator('[data-catalog-dialog]');
+  await row.getByRole('button',{name:'编辑',exact:true}).click();await expect(form.locator('[name="name"]')).toBeEditable();await expect(form.locator('[name="template_id"]')).toBeDisabled();
+  await expect(form).toContainText('历史引用未核验');await expect(form).toContainText('普通编辑可用');await expect(form).toContainText('删除和改挂暂不可用');
+  expect((await form.boundingBox()).width).toBeLessThan(900);
+  await page.screenshot({path:testInfo.outputPath('catalog-missing-job-edit.png'),fullPage:false});
+  await form.locator('[name="name"]').fill('00 Renamed despite missing job');await form.getByRole('button',{name:'保存厂商',exact:true}).click();await expect(form).toHaveCount(0);await expect(row).toContainText('00 Renamed despite missing job');
+  await row.getByRole('button',{name:'停用',exact:true}).click();await expect(row).toContainText('已停用');await row.getByRole('button',{name:'启用',exact:true}).click();await expect(row).toContainText('已启用');
+  await row.getByRole('button',{name:'删除',exact:true}).click();await expect(form).toContainText('历史引用未核验');await expect(form.getByRole('button',{name:'确认删除',exact:true})).toHaveCount(0);await form.getByRole('button',{name:'取消',exact:true}).click();
+  expect(writes.map(x=>x.action)).toEqual(['update','disable','enable']);expect(reads).toBe(4);
+  await nav.getByRole('button',{name:/模型配置/}).click();await nav.getByRole('button',{name:/部署资源/}).click();await expect(row).toContainText('00 Renamed despite missing job');
+  await page.reload();await expect(row).toContainText('00 Renamed despite missing job');await expect(row).toContainText('已启用');
+  const saved=await (await request.get('/api/v39/deploy/catalog')).json();expect(saved.vendors.find(v=>v.id===id)).toMatchObject({name:'00 Renamed despite missing job',template_id:'rknn',enabled:true});
+});

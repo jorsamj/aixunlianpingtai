@@ -465,14 +465,20 @@ class ModelArtifactRepository:
             database.commit()
             return result
 
-    def conversion_catalog_references(self, entity, identity):
+    def conversion_catalog_references(self, entity, identity, *, diagnostic=False):
         from .conversion_catalog_references import catalog_references
         if entity not in {"vendors","chips"}: raise PlatformError("CATALOG_INVALID_REQUEST","字典类型非法",entity,status_code=422)
         with conversion_catalog_fence(self.root.parent):
             catalog=self.conversion_catalog()
             row=next((r for r in catalog[entity] if r["id"]==identity),None)
             if not row: raise PlatformError("CATALOG_NOT_FOUND","记录不存在",identity,status_code=404)
-            return {"entity":entity,"id":identity,"revision":catalog["revision"],**catalog_references(self.root.parent,catalog,entity,row)}
+            try:
+                references=catalog_references(self.root.parent,catalog,entity,row)
+            except PlatformError as error:
+                if not diagnostic or error.code!="CATALOG_REFERENCE_CHECK_FAILED":raise
+                references={"check_status":"UNVERIFIED","can_delete":False,"reference_count":None,"references":[],
+                    "diagnostic":{"code":error.code,"message":error.message,"detail":error.detail,"solution":error.solution}}
+            return {"entity":entity,"id":identity,"revision":catalog["revision"],**({"record":dict(row)} if diagnostic else {}),**references}
 
     def conversion_catalog_operation(self, operation_id):
         self.conversion_catalog()

@@ -1,3 +1,7 @@
+## 2026-10-21｜字典普通编辑与历史引用校验分离（限定验收完成 / 待最终SHA CI）
+
+最新8d74588d95ffa3549f0769431d92072dfa1300cc/VERSION364已fetch/pull干净；无可见同仓库其他活动开发，其他工作树不动。前轮Weight22/57绿色回执已核验归档，不代表本轮。生产缺失job证据、完整需求、最小方案与定向TDD计划见docs/DYNAMIC_CONVERSION_CATALOG_ACCEPTANCE_2026_10_20.md顶部。普通名称/启停不依赖历史扫描；详情返回真实诊断，不允许can_delete假成功；删除/改挂严格fail closed，只可信任务合同/同项目任务路径可恢复。限定本次Python/API/Node/Chrome，版本最终基线一次递增，生产数据/文件/OSS/Weight/重启/部署均禁止。原scanner/Repo/API/UI已最小修复；原严格删除/改挂保护保留，可信任务身份与matcher一致后才恢复，普通短表单可用/诊断折叠，toggle异步归属已修正。Python分批51及受后续改动影响37/4通过、Node9后短表单7、Chrome既有3+新场景1通过；完整RED/质量审查及夹具排序复测见专项。正式VERSION365一次递增，main412/字典模块2、8版本投影一致；最终实际SHA CI待推送核验。
+
 ## 2026-10-20｜Weight自动覆盖发布（A-D限定验收完成 / E待最终SHA CI）
 
 最新b74834c4a8d87090aad64876df50bbf548f2bdac/VERSION363已fetch/pull干净；其他同项目会话未活动、原WIP不动。用户已正式取消常规人工审核：每版本/芯片一个Weight，可信任务完成时间确定最新有效成果，完整性与OSS成功后原ID edit/唯一首次add，全部写后查询确认；本地多SHA和历史审计保留。真实官方edit/detail/list OpenAPI已通过下载入口解析，包含filePath/computePlatformId/chipCode和可选元数据；生产写接口未调用。

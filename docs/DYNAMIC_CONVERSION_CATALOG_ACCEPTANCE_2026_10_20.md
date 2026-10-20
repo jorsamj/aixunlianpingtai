@@ -1,3 +1,33 @@
+## 2026-10-21｜历史job.json缺失不阻断普通编辑（限定实现与验收完成 / 待最终SHA CI）
+
+基线8d74588d95ffa3549f0769431d92072dfa1300cc/VERSION42.24.364，已fetch/prune及pull --ff-only，工作树干净；可见同仓库无其他活动开发，不动其他工作树。前轮Weight最终22/22 Actions、57/57 Checks回执已核验归档（weight-auto-replacement-ci-final-20261020.json），不作为本轮验收。
+
+真实生产证据：部署资源→厂商与芯片管理编辑时报CATALOG_REFERENCE_CHECK_FAILED，缺失/data/platform-data/projects/f1fb1e6fa373/deployment/jobs/c21c69e8af28/job.json。本轮只读代码确认详情GET无条件引用扫描，open/toggle都先请求详情，任何历史Durable文件缺失使所有表单打不开；mutate原本只对delete/identity rebind扫描，普通名称/启停无此门槛，属于前后端合同不一致。
+
+用户完整要求：普通编辑改名启停可用；详情以诊断表示未核验，不得伪造can_delete=true；删除/厂商模板/芯片身份改挂仍需完整引用证据；区分路径迁移、合同残缺、真缺失及其他存储异常。可信Durable Task/ArtifactStore合同可恢复引用，不伪造job、不删任务/模型、不改历史。原Repo/Owner/API/存储复用，无平行扫描/轮询/包装层。UI把诊断与表单分开，明确普通编辑可用、删除改挂暂不可用；处理open/toggle异步归属、单次事件/请求、幂等及错误反馈。只测本次Python/API、Node和必要Chrome，不扩训练素材清洗、不增CI/跳过/降低断言。最终更新文档/正式VERSION必要缓存、普通推送长期分支并验收实际SHA；无生产写入/重启/部署。
+
+最小架构方案：原严格catalog_references继续是危险操作唯一证据源；原Repo引用读取增加diagnostic模式，仅详情使用，失败返回UNVERIFIED/can_delete=false/reference_count=null/原诊断，严格调用仍抛错误。原扫描仅在可信任务合同完整或同项目同任务迁移文件精确可核对时恢复；无法确认一律fail closed。原open正常显示短表单和折叠诊断，身份字段/删除不可用；原toggle使用所属请求回传的表单，失败/迟到响应不得操作别的草稿。原Repo在同一字典fence返回详情原记录和引用/revision快照，API仅补展示字段，原POST继续事务/并发/幂等保护。
+
+实施计划（writing-plans，按用户指定维护现有专项，不另建重复方案Owner）：
+- [x] A/TDD：新增缺job详情可诊断、名称/启停成功、删除/改挂拒绝、可信payload恢复、迁移路径及坏文件/越界/存储异常回归，先观察真实RED；Node补toggle/open归属及诊断控件；Chrome精准一个缺证据正常编辑流程。
+- [x] B：最小修复原扫描/Repo/详情API/原UI，保持安全断言，不假造引用不存在，不嵌套弹窗、不新增事件/轮询。审查完整证据/单次请求/迟到响应及历史无损。
+- [x] C：只运行直接受影响限定测试，真实Chrome核验；通过且未受新改动不重跑；记录RED→GREEN/质量审查/未实测。
+- [ ] D：最终fetch核对，无覆盖/强推；以最终VERSION一次递增，前后端正式标识同源/必要缓存；更新接续文档，安全提交推送后实际SHA既有CI核验。回执catalog-reference-edit-ci-final-20261021.json存原visualizations附件目录，不借用历史CI。
+
+### 本轮实现、真实验收与质量审查
+
+- 原ModelArtifactRepository.conversion_catalog_references新增仅详情使用的diagnostic模式，同fence返回原记录/revision与引用快照；只把CATALOG_REFERENCE_CHECK_FAILED投影为UNVERIFIED/can_delete=false/reference_count=null/原code/detail/solution。严格调用和mutate的delete/rebind校验保持抛错；普通名称/启停原事务路径无需完整扫描。原详情GET复用此方法，不再让引用证据缺失变成整页请求失败；原非法类型/404合同保留，展示补全不改变原记录与revision事实。
+- 原scanner复用TaskRepository SQLite只读游标和ArtifactStore路径合同，完整身份验证直接复用原_nodes作用域及共享SDK字段清单，要求本地ID存在、厂商/芯片归属/Adapter/SDK及跨快照一致，且实际matcher作用域可识别身份。空Adapter不算已知目标；没有job_dir也必须完整可信。未知或冲突不返回虚假无引用。
+- job_dir只解析同项目同任务ID的原deployment/jobs与deploy/jobs；数据根目录迁移和命名空间迁移须实际文件id/项目及相同合同验证，限制解析后仍在同项目目录。仅FileNotFoundError允许查迁移位置或用完整Durable payload恢复；坏JSON、权限和其他存储异常不fallback。无依据缺失为TASK_JOB_MISSING_CONTRACT_INCOMPLETE，迁移为TASK_JOB_PATH_MIGRATED，可信合同恢复为TASK_JOB_MISSING_CONTRACT_RECOVERED；诊断最多50项，扫描仍覆盖全部任务，无伪造/删除job或任务操作。
+- 原UI Owner显示普通宽度短表单，诊断在独立提示区默认折叠，名称与启用可编辑，未核验时模板/SDK身份锁定、无物理删除确认按钮，停用仍可用。open返回所属form实例，toggle只使用该实例；请求ticket/epoch/项目与厂商归属阻止迟到结果影响新页面。离开/切厂商释放opening归属，旧finally不能清除新请求；原监听器AbortController/操作ID/未知结果重放保留，无新事件Owner/观察器/轮询或嵌套弹窗。
+- 真实RED：Python初始6失败；Node诊断/旧opening2失败及toggle误操作另1失败；Chrome缺诊断1失败。审查身份遗漏RED6、跨snapshot1、root/metadata/split作用域4、nested1、matcher/迁移2、无job_dir2均先复现后修复。没有删除/skip/削弱安全断言，既有缺文件严格校验测试仍保留。
+- Python限定两个原字典模块51通过（catalog-reference-python-final.log）；随后仅受后续证据修正影响的引用/危险操作/API范围37通过（catalog-reference-contract-final.log），无job_dir分支及直接依赖4通过（catalog-reference-no-jobdir-green.log），分批重叠不累计为总数。不运行全仓库或无关训练/素材/清洗测试，不重复未受新改动影响的通过项。
+- Node原字典Owner/生命周期9通过；短表单修改后直接编辑文件7通过（catalog-reference-node-final.log），未改接线的2项保持前批证据；版本必要缓存断言1通过/8未选中。Chrome既有CRUD/迟到保存/未知结果幂等3通过；新增缺引用流程1通过，覆盖单次GET/POST、名称/启停、禁止删除、刷新/返回/SDK身份保持。合并运行时新fixture改名排序后移出首页，改用稳定排序前缀后仅该用例复验1通过（catalog-reference-chrome-recheck.log），其他3项不重跑；原断言完整保留。真实Chrome截图已查看，普通宽度760px，提示/技术诊断与表单分离，无整页错误或长技术栈。
+- 静态review按requesting-code-review执行，只读审查发现并闭合跨snapshot身份与matcher作用域遗漏；最终复审未见新必修风险。实际排查无新增Repo/扫描Owner/任务执行器、wrapper链、重复绑定、循环渲染、重复请求或生产数据写路径。未清理无关模块，修改仅原scanner/Repo/详情API/字典UI及直接测试、版本缓存/文档，共15文件。
+- 正式版本在提交前fetch确认远端仍8d74588d/VERSION364，按既有规范一次递增42.24.365；8个正式投影一致（隔离数据源/SDK依赖，无真实检测），前端可见版本仍读后端。main缓存412、字典模块2；app411/styles409与Weight发布缓存不动。最终再fetch核对/普通FF推送，既有CI不扩触发、不增大型工作流，最终实际SHA和Checks/关键Jobs回执见catalog-reference-edit-ci-final-20261021.json（原visualizations附件目录），不借用前轮绿色。
+
+仍未验证：生产任务payload/实际迁移路径和job是否真正丢失；本轮不连接生产、不写数据库/OSS/Weight，不恢复或删除生产文件，不部署。诊断修复不能冒充生产数据已补齐。
+
 ## 2026-10-20｜厂商与芯片完整CRUD及质量治理（A-D限定验收通过 / E待最终SHA CI）
 
 基线ed946c9b43ba7c5e014c60076d5539b6cbdf20b8 / VERSION42.24.362；已fetch/prune及pull --ff-only，干净且唯一同仓库活动会话。前轮40/40 Actions、112/112 Checks、Node1037/Chrome112绿色回执已核验归档，仅为历史。本轮升级上次简化需求，不再把短弹窗视为完整管理。

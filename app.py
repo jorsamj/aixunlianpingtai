@@ -18223,15 +18223,15 @@ def v39_catalog_records(entity: str="vendors", query: str="", vendor_id: str="",
 @app.get("/api/v39/deploy/catalog/records/{entity}/{identity}")
 def v39_catalog_record(entity: str, identity: str):
     from platform_core.compute_platform_catalog import conversion_catalog_records, conversion_catalog_metadata
-    repository=_conversion_catalog_repository(DATA_DIR)
-    catalog=repository.conversion_catalog()
     if entity not in {"vendors","chips"}: raise PlatformError("CATALOG_INVALID_QUERY","字典类型非法",entity,status_code=422)
-    row=next((r for r in catalog[entity] if r["id"]==identity),None)
-    if not row: raise PlatformError("CATALOG_NOT_FOUND","记录不存在",identity,status_code=404)
+    repository=_conversion_catalog_repository(DATA_DIR)
+    references=repository.conversion_catalog_references(entity,identity,diagnostic=True)
+    row=references.pop("record")
+    catalog=repository.conversion_catalog()
     rows=conversion_catalog_records({**catalog,entity:[row]},entity=entity)["items"]
     item=rows[0]
     if entity=="chips": item["capability"]=conversion_catalog_metadata({**catalog,"chips":[row]},resources=v39_list_deploy_resources()["items"])["chip_capabilities"][identity]
-    return {"ok":True,"item":item,"revision":catalog["revision"],"references":repository.conversion_catalog_references(entity,identity)}
+    return {"ok":True,"item":item,"revision":references["revision"],"references":references}
 
 
 @app.post("/api/v39/deploy/catalog/operations")

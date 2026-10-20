@@ -182,3 +182,26 @@ def test_chip_detection_reuses_resource_owner_once_and_keeps_each_sdk_fact(tmp_p
     resources.clear()
     with pytest.raises(PlatformError) as error: api.v39_catalog_detect_chip("chip-84",{})
     assert error.value.code=="CATALOG_RESOURCE_UNAVAILABLE"
+
+
+def test_missing_job_record_http_allows_rename_and_toggle_but_never_identity_or_delete(tmp_path,monkeypatch):
+    from fastapi.testclient import TestClient
+    from platform_core.model_artifacts import ModelArtifactRepository
+    from tests.unit.test_conversion_catalog_crud import seed,missing_job_task
+    monkeypatch.setattr(api,"DATA_DIR",tmp_path);monkeypatch.setattr(api,"v39_list_deploy_resources",lambda:{"items":[]})
+    repo=ModelArtifactRepository(tmp_path);vendor,chip=seed(repo);missing_job_task(tmp_path)
+    client=TestClient(api.app)
+    detail=client.get(f"/api/v39/deploy/catalog/records/vendors/{vendor['id']}")
+    assert detail.status_code==200 and detail.json()["references"]["can_delete"] is False
+    assert detail.json()["references"]["check_status"]=="UNVERIFIED"
+    for action,record in [("update",{"name":"Renamed vendor"}),("disable",{}),("enable",{})]:
+        body={"entity":"vendors","action":action,"id":vendor["id"],"operation_id":"missing-"+action,"expected_revision":repo.conversion_catalog()["revision"],"record":record}
+        saved=client.post('/api/v39/deploy/catalog/operations',json=body)
+        assert saved.status_code==200 and saved.json()["item"]["id"]==vendor["id"]
+        assert client.post('/api/v39/deploy/catalog/operations',json=body).json()["replayed"] is True
+    current=client.get(f"/api/v39/deploy/catalog/records/vendors/{vendor['id']}").json()
+    assert current["item"]["name"]=="Renamed vendor" and current["item"]["enabled"] is True
+    for action,record in [("delete",{}),("update",{"template_id":"rknn"})]:
+        denied=client.post('/api/v39/deploy/catalog/operations',json={"entity":"vendors","action":action,"id":vendor["id"],"operation_id":"danger-"+action,"expected_revision":repo.conversion_catalog()["revision"],"record":record,"confirm_delete":True})
+        assert denied.status_code==409 and denied.json()["code"]=="CATALOG_REFERENCE_CHECK_FAILED"
+    assert repo.conversion_catalog()["chips"][0]["id"]==chip["id"]

@@ -1,4 +1,4 @@
-import {installConversionCatalogRuntime} from './modules/conversion-catalog-runtime.js?v=1';
+import {installConversionCatalogRuntime} from './modules/conversion-catalog-runtime.js?v=2';
 import {renderPrisonNightInspectionPage} from './modules/prison-night-inspection-entry.mjs?v=20261010g';
 import {actionRegistry, invokeAction, registerAction} from './modules/actions.js?v=421800';
 import {installRowActionMenu} from './modules/row-action-menu.js?v=4226385';

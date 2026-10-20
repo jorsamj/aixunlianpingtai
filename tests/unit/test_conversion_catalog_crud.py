@@ -204,3 +204,151 @@ def test_legacy_version_without_ids_is_not_hidden_by_a_sibling_with_local_ids(tm
     path=tmp_path/"projects"/"p"/"algorithms.json";path.parent.mkdir(parents=True)
     path.write_text(json.dumps([{"versions":[{"target":"sophon","params":{"local_chip_id":chip["id"],"chip":"bm1684x"}},{"target":"sophon","params":{"chip":"bm1688"}}]}]))
     assert not repo.conversion_catalog_references("chips",old["id"])["can_delete"]
+
+
+def missing_job_task(root, payload=None, task_id="missing-task"):
+    from platform_core.task_runtime.repository import TaskRepository
+    from platform_core.task_runtime.models import TaskRecord,TaskKind
+    from platform_core.task_runtime.artifacts import ArtifactStore
+    job=root/"projects"/"p"/"deployment"/"jobs"/"missing-job"
+    store=ArtifactStore(root/"task_runtime"/"artifacts")
+    store.atomic_write_json(task_id,"request.json",{"job_dir":str(job),**(payload or {})})
+    TaskRepository(root/"task_runtime"/"tasks.sqlite3").create(TaskRecord.new(task_id,"p",TaskKind.MODEL_CONVERSION,"request.json","conversion"),artifacts=store)
+    return job
+
+
+def test_missing_job_details_diagnose_without_blocking_safe_edits_and_keep_dangerous_writes_closed(tmp_path):
+    repo=ModelArtifactRepository(tmp_path);vendor,chip=seed(repo);job=missing_job_task(tmp_path)
+    refs=repo.conversion_catalog_references("vendors",vendor["id"],diagnostic=True)
+    assert refs["check_status"]=="UNVERIFIED" and refs["can_delete"] is False and refs["reference_count"] is None
+    assert refs["diagnostic"]["code"]=="CATALOG_REFERENCE_CHECK_FAILED" and "missing-job" in refs["diagnostic"]["detail"]
+    for entity,identity in [("vendors",vendor["id"]),("chips",chip["id"])]:
+        mutate(repo,entity,"update",{"name":"Renamed "+entity},identity)
+        assert mutate(repo,entity,"disable",identity=identity)["item"]["enabled"] is False
+        assert mutate(repo,entity,"enable",identity=identity)["item"]["enabled"] is True
+        before=repo.conversion_catalog()
+        for action,record in [("delete",{}),("update",{"template_id":"rknn"} if entity=="vendors" else {"sdk_code":"bm1688"})]:
+            with pytest.raises(PlatformError) as error:mutate(repo,entity,action,record,identity,confirm_delete=True)
+            assert error.value.code=="CATALOG_REFERENCE_CHECK_FAILED" and repo.conversion_catalog()==before
+    assert not (job/"job.json").exists()
+
+
+@pytest.mark.parametrize("remote",[False,True])
+def test_missing_job_uses_existing_complete_durable_contract_without_fabricating_file(tmp_path,remote):
+    repo=ModelArtifactRepository(tmp_path);vendor,chip=seed(repo)
+    contract={"target":"sophon","params":{"local_vendor_id":vendor["id"],"local_chip_id":chip["id"],"chip":"bm1684x"}}
+    payload={"remote_execution":{"version":1,"task_kind":"MODEL_CONVERSION","transport":"object-storage-v1","conversion":{"schema_version":1,**contract}}} if remote else contract
+    job=missing_job_task(tmp_path,payload)
+    refs=repo.conversion_catalog_references("chips",chip["id"])
+    assert not refs["can_delete"] and any(r["id"]=="missing-task" for r in refs["references"])
+    assert refs["check_status"]=="RECOVERED" and refs["diagnostics"][0]["code"]=="TASK_JOB_MISSING_CONTRACT_RECOVERED"
+    other=mutate(repo,"chips","create",{"name":"BM1688","vendor_id":vendor["id"]})["item"]
+    assert repo.conversion_catalog_references("chips",other["id"])["can_delete"]
+    assert not (job/"job.json").exists()
+    with pytest.raises(PlatformError) as error:mutate(repo,"chips","delete",identity=chip["id"],confirm_delete=True)
+    assert error.value.code=="CATALOG_REFERENCED"
+
+
+@pytest.mark.parametrize("move",["namespace","data_root"])
+def test_durable_job_path_migration_requires_same_project_job_identity(tmp_path,move):
+    repo=ModelArtifactRepository(tmp_path);vendor,chip=seed(repo)
+    original=missing_job_task(tmp_path)
+    actual=tmp_path/"projects"/"p"/("deploy" if move=="namespace" else "deployment")/"jobs"/"missing-job"
+    actual.mkdir(parents=True);(actual/"job.json").write_text(json.dumps({"id":"missing-job","project_id":"p","target":"sophon","params":{"local_chip_id":chip["id"],"chip":"bm1684x"}}))
+    if move=="data_root":
+        from platform_core.task_runtime.artifacts import ArtifactStore
+        ArtifactStore(tmp_path/"task_runtime"/"artifacts").atomic_write_json("missing-task","request.json",{"job_dir":str(tmp_path.parent/"old-data"/"projects"/"p"/"deployment"/"jobs"/"missing-job")})
+    refs=repo.conversion_catalog_references("chips",chip["id"])
+    assert not refs["can_delete"] and refs["check_status"]=="RECOVERED"
+    assert any(d["code"]=="TASK_JOB_PATH_MIGRATED" for d in refs["diagnostics"])
+    (actual/"job.json").write_text(json.dumps({"id":"different-job","params":{"local_chip_id":chip["id"]}}))
+    if move=="namespace":
+        with pytest.raises(PlatformError):repo.conversion_catalog_references("chips",chip["id"])
+
+
+@pytest.mark.parametrize("failure",["malformed","permission","incomplete","foreign_project"])
+def test_durable_evidence_errors_do_not_become_safe_absence(tmp_path,monkeypatch,failure):
+    import platform_core.conversion_catalog_references as reference
+    repo=ModelArtifactRepository(tmp_path);vendor,chip=seed(repo)
+    job=missing_job_task(tmp_path,{"target":"sophon","params":{"chip":"bm1684x"}} if failure!="incomplete" else {"target":"sophon","params":{}})
+    if failure in {"malformed","permission"}:
+        job.mkdir(parents=True);(job/"job.json").write_text("{broken" if failure=="malformed" else '{}')
+        if failure=="permission":
+            original=reference._object
+            def denied(path):
+                if path==job/"job.json":raise PermissionError("isolated storage denied")
+                return original(path)
+            monkeypatch.setattr(reference,"_object",denied)
+    if failure=="foreign_project":
+        from platform_core.task_runtime.artifacts import ArtifactStore
+        ArtifactStore(tmp_path/"task_runtime"/"artifacts").atomic_write_json("missing-task","request.json",{"job_dir":str(tmp_path/"projects"/"other"/"deployment"/"jobs"/"missing-job")})
+    with pytest.raises(PlatformError) as error:repo.conversion_catalog_references("chips",chip["id"])
+    assert error.value.code=="CATALOG_REFERENCE_CHECK_FAILED"
+
+
+@pytest.mark.parametrize("conflict",["unknown_chip","wrong_chip_sdk","unknown_vendor","different_target","invalid_sdk_type","contradictory_sdk_fields"])
+def test_missing_job_never_proves_absence_from_unknown_or_conflicting_payload_identity(tmp_path,conflict):
+    repo=ModelArtifactRepository(tmp_path);vendor,chip=seed(repo)
+    params={"local_chip_id":chip["id"],"local_vendor_id":vendor["id"],"chip":"bm1684x"}
+    target="sophon"
+    if conflict=="unknown_chip":params["local_chip_id"]="no-such-chip"
+    if conflict=="wrong_chip_sdk":params["chip"]="bm1688"
+    if conflict=="unknown_vendor":params["local_vendor_id"]="no-such-vendor"
+    if conflict=="different_target":target="rockchip"
+    if conflict=="invalid_sdk_type":params["chip"]={"invalid":"bm1684x"}
+    if conflict=="contradictory_sdk_fields":params["soc_version"]="bm1688"
+    missing_job_task(tmp_path,{"target":target,"params":params})
+    before=repo.conversion_catalog()
+    for action,record in [("delete",{}),("update",{"sdk_code":"bm1688"})]:
+        with pytest.raises(PlatformError) as error:mutate(repo,"chips",action,record,chip["id"],confirm_delete=True)
+        assert error.value.code=="CATALOG_REFERENCE_CHECK_FAILED"
+    assert repo.conversion_catalog()==before
+    detail=repo.conversion_catalog_references("chips",chip["id"],diagnostic=True)
+    assert detail["can_delete"] is False and detail["check_status"]=="UNVERIFIED"
+
+
+def test_missing_job_cannot_mix_vendor_and_chip_identities_across_task_snapshots(tmp_path):
+    repo=ModelArtifactRepository(tmp_path);vendor,chip=seed(repo)
+    other=mutate(repo,"vendors","create",{"name":"Other Sophon","template_id":"tpu-mlir"})["item"]
+    payload={"target":"sophon","params":{"local_vendor_id":other["id"]},"remote_execution":{"version":1,"task_kind":"MODEL_CONVERSION","transport":"object-storage-v1","conversion":{"schema_version":1,"target":"sophon","params":{"local_chip_id":chip["id"],"chip":"bm1684x"}}}}
+    missing_job_task(tmp_path,payload)
+    with pytest.raises(PlatformError) as error:repo.conversion_catalog_references("chips",chip["id"])
+    assert error.value.code=="CATALOG_REFERENCE_CHECK_FAILED"
+
+
+@pytest.mark.parametrize("conflict",["root_identity","metadata_identity","nested_identity","split_sdk","split_target"])
+def test_missing_job_recovery_checks_all_existing_task_identity_scopes(tmp_path,conflict):
+    repo=ModelArtifactRepository(tmp_path);vendor,chip=seed(repo)
+    payload={"target":"sophon","params":{"chip":"bm1684x"}}
+    if conflict=="root_identity":payload["local_chip_id"]="unknown-root"
+    if conflict=="metadata_identity":payload["metadata"]={"local_chip_id":"unknown-metadata"}
+    if conflict=="nested_identity":payload["remote_execution"]={"metadata":{"local_chip_id":"unknown-nested","chip":"bm1688"}}
+    if conflict.startswith("split"):
+        payload={"params":{"local_chip_id":chip["id"]},"remote_execution":{"conversion":{"target":"rockchip" if conflict=="split_target" else "sophon","params":{"chip":"bm1688" if conflict=="split_sdk" else "bm1684x"}}}}
+    missing_job_task(tmp_path,payload)
+    with pytest.raises(PlatformError) as error:repo.conversion_catalog_references("chips",chip["id"])
+    assert error.value.code=="CATALOG_REFERENCE_CHECK_FAILED"
+
+
+def test_missing_job_separate_target_and_sdk_scopes_cannot_prove_absence(tmp_path):
+    repo=ModelArtifactRepository(tmp_path);vendor,chip=seed(repo)
+    missing_job_task(tmp_path,{"params":{"chip":"bm1684x"},"remote_execution":{"conversion":{"target":"sophon","params":{}}}})
+    with pytest.raises(PlatformError) as error:repo.conversion_catalog_references("chips",chip["id"])
+    assert error.value.code=="CATALOG_REFERENCE_CHECK_FAILED"
+
+
+def test_migrated_job_needs_consistent_reference_identity_not_just_matching_filename(tmp_path):
+    repo=ModelArtifactRepository(tmp_path);vendor,chip=seed(repo);missing_job_task(tmp_path)
+    actual=tmp_path/"projects"/"p"/"deploy"/"jobs"/"missing-job";actual.mkdir(parents=True)
+    (actual/"job.json").write_text(json.dumps({"id":"missing-job","target":"sophon","params":{"local_chip_id":"unknown-id","chip":"bm1684x"}}))
+    with pytest.raises(PlatformError) as error:repo.conversion_catalog_references("chips",chip["id"])
+    assert error.value.code=="CATALOG_REFERENCE_CHECK_FAILED"
+
+
+@pytest.mark.parametrize("payload",[{"target":"sophon","params":{}},{"target":"sophon","params":{"local_chip_id":"unknown-id","chip":"bm1684x"}}])
+def test_durable_task_without_job_dir_still_requires_a_complete_trusted_identity(tmp_path,payload):
+    from platform_core.task_runtime.artifacts import ArtifactStore
+    repo=ModelArtifactRepository(tmp_path);vendor,chip=seed(repo);missing_job_task(tmp_path)
+    ArtifactStore(tmp_path/"task_runtime"/"artifacts").atomic_write_json("missing-task","request.json",payload)
+    with pytest.raises(PlatformError) as error:repo.conversion_catalog_references("chips",chip["id"])
+    assert error.value.code=="CATALOG_REFERENCE_CHECK_FAILED"
