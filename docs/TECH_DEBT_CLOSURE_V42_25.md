@@ -1,3 +1,7 @@
+## 2026-10-20 字典管理UI/UX简化
+
+原字典modal Owner内列表/短表单/搜索/启停，完整草稿及原revision API；同modal原位刷新不叠层。compute_platform_catalog原兼容分支提取单一resolve_chip_capability供GET/PUT检测记录投影和转换准入，无独立探测/判定器。未知技术字段可空且严格阻断任务，历史身份不改挂，外部映射/Weight/转换执行不变。VERSION362、app409/styles408/main409；限定Python33/Node32/Chrome2及七版本入口通过，最终CI附件与完整需求证据见docs/DYNAMIC_CONVERSION_CATALOG_ACCEPTANCE_2026_10_20.md顶部。
+
 ## 2026-10-20 部署资源正式入口修复
 
 部署资源正式Owner为main canonicalWindowPageRenderers→已有renderDeployResources；模型配置仍为renderModelConfigPageV35。复用原高级导航/启动恢复/字典弹窗及/api/v39/deploy/catalog，无新页面、Owner、嵌套包装或后端更改。VERSION42.24.361，app408/main409/nav422518；限定验收与接续见docs/DYNAMIC_CONVERSION_CATALOG_ACCEPTANCE_2026_10_20.md顶部，最终CI单独归档。

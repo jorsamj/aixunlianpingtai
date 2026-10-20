@@ -201,3 +201,45 @@ def test_chip_constraints_are_version_bound_and_legacy_fp16_does_not_advertise_f
     r["sophon_probe"]["chip_capabilities"]["bm1688"]["precisions"]=["fp16","fp32"]
     legacy=resolve_conversion_contract(data,vendor_id="local-s",chip_id="chip-88",resource=r,version={},params={})
     assert legacy["ready"] and legacy["allowed_precisions"]==["fp16"]
+
+
+def test_unknown_chip_can_be_saved_without_inventing_sdk_and_never_passes_admission(tmp_path):
+    repo=ModelArtifactRepository(tmp_path)
+    data=catalog()
+    data["chips"].append({"id":"chip-pending","vendor_id":"local-s","name":"Unconfirmed 9000",
+                          "code":"pending-9000","sdk_code":"","constraint_id":"","enabled":True})
+    data["chips"].append({**data["chips"][-1],"id":"pending-second","code":"pending-second"})
+    saved=repo.save_conversion_catalog(data,expected_revision=0)
+    assert saved["chips"][-1]["sdk_code"]==saved["chips"][-1]["constraint_id"]==""
+    result=resolve_conversion_contract(saved,vendor_id="local-s",chip_id="chip-pending",resource=live(),version={},params={})
+    assert not result["ready"] and result["status"]=="pending_configuration"
+    assert "SDK" in result["errors"][0]
+
+
+def test_catalog_suggestions_and_detection_share_the_real_chip_contract():
+    from platform_core.compute_platform_catalog import conversion_catalog_metadata
+    data=catalog()
+    metadata=conversion_catalog_metadata(data,resources=[live()])
+    suggestions={(x["template_id"],x["name"]):x for x in metadata["chip_suggestions"]}
+    assert suggestions[("tpu-mlir","BM1684")]["constraint_id"]=="tpu-mlir-1.30.2"
+    assert suggestions[("tpu-mlir","BM1684X")]["sdk_code"]=="bm1684x"
+    assert suggestions[("rknn","RK3568")]["constraint_id"]=="rknn-verified"
+    assert ("tpu-mlir","Unconfirmed 9000") not in suggestions
+    capability=metadata["chip_capabilities"]["chip-84"]
+    assert capability["sdk_ready"] and capability["allowed_precisions"]==["fp32"]
+    missing=conversion_catalog_metadata(data,resources=[])["chip_capabilities"]["chip-84"]
+    assert not missing["sdk_ready"] and missing["status"]=="service_unavailable"
+    bad=live();bad["sophon_probe"]["version"]="v1.31.0"
+    blocked=conversion_catalog_metadata(data,resources=[bad])["chip_capabilities"]["chip-84"]
+    assert not blocked["sdk_ready"] and blocked["status"]=="pending_detection" and "SDK" in blocked["errors"][0]
+    data["chips"][0]["enabled"]=False
+    assert not conversion_catalog_metadata(data,resources=[live()])["chip_capabilities"]["chip-84"]["sdk_ready"]
+
+
+def test_existing_vendor_template_cannot_reinterpret_historical_chips(tmp_path):
+    repo=ModelArtifactRepository(tmp_path)
+    repo.save_conversion_catalog(catalog(),expected_revision=0)
+    data=catalog();data["vendors"][0]["template_id"]="rknn"
+    with pytest.raises(ValueError,match="身份|模板"):
+        repo.save_conversion_catalog(data,expected_revision=1)
+    assert repo.conversion_catalog()["vendors"][0]["template_id"]=="tpu-mlir"

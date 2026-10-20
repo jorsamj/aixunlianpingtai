@@ -6387,29 +6387,121 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
     return options;
   }
   let conversionContractTicket428=0;
+  let conversionCatalogSession428=0;
+  function newConversionCatalogId428(kind){
+    if(crypto.randomUUID)return kind+'-'+crypto.randomUUID();
+    const bytes=crypto.getRandomValues(new Uint8Array(16));bytes[6]=(bytes[6]&15)|64;bytes[8]=(bytes[8]&63)|128;
+    const hex=[...bytes].map(x=>x.toString(16).padStart(2,'0')).join('');
+    return kind+'-'+[hex.slice(0,8),hex.slice(8,12),hex.slice(12,16),hex.slice(16,20),hex.slice(20)].join('-');
+  }
+  function conversionCatalogSuggestion428(templateId,name){
+    const key=value=>String(value||'').trim().replace(/[\s_-]/g,'').toUpperCase();
+    return (state.convCatalogEditor?.chip_suggestions||[]).find(s=>s.template_id===templateId&&key(s.name)===key(name));
+  }
+  function conversionCatalogWithRecord428(kind,row){
+    const c=state.convCatalogEditor;
+    const records=c[kind].some(x=>x.id===row.id)?c[kind].map(x=>x.id===row.id?{...row}:x):[...c[kind],{...row}];
+    return {...c,[kind]:records};
+  }
+  function currentConversionCatalog428(session){
+    const root=document.getElementById('conversionCatalogBody');
+    return root&&Number(root.dataset.session)===session&&session===conversionCatalogSession428?root:null;
+  }
+  function conversionCatalogError428(message){
+    const box=document.getElementById('conversionCatalogError');if(box){box.hidden=false;box.textContent=message}
+  }
   window.openConversionCatalog428=async function(){
+    const session=++conversionCatalogSession428,project=pid(),page=state.page;
+    const existing=document.getElementById('conversionCatalogBody');
+    const top=()=>[...document.querySelectorAll('.v424-modal-layer,#modal:not(.hidden)')].at(-1);
+    const originalModal=top();
     try{
-      const c=await api('/api/v39/deploy/catalog');state.convCatalogEditor=c;
-      modal('厂商与芯片字典',`<div class="form"><p>本地身份独立于外部分类。模板关联已有转换器；SDK不支持的芯片仍不能转换。停用不改变历史任务。</p><div id="conversionCatalogVendors"></div><button class="btn" onclick="addConversionCatalogVendor428()">新增厂商</button><div id="conversionCatalogChips"></div><button class="btn" onclick="addConversionCatalogChip428()">新增芯片</button><div id="conversionCatalogError" class="alert err" hidden></div><div class="row end"><button class="btn" onclick="closeModal()">取消</button><button class="btn primary" onclick="saveConversionCatalog428()">保存字典</button></div></div>`,true);
-      for(const row of c.vendors||[])window.addConversionCatalogVendor428(row);
-      for(const row of c.chips||[])window.addConversionCatalogChip428(row);
-    }catch(e){toast(e.message||e)}
+      const c=await api('/api/v39/deploy/catalog');
+      if(session!==conversionCatalogSession428||project!==pid()||page!==state.page||top()!==originalModal||(existing&&!existing.isConnected))return;
+      state.convCatalogEditor=c;state.convCatalogSelected=c.vendors?.[0]?.id||'';state.convCatalogSearch='';state.convCatalogBusy=false;state.convCatalogForm=null;
+      if(existing){existing.dataset.session=String(session);document.getElementById('conversionCatalogError').hidden=true;document.getElementById('conversionCatalogFeedback').textContent=''}
+      else modal('厂商与芯片字典',`<div class="catalog428"><div id="conversionCatalogBody" data-session="${session}"></div><div id="conversionCatalogError" class="alert err" role="alert" hidden></div><div class="row end catalog428-footer"><span id="conversionCatalogFeedback" role="status"></span><button class="btn" onclick="openConversionCatalog428()">重新读取字典</button><button class="btn" onclick="closeModal()">关闭</button></div></div>`,true);
+      window.renderConversionCatalog428();
+    }catch(e){if(session===conversionCatalogSession428&&page===state.page)toast(e.message||e)}
   };
-  window.addConversionCatalogVendor428=function(row={}){
-    const options=(state.convCatalogEditor.templates||[]).map(t=>`<option value="${esc(t.id)}" ${row.template_id===t.id?'selected':''}>${esc(t.name)}</option>`).join('');
-    document.getElementById('conversionCatalogVendors').insertAdjacentHTML('beforeend',`<div data-catalog-vendor class="form three"><label>稳定厂商ID<input data-key="id" class="input" value="${esc(row.id||'')}" ${row.id?'readonly':''}></label><label>厂商名称<input data-key="name" class="input" value="${esc(row.name||'')}"></label><label>SDK模板<select data-key="template_id" class="select">${options}</select></label><label><input data-key="enabled" type="checkbox" ${row.enabled!==false?'checked':''}>启用</label></div>`);
+  window.renderConversionCatalog428=function(){
+    const root=currentConversionCatalog428(conversionCatalogSession428);if(!root)return;
+    const c=state.convCatalogEditor,query=String(state.convCatalogSearch||'').trim().toLowerCase();
+    const matches=value=>String(value||'').toLowerCase().includes(query);
+    const vendors=c.vendors.filter(v=>matches(v.name)||c.chips.some(ch=>ch.vendor_id===v.id&&matches(ch.name)));
+    const selected=vendors.find(v=>v.id===state.convCatalogSelected)||vendors[0];
+    if(selected)state.convCatalogSelected=selected.id;
+    const template=id=>(c.templates||[]).find(t=>t.id===id);
+    const chips=selected?c.chips.filter(ch=>ch.vendor_id===selected.id&&(matches(selected.name)||matches(ch.name))):[];
+    const disabled=state.convCatalogBusy?'disabled':'';
+    const status=ch=>{
+      const fact=c.chip_capabilities?.[ch.id]||{};
+      const label=fact.sdk_ready?'检测记录通过':({pending_configuration:'待配置',pending_detection:'待检测',not_adapted:'暂未适配',service_unavailable:'资源未就绪',not_convertible:'不可转换'}[fact.status]||'待检测');
+      return `<span class="tag ${fact.sdk_ready?'ok':''}">${esc(label)}</span><span>${(fact.allowed_precisions||[]).map(p=>esc(p.toUpperCase())).join(' / ')||'精度待检测'}</span><small>${esc((fact.errors||[]).join('；'))}</small>`;
+    };
+    root.innerHTML=`<div class="catalog428-toolbar"><label class="catalog428-search">搜索厂商或芯片<input class="input" type="search" placeholder="输入名称或芯片型号" value="${esc(state.convCatalogSearch||'')}" oninput="filterConversionCatalog428(this.value)"></label><button class="btn primary" ${disabled} onclick="addConversionCatalogVendor428()">新增厂商</button></div><p class="muted">SDK状态来自资源检测记录；转换时重新核验，编译完成后仍需模型及板卡验证。</p><div class="catalog428-layout"><div class="catalog428-vendors" aria-label="厂商列表">${vendors.map(v=>`<button class="catalog428-vendor ${v.id===selected?.id?'selected':''}" data-catalog-vendor="${esc(v.id)}" ${disabled} onclick="selectConversionCatalogVendor428('${esc(v.id)}')"><strong>${esc(v.name)}</strong><span>模板：${esc(template(v.template_id)?.name||v.template_id)}</span><span>${v.enabled!==false?'已启用':'已停用'} · ${c.chips.filter(ch=>ch.vendor_id===v.id).length} 个芯片${template(v.template_id)?.implemented===false?' · 暂未适配':''}</span></button>`).join('')||'<div class="empty compact">未找到厂商，可新增或调整搜索。</div>'}</div><section class="catalog428-chips" aria-label="芯片列表">${selected?`<div class="catalog428-heading"><div><h3>${esc(selected.name)}</h3><span>${esc(template(selected.template_id)?.name||selected.template_id)}</span></div><div class="row"><button class="btn" ${disabled} onclick="editConversionCatalogRecord428('vendors','${esc(selected.id)}')">编辑厂商</button><button class="btn" ${disabled} onclick="toggleConversionCatalogRecord428('vendors','${esc(selected.id)}')">${selected.enabled!==false?'停用厂商':'启用厂商'}</button><button class="btn primary" ${disabled} onclick="addConversionCatalogChip428()">新增芯片</button></div></div>${chips.map(ch=>`<article class="catalog428-chip" data-catalog-chip="${esc(ch.id)}"><div><strong>${esc(ch.name)}</strong><span class="tag">${ch.enabled!==false?'已启用':'已停用'}</span><div class="catalog428-status">${status(ch)}</div></div><div class="row"><button class="btn" ${disabled} onclick="editConversionCatalogRecord428('chips','${esc(ch.id)}')">编辑</button><button class="btn" ${disabled} onclick="toggleConversionCatalogRecord428('chips','${esc(ch.id)}')">${ch.enabled!==false?'停用':'启用'}</button></div></article>`).join('')||'<div class="empty compact">暂无匹配芯片，新增后可在转换弹窗中选择。</div>'}`:'<div class="empty compact">请先新增厂商。</div>'}</section></div>`;
   };
-  window.addConversionCatalogChip428=function(row={}){
-    const vendors=[...document.querySelectorAll('[data-catalog-vendor]')].map(n=>({id:n.querySelector('[data-key="id"]').value,name:n.querySelector('[data-key="name"]').value})).filter(v=>v.id);
-    const constraints=state.convCatalogEditor.constraint_ids||[];
-    document.getElementById('conversionCatalogChips').insertAdjacentHTML('beforeend',`<div data-catalog-chip class="form three"><label>稳定芯片ID<input data-key="id" class="input" value="${esc(row.id||'')}" ${row.id?'readonly':''}></label><label>所属厂商<select data-key="vendor_id" class="select">${vendors.map(v=>`<option value="${esc(v.id)}" ${row.vendor_id===v.id?'selected':''}>${esc(v.name||v.id)}</option>`).join('')}</select></label><label>芯片名称<input data-key="name" class="input" value="${esc(row.name||'')}"></label><label>本地芯片编码<input data-key="code" class="input" value="${esc(row.code||'')}"></label><label>SDK目标编码<input data-key="sdk_code" class="input" value="${esc(row.sdk_code||'')}"></label><label>兼容性证据<select data-key="constraint_id" class="select">${constraints.map(id=>`<option value="${esc(id)}" ${row.constraint_id===id?'selected':''}>${esc(id)}</option>`).join('')}</select></label><label><input data-key="enabled" type="checkbox" ${row.enabled!==false?'checked':''}>启用</label></div>`);
+  window.filterConversionCatalog428=function(value){
+    const input=document.querySelector('.catalog428-search input'),position=input?.selectionStart;
+    state.convCatalogSearch=value;window.renderConversionCatalog428();
+    const next=document.querySelector('.catalog428-search input');next?.focus();if(next&&position!==null)try{next.setSelectionRange(position,position)}catch(e){}
   };
+  window.selectConversionCatalogVendor428=function(id){state.convCatalogSelected=id;window.renderConversionCatalog428()};
+  window.addConversionCatalogVendor428=function(){
+    window.editConversionCatalogRecord428('vendors','');
+  };
+  window.addConversionCatalogChip428=function(){
+    window.editConversionCatalogRecord428('chips','');
+  };
+  window.editConversionCatalogRecord428=function(kind,id){
+    if(state.convCatalogBusy)return;
+    const c=state.convCatalogEditor,old=c[kind].find(x=>x.id===id),root=currentConversionCatalog428(conversionCatalogSession428);if(!root)return;
+    const row=old?{...old}:{id:newConversionCatalogId428(kind==='vendors'?'vendor':'chip'),name:'',enabled:true,...(kind==='vendors'?{template_id:''}:{vendor_id:state.convCatalogSelected||c.vendors[0]?.id||'',code:newConversionCatalogId428('code'),sdk_code:'',constraint_id:''})};
+    state.convCatalogForm={kind,row,existing:!!old};
+    const readonly=old?'readonly':'',disabled=old?'disabled':'';
+    const templates=c.templates||[],chosen=templates.find(t=>t.id===row.template_id);
+    const technical=kind==='vendors'?`<label>稳定厂商ID<input class="input" data-key="id" value="${esc(row.id)}" readonly></label><p>模板标识：${esc(row.template_id||'选择模板后确定')} · 版本 ${chosen?.version||'—'}</p>`:`<label>稳定芯片ID<input class="input" data-key="id" value="${esc(row.id)}" readonly></label>${[['code','本地芯片编码'],['sdk_code','SDK目标编码']].map(([key,label])=>`<label>${label}<input class="input" data-key="${key}" value="${esc(row[key]||'')}" ${readonly}></label>`).join('')}<label>兼容性证据引用<select class="select" data-key="constraint_id" ${disabled}><option value="">待配置</option>${[...new Set([...(c.constraint_ids||[]),row.constraint_id].filter(Boolean))].map(value=>`<option value="${esc(value)}" ${value===row.constraint_id?'selected':''}>${esc(value)}</option>`).join('')}</select></label><p>${esc((c.chip_capabilities?.[row.id]?.errors||[]).join('；'))}</p>`;
+    root.innerHTML=`<form class="catalog428-form" onsubmit="event.preventDefault();saveConversionCatalog428()"><div class="catalog428-heading"><h3>${old?'编辑':'新增'}${kind==='vendors'?'厂商':'芯片'}</h3><button class="btn" type="button" onclick="renderConversionCatalog428()">返回列表</button></div>${kind==='vendors'?`<label>厂商名称<input class="input" data-key="name" required maxlength="120" value="${esc(row.name)}"></label><label>SDK转换模板<select class="select" data-key="template_id" required ${disabled}><option value="">请选择SDK模板</option>${templates.map(t=>`<option value="${esc(t.id)}" ${t.id===row.template_id?'selected':''}>${esc(t.name)}${t.implemented?'':' · 暂未适配'}</option>`).join('')}</select></label>`:`<label>所属厂商<select class="select" data-key="vendor_id" ${disabled} onchange="suggestConversionCatalogChip428()">${c.vendors.map(v=>`<option value="${esc(v.id)}" ${v.id===row.vendor_id?'selected':''}>${esc(v.name)}</option>`).join('')}</select></label><label>芯片型号<input class="input" data-key="name" required maxlength="120" value="${esc(row.name)}" oninput="suggestConversionCatalogChip428()"></label><div id="conversionCatalogSuggestion" class="alert">${old?'已有技术身份保持不变。':'已知型号自动建议配置；未知型号可保存为待配置。'}</div>`}<label class="row"><input type="checkbox" data-key="enabled" ${row.enabled!==false?'checked':''}>启用</label><details class="catalog428-advanced"><summary>高级配置</summary>${technical}<p>稳定身份不随名称变化。已有编译身份如需变更，请停用旧条目并创建新身份。</p></details><div class="row end"><button class="btn" type="button" onclick="renderConversionCatalog428()">取消编辑</button><button class="btn primary" type="submit">保存${kind==='vendors'?'厂商':'芯片'}</button></div></form>`;
+    const error=document.getElementById('conversionCatalogError');if(error)error.hidden=true;
+    root.querySelector('[data-key="name"]')?.focus();
+  };
+  window.suggestConversionCatalogChip428=function(){
+    const form=state.convCatalogForm;if(!form||form.kind!=='chips'||form.existing)return;
+    const root=currentConversionCatalog428(conversionCatalogSession428);if(!root)return;
+    const vendor=state.convCatalogEditor.vendors.find(v=>v.id===root.querySelector('[data-key="vendor_id"]').value);
+    const suggestion=conversionCatalogSuggestion428(vendor?.template_id,root.querySelector('[data-key="name"]').value);
+    for(const key of ['sdk_code','constraint_id'])root.querySelector(`[data-key="${key}"]`).value=suggestion?.[key]||'';
+    root.querySelector('[data-key="code"]').value=suggestion?.sdk_code||form.row.code;
+    document.getElementById('conversionCatalogSuggestion').textContent=suggestion?'已按现有模板建议技术配置；实际转换仍需SDK资源检测通过。':'未知型号：SDK目标与兼容性证据留空，可保存为待配置；不能创建正式转换。';
+  };
+  async function persistConversionCatalog428(candidate){
+    if(state.convCatalogBusy)return;
+    const session=conversionCatalogSession428;state.convCatalogBusy=true;
+    const root=currentConversionCatalog428(session);if(!root){state.convCatalogBusy=false;return}
+    const controls=[...document.querySelectorAll('.catalog428 button,.catalog428 input,.catalog428 select')].map(e=>[e,e.disabled]);controls.forEach(([e])=>e.disabled=true);
+    const error=document.getElementById('conversionCatalogError');if(error)error.hidden=true;
+    document.getElementById('conversionCatalogFeedback').textContent='保存中…';
+    try{
+      const saved=await api('/api/v39/deploy/catalog',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({vendors:candidate.vendors,chips:candidate.chips,expected_revision:candidate.revision})});
+      state.conv428Catalog=null;window.invalidateVersionConversionResources428?.();
+      if(!currentConversionCatalog428(session))return;
+      state.convCatalogEditor={...state.convCatalogEditor,...saved};state.convCatalogBusy=false;state.convCatalogForm=null;
+      window.renderConversionCatalog428();document.getElementById('conversionCatalogFeedback').textContent='已保存';
+    }catch(e){if(currentConversionCatalog428(session)){conversionCatalogError428(e.message||String(e));document.getElementById('conversionCatalogFeedback').textContent='保存失败；原数据未覆盖'}}
+    finally{if(currentConversionCatalog428(session)){state.convCatalogBusy=false;controls.forEach(([e,disabled])=>e.disabled=disabled)}}
+  }
   window.saveConversionCatalog428=async function(){
-    const rows=selector=>[...document.querySelectorAll(selector)].map(n=>Object.fromEntries([...n.querySelectorAll('[data-key]')].map(e=>[e.dataset.key,e.type==='checkbox'?e.checked:e.value.trim()])));
-    try{
-      await api('/api/v39/deploy/catalog',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({vendors:rows('[data-catalog-vendor]'),chips:rows('[data-catalog-chip]'),expected_revision:state.convCatalogEditor.revision})});
-      state.conv428Catalog=null;closeModal();window.invalidateVersionConversionResources428?.();toast('本地字典已保存；转换时仍会检测实际SDK能力');
-    }catch(e){const box=document.getElementById('conversionCatalogError');if(box){box.hidden=false;box.textContent=e.message||String(e)}}
+    const form=state.convCatalogForm,root=currentConversionCatalog428(conversionCatalogSession428);if(!form||!root)return;
+    const row={...form.row};for(const e of root.querySelectorAll('[data-key]'))row[e.dataset.key]=e.type==='checkbox'?e.checked:e.value.trim();
+    if(!row.name)return conversionCatalogError428('请填写名称');
+    if(form.kind==='vendors'&&!row.template_id)return conversionCatalogError428('请选择SDK转换模板');
+    await persistConversionCatalog428(conversionCatalogWithRecord428(form.kind,row));
+    if(!state.convCatalogForm){state.convCatalogSelected=form.kind==='vendors'?row.id:row.vendor_id;state.convCatalogSearch=''}
+    if(!state.convCatalogForm)window.renderConversionCatalog428();
+  };
+  window.toggleConversionCatalogRecord428=async function(kind,id){
+    const row=state.convCatalogEditor[kind].find(x=>x.id===id);if(!row)return;
+    await persistConversionCatalog428(conversionCatalogWithRecord428(kind,{...row,enabled:row.enabled===false}));
   };
 
   window.refreshConvertContract428=async function(){

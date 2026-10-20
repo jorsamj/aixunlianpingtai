@@ -1,3 +1,33 @@
+## 2026-10-20｜字典管理UI/UX简化（A-D限定验收通过 / E待最终SHA CI）
+
+基线6f34efd3ef09741147f90dadadb37591751c3c41 / VERSION42.24.361，fetch/prune及pull --ff-only一致且工作树干净；唯一同仓库活动会话为本会话。其他worktree/WIP不变。上一轮21/21 Actions、55/55最新Checks、Chrome112/112已按独立回执核验并归档为历史，不借用本轮CI。
+
+用户确认的产品需求：原正式入口及renderDeployResources保留；字典默认简洁厂商/芯片列表，搜索/选择厂商查看芯片，展示模板、数量、启停与真实SDK记录状态/精度，编译与板卡验证独立。新增厂商仅名称/现有模板，新增芯片仅厂商/型号；随机合法稳定ID自动生成，已知五型号按已确认模板合同建议SDK/约束，未知芯片可保存待配置且不得准入转换。高级字段默认折叠，历史身份只读且不重编；支持编辑与启停，无删除。读取完整原数据并全量revision保存，搜索/折叠不丢历史；冲突明确要求刷新，不静默覆盖。五SDK模板是模板不是预置厂商；无Adapter显示暂未适配。字典/外部映射、ModelArtifact、历史转换和Weight Owner严格独立，不修改生产。
+
+设计决策：
+- 同一原modal内切换列表/单记录短表单，不叠弹窗、不加框架/页面/管理API。草稿包含完整vendors/chips，筛选只影响显示；保存单记录后仍回同一列表，立即用原PUT持久化完整草稿+revision。
+- ID由浏览器crypto.randomUUID生成，编辑不再生成。模板的可信芯片建议由现有compute_platform_catalog统一提供；未知sdk_code/constraint_id留空，code独立生成，不推测编译目标。历史vendor/template及chip/vendor/code/sdk锁定；如确需变更走停用+新身份。
+- 现有resolve的芯片/SDK兼容部分提取为单一共享判断，GET /api/v39/deploy/catalog附带建议和检测记录投影；转换预检/准入仍用同一函数及原现场检测。状态不冒充模型/板卡验证，不新增扫描或轮询。
+- 新增/编辑技术字段经原后端格式/关系/唯一性校验，未知字段不绕过SDK探测；不写外部发布配置。现有revision、不可删、不可改挂及转换Job校验保留。
+
+实施计划（writing-plans，按本专项指定位置持久化）：
+- [x] B：在现有unit/API增加未知芯片待配置、可信建议/真实能力一致、ID/模板不可改挂、revision/隐藏记录无损测试；Node/Chrome补短表单/搜索/保存恢复及并发冲突RED，记录真实失败。
+- [x] C：compute_platform_catalog/ModelArtifact原校验最小增量，app.py原GET投影；app.js原字典Owner替换长表单为列表与短表单，styles沿用现有风格并限制滚动/响应式；不改转换执行/发布机制。
+- [x] D：仅运行字典unit/API、相关Node和必要Chrome；验证既有ID、未知/停用阻断、已有BM1684矩形精度断言、无Adapter及无资源。修复实际失败，不降断言。
+- [ ] E：再次fetch核对并整合其他会话，按最终最新VERSION一次递增；七版本入口、必要缓存、语法/diff/只读审查，普通push唯一长期分支。最终SHA实际Actions/Checks及关键Jobs回执另存catalog-ui-simplification-ci-final-20261020.json，下一受验证提交归档，避免未CI自引用提交。
+- [x] F：更新本专项、CODEX_CURRENT_STATE及Owner/技术债摘要，列出实际文件/测试/生产未验证与接续步骤。
+
+本轮真实证据与进度：
+- B RED：Python新增4失败（未知芯片无法保存、metadata建议/检测投影缺失、历史厂商模板可改挂、API投影缺失）；Node新合同3失败。HTTP无randomUUID又3通过1失败；“定制BM1684X”不得误匹配已知型号又3通过1失败。修复前Chrome以正确命令恢复基线原app，列表仍展开3个SDK输入而期望0，真实失败；恢复自身工作代码后继续。
+- C：原resolve芯片/SDK分支提为resolve_chip_capability单一事实，未放宽BM1684/FP32、FP16/芯片约束；GET/PUT附带原检测记录投影与5条配置建议（非业务厂商、非SDK白名单）。未知sdk/constraint可空，local code独立生成，未配置永不准入。原Repo保留revision、不可删除、芯片身份防改挂，并保护已有厂商模板身份。原字典Owner单modal列表/短表单、搜索、启停、完整数据PUT；高级默认折叠，已有技术身份只读；无需手填ID。
+- D发现并关闭：revision后“重新读取”曾叠第二modal，改同root原位刷新，浏览器明确单dialog/零layer；pending_configuration原预检chip_options缺状态名导致500，补为待配置，Job现400且零staging。初次浏览器关闭按钮因基础弹窗×同名，定位限定footer；首次baseline命令未选中测试不算RED，正确PowerShell命令日志才是RED。未删测试、放宽SDK或其他保护。
+- 最终本地：Python现有字典unit/API两文件33 passed；Node字典/导航/Owner/版本4文件32 passed；Chrome仅原formal字典用例和新增管理用例2 passed，0失败0跳过。真实隔离GET/PUT验证名称+模板新增、已知RK3568建议、BM1684/BM1684X显示及BM1684 F32矩形原断言；未知无SDK/无Adapter记录、搜索隐藏行无损、启停、只读身份、名称变更ID不变、revision冲突保留服务器值及刷新恢复。无SDK/无资源/无Adapter Job均在暂存前拒绝。外部config隔离哨兵未改变。七版本入口均362；语法/diff检查通过。
+- 正式VERSION42.24.361→42.24.362一次递增，app409/styles408缓存必要更新，main409不变；前端显示仍从后端bootstrap取得正式版本。只读审查完成，原Repo事务/身份/共享SDK判定/单modal及异步保护未发现实质问题；桌面/窄屏截图已检查，提交前再fetch并核验最终SHA CI。详细修改：platform_core/compute_platform_catalog.py、model_artifacts.py、app.py、static/app.js/styles.css/index.html、VERSION、对应unit/API/Node/Chrome及现有文档。
+- 本地日志根C:/Users/jorsam/.codex/tmp：catui-python-red.log、catui-node-red.log、catui-node-http-red.log、catui-suggestion-red.log、catui-browser-red-corrected.log、catui-python-green3.log、catui-node-final.log、catui-browser-final.log、catui-version-final.log。截图最终回执附件目录catalog-ui-simplification/，只代表隔离环境。
+- 接续：先核对最终SHA回执（catalog-ui-simplification-ci-final-20261020.json）及远端VERSION，再处理真实现场数据；部署/生产写入需独立授权。字典检测状态仅现有资源记录，正式转换仍走原实时检测和Durable MODEL_CONVERSION，硬件验证未执行。
+
+未验证边界：不访问或修改生产数据库、字典、SDK环境、OSS、外部Weight；不部署/重启/真实转换。生产既有数据和真实SDK可用性待独立现场验收。
+
 ## 2026-10-20｜正式部署资源入口补修（A-D完成 / E待推送最终SHA CI）
 
 本轮用户完整要求：从正式菜单进入部署资源，复用renderDeployResources和原Owner体系，正常展示厂商与芯片字典/检测本机工具/新增部署资源；模型配置保持独立。进入/返回/刷新状态一致；字典GET/PUT仍使用/api/v39/deploy/catalog，新增与已有BM1684/BM1684X/RK3568保存后重载、转换选择可见；不改/清空生产字典，不建页面/模块/Owner封装，不扩跑无关测试，更新文档与正式版本，安全推送唯一长期分支并验收最终SHA，不部署生产。

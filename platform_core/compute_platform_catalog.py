@@ -56,7 +56,7 @@ def validate_conversion_catalog(payload):
             row = json.loads(json.dumps(source))
             for key in ("id","vendor_id","code","sdk_code","constraint_id") if kind=="chips" else ("id","template_id"):
                 value = str(row.get(key) or "")
-                if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,95}",value): raise ValueError(f"字典{key}格式非法")
+                if not (kind=="chips" and key in {"sdk_code","constraint_id"} and not value) and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,95}",value): raise ValueError(f"字典{key}格式非法")
                 row[key]=value
             if row["id"] in ids: raise ValueError("字典ID重复")
             ids.add(row["id"])
@@ -68,15 +68,15 @@ def validate_conversion_catalog(payload):
                 if row["vendor_id"] not in {v["id"] for v in result["vendors"]}: raise ValueError("芯片所属厂商不存在")
                 identity=(row["vendor_id"],row["code"].lower())
                 sdk_identity=(row["vendor_id"],row["sdk_code"].lower())
-                if identity in codes or sdk_identity in codes: raise ValueError("芯片编码重复")
-                codes.update((identity,sdk_identity))
+                if identity in codes or (row["sdk_code"] and sdk_identity in codes): raise ValueError("芯片编码重复")
+                codes.add(identity)
+                if row["sdk_code"]: codes.add(sdk_identity)
             result[kind].append(row)
     return result
 
 
-def resolve_conversion_contract(catalog, *, vendor_id, chip_id, resource, version, params, training_job=None):
-    """The same backend contract drives preview and job admission; no execution here."""
-    from .conversion import derive_version_conversion_defaults, validate_target
+def resolve_chip_capability(catalog, *, vendor_id, chip_id, resource):
+    """Shared SDK/chip admission facts for dictionary projection and conversion resolve."""
     vendors={v["id"]:v for v in catalog.get("vendors",[])}
     vendor=vendors.get(vendor_id)
     chip=next((c for c in catalog.get("chips",[]) if c["id"]==chip_id and c["vendor_id"]==vendor_id),None)
@@ -93,6 +93,8 @@ def resolve_conversion_contract(catalog, *, vendor_id, chip_id, resource, versio
     target=template.get("adapter")
     if not template.get("implemented") or not target:
         return reject("not_adapted","厂商模板尚无可执行Adapter")
+    if not chip.get("sdk_code") or not chip.get("constraint_id"):
+        return reject("pending_configuration","尚未配置可信SDK目标编码或兼容性约束；请核对高级配置与实际SDK检测")
     if resource.get("kind")!=target or resource.get("status")!="ready" or target not in resource.get("targets",[]):
         return reject("service_unavailable","对应转换资源未就绪或服务不可用")
     sdk=chip["sdk_code"].lower() if target!="ascend" else chip["sdk_code"]
@@ -127,6 +129,23 @@ def resolve_conversion_contract(catalog, *, vendor_id, chip_id, resource, versio
         allowed=["fp16","fp32"]
     result["allowed_precisions"]=list(allowed)
     if not allowed: return reject("pending_detection","所选芯片未确认合法精度")
+    result.update(ready=True,status="convertible")
+    return result
+
+
+def resolve_conversion_contract(catalog, *, vendor_id, chip_id, resource, version, params, training_job=None):
+    """The same backend contract drives preview and job admission; no execution here."""
+    from .conversion import derive_version_conversion_defaults, validate_target
+    result=resolve_chip_capability(catalog,vendor_id=vendor_id,chip_id=chip_id,resource=resource)
+    if not result["ready"]: return result
+    result.update(ready=False,status="not_convertible")
+    template=result["template"];target=template["adapter"]
+    chip=next(c for c in catalog["chips"] if c["id"]==chip_id)
+    sdk=chip["sdk_code"].lower() if target!="ascend" else chip["sdk_code"]
+    allowed=result["allowed_precisions"]
+    def reject(status,message):
+        result.update(status=status,errors=[message])
+        return result
     defaults=derive_version_conversion_defaults(version,training_job)
     values={key:params[key] for key in params}
     input_contract=version.get("model_input_contract") or {}
@@ -162,6 +181,30 @@ def resolve_conversion_contract(catalog, *, vendor_id, chip_id, resource, versio
                                      "batch":"SDK/芯片约束","preprocessing":"用户自定义" if params.get("preprocessing") else "训练成果继承" if inherited_preprocessing else "厂商默认"})
     return result
 
+
+
+# Configuration suggestions reference existing verified contracts, never resource availability.
+_CONVERSION_CHIP_SUGGESTIONS=(
+    ("tpu-mlir","BM1684X","bm1684x","sophon-fp16-verified"),
+    ("tpu-mlir","BM1688","bm1688","sophon-fp16-verified"),
+    ("tpu-mlir","BM1684","bm1684","tpu-mlir-1.30.2"),
+    ("rknn","RK3568","rk3568","rknn-verified"),
+    ("rknn","RK3576","rk3576","rknn-verified"),
+)
+
+
+def conversion_catalog_metadata(catalog, *, resources):
+    """Read-only UI projection of existing resource detection records; no new probes."""
+    suggestions=[dict(template_id=t,name=n,sdk_code=s,constraint_id=c)
+                 for t,n,s,c in _CONVERSION_CHIP_SUGGESTIONS]
+    capabilities={}
+    for chip in catalog.get("chips",[]):
+        facts=[resolve_chip_capability(catalog,vendor_id=chip["vendor_id"],chip_id=chip["id"],resource=r)
+               for r in resources] or [resolve_chip_capability(catalog,vendor_id=chip["vendor_id"],chip_id=chip["id"],resource={})]
+        fact=next((f for f in facts if f["ready"]),None) or next((f for f in facts if f["status"]!="service_unavailable"),facts[0])
+        capabilities[chip["id"]]={"sdk_ready":fact["ready"],"status":fact["status"],
+                                  "allowed_precisions":fact["allowed_precisions"],"errors":fact["errors"]}
+    return {"chip_suggestions":suggestions,"chip_capabilities":capabilities}
 
 
 def compute_platform_catalog(rows: Iterable[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:

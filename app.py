@@ -18190,17 +18190,20 @@ def _conversion_catalog_repository(data_dir):
 
 @app.get("/api/v39/deploy/catalog")
 def v39_conversion_catalog():
-    from platform_core.compute_platform_catalog import conversion_templates
-    return {"ok":True, **_conversion_catalog_repository(DATA_DIR).conversion_catalog(), "templates":conversion_templates(),
+    from platform_core.compute_platform_catalog import conversion_templates, conversion_catalog_metadata
+    catalog=_conversion_catalog_repository(DATA_DIR).conversion_catalog()
+    metadata=conversion_catalog_metadata(catalog,resources=v39_list_deploy_resources()["items"])
+    return {"ok":True, **catalog, **metadata, "templates":conversion_templates(),
             "constraint_ids":["tpu-mlir-1.30.2","sophon-fp16-verified","rknn-verified","atc-detected"]}
 
 
 @app.put("/api/v39/deploy/catalog")
 def v39_save_conversion_catalog(payload: Dict[str, Any]):
     try:
-        return {"ok":True, **_conversion_catalog_repository(DATA_DIR).save_conversion_catalog(
-            {k:v for k,v in payload.items() if k!="expected_revision"},
-            expected_revision=payload.get("expected_revision"))}
+        saved=_conversion_catalog_repository(DATA_DIR).save_conversion_catalog(
+            {k:v for k,v in payload.items() if k!="expected_revision"}, expected_revision=payload.get("expected_revision"))
+        from platform_core.compute_platform_catalog import conversion_catalog_metadata
+        return {"ok":True, **saved, **conversion_catalog_metadata(saved,resources=v39_list_deploy_resources()["items"])}
     except ValueError as error:
         raise HTTPException(status_code=409 if "revision" in str(error) else 400,detail=str(error)) from error
 
@@ -18237,7 +18240,7 @@ def _conversion_contract_for_source(project_id, source, resource, params, target
             return {"ready":False,"status":"not_convertible","errors":["无法核验ONNX输入合同："+str(error)],"params":{},"allowed_precisions":[],"chip_options":[]}
     training_job=_version_deploy_training_job(project_id,version)
     result=resolve_conversion_contract(catalog,vendor_id=vendor_id,chip_id=chip_id,resource=resource,version=version,params=params,training_job=training_job)
-    status_labels={"convertible":"可转换","not_convertible":"不可转换","pending_detection":"待检测","not_adapted":"暂未适配","service_unavailable":"转换服务不可用"}
+    status_labels={"convertible":"可转换","not_convertible":"不可转换","pending_configuration":"待配置","pending_detection":"待检测","not_adapted":"暂未适配","service_unavailable":"转换服务不可用"}
     result["chip_options"]=[]
     for entry in catalog["chips"]:
         if entry["vendor_id"]!=vendor_id:

@@ -87,3 +87,43 @@ def test_existing_onnx_shape_is_the_default_input_contract(tmp_path,monkeypatch)
     body.params.update(input_height=640,input_width=640)
     mismatch=api.v39_resolve_conversion("p",body)
     assert not mismatch["ready"] and "Shape" in mismatch["errors"][0]
+
+
+def test_catalog_management_metadata_does_not_change_saved_identities_or_external_config(tmp_path,monkeypatch):
+    from platform_core.model_artifacts import ModelArtifactRepository
+    monkeypatch.setattr(api,"DATA_DIR",tmp_path)
+    monkeypatch.setattr(api,"v39_list_deploy_resources",lambda:{"items":[live()]})
+    repo=ModelArtifactRepository(tmp_path);repo.save_conversion_catalog(catalog(),expected_revision=0)
+    external=tmp_path/"external_algorithm_publish"/"config.json"
+    external.parent.mkdir();external.write_text('{"keep":"mapping"}')
+    before=repo.conversion_catalog()
+    result=api.v39_conversion_catalog()
+    assert result["chip_suggestions"] and result["chip_capabilities"]["chip-84"]["sdk_ready"]
+    assert repo.conversion_catalog()==before
+    changed={**before,"chips":[{**c,"name":"renamed"} if c["id"]=="chip-84" else c for c in before["chips"]]}
+    saved=api.v39_save_conversion_catalog({**changed,"expected_revision":before["revision"]})
+    assert saved["chips"][0]["id"]=="chip-84" and saved["chips"][0]["sdk_code"]=="bm1684"
+    with pytest.raises(HTTPException) as error:
+        api.v39_save_conversion_catalog({**before,"expected_revision":before["revision"]})
+    assert error.value.status_code==409 and "刷新" in str(error.value.detail)
+    assert external.read_text()=='{"keep":"mapping"}'
+
+
+@pytest.mark.parametrize("mode",["pending_sdk","missing_resource","unknown_adapter"])
+def test_catalog_management_never_admits_jobs_without_verified_sdk_evidence(tmp_path,monkeypatch,mode):
+    from platform_core.model_artifacts import ModelArtifactRepository
+    monkeypatch.setattr(api,"DATA_DIR",tmp_path)
+    data=catalog();resource=live()
+    if mode=="pending_sdk": data["chips"][0].update(sdk_code="",constraint_id="")
+    if mode=="missing_resource": resource.update(status="missing",targets=[])
+    if mode=="unknown_adapter": data["vendors"][0]["template_id"]="cambricon"
+    ModelArtifactRepository(tmp_path).save_conversion_catalog(data,expected_revision=0)
+    source=tmp_path/"best.pt";source.write_bytes(b"isolated source")
+    monkeypatch.setattr(api,"_resolve_deploy_source",lambda *a:{"kind":"imported","path":str(source)})
+    monkeypatch.setattr(api,"_deploy_resource_by_id",lambda *a:resource)
+    monkeypatch.setattr(api,"_detect_local_deploy_resource",lambda r:r)
+    monkeypatch.setattr(api,"_deploy_job_dir",lambda *a:pytest.fail("unverified dictionary must never stage a conversion"))
+    with pytest.raises(HTTPException) as error:
+        api._v39_create_deploy_job_under_version_fence("p",api.DeployJobReq(source_id="s",target="sophon",resource_id="s",
+            params={"local_vendor_id":"local-s","local_chip_id":"chip-84"}))
+    assert error.value.status_code==400

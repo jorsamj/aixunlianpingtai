@@ -419,6 +419,10 @@ class ModelArtifactRepository:
             if any({item["id"] for item in previous[key]}-{item["id"] for item in value[key]} for key in ("vendors","chips")):
                 database.rollback()
                 raise ValueError("已有字典身份不可删除，请停用以保留历史追溯")
+            old_vendors={v["id"]:v for v in previous["vendors"]}
+            if any(v["id"] in old_vendors and v["template_id"]!=old_vendors[v["id"]]["template_id"] for v in value["vendors"]):
+                database.rollback()
+                raise ValueError("已有厂商模板身份不可改挂，请停用旧条目并创建新身份")
             for chip in value["chips"]:
                 if chip["id"] in old and any(chip[k]!=old[chip["id"]][k] for k in ("vendor_id","code","sdk_code")):
                     database.rollback()
