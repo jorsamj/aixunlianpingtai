@@ -3,7 +3,7 @@
 - 基线6f34efd3ef09741147f90dadadb37591751c3c41/VERSION361已fetch/pull且工作树初始干净；无其他同仓库活动会话，原WIP/worktree不改。上轮21/55最终绿色回执已核验归档，不代表本轮。
 - 原字典Owner改默认搜索列表+同modal短表单，自动稳定ID/可信5型号建议/高级折叠/完整revision PUT；原ID/SDK/code保留、厂商模板不可改挂，未知SDK可空但不准入。原resolve抽出共享SDK事实供列表与预检，配置/编译/板卡状态分离，不改外部映射/Weight/执行器。
 - 真实RED与进度：Python4、Node3及HTTP/别名各1、基线Chrome1；修复刷新叠modal及待配置投影500。最终限定Python33、Node32、Chrome2通过（0失败0跳过），七版本入口362一致。完整需求/设计/实施/测试/未验证见docs/DYNAMIC_CONVERSION_CATALOG_ACCEPTANCE_2026_10_20.md顶部。
-- VERSION42.24.362（一次递增），app409/styles408/main409。最终SHA CI回执catalog-ui-simplification-ci-final-20261020.json另存既有visualizations附件目录，下一受验证提交归档。不部署/修改生产数据库、配置、OSS、新畅联或真实转换；现场仍NOT VERIFIED。
+- VERSION42.24.362（一次递增），app410/styles408/main409。最终SHA CI回执catalog-ui-simplification-ci-final-20261020.json另存既有visualizations附件目录，下一受验证提交归档。不部署/修改生产数据库、配置、OSS、新畅联或真实转换；现场仍NOT VERIFIED。
 
 ## 2026-10-20｜正式部署资源入口补修（限定验收通过 / 最终SHA CI待推送 / 生产未部署）
 

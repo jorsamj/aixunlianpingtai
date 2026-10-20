@@ -22,8 +22,9 @@
 - C：原resolve芯片/SDK分支提为resolve_chip_capability单一事实，未放宽BM1684/FP32、FP16/芯片约束；GET/PUT附带原检测记录投影与5条配置建议（非业务厂商、非SDK白名单）。未知sdk/constraint可空，local code独立生成，未配置永不准入。原Repo保留revision、不可删除、芯片身份防改挂，并保护已有厂商模板身份。原字典Owner单modal列表/短表单、搜索、启停、完整数据PUT；高级默认折叠，已有技术身份只读；无需手填ID。
 - D发现并关闭：revision后“重新读取”曾叠第二modal，改同root原位刷新，浏览器明确单dialog/零layer；pending_configuration原预检chip_options缺状态名导致500，补为待配置，Job现400且零staging。初次浏览器关闭按钮因基础弹窗×同名，定位限定footer；首次baseline命令未选中测试不算RED，正确PowerShell命令日志才是RED。未删测试、放宽SDK或其他保护。
 - 最终本地：Python现有字典unit/API两文件33 passed；Node字典/导航/Owner/版本4文件32 passed；Chrome仅原formal字典用例和新增管理用例2 passed，0失败0跳过。真实隔离GET/PUT验证名称+模板新增、已知RK3568建议、BM1684/BM1684X显示及BM1684 F32矩形原断言；未知无SDK/无Adapter记录、搜索隐藏行无损、启停、只读身份、名称变更ID不变、revision冲突保留服务器值及刷新恢复。无SDK/无资源/无Adapter Job均在暂存前拒绝。外部config隔离哨兵未改变。七版本入口均362；语法/diff检查通过。
-- 正式VERSION42.24.361→42.24.362一次递增，app409/styles408缓存必要更新，main409不变；前端显示仍从后端bootstrap取得正式版本。只读审查完成，原Repo事务/身份/共享SDK判定/单modal及异步保护未发现实质问题；桌面/窄屏截图已检查，提交前再fetch并核验最终SHA CI。详细修改：platform_core/compute_platform_catalog.py、model_artifacts.py、app.py、static/app.js/styles.css/index.html、VERSION、对应unit/API/Node/Chrome及现有文档。
+- 正式VERSION42.24.361→42.24.362一次递增，app410/styles408缓存必要更新，main409不变；前端显示仍从后端bootstrap取得正式版本。只读审查完成，原Repo事务/身份/共享SDK判定/单modal及异步保护未发现实质问题；桌面/窄屏截图已检查，提交前再fetch并核验最终SHA CI。详细修改：platform_core/compute_platform_catalog.py、model_artifacts.py、app.py、static/app.js/styles.css/index.html、VERSION、对应unit/API/Node/Chrome及现有文档。
 - 本地日志根C:/Users/jorsam/.codex/tmp：catui-python-red.log、catui-node-red.log、catui-node-http-red.log、catui-suggestion-red.log、catui-browser-red-corrected.log、catui-python-green3.log、catui-node-final.log、catui-browser-final.log、catui-version-final.log。截图最终回执附件目录catalog-ui-simplification/，只代表隔离环境。
+- 最终截图补验：首提交27202972的CI已47/48成功时，发现新表单沿用上次“已保存”提示；新增浏览器断言真实RED（应为空、实际已保存），进入短表单即清空反馈后定向GREEN。VERSION仍362、不重复递增，仅app缓存410；最终SHA必须重新CI，不借用首提交绿色。
 - 接续：先核对最终SHA回执（catalog-ui-simplification-ci-final-20261020.json）及远端VERSION，再处理真实现场数据；部署/生产写入需独立授权。字典检测状态仅现有资源记录，正式转换仍走原实时检测和Durable MODEL_CONVERSION，硬件验证未执行。
 
 未验证边界：不访问或修改生产数据库、字典、SDK环境、OSS、外部Weight；不部署/重启/真实转换。生产既有数据和真实SDK可用性待独立现场验收。

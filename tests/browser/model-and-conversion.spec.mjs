@@ -737,6 +737,7 @@ test('formal deployment menu persists vendor chips and selects BM1684 FP32 throu
   await expect(editor.locator('[data-catalog-vendor].selected')).toHaveAttribute('data-catalog-vendor',vendorId);
   await editor.getByRole('button',{name:'新增芯片',exact:true}).click();
   const chipId=await editor.locator('[data-key="id"]').inputValue();
+  await expect(editor.getByRole('status')).toHaveText('');
   await editor.locator('[data-key="name"]').fill('RK3568');
   await expect(editor.locator('[data-key="sdk_code"]')).toHaveValue('rk3568');
   await expect(editor.locator('[data-key="constraint_id"]')).toHaveValue('rknn-verified');
