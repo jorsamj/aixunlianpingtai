@@ -2,6 +2,8 @@
 
 基线b74a3866/VERSION365、fetch/pull干净且远端一致，其他工作区不动；前轮48/131实际CI回执归档。原Owner最小修复空prepared标签、HTTP请求/回执/读回事实、preset精度、异步参数覆盖与页面归属、单资源检测、真实编译模式/ONNX导出与Agent传递/manifest事实。完整需求/根因/矩阵/质量审查/限定验收见[专项](CONVERSION_PARAMETER_CONSISTENCY_2026_10_21.md)。分批JUnit去重403例通过，Node相关文件分批通过，Chrome9种相关场景通过；修复中失败与复测如实记载。VERSION一次递增366，必要app/main/styles413、训练CSS4226354/submit422600、publish64013。无新Owner/包装/监听器/轮询，生产写入/部署禁止；只读SSH拒绝，17/7及真实SDK/GPU/网页未现场核验。最终实际SHA CI待安全推送，按tags-parameters-ci-final-20261021.json独立回执核对，不能提前标绿。
 
+首推058b2ec1实际CI检出两处测试适配问题（轻量夹具误依赖onnx、旧源码守卫要求非冻结pid）；已原位修正，Python1/Node11定向通过，安全断言保留，无CI依赖/范围变更。VERSION366不二次递增；最终后续SHA核验中，详细日志结论见专项。
+
 ## 2026-10-21｜字典普通编辑与历史引用校验分离（限定验收完成 / 待最终SHA CI）
 
 最新8d74588d95ffa3549f0769431d92072dfa1300cc/VERSION364已fetch/pull干净；无可见同仓库其他活动开发，其他工作树不动。前轮Weight22/57绿色回执已核验归档，不代表本轮。生产缺失job证据、完整需求、最小方案与定向TDD计划见docs/DYNAMIC_CONVERSION_CATALOG_ACCEPTANCE_2026_10_20.md顶部。普通名称/启停不依赖历史扫描；详情返回真实诊断，不允许can_delete假成功；删除/改挂严格fail closed，只可信任务合同/同项目任务路径可恢复。限定本次Python/API/Node/Chrome，版本最终基线一次递增，生产数据/文件/OSS/Weight/重启/部署均禁止。原scanner/Repo/API/UI已最小修复；原严格删除/改挂保护保留，可信任务身份与matcher一致后才恢复，普通短表单可用/诊断折叠，toggle异步归属已修正。Python分批51及受后续改动影响37/4通过、Node9后短表单7、Chrome既有3+新场景1通过；完整RED/质量审查及夹具排序复测见专项。正式VERSION365一次递增，main412/字典模块2、8版本投影一致；最终实际SHA CI待推送核验。

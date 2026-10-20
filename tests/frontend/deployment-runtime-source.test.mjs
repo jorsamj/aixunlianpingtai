@@ -111,7 +111,11 @@ test('canonical version conversion creation refreshes only the selected version 
   const end=source.indexOf('  // ---------------------- training creation from algorithm',start);
   assert.ok(start>=0&&end>start);
   const create=source.slice(start,end);
-  assert.match(create,/\/api\/v39\/projects\/\$\{pid\(\)\}\/deploy\/jobs/);
+  assert.match(create,/\/api\/v39\/projects\/\$\{project\}\/deploy\/jobs/);
+  assert.match(create,/project=pid\(\)/);
+  assert.match(create,/if\(project!==pid\(\)\|\|document\.querySelector\('\.convert428-create'\)!==form\)return/);
+  assert.ok(create.indexOf('project=pid()')<create.indexOf('await deployResources428(true)'));
+  assert.doesNotMatch(create,/\/api\/v39\/projects\/\$\{pid\(\)\}/);
   assert.match(create,/deploymentHistory428\(aid,vid,true\)/);
   assert.match(create,/scheduleVersionConversionPoll428\(aid,vid,r\)/);
   assert.doesNotMatch(create,/renderDeployCenter|loadDeployData\(true\)|deploy\/artifacts|source-models/);

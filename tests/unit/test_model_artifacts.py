@@ -1789,9 +1789,9 @@ def test_original_discovery_keeps_persisted_path_when_best_has_same_bytes(tmp_pa
 
 
 def test_reused_onnx_metadata_uses_verified_graph_shape_without_export_defaults(tmp_path,monkeypatch):
-    from tests.unit.test_sophon_conversion import _onnx_identity
     service=_service(tmp_path);version=_metadata_model(tmp_path)
-    path=tmp_path/"existing.onnx";_onnx_identity(path,[1,3,384,640])
+    # Projection consumes an identity-verified manifest; SDK graph validation has separate tests.
+    path=tmp_path/"existing.onnx";path.write_bytes(b"verified-onnx-output")
     manifest=tmp_path/"manifest.json";source_sha=hashlib.sha256(Path(version["stored_path"]).read_bytes()).hexdigest()
     manifest.write_text(json.dumps({"job_id":"reuse","source":{"sha256":source_sha},
         "onnx":{"input_shapes":[[1,3,384,640]]},"execution_evidence":{"onnx_export":"reused_existing_onnx"},

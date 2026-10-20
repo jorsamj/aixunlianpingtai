@@ -62,6 +62,11 @@
 
 VERSION从最终整合基线365一次递增366，后端/可见版本仍读唯一VERSION；app/main/styles必要缓存413，training-create CSS4226354，training-submit422600，publish64013。没有只改显示版本；VERSION读取/runtime/FastAPI元数据/system/health/UI/app_info等8项实际投影均为42.24.366。提交前再次fetch核对远端；最终实际SHA/Actions/Checks/关键Jobs写独立 `tags-parameters-ci-final-20261021.json` 回执并在交付中报告。本节提交时CI待推送核验，不借用基线绿色、不制造自引用SHA文档提交循环；下一次受验证提交归档实际回执。
 
+
+### 首次推送CI反馈与最小修正
+
+首提交 `058b2ec1fc9152fcfc77535c77d41a2341fc1cf0` 的实际CI失败已读取日志：轻量发布/远程训练/资产合同的新增ModelArtifact投影夹具错误导入Sophon ONNX构图工具，缺少onnx依赖；该测试只消费身份校验后的manifest，不解析图。夹具改为独立输出字节，原SHA/大小/尺寸及证据断言保留，真实ONNX图校验继续由原SDK测试负责。Node原源码守卫仍要求异步后使用pid()，现更新为冻结project并增加捕获顺序/迟到页面隔离断言，原刷新范围及Owner断言保留。未新增依赖、未改CI、未跳过或削弱断言。仅复测直接相关Python1/Node11全部通过；Python去重仍403、Node新增11后合计123，Chrome9场景结果未受测试夹具修改影响，不重复运行。VERSION366及缓存不二次变更。最终后续SHA及CI按独立回执核验，首SHA失败不冒充交付绿色。
+
 ## 生产未验证与下一步
 
 1. SSH连接被拒绝；生产真实HEAD/VERSION、17项/7缺失回执、当前自动发布日志、getInfo/listByVersion tags及新畅联网页仍未核验。不能据此把最新代码空映射问题认定为七个历史故障的唯一根因。
@@ -102,6 +107,7 @@ VERSION从最终整合基线365一次递增366，后端/可见版本仍读唯一
 - `tests/api/test_sophon_remote_admission.py`
 - `tests/browser/model-and-conversion.spec.mjs`
 - `tests/browser/training-quality-reports.spec.mjs`
+- `tests/frontend/deployment-runtime-source.test.mjs`
 - `tests/frontend/conversion-unified-task-truth.test.mjs`
 - `tests/frontend/external-algorithm-publish.test.mjs`
 - `tests/frontend/rknn-conversion-resource-live.test.mjs`
