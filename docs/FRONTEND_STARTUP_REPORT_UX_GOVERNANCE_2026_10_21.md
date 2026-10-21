@@ -222,3 +222,8 @@ RED→GREEN：混合成功/失败/运行/未知耗时、重复别名、异项目
 补充最终本地结论（已完成待验收）：Python55/55、Frontend Node1141/1141；Chrome并集90个独立场景分别通过（原64、转换14、报告范围1、新Loading8、训练Pending2、新评测Pending1），0最终未解失败/0跳过，不将复测重复次数累加。最后受ZIP/评测/Loading/完整性改动影响的39项38通过1失败：ZIP观察请求计数夹具固定sleep200ms时原reconcile仍busy，按原防重合同不会再发GET，得到0；新增只读snapshot.busy观察，夹具等待真实空闲后清poll再精确测一次，原1次GET断言保留，单例1/1复验通过，未增加重复轮询或删除断言。隔离证据不代表生产覆盖。
 
 本次关联提交通过本节Git History定位，CI必须读取该提交Checks；当前提交前未声称CI通过。补记CI文档产生新SHA时也须重新核验自身。正式交付条件为最终SHA全部相关CI成功；全平台未覆盖项目、物理成果只读核验、无请求ID未知提交恢复限制仍保留，不将本次限定验收写成生产可部署结论。
+
+
+最终审查补正：f081d408720dd902931de93597dfb8c9e1d4d7e4为本次主体实现，尚在CI（已有36个工作流成功，不能当最终全绿）。ZIP原isCurrentProject未检查destroyed，销毁后待返list/get可重新upsert/render；新增真实Runtime动态测试先RED复现upsert1，再仅补!destroyed为GREEN，ZIP文件32/32通过。静态ZIP入口/模块标识同步4226364，VERSION仍本轮371。最终SHA应以后续包含该修正提交为准，其自身CI独立核验；不使用f081d408替代。
+
+销毁修正后最终全量Frontend Node1142/1142通过、0失败0跳过（6.6秒），Python55及Chrome90既有结论不重复累计；最终CI回执待本修正准确SHA。

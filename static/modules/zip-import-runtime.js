@@ -353,7 +353,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
     runtimeProject=next;jobs=[];current=null;selectedJobId='';uploading=null;resumeFile=null;
     eligibleSince.clear();started.clear();knownJobs.clear();completionEffects.clear();foregroundImports.clear();labelReviews.clear();classSampleCache.clear();cancellingJobs.clear();
   }
-  const isCurrentProject=project=>Boolean(project)&&runtimeProject===String(project)&&pid()===String(project);
+  const isCurrentProject=project=>!destroyed&&Boolean(project)&&runtimeProject===String(project)&&pid()===String(project);
   const intentKey=(p,id)=>`mc_zip_import_start_v1:${p}:${id}`;
   const readIntent=(p,id)=>{try{return localStorage.getItem(intentKey(p,id))||''}catch(_){return''}};
   const writeIntent=(p,id,v)=>{try{v?localStorage.setItem(intentKey(p,id),v):localStorage.removeItem(intentKey(p,id))}catch(_){}};

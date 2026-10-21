@@ -1,6 +1,25 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
+import {installZipImportRuntime} from '../../static/modules/zip-import-runtime.js';
+
+test('destroy during pending ZIP reconciliation prevents late task-center and dock effects',async()=>{
+  const previous={window:globalThis.window,document:globalThis.document};
+  let respond,upserts=0,dockCreates=0,completionEffects=0;
+  const state={project:{id:'p1'},page:'数据集'};
+  globalThis.document={getElementById:()=>null,querySelector:()=>null,querySelectorAll:()=>[],createElement:()=>{dockCreates++;return {style:{},dataset:{},classList:{add(){}},appendChild(){}}},body:{appendChild(){}}};
+  globalThis.window={UploadTaskCenterRuntime:{upsert(){upserts++}},PollRegistryRuntime:{clear(){},startTimeout(){}},completeZipImportReview412(){completionEffects++}};
+  try{
+    const runtime=installZipImportRuntime({getState:()=>state,projectId:()=> 'p1',fetchImpl:async()=>new Promise(resolve=>{respond=resolve})});
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(typeof respond,'function');
+    runtime.destroy();
+    respond(Response.json({items:[{id:'late-job',status:'running',progress:23,file_name:'late.zip'}]}));
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(upserts,0);assert.equal(dockCreates,0);assert.equal(completionEffects,0);
+    assert.equal(state.import411,undefined);assert.deepEqual(runtime.snapshot().jobs,[]);
+  }finally{Object.assign(globalThis,previous)}
+});
 import {
   ACTIVE_ZIP_STATUSES,
   LEGACY_START_GRACE_MS,
@@ -225,7 +244,7 @@ test('ZIP source label selection only stages an explicit mapping until final con
 
 test('ZIP browser bootstrap loads the refreshed exact-code and side-evidence module',()=>{
  const boot=readFileSync(new URL('../../static/zip-import-bootstrap.mjs',import.meta.url),'utf8');
- assert.match(boot,/zip-import-runtime\.js\?v=4226363/);
+ assert.match(boot,/zip-import-runtime\.js\?v=4226364/);
 });
 
 
