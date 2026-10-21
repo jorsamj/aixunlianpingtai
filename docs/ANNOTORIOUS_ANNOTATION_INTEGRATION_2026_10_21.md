@@ -2,6 +2,8 @@
 
 本文件是本专项唯一需求、设计、进度、问题、验收与接续依据，不与页面启动综合治理或GT素材生命周期专项混写。用户明确要求先完成综合治理补充验收，再单独实施本专项；前者最终 `4fcbcfc804748d37a07eaeb8b8ed960539d10b91` / VERSION `42.24.371` 已独立21/21 Actions、55/55 Checks、Chrome140/140通过。
 
+当前接续：**6.10最终验收与生产前条件**。ANN-01–12代码及隔离回归已验收；下文保留各阶段历史记录，不能把旧待办当作当前任务。
+
 ## 1. 需求基线、授权与当前起点
 
 仓库 `jorsamj/aixunlianpingtai`，唯一长期分支 `feature/external-algorithm-publishing`。开始已通过GitHub只读API重新读取远端：与本地4fcbcfc8一致，工作树干净；已阅读AGENTS、CURRENT_STATE、旧标注/清洗交接及现行工作台/保存/Repository。其他原D盘WIP、工作树和会话不覆盖。旧2026-09-25文档冻结VERSION42.24.0/近全屏等是历史时点规则，不能覆盖本次用户允许版本更新及现有Modal合同。
@@ -10,18 +12,18 @@
 
 | 编号 | 正式需求 | 验收重点 | 状态 |
 |---|---|---|---|
-| ANN-01 | 官方Annotorious v3替换自研矩形画框内核；先隔离PoC再正式入口 | 非Demo交付，不叠加双层，不依赖私有API | 进行中 |
-| ANN-02 | 矩形新建、多框选择/移动/缩放/改类/删除/取消 | 原图像素，临时框与正式编辑框区分 | 已完成待验收 |
-| ANN-03 | 选择/编辑、画框、平移、显示/隐藏及分类过滤 | 隐藏不改GT且不可误编辑 | 已完成待验收 |
-| ANN-04 | Del/Backspace、Esc、Cmd/CtrlS/Z/ShiftZ、H、1–9、左右键 | 仅激活工作台、非输入；Esc先取消画框/选择，销毁释放监听 | 已完成待验收 |
-| ANN-05 | Fit、100%、按钮/滚轮缩放及平移 | 变换后绘制/移动/缩放无坐标偏移 | 已完成待验收 |
-| ANN-06 | 单一GT↔ImageAnnotation/RectangleGeometry转换层 | 稳定Box ID、class/code/来源审核元数据、版本/SHA，不漂移，不造历史证据 | 已完成待验收 |
-| ANN-07 | 沿用正式GT API及AnnotationRepository | expected_version/source_content_sha256/reviewed_label_codes、409不自动覆盖、权限/身份保持 | 已完成待验收 |
-| ANN-08 | 删除全部框可存待标注；明确无目标确认才是负样本 | 空GT与confirmed_empty分离，真实审核范围；材料投影/训练准入/审计一致 | 已完成待验收 |
-| ANN-09 | 简体中文UI、中文名+英文Label Code、原队列/画布/工具/类别对象布局 | 原Modal/Tooltip复用、合理边界和滚动、不新增管理器 | 已完成待验收 |
-| ANN-10 | 连续标注、预加载、保存继续及Dirty/自动保存唯一Owner | 保存成功后切图，失败/冲突不丢修改，保存中关闭/迟到/切项目安全 | 已完成待验收 |
-| ANN-11 | AI候选经人工确认编辑后写GT；保留来源/审核范围 | 未确认预测不是正式GT，不建第二候选/审核/标签/素材体系 | 已完成待验收 |
-| ANN-12 | 精确锁依赖、许可证、本地离线资源、回归/截图/最终SHA CI | 无CDN/React整体改造/第二打包体系，保留版权 | 进行中 |
+| ANN-01 | 官方Annotorious v3替换自研矩形画框内核；先隔离PoC再正式入口 | 非Demo交付，不叠加双层，不依赖私有API | 已验收 |
+| ANN-02 | 矩形新建、多框选择/移动/缩放/改类/删除/取消 | 原图像素，临时框与正式编辑框区分 | 已验收 |
+| ANN-03 | 选择/编辑、画框、平移、显示/隐藏及分类过滤 | 隐藏不改GT且不可误编辑 | 已验收 |
+| ANN-04 | Del/Backspace、Esc、Cmd/CtrlS/Z/ShiftZ、H、1–9、左右键 | 仅激活工作台、非输入；Esc先取消画框/选择，销毁释放监听 | 已验收 |
+| ANN-05 | Fit、100%、按钮/滚轮缩放及平移 | 变换后绘制/移动/缩放无坐标偏移 | 已验收 |
+| ANN-06 | 单一GT↔ImageAnnotation/RectangleGeometry转换层 | 稳定Box ID、class/code/来源审核元数据、版本/SHA，不漂移，不造历史证据 | 已验收 |
+| ANN-07 | 沿用正式GT API及AnnotationRepository | expected_version/source_content_sha256/reviewed_label_codes、409不自动覆盖、权限/身份保持 | 已验收 |
+| ANN-08 | 删除全部框可存待标注；明确无目标确认才是负样本 | 空GT与confirmed_empty分离，真实审核范围；材料投影/训练准入/审计一致 | 已验收 |
+| ANN-09 | 简体中文UI、中文名+英文Label Code、原队列/画布/工具/类别对象布局 | 原Modal/Tooltip复用、合理边界和滚动、不新增管理器 | 已验收 |
+| ANN-10 | 连续标注、预加载、保存继续及Dirty/自动保存唯一Owner | 保存成功后切图，失败/冲突不丢修改，保存中关闭/迟到/切项目安全 | 已验收 |
+| ANN-11 | AI候选经人工确认编辑后写GT；保留来源/审核范围 | 未确认预测不是正式GT，不建第二候选/审核/标签/素材体系 | 已验收 |
+| ANN-12 | 精确锁依赖、许可证、本地离线资源、回归/截图/最终SHA CI | 无CDN/React整体改造/第二打包体系，保留版权 | 已验收 |
 
 ## 2. 接手代码、根因与复用边界（审计已完成）
 
@@ -48,10 +50,10 @@ GT仍由原state/保存API/Repository权威维护，第三方只编辑客户端�
 |---|---|---|---|---|
 | A | Owner/GT/依赖许可证审计；本文件、package.json/lock、本地资源 | P0 已验收 | 最终Owner审计、官方3.9.5发布资源与16项版权/离线校验 | 实现e65ab6cb；生产不访问 |
 | B | 纯转换层+本地官方组件隔离PoC；Node与真实Chrome | P0 已验收 | Node24转换/资源9/9；真实Chrome PoC2/2通过（8.6秒） | 实现e65ab6cb；PoC及正式回归见6.6–6.9 |
-| C | 原GT保存空待标注合同、材料/准入/审计回归 | P0 已完成待验收 | 后端定向100通过（8文件，0失败0跳过） | 前端三态payload/当前负样本审核范围/dirty保留已接线，最终回归进行中；无生产迁移 |
-| D | 原工作台及AI候选新kernel、模式/键盘/过滤/视口/队列/Dirty；退役旧监听 | P1 已完成待验收 | 新接线2项RED→GREEN；公开API/候选草稿/取消19项定向通过 | 不叠加双内核；继承保存deadline/未知恢复 |
-| E | 编辑/数据/生命周期、四尺寸/逐张20图/100/300框/内存截图 | P1 已完成待验收 | 本地53个独立Chrome场景通过；真实截图与采样已归档 | 生产现场未验证；最终SHA CI待核验 |
-| F | 定向Python、完整Node、真实Chrome、许可证/离线复现、VERSION/正常推送/最终SHA CI | P0 进行中 | Python175、Node1192、Chrome53独立场景及16项资源核验通过 | 提交/正常推送与准确SHA CI；生产仍禁止 |
+| C | 原GT保存空待标注合同、材料/准入/审计回归 | P0 已验收 | 后端定向100通过（8文件，0失败0跳过） | 前端三态payload/当前负样本审核范围/dirty保留已接线，最终回归已验收；无生产迁移 |
+| D | 原工作台及AI候选新kernel、模式/键盘/过滤/视口/队列/Dirty；退役旧监听 | P1 已验收 | 新接线2项RED→GREEN；公开API/候选草稿/取消19项定向通过 | 不叠加双内核；继承保存deadline/未知恢复 |
+| E | 编辑/数据/生命周期、四尺寸/逐张20图/100/300框/内存截图 | P1 已验收 | 本地53个独立Chrome场景通过；真实截图与采样已归档 | 生产现场未验证；0e6cff67 CI通过，见6.10 |
+| F | 定向Python、完整Node、真实Chrome、许可证/离线复现、VERSION/正常推送/最终SHA CI | P0 已验收 | Python175、Node1192、Chrome53独立场景及16项资源核验通过 | 实现e65ab6cb，守卫3b0a72e8，夹具1aa75d21/0e6cff67；准确SHA CI见6.10；生产仍禁止 |
 
 ## 5. 问题、测试、生产条件与接续
 
@@ -65,7 +67,7 @@ GT仍由原state/保存API/Repository权威维护，第三方只编辑客户端�
 
 固定官方3.9.5及Lockfile，官方发布UMD/CSS/source map纳入static/vendor/annotorious；tools/vendor_annotorious.mjs离线复制并逐字节核验、SHA256清单及许可证。根包BSD-3-Clause、依赖BSD-2-Clause/MIT/ISC，source map确认内嵌Svelte4.2.20，原版版权文件与NOTICE保留。构建首次因ISC未在允许集合中失败，实读quickselect许可证后补入合法清单；不忽略未知许可证。16项资源/声明可离线重建，.gitattributes限定这些制品与声明不做换行转换。Node24.19.0完成资源/转换测试；初装使用旧Node20产生engine警告，后续Lockfile及正式测试使用Node24，package engines明确受支持22/24/26+，CI原有24复用。
 
-## 6. 正式接线、退役及审查记录（最终验收进行中）
+## 6. 正式接线、退役及审查记录（历史过程，最终结论见6.10）
 
 - 新`annotation-geometry-adapter.js`为唯一纯转换层；`annotorious-editor.js`只管官方图层/事件/视口，业务GT/history/dirty/save仍归原Owner。官方3.9.5 `autoSave`仅指客户端生命周期事件，平台正式持久化仍走原30秒单flight、未知结果GET、CAS/SHA链。
 - `main.mjs`公开一个factory；`app.js`稳定shell异步初始化、项目/图片/URL/generation/AbortSignal归属、立即Loading及资源失败重试，关闭或身份改变销毁，旧请求不得复活。旧mousedown、全局mousemove/up、pointer自研框、专属全局快捷键、`.box424/.handle424`及候选`.ai66-edit-box/.ai66-edit-draw`已退役，相关CSS清除；素材卡片/报告只读overlay保留。
@@ -94,7 +96,7 @@ GT仍由原state/保存API/Repository权威维护，第三方只编辑客户端�
 
 后端：app.py AnnotationSave/save_annotation、API空状态测试；无需新数据库/迁移。前端：app/main/styles/index必要cache、annotation-workbench/negative-samples、两个新模块、现有Node/Chrome Owner定位迁移及新真实交互测试。依赖：package/lock、vendor脚本、16项本地制品/许可证和限定.gitattributes。CI只在既有frontend browser集合增加本专项两个spec，在既有annotation合同集合补空状态/准入/Snapshot，不新建并行体系或扩大无关GPU工作。
 
-当前剩余：AI候选真实审核、保存中关闭/晚回新Modal、项目切换/快速重开、加载资源失败重试和更严格内存生命周期回归；最终四视口截图复核；最终Python/Node/Chrome统一验证与VERSION一次递增；提交/正常推送及准确SHA CI。本地限定验收及后续更新以6.6为准；不能借前轮4fcbcfc8绿色作为本轮结论。生产部署、正式GT/DB/素材变更仍禁止。
+当时剩余（后续已完成，见6.6和6.10）：AI候选真实审核、保存中关闭/晚回新Modal、项目切换/快速重开、加载资源失败重试和更严格内存生命周期回归；最终四视口截图复核；最终Python/Node/Chrome统一验证与VERSION一次递增；提交/正常推送及准确SHA CI。本地限定验收及后续更新以6.6为准；不能借前轮4fcbcfc8绿色作为本轮结论。生产部署、正式GT/DB/素材变更仍禁止。
 
 ### 6.4 历史无ID兼容与最终回归进展
 
@@ -143,8 +145,20 @@ GT仍由原state/保存API/Repository权威维护，第三方只编辑客户端�
 
 仅修改浏览器测试夹具，未改产品内核。修正后本地完整annotorious-workbench.spec.mjs真实Chrome22/22通过、0失败、0跳过（约1.4分钟），包含实际拖动/缩放/删除/保存和100/300框。最终提交仍须重新完成其准确SHA的全部CI；此前失败保留追踪。
 
-### 6.9 第三轮 CI 的切图就绪身份修正（最终汇总接续）
+### 6.9 第三轮 CI 的切图就绪身份修正
 
 1aa75d212025c9fd1e74449bac64c4b8be77effb 的Node实际1192/1192、Windows Agent340/340通过；主Chrome作业119274194039实际174项173通过、1失败（7.8分钟）：dirty previous/next在第二图按左键仍停在第二图。updateShell先同步filename与GT持久状态“已保存”，新组件由requestAnimationFrame后异步decode/create；原official测试helper只检查一个SVG和非空editor，可误认旧实例。旧实例的项目/图片身份保护正确拒绝新图按键，不能绕过或新增键盘Owner。
 
 helper现要求project/image/url完整identity、非hydrating、非factoryflight、非locked，同时保留唯一官方图层和所有GT/返回断言。原切图场景本地重复5/5和全工作台22/22通过。新增真实响应门禁场景：首次打开前拦住第二图真实图片字节，切图后GT已到且独立组件Loading可见、初始化flight存在而editor为空；释放真实响应后完整ready成立、左键恢复首图。新增场景1/1通过（首次夹具未点工具，焦点停留输入控件，方向键按既有输入保护被忽略；改为用户实际点击选择工具后操作，未人为blur或改保护）。本地独立Chrome总场景现54；CI主Chrome预期175，必须以实际输出核验。此证据不保证图片加载中按键被排队；“已保存”是GT持久状态，组件就绪有单独Loading，加载时仍禁止旧实例操作。
+
+### 6.10 最终代码验收、提交与接续
+
+最终代码验收SHA：**0e6cff67d7b303cfd59603af5b51948e6fb8a672**，VERSION **42.24.372**。其实际 **21/21 Actions、55/55 Checks completed/success**，主Chrome **175/175通过、0失败、0跳过（9.7分钟）**，完整Node **1192/1192、0失败、0跳过**。逐项准确SHA/工作流/Checks链接见[持久CI回执](evidence/ANNOTORIOUS_INTEGRATION_CI_2026_10_21.json)和[主浏览器工作流](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39617915659)。先前API出现已完成日志但元数据仍in_progress，最终等到全部实际状态收敛才验收，未把52/55或53/55当作全绿。
+
+本地Python175独立测试、Node1192、Chrome54独立场景全部通过；Chrome为PoC2/工作台23/生命周期10/旧material-workflows11/完整性治理8，原22整组与新增就绪门禁1分别执行，重复5次不累计独立数量。离线16项制品/版权声明再次校验通过。ANN-01–12及A–F在代码/隔离测试/CI范围内已验收；生产条件仍未验收。此前CI RED及夹具修复见6.7–6.9，不删除失败留痕。
+
+发布链：e65ab6cb（正式组件/转换/GT合同），3b0a72e8（三态守卫），1aa75d21（真实点击/DOM就绪），0e6cff67（准确新实例就绪+真实图片响应门禁）。后者普通Git两次连接失败后，GitHub连接器核对两个blob与完整tree d3a0c2123184215ab9b12783d8a85bc9476e88dc完全一致，以expected 1aa75d21、force=false快进；本地原d57c6da8保留codex/annotorious-local-d57c6da8并同步同树远端对象。共享历史、其他工作树及取消chipCode需求未改动。
+
+本文件和入口属于后续文档补提：其最终准确HEAD由Git History确定，交付还须独立核对该新SHA的Actions/Checks，不以0e6cff67绿色代替；最终回复同时给出实际HEAD。文档内容对应当前实现，VERSION不因验收补记再次递增。
+
+接续只需先读本节、6.6–6.9、回执及当前代码；不要重新接线或恢复旧矩形pointer/DOM内核，不新增GT/标签/素材/任务/审核/自动保存/Modal/Tooltip/Loading Owner。先从annotation-geometry-adapter.js、annotorious-editor.js、app.js最终ensureAnnotationEditor420/saveAnn/AI review入口及现有Repository定位问题。未授权部署、生产DB/GT/素材修改、迁移、清理及真实训练。上线前另行授权并核验本地静态制品/缓存、真实图片与大GT、多用户CAS/权限及真实AI候选审核；历史缺ID仅当前live GT原CAS保存补齐，冻结证据不得改写。生产Snapshot12.08秒的真实分解仍属于综合治理现场待核验，不能用本专项Fit76/177ms或空项目0.42–0.58秒冒充。
