@@ -16,15 +16,17 @@ export function annotationReviewView(annotation = {}, requiredCodes = []) {
 }
 
 export function annotationSavePayload({
-  annotation = {}, image = {}, boxes = [], reviewedLabelCodes = [],
+  annotation = {}, image = {}, boxes = [], reviewedLabelCodes = [], confirmEmpty = false,
 } = {}) {
+  const cleanBoxes = Array.isArray(boxes) ? boxes : [];
+  const annotationState = cleanBoxes.length ? 'annotated' : confirmEmpty ? 'confirmed_empty' : 'unannotated';
   return {
-    boxes: Array.isArray(boxes) ? boxes : [],
-    annotation_state: boxes.length ? 'annotated' : 'confirmed_empty',
+    boxes: cleanBoxes,
+    annotation_state: annotationState,
     expected_version: Number.isFinite(Number(annotation?.version))
       ? Number(annotation.version) : 0,
     source_content_sha256: String(image?.content_sha256 || ''),
-    reviewed_label_codes: uniqueCodes(reviewedLabelCodes),
+    reviewed_label_codes: annotationState === 'unannotated' ? [] : uniqueCodes(reviewedLabelCodes),
   };
 }
 

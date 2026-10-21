@@ -21,7 +21,7 @@ export function installNegativeSampleRuntime({getState} = {}) {
     if (!toolbar || !button || !current?.activeImage || !current?.ann) return false;
 
     const boxes = Array.isArray(current.ann.boxes) ? current.ann.boxes : [];
-    const confirmed = current.ann.annotation_state === 'confirmed_empty';
+    const confirmed = !current.annDirty && boxes.length === 0 && current.ann.annotation_state === 'confirmed_empty';
     const locked = Boolean(current.annotationHydrating420 || current.annotationLoadError420);
 
     button.dataset.negativeSample = '1';

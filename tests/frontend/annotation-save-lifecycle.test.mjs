@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
+import {annotationSavePayload} from '../../static/modules/annotation-workbench.js';
 
 function harness(request){
  const source=readFileSync(new URL('../../static/app.js',import.meta.url),'utf8');
@@ -92,5 +93,54 @@ test('failed recovery GET preserves original uncertain submission for the next v
 });
 test('confirmed empty recovery rejects newer unannotated state even with matching boxes and scope',async()=>{
  let count=0;const h=harness(async()=>{if(++count===1)return new Promise(()=>{});return {image:{id:'i1'},annotation:{version:2,annotation_state:'unannotated',annotation_scope:['car'],boxes:[]}}});h.state.ann={version:1,boxes:[],annotation_scope:['car']};
- const first=h.window.saveAnn(true,{confirmEmpty:true});await Promise.resolve();h.expire();assert.equal(await first,false);assert.equal(await h.window.saveAnn(true),false);assert.equal(h.state.ann.version,1);assert.equal(h.state.annDirty,true);assert.equal(h.saved,0);assert.match(h.messages.join(' '),/冲突/);assert.deepEqual(h.calls.map(call=>call.opts.method),['POST','GET']);
+ const first=h.window.saveAnn(true,{confirmEmpty:true,confirmReview:true,reviewedLabelCodes:['car']});await Promise.resolve();h.expire();assert.equal(await first,false);assert.equal(await h.window.saveAnn(true),false);assert.equal(h.state.ann.version,1);assert.equal(h.state.annDirty,true);assert.equal(h.saved,0);assert.match(h.messages.join(' '),/冲突/);assert.deepEqual(h.calls.map(call=>call.opts.method),['POST','GET']);
+});
+
+for(const withModule of [false,true])test(`dirty last-box removal saves pending with no negative proof (module=${withModule})`,async()=>{
+ const h=harness(async(_url,opts)=>({image:{id:'i1'},annotation:{version:2,...JSON.parse(opts.body),annotation_scope:[]}}));
+ if(withModule)h.window.PlatformCore.annotationWorkbench={annotationSavePayload};
+ h.state.ann={version:1,annotation_state:'annotated',annotation_scope:['car'],boxes:[]};h.state.annotationReviewSelected420=new Set(['person']);
+ assert.equal(await h.window.saveAnn(true),true);const payload=JSON.parse(h.calls[0].opts.body);
+ assert.equal(payload.annotation_state,'unannotated');assert.deepEqual(payload.reviewed_label_codes,[]);assert.deepEqual(payload.boxes,[]);assert.equal(payload.expected_version,1);
+ assert.equal(h.state.annDirty,false);assert.match(h.status.textContent,/待标注/);assert.equal(h.saved,1);
+});
+
+test('untouched confirmed negative ordinary save is a no-op that preserves review proof',async()=>{
+ const h=harness(async()=>{throw new Error('must not write')});h.state.ann={version:7,annotation_state:'confirmed_empty',annotation_scope:['car'],boxes:[]};h.state.annDirty=false;
+ assert.equal(await h.window.saveAnn(true),true);assert.equal(h.calls.length,0);assert.equal(h.state.ann.version,7);assert.equal(h.state.ann.annotation_state,'confirmed_empty');assert.deepEqual(h.state.ann.annotation_scope,['car']);assert.equal(h.state.annDirty,false);
+});
+
+test('explicit empty confirmation without current review labels does not POST',async()=>{
+ const h=harness(async()=>response());h.state.ann={version:1,boxes:[],annotation_scope:['car']};
+ assert.equal(await h.window.saveAnn(false,{confirmEmpty:true}),false);assert.equal(h.calls.length,0);assert.equal(h.state.annDirty,true);assert.match(h.messages.join(' '),/审核|标签/);
+});
+
+for(const withModule of [false,true])test(`confirmed negative timeout verifies only current reviewed scope (module=${withModule})`,async()=>{
+ let count=0;const h=harness(async()=>{if(++count===1)return new Promise(()=>{});return {image:{id:'i1'},annotation:{version:2,annotation_state:'confirmed_empty',annotation_scope:['person'],boxes:[]}}});
+ if(withModule)h.window.PlatformCore.annotationWorkbench={annotationSavePayload};
+ h.state.ann={version:1,annotation_state:'annotated',annotation_scope:['car'],boxes:[]};
+ const first=h.window.saveAnn(true,{confirmEmpty:true,confirmReview:true,reviewedLabelCodes:['person']});await Promise.resolve();h.expire();assert.equal(await first,false);
+ const payload=JSON.parse(h.calls[0].opts.body);assert.equal(payload.annotation_state,'confirmed_empty');assert.deepEqual(payload.reviewed_label_codes,['person']);
+ assert.equal(await h.window.saveAnn(true),true);assert.deepEqual(h.calls.map(c=>c.opts.method),['POST','GET']);assert.deepEqual(h.state.ann.annotation_scope,['person']);
+});
+
+for(const remoteState of ['unannotated','confirmed_empty'])test(`pending timeout validates state and empty scope (${remoteState})`,async()=>{
+ let count=0;const h=harness(async()=>{if(++count===1)return new Promise(()=>{});return {image:{id:'i1'},annotation:{version:2,annotation_state:remoteState,annotation_scope:[],boxes:[]}}});
+ h.state.ann={version:1,annotation_state:'annotated',annotation_scope:['car'],boxes:[]};
+ const first=h.window.saveAnn(true);await Promise.resolve();h.expire();assert.equal(await first,false);
+ assert.equal(await h.window.saveAnn(true),remoteState==='unannotated');assert.deepEqual(h.calls.map(c=>c.opts.method),['POST','GET']);assert.equal(h.state.annDirty,remoteState!=='unannotated');
+});
+
+test('pending timeout cannot recover stale negative scope as cleared GT',async()=>{
+ let count=0;const h=harness(async()=>{if(++count===1)return new Promise(()=>{});return {image:{id:'i1'},annotation:{version:2,annotation_state:'unannotated',annotation_scope:['car'],boxes:[]}}});
+ h.state.ann={version:1,annotation_state:'annotated',annotation_scope:['car'],boxes:[]};
+ const first=h.window.saveAnn(true);await Promise.resolve();h.expire();await first;
+ assert.equal(await h.window.saveAnn(true),false);assert.equal(h.state.annDirty,true);assert.equal(h.state.ann.version,1);assert.match(h.messages.join(' '),/冲突/);
+});
+
+test('new box drawn during pending save stays dirty with acknowledged CAS version',async()=>{
+ let resolve;const h=harness(()=>new Promise(r=>resolve=r));h.state.ann={version:1,annotation_state:'annotated',annotation_scope:['car'],boxes:[]};
+ const local=h.state.ann,first=h.window.saveAnn(true);await Promise.resolve();local.boxes.push({id:'new',label:'car',x1:4});
+ resolve({image:{id:'i1'},annotation:{version:2,annotation_state:'unannotated',annotation_scope:[],boxes:[]}});
+ assert.equal(await first,false);assert.equal(h.state.ann,local);assert.equal(local.boxes[0].id,'new');assert.equal(local.version,2);assert.equal(h.state.annDirty,true);assert.equal(h.saved,0);assert.equal(h.opened,0);
 });

@@ -1,3 +1,5 @@
+import {createAnnotoriousEditor} from './modules/annotorious-editor.js?v=20261021a';
+import {withLegacyBoxIdentities} from './modules/annotation-geometry-adapter.js?v=20261021a';
 import {installConversionCatalogRuntime} from './modules/conversion-catalog-runtime.js?v=2';
 import {renderPrisonNightInspectionPage} from './modules/prison-night-inspection-entry.mjs?v=20261010g';
 import {actionRegistry, invokeAction, registerAction} from './modules/actions.js?v=421800';
@@ -5,7 +7,7 @@ import {installRowActionMenu} from './modules/row-action-menu.js?v=4226385';
 import {messageFromApiError, withRequestDeadline} from './modules/api.js?v=20261021s';
 import {createModalStack, installModalPresentation, loadingSkeleton} from './modules/modal.js?v=20261021';
 import {annotationPreviewFromBoxes, applyAnnotationResult} from './modules/annotation.js?v=422502';
-import {installNegativeSampleRuntime} from './modules/negative-samples.js?v=422544';
+import {installNegativeSampleRuntime} from './modules/negative-samples.js?v=422545';
 import {installTrainingLabelRuntime} from './modules/training-labels.js?v=422569';
 import {installNavigationStability} from './modules/navigation-stability.js?v=422518';
 import {persistUiState} from './modules/ui-state.js?v=422500';
@@ -28,7 +30,7 @@ import {TRAINING_DRAFT_CONTROL_IDS, installTrainingDraftControls} from './module
 import {benchmarkReuseContext, buildTrainingEngineParameters, buildTrainingStartPayload, installTrainingSubmitRuntime, trainingSubmitReadiness, validateTrainingDevice} from './modules/training-submit.js?v=422603';
 import {installTrainingCreateHydrationRuntime} from './modules/training-create-hydration.js?v=422556';
 import {installAutoLabelPollRuntime} from './modules/auto-label-poll-runtime.js?v=422503';
-import {annotationReviewView, annotationSavePayload, createAnnotationWorkbench, queueWindow} from './modules/annotation-workbench.js?v=422594';
+import {annotationReviewView, annotationSavePayload, createAnnotationWorkbench, queueWindow} from './modules/annotation-workbench.js?v=422595';
 import {createTaskPoller, isTaskActive, taskProgress, waitForTaskTerminal} from './modules/task-poller.js?v=422002';
 import {annotationTaskView, buildCandidateDecisions} from './modules/annotation-task-view.js?v=422002';
 import {applyCleanConfirmation, cleanExecutionChoices, cleanExecutionMode, cleanSchedulingRequest, cleanScopeChoices, cleanScopeRequest, cleanScopeSupportsAnnotationAudit, cleanTaskView, isActiveCleanTask} from './modules/cleaning.js?v=422570';
@@ -108,7 +110,8 @@ window.PlatformCore = {
   messageFromApiError,
   withRequestDeadline,
   annotation: {annotationPreviewFromBoxes, applyAnnotationResult},
-  annotationWorkbench: {annotationReviewView, annotationSavePayload, createAnnotationWorkbench, queueWindow},
+  createAnnotoriousEditor,
+  annotationWorkbench: {annotationReviewView, annotationSavePayload, createAnnotationWorkbench, queueWindow, withLegacyBoxIdentities},
   taskPoller: {createTaskPoller, isTaskActive, taskProgress, waitForTaskTerminal},
   annotationTasks: {annotationTaskView, buildCandidateDecisions},
   cleaning: {applyCleanConfirmation, cleanExecutionChoices, cleanExecutionMode, cleanSchedulingRequest, cleanScopeChoices, cleanScopeRequest, cleanScopeSupportsAnnotationAudit, cleanTaskView, isActiveCleanTask},

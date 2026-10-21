@@ -5652,7 +5652,7 @@ def get_annotation(project_id: str, image_id: str):
 
 class AnnotationSave(BaseModel):
     boxes: List[Dict[str, Any]]
-    annotation_state: Optional[Literal["annotated", "confirmed_empty"]] = None
+    annotation_state: Optional[Literal["unannotated", "annotated", "confirmed_empty"]] = None
     expected_version: Optional[int] = None
     source_content_sha256: Optional[str] = None
     reviewed_label_codes: List[str] = Field(default_factory=list)
@@ -5757,22 +5757,36 @@ def save_annotation(project_id: str, image_id: str, payload: AnnotationSave):
             solution="请检查标注框是否位于图片内部且宽高大于零。",
             status_code=422,
         ) from error
-    if not clean_boxes and payload.annotation_state != "confirmed_empty":
+    if clean_boxes and payload.annotation_state == "unannotated":
+        raise PlatformError(
+            code="ANNOTATION_STATE_BOXES_MISMATCH",
+            message="待标注状态不能包含标注框",
+            detail="只有清空全部标注框后才能保存为待标注。",
+            solution="请保留标注框并保存为已标注，或清空标注框后保存为待标注。",
+            status_code=422,
+        )
+    if not clean_boxes and payload.annotation_state not in {"unannotated", "confirmed_empty"}:
         raise PlatformError(
             code="ANNOTATION_EMPTY_CONFIRMATION_REQUIRED",
             message="请确认无目标",
-            detail="删除最后一个标注框后，需要明确确认当前图片没有目标。",
-            solution="点击“确认无目标”后保存；如果误删，请先撤销或重新绘制标注框。",
+            detail="空标注必须明确选择保存为待标注，或确认当前图片没有目标。",
+            solution="清空错误标注后保存为待标注；只有完成类别审核后才能确认无目标。",
             status_code=409,
         )
-    annotation_state = "annotated" if clean_boxes else "confirmed_empty"
+    annotation_state = "annotated" if clean_boxes else payload.annotation_state
     existing_scope = {
         str(code).strip()
         for code in (existing_annotation.get("annotation_scope") or [])
         if str(code).strip()
     }
-    next_scope = sorted(existing_scope | set(reviewed_label_codes))
-    if not clean_boxes and not next_scope:
+    if annotation_state == "unannotated":
+        next_scope = []
+    elif annotation_state == "confirmed_empty":
+        # Former positive review does not prove absence after deleting its boxes.
+        next_scope = reviewed_label_codes
+    else:
+        next_scope = sorted(existing_scope | set(reviewed_label_codes))
+    if annotation_state == "confirmed_empty" and not reviewed_label_codes:
         raise PlatformError(
             code="ANNOTATION_REVIEW_LABEL_REQUIRED",
             message="请选择已经完成审核的标签",

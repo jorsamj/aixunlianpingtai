@@ -1,3 +1,7 @@
+## 2026-10-21｜Annotorious人工标注正式集成（本地完成，最终SHA CI待核验）
+
+唯一专项：[Annotorious集成](ANNOTORIOUS_ANNOTATION_INTEGRATION_2026_10_21.md)，6.6为当前接续。官方3.9.5本地资源、单一GT转换、manual/AI候选同kernel，空GT待标注与显式负样本分离，旧画框DOM/pointer已退役。Python175、Node1192、Chrome53个独立场景通过；真实四视口截图、100/300框和20次开关采样已归档，失败与修复均留痕。VERSION42.24.372，下一步正常推送并核验实际新SHA CI，再更新最终状态。生产未部署/写入/迁移/训练；前轮综合治理4fcbcfc8绿色不能代替本专项验收。
+
 ## 2026-10-21｜综合治理补充验收（代码及CI限定验收完成）
 
 唯一接续依据：[综合专项](FRONTEND_STARTUP_REPORT_UX_GOVERNANCE_2026_10_21.md)第10节。基线36aff618/VERSION370，最小修复Loading防重/截止/未知结果查询与标注保存归属，报告明确成功数、全部任务与含失败耗时；PARTIAL_SUCCESS保持正式训练成果已提交但独立评测失败的既有口径，不扩大成功标准。Python55、Node1142、Chrome90独立场景分别通过；bbb4950d实际35/35 Actions、98/98 Checks及CI Chrome140/140通过，准确回执见专项10.6；本次仅文档补提，自身检查仍须核验。VERSION42.24.371。未知批量提交缺幂等请求ID，保守查询锁仍需人工核验；ZIP等未逐接口Pending及生产12.08秒实际链路未覆盖，完整矩阵/生产只读方案/测试失败留痕见专项。未生产部署/数据修改。用户确认此验收完成后另行实施Annotorious，不能将其混入本专项或写为已集成。

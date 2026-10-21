@@ -121,7 +121,7 @@ test('canonical training visibility uses its same-scope status helper', () => {
   assert.doesNotMatch(block, /status429\(/);
 });
 
-test('annotation workbench has one save owner, explicit empty confirmation, and one manual advance', () => {
+test('annotation workbench has one save owner, explicit pending or negative empty states, and one manual advance', () => {
   const source = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
   assert.match(source, /function ensureShell\(\)\{[\s\S]*?ann420-stable[\s\S]*?ann420ConfirmEmpty[\s\S]*?确认无目标/);
   const confirmStart = source.indexOf('window.confirmEmptyAnnotation420=async function confirmEmptyAnnotationCanonical420()');
@@ -140,7 +140,9 @@ test('annotation workbench has one save owner, explicit empty confirmation, and 
   const core = source.slice(coreStart, coreEnd);
   assert.ok(coreStart >= 0 && coreEnd > coreStart);
   assert.match(core, /confirmEmpty=options\?\.confirmEmpty===true/);
-  assert.match(core, /annotation_state:boxes\.length\?'annotated':'confirmed_empty'/);
+  assert.match(core, /annotation_state:boxes\.length\?'annotated':confirmEmpty\?'confirmed_empty':'unannotated'/);
+  assert.match(core, /!boxes\.length&&confirmEmpty&&!reviewedLabelCodes\.length/);
+  assert.match(core, /payload\.annotation_state==='unannotated'\?\[\]/);
   assert.match(core, /patchMaterialCard412\(state\.activeImage\)/);
   assert.doesNotMatch(core, /await loadRelated\(\)/);
   const stableStart = source.lastIndexOf('Stable single-instance manual\/batch annotation workbench');
@@ -206,9 +208,20 @@ test('algorithm card keeps training transition states active and empty confirmat
   assert.match(source, /pausing:'暂停中'/);
   assert.match(source, /resuming:'恢复中'/);
   assert.match(source, /stopping:'停止中'/);
-  const deleteOwner = source.match(/window\.deleteActiveBox=\(\)=>\{[^\n]+/s)?.[0] || '';
-  assert.match(deleteOwner, /ann420ConfirmEmpty/);
-  assert.match(deleteOwner, /confirmEmpty\.hidden=/);
+  assert.match(source, /window\.deleteActiveBox=\(\)=>state\.annotationEditor\?\.deleteSelected\(\)/);
+  const editor=readFileSync(new URL('../../static/modules/annotorious-editor.js',import.meta.url),'utf8');
+  const deleteStart=editor.indexOf('function deleteSelected()');
+  const deleteEnd=editor.indexOf('function reclassSelected',deleteStart);
+  assert.ok(deleteStart>0&&deleteEnd>deleteStart);
+  assert.match(editor.slice(deleteStart,deleteEnd),/commit\(rows\(\)\.filter\(box=>idOf\(box\)!==String\(selectedId\)\),'delete',null\)/);
+  const commitStart=source.indexOf('onCommit:(boxes,{selectedId}={})=>');
+  const commitEnd=source.indexOf('onError:',commitStart);
+  assert.ok(commitStart>0&&commitEnd>commitStart);
+  assert.match(source.slice(commitStart,commitEnd),/state\.ann\.boxes=boxes.*markDirty\(\);renderAnnSide\(\)/);
+  const sideStart=source.lastIndexOf('renderAnnSide=function(){');
+  const sideEnd=source.indexOf('window.relabelBox414=',sideStart);
+  assert.ok(sideStart>0&&sideEnd>sideStart);
+  assert.match(source.slice(sideStart,sideEnd),/getElementById\('ann420ConfirmEmpty'\);if\(confirmEmpty\)confirmEmpty\.hidden=!!state\.annotationHydrating420\|\|!!state\.annotationLoadError420\|\|boxes\.length>0/);
 });
 
 

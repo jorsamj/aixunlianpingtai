@@ -95,17 +95,22 @@ test('manual annotation saves, survives reload, and updates the thumbnail', asyn
   await expect(dialog.getByLabel('绘制标签')).toBeVisible();
   await expect(dialog.getByLabel('绘制标签').locator('option')).toHaveText(['人员 · person', '车辆 · vehicle']);
   await expect(dialog.getByText('连续标注', {exact: true})).toBeVisible();
+  await expect(dialog.locator('#annStage svg.a9s-annotationlayer')).toHaveCount(1);
   const imageBox = await dialog.locator('#annImg').boundingBox();
   expect(imageBox).not.toBeNull();
   await page.mouse.move(imageBox.x + imageBox.width * 0.2, imageBox.y + imageBox.height * 0.2);
   await page.mouse.down();
   await page.mouse.move(imageBox.x + imageBox.width * 0.75, imageBox.y + imageBox.height * 0.75, {steps: 5});
   await page.mouse.up();
-  await expect(dialog.locator('.box424')).toHaveCount(1);
+  await expect(dialog.locator('#annStage .a9s-annotation:is([data-id],.selected)')).toHaveCount(1);
 
-  const box = dialog.locator('.box424').first();
+  const box = dialog.locator('#annStage .a9s-annotation:is([data-id],.selected) .a9s-inner').first();
+  await expect(box).toBeVisible();
   const beforeMove = await box.boundingBox();
   expect(beforeMove).not.toBeNull();
+  await dialog.locator('[data-ann-mode="select"]').click();
+  await page.mouse.click(beforeMove.x+beforeMove.width/2,beforeMove.y+beforeMove.height/2);
+  await expect.poll(()=>page.evaluate(()=>state.activeBox)).toBe(0);
   const moveDx = Math.max(6, imageBox.width * 0.08);
   const moveDy = Math.max(5, imageBox.height * 0.08);
   await page.mouse.move(beforeMove.x + beforeMove.width / 2, beforeMove.y + beforeMove.height / 2);
@@ -120,10 +125,16 @@ test('manual annotation saves, survives reload, and updates the thumbnail', asyn
   expect(afterMove.x).toBeGreaterThan(beforeMove.x + 2);
   expect(afterMove.y).toBeGreaterThan(beforeMove.y + 2);
 
-  const resizeHandle = box.locator('.handle424.se');
-  await expect(resizeHandle).toBeVisible();
+  await expect(dialog.locator('.a9s-annotation.selected [role=button]:visible').first()).toBeVisible();
   const beforeResize = await box.boundingBox();
-  const handleBox = await resizeHandle.boundingBox();
+  const gtBeforeResize=await page.evaluate(()=>({...state.ann.boxes[0]}));
+  // At high zoom, painted SVG bounds include the interaction stroke and do
+  // not identify a corner handle. Use the actual public SVG circle center;
+  // the touch rendering deliberately omits corner-specific CSS classes.
+  const handleBox = await dialog.locator('.a9s-annotation.selected circle[role="button"]:visible').evaluateAll(handles=>{
+    const bottomRight=handles.toSorted((a,b)=>(Number(b.getAttribute('cx'))+Number(b.getAttribute('cy')))-(Number(a.getAttribute('cx'))+Number(a.getAttribute('cy'))))[0];
+    return bottomRight.getBoundingClientRect().toJSON();
+  });
   expect(handleBox).not.toBeNull();
   await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + handleBox.height / 2);
   await page.mouse.down();
@@ -133,24 +144,28 @@ test('manual annotation saves, survives reload, and updates the thumbnail', asyn
     {steps: 4}
   );
   await page.mouse.up();
+  await expect.poll(()=>page.evaluate(()=>state.ann.boxes[0].x2-state.ann.boxes[0].x1)).toBeGreaterThan(gtBeforeResize.x2-gtBeforeResize.x1);
+  await expect.poll(()=>page.evaluate(()=>state.ann.boxes[0].y2-state.ann.boxes[0].y1)).toBeGreaterThan(gtBeforeResize.y2-gtBeforeResize.y1);
   const afterResize = await box.boundingBox();
   expect(afterResize.width).toBeGreaterThan(beforeResize.width + 2);
   expect(afterResize.height).toBeGreaterThan(beforeResize.height + 2);
 
-  await page.mouse.move(imageBox.x + 2, imageBox.y + 2);
+  await dialog.getByRole('button', {name: '100%', exact: true}).click();
+  const zoomImageBox=await dialog.locator('#annImg').boundingBox();
+  await page.mouse.move(zoomImageBox.x + 2, zoomImageBox.y + 2);
   await page.mouse.wheel(0, -120);
   await expect(dialog.locator('#zoomText')).toHaveText('110%');
   await dialog.getByRole('button', {name: '100%', exact: true}).click();
   await expect(dialog.locator('#zoomText')).toHaveText('100%');
   await dialog.getByRole('button', {name: '适应窗口', exact: true}).click();
   await expect(dialog.locator('#zoomText')).toHaveText(/^\d+%$/);
-  await expect(dialog.locator('#annStage')).toHaveAttribute('style', /transform:\s*scale\(/);
+  await expect(dialog.locator('#annStage')).toHaveAttribute('style', /transform:.*scale\(/);
 
   await dialog.getByRole('button', {name: '删除框', exact: true}).click();
-  await expect(dialog.locator('.box424')).toHaveCount(0);
+  await expect(dialog.locator('#annStage .a9s-annotation:is([data-id],.selected)')).toHaveCount(0);
   await expect(dialog.getByRole('button', {name: '确认无目标', exact: true})).toBeVisible();
   await dialog.getByRole('button', {name: '撤销', exact: true}).click();
-  await expect(dialog.locator('.box424')).toHaveCount(1);
+  await expect(dialog.locator('#annStage .a9s-annotation:is([data-id],.selected)')).toHaveCount(1);
 
   await dialog.getByRole('button', {name: '保存并继续'}).click();
   await expect(dialog.getByText('已保存 · 1框')).toBeVisible();
@@ -332,13 +347,14 @@ test('professional annotation workbench survives repeated open-close cycles and 
     expect(rect.y + rect.height).toBeLessThanOrEqual(768);
   }
 
+  await expect(dialog.locator('#annStage svg.a9s-annotationlayer')).toHaveCount(1);
   const imageBox = await dialog.locator('#annImg').boundingBox();
   expect(imageBox).not.toBeNull();
   await page.mouse.move(imageBox.x + imageBox.width * 0.2, imageBox.y + imageBox.height * 0.2);
   await page.mouse.down();
   await page.mouse.move(imageBox.x + imageBox.width * 0.7, imageBox.y + imageBox.height * 0.7, {steps: 5});
   await page.mouse.up();
-  await expect(dialog.locator('.box424')).toHaveCount(1);
+  await expect(dialog.locator('#annStage .a9s-annotation:is([data-id],.selected)')).toHaveCount(1);
   await expect(dialog.locator('#annBoxes [data-ann-box-key]')).toHaveCount(1);
 
   await page.setViewportSize({width: 1920, height: 1080});
@@ -349,10 +365,12 @@ test('professional annotation workbench survives repeated open-close cycles and 
   expect(desktopCard).not.toBeNull();
   expect(desktopCanvas).not.toBeNull();
   expect(desktopInspector).not.toBeNull();
-  expect(desktopCard.width).toBeGreaterThan(1500);
-  expect(desktopCard.height).toBeGreaterThan(900);
-  expect(desktopCanvas.width).toBeGreaterThan(800);
-  expect(desktopCanvas.height).toBeGreaterThan(700);
+  expect(desktopCard.width).toBeLessThanOrEqual(1480);
+  expect(desktopCard.height).toBeLessThanOrEqual(1080*.86);
+  expect(desktopCard.x).toBeGreaterThanOrEqual(32);
+  expect(desktopCard.y).toBeGreaterThanOrEqual(32);
+  expect(desktopCanvas.width).toBeGreaterThan(600);
+  expect(desktopCanvas.height).toBeGreaterThan(400);
   expect(desktopInspector.x + desktopInspector.width).toBeLessThanOrEqual(1920);
 });
 
@@ -373,6 +391,7 @@ test('closing the base annotation workbench persists dirty boxes before teardown
 
   const dialog = page.getByRole('dialog', {name: '图片标注工作台', exact: true});
   await expect(dialog).toBeVisible();
+  await expect(dialog.locator('#annStage svg.a9s-annotationlayer')).toHaveCount(1);
   const imageBox = await dialog.locator('#annImg').boundingBox();
   expect(imageBox).not.toBeNull();
   await page.mouse.move(imageBox.x + imageBox.width * 0.2, imageBox.y + imageBox.height * 0.2);
@@ -709,13 +728,14 @@ test('previous and next navigation auto-save the current annotation', async ({pa
 
   const dialog = page.getByRole('dialog', {name: '图片标注工作台', exact: true});
   await expect(dialog.locator('#ann420Filename')).toHaveText('nav-one.bmp');
+  await expect(dialog.locator('#annStage svg.a9s-annotationlayer')).toHaveCount(1);
   const imageBox = await dialog.locator('#annImg').boundingBox();
   expect(imageBox).not.toBeNull();
   await page.mouse.move(imageBox.x + imageBox.width * 0.2, imageBox.y + imageBox.height * 0.2);
   await page.mouse.down();
   await page.mouse.move(imageBox.x + imageBox.width * 0.7, imageBox.y + imageBox.height * 0.7, {steps: 4});
   await page.mouse.up();
-  await expect(dialog.locator('.box424')).toHaveCount(1);
+  await expect(dialog.locator('#annStage .a9s-annotation:is([data-id],.selected)')).toHaveCount(1);
   await expect(dialog.locator('#annSaveState')).toHaveText('未保存');
 
   await dialog.locator('#ann420Next').click();
@@ -730,6 +750,6 @@ test('previous and next navigation auto-save the current annotation', async ({pa
   await dialog.locator('#ann420Prev').click();
   await expect(dialog.locator('#ann420Filename')).toHaveText('nav-one.bmp');
   await expect(dialog.getByText('1 / 2', {exact: true})).toBeVisible();
-  await expect(dialog.locator('.box424')).toHaveCount(1);
+  await expect(dialog.locator('#annStage .a9s-annotation:is([data-id],.selected)')).toHaveCount(1);
   await expect(dialog.locator('#annSaveState')).toHaveText('已保存');
 });

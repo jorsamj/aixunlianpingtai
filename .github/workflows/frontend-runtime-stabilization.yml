@@ -467,6 +467,9 @@ jobs:
           tests/browser/material-pagination-performance.spec.mjs
           tests/browser/page-loading-performance.spec.mjs
           tests/browser/material-workflows.spec.mjs
+          tests/browser/annotorious-poc.spec.mjs
+          tests/browser/annotorious-workbench.spec.mjs
+          tests/browser/annotorious-lifecycle.spec.mjs
           tests/browser/material-integrity-governance.spec.mjs
           tests/browser/training-duplicate-conflicts.spec.mjs
           tests/browser/source-import-completion-scope.spec.mjs

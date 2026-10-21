@@ -271,7 +271,7 @@ app.shared_task_repository().create(replace(TaskRecord.new(task,p,TaskKind.TRAIN
   await page.locator('#materialIntegrityGroupList47 > article').first().locator('button').click();
   await expect(page.locator('#materialIntegrityItems47 > article')).toHaveCount(2);
   await page.locator('#materialIntegrityItems47 > article').first().getByRole('button',{name:/标注|审核|核对/}).click();
-  const workbench=page.getByRole('dialog',{name:'图片标注工作台',exact:true});await expect(workbench.locator('#annSaveState')).toHaveText('已保存');await expect(workbench.locator('.box424')).toHaveCount(1);
+  const workbench=page.getByRole('dialog',{name:'图片标注工作台',exact:true});await expect(workbench.locator('#annSaveState')).toHaveText('已保存');await expect(workbench.locator('#annStage .a9s-annotation:is([data-id],.selected)')).toHaveCount(1);
   expect(executions).toBe(0);expect(isolatedPython(project.id,"import os,app; print(app.material_store(os.environ['INTEGRITY_TEST_PROJECT']).summary()['total'])")).toBe('2');
   expect(await (await request.get(`/api/v61/projects/${project.id}/materials/${original.id}/content`)).body()).toEqual(before);
   expect(await (await request.get(`/api/v61/projects/${project.id}/materials/protected-copy/content`)).body()).toEqual(before);

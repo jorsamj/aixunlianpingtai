@@ -14,6 +14,11 @@ const modelArtifactSource = readFileSync(new URL('../../static/modules/model-art
 const serviceNodeSource = readFileSync(new URL('../../static/modules/service-node-runtime.js', import.meta.url), 'utf8');
 const authSessionSource = readFileSync(new URL('../../static/auth-session.js', import.meta.url), 'utf8');
 const loginSource = readFileSync(new URL('../../static/login.js', import.meta.url), 'utf8');
+const geometrySource = readFileSync(new URL('../../static/modules/annotation-geometry-adapter.js', import.meta.url), 'utf8');
+const editorSource = readFileSync(new URL('../../static/modules/annotorious-editor.js', import.meta.url), 'utf8');
+// Inspect the URL literal in its actual argument position. A minified line may
+// also contain unrelated documentation URLs after a dynamic or relative fetch.
+const hardcodedNetworkCall = /\b(?:fetch|EventSource)\s*\(\s*['"`]\s*(?:(?:https?|wss?):)?\/\/|\bXMLHttpRequest\.prototype\.open\s*\(\s*(['"`])[^'"`]*\1\s*,\s*['"`]\s*(?:(?:https?|wss?):)?\/\//;
 
 const frontendFiles = directory => readdirSync(directory, {withFileTypes: true}).flatMap(entry => {
   const path = join(directory, entry.name);
@@ -114,16 +119,27 @@ test('lowest browser fallback remains collision-safe during rapid annotation cre
   assert.ok(ids.every(id => /^[0-9a-f]{20}$/.test(id)));
 });
 
-test('training annotation and upload client identities share the browser runtime owner', () => {
+test('upload identities use the browser runtime while annotation projection preserves official and existing ids', () => {
   assert.ok(indexSource.indexOf('/static/browser-runtime.js') < indexSource.indexOf('/static/app.js'));
-  const ownerStart = appSource.lastIndexOf('Pointer based annotation editing is the canonical interaction owner.');
-  const ownerEnd = appSource.indexOf('// ---------- image upload with actual browser upload progress / ETA ----------', ownerStart);
-  const annotationOwner = appSource.slice(ownerStart, ownerEnd);
-  assert.match(annotationOwner, /BrowserCapabilityRuntime\.createClientId\('',\s*20\)/);
-  assert.doesNotMatch(annotationOwner, /randomUUID|String\(Date\.now\(\)\)/);
+  assert.match(editorSource, /originals=new Map\(current\.map\(box=>\[idOf\(box\),box\]\)\)/);
+  assert.match(geometrySource, /const id = annotationId\(annotation\?\.id\)/);
+  assert.match(geometrySource, /id:original\?\.id \?\? id/);
+  assert.doesNotMatch(geometrySource, /randomUUID|String\(Date\.now\(\)\)/);
   assert.match(uploadSource, /BrowserCapabilityRuntime\.createClientId\('up',\s*32\)/);
   assert.match(uploadSource, /BrowserCapabilityRuntime\.createClientId\('images:',\s*32\)/);
   assert.doesNotMatch(uploadSource, /randomUUID|Math\.random\(\)\.toString\(16\)/);
+});
+
+test('same-origin scanner checks URL arguments rather than later URLs in a minified statement', () => {
+  for(const sample of ["fetch('https://bad.example/api')",'new EventSource("https://bad.example/sse")',
+    'fetch(`wss://bad.example/socket`)',"fetch('//bad.example/api')",
+    "XMLHttpRequest.prototype.open('GET', 'http://bad.example/api')"])
+    assert.equal(hardcodedNetworkCall.test(sample),true,sample);
+  for(const sample of ["fetch('/api/images');const docs='https://docs.example/guide'",
+    'fetch(w).then(p=>p.json());const context={"@context":"http://www.w3.org/ns/anno.jsonld"}',
+    'new EventSource(`/api/tasks/${id}`);const docs="https://docs.example"',
+    "XMLHttpRequest.prototype.open('GET', '/api/items');const docs='https://docs.example'"])
+    assert.equal(hardcodedNetworkCall.test(sample),false,sample);
 });
 
 test('clipboard remains an explicitly capability-detected optional enhancement', () => {
@@ -135,7 +151,6 @@ test('training SSE and browser-to-platform requests stay same-origin', () => {
   assert.match(streamSource, /new Source\(`\/api\/v64\/projects\//);
   assert.doesNotMatch(streamSource, /new Source\(`(?:https?|wss?):\/\//);
 
-  const hardcodedNetworkCall = /(?:fetch|EventSource|XMLHttpRequest\.prototype\.open)\s*\([^\n]*(?:https?|wss?):\/\//;
   const offenders = frontendFiles('static')
     .filter(path => hardcodedNetworkCall.test(readFileSync(path, 'utf8')));
   assert.deepEqual(offenders, []);

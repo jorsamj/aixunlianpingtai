@@ -49,9 +49,9 @@ test('entry bundles use cache-bust markers independently from formal release tru
   assert.match(index, /\/static\/app\.js\?v=\d+(?:\.\d+)*/);
   assert.match(index, /\/static\/main\.mjs\?v=\d+(?:\.\d+)*/);
   assert.match(index, /\/static\/styles\.css\?v=\d+(?:\.\d+)*/);
-  assert.equal(index.includes('/static/styles.css?v=42.25.418'), true);
-  assert.equal(index.includes('/static/app.js?v=42.25.418'), true);
-  assert.equal(index.includes('/static/main.mjs?v=42.25.418'), true);
+  assert.equal(index.includes('/static/styles.css?v=42.25.419'), true);
+  assert.equal(index.includes('/static/app.js?v=42.25.419'), true);
+  assert.equal(index.includes('/static/main.mjs?v=42.25.419'), true);
   assert.equal(index.includes('/static/modules/storage-cache-runtime.js?v=422540'), true);
   assert.match(main, /\.\/modules\/model-artifact-runtime\.js\?v=\d+/);
   assert.match(main, /\.\/modules\/training-task-runtime\.js\?v=\d+/);
@@ -73,7 +73,7 @@ test('formal platform version is not re-embedded into visible static chrome', ()
 });
 
 test('negative sample runtime is cache-busted with canonical owner retirement', () => {
-  assert.equal(main.includes("./modules/negative-samples.js?v=422544"), true);
+  assert.equal(main.includes("./modules/negative-samples.js?v=422545"), true);
 });
 
 test('training material picker canonical confirm asset is current', () => {
