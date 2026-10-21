@@ -2080,10 +2080,15 @@ def test_weight_info_optional_tags_query_preserves_default_contract(with_tags,ex
 
 
 @pytest.mark.parametrize("weight_id", ["invalid", "1/other", "0", "-1", "9223372036854775808"])
-def test_weight_info_rejects_invalid_int64_before_request(weight_id):
-    client=_authenticated_mutation_client(NeverCalledSession())
-    with pytest.raises(ValueError,match="weightId"):
-        client.weight_info(weight_id)
+def test_weight_info_rejects_invalid_int64_before_request(weight_id,tmp_path,monkeypatch):
+    from platform_core.external_algorithm_platform import external_algorithm_platform_router
+    def unexpected_client(self):pytest.fail("invalid browser ID must fail before creating a remote client")
+    monkeypatch.setattr(ExternalAlgorithmPlatformService,"_client",unexpected_client)
+    router=external_algorithm_platform_router(data_dir=tmp_path,get_project=lambda p:None,algorithms_file=lambda p:tmp_path/'a.json',secret_store_factory=MemorySecretStore)
+    endpoint=next(r.endpoint for r in router.routes if r.path.endswith('/provider/weights/{weight_id}') and 'GET' in r.methods)
+    with pytest.raises(PlatformError,match="weightId") as error:
+        endpoint(weight_id,withTags=None)
+    assert error.value.code=="EXTERNAL_WEIGHT_ID_INVALID" and error.value.status_code==400
 
 
 @pytest.mark.parametrize("with_tags", [None, True, False])
@@ -2145,3 +2150,11 @@ def test_provider_browser_list_projections_preserve_int64_before_json(tmp_path,m
         row=result['response']['data'][0]
         assert row['weightId']=='2112456166616469504' and row['algoVersionId']=='2109729657292197888' and row['productId']=='2102998777790074880'
     assert isinstance(payload['data'][0]['weightId'],int)
+
+
+def test_weight_info_default_keeps_existing_publisher_client_call_compatible():
+    session=MutationSession()
+    session.request=lambda method,url,**kwargs:(session.calls.append((method,url,kwargs)) or FakeResponse({"code":200,"data":{"weightId":"legacy-weight-1","tags":["Car"]}}))
+    client=_authenticated_mutation_client(session)
+    assert client.weight_info('legacy-weight-1')['data']['tags']==['Car']
+    assert session.calls[0][1].endswith('/getInfo/legacy-weight-1') and 'params' not in session.calls[0][2]

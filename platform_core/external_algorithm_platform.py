@@ -957,8 +957,6 @@ class ChangLianClient:
 
     def weight_info(self, weight_id: Any, *, with_tags: Optional[bool] = None) -> Any:
         identity = str(weight_id)
-        if not identity.isascii() or not identity.isdecimal() or not 0 < int(identity) <= 2**63 - 1:
-            raise ValueError("weightId 必须为有效的正 int64")
         path = self.endpoints.weight_detail.replace("{weightId}", identity)
         # Opt-in candidate contract. Existing publication readback remains unchanged.
         query = {} if with_tags is None else {"params": {"withTags": str(with_tags).lower()}}
@@ -3132,11 +3130,10 @@ def external_algorithm_platform_router(
 
     @router.get("/provider/weights/{weight_id}")
     def provider_weight_info(weight_id: str, withTags: Optional[bool] = Query(default=None)):
-        try:
-            client = service._client()
-            response = client.weight_info(weight_id) if withTags is None else client.weight_info(weight_id, with_tags=withTags)
-        except ValueError as error:
-            raise PlatformError("EXTERNAL_WEIGHT_ID_INVALID", str(error), "", status_code=400) from error
+        if not weight_id.isascii() or not weight_id.isdecimal() or not 0 < int(weight_id) <= 2**63 - 1:
+            raise PlatformError("EXTERNAL_WEIGHT_ID_INVALID", "weightId 必须为有效的正 int64", "", status_code=400)
+        client = service._client()
+        response = client.weight_info(weight_id) if withTags is None else client.weight_info(weight_id, with_tags=withTags)
         return {"ok": True, "response": _provider_browser_response(redact(response))}
 
     @router.get("/training-preflight")

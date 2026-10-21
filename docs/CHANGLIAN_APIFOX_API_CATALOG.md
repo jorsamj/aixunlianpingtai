@@ -41,6 +41,12 @@ getInfo原始响应与list标签响应分开保存/展示，不将list标签伪�
 - Chrome：原手动只读场景1、完整24字段+分页Car+长URL/SHA/XSS/复制/缓存/刷新1、null/缺失/失败重试/关闭迟到/导航返回1，**3个不同场景通过**。完整详情及原手动页面夹具曾在导航初始化前查菜单而超时，补显式高级菜单就绪等待后通过，未放宽功能断言。1366×768/1440×768无内容横溢出，实际截图已查看。隔离协议fixture不是生产/真实SDK证明。
 - JUnit、截图、最终CI回执均在既有visualizations目录：`weight-detail-local-tests-20261021.json`、`changlian-weight-details-top.png`、`changlian-weight-details.png`、`weight-detail-ci-final-20261021.json`。最终SHA/Actions/Checks待普通推送后实际核验，禁止借用基线绿色；按既有接续规则独立回执避免自引用文档提交循环。
 
+## 首SHA CI回归与边界修正
+
+首推 `9d2cdd48e49f654b0bb9dad2b8c19eac56a2650e` 实际CI检出共用Client新加int64校验破坏原发布协议测试的兼容性，26项既有wire/历史17项等失败；不是远端故障。严格校验放错层是本轮回归，已修正为**原Provider详情入口在创建Client前拒绝非法int64**，共用Client恢复原默认调用合同，可选with_tags仍保持None时不传query。没有修改任何原发布夹具、断言或Owner。
+
+新增默认Client兼容回归先RED1→GREEN；本轮新加的非法ID断言改在正确的浏览器API边界执行，并加强为连Client创建都不得发生，RED5→GREEN5，不是放松网络安全。仅重验直接受影响的Client9、真实HTTP1及CI明确失败的26项发布协议，全部通过；不重复跑未变化的Node/Chrome。Python最终去重127项（原100 + 新兼容1 + CI直接失败回归26），Node32、Chrome3不变。VERSION367及缓存不二次递增，最终后续SHA CI仍待实际核验。
+
 ## 质量审查、修改文件与接续
 
 已直接检查唯一Owner/数据源/API、单次事件绑定/重复请求、缓存/异步归属、ID/HTML/敏感数据及历史安全。独立只读review的P2迟到toast已RED→GREEN关闭，复核无新增明确P2；无新wrapper/Observer/定时器/轮询/业务数据库。原页面全量产品/版本列表水合的既有规模债未扩围重构，新增详情仅按需。本轮不声称全仓无历史技术债。

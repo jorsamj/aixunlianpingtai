@@ -1,6 +1,8 @@
 ## 2026-10-21｜畅联云Weight完整详情与官方withTags分页查询（本地通过 / 最终SHA CI待核验）
 
-基线22587dd7/VERSION366已fetch/pull干净且远端一致，其他工作区/会话未覆盖；上轮26/70最终绿色回执归档。原畅联云数据Runtime/Client/详情及分页API复用，24字段分组详情、Tags正式list withTags=true精确ID分页补查、int64浏览器安全投影、来源/空值/冲突/失败区分、按需缓存及迟到生命周期保护；无新增Owner/轮询/包装。完整需求/官方合同/RED→GREEN/字段/质量审查/限定测试见[接口与详情验收](CHANGLIAN_APIFOX_API_CATALOG.md)。Python去重100、Node32、Chrome3场景通过，VERSION一次递增367，main/styles414及浏览模块缓存63002，原app413保持。最终实际SHA CI待推送核验，回执weight-detail-ci-final-20261021.json；SSH只读拒绝，真实provider Tags/getInfo候选参数及生产历史仍NOT VERIFIED；未部署/写生产DB/OSS/Weight。
+基线22587dd7/VERSION366已fetch/pull干净且远端一致，其他工作区/会话未覆盖；上轮26/70最终绿色回执归档。原畅联云数据Runtime/Client/详情及分页API复用，24字段分组详情、Tags正式list withTags=true精确ID分页补查、int64浏览器安全投影、来源/空值/冲突/失败区分、按需缓存及迟到生命周期保护；无新增Owner/轮询/包装。完整需求/官方合同/RED→GREEN/字段/质量审查/限定测试见[接口与详情验收](CHANGLIAN_APIFOX_API_CATALOG.md)。Python去重127、Node32、Chrome3场景通过，VERSION一次递增367，main/styles414及浏览模块缓存63002，原app413保持。最终实际SHA CI待推送核验，回执weight-detail-ci-final-20261021.json；SSH只读拒绝，真实provider Tags/getInfo候选参数及生产历史仍NOT VERIFIED；未部署/写生产DB/OSS/Weight。
+
+首推9d2cdd48的CI复现Client校验层次回归；已将严格ID校验移至原Provider路由并保留默认Client兼容性，新增RED及直接Client9/HTTP1/原失败wire26 GREEN，原发布安全测试未改。VERSION367不二次递增；后续最终SHA CI待核验，详见接口专项。
 
 ## 2026-10-21｜Tags / 转换参数 / AMP / SDK 一致性（本地通过 / 待最终SHA CI）
 
