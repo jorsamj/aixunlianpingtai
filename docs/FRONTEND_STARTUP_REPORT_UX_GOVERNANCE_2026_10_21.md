@@ -12,14 +12,14 @@
 
 | 编号 | 优先级 | 正式需求 | 当前状态 |
 |---|---|---|---|
-| PERF-01 | P0 | 审计 Snapshot/历史任务扫描，核心数据优先，按需历史报告，复用有效快照且任务与算法版本真实 | 已完成待验收 |
-| UX-01 | P1 | 科技蓝、浅色、柔和骨架、小 Spinner、平滑淡入；后台保留数据，提交防重，长任务真实进度 | 已完成待验收 |
-| REPORT-01 | P0/P1 | 即刻弹窗、骨架、真实报告、有界等待、明确错误与重试、请求/版本隔离、关闭清理 | 已完成待验收 |
-| MODAL-01 | P1 | 报告和独立评测居中正常弹窗，约1120px/86dvh，固定标题独立滚动，保留全部功能 | 已完成待验收 |
-| HOVER-01 | P1 | 操作图标统一高亮及跟随指针、边缘避让提示，键盘/Esc/触屏可用，装饰图标不加无意义提示 | 已完成待验收 |
-| CHART-01 | P1 | 保留真实曲线/采样/Legend/DataZoom/Resize/Dispose及真实悬停，彻底删除报告恢复视图 | 已完成待验收 |
-| TRAIN-01 | P1 | 服务端可靠确认独立TRAINING任务身份后接入Runtime、立刻仅关原创建弹窗、成功反馈、后台刷新 | 已完成待验收 |
-| TRAIN-02 | P1 | 只计可信正式成功独立训练任务；去重，不计失败/取消/排队/运行/转换/评测/导入；卡片排序概要一致 | 已完成待验收 |
+| PERF-01 | P0 | 审计 Snapshot/历史任务扫描，核心数据优先，按需历史报告，复用有效快照且任务与算法版本真实 | 已验收 |
+| UX-01 | P1 | 科技蓝、浅色、柔和骨架、小 Spinner、平滑淡入；后台保留数据，提交防重，长任务真实进度 | 已验收 |
+| REPORT-01 | P0/P1 | 即刻弹窗、骨架、真实报告、有界等待、明确错误与重试、请求/版本隔离、关闭清理 | 已验收 |
+| MODAL-01 | P1 | 报告和独立评测居中正常弹窗，约1120px/86dvh，固定标题独立滚动，保留全部功能 | 已验收 |
+| HOVER-01 | P1 | 操作图标统一高亮及跟随指针、边缘避让提示，键盘/Esc/触屏可用，装饰图标不加无意义提示 | 已验收 |
+| CHART-01 | P1 | 保留真实曲线/采样/Legend/DataZoom/Resize/Dispose及真实悬停，彻底删除报告恢复视图 | 已验收 |
+| TRAIN-01 | P1 | 服务端可靠确认独立TRAINING任务身份后接入Runtime、立刻仅关原创建弹窗、成功反馈、后台刷新 | 已验收 |
+| TRAIN-02 | P1 | 只计可信正式成功独立训练任务；去重，不计失败/取消/排队/运行/转换/评测/导入；卡片排序概要一致 | 已验收 |
 
 创建失败保留弹窗；网络不确定按原task_id查询，不盲目重建；列表刷新失败不能改写创建成功。旧异步不能关闭新弹窗，禁止延迟关闭定时器。次数不能依据列表分页低估、不能遍历全部历史文件来计算、不能删除失败历史。旧done/finished必须有后端可信合同与成果证据。
 
@@ -56,12 +56,12 @@ Tooltip盘点：Modal关闭.icon、报告下载/复制/模型溯源/异常/帮�
 
 | 阶段 | 需求 | 状态 | 已完成 | 剩余 / 阻塞 | 关联Commit |
 |---|---|---|---|---|---|
-| A | 全部，P0/P1见第2节 | 已完成待验收 | 最新基线、Owner审计、动态RED、性能基线与独立审查 | 生产现场只读分解未取得，不是本地验收 | `bcf738e9dc46a0744c49fa11eae05b54238701d9` |
-| B | PERF-01 | 已完成待验收 | 增量读、单次索引同步、核心提前返回、概要瘦身 | 元数据仍线性检查；现场12.08s须部署后另验 | `bcf738e9dc46a0744c49fa11eae05b54238701d9` |
-| C | TRAIN-01/02 | 已完成待验收 | 立即正确关闭、未知恢复、防重、权威成功次数、排序缓存联动 | 生产不执行训练；无代码阻塞 | `bcf738e9dc46a0744c49fa11eae05b54238701d9` |
-| D | REPORT/MODAL | 已完成待验收 | 报告有界请求/恢复、旧响应隔离、正常弹窗和原生命周期 | 生产真实报告需部署后核验 | `bcf738e9dc46a0744c49fa11eae05b54238701d9` |
-| E | UX/HOVER/CHART | 已完成待验收 | 统一样式/骨架/提示、真实曲线、恢复移除 | 全平台既有任务Owner保持；无代码阻塞 | `bcf738e9dc46a0744c49fa11eae05b54238701d9` |
-| F | 全部 | 进行中 | 本地Python/Node/Chrome及版本/语法检查 | 正常推送及最终实际SHA CI待完成 | 待最终SHA |
+| A | 全部，P0/P1见第2节 | 已验收 | 最新基线、Owner审计、动态RED、性能基线与独立审查 | 生产现场只读分解未取得，不是本地验收 | `bcf738e9dc46a0744c49fa11eae05b54238701d9` |
+| B | PERF-01 | 已验收 | 增量读、单次索引同步、核心提前返回、概要瘦身 | 元数据仍线性检查；现场12.08s须部署后另验 | `bcf738e9dc46a0744c49fa11eae05b54238701d9` |
+| C | TRAIN-01/02 | 已验收 | 立即正确关闭、未知恢复、防重、权威成功次数、排序缓存联动 | 生产不执行训练；无代码阻塞 | `bcf738e9dc46a0744c49fa11eae05b54238701d9` |
+| D | REPORT/MODAL | 已验收 | 报告有界请求/恢复、旧响应隔离、正常弹窗和原生命周期 | 生产真实报告需部署后核验 | `bcf738e9dc46a0744c49fa11eae05b54238701d9` |
+| E | UX/HOVER/CHART | 已验收 | 统一样式/骨架/提示、真实曲线、恢复移除 | 全平台既有任务Owner保持；无代码阻塞 | `bcf738e9dc46a0744c49fa11eae05b54238701d9` |
+| F | 全部 | 已验收 | 本地Python/Node/Chrome及版本/语法检查 | 实现及修正已正常推送，f0f3010d实际21/21 Actions、55/55 Checks通过；本次文档提交独立核验 | 待最终SHA |
 
 每项实际文件、完成内容、剩余与验收证据对应第3及第6节；禁止用聊天记录代替本文件。CI出来后在第9节补准确Commit。源码/文档同提交，后续文档提交必须重新核验其自身CI。
 
@@ -104,7 +104,7 @@ npx playwright test tests/browser/startup-report-presentation.spec.mjs tests/bro
 
 ## 7. 接续与生产边界
 
-本轮代码完成后剩余为最终提交/CI和文档验收；不得重建Owner或重复实现已测功能。生产部署未授权/未执行，生产数据库/素材/Bundle/外部Weight/GPU均未操作。现场应在独立部署授权后读取真实Network全URL/字节/Server-Timing/TTFB，核验真实报告、算法版本与任务状态、连续10刷新和大量历史。生产12.08秒不能用隔离数据冒充关闭。
+本轮代码及隔离验收完成，最终文档补提仍绑定其自身CI；不得重建Owner或重复实现已测功能。生产部署未授权/未执行，生产数据库/素材/Bundle/外部Weight/GPU均未操作。现场应在独立部署授权后读取真实Network全URL/字节/Server-Timing/TTFB，核验真实报告、算法版本与任务状态、连续10刷新和大量历史。生产12.08秒不能用隔离数据冒充关闭。
 
 ## 8. 中断及恢复检查点（本专项继续，未提交）
 
@@ -120,7 +120,7 @@ npx playwright test tests/browser/startup-report-presentation.spec.mjs tests/bro
 
 Python可复现命令：`python -m pytest tests/api/test_training_success_counts.py tests/unit/test_training_history_projection.py tests/api/test_training_job_visibility.py tests/api/test_bootstrap_label_snapshot_truth.py tests/unit/test_training_job_projection.py tests/api/test_training_priority.py tests/unit/test_training_recovery_api.py tests/api/test_training_terminal_runtime.py tests/api/test_training_metric_credibility_report.py -q --basetemp C:/t/perf-count-final`。Node相关文件173例命令/日志保存在当前会话visualizations目录frontend-governance-node.txt；Chrome新增startup-report-presentation、training-submit-lifecycle、training-report-request-lifecycle及原quality/evaluation/label/performance相关8文件。本专项已经恢复，从最终waitReady(signal)回归、需求文档收尾、正常提交推送及最终SHA CI继续。已取消临时需求没有发布提交，也不加入本专项任务清单；不得夹带其字段映射改动。
 
-## 9. 最终提交与CI（实现已推送，验收进行中）
+## 9. 最终提交与CI（代码验收完成）
 
 实现及本文件基线提交：`bcf738e9dc46a0744c49fa11eae05b54238701d9`，VERSION42.24.370，已普通git push到唯一长期分支，工作树提交后干净。该SHA触发48个Actions（28 push/20 pull_request）及131个Checks，当前129通过、1失败、1运行中，不能先标全绿。最终结果补记后，本文件会产生验收文档提交，该新SHA仍须独立核验；不得用实现SHA绿色替代最终文档HEAD。
 
@@ -129,3 +129,10 @@ Python可复现命令：`python -m pytest tests/api/test_training_success_counts
 首提交主Frontend Chrome job119162256145实际127通过1失败（128场景）。唯一失败navigation-readiness旧测试强制核心Snapshot已成功后仍轮询后台ready，与本轮核心优先合同冲突；已先在本地复现同一RED，夹具改为第一次Snapshot明确503（核心确未可用），保留原10%→60%→100%真实mock进度、同card/bar identity、scaleX及无错误断言，并新增Snapshot精确2次断言。正常核心不等待后台由本轮新Chrome测试覆盖，未删除原恢复分支测试或引入虚假进度。
 
 接续夹具提交`943006d6776b67ef322355db6825fa78501f656b`已推送，只补Task项目身份及进度记录；该SHA在导航旧夹具修正前，不能被当作最终验收。VERSION保持370，不重复递增。
+
+
+最终实现/夹具验收SHA：`f0f3010df1d00948fe60db164c8aa347b547e3a7`，21/21 Actions及55/55 Checks全部success；主Frontend Chrome job119167489279（run39583766130）实际128/128通过，0失败0跳过。准确SHA逐项证据持久化于[CI回执](evidence/FRONTEND_STARTUP_REPORT_UX_CI_2026_10_21.json)，不是沿用首提交绿色。首实现bcf738e9的两条旧夹具失败均记录并修正，943006d6不是最终验收。
+
+本文件、当前状态、AGENTS及上述回执的验收补提仅更新文档，VERSION仍42.24.370、代码树不变。此文档补提的新SHA必须独立核验：通过本文件Git History定位其最后提交，再查看该提交Checks；不能把上述f0f3010d结果冒充新SHA。交付以文档提交本身的实际检查全部成功为条件；GitHub提交所附Checks持续保存该SHA和结果，下一会话可直接从仓库核验，无需聊天记录。正文不写入自身提交哈希以避免循环生成新提交。
+
+本轮全部八项代码需求已验收（隔离开发/测试范围）。生产未部署，生产12.08秒现场链路、真实大库/报告仍是部署前后独立核验条件；没有把生产空间、生产模型质量或现场性能写成已达成。取消的临时权重字段专项所有改动已撤销，没有进入本轮提交。
