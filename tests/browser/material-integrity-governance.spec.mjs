@@ -19,7 +19,7 @@ function isolatedPython(projectId, source, asynchronous = false) {
   return execFileSync('python', ['-c', source], options).trim();
 }
 
-function runIsolatedWorker(projectId, taskId, asynchronous = false) {
+function runIsolatedWorker(projectId, taskId, asynchronous = false, releaseFile = null) {
   return isolatedPython(projectId, `import os,json,app
 from contextlib import closing
 from platform_core.task_runtime import Scheduler, TaskKind
@@ -33,7 +33,19 @@ with closing(r._connect()) as database:
  assert row['project_id']==os.environ['INTEGRITY_TEST_PROJECT'] and row['status']=='QUEUED'
  assert json.loads(row['required_capabilities'])==['materials.batch']
  database.execute('UPDATE tasks SET required_capabilities=? WHERE task_id=?',(json.dumps([capability]),target)); database.commit()
-s = Scheduler(r, app.shared_task_artifacts(), 'integrity-browser-worker', {TaskKind.MATERIAL_BATCH: MaterialBatchHandler(app.DATA_DIR)}, {capability}, lease_seconds=60)
+class ObservedMaterialBatchHandler(MaterialBatchHandler):
+ def run(self, context):
+  release_file=${releaseFile === null ? 'None' : JSON.stringify(releaseFile)}
+  if release_file:
+   from pathlib import Path
+   import time
+   deadline=time.monotonic()+30
+   while not Path(release_file).exists():
+    context.assert_current_execution()
+    assert time.monotonic()<deadline, 'browser did not release the isolated Worker'
+    time.sleep(0.05)
+  return super().run(context)
+s = Scheduler(r, app.shared_task_artifacts(), 'integrity-browser-worker', {TaskKind.MATERIAL_BATCH: ObservedMaterialBatchHandler(app.DATA_DIR)}, {capability}, lease_seconds=60)
 assert s.run_once()
 assert r.get(target).status.value=='SUCCEEDED' and r.get(target).attempt==1
 `, asynchronous);
@@ -160,11 +172,23 @@ for row in m.list_page(limit=200).items:
   await expect(page.getByRole('dialog', {name:'素材删除任务',exact:true})).toBeVisible();
   expect(calls).toBe(2);
   const deleteTaskId=(await page.locator('#materialIntegrityTask47 code').innerText()).replace('Task ID: ','');
-  const worker=runIsolatedWorker(project.id,deleteTaskId,true);
-  await expect(page.locator('#materialIntegrityTask47')).toContainText('删除中',{timeout:15000});
-  await expect(page.locator('#materialIntegrityTask47')).toContainText('Worker: integrity-browser-worker');
-  await page.screenshot({path:path.join(dir,'delete-running.png')});
-  await worker;
+  // Keep the real claimed lease RUNNING until the browser observes it. A fast
+  // Worker can otherwise finish between two polls and hide this transient state.
+  const gateDir=fs.mkdtempSync(path.join(os.tmpdir(),'integrity-worker-gate-'));
+  const releaseFile=path.join(gateDir,'release');
+  const worker=runIsolatedWorker(project.id,deleteTaskId,true,releaseFile);
+  try {
+    await expect(page.locator('#materialIntegrityTask47')).toContainText('删除中',{timeout:15000});
+    await expect(page.locator('#materialIntegrityTask47')).toContainText('Worker: integrity-browser-worker');
+    await expect(page.locator('#materialIntegrityTask47')).toContainText('实际删除索引 0');
+    await page.screenshot({path:path.join(dir,'delete-running.png')});
+  } finally {
+    fs.writeFileSync(releaseFile,'continue');
+    try { await worker; } finally {
+      fs.unlinkSync(releaseFile);
+      fs.rmdirSync(gateDir);
+    }
+  }
   await expect(page.locator('#materialIntegrityTask47')).toContainText('已成功',{timeout:15000});
   await expect(page.locator('#materialIntegrityTask47')).toContainText('实际删除索引 125');
   await page.screenshot({path:path.join(dir,'delete-succeeded.png')});

@@ -6,7 +6,7 @@
 
 核验基线：2026-10-21 实际 `git fetch origin` 后，本地及远端长期分支均为 `067e60fab9c51d46434dc9309b1bd1af275adcd8`，`VERSION.txt=42.24.369`，目标工作区初始干净。原始 cwd 为另一个 `wip/42.25-codex-interrupted` 工作区，未在那里修改、切换或丢弃任何变更。
 
-本次文档基线不修改运行时代码、数据库 Schema、前端资源或 VERSION。文档提交身份用 `git log -1 --format=%H -- docs/TRAINING_MATERIAL_LIFECYCLE_GOVERNANCE_2026_10_21.md` 查得；不得把上面的代码审计基线误作最终交付 SHA。后续开发提交和实际 CI 逐项登记于第七节。全部开发及最终验收尚未完成。
+本次建立文档基线；首推CI另发现既有Chrome测试瞬态竞态，仅修复 `tests/browser/material-integrity-governance.spec.mjs` 隔离夹具同步。不修改运行时代码、数据库 Schema、前端资源或 VERSION。文档提交身份用 `git log -1 --format=%H -- docs/TRAINING_MATERIAL_LIFECYCLE_GOVERNANCE_2026_10_21.md` 查得；不得把上面的代码审计基线误作最终交付 SHA。后续开发提交和实际 CI 逐项登记于第七节。全部开发及最终验收尚未完成。
 
 ## 一、项目背景与问题
 
@@ -129,7 +129,7 @@ Schema落地前必须记录每个字段唯一Owner、唯一约束/索引、升�
 | E-02 历史扫描与dry-run/MLG-09 | P0；原Task artifacts/存储治理 | 未开始 | 三候选及授权边界已登记 | 只读扫描/空间/原因、隔离回收/审计/中断恢复 | 51GB是用户历史估计，非当前测量；生产清理未授权 | 无开发提交 | 真实生产只读未执行，隔离执行器未实现 |
 | F-01 前后端字段及交互/MLG-10 | P1；原治理/训练详情/存储入口 | 未开始 | 保留唯一Owner的界面方向已确定 | 实际数量、影响、占用、进度/终态/错误码；真实Chrome | 缺事实时不能展示虚假0或完成 | 无开发提交 | Node/Chrome未执行 |
 | F-02 最终测试、质量及CI/MLG-11,12 | P0；相关tests/既有workflows/版本/文档 | 未开始 | 已有旧合同基线和本专项台账 | 各阶段RED/GREEN、API/文件链/Chrome、最终HEAD全部实际Actions/Jobs、最终交接 | 不降低断言、不借旧SHA绿灯；生产/GPU不在本轮内 | 无开发提交 | 第七节；完整专项验收未完成 |
-| DOC-01 文档治理/MLG-12 | P0；本文件、AGENTS、CODEX_CURRENT_STATE | 进行中 | 需求全文/任务/根因/候选设计/测试/生产边界建立 | 文档校验已完成；提交推送、准确SHA回执；以后每阶段持续更新 | 后续不得另建同专项平行进度文档 | 本文件首提交由git log定位；后续显式SHA登记 | T-DOC通过；不冒充B–F完成 |
+| DOC-01 文档治理/MLG-12 | P0；本文件、AGENTS、CODEX_CURRENT_STATE | 已完成待验收 | 需求全文/任务/根因/候选设计/测试/生产边界建立 | 首提交已校验推送；首CI失败已如实登记，隔离Chrome夹具已修复并3/3重复、完整8/8复验；待修正最终SHA CI，以后每阶段持续更新 | 后续不得另建同专项平行进度文档 | f632f0f2876edc3aefc796e2a17f43d3a13021e3；CI同步修正提交由git log查得 | T-DOC通过；不冒充B–F完成 |
 
 各任务拆分仍归属上表，不新增第二进度源；每阶段执行顺序为新合同失败用例→确认RED→原Owner最小实现→直接回归GREEN→接口/文件链和必要Chrome→复核风险→更新台账→提交→准确SHA CI。代码实现细节需在A剩余核验完成后记录，不先臆造函数/表。
 
@@ -144,6 +144,7 @@ Schema落地前必须记录每个字段唯一Owner、唯一约束/索引、升�
 | RISK-01 | 进行中 | Annotation连接未显式启用foreign_keys；需验证有无适用约束、Task库及实际连接值 | 尚未做运行核验，不称已发现外键损坏或已修复；A-02跟踪 |
 | ENV-01 | 已验收 | 基线长临时目录WinError206：T-A-01为28通过14失败；同源码短目录T-A-03为41通过1软链接skip | 只改变测试目录，不改代码/断言/系统长路径设置；确认本批长路径失败可由短目录消除，不宣称平台长路径问题已修复 |
 | ENV-02 | 已验收 | 首次短路径复测父目录C:/t不存在，T-A-02有24个setup error | 建立空父目录后使用全新basetemp复测；T-A-03无setup error；不掩盖失败尝试 |
+| CI-01 | 已完成待验收 | f632f0f2前端Chrome为111通过1失败：真实删除已结束，测试仍等瞬态“删除中”；原隔离Worker与浏览器轮询无同步 | 仅测试Handler在真实Scheduler认领租约后等浏览器放行；原运行中/Worker/删除125条/仅剩1条/GT及审计断言保留，新增放行前删除0条；3次重复通过，完整素材治理Chrome 8/8通过；最终新SHA CI待核验；不修改产品状态或Mock成功 |
 | ENV-03 | 进行中 | 本机无法创建symlink，相关用例跳过 | CI/Linux或有能力的隔离环境需实际执行；未关闭软链接安全验收 |
 
 新发现问题追加唯一编号，写明影响、根因证据、真实修改、回归命令、提交和关闭条件；推测与已复现Bug分开。需求变化也必须保留原因及影响：本轮2026-10-21用户明确取消历史永久保护，覆盖旧TQ-08保护语义，影响所有删除决策/队列/归档/历史复评；不是旧安全门禁被无理由移除。
@@ -166,20 +167,53 @@ python -m pytest -q --confcutdir=tests/unit tests/unit/test_material_annotation_
 | T-A-02 | A诊断；`C:/t/mlg21a`但父目录尚不存在 | 18 | 0 | 24 | 0 | 退出1；WinError3 setup；mlg-a-shortpath.xml |
 | T-A-03 | A对照；创建C:/t父目录后新`C:/t/mlg21b` | 41 | 0 | 0 | 1 | 退出0；mlg-a-final.xml；`test_cache_resolve_rejects_in_bundle_symlink_component`因本机无法创建symlink跳过 |
 | T-DOC | DOC-01：9节、12需求、阶段/任务状态、原文全文/SHA、双入口、源码路径、范围、无凭据及diff检查 | 9检查组通过 | 0 | 0 | 0 | 文档校验退出0；本地git diff --check退出0；只验证文档合同，不算业务测试 |
-| T-B/C/D/E/F | 各阶段新需求/Node/Chrome/GPU | 未执行 | 未执行 | 未执行 | 未执行 | 不记为0失败或已通过；真实GPU训练不在本轮授权内 |
+| T-CI-01 | 隔离Chrome竞态修正：`npx playwright test tests/browser/material-integrity-governance.spec.mjs --grep 'real frozen scope' --repeat-each=3` | 3 | 0 | 0 | 0 | 同一真实文件链重复3次，不算3个不同用例；原RED为首SHA CI上述失败 |
+| T-CI-02 | `npx playwright test tests/browser/material-integrity-governance.spec.mjs`（完整规格） | 8 | 0 | 0 | 0 | 本地真实Chrome；含CI-01目标场景，和重复3次存在重叠不累计独立用例 |
+| T-DOC-02 | 最终修正提交前：原文完整性、九节、任务状态、双入口、精确SHA CI来源、四文件范围、Node语法和diff重验 | 通过 | 0 | 0 | 0 | 不把文档校验算业务验收；9个校验组 |
+| T-B/C/D/E/F | 各阶段新需求/完整Node/新功能Chrome/GPU | 未执行 | 未执行 | 未执行 | 未执行 | 不记为0失败或已通过；真实GPU训练不在本轮授权内 |
 
 原始本地证据目录：`C:/Users/jorsam/.codex/visualizations/2026/10/21/01a15d6e-6553-7640-9e31-04ade914aca9/`。关键夹具包括原图独立副本、防硬链接、项目隔离、冻结修订、GT生命周期互斥及TTL/LRU；symlink未实测不能计通过。后续重要验收摘要和CI链接必须持久化进仓库，不能只引用本机文件。
 
 ### 7.2 CI登记规则与本批边界
 
-本批仅文档，不改工作流触发范围制造绿色。`remote-training-runtime.yml`、`training-input-integrity.yml`、`training-final-validation-hardening.yml`、`material-annotation-atomicity.yml`、`frontend-runtime-stabilization.yml`、`v42.25-release-regression.yml`等原流程是后续运行时代码的验收入口；每次根据实际改动和paths核验触发，不把未触发算通过。
+本批为文档基线及既有Chrome隔离夹具同步修正，不改工作流触发范围制造绿色。`remote-training-runtime.yml`、`training-input-integrity.yml`、`training-final-validation-hardening.yml`、`material-annotation-atomicity.yml`、`frontend-runtime-stabilization.yml`、`v42.25-release-regression.yml`等原流程是后续运行时代码的验收入口；每次根据实际改动和paths核验触发，不把未触发算通过。
 
 | 提交 | 范围 | Actions / Jobs | 结论 |
 | --- | --- | --- | --- |
 | 067e60fab9c51d46434dc9309b1bd1af275adcd8 | 本轮只读代码基线 | 本次未复核该旧提交远端CI | 不借用旧绿灯 |
-| 本文档基线首提交（git log查得） | 仅三个Markdown | 待正常推送后按实际完整SHA查询 | NOT VERIFIED；即使无触发也须登记“未触发”，不能写专项CI通过 |
+| f632f0f2876edc3aefc796e2a17f43d3a13021e3 | 首推三个Markdown | 实查21 Actions：20成功、1失败；55 Checks/Jobs：54成功、1失败 | Chrome 111通过1失败，CI-01；不是全绿 |
+| 包含本行的CI同步修正提交（以git对象身份查得） | 三个Markdown接续+隔离Chrome夹具 | 需重新按最终实际HEAD查询push/PR全部Actions及Checks，不继承f632f0f2结果 | 最终结果由GitHub绑定该提交的原生Checks留存；如有失败，必须继续修复并更新本表 |
 
 最终SHA自引用说明：提交无法在自身内容中写入自身哈希。阶段提交SHA在下一次文档更新显式登记；最终文档提交以git对象身份为准，准确SHA的Actions/Jobs结果通过GitHub原生绑定查询核验。若验收结果补写产生新提交，新HEAD也必须重查；不得无穷借用前一次CI。最终完成交付前本节须有实际代码提交、修复提交、工作流run/job链接及成功/失败/跳过/未触发明细；本基线不宣称该最终交付已达到。
+
+
+首推SHA逐工作流回执（同一SHA；pull_request触发基于已有PR全量差异，不等于本次修改了那些模块）：
+
+| Workflow | Event | 结论 | Run |
+| --- | --- | --- | --- |
+| Video Frame Recovery | pull_request | success | [39566463409](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39566463409) |
+| AI Annotation Recovery | pull_request | success | [39566463405](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39566463405) |
+| External Algorithm Platform | pull_request | success | [39566463601](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39566463601) |
+| ChangLian Login Auth | pull_request | success | [39566463512](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39566463512) |
+| Node Agent Executor | pull_request | success | [39566463378](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39566463378) |
+| External Algorithm Publish | pull_request | success | [39566463549](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39566463549) |
+| Training Input Integrity | pull_request | success | [39566463562](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39566463562) |
+| Storage Cache Governance | pull_request | success | [39566463616](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39566463616) |
+| Remote Conversion Runtime | pull_request | success | [39566463521](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39566463521) |
+| Remote Training Runtime | pull_request | success | [39566463391](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39566463391) |
+| Remote Cleaning Runtime | pull_request | success | [39566463419](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39566463419) |
+| Central Node Assignment | pull_request | success | [39566463446](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39566463446) |
+| Remote RKNN Board Runtime Protocol | pull_request | success | [39566463462](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39566463462) |
+| Portable Deployment | pull_request | success | [39566463495](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39566463495) |
+| Resource Discovery SQLite Stability | pull_request | success | [39566463424](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39566463424) |
+| GPU Runtime Truth | pull_request | success | [39566463428](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39566463428) |
+| Task Runtime Truth | pull_request | success | [39566463535](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39566463535) |
+| Remote Material Import | pull_request | success | [39566463619](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39566463619) |
+| Online Feedback Runtime | pull_request | success | [39566463422](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39566463422) |
+| Label Normalization Contract | pull_request | success | [39566463370](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39566463370) |
+| Frontend Runtime Stabilization | push | failure | [39566457772](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39566457772) |
+
+首推Chrome失败Job：[browser-navigation](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39566457772/job/119109799023)；首推[准确SHA全部Checks](https://api.github.com/repos/jorsamj/aixunlianpingtai/commits/f632f0f2876edc3aefc796e2a17f43d3a13021e3/check-runs?per_page=100)。API分页须查至无后续页，本次21 runs/55 checks均在第一页且total_count吻合。未触发的工作流不计通过。
 
 ### 7.3 后续测试矩阵（全部待执行）
 
@@ -211,7 +245,7 @@ python -m pytest -q --confcutdir=tests/unit tests/unit/test_material_annotation_
 8. 阶段提交前运行`git diff --check`、审查范围/敏感信息、再fetch避免覆盖其他会话；仅正常快进推送长期分支，不合并main、不强推、不发生产部署。按本次实际代码变更依仓库规范处理VERSION；本次文档基线保持42.24.369。
 9. 全部运行时代码开发完成后：更新本文件最终完成/局限及生产边界、两个顶部入口、相关实际测试与CI；文档与代码提交推送，验证远端最终实际HEAD。追加文档产生新SHA须重新检查其CI，最终给用户GitHub专项链接。未达到时保留未完成状态，不能用“已具备回收能力”替换“生产空间已释放”。
 
-变更日志：2026-10-21 建立唯一专项基线；现有旧保护策略与用户本轮新业务规则明确分开；A部分只读审计、T-A-01/02失败及T-A-03复测如实记录。未修改任何运行时保护，未声称开发完成。
+变更日志：2026-10-21 建立唯一专项基线；现有旧保护策略与用户本轮新业务规则明确分开；A部分只读审计、T-A-01/02失败及T-A-03复测如实记录。未修改任何运行时保护，未声称开发完成。首推f632f0f2 CI发现既有测试运行中瞬态竞态，按CI-01只修隔离测试同步，不将B–F标完成。
 
 ## 附录 A：用户原始开发指令（第 1–14 节，完整留存）
 
