@@ -130,3 +130,9 @@ GT仍由原state/保存API/Repository权威维护，第三方只编辑客户端�
 生产前条件：部署尚未授权；按现有流程备份、验证本地静态制品齐全/缓存失效、生产浏览器与真实图片/大量GT、真实AI候选审核/多用户CAS及权限，且不能修改冻结证据。无数据库迁移需求；历史缺ID只在当前live文档确定性补齐并在原版本校验保存时写入，现有ID不换，生产不批处理。不另建GT/标签/素材/审核/任务库或Modal/Tooltip/Loading/自动保存Owner，不恢复旧内核。
 
 下一步只做普通提交/推送并查**本次实际SHA**的所有Actions/Checks；失败读准确job日志修复，绿色后写本文件最终CI节、更新入口，再核验文档补提新SHA。禁止重复建设或把综合治理/GT生命周期/chipCode取消需求混入本专项。
+
+### 6.7 首提交CI与守卫同步
+
+实际代码提交e65ab6cb4dae4c3f53d31a98716e762399ed5d28（本地未发布a96d0197同树81e1aef5，保存在codex/annotorious-local-a96d0197）。普通Git443连接持续失败，通过GitHub连接器逐个核对65个唯一blob/67文件及完整tree完全一致，expected旧4fcbcfc8、force=false快进；共享历史未改写，本地按相同tree同步远端原始commit对象。
+
+首提交Label Normalization Contract在Python/Node合同通过后，Permanent source guards仍要求旧双态Literal而失败（run39611132659/job119259964409）；已只把该类型守卫同步为unannotated/annotated/confirmed_empty三态，原空确认错误/审核与其他所有限制保留。完整原Permanent source guards本地执行通过；不是删除测试或扩大负样本标准。VERSION372不再递增，最终修正SHA仍须全部CI，首提交不能当全绿。

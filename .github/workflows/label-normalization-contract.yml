@@ -500,7 +500,7 @@ jobs:
                   missing.setdefault('app.py', []).append(route)
           for token in (
               'ANNOTATION_EMPTY_CONFIRMATION_REQUIRED',
-              'annotation_state: Optional[Literal["annotated", "confirmed_empty"]]',
+              'annotation_state: Optional[Literal["unannotated", "annotated", "confirmed_empty"]]',
               '@app.get("/api/v12/projects/{project_id}/algorithms/{algorithm_id}")',
               'train_completed_count',
           ):
