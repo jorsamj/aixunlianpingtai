@@ -2064,3 +2064,84 @@ def test_compute_platform_list_all_explicitly_requests_children():
     _, path, kwargs = session.calls[-1]
     assert path.endswith("/internal/base/compute-platform/listAll")
     assert kwargs["params"]["showChildren"] == "true"
+
+
+@pytest.mark.parametrize("with_tags,expected", [(None, None), (True, {"withTags": "true"}), (False, {"withTags": "false"})])
+def test_weight_info_optional_tags_query_preserves_default_contract(with_tags,expected):
+    session=MutationSession()
+    session.request=lambda method,url,**kwargs: (session.calls.append((method,url,kwargs)) or FakeResponse({"code":200,"data":{"weightId":2112456166616469504,"tags":["Car"]}}))
+    client=_authenticated_mutation_client(session)
+    result=client.weight_info("2112456166616469504",**({} if with_tags is None else {"with_tags":with_tags}))
+    method,url,kwargs=session.calls[0]
+    assert method=="GET" and url.endswith("/getInfo/2112456166616469504")
+    assert kwargs.get("params")==expected
+    assert kwargs["headers"]["Authorization"]=="Bearer token-1"
+    assert result["data"]["tags"]==["Car"]
+
+
+@pytest.mark.parametrize("weight_id", ["invalid", "1/other", "0", "-1", "9223372036854775808"])
+def test_weight_info_rejects_invalid_int64_before_request(weight_id):
+    client=_authenticated_mutation_client(NeverCalledSession())
+    with pytest.raises(ValueError,match="weightId"):
+        client.weight_info(weight_id)
+
+
+@pytest.mark.parametrize("with_tags", [None, True, False])
+def test_provider_weight_detail_router_projects_int64_and_redacts_without_mutating_client(tmp_path,monkeypatch,with_tags):
+    from platform_core.external_algorithm_platform import external_algorithm_platform_router
+    calls=[]
+    original={"code":200,"data":{"weightId":2112456166616469504,"productId":2102998777790074880,"tags":["Car"],"remark":None,"extension":{"token":"private","newField":[]}}}
+    class Client:
+        def weight_info(self,weight_id,**kwargs):
+            calls.append((weight_id,kwargs));return original
+    monkeypatch.setattr(ExternalAlgorithmPlatformService,"_client",lambda self:Client())
+    router=external_algorithm_platform_router(data_dir=tmp_path,get_project=lambda p:None,algorithms_file=lambda p:tmp_path/"a.json",secret_store_factory=MemorySecretStore)
+    endpoint=next(r.endpoint for r in router.routes if r.path.endswith('/provider/weights/{weight_id}') and 'GET' in r.methods)
+    result=endpoint('2112456166616469504',withTags=with_tags)
+    assert result["response"]["data"]["weightId"]=="2112456166616469504"
+    assert result["response"]["data"]["productId"]=="2102998777790074880"
+    assert result["response"]["data"]["tags"]==["Car"] and result["response"]["data"]["remark"] is None
+    assert result["response"]["data"]["extension"]=={"token":"***","newField":[]}
+    assert original["data"]["extension"]["token"]=="private"
+    assert isinstance(original["data"]["weightId"],int)
+    assert calls==[('2112456166616469504',{} if with_tags is None else {"with_tags":with_tags})]
+
+
+@pytest.mark.parametrize("body,status,error", [({"code":500,"msg":"unsupported withTags"},200,"unsupported"),({"code":200,"data":None},400,"HTTP 400")])
+def test_weight_tags_query_errors_do_not_fallback_or_retry(body,status,error):
+    session=MutationSession()
+    session.request=lambda method,url,**kwargs:(session.calls.append((method,url,kwargs)) or FakeResponse(body,status))
+    client=_authenticated_mutation_client(session)
+    with pytest.raises(RuntimeError,match=error):
+        client.weight_info('2112456166616469504',with_tags=True)
+    assert len(session.calls)==1
+
+
+def test_weight_page_tags_uses_official_filters_and_auth():
+    session=MutationSession()
+    session.request=lambda method,url,**kwargs:(session.calls.append((method,url,kwargs)) or FakeResponse({"code":200,"data":[],"total":0}))
+    client=_authenticated_mutation_client(session)
+    client.weight_page(page_num=1,page_size=50,algoVersionId='2109729657292197888',withTags='true')
+    method,url,kwargs=session.calls[0]
+    assert method=='GET' and url.endswith('/algorithm-weight/list')
+    assert kwargs['params']=={'pageNum':1,'pageSize':50,'algoVersionId':'2109729657292197888','withTags':'true'}
+    assert kwargs['headers']['Authorization']=='Bearer token-1'
+
+
+def test_provider_browser_list_projections_preserve_int64_before_json(tmp_path,monkeypatch):
+    from fastapi import Request
+    from platform_core.external_algorithm_platform import external_algorithm_platform_router
+    payload={"code":200,"data":[{"weightId":2112456166616469504,"algoVersionId":2109729657292197888,"productId":2102998777790074880}],"total":1}
+    class Client:
+        def products(self,**kwargs):return payload
+        def version_list_by_product(self,value):return payload
+        def weight_list_by_version(self,value):return payload
+        def weight_page(self,**kwargs):return payload
+    monkeypatch.setattr(ExternalAlgorithmPlatformService,"_client",lambda self:Client())
+    router=external_algorithm_platform_router(data_dir=tmp_path,get_project=lambda p:None,algorithms_file=lambda p:tmp_path/'a.json',secret_store_factory=MemorySecretStore)
+    routes={r.path.rsplit('/provider/',1)[-1]:r.endpoint for r in router.routes if 'GET' in r.methods}
+    request=Request({'type':'http','query_string':b'withTags=true'})
+    for result in [routes['products'](request),routes['versions/by-product/{product_id}']('1'),routes['weights/by-version/{algo_version_id}']('2'),routes['weights/page'](request,pageNum=1,pageSize=50)]:
+        row=result['response']['data'][0]
+        assert row['weightId']=='2112456166616469504' and row['algoVersionId']=='2109729657292197888' and row['productId']=='2102998777790074880'
+    assert isinstance(payload['data'][0]['weightId'],int)

@@ -1,3 +1,7 @@
+## 2026-10-21｜畅联云Weight完整详情与官方withTags分页查询（本地通过 / 最终SHA CI待核验）
+
+基线22587dd7/VERSION366已fetch/pull干净且远端一致，其他工作区/会话未覆盖；上轮26/70最终绿色回执归档。原畅联云数据Runtime/Client/详情及分页API复用，24字段分组详情、Tags正式list withTags=true精确ID分页补查、int64浏览器安全投影、来源/空值/冲突/失败区分、按需缓存及迟到生命周期保护；无新增Owner/轮询/包装。完整需求/官方合同/RED→GREEN/字段/质量审查/限定测试见[接口与详情验收](CHANGLIAN_APIFOX_API_CATALOG.md)。Python去重100、Node32、Chrome3场景通过，VERSION一次递增367，main/styles414及浏览模块缓存63002，原app413保持。最终实际SHA CI待推送核验，回执weight-detail-ci-final-20261021.json；SSH只读拒绝，真实provider Tags/getInfo候选参数及生产历史仍NOT VERIFIED；未部署/写生产DB/OSS/Weight。
+
 ## 2026-10-21｜Tags / 转换参数 / AMP / SDK 一致性（本地通过 / 待最终SHA CI）
 
 基线b74a3866/VERSION365、fetch/pull干净且远端一致，其他工作区不动；前轮48/131实际CI回执归档。原Owner最小修复空prepared标签、HTTP请求/回执/读回事实、preset精度、异步参数覆盖与页面归属、单资源检测、真实编译模式/ONNX导出与Agent传递/manifest事实。完整需求/根因/矩阵/质量审查/限定验收见[专项](CONVERSION_PARAMETER_CONSISTENCY_2026_10_21.md)。分批JUnit去重403例通过，Node相关文件分批通过，Chrome9种相关场景通过；修复中失败与复测如实记载。VERSION一次递增366，必要app/main/styles413、训练CSS4226354/submit422600、publish64013。无新Owner/包装/监听器/轮询，生产写入/部署禁止；只读SSH拒绝，17/7及真实SDK/GPU/网页未现场核验。最终实际SHA CI待安全推送，按tags-parameters-ci-final-20261021.json独立回执核对，不能提前标绿。

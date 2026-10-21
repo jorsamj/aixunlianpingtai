@@ -955,9 +955,14 @@ class ChangLianClient:
             }),
         )
 
-    def weight_info(self, weight_id: Any) -> Any:
-        path = self.endpoints.weight_detail.replace("{weightId}", str(weight_id))
-        return self._request("GET", path, auth=True)
+    def weight_info(self, weight_id: Any, *, with_tags: Optional[bool] = None) -> Any:
+        identity = str(weight_id)
+        if not identity.isascii() or not identity.isdecimal() or not 0 < int(identity) <= 2**63 - 1:
+            raise ValueError("weightId 必须为有效的正 int64")
+        path = self.endpoints.weight_detail.replace("{weightId}", identity)
+        # Opt-in candidate contract. Existing publication readback remains unchanged.
+        query = {} if with_tags is None else {"params": {"withTags": str(with_tags).lower()}}
+        return self._request("GET", path, auth=True, **query)
 
 
 def _category_id(row: Mapping[str, Any]) -> str:
@@ -2870,6 +2875,17 @@ class ExternalAlgorithmPlatformService:
         return last_auto.astimezone(timezone.utc) < latest_due_slot
 
 
+def _provider_browser_response(value: Any) -> Any:
+    """Keep provider int64 facts lossless in browser JSON; never alter null/empty values."""
+    if isinstance(value, Mapping):
+        return {str(key): _provider_browser_response(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_provider_browser_response(item) for item in value]
+    if isinstance(value, int) and not isinstance(value, bool) and abs(value) > 2**53 - 1:
+        return str(value)
+    return value
+
+
 def external_algorithm_platform_router(
     *,
     data_dir: Path,
@@ -2967,7 +2983,7 @@ def external_algorithm_platform_router(
 
     @router.get("/provider/products")
     def provider_products(request: Request):
-        return {"ok": True, "response": service._client().products(**dict(request.query_params))}
+        return {"ok": True, "response": _provider_browser_response(service._client().products(**dict(request.query_params)))}
 
     @router.get("/provider/products/{product_id}")
     def provider_product_info(product_id: str):
@@ -3018,7 +3034,7 @@ def external_algorithm_platform_router(
 
     @router.get("/provider/versions/by-product/{product_id}")
     def provider_versions_by_product(product_id: str):
-        return {"ok": True, "response": service._client().version_list_by_product(product_id)}
+        return {"ok": True, "response": _provider_browser_response(service._client().version_list_by_product(product_id))}
 
     @router.get("/provider/versions/by-analysis/{analysis_id}")
     def provider_versions_by_analysis(analysis_id: str):
@@ -3065,11 +3081,11 @@ def external_algorithm_platform_router(
         pageSize: int = Query(..., ge=1, le=500),
     ):
         filters = {key: value for key, value in request.query_params.items() if key not in {"pageNum", "pageSize"}}
-        return {"ok": True, "response": service._client().weight_page(page_num=pageNum, page_size=pageSize, **filters)}
+        return {"ok": True, "response": _provider_browser_response(redact(service._client().weight_page(page_num=pageNum, page_size=pageSize, **filters)))}
 
     @router.get("/provider/weights/by-version/{algo_version_id}")
     def provider_weights_by_version(algo_version_id: str):
-        return {"ok": True, "response": service._client().weight_list_by_version(algo_version_id)}
+        return {"ok": True, "response": _provider_browser_response(service._client().weight_list_by_version(algo_version_id))}
 
     @router.get("/provider/weights/by-product/{product_id}")
     def provider_weights_by_product(
@@ -3115,8 +3131,13 @@ def external_algorithm_platform_router(
         return {"ok": True, "response": service._client().weight_remove(ids)}
 
     @router.get("/provider/weights/{weight_id}")
-    def provider_weight_info(weight_id: str):
-        return {"ok": True, "response": service._client().weight_info(weight_id)}
+    def provider_weight_info(weight_id: str, withTags: Optional[bool] = Query(default=None)):
+        try:
+            client = service._client()
+            response = client.weight_info(weight_id) if withTags is None else client.weight_info(weight_id, with_tags=withTags)
+        except ValueError as error:
+            raise PlatformError("EXTERNAL_WEIGHT_ID_INVALID", str(error), "", status_code=400) from error
+        return {"ok": True, "response": _provider_browser_response(redact(response))}
 
     @router.get("/training-preflight")
     def training_preflight(

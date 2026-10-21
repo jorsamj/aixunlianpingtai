@@ -1,3 +1,7 @@
+## 2026-10-21｜官方 withTags 分页与只读Weight详情（VERSION42.24.367）
+
+用户最新OpenAPI正式支持list分页query withTags=true，getInfo自身参数仍候选未现场验证。原畅联云数据详情缺Tags时按版本分页、完整WeightID匹配；区分getInfo/list来源、null/[]/未返回/失败及冲突，不把查询未返回解释为上传失败。原发布回执与真实readback语义已检查，3项安全回归通过，未改发布写链路/WeightID。完整24字段/分页/ID/UI/测试及未验证边界见[接口详情验收](CHANGLIAN_APIFOX_API_CATALOG.md)。生产SSH拒绝，17/7、车辆Car样本及provider网站未现场核验，未执行历史补齐/真实远端写入/部署。上轮22587dd7的26/70绿色已核验归档，不代表本轮；本轮最终SHA CI待独立回执。
+
 ## 2026-10-21｜VERSION42.24.366 一致性修复（本地通过 / 最终SHA CI待核验）
 
 空准备映射不再过滤可信canonical tags；UNKNOWN/CONFLICT继续保护，未知不发[]。HTTP请求审计、确认回执和远端tags分开展示；发布180与隔离HTTP JSON验收通过。生产17/7因只读SSH连接失败仍未核验、未补齐。 完整需求、根因、参数矩阵、RED→GREEN、UI与生产边界统一见 [一致性专项](CONVERSION_PARAMETER_CONSISTENCY_2026_10_21.md)。最终SHA/CI按独立回执归档，不借用历史结果。

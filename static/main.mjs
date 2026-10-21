@@ -13,7 +13,7 @@ import {installPageRequestScope} from './modules/page-request-scope.js?v=422502'
 import {installPollRegistry} from './modules/poll-registry.js?v=422521';
 import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=4226387';
 import {installExternalAlgorithmPlatformRuntime} from './modules/external-algorithm-platform.js?v=63021';
-import {installChangLianDataBrowserRuntime} from './modules/changlian-data-browser.js?v=63001';
+import {installChangLianDataBrowserRuntime} from './modules/changlian-data-browser.js?v=63002';
 import {installExternalAlgorithmPublishRuntime} from './modules/external-algorithm-publish.js?v=64013';
 import {installModelArtifactRuntime} from './modules/model-artifact-runtime.js?v=65009';
 import {installTrainingRecoveryRuntime} from './modules/training-recovery-runtime.js?v=4226389';
@@ -168,6 +168,8 @@ const externalAlgorithmPlatformRuntime = installExternalAlgorithmPlatformRuntime
 window.PlatformCore.runtime.externalAlgorithmPlatformRuntime = externalAlgorithmPlatformRuntime;
 
 const changLianDataBrowserRuntime = installChangLianDataBrowserRuntime({
+  modal: (...args) => modal(...args),
+  closeModal: () => closeModal(),
   getState: () => state,
   request: api,
   notify,
@@ -439,6 +441,7 @@ const navigationStabilityRuntime = installNavigationStability({
   knownPages: window.PlatformCore?.navigation?.knownPages || [],
   performNavigation: page => {
     conversionCatalogRuntime.leave();
+    changLianDataBrowserRuntime.leave();
     const materialNavigation = window.MaterialPaginationRuntime61?.beforeNavigate?.(page);
     state.page = page;
     uploadTaskCenterRuntime.switchProject?.();

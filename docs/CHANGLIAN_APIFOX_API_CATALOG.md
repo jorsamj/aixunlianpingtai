@@ -1,3 +1,74 @@
+# 2026-10-21｜畅联云权重完整详情与 Tags 查询（本地验收通过 / 最终SHA CI待核验）
+
+基线 `22587dd7d4f7550f6634e08a9a2a511f9bc1da89` / VERSION42.24.366；fetch/pull一致、干净工作树，其他会话无同库活动，原D盘WIP不动。上轮26/26 Actions、70/70 Checks独立回执已读取，不替代本轮。正式VERSION本轮一次递增42.24.367，必要main/styles缓存414，原浏览模块import缓存63002；未修改app.js及其413缓存。
+
+## 用户需求、合同与事实来源
+
+原畅联云数据页面每份Weight增加「查看详情」，原产品→版本→Weight结构及手动刷新保留，无全量getInfo预加载。复用 `ChangLianDataBrowserRuntime`、`ChangLianClient`、原provider详情/分页路由及认证/审计，无新Client/API/Repository/Owner/轮询/框架。
+
+用户追加提供的2026-10-21正式OpenAPI明确：`GET /internal/algorithm/algorithm-weight/list` 接收必填pageNum/pageSize及可选productId/analysisId/algoVersionId/computePlatformId/chipCode/fileName/withTags；withTags为query字符串，默认false，要求标签时明确发送`true`。响应为code/msg/data数组/total/reason。**合同已确认，不等于真实生产请求成功。** getInfo未正式声明该参数，DTO说明不能当作请求参数已支持的证据。
+
+原详情路由 `GET /api/v63/external-algorithm-platform/provider/weights/{weight_id}` 新增可选bool withTags，原Client `weight_info(...,with_tags=None)` 默认完全不传；显式传值才使用候选getInfo query，业务/HTTP失败不隐式回退或重试。UI默认普通getInfo，tags字段不存在时才调用原 `/provider/weights/page?pageNum=1&pageSize=50&algoVersionId=完整版本ID&withTags=true`。getInfo明确返回null/[]也属于实际返回，不擅自填本地标签。
+
+只读SSH `ssh -o BatchMode=yes -o ConnectTimeout=8 a800-server pwd` 仍Connection refused，未执行服务器命令；getInfo候选参数实测、正式list生产行为、车辆样本ext_chang_lian_bf868cb214dc7f8d / 345fabc92b7e / 42c43fd314ac及历史17/7回执均NOT VERIFIED。没有修改生产数据库、OSS、Weight、密钥或部署/重启。
+
+## 实现与24字段映射
+
+| 详情分组 | 官方字段 |
+|---|---|
+| 模型基本信息 | weightId、productId、analysisId、algoVersionId、versionName、versionNo、fileName、yoloVersion、imageWidth、imageHeight |
+| 算力环境 | computePlatformId、computePlatformName、computePlatformCode、chipCode |
+| 文件属性 | filePath、fileSize、fileSha256 |
+| 标签信息 | tags |
+| 创建更新 | createBy、createTime、updateBy、updateTime、delFlag |
+| 备注 | remark |
+
+原宽版单modal，顶部身份/列表路径/版本/芯片/算力/删除状态，完整24字段分组；640×384组合并保留独立宽高、字节数与易读单位、完整SHA/URL复制、合法HTTP(S)下载；时间按原值显示，不重复换时区。delFlag 0正常/2删除保留原值。缺字段、null、空字符串、[]分别展示；Tags原数组大小写与顺序保留，Car不改为car。未知字段保留在完整原始响应折叠区；原redact递归掩盖Token/Secret/Authorization等键，所有远端字符串HTML转义。仅Provider浏览投影将超安全整数转十进制字符串；Python原Client及发布请求的int64协议不变。
+
+getInfo原始响应与list标签响应分开保存/展示，不将list标签伪装为getInfo返回。按完整WeightID精确匹配，校验返回产品/版本身份；列表与详情基础字段及Tags冲突明确显示各自旧新值，不反写列表。getInfo缺tags才分页，命中后停止；未命中时按total或无total的尾页判断，重复页/重复ID/异常total/提前空页明确报错，1000页安全上限超限报告未完成，不冒充全量。
+
+缓存按刷新epoch/完整WeightID/query/产品版本上下文；同快照成功详情复用，失败不缓存为成功；单请求并发复用、手动刷新失效。单一view委托事件，modal自身单次绑定；详情对象与root归属隔离，切换/关闭/离页/销毁后不能重绘或开始迟到分页。详情关闭保持原展开状态。保存错误只进仍live的详情错误区，不在新页面toast旧错误；只有用户明确重试才再查询。
+
+## 发布读回审查与安全边界
+
+本轮未改外部发布执行/写接口。原 `_confirm_weight_readback` / `_remote_weight_contract_matches` 仍保留Weight唯一身份、原ID、SHA/UNKNOWN保护；确认请求回执不冒充远端Tags，真实未返回字段的 `remote_tags_status=NOT_RETURNED` 与文件交付SYNCED可并存。检查及3项直接相关回归通过，无需为只读详情重构发布或增加自动分页读回负载。没有执行真实add/edit/remove或历史补齐。
+
+## RED→GREEN、测试与UI证据
+
+- 初始Client 7失败/1通过（可选参数不存在、非法ID未拦截），Node新增详情1失败/原2通过；补最小实现后通过。安全URL校验RED1→GREEN；旧请求迟到开始分页与列表差异RED2→GREEN；独立review发现迟到失败toast，新增RED1→GREEN；Tags接口冲突诊断RED1→GREEN。安全断言未删除/降低。
+- Python：Client/路由新15项通过；原Client/主数据直接模块81项及发布读回/HTTP仅成功不可SYNCED3项通过；独立现有路由HTTP1项通过。**去重100项**，命令为分批 `pytest tests/unit/test_external_algorithm_platform.py` 对应-k、两项直接发布读回参数化、`tests/api/test_changlian_weight_details.py`。无关训练转换素材清洗未运行。
+- Node：原页面Runtime最终23项、必要版本标识9项通过，**32项**。覆盖官方Query/分页/大ID/缓存/重复点击/迟到/失败/null/缺失/[]/冲突/销毁，无轮询或隐式写入。
+- Chrome：原手动只读场景1、完整24字段+分页Car+长URL/SHA/XSS/复制/缓存/刷新1、null/缺失/失败重试/关闭迟到/导航返回1，**3个不同场景通过**。完整详情及原手动页面夹具曾在导航初始化前查菜单而超时，补显式高级菜单就绪等待后通过，未放宽功能断言。1366×768/1440×768无内容横溢出，实际截图已查看。隔离协议fixture不是生产/真实SDK证明。
+- JUnit、截图、最终CI回执均在既有visualizations目录：`weight-detail-local-tests-20261021.json`、`changlian-weight-details-top.png`、`changlian-weight-details.png`、`weight-detail-ci-final-20261021.json`。最终SHA/Actions/Checks待普通推送后实际核验，禁止借用基线绿色；按既有接续规则独立回执避免自引用文档提交循环。
+
+## 质量审查、修改文件与接续
+
+已直接检查唯一Owner/数据源/API、单次事件绑定/重复请求、缓存/异步归属、ID/HTML/敏感数据及历史安全。独立只读review的P2迟到toast已RED→GREEN关闭，复核无新增明确P2；无新wrapper/Observer/定时器/轮询/业务数据库。原页面全量产品/版本列表水合的既有规模债未扩围重构，新增详情仅按需。本轮不声称全仓无历史技术债。
+
+修改：`platform_core/external_algorithm_platform.py`、`static/modules/changlian-data-browser.js`、`static/main.mjs`、`static/styles.css`、`static/index.html`、`VERSION.txt`；对应Client/API/Node/Chrome及版本断言；本合同目录、Tags专项、CODEX_CURRENT_STATE、AGENTS接续。仅这些直接路径。
+
+本轮精确修改清单：
+
+- `AGENTS.md`
+- `VERSION.txt`
+- `docs/CHANGLIAN_APIFOX_API_CATALOG.md`
+- `docs/CODEX_CURRENT_STATE.md`
+- `docs/WEIGHT_TAGS_SYNC_ACCEPTANCE_2026_10_20.md`
+- `platform_core/external_algorithm_platform.py`
+- `static/index.html`
+- `static/main.mjs`
+- `static/modules/changlian-data-browser.js`
+- `static/styles.css`
+- `tests/browser/changlian-data-browser.spec.mjs`
+- `tests/frontend/changlian-data-browser.test.mjs`
+- `tests/frontend/version-marker-owner.test.mjs`
+- `tests/unit/test_external_algorithm_platform.py`
+- `tests/api/test_changlian_weight_details.py`
+
+下一步：最终SHA CI；生产恢复只读连接后用同Weight比较普通getInfo与官方list?withTags=true，记录实际raw/query/ID/Tags/错误并核对网站。getInfo候选参数仍单独NOT VERIFIED，不强制启用。真实历史7项补齐或任何Weight写入、生产部署须单独授权。代码验收与生产读回明确分开。
+
+---
+
 # 新畅联官方 OpenAPI 契约目录
 
 更新时间：2026-09-20  
