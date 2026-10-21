@@ -20588,8 +20588,10 @@ def v44_training_report(project_id: str, job_id: str, algorithm_id: str = '', ve
 
 
 def _v45_training_history(job: Dict[str, Any]) -> List[Dict[str, Any]]:
-    run_dir=Path(job.get('run_dir') or '')
-    csv_path=run_dir/'results.csv' if run_dir else Path('')
+    recorded_dir = str(job.get('run_dir') or '').strip()
+    if not recorded_dir:
+        return []
+    csv_path = Path(recorded_dir) / 'results.csv'
     if not csv_path.is_file(): return []
     try:
         import csv

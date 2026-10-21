@@ -101,6 +101,7 @@ D. 真实训练曲线摘要（来源：当前任务有记录Epoch，最多1000�
 
 E. 模型评测结果（保持Train、Validation、独立Test及协议隔离）
 Train过程指标：未记录
+训练阶段评测协议（非独立Test）：未记录
 Validation指标：Precision=未记录，Recall=未记录，mAP50=未记录，mAP50-95=未记录，F1=未记录（缺少同口径P/R）
 Validation逐类别：未记录
 独立Test状态：not_recorded

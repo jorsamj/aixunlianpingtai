@@ -179,7 +179,7 @@ jobs:
         run: |
           grep -Fq 'frozen feedback candidates stay aligned with training submit provenance' tests/browser/training-create-first-open.spec.mjs
           grep -Fq 'training report shows requested epochs actual epochs stop reason and target status' tests/browser/training-quality-reports.spec.mjs
-          grep -Fq '最大轮次' static/app.js
-          grep -Fq '实际轮次' static/app.js
-          grep -Fq '停止原因' static/app.js
-          grep -Fq '目标状态' static/app.js
+          grep -Fq '最大轮次' static/modules/reports.js
+          grep -Fq '实际轮次' static/modules/reports.js
+          grep -Fq '停止原因' static/modules/reports.js
+          grep -Fq '目标状态' static/modules/reports.js

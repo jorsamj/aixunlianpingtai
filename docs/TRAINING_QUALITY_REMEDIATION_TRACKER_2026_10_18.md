@@ -33,22 +33,16 @@
 
 - RED：材料函数缺失5项；报告显式身份参数缺失2项；代表样本函数缺失1项；JSON/UNC敏感串泄漏1项；版本job_id与lineage.task_id冲突1项；实际Batch/Workers遗漏及AMP重复1项；完成Epoch0被99覆盖1项；原无报告耗时未知变0的API1项；实际Optimizer/LR未记录1项；FP32源默认FP16与模式imgsz覆盖；原图片接口不接受冻结期望身份3项。均在原实现修复后GREEN，不删除/弱化安全断言。最后补强同一身份校验同时保护报告UI和复制文本（先RED Missing expected exception，再10项GREEN）。
 - Chrome首次图表悬停用例落在绘图区右边界，移入2px后真实鼠标tooltip/滚轮/恢复/实例保持/dispose通过；没有改为假dispatch代替悬停。继承浏览器用例真实复现trainAlg二次覆盖800→640，修正后GREEN。新增错误码未在旧UI映射中展示具体原因，已原映射补齐，未降低错误断言。
-- Python命令：`python -m pytest tests/unit/test_reports.py tests/api/test_training_metric_credibility_report.py tests/unit/test_training_metrics_fd.py tests/unit/test_dynamic_conversion_catalog.py -q`（首批54 passed，已有Linux /proc FD用例在Windows 1 skipped；后续新增API一例及受影响精确复验通过）；`python -m pytest tests/api/test_evaluation_diagnostic_image.py -q` 36 passed；`python -m pytest tests/unit/test_sophon_conversion.py -q -k 'preserves_full_v_prefixed_version or official_cli_uses_version'` 5 passed。最终唯一用例合计96 passed/1既有平台限定skip，未新增skip；不执行真实SDK/模型/训练。
-- Node：仅training-analysis-material、metric-credibility-report、quality-charts、training-draft、training-submit、training-recovery-runtime、version-marker-owner七个直接相关文件，分批去重110用例通过。旧模式断言“无论显式320都覆盖640”按本次已确认业务变更为显式320保留，并新增“无显式值仍使用模式默认”强断言；其余资源/安全断言全部保留。
-- Chrome限定：报告Person/Car在1920/1440/1366/375布局/复制/补充/未知/不串任务；真实图表tooltip/缩放/恢复/关闭释放；迟到响应/剪贴板拒绝；冻结缩略图精确身份/失败隐藏/重复进出只读一次；原停止目标报告、四模式精度；新增迭代800/FP32及手工640保持；原成功和运行详情（四视口/运行事实/刷新稳定/键盘/关闭）。去重13场景通过。旧成功详情仅锁两条静态SVG的断言升级为三组真实交互canvas及GPU80原采样、排除结束后0值，不放宽断言。
+- Python命令：`python -m pytest tests/unit/test_reports.py tests/api/test_training_metric_credibility_report.py tests/unit/test_training_metrics_fd.py tests/unit/test_dynamic_conversion_catalog.py -q`（首批54 passed，已有Linux /proc FD用例在Windows 1 skipped；后续新增API一例及受影响精确复验通过）；`python -m pytest tests/api/test_evaluation_diagnostic_image.py -q` 36 passed；`python -m pytest tests/unit/test_sophon_conversion.py -q -k 'preserves_full_v_prefixed_version or official_cli_uses_version'` 5 passed。最终唯一用例合计97 passed/1既有平台限定skip，未新增skip；不执行真实SDK/模型/训练。
+- Node：仅training-analysis-material、metric-credibility-report、quality-charts、training-draft、training-submit、training-recovery-runtime、version-marker-owner九个直接相关文件，分批去重118用例通过。旧模式断言“无论显式320都覆盖640”按本次已确认业务变更为显式320保留，并新增“无显式值仍使用模式默认”强断言；其余资源/安全断言全部保留。
+- Chrome限定：报告Person/Car在1920/1440/1366/375布局/复制/补充/未知/不串任务；真实图表tooltip/缩放/恢复/关闭释放；迟到响应/剪贴板拒绝；冻结缩略图精确身份/失败隐藏/重复进出只读一次；原停止目标报告、四模式精度；新增迭代800/FP32及手工640保持；原成功和运行详情（四视口/运行事实/刷新稳定/键盘/关闭）。去重16场景通过。旧成功详情仅锁两条静态SVG的断言升级为三组真实交互canvas及GPU80原采样、排除结束后0值，不放宽断言。
 - 代码审查两轮确认无第二Owner/队列/轮询、无包装链/重复绑定；报告单根AbortController、迟到结果归属、图片读取Abort、chart实例释放；原API、Task/ArtifactStore及版本事实复用。官方vendor静态资源为唯一新增运行依赖；没有新增UI框架。普通操作均有反馈，输入和视图状态不互相覆盖。
-- 完整生成文本示例：[Person隔离材料](examples/TRAINING_CHATGPT_MATERIAL_PERSON_2026_10_21.md)，由正式纯函数生成约3141字，含全部固定指令与A-H、未知证据、人工描述区，可直接复制给ChatGPT；明确为隔离结构，不冒用生产ID/指标。
+- 完整生成文本示例：[Person隔离材料](examples/TRAINING_CHATGPT_MATERIAL_PERSON_2026_10_21.md)，由正式纯函数生成约3200字，含全部固定指令与A-H、未知证据、人工描述区，可直接复制给ChatGPT；明确为隔离结构，不冒用生产ID/指标。
 
 ### 本轮修改文件清单
 
 ```text
-docs/examples/TRAINING_CHATGPT_MATERIAL_PERSON_2026_10_21.md
-static/vendor/echarts/LICENSE
-static/vendor/echarts/NOTICE
-static/vendor/echarts/README.md
-static/vendor/echarts/echarts.min.js
-tests/browser/training-analysis-material.spec.mjs
-tests/frontend/training-analysis-material.test.mjs
+.github/workflows/training-create-first-open.yml
 .github/workflows/training-recovery-guard.yml
 AGENTS.md
 VERSION.txt
@@ -57,6 +51,7 @@ docs/CODEX_CURRENT_STATE.md
 docs/CONVERSION_PARAMETER_CONSISTENCY_2026_10_21.md
 docs/SOPHON_BMODEL_CONVERSION_ACCEPTANCE_2026_10_20.md
 docs/TRAINING_QUALITY_REMEDIATION_TRACKER_2026_10_18.md
+docs/examples/TRAINING_CHATGPT_MATERIAL_PERSON_2026_10_21.md
 platform_core/compute_platform_catalog.py
 platform_core/reports.py
 platform_core/training_metrics.py
@@ -68,12 +63,21 @@ static/modules/training-draft.js
 static/modules/training-recovery-runtime.js
 static/modules/training-submit.js
 static/styles.css
+static/vendor/echarts/LICENSE
+static/vendor/echarts/NOTICE
+static/vendor/echarts/README.md
+static/vendor/echarts/echarts.min.js
 tests/api/test_evaluation_diagnostic_image.py
 tests/api/test_training_metric_credibility_report.py
+tests/browser/training-analysis-material.spec.mjs
+tests/browser/training-evaluation-diagnostics.spec.mjs
 tests/browser/training-quality-reports.spec.mjs
 tests/browser/training-recovery.spec.mjs
 tests/frontend/metric-credibility-report.test.mjs
+tests/frontend/training-analysis-material.test.mjs
 tests/frontend/training-draft.test.mjs
+tests/frontend/training-legacy-owner-retirement.test.mjs
+tests/frontend/training-quality-owner-retirement.test.mjs
 tests/frontend/training-submit.test.mjs
 tests/frontend/version-marker-owner.test.mjs
 tests/unit/test_dynamic_conversion_catalog.py
@@ -85,7 +89,7 @@ tests/unit/test_training_metrics_fd.py
 
 提交前再次fetch，远端仍ba6e9c3497c04e69a2e80c3f7dbf07d52fb391c2，无覆盖其他成果。本轮VERSION42.24.368→42.24.369一次变更；app/main/styles缓存42.25.416；draft422512/submit422601/recovery4226390，reports两处同URL20261021r1，避免同一有状态模块双实例。正式前端版本继续读后端VERSION，未嵌静态显示版本；既有恢复workflow仅同步build守卫，不改触发/测试范围。
 
-最终SHA在提交后核验，独立回执 `training-report-materials-ci-final-20261021.json` 保存实际SHA、Actions/Checks/关键Jobs，位置为既有Codex visualizations附件目录；本仓文档不自引用未被CI覆盖的追加提交。不得沿用基线22/57绿色。
+首推f22a501c589108249093c42c143ed9ab4133a4b6 CI实测：训练创建/报告Chrome15通过，Node1083通过/2失败，另lineage中文标签断言失败、FirstOpen文案源码guard仍查app旧位置。已保留原断言强度：guard只移到原reports模块的真实Owner，核心签名增加selection并强化唯一赋值；恢复阶段质量检查/非独立Test协议及原中文溯源字段，未删除或跳过用例。随后browser-navigation实际109通过/3失败（包括同一lineage）；保留旧历史报告“未保存完整训练任务”边界及场景实测入口，修正原浏览器夹具精确匹配新增algorithm/version查询，三条静态曲线断言升级为三组交互canvas/20个原Epoch而非跳过。相应Node8+视图14、原lineage Chrome1及冻结评测/四视口Chrome2通过；新增缺失run_dir误读当前目录results.csv的RED→GREEN1，明确目录正例仍能读取。VERSION369不二次递增，无CI扩范围。最终SHA在后续提交后核验，独立回执 `training-report-materials-ci-final-20261021.json` 保存实际SHA、Actions/Checks/关键Jobs，位置为既有Codex visualizations附件目录；本仓文档不自引用未被CI覆盖的追加提交。不得沿用基线22/57绿色。
 
 **NOT VERIFIED**：Person/Car真实完整mAP、FP/FN、现场图片和业务验收、GPU/真实SDK编译及板卡性能、本轮新UI生产上线。用户既有合成/基础板端PASS不等于真实检测精度；源训练FP32/编译FP16/I/O dtype分开。冻结类别仍取已有schema/data合同/ModelArtifact tags；本轮未读取实际PT/ONNX/BMODEL或生产data.yaml，不伪称板端插件类别映射已核验，也未按未知插件格式生成或替换标签文件。板端仍需用版本冻结person/Car核对插件标签，不能默认COCO80。生产17项元数据/历史Weight及其他前轮待办保持原文，不执行本轮外部写入。
 
@@ -190,7 +194,7 @@ tests/unit/test_training_metrics_fd.py
 
 ### 本轮准确提交与验收证据索引（2026-10-19）
 
-- 类别标准化/报告/API/UI代码提交：`2f6a19bfce1605baca6fa4e92606bf9149178328`。本地Python111 passed、Node991 passed、真实Chrome14 passed；准确SHA的全部41次Actions **41 success/0 failure/0 running/0 queued/0 cancelled**，114/114 Jobs success。初次停留checkout的Remote Cleaning作业最终正常完成，未取消、跳过或改CI。原始完整列表：`C:/Users/jorsam/.codex/visualizations/2026/10/19/tq04-class-boundaries/CI_CODE_2f6a19bf.json`。
+- 类别标准化/报告/API/UI代码提交：`2f6a19bfce1605baca6fa4e92606bf9149178328`。本地Python111 passed、Node991 passed、真实Chrome16 passed；准确SHA的全部41次Actions **41 success/0 failure/0 running/0 queued/0 cancelled**，114/114 Jobs success。初次停留checkout的Remote Cleaning作业最终正常完成，未取消、跳过或改CI。原始完整列表：`C:/Users/jorsam/.codex/visualizations/2026/10/19/tq04-class-boundaries/CI_CODE_2f6a19bf.json`。
 - Snapshot/YAML共享校验代码提交：`02884bfe0fdc971a463dc4a416f73f8104a9d89a`。17项portable真实篡改/旧兼容通过；相关组合150 passed/3 skipped。三个Windows跳过实际是符号链接文件/目录创建权限，不是新增篡改用例跳过；最终Ubuntu必须核实这些原用例实际执行。
 - **最后交接提交与CI**：本索引所在提交包含上述两个代码提交；为避免文档自引用SHA伪造，推送后按真实最终SHA导出的 `CI_FINAL.json` 和 `CI_FINAL_ACCEPTANCE.md`（同一附件目录）记录准确HEAD、全部Actions/Jobs、触发路径、关键日志与未触发清单。本段不将metadata代码未经执行的CI提前写绿，也不沿用2f6a19bf结果。该目录仅保留本文的原始验收附件，不是平行问题清单。
 - 正式VERSION仍42.24.356；未修改生产GT/Test/Snapshot、服务或数据库。下一项仍按本文TQ-04持续核对成功Test完整性/推理协议与模型目录证据，以及TQ-02真实来源/邻帧/近重复；没有真实97%任务时只标记待现场只读验收，不声称泛化或事件准确率已验证。

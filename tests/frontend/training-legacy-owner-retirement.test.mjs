@@ -21,7 +21,8 @@ test('legacy training settings compose explicit cores instead of previous-owner 
 test('training report has one explicit core and direct compatibility aliases only', () => {
   assert.equal(app.includes('const report425Base428=window.trainingReport425;'), false);
   assert.equal(app.includes('trainingReportCanonical428'), false);
-  assert.match(app, /window\.trainingReportCore425=async function\(id\)/);
+  assert.equal((app.match(/window\.trainingReportCore425=/g)||[]).length,1);
+  assert.match(app, /window\.trainingReportCore425=async function\(id,selection=\{\}\)/);
   assert.match(app, /window\.trainingReport425=window\.trainingReport424=window\.trainingReportCore425/);
 });
 

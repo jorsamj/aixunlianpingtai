@@ -312,7 +312,7 @@ test('quality workspaces preserve evidence, pagination, comparison and four resp
       classes:[{label:'No_helmet',metrics:{recall:{delta:-.1},map50:{delta:-.1},false_positive:{delta:2},false_negative:{delta:3}}}]
     }})});
   });
-  await page.route('**/jobs/quality-visual/report',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({
+  await page.route('**/jobs/quality-visual/report?algorithm_id=quality-visual-a&version_id=current',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({
     job:{id:'quality-visual',task_status:'SUCCEEDED',completed_epochs:20,requested_epochs:100,
       completion_reason:'quality_target_reached',asset_algorithm_name:'本地验收 · 安全帽模型',auto_version_id:'current'},
     report:{generated_at:'2026-10-13T03:00:00Z',metrics:{'metrics/mAP50(B)':.75},
@@ -405,7 +405,11 @@ test('quality workspaces preserve evidence, pagination, comparison and four resp
     await preview.getByRole('button',{name:'返回独立评测'}).click();
     await dialog.getByRole('button',{name:'训练报告',exact:true}).click();
     const report=page.getByRole('dialog',{name:'训练报告'});
-    await expect(report.locator('.quality-chart')).toHaveCount(3);
+    await report.getByRole('tab',{name:'训练曲线',exact:true}).click();
+    await expect(report.locator('[data-report-chart]')).toHaveCount(3);
+    await expect(report.locator('[data-report-chart] canvas')).toHaveCount(3);
+    expect(await report.locator('[data-report-chart=accuracy]').evaluate(node=>window.echarts.getInstanceByDom(node).getOption().series.find(row=>row.name==='mAP50').data.length)).toBe(20);
+    await report.getByRole('tab',{name:'概览',exact:true}).click();
     await expect(page.getByRole('dialog')).toHaveCount(1);
     expect(await report.evaluate(el=>el.scrollWidth<=el.clientWidth+1)).toBe(true);
     await page.screenshot({path:path.resolve(path.dirname(screenshotPath),'report-'+width+'.png')});

@@ -2925,7 +2925,7 @@ window.installUsability417=function(){
       loading.outerHTML=window.PlatformCore.reports.trainingReportHtml(response);
       const root=document.querySelector('.training-report-workspace');
       const isCurrent=()=>root?.isConnected&&String(pid())===project&&sequence===reportRequestSequence425;
-      window.PlatformCore.reports.mountTrainingReport(root,response,{notify:toast,isCurrent,onData:async()=>{await closeModal();window.setPage('数据集')},
+      window.PlatformCore.reports.mountTrainingReport(root,response,{notify:toast,isCurrent,onScenario:window.openScenarioWorkbench429,onData:async()=>{await closeModal();window.setPage('数据集')},
         onEvaluation:async()=>{if(!version)return toast('该报告没有可核验的算法版本关联');await closeModal();window.openVersionEvaluation429(algorithm.id,version.id)},
         onSample:sample=>{
           const currentEvaluation=version?.evaluation;
@@ -4098,14 +4098,14 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     if(taskId)return window.trainingReportCore425(taskId,{algorithmId:aid,versionId:vid});
     const saved=v.training_report||v.report||{},lineage=v.training_lineage||{};
     const response={report:{...saved,identity:{project_id:pid(),algorithm_id:aid,algorithm_name:a.name,version_id:vid,job_id:''},
-      version_name:v.version_name,status:v.training_status||saved.status,framework:lineage.framework||saved.framework,
+      version_name:v.version_name,note:'此历史版本未保存完整训练任务；执行终态、停止条件与业务验收不能由模型指标推断。',status:v.training_status||saved.status,framework:lineage.framework||saved.framework,
       snapshot_id:v.snapshot_id||saved.snapshot_id,base_version_id:v.base_version_id||saved.base_version_id,
       metrics:saved.metrics||v.metrics||{},lineage,requested_train_params:lineage.parameters?.requested||saved.requested_train_params,
       actual_train_params:lineage.parameters?.actual||saved.actual_train_params,evaluation:v.evaluation||saved.evaluation||{},
       artifact_verified:v.artifact_verified,representative_errors:{status:'unavailable',items:[],reason:'历史版本未保存可核验训练任务，未提取异常图片引用'}}};
     modal('版本训练报告',window.PlatformCore.reports.trainingReportHtml(response),true);
     const root=document.querySelector('.training-report-workspace');
-    window.PlatformCore.reports.mountTrainingReport(root,response,{onData:async()=>{await closeModal();window.setPage('数据集')},onEvaluation:async()=>{await closeModal();window.openVersionEvaluation429(aid,vid)}});
+    window.PlatformCore.reports.mountTrainingReport(root,response,{onScenario:window.openScenarioWorkbench429,onData:async()=>{await closeModal();window.setPage('数据集')},onEvaluation:async()=>{await closeModal();window.openVersionEvaluation429(aid,vid)}});
   };
   window.openJobReport429=function(jobId){return window.trainingReportCore425(jobId);};
 

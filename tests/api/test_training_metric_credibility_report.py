@@ -185,3 +185,11 @@ def test_report_projects_frozen_source_negative_audit_and_preserves_unknown_elap
     job=json.loads(job_file.read_text(encoding='utf-8'));job['training_report']={}
     job_file.write_text(json.dumps(job),encoding='utf-8')
     assert platform.v44_training_report('p','training-1')['report']['elapsed_seconds'] is None
+
+
+def test_report_without_run_dir_never_reads_unrelated_working_directory_csv(monkeypatch,tmp_path):
+    import app as platform
+    monkeypatch.chdir(tmp_path)
+    (tmp_path/'results.csv').write_text('epoch,metrics/mAP50(B)\n1,0.95\n',encoding='utf-8')
+    assert platform._v45_training_history({}) == []
+    assert platform._v45_training_history({'run_dir':str(tmp_path)})[0]['map50'] == .95
