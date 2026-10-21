@@ -2,6 +2,20 @@
 
 本文件为本专项唯一需求、进度、问题及验收依据。与 GT 素材生命周期专项分开维护。
 
+## 10. 综合治理偏差补充验收（2026-10-21，进行中）
+
+补充基线：远端与本地 `36aff61874596530a9ab3823dea077b817e9f3b3`，VERSION `42.24.370`，fetch 后一致且专项工作树干净。原始 D 盘 WIP 和其他工作树不修改；本次不是重新实现八项功能。前次最终文档 HEAD 的 CI 已独立核验 21/21 Actions、55/55 Checks、Chrome 128/128；该结果仅属于前次 HEAD，不作为本次验收。
+
+| 补充任务 | 状态 | 验收要求 | 本次证据/剩余 |
+|---|---|---|---|
+| 全平台 Loading 覆盖矩阵 | 进行中 | ZIP、清洗、GT审计、人工保存、训练创建、报告、独立评测、转换、发布、批量删除逐项核查 | 区分代码审计、动态实测和未覆盖，不再用共享样式已存在代替全平台验收 |
+| 正式成功训练口径 | 进行中 | 追踪 SUCCEEDED/PARTIAL_SUCCESS/旧done、成果合同、评测失败、去重和项目算法隔离 | 不以失败任务 Checkpoint 当成功；不擅自扩大成功标准 |
+| 算法报告指标范围 | 进行中 | 次数、累计/平均耗时和任务列表名称与范围一致 | 核查是否包含失败、截断或重复任务 |
+| 生产只读性能方案 | 进行中 | 完整URL、字节、TTFB、Server-Timing、历史数量、冷/热和10刷新 | 本轮不访问生产；空隔离库0.42–0.58秒不代表生产首屏 |
+| 最小修复与最终验收 | 未开始 | 仅修确定偏差；相关Python/Node/真实Chrome；正常提交及最终SHA CI | 本轮测试尚未执行，未声明全平台通过 |
+
+用户已确认：本次验收完成后，再单独实施附件 Annotorious v3；该集成不混入本专项，另建其自身需求与接续记录，也不因此改变本专项的标注/GT合同。生产部署、数据库/素材/Bundle修改和真实GPU训练继续禁止。
+
 ## 1. 基线、授权与验收边界
 
 起始实际 HEAD `db676bbfe6e6641466025822a38754697e79333f`，长期分支 `feature/external-algorithm-publishing`，VERSION `42.24.369`。已 fetch，远端与本地一致、工作区干净；其他工作树及未完成修改不覆盖。允许代码、隔离测试、文档、正常提交和推送；禁止生产部署、生产数据库修改、正式素材删除、历史 Bundle 清理和真实 GPU 训练。
@@ -136,3 +150,75 @@ Python可复现命令：`python -m pytest tests/api/test_training_success_counts
 本文件、当前状态、AGENTS及上述回执的验收补提仅更新文档，VERSION仍42.24.370、代码树不变。此文档补提的新SHA必须独立核验：通过本文件Git History定位其最后提交，再查看该提交Checks；不能把上述f0f3010d结果冒充新SHA。交付以文档提交本身的实际检查全部成功为条件；GitHub提交所附Checks持续保存该SHA和结果，下一会话可直接从仓库核验，无需聊天记录。正文不写入自身提交哈希以避免循环生成新提交。
 
 本轮全部八项代码需求已验收（隔离开发/测试范围）。生产未部署，生产12.08秒现场链路、真实大库/报告仍是部署前后独立核验条件；没有把生产空间、生产模型质量或现场性能写成已达成。取消的临时权重字段专项所有改动已撤销，没有进入本轮提交。
+
+
+### 10.1 生产部署前性能只读核验方案（尚未执行）
+
+本轮不访问生产、不部署。现场12.08秒仍未按相同条件复测；第6节空隔离项目0.42–0.58秒仅为开发回归，不是生产首屏承诺。以下方案供获得独立现场只读授权后执行。
+
+1. 使用已登录的同一测试账号，在Chrome Network启用Preserve log。记录部署域名、提交SHA、VERSION、浏览器版本、网络条件、项目ID及算法数量；不在仓库保存Cookie、Authorization或带凭据HAR。完整URL以实际请求为准：`https://<生产域名>/api/v53/bootstrap/snapshot?preferred_project_id=<项目ID>`（若现场没有此参数则记录实际URL），禁止添加`refresh=true`来改变普通刷新口径。Bootstrap `/api/v53/bootstrap/status`、算法 `/api/v12/projects/<项目ID>/algorithms`、训练任务 `/api/projects/<项目ID>/jobs` 的实际版本/参数须由Network和当前路由再确认，不把请求名当URL。
+2. 分别记录响应状态、Content-Length（可缺）、Chrome encodedBodySize/decodedBodySize/transferSize、请求发出至首字节TTFB、下载responseEnd-responseStart、独立JSON.parse耗时、完整Server-Timing值和服务端日志同请求处理时间。压缩体积、解压体积及代理等待分别记录，不把fetch总耗时全部归于后端。若跨域拿不到ResourceTiming细项，使用DevTools Timing/Size，不用0表示缺失。
+3. 普通首次登录或浏览器新会话标为“客户端冷缓存”；相同浏览器项目连续正常刷新10次，每次保留首屏可交互定义（项目选择、算法卡片及核心操作可响应），并记录Snapshot次数、算法/任务重复请求次数和是否发生后台ready等待。服务器冷启动只有在另行授权的实际重启或自然启动窗口才能观测；本次只读方案不能为制造冷启动重启服务。未知时标NOT VERIFIED，不能把浏览器冷缓存当服务器冷启动。
+4. 从现有只读任务仓库统计/运维只读查询确认该项目全部TRAINING历史任务数量、活动/成功/失败数量、分页总数及算法数；不能从仅含50条的Snapshot推断完整历史。不在每次刷新追加全盘job.json扫描。现场若无可用只读总数接口，由运维提供受控查询结果；不得为测量修改生产数据库。
+5. 检查真实算法ID/版本/当前版本、卡片成功次数与任务列表（含失败记录）一致；活动任务状态与现有TaskRepository投影一致。选择真实历史报告按需打开，记录报告API耗时/缺证据提示；不发起训练/评测/转换或删除。
+6. 每次一行保存：时间、SHA、VERSION、项目、历史数来源、客户端/服务端冷暖条件、URL、HTTP、请求次数、TTFB、下载、JSON解析、压缩/解压字节、Server-Timing、核心交互时间、算法数、活动任务数及异常。十次分别列原始值，再汇总min/median/p95/max；缺项写未知及原因。若仍慢，比较代理TTFB与Server-Timing，再定位真实调用链，不能仅因隔离回归快就关闭现场问题。
+
+验收证据表（本轮均未执行）：
+
+| 范围 | 实际URL/项目/数据规模 | 原始10次/冷暖 | Server-Timing与Network分解 | 状态 |
+|---|---|---|---|---|
+| 生产Snapshot与首屏 | 待现场只读授权确认 | 待测 | 待测 | 未开始 |
+| 生产算法列表与当前版本 | 待现场确认 | 待测 | 待测 | 未开始 |
+| 生产训练列表/完整历史数量 | 待现场确认，不用50条代总量 | 待测 | 待测 | 未开始 |
+| 服务器真实冷启动 | 本轮禁止为测量重启 | 自然窗口或独立授权 | 待测 | 未开始 |
+
+
+### 10.2 Loading覆盖矩阵、确定偏差与实际修复
+
+本表将正常/异常动态证据和未覆盖条件分开。共享样式存在不等于全平台验收。原Owner、真实任务阶段/计数、已有数据和权限保持；`api.js.withRequestDeadline`只是给Owner的一次异步操作加截止/取消，不发请求、不重试，不是第二API Client或Loading系统。默认30秒含JSON/Blob读取；请求超时不代表服务端任务失败。报告原20秒合同保持。所有进度均来自后端真实stage/processed/total或上传字节，无补造训练或任务百分比。
+
+| 真实操作 | 原Owner与等待反馈 | 本轮确认/最小修复 | 动态证据与未覆盖 |
+|---|---|---|---|
+| ZIP | zip-import-runtime、upload-task-center；真实上传字节、服务端合并/校验/队列阶段，transform原位更新 | 分片已有180秒界限；任务列表/状态GET补30秒界限，不清已显示任务；原提交观察/恢复合同保留 | 原Chrome14场景：3/5/10 ZIP、两槽、取消、失败放行、刷新/迟到/项目；Node确认列表和状态signal。大ZIP实际长时合并、会话创建/标签样本接口永久Pending未逐个注入，不宣称100%覆盖 |
+| 素材清洗 | submitClean427、clean-task/MaterialBatch、PollRegistry；真实扫描进度 | 原按钮busy统一spinner、每项目单flight、30秒提交/查询；未知结果只查原列表不重POST；项目和原form fence | remote-cleaning原6场景，新增真实DOM Pending及422两场景；保留进度行/条DOM不闪动。真实Agent网络断连和自然长时扫描未现场测试 |
+| GT审计 | startMaterialIntegrityAudit47、原审计窗及MaterialBatch真实阶段/组计数 | 前置latest/提交/恢复查询有界；删除错误的“没有创建新任务”结论；先冻结旧ID，只有实际未知POST可恢复；原latest不能冒认新创建；项目/窗隔离 | 原完整性Chrome8场景；Node新审计unknown/旧latest/前置读取失败；并非本轮所有审计接口均已做Chrome永久Pending注入 |
+| 人工标注保存 | saveAnnotationCore420/saveAnn、AnnotationWorkbench、原CAS API | silent/手动共用单flight和busy；30秒；冻结项目/图片/ann/SHA；期间新编辑不清dirty；网络/5xx/解码/超时后下次先GET，不自动POST；原版未变可再次保存、已提交同boxes/scope/state可确认、冲突保留修改 | 原material-workflows11场景；新Node20场景；新增Chrome Pending/422两场景。归一化比较真实坐标round2、source=manual与key顺序，不自动合并他人更改；额外未知持久字段保守冲突 |
+| 训练创建 | TrainingSubmitRuntime、TaskRepository/TrainingTaskRuntime；三阶段真实提交反馈 | 原防重和立即仅关原窗保持；POST/JSON与原task_id恢复GET/JSON补30秒；未知不重POST | 原7场景+新Pending已受理/未找到2场景，列表慢/失败仍立即关闭、关闭重开迟到保护；成功表示创建，不表示训练完成。Compatibility准入接口永久Pending未逐个注入 |
+| 训练报告 | trainingReportCore425、原Modal/Report/ECharts | 本轮无需重做：原20秒、3/10秒说明、同窗重试、身份/迟到fence保持 | 原5Chrome及Node异常矩阵，HTTP404/409/500/502/504、永久Pending、关闭/版本切换已测 |
+| 独立评测 | openVersionEvaluation429同步呈现已载入权威结果；原缩略图/原图证据Owner | 不能把同步打开误写成真实评测计算；图片fetch+Blob/错误JSON补30秒，保留原controller、错误码、retry和隐藏旧overlay | 原8Chrome场景及新增缩略图/原图永久Pending→真实retry；真实计算Worker/GPU不在本次授权 |
+| 模型转换 | submitConvert428、原资源/版本历史与PollRegistry | 原form锁增强为项目/算法/版本pending锁，关闭重开不重POST；busy统一；资源/历史/创建有界；未知只查现有记录，4xx可修正后提交 | model-and-conversion14原场景+新Pending/422两场景。仅隔离SDK能力/任务回执，不执行真实转换/GPU；未知任务无关联请求ID时不能自动断言是哪条历史 |
+| 发布 | ExternalAlgorithmPublishRuntime原preflight→publish→readback | 原requestJson有界，按钮busy、版本实体singleflight；未知下次只查状态，PUBLISHED且requires_sync=false可解除；明确4xx可修正再提交 | 原5Chrome+新增Pending/422两场景；所有外部接口被隔离route，未写OSS/Weight。远端长时SDK/状态未知需现场只读核验 |
+| 批量删除 | MaterialBatchRuntime62、原estimate/confirm/create/poll | 单flight及触发按钮busy；estimate/create/get30秒；未知写入本地持久查询锁，失败不清素材、不假定未创建；仅查同操作后台任务并沿原poll观察 | 原完整性Chrome覆盖迟到成功/失败、冻结分页、失败/重复、真实隔离仓库删除；新Node unknown/永久Pending/持久防重。后端尚无请求ID幂等合同，不能安全将某条历史认作本次提交；未知锁目前需人工核验，未宣称自动恢复闭环 |
+
+未覆盖与生产前条件：ZIP会话/合并写入、清洗/转换/发布真实外部网络、所有长任务自然超长/客户端断电恢复没有全面实测；UI统一骨架不意味着每个业务配置窗口都改成骨架，本轮保持已有进度布局。已验证的后台刷新不清已有数据、ZIP/清洗/审计节点identity保留；其他流程不泛称全平台无闪动。未知提交锁（清洗/转换/发布为当前会话、批量任务为持久存储）不等于服务端取消；重新加载页面不代表写入未发生。没有请求关联ID的批量提交，自动解除未知锁属于尚未完成的安全恢复条件，应后续单独沿原TaskRepository补幂等/查询合同后验收，不能删除锁制造“可恢复”假象。
+
+### 10.3 正式成功次数的业务定义与证据
+
+- **维持既有口径，不扩大成功标准。** Durable TRAINING `SUCCEEDED` 或 `PARTIAL_SUCCESS` 且有 `result_ref`；非Durable旧 `done/finished/completed/success/succeeded/partial_success` 必须 `artifact_verified is True`。FAILED即使有Checkpoint、metrics或result_ref也不计；QUEUED/RUNNING/CANCELLED/转换/独立评测/导入均不计。
+- **PARTIAL_SUCCESS（TRAINING）的实际含义**：`platform_core/training_tasks.py` 的 `_training_completion_error` 先要求任务/项目/Snapshot、done、artifact_verified、完成时间、成功outcome和非空best/last；`_finalize_completed_job` 再验证Manifest，复制模型/计算SHA、进入finalization、提交算法版本及committed checkpoint。仅因独立 `test_result.status=='failed'` 返回PARTIAL_SUCCESS（原2615附近）。远程 `node_agent_training_runtime.py` 先等控制面成果提交，再用同条件设PARTIAL；`remote_execution_transport.py`保留同语义。因此建议继续计数：训练已经真正完成，后续独立评测失败不抹除训练完成事实；该状态不表示模型质量或业务验收合格。没有将其他任务类型通用“部分成功”自动套入训练。
+- `result_ref` **本身不充分证明文件当前仍物理存在/哈希一致**。计数函数仅识别已由受控finalization提交的成功回执，不在每次算法列表GET重新遍历/hash历史模型。可信终态来源是现有TaskRepository；完整性归于原成果/报告合同。人为构造成功终态+missing.json仍能满足这一投影门槛，不应写成“已核验该物理文件”。隔离finalization握手、失败finalization、terminal及count回归与此分层分别验收。
+- 分页：按project+TRAINING完整100条游标读取Durable，非Snapshot50条/页面20条统计。同task_id优先canonical行去重；retry保持task_id且清result_ref，重试中不计，重新成功只计一次。算法归属只用asset_algorithm_id/algorithm_asset_id，不能用SDK算法引擎名；显式异项目历史行排除，缺project_id旧记录以所属项目目录兼容。无job的成功任务沿原不可变payload恢复。
+- 口径限制：已有job的算法ID目前没有和canonical payload逐条交叉核验；正常创建链有冻结业务算法ID，本轮没有发现其产生错归属的证据。旧job缺ID/人工损坏ID可能漏计或错误归属，不能把缺证据自动当成功，也不在本轮擅自迁移历史数据。该条件列为历史只读治理待核验，不说已修复。
+
+### 10.4 算法报告指标一致性
+
+原bug：成功次数被权威聚合覆盖，但耗时/平均和trend仍来自所有job.json，含失败/重复/非TRAINING；页面显示成功X/X，分母其实也是成功数，“完成后准确率”亦可能包含失败Checkpoint指标。
+
+实际修复：`app.py.v49_algorithm_report`复用原增量history/context及Durable分页/payload，不再该请求全量glob读取/enrich；同任务去重、项目/算法/类型隔离，补无job的各状态Durable身份。training_count与successful_count继续为成功数；新增attempt_count在页面称“训练任务数”，指独立task数而非重试次数。累计耗时覆盖全部这些任务（含失败及运行中当前已记录耗时）；平均仅按有限非负真实elapsed记录计算，0有效，缺失/NaN/负值不以0参与平均。返回duration_scope、duration_record_count、duration_unknown_count。列表trend仍完整，jobs字段维持最近20条兼容，补jobs_total/limit/truncated；页面标明全部任务含失败，不删除失败审计。标签汇总也是所展示全部训练任务的累计观测，不当作去重素材总量。
+
+RED→GREEN：混合成功/失败/运行/未知耗时、重复别名、异项目/非训练、25+记录/20窗口元数据两例先因缺范围元数据RED，修后计数文件15/15；新增Node报告文案动态fixture1/1；Chrome真实空项目API及明确标记混合历史夹具1/1。失败指标仍是任务观测，成功业务趋势与其含义分开。
+
+### 10.5 补充测试、问题留痕与接续（最终CI待本次提交）
+
+- 进行过的基线Chrome：64/64通过（4.0分钟），8个真实app文件，包含ZIP14、清洗6、素材11、完整性8、创建7、报告5、评测8及发布5；这是受控临时后端/显式接口夹具，不是生产数据。后续受实际修改影响的集合继续复验。
+- Python实际相关5文件55/55通过，0失败0跳过，5warnings（约27秒），覆盖计数、增量history、finalization握手、终态、指标可信度。新报告文件15例包含在55内，不重复累计。
+- Node首次全量1129通过4失败：两例conversion VM未注入新增pending闭包/截止utility，两条源码守卫固定期待无signal调用/旧await文本；保留真实断言，原位接入闭包和utility、更新带signal精确合同。随后全量1140/1140通过；缓存标识升级后两条旧固定标识守卫失败，按真实入口/模块版本同步（包括ZIP bootstrap本身），最终全量1141/1141通过，0失败0跳过。新增标注20例、截止utility、批量/GT审计及报告均有动态RED→GREEN。
+- Chrome首次扩大转换24项23通过1失败：旧夹具要求BF16选项存在且disabled，但当前正式precision列表已无该项；改验证enabled BF16数量为0，仍禁止用户选用，不添加无效产品选项。复测原转换14场景通过。新增Loading首轮26项25通过1失败为自定义按钮被侧栏遮挡，调整夹具固定可见区域；再32项31通过1失败为模拟“新form”复制了旧busy属性，改为真实新form初始空闲属性，同时继续断言pending实体锁不产生第二POST。均未force click或删除业务断言。
+- 审查修复：标注非timeout网络异常也先GET、恢复核对annotation_state；发布4xx不能永久queryOnly；GT前置GET失败不能冒认旧latest；转换跨新form实体锁。各自回归已加入，不用审查意见本身当测试结果。
+- VERSION本轮一次递增42.24.371，静态入口418及必要模块缓存更新；无新Owner/任务库，无生产写入/部署/GPU。
+- 后续：按最终实际HEAD核对CI；所有未覆盖条件及未知提交无法自动匹配的限制须带入部署前检查。完成本次正文验收后，按用户确认**另行推进Annotorious v3专项**，其原始需求、PoC/适配器/GT合同与接续文档单独维护，不将本文件写为标注内核集成已完成。
+
+
+补充最终本地结论（已完成待验收）：Python55/55、Frontend Node1141/1141；Chrome并集90个独立场景分别通过（原64、转换14、报告范围1、新Loading8、训练Pending2、新评测Pending1），0最终未解失败/0跳过，不将复测重复次数累加。最后受ZIP/评测/Loading/完整性改动影响的39项38通过1失败：ZIP观察请求计数夹具固定sleep200ms时原reconcile仍busy，按原防重合同不会再发GET，得到0；新增只读snapshot.busy观察，夹具等待真实空闲后清poll再精确测一次，原1次GET断言保留，单例1/1复验通过，未增加重复轮询或删除断言。隔离证据不代表生产覆盖。
+
+本次关联提交通过本节Git History定位，CI必须读取该提交Checks；当前提交前未声称CI通过。补记CI文档产生新SHA时也须重新核验自身。正式交付条件为最终SHA全部相关CI成功；全平台未覆盖项目、物理成果只读核验、无请求ID未知提交恢复限制仍保留，不将本次限定验收写成生产可部署结论。

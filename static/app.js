@@ -1,5 +1,5 @@
 const $=s=>document.querySelector(s);const $$=s=>Array.from(document.querySelectorAll(s));
-const api=async(url,opt={})=>{const uploadTicket=opt.body instanceof FormData&&String(opt.method||'').toUpperCase()==='POST'&&/^\/api\/projects\/[^/?]+\/images$/.test(url)?preparePlainUpload411(opt.body):null;const r=await fetch(url,opt);if(uploadTicket&&r.ok)finishPlainUpload411(uploadTicket);if(!r.ok){const raw=await r.text();let body={};try{body=JSON.parse(raw)}catch{body={detail:raw}}const message=body.message||body.detail?.message||'操作失败',detail=typeof body.detail==='string'&&body.detail!==message?`：${body.detail}`:'',solution=body.solution?`\n建议：${body.solution}`:'';const error=new Error(`${message}${detail}${solution}`||'请求失败');error.code=body.code||body.detail?.code||`HTTP_${r.status}`;if(uploadTicket&&error.code==='UPLOAD_REQUEST_MANIFEST_MISMATCH')finishPlainUpload411(uploadTicket);throw error}const ct=r.headers.get('content-type')||'';return ct.includes('json')?r.json():r.text()};
+const api=async(url,opt={})=>{const uploadTicket=opt.body instanceof FormData&&String(opt.method||'').toUpperCase()==='POST'&&/^\/api\/projects\/[^/?]+\/images$/.test(url)?preparePlainUpload411(opt.body):null;const r=await fetch(url,opt);if(uploadTicket&&r.ok)finishPlainUpload411(uploadTicket);if(!r.ok){const raw=await r.text();let body={};try{body=JSON.parse(raw)}catch{body={detail:raw}}const message=body.message||body.detail?.message||'操作失败',detail=typeof body.detail==='string'&&body.detail!==message?`：${body.detail}`:'',solution=body.solution?`\n建议：${body.solution}`:'';const error=new Error(`${message}${detail}${solution}`||'请求失败');error.code=body.code||body.detail?.code||`HTTP_${r.status}`;error.httpStatus=r.status;if(uploadTicket&&error.code==='UPLOAD_REQUEST_MANIFEST_MISMATCH')finishPlainUpload411(uploadTicket);throw error}const ct=r.headers.get('content-type')||'';return ct.includes('json')?r.json():r.text()};
 // Shared request identity for ordinary image uploads (fetch + XHR).
 // Session retry metadata is not a second Material/Annotation source of truth.
 const PLAIN_UPLOAD_PENDING_KEY411='plain-image-upload-request-ids-v1';
@@ -3307,14 +3307,31 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     else if(selectedScope){selectedScope.querySelector('.row.wrap')?.remove();selectedScope.insertAdjacentHTML('beforeend','<div class="clean-image-picker"><div class="ai-create-toolbar"><input id="cl427PickerQuery" class="input" placeholder="搜索图片名称" oninput="searchCleanPicker427()"><button class="btn mini" onclick="cleanUseCurrentPage427()">全选当前页</button><button class="btn mini" onclick="cleanClearSelection427()">取消选择</button><button class="btn mini" onclick="cleanUseCurrentFilters427()">全选当前筛选结果</button></div><div id="cl427PickerGrid" class="ai-create-material-grid"><div class="empty compact">选择“指定图片”后按需加载</div></div><div id="cl427PickerPager" class="ai-create-pager"></div></div>')}
     if(active.value==='selected'&&!state.v427CleanForcedSelected)loadCleanPicker427();
   };
+  const cleanSubmissionOutcomes427=new Map();
   window.submitClean427=async function(){
+    const project=pid(),form=document.querySelector('.clean427-create'),button=document.getElementById('cl427Start'),key=String(project);
+    if(cleanSubmissionOutcomes427.get(key)==='pending')return;
+    if(cleanSubmissionOutcomes427.get(key)==='uncertain'){
+      try{const r=await window.PlatformCore.withRequestDeadline(signal=>api(`/api/v47/projects/${project}/clean-tasks`,{signal}),{label:'清洗任务查询'});if(project===pid()&&document.querySelector('.clean427-create')===form){state.clean427=r.items||[];toast('已查询现有清洗任务；上次提交结果仍需核对，本次没有重复创建。请到自动标注及清洗查看。')}}catch(e){toast(e.message||e)}
+      return;
+    }
     const scope=document.querySelector('input[name="cl427Scope"]:checked')?.value||state.v427CleanScope||'all';
     let selection;try{selection=cleanScopeRequest427(scope)}catch(e){return toast(e.message||e)}
     let executionMode='local';try{executionMode=window.PlatformCore?.cleaning?.cleanExecutionMode?.(document.querySelector('input[name="cl427Execution"]:checked')?.value||'local',state.v427CleanRuntime||{})||'local'}catch(e){return toast(e.message||e)}
     let scheduling;try{scheduling=window.PlatformCore?.cleaning?.cleanSchedulingRequest?.({executionMode,schedulingMode:state.v427CleanSchedulingMode||'auto',nodeId:state.v427CleanTargetNode||'',queuePolicy:state.v427CleanQueuePolicy||'normal'},state.v427CleanRuntime||{})||{scheduling_mode:'auto',target_node_id:'',queue_policy:'normal'}}catch(e){return toast(e.message||e)}
     const choice=cleanScopeChoices427().find(x=>x.value===scope);
     const body={...selection,execution_mode:executionMode,...scheduling,annotation_audit:cleanScopeSupportsAnnotationAudit427(scope)&&!!document.getElementById('cl427AnnotationAudit')?.checked,exact_duplicate:!!document.getElementById('cl427Exact')?.checked,near_duplicate:!!document.getElementById('cl427Near')?.checked,near_duplicate_hamming:+document.getElementById('cl427Ham')?.value||5,min_width:document.getElementById('cl427Low')?.checked?(+document.getElementById('cl427MinW')?.value||320):0,min_height:document.getElementById('cl427Low')?.checked?(+document.getElementById('cl427MinH')?.value||240):0,max_width:document.getElementById('cl427High')?.checked?(+document.getElementById('cl427MaxW')?.value||10000):999999,max_height:document.getElementById('cl427High')?.checked?(+document.getElementById('cl427MaxH')?.value||10000):999999,blur_check:!!document.getElementById('cl427Blur')?.checked,blur_min_laplacian:+document.getElementById('cl427BlurV')?.value||45,brightness_check:!!document.getElementById('cl427Bright')?.checked,brightness_min:+document.getElementById('cl427BMin')?.value||15,brightness_max:+document.getElementById('cl427BMax')?.value||245,corrupt_check:!!document.getElementById('cl427Corrupt')?.checked,task_name:`自动清洗-${choice?.label||'范围'}-${new Date().toLocaleDateString()}`};
-    try{const t=await api(`/api/v47/projects/${pid()}/clean-tasks`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});closeModal();showTaskProgress427('clean',t.id)}catch(e){toast(e.message||e)}
+    cleanSubmissionOutcomes427.set(key,'pending');
+    if(button){button.disabled=true;button.setAttribute('aria-busy','true');button.textContent='正在创建清洗任务…'}
+    try{
+      const t=await window.PlatformCore.withRequestDeadline(signal=>api(`/api/v47/projects/${project}/clean-tasks`,{method:'POST',signal,headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}),{label:'清洗任务创建'});
+      cleanSubmissionOutcomes427.delete(key);
+      if(project===pid()&&document.querySelector('.clean427-create')===form){await closeModal();showTaskProgress427('clean',t.id)}
+    }catch(e){
+      const knownReject=Number(e.httpStatus)>=400&&Number(e.httpStatus)<500;
+      if(knownReject)cleanSubmissionOutcomes427.delete(key);else cleanSubmissionOutcomes427.set(key,'uncertain');
+      if(project===pid()&&document.querySelector('.clean427-create')===form)toast(knownReject?(e.message||e):'清洗创建结果待确认，请查询已有任务，不要重复创建。 '+(e.message||e));
+    }finally{if(button?.isConnected){button.disabled=false;button.removeAttribute('aria-busy');button.textContent=cleanSubmissionOutcomes427.get(key)==='uncertain'?'查询已有清洗任务':'开始清洗'}}
   };
   window.reviewClean427=id=>window.cleanDetail429?.(id);
   window.toggleCleanItem427=(id,on)=>on?state.v427CleanConfirm.add(String(id)):state.v427CleanConfirm.delete(String(id));
@@ -3512,7 +3529,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     const k=cacheKey428('verdeploy',aid,vid),inflightKey=`${pid()}:${aid}:${vid}`;
     if(!force){const c=readCache428(k);if(c)return c}
     if(conversionHistoryInflight428.has(inflightKey))return conversionHistoryInflight428.get(inflightKey);
-    const task=api(`/api/v42/projects/${pid()}/algorithms/${aid}/versions/${vid}/deployments`).then(r=>{writeCache428(k,r);return r}).finally(()=>conversionHistoryInflight428.delete(inflightKey));
+    const task=window.PlatformCore.withRequestDeadline(signal=>api(`/api/v42/projects/${pid()}/algorithms/${aid}/versions/${vid}/deployments`,{signal}),{label:'转换记录读取'}).then(r=>{writeCache428(k,r);return r}).finally(()=>conversionHistoryInflight428.delete(inflightKey));
     conversionHistoryInflight428.set(inflightKey,task);return task
   }
   async function deployResources428(force=false){
@@ -3520,7 +3537,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     // Always ask the authoritative API, including each modal open and submit.
     if(!force&&deployResourcesInflight428)return deployResourcesInflight428;
     const epoch=++deployResourcesEpoch428;
-    const task=api('/api/v39/deploy/resources',{cache:'no-store'}).then(r=>{
+    const task=window.PlatformCore.withRequestDeadline(signal=>api('/api/v39/deploy/resources',{cache:'no-store',signal}),{label:'转换资源读取'}).then(r=>{
       if(epoch!==deployResourcesEpoch428)throw new Error('部署资源检测状态已更新，请重新读取最新能力');
       writeCache428(cacheKey428('deployresources'),r);
       return r;
@@ -3582,9 +3599,12 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   function targetResources428(rows,target){return(rows||[]).filter(x=>x.status==='ready'&&(x.targets||[]).includes(target))}
   window.openNewConvertLegacy428=async function(aid,vid){try{const rr=await deployResources428(false),hist=await deploymentHistory428(aid,vid,false),v=hist.version||{};if(!String(v.stored_path||'').trim())return toast('当前版本没有可用模型产物');modal('新建版本转换',`<div class="convert428-create"><section><b>源版本</b><div class="convert428-source"><span>${esc(hist.algorithm?.name||'-')}</span><strong>${esc(v.version_name||'-')}</strong><em>${esc(v.model_name||'')}</em></div></section><section><b>转换目标</b><div class="convert428-targets">${['ascend','rockchip','sophon'].map((t,i)=>`<label><input type="radio" name="conv428Target" value="${t}" ${i===0?'checked':''} onchange="refreshConvertResource428()"><i></i><b>${esc(TARGET_NAMES428[t])}</b><span>${t==='ascend'?'输出 .om':t==='rockchip'?'输出 .rknn':'输出 .bmodel'}</span></label>`).join('')}</div></section><section><div class="form two"><div class="field"><label>转换资源</label><select id="conv428Resource" class="select"></select><button type="button" class="btn mini" onclick="refreshVersionConversionResources428(true)">检测当前资源</button></div><div class="field"><label>精度</label><select id="conv428Precision" class="select"><option value="fp16">FP16</option><option value="fp32">FP32</option><option value="int8">INT8（需要校准数据）</option></select></div><div class="field"><label>输入尺寸</label><input id="conv428Input" class="input" value="640"></div><div class="field"><label>芯片型号</label><select id="conv428Chip" class="select"></select></div></div></section><div id="conv428Warn" class="alert soft"></div><div class="row end"><button class="btn" onclick="closeModal()">取消</button><button class="btn primary" onclick="submitConvert428('${aid}','${vid}')">开始转换</button></div></div>`,true);state.conv428Resources=rr.items||[];setTimeout(refreshConvertResource428,20)}catch(e){toast(e.message||e)}};
   window.refreshConvertResourceLegacy428_1=function(){const t=document.querySelector('input[name="conv428Target"]:checked')?.value||'ascend',rows=targetResources428(state.conv428Resources,t),sel=document.getElementById('conv428Resource'),chip=document.getElementById('conv428Chip'),warn=document.getElementById('conv428Warn');if(sel){sel.innerHTML=rows.map(x=>`<option value="${x.id}">${esc(x.name)}</option>`).join('')||'<option value="">暂无可用转换资源</option>';sel.onchange=()=>{const r=(state.conv428Resources||[]).find(x=>x.id===sel.value);if(t==='rockchip'&&chip){chip.value=(r?.supported_chips||[])[0]||''}else if(t==='ascend'&&chip){const socs=r?.detected_soc_versions||r?.remote_health?.soc_versions||[];chip.value=socs[0]||''}}}const first=rows[0];if(chip){if(t==='rockchip')chip.value=(first?.supported_chips||[])[0]||'';else if(t==='sophon')chip.value='bm1684x';else{const socs=first?.detected_soc_versions||first?.remote_health?.soc_versions||[];chip.value=socs[0]||''}}if(warn)warn.textContent=rows.length?(t==='ascend'&&!chip?.value?'转换资源可用，但未自动识别 Atlas soc_version；请填写最终部署芯片型号，例如 Ascend310P3。':'将使用已检测可用的真实转换资源执行。'):'当前没有已检测为可用的转换资源，请展开“高级功能 → 部署资源”配置并检测后再试。'};
+  const conversionUnknown428=new Set(),conversionPending428=new Set();
   window.submitConvert428=async function(aid,vid){
     const form=document.querySelector('.convert428-create'),project=pid(),radio=document.querySelector('input[name="conv428Target"]:checked'),target=radio?.value||'onnx',rid=document.getElementById('conv428Resource')?.value,button=window.event?.currentTarget||document.querySelector('.convert428-create [data-convert-submit]');
-    if(form?.dataset?.submitting)return;
+    const submissionKey=`${project}:${aid}:${vid}`;
+    if(conversionUnknown428.has(submissionKey)){toast('转换创建结果待确认，正在查询现有记录，本次不会再次提交。');return window.openVersionConvert428(aid,vid);}
+    if(form?.dataset?.submitting||conversionPending428.has(submissionKey))return;
     if(!rid||state.conv428ResourcesCurrent!==true)return toast('转换资源尚未完成实时核验，请点击刷新资源');
     const precision=document.getElementById('conv428Precision')?.value||'fp16',size=Number(document.getElementById('conv428Input')?.value||640),chip=document.getElementById('conv428Chip')?.value.trim()||'',selectedResource=(state.conv428Resources||[]).find(x=>x.id===rid),rockchipChip=target==='rockchip'?chip.toLowerCase():chip,targetEnvironment=document.getElementById('conv428TargetEnvironment')?.value.trim()||'';
     if(target==='ascend'&&!chip)return toast('请选择目标 Atlas SoC');
@@ -3610,9 +3630,10 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     if(target==='onnx'&&state.conv428ModelDefaults?.source_format==='onnx'){for(const key of ['precision','opset','simplify','dynamic','input_size'])delete params[key]}
     if(target==='tensorrt'){params.workspace_mb=Math.max(64,Number(document.getElementById('conv428Workspace')?.value||2048));params.batch=Math.max(1,Number(document.getElementById('conv428Batch')?.value||1));params.target_environment=targetEnvironment}
     const datasetId=document.getElementById('conv428CalibrationDataset')?.value||'default',calibrationSplit=document.getElementById('conv428CalibrationSplit')?.value||'train',calibrationCount=Math.max(1,Math.min(1000,Number(document.getElementById('conv428CalibrationCount')?.value||100)));
+    conversionPending428.add(submissionKey);
     if(form?.dataset)form.dataset.submitting='true';
-    if(button){button.disabled=true;button.textContent='正在创建转换任务…'}
-    let created=false;
+    if(button){button.disabled=true;button.setAttribute('aria-busy','true');button.textContent='正在创建转换任务…'}
+    let created=false,posted=false;
     try{
       const verified=await deployResources428(true);
       if(project!==pid()||document.querySelector('.convert428-create')!==form)return;
@@ -3622,18 +3643,23 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
         throw new Error('部署资源已下线或能力已改变，请刷新资源后重新选择');
       state.conv428Resources=verified.items||[];
       state.conv428ResourcesCurrent=true;
-      await api(`/api/v39/projects/${project}/deploy/jobs`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source_id:`version::${aid}::${vid}`,target,resource_id:rid,params,dataset_id:datasetId,calibration_split:calibrationSplit,calibration_count:calibrationCount})});
+      posted=true;
+      await window.PlatformCore.withRequestDeadline(signal=>api(`/api/v39/projects/${project}/deploy/jobs`,{method:'POST',signal,headers:{'Content-Type':'application/json'},body:JSON.stringify({source_id:`version::${aid}::${vid}`,target,resource_id:rid,params,dataset_id:datasetId,calibration_split:calibrationSplit,calibration_count:calibrationCount})}),{label:'转换任务创建'});
       created=true;
       localStorage.removeItem(cacheKey428('verdeploy',aid,vid));
       if(project!==pid()||document.querySelector('.convert428-create')!==form)return;
-      const history=await deploymentHistory428(aid,vid,true);
+      const history=await window.PlatformCore.withRequestDeadline(()=>deploymentHistory428(aid,vid,true),{label:'转换记录查询'});
       if(project!==pid()||document.querySelector('.convert428-create')!==form)return;
       closeModal();
       const r=rememberVersionConversion428(aid,vid,history);
       if(!replaceVersionConversionBody428(aid,vid,r))modal('版本转换',historyHtml428(aid,vid,r),true);
       scheduleVersionConversionPoll428(aid,vid,r);
       toast('转换任务已受理，可在当前版本持续查看进度')
-    }catch(e){if(project===pid()&&document.querySelector('.convert428-create')===form){if(button){button.disabled=created;button.textContent=created?'任务已创建':'开始转换'}toast(created?'转换任务已创建，历史记录刷新失败：'+(e.message||e):(e.message||e))}}finally{if(form?.dataset&&!created)delete form.dataset.submitting}
+    }catch(e){
+      const uncertain=posted&&!created&&!(Number(e.httpStatus)>=400&&Number(e.httpStatus)<500);
+      if(uncertain)conversionUnknown428.add(submissionKey);
+      if(project===pid()&&document.querySelector('.convert428-create')===form){if(button){button.disabled=created;button.textContent=created?'任务已创建':uncertain?'查询转换结果':'开始转换'}toast(created?'转换任务已创建，历史记录刷新失败：'+(e.message||e):uncertain?'转换创建结果待确认；请查询记录，不要重复创建。 '+(e.message||e):(e.message||e))}
+    }finally{conversionPending428.delete(submissionKey);if(button?.isConnected)button.removeAttribute('aria-busy');if(form?.dataset&&!created)delete form.dataset.submitting}
   };
 
   // ---------------------- training creation from algorithm ----------------------
@@ -3700,7 +3726,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   window.viewAlgorithm429=function(id){const a=(state.algorithms||[]).find(x=>x.id===id);if(!a)return;const vs=a.versions||[],jobs=(state.jobs||[]).filter(j=>String(j.asset_algorithm_id||j.algorithm_asset_id||'')===String(a.id)),run=active429(a),current=vs.find(v=>String(v.id||'')===String(a.current_version_id||''))||vs[0],success=jobs.filter(j=>['done','finished','completed','succeeded','success'].includes(String(j.status||'').toLowerCase())).length;modal('算法详情',`<div class="alg428-detail"><section><div class="alg428-detail-name"><div class="alg428-logo">${esc((a.name||'算').slice(0,1))}</div><div><h2>${esc(a.name)}</h2><span>${esc(algType429(a.algorithm_type))}${a.industry?` · ${esc(a.industry)}`:''}</span></div></div><p>${esc(a.remark||'暂无算法说明')}</p><div class="alg429-detail-stats"><div><span>训练任务</span><b>${jobs.length}</b></div><div><span>成功训练</span><b>${success}</b></div><div><span>算法版本</span><b>${vs.length}</b></div><div><span>当前版本</span><b>${esc(current?.version_name||'尚未训练')}</b></div><div><span>当前 mAP50</span><b>${pct429(metric429(current))}</b></div></div>${run?`<div class="alg429-detail-live"><span class="pill warn">${esc(status429(run.status))}</span><b>${esc(run.run_name||run.task_name||run.id)}</b><em>${Math.max(0,Math.min(100,Number(run.progress_percent||0))).toFixed(0)}%</em></div>`:''}<div class="row"><button class="btn primary" onclick="startAlgorithmTraining429('${a.id}')">开始训练</button><button class="btn" onclick="algorithmReport429('${a.id}')">查看综合训练报告</button></div></section><section><div class="alg428-version-head"><b>版本列表</b><span>${vs.length} 个版本</span></div>${vs.length?vs.map(v=>verRow429(a,v)).join(''):'<div class="empty">暂无版本</div>'}</section></div>`,true)};
 
   function spark429(points,w=720,h=190){const vals=points.map(x=>Number(x)).filter(Number.isFinite);if(!vals.length)return '<div class="empty">暂无可绘制的准确率数据</div>';const min=Math.min(...vals,0),max=Math.max(...vals,1),pad=18;const xy=vals.map((v,i)=>{const x=pad+(w-pad*2)*(vals.length===1?.5:i/(vals.length-1));const y=h-pad-(h-pad*2)*(v-min)/Math.max(.0001,max-min);return[x,y]});return `<svg class="report429-svg" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none"><line x1="${pad}" y1="${h-pad}" x2="${w-pad}" y2="${h-pad}"/><polyline points="${xy.map(p=>p.join(',')).join(' ')}"/>${xy.map((p,i)=>`<circle cx="${p[0]}" cy="${p[1]}" r="4"><title>${pct429(vals[i])}</title></circle>`).join('')}</svg>`}
-  window.algorithmReport429=async function(id){try{const r=await api(`/api/v49/projects/${pid()}/algorithms/${id}/report`),a=r.algorithm||{},s=r.summary||{},trend=(r.trend||[]).filter(x=>x.map50!=null),labs=Object.entries(s.label_counts||{}).sort((a,b)=>b[1]-a[1]);modal('算法综合训练报告',`<div class="report429"><section class="report429-head"><div><span>算法长期训练总结</span><h2>${esc(a.name||'')}</h2><p>${esc(algType429(a.algorithm_type))}${a.industry?` · ${esc(a.industry)}`:''}</p></div><div class="report429-kpis"><div><span>累计训练</span><b>${s.training_count||0} 次</b></div><div><span>版本数量</span><b>${a.version_count||0}</b></div><div><span>最新正确率</span><b>${pct429(s.latest_accuracy)}</b></div><div><span>累计训练时长</span><b>${fmtTime424(s.total_duration_seconds||0)}</b></div></div></section><section class="report429-card"><header><b>历次训练准确率走势</b><span>每个点代表一次训练完成后的 mAP50</span></header>${spark429(trend.map(x=>x.map50))}<div class="report429-legend">${trend.map(x=>`<span>${esc(x.version||x.job_id||'-')} <b>${pct429(x.map50)}</b></span>`).join('')}</div></section><div class="report429-cols"><section class="report429-card"><header><b>训练素材标签维度</b><span>累计参与训练的检测框数量</span></header><div class="report429-bars">${labs.map(([k,v])=>`<div><span>${esc(k)}</span><i><em style="width:${Math.min(100,v/Math.max(1,labs[0]?.[1]||1)*100)}%"></em></i><b>${v}</b></div>`).join('')||'<div class="empty">暂无标签统计</div>'}</div></section><section class="report429-card"><header><b>算法档案</b></header><dl class="report429-dl"><dt>算法类型</dt><dd>${esc(algType429(a.algorithm_type))}</dd><dt>行业场景</dt><dd>${esc(a.industry||'-')}</dd><dt>训练成功</dt><dd>${s.successful_count||0} / ${s.training_count||0} 次</dd><dt>平均训练时长</dt><dd>${fmtTime424(s.avg_duration_seconds||0)}</dd><dt>当前版本</dt><dd>${esc(s.latest_version||'-')}</dd></dl></section></div><section class="report429-card"><header><b>历次训练记录</b></header><div class="table-wrap"><table class="table"><thead><tr><th>版本/任务</th><th>完成时间</th><th>正确率</th><th>训练素材</th><th>状态</th><th>报告</th></tr></thead><tbody>${(r.trend||[]).slice().reverse().map(x=>`<tr><td>${esc(x.version||x.job_id||'-')}</td><td>${dt429(x.finished_at)}</td><td><b>${pct429(x.map50)}</b></td><td>${x.images||0} 张</td><td>${esc(status429(x.status))}</td><td><button class="btn mini" onclick="openJobReport429('${x.job_id}')">查看</button></td></tr>`).join('')||'<tr><td colspan="6">暂无训练记录</td></tr>'}</tbody></table></div></section></div>`,true)}catch(e){toast(e.message||e)}};
+  window.algorithmReport429=async function(id){try{const r=await api(`/api/v49/projects/${pid()}/algorithms/${id}/report`),a=r.algorithm||{},s=r.summary||{},trend=(r.trend||[]).filter(x=>x.map50!=null),labs=Object.entries(s.label_counts||{}).sort((a,b)=>b[1]-a[1]);modal('算法综合训练报告',`<div class="report429"><section class="report429-head"><div><span>算法长期训练总结</span><h2>${esc(a.name||'')}</h2><p>${esc(algType429(a.algorithm_type))}${a.industry?` · ${esc(a.industry)}`:''}</p></div><div class="report429-kpis"><div><span>成功训练次数</span><b>${s.training_count||0} 次</b></div><div><span>版本数量</span><b>${a.version_count||0}</b></div><div><span>最新正确率</span><b>${pct429(s.latest_accuracy)}</b></div><div><span>所有训练任务累计耗时（含失败）</span><b>${fmtTime424(s.total_duration_seconds||0)}</b></div></div></section><section class="report429-card"><header><b>历次训练准确率走势</b><span>各训练任务已记录的 mAP50；失败任务的指标不代表训练成功</span></header>${spark429(trend.map(x=>x.map50))}<div class="report429-legend">${trend.map(x=>`<span>${esc(x.version||x.job_id||'-')} <b>${pct429(x.map50)}</b></span>`).join('')}</div></section><div class="report429-cols"><section class="report429-card"><header><b>训练素材标签维度</b><span>累计参与训练的检测框数量</span></header><div class="report429-bars">${labs.map(([k,v])=>`<div><span>${esc(k)}</span><i><em style="width:${Math.min(100,v/Math.max(1,labs[0]?.[1]||1)*100)}%"></em></i><b>${v}</b></div>`).join('')||'<div class="empty">暂无标签统计</div>'}</div></section><section class="report429-card"><header><b>算法档案</b></header><dl class="report429-dl"><dt>算法类型</dt><dd>${esc(algType429(a.algorithm_type))}</dd><dt>行业场景</dt><dd>${esc(a.industry||'-')}</dd><dt>成功训练次数</dt><dd>${s.successful_count||0} 次</dd><dt>训练任务数（含失败等状态，同任务重试不重复）</dt><dd>${s.attempt_count??'—'} 次</dd><dt>所有训练任务平均耗时（含失败）</dt><dd>${fmtTime424(s.avg_duration_seconds||0)}<small>按 ${s.duration_record_count??'—'} 条有耗时记录计算，${s.duration_unknown_count??'—'} 条耗时未知；运行中任务为当前快照</small></dd><dt>当前版本</dt><dd>${esc(s.latest_version||'-')}</dd></dl></section></div><section class="report429-card"><header><b>历次训练记录（所有训练任务，含失败）</b><span>完整记录 ${r.jobs_total??(r.trend||[]).length} 条；任务明细返回最近 ${r.jobs_limit??20} 条${r.jobs_truncated?'（已截断）':''}</span></header><div class="table-wrap"><table class="table"><thead><tr><th>版本/任务</th><th>完成/记录时间</th><th>正确率</th><th>训练素材</th><th>状态</th><th>报告</th></tr></thead><tbody>${(r.trend||[]).slice().reverse().map(x=>`<tr><td>${esc(x.version||x.job_id||'-')}</td><td>${dt429(x.finished_at)}</td><td><b>${pct429(x.map50)}</b></td><td>${x.images||0} 张</td><td>${esc(status429(x.status))}</td><td><button class="btn mini" onclick="openJobReport429('${x.job_id}')">查看</button></td></tr>`).join('')||'<tr><td colspan="6">暂无训练记录</td></tr>'}</tbody></table></div></section></div>`,true)}catch(e){toast(e.message||e)}};
 
   window.openVersionLineage429=function(aid,vid){
     const algorithm=(state.algorithms||[]).find(row=>String(row.id)===String(aid)),version=algorithm?.versions?.find(row=>String(row.id)===String(vid));
@@ -3854,13 +3880,13 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     if(status){status.hidden=false;status.innerHTML='<i></i><span>正在读取冻结图片…</span>';}
     let objectUrl='';
     try{
-      const response=await fetch(card.dataset.evalUrl,{signal:controller.signal,headers:{Accept:'image/*'}});
+      const loaded=await window.PlatformCore.withRequestDeadline(async signal=>{const response=await fetch(card.dataset.evalUrl,{signal,headers:{Accept:'image/*'}});return {response,blob:response.ok?await response.blob():null,body:response.ok?null:await response.json().catch(()=>({}))}},{signal:controller.signal,label:'评测图片读取'}),response=loaded.response;
       if(!current())return;
       if(!response.ok){
-        const body=await response.json().catch(()=>({}));
+        const body=loaded.body;
         renderEvaluationThumbnailIssue429(card,evaluationPreviewIssue429(typeof body.detail==='object'?body.detail:{}));return;
       }
-      const blob=await response.blob();objectUrl=URL.createObjectURL(blob);
+      objectUrl=URL.createObjectURL(loaded.blob);
       if(!current()){URL.revokeObjectURL(objectUrl);return;}
       image.onload=()=>{
         URL.revokeObjectURL(objectUrl);if(!current())return;
@@ -3929,15 +3955,15 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     const current=()=>root?.isConnected&&String(pid())===project&&!controller.signal.aborted;
     let objectUrl='';
     try{
-      const response=await fetch(url,{signal:controller.signal,headers:{Accept:'image/*'}});
+      const loaded=await window.PlatformCore.withRequestDeadline(async signal=>{const response=await fetch(url,{signal,headers:{Accept:'image/*'}});return {response,blob:response.ok?await response.blob():null,body:response.ok?null:await response.json().catch(()=>({}))}},{signal:controller.signal,label:'评测图片读取'}),response=loaded.response;
       if(!current())return;
       if(!response.ok){
-        const body=await response.json().catch(()=>({})),detail=typeof body.detail==='object'?body.detail:{},issue=evaluationPreviewIssue429(detail);
+        const body=loaded.body,detail=typeof body.detail==='object'?body.detail:{},issue=evaluationPreviewIssue429(detail);
         message.textContent=issue.title+' · '+issue.solution+'（'+issue.code+'）';
         root.closest('.evaluation429-detail').querySelector('[data-eval-retry]').hidden=!issue.retryable;
         return;
       }
-      objectUrl=URL.createObjectURL(await response.blob());
+      objectUrl=URL.createObjectURL(loaded.blob);
       if(!current()){URL.revokeObjectURL(objectUrl);return;}
       image.onload=()=>{
         URL.revokeObjectURL(objectUrl);
@@ -5500,19 +5526,43 @@ const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
   };
   window.relabelBox414=function(i,classId){const b=state.ann?.boxes?.[i],l=(state.labels||[]).find(x=>Number(x.class_id)===Number(classId));if(!b||!l)return;try{pushHistory()}catch(_){};b.class_id=l.class_id;b.label=l.code;state.activeBox=i;markDirty();drawBoxes();renderAnnSide()};
 
+  let annotationSaveFlight420=null;
+  const annotationSaveUncertain420=new WeakMap();
   window.saveAnnotationCore420=async function(silent=false,options={}){
     if(!state.activeImage||!state.ann)return false;
+    if(annotationSaveFlight420)return false;
+    const recovery=annotationSaveUncertain420.get(state.ann);
+    const project=String(pid()),image=state.activeImage,annotation=state.ann,imageId=String(image.id),sourceSha=String(image.content_sha256||''),signature=recovery?.signature||JSON.stringify(annotation),reviewSignature=recovery?.reviewSignature||JSON.stringify([...(state.annotationReviewSelected420||[])]);
+    const isCurrent=()=>String(pid())===project&&String(state.activeImage?.id)===imageId&&String(state.activeImage?.content_sha256||'')===sourceSha&&state.ann===annotation;
     const boxes=Array.isArray(state.ann.boxes)?state.ann.boxes:[],confirmEmpty=options?.confirmEmpty===true,reviewedLabelCodes=options?.confirmReview===true?[...(options?.reviewedLabelCodes||[])]:[],btn=document.getElementById('ann414Save'),ss=document.getElementById('annSaveState');
-    if(!boxes.length&&!confirmEmpty){
+    if(!recovery&&!boxes.length&&!confirmEmpty){
       if(ss)ss.textContent='待确认无目标';
       const confirmButton=document.getElementById('ann420ConfirmEmpty');if(confirmButton)confirmButton.hidden=false;
       if(!silent)toast('删除最后一个标注框后，请点击“确认无目标”');
       return false;
     }
-    if(!silent&&btn){btn.disabled=true;btn.textContent='保存中…'}if(ss)ss.textContent='保存中';
+    const flight={};let submitted=recovery;annotationSaveFlight420=flight;
+    if(btn){btn.disabled=true;btn.classList.toggle('loading-btn',true);btn.setAttribute('aria-busy','true');btn.innerHTML='<span class="tiny-spinner" aria-hidden="true"></span>保存中…'}if(ss)ss.textContent='保存中';
     try{
-      const payload=window.PlatformCore?.annotationWorkbench?.annotationSavePayload?.({annotation:state.ann,image:state.activeImage,boxes,reviewedLabelCodes})||{boxes,annotation_state:boxes.length?'annotated':'confirmed_empty',expected_version:Number.isFinite(Number(state.ann?.version))?Number(state.ann.version):0,source_content_sha256:String(state.activeImage?.content_sha256||''),reviewed_label_codes:reviewedLabelCodes};
-      const r=await api(`/api/projects/${pid()}/annotations/${state.activeImage.id}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+      const payload=window.PlatformCore?.annotationWorkbench?.annotationSavePayload?.({annotation,image,boxes,reviewedLabelCodes})||{boxes,annotation_state:boxes.length?'annotated':'confirmed_empty',expected_version:Number.isFinite(Number(annotation?.version))?Number(annotation.version):0,source_content_sha256:String(image?.content_sha256||''),reviewed_label_codes:reviewedLabelCodes};
+      const body=JSON.stringify(payload);
+      if(!recovery)submitted={payload:JSON.parse(body),signature,reviewSignature,scope:[...new Set([...(annotation.annotation_scope||[]),...reviewedLabelCodes])].sort(),project,imageId,sourceSha};
+      const r=await window.PlatformCore.withRequestDeadline(signal=>api(`/api/projects/${project}/annotations/${imageId}`,recovery?{method:'GET',signal}:{method:'POST',headers:{'Content-Type':'application/json'},body,signal}),{timeoutMs:30000,label:recovery?'标注版本核验':'标注保存'});
+      if(!isCurrent())return false;
+      if(recovery){
+        const version=Number(r?.annotation?.version);
+        if(recovery.project!==project||recovery.imageId!==imageId||recovery.sourceSha!==sourceSha||String(r?.image?.id||'')!==imageId||String(r?.image?.content_sha256||'')!==sourceSha||!Number.isFinite(version))throw new Error('标注核验身份或版本不一致，请重新读取当前图片');
+        if(version===Number(recovery.payload.expected_version)){annotationSaveUncertain420.delete(annotation);state.annDirty=true;if(ss)ss.textContent='版本已核验 · 修改未保存';toast('已重新读取核验，服务端版本未变化，请再次保存');return false}
+        const remoteScope=[...new Set(r.annotation.annotation_scope||[])].sort();
+        // Persistence sorts keys, rounds geometry and adds manual provenance for new boxes.
+        const boxEvidence=rows=>JSON.stringify((rows||[]).map(box=>{const normalized={...box,source:box.source||'manual'};for(const key of ['x1','y1','x2','y2'])if(key in normalized)normalized[key]=Math.round(Number(normalized[key])*100)/100;return normalized}),(key,value)=>value&&typeof value==='object'&&!Array.isArray(value)?Object.fromEntries(Object.entries(value).sort(([a],[b])=>a.localeCompare(b))):value);
+        if(version<Number(recovery.payload.expected_version)||r.annotation.annotation_state!==recovery.payload.annotation_state||boxEvidence(r.annotation.boxes)!==boxEvidence(recovery.payload.boxes)||JSON.stringify(remoteScope)!==JSON.stringify(recovery.scope))throw new Error('标注版本冲突，本地修改已保留，请重新读取核对后处理');
+        annotationSaveUncertain420.delete(annotation);
+      }
+      if(JSON.stringify(annotation)!==signature||JSON.stringify([...(state.annotationReviewSelected420||[])])!==reviewSignature){
+        if(Number.isFinite(Number(r?.annotation?.version)))annotation.version=Number(r.annotation.version);
+        state.annDirty=true;if(ss)ss.textContent='已保存提交时的标注，后续修改未保存';return false;
+      }
       state.ann=r?.annotation||state.ann;if(!Array.isArray(state.ann.boxes))state.ann.boxes=[];
       const applyResult=window.PlatformCore?.annotation?.applyAnnotationResult;
       if(applyResult&&r?.image?.id)state.images=applyResult(state.images||[],r,state.ann.boxes||[]);
@@ -5528,8 +5578,12 @@ const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
       // If annotation was opened from an image-preview modal, refresh that preview in place as well.
       try{const layers=[...document.querySelectorAll('.v424-modal-layer')],under=layers.length>1?layers[layers.length-2]:null,stage=under?.querySelector('.data412-previewstage');if(stage&&state.activeImage){stage.innerHTML=`<img src="${state.activeImage.url}">${(state.activeImage.annotation_preview||[]).map(b=>{const l=labelByCode414(b.label),w=Math.max(0,(b.x2-b.x1)/(state.activeImage.width||1)*100),h=Math.max(0,(b.y2-b.y1)/(state.activeImage.height||1)*100),x=(b.x1/(state.activeImage.width||1)*100),y=(b.y1/(state.activeImage.height||1)*100);return `<i class="ov412-box" style="left:${x}%;top:${y}%;width:${w}%;height:${h}%;border-color:${esc(l?.color||'#ef4444')}"><b style="background:${esc(l?.color||'#ef4444')}">${esc(b.label||'')}</b></i>`}).join('')}`}}catch(_){}
       if(!silent)toast(reviewedLabelCodes.length?`已保存并确认 ${reviewedLabelCodes.length} 个审核标签`:state.ann.boxes.length?`标注已保存：${state.ann.boxes.length} 个框`:'已确认当前图片无目标');return true;
-    }catch(e){state.annDirty=true;if(ss)ss.textContent='保存失败';toast(`保存失败：${e.message||e}`);return false}
-    finally{if(!silent&&btn){btn.disabled=false;btn.textContent=document.querySelector('.ann420-stable')?'保存并继续':'保存标注'}}
+    }catch(e){
+      const status=Number(e?.httpStatus),uncertain=!!submitted&&!recovery&&!(status>=400&&status<500);
+      if(uncertain)annotationSaveUncertain420.set(annotation,submitted);
+      if(isCurrent()){state.annDirty=true;if(ss)ss.textContent=e?.code==='REQUEST_TIMEOUT'?'保存超时 · 再点保存核验版本':uncertain||recovery?'结果待核验 · 再点保存核验版本':'保存失败';toast(e?.code==='REQUEST_TIMEOUT'?'保存超时，结果尚未确认；再次点击保存将先重新读取核验标注版本，不会直接重发':uncertain?`保存结果尚未确认：${e.message||e}；再次点击保存将先读取核验版本`:`保存失败：${e.message||e}`)}return false;
+    }
+    finally{if(annotationSaveFlight420===flight)annotationSaveFlight420=null;if(btn){btn.disabled=false;btn.classList.toggle('loading-btn',false);btn.setAttribute('aria-busy','false');btn.textContent=document.querySelector('.ann420-stable')?'保存并继续':'保存标注'}}
   };
 
   // ---------- dataset: labels strictly from label library ----------
@@ -5697,22 +5751,49 @@ materialIntegrityDialog47('GT冲突 · 分类与批量审核',`<div class="mater
     state.materialIntegrityAuditSubmitting47=true;
     const projectAtStart=pid();
     const root=materialIntegrityAuditProgressDialog47();
-    try{
-      const task=await api(`/api/v62/projects/${projectAtStart}/material-integrity/audits`,{method:'POST'});
-      if(pid()!==projectAtStart)return;
+    const unknownKey='aixunlian.integrity-audit.unknown:'+projectAtStart;
+    const current=()=>pid()===projectAtStart&&root?.isConnected&&root===activeMaterialIntegrityRoot47('[data-integrity-audit-progress]');
+    const request=(url,opt={})=>window.PlatformCore.withRequestDeadline(signal=>api(url,{...opt,signal}),{label:'素材审计请求'});
+    const accept=task=>{
+      if(!task?.task_id)return false;
+      localStorage.removeItem(unknownKey);
+      if(pid()!==projectAtStart)return true;
       state.materialIntegrityAuditStale47=false;
-      if(root?.isConnected&&root===activeMaterialIntegrityRoot47('[data-integrity-audit-progress]')){
-        root.dataset.integrityAuditTaskId=String(task.task_id);
-        window.updateMaterialIntegrityAudit47(task);
-      }
+      if(current()){root.dataset.integrityAuditTaskId=String(task.task_id);window.updateMaterialIntegrityAudit47(task)}
       window.MaterialBatchRuntime62?.poll?.(task.task_id);
+      return true;
+    };
+    const recover=async()=>{
+      const previousTaskId=localStorage.getItem(unknownKey);
+      if(!previousTaskId)throw new Error('尚未提交审计任务，请重试读取');
+      const latest=await request(`/api/v62/projects/${projectAtStart}/material-integrity/audits/latest`);
+      if(latest?.task?.task_id&&String(latest.task.task_id)!==previousTaskId&&accept(latest.task))return;
+      throw new Error('尚未找到可核验的审计记录；请稍后查询，当前不会重复提交');
+    };
+    try{
+      if(localStorage.getItem(unknownKey)){await recover();return}
+      const previous=await request(`/api/v62/projects/${projectAtStart}/material-integrity/audits/latest`);
+      if(!current())return;
+      localStorage.setItem(unknownKey,String(previous?.task?.task_id||'__none__'));
+      const task=await request(`/api/v62/projects/${projectAtStart}/material-integrity/audits`,{method:'POST'});
+      if(!accept(task))throw new Error('服务端未返回可核验的审计身份');
     }catch(error){
       if(pid()!==projectAtStart)return;
-      if(root?.isConnected&&root===activeMaterialIntegrityRoot47('[data-integrity-audit-progress]')){
+      if(!localStorage.getItem(unknownKey)){
+        if(current()){
+          const box=root.querySelector('#materialIntegrityAuditProgress47');
+          if(box)box.textContent='审计状态读取失败：'+(error.message||String(error))+'。尚未提交审计任务，请重试读取。';
+          const retry=root.querySelector('[data-integrity-audit-retry]');
+          if(retry){retry.hidden=false;retry.textContent='重试读取并提交审计'}
+        }
+        toast(error.message||error);return;
+      }
+      try{await recover();return}catch(_){}
+      if(current()){
         const box=root.querySelector('#materialIntegrityAuditProgress47');
-        if(box)box.textContent='审计任务提交失败：'+(error.message||String(error))+'。没有创建新的审计任务。';
+        if(box)box.textContent='审计提交结果待确认：'+(error.message||String(error))+'。原任务可能已受理；请查询状态，不要重复创建。';
         const retry=root.querySelector('[data-integrity-audit-retry]');
-        if(retry)retry.hidden=false;
+        if(retry){retry.hidden=false;retry.textContent='查询审计提交结果'}
       }
       toast(error.message||error);
     }finally{
@@ -7174,7 +7255,8 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
 
   window.markDirty=function markAnnotationDirtyCanonical420(){state.annotationWorkbench?.markDirty();return markAnnotationDirtyCore()};
   window.saveAnn=async function saveAnnotationCanonical420(silent=false,options={}){
-    const savedId=String(state.activeImage?.id||''),ok=await window.saveAnnotationCore420?.(silent,options);
+    const savedId=String(state.activeImage?.id||''),savedProject=String(pid()),workbench=state.annotationWorkbench,ok=await window.saveAnnotationCore420?.(silent,options);
+    if(String(pid())!==savedProject||String(state.activeImage?.id||'')!==savedId||state.annotationWorkbench!==workbench)return false;
     if(ok){
       state.annotationWorkbench?.markSaved();
       state.annotationWorkbench?.remember?.(savedId,{

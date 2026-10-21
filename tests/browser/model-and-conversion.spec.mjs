@@ -177,10 +177,10 @@ test('vision providers, candidate review, and vendor target parameters are expli
 
   await conversionDialog.locator('input[name="conv428Target"][value="tensorrt"]').check();
   await expect(conversionDialog.locator('#conv428TargetEnvironment')).toBeVisible();
-  await expect(conversionDialog.locator('#conv428Precision option[value="bf16"]')).toBeDisabled();
+  await expect.poll(()=>conversionDialog.locator('#conv428Precision option[value="bf16"]:enabled').count()).toBe(0);
 
   await conversionDialog.locator('input[name="conv428Target"][value="sophon"]').check();
-  await expect(conversionDialog.locator('#conv428Precision option[value="bf16"]')).toBeDisabled();
+  await expect.poll(()=>conversionDialog.locator('#conv428Precision option[value="bf16"]:enabled').count()).toBe(0);
   await expect(conversionDialog.locator('#conv428Precision option[value="int8"]')).toBeDisabled();
   await expect(conversionDialog.locator('#conv428Chip option')).toHaveText(['请选择目标芯片',/BM1684X.*可转换/,/BM1688.*可转换/]);
   await conversionDialog.locator('#conv428Chip').selectOption('bm1688');

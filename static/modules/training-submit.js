@@ -1,3 +1,5 @@
+import {withRequestDeadline} from './api.js?v=20261021s';
+
 function required(value, message) {
   if (value === null || value === undefined || String(value).trim() === '') throw new Error(message);
   return value;
@@ -657,8 +659,10 @@ export function installTrainingSubmitRuntime({
 
       setSubmitStage('posting');
       submittedTaskId = String(payload.task_id || '');
+      const body = await withRequestDeadline(async signal => {
       const response = await window.fetch(`/api/v12/projects/${pid}/train/start`, {
         method: 'POST',
+        signal,
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify(payload),
       });
@@ -672,7 +676,8 @@ export function installTrainingSubmitRuntime({
         throw new Error(validationDetail ? `${message}：${validationDetail}` : String(message));
       }
       creationAccepted = true;
-      const body = await response.json();
+      return await response.json();
+      }, {label: '训练创建'});
       const createdTask = validateTrainingCreatedResponse(body, payload.task_id, {projectId: pid, algorithmId: asset.id});
       setSubmitStage('created');
       const currentProjectMatches = !destroyed && String(projectId?.() || '') === String(pid);
@@ -711,12 +716,12 @@ export function installTrainingSubmitRuntime({
       if (outcomeUncertain && submittedTaskId) {
         try {
           const pid = submittedProjectId;
-          const verification = await window.fetch(
+          const verification = await withRequestDeadline(async signal => { const response = await window.fetch(
             `/api/v62/projects/${encodeURIComponent(pid)}/tasks/${encodeURIComponent(submittedTaskId)}`,
-            {headers: {'Accept': 'application/json'}},
-          );
+            {headers: {'Accept': 'application/json'}, signal},
+          ); return {ok: response.ok, body: response.ok ? await response.json() : null}; }, {label: '训练任务核验'});
           if (verification.ok) {
-            const taskBody = await verification.json();
+            const taskBody = verification.body;
             const createdTask = validateTrainingCreatedResponse(
               {ok: true, task: taskBody?.task || taskBody}, submittedTaskId,
               {projectId: pid, algorithmId: submittedAlgorithmId},

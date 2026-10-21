@@ -7,8 +7,8 @@ import app as platform
 from platform_core.task_runtime import TaskKind, TaskRecord, TaskStatus
 
 
-def _job(project_id, identity, **fields):
-    path = platform.project_dir(project_id) / 'jobs' / identity / 'job.json'
+def _job(owner_project_id, identity, **fields):
+    path = platform.project_dir(owner_project_id) / 'jobs' / identity / 'job.json'
     platform.write_json(path, {'id': identity, 'asset_algorithm_name': 'frozen', **fields})
     return path
 
@@ -167,3 +167,51 @@ def test_incremental_legacy_success_keeps_existing_version_archive_recovery(clie
     platform.sync_jobs_index(project)
     assert len(attempts) == calls_after_receipt
     assert len(platform.list_algorithms_internal(project)[0]['versions']) == 1
+
+
+def test_algorithm_report_scopes_unique_training_tasks_and_known_durations(client, monkeypatch):
+    project = client.post('/api/projects', json={'name': 'report-scope', 'labels': []}).json()['id']
+    algorithm = client.post(f'/api/v12/projects/{project}/algorithms', json={'name': 'one'}).json()['algorithm']['id']
+    _job(project, 'ok', asset_algorithm_id=algorithm, status='done', artifact_verified=True, elapsed_seconds=10)
+    _job(project, 'failed', asset_algorithm_id=algorithm, status='failed', elapsed_seconds=30)
+    _job(project, 'shadow', task_id='failed', asset_algorithm_id=algorithm, status='failed', elapsed_seconds=900)
+    _job(project, 'convert', asset_algorithm_id=algorithm, kind='MODEL_CONVERSION', status='done', elapsed_seconds=900)
+    _job(project, 'foreign', project_id='another-project', asset_algorithm_id=algorithm, status='done', elapsed_seconds=900)
+    for index, elapsed in enumerate([None, '', -1, 'nan', 'inf', 'invalid', 0]):
+        _job(project, f'unknown-{index}', asset_algorithm_id=algorithm, status='failed', elapsed_seconds=elapsed)
+    report = platform.v49_algorithm_report(project, algorithm)
+    summary = report['summary']
+    assert summary['training_count'] == summary['successful_count'] == 1
+    assert summary['attempt_count'] == 9
+    assert summary['total_duration_seconds'] == 40
+    assert summary['avg_duration_seconds'] == 13
+    assert summary['duration_record_count'] == 3
+    assert summary['duration_unknown_count'] == 6
+    assert summary['duration_scope'] == 'all_training_attempts_including_failed'
+    assert len(report['trend']) == report['jobs_total'] == 9
+    assert {row['job_id'] for row in report['trend']} == {'ok', 'failed', *(f'unknown-{i}' for i in range(7))}
+    assert not report['jobs_truncated']
+    # A warmed report reuses the read projection and never hydrates every job.
+    monkeypatch.setattr(platform, 'enrich_job_runtime', lambda *args, **kwargs: pytest.fail('report hydrated historical jobs'))
+    original = platform.read_json
+    monkeypatch.setattr(platform, 'read_json', lambda path, default: pytest.fail('report reread unchanged job JSON') if path.name == 'job.json' else original(path, default))
+    assert platform.v49_algorithm_report(project, algorithm)['summary'] == summary
+
+
+def test_algorithm_report_includes_archived_durable_tasks_and_declares_recent_window(client):
+    project = client.post('/api/projects', json={'name': 'report-window', 'labels': []}).json()['id']
+    algorithm = client.post(f'/api/v12/projects/{project}/algorithms', json={'name': 'one'}).json()['algorithm']['id']
+    for index in range(22):
+        _job(project, f'history-{index:02}', asset_algorithm_id=algorithm, status='failed', created_at=f'2026-10-{index+1:02}T00:00:00', elapsed_seconds=2)
+    identity = f'archived-{project}'
+    task = replace(TaskRecord.new(identity, project, TaskKind.TRAINING, 'payload.json', 'cpu'), status=TaskStatus.FAILED)
+    platform.shared_task_repository().create(task)
+    platform.shared_task_artifacts().atomic_write_json(identity, 'payload.json', {'algorithm_asset_id': algorithm})
+    report = platform.v49_algorithm_report(project, algorithm)
+    assert report['summary']['attempt_count'] == 23
+    assert report['summary']['duration_record_count'] == 22
+    assert report['summary']['duration_unknown_count'] == 1
+    assert report['summary']['avg_duration_seconds'] == 2
+    assert report['jobs_total'] == 23 and report['jobs_limit'] == 20 and report['jobs_truncated'] is True
+    assert len(report['jobs']) == 20 and len(report['trend']) == 23
+    assert next(row for row in report['trend'] if row['job_id'] == identity)['status'] == 'FAILED'

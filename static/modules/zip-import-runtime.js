@@ -1,3 +1,4 @@
+import {withRequestDeadline} from './api.js?v=20261021s';
 import {applyExactLabelCodeMatches, bulkSetLabelMapping, buildManualLabelMapping, createLabelMappingReview, filterCanonicalLabels, labelMappingReviewPage, labelMappingReviewSummary, labelSampleOverlay, reconcileLabelMappingReview, setLabelMapping, setLabelMappingReviewPage, setLabelMappingReviewSearch, setLabelMappingSelected, setLabelMappingTargetSearch, planOriginalLabelMappings} from './label-mapping-review.js?v=4226356';
 
 export const ACTIVE_ZIP_STATUSES = new Set(['uploading','paused','merging','validating','selecting','queued','waiting','running']);
@@ -142,10 +143,10 @@ async function json(response) {
   return body;
 }
 export async function listZipJobs(projectId,{fetchImpl=globalThis.fetch}={}) {
-  return (await json(await fetchImpl(`/api/v19/projects/${encodeURIComponent(String(projectId))}/import/jobs`,{credentials:'same-origin'}))).items||[];
+  return (await withRequestDeadline(async signal=>json(await fetchImpl(`/api/v19/projects/${encodeURIComponent(String(projectId))}/import/jobs`,{credentials:'same-origin',signal})),{label:'ZIP任务列表'})).items||[];
 }
 export async function getZipJob(projectId,jobId,{fetchImpl=globalThis.fetch}={}) {
-  return json(await fetchImpl(`/api/v19/projects/${encodeURIComponent(String(projectId))}/import/jobs/${encodeURIComponent(String(jobId))}`,{credentials:'same-origin'}));
+  return withRequestDeadline(async signal=>json(await fetchImpl(`/api/v19/projects/${encodeURIComponent(String(projectId))}/import/jobs/${encodeURIComponent(String(jobId))}`,{credentials:'same-origin',signal})),{label:'ZIP任务状态'});
 }
 export async function completeZipUpload(projectId,uploadId,{fetchImpl=globalThis.fetch}={}) {
   const url=`/api/v19/projects/${encodeURIComponent(String(projectId))}/import/uploads/${encodeURIComponent(String(uploadId))}/complete`;
@@ -1075,7 +1076,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
   }
 
   const reportUploadBatchError=error=>{notify?.(`ZIP 批次处理失败：${error?.message||error}`);return null};
-  const runtime={upload,uploadBatch,previewOriginalLabels,confirmOriginalLabels,cancelOriginalLabels,matchExistingLabels,toggleManualLabels,setAdvancedExpanded,pauseUpload,cancelUpload,cancelQueuedUpload,stopImport,cancelJob,cancelAllActive,promptResume,resumeFromFile,reconcile,open,openTask,confirmLabels,forgetTerminal,showLabelSamples,useSourceLabel,setReviewSearch,setTargetSearch,setReviewPage,toggleLabelRow,setLabelMapping:setReviewLabelMapping,bulkMapLabels,snapshot:()=>({jobs:[...jobs],current,labelReviews}),destroy(){destroyed=true;clearPoll();document.getElementById('zipImportDurableDock')?.remove()}};
+  const runtime={upload,uploadBatch,previewOriginalLabels,confirmOriginalLabels,cancelOriginalLabels,matchExistingLabels,toggleManualLabels,setAdvancedExpanded,pauseUpload,cancelUpload,cancelQueuedUpload,stopImport,cancelJob,cancelAllActive,promptResume,resumeFromFile,reconcile,open,openTask,confirmLabels,forgetTerminal,showLabelSamples,useSourceLabel,setReviewSearch,setTargetSearch,setReviewPage,toggleLabelRow,setLabelMapping:setReviewLabelMapping,bulkMapLabels,snapshot:()=>({jobs:[...jobs],current,labelReviews,busy}),destroy(){destroyed=true;clearPoll();document.getElementById('zipImportDurableDock')?.remove()}};
   window.ZipImportRuntime=runtime;
   window.doUploadZip426=input=>uploadBatch(input).catch(reportUploadBatchError);
   window.doImportData=()=>{const input=document.getElementById('importFile');if(!input?.files?.length){notify?.('请选择 ZIP 压缩包');return null}return uploadBatch(input).catch(reportUploadBatchError)};

@@ -12,8 +12,9 @@ async function mount(page, mode) {
     const payload=route.request().postDataJSON();
     const task={task_id:payload.task_id,kind:'TRAINING',task_type:'TRAINING',status:'QUEUED',project_id:'fixture-project',algorithm_id:'alg-1'};
     if(mode==='reject') return route.fulfill({status:409,json:{message:'GT 核验失败'}});
-    if(mode!=='unknown') ledger.set(task.task_id,task);
+    if(!['unknown','pending-unknown'].includes(mode)) ledger.set(task.task_id,task);
     if(['recover','unknown'].includes(mode)) return route.abort('failed');
+    if(mode.startsWith('pending-')) return;
     await expect.poll(()=>page.evaluate(()=>window.releasePost)).toBeTruthy();
     return route.fulfill({json:{ok:true,task}});
   });
@@ -41,11 +42,15 @@ async function mount(page, mode) {
   return {ledger,posts:()=>posts};
 }
 
-for(const mode of ['slow-refresh','refresh-error','reject','manual-close','replacement','recover','unknown']) {
+for(const mode of ['slow-refresh','refresh-error','reject','manual-close','replacement','recover','unknown','pending-recover','pending-unknown']) {
   test(`training creation modal identity and durable outcome: ${mode}`,async({page})=>{
     const fixture=await mount(page,mode);
+    if(mode.startsWith('pending-')) await page.clock.install();
     await page.getByRole('button',{name:'创建训练任务'}).click();
-    if(!['recover','unknown','reject'].includes(mode)) {
+    if(mode.startsWith('pending-')) {
+      await expect.poll(()=>fixture.posts()).toBe(1);
+      await page.clock.fastForward(30001);
+    } else if(!['recover','unknown','reject'].includes(mode)) {
       await expect(page.getByRole('button',{name:'正在提交训练任务…'})).toBeDisabled();
       await expect(page.getByRole('button',{name:'正在提交训练任务…'})).toHaveAttribute('aria-busy','true');
       // Repeated calls while pending must not produce another POST.
@@ -56,11 +61,11 @@ for(const mode of ['slow-refresh','refresh-error','reject','manual-close','repla
     }
     await page.evaluate(()=>window.submitPromise);
     expect(fixture.posts()).toBe(1);
-    if(mode==='reject'||mode==='unknown') {
+    if(['reject','unknown','pending-unknown'].includes(mode)) {
       await expect(page.getByRole('dialog')).toBeVisible();
       expect(await page.evaluate(()=>window.closeCalls)).toBe(0);
       expect(fixture.ledger.size).toBe(0);
-      if(mode==='unknown') {
+      if(['unknown','pending-unknown'].includes(mode)) {
         await page.evaluate(()=>window.submitRuntime.submit());
         expect(fixture.posts()).toBe(1);
         expect(await page.evaluate(()=>window.notices.join(' '))).toContain('不要重复创建');

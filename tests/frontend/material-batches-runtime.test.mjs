@@ -28,7 +28,7 @@ test('a delayed material task response cannot mutate the next project or keep po
   globalThis.fetch=async input=>{url=input;return new Promise(resolve=>{respond=resolve})};
   try{
     installMaterialBatchRuntime({projectId:()=>project,notify:()=>{mutations++},refresh:async()=>{mutations++},pollRegistry:{clear:()=>{},startTimeout:()=>{mutations++}}});
-    window.MaterialBatchRuntime62.poll('task-a');project='p2';
+    window.MaterialBatchRuntime62.poll('task-a');await new Promise(resolve=>setImmediate(resolve));project='p2';
     respond(new Response(JSON.stringify({task_id:'task-a',operation:'DELETE_INDEX',status:'SUCCEEDED'})));
     await new Promise(resolve=>setImmediate(resolve));
     assert.equal(url,'/api/v62/projects/p1/material-batches/task-a');

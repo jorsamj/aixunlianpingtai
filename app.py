@@ -23686,17 +23686,46 @@ def v49_algorithm_report(project_id: str, algorithm_id: str):
     algo = next((x for x in list_algorithms_internal(project_id) if x.get('id') == algorithm_id), None)
     if not algo:
         raise HTTPException(status_code=404, detail='算法不存在')
-    jobs_dir = project_dir(project_id) / 'jobs'
+    rows, repository, durable = _training_history_context(project_id)
+    canonical = {}
+    for row in rows:
+        if row.get('project_id') and str(row['project_id']) != str(project_id):
+            continue
+        identity = str(row.get('task_id') or row.get('id') or '').strip()
+        if identity and (identity not in canonical or str(row.get('id') or '') == identity):
+            canonical[identity] = dict(row)
+    for identity, task in durable.items():
+        if identity not in canonical:
+            # The existing task-owned payload restores archived task identity;
+            # it does not invent missing runtime duration or report evidence.
+            key = (str(repository.path), identity)
+            with _TRAINING_JOB_PROJECTION_LOCK:
+                cached = _TRAINING_COUNT_PAYLOADS.get(key)
+                if cached is None or cached[0] != task.updated_at:
+                    payload = shared_task_artifacts().read_json(identity, task.payload_ref, default={})
+                    _TRAINING_COUNT_PAYLOADS[key] = (task.updated_at, payload)
+                else:
+                    payload = cached[1]
+            if isinstance(payload, dict):
+                canonical[identity] = {**payload, 'id': identity, 'task_id': identity}
     jobs = []
-    if jobs_dir.exists():
-        for jf in jobs_dir.glob('*/job.json'):
-            j = read_json(jf, {})
-            if j and (j.get('asset_algorithm_id') == algorithm_id or j.get('algorithm_asset_id') == algorithm_id):
-                try: j = enrich_job_runtime(project_id, j)
-                except Exception: pass
-                jobs.append(j)
+    for identity, row in canonical.items():
+        task = durable.get(identity)
+        kind = task.kind.value if task else str(row.get('task_kind') or row.get('kind') or 'TRAINING').upper()
+        if kind != 'TRAINING' or row.get('never_started'):
+            continue
+        if str(row.get('asset_algorithm_id') or row.get('algorithm_asset_id') or '') != str(algorithm_id):
+            continue
+        row['id'] = identity
+        if task:
+            row['status'] = task.status.value
+            row['task_status'] = task.status.value
+            row.setdefault('created_at', task.created_at)
+            if task.finished_at:
+                row.setdefault('finished_at', task.finished_at)
+        jobs.append(row)
     jobs.sort(key=lambda x: str(x.get('finished_at') or x.get('created_at') or ''))
-    trend=[]; total_label_counts: Dict[str,int]={}; duration=0; success=0
+    trend=[]; total_label_counts: Dict[str,int]={}; duration=0; duration_records=0
     for j in jobs:
         rep=j.get('training_report') or {}
         m=_v49_metric_from_report(rep,'metrics/mAP50(B)','map50','mAP50')
@@ -23705,15 +23734,21 @@ def v49_algorithm_report(project_id: str, algorithm_id: str):
             except Exception: m=None
         lc=_v49_job_label_counts(project_id,j)
         for k,v in lc.items(): total_label_counts[k]=total_label_counts.get(k,0)+int(v)
-        duration += int(j.get('elapsed_seconds') or 0)
-        if j.get('status') in {'done','finished','completed'}: success += 1
+        elapsed = j.get('elapsed_seconds')
+        try:
+            measured = float(elapsed) if elapsed is not None and elapsed != '' and not isinstance(elapsed, bool) else None
+        except (TypeError, ValueError, OverflowError):
+            measured = None
+        if measured is not None and math.isfinite(measured) and measured >= 0:
+            duration += measured
+            duration_records += 1
         trend.append({'job_id':j.get('id'),'version':j.get('auto_version_name') or '', 'finished_at':j.get('finished_at') or j.get('updated_at') or j.get('created_at'), 'map50':m, 'status':j.get('status'), 'labels':lc, 'images':int((j.get('dataset_counts') or {}).get('train') or 0)})
     versions=algo.get('versions') or []
     current_id=str(algo.get('current_version_id') or '')
     current=next((v for v in versions if str(v.get('id') or '')==current_id), versions[0] if versions else None)
     aggregate=build_algorithm_report(versions)
     success = _successful_training_counts(project_id).get(str(algorithm_id), 0)
-    return {'ok':True,'report_type':'algorithm','latest_vs_previous':aggregate['latest_vs_previous'],'best_version':aggregate['best_version'],'best_map50':aggregate['best_map50'],'version_trend':aggregate['trend'],'algorithm':{'id':algo.get('id'),'name':algo.get('name'),'industry':algo.get('industry') or '', 'algorithm_type':algo.get('algorithm_type') or '', 'remark':algo.get('remark') or '', 'version_count':len(versions),'current_version_id':current_id}, 'summary':{'training_count':success,'successful_count':success,'total_duration_seconds':duration,'avg_duration_seconds':int(duration/max(1,len(jobs))) if jobs else 0,'label_counts':total_label_counts,'latest_version':current.get('version_name') if current else '', 'current_version':current.get('version_name') if current else '', 'latest_accuracy': _v49_metric_from_report((current or {}).get('report') or {},'metrics/mAP50(B)','map50','mAP50') if current else None}, 'trend':trend, 'jobs':jobs[-20:]}
+    return {'ok':True,'report_type':'algorithm','latest_vs_previous':aggregate['latest_vs_previous'],'best_version':aggregate['best_version'],'best_map50':aggregate['best_map50'],'version_trend':aggregate['trend'],'algorithm':{'id':algo.get('id'),'name':algo.get('name'),'industry':algo.get('industry') or '', 'algorithm_type':algo.get('algorithm_type') or '', 'remark':algo.get('remark') or '', 'version_count':len(versions),'current_version_id':current_id}, 'summary':{'training_count':success,'successful_count':success,'attempt_count':len(jobs),'duration_scope':'all_training_attempts_including_failed','duration_record_count':duration_records,'duration_unknown_count':len(jobs)-duration_records,'total_duration_seconds':int(duration),'avg_duration_seconds':int(duration/duration_records) if duration_records else 0,'label_counts':total_label_counts,'latest_version':current.get('version_name') if current else '', 'current_version':current.get('version_name') if current else '', 'latest_accuracy': _v49_metric_from_report((current or {}).get('report') or {},'metrics/mAP50(B)','map50','mAP50') if current else None}, 'trend':trend, 'jobs':jobs[-20:],'jobs_total':len(jobs),'jobs_limit':20,'jobs_truncated':len(jobs)>20}
 
 @app.post('/api/v49/projects/{project_id}/images/mark-processed')
 def v49_mark_processed(project_id: str, payload: V46BatchDeleteImagesReq):

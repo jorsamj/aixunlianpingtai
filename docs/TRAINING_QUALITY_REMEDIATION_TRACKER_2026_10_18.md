@@ -1,3 +1,7 @@
+## 2026-10-21 综合治理补充验收入口
+
+Loading覆盖矩阵、成功训练计数/PARTIAL_SUCCESS证据、报告耗时范围和生产只读性能方案见[综合专项第10节](FRONTEND_STARTUP_REPORT_UX_GOVERNANCE_2026_10_21.md)。本地限定测试已完成，最终CI须按本轮SHA，未覆盖和未知提交恢复限制不隐藏；Annotorious后续独立实施。
+
 ## 2026-10-21｜页面启动、报告与训练任务交互综合治理（代码及CI验收完成）
 
 唯一接续依据：[综合专项](FRONTEND_STARTUP_REPORT_UX_GOVERNANCE_2026_10_21.md)。八项代码需求已实现：Snapshot增量/概要与核心先返回、有界恢复；正常报告/评测弹窗、共享Loading/Tooltip及真实曲线无恢复控件；创建成功立即仅关原窗，完整成功训练次数和排序缓存一致。VERSION42.24.370；实现/修正f0f3010d实际21/21 Actions、55/55 Checks、Chrome128/128通过，本地Python104/Frontend Node1108通过。首提交两条旧夹具失败及修复已留痕。本次仅补记文档，自身新SHA须独立CI，见专项第9节与GitHub提交Checks。生产未部署，现场12.08秒仍需分解核验；取消临时需求已全部撤销，无发布字段改造混入。

@@ -1,4 +1,5 @@
 import {canonicalTaskStatus, exactTaskQueuePosition, isCanonicalTaskActive} from './task-runtime-truth.js';
+import {withRequestDeadline} from './api.js?v=20261021s';
 
 const STORAGE_KEY = 'aixunlian.material-batches.v62';
 export function isMaterialBatchActive(value) {
@@ -27,6 +28,7 @@ async function json(response) {
   const message = detail?.message || body?.message || (typeof detail === 'string' ? detail : '') || `HTTP ${response.status}`;
   const error = new Error(message);
   error.code = detail?.code || body?.code || `HTTP_${response.status}`;
+  error.httpStatus = response.status;
   throw error;
 }
 
@@ -38,7 +40,7 @@ function save(items) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
 }
 
-export function installMaterialBatchRuntime({projectId, currentPageIds, selectedIds, filteredSpec, notify, refresh, pollRegistry} = {}) {
+export function installMaterialBatchRuntime({projectId, currentPageIds, selectedIds, filteredSpec, notify, refresh, pollRegistry, requestTimeoutMs = 30000} = {}) {
   if (typeof window === 'undefined' || window.__materialBatchRuntime62Installed) return false;
   window.__materialBatchRuntime62Installed = true;
   const registry = pollRegistry || window.PollRegistryRuntime;
@@ -48,6 +50,11 @@ export function installMaterialBatchRuntime({projectId, currentPageIds, selected
   }
   const POLL_OWNERS = ['数据集', '自动标注及清洗', '训练任务', '算法列表'];
   const auditAnnouncementStatus = new Map();
+  const submissions = new Map();
+  const unknownKey = `${STORAGE_KEY}.unknown`;
+  const unknowns = () => {try {return JSON.parse(localStorage.getItem(unknownKey) || '{}')} catch (_) {return {}}};
+  const markUnknown = (project, operation) => {const values=unknowns();if(operation)values[project]=operation;else delete values[project];localStorage.setItem(unknownKey,JSON.stringify(values))};
+  const request = (url, options = {}) => withRequestDeadline(async signal => json(await fetch(url, {...options, signal})), {timeoutMs:requestTimeoutMs,label:'素材任务请求'});
 
   const pid = () => String(projectId?.() || '');
   const base = () => `/api/v62/projects/${encodeURIComponent(pid())}/material-batches`;
@@ -61,7 +68,7 @@ export function installMaterialBatchRuntime({projectId, currentPageIds, selected
   }
 
   async function get(taskId, project = pid()) {
-    return json(await fetch(`/api/v62/projects/${encodeURIComponent(project)}/material-batches/${encodeURIComponent(taskId)}`));
+    return request(`/api/v62/projects/${encodeURIComponent(project)}/material-batches/${encodeURIComponent(taskId)}`);
   }
 
   function announce(task) {
@@ -163,9 +170,9 @@ export function installMaterialBatchRuntime({projectId, currentPageIds, selected
       }
     };
     const payload = {operation, selection_spec: selectionAtStart, options};
-    const estimate = await json(await fetch(`${batchUrl}/estimate`, {
+    const estimate = await request(`${batchUrl}/estimate`, {
       method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload),
-    }));
+    });
     assertScopeUnchanged();
     if (!estimate.supported) throw new Error(estimate.message || (estimate.error_code === 'BATCH_OPERATION_NOT_READY' ? '该批量操作尚未具备安全后台执行链路' : '当前操作不可用'));
     if (!Number(estimate.count || 0)) throw new Error('当前范围没有可处理素材');
@@ -178,16 +185,51 @@ export function installMaterialBatchRuntime({projectId, currentPageIds, selected
     assertScopeUnchanged();
     payload.selection_spec = estimate.selection_spec;
     if (operation === 'DELETE_SOURCE') payload.options.confirmation_token = estimate.confirmation_token;
-    const task = await json(await fetch(batchUrl, {
-      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload),
-    }));
+    markUnknown(projectAtStart, operation);
+    let task;
+    try {
+      task = await request(batchUrl, {
+        method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload),
+      });
+      if (!task?.task_id) throw new Error('服务端未返回可核验的任务身份');
+      markUnknown(projectAtStart, null);
+    } catch (error) {
+      if (error.httpStatus && error.httpStatus < 500) markUnknown(projectAtStart, null);
+      else {
+        if(pid()===projectAtStart)tell('素材任务提交结果待确认；已保留原数据。再次点击只查询后台任务，不重复提交。');
+        await recoverUnknown(projectAtStart);
+        return null;
+      }
+      throw error;
+    }
+    if(pid()!==projectAtStart)return task;
     remember(task);
     announce(task);
     poll(task.task_id, {foreground: true});
     return task;
   }
 
-  window.runMaterialBatch62 = (operation, config) => run(operation, config).catch(error => tell(error.message || String(error)));
+  async function recoverUnknown(project = pid()) {
+    try {
+      const page=await request(`/api/v62/projects/${encodeURIComponent(project)}/material-batches?limit=50`);
+      if(pid()!==project)return null;
+      const items=(page.items||[]).filter(task=>task.operation===unknowns()[project]);
+      for(const task of items){remember(task);if(isMaterialBatchActive(task))poll(task.task_id)}
+      tell(`提交结果待确认；已查询后台任务${items.length?'：'+items.map(task=>task.task_id).join('、'):'，尚未找到可核验记录'}。请在任务列表核对；此入口保持查询，不重复创建。`);
+      return page;
+    } catch(error){if(pid()===project)tell('提交结果待确认；状态查询失败：'+(error.message||error));return null}
+  }
+  window.runMaterialBatch62 = (operation, config = {}) => {
+    const project=pid();
+    if(submissions.has(project))return submissions.get(project);
+    const button=config.triggerButton||window.event?.currentTarget,wasDisabled=button?.disabled;
+    if(button){button.disabled=true;button.setAttribute?.('aria-busy','true')}
+    const pending=Promise.resolve().then(()=>pid()!==project?null:unknowns()[project]?recoverUnknown(project):run(operation,config))
+      .catch(error=>{if(pid()===project)tell(error.message||String(error))})
+      .finally(()=>{submissions.delete(project);if(button?.isConnected){button.disabled=wasDisabled;button.removeAttribute?.('aria-busy')}});
+    submissions.set(project,pending);
+    return pending;
+  };
   window.reviewMaterialBatch62 = taskId => window.reviewAiLabel427?.(taskId);
   window.cancelMaterialBatch62 = async taskId => {
     const task = await json(await fetch(`${base()}/${encodeURIComponent(taskId)}/cancel`, {method: 'POST'}));

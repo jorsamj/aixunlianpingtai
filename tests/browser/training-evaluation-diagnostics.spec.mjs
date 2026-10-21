@@ -420,3 +420,21 @@ test('quality workspaces preserve evidence, pagination, comparison and four resp
     await page.getByRole('dialog',{name:'独立评测'}).getByRole('tab',{name:'质量总览'}).click();
   }
 });
+
+
+test('pending evaluation thumbnails and original images expire and offer real retry',async({page})=>{
+ let pending=true,reads=0;
+ await page.route('**/evaluation/images/**',route=>{reads++;if(pending)return;return route.fulfill({contentType:'image/bmp',body:diagnosticImage()});});
+ await page.goto('/');await expect.poll(()=>page.evaluate(()=>state.uiReady===true)).toBe(true);await page.clock.install();
+ await page.evaluate(()=>{
+   state.algorithms=[{id:'pending-a',name:'隔离Pending验收',versions:[{id:'pending-v',version_name:'验收夹具',evaluation:{status:'succeeded',evaluation_id:'pending-e',image_count:1,error_samples:[{image:'pending.bmp',image_id:'pending-image',fp_count:1,fn_count:1,image_width:100,image_height:80,gt_boxes:[],pred_boxes:[]}]}}]}];
+   window.openVersionEvaluation429('pending-a','pending-v');
+ });
+ const dialog=page.getByRole('dialog',{name:'独立评测',exact:true});await dialog.getByRole('tab',{name:'错误样本',exact:true}).click();
+ await expect.poll(()=>reads).toBe(1);await page.clock.fastForward(30001);
+ await expect(dialog.locator('.evaluation429-thumb-loading')).toHaveCount(0);
+ await expect(dialog.locator('[data-eval-thumb-retry]')).toBeVisible();
+ pending=false;await dialog.locator('[data-eval-thumb-retry]').click();await expect(dialog.locator('.evaluation429-thumb-ready')).toHaveCount(1);
+ pending=true;await dialog.locator('.evaluation429-image-card').click();await expect.poll(()=>reads).toBe(3);await page.clock.fastForward(30001);
+ await expect(page.locator('[data-eval-retry]')).toBeVisible();await expect(page.locator('.evaluation429-image-error')).not.toContainText('正在读取');
+});

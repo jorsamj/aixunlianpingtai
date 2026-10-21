@@ -1621,3 +1621,5 @@ radial-gradient(circle at 1px 1px,rgba(148,163,184,.14) 1px,transparent 0) 0 0/1
 button[aria-busy="true"]{cursor:progress}button[aria-busy="true"]::before{content:"";display:inline-block;width:12px;height:12px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;margin-right:7px;animation:spin .8s linear infinite;animation-delay:300ms}
 @media(prefers-reduced-motion:reduce){button[aria-busy="true"]::before{animation:none}}
 .boot413:has(.ui-skeleton){align-items:flex-start}.boot413-card:has(.ui-skeleton){width:min(1040px,100%)}.boot413-card>.ui-skeleton{margin-top:20px}.boot413-card .ui-skeleton-chart{height:110px}.boot413-card .ui-skeleton-table{height:80px}
+
+button[aria-busy="true"]:has(.tiny-spinner)::before{display:none}

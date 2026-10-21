@@ -606,7 +606,8 @@ test('narrow label review cancels one server job without touching its sibling',a
   await page.goto('/');
   await expect.poll(()=>page.evaluate(()=>window.ZipImportRuntime?.snapshot?.().jobs.length||0)).toBeGreaterThanOrEqual(2);
   await page.evaluate(()=>window.PollRegistryRuntime?.clear?.('zip-import-runtime'));
-  await page.waitForTimeout(200);
+  await expect.poll(()=>page.evaluate(()=>window.ZipImportRuntime.snapshot().busy)).toBe(false);
+  await page.evaluate(()=>window.PollRegistryRuntime?.clear?.('zip-import-runtime'));
   const observationReads=[];
   const captureObservation=requestEvent=>{
     const url=new URL(requestEvent.url());

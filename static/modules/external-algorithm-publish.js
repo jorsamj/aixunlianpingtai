@@ -1,3 +1,5 @@
+import {withRequestDeadline} from './api.js?v=20261021s';
+
 const API_ROOT = '/api/v64/external-publish';
 const PLATFORM_PAGE = '平台对接';
 const TARGETS = [['original','通用原始模型'],['onnx','通用 ONNX'],['paddle_inference','Paddle Inference']];
@@ -8,17 +10,19 @@ function rawFetch() {
 }
 
 async function requestJson(url, options = {}) {
+  return withRequestDeadline(async signal => {
   const response = await rawFetch()(url, {
     headers: {'Accept': 'application/json', ...(options.headers || {})},
-    ...options,
+    ...options, signal,
   });
   const text = await response.text();
   let body = {};
   try { body = text ? JSON.parse(text) : {}; } catch (_) { body = {detail: text}; }
   if (!response.ok) {
-    throw new Error(String(body.message || body.detail || `请求失败（HTTP ${response.status}）`));
+    throw Object.assign(new Error(String(body.message || body.detail || `请求失败（HTTP ${response.status}）`)), {httpStatus: response.status});
   }
   return body;
+  }, {label: '发布接口'});
 }
 
 function escapeHtml(value) {
@@ -357,10 +361,16 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
     return {algorithm, version};
   }
 
+  const publicationRequests = new Map();
   async function publishVersion(algorithmId, versionId, button) {
     const pid = currentProjectId();
     if (!pid) return notify?.('当前项目不可用，请刷新页面后重试');
-    if (button) { button.disabled = true; button.textContent = '正在检查…'; }
+    const key = `${pid}:${algorithmId}:${versionId}`;
+    if(publicationRequests.get(key)==='pending')return;
+    const queryOnly=publicationRequests.get(key)==='uncertain';
+    publicationRequests.set(key,'pending');
+    let postStarted=false, postConfirmed=false, outcomeUncertain=queryOnly;
+    if (button) { button.disabled = true; button.setAttribute('aria-busy','true'); button.textContent = queryOnly?'正在查询发布结果…':'正在检查…'; }
     const current=()=>currentProjectId()===pid&&String(state().page||'')==='算法列表';
     const showStatus=status=>{
       if(!current())return;
@@ -377,7 +387,8 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
       );
       if(!current())return;
       showStatus(status);
-      if(status.publication?.status==='PUBLISHED'&&status.requires_sync===false)return;
+      if(status.publication?.status==='PUBLISHED'&&status.requires_sync===false){outcomeUncertain=false;return;}
+      if(queryOnly){notify?.('上次发布结果仍待确认，请核对发布状态；本次仅查询，没有再次提交。');return;}
       const preflight = publicationPreflight(status);
       if (!preflight.ready) {
         notify?.(preflight.message);
@@ -385,24 +396,29 @@ export function installExternalAlgorithmPublishRuntime({getState, projectId, not
       }
       notify?.(preflight.message);
       if (button) button.textContent = '正在同步…';
+      postStarted=true;
       const result=await requestJson(`${API_ROOT}/projects/${encodeURIComponent(pid)}/algorithms/${encodeURIComponent(algorithmId)}/versions/${encodeURIComponent(versionId)}/publish`, {method: 'POST'});
       if(!current())return;
+      postConfirmed=true;
       notify?.(publicationResultMessage(result));
       await algorithmListRuntime?.refresh?.({render: true});
       if(!current())return;
       showStatus(await requestJson(`${API_ROOT}/projects/${encodeURIComponent(pid)}/algorithms/${encodeURIComponent(algorithmId)}/versions/${encodeURIComponent(versionId)}`));
     } catch (error) {
+      outcomeUncertain=outcomeUncertain||(postStarted&&!postConfirmed&&!(Number(error.httpStatus)>=400&&Number(error.httpStatus)<500));
       if(!current())return;
-      notify?.(error?.message || error);
+      notify?.(outcomeUncertain?'发布结果待确认，请点击查询发布结果；不会自动再次发布。 '+(error?.message||error):(error?.message || error));
       await algorithmListRuntime?.refresh?.({render: true});
       if(current()){
         try{showStatus(await requestJson(`${API_ROOT}/projects/${encodeURIComponent(pid)}/algorithms/${encodeURIComponent(algorithmId)}/versions/${encodeURIComponent(versionId)}`));}catch(_){/* original error remains visible */}
       }
     } finally {
+      if(outcomeUncertain)publicationRequests.set(key,'uncertain');else publicationRequests.delete(key);
       if (button?.isConnected) {
+        button.removeAttribute('aria-busy');
         const {version} = versionFromIds(algorithmId, versionId);
         button.disabled = false;
-        button.textContent = publicationActionLabel(version || {});
+        button.textContent = outcomeUncertain?'查询发布结果':publicationActionLabel(version || {});
       }
     }
   }

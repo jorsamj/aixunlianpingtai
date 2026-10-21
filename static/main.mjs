@@ -2,7 +2,7 @@ import {installConversionCatalogRuntime} from './modules/conversion-catalog-runt
 import {renderPrisonNightInspectionPage} from './modules/prison-night-inspection-entry.mjs?v=20261010g';
 import {actionRegistry, invokeAction, registerAction} from './modules/actions.js?v=421800';
 import {installRowActionMenu} from './modules/row-action-menu.js?v=4226385';
-import {messageFromApiError} from './modules/api.js?v=421800';
+import {messageFromApiError, withRequestDeadline} from './modules/api.js?v=20261021s';
 import {createModalStack, installModalPresentation, loadingSkeleton} from './modules/modal.js?v=20261021';
 import {annotationPreviewFromBoxes, applyAnnotationResult} from './modules/annotation.js?v=422502';
 import {installNegativeSampleRuntime} from './modules/negative-samples.js?v=422544';
@@ -14,7 +14,7 @@ import {installPollRegistry} from './modules/poll-registry.js?v=422521';
 import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=4226388';
 import {installExternalAlgorithmPlatformRuntime} from './modules/external-algorithm-platform.js?v=63021';
 import {installChangLianDataBrowserRuntime} from './modules/changlian-data-browser.js?v=63002';
-import {installExternalAlgorithmPublishRuntime} from './modules/external-algorithm-publish.js?v=64014';
+import {installExternalAlgorithmPublishRuntime} from './modules/external-algorithm-publish.js?v=64015';
 import {installModelArtifactRuntime} from './modules/model-artifact-runtime.js?v=65009';
 import {installTrainingRecoveryRuntime} from './modules/training-recovery-runtime.js?v=4226390';
 import {installTrainingMaterialPickerRuntime} from './modules/training-material-picker-runtime.js?v=422611';
@@ -25,7 +25,7 @@ import {installTrainingProgressStream} from './modules/training-progress-stream.
 import {createTrainingDraft, trainingDraftToRequest, trainingBaseVersionFromAlgorithm, trainingInheritedDefaults} from './modules/training-draft.js?v=422512';
 import {installTrainingDraftRuntime} from './modules/training-draft-runtime.js?v=422520';
 import {TRAINING_DRAFT_CONTROL_IDS, installTrainingDraftControls} from './modules/training-draft-controls.js?v=422502';
-import {benchmarkReuseContext, buildTrainingEngineParameters, buildTrainingStartPayload, installTrainingSubmitRuntime, trainingSubmitReadiness, validateTrainingDevice} from './modules/training-submit.js?v=422602';
+import {benchmarkReuseContext, buildTrainingEngineParameters, buildTrainingStartPayload, installTrainingSubmitRuntime, trainingSubmitReadiness, validateTrainingDevice} from './modules/training-submit.js?v=422603';
 import {installTrainingCreateHydrationRuntime} from './modules/training-create-hydration.js?v=422556';
 import {installAutoLabelPollRuntime} from './modules/auto-label-poll-runtime.js?v=422503';
 import {annotationReviewView, annotationSavePayload, createAnnotationWorkbench, queueWindow} from './modules/annotation-workbench.js?v=422594';
@@ -50,7 +50,7 @@ import {applyExactLabelCodeMatches, bulkSetLabelMapping, buildManualLabelMapping
 import {installResourceDiscoveryRuntime} from './modules/resource-discovery.js?v=422402';
 import {installServiceNodeRuntime} from './modules/service-node-runtime.js?v=422550';
 import {installOverviewTabsRuntime} from './modules/overview-tabs.js?v=4226362';
-import {installMaterialBatchRuntime} from './modules/material-batches.js?v=422408';
+import {installMaterialBatchRuntime} from './modules/material-batches.js?v=422409';
 import {mountPagination, normalizePagination, paginationPageSizes, paginationTokens, renderPagination, validatePageInput} from './modules/pagination.js?v=422603';
 
 const UI_BUILD_VERSION = '42.25.0-dev';
@@ -106,6 +106,7 @@ window.PlatformCore = {
   modalStack,
   presentation: {...modalPresentation, loadingSkeleton},
   messageFromApiError,
+  withRequestDeadline,
   annotation: {annotationPreviewFromBoxes, applyAnnotationResult},
   annotationWorkbench: {annotationReviewView, annotationSavePayload, createAnnotationWorkbench, queueWindow},
   taskPoller: {createTaskPoller, isTaskActive, taskProgress, waitForTaskTerminal},
