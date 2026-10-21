@@ -107,6 +107,15 @@ test('startup progress keeps the same boot card while status advances', async ({
   let releaseReady;
   const secondGate = new Promise(resolve => { releaseSecond = resolve; });
   const readyGate = new Promise(resolve => { releaseReady = resolve; });
+  let snapshotCalls = 0;
+  await page.route(/\/api\/v53\/bootstrap\/snapshot(?:\?.*)?$/, async route => {
+    snapshotCalls += 1;
+    if (snapshotCalls === 1) {
+      await route.fulfill({status:503,json:{detail:'核心快照尚未可用'}});
+      return;
+    }
+    await route.continue();
+  });
 
   await page.route(/\/api\/v53\/bootstrap\/status(?:\?.*)?$/, async route => {
     statusCalls += 1;
@@ -163,6 +172,7 @@ test('startup progress keeps the same boot card while status advances', async ({
     window.render?.();
   });
   await expect(page.locator('[data-boot-card="1"]')).toHaveCount(0);
+  expect(snapshotCalls).toBe(2);
   expect(pageErrors).toEqual([]);
 });
 

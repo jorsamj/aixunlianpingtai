@@ -125,3 +125,7 @@ Python可复现命令：`python -m pytest tests/api/test_training_success_counts
 实现及本文件基线提交：`bcf738e9dc46a0744c49fa11eae05b54238701d9`，VERSION42.24.370，已普通git push到唯一长期分支，工作树提交后干净。该SHA触发48个Actions（28 push/20 pull_request）及131个Checks，当前129通过、1失败、1运行中，不能先标全绿。最终结果补记后，本文件会产生验收文档提交，该新SHA仍须独立核验；不得用实现SHA绿色替代最终文档HEAD。
 
 首提交CI失败留痕：Training Create First Open run39582203268 / job119162256613，15个Chrome场景14通过1失败；失败`frozen feedback candidates stay aligned with training submit provenance`的旧Mock创建响应缺少正式Task DTO必返project_id，被新安全校验拒绝。修复仅给该场景及同文件固定Benchmark夹具补实际project.id，任务接入/请求次数/溯源及重载断言全部保留；本地先复现同一RED，再两场景2/2 GREEN。无修改产品校验，无跳过测试。首提交不能作为最终全绿，后续修正提交必须独立核验。
+
+首提交主Frontend Chrome job119162256145实际127通过1失败（128场景）。唯一失败navigation-readiness旧测试强制核心Snapshot已成功后仍轮询后台ready，与本轮核心优先合同冲突；已先在本地复现同一RED，夹具改为第一次Snapshot明确503（核心确未可用），保留原10%→60%→100%真实mock进度、同card/bar identity、scaleX及无错误断言，并新增Snapshot精确2次断言。正常核心不等待后台由本轮新Chrome测试覆盖，未删除原恢复分支测试或引入虚假进度。
+
+接续夹具提交`943006d6776b67ef322355db6825fa78501f656b`已推送，只补Task项目身份及进度记录；该SHA在导航旧夹具修正前，不能被当作最终验收。VERSION保持370，不重复递增。
