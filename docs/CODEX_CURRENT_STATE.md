@@ -1,3 +1,7 @@
+## 2026-10-21｜GT素材与训练数据生命周期专项（A进行中，B–F未开始）
+
+唯一需求/进度/问题/验收依据：[专项文档](TRAINING_MATERIAL_LIFECYCLE_GOVERNANCE_2026_10_21.md)。已建立用户新需求基线并部分审计原Material/GT/Prepare/Bundle链；旧合同基线41通过、1软链接能力跳过，不代表新需求验收。历史永久保护取消、排队删减重冻结、单份图片和工作Bundle回收尚未实现；下一步完成活动字节租约/消费者及迁移契约审计后按B→F推进。旧历史条目仅为当时策略，不能覆盖本专项新需求；VERSION42.24.369保持，生产清理/部署未执行，实际提交和CI按专项记录，不借旧SHA绿色。
+
 ## 2026-10-21｜报告交互与确定性ChatGPT材料（本地限定验收完成 / 最终SHA CI待核验）
 
 基线ba6e9c3497c04e69a2e80c3f7dbf07d52fb391c2/VERSION368已fetch/pull且提交前再次一致；其他会话/工作树不动。原v44报告/TaskRecord/Snapshot/ModelArtifact/预览及TrainingRecovery Owner复用：固定模板A-H+4可空现场描述、复制/预览/隐私过滤，无AI调用；本地ECharts交互/生命周期、冻结8–12错误引用及期望评测/图片SHA核验；实际Trainer Optimizer/LR记录、转换源精度约束、迭代实际尺寸/精度及模式保持。完整需求/根因/RED→GREEN/质量审查/测试命令及未验证见[训练质量追踪](TRAINING_QUALITY_REMEDIATION_TRACKER_2026_10_18.md)顶部，完整生成文本见其示例链接。Python去重97通过/Windows已有Linux FD一例skip，Node118、Chrome16场景通过；未扩大到无关业务。VERSION一次递增369，app/main/styles416及必要模块缓存统一；最终实际SHA CI待普通推送，独立回执training-report-materials-ci-final-20261021.json。未生产部署/写入/重训转换；真实Person/Car质量、板端插件标签/性能及现场UI仍NOT VERIFIED，不把基础PASS当业务合格。
