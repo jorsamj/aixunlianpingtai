@@ -2,6 +2,8 @@
 
 基线bb1fed555b60409109b9c62c875b30b72e6c31c5/VERSION367已fetch/pull干净且远端一致；其他会话/工作树未覆盖，上轮23/59 CI回执已核验。完整需求、根因、原target_mappings稳定ID扩展、双向唯一性、历史迁移/回退、危险改挂边界及测试证据见[发布专项](docs/EXTERNAL_ALGORITHM_PUBLISH_PHASE2.md)。原Repo/API/Owner复用，动态本地字典投影，SDK与业务厂商分离；同SDK不同厂商交付/恢复隔离，未知远端分类保持保护；已有Weight分类变化不自动edit，原ID/回执保留。停用历史透传、revision及草稿/保存中返回/迟到保护已闭合。Python去重203、Node28、Chrome1通过，未全仓扩测，版本一次递增368，main/styles415、发布64014，app413不变。最终实际SHA CI待普通推送核验，独立回执stable-vendor-mapping-ci-final-20261021.json；生产字典/DB/OSS/Weight/训练转换/部署未操作，真实provider及历史迁移仍NOT VERIFIED。
 
+首推6339c297实际CI中发布Python/Node/Chrome通过，Syntax and wiring guards检出旧源码契约未同步：退役编辑器丢失仍准确的SDK/字典提示、源码守卫依赖原字段空格及旧“映射变化自动edit”测试名。已恢复真实页面提示/原字段风格，仅将既有workflow一条grep改为本轮更强的“待审核且身份不变”实际测试名，未删除/跳过/削弱动态断言，也未扩展CI触发或测试集合。原完整Syntax and wiring guards本地实际执行退出0，build_identity确认42.24.368；VERSION本轮不二次递增。需以接续修正最终SHA核验全部CI，首推不能当全绿。
+
 ## 2026-10-21｜畅联云Weight完整详情与官方withTags分页查询（本地通过 / 最终SHA CI待核验）
 
 基线22587dd7/VERSION366已fetch/pull干净且远端一致，其他工作区/会话未覆盖；上轮26/70最终绿色回执归档。原畅联云数据Runtime/Client/详情及分页API复用，24字段分组详情、Tags正式list withTags=true精确ID分页补查、int64浏览器安全投影、来源/空值/冲突/失败区分、按需缓存及迟到生命周期保护；无新增Owner/轮询/包装。完整需求/官方合同/RED→GREEN/字段/质量审查/限定测试见[接口与详情验收](docs/CHANGLIAN_APIFOX_API_CATALOG.md)。Python去重127、Node32、Chrome3场景通过，VERSION一次递增367，main/styles414及浏览模块缓存63002，原app413保持。最终实际SHA CI待推送核验，回执weight-detail-ci-final-20261021.json；SSH只读拒绝，真实provider Tags/getInfo候选参数及生产历史仍NOT VERIFIED；未部署/写生产DB/OSS/Weight。

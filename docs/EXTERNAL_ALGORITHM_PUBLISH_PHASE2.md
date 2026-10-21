@@ -49,6 +49,8 @@ ModelArtifact原canonical唯一键不重建：同SHA再次登记若携带与原�
 
 生产配置/字典/DB/OSS/Weight/SDK/训练转换/部署/重启均未操作。尚未验证：生产字典是否满足双向唯一性、历史多业务厂商缺稳定ID的具体范围、真实新畅联分类状态/已有Weight归属及迁移。上线前只读核对并导出旧配置；先审阅READY/REVIEW建议，不批量改写历史。实际Weight迁移须另行授权，先给出原/目标分类、原Weight/Artifact/SHA/filePath/真实远端核验及回滚方案。
 
+首推6339c297实际CI中发布Python/Node/Chrome通过，Syntax and wiring guards检出旧源码契约未同步：退役编辑器丢失仍准确的SDK/字典提示、源码守卫依赖原字段空格及旧“映射变化自动edit”测试名。已恢复真实页面提示/原字段风格，仅将既有workflow一条grep改为本轮更强的“待审核且身份不变”实际测试名，未删除/跳过/削弱动态断言，也未扩展CI触发或测试集合。原完整Syntax and wiring guards本地实际执行退出0，build_identity确认42.24.368；VERSION本轮不二次递增。需以接续修正最终SHA核验全部CI，首推不能当全绿。
+
 ---
 
 ## 2026-10-20｜自动单Weight交付合同（替代旧人工选择策略）

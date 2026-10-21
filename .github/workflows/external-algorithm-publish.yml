@@ -304,7 +304,7 @@ jobs:
           grep -Fq 'data_dir=DATA_DIR, project_id=project_id, conversion_job=cur' app.py
           if grep -Eq 'threading\.Thread|while True|Scheduler|fastapi|APIRouter' platform_core/external_publish_request.py; then echo "conversion publish request must stay lightweight and reuse the existing owner" >&2; exit 1; fi
           test "$(grep -Fc 'threading.Thread(target=worker_loop, name="external-algorithm-auto-publish"' platform_core/external_algorithm_publish.py)" = "1"
-          grep -q "test_published_weight_mapping_change_edits_existing_weight_without_duplicate_create" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_published_weight_mapping_change_requires_review_without_changing_identity" tests/unit/test_external_algorithm_publish.py
           grep -q "test_published_weight_public_url_change_edits_existing_file_path_without_duplicate_create" tests/unit/test_external_algorithm_publish.py
           grep -q "test_published_version_resyncs_when_canonical_model_artifact_is_not_uploaded" tests/unit/test_external_algorithm_publish.py
           grep -Fq 'if not model_asset or str(model_asset.get("storage_status") or "").upper() != "UPLOADED"' platform_core/external_algorithm_publish.py
