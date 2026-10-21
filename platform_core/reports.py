@@ -1,5 +1,8 @@
 from typing import Any, Mapping, Sequence
 import math
+import hashlib
+import re
+from datetime import datetime, timezone
 
 
 def diagnose_training_history(history: Sequence[Mapping[str, Any]]) -> dict:
@@ -103,6 +106,85 @@ def _map50(record: Mapping[str, Any]) -> float | None:
     return None
 
 
+def report_resource_evidence(job, telemetry):
+    """Bound resource observations to the actual run; absence remains unknown."""
+    def stamp(value):
+        try:
+            parsed = datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+            return parsed.timestamp() if parsed.tzinfo else None
+        except (ValueError, TypeError, OverflowError):
+            return None
+    start, end = stamp(job.get('started_at')), stamp(job.get('finished_at'))
+    terminal = str(job.get('task_status') or job.get('status') or '').lower() in {'done', 'succeeded', 'failed', 'partial_success', 'cancelled', 'stopped'}
+    samples = [row for row in list(telemetry.get('samples') or [])[-720:] if isinstance(row, Mapping)]
+    bounded = [row for row in samples if start is not None and (end is not None or not terminal)
+               and stamp(row.get('sampled_at')) is not None and stamp(row['sampled_at']) >= start
+               and (end is None or stamp(row['sampled_at']) <= end)]
+    summary = {}
+    for key in ('gpu_utilization', 'gpu_used_bytes', 'cpu_percent', 'memory_percent', 'io_wait_percent'):
+        values = [float(row[key]) for row in bounded if type(row.get(key)) in (int, float) and math.isfinite(row[key])]
+        summary[key] = {'mean': sum(values) / len(values), 'maximum': max(values), 'samples': len(values)} if values else None
+    return {'resource_summary': summary,
+            'resource_coverage': {'status': 'bounded' if bounded else 'unavailable', 'samples': len(bounded),
+                'first': bounded[0].get('sampled_at') if bounded else None, 'last': bounded[-1].get('sampled_at') if bounded else None,
+                'note': '仅训练起止范围内实际采样，不代表完整时间覆盖'},
+            'runtime_metrics': {**telemetry, 'samples': bounded}}
+
+
+def representative_error_samples(evaluation, *, job_id, snapshot_id, limit=8):
+    """Select references from committed frozen evaluation; never copy image bytes."""
+    missing = {'status': 'unavailable', 'items': [], 'reason': '未记录可核验的冻结异常样本'}
+    if not isinstance(evaluation, Mapping) or evaluation.get('status') != 'succeeded':
+        return missing
+    if (str(evaluation.get('task_id') or '') != str(job_id) or not snapshot_id
+            or str(evaluation.get('snapshot_id') or '') != str(snapshot_id)
+            or not re.fullmatch(r'[0-9a-f]{64}', str(evaluation.get('evaluation_id') or ''))
+            or not re.fullmatch(r'[0-9a-f]{64}', str(evaluation.get('model_sha256') or ''))):
+        return {**missing, 'reason': '冻结评测任务、Snapshot或模型身份未核验'}
+    seed = evaluation['evaluation_id']
+    groups = {}
+    valid = {}
+    for row in list(evaluation.get('error_samples') or [])[:200]:
+        if not isinstance(row, Mapping) or not re.fullmatch(r'[0-9a-f]{64}', str(row.get('image_content_sha256') or '')):
+            continue
+        identity = str(row.get('image_id') or row.get('image') or '')
+        name = str(row.get('image') or '')
+        if not identity or not name or '/' in name or chr(92) in name:
+            continue
+        if any(type(row.get(key)) is not int or row[key] < 0 for key in ('fp_count', 'fn_count')):
+            continue
+        if not row['fp_count'] and not row['fn_count']:
+            continue
+        if identity in valid and valid[identity] != dict(row):
+            return {**missing, 'reason': '冻结异常样本身份重复且内容冲突'}
+        valid[identity] = dict(row)
+        for kind in ('fp', 'fn'):
+            if row[kind + '_count']:
+                for label in list(row.get(kind + '_labels') or ['未记录类别']):
+                    groups.setdefault(kind + ':' + str(label), set()).add(identity)
+    def rank(identity):
+        row = valid[identity]
+        tie = hashlib.sha256((seed + ':' + identity).encode()).hexdigest()
+        return (-row['fp_count'] - row['fn_count'], tie)
+    queues = [sorted(ids, key=rank) for _, ids in sorted(groups.items())]
+    selected = []
+    maximum = min(12, max(1, int(limit)))
+    # One severe representative per error/class stratum, then deterministic
+    # seeded coverage of the remaining qualified evidence.
+    for queue in queues:
+        if queue and queue[0] not in selected:
+            selected.append(queue[0])
+        if len(selected) == maximum:
+            break
+    remainder = sorted(valid, key=lambda identity: hashlib.sha256((seed + ':' + identity).encode()).hexdigest())
+    selected += [identity for identity in remainder if identity not in selected][:maximum - len(selected)]
+    return {'status': 'available' if selected else 'empty', 'items': [valid[key] for key in selected],
+            'evaluation_id': seed, 'model_sha256': evaluation['model_sha256'], 'snapshot_id': snapshot_id,
+            'strategy': 'frozen_error_class_strata_v1', 'recorded_candidates': len(valid),
+            'total_error_samples': evaluation.get('error_sample_count'),
+            'reason': '' if selected else '未记录满足冻结身份要求的FP/FN图片'}
+
+
 def build_version_report(record: Mapping[str, Any]) -> dict:
     training_report = record.get("training_report") if isinstance(record.get("training_report"), Mapping) else {}
     return {
@@ -140,7 +222,7 @@ def build_version_report(record: Mapping[str, Any]) -> dict:
         'dataset_revision_id': record.get('dataset_revision_id') or '',
         'completion_reason': record.get('completion_reason') or '',
         'training_outcome': record.get('training_outcome') or '',
-        'completed_epochs': record.get('current_epoch'),
+        'completed_epochs': record.get('completed_epochs') if record.get('completed_epochs') is not None else record.get('current_epoch'),
         'dataset_counts': dict(record.get('dataset_counts') or {}),
     }
 

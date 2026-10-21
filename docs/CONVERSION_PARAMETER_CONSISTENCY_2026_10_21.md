@@ -1,3 +1,7 @@
+## 2026-10-21｜报告证据与实际参数继承（VERSION42.24.369）
+
+完整接续见[训练质量专项](TRAINING_QUALITY_REMEDIATION_TRACKER_2026_10_18.md)顶部。本轮原resolve改为源训练实际精度优先且受所选SDK允许集合约束，非法显式精度仍拒绝；尺寸继承保留，迭代创建/算法初始化/四模式不覆盖已选或继承imgsz/precision。BM1688完整v1.30.2-20260831解析与官方model_tool --version能力已有并复验，未新增探测/放宽校验。原Trainer真实optimizer/初始LR/AMP观测持久化，报告区分请求与实际，缺失不推断。源训练FP32、目标编译FP16及I/O dtype不能混称；基础合成PASS不证明真实质量。定向Python矩阵/SDK版本、Node及Chrome证据集中记录于该专项；本轮无真实转换、生产修改或部署，板端插件自定义标签仍需现场核验。
+
 # Tags、转换参数、AMP 与 SDK 检测一致性验收
 
 ## 需求与安全边界

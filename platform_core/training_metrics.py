@@ -875,8 +875,30 @@ class TrainingMetrics:
         dataset = trainer.train_loader.dataset
         if runtime["runtime_cache"] == "ram" and hasattr(dataset, "ims") and any(image is None for image in dataset.ims):
             raise RuntimeError("RESOURCE_RUNTIME_MISMATCH: runtime declined requested RAM cache")
-        with self.lock:
+        optimizer = getattr(trainer, 'optimizer', None)
+        observed = {}
+        if optimizer is not None:
+            observed['runtime_optimizer'] = type(optimizer).__name__
+            initial = {}
+            for index, group in enumerate(getattr(optimizer, 'param_groups', ()) or ()):
+                if isinstance(group, dict):
+                    value = _finite_float(group.get('initial_lr', group.get('lr')))
+                    if value is not None:
+                        initial[f'lr/pg{index}'] = value
+            if initial:
+                observed['runtime_initial_learning_rates'] = initial
+        amp = getattr(trainer, 'amp', None)
+        if hasattr(amp, 'item'):
+            amp = amp.item()
+        if type(amp) is bool:
+            observed['amp_runtime_enabled'] = amp
+        with self.lock, closing(self.connect()) as db, db:
             self.resolved.update(runtime)
+            self.resolved.update(observed)
+            row = db.execute('SELECT value FROM summary WHERE id=1').fetchone()
+            summary = json.loads(row[0]) if row else {}
+            summary.update(self.resolved)
+            db.execute('INSERT OR REPLACE INTO summary VALUES (1,?)', (json.dumps(summary),))
         return dict(runtime)
 
     def on_epoch_start(self, trainer):
@@ -894,6 +916,9 @@ class TrainingMetrics:
         total = _trainer_total_epochs(trainer, completed)
         sampled_at = datetime.now(timezone.utc).isoformat()
         with self.lock, closing(self.connect()) as db, db:
+            best_epoch = getattr(trainer, 'best_epoch', None)
+            if type(best_epoch) is int and best_epoch >= 0:
+                self.resolved['best_epoch'] = best_epoch + 1
             self.epoch_duration = round(duration, 3)
             self.images_per_second = round(count / duration, 3)
             self.epoch_durations.append(self.epoch_duration)

@@ -557,3 +557,17 @@ def test_20k_bundle_index_parses_once_for_24_previews_and_invalidates(monkeypatc
     assert platform._evaluation_bundle_identity_index(path, 'a' * 64) == {}
     assert len(reads) == 2
     print(f'20k Bundle index: first={first_ms:.2f}ms, 24 cached lookups={cached_ms:.2f}ms, parses=1')
+
+
+@pytest.mark.parametrize('field,value', [('expected_evaluation_id','e'*64),('expected_image_id','other-image'),('expected_sha256','f'*64)])
+def test_report_thumbnail_rejects_changed_evaluation_or_image_identity(monkeypatch,tmp_path,field,value):
+    platform,version,rows,root,image=_setup(monkeypatch,tmp_path)
+    version['evaluation']['evaluation_id']='b'*64
+    sample=version['evaluation']['error_samples'][0]
+    sample.update(image_id='test-image',image_content_sha256=hashlib.sha256(image.read_bytes()).hexdigest())
+    expected={'expected_evaluation_id':'b'*64,'expected_image_id':'test-image','expected_sha256':sample['image_content_sha256']}
+    expected[field]=value
+    with pytest.raises(HTTPException) as error:
+        platform.evaluation_diagnostic_image_v1('evaluation-project','algo','v1',image.name,**expected)
+    assert error.value.status_code==409
+    assert error.value.detail['code']=='EVALUATION_IDENTITY_CHANGED'

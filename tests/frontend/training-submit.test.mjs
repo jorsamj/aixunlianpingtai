@@ -881,7 +881,9 @@ test('four modes freeze only training semantics while GPU resources resolve at w
       const payload = buildTrainingStartPayload({draft:d, target, algorithm, trainingDraftToRequest});
       assert.equal(payload.training_mode, trainingMode);
       assert.equal(payload.epochs, expectedEpochs);
-      assert.equal(payload.imgsz, imgsz);
+      assert.equal(payload.imgsz, 320, 'explicit image size survives every mode; mode still owns epochs and resources');
+      const defaults = buildTrainingStartPayload({draft:draft({trainingMode,baseVersionId,config:{model:'custom.pt'}}),target,algorithm,trainingDraftToRequest});
+      assert.equal(defaults.imgsz, imgsz, 'mode size remains the fallback only when no selected size exists');
       assert.equal(payload.resource_strategy, 'auto');
       assert.equal(payload.resource_profile, 'performance');
       assert.equal(payload.gpu_policy, 'exclusive');
@@ -942,4 +944,12 @@ test('all training modes preserve explicit precision and matching AMP intent', (
       assert.equal(payload.amp,precision!=='fp32',trainingMode);
     }
   }
+});
+
+test('selected and inherited imgsz precision survive all training mode submissions',()=>{
+ for(const trainingMode of ['quick','full','complex','custom']){
+  const selected=draft({trainingMode,baseVersionId:'previous',config:{model:'best.pt',imgsz:800,precision:'fp32'}});
+  const parameters=buildTrainingEngineParameters({draft:selected,target,algorithm});
+  assert.equal(parameters.imgsz,800,trainingMode);assert.equal(parameters.precision,'fp32',trainingMode);
+ }
 });

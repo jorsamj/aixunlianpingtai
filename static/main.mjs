@@ -16,16 +16,16 @@ import {installExternalAlgorithmPlatformRuntime} from './modules/external-algori
 import {installChangLianDataBrowserRuntime} from './modules/changlian-data-browser.js?v=63002';
 import {installExternalAlgorithmPublishRuntime} from './modules/external-algorithm-publish.js?v=64014';
 import {installModelArtifactRuntime} from './modules/model-artifact-runtime.js?v=65009';
-import {installTrainingRecoveryRuntime} from './modules/training-recovery-runtime.js?v=4226389';
+import {installTrainingRecoveryRuntime} from './modules/training-recovery-runtime.js?v=4226390';
 import {installTrainingMaterialPickerRuntime} from './modules/training-material-picker-runtime.js?v=422611';
 import {installTrainingMaterialSummaryRuntime} from './modules/training-material-summary-runtime.js?v=422606';
 import {installTrainingTaskRuntime} from './modules/training-task-runtime.js?v=422607';
 import {installTrainingTaskVisibilityRuntime} from './modules/training-task-visibility-runtime.js?v=4226385';
 import {installTrainingProgressStream} from './modules/training-progress-stream.js?v=422570';
-import {createTrainingDraft, trainingDraftToRequest, trainingBaseVersionFromAlgorithm} from './modules/training-draft.js?v=422511';
+import {createTrainingDraft, trainingDraftToRequest, trainingBaseVersionFromAlgorithm, trainingInheritedDefaults} from './modules/training-draft.js?v=422512';
 import {installTrainingDraftRuntime} from './modules/training-draft-runtime.js?v=422520';
 import {TRAINING_DRAFT_CONTROL_IDS, installTrainingDraftControls} from './modules/training-draft-controls.js?v=422502';
-import {benchmarkReuseContext, buildTrainingEngineParameters, buildTrainingStartPayload, installTrainingSubmitRuntime, trainingSubmitReadiness, validateTrainingDevice} from './modules/training-submit.js?v=422600';
+import {benchmarkReuseContext, buildTrainingEngineParameters, buildTrainingStartPayload, installTrainingSubmitRuntime, trainingSubmitReadiness, validateTrainingDevice} from './modules/training-submit.js?v=422601';
 import {installTrainingCreateHydrationRuntime} from './modules/training-create-hydration.js?v=422556';
 import {installAutoLabelPollRuntime} from './modules/auto-label-poll-runtime.js?v=422503';
 import {annotationReviewView, annotationSavePayload, createAnnotationWorkbench, queueWindow} from './modules/annotation-workbench.js?v=422594';
@@ -39,7 +39,7 @@ import {uploadBatchFromResponse} from './modules/upload.js?v=421800';
 import {unwrapAlgorithmResponse} from './modules/algorithms.js?v=421800';
 import {applyMaterialSelection, buildTrainingPayload, filterTrainingMaterials, iterationBasePresentation, projectedRandomSplit} from './modules/training.js?v=422101';
 import {qualityChartModel} from './modules/quality.js?v=421800';
-import {reportPresentation, metricChart, trainingCharts, formatPercentagePointDelta, metricCredibilityHtml} from './modules/reports.js?v=20261019tq04';
+import {reportPresentation, metricChart, trainingCharts, formatPercentagePointDelta, metricCredibilityHtml, chatGPTAnalysisMaterial, trainingReportHtml, mountTrainingReport, mountReportCharts, disposeReportViews, lineageReportHtml} from './modules/reports.js?v=20261021r1';
 import {isActiveVideoTask, normalizeVideoTask, videoTaskFormValues} from './modules/video-tasks.js?v=421900';
 import {buildStorageSourcePayload, defaultStorageSource, enabledStorageSources, sourceMatches, storageSourceLabel} from './modules/storage.js?v=422202';
 import {buildMaterialQuery, installMaterialPaginationRuntime, requiresFullMaterialPool} from './modules/material-pagination-runtime.js?v=422610';
@@ -115,10 +115,10 @@ window.PlatformCore = {
   upload: {uploadBatchFromResponse},
   algorithms: {unwrapAlgorithmResponse},
   training: {applyMaterialSelection, buildTrainingPayload, filterTrainingMaterials, iterationBasePresentation, projectedRandomSplit},
-  trainingDraft: {createTrainingDraft, trainingDraftToRequest, trainingBaseVersionFromAlgorithm},
+  trainingDraft: {createTrainingDraft, trainingDraftToRequest, trainingBaseVersionFromAlgorithm, trainingInheritedDefaults},
   trainingSubmit: {buildTrainingEngineParameters, buildTrainingStartPayload, trainingSubmitReadiness, validateTrainingDevice},
   quality: {qualityChartModel},
-  reports: {reportPresentation, metricChart, trainingCharts, formatPercentagePointDelta, metricCredibilityHtml},
+  reports: {reportPresentation, metricChart, trainingCharts, formatPercentagePointDelta, metricCredibilityHtml, chatGPTAnalysisMaterial, trainingReportHtml, mountTrainingReport, mountReportCharts, disposeReportViews, lineageReportHtml},
   video: {isActiveVideoTask, normalizeVideoTask, videoTaskFormValues},
   storage: {buildStorageSourcePayload, defaultStorageSource, enabledStorageSources, sourceMatches, storageSourceLabel},
   materialPaging: {buildMaterialQuery, requiresFullMaterialPool},

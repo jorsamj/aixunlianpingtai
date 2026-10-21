@@ -60,7 +60,7 @@ async function seedTrainingProject(request) {
   return {project, algorithm: listed.items.find(item => item.id === algorithm.algorithm.id)};
 }
 
-async function routeReadyTrainingRuntime(page) {
+async function routeReadyTrainingRuntime(page, defaultSize=640) {
   await page.route('**/api/training_options**', route => route.fulfill({
     status: 200,
     contentType: 'application/json',
@@ -75,7 +75,7 @@ async function routeReadyTrainingRuntime(page) {
         name: 'Ultralytics Detect',
         base_model: 'yolo11n.pt',
         default_epochs: 100,
-        default_imgsz: 640,
+        default_imgsz: defaultSize,
         default_batch: 8,
       }],
       base_models: [{value: 'yolo11n.pt', label: 'YOLO11n 目标检测', model_status: 'FOUND'}],
@@ -487,4 +487,27 @@ test('training precision remains visible and canonical across all four modes',as
   await expect(precision.locator('option')).toHaveText(['自动 AMP（推荐）','FP16 AMP','FP32 全精度']);
   await precision.scrollIntoViewIfNeeded();
   await page.screenshot({path:testInfo.outputPath('training-precision.png')});
+});
+
+
+test('iteration inherits actual precision and size while mode switches preserve explicit choices',async({page,request})=>{
+ const {project,algorithm}=await seedTrainingProject(request);await routeReadyTrainingRuntime(page);
+ await selectIsolatedTestProject(page,project.id);await page.goto('/');await waitForCanonicalApp(page);
+ await page.evaluate(id=>{const a=state.algorithms.find(row=>row.id===id);a.current_version_id='isolated-prior';a.versions=[{id:'isolated-prior',version_name:'隔离迭代来源',training_status:'succeeded',artifact_verified:true,trainable:true,training_lineage:{parameters:{actual:{effective_precision:'fp32',imgsz:800}}}}]},algorithm.id);
+ await page.locator('[data-algorithm-card]',{hasText:'烟火迭代算法'}).getByRole('button',{name:'训练',exact:true}).click();
+ const dialog=page.getByRole('dialog',{name:'创建训练任务'});
+ await expect(dialog.locator('#trV3ManualPrecision')).toHaveValue('fp32');
+ expect(await page.evaluate(()=>state.trainingDraft.config.imgsz)).toBe(800);
+ for(const mode of ['quick','complex','custom','full']){await dialog.locator(`[data-mode="${mode}"]`).click();expect(await page.evaluate(()=>state.trainingDraft.config.imgsz)).toBe(800);await expect(dialog.locator('#trV3ManualPrecision')).toHaveValue('fp32')}
+ await page.evaluate(()=>{state.trainingDraft.config.imgsz=640});
+ await dialog.locator('[data-mode="complex"]').click();expect(await page.evaluate(()=>state.trainingDraft.config.imgsz)).toBe(640);
+});
+
+
+test('first training still adopts actual algorithm default when no inherited size exists',async({page,request})=>{
+ const {project}=await seedTrainingProject(request);await routeReadyTrainingRuntime(page,1280);
+ await selectIsolatedTestProject(page,project.id);await page.goto('/');await waitForCanonicalApp(page);
+ await page.locator('[data-algorithm-card]',{hasText:'烟火迭代算法'}).getByRole('button',{name:'训练',exact:true}).click();
+ await expect(page.getByRole('dialog',{name:'创建训练任务'})).toBeVisible();
+ expect(await page.evaluate(()=>state.trainingDraft.config.imgsz)).toBe(1280);
 });

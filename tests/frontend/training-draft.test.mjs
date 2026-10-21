@@ -178,3 +178,12 @@ test('preset draft still retains explicit labels and version base without remapp
   assert.deepEqual(request.train_image_ids,['im1','im2']);
   assert.equal(d.baseVersionId,'v2');
 });
+
+test('iteration defaults inherit only selected valid version actual precision and image size',async()=>{
+ const {trainingInheritedDefaults}=await import('../../static/modules/training-draft.js');
+ const version={id:'v3',training_status:'done',artifact_verified:true,stored_path:'best.pt',training_lineage:{parameters:{actual:{effective_precision:'fp32',imgsz:800}}}};
+ const algorithm={current_version_id:'v3',versions:[version]};
+ assert.deepEqual(trainingInheritedDefaults(algorithm),{precision:'fp32',amp:false,imgsz:800});
+ assert.deepEqual(trainingInheritedDefaults({...algorithm,versions:[{...version,training_lineage:{parameters:{requested:{precision:'fp16',imgsz:640}}}}]}),{});
+ assert.deepEqual(trainingInheritedDefaults({versions:[]}),{});
+});

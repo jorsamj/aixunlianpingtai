@@ -134,3 +134,54 @@ def test_report_api_preserves_normalized_class_null_zero_and_failure(monkeypatch
     assert report["evaluation"]["per_class"][1]["false_positive"] == 3
     assert report["metrics"]["metrics/mAP50(B)"] == .97
     assert build_version_report(durable)["evaluation"] == truth
+
+
+def test_report_context_is_bound_to_selected_version_and_frozen_labels(monkeypatch,tmp_path):
+    platform=_setup_report(monkeypatch,tmp_path)
+    monkeypatch.setattr(platform,'DATA_DIR',tmp_path)
+    version={'id':'v-person','job_id':'training-1','label_codes':['person'],'label_schema':[{'class_id':0,'code':'person','display_name':'行人'}],'training_lineage':{'task_id':'training-1','base':{'model':'yolo11n.pt'}}}
+    monkeypatch.setattr(platform,'list_algorithms_internal',lambda _path:[{'id':'a','name':'Person','versions':[version]}])
+    response=platform.v44_training_report('p','training-1',algorithm_id='a',version_id='v-person')
+    assert response['report']['identity']=={'project_id':'p','algorithm_id':'a','algorithm_name':'Person','version_id':'v-person','job_id':'training-1'}
+    assert response['report']['class_mapping']==[{'class_id':0,'code':'person','name':'行人'}]
+    assert response['report']['model_architecture']=='YOLOv11n'
+    assert response['report']['conversions']==[]
+    assert response['report']['representative_errors']['items']==[]
+
+
+def test_report_rejects_unrelated_selected_version_instead_of_reusing_old_task(monkeypatch,tmp_path):
+    import pytest
+    from fastapi import HTTPException
+    platform=_setup_report(monkeypatch,tmp_path)
+    monkeypatch.setattr(platform,'DATA_DIR',tmp_path)
+    monkeypatch.setattr(platform,'list_algorithms_internal',lambda _path:[{'id':'a','versions':[{'id':'v-other','job_id':'another-task'}]}])
+    with pytest.raises(HTTPException) as error:
+        platform.v44_training_report('p','training-1',algorithm_id='a',version_id='v-other')
+    assert error.value.status_code==409
+
+
+def test_report_rejects_conflicting_version_lineage_task(monkeypatch,tmp_path):
+    import pytest
+    from fastapi import HTTPException
+    platform=_setup_report(monkeypatch,tmp_path)
+    monkeypatch.setattr(platform,'list_algorithms_internal',lambda _path:[{'id':'a','versions':[{'id':'v','job_id':'training-1','training_lineage':{'task_id':'another-task'}}]}])
+    with pytest.raises(HTTPException) as error:
+        platform.v44_training_report('p','training-1',algorithm_id='a',version_id='v')
+    assert error.value.status_code==409
+
+
+def test_report_projects_frozen_source_negative_audit_and_preserves_unknown_elapsed(monkeypatch,tmp_path):
+    platform=_setup_report(monkeypatch,tmp_path)
+    monkeypatch.setattr(platform,'DATA_DIR',tmp_path)
+    path=tmp_path/'project'/'snapshots';path.mkdir()
+    coverage={'role_confirmed_negative_image_counts':{'train':0,'validation':2},'role_unknown_source_image_counts':{'train':3},'provenance_status':'partial_unknown'}
+    (path/('a'*64+'.json')).write_text(json.dumps({'snapshot_id':'a'*64,'images':[], 'input_quality':{'class_coverage':coverage,'warnings':['来源未知']}}),encoding='utf-8')
+    report=platform.v44_training_report('p','training-1')['report']
+    assert report['frozen_data_quality']['negative_count']==coverage['role_confirmed_negative_image_counts']
+    assert report['capture_source_summary']['role_unknown_source_image_counts']=={'train':3}
+    assert report['frozen_audit']['warnings']==['来源未知']
+    assert report['elapsed_seconds'] is None
+    job_file=tmp_path/'project'/'jobs'/'training-1'/'job.json'
+    job=json.loads(job_file.read_text(encoding='utf-8'));job['training_report']={}
+    job_file.write_text(json.dumps(job),encoding='utf-8')
+    assert platform.v44_training_report('p','training-1')['report']['elapsed_seconds'] is None

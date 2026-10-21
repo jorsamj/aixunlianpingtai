@@ -15,7 +15,7 @@ test('failed final validation exposes backend-approved checkpoint recovery and r
   await page.evaluate(() => window.setPage('训练任务'));
   await expect(page.locator('.train428-page')).toBeVisible({timeout: 10_000});
   await expect.poll(async () => page.evaluate(() => window.TrainingRecoveryRuntime?.build || null))
-    .toBe('training-recovery-runtime-4226389');
+    .toBe('training-recovery-runtime-4226390');
   await expect.poll(async () => page.evaluate(() => window.TrainingTaskRuntime?.build || null))
     .toMatch(/^training-task-runtime-/);
 
@@ -243,7 +243,10 @@ test('successful training detail never presents completion text as an error', as
   for(const [width,height] of [[1920,1080],[1440,900],[1366,768],[375,812]]){
     await page.setViewportSize({width,height});
     await dialog.getByRole('tab',{name:'训练曲线',exact:true}).click();
-    await expect(dialog.locator('.quality-chart')).toHaveCount(2);
+    // Three interactive groups replace the two legacy static curves and retain actual resource observations.
+    await expect(dialog.locator('[data-report-chart]')).toHaveCount(3);
+    await expect(dialog.locator('[data-report-chart] canvas')).toHaveCount(3);
+    expect(await dialog.locator('[data-report-chart=utilization]').evaluate(node=>window.echarts.getInstanceByDom(node).getOption().series.find(row=>row.name==='GPU %').data)).toEqual([80]);
     expect(await dialogShell.evaluate(el=>el.scrollWidth<=el.clientWidth+1)).toBe(true);
     await page.screenshot({path:path.resolve(process.env.CODEX_VISUAL_EVIDENCE_DIR||testInfo.outputPath('visuals'),'detail-'+width+'.png')});
     if(width===375)await expect(dialog.locator('.training-tabs-scroll-hint')).toBeVisible();

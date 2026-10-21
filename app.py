@@ -10871,7 +10871,8 @@ def _evaluation_legacy_name_index(path: Path, repository, test_ids):
 
 
 @app.get("/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/evaluation/images/{image_name}")
-def evaluation_diagnostic_image_v1(project_id: str, algorithm_id: str, version_id: str, image_name: str):
+def evaluation_diagnostic_image_v1(project_id: str, algorithm_id: str, version_id: str, image_name: str,
+        expected_evaluation_id: str = '', expected_image_id: str = '', expected_sha256: str = ''):
     """Read-only frozen Test Split preview, never a source of training candidates.
 
     Authorize the version/evaluation and the exact snapshot/material digest
@@ -10945,6 +10946,13 @@ def evaluation_diagnostic_image_v1(project_id: str, algorithm_id: str, version_i
     if not matches:
         raise HTTPException(status_code=404, detail="图片不属于本版本的问题样本")
     sample = matches[0]
+    if expected_evaluation_id or expected_image_id or expected_sha256:
+        if (not re.fullmatch(r'[0-9a-f]{64}', expected_evaluation_id)
+                or not re.fullmatch(r'[0-9a-f]{64}', expected_sha256)
+                or expected_evaluation_id != evaluation.get('evaluation_id')
+                or expected_sha256 != sample.get('image_content_sha256')
+                or (expected_image_id and expected_image_id != str(sample.get('image_id') or ''))):
+            reject('EVALUATION_IDENTITY_CHANGED', '报告冻结评测或图片身份已变化，请刷新当前版本')
     snapshot_id = str(evaluation.get("snapshot_id") or "").lower()
     if not re.fullmatch(r"[0-9a-f]{64}", snapshot_id):
         reject('SNAPSHOT_MISSING', '历史评测缺少可验证的冻结快照')
@@ -20456,13 +20464,29 @@ def v44_test_saved_model_config(config_id: str):
     return v35_test_model_config(V35ModelConfigReq(**cfg))
 
 @app.get('/api/v44/projects/{project_id}/jobs/{job_id}/report')
-def v44_training_report(project_id: str, job_id: str):
+def v44_training_report(project_id: str, job_id: str, algorithm_id: str = '', version_id: str = ''):
     get_project(project_id);jf=project_dir(project_id)/'jobs'/job_id/'job.json'
     if not jf.exists(): raise HTTPException(status_code=404,detail='训练任务不存在')
     job=enrich_job_runtime(project_id,read_json(jf,{}));report=job.get('training_report') or {}
+    matches = [(algorithm, version) for algorithm in list_algorithms_internal(project_id)
+               for version in algorithm.get('versions', [])
+               if (not algorithm_id or str(algorithm.get('id')) == algorithm_id)
+               and (not version_id or str(version.get('id')) == version_id)
+               and str(version.get('job_id') or (version.get('training_lineage') or {}).get('task_id') or '') == job_id]
+    if (algorithm_id or version_id) and (not algorithm_id or not version_id or len(matches) != 1):
+        raise HTTPException(status_code=409, detail='REPORT_IDENTITY_MISMATCH: 所选算法版本与训练任务不一致')
+    if len(matches) > 1:
+        raise HTTPException(status_code=409, detail='REPORT_IDENTITY_AMBIGUOUS: 训练任务关联多个版本，须明确选择')
+    algorithm, version = matches[0] if matches else ({}, {})
+    task_references = {str(value) for value in (version.get('job_id'), (version.get('training_lineage') or {}).get('task_id'), job.get('id')) if value}
+    algorithm_references = {str(value) for value in (algorithm.get('id'), job.get('asset_algorithm_id'), job.get('algorithm_asset_id')) if value}
+    if task_references - {job_id} or len(algorithm_references) > 1:
+        raise HTTPException(status_code=409, detail='REPORT_IDENTITY_MISMATCH: 任务、算法与版本血缘存在冲突')
+    if version and any(str(job[key]) != str(version['id']) for key in ('auto_version_id', 'version_id') if job.get(key)):
+        raise HTTPException(status_code=409, detail='REPORT_IDENTITY_MISMATCH: 任务版本记录与算法版本冲突')
     if not report:
         metrics = job.get('metrics') or job.get('final_metrics') or {}
-        elapsed = int(job.get('elapsed_seconds') or 0)
+        elapsed = job.get('elapsed_seconds')
         report = {
             'generated_at': now_iso(),
             'framework': job.get('framework') or '',
@@ -20520,15 +20544,45 @@ def v44_training_report(project_id: str, job_id: str):
         if frozen.get('snapshot_id') == snapshot_id:
             from platform_core.quality import frozen_data_quality
             version_report['frozen_data_quality'] = frozen_data_quality(frozen)
+            quality = frozen.get('input_quality') or {}
+            version_report['frozen_audit'] = quality
+            coverage = quality.get('class_coverage') or {}
+            version_report['capture_source_summary'] = {key: value for key, value in coverage.items() if 'source' in key or 'component' in key or key == 'provenance_status'}
+            version_report['frozen_data_quality']['negative_count'] = coverage.get('role_confirmed_negative_image_counts')
     version_report['configuration'] = {
         'framework': job.get('framework') or '', 'algorithm_name': job.get('algorithm_name') or '', 'model': job.get('model') or '',
-        'epochs': job.get('epochs') or 0, 'imgsz': job.get('imgsz') or 0, 'batch': job.get('batch'), 'device': job.get('device') or '',
+        'epochs': job.get('epochs'), 'imgsz': job.get('imgsz'), 'batch': job.get('batch'), 'device': job.get('device') or '',
         **(job.get('advanced_params') or {})
     }
     version_report['data_summary'] = {
         'counts': job.get('dataset_counts') or {}, 'selected_ids': job.get('dataset_selected_ids') or {},
         'quality_gate': job.get('quality_gate') or {}
     }
+    from platform_core.model_metadata import frozen_weight_labels, yolo_architecture
+    from platform_core.reports import representative_error_samples, report_resource_evidence
+    version_report['identity'] = {'project_id': project_id, 'algorithm_id': algorithm.get('id') or '',
+        'algorithm_name': algorithm.get('name') or job.get('asset_algorithm_name') or '',
+        'version_id': version.get('id') or version_report.get('version_id') or '', 'job_id': job_id}
+    version_report['lineage'] = version.get('training_lineage') or job.get('training_lineage') or {}
+    version_report['execution'] = version_report['lineage'].get('execution') or job.get('execution') or {}
+    version_report['framework'] = job.get('framework') or report.get('framework') or ''
+    version_report['model_architecture'] = yolo_architecture(version, algorithm) if version else ''
+    labels = frozen_weight_labels(version) if version else None
+    schema = {row.get('code'): row for row in version.get('label_schema') or [] if isinstance(row, dict)}
+    version_report['class_mapping'] = [{'class_id': index, 'code': code,
+        'name': schema.get(code, {}).get('display_name') or code} for index, code in enumerate(labels or [])]
+    version_report['started_at'] = job.get('started_at') or ''
+    version_report['elapsed_seconds'] = job.get('elapsed_seconds') if job.get('elapsed_seconds') is not None else (report.get('summary') or {}).get('elapsed_seconds')
+    version_report['train_metrics'] = report.get('train_metrics')
+    version_report['best_epoch'] = report.get('best_epoch') or telemetry.get('best_epoch')
+    version_report['representative_errors'] = representative_error_samples(version_report['evaluation'], job_id=job_id, snapshot_id=snapshot_id)
+    version_report.update(report_resource_evidence(job, telemetry))
+    version_report['conversions'] = []
+    if version and (Path(DATA_DIR) / 'model_artifacts' / 'artifacts.sqlite3').is_file():
+        from platform_core.model_artifacts import ModelArtifactRepository
+        version_report['conversions'] = [row for row in ModelArtifactRepository(DATA_DIR).list(
+            project_id=project_id, algorithm_id=str(algorithm['id']), version_id=str(version['id']), limit=100)
+            if row.get('target') != 'original']
     return {"ok":True,"report_type":"version","job":job,"report":version_report}
 
 

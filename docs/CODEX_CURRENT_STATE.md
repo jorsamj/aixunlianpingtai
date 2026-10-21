@@ -1,3 +1,7 @@
+## 2026-10-21｜报告交互与确定性ChatGPT材料（本地限定验收完成 / 最终SHA CI待核验）
+
+基线ba6e9c3497c04e69a2e80c3f7dbf07d52fb391c2/VERSION368已fetch/pull且提交前再次一致；其他会话/工作树不动。原v44报告/TaskRecord/Snapshot/ModelArtifact/预览及TrainingRecovery Owner复用：固定模板A-H+4可空现场描述、复制/预览/隐私过滤，无AI调用；本地ECharts交互/生命周期、冻结8–12错误引用及期望评测/图片SHA核验；实际Trainer Optimizer/LR记录、转换源精度约束、迭代实际尺寸/精度及模式保持。完整需求/根因/RED→GREEN/质量审查/测试命令及未验证见[训练质量追踪](TRAINING_QUALITY_REMEDIATION_TRACKER_2026_10_18.md)顶部，完整生成文本见其示例链接。Python去重96通过/Windows已有Linux FD一例skip，Node110、Chrome13场景通过；未扩大到无关业务。VERSION一次递增369，app/main/styles416及必要模块缓存统一；最终实际SHA CI待普通推送，独立回执training-report-materials-ci-final-20261021.json。未生产部署/写入/重训转换；真实Person/Car质量、板端插件标签/性能及现场UI仍NOT VERIFIED，不把基础PASS当业务合格。
+
 ## 2026-10-21｜本地厂商/芯片稳定ID与新畅联一对一映射（本地验收完成 / 待最终SHA CI）
 
 基线bb1fed555b60409109b9c62c875b30b72e6c31c5/VERSION367已fetch/pull干净且远端一致；其他会话/工作树未覆盖，上轮23/59 CI回执已核验。完整需求、根因、原target_mappings稳定ID扩展、双向唯一性、历史迁移/回退、危险改挂边界及测试证据见[发布专项](EXTERNAL_ALGORITHM_PUBLISH_PHASE2.md)。原Repo/API/Owner复用，动态本地字典投影，SDK与业务厂商分离；同SDK不同厂商交付/恢复隔离，未知远端分类保持保护；已有Weight分类变化不自动edit，原ID/回执保留。停用历史透传、revision及草稿/保存中返回/迟到保护已闭合。Python去重203、Node28、Chrome1通过，未全仓扩测，版本一次递增368，main/styles415、发布64014，app413不变。最终实际SHA CI待普通推送核验，独立回执stable-vendor-mapping-ci-final-20261021.json；生产字典/DB/OSS/Weight/训练转换/部署未操作，真实provider及历史迁移仍NOT VERIFIED。

@@ -264,3 +264,13 @@ def test_automatic_constraint_uses_actual_sdk_evidence_instead_of_manual_referen
     requested=resolve_conversion_contract(data,vendor_id="local-s",chip_id="chip-84",resource=resource,version={},params={"precision":"fp32"})
     assert requested["ready"]==("fp32" in expected)
     assert data["chips"][0]["constraint_id"]==configured, "read/resolve must not rewrite history"
+
+
+@pytest.mark.parametrize('source,allowed,expected',[('fp32',['fp16','fp32'],'fp32'),('fp16',['fp16','fp32'],'fp16'),('fp32',['fp16'],'fp16'),('fp16',['fp32'],'fp32')])
+def test_conversion_default_inherits_actual_training_precision_with_sdk_constraints(source,allowed,expected):
+    resource=live();resource['sophon_probe']['chip_capabilities']['bm1688']['precisions']=allowed
+    version={'training_lineage':{'parameters':{'actual':{'effective_precision':source,'imgsz':800}}}}
+    result=resolve_conversion_contract(catalog(),vendor_id='local-s',chip_id='chip-88',resource=resource,version=version,params={})
+    assert result['ready'] and result['params']['precision']==expected
+    assert result['params']['source_training_precision']==source
+    assert result['params']['input_height']==result['params']['input_width']==800

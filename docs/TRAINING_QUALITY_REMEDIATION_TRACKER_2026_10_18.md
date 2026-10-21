@@ -1,3 +1,96 @@
+## 2026-10-21｜报告交互、确定性ChatGPT材料与参数继承专项（本地限定验收完成 / 最终SHA CI待验收）
+
+起点ba6e9c3497c04e69a2e80c3f7dbf07d52fb391c2/VERSION42.24.368；fetch完成，首次无代理pull连接重置，随后代理pull --ff-only成功且最新一致，工作树干净；唯一同库活跃会话为本任务，其他WIP/worktree不动。上轮最终22/22 Actions、57/57 Checks回执已核验，不替代本轮。
+
+完整需求来源：用户附件03c25113-b573-4524-9fd9-5dc2f05f31a9及其后ChatGPT分析材料强制修订。六项范围：原训练报告/溯源UI；真实曲线交互；冻结FP/FN有界代表样本；确定性复制材料与4项可选现场描述；请求/决议/实际Optimizer/LR/资源事实；BM1688检测复核及转换/迭代训练参数继承。补充修订覆盖原AI定位：不调用模型/API、不生成AI结论、不要求Key；同输入事实+现场描述文本一致。Person/Car只有用户提供配置/基础合成板端PASS，无mAP/FPFN/业务验收，不补造。
+
+已读现状：TrainingRecoveryRuntime拥有详情/按需历史/轮询，reports.js为静态SVG；app.trainingReportCore425调用唯一v44报告API，build_version_report/TaskRecord result拥有报告事实；training_evaluation已有冻结评测身份/Top200/真实预览与GT预测叠加；training_metrics记录LR/损失/资源但未持久化实际Optimizer类型；sophon_runtime已完整版本识别及1.30.2 BM1688 F16/F32能力规则；compute_platform_catalog的precision默认值仍优先模板，training-submit模式预设覆盖imgsz。未将现场全部问题当作仍存在。
+
+采用writing-plans方法，在原文档记录最小实施顺序，用户已授权自主执行，无重复审批/设计确认：
+- [x] A 先新增reports生成材料纯函数及报告HTTP身份测试RED：Person/Car未知项、相同输入稳定、任务版本错配、敏感数据、请求/实际与协议分开；在原reports事实投影内补齐来源、转换和有界错误样本引用，不另建报告Owner/评分引擎。
+- [x] B reports.js内确定性文本序列化固定模板A-H、4现场字段及复制/预览；原报告入口只接线该模块，不叠wrapper。请求迟到校验绑定task/project/version，错误保留在当前视图。
+- [x] C 按官方ECharts容器/resize/dispose合同评估本地静态依赖及许可证；原report/TrainingRecovery渲染调用同一图表实现，旧SVG保留无JS可读降级，不轮询重建；按需载入、缺失断线、tooltip/legend/zoom/reset、关闭释放。
+- [x] D 复用冻结evaluation和预览选择最多8/上限12个分层代表样本，固定身份/seed，不复制原图或修改GT/Test；复用现有预览，图片失败隐藏叠加，人工按权限导出，不自动回流训练或外传AI。
+- [x] E 先RED精度/尺寸继承及实际Optimizer记录，再原位置最小修复；仅真实Trainer对象给实际Optimizer/LR；BM1688版本能力已有则测试复用，不硬编码扩容；模式保护显式/继承尺寸及精度，保持resume区别与安全校验。
+- [x] F 定向Python reports/metrics/直接继承API、Node reports/直接draft-submit、Chrome报告/冻结预览及4分辨率；不跑全仓/无关素材清洗训练。核验同输入、未知不为0、无Key/敏感URL、无AI请求、无重复事件/实例/迟到串数据。
+- [ ] G 更新本tracker与既有转换/Sophon专项、CODEX_CURRENT_STATE/AGENTS、完整生成文本示例；最终fetch后版本一次递增、必要缓存一致，普通push唯一长期分支、核验实际最终SHA Actions/Checks。
+
+生产边界：不部署/重启、不创建真实训练或转换、不修改生产DB/配置/GT/Test/历史报告、不操作OSS或真实新畅联Weight；隔离Person/Car验收数据必须标记测试夹具，不能伪称现场指标。
+
+### 实现、根因及事实边界
+
+- 原报告/TaskRecord result/Snapshot/ModelArtifact仍唯一事实来源；原v44 GET增加可选algorithm_id+version_id明确绑定，冲突409；冻结标签复用model_metadata，版本/血缘任务冲突不能混用。无新报告API、数据库、推理、评分、执行器或AI调用。
+- 原reports.js固定专业指令+A-H数据章节，4现场字段可空且标注未独立验证；同输入结果一致，忽略生成时间；未知/0、请求/实际Optimizer与LR、Train/Val/Test及不同协议分开。不用Workers=0判定I/O瓶颈，不用高mAP确诊业务合格。最终复制文本统一过滤凭证、URL、Windows/UNC/私有路径，JSON/camelCase token也覆盖；剪贴板失败仍可预览/选择复制。
+- API投影本次冻结input_quality/class_coverage来源及负样本事实，原曲线/遥测范围有限且不根据created_at替代真实运行时间；原报告缺失时旧elapsed=0不再作为真实耗时。完成Epoch保留显式0。转换摘要只读本版本已有ModelArtifact，不触发转换/上传/发布。
+- 默认8、最多12个冻结FP/FN引用：错误/类别分层+确定性哈希顺序，保留Top200边界，不复制图片、不改GT、不回流Test。审查发现Durable评测与当前版本评测同名异SHA缩略图风险；原图片GET扩展expected_evaluation_id/expected_image_id/expected_sha256，有期望身份时严格核验，变化409 EVALUATION_IDENTITY_CHANGED，图片隐藏且停止无意义重试。原无参数访问保持原严格Snapshot/Bundle/SHA检查。
+- 原报告和训练详情共用本地ECharts交互实现：质量、Train/Val Loss、LR、Epoch耗时、吞吐和有记录的资源曲线，tooltip/图例/缩放/恢复，null不连线、不造Epoch；按需导入、ResizeObserver、同实例增量更新、关闭dispose。保留静态SVG加载失败降级。原报告冻结分布/下载/素材入口与可信度展示保留，技术JSON折叠，报告/溯源卡片统一风格。删除原三个已无调用的旧展示函数，没有render包装链。
+- ECharts 6.1.0从官方npm registry离线打包，Apache-2.0 LICENSE/NOTICE随static/vendor/echarts保留；bundle SHA256 b66b25aeb4df84e33199dc21694014d336d222cbd9deb0e5a7c14bd6aa0d0fd0。运行不访问CDN，遵守官方容器resize/dispose合同 https://echarts.apache.org/handbook/en/concepts/chart-size/ 。
+- 真正Trainer.optimizer类型、param_groups初始LR与AMP仅在on_train_start观测后写入原training-metrics summary；Checkpoint best_epoch从真实Trainer读取，历史缺失不回填。未把optimizer=auto请求lr0包装成实际LR。
+- 转换默认曾受模板FP16覆盖：原resolve改为源训练实际精度优先，受所选真实SDK允许集合约束；不支持时显示“已根据芯片能力调整转换精度”，显式非法值继续拒绝。原矩形尺寸/Batch1/FP16/FP32/独立资源/产物校验不改。
+- 迭代精度/imgsz只取当前可训练、归档验证版本的actual参数，不取requested猜测；原创建/算法初始化/模式提交三处曾覆盖imgsz，分别原位修正，用户显式值保留；断点续训原冻结合同未改变。新增首训SDK默认1280用例再复现初始化640误当显式值，创建时无继承尺寸保留null直至原算法合同决议；该场景RED→GREEN且迭代800复验通过，避免引入默认值回归。Sophon完整1.30.2版本解析及BM1688能力已在最新代码存在，本轮复用并定向验证，没有重复开发探测器。
+
+### 精准RED→GREEN与限定验收
+
+- RED：材料函数缺失5项；报告显式身份参数缺失2项；代表样本函数缺失1项；JSON/UNC敏感串泄漏1项；版本job_id与lineage.task_id冲突1项；实际Batch/Workers遗漏及AMP重复1项；完成Epoch0被99覆盖1项；原无报告耗时未知变0的API1项；实际Optimizer/LR未记录1项；FP32源默认FP16与模式imgsz覆盖；原图片接口不接受冻结期望身份3项。均在原实现修复后GREEN，不删除/弱化安全断言。最后补强同一身份校验同时保护报告UI和复制文本（先RED Missing expected exception，再10项GREEN）。
+- Chrome首次图表悬停用例落在绘图区右边界，移入2px后真实鼠标tooltip/滚轮/恢复/实例保持/dispose通过；没有改为假dispatch代替悬停。继承浏览器用例真实复现trainAlg二次覆盖800→640，修正后GREEN。新增错误码未在旧UI映射中展示具体原因，已原映射补齐，未降低错误断言。
+- Python命令：`python -m pytest tests/unit/test_reports.py tests/api/test_training_metric_credibility_report.py tests/unit/test_training_metrics_fd.py tests/unit/test_dynamic_conversion_catalog.py -q`（首批54 passed，已有Linux /proc FD用例在Windows 1 skipped；后续新增API一例及受影响精确复验通过）；`python -m pytest tests/api/test_evaluation_diagnostic_image.py -q` 36 passed；`python -m pytest tests/unit/test_sophon_conversion.py -q -k 'preserves_full_v_prefixed_version or official_cli_uses_version'` 5 passed。最终唯一用例合计96 passed/1既有平台限定skip，未新增skip；不执行真实SDK/模型/训练。
+- Node：仅training-analysis-material、metric-credibility-report、quality-charts、training-draft、training-submit、training-recovery-runtime、version-marker-owner七个直接相关文件，分批去重110用例通过。旧模式断言“无论显式320都覆盖640”按本次已确认业务变更为显式320保留，并新增“无显式值仍使用模式默认”强断言；其余资源/安全断言全部保留。
+- Chrome限定：报告Person/Car在1920/1440/1366/375布局/复制/补充/未知/不串任务；真实图表tooltip/缩放/恢复/关闭释放；迟到响应/剪贴板拒绝；冻结缩略图精确身份/失败隐藏/重复进出只读一次；原停止目标报告、四模式精度；新增迭代800/FP32及手工640保持；原成功和运行详情（四视口/运行事实/刷新稳定/键盘/关闭）。去重13场景通过。旧成功详情仅锁两条静态SVG的断言升级为三组真实交互canvas及GPU80原采样、排除结束后0值，不放宽断言。
+- 代码审查两轮确认无第二Owner/队列/轮询、无包装链/重复绑定；报告单根AbortController、迟到结果归属、图片读取Abort、chart实例释放；原API、Task/ArtifactStore及版本事实复用。官方vendor静态资源为唯一新增运行依赖；没有新增UI框架。普通操作均有反馈，输入和视图状态不互相覆盖。
+- 完整生成文本示例：[Person隔离材料](examples/TRAINING_CHATGPT_MATERIAL_PERSON_2026_10_21.md)，由正式纯函数生成约3141字，含全部固定指令与A-H、未知证据、人工描述区，可直接复制给ChatGPT；明确为隔离结构，不冒用生产ID/指标。
+
+### 本轮修改文件清单
+
+```text
+docs/examples/TRAINING_CHATGPT_MATERIAL_PERSON_2026_10_21.md
+static/vendor/echarts/LICENSE
+static/vendor/echarts/NOTICE
+static/vendor/echarts/README.md
+static/vendor/echarts/echarts.min.js
+tests/browser/training-analysis-material.spec.mjs
+tests/frontend/training-analysis-material.test.mjs
+.github/workflows/training-recovery-guard.yml
+AGENTS.md
+VERSION.txt
+app.py
+docs/CODEX_CURRENT_STATE.md
+docs/CONVERSION_PARAMETER_CONSISTENCY_2026_10_21.md
+docs/SOPHON_BMODEL_CONVERSION_ACCEPTANCE_2026_10_20.md
+docs/TRAINING_QUALITY_REMEDIATION_TRACKER_2026_10_18.md
+platform_core/compute_platform_catalog.py
+platform_core/reports.py
+platform_core/training_metrics.py
+static/app.js
+static/index.html
+static/main.mjs
+static/modules/reports.js
+static/modules/training-draft.js
+static/modules/training-recovery-runtime.js
+static/modules/training-submit.js
+static/styles.css
+tests/api/test_evaluation_diagnostic_image.py
+tests/api/test_training_metric_credibility_report.py
+tests/browser/training-quality-reports.spec.mjs
+tests/browser/training-recovery.spec.mjs
+tests/frontend/metric-credibility-report.test.mjs
+tests/frontend/training-draft.test.mjs
+tests/frontend/training-submit.test.mjs
+tests/frontend/version-marker-owner.test.mjs
+tests/unit/test_dynamic_conversion_catalog.py
+tests/unit/test_reports.py
+tests/unit/test_training_metrics_fd.py
+```
+
+### 版本、未验证与接续
+
+提交前再次fetch，远端仍ba6e9c3497c04e69a2e80c3f7dbf07d52fb391c2，无覆盖其他成果。本轮VERSION42.24.368→42.24.369一次变更；app/main/styles缓存42.25.416；draft422512/submit422601/recovery4226390，reports两处同URL20261021r1，避免同一有状态模块双实例。正式前端版本继续读后端VERSION，未嵌静态显示版本；既有恢复workflow仅同步build守卫，不改触发/测试范围。
+
+最终SHA在提交后核验，独立回执 `training-report-materials-ci-final-20261021.json` 保存实际SHA、Actions/Checks/关键Jobs，位置为既有Codex visualizations附件目录；本仓文档不自引用未被CI覆盖的追加提交。不得沿用基线22/57绿色。
+
+**NOT VERIFIED**：Person/Car真实完整mAP、FP/FN、现场图片和业务验收、GPU/真实SDK编译及板卡性能、本轮新UI生产上线。用户既有合成/基础板端PASS不等于真实检测精度；源训练FP32/编译FP16/I/O dtype分开。冻结类别仍取已有schema/data合同/ModelArtifact tags；本轮未读取实际PT/ONNX/BMODEL或生产data.yaml，不伪称板端插件类别映射已核验，也未按未知插件格式生成或替换标签文件。板端仍需用版本冻结person/Car核对插件标签，不能默认COCO80。生产17项元数据/历史Weight及其他前轮待办保持原文，不执行本轮外部写入。
+
+不部署、不重启、不修改生产数据/配置/密钥/OSS/Weight，不重训/重转换。下一会话先读本节与最终CI独立回执，再按明确授权现场验收；不要重跑已通过且未受新修改影响的测试。
+
 # 畅联云算法训练平台｜训练质量与模型评测可信度专项问题追踪（2026-10-18）
 
 ## 接手信息

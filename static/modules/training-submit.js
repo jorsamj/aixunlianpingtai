@@ -87,7 +87,7 @@ export function buildTrainingEngineParameters({draft, target, algorithm} = {}) {
   // task or an old dialog session. Keep the explicitly selected mother model and precision;
   // existing optimizer, augmentation and quality defaults remain canonical here.
   const config = preset
-    ? {model: rawConfig.model, precision: rawConfig.precision, amp: rawConfig.amp, stop_threshold: .90, eval_interval: 10, eval_metric: 'map50'}
+    ? {model: rawConfig.model, imgsz: rawConfig.imgsz, precision: rawConfig.precision, amp: rawConfig.amp, stop_threshold: .90, eval_interval: 10, eval_metric: 'map50'}
     : rawConfig;
   return {
     framework: target.framework === 'paddle' ? 'paddle' : 'ultralytics',
@@ -96,7 +96,7 @@ export function buildTrainingEngineParameters({draft, target, algorithm} = {}) {
     algorithm: algorithm.key || '',
     model: config.model || algorithm.base_model || '',
     epochs: preset?.epochs ?? config.epochs ?? (draft.baseVersionId ? 80 : (algorithm.default_epochs ?? 150)),
-    imgsz: preset?.imgsz ?? config.imgsz ?? algorithm.default_imgsz ?? 640,
+    imgsz: config.imgsz ?? preset?.imgsz ?? algorithm.default_imgsz ?? 640,
     batch: integerParameter(draft.resource?.batch ?? config.batch ?? algorithm.default_batch, 8, 'Batch'),
     device: draft.resource?.device || config.device || 'auto',
     include_empty: false,

@@ -50,6 +50,16 @@ export function trainingBaseVersionFromAlgorithm(algorithm = {}) {
   };
 }
 
+export function trainingInheritedDefaults(algorithm={}) {
+  const base=trainingBaseVersionFromAlgorithm(algorithm);
+  if(!base.hasPrevious)return {};
+  const version=algorithm.versions.find(row=>String(row.id||row.version_id)===base.versionId);
+  const actual=version?.training_lineage?.parameters?.actual||version?.training_report?.actual_train_params||version?.report?.actual_train_params||{};
+  const precision=String(actual.effective_precision||actual.runtime_precision||actual.precision||'').toLowerCase();
+  const size=actual.imgsz;
+  return {...(['fp16','fp32'].includes(precision)?{precision,amp:precision==='fp16'}:{}),...(Number.isInteger(size)&&size>=32&&size<=4096?{imgsz:size}:{})};
+}
+
 export function createTrainingDraft(values = {}) {
   const splitMode = String(values.splitMode || 'random_test_from_training_pool');
   if (!['random_test_from_training_pool', 'independent_test_set'].includes(splitMode)) {

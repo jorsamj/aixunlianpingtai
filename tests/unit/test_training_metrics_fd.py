@@ -294,3 +294,18 @@ def test_resource_sample_sums_unique_process_memory_not_shared_rss(tmp_path, mon
     assert latest["task_id"] == "train-a"
     assert latest["node_id"] == "node-a"
     assert latest["cgroup_memory_limit_bytes"] == 20 * 1024 ** 3
+
+
+def test_actual_optimizer_and_initial_lr_are_captured_from_trainer_not_request(tmp_path):
+    metrics=training_metrics.TrainingMetrics(tmp_path/'optimizer.sqlite3',resolved_resources(resolved_batch=4,resolved_workers=0),gpu_uuid=None,interval=999)
+    metrics.psutil=None
+    optimizer=type('AdamW',(),{})();optimizer.param_groups=[{'lr':.0003,'initial_lr':.002}]
+    trainer=SimpleNamespace(args=SimpleNamespace(cache=False,optimizer='auto',lr0=.01),optimizer=optimizer,amp=False,
+        train_loader=SimpleNamespace(batch_size=4,num_workers=0,dataset=[1,2,3,4]))
+    try:
+        metrics.on_train_start(trainer)
+        recorded=training_metrics.read_metrics(tmp_path/'optimizer.sqlite3')
+        assert recorded['runtime_optimizer']=='AdamW'
+        assert recorded['runtime_initial_learning_rates']=={'lr/pg0':.002}
+        assert recorded['amp_runtime_enabled'] is False
+    finally:metrics.stop_event.set()

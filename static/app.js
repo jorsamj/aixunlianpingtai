@@ -2633,12 +2633,14 @@ window.installUsability417=function(){
   };
   window.modal=modal;
   closeModal=function closeModalStackCore424(){
-    if(dynamicModalStack.length){const top=dynamicModalStack.pop();top.remove();return}
+    if(dynamicModalStack.length){const top=dynamicModalStack.pop();window.PlatformCore?.reports?.disposeReportViews?.(top);window.beforeCloseEvaluationPreview429?.(top);top.remove();return}
+    window.PlatformCore?.reports?.disposeReportViews?.(baseModal);
+    window.beforeCloseEvaluationPreview429?.(baseModal);
     baseModal?.classList.remove('import350-modal','import350-minimized');
     closeModalBase();
   };
   window.closeModalCore424=closeModal;
-  window.closeAllModals424=function(){while(dynamicModalStack.length)dynamicModalStack.pop().remove();if(baseModal&&!baseModal.classList.contains('hidden'))closeModalBase()};
+  window.closeAllModals424=function(){for(const layer of [...dynamicModalStack,baseModal]){window.PlatformCore?.reports?.disposeReportViews?.(layer);window.beforeCloseEvaluationPreview429?.(layer)}while(dynamicModalStack.length)dynamicModalStack.pop().remove();if(baseModal&&!baseModal.classList.contains('hidden'))closeModalBase()};
 
   // ---------- all images are one logical data pool ----------
 
@@ -2904,33 +2906,37 @@ window.installUsability417=function(){
     );
     return{requested,completed,reasonText,targetText};
   }
-  function line425(rows,key,title,pct=true){const vals=rows.map(r=>r[key]).filter(v=>v!=null);if(vals.length<2)return`<div class="report425-chart-empty">暂无${title}曲线</div>`;const W=560,H=170,pad=24,min=pct?0:Math.min(...vals),max=pct?1:Math.max(...vals),den=Math.max(.000001,max-min),pts=rows.map((r,i)=>{const v=r[key];if(v==null)return null;return[pad+i*(W-pad*2)/Math.max(1,rows.length-1),H-pad-(v-min)/den*(H-pad*2)]}).filter(Boolean);return`<div class="report425-chart"><div class="report425-chart-title">${title}</div><svg viewBox="0 0 ${W} ${H}"><line x1="${pad}" y1="${H-pad}" x2="${W-pad}" y2="${H-pad}"/><polyline points="${pts.map(p=>p.join(',')).join(' ')}"/></svg><div class="report425-chart-foot"><span>Epoch 1</span><span>Epoch ${rows.at(-1)?.epoch||rows.length}</span></div></div>`}
-  function metricExplain425(name,v){if(v==null)return'-';const n=Number(v);if(name==='Precision')return n>=.9?'误报控制优秀':n>=.8?'误报控制较好':'误报偏多';if(name==='Recall')return n>=.9?'漏检控制优秀':n>=.8?'漏检控制较好':'漏检偏多';if(name==='mAP50')return n>=.9?'整体检测能力优秀':n>=.8?'整体效果较好':'整体效果需提升';return n>=.7?'严格标准下表现较好':'严格标准下仍有提升空间'}
-  function aiResultText425(x){if(x.error)return`失败：${esc(x.error)}`;const r=x.result||{};if(typeof r==='string')return esc(r);if(r.cause||r.data_suggestion)return`${esc(r.cause||'')} ${r.data_suggestion?`· 建议：${esc(r.data_suggestion)}`:''}`;if(r.raw)return esc(String(r.raw).slice(0,300));return esc(JSON.stringify(r).slice(0,300))}
-  window.trainingReportCore425=async function(id){
-    const jobId=String(id);
-    const project=String(pid());
+  let reportRequestSequence425=0;
+  window.trainingReportCore425=async function(id,selection={}){
+    const jobId=String(id),project=String(pid()),sequence=++reportRequestSequence425;
+    modal('训练报告','<div class="quality-empty" data-training-report-loading role="status">正在读取当前任务报告与冻结证据…</div>',true);
+    const loading=document.querySelector('[data-training-report-loading]');
+    const current=()=>sequence===reportRequestSequence425&&String(pid())===project&&loading?.isConnected;
     try{
-      const response=await api(`/api/v44/projects/${encodeURIComponent(project)}/jobs/${encodeURIComponent(jobId)}/report`);
-      if(String(pid())!==project)return;
-      const j=response.job||{},rep=response.report||{},history=rep.history||[],metrics=rep.metrics||{};
-      const canonical=String(j.task_status||j.status||'').toUpperCase();
-      const completed=['SUCCEEDED','PARTIAL_SUCCESS','DONE','COMPLETED'].includes(canonical);
-      const statusText=completed?'训练执行已完成':canonical==='CANCELLED'?'训练已取消':canonical==='FAILED'?'训练执行失败':'训练尚未完成';
-      const algorithm=(state.algorithms||[]).find(a=>(a.versions||[]).some(v=>v.job_id===jobId||v.id===j.auto_version_id));
-      const version=algorithm?.versions?.find(v=>v.job_id===jobId||v.id===j.auto_version_id);
-      const evaluation=rep.evaluation||version?.evaluation||{},analysis=rep.quality_analysis||{},counts=rep.data_summary?.counts||rep.dataset_counts||{},actual=rep.actual_train_params||j.actual_train_params||{};
-      const metric=(key,alias)=>pct424(metrics[key]??metrics[alias]);
-      const stopReasons={quality_target_reached:'达到训练停止指标',epochs_completed:'完成配置轮次',early_stopping:'提前停止',time_limit_reached:'达到训练时限',manual_stop:'用户停止'};
-      const reason=j.completion_reason||rep.completion_reason||'';
-      const gateHtml=rep.data_summary?.quality_gate?.eval_interval?`<section class="report429-card"><header><b>阶段质量门禁</b></header><p>每 ${Number(rep.data_summary.quality_gate.eval_interval)} 轮检查 · 每次随机试验样本 ${rep.data_summary.quality_gate.stage_eval_samples??'全部'} 张 · ${esc(rep.data_summary.quality_gate.metric||'mAP50')}</p><div class="report429-timeline">${(rep.gate_events||j.gate_events||[]).map(event=>`<div><b>Epoch ${event.epoch}</b><span>${esc(event.metric||'')} ${pct424(event.value)} · ${esc(event.decision||'')}</span></div>`).join('')}</div></section>`:'';
-      modal('训练报告',`<div class="report429 quality-workspace"><header class="quality-workspace-head"><div><span>TRAINING REPORT · ${esc(statusText)}</span><h2>${esc(j.asset_algorithm_name||algorithm?.name||'训练成果')} <small>${esc(j.auto_version_name||rep.version_name||'')}</small></h2><p>${esc(stopReasons[reason]||reason||'未记录结束原因')} · 生成于 ${esc(rep.generated_at||'未记录')}</p></div><div class="row">${version?.evaluation?`<button class="btn primary" data-report-evaluation>查看独立评测</button>`:''}<button class="btn" data-report-scenario>场景算法实测</button></div></header><div class="quality-metrics">${[['Precision',metric('metrics/precision(B)','precision')],['Recall',metric('metrics/recall(B)','recall')],['Val mAP50',metric('metrics/mAP50(B)','map50')],['Val mAP50-95',metric('metrics/mAP50-95(B)','map5095')],['实际 Epoch',j.completed_epochs??j.current_epoch??rep.completed_epochs??'未记录'],['最佳已记录 Epoch',analysis.best_observed_epoch??'未记录']].map(([label,value])=>`<div><span>${label}</span><b>${value}</b></div>`).join('')}</div><section class="report429-card"><div class="report425-facts"><div><span>最大轮次</span><b>${j.requested_epochs??rep.configuration?.epochs??j.epochs??'未记录'}</b></div><div><span>实际轮次</span><b>${j.completed_epochs??j.current_epoch??rep.completed_epochs??'未记录'}</b></div><div><span>停止原因</span><b>${reason==='quality_target_reached'?'达到目标指标，提前完成':esc(stopReasons[reason]||reason||'未记录')}</b></div><div><span>训练停止目标状态</span><b>${reason==='quality_target_reached'?'已达标':'未确认'}</b></div></div></section><section class="report429-card"><header><b>成果验收边界</b></header><div class="quality-status-strip"><span>训练执行：${esc(statusText)}</span><span>停止条件：${esc(stopReasons[reason]||reason||'未记录')}</span><span>独立评测：${evaluation.status==='succeeded'?'已完成（不等于业务通过）':'未完成或缺少记录'}</span><span>业务验收：未记录</span></div><p>训练停止指标、训练成功、独立评测与业务验收是不同事实；本报告不据此自动判定可生产使用。</p></section>${window.PlatformCore.reports.metricCredibilityHtml(rep.metric_credibility||version?.metric_credibility)}${gateHtml}<section><h3>训练曲线</h3>${window.PlatformCore.reports.trainingCharts(history)}</section><section class="report429-card"><header><b>收敛与泛化诊断</b><span>确定性证据规则 · 趋势信号</span></header>${(analysis.findings||[]).map(finding=>`<article><h4>${esc(finding.phenomenon)}</h4>${finding.evidence_summary?`<p>${esc(finding.evidence_summary)}</p>`:`<p>证据：${finding.evidence?.paired_epochs} 个 Train/Val 配对 Epoch，前后各 ${finding.evidence?.window} 个 Epoch 均值。Train ${Number(finding.evidence?.train_before).toFixed(4)} → ${Number(finding.evidence?.train_after).toFixed(4)}；Val ${Number(finding.evidence?.val_before).toFixed(4)} → ${Number(finding.evidence?.val_after).toFixed(4)}。</p>`}<p>可能原因：${esc((finding.possible_causes||[]).join('；'))}</p><p>${esc(finding.action)}</p></article>`).join('')||'<div class="quality-empty">未发现已定义的泛化差距信号，或配对曲线不足10个 Epoch；这不代表没有过拟合。</div>'}</section><section class="report429-card"><header><b>本轮数据与配置</b></header><div class="quality-metrics">${[['训练图片',counts.train],['验证图片',counts.validation??counts.val],['独立测试',counts.test]].map(([label,value])=>`<div><span>${label}</span><b>${value??'未生成'}</b></div>`).join('')}</div><dl class="report429-dl"><dt>母模型版本</dt><dd>${esc(j.base_version_name||rep.base_version_name||'未记录')}</dd><dt>Snapshot</dt><dd>${esc(rep.snapshot_id||j.snapshot_id||'未记录')}</dd><dt>Dataset Revision</dt><dd>${esc(rep.dataset_revision_id||j.dataset_revision_id||'未记录')}</dd><dt>实际 Batch / Workers / Precision</dt><dd>${actual.batch??'未记录'} / ${actual.workers??'未记录'} / ${esc(actual.effective_precision||actual.precision||'未决议')}</dd><dt>图片尺寸</dt><dd>${actual.imgsz??rep.configuration?.imgsz??'未记录'}</dd></dl><button class="btn" data-report-data>核查正式素材与标注</button><details><summary>已冻结的数据质量证据</summary>${rep.frozen_data_quality?`<p>${rep.frozen_data_quality.image_count} 张冻结图片 · 重复 ${rep.frozen_data_quality.duplicate_count} 张；分布不要求各类相等。</p><div class="table-wrap"><table class="table"><thead><tr><th>类别</th><th>图片数</th><th>目标框数</th></tr></thead><tbody>${(rep.frozen_data_quality.classes||[]).slice(0,1000).map(row=>`<tr><td>${esc(row.label)}</td><td>${row.image_count??'未记录'}</td><td>${row.box_count??'未记录'}</td></tr>`).join('')}</tbody></table></div><p>标注状态：${esc(Object.entries(rep.frozen_data_quality.annotation_states||{}).map(([key,value])=>key+' '+value).join(' · '))}。目标尺寸与场景属性未留存，不据此推断覆盖。</p>`:'<p>旧报告未保存本轮数据分布明细，不能用当前素材库代替历史训练数据。</p>'}</details></section><section class="report429-card"><header><b>模型成果</b></header><p>${(rep.artifacts||[]).map(item=>esc(String(typeof item==='string'?item:item.file_name||item.filename||item.path||'').split(/[\\/]/).pop())).join(' · ')||'暂无已归档模型记录'}</p>${version?`<a class="btn" href="/api/v12/projects/${encodeURIComponent(project)}/algorithms/${encodeURIComponent(algorithm.id)}/versions/${encodeURIComponent(version.id)}/download">下载有效版本模型</a>`:''}<p>${rep.artifact_verified?'模型产物已经过归档验证':'未记录模型产物验证状态'}</p></section><footer class="quality-provenance">模型质量需结合独立 Test 与业务现场复核；冻结 Test 不直接参与后续训练。</footer></div>`,true);
-      const root=document.querySelector('.quality-workspace');
-      root?.querySelector('[data-report-evaluation]')?.addEventListener('click',async()=>{await closeModal();window.openVersionEvaluation429(algorithm.id,version.id);});
-      root?.querySelector('[data-report-scenario]')?.addEventListener('click',window.openScenarioWorkbench429);
-      root?.querySelector('[data-report-data]')?.addEventListener('click',async()=>{await closeModal();window.setPage('数据集');});
-    }catch(error){toast(error.message||error);}
+      const query=selection.algorithmId&&selection.versionId?'?'+new URLSearchParams({algorithm_id:selection.algorithmId,version_id:selection.versionId}):'';
+      const response=await api(`/api/v44/projects/${encodeURIComponent(project)}/jobs/${encodeURIComponent(jobId)}/report${query}`);
+      if(!current())return;
+      if(String(response.job?.id||response.report?.job_id||'')!==jobId)throw new Error('报告训练任务身份不一致');
+      const report=response.report||{};
+      const algorithm=(state.algorithms||[]).find(a=>String(a.id)===String(report.identity?.algorithm_id||selection.algorithmId)||(!report.identity?.algorithm_id&&!selection.algorithmId&&(a.versions||[]).some(v=>String(v.job_id||v.training_lineage?.task_id)===jobId)));
+      const version=algorithm?.versions?.find(v=>String(v.id)===String(report.identity?.version_id||selection.versionId)||(!report.identity?.version_id&&!selection.versionId&&String(v.job_id||v.training_lineage?.task_id)===jobId));
+      report.identity??={project_id:project,algorithm_id:algorithm?.id||'',algorithm_name:algorithm?.name||'',version_id:version?.id||report.version_id||'',job_id:jobId};
+      if(selection.versionId&&String(report.identity.version_id)!==String(selection.versionId))throw new Error('报告算法版本身份不一致');
+      loading.outerHTML=window.PlatformCore.reports.trainingReportHtml(response);
+      const root=document.querySelector('.training-report-workspace');
+      const isCurrent=()=>root?.isConnected&&String(pid())===project&&sequence===reportRequestSequence425;
+      window.PlatformCore.reports.mountTrainingReport(root,response,{notify:toast,isCurrent,onData:async()=>{await closeModal();window.setPage('数据集')},
+        onEvaluation:async()=>{if(!version)return toast('该报告没有可核验的算法版本关联');await closeModal();window.openVersionEvaluation429(algorithm.id,version.id)},
+        onSample:sample=>{
+          const currentEvaluation=version?.evaluation;
+          if(!sample||!currentEvaluation?.evaluation_id||currentEvaluation.evaluation_id!==report.evaluation?.evaluation_id)return toast('冻结评测身份已变化或未核验，请刷新当前版本');
+          const index=(currentEvaluation.error_samples||[]).findIndex(row=>row.image_id===sample.image_id&&row.image_content_sha256===sample.image_content_sha256);
+          if(index<0)return toast('冻结样本身份不一致');
+          void window.openEvaluationSample429(algorithm.id,version.id,index);
+        }});
+    }catch(error){if(current())loading.innerHTML=`<div class="alert err">${esc(error.message||error)}</div>`}
   };
+
   window.openAiCause425=function(id){const opts=(state.modelConfigs||[]).map(c=>`<option value="${c.id}">${esc(c.name)}${c.model_kind==='vlm'?' · VLM':''}</option>`).join('');modal('模型辅助错误归因',`<div class="form"><div class="field"><label>选择视觉模型</label><select id="ai425Model" class="select">${opts}</select></div><div class="field"><label>分析样本数量</label><input id="ai425Limit" class="input" type="number" min="1" max="30" value="12"></div><div class="alert soft">模型不会重新判定“检测对不对”。对错由预测结果与人工标准标注计算；模型只分析小目标、遮挡、夜间、模糊、相似干扰等可能原因。</div></div><div class="row end"><button class="btn" onclick="closeModal()">取消</button><button class="btn primary" onclick="runAiCause425('${id}')">开始分析</button></div>`,true)};
   window.runAiCause425=async function(id){const mid=document.getElementById('ai425Model')?.value;if(!mid)return toast('请选择模型');try{await api(`/api/v45/projects/${pid()}/jobs/${id}/error-cause-analysis`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model_config_id:mid,limit:num425('ai425Limit',12)})});closeModal();closeModal();trainingReport425(id);toast('模型辅助归因已完成')}catch(e){toast(e.message||e)}};
 
@@ -3648,19 +3654,11 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   window.algorithmReport429=async function(id){try{const r=await api(`/api/v49/projects/${pid()}/algorithms/${id}/report`),a=r.algorithm||{},s=r.summary||{},trend=(r.trend||[]).filter(x=>x.map50!=null),labs=Object.entries(s.label_counts||{}).sort((a,b)=>b[1]-a[1]);modal('算法综合训练报告',`<div class="report429"><section class="report429-head"><div><span>算法长期训练总结</span><h2>${esc(a.name||'')}</h2><p>${esc(algType429(a.algorithm_type))}${a.industry?` · ${esc(a.industry)}`:''}</p></div><div class="report429-kpis"><div><span>累计训练</span><b>${s.training_count||0} 次</b></div><div><span>版本数量</span><b>${a.version_count||0}</b></div><div><span>最新正确率</span><b>${pct429(s.latest_accuracy)}</b></div><div><span>累计训练时长</span><b>${fmtTime424(s.total_duration_seconds||0)}</b></div></div></section><section class="report429-card"><header><b>历次训练准确率走势</b><span>每个点代表一次训练完成后的 mAP50</span></header>${spark429(trend.map(x=>x.map50))}<div class="report429-legend">${trend.map(x=>`<span>${esc(x.version||x.job_id||'-')} <b>${pct429(x.map50)}</b></span>`).join('')}</div></section><div class="report429-cols"><section class="report429-card"><header><b>训练素材标签维度</b><span>累计参与训练的检测框数量</span></header><div class="report429-bars">${labs.map(([k,v])=>`<div><span>${esc(k)}</span><i><em style="width:${Math.min(100,v/Math.max(1,labs[0]?.[1]||1)*100)}%"></em></i><b>${v}</b></div>`).join('')||'<div class="empty">暂无标签统计</div>'}</div></section><section class="report429-card"><header><b>算法档案</b></header><dl class="report429-dl"><dt>算法类型</dt><dd>${esc(algType429(a.algorithm_type))}</dd><dt>行业场景</dt><dd>${esc(a.industry||'-')}</dd><dt>训练成功</dt><dd>${s.successful_count||0} / ${s.training_count||0} 次</dd><dt>平均训练时长</dt><dd>${fmtTime424(s.avg_duration_seconds||0)}</dd><dt>当前版本</dt><dd>${esc(s.latest_version||'-')}</dd></dl></section></div><section class="report429-card"><header><b>历次训练记录</b></header><div class="table-wrap"><table class="table"><thead><tr><th>版本/任务</th><th>完成时间</th><th>正确率</th><th>训练素材</th><th>状态</th><th>报告</th></tr></thead><tbody>${(r.trend||[]).slice().reverse().map(x=>`<tr><td>${esc(x.version||x.job_id||'-')}</td><td>${dt429(x.finished_at)}</td><td><b>${pct429(x.map50)}</b></td><td>${x.images||0} 张</td><td>${esc(status429(x.status))}</td><td><button class="btn mini" onclick="openJobReport429('${x.job_id}')">查看</button></td></tr>`).join('')||'<tr><td colspan="6">暂无训练记录</td></tr>'}</tbody></table></div></section></div>`,true)}catch(e){toast(e.message||e)}};
 
   window.openVersionLineage429=function(aid,vid){
-    const a=(state.algorithms||[]).find(x=>String(x.id)===String(aid)),v=(a?.versions||[]).find(x=>String(x.id)===String(vid)),l=v?.training_lineage;
-    if(!l)return toast('该历史版本没有训练溯源记录');
-    const base=l.base||{},ex=l.execution||{},params=l.parameters||{},arts=Array.isArray(l.artifacts)?l.artifacts:[];
-    const rows=[
-      ['数据版本',l.dataset_revision_id],['训练快照',l.snapshot_id],['训练任务',l.task_id],
-      ['训练框架',l.framework],['基础版本',base.version_name||base.version_id],['基础模型',base.model],
-      ['基础选择',base.selection_reason],['执行方式',ex.mode],['执行 Worker',ex.worker_id],
-      ['执行节点',ex.node_id],['执行代次',ex.execution_generation],['请求设备',ex.requested_device],
-      ['分配设备',ex.assigned_device],['实际设备',ex.actual_device],['GPU',ex.gpu_name||ex.gpu_uuid||ex.gpu_id],
-    ].filter(([,value])=>value!==undefined&&value!==null&&String(value).trim()!=='');
-    const paramRows=Object.entries(params.actual||params.requested||{});
-    modal('训练溯源',`<div class="report429 lineage429"><section class="report429-head"><div><span>算法版本来源</span><h2>${esc(a?.name||'')} · ${esc(v?.version_name||'-')}</h2><p>该信息随算法版本持久化，不依赖当前训练任务缓存。</p></div></section><section class="report429-card"><header><b>输入与执行</b></header><dl class="report429-dl">${rows.map(([label,value])=>`<dt>${esc(label)}</dt><dd title="${esc(String(value))}">${esc(String(value))}</dd>`).join('')}</dl></section>${paramRows.length?`<section class="report429-card"><header><b>实际训练参数</b><span>${params.actual?'实际执行值':'请求值'}</span></header><dl class="report429-dl">${paramRows.map(([key,value])=>`<dt>${esc(key)}</dt><dd>${esc(String(value))}</dd>`).join('')}</dl></section>`:''}${arts.length?`<section class="report429-card"><header><b>模型产物</b></header><div class="table-wrap"><table class="table"><thead><tr><th>角色</th><th>文件</th><th>SHA256</th><th>大小</th></tr></thead><tbody>${arts.map(item=>`<tr><td>${esc(item.role||'-')}</td><td>${esc(item.file_name||item.model_name||'-')}</td><td title="${esc(item.sha256||'')}">${esc(item.sha256?String(item.sha256).slice(0,12):'-')}</td><td>${item.size_bytes!=null?esc(String(item.size_bytes)):'-'}</td></tr>`).join('')}</tbody></table></div></section>`:''}</div>`,true);
+    const algorithm=(state.algorithms||[]).find(row=>String(row.id)===String(aid)),version=algorithm?.versions?.find(row=>String(row.id)===String(vid));
+    if(!version?.training_lineage)return toast('该历史版本没有训练溯源记录');
+    modal('训练溯源',window.PlatformCore.reports.lineageReportHtml({algorithm,version}),true);
   };
+
 
   window.resumeConfirmedIterationActionCore429=async function(aid,vid){
     const a=(state.algorithms||[]).find(x=>String(x.id)===String(aid));
@@ -3759,12 +3757,13 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   let evaluationPreviewController429=null;
   let evaluationGalleryController429=null;
   window.beforeCloseEvaluationPreview429=function(top){
-    top?.querySelectorAll('.evaluation429,.evaluation429-detail').forEach(root=>root.evaluationImageController429?.abort());
+    top?.querySelectorAll('.evaluation429,.evaluation429-detail,.training-report-workspace').forEach(root=>root.evaluationImageController429?.abort());
   };
   const EVALUATION_PREVIEW_ISSUES_429={
     SNAPSHOT_MISSING:['冻结评测快照缺失','需要恢复该次评测的冻结 Snapshot；无法恢复时重新评测。'],
     SNAPSHOT_INCOMPLETE:['冻结快照不完整或身份不一致','冻结身份无法安全确认，需要恢复原始 Snapshot 或重新评测。'],
     ORIGINAL_IMAGE_MISSING:['评测图片证据已缺失','原始评测字节已不存在，需要恢复归档证据或重新评测。'],
+    EVALUATION_IDENTITY_CHANGED:['报告冻结评测或图片身份已变化','请刷新当前版本并重新打开报告，禁止混用其他评测图片。'],
     IMAGE_HASH_MISMATCH:['图片与评测时内容不一致','为避免展示错误图片，已拒绝同名或已变化的内容。'],
     IMAGE_IDENTITY_AMBIGUOUS:['图片身份无法唯一确认','存在同名或冲突身份，不能自动选择其中一张。'],
     ACCESS_DENIED:['图片存储访问被拒绝','请检查当前存储源权限后重试。'],
@@ -3798,7 +3797,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   }
   async function loadEvaluationThumbnail429(card,controller,identity){
     if(!card||!controller)return;
-    const current=()=>card.isConnected&&state.eval429View?.identity===identity&&!controller.signal.aborted;
+    const current=()=>card.isConnected&&(typeof identity==='function'?identity():state.eval429View?.identity===identity)&&!controller.signal.aborted;
     const image=card.querySelector('.evaluation429-thumb img'),status=card.querySelector('[data-eval-thumb-status]'),retry=card.querySelector('[data-eval-thumb-retry]'),format=card.querySelector('[data-eval-thumb-format]'),stateNode=card.querySelector('[data-eval-thumb-state]');
     card.classList.remove('evaluation429-thumb-failed','evaluation429-thumb-ready');card.classList.add('evaluation429-thumb-loading');
     card.dataset.previewCode='LOADING';updateEvaluationGallerySummary429(card);
@@ -3836,8 +3835,8 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
       if(current())renderEvaluationThumbnailIssue429(card,evaluationPreviewIssue429({code:'STORAGE_UNAVAILABLE',retryable:true}));
     }
   }
-  function hydrateEvaluationGallery429(identity){
-    const root=document.querySelector('.evaluation429');if(!root)return;
+  function hydrateEvaluationGallery429(identity,root=document.querySelector('.evaluation429')){
+    if(!root)return;
     if(root.dataset.galleryLoaded==='true')return;
     root.dataset.galleryLoaded='true';
     evaluationGalleryController429?.abort();
@@ -3847,6 +3846,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     if(gallery&&!gallery.querySelector('[data-eval-preview-summary]'))gallery.querySelector('.evaluation429-gallery-bar')?.insertAdjacentHTML('afterend','<p class="item-sub" data-eval-preview-summary role="status"></p>');
     root.querySelectorAll('.evaluation429-image-card[data-eval-url]').forEach(card=>loadEvaluationThumbnail429(card,controller,identity));
   }
+  window.hydrateEvaluationGallery429=hydrateEvaluationGallery429;
   window.retryEvaluationThumbnail429=function(button){
     const card=button?.closest?.('.evaluation429-image-card');if(!card)return;
     if(!evaluationGalleryController429||evaluationGalleryController429.signal.aborted)evaluationGalleryController429=new AbortController();
@@ -4094,10 +4094,18 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   window.openVersionReport429=function(aid,vid){
     const a=(state.algorithms||[]).find(x=>String(x.id)===String(aid)),v=a?.versions?.find(x=>String(x.id)===String(vid));
     if(!v)return toast('版本不存在');
-    if(v.job_id)return openJobReport429(v.job_id);
-    const report=v.report||v.training_report||{},metrics=report.metrics||v.metrics||{};
-    modal('版本训练报告',`<div class="report429 quality-workspace"><header class="quality-workspace-head"><div><span>历史版本 · 证据有限</span><h2>${esc(a.name)} <small>${esc(v.version_name||'')}</small></h2></div>${v.evaluation?'<button class="btn" data-legacy-evaluation>查看独立评测</button>':''}</header><div class="quality-metrics">${[['Precision',metrics['metrics/precision(B)']],['Recall',metrics['metrics/recall(B)']],['mAP50',metric429(v)],['mAP50-95',metrics['metrics/mAP50-95(B)']]].map(([label,value])=>`<div><span>${label}</span><b>${pct429(value)}</b></div>`).join('')}</div><div class="quality-empty">此历史版本未保存完整训练任务；执行终态、停止条件与业务验收不能由模型指标推断。</div>${window.PlatformCore.reports.trainingCharts(report.history||[])}<section class="report429-card"><h3>版本溯源</h3><dl class="report429-dl"><dt>母模型版本</dt><dd>${esc(v.base_version_name||report.base_version_name||'未记录')}</dd><dt>Snapshot</dt><dd>${esc(v.snapshot_id||report.snapshot_id||'未记录')}</dd><dt>模型</dt><dd>${esc(v.model_name||'未记录')}</dd></dl><details><summary>历史报告原始记录</summary><pre>${esc(JSON.stringify(report,null,2))}</pre></details></section></div>`,true);
-    document.querySelector('[data-legacy-evaluation]')?.addEventListener('click',async()=>{await closeModal();window.openVersionEvaluation429(aid,vid);});
+    const taskId=v.job_id||v.training_lineage?.task_id;
+    if(taskId)return window.trainingReportCore425(taskId,{algorithmId:aid,versionId:vid});
+    const saved=v.training_report||v.report||{},lineage=v.training_lineage||{};
+    const response={report:{...saved,identity:{project_id:pid(),algorithm_id:aid,algorithm_name:a.name,version_id:vid,job_id:''},
+      version_name:v.version_name,status:v.training_status||saved.status,framework:lineage.framework||saved.framework,
+      snapshot_id:v.snapshot_id||saved.snapshot_id,base_version_id:v.base_version_id||saved.base_version_id,
+      metrics:saved.metrics||v.metrics||{},lineage,requested_train_params:lineage.parameters?.requested||saved.requested_train_params,
+      actual_train_params:lineage.parameters?.actual||saved.actual_train_params,evaluation:v.evaluation||saved.evaluation||{},
+      artifact_verified:v.artifact_verified,representative_errors:{status:'unavailable',items:[],reason:'历史版本未保存可核验训练任务，未提取异常图片引用'}}};
+    modal('版本训练报告',window.PlatformCore.reports.trainingReportHtml(response),true);
+    const root=document.querySelector('.training-report-workspace');
+    window.PlatformCore.reports.mountTrainingReport(root,response,{onData:async()=>{await closeModal();window.setPage('数据集')},onEvaluation:async()=>{await closeModal();window.openVersionEvaluation429(aid,vid)}});
   };
   window.openJobReport429=function(jobId){return window.trainingReportCore425(jobId);};
 
@@ -4355,7 +4363,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   function selectedTrainAlg429(){const t=selectedTarget429(),k=document.getElementById('tr429Alg')?.value;return(t?.algorithms||[]).find(x=>x.key===k)}
   function pool429(){return(state.images||[]).filter(x=>processed429(x)&&x.annotated)}
   function cfg429(){return window.trainingConfigCanonical428()}
-  window.openTrainingCreateDialog429=function(aid){const a=(state.algorithms||[]).find(x=>x.id===aid);if(!a)return toast('算法不存在');const plannedTaskId=window.TrainingSubmitRuntime?.createTaskId?.();if(!plannedTaskId)return toast('训练任务身份模块尚未就绪，请刷新页面后重试');const ts=readyTargets429();if(!ts.length)return toast('没有可用训练资源，请先检查训练资源配置');window.TrainingDraftRuntime?.update?.({algorithmId:String(aid),trainingMode:'full',materialIds:[],testMaterialIds:[],splitMode:'random_test_from_training_pool',experimentPercent:20,validationPercent:20,newLabelCodes:[],priority:50,resource:{strategy:'auto',profile:'performance',device:'auto',gpuPolicy:'exclusive',batch:null,workers:null,cache:null},config:{model:'',epochs:150,imgsz:640,patience:40,early_stopping_enabled:false}});
+  window.openTrainingCreateDialog429=function(aid){const a=(state.algorithms||[]).find(x=>x.id===aid);if(!a)return toast('算法不存在');const plannedTaskId=window.TrainingSubmitRuntime?.createTaskId?.();if(!plannedTaskId)return toast('训练任务身份模块尚未就绪，请刷新页面后重试');const ts=readyTargets429();if(!ts.length)return toast('没有可用训练资源，请先检查训练资源配置');window.TrainingDraftRuntime?.update?.({algorithmId:String(aid),trainingMode:'full',materialIds:[],testMaterialIds:[],splitMode:'random_test_from_training_pool',experimentPercent:20,validationPercent:20,newLabelCodes:[],priority:50,resource:{strategy:'auto',profile:'performance',device:'auto',gpuPolicy:'exclusive',batch:null,workers:null,cache:null},config:{model:'',epochs:150,imgsz:null,patience:40,early_stopping_enabled:false,...window.PlatformCore.trainingDraft.trainingInheritedDefaults(a)}});
     modal('创建训练任务',`<div class="train428-create train429-create train-create-saas train-create-saas-v2" data-algorithm-id="${esc(a.id)}" data-training-mode="full">
       <div class="train-create-layout">
         <div class="train-create-left">
@@ -4463,7 +4471,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   window.trainAlg429=function(){
     const x=selectedTrainAlg429(),c=cfg429(),t=selectedTarget429();
     const base=state.trainingDraftBase||{};
-    if(x){c.epochs=base.hasPrevious?80:(x.default_epochs||150);c.imgsz=x.default_imgsz||c.imgsz;c.batch=x.default_batch||c.batch}
+    if(x){c.epochs=base.hasPrevious?80:(x.default_epochs||150);c.imgsz=c.imgsz??x.default_imgsz??640;c.batch=x.default_batch||c.batch}
     if(!base.hasPrevious){
       const models=preparedModels429(t);
       c.model=models.find(m=>String(m.value)===String(c.model))?.value || models.find(m=>String(m.name||'')===String(x?.base_model||''))?.value || models[0]?.value || '';
@@ -6426,7 +6434,7 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
       if(result.ready&&!state.conv428PreprocessEdited&&result.params.preprocessing){const p=result.params.preprocessing;for(const [id,key] of [['conv428Pixel','pixel_format'],['conv428Mean','mean'],['conv428Scale','scale']]){const e=document.getElementById(id);if(e)e.value=Array.isArray(p[key])?p[key].join(','):p[key]}const letterbox=document.getElementById('conv428Letterbox');if(letterbox)letterbox.checked=p.letterbox===true}
       const outputContract=document.getElementById('conv428OutputContract');if(outputContract)outputContract.textContent=result.params?.model_output_contract?JSON.stringify(result.params.model_output_contract,null,2):'历史版本未记录完整输出/后处理合同；模型级质量验证尚未完成';
       if(result.ready&&target==='sophon'&&!state.conv428ShapeEdited){for(const [id,key] of [['conv428Width','input_width'],['conv428Height','input_height']]){const e=document.getElementById(id);if(e)e.value=result.params[key]}}
-      const warn=document.getElementById('conv428Warn');if(warn)warn.textContent=result.ready?'可转换 · '+Object.entries(result.parameter_sources||{}).map(([k,v])=>k+'：'+v).join('；')+'。编译、模型验证和板卡验证分别记录。':(result.errors||[]).join('；');
+      const warn=document.getElementById('conv428Warn');if(warn)warn.textContent=result.ready?'可转换 · '+Object.entries(result.parameter_sources||{}).map(([k,v])=>k+'：'+v).join('；')+'。'+(result.precision_adjustment_reason||'')+' 编译、模型验证和板卡验证分别记录。':(result.errors||[]).join('；');
       window.refreshConvertCalibration428();
       if(button)button.disabled=!result.ready||state.conv428ResourcesCurrent!==true;
       return result;
@@ -6716,8 +6724,8 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
         cache:mode==='custom'?(wasCustom?(resource.cache??false):false):null
       },
       config:mode==='custom'
-        ? {...config,epochs:wasCustom?(config.epochs??150):(preceding?.epochs??config.epochs??150),imgsz:wasCustom?(config.imgsz??640):(preceding?.imgsz??config.imgsz??640)}
-        : {...config,epochs:preset.epochs,imgsz:preset.imgsz}
+        ? {...config,epochs:wasCustom?(config.epochs??150):(preceding?.epochs??config.epochs??150),imgsz:config.imgsz??preceding?.imgsz??640}
+        : {...config,epochs:preset.epochs,imgsz:config.imgsz??preset.imgsz}
     };
     const strategy=document.getElementById('trV3ResourceStrategy');
     if(strategy)strategy.value=patch.resource.strategy;

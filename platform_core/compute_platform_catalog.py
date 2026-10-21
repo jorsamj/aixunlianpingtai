@@ -160,7 +160,11 @@ def resolve_conversion_contract(catalog, *, vendor_id, chip_id, resource, versio
         values["model_output_contract"]=dict(input_contract["postprocessing"])
     for field in template["advanced_fields"]:
         values.setdefault(field["key"],field["default"])
-    precision=str(values.get("precision") or (template.get("default_precision") if template.get("default_precision") in allowed else allowed[0])).lower()
+    source_precision = str(defaults.get("training_precision") or "").lower()
+    recommended = source_precision if source_precision in allowed else template.get("default_precision")
+    precision=str(params.get("precision") or (recommended if recommended in allowed else allowed[0])).lower()
+    result["precision_adjusted"] = bool(not params.get("precision") and source_precision in {"fp16", "fp32"} and precision != source_precision)
+    result["precision_adjustment_reason"] = "已根据芯片能力调整转换精度" if result["precision_adjusted"] else ""
     if precision not in allowed: return reject("not_convertible","所选精度不受此芯片及SDK支持："+precision)
     if precision=="int8" and target=="sophon": return reject("not_convertible","Sophon INT8仍须冻结校准与质量验收，不允许通过字典绕过")
     if not any(key in values for key in ("input_height","input_width","input_size")):
@@ -174,7 +178,7 @@ def resolve_conversion_contract(catalog, *, vendor_id, chip_id, resource, versio
     except ValueError as error: return reject("not_convertible",str(error))
     result.update(ready=True,status="convertible",params=values,
                   calibration_required=precision=="int8",
-                  parameter_sources={"precision":"用户自定义" if params.get("precision") else "SDK/芯片约束",
+                  parameter_sources={"precision":"用户自定义" if params.get("precision") else "源训练实际精度" if source_precision in allowed and len(allowed)>1 else "SDK/芯片约束",
                                      "input_shape":"用户自定义" if any(k in params for k in ("input_size","input_width","input_height")) else defaults["input_size_source"],
                                      "batch":"SDK/芯片约束","preprocessing":"用户自定义" if params.get("preprocessing") else "训练成果继承" if inherited_preprocessing else "厂商默认"})
     return result

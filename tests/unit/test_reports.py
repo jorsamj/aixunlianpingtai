@@ -48,3 +48,34 @@ def test_algorithm_report_compares_latest_two_versions():
     assert report["report_type"] == "algorithm"
     assert report["latest_vs_previous"]["map50_delta"] == 0.10
     assert report["best_version"] == "20260828120000"
+
+
+def test_representative_samples_are_frozen_bounded_stratified_and_deterministic():
+    from platform_core.reports import representative_error_samples
+    samples=[{'image':f'{i}.jpg','image_id':str(i),'image_content_sha256':'b'*64,'fp_count':1 if i<8 else 0,'fn_count':1 if i>=8 else 0,'fp_labels':['person'],'fn_labels':['Car'],'gt_boxes':[],'pred_boxes':[]} for i in range(20)]
+    evaluation={'status':'succeeded','evaluation_id':'e'*64,'task_id':'j','snapshot_id':'s','model_sha256':'a'*64,'error_samples':samples}
+    selected=representative_error_samples(evaluation,job_id='j',snapshot_id='s')
+    assert selected['status']=='available' and len(selected['items'])==8
+    assert any(s['fp_count'] for s in selected['items']) and any(s['fn_count'] for s in selected['items'])
+    assert selected==representative_error_samples({**evaluation,'error_samples':list(reversed(samples))},job_id='j',snapshot_id='s')
+    assert len(representative_error_samples(evaluation,job_id='j',snapshot_id='s',limit=999)['items'])<=12
+    assert representative_error_samples(evaluation,job_id='other',snapshot_id='s')['items']==[]
+    assert representative_error_samples(evaluation,job_id='j',snapshot_id='wrong')['items']==[]
+    assert representative_error_samples({**evaluation,'evaluation_id':''},job_id='j',snapshot_id='s')['items']==[]
+
+
+def test_report_completed_zero_and_resource_coverage_remain_observed():
+    from platform_core.reports import build_version_report, report_resource_evidence
+    assert build_version_report({'completed_epochs': 0, 'current_epoch': 99})['completed_epochs'] == 0
+    job = {'status': 'done', 'started_at': '2026-10-21T01:00:00Z', 'finished_at': '2026-10-21T01:10:00Z'}
+    telemetry = {'samples': [
+        {'sampled_at': '2026-10-21T00:59:00Z', 'cpu_percent': 99},
+        {'sampled_at': '2026-10-21T01:01:00Z', 'cpu_percent': 0, 'gpu_utilization': True},
+        {'sampled_at': '2026-10-21T01:02:00Z', 'cpu_percent': 20},
+        {'sampled_at': '2026-10-21T01:11:00Z', 'cpu_percent': 100},
+    ]}
+    facts = report_resource_evidence(job, telemetry)
+    assert facts['resource_coverage']['samples'] == 2
+    assert facts['resource_summary']['cpu_percent'] == {'mean': 10, 'maximum': 20, 'samples': 2}
+    assert facts['resource_summary']['gpu_utilization'] is None
+    assert report_resource_evidence({'status': 'done'}, telemetry)['resource_coverage']['status'] == 'unavailable'

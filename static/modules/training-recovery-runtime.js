@@ -1,6 +1,6 @@
 import {canonicalTaskProgressPercent, canonicalTaskStatus, isCanonicalTaskActive} from './task-runtime-truth.js?v=422424';
 import {formatTrainingDuration, trainingApiErrorMessage, trainingProgressView} from './training-task-runtime.js?v=422562';
-import {trainingCharts} from './reports.js?v=4226374';
+import {trainingCharts, mountReportCharts, disposeReportViews} from './reports.js?v=20261021r1';
 
 const RECOVERY_ACTION_REVALIDATE = 'revalidate_checkpoint';
 const SUCCESS_TASK_STATUSES = new Set(['SUCCEEDED', 'PARTIAL_SUCCESS']);
@@ -68,6 +68,7 @@ function patchTrainingDetailDom(current, next) {
     if (current.nodeValue !== next.nodeValue) current.nodeValue = next.nodeValue;
     return true;
   }
+  if(current.hasAttribute?.('data-report-chart')||next.hasAttribute?.('data-report-chart'))return current.getAttribute('data-report-chart')===next.getAttribute('data-report-chart');
   const currentAttributes = Array.from(current.attributes || []);
   const nextAttributes = Array.from(next.attributes || []);
   for (const attribute of currentAttributes) {
@@ -397,6 +398,7 @@ export function trainingRecoveryDetailModel(job = {}, recovery = {}) {
     completionReason: String(job?.completion_reason || '').trim(),
     diagnosticCode: String(runtimeMetrics?.diagnostic?.code || '').trim(),
     resourceSampleCount: intervalSamples.length,
+    resourceSamples: intervalSamples,
     resourceTimeBasis: terminal ? '训练区间内已保留采样均值' : '最新运行采样',
     gpuUtilization: metricNumber(latestRuntime.gpu_utilization),
     gpuMemoryPercent: metricNumber(latestRuntime.gpu_memory_percent),
@@ -515,7 +517,7 @@ function detailHtml(job, recovery, log = '', inputIssues = null, activeTab = 'cu
             <div><small>实际 Batch / Workers / Cache</small><b>${esc(`${model.batch ?? '-'} / ${model.workers ?? '-'} / ${model.cache ?? '-'}`)}</b><span>${esc(model.runtimePrecision || '尚未启动 Trainer')}</span></div>
           </section>
           ${statusHtml}${conflictHtml}${failureSummaryHtml}${inputIssuesHtml(inputIssues)}${technicalFailureHtml}${warningHtml}
-          <section id="training-panel-curves" data-training-panel="curves" role="tabpanel" aria-labelledby="training-tab-curves">${trainingCharts(job?.runtime_metrics?.epochs || job?.training_report?.history || [])}</section>
+          <section id="training-panel-curves" data-training-panel="curves" role="tabpanel" aria-labelledby="training-tab-curves">${trainingCharts(job?.runtime_metrics?.epochs || job?.training_report?.history || [], model.resourceSamples || [])}</section>
           <div class="training-recovery-columns">
             <section id="training-panel-data" class="training-recovery-panel" data-training-panel="data" role="tabpanel" aria-labelledby="training-tab-data">
               <header><h4>训练配置</h4><span>实际运行值优先</span></header>
@@ -636,6 +638,7 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
   function closeDetail({immediate = false} = {}) {
     stopDetailTimer();
     const overlay = doc?.querySelector?.('[data-training-recovery-overlay]');
+    disposeReportViews(overlay);
     const restoreFocus = () => {
       if (previouslyFocusedElement?.isConnected !== false) previouslyFocusedElement?.focus?.();
       previouslyFocusedElement = null;
@@ -803,6 +806,7 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
       nextOverlay.classList?.add?.('is-opening');
       window.requestAnimationFrame?.(() => nextOverlay.classList?.remove?.('is-opening'));
     }
+    void mountReportCharts(overlay,job?.runtime_metrics?.epochs||job?.training_report?.history||[],trainingRecoveryDetailModel(job,recovery).resourceSamples||[]);
     if (dialog) dialog.scrollTop = scrollTop;
     const logs = overlay.querySelector?.('[data-training-tech-log]');
     if (logs) logs.open = logOpen;
@@ -1094,7 +1098,7 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
   };
 
   const runtime = {
-    build: 'training-recovery-runtime-4226389',
+    build: 'training-recovery-runtime-4226390',
     hydrateJobs,
     openDetail,
     refreshOpenDetail,
