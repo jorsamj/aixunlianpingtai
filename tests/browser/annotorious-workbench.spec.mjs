@@ -57,7 +57,11 @@ async function open(page,fx,{batch=false}={}) {
 
 async function official(page,dialog) {
   await expect(dialog.locator('#annStage svg.a9s-annotationlayer')).toHaveCount(1);
-  await expect.poll(()=>page.evaluate(()=>!!state.annotationEditor?.snapshot)).toBe(true);
+  await expect.poll(()=>page.evaluate(()=>{
+    const key=`${state.project?.id}:${state.activeImage?.id||''}:${state.activeImage?.url||''}`;
+    return !!state.annotationEditor?.snapshot && state.annotationEditorIdentity===key
+      && !state.annotationHydrating420 && !state.annotationEditorFlight && !state.annotationEditor.snapshot().locked;
+  })).toBe(true);
   await expect(dialog.locator('.box424,.drawBox,.handle424')).toHaveCount(0);
 }
 
@@ -320,6 +324,29 @@ test('dirty previous next navigation saves the current GT before replacing the o
   expect((await (await request.get(annotationUrl(fx))).json()).boxes[0].id).toBe(id);
   await page.keyboard.press('ArrowLeft');await expect(dialog.locator('#ann420Filename')).toHaveText(fx.images[0].filename);
   await expect.poll(async()=> (await gt(page))[0]?.id).toBe(id);await official(page,dialog);
+});
+
+test('GT projection cannot mark a new editor ready before its actual image decodes',async({page,request})=>{
+  const fx=await fixture(request,{count:2});
+  const imagePath=new URL(fx.images[1].url,'http://localhost').pathname;
+  let release;const gate=new Promise(resolve=>{release=resolve});
+  await page.route(url=>url.pathname===imagePath,async route=>{
+    const response=await route.fetch();await gate;await route.fulfill({response});
+  });
+  try {
+    const dialog=await open(page,fx,{batch:true});await official(page,dialog);
+    await dialog.locator('[data-ann-mode="select"]').click();
+    await page.keyboard.press('ArrowRight');
+    await expect(dialog.locator('#ann420Filename')).toHaveText(fx.images[1].filename);
+    await expect(dialog.locator('[data-ann-editor-status]')).toBeVisible();
+    await expect.poll(()=>page.evaluate(()=>!!state.annotationEditorFlight)).toBe(true);
+    expect(await page.evaluate(()=>!!state.annotationEditor?.snapshot)).toBe(false);
+    expect(await gt(page)).toEqual([]);
+    release();await official(page,dialog);
+    await page.keyboard.press('ArrowLeft');
+    await expect(dialog.locator('#ann420Filename')).toHaveText(fx.images[0].filename);
+    await official(page,dialog);
+  } finally {release();}
 });
 
 test('twenty consecutive images each commit a real edit before keyboard navigation continues',async({page,request})=>{
