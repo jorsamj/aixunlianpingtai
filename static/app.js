@@ -2595,8 +2595,14 @@ window.installUsability417=function(){
   // ---------- modal stack: close always affects only top window ----------
   const baseModal=document.getElementById('modal');
   const dynamicModalStack=[];
+  const modalReturnFocus424=new WeakMap();
+  function focusModal424(layer){requestAnimationFrame(()=>{if(!layer?.isConnected||layer.classList.contains('hidden'))return;const top=dynamicModalStack.at(-1)||baseModal;if(top!==layer)return;if(!layer.contains(document.activeElement))layer.querySelector('button:not([disabled]),input:not([disabled]),select:not([disabled]),[tabindex="0"]')?.focus({preventScroll:true})})}
+  function restoreModalFocus424(layer){const previous=modalReturnFocus424.get(layer);modalReturnFocus424.delete(layer);if(previous?.isConnected)previous.focus?.({preventScroll:true})}
+  document.addEventListener('keydown',event=>{if(event.key!=='Tab')return;const layer=dynamicModalStack.at(-1)||(!baseModal?.classList.contains('hidden')?baseModal:null);if(!layer)return;const nodes=[...layer.querySelectorAll('button:not([disabled]),a[href],input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex="0"]')].filter(node=>node.getClientRects().length&&!node.closest('[hidden]'));const first=nodes[0],last=nodes.at(-1);if(first&&(!layer.contains(document.activeElement)||(event.shiftKey?document.activeElement===first:document.activeElement===last))){event.preventDefault();(event.shiftKey?last:first).focus({preventScroll:true})}});
+
   function makeLayer424(title,body,wide){
     const layer=document.createElement('div');
+    modalReturnFocus424.set(layer,document.activeElement);
     layer.className='modal v424-modal-layer';
     const titleId=`v424ModalTitle${dynamicModalStack.length+1}`;
     layer.setAttribute('role','dialog');layer.setAttribute('aria-modal','true');layer.setAttribute('aria-labelledby',titleId);
@@ -2604,7 +2610,7 @@ window.installUsability417=function(){
     layer.innerHTML=`<div class="modal-card ${wide?'wide':''}"><div class="modal-head"><div id="${titleId}" class="modal-title">${esc(title||'')}</div><button class="icon" data-v424-close aria-label="关闭">×</button></div><div class="modal-body">${body||''}</div></div>`;
     layer.querySelector('[data-v424-close]').onclick=()=>closeModal();
     layer.addEventListener('mousedown',e=>{if(e.target===layer)closeModal()});
-    document.body.appendChild(layer); dynamicModalStack.push(layer); return layer;
+    document.body.appendChild(layer); dynamicModalStack.push(layer); focusModal424(layer);return layer;
   }
   // Presentation-only import modal control: keep original upload and durable task owners.
   function decorateImportModal424(layer,title){
@@ -2626,21 +2632,24 @@ window.installUsability417=function(){
   }
   modal=function modalStackCanonical424(title,body,wide=false){
     if(baseModal && baseModal.classList.contains('hidden') && dynamicModalStack.length===0){
+      modalReturnFocus424.set(baseModal,document.activeElement);
       baseModal.classList.remove('import350-modal','import350-minimized');
-      modalBase(title,body,wide);return decorateImportModal424(baseModal,title);
+      modalBase(title,body,wide);focusModal424(baseModal);return decorateImportModal424(baseModal,title);
     }
     return decorateImportModal424(makeLayer424(title,body,wide),title);
   };
   window.modal=modal;
   closeModal=function closeModalStackCore424(){
-    if(dynamicModalStack.length){const top=dynamicModalStack.pop();window.PlatformCore?.reports?.disposeReportViews?.(top);window.beforeCloseEvaluationPreview429?.(top);top.remove();return}
+    window.PlatformCore?.presentation?.hideTooltip?.();
+    if(dynamicModalStack.length){const top=dynamicModalStack.pop();window.beforeCloseTrainingReport425?.(top);window.PlatformCore?.reports?.disposeReportViews?.(top);window.beforeCloseEvaluationPreview429?.(top);top.remove();restoreModalFocus424(top);return}
+    window.beforeCloseTrainingReport425?.(baseModal);
     window.PlatformCore?.reports?.disposeReportViews?.(baseModal);
     window.beforeCloseEvaluationPreview429?.(baseModal);
     baseModal?.classList.remove('import350-modal','import350-minimized');
-    closeModalBase();
+    closeModalBase();restoreModalFocus424(baseModal);
   };
   window.closeModalCore424=closeModal;
-  window.closeAllModals424=function(){for(const layer of [...dynamicModalStack,baseModal]){window.PlatformCore?.reports?.disposeReportViews?.(layer);window.beforeCloseEvaluationPreview429?.(layer)}while(dynamicModalStack.length)dynamicModalStack.pop().remove();if(baseModal&&!baseModal.classList.contains('hidden'))closeModalBase()};
+  window.closeAllModals424=function(){window.PlatformCore?.presentation?.hideTooltip?.();for(const layer of [...dynamicModalStack,baseModal]){window.beforeCloseTrainingReport425?.(layer);window.PlatformCore?.reports?.disposeReportViews?.(layer);window.beforeCloseEvaluationPreview429?.(layer)}while(dynamicModalStack.length)dynamicModalStack.pop().remove();if(baseModal&&!baseModal.classList.contains('hidden'))closeModalBase()};
 
   // ---------- all images are one logical data pool ----------
 
@@ -2906,35 +2915,75 @@ window.installUsability417=function(){
     );
     return{requested,completed,reasonText,targetText};
   }
-  let reportRequestSequence425=0;
+  let reportRequestSequence425=0,reportPendingRequest425=null;
+  window.beforeCloseTrainingReport425=function(layer){
+    const pending=reportPendingRequest425;
+    if(pending&&(pending.layer===layer||layer?.contains?.(pending.loading)))pending.cancel();
+  };
   window.trainingReportCore425=async function(id,selection={}){
+    if(reportPendingRequest425){
+      if(reportPendingRequest425.loading.isConnected){
+        reportPendingRequest425.loading.setAttribute?.('aria-busy','false');
+        reportPendingRequest425.loading.innerHTML='<p class="quality-empty">已切换到新的报告请求。</p>';
+      }
+      reportPendingRequest425.cancel();
+    }
     const jobId=String(id),project=String(pid()),sequence=++reportRequestSequence425;
-    modal('训练报告','<div class="quality-empty" data-training-report-loading role="status">正在读取当前任务报告与冻结证据…</div>',true);
-    const loading=document.querySelector('[data-training-report-loading]');
+    const skeleton=window.PlatformCore.presentation.loadingSkeleton('正在读取当前任务报告与冻结证据…');
+    const layer=modal('训练报告',`<div class="training-report-workspace quality-workspace" data-training-report-loading aria-busy="true">${skeleton}</div>`,true);
+    const loading=layer?.querySelector('[data-training-report-loading]')||document.querySelector('[data-training-report-loading]');
     const current=()=>sequence===reportRequestSequence425&&String(pid())===project&&loading?.isConnected;
-    try{
-      const query=selection.algorithmId&&selection.versionId?'?'+new URLSearchParams({algorithm_id:selection.algorithmId,version_id:selection.versionId}):'';
-      const response=await api(`/api/v44/projects/${encodeURIComponent(project)}/jobs/${encodeURIComponent(jobId)}/report${query}`);
+    const read=async()=>{
       if(!current())return;
-      if(String(response.job?.id||response.report?.job_id||'')!==jobId)throw new Error('报告训练任务身份不一致');
-      const report=response.report||{};
-      const algorithm=(state.algorithms||[]).find(a=>String(a.id)===String(report.identity?.algorithm_id||selection.algorithmId)||(!report.identity?.algorithm_id&&!selection.algorithmId&&(a.versions||[]).some(v=>String(v.job_id||v.training_lineage?.task_id)===jobId)));
-      const version=algorithm?.versions?.find(v=>String(v.id)===String(report.identity?.version_id||selection.versionId)||(!report.identity?.version_id&&!selection.versionId&&String(v.job_id||v.training_lineage?.task_id)===jobId));
-      report.identity??={project_id:project,algorithm_id:algorithm?.id||'',algorithm_name:algorithm?.name||'',version_id:version?.id||report.version_id||'',job_id:jobId};
-      if(selection.versionId&&String(report.identity.version_id)!==String(selection.versionId))throw new Error('报告算法版本身份不一致');
-      loading.outerHTML=window.PlatformCore.reports.trainingReportHtml(response);
-      const root=document.querySelector('.training-report-workspace');
-      const isCurrent=()=>root?.isConnected&&String(pid())===project&&sequence===reportRequestSequence425;
-      window.PlatformCore.reports.mountTrainingReport(root,response,{notify:toast,isCurrent,onScenario:window.openScenarioWorkbench429,onData:async()=>{await closeModal();window.setPage('数据集')},
-        onEvaluation:async()=>{if(!version)return toast('该报告没有可核验的算法版本关联');await closeModal();window.openVersionEvaluation429(algorithm.id,version.id)},
-        onSample:sample=>{
-          const currentEvaluation=version?.evaluation;
-          if(!sample||!currentEvaluation?.evaluation_id||currentEvaluation.evaluation_id!==report.evaluation?.evaluation_id)return toast('冻结评测身份已变化或未核验，请刷新当前版本');
-          const index=(currentEvaluation.error_samples||[]).findIndex(row=>row.image_id===sample.image_id&&row.image_content_sha256===sample.image_content_sha256);
-          if(index<0)return toast('冻结样本身份不一致');
-          void window.openEvaluationSample429(algorithm.id,version.id,index);
-        }});
-    }catch(error){if(current())loading.innerHTML=`<div class="alert err">${esc(error.message||error)}</div>`}
+      loading.innerHTML=skeleton;loading.setAttribute?.('aria-busy','true');
+      const controller=new AbortController(),timers=[];
+      const pending={layer,loading,cancel:()=>controller.abort()};reportPendingRequest425=pending;
+      const status=text=>{if(current()){const node=loading.querySelector('.loading');if(node)node.textContent=text}};
+      timers.push(setTimeout(()=>status('仍在读取当前任务的真实报告与冻结证据，请稍候。'),3000));
+      timers.push(setTimeout(()=>status('读取时间较长，正在等待报告接口；最长等待20秒，超时后可安全重试。'),10000));
+      let abortListener;
+      const deadline=new Promise((resolve,reject)=>{
+        abortListener=()=>reject(Object.assign(new Error('报告读取已取消'),{name:'AbortError'}));
+        controller.signal.addEventListener('abort',abortListener,{once:true});
+        timers.push(setTimeout(()=>{reject(Object.assign(new Error('报告读取超时（20秒），可重试；不会发起训练或修改历史证据。'),{code:'REPORT_TIMEOUT'}));controller.abort()},20000));
+      });
+      try{
+        const query=selection.algorithmId&&selection.versionId?'?'+new URLSearchParams({algorithm_id:selection.algorithmId,version_id:selection.versionId}):'';
+        const response=await Promise.race([api(`/api/v44/projects/${encodeURIComponent(project)}/jobs/${encodeURIComponent(jobId)}/report${query}`,{signal:controller.signal}),deadline]);
+        if(!current())return;
+        if(String(response.job?.id||response.report?.job_id||'')!==jobId)throw new Error('报告训练任务身份不一致');
+        const report=response.report||{};
+        const algorithm=(state.algorithms||[]).find(a=>String(a.id)===String(report.identity?.algorithm_id||selection.algorithmId)||(!report.identity?.algorithm_id&&!selection.algorithmId&&(a.versions||[]).some(v=>String(v.job_id||v.training_lineage?.task_id)===jobId)));
+        const version=algorithm?.versions?.find(v=>String(v.id)===String(report.identity?.version_id||selection.versionId)||(!report.identity?.version_id&&!selection.versionId&&String(v.job_id||v.training_lineage?.task_id)===jobId));
+        report.identity??={project_id:project,algorithm_id:algorithm?.id||'',algorithm_name:algorithm?.name||'',version_id:version?.id||report.version_id||'',job_id:jobId};
+        if(report.identity.job_id&&String(report.identity.job_id)!==jobId)throw new Error('报告训练任务身份不一致');
+        if(report.identity.project_id&&String(report.identity.project_id)!==project)throw new Error('报告项目身份不一致');
+        if(selection.algorithmId&&String(report.identity.algorithm_id)!==String(selection.algorithmId))throw new Error('报告算法身份不一致');
+        if(selection.versionId&&String(report.identity.version_id)!==String(selection.versionId))throw new Error('报告算法版本身份不一致');
+        loading.outerHTML=window.PlatformCore.reports.trainingReportHtml(response);
+        const root=layer?.querySelector('.training-report-workspace')||document.querySelector('.training-report-workspace');
+        const isCurrent=()=>root?.isConnected&&String(pid())===project&&sequence===reportRequestSequence425;
+        window.PlatformCore.reports.mountTrainingReport(root,response,{notify:toast,isCurrent,onScenario:window.openScenarioWorkbench429,onData:async()=>{await closeModal();window.setPage('数据集')},
+          onEvaluation:async()=>{if(!version)return toast('该报告没有可核验的算法版本关联');await closeModal();window.openVersionEvaluation429(algorithm.id,version.id)},
+          onSample:sample=>{
+            const currentEvaluation=version?.evaluation;
+            if(!sample||!currentEvaluation?.evaluation_id||currentEvaluation.evaluation_id!==report.evaluation?.evaluation_id)return toast('冻结评测身份已变化或未核验，请刷新当前版本');
+            const index=(currentEvaluation.error_samples||[]).findIndex(row=>row.image_id===sample.image_id&&row.image_content_sha256===sample.image_content_sha256);
+            if(index<0)return toast('冻结样本身份不一致');
+            void window.openEvaluationSample429(algorithm.id,version.id,index);
+          }});
+      }catch(error){
+        if(current()&&error.name!=='AbortError'){
+          loading.setAttribute?.('aria-busy','false');
+          loading.innerHTML=`<div class="alert err" role="alert">${esc(error.code||'REPORT_READ_FAILED')} · ${esc(error.message||error)}</div><p>未能读取本次任务报告；没有用其他版本或当前素材代替缺失证据。</p><button class="btn primary" data-training-report-retry>重新读取报告</button>`;
+          loading.querySelector('[data-training-report-retry]')?.addEventListener('click',()=>{void read()},{once:true});
+        }
+      }finally{
+        timers.forEach(clearTimeout);controller.signal.removeEventListener('abort',abortListener);
+        if(reportPendingRequest425===pending)reportPendingRequest425=null;
+      }
+    };
+    return read();
   };
 
   window.openAiCause425=function(id){const opts=(state.modelConfigs||[]).map(c=>`<option value="${c.id}">${esc(c.name)}${c.model_kind==='vlm'?' · VLM':''}</option>`).join('');modal('模型辅助错误归因',`<div class="form"><div class="field"><label>选择视觉模型</label><select id="ai425Model" class="select">${opts}</select></div><div class="field"><label>分析样本数量</label><input id="ai425Limit" class="input" type="number" min="1" max="30" value="12"></div><div class="alert soft">模型不会重新判定“检测对不对”。对错由预测结果与人工标准标注计算；模型只分析小目标、遮挡、夜间、模糊、相似干扰等可能原因。</div></div><div class="row end"><button class="btn" onclick="closeModal()">取消</button><button class="btn primary" onclick="runAiCause425('${id}')">开始分析</button></div>`,true)};
@@ -4945,11 +4994,22 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
  window.PlatformCore.navigation=window.PlatformCore.navigation||{};
  window.PlatformCore.navigation.knownPages=Object.freeze([...RESTORABLE_PAGES413]);
  window.__v53BootstrapOwned=true;
- function boot(st){const p=Math.max(0,Math.min(100,Number(st?.progress||0))),scale=(p/100).toFixed(4);return `<div class="boot413"><div class="boot413-card" data-boot-card="1"><div class="boot413-brand"><i></i><div><b>畅联云算法训练</b><span>正在准备平台数据</span></div></div><div class="boot413-progress"><div><span data-boot-stage>${esc(st?.stage||'正在启动')}</span><b data-boot-percent>${Math.round(p)}%</b></div><i><em data-boot-progress-bar data-progress="${p.toFixed(2)}" style="transform:scaleX(${scale})"></em></i><p data-boot-message>${esc(st?.message||'正在读取历史素材、标注和算法版本')}</p></div><div class="boot413-note">start.bat 会先把核心数据与训练环境准备好，再进入平台。</div></div></div>`}
+ function boot(st){const p=Math.max(0,Math.min(100,Number(st?.progress||0))),scale=(p/100).toFixed(4);return `<div class="boot413"><div class="boot413-card" data-boot-card="1"><div class="boot413-brand"><i></i><div><b>畅联云算法训练</b><span>正在准备平台数据</span></div></div><div class="boot413-progress"><div><span data-boot-stage>${esc(st?.stage||'正在启动')}</span><b data-boot-percent>${Math.round(p)}%</b></div><i><em data-boot-progress-bar data-progress="${p.toFixed(2)}" style="transform:scaleX(${scale})"></em></i><p data-boot-message>${esc(st?.message||'正在读取历史素材、标注和算法版本')}</p></div><div class="boot413-note">核心数据就绪后即可操作，后台初始化状态以服务端回执为准。</div>${window.PlatformCore?.presentation?.loadingSkeleton?.('正在读取核心页面布局')||''}</div></div>`}
  function paintBoot(view,st){if(!view)return false;const p=Math.max(0,Math.min(100,Number(st?.progress||0))),card=view.querySelector?.('[data-boot-card="1"]');if(!card){view.innerHTML=boot(st);return true}const stage=card.querySelector?.('[data-boot-stage]'),percent=card.querySelector?.('[data-boot-percent]'),bar=card.querySelector?.('[data-boot-progress-bar]'),message=card.querySelector?.('[data-boot-message]');if(stage)stage.textContent=st?.stage||'正在启动';if(percent)percent.textContent=`${Math.round(p)}%`;if(bar){bar.dataset.progress=p.toFixed(2);bar.style.transform=`scaleX(${(p/100).toFixed(4)})`}if(message)message.textContent=st?.message||'正在读取历史素材、标注和算法版本';return true}
- async function waitReady(){const view=document.getElementById('view');let st={progress:0,stage:'连接平台服务',message:'正在确认启动状态'};paintBoot(view,st);for(let i=0;i<1800;i++){let r=null;try{r=await api('/api/v53/bootstrap/status')}catch(e){}if(r){st=r;paintBoot(view,st);if(r.status==='ready')return r;if(r.status==='failed')throw new Error(r.message||r.error||'平台数据预加载失败')}await sleep(i<30?300:650)}throw new Error('平台数据准备时间过长，请查看 start.bat 启动窗口。')}
+ async function waitReady(signal){const view=document.getElementById('view');let st={progress:0,stage:'连接平台服务',message:'正在确认启动状态'};paintBoot(view,st);for(let i=0;i<1800;i++){if(signal?.aborted)throw new Error('启动等待已结束');let r=null;try{r=await api('/api/v53/bootstrap/status',{signal})}catch(e){if(signal?.aborted)throw e}if(r){st=r;paintBoot(view,st);if(r.status==='ready')return r;if(r.status==='failed')throw new Error(r.message||r.error||'平台数据预加载失败')}await sleep(i<30?300:650)}throw new Error('平台数据准备时间过长，请查看 start.bat 启动窗口。')}
  function apply(s){state.projects=s.projects||[];state.project=s.project||null;state.datasets=s.datasets||[];state.datasetId=state.datasets.find(d=>d.id===state.datasetId)?.id||state.datasets[0]?.id||'default';state.images=s.images||[];state.materialSummary61=s.material_summary;state.annotationSummary61=s.annotation_summary;const bootstrapLabels=Array.isArray(s.labels)?s.labels:[];state.labelGovernance414=bootstrapLabels;state.labels=bootstrapLabels.filter(item=>item?.active!==false&&String(item?.status||'active')==='active');state.algorithms=s.algorithms||[];state.jobs=s.jobs||[];state.models=s.models||[];state.targets=s.targets||[];state.inferenceEnvs=s.inference_envs||[];state.rec=s.recommendation||null;state.localModels=s.local_models||[];state.modelConfigs=s.model_configs||[];state.pending=s.pending||[];state.testModels=s.test_models||[];state.__coreSnapshotGeneratedAt=Date.parse(s.generated_at||'')||Date.now();state.versionInfo={version:String(s.platform_version||'').trim()||'—',build_id:String(s.build_id||'').trim(),name:'畅联云算法训练'};try{const x=JSON.parse(localStorage.getItem('mc_train_ui_state_v34')||'{}'),rawPage=String(x.page||'');let restoredPage=rawPage==='工作台'?'总览':rawPage==='自动标注'?'自动标注及清洗':rawPage;if(rawPage==='检测台'){restoredPage='质量中心';state.qualityCenterTab411='detect'}else if(rawPage==='测试发布'){restoredPage='质量中心';state.qualityCenterTab411='overview'}else if(['部署转换','部署产物'].includes(rawPage))restoredPage='算法列表';else if(rawPage==='部署插件')restoredPage='模型配置';delete x.projectId;if(RESTORABLE_PAGES413.has(restoredPage)){state.page=restoredPage;x.page=restoredPage}x.ts=Date.now();localStorage.setItem('mc_train_ui_state_v34',JSON.stringify(x))}catch(e){}}
- window.loadStartupSnapshot413=async function(force=false){if(force)await api('/api/v53/bootstrap/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({force:true})});await waitReady();const s=await api('/api/v53/bootstrap/snapshot');apply(s);return s};
+ window.loadStartupSnapshot413=async function(force=false){
+   const view=document.getElementById('view'),controller=new AbortController(),timers=[];
+   paintBoot(view,{stage:'读取核心页面',message:'正在核验项目、算法版本和真实任务状态'});
+   const deadline=new Promise((_,reject)=>timers.push(setTimeout(()=>{const error=new Error('核心页面读取超时，请重试；后台任务状态不会因此改变。');controller.abort();reject(error)},20000)));
+   timers.push(setTimeout(()=>paintBoot(view,{stage:'仍在读取核心数据',message:'请求尚未返回，正在等待服务端真实项目与任务索引'}),3000));
+   timers.push(setTimeout(()=>paintBoot(view,{stage:'服务端仍未返回',message:'最长等待20秒，超时后可重新加载；不会重复创建训练任务'}),10000));
+   try{
+     if(force)await Promise.race([api('/api/v53/bootstrap/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({force:true}),signal:controller.signal}),deadline]);
+     let s;try{s=await Promise.race([api('/api/v53/bootstrap/snapshot',{signal:controller.signal}),deadline])}catch(error){if(error?.code!=='HTTP_503')throw error;await Promise.race([waitReady(controller.signal),deadline]);s=await Promise.race([api('/api/v53/bootstrap/snapshot',{signal:controller.signal}),deadline])}
+     apply(s);return s
+   }finally{timers.forEach(clearTimeout);controller.abort()}
+ };
  window.__clInit=function(){if(window.__v53InitPromise)return window.__v53InitPromise;const view=document.getElementById('view');window.__v53InitPromise=(async()=>{try{await window.loadStartupSnapshot413(false);state.uiReady=true;render();state.__startupCanonicalPainted=true}catch(e){window.__v53InitPromise=null;if(view)view.innerHTML=`<div class="boot413"><div class="boot413-card error"><b>平台数据加载失败</b><p>${esc(e.message||e)}</p><div class="row"><button class="btn primary" onclick="window.__clInit()">重新加载</button><button class="btn" onclick="location.reload()">刷新页面</button></div></div></div>`}})();return window.__v53InitPromise};
  const TOP_CRUMB413=Object.freeze({
   '总览':'总览','质量中心':'总览',

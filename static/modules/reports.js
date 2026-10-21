@@ -31,7 +31,7 @@ export function metricChart(rows = [], key, title, {xKey='epoch',percent=false} 
 export function trainingCharts(history = [], samples = []) {
   const groups=trainingChartGroups(history,samples);
   if(!groups.length)return '<div class="quality-empty">暂无训练曲线记录；不根据最终指标补造 Epoch 曲线。</div>';
-  return `<div class="report-chart-groups">${groups.map(group=>`<section class="report-chart-card"><header><b>${escapeText(group.title)}</b><small>悬停查看 · 图例筛选 · 滚轮/拖动缩放</small><button class="btn mini" data-chart-reset="${group.key}" aria-label="恢复${escapeText(group.title)}视图">恢复视图</button></header><div class="report-interactive-chart" data-report-chart="${group.key}" role="img" aria-label="${escapeText(group.title)}交互图表"></div><div data-chart-fallback hidden>${group.fields.map(([key,title,percent])=>metricChart(group.rows,key,title,{xKey:group.xKey,percent})).join('')}</div></section>`).join('')}</div>`;
+  return `<div class="report-chart-groups">${groups.map(group=>`<section class="report-chart-card"><header><b>${escapeText(group.title)}</b><small>悬停查看 · 图例筛选 · 滚轮/拖动缩放</small></header><div class="report-interactive-chart" data-report-chart="${group.key}" role="img" aria-label="${escapeText(group.title)}交互图表"></div><div data-chart-fallback hidden>${group.fields.map(([key,title,percent])=>metricChart(group.rows,key,title,{xKey:group.xKey,percent})).join('')}</div></section>`).join('')}</div>`;
 }
 
 const metricCredibilityReasons = Object.freeze({
@@ -269,6 +269,11 @@ export function chatGPTAnalysisMaterial({job={},report={}}={},supplements={}) {
 }
 
 
+function reportTooltipPosition(point,params,dom,rect,size) {
+  const [x,y]=point,[width,height]=size.contentSize,[viewWidth,viewHeight]=size.viewSize;
+  return [Math.max(0,Math.min(x+16,viewWidth-width-8)),Math.max(0,Math.min(y+16,viewHeight-height-8))];
+}
+
 export function trainingChartGroups(history=[],samples=[]) {
   const rows=trainingHistoryRows(history),resourceRows=samples.slice(-720).filter(row=>row&&typeof row.sampled_at==='string').map((row,index)=>({...row,sample:index+1}));
   const definitions=[
@@ -285,9 +290,8 @@ export function trainingChartGroups(history=[],samples=[]) {
     const fields=allFields.filter(([field])=>data.some(row=>finite(row[field])!==null));
     if(!fields.length)return [];
     return [{key,title,rows:data,fields,xKey,options:{
-      animation:false,aria:{enabled:true},tooltip:{trigger:'axis',axisPointer:{type:'cross'},confine:true},
+      animation:false,aria:{enabled:true},tooltip:{trigger:'axis',axisPointer:{type:'cross'},confine:true,position:reportTooltipPosition},
       legend:{type:'scroll',top:4},grid:{left:55,right:26,top:55,bottom:70},
-      toolbox:{right:8,feature:{restore:{title:'恢复视图'}}},
       xAxis:{type:'category',name:xKey==='epoch'?'Epoch':'采样序号',boundaryGap:false,data:data.map(row=>row[xKey])},
       yAxis:{type:'value',scale:true,...(fields.every(row=>row[2])?{min:0,max:1}:{})},
       dataZoom:[{type:'inside',filterMode:'none'},{type:'slider',bottom:12,height:20,filterMode:'none'}],
@@ -302,7 +306,7 @@ const reportInteractions=new Map();
 export async function mountReportCharts(root,history=[],samples=[]) {
   if(!root?.isConnected)return;
   let owned=reportCharts.get(root);
-  if(!owned){owned={charts:new Map(),groups:[],disposed:false,controller:new AbortController()};reportCharts.set(root,owned);root.addEventListener('click',event=>{const button=event.target.closest('[data-chart-reset]');if(button)owned.charts.get(button.dataset.chartReset)?.instance.dispatchAction({type:'restore'})},{signal:owned.controller.signal})}
+  if(!owned){owned={charts:new Map(),groups:[],disposed:false};reportCharts.set(root,owned)}
   owned.groups=trainingChartGroups(history,samples);
   try{
     echartsLoad??=import('../vendor/echarts/echarts.min.js').then(()=>globalThis.echarts).catch(error=>{echartsLoad=null;throw error});
@@ -337,7 +341,7 @@ export async function mountReportCharts(root,history=[],samples=[]) {
 }
 export function disposeReportViews(container) {
   for(const [root,owned] of reportCharts)if(!root.isConnected||root===container||container?.contains(root)){
-    owned.disposed=true;owned.controller?.abort();owned.observer?.disconnect();for(const entry of owned.charts.values())entry.instance.dispose();reportCharts.delete(root);
+    owned.disposed=true;owned.observer?.disconnect();for(const entry of owned.charts.values())entry.instance.dispose();reportCharts.delete(root);
   }
   for(const [root,controller] of reportInteractions)if(!root.isConnected||root===container||container?.contains(root)){controller.abort();reportInteractions.delete(root)}
 }

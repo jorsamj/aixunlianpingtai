@@ -54,7 +54,7 @@ test('interactive chart contract groups real metrics and preserves missing point
  assert.deepEqual(accuracy.options.series.find(s=>s.name==='mAP50').data,[.5,null,.8]);
  assert.equal(accuracy.options.series[0].connectNulls,false);
  assert.ok(accuracy.options.dataZoom.some(z=>z.type==='inside'));
- assert.ok(accuracy.options.toolbox.feature.restore);
+ assert.equal(accuracy.options.toolbox?.feature?.restore,undefined);
  assert.equal(reports.trainingChartGroups([]).length,0);
  assert.equal(reports.trainingChartGroups([{epoch:1,map50:true}]).length,0);
 });

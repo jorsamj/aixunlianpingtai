@@ -8584,28 +8584,12 @@ def add_job_to_index(project_id: str, job: Dict[str, Any]):
 @app.get("/api/projects/{project_id}/jobs")
 def list_jobs(project_id: str):
     get_project(project_id)
-    sync_jobs_index(project_id)
     try: _v48_dispatch_training_queues(project_id)
     except Exception: pass
-    sync_jobs_index(project_id)
-    rows = read_json(project_dir(project_id) / "jobs" / "index.json", [])
-    repository = shared_task_repository()
-    worker_runtime = WorkerInstanceService(repository).list_runtime()
-    queued_candidates = repository.queued_candidates()
-    out=[]
-    for row in rows:
-        jf=project_dir(project_id)/"jobs"/str(row.get("id") or "")/"job.json"
-        full=read_json(jf,row) if jf.exists() else row
-        full=enrich_job_runtime(
-            project_id,
-            full,
-            repository=repository,
-            worker_runtime=worker_runtime,
-            queued_candidates=queued_candidates,
-        )
-        # Read-side projection only; runtime truth is worker/task-runtime owned.
-        out.append(full)
-    return out
+    rows = sync_jobs_index(project_id)
+    if not isinstance(rows, list):
+        rows = read_json(project_dir(project_id) / "jobs" / "index.json", [])
+    return rows
 
 
 
@@ -8974,20 +8958,91 @@ def _training_job_index_rows(
     return rows
 
 
+from platform_core.training_history_projection import TrainingHistoryProjection, successful_training_counts
+
+_TRAINING_HISTORY_PROJECTION = TrainingHistoryProjection()
+_TRAINING_JOB_PROJECTION_LOCK = threading.RLock()
+_TRAINING_JOB_PROJECTIONS = {}
+_TRAINING_COUNT_PAYLOADS = {}
+
+
+def _training_history_context(project_id: str):
+    rows = _TRAINING_HISTORY_PROJECTION.read(
+        project_dir(project_id) / "jobs", lambda path: read_json(path, {}),
+    )
+    repository = shared_task_repository()
+    durable = {}
+    cursor = None
+    while True:
+        page = repository.list(project_id=project_id, kinds=(TaskKind.TRAINING,), limit=100, cursor=cursor)
+        durable.update((task.task_id, task) for task in page.items)
+        cursor = page.next_cursor
+        if not cursor:
+            break
+    return rows, repository, durable
+
+
+def _successful_training_counts(project_id: str):
+    rows, _repository, durable = _training_history_context(project_id)
+    rows = [row for row in rows if not row.get("project_id") or str(row["project_id"]) == str(project_id)]
+    identities = {str(row.get("task_id") or row.get("id") or "") for row in rows}
+    for identity, task in durable.items():
+        if identity in identities or task.status not in {TaskStatus.SUCCEEDED, TaskStatus.PARTIAL_SUCCESS} or not task.result_ref:
+            continue
+        # Payloads are task-owned immutable creation evidence. Cache by revision
+        # to retain archived tasks even when no legacy job.json remains.
+        key = (str(_repository.path), identity)
+        with _TRAINING_JOB_PROJECTION_LOCK:
+            cached = _TRAINING_COUNT_PAYLOADS.get(key)
+            if cached is None or cached[0] != task.updated_at:
+                payload = shared_task_artifacts().read_json(identity, task.payload_ref, default={})
+                _TRAINING_COUNT_PAYLOADS[key] = (task.updated_at, payload)
+            else:
+                payload = cached[1]
+        if isinstance(payload, dict):
+            rows.append({**payload, "id": identity, "task_id": identity})
+    return successful_training_counts(rows, {
+        identity: {"status": task.status.value, "kind": task.kind.value, "result_ref": task.result_ref}
+        for identity, task in durable.items()
+    })
+
+
 def sync_jobs_index(project_id: str):
-    p = project_dir(project_id)
-    jobs_dir = p / "jobs"
-    jobs = []
-    for child in jobs_dir.iterdir() if jobs_dir.exists() else []:
-        jf = child / "job.json"
-        if jf.exists():
-            job = read_json(jf, {})
-            job = enrich_job_runtime(project_id, job)
-            # GET/list projection must never write back into worker-owned
-            # job.json. The worker publishes Batch/Epoch progress frequently;
-            # persisting an older read snapshot can clobber newer runtime truth.
+    jobs_dir = project_dir(project_id) / "jobs"
+    # Serialise only the read projection, never worker publication or scheduling.
+    with _TRAINING_JOB_PROJECTION_LOCK:
+        raw_rows, repository, durable = _training_history_context(project_id)
+        key = str(jobs_dir.resolve())
+        previous = _TRAINING_JOB_PROJECTIONS.get(key, {})
+        current = {}
+        worker_runtime = WorkerInstanceService(repository).list_runtime()
+        queued_candidates = repository.queued_candidates()
+        jobs = []
+        for raw in raw_rows:
+            identity = str(raw.get("task_id") or raw.get("id") or "")
+            task = durable.get(identity)
+            revision = (task.updated_at, task.status.value, task.result_ref) if task else None
+            old = previous.get(str(raw.get("id") or identity))
+            if old is not None and old[0] == raw and old[1] == revision and not _training_job_is_active(old[2]):
+                job = old[2]
+            else:
+                job = enrich_job_runtime(
+                    project_id, dict(raw), repository=repository,
+                    worker_runtime=worker_runtime, queued_candidates=queued_candidates,
+                    # Pre-Durable workers still complete their idempotent
+                    # version receipt here. Current Durable handlers own their
+                    # own finalized version; never rebuild that on GET.
+                    allow_version_archive=task is None,
+                )
+            current[str(raw.get("id") or identity)] = (raw, revision, job)
             jobs.append(job)
-    write_json(jobs_dir / "index.json", _training_job_index_rows(jobs))
+        index = _training_job_index_rows(jobs)
+        # Unchanged terminal history needs neither JSON serialization nor writes.
+        old_index = [entry[2] for entry in previous.values()]
+        if not (jobs_dir / "index.json").exists() or index != _training_job_index_rows(old_index):
+            write_json(jobs_dir / "index.json", index)
+        _TRAINING_JOB_PROJECTIONS[key] = current
+        return index
 
 
 def list_models_internal(project_id: str) -> List[Dict[str, Any]]:
@@ -11483,9 +11538,10 @@ def _v48_dispatch_training_queues(project_id: str) -> None:
     """Run one task per resource, using lower-number-first priority and FIFO ties."""
     with _LEGACY_V48_TRAIN_QUEUE_LOCK:
         rows=[]
-        for jf in _v48_all_job_files(project_id):
-            j=read_json(jf,{})
-            if j and _durable_training_task(project_id, str(j.get("id") or "")) is not None:
+        history, _repository, durable = _training_history_context(project_id)
+        for j in history:
+            jf = project_dir(project_id) / "jobs" / str(j.get("id") or "") / "job.json"
+            if j and str(j.get("task_id") or j.get("id") or "") in durable:
                 continue
             if j.get("status") == "queued":
                 j = _v56_migrate_queued_priority(jf, j)
@@ -11821,6 +11877,8 @@ def v12_delete_job(project_id: str, job_id: str):
 @app.get("/api/v12/projects/{project_id}/algorithms")
 def v12_list_algorithms(project_id: str):
     algos = list_algorithms_internal(project_id)
+    counts = _successful_training_counts(project_id)
+    algos = [{**algorithm, "successful_training_count": counts.get(str(algorithm.get("id") or ""), 0)} for algorithm in algos]
     return {"ok": True, "items": algos}
 
 
@@ -23654,7 +23712,8 @@ def v49_algorithm_report(project_id: str, algorithm_id: str):
     current_id=str(algo.get('current_version_id') or '')
     current=next((v for v in versions if str(v.get('id') or '')==current_id), versions[0] if versions else None)
     aggregate=build_algorithm_report(versions)
-    return {'ok':True,'report_type':'algorithm','latest_vs_previous':aggregate['latest_vs_previous'],'best_version':aggregate['best_version'],'best_map50':aggregate['best_map50'],'version_trend':aggregate['trend'],'algorithm':{'id':algo.get('id'),'name':algo.get('name'),'industry':algo.get('industry') or '', 'algorithm_type':algo.get('algorithm_type') or '', 'remark':algo.get('remark') or '', 'version_count':len(versions),'current_version_id':current_id}, 'summary':{'training_count':len(jobs),'successful_count':success,'total_duration_seconds':duration,'avg_duration_seconds':int(duration/max(1,len(jobs))) if jobs else 0,'label_counts':total_label_counts,'latest_version':current.get('version_name') if current else '', 'current_version':current.get('version_name') if current else '', 'latest_accuracy': _v49_metric_from_report((current or {}).get('report') or {},'metrics/mAP50(B)','map50','mAP50') if current else None}, 'trend':trend, 'jobs':jobs[-20:]}
+    success = _successful_training_counts(project_id).get(str(algorithm_id), 0)
+    return {'ok':True,'report_type':'algorithm','latest_vs_previous':aggregate['latest_vs_previous'],'best_version':aggregate['best_version'],'best_map50':aggregate['best_map50'],'version_trend':aggregate['trend'],'algorithm':{'id':algo.get('id'),'name':algo.get('name'),'industry':algo.get('industry') or '', 'algorithm_type':algo.get('algorithm_type') or '', 'remark':algo.get('remark') or '', 'version_count':len(versions),'current_version_id':current_id}, 'summary':{'training_count':success,'successful_count':success,'total_duration_seconds':duration,'avg_duration_seconds':int(duration/max(1,len(jobs))) if jobs else 0,'label_counts':total_label_counts,'latest_version':current.get('version_name') if current else '', 'current_version':current.get('version_name') if current else '', 'latest_accuracy': _v49_metric_from_report((current or {}).get('report') or {},'metrics/mAP50(B)','map50','mAP50') if current else None}, 'trend':trend, 'jobs':jobs[-20:]}
 
 @app.post('/api/v49/projects/{project_id}/images/mark-processed')
 def v49_mark_processed(project_id: str, payload: V46BatchDeleteImagesReq):
@@ -23713,17 +23772,45 @@ def _v53_index_annotations_sync(project_id:str, images:List[Dict[str,Any]], base
             if done==total or done%100==0:_v53_set_bootstrap(base_progress+int(span*done/max(1,total)),"整理历史标注索引",f"{done}/{total} 张")
     material_store(project_id).patch_annotation_projections(patches); return load_images(project_id)
 
+def _v53_job_summary(source: Mapping[str, Any]) -> Dict[str, Any]:
+    """First-paint task metadata; full evidence stays in the existing report API.
+
+    Always copy before trimming: the worker JSON, durable index and incremental
+    history projection remain complete and can serve independent report reads.
+    """
+    deferred = {
+        "history", "training_history", "epoch_history", "training_metrics",
+        "runtime_metrics", "resource_samples", "error_samples", "evaluation",
+        "frozen_evidence", "frozen_audit", "frozen_data_quality", "snapshot_manifest",
+        "dataset_manifest", "dataset_selected_ids", "selected_ids",
+    }
+    row = {key: value for key, value in source.items() if key not in deferred}
+    report = source.get("training_report")
+    if isinstance(report, Mapping):
+        summary_keys = {
+            "generated_at", "framework", "status", "metrics", "train_metrics",
+            "val_metrics", "summary", "note", "training_outcome", "completion_reason",
+        }
+        row["training_report"] = {key: value for key, value in report.items() if key in summary_keys}
+    data_summary = source.get("data_summary")
+    if isinstance(data_summary, Mapping):
+        row["data_summary"] = {key: value for key, value in data_summary.items() if key != "selected_ids"}
+    return row
+
+
 def _v53_live_jobs(project_id: str) -> List[Dict[str, Any]]:
     """Overlay volatile training truth without rebuilding the whole bootstrap snapshot."""
     try:
-        sync_jobs_index(project_id)
+        current = sync_jobs_index(project_id)
+        if isinstance(current, list):
+            return [_v53_job_summary(row) for row in current]
     except Exception:
         # A bootstrap response may still use the last durable index if one job
         # cannot be enriched temporarily; never fall back to an older in-memory
         # snapshot merely because the live overlay failed.
         pass
     jobs = read_json(project_dir(project_id) / "jobs" / "index.json", [])
-    return jobs if isinstance(jobs, list) else []
+    return [_v53_job_summary(row) for row in jobs] if isinstance(jobs, list) else []
 
 
 def _v53_algorithms_with_revision(project_id: str) -> tuple[List[Dict[str, Any]], int]:
@@ -23777,6 +23864,8 @@ def _v53_snapshot_with_live_jobs(snapshot: Mapping[str, Any], project_id: str) -
             refreshed["generated_at"] = now_iso()
             _V53_BOOTSTRAP_SNAPSHOT = refreshed
 
+    counts = _successful_training_counts(project_id)
+    payload["algorithms"] = [{**algorithm, "successful_training_count": counts.get(str(algorithm.get("id") or ""), 0)} for algorithm in payload.get("algorithms", [])]
     payload["jobs"] = _v53_live_jobs(project_id)
     payload["jobs_generated_at"] = now_iso()
     return payload
@@ -23790,6 +23879,8 @@ def _v53_build_snapshot(project_id:str, prepared_targets:Optional[List[Dict[str,
     materials=material_store(project_id).summary()
     annotations=AnnotationRepository(project_dir(project_id)).summary()
     jobs=_v53_live_jobs(project_id)
+    counts=_successful_training_counts(project_id)
+    algorithms=[{**algorithm,"successful_training_count":counts.get(str(algorithm.get("id") or ""),0)} for algorithm in algorithms]
     model_configs=[_v35_sanitize_secret(item) for item in _v35_model_items()]
     generated_at=now_iso()
     return {"project":project,"datasets":datasets,"material_summary":materials,"annotation_summary":annotations,"labels":labels,"algorithms":algorithms,"algorithm_revision":algorithm_revision,"algorithms_generated_at":generated_at,"jobs":jobs,"model_configs":model_configs,"platform_version":APP_VERSION,"build_id":BUILD_ID,"generated_at":generated_at,"jobs_generated_at":generated_at}
@@ -23847,21 +23938,26 @@ def v53_bootstrap_status():return {"ok":True,**_V53_BOOTSTRAP_STATUS}
 @app.get("/api/v53/bootstrap/snapshot")
 def v53_bootstrap_snapshot(preferred_project_id:Optional[str]="", refresh:bool=False):
     global _V53_BOOTSTRAP_SNAPSHOT
+    started_at = time.perf_counter()
+    def respond(payload):
+        response = fast_json_response(payload)
+        response.headers["Server-Timing"] = f"bootstrap;dur={(time.perf_counter() - started_at) * 1000:.2f}"
+        return response
     projects=list_projects(); requested=str(preferred_project_id or "") if ALLOW_MULTIPLE_PROJECTS_FOR_TESTS else ""; cached_id=str(_V53_BOOTSTRAP_SNAPSHOT.get("project",{}).get("id") or ""); project_ids={str(project.get("id") or "") for project in projects}
     if not refresh and _V53_BOOTSTRAP_STATUS.get("status")=="ready" and cached_id in project_ids and (not requested or requested==cached_id):
         live_snapshot=_v53_snapshot_with_live_jobs(_V53_BOOTSTRAP_SNAPSHOT,cached_id)
-        return fast_json_response({"ok":True,"bootstrap":dict(_V53_BOOTSTRAP_STATUS),**live_snapshot})
+        return respond({"ok":True,"bootstrap":dict(_V53_BOOTSTRAP_STATUS),**live_snapshot})
     counts={str(project.get("id") or ""):_v53_project_counts(project) for project in projects}; chosen=choose_requested_project(projects,requested,counts) if requested else choose_project(projects,"",counts); chosen_id=str(chosen.get("id")) if chosen else ""
     projects_with_counts=[{**project,"bootstrap_counts":counts.get(str(project.get("id") or ""),{"images":0,"algorithms":0,"versions":0,"jobs":0})} for project in projects]
     if _V53_BOOTSTRAP_STATUS.get("status")!="ready":
-        if requested and chosen_id==requested:
-            snap=_v53_build_snapshot(chosen_id); snap["projects"]=projects_with_counts; _V53_BOOTSTRAP_SNAPSHOT=snap; return fast_json_response({"ok":True,"bootstrap":dict(_V53_BOOTSTRAP_STATUS),**snap})
+        if chosen_id and (not requested or chosen_id==requested):
+            snap=_v53_build_snapshot(chosen_id); snap["projects"]=projects_with_counts; _V53_BOOTSTRAP_SNAPSHOT=snap; return respond({"ok":True,"bootstrap":dict(_V53_BOOTSTRAP_STATUS),**snap})
         raise HTTPException(status_code=503,detail={"message":"平台数据仍在启动预加载",**_V53_BOOTSTRAP_STATUS})
     if chosen_id and (refresh or chosen_id!=str(_V53_BOOTSTRAP_SNAPSHOT.get("project",{}).get("id") or "")):
-        snap=_v53_build_snapshot(chosen_id); snap["projects"]=projects_with_counts; _V53_BOOTSTRAP_SNAPSHOT=snap; return fast_json_response({"ok":True,"bootstrap":dict(_V53_BOOTSTRAP_STATUS),**snap})
+        snap=_v53_build_snapshot(chosen_id); snap["projects"]=projects_with_counts; _V53_BOOTSTRAP_SNAPSHOT=snap; return respond({"ok":True,"bootstrap":dict(_V53_BOOTSTRAP_STATUS),**snap})
     final_id=str(_V53_BOOTSTRAP_SNAPSHOT.get("project",{}).get("id") or "")
     live_snapshot=_v53_snapshot_with_live_jobs(_V53_BOOTSTRAP_SNAPSHOT,final_id) if final_id else dict(_V53_BOOTSTRAP_SNAPSHOT)
-    return fast_json_response({"ok":True,"bootstrap":dict(_V53_BOOTSTRAP_STATUS),**live_snapshot})
+    return respond({"ok":True,"bootstrap":dict(_V53_BOOTSTRAP_STATUS),**live_snapshot})
 
 
 # ============================================================

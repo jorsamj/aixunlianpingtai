@@ -3,7 +3,7 @@ import {renderPrisonNightInspectionPage} from './modules/prison-night-inspection
 import {actionRegistry, invokeAction, registerAction} from './modules/actions.js?v=421800';
 import {installRowActionMenu} from './modules/row-action-menu.js?v=4226385';
 import {messageFromApiError} from './modules/api.js?v=421800';
-import {createModalStack} from './modules/modal.js?v=421800';
+import {createModalStack, installModalPresentation, loadingSkeleton} from './modules/modal.js?v=20261021';
 import {annotationPreviewFromBoxes, applyAnnotationResult} from './modules/annotation.js?v=422502';
 import {installNegativeSampleRuntime} from './modules/negative-samples.js?v=422544';
 import {installTrainingLabelRuntime} from './modules/training-labels.js?v=422569';
@@ -11,7 +11,7 @@ import {installNavigationStability} from './modules/navigation-stability.js?v=42
 import {persistUiState} from './modules/ui-state.js?v=422500';
 import {installPageRequestScope} from './modules/page-request-scope.js?v=422502';
 import {installPollRegistry} from './modules/poll-registry.js?v=422521';
-import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=4226387';
+import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=4226388';
 import {installExternalAlgorithmPlatformRuntime} from './modules/external-algorithm-platform.js?v=63021';
 import {installChangLianDataBrowserRuntime} from './modules/changlian-data-browser.js?v=63002';
 import {installExternalAlgorithmPublishRuntime} from './modules/external-algorithm-publish.js?v=64014';
@@ -19,13 +19,13 @@ import {installModelArtifactRuntime} from './modules/model-artifact-runtime.js?v
 import {installTrainingRecoveryRuntime} from './modules/training-recovery-runtime.js?v=4226390';
 import {installTrainingMaterialPickerRuntime} from './modules/training-material-picker-runtime.js?v=422611';
 import {installTrainingMaterialSummaryRuntime} from './modules/training-material-summary-runtime.js?v=422606';
-import {installTrainingTaskRuntime} from './modules/training-task-runtime.js?v=422607';
+import {installTrainingTaskRuntime} from './modules/training-task-runtime.js?v=422608';
 import {installTrainingTaskVisibilityRuntime} from './modules/training-task-visibility-runtime.js?v=4226385';
 import {installTrainingProgressStream} from './modules/training-progress-stream.js?v=422570';
 import {createTrainingDraft, trainingDraftToRequest, trainingBaseVersionFromAlgorithm, trainingInheritedDefaults} from './modules/training-draft.js?v=422512';
 import {installTrainingDraftRuntime} from './modules/training-draft-runtime.js?v=422520';
 import {TRAINING_DRAFT_CONTROL_IDS, installTrainingDraftControls} from './modules/training-draft-controls.js?v=422502';
-import {benchmarkReuseContext, buildTrainingEngineParameters, buildTrainingStartPayload, installTrainingSubmitRuntime, trainingSubmitReadiness, validateTrainingDevice} from './modules/training-submit.js?v=422601';
+import {benchmarkReuseContext, buildTrainingEngineParameters, buildTrainingStartPayload, installTrainingSubmitRuntime, trainingSubmitReadiness, validateTrainingDevice} from './modules/training-submit.js?v=422602';
 import {installTrainingCreateHydrationRuntime} from './modules/training-create-hydration.js?v=422556';
 import {installAutoLabelPollRuntime} from './modules/auto-label-poll-runtime.js?v=422503';
 import {annotationReviewView, annotationSavePayload, createAnnotationWorkbench, queueWindow} from './modules/annotation-workbench.js?v=422594';
@@ -39,7 +39,7 @@ import {uploadBatchFromResponse} from './modules/upload.js?v=421800';
 import {unwrapAlgorithmResponse} from './modules/algorithms.js?v=421800';
 import {applyMaterialSelection, buildTrainingPayload, filterTrainingMaterials, iterationBasePresentation, projectedRandomSplit} from './modules/training.js?v=422101';
 import {qualityChartModel} from './modules/quality.js?v=421800';
-import {reportPresentation, metricChart, trainingCharts, formatPercentagePointDelta, metricCredibilityHtml, chatGPTAnalysisMaterial, trainingReportHtml, mountTrainingReport, mountReportCharts, disposeReportViews, lineageReportHtml} from './modules/reports.js?v=20261021r1';
+import {reportPresentation, metricChart, trainingCharts, formatPercentagePointDelta, metricCredibilityHtml, chatGPTAnalysisMaterial, trainingReportHtml, mountTrainingReport, mountReportCharts, disposeReportViews, lineageReportHtml} from './modules/reports.js?v=20261021r2';
 import {isActiveVideoTask, normalizeVideoTask, videoTaskFormValues} from './modules/video-tasks.js?v=421900';
 import {buildStorageSourcePayload, defaultStorageSource, enabledStorageSources, sourceMatches, storageSourceLabel} from './modules/storage.js?v=422202';
 import {buildMaterialQuery, installMaterialPaginationRuntime, requiresFullMaterialPool} from './modules/material-pagination-runtime.js?v=422610';
@@ -56,6 +56,7 @@ import {mountPagination, normalizePagination, paginationPageSizes, paginationTok
 const UI_BUILD_VERSION = '42.25.0-dev';
 const modalStack = createModalStack();
 installRowActionMenu();
+const modalPresentation = installModalPresentation();
 
 function fallbackToast(message) {
   const element = document.getElementById('toast');
@@ -103,6 +104,7 @@ window.PlatformCore = {
   navigation: window.PlatformCore?.navigation || {},
   actions: actionRegistry,
   modalStack,
+  presentation: {...modalPresentation, loadingSkeleton},
   messageFromApiError,
   annotation: {annotationPreviewFromBoxes, applyAnnotationResult},
   annotationWorkbench: {annotationReviewView, annotationSavePayload, createAnnotationWorkbench, queueWindow},
@@ -424,7 +426,7 @@ function refreshCurrentPageOwner(page) {
   if (page !== '算法列表') return;
   const snapshotAge = Date.now() - Number(state.__coreSnapshotGeneratedAt || 0);
   if (snapshotAge >= 0 && snapshotAge < ALGORITHM_PAGE_ENTRY_REUSE_MS) return;
-  void algorithmListRuntime.refresh({render: true, minAgeMs: ALGORITHM_PAGE_ENTRY_REUSE_MS}).catch(error => notify(error?.message || error));
+  void algorithmListRuntime.refresh({render: true, minAgeMs: state.__coreSnapshotGeneratedAt === 0 ? 0 : ALGORITHM_PAGE_ENTRY_REUSE_MS}).catch(error => notify(error?.message || error));
 }
 
 const navigationStabilityRuntime = installNavigationStability({

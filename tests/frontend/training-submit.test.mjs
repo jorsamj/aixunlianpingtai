@@ -125,6 +125,7 @@ function durableTask(taskId = 'train_aaaaaaaaaaaaaaaaaaaa', overrides = {}) {
     ok: true,
     task: {
       task_id: taskId,
+      project_id: 'project-1',
       kind: 'TRAINING',
       task_type: 'TRAINING',
       status: 'QUEUED',
@@ -314,6 +315,7 @@ test('submit runtime is the sole train-start network owner and uses canonical dr
   assert.deepEqual(sent.train_labels, ['fire']);
   assert.equal(sent.queue_priority, 7);
   assert.equal(sent.cache, 'False');
+  await new Promise(resolve => setImmediate(resolve));
   assert.equal(reloaded, 1);
   assert.equal(rendered, 1);
   assert.equal(closed, 1);
@@ -435,7 +437,7 @@ test('submit button exposes truthful creation stages while the durable POST is p
   release();
   await request;
   assert.equal(runtime.isSubmitting(), false);
-  assert.equal(submitButton.dataset.trainingSubmitStage, 'idle');
+  assert.equal(submitButton.dataset.trainingSubmitStage, 'created');
   assert.equal(submitButton.textContent, '开始训练');
   cleanup(runtime);
 });
@@ -560,6 +562,7 @@ test('refresh failure after successful POST does not invite a duplicate training
   assert.equal(result.task.task_id, 'train_aaaaaaaaaaaaaaaaaaaa');
   assert.equal(calls, 1);
   assert.match(notices[0], /训练任务已进入后台队列/);
+  await new Promise(resolve => setImmediate(resolve));
   assert.match(notices.at(-1), /列表刷新失败/);
   cleanup(runtime);
 });
@@ -952,4 +955,93 @@ test('selected and inherited imgsz precision survive all training mode submissio
   const parameters=buildTrainingEngineParameters({draft:selected,target,algorithm});
   assert.equal(parameters.imgsz,800,trainingMode);assert.equal(parameters.precision,'fp32',trainingMode);
  }
+});
+
+function createCloseTimingFixture({reloadRelated, fetch, closeModal} = {}) {
+  const state = baseState();
+  const dom = installDom();
+  globalThis.window = {fetch: fetch || (async () => ({ok:true, json:async () => durableTask()}))};
+  const notices = [];
+  const runtime = installTrainingSubmitRuntime({
+    getState:()=>state, projectId:()=> 'project-1',
+    trainingDraftRuntime:{sync:()=>draft(),current:()=>draft(),base:()=>({blocked:false})},
+    trainingDraftToRequest,reloadRelated,closeModal,notify:message=>notices.push(message),
+  });
+  return {...dom,runtime,notices};
+}
+
+test('created task closes before a pending related-list refresh and submission settles', async () => {
+  let release, closed=0;
+  const fixture=createCloseTimingFixture({reloadRelated:()=>new Promise(resolve=>{release=resolve;}),closeModal:()=>{closed++;}});
+  let settled=false;
+  const pending=fixture.runtime.submit().then(result=>{settled=true;return result;});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(closed,1);
+  assert.equal(settled,true);
+  release();
+  await pending;
+  cleanup(fixture.runtime);
+});
+
+test('late creation response never closes a replacement training form', async () => {
+  let resolveResponse,closed=0;
+  const fixture=createCloseTimingFixture({fetch:()=>new Promise(resolve=>{resolveResponse=resolve;}),closeModal:()=>{closed++;}});
+  const pending=fixture.runtime.submit();
+  await new Promise(resolve=>setImmediate(resolve));
+  const replacement={dataset:{},textContent:'创建训练任务'};
+  const prior=document.querySelector;
+  document.querySelector=selector=>selector==='.train429-create .train428-footer .btn.primary'?replacement:prior(selector);
+  resolveResponse({ok:true,json:async()=>durableTask()});
+  assert.ok(await pending);
+  assert.equal(closed,0);
+  cleanup(fixture.runtime);
+});
+
+test('uncertain creation blocks direct repeated invocation for the same task id', async () => {
+  let posts=0;
+  const fixture=createCloseTimingFixture({fetch:async (_url,init)=>{if(init?.method==='POST'){posts++;throw new Error('network');}return {ok:false,status:404};}});
+  await fixture.runtime.submit();
+  await fixture.runtime.submit();
+  assert.equal(posts,1);
+  cleanup(fixture.runtime);
+});
+
+test('a task returned for another project cannot close the creation form', async () => {
+  let closed=0;
+  const fixture=createCloseTimingFixture({fetch:async()=>({ok:true,json:async()=>durableTask(undefined,{project_id:'other-project'})}),closeModal:()=>{closed++;}});
+  assert.equal(await fixture.runtime.submit(),null);
+  assert.equal(closed,0);
+  cleanup(fixture.runtime);
+});
+
+test('missing project identity never confirms creation or recovered task', async () => {
+  let closed=0,lookups=0;
+  const fixture=createCloseTimingFixture({fetch:async (_url,init)=>{
+    if(init?.method!=='POST')lookups++;
+    return {ok:true,json:async()=>durableTask(undefined,{project_id:undefined})};
+  },closeModal:()=>{closed++;}});
+  assert.equal(await fixture.runtime.submit(),null);
+  assert.equal(closed,0);
+  assert.equal(lookups,1);
+  assert.equal(fixture.runtime.state().presentation.retrySafe,false);
+  cleanup(fixture.runtime);
+});
+
+test('opening a fresh form after success resets old submit feedback without a success overlay', async () => {
+  const fixture=createCloseTimingFixture();
+  const makeRoot=()=>{
+    const classes=new Set();
+    const panel={hidden:true,dataset:{},querySelector:()=>null,querySelectorAll:()=>[],setAttribute(){},removeAttribute(){}};
+    return {classes,panel,isConnected:true,querySelector:()=>panel,classList:{toggle:(key,on)=>on?classes.add(key):classes.delete(key),remove:(...keys)=>keys.forEach(key=>classes.delete(key))}};
+  };
+  let root=makeRoot();
+  const prior=document.querySelector;
+  document.querySelector=selector=>selector==='.train429-create'?root:prior(selector);
+  await fixture.runtime.submit();
+  root=makeRoot();
+  fixture.runtime.updateReadiness();
+  assert.equal(root.classes.has('training-submit-complete'),false);
+  assert.equal(root.panel.hidden,true);
+  assert.equal(fixture.runtime.state().lastStage,'idle');
+  cleanup(fixture.runtime);
 });

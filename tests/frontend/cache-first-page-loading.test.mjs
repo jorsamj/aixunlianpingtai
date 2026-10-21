@@ -272,7 +272,7 @@ test('algorithm list revisit reuses the startup or focused snapshot for thirty s
   assert.ok(start >= 0 && end > start);
   const owner = main.slice(start, end);
   assert.match(owner, /snapshotAge >= 0 && snapshotAge < ALGORITHM_PAGE_ENTRY_REUSE_MS/);
-  assert.match(owner, /algorithmListRuntime\.refresh\(\{render: true, minAgeMs: ALGORITHM_PAGE_ENTRY_REUSE_MS\}\)/);
+  assert.match(owner, /algorithmListRuntime\.refresh\(\{render: true, minAgeMs: state\.__coreSnapshotGeneratedAt === 0 \? 0 : ALGORITHM_PAGE_ENTRY_REUSE_MS\}\)/);
   assert.doesNotMatch(owner, /snapshotAge <= 5000/);
   assert.doesNotMatch(owner, /minAgeMs: 5000/);
 });

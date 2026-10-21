@@ -293,7 +293,7 @@ export function trainingSubmitPresentation(stage, options = {}) {
       completedSteps: fallback.completedSteps,
       title: uncertain ? '正在核对创建结果' : '训练任务未创建',
       detail: uncertain
-        ? `网络连接中断，不能确认任务是否已经创建。请先到任务列表核对 ${taskId || '本次任务 ID'}，不要重复提交。`
+        ? `创建结果尚未确认：${String(options.error || '网络连接中断')}。请先到任务列表核对 ${taskId || '本次任务 ID'}，不要重复提交。`
         : String(options.error || '请检查训练配置后重试'),
       retrySafe: !uncertain,
       taskId,
@@ -304,7 +304,7 @@ export function trainingSubmitPresentation(stage, options = {}) {
   return {...TRAINING_SUBMIT_PRESENTATIONS.configuration};
 }
 
-export function validateTrainingCreatedResponse(body, expectedTaskId = '') {
+export function validateTrainingCreatedResponse(body, expectedTaskId = '', expectedIdentity = {}) {
   const task = body?.task;
   const taskId = String(task?.task_id || '').trim();
   const kind = String(task?.kind || task?.task_type || '').trim().toUpperCase();
@@ -316,6 +316,12 @@ export function validateTrainingCreatedResponse(body, expectedTaskId = '') {
   const expected = String(expectedTaskId || '').trim();
   if (expected && taskId !== expected) {
     throw new Error(`训练创建返回的任务身份不一致：期望 ${expected}，实际 ${taskId}`);
+  }
+  for (const [field, expectedValue] of [['project_id', expectedIdentity.projectId], ['algorithm_id', expectedIdentity.algorithmId]]) {
+    const actual = String(task[field] || (field === 'algorithm_id' ? task.algorithm_asset_id : '') || '').trim();
+    if (expectedValue && (field === 'project_id' || actual) && actual !== String(expectedValue)) {
+      throw new Error('训练创建返回的项目或算法身份不一致，请查询任务状态');
+    }
   }
   return task;
 }
@@ -369,6 +375,45 @@ export function installTrainingSubmitRuntime({
   let lastStage = 'idle';
   let lastError = '';
   let lastPresentation = null;
+  let submissionRoot = null;
+  let submissionButton = null;
+  let uncertainTaskId = '';
+  const createdTaskIds = new Set();
+  let submittedProjectId = '';
+  let submittedAlgorithmId = '';
+
+  function ownsSubmissionModal() {
+    if (destroyed) return false;
+    const currentRoot = document.querySelector?.('.train429-create');
+    if (submissionRoot) {
+      if (submissionRoot.isConnected === false || currentRoot !== submissionRoot) return false;
+      const owner = submissionRoot.closest?.('[role=dialog],.modal');
+      if (owner) {
+        const layers = [...(document.querySelectorAll?.('.v424-modal-layer') || [])];
+        const top = layers.at(-1) || document.getElementById?.('modal');
+        if (top !== owner || owner.classList?.contains('hidden')) return false;
+      }
+      return true;
+    }
+    return !!submissionButton && document.querySelector?.('.train429-create .train428-footer .btn.primary') === submissionButton;
+  }
+
+  function closeCreatedModal() {
+    if (!ownsSubmissionModal()) return;
+    closeModal?.();
+  }
+
+  function refreshCreatedLists(pid) {
+    Promise.resolve().then(() => {
+      if (destroyed || String(projectId?.() || '') !== String(pid)) return;
+      return reloadRelated?.();
+    }).then(() => {
+      if (!destroyed && String(projectId?.() || '') === String(pid)) renderAlgorithms?.();
+    }).catch(refreshError => {
+      console.warn?.('training task created but list refresh failed', refreshError);
+      if (!destroyed && String(projectId?.() || '') === String(pid)) notify?.('训练任务已创建；列表刷新失败，请稍后手动刷新查看');
+    });
+  }
   const SUBMIT_STAGE_TEXT = Object.freeze({
     idle: '开始训练',
     'sync-draft': '正在读取训练配置…',
@@ -383,6 +428,7 @@ export function installTrainingSubmitRuntime({
   });
 
   function submitButton() {
+    if (submitting && !ownsSubmissionModal()) return null;
     if (typeof document === 'undefined') return null;
     const primary = document.querySelector?.('.train429-create .train428-footer .btn.primary');
     if (primary) return primary;
@@ -391,7 +437,7 @@ export function installTrainingSubmitRuntime({
   }
 
   function renderSubmitFeedback(stage, options = {}) {
-    const root = document.querySelector?.('.train429-create');
+    const root = stage !== 'idle' && !ownsSubmissionModal() ? null : document.querySelector?.('.train429-create');
     const panel = root?.querySelector?.('[data-training-submit-feedback]');
     if (stage === 'idle') {
       if (panel) {
@@ -439,6 +485,12 @@ export function installTrainingSubmitRuntime({
   }
 
   function updateReadiness() {
+    const currentRoot = document.querySelector?.('.train429-create') || null;
+    if (!submitting && currentRoot && currentRoot !== submissionRoot) {
+      lastStage = 'idle';
+      lastError = '';
+      lastPresentation = null;
+    }
     const state = getState?.() || {};
     const draft = state.trainingDraft || trainingDraftRuntime.current?.() || trainingDraftRuntime.sync();
     const base = trainingDraftRuntime.base?.() || state.trainingDraftBase || {};
@@ -460,7 +512,8 @@ export function installTrainingSubmitRuntime({
     let readiness = baseReadiness.ready && externalReadiness?.ready === false
       ? {ready: false, reason: externalReadiness.reason || 'external-master-data'}
       : baseReadiness;
-    if (lastStage === 'failed' && lastPresentation?.retrySafe === false) {
+    if (uncertainTaskId
+      && String(document.getElementById?.('tr429TaskId')?.value || '') === uncertainTaskId) {
       readiness = {ready: false, reason: 'outcome-uncertain'};
     }
     let supplementContext = null;
@@ -475,7 +528,8 @@ export function installTrainingSubmitRuntime({
       button.disabled = !readiness.ready;
       button.dataset.trainingSubmitOwner = 'TrainingSubmitRuntime';
       button.dataset.trainingSubmitReason = readiness.reason;
-      if (!submitting && !['failed', 'created'].includes(lastStage)) setSubmitStage('idle');
+      if (!submitting && lastStage === 'created') setSubmitStage('created');
+      else if (!submitting && lastStage !== 'failed') setSubmitStage('idle');
     }
     return readiness;
   }
@@ -486,12 +540,23 @@ export function installTrainingSubmitRuntime({
       notify?.('训练任务正在创建，请勿重复提交');
       return null;
     }
+    const plannedId = String(document.getElementById?.('tr429TaskId')?.value || '').trim();
+    if (createdTaskIds.has(plannedId)) {
+      notify?.(`训练任务已创建，请在任务列表查看 ${plannedId}`);
+      return null;
+    }
+    if (uncertainTaskId && plannedId === uncertainTaskId) {
+      notify?.(`创建结果尚未确认，请先在任务列表查询 ${uncertainTaskId}，不要重复创建`);
+      return null;
+    }
+    submissionRoot = document.querySelector?.('.train429-create') || null;
+    submissionButton = document.querySelector?.('.train429-create .train428-footer .btn.primary') || null;
     submitting = true;
     lastError = '';
     lastPresentation = null;
     let submittedTaskId = '';
     let responseReceived = false;
-    const startedAt = typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
+    let creationAccepted = false;
     setSubmitStage('sync-draft');
     updateReadiness();
     setSubmitStage('sync-draft');
@@ -572,6 +637,8 @@ export function installTrainingSubmitRuntime({
         payload.task_id = plannedTaskId;
       }
       const pid = projectId?.();
+      submittedProjectId = pid;
+      submittedAlgorithmId = asset.id;
       if (!pid) throw new Error('当前项目不可用，请刷新页面后重试');
 
       if (materialSummaryRuntime?.refreshCompatibility) {
@@ -604,21 +671,25 @@ export function installTrainingSubmitRuntime({
         const validationDetail = body.code === 'VALIDATION_ERROR' ? formatTrainingValidationError(body) : '';
         throw new Error(validationDetail ? `${message}：${validationDetail}` : String(message));
       }
+      creationAccepted = true;
       const body = await response.json();
-      const createdTask = validateTrainingCreatedResponse(body, payload.task_id);
+      const createdTask = validateTrainingCreatedResponse(body, payload.task_id, {projectId: pid, algorithmId: asset.id});
       setSubmitStage('created');
-      if (payload.iteration_action && state.trainingIterationAction) {
+      const currentProjectMatches = !destroyed && String(projectId?.() || '') === String(pid);
+      if (currentProjectMatches && payload.iteration_action && state.trainingIterationAction) {
         state.trainingIterationAction = null;
       }
 
-      trainingTaskRuntime?.acceptCreatedTask?.(createdTask, {
+      if (currentProjectMatches) trainingTaskRuntime?.acceptCreatedTask?.(createdTask, {
         algorithmId: asset.id,
         algorithmName: String(asset.name || '已删除算法'),
         framework: String(payload.framework || target.framework || ''),
         queuePriority: payload.queue_priority,
       });
-      state.alg428Expanded = state.alg428Expanded || {};
-      state.alg428Expanded[asset.id] = true;
+      if (currentProjectMatches) {
+        state.alg428Expanded = state.alg428Expanded || {};
+        state.alg428Expanded[asset.id] = true;
+      }
       const selection = body?.selection && typeof body.selection === 'object' ? body.selection : null;
       let createdMessage = `训练任务已进入后台队列 · ${createdTask.task_id}`;
       if (selection && Number.isFinite(Number(selection.effective_train_count))) {
@@ -627,33 +698,19 @@ export function installTrainingSubmitRuntime({
       if (selection && Number(selection.pending_annotation_count || 0) > 0) {
         createdMessage += ` · 待标注 ${Math.max(0, Number(selection.pending_annotation_count))} 张已保留`;
       }
+      uncertainTaskId = '';
+      createdTaskIds.add(createdTask.task_id);
+      closeCreatedModal();
       notify?.(createdMessage);
-
-      try {
-        await reloadRelated?.();
-        renderAlgorithms?.();
-      } catch (refreshError) {
-        console.warn?.('training task created but list refresh failed', refreshError);
-        notify?.('训练任务已创建；列表刷新失败，请稍后手动刷新查看');
-      }
-      const elapsed = (typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now()) - startedAt;
-      if (elapsed < 260) {
-        closeModal?.();
-        setSubmitStage('idle');
-      } else {
-        setTimeout(() => {
-          closeModal?.();
-          if (lastStage === 'created') setSubmitStage('idle');
-        }, 520);
-      }
+      refreshCreatedLists(pid);
       return body;
     } catch (error) {
       lastError = String(error?.message || error || '未知训练提交错误');
       const failedAt = lastStage;
-      let outcomeUncertain = failedAt === 'posting' && !responseReceived;
+      let outcomeUncertain = failedAt === 'posting' && (!responseReceived || creationAccepted);
       if (outcomeUncertain && submittedTaskId) {
         try {
-          const pid = projectId?.();
+          const pid = submittedProjectId;
           const verification = await window.fetch(
             `/api/v62/projects/${encodeURIComponent(pid)}/tasks/${encodeURIComponent(submittedTaskId)}`,
             {headers: {'Accept': 'application/json'}},
@@ -662,18 +719,24 @@ export function installTrainingSubmitRuntime({
             const taskBody = await verification.json();
             const createdTask = validateTrainingCreatedResponse(
               {ok: true, task: taskBody?.task || taskBody}, submittedTaskId,
+              {projectId: pid, algorithmId: submittedAlgorithmId},
             );
             setSubmitStage('created');
-            trainingTaskRuntime?.acceptCreatedTask?.(createdTask, {recoveredAfterNetworkError: true});
+            if (!destroyed && String(projectId?.() || '') === String(pid)) {
+              trainingTaskRuntime?.acceptCreatedTask?.(createdTask, {recoveredAfterNetworkError: true});
+            }
+            uncertainTaskId = '';
+            createdTaskIds.add(createdTask.task_id);
+            closeCreatedModal();
             notify?.(`训练任务已创建并进入后台队列 · ${createdTask.task_id}`);
-            closeModal?.();
-            setSubmitStage('idle');
+            refreshCreatedLists(pid);
             return {ok: true, task: createdTask, recovered: true};
           }
         } catch (_) {
           outcomeUncertain = true;
         }
       }
+      if (outcomeUncertain) uncertainTaskId = submittedTaskId;
       setSubmitStage('failed', {
         error: lastError, failedAt, taskId: submittedTaskId, outcomeUncertain,
       });

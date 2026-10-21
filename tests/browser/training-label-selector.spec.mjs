@@ -102,6 +102,7 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
       contentType: 'application/json',
       body: JSON.stringify({ok: true, task: {
         task_id: submitted.task_id,
+        project_id: project.id,
         kind: 'TRAINING',
         task_type: 'TRAINING',
         status: 'QUEUED',
@@ -267,8 +268,8 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   await expect(feedback).toContainText('正在提交训练任务');
   await expect(feedback).toHaveCSS('opacity', '1');
   await page.screenshot({path: visualPath('training-create-working.png'), fullPage: true});
-  await expect(feedback).toHaveAttribute('data-tone', 'success');
-  await expect(feedback).toContainText('已加入训练任务队列');
+  await expect(dialog).not.toBeVisible();
+  await expect(page.locator('#toast')).toContainText('训练任务已进入后台队列');
   await page.screenshot({path: visualPath('training-create-success.png'), fullPage: true});
   await expect.poll(async () => {
     if (submitted) return 'submitted';

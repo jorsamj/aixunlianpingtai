@@ -408,6 +408,9 @@ export function installTrainingTaskRuntime({getState, projectId, notify, fetchIm
       }
       jobs = mergeTrainingJobRows(state().jobs, jobs);
       state().jobs = jobs;
+      // Success counts belong to the server's complete history aggregation.
+      // Returning to algorithms must revalidate after task truth was refreshed.
+      state().__coreSnapshotGeneratedAt = 0;
       lastRefreshAt = Date.now();
       lastRefreshSource = String(source || 'direct');
       return finalizeViewRefresh({stale: false, jobs}, refreshOptions);

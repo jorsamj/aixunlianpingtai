@@ -76,19 +76,17 @@ def test_legacy_priority_migration_only_rewrites_queued_job(tmp_path):
 def test_dispatch_selects_highest_priority_per_resource(tmp_path, monkeypatch):
     import app as app_module
 
-    job_files = []
     for job in [
         {"id": "local-low", "status": "queued", "resource_key": "local:default", "queue_priority": 50, "priority_scheme": "lower_number_first", "queued_at": "2026-08-30T09:00:00"},
         {"id": "local-high", "status": "queued", "resource_key": "local:default", "queue_priority": 1, "priority_scheme": "lower_number_first", "queued_at": "2026-08-30T10:00:00"},
         {"id": "remote", "status": "queued", "resource_key": "remote:a", "queue_priority": 20, "priority_scheme": "lower_number_first", "queued_at": "2026-08-30T08:00:00"},
     ]:
-        job_dir = tmp_path / job["id"]
-        job_dir.mkdir()
+        job_dir = tmp_path / "jobs" / job["id"]
+        job_dir.mkdir(parents=True)
         job_file = job_dir / "job.json"
         app_module.write_json(job_file, job)
-        job_files.append(job_file)
     launched = []
-    monkeypatch.setattr(app_module, "_v48_all_job_files", lambda _project_id: job_files)
+    monkeypatch.setattr(app_module, "project_dir", lambda _project_id: tmp_path)
     monkeypatch.setattr(app_module, "_v48_launch_saved_job", lambda _project_id, job: launched.append(job["id"]))
 
     app_module._v48_dispatch_training_queues("project")

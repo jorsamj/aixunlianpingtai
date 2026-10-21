@@ -7,6 +7,9 @@ on:
       - feature/external-algorithm-publishing
     paths:
       - app.py
+      - platform_core/training_history_projection.py
+      - tests/unit/test_training_history_projection.py
+      - tests/api/test_training_success_counts.py
       - static/index.html
       - static/styles.css
       - static/app.js
@@ -71,6 +74,8 @@ jobs:
           tests/api/test_training_event_stream.py
           tests/api/test_durable_training_controls.py
           tests/api/test_training_terminal_runtime.py
+          tests/unit/test_training_history_projection.py
+          tests/api/test_training_success_counts.py
       - name: Training visibility and identity focused tests
         run: >-
           node --test

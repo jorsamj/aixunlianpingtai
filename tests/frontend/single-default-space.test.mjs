@@ -29,7 +29,7 @@ test('saved projectId and preferred_project_id cannot switch the server-owned sp
 
   assert.doesNotMatch(owner, /lastState\.projectId|projects\.find/);
   assert.doesNotMatch(startup, /savedProject|preferred_project_id/);
-  assert.match(startup, /api\('\/api\/v53\/bootstrap\/snapshot'\)/);
+  assert.match(startup, /api\('\/api\/v53\/bootstrap\/snapshot',\{signal:controller\.signal\}\)/);
 });
 
 test('dataset, material and training requests derive from the selected server project', () => {

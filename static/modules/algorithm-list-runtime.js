@@ -394,13 +394,22 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
   }
 
   function trainingCount(id) {
-    return (state().jobs || []).filter(job => String(job?.asset_algorithm_id || job?.algorithm_asset_id || job?.algorithm_id || '') === String(id)).length;
+    // The server owns the complete durable history; state.jobs can be windowed.
+    const value = (state().algorithms || []).find(row => String(row.id) === String(id))?.successful_training_count;
+    return Number.isSafeInteger(value) && value >= 0 ? value : null;
+  }
+
+  function setSort(value) {
+    if (!['comprehensive','updated','training','metric'].includes(value)) return;
+    viewState.sort = value;
+    viewState.page = 1;
+    renderPage();
   }
 
   function visibleAlgorithms() {
     const rows = (state().algorithms || []).filter(algorithmMatches);
     if (viewState.sort === 'updated') return [...rows].sort((a, b) => String(b.updated_at || b.created_at || '').localeCompare(String(a.updated_at || a.created_at || '')));
-    if (viewState.sort === 'training') return [...rows].sort((a, b) => trainingCount(b.id) - trainingCount(a.id));
+    if (viewState.sort === 'training') return [...rows].sort((a, b) => (trainingCount(b.id) ?? -1) - (trainingCount(a.id) ?? -1));
     if (viewState.sort === 'metric') return [...rows].sort((a, b) => (algorithmVersionMap50(currentVersion(b)) ?? -1) - (algorithmVersionMap50(currentVersion(a)) ?? -1));
     return [...rows].sort((a, b) => Number(Boolean(activeJob(b.id, state().jobs || []))) - Number(Boolean(activeJob(a.id, state().jobs || []))));
   }
@@ -520,7 +529,7 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
   function algorithmRowView(algorithm) {
     const version = currentVersion(algorithm);
     const metric = algorithmVersionMap50(version);
-    const count = trainingCount(algorithm.id);
+    const count = trainingCount(algorithm.id) ?? '—';
     const meta = providerMeta(algorithm);
     const trainability = algorithmTrainability(algorithm);
     const run = activeJob(algorithm.id, state().jobs || []);
@@ -651,7 +660,7 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
       if (event.target.closest('[data-algorithm-reset]')) return resetFilters();
       const remove = event.target.closest('[data-remove-filter]');
       if (remove) { const key = String(remove.dataset.removeFilter || ''); if (key.startsWith('category:')) filters.selectedCategoryIds = filters.selectedCategoryIds.filter(id => id !== key.slice(9)); else if (key in filters) filters[key] = 'all'; return renderPage(); }
-      const sort = event.target.closest('[data-algorithm-sort]'); if (sort) { viewState.sort = sort.dataset.algorithmSort; viewState.page = 1; return renderPage(); }
+      const sort = event.target.closest('[data-algorithm-sort]'); if (sort) return setSort(sort.dataset.algorithmSort);
       const page = event.target.closest('[data-algorithm-page]'); if (page && !page.disabled) { viewState.page = Number(page.dataset.algorithmPage || 1); return renderRows(); }
       const toggleRow = event.target.closest('[data-algorithm-toggle]'); if (toggleRow) return toggle(toggleRow.dataset.algorithmToggle);
       if (event.target.closest('[data-algorithm-trainable-only]')) return setFilters({status: filters.status === 'trainable' ? 'all' : 'trainable'});
@@ -795,6 +804,7 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
     setFilters,
     matchesSearch,
     visibleAlgorithms,
+    setSort,
     setExternalProvider,
     openCategoryPicker,
     cancelCategoryPicker,
