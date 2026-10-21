@@ -56,11 +56,11 @@ Tooltip盘点：Modal关闭.icon、报告下载/复制/模型溯源/异常/帮�
 
 | 阶段 | 需求 | 状态 | 已完成 | 剩余 / 阻塞 | 关联Commit |
 |---|---|---|---|---|---|
-| A | 全部，P0/P1见第2节 | 已完成待验收 | 最新基线、Owner审计、动态RED、性能基线与独立审查 | 生产现场只读分解未取得，不是本地验收 | 本轮提交待生成 |
-| B | PERF-01 | 已完成待验收 | 增量读、单次索引同步、核心提前返回、概要瘦身 | 元数据仍线性检查；现场12.08s须部署后另验 | 本轮提交待生成 |
-| C | TRAIN-01/02 | 已完成待验收 | 立即正确关闭、未知恢复、防重、权威成功次数、排序缓存联动 | 生产不执行训练；无代码阻塞 | 本轮提交待生成 |
-| D | REPORT/MODAL | 已完成待验收 | 报告有界请求/恢复、旧响应隔离、正常弹窗和原生命周期 | 生产真实报告需部署后核验 | 本轮提交待生成 |
-| E | UX/HOVER/CHART | 已完成待验收 | 统一样式/骨架/提示、真实曲线、恢复移除 | 全平台既有任务Owner保持；无代码阻塞 | 本轮提交待生成 |
+| A | 全部，P0/P1见第2节 | 已完成待验收 | 最新基线、Owner审计、动态RED、性能基线与独立审查 | 生产现场只读分解未取得，不是本地验收 | `bcf738e9dc46a0744c49fa11eae05b54238701d9` |
+| B | PERF-01 | 已完成待验收 | 增量读、单次索引同步、核心提前返回、概要瘦身 | 元数据仍线性检查；现场12.08s须部署后另验 | `bcf738e9dc46a0744c49fa11eae05b54238701d9` |
+| C | TRAIN-01/02 | 已完成待验收 | 立即正确关闭、未知恢复、防重、权威成功次数、排序缓存联动 | 生产不执行训练；无代码阻塞 | `bcf738e9dc46a0744c49fa11eae05b54238701d9` |
+| D | REPORT/MODAL | 已完成待验收 | 报告有界请求/恢复、旧响应隔离、正常弹窗和原生命周期 | 生产真实报告需部署后核验 | `bcf738e9dc46a0744c49fa11eae05b54238701d9` |
+| E | UX/HOVER/CHART | 已完成待验收 | 统一样式/骨架/提示、真实曲线、恢复移除 | 全平台既有任务Owner保持；无代码阻塞 | `bcf738e9dc46a0744c49fa11eae05b54238701d9` |
 | F | 全部 | 进行中 | 本地Python/Node/Chrome及版本/语法检查 | 正常推送及最终实际SHA CI待完成 | 待最终SHA |
 
 每项实际文件、完成内容、剩余与验收证据对应第3及第6节；禁止用聊天记录代替本文件。CI出来后在第9节补准确Commit。源码/文档同提交，后续文档提交必须重新核验其自身CI。
@@ -120,6 +120,8 @@ npx playwright test tests/browser/startup-report-presentation.spec.mjs tests/bro
 
 Python可复现命令：`python -m pytest tests/api/test_training_success_counts.py tests/unit/test_training_history_projection.py tests/api/test_training_job_visibility.py tests/api/test_bootstrap_label_snapshot_truth.py tests/unit/test_training_job_projection.py tests/api/test_training_priority.py tests/unit/test_training_recovery_api.py tests/api/test_training_terminal_runtime.py tests/api/test_training_metric_credibility_report.py -q --basetemp C:/t/perf-count-final`。Node相关文件173例命令/日志保存在当前会话visualizations目录frontend-governance-node.txt；Chrome新增startup-report-presentation、training-submit-lifecycle、training-report-request-lifecycle及原quality/evaluation/label/performance相关8文件。本专项已经恢复，从最终waitReady(signal)回归、需求文档收尾、正常提交推送及最终SHA CI继续。已取消临时需求没有发布提交，也不加入本专项任务清单；不得夹带其字段映射改动。
 
-## 9. 最终提交与CI（待发布）
+## 9. 最终提交与CI（实现已推送，验收进行中）
 
-本轮实现与文档待正常提交；最终实际SHA必须同时核验Actions及Check Runs，包含新增16个Chrome场景和新增Python合同，不得用旧db676bbf绿色代替。若本地git网络不可用，允许使用已连接GitHub接口创建相同Git树，并以expected_sha+非force快进更新唯一长期分支；必须先比对树SHA、拒绝并行HEAD变化，不得重写历史。文档后续验收提交也按新SHA重新核验。
+实现及本文件基线提交：`bcf738e9dc46a0744c49fa11eae05b54238701d9`，VERSION42.24.370，已普通git push到唯一长期分支，工作树提交后干净。该SHA触发48个Actions（28 push/20 pull_request）及131个Checks，当前129通过、1失败、1运行中，不能先标全绿。最终结果补记后，本文件会产生验收文档提交，该新SHA仍须独立核验；不得用实现SHA绿色替代最终文档HEAD。
+
+首提交CI失败留痕：Training Create First Open run39582203268 / job119162256613，15个Chrome场景14通过1失败；失败`frozen feedback candidates stay aligned with training submit provenance`的旧Mock创建响应缺少正式Task DTO必返project_id，被新安全校验拒绝。修复仅给该场景及同文件固定Benchmark夹具补实际project.id，任务接入/请求次数/溯源及重载断言全部保留；本地先复现同一RED，再两场景2/2 GREEN。无修改产品校验，无跳过测试。首提交不能作为最终全绿，后续修正提交必须独立核验。

@@ -546,6 +546,7 @@ test('frozen feedback candidates stay aligned with training submit provenance', 
     submitted = route.request().postDataJSON();
     durableTask = {
       task_id: submitted.task_id,
+      project_id: project.id,
       kind: 'TRAINING',
       task_type: 'TRAINING',
       status: 'QUEUED',
@@ -639,7 +640,7 @@ test('verified fixed benchmark stays aligned from backend availability to traini
   await page.route('**/api/v62/training-devices', route => route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({recommended:'cpu',options:[{id:'cpu',label:'CPU',available:true}]})}));
   await page.route('**/api/v12/projects/*/algorithms/*/benchmark-reuse', route => route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({available:true,algorithm_id:algorithmId,source_version_id:'benchmark-version',source_version_name:'20260919150000',scope_id:scopeId,snapshot_id:'snapshot-benchmark',test_image_count:11,binding_level:'bundle_verified'})}));
   await page.route('**/api/v62/projects/*/training-materials/selection-summary', async route => {const body=route.request().postDataJSON(),count=Array.isArray(body?.image_ids)?body.image_ids.length:0;await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({requested_count:count,matched_count:count,eligible_count:count,eligible_total:count,box_count:count,size_bytes:count*1024,label_codes:['smoke'],label_counts:{smoke:count},repository_revision:1})});});
-  await page.route('**/api/v12/projects/*/train/start', async route => {submitted=route.request().postDataJSON();await route.fulfill({status:202,contentType:'application/json',body:JSON.stringify({ok:true,task:{task_id:submitted.task_id,kind:'TRAINING',task_type:'TRAINING',status:'QUEUED',persisted_status:'QUEUED',phase:'queued',progress_percent:0}})});});
+  await page.route('**/api/v12/projects/*/train/start', async route => {submitted=route.request().postDataJSON();await route.fulfill({status:202,contentType:'application/json',body:JSON.stringify({ok:true,task:{task_id:submitted.task_id,project_id:project.id,kind:'TRAINING',task_type:'TRAINING',status:'QUEUED',persisted_status:'QUEUED',phase:'queued',progress_percent:0}})});});
   await selectIsolatedTestProject(page, project.id, '算法列表');
   await page.goto('/');
   await expect.poll(async () => page.evaluate(() => state.uiReady === true)).toBe(true);
