@@ -66,6 +66,7 @@ async function drag(page,from,to) {
   const size=await page.locator('#annImg').evaluate(img=>({w:img.naturalWidth,h:img.naturalHeight}));
   const point=([x,y])=>({x:rect.x+x*rect.width/size.w,y:rect.y+y*rect.height/size.h});
   const a=point(from),b=point(to);
+  if(from[0]===to[0]&&from[1]===to[1]){await page.mouse.click(a.x,a.y);return;}
   await page.mouse.move(a.x,a.y);await page.mouse.down();await page.mouse.move(b.x,b.y,{steps:8});await page.mouse.up();
 }
 const gt=page=>page.evaluate(()=>structuredClone(state.ann.boxes));
@@ -295,6 +296,8 @@ test('twenty-image queue measures 100 and 300 real official boxes and browser he
       await page.locator('.data412-card',{hasText:fx.images[0].filename}).getByRole('button',{name:/^(标注|编辑标注)$/}).click();
     }
     await expect.poll(async()=> (await gt(page)).length).toBe(count);
+    await official(page,dialog);
+    await expect(dialog.locator('#annStage .a9s-annotation[data-id]')).toHaveCount(count);
     const sample=await page.evaluate(()=>({time:performance.now(),heap:performance.memory?.usedJSHeapSize??null,
       officialShapes:document.querySelectorAll('#annStage .a9s-annotation[data-id]').length,totalNodes:document.querySelectorAll('#annStage *').length}));
     expect(sample.officialShapes).toBe(count);

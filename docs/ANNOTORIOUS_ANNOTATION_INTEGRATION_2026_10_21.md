@@ -136,3 +136,9 @@ GT仍由原state/保存API/Repository权威维护，第三方只编辑客户端�
 实际代码提交e65ab6cb4dae4c3f53d31a98716e762399ed5d28（本地未发布a96d0197同树81e1aef5，保存在codex/annotorious-local-a96d0197）。普通Git443连接持续失败，通过GitHub连接器逐个核对65个唯一blob/67文件及完整tree完全一致，expected旧4fcbcfc8、force=false快进；共享历史未改写，本地按相同tree同步远端原始commit对象。
 
 首提交Label Normalization Contract在Python/Node合同通过后，Permanent source guards仍要求旧双态Literal而失败（run39611132659/job119259964409）；已只把该类型守卫同步为unannotated/annotated/confirmed_empty三态，原空确认错误/审核与其他所有限制保留。完整原Permanent source guards本地执行通过；不是删除测试或扩大负样本标准。VERSION372不再递增，最终修正SHA仍须全部CI，首提交不能当全绿。
+
+### 6.8 第二轮 CI 的浏览器夹具修正
+
+3b0a72e8ea2f8a1d7386dd90a4c1368aabc49e6a 的 Node 作业119262539934实际1192/1192通过；Chrome作业119262540552（run39611873766）实际174项169通过、5失败，不能以API缓存中的in_progress当作绿色。四项选择/删除失败来自零位移drag仍发送8次move：官方SVGAnnotationLayerPointerEvent的点击合同为pointerdown至pointerup少于250ms，繁忙CI可能超过；改为真实mouse.click，非零拖动仍保留8步及全部选择/Delete/input保护断言。另1项300框采样在GT状态到达但异步官方图层尚未挂载时开始；补等待官方组件和准确DOM框数，不降低300框断言或扩大超时。
+
+仅修改浏览器测试夹具，未改产品内核。修正后本地完整annotorious-workbench.spec.mjs真实Chrome22/22通过、0失败、0跳过（约1.4分钟），包含实际拖动/缩放/删除/保存和100/300框。最终提交仍须重新完成其准确SHA的全部CI；此前失败保留追踪。
