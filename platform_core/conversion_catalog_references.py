@@ -131,6 +131,7 @@ def catalog_references(data_dir, catalog, entity, record):
                 if any(c["id"]==local_chip for c in chips): return True
                 continue
             if local_vendor and entity=="chips" and record["vendor_id"]!=local_vendor: continue
+            if entity=="chips" and local_vendor==record["vendor_id"] and record["id"] in (node.get("chip_mappings") or {}): return True
             code=next((node.get(k) for k in _SDK_CHIP_FIELDS if node.get(k)),None)
             if code and (target,local_chip_key(code)) in sdk_identities: return True
         return False

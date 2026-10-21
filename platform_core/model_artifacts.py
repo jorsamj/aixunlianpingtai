@@ -682,6 +682,10 @@ class ModelArtifactRepository:
             # Only the frozen model contract survives a sparse delivery/storage
             # refresh. Other task-owned metadata retains replacement semantics.
             previous = json.loads(existing["metadata_json"] or "{}") if existing is not None else {}
+            for identity in ("local_vendor_id", "local_chip_id"):
+                if previous.get(identity) and metadata.get(identity) and previous[identity] != metadata[identity]:
+                    raise PlatformError("MODEL_ARTIFACT_LOCAL_IDENTITY_CONFLICT", "相同文件身份携带冲突的本地厂商或芯片ID", identity,
+                                        "保留原资产及发布关系，请核对转换任务身份；禁止覆盖历史元数据。", 409)
             owned = {"tags", "class_mapping", "label_source", "label_validation_status", "label_error", "label_version_id",
                      "image_width", "image_height", "yolo_version", "precision", "conversion_params", "source_artifact_id",
                      "local_vendor_id", "local_chip_id", "sdk_chip_code", "template_id", "template_version", "constraint_id", "resource_id", "sdk_version", "parameter_sources",

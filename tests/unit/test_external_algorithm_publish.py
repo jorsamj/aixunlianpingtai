@@ -1335,7 +1335,7 @@ def test_recovered_weight_missing_file_path_is_repaired_without_duplicate_create
     assert artifact["public_url"] == remote["filePath"]
 
 
-def test_published_weight_mapping_change_edits_existing_weight_without_duplicate_create(tmp_path: Path):
+def test_published_weight_mapping_change_requires_review_without_changing_identity(tmp_path: Path):
     FakePublishingClient.reset()
     memory = MemorySecretStore()
     _configure_external(tmp_path, memory)
@@ -1359,20 +1359,21 @@ def test_published_weight_mapping_change_edits_existing_weight_without_duplicate
     ))
     algorithm = list_algorithms(_algorithms_file(tmp_path, "p1"))[0]
     version = algorithm["versions"][0]
-    assert service.publication_requires_sync("p1", algorithm, version, publication) is True
+    assert service.publication_requires_sync("p1", algorithm, version, publication) is False
 
     second = service.publish(project_id="p1", algorithm_id="a1", version_id="v1")
 
-    assert second["publication"]["status"] == "PUBLISHED"
+    assert second["publication"]["status"] == "PARTIAL"
     assert FakePublishingClient.version_creates == 1
     assert FakePublishingClient.weight_creates == 2
-    assert FakePublishingClient.weight_edits == 1
-    assert FakePublishingClient.last_weight_edit_path == "/internal/algorithm/algorithm-weight/edit"
+    assert FakePublishingClient.weight_edits == 0
     remote = next(row for row in FakePublishingClient.weights if row["fileName"] == "model.rknn")
-    assert remote["computePlatformId"] == "rk-3568"
-    artifact = next(row for row in second["artifacts"] if row["target"] == "rockchip")
+    assert remote["computePlatformId"] == "cp-rk"
+    artifact = next(row for row in service.publication_status("p1","a1","v1")["artifacts"] if row["target"] == "rockchip")
     assert artifact["external_weight_id"] == remote["weightId"]
     assert artifact["sync_status"] == "SYNCED"
+
+    assert artifact["review_required"] and artifact["recovery_plan"]["target_compute_platform_id"]=="rk-3568"
 
 
 def test_published_weight_public_url_change_edits_existing_file_path_without_duplicate_create(tmp_path: Path):
@@ -4217,7 +4218,7 @@ def test_local_delivery_selection_is_fenced_and_does_not_write_remote(tmp_path):
     assert len(service.model_assets.repository.list(project_id="p1",version_id="v1"))==3
 
 
-def test_historical_parent_mapping_is_edited_only_after_remote_identity_and_parent_child_proof(tmp_path):
+def test_historical_parent_mapping_requires_separate_review_and_preserves_receipt(tmp_path):
     FakePublishingClient.reset();memory=MemorySecretStore();_configure_external(tmp_path,memory);_seed_external_algorithm(tmp_path)
     _seed_conversion(tmp_path)
     service=_service(tmp_path,memory);service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
@@ -4227,14 +4228,11 @@ def test_historical_parent_mapping_is_edited_only_after_remote_identity_and_pare
     service.save_config(ExternalPublishConfigPayload(target_mappings={"rockchip":TargetMapping(compute_platform_id="cp-rk",chip_mappings={"RK3568":"rk-3568"})}))
     result=service.publish(project_id="p1",algorithm_id="a1",version_id="v1")
     row=next(r for r in service.publication_status("p1","a1","v1")["artifacts"] if r["artifact_id"]==old["artifact_id"])
-    assert row["sync_status"]=="SYNCED" and row["compute_platform_id"]=="rk-3568"
-    assert not row["review_required"] and row["remote_identity_status"]=="READ_BACK"
-    assert result["publication"]["status"]=="PUBLISHED" and FakePublishingClient.weight_edits==1
+    assert row["sync_status"]=="SYNCED" and row["compute_platform_id"]=="cp-rk"
+    assert row["review_required"] and row["recovery_plan"]["suggested_operation"]=="REVIEW_PLATFORM_MIGRATION"
+    assert result["publication"]["status"]=="PARTIAL" and FakePublishingClient.weight_edits==0
     assert FakePublishingClient.weight_creates==2 and row["external_weight_id"]==old["external_weight_id"]
-    audit=json.loads(service.repository.artifact_publication(old["artifact_id"])["remote_metadata_json"])
-    assert audit["readback_confirmed"] is True
-    algorithm,version=service._algorithm_version("p1","a1","v1")
-    assert not service.publication_requires_sync("p1",algorithm,version,result["publication"])
+    assert service.repository.artifact_publication(old["artifact_id"])["synced_payload_json"]==old["synced_payload_json"]
 
 
 def test_conversion_provenance_survives_sparse_publication_metadata(tmp_path):
@@ -4577,3 +4575,155 @@ def test_tags_wire_canonical_metadata_survives_empty_prepared_mapping(tmp_path,m
     assert sent["tags"] == ["smoke","fire"]
     assert first["artifacts"][0]["sync_status"] == "SYNCED"
     assert backend.weights[0]["tags"] == sent["tags"]
+
+
+
+def _stable_mapping_service(tmp_path):
+    memory=MemorySecretStore();_configure_external(tmp_path,memory);service=_service(tmp_path,memory)
+    catalog={"vendors":[{"id":"vendor-s","name":"算能","template_id":"tpu-mlir","enabled":True},{"id":"vendor-r","name":"瑞芯微","template_id":"rknn","enabled":True}],
+             "chips":[{"id":"chip-s","vendor_id":"vendor-s","name":"BM1684X","code":"s84x","sdk_code":"bm1684x","enabled":True},{"id":"chip-r","vendor_id":"vendor-r","name":"RK3568","code":"r68","sdk_code":"rk3568","enabled":True}]}
+    service.model_assets.repository.save_conversion_catalog(catalog,expected_revision=0)
+    cache=service.external_repository.cache();cache['compute_platforms']+=[
+      {"computePlatformId":"parent-s","computePlatformName":"算能","parentId":"0"},
+      {"computePlatformId":"child-s","computePlatformName":"BM1684X","parentId":"parent-s"},
+      {"computePlatformId":"parent-r","computePlatformName":"瑞芯微","parentId":"0"},
+      {"computePlatformId":"child-r","computePlatformName":"RK3568","parentId":"parent-r"}]
+    service.external_repository.save_cache(cache)
+    return service,catalog
+
+
+def _stable_binding(vendor='vendor-s',parent='parent-s',chip='chip-s',child='child-s'):
+    return {"local_vendor_id":vendor,"compute_platform_id":parent,"chip_mappings":{chip:child},"enabled":True}
+
+
+def test_stable_chip_mapping_resolves_real_local_identity_and_keeps_generic_original(tmp_path):
+    service,catalog=_stable_mapping_service(tmp_path)
+    service.save_config(ExternalPublishConfigPayload(expected_revision=service.repository.config()['mapping_revision'],target_mappings={'vendor:vendor-s':_stable_binding()}))
+    artifact={"target":"sophon","chip_code":"BM1684X","metadata":{"local_vendor_id":"vendor-s","local_chip_id":"chip-s"}}
+    result=service._artifact_mapping_state(artifact)
+    assert result['status']=='mapped' and result['mapping']['compute_platform_id']=='child-s'
+    assert service._artifact_mapping_state({'target':'original'})['mapping']['compute_platform_id']=='cp-rk'
+    assert service.repository.config()['target_mappings']['vendor:vendor-s']['local_vendor_id']=='vendor-s'
+
+
+@pytest.mark.parametrize('problem',['remote-vendor-duplicate','remote-chip-duplicate','wrong-vendor','wrong-parent','sdk-code-key'])
+def test_stable_mapping_rejects_non_unique_or_wrong_identity(tmp_path,problem):
+    service,catalog=_stable_mapping_service(tmp_path)
+    mappings={'vendor:vendor-s':_stable_binding()}
+    if problem=='remote-vendor-duplicate':mappings['vendor:vendor-r']=_stable_binding('vendor-r','parent-s','chip-r','child-s')
+    if problem=='remote-chip-duplicate':
+        catalog['chips'].append({'id':'chip-extra','vendor_id':'vendor-s','name':'extra','code':'extra','sdk_code':'bm1688','enabled':True})
+        service.model_assets.repository.save_conversion_catalog(catalog,expected_revision=1)
+        mappings['vendor:vendor-s']['chip_mappings']['chip-extra']='child-s'
+    if problem=='wrong-vendor':mappings['vendor:vendor-s']['chip_mappings']={'chip-r':'child-s'}
+    if problem=='wrong-parent':mappings['vendor:vendor-s']['chip_mappings']={'chip-s':'child-r'}
+    if problem=='sdk-code-key':mappings['vendor:vendor-s']['chip_mappings']={'BM1684X':'child-s'}
+    with pytest.raises(PlatformError):service.save_config(ExternalPublishConfigPayload(expected_revision=service.repository.config()['mapping_revision'],target_mappings=mappings))
+
+
+def test_stable_public_config_exposes_actual_vendor_ids_and_all_chip_states(tmp_path):
+    service,catalog=_stable_mapping_service(tmp_path)
+    public=service.public_config()
+    assert public['local_catalog']['vendors'][0]['id']=='vendor-s'
+    assert {r['id'] for r in public['local_catalog']['chips']}=={'chip-s','chip-r'}
+    assert public['config']['mapping_revision']>=0
+
+
+
+def test_same_adapter_vendors_have_independent_delivery_slots(tmp_path):
+    service,catalog=_stable_mapping_service(tmp_path)
+    first={'target':'sophon','chip_code':'bm1684x','metadata':{'local_vendor_id':'vendor-s','local_chip_id':'chip-s'}}
+    second={'target':'sophon','chip_code':'bm1684x','metadata':{'local_vendor_id':'vendor-other','local_chip_id':'chip-other'}}
+    assert service._delivery_key(first)!=service._delivery_key(second)
+
+
+def test_mapping_revision_conflict_and_history_rollback_are_owned_by_original_repository(tmp_path):
+    service,catalog=_stable_mapping_service(tmp_path)
+    before=service.repository.config();revision=before['mapping_revision']
+    payload=ExternalPublishConfigPayload(expected_revision=revision,target_mappings={'vendor:vendor-s':_stable_binding()})
+    saved=service.save_config(payload)
+    assert saved['mapping_revision']==revision+1 and saved['mapping_history'][-1]['target_mappings']==before['target_mappings']
+    with pytest.raises(PlatformError,match='已被其他操作更新'):service.save_config(payload)
+    restored=service.save_config(ExternalPublishConfigPayload(expected_revision=saved['mapping_revision'],replace_target_mappings=True,target_mappings=before['target_mappings']))
+    assert restored['target_mappings']==before['target_mappings']
+
+
+def test_stable_mapping_is_a_real_chip_reference_even_before_any_task(tmp_path):
+    from platform_core.conversion_catalog_references import catalog_references
+    service,catalog=_stable_mapping_service(tmp_path)
+    service.save_config(ExternalPublishConfigPayload(expected_revision=service.repository.config()['mapping_revision'],target_mappings={'vendor:vendor-s':_stable_binding()}))
+    references=catalog_references(tmp_path,service._mapping_catalog(),'chips',service._mapping_catalog()['chips'][0])
+    assert references['can_delete'] is False and references['reference_count']>0
+
+
+
+def test_same_sdk_remote_weight_in_another_confirmed_business_vendor_is_not_recovered(tmp_path):
+    service,catalog=_stable_mapping_service(tmp_path)
+    catalog['vendors'].append({'id':'vendor-other','name':'同SDK业务厂商','template_id':'tpu-mlir','enabled':True})
+    catalog['chips'].append({'id':'chip-other','vendor_id':'vendor-other','name':'BM1684X','code':'other84x','sdk_code':'bm1684x','enabled':True})
+    service.model_assets.repository.save_conversion_catalog(catalog,expected_revision=1)
+    cache=service.external_repository.cache();cache['compute_platforms'] += [{'computePlatformId':'parent-other','parentId':'0'},{'computePlatformId':'child-other','parentId':'parent-other'}];service.external_repository.save_cache(cache)
+    service.save_config(ExternalPublishConfigPayload(expected_revision=service.repository.config()['mapping_revision'],target_mappings={'vendor:vendor-s':_stable_binding(),'vendor:vendor-other':_stable_binding('vendor-other','parent-other','chip-other','child-other')}))
+    artifact={'target':'sophon','file_name':'same.bmodel','public_url':'https://x/new','compute_platform_id':'child-s','remote_chip_code':'BM1684X','chip_code':'BM1684X','external_algo_version_id':'v-remote','metadata':{'local_vendor_id':'vendor-s','local_chip_id':'chip-s'}}
+    rows=[{'weightId':'other-weight','algoVersionId':'v-remote','fileName':'same.bmodel','chipCode':'BM1684X','computePlatformId':'child-other','filePath':'https://x/other'}]
+    assert service._recover_weight_from_rows(rows,artifact)==''
+    rows[0]['computePlatformId']='unknown-platform'
+    with pytest.raises(PlatformError):service._recover_weight_from_rows(rows,artifact)
+
+
+def test_stable_mapping_retains_disabled_history_while_editing_active_chip(tmp_path):
+    service,catalog=_stable_mapping_service(tmp_path)
+    catalog['chips'].append({'id':'chip-disabled','vendor_id':'vendor-s','name':'BM1688','code':'bm1688','sdk_code':'bm1688','enabled':True})
+    service.model_assets.repository.save_conversion_catalog(catalog,expected_revision=1)
+    cache=service.external_repository.cache();cache['compute_platforms'] += [{'computePlatformId':'child-disabled','parentId':'parent-s'},{'computePlatformId':'child-new','parentId':'parent-s'}];service.external_repository.save_cache(cache)
+    binding=_stable_binding();binding['chip_mappings']['chip-disabled']='child-disabled'
+    service.save_config(ExternalPublishConfigPayload(expected_revision=service.repository.config()['mapping_revision'],target_mappings={'vendor:vendor-s':binding}))
+    catalog=service.model_assets.repository.conversion_catalog();next(c for c in catalog['chips'] if c['id']=='chip-disabled')['enabled']=False
+    service.model_assets.repository.save_conversion_catalog(catalog,expected_revision=catalog['revision'])
+    binding['chip_mappings']['chip-s']='child-new'
+    service.save_config(ExternalPublishConfigPayload(expected_revision=service.repository.config()['mapping_revision'],target_mappings={'vendor:vendor-s':binding}))
+    assert service.repository.config()['target_mappings']['vendor:vendor-s']['chip_mappings']=={'chip-s':'child-new','chip-disabled':'child-disabled'}
+    binding['chip_mappings']['chip-disabled']='child-s'
+    with pytest.raises(PlatformError,match='EXTERNAL_LOCAL_CHIP_INVALID'):
+        service.save_config(ExternalPublishConfigPayload(expected_revision=service.repository.config()['mapping_revision'],target_mappings={'vendor:vendor-s':binding}))
+
+
+def test_stable_mapping_migration_is_read_only_and_ambiguous_adapter_never_guesses(tmp_path):
+    service,catalog=_stable_mapping_service(tmp_path)
+    service.save_config(ExternalPublishConfigPayload(target_mappings={'sophon':TargetMapping(compute_platform_id='parent-s',chip_mappings={'BM1684X':'child-s'})}))
+    before=service.repository.config_path.read_bytes()
+    proposal=next(p for p in service.public_config()['mapping_diagnostics']['legacy_proposals'] if p['local_vendor_id']=='vendor-s')
+    assert proposal['status']=='READY' and proposal['mapping']['chip_mappings']=={'chip-s':'child-s'}
+    assert service.repository.config_path.read_bytes()==before
+    catalog['vendors'].append({'id':'same-sdk','name':'另一业务厂商','template_id':'tpu-mlir','enabled':True})
+    service.model_assets.repository.save_conversion_catalog(catalog,expected_revision=1)
+    proposals=service.public_config()['mapping_diagnostics']['legacy_proposals']
+    assert all(p['status']!='READY' for p in proposals if p['local_vendor_id'] in {'vendor-s','same-sdk'})
+    state=service._artifact_mapping_state({'target':'sophon','chip_code':'BM1684X'})
+    assert state['status']=='blocked' and state['code']=='EXTERNAL_VENDOR_MAPPING_REQUIRED'
+    assert service.repository.config_path.read_bytes()==before
+
+
+def test_stable_mapping_http_contract_revision_and_browser_projection(tmp_path,monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from fastapi.responses import JSONResponse
+    from platform_core.errors import error_body
+    import platform_core.external_algorithm_publish as publishing
+    service,catalog=_stable_mapping_service(tmp_path)
+    with monkeypatch.context() as scope:
+        scope.setattr(publishing.threading.Thread,'start',lambda self:None)
+        scope.setattr(publishing,'ExternalAlgorithmPublishService',lambda **kwargs:service)
+        router=publishing.external_algorithm_publish_router(data_dir=tmp_path,get_project=lambda p:{'id':p},project_dir=lambda p:_project_dir(tmp_path,p),algorithms_file=lambda p:_algorithms_file(tmp_path,p),external_secret_store_factory=lambda:MemorySecretStore(),storage_sources_factory=service.storage_sources_factory,storage_credentials_factory=service.storage_credentials_factory)
+    app=FastAPI();app.include_router(router)
+    async def handle(_request,error):return JSONResponse(status_code=error.status_code,content=error_body(error))
+    app.add_exception_handler(PlatformError,handle)
+    with TestClient(app) as client:
+        initial=client.get('/api/v64/external-publish/config').json()
+        assert initial['local_catalog']['chips'][0]['id']=='chip-s'
+        payload={'expected_revision':initial['config']['mapping_revision'],'expected_catalog_revision':1,'target_mappings':{'vendor:vendor-s':_stable_binding()}}
+        saved=client.put('/api/v64/external-publish/config',json=payload)
+        assert saved.status_code==200 and saved.json()['config']['target_mappings']['vendor:vendor-s']['chip_mappings']=={'chip-s':'child-s'}
+        conflict=client.put('/api/v64/external-publish/config',json=payload)
+        assert conflict.status_code==409 and conflict.json()['code']=='EXTERNAL_MAPPING_REVISION_CONFLICT'
+        assert client.get('/api/v64/external-publish/config').json()['config']['target_mappings']==saved.json()['config']['target_mappings']

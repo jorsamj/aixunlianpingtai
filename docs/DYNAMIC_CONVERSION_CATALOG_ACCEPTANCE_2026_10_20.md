@@ -1,3 +1,9 @@
+## 2026-10-21｜字典与外部厂商一对一映射整合
+
+本地conversion_catalog仍唯一字典事实来源；本轮在原平台对接厂商对应表动态读取完整本地vendor/chip稳定ID，SDK模板只提供Adapter能力，不作为业务厂商身份。原target_mappings支持canonical vendor:<id>及stable chip ID→远端具体分类；原catalog引用扫描识别这些真实绑定及历史快照，删除/改挂保护保留。厂商/芯片CRUD、探测、resolve、实际SDK参数与新畅联映射互不冒充。
+
+完整需求、接口/并发/迁移/回退、RED→GREEN、UI及发布边界集中见[发布专项](EXTERNAL_ALGORITHM_PUBLISH_PHASE2.md)顶部，避免重复长篇。直接相关引用/并发7例、资产2例通过；发布194、Node28及Chrome1通过。VERSION367→368一次变更，必要main/styles415/发布64014；最终SHA CI按该专项独立回执核验。生产字典与历史Weight未改、未部署；相同文件跨冲突稳定身份仍保守拒绝，不伪造新资产。
+
 ## 2026-10-21｜VERSION42.24.366 一致性修复（本地通过 / 最终SHA CI待核验）
 
 现有厂商/芯片CRUD、稳定身份与引用保护复用；只补原TPU模板固定导出参数。转换芯片状态按当前资源合同，单资源重检复用原detect、失败不清空其他资源、迟到响应不回滚选择。无第二字典/页面或外部映射变更。 完整需求、根因、参数矩阵、RED→GREEN、UI与生产边界统一见 [一致性专项](CONVERSION_PARAMETER_CONSISTENCY_2026_10_21.md)。最终SHA/CI按独立回执归档，不借用历史结果。

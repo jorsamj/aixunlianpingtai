@@ -1802,3 +1802,14 @@ def test_reused_onnx_metadata_uses_verified_graph_shape_without_export_defaults(
     artifact=next(r for r in service.discover_version_artifacts("p1",{"id":"a1"},version) if r["target"]=="onnx")
     assert artifact["metadata"]["image_width"]==640 and artifact["metadata"]["image_height"]==384
     assert artifact["metadata"]["execution_evidence"]["onnx_export"]=="reused_existing_onnx"
+
+
+def test_same_file_cannot_overwrite_stable_local_business_identity(tmp_path):
+    service=_service(tmp_path);version=_metadata_model(tmp_path)
+    item=service.discover_version_artifacts("p1",{"id":"a1"},version)[0]
+    item['metadata'].update(local_vendor_id='vendor-a',local_chip_id='chip-a')
+    first=service.repository.upsert(item)
+    with pytest.raises(PlatformError,match='MODEL_ARTIFACT_LOCAL_IDENTITY_CONFLICT'):
+        service.repository.upsert({**item,'metadata':{**item['metadata'],'local_vendor_id':'vendor-b','local_chip_id':'chip-b'}})
+    assert service.repository.get(first['artifact_id'])==first
+    assert len(service.repository.list(project_id='p1'))==1

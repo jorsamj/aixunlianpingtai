@@ -265,3 +265,65 @@ test('changlian manual publish succeeds through the canonical algorithm version 
   await expect.poll(() => publishWrites).toBe(1);
   await expect(page.locator('#toast')).toContainText('模型版本和转换产物已同步到新畅联');
 });
+
+
+test('stable vendor mapping uses formal tab, preserves drafts and locks returning panels during one save', async ({page}) => {
+  let writes=0, releaseSave, startedSave, failSave=false, rollbackSave=false;
+  const started=new Promise(resolve=>startedSave=resolve);
+  let config={mapping_history:[{revision:2,target_mappings:{original:{compute_platform_id:'generic',enabled:true}}}],mapping_revision:3,target_mappings:{original:{compute_platform_id:'generic',enabled:true},rockchip:{compute_platform_id:'legacy',chip_mappings:{RK3568:'legacy-child'},enabled:true}}};
+  const catalog={revision:7,vendors:[{id:'local-s',name:'算能业务厂商',template_id:'tpu-mlir',adapter:'sophon',enabled:true},{id:'local-r',name:'瑞芯微业务厂商',template_id:'rknn',adapter:'rockchip',enabled:true}],chips:[{id:'chip84',vendor_id:'local-s',name:'BM1684X',sdk_code:'bm1684x',enabled:true},{id:'chip68',vendor_id:'local-r',name:'RK3568',sdk_code:'rk3568',enabled:true}]};
+  const platforms=[{computePlatformId:'generic',computePlatformName:'通用原始模型',parentId:'0'},{computePlatformId:'s-parent',computePlatformName:'算能',parentId:'0'},{computePlatformId:'s-child',computePlatformName:'BM1684X',parentId:'s-parent'},{computePlatformId:'r-parent',computePlatformName:'瑞芯微',parentId:'0'},{computePlatformId:'r-child',computePlatformName:'RK3568',parentId:'r-parent'}];
+  await page.route('**/api/v64/external-publish/config',async route=>{
+    if(route.request().method()==='PUT'){
+      writes++;const body=route.request().postDataJSON();
+      if(failSave)return route.fulfill({status:409,json:{detail:'映射版本已变化，请核对草稿'}});
+      if(rollbackSave){expect(body.replace_target_mappings).toBe(true);expect(body.target_mappings).not.toHaveProperty('vendor:local-s');expect(body.target_mappings).not.toHaveProperty('vendor:local-r');config={...config,target_mappings:body.target_mappings,mapping_revision:5};return route.fulfill({json:{ok:true,config}})}
+      expect(body.expected_revision).toBe(3);expect(body.expected_catalog_revision).toBe(7);
+      expect(body.target_mappings['vendor:local-s'].chip_mappings).toEqual({chip84:'s-child'});
+      expect(body.target_mappings).not.toHaveProperty('vendor:local-r');
+      expect(body.target_mappings.rockchip.chip_mappings).toEqual({RK3568:'legacy-child'});
+      startedSave();await new Promise(resolve=>releaseSave=resolve);
+      config={...config,target_mappings:body.target_mappings,mapping_revision:4};
+    }
+    await route.fulfill({json:{ok:true,config,local_catalog:catalog,compute_platforms:platforms,mapping_diagnostics:{vendors:{},legacy_proposals:[]}}});
+  });
+  await page.goto('/');
+  await expect.poll(()=>page.evaluate(()=>typeof window.setPage==='function'&&state.uiReady===true)).toBe(true);
+  const enter=async()=>{
+    await page.evaluate(()=>window.setPage('平台对接'));
+    await page.locator('[data-external-platform-tab="vendor"]').click();
+    await expect(page.locator('[data-external-publish-panel="1"]')).toBeVisible();
+  };
+  await enter();
+  let vendor=page.locator('[data-local-vendor="local-s"]');await vendor.locator('summary').click();
+  await vendor.locator('[data-publish-platform]').selectOption('s-parent');
+  await vendor.locator('[data-publish-chip-child]').selectOption('s-child');
+  await page.evaluate(()=>window.setPage('工作台'));await enter();
+  vendor=page.locator('[data-local-vendor="local-s"]');await vendor.locator('summary').click();
+  await expect(vendor.locator('[data-publish-chip-child]')).toHaveValue('s-child');
+  await page.locator('#externalPublishSave').click();await started;
+  await page.evaluate(()=>window.setPage('工作台'));await enter();
+  await expect(page.locator('#externalPublishSave')).toBeDisabled();
+  releaseSave();await expect(page.locator('#externalPublishSave')).toBeEnabled();
+  expect(writes).toBe(1);
+  await page.reload();await expect.poll(()=>page.evaluate(()=>typeof window.setPage==='function'&&state.uiReady===true)).toBe(true);await enter();
+  vendor=page.locator('[data-local-vendor="local-s"]');await vendor.locator('summary').click();
+  await expect(vendor.locator('[data-publish-chip-child]')).toHaveValue('s-child');
+  await expect(page.locator('[data-local-vendor]')).toHaveCount(2);
+  await page.screenshot({path:'C:/Users/jorsam/.codex/visualizations/2026/10/20/01a156ca-1ca0-7b70-8497-bd255da4345e/stable-vendor-mapping-20261021.png',fullPage:true});
+  failSave=true;
+  await vendor.locator('[data-publish-chip-child]').selectOption('');
+  await page.locator('#externalPublishSave').click();
+  await expect(page.locator('#externalPublishSave')).toBeEnabled();
+  await expect(page.locator('[data-mapping-dirty]')).toContainText('未保存');
+  await expect(page.locator('[data-local-vendor="local-s"] [data-publish-chip-child]')).toHaveValue('');
+  expect(config.target_mappings['vendor:local-s'].chip_mappings).toEqual({chip84:'s-child'});
+  failSave=false;rollbackSave=true;
+  await page.locator('.external-vendor-advanced > summary').click();
+  await page.locator('[data-mapping-restore]').click();
+  await page.locator('#externalPublishSave').click();
+  await expect(page.locator('#externalPublishSave')).toBeEnabled();
+  await expect.poll(()=>config.mapping_revision).toBe(5);
+  expect(writes).toBe(3);
+
+});

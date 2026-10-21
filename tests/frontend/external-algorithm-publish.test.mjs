@@ -314,3 +314,11 @@ test('automatic delivery facts preserve historical identity and confirmed remote
   const error=publicationWeightDetails({publication:{status:'PARTIAL'},artifacts:[{file_name:'model.rknn',sync_status:'UNKNOWN',review_required:true,recovery_plan:{reason:'同一芯片两个Weight ID',target_compute_platform_id:'child'}}]});
   for(const value of ['PARTIAL','UNKNOWN','同一芯片两个Weight ID','child','管理员'])assert.ok(error.includes(value),value);
 });
+
+
+test('stable mapping normalization preserves dynamic vendors chips revision and historical mappings',()=>{
+  const model=normalizePublishConfig({config:{mapping_revision:4,target_mappings:{'vendor:business-a':{local_vendor_id:'business-a',compute_platform_id:'parent-a',chip_mappings:{'chip-a':'child-a'}}}},local_catalog:{revision:7,vendors:[{id:'business-a',name:'独立业务厂商',adapter:'sophon'}],chips:[{id:'chip-a',vendor_id:'business-a',sdk_code:'bm1684x',enabled:false}]},mapping_diagnostics:{vendors:{'business-a':{status:'BOUND'}}}});
+  assert.equal(model.targetMappings['vendor:business-a'].local_vendor_id,'business-a');
+  assert.equal(model.localCatalog.vendors[0].id,'business-a');assert.equal(model.localCatalog.chips[0].enabled,false);
+  assert.equal(model.mappingRevision,4);assert.equal(model.localCatalog.revision,7);
+});
