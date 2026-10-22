@@ -220,3 +220,11 @@
 ### 新会话从哪里继续
 
 先读本文当前结论/最终验收、精确HEAD Checks和限制。场景资格从 `platform_core/scenario_models.py`→原v61→Worker/Agent/transport；界面从 `quality-detection-workbench.js`→`scenario-evaluation.js`→原`reports.js`。素材从原card412/material-pagination及受限material-workspace.css；标注从原annotorious-editor/annotation-adapter与app原保存审核、annotation-workspace.css。全部任务已有独立提交，不重新开工；不要重建Bootstrap/API Client/Task/GT/轮询/Modal/ECharts Owner，不把人工反馈写成评测指标。生产操作与P2仍需独立授权。
+
+### 文档补提2678的独立CI失败及测试前置加固（不借42bf绿色）
+
+2678b5dcceaa8053639299a53188377f3e8e3502实际23个Actions中22通过、60/61 Checks通过，前端Chrome238通过1失败（13.5m），Node job通过。失败为原annotorious-lifecycle的immediate pointer→Escape用例末行：Esc后annotationEditor为null。旧测试没有断言其图片坐标点击命中检测框，因此不能据此直接认定“清空选择”业务失效，更不能写成编辑器初始化失败。旧写法本地fresh重复12/12通过，单次CI不能稳定复现根因；此不确定性保留。
+
+仅加固测试真实前置：使用Playwright正常点击实际SVG矩形（无force），记录并断言pointerup命中原annotation，依然点击后立即Esc、不等待异步selectionChanged；两帧后明确断言同一编辑器仍存活、选择清空和工作台可见。原关闭/保存/键盘业务没有修改，也没有移除“立即”边界、加sleep或放宽断言。强化写法fresh重复12/12通过（1.0m）；原生命周期+新UI14项再整体回归后补最终记录。本次再提交产生的新SHA仍必须重新查全部CI，不沿用42bf/2678结论。
+
+收尾强化后的标注原生命周期10+新UI4实际14/14通过（55.0s，C:/tmp/scenario-final-ann-escape.log），含20次真实开关/DOM监听增长、保存200/422、迟到和资源失败重试。当前只追加测试及记录，不修改业务或再次升级VERSION；新HEAD全部CI仍按自身核验。

@@ -135,8 +135,21 @@ test('immediate real pointer selection then Escape clears selection without clos
   const fx=await fixture(request);await start(page,fx);const dialog=await open(page,fx);await dirty(page,dialog);
   await dialog.locator('[data-ann-mode="select"]').click();
   expect(await page.evaluate(()=>state.annotationEditor.snapshot().selectedId)).toBe(null);
-  await drag(page,'#annImg',[160,140],[160,140]);await page.keyboard.press('Escape');
-  await expect(dialog).toBeVisible();expect(await page.evaluate(()=>state.annotationEditor.snapshot().selectedId)).toBe(null);
+  // Use the actual stable SVG target: source-image coordinates can miss while
+  // fit/centering settles. Do not wait for deferred selectionChanged before Esc.
+  const rectangle=dialog.locator('g.a9s-annotation rect.a9s-inner').first();
+  await rectangle.evaluate(node=>{
+    window.__escapeEditor=state.annotationEditor;
+    window.__escapePointerHit=false;
+    node.ownerSVGElement.addEventListener('pointerup',event=>{
+      window.__escapePointerHit=!!event.target.closest('.a9s-annotation');
+    },{capture:true,once:true});
+  });
+  await rectangle.click();await page.keyboard.press('Escape');await frames(page);
+  expect(await page.evaluate(()=>window.__escapePointerHit)).toBe(true);
+  await expect(dialog).toBeVisible();
+  expect(await page.evaluate(()=>state.annotationEditor===window.__escapeEditor)).toBe(true);
+  expect(await page.evaluate(()=>state.annotationEditor.snapshot().selectedId)).toBe(null);
 });
 
 test('twenty actual open close cycles report garbage-collected DOM and listener samples with bounded growth',async({page,request},testInfo)=>{
