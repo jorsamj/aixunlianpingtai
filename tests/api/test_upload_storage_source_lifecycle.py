@@ -1,7 +1,10 @@
 """Storage Source lifecycle admission for normal image upload and retirement."""
 
 import io
+import hashlib
+import json
 import uuid
+from contextlib import closing
 
 from PIL import Image
 
@@ -41,6 +44,25 @@ def _send(client, project_id, source_id, request_id):
     )
 
 
+def _assert_failed_upload_retains_audited_bytes(project_id, source_id, original_root):
+    # A changed/deleted source is never resolved again for compensation: retain
+    # the original bytes and record deferred cleanup in the existing owner.
+    retained = list((original_root / 'uploads').glob('*'))
+    assert len(retained) == 1
+    expected = io.BytesIO()
+    Image.new('RGB', (64, 64), 'white').save(expected, format='JPEG')
+    assert retained[0].read_bytes() == expected.getvalue()
+    with closing(app_module.material_store(project_id)._connect()) as database:
+        rows = database.execute('SELECT payload_json,reclamation_state FROM material_cleanup_deferred').fetchall()
+    assert len(rows) == 1
+    payload = json.loads(rows[0]['payload_json'])
+    assert rows[0]['reclamation_state'] == 'DEFERRED_SAFETY_UNVERIFIED'
+    assert payload['storage_source_id'] == source_id
+    assert payload['object_key'] == 'uploads/' + retained[0].name
+    assert payload['content_sha256'] == hashlib.sha256(expected.getvalue()).hexdigest()
+    assert not app_module.AnnotationRepository(app_module.project_dir(project_id)).exists(payload['id'])
+
+
 def test_plain_upload_rejects_config_change_before_material_commit(client, tmp_path, monkeypatch):
     project_id = _project(client)
     source_id, original_root, next_root = _source(client, tmp_path)
@@ -63,7 +85,7 @@ def test_plain_upload_rejects_config_change_before_material_commit(client, tmp_p
     assert response.status_code == 409, response.text
     assert response.json()["code"] == "UPLOAD_STORAGE_SOURCE_CHANGED"
     assert app_module.material_store(project_id).count() == 0
-    assert list((original_root / "uploads").glob("*")) == []
+    _assert_failed_upload_retains_audited_bytes(project_id, source_id, original_root)
     assert not (next_root / "uploads").exists()
 
 
@@ -88,7 +110,7 @@ def test_plain_upload_rejects_source_deletion_before_material_commit(client, tmp
     assert response.status_code == 409, response.text
     assert response.json()["code"] == "UPLOAD_STORAGE_SOURCE_CHANGED"
     assert app_module.material_store(project_id).count() == 0
-    assert list((original_root / "uploads").glob("*")) == []
+    _assert_failed_upload_retains_audited_bytes(project_id, source_id, original_root)
 
 
 def test_source_name_only_update_does_not_break_normal_image_upload(client, tmp_path, monkeypatch):
@@ -170,7 +192,7 @@ def test_deleted_and_recreated_source_id_is_not_the_original_generation(
     assert response.status_code == 409, response.text
     assert response.json()["code"] == "UPLOAD_STORAGE_SOURCE_CHANGED"
     assert app_module.material_store(project_id).count() == 0
-    assert list((original_root / "uploads").glob("*")) == []
+    _assert_failed_upload_retains_audited_bytes(project_id, source_id, original_root)
 
 
 def test_source_config_change_then_restore_still_invalidates_upload(
@@ -206,4 +228,4 @@ def test_source_config_change_then_restore_still_invalidates_upload(
     assert response.status_code == 409, response.text
     assert response.json()["code"] == "UPLOAD_STORAGE_SOURCE_CHANGED"
     assert app_module.material_store(project_id).count() == 0
-    assert list((original_root / "uploads").glob("*")) == []
+    _assert_failed_upload_retains_audited_bytes(project_id, source_id, original_root)

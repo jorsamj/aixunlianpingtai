@@ -1,6 +1,7 @@
 import {mkdir} from 'node:fs/promises';
 import {join} from 'node:path';
 import {test, expect} from '@playwright/test';
+import {returnToTrainingConfiguration} from './helpers/training-admission.mjs';
 
 const screenshotDir = join(process.cwd(), 'docs', 'screenshots', '2026-09-23-enterprise-lists');
 
@@ -194,6 +195,7 @@ test('training list view state does not replace durable truth and create still r
   await page.getByRole('button', {name: '新建训练任务'}).click();
   await expect(page.locator('#modal')).not.toHaveClass(/hidden/);
   await expect(page.locator('#tr429Target')).toContainText('A800 训练资源');
+  await returnToTrainingConfiguration(page);
   expect(trainingOptionsCalls).toBeGreaterThan(0);
   await page.locator('#modal .modal-head .icon').click();
   expect(pageErrors).toEqual([]);

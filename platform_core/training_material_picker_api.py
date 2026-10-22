@@ -739,7 +739,12 @@ def training_material_picker_router(
                 page_size=body.get("page_size"),
             )
         except ValueError as error:
-            raise HTTPException(status_code=409 if any(code in str(error) for code in ('TRAINING_SELECTION_STALE','TRAINING_SELECTION_CHANGED','TRAINING_REVIEW_STALE')) else 422, detail=str(error)) from error
+            stale_selection = body.get('selection_action') == 'RESOLVE_SELECTION' and any(
+                code in str(error) for code in ('TRAINING_SELECTION_STALE', 'TRAINING_SELECTION_CHANGED', 'TRAINING_REVIEW_STALE')
+            )
+            # Preserve the existing preflight's 422 validation contract. Only
+            # the new revision-bound selection mutation reports a CAS conflict.
+            raise HTTPException(status_code=409 if stale_selection else 422, detail=str(error)) from error
         items = []
         for item in page["items"]:
             image_id = str(item.get("image_id") or "")

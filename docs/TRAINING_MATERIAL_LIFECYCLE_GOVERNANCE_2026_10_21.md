@@ -441,6 +441,19 @@ tests/unit/test_training_duplicate_conflicts.py
 
 后续接续：先核验本轮代码准确SHA的全部实际Actions/Checks及Linux symlink；有失败按原日志修复。CI通过后补记代码SHA/run链接，再核验文档补提自身SHA，才交付。生产尚未读取现场或执行迁移/部署/删除/训练；完整生产项目访问边界、真实数据规模及远端文件能力仍须部署前独立核验。旧MLG单份存储、跨Worker物理GC租约、Bundle回收、缩略证据归档仍未实现，51GB/31GB/20GB没有释放，不得由当前逻辑退出功能推导已经完成。
 
+### 10.12 首次推送CI问题与修正（最终SHA待重新核验）
+
+基线文档125d142a及实现`14419353af4d386cec834c09b0a3f9b68445e474`已正常快进推送，VERSION42.24.373。本机直连GitHub reset/连接失败三次后，使用已有本机代理单次命令参数完成普通推送，没有改全局Git配置、强推或改写历史。该SHA实际触发49个Actions、132个Checks（Checks须分页2页），不能借用前轮21/55结果。
+
+CI检出并已定向修正：
+
+- [Task Runtime Truth Ubuntu](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39718176204/job/119625213530)及Windows、RemoteMaterialImport轻量Worker：material_batches顶层引入starlette Request导致无Web依赖环境import失败。新增阻断fastapi/starlette导入的真实子进程RED，再把Request仅在原router mount时绑定到模块注解可解析位置；原Worker无需新增Web依赖。原TaskTruth三文件26/26及remote execution transport51/51本地通过。
+- [Remote Training API](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39718176131/job/119625213339)：108通过2失败，旧Benchmark review stale预检应422却被新分支改409。恢复既有preflight422；仅新RESOLVE_SELECTION修订冲突409，最终train/start仍409且Worker拒绝stale review、不产生freeze。原API加summary/actor三文件70/70通过，未修改这些原失败断言。
+- [Remote Material Import API](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39718176119/job/119625214123)：57通过4失败，上传源配置/删除/ABA的旧补偿断言仍要求物理删文件，与本轮全部源字节延期保留冲突。迁移四项为真实409/索引0/GT无残留/原字节逐字节及SHA不变/同库延期审计精确source+object绑定；依然核验未写错误新根目录。该文件及upload request recovery12/12通过。不是降低源变更准入门禁。
+- 本地扩展执行既有Frontend CI全部184项时，旧enterprise配置空素材夹具被新增真实诊断覆盖；按原用户“返回训练配置”路径继续，保留草稿及原资源断言，未关闭运行时诊断。该轮及修正后结果另记。
+
+首实现SHA目前不全绿，不据其宣布验收。上述代码修正保持VERSION373，不第二次递增；后续修正提交和文档补提仍分别核验自身全部实际CI。
+
 ## 附录 A：用户原始开发指令（第 1–14 节，完整留存）
 
 以下仅为需求来源原文，实际进度始终以上面台账为准；原文中的建议与已确认业务原则按第二/四节区分。附件路径仅用于本次录入，不作为未来接续依赖。原文UTF-8（去BOM、统一LF）SHA256：`e72cf551a7d275e7c53308d4b275ab6b70374e70a3d86c562f469a9a282b3d67`；字符数10,780。

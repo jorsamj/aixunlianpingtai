@@ -13,7 +13,6 @@ from dataclasses import asdict, replace
 from enum import Enum
 from pathlib import Path
 from types import SimpleNamespace
-from starlette.requests import Request
 
 from filelock import FileLock
 
@@ -4026,7 +4025,10 @@ def material_batch_router(
     training_selection_provider=None,
     actor_provider=None,
 ):
-    from fastapi import APIRouter, Body, HTTPException
+    # FastAPI resolves postponed endpoint annotations in this module's globals.
+    # Bind Request only when mounting HTTP routes; workers do not require ASGI.
+    global Request
+    from fastapi import APIRouter, Body, HTTPException, Request
     from fastapi.responses import FileResponse
 
     router = APIRouter(prefix="/api/v62/projects/{project_id}/material-batches")
