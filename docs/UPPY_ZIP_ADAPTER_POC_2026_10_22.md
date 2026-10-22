@@ -114,14 +114,22 @@ Python API48项无后端代码变更后继续有效。原ZIP仓库/标注/审计
 
 技术取舍/剩余限制：官方aggregate含未启用插件导致约711KB加载，不因预编译源码出现远端URL就启动相关插件，真实浏览器外部请求尝试为0；若以后要减体积，应经批准统一现有构建策略，不能另造bundler。取消继续使用原TaskCenter，Uppy不出现并行取消器。浏览器刷新后必须重选同文件，File句柄不跨刷新持久化；大于测试约33MiB、生产代理/超大文件、生产任务数量和真实断网环境仍需另行生产只读/发布后验收。本轮未部署、无生产素材/正式GT/索引/历史数据修改，测试写入仅临时隔离数据。
 
-现有`.github/workflows/zip-import-durable-runtime.yml`增加锁定npm安装/离线check及上述定向Node/Chrome、原后台合并API，不新建第二CI或删除旧断言。最终提交/精确SHA Actions与Checks见5.6（待推送核验）。
+现有`.github/workflows/zip-import-durable-runtime.yml`增加锁定npm安装/离线check及上述定向Node/Chrome、原后台合并API，不新建第二CI或删除旧断言。最终提交/精确SHA Actions与Checks见5.6。
 
 ### 5.6 Git提交与准确SHA CI
 
-尚未提交/推送；本节仅在真实结果到达后更新，不借基线CI。
+首代码提交[a6bcd6362c0c78ba5e061d081a460cf7f00a8bed](https://github.com/jorsamj/aixunlianpingtai/commit/a6bcd6362c0c78ba5e061d081a460cf7f00a8bed)已普通推送。准确该SHA最终40条Actions：39成功、1失败；112 Checks：111成功、1失败，不能称首提交全绿。
+
+- ZIP专项run[39725719831](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39725719831)：Linux/Windows合同、离线制品、后端均成功；后端单元34/API28及真实Chrome29通过。
+- Frontend run[39725719673](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39725719673)：Node1237及Chrome184（8.5分钟）全部成功。
+- 失败run[39725719739](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39725719739)、job119649022314：training-quality-reports旧夹具6失败、其余9通过，六处底层训练配置点击被正式准入诊断遮挡。
+
+确定根因：此前GOV提交14419353正式增加空草稿“至少2张有效训练素材”的自动诊断；first-open等已接既有returnToTrainingConfiguration helper，quality-reports漏接。本轮Uppy没有改训练准入逻辑；基线c1af26ea同样存在该旧夹具缺口，原Frontend184集合不包括此quality文件，不能拿184绿色证明它通过。独立复审与本地原例实际RED一致（C:/tmp/uppy-ci-training-red.log）。仅在7处新建表单可见后复用原helper，点击真实“返回训练配置”且断言原草稿未变，不用force、移除诊断或修改成功标准。修复后原失败首例1/1、精确CI两文件training-create-first-open+training-quality-reports共15/15通过（40.2秒，C:/tmp/uppy-ci-training-full.log）。
+
+收尾同时将截图输出改为跨平台os.tmpdir()/path.join（四视口+正式入口2/2再次通过，C:/tmp/uppy-chrome-portable-final.log），去除自有helper空白EOF；官方供应文件原生空白不改，以.gitattributes -whitespace仅保留第三方原字节，平台代码仍执行正常whitespace检查。VERSION保持374，不二次递增。后续修正提交及最终文档SHA必须各自重新核CI，当前还未作最终绿色结论。
 
 ## 6. 接续
 
-本轮功能已实现，本地回归和独立复核已完成，剩余精确SHA CI。测试通过后普通提交推送唯一长期分支，不改其他工作树，不重写共享历史。所有完成状态必须以5.6及实际提交Checks为准。
+本轮功能已实现，Uppy本地/CI通过；旧训练报告夹具适配已本地15/15通过，剩余修正提交与最终文档HEAD精确SHA CI。测试通过后普通提交推送唯一长期分支，不改其他工作树，不重写共享历史。所有完成状态必须以5.6及实际提交Checks为准。
 
 后续会话从本文件、static/modules/uppy-zip-adapter.js、uppy-zip-view.js、zip-import-runtime.js及zip-import-bootstrap.mjs开始。禁止重复建设上传/任务/Modal/轮询；不得把Uppy交付成功写成Worker入库成功。正式入口可用“使用原上传界面”立即回退，供应静态资源失败也回退；无需改生产配置或数据。禁止未经授权的部署、生产服务测试、真实素材删除或GT/历史变更。

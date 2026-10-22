@@ -1,4 +1,6 @@
 import {test,expect} from '@playwright/test';
+import os from 'node:os';
+import path from 'node:path';
 import {archive,setup,open,add,upload,watch,successes,jobs,gateParts,cleanupInputs} from './helpers/uppy-zip.mjs';
 test.afterEach(()=>cleanupInputs());
 
@@ -104,7 +106,7 @@ test('UP-02 original task center cancels queued sibling without sending its part
 
 test('UP-07 Chinese Dashboard remains operable in four real Chrome viewports',async({page,request})=>{
  await setup(page,request);
- for(const [width,height] of [[1920,1080],[1440,900],[1366,768],[375,812]]){await page.setViewportSize({width,height});await open(page);await expect(page.locator('.uppy-Dashboard')).toBeVisible();await expect(page.getByRole('button',{name:'关闭 · 后台继续'})).toBeInViewport();await page.screenshot({path:`C:/tmp/uppy-chrome-${width}x${height}.png`,fullPage:true});await page.getByRole('button',{name:'关闭 · 后台继续'}).click();await expect(page.locator('.uppy-Dashboard')).toHaveCount(0);}
+ for(const [width,height] of [[1920,1080],[1440,900],[1366,768],[375,812]]){await page.setViewportSize({width,height});await open(page);await expect(page.locator('.uppy-Dashboard')).toBeVisible();await expect(page.getByRole('button',{name:'关闭 · 后台继续'})).toBeInViewport();await page.screenshot({path:path.join(os.tmpdir(),`uppy-chrome-${width}x${height}.png`),fullPage:true});await page.getByRole('button',{name:'关闭 · 后台继续'}).click();await expect(page.locator('.uppy-Dashboard')).toHaveCount(0);}
 });
 
 test('UP-05 external label is manually mapped by original review into canonical GT',async({page,request})=>{

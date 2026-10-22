@@ -1,6 +1,6 @@
 ## 2026-10-22｜Uppy ZIP适配（本地PoC/正式入口已实现，最终CI待验收）
 
-唯一需求/进度/接续：[Uppy专项](docs/UPPY_ZIP_ADAPTER_POC_2026_10_22.md)。Core6.3.0/Dashboard6.0.2/locales5.3.1本地离线，原ZipImportRuntime/v19/TaskCenter单Owner，隔离14项Chrome通过后接正式按钮并保留原UI回退。Node1237/Python82/Chrome29已通过，既有恢复末例竞态已修夹具保留断言；VERSION42.24.374，最终提交/准确SHA CI待完成。取消仍原TaskCenter，传输交付不等于入库；许可/体积/生产未验证限制见专项。禁止生产部署或生产素材测试。
+唯一需求/进度/接续：[Uppy专项](UPPY_ZIP_ADAPTER_POC_2026_10_22.md)。Core6.3.0/Dashboard6.0.2/locales5.3.1本地离线，原ZipImportRuntime/v19/TaskCenter单Owner，隔离14项Chrome通过后接正式按钮并保留原UI回退。Node1237/Python82/Chrome29已通过，既有恢复末例竞态已修夹具保留断言；VERSION42.24.374，首a6bcd636实际39/40 Actions、111/112 Checks：Uppy29和平台184 Chrome通过，旧quality六例漏适配自动诊断，已复用原返回按钮helper本地15/15修正，后续准确SHA CI待核验。取消仍原TaskCenter，传输交付不等于入库；许可/体积/生产未验证限制见专项。禁止生产部署或生产素材测试。
 
 ## 2026-10-22｜训练准入诊断与素材删除一体治理（代码及CI验收完成）
 

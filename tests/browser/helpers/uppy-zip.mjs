@@ -76,4 +76,3 @@ export async function watch(page){await page.evaluate(()=>{window.__zipEvents=[]
 export async function successes(page,n){await expect.poll(()=>page.evaluate(()=>window.__zipEvents.filter(e=>e.type==='success').length),{timeout:60000}).toBe(n);return page.evaluate(()=>window.__zipEvents.filter(e=>e.type==='success'));}
 export async function jobs(request,id){return (await (await request.get(`/api/v19/projects/${id}/import/jobs`)).json()).items||[];}
 export function gateParts(page){let release;const gate=new Promise(r=>release=r);const urls=[];const install=page.route('**/api/v19/projects/*/import/uploads/*/parts/*',async route=>{urls.push(route.request().url());await gate;await route.continue().catch(()=>{});});return {urls,release,install};}
-

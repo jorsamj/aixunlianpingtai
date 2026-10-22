@@ -1,3 +1,4 @@
+import {returnToTrainingConfiguration} from './helpers/training-admission.mjs';
 import {test, expect} from '@playwright/test';
 
 async function waitForCanonicalApp(page) {
@@ -148,6 +149,7 @@ test('training dialog exposes iteration base, stacked quality charts, and report
 
   const trainingDialog = page.getByRole('dialog', {name: '创建训练任务'});
   await expect(trainingDialog).toBeVisible();
+  await returnToTrainingConfiguration(page);
   await expect(trainingDialog.locator('.train-v3-summary')).toContainText('本次训练素材0 张');
   await expandTrainingAdvanced(trainingDialog);
   await expect(trainingDialog.locator('#trainBaseModeLabelV3')).toContainText('首次训练');
@@ -210,6 +212,7 @@ test('training submit sends the selected candidate pool and configured experimen
   await card.getByRole('button', {name: '训练'}).click();
   const dialog = page.getByRole('dialog', {name: '创建训练任务'});
   await expect(dialog).toBeVisible();
+  await returnToTrainingConfiguration(page);
   await expect(dialog.locator('.train-v3-summary')).toContainText('本次训练素材0 张');
   await selectAllTrainingMaterials(page, dialog);
   const fireLabel = dialog.locator('[data-training-label-code="fire"]');
@@ -266,6 +269,7 @@ test('training material selection does not depend on dataset groups and supports
   }, algorithm.id);
   const dialog = page.getByRole('dialog', {name: '创建训练任务'});
   await expect(dialog).toBeVisible();
+  await returnToTrainingConfiguration(page);
   await expect(dialog.locator('.train-v3-summary')).toContainText('本次训练素材0 张');
 
   await dialog.getByRole('button', {name: '选择训练素材'}).click();
@@ -360,6 +364,8 @@ test('versioned training locks the latest version and projects the current rando
   const card = page.locator('[data-algorithm-card]', {hasText: '烟火迭代算法'});
   await card.getByRole('button', {name: '训练'}).click();
   const dialog = page.getByRole('dialog', {name: '创建训练任务'});
+  await expect(dialog).toBeVisible();
+  await returnToTrainingConfiguration(page);
 
   await expect(dialog.locator('.train-v3-summary')).toContainText('本次训练素材0 张');
   await expandTrainingAdvanced(dialog);
@@ -476,6 +482,7 @@ test('training precision remains visible and canonical across all four modes',as
   await selectIsolatedTestProject(page,project.id);await page.goto('/');await waitForCanonicalApp(page);
   await page.locator('[data-algorithm-card]',{hasText:'烟火迭代算法'}).getByRole('button',{name:'训练',exact:true}).click();
   const dialog=page.getByRole('dialog',{name:'创建训练任务'}),precision=dialog.locator('#trV3ManualPrecision');
+  await expect(dialog).toBeVisible();await returnToTrainingConfiguration(page);
   await expect(precision).toBeVisible();await expect(precision).toHaveValue('auto');
   await precision.selectOption('fp32');
   for(const mode of ['quick','complex','custom','full']){
@@ -496,6 +503,7 @@ test('iteration inherits actual precision and size while mode switches preserve 
  await page.evaluate(id=>{const a=state.algorithms.find(row=>row.id===id);a.current_version_id='isolated-prior';a.versions=[{id:'isolated-prior',version_name:'隔离迭代来源',training_status:'succeeded',artifact_verified:true,trainable:true,training_lineage:{parameters:{actual:{effective_precision:'fp32',imgsz:800}}}}]},algorithm.id);
  await page.locator('[data-algorithm-card]',{hasText:'烟火迭代算法'}).getByRole('button',{name:'训练',exact:true}).click();
  const dialog=page.getByRole('dialog',{name:'创建训练任务'});
+ await expect(dialog).toBeVisible();await returnToTrainingConfiguration(page);
  await expect(dialog.locator('#trV3ManualPrecision')).toHaveValue('fp32');
  expect(await page.evaluate(()=>state.trainingDraft.config.imgsz)).toBe(800);
  for(const mode of ['quick','complex','custom','full']){await dialog.locator(`[data-mode="${mode}"]`).click();expect(await page.evaluate(()=>state.trainingDraft.config.imgsz)).toBe(800);await expect(dialog.locator('#trV3ManualPrecision')).toHaveValue('fp32')}
@@ -509,5 +517,6 @@ test('first training still adopts actual algorithm default when no inherited siz
  await selectIsolatedTestProject(page,project.id);await page.goto('/');await waitForCanonicalApp(page);
  await page.locator('[data-algorithm-card]',{hasText:'烟火迭代算法'}).getByRole('button',{name:'训练',exact:true}).click();
  await expect(page.getByRole('dialog',{name:'创建训练任务'})).toBeVisible();
+ await returnToTrainingConfiguration(page);
  expect(await page.evaluate(()=>state.trainingDraft.config.imgsz)).toBe(1280);
 });
