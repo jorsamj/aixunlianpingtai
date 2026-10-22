@@ -2,6 +2,8 @@
 
 > 本轮唯一综合需求/进度/问题与接续依据。既有VNext、素材性能与Annotorious文档保留历史，仅增加入口，不复制本轮进度。基线c376be7d5d54cca838dc8456ae2e6906815a5335 / VERSION42.24.376；2026-10-22已重新fetch，远端与本地一致、长期工作树干净。应用会话列表查询超时，未宣称已读取全部其他会话；现存其他worktree不动，推送前再次核验远端与差异。
 
+> **当前结论：P0与P1代码、隔离验收及代码SHA CI已验收，生产未验证。** VERSION42.24.377。业务最终代码42bf33b2bfcc46279c1360632e063f3336f7821e实际23/23 Actions、60/60 Checks通过，CI Chrome239/239。本次文档/旧fixture补提不修改业务；其新HEAD仍须按自身GitHub Checks独立核验，不能继承42bf绿色。下文早期“进行中/未提交”是历史执行留痕，以本段、任务表及末尾最终验收为准。
+
 ## 已确认需求和边界
 
 用户授权本轮前后端代码、隔离测试、必要文档及长期feature/external-algorithm-publishing正常提交推送。禁止生产部署、素材/GT/训练数据/权重修改、真实GPU训练、强推及覆盖其他开发。P2重新评测/新泄漏分析/大图组件/导出不在本轮。
@@ -28,12 +30,12 @@
 | 任务 | 优先级与模块 | 状态 | 已完成/剩余与风险 | 提交/验收 |
 |---|---|---|---|---|
 | SCN-A 现有合同及重复Owner审计 | P0 app.py/algorithms/training_evaluation/inference_tasks | 已验收 | 已确认资格及UI缺口；补完整产物/任务/冻结API映射 | 基线c376be7d，未新增提交 |
-| SCN-01 正式模型资格及后端强制 | P0 原test_models与v61/Worker/Agent | 已完成待验收 | 专用资格、来源/字节/持久分类复验完成；通用目录不改；固有TOCTOU限制见记录 | 1f606d30；场景54、相关145通过；最终CI待验 |
-| SCN-02 两模式和内联检测工作台 | P0 原v64 UI/原任务API | 已完成待验收 | 原Task/Poll/历史/反馈复用，项目/迟到/未知锁与真实SVG回归通过 | 1f606d30；Chrome11通过，最终CI待验 |
-| MAT-UI 素材视觉与必要反馈 | 独立P0 原素材Owner/CSS | 已完成待验收 | grid/list同DOM、原比例媒体面、坏图重试及三视口截图；原GT/API不改 | 13c70368；Node28/Chrome4及原治理/分页/上传通过；最终CI待验 |
-| ANN-UI 原标注交互规范 | 独立P0 原Editor/review/NegativeSample | 已完成待验收 | 唯一显式审核、正式色即时同步、居中/手动视角、坏图原重试；GT/CAS保留 | b8d04f04；原workbench23、最终14/15组合通过；最终CI待验 |
-| SCN-03 真实指标与交互分析 | P1 原reports/ECharts/evaluation合同 | 已完成待验收 | 原真实matrix/curves、未覆盖类、只读诊断、同基准pp及同图AB，组件单URL/单Owner | 新Chrome12及AB同步补测通过；最终CI待验 |
-| SCN-F 最终回归、版本及精确CI | P0/P1 原工作流/接续文档 | 进行中 | VERSION377；Node1295/Python212通过，完整Chrome352正在执行；原CI补新用例 | 最终推送SHA/全部Actions与Checks待验 |
+| SCN-01 正式模型资格及后端强制 | P0 原test_models与v61/Worker/Agent | 已验收 | 专用资格、来源/字节/持久分类复验完成；通用目录不改；固有TOCTOU限制见记录 | 1f606d30；场景54、相关145通过；42bf最终代码CI通过 |
+| SCN-02 两模式和内联检测工作台 | P0 原v64 UI/原任务API | 已验收 | 原Task/Poll/历史/反馈复用，项目/迟到/未知锁与真实SVG回归通过 | 1f606d30；Chrome11通过，42bf最终代码CI通过 |
+| MAT-UI 素材视觉与必要反馈 | 独立P0 原素材Owner/CSS | 已验收 | grid/list同DOM、原比例媒体面、坏图重试及三视口截图；原GT/API不改 | 13c70368；Node28/Chrome4及原治理/分页/上传通过；42bf最终代码CI通过 |
+| ANN-UI 原标注交互规范 | 独立P0 原Editor/review/NegativeSample | 已验收 | 唯一显式审核、正式色即时同步、居中/手动视角、坏图原重试；GT/CAS保留 | b8d04f04；原workbench23、最终14/15组合通过；42bf最终代码CI通过 |
+| SCN-03 真实指标与交互分析 | P1 原reports/ECharts/evaluation合同 | 已验收 | 原真实matrix/curves、未覆盖类、只读诊断、同基准pp及同图AB，组件单URL/单Owner | 新Chrome12及AB同步补测通过；42bf最终代码CI通过 |
+| SCN-F 最终回归、版本及精确CI | P0/P1 原工作流/接续文档 | 已验收 | VERSION377；Node1297/Python213通过；广泛Chrome339通过13失败及逐项fresh关闭完整留痕 | 42bf33b2代码CI23/23 Actions、60/60 Checks、Chrome239/239；本次补提自身Checks另核 |
 
 ### 执行检查清单
 
@@ -42,8 +44,8 @@
 - [x] 原v64展示迁出并安装同一Owner；原api与benchPredictOne复用；两模式、选择/内联图片/列表/历史、取消/失效/防重与无GT明确呈现；Node真实DOM与Chrome走原任务链。
 - [x] 素材坏图、间距/网格列表/toolbar及相关弹窗在原Owner修复；先截图/失败断言，后3分辨率回归，独立提交。
 - [x] 标注先fit/颜色/重复确认RED，修原Editor与审核；3分辨率截图与GT保存/并发/负样本/快捷键回归，独立提交。
-- [ ] P0实际通过后接真实报告P1：身份、原矩阵/曲线、错误样本/GT层、版本同基准比较；任何缺失不造值，样本按需分页/取消。
-- [ ] 记录实际测试命令/通过失败跳过、RED修复与遗留；一次版本升级、必要缓存与守卫同步；更新AGENTS及四份handoff，推送后最终SHA逐条CI核验。
+- [x] P0实际通过后接真实报告P1：身份、原矩阵/曲线、错误样本/GT层、版本同基准比较；任何缺失不造值，样本按需分页/取消。
+- [x] 记录实际测试命令/通过失败跳过、RED修复与遗留；一次版本升级、必要缓存与守卫同步；更新AGENTS及四份handoff，推送后最终SHA逐条CI核验。
 
 ## 开源与许可证核验
 
@@ -178,3 +180,43 @@
 - 收尾新增确定停止边界：A完成后用户已停止后续时仍保留running及未显示结果。原函数真实RED2失败→相关Node19/19、最终全Node1297/1297；A-only完成计数保持，compare显示A已完成/B未提交，后续未创建任务明确标记未提交，不篡改Task状态。新Chrome两模式实际通过。
 - local广泛运行352用例终态339通过13失败（31.5m），不是全部通过。包括认证2（原有专用auth config待核）、旧clean/AI fencing2、旧row-menu3、上述navigation1、已退役restore控件旧测试1、Uppy前4个项目初始化等待失败。它们逐项追踪，不能通过改鉴权/Uppy业务/删断言掩盖。相关旧report测试已改为断言无恢复控件并保留真实DataZoom范围/同实例/销毁，而非恢复已被用户删除的按钮。其余既有用例正在只读核验是否环境/原基线问题。
 - 本轮相关修正后fresh Chrome5/5通过（20.1s）：默认两模式导航、正式SVG框点击、A-only/compare停止后续保留A结果、原报告真实zoom保持且无restore；新P0/P1其他定向及原相关通过记录保持，不把339/13写成352全绿。接下来正常提交修正核新SHA。
+
+### 广泛运行失败的后续差分核验
+
+- 认证2项按原 `playwright.auth.config.mjs` 独立8012/mock登录配置实际2/2通过（12.4s）；普通352套件使用8011测试旁路，不可据此修改生产鉴权。
+- Uppy原失败前4项分别fresh真实运行：UP-01/05的本地中文/正式标签映射/真实隔离JPEG入库1项通过，UP-02/03并发槽位、UP-06关闭继续、UP-04丢失complete响应共3/3通过（26.4s）。未改Uppy/TaskCenter Owner。
+- row-menu三项fresh3/3通过，原<100ms性能及同DOM/焦点/分页断言保留；实测首菜单四视口16.5–32.8ms，真实pointer17.9–22.3ms。旧全套仍有共享长时启动5秒等待失败记录，不能凭fresh通过宣称相同30分钟负载已完整复验。
+- clean/AI两个旧fixture用c376与当前原函数均能复现同一缺失：clean未提供正式awaiting_confirmation状态/旧按钮名，AI缺labelMapping导致POST前TypeError。仅补测试正式shape和真实按钮，不修改原业务；clean迟到确认用无删除项隔离本Owner，删除preview仍由原素材治理测试覆盖。全部新页面sentinel/迟到不可关窗/零broad GET断言保留。fresh原fencing4+row-menu3共7/7通过（31.1s）；另Uppy1+两fencing+菜单1共4/4通过（20.5s）。不重复相加为独立用例数。
+- 原13个失败均已有对应fresh通过证据或本轮真实修复通过；没有重跑整套352并宣称其全绿。最终代码Python213/213（5既有warnings，76.35s）、全Node1297/1297（0跳过，27.08s），日志分别C:/tmp/scenario-final-python-after-fix.log、scenario-final-node-after-stop.log。
+
+## 最终验收与后续接续（2026-10-22）
+
+### 准确SHA回执
+
+业务代码最终SHA **42bf33b2bfcc46279c1360632e063f3336f7821e**，VERSION **42.24.377**，实际全部23/23 Actions、60/60 Checks通过，无失败/待运行；原[前端工作流39768539451](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39768539451)真实Chrome **239/239**（11.7m）、Node job通过。[跨平台部署39768548086](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39768548086) Windows与Linux合同各136通过，导入边界各4通过；Linux另3个符号链接边界通过，API79通过/4既有warnings。此处不以本地Windows symlink skip冒充Linux通过。
+
+本次文档与旧fencing测试夹具补提产生新HEAD，必须再次检查其全部Actions/Checks；最终绑定结果从[长期分支提交记录](https://github.com/jorsamj/aixunlianpingtai/commits/feature/external-algorithm-publishing)对应完整SHA进入，不沿用旧绿。按AGENTS.md已有最终回执规则，新HEAD回执保存于 `C:/Users/jorsam/.codex/visualizations/2026/10/21/01a15d6e-6553-7640-9e31-04ade914aca9/scenario-model-ui-20261022/CI_FINAL_HANDOFF.json`，下次受验证提交可归档；避免为写自身SHA无限产生未验证的新HEAD。最终验收以该新SHA真实Checks全通过为必要条件。
+
+### 交付范围与证据
+
+| 项目 | 实际结果 | 证据/限制 |
+|---|---|---|
+| SCN P0 | 专用正式训练资格前后端/Worker/Agent统一；默认可信准确性评测；快检无GT不显示伪准确率；内联图片/框/反馈/历史、任务真实状态及未知锁 | 1f606d30独立提交；原API/Task/Poll/Batch/反馈Owner保留；原始母模型及未验证上传/失败checkpoint拒绝 |
+| MAT P0 | 同卡片Owner网格/列表、统一toolbar/filter、媒体比例/长名多标签/选中/坏图重试及原详情 | 13c70368独立提交；三桌面before/after/grid/list/detail见截图表；原API与GT不变 |
+| ANN P0 | 顶部重复确认退役；右侧显式审核/选类确认空图；管理正式色唯一来源并即时同步；fit居中/手动视角/坏图原重试/统一三栏 | b8d04f04独立提交；原confirmed_empty/annotation_scope/CAS/负样本及保存Owner保留；三桌面截图 |
+| SCN P1 | 原ECharts真实矩阵/类别/PR/Confidence；正式TP/FP/FN联动；GT双层；同基准版本pp及同图A/B同步 | 57dd15c9及收尾42bf；无GT未覆盖/缺失证据不补造；定位仅待复核，不改正式指标；无新数据库/任务/图表注册表 |
+| Python | 当前相关213通过、0失败/0跳过、5既有warnings | 76.35s；本地精简环境另135通过/1 Windows symlink skip，最终Linux CI已实际覆盖 |
+| Node | 当前全量1297通过、0失败/0跳过 | 27.08s，原函数/DOM动态用例，非仅源码断言 |
+| Chrome | 本轮新P0/P1、MAT/ANN及原相关通过；最终代码CI239/239 | 本地广泛352原339通过13失败后逐项fresh通过，未再次整套352，不能写352全绿；专用认证2/2、Uppy4/4、fencing4+row3共7/7；重叠组合不累计唯一数 |
+
+### 遗留及生产前核验
+
+1. 本轮不部署，不连接/修改生产素材、GT、训练数据、模型权重，不执行真实GPU训练。实际生产模型准确率、历史数据覆盖、远程OSS/硬件吞吐与大库SLA均NOT VERIFIED；隔离UI fixture截图不代表生产精度。
+2. 旧历史缺正式模型/冻结图片/版本身份时明确不可信/缺证据；不会为兼容补造成功或指标。现有报告最多200保留错误图、每层120框、前20类图表等边界见前文，不能把保留样本当完整测试集。类别表和样本按原分页/按需加载。
+3. mutable文件系统最后资格校验至推理实际open的固有TOCTOU仍存在；已有入口/运输/Worker/Agent多次严格复核，无新权重复制或新存储Owner。
+4. 广泛长时共享后端下旧启动helper5秒超时虽fresh全部通过，相同30分钟混合负载整套尚未重验；保留观察事项，不用加sleep或移除性能断言掩盖。
+5. Ultralytics既有AGPL/商业授权状态未提供证明，需独立确认；ECharts/Annotorious既有本地许可证沿用，没有新Supervision依赖或许可替代。P2全部未实施，需以后独立授权。
+
+### 新会话从哪里继续
+
+先读本文当前结论/最终验收、精确HEAD Checks和限制。场景资格从 `platform_core/scenario_models.py`→原v61→Worker/Agent/transport；界面从 `quality-detection-workbench.js`→`scenario-evaluation.js`→原`reports.js`。素材从原card412/material-pagination及受限material-workspace.css；标注从原annotorious-editor/annotation-adapter与app原保存审核、annotation-workspace.css。全部任务已有独立提交，不重新开工；不要重建Bootstrap/API Client/Task/GT/轮询/Modal/ECharts Owner，不把人工反馈写成评测指标。生产操作与P2仍需独立授权。

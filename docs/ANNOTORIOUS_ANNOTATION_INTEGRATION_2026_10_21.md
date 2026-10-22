@@ -1,4 +1,4 @@
-> 2026-10-22接续：场景评估/素材及标注UI的唯一专项进度为[本轮治理](SCENARIO_MODEL_EVALUATION_UI_GOVERNANCE_2026_10_22.md)，当前P0验收中、P1未开始；本文原验收合同继续保留。
+> 2026-10-22接续：场景评估/素材及标注UI的唯一专项进度为[本轮治理](SCENARIO_MODEL_EVALUATION_UI_GOVERNANCE_2026_10_22.md)，P0/P1代码及隔离CI已验收，生产未验证；新HEAD验收以唯一专项末节为准；本文原验收合同继续保留。
 
 # Annotorious v3 人工标注工作台正式集成（2026-10-21）
 
