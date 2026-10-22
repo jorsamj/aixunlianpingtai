@@ -1,3 +1,7 @@
+## 2026-10-22｜Uppy ZIP适配（本地PoC/正式入口已实现，最终CI待验收）
+
+唯一需求/进度/接续：[Uppy专项](docs/UPPY_ZIP_ADAPTER_POC_2026_10_22.md)。Core6.3.0/Dashboard6.0.2/locales5.3.1本地离线，原ZipImportRuntime/v19/TaskCenter单Owner，隔离14项Chrome通过后接正式按钮并保留原UI回退。Node1237/Python82/Chrome29已通过，既有恢复末例竞态已修夹具保留断言；VERSION42.24.374，最终提交/准确SHA CI待完成。取消仍原TaskCenter，传输交付不等于入库；许可/体积/生产未验证限制见专项。禁止生产部署或生产素材测试。
+
 ## 2026-10-22｜训练准入诊断与素材删除一体治理（代码及CI验收完成）
 
 唯一专项：[生命周期治理](TRAINING_MATERIAL_LIFECYCLE_GOVERNANCE_2026_10_21.md)第十节，最新回执/交接10.13。GOV-01–11复用原Owner，自动多阻塞诊断、草稿全部问题排除、不可变预览/幂等Worker逻辑删除、GT整组/跨分页/项目清空、真实成功ID完整复检均完成。成功登录且可访问项目即同权，无admin/白名单/RBAC；清空仍须项目名与精确范围确认。旧隐式删除退役，活动/共享字节保留且释放0；排队10000→9500原范围重冻结。VERSION42.24.373，代码d207ba570a7209d2776b4b6b7240c511691b456a实际31/31 Actions、81/81 Checks、Chrome184/184及Node1209/1209通过；本地Python356+3 Windows symlink skip，Linux CI相应边界实际通过。首推失败及修正已留痕，本次文档/PoC时序增强补提自身SHA须再核CI，以最终GitHub绑定结果为准。禁止生产删除/迁移/部署/GPU；旧单份图片、物理GC和Bundle回收未实施，不重复建设已验收GOV。

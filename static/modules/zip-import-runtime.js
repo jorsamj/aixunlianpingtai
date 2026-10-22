@@ -254,8 +254,8 @@ export async function uploadZipMultipartJob(projectId,file,{onTransfer=()=>{},on
   if(control?.state&&control.state!=='active')throw new Error('ZIP 上传已暂停或取消');
   const plan=zipPartPlan(file.size,session.part_size,session.completed_parts);
   const pending=plan.filter(part=>!part.completed),inflight=new Map();
-  let committed=plan.filter(part=>part.completed).reduce((sum,part)=>sum+part.size,0),cursor=0;
-  const emit=()=>{const loaded=Math.min(file.size,committed+[...inflight.values()].reduce((sum,value)=>sum+value,0));onTransfer({loaded,total:file.size,ratio:file.size?loaded/file.size:0,completedParts:plan.length-pending.length+Math.min(cursor,pending.length),totalParts:plan.length})};
+  let committed=plan.filter(part=>part.completed).reduce((sum,part)=>sum+part.size,0),cursor=0,acknowledgedParts=plan.length-pending.length;
+  const emit=()=>{const loaded=Math.min(file.size,committed+[...inflight.values()].reduce((sum,value)=>sum+value,0));onTransfer({loaded,total:file.size,ratio:file.size?loaded/file.size:0,completedParts:acknowledgedParts,totalParts:plan.length})};
   emit();
   async function uploadOne(part){
     let attempt=0;
@@ -263,7 +263,7 @@ export async function uploadZipMultipartJob(projectId,file,{onTransfer=()=>{},on
       if(control?.state&&control.state!=='active')throw new Error('ZIP 上传已暂停或取消');
       try{
         const result=await uploadZipPartXHR(projectId,uploadId,part,file,{xhrFactory,control,onTransfer:p=>{inflight.set(part.index,Math.min(part.size,Number(p.loaded)||0));emit()}});
-        inflight.delete(part.index);committed+=part.size;emit();return result;
+        inflight.delete(part.index);committed+=part.size;acknowledgedParts++;emit();return result;
       }catch(error){
         inflight.delete(part.index);emit();
         if((control?.state&&control.state!=='active')||attempt>=retries)throw error;
@@ -288,6 +288,13 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
   let jobs=[],current=null,timer=null,busy=false,destroyed=false,uploading=null,uploadControl=null,resumeFile=null;
   let selectedJobId='';
   const batchTransfers=new Map(),batchFiles=new Map(),withBatchSlot=createZipTransferLimiter(2);
+  const transferObservers=new Set();
+  const subscribeTransfers=listener=>{if(typeof listener!=='function')throw new TypeError('传输观察者必须是函数');transferObservers.add(listener);return ()=>transferObservers.delete(listener)};
+  function publishTransfer(type,control,detail={}){
+    if(destroyed||!control||String(control.project)!==pid())return;
+    const event={type,projectId:control.project,file:control.file,transferId:control.transferId||control.uploadId||'',uploadId:control.uploadId||'',total:Number(control.file?.size||0),...detail};
+    for(const listener of [...transferObservers])try{listener(event)}catch(error){transferObservers.delete(listener);console.warn('ZIP传输界面观察者已解除，原上传继续',error?.message||'')}
+  }
   let localUploadSequence=0,queueSequence=0;
   const eligibleSince=new Map(),started=new Set(),knownJobs=new Map(),completionEffects=new Set(),foregroundImports=new Set(),labelReviews=new Map(),classSampleCache=new Map(),cancellingJobs=new Set();
   const pid=()=>String(projectId?.()||'');
@@ -306,10 +313,15 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
       });
     });
   }
+  function trackTransferStop(control){
+    control.stopped=new Promise(resolve=>{control.finish=()=>{control.stoppedComplete=true;resolve()}});
+    return control;
+  }
   function registerQueuedUpload(project,file,index){
     const id=localUploadId();
-    const control={state:'queued',localOnly:true,project,file,xhrs:new Set(),uploadId:'',progress:0,message:'等待上传',queueSequence:++queueSequence,selectionIndex:index};
+    const control=trackTransferStop({state:'queued',localOnly:true,project,file,transferId:id,xhrs:new Set(),uploadId:'',progress:0,message:'等待上传',queueSequence:++queueSequence,selectionIndex:index});
     batchTransfers.set(id,control);batchFiles.set(id,file);
+    publishTransfer('queued',control);
     window.UploadTaskCenterRuntime?.upsert?.({
       id:`zip:${id}`,kind:'zip',title:file.name||`ZIP ${index+1}`,status:'WAITING_UPLOAD',progress:0,
       stage:'等待上传',detail:'文件已受理，正在进入上传队列',fileSize:Number(file.size||0),
@@ -319,6 +331,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
   }
   function failLocalUpload(entry,message){
     entry.control.state='failed';batchTransfers.delete(entry.id);batchFiles.delete(entry.id);
+    publishTransfer('error',entry.control,{error:new Error(message),message:String(message)});
     window.UploadTaskCenterRuntime?.upsert?.({
       id:`zip:${entry.id}`,kind:'zip',title:entry.file.name||'ZIP 文件',status:'FAILED',progress:0,
       stage:'无法受理',detail:String(message||'文件不可用'),fileSize:Number(entry.file.size||0),
@@ -331,6 +344,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
     const control=batchTransfers.get(key);
     if(!control?.localOnly||!['queued','preparing','active'].includes(control.state))return false;
     control.state='cancelled';for(const xhr of control.xhrs||[])xhr.abort?.();
+    publishTransfer('cancelled',control);
     batchTransfers.delete(key);batchFiles.delete(key);
     window.UploadTaskCenterRuntime?.upsert?.({
       id:`zip:${key}`,kind:'zip',title:control.file?.name||'ZIP 文件',status:'CANCELLED',progress:control.progress||0,
@@ -782,10 +796,24 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
     const uploadId=String(id||(uploading?uploading.uploadId:current?.id)||'');
     if(!uploadId){notify?.('上传会话正在创建，尚不能暂停');return false}
     const batchControl=batchTransfers.get(uploadId);
-    if(batchControl){batchControl.state='paused';for(const xhr of batchControl.xhrs)xhr.abort?.()}
-    if(uploadControl?.uploadId===uploadId){uploadControl.state='paused';for(const xhr of uploadControl.xhrs)xhr.abort?.()}
-    try{await uploadAction(project,uploadId,'pause');if(!isCurrentProject(project))return true;uploading=null;await reconcile('pause');if(isCurrentProject(project))open();return true}
-    catch(error){if(isCurrentProject(project)){notify?.(error.message||error);await reconcile('pause-error')}return false}
+    const control=batchControl||(uploadControl?.uploadId===uploadId?uploadControl:null);
+    if(control){control.state='paused';for(const xhr of control.xhrs)xhr.abort?.()}
+    try{
+      await uploadAction(project,uploadId,'pause');
+      // An aborted XHR can still be unwinding retry backoff. Resume only after
+      // the original owner has released its transfer identity and slot.
+      await control?.stopped;
+      publishTransfer('paused',control);
+      if(!isCurrentProject(project))return true;
+      uploading=null;await reconcile('pause');
+      if(isCurrentProject(project)&&!control?.externalView)open();
+      return true;
+    }catch(error){
+      await control?.stopped;
+      publishTransfer('error',control,{error,message:String(error.message||error)});
+      if(isCurrentProject(project)){notify?.(error.message||error);await reconcile('pause-error')}
+      return false;
+    }
   }
   function clearCancelledJobCaches(project,jobId){
     const id=String(jobId||'');labelReviews.delete(id);eligibleSince.delete(id);started.delete(id);foregroundImports.delete(id);batchFiles.delete(id);
@@ -796,7 +824,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
     const project=pid();resetProjectState(project);
     const jobId=String(id||(uploading?uploading.uploadId:current?.id)||uploadControl?.uploadId||'');
     if(!skipConfirm&&!window.confirm?.('确定取消此 ZIP 任务？服务器只会清理该任务尚未提交的 ZIP、分片与临时解析缓存；已正式入库的数据和平台标签不会被删除。'))return false;
-    const localControl=batchTransfers.get(jobId);
+    const localControl=batchTransfers.get(jobId),cancelledControl=localControl||(uploadControl?.uploadId===jobId?uploadControl:null);
     if(localControl){localControl.state='cancelled';for(const xhr of localControl.xhrs)xhr.abort?.()}
     if(uploadControl&&(!jobId||uploadControl.uploadId===jobId)){uploadControl.state='cancelled';for(const xhr of uploadControl.xhrs)xhr.abort?.()}
     if(!jobId){uploading=null;resumeFile=null;uploadControl=null;window.closeModal?.();return true}
@@ -804,7 +832,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
     cancellingJobs.add(jobId);render();
     try{
       const response=await json(await fetchImpl(`/api/v19/projects/${encodeURIComponent(project)}/import/jobs/${encodeURIComponent(jobId)}/cancel`,{method:'POST',credentials:'same-origin'}));
-      clearCancelledJobCaches(project,jobId);
+      publishTransfer('cancelled',cancelledControl);clearCancelledJobCaches(project,jobId);
       if(!isCurrentProject(project))return response.cleanup_status!=='failed';
       knownJobs.set(jobId,{...(knownJobs.get(jobId)||jobs.find(row=>String(row?.id||'')===jobId)||{}),...response});
       if(uploading?.uploadId===jobId)uploading=null;
@@ -841,10 +869,18 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
   }
   function resumeFromFile(input,id){return upload(input,String(id||'')).catch(()=>null)}
   async function upload(input,expectedUploadId=''){
+    const projectAtStart=pid();
+    return withBatchSlot(release=>{
+      if(pid()!==projectAtStart)throw new Error('项目已切换，请从原项目任务中心恢复');
+      return uploadInSlot(input,expectedUploadId,release);
+    });
+  }
+  const resumeTransfer=(file,uploadId)=>uploadBatch({files:[file],value:'',externalView:true,resumeUploadId:String(uploadId||'')});
+  async function uploadInSlot(input,expectedUploadId='',releaseSlot=()=>{}){
     const file=input?.files?.[0];if(!file)return null;if(!/\.zip$/i.test(file.name||'')){notify?.('请选择 ZIP 压缩包');input.value='';return null}const project=pid();if(!project){notify?.('当前项目未加载，请刷新后重试');return null}resetProjectState(project);
     if(batchTransfers.get(String(expectedUploadId||''))?.state==='active')return notify?.('该 ZIP 正在上传，请勿重复提交');
     if(uploadControl?.state==='active')return notify?.('另一个 ZIP 正在恢复上传，请从任务中心查看');
-    const control={state:'active',xhrs:new Set(),uploadId:'',file,expectedUploadId};
+    const control=trackTransferStop({state:'active',project,externalView:Boolean(input.externalView),xhrs:new Set(),uploadId:'',file,expectedUploadId});
     uploadControl=control;resumeFile=file;
     let multipartTaskId='';uploading={progress:0,message:'准备上传',uploadId:''};
     // The chooser already owns a modal. Replace that modal's content instead
@@ -855,11 +891,13 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
       else chooserBody.innerHTML=uploadBody();
       const title=chooserBody.closest('.modal')?.querySelector('.modal-title');
       if(title)title.textContent='ZIP 数据导入';
-    }else open();
+    }else if(!control.externalView)open();
     render();
     try{
-      const response=await uploadZipMultipartJob(project,file,{fetchImpl,control,onSession:session=>{multipartTaskId=String(session.upload_id||'');if(expectedUploadId&&multipartTaskId!==expectedUploadId)throw new Error('原 ZIP 身份未匹配历史会话，已阻止向新会话发送数据；请确认文件名、大小和修改时间');control.uploadId=multipartTaskId;if(!isCurrentProject(project))return;const resumedUpload=Math.max(0,Math.min(100,Number(session.upload_progress)||0));uploading={...uploading,uploadId:multipartTaskId,progress:resumedUpload};window.UploadTaskCenterRuntime?.upsert?.({id:`zip:${session.upload_id}`,kind:'zip',title:file.name,status:'UPLOADING',progress:resumedUpload,stage:'正在上传 ZIP',detail:`已完成 ${(session.completed_parts||[]).length}/${session.total_parts||0} 个分片`,serverUrl:`/api/v19/projects/${encodeURIComponent(project)}/import/jobs/${encodeURIComponent(String(session.upload_id))}`,browserTransfer:true,resumeRequired:false,pollOwner:'zip-import-runtime'})},onTransfer:e=>{if(control.state!=='active'||!uploading||!isCurrentProject(project))return;const networkPercent=Math.round(e.ratio*1000)/10;uploading={...uploading,progress:networkPercent,message:`网络上传 ${networkPercent}% · ${bytes(e.loaded)} / ${bytes(e.total)}`};window.UploadTaskCenterRuntime?.upsert?.({id:`zip:${multipartTaskId}`,kind:'zip',title:file.name,status:'UPLOADING',progress:networkPercent,stage:'正在上传 ZIP',detail:uploading.message,browserTransfer:true,resumeRequired:false,pollOwner:'zip-import-runtime'});render()},onPhase:phase=>{if(!isCurrentProject(project))return;uploading={...uploading,progress:100,message:phase.message};window.UploadTaskCenterRuntime?.upsert?.({id:`zip:${multipartTaskId}`,kind:'zip',title:file.name,status:'MERGING',progress:null,stage:phase.stage,detail:phase.message,browserTransfer:false,resumeRequired:false,pollOwner:'zip-import-runtime'});render()}});if(isCurrentProject(project)){uploading=null;resumeFile=null}if(uploadControl===control)uploadControl=null;
+      const response=await uploadZipMultipartJob(project,file,{fetchImpl,control,onSession:session=>{multipartTaskId=String(session.upload_id||'');if(expectedUploadId&&multipartTaskId!==expectedUploadId)throw new Error('原 ZIP 身份未匹配历史会话，已阻止向新会话发送数据；请确认文件名、大小和修改时间');control.uploadId=multipartTaskId;publishTransfer('session',control);if(!isCurrentProject(project))return;const resumedUpload=Math.max(0,Math.min(100,Number(session.upload_progress)||0));uploading={...uploading,uploadId:multipartTaskId,progress:resumedUpload};window.UploadTaskCenterRuntime?.upsert?.({id:`zip:${session.upload_id}`,kind:'zip',title:file.name,status:'UPLOADING',progress:resumedUpload,stage:'正在上传 ZIP',detail:`已完成 ${(session.completed_parts||[]).length}/${session.total_parts||0} 个分片`,serverUrl:`/api/v19/projects/${encodeURIComponent(project)}/import/jobs/${encodeURIComponent(String(session.upload_id))}`,browserTransfer:true,resumeRequired:false,pollOwner:'zip-import-runtime'})},onTransfer:e=>{publishTransfer('progress',control,e);if(control.state!=='active'||!uploading||!isCurrentProject(project))return;const networkPercent=Math.round(e.ratio*1000)/10;uploading={...uploading,progress:networkPercent,message:`网络上传 ${networkPercent}% · ${bytes(e.loaded)} / ${bytes(e.total)}`};window.UploadTaskCenterRuntime?.upsert?.({id:`zip:${multipartTaskId}`,kind:'zip',title:file.name,status:'UPLOADING',progress:networkPercent,stage:'正在上传 ZIP',detail:uploading.message,browserTransfer:true,resumeRequired:false,pollOwner:'zip-import-runtime'});render()},onPhase:phase=>{releaseSlot();publishTransfer('processing',control,phase);if(!isCurrentProject(project))return;uploading={...uploading,progress:100,message:phase.message};window.UploadTaskCenterRuntime?.upsert?.({id:`zip:${multipartTaskId}`,kind:'zip',title:file.name,status:'MERGING',progress:null,stage:phase.stage,detail:phase.message,browserTransfer:false,resumeRequired:false,pollOwner:'zip-import-runtime'});render()}});if(isCurrentProject(project)){uploading=null;resumeFile=null}if(uploadControl===control)uploadControl=null;
       if(!isCurrentProject(project))return response;
+      if(!response.id)throw new Error('ZIP交付身份不完整，请从任务中心核验');
+      publishTransfer('success',control,{jobId:String(response.id),response});
       const provisional={...response,id:String(response.id),status:response.status||'selecting',stage:response.stage||'上传与校验完成',message:response.message||'上传与ZIP校验完成，等待开始后台导入',progress:Number(response.progress||0),file_name:response.file_name||file.name,uploaded_bytes:Number(response.uploaded_bytes||file.size||0),created_at:response.created_at||new Date().toISOString()};window.UploadTaskCenterRuntime?.rekey?.('zip:'+multipartTaskId,'zip:'+provisional.id);knownJobs.set(String(provisional.id),provisional);foregroundImports.add(String(provisional.id));writeIntent(project,provisional.id,'deferred');
       try {
         await reconcile('upload');
@@ -873,13 +911,14 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
         render();arm();
         notify?.('ZIP 已由服务器受理，但状态刷新暂时中断；可从右下角任务中心继续查看，请勿重复上传。');
       }
-      open();return response;
+      if(!control.externalView)open();return response;
     }catch(e){const lastUploadProgress=Number(uploading?.progress||0);if(isCurrentProject(project))uploading=null;
       // A failed browser transfer must relinquish its active controller; otherwise
       // choosing the same ZIP again is permanently blocked as "already uploading".
       if(uploadControl===control&&control.state==='active')uploadControl=null;
       if(control.state==='paused'||control.state==='cancelled')return null;
       if(!isCurrentProject(project))return null;
+      publishTransfer('error',control,{error:e,message:String(e.message||e)});
       if(multipartTaskId){
         // A browser transport failure does not mean the server lost its parts.
         // Yield to the task center until the canonical runtime can reconnect.
@@ -892,9 +931,9 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
         });
       }
       const html=`<div class="zip411" data-zip-runtime="1"><div class="alert err">${esc(e.message||e)}</div><div class="row end"><button class="btn" onclick="closeModal()">关闭</button></div></div>`;
-      if(!replaceOpenRuntime(html))window.modal?.('ZIP 数据导入',html,true);
+      if(!control.externalView&&!replaceOpenRuntime(html))window.modal?.('ZIP 数据导入',html,true);
       notify?.(e.message||e);throw e
-    }finally{input.value=''}
+    }finally{input.value='';control.finish()}
   }
 
   async function uploadBatch(input,expectedUploadId=''){
@@ -906,6 +945,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
     resetProjectState(project);
     const chooser=input.closest?.('.modal')||null;
     const entries=files.map((file,index)=>registerQueuedUpload(project,file,index));
+    for(const entry of entries)entry.control.externalView=Boolean(input.externalView);
     const validEntries=[];
     for(const entry of entries){
       if(!/\.zip$/i.test(entry.file.name||''))failLocalUpload(entry,'仅支持 ZIP 压缩包');
@@ -947,15 +987,16 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
         if(fingerprintRow?.duplicateOf){failLocalUpload(entry,'本批次已选择内容相同的 ZIP 文件');return null}
         let item=null;
         try{
-            const session=await createZipUploadSession(project,file,{fetchImpl});
+            const session=await createZipUploadSession(project,file,{fetchImpl,expectedUploadId:String(input.resumeUploadId||'')});
             const id=String(session.upload_id||'');
             if(!id)throw new Error('服务器未返回 ZIP 上传会话 ID');
+            if(input.resumeUploadId&&id!==String(input.resumeUploadId))throw new Error('原ZIP身份未匹配历史会话，未发送任何分片');
             if(control.state==='cancelled'){
               try{await json(await fetchImpl(`/api/v19/projects/${encodeURIComponent(project)}/import/jobs/${encodeURIComponent(id)}/cancel`,{method:'POST',credentials:'same-origin'}))}catch(cleanupError){notify?.(`取消后的临时上传会话清理失败：${cleanupError?.message||cleanupError}`)}
               return null;
             }
             if(!isCurrentProject(project))throw new Error('项目已切换，请从原项目任务中心恢复');
-            if(batchTransfers.has(id)||uploadControl?.uploadId===id)throw new Error('选中的 ZIP 已在上传，请勿重复提交');
+            if(batchTransfers.has(id)||(uploadControl?.uploadId===id&&!uploadControl.stoppedComplete))throw new Error('选中的 ZIP 已在上传，请勿重复提交');
             item={id,file};entry.serverId=id;
             batchTransfers.delete(entry.id);batchFiles.delete(entry.id);
             control.state='active';control.localOnly=false;control.uploadId=id;control.expectedUploadId=id;control.progress=0;control.message='准备网络上传';
@@ -965,6 +1006,8 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
             const fallback={id,file_name:file.name,status:'uploading',created_at:new Date().toISOString(),uploaded_bytes:0,file_size:Number(file.size||0)};
             knownJobs.set(id,fallback);
             if(isCurrentProject(project))publishTaskCenterJob(project,fallback);
+            publishTransfer('session',control);
+            if(control.state==='paused'||control.state==='cancelled')return null;
             if(!selectionMounted&&isCurrentProject(project)){
               selectionMounted=true;selectedJobId=id;jobs=mergeJobs(jobs);
               current=jobs.find(x=>String(x.id||'')===selectedJobId)||null;
@@ -985,6 +1028,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
               },
               onTransfer:event=>{
                 if(control.state!=='active')return;
+                publishTransfer('progress',control,event);
                 control.progress=Math.round(event.ratio*1000)/10;
                 control.message='网络上传 '+control.progress+'% · '+bytes(event.loaded)+' / '+bytes(event.total);
                 if(isCurrentProject(project)){
@@ -993,6 +1037,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
                 }
               },
               onPhase:phase=>{
+                publishTransfer('processing',control,phase);
                 // Scanning/label decisions never consume a browser transfer slot.
                 control.state='post-upload';releaseSlot();refreshQueuedUploadPositions();
                 control.progress=100;control.message=phase.message;
@@ -1005,6 +1050,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
             // the imported material completion cannot be observed.
             const jobId=String(response.id||'');
             if(!jobId)throw new Error('ZIP 合并完成但未返回正式导入任务 ID，请在任务中心核对，勿重复上传');
+            publishTransfer('success',control,{jobId,response});
             const provisional={...response,id:jobId,file_name:response.file_name||item.file.name,status:response.status||'selecting',created_at:response.created_at||new Date().toISOString()};
             if(isCurrentProject(project)){
               if(jobId!==item.id){
@@ -1023,6 +1069,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
             return response;
           }catch(error){
             if(control.state==='paused'||control.state==='cancelled')return null;
+            publishTransfer('error',control,{error,message:String(error?.message||error)});
             if(item?.id&&isCurrentProject(project))window.UploadTaskCenterRuntime?.upsert?.({
               id:'zip:'+item.id,kind:'zip',title:item.file.name,status:'WAITING',progress:control.progress,
               stage:error?.zipCompletionUncertain?'等待服务器确认':'上传中断，等待续传',
@@ -1036,6 +1083,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
             if(batchTransfers.get(transferId)===control)batchTransfers.delete(transferId);
             refreshQueuedUploadPositions();
             if(isCurrentProject(project))render();
+            control.finish();
           }
       }),validEntries.length);
       const incomplete=entries.filter(entry=>['failed','active'].includes(entry.control.state)).length;
@@ -1076,7 +1124,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
   }
 
   const reportUploadBatchError=error=>{notify?.(`ZIP 批次处理失败：${error?.message||error}`);return null};
-  const runtime={upload,uploadBatch,previewOriginalLabels,confirmOriginalLabels,cancelOriginalLabels,matchExistingLabels,toggleManualLabels,setAdvancedExpanded,pauseUpload,cancelUpload,cancelQueuedUpload,stopImport,cancelJob,cancelAllActive,promptResume,resumeFromFile,reconcile,open,openTask,confirmLabels,forgetTerminal,showLabelSamples,useSourceLabel,setReviewSearch,setTargetSearch,setReviewPage,toggleLabelRow,setLabelMapping:setReviewLabelMapping,bulkMapLabels,snapshot:()=>({jobs:[...jobs],current,labelReviews,busy}),destroy(){destroyed=true;clearPoll();document.getElementById('zipImportDurableDock')?.remove()}};
+  const runtime={upload,uploadBatch,subscribeTransfers,resumeTransfer,getProjectId:pid,previewOriginalLabels,confirmOriginalLabels,cancelOriginalLabels,matchExistingLabels,toggleManualLabels,setAdvancedExpanded,pauseUpload,cancelUpload,cancelQueuedUpload,stopImport,cancelJob,cancelAllActive,promptResume,resumeFromFile,reconcile,open,openTask,confirmLabels,forgetTerminal,showLabelSamples,useSourceLabel,setReviewSearch,setTargetSearch,setReviewPage,toggleLabelRow,setLabelMapping:setReviewLabelMapping,bulkMapLabels,snapshot:()=>({jobs:[...jobs],current,labelReviews,busy}),destroy(){destroyed=true;transferObservers.clear();clearPoll();document.getElementById('zipImportDurableDock')?.remove()}};
   window.ZipImportRuntime=runtime;
   window.doUploadZip426=input=>uploadBatch(input).catch(reportUploadBatchError);
   window.doImportData=()=>{const input=document.getElementById('importFile');if(!input?.files?.length){notify?.('请选择 ZIP 压缩包');return null}return uploadBatch(input).catch(reportUploadBatchError)};

@@ -614,7 +614,18 @@ test('narrow label review cancels one server job without touching its sibling',a
     if(requestEvent.method()==='GET'&&url.pathname===`/api/v19/projects/${project.id}/import/jobs`)observationReads.push(url.pathname);
   };
   page.on('request',captureObservation);
-  await page.evaluate(()=>window.ZipImportRuntime.reconcile('request-count-audit'));
+  // Admission must share one browser task with the idle check: a registered
+  // poll/bootstrap reconciliation can start between separate Playwright calls.
+  await page.evaluate(async()=>{
+    await window.__v53InitPromise;
+    const runtime=window.ZipImportRuntime,deadline=Date.now()+10_000;
+    while(runtime.snapshot().busy){
+      if(Date.now()>deadline)throw new Error('ZIP reconciliation did not become idle');
+      await new Promise(resolve=>setTimeout(resolve,10));
+    }
+    window.PollRegistryRuntime?.clear?.('zip-import-runtime');
+    await runtime.reconcile('request-count-audit');
+  });
   page.off('request',captureObservation);
   expect(observationReads).toHaveLength(1);
   console.log(`[zip-reconcile-inventory] observation-only list GET before=2 after=${observationReads.length}`);

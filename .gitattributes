@@ -1,3 +1,4 @@
 # These reviewed upstream artifacts and notices are verified byte-for-byte.
 static/vendor/annotorious/** -text
 tools/third_party_notices/** -text
+static/vendor/uppy/** -text -whitespace

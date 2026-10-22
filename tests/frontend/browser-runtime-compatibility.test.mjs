@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync, readdirSync, statSync} from 'node:fs';
 import {join} from 'node:path';
+import {createHash} from 'node:crypto';
 
 import '../../static/browser-runtime.js';
 
@@ -152,7 +153,17 @@ test('training SSE and browser-to-platform requests stay same-origin', () => {
   assert.doesNotMatch(streamSource, /new Source\(`(?:https?|wss?):\/\//);
 
   const offenders = frontendFiles('static')
-    .filter(path => hardcodedNetworkCall.test(readFileSync(path, 'utf8')));
+    .filter(path => {
+      const source=readFileSync(path,'utf8');
+      if(path.replaceAll('\\','/')==='static/vendor/uppy/uppy.min.mjs'){
+        // The unmodified official distribution contains inactive remote-source
+        // plugins. Only this exact reviewed artifact is exempt from source-call
+        // scanning; PoC Chrome asserts zero external requests with Core/Dashboard.
+        assert.equal(createHash('sha256').update(source).digest('hex'),'4f77fed780378c09bb9c1cb818b9cadd21ab0f644070de1731e46013c352c37c');
+        return false;
+      }
+      return hardcodedNetworkCall.test(source);
+    });
   assert.deepEqual(offenders, []);
 });
 

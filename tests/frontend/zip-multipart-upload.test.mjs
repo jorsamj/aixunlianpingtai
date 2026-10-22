@@ -97,6 +97,21 @@ test('ZIP complete lost response recovers using the same durable job id without 
   assert.equal(requests.filter(x=>x.method==='GET').length,1);
 });
 
+test('multipart completedParts reports only acknowledged PUTs while other workers are dispatched',async()=>{
+  const {uploadZipMultipartJob}=await import('../../static/modules/zip-import-runtime.js');
+  const f=new File([new Uint8Array(12)],'confirmed.zip',{lastModified:1});
+  const pending=[],events=[];
+  const xhrFactory=()=>({upload:{},status:200,responseText:'{}',open(){},setRequestHeader(){},send(){pending.push(this)},abort(){this.onabort?.()}});
+  const fetchImpl=async url=>Response.json(url.endsWith('/complete')?{id:'confirmed',status:'selecting'}:{upload_id:'confirmed',part_size:4,completed_parts:[],total_parts:3});
+  const task=uploadZipMultipartJob('p',f,{fetchImpl,xhrFactory,onTransfer:event=>events.push(event)});
+  for(let i=0;i<100&&pending.length<3;i++)await new Promise(resolve=>setTimeout(resolve,5));
+  assert.equal(pending.length,3);
+  pending[0].onload();await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(events.at(-1).completedParts,1);
+  pending[1].onload();pending[2].onload();await task;
+  assert.equal(events.at(-1).completedParts,3);
+});
+
 test('ZIP complete unknown network state remains recoverable and never blindly retries POST', async () => {
   const {completeZipUpload}=await import('../../static/modules/zip-import-runtime.js');
   const requests=[];

@@ -17,6 +17,16 @@ on:
       - 'static/index.html'
       - 'static/main.mjs'
       - 'static/zip-import-bootstrap.mjs'
+      - 'static/modules/uppy-zip-*.js'
+      - 'static/vendor/uppy/**'
+      - 'tools/vendor_uppy.mjs'
+      - 'tools/third_party_notices/uppy/**'
+      - 'tests/frontend/uppy-*.test.mjs'
+      - 'tests/frontend/zip-transfer-observer.test.mjs'
+      - 'tests/browser/uppy-zip-poc.spec.mjs'
+      - 'tests/browser/helpers/uppy-zip.mjs'
+      - 'package.json'
+      - 'package-lock.json'
       - 'static/modules/zip-import-runtime.js'
       - 'static/modules/upload-task-center.js'
       - 'static/modules/storage-import-progress.js'
@@ -62,6 +72,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Install pinned frontend dependencies and verify offline artifacts
+        run: npm ci && npm run verify:uppy
       - name: Install atomic persistence test dependencies
         run: python -m pip install --disable-pip-version-check pytest filelock
       - name: Cross-platform atomic JSON staging and Windows contention
@@ -80,6 +92,10 @@ jobs:
           tests/frontend/zip-import-durable-runtime.test.mjs
           tests/frontend/zip-label-evidence-and-simple-training-ui.test.mjs
           tests/frontend/zip-multipart-upload.test.mjs
+          tests/frontend/zip-transfer-observer.test.mjs
+          tests/frontend/uppy-zip-adapter.test.mjs
+          tests/frontend/uppy-zip-view.test.mjs
+          tests/frontend/uppy-vendor.test.mjs
           tests/frontend/upload-task-center.test.mjs
           tests/frontend/storage-import-progress.test.mjs
           tests/frontend/import-dock-style.test.mjs
@@ -187,6 +203,7 @@ jobs:
           tests/api/test_v19_import_report_externalization.py
           tests/api/test_v19_import_bounded_admission.py
           tests/api/test_v19_multipart_controls.py
+          tests/api/test_v19_multipart_background_finalize.py
           tests/api/test_zip_class_samples_v19.py
           tests/api/test_v19_import_failure_rollback.py
       - name: Backend syntax and wiring guards
@@ -222,4 +239,4 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
       - name: Real Chrome refresh recovery
-        run: npx playwright test tests/browser/zip-import-refresh-recovery.spec.mjs
+        run: npx playwright test tests/browser/zip-import-refresh-recovery.spec.mjs tests/browser/uppy-zip-poc.spec.mjs
