@@ -191,6 +191,8 @@ Python定向：API test_v19_multipart_controls/multipart_background_finalize/job
 
 最终本地完整Chrome **38/38通过0失败0跳过（1.9分钟）**，C:/tmp/utc-chrome-final-green.log；600更新487ms、同步进度存储0、元素移除0。最后最小CSS/保序优化复测8/8（13.5秒），增加模块未就绪明确反馈后8/8（12.4秒，C:/tmp/utc-chrome-delivery.log），无扩大或删除断言；Node1239/1239（21.27秒，C:/tmp/utc-node-delivery.log）与Python49通过，原Permanent ZIP guards实际bash退出0，build identity=42.24.375。代码审查两项具体问题已修正并加测试；审查子代理后续因模型容量中止，未宣称取得完整无问题报告，最终差异由主会话逐项核验。
 
+代码首提交[4580756d92f373ccb40301ceeabf23aca045ea06](https://github.com/jorsamj/aixunlianpingtai/commit/4580756d92f373ccb40301ceeabf23aca045ea06)已普通推送。Frontend run[39736091868](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39736091868)的job[119681988102](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39736091868/job/119681988102)在旧“任何setTimeout均禁止”源码守卫失败，未进入Node步骤；不能称首提交全绿。根因是Node测试已适配可清理存储debounce，但工作流重复守卫漏同步。本轮用户明确要求避免每次XHR同步保存，故仅把同一守卫收紧为“恰好一处persistTimer = window.setTimeout(() => persist(), 500)、必须clearTimeout、禁止setInterval”，原PollRegistry调用断言和其他模块禁原生轮询规则全部保留，额外原生timer会失败。修正后的完整Polling guards原步骤已本地实际bash退出0，不删除/跳过测试，不新增轮询或CI范围。VERSION保持375；后续修正SHA的实际CI独立核验。
+
 当前状态：已完成待验收，准确提交SHA CI尚待补齐。提交关联、实际Actions/Checks与最终HEAD将在本节补记；旧5.6不可作为本轮CI。生产网络/任务规模/真实素材仍NOT VERIFIED，所有本轮写入在隔离测试目录。本轮不部署，不删除生产素材，不改变正式GT、历史任务及数据库。
 
 ## 6. 接续
