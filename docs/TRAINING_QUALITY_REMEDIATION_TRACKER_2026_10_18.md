@@ -1,3 +1,7 @@
+## 2026-10-22 训练准入与当前素材删除统一治理入口
+
+本轮GOV-01–11唯一需求和进度为[GT生命周期专项第十节](TRAINING_MATERIAL_LIFECYCLE_GOVERNANCE_2026_10_21.md)：全部已登录且可访问项目用户同权，无管理员白名单/RBAC；诊断、全部问题选择、GT整组删除、清空、队列重冻结及真实结果复检。当前代码和限定Chrome/Node已通过，Python合同迁移及最终SHA CI仍在收尾；生产未操作，单份存储/Bundle回收未冒称完成。
+
 ## 2026-10-21 综合治理补充验收入口
 
 Loading覆盖矩阵、成功训练计数/PARTIAL_SUCCESS证据、报告耗时范围和生产只读性能方案见[综合专项第10节](FRONTEND_STARTUP_REPORT_UX_GOVERNANCE_2026_10_21.md)。本地限定测试已完成，最终CI须按本轮SHA，未覆盖和未知提交恢复限制不隐藏；Annotorious后续独立实施。

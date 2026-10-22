@@ -157,5 +157,8 @@ class StorageManager:
         return self.provider_for(source_id).upload(object_key, source, content_type=content_type)
 
     def delete_source_file(self, value: str | Mapping[str, object]) -> None:
-        row = self.material(value)
-        self.provider_for(str(row["storage_source_id"])).delete(str(row["object_key"]))
+        raise StorageError(
+            code='PHYSICAL_DELETE_SAFETY_UNVERIFIED',
+            message='PHYSICAL_DELETE_SAFETY_UNVERIFIED: 尚未证明源文件无当前、已退休及活动共享引用',
+            solution='请使用统一逻辑删除；底层字节保留，等待可靠物理引用核验。',
+        )

@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
+import * as submitModule from '../../static/modules/training-submit.js';
+const collectTrainingAdmissionBlockers=(...args)=>{assert.equal(typeof submitModule.collectTrainingAdmissionBlockers,'function','formal Submit Owner must expose all-blocker projection');return submitModule.collectTrainingAdmissionBlockers(...args)};
+
 import {createTrainingDraft, trainingDraftToRequest} from '../../static/modules/training-draft.js';
 import {
   benchmarkReuseContext,
@@ -1044,4 +1047,39 @@ test('opening a fresh form after success resets old submit feedback without a su
   assert.equal(root.panel.hidden,true);
   assert.equal(fixture.runtime.state().lastStage,'idle');
   cleanup(fixture.runtime);
+});
+
+
+test('admission collects all confirmed blockers and uses unique affected images rather than issue rows',()=>{
+  const items=collectTrainingAdmissionBlockers({draft:draft(),base:{blocked:true},
+    compatibility:{ready:true,issue_count:76,affected_image_count:38,issue_counts:{duplicate_annotation_conflict:38,partial_review_scope:38}},
+    externalReadiness:{ready:false,reason:'external-master-data-stale',message:'畅联云主数据已过期'}});
+  assert.ok(items.some(row=>row.code==='iteration'));
+  assert.ok(items.some(row=>row.code==='external-master-data-stale'));
+  assert.equal(items.find(row=>row.code==='material-compatibility').count,38);
+  assert.equal(items.find(row=>row.code==='duplicate_annotation_conflict').count,38);
+  assert.equal(items.find(row=>row.code==='partial_review_scope').count,38);
+  assert.ok(items.every(row=>!row.transient));
+});
+
+test('admission distinguishes unfinished checks from a recoverable failed check',()=>{
+  const pending=collectTrainingAdmissionBlockers({draft:draft(),compatibility:{ready:false,loading:true}});
+  assert.equal(pending[0].code,'material-compatibility-loading');assert.equal(pending[0].transient,true);
+  const failed=collectTrainingAdmissionBlockers({draft:draft(),compatibility:{ready:false,loading:false,error:'服务暂不可用'}});
+  assert.equal(failed[0].code,'material-compatibility-error');assert.equal(failed[0].transient,false);
+  assert.match(failed[0].message,/服务暂不可用/);
+});
+
+test('admission does not invent a unique image count from an issue-only response',()=>{
+  const blockers=collectTrainingAdmissionBlockers({draft:draft(),compatibility:{ready:true,issue_count:76}});
+  const material=blockers.find(row=>row.code==='material-compatibility');
+  assert.equal(material.count,null);assert.doesNotMatch(material.message,/76张/);
+});
+
+
+test('a prepared mother model cannot hide a noninteger Batch blocker',()=>{
+  const state=baseState();state.targets=[{...target,base_models:[{value:'custom.pt',model_status:'FOUND'}]}];
+  state.trainingDraft=draft({resource:{strategy:'manual',device:'0',batch:1.5,workers:0}});installDom();globalThis.window={submitTrain429:()=>null};
+  const runtime=installTrainingSubmitRuntime({getState:()=>state,projectId:()=> 'project-1',trainingDraftRuntime:{sync:()=>state.trainingDraft,current:()=>state.trainingDraft,base:()=>({blocked:false})},trainingDraftToRequest});
+  try{assert.equal(runtime.state().readiness.ready,false);assert.match(runtime.state().readiness.blockers.find(row=>row.code==='training-config')?.message||'',/Batch/)}finally{cleanup(runtime)}
 });

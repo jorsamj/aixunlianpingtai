@@ -1454,6 +1454,22 @@ def get_project(project_id: str) -> Dict[str, Any]:
     return read_json(meta, {})
 
 
+
+def _material_governance_actor(request: Request, project_id: str) -> Dict[str, Any]:
+    """Use the existing verified login; all project users have equal material rights."""
+    claims = getattr(request.state, 'changlian_user', None)
+    if claims is None:
+        claims = _CHANGLIAN_AUTH_SESSIONS.verify(request.cookies.get(SESSION_COOKIE_NAME, ''))
+    actor_id = str((claims or {}).get('username') or '').strip()
+    if not actor_id:
+        if not _auth_test_bypass_enabled():
+            raise HTTPException(401, detail={'code':'AUTH_REQUIRED','message':'请先登录平台后管理当前项目素材'})
+        # Preserve the pre-existing server-controlled isolated test harness only.
+        actor_id = 'isolated-test'
+    get_project(project_id)
+    return {'actor_id': actor_id}
+
+
 def save_project(project: Dict[str, Any]):
     project["updated_at"] = now_iso()
     meta_path = project_dir(project["id"]) / "meta.json"
@@ -3101,9 +3117,10 @@ def _v50_cleanup_buffered_image_batch_files(
     for record in records:
         image_id = str(record.get("id") or "")
         try:
-            manager.delete_source_file(record)
+            material_store(project_id).record_deferred_cleanup(record,
+                owner='upload_batch_rollback',error='PHYSICAL_DELETE_SAFETY_UNVERIFIED')
         except Exception as error:
-            errors.append(f"{record.get('object_key') or record.get('stored_name')}: {error}")
+            errors.append(f"延期回收记录未保存 {record.get('object_key') or record.get('stored_name')}: {redact_storage_error(error)}")
         paths = []
         if re.fullmatch(r"[A-Za-z0-9_-]{1,128}", image_id):
             paths.append(p / "annotations" / f"{image_id}.json")
@@ -3590,13 +3607,14 @@ def add_image_record(
                 }
             elif not annotation_path.exists():
                 write_annotation(project_id, img_id, [], "unannotated")
-    except Exception:
+    except Exception as original_error:
         annotation_path.unlink(missing_ok=True)
         _v50_annotation_repository(project_id).remove([img_id])
         try:
-            manager.delete_source_file(record)
-        except Exception:
-            pass
+            material_store(project_id).record_deferred_cleanup(record,
+                owner='upload_rollback',error=redact_storage_error(original_error))
+        except Exception as cleanup_error:
+            original_error.add_note('延期回收记录保存失败：'+redact_storage_error(cleanup_error))
         raise
     if batch:
         return dict(batch["records"][str(img_id)])
@@ -3784,6 +3802,7 @@ _V50_DATASET_DELETE_STATUSES = {
     "recovered",
     "deletion_finished",
     "recovery_failed",
+    "manual_recovery_required",
     "rolled_back",
     "rollback_failed",
 }
@@ -4199,36 +4218,20 @@ def _v50_restore_dataset_delete_rows(
     return material_store(project_id).mutate(restore)
 
 
-def _v50_finish_absent_dataset_deletion(
-    project_id: str, journal: Dict[str, Any]
-):
-    token = str(journal.get("token") or "")
-
-    def finish(rows):
-        removed = [
-            dict(row)
-            for row in rows
-            if row.get(_V50_DATASET_DELETE_CLAIM_FIELD) == token
-        ]
-        rows[:] = [
-            row
-            for row in rows
-            if row.get(_V50_DATASET_DELETE_CLAIM_FIELD) != token
-        ]
-        return removed
-
-    return material_store(project_id).mutate(finish)
 
 
 def _v50_cleanup_dataset_delete_artifacts(journal: Dict[str, Any]):
     project_id = str(journal.get("project_id") or "")
     token = str(journal.get("token") or "")
-    # The SQLite backup is part of the deletion journal. Clear it before
-    # removing filesystem recovery evidence so a DB failure leaves the journal.
-    AnnotationRepository(project_dir(project_id)).complete_delete(token)
     staging_dir = _v50_dataset_delete_staging_dir(project_id, token)
     if staging_dir.exists():
-        shutil.rmtree(staging_dir)
+        paths=list(staging_dir.rglob('*'))
+        if staging_dir.is_symlink() or any(path.is_symlink() or not path.is_dir() for path in paths):
+            raise _v50_recovery_conflict('STAGED_BYTES_RETAINED: staging仍有原图或证据，已保留等待独立恢复')
+        for path in sorted(paths,key=lambda path:len(path.parts),reverse=True):
+            path.rmdir()
+        staging_dir.rmdir()
+    AnnotationRepository(project_dir(project_id)).complete_delete(token)
     _v50_dataset_delete_journal_path(project_id, token).unlink(missing_ok=True)
 
 
@@ -4261,15 +4264,16 @@ def _v50_recover_one_dataset_deletion(
                 annotation_repository.restore_delete(token)
             journal["status"] = "recovered"
         else:
-            with material_annotation_lifecycle_fence(project_dir(project_id)):
-                _v50_finish_absent_dataset_deletion(project_id, journal)
-                annotation_repository.finalize_delete(token)
-            journal["status"] = "deletion_finished"
+            journal['status']='manual_recovery_required'
+            journal['last_error']='DATASET_METADATA_ABSENT: 原图和GT备份已保留，需要独立恢复'
+            _v50_write_dataset_delete_journal(journal)
+            raise _v50_recovery_conflict(journal['last_error'])
         _v50_write_dataset_delete_journal(journal)
         _v50_cleanup_dataset_delete_artifacts(journal)
         return True
     except Exception as error:
-        journal["status"] = "recovery_failed"
+        if journal.get('status') != 'manual_recovery_required':
+            journal["status"] = "recovery_failed"
         journal["last_error"] = str(
             error.detail if isinstance(error, HTTPException) else error
         )
@@ -4410,181 +4414,19 @@ def _v50_stage_material_file(source: Path, destination: Path):
     source.replace(destination)
 
 
+def _require_material_delete_preview(project_id: str):
+    raise HTTPException(status_code=409, detail={
+        'code':'MATERIAL_DELETE_PREVIEW_REQUIRED',
+        'message':'请通过统一素材治理预览精确范围并确认，旧同步删除入口已停用。',
+        'preview_url':f'/api/v62/projects/{project_id}/material-batches/estimate',
+        'operation':'DELETE_INDEX',
+    })
+
+
 @app.delete("/api/projects/{project_id}/datasets/{dataset_id}")
 def delete_dataset(project_id: str, dataset_id: str):
-    if dataset_id == "default":
-        raise HTTPException(status_code=400, detail="默认数据集不能删除")
     get_project(project_id)
-    coordination_lock = _v50_dataset_lock(project_id, dataset_id)
-    claim_token = uuid.uuid4().hex
-    journal = {
-        "token": claim_token,
-        "project_id": project_id,
-        "dataset_id": dataset_id,
-        "created_at": now_iso(),
-        "updated_at": now_iso(),
-        "status": "created",
-        "staging_dir": str(
-            _v50_dataset_delete_staging_dir(project_id, claim_token)
-        ),
-        "claimed_rows": [],
-        "claimed_positions": {},
-        "files": [],
-    }
-    registered = False
-    try:
-        with coordination_lock, material_annotation_lifecycle_fence(
-            project_dir(project_id)
-        ):
-            _v50_assert_dataset_writable_locked(project_id, dataset_id)
-            datasets = _v50_read_datasets_strict(project_id)
-            if not any(str(item.get("id")) == dataset_id for item in datasets):
-                raise HTTPException(status_code=404, detail="数据集不存在")
-            remote_rows = [
-                row
-                for row in material_store(project_id).read().rows
-                if str(row.get("dataset_id") or "default") == dataset_id
-                and str(row.get("storage_source_id") or "default_local")
-                != "default_local"
-            ]
-            if remote_rows:
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        "该历史数据集包含多来源素材，不能使用旧的数据集物理删除流程。"
-                        "请在统一素材池中按图片删除索引，并仅在明确确认后删除源文件。"
-                    ),
-                )
-            _v50_write_dataset_delete_journal(journal)
-            _v50_register_dataset_delete_token(
-                claim_token, project_id, dataset_id
-            )
-            registered = True
-
-            def claim_dataset_rows(rows):
-                claimed_rows = []
-                positions = {}
-                for position, img in enumerate(rows):
-                    if img.get("dataset_id", "default") != dataset_id:
-                        continue
-                    original = dict(img)
-                    original.pop(_V50_DATASET_DELETE_CLAIM_FIELD, None)
-                    image_id = str(original.get("id"))
-                    positions[image_id] = position
-                    img[_V50_DATASET_DELETE_CLAIM_FIELD] = claim_token
-                    claimed_rows.append(original)
-                return {"rows": claimed_rows, "positions": positions}
-
-            claimed = material_store(project_id).mutate(claim_dataset_rows)
-            journal["claimed_rows"] = claimed["rows"]
-            journal["claimed_positions"] = claimed["positions"]
-            journal["files"] = _v50_dataset_delete_file_entries(
-                project_id, journal
-            )
-            journal["status"] = "claimed"
-            _v50_write_dataset_delete_journal(journal)
-            AnnotationRepository(project_dir(project_id)).prepare_delete(
-                claim_token,
-                [str(row.get("id")) for row in journal["claimed_rows"]],
-            )
-
-        journal["status"] = "staging"
-        _v50_write_dataset_delete_journal(journal)
-        failed_items = []
-        for item in journal["files"]:
-            if not item.get("existed"):
-                continue
-            source = Path(item["source"])
-            staged = Path(item["staged"])
-            try:
-                if not source.exists():
-                    raise FileNotFoundError(str(source))
-                _v50_stage_material_file(source, staged)
-            except OSError as error:
-                failed_items.append({
-                    "id": item.get("image_id"),
-                    "kind": item.get("kind"),
-                    "errors": [str(error)],
-                })
-                break
-
-        if failed_items:
-            try:
-                _v50_restore_dataset_delete_files(project_id, journal)
-                with coordination_lock, material_annotation_lifecycle_fence(
-                    project_dir(project_id)
-                ):
-                    _v50_restore_dataset_delete_rows(project_id, journal)
-                    AnnotationRepository(project_dir(project_id)).restore_delete(
-                        claim_token
-                    )
-                    journal["status"] = "rolled_back"
-                    _v50_write_dataset_delete_journal(journal)
-                _v50_cleanup_dataset_delete_artifacts(journal)
-            except Exception as rollback_error:
-                journal["status"] = "rollback_failed"
-                journal["last_error"] = str(
-                    rollback_error.detail
-                    if isinstance(rollback_error, HTTPException)
-                    else rollback_error
-                )
-                try:
-                    _v50_write_dataset_delete_journal(journal)
-                except Exception:
-                    pass
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "message": "素材文件被占用，回滚尚待恢复",
-                        "failed_items": failed_items,
-                    },
-                ) from rollback_error
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "message": "部分素材文件被占用，数据集未删除",
-                    "failed_items": failed_items,
-                },
-            )
-
-        journal["status"] = "staged"
-        _v50_write_dataset_delete_journal(journal)
-        with coordination_lock, material_annotation_lifecycle_fence(
-            project_dir(project_id)
-        ):
-            def finalize_dataset_rows(rows):
-                finalized = [
-                    dict(img)
-                    for img in rows
-                    if img.get(_V50_DATASET_DELETE_CLAIM_FIELD) == claim_token
-                ]
-                rows[:] = [
-                    img
-                    for img in rows
-                    if img.get(_V50_DATASET_DELETE_CLAIM_FIELD) != claim_token
-                ]
-                return finalized
-
-            finalized = material_store(project_id).mutate(finalize_dataset_rows)
-            if len(finalized) != len(journal["claimed_rows"]):
-                raise RuntimeError("数据集删除锁定的素材数量已变化")
-            AnnotationRepository(project_dir(project_id)).finalize_delete(claim_token)
-            journal["status"] = "finalized"
-            _v50_write_dataset_delete_journal(journal)
-            datasets = _v50_read_datasets_strict(project_id)
-            atomic_write_json(
-                datasets_file(project_id),
-                [item for item in datasets if str(item.get("id")) != dataset_id],
-            )
-            journal["status"] = "metadata_removed"
-            _v50_write_dataset_delete_journal(journal)
-
-        _v50_cleanup_dataset_delete_artifacts(journal)
-        return {"ok": True}
-    finally:
-        if registered:
-            with coordination_lock:
-                _v50_unregister_dataset_delete_token(claim_token)
+    _require_material_delete_preview(project_id)
 
 
 def _system_recommendation_payload(cuda: bool = False, gpu_name: str = "未探测"):
@@ -5241,27 +5083,7 @@ def delete_image(
     delete_source: Optional[bool] = None, confirmation: str = "",
 ):
     get_project(project_id)
-    p = project_dir(project_id)
-    images = load_images(project_id)
-    target = None
-    for img in images:
-        if img["id"] == image_id:
-            target = img
-    if not target:
-        raise HTTPException(status_code=404, detail="图片不存在")
-    source_id = str(target.get("storage_source_id") or "default_local")
-    should_delete_source = source_id == "default_local" if delete_source is None else bool(delete_source)
-    if should_delete_source and source_id != "default_local" and confirmation != "DELETE_SOURCE":
-        raise HTTPException(status_code=409, detail="删除外部源文件需要二次确认")
-    if should_delete_source:
-        try:
-            storage_manager(project_id).delete_source_file(target)
-        except StorageError as error:
-            _raise_storage_error(error)
-    (p / "annotations" / f"{image_id}.json").unlink(missing_ok=True)
-    AnnotationRepository(p).remove([image_id])
-    material_store(project_id).remove([image_id])
-    return {"ok": True, "source_deleted": should_delete_source, "index_deleted": True}
+    _require_material_delete_preview(project_id)
 
 
 
@@ -5275,53 +5097,7 @@ class V46BatchDeleteImagesReq(BaseModel):
 @app.post("/api/v46/projects/{project_id}/images/batch-delete")
 def v46_batch_delete_images(project_id: str, payload: V46BatchDeleteImagesReq):
     get_project(project_id)
-    ids = {str(x) for x in (payload.image_ids or []) if str(x).strip()}
-    if not ids:
-        return {"ok": True, "deleted": 0, "deleted_images": [], "failed_items": []}
-    p = project_dir(project_id)
-    images = load_images(project_id)
-    selected_rows = [img for img in images if str(img.get("id")) in ids]
-    if payload.delete_source is True and payload.confirmation != "DELETE_SOURCE" and any(
-        str(img.get("storage_source_id") or "default_local") != "default_local"
-        for img in selected_rows
-    ):
-        raise HTTPException(status_code=409, detail="删除外部源文件需要二次确认")
-    deleted_images = []
-    failed_items = []
-    found_ids = set()
-    for img in images:
-        image_id = str(img.get("id"))
-        if image_id not in ids:
-            continue
-        found_ids.add(image_id)
-        errors = []
-        source_id = str(img.get("storage_source_id") or "default_local")
-        should_delete_source = source_id == "default_local" if payload.delete_source is None else bool(payload.delete_source)
-        if should_delete_source:
-            try:
-                storage_manager(project_id).delete_source_file(img)
-            except StorageError as error:
-                errors.append(f"源文件删除失败：{error.detail or error.message}")
-        if not errors:
-            try:
-                (p / "annotations" / f"{image_id}.json").unlink(missing_ok=True)
-            except OSError as error:
-                errors.append(f"标注文件删除失败：{error}")
-        if errors:
-            failed_items.append({"id": image_id, "filename": img.get("filename"), "errors": errors})
-            continue
-        deleted_images.append({"id": image_id, "filename": img.get("filename"), "source_deleted": should_delete_source})
-    for missing_id in sorted(ids - found_ids):
-        failed_items.append({"id": missing_id, "filename": "", "errors": ["图片不存在"]})
-    if deleted_images:
-        AnnotationRepository(p).remove(item['id'] for item in deleted_images)
-        material_store(project_id).remove(item["id"] for item in deleted_images)
-    return {
-        "ok": not failed_items,
-        "deleted": len(deleted_images),
-        "deleted_images": deleted_images,
-        "failed_items": failed_items,
-    }
+    _require_material_delete_preview(project_id)
 
 
 LEGACY_ANNOTATED_IMPORT_BLOCKED_DETAIL = (
@@ -20827,6 +20603,7 @@ class V47CleanReq(BaseModel):
 
 class V47CleanConfirmReq(BaseModel):
     delete_ids: List[str]
+    skip_image_ids: List[str] = Field(default_factory=list)
 
 
 class V47CleanRuntimeReq(BaseModel):
@@ -21614,7 +21391,7 @@ def _v47_frozen_clean_selection_ids(task_id: str) -> List[str]:
             ).fetchall()
         ]
 
-def _v47_validate_clean_confirmation(project_id: str, task_id: str) -> set[str]:
+def _v47_validate_clean_confirmation(project_id: str, task_id: str, *, skip_image_ids=()) -> set[str]:
     """Fail closed before any destructive or processed-status confirmation."""
     from platform_core.cleaning_batches import clean_result_source_sha256
 
@@ -21658,7 +21435,7 @@ def _v47_validate_clean_confirmation(project_id: str, task_id: str) -> set[str]:
                     source_hash = clean_result_source_sha256(result)
                 except (TypeError, ValueError, AttributeError):
                     source_hash = ''
-                if not source_hash or source_hash != current.get(str(image_id), ''):
+                if not source_hash or (str(image_id) not in skip_image_ids and source_hash != current.get(str(image_id), '')):
                     raise HTTPException(
                         status_code=409,
                         detail='素材内容已变化或清洗结果无可信哈希，请重新清洗后确认',
@@ -22190,19 +21967,18 @@ def v47_confirm_clean(project_id: str, task_id: str, payload: V47CleanConfirmReq
         raise HTTPException(status_code=404, detail='清洗任务不存在')
     # Never delete or mark processed based on the previous contents of a
     # storage-source object. Validate the entire frozen selection first.
-    allowed = _v47_validate_clean_confirmation(project_id, task_id)
+    if payload.delete_ids:
+        _require_material_delete_preview(project_id)
+    skipped={str(value) for value in payload.skip_image_ids}
+    allowed = _v47_validate_clean_confirmation(project_id, task_id, skip_image_ids=skipped) if skipped else _v47_validate_clean_confirmation(project_id,task_id)
     requested = {str(x) for x in payload.delete_ids}
     if requested - allowed:
         raise HTTPException(status_code=409, detail='删除范围不属于本次有效清洗结果')
-    ids = requested
+    if skipped - allowed:
+        raise HTTPException(status_code=409,detail='跳过范围不属于本次有效清洗结果')
     deleted = 0
     deleted_images = []
     failed_items = []
-    if ids:
-        res = v46_batch_delete_images(project_id, V46BatchDeleteImagesReq(image_ids=list(ids)))
-        deleted = int(res.get('deleted') or 0)
-        deleted_images = list(res.get('deleted_images') or [])
-        failed_items = list(res.get('failed_items') or [])
     # 清洗确认严格绑定创建时已经冻结的 selection.sqlite3。
     # FILTERED 范围不能因为兼容层 image_ids 为空而扩大到整个素材库。
     wanted = set(_v47_frozen_clean_selection_ids(task_id))
@@ -22223,7 +21999,7 @@ def v47_confirm_clean(project_id: str, task_id: str, payload: V47CleanConfirmReq
     # no longer exists, while a failed delete retains its previous state for
     # an explicit retry. The frozen selection remains authoritative.
     processed_ids = list(dict.fromkeys(
-        image_id for image_id in existing_ids if image_id not in requested
+        image_id for image_id in existing_ids if image_id not in requested | skipped
     ))
     if processed_ids:
         materials.patch_many(
@@ -22239,6 +22015,7 @@ def v47_confirm_clean(project_id: str, task_id: str, payload: V47CleanConfirmReq
     shared_task_artifacts().atomic_write_json(task_id, 'clean_confirmation.json', {
         'confirmed_at': now_iso(), 'deleted': deleted, 'deleted_ids': deleted_ids,
         'delete_failures': len(failed_items), 'processed_ids': processed_ids,
+        'skipped_image_ids': sorted(skipped),
     })
     return {'ok': not failed_items, 'deleted': deleted, 'deleted_ids': deleted_ids, 'deleted_images': deleted_images, 'failed_items': failed_items, 'processed_ids': processed_ids}
 
@@ -24268,6 +24045,7 @@ app.include_router(material_batch_router(
     shared_task_artifacts,
     _storage_source_fence,
     training_selection_provider=_training_compatibility_request,
+    actor_provider=_material_governance_actor,
 ))
 app.include_router(training_material_picker_router(
     get_project,

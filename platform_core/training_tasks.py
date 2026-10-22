@@ -14,7 +14,7 @@ import tempfile
 import threading
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
 from typing import Any, Callable, Mapping, Sequence
@@ -995,6 +995,31 @@ def _indexed_content_identity_ready(images: Sequence[Mapping[str, Any]]) -> bool
         if size_bytes <= 0:
             return False
     return True
+
+
+def revalidate_queued_training_selection(materials: MaterialRepository, split: SplitRequest):
+    """Reduce a queued exact request to live identities, never refill from a filter.
+
+    Called under the existing lifecycle fence, before formal GT/split admission.
+    It is not allowed to rewrite an already-bound input freeze.
+    """
+    requested = tuple(dict.fromkeys((*split.train_image_ids, *split.test_image_ids)))
+    found = set()
+    for offset in range(0, len(requested), 500):
+        found.update(str(row['id']) for row in materials.get_many(requested[offset:offset + 500]))
+    train = tuple(key for key in split.train_image_ids if key in found)
+    test = tuple(key for key in split.test_image_ids if key in found)
+    if len(train) < 2:
+        raise ValueError('TRAINING_SELECTION_INSUFFICIENT: 原请求范围内有效训练素材不足2张，请重新选择素材')
+    if split.mode is SplitMode.INDEPENDENT_TEST_SET and not test:
+        raise ValueError('TRAINING_TEST_SELECTION_INSUFFICIENT: 原请求独立Test素材已不可用，不能自动补选')
+    report = {
+        'requested_train_count': len(split.train_image_ids),
+        'requested_test_count': len(split.test_image_ids),
+        'remaining_train_count': len(train), 'remaining_test_count': len(test),
+        'removed_image_ids': [key for key in requested if key not in found],
+    }
+    return replace(split, train_image_ids=train, test_image_ids=test), report
 
 
 def _selected_project_images(

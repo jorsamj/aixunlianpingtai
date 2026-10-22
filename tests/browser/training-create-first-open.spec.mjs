@@ -1,3 +1,4 @@
+import {returnToTrainingConfiguration} from './helpers/training-admission.mjs';
 import {test, expect} from '@playwright/test';
 
 async function selectIsolatedTestProject(page, projectId, pageName = '算法列表') {
@@ -244,6 +245,7 @@ test('training dialog shows canonical inherited labels horizontally without hist
   await card.getByRole('button', {name: '训练'}).click();
   const dialog = page.getByRole('dialog', {name: '创建训练任务'});
   await expect(dialog).toBeVisible({timeout: 10_000});
+  await returnToTrainingConfiguration(page);
 
   await page.evaluate(({algorithmId}) => {
     const algorithm = (state.algorithms || []).find(row => String(row?.id || '') === String(algorithmId));
@@ -352,6 +354,7 @@ test('same selected materials reload canonical labels after a completed label un
   await card.getByRole('button', {name: '训练'}).click();
   let dialog = page.getByRole('dialog', {name: '创建训练任务'});
   await expect(dialog).toBeVisible({timeout: 10_000});
+  await returnToTrainingConfiguration(page);
   await page.evaluate(() => {
     if (!(state.labels || []).some(row => String(row?.code || '') === 'fire')) {
       state.labels = [...(state.labels || []), {
@@ -378,6 +381,7 @@ test('same selected materials reload canonical labels after a completed label un
   await card.getByRole('button', {name: '训练'}).click();
   dialog = page.getByRole('dialog', {name: '创建训练任务'});
   await expect(dialog).toBeVisible({timeout: 10_000});
+  await returnToTrainingConfiguration(page);
   await page.evaluate(() => window.TrainingDraftRuntime.setMaterialIds(['same-material-after-unify']));
 
   panel = dialog.locator('#trainingLabelContractPanel');
@@ -431,6 +435,7 @@ test('training target is the only automatic early-stop control', async ({page, r
   await card.getByRole('button', {name: '训练'}).click();
   const dialog = page.getByRole('dialog', {name: '创建训练任务'});
   await expect(dialog).toBeVisible({timeout: 10_000});
+  await returnToTrainingConfiguration(page);
 
   await dialog.locator('[data-mode="custom"]').click();
   await expect(dialog.getByRole('button', {name: '配置更多专业参数'})).toBeVisible();
@@ -570,6 +575,7 @@ test('frozen feedback candidates stay aligned with training submit provenance', 
   await card.getByRole('button', {name: '训练'}).click();
   const dialog = page.getByRole('dialog', {name: '创建训练任务'});
   await expect(dialog).toBeVisible({timeout: 10_000});
+  await returnToTrainingConfiguration(page);
   await expect(dialog.locator('#tr429Target')).toHaveValue('feedback-training-target');
 
   await page.evaluate(({algorithmId}) => {
@@ -649,6 +655,7 @@ test('verified fixed benchmark stays aligned from backend availability to traini
   await card.getByRole('button',{name:'训练'}).click();
   const dialog=page.getByRole('dialog',{name:'创建训练任务'});
   await expect(dialog).toBeVisible({timeout:10000});
+  await returnToTrainingConfiguration(page);
   await expect(dialog.locator('[data-benchmark-reuse="available"]')).toContainText('11 张');
   // Availability alone must NOT silently replace the default 60/20/20 split.
   await expect(dialog.locator('#trV3BenchmarkReuse')).not.toBeChecked();

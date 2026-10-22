@@ -508,6 +508,36 @@ def test_training_prepare_persists_all_scope_drift_issues_before_failure(tmp_pat
     assert all(item["missing_label_codes"] == ["smoke"] for item in page)
 
 
+def test_queued_prepare_refreezes_remaining_original_scope_and_archives_request(tmp_path):
+    from types import SimpleNamespace
+    data_dir = tmp_path / "data"
+    project_id = _build_project(data_dir)
+    project = data_dir / "projects" / project_id
+    repository, artifacts, target_id, _prep_id = _runtime(data_dir, project_id)
+    materials = MaterialRepository(project)
+    annotations = AnnotationRepository(project)
+    payload = artifacts.read_json(target_id, "payload.json")
+    original = list(payload["train_image_ids"])
+    payload.update(schema_version=4, train_labels=["fire"],
+        expected_material_revision=materials.current_revision(),
+        expected_annotation_revision=annotations.current_revision())
+    materials.remove_many(["image-1"])
+    annotations.remove(["image-1"])
+    # An unrelated new image must never replace the removed requested identity.
+    materials.upsert_many([{**materials.get("image-0"), "id": "outside"}])
+    handler = RemoteTrainingPrepareHandler(data_dir)
+    updated = handler._freeze_request_contract(SimpleNamespace(artifacts=artifacts), repository.get(target_id), payload)
+    assert updated["train_image_ids"] == ["image-0", "image-2", "image-3"]
+    assert updated["input_selection_recheck"]["removed_image_ids"] == ["image-1"]
+    assert updated["input_selection_recheck"]["requested_train_count"] == 4
+    request = artifacts.read_json(target_id, "input-request-selection.json")
+    assert request["train_image_ids"] == original
+    frozen = artifacts.read_json(target_id, "input-freeze.json")
+    assert frozen["input_freeze_id"] == updated["input_freeze_id"]
+    assert "outside" not in updated["train_image_ids"]
+    assert (project / "uploads/image-1.jpg").is_file()
+
+
 def test_training_prepare_persists_revision_drift_error_without_creating_freeze(tmp_path):
     data_dir = tmp_path / "data"
     project_id = _build_project(data_dir)
@@ -524,6 +554,25 @@ def test_training_prepare_persists_revision_drift_error_without_creating_freeze(
     assert evidence["input_freeze_created"] is False
     assert evidence["task_id"] == target_id
     assert not artifacts.artifact_path(target_id, "input-freeze.json").exists()
+
+
+def test_prepare_never_overwrites_freeze_published_before_payload_crash(tmp_path):
+    from types import SimpleNamespace
+    data_dir = tmp_path / "data"
+    project_id = _build_project(data_dir)
+    repository, artifacts, target_id, _prep_id = _runtime(data_dir, project_id)
+    payload = artifacts.read_json(target_id, "payload.json")
+    payload.update(schema_version=4, train_labels=["fire"])
+    handler = RemoteTrainingPrepareHandler(data_dir)
+    context = SimpleNamespace(artifacts=artifacts)
+    handler._freeze_request_contract(context, repository.get(target_id), payload)
+    path = artifacts.artifact_path(target_id, "input-freeze.json")
+    original = path.read_bytes()
+    MaterialRepository(data_dir / "projects" / project_id).remove_many(["image-1"])
+    with pytest.raises(RemoteTrainingPreparationError) as caught:
+        handler._freeze_request_contract(context, repository.get(target_id), payload)
+    assert caught.value.code == "TRAINING_FREEZE_PUBLICATION_INCOMPLETE"
+    assert path.read_bytes() == original
 
 
 def test_remote_training_prepare_freezes_feedback_subset_without_agent_feedback_dependency(tmp_path):
@@ -847,3 +896,35 @@ def test_cancelled_training_parent_is_not_reactivated_by_prepare_recovery(tmp_pa
     assert target.required_capabilities == ("training.ultralytics",)
     payload = artifacts.read_json(target_id, "payload.json")
     assert payload["remote_input_state"] == "PREPARING"
+
+
+# GOV: a queued request is an exact candidate set, never a fresh project filter.
+def _queued_recheck(materials,split):
+    import platform_core.training_tasks as module
+    fn=getattr(module,'revalidate_queued_training_selection',None)
+    assert callable(fn),'queued preparation must revalidate only its original exact candidate IDs'
+    return fn(materials,split)
+
+
+def test_queued_selection_10000_to_9500_does_not_add_new_project_images(tmp_path):
+    from platform_core.training_splits import SplitRequest,SplitMode
+    materials=MaterialRepository(tmp_path/'projects'/'queued')
+    original=tuple(f'image-{i:05d}' for i in range(10000))
+    materials.upsert_many([{'id':key,'filename':key+'.jpg'} for key in original[500:]]+[{'id':'outside-original','filename':'outside.jpg'},{'id':'test-original','filename':'test.jpg'}])
+    split=SplitRequest(SplitMode.INDEPENDENT_TEST_SET,original,('test-original',))
+    effective,report=_queued_recheck(materials,split)
+    assert effective.train_image_ids==original[500:]
+    assert effective.test_image_ids==('test-original',)
+    assert 'outside-original' not in effective.train_image_ids
+    assert report['requested_train_count']==10000
+    assert report['remaining_train_count']==9500
+    assert len(report['removed_image_ids'])==500
+
+
+@pytest.mark.parametrize('remaining,test_present,code',[(1,True,'TRAINING_SELECTION_INSUFFICIENT'),(3,False,'TRAINING_TEST_SELECTION_INSUFFICIENT')])
+def test_queued_selection_refuses_insufficient_original_scope(tmp_path,remaining,test_present,code):
+    from platform_core.training_splits import SplitRequest,SplitMode
+    materials=MaterialRepository(tmp_path/'projects'/'queued')
+    materials.upsert_many([{'id':f'image-{i}','filename':f'{i}.jpg'} for i in range(remaining)]+([{'id':'test','filename':'t.jpg'}] if test_present else []))
+    split=SplitRequest(SplitMode.INDEPENDENT_TEST_SET,('image-0','image-1','image-2'),('test',))
+    with pytest.raises(ValueError,match=code):_queued_recheck(materials,split)

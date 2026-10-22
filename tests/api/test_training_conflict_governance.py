@@ -43,7 +43,7 @@ def test_training_filtered_scope_uses_shared_preview_and_worker_without_changing
     assert response.status_code == 201, response.text
     plan = response.json()
     assert plan['selected_count'] == 2
-    assert plan['delete_count'] == 1
+    assert plan['delete_count'] == 2
     assert plan['training_selection']['filtered_count'] == 3
     assert 'image_ids' not in plan['training_selection']
     url = base+f"/dedup-plans/{plan['plan_id']}/execute"
@@ -53,16 +53,16 @@ def test_training_filtered_scope_uses_shared_preview_and_worker_without_changing
     assert scheduler.run_once()
     finished = client.get(f"/api/v62/projects/{pid}/material-batches/{task.json()['task_id']}").json()
     assert finished['status'] == 'SUCCEEDED', finished
-    assert finished['succeeded'] == 1
-    assert materials.get(ids[0]) and materials.get(ids[1])
+    assert finished['succeeded'] == 2
+    assert materials.get(ids[0]) is None and materials.get(ids[1])
     assert materials.get(ids[2]) is None
     assert artifacts.read_json(old.task_id, old.payload_ref) == selection
     assert client.get(base+'/groups').json()['stale'] is True
     # Same physical source and original historical task remain intact.
-    assert client.get(f'/api/v61/projects/{pid}/materials/{ids[0]}/content').status_code == 200
+    assert client.get(f'/api/v61/projects/{pid}/materials/{ids[1]}/content').status_code == 200
     diagnosis = client.get(f'/api/v62/projects/{pid}/training-tasks/{old.task_id}/input-diagnosis').json()
     assert diagnosis['current_diagnosis']['available'] is True
-    assert diagnosis['current_diagnosis']['selection_truth']['missing_current_image_count'] == 1
+    assert diagnosis['current_diagnosis']['selection_truth']['missing_current_image_count'] == 2
 
 
 @pytest.mark.parametrize('mutation', ['revision', 'foreign_selection', 'no_manual', 'foreign_task'])
@@ -80,12 +80,10 @@ def test_training_plan_rejects_stale_or_foreign_scope_and_keeps_gt_review(client
     response = client.post(base+'/training-plans', json=body)
     if mutation == 'no_manual':
         assert response.status_code == 201, response.text
-        assert response.json()['delete_count'] == 0
-        assert response.json()['manual_required_count'] == 3
+        assert response.json()['delete_count'] == 3
+        assert response.json()['manual_required_count'] == 0
         plan=response.json()
-        empty=client.post(base+f"/dedup-plans/{plan['plan_id']}/execute",json={'confirmation_credential':plan['confirmation_credential']})
-        assert empty.status_code==409,empty.text
-        assert repository.get(plan['plan_id']) is None
+        assert repository.get(plan['plan_id']) is None  # Preview alone changes no identity.
     else:
         assert response.status_code == (404 if mutation == 'foreign_task' else 409), response.text
         assert ('训练任务不存在' if mutation == 'foreign_task' else 'MATERIAL_INTEGRITY_') in response.text
@@ -102,7 +100,7 @@ def test_training_all_filtered_freezes_99_pages_without_returning_ids(client, se
     plan = response.json()
     assert plan['selected_count'] == 2374
     assert plan['training_selection']['filtered_count'] == 2375
-    assert plan['delete_count'] == 0  # Conflicting GT is not an automatic deletion rule.
+    assert plan['delete_count'] == 2374  # Exact explicit discard freezes every selected member.
     assert len(plan['preview_items']) <= 20
     assert len(response.content) < 45000
 
@@ -123,9 +121,10 @@ def test_audit_classification_is_shared_read_only_plan_truth_not_hidden_duplicat
     assert response.status_code==200,response.text
     summary=response.json()
     assert summary['available'] is True
-    assert summary['historical_retained_count']==2
-    assert summary['pending_image_count']==1
-    assert summary['safe_delete_count']==0  # Still conflicting GT requires human decision.
+    assert summary['historical_retained_count']==0
+    assert summary['historical_reference_count']==2
+    assert summary['pending_image_count']==3
+    assert summary['safe_delete_count']==3  # Logical retirement keeps all source bytes.
     assert summary['actually_deleted_count']==0
     assert not artifacts.artifact_path(base.split('/')[-1], 'dedup-plans').exists()
     groups=client.get(base+'/groups').json()
@@ -133,19 +132,22 @@ def test_audit_classification_is_shared_read_only_plan_truth_not_hidden_duplicat
     assert all(materials.get(image_id) for image_id in ids)
 
 
-def test_2531_protected_materials_remain_visible_with_zero_safe_deletions(client, seeded_project, tmp_path, monkeypatch):
+def test_2531_historical_references_allow_discard_while_keep_one_requires_gt_decision(client, seeded_project, tmp_path, monkeypatch):
     pid, materials, ids, repository, artifacts, scheduler, selection, base = _conflict(client, seeded_project, tmp_path, monkeypatch, count=2531)
     snapshots=materials.project_path/'snapshots';snapshots.mkdir(exist_ok=True)
     (snapshots/'isolated-frozen-test.json').write_text(json.dumps({'test_image_ids':ids}),encoding='utf-8')
     summary=client.get(base+'/governance-summary')
     assert summary.status_code==200,summary.text
-    assert summary.json()['historical_retained_count']==2531
-    assert summary.json()['safe_delete_count']==0
-    assert summary.json()['pending_image_count']==0
+    assert summary.json()['historical_retained_count']==0
+    assert summary.json()['historical_reference_count']==2531
+    assert summary.json()['safe_delete_count']==2531
+    assert summary.json()['pending_image_count']==2531
     assert summary.json()['actually_deleted_count']==0
-    assert summary.json()['protection_reason_counts']['FROZEN_TEST_SNAPSHOT']==2531
+    assert summary.json()['protection_reason_counts']=={}
+    assert json.loads((snapshots/'isolated-frozen-test.json').read_text(encoding='utf-8')) == {'test_image_ids':ids}
     plan=client.post(base+'/dedup-plans',json={'scope':'SAFE_ALL'}).json()
-    assert plan['protected_item_count']==2531 and plan['delete_count']==0
+    assert plan['protected_item_count']==0 and plan['delete_count']==0
+    assert plan['historical_reference_count']==2531
     assert plan['retained_count']==2531
     assert len(plan['preview_items'])==20
     assert plan['manual_required_count']==2531
@@ -156,7 +158,7 @@ def test_2531_protected_materials_remain_visible_with_zero_safe_deletions(client
 def test_partial_delete_refreezes_only_original_unprocessed_range_without_browser_ids(client, seeded_project, tmp_path, monkeypatch):
     pid, materials, ids, repository, artifacts, scheduler, selection, base = _conflict(client, seeded_project, tmp_path, monkeypatch, count=4)
     group='DUPLICATE_ANNOTATION_CONFLICT:'+materials.get(ids[0])['content_sha256']
-    options=dict(training_selection=selection,all_filtered=True,manual_decisions={group:ids[0]},
+    options=dict(training_selection=selection,all_filtered=True,delete_mode='KEEP_ONE',manual_decisions={group:ids[0]},
         expected_material_revision=materials.current_revision(),expected_annotation_revision=AnnotationRepository(materials.project_path).current_revision())
     plan=client.post(base+'/training-plans',json=options).json()
     queued=client.post(base+f"/dedup-plans/{plan['plan_id']}/execute",json={'confirmation_credential':plan['confirmation_credential']}).json()

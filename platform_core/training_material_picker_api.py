@@ -31,6 +31,7 @@ from .storage.manager import StorageManager
 from .training_compatibility import (
     compatibility_page,
     evaluate_training_compatibility_projection,
+    resolve_training_compatibility_selection,
 )
 
 # Keep the visual page intentionally smaller than the old 120-card page. The
@@ -726,6 +727,8 @@ def training_material_picker_router(
             result = evaluate_training_compatibility_projection(
                 data_dir(), repository.project_path, request, algorithm,
             )
+            if body.get('selection_action') == 'RESOLVE_SELECTION':
+                return resolve_training_compatibility_selection(result, body)
             page = compatibility_page(
                 result,
                 query=str(body.get("query") or ""),
@@ -736,7 +739,7 @@ def training_material_picker_router(
                 page_size=body.get("page_size"),
             )
         except ValueError as error:
-            raise HTTPException(status_code=422, detail=str(error)) from error
+            raise HTTPException(status_code=409 if any(code in str(error) for code in ('TRAINING_SELECTION_STALE','TRAINING_SELECTION_CHANGED','TRAINING_REVIEW_STALE')) else 422, detail=str(error)) from error
         items = []
         for item in page["items"]:
             image_id = str(item.get("image_id") or "")

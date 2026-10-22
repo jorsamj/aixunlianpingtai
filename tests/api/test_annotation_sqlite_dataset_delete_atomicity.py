@@ -1,4 +1,5 @@
 import io
+import json
 import uuid
 from pathlib import Path
 
@@ -49,7 +50,7 @@ def annotate(app_module, project_id: str, image_id: str):
     )
 
 
-def test_dataset_delete_removes_only_target_sqlite_annotations(client):
+def test_retired_dataset_delete_preserves_target_and_unrelated_sqlite_annotations(client):
     import app as app_module
 
     project_id, dataset_id = create_project_with_dataset(client)
@@ -63,13 +64,14 @@ def test_dataset_delete_removes_only_target_sqlite_annotations(client):
     assert repository.exists(unrelated["id"])
 
     response = client.delete(f"/api/projects/{project_id}/datasets/{dataset_id}")
-    assert response.status_code == 200, response.text
+    assert response.status_code == 409, response.text
+    assert json.loads(response.json()["detail"])["code"] == "MATERIAL_DELETE_PREVIEW_REQUIRED"
 
-    assert not repository.exists(target["id"])
+    assert repository.exists(target["id"])
     assert repository.exists(unrelated["id"])
     assert repository.get(unrelated["id"])["annotation_state"] == "annotated"
     assert all(
-        str(row.get("id")) != target["id"]
+        str(row.get("id")) in {target["id"], unrelated["id"]}
         for row in app_module.material_store(project_id).read().rows
     )
 
@@ -82,28 +84,18 @@ def test_dataset_delete_journal_has_durable_sqlite_annotation_backup(client, mon
     annotate(app_module, project_id, target["id"])
     repository = app_module.AnnotationRepository(app_module.project_dir(project_id))
 
-    original_stage = app_module._v50_stage_material_file
-    observed = {}
-
-    def inspect_first_stage(source, destination):
-        if not observed:
-            journals = list(
-                (app_module.project_dir(project_id) / "imports" / "dataset_deletions").glob("*.json")
-            )
-            assert len(journals) == 1
-            journal = app_module.read_json(journals[0], {})
-            token = str(journal.get("token") or "")
-            observed["token"] = token
-            observed["backup_count"] = repository.delete_backup_count(token)
-        return original_stage(source, destination)
-
-    monkeypatch.setattr(app_module, "_v50_stage_material_file", inspect_first_stage)
-    response = client.delete(f"/api/projects/{project_id}/datasets/{dataset_id}")
-    assert response.status_code == 200, response.text
-
-    assert observed["token"]
-    assert observed["backup_count"] == 1
-    assert repository.delete_backup_count(observed["token"]) == 0
+    before = repository.get(target['id'])
+    journal = historical_journal(app_module, project_id, dataset_id, target)
+    token = journal['token']
+    assert repository.delete_backup_count(token) == 1
+    repository.finalize_delete(token)
+    assert not repository.exists(target['id'])
+    with pytest.raises(app_module.HTTPException, match='STAGED_BYTES_RETAINED'):
+        app_module._v50_cleanup_dataset_delete_artifacts(journal)
+    assert repository.delete_backup_count(token) == 1
+    app_module._v50_recover_dataset_deletions(project_id, dataset_id)
+    assert repository.get(target['id'])['content_digest'] == before['content_digest']
+    assert repository.delete_backup_count(token) == 0
 
 
 def test_dataset_delete_recovery_restores_sqlite_annotation_after_metadata_failure(
@@ -117,37 +109,12 @@ def test_dataset_delete_recovery_restores_sqlite_annotation_after_metadata_failu
     repository = app_module.AnnotationRepository(app_module.project_dir(project_id))
     before = repository.get(target["id"])
 
-    original_atomic_write = app_module.atomic_write_json
-    metadata_path = app_module.datasets_file(project_id).resolve()
-    failed = {"value": False}
-
-    def fail_metadata_once(path, value):
-        if Path(path).resolve() == metadata_path and not failed["value"]:
-            current = app_module.read_json(app_module.datasets_file(project_id), [])
-            current_ids = {str(item.get("id")) for item in current if isinstance(item, dict)}
-            next_ids = (
-                {str(item.get("id")) for item in value if isinstance(item, dict)}
-                if isinstance(value, list)
-                else current_ids
-            )
-            if dataset_id in current_ids and dataset_id not in next_ids:
-                failed["value"] = True
-                raise OSError("simulated dataset metadata write failure")
-        return original_atomic_write(path, value)
-
-    monkeypatch.setattr(app_module, "atomic_write_json", fail_metadata_once)
-    with pytest.raises(OSError, match="simulated dataset metadata write failure"):
-        app_module.delete_dataset(project_id, dataset_id)
-    monkeypatch.setattr(app_module, "atomic_write_json", original_atomic_write)
-
-    assert failed["value"] is True
-    journals = list(
-        (app_module.project_dir(project_id) / "imports" / "dataset_deletions").glob("*.json")
-    )
-    assert len(journals) == 1
-    token = journals[0].stem
+    journal = historical_journal(app_module, project_id, dataset_id, target)
+    token = journal['token']
+    repository.finalize_delete(token)
+    app_module.material_store(project_id).remove([target['id']])
     assert repository.delete_backup_count(token) == 1
-    assert not repository.exists(target["id"])
+    assert not repository.exists(target['id'])
 
     recovered = app_module._v50_recover_dataset_deletions(project_id, dataset_id)
     assert recovered
@@ -162,3 +129,20 @@ def test_dataset_delete_recovery_restores_sqlite_annotation_after_metadata_failu
     assert not list(
         (app_module.project_dir(project_id) / "imports" / "dataset_deletions").glob("*.json")
     )
+
+
+def historical_journal(app_module, pid, did, target):
+    token = uuid.uuid4().hex
+    journal = {'token': token, 'project_id': pid, 'dataset_id': did,
+        'created_at': app_module.now_iso(), 'updated_at': app_module.now_iso(), 'status': 'staged',
+        'staging_dir': str(app_module._v50_dataset_delete_staging_dir(pid, token)),
+        'claimed_rows': [dict(target)], 'claimed_positions': {target['id']: 0}}
+    journal['files'] = app_module._v50_dataset_delete_file_entries(pid, journal)
+    repository = app_module.AnnotationRepository(app_module.project_dir(pid))
+    repository.prepare_delete(token, [target['id']])
+    app_module.material_store(pid).patch({target['id']: {app_module._V50_DATASET_DELETE_CLAIM_FIELD: token}})
+    for item in journal['files']:
+        if item.get('existed'):
+            app_module._v50_stage_material_file(Path(item['source']), Path(item['staged']))
+    app_module._v50_write_dataset_delete_journal(journal)
+    return journal

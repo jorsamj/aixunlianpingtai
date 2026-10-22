@@ -164,8 +164,22 @@ artifacts=app.shared_task_artifacts(); old=artifacts.read_json(${JSON.stringify(
   const selection=response.request().postDataJSON();
   expect(selection.all_filtered).toBe(true);expect(selection.image_ids).toEqual([]);expect(selection.excluded_image_ids).toEqual([first]);
   expect(JSON.stringify(selection).length).toBeLessThan(2000);
-  const plan=await response.json();expect(plan.selected_count).toBe(2375);expect(plan.delete_count).toBe(0);expect(plan.manual_required_count).toBe(2375);
-  await expect(page.locator('.material-integrity47-plan')).toContainText('没有可安全删除的素材');
+  const plan=await response.json();expect(plan.selected_count).toBe(2375);expect(plan.delete_count).toBe(2375);expect(plan.manual_required_count).toBe(0);
+  await expect(page.getByRole('button',{name:'确认删除 2375 条索引',exact:true})).toBeVisible();
+});
+
+test('a late real GT comparison cannot reopen over a newer business modal',async({page,request})=>{
+  const f=await fixture(request);await openDraft(page,f);
+  await page.evaluate(()=>window.TrainingMaterialSummaryRuntime.openCompatibilityIssues());
+  let release,entered;
+  const gate=new Promise(resolve=>{release=resolve}),started=new Promise(resolve=>{entered=resolve});
+  await page.route('**/material-integrity/gt-comparison',async route=>{const response=await route.fetch();entered();await gate;await route.fulfill({response})});
+  await page.locator('[data-duplicate-compare]').first().click();await started;
+  await page.evaluate(()=>window.modal('其他业务窗口','<div data-new-business>新窗口内容保持</div>',true));
+  const settled=page.waitForResponse(response=>response.url().endsWith('/gt-comparison'));release();await settled;
+  await expect(page.getByRole('dialog',{name:'其他业务窗口',exact:true})).toContainText('新窗口内容保持');
+  await expect(page.locator('.training-duplicate-comparison')).toHaveCount(0);
+  expect(await page.evaluate(()=>[...document.querySelectorAll('.modal:not(.hidden)')].at(-1).querySelector('.modal-title').textContent)).toBe('其他业务窗口');
 });
 
 test('changed GT invalidates prior manual keeper and cross-role conflicts still allow visual review',async({page,request})=>{
@@ -179,6 +193,7 @@ from platform_core.annotation_repository import AnnotationRepository
 a=AnnotationRepository(app.project_dir(${JSON.stringify(f.project.id)}));a.upsert('duplicate-copy',[{'label':'vehicle','class_id':1,'x1':17,'y1':9,'x2':80,'y2':45}],annotation_state='annotated',annotation_scope=['person','vehicle'])`);
   await page.locator('[data-training-recheck]').click();
   await page.locator('[data-governance-check="duplicate-copy"]').check();
+  await page.locator('[data-governance-delete-mode]').selectOption('KEEP_ONE');
   const audit=await request.post(`/api/v62/projects/${f.project.id}/material-integrity/audits`);runIsolatedBatch(f.project.id,(await audit.json()).task_id);
   const preview=page.waitForResponse(r=>r.url().endsWith('/training-plans'));
   await page.getByRole('button',{name:'删除已选 · 安全预览',exact:true}).click();
@@ -187,12 +202,12 @@ a=AnnotationRepository(app.project_dir(${JSON.stringify(f.project.id)}));a.upser
   await page.getByRole('button',{name:'返回选择 · 保留勾选',exact:true}).click();
   await page.evaluate(f=>{window.TrainingDraftRuntime.update({materialIds:f.ids.filter(id=>id!=='duplicate-copy'),testMaterialIds:['duplicate-copy'],splitMode:'independent_test_set',experimentPercent:null});},f);
   await page.evaluate(async()=>{await window.TrainingMaterialSummaryRuntime.refreshCompatibility({force:true});window.TrainingMaterialSummaryRuntime.openCompatibilityIssues()});
-  await expect(page.locator('[data-conflict-exclude]').first()).toBeDisabled();
+  await expect(page.locator('[data-conflict-exclude]').first()).toBeEnabled();
   await expect(page.locator('[data-duplicate-compare]').first()).toBeEnabled();
   await page.locator('[data-duplicate-compare]').first().click();
   await expect(page.locator('.training-duplicate-comparison .material-integrity47-grid img')).toHaveCount(2);
   await expect(page.locator('.training-duplicate-comparison [data-gt-overlay] img')).toHaveCount(1);
-  for(const button of await page.locator('.training-duplicate-comparison [data-conflict-exclude]').all())await expect(button).toBeDisabled();
+  for(const button of await page.locator('.training-duplicate-comparison [data-conflict-exclude]').all())await expect(button).toBeEnabled();
   await page.locator('[data-comparison-back]').click();
   await page.getByRole('button',{name:'全选当前页',exact:true}).click();
   let release,entered;
@@ -205,7 +220,7 @@ a=AnnotationRepository(app.project_dir(${JSON.stringify(f.project.id)}));a.upser
   await expect(workbench).toBeVisible();await expect(page.locator('.material-integrity47-plan')).toHaveCount(0);
 });
 
-test('partial deletion preserves failed server-frozen selection and requires fresh human review',async({page,request},testInfo)=>{
+test('partial deletion preserves failed server-frozen selection and requires a fresh frozen preview',async({page,request},testInfo)=>{
   const f=await fixture(request);await openDraft(page,f);
   isolatedPython(f.project.id,`import app
 from platform_core.annotation_repository import AnnotationRepository
@@ -220,6 +235,7 @@ a.upsert('duplicate-second',[{'label':'vehicle','class_id':1,'x1':16,'y1':9,'x2'
   const keeper=await page.locator('[data-conflict-keeper]').first().getAttribute('data-conflict-keeper');
   await page.locator('[data-conflict-keeper]').first().click();await page.locator('[data-comparison-back]').click();
   await page.getByRole('button',{name:'全选当前筛选结果',exact:true}).click();
+  await page.locator('[data-governance-delete-mode]').selectOption('KEEP_ONE');
   const audit=await request.post(`/api/v62/projects/${f.project.id}/material-integrity/audits`);runIsolatedBatch(f.project.id,(await audit.json()).task_id);
   await page.getByRole('button',{name:'删除已选 · 安全预览',exact:true}).click();
   await page.getByRole('button',{name:'确认删除 2 条索引',exact:true}).click();
@@ -239,7 +255,7 @@ a=AnnotationRepository(app.project_dir(${JSON.stringify(f.project.id)}));a.upser
   const response=page.waitForResponse(r=>r.url().endsWith('/training-plans'));
   await page.getByRole('button',{name:'删除已选 · 安全预览',exact:true}).click();
   const reply=await response;expect(reply.request().postDataJSON().previous_execution_task_id).toBe(taskId);
-  const plan=await reply.json();expect(plan.selected_count).toBe(1);expect(plan.delete_count).toBe(0);expect(plan.manual_required_count).toBe(1);
+  const plan=await reply.json();expect(plan.selected_count).toBe(1);expect(plan.delete_count).toBe(1);expect(plan.manual_required_count).toBe(0);
 });
 
 test('real duplicate GT comparison edits the original annotation and rechecks before admission',async({page,request},testInfo)=>{

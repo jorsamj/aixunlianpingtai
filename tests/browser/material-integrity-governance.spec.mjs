@@ -81,7 +81,7 @@ row={k:v for k,v in first.items() if not k.startswith('annotation_')}; row.updat
     if(response)await route.fulfill({response});
     else await route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({message:'delayed obsolete failure'})});
   });
-  await page.getByRole('button',{name:'确认删除 1 条索引'}).click();
+  await page.getByRole('button',{name:'确认删除 2 条索引'}).click();
   await started;
   await page.getByRole('button',{name:'返回选择 · 保留勾选'}).click();
   await expect(page.locator('.modal:not(.hidden) #materialIntegrityItems47')).toBeVisible();
@@ -152,7 +152,7 @@ for row in m.list_page(limit=200).items:
   await page.screenshot({path:path.join(dir,'selection-desktop.png')});
   await page.getByRole('button', {name: '全选本组全部图片'}).click();
   await page.getByRole('button', {name: '批量删除 · 先预检查'}).click();
-  await expect(page.getByRole('button', {name: '确认删除 125 条索引'})).toBeVisible();
+  await expect(page.getByRole('button', {name: '确认删除 126 条索引'})).toBeVisible();
   await page.screenshot({path:path.join(dir,'frozen-preview-desktop.png')});
   let calls = 0;
   await page.route('**/dedup-plans/*/execute', async route => {
@@ -160,7 +160,7 @@ for row in m.list_page(limit=200).items:
     if(calls === 1)return route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({message:'隔离测试：提交暂时不可用，请保留选择后重试'})});
     await route.fallback();
   });
-  await page.getByRole('button', {name: '确认删除 125 条索引'}).click();
+  await page.getByRole('button', {name: '确认删除 126 条索引'}).click();
   await expect(page.locator('#materialIntegrityError47')).toContainText('请保留选择后重试');
   await page.screenshot({path:path.join(dir,'submit-failed-selection-preserved.png')});
   await page.getByRole('button', {name: '使用同一凭证重试 · 不会重复建任务'}).click();
@@ -190,12 +190,12 @@ for row in m.list_page(limit=200).items:
     }
   }
   await expect(page.locator('#materialIntegrityTask47')).toContainText('已成功',{timeout:15000});
-  await expect(page.locator('#materialIntegrityTask47')).toContainText('实际删除索引 125');
+  await expect(page.locator('#materialIntegrityTask47')).toContainText('实际删除索引 126');
   await page.screenshot({path:path.join(dir,'delete-succeeded.png')});
   const groups = await request.get(`/api/v62/projects/${project.id}/material-integrity/audits/${auditId}/groups`);
   expect((await groups.json()).stale).toBe(true);
   const remaining = isolatedPython(project.id,"import os,app; print(app.material_store(os.environ['INTEGRITY_TEST_PROJECT']).summary()['total'])");
-  expect(remaining).toBe('1');
+  expect(remaining).toBe('0');
   const taskId=(await page.locator('#materialIntegrityTask47 code').innerText()).replace('Task ID: ','');
   const detail=await request.get(`/api/v62/projects/${project.id}/material-batches/${taskId}`);
   const log=await request.get(`/api/v62/projects/${project.id}/material-batches/${taskId}/log`);
@@ -205,7 +205,7 @@ for row in m.list_page(limit=200).items:
   await page.reload();
   await page.getByRole('button', {name:'重复与异常素材'}).click();
   await expect(page.getByText('审计快照已过期',{exact:true})).toBeVisible();
-  await expect(page.locator('#materialIntegrityTask47')).toContainText('实际删除索引 125');
+  await expect(page.locator('#materialIntegrityTask47')).toContainText('实际删除索引 126');
 });
 
 
@@ -221,7 +221,7 @@ async function createProject(request) {
   return response.json();
 }
 
-test('real protected duplicate group offers review with zero deletions and preserves shared content',async({page,request},testInfo)=>{
+test('real historical duplicate group supports whole-group deletion while preserving shared bytes and snapshot evidence',async({page,request},testInfo)=>{
   const project=await createProject(request);
   const buffer=execFileSync('python',['-c',"from PIL import Image; import io,sys; b=io.BytesIO(); Image.new('RGB',(160,90),'#9ec9e6').save(b,format='PNG'); sys.stdout.buffer.write(b.getvalue())"]);
   const upload=await request.post(`/api/projects/${project.id}/images`,{multipart:{files:{name:'protected-original.png',mimeType:'image/png',buffer},dataset_id:'default'}});expect(upload.ok()).toBeTruthy();
@@ -262,19 +262,32 @@ app.shared_task_repository().create(replace(TaskRecord.new(task,p,TaskKind.TRAIN
     expect(layout.text.length).toBeGreaterThan(10);
   }
   await page.setViewportSize({width:1366,height:768});
-  await page.getByRole('button',{name:'批量去重 · 保留安全身份',exact:true}).click();
-  const plan=await (await previewResponse).json();expect(plan.delete_count).toBe(0);expect(plan.protected_groups).toBe(1);expect(plan.preview_items).toHaveLength(2);expect(plan.preview_items.every(item=>item.protection_reasons.length>0)).toBe(true);
-  const preview=page.getByRole('dialog',{name:'异常素材删除预览',exact:true});await expect(preview).toContainText('没有可安全删除的素材');await expect(preview.getByRole('button',{name:/确认删除/})).toBeHidden();
-  await expect(preview.locator('img')).toHaveCount(2);for(const img of await preview.locator('img').all())await expect.poll(()=>img.evaluate(el=>el.complete&&el.naturalWidth)).toBe(160);
-  await page.screenshot({path:testInfo.outputPath('protected-zero-delete-desktop.png')});await page.setViewportSize({width:375,height:812});await page.screenshot({path:testInfo.outputPath('protected-zero-delete-mobile.png')});await page.setViewportSize({width:1366,height:768});
-  await preview.getByRole('button',{name:'返回待核对问题组 · 已跳过 1 组',exact:true}).click();
-  await page.locator('#materialIntegrityGroupList47 > article').first().locator('button').click();
+  await firstGroup.locator('button').click();
   await expect(page.locator('#materialIntegrityItems47 > article')).toHaveCount(2);
   await page.locator('#materialIntegrityItems47 > article').first().getByRole('button',{name:/标注|审核|核对/}).click();
   const workbench=page.getByRole('dialog',{name:'图片标注工作台',exact:true});await expect(workbench.locator('#annSaveState')).toHaveText('已保存');await expect(workbench.locator('#annStage .a9s-annotation:is([data-id],.selected)')).toHaveCount(1);
-  expect(executions).toBe(0);expect(isolatedPython(project.id,"import os,app; print(app.material_store(os.environ['INTEGRITY_TEST_PROJECT']).summary()['total'])")).toBe('2');
-  expect(await (await request.get(`/api/v61/projects/${project.id}/materials/${original.id}/content`)).body()).toEqual(before);
-  expect(await (await request.get(`/api/v61/projects/${project.id}/materials/protected-copy/content`)).body()).toEqual(before);
+  await workbench.getByRole('button',{name:'关闭',exact:true}).click();
+  // Returning from the annotation owner invalidates the previous audit even
+  // when no boxes changed. Reaudit through the real worker before deleting.
+  const fresh=await request.post(`/api/v62/projects/${project.id}/material-integrity/audits`);
+  runIsolatedWorker(project.id,(await fresh.json()).task_id);
+  await page.evaluate(()=>window.openMaterialIntegrityAudit47());
+  await page.locator('#materialIntegrityGroupList47 > article').first().locator('button').click();
+  await page.getByRole('button',{name:'整组删除 · 不保留任何项',exact:true}).click();
+  const plan=await(await previewResponse).json();expect(plan.delete_count).toBe(2);expect(plan.physical_retained_count).toBe(2);expect(plan.reclaimed_bytes).toBe(0);
+  const preview=page.getByRole('dialog',{name:'重复素材治理预览',exact:true});await expect(preview).toContainText('释放空间 0 字节');
+  await page.screenshot({path:testInfo.outputPath('historical-discard-desktop.png')});await page.setViewportSize({width:375,height:812});await page.screenshot({path:testInfo.outputPath('historical-discard-mobile.png')});await page.setViewportSize({width:1366,height:768});
+  await preview.getByRole('button',{name:'确认删除 2 条索引',exact:true}).click();
+  await expect(page.locator('#materialIntegrityTask47')).toContainText('排队中');
+  const taskId=await page.evaluate(()=>state.materialIntegrityTask47.task_id);runIsolatedWorker(project.id,taskId);
+  await expect(page.locator('#materialIntegrityTask47')).toContainText('实际删除索引 2');
+  expect(executions).toBe(1);expect(isolatedPython(project.id,"import os,app; print(app.material_store(os.environ['INTEGRITY_TEST_PROJECT']).summary()['total'])")).toBe('0');
+  const retained=isolatedPython(project.id,`import os,app,base64,json
+p=app.project_dir(os.environ['INTEGRITY_TEST_PROJECT'])
+assert json.loads((p/'snapshots/browser-protected.json').read_text())['train_image_ids']==[${JSON.stringify(original.id)},'protected-copy']
+print(base64.b64encode((p/'uploads'/${JSON.stringify(original.stored_name)}).read_bytes()).decode())`);
+  expect(retained).toBe(before.toString('base64'));
+
 });
 
 

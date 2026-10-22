@@ -419,3 +419,45 @@ def test_gt_import_mapping_difference_uses_verified_confirmation_and_source_taxo
     assert unverified['verified_import_mapping_difference_count'] == 0
     confirmations['zip-b']['external_classes'][0]['name'] = 'different-taxonomy'
     assert diagnose_annotation_conflict(rows, {}, confirmations)['verified_import_mapping_difference_count'] == 0
+
+
+def test_explicit_selection_adjustment_accepts_missing_scope_and_cross_role_exclusion(tmp_path):
+    from platform_core.training_compatibility import validate_duplicate_review
+    project = seed(tmp_path, [row('a'), row('b', scope=()), row('c', sha='b' * 64), row('t', sha='c' * 64)])
+    review = {**review_payload(project, exclude=('b',), original=('a', 'c'), test=('b', 't')),
+              'review_kind': 'EXPLICIT_SELECTION_ADJUSTMENT'}
+    payload = request(('a', 'c'), split_mode='independent_test_set', test_image_ids=['t'], duplicate_review=review)
+    split = splits.SplitRequest(splits.SplitMode.INDEPENDENT_TEST_SET, ('a', 'c'), ('t',))
+    normalized = validate_duplicate_review(project, payload, split)
+    assert normalized['review_kind'] == 'EXPLICIT_SELECTION_ADJUSTMENT'
+    assert evaluate_training_compatibility(tmp_path, project, payload, {'id': 'alg'}).summary()['compatible'] is True
+    assert AnnotationRepository(project).get('b')['annotation_scope'] == []
+
+
+@pytest.mark.parametrize('change,match', [
+    ({'excluded_image_ids': ['foreign']}, 'exclusion'),
+    ({'original_train_image_ids': ['a', 'missing', 'b']}, 'missing'),
+    ({'material_revision': -1}, 'revision'),
+    ({'annotation_revision': -1}, 'revision'),
+    ({'original_test_image_ids': ['a']}, 'roles'),
+    ({'review_kind': 'UNTRUSTED_KIND'}, 'kind'),
+])
+def test_explicit_selection_adjustment_rejects_forged_scope(tmp_path, change, match):
+    from platform_core.training_compatibility import validate_duplicate_review
+    project = seed(tmp_path, [row('a'), row('b', scope=()), row('c', sha='b' * 64)])
+    review = {**review_payload(project), 'review_kind': 'EXPLICIT_SELECTION_ADJUSTMENT', **change}
+    with pytest.raises(ValueError, match=match):
+        validate_duplicate_review(project, request(('a', 'c'), duplicate_review=review),
+            splits.SplitRequest(splits.SplitMode.RANDOM_TEST_FROM_TRAINING_POOL, ('a', 'c'), experiment_percent=20))
+
+
+def test_explicit_selection_adjustment_benchmark_normalization_preserves_kind(tmp_path):
+    from platform_core.training_compatibility import normalize_benchmark_duplicate_review
+    project = seed(tmp_path, [row('a'), row('b', scope=(), sha='d' * 64), row('c', sha='b' * 64), row('t', sha='c' * 64)])
+    review = {**review_payload(project), 'review_kind': 'EXPLICIT_SELECTION_ADJUSTMENT'}
+    payload = request(('a', 'c'), duplicate_review=review)
+    resolved = splits.SplitRequest(splits.SplitMode.INDEPENDENT_TEST_SET, ('a', 'c'), ('t',))
+    normalized = normalize_benchmark_duplicate_review(project, payload, resolved)
+    assert normalized['review_kind'] == review['review_kind']
+    assert normalized['original_test_image_ids'] == ['t']
+    assert normalized['excluded_image_ids'] == ['b']

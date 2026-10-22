@@ -574,6 +574,9 @@ export function installMaterialPaginationRuntime() {
     if (!narrowed) return window.toast?.('请先按标签、名称、来源或标注状态筛选，不能一键删除整个素材池');
     return window.runMaterialBatch62?.('DELETE_INDEX', {scope: 'FILTERED'});
   };
+  window.clearProjectMaterials61 = () => window.runMaterialBatch62?.('DELETE_INDEX', {scope:'PROJECT'});
+  window.deleteData424 = imageId => window.runMaterialBatch62?.('DELETE_INDEX',{scope:'SELECTED',imageIds:[String(imageId)]});
+  window.batchDelete426 = window.batchDelete429 = () => window.runMaterialBatch62?.('DELETE_INDEX',{scope:'SELECTED',imageIds:[...(state.data424Selected||[])]});
   window.reloadMaterialPage61 = async () => {
     invalidateFullPool61();
     const result = await loadMaterialPage61({reset: true});

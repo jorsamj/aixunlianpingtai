@@ -23,7 +23,7 @@ from platform_core.task_runtime import (
 )
 
 
-def test_anomaly_filtered_plan_freezes_full_scope_and_preserves_protected_items(
+def test_anomaly_filtered_plan_freezes_full_scope_including_test_with_bytes_deferred(
     client, seeded_project, tmp_path, monkeypatch
 ):
     project_id, original = seeded_project
@@ -53,8 +53,8 @@ def test_anomaly_filtered_plan_freezes_full_scope_and_preserves_protected_items(
     assert response.status_code == 201, response.text
     plan = response.json()
     assert plan['selected_count'] == 125
-    assert plan['delete_count'] == 124
-    assert plan['protected_item_count'] == 1
+    assert plan['delete_count'] == 125
+    assert plan['protected_item_count'] == 0
     assert len(plan['preview_items']) <= 20
     execute_url = base + f"/dedup-plans/{plan['plan_id']}/execute"
     queued = client.post(execute_url, json={'confirmation_credential': plan['confirmation_credential']})
@@ -68,8 +68,8 @@ def test_anomaly_filtered_plan_freezes_full_scope_and_preserves_protected_items(
     assert scheduler.run_once()
     finished = client.get(f"/api/v62/projects/{project_id}/material-batches/{queued.json()['task_id']}").json()
     assert finished['status'] == 'SUCCEEDED', finished
-    assert finished['succeeded'] == 124
-    assert materials.get('missing-000') is not None
+    assert finished['succeeded'] == 125
+    assert materials.get('missing-000') is None
     assert materials.get('missing-124') is None
     assert client.get(base + '/groups').json()['stale'] is True
     stale_items = client.get(base + '/groups/MATERIAL_OBJECT_MISSING:missing-124/items')
@@ -77,7 +77,7 @@ def test_anomaly_filtered_plan_freezes_full_scope_and_preserves_protected_items(
     assert 'MATERIAL_INTEGRITY_AUDIT_STALE' in stale_items.text
 
 
-def test_unverified_anomaly_cannot_be_deleted_by_filtered_plan(
+def test_unverified_anomaly_can_leave_current_index_without_physical_reclamation(
     client, seeded_project, tmp_path, monkeypatch
 ):
     project_id, image = seeded_project
@@ -91,8 +91,8 @@ def test_unverified_anomaly_cannot_be_deleted_by_filtered_plan(
         json={'scope': 'FILTERED', 'issue_type': 'MATERIAL_SCAN_UNVERIFIED'},
     )
     assert response.status_code == 201, response.text
-    assert response.json()['delete_count'] == 0
-    assert response.json()['unverifiable_count'] == 1
+    assert response.json()['delete_count'] == 1
+    assert response.json()['unverifiable_count'] == 0
 
 
 @pytest.mark.parametrize('count', [1000, 10000])
@@ -156,23 +156,23 @@ def test_anomaly_plan_partial_failure_keeps_changed_annotation_and_history(
     plan = client.post(base+'/dedup-plans', json={
         'scope':'SELECTED_IMAGES', 'image_ids':['anomaly-0','anomaly-1','anomaly-2'],
     }).json()
-    assert plan['delete_count'] == 2
-    assert plan['protected_item_count'] == 1
+    assert plan['delete_count'] == 3
+    assert plan['protected_item_count'] == 0
     queued = client.post(base+f"/dedup-plans/{plan['plan_id']}/execute", json={'confirmation_credential':plan['confirmation_credential']}).json()
     annotations = AnnotationRepository(materials.project_path)
     annotations.upsert('anomaly-1', [], annotation_state='confirmed_empty')
     assert scheduler.run_once()
     finished = client.get(f"/api/v62/projects/{project_id}/material-batches/{queued['task_id']}").json()
     assert finished['status'] == 'PARTIAL_SUCCESS', finished
-    assert finished['succeeded'] == 1
+    assert finished['succeeded'] == 2
     assert finished['failed'] == 1
-    assert materials.get('anomaly-0') and materials.get('anomaly-1')
+    assert materials.get('anomaly-0') is None and materials.get('anomaly-1')
     assert materials.get('anomaly-2') is None
     assert annotations.get('anomaly-1')['annotation_state'] == 'confirmed_empty'
     assert finished['error_examples'][0]['image_id'] == 'anomaly-1'
 
 
-def test_anomaly_filter_cannot_bypass_duplicate_keeper_or_conflicting_gt(
+def test_explicit_anomaly_filter_discards_selected_duplicate_records_without_keeper(
     client, seeded_project, tmp_path, monkeypatch
 ):
     project_id, original = seeded_project
@@ -191,8 +191,8 @@ def test_anomaly_filter_cannot_bypass_duplicate_keeper_or_conflicting_gt(
     )
     assert response.status_code == 201, response.text
     assert response.json()['selected_count'] == 2
-    assert response.json()['delete_count'] == 0
-    assert response.json()['manual_required_count'] == 2
+    assert response.json()['delete_count'] == 2
+    assert response.json()['manual_required_count'] == 0
 
 
 @pytest.mark.parametrize('tamper_manifest', [False, True])
@@ -352,11 +352,11 @@ def test_material_integrity_audit_groups_duplicate_annotation_conflicts(
     assert execute.json()["operation"] == "DELETE_INDEX"
 
 
-def test_material_delete_fails_closed_when_active_training_references_selection(
+def test_logical_delete_preserves_bytes_referenced_by_active_training(
     client, seeded_project, tmp_path, monkeypatch
 ):
     project_id, image = seeded_project
-    repository, artifacts, _scheduler = _runtime(tmp_path, monkeypatch)
+    repository, artifacts, scheduler = _runtime(tmp_path, monkeypatch)
     task_id = "train_" + uuid.uuid4().hex[:20]
     artifacts.atomic_write_json(
         task_id,
@@ -385,10 +385,13 @@ def test_material_delete_fails_closed_when_active_training_references_selection(
         json={
             "operation": "DELETE_INDEX",
             "selection_spec": estimate.json()["selection_spec"],
+            "options": {"deletion_plan_id":estimate.json()["deletion_preview"]["plan_id"],"confirmation_credential":estimate.json()["deletion_preview"]["confirmation_credential"]},
         },
     )
-    assert created.status_code == 409, created.text
-    assert "MATERIAL_ACTIVE_TRAINING_REFERENCE" in created.text
+    assert created.status_code == 202, created.text
+    assert scheduler.run_once()
+    assert app_module.material_store(project_id).get(image['id']) is None
+    assert (app_module.project_dir(project_id) / image['object_key']).is_file()
 
 
 def test_durable_index_delete_removes_annotation_truth_but_keeps_shared_object(
@@ -418,6 +421,7 @@ def test_durable_index_delete_removes_annotation_truth_but_keeps_shared_object(
         json={
             "operation": "DELETE_INDEX",
             "selection_spec": estimate.json()["selection_spec"],
+            "options": {"deletion_plan_id":estimate.json()["deletion_preview"]["plan_id"],"confirmation_credential":estimate.json()["deletion_preview"]["confirmation_credential"]},
         },
     )
     assert created.status_code == 202, created.text
@@ -430,9 +434,10 @@ def test_durable_index_delete_removes_annotation_truth_but_keeps_shared_object(
     assert stale['stale'] is True
     repeated = client.post(f'/api/v62/projects/{project_id}/material-batches', json={
         'operation':'DELETE_INDEX', 'selection_spec':estimate.json()['selection_spec'],
+        'options':{'deletion_plan_id':estimate.json()['deletion_preview']['plan_id'],'confirmation_credential':estimate.json()['deletion_preview']['confirmation_credential']},
     })
-    assert repeated.status_code == 409
-    assert 'MATERIAL_REVISION_CHANGED' in repeated.text
+    assert repeated.status_code == 202
+    assert repeated.json()['task_id']==created.json()['task_id']
 
 
 def test_filtered_dog_delete_removes_only_dog_material_and_its_annotation_files(
@@ -476,6 +481,7 @@ def test_filtered_dog_delete_removes_only_dog_material_and_its_annotation_files(
     assert estimate.status_code == 200, estimate.text
     assert estimate.json()["count"] == 1
     payload["selection_spec"] = estimate.json()["selection_spec"]
+    payload["options"] = {"deletion_plan_id":estimate.json()["deletion_preview"]["plan_id"],"confirmation_credential":estimate.json()["deletion_preview"]["confirmation_credential"]}
     task = client.post(f"/api/v62/projects/{project_id}/material-batches", json=payload)
     assert task.status_code == 202, task.text
     assert scheduler.run_once() is True
@@ -611,7 +617,7 @@ def test_material_integrity_worker_skips_group_when_keeper_changes_after_queue(
     assert all(materials.get(image_id) is not None for image_id in planned_deletes)
 
 
-def test_material_integrity_safe_plan_skips_groups_with_multiple_training_references(
+def test_material_integrity_keep_one_not_blocked_by_multiple_training_references(
     client, seeded_project, tmp_path, monkeypatch
 ):
     project_id, original = seeded_project
@@ -636,13 +642,11 @@ def test_material_integrity_safe_plan_skips_groups_with_multiple_training_refere
         json={"scope": "SAFE_ALL"},
     )
     assert response.status_code == 201, response.text
-    assert response.json()["delete_count"] == 0
-    assert response.json()["protected_groups"] == 1
-    assert response.json()["skip_reasons"]["MULTIPLE_PROTECTED_REFERENCES"] == 1
-    assert response.json()["review_groups"][0]["group_key"].startswith('DUPLICATE_')
-    assert response.json()["review_groups"][0]["reason"] == 'MULTIPLE_PROTECTED_REFERENCES'
-    assert {item['image_id'] for item in response.json()['preview_items']} == {original['id'], duplicate_id}
-    assert all(item['protection_reasons'] for item in response.json()['preview_items'])
+    assert response.json()["delete_count"] == 1
+    assert response.json()["protected_groups"] == 0
+    assert response.json()['skip_reasons'] == {}
+    assert response.json()['protected_item_count'] == 0
+    assert all(not reason['protected'] for item in response.json()['preview_items'] for reason in item['protection_reasons'])
 
 
 @pytest.mark.parametrize('diagnostics', [False, True])
@@ -724,7 +728,7 @@ def test_failed_request_only_releases_index_and_retains_original_evidence(
     'remote-material/staging-cleanup.json', 'unknown.lock',
     'remote-material/unknown.json.lock',
 ])
-def test_failed_no_freeze_dependencies_remain_protected(
+def test_failed_dependencies_do_not_permanently_lock_current_index(
     client, seeded_project, tmp_path, monkeypatch, dependency
 ):
     project_id, original = seeded_project
@@ -765,11 +769,11 @@ def test_failed_no_freeze_dependencies_remain_protected(
     audit_id = _run_integrity_audit(client, scheduler, project_id)
     response = client.post(f'/api/v62/projects/{project_id}/material-integrity/audits/{audit_id}/dedup-plans', json={'scope': 'SAFE_ALL'})
     assert response.status_code == 201, response.text
-    assert response.json()['delete_count'] == 0
-    assert response.json()['protected_item_count'] == 2
+    assert response.json()['delete_count'] == 1
+    assert response.json()['protected_item_count'] == 0
 
 
-def test_same_gt_mixed_protected_group_deletes_only_unprotected_redundants(
+def test_same_gt_active_references_do_not_block_keep_one_logical_retirement(
     client, seeded_project, tmp_path, monkeypatch
 ):
     project_id, original = seeded_project
@@ -784,15 +788,15 @@ def test_same_gt_mixed_protected_group_deletes_only_unprotected_redundants(
     response = client.post(base + '/dedup-plans', json={'scope': 'SAFE_ALL'})
     assert response.status_code == 201, response.text
     plan = response.json()
-    assert plan['delete_count'] == 2
-    assert plan['kept_count'] == 2
-    assert plan['protected_item_count'] == 2
-    assert plan['protection_reason_counts'] == {'ACTIVE_TASK_INPUT': 2}
+    assert plan['delete_count'] == 3
+    assert plan['kept_count'] == 1
+    assert plan['protected_item_count'] == 0
+    assert plan['protection_reason_counts'] == {}
     queued = client.post(base + f"/dedup-plans/{plan['plan_id']}/execute", json={'confirmation_credential': plan['confirmation_credential']})
     assert queued.status_code == 202, queued.text
     assert scheduler.run_once()
-    assert materials.get(original['id']) and materials.get('protected-copy')
-    assert materials.get('safe-copy-a') is None and materials.get('safe-copy-b') is None
+    assert materials.count() == 1
+    assert client.get(f"/api/v62/projects/{project_id}/material-batches/{queued.json()['task_id']}").json()['reclaimed_bytes'] == 0
 
 
 def test_governance_summary_uses_plan_rules_without_persisting_a_plan(
@@ -815,7 +819,7 @@ def test_governance_summary_uses_plan_rules_without_persisting_a_plan(
 
 
 @pytest.mark.parametrize('all_protected', [False, True])
-def test_conflicting_gt_manual_keeper_preserves_all_protected_identities(
+def test_conflicting_gt_manual_keeper_retires_others_even_with_history(
     client, seeded_project, tmp_path, monkeypatch, all_protected
 ):
     project_id, original = seeded_project
@@ -839,19 +843,17 @@ def test_conflicting_gt_manual_keeper_preserves_all_protected_identities(
     })
     assert manual.status_code == 201, manual.text
     plan = manual.json()
-    if all_protected:
-        assert plan['delete_count'] == 0 and plan['protected_item_count'] == 4
-        return
-    assert plan['delete_count'] == 1 and plan['kept_count'] == 3
+    assert plan['delete_count'] == 3 and plan['kept_count'] == 1
+    assert plan['protected_item_count'] == 0
     queued = client.post(base + f"/dedup-plans/{plan['plan_id']}/execute", json={'confirmation_credential': plan['confirmation_credential']})
     assert queued.status_code == 202, queued.text
     assert scheduler.run_once()
-    assert materials.get(original['id']) and materials.get('protected-copy') and materials.get('manual-keeper')
+    assert materials.get(original['id']) is None and materials.get('protected-copy') is None and materials.get('manual-keeper')
     assert materials.get('safe-copy') is None
 
 
 @pytest.mark.parametrize('changed_at', ['execute', 'worker'])
-def test_request_only_release_is_revalidated_when_durable_reference_appears(
+def test_late_historical_reference_does_not_block_logical_delete_or_remove_bytes(
     client, seeded_project, tmp_path, monkeypatch, changed_at
 ):
     project_id, original = seeded_project
@@ -872,17 +874,19 @@ def test_request_only_release_is_revalidated_when_durable_reference_appears(
         assert queued.status_code == 202, queued.text
     artifacts.atomic_write_json('failed-request', 'snapshot.json', {'train_image_ids': [original['id'], 'changing-copy']})
     if changed_at == 'execute':
-        blocked = client.post(url, json=credential)
-        assert blocked.status_code == 409, blocked.text
-        assert 'MATERIAL_INTEGRITY_REFERENCE_CHANGED' in blocked.text
+        queued = client.post(url, json=credential)
+        assert queued.status_code == 202, queued.text
+        assert scheduler.run_once()
     else:
         assert scheduler.run_once()
         finished = repository.get(queued.json()['task_id'])
-        assert finished.status is TaskStatus.FAILED
-    assert materials.get(original['id']) and materials.get('changing-copy')
+        assert finished.status is TaskStatus.SUCCEEDED
+    assert materials.count() == 1
+    assert artifacts.artifact_path('failed-request','snapshot.json').is_file()
+    assert (materials.project_path / str(original['object_key'])).is_file()
 
 
-def test_material_integrity_plan_keeps_snapshot_referenced_identity(
+def test_material_integrity_keep_one_does_not_require_snapshot_identity(
     client, seeded_project, tmp_path, monkeypatch
 ):
     project_id, original = seeded_project
@@ -903,8 +907,8 @@ def test_material_integrity_plan_keeps_snapshot_referenced_identity(
         json={"scope": "SAFE_ALL"},
     ).json()
     assert plan["delete_count"] == 1
-    assert plan["preview_groups"][0]["keeper_image_id"] == original["id"]
-    assert plan["preview_groups"][0]["keeper_reason"] == "HISTORICAL_REFERENCE"
+    assert plan["preview_groups"][0]["keeper_image_id"] in {original["id"],duplicate_id}
+    assert plan["preview_groups"][0]["keeper_reason"] == "VERIFIED_SOURCE_AND_ANNOTATION"
 
 
 def test_material_integrity_plan_can_freeze_more_than_500_deletes_without_browser_ids(
@@ -1043,8 +1047,8 @@ def test_gt_conflict_review_is_complete_read_only_revision_bound_and_uses_existi
         'manual_decisions': {row['group_key']: 'review-b'},
     })
     assert plan.status_code == 201, plan.text
-    assert plan.json()['delete_count'] == 1
-    assert plan.json()['protected_item_count'] == 1
+    assert plan.json()['delete_count'] == 2
+    assert plan.json()['protected_item_count'] == 0
     basis = {'confirmed_all_filtered': True, 'import_batch_id': 'zip-b',
              'observation': 'COORDINATE_DIFFERENCE', 'material_revision': body['material_revision'],
              'annotation_revision': body['annotation_revision']}
@@ -1234,7 +1238,7 @@ def test_discard_gt_conflicts_requires_explicit_confirmation_and_deletes_only_in
     assert client.get(base + '/groups').json()['stale'] is True
 
 
-def test_discard_gt_conflicts_never_deletes_test_or_historical_protected_identities(
+def test_discard_gt_conflicts_retires_test_and_history_identities_with_bytes_retained(
     client, seeded_project, tmp_path, monkeypatch,
 ):
     project_id, original = seeded_project
@@ -1266,16 +1270,16 @@ def test_discard_gt_conflicts_never_deletes_test_or_historical_protected_identit
     assert plan_response.status_code == 201, plan_response.text
     plan = plan_response.json()
     assert plan['discard_mode'] is True
-    assert plan['delete_count'] == 1
-    assert plan['protected_item_count'] == 2
+    assert plan['delete_count'] == 3
+    assert plan['protected_item_count'] == 0
     queued = client.post(base + f"/dedup-plans/{plan['plan_id']}/execute", json={
         'confirmation_credential': plan['confirmation_credential'],
     })
     assert queued.status_code == 202, queued.text
     assert scheduler.run_once()
     assert materials.get('discard-free') is None
-    assert materials.get(original['id']) is not None
-    assert materials.get('discard-kept') is not None
+    assert materials.get(original['id']) is None
+    assert materials.get('discard-kept') is None
     assert repository.get('protected-training') is not None
 
 def test_duplicate_gt_delete_rejects_missing_group_manifest_without_blocking_ordinary_anomaly(
@@ -1402,14 +1406,14 @@ def test_integrity_partial_delete_retry_preserves_prior_success_counters(
     queued = client.post(base + f"/dedup-plans/{plan['plan_id']}/execute", json={
         'confirmation_credential': plan['confirmation_credential'],
     }).json()
-    remove = material_batches_module.MaterialRepository.remove_many
+    remove = material_batches_module.MaterialRepository.retire_many
     failed_ids = []
     def fail_once(store, ids, **kwargs):
         if not failed_ids:
             failed_ids.extend(ids)
             raise OSError('isolated transient delete failure')
         return remove(store, ids, **kwargs)
-    monkeypatch.setattr(material_batches_module.MaterialRepository, 'remove_many', fail_once)
+    monkeypatch.setattr(material_batches_module.MaterialRepository, 'retire_many', fail_once)
     assert scheduler.run_once()
     task_url = f"/api/v62/projects/{project_id}/material-batches/{queued['task_id']}"
     first = client.get(task_url).json()

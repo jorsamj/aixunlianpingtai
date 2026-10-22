@@ -40,7 +40,7 @@ function save(items) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
 }
 
-export function installMaterialBatchRuntime({projectId, currentPageIds, selectedIds, filteredSpec, notify, refresh, pollRegistry, requestTimeoutMs = 30000} = {}) {
+export function installMaterialBatchRuntime({projectId, projectName, currentPageIds, selectedIds, filteredSpec, notify, refresh, pollRegistry, requestTimeoutMs = 30000} = {}) {
   if (typeof window === 'undefined' || window.__materialBatchRuntime62Installed) return false;
   window.__materialBatchRuntime62Installed = true;
   const registry = pollRegistry || window.PollRegistryRuntime;
@@ -51,6 +51,7 @@ export function installMaterialBatchRuntime({projectId, currentPageIds, selected
   const POLL_OWNERS = ['数据集', '自动标注及清洗', '训练任务', '算法列表'];
   const auditAnnouncementStatus = new Map();
   const submissions = new Map();
+  const deletionContexts = new Map();
   const unknownKey = `${STORAGE_KEY}.unknown`;
   const unknowns = () => {try {return JSON.parse(localStorage.getItem(unknownKey) || '{}')} catch (_) {return {}}};
   const markUnknown = (project, operation) => {const values=unknowns();if(operation)values[project]=operation;else delete values[project];localStorage.setItem(unknownKey,JSON.stringify(values))};
@@ -116,11 +117,12 @@ export function installMaterialBatchRuntime({projectId, currentPageIds, selected
           registry.startTimeout(pollKey(id), POLL_OWNERS, tick, 1500);
         } else {
           stopPolling(id);
-          await refresh?.();
+          try {await refresh?.();} catch(error) {tell('素材任务已结束，列表刷新失败，可手动刷新：'+(error.message||error));}
           if (pid() !== projectAtStart) return;
           if (task.operation === 'DELETE_INDEX' && typeof window.invalidateMaterialIntegrityGovernance47 === 'function') {
             await window.invalidateMaterialIntegrityGovernance47(task);
           }
+          if(task.operation==='DELETE_INDEX')await window.TrainingMaterialSummaryRuntime?.onMaterialBatchCompleted?.(task);
           if (foreground && task.operation === 'AI_ANNOTATE' && task.review_required && typeof window.reviewAiLabel427 === 'function') {
             await window.reviewAiLabel427(task.task_id);
           }
@@ -143,6 +145,7 @@ export function installMaterialBatchRuntime({projectId, currentPageIds, selected
   }
 
   function selection(scope, explicitIds = []) {
+    if(scope==='PROJECT')return {scope:'FILTERED',filters:{}};
     if (scope === 'CURRENT_PAGE') return {scope, image_ids: (currentPageIds?.() || []).map(String)};
     if (scope === 'SELECTED') {
       const source = explicitIds?.length ? explicitIds : (selectedIds?.() || []);
@@ -153,8 +156,17 @@ export function installMaterialBatchRuntime({projectId, currentPageIds, selected
 
   async function run(operation, {scope, options = {}, imageIds = [], skipConfirm = false} = {}) {
     if (!pid()) throw new Error('请先选择项目');
+    const trainingContext=window.TrainingMaterialSummaryRuntime?.captureDeletionContext?.()||null;
     const chosen = scope || window.prompt('处理范围：CURRENT_PAGE 当前页 / FILTERED 全部筛选结果 / SELECTED 当前已选', 'CURRENT_PAGE');
-    if (!['CURRENT_PAGE', 'FILTERED', 'SELECTED'].includes(chosen)) return null;
+    if (!['CURRENT_PAGE', 'FILTERED', 'SELECTED', 'PROJECT'].includes(chosen)) return null;
+    if(chosen==='PROJECT'){
+      if(operation!=='DELETE_INDEX')throw new Error('项目清空只允许删除当前素材索引');
+      const name=String(projectName?.()||options.project_name||'');
+      const confirmation=window.prompt(`清空整个项目素材库。请输入当前项目名称：${name}`,'');
+      if(confirmation===null)return null;
+      if(!name||confirmation!==name)throw new Error('项目名称确认不一致，未创建删除任务');
+      options={...options,clear_project:true,project_name_confirmation:confirmation};
+    }
     if (operation === 'AI_ANNOTATE' && !options.labels?.length && !options.labels_text && !options.reference_image_ids?.length) {
       const labels = window.prompt('请输入标签库中的标签编码（逗号分隔）；使用默认 AI 模型生成待确认候选', '');
       if (!labels?.trim()) return null;
@@ -177,15 +189,23 @@ export function installMaterialBatchRuntime({projectId, currentPageIds, selected
     if (!estimate.supported) throw new Error(estimate.message || (estimate.error_code === 'BATCH_OPERATION_NOT_READY' ? '该批量操作尚未具备安全后台执行链路' : '当前操作不可用'));
     if (!Number(estimate.count || 0)) throw new Error('当前范围没有可处理素材');
     const cleanNote = operation === 'CLEAN' ? '清洗将检查并记录问题，不自动删除或确认素材。\n' : '';
-    const deleteNote = operation === 'DELETE_INDEX'
+    let deleteNote = operation === 'DELETE_INDEX'
       ? '将删除素材索引及对应全部标注（Ground Truth 与标注文件）；共享原图及平台标签字典不会被删除。\n'
       : operation === 'DELETE_SOURCE'
         ? '将尝试删除原始图片对象及对应标注，操作不可撤销。\n' : '';
-    if (!skipConfirm && !window.confirm(`${deleteNote}${cleanNote}本次将${deleteNote ? '删除' : '处理'} ${estimate.count} 张素材（${chosen === 'CURRENT_PAGE' ? '当前页' : chosen === 'SELECTED' ? '当前已选' : '全部筛选结果'}），确认继续？`)) return null;
+    const preview=estimate.deletion_preview;
+    if(operation==='DELETE_INDEX'&&preview){
+      if(!preview.plan_id||!preview.confirmation_credential)throw new Error('删除预览身份不完整，请重新预览');
+      const count=value=>value==null?'未核验':Number(value);
+      deleteNote+=`正式 GT ${count(preview.gt_count)} · 当前 Test ${count(preview.current_test_count)}\n历史引用 ${count(preview.historical_reference_count)} · 活动引用 ${count(preview.active_reference_count)}\n保留物理图片 ${count(preview.physical_retained_count)} · 释放空间 0 字节\n历史证据保留；已删除原图不保证完整复评。\n`;
+      payload.options={...options,deletion_plan_id:preview.plan_id,confirmation_credential:preview.confirmation_credential};
+    }
+    if ((!skipConfirm || preview) && !window.confirm(`${deleteNote}${cleanNote}本次将${deleteNote ? '删除' : '处理'} ${estimate.count} 张素材（${chosen==='PROJECT'?'整个项目':chosen === 'CURRENT_PAGE' ? '当前页' : chosen === 'SELECTED' ? '当前已选' : '全部筛选结果'}），确认继续？`)) return null;
     assertScopeUnchanged();
     payload.selection_spec = estimate.selection_spec;
     if (operation === 'DELETE_SOURCE') payload.options.confirmation_token = estimate.confirmation_token;
-    markUnknown(projectAtStart, operation);
+    if(preview?.plan_id)deletionContexts.set(preview.plan_id,trainingContext);
+    markUnknown(projectAtStart, preview?.plan_id?{operation,task_id:preview.plan_id}:operation);
     let task;
     try {
       task = await request(batchUrl, {
@@ -203,6 +223,8 @@ export function installMaterialBatchRuntime({projectId, currentPageIds, selected
       throw error;
     }
     if(pid()!==projectAtStart)return task;
+    if(operation==='DELETE_INDEX')window.TrainingMaterialSummaryRuntime?.trackMaterialDeletion?.(task,trainingContext);
+    deletionContexts.delete(task.task_id);
     remember(task);
     announce(task);
     poll(task.task_id, {foreground: true});
@@ -211,6 +233,17 @@ export function installMaterialBatchRuntime({projectId, currentPageIds, selected
 
   async function recoverUnknown(project = pid()) {
     try {
+      const pending=unknowns()[project];
+      if(pending?.task_id){
+        const task=await get(pending.task_id,project);
+        if(pid()!==project)return null;
+        if(task?.task_id!==pending.task_id||task.operation!==pending.operation)throw new Error('提交结果身份不一致，请查询原任务');
+        markUnknown(project,null);
+        window.TrainingMaterialSummaryRuntime?.trackMaterialDeletion?.(task,deletionContexts.get(task.task_id)||null);
+        deletionContexts.delete(task.task_id);
+        remember(task);announce(task);poll(task.task_id);
+        tell('已按原计划身份核验素材任务，不会重复创建');return task;
+      }
       const page=await request(`/api/v62/projects/${encodeURIComponent(project)}/material-batches?limit=50`);
       if(pid()!==project)return null;
       const items=(page.items||[]).filter(task=>task.operation===unknowns()[project]);
@@ -223,10 +256,10 @@ export function installMaterialBatchRuntime({projectId, currentPageIds, selected
     const project=pid();
     if(submissions.has(project))return submissions.get(project);
     const button=config.triggerButton||window.event?.currentTarget,wasDisabled=button?.disabled;
-    if(button){button.disabled=true;button.setAttribute?.('aria-busy','true')}
+    if(button){button.disabled=true;button.setAttribute?.('aria-busy','true');button.classList?.add('loading')}
     const pending=Promise.resolve().then(()=>pid()!==project?null:unknowns()[project]?recoverUnknown(project):run(operation,config))
       .catch(error=>{if(pid()===project)tell(error.message||String(error))})
-      .finally(()=>{submissions.delete(project);if(button?.isConnected){button.disabled=wasDisabled;button.removeAttribute?.('aria-busy')}});
+      .finally(()=>{submissions.delete(project);if(button?.isConnected){button.disabled=wasDisabled;button.removeAttribute?.('aria-busy');button.classList?.remove('loading')}});
     submissions.set(project,pending);
     return pending;
   };

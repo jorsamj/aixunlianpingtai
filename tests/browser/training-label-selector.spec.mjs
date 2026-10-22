@@ -1,3 +1,4 @@
+import {returnToTrainingConfiguration} from './helpers/training-admission.mjs';
 import {test, expect} from '@playwright/test';
 
 const visualOutput = process.env.CODEX_VISUAL_OUTPUT_DIR || '';
@@ -145,6 +146,7 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   await card.getByRole('button', {name: '训练'}).click();
   const dialog = page.getByRole('dialog', {name: '创建训练任务'});
   await expect(dialog).toBeVisible({timeout: 10_000});
+  await returnToTrainingConfiguration(page);
   await expect(dialog.locator('.train-create-saas')).toBeVisible();
   await expect(dialog.locator('.train-create-layout')).toBeVisible();
   await expect(dialog.locator('.train-create-left')).toBeVisible();
@@ -305,6 +307,7 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   await secondCard.getByRole('button', {name: '训练'}).click();
   const secondDialog = page.getByRole('dialog', {name: '创建训练任务'});
   await expect(secondDialog).toBeVisible({timeout: 10_000});
+  await returnToTrainingConfiguration(page);
   await secondDialog.getByRole('button', {name: '选择训练素材'}).click();
   const secondPicker = page.getByRole('dialog', {name: '选择本次训练素材'});
   let releaseBulk;
@@ -325,6 +328,7 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   await secondCard.getByRole('button', {name: '训练'}).click();
   const failureDialog = page.getByRole('dialog', {name: '创建训练任务'});
   await expect(failureDialog).toBeVisible();
+  await returnToTrainingConfiguration(page);
   await page.evaluate(() => {
     document.getElementById('tr429TaskId').value = 'invalid-task-id';
     void window.TrainingSubmitRuntime.submit();

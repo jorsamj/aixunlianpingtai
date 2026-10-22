@@ -4,13 +4,13 @@ import {installMaterialBatchRuntime} from '../../static/modules/material-batches
 import {readFileSync} from 'node:fs';
 import {withRequestDeadline} from '../../static/modules/api.js';
 
-async function fixture(run) {
+async function fixture(run,{refresh}={}) {
   const previous={window:globalThis.window,localStorage:globalThis.localStorage,fetch:globalThis.fetch};
   const storage=new Map(),calls=[],messages=[];
   globalThis.localStorage={getItem:key=>storage.get(key)||null,setItem:(key,value)=>storage.set(key,value)};
   globalThis.window={confirm:()=>true};
   try {
-    installMaterialBatchRuntime({projectId:()=> 'p1',currentPageIds:()=>['one'],notify:value=>messages.push(value),requestTimeoutMs:15,pollRegistry:{clear(){},startTimeout(){}}});
+    installMaterialBatchRuntime({projectId:()=> 'p1',currentPageIds:()=>['one'],refresh,notify:value=>messages.push(value),requestTimeoutMs:15,pollRegistry:{clear(){},startTimeout(){}}});
     await run({calls,messages});
   } finally {Object.assign(globalThis,previous)}
 }
@@ -45,6 +45,52 @@ test('material estimate pending is bounded without posting a mutation',()=>fixtu
   await window.runMaterialBatch62('CLEAN',{scope:'CURRENT_PAGE'});
   assert.match(messages.join(' '),/超时/);
 }));
+
+test('logical delete carries the frozen preview credential and shows actual retention before creation',()=>fixture(async()=>{
+  let posted, confirmation='';
+  window.confirm=text=>{confirmation=text;return true};
+  globalThis.fetch=async(url,options={})=>{
+    if(url.endsWith('/estimate'))return Response.json({supported:true,count:2,selection_spec:{scope:'SELECTED',image_ids:['one','two'],repository_revision:9},
+      deletion_preview:{plan_id:'plan-safe',confirmation_credential:'proof',selected_count:2,gt_count:1,current_test_count:1,historical_reference_count:2,active_reference_count:1,physical_retained_count:2,reclaimed_bytes:0}});
+    if(options.method==='POST'){posted=JSON.parse(options.body);return Response.json({task_id:'plan-safe',operation:'DELETE_INDEX',status:'QUEUED'})}
+    return Response.json({task_id:'plan-safe',operation:'DELETE_INDEX',status:'QUEUED'});
+  };
+  await window.runMaterialBatch62('DELETE_INDEX',{scope:'SELECTED',imageIds:['one','two'],skipConfirm:true});
+  assert.equal(posted.options.deletion_plan_id,'plan-safe');assert.equal(posted.options.confirmation_credential,'proof');
+  assert.match(confirmation,/正式 GT 1/);assert.match(confirmation,/活动引用 1/);assert.match(confirmation,/释放空间 0/);
+}));
+
+test('project clear freezes an unfiltered project and rejects a wrong name without posting',()=>fixture(async({messages})=>{
+  let requests=0;
+  window.prompt=()=> 'wrong';
+  globalThis.fetch=async()=>{requests++;throw Error('must not request')};
+  await window.runMaterialBatch62('DELETE_INDEX',{scope:'PROJECT',options:{project_name:'Current Project'}});
+  assert.equal(requests,0);assert.match(messages.join(' '),/项目名称/);
+}));
+
+test('a late delete submission carries the original training context instead of capturing a replacement draft',()=>fixture(async()=>{
+  const original={taskId:'training-original'},replacement={taskId:'training-replacement'},tracked=[];
+  let context=original,release;
+  window.TrainingMaterialSummaryRuntime={captureDeletionContext:()=>context,trackMaterialDeletion:(_task,value)=>tracked.push(value)};
+  globalThis.fetch=async(url,options={})=>{
+    if(url.endsWith('/estimate'))return Response.json({supported:true,count:1,selection_spec:{scope:'SELECTED',image_ids:['one']}});
+    if(options.method==='POST')return new Promise(resolve=>{release=()=>resolve(Response.json({task_id:'queued-delete',operation:'DELETE_INDEX',status:'QUEUED'}))});
+    return Response.json({task_id:'queued-delete',operation:'DELETE_INDEX',status:'QUEUED'});
+  };
+  const pending=window.runMaterialBatch62('DELETE_INDEX',{scope:'SELECTED',imageIds:['one']});
+  while(!release)await new Promise(resolve=>setImmediate(resolve));
+  context=replacement;release();await pending;assert.deepEqual(tracked,[original]);
+}));
+
+test('delete terminal updates training from results even when dataset refresh fails',()=>fixture(async({messages})=>{
+  const ids=[];
+  window.TrainingMaterialSummaryRuntime={onMaterialBatchCompleted:async task=>ids.push(task.task_id)};
+  globalThis.fetch=async()=>Response.json({task_id:'delete-a',project_id:'p1',operation:'DELETE_INDEX',status:'PARTIAL_SUCCESS'});
+  window.MaterialBatchRuntime62.poll('delete-a');
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(ids,['delete-a']);
+  assert.match(messages.join(' '),/列表刷新失败/);
+},{refresh:async()=>{throw new Error('isolated list refresh failure')}}));
 test('material polling pending stops with a recoverable timeout message',()=>fixture(async({messages})=>{
   globalThis.fetch=async()=>new Promise(()=>{});
   window.MaterialBatchRuntime62.poll('existing-task');

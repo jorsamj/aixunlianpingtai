@@ -68,7 +68,7 @@ test('large explicit ready selections reuse the durable material-batch owner', (
   assert.match(source, /imageIds = \[\], skipConfirm = false/);
   assert.match(source, /selection\(chosen, imageIds\)/);
   assert.match(source, /explicitIds\?\.length \? explicitIds/);
-  assert.match(source, /!skipConfirm && !window\.confirm/);
+  assert.match(source, /\(!skipConfirm \|\| preview\) && !window\.confirm/);
   const start = app.indexOf('window.confirmBatch414=function(mode)');
   const end = app.indexOf('// ---------- stable algorithm CRUD ----------', start);
   assert.ok(start >= 0 && end > start);

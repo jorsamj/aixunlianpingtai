@@ -55,6 +55,7 @@ from .training_tasks import (
     resolve_frozen_training_base,
     resolve_training_selection,
     resolve_training_input_freeze,
+    revalidate_queued_training_selection,
 )
 from .snapshots import (
     build_snapshot,
@@ -541,7 +542,38 @@ class TrainingPrepareHandler:
         # Keep network-backed refresh outside the project GT fence, but validate
         # Benchmark, expected revisions, selection and publication atomically.
         with material_annotation_lifecycle_fence(project):
+            if context.artifacts.artifact_path(target.task_id, "input-freeze.json").exists():
+                raise RemoteTrainingPreparationError("TRAINING_FREEZE_PUBLICATION_INCOMPLETE",
+                    "冻结证据已存在但任务尚未绑定，已保留原证据；请核验后重新创建任务",
+                    target_status=TaskStatus.FAILED)
+            request_selection = {
+                "schema_version": 1, "task_id": target.task_id, "project_id": target.project_id,
+                "train_image_ids": list(split.train_image_ids), "test_image_ids": list(split.test_image_ids),
+                "expected_material_revision": payload.get("expected_material_revision"),
+                "expected_annotation_revision": payload.get("expected_annotation_revision"),
+                "duplicate_review": payload.get("duplicate_review"),
+            }
+            artifacts_request = context.artifacts.read_json(target.task_id, "input-request-selection.json", default=None)
+            if artifacts_request is None:
+                context.artifacts.atomic_write_json(target.task_id, "input-request-selection.json", request_selection)
+            elif artifacts_request != request_selection:
+                raise RemoteTrainingPreparationError("TRAINING_REQUEST_SELECTION_CHANGED",
+                    "原始训练选择证据不一致，请核验任务后重新创建", target_status=TaskStatus.FAILED)
             split, benchmark_reuse = self._resolve_benchmark_reuse(project, algorithm, payload, split)
+            try:
+                split, selection_recheck = revalidate_queued_training_selection(MaterialRepository(project), split)
+            except ValueError as error:
+                raise RemoteTrainingPreparationError(str(error).split(":", 1)[0], str(error),
+                    target_status=TaskStatus.FAILED) from error
+            if selection_recheck["removed_image_ids"]:
+                # A queued request does not lease live records. Drop only missing
+                # requested identities, then run the full current GT/label checks.
+                # Old human review evidence remains in the original request audit;
+                # it never grants admission to a changed selection or GT revision.
+                payload = {**payload,
+                    "expected_material_revision": MaterialRepository(project).current_revision(),
+                    "expected_annotation_revision": AnnotationRepository(project).current_revision(),
+                    "duplicate_review": None}
             duplicate_review = (
                 normalize_benchmark_duplicate_review(project, payload, split)
                 if benchmark_reuse else validate_duplicate_review(project, payload, split)
@@ -610,6 +642,8 @@ class TrainingPrepareHandler:
             updated = {
                 **payload,
                 "schema_version": 4,
+                "input_request_selection_ref": "input-request-selection.json",
+                "input_selection_recheck": selection_recheck,
                 "split_mode": effective_split.mode.value,
                 "train_image_ids": list(effective_split.train_image_ids),
                 "test_image_ids": list(effective_split.test_image_ids),
@@ -1517,6 +1551,7 @@ class TrainingPrepareHandler:
             if (
                 str(payload.get("training_input_state") or "").upper() != "READY"
                 and int(payload.get("schema_version") or 0) >= 4
+                and not payload.get("input_freeze_ref")
             ):
                 self._heartbeat(context, 2, "resolving_training_contract", "核验训练素材与标签合同")
                 payload = self._freeze_request_contract(context, target, payload)

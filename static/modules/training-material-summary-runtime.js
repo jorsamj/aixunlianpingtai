@@ -1,21 +1,40 @@
+import {withRequestDeadline} from './api.js?v=20261021s';
 function uniqueIds(values) {
   return [...new Set((values || []).map(value => String(value || '').trim()).filter(Boolean))];
 }
 
-export function updateTrainingGovernanceSelection(previous, {mode='read', key, total=0, ids=[], id='', checked=false}) {
+export function updateTrainingGovernanceSelection(previous, {mode='read', key, total=0, allTotal=total, ids=[], id='', checked=false}) {
   const value = previous?.key === key ? previous : {key, all_filtered:false, image_ids:[], excluded_image_ids:[]};
   const selected = new Set(value.image_ids), excluded = new Set(value.excluded_image_ids);
   let all = value.all_filtered;
-  if (mode === 'all' || mode === 'clear') { all = mode === 'all'; selected.clear(); excluded.clear(); }
-  if (mode === 'page') ids.forEach(imageId => all ? excluded.delete(String(imageId)) : selected.add(String(imageId)));
+  let issues=Boolean(value.all_issues);
+  if (['all','issues','clear'].includes(mode)) { all = mode === 'all';issues=mode==='issues'; selected.clear(); excluded.clear(); }
+  if (mode === 'page') ids.forEach(imageId => all||issues ? excluded.delete(String(imageId)) : selected.add(String(imageId)));
   if (mode === 'toggle') {
-    if (all) checked ? excluded.delete(id) : excluded.add(id);
+    if (all||issues) checked ? excluded.delete(id) : excluded.add(id);
     else checked ? selected.add(id) : selected.delete(id);
   }
-  return {key, all_filtered:all, image_ids:[...selected], excluded_image_ids:[...excluded],
+  return {key, all_filtered:all, all_issues:issues, image_ids:[...selected], excluded_image_ids:[...excluded],
     ...(mode==='read'&&value.previous_execution_task_id?{previous_execution_task_id:value.previous_execution_task_id}:{}),
-    count:mode==='read'&&value.previous_execution_task_id ? value.count : all ? Math.max(0,total-excluded.size) : selected.size};
+    count:mode==='read'&&value.previous_execution_task_id ? value.count : all||issues ? Math.max(0,(issues?allTotal:total)-excluded.size) : selected.size};
 }
+
+export function removeResolvedTrainingMaterials(runtime,draft,imageIds,diagnosis=null){
+  const removed=new Set(uniqueIds(imageIds));
+  const duplicateReview=diagnosis?{
+    review_kind:'EXPLICIT_SELECTION_ADJUSTMENT',
+    original_train_image_ids:draft?.duplicateReview?.original_train_image_ids||uniqueIds(draft?.materialIds),
+    original_test_image_ids:draft?.duplicateReview?.original_test_image_ids||uniqueIds(draft?.testMaterialIds),
+    excluded_image_ids:uniqueIds([...(draft?.duplicateReview?.excluded_image_ids||[]),...removed]),
+    material_revision:diagnosis.material_revision,annotation_revision:diagnosis.annotation_revision,
+  }:null;
+  return runtime.update({materialIds:uniqueIds(draft?.materialIds).filter(id=>!removed.has(id)),
+    testMaterialIds:uniqueIds(draft?.testMaterialIds).filter(id=>!removed.has(id)),duplicateReview});
+}
+
+const ISSUE_NAMES=Object.freeze({missing_annotation:'缺少正式标注',partial_review_scope:'标注审核范围不完整',
+  stale_ground_truth:'正式标注与素材身份不一致',material_unavailable:'素材当前不可用',
+  duplicate_annotation_conflict:'同图不同标注',content_hash_leakage:'训练与试验集内容重叠'});
 
 export function trainingMaterialSelectionSignature(ids = []) {
   return uniqueIds(ids).sort().join('\u0000');
@@ -127,6 +146,7 @@ export function installTrainingMaterialSummaryRuntime({
   resolveBenchmarkContext,
   notify = () => {},
   fetchImpl = (...args) => fetch(...args),
+  requestTimeoutMs = 30000,
 } = {}) {
   if (typeof window === 'undefined') return null;
   if (window.__trainingMaterialSummaryRuntimeInstalled) return window.TrainingMaterialSummaryRuntime;
@@ -147,6 +167,9 @@ export function installTrainingMaterialSummaryRuntime({
   let compatibilitySignature = null;
   let compatibilityPendingSignature = null;
   let compatibility = null;
+  let compatibilityFailure=null;
+  let admissionContext=null;
+  const admissionSessions=new WeakMap();
   let compatibilityController = null;
   let compatibilityQuery = '';
   let compatibilityIssueType = '';
@@ -160,26 +183,83 @@ export function installTrainingMaterialSummaryRuntime({
   let governanceDecisions = {};
   let governanceDecisionRevision = '';
   let governanceRetainedTask = null;
+  const deletionSessions=new Map();
+  const topOwns=anchor=>!!anchor?.isConnected&&!anchor.closest('.hidden')&&[...document.querySelectorAll('.modal:not(.hidden)')].at(-1)?.contains(anchor);
+
+  function captureDeletionContext(){
+    return ownsAdmission()?{...admissionContext,signature:trainingCompatibilitySignature(currentDraft())}:null;
+  }
+
+  function trackMaterialDeletion(task,context){
+    if(!context||!task?.task_id||task.operation!=='DELETE_INDEX'||!ownsAdmission(context)
+        ||trainingCompatibilitySignature(currentDraft())!==context.signature)return;
+    deletionSessions.set(task.task_id,context);
+  }
+
+  async function onMaterialBatchCompleted(task){
+    const context=deletionSessions.get(task?.task_id);
+    if(!context)return false;
+    if(!ownsAdmission(context)||trainingCompatibilitySignature(currentDraft())!==context.signature
+        ||task.project_id&&String(task.project_id)!==context.projectId){deletionSessions.delete(task.task_id);return false;}
+    const succeeded=new Set();let cursor='';const cursors=new Set();
+    do{
+      if(cursors.has(cursor))throw new Error('删除结果分页异常，请重新查询任务');cursors.add(cursor);
+      const page=await withRequestDeadline(async signal=>readJson(await fetchImpl(`/api/v62/projects/${encodeURIComponent(context.projectId)}/material-batches/${encodeURIComponent(task.task_id)}/results?limit=100&cursor=${encodeURIComponent(cursor)}`,{signal}),'删除结果读取失败'),{timeoutMs:30000,label:'删除结果核验'});
+      for(const item of page.items||[])if((item.item_state||item.state)==='succeeded'&&item.logical_removed===true)succeeded.add(String(item.image_id));
+      cursor=page.next_cursor||'';
+    }while(cursor);
+    if(!ownsAdmission(context)||trainingCompatibilitySignature(currentDraft())!==context.signature){deletionSessions.delete(task.task_id);return false;}
+    deletionSessions.delete(task.task_id);
+    if(succeeded.size)removeResolvedTrainingMaterials(trainingDraftRuntime,currentDraft(),[...succeeded]);
+    invalidate();await refresh(currentIds(),{force:true});await refreshCompatibility({force:true});
+    window.TrainingSubmitRuntime?.updateReadiness?.();
+    notify(`删除任务已核验：实际移除 ${succeeded.size} 张；失败或未处理项继续保留在训练选择中`);
+    return true;
+  }
+
+  async function excludeSelectedFromDraft(imageId){
+    if(historicalDiagnosis||!governanceContext)return false;
+    const anchor=document.querySelector('[data-training-compatibility-dialog]'),pid=String(projectId()||'');
+    const draft=currentDraft(),signature=trainingCompatibilitySignature(draft),context=governanceContext;
+    const selected=imageId?{image_ids:[imageId]}:governanceSelection;
+    if(!imageId&&!selected?.count)return notify('请先选择问题素材');
+    const controls=[...(anchor?.querySelectorAll('button')||[])];controls.forEach(button=>button.disabled=true);
+    try{
+      const resolved=await withRequestDeadline(async signal=>readJson(await fetchImpl(`/api/v62/projects/${encodeURIComponent(pid)}/training-materials/compatibility`,{
+        method:'POST',signal,headers:{'Content-Type':'application/json'},body:JSON.stringify({...compatibilityPayload(draft),selection_action:'RESOLVE_SELECTION',
+          expected_material_revision:context.truth.material_revision,expected_annotation_revision:context.truth.annotation_revision,
+          selection:{...selected,query:compatibilityQuery,issue_type:compatibilityIssueType}})}),'训练问题选择解析失败'),{timeoutMs:30000,label:'核验排除范围'});
+      if(destroyed||String(projectId()||'')!==pid||trainingCompatibilitySignature(currentDraft())!==signature||!topOwns(anchor))return false;
+      const ids=uniqueIds(resolved.matching_image_ids);
+      if(!ids.length)return notify('当前选择没有可排除的问题素材，请重新检查');
+      if(!window.confirm(`仅从本次训练排除 ${ids.length} 张问题素材，保留素材库、GT 和历史证据；随后重新检查全部准入条件。确认继续？`))return false;
+      removeResolvedTrainingMaterials(trainingDraftRuntime,draft,ids,resolved);
+      invalidate();await refresh(currentIds(),{force:true});const result=await refreshCompatibility({force:true});
+      if(result&&String(projectId()||'')===pid&&topOwns(anchor))openCompatibilityIssues();
+      return true;
+    }catch(error){notify(error.message||String(error));return false}
+    finally{controls.forEach(button=>{if(button.isConnected)button.disabled=false})}
+  }
 
   function governanceTools(truth, source='draft') {
     const decisionRevision=JSON.stringify([projectId(),truth.material_revision,truth.annotation_revision]);
     if(governanceDecisionRevision!==decisionRevision){governanceDecisions={};governanceDecisionRevision=decisionRevision;}
     const key=JSON.stringify([projectId(),source,compatibilityQuery,compatibilityIssueType,
       truth.material_revision,truth.annotation_revision,source==='draft'?trainingCompatibilitySignature(currentDraft()):'']);
-    governanceContext={key,total:Number(truth.governance_eligible_count||0),rows:truth.items||[],truth,source};
-    governanceSelection=updateTrainingGovernanceSelection(governanceSelection,{key,total:governanceContext.total});
+    governanceContext={key,total:Number(truth.filtered_affected_image_count??truth.governance_eligible_count??0),allTotal:Number(truth.affected_image_count||0),rows:truth.items||[],truth,source};
+    governanceSelection=updateTrainingGovernanceSelection(governanceSelection,governanceContext);
     if(governanceRetainedTask?.projectId===String(projectId()||'')&&governanceRetainedTask.source===source){
       governanceSelection={...governanceSelection,all_filtered:false,image_ids:[],excluded_image_ids:[],
         count:governanceRetainedTask.count,previous_execution_task_id:governanceRetainedTask.task_id};
       governanceRetainedTask=null;
     }
-    return `<section class="training-governance-tools"><div class="row"><button class="btn" data-governance-mode="page">全选当前页</button><button class="btn" data-governance-mode="all">全选当前筛选结果</button><button class="btn" data-governance-mode="clear">取消全选</button><span data-governance-selected aria-live="polite">已选 ${governanceSelection.count} 张 · 排除 ${governanceSelection.excluded_image_ids.length} 张</span><button class="btn danger" data-governance-preview>删除已选 · 安全预览</button></div><p>只治理当前素材索引，不修改历史任务；不同标注须先在“查看标注差异”明确保留项。全部筛选由服务端冻结，保护资格以预览和执行复验为准。</p><div data-governance-error role="alert" hidden></div></section>`;
+    return `<section class="training-governance-tools"><div class="row"><button class="btn" data-governance-mode="page">全选当前页</button><button class="btn" data-governance-mode="all">全选当前筛选结果</button><button class="btn" data-governance-mode="issues">全选全部训练问题</button><button class="btn" data-governance-mode="clear">取消全选</button><span data-governance-selected aria-live="polite">已选 ${governanceSelection.count} 张 · 排除 ${governanceSelection.excluded_image_ids.length} 张</span>${source==='draft'?'<button class="btn" data-governance-exclude>批量排除本次训练</button>':''}<select class="select" data-governance-delete-mode aria-label="删除模式"><option value="DISCARD">丢弃所选 · 可整组删除</option><option value="KEEP_ONE">保留一份 · 人工指定保留项</option></select><button class="btn danger" data-governance-preview>删除已选 · 安全预览</button></div><p>排除只调整当前训练草稿；删除会移除当前素材及 GT。整组删除无需保留项；历史证据保留，活动或共享图片物理字节延后保留。范围由服务端冻结并复验。</p><div data-governance-error role="alert" hidden></div></section>`;
   }
 
   function refreshGovernanceChecks() {
     const root=document.querySelector('[data-training-compatibility-dialog]');
     root?.querySelectorAll('[data-governance-check]').forEach(input=>{
-      input.checked=governanceSelection?.all_filtered
+      input.checked=governanceSelection?.all_filtered||governanceSelection?.all_issues
         ? !governanceSelection.excluded_image_ids.includes(input.dataset.governanceCheck)
         : governanceSelection?.image_ids.includes(input.dataset.governanceCheck);
     });
@@ -195,11 +275,13 @@ export function installTrainingMaterialSummaryRuntime({
     if(!selected?.count)return notify('请先选择素材');
     const context=governanceContext,pid=String(projectId()||''),sourceTask=historicalDiagnosis?.task_id;
     const sequence=diagnosticSequence,draftSignature=trainingCompatibilitySignature(currentDraft());
+    const deletionContext=captureDeletionContext();
     const dialog=document.querySelector('[data-training-compatibility-dialog]')?.closest('[role="dialog"]');
     const filters={query:compatibilityQuery,issueType:compatibilityIssueType};
     const body={...selected, query:compatibilityQuery,issue_type:compatibilityIssueType,
       expected_material_revision:context.truth.material_revision,
       expected_annotation_revision:context.truth.annotation_revision,manual_decisions:governanceDecisions,
+      delete_mode:document.querySelector('[data-governance-delete-mode]')?.value||'DISCARD',
       ...(sourceTask?{training_task_id:sourceTask}:{training_selection:compatibilityPayload()})};
     const errorBox=document.querySelector('[data-governance-error]');
     const buttons=[...document.querySelectorAll('[data-governance-preview],[data-conflict-delete]')];
@@ -207,27 +289,71 @@ export function installTrainingMaterialSummaryRuntime({
     if(errorBox)errorBox.hidden=true;
     try {
       await window.previewTrainingIntegrityGovernance47({payload:body,projectId:pid,
+        onCreated:task=>trackMaterialDeletion(task,deletionContext),
         isCurrent:()=>!destroyed&&String(projectId()||'')===pid&&governanceContext===context&&diagnosticSequence===sequence
           &&Boolean(dialog?.isConnected&&!dialog.closest('.hidden'))
           &&[...document.querySelectorAll('.modal:not(.hidden)')].at(-1)===dialog
           &&(sourceTask||trainingCompatibilitySignature(currentDraft())===draftSignature),
         onReturn:async(task)=>{
+          const returnAnchor=document.querySelector('.material-integrity47-plan');
           if(task&&['PARTIAL_SUCCESS','FAILED','CANCELLED'].includes(task.status)&&Number(task.total||0)>Number(task.succeeded||0)){
             governanceRetainedTask={projectId:pid,source:context.source,task_id:task.task_id,count:Number(task.total||0)-Number(task.succeeded||0)};
           }
           if(sourceTask)return openTaskDiagnosis(sourceTask);
-          // Only change this new draft. A server deletion never rewrites historical input.
-          const draft=currentDraft(),signature=trainingCompatibilitySignature(draft);
-          const existing=await readJson(await fetchImpl(`/api/v62/projects/${encodeURIComponent(pid)}/training-materials/selection-summary`,{
-            method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({image_ids:uniqueIds([...(draft?.materialIds||[]),...(draft?.testMaterialIds||[])])})}), '当前训练选择读取失败');
-          if(String(projectId()||'')!==pid||trainingCompatibilitySignature(currentDraft())!==signature)return;
-          const missing=new Set(existing.missing_image_ids||[]);
-          if(missing.size)trainingDraftRuntime.update({materialIds:uniqueIds(draft?.materialIds).filter(id=>!missing.has(id)),
-            testMaterialIds:uniqueIds(draft?.testMaterialIds).filter(id=>!missing.has(id)),duplicateReview:null});
-          const result=await refreshCompatibility({force:true,...filters});if(result)openCompatibilityIssues();
+          if(String(projectId()||'')!==pid||!ownsAdmission())return;
+          if(task)await onMaterialBatchCompleted(task);
+          const result=await refreshCompatibility({force:true,...filters});if(result&&topOwns(returnAnchor))openCompatibilityIssues();
         }});
     } catch(error) { if(errorBox?.isConnected){errorBox.hidden=false;errorBox.textContent=error.message||String(error)}notify(error.message||String(error)); }
     finally {buttons.forEach(button=>button.disabled=false);}
+  }
+
+  function ownsAdmission(context=admissionContext){
+    return !!context&&!destroyed&&context.root?.isConnected&&!context.root.closest?.('.hidden')&&String(projectId()||'')===context.projectId
+      &&document.querySelector('.train429-create')===context.root
+      &&String(document.getElementById('tr429TaskId')?.value||'')===context.taskId;
+  }
+
+  function openAdmissionDiagnosis(){
+    const context=admissionContext;if(!ownsAdmission(context))return false;
+    const {readiness,draft,algorithmName}=context;
+    const details=readiness.blockers.filter(row=>!row.transient);
+    const title=readiness.ready?'训练准入检查已通过':'训练暂不可开始';
+    const html=`<div data-training-compatibility-dialog data-training-admission-dialog>
+      <div class="alert ${readiness.ready?'success':'warn'}"><b>${title}</b><p>${htmlEscape(algorithmName)} · 本次选择 ${uniqueIds(draft?.materialIds).length} 张训练素材</p></div>
+      <ul class="training-admission-reasons">${details.map(row=>`<li data-admission-code="${htmlEscape(row.code)}"><b>${htmlEscape(row.message)}</b>${row.count!=null?`<span> · ${Number(row.count)} ${htmlEscape(row.count_unit||'张')}</span>`:''}</li>`).join('')||(readiness.ready?'<li>已完成全部已知准入检查，可返回训练配置开始训练。</li>':'<li>正在完成准入检查，请稍候</li>')}</ul>
+      <div class="row"><button class="btn" data-admission-materials>查看全部问题 · 批量处理</button><button class="btn" data-admission-recheck>重新检查</button><button class="btn primary" data-admission-return>返回训练配置</button></div><div data-admission-status aria-live="polite"></div></div>`;
+    showDiagnosticDialog(title,html);
+    const root=document.querySelector('[data-training-admission-dialog]');
+    root?.querySelector('[data-admission-return]')?.addEventListener('click',()=>window.closeModal?.());
+    root?.querySelector('[data-admission-materials]')?.addEventListener('click',()=>{if(ownsAdmission(context))openCompatibilityIssues()});
+    root?.querySelector('[data-admission-recheck]')?.addEventListener('click',async()=>{
+      if(!ownsAdmission(context))return;
+      const button=root.querySelector('[data-admission-recheck]');button.disabled=true;button.classList.add('loading');
+      const status=root.querySelector('[data-admission-status]');if(status)status.textContent='正在重新检查全部准入条件…';
+      window.TrainingSubmitRuntime?.clearAdmissionError?.();
+      try{await refresh(currentIds(),{force:true});await refreshCompatibility({force:true});}
+      finally{if(button.isConnected){button.disabled=false;button.classList.remove('loading');}if(ownsAdmission(context)&&root.isConnected&&[...document.querySelectorAll('.modal:not(.hidden)')].at(-1)?.contains(root)){window.TrainingSubmitRuntime?.updateReadiness?.();openAdmissionDiagnosis()}}
+    });
+    return true;
+  }
+
+  function updateAdmissionDiagnosis(context){
+    if(!context?.root){admissionContext=null;return;}
+    admissionContext=context;if(!ownsAdmission(context))return;
+    const {root,taskId,readiness}=context;
+    let session=admissionSessions.get(root);
+    if(!session||session.taskId!==taskId){session={taskId,shown:false};admissionSessions.set(root,session);}
+    const footer=root.querySelector('.train428-footer');
+    let entry=footer?.querySelector('[data-training-admission-open]');
+    if(footer&&!entry){entry=document.createElement('button');entry.className='btn';entry.type='button';entry.dataset.trainingAdmissionOpen='1';entry.textContent='查看不能训练的原因';entry.onclick=()=>openAdmissionDiagnosis();footer.append(entry);}
+    if(entry)entry.hidden=readiness.ready;
+    const top=[...document.querySelectorAll('.modal:not(.hidden)')].at(-1);
+    if(top?.querySelector('[data-training-admission-dialog]')){
+      const key=readiness.signature;if(top.dataset.admissionSignature!==key){top.dataset.admissionSignature=key;openAdmissionDiagnosis();}return;
+    }
+    if(session.shown||readiness.ready||readiness.checking||!readiness.blockers.some(row=>!row.transient)||!taskId||!top?.contains(root))return;
+    session.shown=true;openAdmissionDiagnosis();
   }
 
   function currentIds() {
@@ -264,6 +390,7 @@ export function installTrainingMaterialSummaryRuntime({
     if (compatibilityPendingSignature === signature) {
       return {ready: false, loading: true, issue_count: null, signature};
     }
+    if(compatibilityFailure?.signature===signature)return {ready:false,loading:false,issue_count:null,signature,error:compatibilityFailure.message};
     if (compatibilitySignature !== signature || !compatibility) {
       return {ready: false, loading: false, issue_count: null, signature};
     }
@@ -323,12 +450,14 @@ export function installTrainingMaterialSummaryRuntime({
       }
       const truth = compatibilityFor();
       const count = Number(truth.affected_image_count ?? truth.issue_count ?? 0);
-      row.innerHTML = truth.loading || !truth.ready
+      const nextHtml = truth.error
+        ? '<span>训练输入检查</span><b class="err">检查失败 · 可重试</b><button class="btn mini" type="button" data-training-compatibility-open>查看原因并重试</button>'
+        : truth.loading || !truth.ready
         ? '<span>标签适配</span><b>检查中…</b>'
         : count
           ? `<span>训练输入检查</span><b class="warn">${count} 张需处理</b><button class="btn mini" type="button" data-training-compatibility-open>查看并处理冲突</button>`
           : '<span>标签适配</span><b>已通过</b>';
-      row.querySelector?.('[data-training-compatibility-open]')?.addEventListener?.('click', () => openCompatibilityIssues());
+      if(row.dataset.compatibilityRenderKey!==nextHtml){row.dataset.compatibilityRenderKey=nextHtml;row.innerHTML=nextHtml;row.querySelector?.('[data-training-compatibility-open]')?.addEventListener?.('click', () => openCompatibilityIssues());}
     }
   }
 
@@ -365,17 +494,16 @@ export function installTrainingMaterialSummaryRuntime({
     lastError = '';
     queueDecorate();
     try {
-      const response = await fetchImpl(
+      const body = await withRequestDeadline(async signal=>readJson(await fetchImpl(
         `/api/v62/projects/${encodeURIComponent(pid)}/training-materials/selection-summary`,
         {
           method: 'POST',
-          signal: activeController.signal,
+          signal,
           headers: {'Accept': 'application/json', 'Content-Type': 'application/json'},
           body: JSON.stringify({image_ids: normalizedIds}),
         },
-      );
-      const body = await readJson(response, '训练素材摘要读取失败');
-      if (destroyed || sequence !== requestSequence) return null;
+      ),'训练素材摘要读取失败'),{timeoutMs:requestTimeoutMs,label:'训练素材摘要',signal:activeController.signal});
+      if (destroyed || sequence !== requestSequence || String(projectId()||'')!==pid) return null;
       currentSignature = signature;
       pendingSignature = null;
       summary = {
@@ -424,6 +552,7 @@ export function installTrainingMaterialSummaryRuntime({
     compatibilityController?.abort?.();
     compatibilityController = new AbortController();
     compatibilityPendingSignature = signature;
+    compatibilityFailure=null;
     queueDecorate();
     try {
       const requestBody = payload ? {...payload} : compatibilityPayload(draft);
@@ -433,16 +562,15 @@ export function installTrainingMaterialSummaryRuntime({
         page,
         page_size: pageSize,
       });
-      const response = await fetchImpl(
+      const body = await withRequestDeadline(async signal=>readJson(await fetchImpl(
         `/api/v62/projects/${encodeURIComponent(pid)}/training-materials/compatibility`,
         {
           method: 'POST',
-          signal: compatibilityController.signal,
+          signal,
           headers: {'Accept': 'application/json', 'Content-Type': 'application/json'},
           body: JSON.stringify(requestBody),
         },
-      );
-      const body = await readJson(response, '训练标签适配检查失败');
+      ),'训练标签适配检查失败'),{timeoutMs:requestTimeoutMs,label:'训练准入检查',signal:compatibilityController.signal});
       if (destroyed || sequence !== compatibilitySequence || String(projectId() || '') !== pid) return null;
       compatibilitySignature = signature;
       compatibilityPendingSignature = null;
@@ -463,6 +591,7 @@ export function installTrainingMaterialSummaryRuntime({
       if (error?.name === 'AbortError' || sequence !== compatibilitySequence) return null;
       compatibilityPendingSignature = null;
       compatibility = null;
+      compatibilityFailure={signature,message:String(error?.message||error||'训练检查失败')};
       lastError = String(error?.message || error || '训练标签适配检查失败');
       queueDecorate();
       window.TrainingSubmitRuntime?.updateReadiness?.();
@@ -474,7 +603,7 @@ export function installTrainingMaterialSummaryRuntime({
   function issueHtml(item) {
     if (['duplicate_annotation_conflict','content_hash_leakage'].includes(item?.issue_type)) {
       const leakage = item.issue_type === 'content_hash_leakage';
-return `<article class="training-compatibility-item"><img src="${htmlEscape(item.thumbnail_url||item.content_url||'')}" alt="${htmlEscape(item.filename||item.image_id)}" loading="lazy"><div><b>${htmlEscape(item.filename||item.image_id)}</b><small>${htmlEscape(item.image_id)} · ${htmlEscape(item.role||'')}</small><p>${leakage?'同 SHA 跨训练/试验集：必须调整数据角色，不能直接忽略':'原始正式标注冲突：'+htmlEscape((item.conflict_types||[]).join('、'))}</p><p>${htmlEscape(item.annotation_state)} · 范围 ${htmlEscape((item.annotation_scope||[]).join('、'))} · ${Number(item.box_count||0)} 框</p><code>${htmlEscape(item.content_sha256)}</code><div class="row"><button class="btn primary" data-duplicate-compare="${htmlEscape(item.content_sha256)}">查看标注差异</button><button class="btn" data-conflict-review="${htmlEscape(item.image_id)}">去补审 / 核对当前标注</button><button class="btn" data-conflict-exclude="${htmlEscape(item.image_id)}" ${leakage?'disabled':''}>仅排除本次训练</button></div></div></article>`;
+return `<article class="training-compatibility-item"><img src="${htmlEscape(item.thumbnail_url||item.content_url||'')}" alt="${htmlEscape(item.filename||item.image_id)}" loading="lazy"><div><b>${htmlEscape(item.filename||item.image_id)}</b><small>${htmlEscape(item.image_id)} · ${htmlEscape(item.role||'')}</small><p>${leakage?'同 SHA 跨训练/试验集：调整选择后必须完整复检，不能直接忽略':'原始正式标注冲突：'+htmlEscape((item.conflict_types||[]).join('、'))}</p><p>${htmlEscape(item.annotation_state)} · 范围 ${htmlEscape((item.annotation_scope||[]).join('、'))} · ${Number(item.box_count||0)} 框</p><code>${htmlEscape(item.content_sha256)}</code><div class="row"><button class="btn primary" data-duplicate-compare="${htmlEscape(item.content_sha256)}">查看标注差异</button><button class="btn" data-conflict-review="${htmlEscape(item.image_id)}">去补审 / 核对当前标注</button><button class="btn" data-conflict-exclude="${htmlEscape(item.image_id)}" >仅排除本次训练</button></div></div></article>`;
     }
     const reviewed = uniqueIds(item?.annotation_scope).join('、') || '无';
     const required = uniqueIds(item?.required_label_codes).join('、') || '无';
@@ -494,7 +623,7 @@ return `<article class="training-compatibility-item"><img src="${htmlEscape(item
     const issueTypes = Object.keys(truth.issue_counts || {});
     const offset = Math.max(0, (compatibilityPage - 1) * compatibilityPageSize);
     const tools=governanceTools(truth);
-    const html = `<div class="training-compatibility-list"><div class="alert warn"><b>${truth.issue_count} 张素材不适配本次训练</b><span>补审只记录你明确检查过的标签；AI 未检出不会自动确认不存在。</span></div><div class="row"><input id="trainingCompatibilityQuery" class="input" value="${htmlEscape(compatibilityQuery)}" placeholder="搜索文件名 / image_id"><select id="trainingCompatibilityType" class="select"><option value="">全部异常</option>${issueTypes.map(type=>`<option value="${htmlEscape(type)}" ${type===compatibilityIssueType?'selected':''}>${htmlEscape(type)} · ${Number(truth.issue_counts[type]||0)}</option>`).join('')}</select><button class="btn" type="button" onclick="TrainingMaterialSummaryRuntime.applyIssueFilters()">筛选</button></div>${tools}<div class="item-sub">筛选结果 ${Number(truth.filtered_count||0)} 条 · 当前 ${rows.length?offset+1:0}-${offset+rows.length}</div>${rows.map(issueHtml).join('') || '<div class="empty">当前筛选没有问题素材</div>'}<div id="trainingCompatibilityPager"></div></div>`;
+    const html = `<div class="training-compatibility-list"><div class="alert warn"><b>${Number(truth.affected_image_count||0)} 张素材 · ${truth.issue_count} 条训练问题</b><span>补审只记录你明确检查过的标签；AI 未检出不会自动确认不存在。</span></div><div class="row"><input id="trainingCompatibilityQuery" class="input" value="${htmlEscape(compatibilityQuery)}" placeholder="搜索文件名 / image_id"><select id="trainingCompatibilityType" class="select"><option value="">全部异常</option>${issueTypes.map(type=>`<option value="${htmlEscape(type)}" ${type===compatibilityIssueType?'selected':''}>${htmlEscape(ISSUE_NAMES[type]||type)} · ${Number(truth.issue_counts[type]||0)}</option>`).join('')}</select><button class="btn" type="button" onclick="TrainingMaterialSummaryRuntime.applyIssueFilters()">筛选</button></div>${tools}<div class="item-sub">筛选 ${Number(truth.filtered_affected_image_count||0)} 张 · ${Number(truth.filtered_count||0)} 条问题 · 当前 ${rows.length?offset+1:0}-${offset+rows.length}</div>${rows.map(issueHtml).join('') || '<div class="empty">当前筛选没有问题素材</div>'}<div id="trainingCompatibilityPager"></div></div>`;
     showDiagnosticDialog(Number(truth.duplicate_conflict_group_count||truth.duplicate_group_count||0)?'训练素材冲突诊断':'训练标签适配问题', `<div data-training-compatibility-dialog>${html}<div class="row end"><button class="btn" data-training-recheck>重新预检</button>${currentDraft()?.duplicateReview?'<button class="btn" data-training-undo-exclusions>撤销本次排除并重新检查</button>':''}<button class="btn" onclick="closeModal()">返回训练配置 · 保留草稿</button></div></div>`);
     bindDiagnosticActions();
     window.PlatformCore?.pagination?.mountPagination?.(
@@ -556,7 +685,7 @@ return `<article class="training-compatibility-item"><img src="${htmlEscape(item
     root.querySelectorAll('[data-duplicate-compare]').forEach(button=>button.onclick=()=>openDuplicateComparison(button.dataset.duplicateCompare));
     root.querySelectorAll('[data-conflict-review]').forEach(button=>button.onclick=()=>openReview(button.dataset.conflictReview));
     root.querySelectorAll('[data-conflict-exclude]').forEach(button=>{
-      if(historicalDiagnosis||comparison?.items.some(item=>item.image_id===button.dataset.conflictExclude&&item.issue_type==='content_hash_leakage'))button.disabled=true;
+      if(historicalDiagnosis)button.disabled=true;
       button.onclick=()=>{if(!button.disabled)excludeFromDraft(button.dataset.conflictExclude)};
     });
     root.querySelector('[data-training-recheck]')?.addEventListener('click',async()=>{
@@ -564,7 +693,7 @@ return `<article class="training-compatibility-item"><img src="${htmlEscape(item
       const controls=[...root.querySelectorAll('[data-governance-check],[data-governance-mode],[data-governance-preview],[data-conflict-delete],[data-training-recheck]')];
       const disabled=controls.map(control=>control.disabled);controls.forEach(control=>control.disabled=true);root.setAttribute('aria-busy','true');
       const result=await refreshCompatibility({force:true,query:compatibilityQuery,issueType:compatibilityIssueType});
-      if(result&&root.isConnected&&!root.closest('.hidden'))openCompatibilityIssues();
+      if(result&&topOwns(root))openCompatibilityIssues();
       else if(root.isConnected){controls.forEach((control,index)=>control.disabled=disabled[index]);root.removeAttribute('aria-busy');}
     });
     root.querySelector('[data-training-undo-exclusions]')?.addEventListener('click',async()=>{
@@ -578,7 +707,7 @@ return `<article class="training-compatibility-item"><img src="${htmlEscape(item
     if(!comparison){
       root.querySelectorAll('.training-compatibility-item').forEach((article,index)=>{
         const item=governanceContext?.rows[index];
-        if(!item||!['duplicate_annotation_conflict','content_hash_leakage'].includes(item.issue_type))return;
+        if(!item)return;
         const label=document.createElement('label');label.className='training-governance-check';
         const input=document.createElement('input');input.type='checkbox';input.dataset.governanceCheck=item.image_id;
         input.setAttribute('aria-label',`选择 ${item.filename||item.image_id}`);
@@ -588,19 +717,32 @@ return `<article class="training-compatibility-item"><img src="${htmlEscape(item
       });
     }
     root.querySelectorAll('[data-governance-mode]').forEach(button=>button.onclick=()=>{
-      governanceSelection=updateTrainingGovernanceSelection(governanceSelection,{...governanceContext,mode:button.dataset.governanceMode,ids:governanceContext.rows.filter(item=>['duplicate_annotation_conflict','content_hash_leakage'].includes(item.issue_type)).map(item=>item.image_id)});
+      governanceSelection=updateTrainingGovernanceSelection(governanceSelection,{...governanceContext,mode:button.dataset.governanceMode,ids:uniqueIds(governanceContext.rows.map(item=>item.image_id))});
       refreshGovernanceChecks();
     });
     root.querySelector('[data-governance-preview]')?.addEventListener('click',()=>previewGovernance());
+    root.querySelector('[data-governance-exclude]')?.addEventListener('click',()=>excludeSelectedFromDraft());
     root.querySelectorAll('[data-conflict-review]').forEach(button=>{
       if(!comparison)return;
       const item=comparison.items.find(row=>row.image_id===button.dataset.conflictReview);if(!item)return;
       const keeper=document.createElement('button');keeper.className='btn';keeper.dataset.conflictKeeper=item.image_id;
       keeper.textContent='人工确认 · 作为本组保留项';keeper.onclick=()=>{
         governanceDecisions[`DUPLICATE_ANNOTATION_CONFLICT:${item.content_sha256}`]=item.image_id;
-        keeper.textContent='已明确保留 · 删除仍须安全预览';notify('已记录本组人工保留项，不会覆盖历史保护');
+        keeper.textContent='已明确保留 · 删除仍须安全预览';notify('已记录本组人工保留项；整组丢弃无需选择保留项');
       };button.parentElement.append(keeper);
     });
+    if(comparison){
+      const discard=document.createElement('button');discard.className='btn danger';discard.textContent='整组删除 · 不保留任何项';
+      discard.onclick=()=>{
+        const truth=comparison.truth;
+        compatibilityQuery=comparison.hash;compatibilityIssueType=comparison.items[0]?.issue_type||'duplicate_annotation_conflict';
+        governanceContext={...governanceContext,key:JSON.stringify([projectId(),comparison.hash,truth.material_revision,truth.annotation_revision]),
+          total:Number(truth.filtered_affected_image_count||0),allTotal:Number(truth.affected_image_count||0),rows:comparison.items,truth};
+        governanceSelection=updateTrainingGovernanceSelection(null,{...governanceContext,mode:'all'});
+        void previewGovernance();
+      };
+      root.append(discard);
+    }
     refreshGovernanceChecks();
   }
 
@@ -608,6 +750,7 @@ return `<article class="training-compatibility-item"><img src="${htmlEscape(item
     const pid=String(projectId()||'');
     const origin=comparison?.origin||{query:compatibilityQuery,issueType:compatibilityIssueType,page:compatibilityPage,pageSize:compatibilityPageSize};
     const sequence=++diagnosticSequence,sourceTask=historicalDiagnosis?.task_id;
+    const draftSignature=trainingCompatibilitySignature(currentDraft());
     const anchor=document.querySelector('[data-training-compatibility-dialog]');
     try{
       let result, history;
@@ -624,8 +767,9 @@ return `<article class="training-compatibility-item"><img src="${htmlEscape(item
           expected_material_revision:result.material_revision,expected_annotation_revision:result.annotation_revision}),
       }), '正式GT差异读取失败'):{items:[],diagnosis:{}};
       const rows=result.items.map(item=>({...item,...evidence.items.find(row=>row.image_id===item.image_id)}));
-      if(String(projectId()||'')!==pid||destroyed||sequence!==diagnosticSequence||anchor&&(!anchor.isConnected||anchor.closest('.hidden')))return false;
-      comparison={hash:String(hash),page,items:rows,origin};historicalDiagnosis=sourceTask?history:null;
+      if(String(projectId()||'')!==pid||destroyed||sequence!==diagnosticSequence||anchor&&!topOwns(anchor)
+          ||!sourceTask&&trainingCompatibilitySignature(currentDraft())!==draftSignature)return false;
+      comparison={hash:String(hash),page,items:rows,origin,truth:result};historicalDiagnosis=sourceTask?history:null;
       const decisionRevision=JSON.stringify([pid,result.material_revision,result.annotation_revision]);
       if(governanceDecisionRevision!==decisionRevision){governanceDecisions={};governanceDecisionRevision=decisionRevision;}
       const cards=rows.map(item=>`<article>${window.materialIntegrityImage47?.(item)||`<img src="${htmlEscape(item.content_url)}" alt="${htmlEscape(item.filename)}">`}<div class="material-integrity47-meta"><b>${htmlEscape(item.filename)}</b><code>${htmlEscape(item.image_id)}</code><p>原始正式 GT · ${htmlEscape(item.role)} · ${htmlEscape(item.annotation_state)} · ${Number(item.box_count)} 框</p><p>类别 ${htmlEscape((item.labels||[]).join('、'))} · 范围 ${htmlEscape((item.annotation_scope||[]).join('、'))}</p><small>差异 ${htmlEscape((item.conflict_types||[]).join('、'))}</small><code>${htmlEscape(item.annotation_digest)}</code><p>${htmlEscape((item.reference_reasons||[]).map(reason=>window.materialIntegrityProtectionText47?.(reason)||reason.reason).join('；')||'本页未返回历史保护原因；不是删除许可')}</p><div class="row"><button class="btn primary" data-conflict-review="${htmlEscape(item.image_id)}">人工核对这份标注</button><button class="btn" data-conflict-exclude="${htmlEscape(item.image_id)}">仅排除本次训练</button></div></div></article>`).join('');
@@ -644,7 +788,7 @@ return `<article class="training-compatibility-item"><img src="${htmlEscape(item
     const anchor=document.querySelector('[data-training-compatibility-dialog]');
     try{
       const body=await readJson(await fetchImpl(`/api/v62/projects/${encodeURIComponent(pid)}/training-tasks/${encodeURIComponent(taskId)}/input-diagnosis?page=${page}&limit=24&query=${encodeURIComponent(compatibilityQuery)}&issue_type=${encodeURIComponent(compatibilityIssueType)}`),'训练输入诊断读取失败');
-      if(String(projectId()||'')!==pid||destroyed||sequence!==diagnosticSequence||!anchor?.isConnected||anchor.closest('.hidden'))return false;
+      if(String(projectId()||'')!==pid||destroyed||sequence!==diagnosticSequence||!topOwns(anchor))return false;
       historicalDiagnosis=body;comparison=null;
       const current=body.current_diagnosis||{},history=body.historical_evidence||{};
       showDiagnosticDialog('训练输入冲突诊断',`<div data-training-compatibility-dialog><div class="alert warn"><b>训练输入检查失败 · 请先修复后创建新任务</b><p>${htmlEscape(history.message||history.status)}</p><small>历史证据状态：${htmlEscape(history.status)}；以下仅为当前正式索引/标注，不冒充旧任务冻结时的数据。</small></div>${current.available===false?`<div class="alert err">${htmlEscape(current.message||'当前素材不足以重建诊断')}</div>`:`<div class="training-compatibility-list">${(current.items||[]).map(item=>issueHtml(item).replaceAll('data-conflict-exclude=','disabled data-conflict-exclude=')).join('')||'<p>当前未发现相同冲突；请在新训练中重新预检，不恢复原失败任务。</p>'}</div>`}<div class="row between"><button class="btn" data-task-diagnosis-page="${page-1}" ${page>1?'':'disabled'}>上一页问题</button><span>第 ${page} / ${current.total_pages||1} 页</span><button class="btn" data-task-diagnosis-page="${page+1}" ${current.has_next?'':'disabled'}>下一页问题</button></div><div class="row end"><button class="btn" data-training-recheck>重新检查当前数据</button><button class="btn" onclick="closeModal()">返回失败任务</button></div></div>`);
@@ -658,6 +802,7 @@ return `<article class="training-compatibility-item"><img src="${htmlEscape(item
   }
 
   async function loadIssuePage(page = 1) {
+    const anchor=document.querySelector('[data-training-compatibility-dialog]');
     const result = await refreshCompatibility({
       force: true,
       query: compatibilityQuery,
@@ -665,7 +810,7 @@ return `<article class="training-compatibility-item"><img src="${htmlEscape(item
       page,
       pageSize: compatibilityPageSize,
     });
-    if (result) openCompatibilityIssues();
+    if (result&&topOwns(anchor)) openCompatibilityIssues();
     return result;
   }
 
@@ -696,12 +841,7 @@ return `<article class="training-compatibility-item"><img src="${htmlEscape(item
   }
 
   function excludeFromDraft(imageId) {
-    if(historicalDiagnosis)return false;
-    if(typeof window.confirm==='function'&&!window.confirm('仅从本次新训练选择中排除这条身份，不删除素材、标注或历史证据。确认后将重新预检。'))return false;
-    const next = excludeTrainingMaterialFromDraft(trainingDraftRuntime, currentDraft(), imageId, compatibility);
-    invalidateCompatibility();
-    void refreshCompatibility({force: true}).then(result=>{if(result)openCompatibilityIssues()});
-    return next;
+    return excludeSelectedFromDraft(imageId);
   }
 
   function invalidateCompatibility() {
@@ -711,11 +851,13 @@ return `<article class="training-compatibility-item"><img src="${htmlEscape(item
     compatibilitySignature = null;
     compatibilityPendingSignature = null;
     compatibility = null;
+    compatibilityFailure=null;
     queueDecorate();
     window.TrainingSubmitRuntime?.updateReadiness?.();
   }
 
   function invalidate() {
+    for(const [taskId,context] of deletionSessions)if(!ownsAdmission(context))deletionSessions.delete(taskId);
     requestSequence += 1;
     activeController?.abort?.();
     activeController = null;
@@ -753,6 +895,8 @@ return `<article class="training-compatibility-item"><img src="${htmlEscape(item
     invalidateCompatibility,
     compatibilityFor,
     openCompatibilityIssues,
+    updateAdmissionDiagnosis,
+    openAdmissionDiagnosis,
     loadIssuePage,
     applyIssueFilters,
     openReview,
@@ -763,6 +907,10 @@ return `<article class="training-compatibility-item"><img src="${htmlEscape(item
     openTaskDiagnosis,
     returnFromReview,
     excludeFromDraft,
+    excludeSelectedFromDraft,
+    trackMaterialDeletion,
+    captureDeletionContext,
+    onMaterialBatchCompleted,
     invalidate,
     summaryReadyFor,
     summaryFor,
@@ -785,6 +933,7 @@ return `<article class="training-compatibility-item"><img src="${htmlEscape(item
     },
     destroy() {
       destroyed = true;
+      deletionSessions.clear();
       activeController?.abort?.();
       compatibilityController?.abort?.();
       unsubscribeDraft();

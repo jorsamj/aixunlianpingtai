@@ -655,7 +655,7 @@ def test_clean_confirmation_rejects_changed_content_without_deleting_or_marking_
             json={"delete_ids": delete_ids},
         )
         assert response.status_code == 409, response.text
-        assert "素材内容已变化" in response.text
+        assert ("MATERIAL_DELETE_PREVIEW_REQUIRED" if delete_ids else "素材内容已变化") in response.text
         row = materials.get(image_id)
         assert row is not None
         assert row.get("processing_status") != "processed"
@@ -678,6 +678,39 @@ def test_clean_confirmation_requires_complete_success_evidence(client):
     )
     assert response.status_code == 409, response.text
     assert app_module.material_store(project_id).get(image_id).get("cleaned_at") is None
+
+
+def test_clean_confirmation_skips_only_frozen_ids_after_governed_delete(client):
+    project_id=_create_project(client,'clean-skip-retired')
+    uploaded=_upload(client,project_id,'keep.png','skip.png')['uploaded']
+    keep_id,skip_id=[row['id'] for row in uploaded]
+    task=client.post(f'/api/v47/projects/{project_id}/clean-tasks',json={'image_ids':[keep_id,skip_id]}).json()
+    task_id=task['id'];scheduler,repository,_=_materials_scheduler(project_id)
+    for _ in range(20):
+        if repository.get(task_id).status is TaskStatus.SUCCEEDED:
+            break
+        assert scheduler.run_once()
+    assert repository.get(task_id).status is TaskStatus.SUCCEEDED
+    base=f'/api/v62/projects/{project_id}/material-batches'
+    estimate=client.post(base+'/estimate',json={'operation':'DELETE_INDEX','selection_spec':{'scope':'SELECTED','image_ids':[skip_id]}}).json()
+    preview=estimate['deletion_preview']
+    created=client.post(base,json={'operation':'DELETE_INDEX','selection_spec':estimate['selection_spec'],
+        'options':{'deletion_plan_id':preview['plan_id'],'confirmation_credential':preview['confirmation_credential']}})
+    assert created.status_code==202,created.text
+    for _ in range(20):
+        if repository.get(created.json()['task_id']).status is TaskStatus.SUCCEEDED:
+            break
+        assert scheduler.run_once()
+    assert repository.get(created.json()['task_id']).status is TaskStatus.SUCCEEDED
+    assert app_module.material_store(project_id).get(skip_id) is None
+    url=f'/api/v47/projects/{project_id}/clean-tasks/{task_id}/confirm'
+    rejected=client.post(url,json={'delete_ids':[],'skip_image_ids':['foreign-id']})
+    assert rejected.status_code==409,rejected.text
+    confirmed=client.post(url,json={'delete_ids':[],'skip_image_ids':[skip_id]})
+    assert confirmed.status_code==200,confirmed.text
+    assert confirmed.json()['processed_ids']==[keep_id]
+    assert app_module.material_store(project_id).get(keep_id)['processing_status']=='processed'
+    assert (app_module.project_dir(project_id)/uploaded[1]['object_key']).is_file()
 
 
 def test_clean_retry_resets_only_stale_success_and_removes_duplicate_index(tmp_path):

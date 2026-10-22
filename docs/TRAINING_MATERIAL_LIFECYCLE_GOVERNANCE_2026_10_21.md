@@ -1,8 +1,10 @@
 # GT 素材保护、训练数据单份存储及历史 Bundle 生命周期治理
 
-> 本专项唯一需求与进度依据；更新日期：2026-10-21（Asia/Shanghai）。
+> 本专项唯一需求与进度依据；更新日期：2026-10-22（Asia/Shanghai）。
 > 仓库：`jorsamj/aixunlianpingtai`；唯一长期分支：`feature/external-algorithm-publishing`。
-> **当前接续：第十节“训练准入诊断与素材删除治理一体化专项”（GOV-01–11），阶段A进行中。2026-10-21新增指令优先；旧MLG任务及历史记录保留，不代表已实现。图片单份存储和工作Bundle回收仍未开始，本轮不擅自扩大到生产清理。**
+> **当前接续：第十节“训练准入诊断与素材删除治理一体化专项”（GOV-01–11），代码实现已进入集成验收；10.6统一登录权限优先，10.9为当前实现合同。旧MLG任务及历史记录保留，不代表已实现。图片单份存储和工作Bundle回收仍未开始，本轮不擅自扩大到生产清理。**
+
+以下为旧MLG文档初建时的历史记录，当前GOV进度请直接阅读第十节。
 
 核验基线：2026-10-21 实际 `git fetch origin` 后，本地及远端长期分支均为 `067e60fab9c51d46434dc9309b1bd1af275adcd8`，`VERSION.txt=42.24.369`，目标工作区初始干净。原始 cwd 为另一个 `wip/42.25-codex-interrupted` 工作区，未在那里修改、切换或丢弃任何变更。
 
@@ -293,29 +295,151 @@ python -m pytest -q --confcutdir=tests/unit tests/unit/test_material_annotation_
 
 现有MaterialBatch已经具有FILTERED服务端分页全选、selection.sqlite3持久冻结、DELETE_INDEX、Worker恢复/进度及GT删除补偿；完整性治理已有DISCARD_CONFLICTS但历史/Test/protected仍阻断。generic DELETE_INDEX显式选择当前仍限500；计划、提交和Worker需统一新语义。现有TrainingMaterialSummary有兼容性签名、问题分页、治理预览及单张排除；须进一步核对final Submit全部阻塞与Modal生命周期。以上仅代码初审，不作为新需求通过证据。
 
-设计遵循原Owner：扩展原MaterialBatch计划/estimate/create/Worker，所有删除入口使用同一不可变目标与资格事实；逻辑退出与字节回收分别报告；原训练Draft/Submit/MaterialSummary统一收集阻塞，不建第二Modal/Tooltip/Loading/任务库或调度器。选择冻结须绑定project、material/GT revision、SHA/digest、操作者与确认范围，执行重验；管理员项目清空必须服务端鉴权及项目名称确认。技术接口/Schema增量在A审计完成后定稿，优先无需搬迁的兼容扩展；不为未知空间编造释放估算。
+设计遵循原Owner：扩展原MaterialBatch计划/estimate/create/Worker，所有删除入口使用同一不可变目标与资格事实；逻辑退出与字节回收分别报告；原训练Draft/Submit/MaterialSummary统一收集阻塞，不建第二Modal/Tooltip/Loading/任务库或调度器。选择冻结须绑定project、material/GT revision、SHA/digest、操作者与确认范围，执行重验；已登录用户项目清空必须服务端鉴权及项目名称确认。技术接口/Schema增量在A审计完成后定稿，优先无需搬迁的兼容扩展；不为未知空间编造释放估算。
 
-### 10.3 任务清单（本轮初始状态）
+### 10.3 任务清单（2026-10-22实际集成状态；最终CI未完成）
 
 | 需求 | 优先级/模块 | 状态 | 已完成 | 剩余/风险 | Commit | 验收证据 |
 |---|---|---|---|---|---|---|
-| GOV-01 自动诊断 | P0 Submit/MaterialSummary/Modal | 进行中 | 附件基线与入口初读 | final阻塞/once签名/草稿恢复；加载不误报 | 未提交 | 未执行 |
-| GOV-02 全部阻塞 | P0 兼容API/Submit | 进行中 | 问题类型及真实数量要求确认 | 算法/素材/GT/审核/SHA/Test/母模型/版本/资源全链审计 | 未提交 | 未执行 |
-| GOV-03 单张/批量/整组 | P0 MaterialBatch/AnnotationRepo | 进行中 | DISCARD_CONFLICTS复用点定位 | Keeper只适用保留；三层资格一致 | 未提交 | 新合同未执行 |
-| GOV-04 筛选全部 | P0 MaterialSelection/Batch | 进行中 | FILTERED持久全选已存在 | 全分页1000+、版本/SHA/GT冻结/恢复 | 未提交 | 新合同未执行 |
-| GOV-05 全问题排除/删除 | P0 兼容API/Draft/Batch | 未开始 | 确认38张按image_id去重 | 服务端真实全问题选择及只改草稿/永久删除区分 | 未提交 | 未执行 |
-| GOV-06 管理员清空 | P1 API权限/Batch/素材UI | 未开始 | 当前项目范围与名称确认需求确定 | 管理员鉴权、精确计划、GT/Test影响及恢复 | 未提交 | 未执行 |
-| GOV-07 历史/Test规则 | P0 material_batches | 进行中 | 历史protected混用已定位 | 统一预览/提交/Worker和历史复评提示 | 未提交 | 新合同未执行 |
-| GOV-08 活动/共享安全 | P0 Task/Material/prepare | 进行中 | DELETE_INDEX不删除共享图片已定位 | 活动消费者/queued重冻结、当前退出后引用可读、并发fence | 未提交 | 未执行 |
-| GOV-09 预览与后台 | P0 Batch/Worker/审计 | 进行中 | 原selection/task/恢复可复用 | 精确影响、幂等提交、GT revision、实际成功结果/错误 | 未提交 | 未执行 |
-| GOV-10 自动完整复检 | P0 Draft/MaterialSummary/Task | 未开始 | 正确流程已确定 | 只同步成功ID、部分成功、项目/草稿身份、全准入重核验 | 未提交 | 未执行 |
+| GOV-01 自动诊断 | P0 Submit/MaterialSummary/Modal | 已完成待验收 | 原Owner多阻塞/一次弹窗、保留草稿和手动入口 | 等最终回归/CI及更多异常场景 | 待实现提交 | Node49 Submit+Chrome3场景；见10.8 |
+| GOV-02 全部阻塞 | P0 兼容API/Submit | 已完成待验收 | 多阻塞/后端拒绝/资源/固定Test投影，条目与唯一图片数分开 | 最终SHA CI；未知检查保留失败而非放行 | 待实现提交 | Node1208全量、Python356及真实Chrome，见10.11 |
+| GOV-03 单张/批量/整组 | P0 MaterialBatch/AnnotationRepo | 已完成待验收 | 无Keeper整组丢弃；显式KEEP_ONE仍校验；旧隐式删除409退役 | 最终SHA CI | 待实现提交 | 19组38张、126整组、历史2图真实Worker；10.10/10.11 |
+| GOV-04 筛选全部 | P0 MaterialSelection/Batch | 已完成待验收 | 原持久selection跨99页2376张，排除1后冻结2375张 | 最终SHA CI；大型预览仅20样例 | 待实现提交 | 真实Chrome及revision/SHA/GT漂移Python，10.11 |
+| GOV-05 全问题排除/删除 | P0 兼容API/Draft/Batch | 已完成待验收 | 原compatibility RESOLVE全类型、当前页/筛选/全部问题；38张排除和删除均真实验证 | 故障/跨页/整组及保留UI回归 | 待实现提交 | Chrome38排除及38删除各1通过，库/草稿真实核验 |
+| GOV-06 统一登录清空 | P1 API权限/Batch/素材UI | 已完成待验收 | 无admin/白名单/角色；真实actor+项目name+冻结预览+原Worker | HTTP安全/重试最终回归CI | 待实现提交 | Python身份4通过，Chrome真实name/预览/40清空通过 |
+| GOV-07 历史/Test规则 | P0 material_batches | 已完成待验收 | 预览/提交/Worker统一允许当前退役；历史证据、Test Snapshot不改写 | 最终SHA CI；物理回收仍延期 | 待实现提交 | 历史2/2退出且字节/Snapshot不变，原合同Python回归 |
+| GOV-08 活动/共享安全 | P0 Task/Material/prepare | 已完成待验收 | 所有物理源保留；退休映射可读；排队精确原IDs交集、完整重冻结及崩溃不覆盖 | 最终SHA CI；无逐字节GC租约实现，不宣称已实现MLG-03全部 | 待实现提交 | 10000→9500及19准备用例；local/remote冻结映射读取；10.11 |
+| GOV-09 预览与后台 | P0 Batch/Worker/审计 | 已完成待验收 | 原计划绑定actor/GT/SHA/revision，确定任务身份、幂等恢复、分页真实结果 | 最终SHA CI；未知物理资格保留、释放0 | 待实现提交 | 356项Python含硬退出5例；预览/重试真实Chrome |
+| GOV-10 自动完整复检 | P0 Draft/MaterialSummary/Task | 已完成待验收 | 终态分页核验成功ID、原草稿签名、完整刷新/预检 | 部分成功/迟到/重试完整场景 | 待实现提交 | Chrome40→2真实Worker且兼容复检通过；首次后续invalidate清空结果已修正 |
 | GOV-11 集成验收文档 | P0 tests/既有CI/本文件 | 进行中 | 单一权威基线建立 | RED→GREEN、Python/Node/Chrome、版本、准确HEAD CI | 未提交 | 本文件及双入口已建立；不代表功能完成 |
 
-阶段A只读审计/RED进行中，B统一资格、C扩展删除、D自动诊断、E进度复检、F端到端均未开始。每阶段更新实际文件、根因/替代方案/风险、测试通过失败跳过数及Commit。当前未运行新合同测试，不借旧合同绿灯。仅审计子代理可同时只读；实现任务按依赖顺序、代码与规范独立复核，避免共享文件并行改动。
+GOV阶段A审计/RED、B统一资格、C扩展删除、D自动诊断、E进度复检已实现并通过本地定向验收；F受影响回归、最终提交及准确SHA CI进行中。表内“已完成待验收”仍需最终CI，不借旧合同绿灯。10.7–10.10保留各时点真实过程记录，最新结果以10.11及后续准确SHA回执为准；不把旧MLG D/E或生产治理标成完成。
 
 ### 10.4 本轮接续与禁止重复建设
 
-继续从material_batches的parse_request/estimate_batch/prepare_batch、create_material_integrity_plan/执行/Worker/_delete_index_rows和Material/Annotation生命周期fence开始；训练端从training-submit、training-material-summary-runtime、training-draft-runtime/兼容性API及TrainingPrepare启动冻结开始。先完成A所有实际消费者与权限/删除入口审计，再建立RED后最小修改。保持Annotorious正式GT/CAS/SHA及旧历史证据不变。新问题即追加，最终SHA/CI未到不得写已验收。
+GOV实现和原Owner审计已完成，下一步按10.11核验最终代码SHA CI；出现失败先读对应Workflow/Job日志，从原模块最小修正，不重建已验收诊断/删除体系。代码入口为material_batches/MaterialRepository/原Annotation补偿、training-submit/material-summary/material-batches/draft、兼容API及TrainingPrepare。保持Annotorious正式GT/CAS/SHA、任务真实性和历史证据；完成GOV不代表旧MLG单份存储/GC已落地。
+
+### 10.5 A审计结论及实施计划（按依赖执行）
+
+确定根因：Submit readiness首错early return，母模型/版本/外部资产等阻塞互相掩盖；issue_count为问题条目，affected_image_count才是去重素材；当前全选治理只覆盖GT冲突和SHA泄漏，不覆盖missing_annotation/partial_review_scope/stale_ground_truth/material_unavailable；删除终态只invalidate、未自动完整重检。updateShell先更新GT保存状态而组件异步就绪是前轮已验收合同，须保留准确身份门禁。后端历史/Test在plan/execute/Worker同时阻断；ACTIVE guard还把QUEUED当活动、没显式识别TRAINING_PREPARE。原dataset删除会搬源文件，不应作为新的素材退出入口。
+
+正式方案：A先固定这些失败用例；B在原MaterialRepo同库兼容新增退休/保留记录，索引退出与源身份保留同事务，复用GT删除补偿及原fence，物理回收全部延期、释放0；保留原DELETE_SOURCE严格保护并防止删除已退休/共享字节。替代方案是立即实现跨Worker对象租约与自动GC，消费者失联/缓存/跨项目物理映射证明尚不齐，范围风险更高，本轮选择可安全完成当前逻辑退出的保守延期，不将其写为单份存储/自动回收。训练准备用原候选ID存活交集重准入/冻结，不增选；已有活动freeze不改。
+
+C扩展原material-batches estimate/create，响应deletion_preview含不可变计划凭证、精确GT/Test/历史/活动影响、保留及0释放；原POST消费凭证、plan_id作为确定任务身份，执行仍原DELETE_INDEX/Worker。clear_project仅要求服务端真实登录会话及当前项目可访问；所有登录用户权限一致，绑定项目名称与actor，不设管理员资格。原完整性/训练问题治理同一计划Owner、显式丢弃无需Keeper；保留模式继续Keeper验证。批量排除通过原compatibility API的RESOLVE_SELECTION解析真实问题集合，不需全库审计，不删GT。
+
+D在原training-submit收集所有已知阻塞、保留既有首reason兼容，只由原TrainingMaterialSummary/Modal Stack展示；稳定锚为project+训练root+taskId，已确认阻塞且配置/预检完成才主动一次，手动关闭后不抢焦点，后续变化只更新现有诊断；常驻查看入口。加载/错误分别呈现，30秒有界恢复，不将缺失数据伪造为0。
+
+E在原MaterialBatch轮询终态通过原回调拿分页成功IDs，只更新同一项目/同一训练草稿，保留失败及其他正常素材，清过期duplicateReview后force selection-summary/compatibility及所有Submit准入重算，不按数量相减解锁。前端普通素材页添加全筛选/统一登录清空，复用原确认Modal、Loading和Task进度。
+
+文件分工：后端agent仅platform_core/material_batches、MaterialRepo/batch、StorageManager/物理保护、training_compatibility/training_material_picker_api及对应backend tests；主agent负责app.py原入口/鉴权接线、training-submit/material-summary/material-batches/draft/main/style和前端/Chrome、queued prepare两个文件及integration tests。不会同时编辑相同文件。每项先RED→最小GREEN→规范复核→质量复核；最后Python/Node/真实Chrome及受影响CI、版本一次递增373、最终代码SHA与文档补提SHA分别核验。
+
+初始验收映射：B覆盖历史成功/失败/Test/Snapshot/活动可逻辑退、源字节与共享/跨项目不误删/新引用竞态/GT补偿；C覆盖19组38图、同图同GT keepOne与discard、1000+跨页、revision漂移、幂等恢复、clear权限/确认/项目隔离；D覆盖多阻塞/去重38/加载不误报/once/关窗换项目；E覆盖排除/删除全成与部分/样本及Test不足不解锁/旧任务不回写新草稿；F原受影响回归及四视口Modal/遮罩。具体通过/失败/跳过数随后填写，不预报绿色。
+
+### 10.6 2026-10-22权限合同正式变更（覆盖附件GOV-06管理员限定）
+
+用户明确确认：平台当前不区分管理员和普通用户，成功登录且可访问当前项目，即可单张/批量/GT整组/筛选全部删除与清空当前素材。**不采用管理员白名单、角色、RBAC或新增权限模块**。服务端必须依既有真实签名会话及项目访问判定，不信任请求体自报身份；所有登录用户规则一致。清空项目仍要求服务端精确不可变预览、当前项目名称二次确认、审计/真实进度/幂等及活动/共享输入保护；名称确认是操作确认而非管理员授权。
+
+变更原因：用户正式修正原附件GOV-06管理员要求。影响：后端actor provider仅核验真实会话和项目范围；移除本轮新增can_clear_project/admin限制及其测试，改为未登录拒绝、普通登录用户均可、跨项目/伪造身份/名称不符拒绝；前端不按角色隐藏清空入口。原平台登录认证保持。该变更不授权生产删除、项目清空或部署。实现和测试仍在进行中，不能写为已验收。
+
+### 10.7 阶段性实际证据（进行中）
+
+原Submit全阻塞投影新增3例RED：旧模块无collectTrainingAdmissionBlockers导出，改为明确特性缺失断言后45通过3失败；原Owner最小实现后training-submit 48/48通过。兼容性摘要DOM相同内容每次重写导致MutationObserver自激：新动态测试8通过1失败（相同值写3次），改为HTML相同不替换后9/9通过。联合57/57 Node通过，尚非最终全仓结果。
+
+首次浏览器隔离40张真实素材夹具在page.evaluate超时，沿实际调用定位并以上述DOM动态RED证明自激问题；修正后用同夹具得到预期RED（缺少“训练暂不可开始”弹窗，12.9秒），非用超时当业务失败。已在原Submit/MaterialSummary接多阻塞、一次自动诊断、原Modal Stack、常驻查看入口、项目/草稿/关闭身份防迟到和检查失败有界恢复；中断前最后浏览器会话输出尚未取到，须重跑确认，不宣称GREEN。后端由原Repo/Batch实现退休与不可变计划，准确RED/GREEN数待其完整报告，当前未验收。
+
+### 10.8 2026-10-22继续实施与实际验收（进行中）
+
+- 统一登录授权：`app._material_governance_actor`只核验原签名会话和当前项目，不设管理员/白名单/角色；新Python身份用例4例RED→GREEN（未登录/伪造身份、Alice/Bob同权、坏签名、项目不存在）。清空计划绑定actor及项目名称，普通登录用户允许；未操作生产。
+- 前端原Submit/MaterialSummary多阻塞投影及诊断已实际Chrome通过3/3：40张真实隔离素材中38张缺GT自动诊断一次；关闭保留原训练草稿且不重弹；Pending时不误弹，关闭原窗后迟到检查不复活；38张全部问题经服务器RESOLVE_SELECTION一次排除后仅余2张，原40张库记录保留，模型配置保留并完整复检通过。真实DOM valueless属性序列化再次暴露旧innerHTML比较仍自激，最终改用同一元素dataset模板签名，动态测试和Chrome均确认解除。
+- Node本次相关4文件80/80通过，0失败0跳过：新增跨页“全部问题”与“当前筛选”分离、真实ID去重排除；DELETE_INDEX计划凭证透传、GT/Test/历史/活动及保留字节影响确认、名称不符不提交、终态回写钩子。不是最终回归/CI验收。
+- 排队准备：`training_tasks.revalidate_queued_training_selection`只交集原请求ID并保序，10000→9500不补项目其他图片；不足训练/独立Test明确失败。`remote_training_tasks`在首次freeze前保存原始请求及提交revisions，删除使候选减少后废止旧review、按当前合同完整重检/冻结。原14场景+新4场景18/18通过；质量审查发现freeze已写而payload未绑定时崩溃可能覆盖旧freeze，新增实际RED后改为明确`TRAINING_FREEZE_PUBLICATION_INCOMPLETE`保留原字节、要求核验后重新创建；聚焦5/5通过，最终全19仍待复验。
+- 发现尚未关闭的P0：旧dataset删除及历史journal可直接stage/rmtree；旧单图/批量`delete_source=false`绕过退休审计；清洗确认仍调用旧同步删。必须退役绕过并接现有预览→DELETE_INDEX；不得只依赖StorageManager拒绝物理删除。上传补偿因安全拒删需持久记录延期清理，不能静默遗留或虚称回滚完成。
+- 仍待：完整后台测试报告、所有删除入口收敛、整组丢弃UI/保留模式区分、终态只同步实际成功ID真实Chrome、清空真实确认/任务/Worker测试、故障与迟到/跨项目回归、最终VERSION/Commit/CI。当前未验收、未推送代码；基线需求提交125d142a，最终实现SHA尚未产生。旧MLG单份存储与Bundle回收仍不在本轮完成结论内。
+
+### 10.9 实现合同、审查修正和接续证据（2026-10-22，尚待最终CI）
+
+**唯一数据与执行 Owner**：MaterialRepository同库schema5扩展退休/延期清理记录，保留原material+GT快照、source/key/SHA、task和actor；AnnotationRepository原删除补偿、MaterialBatch原selection.sqlite3、原TaskRepository与Worker继续使用。未新增角色/权限库、队列、Modal、Loading、API Client或物理GC。Material当前索引/GT可退役；StorageManager物理源删除保守拒绝，活动/共享真实字节保留，所有页面明确0字节释放。旧MLG D/E、51GB/31GB/20GB生产空间未清理，单份存储/自动Bundle GC仍独立未完成。
+
+**预览和身份**：原`POST /api/v62/projects/{project_id}/material-batches/estimate`返回`deletion_preview`，同一计划schema冻结具体ID、revision、GT摘要、SHA、标签映射、actor及影响。原POST消费`deletion_plan_id`+`confirmation_credential`，task_id为plan_id；同凭据重复请求返回同任务。clear_project只限未筛选全项目范围，要求当前项目名称确认；两名普通签名用户同权，未登录/坏签名/伪造header/错误项目/错误名称不授权。结果不确定按已知plan_id查询，不能盲目重建。
+
+**问题选择与草稿审计**：原compatibility API `RESOLVE_SELECTION`返回精确去重ID；all_issues忽略query/type，全筛选只绑定当前query/type，page为显式ID。issue_count是问题条数，affected_image_count及filtered_affected_image_count是唯一图片数。草稿排除沿原duplicate_review元数据扩展`review_kind=EXPLICIT_SELECTION_ADJUSTMENT`记录原train/test、实际排除、revisions；原无kind旧合同保持严格。新合同允许用户调整全部类型问题/跨Train-Test候选，仍逐次校验角色、原IDs、排除子集、精确最终集合和当前GT，剩余问题不被隐藏。不修改素材/GT/历史；正式DELETE_INDEX回写会清掉已失效的review。
+
+**结束后复检**：MaterialBatch原PollRegistry终态先使旧审计失效，再按results分页读取`item_state=succeeded && logical_removed=true`的真实成功ID；核验原project、训练Modal/task_id及完整draft签名后调整原草稿。失败、未处理项保留；完整重新读取摘要、标签兼容、母模型、版本、资源和原Submit准入，无数量减法解锁。首次真实Worker测试发现后续invalidate清掉复检结果，已修正顺序并真实Chrome重验通过。原手动返回入口继续可恢复，不创建第二轮询。
+
+**额外审查与RED→GREEN**：原摘要裸fetch/兼容响应体在deadline外可永久Pending，新动态测试12通过1失败后改为fetch+JSON解码整体受原withRequestDeadline约束，13/13通过。差异查看迟到增加顶层Modal和草稿签名核验。排除审计字段新测试先发现null丢审计，原draft sanitize扩展后相关30/30 Node通过。全Node当前一次1205/1205通过；首全量1202/1203只旧clean源码守卫合同未同步，后1204/1205只缓存版本守卫，均保留/加强正式动态行为断言后修正，不删测试。
+
+**真实隔离浏览器证据**：自动诊断/保草稿/关闭迟到/38批量排除3通过；38真实DELETE_INDEX Worker成功后40→2并全量复检1通过；项目名+影响预览双确认清空40张1通过；1张SHA在排队后变化导致37成功/1失败、草稿保留3张且不放行1通过。部分失败夹具最初用不可变patch字段被Repo拒绝，改为原upsert模拟身份漂移后通过。100+分页原整组选择按新规则删126/126，真实Worker排队/运行/成功、一次503同凭据重试及刷新恢复测试通过。历史2图整组测试继续保留Annotation/历史Snapshot/共享字节校验；返标注后旧审计失效需要重新真实Worker审计，不能跳过防线。最终相关三份规格仍在合并验收中，不能把上述独立通过次数当全部套件通过。
+
+**接续**：后台负责人正在迁移旧dataset同步删除及journal测试；三个旧隐式删除入口必须明确409指向原v62冻结预览，历史staged字节和未知元数据保留；上传回滚延期清理写同库审计，清洗确认skip_image_ids需属于原冻结scope且不标processed。完成后执行相关Python/Chrome合并回归、独立审查、提交长期分支及最终SHA CI。当前VERSION一次递增42.24.373；入口cache420及必要模块URL已更新，build_identity核验通过，尚未代码提交或推送。远端fetch仍232e4755，其他工作树未覆盖。
+
+### 10.10 最终合并验收收尾（进行中，未借用旧SHA的绿色）
+
+- 三份实际Chrome规格一次合并：**25 passed / 0 failed / 0 skipped，6.2分钟**（material-integrity-governance、training-admission-governance、training-duplicate-conflicts）。包含99页2376张服务端选择、排除1张后2375张精确预览、跨项目旧审计、真实126/126整组、历史2/2当前索引/GT移除但原字节与Snapshot保持、关闭/新Modal迟到保护、全部问题排除/正式删除、部分失败保留与清空。
+- Node全量新鲜运行：**1207 passed / 0 failed / 0 skipped**；新增清洗确认动态用例核验先原DELETE_INDEX、cancel无确认写入、delete_ids空/skip待删IDs、只将后端processed_ids更新为已处理，创建后台任务不冒称已删。
+- Python独立组：排队准备19+真实签名权限4=**23 passed**；后台15文件**228 passed**、storage/冻结消费者补测**12 passed**（与前组3例重叠，不能直接相加）；GT finalize→retire间硬退出的P1新增5例通过，并经另一审查者独立核对恢复先于guard、同任务token、SHA/schema/新GT CAS及退休幂等。新测试还实际从已退休记录的冻结Mapping通过StorageManager读取local及模拟remote源的同SHA字节，不只检查文件存在。
+- 原Atomicity完整step首运行**137 passed / 9 failed**：6例旧默认保留/历史永久锁合同，3例旧上传失败应物理删源合同。负责人正在逐项迁移为显式KEEP_ONE或整组丢弃、历史可退役、持久延期清理及真实字节保留；保留全部安全断言，不删除测试、不绕过失败。另原active conversion依赖单测的物理删除合同也须一致更新。两项旧Chrome失败是新generic预览缺manual_required_count等字段，已补完整原计划标准0值字段并在25项合并中通过；未把undefined当默认0修改测试。
+- 尚待提交前最后Python合并去重验收、编译/版本、最终差异核对及长期分支普通推送；代码/文档最终SHA和CI将在验收后登记。生产数据库/素材/Bundle/服务/真实训练均未操作。
+
+### 10.11 提交前最终本地证据及未完成边界（2026-10-22）
+
+本节覆盖10.7–10.10当时的“待迁移/待补测”。旧隐式dataset/单图/批量删除入口已统一409 `MATERIAL_DELETE_PREVIEW_REQUIRED`，指向原v62预览；旧journal有可信原元数据时补偿恢复，没有时保留staging及GT备份并明确冲突。未使用整目录删除清掉未知字节。上传失败沿同库`material_cleanup_deferred`记录延期源清理，不吞掉原错误；清洗`skip_image_ids`必须在原冻结范围且不记processed。旧无引用的destructive finish函数已退役。原Atomicity的9项旧合同已迁移，保留全部GT/字节/审计/失败补偿断言。
+
+| 最终本地执行 | 通过 | 失败 | 跳过 | 证据、范围及限制 |
+|---|---:|---:|---:|---|
+| Python33文件合并去重一次 | 356 | 0 | 3 | `gov-python-final.xml`，383.22秒；原Atomicity完整step、新计划/退休/权限/兼容选择、旧入口/清洗/导入、queued prepare19、活动引用/Cache隔离等。下列清单可直接复跑 |
+| 原隐式删除/journal补测 | 7 | 0 | 0 | `python -m pytest -q tests/api/test_governance_legacy_guards.py --basetemp=C:/t/gov-last-legacy2`；删除无引用旧finish函数后重验；与356重叠，不累加 |
+| Node完整前端 | 1209 | 0 | 0 | `npm test`；最新`gov-node-final4.log`，包含两个迟到POST归属及清洗实际处理结果动态测试 |
+| Chrome治理三份规格合并 | 25 | 0 | 0 | `material-integrity-governance.spec.mjs training-admission-governance.spec.mjs training-duplicate-conflicts.spec.mjs`；6.2分钟，新增第8项准入迟到case另见下行 |
+| Chrome最终准入8项+原标签生命周期1项 | 9 | 0 | 0 | `training-admission-governance.spec.mjs training-label-selector.spec.mjs`；1.6分钟，含晚POST不回写新草稿 |
+| Chrome原Owner六份规格 | 32 | 0 | 0 | `material-workflows training-create-first-open training-label-selector training-submit-lifecycle training-page-material-summary training-task-performance`，各文件后缀`.spec.mjs`；1分钟；和上行标签1项重叠 |
+| Chrome最终治理预览执行 | 1 | 0 | 0 | `training-duplicate-conflicts.spec.mjs --grep 'training conflict selection uses shared safe preview'`，23.3秒；最终app.js回调修正后重验，与25重叠 |
+| 编译、版本、差异 | 通过 | 0 | 0 | 8个受影响Python文件`py_compile`、`python -m platform_core.build_identity --check-version-file VERSION.txt`返回42.24.373、`git diff --check` |
+
+Python3项skip均为本机Windows无法创建symlink：Cache组件软链接、Bundle最终路径软链接及cleanup拒绝linked bundle root；Linux CI必须实际执行，不将skip算通过。8条warning为既有弃用/JUnit记录警告。最终补测初次误用`--confcutdir=tests/api`隔断`tests/conftest.py`导致7个fixture setup error；按原正确加载方式重跑7/7通过，无业务代码修改。曾误调用不存在的build_identity函数，随后按原正式CLI核验通过；不隐去命令失败。
+
+**最后两项真实问题与修正**：普通批量estimate/create及未知结果恢复，原训练ticket必须在任何异步提交前捕获，不能POST返回时捕获当前新草稿；Chrome晚POST真实Worker通过。独立复审进一步发现`executeMaterialIntegrityGovernance47`动态读取全局新context.onCreated，新增动态RED为5通过1失败（实际调用replacement），改为提交前捕获`trainingContextAtStart`后完整Node1209通过。项目/root/task/draft校验保留，迟到回调不得关闭或更新后来的Modal。最初原配置类Chrome夹具被新增的真实自动诊断盖住，测试按用户路径点击“返回训练配置”并校验草稿不变后继续；不关闭产品诊断、不放松Submit所属Modal检查、不伪造兼容成功。首轮原fixture失败及后续32全通过分别记录，不能把夹具变化说成产品保护退化。
+
+Python复跑清单（同一次356+3，不含重复补测）：
+
+```text
+tests/api/test_annotation_sqlite_dataset_delete_atomicity.py
+tests/api/test_clean_unified_execution_truth.py
+tests/api/test_dataset_deletion_recovery.py
+tests/api/test_governance_legacy_guards.py
+tests/api/test_material_batch_unified_truth.py
+tests/api/test_material_batching.py
+tests/api/test_material_governance_actor.py
+tests/api/test_material_integrity.py
+tests/api/test_material_repository_connection_lifecycle.py
+tests/api/test_material_selection_atomicity.py
+tests/api/test_material_storage_deletion.py
+tests/api/test_storage_source_repository_connection_lifecycle.py
+tests/api/test_training_conflict_governance.py
+tests/api/test_training_material_selection_summary_api.py
+tests/api/test_upload_clean_flow.py
+tests/api/test_v19_import_failure_rollback.py
+tests/api/test_v19_import_report_externalization.py
+tests/api/test_v19_job_atomic_persistence.py
+tests/api/test_v52_import_review_owner.py
+tests/api/test_zip_processing_p2a_annotation_connections.py
+tests/api/test_zip_processing_p2b_single_final_annotation.py
+tests/api/test_zip_processing_p2c_structured_single_final_annotation.py
+tests/integration/test_remote_training_prepare_task.py
+tests/unit/test_active_material_task_dependencies.py
+tests/unit/test_annotation_repository_scope.py
+tests/unit/test_governance_compatibility_selection.py
+tests/unit/test_governance_deletion_plans.py
+tests/unit/test_governance_retirement.py
+tests/unit/test_material_batch_public_truth.py
+tests/unit/test_material_reference_reasons.py
+tests/unit/test_training_bundle_cache.py
+tests/unit/test_training_bundle_isolation.py
+tests/unit/test_training_duplicate_conflicts.py
+```
+
+运行：`python -m pytest -q <上述33个文件> --basetemp=<新的隔离短目录> --junitxml=<证据路径>`。现有MaterialAnnotationAtomicity CI原步骤追加5个治理文件，FrontendRuntime原Chrome步骤追加准入规格；没有新增平行工作流、降低断言或跳过关键检查。阶段代码尚待普通提交及最终SHA实际CI，**目前所有GOV仍为已完成待验收**。提交前fetch仍232e475521b62004ed6e68728fe562231b85130b，其他工作树及会话未覆盖。
+
+后续接续：先核验本轮代码准确SHA的全部实际Actions/Checks及Linux symlink；有失败按原日志修复。CI通过后补记代码SHA/run链接，再核验文档补提自身SHA，才交付。生产尚未读取现场或执行迁移/部署/删除/训练；完整生产项目访问边界、真实数据规模及远端文件能力仍须部署前独立核验。旧MLG单份存储、跨Worker物理GC租约、Bundle回收、缩略证据归档仍未实现，51GB/31GB/20GB没有释放，不得由当前逻辑退出功能推导已经完成。
 
 ## 附录 A：用户原始开发指令（第 1–14 节，完整留存）
 

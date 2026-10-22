@@ -223,19 +223,26 @@ def validate_duplicate_review(project: Path, payload: Mapping[str, Any], split: 
     if not original_train or set(original_train) & set(original_test):
         raise ValueError("duplicate review original selection has invalid roles")
     rows = _selected_project_images(MaterialRepository(project), project, (*original_train, *original_test))
-    groups = analyze_training_duplicates(rows, original_train, original_test)
-    if any(group["issue_type"] == "content_hash_leakage" for group in groups):
-        raise ValueError("content hash leakage: original review crosses train/test; exclusions cannot conceal leakage")
-    eligible = {image_id for group in groups if group["issue_type"] == "duplicate_annotation_conflict"
-                for image_id in group["image_ids"]}
-    if len(set(excluded)) != len(excluded) or not excluded or not set(excluded) <= eligible:
-        raise ValueError("duplicate review exclusion must identify conflicting duplicate members")
+    review_kind = raw.get("review_kind")
+    if review_kind not in (None, "EXPLICIT_SELECTION_ADJUSTMENT"):
+        raise ValueError("duplicate review kind is unsupported")
+    if review_kind == "EXPLICIT_SELECTION_ADJUSTMENT":
+        eligible = set(original_train) | set(original_test)
+    else:
+        groups = analyze_training_duplicates(rows, original_train, original_test)
+        if any(group["issue_type"] == "content_hash_leakage" for group in groups):
+            raise ValueError("content hash leakage: original review crosses train/test; exclusions cannot conceal leakage")
+        eligible = {image_id for group in groups if group["issue_type"] == "duplicate_annotation_conflict"
+                    for image_id in group["image_ids"]}
+    if not excluded or not set(excluded) <= eligible:
+        raise ValueError("duplicate review exclusion must identify eligible original selection members")
     if (tuple(value for value in original_train if value not in set(excluded)) != split.train_image_ids
             or tuple(value for value in original_test if value not in set(excluded)) != split.test_image_ids):
         raise ValueError("duplicate review exclusion does not match the final selection")
     return {"original_train_image_ids": list(original_train), "original_test_image_ids": list(original_test),
             "excluded_image_ids": list(excluded), "material_revision": material_revision,
-            "annotation_revision": annotation_revision, "ground_truth_source": "original_annotation"}
+            "annotation_revision": annotation_revision, "ground_truth_source": "original_annotation",
+            **({"review_kind": review_kind} if review_kind else {})}
 
 
 def normalize_benchmark_duplicate_review(
@@ -296,6 +303,8 @@ def diagnose_training_duplicates(project: Path, payload: Mapping[str, Any], *, c
 
 
 _COMPATIBILITY_PAGE_FIELDS = frozenset({
+    "selection_action",
+    "selection",
     "cursor",
     "issue_type",
     "limit",
@@ -611,6 +620,43 @@ def diagnose_annotation_conflict(rows, label_ids=None, import_confirmations=None
         'requires_human_review': True, 'automatic_gt_write_allowed': False}
 
 
+def resolve_training_compatibility_selection(result: TrainingCompatibilityResult, payload) -> dict[str, Any]:
+    """Resolve exact issue identities for draft exclusion or a deletion preview.
+
+    This is a read projection of the same canonical compatibility result, never
+    an audit job or an authorization to remove current Ground Truth.
+    """
+    if (payload.get('expected_material_revision') != result.material_revision
+            or payload.get('expected_annotation_revision') != result.annotation_revision):
+        raise ValueError('TRAINING_SELECTION_STALE: 素材或GT已变化，请重新检查')
+    selection = payload.get('selection') or {}
+    if not isinstance(selection, Mapping):
+        raise ValueError('TRAINING_SELECTION_INVALID: selection必须是对象')
+    selected, excluded = selection.get('image_ids') or [], selection.get('excluded_image_ids') or []
+    for values in (selected, excluded):
+        if (not isinstance(values, list) or len(values) > 100000
+                or any(not isinstance(value, str) or not value.strip() for value in values)):
+            raise ValueError('TRAINING_SELECTION_INVALID: 素材身份列表无效')
+    query = str(selection.get('query') or '').strip().casefold()
+    issue_type = str(selection.get('issue_type') or '').strip()
+    if len(query) > 256:
+        raise ValueError('TRAINING_SELECTION_INVALID: 筛选文本过长')
+    all_ids = {str(item['image_id']) for item in result.issues}
+    filtered = {str(item['image_id']) for item in result.issues
+        if (not issue_type or item.get('issue_type') == issue_type)
+        and (not query or any(query in str(item.get(key) or '').casefold()
+            for key in ('image_id','filename','content_sha256','duplicate_group_id')))}
+    candidates = all_ids if selection.get('all_issues') is True else filtered
+    if not set(selected).issubset(candidates) or not set(excluded).issubset(candidates):
+        raise ValueError('TRAINING_SELECTION_CHANGED: 所选素材不属于本次真实问题范围')
+    chosen = candidates if selection.get('all_issues') is True or selection.get('all_filtered') is True else set(selected)
+    chosen = chosen - set(excluded)
+    return {'matching_image_ids':sorted(chosen),'selected_count':len(chosen),
+        'filtered_count':len(candidates),'excluded_count':len(set(excluded)),
+        'summary':result.summary(),'material_revision':result.material_revision,
+        'annotation_revision':result.annotation_revision,'selection_action':'RESOLVE_SELECTION'}
+
+
 def compatibility_page(
     result: TrainingCompatibilityResult,
     *,
@@ -664,7 +710,9 @@ def compatibility_page(
     return {
         "items": [dict(item) for item in items],
         "filtered_count": total,
-        "governance_eligible_count": sum(item.get('issue_type') in {'duplicate_annotation_conflict', 'content_hash_leakage'} for item in filtered),
+        "governance_eligible_count": len({str(item['image_id']) for item in filtered}),
+        "filtered_affected_image_count": len({str(item['image_id']) for item in filtered}),
+        "filtered_issue_count": total,
         "total": total,
         "page": page_number,
         "page_size": bounded,

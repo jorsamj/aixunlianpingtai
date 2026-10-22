@@ -71,6 +71,11 @@ jobs:
           tests/api/test_material_batching.py
           tests/api/test_material_integrity.py
           tests/api/test_training_conflict_governance.py
+          tests/api/test_material_governance_actor.py
+          tests/api/test_governance_legacy_guards.py
+          tests/unit/test_governance_retirement.py
+          tests/unit/test_governance_deletion_plans.py
+          tests/unit/test_governance_compatibility_selection.py
           tests/api/test_material_repository_connection_lifecycle.py
           tests/api/test_storage_source_repository_connection_lifecycle.py
           tests/api/test_material_selection_atomicity.py

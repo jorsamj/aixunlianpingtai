@@ -12,6 +12,8 @@ from contextlib import closing, nullcontext
 from dataclasses import asdict, replace
 from enum import Enum
 from pathlib import Path
+from types import SimpleNamespace
+from starlette.requests import Request
 
 from filelock import FileLock
 
@@ -187,7 +189,7 @@ def parse_request(payload):
     selection = MaterialSelectionSpec.from_mapping(payload.get("selection_spec"))
     explicit_limit = (
         MAX_LARGE_EXPLICIT_SELECTION
-        if operation in {BatchOperation.CLEAN, BatchOperation.MARK_CLEAN_SKIPPED}
+        if operation in {BatchOperation.CLEAN, BatchOperation.MARK_CLEAN_SKIPPED, BatchOperation.DELETE_INDEX}
         else BATCH_SIZE
     )
     if len(selection.image_ids) > explicit_limit:
@@ -246,7 +248,81 @@ def _confirmation_token(project_id, operation, selection, options):
     return "DELETE_SOURCE:" + digest
 
 
-def estimate_batch(project_id, materials, payload):
+def _assert_clear_authorization(options, actor, project):
+    if not options.get('clear_project'):
+        return
+    if not actor or not actor.get('actor_id'):
+        raise BatchRequestError('MATERIAL_CLEAR_SESSION_REQUIRED', '清空项目需要已核验的登录会话', 401)
+    name = str((project or {}).get('name') or '')
+    if not name or options.get('project_name_confirmation') != name:
+        raise BatchRequestError('MATERIAL_CLEAR_NAME_CONFIRMATION_REQUIRED', '项目名称确认不一致', 409)
+
+
+def _general_delete_preview(project_id, materials, selection, options, repository, artifacts, actor, project, *, owner_task_id=None):
+    from .training_compatibility import _file_digest
+    _assert_clear_authorization(options, actor, project)
+    if options.get('clear_project') and (selection.scope is not SelectionScope.FILTERED or any(selection.filters.as_dict().values())):
+        raise BatchRequestError('MATERIAL_CLEAR_SCOPE_INVALID', '清空项目必须选择未筛选的全部当前素材', 422)
+    annotations = AnnotationRepository(materials.project_path)
+    with label_governance_fence(materials.project_path), material_annotation_lifecycle_fence(materials.project_path):
+        if materials.current_revision() != selection.repository_revision:
+            raise BatchRequestError('BATCH_SELECTION_STALE', '素材范围已变化，请重新预览', 409)
+        with closing(materials._connect()) as database:
+            if selection.scope is SelectionScope.FILTERED:
+                clauses, params = _predicate(materials, selection)
+                where = ' WHERE ' + ' AND '.join(clauses) if clauses else ''
+            else:
+                _explicit_selection_count(database, selection.image_ids, materials, selection.filters)
+                clauses, params = materials._filters(selection.filters)
+                clauses.append('m.id IN (SELECT image_id FROM material_batch_explicit_selection)')
+                where = ' WHERE ' + ' AND '.join(clauses)
+            rows = [materials._row_payload(row) for row in database.execute('SELECT m.id,m.payload_json FROM materials m' + where + ' ORDER BY m.id', params)]
+        records = {}
+        for offset in range(0, len(rows), BATCH_SIZE):
+            records.update(annotations.get_many([row['id'] for row in rows[offset:offset+BATCH_SIZE]]))
+        plan_id, credential = uuid.uuid4().hex, secrets.token_urlsafe(32)
+        owner_task_id = str(owner_task_id or plan_id)
+        summary = {'plan_id':plan_id,'audit_task_id':owner_task_id,'project_id':str(project_id),
+            'general_deletion':True,'actor_id':str((actor or {}).get('actor_id') or ''),
+            'clear_project':bool(options.get('clear_project')),'project_name':str((project or {}).get('name') or ''),
+            'selection_spec':selection.as_dict(),'scope':selection.scope.value,'operation':'DELETE_INDEX',
+            'material_revision':materials.current_revision(),'annotation_revision':annotations.current_revision(),
+            'label_schema_digest':_file_digest(materials.project_path/'meta.json'),
+            'selected_count':len(rows),'delete_count':len(rows),'included_groups':0,'kept_count':0,
+            'retained_count':0,'manual_required_count':0,'unverifiable_count':0,
+            'skipped_groups':0,'skipped_item_count':0,'protected_item_count':0,'protected_groups':0,
+            'manual_required_groups':0,'anomaly_groups':0,'anomaly_item_count':0,
+            'skip_reasons':{},'protection_reason_counts':{},
+            'gt_count':sum(int(records[row['id']].get('version') or 0)>0 for row in rows),
+            'current_test_count':sum(str(row.get('split') or '').lower()=='test' for row in rows),
+            'physical_retained_count':len(rows),'reclaimed_bytes':0,'reclamation_state':'DEFERRED_SAFETY_UNVERIFIED',
+            'created_at':utc_now(),'execution_task_id':None,
+            'credential_sha256':hashlib.sha256(credential.encode()).hexdigest()}
+        # Reference evidence informs impact; it never authorizes physical deletion.
+        try:
+            references = _historical_material_references(project_id, materials.project_path, repository, artifacts, with_reasons=True)
+            selected_ids = {row['id'] for row in rows}
+            summary['historical_reference_count'] = len({key for key, values in references.items() if key in selected_ids and any(value.get('reason') not in {'ACTIVE_TASK_INPUT', 'CURRENT_TEST_ROLE'} for value in values)})
+            summary['active_reference_count'] = len({key for key, values in references.items() if key in selected_ids and any(value.get('reason')=='ACTIVE_TASK_INPUT' and value.get('task_status') in {'RUNNING','CANCEL_REQUESTED'} for value in values)})
+            summary['reference_diagnostics_state'] = 'COMPLETED'
+        except (ValueError, OSError, sqlite3.Error, BatchRequestError):
+            summary.update(historical_reference_count=None, active_reference_count=None, reference_diagnostics_state='UNAVAILABLE')
+        path = artifacts.artifact_path(owner_task_id, _material_integrity_plan_ref(plan_id))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with closing(sqlite3.connect(path)) as plan:
+            plan.executescript(_MATERIAL_INTEGRITY_PLAN_SCHEMA)
+            plan.executemany('INSERT INTO plan_metadata VALUES (?,?)', ((key,json.dumps(value,ensure_ascii=False,sort_keys=True)) for key,value in summary.items()))
+            plan.executemany('INSERT INTO plan_items VALUES (?,?,?,?,?)',
+                (('EXPLICIT_SELECTION',row['id'],'DELETE',str(row.get('content_sha256') or ''),annotations.record_digest(records[row['id']])) for row in rows))
+            plan.commit()
+    return {**{key:value for key,value in summary.items() if key!='credential_sha256'},
+        'confirmation_credential':credential,
+        'preview_items':_material_integrity_preview_items(project_id,materials,[row['id'] for row in rows[:20]]),
+        'preview_groups':[], 'preview_groups_truncated':False}
+
+
+
+def estimate_batch(project_id, materials, payload, *, repository=None, artifacts=None, actor=None, project=None):
     operation, selection, options = parse_request(payload)
     with closing(materials._connect()) as database:
         database.execute("BEGIN")
@@ -265,6 +341,8 @@ def estimate_batch(project_id, materials, payload):
               "selection_spec": confirmed_selection.as_dict(), "supported": operation not in NOT_READY}
     if operation is BatchOperation.DELETE_SOURCE:
         result["confirmation_token"] = _confirmation_token(project_id, operation, confirmed_selection, options)
+    if operation is BatchOperation.DELETE_INDEX and repository is not None and artifacts is not None:
+        result['deletion_preview'] = _general_delete_preview(project_id, materials, confirmed_selection, options, repository, artifacts, actor, project)
     return result
 
 
@@ -438,10 +516,32 @@ def publish_prepared_batch(task, repository, artifacts):
         raise BatchRequestError("BATCH_PUBLICATION_FAILED", f"material batch publication failed: {redact_storage_error(error)}", 500) from error
 
 
-def create_batch(project_id, materials, repository, artifacts, payload):
+def create_batch(project_id, materials, repository, artifacts, payload, *, actor=None, project=None):
+    operation, selection, options = parse_request(payload)
+    if operation is BatchOperation.DELETE_SOURCE:
+        raise BatchRequestError('PHYSICAL_DELETE_SAFETY_UNVERIFIED', '尚未证明物理回收安全，请使用逻辑删除保留源字节', 409)
+    if operation is BatchOperation.DELETE_INDEX:
+        plan_id = str(options.get('deletion_plan_id') or '')
+        if not plan_id:
+            raise BatchRequestError('BATCH_DELETE_PREVIEW_REQUIRED', '请先预览并确认服务端冻结的删除范围', 409)
+        path = artifacts.artifact_path(plan_id, _material_integrity_plan_ref(plan_id))
+        if not path.is_file():
+            raise BatchRequestError('MATERIAL_INTEGRITY_PLAN_NOT_FOUND', '删除计划不存在', 404)
+        with closing(sqlite3.connect(path)) as plan:
+            metadata = _json_metadata(plan)
+        if metadata.get('project_id') != str(project_id) or metadata.get('actor_id') != str((actor or {}).get('actor_id') or ''):
+            raise BatchRequestError('MATERIAL_DELETE_ACTOR_CHANGED', '删除计划项目或操作人不一致', 403)
+        if metadata.get('selection_spec') != selection.as_dict():
+            raise BatchRequestError('MATERIAL_DELETE_SCOPE_CHANGED', '删除范围与预览不一致', 409)
+        if metadata.get('clear_project'):
+            _assert_clear_authorization({'clear_project':True,'project_name_confirmation':options.get('project_name_confirmation')}, actor, project)
+            if metadata.get('project_name') != str((project or {}).get('name') or ''):
+                raise BatchRequestError('MATERIAL_CLEAR_NAME_CHANGED', '项目名称已变化，请重新预览', 409)
+        return execute_material_integrity_plan(project_id, SimpleNamespace(task_id=plan_id), plan_id,
+            options.get('confirmation_credential'), materials, repository, artifacts, actor=actor)
     task = prepare_batch(project_id, materials, artifacts, payload)
     operation, _, _ = parse_request(payload)
-    if operation in {BatchOperation.DELETE_INDEX, BatchOperation.DELETE_SOURCE}:
+    if operation is BatchOperation.DELETE_SOURCE:
         path = artifacts.artifact_path(task.task_id, SELECTION_REF)
         with closing(BatchSelection(path)) as manifest:
             rows = manifest.database.execute(
@@ -875,7 +975,7 @@ def _material_integrity_import_evidence(project_id, rows, repository, artifacts,
 
 def create_material_integrity_plan(
     project_id, audit_task, materials, repository, artifacts, payload,
-    *, candidate_image_ids=None, persist=True,
+    *, candidate_image_ids=None, persist=True, actor=None,
 ):
     from .training_compatibility import _file_digest
     if audit_task.status is not TaskStatus.SUCCEEDED:
@@ -953,12 +1053,19 @@ def create_material_integrity_plan(
             "素材或标注已变化，请重新运行完整性审计", 409,
         )
 
-    reference_reasons = _historical_material_references(
-        project_id, materials.project_path, repository, artifacts,
-        with_reasons=True,
-    )
-    protected = {image_id for image_id, reasons in reference_reasons.items()
-                 if any(reason.get('protected') is True for reason in reasons)}
+    try:
+        reference_reasons = _historical_material_references(
+            project_id, materials.project_path, repository, artifacts, with_reasons=True)
+        reference_diagnostics_state = 'COMPLETED'
+    except (ValueError, OSError, sqlite3.Error, BatchRequestError):
+        # Unknown history cannot make current identities immortal. Bytes are
+        # retained unconditionally, so uncertainty still cannot authorize GC.
+        reference_reasons, reference_diagnostics_state = {}, 'UNAVAILABLE'
+    # References remain impact evidence; current identity deletion retains bytes.
+    protected = set()
+    for reasons in reference_reasons.values():
+        for reason in reasons:
+            reason['protected'] = False
     review_basis = payload.get('review_basis')
     if review_basis is not None:
         from .training_compatibility import _file_digest
@@ -1027,7 +1134,7 @@ def create_material_integrity_plan(
             )
             join = " JOIN selected_integrity_groups s ON s.group_key=g.group_key"
         if scope == "DISCARD_CONFLICTS":
-            where, params = "g.issue_type=?", ["DUPLICATE_ANNOTATION_CONFLICT"]
+            where, params = "1=1", []
         groups = audit.execute(
             f"SELECT g.group_key,g.issue_type FROM issue_groups g{join} "
             f"WHERE {where} ORDER BY g.group_key",
@@ -1081,15 +1188,25 @@ def create_material_integrity_plan(
             if not chosen_ids:
                 continue
             selected_ids.update(chosen_ids)
-            group_protected = ids.intersection(protected) | {
-                item['image_id'] for item in items if str(item['details'].get('split') or '').lower() == 'test'
-            }
+            group_protected = set()
             for item in items:
                 if str(item['details'].get('split') or '').lower() == 'test':
-                    role_reason = {'reason': 'CURRENT_TEST_ROLE', 'source': 'material_index', 'protected': True}
+                    role_reason = {'reason': 'CURRENT_TEST_ROLE', 'source': 'material_index', 'protected': False}
                     if role_reason not in reference_reasons.setdefault(item['image_id'], []):
                         reference_reasons[item['image_id']].append(role_reason)
             counted_protected.update(chosen_ids.intersection(group_protected))
+            if (scope in {'DISCARD_CONFLICTS', 'SELECTED_IMAGES', 'FILTERED'} and payload.get('delete_mode') != 'KEEP_ONE') or payload.get('delete_mode') == 'DISCARD':
+                disposable = chosen_ids - planned_ids
+                if not disposable:
+                    continue
+                planned_groups.append((group_key, '', 'EXPLICIT_DISCARD_UNPROTECTED', len(disposable)))
+                included_groups += 1
+                kept_count += len(ids - disposable)
+                for item in items:
+                    if item['image_id'] in disposable:
+                        planned.append((group_key,item['image_id'],'DELETE',item['content_sha256'],str(item['details'].get('annotation_digest') or '')))
+                        planned_ids.add(item['image_id']); delete_count += 1
+                continue
             if str(group['issue_type']) not in duplicate_types:
                 for item in items:
                     image_id = item['image_id']
@@ -1224,6 +1341,8 @@ def create_material_integrity_plan(
                 reason_image_ids.setdefault(entry['reason'], set()).add(image_id)
     summary = {
         "plan_id": plan_id,
+        "project_id": str(project_id),
+        "actor_id": str((actor or {}).get('actor_id') or ''),
         "operation": BatchOperation.DELETE_INDEX.value,
         "audit_task_id": audit_task.task_id,
         "scope": scope,
@@ -1245,6 +1364,13 @@ def create_material_integrity_plan(
         "anomaly_groups": anomaly_groups,
         "skipped_item_count": skipped_item_count,
         "protected_item_count": len(counted_protected),
+        "physical_retained_count": len(planned_ids),
+        "reclaimed_bytes": 0,
+        "reclamation_state": "DEFERRED_SAFETY_UNVERIFIED",
+        "reference_diagnostics_state": reference_diagnostics_state,
+        "historical_reference_count": len({key for key, values in reference_reasons.items() if key in selected_ids and any(value.get('reason') not in {'ACTIVE_TASK_INPUT', 'CURRENT_TEST_ROLE'} for value in values)}) if reference_diagnostics_state=='COMPLETED' else None,
+        "active_reference_count": len({key for key,values in reference_reasons.items() if key in selected_ids and any(value.get('reason')=='ACTIVE_TASK_INPUT' and value.get('task_status') in {'RUNNING','CANCEL_REQUESTED'} for value in values)}) if reference_diagnostics_state=='COMPLETED' else None,
+        "current_test_count": sum(any(value.get('reason')=='CURRENT_TEST_ROLE' for value in reference_reasons.get(key,[])) for key in selected_ids),
         "protection_reason_counts": {reason: len(image_ids)
                                      for reason, image_ids in sorted(reason_image_ids.items())},
         "anomaly_item_count": anomaly_item_count,
@@ -1295,8 +1421,9 @@ def create_material_integrity_plan(
     annotation_count = 0
     for offset in range(0, len(deletion_ids), BATCH_SIZE):
         records = annotations.get_many(deletion_ids[offset:offset+BATCH_SIZE])
-        annotation_count += sum(bool(record.get('content_digest')) or (annotations.project_path / 'annotations' / f'{image_id}.json').is_file() for image_id, record in records.items())
+        annotation_count += sum(int(record.get('version') or 0)>0 or (annotations.project_path / 'annotations' / f'{image_id}.json').is_file() for image_id, record in records.items())
     public['annotation_count'] = annotation_count
+    public['gt_count'] = annotation_count
     if persist:
         public["confirmation_credential"] = credential
     else:
@@ -1306,6 +1433,7 @@ def create_material_integrity_plan(
 
 def execute_material_integrity_plan(
     project_id, audit_task, plan_id, credential, materials, repository, artifacts,
+    *, actor=None,
 ):
     plan_path = artifacts.artifact_path(
         audit_task.task_id, _material_integrity_plan_ref(plan_id)
@@ -1314,11 +1442,13 @@ def execute_material_integrity_plan(
         return _execute_material_integrity_plan_locked(
             project_id, audit_task, plan_id, credential,
             materials, repository, artifacts,
+            actor=actor,
         )
 
 
 def _execute_material_integrity_plan_locked(
     project_id, audit_task, plan_id, credential, materials, repository, artifacts,
+    *, actor=None,
 ):
     from .training_compatibility import _file_digest
     plan_path = artifacts.artifact_path(
@@ -1332,6 +1462,10 @@ def _execute_material_integrity_plan_locked(
     with closing(sqlite3.connect(plan_path)) as plan:
         plan.row_factory = sqlite3.Row
         metadata = _json_metadata(plan)
+        if metadata.get('project_id') not in (None,str(project_id)):
+            raise BatchRequestError('MATERIAL_DELETE_PROJECT_CHANGED','删除计划项目不一致',403)
+        if actor is not None and metadata.get('actor_id','') != str(actor.get('actor_id') or ''):
+            raise BatchRequestError('MATERIAL_DELETE_ACTOR_CHANGED','删除计划操作人不一致，请重新预览',403)
         expected = str(metadata.get("credential_sha256") or "")
         actual = hashlib.sha256(str(credential or "").encode()).hexdigest()
         if not credential or not hmac.compare_digest(expected, actual):
@@ -1399,17 +1533,6 @@ def _execute_material_integrity_plan_locked(
                     "MATERIAL_INTEGRITY_PLAN_STALE",
                     "治理范围中的素材身份或标注已变化，请重新生成预览", 409,
                 )
-        protected = _historical_material_references(
-            project_id, materials.project_path, repository, artifacts,
-        )
-        conflict = sorted(set(delete_ids).intersection(protected))
-        conflict.extend(image_id for image_id in delete_ids if str(current_materials[image_id].get('split') or '').lower() == 'test')
-        if conflict:
-            raise BatchRequestError(
-                "MATERIAL_INTEGRITY_REFERENCE_CHANGED",
-                "治理范围新增了任务或快照引用，请重新生成预览：" + ", ".join(conflict[:10]),
-                409,
-            )
 
         task_id = str(plan_id)
         request = {
@@ -1429,6 +1552,7 @@ def _execute_material_integrity_plan_locked(
                 "planned_groups": int(metadata.get("included_groups") or 0),
                 "planned_kept": int(metadata.get("kept_count") or 0),
                 "planned_skipped_groups": int(metadata.get("skipped_groups") or 0),
+                "actor_id": str(metadata.get('actor_id') or ''),
             },
         }
         selection_path = artifacts.artifact_path(task_id, SELECTION_REF)
@@ -1523,9 +1647,6 @@ def _execute_material_integrity_plan_locked(
             f"materials:{project_id}", required_capabilities=("materials.batch",),
         )
         with material_annotation_lifecycle_fence(materials.project_path):
-            _assert_not_referenced_by_active_tasks(
-                project_id, delete_ids, materials, repository, artifacts,
-            )
             published = publish_prepared_batch(task, repository, artifacts)
         plan.execute(
             "UPDATE plan_metadata SET value_json=? WHERE key='execution_task_id'",
@@ -2251,6 +2372,10 @@ def _retire_merged_source_labels(
                 _atomic_write_json_file(projects_path, projects)
         return retired
 
+def _material_delete_token(task_id, image_id):
+    return f"material_delete_{str(task_id)[:32]}_" + hashlib.sha256(str(image_id).encode('utf-8')).hexdigest()[:24]
+
+
 class MaterialBatchHandler:
     def __init__(self, data_dir):
         self.data_dir = Path(data_dir).resolve()
@@ -2320,6 +2445,8 @@ class MaterialBatchHandler:
             while batch := manifest.rows(retry_states):
                 _check_active(context)
                 manifest.transition([row["image_id"] for row in batch], "pending")
+        if operation is BatchOperation.DELETE_INDEX:
+            self._reconcile_index_retirement_backups(context, manifest, project_path, materials)
         if options.get("material_integrity_plan_id"):
             self._validate_material_integrity_execution(
                 context, manifest, project_path, materials,
@@ -2340,7 +2467,7 @@ class MaterialBatchHandler:
         while batch := manifest.rows():
             _check_active(context)
             ids = [row["image_id"] for row in batch]
-            if operation in {BatchOperation.DELETE_INDEX, BatchOperation.DELETE_SOURCE}:
+            if operation is BatchOperation.DELETE_SOURCE:
                 with material_annotation_lifecycle_fence(project_path):
                     _assert_not_referenced_by_active_tasks(
                         project, ids, materials, context.repository, context.artifacts
@@ -2395,6 +2522,9 @@ class MaterialBatchHandler:
                 enabled=bool(options.get("annotation_audit", True)),
             )
         summary = manifest.summary()
+        if operation is BatchOperation.DELETE_INDEX:
+            summary.update(logical_removed=summary['succeeded'],physical_retained=summary['succeeded'],
+                reclaimed_bytes=0,skipped=0,reclamation_state='DEFERRED_SAFETY_UNVERIFIED')
         if operation is BatchOperation.CLEAN:
             summary.update({
                 "clean_results_ref": SELECTION_REF,
@@ -2412,6 +2542,49 @@ class MaterialBatchHandler:
         status = (TaskStatus.PARTIAL_SUCCESS if summary["succeeded"] else TaskStatus.FAILED) if summary["failed"] else TaskStatus.SUCCEEDED
         append_task_log(context, "finished", status.value)
         return status, RESULT_REF
+
+    def _reconcile_index_retirement_backups(self, context, manifest, project_path, materials):
+        """Reconcile only this task's durable GT/identity commit boundary."""
+        annotations = AnnotationRepository(project_path)
+        from .training_compatibility import _file_digest
+        schema = manifest.database.execute("SELECT value FROM meta WHERE key='label_schema_digest'").fetchone()
+        has_plan = manifest.database.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='integrity_plan_items'"
+        ).fetchone()
+        if not has_plan:
+            return
+        pending = manifest.database.execute(
+            "SELECT i.* FROM integrity_plan_items i JOIN selection s ON s.image_id=i.image_id "
+            "WHERE s.state!='succeeded' ORDER BY i.image_id"
+        )
+        while rows := pending.fetchmany(BATCH_SIZE):
+            for item in rows:
+                _check_active(context, "retirement_recovery")
+                image_id = str(item['image_id'])
+                token = _material_delete_token(context.task.task_id, image_id)
+                with label_governance_fence(project_path), material_annotation_lifecycle_fence(project_path):
+                    material = materials.get(image_id)
+                    retired = materials.retirement(context.task.task_id, image_id)
+                    if retired and material is None:
+                        annotations.complete_delete(token)
+                        manifest.transition([image_id], 'succeeded')
+                        continue
+                    if not annotations.delete_backup_count(token):
+                        continue
+                    # Preserve evidence on identity/schema drift. Never attach old
+                    # GT to replaced bytes or overwrite a concurrent human edit.
+                    current = annotations.get(image_id)
+                    if (retired or material is None
+                            or str(material.get('content_sha256') or '').lower() != str(item['content_sha256'] or '').lower()
+                            or not schema or schema[0] != _file_digest(project_path / 'meta.json')
+                            or (int(current.get('version') or 0) > 0
+                                and annotations.record_digest(current) != str(item['annotation_digest'] or ''))):
+                        manifest.transition([image_id], 'failed', 'MATERIAL_RETIREMENT_RECOVERY_CONFLICT')
+                        continue
+                    try:
+                        annotations.restore_delete(token)
+                    except (OSError, ValueError, sqlite3.Error):
+                        manifest.transition([image_id], 'failed', 'MATERIAL_RETIREMENT_RECOVERY_CONFLICT')
 
     def _validate_material_integrity_execution(
         self, context, manifest, project_path, materials,
@@ -2480,6 +2653,8 @@ class MaterialBatchHandler:
                     failed[image_id] = "MATERIAL_INTEGRITY_KEEPER_CHANGED"
         for row in items:
             image_id = str(row["image_id"])
+            if current_materials.get(image_id) is None and materials.retirement(context.task.task_id,image_id):
+                continue
             if schema_changed:
                 failed[image_id] = 'MATERIAL_INTEGRITY_PLAN_STALE'
             # Ordinary anomaly deletes have no keeper row. Duplicate groups
@@ -2491,15 +2666,6 @@ class MaterialBatchHandler:
                 image_id, row["content_sha256"], row["annotation_digest"],
             ):
                 failed[image_id] = "MATERIAL_INTEGRITY_DELETE_IDENTITY_CHANGED"
-            if str((current_materials.get(image_id) or {}).get('split') or '').lower() == 'test':
-                failed[image_id] = 'MATERIAL_INTEGRITY_REFERENCE_CHANGED'
-        protected = _historical_material_references(
-            context.task.project_id, project_path, context.repository,
-            context.artifacts, exclude_task_id=context.task.task_id,
-        )
-        planned_delete_ids = {str(row['image_id']) for row in items}
-        for image_id in planned_delete_ids.intersection(protected):
-            failed[image_id] = "MATERIAL_INTEGRITY_REFERENCE_CHANGED"
         for reason in sorted(set(failed.values())):
             ids = sorted(image_id for image_id, value in failed.items() if value == reason)
             for offset in range(0, len(ids), BATCH_SIZE):
@@ -3333,141 +3499,11 @@ class MaterialBatchHandler:
         return status, RESULT_REF
 
     def _delete_sources(self, context, manifest, materials, batch, sources, source_cache, providers):
-        ids = [row["image_id"] for row in batch]
-        indexed = {row["id"]: row for row in materials.get_many(ids)}
+        # Cross-project aliases, retired records and detached consumers cannot
+        # yet be proven absent. Never turn a logical-delete authorization into GC.
         for item in batch:
-            image_id = item["image_id"]
-            claim_token = (
-                f"material_batch_delete_{context.task.task_id[:32]}_"
-                + hashlib.sha256(str(image_id).encode("utf-8")).hexdigest()[:24]
-            )
-            tombstone = None
-            _check_active(context, "deleting_source", image_id)
-            context.save_checkpoint(manifest.summary(image_id))
-            try:
-                tombstone = json.loads(item["tombstone_json"]) if item["tombstone_json"] else None
-                if tombstone is None:
-                    material = indexed.get(image_id)
-                    if material is None:
-                        raise ValueError("MATERIAL_NOT_FOUND: no durable source reference exists")
-                    source_id = material["storage_source_id"]
-                    if source_id not in source_cache:
-                        source_cache[source_id] = sources.get(source_id)
-                    source = source_cache[source_id]
-                    tombstone = {"material": material, "source": asdict(source) if source else None, "created_at": utc_now()}
-                    manifest.database.execute("UPDATE selection SET tombstone_json=? WHERE image_id=?",
-                                              (json.dumps(tombstone, ensure_ascii=False), image_id))
-                if not item["source_deleted"]:
-                    source_data = tombstone.get("source")
-                    if not source_data:
-                        source_id = tombstone["material"]["storage_source_id"]
-                        if source_id not in source_cache:
-                            source_cache[source_id] = sources.get(source_id)
-                        restored = source_cache[source_id]
-                        if restored is None:
-                            raise ValueError("STORAGE_SOURCE_NOT_FOUND: restore the source configuration before retrying")
-                        source_data = asdict(restored)
-                        tombstone["source"] = source_data
-                        manifest.database.execute("UPDATE selection SET tombstone_json=? WHERE image_id=?",
-                                                  (json.dumps(tombstone, ensure_ascii=False), image_id))
-                    source = StorageSource(**source_data)
-                    if source.id not in source_cache:
-                        source_cache[source.id] = sources.get(source.id)
-                    live_source = source_cache[source.id]
-                    if live_source is None or not live_source.enabled:
-                        raise ValueError("STORAGE_SOURCE_DISABLED: restore and enable the source before retrying")
-                    source = replace(source, enabled=True, secret_ref=live_source.secret_ref)
-                    cache_key = json.dumps(source_data, sort_keys=True)
-                    if cache_key not in providers:
-                        providers[cache_key] = _provider(self.data_dir, context.task.project_id, source)
-                    material = tombstone["material"]
-                    provider = providers[cache_key]
-                    object_key = str(material["object_key"])
-                    with closing(materials._connect()) as database:
-                        shared_references = int(database.execute(
-                            "SELECT COUNT(*) FROM materials "
-                            "WHERE storage_source_id=? AND object_key=?",
-                            (str(material["storage_source_id"]), object_key),
-                        ).fetchone()[0])
-                    if shared_references > 1:
-                        raise BatchRequestError(
-                            "SHARED_STORAGE_OBJECT",
-                            "该物理素材仍被其他素材记录引用，不能删除共享对象",
-                            409,
-                        )
-                    with material_annotation_lifecycle_fence(materials.project_path):
-                        _assert_not_referenced_by_active_tasks(
-                            context.task.project_id,
-                            [image_id],
-                            materials,
-                            context.repository,
-                            context.artifacts,
-                        )
-                        current = materials.get(image_id)
-                        if current is None:
-                            raise BatchRequestError(
-                                "MATERIAL_NOT_FOUND",
-                                "素材索引已不存在，不能继续删除源对象",
-                                409,
-                            )
-                        existing_claim = str(
-                            current.get(MATERIAL_BATCH_DELETE_CLAIM_FIELD) or ""
-                        )
-                        if existing_claim and existing_claim != claim_token:
-                            raise BatchRequestError(
-                                "MATERIAL_DELETE_IN_PROGRESS",
-                                "素材已被其他删除任务占用",
-                                409,
-                            )
-                        materials.patch({
-                            image_id: {MATERIAL_BATCH_DELETE_CLAIM_FIELD: claim_token}
-                        })
-                    previously_attempted = bool(tombstone.get("delete_attempted_at"))
-                    if not previously_attempted:
-                        tombstone["delete_attempted_at"] = utc_now()
-                        manifest.database.execute("UPDATE selection SET tombstone_json=? WHERE image_id=?",
-                                                  (json.dumps(tombstone, ensure_ascii=False), image_id))
-                    try:
-                        provider.delete(object_key)
-                    except Exception as error:
-                        if not previously_attempted or not _object_missing(error):
-                            raise
-                        if provider.exists(object_key) is not False:
-                            raise
-                        append_task_log(context, "source_already_deleted", f"image_id={image_id}")
-                    manifest.database.execute("UPDATE selection SET source_deleted=1 WHERE image_id=?", (image_id,))
-                # Source deletion is irreversible.  Do not introduce a
-                # cancellation point between it and canonical index/GT commit.
-                self._delete_index_rows(
-                    context,
-                    manifest,
-                    materials,
-                    [image_id],
-                    materials.project_path,
-                    required_claim=claim_token,
-                )
-            except Exception as error:
-                delete_attempted = bool(
-                    isinstance(tombstone, dict)
-                    and tombstone.get("delete_attempted_at")
-                )
-                if not delete_attempted and not bool(item["source_deleted"]):
-                    try:
-                        with material_annotation_lifecycle_fence(materials.project_path):
-                            current = materials.get(image_id)
-                            if (
-                                current is not None
-                                and str(current.get(MATERIAL_BATCH_DELETE_CLAIM_FIELD) or "")
-                                == claim_token
-                            ):
-                                materials.patch({
-                                    image_id: {MATERIAL_BATCH_DELETE_CLAIM_FIELD: None}
-                                })
-                    except Exception:
-                        pass
-                public_error = redact_storage_error(error)
-                manifest.transition([image_id], "failed", public_error)
-                append_task_log(context, "source_delete_error", f"image_id={image_id} {public_error}")
+            manifest.transition([item['image_id']], 'failed', 'PHYSICAL_DELETE_SAFETY_UNVERIFIED')
+        return
 
     def _delete_index_rows(
         self,
@@ -3482,23 +3518,17 @@ class MaterialBatchHandler:
         """Delete material identity and Ground Truth through their existing owners."""
         annotations = AnnotationRepository(project_path)
         for image_id in image_ids:
-            token = (
-                f"material_delete_{context.task.task_id[:32]}_"
-                + hashlib.sha256(str(image_id).encode("utf-8")).hexdigest()[:24]
-            )
+            token = _material_delete_token(context.task.task_id, image_id)
             legacy = Path(project_path) / "annotations" / f"{image_id}.json"
             legacy_bytes = legacy.read_bytes() if legacy.is_file() else None
             try:
                 with label_governance_fence(project_path), material_annotation_lifecycle_fence(project_path):
+                    if materials.get(image_id) is None and materials.retirement(context.task.task_id,image_id):
+                        annotations.complete_delete(token)
+                        manifest.transition([image_id], 'succeeded')
+                        continue
                     self._assert_integrity_delete_identity(
                         manifest, materials, annotations, image_id,
-                    )
-                    _assert_not_referenced_by_active_tasks(
-                        context.task.project_id,
-                        [image_id],
-                        materials,
-                        context.repository,
-                        context.artifacts,
                     )
                     current = materials.get(image_id)
                     if required_claim is not None and (
@@ -3511,11 +3541,15 @@ class MaterialBatchHandler:
                             "素材源删除占用已丢失，已阻止索引提交",
                             409,
                         )
+                    retired_annotation = annotations.get(image_id)
                     annotations.prepare_delete(token, [image_id])
                     legacy.unlink(missing_ok=True)
                     annotations.finalize_delete(token)
                     try:
-                        materials.remove_many([image_id], batch_size=1)
+                        request = context.artifacts.read_json(context.task.task_id, context.task.payload_ref, default={})
+                        materials.retire_many([image_id], task_id=context.task.task_id,
+                            actor_id=str((request.get('options') or {}).get('actor_id') or ''),
+                            annotations={image_id: retired_annotation})
                     except Exception:
                         annotations.restore_delete(token)
                         if legacy_bytes is not None and not legacy.exists():
@@ -3557,8 +3591,6 @@ class MaterialBatchHandler:
                 'MATERIAL_INTEGRITY_PLAN_STALE', '标签映射已变化，请重新审计和生成治理预览', 409,
             )
         current = materials.get(str(image_id))
-        if current and str(current.get('split') or '').lower() == 'test':
-            raise BatchRequestError('MATERIAL_INTEGRITY_REFERENCE_CHANGED', 'Test 素材受保护，已阻止删除', 409)
         row = manifest.database.execute(
             "SELECT i.group_key AS planned_group_key,i.content_sha256,i.annotation_digest,"
             "g.group_key AS keeper_group_key,"
@@ -3623,6 +3655,7 @@ def public_batch(task, artifacts, repository=None):
             BatchOperation.REPAIR_ANNOTATION_PROJECTIONS.value,
             BatchOperation.AUDIT_LABEL_INTEGRITY.value,
             BatchOperation.AUDIT_MATERIAL_INTEGRITY.value,
+            BatchOperation.DELETE_INDEX.value,
         }
         else {}
     )
@@ -3707,9 +3740,13 @@ def public_batch(task, artifacts, repository=None):
             "review_url": (f"/api/v60/projects/{task.project_id}/annotation-tasks/{task.task_id}"
                            if request.get("operation") == BatchOperation.AI_ANNOTATE.value else None),
             "results_url": (f"/api/v62/projects/{task.project_id}/material-batches/{task.task_id}/results"
-                            if request.get("operation") == BatchOperation.CLEAN.value else None),
+                            if request.get("operation") in {BatchOperation.CLEAN.value,BatchOperation.DELETE_INDEX.value} else None),
             "error_examples": error_examples, "selection_frozen": frozen,
             "result": result if result else None,
+            "logical_removed": result.get('logical_removed',checkpoint.get('logical_removed',0)),
+            "physical_retained": result.get('physical_retained',checkpoint.get('physical_retained',0)),
+            "reclaimed_bytes": 0 if request.get('operation')==BatchOperation.DELETE_INDEX.value else None,
+            "reclamation_state": 'DEFERRED_SAFETY_UNVERIFIED' if request.get('operation')==BatchOperation.DELETE_INDEX.value else None,
             "source_labels": remap_sources,
             "target_label": remap_target,
             "mappings": list(options.get("mappings") or []),
@@ -3724,9 +3761,9 @@ def public_batch(task, artifacts, repository=None):
             "created_at": task.created_at, "updated_at": task.updated_at, "finished_at": task.finished_at}
 
 
-def create_training_integrity_plan(project_id, audit_task, materials, repository, artifacts, payload, selection_provider=None):
+def create_training_integrity_plan(project_id, audit_task, materials, repository, artifacts, payload, selection_provider=None, *, actor=None):
     """Resolve training issue selection on the server, then use the only deletion plan."""
-    from .training_compatibility import diagnose_training_duplicates
+    from .training_compatibility import diagnose_training_duplicates, evaluate_training_compatibility_projection
     body = payload if isinstance(payload, dict) else {}
     if (body.get('expected_material_revision') != materials.current_revision()
             or body.get('expected_annotation_revision') != AnnotationRepository(materials.project_path).current_revision()):
@@ -3742,10 +3779,22 @@ def create_training_integrity_plan(project_id, audit_task, materials, repository
         raise BatchRequestError('MATERIAL_INTEGRITY_SELECTION_INVALID', '训练输入范围不可用', 422)
     if not source_task_id and selection_provider is not None:
         selection = selection_provider(project_id, None, selection)
-    result = diagnose_training_duplicates(materials.project_path, selection, current_only=bool(source_task_id))
+    algorithm_id = str(selection.get('algorithm_asset_id') or '')
+    if algorithm_id:
+        from .algorithms import list_algorithms
+        algorithm = next((row for row in list_algorithms(materials.project_path/'algorithms.json') if str(row.get('id') or '')==algorithm_id),None)
+        if algorithm is None:
+            raise BatchRequestError('TRAINING_ALGORITHM_NOT_FOUND','训练算法不存在',404)
+        result = evaluate_training_compatibility_projection(materials.project_path.parent.parent,materials.project_path,selection,algorithm)
+    else:
+        # Read compatibility for historical duplicate-only tasks with no algorithm
+        # identity; never pretend this is a full label-contract diagnosis.
+        result = diagnose_training_duplicates(materials.project_path, selection, current_only=bool(source_task_id))
     query = str(body.get('query') or '').strip().casefold()
     issue_type = str(body.get('issue_type') or '')
-    if len(query) > 256 or issue_type not in ('', 'duplicate_annotation_conflict', 'content_hash_leakage'):
+    if body.get('all_issues') is True:
+        query, issue_type = '', ''
+    if len(query) > 256 or len(issue_type)>128:
         raise BatchRequestError('MATERIAL_INTEGRITY_FILTER_INVALID', '训练冲突筛选无效', 422)
     candidates = {str(item['image_id']) for item in result.issues
         if (not issue_type or item['issue_type'] == issue_type)
@@ -3759,7 +3808,7 @@ def create_training_integrity_plan(project_id, audit_task, materials, repository
     if not set(selected).issubset(candidates) or not set(excluded).issubset(candidates):
         raise BatchRequestError('MATERIAL_INTEGRITY_SELECTION_CHANGED', '所选图片不属于当前训练冲突筛选，请重新检查', 409)
     filtered_count = len(candidates)
-    chosen = candidates - set(excluded) if body.get('all_filtered') is True else set(selected)
+    chosen = candidates - set(excluded) if body.get('all_filtered') is True or body.get('all_issues') is True else set(selected)
     previous_execution = str(body.get('previous_execution_task_id') or '')
     retained_count = 0
     if previous_execution:
@@ -3781,9 +3830,15 @@ def create_training_integrity_plan(project_id, audit_task, materials, repository
         chosen = candidates.intersection(remaining)
     if not chosen:
         raise BatchRequestError('MATERIAL_INTEGRITY_SELECTION_EMPTY', '当前范围没有已选择的冲突素材', 409)
-    plan = create_material_integrity_plan(project_id, audit_task, materials, repository, artifacts,
-        {'scope':'SELECTED_IMAGES', 'manual_decisions':body.get('manual_decisions') or {}},
-        candidate_image_ids=chosen)
+    if body.get('delete_mode') == 'KEEP_ONE':
+        plan = create_material_integrity_plan(project_id,audit_task,materials,repository,artifacts,
+            {'scope':'SELECTED_IMAGES','delete_mode':'KEEP_ONE','manual_decisions':body.get('manual_decisions') or {}},candidate_image_ids=chosen,actor=actor)
+    else:
+        plan = _general_delete_preview(project_id,materials,
+            MaterialSelectionSpec.from_mapping({'scope':'SELECTED','image_ids':sorted(chosen),'repository_revision':materials.current_revision()}),
+            {},repository,artifacts,actor,None,owner_task_id=audit_task.task_id)
+    # The exact full range remains in the same durable plan; return bounded preview only.
+    plan.pop('selection_spec', None)
     plan['training_selection'] = {'filtered_count':filtered_count, 'selected_count':len(chosen),
         'excluded_count':len(excluded), 'query':query, 'issue_type':issue_type,
         'retained_execution_count':retained_count, 'previous_execution_task_id':previous_execution or None,
@@ -3953,6 +4008,12 @@ def material_integrity_governance_summary(project_id, audit_task, materials, rep
         'safe_delete_count':plan['delete_count'], 'manual_required_count':plan['manual_required_count'],
         'unverifiable_count':plan['unverifiable_count'], 'actually_deleted_count':deleted, 'failed_count':failed,
         'protection_reason_counts':plan.get('protection_reason_counts', {}),
+        'historical_reference_count':plan.get('historical_reference_count'),
+        'active_reference_count':plan.get('active_reference_count'),
+        'current_test_count':plan.get('current_test_count'), 'gt_count':plan.get('gt_count'),
+        'reference_diagnostics_state':plan.get('reference_diagnostics_state'),
+        'physical_retained_count':plan.get('physical_retained_count'), 'reclaimed_bytes':0,
+        'reclamation_state':'DEFERRED_SAFETY_UNVERIFIED',
         'material_revision':plan['material_revision'], 'annotation_revision':plan['annotation_revision']}
 
 
@@ -3963,6 +4024,7 @@ def material_batch_router(
     task_artifacts,
     storage_source_fence=None,
     training_selection_provider=None,
+    actor_provider=None,
 ):
     from fastapi import APIRouter, Body, HTTPException
     from fastapi.responses import FileResponse
@@ -3999,23 +4061,19 @@ def material_batch_router(
             task_repository(), task_artifacts(), payload)
 
     @router.post("/estimate")
-    def estimate(project_id: str, payload: dict = Body(...)):
-        get_project(project_id)
-        return invoke(estimate_batch, project_id, material_store(project_id), payload)
+    def estimate(project_id: str, request: Request, payload: dict = Body(...)):
+        project = get_project(project_id)
+        actor = actor_provider(request, project_id) if actor_provider else {}
+        return invoke(lambda: estimate_batch(project_id, material_store(project_id), payload,
+            repository=task_repository(),artifacts=task_artifacts(),actor=actor,project=project))
 
     @router.post("", status_code=202)
-    def create(project_id: str, payload: dict = Body(...)):
-        get_project(project_id)
+    def create(project_id: str, request: Request, payload: dict = Body(...)):
+        project = get_project(project_id)
+        actor = actor_provider(request, project_id) if actor_provider else {}
         fence = storage_source_fence() if storage_source_fence else nullcontext()
         with fence:
-            task = invoke(
-                create_batch,
-                project_id,
-                material_store(project_id),
-                task_repository(),
-                task_artifacts(),
-                payload,
-            )
+            task = invoke(lambda: create_batch(project_id,material_store(project_id),task_repository(),task_artifacts(),payload,actor=actor,project=project))
         return public_batch(task, task_artifacts(), task_repository())
 
     @router.get("")
@@ -4060,6 +4118,15 @@ def material_batch_router(
     def results(project_id: str, task_id: str, cursor: str = "", limit: int = 100):
         task = require_task(project_id, task_id)
         request = task_artifacts().read_json(task_id, task.payload_ref, default={})
+        if request.get("operation") == BatchOperation.DELETE_INDEX.value:
+            if not 1 <= limit <= BATCH_SIZE:
+                raise HTTPException(422, detail='limit must be between 1 and 500')
+            with closing(BatchSelection(task_artifacts().artifact_path(task_id, SELECTION_REF))) as selection:
+                rows=selection.database.execute('SELECT image_id,state,error FROM selection WHERE image_id>? ORDER BY image_id LIMIT ?',(cursor,limit)).fetchall()
+                next_cursor=rows[-1][0] if rows and selection.database.execute('SELECT 1 FROM selection WHERE image_id>? LIMIT 1',(rows[-1][0],)).fetchone() else None
+            return {'items':[{'image_id':row[0],'item_state':row[1],'item_error':row[2],
+                'logical_removed':row[1]=='succeeded','physical_retained':True,'reclaimed_bytes':0} for row in rows],
+                'succeeded_image_ids':[row[0] for row in rows if row[1]=='succeeded'],'next_cursor':next_cursor,'reclamation_state':'DEFERRED_SAFETY_UNVERIFIED'}
         if request.get("operation") != BatchOperation.CLEAN.value:
             raise HTTPException(409, detail="this task has no cleaning results")
         if not 1 <= limit <= BATCH_SIZE:
@@ -4270,10 +4337,10 @@ def material_batch_router(
         }
 
     @integrity.post("/audits/{task_id}/training-plans", status_code=201)
-    def create_training_plan(project_id: str, task_id: str, payload: dict = Body(...)):
+    def create_training_plan(project_id: str, task_id: str, request: Request, payload: dict = Body(...)):
         task = require_integrity_audit(project_id, task_id)
-        return invoke(create_training_integrity_plan, project_id, task, material_store(project_id),
-            task_repository(), task_artifacts(), payload, training_selection_provider)
+        actor = actor_provider(request,project_id) if actor_provider else {}
+        return invoke(lambda: create_training_integrity_plan(project_id,task,material_store(project_id),task_repository(),task_artifacts(),payload,training_selection_provider,actor=actor))
 
     @integrity.get('/audits/{task_id}/conflict-review')
     def integrity_conflict_review(project_id: str, task_id: str, cursor: str = '', limit: int = 25,
@@ -4292,29 +4359,22 @@ def material_batch_router(
 
     @integrity.post("/audits/{task_id}/dedup-plans", status_code=201)
     def create_integrity_plan(
-        project_id: str, task_id: str, payload: dict = Body(...),
+        project_id: str, task_id: str, request: Request, payload: dict = Body(...),
     ):
         task = require_integrity_audit(project_id, task_id)
-        return invoke(
-            create_material_integrity_plan,
-            project_id, task, material_store(project_id), task_repository(),
-            task_artifacts(), payload,
-        )
+        actor = actor_provider(request,project_id) if actor_provider else {}
+        return invoke(lambda: create_material_integrity_plan(project_id,task,material_store(project_id),task_repository(),task_artifacts(),payload,actor=actor))
 
     @integrity.post(
         "/audits/{task_id}/dedup-plans/{plan_id}/execute", status_code=202,
     )
     def execute_integrity_plan(
-        project_id: str, task_id: str, plan_id: str,
+        project_id: str, task_id: str, plan_id: str, request: Request,
         payload: dict = Body(...),
     ):
         task = require_integrity_audit(project_id, task_id)
-        published = invoke(
-            execute_material_integrity_plan,
-            project_id, task, plan_id,
-            str((payload or {}).get("confirmation_credential") or ""),
-            material_store(project_id), task_repository(), task_artifacts(),
-        )
+        actor = actor_provider(request,project_id) if actor_provider else {}
+        published = invoke(lambda: execute_material_integrity_plan(project_id,task,plan_id,str((payload or {}).get('confirmation_credential') or ''),material_store(project_id),task_repository(),task_artifacts(),actor=actor))
         return public_batch(published, task_artifacts(), task_repository())
 
     # Training/agent routes are mounted once by app.py with their dependencies.

@@ -85,6 +85,7 @@ export function createTrainingDraft(values = {}) {
     materialIds,
     testMaterialIds,
     ...(values.duplicateReview ? {duplicateReview: {
+      ...(values.duplicateReview.review_kind==='EXPLICIT_SELECTION_ADJUSTMENT'?{review_kind:'EXPLICIT_SELECTION_ADJUSTMENT'}:{}),
       original_train_image_ids: unique(values.duplicateReview.original_train_image_ids),
       original_test_image_ids: unique(values.duplicateReview.original_test_image_ids),
       excluded_image_ids: unique(values.duplicateReview.excluded_image_ids),

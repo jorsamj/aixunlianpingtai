@@ -1,4 +1,5 @@
 import io
+import json
 import zipfile
 from pathlib import Path
 
@@ -109,12 +110,12 @@ def test_v19_worker_failure_rolls_back_partial_durable_import(client, monkeypatc
         str(row.get("id")) != image_id
         for row in app_module.material_store(project_id).read().rows
     )
-    assert not _local_stored_path(app_module, project_id, record).exists()
+    assert_deferred_bytes(app_module, project_id, record)
     assert not AnnotationRepository(app_module.project_dir(project_id)).exists(image_id)
     assert app_module._v50_active_image_batch(project_id) is None
 
 
-def test_save_false_discards_new_batch_files_and_sqlite_annotation(client, tmp_path):
+def test_save_false_discards_new_metadata_and_defers_source_cleanup(client, tmp_path):
     import app as app_module
 
     project_id = _project(client)
@@ -154,7 +155,7 @@ def test_save_false_discards_new_batch_files_and_sqlite_annotation(client, tmp_p
         str(row.get("id")) != record["id"]
         for row in app_module.material_store(project_id).read().rows
     )
-    assert not stored_path.exists()
+    assert_deferred_bytes(app_module, project_id, record)
     assert not repository.exists(record["id"])
     assert app_module._v50_active_image_batch(project_id) is None
 
@@ -201,7 +202,7 @@ def test_zip_stop_between_parse_and_db_commit_rolls_back_staged_material(client,
     record = captured['record']
     assert app_module.material_store(project_id).get(record['id']) is None
     assert not AnnotationRepository(app_module.project_dir(project_id)).exists(record['id'])
-    assert not _local_stored_path(app_module, project_id, record).exists()
+    assert_deferred_bytes(app_module, project_id, record)
     assert not (app_module.v19_job_dir(project_id, job_id) / 'source.zip').exists()
 
 
@@ -220,3 +221,11 @@ def test_zip_stop_rejects_commit_phase(client):
     response = client.post(f'/api/v19/projects/{project_id}/import/jobs/{job_id}/stop')
     assert response.status_code == 409
     assert not app_module.v19_read_job(project_id, job_id).get('cancel_requested')
+
+
+def assert_deferred_bytes(app_module, project_id, record):
+    retained = _local_stored_path(app_module, project_id, record)
+    assert retained.read_bytes() == _png_bytes()
+    with app_module.material_store(project_id)._connect() as database:
+        rows = database.execute('SELECT payload_json,reclamation_state FROM material_cleanup_deferred').fetchall()
+    assert any(json.loads(row[0])['id'] == record['id'] and row[1] == 'DEFERRED_SAFETY_UNVERIFIED' for row in rows)
