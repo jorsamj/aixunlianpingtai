@@ -11,7 +11,6 @@ from collections.abc import Mapping
 
 from .algorithms import is_trainable_version, list_algorithms
 from .task_runtime import TaskKind, TaskStatus
-from .training_tasks import _training_completion_error, _SUCCESSFUL_TRAINING_OUTCOMES
 
 
 _LIST_DIGEST_CACHE = OrderedDict()
@@ -67,6 +66,7 @@ def _model_digest(path, *, use_list_cache):
 
 
 def _remote_primary(project_id, project, algorithm_id, version, task, payload, result, artifacts):
+    from .training_tasks import _SUCCESSFUL_TRAINING_OUTCOMES
     generation = int(result.get('execution_generation') or 0)
     _require(generation > 0 and generation == int(version.get('execution_generation') or 0), 'remote generation mismatch')
     _require(task.result_ref == f'remote-results/{generation}/result.json', 'remote committed result reference mismatch')
@@ -122,6 +122,7 @@ def resolve_scenario_model(project_id, project, algorithm, version, repository, 
 
 
 def _resolve(project_id, project, algorithm, version, repository, artifacts, *, use_list_cache):
+    from .training_tasks import _training_completion_error, _SUCCESSFUL_TRAINING_OUTCOMES
     algorithm_id, version_id = str(algorithm.get('id') or ''), str(version.get('id') or '')
     _require(algorithm_id and version_id, 'missing algorithm/version identity')
     _require(is_trainable_version(version, 'ultralytics'), 'unverified or unsuccessful version')

@@ -164,3 +164,9 @@
 最终相关Python组合实际212 passed、5既有deprecation warnings、0失败0跳过（96.72s，C:/tmp/scenario-final-python.log）；最终Node1295/1295（C:/tmp/scenario-final-node.log）。全Chrome352仍运行（C:/tmp/scenario-final-all-chrome.log），不能沿用子集宣布全绿。P1提交与推送后将以最终准确SHA核全部Actions/Checks，若产生修复提交或文档新HEAD，重新核新SHA。当前未生产部署、生产清理、生产模型/GT操作。
 
 后续接续：先读本文最新阶段/问题关闭与证据，再看scenario_models.py→原v61→Worker/Agent、quality-detection-workbench.js→scenario-evaluation.js→reports.js；素材仍card412/material-pagination，标注仍原Editor及saveAnn/review。禁止另建任务/GT/图表注册表、重新复制素材、用无GT快检作准确率或把不同比较作提升。P2仍未实施；生产真实历史权重/远程OSS/GPU吞吐、大库SLA与已有Ultralytics授权状态需单独现场核验，不能凭隔离测试声明达标。
+
+### 首推精简环境CI失败与修正（不能沿用首推绿色）
+
+首推代码SHA57dd15c9b478a81f5dd67d5e21622fd4bffce153的Portable Deployment API job已通过，但Linux/Windows transport-contract失败；Linux实际33失败102通过，缺ModuleNotFoundError: yaml。根因为scenario_models顶层导入training_tasks，把通用Agent/传输原精简依赖边界扩大，不是合法模型核验失败。没有向精简job盲目安装整套训练依赖。
+
+新增独立子进程MetaPathFinder明确禁止yaml/training_tasks导入的真实RED1失败，原模块改为仅实际resolve训练成果时延迟导入原训练合同；通用verify仍先核持久scene分类，scene执行资格/字节复核不削弱。修后原精简传输/Agent/NodeExecutor相关135 passed、1 Windows symlink环境skip（17.41s），场景54 passed/5既有warnings（61.08s）；新边界测试纳入原Portable工作流触发/编译/执行。相关Linux符号链接实测仍以新SHA CI为准，不借本地skip声明通过。接下来正常提交修复并核新SHA所有Checks。

@@ -19,6 +19,7 @@ on:
       - 'platform_core/storage/oss.py'
       - 'platform_core/training_recovery_api.py'
       - 'tests/unit/test_remote_execution_transport.py'
+      - 'tests/unit/test_scenario_import_boundary.py'
       - 'tests/unit/test_agent_execution.py'
       - 'tests/unit/test_agent_result_upload.py'
       - 'tests/unit/test_node_agent_executor_runtime.py'
@@ -51,6 +52,7 @@ on:
       - 'platform_core/storage/oss.py'
       - 'platform_core/training_recovery_api.py'
       - 'tests/unit/test_remote_execution_transport.py'
+      - 'tests/unit/test_scenario_import_boundary.py'
       - 'tests/unit/test_agent_execution.py'
       - 'tests/unit/test_agent_result_upload.py'
       - 'tests/unit/test_node_agent_executor_runtime.py'
@@ -102,6 +104,7 @@ jobs:
           platform_core/storage/s3.py
           platform_core/storage/oss.py
           tests/unit/test_remote_execution_transport.py
+          tests/unit/test_scenario_import_boundary.py
           tests/unit/test_agent_execution.py
           tests/unit/test_agent_result_upload.py
           tests/unit/test_node_agent_executor_runtime.py
@@ -113,6 +116,7 @@ jobs:
         run: >-
           python -m pytest -q --confcutdir=tests/unit
           tests/unit/test_remote_execution_transport.py
+          tests/unit/test_scenario_import_boundary.py
           tests/unit/test_agent_execution.py
           tests/unit/test_agent_result_upload.py
           tests/unit/test_node_agent_executor_runtime.py
