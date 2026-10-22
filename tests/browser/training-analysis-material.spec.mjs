@@ -37,7 +37,7 @@ for(const width of [1920,1440,1366,375])test(`report materials are truthful usab
  copied=await page.evaluate(()=>navigator.clipboard.readText());expect(copied).toContain('Car');expect(copied).toContain('请求Workers：0');expect(copied).not.toContain('工厂摄像头');expect(copied).not.toContain('isolated-person');expect(aiWrites).toBe(0);
 });
 
-test('interactive report charts hover zoom reset persist and dispose using local ECharts',async({page,request})=>{
+test('interactive report charts hover zoom persist and dispose without restore controls using local ECharts',async({page,request})=>{
  const {payloads}=await setup(page,request);
  // Explicit synthetic curve fixture for interaction QA; not the user's Person metrics.
  payloads.person.report.identity.algorithm_name='曲线交互隔离数据';payloads.person.report.history=[{epoch:1,map50:.2,precision:.3},{epoch:2,map50:null,precision:.4},{epoch:3,map50:.6,precision:.7},{epoch:4,map50:.8,precision:.9}];
@@ -48,9 +48,10 @@ test('interactive report charts hover zoom reset persist and dispose using local
  const point=await host.evaluate(node=>{const c=window.echarts.getInstanceByDom(node);window.__reportChart=c;const [x,y]=c.convertToPixel({xAxisIndex:0,yAxisIndex:0},[3,.6]);return {x,y}});
  const box=await host.boundingBox();await page.mouse.move(box.x+point.x-2,box.y+point.y);await expect(host).toContainText('mAP50');
  await page.mouse.wheel(0,-500);await expect.poll(()=>host.evaluate(node=>{const z=window.echarts.getInstanceByDom(node).getOption().dataZoom[0];return z.end-z.start<100})).toBe(true);
+ const retainedZoom=await host.evaluate(node=>{const z=window.echarts.getInstanceByDom(node).getOption().dataZoom[0];return {start:z.start,end:z.end}});
  await root.locator('[data-report-tab="overview"]').click();await root.locator('[data-report-tab="curves"]').click();
  expect(await host.evaluate(node=>window.__reportChart===window.echarts.getInstanceByDom(node))).toBe(true);
- await root.getByRole('button',{name:'恢复Validation 指标视图'}).click();await expect.poll(()=>host.evaluate(node=>window.echarts.getInstanceByDom(node).getOption().dataZoom[0].end)).toBe(100);
+ await expect(root.locator('[data-chart-reset]')).toHaveCount(0);expect(await host.evaluate(node=>!!window.echarts.getInstanceByDom(node).getOption().toolbox?.[0]?.feature?.restore)).toBe(false);await expect.poll(()=>host.evaluate(node=>{const z=window.echarts.getInstanceByDom(node).getOption().dataZoom[0];return {start:z.start,end:z.end}})).toEqual(retainedZoom);
  const gap=await host.evaluate(node=>window.echarts.getInstanceByDom(node).getOption().series.find(s=>s.name==='mAP50').data);expect(gap).toEqual([.2,null,.6,.8]);
  await page.screenshot({path:test.info().outputPath('training-report-interactive.png'),fullPage:true,animations:'disabled'});
  await page.evaluate(()=>window.closeModal());expect(await page.evaluate(()=>window.__reportChart.isDisposed())).toBe(true);

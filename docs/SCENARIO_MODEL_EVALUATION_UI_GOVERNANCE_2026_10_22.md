@@ -170,3 +170,11 @@
 首推代码SHA57dd15c9b478a81f5dd67d5e21622fd4bffce153的Portable Deployment API job已通过，但Linux/Windows transport-contract失败；Linux实际33失败102通过，缺ModuleNotFoundError: yaml。根因为scenario_models顶层导入training_tasks，把通用Agent/传输原精简依赖边界扩大，不是合法模型核验失败。没有向精简job盲目安装整套训练依赖。
 
 新增独立子进程MetaPathFinder明确禁止yaml/training_tasks导入的真实RED1失败，原模块改为仅实际resolve训练成果时延迟导入原训练合同；通用verify仍先核持久scene分类，scene执行资格/字节复核不削弱。修后原精简传输/Agent/NodeExecutor相关135 passed、1 Windows symlink环境skip（17.41s），场景54 passed/5既有warnings（61.08s）；新边界测试纳入原Portable工作流触发/编译/执行。相关Linux符号链接实测仍以新SHA CI为准，不借本地skip声明通过。接下来正常提交修复并核新SHA所有Checks。
+
+### 第二次CI及广泛浏览器运行的真实结果（未隐藏失败）
+
+- ab883bfc399d6cd687552cdef49f1649f49a7df8实际22个Actions中21通过、前端浏览器工作流失败；其Node job通过，Chrome235通过2失败（13.9m）。精简依赖问题已关闭。
+- 两个CI失败：旧navigation用例仍默认显示上传按钮，按新“默认准确性评测→主动快速图片检测”补原tab操作与隐藏断言，保留multiple/folder及按钮可见/无pageerror；另一SCN测试点击包含文字的SVG g联合bbox中心，Linux字体下空白落点被底图拦截，改为点击真实rect绘制区域，无force click，保留详情联动。未更改产品资格或降低安全断言。
+- 收尾新增确定停止边界：A完成后用户已停止后续时仍保留running及未显示结果。原函数真实RED2失败→相关Node19/19、最终全Node1297/1297；A-only完成计数保持，compare显示A已完成/B未提交，后续未创建任务明确标记未提交，不篡改Task状态。新Chrome两模式实际通过。
+- local广泛运行352用例终态339通过13失败（31.5m），不是全部通过。包括认证2（原有专用auth config待核）、旧clean/AI fencing2、旧row-menu3、上述navigation1、已退役restore控件旧测试1、Uppy前4个项目初始化等待失败。它们逐项追踪，不能通过改鉴权/Uppy业务/删断言掩盖。相关旧report测试已改为断言无恢复控件并保留真实DataZoom范围/同实例/销毁，而非恢复已被用户删除的按钮。其余既有用例正在只读核验是否环境/原基线问题。
+- 本轮相关修正后fresh Chrome5/5通过（20.1s）：默认两模式导航、正式SVG框点击、A-only/compare停止后续保留A结果、原报告真实zoom保持且无restore；新P0/P1其他定向及原相关通过记录保持，不把339/13写成352全绿。接下来正常提交修正核新SHA。
