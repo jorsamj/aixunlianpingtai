@@ -1,4 +1,4 @@
-import {installZipImportRuntime} from './modules/zip-import-runtime.js?v=4226365';
+import {installZipImportRuntime} from './modules/zip-import-runtime.js?v=4226366';
 
 const runtime = installZipImportRuntime({
   getState: () => state,

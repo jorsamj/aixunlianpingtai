@@ -48,6 +48,7 @@ on:
       - 'tests/frontend/storage-import-progress.test.mjs'
       - 'tests/frontend/import-dock-style.test.mjs'
       - 'tests/browser/zip-import-refresh-recovery.spec.mjs'
+      - 'tests/browser/material-upload-chunking.spec.mjs'
       - 'tests/api/test_v19_job_atomic_persistence.py'
       - 'tests/api/test_v19_import_scalability.py'
       - 'tests/api/test_v19_import_report_externalization.py'
@@ -239,4 +240,4 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
       - name: Real Chrome refresh recovery
-        run: npx playwright test tests/browser/zip-import-refresh-recovery.spec.mjs tests/browser/uppy-zip-poc.spec.mjs
+        run: npx playwright test tests/browser/zip-import-refresh-recovery.spec.mjs tests/browser/uppy-zip-poc.spec.mjs tests/browser/material-upload-chunking.spec.mjs

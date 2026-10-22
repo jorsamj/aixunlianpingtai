@@ -25,6 +25,17 @@ test('mergeUploadTask keeps truthful progress and terminal success becomes 100%'
   assert.equal(isUploadTaskActive(done), false);
 });
 
+test('unknown processing progress survives persisted JSON hydration without showing upload 100 percent',()=>{
+  const uploaded=mergeUploadTask({}, {id:'zip:unknown',kind:'zip',status:'UPLOADING',progress:100});
+  const merging=mergeUploadTask(uploaded,{status:'MERGING',progress:null,stage:'合并与校验'});
+  assert.equal(merging.progressKnown,false);
+  const recovered=mergeUploadTask({},JSON.parse(JSON.stringify(merging)));
+  assert.equal(recovered.progressKnown,false);
+  assert.match(renderUploadTaskCenterRow(recovered),/等待服务器进度/);
+  assert.doesNotMatch(renderUploadTaskCenterRow(recovered),/>100%/);
+  assert.equal(mergeUploadTask(recovered,{status:'VALIDATING',progress:12}).progressKnown,true);
+});
+
 test('task center treats label mapping/indexing stages as active', () => {
   for (const status of ['WAITING_UPLOAD','MAPPING_LABELS','WRITING_ANNOTATIONS','INDEXING']) {
     assert.equal(isUploadTaskActive({status}), true, status);
@@ -184,8 +195,9 @@ test('task center durable polling is PollRegistry-owned and hidden tabs do not k
   assert.match(runtime, /registry\?\.startTimeout\(POLL_KEY, pollOwners/);
   assert.match(runtime, /document\.visibilityState === 'hidden'/);
   assert.match(runtime, /visibilitychange/);
-  assert.doesNotMatch(runtime, /setTimeout\(/);
-  assert.doesNotMatch(runtime, /clearTimeout\(/);
+  assert.doesNotMatch(runtime, /setInterval\(/);
+  assert.match(runtime, /window\.setTimeout\(\(\) => persist\(\), 500\)/);
+  assert.match(runtime, /window\.clearTimeout\(persistTimer\)/);
   assert.match(main, /pollRegistry,[\s\S]*ownerPages: window\.PlatformCore\?\.navigation\?\.knownPages/);
 });
 
@@ -198,8 +210,8 @@ test('ZIP task center rows reopen their durable runtime instead of becoming dead
   assert.match(html,/utc-reopenable/);
   assert.match(html,/tabindex="0"/);
   const runtime=readFileSync(new URL('../../static/modules/upload-task-center.js',import.meta.url),'utf8');
-  assert.match(runtime,/ZipImportRuntime\?\.openTask\?\./);
-  assert.match(runtime,/\.utc-row\[data-utc-kind="zip"\]/);
+  assert.match(runtime,/owner\?\.openTask\?\./);
+  assert.match(runtime,/task\.kind === 'zip' && !task\.localOnly/);
 });
 
 test('queued ZIP row shows size, FIFO position and local cancel without pretending to be reopenable',()=>{

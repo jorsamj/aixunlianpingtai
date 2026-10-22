@@ -4,7 +4,7 @@ import {installZipImportRuntime} from '../../static/modules/zip-import-runtime.j
 
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 function file(name){return new File([new Uint8Array(11)],name,{lastModified:123});}
-function harness({rejectPause=false}={}){
+function harness({rejectPause=false,durableJobs=()=>[]}={}){
   const previous={window:globalThis.window,document:globalThis.document,XMLHttpRequest:globalThis.XMLHttpRequest};
   const node={classList:{add(){},remove(){}},querySelector(){return null},style:{},remove(){}};
   const requests=[],pending=[],events=[],rows=new Map(),state={project:{id:'p'},page:'数据集'};let modals=0;
@@ -21,7 +21,7 @@ function harness({rejectPause=false}={}){
     if(rejectPause&&url.endsWith('/pause'))return Response.json({detail:'isolated pause rejection'},{status:500});
     if(url.endsWith('/uploads')){const b=JSON.parse(options.body);return Response.json({upload_id:b.resume_upload_id||b.file_name,part_size:4,completed_parts:[],upload_progress:0,total_parts:3})}
     if(url.endsWith('/complete'))return Response.json({id:'job-'+url.split('/').at(-2),status:'running',file_name:'accepted.zip'});
-    if(url.endsWith('/jobs'))return Response.json({items:[]});
+    if(url.endsWith('/jobs'))return Response.json({items:durableJobs()});
     return Response.json({id:url.split('/').at(-1),status:'running'});
   };
   const runtime=installZipImportRuntime({getState:()=>state,projectId:()=>state.project.id,fetchImpl});
@@ -43,6 +43,22 @@ test('original ZIP controller publishes per-file identity bytes and handoff, and
     unsubscribe();const before=h.events.length;
     await h.runtime.uploadBatch({files:[file('bad.txt')],value:'',externalView:true});
     assert.equal(h.events.length,before);
+  }finally{h.cleanup()}
+});
+
+test('legacy browser transfer stays authoritative when durable polling lags acknowledged bytes',async()=>{
+  let server=[];
+  const h=harness({durableJobs:()=>server});
+  try{
+    const upload=h.runtime.upload({files:[file('source.zip')],value:'',externalView:true});
+    await tick();await tick();
+    for(const xhr of h.pending)xhr.upload.onprogress?.({lengthComputable:true,loaded:Math.max(1,xhr.size-1),total:xhr.size});
+    const before=h.rows.get('zip:source.zip').progress;
+    assert.ok(before>30);
+    server=[{id:'source.zip',status:'uploading',progress:0,file_name:'source.zip'}];
+    await h.runtime.reconcile('source-consistency');
+    assert.equal(h.rows.get('zip:source.zip').progress,before);
+    await h.finish();await upload;
   }finally{h.cleanup()}
 });
 

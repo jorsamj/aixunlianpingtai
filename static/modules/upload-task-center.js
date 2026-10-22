@@ -1,3 +1,5 @@
+import {withRequestDeadline} from './api.js';
+
 const ACTIVE_STATUSES = new Set(['WAITING_UPLOAD','UPLOADING','PAUSED','MERGING','VALIDATING','SELECTING','QUEUED','WAITING','WAITING_RESOURCE','RUNNING','SCANNING','EXTRACTING','MAPPING_LABELS','WRITING_ANNOTATIONS','INDEXING','FINALIZING']);
 const TERMINAL_STATUSES = new Set(['DONE','SUCCEEDED','COMPLETED','FINISHED','FAILED','CANCELLED','CANCELED','INTERRUPTED']);
 const STORAGE_PREFIX = 'mc_upload_task_center_v1:';
@@ -52,7 +54,7 @@ export function hasTerminalZipUploadTasks(tasks = []) {
 export function stableUploadTaskOrder(tasks = []) {
   return [...tasks].sort((a, b) =>
     String(b?.createdAt || '').localeCompare(String(a?.createdAt || ''))
-    || String(a?.id || '').localeCompare(String(b?.id || ''))
+    || String(a?.orderKey || a?.id || '').localeCompare(String(b?.orderKey || b?.id || ''))
   );
 }
 
@@ -86,10 +88,12 @@ export function mergeUploadTask(previous = {}, next = {}) {
     ...previous,
     ...next,
     id: String(next.id || previous.id || ''),
+    orderKey: String(previous.orderKey || next.orderKey || next.id || previous.id || ''),
     kind: String(next.kind || previous.kind || 'upload'),
     title: String(next.title || previous.title || '上传任务'),
     status,
     progress,
+    progressKnown: next.progressKnown === false || next.progress === null ? false : next.progress !== undefined ? true : previous.progressKnown !== false,
     stage: String(next.stage || previous.stage || ''),
     detail: String(next.detail || previous.detail || ''),
     updatedAt: String(next.updatedAt || nowIso()),
@@ -149,6 +153,7 @@ export function recoverUploadTaskAfterRefresh(row = {}) {
 }
 
 function taskActionMarkup(row) {
+  if (String(row.kind || '') === 'browser-upload') return '<button type="button" class="utc-action" data-utc-action="details">查看详情</button>';
   if (String(row.kind || '') !== 'zip') return '';
   const status = upper(row.status);
   const button = (action, label, cls = '') => `<button type="button" class="utc-action ${cls}" data-utc-action="${action}">${label}</button>`;
@@ -171,9 +176,9 @@ export function renderUploadTaskCenterRow(row = {}) {
   const reopenable=String(row.kind||'')==='zip'&&!row.localOnly;
   const size=Number(row.fileSize)>0?formatBytes(row.fileSize):'';
   const queue=Number(row.queuePosition)>0?`排队第 ${Number(row.queuePosition)} 位`:'';
-  const leftMeta=[`${progress.toFixed(progress % 1 ? 1 : 0)}%`,size,queue].filter(Boolean).join(' · ');
+  const leftMeta=[row.progressKnown === false ? '等待服务器进度' : `${progress.toFixed(progress % 1 ? 1 : 0)}%`,size,queue].filter(Boolean).join(' · ');
   const actions=taskActionMarkup(row);
-  return `<div class="utc-row${reopenable?' utc-reopenable':''}" data-utc-id="${esc(row.id)}" data-utc-kind="${esc(row.kind||'')}" data-utc-local="${row.localOnly?'1':'0'}" ${reopenable?'role="button" tabindex="0" aria-label="重新打开 ZIP 导入任务"':''}><div class="utc-top"><div class="utc-name"><b>${esc(row.title)}</b><small>${esc(row.stage || presentation.label)}</small></div><span class="utc-pill ${presentation.cls}">${presentation.label}</span></div><div class="utc-progress"><i data-progress="${progress.toFixed(2)}" style="transform:scaleX(${scale.toFixed(4)})"></i></div><div class="utc-meta"><span>${esc(leftMeta)}</span><span>${esc(formatTime(row.updatedAt))}</span></div>${detail}${actions?`<div class="utc-actions">${actions}</div>`:''}</div>`;
+  return `<div class="utc-row${reopenable?' utc-reopenable':''}" data-utc-id="${esc(row.id)}" data-utc-kind="${esc(row.kind||'')}" data-utc-local="${row.localOnly?'1':'0'}" ${reopenable?'role="button" tabindex="0" aria-label="重新打开 ZIP 导入任务"':''}><div class="utc-top"><div class="utc-name"><b>${esc(row.title)}</b><small>${esc(row.stage || presentation.label)}</small></div><span class="utc-pill ${presentation.cls}">${presentation.label}</span></div><div class="utc-progress"><i data-progress="${progress.toFixed(2)}" style="transform:scaleX(${scale.toFixed(4)});opacity:${row.progressKnown === false ? 0 : 1}"></i></div><div class="utc-meta"><span>${esc(leftMeta)}</span><span>${esc(formatTime(row.updatedAt))}</span></div>${detail}${actions?`<div class="utc-actions">${actions}</div>`:''}</div>`;
 }
 
 function createUploadTaskCenterRow(body, html) {
@@ -206,6 +211,7 @@ function patchUploadTaskCenterRow(currentRow, nextRow) {
   currentPill.textContent = nextPill.textContent;
   currentBar.dataset.progress = nextBar.dataset.progress || '';
   currentBar.style.transform = nextBar.style.transform;
+  currentBar.style.opacity = nextBar.style.opacity;
   if (currentMeta[0] && nextMeta[0]) currentMeta[0].textContent = nextMeta[0].textContent;
   if (currentMeta[1] && nextMeta[1]) currentMeta[1].textContent = nextMeta[1].textContent;
   currentRow.className = nextRow.className;
@@ -233,7 +239,21 @@ function patchUploadTaskCenterRow(currentRow, nextRow) {
   }
   const currentActions = currentRow.querySelector?.('.utc-actions');
   const nextActions = nextRow.querySelector?.('.utc-actions');
-  if (currentActions && nextActions) currentActions.replaceWith(nextActions.cloneNode(true));
+  if (currentActions && nextActions) {
+    const wanted = new Set();
+    for (const next of nextActions.children) {
+      const key = next.dataset.utcAction;
+      wanted.add(key);
+      const current = [...currentActions.children].find(node => node.dataset.utcAction === key);
+      if (current) {
+        current.className = next.className;
+        if (!current.disabled) current.textContent = next.textContent;
+      } else currentActions.appendChild(next.cloneNode(true));
+    }
+    for (const current of [...currentActions.children]) {
+      if (!wanted.has(current.dataset.utcAction)) current.remove();
+    }
+  }
   else if (currentActions && !nextActions) currentActions.remove();
   else if (!currentActions && nextActions) currentRow.appendChild(nextActions.cloneNode(true));
   return currentRow;
@@ -311,6 +331,11 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
   let rows = [];
   let expanded = false;
   let lastProjectId = '';
+  let renderFrame = 0;
+  let persistTimer = 0;
+  let destroyed = false;
+  const pendingActions = new Map();
+  let clearPending = false;
   const registry = pollRegistry || window.PollRegistryRuntime;
   const POLL_KEY = 'upload-task-center';
   const fallbackOwners = [
@@ -341,8 +366,8 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
       .utc-top{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}.utc-name{min-width:0}.utc-name b{display:block;color:#192231;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.utc-name small{display:block;color:#748197;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
       .utc-pill{flex:none;padding:3px 8px;border-radius:999px;font-size:11px;font-weight:800}.utc-pill.ok{background:#ecfdf3;color:#15803d}.utc-pill.bad{background:#fff1f2;color:#be123c}.utc-pill.warn{background:#fff7ed;color:#c2410c}.utc-pill.run{background:#eff6ff;color:#2563eb}.utc-pill.muted{background:#f1f5f9;color:#64748b}
       .utc-progress{height:6px;border-radius:999px;background:#edf1f5;overflow:hidden;margin:9px 0 7px}.utc-progress i{display:block;width:100%;height:100%;background:linear-gradient(90deg,#2563eb,#60a5fa);border-radius:inherit;transform-origin:left center;transition:transform .22s cubic-bezier(.22,1,.36,1);will-change:transform}
-      .utc-meta{display:flex;justify-content:space-between;gap:10px;color:#738197;font-size:11px}.utc-detail{margin-top:5px;color:#64748b;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.utc-empty{padding:24px;text-align:center;color:#8995a7}.utc-reopenable{cursor:pointer}.utc-reopenable:hover{transform:translateY(-1px)}
-      .utc-actions{display:flex;justify-content:flex-end;gap:7px;margin-top:9px}.utc-action{min-height:32px;padding:5px 10px;border:1px solid #d6deea;border-radius:8px;background:#fff;color:#334155;font-size:12px;font-weight:700;cursor:pointer}.utc-action:hover{background:#f8fafc}.utc-action.primary{border-color:#bfdbfe;background:#eff6ff;color:#1d4ed8}.utc-action.danger{border-color:#fecdd3;background:#fff1f2;color:#be123c}
+      .utc-meta{display:flex;justify-content:space-between;gap:10px;color:#738197;font-size:11px}.utc-detail{margin-top:5px;color:#64748b;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.utc-empty{padding:24px;text-align:center;color:#8995a7}.utc-reopenable{cursor:pointer}.utc-reopenable:hover{background:#f8fafc}
+      .utc-actions{display:flex;justify-content:flex-end;gap:7px;margin-top:9px}.utc-action{min-height:32px;padding:5px 10px;border:1px solid #d6deea;border-radius:8px;background:#fff;color:#334155;font-size:12px;font-weight:700;cursor:pointer}.utc-action:hover{background:#f8fafc}.utc-action:disabled{cursor:wait;opacity:.65}.utc-action.primary{border-color:#bfdbfe;background:#eff6ff;color:#1d4ed8}.utc-action.danger{border-color:#fecdd3;background:#fff1f2;color:#be123c}
       @media (prefers-reduced-motion: reduce){.utc-progress i{transition:none!important}}
       @media(max-width:720px){.utc-root{right:10px;bottom:10px;width:calc(100vw - 20px)}}
     `;
@@ -361,11 +386,28 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
     return root;
   }
 
-  function persist() {
-    const project = pid();
+  function persist(project = lastProjectId) {
+    window.clearTimeout(persistTimer);
+    persistTimer = 0;
     if (!project) return;
     const persistedRows = retainUploadTaskRows(rows).map(row => { const value = {...row}; delete value.pollOwner; return value; });
     try { localStorage.setItem(storageKey(project), JSON.stringify(persistedRows)); } catch (_) {}
+  }
+
+  function publish(critical = false) {
+    if (destroyed) return;
+    if (critical) {
+      window.cancelAnimationFrame(renderFrame);
+      renderFrame = 0;
+      persist();
+      render();
+    } else {
+      if (!renderFrame) renderFrame = window.requestAnimationFrame(() => {
+        renderFrame = 0;
+        if (!destroyed) render();
+      });
+      if (!persistTimer) persistTimer = window.setTimeout(() => persist(), 500);
+    }
   }
 
   function load(project) {
@@ -396,32 +438,84 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
       event.stopPropagation();
       void clearCompleted();
     });
-    const openZipTask=event=>{
-      const action=event.target?.closest?.('[data-utc-action]');
-      if(action){
-        event.preventDefault();event.stopPropagation();
-        const row=action.closest?.('.utc-row[data-utc-kind="zip"]');
-        const id=String(row?.dataset?.utcId||'').replace(/^zip:/,'');
-        const name=action.dataset.utcAction;
-        if(name==='cancel-local')void window.ZipImportRuntime?.cancelQueuedUpload?.(id);
-        else if(name==='pause')void window.ZipImportRuntime?.pauseUpload?.(id);
-        else if(name==='cancel')void window.ZipImportRuntime?.cancelUpload?.(id);
-        else if(name==='resume')void window.ZipImportRuntime?.promptResume?.(id);
-        else if(name==='reselect')window.importData?.();
-        else if(name==='open')void window.ZipImportRuntime?.openTask?.(id);
-        return;
-      }
-      const row=event.target?.closest?.('.utc-row[data-utc-kind="zip"]');if(!row)return;
-      if(row.dataset.utcLocal==='1')return;
-      event.preventDefault();event.stopPropagation();
-      void window.ZipImportRuntime?.openTask?.(row.dataset.utcId);
+    const openTask = event => {
+      const button = event.target?.closest?.('[data-utc-action]');
+      // Native buttons synthesize their own keyboard click. Never invoke twice.
+      if (event.type === 'keydown' && button) return;
+      const element = event.target?.closest?.('.utc-row[data-utc-id]');
+      const task = rows.find(row => row.id === element?.dataset.utcId);
+      if (!task) return;
+      const name = button?.dataset.utcAction || (task.kind === 'zip' && !task.localOnly ? 'open' : '');
+      if (!name) return;
+      event.preventDefault(); event.stopPropagation();
+      void performAction(task, name, button);
     };
-    root.querySelector?.('[data-utc-body]')?.addEventListener('click',openZipTask);
-    root.querySelector?.('[data-utc-body]')?.addEventListener('keydown',event=>{if(!['Enter',' '].includes(event.key))return;openZipTask(event)});
+    root.querySelector?.('[data-utc-body]')?.addEventListener('click', openTask);
+    root.querySelector?.('[data-utc-body]')?.addEventListener('keydown', event => {
+      if (['Enter',' '].includes(event.key)) openTask(event);
+    });
     return shell;
   }
 
+  async function performAction(task, name, button) {
+    if (pendingActions.has(task.id)) {
+      if (name === 'open') void window.ZipImportRuntime?.openTask?.(task.id.replace(/^zip:/,''));
+      return;
+    }
+    const operation = {project:pid(), id:task.id, action:name};
+    pendingActions.set(task.id, operation);
+    for (const sibling of button?.closest('.utc-actions')?.querySelectorAll('button') || []) sibling.disabled=true;
+    if (button) { button.disabled = true; button.setAttribute('aria-busy','true'); button.textContent = '正在处理'; }
+    try {
+      if (name === 'details') {
+        window.modal?.('图片任务详情', `<div class="utc-upload-details" data-utc-detail-id="${esc(task.id)}" data-utc-project="${esc(pid())}"><b>${esc(task.title)}</b><p data-utc-detail-stage>${esc(task.stage || statusPresentation(task.status).label)}</p><p data-utc-detail-message>${esc(task.detail)}</p><p data-utc-detail-progress>当前阶段进度：${clamp(task.progress)}%</p><small>任务 ID：${esc(task.id)}。网络传输完成不代表服务器入库完成；关闭本窗不会停止上传。</small></div>`, true);
+        return;
+      }
+      const id = operation.id.replace(/^zip:/,'');
+      const owner = window.ZipImportRuntime;
+      const method = {'cancel-local':'cancelQueuedUpload',pause:'pauseUpload',cancel:'cancelUpload',resume:'promptResume',open:'openTask'}[name];
+      if ((method && typeof owner?.[method] !== 'function') || (name === 'reselect' && typeof window.importData !== 'function')) {
+        throw new Error('上传模块尚未就绪，请稍后重试');
+      }
+      const actions = {
+        'cancel-local':()=>owner?.cancelQueuedUpload?.(id),
+        pause:()=>owner?.pauseUpload?.(id), cancel:()=>owner?.cancelUpload?.(id),
+        resume:()=>owner?.promptResume?.(id), reselect:()=>window.importData?.(),
+        open:()=>owner?.openTask?.(id),
+      };
+      const request = Promise.resolve().then(() => actions[name]?.());
+      const settled = () => {
+        operation.settled = true;
+        if (!operation.timedOut) return;
+        if (pendingActions.get(operation.id) === operation) pendingActions.delete(operation.id);
+        if (button?.isConnected) { button.disabled=false; button.removeAttribute('aria-busy'); }
+        if (!destroyed && pid() === operation.project) render();
+      };
+      request.then(settled, settled);
+      await withRequestDeadline(() => request, {timeoutMs:30000, label:'上传任务操作'});
+    } catch (error) {
+      operation.timedOut = error?.code === 'REQUEST_TIMEOUT' && !operation.settled;
+      if (!destroyed && pid() === operation.project) notify?.(`操作未确认：${error?.message || error}；请查看任务状态，勿重复提交。`);
+    } finally {
+      if (!operation.timedOut && pendingActions.get(operation.id) === operation) pendingActions.delete(operation.id);
+      if (button?.isConnected) {
+        button.disabled = Boolean(operation.timedOut); button.removeAttribute('aria-busy');
+        if (operation.timedOut) button.textContent = '等待结果确认';
+      }
+      if (!destroyed && pid() === operation.project) render();
+    }
+  }
+
   function render() {
+    if (destroyed) return;
+    for (const detail of document.querySelectorAll?.('.utc-upload-details[data-utc-detail-id]') || []) {
+      if (detail.dataset.utcProject !== pid()) continue;
+      const task = rows.find(row => row.id === detail.dataset.utcDetailId);
+      if (!task) continue;
+      detail.querySelector('[data-utc-detail-stage]').textContent = task.stage || statusPresentation(task.status).label;
+      detail.querySelector('[data-utc-detail-message]').textContent = task.detail;
+      detail.querySelector('[data-utc-detail-progress]').textContent = task.progressKnown === false ? '等待服务器进度' : `当前阶段进度：${clamp(task.progress)}%`;
+    }
     const root = ensureRoot();
     if (!rows.length) {
       root.style.display = 'none';
@@ -448,23 +542,43 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
       ? [`上传中 ${stats.uploading}`,`排队 ${stats.queued}`,processing>0?`处理中 ${processing}`:''].filter(Boolean).join(' · ')
       : `最近任务 · ${latest ? formatTime(latest.updatedAt) : ''}`;
     if (count) count.textContent = String(active.length || rows.length);
-    if (clear) clear.disabled = terminalCount <= 0;
+    if (clear) clear.disabled = clearPending || terminalCount <= 0;
     if (toggle) toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
     if (body) {
       body.style.display = expanded ? '' : 'none';
-      if (expanded) patchUploadTaskCenterRows(body, visible);
+      if (expanded) {
+        patchUploadTaskCenterRows(body, visible);
+        for (const element of body.querySelectorAll('.utc-row')) {
+          const pending = pendingActions.get(element.dataset.utcId);
+          for (const button of element.querySelectorAll('[data-utc-action]')) {
+            if (button.dataset.utcAction === 'open') continue;
+            button.disabled = Boolean(pending);
+            if (pending?.action === button.dataset.utcAction) {
+              if (pending.timedOut) { button.removeAttribute('aria-busy'); button.textContent='等待结果确认'; }
+              else { button.setAttribute('aria-busy','true'); button.textContent='正在处理'; }
+            } else button.removeAttribute('aria-busy');
+          }
+        }
+      }
     }
   }
 
   async function clearCompleted() {
+    if (destroyed) return rows;
+    if (clearPending) return rows;
+    clearPending = true;
+    const clearButton = document.querySelector('#uploadTaskCenter [data-utc-clear]');
+    if (clearButton) { clearButton.disabled=true; clearButton.setAttribute('aria-busy','true'); }
+    try {
     const before = rows.length;
     const project = pid();
     if (project && hasTerminalZipUploadTasks(rows)) {
       try {
-        await responseJson(await fetchImpl(
+        await withRequestDeadline(signal => fetchImpl(
           `/api/v19/projects/${encodeURIComponent(project)}/import/jobs`,
-          {method:'DELETE', credentials:'same-origin'},
-        ));
+          {method:'DELETE', credentials:'same-origin', signal},
+        ).then(responseJson), {timeoutMs:30000, label:'清空上传记录'});
+        if (destroyed || project !== pid()) return rows;
         window.ZipImportRuntime?.forgetTerminal?.();
       } catch (error) {
         notify?.(`清空导入记录失败：${error?.message || error}`);
@@ -478,28 +592,38 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
     const cleared = Math.max(0, before - rows.length);
     if (cleared) notify?.(`已清空 ${cleared} 条已结束任务`);
     return rows;
+    } finally { clearPending=false; clearButton?.removeAttribute('aria-busy'); render(); }
   }
 
   function upsert(task) {
-    const incoming = mergeUploadTask({}, task);
-    if (!incoming.id) throw new Error('upload task id is required');
-    const index = rows.findIndex(row => row.id === incoming.id);
-    if (index >= 0) rows[index] = mergeUploadTask(rows[index], incoming);
+    if (destroyed) return null;
+    const id = String(task?.id || '');
+    if (!id) throw new Error('upload task id is required');
+    const index = rows.findIndex(row => row.id === id);
+    const previous = index >= 0 ? rows[index] : null;
+    const incoming = mergeUploadTask(previous || {}, task);
+    if (index >= 0) rows[index] = incoming;
     else rows.unshift(incoming);
-    rows = retainUploadTaskRows(rows);
-    persist();
-    render();
-    arm();
+    if (!previous || previous.status !== incoming.status) rows = retainUploadTaskRows(rows);
+    const critical = !previous || ['status','stage','browserTransfer','resumeRequired','localOnly'].some(key => previous[key] !== incoming[key]);
+    publish(critical);
+    if (critical) arm();
     return rows.find(row => row.id === incoming.id);
   }
 
   function rekey(oldId, newId) {
+    if (destroyed) return null;
     const source = rows.find(row => row.id === String(oldId));
     if (!source || !newId || String(oldId) === String(newId)) return null;
     const target = rows.find(row => row.id === String(newId));
     const merged = target ? mergeUploadTask(source, target) : {...source};
     merged.id = String(newId);
     merged.createdAt = source.createdAt;
+    merged.orderKey = source.orderKey;
+    const element = [...(document.querySelectorAll('#uploadTaskCenter .utc-row') || [])].find(row => row.dataset.utcId === String(oldId));
+    if (element) element.dataset.utcId = String(newId);
+    const pending = pendingActions.get(String(oldId));
+    if (pending) { pendingActions.delete(String(oldId)); pending.id=String(newId); pendingActions.set(pending.id,pending); }
     rows = retainUploadTaskRows([...rows.filter(row => row.id !== String(oldId) && row.id !== String(newId)), merged]);
     persist();
     render();
@@ -507,6 +631,7 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
   }
 
   function remove(id) {
+    if (destroyed) return;
     rows = rows.filter(row => row.id !== String(id));
     persist();
     render();
@@ -523,17 +648,18 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
   }
 
   async function poll() {
+    if (destroyed) return;
     const project = pid();
     if (project !== lastProjectId) {
-      lastProjectId = project;
-      load(project);
+      switchProject();
     }
     const active = rows.filter(row => isUploadTaskActive(row) && row.serverUrl && !row.pollOwner);
     if (active.length) {
       const updates = await Promise.all(active.map(refreshDurable));
-      for (const updated of updates) {
+      if (destroyed || project !== pid() || project !== lastProjectId) return;
+      for (const [position, updated] of updates.entries()) {
         const index = rows.findIndex(row => row.id === updated.id);
-        if (index >= 0) rows[index] = updated;
+        if (index >= 0 && rows[index] === active[position]) rows[index] = updated;
       }
       rows = retainUploadTaskRows(rows);
       persist();
@@ -543,6 +669,7 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
   }
 
   function arm() {
+    if (destroyed) return null;
     registry?.clear?.(POLL_KEY);
     const needsPoll = rows.some(row => isUploadTaskActive(row) && row.serverUrl && !row.pollOwner);
     if (!needsPoll || document.visibilityState === 'hidden' || !registry?.startTimeout) return null;
@@ -550,11 +677,15 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
   }
 
   function switchProject() {
+    if (destroyed) return;
     const project = pid();
     if (project === lastProjectId) {
       arm();
       return;
     }
+    persist();
+    window.cancelAnimationFrame(renderFrame); renderFrame=0;
+    pendingActions.clear();
     lastProjectId = project;
     load(project);
     persist();
@@ -563,10 +694,12 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
   }
 
   const onVisibilityChange = () => {
-    if (document.visibilityState === 'hidden') registry?.clear?.(POLL_KEY);
+    if (document.visibilityState === 'hidden') { persist(); registry?.clear?.(POLL_KEY); }
     else arm();
   };
   document.addEventListener?.('visibilitychange', onVisibilityChange);
+  const onPageHide = () => persist();
+  window.addEventListener?.('pagehide', onPageHide);
 
   const runtime = Object.freeze({
     build:'upload-task-center-4',
@@ -578,8 +711,12 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
     refresh:() => poll(),
     switchProject,
     destroy() {
+      persist(); destroyed=true;
+      window.cancelAnimationFrame(renderFrame); renderFrame=0;
+      window.removeEventListener?.('pagehide', onPageHide);
       registry?.clear?.(POLL_KEY);
       document.removeEventListener?.('visibilitychange', onVisibilityChange);
+      document.getElementById('uploadTaskCenter')?.remove();
       if (window.UploadTaskCenterRuntime === runtime) window.UploadTaskCenterRuntime = null;
     },
   });

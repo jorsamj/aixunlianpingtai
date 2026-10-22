@@ -1,3 +1,5 @@
+> 最新接续：6A原UploadTaskCenter稳定性补充。旧Uppy验收仍有效；本轮准确SHA验收独立记录在6A.3。
+
 # Uppy ZIP上传隔离适配PoC与兼容性报告
 
 > 唯一专项需求、设计、进度与验收依据；日期2026-10-22；仓库jorsamj/aixunlianpingtai，唯一分支feature/external-algorithm-publishing。
@@ -138,6 +140,58 @@ Uppy能够通过官方自定义Uploader接入原ZIP v19协议，无须Tus/Compan
 
 已测试范围未发现无法解决的协议冲突，中文界面及原任务状态一致；真正生产网络/超大ZIP仍未验证，不能外推性能或发布合格。受约束采用本地官方预编译制品，体积与未独立确定的嵌入依赖版本限制见5.1；实际已核许可证为宽松商业可用，保留版权/许可声明。不把711KB体积说成定制最小包，也不把后台selecting说成导入完成。
 
+
+## 6A. 原 UploadTaskCenter 稳定性交互补充（2026-10-22，已完成待验收）
+
+基线83790b4c457a642af244ad2d7166301527603363 / VERSION42.24.374，工作树干净。用户要求先修原唯一任务中心，不以Uppy替代。仅隔离数据，不部署、不操作生产。
+
+| 编号 | 需求及涉及模块 | 状态 | 已完成/剩余及风险 |
+|---|---|---|---|
+| UTC-01 P0 | 稳定按钮DOM、合帧渲染及节流持久化；upload-task-center.js | 已完成待验收 | 已RED→GREEN，600更新0元素移除，关键状态即时保存；待准确SHA CI |
+| UTC-02 P0 | ZIP进度来源/阶段一致、顺序/rekey稳定；zip-import-runtime.js | 已完成待验收 | 来源72.7→0已复现/修复，rekey及阶段分离动态通过；待CI |
+| UTC-03 P1 | 防重复操作、Loading、普通图片详情、Modal命中 | 已完成待验收 | 原Modal/TaskCenter/Loading复用、真实图片详情、遮罩及超时已测；待CI |
+| UTC-04 P1 | 九类真实Chrome回归、Node/Python、最终SHA CI | 已完成待验收 | Chrome38/Node1239/Python49通过，日志/矩阵见下；准确SHA CI尚待推送 |
+
+执行顺序：审计与RED → 原任务中心补丁 → ZIP/图片投影修复 → 定向GREEN与原恢复回归 → 版本/文档/普通提交及准确SHA CI。当前已取得下述隔离测试证据，提交/最终SHA CI及生产性能不可提前宣称通过；旧5.6仅代表此前Uppy代码。
+
+### 6A.1 根因、最小方案与取舍
+
+1. 原patch每次replaceWith整组actions：真实Chrome按下暂停→150次进度→rekey→抬起，原按钮身份断言RED(false≠true)。改为按data-utc-action保留实际按钮，只在动作集合真实变化时增删；委托事件仍在原body，原生按钮键盘click不重复处理keydown。rekey先迁移原行dataset，保留按钮/焦点/创建时间及orderKey，不因临时ID改变位置；移除行hover位移，仅改变背景。
+2. 原upsert每次persist+render并重置poll计时：现在内存立即更新，进度按rAF合帧、500ms尾部保存；状态/阶段/暂停/成功/失败/新身份立即保存；pagehide、隐藏、切项目、destroy刷盘并清定时器。无字段变化的进度不重排整个列表；持久存储仍为原localStorage键及原恢复合同，非第二数据库。TaskCenter状态轮询继续由原PollRegistry负责，进度更新不反复延期轮询。
+3. 原upsert先用空previous补默认字段，再合并原行，部分更新误将kind/title重置为upload/上传任务：改用原行与原始增量直接merge，修复普通图片任务类型丢失；新增“查看详情”，复用原Modal Stack，显示真实任务ID/阶段/消息并随原行更新，失败仍可查看。标题“图片任务详情”避免被旧通用“上传”标题装饰器误识别成可穿透的上传窗口，真实Chrome确认遮罩命中。
+4. 原legacy上传的轮询只读后端progress，未取当前uploading：动态Node RED精确72.7→0。统一原publishTaskCenterJob投影：活动浏览器阶段使用对应原transfer或legacy uploading的真实字节；post-upload且服务器暂仍uploading时显示合并校验，不退回上传。MERGING progress:null显示“等待服务器进度”、隐藏旧阶段条，不冒充上传100%为处理100%。真实分片失败按实际字节回算时显示“分片传输中断，按实际字节重算”；不以Math.max掩盖真实重试。后台校验/标签/入库仍用服务端真实阶段及进度。
+5. 操作统一在原任务中心做每任务单次在途保护，相关操作按钮禁用，aria-busy复用全平台已有Spinner/reduced-motion样式，无新Loading系统。30秒超时停止Spinner并显示结果待确认；原控制器请求未结束时保留防重复锁、可打开任务核验，原请求结束后解锁。不能把未知提交伪装失败并重复发请求。详情/操作依旧调用原ZipImportRuntime，关闭窗口不取消后台。
+6. TaskCenter状态读取按项目与原行引用核验，迟到结果不覆盖后来进度/新项目。审查补修destroy后clearCompleted迟到finally可能重建root：所有入口/渲染/arm增加destroyed保护；原实例移除root/事件，不能清掉新实例轮询。额外Node RED指出progressKnown:false持久化后被默认值改为true，已保留显式未知标记并用JSON往返断言GREEN。
+
+替代方案：不整行重建/重挂监听、不为Uppy新建任务中心、不对全部进度取历史最大、不让每次XHR同步刷盘；这些方案分别丢点击/形成多Owner/伪造重试事实/阻塞主线程。现有业务ID、8MB分片、并发/暂停/恢复/幂等、v19/Worker/GT合同不改。material-upload-runtime.js只读审计后继续复用原批次/合帧，问题在TaskCenter增量合并；其正式65图两批Chrome已追加详情验收。
+
+### 6A.2 真实Chrome九项覆盖矩阵及测试记录
+
+| 用户场景 | 实际证据/断言 | 覆盖文件 |
+|---|---|---|
+| 1 高频更新期间展开/收起 | 30帧×20=600更新与6次点击并行，最终展开状态正确 | upload-task-center-performance |
+| 2 pointerdown/up间刷新只执行一次 | 150更新+rekey，按钮/焦点对象相同，实际mouse抬起仅1次pause(formal ID) | 同上 |
+| 3 两ZIP及多排队不跳 | 相同createdAt的4行顺序不变；原真实3/5/10ZIP与两槽FIFO继续回归 | 同上 + zip-import-refresh-recovery + uppy-zip-poc |
+| 4 临时→正式ID | 原行dataset原位迁移，按钮仍有效，两个ID无重复行 | 同上 |
+| 5 暂停/继续/取消/详情 | 原委托事件与在途锁、HTTP失败后可恢复，实际Uppy暂停续传跳过已确认分片；30秒未知操作不重发 | 同上 + uppy-zip-poc |
+| 6 阶段切换 | MERGING→VALIDATING→MAPPING_LABELS→RUNNING→DONE原行不变，未知进度不伪造 | 同上 + Node unknown/ZIP source |
+| 7 弹窗/最小化 | 原ZIP窗口及最小化dock可点击，业务二层Modal及标签确认独占点击，elementFromPoint真实命中 | 同上 + 原ZIP窄屏标签取消 |
+| 8 图片与ZIP不串 | 混合行身份/操作严格隔离；真实65张图片两批入库后详情显示成功65失败0 | 同上 + material-upload-chunking |
+| 9 >100更新稳定性 | 600次更新元素移除0、按钮对象保留；约498ms采样进度同步写存储0，后续暂停关键状态即时从localStorage读到PAUSED | 同上 |
+
+新增TaskCenter共8项真实Chrome（含原1项），合并原Uppy15、ZIP恢复14、真实图片1共38项。首轮新增按下按钮断言真实RED；第二轮图片详情被标题误分为upload modal，命中RED后修标题；追加旧实例cleanup测试首跑37通过1失败仅夹具未让withRequestDeadline调度fetch就销毁，resolveDelete未赋值，补await Promise.resolve确保请求实际在途，原断言保持，单例GREEN。最终完整结果下文补记，不能用旧34通过代替当前38。
+
+Node：upload-task-center新增未知阶段持久化RED(true≠false)后GREEN；zip-transfer-observer新增legacy来源RED(0≠72.7)后GREEN。两条旧源码守卫原意为无永久轮询/原ZIP Owner，现改精确断言可清理500ms单次持久化定时器、禁止setInterval及原owner.openTask；未删业务保护。全量Node1239通过0失败0跳过（C:/tmp/utc-node-final-green.log，22.64秒，后续最小CSS/保序优化及模块未就绪反馈已完成8项Chrome定向复测）。
+
+Python定向：API test_v19_multipart_controls/multipart_background_finalize/job_atomic_persistence/import_failure_rollback共15通过；原仓库test_zip_multipart/annotations/audit_v19_partial_import/secrets共34通过；合计49不同测试，0失败0跳过，JUnit C:/tmp/utc-python-api.xml及utc-python-units.xml。无后端生产代码修改，未扩跑无关全仓Python。现有Frontend CI已覆盖TaskCenter Chrome；原ZIP工作流仅补真实图片1项，不新建CI或扩大无关测试。
+
+实际修改：原upload-task-center.js、zip-import-runtime.js、必要main/index/zip-bootstrap缓存与VERSION；对应Node/Chrome测试、原ZIP workflow、本文及四个简短handoff/AGENTS入口。VERSION42.24.375一次递增，TaskCenter66013/main421/ZIP bootstrap与runtime4226366，原Uppy view4226365、app421/styles420不动。旧Uppy/vendor资源未改。
+
+### 6A.3 最终验收与接续
+
+最终本地完整Chrome **38/38通过0失败0跳过（1.9分钟）**，C:/tmp/utc-chrome-final-green.log；600更新487ms、同步进度存储0、元素移除0。最后最小CSS/保序优化复测8/8（13.5秒），增加模块未就绪明确反馈后8/8（12.4秒，C:/tmp/utc-chrome-delivery.log），无扩大或删除断言；Node1239/1239（21.27秒，C:/tmp/utc-node-delivery.log）与Python49通过，原Permanent ZIP guards实际bash退出0，build identity=42.24.375。代码审查两项具体问题已修正并加测试；审查子代理后续因模型容量中止，未宣称取得完整无问题报告，最终差异由主会话逐项核验。
+
+当前状态：已完成待验收，准确提交SHA CI尚待补齐。提交关联、实际Actions/Checks与最终HEAD将在本节补记；旧5.6不可作为本轮CI。生产网络/任务规模/真实素材仍NOT VERIFIED，所有本轮写入在隔离测试目录。本轮不部署，不删除生产素材，不改变正式GT、历史任务及数据库。
 
 ## 6. 接续
 

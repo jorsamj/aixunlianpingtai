@@ -1,3 +1,7 @@
+## 2026-10-22｜原 UploadTaskCenter 稳定性修复（已完成待验收）
+
+唯一专项：[Uppy专项6A](docs/UPPY_ZIP_ADAPTER_POC_2026_10_22.md)。按钮按action原位保留、进度合帧/500ms保存、关键状态即时保存、稳定rekey/order、原ZIP进度来源与图片详情均在原Owner修复。真实RED及追加审查问题已记录；VERSION42.24.375，Node1239/Python49/Chrome38及收尾定向8通过，准确SHA CI待验收。无新任务中心、上传控制器或数据库，未操作生产，其他工作区不动。接续先看6A，勿将旧Uppy验收冒充本轮。
+
 ## 2026-10-22｜Uppy ZIP适配（代码及隔离CI验收完成）
 
 唯一需求/进度/接续：[Uppy专项](docs/UPPY_ZIP_ADAPTER_POC_2026_10_22.md)。固定Core6.3.0/Dashboard6.0.2/locales5.3.1本地离线；原ZipImportRuntime/v19/TaskCenter/Worker单Owner，PoC14项通过后正式按钮接Uppy并保留原UI回退。VERSION42.24.374；本地Node1237/Python82/Chrome29+15通过，修正2ae6bdf71c24096e4ab75db5696c4609e6832678实际23/23 Actions、62/62 Checks通过（CI Chrome184/15/29）。首提交39/40及旧quality漏适配自动诊断的真实修复均留痕；本次仅补验收文档，其最终实际HEAD仍按专项5.6独立检查GitHub绑定结果。传输交付不等于入库；许可/711KB制品/生产未验证限制见专项。禁止生产部署或生产素材测试，勿重复建设上传控制器。

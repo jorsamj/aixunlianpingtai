@@ -1,3 +1,7 @@
+## 2026-10-22｜原 UploadTaskCenter 稳定性修复（已完成待验收）
+
+唯一专项：[Uppy专项6A](UPPY_ZIP_ADAPTER_POC_2026_10_22.md)。按钮按action原位保留、进度合帧/500ms保存、关键状态即时保存、稳定rekey/order、原ZIP进度来源与图片详情均在原Owner修复。真实RED及追加审查问题已记录；VERSION42.24.375，Node1239/Python49/Chrome38及收尾定向8通过，准确SHA CI待验收。无新任务中心、上传控制器或数据库，未操作生产，其他工作区不动。接续先看6A，勿将旧Uppy验收冒充本轮。
+
 ## 2026-10-10｜四模式训练创建 CI 修复（42.24.345，待全量复验）
 
 - 实际核对基线 `2e01bde1ee362060c23a82be1fad2c5e44341bf3` / `42.24.344` 的 6 个失败 Workflow、对应失败 Job 的原始日志；Remote Material Import 两次触发为同一缓存键测试根因。
