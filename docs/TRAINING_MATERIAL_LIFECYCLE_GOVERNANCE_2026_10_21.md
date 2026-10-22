@@ -2,7 +2,7 @@
 
 > 本专项唯一需求与进度依据；更新日期：2026-10-22（Asia/Shanghai）。
 > 仓库：`jorsamj/aixunlianpingtai`；唯一长期分支：`feature/external-algorithm-publishing`。
-> **当前接续：第十节“训练准入诊断与素材删除治理一体化专项”（GOV-01–11），代码实现已进入集成验收；10.6统一登录权限优先，10.9为当前实现合同。旧MLG任务及历史记录保留，不代表已实现。图片单份存储和工作Bundle回收仍未开始，本轮不擅自扩大到生产清理。**
+> **当前接续：第十节“训练准入诊断与素材删除治理一体化专项”（GOV-01–11），代码SHA d207ba57已完成CI验收，最新回执及交接见10.13；10.6统一登录权限优先，10.9为实现合同。旧MLG任务及历史记录保留，不代表已实现。图片单份存储和工作Bundle回收仍未开始，本轮不擅自扩大到生产清理。**
 
 以下为旧MLG文档初建时的历史记录，当前GOV进度请直接阅读第十节。
 
@@ -297,27 +297,27 @@ python -m pytest -q --confcutdir=tests/unit tests/unit/test_material_annotation_
 
 设计遵循原Owner：扩展原MaterialBatch计划/estimate/create/Worker，所有删除入口使用同一不可变目标与资格事实；逻辑退出与字节回收分别报告；原训练Draft/Submit/MaterialSummary统一收集阻塞，不建第二Modal/Tooltip/Loading/任务库或调度器。选择冻结须绑定project、material/GT revision、SHA/digest、操作者与确认范围，执行重验；已登录用户项目清空必须服务端鉴权及项目名称确认。技术接口/Schema增量在A审计完成后定稿，优先无需搬迁的兼容扩展；不为未知空间编造释放估算。
 
-### 10.3 任务清单（2026-10-22实际集成状态；最终CI未完成）
+### 10.3 任务清单（2026-10-22代码验收完成；最终文档自身CI按10.13核验）
 
 | 需求 | 优先级/模块 | 状态 | 已完成 | 剩余/风险 | Commit | 验收证据 |
 |---|---|---|---|---|---|---|
-| GOV-01 自动诊断 | P0 Submit/MaterialSummary/Modal | 已完成待验收 | 原Owner多阻塞/一次弹窗、保留草稿和手动入口 | 等最终回归/CI及更多异常场景 | 待实现提交 | Node49 Submit+Chrome3场景；见10.8 |
-| GOV-02 全部阻塞 | P0 兼容API/Submit | 已完成待验收 | 多阻塞/后端拒绝/资源/固定Test投影，条目与唯一图片数分开 | 最终SHA CI；未知检查保留失败而非放行 | 待实现提交 | Node1208全量、Python356及真实Chrome，见10.11 |
-| GOV-03 单张/批量/整组 | P0 MaterialBatch/AnnotationRepo | 已完成待验收 | 无Keeper整组丢弃；显式KEEP_ONE仍校验；旧隐式删除409退役 | 最终SHA CI | 待实现提交 | 19组38张、126整组、历史2图真实Worker；10.10/10.11 |
-| GOV-04 筛选全部 | P0 MaterialSelection/Batch | 已完成待验收 | 原持久selection跨99页2376张，排除1后冻结2375张 | 最终SHA CI；大型预览仅20样例 | 待实现提交 | 真实Chrome及revision/SHA/GT漂移Python，10.11 |
-| GOV-05 全问题排除/删除 | P0 兼容API/Draft/Batch | 已完成待验收 | 原compatibility RESOLVE全类型、当前页/筛选/全部问题；38张排除和删除均真实验证 | 故障/跨页/整组及保留UI回归 | 待实现提交 | Chrome38排除及38删除各1通过，库/草稿真实核验 |
-| GOV-06 统一登录清空 | P1 API权限/Batch/素材UI | 已完成待验收 | 无admin/白名单/角色；真实actor+项目name+冻结预览+原Worker | HTTP安全/重试最终回归CI | 待实现提交 | Python身份4通过，Chrome真实name/预览/40清空通过 |
-| GOV-07 历史/Test规则 | P0 material_batches | 已完成待验收 | 预览/提交/Worker统一允许当前退役；历史证据、Test Snapshot不改写 | 最终SHA CI；物理回收仍延期 | 待实现提交 | 历史2/2退出且字节/Snapshot不变，原合同Python回归 |
-| GOV-08 活动/共享安全 | P0 Task/Material/prepare | 已完成待验收 | 所有物理源保留；退休映射可读；排队精确原IDs交集、完整重冻结及崩溃不覆盖 | 最终SHA CI；无逐字节GC租约实现，不宣称已实现MLG-03全部 | 待实现提交 | 10000→9500及19准备用例；local/remote冻结映射读取；10.11 |
-| GOV-09 预览与后台 | P0 Batch/Worker/审计 | 已完成待验收 | 原计划绑定actor/GT/SHA/revision，确定任务身份、幂等恢复、分页真实结果 | 最终SHA CI；未知物理资格保留、释放0 | 待实现提交 | 356项Python含硬退出5例；预览/重试真实Chrome |
-| GOV-10 自动完整复检 | P0 Draft/MaterialSummary/Task | 已完成待验收 | 终态分页核验成功ID、原草稿签名、完整刷新/预检 | 部分成功/迟到/重试完整场景 | 待实现提交 | Chrome40→2真实Worker且兼容复检通过；首次后续invalidate清空结果已修正 |
-| GOV-11 集成验收文档 | P0 tests/既有CI/本文件 | 进行中 | 单一权威基线建立 | RED→GREEN、Python/Node/Chrome、版本、准确HEAD CI | 未提交 | 本文件及双入口已建立；不代表功能完成 |
+| GOV-01 自动诊断 | P0 Submit/MaterialSummary/Modal | 已验收 | 原Owner一次自动多阻塞诊断、保留草稿和手动入口 | Pending不误报/30秒截止；迟到不复活 | d207ba57 | Chrome准入8及Node1209；10.11–10.13 |
+| GOV-02 全部阻塞 | P0 兼容API/Submit | 已验收 | 全部已知真实阻塞、后端拒绝、母模型/版本/资源/固定Test | 问题条目与图片去重分开；未知不放行 | d207ba57 | Python兼容/原请求70及动态Submit；10.11–10.13 |
+| GOV-03 单张/批量/整组 | P0 MaterialBatch/AnnotationRepo | 已验收 | 整组丢弃无需Keeper；KEEP_ONE仍核验；旧隐式删除409 | 物理源保留，旧journal未知保留 | d207ba57 | 19组38张/126张整组/旧入口7；10.11–10.13 |
+| GOV-04 筛选全部 | P0 MaterialSelection/Batch | 已验收 | 服务端持久全选、精确冻结/排除、20条预览样例 | 不全量回传；版本/SHA/GT执行重验 | d207ba57 | Chrome99页2376→2375；Python漂移；10.11–10.13 |
+| GOV-05 全问题排除/删除 | P0 兼容API/Draft/Batch | 已验收 | 全部问题/当前筛选/页内集合分开，草稿调整留审计 | 排除不删GT，正式删除才退役；剩余问题复检 | d207ba57 | 38张排除/删除真实Chrome；10.11–10.13 |
+| GOV-06 统一登录清空 | P1 API/Batch/素材UI | 已验收 | 签名actor+项目访问，普通用户同权，名称及预览二次确认 | 无管理员/白名单/RBAC；未登录伪造拒绝 | d207ba57 | 权限4及项目40张真实Worker清空；10.11–10.13 |
+| GOV-07 历史/Test规则 | P0 material_batches | 已验收 | 计划/提交/Worker统一逻辑退役，历史及Snapshot保留 | 不保证删除原图后完整复评；释放0 | d207ba57 | 历史2图当前退出/字节及Snapshot不变；10.11–10.13 |
+| GOV-08 活动/共享安全 | P0 Task/Material/prepare | 已验收 | 源字节保留；退休冻结映射可读；原ID交集重冻结 | 未实现物理GC租约/单份图片，不吸入其他IDs | d207ba57 | 19准备含10000→9500；local/remote读取；10.11–10.13 |
+| GOV-09 预览与后台 | P0 Batch/Worker/审计 | 已验收 | actor/项目名/revision/SHA/GT绑定，确定task及幂等结果 | GT硬退出恢复仅同身份；未知保守保留 | d207ba57 | Python356合并及硬退出5例；Chrome重试；10.11–10.13 |
+| GOV-10 自动完整复检 | P0 Draft/MaterialSummary/Task | 已验收 | 只同步真实成功IDs，失败保留，原草稿/项目/Modal fencing | 不算术解锁；提交前捕获上下文 | d207ba57 | 真实37成功1失败保留3；迟到POST RED→GREEN；10.11–10.13 |
+| GOV-11 集成验收文档 | P0 tests/既有CI/本文件 | 已验收 | 唯一需求/设计/变更/测试/问题及代码SHA CI持久化 | 文档补提自身CI按10.13生效条件核验 | d207ba57 | d207代码31/81、Chrome184、Node1209；10.11–10.13 |
 
-GOV阶段A审计/RED、B统一资格、C扩展删除、D自动诊断、E进度复检已实现并通过本地定向验收；F受影响回归、最终提交及准确SHA CI进行中。表内“已完成待验收”仍需最终CI，不借旧合同绿灯。10.7–10.10保留各时点真实过程记录，最新结果以10.11及后续准确SHA回执为准；不把旧MLG D/E或生产治理标成完成。
+GOV阶段A–F代码已通过准确SHA CI。10.7–10.12保留各时点失败/修正过程，最新回执以10.13为准；验收文档及PoC夹具补提自身CI必须另核，不借旧SHA绿色。不把旧MLG D/E或生产治理标成完成。
 
 ### 10.4 本轮接续与禁止重复建设
 
-GOV实现和原Owner审计已完成，下一步按10.11核验最终代码SHA CI；出现失败先读对应Workflow/Job日志，从原模块最小修正，不重建已验收诊断/删除体系。代码入口为material_batches/MaterialRepository/原Annotation补偿、training-submit/material-summary/material-batches/draft、兼容API及TrainingPrepare。保持Annotorious正式GT/CAS/SHA、任务真实性和历史证据；完成GOV不代表旧MLG单份存储/GC已落地。
+GOV实现和原Owner审计已完成，代码CI已通过，下一步按10.13核验文档补提自身准确SHA CI；出现失败先读对应Workflow/Job日志，从原模块最小修正，不重建已验收诊断/删除体系。代码入口为material_batches/MaterialRepository/原Annotation补偿、training-submit/material-summary/material-batches/draft、兼容API及TrainingPrepare。保持Annotorious正式GT/CAS/SHA、任务真实性和历史证据；完成GOV不代表旧MLG单份存储/GC已落地。
 
 ### 10.5 A审计结论及实施计划（按依赖执行）
 
@@ -453,6 +453,54 @@ CI检出并已定向修正：
 - 本地扩展执行既有Frontend CI全部184项时，旧enterprise配置空素材夹具被新增真实诊断覆盖；按原用户“返回训练配置”路径继续，保留草稿及原资源断言，未关闭运行时诊断。该轮及修正后结果另记。
 
 首实现SHA目前不全绿，不据其宣布验收。上述代码修正保持VERSION373，不第二次递增；后续修正提交和文档补提仍分别核验自身全部实际CI。
+
+### 10.13 代码最终验收回执与交接（2026-10-22）
+
+**GOV-01–11代码功能已验收，VERSION42.24.373；最终修正代码SHA：`d207ba570a7209d2776b4b6b7240c511691b456a`。** 实际按该SHA查询全部31/31 Actions、81/81 Checks/Jobs为completed/success，0失败、0运行中、0跳过；检查API total_count与返回数量一致，无漏页。FrontendRuntime真实Chrome **184/184通过，8.5分钟**，Node **1209/1209通过**。原首推14419353的失败不能覆盖或冒充本行结果。
+
+[准确代码SHA Checks](https://api.github.com/repos/jorsamj/aixunlianpingtai/commits/d207ba570a7209d2776b4b6b7240c511691b456a/check-runs?per_page=100)，[Frontend Chrome Job](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39718854993/job/119627383988)。Linux原TrainingInputIntegrity Job [119627402296](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39718860522/job/119627402296)实际执行108/30/76/2四组均通过、0跳过，覆盖本机symlink跳过的Cache/Bundle路径边界；不把Windows跳过当通过。
+
+| Workflow | Event | 结论 | Run |
+|---|---|---|---|
+| Storage Cache Governance | pull_request | success | [39718860461](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39718860461) |
+| External Algorithm Platform | pull_request | success | [39718860509](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39718860509) |
+| GPU Runtime Truth | pull_request | success | [39718860466](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39718860466) |
+| Resource Discovery SQLite Stability | pull_request | success | [39718860508](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39718860508) |
+| AI Annotation Recovery | pull_request | success | [39718860471](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39718860471) |
+| External Algorithm Publish | pull_request | success | [39718860577](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39718860577) |
+| Portable Deployment | pull_request | success | [39718860493](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39718860493) |
+| Central Node Assignment | pull_request | success | [39718860442](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39718860442) |
+| Online Feedback Runtime | pull_request | success | [39718860452](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39718860452) |
+| ChangLian Login Auth | pull_request | success | [39718860521](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39718860521) |
+| Training Input Integrity | pull_request | success | [39718860522](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39718860522) |
+| Task Runtime Truth | pull_request | success | [39718860520](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39718860520) |
+| Remote Cleaning Runtime | pull_request | success | [39718860465](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39718860465) |
+| Remote RKNN Board Runtime Protocol | pull_request | success | [39718860498](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39718860498) |
+| Label Normalization Contract | pull_request | success | [39718860541](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39718860541) |
+| Video Frame Recovery | pull_request | success | [39718860497](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39718860497) |
+| Remote Material Import | pull_request | success | [39718860445](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39718860445) |
+| Remote Conversion Runtime | pull_request | success | [39718860605](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39718860605) |
+| Node Agent Executor | pull_request | success | [39718860519](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39718860519) |
+| Remote Training Runtime | pull_request | success | [39718860463](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39718860463) |
+| Label Normalization Contract | push | success | [39718855060](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39718855060) |
+| Task Runtime Truth | push | success | [39718855073](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39718855073) |
+| Training Material Picker | push | success | [39718855093](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39718855093) |
+| Remote Cleaning Runtime | push | success | [39718855059](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39718855059) |
+| Training Input Integrity | push | success | [39718855033](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39718855033) |
+| Material Annotation Atomicity | push | success | [39718855043](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39718855043) |
+| v42.25 Release Regression | push | success | [39718855005](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39718855005) |
+| Training Recovery Guard | push | success | [39718855006](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39718855006) |
+| Remote Training Runtime | push | success | [39718855031](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39718855031) |
+| Remote Material Import | push | success | [39718855046](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39718855046) |
+| Frontend Runtime Stabilization | push | success | [39718854993](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39718854993) |
+
+**实际范围与文件**：`app.py`签名actor/旧隐式删除退役/清洗冻结skip/上传延期审计；`platform_core/material_repository.py`schema5退休及延期表；`material_batches.py`同Owner不可变预览、actor/项目名/revision/SHA/GT绑定、确定任务ID/幂等、GT备份硬退出恢复、真成功分页结果；`storage/manager.py`物理删除未核验保留；`training_compatibility.py`和`training_material_picker_api.py`全部问题精确选择、草稿调整审计与旧HTTP合同；`training_tasks.py`/`remote_training_tasks.py`原ID交集重冻结/请求证据/孤立freeze保护。前端仍是原Submit/MaterialSummary/MaterialBatch/Draft/Pagination、`static/app.js`及`main.mjs`接线，没有平行系统。
+
+**最终补记包含一处测试时序增强**：本地扩展完整Chrome首次182通过2失败（14分钟）：enterprise空素材配置已在d207修正并CI184全通过；Annotorious PoC第一笔几何已生成但公开createAnnotation自动保存事件尚未确认就切工具，最后只观测1个create事件。仅在原PoC第一笔后新增实际等待第1个公开事件断言，避免后续update与创建证据合并；原第二笔、精确几何、变换、2次create断言全部保留。PoC2项+enterprise3项实际Chrome **5/5通过（11.4秒）**，无产品Annotorious改动。此测试修正随本次验收文档提交；其最终新SHA必须再次完整CI，不能直接沿用上行代码绿色。
+
+**最终状态与自验规则**：GOV代码阶段A–F及需求均完成；本条所在提交为验收文档/PoC夹具补提，准确身份由`git log -1 --format=%H -- docs/TRAINING_MATERIAL_LIFECYCLE_GOVERNANCE_2026_10_21.md`取得。依7.2自引用规则，以该提交自身GitHub绑定的全部Actions/Checks均completed/success作为最终交付验收生效条件，交付前必须实查。若失败继续修复并记录，不宣称自身已绿；最终精确SHA及检查回执同时提供用户并归档独立附件，避免自引用反复产生提交。
+
+**接续与未实施边界**：不再重做GOV诊断/删除/Modal/Task系统，不新增管理员或RBAC。所有可访问项目的已登录用户同权；清空仅操作确认，登录/项目/预览/审计/幂等不放松。生产尚未部署/迁移/读写素材/清空/清理Bundle或真实GPU训练；原字节保守保留，空间释放始终0。生产部署前在隔离副本验证schema5迁移/回滚、真实登录项目范围、大项目索引与所有消费者读能力，再独立申请部署授权。旧MLG D/E单份图片、跨Worker物理GC、工作Bundle回收及51GB/31GB/20GB历史治理仍未实施，不由当前GOV验收推导完成。
 
 ## 附录 A：用户原始开发指令（第 1–14 节，完整留存）
 

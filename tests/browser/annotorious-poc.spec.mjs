@@ -43,6 +43,9 @@ test('official offline Annotorious draws, selects, moves, resizes and preserves 
   await openPoc(page);
   await dragPixels(page,[50,60],[150,140]);
   await expect.poll(async () => (await geometry(page))?.w).toBeCloseTo(100,3);
+  // The public auto-save event is debounced. Observe the first creation before
+  // switching tools/selection, so later updates cannot coalesce that evidence.
+  await expect.poll(() => page.evaluate(() => poc.events.filter(e => e.name === 'createAnnotation').length)).toBe(1);
   const id = await page.evaluate(() => poc.component.getAnnotations()[0].id);
   expect(id).toBeTruthy();
   await page.evaluate(id => {poc.component.setDrawingEnabled(false);poc.component.setSelected(id,true);},id);
