@@ -2242,7 +2242,7 @@ Codex 必须先：
 
 本轮不执行生产部署，不删除任何真实生产素材。
 
-## 十一、训练创建按需准入与Loading（2026-10-22，进行中）
+## 十一、训练创建按需准入与Loading（2026-10-22，代码及隔离CI已验收）
 
 ### 11.1 用户确认的需求变更与基线
 
@@ -2258,10 +2258,10 @@ Codex 必须先：
 
 | 任务 | 优先级/模块 | 状态 | 已完成/剩余 | 提交/证据 |
 |---|---|---|---|---|
-| ADM-01 安静首次打开、停止后台正式查询 | P0 summary/submit/既有Modal | 已完成待验收 | 停止普通选择/DOM的正式查询与自动诊断，保留摘要；首次打开真实RED→GREEN | 基线fb7e38ae；本轮提交后记录SHA |
-| ADM-02 点击完整检查、Loading、防重与单次创建 | P0 training-submit.js | 已完成待验收 | 原submit检查后接原POST，阶段/busy/防重、后端再次拒绝及未知创建查询保留 | 新Chrome真实SQLite仅1个QUEUED任务；最终CI待核验 |
-| ADM-03 诊断有效期、异常及请求生命周期 | P0 summary/submit/draft | 已完成待验收 | 完整签名/取消/原因入口；审查补Benchmark与迟到POST成功/拒绝隔离 | HTTP500/断网/超时及迟到用例；扩大回归中 |
-| ADM-04 18场景、GT治理/冻结回归及最终SHA CI | P1 Node/Python/Chrome/原CI | 进行中 | 更新旧自动断言保留GT/删除/幂等；Node1239通过、Python126通过2环境skip；Chrome59独立场景分批通过 | 最终SHA所有Actions/Checks待普通推送核验 |
+| ADM-01 安静首次打开、停止后台正式查询 | P0 summary/submit/既有Modal | 已验收 | 停止普通选择/DOM的正式查询与自动诊断，保留摘要；首次打开真实RED→GREEN | 基线fb7e38ae；实现c0163347287beeca1e3e52fa0e42c71c423527bc |
+| ADM-02 点击完整检查、Loading、防重与单次创建 | P0 training-submit.js | 已验收 | 原submit检查后接原POST，阶段/busy/防重、后端再次拒绝及未知创建查询保留 | 新Chrome真实SQLite仅1个QUEUED任务；c0163347准确41/41 Actions及114/114 Checks通过 |
+| ADM-03 诊断有效期、异常及请求生命周期 | P0 summary/submit/draft | 已验收 | 完整签名/取消/原因入口；审查补Benchmark与迟到POST成功/拒绝隔离 | HTTP500/断网/超时及迟到用例；CI Chrome207/207通过 |
+| ADM-04 18场景、GT治理/冻结回归及最终SHA CI | P1 Node/Python/Chrome/原CI | 已验收 | 更新旧自动断言保留GT/删除/幂等；Node1239通过、Python126通过2环境skip；Chrome59独立场景分批通过 | c0163347最终41/41 Actions、114/114 Checks通过；文档HEAD自身另验 |
 
 检查入口：static/modules/training-submit.js、training-material-summary-runtime.js、training-draft-runtime.js，static/app.js母模型与标注回调；浏览器training-create-first-open、training-admission-governance、training-quality-reports、已有提交DOM用例。后端只读合同审计，不改正式准入。版本验收前按375基线只增一次；最终普通提交、准确SHA全部Actions/Checks及接续入口必须持久化。
 
@@ -2299,8 +2299,23 @@ Codex 必须先：
 - 补充GT冲突/盲测/冻结Bundle：67通过/0失败/2跳过，C:/tmp/admission-python-freeze.xml；两项skip因Windows无符号链接权限，须看Linux最终CI，不当作通过。合计126通过、2跳过。
 - Loading淡入可见性补验1/1通过，C:/tmp/admission-visible-loading-final.log；先等待opacity=1再截图，避免把180ms淡入开始瞬间当作持续视觉效果。
 - 原3个Syntax and wiring guards及first-open永久guard原文实际执行退出0，C:/tmp/admission-wiring.log；未删除或降低保护。
-- Chrome扩大集合原43场景全部通过；新增16场景最终完整16/16通过（C:/tmp/admission-chrome-on-demand-final.log），合计59个独立场景分批通过、0跳过。扩大首轮56通过/3夹具失败：canonical draft不重绘模式按钮，受控成功任务会被真实列表刷新校正；已改为核验原draft与原Runtime接收调用（保留原调用），真实持久创建证据仍由实际API/SQLite用例承担。最终SHA全部Actions/Checks尚未确认，不沿用fb7e38ae绿色结论。
+- Chrome扩大集合原43场景全部通过；新增16场景最终完整16/16通过（C:/tmp/admission-chrome-on-demand-final.log），合计59个独立场景分批通过、0跳过。扩大首轮56通过/3夹具失败：canonical draft不重绘模式按钮，受控成功任务会被真实列表刷新校正；已改为核验原draft与原Runtime接收调用（保留原调用），真实持久创建证据仍由实际API/SQLite用例承担。实现SHA c0163347已独立41/41 Actions、114/114 Checks通过；不沿用fb7e38ae绿色结论，文档HEAD自身另验。
 
 ### 11.6 接续指令
 
 先读本节再读原submit/summary与新增tests/browser/training-on-demand-admission.spec.mjs；旧第十节自动弹窗及自动正式复检已被本节覆盖，不能重新引入。保持删除/GT/原权限/冻结保护，基础摘要仍允许加载。完成扩大Chrome/审查、原CI最终SHA核验后更新本节任务状态；仅对实际失败最小修复，不改Uppy/TaskCenter，不新增Owner/轮询或生产动作。更早单份图片/物理GC/历史Bundle清理仍未实施，不因本轮准入交互完成写成已清理。
+
+
+### 11.7 准确提交关联与CI核验记录（2026-10-22）
+
+代码及本地证据提交：[c0163347287beeca1e3e52fa0e42c71c423527bc](https://github.com/jorsamj/aixunlianpingtai/commit/c0163347287beeca1e3e52fa0e42c71c423527bc)，VERSION42.24.376，正常推送长期分支，未覆盖其他worktree。审查发现的Benchmark/迟到拒绝/迟到直接成功及查询恢复成功均原位修正；二次只读审查未发现确定P0/P1遗留。
+
+CI真实日志：Training Create First Open [run39746612809](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39746612809) Chrome15/15通过；Training Input Integrity [run39746619901](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39746619901) Linux原Bundle隔离/cache集合30通过0跳过，覆盖本地无symlink权限的两项；v42.25 Release Regression [run39746612769](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39746612769) training-data-contracts371通过。
+
+本地证据已另存C:/Users/jorsam/.codex/visualizations/2026/10/21/01a15d6e-6553-7640-9e31-04ade914aca9/training-admission-on-demand-20261022：RED日志/首次失败trace与截图、最终淡入可见截图、Node/Python/Chrome日志及JUnit；不含生产凭据。GitHub准确提交Actions/Checks为远端验收依据，不把本机日志当生产测试。
+
+实现提交最终准确核验：**41/41 Actions、114/114 Checks全部completed/success，无失败/运行中/遗漏**，已分页取得全部114条且逐条head_sha匹配c0163347287beeca1e3e52fa0e42c71c423527bc。Frontend Runtime Stabilization [run39746612466](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39746612466) Chrome **207/207通过（11.3分钟）**，Node1239/1239通过。原first-open Chrome15/15另通过。验收JSON为同证据目录code-ci-c0163347.json。
+
+此次仅补验收/接续文档，不改业务代码或VERSION。**文档自身提交不能借用上述代码SHA结论，须按本文件最终提交的实际HEAD再次查询全部Actions/Checks；最终结果以GitHub该提交Checks与外部training-admission-on-demand-ci-final-20261022.json绑定回执为准。** 这样无需为把提交SHA写回自身而循环创建文档提交。
+
+最终功能结论：安静配置→显式开始→真实检查/Loading→通过接原创建；真实阻塞有效时显示完整原因，过期隐藏；请求错误可重试且不放行；迟到响应不污染新配置，未知创建保留查询锁。后端GT/冻结/权限/调度真实性不变，未引入第二套Owner。生产部署/数据修改/GPU训练均未执行，真实生产大库与资源现场仍NOT VERIFIED。下一会话从本节与现有代码接续，不重复建设旧自动诊断。

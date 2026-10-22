@@ -1,6 +1,6 @@
 ## 2026-10-22 训练创建按需准入变更入口
 
-用户确认仅“开始训练”触发正式检查，覆盖此前打开/草稿变化自动诊断。唯一需求、实际修改、RED→GREEN及最终SHA回执见[生命周期专项第十一节](TRAINING_MATERIAL_LIFECYCLE_GOVERNANCE_2026_10_21.md)。后端与GT/删除/冻结合同保留，Uppy/TaskCenter实现不改；本地限定回归已执行，最终CI待核验，生产未操作。
+用户确认仅“开始训练”触发正式检查，覆盖此前打开/草稿变化自动诊断。唯一需求、实际修改、RED→GREEN及最终SHA回执见[生命周期专项第十一节](TRAINING_MATERIAL_LIFECYCLE_GOVERNANCE_2026_10_21.md)。后端与GT/删除/冻结合同保留，Uppy/TaskCenter实现不改；实现c0163347实际41/41 Actions、114/114 Checks通过（Chrome207/207），最终文档HEAD自身另验，生产未操作。
 
 ## 2026-10-22 训练准入与当前素材删除统一治理入口
 

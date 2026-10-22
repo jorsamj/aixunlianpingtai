@@ -1,6 +1,6 @@
-## 2026-10-22｜训练创建按需准入与Loading（本地限定验收完成 / 最终SHA CI待核验）
+## 2026-10-22｜训练创建按需准入与Loading（代码及隔离CI已验收）
 
-唯一专项：[生命周期治理第十一节](docs/TRAINING_MATERIAL_LIFECYCLE_GOVERNANCE_2026_10_21.md#十一训练创建按需准入与loading2026-10-22进行中)。打开/编辑保持安静，仅“开始训练”触发原完整准入与创建；有效阻塞才显示原因，草稿/项目/Modal过期及网络错误隔离。旧自动弹窗/自动正式复检触发被本轮用户要求覆盖，后端与删除GT合同保留。VERSION42.24.376，Node1239通过/Python126通过2环境skip，Chrome59独立场景分批通过，最终SHA全部CI待核验。禁止改Uppy/UploadTaskCenter实现，未生产部署/写入/GPU。接续从原submit/summary及新增on-demand Chrome开始，完整RED/问题/限制见唯一专项。
+唯一专项：[生命周期治理第十一节](docs/TRAINING_MATERIAL_LIFECYCLE_GOVERNANCE_2026_10_21.md)。打开/编辑保持安静，仅“开始训练”触发原完整准入与创建；有效阻塞才显示原因，草稿/项目/Modal过期及网络错误隔离。旧自动弹窗/自动正式复检触发被本轮用户要求覆盖，后端与删除GT合同保留。VERSION42.24.376，Node1239通过/Python126通过2环境skip，本地Chrome59独立场景分批通过；实现c0163347287beeca1e3e52fa0e42c71c423527bc实际41/41 Actions、114/114 Checks通过，CI Chrome207/207及first-open15/15；本次文档HEAD自身仍须独立CI。禁止改Uppy/UploadTaskCenter实现，未生产部署/写入/GPU。接续从原submit/summary及新增on-demand Chrome开始，完整RED/问题/限制见唯一专项。
 
 ## 2026-10-22｜原 UploadTaskCenter 稳定性修复（代码及隔离CI已验收）
 
