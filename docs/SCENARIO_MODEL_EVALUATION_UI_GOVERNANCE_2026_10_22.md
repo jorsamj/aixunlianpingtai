@@ -118,3 +118,8 @@
 - ANN新4+原生命周期10最终14/14通过；新4+原素材流程11最终15/15通过，原标注工作台23项首轮全部通过；MAT新4/4 current及before4/4，素材治理8/分页5/上传1通过。统计按独立组合记录，不把重叠case重复加成唯一测试数。
 - 最后反馈deadline/无模型loading/历史覆盖新增原函数执行RED3失败→相关34/34通过，5ms真实原deadline不重试；原project/sequence/unknown守卫保留。
 - 三P0已达到隔离本地实现及回归门槛，开始分别阶段提交；最终整体CI/生产仍未验收。P1接着实施真实ECharts、原矩阵/曲线和严格同基准A/B，不启用P2。截图证据将存docs/evidence/scenario-ui-2026-10-22，均明确隔离fixtures/controlled推理合同，不是生产准确率。
+
+### 阶段提交
+
+- SCN P0：1f606d30b75eb1245224ce5fc0dd9df5b42f006b，本地独立提交正式模型资格、原Owner工作台、迟到/未知锁与真实回归；未推送/未最终CI，不宣称阶段SHA远端绿色。
+- MAT P0：独立提交准备，包含原卡片/详情及保存后的media-plane兼容，未混入ANN标签/确认合同。三桌面before/grid/list/detail截图已归档docs/evidence/scenario-ui-2026-10-22。
