@@ -125,6 +125,9 @@ test('hard refresh algorithm list prewarms training configuration before the fir
   await expect(dialog.locator('#tr429Target')).toContainText('首次打开 Ultralytics');
   await expect(dialog.locator('#tr429Alg')).toHaveValue('yolo_detect');
   await expect(dialog.locator('#tr429MotherModel')).toHaveValue('yolo11n.pt');
+  await expect(page.locator('[data-training-admission-dialog]')).toHaveCount(0);
+  await expect(dialog.locator('[data-training-admission-open]:visible')).toHaveCount(0);
+  await expect(dialog.getByRole('button',{name:'开始训练',exact:true})).toBeEnabled();
   await expect(dialog.locator('[data-mode="full"]')).toHaveAttribute('aria-pressed', 'true');
   // Labels must sit next to materials, not below the mode options.
   const desktopLayout = await dialog.evaluate(node => {
@@ -604,7 +607,7 @@ test('frozen feedback candidates stay aligned with training submit provenance', 
   await expect(dialog.locator('[data-supplement-candidate-summary]')).toContainText('反馈补数据');
   await expect(dialog.locator('[data-supplement-candidate-value]')).toHaveText('1 / 1 张');
 
-  const submitButton = dialog.getByRole('button', {name: '创建训练任务'});
+  const submitButton = dialog.getByRole('button', {name: '开始训练'});
   await expect(submitButton).toBeEnabled();
   const jobListReadsBeforeSubmit = jobListReads;
   await submitButton.click();
@@ -670,7 +673,7 @@ test('verified fixed benchmark stays aligned from backend availability to traini
   await expect(dialog.locator('.train-v3-summary>div').first().locator('span')).toHaveText('训练候选素材');
   await expect(dialog.locator('.train-v3-note')).toContainText('系统自动保留');
   await page.evaluate(({algorithmId}) => {window.TrainingDraftRuntime.update({algorithmId});window.TrainingDraftRuntime.setMaterialIds(['train-material-a','train-material-b']);window.TrainingSubmitRuntime.updateReadiness();}, {algorithmId});
-  const submitButton=dialog.getByRole('button',{name:'创建训练任务'});
+  const submitButton=dialog.getByRole('button',{name:'开始训练'});
   await expect(submitButton).toBeEnabled();
   await submitButton.click();
   await expect.poll(()=>submitted).not.toBeNull();

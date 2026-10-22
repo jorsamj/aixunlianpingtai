@@ -4485,7 +4485,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
       </section>
       <div class="row end train428-footer">
         <button type="button" class="btn train-ui-cancel" onclick="closeModal()">取消</button>
-        <button type="button" class="btn primary train-ui-submit" onclick="submitTrain429()">创建训练任务</button>
+        <button type="button" class="btn primary train-ui-submit" onclick="submitTrain429()">开始训练</button>
       </div>
     </div>`,true);trainTarget429()};
   window.toggleTrainAdvanced429=function(){
@@ -5464,7 +5464,7 @@ const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
       if(idx>=0){if(!applyResult){const fresh=r?.image||{};Object.assign(state.images[idx],fresh);state.images[idx].box_count=state.ann.boxes.length;state.images[idx].annotated=state.ann.boxes.length>0;state.images[idx].labels=[...new Set(state.ann.boxes.map(b=>b.label).filter(Boolean))];state.images[idx].annotation_preview=window.PlatformCore?.annotation?.annotationPreviewFromBoxes?.(state.ann.boxes)||state.ann.boxes.slice(0,32).map(b=>({class_id:b.class_id,label:b.label,x1:b.x1,y1:b.y1,x2:b.x2,y2:b.y2,source:b.source,source_task_id:b.source_task_id,confidence:b.confidence}))}if(state.ann.boxes.length)state.images[idx].processing_status='processed';state.activeImage=state.images[idx]}
       state.annDirty=false;if(ss)ss.textContent=state.ann.boxes.length?`已保存 · ${state.ann.boxes.length}框`:state.ann.annotation_state==='confirmed_empty'?'已确认无目标':'已保存 · 待标注';const confirmButton=document.getElementById('ann420ConfirmEmpty');if(confirmButton)confirmButton.hidden=state.ann.boxes.length>0;drawBoxes();renderAnnSide();
       state.annotationReviewSelected420=new Set();window.renderAnnotationReviewScope420?.();
-      if(reviewedLabelCodes.length){window.TrainingMaterialSummaryRuntime?.invalidateCompatibility?.();void window.TrainingMaterialSummaryRuntime?.refreshCompatibility?.({force:true})}
+      if(reviewedLabelCodes.length){window.TrainingMaterialSummaryRuntime?.invalidateCompatibility?.()}
       try{if(typeof invalidateQuality411==='function')invalidateQuality411()}catch(_){}
       // Patch only the affected material card. Re-rendering the full gallery here
       // blocks the main thread for seconds on large libraries and remounts the modal.

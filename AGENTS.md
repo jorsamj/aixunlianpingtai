@@ -1,3 +1,7 @@
+## 2026-10-22｜训练创建按需准入与Loading（本地限定验收完成 / 最终SHA CI待核验）
+
+唯一专项：[生命周期治理第十一节](docs/TRAINING_MATERIAL_LIFECYCLE_GOVERNANCE_2026_10_21.md#十一训练创建按需准入与loading2026-10-22进行中)。打开/编辑保持安静，仅“开始训练”触发原完整准入与创建；有效阻塞才显示原因，草稿/项目/Modal过期及网络错误隔离。旧自动弹窗/自动正式复检触发被本轮用户要求覆盖，后端与删除GT合同保留。VERSION42.24.376，Node1239通过/Python126通过2环境skip，Chrome59独立场景分批通过，最终SHA全部CI待核验。禁止改Uppy/UploadTaskCenter实现，未生产部署/写入/GPU。接续从原submit/summary及新增on-demand Chrome开始，完整RED/问题/限制见唯一专项。
+
 ## 2026-10-22｜原 UploadTaskCenter 稳定性修复（代码及隔离CI已验收）
 
 唯一专项：[Uppy专项6A](docs/UPPY_ZIP_ADAPTER_POC_2026_10_22.md)。按钮按action原位保留、进度合帧/500ms保存、关键状态即时保存、稳定rekey/order、原ZIP进度来源与图片详情均在原Owner修复。真实RED及追加审查问题已记录；VERSION42.24.375，Node1239/Python49/Chrome38及收尾定向8通过；18dae908ee841e9b874d27a38a0a8a0f946f2c00实际22/22 Actions、59/59 Checks通过，CI Chrome191/30；首守卫失败及修正已留痕，本次文档HEAD仍须独立核验。无新任务中心、上传控制器或数据库，未操作生产，其他工作区不动。接续先看6A，勿将旧Uppy验收冒充本轮。

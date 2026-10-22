@@ -49,15 +49,16 @@ async function fixture(page,request,{hold=false}={}){
   await page.evaluate(({id,ids})=>{
     window.TrainingDraftRuntime.update({algorithmId:id,materialIds:ids,testMaterialIds:[],newLabelCodes:[],config:{model:'yolo11n.pt'}});
     state.targets=[{id:'gov-cpu',scheduler_owned:true,framework:'ultralytics',algorithms:[{key:'yolo_detect'}],base_models:[{value:'yolo11n.pt',model_status:'FOUND'}]}];
-    window.modal('创建训练任务',`<div class="train429-create"><input id="tr429TaskId" value="train_aaaaaaaaaaaaaaaaaaaa"><select id="tr429Target"><option value="gov-cpu">隔离调度资源</option></select><select id="tr429Alg"><option value="yolo_detect">测试引擎</option></select><div class="train429-data-summary"></div><div class="train428-footer"><button class="btn primary">开始训练</button></div></div>`,true);
+    window.modal('创建训练任务',`<div class="train429-create"><input id="tr429TaskId" value="train_aaaaaaaaaaaaaaaaaaaa"><select id="tr429Target"><option value="gov-cpu">隔离调度资源</option></select><select id="tr429Alg"><option value="yolo_detect">测试引擎</option></select><div class="train429-data-summary"></div><div class="train428-footer"><button class="btn primary" onclick="void window.submitTrain429()">开始训练</button></div></div>`,true);
     window.TrainingSubmitRuntime.updateReadiness();
   },{id:asset.algorithm.id,ids:images.map(x=>x.id)});
   await page.locator('[data-training-label-code="smoke"]').check();
   if(!hold)release();
+  await page.getByRole('dialog',{name:'创建训练任务',exact:true}).getByRole('button',{name:'开始训练',exact:true}).click();
   return {project,images,asset:asset.algorithm,release};
 }
 
-test('38 real incompatible materials automatically diagnose once and preserve the original draft',async({page,request})=>{
+test('38 real incompatible materials diagnose only after start and preserve the original draft',async({page,request})=>{
   const fx=await fixture(page,request);
   const diagnostic=page.getByRole('dialog',{name:'训练暂不可开始',exact:true});
   await expect(diagnostic).toBeVisible();
@@ -78,7 +79,7 @@ test('unfinished compatibility is loading and a closed training session cannot r
   await expect(page.getByRole('dialog',{name:'训练暂不可开始',exact:true})).toHaveCount(0);
   await page.getByRole('dialog',{name:'创建训练任务',exact:true}).getByRole('button',{name:'关闭',exact:true}).click();
   fx.release();
-  await expect.poll(()=>page.evaluate(()=>window.TrainingMaterialSummaryRuntime.compatibilityFor().ready)).toBe(true);
+  await expect.poll(()=>page.evaluate(()=>window.TrainingMaterialSummaryRuntime.compatibilityFor().loading)).toBe(false);
   await expect(page.getByRole('dialog',{name:'训练暂不可开始',exact:true})).toHaveCount(0);
 });
 
@@ -100,7 +101,7 @@ test('all 38 real issues can be excluded together without deleting GT or losing 
   await expect(page.getByRole('dialog',{name:'创建训练任务',exact:true})).toBeVisible();
 });
 
-test('real DELETE_INDEX worker completion automatically removes only returned successful IDs and fully rechecks the draft',async({page,request})=>{
+test('real DELETE_INDEX worker completion removes only returned successful IDs and invalidates the draft check',async({page,request})=>{
   const fx=await fixture(page,request);
   await expect(page.getByRole('dialog',{name:'训练暂不可开始',exact:true})).toBeVisible();
   page.once('dialog',dialog=>dialog.accept());
@@ -109,7 +110,7 @@ test('real DELETE_INDEX worker completion automatically removes only returned su
   expect(await page.evaluate(()=>window.TrainingDraftRuntime.current().materialIds.length)).toBe(40);
   runWorker(fx.project.id,task.task_id);
   await expect.poll(()=>page.evaluate(()=>window.TrainingDraftRuntime.current().materialIds.length)).toBe(2);
-  await expect.poll(()=>page.evaluate(()=>window.TrainingMaterialSummaryRuntime.compatibilityFor().compatible)).toBe(true);
+  await expect.poll(()=>page.evaluate(()=>window.TrainingMaterialSummaryRuntime.compatibilityFor().ready)).toBe(false);
   const results=await(await request.get(`/api/v62/projects/${fx.project.id}/material-batches/${task.task_id}/results`)).json();
   expect(results.items).toHaveLength(38);expect(results.items.every(item=>item.logical_removed&&item.physical_retained&&item.reclaimed_bytes===0)).toBe(true);
   const summary=await(await request.post(`/api/v62/projects/${fx.project.id}/training-materials/selection-summary`,{data:{image_ids:fx.images.map(x=>x.id)}})).json();
@@ -126,7 +127,8 @@ test('project clear requires its exact name and a frozen impact confirmation bef
   runWorker(fx.project.id,task.task_id);
   await expect.poll(()=>page.evaluate(()=>window.TrainingDraftRuntime.current().materialIds.length)).toBe(0);
   expect((await(await request.post(`/api/v62/projects/${fx.project.id}/training-materials/selection-summary`,{data:{image_ids:fx.images.map(x=>x.id)}})).json()).matched_count).toBe(0);
-  await expect(page.getByRole('dialog',{name:'创建训练任务',exact:true}).locator('.train428-footer .btn.primary')).toBeDisabled();
+  await expect(page.getByRole('dialog',{name:'创建训练任务',exact:true}).locator('.train428-footer .btn.primary')).toBeEnabled();
+  expect(await page.evaluate(()=>window.TrainingSubmitRuntime.state().readiness.ready)).toBe(false);
 });
 
 test('a real partial delete keeps the failed material in the draft and never unlocks admission by arithmetic',async({page,request})=>{
@@ -137,9 +139,16 @@ test('a real partial delete keeps the failed material in the draft and never unl
   runWorker(fx.project.id,task.task_id,{driftImageId:fx.images[0].id,status:'PARTIAL_SUCCESS'});
   await expect.poll(()=>page.evaluate(()=>window.TrainingDraftRuntime.current().materialIds.length)).toBe(3);
   expect(await page.evaluate(()=>window.TrainingDraftRuntime.current().materialIds)).toContain(fx.images[0].id);
+  await expect.poll(()=>page.evaluate(()=>window.TrainingMaterialSummaryRuntime.compatibilityFor().ready)).toBe(false);
+  await page.getByRole('dialog',{name:'训练暂不可开始',exact:true}).getByRole('button',{name:'返回训练配置',exact:true}).click();
+  let posts=0;page.on('request',r=>{if(r.url().endsWith('/train/start')&&r.method()==='POST')posts++});
+  await page.getByRole('dialog',{name:'创建训练任务',exact:true}).getByRole('button',{name:'开始训练',exact:true}).click();
+  await expect(page.getByRole('dialog',{name:'训练暂不可开始',exact:true})).toBeVisible();
   await expect.poll(()=>page.evaluate(()=>window.TrainingMaterialSummaryRuntime.compatibilityFor().ready)).toBe(true);
+  expect(posts).toBe(0);
   expect(await page.evaluate(()=>window.TrainingMaterialSummaryRuntime.compatibilityFor().compatible)).toBe(false);
-  await expect(page.getByRole('dialog',{name:'创建训练任务',exact:true}).locator('.train428-footer .btn.primary')).toBeDisabled();
+  await expect(page.getByRole('dialog',{name:'创建训练任务',exact:true}).locator('.train428-footer .btn.primary')).toBeEnabled();
+  expect(await page.evaluate(()=>window.TrainingSubmitRuntime.state().readiness.ready)).toBe(false);
   const results=await(await request.get(`/api/v62/projects/${fx.project.id}/material-batches/${task.task_id}/results`)).json();
   expect(results.succeeded_image_ids).toHaveLength(37);expect(results.items.filter(item=>item.item_state==='failed').map(item=>item.image_id)).toEqual([fx.images[0].id]);
 });

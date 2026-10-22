@@ -168,7 +168,7 @@ test('a failed compatibility request renders retryable failure instead of a perm
   const draft={algorithmId:'a',materialIds:['a','b'],newLabelCodes:['smoke']};
   globalThis.window={};globalThis.document={body:{},getElementById:()=>null,querySelector:selector=>selector==='.train429-data-summary'?{querySelector:()=>row}:null,querySelectorAll:()=>[]};
   const runtime=installTrainingMaterialSummaryRuntime({getState:()=>({trainingDraft:draft}),projectId:()=> 'p',trainingDraftRuntime:{materialIds:()=>draft.materialIds,current:()=>draft},fetchImpl:async()=>{throw new Error('isolated unavailable')}});
-  try{await new Promise(resolve=>setImmediate(resolve));runtime.decorateTrainingCreateUi();assert.match(html,/失败|重试/);assert.doesNotMatch(html,/检查中/);const before=writes;runtime.decorateTrainingCreateUi();assert.equal(writes,before,'DOM attribute serialization must not trigger repeated identical renders')}finally{runtime.destroy();delete globalThis.window;delete globalThis.document}
+  try{await new Promise(resolve=>setImmediate(resolve));runtime.decorateTrainingCreateUi();assert.match(html,/点击开始训练后检查/);assert.equal(runtime.compatibilityFor().ready,false);await runtime.refreshCompatibility({force:true});runtime.decorateTrainingCreateUi();assert.match(html,/失败|重试/);assert.doesNotMatch(html,/检查中/);const before=writes;runtime.decorateTrainingCreateUi();assert.equal(writes,before,'DOM attribute serialization must not trigger repeated identical renders')}finally{runtime.destroy();delete globalThis.window;delete globalThis.document}
 });
 
 test('pending selection summary and stalled compatibility body both release loading with a deadline',async()=>{
@@ -178,6 +178,6 @@ test('pending selection summary and stalled compatibility body both release load
   const runtime=installTrainingMaterialSummaryRuntime({getState:()=>({trainingDraft:draft}),projectId:()=> 'p',requestTimeoutMs:15,
     trainingDraftRuntime:{materialIds:()=>draft.materialIds,current:()=>draft},notify:message=>messages.push(message),
     fetchImpl:async url=>url.endsWith('selection-summary')?new Promise(()=>{}):{ok:true,json:()=>new Promise(()=>{})}});
-  try{await new Promise(resolve=>setTimeout(resolve,45));assert.equal(runtime.state().loading,false);assert.equal(runtime.compatibilityFor().loading,false);assert.match(messages.join(' '),/超时/)}
+  try{await runtime.refreshCompatibility({force:true});await new Promise(resolve=>setTimeout(resolve,45));assert.equal(runtime.state().loading,false);assert.equal(runtime.compatibilityFor().loading,false);assert.match(messages.join(' '),/超时/)}
   finally{runtime.destroy();Object.assign(globalThis,previous)}
 });

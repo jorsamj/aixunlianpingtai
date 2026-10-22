@@ -164,6 +164,7 @@ export function installTrainingMaterialSummaryRuntime({
   let summary = null;
   let lastError = '';
   let decorateQueued = false;
+  let observedCompatibilityKey = null;
   let compatibilitySignature = null;
   let compatibilityPendingSignature = null;
   let compatibility = null;
@@ -211,7 +212,7 @@ export function installTrainingMaterialSummaryRuntime({
     if(!ownsAdmission(context)||trainingCompatibilitySignature(currentDraft())!==context.signature){deletionSessions.delete(task.task_id);return false;}
     deletionSessions.delete(task.task_id);
     if(succeeded.size)removeResolvedTrainingMaterials(trainingDraftRuntime,currentDraft(),[...succeeded]);
-    invalidate();await refresh(currentIds(),{force:true});await refreshCompatibility({force:true});
+    invalidate();await refresh(currentIds(),{force:true});
     window.TrainingSubmitRuntime?.updateReadiness?.();
     notify(`删除任务已核验：实际移除 ${succeeded.size} 张；失败或未处理项继续保留在训练选择中`);
     return true;
@@ -316,6 +317,8 @@ export function installTrainingMaterialSummaryRuntime({
 
   function openAdmissionDiagnosis(){
     const context=admissionContext;if(!ownsAdmission(context))return false;
+    const session=admissionSessions.get(context.root);
+    if(session?.checkedSignature!==context.signature||!context.readiness.blockers.some(row=>!row.transient))return false;
     const {readiness,draft,algorithmName}=context;
     const details=readiness.blockers.filter(row=>!row.transient);
     const title=readiness.ready?'训练准入检查已通过':'训练暂不可开始';
@@ -327,13 +330,10 @@ export function installTrainingMaterialSummaryRuntime({
     const root=document.querySelector('[data-training-admission-dialog]');
     root?.querySelector('[data-admission-return]')?.addEventListener('click',()=>window.closeModal?.());
     root?.querySelector('[data-admission-materials]')?.addEventListener('click',()=>{if(ownsAdmission(context))openCompatibilityIssues()});
-    root?.querySelector('[data-admission-recheck]')?.addEventListener('click',async()=>{
+    root?.querySelector('[data-admission-recheck]')?.addEventListener('click',()=>{
       if(!ownsAdmission(context))return;
-      const button=root.querySelector('[data-admission-recheck]');button.disabled=true;button.classList.add('loading');
-      const status=root.querySelector('[data-admission-status]');if(status)status.textContent='正在重新检查全部准入条件…';
-      window.TrainingSubmitRuntime?.clearAdmissionError?.();
-      try{await refresh(currentIds(),{force:true});await refreshCompatibility({force:true});}
-      finally{if(button.isConnected){button.disabled=false;button.classList.remove('loading');}if(ownsAdmission(context)&&root.isConnected&&[...document.querySelectorAll('.modal:not(.hidden)')].at(-1)?.contains(root)){window.TrainingSubmitRuntime?.updateReadiness?.();openAdmissionDiagnosis()}}
+      window.closeModal?.();
+      void window.TrainingSubmitRuntime?.submit?.();
     });
     return true;
   }
@@ -343,18 +343,19 @@ export function installTrainingMaterialSummaryRuntime({
     admissionContext=context;if(!ownsAdmission(context))return;
     const {root,taskId,readiness}=context;
     let session=admissionSessions.get(root);
-    if(!session||session.taskId!==taskId){session={taskId,shown:false};admissionSessions.set(root,session);}
+    if(!session||session.taskId!==taskId){session={taskId,checkedSignature:null};admissionSessions.set(root,session);}
+    if(context.checked)session.checkedSignature=context.signature;
+    if(context.reset||session.checkedSignature!==context.signature)session.checkedSignature=null;
+    const valid=session.checkedSignature===context.signature;
+    const blocked=valid&&readiness.blockers.some(row=>!row.transient);
     const footer=root.querySelector('.train428-footer');
     let entry=footer?.querySelector('[data-training-admission-open]');
-    if(footer&&!entry){entry=document.createElement('button');entry.className='btn';entry.type='button';entry.dataset.trainingAdmissionOpen='1';entry.textContent='查看不能训练的原因';entry.onclick=()=>openAdmissionDiagnosis();footer.append(entry);}
-    if(entry)entry.hidden=readiness.ready;
-    const top=[...document.querySelectorAll('.modal:not(.hidden)')].at(-1);
-    if(top?.querySelector('[data-training-admission-dialog]')){
-      const key=readiness.signature;if(top.dataset.admissionSignature!==key){top.dataset.admissionSignature=key;openAdmissionDiagnosis();}return;
-    }
-    if(session.shown||readiness.ready||readiness.checking||!readiness.blockers.some(row=>!row.transient)||!taskId||!top?.contains(root))return;
-    session.shown=true;openAdmissionDiagnosis();
+    if(footer&&!entry&&blocked){entry=document.createElement('button');entry.className='btn';entry.type='button';entry.dataset.trainingAdmissionOpen='1';entry.textContent='查看不能训练的原因';entry.onclick=()=>openAdmissionDiagnosis();footer.append(entry);}
+    if(entry&&!blocked)entry.remove();
+    const diagnostic=document.querySelector('[data-training-admission-dialog]');
+    if(diagnostic&&!valid){const status=diagnostic.querySelector('[data-admission-status]');setTextIfChanged(status,'配置或素材已变化，此诊断已过期，请返回训练配置重新检查。');}
   }
+
 
   function currentIds() {
     return uniqueIds(trainingDraftRuntime.materialIds?.() || state().trainingDraft?.materialIds || []);
@@ -453,7 +454,7 @@ export function installTrainingMaterialSummaryRuntime({
       const nextHtml = truth.error
         ? '<span>训练输入检查</span><b class="err">检查失败 · 可重试</b><button class="btn mini" type="button" data-training-compatibility-open>查看原因并重试</button>'
         : truth.loading || !truth.ready
-        ? '<span>标签适配</span><b>检查中…</b>'
+        ? `<span>训练输入检查</span><b>${truth.loading?'检查中…':'点击开始训练后检查'}</b>`
         : count
           ? `<span>训练输入检查</span><b class="warn">${count} 张需处理</b><button class="btn mini" type="button" data-training-compatibility-open>查看并处理冲突</button>`
           : '<span>标签适配</span><b>已通过</b>';
@@ -466,6 +467,7 @@ export function installTrainingMaterialSummaryRuntime({
     decorateQueued = true;
     queueMicrotask(() => {
       decorateQueued = false;
+      window.TrainingSubmitRuntime?.cancelStaleCheck?.();
       decorateTrainingCreateUi();
     });
   }
@@ -534,7 +536,7 @@ export function installTrainingMaterialSummaryRuntime({
     }
   }
 
-  async function refreshCompatibility({force = false, payload = null, query = '', issueType = '', page = 1, pageSize = 50} = {}) {
+  async function refreshCompatibility({force = false, payload = null, signal: externalSignal = null, query = '', issueType = '', page = 1, pageSize = 50} = {}) {
     const draft = currentDraft();
     const signature = trainingCompatibilitySignature(draft || {});
     if (!draft?.algorithmId || !uniqueIds(draft?.materialIds).length) {
@@ -548,9 +550,13 @@ export function installTrainingMaterialSummaryRuntime({
     if (!force && compatibilityPendingSignature === signature) return null;
     const pid = String(projectId() || '');
     if (!pid) return null;
+    if(externalSignal?.aborted)return null;
     const sequence = ++compatibilitySequence;
     compatibilityController?.abort?.();
     compatibilityController = new AbortController();
+    const controller=compatibilityController;
+    const abort=()=>controller.abort();
+    externalSignal?.addEventListener('abort',abort,{once:true});
     compatibilityPendingSignature = signature;
     compatibilityFailure=null;
     queueDecorate();
@@ -570,7 +576,7 @@ export function installTrainingMaterialSummaryRuntime({
           headers: {'Accept': 'application/json', 'Content-Type': 'application/json'},
           body: JSON.stringify(requestBody),
         },
-      ),'训练标签适配检查失败'),{timeoutMs:requestTimeoutMs,label:'训练准入检查',signal:compatibilityController.signal});
+      ),'训练标签适配检查失败'),{timeoutMs:requestTimeoutMs,label:'训练准入检查',signal:controller.signal});
       if (destroyed || sequence !== compatibilitySequence || String(projectId() || '') !== pid) return null;
       compatibilitySignature = signature;
       compatibilityPendingSignature = null;
@@ -588,7 +594,8 @@ export function installTrainingMaterialSummaryRuntime({
       window.TrainingSubmitRuntime?.updateReadiness?.();
       return compatibility;
     } catch (error) {
-      if (error?.name === 'AbortError' || sequence !== compatibilitySequence) return null;
+      if (sequence !== compatibilitySequence) return null;
+      if (error?.name === 'AbortError') { compatibilityPendingSignature=null;queueDecorate();return null; }
       compatibilityPendingSignature = null;
       compatibility = null;
       compatibilityFailure={signature,message:String(error?.message||error||'训练检查失败')};
@@ -597,7 +604,7 @@ export function installTrainingMaterialSummaryRuntime({
       window.TrainingSubmitRuntime?.updateReadiness?.();
       notify(lastError);
       return null;
-    }
+    } finally { externalSignal?.removeEventListener('abort',abort); }
   }
 
   function issueHtml(item) {
@@ -853,7 +860,7 @@ return `<article class="training-compatibility-item"><img src="${htmlEscape(item
     compatibility = null;
     compatibilityFailure=null;
     queueDecorate();
-    window.TrainingSubmitRuntime?.updateReadiness?.();
+    window.TrainingSubmitRuntime?.updateReadiness?.({reset:true});
   }
 
   function invalidate() {
@@ -877,8 +884,9 @@ return `<article class="training-compatibility-item"><img src="${htmlEscape(item
     else queueDecorate();
     const draft = currentDraft();
     const compatibilityKey = trainingCompatibilitySignature(draft || {});
-    if (compatibilityKey !== compatibilitySignature && compatibilityKey !== compatibilityPendingSignature) {
-      void refreshCompatibility();
+    if (compatibilityKey !== observedCompatibilityKey) {
+      observedCompatibilityKey=compatibilityKey;
+      invalidateCompatibility();
     }
   }
 

@@ -27,7 +27,7 @@ async function mount(page, mode) {
     const {installTrainingSubmitRuntime}=await import('/static/modules/training-submit.js');
     const {createTrainingDraft,trainingDraftToRequest}=await import('/static/modules/training-draft.js');
     window.openFixture=()=>{
-      document.querySelector('#fixture').innerHTML=`<div id="modal" role="dialog"><div class="train429-create"><input id="tr429TaskId" value="${taskId}"><select id="tr429Target"><option value="local">local</option></select><select id="tr429Alg"><option value="detect">detect</option></select><div class="train428-footer"><button class="btn primary">创建训练任务</button></div></div></div>`;
+      document.querySelector('#fixture').innerHTML=`<div id="modal" role="dialog"><div class="train429-create"><input id="tr429TaskId" value="${taskId}"><select id="tr429Target"><option value="local">local</option></select><select id="tr429Alg"><option value="detect">detect</option></select><div class="train428-footer"><button class="btn primary">开始训练</button></div></div></div>`;
     };
     window.openFixture();window.releasePost=false;window.closeCalls=0;window.accepted=[];window.notices=[];window.refreshStarted=false;window.refreshFinished=false;
     const draft=createTrainingDraft({algorithmId:'alg-1',materialIds:['m1','m2'],newLabelCodes:['person'],resource:{strategy:'manual',device:'cpu'},config:{model:'yolo11n.pt'}});
@@ -46,13 +46,13 @@ for(const mode of ['slow-refresh','refresh-error','reject','manual-close','repla
   test(`training creation modal identity and durable outcome: ${mode}`,async({page})=>{
     const fixture=await mount(page,mode);
     if(mode.startsWith('pending-')) await page.clock.install();
-    await page.getByRole('button',{name:'创建训练任务'}).click();
+    await page.getByRole('button',{name:'开始训练'}).click();
     if(mode.startsWith('pending-')) {
       await expect.poll(()=>fixture.posts()).toBe(1);
       await page.clock.fastForward(30001);
     } else if(!['recover','unknown','reject'].includes(mode)) {
-      await expect(page.getByRole('button',{name:'正在提交训练任务…'})).toBeDisabled();
-      await expect(page.getByRole('button',{name:'正在提交训练任务…'})).toHaveAttribute('aria-busy','true');
+      await expect(page.getByRole('button',{name:'正在创建训练任务…'})).toBeDisabled();
+      await expect(page.getByRole('button',{name:'正在创建训练任务…'})).toHaveAttribute('aria-busy','true');
       // Repeated calls while pending must not produce another POST.
       await page.evaluate(()=>window.submitRuntime.submit());
       if(mode==='manual-close')await page.evaluate(()=>document.getElementById('modal').classList.add('hidden'));

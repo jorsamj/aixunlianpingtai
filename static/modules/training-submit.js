@@ -304,6 +304,8 @@ const TRAINING_SUBMIT_PRESENTATIONS = Object.freeze({
 
 export function trainingSubmitPresentation(stage, options = {}) {
   const value = String(stage || 'idle');
+  if (value === 'blocked') return {tone:'error',activeStep:1,completedSteps:1,title:'训练暂不可开始',detail:'请查看完整阻塞原因，调整配置后重新检查',retrySafe:true};
+  if (value === 'checking-materials') return {...TRAINING_SUBMIT_PRESENTATIONS.materials,title:'正在检查训练素材、标签与 GT'};
   if (value === 'created') return {...TRAINING_SUBMIT_PRESENTATIONS.success};
   if (value === 'failed') {
     const failedAt = String(options.failedAt || '');
@@ -405,6 +407,21 @@ export function installTrainingSubmitRuntime({
   const createdTaskIds = new Set();
   let submittedProjectId = '';
   let submittedAlgorithmId = '';
+  let admissionOperation = null;
+  function admissionSignature() {
+    return JSON.stringify([(getState?.()||{}).trainingDraft||trainingDraftRuntime.current?.()||{},
+      document.getElementById?.('tr429Target')?.value||'',document.getElementById?.('tr429Alg')?.value||'']);
+  }
+  function admissionIsCurrent(operation=admissionOperation) {
+    return !!operation&&!destroyed&&String(projectId?.()||'')===operation.projectId
+      &&document.querySelector?.('.train429-create')===operation.root&&operation.root?.isConnected!==false
+      &&String(document.getElementById?.('tr429TaskId')?.value||'')===operation.taskId
+      &&admissionSignature()===operation.signature&&ownsSubmissionModal();
+  }
+  function cancelStaleCheck() {
+    if(admissionOperation&&lastStage!=='posting'&&!admissionIsCurrent())admissionOperation.controller.abort();
+  }
+
 
   function ownsSubmissionModal() {
     if (destroyed) return false;
@@ -423,7 +440,7 @@ export function installTrainingSubmitRuntime({
   }
 
   function closeCreatedModal() {
-    if (!ownsSubmissionModal()) return;
+    if (!ownsSubmissionModal() || (admissionOperation&&!admissionIsCurrent())) return;
     closeModal?.();
   }
 
@@ -440,14 +457,15 @@ export function installTrainingSubmitRuntime({
   }
   const SUBMIT_STAGE_TEXT = Object.freeze({
     idle: '开始训练',
-    'sync-draft': '正在读取训练配置…',
+    'sync-draft': '正在检查训练条件…',
+    'checking-materials': '正在检查训练条件…',
     'validate-version': '正在核验算法版本…',
     'resolve-algorithm': '正在核验算法主数据…',
     'resolve-target': '正在核验训练资源…',
     'resolve-engine': '正在核验训练引擎…',
     'validate-device': '正在核验训练设备…',
     'build-payload': '正在整理训练素材与参数…',
-    posting: '正在提交训练任务…',
+    posting: '正在创建训练任务…',
     created: '训练任务已创建',
   });
 
@@ -502,13 +520,14 @@ export function installTrainingSubmitRuntime({
     }
     button.dataset.trainingSubmitStage = lastStage;
     button.textContent = submitting
-      ? (SUBMIT_STAGE_TEXT[lastStage] || '正在创建训练任务…')
+      ? (lastStage==='posting'?'正在创建训练任务…':lastStage==='created'?'训练任务已创建':'正在检查训练条件…')
       : button.dataset.trainingSubmitIdleText;
     if (typeof button.setAttribute === 'function') button.setAttribute('aria-busy', submitting ? 'true' : 'false');
     return lastStage;
   }
 
-  function updateReadiness() {
+  function updateReadiness({checked=false,reset=false}={}) {
+    cancelStaleCheck();
     const currentRoot = document.querySelector?.('.train429-create') || null;
     if (!submitting && currentRoot && currentRoot !== submissionRoot) {
       lastStage = 'idle';
@@ -545,8 +564,7 @@ export function installTrainingSubmitRuntime({
       catch(error){add('fixed-test-benchmark',error)}
     }
     if(draft?.splitMode==='independent_test_set'&&!draft?.benchmarkReuseEnabled&&!(draft.testMaterialIds||[]).length)add('independent-test-insufficient','独立Test素材不足，请补充后重新预检');
-    const draftSignature=JSON.stringify(draft||{});
-    if(serverRejection?.root!==currentRoot||serverRejection?.signature!==draftSignature)serverRejection=null;
+    if(serverRejection?.root!==currentRoot||serverRejection?.signature!==admissionSignature())serverRejection=null;
     if(serverRejection)add(serverRejection.code,serverRejection.message);
     const blockers=collectTrainingAdmissionBlockers({draft,base,target:selectedTarget,benchmarkStatus,compatibility,submitting,externalReadiness,additional});
     if(uncertainTaskId&&String(document.getElementById?.('tr429TaskId')?.value||'')===uncertainTaskId){
@@ -556,7 +574,7 @@ export function installTrainingSubmitRuntime({
       checking:blockers.some(row=>row.transient),signature:JSON.stringify([draft,blockers])};
     materialSummaryRuntime?.updateAdmissionDiagnosis?.({root:currentRoot,
       taskId:String(document.getElementById?.('tr429TaskId')?.value||''),projectId:String(projectId?.()||''),
-      draft,algorithmName:asset?.name||'',readiness});
+      draft,algorithmName:asset?.name||'',readiness,checked,reset,signature:admissionSignature()});
     let supplementContext = null;
     try {
       supplementContext = supplementCandidateContext({asset, draft, base});
@@ -566,11 +584,14 @@ export function installTrainingSubmitRuntime({
     renderSupplementCandidateSummary(supplementContext);
     const button = submitButton();
     if (button) {
-      button.disabled = !readiness.ready;
+      button.disabled = submitting || Boolean(uncertainTaskId&&String(document.getElementById?.('tr429TaskId')?.value||'')===uncertainTaskId);
+      button.setAttribute?.('aria-busy',submitting?'true':'false');
       button.dataset.trainingSubmitOwner = 'TrainingSubmitRuntime';
       button.dataset.trainingSubmitReason = readiness.reason;
       if (!submitting && lastStage === 'created') setSubmitStage('created');
-      else if (!submitting && lastStage !== 'failed') setSubmitStage('idle');
+      else if (!submitting && lastStage === 'failed') button.textContent='重新检查';
+      else if (!submitting && lastStage === 'blocked') button.textContent=button.dataset.trainingSubmitIdleText||'开始训练';
+      else if (!submitting) setSubmitStage('idle');
     }
     return readiness;
   }
@@ -595,16 +616,43 @@ export function installTrainingSubmitRuntime({
     submitting = true;
     lastError = '';
     lastPresentation = null;
+    serverRejection = null;
     let submittedTaskId = '';
     let responseReceived = false;
     let creationAccepted = false;
     setSubmitStage('sync-draft');
-    updateReadiness();
+    updateReadiness({reset:true});
     setSubmitStage('sync-draft');
     try {
       const state = getState?.() || {};
       const draft = trainingDraftRuntime.sync();
       if (!draft) throw new Error('训练草稿尚未就绪，请关闭训练窗口后重新打开。');
+      const operation={root:submissionRoot,taskId:plannedId,projectId:String(projectId?.()||''),signature:admissionSignature(),controller:new AbortController()};
+      admissionOperation=operation;
+      const showBlockers=readiness=>{
+        const blockers=readiness.blockers.filter(row=>!row.transient);
+        if(!blockers.length)return false;
+        setSubmitStage('blocked');updateReadiness({checked:true});
+        if(!materialSummaryRuntime?.openAdmissionDiagnosis?.())notify?.(blockers.map(row=>row.message).join('；'));
+        return true;
+      };
+      const localAdmission=updateReadiness();
+      if(draft.benchmarkReuseEnabled&&localAdmission.blockers.some(row=>['fixed-test-benchmark','benchmark-error'].includes(row.code))){
+        showBlockers(localAdmission);return null;
+      }
+      if(draft.benchmarkReuseEnabled&&localAdmission.blockers.some(row=>row.code==='benchmark-loading'))throw new Error('固定Test基准仍在读取，检查尚未完成，请稍后重新检查');
+      setSubmitStage('checking-materials');
+      let checkedCompatibility;
+      if(materialSummaryRuntime?.refreshCompatibility){
+        checkedCompatibility=await materialSummaryRuntime.refreshCompatibility({force:true,signal:operation.controller.signal});
+        if(!admissionIsCurrent(operation))throw Object.assign(new Error('训练配置或窗口已变化，本次检查已取消'),{name:'AbortError'});
+        if(!checkedCompatibility){const truth=materialSummaryRuntime.compatibilityFor?.(draft);throw new Error(truth?.error||'训练准入检查未完成，请重新检查');}
+        if(checkedCompatibility.compatible===false&&!checkedCompatibility.skipped&&!Number(checkedCompatibility.issue_count||0))throw new Error('训练准入检查未完成：未获得明确通过结果，请重新检查');
+      }
+      const admission=updateReadiness();
+      if(showBlockers(admission))return null;
+      if(admission.blockers.some(row=>row.transient&&row.code!=='submitting'))throw new Error('训练条件检查尚未完成，请等待基础配置就绪后重新检查');
+
 
       setSubmitStage('validate-version');
       const base = trainingDraftRuntime.base?.() || state.trainingDraftBase || {};
@@ -682,18 +730,10 @@ export function installTrainingSubmitRuntime({
       submittedAlgorithmId = asset.id;
       if (!pid) throw new Error('当前项目不可用，请刷新页面后重试');
 
-      if (materialSummaryRuntime?.refreshCompatibility) {
-        const checked = await materialSummaryRuntime.refreshCompatibility({
-          force: true,
-          payload,
-        });
-        if (!checked) throw new Error('训练标签适配检查失败，请重试');
-        if (Number(checked.issue_count || 0) > 0) {
-          materialSummaryRuntime.openCompatibilityIssues?.();
-          throw new Error(checked.affected_image_count==null?'训练素材仍有未处理问题，请查看诊断':`仍有 ${Number(checked.affected_image_count)} 张素材需要修复或排除`);
-        }
-        payload.expected_material_revision = checked.material_revision;
-        payload.expected_annotation_revision = checked.annotation_revision;
+      if(!admissionIsCurrent(operation))throw Object.assign(new Error('训练配置或窗口已变化，本次检查已取消'),{name:'AbortError'});
+      if(checkedCompatibility){
+        payload.expected_material_revision=checkedCompatibility.material_revision;
+        payload.expected_annotation_revision=checkedCompatibility.annotation_revision;
       }
 
       setSubmitStage('posting');
@@ -713,13 +753,14 @@ export function installTrainingSubmitRuntime({
         const detail=body.detail;
         const message=body.message||detail?.message||(typeof detail==='string'?detail:'')||`训练任务创建失败（HTTP ${response.status}）`;
         const validationDetail = body.code === 'VALIDATION_ERROR' ? formatTrainingValidationError(body) : '';
-        throw Object.assign(new Error(validationDetail?`${message}：${validationDetail}`:String(message)),{code:body.code||detail?.code||`HTTP_${response.status}`,detail,solution:body.solution||detail?.solution||'',serverRejected:true});
+        throw Object.assign(new Error(validationDetail?`${message}：${validationDetail}`:String(message)),{code:body.code||detail?.code||`HTTP_${response.status}`,detail,solution:body.solution||detail?.solution||'',serverRejected:true,httpStatus:response.status});
       }
       creationAccepted = true;
       return await response.json();
       }, {label: '训练创建'});
       const createdTask = validateTrainingCreatedResponse(body, payload.task_id, {projectId: pid, algorithmId: asset.id});
-      setSubmitStage('created');
+      if(admissionIsCurrent())setSubmitStage('created');
+      else{lastStage='idle';lastError='';lastPresentation=null;}
       const currentProjectMatches = !destroyed && String(projectId?.() || '') === String(pid);
       if (currentProjectMatches && payload.iteration_action && state.trainingIterationAction) {
         state.trainingIterationAction = null;
@@ -750,10 +791,11 @@ export function installTrainingSubmitRuntime({
       refreshCreatedLists(pid);
       return body;
     } catch (error) {
+      if(error?.name==='AbortError'&&lastStage!=='posting')return null;
       lastError = String(error?.message || error || '未知训练提交错误');
       const failedAt = lastStage;
-      if(error?.serverRejected)serverRejection={root:submissionRoot,signature:JSON.stringify((getState?.()||{}).trainingDraft||trainingDraftRuntime.current?.()||{}),code:error.code,message:lastError};
-      let outcomeUncertain = failedAt === 'posting' && (!responseReceived || creationAccepted);
+      if(error?.serverRejected&&[400,409,422].includes(error.httpStatus)&&admissionIsCurrent())serverRejection={root:submissionRoot,signature:admissionOperation.signature,code:error.code,message:lastError};
+      let outcomeUncertain = failedAt === 'posting' && (!responseReceived || creationAccepted || Number(error?.httpStatus)>=500);
       if (outcomeUncertain && submittedTaskId) {
         try {
           const pid = submittedProjectId;
@@ -767,7 +809,8 @@ export function installTrainingSubmitRuntime({
               {ok: true, task: taskBody?.task || taskBody}, submittedTaskId,
               {projectId: pid, algorithmId: submittedAlgorithmId},
             );
-            setSubmitStage('created');
+            if(admissionIsCurrent())setSubmitStage('created');
+            else{lastStage='idle';lastError='';lastPresentation=null;}
             if (!destroyed && String(projectId?.() || '') === String(pid)) {
               trainingTaskRuntime?.acceptCreatedTask?.(createdTask, {recoveredAfterNetworkError: true});
             }
@@ -783,12 +826,16 @@ export function installTrainingSubmitRuntime({
         }
       }
       if (outcomeUncertain) uncertainTaskId = submittedTaskId;
+      if(!admissionIsCurrent()){lastStage='idle';lastError='';return null;}
       setSubmitStage('failed', {
         error: lastError, failedAt, taskId: submittedTaskId, outcomeUncertain,
       });
-      notify?.(lastPresentation?.detail || lastError);
+      updateReadiness({reset:!serverRejection});
+      if(error?.serverRejected&&serverRejection&&ownsSubmissionModal()){updateReadiness({checked:true});materialSummaryRuntime?.openAdmissionDiagnosis?.();}
+      if(ownsSubmissionModal())notify?.(lastPresentation?.detail || lastError);
       return null;
     } finally {
+      admissionOperation=null;
       submitting = false;
       updateReadiness();
     }
@@ -804,11 +851,13 @@ export function installTrainingSubmitRuntime({
     modePreset: trainingModePreset,
     isCanonicalTaskId: isCanonicalTrainingTaskId,
     updateReadiness,
+    cancelStaleCheck,
     clearAdmissionError:()=>{serverRejection=null;},
     isSubmitting: () => submitting,
     state: () => ({submitting, networkOwner: true, readiness: updateReadiness(), lastStage, lastError, presentation: lastPresentation}),
     destroy() {
       destroyed = true;
+      admissionOperation?.controller.abort();
       if (window.submitTrain429 === submit) window.submitTrain429 = originalSubmit;
       if (window.TrainingSubmitRuntime === runtime) window.TrainingSubmitRuntime = null;
       window.__trainingSubmitRuntimeInstalled = false;

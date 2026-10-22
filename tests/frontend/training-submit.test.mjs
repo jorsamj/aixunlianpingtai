@@ -220,7 +220,7 @@ test('submit readiness depends only on canonical draft, base and submitting stat
   assert.deepEqual(trainingSubmitReadiness({draft: draft(), base: {blocked: false}, submitting: true}), {ready: false, reason: 'submitting'});
 });
 
-test('compatibility issues disable submit until the current draft passes', () => {
+test('compatibility issues keep admission blocked until the current draft passes', () => {
   assert.deepEqual(
     trainingSubmitReadiness({
       draft: draft(), base: {blocked: false},
@@ -273,7 +273,7 @@ test('submit runtime owns button readiness instead of legacy train428/train429 m
 
   state.trainingDraft = draft({materialIds: ['one']});
   runtime.updateReadiness();
-  assert.equal(submitButton.disabled, true);
+  assert.equal(submitButton.disabled, false, 'start click must run diagnosis even for incomplete configuration');
   assert.equal(submitButton.dataset.trainingSubmitReason, 'materials');
   cleanup(runtime);
 });
@@ -354,16 +354,16 @@ test('iteration block is enforced by TrainingSubmitRuntime before any POST', asy
     notify: message => notices.push(String(message)),
   });
 
-  assert.equal(submitButton.disabled, true);
+  assert.equal(submitButton.disabled, false);
   assert.equal(submitButton.dataset.trainingSubmitReason, 'iteration');
   const result = await window.submitTrain429();
   assert.equal(result, null);
   assert.equal(calls, 0);
-  assert.match(notices.at(-1), /不会回退母算法/);
+  assert.match(notices.at(-1), /没有成功且成果有效的可迭代版本/);
   cleanup(runtime);
 });
 
-test('stale changlian master data disables submit and blocks network POST', async () => {
+test('stale changlian master data allows checking but blocks network POST', async () => {
   const state = baseState();
   state.algorithms = [{
     id: 'alg-1',
@@ -402,7 +402,7 @@ test('stale changlian master data disables submit and blocks network POST', asyn
     notify: message => notices.push(String(message)),
   });
 
-  assert.equal(submitButton.disabled, true);
+  assert.equal(submitButton.disabled, false);
   assert.equal(submitButton.dataset.trainingSubmitReason, 'external-master-data-stale');
   const result = await window.submitTrain429();
 
@@ -434,7 +434,7 @@ test('submit button exposes truthful creation stages while the durable POST is p
   const request = window.submitTrain429();
   assert.equal(runtime.state().lastStage, 'posting');
   assert.equal(submitButton.dataset.trainingSubmitStage, 'posting');
-  assert.equal(submitButton.textContent, '正在提交训练任务…');
+  assert.equal(submitButton.textContent, '正在创建训练任务…');
   assert.equal(submitButton.disabled, true);
 
   release();

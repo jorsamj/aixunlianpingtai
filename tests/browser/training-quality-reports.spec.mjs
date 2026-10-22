@@ -220,7 +220,7 @@ test('training submit sends the selected candidate pool and configured experimen
   await fireLabel.check();
   await expandTrainingAdvanced(dialog);
   await dialog.locator('#tr429Priority').fill('0');
-  await dialog.getByRole('button', {name: '创建训练任务'}).click();
+  await dialog.locator('.train428-footer .btn.primary').click();
   await expect(page.locator('#toast')).toContainText('任务优先级必须是 1~999 的整数');
   expect(submitted).toBeUndefined();
   await dialog.locator('#trV3Experiment').fill('35');
@@ -236,7 +236,7 @@ test('training submit sends the selected candidate pool and configured experimen
     if (url.pathname.startsWith('/api/')) postSubmitRequests.push(`${request.method()} ${url.pathname}${url.search}`);
   };
   page.on('request', capturePostSubmit);
-  await dialog.getByRole('button', {name: '创建训练任务'}).click();
+  await dialog.locator('.train428-footer .btn.primary').click();
   await expect.poll(() => submitted).toBeTruthy();
   await expect.poll(async () => page.evaluate(() =>
     window.PlatformCore?.runtime?.trainingSubmitRuntime?.state?.().submitting ?? true
@@ -301,7 +301,7 @@ test('training material selection does not depend on dataset groups and supports
   await picker.getByRole('button', {name: '确认选择'}).click();
 
   await expect(dialog.locator('.train-v3-summary')).toContainText('本次训练素材0 张');
-  await expect(dialog.getByRole('button', {name: '创建训练任务'})).toBeDisabled();
+  await expect(dialog.getByRole('button', {name: '开始训练'})).toBeEnabled();
 });
 
 test('versioned training locks the latest version and projects the current random split', async ({page, request}) => {

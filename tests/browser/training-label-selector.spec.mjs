@@ -247,8 +247,8 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
     batch: state.trainingDraft.resource.batch,
     optimizer: state.trainingDraft.config.optimizer,
   }))).toEqual({algorithmId, materials: imageIds, device: 'cpu', batch: 16, optimizer: 'AdamW'});
-  await expect(dialog.getByRole('button', {name: '创建训练任务'})).toBeEnabled();
-  expect(await dialog.getByRole('button', {name: '创建训练任务'}).getAttribute('data-training-submit-owner')).toBe('TrainingSubmitRuntime');
+  await expect(dialog.getByRole('button', {name: '开始训练'})).toBeEnabled();
+  expect(await dialog.getByRole('button', {name: '开始训练'}).getAttribute('data-training-submit-owner')).toBe('TrainingSubmitRuntime');
 
   submitted = undefined;
   await page.evaluate(async projectId => {
@@ -263,7 +263,7 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
 
   submitted = undefined;
   expect(await page.evaluate(() => window.submitTrain429?.__trainingSubmitRuntime === true)).toBe(true);
-  await dialog.getByRole('button', {name: '创建训练任务'}).click();
+  await dialog.getByRole('button', {name: '开始训练'}).click();
   const feedback = dialog.locator('[data-training-submit-feedback]');
   await expect(feedback).toBeVisible();
   await expect(feedback).toHaveAttribute('data-tone', 'working');
@@ -335,7 +335,10 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   });
   const failure = failureDialog.locator('[data-training-submit-feedback]');
   await expect(failure).toHaveAttribute('data-tone', 'error');
-  await expect(failure).toContainText('请选择训练素材');
+  await expect(failure).toContainText('训练暂不可开始');
+  const blockers = page.getByRole('dialog', {name: '训练暂不可开始'});
+  await expect(blockers.locator('[data-admission-code="materials"]')).toContainText('至少需要2张有效训练素材');
+  await blockers.getByRole('button', {name: '返回训练配置', exact: true}).click();
   await expect(failure).toHaveCSS('opacity', '1');
   await page.screenshot({path: visualPath('training-create-failure.png'), fullPage: true});
   for (const viewport of [

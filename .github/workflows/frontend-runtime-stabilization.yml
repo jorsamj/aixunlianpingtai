@@ -483,6 +483,7 @@ jobs:
           tests/browser/annotorious-lifecycle.spec.mjs
           tests/browser/material-integrity-governance.spec.mjs
           tests/browser/training-admission-governance.spec.mjs
+          tests/browser/training-on-demand-admission.spec.mjs
           tests/browser/training-duplicate-conflicts.spec.mjs
           tests/browser/source-import-completion-scope.spec.mjs
           tests/browser/upload-task-center-performance.spec.mjs

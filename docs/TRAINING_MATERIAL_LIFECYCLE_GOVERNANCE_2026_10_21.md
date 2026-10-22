@@ -1,3 +1,5 @@
+> 最新补充：第十一节为2026-10-22用户正式变更——仅点击开始训练才正式准入，覆盖旧自动弹窗/草稿变化自动正式预检交互。安全规则不变。
+
 # GT 素材保护、训练数据单份存储及历史 Bundle 生命周期治理
 
 > 本专项唯一需求与进度依据；更新日期：2026-10-22（Asia/Shanghai）。
@@ -2239,3 +2241,66 @@ Codex 必须先：
 **本轮最终目标：用户知道为什么不能训练，也能直接处理不需要的素材；用户明确选择整组、批量、筛选结果全部或清空当前项目时，系统必须能够在不破坏活动任务与共享数据的前提下，安全、完整、可审计地执行，而不是被历史 GT、Test 和失败任务永久锁死。**
 
 本轮不执行生产部署，不删除任何真实生产素材。
+
+## 十一、训练创建按需准入与Loading（2026-10-22，进行中）
+
+### 11.1 用户确认的需求变更与基线
+
+基线fb7e38ae124977cd16f7db4540bc629af8441bcc / VERSION42.24.375，已fetch且远端一致、工作树干净。仅长期feature/external-algorithm-publishing。用户附件确认：打开/填写训练配置不执行正式兼容性诊断、不弹“训练暂不可开始”、不显示原因入口；只在点击开始训练后完整检查，立即Loading/防重，真实阶段无假百分比。通过后一次点击直接进入原创建链路并成功自动关闭原窗；阻塞才显示全部已确认原因及有效辅助入口，修改草稿后过期隐藏。HTTP/网络/超时与业务阻塞分开，失败可恢复且不放行；请求/草稿/项目/Modal身份防迟到污染，创建未知结果仍按原任务ID查询、不盲目重发。原后端训练/GT/冻结/资源/幂等安全复核全部保留。
+
+此项正式覆盖GOV-01旧自动弹窗、草稿变化正式预检及GOV-10自动正式复检的触发时机；素材治理/删除/GT核验功能及后端合同不退役。基础摘要、算法模型与算力选项允许加载，不等于正式准入。用户已确认完整交互，无须重新审批同一业务设计。禁止改Uppy/UploadTaskCenter（其他任务负责）、生产部署/数据修改/GPU训练/强推。
+
+### 11.2 设计与执行计划
+
+沿用TrainingSubmitRuntime/TrainingMaterialSummaryRuntime/TrainingDraftRuntime、原Modal Stack、withRequestDeadline及aria-busy Loading。删除syncSelection/普通DOM装饰的正式兼容性网络触发；点击从原submit完成配置/资源本地检查、真实兼容性HTTP、全部阻塞汇总，再用原POST创建。结果绑定root/taskId/project/完整草稿签名与请求代次；明确未检查、检查中、阻塞、请求错误、通过/创建、未知创建。仅检查结果有效且有真实阻塞时显示原因入口，不复用过期缓存放行。每个await后复核提交上下文，关闭/更改前端检查取消或隔离；POST已发后仍保留原未知结果核验。
+
+不采用仅隐藏自动诊断（会残留重复请求）、独立准入/提交Owner（重复状态及幂等）或删后端校验（安全退化）。诊断内显式重检及素材治理工具继续复用原调用；普通草稿/数据变化只失效旧结果，不自动正式检查。先RED再最小修复，每阶段更新本文。
+
+| 任务 | 优先级/模块 | 状态 | 已完成/剩余 | 提交/证据 |
+|---|---|---|---|---|
+| ADM-01 安静首次打开、停止后台正式查询 | P0 summary/submit/既有Modal | 已完成待验收 | 停止普通选择/DOM的正式查询与自动诊断，保留摘要；首次打开真实RED→GREEN | 基线fb7e38ae；本轮提交后记录SHA |
+| ADM-02 点击完整检查、Loading、防重与单次创建 | P0 training-submit.js | 已完成待验收 | 原submit检查后接原POST，阶段/busy/防重、后端再次拒绝及未知创建查询保留 | 新Chrome真实SQLite仅1个QUEUED任务；最终CI待核验 |
+| ADM-03 诊断有效期、异常及请求生命周期 | P0 summary/submit/draft | 已完成待验收 | 完整签名/取消/原因入口；审查补Benchmark与迟到POST成功/拒绝隔离 | HTTP500/断网/超时及迟到用例；扩大回归中 |
+| ADM-04 18场景、GT治理/冻结回归及最终SHA CI | P1 Node/Python/Chrome/原CI | 进行中 | 更新旧自动断言保留GT/删除/幂等；Node1239通过、Python126通过2环境skip；Chrome59独立场景分批通过 | 最终SHA所有Actions/Checks待普通推送核验 |
+
+检查入口：static/modules/training-submit.js、training-material-summary-runtime.js、training-draft-runtime.js，static/app.js母模型与标注回调；浏览器training-create-first-open、training-admission-governance、training-quality-reports、已有提交DOM用例。后端只读合同审计，不改正式准入。版本验收前按375基线只增一次；最终普通提交、准确SHA全部Actions/Checks及接续入口必须持久化。
+
+
+### 11.3 实际改造、问题及RED证据
+
+实际业务文件仅static/app.js、static/modules/training-submit.js、static/modules/training-material-summary-runtime.js；原draft/后端不改。main.mjs/index.html仅相关缓存更新，VERSION一次递增42.24.376。无Uppy/UploadTaskCenter实现修改。
+
+- 首次打开：syncSelection过去自动refreshCompatibility，诊断装饰每个新session自动open；真实first-open RED为1失败/5通过（C:/tmp/admission-on-demand-red.log）。现只摘要/失效，原因按钮按有效已检查阻塞条件创建/移除。Chrome发现通用.btn样式覆盖hidden，改为不创建无效入口，未靠遮罩隐藏后台请求。
+- 原submit先捕获root/taskId/projectId/完整draft及资源引擎签名，只由显式点击发正式检查；保留原参数、外部主数据、设备、母模型、版本、Test及后端再次校验。检查通过后直接POST，不另建提交入口。固定Benchmark确认不可用先展示业务阻塞，不能因无法构建payload误报网络错误。
+- 请求失败：兼容性500/断网/真实30s截止均结束busy并允许重新检查，不显示业务诊断。创建5xx/断网/不完整回执仍查询原任务ID，不能盲目重发。只有400/409/422确定业务拒绝才绑定当前签名的原因。
+- 生命周期：原observer只取消过期检查并更新显示；signal监听finally移除，AbortError清pending。迟到检查不创建/不重开；迟到POST拒绝不绑定新配置。审查又发现迟到成功虽不关闭新配置仍会写created，两个直接/查询恢复Chrome以“Expected idle / Received created”真实RED（C:/tmp/admission-late-success-red2.log）确认；已为两路径加同一身份检查，真实任务仍接入原Runtime和列表，对应新增16场景最终GREEN。
+- 测试夹具问题已留痕：首次迟到成功测试用pointer点击被原提交遮罩正确阻止，等30s后才修改并非目标边界，未将其当RED证据；改为通过原TrainingDraftRuntime模拟异步配置变更后取得上述确定RED。旧自动诊断/按钮disable测试按新合同改为显式开始，但仍断言readiness阻塞、POST=0、失败ID保留及真实GT计数。
+- 扩大Chrome首轮57场景诊断跑37通过/4失败/16未运行（max-failures=4用于定位，不作验收）：2处旧自动复检/disable、1处旧单行报错期待、1处重试按钮旧名称。均在原用例更新触发/诊断及稳定按钮选择，未删除安全断言；最终完整重跑不设max-failures。
+
+### 11.4 验收覆盖与真实边界
+
+| 用户18项场景 | 自动化证据 |
+|---|---|
+| 1–4 安静打开/未选素材可配置/无正式查询/无原因按钮 | training-on-demand-admission首例及原first-open6例，监听compatibility请求数=0 |
+| 5–8 点击Loading/防重/通过直建/无原因按钮 | 新Chrome实际compatibility及train/start、SQLite TaskRepository count=1/QUEUED；精确按钮文字/disabled/aria-busy |
+| 9–13 GT完整原因/保留草稿/重新查看/失效/重检 | 实际同图不同GT issue_counts=2；受控多问题、关闭和编辑重检；真实删除后明确点击才重新核验 |
+| 14 500/断网/超时 | 受控HTTP与网络故障，原30s截止由浏览器时钟推进，结束Loading再重试，不伪造通过 |
+| 15 关闭/项目/草稿的迟到 | 原Modal真实关闭、切换项目身份、canonical draft修改；不POST、不幽灵弹窗 |
+| 16 后端再次拒绝 | 前检通过后实际拒绝合同409，不成功；迟到拒绝/成功均检验签名隔离 |
+| 17 创建恰1次 | 原API真实持久任务行count=1，重复点击不增加请求；未知创建保留原ID、禁止盲重试 |
+| 18 治理/GT/冻结 | Python API治理22、准入/划分unit37、GT冲突/盲测/Bundle隔离67通过2环境skip；原治理/重复冲突Chrome扩大回归 |
+
+受控API回执明确标注，不能冒充GPU执行；实际成功用本地随机未训练模型权重验证排队持久化，不启动Worker或训练、不下载权重。截图/trace由原Playwright输出；早期首次RED归档%TEMP%/codex-on-demand-red-first-open，首批GREEN截图%TEMP%/codex-on-demand-green，最终执行日志见11.5。真实生产大库、资源断连、GPU训练和生产浏览器均NOT VERIFIED。
+
+### 11.5 测试和最终提交回执（进行中）
+
+- Node24全部frontend：1239通过/0失败/0跳过，C:/tmp/admission-node-final.log（最终业务代码、VERSION及缓存）。
+- Python API治理：22通过/0失败/0跳过，C:/tmp/admission-python-api.xml；准入/划分unit：37通过/0失败/0跳过，C:/tmp/admission-python-unit.xml。
+- 补充GT冲突/盲测/冻结Bundle：67通过/0失败/2跳过，C:/tmp/admission-python-freeze.xml；两项skip因Windows无符号链接权限，须看Linux最终CI，不当作通过。合计126通过、2跳过。
+- Loading淡入可见性补验1/1通过，C:/tmp/admission-visible-loading-final.log；先等待opacity=1再截图，避免把180ms淡入开始瞬间当作持续视觉效果。
+- 原3个Syntax and wiring guards及first-open永久guard原文实际执行退出0，C:/tmp/admission-wiring.log；未删除或降低保护。
+- Chrome扩大集合原43场景全部通过；新增16场景最终完整16/16通过（C:/tmp/admission-chrome-on-demand-final.log），合计59个独立场景分批通过、0跳过。扩大首轮56通过/3夹具失败：canonical draft不重绘模式按钮，受控成功任务会被真实列表刷新校正；已改为核验原draft与原Runtime接收调用（保留原调用），真实持久创建证据仍由实际API/SQLite用例承担。最终SHA全部Actions/Checks尚未确认，不沿用fb7e38ae绿色结论。
+
+### 11.6 接续指令
+
+先读本节再读原submit/summary与新增tests/browser/training-on-demand-admission.spec.mjs；旧第十节自动弹窗及自动正式复检已被本节覆盖，不能重新引入。保持删除/GT/原权限/冻结保护，基础摘要仍允许加载。完成扩大Chrome/审查、原CI最终SHA核验后更新本节任务状态；仅对实际失败最小修复，不改Uppy/TaskCenter，不新增Owner/轮询或生产动作。更早单份图片/物理GC/历史Bundle清理仍未实施，不因本轮准入交互完成写成已清理。

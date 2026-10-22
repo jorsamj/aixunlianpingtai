@@ -1,19 +1,11 @@
 import {expect} from '@playwright/test';
 
-// Existing configuration-only fixtures intentionally include empty or synthetic
-// selections. Acknowledge the required diagnostic as a user would; never disable
-// admission or substitute successful backend truth to reach the configuration.
+// Configuration-only fixtures must remain quiet. Opening configuration is not
+// authorization to run formal admission or dismiss a diagnostic on the user's behalf.
 export async function returnToTrainingConfiguration(page){
-  await expect.poll(()=>page.evaluate(()=>{
-    const truth=window.TrainingMaterialSummaryRuntime?.compatibilityFor?.();
-    return Boolean(truth&&(truth.ready||truth.error));
-  })).toBe(true);
+  const draft=await page.evaluate(()=>window.TrainingDraftRuntime.current());
   await page.evaluate(()=>window.TrainingSubmitRuntime?.updateReadiness?.());
-  const diagnostic=page.locator('[data-training-admission-dialog]');
-  if(await diagnostic.count()){
-    const draft=await page.evaluate(()=>window.TrainingDraftRuntime.current());
-    await expect(diagnostic).toContainText('训练暂不可开始');
-    await diagnostic.getByRole('button',{name:'返回训练配置',exact:true}).click();
-    expect(await page.evaluate(()=>window.TrainingDraftRuntime.current())).toEqual(draft);
-  }
+  await expect(page.locator('[data-training-admission-dialog]')).toHaveCount(0);
+  await expect(page.locator('[data-training-admission-open]:visible')).toHaveCount(0);
+  expect(await page.evaluate(()=>window.TrainingDraftRuntime.current())).toEqual(draft);
 }

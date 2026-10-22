@@ -126,7 +126,7 @@ jobs:
           grep -Fq "'done','finished','completed','succeeded','success'" static/app.js
           grep -Fq "a.train_success_rate==null?{}:{'训练成功率':a.train_success_rate}" static/app.js
           grep -Fq 'external-master-data-stale' tests/frontend/training-submit.test.mjs
-          grep -Fq 'stale changlian master data disables submit and blocks network POST' tests/frontend/training-submit.test.mjs
+          grep -Fq 'stale changlian master data allows checking but blocks network POST' tests/frontend/training-submit.test.mjs
           grep -Fq '/benchmark-reuse' static/app.js
           grep -Fq 'benchmarkReuseEnabled:Boolean(draft.benchmarkReuseEnabled)' static/app.js
           grep -Fq '固定评测素材由系统自动保留，不会混入训练' static/app.js
