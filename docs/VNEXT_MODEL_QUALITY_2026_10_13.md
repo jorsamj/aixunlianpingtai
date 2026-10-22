@@ -1,3 +1,5 @@
+> 2026-10-22接续：场景评估/素材及标注UI的唯一专项进度为[本轮治理](SCENARIO_MODEL_EVALUATION_UI_GOVERNANCE_2026_10_22.md)，当前P0验收中、P1未开始；本文原验收合同继续保留。
+
 # VNext 模型质量工作台：设计、合同与验收
 
 基线：`30f83c48bab39b9b8aca07f95b8481a3fbb672ec`；长期分支 `feature/external-algorithm-publishing`；正式 VERSION 保持 `42.24.355`。本轮仅本地开发、测试、提交。

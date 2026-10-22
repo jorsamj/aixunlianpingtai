@@ -8,6 +8,7 @@ on:
     paths:
       - 'app.py'
       - 'platform_core/agent_execution.py'
+      - 'platform_core/scenario_models.py'
       - 'platform_core/node_agent_executor_runtime.py'
       - 'platform_core/node_agent_deployment_runtime.py'
       - 'platform_core/node_agent_executor_loop.py'
@@ -26,6 +27,7 @@ on:
       - 'tests/unit/test_node_agent_entrypoint.py'
       - 'tests/unit/storage/test_object_store_immutability.py'
       - 'tests/api/test_deployment_test_runtime.py'
+      - 'tests/api/test_scenario_model_eligibility.py'
       - 'tests/api/test_agent_result_upload_api.py'
       - 'tests/api/test_runtime_router_app_mount.py'
       - 'tools/production_upgrade.py'
@@ -38,6 +40,7 @@ on:
     paths:
       - 'app.py'
       - 'platform_core/agent_execution.py'
+      - 'platform_core/scenario_models.py'
       - 'platform_core/node_agent_executor_runtime.py'
       - 'platform_core/node_agent_deployment_runtime.py'
       - 'platform_core/node_agent_executor_loop.py'
@@ -56,6 +59,7 @@ on:
       - 'tests/unit/test_node_agent_entrypoint.py'
       - 'tests/unit/storage/test_object_store_immutability.py'
       - 'tests/api/test_deployment_test_runtime.py'
+      - 'tests/api/test_scenario_model_eligibility.py'
       - 'tests/api/test_agent_result_upload_api.py'
       - 'tests/api/test_runtime_router_app_mount.py'
       - 'tools/production_upgrade.py'
@@ -143,6 +147,7 @@ jobs:
           platform_core/storage/s3.py
           platform_core/storage/oss.py
           tests/api/test_deployment_test_runtime.py
+          tests/api/test_scenario_model_eligibility.py
           tests/api/test_agent_result_upload_api.py
           tests/api/test_runtime_router_app_mount.py
           tests/unit/storage/test_object_store_immutability.py
@@ -150,6 +155,7 @@ jobs:
         run: >-
           python -m pytest -q
           tests/api/test_deployment_test_runtime.py
+          tests/api/test_scenario_model_eligibility.py
           tests/api/test_agent_result_upload_api.py
           tests/api/test_runtime_router_app_mount.py
           tests/unit/storage/test_object_store_immutability.py

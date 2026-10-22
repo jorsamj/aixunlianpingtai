@@ -300,48 +300,137 @@ export function trainingChartGroups(history=[],samples=[]) {
   });
 }
 
+const evaluationScore=value=>typeof value==='number'&&Number.isFinite(value)&&value>=0&&value<=1?value:null;
+const evaluationClassId=value=>typeof value==='number'&&Number.isSafeInteger(value)&&value>=0?value:null;
+
+/** Present persisted diagnostic evidence only. PR samples are not the AP integration curve. */
+export function evaluationChartGroups(e={}, {classId}={}) {
+  const classes=new Map();
+  for(const row of Array.isArray(e?.per_class)?e.per_class:[]){
+    const id=evaluationClassId(row?.class_id);
+    if(id!==null&&!classes.has(id))classes.set(id,row);
+  }
+  const label=id=>id===null?'背景（无目标）':`${classes.get(id)?.label||'类别'} [${id}]`;
+  const groups=[],matrix=e?.confusion_matrix;
+  if(matrix?.protocol==='confidence_first_class_agnostic_iou_0.5'&&Array.isArray(matrix.cells)){
+    const realCells=matrix.cells.filter(cell=>cell&&Object.hasOwn(cell,'actual')&&Object.hasOwn(cell,'predicted')
+      &&(cell.actual===null||evaluationClassId(cell.actual)!==null)
+      &&(cell.predicted===null||evaluationClassId(cell.predicted)!==null)
+      &&Number.isSafeInteger(cell.count)&&cell.count>=0);
+    const allIds=[...new Set([...classes.keys(),...realCells.flatMap(cell=>[cell.actual,cell.predicted].filter(id=>id!==null))])].sort((a,b)=>a-b);
+    const ids=allIds.slice(0,20),axes=[...ids,null],index=new Map(axes.map((id,i)=>[id,i]));
+    const cells=realCells.filter(cell=>index.has(cell.actual)&&index.has(cell.predicted));
+    if(cells.length)groups.push({key:'evaluation-confusion',title:`空间混淆矩阵${allIds.length>20?'（最多20类＋背景，已截断）':''}`,cells,
+      options:{animation:false,aria:{enabled:true},grid:{left:100,right:55,top:30,bottom:100},
+        tooltip:{trigger:'item',confine:true,position:reportTooltipPosition,formatter:params=>{
+          const cell=cells[params.dataIndex];
+          return cell?`真实：${escapeText(label(cell.actual))}<br>预测：${escapeText(label(cell.predicted))}<br>数量：${cell.count}`:'';
+        }},
+        xAxis:{type:'category',name:'预测类别',data:axes.map(label),axisLabel:{rotate:35}},
+        yAxis:{type:'category',name:'真实类别',data:axes.map(label)},
+        visualMap:{min:0,max:Math.max(1,...cells.map(cell=>cell.count)),calculable:true,orient:'horizontal',left:'center',bottom:5},
+        dataZoom:[{type:'inside',filterMode:'none'},{type:'slider',bottom:55,height:16,filterMode:'none'}],
+        series:[{id:'confusion',name:'真实数量',type:'heatmap',data:cells.map((cell,cellIndex)=>({
+          value:[index.get(cell.predicted),index.get(cell.actual),cell.count],cellIndex})),
+          label:{show:true},emphasis:{itemStyle:{borderColor:'#0f172a',borderWidth:2}}}],
+      }});
+  }
+  const covered=[...classes.values()].filter(row=>Number.isSafeInteger(row.ground_truth_count)&&row.ground_truth_count>0);
+  const selected=classId==null?covered[0]:covered.find(row=>String(row.class_id)===String(classId));
+  if(!selected||e.confidence_curve_protocol!=='same_class_confidence_first_iou_0.5_grid_0.05')return groups;
+  const curve=(Array.isArray(e.confidence_curves)?e.confidence_curves:[]).find(row=>row?.class_id===selected.class_id);
+  const points=(Array.isArray(curve?.points)?curve.points:[]).filter(point=>evaluationScore(point?.confidence)!==null)
+    .slice(0,21).toSorted((a,b)=>a.confidence-b.confidence);
+  const series=[['precision','Precision'],['recall','Recall'],['f1','F1']].filter(([field])=>points.some(point=>evaluationScore(point[field])!==null))
+    .map(([field,name])=>({id:field,name,type:'line',showSymbol:true,symbolSize:6,connectNulls:false,
+      data:points.map(point=>[point.confidence,evaluationScore(point[field])])}));
+  const common={animation:false,aria:{enabled:true},legend:{type:'scroll',top:4},grid:{left:60,right:28,top:55,bottom:75},
+    tooltip:{trigger:'axis',axisPointer:{type:'cross'},confine:true,position:reportTooltipPosition},
+    xAxis:{type:'value',name:'Confidence',min:0,max:1},yAxis:{type:'value',min:0,max:1},
+    dataZoom:[{type:'inside',filterMode:'none'},{type:'slider',bottom:12,height:20,filterMode:'none'}]};
+  if(series.length)groups.push({key:`evaluation-confidence-${selected.class_id}`,title:`${label(selected.class_id)} · Confidence 阈值采样`,
+    options:{...common,series}});
+  const pr=points.filter(point=>evaluationScore(point.precision)!==null&&evaluationScore(point.recall)!==null)
+    .map(point=>({value:[point.recall,point.precision],confidence:point.confidence}));
+  if(pr.length)groups.push({key:`evaluation-pr-${selected.class_id}`,title:`${label(selected.class_id)} · PR阈值采样（最多21点，非AP积分曲线）`,
+    options:{...common,xAxis:{...common.xAxis,name:'Recall'},yAxis:{...common.yAxis,name:'Precision'},
+      tooltip:{trigger:'item',confine:true,position:reportTooltipPosition,formatter:params=>{
+        const point=pr[params.dataIndex];return point?`Confidence：${point.confidence}<br>Recall：${point.value[0]}<br>Precision：${point.value[1]}<br>真实阈值采样，非AP积分曲线`:'';
+      }},series:[{id:'pr-samples',name:'PR阈值采样（非AP积分）',type:'scatter',symbolSize:8,data:pr}]}});
+  return groups;
+}
+
 let echartsLoad=null;
 const reportCharts=new Map();
 const reportInteractions=new Map();
 export async function mountReportCharts(root,history=[],samples=[]) {
+  return mountChartGroups(root,trainingChartGroups(history,samples));
+}
+export async function mountEvaluationCharts(root,e={}, {classId,onCell}={}) {
+  return mountChartGroups(root,evaluationChartGroups(e,{classId}),{onCell});
+}
+async function mountChartGroups(root,groups,{onCell}={}) {
   if(!root?.isConnected)return;
   let owned=reportCharts.get(root);
   if(!owned){owned={charts:new Map(),groups:[],disposed:false};reportCharts.set(root,owned)}
-  owned.groups=trainingChartGroups(history,samples);
+  const revision=owned.revision=(owned.revision||0)+1;
+  owned.groups=groups;owned.onCell=onCell;
+  const disposeEntry=entry=>{entry.instance.off?.('click',entry.onClick);entry.instance.dispose();};
+  const activeKeys=new Set(groups.map(group=>group.key));
+  for(const [key,entry] of owned.charts)if(!activeKeys.has(key)||!root.contains(entry.host)){disposeEntry(entry);owned.charts.delete(key)}
+  if(!groups.length){owned.observer?.disconnect();return;}
   try{
-    echartsLoad??=import('../vendor/echarts/echarts.min.js').then(()=>globalThis.echarts).catch(error=>{echartsLoad=null;throw error});
+    echartsLoad??=import('../vendor/echarts/echarts.min.js').then(()=>{
+      if(!globalThis.echarts?.init)throw new Error('ECharts runtime unavailable');return globalThis.echarts;
+    }).catch(error=>{echartsLoad=null;throw error});
     const echarts=await echartsLoad;
-    if(owned.disposed||!root.isConnected)return;
+    if(owned.disposed||owned.revision!==revision||!root.isConnected)return;
+    root.querySelectorAll('[data-chart-fallback]').forEach(node=>node.hidden=true);
     const update=()=>{
       if(owned.disposed||!root.isConnected)return;
       for(const group of owned.groups){
         const host=root.querySelector(`[data-report-chart="${group.key}"]`);
         if(!host||!host.clientWidth)continue;
         let entry=owned.charts.get(group.key);
-        if(entry&&entry.host!==host){entry.instance.dispose();owned.charts.delete(group.key);entry=null}
-        if(!entry){entry={host,instance:echarts.init(host,null,{renderer:'canvas'}),signature:''};owned.charts.set(group.key,entry)}
+        if(entry&&entry.host!==host){disposeEntry(entry);owned.charts.delete(group.key);entry=null}
+        if(!entry){
+          host.textContent='';if(host.style.height==='auto')host.style.height='';
+          entry={host,instance:echarts.init(host,null,{renderer:'canvas'}),signature:''};owned.charts.set(group.key,entry);
+        }
         const signature=JSON.stringify(group.options);
         if(signature!==entry.signature){
           const style=getComputedStyle(root),text=style.color||'#334155';
-          entry.instance.setOption({...group.options,textStyle:{color:text},backgroundColor:'transparent'});
+          entry.instance.setOption({...group.options,textStyle:{color:text},backgroundColor:'transparent'},{notMerge:true});
           entry.signature=signature;
+        }
+        if(entry.onClick){entry.instance.off?.('click',entry.onClick);entry.onClick=null;}
+        if(group.cells&&typeof owned.onCell==='function'){
+          entry.onClick=params=>{
+            if(owned.disposed||!root.isConnected)return;
+            if(params?.componentType!=='series'||params.seriesType!=='heatmap')return;
+            const cell=group.cells[params.dataIndex];if(cell)owned.onCell?.(cell);
+          };
+          entry.instance.on('click',entry.onClick);
         }
         entry.instance.resize();
       }
-      for(const [key,entry] of owned.charts)if(!root.contains(entry.host)){entry.instance.dispose();owned.charts.delete(key)}
+      for(const [key,entry] of owned.charts)if(!root.contains(entry.host)){disposeEntry(entry);owned.charts.delete(key)}
     };
     if(!owned.observer&&typeof ResizeObserver!=='undefined')owned.observer=new ResizeObserver(update);
+    owned.observer?.disconnect();
     root.querySelectorAll('[data-report-chart]').forEach(host=>owned.observer?.observe(host));
     update();
   }catch(error){
-    if(owned.disposed||!root.isConnected)return;
-    root.querySelectorAll('[data-chart-fallback]').forEach(node=>node.hidden=false);
-    root.querySelectorAll('[data-report-chart]').forEach(node=>{node.textContent='交互图表加载失败，以下保留真实静态曲线';node.style.height='auto'});
+    if(owned.disposed||owned.revision!==revision||!root.isConnected)return;
+    owned.observer?.disconnect();for(const entry of owned.charts.values())disposeEntry(entry);owned.charts.clear();
+    const fallbacks=root.querySelectorAll('[data-chart-fallback]');
+    fallbacks.forEach(node=>node.hidden=false);
+    root.querySelectorAll('[data-report-chart]').forEach(node=>{node.textContent=fallbacks.length?'交互图表加载失败，以下保留真实静态曲线':'交互图表加载失败；未生成替代指标或曲线';node.style.height='auto'});
   }
 }
 export function disposeReportViews(container) {
   for(const [root,owned] of reportCharts)if(!root.isConnected||root===container||container?.contains(root)){
-    owned.disposed=true;owned.observer?.disconnect();for(const entry of owned.charts.values())entry.instance.dispose();reportCharts.delete(root);
+    owned.disposed=true;owned.observer?.disconnect();for(const entry of owned.charts.values()){entry.instance.off?.('click',entry.onClick);entry.instance.dispose();}reportCharts.delete(root);
   }
   for(const [root,controller] of reportInteractions)if(!root.isConnected||root===container||container?.contains(root)){controller.abort();reportInteractions.delete(root)}
 }

@@ -4639,6 +4639,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     view.insertAdjacentHTML('afterbegin',qualityTabs411());
   }
   window.setQualityCenterTab411=async function(tab){
+    if(tab!=='detect')window.QualityDetectionWorkbenchRuntime?.deactivate?.();
     state.qualityCenterTab411=tab==='detect'?'detect':'overview';
     window.renderQualityCenter424?.();
     if(state.qualityCenterTab411!=='detect')return;

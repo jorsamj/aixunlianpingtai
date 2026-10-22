@@ -1,4 +1,4 @@
-import {eligibleScenarioModels,latestScenarioModel,evaluationTruth,scenarioMetric,visibleEvidenceBoxes,sampleIssueKinds} from './scenario-evaluation.js?v=20261022a';
+import {eligibleScenarioModels,latestScenarioModel,evaluationTruth,scenarioMetric,visibleEvidenceBoxes,sampleIssueKinds,sameFrozenSample} from './scenario-evaluation.js?v=20261022a';
 import {withRequestDeadline} from './api.js?v=20261021s';
 
 // The original v64 presentation owner, relocated from app.js. Tasks, polling,
@@ -11,10 +11,14 @@ export function installQualityDetectionWorkbench({getState,api,toast,modal,close
 
   let reportSequence=0,reportController=null,reportLoading=false,reportError='',reportVersion=null,reportModel=null;
   let mountedProject='',historySequence=0,batchOpenSequence=0;
+  let comparisonSequence=0,comparisonController=null,comparison={};
+  let matrixCell=null,curveClass='',classPage=0;
+  const reportViews=()=>window.PlatformCore?.reports;
   let displayMode='accuracy',selectedIndex=0,listMode='grid',zoom=1,selectedBox=null;
   let classFilter='',confidence=.25,issueFilter='',showPred=true,showGT=true;
   function detectionModels64(){return eligibleScenarioModels(state.scenarioTestModels||[]);}
   function modelGroup64(model){return `算法 · ${(state.algorithms||[]).find(row=>String(row.id)===String(model.algorithm_id))?.name||model.algorithm_name||model.algorithm_id}`;}
+  const modelIdentity64=model=>model?`${model.algorithm_id}:${model.version_id}:${model.training_task_id}:${model.model_sha256}`:'';
   function selectedModel64(side='A') {const value=document.getElementById(`benchModel${side}`)?.value;if(value==null||value==='')return null;const model=(state.scenarioTestModels||[])[Number(value)];return detectionModels64().includes(model)?model:null;}
   function defaultModelIndex64(side='A'){
     const rows=detectionModels64(),algorithmId=document.getElementById(`benchAlgorithm${side}`)?.value||rows[0]?.algorithm_id;
@@ -25,7 +29,7 @@ export function installQualityDetectionWorkbench({getState,api,toast,modal,close
     const rows=detectionModels64().filter(row=>String(row.algorithm_id)===String(group));
     return rows.map(model=>({model,index:(state.scenarioTestModels||[]).indexOf(model)})).filter(({model})=>!q||`${modelGroup64(model)} ${model.version_name||model.label}`.toLowerCase().includes(q))
       .sort((a,b)=>String(b.model.finished_at||b.model.created_at||'').localeCompare(String(a.model.finished_at||a.model.created_at||'')))
-      .map(({model,index})=>`<option value="${index}" ${index===Number(selected)?'selected':''}>${esc(model.version_name||model.version_id)}${index===defaultModelIndex64()?' · 最新有效版本':''}</option>`).join('')||'<option value="">暂无有效成功训练版本</option>';
+      .map(({model,index})=>`<option value="${index}" ${index===Number(selected)?'selected':''}>${esc(model.version_name||model.version_id)}${model===latestScenarioModel(rows,group)?' · 最新有效版本':''}</option>`).join('')||'<option value="">暂无有效成功训练版本</option>';
   }
   function algorithmOptions64(current=''){
     const unique=new Map();for(const model of detectionModels64())if(!unique.has(model.algorithm_id))unique.set(model.algorithm_id,modelGroup64(model).replace(/^算法 · /,''));
@@ -42,10 +46,10 @@ export function installQualityDetectionWorkbench({getState,api,toast,modal,close
   window.scenarioSelectVersion64=function(side){
     const select=document.getElementById(`benchModel${side}`),model=selectedModel64(side);
     if(select)select.dataset.modelIdentity=model?`${model.algorithm_id}:${model.version_id}`:'';
-    if(side==='A'){reportVersion=null;reportModel=null;selectedIndex=0;void loadScenarioReport64();}
+    if(side==='A'){reportVersion=null;reportModel=null;selectedIndex=0;void loadScenarioReport64();}else void loadScenarioComparison64();
   };
   async function loadScenarioReport64(){
-    reportController?.abort();const controller=new AbortController();reportController=controller;
+    reportController?.abort();comparisonController?.abort();comparisonSequence++;comparison={};matrixCell=null;curveClass='';classPage=0;const controller=new AbortController();reportController=controller;
     const sequence=++reportSequence,project=String(pid()),selected=selectedModel64('A');
     reportLoading=false;reportError='';reportVersion=null;reportModel=null;
     if(!selected){renderScenarioAccuracy64();return;}
@@ -65,34 +69,84 @@ export function installQualityDetectionWorkbench({getState,api,toast,modal,close
       const chosen=candidates.find(row=>row.version.id===selected.version_id)||candidates[0];
       if(chosen){reportVersion=chosen.version;reportModel=chosen.model;}
     }catch(error){if(error.name!=='AbortError'&&sequence===reportSequence)reportError=String(error.message||error);}
-    finally{if(sequence===reportSequence&&String(pid())===project){reportLoading=false;renderScenarioAccuracy64();}}
+    finally{if(sequence===reportSequence&&String(pid())===project){reportLoading=false;renderScenarioAccuracy64();void loadScenarioComparison64();}}
   }
   window.retryScenarioReport64=()=>loadScenarioReport64();
   function renderScenarioAccuracy64(){
     const root=document.getElementById('scenarioAccuracy64');if(!root)return;
+    reportViews()?.disposeReportViews?.(root);
     if(reportLoading){root.innerHTML='<div class="scn-empty" role="status"><i class="loading-spinner"></i><b>正在读取可信独立评测…</b></div>';return;}
     if(reportError){root.innerHTML=`<div class="scn-empty" role="alert"><b>评测报告读取失败</b><p>${esc(reportError)}</p><button class="btn" onclick="retryScenarioReport64()">重试</button></div>`;return;}
     if(!reportVersion){root.innerHTML='<div class="scn-empty"><b>尚未进行独立评测</b><p>当前算法没有可验证的独立测试集报告。快速图片检测可查看预测，不代表准确率。</p><button class="btn primary" onclick="setScenarioMode64(\'quick\')">快速图片检测</button></div>';return;}
     const e=reportVersion.evaluation,m=e.metrics||{},rows=e.per_class||[],covered=rows.filter(row=>Number(row.ground_truth_count)>0),sum=key=>rows.length&&rows.every(row=>Number.isFinite(row[key]))?rows.reduce((n,row)=>n+row[key],0):null;
     const f1=covered.length&&covered.every(row=>Number.isFinite(row.precision)&&Number.isFinite(row.recall))?covered.reduce((n,row)=>n+(row.precision+row.recall?2*row.precision*row.recall/(row.precision+row.recall):0),0)/covered.length:null;
     const scope=e.benchmark_scope||{},selected=selectedModel64('A');
-    root.innerHTML=`<header class="scn-report-head"><div><h3>可信独立测试集评测 · ${esc(reportVersion.version_name||reportVersion.id)}</h3><p>${reportModel.version_id!==selected?.version_id?'当前选择版本尚无可信报告；以下明确展示该算法最近可信报告。':'指标来自当前版本的冻结独立测试集。'}</p></div><button class="btn" onclick="openVersionEvaluation429('${esc(reportModel.algorithm_id)}','${esc(reportModel.version_id)}')">完整独立评测报告</button></header><div class="scn-metrics">${[['Precision',scenarioMetric(m.precision)],['Recall',scenarioMetric(m.recall)],['mAP50',scenarioMetric(m.map50)],['mAP50-95',scenarioMetric(m.map50_95)],['F1（类别宏平均）',scenarioMetric(f1)],['TP / FP / FN',[sum('true_positive'),sum('false_positive'),sum('false_negative')].map(n=>n===null?'未记录':n).join(' / ')]].map(([label,value])=>`<div><span>${label}</span><strong>${value}</strong></div>`).join('')}</div><div class="scn-provenance"><span>测试图片 ${Number.isFinite(e.image_count)?e.image_count:'未记录'}</span><span>评测时间 ${esc(e.finished_at||'未记录')}</span><span>基准 ${esc(scope.scope_id.slice(0,12))}</span><span>正式 GT ${esc(scope.ground_truth_digest.slice(0,12))}</span><span>冻结输入已核验</span></div><div id="scenarioAnalysis64"></div><div id="scenarioEvidence64"></div>`;
+    root.innerHTML=`<header class="scn-report-head"><div><h3>可信独立测试集评测 · ${esc(reportVersion.version_name||reportVersion.id)}</h3><p>${reportModel.version_id!==selected?.version_id?'当前选择版本尚无可信报告；以下明确展示该算法最近可信报告。':'指标来自当前版本的冻结独立测试集。'}</p></div><button class="btn" onclick="openVersionEvaluation429('${esc(reportModel.algorithm_id)}','${esc(reportModel.version_id)}')">完整独立评测报告</button></header><div class="scn-metrics">${[['Precision',scenarioMetric(m.precision)],['Recall',scenarioMetric(m.recall)],['mAP50',scenarioMetric(m.map50)],['mAP50-95',scenarioMetric(m.map50_95)],['F1（类别宏平均）',scenarioMetric(f1)],['TP / FP / FN',[sum('true_positive'),sum('false_positive'),sum('false_negative')].map(n=>n===null?'未记录':n).join(' / ')]].map(([label,value])=>`<div><span>${label}</span><strong>${value}</strong></div>`).join('')}</div><div class="scn-provenance"><span>测试图片 ${Number.isFinite(e.image_count)?e.image_count:'未记录'}</span><span>评测时间 ${esc(e.finished_at||'未记录')}</span><span>基准 ${esc(scope.scope_id.slice(0,12))}</span><span>正式 GT ${esc(scope.ground_truth_digest.slice(0,12))}</span><span>冻结输入已核验</span></div><details class="scn-trust"><summary>评测可信度与训练 / 验证 / Test 隔离依据</summary><p>测试来源 Snapshot：${esc(e.snapshot_id)} · 数据版本：${esc(e.dataset_revision_id)} · 计算协议：${esc(e.evaluation_protocol_id)}</p><p>冻结训练输入政策：${esc(scope.training_input_policy)}。上述指标仅对应本次 Test；不以验证集或快速检测结果代替。尚未证明的同源、近重复或相邻帧泄漏不能据高分排除。</p>${reportViews()?.metricCredibilityHtml?.(reportVersion.metric_credibility)||''}</details><div id="scenarioComparison64" role="status"></div><div id="scenarioEvidence64"></div><details id="scenarioAnalysis64" class="scn-analysis"><summary>类别指标、混淆矩阵与阈值曲线</summary><div data-scn-analysis-body></div></details>`;
     // Existing reports and frozen image API remain the evidence owners.
     const samples=e.error_samples||[];
     renderEvidenceWorkspace64(document.getElementById('scenarioEvidence64'),samples,'evaluation');
+    renderScenarioAnalysis64();renderScenarioComparison64();
   }
+  function renderScenarioAnalysis64(){
+    const details=document.getElementById('scenarioAnalysis64'),body=details?.querySelector('[data-scn-analysis-body]'),e=reportVersion?.evaluation;if(!body||!e)return;
+    reportViews()?.disposeReportViews?.(body);
+    const classes=e.per_class||[],pages=Math.max(1,Math.ceil(classes.length/100));classPage=Math.min(classPage,pages-1);
+    const curves=(e.confidence_curves||[]).filter(curve=>classes.some(row=>(curve.class_id!=null?row.class_id===curve.class_id:row.label===curve.label)&&Number(row.ground_truth_count)>0));
+    if(!curves.some(row=>String(row.class_id??row.label)===curveClass))curveClass=String(curves[0]?.class_id??curves[0]?.label??'');
+    const groups=reportViews()?.evaluationChartGroups?.(e,{classId:curveClass})||[];
+    const count=value=>Number.isFinite(value)?value:'未记录';
+    body.innerHTML=`<p>逐类指标来自冻结独立 Test；未覆盖类不参与宏平均。混淆矩阵采用跨类别置信度优先 IoU≥0.5，与逐类 TP/FP/FN 同类匹配分开解释。</p><div class="table-wrap"><table class="table" data-scn-class-metrics><thead><tr><th>类别 / GT</th><th>Precision</th><th>Recall</th><th>AP50</th><th>AP50-95</th><th>TP / FP / FN</th><th>证据</th></tr></thead><tbody>${classes.slice(classPage*100,(classPage+1)*100).map((row,i)=>{const covered=Number(row.ground_truth_count)>0;return `<tr><td>${esc(row.label)} · ${count(row.ground_truth_count)}${covered?'':' · 未覆盖'}</td>${['precision','recall','map50','map50_95'].map(key=>`<td>${scenarioMetric(row[key],{covered})}</td>`).join('')}<td>${['true_positive','false_positive','false_negative'].map(key=>count(row[key])).join(' / ')}</td><td><button class="btn small" onclick="scenarioShowClassEvidence64(${classPage*100+i})">查看框证据</button></td></tr>`}).join('')||'<tr><td colspan="7">未保存逐类别指标</td></tr>'}</tbody></table></div><div class="row"><button class="btn small" ${classPage===0?'disabled':''} onclick="scenarioAnalysisPage64(-1)">上一页类别</button><span>${classPage+1} / ${pages}</span><button class="btn small" ${classPage+1>=pages?'disabled':''} onclick="scenarioAnalysisPage64(1)">下一页类别</button><label>曲线类别<select class="select" data-scn-curve onchange="scenarioAnalysisClass64(this.value)">${curves.map(row=>`<option value="${esc(row.class_id??row.label)}" ${String(row.class_id??row.label)===curveClass?'selected':''}>${esc(row.label)}</option>`).join('')||'<option>无有GT覆盖的真实曲线</option>'}</select></label></div><div class="scn-analysis-charts">${groups.map(group=>`<section class="report-chart-card"><header><b>${esc(group.title)}</b></header><div class="report-interactive-chart" data-report-chart="${esc(group.key)}" role="img" aria-label="${esc(group.title)}"></div><div data-chart-fallback hidden>交互图表不可用；上方保留正式逐类指标，缺失曲线不补造。</div></section>`).join('')||'<p>历史报告未保存可验证的矩阵或曲线，不能由最终指标推算。</p>'}</div><p>PR为实际阈值采样曲线，非AP积分曲线；Confidence仅显示存在的真实阈值点。矩阵最多显示前20类和背景，点击只筛选已保留的样本；未保留图片不代表没有错误。</p>`;
+    const mount=()=>{if(details.open)void reportViews()?.mountEvaluationCharts?.(body,e,{classId:curveClass,onCell:cell=>{matrixCell=cell;issueFilter='';selectedIndex=0;const root=document.getElementById('scenarioEvidence64');renderEvidenceWorkspace64(root,e.error_samples||[],'evaluation');root?.scrollIntoView({block:'start'});}});};
+    details.ontoggle=mount;mount();
+  }
+  window.scenarioAnalysisClass64=value=>{curveClass=String(value);renderScenarioAnalysis64();};
+  window.scenarioAnalysisPage64=delta=>{classPage=Math.max(0,classPage+Number(delta));renderScenarioAnalysis64();};
+  window.scenarioShowClassEvidence64=index=>{const row=reportVersion?.evaluation?.per_class?.[index];if(!row)return;classFilter=Number.isInteger(row.class_id)?`id:${row.class_id}`:String(row.label);const root=document.getElementById('scenarioEvidence64');renderEvidenceWorkspace64(root,evidenceRows64('evaluation'),'evaluation');root?.scrollIntoView({block:'start'});};
+  window.scenarioClearMatrix64=()=>{matrixCell=null;const root=document.getElementById('scenarioEvidence64');renderEvidenceWorkspace64(root,evidenceRows64('evaluation'),'evaluation');};
+  const comparisonReasons64={benchmark_scope_mismatch:'冻结测试基准不同',benchmark_evidence_missing:'缺少冻结基准证据',benchmark_input_binding_missing:'测试输入未完成校验',evaluation_protocol_mismatch:'指标计算协议不同',class_identity_ambiguous:'类别身份不兼容',evaluation_missing:'缺少可信评测'};
+  function renderScenarioComparison64(){
+    const root=document.getElementById('scenarioComparison64');if(!root)return;
+    if(!document.querySelector('.scenario-workbench.bench350-comparison')){root.replaceChildren();return;}
+    if(comparison.loading){root.innerHTML='<div class="scn-comparison" role="status"><i class="loading-spinner"></i>正在核验同基准版本对比…</div>';return;}
+    const result=comparison.result;
+    if(!result?.comparable){root.innerHTML=`<div class="scn-comparison"><b>暂不可作准确率提升比较</b><p>${esc(comparison.error||(result?.reason_codes||[]).map(code=>comparisonReasons64[code]||code).join('；')||'请选择同算法另一个有可信独立评测的成功版本。')}</p>${comparison.error?'<button class="btn small" onclick="retryScenarioComparison64()">重试对比核验</button>':''}</div>`;return;}
+    const m=result.metrics||{};
+    root.innerHTML=`<div class="scn-comparison" data-scn-comparison-result><b>同冻结基准 · A ${esc(reportModel?.version_name||reportModel?.version_id)} 相对 B ${esc(comparison.model?.version_name||comparison.model?.version_id)}</b><div class="scn-comparison-metrics">${[['precision','Precision'],['recall','Recall'],['map50','mAP50'],['map50_95','mAP50-95']].map(([key,label])=>{const value=m[key];return `<span>${label}：${scenarioMetric(value?.before)} → ${scenarioMetric(value?.after)} · ${Number.isFinite(value?.delta)?reportViews().formatPercentagePointDelta(value.delta):'差异未记录'}</span>`}).join('')}</div><p>差异来自服务端同基准/协议/类别映射核验后的正式结果，以百分点（pp）表示；不推算生产准确率或相对提升百分比。</p></div>`;
+  }
+  async function loadScenarioComparison64(){
+    comparisonController?.abort();const controller=new AbortController();comparisonController=controller;const sequence=++comparisonSequence,project=String(pid()),a=selectedModel64('A'),b=selectedModel64('B'),origin=reportVersion;
+    comparison={};renderScenarioComparison64();
+    const updateEvidence=()=>{const root=document.getElementById('scenarioEvidence64');if(displayMode==='accuracy'&&root&&reportVersion)void renderSelectedEvidence64(root,'evaluation');};
+    updateEvidence();
+    if(!document.querySelector('.scenario-workbench.bench350-comparison')||!a||!b||!reportVersion)return;
+    if(a.algorithm_id!==b.algorithm_id||a.version_id===b.version_id||reportModel?.version_id!==a.version_id){comparison.error=a.algorithm_id!==b.algorithm_id?'严格评测比较仅支持同算法的成功版本；快速检测支持跨算法同图查看。':'请选择两个不同且各有可信报告的成功版本。';renderScenarioComparison64();updateEvidence();return;}
+    const version=(state.algorithms||[]).find(row=>row.id===b.algorithm_id)?.versions?.find(row=>row.id===b.version_id);
+    if(!evaluationTruth(version?.evaluation,b).trusted){comparison.error='对比版本没有可信独立评测，不能计算提升。';renderScenarioComparison64();updateEvidence();return;}
+    comparison={loading:true};renderScenarioComparison64();
+    const current=()=>sequence===comparisonSequence&&String(pid())===project&&reportVersion===origin&&modelIdentity64(selectedModel64('A'))===modelIdentity64(a)&&modelIdentity64(selectedModel64('B'))===modelIdentity64(b)&&!controller.signal.aborted&&!!document.querySelector('.scenario-workbench.bench350-comparison');
+    try{
+      const response=await withRequestDeadline(signal=>api(`/api/v12/projects/${project}/algorithms/${encodeURIComponent(a.algorithm_id)}/versions/${encodeURIComponent(a.version_id)}/evaluation/compare/${encodeURIComponent(b.version_id)}`,{signal}),{signal:controller.signal,label:'同基准版本对比'});
+      if(!current())return;const result=response.comparison;
+      if(!result||result.source_version_id!==b.version_id||result.current_version_id!==a.version_id)throw new Error('版本对比回执身份不一致');
+      comparison={result,model:b,version};
+    }catch(error){if(!current())return;comparison={error:String(error.message||error)};}
+    if(current()){renderScenarioComparison64();updateEvidence();}
+  }
+  window.retryScenarioComparison64=()=>loadScenarioComparison64();
   window.setScenarioMode64=function(mode){
     displayMode=mode==='quick'?'quick':'accuracy';
     document.querySelectorAll('[data-scenario-mode]').forEach(button=>button.setAttribute('aria-selected',String(button.dataset.scenarioMode===displayMode)));
     for(const [id,visible] of [['scenarioAccuracy64',displayMode==='accuracy'],['scenarioQuick64',displayMode==='quick']]){const node=document.getElementById(id);if(node)node.hidden=!visible;}
     if(displayMode==='accuracy'&&!reportLoading&&!reportVersion&&!reportError)void loadScenarioReport64();
+    if(displayMode==='accuracy'&&reportVersion)renderEvidenceWorkspace64(document.getElementById('scenarioEvidence64'),evidenceRows64('evaluation'),'evaluation');
+    if(displayMode==='quick'&&batch64())renderEvidenceWorkspace64(document.getElementById('scenarioQuickEvidence64'),evidenceRows64('quick'),'quick');
   };
   let evidenceController=null,evidenceObserver=null;
   const evidenceUrls=new Set();
   function revokeEvidenceUrls64(){evidenceController?.abort();evidenceObserver?.disconnect();evidenceObserver=null;for(const url of evidenceUrls)URL.revokeObjectURL(url);evidenceUrls.clear();}
   function evidenceRows64(kind){return kind==='evaluation'?(reportVersion?.evaluation?.error_samples||[]):(batch64()?.results||[]);}
   function filteredEvidence64(kind){
-    return evidenceRows64(kind).map((row,index)=>({row,index})).filter(({row})=>kind!=='evaluation'||!issueFilter||sampleIssueKinds(row).includes(issueFilter));
+    return evidenceRows64(kind).map((row,index)=>({row,index})).filter(({row})=>kind!=='evaluation'||((!issueFilter||sampleIssueKinds(row,{evaluation:reportVersion?.evaluation}).includes(issueFilter))&&(!matrixCell||matrixCell.images?.includes(row.image))));
   }
   function thumbnailUrl64(row,kind){
     if(kind==='evaluation'){
@@ -104,13 +158,14 @@ export function installQualityDetectionWorkbench({getState,api,toast,modal,close
     return row.previewUrl||row.inputImageUrl||row.a?.r?.input_image_url||row.b?.r?.input_image_url||'';
   }
   function renderEvidenceWorkspace64(root,rows,kind){
-    if(!root)return;
+    if(!root||(kind==='evaluation'?displayMode!=='accuracy':displayMode!=='quick'))return;
     root.dataset.evidenceKind=kind;
     const choices=filteredEvidence64(kind),pages=Math.max(1,Math.ceil(choices.length/24));
     if(!choices.some(item=>item.index===selectedIndex))selectedIndex=choices[0]?.index||0;
     const selectedPage=Math.max(0,Math.floor(choices.findIndex(item=>item.index===selectedIndex)/24));
     const labels=[...new Set(rows.flatMap(row=>kind==='evaluation'?[...(row.gt_boxes||[]),...(row.pred_boxes||[])]:[...(row.a?.r?.detections||[]),...(row.b?.r?.detections||[])]).map(box=>String(box.label||'')).filter(Boolean))];
-    root.innerHTML=`<div class="scn-evidence-tools"><div class="row"><button class="btn small" onclick="scenarioEvidenceLayout64('grid')" aria-pressed="${listMode==='grid'}">图片网格</button><button class="btn small" onclick="scenarioEvidenceLayout64('list')" aria-pressed="${listMode==='list'}">图片列表</button><label>类别<select class="select" data-scn-class onchange="scenarioEvidenceFilter64('class',this.value)"><option value="">全部类别</option>${labels.map(label=>`<option ${label===classFilter?'selected':''}>${esc(label)}</option>`).join('')}</select></label>${kind==='evaluation'?`<label>问题类型<select class="select" data-scn-issue onchange="scenarioEvidenceFilter64('issue',this.value)">${[['','全部证据'],['fp','误检'],['fn','漏检'],['wrong_class','类别错误'],['localization','定位偏差'],['low_confidence','低置信度']].map(([value,name])=>`<option value="${value}" ${value===issueFilter?'selected':''}>${name}</option>`).join('')}</select></label>`:''}</div><div class="row"><label><input type="checkbox" ${showPred?'checked':''} onchange="scenarioEvidenceFilter64('pred',this.checked)">预测框</label><label><input type="checkbox" ${showGT?'checked':''} ${kind==='evaluation'?'':'disabled'} onchange="scenarioEvidenceFilter64('gt',this.checked)">正式 GT</label><label>显示阈值<input class="input" data-scn-confidence type="number" value="${confidence}" min="0" max="1" step=".05" onchange="scenarioEvidenceFilter64('confidence',this.value)"></label><button class="btn small" onclick="scenarioEvidenceZoom64(-.25)" aria-label="缩小图片">−</button><button class="btn small" onclick="scenarioEvidenceZoom64(.25)" aria-label="放大图片">＋</button><button class="btn small" onclick="scenarioEvidenceZoom64(0)">适应窗口</button></div></div><div class="scn-inspection"><aside class="scn-queue ${listMode}" aria-label="图片结果队列">${choices.slice(selectedPage*24,(selectedPage+1)*24).map(({row,index})=>`<button class="scn-sample ${index===selectedIndex?'selected':''}" data-scn-sample="${index}" onclick="scenarioSelectSample64(${index})"><span class="scn-thumb" data-scn-thumb="${index}">${thumbnailUrl64(row,kind)?`<img src="${esc(thumbnailUrl64(row,kind))}" loading="lazy" alt="${esc(row.image||row.file?.name||'图片缩略图')}" onerror="this.hidden=true;this.parentElement.dataset.imageError='图片不可用'">`: ''}${kind==='evaluation'?`<b>${Number(row.fp_count||0)} FP · ${Number(row.fn_count||0)} FN</b>`:`<b>${({done:'完成',failed:'失败',running:'检测中',pending:'排队'})[row.status]||row.status}</b>`}</span><strong title="${esc(row.image||row.file?.name||'')}">${esc(row.image||row.file?.webkitRelativePath||row.file?.name||'图片')}</strong></button>`).join('')||'<div class="scn-empty">暂无匹配图片；未记录的错误类型不能由前端猜测。</div>'}<div class="scn-pagination"><button class="btn small" ${selectedPage===0?'disabled':''} onclick="scenarioEvidencePage64(-1)">上一页</button><span>${selectedPage+1}/${pages}</span><button class="btn small" ${selectedPage+1>=pages?'disabled':''} onclick="scenarioEvidencePage64(1)">下一页</button></div></aside><section class="scn-image-workspace"><div class="scn-image-navigation"><button class="btn small" ${choices.findIndex(item=>item.index===selectedIndex)<=0?'disabled':''} onclick="scenarioStepSample64(-1)">上一张</button><span>${choices.length?choices.findIndex(item=>item.index===selectedIndex)+1:0} / ${choices.length}</span><button class="btn small" ${choices.findIndex(item=>item.index===selectedIndex)>=choices.length-1?'disabled':''} onclick="scenarioStepSample64(1)">下一张</button></div><div class="scn-stages" data-scn-stages></div></section><aside class="scn-box-details" data-scn-box-details><h4>检测框与复核</h4><p>选择图片后查看真实框证据。</p></aside></div>`;
+    const classOptions=kind==='evaluation'?(reportVersion.evaluation.per_class||[]).map(row=>({value:Number.isInteger(row.class_id)?`id:${row.class_id}`:String(row.label),name:row.label})):labels.map(label=>({value:label,name:label}));
+    root.innerHTML=`${kind==='evaluation'?`<div class="scn-evidence-counts">${[['tp','已匹配 TP'],['fp','误检 FP'],['fn','漏检 FN']].map(([key,label])=>`<button class="btn small" aria-pressed="${issueFilter===key}" onclick="scenarioEvidenceFilter64('issue','${key}')">${label}</button>`).join('')}<span>仅筛选已保存证据（最多200图、每层120框），不代表完整测试集。</span>${matrixCell?'<button class="btn small" onclick="scenarioClearMatrix64()">清除矩阵筛选</button>':''}</div>`:''}<div class="scn-evidence-tools"><div class="row"><button class="btn small" onclick="scenarioEvidenceLayout64('grid')" aria-pressed="${listMode==='grid'}">图片网格</button><button class="btn small" onclick="scenarioEvidenceLayout64('list')" aria-pressed="${listMode==='list'}">图片列表</button><label>类别<select class="select" data-scn-class onchange="scenarioEvidenceFilter64('class',this.value)"><option value="">全部类别</option>${classOptions.map(row=>`<option value="${esc(row.value)}" ${row.value===classFilter?'selected':''}>${esc(row.name)}</option>`).join('')}</select></label>${kind==='evaluation'?`<label>问题类型<select class="select" data-scn-issue onchange="scenarioEvidenceFilter64('issue',this.value)">${[['','全部证据'],['tp','已匹配 TP'],['fp','误检'],['fn','漏检'],['wrong_class','类别错误'],['localization','定位待复核'],['low_confidence','低置信度（<0.5）']].map(([value,name])=>`<option value="${value}" ${value===issueFilter?'selected':''}>${name}</option>`).join('')}</select></label>`:''}</div><div class="row"><label><input type="checkbox" ${showPred?'checked':''} onchange="scenarioEvidenceFilter64('pred',this.checked)">预测框</label><label><input type="checkbox" ${showGT?'checked':''} ${kind==='evaluation'?'':'disabled'} onchange="scenarioEvidenceFilter64('gt',this.checked)">正式 GT</label><label>显示阈值<input class="input" data-scn-confidence type="number" value="${confidence}" min="0" max="1" step=".05" onchange="scenarioEvidenceFilter64('confidence',this.value)"></label><button class="btn small" onclick="scenarioEvidenceZoom64(-.25)" aria-label="缩小图片">−</button><button class="btn small" onclick="scenarioEvidenceZoom64(.25)" aria-label="放大图片">＋</button><button class="btn small" onclick="scenarioEvidenceZoom64(0)">适应窗口</button></div></div><div class="scn-inspection"><aside class="scn-queue ${listMode}" aria-label="图片结果队列">${choices.slice(selectedPage*24,(selectedPage+1)*24).map(({row,index})=>`<button class="scn-sample ${index===selectedIndex?'selected':''}" data-scn-sample="${index}" onclick="scenarioSelectSample64(${index})"><span class="scn-thumb" data-scn-thumb="${index}">${thumbnailUrl64(row,kind)?`<img src="${esc(thumbnailUrl64(row,kind))}" loading="lazy" alt="${esc(row.image||row.file?.name||'图片缩略图')}" onerror="this.hidden=true;this.parentElement.dataset.imageError='图片不可用'">`: ''}${kind==='evaluation'?`<b>${Number(row.fp_count||0)} FP · ${Number(row.fn_count||0)} FN</b>`:`<b>${({done:'完成',failed:'失败',running:'检测中',pending:'排队'})[row.status]||row.status}</b>`}</span><strong title="${esc(row.image||row.file?.name||'')}">${esc(row.image||row.file?.webkitRelativePath||row.file?.name||'图片')}</strong></button>`).join('')||'<div class="scn-empty">暂无匹配图片；未记录的错误类型不能由前端猜测。</div>'}<div class="scn-pagination"><button class="btn small" ${selectedPage===0?'disabled':''} onclick="scenarioEvidencePage64(-1)">上一页</button><span>${selectedPage+1}/${pages}</span><button class="btn small" ${selectedPage+1>=pages?'disabled':''} onclick="scenarioEvidencePage64(1)">下一页</button></div></aside><section class="scn-image-workspace"><div class="scn-image-navigation"><button class="btn small" ${choices.findIndex(item=>item.index===selectedIndex)<=0?'disabled':''} onclick="scenarioStepSample64(-1)">上一张</button><span>${choices.length?choices.findIndex(item=>item.index===selectedIndex)+1:0} / ${choices.length}</span><button class="btn small" ${choices.findIndex(item=>item.index===selectedIndex)>=choices.length-1?'disabled':''} onclick="scenarioStepSample64(1)">下一张</button></div><div class="scn-stages" data-scn-stages></div></section><aside class="scn-box-details" data-scn-box-details><h4>检测框与复核</h4><p>选择图片后查看真实框证据。</p></aside></div>`;
     renderSelectedEvidence64(root,kind);
   }
   function activeEvidence64(){return document.querySelector(displayMode==='accuracy'?'#scenarioEvidence64':'#scenarioQuickEvidence64');}
@@ -120,7 +175,7 @@ export function installQualityDetectionWorkbench({getState,api,toast,modal,close
   window.scenarioEvidenceLayout64=function(mode){listMode=mode==='list'?'list':'grid';const root=activeEvidence64();if(root)renderEvidenceWorkspace64(root,evidenceRows64(root.dataset.evidenceKind),root.dataset.evidenceKind);};
   window.scenarioEvidenceFilter64=function(key,value){
     if(key==='class')classFilter=String(value);if(key==='confidence')confidence=Math.max(0,Math.min(1,Number(value)||0));
-    if(key==='issue'){issueFilter=String(value);selectedIndex=0;}if(key==='pred')showPred=!!value;if(key==='gt')showGT=!!value;
+    if(key==='issue'){issueFilter=String(value);matrixCell=null;selectedIndex=0;}if(key==='pred')showPred=!!value;if(key==='gt')showGT=!!value;
     const root=activeEvidence64();if(root)renderEvidenceWorkspace64(root,evidenceRows64(root.dataset.evidenceKind),root.dataset.evidenceKind);
   };
   window.scenarioEvidenceZoom64=function(delta){zoom=delta===0?1:Math.max(.25,Math.min(4,zoom+delta));const root=activeEvidence64();root?.querySelectorAll('.scn-stage figure').forEach(fitStage64);};
@@ -133,7 +188,7 @@ export function installQualityDetectionWorkbench({getState,api,toast,modal,close
   function drawStageBoxes64(figure,boxes,width,height){
     const svg=figure.querySelector('svg');if(!svg)return;
     svg.setAttribute('viewBox',`0 0 ${width} ${height}`);
-    svg.innerHTML=boxes.filter(row=>(row.layer==='gt'?showGT:showPred)).map((row,index)=>{
+    svg.innerHTML=boxes.map((row,index)=>({row,index})).filter(({row})=>(row.layer==='gt'?showGT:showPred)).map(({row,index})=>{
       const box=row.box||[row.x1,row.y1,row.x2,row.y2],color=row.layer==='gt'?'#16a34a':'#2563eb';
       if(box.some((n,i)=>n<0||n>(i%2?height:width)))return '';
       return `<g role="button" tabindex="0" data-box-index="${index}" aria-label="${esc(row.label)} ${row.layer==='gt'?'正式GT':'预测'}"><rect x="${box[0]}" y="${box[1]}" width="${box[2]-box[0]}" height="${box[3]-box[1]}" fill="${color}" fill-opacity=".05" stroke="${color}" stroke-width="${Math.max(1,width/500)}" vector-effect="non-scaling-stroke"/><text x="${box[0]}" y="${Math.max(12,box[1]-4)}" fill="${color}" font-size="${Math.max(12,width/65)}">${esc(row.label)}${Number.isFinite(row.confidence)?` ${(row.confidence*100).toFixed(1)}%`:''}</text></g>`;
@@ -146,19 +201,22 @@ export function installQualityDetectionWorkbench({getState,api,toast,modal,close
     revokeEvidenceUrls64();const controller=new AbortController();evidenceController=controller;
     const row=evidenceRows64(kind)[selectedIndex],host=root.querySelector('[data-scn-stages]'),aside=root.querySelector('[data-scn-box-details]');if(!row||!host)return;
     const project=String(pid()),current=()=>root.isConnected&&String(pid())===project&&!controller.signal.aborted;
-    const panels=kind==='evaluation'?[{side:'A',title:reportVersion.version_name||reportVersion.id,sample:row,model:reportModel}]:[['A',row.a],['B',row.b]].filter(([,value])=>value).map(([side,value])=>({side,title:resultName64(value,side),sample:{pred_boxes:value.r?.detections||[]},url:row.inputImageUrl||value.r?.input_image_url||row.previewUrl||'',value}));
+    const panels=kind==='evaluation'?[{side:'A',title:reportVersion.version_name||reportVersion.id,sample:row,model:reportModel,evaluation:reportVersion.evaluation}]:[['A',row.a],['B',row.b]].filter(([,value])=>value).map(([side,value])=>({side,title:resultName64(value,side),sample:{pred_boxes:value.r?.detections||[]},url:row.inputImageUrl||value.r?.input_image_url||row.previewUrl||'',value}));
+    if(kind==='evaluation'&&comparison.result?.comparable&&comparison.version){const other=(comparison.version.evaluation.error_samples||[]).find(sample=>sameFrozenSample(row,sample));if(other)panels.push({side:'B',title:comparison.version.version_name||comparison.version.id,sample:other,model:comparison.model,evaluation:comparison.version.evaluation});}
     if(!panels.length){host.innerHTML=`<div class="scn-empty" role="status"><b>${row.status==='failed'?'检测失败':row.status==='running'?'正在处理图片':row.status==='unknown'?'创建结果待核验':'等待检测结果'}</b><p>${esc(row.error||'真实任务完成后会直接显示首张图片。')}</p></div>`;return;}
     host.classList.toggle('paired',panels.length>1);host.innerHTML=panels.map(panel=>`<section><header>${esc(panel.side)} · ${esc(panel.title)}</header><div class="scn-stage"><p role="status">正在读取图片…</p><figure data-side="${panel.side}" hidden><img alt="${esc(row.image||row.file?.name||'检测原图')}" decoding="async"><svg hidden aria-label="预测与正式GT检测框" preserveAspectRatio="none"></svg></figure><button class="btn small" data-scn-image-retry hidden onclick="scenarioSelectSample64(${selectedIndex})">重试图片</button></div></section>`).join('');
     let detail='<h4>检测框与复核</h4>';
     for(const panel of panels){
-      const gt=visibleEvidenceBoxes(panel.sample.gt_boxes||[],{label:classFilter}).map(box=>({...box,layer:'gt'}));
-      const pred=visibleEvidenceBoxes(panel.sample.pred_boxes||[],{label:classFilter,confidence,prediction:true}).map(box=>({...box,layer:'pred'}));
+      const boxFilter=classFilter.startsWith('id:')?{classId:Number(classFilter.slice(3))}:{label:classFilter};
+      const gt=visibleEvidenceBoxes(panel.sample.gt_boxes||[],boxFilter).map(box=>({...box,layer:'gt'}));
+      const pred=visibleEvidenceBoxes(panel.sample.pred_boxes||[],{...boxFilter,confidence,prediction:true}).map(box=>({...box,layer:'pred'}));
       panel.boxes=[...gt,...pred];
       detail+=`<h5>${esc(panel.side)} · 正式 GT ${kind==='evaluation'?(panel.sample.gt_boxes?.length??'未记录'):'不可用'} / 预测 ${panel.sample.pred_boxes?.length??'未记录'}</h5>${panel.boxes.map((box,index)=>`<button class="scn-box-row" data-scn-box="${panel.side}:${index}"><b>${box.layer==='gt'?'GT':'预测'} · ${esc(box.label)}</b><span>${Number.isFinite(box.confidence)?`置信度 ${(box.confidence*100).toFixed(1)}%`:'未记录置信度'}${kind==='evaluation'?` · ${typeof box.matched==='boolean'?(box.matched?'已匹配':box.layer==='gt'?'漏检':'误检'):'未记录匹配关系'}`:''}</span><small>[${(box.box||[box.x1,box.y1,box.x2,box.y2]).map(n=>Number(n).toFixed(1)).join(', ')}]</small></button>`).join('')||'<p>暂无符合筛选条件的真实框。</p>'}`;
     }
-    if(kind==='evaluation')detail+='<p>冻结独立测试证据只读。显示阈值只过滤可视框，不重算正式指标；历史截断框不能补造。</p>';
+    if(kind==='evaluation')detail+=`<p>冻结独立测试证据只读。显示阈值只过滤可视框，不重算正式指标；历史截断框不能补造。定位待复核是同类未匹配框的0&lt;IoU&lt;0.5几何线索，并非正式错误指标。低置信度仅指真实预测&lt;0.5。</p>${comparison.result?.comparable&&panels.length<2?'<p class="scn-comparison-missing">对比版本未保留本图同身份框证据，不能用空框推断正确检出。</p>':''}`;
     else detail+=`<div class="scn-human-review"><b>人工主观复核 · 与正式指标分开</b><span id="benchReviewStatus64">${esc(REVIEW_NAMES64[row.review]||'尚未核验')}</span>${[['A',row.a],['B',row.b]].filter(([,value])=>canSubmitBenchFeedback64(value)).map(([side])=>`<button class="btn small" onclick="openBenchFeedback64(${selectedIndex},'${side}')">${side} · 提交抽检反馈</button>`).join('')}${Object.entries(REVIEW_NAMES64).map(([key,label])=>`<button class="btn small" onclick="markBenchReview64(${selectedIndex},'${key}')">${label}</button>`).join('')}</div>`;
     aside.innerHTML=detail;
+    aside.onclick=event=>{const button=event.target.closest('[data-scn-box]');if(!button)return;const [side,index]=button.dataset.scnBox.split(':'),target=host.querySelector(`figure[data-side="${side}"] svg [data-box-index="${index}"]`);aside.querySelectorAll('[data-scn-box]').forEach(node=>node.classList.toggle('selected',node===button));target?.focus();};
     const scrollPanels=[...host.querySelectorAll('.scn-stage')];let syncing=false;
     scrollPanels.forEach(source=>source.addEventListener('scroll',()=>{if(syncing)return;syncing=true;for(const target of scrollPanels)if(target!==source){target.scrollLeft=source.scrollLeft/Math.max(1,source.scrollWidth-source.clientWidth)*(target.scrollWidth-target.clientWidth);target.scrollTop=source.scrollTop/Math.max(1,source.scrollHeight-source.clientHeight)*(target.scrollHeight-target.clientHeight);}syncing=false;},{signal:controller.signal}));
     for(const panel of panels){
@@ -166,7 +224,7 @@ export function installQualityDetectionWorkbench({getState,api,toast,modal,close
       try{
         let url=panel.url;
         if(kind==='evaluation'){
-          const e=reportVersion.evaluation,sample=panel.sample;
+          const e=panel.evaluation,sample=panel.sample;
           if(!sample.image_id||!sample.image_content_sha256)throw new Error('历史图片缺少可验证身份，不能加载同名图片');
           const query=new URLSearchParams({expected_evaluation_id:e.evaluation_id,expected_image_id:sample.image_id,expected_sha256:sample.image_content_sha256});
           const path=`/api/v12/projects/${project}/algorithms/${encodeURIComponent(panel.model.algorithm_id)}/versions/${encodeURIComponent(panel.model.version_id)}/evaluation/images/${encodeURIComponent(sample.image)}?${query}`;
@@ -414,7 +472,7 @@ export function installQualityDetectionWorkbench({getState,api,toast,modal,close
     const root=document.querySelector('[data-quality-detection-shell="1"]');if(!root)return;
     const enabled=!!show;root.classList.toggle('bench350-comparison',enabled);
     const button=document.getElementById('benchAddCompare64');if(button)button.textContent=enabled?'移除对比模型':'＋ 添加对比模型';
-    const select=document.getElementById('benchMode64');if(select)select.value=enabled?'compare':'a';
+    const select=document.getElementById('benchMode64');if(select)select.value=enabled?'compare':'a';void loadScenarioComparison64();
   };
   window.syncBenchComparisonMode64=function(value){
     const root=document.querySelector('[data-quality-detection-shell="1"]');if(root)root.classList.toggle('bench350-comparison',value==='compare'||value==='b');
@@ -447,6 +505,6 @@ export function installQualityDetectionWorkbench({getState,api,toast,modal,close
     void window.loadDetectionBatches64();window.renderOnlineFeedbackPanel63?.(view);
   };
 
-  function deactivate64(){reportController?.abort();reportSequence++;reportLoading=false;reportError='';reportVersion=null;reportModel=null;batchOpenSequence++;revokeEvidenceUrls64();}
+  function deactivate64(){comparisonController?.abort();comparisonSequence++;comparison={};reportViews()?.disposeReportViews?.(document.querySelector('.scenario-workbench'));reportController?.abort();reportSequence++;reportLoading=false;reportError='';reportVersion=null;reportModel=null;batchOpenSequence++;revokeEvidenceUrls64();}
   return {render:window.renderQualityDetectionBench64,deactivate:deactivate64,destroy:deactivate64};
 }

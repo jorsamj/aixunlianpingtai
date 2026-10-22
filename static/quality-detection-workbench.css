@@ -52,3 +52,7 @@
 
 .scenario-workbench:not(.bench350-comparison) #benchMode64{display:none}
 .scenario-workbench #benchMode64{width:155px}
+
+.scenario-workbench .scn-analysis{border:1px solid var(--scn-border);border-radius:12px;background:#fff;padding:16px}.scenario-workbench .scn-analysis>summary{cursor:pointer;font-weight:600}.scenario-workbench .scn-analysis [data-scn-analysis-body]{display:grid;gap:14px;margin-top:16px;min-width:0}.scenario-workbench .scn-analysis-charts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.scenario-workbench .scn-analysis-charts>section:first-child{grid-column:1/-1}.scenario-workbench .report-interactive-chart{height:360px}.scenario-workbench .scn-analysis .row{flex-wrap:wrap}.scenario-workbench .scn-evidence-counts{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin:12px 0}.scenario-workbench .scn-evidence-counts>span{font-size:11px;color:#64748b}.scenario-workbench .scn-comparison{margin:12px 0;padding:14px;border:1px solid #cdddff;border-radius:10px;background:#f5f9ff}.scenario-workbench .scn-comparison-metrics{display:flex;flex-wrap:wrap;gap:10px;margin:10px 0;font-size:12px}.scenario-workbench .scn-comparison-missing{color:#946020}.scenario-workbench .scn-box-row:focus-visible{outline:2px solid #2563eb}.scenario-workbench .scn-stage g:focus{outline:none}@media(max-width:900px){.scenario-workbench .scn-analysis-charts{grid-template-columns:1fr}}
+
+.scenario-workbench .scn-trust{padding:10px 0;font-size:12px;overflow-wrap:anywhere}.scenario-workbench .scn-trust>summary{cursor:pointer;color:#526c91}

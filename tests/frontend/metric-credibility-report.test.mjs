@@ -26,7 +26,7 @@ test('report and evaluation share one server-truth presentation, not client-side
   const reports=readFileSync(new URL('../../static/modules/reports.js',import.meta.url),'utf8');
   assert.match(reports,/metricCredibilityHtml\(report\.metric_credibility\)/);
   assert.match(app, /metricCredibilityHtml\(v\?\.metric_credibility\)/);
-  assert.match(main, /reports: \{reportPresentation, metricChart, trainingCharts, formatPercentagePointDelta, metricCredibilityHtml, chatGPTAnalysisMaterial, trainingReportHtml, mountTrainingReport, mountReportCharts, disposeReportViews, lineageReportHtml\}/);
+  assert.match(main, /reports: \{reportPresentation, metricChart, trainingCharts, formatPercentagePointDelta, metricCredibilityHtml, chatGPTAnalysisMaterial, trainingReportHtml, mountTrainingReport, mountReportCharts, evaluationChartGroups, mountEvaluationCharts, disposeReportViews, lineageReportHtml\}/);
 });
 
 test('older reports remain explicitly unverified, no inferred or fake numeric evidence', () => {

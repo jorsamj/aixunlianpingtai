@@ -462,6 +462,10 @@ jobs:
           tests/browser/overview-tabs.spec.mjs
           tests/browser/prison-night-isolation.spec.mjs
           tests/browser/quality-detection-workbench.spec.mjs
+          tests/browser/scenario-evaluation-workspace.spec.mjs
+          tests/browser/scenario-evaluation-analysis.spec.mjs
+          tests/browser/material-workspace-ui.spec.mjs
+          tests/browser/annotation-ui-governance.spec.mjs
           tests/browser/training-evaluation-diagnostics.spec.mjs
           tests/browser/navigation-readiness.spec.mjs
           tests/browser/training-label-selector.spec.mjs

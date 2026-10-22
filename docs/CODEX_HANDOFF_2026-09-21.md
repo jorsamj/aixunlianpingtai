@@ -1,3 +1,7 @@
+## 2026-10-22｜场景评估、素材与标注UI（定向通过，整体回归/CI进行中）
+
+唯一需求/进度/问题/截图：[本轮专项](SCENARIO_MODEL_EVALUATION_UI_GOVERNANCE_2026_10_22.md)。P0分别提交1f606d30/13c70368/b8d04f04；正式训练资格贯穿原Worker/Agent、双模式内联框证据、素材同Owner网格/列表、标注唯一审核/正式色/居中已实现。P1复用原ECharts与严格同基准比较；VERSION42.24.377，Node1295/Python212及新P1 Chrome12通过，完整Chrome352及最终SHA全部CI待验。未生产部署/数据/权重写入/GPU；从唯一专项接续，禁止重复建Owner，生产真实精度与许可仍需独立核验。
+
 ## 2026-10-22｜训练创建按需准入与Loading（代码及隔离CI已验收）
 
 唯一专项：[生命周期治理第十一节](TRAINING_MATERIAL_LIFECYCLE_GOVERNANCE_2026_10_21.md)。打开/编辑保持安静，仅“开始训练”触发原完整准入与创建；有效阻塞才显示原因，草稿/项目/Modal过期及网络错误隔离。旧自动弹窗/自动正式复检触发被本轮用户要求覆盖，后端与删除GT合同保留。VERSION42.24.376，Node1239通过/Python126通过2环境skip，本地Chrome59独立场景分批通过；实现c0163347287beeca1e3e52fa0e42c71c423527bc实际41/41 Actions、114/114 Checks通过，CI Chrome207/207及first-open15/15；本次文档HEAD自身仍须独立CI。禁止改Uppy/UploadTaskCenter实现，未生产部署/写入/GPU。接续从原submit/summary及新增on-demand Chrome开始，完整RED/问题/限制见唯一专项。

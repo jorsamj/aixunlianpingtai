@@ -28,20 +28,20 @@
 | 任务 | 优先级与模块 | 状态 | 已完成/剩余与风险 | 提交/验收 |
 |---|---|---|---|---|
 | SCN-A 现有合同及重复Owner审计 | P0 app.py/algorithms/training_evaluation/inference_tasks | 已验收 | 已确认资格及UI缺口；补完整产物/任务/冻结API映射 | 基线c376be7d，未新增提交 |
-| SCN-01 正式模型资格及后端强制 | P0 原test_models与v61入口/平台合同 | 已完成待验收 | 增场景专用范围，非法/失败/不关联/母模型/任意PT/伪best/只转换都拒绝；成功多版本最新默认 | 相关API动态测试待RED |
-| SCN-02 两模式和内联检测工作台 | P0 原v64 UI/原任务API | 已完成待验收 | 保留原历史/反馈，真实任务进度、防重和跨项目迟到隔离；算法/版本/可选B、首张直显、SVG图层与框详情 | Node与Chrome待RED；专用模型接口依赖SCN-01 |
-| MAT-UI 素材视觉与必要反馈 | 独立P0 card412/material-pagination/CSS | 已完成待验收 | 三视口、横竖方图/长名多类/坏图/网格列表/操作与弹窗；上传GT规则不改 | 前后截图/独立提交待验 |
-| ANN-UI 原标注交互规范 | 独立P0 annotorious-editor/原review/NegativeSample | 已完成待验收 | 唯一右侧显式确认、正式颜色、居中与视角、三栏UI；空GT/版本/负样本守卫必须保留 | 前后截图/Node/Python/Chrome待RED |
-| SCN-03 真实指标与交互分析 | P1 原reports/ECharts/evaluation合同 | 未开始 | 仅P0通过后；未覆盖/缺证据/不同比较禁止虚假指标 | 原评测计算交叉验证待验 |
-| SCN-F 最终回归、版本及精确CI | P0/P1 原工作流/交接文档 | 未开始 | Python、Node、Chrome及相关旧回归；单次版本升级；正常推送前复核并行变化 | 最终SHA全部Actions/Checks尚未运行 |
+| SCN-01 正式模型资格及后端强制 | P0 原test_models与v61/Worker/Agent | 已完成待验收 | 专用资格、来源/字节/持久分类复验完成；通用目录不改；固有TOCTOU限制见记录 | 1f606d30；场景54、相关145通过；最终CI待验 |
+| SCN-02 两模式和内联检测工作台 | P0 原v64 UI/原任务API | 已完成待验收 | 原Task/Poll/历史/反馈复用，项目/迟到/未知锁与真实SVG回归通过 | 1f606d30；Chrome11通过，最终CI待验 |
+| MAT-UI 素材视觉与必要反馈 | 独立P0 原素材Owner/CSS | 已完成待验收 | grid/list同DOM、原比例媒体面、坏图重试及三视口截图；原GT/API不改 | 13c70368；Node28/Chrome4及原治理/分页/上传通过；最终CI待验 |
+| ANN-UI 原标注交互规范 | 独立P0 原Editor/review/NegativeSample | 已完成待验收 | 唯一显式审核、正式色即时同步、居中/手动视角、坏图原重试；GT/CAS保留 | b8d04f04；原workbench23、最终14/15组合通过；最终CI待验 |
+| SCN-03 真实指标与交互分析 | P1 原reports/ECharts/evaluation合同 | 已完成待验收 | 原真实matrix/curves、未覆盖类、只读诊断、同基准pp及同图AB，组件单URL/单Owner | 新Chrome12及AB同步补测通过；最终CI待验 |
+| SCN-F 最终回归、版本及精确CI | P0/P1 原工作流/接续文档 | 进行中 | VERSION377；Node1295/Python212通过，完整Chrome352正在执行；原CI补新用例 | 最终推送SHA/全部Actions与Checks待验 |
 
 ### 执行检查清单
 
-- [ ] 审计原资格/TaskRepository/ModelArtifact/Version关系，记录可复用函数；建立前后端非法资格RED。
-- [ ] 专用模型范围只从服务端已验证成果投影；原v61受场景合同约束，Worker执行前继续核验来源；动态API测合法/伪造/跨项目/漂移/历史。
-- [ ] 原v64展示迁出并安装同一Owner；原api与benchPredictOne复用；两模式、选择/内联图片/列表/历史、取消/失效/防重与无GT明确呈现；Node真实DOM与Chrome走原任务链。
-- [ ] 素材坏图、间距/网格列表/toolbar及相关弹窗在原Owner修复；先截图/失败断言，后3分辨率回归，独立提交。
-- [ ] 标注先fit/颜色/重复确认RED，修原Editor与审核；3分辨率截图与GT保存/并发/负样本/快捷键回归，独立提交。
+- [x] 审计原资格/TaskRepository/ModelArtifact/Version关系，记录可复用函数；建立前后端非法资格RED。
+- [x] 专用模型范围只从服务端已验证成果投影；原v61受场景合同约束，Worker执行前继续核验来源；动态API测合法/伪造/跨项目/漂移/历史。
+- [x] 原v64展示迁出并安装同一Owner；原api与benchPredictOne复用；两模式、选择/内联图片/列表/历史、取消/失效/防重与无GT明确呈现；Node真实DOM与Chrome走原任务链。
+- [x] 素材坏图、间距/网格列表/toolbar及相关弹窗在原Owner修复；先截图/失败断言，后3分辨率回归，独立提交。
+- [x] 标注先fit/颜色/重复确认RED，修原Editor与审核；3分辨率截图与GT保存/并发/负样本/快捷键回归，独立提交。
 - [ ] P0实际通过后接真实报告P1：身份、原矩阵/曲线、错误样本/GT层、版本同基准比较；任何缺失不造值，样本按需分页/取消。
 - [ ] 记录实际测试命令/通过失败跳过、RED修复与遗留；一次版本升级、必要缓存与守卫同步；更新AGENTS及四份handoff，推送后最终SHA逐条CI核验。
 
@@ -126,3 +126,41 @@
 
 - MAT独立提交13c7036898c00ea1b5626986ac0115a5d6644c69，原素材/GT/API不改，最终整体CI尚待。
 - ANN独立提交准备：包含唯一右侧显式审核、正式颜色及管理保存即时sync、fit居中/resize保持手动视角/小图zoom方向、原坏图retry与GT版本保护；清除旧annotation-only覆盖，三桌面before/after六图已归档。最终全Node1273/1273与ANN相关实际Chrome组合证据如上，未借旧green。
+
+### P1实现、审查与真实回归（最终CI待验）
+
+- ANN独立提交b8d04f0467d0eff8070413a7142da93ecc0b8c57，三P0本地门槛通过后才进入P1；最新fetch远端仍c376be7d，其他工作树不动。
+- P1 Chrome首RED为可信报告analysis空白；reports新增图表接口先7个RED，再扩展新10/原29共39通过。纯诊断5通过9失败→16/16，类别ID0/同名不同ID不串；TP/FP/FN只用正式matched/count，错类只用原矩阵protocol+images，低置信真实<0.5，定位仅同类unmatched0<IoU<0.5只读待复核，不变更正式评测值。
+- 原reports.js单loader/registry/ResizeObserver/dispose扩展至evaluationChartGroups/mountEvaluationCharts；最多前20类+背景的实际cell矩阵、当前有GT类Confidence与PR最多21真实采样，非AP积分曲线，缺点不补0。未覆盖类表格明确未覆盖，不绘虚假曲线。表格100类/页，原错误证据24图/页/最多200图及每层120框的历史边界明确，不把保留样本当全测试集。
+- 严格A/B只对同算法不同成功版本，原GET evaluation/compare复核基准/协议/映射，回执source/current版本必须对应；仅展示服务端delta的pp，不计算相对提升百分比。不同算法可用快检同图，不能假作同基准提升。B证据需image_id/SHA/原始尺寸都一致；缺图/未保留正确图明确缺证据，不补空框。
+- P1首Chrome5通过5失败：同页返回质量概览未dispose为实际RED，已在原tab Owner显式deactivate修复；其余失败为新夹具启动未await uiReady或对缺席节点用了文字断言，修为真实启动等待与count0（不放松业务）。fresh新10/10通过；框显示层过滤后保留原index，关GT再点预测仍对应预测详情。
+- 独立审查确认B图URI版本虽正确但expected_evaluation_id误用A的ID（原API严格409，旧fixture无条件200掩盖）。各panel带自身evaluation已修；强化图片route严格评测ID/image_id/SHA不符409，fresh严格AB1/1通过，不伪称此项Chrome先RED。
+- 独立审查还确认旧training-recovery-runtime import reports旧query使两个ESM注册表；新增单URL测试真实10通过1失败→修后相关45/45通过，同步原recovery缓存引用及既有守卫，原恢复业务不变。reports额外loader失败/空报告迟到/脱离DOM及观察器泄漏RED已修。
+- 主入口静态缓存统一423、模块缓存按改动更新，正式版本仅本轮升级一次42.24.377。最终新增12个P1 Chrome及全量Node/Chrome/相关Python/CI仍在执行，不能提前宣布全部完成。
+
+### Ultralytics许可单独说明
+
+本轮沿用ECharts Apache-2.0、Annotorious BSD-3-Clause既有离线制品，无新增Supervision生产依赖。2026-10-22再次核验[Ultralytics官方许可说明](https://www.ultralytics.com/license)及[正式条款](https://www.ultralytics.com/legal/agpl-3-0-software-license)：其AGPL/商业许可适用性应按实际软件、模型及既有授权核验；项目未提供企业授权证明，本轮不宣称闭源部署已获许可。MIT评测库不解决此独立义务，也不改变现有Ultralytics使用事实。
+
+### 最后本地验收执行记录（进行中）
+
+- 新P1 Chrome最终12/12通过（1.4m）；加强A/B真实缩放和横向mouse.wheel相对滚动同步另fresh1/1通过。各版本冻结图片query严格检查、B缺image_id/SHA/尺寸分别禁止展示，非同基准/协议不显示pp、版本/受控项目迟到无污染。
+- 最终当前代码Node1295/1295通过、0失败0跳过；不是早期1251/1254快照。原相关31个CI guard本地执行：30 Bash步骤通过，1个workflow明确shell:python的步骤首次被验证脚本误用Bash（import command not found），改用原Python解释器后通过；未修改业务或降低守卫。
+- 新API场景54纳入原Portable Deployment的触发与API回归，四份新Chrome纳入原frontend-runtime-stabilization既有Chrome job，未新建打包/测试体系。最终SHA执行结果须逐工作流检查。
+- 全部Chrome352个独立用例当前执行中，最终Python相关212预计组合当前执行中；未完成前不填写全通过。生产/真实GPU仍NOT VERIFIED。
+
+### 可复查截图（全部隔离数据）
+
+以下前后图验证布局与真实DOM交互，不是生产图片或模型精度证明。场景评测/模型及任务响应是明示controlled UI合同；后端资格由独立真实持久Task/Artifact测试覆盖。原素材/标注用隔离素材与正式保存API，未接触生产GT。
+
+| 区域 | 优化前（1366） | 优化后（1366） | 其他分辨率 |
+|---|---|---|---|
+| 场景工作台 | [原页](evidence/scenario-ui-2026-10-22/scenario-before-1366.png) | [内联A/B框证据](evidence/scenario-ui-2026-10-22/scenario-p1-fixtures-workspace-1366.png)、[真实阈值采样](evidence/scenario-ui-2026-10-22/scenario-p1-fixtures-curves-1366.png) | 同目录1920/1440 overview、analysis/curves/workspace |
+| 素材管理 | [原网格](evidence/scenario-ui-2026-10-22/material-before-1366x768-grid.png) | [网格](evidence/scenario-ui-2026-10-22/material-after-1366x768-grid.png)、[列表](evidence/scenario-ui-2026-10-22/material-after-1366x768-list.png)、[详情](evidence/scenario-ui-2026-10-22/material-after-1366x768-detail.png) | 同目录1920×1080/1440×900 |
+| 标注工作台 | [原页](evidence/scenario-ui-2026-10-22/annotation-ui-before-1366.png) | [唯一审核/正式色/居中](evidence/scenario-ui-2026-10-22/annotation-ui-after-1366.png) | 同目录1920/1440 |
+
+### 最终整体回归接续
+
+最终相关Python组合实际212 passed、5既有deprecation warnings、0失败0跳过（96.72s，C:/tmp/scenario-final-python.log）；最终Node1295/1295（C:/tmp/scenario-final-node.log）。全Chrome352仍运行（C:/tmp/scenario-final-all-chrome.log），不能沿用子集宣布全绿。P1提交与推送后将以最终准确SHA核全部Actions/Checks，若产生修复提交或文档新HEAD，重新核新SHA。当前未生产部署、生产清理、生产模型/GT操作。
+
+后续接续：先读本文最新阶段/问题关闭与证据，再看scenario_models.py→原v61→Worker/Agent、quality-detection-workbench.js→scenario-evaluation.js→reports.js；素材仍card412/material-pagination，标注仍原Editor及saveAnn/review。禁止另建任务/GT/图表注册表、重新复制素材、用无GT快检作准确率或把不同比较作提升。P2仍未实施；生产真实历史权重/远程OSS/GPU吞吐、大库SLA与已有Ultralytics授权状态需单独现场核验，不能凭隔离测试声明达标。
