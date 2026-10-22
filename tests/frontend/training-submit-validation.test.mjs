@@ -123,13 +123,14 @@ test('canonical training visibility uses its same-scope status helper', () => {
 
 test('annotation workbench has one save owner, explicit pending or negative empty states, and one manual advance', () => {
   const source = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
-  assert.match(source, /function ensureShell\(\)\{[\s\S]*?ann420-stable[\s\S]*?ann420ConfirmEmpty[\s\S]*?确认无目标/);
-  const confirmStart = source.indexOf('window.confirmEmptyAnnotation420=async function confirmEmptyAnnotationCanonical420()');
-  const confirmEnd = source.indexOf('window.patchMaterialCard412=', confirmStart);
+  assert.match(source, /function ensureShell\(\)\{[\s\S]*?ann420-stable[\s\S]*?ann420SaveReview/);
+  assert.doesNotMatch(source, /ann420ConfirmEmpty|confirmEmptyAnnotation420/);
+  const confirmStart = source.indexOf('window.saveAndConfirmAnnotationReview420=async function()');
+  const confirmEnd = source.indexOf('function updateShell()', confirmStart);
   assert.ok(confirmStart >= 0 && confirmEnd > confirmStart);
   const confirmOwner = source.slice(confirmStart, confirmEnd);
-  assert.match(confirmOwner, /if\(!selected\.size\)/);
-  assert.match(confirmOwner, /return window\.saveAndConfirmAnnotationReview420\(\)/);
+  assert.match(confirmOwner, /if\(!selected\.length\)/);
+  assert.match(confirmOwner, /window\.saveAnn\(true,\{confirmEmpty:/);
   assert.match(confirmOwner, /state\.annotationHydrating420\|\|state\.annotationLoadError420/);
   assert.equal((source.match(/window\.saveAnn=/g) || []).length, 1);
   assert.equal(source.includes('const baseSaveAnnotation417=window.saveAnn;'), false);
@@ -221,7 +222,8 @@ test('algorithm card keeps training transition states active and empty confirmat
   const sideStart=source.lastIndexOf('renderAnnSide=function(){');
   const sideEnd=source.indexOf('window.relabelBox414=',sideStart);
   assert.ok(sideStart>0&&sideEnd>sideStart);
-  assert.match(source.slice(sideStart,sideEnd),/getElementById\('ann420ConfirmEmpty'\);if\(confirmEmpty\)confirmEmpty\.hidden=!!state\.annotationHydrating420\|\|!!state\.annotationLoadError420\|\|boxes\.length>0/);
+  assert.match(source.slice(sideStart,sideEnd),/window\.renderAnnotationReviewScope420\?\.\(\)/);
+  assert.match(source.slice(sideStart,sideEnd),/window\.NegativeSampleRuntime\?\.decorate\?\.\(\)/);
 });
 
 

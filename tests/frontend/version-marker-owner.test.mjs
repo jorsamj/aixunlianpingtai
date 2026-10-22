@@ -73,7 +73,7 @@ test('formal platform version is not re-embedded into visible static chrome', ()
 });
 
 test('negative sample runtime is cache-busted with canonical owner retirement', () => {
-  assert.equal(main.includes("./modules/negative-samples.js?v=422545"), true);
+  assert.equal(main.includes("./modules/negative-samples.js?v=20261022a"), true);
 });
 
 test('training material picker canonical confirm asset is current', () => {

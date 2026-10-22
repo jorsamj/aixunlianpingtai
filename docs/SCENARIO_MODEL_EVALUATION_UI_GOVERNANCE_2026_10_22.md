@@ -123,3 +123,6 @@
 
 - SCN P0：1f606d30b75eb1245224ce5fc0dd9df5b42f006b，本地独立提交正式模型资格、原Owner工作台、迟到/未知锁与真实回归；未推送/未最终CI，不宣称阶段SHA远端绿色。
 - MAT P0：独立提交准备，包含原卡片/详情及保存后的media-plane兼容，未混入ANN标签/确认合同。三桌面before/grid/list/detail截图已归档docs/evidence/scenario-ui-2026-10-22。
+
+- MAT独立提交13c7036898c00ea1b5626986ac0115a5d6644c69，原素材/GT/API不改，最终整体CI尚待。
+- ANN独立提交准备：包含唯一右侧显式审核、正式颜色及管理保存即时sync、fit居中/resize保持手动视角/小图zoom方向、原坏图retry与GT版本保护；清除旧annotation-only覆盖，三桌面before/after六图已归档。最终全Node1273/1273与ANN相关实际Chrome组合证据如上，未借旧green。

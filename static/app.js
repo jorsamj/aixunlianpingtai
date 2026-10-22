@@ -57,6 +57,7 @@ async function loadRelated(){if(!state.project)return;const pid=state.project.id
 function statusName(s){return ({queued:'排队中',running:'训练中',done:'已完成',finished:'已完成',failed:'失败',stopped:'已停止'}[s]||s||'-')}
 function render(){renderNav();renderTop();renderSummary();({算法列表:renderAlgorithms,训练资源:renderResources,数据集:renderDatasets,训练任务:renderTraining,测试发布:renderTest}[state.page]||renderAlgorithms)()}
 function pid(){return state.project?.id}
+function annotationColor420(box){return window.PlatformCore?.annotationWorkbench?.annotationColor?.(box,state.labels||[])||'#64748b'}
 async function reload(){await loadAll();render()}
 
 function renderAlgorithms(){return window.renderAlgorithms423?.()}
@@ -104,10 +105,10 @@ function pushHistory(){state.annHistory.push(JSON.stringify(state.ann.boxes||[])
 function markAnnotationDirtyCore(){state.annDirty=true;const s=$('#annSaveState');if(s)s.textContent='未保存';clearTimeout(state.annAutoSaveTimer);state.annAutoSaveTimer=setTimeout(()=>saveAnn(true),900)}
 function imageSize(){return {w:state.activeImage?.width||1,h:state.activeImage?.height||1}}
 function renderAnnotator(){return window.updateAnnotationShell420?.()}
-function renderAnnSide(){const labels=state.labels;$('#annLabels').innerHTML=labels.map(l=>`<div class="label-row ${state.activeLabel===l.class_id?'active':''}" onclick="state.activeLabel=${l.class_id};renderAnnSide()"><span><span class="dot" style="background:${l.color}"></span>${esc(l.display_name)} <span class="muted">${esc(l.code)}</span></span><b>${esc(l.hotkey||'')}</b></div>`).join('');const boxes=state.ann.boxes||[];$('#annBoxes').innerHTML=boxes.map((b,i)=>{const l=labels.find(x=>x.class_id===b.class_id)||{};return`<div class="label-row ${state.activeBox===i?'active':''}" onclick="state.activeBox=${i};drawBoxes();renderAnnSide()"><span>${i+1}. ${esc(l.display_name||b.label)}</span><span>${Math.round(b.x2-b.x1)}×${Math.round(b.y2-b.y1)}</span></div>`}).join('')||'<div class="muted">暂无框。选择标签后，在图片上拖拽即可。</div>'}
+function renderAnnSide(){const labels=state.labels;$('#annLabels').innerHTML=labels.map(l=>`<div class="label-row ${state.activeLabel===l.class_id?'active':''}" onclick="state.activeLabel=${l.class_id};renderAnnSide()"><span><span class="dot" style="background:${esc(annotationColor420({label:l.code,class_id:l.class_id}))}"></span>${esc(l.display_name)} <span class="muted">${esc(l.code)}</span></span><b>${esc(l.hotkey||'')}</b></div>`).join('');const boxes=state.ann.boxes||[];$('#annBoxes').innerHTML=boxes.map((b,i)=>{const l=labels.find(x=>x.class_id===b.class_id)||{};return`<div class="label-row ${state.activeBox===i?'active':''}" onclick="state.activeBox=${i};drawBoxes();renderAnnSide()"><span>${i+1}. ${esc(l.display_name||b.label)}</span><span>${Math.round(b.x2-b.x1)}×${Math.round(b.y2-b.y1)}</span></div>`}).join('')||'<div class="muted">暂无框。选择标签后，在图片上拖拽即可。</div>'}
 function drawBoxes(){return window.syncAnnotationEditor420?.()}
 function bindAnnotationEvents(){return window.syncAnnotationEditor420?.()}
-window.saveAnnLegacyBase=async(silent=false,options={})=>{if(!state.activeImage)return false;const boxes=Array.isArray(state.ann?.boxes)?state.ann.boxes:[],confirmEmpty=options?.confirmEmpty===true;if(!boxes.length&&!confirmEmpty){const s=$('#annSaveState');if(s)s.textContent='待确认无目标';const btn=$('#ann420ConfirmEmpty');if(btn)btn.hidden=false;if(!silent)toast('删除最后一个标注框后，请点击“确认无目标”');return false}try{const r=await api(`/api/projects/${pid()}/annotations/${state.activeImage.id}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({boxes,annotation_state:boxes.length?'annotated':'confirmed_empty',expected_version:Number.isFinite(Number(state.ann?.version))?Number(state.ann.version):0})});if(r?.annotation){state.ann=r.annotation;if(!Array.isArray(state.ann.boxes))state.ann.boxes=[]}if(r?.image){state.activeImage=r.image;const index=(state.images||[]).findIndex(image=>String(image.id)===String(r.image.id));if(index>=0)state.images[index]=r.image}state.annDirty=false;const saveState=$('#annSaveState');if(saveState)saveState.textContent=state.ann.boxes.length?`已保存（${state.ann.boxes.length}框）`:'已确认无目标';const confirmBtn=$('#ann420ConfirmEmpty');if(confirmBtn)confirmBtn.hidden=state.ann.boxes.length>0;drawBoxes();renderAnnSide();if(!silent)toast(state.ann.boxes.length?`标注已保存：${state.ann.boxes.length}个框`:'已确认当前图片无目标');return true}catch(error){if(!silent)toast(error.message||error);return false}};
+window.saveAnnLegacyBase=async(silent=false,options={})=>{if(!state.activeImage)return false;const boxes=Array.isArray(state.ann?.boxes)?state.ann.boxes:[],confirmEmpty=options?.confirmEmpty===true;if(!boxes.length&&!confirmEmpty){const s=$('#annSaveState');if(s)s.textContent='待确认无目标';if(!silent)toast('删除最后一个标注框后，请点击“确认无目标”');return false}try{const r=await api(`/api/projects/${pid()}/annotations/${state.activeImage.id}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({boxes,annotation_state:boxes.length?'annotated':'confirmed_empty',expected_version:Number.isFinite(Number(state.ann?.version))?Number(state.ann.version):0})});if(r?.annotation){state.ann=r.annotation;if(!Array.isArray(state.ann.boxes))state.ann.boxes=[]}if(r?.image){state.activeImage=r.image;const index=(state.images||[]).findIndex(image=>String(image.id)===String(r.image.id));if(index>=0)state.images[index]=r.image}state.annDirty=false;const saveState=$('#annSaveState');if(saveState)saveState.textContent=state.ann.boxes.length?`已保存（${state.ann.boxes.length}框）`:'已确认无目标';drawBoxes();renderAnnSide();if(!silent)toast(state.ann.boxes.length?`标注已保存：${state.ann.boxes.length}个框`:'已确认当前图片无目标');return true}catch(error){if(!silent)toast(error.message||error);return false}};
 window.deleteActiveBox=()=>state.annotationEditor?.deleteSelected();
 window.undoAnn=()=>{if(!state.annHistory.length)return;state.annRedo.push(JSON.stringify(state.ann.boxes||[]));state.ann.boxes=JSON.parse(state.annHistory.pop());state.activeBox=null;markDirty();drawBoxes();renderAnnSide()};
 window.redoAnn=()=>{if(!state.annRedo.length)return;const next=state.annRedo.pop();state.annHistory.push(JSON.stringify(state.ann.boxes||[]));state.ann.boxes=JSON.parse(next);state.activeBox=null;markDirty();drawBoxes();renderAnnSide()};
@@ -935,7 +936,7 @@ window.installUsability417=function(){
   window.selectActiveLabel417=function(value){state.activeLabel=Number(value);renderAnnSide()};
   window.renderAnnSideLegacy417=function(){
     const labels=state.labels||[],box=document.getElementById('annBoxes'),boxes=state.ann?.boxes||[];
-    if(box)box.innerHTML=boxes.map((b,i)=>{const item=labels.find(x=>Number(x.class_id)===Number(b.class_id));return `<div class="ann414-boxrow ${Number(state.activeBox)===i?'active':''}" onclick="state.activeBox=${i};drawBoxes();renderAnnSide()"><span><i style="background:${esc(item?.color||'#64748b')}"></i><b>${i+1}. ${esc(label417(item?.code||b.label||'unknown'))}</b></span><select class="select" onclick="event.stopPropagation()" onchange="relabelBox414(${i},this.value)">${labels.map(x=>`<option value="${Number(x.class_id)}" ${Number(x.class_id)===Number(b.class_id)?'selected':''}>${esc(label417(x.code))}</option>`).join('')}</select></div>`}).join('')||'<div class="muted">暂无框。请在顶部选择标签，然后在图片上拖拽。</div>';
+    if(box)box.innerHTML=boxes.map((b,i)=>{const item=labels.find(x=>Number(x.class_id)===Number(b.class_id));return `<div class="ann414-boxrow ${Number(state.activeBox)===i?'active':''}" onclick="state.activeBox=${i};drawBoxes();renderAnnSide()"><span><i style="background:${esc(annotationColor420(b))}"></i><b>${i+1}. ${esc(label417(item?.code||b.label||'unknown'))}</b></span><select class="select" onclick="event.stopPropagation()" onchange="relabelBox414(${i},this.value)">${labels.map(x=>`<option value="${Number(x.class_id)}" ${Number(x.class_id)===Number(b.class_id)?'selected':''}>${esc(label417(x.code))}</option>`).join('')}</select></div>`}).join('')||'<div class="muted">暂无框。请在顶部选择标签，然后在图片上拖拽。</div>';
   };
   function syncReferenceLabels417(){
     const input=document.getElementById('ai429Labels');if(!input)return;
@@ -2698,7 +2699,7 @@ window.installUsability417=function(){
   // ---------- editable annotation boxes: move / resize / relabel ----------
   renderAnnSide=function(){
     const labels=state.labels||[],boxes=state.ann?.boxes||[];const lb=document.getElementById('annLabels'),bb=document.getElementById('annBoxes');if(!lb||!bb)return;
-    lb.innerHTML=labels.map(l=>`<div class="label-row ${state.activeLabel===l.class_id?'active':''}" onclick="selectAnnotationLabel420(${l.class_id})"><span><span class="dot" style="background:${l.color}"></span>${esc(l.display_name||l.code)}</span><b>${esc(l.hotkey||'')}</b></div>`).join('');
+    lb.innerHTML=labels.map(l=>`<div class="label-row ${state.activeLabel===l.class_id?'active':''}" onclick="selectAnnotationLabel420(${l.class_id})"><span><span class="dot" style="background:${esc(annotationColor420({label:l.code,class_id:l.class_id}))}"></span>${esc(l.display_name||l.code)}</span><b>${esc(l.hotkey||'')}</b></div>`).join('');
     bb.innerHTML=boxes.map((b,i)=>`<div class="boxrow424 ${state.activeBox===i?'active':''}" onclick="state.activeBox=${i};drawBoxes();renderAnnSide()"><span>${i+1}</span><select class="select" onclick="event.stopPropagation()" onchange="changeBoxLabel424(${i},this.value)">${labels.map(l=>`<option value="${l.class_id}" ${l.class_id===b.class_id?'selected':''}>${esc(l.display_name||l.code)}</option>`).join('')}</select><b>${Math.round(b.x2-b.x1)}×${Math.round(b.y2-b.y1)}</b></div>`).join('')||'<div class="muted">暂无框</div>';
   };
   window.changeBoxLabel424=(i,classId)=>window.relabelBox414?.(i,classId);
@@ -3015,7 +3016,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     const boxes=Array.isArray(state.ann.boxes)?state.ann.boxes:[],confirmEmpty=options?.confirmEmpty===true;
     if(!boxes.length&&!confirmEmpty){
       const saveState=document.getElementById('annSaveState');if(saveState)saveState.textContent='待确认无目标';
-      const confirmButton=document.getElementById('ann420ConfirmEmpty');if(confirmButton)confirmButton.hidden=false;
+
       if(!silent)toast('删除最后一个标注框后，请点击“确认无目标”');
       return false;
     }
@@ -3026,7 +3027,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
       if(img){img.box_count=state.ann.boxes.length;img.annotated=state.ann.boxes.length>0;img.labels=[...new Set(state.ann.boxes.map(b=>b.label).filter(Boolean))];img.processing_status='processed';state.activeImage=r?.image||img}
       state.annDirty=false;
       const saveState=document.getElementById('annSaveState');if(saveState)saveState.textContent=state.ann.boxes.length?`已保存（${state.ann.boxes.length}框）`:'已确认无目标';
-      const confirmButton=document.getElementById('ann420ConfirmEmpty');if(confirmButton)confirmButton.hidden=state.ann.boxes.length>0;
+
       drawBoxes();renderAnnSide();if(!silent)toast(state.ann.boxes.length?`标注已保存：${state.ann.boxes.length}个框`:'已确认当前图片无目标');
       return true;
     }catch(e){if(!silent)toast(`保存失败：${e.message||e}`);return false}
@@ -5365,6 +5366,7 @@ const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
       }
       closeModal();
       if(state.page==='标签管理')window.drawLabel414?.();
+      if(document.querySelector('.ann420-stable')){renderAnnSide();window.syncAnnotationEditor420?.();}
       toast(classId===null?'标签已创建':'标签已更新');
       void refreshLabels414(true).then(()=>{if(state.page==='标签管理')window.drawLabel414?.()}).catch(e=>toast(`标签已保存，但使用统计刷新失败：${e.message||e}`));
     }catch(e){toast(e.message||e)}
@@ -5393,7 +5395,7 @@ const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
       const signature=labels.map(l=>[l.class_id,l.code,l.display_name,l.color,l.hotkey,Number(state.activeLabel)===Number(l.class_id)?1:0].join(':')).join('|');
       if(a.dataset.signature!==signature){
         a.dataset.signature=signature;
-        a.innerHTML=`<label class="ann420-label-picker"><span>绘制标签</span><select id="ann420Label" class="select" onchange="selectAnnotationLabel420(this.value)" ${labels.length?'':'disabled'}>${labels.map(l=>`<option value="${Number(l.class_id)}" ${Number(state.activeLabel)===Number(l.class_id)?'selected':''}>${esc(l.display_name&&l.display_name!==l.code?`${l.display_name} · ${l.code}`:l.code)}</option>`).join('')||'<option>暂无可用标签</option>'}</select></label><small class="ann420-class-hint">选定类别后在图片空白处拖拽；对象改类在下方单独操作。</small>`;
+        a.innerHTML=`<label class="ann420-label-picker"><span>绘制标签</span><select id="ann420Label" class="select" onchange="selectAnnotationLabel420(this.value)" ${labels.length?'':'disabled'}>${labels.map(l=>`<option value="${Number(l.class_id)}" ${Number(state.activeLabel)===Number(l.class_id)?'selected':''}>${esc(l.display_name&&l.display_name!==l.code?`${l.display_name} · ${l.code}`:l.code)}</option>`).join('')||'<option>暂无可用标签</option>'}</select></label><div class="ann420-class-list">${labels.map(l=>`<button type="button" class="ann420-class-option ${Number(state.activeLabel)===Number(l.class_id)?'active':''}" data-ann-label-code="${esc(l.code)}" onclick="selectAnnotationLabel420(${Number(l.class_id)})"><i style="background:${esc(annotationColor420({label:l.code,class_id:l.class_id}))}"></i><span><b>${esc(l.display_name||l.code)}</b><small>${esc(l.code)}</small></span><kbd>${esc(l.hotkey||'')}</kbd></button>`).join('')}</div><small class="ann420-class-hint">选定类别后拖拽绘制；对象可在下方单独改类。</small>`;
       }
     }
     const boxes=state.ann?.boxes||[];
@@ -5417,7 +5419,7 @@ const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
           }
           row.dataset.i=String(i);row.classList.toggle('active',state.activeBox!=null&&Number(state.activeBox)===i);
           const dot=row.querySelector('span i'),title=row.querySelector('span b'),subtitle=row.querySelector('span em'),select=row.querySelector('select');
-          if(dot)dot.style.background=l?.color||'#64748b';
+          if(dot)dot.style.background=annotationColor420(b);
           if(title)title.textContent=`${i+1}. ${l?.display_name||b.label||'未知类别'} · ${l?.code||b.label||''}`;
           if(subtitle)subtitle.textContent=[annotationBoxSourceLabel420(b),l?.display_name||''].filter(Boolean).join(' · ');
           if(select){
@@ -5430,7 +5432,7 @@ const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
       }
     }
     const count=document.getElementById('ann420BoxCount');if(count)count.textContent=String(boxes.length);
-    const confirmEmpty=document.getElementById('ann420ConfirmEmpty');if(confirmEmpty)confirmEmpty.hidden=!!state.annotationHydrating420||!!state.annotationLoadError420||boxes.length>0;
+    window.renderAnnotationReviewScope420?.();window.NegativeSampleRuntime?.decorate?.();
   };
   window.relabelBox414=function(i,classId){const box=state.ann?.boxes?.[i],label=(state.labels||[]).find(row=>String(row.class_id)===String(classId));if(box&&label&&state.annotationEditor?.select(box.id))state.annotationEditor.reclassSelected(label)};
 
@@ -5476,7 +5478,7 @@ const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
       if(applyResult&&r?.image?.id)state.images=applyResult(state.images||[],r,state.ann.boxes||[]);
       const idx=(state.images||[]).findIndex(x=>String(x.id)===String(state.activeImage.id));
       if(idx>=0){if(!applyResult){const fresh=r?.image||{};Object.assign(state.images[idx],fresh);state.images[idx].box_count=state.ann.boxes.length;state.images[idx].annotated=state.ann.boxes.length>0;state.images[idx].labels=[...new Set(state.ann.boxes.map(b=>b.label).filter(Boolean))];state.images[idx].annotation_preview=window.PlatformCore?.annotation?.annotationPreviewFromBoxes?.(state.ann.boxes)||state.ann.boxes.slice(0,32).map(b=>({class_id:b.class_id,label:b.label,x1:b.x1,y1:b.y1,x2:b.x2,y2:b.y2,source:b.source,source_task_id:b.source_task_id,confidence:b.confidence}))}if(state.ann.boxes.length)state.images[idx].processing_status='processed';state.activeImage=state.images[idx]}
-      state.annDirty=false;if(ss)ss.textContent=state.ann.boxes.length?`已保存 · ${state.ann.boxes.length}框`:state.ann.annotation_state==='confirmed_empty'?'已确认无目标':'已保存 · 待标注';const confirmButton=document.getElementById('ann420ConfirmEmpty');if(confirmButton)confirmButton.hidden=state.ann.boxes.length>0;drawBoxes();renderAnnSide();
+      state.annDirty=false;if(ss)ss.textContent=state.ann.boxes.length?`已保存 · ${state.ann.boxes.length}框`:state.ann.annotation_state==='confirmed_empty'?'已确认无目标':'已保存 · 待标注';drawBoxes();renderAnnSide();
       state.annotationReviewSelected420=new Set();window.renderAnnotationReviewScope420?.();
       if(reviewedLabelCodes.length){window.TrainingMaterialSummaryRuntime?.invalidateCompatibility?.()}
       try{if(typeof invalidateQuality411==='function')invalidateQuality411()}catch(_){}
@@ -6997,6 +6999,17 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     state.annotationEditorFlight=flight;return flight;
   }
   window.syncAnnotationEditor420=ensureAnnotationEditor420;
+  window.retryAnnotationEditor420=function(){
+    const root=document.querySelector('.ann420-stable'),image=root?.querySelector('#annImg');
+    if(!image||!state.activeImage||state.annotationHydrating420||state.annotationLoadError420)return null;
+    const source=new URL(state.activeImage.url,location.href).href;
+    if(image.src!==source||!editorActive420(root,editorIdentity420()))return null;
+    if(state.annotationEditorFlight)return state.annotationEditorFlight;
+    // Re-read only failed image bytes. GT, dirty edits and the original editor
+    // factory/lifecycle remain owned by the existing annotation workbench.
+    if(image.complete&&!image.naturalWidth){image.removeAttribute('src');image.src=source;}
+    return ensureAnnotationEditor420();
+  };
   window.setAnnotationMode420=mode=>{state.annotationEditor?.setMode(mode);editorTools420()};
   window.toggleAnnotationVisibility420=()=>{const editor=state.annotationEditor;if(editor)editor.setVisibility(!editor.snapshot().visible);editorTools420()};
   window.filterAnnotationClass420=code=>{state.annotationEditor?.setClassFilter(code?[code]:null);editorTools420()};
@@ -7064,7 +7077,6 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
         <div class="ann-toolbar ann420-toolbar">
           <div class="ann420-toolbar-group ann420-toolbar-primary">
             <button id="ann414Save" data-ann420-edit="1" class="btn primary small" onclick="saveAnn(false)">保存并继续</button>
-            <button id="ann420ConfirmEmpty" data-ann420-edit="1" class="btn small ann420-empty-action" hidden onclick="confirmEmptyAnnotation420()">确认无目标</button>
           </div>
           <div class="ann420-toolbar-group ann420-toolbar-nav">
             <button id="ann420Prev" class="btn small" title="上一张 · ←">← 上一张</button>
@@ -7082,7 +7094,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
             <button class="btn mini" onclick="resetAnnotationZoom420()">100%</button><button class="btn mini" onclick="fitAnnotation420()">适应窗口</button>
           </div>
         </div>
-        <div class="ann-canvas-wrap"><div id="annStage" class="ann-stage ann-annotorious-world"><img id="annImg" alt="当前标注图片"></div><div class="ann420-editor-feedback"><span data-ann-editor-status role="status" class="loading" hidden></span><button class="btn small" data-ann-editor-retry hidden onclick="syncAnnotationEditor420()">重新读取编辑器</button></div></div>
+        <div class="ann-canvas-wrap"><div id="annStage" class="ann-stage ann-annotorious-world"><img id="annImg" alt="当前标注图片"></div><div class="ann420-editor-feedback"><span data-ann-editor-status role="status" class="loading" hidden></span><button class="btn small" data-ann-editor-retry hidden onclick="retryAnnotationEditor420()">重新读取编辑器</button></div></div>
       </div>
       <aside class="side-panel ann-side ann420-inspector">
         <section class="side-section ann420-label-panel"><div class="side-title"><span>绘制类别</span><b id="ann420LabelCount">0</b></div><div id="annLabels"><div class="ann420-panel-empty">正在加载标签…</div></div><details class="ann420-class-visibility"><summary>按类别显示 / 隐藏</summary><div data-ann-class-visibility></div></details></section>
@@ -7128,6 +7140,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     reviewedRoot.innerHTML=`<small>已检查范围</small><div class="ann420-review-tags">${view.reviewed.map(code=>`<span>${esc(code==='*'?'全部类别（历史明确范围）':code)}</span>`).join('')||'<em>尚无明确检查范围</em>'}</div>`;
     pendingRoot.innerHTML=`<small>未检查类别（默认不勾选）</small><div class="ann420-review-checks">${view.pending.map(code=>`<label><input type="checkbox" ${selected.has(code)?'checked':''} onchange="toggleAnnotationReview420('${esc(code)}',this.checked)"><span>${esc(code)}</span></label>`).join('')||'<em>本次要求已全部覆盖</em>'}</div>`;
     if(count)count.textContent=String(view.pending.length);if(button)button.disabled=!selected.size||!!state.annotationHydrating420||!!state.annotationLoadError420;
+    window.NegativeSampleRuntime?.decorate?.();
   };
   window.saveAndConfirmAnnotationReview420=async function(){
     if(state.annotationHydrating420||state.annotationLoadError420)return false;
@@ -7135,7 +7148,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     if(!selected.length){toast('请先勾选已经查看图片并完成审核的标签');return false}
     const button=document.getElementById('ann420SaveReview');if(button){button.disabled=true;button.textContent='提交中…'}
     const ok=await window.saveAnn(true,{confirmEmpty:(state.ann?.boxes?.length||0)===0,confirmReview:true,reviewedLabelCodes:selected});
-    if(button){button.textContent='保存并确认审核';button.disabled=false}if(ok){toast(`已补充审核：${selected.join('、')}`);window.renderAnnotationReviewScope420?.()}return ok;
+    if(ok)toast(`已补充审核：${selected.join('、')}`);window.renderAnnotationReviewScope420?.();return ok;
   };
 
   function updateShell(){
@@ -7157,7 +7170,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     }
     const labelCount=document.getElementById('ann420LabelCount');if(labelCount)labelCount.textContent=String((state.labels||[]).length);
     window.renderAnnotationReviewScope420?.();
-    const confirmEmpty=document.getElementById('ann420ConfirmEmpty');if(confirmEmpty)confirmEmpty.hidden=locked||(state.ann?.boxes?.length||0)>0;
+
     const saveButton=document.getElementById('ann414Save');if(saveButton){saveButton.disabled=locked;saveButton.textContent=loading?'读取中…':'保存并继续'}
     document.querySelectorAll('.ann420-stable [data-ann420-edit="1"]').forEach(button=>{button.disabled=locked});
     const saveState=document.getElementById('annSaveState');if(saveState)saveState.textContent=loading?'正在读取标注…':error?'读取失败':state.annDirty?'未保存':'已保存';
@@ -7251,14 +7264,6 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   };
   window.resetAnnotationZoom420=()=>state.annotationEditor?.resetZoom();
   window.fitAnnotation420=()=>{const root=document.querySelector('.ann420-stable');if(window.matchMedia('(max-width:980px)').matches){const body=root?.closest('.modal-body');if(body)body.scrollTop=0}state.annotationEditor?.fit()};
-  window.confirmEmptyAnnotation420=async function confirmEmptyAnnotationCanonical420(){
-    const button=document.getElementById('ann420ConfirmEmpty');
-    if(button?.disabled||state.annotationHydrating420||state.annotationLoadError420)return false;
-    if((state.ann?.boxes?.length||0)>0)return false;
-    const selected=state.annotationReviewSelected420 instanceof Set?state.annotationReviewSelected420:new Set();
-    if(!selected.size){toast('请在“类别审核范围”中勾选已经确认无目标的标签');document.getElementById('ann420ReviewPanel')?.scrollIntoView?.({block:'nearest'});return false}
-    return window.saveAndConfirmAnnotationReview420();
-  };
 
   window.patchMaterialCard412=function(image){
     if(!image)return;
@@ -7269,7 +7274,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     const tags=card.querySelector('.data426-tags');if(tags)tags.innerHTML=(image.labels||[]).map(label=>`<span>${esc(typeof displayLabel412==='function'?displayLabel412(label):label)}</span>`).join('')||'<em>暂无标签</em>';
     const actions=card.querySelector('.data426-actions');if(actions&&window.annotationMaterialActionV66)actions.innerHTML=`<button class="btn mini" onclick="previewData429('${esc(String(image.id||''))}')">详情</button>${window.annotationMaterialActionV66(image)}`;
     card.dataset.renderSignature=typeof dataCardSignature412==='function'?dataCardSignature412(image):(card.dataset.renderSignature||'');
-    const stage=card.querySelector('.data411-stage');if(stage){stage.querySelectorAll('.data412-box,.data411-box').forEach(node=>node.remove());const width=Number(image.width||1),height=Number(image.height||1);(stage.querySelector('.material-media-plane')||stage).insertAdjacentHTML('beforeend',(image.annotation_preview||[]).slice(0,24).map(box=>`<i class="data412-box" style="left:${100*Number(box.x1||0)/width}%;top:${100*Number(box.y1||0)/height}%;width:${100*Math.max(0,Number(box.x2||0)-Number(box.x1||0))/width}%;height:${100*Math.max(0,Number(box.y2||0)-Number(box.y1||0))/height}%"><em>${esc(typeof displayLabel412==='function'?displayLabel412(box.label):box.label||'')}</em></i>`).join(''))}
+    const stage=card.querySelector('.data411-stage');if(stage){stage.querySelectorAll('.data412-box,.data411-box').forEach(node=>node.remove());const width=Number(image.width||1),height=Number(image.height||1);(stage.querySelector('.material-media-plane')||stage).insertAdjacentHTML('beforeend',(image.annotation_preview||[]).slice(0,24).map(box=>`<i class="data412-box" style="--annotation-color:${esc(annotationColor420(box))};border-color:${esc(annotationColor420(box))};left:${100*Number(box.x1||0)/width}%;top:${100*Number(box.y1||0)/height}%;width:${100*Math.max(0,Number(box.x2||0)-Number(box.x1||0))/width}%;height:${100*Math.max(0,Number(box.y2||0)-Number(box.y1||0))/height}%"><em>${esc(typeof displayLabel412==='function'?displayLabel412(box.label):box.label||'')}</em></i>`).join(''))}
   };
 
   closeModal=window.closeModal=async function closeModalCanonical420(){

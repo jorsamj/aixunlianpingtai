@@ -1,6 +1,6 @@
 import {installQualityDetectionWorkbench} from './modules/quality-detection-workbench.js?v=20261022a';
-import {createAnnotoriousEditor} from './modules/annotorious-editor.js?v=20261021a';
-import {withLegacyBoxIdentities} from './modules/annotation-geometry-adapter.js?v=20261021a';
+import {createAnnotoriousEditor} from './modules/annotorious-editor.js?v=20261022a';
+import {annotationColor,withLegacyBoxIdentities} from './modules/annotation-geometry-adapter.js?v=20261022a';
 import {installConversionCatalogRuntime} from './modules/conversion-catalog-runtime.js?v=2';
 import {renderPrisonNightInspectionPage} from './modules/prison-night-inspection-entry.mjs?v=20261010g';
 import {actionRegistry, invokeAction, registerAction} from './modules/actions.js?v=421800';
@@ -8,7 +8,7 @@ import {installRowActionMenu} from './modules/row-action-menu.js?v=4226385';
 import {messageFromApiError, withRequestDeadline} from './modules/api.js?v=20261021s';
 import {createModalStack, installModalPresentation, loadingSkeleton} from './modules/modal.js?v=20261021';
 import {annotationPreviewFromBoxes, applyAnnotationResult} from './modules/annotation.js?v=422502';
-import {installNegativeSampleRuntime} from './modules/negative-samples.js?v=422545';
+import {installNegativeSampleRuntime} from './modules/negative-samples.js?v=20261022a';
 import {installTrainingLabelRuntime} from './modules/training-labels.js?v=422569';
 import {installNavigationStability} from './modules/navigation-stability.js?v=422518';
 import {persistUiState} from './modules/ui-state.js?v=422500';
@@ -112,7 +112,7 @@ window.PlatformCore = {
   withRequestDeadline,
   annotation: {annotationPreviewFromBoxes, applyAnnotationResult},
   createAnnotoriousEditor,
-  annotationWorkbench: {annotationReviewView, annotationSavePayload, createAnnotationWorkbench, queueWindow, withLegacyBoxIdentities},
+  annotationWorkbench: {annotationReviewView, annotationSavePayload, createAnnotationWorkbench, queueWindow, annotationColor, withLegacyBoxIdentities},
   taskPoller: {createTaskPoller, isTaskActive, taskProgress, waitForTaskTerminal},
   annotationTasks: {annotationTaskView, buildCandidateDecisions},
   cleaning: {applyCleanConfirmation, cleanExecutionChoices, cleanExecutionMode, cleanSchedulingRequest, cleanScopeChoices, cleanScopeRequest, cleanScopeSupportsAnnotationAudit, cleanTaskView, isActiveCleanTask},

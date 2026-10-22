@@ -163,7 +163,8 @@ test('manual annotation saves, survives reload, and updates the thumbnail', asyn
 
   await dialog.getByRole('button', {name: '删除框', exact: true}).click();
   await expect(dialog.locator('#annStage .a9s-annotation:is([data-id],.selected)')).toHaveCount(0);
-  await expect(dialog.getByRole('button', {name: '确认无目标', exact: true})).toBeVisible();
+  await expect(dialog.locator('#ann420SaveReview')).toHaveText('确认本图无目标');
+  await expect(dialog.locator('#ann420ConfirmEmpty')).toHaveCount(0);
   await dialog.getByRole('button', {name: '撤销', exact: true}).click();
   await expect(dialog.locator('#annStage .a9s-annotation:is([data-id],.selected)')).toHaveCount(1);
 
@@ -265,7 +266,7 @@ test('image-first annotation workspace keeps one class picker and explicit colla
   await expect(review.locator('summary')).toContainText('未检查类别');
   await expect(dialog.getByLabel('绘制标签')).toHaveCount(1);
   await expect(dialog.locator('.ann420-inspector #ann420Label')).toBeVisible();
-  await expect(dialog.locator('#annLabels button')).toHaveCount(0);
+  await expect(dialog.locator('#annLabels [data-ann-label-code]')).toHaveCount(2);
   const before = await (await request.get(`/api/projects/${project.id}/annotations/${image.id}`)).json();
   await review.locator('summary').click();
   await expect(review.locator('input:checked')).toHaveCount(0);
@@ -323,9 +324,10 @@ test('professional annotation workbench survives repeated open-close cycles and 
   await expect(dialog).toBeVisible();
   await expect(dialog.locator('#annSaveState')).toHaveText('已保存');
 
+  await dialog.locator('#ann420ReviewPanel > summary').click();
   const essential = [
     dialog.getByRole('button', {name: '保存并继续', exact: true}),
-    dialog.getByRole('button', {name: '确认无目标', exact: true}),
+    dialog.locator('#ann420SaveReview'),
     dialog.getByRole('button', {name: '← 上一张', exact: true}),
     dialog.getByRole('button', {name: '下一张 →', exact: true}),
     dialog.getByLabel('绘制标签'),
@@ -365,10 +367,10 @@ test('professional annotation workbench survives repeated open-close cycles and 
   expect(desktopCard).not.toBeNull();
   expect(desktopCanvas).not.toBeNull();
   expect(desktopInspector).not.toBeNull();
-  expect(desktopCard.width).toBeLessThanOrEqual(1480);
-  expect(desktopCard.height).toBeLessThanOrEqual(1080*.86);
-  expect(desktopCard.x).toBeGreaterThanOrEqual(32);
-  expect(desktopCard.y).toBeGreaterThanOrEqual(32);
+  expect(desktopCard.width).toBeLessThanOrEqual(1880);
+  expect(desktopCard.height).toBeLessThanOrEqual(1080-24);
+  expect(desktopCard.x).toBeGreaterThanOrEqual(12);
+  expect(desktopCard.y).toBeGreaterThanOrEqual(12);
   expect(desktopCanvas.width).toBeGreaterThan(600);
   expect(desktopCanvas.height).toBeGreaterThan(400);
   expect(desktopInspector.x + desktopInspector.width).toBeLessThanOrEqual(1920);
@@ -432,9 +434,9 @@ test('batch annotation requires explicit label review before confirming consecut
   await expect(dialog.getByText('1 / 2', {exact: true})).toBeVisible();
   await expect(dialog.locator('#ann420Filename')).toHaveText('queue-one.bmp');
 
-  const firstConfirm = dialog.getByRole('button', {name: '确认无目标', exact: true});
-  await expect(firstConfirm).toBeVisible();
-  await expect(firstConfirm).toBeEnabled();
+  const firstConfirm = dialog.locator('#ann420SaveReview');
+  await expect(firstConfirm).toHaveText('确认本图无目标');
+  await expect(firstConfirm).toBeDisabled();
   const firstPending = dialog.locator('#ann420PendingLabels input[type="checkbox"]');
   await expect(firstPending).toHaveCount(2);
   await expect(firstPending.nth(0)).not.toBeChecked();
@@ -447,9 +449,9 @@ test('batch annotation requires explicit label review before confirming consecut
 
   await expect(dialog.getByText('2 / 2', {exact: true})).toBeVisible();
   await expect(dialog.locator('#ann420Filename')).toHaveText('queue-two.bmp');
-  const secondConfirm = dialog.getByRole('button', {name: '确认无目标', exact: true});
-  await expect(secondConfirm).toBeVisible();
-  await expect(secondConfirm).toBeEnabled();
+  const secondConfirm = dialog.locator('#ann420SaveReview');
+  await expect(secondConfirm).toHaveText('确认本图无目标');
+  await expect(secondConfirm).toBeDisabled();
   const secondPending = dialog.locator('#ann420PendingLabels input[type="checkbox"]');
   await expect(secondPending).toHaveCount(2);
   await expect(secondPending.nth(0)).not.toBeChecked();

@@ -92,3 +92,14 @@ test('input is a single rectangle, not a version/SHA or full GT owner', () => {
   annotation.target.selector.type = 'POLYGON';
   assert.throws(() => fromAnno(annotation,options()), /rectangle/i);
 });
+
+test('annotationColor uses exact code/class identity, rejects names and conflicts without mutating schema',async()=>{
+  const module=await import('../../static/modules/annotation-geometry-adapter.js');
+  assert.equal(typeof module.annotationColor,'function');
+  const labels=Object.freeze([Object.freeze({code:'person',class_id:7,name:'人员',color:'#123abc'}),Object.freeze({code:'car',class_id:9,color:'#aabbcc'})]);
+  for(const value of [{label:'person',class_id:7},{label:'person',class_id:'7'},{label:'person'}])assert.equal(module.annotationColor(value,labels),'#123abc');
+  for(const value of [{label:'人员',class_id:7},{label:'person',class_id:9},{label:'unknown',class_id:7},{}])assert.equal(module.annotationColor(value,labels),'#64748b');
+  assert.equal(module.annotationColor({label:'person',class_id:7},[{...labels[0],active:false}]),'#64748b');
+  assert.equal(module.annotationColor({label:'person',class_id:7},[{...labels[0],color:'url(evil)'}]),'#64748b');
+  assert.equal(module.annotationColor({label:'person',class_id:7},[...labels,{...labels[0],class_id:8}]),'#64748b');
+});

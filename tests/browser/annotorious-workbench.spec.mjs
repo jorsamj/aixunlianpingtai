@@ -237,7 +237,7 @@ test('last-box deletion saves unannotated while explicit no-target review saves 
   expect(empty.annotation_state).toBe('unannotated');expect(empty.annotation_scope).toEqual([]);
   await dialog.locator('#ann420ReviewPanel summary').click();
   for(const input of await dialog.locator('#ann420ReviewPanel input[type=checkbox]').all())await input.check();
-  await dialog.getByRole('button',{name:'确认无目标',exact:true}).click();
+  await dialog.locator('#ann420SaveReview').click();
   await expect.poll(async()=> (await (await request.get(annotationUrl(fx))).json()).annotation_state).toBe('confirmed_empty');
 });
 

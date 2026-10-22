@@ -506,7 +506,7 @@ jobs:
           ):
               if token not in app:
                   missing.setdefault('app.py', []).append(token)
-          for token in ('ann420ConfirmEmpty', 'confirmEmptyAnnotation420', '暂无已结束训练可统计'):
+          for token in ('ann420SaveReview', 'saveAndConfirmAnnotationReview420', '暂无已结束训练可统计'):
               if token not in static_app:
                   missing.setdefault('static/app.js', []).append(token)
           if 'test_multi_source_label_unify_is_one_durable_task_and_retires_sources' not in Path('tests/api/test_durable_label_remap.py').read_text(encoding='utf-8'):

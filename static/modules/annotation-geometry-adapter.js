@@ -53,6 +53,22 @@ export function annotationLabelIssue(box, labels = []) {
   return null;
 }
 
+/** Read-only schema color projection. Names never establish class identity.
+ * Code-only predictions may omit class_id; an explicit class must agree.
+ * Ambiguous, inactive and unrecognized identities use a neutral visible color.
+ */
+export function annotationColor(box, labels = []) {
+  const fallback = '#64748b';
+  if (box?.label == null || !Array.isArray(labels)) return fallback;
+  const matches = labels.filter(row => row?.code != null && String(row.code) === String(box.label));
+  if (matches.length !== 1) return fallback;
+  const label = matches[0];
+  if (label.active === false || (label.status && label.status !== 'active') ||
+      (box.class_id != null && String(box.class_id) !== String(label.class_id))) return fallback;
+  // Formal label management stores hex colors. Do not accept CSS expressions.
+  return typeof label.color === 'string' && /^#(?:[a-f\d]{3}|[a-f\d]{6})$/i.test(label.color) ? label.color : fallback;
+}
+
 /**
  * Official rectangle -> one GT box. originalBoxesById must be the caller's
  * current GT map, including hidden boxes; it is never mutated or cached.

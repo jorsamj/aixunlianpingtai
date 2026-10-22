@@ -4,6 +4,7 @@ import {readFileSync} from 'node:fs';
 
 const source = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
 const styles = readFileSync(new URL('../../static/styles.css', import.meta.url), 'utf8');
+const workbenchStyles = readFileSync(new URL('../../static/annotation-workspace.css', import.meta.url), 'utf8');
 const editor = readFileSync(new URL('../../static/modules/annotorious-editor.js', import.meta.url), 'utf8');
 
 test('the final AI annotation override uses the persistent v60 task API', () => {
@@ -162,10 +163,11 @@ test('canonical manual inspector exposes per-box provenance without a second ann
   assert.match(source, /truth\.className==='mixed'.*'混合来源'/s);
 });
 
-test('v66 inspector polish targets the canonical ann414 label and object row classes', () => {
-  assert.match(styles, /\.ann420-inspector #annLabels \.ann414-label/);
-  assert.match(styles, /\.ann420-inspector #annBoxes \.ann414-boxrow/);
-  assert.match(styles, /grid-template-columns:minmax\(0,1fr\) 126px/);
+test('scoped inspector styles target real class choices and original object rows', () => {
+  assert.match(workbenchStyles, /\.annotation-workbench-modal \.ann420-class-option/);
+  assert.match(workbenchStyles, /\.annotation-workbench-modal #annBoxes \.ann414-boxrow/);
+  assert.match(workbenchStyles, /grid-template-columns:minmax\(0,1fr\) 102px/);
+  assert.doesNotMatch(workbenchStyles, /!important/);
 });
 
 test('one annotation truth view owns text color and provenance with formal truth priority', () => {
@@ -233,8 +235,8 @@ test('annotation P1 interactions use shared motion tokens instead of local timin
 });
 
 
-test('annotation inspector has one outer scroll owner with bounded label and object panes', () => {
-  assert.match(styles, /\.ann420-inspector\{display:flex!important;min-height:0;flex-direction:column;overflow:hidden!important\}/);
-  assert.match(styles, /\.ann420-label-panel #annLabels\{[^}]*overflow:auto[^}]*scrollbar-gutter:stable/s);
-  assert.match(styles, /\.ann420-object-panel #annBoxes\{[^}]*flex:1 1 auto[^}]*overflow:auto[^}]*scrollbar-gutter:stable/s);
+test('annotation inspector contains independent bounded label and object scroll panes', () => {
+  assert.match(workbenchStyles, /\.ann420-inspector\{[^}]*display:flex[^}]*overflow:hidden/s);
+  assert.match(workbenchStyles, /#annLabels\{[^}]*overflow:auto[^}]*scrollbar-gutter:stable/s);
+  assert.match(workbenchStyles, /#annBoxes\{[^}]*overflow:auto[^}]*scrollbar-gutter:stable/s);
 });

@@ -45,7 +45,8 @@ test('manual annotation delegates editable shapes to one official kernel and pre
   const stableStart = app.lastIndexOf('Stable single-instance manual\/batch annotation workbench');
   const stableEnd = app.indexOf('Persistent v60 AI annotation UI', stableStart);
   const stable = app.slice(stableStart, stableEnd);
-  assert.match(stable, /confirmEmptyAnnotationCanonical420/);
+  assert.match(stable, /window\.saveAndConfirmAnnotationReview420=async function/);
+  assert.doesNotMatch(app, /ann420ConfirmEmpty|confirmEmptyAnnotation420/);
   assert.match(stable, /button\.textContent='提交中…'/);
   assert.match(stable, /confirmReview:true,reviewedLabelCodes:selected/);
   assert.match(stable, /未检查类别（默认不勾选）/);

@@ -1,4 +1,4 @@
-import {toAnno, fromAnno} from './annotation-geometry-adapter.js?v=20261021a';
+import {toAnno, fromAnno, annotationColor} from './annotation-geometry-adapter.js?v=20261022a';
 import {withRequestDeadline} from './api.js?v=20261021s';
 
 // One local official distribution, shared by manual GT and candidate editors.
@@ -42,6 +42,7 @@ export async function createAnnotoriousEditor(options) {
   const controller = new AbortController(), signal = controller.signal;
   let destroyed = false, syncing = false, locked = false, visible = true;
   let mode = 'draw', selectedId = getSelectedId(), filteredCodes = null;
+  let autoFit = true, resizeObserver;
   let scale = 1, tx = 0, ty = 0, drawing = false, pan = null, source = initialSource;
   let labelOverride, labelsOverride;
   const size = () => ({width:Number(image.naturalWidth || options.width || image.width),height:Number(image.naturalHeight || options.height || image.height)});
@@ -53,11 +54,12 @@ export async function createAnnotoriousEditor(options) {
   const rows = () => getBoxes() || [];
   const idOf = box => String(box.id);
   // autoSave is the official lifecycle event policy; persistence remains the caller's.
-  const official = create(image, {disableUndoRedoKeys:true,autoSave:true,drawingEnabled:false,drawingMode:'drag',userSelectAction:'EDIT',style:annotation=>{
+  const annotationStyle = annotation => {
     const box=rows().find(row=>idOf(row)===String(annotation.id));
-    const color=labels().find(row=>String(row.code)===String(box?.label))?.color || '#7c3aed';
+    const color=annotationColor(box,labels());
     return {stroke:color,strokeWidth:2,fill:color,fillOpacity:.08};
-  }});
+  };
+  const official = create(image, {disableUndoRedoKeys:true,autoSave:true,drawingEnabled:false,drawingMode:'drag',userSelectAction:'EDIT',style:annotationStyle});
   official.setDrawingTool('rectangle');
   const listeners = [];
   const notifySelection = id => { selectedId=id == null ? null : String(id); onSelect(selectedId); };
@@ -75,6 +77,9 @@ export async function createAnnotoriousEditor(options) {
     try {
       const projected=rows().filter(allowed).map(box=>toAnno(box,size()));
       official.setAnnotations(projected);
+      // Official 3.9.5 renders these values as inline styles on both normal
+      // rectangles and selected editors, above its ordinary theme CSS.
+      official.setStyle?.(annotationStyle);
       const selected=projected.some(row=>String(row.id)===String(selectedId));
       if (!selected || locked || mode!=='select') { official.cancelSelected(); if(selectedId!=null)notifySelection(null); }
       else official.setSelected(String(selectedId),true);
@@ -188,7 +193,7 @@ export async function createAnnotoriousEditor(options) {
   },{capture:true,signal});
   viewport.addEventListener('pointerdown',event=>{
     if(!active()||locked||event.button!==0)return;
-    if(mode==='pan'){pan={id:event.pointerId,x:event.clientX,y:event.clientY,tx,ty};viewport.setPointerCapture?.(event.pointerId);event.preventDefault();event.stopImmediatePropagation();}
+    if(mode==='pan'){autoFit=false;pan={id:event.pointerId,x:event.clientX,y:event.clientY,tx,ty};viewport.setPointerCapture?.(event.pointerId);event.preventDefault();event.stopImmediatePropagation();}
     else if(mode==='draw'&&visible&&!event.target.closest?.('.a9s-annotation,.a9s-selection'))drawing=true;
   },{capture:true,signal});
   viewport.addEventListener('pointermove',event=>{
@@ -198,7 +203,19 @@ export async function createAnnotoriousEditor(options) {
   const finishPan=event=>{if(pan?.id===event.pointerId){viewport.releasePointerCapture?.(event.pointerId);pan=null;}else queueMicrotask(()=>{if(!destroyed)flush();});};
   viewport.addEventListener('pointerup',finishPan,{signal});viewport.addEventListener('pointercancel',event=>{finishPan(event);drawing=false;official.cancelDrawing();},{signal});
   viewport.addEventListener('wheel',event=>{if(!active()||locked)return;event.preventDefault();api.zoom(event.deltaY<0?.1:-.1,{x:event.clientX,y:event.clientY});},{passive:false,signal});
-  image.addEventListener('load',()=>{if(destroyed)return;if(source!==imageSource()){source=imageSource();scale=1;tx=ty=0;notifySelection(null);}transform();project();},{signal});
+  function fitViewport() {
+    if(destroyed)return;
+    const {width,height}=size(), vw=viewport.clientWidth, vh=viewport.clientHeight;
+    if(![width,height,vw,vh].every(n=>Number.isFinite(n)&&n>0))return;
+    scale=Math.min(vw/width,vh/height);
+    tx=(vw-width*scale)/2;ty=(vh-height*scale)/2;transform();
+  }
+  image.addEventListener('load',()=>{
+    if(destroyed)return;
+    if(source!==imageSource()){source=imageSource();autoFit=true;notifySelection(null);}
+    if(autoFit)fitViewport();else transform();
+    project();
+  },{signal});
   const api={
     sync(value={}) {
       if(destroyed)return;
@@ -207,19 +224,21 @@ export async function createAnnotoriousEditor(options) {
       if('selectedId'in value)selectedId=value.selectedId==null?null:String(value.selectedId);
       if('locked'in value)locked=!!value.locked;
       const nextSource=imageSource();
-      if(source!==nextSource){source=nextSource;scale=1;tx=ty=0;selectedId=null;drawing=false;official.cancelDrawing();}
+      if(source!==nextSource){source=nextSource;autoFit=true;selectedId=null;drawing=false;official.cancelDrawing();}
       if(locked){drawing=false;official.cancelDrawing();}
-      transform();project();
+      if(autoFit)fitViewport();else transform();project();
     },select,deleteSelected,reclassSelected,setMode,handleEscape,flush,
     setVisibility(value){if(destroyed)return;visible=!!value;official.cancelDrawing();drawing=false;project();options.onVisibilityChange?.(visible);},
     setClassFilter(codes){if(destroyed)return;filteredCodes=codes==null?null:new Set([...codes].map(String));official.cancelDrawing();drawing=false;project();},
-    fit(){if(destroyed)return;const {width,height}=size();scale=Math.max(.01,Math.min(4,viewport.clientWidth/width,viewport.clientHeight/height));tx=ty=0;transform();},
-    resetZoom(){if(destroyed)return;scale=1;tx=ty=0;transform();},
-    zoom(delta,point){if(destroyed)return;const next=Math.max(.01,Math.min(4,scale+Number(delta)));if(!Number.isFinite(next))return;const rect=viewport.getBoundingClientRect();const x=point?point.x-rect.left:viewport.clientWidth/2,y=point?point.y-rect.top:viewport.clientHeight/2;tx=x-(x-tx)*next/scale;ty=y-(y-ty)*next/scale;scale=next;transform();},
+    fit(){if(destroyed)return;autoFit=true;fitViewport();},
+    resetZoom(){if(destroyed)return;autoFit=false;scale=1;tx=ty=0;transform();},
+    zoom(delta,point){if(destroyed)return;const next=Math.max(.01,Math.min(Math.max(4,scale,4*Math.min(viewport.clientWidth/image.naturalWidth,viewport.clientHeight/image.naturalHeight)),scale+Number(delta)));if(!Number.isFinite(next))return;autoFit=false;const rect=viewport.getBoundingClientRect();const x=point?point.x-rect.left:viewport.clientWidth/2,y=point?point.y-rect.top:viewport.clientHeight/2;tx=x-(x-tx)*next/scale;ty=y-(y-ty)*next/scale;scale=next;transform();},
     snapshot:()=>Object.freeze({mode,visible,scale,selectedId,filteredCodes:filteredCodes?[...filteredCodes]:null,destroyed,locked}),
-    destroy(){if(destroyed)return;destroyed=true;controller.abort();pan=null;drawing=false;for(const [event,fn]of listeners)official.off(event,fn);official.destroy();},
+    destroy(){if(destroyed)return;destroyed=true;controller.abort();resizeObserver?.disconnect();if(pan)viewport.releasePointerCapture?.(pan.id);pan=null;drawing=false;for(const [event,fn]of listeners)official.off(event,fn);official.destroy();},
   };
   api.delete=deleteSelected;api.reclass=reclassSelected;api.mode=setMode;api['100']=api.resetZoom;
   options.signal?.addEventListener('abort',()=>api.destroy(),{once:true,signal});
-  transform();project();return api;
+  const Observer=doc.defaultView?.ResizeObserver || globalThis.ResizeObserver;
+  if(Observer){resizeObserver=new Observer(()=>{if(autoFit&&active())fitViewport();});resizeObserver.observe(viewport);}
+  fitViewport();project();return api;
 }

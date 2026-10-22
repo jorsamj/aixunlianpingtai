@@ -16,9 +16,9 @@ test('dirty editor removes confirmed-negative decoration without mutating formal
   vm.runInNewContext(negative.replace('export function installNegativeSampleRuntime','function installNegativeSampleRuntime')+'\ninstallNegativeSampleRuntime({getState:()=>state});',{window,document,state,queueMicrotask:fn=>fn()});
   assert.equal(button.textContent,'✓ 已确认负样本');assert.match(status.textContent,/fire/);
   state.annDirty=true;window.NegativeSampleRuntime.decorate();
-  assert.equal(button.textContent,'确认无目标');assert.equal(status,null);assert.equal(state.ann.annotation_state,'confirmed_empty');
+  assert.equal(button.textContent,'确认本图无目标');assert.equal(status,null);assert.equal(state.ann.annotation_state,'confirmed_empty');
   state.ann.boxes=[{label:'fire'}];window.NegativeSampleRuntime.decorate();
-  assert.equal(button.hidden,true);assert.equal(status,null);
+  assert.equal(button.hidden,false);assert.equal(button.textContent,'保存并确认审核');assert.equal(status,null);
 });
 
 test('negative sample runtime is decorator-only and never captures annotation owners', () => {
@@ -30,17 +30,16 @@ test('negative sample runtime is decorator-only and never captures annotation ow
     'wrapNavigation',
     'setTimeout(',
   ]) assert.equal(negative.includes(token), false, token);
-  assert.match(negative, /document\.getElementById\?\.\('ann420ConfirmEmpty'\)/);
+  assert.match(negative, /document\.getElementById\?\.\('ann420SaveReview'\)/);
   assert.match(negative, /window\.NegativeSampleRuntime = runtime/);
   assert.match(negative, /confirmed_empty/);
 });
 
 test('canonical annotation owners explicitly decorate and confirm empty truth', () => {
   assert.match(app, /window\.saveAnn=async function saveAnnotationCanonical420/);
-  assert.match(app, /window\.confirmEmptyAnnotation420=async function confirmEmptyAnnotationCanonical420\(\)/);
-  assert.match(app, /if\(!selected\.size\)\{toast\('请在“类别审核范围”中勾选已经确认无目标的标签'/);
-  assert.match(app, /return window\.saveAndConfirmAnnotationReview420\(\)/);
+  assert.doesNotMatch(app, /ann420ConfirmEmpty|confirmEmptyAnnotation420/);
+  assert.match(app, /if\(!selected\.length\)\{toast\('请先勾选已经查看图片并完成审核的标签'/);
   assert.match(app, /confirmEmpty:\(state\.ann\?\.boxes\?\.length\|\|0\)===0,confirmReview:true,reviewedLabelCodes:selected/);
   assert.ok((app.match(/window\.NegativeSampleRuntime\?\.decorate\?\.\(\);/g) || []).length >= 2);
-  assert.match(main, /negative-samples\.js\?v=422545/);
+  assert.match(main, /negative-samples\.js\?v=20261022a/);
 });
