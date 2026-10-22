@@ -12,22 +12,22 @@
 
 | ID | 场景 | 状态 | 证据 |
 |---|---|---|---|
-| UP-01 | 固定Core/Dashboard/简体中文版本、实际许可证及离线可复现资源 | 已完成待验收 | 固定三依赖+官方发行；87项离线制品/声明，Node3项通过，许可限制见5.1 |
-| UP-02 | 单ZIP、多ZIP及两个全局槽、每ZIP原分片并发 | 已完成待验收 | Chrome真实3×33MiB，2个ZIP×4分片；第三个在原槽位释放后启动 |
-| UP-03 | 实际传输进度，暂停/继续不重传确认分片 | 已完成待验收 | Chrome中间真实字节+暂停确认分片不重传；官方Core真实回滚与恢复Node |
-| UP-04 | 断网、刷新后同ZIP续传，失败不重复任务 | 已完成待验收 | Chrome断网重试/刷新同mtime续传/complete响应丢失和未知查询，任务不重复 |
-| UP-05 | 上传后ZIP校验/标签映射/Worker入库；传输完成与导入完成分开 | 已完成待验收 | 真实JPEG+YOLO，原v19→映射→daemon Worker done→Material及正式GT |
-| UP-06 | 关窗后台继续；销毁清理监听/实例；原界面回退 | 已完成待验收 | 关窗原传输继续；迟到mount不复活；资源失败自动/手动回退 |
-| UP-07 | 中文、隔离PoC、实际Python/Node/Chrome及最终SHA CI报告 | 进行中 | 简体中文/零外部请求/四视口，Python82、Node1237、Chrome29已通过；最终SHA CI待推送 |
-| UP-08 | PoC全通过后正式入口切换及可回退 | 已完成待验收 | 隔离14项全通过后接正式按钮；真实菜单进入Uppy及原回退上传通过 |
+| UP-01 | 固定Core/Dashboard/简体中文版本、实际许可证及离线可复现资源 | 已验收 | 固定三依赖+官方发行；87项离线制品/声明，Node3项通过，许可限制见5.1 |
+| UP-02 | 单ZIP、多ZIP及两个全局槽、每ZIP原分片并发 | 已验收 | Chrome真实3×33MiB，2个ZIP×4分片；第三个在原槽位释放后启动 |
+| UP-03 | 实际传输进度，暂停/继续不重传确认分片 | 已验收 | Chrome中间真实字节+暂停确认分片不重传；官方Core真实回滚与恢复Node |
+| UP-04 | 断网、刷新后同ZIP续传，失败不重复任务 | 已验收 | Chrome断网重试/刷新同mtime续传/complete响应丢失和未知查询，任务不重复 |
+| UP-05 | 上传后ZIP校验/标签映射/Worker入库；传输完成与导入完成分开 | 已验收 | 真实JPEG+YOLO，原v19→映射→daemon Worker done→Material及正式GT |
+| UP-06 | 关窗后台继续；销毁清理监听/实例；原界面回退 | 已验收 | 关窗原传输继续；迟到mount不复活；资源失败自动/手动回退 |
+| UP-07 | 中文、隔离PoC、实际Python/Node/Chrome及准确SHA CI报告 | 已验收 | 本地Python82/Node1237/Chrome29+15；2ae6bdf7实际23/23 Actions、62/62 Checks通过，文档HEAD单独核Checks |
+| UP-08 | PoC全通过后正式入口切换及可回退 | 已验收 | 隔离14项全通过后接正式按钮；真实菜单进入Uppy及原回退上传通过 |
 
 ## 3. 架构审计与设计取舍
 
 - 唯一传输Owner为static/modules/zip-import-runtime.js。uploadBatch同步登记任务并使用createZipTransferLimiter(2)跨批FIFO；uploadZipMultipartJob复用会话、8MB、最多4个分片XHR及重试。暂停/取消/续传由同一Owner处理。UploadTaskCenterRuntime是正式状态展示Owner，原PollRegistry及v19持久任务继续工作。
 - v19 Upload ID与正式Import Job ID可能不同；原任务中心rekey及标签/Worker链不能丢失。Uppy完成事件仅对应原控制器已确认分片合并交付，不将整个导入标成功。
 - 新增适配层只绑定Uppy文件ID与原控制器返回身份、转发官方进度事件和操作意图；不创建传输XHR/会话/第二队列/轮询/持久任务状态。控制器暴露最小观察回调，批量结果需逐文件反馈，不能从最终一个任务猜其他文件成功。
-- Uppy实例随原Modal内容生命周期创建/销毁；销毁只清Uppy事件及投影，不取消控制器任务；新窗口可读原Owner快照，恢复按原文件指纹/Upload ID核验。项目与Modal归属防迟到。
-- 方案A（采用候选）：官方预编译uppy发行制品本地复制，动态只加载Core/Dashboard/zh_CN；不启动其他插件。优势无需新增打包工具且可精确校验；风险包含未用插件代码，须记录实际字节、嵌入许可和懒加载证据。方案B：引入新bundler定制tree-shake，体积更小但与不增加第二套打包体系约束冲突，不采用。方案C：裸ESM/import map，传递依赖含非原生ESM，需自造转换器，不采用。
+- Uppy实例随原Modal内容生命周期创建/销毁；销毁只清Uppy事件及投影，不取消控制器任务；原任务中心继续读取原Owner快照，新界面重选恢复按原文件指纹/Upload ID核验。项目与Modal归属防迟到。
+- 方案A（采用候选）：官方预编译uppy发行制品本地复制，动态加载官方aggregate+zh_CN，仅实例化Core/Dashboard，不启动其他插件。优势无需新增打包工具且可精确校验；风险包含未用插件代码，须记录实际字节、嵌入许可和懒加载证据。方案B：引入新bundler定制tree-shake，体积更小但与不增加第二套打包体系约束冲突，不采用。方案C：裸ESM/import map，传递依赖含非原生ESM，需自造转换器，不采用。
 - 初选官方稳定Core6.3.0、Dashboard6.0.2、locales5.3.1，与官方uppy6.0.5预编译发行对应；以registry.npmjs.org和实际包manifest/source map核验后固定，禁止宽松版本。官方文档：https://uppy.io/docs/uppy/ 、https://uppy.io/docs/guides/building-plugins/ 、https://uppy.io/docs/dashboard/ 、https://uppy.io/docs/locales/ 。许可证以实际安装/嵌入依赖文本为准，不只看顶层MIT。
 
 ## 4. 实施计划与职责
@@ -40,11 +40,11 @@
 - [ ] B2：static/modules/uppy-zip-adapter.js通过addUploader及官方事件委托原Owner；测试不发旁路XHR、关闭不取消、旧响应不能覆盖新界面、暂停/恢复/取消只有单Owner。主agent负责。
 - [ ] C1：独立PoC入口及真实浏览器，临时本地后端、真实ZIP/分片/校验/标签Worker，故障注入只隔离网络；覆盖UP-01–07全部场景，保留RED/失败原因。
 - [ ] D1：仅C1全部通过后，原ZIP入口接Dashboard，显式原界面回退及资源失败自动回退；继续复用原Modal/UploadTaskCenter。必要静态缓存与VERSION按最终改动一次递增。
-- [ ] E1：相关Python、Node、Chrome和既有回归/许可离线验证；独立只读审查；更新AGENTS/CURRENT_STATE及既有ZIP入口；正常提交推送，准确代码SHA和最终文档HEAD均核验所有实际Actions/Checks。
+- [x] E1：相关Python、Node、Chrome和既有回归/许可离线验证；独立只读审查；更新AGENTS/CURRENT_STATE及既有ZIP入口；正常提交推送，准确代码SHA和最终文档HEAD均核验所有实际Actions/Checks。
 
 ## 5. 实际测试、问题与进度
 
-### 5.1 A1离线制品与许可（本地通过，未最终CI）
+### 5.1 A1离线制品与许可（代码CI已通过）
 
 精确固定@uppy/core6.3.0、@uppy/dashboard6.0.2、@uppy/locales5.3.1；官方预编译uppy6.0.5作为dev依赖只供制品复制。Core/Dashboard嵌入manifest精确版本已由官方source map核验。uppy.min.mjs610629字节、CSS92037、独立zh_CN8261，运行时合计710927字节，按需加载；含source map的全部制品3009329字节，完整含notice目录3178573字节。不新增bundler或CDN，未启用Tus/Companion/远端来源插件。
 
@@ -62,7 +62,7 @@ npm ci官方registry通过（88 installed、audit0漏洞），vendor Node3/3通�
 - Uppy官方addUploader、upload-start/progress/success及upload-pause/pause-all/resume-all已接原Owner，取消仍从原任务中心（不启用Uppy并行取消器）。传输complete只记录服务端交付响应，后台selecting/running不变done。销毁先解除原订阅/Uppy事件/Uploader，再destroy（官方destroy会触发cancel-all），关窗不取消任务。
 - 动态适配测试含实际安装官方Core共11/11；随后发现本地资源永远Pending会无限Loading，新增RED后复用原withRequestDeadline30秒回退，适配+view共13/13。旧mount迟到覆盖新view句柄有动态RED，改为await前登记handle、旧关闭后只销毁自身，1/1通过。
 
-### 5.3 当前真实测试
+### 5.3 初期真实测试
 
 Python一次12份ZIP/multipart/背景合并/持久化/规模/映射/回滚/正式标注导入文件合并 **48通过0失败0跳过，92.28秒**（C:/tmp/uppy-python-poc.xml），warning5条为现有依赖弃用。命令文件清单为test_v19_multipart_controls、test_v19_multipart_background_finalize、test_v19_job_atomic_persistence、test_v19_import_scalability、test_v19_import_report_externalization、test_v19_import_bounded_admission、test_zip_class_samples_v19、test_v19_import_failure_rollback、test_zip_processing_p1/p2a_annotation_connections/p2b_single_final_annotation/p2c_structured_single_final_annotation，均在tests/api，运行python -m pytest -q对应文件与隔离短basetemp。
 
@@ -126,10 +126,23 @@ Python API48项无后端代码变更后继续有效。原ZIP仓库/标注/审计
 
 确定根因：此前GOV提交14419353正式增加空草稿“至少2张有效训练素材”的自动诊断；first-open等已接既有returnToTrainingConfiguration helper，quality-reports漏接。本轮Uppy没有改训练准入逻辑；基线c1af26ea同样存在该旧夹具缺口，原Frontend184集合不包括此quality文件，不能拿184绿色证明它通过。独立复审与本地原例实际RED一致（C:/tmp/uppy-ci-training-red.log）。仅在7处新建表单可见后复用原helper，点击真实“返回训练配置”且断言原草稿未变，不用force、移除诊断或修改成功标准。修复后原失败首例1/1、精确CI两文件training-create-first-open+training-quality-reports共15/15通过（40.2秒，C:/tmp/uppy-ci-training-full.log）。
 
-收尾同时将截图输出改为跨平台os.tmpdir()/path.join（四视口+正式入口2/2再次通过，C:/tmp/uppy-chrome-portable-final.log），去除自有helper空白EOF；官方供应文件原生空白不改，以.gitattributes -whitespace仅保留第三方原字节，平台代码仍执行正常whitespace检查。VERSION保持374，不二次递增。后续修正提交及最终文档SHA必须各自重新核CI，当前还未作最终绿色结论。
+收尾同时将截图输出改为跨平台os.tmpdir()/path.join（四视口+正式入口2/2再次通过，C:/tmp/uppy-chrome-portable-final.log），去除自有helper空白EOF；官方供应文件原生空白不改，以.gitattributes -whitespace仅保留第三方原字节，平台代码仍执行正常whitespace检查。VERSION保持374，不二次递增。当时尚未作最终绿色结论；修正提交实际结果见下一段，最终文档SHA仍独立核验。
+
+修正提交[2ae6bdf71c24096e4ab75db5696c4609e6832678](https://github.com/jorsamj/aixunlianpingtai/commit/2ae6bdf71c24096e4ab75db5696c4609e6832678)已普通推送；准确该SHA **23/23条Actions全部completed/success、62/62项Checks全部completed/success**，代码与隔离测试已验收。训练回归run[39727149526](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39727149526)已成功；ZIP run[39727149529](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39727149529)全部成功；Frontend run[39727149494](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39727149494)Node1237及全量Chrome184（7.4分钟）实际通过；训练Chrome15（39.5秒）、ZIP Chrome29（1.3分钟）均通过，非借用首SHA。
+
+本次最终文档补提仅更新本专项、AGENTS、CODEX_CURRENT_STATE及PROJECT_HANDOFF_CURRENT索引，不改业务或VERSION。交付前必须对**本文件所在最终HEAD**再次读取全部Actions及分页Checks，确认无queued/in_progress/failure/cancelled；不能沿用2ae6bdf7绿色。GitHub本提交关联Checks为最终文档SHA的持久验收证据（打开仓库分支Latest commit→Checks），交付报告提供最终准确SHA。独立完整回执另存本机visualizations附件目录`uppy-zip-ci-final-20261022.json`，包括首失败、修正及最终文档三组SHA/Actions/Checks；未来会话优先按本文件链接和GitHub准确SHA核验，不依赖聊天或本机临时日志。
+
+### 5.7 兼容性结论
+
+Uppy能够通过官方自定义Uploader接入原ZIP v19协议，无须Tus/Companion/新后端。直接复用原会话/8MB分片/4并发、全局2槽FIFO、指纹恢复/幂等、后台合并/校验、标签映射、原Worker和TaskCenter。必要的小幅修改为原Owner只读观察、续传共用原槽位、暂停停止屏障/错误反馈及前端投影/懒加载入口，没有新增上传控制器、持久任务库或轮询。
+
+已测试范围未发现无法解决的协议冲突，中文界面及原任务状态一致；真正生产网络/超大ZIP仍未验证，不能外推性能或发布合格。受约束采用本地官方预编译制品，体积与未独立确定的嵌入依赖版本限制见5.1；实际已核许可证为宽松商业可用，保留版权/许可声明。不把711KB体积说成定制最小包，也不把后台selecting说成导入完成。
+
 
 ## 6. 接续
 
-本轮功能已实现，Uppy本地/CI通过；旧训练报告夹具适配已本地15/15通过，剩余修正提交与最终文档HEAD精确SHA CI。测试通过后普通提交推送唯一长期分支，不改其他工作树，不重写共享历史。所有完成状态必须以5.6及实际提交Checks为准。
+本轮代码、隔离PoC、正式入口/回退、兼容性报告和修正SHA CI已完成；无需重复开发Uppy或上述恢复功能。最终文档HEAD自身的全部检查仍按5.6交付门槛核验，以GitHub绑定该SHA的实际结果为准。VERSION42.24.374，只在唯一长期分支提交推送，未部署生产。
 
-后续会话从本文件、static/modules/uppy-zip-adapter.js、uppy-zip-view.js、zip-import-runtime.js及zip-import-bootstrap.mjs开始。禁止重复建设上传/任务/Modal/轮询；不得把Uppy交付成功写成Worker入库成功。正式入口可用“使用原上传界面”立即回退，供应静态资源失败也回退；无需改生产配置或数据。禁止未经授权的部署、生产服务测试、真实素材删除或GT/历史变更。
+后续会话从本文件、static/modules/uppy-zip-adapter.js、uppy-zip-view.js、zip-import-runtime.js及zip-import-bootstrap.mjs开始。官方制品更新必须同时更新精确pins、原始哈希、许可证/manifest与离线check；不可手工改minified文件。运行`npm ci`、`npm run verify:uppy`、`node --test tests/frontend/*.test.mjs`；本地临时后端通过`npx playwright test tests/browser/uppy-zip-poc.spec.mjs tests/browser/zip-import-refresh-recovery.spec.mjs`复现完整29项，训练兼容回归用两份training-create-first-open/training-quality-reports。Python文件/数量见5.3/5.5，原CI逐项覆盖见5.6链接。
+
+禁止重复建设上传/任务/Modal/轮询；不得把Uppy交付成功写成Worker入库成功。正式入口可用“使用原上传界面”立即回退，供应静态资源失败也回退；无需改生产配置或数据。禁止未经授权的部署、生产服务测试、真实素材删除或GT/历史变更。仅生产代理/超大ZIP/实际网络和发布后现场仍待独立授权验收，不能把隔离测试外推为已生产发布。

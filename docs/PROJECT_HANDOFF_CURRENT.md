@@ -1,6 +1,6 @@
-## 2026-10-22｜Uppy ZIP适配入口
+## 2026-10-22｜Uppy ZIP适配验收与接续
 
-唯一专项：[Uppy兼容性/进度](UPPY_ZIP_ADAPTER_POC_2026_10_22.md)。原ZIP协议/TaskCenter/Worker继续唯一Owner；14项隔离PoC通过后正式按钮接Uppy，原界面可回退，最终SHA验收见专项5.6。未生产部署或操作生产素材，勿重复创建上传控制器。
+唯一专项：[Uppy兼容性/进度](UPPY_ZIP_ADAPTER_POC_2026_10_22.md)。原协议/TaskCenter/Worker唯一Owner，隔离PoC通过后正式按钮接Uppy、原界面可回退；VERSION374，修正2ae6bdf7实际23/23 Actions及62/62 Checks通过。Node1237、Python82、Chrome ZIP29/训练15/平台CI184；首失败、修正和最终文档HEAD核验入口见专项5.6。未生产部署或操作生产素材，勿重复创建上传控制器。
 
 ## 2026-10-12｜CI 止血阶段：精确 HEAD 复核与修复（完整验收未完成）
 
