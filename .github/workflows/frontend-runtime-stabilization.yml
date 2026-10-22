@@ -359,7 +359,7 @@ jobs:
           )
           if not readiness:
               raise SystemExit('startup snapshot readiness contract is missing from main runtime wiring')
-          if 'beforeInvokeNavigation: () => window.toggleMobileSidebarV37?.(false),' not in main:
+          if 'beforeInvokeNavigation: page => {window.toggleMobileSidebarV37?.(false);' not in main or "if(page!=='质量中心')qualityDetectionWorkbench.deactivate();" not in main:
               raise SystemExit('mobile sidebar close semantic wiring is missing from final navigation runtime')
           start = main.find('performNavigation: page => {')
           end = main.find('\n  },', start)

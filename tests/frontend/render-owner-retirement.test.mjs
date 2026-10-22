@@ -255,7 +255,9 @@ test('shadowed test and detection page renderers are physically retired', () => 
   assert.equal((app.match(/^\s*window\.renderDetectBench = function\(\)\{/gm) || []).length, 0);
   assert.equal((app.match(/^\s*renderTest = window\.renderTest = function\(\)\{/gm) || []).length, 0);
   assert.match(app, /renderDetectBench = window\.renderDetectBench = function\(\)/);
-  assert.match(app, /window\.renderQualityDetectionBench64=function renderQualityDetectionBench64\(\)/);
+  const workbench = fs.readFileSync(new URL('../../static/modules/quality-detection-workbench.js', import.meta.url), 'utf8');
+  assert.doesNotMatch(app, /window\.renderQualityDetectionBench64=function/);
+  assert.match(workbench, /window\.renderQualityDetectionBench64=function renderQualityDetectionBench64\(\)/);
   assert.equal((app.match(/window\.renderDetectBench\s*=/g) || []).length, 1);
   assert.match(app, /renderTest=window\.renderTest=function renderTestCanonical63\(\)/);
 });

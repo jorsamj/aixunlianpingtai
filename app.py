@@ -13079,8 +13079,22 @@ def _testable_version_pt_path(version: Mapping[str, Any]) -> Optional[Path]:
 
 
 @app.get("/api/v12/projects/{project_id}/test_models")
-def v12_test_models(project_id: str, probe_optional: bool = True):
+def v12_test_models(project_id: str, probe_optional: bool = True, model_scope: str = ""):
     project = get_project(project_id)
+    if model_scope == "scenario":
+        from platform_core.scenario_models import resolve_scenario_model, ScenarioModelUnavailable
+        items = []
+        for algorithm in list_algorithms_internal(project_id):
+            for version in algorithm.get("versions") or []:
+                try:
+                    item = resolve_scenario_model(project_id, project_dir(project_id), algorithm, version,
+                        shared_task_repository(), shared_task_artifacts(), use_list_cache=True)
+                except ScenarioModelUnavailable:
+                    continue
+                item["is_current_version"] = str(version.get("id")) == str(algorithm.get("current_version_id"))
+                items.append(item)
+        items.sort(key=lambda row: (str(row.get("finished_at") or row.get("created_at") or ""), str(row.get("version_id"))), reverse=True)
+        return {"ok": True, "items": items}
     project_label_names = _project_label_names(project)
     project_labels_token = _labels_b64(project_label_names)
     items = []
@@ -22857,6 +22871,7 @@ async def create_deployment_test(
     detection_batch_id: str = Form(""), detection_item_index: int = Form(-1),
     detection_item_total: int = Form(0), detection_side: str = Form(""),
     model_label: str = Form(""), original_filename: str = Form(""),
+    model_scope: str = Form(""),
     file: UploadFile = File(...),
 ):
     with _algorithm_version_reference_fence(
@@ -22880,6 +22895,7 @@ async def create_deployment_test(
             detection_side=detection_side,
             model_label=model_label,
             original_filename=original_filename,
+            model_scope=model_scope,
             file=file,
         )
 
@@ -22901,12 +22917,26 @@ async def _create_deployment_test_under_version_fence(
     model_label: str,
     original_filename: str,
     file: UploadFile,
+    model_scope: str = "",
 ):
     get_project(project_id)
-    model_resolution = _resolve_v61_test_model(
-        project_id, model_name=model_name, model_source=model_source, local_path=local_path,
-        algorithm_id=algorithm_id, version_id=version_id,
-    )
+    scenario_model = None
+    if model_scope == "scenario":
+        from platform_core.scenario_models import resolve_scenario_model, ScenarioModelUnavailable
+        if model_source != "algorithm_version" or not algorithm_id or not version_id:
+            raise HTTPException(status_code=409, detail="SCENARIO_MODEL_INELIGIBLE: 场景实测仅允许可信的正式训练算法版本")
+        algorithm, version = _algorithm_version_for_action(project_id, algorithm_id, version_id)
+        try:
+            scenario_model = resolve_scenario_model(project_id, project_dir(project_id), algorithm, version,
+                shared_task_repository(), shared_task_artifacts())
+        except ScenarioModelUnavailable as error:
+            raise HTTPException(status_code=409, detail=f"SCENARIO_MODEL_INELIGIBLE: {error}") from error
+        model_resolution = resolve_ultralytics_model(scenario_model["path"], project_id)
+    else:
+        model_resolution = _resolve_v61_test_model(
+            project_id, model_name=model_name, model_source=model_source, local_path=local_path,
+            algorithm_id=algorithm_id, version_id=version_id,
+        )
     if not model_resolution.found and not model_resolution.downloadable:
         raise HTTPException(status_code=404, detail="测试模型不存在，且不是允许自动下载的官方模型")
     model_path = str(model_resolution.path) if model_resolution.found else ""
@@ -22980,6 +23010,9 @@ async def _create_deployment_test_under_version_fence(
             if batch_id else None
         ),
     }
+    if scenario_model is not None:
+        request["model_scope"] = "scenario"
+        request["scenario_model"] = {**scenario_model, "project_path": str(project_dir(project_id).resolve())}
     try:
         remote_execution = _remote_execution_transport_service().stage_deployment_test(
             project_id=project_id,
@@ -23009,9 +23042,25 @@ async def _create_deployment_test_under_version_fence(
         ) from error
     if remote_execution is not None:
         request["remote_execution"] = remote_execution
-    shared_task_artifacts().atomic_write_json(task_id, "request.json", request)
+    if scenario_model is not None:
+        from types import SimpleNamespace
+        from platform_core.scenario_models import verify_scenario_request
+        try:
+            verify_scenario_request(SimpleNamespace(
+                task=SimpleNamespace(project_id=project_id),
+                repository=shared_task_repository(), artifacts=shared_task_artifacts(),
+            ), request)
+        except ScenarioModelUnavailable as error:
+            input_path.unlink(missing_ok=True)
+            try:
+                prediction_dir.rmdir()
+            except OSError:
+                pass
+            raise HTTPException(status_code=409, detail=f"SCENARIO_MODEL_INELIGIBLE: {error}") from error
+    payload_ref = "scenario/request.json" if scenario_model is not None else "request.json"
+    shared_task_artifacts().atomic_write_json(task_id, payload_ref, request)
     record = shared_task_repository().create(TaskRecord.new(
-        task_id, project_id, TaskKind.DEPLOYMENT_TEST, "request.json", f"deployment-runtime:{suffix}",
+        task_id, project_id, TaskKind.DEPLOYMENT_TEST, payload_ref, f"deployment-runtime:{suffix}",
         required_capabilities=("deployment.runtime",),
     ))
     return JSONResponse(status_code=202, content=public_deployment_test(record))
@@ -23935,6 +23984,7 @@ def _remote_execution_transport_service():
         storage_sources_factory=storage_source_repository,
         storage_credentials_factory=storage_credentials,
         task_artifacts=shared_task_artifacts(),
+        task_repository=shared_task_repository(),
     )
 
 

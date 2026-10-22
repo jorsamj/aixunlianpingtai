@@ -112,7 +112,8 @@ def test_completed_training_job_recovers_without_retraining(tmp_path: Path, monk
         "requested": {"test_source": "explicit"},
         "test_seed": 7,
         "validation_seed": 11,
-        "label_schema": [],
+        "label_schema": [{"class_id": 0, "code": "fire"}],
+        "test_image_ids": [],
         "images": [],
     })
     revision = dataset_revision_document(snapshot)

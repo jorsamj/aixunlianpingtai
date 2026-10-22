@@ -152,10 +152,11 @@ test('quality-center detection loads focused model and inference extras without 
   assert.match(qualityTab, /await focused\('质量中心'\)/);
   assert.match(qualityTab, /window\.loadPageExtras413\?\.\('质量中心'\)/);
 
-  const benchStart = source.indexOf('function qualityDetectionShell64(models,ready)');
-  const benchEnd = source.indexOf('\n  window.renderQualityDetectionBench64=function renderQualityDetectionBench64()', benchStart);
+  const benchSource=fs.readFileSync(new URL('../../static/modules/quality-detection-workbench.js',import.meta.url),'utf8');
+  const benchStart = benchSource.indexOf('function qualityDetectionShell64(models,ready)');
+  const benchEnd = benchSource.indexOf('\n  window.renderQualityDetectionBench64=function renderQualityDetectionBench64()', benchStart);
   assert.ok(benchStart >= 0 && benchEnd > benchStart);
-  const bench = source.slice(benchStart, benchEnd);
+  const bench = benchSource.slice(benchStart, benchEnd);
   assert.match(bench, /data-quality-detection-shell="1"/);
   assert.match(bench, /onclick="refreshDetectionBenchDataV3\(\)">刷新模型<\/button>/);
   assert.doesNotMatch(bench, /loadAll\(\)\.then\(render\)/);
@@ -259,7 +260,9 @@ test('page extras have their own freshness and quality extras only run on the de
   assert.doesNotMatch(refresh, /page === '部署转换'/);
   assert.doesNotMatch(refresh, /PAGE_EXTRAS_OWNERS = new Set\([^\n]*'训练任务'/);
   assert.match(refresh, /page !== '质量中心' \|\| state\.qualityCenterTab411 === 'detect'/);
-  assert.match(refresh, /const loadedAt = Number\(pageExtrasLoadedAt\.get\(page\) \|\| 0\)/);
+  assert.match(refresh, /const loadedAt = Number\(pageExtrasLoadedAt\.get\(cacheKey\) \|\| 0\)/);
+  assert.match(refresh,/const cacheKey=page==='质量中心'/);
+  assert.match(refresh,/state\.project\?\.id/);
   assert.doesNotMatch(refresh, /__coreSnapshotGeneratedAt|snapshotLoadedAt/);
   assert.match(refresh, /if \(!force && loadedAt > 0 && age >= 0 && age < PAGE_EXTRAS_CACHE_TTL_MS\) return null/);
   assert.match(refresh, /window\.PlatformCore\.runtime\.refreshPageExtras = refreshPageExtrasInBackground/);

@@ -118,6 +118,7 @@ class RemoteExecutionTransportService:
         provider_factory: Callable[[str, object, Mapping[str, str]], object] | None = None,
         model_artifacts: ModelArtifactService | None = None,
         task_artifacts=None,
+        task_repository=None,
     ):
         self.data_dir = Path(data_dir)
         self.project_dir = project_dir
@@ -126,6 +127,7 @@ class RemoteExecutionTransportService:
         self.storage_credentials_factory = storage_credentials_factory
         self.provider_factory = provider_factory
         self.task_artifacts = task_artifacts
+        self.task_repository = task_repository
         self.model_artifacts = model_artifacts or ModelArtifactService(
             data_dir=self.data_dir,
             project_dir=self.project_dir,
@@ -1573,14 +1575,20 @@ class RemoteExecutionTransportService:
             "sha256": expected_sha,
         }
 
-    @staticmethod
-    def _deployment_remote(task, payload: Mapping[str, Any]) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
+    def _deployment_remote(self, task, payload: Mapping[str, Any]) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
         if str(getattr(task.kind, "value", task.kind)) != "DEPLOYMENT_TEST":
             raise RemoteExecutionTransportError(
                 "REMOTE_TASK_KIND_UNSUPPORTED",
                 "remote object-storage result transport is only implemented for deployment tests",
                 409,
             )
+        from types import SimpleNamespace
+        from .scenario_models import verify_scenario_request, ScenarioModelUnavailable
+        try:
+            verify_scenario_request(SimpleNamespace(task=task, repository=self.task_repository,
+                artifacts=self.task_artifacts), payload)
+        except (ScenarioModelUnavailable, AttributeError) as error:
+            raise RemoteExecutionTransportError('SCENARIO_MODEL_INELIGIBLE', str(error), 409) from error
         remote = payload.get("remote_execution")
         if not isinstance(remote, Mapping):
             raise RemoteExecutionTransportError(

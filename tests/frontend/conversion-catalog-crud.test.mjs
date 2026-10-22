@@ -11,7 +11,7 @@ test('deployment catalog has one embedded CRUD owner and no retired bulk editor'
 
 test('catalog cleanup runs inside the existing actual navigation owner before page mutation',()=>{
  const main=readFileSync(new URL('../../static/main.mjs',import.meta.url),'utf8');
- assert.ok(main.includes('beforeInvokeNavigation: () => window.toggleMobileSidebarV37?.(false),'));
+ assert.ok(main.includes('beforeInvokeNavigation: page => {window.toggleMobileSidebarV37?.(false);'));
  const start=main.indexOf('performNavigation: page => {'),end=main.indexOf('\n  },',start),owner=main.slice(start,end);
  assert.ok(owner.indexOf('conversionCatalogRuntime.leave();')>=0);
  assert.ok(owner.indexOf('conversionCatalogRuntime.leave();')<owner.indexOf('state.page = page;'));

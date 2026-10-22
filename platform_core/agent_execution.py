@@ -688,6 +688,7 @@ class AgentExecutionService:
         }
 
         execution_payload = payload
+        self._verify_scenario_payload(preflight_task, payload)
         if str(node_public.get("connection_mode") or "") == "agent":
             if not isinstance(payload, dict):
                 raise AgentExecutionError(
@@ -1257,7 +1258,17 @@ class AgentExecutionService:
                 "task payload is unavailable or invalid",
                 409,
             )
+        self._verify_scenario_payload(task, payload)
         return payload
+
+    def _verify_scenario_payload(self, task, payload):
+        from types import SimpleNamespace
+        from .scenario_models import verify_scenario_request, ScenarioModelUnavailable
+        try:
+            verify_scenario_request(SimpleNamespace(task=task, repository=self.repository,
+                artifacts=self.artifacts), payload)
+        except ScenarioModelUnavailable as error:
+            raise AgentExecutionError('SCENARIO_MODEL_INELIGIBLE', str(error), 409) from error
 
     @staticmethod
     def _requires_remote_result_confirmation(task, payload: dict[str, Any]) -> bool:

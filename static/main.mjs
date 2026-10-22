@@ -1,3 +1,4 @@
+import {installQualityDetectionWorkbench} from './modules/quality-detection-workbench.js?v=20261022a';
 import {createAnnotoriousEditor} from './modules/annotorious-editor.js?v=20261021a';
 import {withLegacyBoxIdentities} from './modules/annotation-geometry-adapter.js?v=20261021a';
 import {installConversionCatalogRuntime} from './modules/conversion-catalog-runtime.js?v=2';
@@ -181,6 +182,9 @@ const changLianDataBrowserRuntime = installChangLianDataBrowserRuntime({
   notify,
 });
 window.PlatformCore.runtime.changLianDataBrowserRuntime = changLianDataBrowserRuntime;
+
+const qualityDetectionWorkbench=installQualityDetectionWorkbench({getState:()=>state,api,toast:notify,modal,closeModal,esc});
+window.QualityDetectionWorkbenchRuntime=qualityDetectionWorkbench;
 
 const conversionCatalogRuntime = installConversionCatalogRuntime({api,getState:()=>state,modal:(...args)=>modal(...args),closeModal:()=>closeModal()});
 
@@ -372,27 +376,29 @@ function pageExtrasEnabled(page) {
 }
 
 function adoptPageExtrasInflight(page, promise) {
+  const cacheKey=page==='质量中心'?`${state.project?.id||''}:${page}`:page;
   if (!pageExtrasEnabled(page) || !promise || typeof promise.then !== 'function') return null;
-  if (pageExtrasInflight.has(page)) return pageExtrasInflight.get(page);
+  if (pageExtrasInflight.has(cacheKey)) return pageExtrasInflight.get(cacheKey);
   const task = Promise.resolve(promise)
-    .then(() => { pageExtrasLoadedAt.set(page, Date.now()); })
+    .then(() => { pageExtrasLoadedAt.set(cacheKey, Date.now()); })
     .catch(error => notify(error?.message || error))
-    .finally(() => pageExtrasInflight.delete(page));
-  pageExtrasInflight.set(page, task);
+    .finally(() => pageExtrasInflight.delete(cacheKey));
+  pageExtrasInflight.set(cacheKey, task);
   return task;
 }
 
 function refreshPageExtrasInBackground(page, {force = false} = {}) {
+  const cacheKey=page==='质量中心'?`${state.project?.id||''}:${page}`:page;
   if (!pageExtrasEnabled(page) || typeof window.loadPageExtras413 !== 'function') return null;
-  const loadedAt = Number(pageExtrasLoadedAt.get(page) || 0);
+  const loadedAt = Number(pageExtrasLoadedAt.get(cacheKey) || 0);
   const age = Date.now() - loadedAt;
   if (!force && loadedAt > 0 && age >= 0 && age < PAGE_EXTRAS_CACHE_TTL_MS) return null;
-  if (pageExtrasInflight.has(page)) return pageExtrasInflight.get(page);
+  if (pageExtrasInflight.has(cacheKey)) return pageExtrasInflight.get(cacheKey);
   const loadTask = page === '训练资源' && typeof window.refreshTrainingResourceTruthV3 === 'function'
     ? window.refreshTrainingResourceTruthV3()
     : window.loadPageExtras413(page);
   const task = Promise.resolve(loadTask).then(() => {
-    pageExtrasLoadedAt.set(page, Date.now());
+    pageExtrasLoadedAt.set(cacheKey, Date.now());
     if (state.page !== page) return;
     if (page === '训练资源' && window.patchTrainingResourceCardsV3?.()) return;
     if (page === '模型配置' && window.patchModelPromptTemplatesV35?.()) return;
@@ -401,8 +407,8 @@ function refreshPageExtrasInBackground(page, {force = false} = {}) {
     } else {
       render();
     }
-  }).catch(error => notify(error?.message || error)).finally(() => pageExtrasInflight.delete(page));
-  pageExtrasInflight.set(page, task);
+  }).catch(error => notify(error?.message || error)).finally(() => pageExtrasInflight.delete(cacheKey));
+  pageExtrasInflight.set(cacheKey, task);
   return task;
 }
 window.PlatformCore.runtime.refreshPageExtras = refreshPageExtrasInBackground;
@@ -444,7 +450,7 @@ const navigationStabilityRuntime = installNavigationStability({
     if (!state.uiReady && window.__v53InitPromise) return window.__v53InitPromise;
     return null;
   },
-  beforeInvokeNavigation: () => window.toggleMobileSidebarV37?.(false),
+  beforeInvokeNavigation: page => {window.toggleMobileSidebarV37?.(false);if(page!=='质量中心')qualityDetectionWorkbench.deactivate();},
   knownPages: window.PlatformCore?.navigation?.knownPages || [],
   performNavigation: page => {
     conversionCatalogRuntime.leave();

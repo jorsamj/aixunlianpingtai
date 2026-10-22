@@ -22,7 +22,7 @@ test('final deployment test consumes unified durable queue and progress truth wh
   assert.match(finalLayer,/PlatformCore\?\.deployment\?\.deploymentTaskView/);
   assert.match(finalLayer,/PlatformCore\.taskPoller\.waitForTaskTerminal/);
   assert.match(finalLayer,/registry:window\.PollRegistryRuntime/);
-  assert.match(finalLayer,/\/api\/v62\/projects\/\$\{pid\(\)\}\/tasks\//);
+  assert.match(finalLayer,/\/api\/v62\/projects\/\$\{project\}\/tasks\//);
   assert.match(finalLayer,/runtimeText/);
   assert.doesNotMatch(finalLayer,/\['QUEUED','RUNNING','CANCEL_REQUESTED'\]\.includes\(task\.status\)/);
 });

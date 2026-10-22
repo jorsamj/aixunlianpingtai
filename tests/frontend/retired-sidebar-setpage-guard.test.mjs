@@ -22,7 +22,7 @@ test('V417 classic mobile-sidebar setPage owner cannot return', () => {
   );
   assert.equal(navigation.includes('beforeInvokeNavigation'), true, 'final navigation must own pre-invoke UI cleanup');
   assert.equal(
-    main.includes('beforeInvokeNavigation: () => window.toggleMobileSidebarV37?.(false),'),
+    main.includes('beforeInvokeNavigation: page => {window.toggleMobileSidebarV37?.(false);'),
     true,
     'mobile sidebar close semantic wiring must remain in the named runtime',
   );
