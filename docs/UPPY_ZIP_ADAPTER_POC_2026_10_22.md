@@ -141,16 +141,16 @@ Uppy能够通过官方自定义Uploader接入原ZIP v19协议，无须Tus/Compan
 已测试范围未发现无法解决的协议冲突，中文界面及原任务状态一致；真正生产网络/超大ZIP仍未验证，不能外推性能或发布合格。受约束采用本地官方预编译制品，体积与未独立确定的嵌入依赖版本限制见5.1；实际已核许可证为宽松商业可用，保留版权/许可声明。不把711KB体积说成定制最小包，也不把后台selecting说成导入完成。
 
 
-## 6A. 原 UploadTaskCenter 稳定性交互补充（2026-10-22，已完成待验收）
+## 6A. 原 UploadTaskCenter 稳定性交互补充（2026-10-22，代码及隔离CI已验收）
 
 基线83790b4c457a642af244ad2d7166301527603363 / VERSION42.24.374，工作树干净。用户要求先修原唯一任务中心，不以Uppy替代。仅隔离数据，不部署、不操作生产。
 
 | 编号 | 需求及涉及模块 | 状态 | 已完成/剩余及风险 |
 |---|---|---|---|
-| UTC-01 P0 | 稳定按钮DOM、合帧渲染及节流持久化；upload-task-center.js | 已完成待验收 | 已RED→GREEN，600更新0元素移除，关键状态即时保存；待准确SHA CI |
-| UTC-02 P0 | ZIP进度来源/阶段一致、顺序/rekey稳定；zip-import-runtime.js | 已完成待验收 | 来源72.7→0已复现/修复，rekey及阶段分离动态通过；待CI |
-| UTC-03 P1 | 防重复操作、Loading、普通图片详情、Modal命中 | 已完成待验收 | 原Modal/TaskCenter/Loading复用、真实图片详情、遮罩及超时已测；待CI |
-| UTC-04 P1 | 九类真实Chrome回归、Node/Python、最终SHA CI | 已完成待验收 | Chrome38/Node1239/Python49通过，日志/矩阵见下；准确SHA CI尚待推送 |
+| UTC-01 P0 | 稳定按钮DOM、合帧渲染及节流持久化；upload-task-center.js | 已验收 | 已RED→GREEN，600更新0元素移除，关键状态即时保存；修正SHA22/22 Actions、59/59 Checks通过 |
+| UTC-02 P0 | ZIP进度来源/阶段一致、顺序/rekey稳定；zip-import-runtime.js | 已验收 | 来源72.7→0已复现/修复，rekey及阶段分离动态通过；修正SHA CI通过 |
+| UTC-03 P1 | 防重复操作、Loading、普通图片详情、Modal命中 | 已验收 | 原Modal/TaskCenter/Loading复用、真实图片详情、遮罩及超时已测；修正SHA CI通过 |
+| UTC-04 P1 | 九类真实Chrome回归、Node/Python、最终SHA CI | 已验收 | Chrome38/Node1239/Python49通过，日志/矩阵见下；准确SHA22/59通过 |
 
 执行顺序：审计与RED → 原任务中心补丁 → ZIP/图片投影修复 → 定向GREEN与原恢复回归 → 版本/文档/普通提交及准确SHA CI。当前已取得下述隔离测试证据，提交/最终SHA CI及生产性能不可提前宣称通过；旧5.6仅代表此前Uppy代码。
 
@@ -193,9 +193,17 @@ Python定向：API test_v19_multipart_controls/multipart_background_finalize/job
 
 代码首提交[4580756d92f373ccb40301ceeabf23aca045ea06](https://github.com/jorsamj/aixunlianpingtai/commit/4580756d92f373ccb40301ceeabf23aca045ea06)已普通推送。Frontend run[39736091868](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39736091868)的job[119681988102](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39736091868/job/119681988102)在旧“任何setTimeout均禁止”源码守卫失败，未进入Node步骤；不能称首提交全绿。根因是Node测试已适配可清理存储debounce，但工作流重复守卫漏同步。本轮用户明确要求避免每次XHR同步保存，故仅把同一守卫收紧为“恰好一处persistTimer = window.setTimeout(() => persist(), 500)、必须clearTimeout、禁止setInterval”，原PollRegistry调用断言和其他模块禁原生轮询规则全部保留，额外原生timer会失败。修正后的完整Polling guards原步骤已本地实际bash退出0，不删除/跳过测试，不新增轮询或CI范围。VERSION保持375；后续修正SHA的实际CI独立核验。
 
-当前状态：已完成待验收，准确提交SHA CI尚待补齐。提交关联、实际Actions/Checks与最终HEAD将在本节补记；旧5.6不可作为本轮CI。生产网络/任务规模/真实素材仍NOT VERIFIED，所有本轮写入在隔离测试目录。本轮不部署，不删除生产素材，不改变正式GT、历史任务及数据库。
+首代码SHA最终36条Actions：34成功、1失败（上述Frontend）、1取消（Remote Material Import在后续运行替代时取消），如实保留，不计为绿色。修正提交[18dae908ee841e9b874d27a38a0a8a0f946f2c00](https://github.com/jorsamj/aixunlianpingtai/commit/18dae908ee841e9b874d27a38a0a8a0f946f2c00)只改重复CI守卫及本文，不改业务/VERSION。新守卫隔离四变体实际执行：正式debounce允许；额外poll timeout、无clear、额外interval分别拒绝，保护未放宽为任意原生timer。
 
-## 6. 接续
+当前修正SHA额外触发ZIP专项以绑定同一SHA，run[39737134359](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39737134359)：四个job均success，Linux/Windows合同、后端和真实Chrome30（1.4分钟）通过，非沿用4580756d。Frontend run[39736492535](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39736492535)已success：Node1239与真实Chrome191（8.0分钟）通过，job119683289738中600次进度更新685ms仅存储1次、元素移除0。
+
+修正SHA **18dae908ee841e9b874d27a38a0a8a0f946f2c00：22/22 Actions、59/59 Checks全部completed/success**，UTC-01–04代码与隔离CI均已验收；未借用首失败SHA。本轮可交付：稳定按钮/焦点、合帧与节流、即时关键保存、进度来源/未知阶段、稳定排序/rekey、防重复/超时可恢复、图片详情及Modal命中；Uppy仍只使用该唯一中心。
+
+本次最后仅补记本文与AGENTS/四个handoff简短入口，不改业务/VERSION。文档最终HEAD必须再独立读取GitHub全部Actions/Checks，全部success后才交付；最终准确SHA以本文件所在Git提交及该提交Checks绑定，不能继承18dae908结果。独立回执另存当前会话visualizations附件目录`upload-task-center-ci-final-20261022.json`，含首失败、修正及最终文档三组SHA/运行ID与结果。未来接续从6A、upload-task-center.js、zip-import-runtime.js及performance浏览器测试开始，勿新建上传/Modal/Loading/任务Owner，不重复实施已验收功能。
+
+生产网络/任务规模/真实素材仍NOT VERIFIED；约0.5–0.7秒600更新为隔离浏览器采样，不宣称生产延迟/吞吐或生产问题已发布。所有本轮写入在隔离测试目录。本轮不部署，不删除生产素材，不改变正式GT、历史任务及数据库。
+
+## 6. Uppy阶段接续（历史；最新补充以6A为准）
 
 本轮代码、隔离PoC、正式入口/回退、兼容性报告和修正SHA CI已完成；无需重复开发Uppy或上述恢复功能。最终文档HEAD自身的全部检查仍按5.6交付门槛核验，以GitHub绑定该SHA的实际结果为准。VERSION42.24.374，只在唯一长期分支提交推送，未部署生产。
 
