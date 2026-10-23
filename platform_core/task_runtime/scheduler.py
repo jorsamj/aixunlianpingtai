@@ -29,6 +29,8 @@ class Scheduler:
         poll_seconds: float = 0.25,
         gpu_resources=None,
         worker_instance=None,
+        maintenance=None,
+        maintenance_seconds: float = 30.0,
     ):
         self.repository = repository
         self.artifacts = artifacts
@@ -39,6 +41,9 @@ class Scheduler:
         self.poll_seconds = max(0.05, float(poll_seconds))
         self.gpu_resources = gpu_resources
         self.worker_instance = worker_instance
+        self.maintenance = maintenance
+        self.maintenance_seconds = max(1.0, float(maintenance_seconds))
+        self._maintenance_wake = threading.Event()
         if self.gpu_resources is None and TaskKind.TRAINING in self.handlers:
             from ..gpu_resources import GPUResourceManager
             self.gpu_resources = GPUResourceManager(repository, artifacts)
@@ -320,12 +325,26 @@ class Scheduler:
             renewal.join(timeout=max(1.0, self.lease_seconds / 3 + 0.5))
             if context.lease_lost:
                 context.terminate_bound_process()
+            self._maintenance_wake.set()
         return True
 
     def serve_forever(self, stop: threading.Event | None = None) -> None:
         stop_event = stop or threading.Event()
         renewal_stop = threading.Event()
         renewal = None
+        maintenance_thread = None
+        if callable(self.maintenance):
+            def maintain() -> None:
+                while not renewal_stop.is_set() and not stop_event.is_set():
+                    self._maintenance_wake.clear()
+                    try:
+                        self.maintenance()
+                    except Exception:
+                        # Maintenance cannot stop execution or lease ownership.
+                        pass
+                    self._maintenance_wake.wait(self.maintenance_seconds)
+            maintenance_thread = threading.Thread(target=maintain, name="task-workspace-maintenance", daemon=True)
+            maintenance_thread.start()
         if self.worker_instance is not None:
             def renew_instance() -> None:
                 interval = max(1.0, self.worker_instance.lease_seconds / 3)
@@ -352,6 +371,9 @@ class Scheduler:
                     stop_event.wait(self.poll_seconds)
         finally:
             renewal_stop.set()
+            self._maintenance_wake.set()
+            if maintenance_thread is not None:
+                maintenance_thread.join(timeout=1.0)
             if renewal is not None:
                 renewal.join(timeout=max(1.0, self.worker_instance.lease_seconds / 3 + 0.5))
             if self.worker_instance is not None:

@@ -5,14 +5,14 @@
 |任务|优先级/状态|本轮计划与验收|
 |--|--|--|
 |S2-01 远程按需准备|P0/已完成待验收|Prepare仅索引；正式Agent执行lease之后获取冻结Manifest/逐图受控读取；原StorageManager.open_reader与原materializer复用；旧ZIP schema合同保留兼容；RED→GREEN验证排队无副本、冻结GT、SHA与隔离|
-|S2-02 自动安全回收|P0/未开始|原资格/隔离删除/回执接实际终态及重启恢复，无法证明进程死亡则等待，原图/共享cache/模型/Checkpoint不删除|
+|S2-02 自动安全回收|P0/进行中|原资格/隔离删除/回执接实际终态及重启恢复，无法证明进程死亡则等待，原图/共享cache/模型/Checkpoint不删除|
 |S2-03 详情人工释放与历史只读扫描|P1/未开始|复用原API/详情，真实占用/资格/原因/进度；历史仅dry-run不可执行生产删除|
 |S2-04 旧素材兼容检测及最小迁移|P1/未开始|原图不搬迁、image_id与GT版本不变，只修经证据确认的元数据，备份/CAS/批次幂等恢复|
 |S2-05 缩略图及受控原图物理回收|P2/未开始|在前述P0/P1后补真实缺口，区分逻辑字节与实际空间，OSS/NAS/GPU无法现场核验则NOT VERIFIED|
 
 关键设计取舍：原远程载荷resolver在正式execution lease建立前调用，禁止在那里获取图片。新输入协议使用schema3冻结索引描述；Agent取得真实owner后使用现有node-executor鉴权/代次栅栏读Manifest和源流，所有存储类型复用StorageManager驱动，不在控制端落整份原图缓存/ZIP。替代方案“选定Worker后控制端打包”仍提前复制且留第二份整集，拒绝；直接暴露任意绝对路径或下发存储凭据也不采用。旧schema1/2已排队ZIP保持严格身份/哈希验证兼容，不重写历史任务。元数据可传输，图片/YOLO目录只能在实际Agent执行工作目录物化；冻结GT不能被当前数据库内容替代。
 
-### S2-01 实施与证据（父提交5b79f35d，本阶段提交见Git历史）
+### S2-01 实施与证据（提交21c78788，完整SHA见Git完整历史，父提交5b79f35d）
 
 原Prepare统一indices_only；旧未冻结请求通过原GT生命周期锁/投影/冻结Owner补齐一次冻结，排队无完整Bundle或上传ZIP。新远程schema3仅冻结索引；正式execution代次/令牌/租约校验后才能读manifest和原图，逐块重查所有权并在最后一块前核EOF。使用StorageManager.stat/open_reader，Agent逐图核SHA/size并复用一个原始下载缓冲；原materializer延迟读取且仍隔离复制、归一化、生成YOLO标签及隐藏TestGT。模型须为预置可信object，不隐式联网下载母模型。旧schema1/2保留原ZIP校验兼容。
 
@@ -21,6 +21,14 @@
 实际测试分批执行，不能合并冒充一次全套结果：Prepare集成18通过1失败，失败源于旧测试仍要求排队ZIP；改为真实冻结GT篡改后定向1通过，恢复/取消相关4通过。原单元Agent+portable39通过；后续indexed成功/坏大小/同大小坏SHA定向3通过。resolver预领取不签数据集/拒绝非预置模型1通过。协议相关52通过1既有skip，新增EOF/归属合同1通过。结果manifest相关17通过，实际错误图片归档/篡改/路径/非Test样本6通过，最后证据路径/大小定向13通过。此前真实RED包括排队已复制、缺新合同、源身份不匹配及旧失效fixture；均有针对性修正，没有删除原测试。py_compile与diff检查通过；无需GPU，不执行全仓Python/Node/Chrome。
 
 实际修改集中remote_training_tasks、remote_training_inputs、training_tasks、agent_execution、node_agent_executor_runtime、node_agent_training_runtime、remote_execution_transport、remote_training_results、原recovery router/app接线及相应原测试/工作流。仅验证隔离本地存储和伪训练子进程；真实OSS/NAS、多机下载性能、大规模元数据响应/峰值磁盘未核验。manifest一次传输元数据，2项有界缓存不缓存图片。未推送、没有新SHA CI，不能宣称整体专项完成。下一阶段自动维护与Agent失败Checkpoint保护仍在实现，兼容迁移/P2未开始。生产部署、数据库迁移、真实对象删除、历史Bundle清理和GPU均未执行。
+
+### S2-02 自动回收实施中（尚未推送/CI）
+
+原Scheduler.serve_forever接唯一有界维护回调：启动即扫描，任务结束仅唤醒，30秒兜底，每批默认4项/上限16项，复用原tasks和既有cleanup/回执，不新建数据库或独立调度器。重启从持久任务及回执恢复；--once仍只诊断执行。贵树扫描/模型SHA/证据归档在DB事务外，最终短事务重验任务/证据stamp/实际消费者再隔离目录，unlink在锁外。独立冻结训练不再误阻塞同项目回收；queued显式引用、未知评测引用、租约/进程身份不明仍保守保护。共享缓存完全不在回收范围。
+
+远程Agent原finally无条件整目录删除会丢失败Checkpoint，本轮改为只有正式模型结果及任务终态确认后整目录释放；未启动Trainer的失败可释放输入；已启动失败/取消保留日志/配置/任务身份，有Checkpoint时整份输入保留，无Checkpoint仅删除受控input。精确进程终止不确定则全保留。重启精确清除旧进程后同样保护Checkpoint，不将未确认结果当成功。目录先拒绝链接/共享硬链接/特殊文件，隔离后可重试；逻辑删除字节不冒充物理空间。
+
+实际必要RED7后，本地lifecycle+受影响scheduler31通过/1系统symlink权限skip；Agent保留恢复/失败幂等2项先RED，结合取消/栅栏/原进程未知/indexed输入8通过，重启无Checkpoint/有Checkpoint与本地保留4通过。未运行全仓或GPU。真实节点失联/长时间断电/OSS/NAS未验收，失败Checkpoint尚不自动放弃恢复；恢复依赖存在保持阻塞。P1详情正在接原API，历史只读聚合与兼容迁移仍待实施。
 
 ## 2026-10-23｜回收 API 与报告流式消费者保护（后端进行中）
 

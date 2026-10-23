@@ -51,6 +51,7 @@ class TrainingWorkspaceLifecycle:
         self.data_dir = Path(data_dir).resolve()
         self.repository = repository
         self.artifacts = artifacts
+        self._maintenance_cursor = ""
 
     def _paths(self, task_id):
         self.artifacts._validate_task_id(task_id)
@@ -121,16 +122,105 @@ class TrainingWorkspaceLifecycle:
                         return True
         return False
 
-    def _inspect(self, task, active):
+    def _consumes_bundle(self, task, candidate):
+        # Known original handlers isolate TRAINING bundles to their own task
+        # directory. Missing/foreign contracts remain protected, including queued
+        # recovery consumers; cache identity alone never means task-bundle sharing.
+        try:
+            payload = self.artifacts.read_json(candidate.task_id, candidate.payload_ref, default=None)
+            if not isinstance(payload, dict) or not payload:
+                return True
+            if payload.get("training_task_id") == task.task_id:
+                return True
+            target = str(self._paths(task.task_id)[0]).replace("\\", "/").casefold()
+            pending = [payload]
+            prepared_ref = payload.get("prepared_input_ref")
+            if prepared_ref:
+                prepared = self.artifacts.read_json(candidate.task_id, str(prepared_ref), default=None)
+                if not isinstance(prepared, dict):
+                    return True
+                pending.append(prepared)
+            while pending:
+                item = pending.pop()
+                if isinstance(item, dict):
+                    pending.extend(item.values())
+                elif isinstance(item, list):
+                    pending.extend(item)
+                elif isinstance(item, str):
+                    value = item.replace("\\", "/").casefold()
+                    if target in value or f"{task.task_id}/work/bundle/" in value + "/":
+                        return True
+            if candidate.kind is TaskKind.TRAINING:
+                return not (payload.get("target") in {"local", "remote"}
+                            and payload.get("input_freeze_id") and payload.get("input_freeze_ref"))
+            if candidate.kind is TaskKind.TRAINING_PREPARE:
+                return not bool(payload.get("training_task_id"))
+            # Legacy evaluation contracts lack an explicit workspace ownership
+            # guarantee. Keep them until a known, verified reference is available.
+            return True
+        except (OSError, ValueError, KeyError, TypeError):
+            return True
+
+    def _consumers(self, task):
+        with closing(self.repository._connect()) as database:
+            ids = database.execute(
+                "SELECT task_id FROM tasks WHERE project_id=? AND task_id<>? "
+                "AND kind IN ('TRAINING','TRAINING_PREPARE','DEPLOYMENT_TEST') "
+                "AND status NOT IN ('SUCCEEDED','PARTIAL_SUCCESS','FAILED','CANCELLED')",
+                (task.project_id, task.task_id),
+            ).fetchall()
+        return [candidate for row in ids if (candidate := self.repository.get(row[0])) is not None]
+
+    def maintain(self, *, limit=4):
+        """One bounded sweep over original terminal task truth; cursor is disposable."""
+        limit = max(1, min(16, int(limit)))
+        with closing(self.repository._connect()) as database:
+            rows = database.execute(
+                "SELECT task_id,project_id FROM tasks WHERE kind='TRAINING' "
+                "AND status IN ('SUCCEEDED','PARTIAL_SUCCESS','FAILED','CANCELLED') "
+                "AND finished_at IS NOT NULL AND task_id>? ORDER BY task_id LIMIT ?",
+                (self._maintenance_cursor, limit),
+            ).fetchall()
+        if not rows:
+            self._maintenance_cursor = ""
+            return {"examined": 0, "deleted": 0}
+        deleted = 0
+        for task_id, project_id in rows:
+            self._maintenance_cursor = task_id
+            try:
+                bundle, detached = self._paths(task_id)
+                if not bundle.exists() and not detached.exists():
+                    continue
+                truth = self.inspect(project_id, task_id)
+                if not truth["eligible"]:
+                    continue
+                result = self.cleanup(project_id, task_id, actor="automatic-workspace-maintenance",
+                    expected_attempt=truth["attempt"], expected_snapshot_id=truth["snapshot_id"])
+                deleted += result.get("status") == "deleted"
+            except Exception:
+                # Original cleanup records deletion failures. Never let maintenance
+                # break lease renewal/claiming or authorize deletion after an error.
+                continue
+        return {"examined": len(rows), "deleted": deleted}
+
+    def _inspect(self, task, active, *, verify_evidence=True):
         blockers = []
         if task.status not in TERMINAL_STATUSES or not task.finished_at:
             blockers.append("TASK_ACTIVE")
         if task.worker_id or task.lease_expires_at:
             blockers.append("EXECUTION_LEASE_PRESENT")
-        if task.process_pid and (psutil.pid_exists(task.process_pid)
-                or (os.name != "nt" and ProcessController._posix_group_exists(task.process_pid))):
-            blockers.append("PROCESS_PRESENT")
-        if active:
+        if task.process_pid:
+            try:
+                if (psutil.pid_exists(task.process_pid)
+                        or (os.name != "nt" and ProcessController._posix_group_exists(task.process_pid))):
+                    blockers.append("PROCESS_PRESENT")
+                elif not task.process_create_time or not task.process_command_hash:
+                    blockers.append("PROCESS_IDENTITY_UNVERIFIED")
+            except (OSError, psutil.Error):
+                blockers.append("PROCESS_IDENTITY_UNVERIFIED")
+        elif task.process_create_time or task.process_command_hash:
+            blockers.append("PROCESS_IDENTITY_UNVERIFIED")
+        if any(self._consumes_bundle(task, candidate) for candidate in active):
             blockers.append("ACTIVE_CONSUMER")
         marker = self.artifacts.read_json(task.task_id, MARKER, default={})
         snapshot = self.artifacts.read_json(task.task_id, "snapshot.json", default={})
@@ -146,10 +236,13 @@ class TrainingWorkspaceLifecycle:
         size = 0
         try:
             bundle, detached = self._paths(task.task_id)
-            size = self._tree_bytes(bundle) + self._tree_bytes(detached)
+            if verify_evidence:
+                size = self._tree_bytes(bundle) + self._tree_bytes(detached)
         except (OSError, ValueError):
             blockers.append("UNSAFE_PATH")
-        if task.status in {TaskStatus.SUCCEEDED, TaskStatus.PARTIAL_SUCCESS}:
+        if not verify_evidence:
+            pass
+        elif task.status in {TaskStatus.SUCCEEDED, TaskStatus.PARTIAL_SUCCESS}:
             if not self._model_evidence(task, snapshot):
                 blockers.append("MODEL_EVIDENCE_UNVERIFIED")
         elif self._recovery_dependency(task):
@@ -163,15 +256,7 @@ class TrainingWorkspaceLifecycle:
         task = self.repository.get(task_id)
         if task is None or task.project_id != project_id or task.kind is not TaskKind.TRAINING:
             raise KeyError(task_id)
-        # Read-only: no schema, marker, evidence or audit writes.
-        with closing(self.repository._connect()) as database:
-            active = database.execute(
-                "SELECT task_id FROM tasks WHERE project_id=? AND task_id<>? "
-                "AND kind IN ('TRAINING','TRAINING_PREPARE','DEPLOYMENT_TEST') "
-                "AND status IN ('RUNNING','CANCEL_REQUESTED','AWAITING_CONFIRMATION')",
-                (project_id, task_id),
-            ).fetchall()
-        return self._inspect(task, active)
+        return self._inspect(task, self._consumers(task))
 
     def _archive_evidence(self, task, bundle):
         """Retain metadata and actual report error images, never the entire cohort."""
@@ -228,11 +313,49 @@ class TrainingWorkspaceLifecycle:
         if path.exists():
             shutil.rmtree(path)
 
+    def _evidence_stamp(self, task):
+        # Stat only under the final DB gate; expensive hashing stays outside.
+        refs = {MARKER, "snapshot.json", task.payload_ref, task.result_ref or "result.json",
+                "failure.json", "checkpoints/worker.json", "work/bundle/manifest.json"}
+        result = self.artifacts.read_json(task.task_id, task.result_ref or "result.json", default={})
+        if isinstance(result, dict):
+            refs.update(str(model.get("ref")) for model in result.get("verified_models") or []
+                        if isinstance(model, dict) and model.get("ref"))
+        paths = [self.artifacts.artifact_path(task.task_id, ref) for ref in sorted(refs)]
+        project = self.data_dir / "projects" / task.project_id
+        paths.extend(project / name for name in ("algorithms.json", "algorithms.sqlite3", "algorithms.sqlite3-wal"))
+        stamp = []
+        for path in paths:
+            if _is_link_like(path):
+                raise RuntimeError("UNSAFE_EVIDENCE_PATH")
+            try:
+                info = path.stat()
+                stamp.append((str(path), info.st_ino, info.st_size, info.st_mtime_ns))
+            except FileNotFoundError:
+                stamp.append((str(path), None))
+        return tuple(stamp)
+
     def cleanup(self, project_id, task_id, *, actor, expected_attempt=None, expected_snapshot_id=None):
         # Lock lives outside the task-owned work tree and holds no business state.
         self.artifacts._validate_task_id(task_id)
         self._paths(task_id)  # Validate lexical task/work ownership before locking.
         with FileLock(str(self.artifacts.root / task_id / "workspace-access.lock"), timeout=5):
+            qualified = self.repository.get(task_id)
+            if qualified is None or qualified.project_id != project_id or qualified.kind is not TaskKind.TRAINING:
+                raise KeyError(task_id)
+            evidence_stamp = self._evidence_stamp(qualified)
+            truth = self._inspect(qualified, self._consumers(qualified))
+            if not truth["eligible"]:
+                self.artifacts.append_log(task_id, "logs/workspace-cleanup.jsonl", json.dumps({
+                    "status": "refused", "actor": str(actor), "at": utc_now(),
+                    "blockers": truth["blockers"], "task_id": task_id,
+                }, ensure_ascii=False) + "\n")
+                raise RuntimeError(",".join(truth["blockers"]))
+            bundle, detached = self._paths(task_id)
+            if bundle.exists():
+                if detached.exists():
+                    raise RuntimeError("PREVIOUS_CLEANUP_PENDING")
+                self._archive_evidence(qualified, bundle)
             with self.repository.training_workspace_guard(task_id) as (task, active):
                 if task.project_id != project_id or task.kind is not TaskKind.TRAINING:
                     raise KeyError(task_id)
@@ -242,7 +365,11 @@ class TrainingWorkspaceLifecycle:
                     snapshot = self.artifacts.read_json(task_id, "snapshot.json", default={})
                     if snapshot.get("snapshot_id") != expected_snapshot_id:
                         raise RuntimeError("WORKSPACE_PREVIEW_STALE")
-                truth = self._inspect(task, active)
+                if task != qualified or self._evidence_stamp(task) != evidence_stamp:
+                    raise RuntimeError("WORKSPACE_PREVIEW_STALE")
+                latest = self._inspect(task, active, verify_evidence=False)
+                latest["temporary_logical_bytes"] = truth["temporary_logical_bytes"]
+                truth = latest
                 if not truth["eligible"]:
                     self.artifacts.append_log(task_id, "logs/workspace-cleanup.jsonl", json.dumps({
                         "status": "refused", "actor": str(actor), "at": utc_now(),
@@ -261,7 +388,6 @@ class TrainingWorkspaceLifecycle:
                 if bundle.exists():
                     if detached.exists():
                         raise RuntimeError("PREVIOUS_CLEANUP_PENDING")
-                    self._archive_evidence(task, bundle)
                     receipt = {"schema_version": 1, "task_id": task_id, "attempt": task.attempt,
                         "actor": str(actor), "started_at": utc_now(), "status": "pending",
                         "deleted_logical_bytes": 0, "candidate_logical_bytes": truth["temporary_logical_bytes"]}
@@ -269,7 +395,7 @@ class TrainingWorkspaceLifecycle:
                     os.replace(bundle, detached)
                 elif receipt.get("task_id") != task_id or receipt.get("attempt") != task.attempt:
                     raise RuntimeError("CLEANUP_RECEIPT_UNVERIFIED")
-            # The DB lock covers only eligibility/archival/detach, never bulk unlink.
+            # The DB lock covers only the final identity/eligibility check and detach.
             try:
                 self._delete_detached(detached)
             except OSError as error:

@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -19,6 +20,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping
+from types import SimpleNamespace
 from urllib.parse import urlparse
 
 import requests
@@ -291,8 +293,68 @@ class AgentTrainingRunner:
                     f"{type(error).__name__}: {error}"
                 )
                 return False
+            recovered_lease = SimpleNamespace(task_id=str(record["task_id"]), generation=int(record["generation"]))
+            try:
+                recovered_dir = self.workdirs.path_for(recovered_lease)
+            except (OSError, ValueError) as error:
+                self._recovery_error = f"recovered training workspace is unsafe or unreadable: {type(error).__name__}"
+                return False
+            execution = _read_json(recovered_dir / "execution.json", {})
+            if not isinstance(execution, dict):
+                self._recovery_error = "recovered training execution metadata is invalid"
+                return False
+            if execution.get("kind") == "TRAINING":
+                self._cleanup_training_workdir(recovered_lease, trainer_started=True, committed=False)
         self._recovery_error = ""
         return True
+
+    def _cleanup_training_workdir(self, lease, *, trainer_started, committed):
+        """Process death is proven by the caller; retain uncommitted recovery evidence."""
+        from .training_workspace_lifecycle import TrainingWorkspaceLifecycle
+        try:
+            workdir = self.workdirs.path_for(lease)
+        except (OSError, ValueError):
+            return  # No safe audit path; never mask an already committed result.
+        receipt = workdir / "workspace-cleanup.json"
+        try:
+            # Reject links, shared hardlinks and special files before any removal.
+            TrainingWorkspaceLifecycle._tree_bytes(workdir)
+            if committed or not trainer_started:
+                self.workdirs.cleanup(lease)
+                return
+            checkpoints = [path for path in workdir.rglob("*")
+                           if path.suffix.lower() == ".pt" and "input" not in path.relative_to(workdir).parts[:1]]
+            if checkpoints:
+                self.workdirs._atomic_write_json(receipt, {
+                    "task_id": lease.task_id, "generation": lease.generation,
+                    "status": "retained", "blockers": ["RECOVERY_DEPENDENCY"],
+                    "physical_space_released": None,
+                })
+                return
+            source, detached = workdir / "input", workdir / ".input-reclaim"
+            if source.exists():
+                if detached.exists():
+                    raise OSError("previous input cleanup pending")
+                os.replace(source, detached)
+            size = TrainingWorkspaceLifecycle._tree_bytes(detached)
+            if detached.exists():
+                shutil.rmtree(detached)
+            # Failure logs, config, result files and execution lineage stay intact.
+            self.workdirs._atomic_write_json(receipt, {
+                "task_id": lease.task_id, "generation": lease.generation,
+                "status": "deleted", "scope": "agent_input_only",
+                "deleted_logical_bytes": size, "physical_space_released": None,
+            })
+        except (OSError, ValueError):
+            # Cleanup must never turn a confirmed training result into failure.
+            try:
+                self.workdirs._atomic_write_json(receipt, {
+                    "task_id": lease.task_id, "generation": lease.generation,
+                    "status": "retryable", "blockers": ["CLEANUP_UNVERIFIED"],
+                    "physical_space_released": None,
+                })
+            except OSError:
+                pass  # Retain files when even the local audit write is unavailable.
 
     def _terminate_active(self, *, strict: bool = False) -> bool:
         lease, identity = self._active_process()
@@ -1222,6 +1284,8 @@ class AgentTrainingRunner:
         )
         monitor.start()
         log_offset = 0
+        trainer_started = False
+        committed = False
         try:
             self._heartbeat(
                 monitor,
@@ -1337,6 +1401,7 @@ class AgentTrainingRunner:
                     stderr=subprocess.STDOUT,
                 )
                 self._set_active_process(lease, launched.identity)
+                trainer_started = True
                 try:
                     self.workdirs.persist_process_identity(
                         lease,
@@ -1736,6 +1801,7 @@ class AgentTrainingRunner:
                     "control plane returned unexpected training terminal "
                     f"status: {status or '<empty>'}"
                 )
+            committed = True
             return AgentTrainingOutcome(
                 lease.task_id,
                 lease.generation,
@@ -1811,7 +1877,7 @@ class AgentTrainingRunner:
             monitor.stop()
             _active_lease, active_identity = self._active_process()
             if active_identity is None:
-                self.workdirs.cleanup(lease)
+                self._cleanup_training_workdir(lease, trainer_started=trainer_started, committed=committed)
             # If exact process cleanup could not be proven, preserve both the
             # in-memory identity and generation workdir for retry/restart
             # recovery. Never erase the only evidence of a possibly live GPU

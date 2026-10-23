@@ -1040,12 +1040,18 @@ def test_training_cleanup_failure_preserves_identity_and_never_publishes_termina
             workdirs.cleanup(current)
 
 
+@pytest.mark.parametrize("checkpoint", [False, True])
 def test_training_runner_restart_reaps_persisted_exact_process_before_accepting_work(
-    tmp_path,
+    tmp_path, checkpoint,
 ):
     current, downloads = training_lease(tmp_path)
     workdirs = AgentExecutionWorkdir(tmp_path / "agent-state")
-    workdirs.prepare(current)
+    recovered = workdirs.prepare(current)
+    (recovered / "input").mkdir()
+    (recovered / "input/pixels").write_bytes(b"temporary")
+    if checkpoint:
+        (recovered / "project").mkdir()
+        (recovered / "project/last.pt").write_bytes(b"last-checkpoint")
     launched = launch_process(
         [
             sys.executable,
@@ -1076,6 +1082,9 @@ def test_training_runner_restart_reaps_persisted_exact_process_before_accepting_
         assert runner.recovery_error == ""
         assert workdirs.list_process_identities() == []
         launched.process.wait(timeout=5)
+        assert (recovered / "input").exists() == checkpoint
+        if checkpoint:
+            assert (recovered / "project/last.pt").read_bytes() == b"last-checkpoint"
     finally:
         if launched.process.poll() is None:
             ProcessController().terminate_tree(
@@ -1249,6 +1258,44 @@ def test_agent_failure_source_prefers_worker_job_error_over_secondary_message():
     assert message_read > error_read
     assert tail_read > message_read
     assert "runtime_log.read_text(" not in source
+
+@pytest.mark.parametrize("checkpoint", [False, True])
+def test_failed_agent_cleanup_preserves_recovery_and_audits_only_owned_input(tmp_path, checkpoint):
+    lease, downloads = training_lease(tmp_path)
+    transfer = FakeTransferSession(downloads)
+    runner, _, workdirs = build_runner(tmp_path, FakeControlClient(transfer), transfer)
+    workdir = workdirs.prepare(lease)
+    (workdir / "input").mkdir()
+    (workdir / "input/source").write_bytes(b"temporary pixels")
+    evidence = workdir / "project/runs/train/weights"
+    evidence.mkdir(parents=True)
+    (evidence.parent / "results.csv").write_text("epoch,loss\n1,0.5\n")
+    if checkpoint:
+        (evidence / "last.pt").write_bytes(b"recoverable checkpoint")
+    runner._cleanup_training_workdir(lease, trainer_started=True, committed=False)
+    assert (workdir / "request.json").exists()
+    assert (evidence.parent / "results.csv").exists()
+    receipt = json.loads((workdir / "workspace-cleanup.json").read_text(encoding="utf-8"))
+    if checkpoint:
+        assert (evidence / "last.pt").read_bytes() == b"recoverable checkpoint"
+        assert (workdir / "input/source").exists()
+        assert receipt["blockers"] == ["RECOVERY_DEPENDENCY"]
+    else:
+        assert not (workdir / "input").exists()
+        assert receipt["status"] == "deleted"
+        runner._cleanup_training_workdir(lease, trainer_started=True, committed=False)
+        assert (evidence.parent / "results.csv").exists()
+
+
+def test_agent_cleanup_unreadable_directory_does_not_mask_committed_result(tmp_path, monkeypatch):
+    lease, downloads = training_lease(tmp_path)
+    transfer = FakeTransferSession(downloads)
+    runner, _, workdirs = build_runner(tmp_path, FakeControlClient(transfer), transfer)
+    def unreadable(_lease):
+        raise PermissionError("unreadable")
+    monkeypatch.setattr(workdirs, "path_for", unreadable)
+    runner._cleanup_training_workdir(lease, trainer_started=True, committed=True)
+
 
 def test_agent_training_log_tail_reader_is_bounded(tmp_path):
     path = tmp_path / "large-runtime.log"

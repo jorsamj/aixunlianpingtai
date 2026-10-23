@@ -314,7 +314,7 @@ class TaskRepository:
                 active = database.execute(
                     """SELECT * FROM tasks WHERE project_id=? AND task_id<>?
                        AND kind IN ('TRAINING','TRAINING_PREPARE','DEPLOYMENT_TEST')
-                       AND status IN ('RUNNING','CANCEL_REQUESTED','AWAITING_CONFIRMATION')""",
+                       AND status NOT IN ('SUCCEEDED','PARTIAL_SUCCESS','FAILED','CANCELLED')""",
                     (task.project_id, task.task_id),
                 ).fetchall()
                 yield task, tuple(_from_row(item) for item in active)

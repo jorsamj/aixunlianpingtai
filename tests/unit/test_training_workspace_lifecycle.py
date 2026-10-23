@@ -243,3 +243,89 @@ def test_workspace_api_requires_actor_explicit_confirmation_and_current_preview(
     assert original.read_bytes() == b"original"
     assert repo.get("t").status is TaskStatus.FAILED
     assert artifacts.read_json("t", "workspace-cleanup.json")["actor"] == "logged-in-user"
+
+
+def test_independent_active_training_does_not_pin_task_bundle(tmp_path):
+    service, repo, artifacts, original = workspace(tmp_path)
+    repo.create(replace(TaskRecord.new("other", "p", TaskKind.TRAINING,
+        "payload.json", "training:other"), status=TaskStatus.RUNNING))
+    artifacts.atomic_write_json("other", "payload.json", {
+        "target": "local", "input_freeze_id": "other-freeze", "input_freeze_ref": "input-freeze.json"})
+    assert service.inspect("p", "t")["eligible"]
+    assert service.cleanup("p", "t", actor="maintenance")["status"] == "deleted"
+    assert original.exists()
+
+
+def test_queued_explicit_bundle_consumer_blocks_cleanup(tmp_path):
+    service, repo, artifacts, _ = workspace(tmp_path)
+    repo.create(TaskRecord.new("other", "p", TaskKind.TRAINING_PREPARE, "payload.json", "prepare"))
+    artifacts.atomic_write_json("other", "payload.json", {"training_task_id": "t"})
+    assert "ACTIVE_CONSUMER" in service.inspect("p", "t")["blockers"]
+
+
+def test_maintenance_rotates_bounded_batches_and_restarts_from_task_truth(tmp_path):
+    service, repo, artifacts, original = workspace(tmp_path)
+    # A protected old entry must not starve later eligible entries.
+    repo.create(replace(TaskRecord.new("a", "p", TaskKind.TRAINING, "payload.json", "training:a"),
+                       status=TaskStatus.FAILED, finished_at="2026-10-22T00:00:00+00:00"))
+    first = service.maintain(limit=1)
+    second = service.maintain(limit=1)
+    assert first["examined"] == second["examined"] == 1
+    assert not artifacts.artifact_path("t", "work/bundle").exists()
+    assert original.exists()
+    restarted = TrainingWorkspaceLifecycle(service.data_dir, repo, artifacts)
+    assert restarted.maintain(limit=10)["deleted"] == 0
+
+
+def test_evidence_archival_does_not_hold_task_database_write_lock(tmp_path, monkeypatch):
+    service, repo, artifacts, _ = workspace(tmp_path)
+    archive = service._archive_evidence
+    def checked(task, bundle):
+        with repo._connect() as connection:
+            connection.execute("PRAGMA busy_timeout=1")
+            connection.execute("BEGIN IMMEDIATE")
+            connection.rollback()
+        archive(task, bundle)
+    monkeypatch.setattr(service, "_archive_evidence", checked)
+    assert service.cleanup("p", "t", actor="maintenance")["status"] == "deleted"
+
+
+def test_scheduler_maintenance_starts_on_restart_and_never_blocks_claim(tmp_path):
+    import threading
+    from platform_core.task_runtime import Scheduler
+    service, repo, artifacts, _ = workspace(tmp_path)
+    started, claimed, completed, stop = (threading.Event() for _ in range(4))
+    def maintenance():
+        started.set()
+        assert claimed.wait(2), "maintenance blocked original claim loop"
+        completed.set()
+    scheduler = Scheduler(repo, artifacts, "worker", {}, set(), maintenance=maintenance)
+    def run_once():
+        assert started.wait(2)
+        claimed.set()
+        stop.set()
+        return False
+    scheduler.run_once = run_once
+    scheduler.serve_forever(stop)
+    assert completed.wait(2)
+
+
+def test_unknown_terminal_process_identity_is_not_reclaimed(tmp_path):
+    service, repo, artifacts, _ = workspace(tmp_path)
+    with repo._connect() as connection:
+        connection.execute("UPDATE tasks SET process_pid=2147483000 WHERE task_id='t'")
+    assert "PROCESS_IDENTITY_UNVERIFIED" in service.inspect("p", "t")["blockers"]
+    assert service.maintain()["deleted"] == 0
+    assert artifacts.artifact_path("t", "work/bundle").exists()
+
+
+def test_changed_recovery_evidence_during_archival_prevents_detach(tmp_path, monkeypatch):
+    service, repo, artifacts, _ = workspace(tmp_path)
+    archive = service._archive_evidence
+    def changed(task, bundle):
+        archive(task, bundle)
+        artifacts.atomic_write_json("t", "failure.json", {"recoverable": True})
+    monkeypatch.setattr(service, "_archive_evidence", changed)
+    with pytest.raises(RuntimeError, match="WORKSPACE_PREVIEW_STALE"):
+        service.cleanup("p", "t", actor="maintenance")
+    assert artifacts.artifact_path("t", "work/bundle").exists()
