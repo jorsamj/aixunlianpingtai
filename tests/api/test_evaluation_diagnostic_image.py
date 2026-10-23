@@ -33,6 +33,26 @@ def test_p2_trust_api_uses_original_model_qualification_and_readonly_snapshot(mo
     assert denied.value.status_code == 409
 
 
+def test_p2_sample_pages_distinguish_missing_evidence_and_never_rescore(monkeypatch, tmp_path):
+    platform, version, _, _, _ = _setup(monkeypatch, tmp_path)
+    version['evaluation'].update(evaluation_id='e' * 64, image_count=3,
+        sample_outcomes=[{'image': f'{i}.jpg', 'image_id': str(i), 'image_content_sha256': 'f' * 64,
+                          'tp_count': 1 if i == 0 else 0, 'fp_count': 0, 'fn_count': 1 if i else 0}
+                         for i in range(3)])
+    monkeypatch.setattr(platform, '_advanced_evaluation_context', lambda *args: (version, {}))
+    page = platform.evaluation_sample_page('evaluation-project', 'algo', 'v1', issue='fn', limit=1)
+    assert page['total'] == 2 and len(page['items']) == 1
+    assert page['items'][0]['box_evidence_available'] is False
+    assert 'pred_boxes' not in page['items'][0]
+    assert page['evaluation_id'] == 'e' * 64
+    version['evaluation'].pop('sample_outcomes')
+    legacy = platform.evaluation_sample_page('evaluation-project', 'algo', 'v1')
+    assert legacy['cohort_complete'] is False
+    assert legacy['total'] == 1
+    public = platform.advanced_evaluation_report('evaluation-project', 'algo', 'v1')
+    assert 'sample_outcomes' not in public['algorithm']['versions'][0]['evaluation']
+
+
 def _setup(monkeypatch, tmp_path: Path):
     import app as platform
     project_id = "evaluation-project"

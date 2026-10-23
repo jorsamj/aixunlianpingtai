@@ -954,3 +954,32 @@ def test_strict_bundle_bound_test_evidence_survives_credibility_and_does_not_fak
 
     # Historical snapshot versions never impersonate a materialized Test.
     assert evaluation.build_evaluation_benchmark_scope({"schema_version": 2}) == {}
+
+def test_all_sample_outcomes_and_formal_matching_evidence(tmp_path):
+    from copy import deepcopy
+    images, gt = tmp_path / 'images', tmp_path / 'gt'
+    images.mkdir(); gt.mkdir()
+    for name in ('correct', 'error', 'empty'):
+        Image.new('RGB', (100, 100), 'white').save(images / (name + '.jpg'))
+        (gt / (name + '.txt')).write_text('' if name == 'empty' else '0 0.5 0.5 0.4 0.4\n')
+    def predict(path):
+        if path.stem == 'empty':
+            return []
+        return [{'class_id': 0, 'confidence': .9, 'box': [30, 30, 70, 70]}] if path.stem == 'correct' else [
+            {'class_id': 1, 'confidence': .9, 'box': [30, 30, 70, 70]}]
+    raw = evaluation.evaluate_blind_detection(images, gt, predict, names={0: 'a', 1: 'b'})
+    outcomes = {row['image_id']: row for row in raw['sample_outcomes']}
+    assert len(outcomes) == 3
+    assert [(outcomes[key]['tp_count'], outcomes[key]['fp_count'], outcomes[key]['fn_count'])
+            for key in ('correct', 'error', 'empty')] == [(1, 0, 0), (0, 1, 1), (0, 0, 0)]
+    evidence = {row['image_id']: row for row in raw['sample_evidence']}
+    box = evidence['correct']['pred_boxes'][0]
+    assert (box['prediction_index'], box['target_index'], box['matched_iou']) == (0, 0, 1.0)
+    assert evidence['error']['pred_boxes'][0]['diagnostic_tags'] == ['wrong_class']
+    before = deepcopy(raw)
+    frozen = evaluation.build_evaluation_truth(raw, task_id='sample-evidence')
+    assert frozen['sample_outcomes'] == raw['sample_outcomes']
+    assert frozen['sample_evidence'] == raw['sample_evidence']
+    assert raw == before
+    legacy = evaluation.build_evaluation_truth({'status': 'succeeded'}, task_id='legacy')
+    assert 'sample_outcomes' not in legacy and 'sample_evidence' not in legacy

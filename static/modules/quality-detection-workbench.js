@@ -215,6 +215,9 @@ export function installQualityDetectionWorkbench({getState,api,toast,modal,close
     }
     if(kind==='evaluation')detail+=`<p>冻结独立测试证据只读。显示阈值只过滤可视框，不重算正式指标；历史截断框不能补造。定位待复核是同类未匹配框的0&lt;IoU&lt;0.5几何线索，并非正式错误指标。低置信度仅指真实预测&lt;0.5。</p>${comparison.result?.comparable&&panels.length<2?'<p class="scn-comparison-missing">对比版本未保留本图同身份框证据，不能用空框推断正确检出。</p>':''}`;
     else detail+=`<div class="scn-human-review"><b>人工主观复核 · 与正式指标分开</b><span id="benchReviewStatus64">${esc(REVIEW_NAMES64[row.review]||'尚未核验')}</span>${[['A',row.a],['B',row.b]].filter(([,value])=>canSubmitBenchFeedback64(value)).map(([side])=>`<button class="btn small" onclick="openBenchFeedback64(${selectedIndex},'${side}')">${side} · 提交抽检反馈</button>`).join('')}${Object.entries(REVIEW_NAMES64).map(([key,label])=>`<button class="btn small" onclick="markBenchReview64(${selectedIndex},'${key}')">${label}</button>`).join('')}</div>`;
+    if(kind==='evaluation'){
+      detail+=panels.map(panel=>`<div class="scn-match-evidence"><b>${esc(panel.side)} · 正式匹配与辅助诊断</b>${panel.boxes.map(box=>`<p>${esc(box.label)} · ${Number.isFinite(box.matched_iou)?`IoU ${box.matched_iou.toFixed(3)}`:'IoU 未记录'} · ${esc((box.diagnostic_tags||[]).map(tag=>({wrong_class:'类别错误线索',localization:'定位偏差线索',duplicate:'重复检测线索',low_confidence:'低置信度'}[tag]||tag)).join(' / ')||'无额外诊断')} ${Number.isInteger(box.target_index)?`GT #${box.target_index+1}`:''}</p>`).join('')||'<p>本图未保留完整框证据，不能以空框推断正确或漏检。</p>'}</div>`).join('');
+    }
     aside.innerHTML=detail;
     aside.onclick=event=>{const button=event.target.closest('[data-scn-box]');if(!button)return;const [side,index]=button.dataset.scnBox.split(':'),target=host.querySelector(`figure[data-side="${side}"] svg [data-box-index="${index}"]`);aside.querySelectorAll('[data-scn-box]').forEach(node=>node.classList.toggle('selected',node===button));target?.focus();};
     const scrollPanels=[...host.querySelectorAll('.scn-stage')];let syncing=false;
@@ -512,5 +515,11 @@ export function installQualityDetectionWorkbench({getState,api,toast,modal,close
   };
 
   function deactivate64(){comparisonController?.abort();comparisonSequence++;comparison={};reportViews()?.disposeReportViews?.(document.querySelector('.scenario-workbench'));reportController?.abort();reportSequence++;reportLoading=false;reportError='';reportVersion=null;reportModel=null;batchOpenSequence++;revokeEvidenceUrls64();}
-  return {render:window.renderQualityDetectionBench64,deactivate:deactivate64,destroy:deactivate64};
+  function mountEvaluationEvidence(root,{model,version,rows,comparison:other}={}){
+    deactivate64();displayMode='accuracy';selectedIndex=0;zoom=1;classFilter='';issueFilter='';matrixCell=null;confidence=0;showGT=true;showPred=true;
+    reportModel=model;reportVersion={...version,evaluation:{...version.evaluation,error_samples:rows||[]}};
+    comparison=other||{};root.classList.add('scenario-workbench');root.id='scenarioEvidence64';
+    renderEvidenceWorkspace64(root,rows||[],'evaluation');
+  }
+  return {render:window.renderQualityDetectionBench64,deactivate:deactivate64,destroy:deactivate64,mountEvaluationEvidence};
 }

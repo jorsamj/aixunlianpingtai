@@ -10847,12 +10847,16 @@ def evaluation_diagnostic_image_v1(project_id: str, algorithm_id: str, version_i
         raise HTTPException(status_code=404, detail="评测记录不存在")
     if image_name != Path(image_name).name or '\\' in image_name or not image_name or image_name in {".", ".."}:
         raise HTTPException(status_code=404, detail="评测图片不存在")
-    matches = [row for row in list(evaluation.get("error_samples") or [])
-               if isinstance(row, dict) and row.get("image") == image_name]
+    matches = []
+    for evidence_key in ('sample_evidence', 'error_samples', 'sample_outcomes'):
+        matches = [row for row in list(evaluation.get(evidence_key) or [])
+                   if isinstance(row, dict) and row.get("image") == image_name]
+        if matches:
+            break
     if len(matches) > 1:
         reject('IMAGE_IDENTITY_AMBIGUOUS', '评测样本图片身份不唯一')
     if not matches:
-        raise HTTPException(status_code=404, detail="图片不属于本版本的问题样本")
+        raise HTTPException(status_code=404, detail="图片不属于本版本的冻结评测样本")
     sample = matches[0]
     if expected_evaluation_id or expected_image_id or expected_sha256:
         if (not re.fullmatch(r'[0-9a-f]{64}', expected_evaluation_id)
@@ -11044,6 +11048,33 @@ def evaluation_trust_analysis(project_id: str, algorithm_id: str, version_id: st
                                      detail_offset=offset, detail_limit=limit)
     return {'ok': True, 'analysis': result, 'project_id': project_id,
             'algorithm_id': algorithm_id, 'version_id': version_id}
+
+
+@app.get('/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/evaluation/samples')
+def evaluation_sample_page(project_id: str, algorithm_id: str, version_id: str,
+                           offset: int = 0, limit: int = 24, issue: str = '', class_id: Optional[int] = None,
+                           sort: str = 'severity'):
+    from platform_core.evaluation_analysis import evaluation_samples
+    if (offset < 0 or not 1 <= limit <= 50 or issue not in {'', 'tp', 'fp', 'fn', 'wrong_class',
+            'localization', 'low_confidence', 'duplicate'} or sort not in {'severity', 'high_confidence_fp'}
+            or class_id is not None and class_id < 0):
+        raise HTTPException(status_code=422, detail='样本筛选或分页范围无效')
+    version, _ = _advanced_evaluation_context(project_id, algorithm_id, version_id)
+    evaluation = version.get('evaluation') or {}
+    result = evaluation_samples(evaluation, offset=offset, limit=limit, issue=issue, class_id=class_id, sort=sort)
+    return {'ok': True, 'project_id': project_id, 'algorithm_id': algorithm_id, 'version_id': version_id, **result}
+
+
+@app.get('/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/evaluation/report')
+def advanced_evaluation_report(project_id: str, algorithm_id: str, version_id: str):
+    version, _ = _advanced_evaluation_context(project_id, algorithm_id, version_id)
+    # All-cohort outcomes are available only via the paged sample endpoint.
+    evaluation = {key: value for key, value in (version.get('evaluation') or {}).items()
+                  if key not in {'sample_outcomes', 'sample_evidence'}}
+    public = {key: version[key] for key in ('id', 'version_name', 'iteration_decision',
+              'feedback_adoption_outcome') if key in version}
+    public['evaluation'] = evaluation
+    return {'ok': True, 'algorithm': {'id': algorithm_id, 'versions': [public]}}
 
 
 @app.get('/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/evaluation/compare/{other_version_id}')

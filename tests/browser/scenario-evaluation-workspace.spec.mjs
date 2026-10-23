@@ -1,5 +1,17 @@
 import {test,expect} from '@playwright/test';
 
+test('P2 advanced diagnostics reuses original SVG and sample pagination without a modal or invented matches',async({page,request},testInfo)=>{
+  const c=await fixture(page,request);let sampleGets=0;
+  await page.route('**/evaluation/trust?**',route=>json(route,{project_id:c.project.id,algorithm_id:c.algorithm.id,version_id:'v2',analysis:{checks:[],coverage:[]}}));
+  const sample=structuredClone(c.evaluation.error_samples[0]);sample.pred_boxes[0].matched_iou=.83;sample.pred_boxes[0].target_index=0;
+  await page.route('**/evaluation/samples?**',route=>{sampleGets++;return json(route,{evaluation_id:c.evaluation.evaluation_id,items:[sample],total:1,cohort_complete:false});});
+  await c.open();await page.getByRole('button',{name:'高级评测',exact:true}).click();const root=page.locator('[data-advanced-evaluation]');await expect(root.getByRole('button',{name:'刷新证据',exact:true})).toBeEnabled();
+  await root.getByRole('tab',{name:'错误诊断',exact:true}).click();await expect(root.locator('figure:not([hidden]) svg rect')).toHaveCount(3);await expect(root).toContainText('IoU 0.830');await expect(root).toContainText('历史仅保留部分问题图片');
+  await root.locator('svg [data-box-index]').last().click();await expect(root.locator('.scn-box-row.selected')).toHaveCount(1);await root.getByRole('checkbox',{name:'正式 GT',exact:true}).uncheck();await expect(root.locator('svg rect')).toHaveCount(2);
+  expect(sampleGets).toBe(1);await expect(page.getByRole('dialog')).toHaveCount(0);await page.screenshot({path:testInfo.outputPath('p2-diagnostics.png')});
+  await page.getByRole('button',{name:'质量概览',exact:true}).click();await expect(root).toHaveCount(0);
+});
+
 test('P2 advanced trust uses existing qualified models, honest unknowns, retry and page isolation',async({page,request},testInfo)=>{
   const c=await fixture(page,request);let failed=false,gets=0;
   await page.route('**/evaluation/trust?**',route=>{gets++;if(failed)return json(route,{detail:'受控可信度读取失败'},500);
@@ -11,7 +23,7 @@ test('P2 advanced trust uses existing qualified models, honest unknowns, retry a
   await expect(root).toContainText('存在风险');await expect(root).toContainText('未执行检查');await expect(root).toContainText('证据不足');await expect(root).toContainText('未覆盖');
   for(const width of [1920,1440,1366]){await page.setViewportSize({width,height:width===1920?1080:width===1440?900:768});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);await page.screenshot({path:testInfo.outputPath(`p2-trust-${width}.png`)});}
   failed=true;await root.getByRole('button',{name:'刷新证据',exact:true}).click();await expect(root.getByRole('alert')).toContainText('受控可信度读取失败');await expect(root).not.toContainText('正在核验');
-  failed=false;await root.getByRole('button',{name:'重试',exact:true}).click();await expect(root.getByRole('alert')).toHaveCount(0);expect(gets).toBe(3);
+  failed=false;await root.getByRole('button',{name:'重试',exact:true}).click();await expect(root.getByRole('alert')).toHaveCount(0);await expect.poll(()=>gets).toBe(3);await expect(root.getByRole('button',{name:'刷新证据',exact:true})).toBeEnabled();
   await page.getByRole('button',{name:'场景算法实测',exact:true}).click();await expect(page.locator('.scenario-workbench')).toBeVisible();await expect(root).toHaveCount(0);
 });
 
@@ -38,6 +50,7 @@ async function fixture(page,request,{empty=false}={}){
   await page.route('**/scn-controlled.bmp',route=>route.fulfill({status:200,contentType:'image/bmp',body:bmp()}));
   await page.route(`**/api/v64/projects/${project.id}/detection-batches**`,route=>{control.historyGets.push(new URL(route.request().url()));return json(route,{items:[]});});
   await page.addInitScript(()=>localStorage.setItem('mc_train_ui_state_v34',JSON.stringify({page:'总览'})));
+  await page.route('**/evaluation/report',route=>json(route,{algorithm:{...algorithm,versions:[{id:'v2',version_name:'v2',evaluation:control.evaluation}]}}));
   control.open=async()=>{await page.goto('/');await page.evaluate(()=>window.setPage('质量中心'));await page.getByRole('button',{name:'场景算法实测',exact:true}).click();await expect(page.locator('.scenario-workbench')).toBeVisible();};
   return control;
 }

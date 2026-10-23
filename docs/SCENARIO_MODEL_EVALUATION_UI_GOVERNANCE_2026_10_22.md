@@ -34,6 +34,16 @@
 
 RED：新增Python2项因缺模块失败，Node缺新模块失败。GREEN：原test_training_evaluation.py完整33通过；test_evaluation_diagnostic_image.py的P2资格/只读/分页1通过；scenario-evaluation.test.mjs17通过；真实Chrome新增1场景通过（3桌面宽度、风险/未知、500重试、返回原场景）。浏览器截图由testInfo.outputPath生成p2-before-scenario及p2-trust-1920/1440/1366，1920已人工查看。缺失报告不显示假指标；未跑GPU/生产/全仓。该阶段提交后回填实际SHA；A2/B/C尚未实现，不将禁用Tab当完成。
 
+A1实际提交21e0d816e76f7e4cfd84061efeb0ed1b4fbcfdd6（本地，远端CI未验）。
+
+### P2-A2 本地阶段实绩
+
+原正式confidence-first同类匹配循环记录pair/IoU，逐图轻量outcomes包含正确/空图，固定GT内容摘要；同一预测只匹配一次。sample_evidence保留前200严重错误及剩余容量正确图、每层120框，截断明确。新合同校验计数、身份、引用界限、完整性后纳入原evaluation_id；历史缺失字段保持缺失。辅助类别/定位/重复标签不改变正式统计。全部图片SHA需额外顺序读取；全部轻量结果O(n)保存在原Evaluation，前端独立report概要不序列化全量outcomes，samples接口最多50/页，无新存储Owner。
+
+高级评测错误诊断复用原QualityDetectionWorkbenchRuntime/SVG/缩放/GT图层/图片鉴权与生命周期；完整逐图与局部框证据范围分开说明。原图片API允许新已冻结样本，仍执行原Snapshot/模型/字节读取校验；不永久复制整个原图集，回收后缺原图可明确不可读。
+
+RED→GREEN：新增分页API先AttributeError；原scorer新增outcome合同先KeyError，最终原单测34通过。图片API39通过；新report概要投影后相关1项复验通过。Node原场景/图表28通过。Chrome新2场景首轮失败：重叠GT框被上层预测框命中（改选择可见最上层实际框，不force）；重试断言早于请求完成（改等真实请求计数和按钮完成）。修正后2通过，未降低功能断言；新诊断截图p2-diagnostics.png。真实GPU/NAS/OSS/大规模内存与生产未验，远端CI未验。A2阶段提交后回填SHA；B/C继续。
+
 > 本轮唯一综合需求/进度/问题与接续依据。既有VNext、素材性能与Annotorious文档保留历史，仅增加入口，不复制本轮进度。基线c376be7d5d54cca838dc8456ae2e6906815a5335 / VERSION42.24.376；2026-10-22已重新fetch，远端与本地一致、长期工作树干净。应用会话列表查询超时，未宣称已读取全部其他会话；现存其他worktree不动，推送前再次核验远端与差异。
 
 > **当前结论：P0与P1代码、隔离验收及代码SHA CI已验收，生产未验证。** VERSION42.24.377。业务最终代码42bf33b2bfcc46279c1360632e063f3336f7821e实际23/23 Actions、60/60 Checks通过，CI Chrome239/239。本次文档/旧fixture补提不修改业务；其新HEAD仍须按自身GitHub Checks独立核验，不能继承42bf绿色。下文早期“进行中/未提交”是历史执行留痕，以本段、任务表及末尾最终验收为准。

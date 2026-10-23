@@ -16,6 +16,41 @@ def _digest(value):
     return isinstance(value, str) and re.fullmatch(r"[a-f0-9]{64}", value) is not None
 
 
+def evaluation_samples(evaluation: Mapping, *, offset=0, limit=24, issue="", class_id=None, sort="severity"):
+    """Paginate persisted formal outcomes; absent legacy samples stay unknown."""
+    complete = isinstance(evaluation.get('sample_outcomes'), list)
+    outcomes = evaluation.get('sample_outcomes') if complete else evaluation.get('error_samples', [])
+    evidence = evaluation.get('sample_evidence') if complete else evaluation.get('error_samples', [])
+    indexed = {(row.get('image_id'), row.get('image_content_sha256')): row for row in evidence or []}
+    rows = []
+    for outcome in outcomes:
+        sample = dict(outcome)
+        detail = indexed.get((sample.get('image_id'), sample.get('image_content_sha256')))
+        if detail:
+            sample.update(detail)
+        sample['box_evidence_available'] = bool(detail and isinstance(detail.get('gt_boxes'), list)
+                                                 and isinstance(detail.get('pred_boxes'), list))
+        kinds = set(sample.get('diagnostic_tags') or [])
+        for box in sample.get('pred_boxes', []):
+            kinds.update(box.get('diagnostic_tags') or [])
+        kinds.update(key for key in ('fp', 'fn', 'tp') if sample.get(f'{key}_count', 0) > 0)
+        if issue and issue not in kinds:
+            continue
+        if class_id is not None and not any(box.get('class_id') == class_id for box in
+                list(sample.get('gt_boxes', [])) + list(sample.get('pred_boxes', []))):
+            continue
+        rows.append(sample)
+    if sort == 'high_confidence_fp':
+        rows.sort(key=lambda row: (-max((box.get('confidence', 0) for box in row.get('pred_boxes', [])
+                                         if box.get('matched') is False), default=-1), row.get('image', '')))
+    else:
+        rows.sort(key=lambda row: (-row.get('fn_count', 0), -row.get('fp_count', 0), row.get('image', '')))
+    return {'items': rows[offset:offset + limit], 'total': len(rows), 'offset': offset, 'limit': limit,
+            'cohort_complete': complete and len(outcomes) == evaluation.get('image_count'),
+            'image_count': evaluation.get('image_count'), 'evaluation_id': evaluation.get('evaluation_id'),
+            'filter_scope': 'retained_box_evidence_only' if class_id is not None else 'persisted_sample_outcomes'}
+
+
 def analyze_evaluation_trust(evaluation: Mapping, snapshot: Mapping, version: Mapping,
                              *, verified_model: Mapping | None = None,
                              detail_offset: int = 0, detail_limit: int = 20) -> dict[str, Any]:
