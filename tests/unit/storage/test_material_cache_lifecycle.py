@@ -43,6 +43,21 @@ def test_material_cache_ttl_evicts_old_content_but_keeps_recent_access(tmp_path)
     assert result["evicted_files"] == 1
 
 
+def test_incomplete_cache_inventory_is_marked_without_changing_deletion(tmp_path, monkeypatch):
+    cache = MaterialCache(tmp_path / "cache", max_bytes=0, ttl_seconds=0)
+    target = _cached(cache, b"must-stay")
+    original = Path.iterdir
+    def unreadable(path):
+        if path == target.parent:
+            raise PermissionError("prefix cannot be enumerated")
+        return original(path)
+    monkeypatch.setattr(Path, "iterdir", unreadable)
+    result = cache.maintain()
+    assert result["inventory_complete"] is False
+    assert target.exists()
+    assert json.loads((cache.root / "status.json").read_text())["inventory_complete"] is False
+
+
 def test_material_cache_quota_uses_lru_and_never_evicts_explicitly_protected_file(tmp_path):
     cache = MaterialCache(
         tmp_path / "cache",

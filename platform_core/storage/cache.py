@@ -169,13 +169,20 @@ class MaterialCache:
             # Access metadata must never turn a valid cache hit into a task failure.
             pass
 
-    def _candidate_files(self) -> list[_CacheCandidate]:
-        if not self.root.exists():
+    def _candidate_files(self, *, inventory_errors: list[str] | None = None) -> list[_CacheCandidate]:
+        errors = inventory_errors if inventory_errors is not None else []
+        try:
+            self.root.stat()
+        except FileNotFoundError:
+            return []
+        except OSError:
+            errors.append("root")
             return []
         candidates: list[_CacheCandidate] = []
         try:
             prefixes = list(self.root.iterdir())
         except OSError:
+            errors.append("root")
             return []
         for prefix in prefixes:
             try:
@@ -183,6 +190,7 @@ class MaterialCache:
                     continue
                 items = list(prefix.iterdir())
             except OSError:
+                errors.append("prefix")
                 continue
             for path in items:
                 match = _CACHE_FILE.fullmatch(path.name)
@@ -193,6 +201,7 @@ class MaterialCache:
                         continue
                     info = path.stat()
                 except OSError:
+                    errors.append("entry")
                     continue
                 if info.st_size <= 0:
                     continue
@@ -250,7 +259,8 @@ class MaterialCache:
         """Apply TTL/LRU lifecycle limits without touching recent or locked files."""
         current_ns = int(time.time_ns() if now_ns is None else now_ns)
         protected = self._protected_paths(protect_paths)
-        candidates = self._candidate_files()
+        inventory_errors: list[str] = []
+        candidates = self._candidate_files(inventory_errors=inventory_errors)
         before_bytes = sum(item.size_bytes for item in candidates)
         retained_bytes = before_bytes
         evicted_files = 0
@@ -355,6 +365,34 @@ class MaterialCache:
                 else 0
             ),
         }
+        # Reuse this existing maintenance inventory, never rescan on page views.
+        thumbnail_members = set()
+        for candidate in candidates:
+            if candidate.path.suffix != '.json' or candidate.path.resolve() in removed:
+                continue
+            try:
+                if candidate.path.stat().st_size > 16384:
+                    continue
+                pointer = json.loads(candidate.path.read_text(encoding='utf-8'))
+                if not str(pointer.get('spec') or '').startswith('thumbnail-v1:'):
+                    continue
+                target = self.path_for(pointer['content_sha256'], '.jpg')
+                self._thumbnail_path_safe(target)
+                thumbnail_members.add(candidate.path)
+                if target.is_file():
+                    thumbnail_members.add(target)
+            except (OSError, ValueError, KeyError, AttributeError) as error:
+                if isinstance(error, OSError):
+                    inventory_errors.append("thumbnail_pointer")
+                continue
+        thumbnail_bytes = 0
+        for member in thumbnail_members:
+            try:
+                thumbnail_bytes += member.stat().st_size
+            except OSError:
+                inventory_errors.append("thumbnail_member")
+        result['thumbnail_logical_bytes'] = thumbnail_bytes
+        result['inventory_complete'] = not inventory_errors
         self._publish_status(result)
         return result
 

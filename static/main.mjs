@@ -494,12 +494,13 @@ const canonicalWindowPageOwners = [...canonicalWindowPageRenderers].map(([page, 
     return renderer();
   })
 ));
-navigationStabilityRuntime.registerPageOwner('旧素材兼容迁移', () => renderLegacyMaterialCompatibility({projectId:()=>state.project?.id, notify}));
+const unregisterLegacyMaterialCompatibility = navigationStabilityRuntime.registerPageOwner('旧素材兼容迁移', () => renderLegacyMaterialCompatibility({projectId:()=>state.project?.id, notify}));
 // Dedicated isolated demo page owner; no Training/Material/Agent/Task owner reuse.
 const unregisterPrisonNightPageOwner = navigationStabilityRuntime.registerPageOwner(
   'AI算法底座', () => renderPrisonNightInspectionPage()
 );
 const canonicalPageOwnerDisposers = [
+  unregisterLegacyMaterialCompatibility,
   unregisterPrisonNightPageOwner,
   ...canonicalWindowPageOwners,
   navigationStabilityRuntime.registerPageOwner('算法列表', () => algorithmListRuntime?.renderCards?.()),

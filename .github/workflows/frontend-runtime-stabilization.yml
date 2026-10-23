@@ -465,6 +465,10 @@ jobs:
           tests/browser/scenario-evaluation-workspace.spec.mjs
           tests/browser/scenario-evaluation-analysis.spec.mjs
           tests/browser/material-workspace-ui.spec.mjs
+          tests/browser/training-workspace.spec.mjs
+          tests/browser/legacy-material-compatibility.spec.mjs
+          tests/browser/material-thumbnail.spec.mjs
+          tests/browser/storage-lifecycle-summary.spec.mjs
           tests/browser/annotation-ui-governance.spec.mjs
           tests/browser/training-evaluation-diagnostics.spec.mjs
           tests/browser/navigation-readiness.spec.mjs

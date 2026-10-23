@@ -2918,6 +2918,12 @@ def material_content_v61(project_id: str, image_id: str):
         _raise_storage_error(error, status_code=404 if error.code in {"MATERIAL_NOT_FOUND", "STORAGE_OBJECT_NOT_FOUND"} else 503)
 
 
+@app.get('/api/v62/projects/{project_id}/storage/lifecycle-summary')
+def storage_lifecycle_summary_v62(project_id: str):
+    get_project(project_id)
+    from platform_core.storage.lifecycle_summary import storage_lifecycle_summary
+    return {'ok':True, **storage_lifecycle_summary(DATA_DIR, project_id)}
+
 
 @app.get("/api/v61/projects/{project_id}/materials/{image_id}/content/thumbnail")
 def material_thumbnail_v61(project_id: str, image_id: str, edge: int = Query(384, ge=16, le=1024)):

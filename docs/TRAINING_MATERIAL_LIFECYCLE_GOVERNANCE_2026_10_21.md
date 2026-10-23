@@ -1,4 +1,4 @@
-## 2026-10-23｜第二阶段接续：先远程按需准备，再自动回收（进行中）
+## 2026-10-23｜第二阶段接续：核心链路已实现，最终SHA CI待验收
 
 本轮附件48129ab7需求正式接续，基线HEAD `5b79f35d81670fd3cb16346fe01b61eeb508b6ed`/VERSION42.24.377，fetch远端仍3cc331f2，无分叉。5944及前阶段所有提交和两份未提交模板测试保留，不扩大模板功能，不重审全仓、不重复建设已有API。
 
@@ -8,7 +8,7 @@
 |S2-02 自动安全回收|P0/已完成待验收|原资格/隔离删除/回执接实际终态及重启恢复，无法证明进程死亡则等待，原图/共享cache/模型/Checkpoint不删除|
 |S2-03 详情人工释放与历史只读扫描|P1/已完成待验收|复用原API/详情，真实占用/资格/原因/进度；历史仅dry-run不可执行生产删除|
 |S2-04 旧素材兼容检测及最小迁移|P1/已完成待验收|原图不搬迁、image_id与GT版本不变，只修经证据确认的元数据，备份/CAS/批次幂等恢复|
-|S2-05 缩略图及受控原图物理回收|P2/进行中|在前述P0/P1后补真实缺口，区分逻辑字节与实际空间，OSS/NAS/GPU无法现场核验则NOT VERIFIED|
+|S2-05 缩略图及受控原图物理回收|P2/已完成待验收|在前述P0/P1后补真实缺口，区分逻辑字节与实际空间，OSS/NAS/GPU无法现场核验则NOT VERIFIED|
 
 关键设计取舍：原远程载荷resolver在正式execution lease建立前调用，禁止在那里获取图片。新输入协议使用schema3冻结索引描述；Agent取得真实owner后使用现有node-executor鉴权/代次栅栏读Manifest和源流，所有存储类型复用StorageManager驱动，不在控制端落整份原图缓存/ZIP。替代方案“选定Worker后控制端打包”仍提前复制且留第二份整集，拒绝；直接暴露任意绝对路径或下发存储凭据也不采用。旧schema1/2已排队ZIP保持严格身份/哈希验证兼容，不重写历史任务。元数据可传输，图片/YOLO目录只能在实际Agent执行工作目录物化；冻结GT不能被当前数据库内容替代。
 
@@ -69,6 +69,52 @@ apply必须真实登录/项目范围+明确确认，绑定本批image_ids、完�
 独立工具tools/reclaim_retired_original.py默认仅预览，要求明确--data-dir/--project/--retirement-task/--image-id，不构造会初始化的Owner。--apply另需准确fingerprint、稳定operation_id、当前项目/图片确认文字与本机真实actor；不能把此脚本当生产执行授权。本轮只执行--help和空隔离目录安全检查（退出2且初始化文件0），未运行任何生产路径。恢复必须沿用同operation_id与指纹；出现新源/未知身份时保留并报告。
 
 实际：相关限定集合67通过1系统symlink skip，原batch4通过；后续血缘/恢复3定向通过、路径1通过1系统skip、未知身份/恢复证据1通过。目录链接边界还须Linux CI实际覆盖。HTTP实际发送锁1通过，原素材API4通过与报告真实格式/原图身份5通过；未重复原报告全37。审查发现的离线进程漏检、恢复倒退、审计身份冲突、预览WAL副作用及回执外链已修并加必要合同，未降低断言。P1共享只读连接/digest移回原MaterialRepository，临时兼容页面/API可移除，正式GC无临时工具依赖。
+
+### S2-05 既有存储页面与最终交接（代码待最终SHA CI）
+
+复用原StorageCacheRuntime及原缓存维护采样：显示原图索引逻辑量、GT SQLite逻辑量、已索引缩略图缓存、配置共享缓存及Worker/可回收/待清理/清理失败八项。没有建立统计数据库或扫描全目录。素材索引任一size缺失则该总量未获取；GT不含旧JSON；缩略图是已有指针可归属的缓存子集，不包含失效指针留下的孤立文件；全部缓存可跨节点，不能相加冒充独占空间。Worker/可回收/待清理/失败回执缺全量可信采样，返回null显示未获取，详情和历史分页另可逐项查看。实际物理释放始终未获取，未把删除字节/逻辑退役算成磁盘释放。
+
+后台刷新保留已有样本，失败标明旧样本/可重试，首读失败显示未获取；项目与页面身份隔离迟到响应。原临时迁移页面注册的disposer已纳入原NavigationStability销毁列表。VERSION按原规则由377增至42.24.378，更新原静态缓存标记及准确接线守卫。受影响原CI增加新核心文件和五个独立Chrome冒烟（四份spec）；不新建测试框架，不削弱原断言。
+
+本阶段实际必要Python摘要2通过，后与原HTTP源发送锁共3通过；原Node storage-cache文件12通过、版本标记9通过；发现错误刷新清空旧样本后增加原断言，定向1通过/11未选择。真实Chrome摘要单例通过，覆盖八项口径/503恢复/防重复/离页迟到；随后发现同项目离页返回复用旧在途请求会锁住Loading，单项Node真实RED→GREEN（1通过/12未选），原Chrome同一用例追加返回场景1通过（5.7秒），不增加独立场景计数。另补两项真实观测偏差：Worker非2xx/坏JSON保留已知节点并明确失败重试；原maintenance只复用一次inventory，记录inventory_complete，读取不完整或旧快照无标记时新摘要两项缓存返回未知，待下一次原维护完整采样，不改变删除循环/新增扫描。原Node单例1失败→1通过/13未选，Python必要合同3失败1通过→与正向用例合并5通过/6未选。全轮本地Chrome共5个独立场景（workspace两项、legacy一项、thumbnail一项、summary一项），重复执行不重复计数；GPU、NAS/OSS真实端到端、生产旧库、生产浏览器均NOT VERIFIED。已知Windows symlink权限skip保留，等待Linux准确SHA CI补验，不当PASS。
+
+阶段提交（均保留前阶段5944及已有提交，不重写历史）：
+
+|阶段|实际提交|
+|--|--|
+|远程冻结输入|`21c787889dc24cdb98a9253897204419b1b02f64`|
+|自动回收/Agent恢复保护|`ad5564822beedddfb9477ba2e0fa0dfe47811d0d`|
+|任务详情/历史只读|`46d2297fd8accb91b8f5de24333aca6d9116b61f`|
+|旧素材元数据工具|`fa97091204d699331f079d4a6bf07e8d44acbc35`|
+|按需缩略图|`0513c5a1034136466966e7366fa0f1d2109abe0e`|
+|离线受控原图回收|`97e0d8b7144c29f876642064834ad4b29fb5a4ee`|
+|GT绑定冲突拒绝|`7abd07f1106b5db121a6f1f876647098fb2862b7`|
+
+存储用量/发行及文档收尾提交以Git完整历史为准；最终代码和文档各自HEAD必须重新读取GitHub Actions/Checks，不能借用旧SHA。本文较早阶段中“未实现/未推送/待做”均是当时事实，最新矩阵和本节优先；不反向篡改历史测试失败记录。
+
+### 最终业务问题逐项回答及实际边界
+
+1. **原图实际位置**：本轮未读取生产；既有StorageManager按storage_source_id/object_key解析。本地旧默认projects/<pid>/uploads保留，配置NAS/OSS仍走原驱动，不宣称所有原图已统一搬迁或全局只有一份。
+2. **统一索引**：复用MaterialRepository和StorageSource合同支持local/NAS/S3/OSS读取；本轮远程按需通道经原驱动代理读取，不下发凭据。真实远端驱动/跨机性能NOT VERIFIED，不为历史单份物理内容强迁全库。
+3. **GT权威**：AnnotationRepository的正式SQLite、版本/CAS和既有历史回退；工作目录YOLO不是权威。不同GT/image_id不合并，迁移不写GT。
+4. **YOLO TXT时机**：实际Worker执行所有权确认后从冻结GT派生；随owned工作Bundle安全回收，必要冻结/报告证据另归档，保留正式GT。
+5. **创建/排队零完整副本**：新Prepare本地和远程均indices_only；分配resolver只描述。旧schema1/2已存在ZIP兼容保留，不能承诺历史目录已清空。
+6. **本地/远程按需**：本地TrainingHandler和远程Agent正式lease后物化，SHA/size/冻结版本及角色验证；隔离本地存储/伪Trainer通过，真实GPU/跨机/OSS/NAS未验。
+7. **终态自动回收**：原Scheduler有界维护/结束唤醒/启动恢复；成功必须归档/独立Test等依赖解除，失败/取消按进程和恢复证据判断；Checkpoint/未知消费者保留，不按终态直接删。
+8. **证据保留**：原图、GT、模型、Checkpoint、Snapshot不属于Bundle回收目标；结果只保必要错误样本而非整集。受认证Worker修复后像素SHA不是控制端独立重算全图的证明，限制保留。
+9. **历史可回收量**：51GB/31GB/20GB仅用户旧信息，当前未实测，无法给出真实可回收数。只读入口仅TaskRepository已索引任务，不覆盖任意古老磁盘目录；无ownership marker只报告不接管。
+10. **旧素材是否需要迁移**：生产未扫描，未知；已完整兼容数据明确无需迁移。临时工具只补现有schema5且default_local受控原图可证明的缺SHA/size，冲突/JSON-only/外部未知仅报告。
+11. **原图搬迁**：本轮元数据工具完全不搬、不复制、不改名、不删除原图；没有为满足单份目标强制迁移。独立离线物理GC需单独授权维护，不包含在迁移里。
+12. **工具暂停/恢复/关闭/移除**：批次最多50，停止发下一批即暂停；单批CAS+备份+同task幂等重试，中断不覆盖新数据。服务端保存备份task_id，刷新后重扫识别已正常记录；前端未新增跨刷新任务数据库。LEGACY_MATERIAL_COMPATIBILITY_ENABLED=0关API，可再移除临时导航/API/module；正式元数据/共享只读Owner工具不依赖临时模块。
+13. **缩略图可靠性**：源SHA+处理规格版本→真实JPEG内容SHA，复用原TTL/配额/锁；坏缓存/驱逐按需重建，GT单独实时叠加，不因GT改色复制图片。
+14. **物理删除保护**：只提供受控固定本地盘离线维护工具；全引用/退役/任务/恢复/进程/路径/source-byte lease核验与审计恢复。在线、未知旧节点、NAS/OSS不开放；无Delete Marker/对象版本释放承诺，没有生产删除或空间释放事实。
+15. **未验证条件**：真实OSS/NAS、旧节点混跑、跨服务器断网恢复性能、大库峰值、生产旧库、GPU均NOT VERIFIED；不能把隔离通过当生产通过。
+16. **提交/CI**：上述实现提交真实存在，最终发行/文档收尾SHA的远端证据待本节后续回执；5944与两份模板测试保留，不把本地GREEN当CI。
+17. **生产升级前**：另行授权部署；先只读核配置/版本/原图GT可达性、活跃消费者/旧Worker、实际磁盘量和历史任务身份；维护窗口/备份/小批恢复演练后，分别申请生产元数据迁移或物理回收授权。本轮没有这些执行授权。
+
+### 接续指令
+
+先读本文顶部S2矩阵及本节，再读remote_training_inputs.py / node_agent_training_runtime.py / training_workspace_lifecycle.py / scheduler.py，前端从training-recovery-runtime.js和legacy-material-compatibility.js，缩略图从原StorageManager/MaterialCache，物理GC仅local_material_reclamation.py及tools/reclaim_retired_original.py。禁止重复建设StorageManager/Material/Annotation/BundleCache/Task状态；不要继续训练模板、Uppy或chipCode需求。保留两份未提交模板测试及其他工作树。生产真实量/外部存储/旧数据未知条件以只读计划和独立授权接续，不自动执行清理。
 
 ## 2026-10-23｜回收 API 与报告流式消费者保护（后端进行中）
 
