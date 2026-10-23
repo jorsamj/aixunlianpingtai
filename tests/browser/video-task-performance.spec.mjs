@@ -6,6 +6,7 @@ test('video progress delta keeps row and progress nodes stable', async ({page}) 
 
   await page.goto('/');
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
+  await expect.poll(async () => page.evaluate(() => state.project?.id || ''), {timeout: 15_000}).not.toBe('');
   const projectId = await page.evaluate(() => state.project?.id);
   expect(projectId).toBeTruthy();
   const encoded = encodeURIComponent(projectId);

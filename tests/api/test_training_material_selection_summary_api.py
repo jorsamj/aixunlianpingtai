@@ -446,3 +446,20 @@ def test_training_compatibility_rejects_page_outside_filtered_result(tmp_path):
     )
     assert response.status_code == 422
     assert "page" in response.json()["detail"]
+
+
+def test_training_compatibility_resolves_current_scope_issues_without_integrity_audit(tmp_path):
+    client=_compatibility_client(tmp_path)
+    project=tmp_path/'data'/'projects'/'p1'
+    payload={'algorithm_asset_id':'alg-1','image_ids':['partial','complete'],'train_labels':['helmet','person'],
+        'model':'yolo11n.pt','framework':'ultralytics','selection_action':'RESOLVE_SELECTION',
+        'expected_material_revision':MaterialRepository(project).current_revision(),
+        'expected_annotation_revision':AnnotationRepository(project).current_revision(),
+        'selection':{'all_issues':True,'query':'does-not-match','issue_type':'other'}}
+    response=client.post('/api/v62/projects/p1/training-materials/compatibility',json=payload)
+    assert response.status_code==200,response.text
+    assert response.json()['matching_image_ids']==['partial']
+    assert response.json()['summary']['affected_image_count']==1
+    payload['selection']={'image_ids':['complete']}
+    rejected=client.post('/api/v62/projects/p1/training-materials/compatibility',json=payload)
+    assert rejected.status_code==409,rejected.text

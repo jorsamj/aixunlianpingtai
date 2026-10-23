@@ -19,6 +19,7 @@ VENDOR_TARGETS = {"tensorrt", "ascend", "rockchip", "sophon"}
 ENVIRONMENT_ERROR_CODES = {
     "TENSORRT_NOT_FOUND", "ATC_NOT_FOUND", "RKNN_TOOLKIT_NOT_FOUND",
     "ONNX_VALIDATION_FAILED",
+    "TPU_MLIR_NOT_FOUND", "TPU_MLIR_UNAVAILABLE", "REMOTE_AUTH_REQUIRED",
 }
 TERMINAL_CONVERSION_STATUSES = {
     "done",
@@ -122,6 +123,8 @@ def _finalize_conversion_job(
 
 def run_conversion(context, *, data_dir: Path | None = None) -> tuple[TaskStatus, str]:
     request = context.artifacts.read_json(context.task.task_id, context.task.payload_ref, default={})
+    if request.get("execution_mode") == "remote" and request.get("target") == "sophon":
+        return run_remote_conversion(context, data_dir=data_dir, recovering=False)
     job_dir = Path(str(request.get("job_dir") or "")).resolve()
     job_file = job_dir / "job.json"
     worker = Path(str(request.get("worker_path") or "")).resolve()
@@ -193,6 +196,8 @@ class ConversionHandler:
 
     def recover(self, context):
         request = context.artifacts.read_json(context.task.task_id, context.task.payload_ref, default={})
+        if request.get("execution_mode") == "remote" and request.get("target") == "sophon":
+            return run_remote_conversion(context, data_dir=self.data_dir, recovering=True)
         job_dir = Path(str(request.get("job_dir") or "")).resolve()
         job_file = job_dir / "job.json"
         job = _read(job_file) if job_file.is_file() else {}
@@ -205,6 +210,16 @@ class ConversionHandler:
                 data_dir=self.data_dir,
             )
         return run_conversion(context, data_dir=self.data_dir)
+
+
+def run_remote_conversion(context, *, data_dir=None, recovering=False):
+    from platform_core.remote_conversion_runtime import synchronize_remote_conversion
+    request = context.artifacts.read_json(context.task.task_id, context.task.payload_ref, default={})
+    job_file = Path(request["job_dir"]) / "job.json"
+    job = synchronize_remote_conversion(context, request, recovering=recovering)
+    return _finalize_conversion_job(
+        context, job_file, job, recovered_from_completed_work=recovering, data_dir=data_dir,
+    )
 
 
 def worker_registration(_data_dir: Path):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import threading
 from datetime import datetime, timezone
@@ -52,6 +53,11 @@ def request_external_auto_publish_if_enabled(
     version_id: str,
     now: str,
 ) -> bool:
+    try:
+        from .model_artifacts import record_version_model_metadata
+        record_version_model_metadata(algorithms_path, algorithm_id, version_id)
+    except Exception:
+        logging.getLogger(__name__).exception("Local model metadata registration failed; publish request remains eligible: algorithm=%s version=%s",algorithm_id,version_id)
     try:
         if not _external_auto_publish_enabled(Path(data_dir)):
             return False

@@ -9,11 +9,21 @@ on:
       - app.py
       - platform_core/training_tasks.py
       - platform_core/training_splits.py
+      - platform_core/material_batches.py
+      - platform_core/training_compatibility.py
+      - platform_core/training_material_picker_api.py
+      - platform_core/training_recovery_api.py
+      - tests/unit/test_training_duplicate_conflicts.py
+      - tests/api/test_training_conflict_governance.py
       - platform_core/training_bundle_cache.py
       - platform_core/training_label_tasks.py
       - platform_core/snapshots.py
       - tests/api/test_training_request.py
       - tests/unit/test_training_splits.py
+      - tests/unit/test_training_stratification_v2.py
+      - tests/unit/test_training_annotation_admission.py
+      - tests/unit/test_training_metric_credibility.py
+      - platform_core/training_evaluation.py
       - tests/unit/test_training_bundle_isolation.py
       - tests/unit/test_training_bundle_cache.py
       - tests/unit/test_training_label_contract.py
@@ -28,11 +38,21 @@ on:
       - app.py
       - platform_core/training_tasks.py
       - platform_core/training_splits.py
+      - platform_core/material_batches.py
+      - platform_core/training_compatibility.py
+      - platform_core/training_material_picker_api.py
+      - platform_core/training_recovery_api.py
+      - tests/unit/test_training_duplicate_conflicts.py
+      - tests/api/test_training_conflict_governance.py
       - platform_core/training_bundle_cache.py
       - platform_core/training_label_tasks.py
       - platform_core/snapshots.py
       - tests/api/test_training_request.py
       - tests/unit/test_training_splits.py
+      - tests/unit/test_training_stratification_v2.py
+      - tests/unit/test_training_annotation_admission.py
+      - tests/unit/test_training_metric_credibility.py
+      - platform_core/training_evaluation.py
       - tests/unit/test_training_bundle_isolation.py
       - tests/unit/test_training_bundle_cache.py
       - tests/unit/test_training_label_contract.py
@@ -75,11 +95,17 @@ jobs:
           tests/unit/test_training_bundle_cache.py
           tests/unit/test_training_label_contract.py
           tests/unit/test_negative_sample_contract.py
+          tests/unit/test_training_stratification_v2.py
+          tests/unit/test_training_annotation_admission.py
+          tests/unit/test_training_metric_credibility.py
           tests/integration/test_training_input_integrity_chain.py
       - name: Fixed benchmark reservation component guard
         run: >-
           python -m pytest --confcutdir=tests/unit -q
           tests/unit/test_training_splits.py
+          tests/unit/test_training_stratification_v2.py
+          tests/unit/test_training_annotation_admission.py
+          tests/unit/test_training_metric_credibility.py
       - name: Existing JPEG and cache isolation guards
         run: >-
           python -m pytest --confcutdir=tests/unit -q

@@ -116,17 +116,17 @@ jobs:
           grep -Fq "build: 'training-recovery-runtime-" static/modules/training-recovery-runtime.js
           grep -Fq 'refreshOpenDetail,' static/modules/training-recovery-runtime.js
           grep -Fq 'recoveryRuntime: trainingRecoveryRuntime' static/main.mjs
-          grep -Fq 'annPointerAbort' static/app.js
+          grep -Fq 'destroyAnnotationEditor420' static/app.js
           grep -Fq 'window.saveAnnotationCore420=async function(silent=false,options={})' static/app.js
           grep -Fq 'window.saveAnn=async function saveAnnotationCanonical420(silent=false,options={})' static/app.js
           if grep -Fq 'baseSaveAnnotation417=window.saveAnn' static/app.js; then echo 'retired annotation save wrapper was reintroduced' >&2; exit 1; fi
-          grep -Fq "annotation_state:boxes.length?'annotated':'confirmed_empty'" static/app.js
+          grep -Fq "annotation_state:boxes.length?'annotated':confirmEmpty?'confirmed_empty':'unannotated'" static/app.js
           grep -Fq 'external ChangLian training re-reads algorithm truth in hydration before canonical form open and training log refresh stays modal-local' tests/frontend/training-submit-validation.test.mjs
           grep -Fq 'canonical training visibility uses its same-scope status helper' tests/frontend/training-submit-validation.test.mjs
           grep -Fq "'done','finished','completed','succeeded','success'" static/app.js
           grep -Fq "a.train_success_rate==null?{}:{'训练成功率':a.train_success_rate}" static/app.js
           grep -Fq 'external-master-data-stale' tests/frontend/training-submit.test.mjs
-          grep -Fq 'stale changlian master data disables submit and blocks network POST' tests/frontend/training-submit.test.mjs
+          grep -Fq 'stale changlian master data allows checking but blocks network POST' tests/frontend/training-submit.test.mjs
           grep -Fq '/benchmark-reuse' static/app.js
           grep -Fq 'benchmarkReuseEnabled:Boolean(draft.benchmarkReuseEnabled)' static/app.js
           grep -Fq '固定评测素材由系统自动保留，不会混入训练' static/app.js
@@ -179,7 +179,7 @@ jobs:
         run: |
           grep -Fq 'frozen feedback candidates stay aligned with training submit provenance' tests/browser/training-create-first-open.spec.mjs
           grep -Fq 'training report shows requested epochs actual epochs stop reason and target status' tests/browser/training-quality-reports.spec.mjs
-          grep -Fq '最大轮次' static/app.js
-          grep -Fq '实际轮次' static/app.js
-          grep -Fq '停止原因' static/app.js
-          grep -Fq '目标状态' static/app.js
+          grep -Fq '最大轮次' static/modules/reports.js
+          grep -Fq '实际轮次' static/modules/reports.js
+          grep -Fq '停止原因' static/modules/reports.js
+          grep -Fq '目标状态' static/modules/reports.js

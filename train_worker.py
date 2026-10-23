@@ -13,6 +13,9 @@ from platform_core.training_precision import (
     normalize_training_precision,
     ultralytics_amp_value,
     verify_effective_training_precision,
+    preflight_worker_amp,
+    scoped_worker_amp_check,
+    require_local_training_weight,
 )
 
 
@@ -148,29 +151,108 @@ def metric_value(metrics, key):
 
 
 def build_report_from_metrics(metrics_obj, names=None):
-    report={"metrics":{},"per_class":[],"weak_labels":[]}
-    try:
-        d=getattr(metrics_obj,"results_dict",{}) or {}
-        for k,v in d.items():
-            try: report["metrics"][str(k)]=round(float(v),6)
-            except Exception: pass
-        box=getattr(metrics_obj,"box",None)
-        pvals=list(getattr(box,"p",[]) or []) if box is not None else []
-        rvals=list(getattr(box,"r",[]) or []) if box is not None else []
-        ap50=list(getattr(box,"ap50",[]) or []) if box is not None else []
-        maps=list(getattr(box,"maps",[]) or []) if box is not None else []
-        names=names or getattr(metrics_obj,"names",{}) or {}
-        n=max(len(pvals),len(rvals),len(ap50),len(maps))
-        for i in range(n):
-            name=names.get(i,str(i)) if isinstance(names,dict) else (names[i] if i<len(names) else str(i))
-            row={"label":str(name),"precision":float(pvals[i]) if i<len(pvals) else None,"recall":float(rvals[i]) if i<len(rvals) else None,"map50":float(ap50[i]) if i<len(ap50) else None,"map50_95":float(maps[i]) if i<len(maps) else None}
-            report["per_class"].append(row)
-        ranked=sorted(report["per_class"], key=lambda x: (x.get("recall") if x.get("recall") is not None else 2, x.get("map50") if x.get("map50") is not None else 2))
-        report["weak_labels"]=[x["label"] for x in ranked[:3] if (x.get("recall") is not None and x["recall"]<0.75) or (x.get("map50") is not None and x["map50"]<0.75)]
-    except Exception as e:
-        report["report_error"]=str(e)
-    return report
+    """Report only measured Ultralytics classes, indexed by real class IDs.
 
+    box.p/r/ap50/ap are compact arrays in ap_class_index order. box.maps
+    is a dense array indexed by class_id, and its entries for unmeasured
+    classes are *not* independent AP observations. Never mix those shapes.
+    """
+    import math
+
+    report = {"metrics": {}, "per_class": [], "weak_labels": []}
+    try:
+        for key, value in (getattr(metrics_obj, "results_dict", {}) or {}).items():
+            try:
+                number = float(value)
+                if math.isfinite(number):
+                    report["metrics"][str(key)] = round(number, 6)
+            except (TypeError, ValueError, OverflowError):
+                continue
+
+        box = getattr(metrics_obj, "box", None)
+        if box is None:
+            return report
+
+        def values(name):
+            value = getattr(box, name, None)
+            if value is None:
+                return []
+            # NumPy arrays have an ambiguous truth value. In particular,
+            # "list(ndarray or [])" raises for multiple measured classes.
+            return list(value)
+
+        ids = [int(value) for value in values("ap_class_index")]
+        pvals = values("p")
+        rvals = values("r")
+        ap50 = values("ap50")
+        ap = values("ap")
+        maps = values("maps")
+        if not ids and not any((pvals, rvals, ap50, ap)):
+            return report
+        if not ids:
+            raise ValueError("Ultralytics per-class metrics lack ap_class_index")
+        if any(value < 0 for value in ids) or len(set(ids)) != len(ids):
+            raise ValueError("Ultralytics ap_class_index contains invalid or duplicate class IDs")
+        for label, data in (("p", pvals), ("r", rvals), ("ap50", ap50), ("ap", ap)):
+            if data and len(data) != len(ids):
+                raise ValueError(
+                    f"Ultralytics {label} and ap_class_index lengths disagree"
+                )
+        if not any((pvals, rvals, ap50, ap)):
+            raise ValueError("Ultralytics ap_class_index has no measured per-class metrics")
+
+        catalog = names if names is not None else (getattr(metrics_obj, "names", {}) or {})
+        def class_name(class_id):
+            if isinstance(catalog, dict):
+                return str(catalog.get(class_id, catalog.get(str(class_id), class_id)))
+            if isinstance(catalog, (list, tuple)) and class_id < len(catalog):
+                return str(catalog[class_id])
+            return str(class_id)
+
+        for position, class_id in enumerate(ids):
+            def measurement(data):
+                if not data:
+                    return None
+                value = float(data[position])
+                if not math.isfinite(value):
+                    raise ValueError("Ultralytics per-class metric is non-finite")
+                return value
+
+            # Prefer the compact AP@.5:.95 observation, never maps[position]:
+            # box.maps is indexed by actual class_id (and populates absent
+            # classes with a *global mean*, which must not become measured).
+            map95 = measurement(ap)
+            if map95 is None and class_id < len(maps):
+                map95 = float(maps[class_id])
+                if not math.isfinite(map95):
+                    raise ValueError("Ultralytics class mAP is non-finite")
+            report["per_class"].append({
+                "class_id": class_id,
+                "label": class_name(class_id),
+                "precision": measurement(pvals),
+                "recall": measurement(rvals),
+                "map50": measurement(ap50),
+                "map50_95": map95,
+            })
+        ranked = sorted(
+            report["per_class"],
+            key=lambda row: (
+                row["recall"] if row["recall"] is not None else 2,
+                row["map50"] if row["map50"] is not None else 2,
+            ),
+        )
+        report["weak_labels"] = [
+            row["label"] for row in ranked[:3]
+            if (row["recall"] is not None and row["recall"] < 0.75)
+            or (row["map50"] is not None and row["map50"] < 0.75)
+        ]
+    except Exception as error:
+        # Keep aggregate metrics but never present a partially misaligned
+        # per-class report as trusted category truth.
+        report["per_class"] = []
+        report["weak_labels"] = []
+        report["report_error"] = str(error)
+    return report
 
 def _iou_xyxy(a, b):
     x1=max(a[0],b[0]); y1=max(a[1],b[1]); x2=min(a[2],b[2]); y2=min(a[3],b[3])
@@ -837,6 +919,7 @@ def main():
     pretrained = as_bool(args.pretrained)
     cache_value = parse_cache(args.cache)
     precision = normalize_training_precision(args.precision)
+    runtime_precision = precision
     amp_value = ultralytics_amp_value(precision, as_bool(args.amp))
 
     def recorded_train_params(values):
@@ -845,7 +928,8 @@ def main():
             "resource_strategy": args.resource_strategy,
             "resource_profile": args.resource_profile,
             "gpu_policy": args.gpu_policy,
-            "precision": precision,
+            "precision": runtime_precision,
+            "resolved_precision": precision,
         }
 
     actual_model = resolve_training_model(args.model, pretrained)
@@ -895,7 +979,7 @@ def main():
     print(f"[{now_iso()}] 开始训练", flush=True)
     print(f"模型: {actual_model}", flush=True)
     print(f"数据集: {args.data}", flush=True)
-    print("实际训练参数:", flush=True)
+    print("请求训练参数（AMP 预检前）:", flush=True)
     print(json.dumps(train_args, ensure_ascii=False, indent=2, default=str), flush=True)
 
     telemetry = None
@@ -924,7 +1008,11 @@ def main():
         import ultralytics
         import torch
         from ultralytics import YOLO
-        from platform_core.training_metrics import TrainingMetrics
+        from platform_core.training_metrics import (
+            TrainingMetrics,
+            validate_frozen_gpu_budget,
+            validate_frozen_resource_budget,
+        )
         publish_startup_stage(job_file, "validating_runtime_device", "校验训练运行设备", 22)
         runtime_device = "cuda:0" if gpu_index is not None else "cpu"
         allocation = torch.empty(1, device=runtime_device)
@@ -947,6 +1035,11 @@ def main():
         update_job(job_file, requested_device=requested, assigned_device=assigned, actual_device=assigned,
                    device_evidence=evidence, ultralytics_version=getattr(ultralytics, "__version__", "unknown"))
         publish_startup_stage(job_file, "loading_model", "加载训练模型", 24)
+        # Fail before Ultralytics can silently download a missing official .pt.
+        actual_model = require_local_training_weight(
+            actual_model, project_dir=project_dir,
+            weights_dir=getattr(ultralytics, "SETTINGS", {}).get("weights_dir"),
+        )
         model = YOLO(actual_model)
         resolution_path = Path(args.resource_resolution) if args.resource_resolution else job_file.parent / "resolved-resources.json"
         resolved = read_json(resolution_path, {})
@@ -963,12 +1056,59 @@ def main():
             raise RuntimeError(
                 "RESOURCE_PREPARE_REQUIRED: Trainer precision does not match frozen resource contract"
             )
+        prestart_resources = validate_frozen_resource_budget(resolved)
+        prestart_gpu = validate_frozen_gpu_budget(
+            resolved,
+            torch,
+            runtime_index=0,
+        )
+        update_job(
+            job_file,
+            prestart_resource_validation={
+                "validated_at": prestart_resources.get("sampled_at"),
+                "memory_source": prestart_resources.get("memory_source"),
+                "effective_available_bytes": prestart_resources.get("effective_available_bytes"),
+                "cgroup_limit_bytes": prestart_resources.get("cgroup_limit_bytes"),
+                "cgroup_current_bytes": prestart_resources.get("cgroup_current_bytes"),
+                "required_bytes": resolved.get("host_memory_remaining_required_bytes"),
+                "frozen_batch": resolved.get("resolved_batch"),
+                "frozen_workers": resolved.get("resolved_workers"),
+                "gpu_free_bytes": (prestart_gpu or {}).get("free_bytes"),
+                "gpu_total_bytes": (prestart_gpu or {}).get("total_bytes"),
+                "gpu_required_bytes": (prestart_gpu or {}).get("required_bytes"),
+            },
+        )
         publish_startup_stage(job_file, "resources_ready", "使用后台已核验的 Batch / Workers / Precision / Cache", 25)
         train_args.update(batch=resolved["resolved_batch"], workers=resolved["resolved_workers"], cache=resolved["resolved_cache"])
+        publish_startup_stage(job_file, "amp_offline_preflight", "检查 Worker 本地 AMP 与 CUDA FP16 能力", 25.5)
+        amp_decision = preflight_worker_amp(
+            requested_amp=bool(train_args["amp"]), torch=torch, ultralytics=ultralytics,
+            train_model=model, project_dir=project_dir,
+        )
+        train_args["amp"] = bool(amp_decision.enabled)
+        runtime_precision = "fp16" if amp_decision.enabled else "fp32"
+        fallback_reason = amp_decision.reason if amp_value and not amp_decision.enabled else ""
+        user_precision = (read_json(job_file, {}).get("requested_resources") or {}).get("precision") or precision
+        update_job(job_file,
+                   requested_precision=str(user_precision),
+                   amp_preflight=amp_decision.to_dict(),
+                   amp_check_method=amp_decision.method,
+                   amp_check_result=amp_decision.result,
+                   precision_fallback_reason=fallback_reason,
+                   resolved_precision=precision,
+                   runtime_precision=runtime_precision)
+        print(f"[AMP离线预检] 检查方式={amp_decision.method} 结果={amp_decision.result} "
+              f"实际精度={runtime_precision} 回退原因={fallback_reason or '-'}", flush=True)
+        print("实际训练参数（AMP 预检后）:", flush=True)
+        print(json.dumps(recorded_train_params(train_args), ensure_ascii=False, indent=2, default=str), flush=True)
         evidence["effective_args"] = recorded_train_params(train_args)
         update_job(job_file, resolved_resources=resolved, actual_train_params=recorded_train_params(train_args), device_evidence=evidence)
-        telemetry = TrainingMetrics(args.metrics_db or job_file.parent / "training-metrics.sqlite3", resolved,
-                                    gpu_uuid=resource_context.get("gpu_uuid"))
+        telemetry = TrainingMetrics(
+            args.metrics_db or job_file.parent / "training-metrics.sqlite3",
+            resolved,
+            gpu_uuid=resource_context.get("gpu_uuid"),
+            task_id=read_json(job_file, {}).get("id"),
+        )
         telemetry.start()
         publish_startup_stage(job_file, "initializing_trainer", "初始化训练器与数据加载器", 26)
         gate_events=[]
@@ -1031,7 +1171,7 @@ def main():
                 if str(trainer.device) != runtime_device:
                     raise RuntimeError(f"TRAINING_DEVICE_RUNTIME_MISMATCH: expected={runtime_device}; actual={trainer.device}")
                 effective_precision = verify_effective_training_precision(
-                    precision, getattr(trainer, "amp", False)
+                    runtime_precision, getattr(trainer, "amp", False)
                 )
                 runtime_resources = {
                     **runtime_resources,
@@ -1092,7 +1232,8 @@ def main():
                 device_evidence=evidence,
                 actual_train_params=recorded_train_params(train_args),
             )
-            train_result = model.train(**train_args)
+            with scoped_worker_amp_check(amp_decision):
+                train_result = model.train(**train_args)
         except Exception as train_error:
             is_oom = (
                 isinstance(train_error, torch.cuda.OutOfMemoryError)
@@ -1125,7 +1266,8 @@ def main():
                 cont_args=dict(train_args);cont_args.update({"data":next_data,"epochs":extra,"name":args.run_name+f"_ai{ai_rounds}","project":str(runs_dir),"exist_ok":True})
                 model=YOLO(str(resume_model))
                 attach_ai_continuation_callbacks(model,job_file,telemetry,base_completed_epochs=base_completed_epochs,extra_epochs=extra,attach_resource_callbacks=lambda target: attach_resource_callbacks(target,cont_args))
-                train_result=model.train(**cont_args)
+                with scoped_worker_amp_check(amp_decision):
+                    train_result=model.train(**cont_args)
                 phase["finished_at"]=now_iso()
                 update_job(job_file,ai_continuation=phase,progress_percent=95.0,current_epoch=cumulative_total_epochs,total_epochs=cumulative_total_epochs,current_batch=None,total_batches=None,current_item="AI追加训练完成，正在校验模型产物",message="AI追加训练完成，正在校验模型产物")
         run_dir = Path(getattr(model.trainer,"save_dir",runs_dir/args.run_name))
@@ -1157,7 +1299,7 @@ def main():
         training_report={"generated_at":now_iso(),"gate_events":gate_events,"quality_gate_reason":gate_reason,"metrics":{},"per_class":[],"weak_labels":[],"test_metrics":{},"test_result":{"status":"not_requested","metrics":{}},"ai_intervention_events":ai_events}
         try:
             best_model=YOLO(verified[0])
-            val_metrics=best_model.val(data=args.data, split="val", verbose=False)
+            val_metrics=best_model.val(data=args.data, split="val", imgsz=int(args.imgsz), device=args.device, verbose=False)
             training_report.update(build_report_from_metrics(val_metrics,getattr(best_model,"names",None)))
             try:
                 import yaml
@@ -1182,6 +1324,7 @@ def main():
                 def blind_predict(image_path):
                     results=best_model.predict(
                         source=str(image_path),
+                        imgsz=int(args.imgsz),
                         conf=0.001,
                         iou=0.7,
                         device=args.device,
@@ -1210,6 +1353,12 @@ def main():
                     blind_predict,
                     names=getattr(best_model,"names",None),
                 )
+                if blind_result.get("status") == "succeeded":
+                    blind_result["protocol"].update({
+                        "predict_imgsz": int(args.imgsz),
+                        "predict_conf": 0.001,
+                        "predict_nms_iou": 0.7,
+                    })
                 training_report["test_metrics"]=blind_result.get("metrics") or {}
                 training_report["test_result"]=blind_result
                 training_report["test_per_class"]=blind_result.get("per_class") or []

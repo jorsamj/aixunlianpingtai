@@ -95,9 +95,13 @@ class WorkerContext:
     _process_identity: ProcessIdentity | None = field(default=None, init=False, repr=False)
     _process_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
     _artifact_store: ArtifactStore = field(init=False, repr=False)
+    _diagnostic_stage: str = field(default="", init=False, repr=False)
+    _diagnostic_current_item: str = field(default="", init=False, repr=False)
 
     def __post_init__(self) -> None:
         self.lease_seconds = max(1, int(self.lease_seconds))
+        self._diagnostic_stage = str(self.task.stage or "")
+        self._diagnostic_current_item = str(self.task.current_item or "")
         self._artifact_store = self.artifacts
         self.artifacts = FencedArtifactStore(self, self._artifact_store)  # type: ignore[assignment]
 
@@ -110,6 +114,14 @@ class WorkerContext:
     @property
     def lease_lost(self) -> bool:
         return self._lease_lost.is_set()
+
+    @property
+    def diagnostic_stage(self) -> str:
+        return self._diagnostic_stage
+
+    @property
+    def diagnostic_current_item(self) -> str:
+        return self._diagnostic_current_item
 
     def mark_lease_lost(self) -> None:
         self._lease_lost.set()
@@ -135,6 +147,13 @@ class WorkerContext:
         return current
 
     def heartbeat(self, progress=None, stage=None, current_item=None) -> TaskRecord:
+        # Keep the attempted progress locally before touching SQLite. If the
+        # renewal itself fails, journald still receives the useful operation
+        # stage without depending on the unavailable task database.
+        if stage is not None:
+            self._diagnostic_stage = str(stage)
+        if current_item is not None:
+            self._diagnostic_current_item = str(current_item)
         self.assert_current_execution()
         try:
             try:

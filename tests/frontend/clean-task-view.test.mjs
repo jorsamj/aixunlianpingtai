@@ -179,27 +179,40 @@ test('remote clean task view maps Agent stages without inventing progress', () =
 });
 
 
-test('clean scope choices use formal annotation states and selected IDs explicitly', () => {
-  const choices = cleaning.cleanScopeChoices({selectedCount: 2});
+test('clean scope choices separate primary selection from secondary formal annotation state', () => {
+  const choices = cleaning.cleanScopeChoices({selectedCount: 2, labelCount: 3});
   assert.deepEqual(
     choices.map(item => item.value),
-    ['all', 'annotated', 'unannotated', 'confirmed_empty', 'selected'],
+    ['all', 'selected', 'labels'],
   );
   assert.equal(choices.find(item => item.value === 'selected').available, true);
+  assert.equal(choices.find(item => item.value === 'labels').available, true);
   assert.deepEqual(
-    cleaning.cleanScopeRequest('annotated', ['should-not-leak']),
-    {clean_scope: 'annotated', image_ids: []},
+    cleaning.cleanScopeRequest('all', [], {annotationState: 'annotated', filters: {query: 'fire'}}),
+    {
+      selection_mode: 'all', clean_scope: 'annotated', image_ids: [],
+      selection_spec: {scope: 'FILTERED', filters: {query: 'fire', annotation_state: 'annotated'}},
+    },
   );
   assert.deepEqual(
-    cleaning.cleanScopeRequest('selected', ['a', 'a', 'b']),
-    {clean_scope: 'selected', image_ids: ['a', 'b']},
+    cleaning.cleanScopeRequest('selected', ['a', 'a', 'b'], {annotationState: 'all'}),
+    {
+      selection_mode: 'selected', clean_scope: 'selected', image_ids: ['a', 'b'],
+      selection_spec: {scope: 'SELECTED', image_ids: ['a', 'b']},
+    },
   );
-  assert.equal(cleaning.cleanScopeSupportsAnnotationAudit('all'), true);
-  assert.equal(cleaning.cleanScopeSupportsAnnotationAudit('annotated'), true);
-  assert.equal(cleaning.cleanScopeSupportsAnnotationAudit('selected'), true);
-  assert.equal(cleaning.cleanScopeSupportsAnnotationAudit('unannotated'), false);
-  assert.equal(cleaning.cleanScopeSupportsAnnotationAudit('confirmed_empty'), false);
+  assert.deepEqual(
+    cleaning.cleanScopeRequest('labels', [], {labels: ['smoke', 'fire', 'smoke'], annotationState: 'annotated'}),
+    {
+      selection_mode: 'labels', clean_scope: 'annotated', image_ids: [],
+      selection_spec: {scope: 'FILTERED', filters: {labels: ['smoke', 'fire'], annotation_state: 'annotated'}},
+    },
+  );
+  assert.equal(cleaning.cleanScopeSupportsAnnotationAudit('all', 'all'), true);
+  assert.equal(cleaning.cleanScopeSupportsAnnotationAudit('labels', 'annotated'), true);
+  assert.equal(cleaning.cleanScopeSupportsAnnotationAudit('selected', 'unannotated'), false);
   assert.throws(() => cleaning.cleanScopeRequest('selected', []), /没有选中的图片/);
+  assert.throws(() => cleaning.cleanScopeRequest('labels', [], {labels: []}), /至少选择一个标签/);
 
   const forced = cleaning.cleanScopeChoices({selectedCount: 1, forcedSelected: true});
   assert.equal(forced.find(item => item.value === 'selected').available, true);
@@ -292,6 +305,16 @@ test('clean retry source changes invalidate both entrypoint and cleaning module 
     appCacheVersion[1].localeCompare('42.25.315', undefined, {numeric: true}) >= 0,
     '清洗重试修复后的 app.js 缓存版本不能回退',
   );
-  assert.ok(html.includes('/static/main.mjs?v=42.25.311'));
-  assert.ok(main.includes('./modules/cleaning.js?v=422569'));
+  const mainCacheVersion = html.match(/\/static\/main\.mjs\?v=(\d+(?:\.\d+){2})/);
+  assert.ok(mainCacheVersion, '正式入口必须为 main.mjs 设置版本缓存键');
+  assert.ok(
+    mainCacheVersion[1].localeCompare('42.25.364', undefined, {numeric: true}) >= 0,
+    '清洗重试修复后的 main.mjs 缓存版本不能回退',
+  );
+  const cleaningCacheVersion = main.match(/\.\/modules\/cleaning\.js\?v=(\d+)/);
+  assert.ok(cleaningCacheVersion, '正式主模块必须为 cleaning.js 设置版本缓存键');
+  assert.ok(
+    Number(cleaningCacheVersion[1]) >= 422569,
+    '清洗重试修复后的 cleaning.js 缓存版本不能回退',
+  );
 });

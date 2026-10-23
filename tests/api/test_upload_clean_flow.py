@@ -600,8 +600,7 @@ def test_upload_batch_invalid_id_is_404_and_deleted_image_is_explicit(client):
         json={"clean_image_ids": [], "ready_image_ids": []},
     ).status_code == 404
 
-    deleted = client.delete(f"/api/projects/{pid}/images/{image_id}")
-    deleted.raise_for_status()
+    governed_delete(client, pid, [image_id])
     batch = client.get(
         f"/api/v55/projects/{pid}/upload-batches/{batch_id}"
     )
@@ -964,13 +963,15 @@ def test_upload_batch_and_confirmed_cleaning_only_delete_selected_items(client):
     flagged = {item["filename"]: item for item in result["result"]["items"]}
     assert {"duplicate.png", "blurry.png"}.issubset(flagged)
 
+    governed_delete(client, pid, [duplicate['id']])
     confirmed = client.post(
         f"/api/v47/projects/{pid}/clean-tasks/{task['id']}/confirm",
-        json={"delete_ids": [duplicate["id"]]},
+        json={"delete_ids": [], "skip_image_ids": [duplicate["id"]]},
     )
     confirmed.raise_for_status()
     body = confirmed.json()
-    assert [item["id"] for item in body["deleted_images"]] == [duplicate["id"]]
+    assert body["deleted_images"] == []
+    assert duplicate["id"] not in body["processed_ids"]
     assert body["failed_items"] == []
 
     remaining = client.get(f"/api/projects/{pid}/images").json()
@@ -986,3 +987,28 @@ def test_upload_batch_and_confirmed_cleaning_only_delete_selected_items(client):
     )
     ready.raise_for_status()
     assert ready.json()["images"][0]["clean_skipped"] is True
+
+
+def governed_delete(client, pid, image_ids):
+    import app as app_module
+    from platform_core.task_runtime import Scheduler, TaskStatus
+    from platform_core.worker_registry import build_worker_registration
+    base = f'/api/v62/projects/{pid}/material-batches'
+    estimated = client.post(base + '/estimate', json={
+        'operation': 'DELETE_INDEX', 'selection_spec': {'scope': 'SELECTED', 'image_ids': image_ids}})
+    estimated.raise_for_status()
+    preview = estimated.json()['deletion_preview']
+    response = client.post(base, json={'operation': 'DELETE_INDEX', 'selection_spec': estimated.json()['selection_spec'],
+        'options': {'deletion_plan_id': preview['plan_id'], 'confirmation_credential': preview['confirmation_credential']}})
+    assert response.status_code == 202, response.text
+    repository, artifacts = app_module.shared_task_repository(), app_module.shared_task_artifacts()
+    handlers, capabilities = build_worker_registration(app_module.DATA_DIR, {'materials'})
+    scheduler = Scheduler(repository, artifacts, f'governance-clean-{uuid.uuid4().hex}', handlers, capabilities,
+        lease_seconds=5, poll_seconds=0.01)
+    task_id = response.json()['task_id']
+    for _ in range(50):
+        if repository.get(task_id).status in {TaskStatus.SUCCEEDED, TaskStatus.FAILED}:
+            break
+        assert scheduler.run_once()
+    assert repository.get(task_id).status is TaskStatus.SUCCEEDED
+    return response.json()

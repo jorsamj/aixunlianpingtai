@@ -67,7 +67,7 @@ def test_legacy_dataset_delete_refuses_remote_materials(client, tmp_path):
     response = client.delete(f"/api/projects/{project_id}/datasets/{dataset_id}")
 
     assert response.status_code == 409
-    assert "多来源素材" in response.text
+    assert "MATERIAL_DELETE_PREVIEW_REQUIRED" in response.text
     assert remote_path.is_file()
     assert app_module.material_store(project_id).get(row["id"]) is not None
     assert not journal_paths(app_module, project_id)
@@ -201,7 +201,9 @@ def test_add_rechecks_dataset_after_waiting_for_its_lock(
         assert reached.wait(5), "add did not pause before dataset lock"
         prepared = list((app_module.project_dir(project_id) / "uploads").glob("*"))
         assert len(prepared) == 1
-        assert app_module.delete_dataset(project_id, dataset_id) == {"ok": True}
+        app_module.atomic_write_json(app_module.datasets_file(project_id), [
+            row for row in app_module.read_json(app_module.datasets_file(project_id), [])
+            if row['id'] != dataset_id])
     finally:
         resume.set()
         thread.join(5)
@@ -210,7 +212,9 @@ def test_add_rechecks_dataset_after_waiting_for_its_lock(
     assert "record" not in outcome
     assert isinstance(outcome.get("error"), app_module.HTTPException)
     assert outcome["error"].status_code == 409
-    assert all(not path.exists() for path in prepared)
+    assert all(path.is_file() for path in prepared)
+    with app_module.material_store(project_id)._connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM material_cleanup_deferred").fetchone()[0] == 1
     assert all(
         str(row.get("dataset_id") or "default") != dataset_id
         for row in app_module.material_store(project_id).read().rows
@@ -221,7 +225,9 @@ def test_upload_to_deleted_dataset_is_rejected_without_dangling_row(client):
     import app as app_module
 
     project_id, dataset_id = create_project_with_dataset(client)
-    assert app_module.delete_dataset(project_id, dataset_id) == {"ok": True}
+    app_module.atomic_write_json(app_module.datasets_file(project_id), [
+            row for row in app_module.read_json(app_module.datasets_file(project_id), [])
+            if row['id'] != dataset_id])
 
     response = upload_response(client, project_id, dataset_id, "deleted.png")
     response.raise_for_status()
@@ -234,7 +240,9 @@ def test_upload_to_deleted_dataset_is_rejected_without_dangling_row(client):
         str(row.get("dataset_id") or "default") != dataset_id
         for row in app_module.material_store(project_id).read().rows
     )
-    assert not list((app_module.project_dir(project_id) / "uploads").glob("*"))
+    assert list((app_module.project_dir(project_id) / "uploads").glob("*"))
+    with app_module.material_store(project_id)._connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM material_cleanup_deferred").fetchone()[0] == 1
 
 
 def test_first_default_upload_initializes_strict_dataset_metadata(client):
@@ -308,119 +316,51 @@ def test_other_dataset_add_does_not_wait_for_project_import_lock(
     assert outcome["record"]["dataset_id"] == other_dataset_id
 
 
-def test_active_deletion_rejects_target_writes_but_allows_other_dataset(
-    client, monkeypatch
-):
+def test_active_deletion_rejects_target_writes_but_allows_other_dataset(client):
     import app as app_module
-
     project_id, dataset_id = create_project_with_dataset(client)
-    target = upload_png(client, project_id, dataset_id, "target.png")
-    reassign = upload_png(client, project_id, "default", "reassign.png")
-    reached = threading.Event()
-    resume = threading.Event()
-    original_stage = app_module._v50_stage_material_file
-
-    def paused_stage(source, destination):
-        if threading.current_thread().name == "durable-delete" and not reached.is_set():
-            reached.set()
-            assert resume.wait(5), "dataset deletion did not resume"
-        return original_stage(source, destination)
-
-    monkeypatch.setattr(app_module, "_v50_stage_material_file", paused_stage)
-    outcome = {}
-
-    def run_delete():
-        try:
-            outcome["value"] = app_module.delete_dataset(project_id, dataset_id)
-        except BaseException as error:
-            outcome["error"] = error
-
-    thread = threading.Thread(target=run_delete, name="durable-delete")
-    thread.start()
+    target = upload_png(client, project_id, dataset_id, 'target.png')
+    reassign = upload_png(client, project_id, 'default', 'reassign.png')
+    journal = stage_historical_journal(app_module, project_id, dataset_id, target)
+    token = journal['token']
+    app_module._v50_register_dataset_delete_token(token, project_id, dataset_id)
     try:
-        assert reached.wait(5), "deletion did not reach staging"
-        blocked_upload = upload_response(
-            client, project_id, dataset_id, "blocked.png"
-        )
-        blocked_patch = client.patch(
-            f"/api/v12/projects/{project_id}/images/{reassign['id']}",
-            json={"dataset_id": dataset_id},
-        )
-        unrelated = upload_png(
-            client, project_id, "default", "unrelated.png"
-        )
+        blocked_upload = upload_response(client, project_id, dataset_id, 'blocked.png')
+        blocked_patch = client.patch(f"/api/v12/projects/{project_id}/images/{reassign['id']}", json={'dataset_id': dataset_id})
+        unrelated = upload_png(client, project_id, 'default', 'unrelated.png')
     finally:
-        resume.set()
-        thread.join(5)
-
-    assert not thread.is_alive(), "dataset deletion thread did not terminate"
-    assert outcome == {"value": {"ok": True}}
+        app_module._v50_unregister_dataset_delete_token(token)
     assert blocked_upload.status_code == 200
-    assert blocked_upload.json()["uploaded_count"] == 0
-    assert blocked_upload.json()["failed_count"] == 1
+    assert blocked_upload.json()['failed_count'] == 1
+    assert blocked_upload.json()['uploaded_count'] == 0
     assert blocked_patch.status_code == 409
-    rows = app_module.material_store(project_id).read().rows
-    assert all(row.get("dataset_id", "default") != dataset_id for row in rows)
-    row_ids = {str(row.get("id")) for row in rows}
-    rows_by_id = {str(row.get("id")): row for row in rows}
-    assert target["id"] not in row_ids
-    assert reassign["id"] in row_ids
-    assert rows_by_id[reassign["id"]].get("dataset_id", "default") == "default"
-    assert unrelated["id"] in row_ids
-    uploads = app_module.project_dir(project_id) / "uploads"
-    assert {path.name for path in uploads.iterdir()} == {
-        reassign["stored_name"],
-        unrelated["stored_name"],
-    }
+    app_module._v50_recover_dataset_deletions(project_id, dataset_id)
+    rows = {row['id']: row for row in app_module.material_store(project_id).read().rows}
+    assert rows[target['id']]['dataset_id'] == dataset_id
+    assert rows[reassign['id']]['dataset_id'] == 'default'
+    assert unrelated['id'] in rows
+    uploads = app_module.project_dir(project_id) / 'uploads'
+    assert all((uploads / row['stored_name']).is_file() for row in (target, reassign, unrelated))
     assert not journal_paths(app_module, project_id)
 
 
-def test_active_source_dataset_deletion_rejects_reassignment_out(
-    client, monkeypatch
-):
+
+def test_active_source_dataset_deletion_rejects_reassignment_out(client):
     import app as app_module
-
     project_id, dataset_id = create_project_with_dataset(client)
-    other_dataset_id = create_dataset(client, project_id, "other")
-    target = upload_png(client, project_id, dataset_id, "source.png")
-    reached = threading.Event()
-    resume = threading.Event()
-    original_stage = app_module._v50_stage_material_file
-
-    def paused_stage(source, destination):
-        if threading.current_thread().name == "source-delete" and not reached.is_set():
-            reached.set()
-            assert resume.wait(5), "dataset deletion did not resume"
-        return original_stage(source, destination)
-
-    monkeypatch.setattr(app_module, "_v50_stage_material_file", paused_stage)
-    outcome = {}
-
-    def run_delete():
-        try:
-            outcome["value"] = app_module.delete_dataset(project_id, dataset_id)
-        except BaseException as error:
-            outcome["error"] = error
-
-    thread = threading.Thread(target=run_delete, name="source-delete")
-    thread.start()
+    other_dataset_id = create_dataset(client, project_id, 'other')
+    target = upload_png(client, project_id, dataset_id, 'source.png')
+    journal = stage_historical_journal(app_module, project_id, dataset_id, target)
+    app_module._v50_register_dataset_delete_token(journal['token'], project_id, dataset_id)
     try:
-        assert reached.wait(5), "deletion did not reach staging"
-        response = client.patch(
-            f"/api/v12/projects/{project_id}/images/{target['id']}",
-            json={"dataset_id": other_dataset_id},
-        )
+        response = client.patch(f"/api/v12/projects/{project_id}/images/{target['id']}", json={'dataset_id': other_dataset_id})
     finally:
-        resume.set()
-        thread.join(5)
-
-    assert not thread.is_alive()
+        app_module._v50_unregister_dataset_delete_token(journal['token'])
     assert response.status_code == 409
-    assert outcome == {"value": {"ok": True}}
-    assert target["id"] not in {
-        str(row.get("id"))
-        for row in app_module.material_store(project_id).read().rows
-    }
+    app_module._v50_recover_dataset_deletions(project_id, dataset_id)
+    assert app_module.material_store(project_id).get(target['id'])['dataset_id'] == dataset_id
+    assert (app_module.project_dir(project_id) / 'uploads' / target['stored_name']).is_file()
+
 
 
 class FailAfterSecondMutation:
@@ -439,96 +379,45 @@ class FailAfterSecondMutation:
         return getattr(self._delegate, name)
 
 
-def test_recovery_restores_rows_and_files_after_finalize_interruption(
-    client, monkeypatch
-):
+def test_recovery_restores_rows_and_files_after_finalize_interruption(client):
     import app as app_module
-
     project_id, dataset_id = create_project_with_dataset(client)
-    target = upload_png(client, project_id, dataset_id, "interrupted.png")
-    project_path = app_module.project_dir(project_id)
-    upload_path = project_path / "uploads" / target["stored_name"]
-    annotation_path = project_path / "annotations" / f"{target['id']}.json"
-    real_material_store = app_module.material_store
-    state = {"mutations": 0}
-
-    def failing_material_store(pid):
-        delegate = real_material_store(pid)
-        if pid == project_id:
-            return FailAfterSecondMutation(delegate, state)
-        return delegate
-
-    monkeypatch.setattr(app_module, "material_store", failing_material_store)
-    with pytest.raises(RuntimeError, match="simulated finalize interruption"):
-        app_module.delete_dataset(project_id, dataset_id)
-    monkeypatch.setattr(app_module, "material_store", real_material_store)
-
-    journals = journal_paths(app_module, project_id)
-    assert len(journals) == 1
-    journal = json.loads(journals[0].read_text(encoding="utf-8"))
-    assert_token_inactive(app_module, journal["token"])
-    assert dataset_exists(app_module, project_id, dataset_id)
-    assert target["id"] not in {
-        str(row.get("id")) for row in real_material_store(project_id).read().rows
-    }
-    assert not upload_path.exists()
-    assert not annotation_path.exists()
-
+    target = upload_png(client, project_id, dataset_id, 'interrupted.png')
+    repository = app_module.AnnotationRepository(app_module.project_dir(project_id))
+    before = repository.get(target['id'])
+    source = app_module.project_dir(project_id) / 'uploads' / target['stored_name']
+    before_bytes = source.read_bytes()
+    journal = stage_historical_journal(app_module, project_id, dataset_id, target)
+    repository.finalize_delete(journal['token'])
+    app_module.material_store(project_id).remove([target['id']])
+    assert not source.exists()
+    assert not repository.exists(target['id'])
     app_module._v50_recover_dataset_deletions(project_id, dataset_id)
-
-    rows = {str(row.get("id")): row for row in real_material_store(project_id).read().rows}
-    assert rows[target["id"]]["stored_name"] == target["stored_name"]
-    assert app_module._V50_DATASET_DELETE_CLAIM_FIELD not in rows[target["id"]]
-    assert upload_path.exists()
-    assert app_module.AnnotationRepository(project_path).exists(target["id"])
+    restored = app_module.material_store(project_id).get(target['id'])
+    assert restored['stored_name'] == target['stored_name']
+    assert app_module._V50_DATASET_DELETE_CLAIM_FIELD not in restored
+    assert source.read_bytes() == before_bytes
+    assert repository.get(target['id'])['content_digest'] == before['content_digest']
     assert not journal_paths(app_module, project_id)
-    assert not Path(journal["staging_dir"]).exists()
+    assert not Path(journal['staging_dir']).exists()
 
 
-def test_recovery_finishes_deletion_when_dataset_metadata_is_already_absent(
-    client, monkeypatch
-):
+
+def test_recovery_preserves_evidence_when_dataset_metadata_is_already_absent(client):
     import app as app_module
-
     project_id, dataset_id = create_project_with_dataset(client)
-    target = upload_png(client, project_id, dataset_id, "finish.png")
-    original_cleanup = app_module._v50_cleanup_dataset_delete_artifacts
+    target = upload_png(client, project_id, dataset_id, 'finish.png')
+    journal = stage_historical_journal(app_module, project_id, dataset_id, target)
+    staged = Path(journal['files'][0]['staged'])
+    before = staged.read_bytes()
+    app_module.atomic_write_json(app_module.datasets_file(project_id), [])
+    with pytest.raises(app_module.HTTPException, match='DATASET_METADATA_ABSENT'):
+        app_module._v50_recover_dataset_deletions(project_id, dataset_id)
+    assert staged.read_bytes() == before
+    assert app_module.material_store(project_id).get(target['id']) is not None
+    assert app_module.AnnotationRepository(app_module.project_dir(project_id)).delete_backup_count(journal['token']) == 1
+    assert app_module.read_json(journal_paths(app_module, project_id)[0], {})['status'] == 'manual_recovery_required'
 
-    def interrupted_cleanup(_journal):
-        raise RuntimeError("simulated cleanup interruption")
-
-    monkeypatch.setattr(
-        app_module, "_v50_cleanup_dataset_delete_artifacts", interrupted_cleanup
-    )
-    with pytest.raises(RuntimeError, match="simulated cleanup interruption"):
-        app_module.delete_dataset(project_id, dataset_id)
-    monkeypatch.setattr(
-        app_module, "_v50_cleanup_dataset_delete_artifacts", original_cleanup
-    )
-
-    journals = journal_paths(app_module, project_id)
-    assert len(journals) == 1
-    journal = json.loads(journals[0].read_text(encoding="utf-8"))
-    assert journal["status"] == "metadata_removed"
-    assert_token_inactive(app_module, journal["token"])
-    assert not dataset_exists(app_module, project_id, dataset_id)
-    assert target["id"] not in {
-        str(row.get("id"))
-        for row in app_module.material_store(project_id).read().rows
-    }
-    assert Path(journal["staging_dir"]).exists()
-    claimed_again = dict(target)
-    claimed_again[app_module._V50_DATASET_DELETE_CLAIM_FIELD] = journal["token"]
-    app_module.material_store(project_id).upsert(claimed_again)
-
-    app_module._v50_recover_dataset_deletions(project_id, dataset_id)
-
-    assert not journal_paths(app_module, project_id)
-    assert not Path(journal["staging_dir"]).exists()
-    assert target["id"] not in {
-        str(row.get("id"))
-        for row in app_module.material_store(project_id).read().rows
-    }
 
 
 def test_recovery_rejects_traversal_image_id_without_touching_evidence(client):
@@ -598,3 +487,14 @@ def test_malformed_dataset_metadata_preserves_claimed_row_and_staging(client):
         if item.get("existed")
     )
     assert app_module._v50_dataset_delete_journal_path(project_id, token).exists()
+
+
+def stage_historical_journal(app_module, project_id, dataset_id, target):
+    journal = write_recovery_journal(app_module, project_id, dataset_id, target)
+    token = journal['token']
+    app_module.AnnotationRepository(app_module.project_dir(project_id)).prepare_delete(token, [target['id']])
+    app_module.material_store(project_id).patch({target['id']: {app_module._V50_DATASET_DELETE_CLAIM_FIELD: token}})
+    for item in journal['files']:
+        if item['existed']:
+            app_module._v50_stage_material_file(Path(item['source']), Path(item['staged']))
+    return journal

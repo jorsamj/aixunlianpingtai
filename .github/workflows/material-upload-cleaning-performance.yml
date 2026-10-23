@@ -7,6 +7,7 @@ on:
       - refactor/frontend-runtime-stabilization
       - feature/external-algorithm-publishing
     paths:
+      - 'platform_core/annotations.py'
       - 'app.py'
       - 'platform_core/upload_batches.py'
       - 'platform_core/storage/local.py'

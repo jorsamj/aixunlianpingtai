@@ -2,6 +2,7 @@
 import hashlib
 import json
 import sqlite3
+from contextlib import closing
 
 from tools.audit_v19_partial_import import audit
 
@@ -30,11 +31,11 @@ def _fixture(root):
     (root / "import_jobs" / JOB / "report.json").write_text(
         json.dumps({"imported_images": 1, "annotated_images": 1, "boxes": 1,
                     "imported_image_ids": ["image001"]}), encoding="utf-8")
-    with sqlite3.connect(root / "materials.sqlite3") as db:
+    with closing(sqlite3.connect(root / "materials.sqlite3")) as db, db:
         db.execute("CREATE TABLE materials(id TEXT PRIMARY KEY,payload_json TEXT)")
         db.execute("INSERT INTO materials VALUES (?,?)",
                    ("image001", json.dumps(material)))
-    with sqlite3.connect(root / "annotations.sqlite3") as db:
+    with closing(sqlite3.connect(root / "annotations.sqlite3")) as db, db:
         db.execute("CREATE TABLE annotations(image_id TEXT PRIMARY KEY,"
                    "annotation_state TEXT,version INTEGER,content_digest TEXT,boxes_json TEXT)")
         db.execute("INSERT INTO annotations VALUES (?,?,?,?,?)",
@@ -61,7 +62,7 @@ def test_auditor_checks_source_digest_boxes_and_provenance_without_mutating(tmp_
 def test_auditor_detects_same_size_source_corruption_and_wrong_gt_projection(tmp_path):
     source = _fixture(tmp_path)
     source.write_bytes(b"image-changed!")  # same length is not essential: verify the hash
-    with sqlite3.connect(tmp_path / "materials.sqlite3") as db:
+    with closing(sqlite3.connect(tmp_path / "materials.sqlite3")) as db, db:
         material = json.loads(db.execute(
             "SELECT payload_json FROM materials WHERE id='image001'").fetchone()[0])
         material["annotation_hash"] = "b" * 64
@@ -91,7 +92,7 @@ def test_auditor_reports_missing_annotation_db_and_report_identity_errors(tmp_pa
 
 def test_auditor_rejects_path_escape_without_reading_foreign_file(tmp_path):
     _fixture(tmp_path)
-    with sqlite3.connect(tmp_path / "materials.sqlite3") as db:
+    with closing(sqlite3.connect(tmp_path / "materials.sqlite3")) as db, db:
         payload = json.loads(db.execute(
             "SELECT payload_json FROM materials WHERE id='image001'").fetchone()[0])
         payload["object_key"] = "../out-of-project.jpg"

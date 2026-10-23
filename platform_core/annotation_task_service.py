@@ -127,7 +127,35 @@ def run_ai_annotation(
     if not isinstance(request, dict):
         raise ValueError("AI annotation request is invalid")
     runtime_request = dict(request)
-    if annotate is annotate_one:
+    mining_mode = runtime_request.get("mode") == "hard_sample_yolo"
+    if mining_mode:
+        from app import project_dir, material_store
+        from .hard_sample_mining import assert_not_frozen_test, HardSampleSafetyError
+        image_ids = [str(value) for value in runtime_request.get("image_ids") or []]
+        frozen_hashes = {
+            str(k): str(v).lower()
+            for k, v in (runtime_request.get("source_hashes") or {}).items()
+        }
+        if not image_ids or set(image_ids) != set(frozen_hashes):
+            raise HardSampleSafetyError("HARD_SAMPLE_SOURCE_IDENTITY_MISSING")
+        material_rows = []
+        for offset in range(0, len(image_ids), 500):
+            material_rows.extend(material_store(context.task.project_id).get_many(image_ids[offset:offset + 500]))
+        current = {str(row.get("id") or ""): str(row.get("content_sha256") or "").lower()
+                   for row in material_rows}
+        if current != frozen_hashes:
+            raise HardSampleSafetyError("HARD_SAMPLE_SOURCE_CHANGED")
+        assert_not_frozen_test(project_dir(context.task.project_id), image_ids, current)
+        runtime_request["_project_dir"] = str(project_dir(context.task.project_id))
+        from .hard_sample_mining import sha256_file
+        snapshot_id = str(runtime_request.get("mining_snapshot_id") or "")
+        expected = str(runtime_request.get("mining_snapshot_sha256") or "").lower()
+        if len(snapshot_id) != 64 or len(expected) != 64:
+            raise HardSampleSafetyError("HARD_SAMPLE_LABEL_SNAPSHOT_MISSING")
+        path = project_dir(context.task.project_id) / "snapshots" / f"{snapshot_id}.json"
+        if not path.is_file() or sha256_file(path) != expected:
+            raise HardSampleSafetyError("HARD_SAMPLE_LABEL_SNAPSHOT_CHANGED")
+    elif annotate is annotate_one:
         runtime_request = _prepare_runtime_request(
             context.task.project_id,
             runtime_request,
@@ -188,7 +216,11 @@ def run_ai_annotation(
                 return WorkerOutcome(TaskStatus.CANCELLED, "candidates/manifest.json")
             image = images[index]
             try:
-                generated = annotate(runtime_request, image)
+                if mining_mode and annotate is annotate_one:
+                    from .hard_sample_mining import infer_with_frozen_yolo
+                    generated = infer_with_frozen_yolo(runtime_request, image)
+                else:
+                    generated = annotate(runtime_request, image)
                 boxes = list(generated.get("boxes") or [])
                 item = {
                     "image_id": str(image["id"]),
@@ -202,8 +234,10 @@ def run_ai_annotation(
                     "status": "success" if boxes else "empty",
                     "boxes": boxes,
                     **{key: generated.get(key) for key in (
-                        "raw_response_hash", "request_id", "latency_ms", "provider", "model"
-                    ) if generated.get(key) not in (None, "")},
+                        "raw_response_hash", "request_id", "latency_ms", "provider", "model",
+                        "hard_sample_signals", "hard_sample_priority",
+                        "ground_truth_compared", "gt_comparison", "root_cause_confirmed",
+                    ) if generated.get(key) is not None and generated.get(key) != ""},
                 }
                 next_succeeded = succeeded + 1
                 next_failed = failed
@@ -586,6 +620,21 @@ def commit_confirmed_review(context):
     if context.task.kind is TaskKind.MATERIAL_BATCH:
         request = (request or {}).get("options") or {}
     store = CandidateStore(context.artifacts, task_id=context.task.task_id)
+    if (request or {}).get("mode") == "hard_sample_yolo":
+        from app import project_dir, material_store
+        from .hard_sample_mining import assert_not_frozen_test, HardSampleSafetyError
+        image_ids = [str(value) for value in request.get("image_ids") or []]
+        hashes = {str(k): str(v).lower() for k, v in (request.get("source_hashes") or {}).items()}
+        if not image_ids or set(image_ids) != set(hashes):
+            raise HardSampleSafetyError("HARD_SAMPLE_SOURCE_IDENTITY_MISSING")
+        actual_rows = []
+        for offset in range(0, len(image_ids), 500):
+            actual_rows.extend(material_store(context.task.project_id).get_many(image_ids[offset:offset + 500]))
+        actual = {str(row.get("id") or ""): str(row.get("content_sha256") or "").lower()
+                  for row in actual_rows}
+        if actual != hashes:
+            raise HardSampleSafetyError("HARD_SAMPLE_SOURCE_CHANGED")
+        assert_not_frozen_test(project_dir(context.task.project_id), image_ids, actual)
     # Human confirmation freezes intent, not stale class indexes. Revalidate
     # every candidate against the current active platform label catalog before
     # writing Ground Truth, and repair class_id if the catalog order changed.
@@ -673,7 +722,18 @@ class AnnotationHandler:
 
 
 def worker_registration(_data_dir: Path):
+    # The same AI_ANNOTATION handler owns both provider annotations and YOLO
+    # mining; never advertise mining on the CPU-only control-plane Worker.
+    capabilities = {"vision_provider"}
+    try:
+        import importlib.util
+        if importlib.util.find_spec("ultralytics") and importlib.util.find_spec("torch"):
+            import torch
+            if torch.cuda.is_available():
+                capabilities.add("mining.ultralytics")
+    except (ImportError, RuntimeError, OSError):
+        pass
     return {
         "handlers": {TaskKind.AI_ANNOTATION: AnnotationHandler(_data_dir)},
-        "capabilities": {"vision_provider"},
+        "capabilities": capabilities,
     }

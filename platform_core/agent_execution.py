@@ -349,6 +349,33 @@ def _sanitize_runtime_result_metadata(value: object) -> dict[str, Any]:
             )
         result[key] = text
 
+    evidence = value.get("execution_evidence")
+    if evidence is not None:
+        if not isinstance(evidence, dict):
+            raise AgentExecutionError("REMOTE_RESULT_METADATA_INVALID", "execution_evidence must be an object", 422)
+        clean = {}
+        for key in ("source_training_precision", "resolved_precision", "compiler_precision", "onnx_export", "sdk_version"):
+            if key not in evidence:
+                continue
+            raw = evidence[key]
+            if raw is not None and (not isinstance(raw, str) or len(raw) > 120):
+                raise AgentExecutionError("REMOTE_RESULT_METADATA_INVALID", f"execution_evidence.{key} is invalid", 422)
+            clean[key] = raw
+        for key in ("compiler_completed", "onnx_export_parameters_applied"):
+            if key in evidence:
+                if type(evidence[key]) is not bool:
+                    raise AgentExecutionError("REMOTE_RESULT_METADATA_INVALID", f"execution_evidence.{key} must be boolean", 422)
+                clean[key] = evidence[key]
+        shape = evidence.get("onnx_input_shape")
+        if shape is not None:
+            if not isinstance(shape, list) or len(shape)!=4 or any(type(d) is not int or not 0<d<=8192 for d in shape):
+                raise AgentExecutionError("REMOTE_RESULT_METADATA_INVALID", "ONNX input shape evidence is invalid", 422)
+            clean["onnx_input_shape"] = list(shape)
+        if evidence.get("artifact_precision") is not None:
+            raise AgentExecutionError("REMOTE_RESULT_METADATA_INVALID", "artifact dtype requires independent inspection evidence", 422)
+        clean["artifact_precision"] = None
+        result["execution_evidence"] = clean
+
     labels = value.get("labels")
     if labels is not None:
         if not isinstance(labels, list) or len(labels) > 1000:
@@ -661,6 +688,7 @@ class AgentExecutionService:
         }
 
         execution_payload = payload
+        self._verify_scenario_payload(preflight_task, payload)
         if str(node_public.get("connection_mode") or "") == "agent":
             if not isinstance(payload, dict):
                 raise AgentExecutionError(
@@ -1230,7 +1258,17 @@ class AgentExecutionService:
                 "task payload is unavailable or invalid",
                 409,
             )
+        self._verify_scenario_payload(task, payload)
         return payload
+
+    def _verify_scenario_payload(self, task, payload):
+        from types import SimpleNamespace
+        from .scenario_models import verify_scenario_request, ScenarioModelUnavailable
+        try:
+            verify_scenario_request(SimpleNamespace(task=task, repository=self.repository,
+                artifacts=self.artifacts), payload)
+        except ScenarioModelUnavailable as error:
+            raise AgentExecutionError('SCENARIO_MODEL_INELIGIBLE', str(error), 409) from error
 
     @staticmethod
     def _requires_remote_result_confirmation(task, payload: dict[str, Any]) -> bool:

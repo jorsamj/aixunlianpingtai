@@ -4,6 +4,8 @@ import {readFileSync} from 'node:fs';
 
 const source = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
 const styles = readFileSync(new URL('../../static/styles.css', import.meta.url), 'utf8');
+const workbenchStyles = readFileSync(new URL('../../static/annotation-workspace.css', import.meta.url), 'utf8');
+const editor = readFileSync(new URL('../../static/modules/annotorious-editor.js', import.meta.url), 'utf8');
 
 test('the final AI annotation override uses the persistent v60 task API', () => {
   const marker = source.lastIndexOf('Persistent v60 AI annotation UI');
@@ -33,7 +35,7 @@ test('manual annotation shell paints before authoritative hydration and prefetch
   assert.match(stable, /state\.annotationHydrating420=true/);
   assert.match(stable, /正在读取标注…/);
   assert.match(stable, /data-ann420-edit="1"/);
-  assert.match(stable, /stage\.classList\.toggle\('disabled',locked/);
+  assert.match(stable, /if\(stage\)stage\.classList\.toggle\('disabled',locked/);
   assert.match(stable, /Promise\.all\(\[apiRequestAnnotation420\(id\),labelsPromise\]\)/);
   assert.match(stable, /prefetchAnnotationNeighbors420/);
   assert.match(stable, /annotationWorkbench\?\.prefetch/);
@@ -42,31 +44,42 @@ test('manual annotation shell paints before authoritative hydration and prefetch
   assert.match(stable, /saveAnnotationCanonical420/);
   assert.match(stable, /saveAnnotationCore420/);
   assert.equal((stable.match(/annotationWorkbench\?\.open\(ids\[at\+1\]\)/g) || []).length, 1);
-  assert.match(source, /const locked=!!state\.annotationHydrating420\|\|!!state\.annotationLoadError420/);
-  assert.match(source, /if\(!locked&&e\.key==='Delete'\)deleteActiveBox\(\)/);
-  assert.match(source, /if\(!locked\)saveAnn\(false\)/);
+  assert.match(stable, /locked:!!state\.annotationHydrating420\|\|!!state\.annotationLoadError420/);
+  assert.match(editor, /if\(locked\)return/);
+  assert.match(editor, /key==='delete'\|\|key==='backspace'\)\)deleteSelected\(\)/);
+  assert.match(editor, /if\(command&&key==='s'\)\{flush\(\);options\.onSave\?\.\(\)/);
+  assert.match(stable, /onSave:\(\)=>window\.saveAnn\(false\)/);
 });
 
 
-test('manual annotation hot path paints only the active box until pointerup commit', () => {
-  const start = source.lastIndexOf('Pointer based annotation editing is the canonical interaction owner.');
-  const end = source.indexOf('// ---------- image upload with actual browser upload progress / ETA ----------', start);
-  assert.ok(start > 0 && end > start);
-  const interaction = source.slice(start, end);
-  const moveStart = interaction.indexOf("st.addEventListener('pointermove'");
-  const finishStart = interaction.indexOf('const finish=', moveStart);
-  const move = interaction.slice(moveStart, finishStart);
-  assert.match(interaction, /state\.annPointerAbort\?\.abort/);
-  assert.match(interaction, /new AbortController\(\)/);
-  assert.match(interaction, /requestAnimationFrame/);
-  assert.match(move, /scheduleActivePaint\(\)/);
-  assert.doesNotMatch(move, /markDirty\(\)/);
-  assert.doesNotMatch(move, /drawBoxes\(\)/);
-  assert.doesNotMatch(interaction, /window\.addEventListener\(['"]mouse(?:move|up)/);
-  assert.match(interaction, /if\(created\|\|\(mode!=='draw'&&changed\)\)markDirty\(\)/);
+test('official kernel defers GT commits to lifecycle or pointerup flush and aborts its listeners', () => {
+  const moveStart=editor.indexOf("viewport.addEventListener('pointermove'");
+  const finishStart=editor.indexOf('const finishPan=',moveStart);
+  assert.ok(moveStart>0&&finishStart>moveStart);
+  const move=editor.slice(moveStart,finishStart);
+  assert.match(move,/transform\(\)/);
+  assert.doesNotMatch(move,/onCommit|commit\(|markDirty|pushHistory|setAnnotations|drawBoxes/);
+  assert.match(editor,/viewport\.addEventListener\('pointerup',finishPan,\{signal\}\)/);
+  assert.match(editor,/queueMicrotask\(\(\)=>\{if\(!destroyed\)flush\(\)/);
+  assert.match(editor,/listen\('createAnnotation'/);
+  assert.match(editor,/listen\('updateAnnotation'/);
+  assert.match(editor,/official\.getAnnotationById\(annotation\.id\)/);
+  assert.match(editor,/official\.getAnnotations\?\.\(\)/);
+  assert.match(editor,/if\(JSON\.stringify\(next\)===JSON\.stringify\(rows\(\)\)\)return false/);
+  assert.match(editor,/new AbortController\(\)/);
+  assert.match(editor,/controller\.abort\(\).*official\.off\(event,fn\);official\.destroy\(\)/);
+  assert.doesNotMatch(editor,/pushHistory|markDirty|fetch\(/);
+  const commitStart=source.indexOf('onCommit:(boxes,{selectedId}={})=>');
+  const commitEnd=source.indexOf('onError:',commitStart);
+  assert.ok(commitStart>0&&commitEnd>commitStart);
+  const commit=source.slice(commitStart,commitEnd);
+  assert.match(commit,/if\(!current\(\)\|\|state\.annotationHydrating420\|\|state\.annotationLoadError420\)return/);
+  assert.equal((commit.match(/pushHistory\(\)/g)||[]).length,1);
+  assert.equal((commit.match(/markDirty\(\)/g)||[]).length,1);
+  assert.match(source,/state\.annotationEditor\?\.destroy\(\)/);
 });
 
-test('manual annotation uses a dedicated near-fullscreen workbench with complete label and object panels', () => {
+test('manual annotation uses a dedicated modal workbench with complete label and object panels', () => {
   const marker = source.lastIndexOf('Stable single-instance manual/batch annotation workbench');
   const end = source.indexOf('Persistent v60 AI annotation UI', marker);
   const stable = source.slice(marker, end);
@@ -150,10 +163,11 @@ test('canonical manual inspector exposes per-box provenance without a second ann
   assert.match(source, /truth\.className==='mixed'.*'混合来源'/s);
 });
 
-test('v66 inspector polish targets the canonical ann414 label and object row classes', () => {
-  assert.match(styles, /\.ann420-inspector #annLabels \.ann414-label/);
-  assert.match(styles, /\.ann420-inspector #annBoxes \.ann414-boxrow/);
-  assert.match(styles, /grid-template-columns:minmax\(0,1fr\) 126px/);
+test('scoped inspector styles target real class choices and original object rows', () => {
+  assert.match(workbenchStyles, /\.annotation-workbench-modal \.ann420-class-option/);
+  assert.match(workbenchStyles, /\.annotation-workbench-modal #annBoxes \.ann414-boxrow/);
+  assert.match(workbenchStyles, /grid-template-columns:minmax\(0,1fr\) 102px/);
+  assert.doesNotMatch(workbenchStyles, /!important/);
 });
 
 test('one annotation truth view owns text color and provenance with formal truth priority', () => {
@@ -186,9 +200,10 @@ test('annotation motion stays outside the pointer hot path and respects reduced 
   assert.match(styles, /@media\(prefers-reduced-motion:reduce\).*annotation-workbench-modal.*animation:none!important/s);
   assert.match(styles, /prefers-reduced-motion:reduce[^}]*\.ann420-inspector \.ann414-label[^}]*\.ai66-candidate-card\{transition:none!important/s);
 
-  const start = source.lastIndexOf('Pointer based annotation editing is the canonical interaction owner.');
-  const end = source.indexOf('// ---------- image upload with actual browser upload progress / ETA ----------', start);
-  const pointerOwner = source.slice(start, end);
+  const start = editor.indexOf("viewport.addEventListener('pointermove'");
+  const end = editor.indexOf('const finishPan=', start);
+  assert.ok(start>0&&end>start);
+  const pointerOwner = editor.slice(start, end);
   assert.doesNotMatch(pointerOwner, /classList\.add\([^)]*anim/i);
   assert.doesNotMatch(pointerOwner, /style\.transition/);
 });
@@ -220,8 +235,8 @@ test('annotation P1 interactions use shared motion tokens instead of local timin
 });
 
 
-test('annotation inspector has one outer scroll owner with bounded label and object panes', () => {
-  assert.match(styles, /\.ann420-inspector\{display:flex!important;min-height:0;flex-direction:column;overflow:hidden!important\}/);
-  assert.match(styles, /\.ann420-label-panel #annLabels\{[^}]*overflow:auto[^}]*scrollbar-gutter:stable/s);
-  assert.match(styles, /\.ann420-object-panel #annBoxes\{[^}]*flex:1 1 auto[^}]*overflow:auto[^}]*scrollbar-gutter:stable/s);
+test('annotation inspector contains independent bounded label and object scroll panes', () => {
+  assert.match(workbenchStyles, /\.ann420-inspector\{[^}]*display:flex[^}]*overflow:hidden/s);
+  assert.match(workbenchStyles, /#annLabels\{[^}]*overflow:auto[^}]*scrollbar-gutter:stable/s);
+  assert.match(workbenchStyles, /#annBoxes\{[^}]*overflow:auto[^}]*scrollbar-gutter:stable/s);
 });

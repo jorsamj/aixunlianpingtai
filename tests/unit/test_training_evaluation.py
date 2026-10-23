@@ -45,6 +45,44 @@ def test_blind_evaluation_finishes_all_predictions_before_reading_hidden_ground_
     assert result["per_class"][0]["label"] == "smoke"
 
 
+def test_high_map_does_not_mark_unmeasured_model_classes_as_accurate(tmp_path: Path):
+    images, ground_truth = tmp_path / "images", tmp_path / "hidden"
+    images.mkdir()
+    ground_truth.mkdir()
+    Image.new("RGB", (100, 100), (10, 20, 30)).save(images / "a.jpg")
+    (ground_truth / "a.txt").write_text("0 0.5 0.5 0.4 0.4\n", encoding="utf-8")
+
+    def prediction(_):
+        return [
+            {"class_id": 0, "confidence": 0.99, "box": [30, 30, 70, 70]},
+            # A false alarm for an otherwise untested class must stay visible.
+            {"class_id": 2, "confidence": 0.80, "box": [0, 0, 10, 10]},
+        ]
+
+    result = evaluation.evaluate_blind_detection(
+        images, ground_truth, prediction, names={0: "smoke", 1: "fire", 2: "helmet"}
+    )
+    assert result["metrics"]["metrics/mAP50(B)"] == 1.0
+    coverage = result["class_coverage"]
+    assert coverage["source"] == "declared_model_names"
+    assert coverage["macro_average_class_count"] == 1
+    assert coverage["scored_class_ids"] == [0]
+    assert coverage["class_ids_without_test_ground_truth"] == [1, 2]
+    per_class = {row["class_id"]: row for row in result["per_class"]}
+    assert per_class[1]["evaluation_status"] == "no_test_ground_truth"
+    assert per_class[1]["map50"] is None
+    assert per_class[2]["map50_95"] is None
+    assert per_class[2]["false_positive"] == 1
+    frozen = evaluation.build_evaluation_truth(result, task_id="test-high-map")
+    assert frozen["class_coverage"] == coverage
+    assert frozen["per_class"][1]["map50"] is None
+    decision = evaluation.build_iteration_decision(
+        frozen, quality_gate={"metric": "map50", "stop_threshold": 0.9}
+    )
+    assert decision["decision"] == "review_required"
+    assert "independent_test_class_coverage_incomplete" in decision["reason_codes"]
+
+
 def test_blind_evaluation_reports_test_fp_fn_weak_labels_and_error_samples(tmp_path: Path):
     images = tmp_path / "images"
     ground_truth = tmp_path / "hidden"
@@ -73,6 +111,47 @@ def test_blind_evaluation_reports_test_fp_fn_weak_labels_and_error_samples(tmp_p
     samples = {row["image"]: row for row in result["error_samples"]}
     assert samples["a.jpg"]["fp_count"] == 1
     assert samples["b.jpg"]["fn_count"] == 1
+
+
+def test_confusion_and_confidence_evidence_preserve_wrong_class_and_real_thresholds(tmp_path):
+    images, truth = tmp_path / 'images', tmp_path / 'truth'
+    images.mkdir(); truth.mkdir()
+    Image.new('RGB', (100, 100), 'white').save(images / 'image-id.jpg')
+    (truth / 'image-id.txt').write_text('0 0.5 0.5 0.4 0.4\n', encoding='utf-8')
+    result = evaluation.evaluate_blind_detection(images, truth, lambda _: [
+        {'class_id': 1, 'confidence': .8, 'box': [30, 30, 70, 70]},
+    ], names={0: 'helmet', 1: 'person'})
+    assert result['per_class'][0]['false_negative'] == 1
+    assert result['per_class'][1]['false_positive'] == 1
+    assert result['confusion_matrix']['cells'] == [
+        {'actual': 0, 'predicted': 1, 'count': 1, 'images': ['image-id.jpg']},
+    ]
+    assert result['confidence_curves'][0]['points'][0]['recall'] == 0
+    frozen = evaluation.build_evaluation_truth(result, task_id='train-evidence', snapshot_id='a' * 64)
+    assert frozen['confusion_matrix'] == result['confusion_matrix']
+    assert frozen['confidence_curves'] == result['confidence_curves']
+    assert frozen['error_samples'][0]['image_id'] == 'image-id'
+    assert len(frozen['error_samples'][0]['image_content_sha256']) == 64
+
+
+def test_inference_size_is_part_of_evaluation_protocol_identity():
+    from copy import deepcopy
+    raw = {
+        "status": "succeeded", "image_count": 1,
+        "metrics": {"metrics/mAP50(B)": 0.97},
+        "protocol": {
+            "mode": "blind_image_only_inference_then_hidden_ground_truth_scoring",
+            "predict_imgsz": 800, "predict_conf": 0.001, "predict_nms_iou": 0.7,
+        },
+    }
+    other = deepcopy(raw)
+    other["protocol"]["predict_imgsz"] = 640
+    a = evaluation.build_evaluation_truth(raw, task_id="imgsz-test")
+    b = evaluation.build_evaluation_truth(other, task_id="imgsz-test")
+    assert a["protocol"]["predict_imgsz"] == 800
+    assert b["protocol"]["predict_imgsz"] == 640
+    assert a["evaluation_protocol_id"] != b["evaluation_protocol_id"]
+    assert a["evaluation_id"] != b["evaluation_id"]
 
 
 def test_evaluation_truth_is_deterministic_public_safe_and_bound_to_model_revision():
@@ -573,3 +652,272 @@ def test_evaluation_benchmark_scope_rejects_manifest_cohort_or_source_mismatch()
         evaluation.build_evaluation_benchmark_scope(
             _benchmark_snapshot(), wrong_source,
         )
+
+
+def test_blind_evaluation_preserves_true_error_count_and_ranks_late_high_severity(tmp_path: Path):
+    images, gt = tmp_path / "images", tmp_path / "hidden"
+    images.mkdir()
+    gt.mkdir()
+    for index in range(205):
+        name = f"img_{index:03d}"
+        Image.new("RGB", (100, 80)).save(images / f"{name}.jpg")
+        boxes = ["0 0.5 0.5 0.3 0.3"]
+        if index == 204:
+            boxes *= 12
+        (gt / f"{name}.txt").write_text("\n".join(boxes) + "\n", encoding="utf-8")
+
+    result = evaluation.evaluate_blind_detection(images, gt, lambda _: [], names={0: "person"})
+    assert result["image_count"] == 205
+    assert result["error_sample_count"] == 205
+    assert len(result["error_samples"]) == 200
+    assert result["error_samples"][0]["image"] == "img_204.jpg"
+    assert result["error_samples"][0]["fn_count"] == 12
+    assert result["error_samples"][0]["image_width"] == 100
+    assert len(result["error_samples"][0]["gt_boxes"]) == 12
+    assert all(not x["matched"] for x in result["error_samples"][0]["gt_boxes"])
+    assert all(row["pred_boxes"] == [] for row in result["error_samples"])
+
+
+def test_evaluation_evidence_is_bounded_safe_and_retains_true_error_count():
+    raw = {
+        "status": "succeeded",
+        "metrics": {"metrics/mAP50(B)": 0.31},
+        "per_class": [{"class_id": 0, "label": "No_helmet",
+                       "ground_truth_count": 85, "true_positive": 0,
+                       "false_positive": 0, "false_negative": 85,
+                       "recall": 0, "map50": 0.002}],
+        "weak_labels": ["No_helmet"],
+        "error_sample_count": 230,
+        "error_samples": [{"image": "../test.png", "fp_count": 1, "fn_count": 1,
+                           "image_width": 100, "image_height": 80,
+                           "gt_boxes": [{"class_id": 0, "label": "No_helmet",
+                                          "box": [10, 15, 40, 60], "matched": False},
+                                         {"box": [float("nan"), 1, 2, 3]}],
+                           "pred_boxes": [{"class_id": 1, "label": "helmet",
+                                            "box": [11, 15, 42, 60], "matched": False,
+                                            "confidence": 0.8}],
+                           "hidden_path": "/server/private/file.txt"}],
+    }
+    truth = evaluation.build_evaluation_truth(raw, task_id="training-test")
+    assert truth["error_sample_count"] == 230
+    assert truth["error_samples"][0]["image"] == "test.png"
+    assert truth["error_samples"][0]["gt_boxes"] == [{
+        "class_id": 0, "label": "No_helmet", "box": [10., 15., 40., 60.],
+        "matched": False, "kind": "ground_truth"
+    }]
+    assert "hidden_path" not in str(truth)
+    assert truth["error_samples"][0]["pred_boxes"][0]["confidence"] == 0.8
+
+
+def test_zero_true_positive_class_requires_diagnosis_not_data_confirmation():
+    truth = evaluation.build_evaluation_truth({
+        "status": "succeeded",
+        "metrics": {"metrics/mAP50(B)": 0.298},
+        "per_class": [
+            {"class_id": 0, "label": "No_helmet", "true_positive": 0,
+             "false_positive": 0, "false_negative": 85, "ground_truth_count": 85,
+             "precision": 0.0, "recall": 0.0, "map50": 0.002},
+            {"class_id": 1, "label": "helmet", "true_positive": 195,
+             "false_positive": 88, "false_negative": 164, "ground_truth_count": 359,
+             "precision": 0.689, "recall": 0.543, "map50": 0.594}
+        ],
+        "weak_labels": ["No_helmet", "helmet"],
+    }, task_id="helmet-test")
+    decision = evaluation.build_iteration_decision(truth, quality_gate={"metric": "map50", "stop_threshold": 0.9})
+    assert decision["decision"] == "review_required"
+    assert "critical_class_zero_true_positives" in decision["reason_codes"]
+    assert decision["critical_labels"] == ["No_helmet"]
+    assert decision["class_diagnostics"][0]["code"] == "zero_true_positives"
+    assert decision["class_diagnostics"][0]["root_cause_confirmed"] is False
+    assert "inspect_class_mapping" in decision["recommended_actions"]
+    assert "supplement_weak_label_data" not in decision["recommended_actions"]
+    assert decision["automatic_execution"] is False
+
+
+def test_fire_class_diagnosis_preserves_smoke_success_without_fabricating_cause():
+    truth = evaluation.build_evaluation_truth({
+        "status": "succeeded",
+        "metrics": {"metrics/mAP50(B)": 0.772},
+        "per_class": [
+            {"class_id": 0, "label": "fire1", "true_positive": 2073,
+             "false_positive": 1085, "false_negative": 870, "ground_truth_count": 2943,
+             "recall": 0.704, "map50": 0.709},
+            {"class_id": 1, "label": "smoke1", "true_positive": 1984,
+             "false_positive": 616, "false_negative": 406, "ground_truth_count": 2390,
+             "recall": 0.83, "map50": 0.835},
+        ],
+        "weak_labels": ["fire1"],
+    }, task_id="fire-test")
+    decision = evaluation.build_iteration_decision(truth, quality_gate={"metric": "map50", "stop_threshold": 0.95})
+    assert decision["decision"] == "needs_data"
+    assert [row["label"] for row in decision["class_diagnostics"]] == ["fire1"]
+    assert decision["class_diagnostics"][0]["code"] == "class_detection_below_reference"
+    assert "review_fp_fn_samples" in decision["recommended_actions"]
+    assert decision["class_diagnostics"][0]["root_cause_confirmed"] is False
+
+
+def test_overlapping_objects_use_identical_tp_fp_fn_for_class_score_and_image_evidence(tmp_path: Path):
+    """Higher confidence wins first, even when IoU-first would match both boxes."""
+    images = tmp_path / "images"
+    hidden = tmp_path / "hidden"
+    images.mkdir()
+    hidden.mkdir()
+    Image.new("RGB", (100, 100), (20, 30, 40)).save(images / "overlap.jpg")
+    # GT: [20,20,60,60] and [40,20,80,60].
+    (hidden / "overlap.txt").write_text(
+        "0 0.4 0.4 0.4 0.4\n0 0.6 0.4 0.4 0.4\n",
+        encoding="utf-8",
+    )
+
+    result = evaluation.evaluate_blind_detection(
+        images, hidden,
+        lambda _: [
+            {"class_id": 0, "confidence": 0.95, "box": [28, 20, 68, 60]},
+            {"class_id": 0, "confidence": 0.65, "box": [20, 20, 60, 60]},
+        ],
+        names={0: "person"},
+    )
+    score = result["per_class"][0]
+    assert (score["true_positive"], score["false_positive"], score["false_negative"]) == (1, 1, 1)
+    assert result["error_sample_count"] == 1
+    sample, = result["error_samples"]
+    assert (sample["fp_count"], sample["fn_count"]) == (1, 1)
+    assert [row["matched"] for row in sample["pred_boxes"]] == [True, False]
+    assert [row["matched"] for row in sample["gt_boxes"]] == [True, False]
+    assert sum(row["fp_count"] for row in result["error_samples"]) == score["false_positive"]
+    assert sum(row["fn_count"] for row in result["error_samples"]) == score["false_negative"]
+
+
+def test_version_comparison_requires_identical_verified_inputs_and_reports_class_regression():
+    import copy
+    source = {"status":"succeeded", "evaluation_id":"a"*64, "evaluation_protocol_id":"b"*64,
+              "benchmark_scope":{key:"c"*64 for key in
+                 ("scope_id","content_digest","ground_truth_digest","label_schema_digest","evaluation_input_digest")},
+              "metrics":{"metrics/mAP50(B)":.6},
+              "per_class":[{"label":"critical","recall":.8,"map50":.7,"false_negative":2}]}
+    source["benchmark_scope"]["binding_level"]="bundle_verified"
+    current=copy.deepcopy(source)
+    current["metrics"]["metrics/mAP50(B)"]=.7
+    current["per_class"][0].update(recall=.5,false_negative=5)
+    result=evaluation.compare_evaluations(source,current)
+    assert result["comparable"] is True
+    assert result["metrics"]["metrics/mAP50(B)"]["delta"] == .1
+    assert result["regressed_labels"] == ["critical"]
+    for key in ("scope_id","content_digest","ground_truth_digest","label_schema_digest","evaluation_input_digest"):
+        drift=copy.deepcopy(current)
+        drift["benchmark_scope"][key]="d"*64
+        rejected=evaluation.compare_evaluations(source,drift)
+        assert rejected["comparable"] is False
+        assert rejected["metrics"] == {}
+    current["evaluation_protocol_id"]="e"*64
+    assert evaluation.compare_evaluations(source,current)["comparable"] is False
+
+
+def test_version_comparison_uses_class_id_when_display_labels_are_duplicated():
+    import copy
+    scope = {key: 'c' * 64 for key in (
+        'scope_id', 'content_digest', 'ground_truth_digest',
+        'label_schema_digest', 'evaluation_input_digest',
+    )}
+    scope['binding_level'] = 'bundle_verified'
+    source = {
+        'status': 'succeeded', 'evaluation_id': 'a' * 64,
+        'evaluation_protocol_id': 'b' * 64, 'benchmark_scope': scope,
+        'metrics': {'metrics/mAP50(B)': .85},
+        'per_class': [
+            {'class_id': 0, 'label': 'same', 'recall': .9, 'map50': .9, 'false_negative': 1},
+            {'class_id': 1, 'label': 'same', 'recall': .8, 'map50': .8, 'false_negative': 2},
+        ],
+    }
+    current = copy.deepcopy(source)
+    current['per_class'][0].update(recall=.1, map50=.1, false_negative=9)
+    result = evaluation.compare_evaluations(source, current)
+    assert result['comparable'] is True
+    assert len(result['classes']) == 2
+    regressed = [row for row in result['classes'] if row.get('regressed')]
+    assert [(row['class_id'], row['label']) for row in regressed] == [(0, 'same')]
+    assert result['regressed_class_ids'] == [0]
+    assert result['regressed_labels'] == ['same · ID 0']
+
+
+def test_version_comparison_marks_ambiguous_legacy_duplicate_labels_non_comparable():
+    scope = {key: 'c' * 64 for key in (
+        'scope_id', 'content_digest', 'ground_truth_digest',
+        'label_schema_digest', 'evaluation_input_digest',
+    )}
+    scope['binding_level'] = 'bundle_verified'
+    value = {
+        'status': 'succeeded', 'evaluation_id': 'a' * 64,
+        'evaluation_protocol_id': 'b' * 64, 'benchmark_scope': scope,
+        'metrics': {},
+        'per_class': [
+            {'label': 'same', 'recall': .9, 'map50': .9},
+            {'label': 'same', 'recall': .8, 'map50': .8},
+        ],
+    }
+    result = evaluation.compare_evaluations(value, value)
+    assert result['comparable'] is False
+    assert 'class_identity_ambiguous' in result['reason_codes']
+
+
+
+def test_finalization_passes_verified_frozen_test_bundle_into_independent_evaluation():
+    """The durable version must not discard an already-verified Test binding."""
+    import ast
+
+    # This is a source-level wiring guard. Do not import the heavy training
+    # runtime into the lightweight Algorithm SQL Store CI environment.
+    module = (Path(__file__).resolve().parents[2] / "platform_core" / "training_tasks.py").read_text(
+        encoding="utf-8"
+    )
+    tree = ast.parse(module)
+    handler = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "TrainingHandler"
+    )
+    finalizer = next(
+        node for node in handler.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_finalize_completed_job"
+    )
+    source = ast.get_source_segment(module, finalizer)
+    assert "verification = verify_portable_dataset(manifest_path)" in source
+    assert "benchmark_scope = build_evaluation_benchmark_scope(" in source
+    assert "snapshot, _json(manifest_path, {})" in source
+    assert "benchmark_scope=benchmark_scope" in source
+    assert source.index("verification = verify_portable_dataset(manifest_path)") < source.index(
+        "benchmark_scope = build_evaluation_benchmark_scope("
+    )
+    assert source.index("benchmark_scope = build_evaluation_benchmark_scope(") < source.index(
+        "evaluation = build_evaluation_truth("
+    )
+
+
+def test_strict_bundle_bound_test_evidence_survives_credibility_and_does_not_fake_field_accuracy():
+    from platform_core.training_evaluation import build_training_metric_credibility
+
+    scope = evaluation.build_evaluation_benchmark_scope(
+        _benchmark_snapshot(), _benchmark_manifest(),
+    )
+    assert scope["binding_level"] == "bundle_verified"
+    truth = evaluation.build_evaluation_truth({
+        "status": "succeeded",
+        "image_count": 1,
+        "metrics": {"metrics/mAP50(B)": .98},
+        "protocol": {
+            "mode": "blind_image_only_inference_then_hidden_ground_truth_scoring",
+            "predict_imgsz": 800, "predict_conf": .001, "predict_nms_iou": .7,
+        },
+        "class_coverage": {
+            "schema_version": 1,
+            "source": "declared_model_names",
+        },
+    }, task_id="strict-bound-test",
+       snapshot_id="1" * 64, benchmark_scope=scope)
+    diagnosis = build_training_metric_credibility({
+        "metrics": {"metrics/mAP50(B)": .97},
+    }, truth, input_quality={})
+    assert "independent_test_input_binding_unverified" not in diagnosis["reason_codes"]
+    assert diagnosis["production_accuracy_verified"] is False
+
+    # Historical snapshot versions never impersonate a materialized Test.
+    assert evaluation.build_evaluation_benchmark_scope({"schema_version": 2}) == {}

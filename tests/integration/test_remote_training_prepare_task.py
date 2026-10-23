@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 from pathlib import Path
 
 from PIL import Image
@@ -20,11 +21,14 @@ from platform_core.storage.models import ObjectMetadata
 from platform_core.storage.source_repository import StorageSource, StorageSourceRepository
 from platform_core.task_runtime import (
     ArtifactStore,
+    ExecutionFencedError,
+    FencedTaskRepository,
     Scheduler,
     TaskKind,
     TaskRecord,
     TaskRepository,
     TaskStatus,
+    WorkerContext,
 )
 
 
@@ -200,9 +204,15 @@ def test_remote_official_filename_never_becomes_agent_download_contract(tmp_path
     assert captured.value.code == "REMOTE_TRAINING_BASE_MODEL_NOT_PREPARED"
 
 
-def _runtime(data_dir: Path, project_id: str, *, supplement_candidate_set=None):
+def _runtime(
+    data_dir: Path,
+    project_id: str,
+    *,
+    supplement_candidate_set=None,
+    repository_type=TaskRepository,
+):
     runtime = data_dir / "task_runtime"
-    repository = TaskRepository(runtime / "tasks.sqlite3")
+    repository = repository_type(runtime / "tasks.sqlite3")
     artifacts = ArtifactStore(runtime / "artifacts")
     target_id = "train_remote_target"
     prep_id = "trainprep_train_remote_target"
@@ -290,10 +300,15 @@ class FakeSources:
         return self.value if str(source_id) == self.value.id else None
 
 
-def test_remote_training_prepare_handler_builds_bundle_and_activates_target(tmp_path):
+@pytest.mark.parametrize("schema_version", [3, 4])
+def test_remote_training_prepare_handler_builds_bundle_and_activates_target(tmp_path, monkeypatch, schema_version):
     data_dir = tmp_path / "data"
     project_id = _build_project(data_dir)
     repository, artifacts, target_id, prep_id = _runtime(data_dir, project_id)
+    if schema_version == 4:
+        payload = artifacts.read_json(target_id, "payload.json")
+        payload.update(schema_version=4, training_input_state="PREPARING", train_labels=["fire"])
+        artifacts.atomic_write_json(target_id, "payload.json", payload)
     source = _remote_source()
     provider = FakeObjectProvider()
     handler = RemoteTrainingPrepareHandler(
@@ -303,6 +318,43 @@ def test_remote_training_prepare_handler_builds_bundle_and_activates_target(tmp_
         provider_factory=lambda _project_id, _source, _secret: provider,
         model_artifacts=FakeModelArtifacts(source.id),
     )
+    from contextlib import contextmanager
+    original_fence = remote_training_tasks_module.material_annotation_lifecycle_fence
+    original_refresh = handler._refresh_external_algorithm
+    original_freeze = remote_training_tasks_module.freeze_training_inputs
+    locked = False
+    calls = []
+    @contextmanager
+    def tracked_fence(project):
+        nonlocal locked
+        with original_fence(project):
+            locked = True
+            try:
+                yield
+            finally:
+                locked = False
+    def refresh(*args):
+        assert not locked, "external HTTP must not block canonical GT editing"
+        calls.append("refresh")
+        return original_refresh(*args)
+    def freeze(*args, **kwargs):
+        if schema_version == 4:
+            assert locked, "canonical freeze must hold the annotation lifecycle fence"
+        calls.append("freeze")
+        return original_freeze(*args, **kwargs)
+    monkeypatch.setattr(remote_training_tasks_module, "material_annotation_lifecycle_fence", tracked_fence)
+    monkeypatch.setattr(remote_training_tasks_module, "freeze_training_inputs", freeze)
+    monkeypatch.setattr(handler, "_refresh_external_algorithm", refresh)
+    original_benchmark = handler._resolve_benchmark_reuse
+    original_review = remote_training_tasks_module.validate_duplicate_review
+    def benchmark(*args, **kwargs):
+        assert locked, "benchmark GT validation and selection must share the freeze fence"
+        return original_benchmark(*args, **kwargs)
+    def review(*args, **kwargs):
+        assert locked, "expected revisions must be validated within the selection fence"
+        return original_review(*args, **kwargs)
+    monkeypatch.setattr(handler, "_resolve_benchmark_reuse", benchmark)
+    monkeypatch.setattr(remote_training_tasks_module, "validate_duplicate_review", review)
     scheduler = Scheduler(
         repository,
         artifacts,
@@ -312,6 +364,8 @@ def test_remote_training_prepare_handler_builds_bundle_and_activates_target(tmp_
     )
 
     assert scheduler.run_once() is True
+    if schema_version == 4:
+        assert calls[:2] == ["refresh", "freeze"]
 
     prep = repository.get(prep_id)
     target = repository.get(target_id)
@@ -454,6 +508,73 @@ def test_training_prepare_persists_all_scope_drift_issues_before_failure(tmp_pat
     assert all(item["missing_label_codes"] == ["smoke"] for item in page)
 
 
+def test_queued_prepare_refreezes_remaining_original_scope_and_archives_request(tmp_path):
+    from types import SimpleNamespace
+    data_dir = tmp_path / "data"
+    project_id = _build_project(data_dir)
+    project = data_dir / "projects" / project_id
+    repository, artifacts, target_id, _prep_id = _runtime(data_dir, project_id)
+    materials = MaterialRepository(project)
+    annotations = AnnotationRepository(project)
+    payload = artifacts.read_json(target_id, "payload.json")
+    original = list(payload["train_image_ids"])
+    payload.update(schema_version=4, train_labels=["fire"],
+        expected_material_revision=materials.current_revision(),
+        expected_annotation_revision=annotations.current_revision())
+    materials.remove_many(["image-1"])
+    annotations.remove(["image-1"])
+    # An unrelated new image must never replace the removed requested identity.
+    materials.upsert_many([{**materials.get("image-0"), "id": "outside"}])
+    handler = RemoteTrainingPrepareHandler(data_dir)
+    updated = handler._freeze_request_contract(SimpleNamespace(artifacts=artifacts), repository.get(target_id), payload)
+    assert updated["train_image_ids"] == ["image-0", "image-2", "image-3"]
+    assert updated["input_selection_recheck"]["removed_image_ids"] == ["image-1"]
+    assert updated["input_selection_recheck"]["requested_train_count"] == 4
+    request = artifacts.read_json(target_id, "input-request-selection.json")
+    assert request["train_image_ids"] == original
+    frozen = artifacts.read_json(target_id, "input-freeze.json")
+    assert frozen["input_freeze_id"] == updated["input_freeze_id"]
+    assert "outside" not in updated["train_image_ids"]
+    assert (project / "uploads/image-1.jpg").is_file()
+
+
+def test_training_prepare_persists_revision_drift_error_without_creating_freeze(tmp_path):
+    data_dir = tmp_path / "data"
+    project_id = _build_project(data_dir)
+    repository, artifacts, target_id, prep_id = _runtime(data_dir, project_id)
+    payload = artifacts.read_json(target_id, "payload.json")
+    payload.update(schema_version=4, expected_material_revision=0, expected_annotation_revision=0)
+    artifacts.atomic_write_json(target_id, "payload.json", payload)
+    scheduler = Scheduler(repository, artifacts, "prep-revision-drift",
+        {TaskKind.TRAINING_PREPARE: RemoteTrainingPrepareHandler(data_dir)}, {"training.prepare"})
+    assert scheduler.run_once() is True
+    assert repository.get(target_id).status is TaskStatus.FAILED
+    evidence = artifacts.read_json(target_id, "input-preparation-error.json", default={})
+    assert evidence["code"] == "TRAINING_REVIEW_STALE"
+    assert evidence["input_freeze_created"] is False
+    assert evidence["task_id"] == target_id
+    assert not artifacts.artifact_path(target_id, "input-freeze.json").exists()
+
+
+def test_prepare_never_overwrites_freeze_published_before_payload_crash(tmp_path):
+    from types import SimpleNamespace
+    data_dir = tmp_path / "data"
+    project_id = _build_project(data_dir)
+    repository, artifacts, target_id, _prep_id = _runtime(data_dir, project_id)
+    payload = artifacts.read_json(target_id, "payload.json")
+    payload.update(schema_version=4, train_labels=["fire"])
+    handler = RemoteTrainingPrepareHandler(data_dir)
+    context = SimpleNamespace(artifacts=artifacts)
+    handler._freeze_request_contract(context, repository.get(target_id), payload)
+    path = artifacts.artifact_path(target_id, "input-freeze.json")
+    original = path.read_bytes()
+    MaterialRepository(data_dir / "projects" / project_id).remove_many(["image-1"])
+    with pytest.raises(RemoteTrainingPreparationError) as caught:
+        handler._freeze_request_contract(context, repository.get(target_id), payload)
+    assert caught.value.code == "TRAINING_FREEZE_PUBLICATION_INCOMPLETE"
+    assert path.read_bytes() == original
+
+
 def test_remote_training_prepare_freezes_feedback_subset_without_agent_feedback_dependency(tmp_path):
     data_dir = tmp_path / "data"
     project_id = _build_project(data_dir)
@@ -536,3 +657,274 @@ def test_remote_training_prepare_freezes_feedback_subset_without_agent_feedback_
     revision = artifacts.read_json(target_id, "dataset-revision.json")
     assert snapshot["supplement_provenance"]["adoption_id"] == provenance["adoption_id"]
     assert revision["supplement_provenance"]["adoption_id"] == provenance["adoption_id"]
+
+
+def test_reclaimed_training_prepare_attempt_validates_and_activates_once(tmp_path):
+    data_dir = tmp_path / "data"
+    project_id = _build_project(data_dir)
+    repository, artifacts, target_id, prep_id = _runtime(
+        data_dir,
+        project_id,
+        repository_type=FencedTaskRepository,
+    )
+    first = repository.claim_next(
+        "dead-preparer",
+        [TaskKind.TRAINING_PREPARE],
+        {"training.prepare"},
+        lease_seconds=1,
+    )
+    assert first is not None and first.task.task_id == prep_id
+    assert repository.release_expired("2999-01-01T00:00:00+00:00") == 1
+
+    source = _remote_source()
+    provider = FakeObjectProvider()
+    handler = RemoteTrainingPrepareHandler(
+        data_dir,
+        sources=FakeSources(source),
+        credentials=FakeCredentials(),
+        provider_factory=lambda _project_id, _source, _secret: provider,
+        model_artifacts=FakeModelArtifacts(source.id),
+    )
+    scheduler = Scheduler(
+        repository,
+        artifacts,
+        "recovery-preparer",
+        {TaskKind.TRAINING_PREPARE: handler},
+        {"training.prepare"},
+    )
+
+    assert scheduler.run_once() is True
+    prep = repository.get(prep_id)
+    target = repository.get(target_id)
+    assert prep is not None and prep.status is TaskStatus.SUCCEEDED, prep.error if prep else "missing"
+    assert prep.attempt == 2
+    assert target is not None and target.status is TaskStatus.QUEUED
+    assert target.required_capabilities == ("training.ultralytics",)
+    payload = artifacts.read_json(target_id, "payload.json")
+    assert payload["training_input_state"] == "READY"
+    assert payload["remote_prepare_task_id"] == prep_id
+    assert artifacts.read_json(prep_id, "result.json")["status"] == "ready"
+
+
+def test_recovery_validates_ready_artifacts_without_reuploading_or_reactivating(tmp_path):
+    data_dir = tmp_path / "data"
+    project_id = _build_project(data_dir)
+    repository, artifacts, target_id, prep_id = _runtime(
+        data_dir,
+        project_id,
+        repository_type=FencedTaskRepository,
+    )
+    source = _remote_source()
+    provider = FakeObjectProvider()
+    handler = RemoteTrainingPrepareHandler(
+        data_dir,
+        sources=FakeSources(source),
+        credentials=FakeCredentials(),
+        provider_factory=lambda _project_id, _source, _secret: provider,
+        model_artifacts=FakeModelArtifacts(source.id),
+    )
+    first = repository.claim_next(
+        "preparer-before-crash",
+        [TaskKind.TRAINING_PREPARE],
+        {"training.prepare"},
+        lease_seconds=30,
+    )
+    assert first is not None
+    context = WorkerContext(first.task, first, repository, artifacts, lease_seconds=30)
+    status, result_ref = handler.run(context)
+    assert status is TaskStatus.SUCCEEDED and result_ref == "result.json"
+    upload_count = len(provider.upload_calls)
+    activated = repository.get(target_id)
+    assert activated is not None
+    activated_contract = (activated.resource_key, activated.required_capabilities)
+
+    # Simulate process death after durable parent publication but before the
+    # preparation task itself was finished by Scheduler.
+    assert repository.release_expired("2999-01-01T00:00:00+00:00") == 1
+    Scheduler(
+        repository,
+        artifacts,
+        "recovery-preparer",
+        {TaskKind.TRAINING_PREPARE: handler},
+        {"training.prepare"},
+    ).run_once()
+
+    recovered = repository.get(prep_id)
+    parent = repository.get(target_id)
+    assert recovered is not None and recovered.status is TaskStatus.SUCCEEDED, (
+        recovered.error if recovered else "missing preparation task"
+    )
+    assert recovered.attempt == 2
+    assert parent is not None
+    assert (parent.resource_key, parent.required_capabilities) == activated_contract
+    assert len(provider.upload_calls) == upload_count
+    assert artifacts.read_json(prep_id, "result.json")["status"] == "ready"
+
+
+def test_recovery_rejects_corrupted_ready_bundle_instead_of_reusing_it(tmp_path):
+    data_dir = tmp_path / "data"
+    project_id = _build_project(data_dir)
+    repository, artifacts, target_id, prep_id = _runtime(
+        data_dir,
+        project_id,
+        repository_type=FencedTaskRepository,
+    )
+    source = _remote_source()
+    provider = FakeObjectProvider()
+    handler = RemoteTrainingPrepareHandler(
+        data_dir,
+        sources=FakeSources(source),
+        credentials=FakeCredentials(),
+        provider_factory=lambda _project_id, _source, _secret: provider,
+        model_artifacts=FakeModelArtifacts(source.id),
+    )
+    first = repository.claim_next(
+        "preparer-before-corruption",
+        [TaskKind.TRAINING_PREPARE],
+        {"training.prepare"},
+        lease_seconds=30,
+    )
+    assert first is not None
+    context = WorkerContext(first.task, first, repository, artifacts, lease_seconds=30)
+    assert handler.run(context)[0] is TaskStatus.SUCCEEDED
+    artifacts.artifact_path(
+        target_id, "remote-training/training-bundle.zip",
+    ).write_bytes(b"corrupted")
+    assert repository.release_expired("2999-01-01T00:00:00+00:00") == 1
+
+    Scheduler(
+        repository,
+        artifacts,
+        "recovery-preparer",
+        {TaskKind.TRAINING_PREPARE: handler},
+        {"training.prepare"},
+    ).run_once()
+
+    recovered = repository.get(prep_id)
+    parent = repository.get(target_id)
+    assert recovered is not None and recovered.status is TaskStatus.FAILED
+    assert "archive no longer matches durable evidence" in str(recovered.error)
+    assert parent is not None and parent.status is TaskStatus.FAILED
+    assert "REMOTE_TRAINING_ARCHIVE_EVIDENCE_MISMATCH" in str(parent.error)
+
+
+def test_fenced_training_preparer_cannot_fail_queued_parent(tmp_path):
+    data_dir = tmp_path / "data"
+    project_id = _build_project(data_dir)
+    repository, artifacts, target_id, prep_id = _runtime(
+        data_dir,
+        project_id,
+        repository_type=FencedTaskRepository,
+    )
+    lease = repository.claim_next(
+        "stale-preparer",
+        [TaskKind.TRAINING_PREPARE],
+        {"training.prepare"},
+    )
+    assert lease is not None
+    context = WorkerContext(lease.task, lease, repository, artifacts)
+    context.mark_lease_lost()
+    handler = RemoteTrainingPrepareHandler(data_dir)
+
+    with pytest.raises(ExecutionFencedError):
+        handler.run(context)
+
+    target = repository.get(target_id)
+    assert target is not None and target.status is TaskStatus.QUEUED
+    assert target.error is None
+
+
+def test_transient_prepare_sqlite_error_does_not_fail_parent(tmp_path, monkeypatch):
+    data_dir = tmp_path / "data"
+    project_id = _build_project(data_dir)
+    repository, artifacts, target_id, _prep_id = _runtime(
+        data_dir,
+        project_id,
+        repository_type=FencedTaskRepository,
+    )
+    lease = repository.claim_next(
+        "busy-preparer",
+        [TaskKind.TRAINING_PREPARE],
+        {"training.prepare"},
+    )
+    assert lease is not None
+    context = WorkerContext(lease.task, lease, repository, artifacts)
+    handler = RemoteTrainingPrepareHandler(data_dir)
+
+    def raise_busy(*_args, **_kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(handler, "_target", raise_busy)
+
+    with pytest.raises(sqlite3.OperationalError, match="locked"):
+        handler.run(context)
+
+    target = repository.get(target_id)
+    assert target is not None and target.status is TaskStatus.QUEUED
+    assert target.error is None
+
+
+def test_cancelled_training_parent_is_not_reactivated_by_prepare_recovery(tmp_path):
+    data_dir = tmp_path / "data"
+    project_id = _build_project(data_dir)
+    repository, artifacts, target_id, prep_id = _runtime(
+        data_dir,
+        project_id,
+        repository_type=FencedTaskRepository,
+    )
+    first = repository.claim_next(
+        "dead-preparer",
+        [TaskKind.TRAINING_PREPARE],
+        {"training.prepare"},
+        lease_seconds=1,
+    )
+    assert first is not None
+    assert repository.release_expired("2999-01-01T00:00:00+00:00") == 1
+    repository.request_cancel(target_id)
+
+    handler = RemoteTrainingPrepareHandler(data_dir)
+    Scheduler(
+        repository,
+        artifacts,
+        "recovery-preparer",
+        {TaskKind.TRAINING_PREPARE: handler},
+        {"training.prepare"},
+    ).run_once()
+
+    target = repository.get(target_id)
+    assert target is not None and target.status is TaskStatus.CANCELLED
+    assert target.required_capabilities == ("training.ultralytics",)
+    payload = artifacts.read_json(target_id, "payload.json")
+    assert payload["remote_input_state"] == "PREPARING"
+
+
+# GOV: a queued request is an exact candidate set, never a fresh project filter.
+def _queued_recheck(materials,split):
+    import platform_core.training_tasks as module
+    fn=getattr(module,'revalidate_queued_training_selection',None)
+    assert callable(fn),'queued preparation must revalidate only its original exact candidate IDs'
+    return fn(materials,split)
+
+
+def test_queued_selection_10000_to_9500_does_not_add_new_project_images(tmp_path):
+    from platform_core.training_splits import SplitRequest,SplitMode
+    materials=MaterialRepository(tmp_path/'projects'/'queued')
+    original=tuple(f'image-{i:05d}' for i in range(10000))
+    materials.upsert_many([{'id':key,'filename':key+'.jpg'} for key in original[500:]]+[{'id':'outside-original','filename':'outside.jpg'},{'id':'test-original','filename':'test.jpg'}])
+    split=SplitRequest(SplitMode.INDEPENDENT_TEST_SET,original,('test-original',))
+    effective,report=_queued_recheck(materials,split)
+    assert effective.train_image_ids==original[500:]
+    assert effective.test_image_ids==('test-original',)
+    assert 'outside-original' not in effective.train_image_ids
+    assert report['requested_train_count']==10000
+    assert report['remaining_train_count']==9500
+    assert len(report['removed_image_ids'])==500
+
+
+@pytest.mark.parametrize('remaining,test_present,code',[(1,True,'TRAINING_SELECTION_INSUFFICIENT'),(3,False,'TRAINING_TEST_SELECTION_INSUFFICIENT')])
+def test_queued_selection_refuses_insufficient_original_scope(tmp_path,remaining,test_present,code):
+    from platform_core.training_splits import SplitRequest,SplitMode
+    materials=MaterialRepository(tmp_path/'projects'/'queued')
+    materials.upsert_many([{'id':f'image-{i}','filename':f'{i}.jpg'} for i in range(remaining)]+([{'id':'test','filename':'t.jpg'}] if test_present else []))
+    split=SplitRequest(SplitMode.INDEPENDENT_TEST_SET,('image-0','image-1','image-2'),('test',))
+    with pytest.raises(ValueError,match=code):_queued_recheck(materials,split)

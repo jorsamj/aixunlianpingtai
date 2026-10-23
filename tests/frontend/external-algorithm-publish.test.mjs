@@ -4,9 +4,30 @@ import {readFileSync} from 'node:fs';
 
 import {
   normalizePublishConfig,
+  computePlatformTreeRows,
+  childPlatformChoices,
+  localChipKey,
   publicationActionLabel,
   publicationPreflight,
+  publicationWeightDetails,
+  publicationResultMessage,
 } from '../../static/modules/external-algorithm-publish.js';
+
+test('weight status shows known facts and optional gaps without downgrading successful delivery',()=>{
+  const html=publicationWeightDetails({artifacts:[{target:'rockchip',file_name:'model.rknn',remote_registered:true,
+    compute_platform_id:'rk-child',mapped_chip_code:'RK3576',metadata_sync_status:'PENDING',size_bytes:123,sha256:'a'.repeat(64),
+    metadata:{image_width:640,image_height:384,yolo_version:'YOLOv11s',tags:['smoke','fire']}}]});
+  for(const fact of ['RK3576','rk-child','640','384','YOLOv11s','123','a'.repeat(64),'smoke','fire','可同步已确定的补充信息'])assert.ok(html.includes(fact),fact);
+  const incomplete=publicationWeightDetails({artifacts:[{file_name:'best.pt',sync_status:'SYNCED',metadata_sync_status:'SYNCED',metadata_note:'部分扩展信息未提供：yoloVersion <unknown>'}]});
+  assert.ok(incomplete.includes('部分扩展信息未提供：yoloVersion &lt;unknown&gt;'));
+  assert.match(incomplete,/同步成功/);
+  assert.doesNotMatch(incomplete,/同步失败|阻断/);
+  const failed=publicationWeightDetails({artifacts:[{file_name:'model.rknn',metadata_note:'部分扩展信息未提供：tags',last_error:'真实远端错误 FIELD_REJECTED'}]});
+  assert.match(failed,/部分扩展信息未提供：tags/);
+  assert.match(failed,/真实远端错误 FIELD_REJECTED/);
+  assert.match(publicationResultMessage({publication:{status:'PUBLISHED'},metadata_note:'tags未提供'}),/已同步到新畅联/);
+  assert.match(publicationResultMessage({publication:{status:'PARTIAL'},conversion_failures:['真实接口失败']}),/尚未完整同步/);
+});
 
 test('publish config normalizes storage, compute mappings and recovery paths', () => {
   const config = normalizePublishConfig({
@@ -233,4 +254,71 @@ test('version rollback is destructive and external deletion is explained in the 
   assert.match(appSource, /delete_current_version:true/);
   assert.match(appSource, /先删除新畅联对应算法版本及其权重/);
   assert.doesNotMatch(appSource, /id="rollbackDeleteCurrent"/);
+});
+
+
+test('compute platform tree shows full names but never equates a label with a local chip identity', () => {
+  const remote = [
+    {computePlatformId: 100, computePlatformName: '瑞芯微', parentId: 0, delFlag: 0},
+    {computePlatformId: 101, computePlatformName: '边缘设备环境', parentId: 100, delFlag: 0},
+    {computePlatformId: 102, computePlatformName: 'RK 设备档位', parentId: 100, delFlag: 1},
+    {computePlatformId: 200, computePlatformName: 'ONNX', parentId: 0, delFlag: 0},
+  ];
+  const rows = computePlatformTreeRows(remote);
+  assert.equal(rows.find(row => row.id === '101').path, '瑞芯微 / 边缘设备环境');
+  assert.equal(rows.find(row => row.id === '101').active, true);
+  assert.equal(rows.find(row => row.id === '102').active, false);
+  assert.deepEqual(childPlatformChoices(remote, '100').map(row => row.id), ['101']);
+  assert.equal(localChipKey('rk-3568'), 'RK3568');
+  assert.equal(localChipKey('RK3576'), 'RK3576');
+});
+
+test('chip dictionary and individual child mappings survive frontend normalization', () => {
+  const model = normalizePublishConfig({
+    config: {target_mappings: {rockchip: {
+      compute_platform_id: 'parent-rk',
+      chip_mappings: {RK3568: 'child-edge', RK3576: 'child-model'},
+    }}},
+    chip_dictionary: {rockchip: ['RK3568', 'RK3576', 'RK3578']},
+  });
+  assert.deepEqual(model.targetMappings.rockchip.chip_mappings,
+    {RK3568: 'child-edge', RK3576: 'child-model'});
+  assert.deepEqual(model.chipDictionary.rockchip, ['RK3568', 'RK3576', 'RK3578']);
+});
+
+
+test('save refresh retains backend chip dictionary rather than replacing it with empty UI defaults', () => {
+  const source = readFileSync(new URL('../../static/modules/external-algorithm-publish.js', import.meta.url), 'utf8');
+  assert.match(source, /chip_dictionary: config\?\.chipDictionary/);
+  assert.match(source, /chip_mappings: chipMappings/);
+  assert.doesNotMatch(source, /if \(chip && code\) chip\.value = code/);
+});
+
+
+test('weight details distinguish frozen, local, prepared, confirmed and read-back tags',()=>{
+  const html=publicationWeightDetails({artifacts:[{file_name:'best.pt',sync_status:'SYNCED',remote_registered:true,
+    metadata_sync_status:'PENDING',metadata:{tags:['fire1','smoke1'],label_validation_status:'VERIFIED'},
+    frozen_tags:['fire1','smoke1'],local_tags:['fire1','smoke1'],prepared_tags:['fire1','smoke1'],
+    request_tags:['fire1','smoke1'],request_status:'UNKNOWN',confirmed_tags:null,remote_tags:null,remote_tags_status:'NOT_RETURNED'}]});
+  for(const text of ['冻结类别','本地类别','准备提交','HTTP 请求记录','UNKNOWN','已确认提交','远端未返回 tags','标签补齐待处理','同步成功','2 类'])assert.ok(html.includes(text),text);
+  assert.ok(!html.includes('远端已验证：fire1'));
+});
+
+
+test('automatic delivery facts preserve historical identity and confirmed remote readback without manual selection',()=>{
+  const html=publicationWeightDetails({project_id:'p',algorithm:{id:'a'},version:{id:'v'},publication:{status:'PUBLISHED'},weight_delivery_status:'PUBLISHED',artifacts:[
+    {artifact_id:'old',file_name:'same.bmodel',target:'sophon',external_weight_id:'w-old',sync_status:'SYNCED',storage_status:'UPLOADED',compute_platform_id:'parent',chip_code:'bm1684x',sha256:'a'.repeat(64),delivery_role:'HISTORICAL',included_in_delivery:false,remote_identity_status:'HISTORICAL_RECEIPT'},
+    {artifact_id:'new',file_name:'same.bmodel',target:'sophon',external_weight_id:'w-old',sync_status:'SYNCED',storage_status:'UPLOADED',chip_code:'bm1684x',sha256:'b'.repeat(64),delivery_role:'AUTOMATIC_CURRENT',remote_identity_status:'READ_BACK',review_required:false}]});
+  for(const value of ['PUBLISHED','old','new','w-old','UPLOADED','同步成功','历史成果','自动当前交付','远端读回已确认'])assert.ok(html.includes(value),value);
+  assert.doesNotMatch(html,/data-weight-select|选择交付成果|仅保存本地交付意向|待人工审核/);
+  const error=publicationWeightDetails({publication:{status:'PARTIAL'},artifacts:[{file_name:'model.rknn',sync_status:'UNKNOWN',review_required:true,recovery_plan:{reason:'同一芯片两个Weight ID',target_compute_platform_id:'child'}}]});
+  for(const value of ['PARTIAL','UNKNOWN','同一芯片两个Weight ID','child','管理员'])assert.ok(error.includes(value),value);
+});
+
+
+test('stable mapping normalization preserves dynamic vendors chips revision and historical mappings',()=>{
+  const model=normalizePublishConfig({config:{mapping_revision:4,target_mappings:{'vendor:business-a':{local_vendor_id:'business-a',compute_platform_id:'parent-a',chip_mappings:{'chip-a':'child-a'}}}},local_catalog:{revision:7,vendors:[{id:'business-a',name:'独立业务厂商',adapter:'sophon'}],chips:[{id:'chip-a',vendor_id:'business-a',sdk_code:'bm1684x',enabled:false}]},mapping_diagnostics:{vendors:{'business-a':{status:'BOUND'}}}});
+  assert.equal(model.targetMappings['vendor:business-a'].local_vendor_id,'business-a');
+  assert.equal(model.localCatalog.vendors[0].id,'business-a');assert.equal(model.localCatalog.chips[0].enabled,false);
+  assert.equal(model.mappingRevision,4);assert.equal(model.localCatalog.revision,7);
 });

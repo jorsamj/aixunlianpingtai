@@ -353,3 +353,39 @@ def test_training_picker_summary_and_test_bulk_ignore_stale_material_annotation_
     assert label_bulk_body["total"] == 115
     assert "m0000" not in label_bulk_body["items"]
     assert "m0250" in label_bulk_body["items"]
+
+
+def test_training_picker_creation_time_order_across_pages_and_formal_labels(tmp_path):
+    client, _ = _client(tmp_path)
+    endpoint = "/api/v62/projects/p1/training-materials"
+    for order, expected in (
+        ("newest", ["m0259", "m0258", "m0257"]),
+        ("oldest", ["m0000", "m0001", "m0002"]),
+    ):
+        first = client.get(endpoint, params={"page": 1, "page_size": 3, "sort_order": order})
+        assert first.status_code == 200, first.text
+        assert [row["id"] for row in first.json()["items"]] == expected
+        second = client.get(endpoint, params={"page": 2, "page_size": 3, "sort_order": order})
+        assert second.status_code == 200, second.text
+        assert {row["id"] for row in first.json()["items"]}.isdisjoint(
+            {row["id"] for row in second.json()["items"]}
+        )
+    smoke = client.get(endpoint, params=[("page", "1"), ("page_size", "2"),
+                                         ("label", "smoke"), ("sort_order", "newest")])
+    assert smoke.status_code == 200, smoke.text
+    assert [row["id"] for row in smoke.json()["items"]] == ["m0228", "m0226"]
+    assert client.get(endpoint, params={"sort_order": "invalid"}).status_code == 422
+
+
+def test_training_picker_newest_cursor_has_no_duplicate_materials(tmp_path):
+    client, _ = _client(tmp_path)
+    endpoint = "/api/v62/projects/p1/training-materials"
+    first = client.get(endpoint, params={"limit": 3, "sort_order": "newest"})
+    assert first.status_code == 200, first.text
+    assert [row["id"] for row in first.json()["items"]] == ["m0259", "m0258", "m0257"]
+    second = client.get(endpoint, params={
+        "limit": 3, "sort_order": "newest",
+        "cursor": first.json()["next_cursor"],
+    })
+    assert second.status_code == 200, second.text
+    assert [row["id"] for row in second.json()["items"]] == ["m0256", "m0255", "m0254"]

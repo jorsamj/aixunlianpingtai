@@ -258,10 +258,10 @@ jobs:
               ),
               'static/modules/zip-import-runtime.js': (
                   'zipNeedsLabelConfirmation',
-                  '标注入库确认',
+                  '一键使用原始标签',
                   'confirmLabels',
                   '选择平台标签',
-                  "setPage('标签管理')",
+                  "data-zip-confirm-button",
                   "openInlineLabelCreate414?.('zip'",
                   'window.doImportData=()=>',
               ),
@@ -285,7 +285,8 @@ jobs:
                   'id="startSourceImportBtnV36"',
                   'label414Aliases',
                   '不会用于导入时自动选择或推荐平台标签',
-                  '只记录人工决定；不会自动推荐或预选。',
+                  '英文编码一致自动关联已有标签；新编码须手动创建。',
+                  'labelReviewUseSource61',
                   'function labelReviewMarkup61(',
                   'function explicitCanonicalAiLabelText(value)',
                   '中文名、别名、历史 alias 不会自动转换',
@@ -305,14 +306,14 @@ jobs:
                   '平台标签已创建并选中；仍需确认后才会正式入库',
               ),
               'static/index.html': (
-                  '/static/zip-import-bootstrap.mjs?v=422617',
+                  '/static/zip-import-bootstrap.mjs?v=',
               ),
               'static/main.mjs': (
                   'annotation-task-view.js?v=422002',
                   'server-material-import.js?v=422526',
               ),
               'static/zip-import-bootstrap.mjs': (
-                  'zip-import-runtime.js?v=422617',
+                  'zip-import-runtime.js?v=',
               ),
           }
           bodies = {
@@ -344,6 +345,17 @@ jobs:
               missing.setdefault('static/index.html', []).append('cache-busted app.js entrypoint')
           if not re.search(r'/static/main\.mjs\?v=\d+(?:\.\d+)*', index_html):
               missing.setdefault('static/index.html', []).append('cache-busted main.mjs entrypoint')
+          # Cache revisions advance on deploy; protect a minimum rather than
+          # pinning the source contract to an obsolete exact revision.
+          for name, body, marker in (
+              ('static/index.html', index_html, r'/static/zip-import-bootstrap\.mjs\?v=(\d+)'),
+              ('static/zip-import-bootstrap.mjs', zip_bootstrap, r'zip-import-runtime\.js\?v=(\d+)'),
+          ):
+              match = re.search(marker, body)
+              if not match or int(match.group(1)) < 4226359:
+                  missing.setdefault(name, []).append(
+                      'ZIP import cache revision missing or below 4226359'
+                  )
           if app.count('_reject_legacy_annotated_import(project_id)') != 5:
               missing.setdefault('app.py', []).append(
                   'exactly five legacy annotated import guards'
@@ -488,13 +500,13 @@ jobs:
                   missing.setdefault('app.py', []).append(route)
           for token in (
               'ANNOTATION_EMPTY_CONFIRMATION_REQUIRED',
-              'annotation_state: Optional[Literal["annotated", "confirmed_empty"]]',
+              'annotation_state: Optional[Literal["unannotated", "annotated", "confirmed_empty"]]',
               '@app.get("/api/v12/projects/{project_id}/algorithms/{algorithm_id}")',
               'train_completed_count',
           ):
               if token not in app:
                   missing.setdefault('app.py', []).append(token)
-          for token in ('ann420ConfirmEmpty', 'confirmEmptyAnnotation420', '暂无已结束训练可统计'):
+          for token in ('ann420SaveReview', 'saveAndConfirmAnnotationReview420', '暂无已结束训练可统计'):
               if token not in static_app:
                   missing.setdefault('static/app.js', []).append(token)
           if 'test_multi_source_label_unify_is_one_durable_task_and_retires_sources' not in Path('tests/api/test_durable_label_remap.py').read_text(encoding='utf-8'):

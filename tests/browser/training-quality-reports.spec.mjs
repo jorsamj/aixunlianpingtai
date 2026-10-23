@@ -1,3 +1,4 @@
+import {returnToTrainingConfiguration} from './helpers/training-admission.mjs';
 import {test, expect} from '@playwright/test';
 
 async function waitForCanonicalApp(page) {
@@ -60,7 +61,7 @@ async function seedTrainingProject(request) {
   return {project, algorithm: listed.items.find(item => item.id === algorithm.algorithm.id)};
 }
 
-async function routeReadyTrainingRuntime(page) {
+async function routeReadyTrainingRuntime(page, defaultSize=640) {
   await page.route('**/api/training_options**', route => route.fulfill({
     status: 200,
     contentType: 'application/json',
@@ -75,7 +76,7 @@ async function routeReadyTrainingRuntime(page) {
         name: 'Ultralytics Detect',
         base_model: 'yolo11n.pt',
         default_epochs: 100,
-        default_imgsz: 640,
+        default_imgsz: defaultSize,
         default_batch: 8,
       }],
       base_models: [{value: 'yolo11n.pt', label: 'YOLO11n 目标检测', model_status: 'FOUND'}],
@@ -148,6 +149,7 @@ test('training dialog exposes iteration base, stacked quality charts, and report
 
   const trainingDialog = page.getByRole('dialog', {name: '创建训练任务'});
   await expect(trainingDialog).toBeVisible();
+  await returnToTrainingConfiguration(page);
   await expect(trainingDialog.locator('.train-v3-summary')).toContainText('本次训练素材0 张');
   await expandTrainingAdvanced(trainingDialog);
   await expect(trainingDialog.locator('#trainBaseModeLabelV3')).toContainText('首次训练');
@@ -210,6 +212,7 @@ test('training submit sends the selected candidate pool and configured experimen
   await card.getByRole('button', {name: '训练'}).click();
   const dialog = page.getByRole('dialog', {name: '创建训练任务'});
   await expect(dialog).toBeVisible();
+  await returnToTrainingConfiguration(page);
   await expect(dialog.locator('.train-v3-summary')).toContainText('本次训练素材0 张');
   await selectAllTrainingMaterials(page, dialog);
   const fireLabel = dialog.locator('[data-training-label-code="fire"]');
@@ -217,7 +220,7 @@ test('training submit sends the selected candidate pool and configured experimen
   await fireLabel.check();
   await expandTrainingAdvanced(dialog);
   await dialog.locator('#tr429Priority').fill('0');
-  await dialog.getByRole('button', {name: '创建训练任务'}).click();
+  await dialog.locator('.train428-footer .btn.primary').click();
   await expect(page.locator('#toast')).toContainText('任务优先级必须是 1~999 的整数');
   expect(submitted).toBeUndefined();
   await dialog.locator('#trV3Experiment').fill('35');
@@ -233,7 +236,7 @@ test('training submit sends the selected candidate pool and configured experimen
     if (url.pathname.startsWith('/api/')) postSubmitRequests.push(`${request.method()} ${url.pathname}${url.search}`);
   };
   page.on('request', capturePostSubmit);
-  await dialog.getByRole('button', {name: '创建训练任务'}).click();
+  await dialog.locator('.train428-footer .btn.primary').click();
   await expect.poll(() => submitted).toBeTruthy();
   await expect.poll(async () => page.evaluate(() =>
     window.PlatformCore?.runtime?.trainingSubmitRuntime?.state?.().submitting ?? true
@@ -266,6 +269,7 @@ test('training material selection does not depend on dataset groups and supports
   }, algorithm.id);
   const dialog = page.getByRole('dialog', {name: '创建训练任务'});
   await expect(dialog).toBeVisible();
+  await returnToTrainingConfiguration(page);
   await expect(dialog.locator('.train-v3-summary')).toContainText('本次训练素材0 张');
 
   await dialog.getByRole('button', {name: '选择训练素材'}).click();
@@ -297,7 +301,7 @@ test('training material selection does not depend on dataset groups and supports
   await picker.getByRole('button', {name: '确认选择'}).click();
 
   await expect(dialog.locator('.train-v3-summary')).toContainText('本次训练素材0 张');
-  await expect(dialog.getByRole('button', {name: '创建训练任务'})).toBeDisabled();
+  await expect(dialog.getByRole('button', {name: '开始训练'})).toBeEnabled();
 });
 
 test('versioned training locks the latest version and projects the current random split', async ({page, request}) => {
@@ -340,12 +344,28 @@ test('versioned training locks the latest version and projects the current rando
     }})});
   });
   await selectIsolatedTestProject(page, project.id, '算法列表');
+  // Both startup snapshot and project GET represent the same verified
+  // algorithm-version identity; a GET-only fixture leaves startup stale.
+  await page.route('**/api/v53/bootstrap/snapshot**', async route => {
+    const url = new URL(route.request().url());
+    url.searchParams.set('preferred_project_id', project.id);
+    const response = await route.fetch({url: url.toString()});
+    const snapshot = await response.json();
+    await route.fulfill({response, json: {
+      ...snapshot,
+      algorithms: (snapshot.algorithms || []).map(item => item.id === algorithm.id
+        ? {...item, current_version_id: latestVersion.id, versions: [latestVersion]}
+        : item),
+    }});
+  });
   await page.goto('/');
   await waitForCanonicalApp(page);
   await page.getByRole('button', {name: /算法列表/}).click();
   const card = page.locator('[data-algorithm-card]', {hasText: '烟火迭代算法'});
   await card.getByRole('button', {name: '训练'}).click();
   const dialog = page.getByRole('dialog', {name: '创建训练任务'});
+  await expect(dialog).toBeVisible();
+  await returnToTrainingConfiguration(page);
 
   await expect(dialog.locator('.train-v3-summary')).toContainText('本次训练素材0 张');
   await expandTrainingAdvanced(dialog);
@@ -380,7 +400,8 @@ test('training queue displays numeric priorities and orders each resource by pri
   await selectIsolatedTestProject(page, project.id, '训练任务');
   await page.goto('/');
   await waitForCanonicalApp(page);
-  await expect(page.locator('.nav-project-v')).toHaveText(project.name);
+  await expect(page.locator('.nav-project')).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => state.project?.id)).toBe(project.id);
   await expect.poll(async () => page.evaluate(() => typeof window.TrainingTaskRuntime?.refresh)).toBe('function');
   await page.evaluate(async () => {
     await window.setPage?.('训练任务');
@@ -453,4 +474,49 @@ test('training report shows requested epochs actual epochs stop reason and targe
   await expect(facts.locator('div', {hasText: '实际轮次'}).locator('b')).toHaveText('46');
   await expect(facts.locator('div', {hasText: '停止原因'}).locator('b')).toHaveText('达到目标指标，提前完成');
   await expect(facts.locator('div', {hasText: '目标状态'}).locator('b')).toHaveText('已达标');
+});
+
+
+test('training precision remains visible and canonical across all four modes',async({page,request},testInfo)=>{
+  const {project}=await seedTrainingProject(request);await routeReadyTrainingRuntime(page);
+  await selectIsolatedTestProject(page,project.id);await page.goto('/');await waitForCanonicalApp(page);
+  await page.locator('[data-algorithm-card]',{hasText:'烟火迭代算法'}).getByRole('button',{name:'训练',exact:true}).click();
+  const dialog=page.getByRole('dialog',{name:'创建训练任务'}),precision=dialog.locator('#trV3ManualPrecision');
+  await expect(dialog).toBeVisible();await returnToTrainingConfiguration(page);
+  await expect(precision).toBeVisible();await expect(precision).toHaveValue('auto');
+  await precision.selectOption('fp32');
+  for(const mode of ['quick','complex','custom','full']){
+    await dialog.locator(`[data-mode="${mode}"]`).click();
+    await expect(precision).toBeVisible();await expect(precision).toHaveValue('fp32');
+    expect(await page.evaluate(()=>state.trainingDraft.config.precision)).toBe('fp32');
+    expect(await page.evaluate(()=>state.trainingDraft.config.amp)).toBe(false);
+  }
+  await expect(precision.locator('option')).toHaveText(['自动 AMP（推荐）','FP16 AMP','FP32 全精度']);
+  await precision.scrollIntoViewIfNeeded();
+  await page.screenshot({path:testInfo.outputPath('training-precision.png')});
+});
+
+
+test('iteration inherits actual precision and size while mode switches preserve explicit choices',async({page,request})=>{
+ const {project,algorithm}=await seedTrainingProject(request);await routeReadyTrainingRuntime(page);
+ await selectIsolatedTestProject(page,project.id);await page.goto('/');await waitForCanonicalApp(page);
+ await page.evaluate(id=>{const a=state.algorithms.find(row=>row.id===id);a.current_version_id='isolated-prior';a.versions=[{id:'isolated-prior',version_name:'隔离迭代来源',training_status:'succeeded',artifact_verified:true,trainable:true,training_lineage:{parameters:{actual:{effective_precision:'fp32',imgsz:800}}}}]},algorithm.id);
+ await page.locator('[data-algorithm-card]',{hasText:'烟火迭代算法'}).getByRole('button',{name:'训练',exact:true}).click();
+ const dialog=page.getByRole('dialog',{name:'创建训练任务'});
+ await expect(dialog).toBeVisible();await returnToTrainingConfiguration(page);
+ await expect(dialog.locator('#trV3ManualPrecision')).toHaveValue('fp32');
+ expect(await page.evaluate(()=>state.trainingDraft.config.imgsz)).toBe(800);
+ for(const mode of ['quick','complex','custom','full']){await dialog.locator(`[data-mode="${mode}"]`).click();expect(await page.evaluate(()=>state.trainingDraft.config.imgsz)).toBe(800);await expect(dialog.locator('#trV3ManualPrecision')).toHaveValue('fp32')}
+ await page.evaluate(()=>{state.trainingDraft.config.imgsz=640});
+ await dialog.locator('[data-mode="complex"]').click();expect(await page.evaluate(()=>state.trainingDraft.config.imgsz)).toBe(640);
+});
+
+
+test('first training still adopts actual algorithm default when no inherited size exists',async({page,request})=>{
+ const {project}=await seedTrainingProject(request);await routeReadyTrainingRuntime(page,1280);
+ await selectIsolatedTestProject(page,project.id);await page.goto('/');await waitForCanonicalApp(page);
+ await page.locator('[data-algorithm-card]',{hasText:'烟火迭代算法'}).getByRole('button',{name:'训练',exact:true}).click();
+ await expect(page.getByRole('dialog',{name:'创建训练任务'})).toBeVisible();
+ await returnToTrainingConfiguration(page);
+ expect(await page.evaluate(()=>state.trainingDraft.config.imgsz)).toBe(1280);
 });

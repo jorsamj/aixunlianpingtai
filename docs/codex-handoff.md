@@ -1,3 +1,15 @@
+## 2026-10-22｜场景评估、素材与标注UI（代码及隔离CI已验收）
+
+唯一需求/进度/问题/截图：[本轮专项](SCENARIO_MODEL_EVALUATION_UI_GOVERNANCE_2026_10_22.md)。P0分别提交1f606d30/13c70368/b8d04f04；正式训练资格贯穿原Worker/Agent、双模式内联框证据、素材同Owner网格/列表、标注唯一审核/正式色/居中已实现。P1复用原ECharts与严格同基准比较；VERSION42.24.377，最终代码42bf33b2实际23/23 Actions、60/60 Checks、Chrome239/239；本地Node1297/Python213通过，广泛352曾339通过13失败后逐项fresh通过，未宣称重跑全绿。本次文档/旧fixture补提自身完整SHA须再核CI，最终回执与限制见唯一专项。未生产部署/数据/权重写入/GPU；从唯一专项接续，禁止重复建Owner，生产真实精度与许可仍需独立核验。
+
+## 2026-10-22｜训练创建按需准入与Loading（代码及隔离CI已验收）
+
+唯一专项：[生命周期治理第十一节](TRAINING_MATERIAL_LIFECYCLE_GOVERNANCE_2026_10_21.md)。打开/编辑保持安静，仅“开始训练”触发原完整准入与创建；有效阻塞才显示原因，草稿/项目/Modal过期及网络错误隔离。旧自动弹窗/自动正式复检触发被本轮用户要求覆盖，后端与删除GT合同保留。VERSION42.24.376，Node1239通过/Python126通过2环境skip，本地Chrome59独立场景分批通过；实现c0163347287beeca1e3e52fa0e42c71c423527bc实际41/41 Actions、114/114 Checks通过，CI Chrome207/207及first-open15/15；本次文档HEAD自身仍须独立CI。禁止改Uppy/UploadTaskCenter实现，未生产部署/写入/GPU。接续从原submit/summary及新增on-demand Chrome开始，完整RED/问题/限制见唯一专项。
+
+## 2026-10-22｜原 UploadTaskCenter 稳定性修复（代码及隔离CI已验收）
+
+唯一专项：[Uppy专项6A](UPPY_ZIP_ADAPTER_POC_2026_10_22.md)。按钮按action原位保留、进度合帧/500ms保存、关键状态即时保存、稳定rekey/order、原ZIP进度来源与图片详情均在原Owner修复。真实RED及追加审查问题已记录；VERSION42.24.375，Node1239/Python49/Chrome38及收尾定向8通过；18dae908ee841e9b874d27a38a0a8a0f946f2c00实际22/22 Actions、59/59 Checks通过，CI Chrome191/30；首守卫失败及修正已留痕，本次文档HEAD仍须独立核验。无新任务中心、上传控制器或数据库，未操作生产，其他工作区不动。接续先看6A，勿将旧Uppy验收冒充本轮。
+
 ## 2026-10-10｜四模式训练创建 CI 修复（42.24.345，待全量复验）
 
 - 实际核对基线 `2e01bde1ee362060c23a82be1fad2c5e44341bf3` / `42.24.344` 的 6 个失败 Workflow、对应失败 Job 的原始日志；Remote Material Import 两次触发为同一缓存键测试根因。
@@ -5455,3 +5467,75 @@ GitHub 当前没有 CI status，不能把“测试代码已写”表述成“已
 - 用户确认人工工作台双保存语义：普通保存不扩大 scope；明确补审仅合并用户选中的缺失标签，并与 boxes 在 AnnotationRepository 同一 CAS 写入。
 - 设计文件：`docs/superpowers/specs/2026-10-08-training-label-scope-compatibility-design.md`。实现须复用现有 Runtime、Durable Task ArtifactStore 与训练标签合同，不新增第二 Owner。
 - 本节仅记录设计，代码、定向测试、推送及 CI 尚待后续提交完成。
+## 2026-10-13｜VNext 模型质量工作台（LOCAL VERIFIED / PRODUCTION UAT OPEN）
+
+- 基线 `30f83c48`，唯一 owner 不变：`training_evaluation.py` 负责评测事实，`TrainingRecoveryRuntime` 负责训练详情，`trainingReportCore425` 负责训练报告；没有新增评测引擎、训练状态 owner、轮询器、素材库或标注流程。
+- P0 冻结图片读取按 Evaluation → Snapshot Test ID → SHA256 → 已验证 Bundle/Storage 实际字节闭环；拒绝同名替代、Snapshot 漂移、哈希变化与悬空检测框，安全错误码区分恢复/重试。隔离环境已验证，生产历史对象与真实 OSS 尚未验证。
+- 评测工作台包含总览、类别/真实混淆、Top200 错误图片、真实 Confidence 采样、严格同基准版本对比；同图并排还要求相同 Image ID 与实际字节哈希。训练详情沿用原 runtime 四 Tab，训练报告区分执行、停止、独立评测和业务验收。
+- 本地证据：Python 208 passed / 1 Linux-only skipped；Node 24 frontend 947/947；Real Chrome 51/51；1920×1080、1440×900、1366×768、375×812 的评测、图片、训练详情和报告均截图核验。正式 `VERSION.txt=42.24.355` 未改；未 push、未部署、未执行 GPU 训练。
+- P2 明确保留：全量错误索引、完整场景切片、全量尺寸统计、PDF 导出需要新增可靠证据或迁移；旧记录缺证据时只提示重新评测，不回算或虚构。
+- 本轮交付止于本地提交；GitHub CI、生产历史数据与 GPU 训练仍为 `NOT VERIFIED`。
+
+## 2026-10-13 VNext 独立审查修复交接
+
+- P0：历史错误样本只按显式冻结 Image ID 或唯一冻结 `stored_name` 取图；stem 冲突对抗样本返回正确 stored-name 字节，同名/不完整/漂移安全拒绝，失败图片不显示框。
+- P1：训练报告与独立评测均进入 `质量中心 → detect`；训练详情完整历史一次按需加载，后续 summary 增量合并；比较按 class_id，重复旧标签不可严格比较。
+- P2/UI：20k Snapshot 有界索引、键盘页签、A/B 双侧操作、缺失 delta、核心指标层级和移动端提示已完成。性能按首分钟同为 40 次请求计算：旧 `40×全量=11.3042 MiB`，新 `1×全量+39×精简=0.2985 MiB`，已计首次历史加载；SQLite SELECT 4 → 1/轮询。
+- 最终差异审计：Python focused 60 passed / 1 skipped；Node 24.19 952/952；Chrome focused 7/7。Windows full pytest 2325 passed / 12 skipped / 62 failed，干净 `30f83c48` 对照 62/62 同根因。基线 Full Chrome 142/148、6 fail；最终 VNext Node 24 Full Chrome 143/149、6 fail，六项同名同断点。首轮额外标签管理失败已按真实缓存提交时点修复测试夹具（repeat 5/5、相关素材集合 22/22）；旧基线同样可复现的服务节点启动竞态只修测试前置状态（repeat 3/3）。无生产代码改动或业务断言放宽。详细清单与 Trace 位于 `docs/VNEXT_FINAL_DIFFERENTIAL_AUDIT_2026_10_13.md`。生产历史素材、OSS、GPU、Linux CI 未验证。VERSION 42.24.355 不改，未 push/merge/deploy。
+
+## 2026-10-13 多文件上传队列修复交接
+
+- 选择 ZIP 后先为每个文件创建可见任务，再计算指纹/创建服务器会话；跨批次共享现有两槽 limiter，严格 FIFO。分片传完立即释放槽位，后续合并、扫描、标签确认和正式导入继续由既有 Durable/FIFO Owner 负责。
+- 右下角任务中心展示全部活动项、大小、排队序号、真实进度、错误及暂停/继续/取消/重选/查看动作；活动项不被终态历史上限截断。排队取消和项目切换均按文件、项目隔离；刷新后没有服务器会话的浏览器 File 明确要求重选，不虚构恢复。
+- 单项格式、空文件、重复内容、哈希、会话或传输失败不会吞错或阻断其他文件；同名不同内容仍允许。普通素材原分块 Owner 经 130 文件 Node 与 65 文件 Chrome 回归确认完整受理。
+- `VERSION.txt=42.24.356`；静态缓存与版本健康合同同步。Node 24 frontend 962/962、Python 35/35、Chrome 16/16（含传输中与排队取消）。仅本地提交，CI/生产未验证，未 push/merge/deploy。
+
+
+## 2026-10-14｜训练失败智能诊断（REMOTE PUSHED / LOCAL CI FIX READY）
+
+- 事实源保持唯一：现有 Worker 在训练进程异常退出时只执行一次有界 Kernel journal 读取，并仅保存与 PID、进程创建时间及任务时间窗匹配的结构化 OOM 摘要；详情 API 不扫描系统日志，也未新增轮询器、诊断 Owner 或自动重试。
+- `training_recovery_truth` 输出后端判定的 `diagnosis`（code/certainty/title/summary/evidence/possible_causes/suggestions/checkpoint_message）。`HOST_MEMORY_OOM` 需要任务关联 Kernel 证据；cgroup 还要求同生命周期 `oom_kill_delta>0` 和 scope identity；纯 `SIGKILL/-9` 固定为 `SIGKILL_CAUSE_UNKNOWN`，CUDA OOM、租约丢失、取消、SQLite lock 等保持独立。
+- 对外诊断与折叠技术详情会脱敏路径、Bearer、token/password/secret/API key。旧任务只按已有证据投影，不回写状态或原始 artifact。没有可信恢复合同固定显示“当前没有可恢复的训练断点，需要重新创建训练任务。”，不出现恢复按钮。
+- 训练详情沿用现有四 Tab 和 `TrainingRecoveryRuntime`；桌面将依据/可能原因/建议紧凑分栏，窄屏回到单列。缓存标识和 Training Recovery Guard 同步，正式 `VERSION.txt=42.24.356` 不变。
+- 远端 HEAD `ab470e8c` 的 44 个实际 Actions 已终态：42 success、2 failure、0 running；Training Recovery Guard 与其余训练关键工作流通过。两项失败分别为 Frontend Runtime 守卫仍硬编码旧 `upload-task-center-3`，以及 ZIP Chrome 测试在标签确认模态框拥有交互焦点时点击其后方任务中心。最小测试/工作流修复已在本地完成并复验 Node 964/964、ZIP Chrome 14/14、诊断 Python 33/33，尚未获准再次 push。真实 Linux journal 权限、生产历史任务和 GPU 训练仍为 NOT VERIFIED。
+
+## 2026-10-14｜训练任务创建反馈交接
+
+- `TrainingSubmitRuntime` 唯一 Owner 保持不变，真实阶段合并为三步可读状态；慢请求展示同层反馈，快请求仅按钮 Loading。
+- 成功只认正式 Task ID 与队列状态；网络未知会先回查同一 Task ID，查不清则提示核对并禁止盲重试。失败保留全部训练草稿。
+- Node 968/968、Python 69/69、Real Chrome 1/1；1920/1440/1366/375 与 reduced-motion 通过。VERSION 42.24.356，未 push/merge/deploy。
+
+## 2026-10-15｜重复与异常素材治理交接
+
+- Full Audit 后可按全项目、所选组或单组人工 keeper 生成服务端冻结计划；浏览器不再负责推导或提交实际删除 ID。计划冻结 revision、SHA256、正式标注摘要及每组 KEEP/DELETE 决策，并要求一次性确认凭证。
+- 同图同标注才可自动建议；同图不同标注必须人工选择，异常、未核验和多重历史引用均 fail closed。训练/转换历史、活动任务、Snapshot、算法/模型/评测记录受保护，读不到历史时阻止计划。
+- 执行沿用 `DELETE_INDEX`、现有 selection/Worker/重试/取消/进度；入队与逐项删除均重验身份和引用。只删索引及对应正式标注，不删共享物理对象。治理终态会失效相关分页、训练、标签与质量缓存。
+- 本地通过：Python 11/11 + 19/19、Node 970/970、Real Chrome 1/1；包含 501 删除、120 组分页、幂等、错误凭证、引用保护和 keeper 漂移。VERSION 42.24.356；CI、生产 OSS/历史数据为 NOT VERIFIED，未 push/merge/deploy。
+
+## 2026-10-15｜训练创建反馈 CI 修复交接
+
+- 首轮远端 Chrome 的配置错误场景证明 `training-submit-failed` 遮罩会阻断后续编辑。修复后普通失败为内联非阻断反馈；提交中、成功以及未知 POST 的安全合同未放宽。
+- 同一失败用例 RED 后通过，完整 Chrome 12/12、Node 970/970。仅 styles 缓存标识升至 42.25.379，正式 VERSION 保持 42.24.356；新 CI 待验证。
+- `3718807f` 的 36 个运行中 35 个成功。Frontend 唯一失败的两个真实原因（长表单失败提示越出视口、守卫仍锁定 MaterialBatch 旧 build `422403`）均已最小修复；两个启动测试仅增加权威就绪等待，styles 缓存键为 `42.25.380`。新鲜本地证据：Frontend Chrome 84/84、Training Create Chrome 12/12、Node 970/970；正式 VERSION 仍为 42.24.356，待修复提交远端复验。
+
+## 2026-10-15｜自动资源决议与训练详情弹窗交接
+
+- Auto 在执行 Worker 内按 host/cgroup v2、Batch、Workers、Prefetch、imgsz、有效精度、Cache 与并发联合决议；Manual 不安全即失败。启动 Trainer 前只读复核冻结 host/GPU 预算，不做隐式降档。
+- 指标按任务/节点记录 host/cgroup 和进程树当前/峰值，USS/PSS 去重；无法取得时仅根 RSS。其他 PID 的 OOM 不归因当前任务。
+- `TrainingRecoveryRuntime` 仍是唯一详情 Owner；居中弹窗、内部滚动、原位刷新、四 Tab、Esc/焦点/快速重开/reduced-motion 已由四档 Chrome 验证，并呈现 requested/resolved/runtime 与资源证据。
+- 本地证据：Node 971/971、Python 99 passed / 1 Linux-only skipped、Chrome 4/4。VERSION 42.24.356 未改；A800/GPU、Linux journal 权限、生产与 CI 为 NOT VERIFIED，未 push/merge/deploy。
+
+## 2026-10-15｜资源与训练详情 CI 修复交接
+
+- 首轮远端失败仅定位到旧 `replaceChildren` 静态守卫与 Ubuntu Chrome 68px 标签宽度；现要求原位 patch、禁止旧整树替换，并显式设置 80px 标签最小宽度。
+- Remote Training Runtime 原工作流新增 Ubuntu 具名 cgroup v2 与 `/proc/self/fd` 证据步骤。Windows 本地 Python 99 passed / 2 Linux-only skipped、Node 971/971、Chrome 5/5。
+- 样式缓存键 42.25.382，VERSION 42.24.356 不变；最终远端 CI 和真实 A800/GPU 仍待核验。
+- `39157527` Ubuntu 首跑确认旧 Linux workers=12 精确断言已失效：31 GiB 下联合 Batch/Prefetch 预算会安全收敛到 8。测试现验证 GPU 数量无关、并发预约减配与预算不超限，不固定新数值；真实 cgroup `/proc` 验证仍读取 Runner 文件。
+
+## 2026-10-16｜独立评测图片预览专项（LOCAL VERIFIED / PRODUCTION OPEN）
+
+- 历史无 Image ID 的规范化 Bundle 名通过 Snapshot、manifest Image ID、源 SHA256 和评测字节 SHA256 闭环恢复；同名冲突、归一化证据丢失和内容变化继续拒绝。
+- JPEG/PNG/WebP/BMP 按真实格式返回 MIME；EXIF 仅产生保留原哈希的内存展示派生，保持冻结像素坐标。StorageManager.read_only 禁止预览补写正式素材元数据。
+- 列表与详情统一错误码、单图重试和失败隐藏框；仅错误样本 Tab 当前页最多 24 张。Snapshot、Bundle 和历史素材名称投影复用原上限 8 的元数据缓存，文件身份/素材 Revision 变化时失效，响应逐次校验实际字节。
+- Chrome 覆盖四视口、24/20k 按页请求、跨版本迟到结果、错误原因与重试。生产历史对象、OSS/A800 仍为 NOT VERIFIED；现场只读命令：`python -m scripts.diagnose_evaluation_previews --project-id ID --algorithm-id ID --version-id ID`。
+- VERSION=42.24.356，静态入口缓存=42.25.384；保留先前本地 1de328cc，不推送、不部署、不改历史评测或 Snapshot。详细证据见 docs/EVALUATION_DIAGNOSTICS_P0_2026_10_12.md。

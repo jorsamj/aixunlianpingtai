@@ -22,6 +22,14 @@ test('label management has one canonical browser owner', () => {
   assert.ok(app.includes('不会用于导入时自动选择或推荐平台标签'));
   assert.doesNotMatch(app, /target_label_code\|\|''\)\?'selected'/);
   assert.match(app, /window\.openInlineLabelCreate414=function/);
+  const editStart=app.indexOf('window.openLabel414=function(classId=null)');
+  const editEnd=app.indexOf('window.saveLabel414=async function',editStart);
+  assert.ok(editStart>=0 && editEnd>editStart);
+  const edit=app.slice(editStart,editEnd);
+  assert.match(edit,/state\.label414UsageLoadedAt>0\?state\.label414Usage/);
+  assert.match(edit,/\(state\.labels\|\|\[\]\)\.find/);
+  assert.match(edit,/classId!==null&&!l/);
+
   assert.match(app, /window\.submitInlineLabelCreate414=async function/);
   assert.match(app, /平台标签已创建并选中；仍需确认后才会正式入库/);
   assert.match(app, /\/api\/projects\/\$\{pid\(\)\}\/labels/);
@@ -36,6 +44,8 @@ test('label management has one canonical browser owner', () => {
   assert.match(app, /labels\/integrity\/audits\/\$\{auditTaskId\}\/samples/);
   assert.match(app, /labels\/integrity\/audits\/\$\{auditTaskId\}\/repairs/);
   assert.match(app, /PROJECTION_PREVIEW_DRIFT/);
+  assert.ok(app.includes('训练阻断：同图不同标注'));
+  assert.match(app, /DUPLICATE_ANNOTATION_CONFLICT/);
   assert.match(app, /window\.startLabelPreviewRepair414=function/);
   assert.match(app, /window\.confirmLabelPreviewRepair414=async function/);
   assert.match(app, /labels\/integrity\/audits\/\$\{auditTaskId\}\/projection-repairs/);

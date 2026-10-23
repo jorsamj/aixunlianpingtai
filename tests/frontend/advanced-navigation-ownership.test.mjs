@@ -43,3 +43,17 @@ test('repository records the permanent one-owner one-truth anti-nesting constrai
   assert.match(agents, /normalize\s*\/\s*redirect\s*\/\s*delegate/);
   assert.match(agents, /Page\s*→\s*Surface\s*→\s*Content/);
 });
+
+
+test('deployment resource configuration has one formal menu and an independent existing renderer owner',()=>{
+  const block=finalRenderNavBlock();
+  assert.equal((block.match(/'部署资源'/g)||[]).length,1);
+  assert.match(block, /'模型配置','部署资源'/);
+  const main=readFileSync(new URL('../../static/main.mjs',import.meta.url),'utf8');
+  assert.match(main,/\['部署资源', 'renderDeployResources'\]/);
+  assert.match(main,/\['模型配置', 'renderModelConfigPageV35'\]/);
+  const start=app.indexOf('const RESTORABLE_PAGES413=');
+  const end=app.indexOf('});',start);
+  assert.match(app.slice(start,end),/'部署资源'/);
+  assert.doesNotMatch(app.slice(start,end),/\['部署资源','部署插件'\]\.includes\(rawPage\)/);
+});

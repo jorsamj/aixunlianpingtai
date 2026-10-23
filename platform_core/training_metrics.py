@@ -43,6 +43,177 @@ def host_resources():
     return max(1, cores), available
 
 
+def _read_positive_int(path):
+    try:
+        raw = Path(path).read_text(encoding="utf-8").strip()
+        if not raw or raw == "max":
+            return None
+        value = int(raw)
+        return value if value > 0 else None
+    except (OSError, TypeError, ValueError):
+        return None
+
+
+def host_resource_snapshot():
+    """Read execution-node CPU/RAM truth, respecting a tighter cgroup v2 limit.
+
+    Swap is intentionally absent: it is recovery headroom, not usable training
+    memory.  The resolver runs inside the selected Worker environment, so this
+    sample belongs to the actual execution node instead of the controller.
+    """
+    cores, available = host_resources()
+    host_total = None
+    try:
+        import psutil
+        host_total = int(psutil.virtual_memory().total)
+    except (ImportError, AttributeError, OSError):
+        pass
+    host_available = max(0, int(available or 0))
+    effective = host_available
+    cgroup_limit = cgroup_current = cgroup_headroom = None
+    source = "host"
+    if os.name != "nt":
+        try:
+            relative = ""
+            for line in Path("/proc/self/cgroup").read_text(encoding="utf-8").splitlines():
+                parts = line.split(":", 2)
+                if len(parts) == 3 and parts[0] == "0":
+                    relative = parts[2].lstrip("/")
+                    break
+            scope = Path("/sys/fs/cgroup") / relative
+            cgroup_limit = _read_positive_int(scope / "memory.max")
+            cgroup_current = _read_positive_int(scope / "memory.current")
+            if cgroup_limit is not None and cgroup_current is not None:
+                cgroup_headroom = max(0, cgroup_limit - cgroup_current)
+                if not effective or cgroup_headroom < effective:
+                    effective = cgroup_headroom
+                    source = "cgroup_v2"
+        except OSError:
+            pass
+    return {
+        "cpu_cores": max(1, int(cores)),
+        "host_available_bytes": host_available,
+        "host_total_bytes": host_total,
+        "cgroup_limit_bytes": cgroup_limit,
+        "cgroup_current_bytes": cgroup_current,
+        "cgroup_headroom_bytes": cgroup_headroom,
+        "effective_available_bytes": max(0, int(effective or 0)),
+        "memory_source": source,
+        "sampled_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+_HOST_MEMORY_FRACTIONS = {
+    "stability": 0.56,
+    "balanced": 0.64,
+    "performance": 0.72,
+}
+
+
+def plan_host_training_resources(
+    request, context, *, profile, batch, workers, cache, snapshot, concurrency=1,
+    activation_precision_factor=None,
+):
+    """Jointly bound Batch/DataLoader memory without hard-coded 32/2 values."""
+    available = max(0, int(snapshot.get("effective_available_bytes") or 0))
+    if available <= 0:
+        raise RuntimeError("RESOURCE_HOST_MEMORY_UNKNOWN: execution-node RAM headroom is unavailable")
+    concurrency = max(1, int(concurrency or 1))
+    profile_fraction = _HOST_MEMORY_FRACTIONS[profile]
+    budget = int((available / concurrency) * profile_fraction)
+    train_images = max(1, int(context.get("train_image_count") or 1))
+    decoded = context.get("decoded_dataset_bytes")
+    decoded = max(0, int(decoded)) if decoded is not None else 0
+    imgsz = max(128, int(request.get("imgsz") or 640))
+    raw_sample_bytes = imgsz * imgsz * 3
+    decoded_per_image = int(decoded / train_images) if decoded else 0
+    # decoded_dataset_bytes may cover train/val/test while train_image_count is
+    # train-only. Keep measured evidence useful without allowing that mismatch
+    # to inflate one image into hundreds of MiB.
+    sample_bytes = max(raw_sample_bytes, min(decoded_per_image, raw_sample_bytes * 4))
+    prefetch = min(4, max(1, int(request.get("prefetch_factor") or 2)))
+    precision = str(request.get("precision") or "auto").strip().lower()
+    precision_factor = (
+        max(1.0, float(activation_precision_factor))
+        if activation_precision_factor is not None
+        else (2.0 if precision == "fp32" or request.get("amp") is False else 1.0)
+    )
+    dataset_bytes = max(0, int(context.get("dataset_bytes") or 0))
+    metadata = min(2 * GIB, int(dataset_bytes * 0.10))
+    trainer_base = 4 * GIB + metadata
+    cache_bytes = int(decoded * 1.15) if cache == "ram" else 0
+
+    def estimate(candidate_batch, candidate_workers):
+        # Main-process tensors plus augmented/pinned copies. DataLoader workers
+        # may each retain `prefetch_factor` complete batches in shared memory.
+        batch_workspace = int(sample_bytes * candidate_batch * 8 * precision_factor)
+        per_worker = int(320 * 1024 ** 2 + sample_bytes * candidate_batch * prefetch * 6 * precision_factor)
+        total = trainer_base + cache_bytes + batch_workspace + per_worker * candidate_workers
+        return total, batch_workspace, per_worker
+
+    selected_batch = max(1, int(batch))
+    selected_workers = max(0, int(workers))
+    estimated, batch_workspace, per_worker = estimate(selected_batch, selected_workers)
+    while selected_workers > 0 and estimated > budget:
+        selected_workers -= 1
+        estimated, batch_workspace, per_worker = estimate(selected_batch, selected_workers)
+    while selected_batch > 1 and estimated > budget:
+        selected_batch -= 1
+        estimated, batch_workspace, per_worker = estimate(selected_batch, selected_workers)
+    if estimated > budget:
+        raise RuntimeError(
+            "RESOURCE_HOST_MEMORY_INSUFFICIENT: batch=1/workers=0 exceeds execution-node RAM budget"
+        )
+    return {
+        "batch": selected_batch,
+        "workers": selected_workers,
+        "budget_bytes": budget,
+        "estimated_bytes": estimated,
+        "remaining_required_bytes": max(0, estimated - trainer_base),
+        "trainer_base_bytes": trainer_base,
+        "batch_workspace_bytes": batch_workspace,
+        "worker_bytes_each": per_worker,
+        "cache_bytes": cache_bytes,
+        "sample_bytes": sample_bytes,
+        "prefetch_factor": prefetch,
+        "profile_fraction": profile_fraction,
+    }
+
+
+def validate_frozen_resource_budget(resolved):
+    """Second, read-only guard immediately before Trainer/DataLoader startup."""
+    required = int(resolved.get("host_memory_remaining_required_bytes") or 0)
+    if required <= 0:
+        raise RuntimeError("RESOURCE_PREPARE_REQUIRED: frozen host-memory contract is missing")
+    snapshot = host_resource_snapshot()
+    available = int(snapshot.get("effective_available_bytes") or 0)
+    if available < required:
+        raise RuntimeError(
+            "RESOURCE_HOST_MEMORY_CHANGED: execution-node RAM headroom fell below the frozen plan; "
+            f"required={required}; available={available}"
+        )
+    return snapshot
+
+
+def validate_frozen_gpu_budget(resolved, torch, *, runtime_index=0):
+    """Fail before DataLoader creation if assigned GPU headroom has drifted."""
+    device = str(resolved.get("assigned_device") or "").strip().lower()
+    if not device.startswith("cuda:"):
+        return None
+    estimated = int(resolved.get("estimated_gpu_memory_bytes") or 0)
+    if estimated <= 0:
+        raise RuntimeError("RESOURCE_PREPARE_REQUIRED: frozen GPU memory estimate is missing")
+    free, total = (int(value) for value in torch.cuda.mem_get_info(int(runtime_index)))
+    reserve_floor = max(GIB, int(total * 0.05))
+    required = estimated + reserve_floor
+    if free < required:
+        raise RuntimeError(
+            "RESOURCE_GPU_MEMORY_CHANGED: assigned GPU headroom fell below the frozen plan; "
+            f"required={required}; free={free}"
+        )
+    return {"free_bytes": free, "total_bytes": total, "required_bytes": required}
+
+
 def normalize_cache(value):
     value = str(value).lower().strip()
     if value in {"false", "none", "0", ""}:
@@ -150,7 +321,9 @@ def resolve_resources(request, context, model, torch):
 
     profile_cfg = resource_profile_config(profile)
 
-    cores, ram = host_resources()
+    host_snapshot = host_resource_snapshot()
+    cores = int(host_snapshot["cpu_cores"])
+    ram = int(host_snapshot["effective_available_bytes"])
     concurrency = max(1, int(context.get("concurrent_reservations") or 1))
     cpu_budget = max(1, cores // concurrency)
     dataset_bytes = max(0, int(context.get("dataset_bytes") or 0))
@@ -296,6 +469,29 @@ def resolve_resources(request, context, model, torch):
                 f"to preserve >=4 loader batches per epoch when possible"
             )
             batch = small_set_cap
+    host_plan = None
+    if strategy == "auto":
+        host_plan = plan_host_training_resources(
+            request,
+            context,
+            profile=profile,
+            batch=batch,
+            workers=workers,
+            cache=cache,
+            snapshot=host_snapshot,
+            concurrency=concurrency,
+            activation_precision_factor=activation_precision_factor,
+        )
+        if host_plan["batch"] != batch:
+            adjustments.append(
+                f"batch capped {batch}->{host_plan['batch']} by execution-node host memory budget"
+            )
+        if host_plan["workers"] != workers:
+            adjustments.append(
+                f"workers capped {workers}->{host_plan['workers']} by batch-prefetch host memory budget"
+            )
+        batch = int(host_plan["batch"])
+        workers = int(host_plan["workers"])
     candidate_batch = int(batch)
     candidate_workers = int(workers)
     loader = effective_loader_resources(train_image_count, candidate_batch, candidate_workers)
@@ -313,6 +509,21 @@ def resolve_resources(request, context, model, torch):
                 f"RESOURCE_MANUAL_INVALID: requested workers={requested_workers} exceeds "
                 f"runtime loader cap={loader['worker_batch_cap']} for "
                 f"{loader['loader_batches']} loader batches"
+            )
+        host_plan = plan_host_training_resources(
+            request,
+            context,
+            profile=profile,
+            batch=batch,
+            workers=workers,
+            cache=cache,
+            snapshot=host_snapshot,
+            concurrency=concurrency,
+            activation_precision_factor=activation_precision_factor,
+        )
+        if host_plan["batch"] != batch or host_plan["workers"] != workers:
+            raise ValueError(
+                "RESOURCE_MANUAL_INVALID: requested batch/workers exceed current host memory budget"
             )
     else:
         if candidate_batch != batch:
@@ -333,6 +544,12 @@ def resolve_resources(request, context, model, torch):
             f"effective_batch={batch}; loader_batches={loader['loader_batches']}; "
             f"worker_batch_cap={loader['worker_batch_cap']}; effective_workers={workers}"
         )
+    reasons.append(
+        "Execution-node host memory joint budget "
+        f"source={host_snapshot['memory_source']}; available={ram}; "
+        f"budget={host_plan['budget_bytes']}; estimate={host_plan['estimated_bytes']}; "
+        f"batch={batch}; workers={workers}; prefetch={host_plan['prefetch_factor']}"
+    )
 
     if str(request.get("device", "")).startswith("cuda:"):
         estimated = fixed + batch * per_image
@@ -368,9 +585,24 @@ def resolve_resources(request, context, model, torch):
         available_cpu_cores=cores,
         concurrent_reservations=concurrency,
         available_ram_bytes=ram,
+        host_total_memory_bytes=host_snapshot.get("host_total_bytes"),
+        host_memory_source=host_snapshot.get("memory_source"),
+        cgroup_memory_limit_bytes=host_snapshot.get("cgroup_limit_bytes"),
+        cgroup_memory_current_bytes=host_snapshot.get("cgroup_current_bytes"),
+        cgroup_memory_headroom_bytes=host_snapshot.get("cgroup_headroom_bytes"),
+        host_memory_budget_bytes=host_plan["budget_bytes"],
+        estimated_host_memory_bytes=host_plan["estimated_bytes"],
+        host_memory_remaining_required_bytes=host_plan["remaining_required_bytes"],
+        host_memory_trainer_base_bytes=host_plan["trainer_base_bytes"],
+        host_memory_batch_workspace_bytes=host_plan["batch_workspace_bytes"],
+        host_memory_worker_bytes_each=host_plan["worker_bytes_each"],
+        host_memory_cache_bytes=host_plan["cache_bytes"],
+        host_memory_sample_bytes=host_plan["sample_bytes"],
+        host_memory_prefetch_factor=host_plan["prefetch_factor"],
+        host_memory_profile_fraction=host_plan["profile_fraction"],
         dataset_bytes=dataset_bytes,
         decoded_dataset_bytes=decoded,
-        sampled_at=datetime.now(timezone.utc).isoformat(),
+        sampled_at=host_snapshot.get("sampled_at") or datetime.now(timezone.utc).isoformat(),
     )
     print(
         "[资源决议] "
@@ -413,14 +645,23 @@ def diagnose_window(samples, oom=False):
                 gpu_utilization=gpu, gpu_memory_percent=memory, window_samples=len(samples))
 
 
-def read_metrics(path):
+def read_metrics(path, *, include_history=False):
     path = Path(path)
     if not path.is_file():
         return {}
     try:
         with closing(sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True, timeout=1)) as db, db:
             row = db.execute("SELECT value FROM summary WHERE id=1").fetchone()
-        return json.loads(row[0]) if row else {}
+            result = json.loads(row[0]) if row else {}
+            if include_history:
+                tables = {item[0] for item in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                if 'epochs' in tables:
+                    result['epochs'] = [json.loads(item[0]) for item in reversed(list(
+                        db.execute('SELECT value FROM epochs ORDER BY id DESC LIMIT 1000')))]
+                if 'samples' in tables:
+                    result['samples'] = [json.loads(item[0]) for item in reversed(list(
+                        db.execute('SELECT value FROM samples ORDER BY id DESC LIMIT 720')))]
+        return result
     except (sqlite3.Error, ValueError, OSError):
         return {}
 
@@ -498,11 +739,12 @@ def _trainer_total_epochs(trainer, completed):
 
 
 class TrainingMetrics:
-    def __init__(self, path, resolved, gpu_uuid=None, interval=5):
+    def __init__(self, path, resolved, gpu_uuid=None, interval=5, task_id=None):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.resolved = dict(resolved)
         self.gpu_uuid = gpu_uuid
+        self.task_id = str(task_id or resolved.get("task_id") or "") or None
         self.interval = max(5, float(interval))
         self.started = time.monotonic()
         self.epoch_started = self.started
@@ -513,6 +755,7 @@ class TrainingMetrics:
         self.stop_event = threading.Event()
         self.lock = threading.Lock()
         self.psutil = None
+        self.process_tree_peak_bytes = 0
         try:
             import psutil
             self.psutil = psutil
@@ -539,13 +782,68 @@ class TrainingMetrics:
                 pass
             self.stop_event.wait(self.interval)
 
+    def _process_tree_memory(self):
+        """Prefer additive USS/PSS; never sum shared RSS across processes."""
+        if self.psutil is None or not callable(getattr(self.psutil, "Process", None)):
+            return {"bytes": None, "process_count": None, "measure": None}
+        try:
+            root = self.psutil.Process(os.getpid())
+            processes = [root, *(root.children(recursive=True) or [])]
+        except Exception:
+            return {"bytes": None, "process_count": None, "measure": None}
+        for field in ("uss", "pss"):
+            values = []
+            try:
+                for process in processes:
+                    value = getattr(process.memory_full_info(), field, None)
+                    if value is None:
+                        raise AttributeError(field)
+                    values.append(max(0, int(value)))
+            except Exception:
+                values = []
+            if values:
+                return {"bytes": sum(values), "process_count": len(processes), "measure": field}
+        try:
+            # RSS contains shared pages. Root-only RSS is less complete but is
+            # truthful; summing parent + DataLoader RSS would double count.
+            return {
+                "bytes": max(0, int(root.memory_info().rss)),
+                "process_count": len(processes),
+                "measure": "root_rss_only",
+            }
+        except Exception:
+            return {"bytes": None, "process_count": len(processes), "measure": None}
+
     def sample(self):
         sample = dict(sampled_at=datetime.now(timezone.utc).isoformat(), gpu_utilization=None,
                       gpu_memory_percent=None, gpu_used_bytes=None, gpu_total_bytes=None,
-                      cpu_percent=None, io_wait_percent=None)
+                      cpu_percent=None, memory_percent=None, io_wait_percent=None,
+                      host_available_bytes=None, host_total_bytes=None,
+                      cgroup_memory_limit_bytes=None, cgroup_memory_current_bytes=None,
+                      process_tree_memory_bytes=None, process_tree_peak_memory_bytes=None,
+                      process_tree_count=None, process_tree_memory_measure=None,
+                      task_id=self.task_id, node_id=self.resolved.get("node_id"))
         if self.psutil:
             sample["cpu_percent"] = self.psutil.cpu_percent()
+            sample["memory_percent"] = self.psutil.virtual_memory().percent
             sample["io_wait_percent"] = getattr(self.psutil.cpu_times_percent(), "iowait", None)
+            tree = self._process_tree_memory()
+            if tree["bytes"] is not None:
+                self.process_tree_peak_bytes = max(self.process_tree_peak_bytes, int(tree["bytes"]))
+            sample.update(
+                process_tree_memory_bytes=tree["bytes"],
+                process_tree_peak_memory_bytes=(self.process_tree_peak_bytes or None),
+                process_tree_count=tree["process_count"],
+                process_tree_memory_measure=tree["measure"],
+            )
+        host = host_resource_snapshot()
+        sample.update(
+            host_available_bytes=host.get("effective_available_bytes"),
+            host_total_bytes=host.get("host_total_bytes"),
+            cgroup_memory_limit_bytes=host.get("cgroup_limit_bytes"),
+            cgroup_memory_current_bytes=host.get("cgroup_current_bytes"),
+            host_memory_source=host.get("memory_source"),
+        )
         if self.gpu_uuid:
             gpu = next((row for row in sample_gpus() if row["uuid"] == self.gpu_uuid), None)
             if gpu and gpu.get("total_bytes") and gpu.get("free_bytes") is not None:
@@ -577,8 +875,30 @@ class TrainingMetrics:
         dataset = trainer.train_loader.dataset
         if runtime["runtime_cache"] == "ram" and hasattr(dataset, "ims") and any(image is None for image in dataset.ims):
             raise RuntimeError("RESOURCE_RUNTIME_MISMATCH: runtime declined requested RAM cache")
-        with self.lock:
+        optimizer = getattr(trainer, 'optimizer', None)
+        observed = {}
+        if optimizer is not None:
+            observed['runtime_optimizer'] = type(optimizer).__name__
+            initial = {}
+            for index, group in enumerate(getattr(optimizer, 'param_groups', ()) or ()):
+                if isinstance(group, dict):
+                    value = _finite_float(group.get('initial_lr', group.get('lr')))
+                    if value is not None:
+                        initial[f'lr/pg{index}'] = value
+            if initial:
+                observed['runtime_initial_learning_rates'] = initial
+        amp = getattr(trainer, 'amp', None)
+        if hasattr(amp, 'item'):
+            amp = amp.item()
+        if type(amp) is bool:
+            observed['amp_runtime_enabled'] = amp
+        with self.lock, closing(self.connect()) as db, db:
             self.resolved.update(runtime)
+            self.resolved.update(observed)
+            row = db.execute('SELECT value FROM summary WHERE id=1').fetchone()
+            summary = json.loads(row[0]) if row else {}
+            summary.update(self.resolved)
+            db.execute('INSERT OR REPLACE INTO summary VALUES (1,?)', (json.dumps(summary),))
         return dict(runtime)
 
     def on_epoch_start(self, trainer):
@@ -596,6 +916,9 @@ class TrainingMetrics:
         total = _trainer_total_epochs(trainer, completed)
         sampled_at = datetime.now(timezone.utc).isoformat()
         with self.lock, closing(self.connect()) as db, db:
+            best_epoch = getattr(trainer, 'best_epoch', None)
+            if type(best_epoch) is int and best_epoch >= 0:
+                self.resolved['best_epoch'] = best_epoch + 1
             self.epoch_duration = round(duration, 3)
             self.images_per_second = round(count / duration, 3)
             self.epoch_durations.append(self.epoch_duration)

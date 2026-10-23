@@ -561,6 +561,22 @@ export function installMaterialPaginationRuntime() {
   };
   window.materialCurrentPageIds61 = () => (state.images || []).map(row => String(row.id));
   window.materialSelectedIds61 = () => [...(state.data412Selected || new Set())].map(String);
+  // The durable batch owner estimates and freezes all matching IDs at one
+  // repository revision; visible page cards are never the deletion truth.
+  window.deleteFilteredMaterials61 = async () => {
+    if (!isPagedDataset() || !state.data412DeleteMode) return window.toast?.('请先进入数据集批量操作');
+    const filters = window.materialBatchFilters61?.() || {};
+    const narrowed = Boolean(
+      String(filters.query || '').trim() || (filters.labels || []).length
+      || (filters.storage_source_ids || []).length
+      || (state.data412Tab === 'processed' && String(state.materialAnnotated61 || 'all') !== 'all')
+    );
+    if (!narrowed) return window.toast?.('请先按标签、名称、来源或标注状态筛选，不能一键删除整个素材池');
+    return window.runMaterialBatch62?.('DELETE_INDEX', {scope: 'FILTERED'});
+  };
+  window.clearProjectMaterials61 = () => window.runMaterialBatch62?.('DELETE_INDEX', {scope:'PROJECT'});
+  window.deleteData424 = imageId => window.runMaterialBatch62?.('DELETE_INDEX',{scope:'SELECTED',imageIds:[String(imageId)]});
+  window.batchDelete426 = window.batchDelete429 = () => window.runMaterialBatch62?.('DELETE_INDEX',{scope:'SELECTED',imageIds:[...(state.data424Selected||[])]});
   window.reloadMaterialPage61 = async () => {
     invalidateFullPool61();
     const result = await loadMaterialPage61({reset: true});
@@ -692,6 +708,17 @@ export function installMaterialPaginationRuntime() {
     build: 'material-pagination-runtime-422212',
     load: loadMaterialPage61,
     ensureFullPool: ensureFullPool61,
+    selectionFilters() {
+      const value = filters61();
+      const result = {};
+      if (value.query) result.query = value.query;
+      if (value.sourceId && value.sourceId !== 'all') result.storage_source_ids = [value.sourceId];
+      if (value.processingStatus) result.processing_status = value.processingStatus;
+      if (Array.isArray(value.labels) && value.labels.length) result.labels = value.labels.slice();
+      if (value.annotated === 'marked') result.annotated = true;
+      if (value.annotated === 'unmarked') result.annotated = false;
+      return result;
+    },
     refresh: focusedRefresh61,
     invalidate() {
       invalidateFullPool61();

@@ -2,8 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
-const source = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
-const main = fs.readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8');
+const source = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+const main = fs.readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 
 function block(start, end) {
   const from = source.indexOf(start);
@@ -152,10 +152,11 @@ test('quality-center detection loads focused model and inference extras without 
   assert.match(qualityTab, /await focused\('质量中心'\)/);
   assert.match(qualityTab, /window\.loadPageExtras413\?\.\('质量中心'\)/);
 
-  const benchStart = source.indexOf('function qualityDetectionShell64(models,ready)');
-  const benchEnd = source.indexOf('\n  window.renderQualityDetectionBench64=function renderQualityDetectionBench64()', benchStart);
+  const benchSource=fs.readFileSync(new URL('../../static/modules/quality-detection-workbench.js',import.meta.url),'utf8');
+  const benchStart = benchSource.indexOf('function qualityDetectionShell64(models,ready)');
+  const benchEnd = benchSource.indexOf('\n  window.renderQualityDetectionBench64=function renderQualityDetectionBench64()', benchStart);
   assert.ok(benchStart >= 0 && benchEnd > benchStart);
-  const bench = source.slice(benchStart, benchEnd);
+  const bench = benchSource.slice(benchStart, benchEnd);
   assert.match(bench, /data-quality-detection-shell="1"/);
   assert.match(bench, /onclick="refreshDetectionBenchDataV3\(\)">刷新模型<\/button>/);
   assert.doesNotMatch(bench, /loadAll\(\)\.then\(render\)/);
@@ -229,7 +230,8 @@ test('ordinary page navigation patches chrome state without rebuilding the sideb
   const chrome = main.slice(start, end);
   assert.match(chrome, /querySelectorAll\('\.nav-btn'\)/);
   assert.match(chrome, /classList\.toggle\('active', label === currentPage\)/);
-  assert.match(chrome, /nav\.querySelector\('\.nav-project-v'\)/);
+  assert.doesNotMatch(chrome, /nav-project/);
+  assert.doesNotMatch(source, /class="nav-project"/);
   assert.match(chrome, /if \(!nav \|\| !buttons\.length\)/);
   assert.equal((chrome.match(/window\.renderNav\?\.\(\)/g) || []).length, 1);
 });
@@ -258,7 +260,9 @@ test('page extras have their own freshness and quality extras only run on the de
   assert.doesNotMatch(refresh, /page === '部署转换'/);
   assert.doesNotMatch(refresh, /PAGE_EXTRAS_OWNERS = new Set\([^\n]*'训练任务'/);
   assert.match(refresh, /page !== '质量中心' \|\| state\.qualityCenterTab411 === 'detect'/);
-  assert.match(refresh, /const loadedAt = Number\(pageExtrasLoadedAt\.get\(page\) \|\| 0\)/);
+  assert.match(refresh, /const loadedAt = Number\(pageExtrasLoadedAt\.get\(cacheKey\) \|\| 0\)/);
+  assert.match(refresh,/const cacheKey=page==='质量中心'/);
+  assert.match(refresh,/state\.project\?\.id/);
   assert.doesNotMatch(refresh, /__coreSnapshotGeneratedAt|snapshotLoadedAt/);
   assert.match(refresh, /if \(!force && loadedAt > 0 && age >= 0 && age < PAGE_EXTRAS_CACHE_TTL_MS\) return null/);
   assert.match(refresh, /window\.PlatformCore\.runtime\.refreshPageExtras = refreshPageExtrasInBackground/);
@@ -271,7 +275,7 @@ test('algorithm list revisit reuses the startup or focused snapshot for thirty s
   assert.ok(start >= 0 && end > start);
   const owner = main.slice(start, end);
   assert.match(owner, /snapshotAge >= 0 && snapshotAge < ALGORITHM_PAGE_ENTRY_REUSE_MS/);
-  assert.match(owner, /algorithmListRuntime\.refresh\(\{render: true, minAgeMs: ALGORITHM_PAGE_ENTRY_REUSE_MS\}\)/);
+  assert.match(owner, /algorithmListRuntime\.refresh\(\{render: true, minAgeMs: state\.__coreSnapshotGeneratedAt === 0 \? 0 : ALGORITHM_PAGE_ENTRY_REUSE_MS\}\)/);
   assert.doesNotMatch(owner, /snapshotAge <= 5000/);
   assert.doesNotMatch(owner, /minAgeMs: 5000/);
 });

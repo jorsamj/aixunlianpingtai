@@ -1,3 +1,4 @@
+import {returnToTrainingConfiguration} from './helpers/training-admission.mjs';
 import {test, expect} from '@playwright/test';
 
 async function selectIsolatedTestProject(page, projectId, pageName = '算法列表') {
@@ -124,6 +125,9 @@ test('hard refresh algorithm list prewarms training configuration before the fir
   await expect(dialog.locator('#tr429Target')).toContainText('首次打开 Ultralytics');
   await expect(dialog.locator('#tr429Alg')).toHaveValue('yolo_detect');
   await expect(dialog.locator('#tr429MotherModel')).toHaveValue('yolo11n.pt');
+  await expect(page.locator('[data-training-admission-dialog]')).toHaveCount(0);
+  await expect(dialog.locator('[data-training-admission-open]:visible')).toHaveCount(0);
+  await expect(dialog.getByRole('button',{name:'开始训练',exact:true})).toBeEnabled();
   await expect(dialog.locator('[data-mode="full"]')).toHaveAttribute('aria-pressed', 'true');
   // Labels must sit next to materials, not below the mode options.
   const desktopLayout = await dialog.evaluate(node => {
@@ -244,6 +248,7 @@ test('training dialog shows canonical inherited labels horizontally without hist
   await card.getByRole('button', {name: '训练'}).click();
   const dialog = page.getByRole('dialog', {name: '创建训练任务'});
   await expect(dialog).toBeVisible({timeout: 10_000});
+  await returnToTrainingConfiguration(page);
 
   await page.evaluate(({algorithmId}) => {
     const algorithm = (state.algorithms || []).find(row => String(row?.id || '') === String(algorithmId));
@@ -352,6 +357,7 @@ test('same selected materials reload canonical labels after a completed label un
   await card.getByRole('button', {name: '训练'}).click();
   let dialog = page.getByRole('dialog', {name: '创建训练任务'});
   await expect(dialog).toBeVisible({timeout: 10_000});
+  await returnToTrainingConfiguration(page);
   await page.evaluate(() => {
     if (!(state.labels || []).some(row => String(row?.code || '') === 'fire')) {
       state.labels = [...(state.labels || []), {
@@ -378,6 +384,7 @@ test('same selected materials reload canonical labels after a completed label un
   await card.getByRole('button', {name: '训练'}).click();
   dialog = page.getByRole('dialog', {name: '创建训练任务'});
   await expect(dialog).toBeVisible({timeout: 10_000});
+  await returnToTrainingConfiguration(page);
   await page.evaluate(() => window.TrainingDraftRuntime.setMaterialIds(['same-material-after-unify']));
 
   panel = dialog.locator('#trainingLabelContractPanel');
@@ -431,6 +438,7 @@ test('training target is the only automatic early-stop control', async ({page, r
   await card.getByRole('button', {name: '训练'}).click();
   const dialog = page.getByRole('dialog', {name: '创建训练任务'});
   await expect(dialog).toBeVisible({timeout: 10_000});
+  await returnToTrainingConfiguration(page);
 
   await dialog.locator('[data-mode="custom"]').click();
   await expect(dialog.getByRole('button', {name: '配置更多专业参数'})).toBeVisible();
@@ -444,7 +452,7 @@ test('training target is the only automatic early-stop control', async ({page, r
   await expect(settings.getByText('目标正确率', {exact: true})).toBeVisible();
   await expect(settings.locator('#ts428Goal')).toHaveValue('90');
   await expect(settings.locator('#ts428Low')).toHaveCount(0);
-  await expect(settings.locator('#ts428Patience')).toHaveValue('40');
+  await expect(settings.locator('#ts428Patience')).toHaveCount(0); // Hidden/removed legacy patience control
   await expect(settings.locator('#ts428EarlyStop')).not.toBeChecked();
   await expect(settings.getByText('低于此正确率停止')).toHaveCount(0);
 
@@ -546,6 +554,7 @@ test('frozen feedback candidates stay aligned with training submit provenance', 
     submitted = route.request().postDataJSON();
     durableTask = {
       task_id: submitted.task_id,
+      project_id: project.id,
       kind: 'TRAINING',
       task_type: 'TRAINING',
       status: 'QUEUED',
@@ -569,6 +578,7 @@ test('frozen feedback candidates stay aligned with training submit provenance', 
   await card.getByRole('button', {name: '训练'}).click();
   const dialog = page.getByRole('dialog', {name: '创建训练任务'});
   await expect(dialog).toBeVisible({timeout: 10_000});
+  await returnToTrainingConfiguration(page);
   await expect(dialog.locator('#tr429Target')).toHaveValue('feedback-training-target');
 
   await page.evaluate(({algorithmId}) => {
@@ -597,7 +607,7 @@ test('frozen feedback candidates stay aligned with training submit provenance', 
   await expect(dialog.locator('[data-supplement-candidate-summary]')).toContainText('反馈补数据');
   await expect(dialog.locator('[data-supplement-candidate-value]')).toHaveText('1 / 1 张');
 
-  const submitButton = dialog.getByRole('button', {name: '创建训练任务'});
+  const submitButton = dialog.getByRole('button', {name: '开始训练'});
   await expect(submitButton).toBeEnabled();
   const jobListReadsBeforeSubmit = jobListReads;
   await submitButton.click();
@@ -639,7 +649,7 @@ test('verified fixed benchmark stays aligned from backend availability to traini
   await page.route('**/api/v62/training-devices', route => route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({recommended:'cpu',options:[{id:'cpu',label:'CPU',available:true}]})}));
   await page.route('**/api/v12/projects/*/algorithms/*/benchmark-reuse', route => route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({available:true,algorithm_id:algorithmId,source_version_id:'benchmark-version',source_version_name:'20260919150000',scope_id:scopeId,snapshot_id:'snapshot-benchmark',test_image_count:11,binding_level:'bundle_verified'})}));
   await page.route('**/api/v62/projects/*/training-materials/selection-summary', async route => {const body=route.request().postDataJSON(),count=Array.isArray(body?.image_ids)?body.image_ids.length:0;await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({requested_count:count,matched_count:count,eligible_count:count,eligible_total:count,box_count:count,size_bytes:count*1024,label_codes:['smoke'],label_counts:{smoke:count},repository_revision:1})});});
-  await page.route('**/api/v12/projects/*/train/start', async route => {submitted=route.request().postDataJSON();await route.fulfill({status:202,contentType:'application/json',body:JSON.stringify({ok:true,task:{task_id:submitted.task_id,kind:'TRAINING',task_type:'TRAINING',status:'QUEUED',persisted_status:'QUEUED',phase:'queued',progress_percent:0}})});});
+  await page.route('**/api/v12/projects/*/train/start', async route => {submitted=route.request().postDataJSON();await route.fulfill({status:202,contentType:'application/json',body:JSON.stringify({ok:true,task:{task_id:submitted.task_id,project_id:project.id,kind:'TRAINING',task_type:'TRAINING',status:'QUEUED',persisted_status:'QUEUED',phase:'queued',progress_percent:0}})});});
   await selectIsolatedTestProject(page, project.id, '算法列表');
   await page.goto('/');
   await expect.poll(async () => page.evaluate(() => state.uiReady === true)).toBe(true);
@@ -648,6 +658,7 @@ test('verified fixed benchmark stays aligned from backend availability to traini
   await card.getByRole('button',{name:'训练'}).click();
   const dialog=page.getByRole('dialog',{name:'创建训练任务'});
   await expect(dialog).toBeVisible({timeout:10000});
+  await returnToTrainingConfiguration(page);
   await expect(dialog.locator('[data-benchmark-reuse="available"]')).toContainText('11 张');
   // Availability alone must NOT silently replace the default 60/20/20 split.
   await expect(dialog.locator('#trV3BenchmarkReuse')).not.toBeChecked();
@@ -662,7 +673,7 @@ test('verified fixed benchmark stays aligned from backend availability to traini
   await expect(dialog.locator('.train-v3-summary>div').first().locator('span')).toHaveText('训练候选素材');
   await expect(dialog.locator('.train-v3-note')).toContainText('系统自动保留');
   await page.evaluate(({algorithmId}) => {window.TrainingDraftRuntime.update({algorithmId});window.TrainingDraftRuntime.setMaterialIds(['train-material-a','train-material-b']);window.TrainingSubmitRuntime.updateReadiness();}, {algorithmId});
-  const submitButton=dialog.getByRole('button',{name:'创建训练任务'});
+  const submitButton=dialog.getByRole('button',{name:'开始训练'});
   await expect(submitButton).toBeEnabled();
   await submitButton.click();
   await expect.poll(()=>submitted).not.toBeNull();

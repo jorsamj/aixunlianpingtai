@@ -58,10 +58,10 @@ def test_multipart_complete_returns_before_background_scan_finishes(client, monk
     release_scan = threading.Event()
     original_scan = app_module.v19_scan_zip
 
-    def blocked_scan(path):
+    def blocked_scan(path, progress_cb=None):
         scan_started.set()
         assert release_scan.wait(5.0)
-        return original_scan(path)
+        return original_scan(path, progress_cb)
 
     monkeypatch.setattr(app_module, "v19_scan_zip", blocked_scan)
     try:
@@ -78,8 +78,9 @@ def test_multipart_complete_returns_before_background_scan_finishes(client, monk
         active = client.get(
             f"/api/v19/projects/{project['id']}/import/jobs/{session['upload_id']}"
         ).json()
-        assert active["status"] in {"merging", "validating"}
-        assert "后台" in str(active.get("message") or "")
+        assert active["status"] == "validating"
+        assert active["phase"] == "VERIFY"
+        assert "校验" in str(active.get("message") or "")
     finally:
         release_scan.set()
 
@@ -105,10 +106,10 @@ def test_job_read_recovers_interrupted_multipart_finalize(client, monkeypatch):
     release_scan = threading.Event()
     original_scan = app_module.v19_scan_zip
 
-    def blocked_scan(path):
+    def blocked_scan(path, progress_cb=None):
         scan_started.set()
         assert release_scan.wait(5.0)
-        return original_scan(path)
+        return original_scan(path, progress_cb)
 
     monkeypatch.setattr(app_module, "v19_scan_zip", blocked_scan)
     try:

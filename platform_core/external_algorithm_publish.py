@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .model_metadata import (yolo_architecture, frozen_weight_labels, snapshot_weight_labels, weight_model_metadata, model_metadata)
+
 import hashlib
 import json
 import mimetypes
@@ -18,6 +20,14 @@ from filelock import FileLock, Timeout
 from pydantic import BaseModel, Field
 
 from .algorithms import list_algorithms, update_algorithm_version
+from .compute_platform_catalog import (
+    compute_platform_active,
+    compute_platform_catalog,
+    compute_platform_has_children,
+    compute_platform_is_descendant,
+    compute_platform_parent,
+    local_chip_key,
+)
 from .errors import PlatformError
 from .external_publish_request import (
     request_external_auto_publish_for_conversion_if_enabled,
@@ -32,6 +42,7 @@ from .model_artifacts import (
     StorageTestPayload,
     SUCCESSFUL_CONVERSION_STATUSES as MODEL_ARTIFACT_SUCCESSFUL_CONVERSION_STATUSES,
     model_delivery_version_fence,
+    conversion_completion_rank,
 )
 from .external_algorithm_platform import (
     DEFAULT_CONFIG as EXTERNAL_PLATFORM_DEFAULT_CONFIG,
@@ -42,6 +53,7 @@ from .external_algorithm_platform import (
     ExternalPlatformRepository,
     assert_external_algorithm_master_data_current,
     extract_items,
+    _provider_browser_response,
 )
 from .secrets import SecretCredentialStore
 from .storage import StorageProviderFactory, StorageSourceRepository
@@ -161,6 +173,8 @@ def _canonical_chip_code(value: Any) -> str:
     compact = re.sub(r"[^A-Za-z0-9]+", "", text).upper()
     if compact in {"RK3568", "RK3578", "RK3576"}:
         return compact
+    if compact in {"BM1684X", "BM1688"}:
+        return compact
     return text
 
 
@@ -195,8 +209,10 @@ def _is_publishable_conversion_output(target: Any, path: Path) -> bool:
 
 
 class TargetMapping(BaseModel):
+    local_vendor_id: str = ""
     compute_platform_id: str = ""
-    chip_code: str = ""
+    chip_code: str = ""  # Legacy single-target compatibility only.
+    chip_mappings: Dict[str, str] = Field(default_factory=dict)
     enabled: bool = True
 
 
@@ -220,6 +236,9 @@ class ExternalPublishConfigPayload(BaseModel):
     public_base_url: str = ""
     publish_original_model: bool = True
     target_mappings: Dict[str, TargetMapping] = Field(default_factory=dict)
+    expected_revision: Optional[int] = None
+    expected_catalog_revision: Optional[int] = None
+    replace_target_mappings: bool = False
     version_list_by_product: str = "/internal/algorithm/algorithm-version/listByProduct/{productId}"
     weight_list_by_version: str = "/internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}"
 
@@ -227,7 +246,9 @@ class ExternalPublishConfigPayload(BaseModel):
 DEFAULT_PUBLISH_CONFIG: Dict[str, Any] = {
     "schema_version": PUBLICATION_SCHEMA_VERSION,
     "publish_original_model": True,
-    "target_mappings": {key: {"compute_platform_id": "", "chip_code": "", "enabled": True} for key in TARGET_KEYS},
+    "mapping_revision": 0,
+    "mapping_history": [],
+    "target_mappings": {key: {"compute_platform_id": "", "chip_code": "", "chip_mappings": {}, "enabled": True} for key in TARGET_KEYS},
     "version_list_by_product": "/internal/algorithm/algorithm-version/listByProduct/{productId}",
     "weight_list_by_version": "/internal/algorithm/algorithm-weight/listByVersion/{algoVersionId}",
     "updated_at": None,
@@ -294,6 +315,7 @@ CREATE TABLE IF NOT EXISTS external_artifact_publications (
     compute_platform_id TEXT NOT NULL DEFAULT '',
     remote_chip_code TEXT NOT NULL DEFAULT '',
     sync_status TEXT NOT NULL DEFAULT 'PENDING',
+    synced_payload_json TEXT NOT NULL DEFAULT '{}',
     attempts INTEGER NOT NULL DEFAULT 0,
     last_error TEXT NOT NULL DEFAULT '',
     active INTEGER NOT NULL DEFAULT 1,
@@ -354,6 +376,12 @@ class ExternalPublicationRepository:
             str(row["name"])
             for row in database.execute("PRAGMA table_info(external_artifact_publications)").fetchall()
         }
+        if 'remote_metadata_json' not in artifact_publication_columns:
+            database.execute("ALTER TABLE external_artifact_publications ADD COLUMN remote_metadata_json TEXT NOT NULL DEFAULT '{}'")
+        if 'synced_payload_json' not in artifact_publication_columns:
+            database.execute(
+                "ALTER TABLE external_artifact_publications ADD COLUMN synced_payload_json TEXT NOT NULL DEFAULT '{}'"
+            )
         if "active" not in artifact_publication_columns:
             database.execute(
                 "ALTER TABLE external_artifact_publications ADD COLUMN active INTEGER NOT NULL DEFAULT 1"
@@ -528,60 +556,78 @@ class ExternalPublicationRepository:
         result.setdefault("target_mappings", {}).setdefault("original", {})["enabled"] = True
         return result
 
-    def save_config(self, payload: ExternalPublishConfigPayload) -> Dict[str, Any]:
-        previous = self.config()
-        body = payload.model_dump()
-        # These fields are accepted only so old clients can trigger migration
-        # in ExternalAlgorithmPublishService. This repository is not their
-        # durable owner and must never write them into config.json again.
-        body.pop("storage_source_id", None)
-        body.pop("public_base_url", None)
-        merged_mappings = {
-            str(key): dict(value)
-            for key, value in (previous.get("target_mappings") or {}).items()
-            if isinstance(value, dict)
-        }
-        for key, value in (body.get("target_mappings") or {}).items():
-            merged_mappings[str(key)] = dict(value or {})
-        body["target_mappings"] = merged_mappings
-        body["schema_version"] = PUBLICATION_SCHEMA_VERSION
-        body["publish_original_model"] = True
-        mappings = body.setdefault("target_mappings", {})
-        original = dict(mappings.get("original") or {})
-        original["enabled"] = True
-        mappings["original"] = original
-        body["version_list_by_product"] = ChangLianEndpoints.version_list_by_product
-        body["weight_list_by_version"] = ChangLianEndpoints.weight_list_by_version
-        body["updated_at"] = utc_now()
-        mapping_changed = (
-            previous.get("target_mappings") != body.get("target_mappings")
-        )
-        with self.lock:
-            temp = self.config_path.with_suffix(".tmp")
-            temp.write_text(json.dumps(body, ensure_ascii=False, indent=2), encoding="utf-8")
-            temp.replace(self.config_path)
-        # Configuration-blocked publications are dormant until the canonical
-        # publish mapping actually changes. Keep attempts as immutable audit truth.
-        if mapping_changed:
-            with closing(self._connect()) as database:
-                stamp = utc_now()
-                database.execute(
-                    """
-                    UPDATE external_version_publications
-                    SET status='PENDING', last_error='', updated_at=?
-                    WHERE status='BLOCKED_CONFIG'
-                    """,
-                    (stamp,),
-                )
-                database.execute(
-                    """
-                    UPDATE external_artifact_publications
-                    SET sync_status='PENDING', last_error='', updated_at=?
-                    WHERE sync_status='BLOCKED_CONFIG'
-                    """,
-                    (stamp,),
-                )
-        return self.config()
+    def save_config(self, payload: ExternalPublishConfigPayload, *, validator=None) -> Dict[str, Any]:
+        from .model_artifacts import conversion_catalog_fence
+        with conversion_catalog_fence(self.root.parent):
+            previous = self.config()
+            if payload.expected_revision is not None and payload.expected_revision != int(previous.get("mapping_revision", 0)):
+                raise PlatformError("EXTERNAL_MAPPING_REVISION_CONFLICT", "厂商映射已被其他操作更新", str(previous.get("mapping_revision", 0)), "请重新读取配置并核对草稿。", 409)
+            if (payload.replace_target_mappings or any(key.startswith("vendor:") for key in payload.target_mappings)) and payload.expected_revision is None:
+                raise PlatformError("EXTERNAL_MAPPING_REVISION_REQUIRED", "稳定ID映射保存需要revision", "", "请刷新厂商对应表后重试。", 409)
+            body = payload.model_dump()
+            for key in ("expected_revision", "expected_catalog_revision", "replace_target_mappings"):
+                body.pop(key, None)
+            # These fields are accepted only so old clients can trigger migration
+            # in ExternalAlgorithmPublishService. This repository is not their
+            # durable owner and must never write them into config.json again.
+            body.pop("storage_source_id", None)
+            body.pop("public_base_url", None)
+            merged_mappings = {
+                str(key): dict(value)
+                for key, value in (previous.get("target_mappings") or {}).items()
+                if isinstance(value, dict) and not payload.replace_target_mappings
+            }
+            for key, value in (body.get("target_mappings") or {}).items():
+                item = dict(value or {})
+                if not item.get("local_vendor_id"):
+                    item.pop("local_vendor_id", None)
+                merged_mappings[str(key)] = item
+            body["target_mappings"] = merged_mappings
+            body["schema_version"] = PUBLICATION_SCHEMA_VERSION
+            body["publish_original_model"] = True
+            mappings = body.setdefault("target_mappings", {})
+            original = dict(mappings.get("original") or {})
+            original["enabled"] = True
+            mappings["original"] = original
+            body["version_list_by_product"] = ChangLianEndpoints.version_list_by_product
+            body["weight_list_by_version"] = ChangLianEndpoints.weight_list_by_version
+            if validator is not None:
+                validator(body, previous, payload.expected_catalog_revision)
+            body["updated_at"] = utc_now()
+            mapping_changed = (
+                previous.get("target_mappings") != body.get("target_mappings")
+            )
+            body["mapping_revision"] = int(previous.get("mapping_revision", 0)) + int(mapping_changed)
+            history = list(previous.get("mapping_history") or [])
+            if mapping_changed:
+                history.append({"revision": int(previous.get("mapping_revision", 0)), "saved_at": body["updated_at"], "target_mappings": previous.get("target_mappings") or {}})
+            body["mapping_history"] = history[-10:]
+            with self.lock:
+                temp = self.config_path.with_suffix(".tmp")
+                temp.write_text(json.dumps(body, ensure_ascii=False, indent=2), encoding="utf-8")
+                temp.replace(self.config_path)
+            # Configuration-blocked publications are dormant until the canonical
+            # publish mapping actually changes. Keep attempts as immutable audit truth.
+            if mapping_changed:
+                with closing(self._connect()) as database:
+                    stamp = utc_now()
+                    database.execute(
+                        """
+                        UPDATE external_version_publications
+                        SET status='PENDING', last_error='', updated_at=?
+                        WHERE status='BLOCKED_CONFIG'
+                        """,
+                        (stamp,),
+                    )
+                    database.execute(
+                        """
+                        UPDATE external_artifact_publications
+                        SET sync_status='PENDING', last_error='', updated_at=?
+                        WHERE sync_status='BLOCKED_CONFIG'
+                        """,
+                        (stamp,),
+                    )
+            return self.config()
 
     @classmethod
     def publication_key(
@@ -653,8 +699,7 @@ class ExternalPublicationRepository:
                     external_product_id=excluded.external_product_id,
                     external_analysis_id=excluded.external_analysis_id,
                     version_name=excluded.version_name,
-                    version_no=excluded.version_no,
-                    updated_at=excluded.updated_at
+                    version_no=excluded.version_no
                 """,
                 (
                     key, provider_id, project_id, algorithm_id, version_id,
@@ -835,16 +880,16 @@ class ExternalPublicationRepository:
         return dict(row) if row else None
 
     def artifact_publications(
-        self, publication_key: str, *, provider: str = PROVIDER_CHANGLIAN,
+        self, publication_key: str, *, provider: str = PROVIDER_CHANGLIAN, include_inactive: bool = False,
     ) -> list[Dict[str, Any]]:
         with closing(self._connect()) as database:
             rows = database.execute(
                 """
                 SELECT * FROM external_artifact_publications
-                WHERE publication_key = ? AND provider = ? AND active = 1
+                WHERE publication_key = ? AND provider = ? AND (active = 1 OR ?)
                 ORDER BY artifact_id
                 """,
-                (str(publication_key), self._provider(provider)),
+                (str(publication_key), self._provider(provider), bool(include_inactive)),
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -860,6 +905,17 @@ class ExternalPublicationRepository:
         artifact_id = str(artifact["artifact_id"])
         existing = self.artifact_publication(artifact_id, provider=provider_id)
         compute_platform_id = str(mapping.get("compute_platform_id") or "").strip()
+        if (
+            existing and str(existing.get("external_weight_id") or "")
+            and str(existing.get("compute_platform_id") or "") != compute_platform_id
+        ):
+            raise PlatformError(
+                "EXTERNAL_WEIGHT_PLATFORM_REMAP_REVIEW_REQUIRED",
+                "已有远端权重不能随新的芯片字典静默改挂",
+                f"artifact_id={artifact_id}",
+                "请核对已有 weightId 的归属，必要时执行单独的远端权重迁移流程。",
+                409,
+            )
         # Persist the provider-facing value separately from the local artifact
         # identity. Existing per-target config supplies non-chip formats while
         # RKNN artifacts retain their explicit generated chip identity.
@@ -904,7 +960,7 @@ class ExternalPublicationRepository:
     ) -> Dict[str, Any]:
         allowed = {
             "external_weight_id", "compute_platform_id", "remote_chip_code",
-            "sync_status", "attempts", "last_error", "updated_at",
+            "sync_status", "attempts", "last_error", "updated_at", "synced_payload_json", "remote_metadata_json",
         }
         values = {key: value for key, value in changes.items() if key in allowed}
         values.setdefault("updated_at", utc_now())
@@ -922,6 +978,28 @@ class ExternalPublicationRepository:
         if row is None:
             raise KeyError(artifact_id)
         return row
+
+    def confirm_weight_publication(self, artifact_id, weight_id, payload, observation, *, previous_artifact_ids=()):
+        """Commit one active owner only after remote readback; retain historical receipts."""
+        with closing(self._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            current=database.execute("SELECT * FROM external_artifact_publications WHERE provider=? AND artifact_id=? AND active=1",
+                                     (PROVIDER_CHANGLIAN,str(artifact_id))).fetchone()
+            if current is None: raise KeyError(artifact_id)
+            owners=database.execute("SELECT * FROM external_artifact_publications WHERE provider=? AND publication_key=? AND external_weight_id=? AND active=1 AND artifact_id<>?",
+                                    (PROVIDER_CHANGLIAN,current["publication_key"],str(weight_id),str(artifact_id))).fetchall()
+            if any(r["artifact_id"] not in previous_artifact_ids for r in owners):
+                raise PlatformError("EXTERNAL_WEIGHT_OWNER_CONFLICT","远端Weight存在未核验活动Owner",str(weight_id),"保留所有历史，禁止认领或合并。",409)
+            historical=database.execute("SELECT * FROM external_artifact_publications WHERE provider=? AND publication_key=? AND active=1 AND artifact_id<>?",
+                                        (PROVIDER_CHANGLIAN,current["publication_key"],str(artifact_id))).fetchall()
+            for owner in historical:
+                if owner["artifact_id"] not in previous_artifact_ids: continue
+                database.execute("UPDATE external_artifact_publications SET active=0,superseded_by_artifact_id=?,updated_at=? WHERE mapping_id=?",
+                                 (str(artifact_id),utc_now(),owner["mapping_id"]))
+            database.execute("UPDATE external_artifact_publications SET external_weight_id=?,compute_platform_id=?,remote_chip_code=?,sync_status='SYNCED',last_error='',synced_payload_json=?,remote_metadata_json=?,updated_at=? WHERE mapping_id=?",
+                (str(weight_id),str(payload["computePlatformId"]),str(payload.get("chipCode") or ""),json.dumps(dict(payload),ensure_ascii=False,sort_keys=True),json.dumps(observation,ensure_ascii=False),utc_now(),current["mapping_id"]))
+            database.commit()
+        return self.artifact_publication(artifact_id)
 
     def rebind_artifact_publication(
         self,
@@ -1026,9 +1104,11 @@ class ExternalPublicationRepository:
         now: datetime | None = None,
     ) -> bool:
         if (
-            str(publication.get("status") or "").upper() != "PUBLISHED"
+            str(publication.get("status") or "").upper() not in {"PUBLISHED","PARTIAL","UNKNOWN"}
             or not str(publication.get("external_algo_version_id") or "").strip()
         ):
+            return False
+        if str(publication.get("status") or "").upper()!="PUBLISHED" and not any(str(r.get("sync_status") or "").upper()=="UNKNOWN" for r in self.artifact_publications(str(publication.get("publication_key") or ""))):
             return False
         current = now or datetime.now(timezone.utc)
         last = _status_time(str(publication.get("remote_checked_at") or ""))
@@ -1036,7 +1116,7 @@ class ExternalPublicationRepository:
             return True
         interval = (
             DEFAULT_REMOTE_RECONCILE_RETRY_SECONDS
-            if str(publication.get("remote_check_error") or "").strip()
+            if str(publication.get("remote_check_error") or "").strip() or str(publication.get("status") or "").upper()!="PUBLISHED"
             else DEFAULT_REMOTE_RECONCILE_SECONDS
         )
         return (current - last).total_seconds() >= interval
@@ -1062,6 +1142,58 @@ class PublishingChangLianClient(ChangLianClient):
 
     def list_version_weights(self, algo_version_id: Any) -> Any:
         return self.weight_list_by_version(algo_version_id)
+
+
+def weight_recovery_plan(artifact, peers, target_compute_platform_id="", *, remote_rows=None, external_version_id=""):
+    """Read-only review projection; it never authorizes a provider write."""
+    target = str(artifact.get("target") or "")
+    chip = _canonical_chip_code(artifact.get("remote_chip_code") or artifact.get("chip_code") or "")
+    owners = [r for r in peers if r.get("external_weight_id") and r.get("active",1)
+              and r.get("target")==target
+              and (r.get("algorithm_id"),r.get("version_id"))==(artifact.get("algorithm_id"),artifact.get("version_id"))
+              and _canonical_chip_code(r.get("remote_chip_code") or r.get("chip_code") or "")==chip]
+    old = next((r for r in owners if r.get("artifact_id")==artifact.get("artifact_id")), None)
+    old = old or (owners[0] if len(owners)==1 else {})
+    replacement = bool(old and old.get("sha256")!=artifact.get("sha256"))
+    remap = bool(old and target_compute_platform_id and str(old.get("compute_platform_id"))!=str(target_compute_platform_id))
+    unknown = str(artifact.get("sync_status") or "").upper()=="UNKNOWN"
+    review = remap or len({str(r["external_weight_id"]) for r in owners})>1
+    plan = {
+        "review_required": review,
+        "suggested_operation": "REVIEW_MULTIPLE_OWNERS" if len(owners)>1 else "AUTO_EDIT_AFTER_IDENTITY_CHECK" if replacement else "REVIEW_PLATFORM_MIGRATION" if remap else "READ_ONLY_RECOVERY" if unknown else "NONE",
+        "algorithm_id": artifact.get("algorithm_id"), "version_id": artifact.get("version_id"),
+        "artifact_id": artifact.get("artifact_id"), "target":target, "chip_code":chip,
+        "old_artifact_id": old.get("artifact_id"), "old_weight_id": old.get("external_weight_id"),
+        "old_compute_platform_id": old.get("compute_platform_id"), "target_compute_platform_id":target_compute_platform_id,
+        "old_file_path": old.get("public_url"), "new_file_path": artifact.get("public_url"),
+        "old_sha256": old.get("sha256"), "new_sha256": artifact.get("sha256"),
+        "remote_identity_status":"NOT_VERIFIED", "replacement_contract_status":"OPENAPI_FIELDS_CONFIRMED",
+        "automatic_write_allowed":False,
+        "reason":"已有Weight算力分类发生变化，须独立核验迁移" if remap else "多个活动Weight身份冲突，停止写入并核对" if review else "",
+        "risk":"不得按同名合并或覆盖旧SYNCED；需核对原ID、版本、分类、芯片、filePath及SHA",
+        "rollback":"未执行远端写入；后续迁移须保留旧payload，结果未知先读回，禁止盲目回写",
+        "old_conversion_job_id":old.get("conversion_job_id"),"new_conversion_job_id":artifact.get("conversion_job_id"),
+        "old_conversion_metadata":old.get("metadata") or {},"new_conversion_metadata":artifact.get("metadata") or {},
+        "platform_relation_status":"NOT_VERIFIED",
+    }
+    if remote_rows is not None and old.get("external_weight_id"):
+        found=[r for r in remote_rows if ExternalAlgorithmPublishService._remote_weight_id(r)==str(old["external_weight_id"])]
+        remote=found[0] if len(found)==1 else {}
+        matches=bool(remote and external_version_id and str(remote.get("algoVersionId") or "")==str(external_version_id)
+                     and str(remote.get("computePlatformId") or "")==str(old.get("compute_platform_id") or "")
+                     and _canonical_chip_code(remote.get("chipCode"))==chip
+                     and str(remote.get("fileName") or "")==str(old.get("file_name") or "")
+                     and bool(remote.get("filePath")) and str(remote["filePath"])==str(old.get("public_url") or "")
+                     and (not remote.get("fileSha256") or str(remote["fileSha256"]).lower()==str(old.get("sha256") or "").lower()))
+        plan["remote_identity_status"]="MATCHED_READ_ONLY" if matches else "MISMATCH_OR_AMBIGUOUS"
+        plan["remote_observation"]=remote
+    return plan
+
+
+class WeightArtifactSelection(BaseModel):
+    artifact_id: str
+    sha256: str
+    expected_selection: str = ""
 
 
 class ExternalAlgorithmPublishService:
@@ -1307,6 +1439,91 @@ class ExternalAlgorithmPublishService:
                 409,
             )
 
+    def _delivery_key(self, artifact):
+        target = str(artifact.get("target") or "")
+        base = target + ":" + _canonical_chip_code(artifact.get("chip_code"))
+        if target in {"original", "onnx", "paddle_inference"}:
+            return base
+        metadata = artifact.get("model_metadata") or artifact.get("metadata") or {}
+        vendor, chip = metadata.get("local_vendor_id"), metadata.get("local_chip_id")
+        if not vendor or not chip:
+            catalog = self._mapping_catalog()
+            vendors = {row["id"]: row for row in catalog["vendors"]}
+            matches = [row for row in catalog["chips"] if vendors[row["vendor_id"]].get("adapter") == target and local_chip_key(row.get("sdk_code")) == local_chip_key(artifact.get("chip_code"))]
+            if len(matches) == 1 and (not vendor or vendor == matches[0]["vendor_id"]) and (not chip or chip == matches[0]["id"]):
+                vendor, chip = matches[0]["vendor_id"], matches[0]["id"]
+        return base + "|vendor:" + str(vendor) + "|chip:" + str(chip) if vendor and chip else base
+
+    def _delivery_selection(self, version, artifact):
+        selections = version.get("external_publish_artifact_selection") or {}
+        key = self._delivery_key(artifact)
+        if key in selections: return selections[key]
+        legacy = str(artifact.get("target") or "") + ":" + _canonical_chip_code(artifact.get("chip_code"))
+        selected = selections.get(legacy) or {}
+        if key == legacy or not selected: return selected
+        owner = self.model_assets.repository.get(str(selected.get("artifact_id") or "")) or {}
+        if owner.get("sha256") == selected.get("sha256") and self._delivery_key(owner) == key:
+            return selected
+        return {"error": "旧交付选择缺少唯一的本地厂商/芯片归属", "code": "EXTERNAL_DELIVERY_IDENTITY_REVIEW_REQUIRED"}
+
+    def _automatic_delivery_choices(self, version, candidates):
+        choices={}
+        groups={}
+        for row in candidates:
+            if row.get("target")!="original": groups.setdefault(self._delivery_key(row),[]).append(row)
+        for key,rows in groups.items():
+            unique={r["sha256"]:r for r in rows}
+            ranked=[(conversion_completion_rank(r.get("model_metadata") or r.get("metadata") or {},r.get("conversion_job_id"),r["sha256"]),r) for r in unique.values()]
+            previous=self._delivery_selection(version,rows[0])
+            if previous.get("error"):
+                choices[key] = previous
+                continue
+            if any(rank is None for rank,_ in ranked):
+                choices[key]={"error":"缺少带时区的可信转换完成时间，无法自动确定当前成果","code":"EXTERNAL_WEIGHT_COMPLETION_UNCONFIRMED"}
+                continue
+            rank,winner=max(ranked,key=lambda pair:pair[0])
+            meta=winner.get("model_metadata") or winner.get("metadata") or {}
+            stored=self.model_assets.repository.get(winner["artifact_id"]) or {}
+            known=stored.get("storage_status")=="UPLOADED" and stored.get("conversion_job_id")==winner.get("conversion_job_id") and stored.get("sha256")==winner["sha256"]
+            if meta.get("manifest_metadata_error") or (not meta.get("conversion_identity_verified") and not known):
+                choices[key]={"error":"当前成果缺少与任务匹配的Manifest或输出SHA/大小证据","code":"EXTERNAL_WEIGHT_CONVERSION_IDENTITY_UNCONFIRMED"}
+                continue
+            selection={"artifact_id":winner["artifact_id"],"sha256":winner["sha256"],"conversion_job_id":winner.get("conversion_job_id"),
+                       "completed_at":(winner.get("model_metadata") or winner.get("metadata") or {}).get("finished_at"),"order":list(rank) if rank else None,"source":"AUTOMATIC"}
+            old_order=previous.get("order") if previous.get("source")=="AUTOMATIC" else None
+            if old_order and (rank is None or tuple(old_order)>rank): selection=dict(previous)
+            choices[key]=selection
+        return choices
+
+    def _record_automatic_delivery(self, project_id, algorithm_id, version_id, artifact, selection):
+        _,version=self._algorithm_version(project_id,algorithm_id,version_id)
+        selections=dict(version.get("external_publish_artifact_selection") or {})
+        key=self._delivery_key(artifact);previous=self._delivery_selection(version,artifact)
+        if previous==selection: return
+        if previous.get("source")=="AUTOMATIC" and previous.get("order") and (not selection.get("order") or tuple(previous["order"])>tuple(selection["order"])):
+            raise PlatformError("EXTERNAL_WEIGHT_STALE_COMPLETION","迟到成果不能覆盖较新交付",artifact["artifact_id"],"已有最新交付保持。",409)
+        history=list(version.get("external_publish_selection_history") or [])
+        history.append({"key":key,"before":previous,"after":selection,"recorded_at":utc_now()})
+        selections[key]=dict(selection)
+        update_algorithm_version(self.algorithms_file(project_id),algorithm_id,version_id,
+            {"external_publish_artifact_selection":selections,"external_publish_selection_history":history},now=utc_now())
+
+    def select_publication_artifact(self, project_id, algorithm_id, version_id, **_):
+        raise PlatformError("EXTERNAL_WEIGHT_AUTOMATIC_SELECTION","当前交付成果由可信转换完成时间自动确定",version_id,
+                            "无需手工选择；历史成果不会因手工请求覆盖当前模型。",410)
+
+    def _artifact_review(self, artifact, version, peers):
+        peers = [row for row in peers if self._delivery_key(row) == self._delivery_key(artifact)]
+        mapping=self._artifact_mapping_state(artifact).get("mapping") or {}
+        plan=weight_recovery_plan(artifact,peers,str(mapping.get("compute_platform_id") or artifact.get("compute_platform_id") or ""))
+        choices=version.get("_automatic_delivery_choices") or {}
+        selected=choices.get(self._delivery_key(artifact)) or self._delivery_selection(version,artifact)
+        ids={str(r["external_weight_id"]) for r in peers if r.get("active",1) and r.get("external_weight_id") and self._delivery_key(r)==self._delivery_key(artifact)}
+        plan.update(requested_artifact_id=str(selected.get("artifact_id") or ""),review_required=bool(plan["review_required"] or selected.get("error") or len(ids)>1),
+                    reason=selected.get("error") or ("同一芯片存在多个远端Weight ID" if len(ids)>1 else plan["reason"]),
+                    suggested_operation=plan["suggested_operation"] if plan["review_required"] else "AUTOMATIC_EDIT" if ids else "AUTOMATIC_ADD",replacement_contract_status="OPENAPI_FIELDS_CONFIRMED")
+        return plan
+
     def _artifact_projection(self, artifact_id: str) -> Dict[str, Any] | None:
         canonical = self.model_assets.repository.get(str(artifact_id))
         mapping = self.repository.artifact_publication(
@@ -1316,14 +1533,14 @@ class ExternalAlgorithmPublishService:
             return None
         return {**dict(canonical or {}), **dict(mapping or {})}
 
-    def _publication_artifacts(self, publication_key: str) -> list[Dict[str, Any]]:
+    def _publication_artifacts(self, publication_key: str, *, include_inactive=False) -> list[Dict[str, Any]]:
         result: list[Dict[str, Any]] = []
         for mapping in self.repository.artifact_publications(
-            publication_key, provider=PROVIDER_CHANGLIAN,
+            publication_key, provider=PROVIDER_CHANGLIAN, include_inactive=include_inactive,
         ):
             projection = self._artifact_projection(str(mapping.get("artifact_id") or ""))
             if projection is not None:
-                result.append(projection)
+                result.append({**projection,**mapping})
         result.sort(key=lambda row: (str(row.get("target") or ""), str(row.get("file_name") or "")))
         return result
 
@@ -1355,33 +1572,136 @@ class ExternalAlgorithmPublishService:
                 secret_masked=str(state.get("masked") or ""),
             ))
         external_cache = self.external_repository.cache()
-        return {
+        return _provider_browser_response({
             "config": config,
             "storage_sources": sources,
             "compute_platforms": external_cache.get("compute_platforms") or [],
-        }
+            "chip_dictionary": self._local_chip_dictionary(),
+            "local_catalog": self._mapping_catalog(),
+            "mapping_diagnostics": self._mapping_diagnostics(config),
+        })
 
-    def _current_compute_platform_ids(self) -> set[str]:
-        rows = self.external_repository.cache().get("compute_platforms") or []
-        result: set[str] = set()
-        for row in rows:
-            if not isinstance(row, Mapping):
+    def _mapping_catalog(self):
+        from .compute_platform_catalog import conversion_templates
+        catalog = self.model_assets.repository.conversion_catalog()
+        adapters = {row["id"]: row.get("adapter", "") for row in conversion_templates()}
+        return {**catalog, "vendors": [{**row, "adapter": adapters.get(row.get("template_id"), "")} for row in catalog["vendors"]]}
+
+    def _validate_stable_binding(self, key, mapping, catalog):
+        vendor_id = str(mapping.get("local_vendor_id") or "")
+        vendor = next((row for row in catalog["vendors"] if row["id"] == vendor_id), None)
+        if not vendor or key != "vendor:" + vendor_id:
+            raise PlatformError("EXTERNAL_LOCAL_VENDOR_INVALID", "本地厂商稳定ID不存在或绑定键不一致", key, "请从本地字典重新选择。", 409)
+        chips = {row["id"]: row for row in catalog["chips"]}
+        parent = str(mapping.get("compute_platform_id") or "")
+        remote = self._compute_catalog()
+        if parent:
+            self._assert_current_compute_platform(parent)
+            if compute_platform_parent(remote[parent]):
+                raise PlatformError("EXTERNAL_VENDOR_PARENT_REQUIRED", "厂商必须绑定有效的顶级厂商分类", parent, "请选择厂商父分类。", 409)
+        if mapping.get("chip_mappings") and not parent:
+            raise PlatformError("EXTERNAL_COMPUTE_PARENT_REQUIRED", "芯片绑定缺少厂商父分类", key, "请先选择远端厂商。", 409)
+        if parent and not vendor.get("enabled", True):
+            raise PlatformError("EXTERNAL_LOCAL_VENDOR_DISABLED", "本地厂商已停用", vendor_id, "保留历史绑定，不能创建新的有效绑定。", 409)
+        for chip_id, remote_id in (mapping.get("chip_mappings") or {}).items():
+            chip = chips.get(chip_id)
+            if not chip or chip["vendor_id"] != vendor_id or not chip.get("enabled", True):
+                raise PlatformError("EXTERNAL_LOCAL_CHIP_INVALID", "芯片稳定ID不存在、已停用或不属于该厂商", chip_id, "请选择本地字典的有效芯片。", 409)
+            if not compute_platform_active(remote, remote_id) or not compute_platform_is_descendant(remote, remote_id, parent) or compute_platform_has_children(remote, remote_id):
+                raise PlatformError("EXTERNAL_COMPUTE_CHILD_MAPPING_INVALID", "远端芯片不是该厂商下有效的具体芯片分类", str(remote_id), "请核对真实parentId分类关系。", 409)
+
+    def _validate_mapping_config(self, body, previous, expected_catalog_revision):
+        catalog = self._mapping_catalog()
+        if expected_catalog_revision is not None and expected_catalog_revision != catalog["revision"]:
+            raise PlatformError("EXTERNAL_LOCAL_CATALOG_REVISION_CONFLICT", "本地厂商芯片字典已变化", str(catalog["revision"]), "请刷新并核对草稿。", 409)
+        old = previous.get("target_mappings") or {}
+        parents, children = {}, {}
+        for key, mapping in body["target_mappings"].items():
+            if key.startswith("vendor:"):
+                if mapping != old.get(key) and mapping.get("enabled", True):
+                    candidate = dict(mapping)
+                    previous_mapping = old.get(key) or {}
+                    if mapping.get("compute_platform_id") == previous_mapping.get("compute_platform_id") and mapping.get("local_vendor_id") == previous_mapping.get("local_vendor_id"):
+                        candidate["chip_mappings"] = {chip: remote for chip, remote in (mapping.get("chip_mappings") or {}).items() if remote != (previous_mapping.get("chip_mappings") or {}).get(chip)}
+                    self._validate_stable_binding(key, candidate, catalog)
+                if not mapping.get("enabled", True):
+                    continue
+                parent = str(mapping.get("compute_platform_id") or "")
+                if parent and parent in parents:
+                    raise PlatformError("EXTERNAL_VENDOR_MAPPING_CONFLICT", "一个远端厂商只能绑定一个本地厂商", parent, "请解除冲突后保存。", 409)
+                if parent: parents[parent] = key
+                for chip_id, remote_id in (mapping.get("chip_mappings") or {}).items():
+                    if remote_id in children:
+                        raise PlatformError("EXTERNAL_CHIP_MAPPING_CONFLICT", "一个远端芯片只能绑定一个本地芯片", str(remote_id), "请解除冲突后保存。", 409)
+                    children[remote_id] = chip_id
+            elif mapping != old.get(key) and mapping.get("enabled", True):
+                parent = str(mapping.get("compute_platform_id") or "")
+                if parent: self._assert_current_compute_platform(parent, target=key)
+                if mapping.get("chip_mappings"):
+                    if not parent: raise PlatformError("EXTERNAL_COMPUTE_PARENT_REQUIRED", "芯片绑定缺少父级算力环境", key, "请先绑定父级环境。", 422)
+                    self._validated_chip_bindings(key, parent, mapping["chip_mappings"])
+
+    def _mapping_diagnostics(self, config):
+        catalog = self._mapping_catalog()
+        mappings = config.get("target_mappings") or {}
+        states, proposals = {}, []
+        for vendor in catalog["vendors"]:
+            key = "vendor:" + vendor["id"]
+            mapping = mappings.get(key) or {}
+            status, reason = "UNBOUND", "尚未绑定远端厂商"
+            if mapping.get("compute_platform_id"):
+                try:
+                    self._validate_stable_binding(key, mapping, catalog)
+                    status, reason = ("BOUND", "已绑定") if mapping.get("enabled", True) else ("DISABLED", "已停用发布")
+                except PlatformError as error:
+                    status, reason = "INVALID", error.message + "：" + error.detail
+            states[vendor["id"]] = {"status": status, "reason": reason}
+            legacy = mappings.get(vendor["adapter"]) or {}
+            if key in mappings or not legacy.get("compute_platform_id"):
                 continue
-            value = str(
-                row.get("computePlatformId")
-                or row.get("compute_platform_id")
-                or row.get("id")
-                or ""
-            ).strip()
-            if value:
-                result.add(value)
+            siblings = [row for row in catalog["vendors"] if row["adapter"] == vendor["adapter"]]
+            candidate = {**legacy, "local_vendor_id": vendor["id"], "chip_mappings": {}}
+            chips = [row for row in catalog["chips"] if row["vendor_id"] == vendor["id"]]
+            reason = "同一SDK Adapter存在多个本地厂商，旧映射归属待确认" if len(siblings) != 1 else ""
+            for code, remote_id in (legacy.get("chip_mappings") or {}).items():
+                matches = [row for row in chips if local_chip_key(row.get("sdk_code")) == local_chip_key(code)]
+                if len(matches) != 1:
+                    reason = "旧SDK编码无法唯一对应本地芯片稳定ID"; break
+                candidate["chip_mappings"][matches[0]["id"]] = remote_id
+            if not reason:
+                try: self._validate_stable_binding(key, candidate, catalog)
+                except PlatformError as error: reason = error.message
+            proposals.append({"legacy_target": vendor["adapter"], "local_vendor_id": vendor["id"], "status": "REVIEW" if reason else "READY", "reason": reason or "Adapter与SDK目标关系唯一，点击采用后仍需保存", "mapping": candidate})
+        return {"vendors": states, "legacy_proposals": proposals}
+
+    def _local_chip_dictionary(self):
+        from .compute_platform_catalog import conversion_templates
+        catalog=self.model_assets.repository.conversion_catalog()
+        templates={t["id"]:t.get("adapter") for t in conversion_templates()}
+        vendors={v["id"]:templates.get(v.get("template_id")) for v in catalog["vendors"] if v.get("enabled",True)}
+        result={}
+        for chip in catalog["chips"]:
+            adapter=vendors.get(chip["vendor_id"])
+            if adapter and chip.get("enabled",True):
+                result.setdefault(adapter,[]).append(chip["sdk_code"].upper())
         return result
+
+    def _compute_catalog(self) -> dict[str, dict[str, Any]]:
+        rows = self.external_repository.cache().get("compute_platforms") or []
+        try:
+            return compute_platform_catalog(rows)
+        except ValueError as error:
+            raise PlatformError(
+                "EXTERNAL_COMPUTE_PLATFORM_HIERARCHY_INVALID",
+                "畅联云算力环境层级数据无效",
+                str(error), "请重新同步完整的算力环境主数据并检查 parentId。", 409,
+            ) from error
 
     def _assert_current_compute_platform(self, compute_platform_id: Any, *, target: str = "") -> str:
         value = str(compute_platform_id or "").strip()
         if not value:
             return ""
-        current = self._current_compute_platform_ids()
+        current = self._compute_catalog()
         if not current:
             raise PlatformError(
                 "EXTERNAL_COMPUTE_PLATFORM_CACHE_REQUIRED",
@@ -1390,15 +1710,41 @@ class ExternalAlgorithmPublishService:
                 "请先在“配置中心 → 平台对接”执行“立即同步”，再重新选择算力环境。",
                 409,
             )
-        if value not in current:
+        if not compute_platform_active(current, value):
             raise PlatformError(
                 "EXTERNAL_COMPUTE_PLATFORM_MAPPING_STALE",
                 "畅联云算力环境映射已失效",
-                f"转换目标 {target or '-'} 当前映射的 computePlatformId={value} 已不在最近一次同步的算力环境中。",
-                "请先重新同步畅联云主数据，然后重新选择该转换目标对应的算力环境。",
+                f"转换目标 {target or '-'} 对应的 computePlatformId={value} 已不存在、被删除或其父级失效。",
+                "请先同步畅联云主数据，重新确认父子分类绑定；平台不会自动改挂。",
                 409,
             )
         return value
+
+    def _validated_chip_bindings(
+        self, target: str, parent_id: str, bindings: Mapping[str, str],
+    ) -> dict[str, str]:
+        catalog = self._compute_catalog()
+        normalized: dict[str, str] = {}
+        for local_code, remote_id in bindings.items():
+            chip = local_chip_key(local_code)
+            if not chip or not re.fullmatch(r"[A-Z0-9]{2,64}", chip) or chip in normalized:
+                raise PlatformError(
+                    "EXTERNAL_COMPUTE_CHIP_MAPPING_INVALID",
+                    "本地芯片字典编号重复或不合法", f"{target}: {local_code}",
+                    "同一转换目标的芯片编号归一化后必须唯一。", 422,
+                )
+            leaf = str(remote_id or "").strip()
+            if leaf in normalized.values():
+                raise PlatformError("EXTERNAL_CHIP_MAPPING_CONFLICT", "远端芯片已被另一条本地芯片绑定", leaf, "请解除重复绑定。", 409)
+            if not compute_platform_active(catalog, leaf) or not compute_platform_is_descendant(catalog, leaf, parent_id):
+                raise PlatformError(
+                    "EXTERNAL_COMPUTE_CHILD_MAPPING_INVALID",
+                    "芯片绑定不属于指定的有效父级算力环境",
+                    f"{target}/{chip}: {parent_id} -> {leaf}",
+                    "请从该父级算力环境下的有效子分类中明确选择，不能根据名称猜测。", 409,
+                )
+            normalized[chip] = leaf
+        return normalized
 
     def save_config(self, payload: ExternalPublishConfigPayload) -> Dict[str, Any]:
         source_id = str(payload.storage_source_id or "").strip()
@@ -1412,10 +1758,7 @@ class ExternalAlgorithmPublishService:
                 "ARTIFACT_PUBLIC_URL_INVALID", "模型下载服务地址格式不正确", str(payload.public_base_url),
                 "请填写以 http:// 或 https:// 开头的本平台外部访问地址。", 422,
             )
-        for target, mapping in payload.target_mappings.items():
-            if mapping.enabled and str(mapping.compute_platform_id or "").strip():
-                self._assert_current_compute_platform(mapping.compute_platform_id, target=str(target))
-        saved = self.repository.save_config(payload)
+        saved = self.repository.save_config(payload, validator=self._validate_mapping_config)
         # Legacy compatibility only. Runtime reads the StorageSource and the
         # artifact binding; this moves old values to those owners once.
         self._migrate_legacy_storage_binding(source_id, str(payload.public_base_url or ""))
@@ -1549,60 +1892,32 @@ class ExternalAlgorithmPublishService:
     def conversion_active(self, project_id: str, algorithm_id: str, version_id: str) -> bool:
         return any(str(job.get("status") or "").strip().lower() in ACTIVE_CONVERSION_STATUSES for job in self._conversion_jobs(project_id, algorithm_id, version_id))
 
+
+
+
+
+    _yolo_architecture = staticmethod(yolo_architecture)
+    _frozen_weight_labels = staticmethod(frozen_weight_labels)
+    _weight_model_metadata = staticmethod(weight_model_metadata)
+
+    def _snapshot_weight_labels(self, version):
+        return snapshot_weight_labels(self.data_dir, version)
+
     def discover_artifacts(self, project_id: str, algorithm: Mapping[str, Any], version: Mapping[str, Any]) -> list[Dict[str, Any]]:
-        algorithm_id = str(algorithm.get("id") or "")
-        version_id = str(version.get("id") or "")
-        config = self.repository.config()
-        candidates: list[tuple[str, Path, str]] = []
-        if bool(config.get("publish_original_model")):
-            raw = next((str(version.get(key) or "").strip() for key in ("stored_path", "best_path", "last_path", "path") if str(version.get(key) or "").strip()), "")
-            if raw:
-                candidates.append(("original", Path(raw).expanduser(), ""))
-        for job in self._conversion_jobs(project_id, algorithm_id, version_id):
-            status = str(job.get("status") or "").strip().lower()
-            if status and status not in SUCCESSFUL_CONVERSION_STATUSES:
+        config=self.repository.config()
+        rows=self.model_assets.discover_version_artifacts(project_id,algorithm,version)
+        original_path=next((str(version.get(k) or "").strip() for k in ("stored_path","best_path","last_path","path") if str(version.get(k) or "").strip()),"")
+        result=[]
+        for source in rows:
+            if source["target"]=="original" and (not config.get("publish_original_model") or str(Path(original_path).resolve())!=source["source_path"]):
                 continue
-            target = str(job.get("target") or "").strip().lower() or "converted"
-            params = job.get("params") or {}
-            chip = _canonical_chip_code(params.get("chip") or params.get("soc_version") or "")
-            for output in job.get("outputs") or []:
-                if not isinstance(output, dict) or output.get("available") is False:
-                    continue
-                raw = str(output.get("path") or "").strip()
-                if raw:
-                    output_path = Path(raw).expanduser()
-                    if _is_publishable_conversion_output(target, output_path):
-                        candidates.append((target, output_path, chip))
-        dedupe: set[tuple[str, str, str]] = set()
-        result: list[Dict[str, Any]] = []
-        for target, path, chip in candidates:
-            try:
-                path = path.resolve()
-            except (OSError, RuntimeError):
-                continue
-            if not path.is_file() or path.stat().st_size <= 0:
-                continue
-            digest = _sha256(path)
-            chip_identity = _canonical_chip_code(chip)
-            key = (target, chip_identity, digest)
-            if key in dedupe:
-                continue
-            dedupe.add(key)
-            artifact_id = hashlib.sha256(
-                f"{project_id}:{algorithm_id}:{version_id}:{target}:{chip_identity}:{digest}".encode("utf-8")
-            ).hexdigest()[:32]
-            result.append({
-                "artifact_id": artifact_id,
-                "project_id": project_id,
-                "algorithm_id": algorithm_id,
-                "version_id": version_id,
-                "target": target,
-                "file_name": path.name,
-                "source_path": str(path),
-                "sha256": digest,
-                "size_bytes": path.stat().st_size,
-                "chip_code": chip_identity,
-            })
+            full=dict(source.get("metadata") or {})
+            weight={k:v for k,v in full.items() if k in {"image_width","image_height","yolo_version","tags"}}
+            row={**source,"chip_code":_canonical_chip_code(source.get("chip_code")),"weight_metadata":weight,"model_metadata":full}
+            provided=self._weight_metadata_payload(row)
+            missing=[k for k in ("imageWidth","imageHeight","yoloVersion","fileSize","fileSha256","tags") if k not in provided]
+            row.update(metadata_complete=not missing,metadata_note="部分扩展信息未提供："+", ".join(missing) if missing else "")
+            result.append(row)
         return result
 
     def _mapping(self, target: str) -> Dict[str, Any] | None:
@@ -1657,27 +1972,120 @@ class ExternalAlgorithmPublishService:
             "detail": str((mapping or {}).get("compute_platform_id") or ""),
         }
 
+    def _stable_artifact_mapping(self, artifact):
+        target = str(artifact.get("target") or "").lower()
+        if target in {"original", "onnx", "paddle_inference"}:
+            return None
+        catalog = self._mapping_catalog()
+        vendors = {row["id"]: row for row in catalog["vendors"]}
+        chips = {row["id"]: row for row in catalog["chips"]}
+        metadata = artifact.get("metadata") or {}
+        scopes = [artifact, metadata] + [metadata[key] for key in ("conversion_parameters", "conversion_params") if isinstance(metadata.get(key), dict)]
+        identities = {key: {str(row[key]) for row in scopes if row.get(key)} for key in ("local_vendor_id", "local_chip_id")}
+        if any(len(values) > 1 for values in identities.values()):
+            return self._blocked_chip_state("EXTERNAL_LOCAL_IDENTITY_CONFLICT", "产物与转换任务本地身份冲突", "请核对原任务及ModelArtifact，不会猜测绑定。")
+        vendor_id = next(iter(identities["local_vendor_id"]), "")
+        chip_id = next(iter(identities["local_chip_id"]), "")
+        actual = local_chip_key(artifact.get("chip_code"))
+        if not chip_id:
+            matches = [row for row in catalog["chips"] if (not vendor_id or row["vendor_id"] == vendor_id) and vendors[row["vendor_id"]].get("adapter") == target and local_chip_key(row.get("sdk_code")) == actual and actual]
+            if len(matches) > 1:
+                return self._blocked_chip_state("EXTERNAL_LOCAL_IDENTITY_AMBIGUOUS", "历史SDK目标对应多个本地芯片身份", "请先核对任务归属，禁止选取第一个候选。")
+            if len(matches) == 1: chip_id = matches[0]["id"]
+        chip = chips.get(chip_id)
+        if not chip and not vendor_id and not chip_id and not any(row.get("adapter") == target for row in vendors.values()):
+            return None  # Unambiguous pre-dictionary legacy contract remains readable.
+        if not chip or (vendor_id and chip["vendor_id"] != vendor_id):
+            return self._blocked_chip_state("EXTERNAL_LOCAL_IDENTITY_INVALID", "产物缺少可核验的本地芯片归属", "请核对稳定厂商/芯片ID与原转换合同。")
+        vendor_id = chip["vendor_id"]
+        vendor = vendors.get(vendor_id) or {}
+        if vendor.get("adapter") != target or not actual or local_chip_key(chip.get("sdk_code")) != actual:
+            return self._blocked_chip_state("EXTERNAL_LOCAL_SDK_IDENTITY_CONFLICT", "产物SDK目标与本地稳定身份不一致", "禁止通过名称或其他Adapter的映射发布。")
+        if not chip.get("enabled", True) or not vendor.get("enabled", True):
+            return self._blocked_chip_state("EXTERNAL_LOCAL_IDENTITY_DISABLED", "本地厂商或芯片已停用", "历史记录保留，相关外部发布暂停。")
+        mappings = self.repository.config().get("target_mappings") or {}
+        key = "vendor:" + vendor_id
+        if key not in mappings:
+            siblings = [row for row in vendors.values() if row.get("adapter") == target]
+            canonical = any(name.startswith("vendor:") and vendors.get(row.get("local_vendor_id"), {}).get("adapter") == target for name, row in mappings.items())
+            legacy = mappings.get(target) or {}
+            if len(siblings) == 1 and not canonical and (legacy.get("chip_mappings") or {}).get(actual):
+                return None  # SDK contract + unique vendor + explicit legacy child binding.
+            return self._blocked_chip_state("EXTERNAL_VENDOR_MAPPING_REQUIRED", "该本地厂商尚未完成稳定ID绑定", "请在厂商对应表确认绑定；不会借用同Adapter其他厂商。")
+        mapping = mappings[key]
+        if not mapping.get("enabled", True):
+            return {"status": "ignored", "enabled": False, "mapping": None, "detail": "该本地厂商已停用外部发布"}
+        remote_id = (mapping.get("chip_mappings") or {}).get(chip_id)
+        if not remote_id:
+            return self._blocked_chip_state("EXTERNAL_COMPUTE_CHIP_MAPPING_REQUIRED", "该本地芯片尚未绑定具体远端芯片", "请选择该厂商下实际芯片子分类，不能使用父级代替。")
+        try:
+            self._validate_stable_binding(key, {**mapping, "chip_mappings": {chip_id: remote_id}}, catalog)
+            peers = [row for name, row in mappings.items() if name.startswith("vendor:") and row.get("enabled", True)]
+            if sum(row.get("compute_platform_id") == mapping.get("compute_platform_id") for row in peers) != 1 or sum(list((row.get("chip_mappings") or {}).values()).count(remote_id) for row in peers) != 1:
+                raise PlatformError("EXTERNAL_STABLE_MAPPING_CONFLICT", "当前绑定不满足双向唯一性", chip_id, "请核对绑定后重试。", 409)
+        except PlatformError as error:
+            return self._blocked_chip_state(error.code, error.message, error.solution)
+        return {"status": "mapped", "enabled": True, "mapping": {**mapping, "compute_platform_id": remote_id}, "detail": remote_id}
+
     def _artifact_mapping_state(self, artifact: Mapping[str, Any]) -> Dict[str, Any]:
+        stable = self._stable_artifact_mapping(artifact)
+        if stable is not None:
+            return stable
         target = str(artifact.get("target") or "").strip().lower()
         state = self._mapping_state(target)
         mapping = state.get("mapping")
-        if mapping and target == "rockchip":
-            # The canonical RKNN artifact identity must come from the conversion
-            # result itself. A provider mapping may translate the remote code,
-            # but must never invent the chip identity of a local .rknn file.
-            chip_code = _canonical_chip_code(artifact.get("chip_code") or "")
-            if not chip_code:
-                return {
-                    "status": "blocked",
-                    "enabled": True,
-                    "mapping": None,
-                    "detail": "RKNN 产物缺少芯片身份",
-                    "code": "MODEL_ARTIFACT_CHIP_REQUIRED",
-                    "message": "RKNN 产物缺少芯片身份",
-                    "solution": "请重新生成或修复该 RKNN 转换结果，确保转换任务自身保留真实 chip/soc_version（当前优先 RK3568/RK3578，兼容 RK3576）；厂商映射不能替代产物真实芯片身份。",
-                    "status_code": 409,
-                }
+        if not mapping:
+            return state
+        actual_chip = local_chip_key(artifact.get("chip_code"))
+        if target == "sophon" and actual_chip not in {"BM1684X", "BM1688"}:
+            return self._blocked_chip_state("MODEL_ARTIFACT_CHIP_REQUIRED",
+                "BMODEL缺少经过确认的BM1684X/BM1688芯片身份", "请核对真实转换任务芯片，不能借用厂商映射猜测。")
+        if target == "rockchip" and not actual_chip:
+            return self._blocked_chip_state(
+                "MODEL_ARTIFACT_CHIP_REQUIRED", "RKNN 产物缺少芯片身份：缺少真实转换硬件身份",
+                "请检查转换任务的 chip/soc_version，不能从畅联云分类名称反推芯片。",
+            )
+        bindings = mapping.get("chip_mappings") or {}
+        if not isinstance(bindings, Mapping):
+            return self._blocked_chip_state(
+                "EXTERNAL_COMPUTE_CHIP_MAPPING_INVALID", "芯片字典格式错误", "请重新保存厂商对应表。",
+            )
+        parent = str(mapping.get("compute_platform_id") or "")
+        if actual_chip and bindings:
+            bound = {local_chip_key(code): str(pid) for code, pid in bindings.items()}.get(actual_chip)
+            if not bound:
+                return self._blocked_chip_state(
+                    "EXTERNAL_COMPUTE_CHIP_MAPPING_REQUIRED",
+                    f"{target} / {actual_chip} 尚未绑定畅联云子分类",
+                    "请在平台对接的厂商对应表中绑定该真实芯片型号。",
+                )
+            try:
+                valid = self._validated_chip_bindings(target, parent, {actual_chip: bound})
+            except PlatformError as error:
+                return self._blocked_chip_state(error.code, error.message, error.solution)
+            return {**state, "mapping": {**mapping, "compute_platform_id": valid[actual_chip]},
+                    "detail": valid[actual_chip]}
+        if target in {"rockchip", "sophon"}:
+            catalog = self._compute_catalog()
+            is_parent = compute_platform_has_children(catalog, parent)
+            is_leaf = compute_platform_parent(catalog.get(parent, {})) != ""
+            if is_parent or is_leaf:
+                return self._blocked_chip_state(
+                    "EXTERNAL_COMPUTE_CHIP_MAPPING_REQUIRED",
+                    f"瑞芯微 {actual_chip} 尚未显式绑定具体子分类",
+                    "请先选择一级父分类，再绑定本地芯片和实际子分类；不能直接把已有子分类当作任意芯片。",
+                )
+        # Historical flat mappings stay compatible. New hierarchical Rockchip
+        # environments must use an explicit chip mapping and never guess a child.
         return state
+
+    @staticmethod
+    def _blocked_chip_state(code: str, message: str, solution: str) -> Dict[str, Any]:
+        return {
+            "status": "blocked", "enabled": True, "mapping": None,
+            "detail": message, "code": code, "message": message,
+            "solution": solution, "status_code": 409,
+        }
 
     @staticmethod
     def _remote_version_id(row: Mapping[str, Any]) -> str:
@@ -1989,7 +2397,29 @@ class ExternalAlgorithmPublishService:
             return row
         return None
 
+    @staticmethod
+    def _assert_upload_source_identity(artifact: Mapping[str, Any]) -> None:
+        """Reject replaced model bytes after discovery, including same-size changes."""
+        path = Path(str(artifact.get("source_path") or "")).expanduser()
+        expected_sha = str(artifact.get("source_sha256") or artifact.get("sha256") or "").lower()
+        expected_size = int(artifact.get("size_bytes") or 0)
+        if (
+            not re.fullmatch(r"[0-9a-f]{64}", expected_sha)
+            or expected_size <= 0
+            or not path.is_file()
+            or path.stat().st_size != expected_size
+            or _sha256(path) != expected_sha
+        ):
+            raise PlatformError(
+                "MODEL_ARTIFACT_SOURCE_IDENTITY_CHANGED",
+                "模型源文件内容与发现时的产物身份不一致",
+                str(artifact.get("file_name") or ""),
+                "请重新发现并发布当前产物，不允许沿用旧文件的大小和 SHA256。",
+                409,
+            )
+
     def _upload_artifact(self, artifact: Mapping[str, Any], algorithm: Mapping[str, Any], version: Mapping[str, Any]) -> Dict[str, Any]:
+        self._assert_upload_source_identity(artifact)
         discovered = {
             "artifact_id": str(artifact["artifact_id"]),
             "project_id": str(artifact["project_id"]),
@@ -1997,12 +2427,14 @@ class ExternalAlgorithmPublishService:
             "version_id": str(artifact["version_id"]),
             "artifact_kind": "original" if str(artifact.get("target") or "") == "original" else "conversion",
             "target": str(artifact.get("target") or "unknown"),
-            "conversion_job_id": "",
+            "conversion_job_id": str(artifact.get("conversion_job_id") or ""),
             "file_name": str(artifact["file_name"]),
             "source_path": str(artifact["source_path"]),
             "sha256": str(artifact.get("source_sha256") or artifact.get("sha256") or ""),
             "size_bytes": int(artifact["size_bytes"]),
-            "metadata": {"chip_code": str(artifact.get("chip_code") or "")},
+            "metadata": {"chip_code": str(artifact.get("chip_code") or ""),
+                         **dict(artifact.get("model_metadata") or {}),
+                         **dict(artifact.get("weight_metadata") or {})},
         }
         stored = self._reuse_uploaded_model_asset(artifact) or self.model_assets.ensure_uploaded(discovered)
         if str(stored.get("storage_status") or "").upper() != "UPLOADED":
@@ -2030,13 +2462,49 @@ class ExternalAlgorithmPublishService:
             stored = self.model_assets.repository.patch(
                 str(stored["artifact_id"]), public_url=public_url,
             )
-        return stored
+        self._assert_upload_source_identity(artifact)
+        # Include fresh verified input metadata even when the OSS file is
+        # reused; the canonical object bytes and identity remain unchanged.
+        metadata = {key: value for key, value in dict(stored.get('metadata') or {}).items()
+                    if key not in {'image_width', 'image_height', 'yolo_version', 'tags'}}
+        metadata.update(discovered['metadata'])
+        return {**self.model_assets.repository.upsert({**stored, 'metadata': metadata}),
+                'weight_metadata': dict(artifact.get('weight_metadata') or {})}
 
     @staticmethod
-    def _weight_artifact_payload(artifact: Mapping[str, Any]) -> Dict[str, str]:
+    def _weight_metadata_payload(artifact: Mapping[str, Any]) -> Dict[str, Any]:
+        """Encode only verified optional facts; absence never gates delivery."""
+        payload: Dict[str, Any] = {}
+        size = artifact.get('size_bytes')
+        if type(size) is int and 0 < size < 2**63:
+            payload['fileSize'] = size
+        digest = str(artifact.get("sha256") or "").strip().lower()
+        if re.fullmatch(r"[0-9a-f]{64}", digest):
+            payload["fileSha256"] = digest
+        metadata = artifact.get("metadata") or {}
+        metadata = metadata if isinstance(metadata, Mapping) else {}
+        for field, source in (("imageWidth", "image_width"), ("imageHeight", "image_height")):
+            if source in metadata:
+                value = metadata[source]
+                if type(value) is int and 32 <= value <= 8192:
+                    payload[field] = value
+        yolo_version = str(metadata.get("yolo_version") or "").strip()
+        if re.fullmatch(r"YOLOv\d+[nsmlx]", yolo_version):
+            payload["yoloVersion"] = yolo_version
+        prepared = artifact.get('weight_metadata')
+        if (metadata.get('label_validation_status') not in {'CONFLICT', 'UNKNOWN'}
+                and (not isinstance(prepared, Mapping) or not prepared or bool(prepared.get('tags')))
+                and isinstance(metadata.get('tags'), list) and metadata['tags']
+                and all(isinstance(tag, str) and tag.strip() == tag and tag for tag in metadata['tags'])
+                and len(set(metadata['tags'])) == len(metadata['tags'])):
+            payload["tags"] = list(metadata["tags"])
+        return payload
+
+    @classmethod
+    def _weight_artifact_payload(cls, artifact: Mapping[str, Any]) -> Dict[str, Any]:
         target = str(artifact.get("target") or "").strip().lower()
         chip_code = _canonical_chip_code(artifact.get("remote_chip_code") or "")
-        payload: Dict[str, str] = {
+        payload: Dict[str, Any] = {
             "computePlatformId": str(artifact.get("compute_platform_id") or "").strip(),
             "fileName": str(artifact.get("file_name") or "").strip(),
             "filePath": str(artifact.get("public_url") or "").strip(),
@@ -2044,6 +2512,9 @@ class ExternalAlgorithmPublishService:
         if chip_code:
             payload["chipCode"] = chip_code
         missing = [field for field in ("computePlatformId", "fileName", "filePath") if not payload.get(field)]
+        if target == "sophon" and chip_code not in {"BM1684X", "BM1688"}:
+            raise PlatformError("MODEL_ARTIFACT_CHIP_REQUIRED", "BMODEL真实芯片身份不正确", chip_code,
+                "必须由实际转换任务提供BM1684X/BM1688，不能复用瑞芯微或未知芯片。", 409)
         if target == "rockchip" and not chip_code:
             missing.append("chipCode")
         if missing:
@@ -2054,10 +2525,10 @@ class ExternalAlgorithmPublishService:
                 "algoVersionId、computePlatformId、fileName、filePath 按平台业务合同必须具备；chipCode 仅在 RKNN/rockchip 等芯片相关产物上强制要求，original 通用模型允许为空。",
                 409,
             )
-        return payload
+        return {**payload, **cls._weight_metadata_payload(artifact)}
 
     @classmethod
-    def _weight_payload(cls, artifact: Mapping[str, Any], external_version_id: str) -> Dict[str, str]:
+    def _weight_payload(cls, artifact: Mapping[str, Any], external_version_id: str) -> Dict[str, Any]:
         payload = {
             "algoVersionId": str(external_version_id or "").strip(),
             **cls._weight_artifact_payload(artifact),
@@ -2072,6 +2543,28 @@ class ExternalAlgorithmPublishService:
             )
         return payload
 
+    def _weight_slot_rows(self, rows, artifact):
+        """Exclude only remote leaves positively bound to another business vendor."""
+        slot = self._delivery_key(artifact)
+        if "|vendor:" not in slot:
+            return list(rows)
+        vendor_id = slot.split("|vendor:", 1)[1].split("|chip:", 1)[0]
+        mappings = self.repository.config().get("target_mappings") or {}
+        state = self._stable_artifact_mapping(artifact) or {}
+        if state.get("status") != "mapped" or str((state.get("mapping") or {}).get("compute_platform_id") or "") != str(artifact.get("compute_platform_id") or ""):
+            return list(rows)
+        catalog = self._mapping_catalog()
+        excluded = set()
+        for key, binding in mappings.items():
+            if not key.startswith("vendor:") or key == "vendor:" + vendor_id or not binding.get("enabled", True):
+                continue
+            try:
+                self._validate_stable_binding(key, binding, catalog)
+            except PlatformError:
+                continue
+            excluded.update(str(value) for value in (binding.get("chip_mappings") or {}).values())
+        return [row for row in rows if str(row.get("computePlatformId") or "") not in excluded or self._remote_weight_id(row) == str(artifact.get("external_weight_id") or "")]
+
     def _recover_weight_from_rows(
         self,
         rows: Iterable[Mapping[str, Any]],
@@ -2080,20 +2573,26 @@ class ExternalAlgorithmPublishService:
         exact_ids: set[str] = set()
         related: list[Mapping[str, Any]] = []
         expected_chip = _canonical_chip_code(artifact.get("remote_chip_code") or "")
-        for row in rows:
+        for row in self._weight_slot_rows(rows, artifact):
             same_file = str(row.get("fileName") or row.get("name") or "") == str(artifact.get("file_name") or "")
             same_platform = str(row.get("computePlatformId") or "") == str(artifact.get("compute_platform_id") or "")
             remote_chip = _canonical_chip_code(row.get("chipCode") or "")
             same_chip = remote_chip == expected_chip
             remote_path = str(row.get("filePath") or "").strip()
             expected_path = str(artifact.get("public_url") or "").strip()
-            same_path = not remote_path or remote_path == expected_path
+            original = artifact.get("target") in {None,"original","training","best","last"}
+            same_path = remote_path == expected_path or (not remote_path and (original or bool(row.get("fileSha256") and str(row["fileSha256"]).lower()==str(artifact.get("sha256") or "").lower())))
+            if (row.get("algoVersionId") and artifact.get("external_algo_version_id") and str(row["algoVersionId"])!=str(artifact["external_algo_version_id"])) or (row.get("fileSha256") and str(row["fileSha256"]).lower()!=str(artifact.get("sha256") or "").lower()):
+                if same_chip and (same_platform or not original): related.append(row)
+                continue
             if same_file and same_platform and same_chip and same_path:
                 weight_id = self._remote_weight_id(row)
                 if weight_id:
                     exact_ids.add(weight_id)
                 else:
                     related.append(row)
+            elif same_chip and not original:
+                related.append(row)
             elif same_file and same_platform and same_chip:
                 related.append(row)
             elif same_file and same_platform and expected_chip and not remote_chip:
@@ -2121,7 +2620,7 @@ class ExternalAlgorithmPublishService:
                 "恢复查询不可用时平台不会继续新增权重；请恢复 listByVersion 后重试。",
                 502,
             ) from error
-        return self._recover_weight_from_rows(rows, artifact)
+        return self._recover_weight_from_rows(rows, {**artifact,"external_algo_version_id":external_version_id})
 
     @staticmethod
     def _remote_weight_id(row: Mapping[str, Any]) -> str:
@@ -2137,15 +2636,105 @@ class ExternalAlgorithmPublishService:
         artifact: Mapping[str, Any],
         *,
         weight_id: str = "",
+        confirmed_payload: Mapping[str, Any] | None = None,
     ) -> bool:
         if weight_id and cls._remote_weight_id(row) != str(weight_id):
             return False
-        return (
+        base_matches = (
             str(row.get("fileName") or row.get("name") or "") == str(artifact.get("file_name") or "")
             and str(row.get("computePlatformId") or "") == str(artifact.get("compute_platform_id") or "")
             and _canonical_chip_code(row.get("chipCode") or "") == _canonical_chip_code(artifact.get("remote_chip_code") or "")
             and str(row.get("filePath") or "") == str(artifact.get("public_url") or "")
         )
+        if not base_matches:
+            return False
+        expected = cls._weight_metadata_payload(artifact)
+        return all(
+            row.get(key) == value if key in row else (confirmed_payload or {}).get(key) == value
+            for key, value in expected.items()
+        )
+
+    def _confirm_weight_readback(self, current, external_version_id, client, payload, weight_id, *, previous_artifact_ids=(), rows=None, remote=None, strict_metadata=False):
+        intent=json.loads(str(current.get("remote_metadata_json") or "{}"))
+        strict_metadata=strict_metadata or bool(intent.get("metadata_only") and intent.get("write_error"))
+        if rows is None: rows=extract_items(client.list_version_weights(external_version_id))
+        matches=[r for r in rows if self._remote_weight_id(r)==str(weight_id)]
+        if len(matches)!=1:
+            raise PlatformError("EXTERNAL_WEIGHT_READBACK_UNCONFIRMED","新增或更新后的Weight未唯一读回",str(weight_id),"保持UNKNOWN，仅查询恢复，不重复新增。",409)
+        if remote is None:
+            remote=_remote_data(client.weight_info(weight_id)) if callable(getattr(client,"weight_info",None)) else matches[0]
+        if not isinstance(remote,Mapping) or str(remote.get("algoVersionId") or "")!=str(external_version_id):
+            raise PlatformError("EXTERNAL_WEIGHT_READBACK_UNCONFIRMED","读回Weight版本归属未确认",str(weight_id),"不会仅凭HTTP成功确认。",409)
+        if not self._remote_weight_contract_matches(remote,current,weight_id=str(weight_id),confirmed_payload=None if strict_metadata else payload):
+            raise PlatformError("EXTERNAL_WEIGHT_READBACK_MISMATCH","远端Weight尚未持久化目标文件或参数",str(weight_id),"保留实际错误和UNKNOWN状态，禁止delete/add绕过。",409)
+        same_chip={self._remote_weight_id(r) for r in self._weight_slot_rows(rows,current) if _canonical_chip_code(r.get("chipCode"))==_canonical_chip_code(current.get("remote_chip_code"))}
+        if current.get("target")!="original" and same_chip!={str(weight_id)}:
+            raise PlatformError("EXTERNAL_WEIGHT_RECOVERY_AMBIGUOUS","同版本芯片远端Weight不唯一",str(weight_id),"停止自动写入，请管理员核对身份冲突。",409)
+        observation=json.loads(str(current.get("remote_metadata_json") or "{}"))
+        observation.update(weight_id=str(weight_id),write_pending=False,readback_confirmed=True,checked_at=utc_now(),source="getInfo" if callable(getattr(client,"weight_info",None)) else "listByVersion",tags_present="tags" in remote,tags=remote.get("tags"),remote=dict(remote))
+        patched=self.repository.confirm_weight_publication(current["artifact_id"],weight_id,payload,observation,previous_artifact_ids=previous_artifact_ids)
+        return {**dict(current),**patched}
+
+    @staticmethod
+    def _unconfirmed_weight_write(artifact):
+        if artifact.get("sync_status")!="UNKNOWN": return False
+        observation=json.loads(str(artifact.get("remote_metadata_json") or "{}"))
+        return bool(observation.get("write_pending") or str(artifact.get("last_error") or "").startswith(("EXTERNAL_WEIGHT_CREATE_UNKNOWN:","EXTERNAL_WEIGHT_EDIT_UNKNOWN:")))
+
+    def _sync_conversion_weight(self, current, external_version_id, client):
+        _,version=self._algorithm_version(current["project_id"],current["algorithm_id"],current["version_id"])
+        selected=self._delivery_selection(version,current)
+        if selected.get("error"):
+            raise PlatformError(selected["code"], selected["error"], str(current["artifact_id"]), "请核对旧交付身份；未发送远端写入。", 409)
+        if selected.get("artifact_id") and (selected["artifact_id"]!=current["artifact_id"] or selected.get("sha256")!=current.get("sha256")):
+            raise PlatformError("EXTERNAL_WEIGHT_STALE_COMPLETION","历史成果不再对外写入",current["artifact_id"],"较新的当前成果保持不变。",409)
+        payload=self._weight_payload(current,external_version_id)
+        rows=extract_items(client.list_version_weights(external_version_id))
+        slot_peers=[r for r in self._publication_artifacts(current["publication_key"]) if self._delivery_key(r)==self._delivery_key(current) and r["artifact_id"]!=current["artifact_id"]]
+        for pending in slot_peers:
+            if not self._unconfirmed_weight_write(pending): continue
+            observation=json.loads(str(pending.get("remote_metadata_json") or "{}"))
+            try:
+                pending_id=str(pending.get("external_weight_id") or self._recover_weight_from_rows(rows,{**pending,"external_algo_version_id":external_version_id}))
+                if not pending_id: raise ValueError("远端尚未返回先前请求的唯一Weight ID")
+                self._confirm_weight_readback(pending,external_version_id,client,self._weight_payload(pending,external_version_id),pending_id,
+                    previous_artifact_ids=tuple(observation.get("artifact_ids") or ()),rows=rows)
+            except (PlatformError,ValueError) as error:
+                raise PlatformError("EXTERNAL_WEIGHT_SLOT_WRITE_UNKNOWN","同芯片先前写入未确认，暂停较新成果写入",str(error),
+                                    "原发布Owner只读恢复后自动继续，不允许跨Artifact重复add/edit。",409) from error
+        related=[r for r in self._weight_slot_rows(rows,current) if _canonical_chip_code(r.get("chipCode"))==_canonical_chip_code(current.get("remote_chip_code"))]
+        ids={self._remote_weight_id(r) for r in related}
+        if len(ids)>1 or "" in ids:
+            raise PlatformError("EXTERNAL_WEIGHT_RECOVERY_AMBIGUOUS","当前芯片远端Weight身份不唯一",str(sorted(ids)),"不按同名替换，不新增，不删除。",409)
+        peers=slot_peers
+        owner_ids={str(r["external_weight_id"]) for r in peers if r.get("external_weight_id")}
+        known_ids=owner_ids|({str(current["external_weight_id"])} if current.get("external_weight_id") else set())
+        if len(known_ids)>1 or (ids and known_ids and not ids.issubset(known_ids)):
+            raise PlatformError("EXTERNAL_WEIGHT_OWNER_CONFLICT","本地与远端当前Weight身份冲突",str(sorted(ids|owner_ids)),"保留历史，停止自动写入。",409)
+        if not ids:
+            if known_ids:
+                if not callable(getattr(client,"weight_info",None)) or any(_remote_data(client.weight_info(i)) is not None for i in known_ids):
+                    raise PlatformError("EXTERNAL_WEIGHT_ABSENCE_UNCONFIRMED","历史Weight是否不存在未确认",str(sorted(owner_ids)),"列表与详情须共同确认，不重复add。",409)
+            return self._create_or_recover_weight(current,external_version_id,client,payload,previous_artifact_ids=tuple(r["artifact_id"] for r in peers if r.get("external_weight_id")))
+        weight_id=next(iter(ids));remote=related[0]
+        if callable(getattr(client,"weight_info",None)): remote=_remote_data(client.weight_info(weight_id))
+        if not isinstance(remote,Mapping) or str(remote.get("algoVersionId") or "")!=str(external_version_id) or _canonical_chip_code(remote.get("chipCode"))!=_canonical_chip_code(current.get("remote_chip_code")) or not remote.get("filePath"):
+            raise PlatformError("EXTERNAL_WEIGHT_EDIT_IDENTITY_UNCONFIRMED","远端Weight真实版本/芯片/文件身份未确认",weight_id,"不修改、不新增。",409)
+        desired_platform=str(current.get("compute_platform_id") or "");old_platform=str(remote.get("computePlatformId") or "")
+        if old_platform!=desired_platform:
+            raise PlatformError("EXTERNAL_WEIGHT_PLATFORM_REMAP_REVIEW_REQUIRED","已有Weight算力分类发生变化",old_platform,"须独立核验迁移，禁止随字典变化静默改挂。",409)
+        previous_ids=tuple(r["artifact_id"] for r in peers if str(r.get("external_weight_id") or "")==weight_id)
+        bound={**current,"external_weight_id":weight_id}
+        if self._remote_weight_contract_matches(remote,bound,weight_id=weight_id,confirmed_payload=json.loads(str(current.get("synced_payload_json") or "{}"))):
+            return self._confirm_weight_readback(bound,external_version_id,client,payload,weight_id,previous_artifact_ids=previous_ids,rows=rows,remote=remote)
+        intent=json.loads(str(current.get("remote_metadata_json") or "{}"))
+        if intent.get("write_pending"):
+            raise PlatformError("EXTERNAL_WEIGHT_EDIT_UNKNOWN","上次写入结果未确认，禁止再次覆盖",weight_id,"仅通过读回恢复；远端目标文件尚未确认。",409)
+        before={"artifact_ids":list(previous_ids),"remote":dict(remote),"desired":dict(payload),"write_pending":True}
+        self.repository.patch_artifact_publication(current["artifact_id"],external_weight_id=weight_id,sync_status="UNKNOWN",last_error="EXTERNAL_WEIGHT_EDIT_UNKNOWN: 自动更新待读回",remote_metadata_json=json.dumps(before,ensure_ascii=False))
+        bound={**bound,"remote_metadata_json":json.dumps(before,ensure_ascii=False)}
+        self.audit.record({"operation":"weight_replacement","stage":"before_edit","status":"UNKNOWN","project_id":current["project_id"],"algorithm_id":current["algorithm_id"],"version_id":current["version_id"],"artifact_id":current["artifact_id"],"request":before})
+        return self._edit_existing_weight(bound,external_version_id,client,payload,remote_reference=remote,previous_artifact_ids=previous_ids)
 
     def _edit_existing_weight(
         self,
@@ -2153,6 +2742,7 @@ class ExternalAlgorithmPublishService:
         external_version_id: str,
         client: PublishingChangLianClient,
         payload: Mapping[str, Any],
+        *, remote_reference=None, previous_artifact_ids=(),
     ) -> Dict[str, Any]:
         external_weight_id = str(current.get("external_weight_id") or "").strip()
         if not external_weight_id:
@@ -2163,51 +2753,48 @@ class ExternalAlgorithmPublishService:
                 "只能对已经唯一恢复到 weightId 的远端权重执行更新。",
                 409,
             )
+        # A remembered ID alone is not permission to edit an ambiguous remote
+        # identity. Use the last confirmed core contract when names were changed.
+        previous = json.loads(str(current.get("synced_payload_json") or "{}"))
+        reference = {**current,
+            "file_name": previous.get("fileName", current.get("file_name")),
+            "compute_platform_id": previous.get("computePlatformId", current.get("compute_platform_id")),
+            "remote_chip_code": previous.get("chipCode", current.get("remote_chip_code")),
+            "public_url": previous.get("filePath", current.get("public_url"))}
+        try:
+            rows = extract_items(client.list_version_weights(external_version_id)) if remote_reference is None else []
+            if remote_reference is None and self._recover_weight_from_rows(rows, reference) != external_weight_id:
+                raise PlatformError("EXTERNAL_WEIGHT_EDIT_IDENTITY_UNCONFIRMED", "无法唯一确认原Weight身份", external_weight_id,
+                    "请只读核对原Weight ID与文件映射；未发送edit或add。", 409)
+        except Exception as error:
+            changes = {"last_error":str(error)}
+            if isinstance(error, PlatformError):
+                changes["sync_status"] = "UNKNOWN"
+            self.repository.patch_artifact_publication(str(current["artifact_id"]), **changes)
+            raise
         edit_payload = {"weightId": external_weight_id, **dict(payload)}
+        self.repository.patch_artifact_publication(str(current['artifact_id']), sync_status='UNKNOWN',
+            last_error='EXTERNAL_WEIGHT_EDIT_UNKNOWN: 编辑请求待确认')
+        metadata_only=all(str(reference.get(k) or "")==str(current.get(k) or "") for k in ("file_name","compute_platform_id","remote_chip_code","public_url")) if remote_reference is None else all(remote_reference.get(k)==payload.get(k) for k in ("fileName","computePlatformId","chipCode","filePath"))
+        intent=json.loads(str(current.get("remote_metadata_json") or "{}"))
+        intent.update(operation="EDIT",write_pending=True,metadata_only=metadata_only,desired=dict(payload))
+        current={**current,"remote_metadata_json":json.dumps(intent,ensure_ascii=False)}
+        self.repository.patch_artifact_publication(current["artifact_id"],remote_metadata_json=current["remote_metadata_json"])
+        write_error=None
         try:
             client.edit_weight(edit_payload)
         except Exception as error:
-            confirmed = False
-            try:
-                rows = extract_items(client.list_version_weights(external_version_id))
-                confirmed = any(
-                    self._remote_weight_contract_matches(
-                        row,
-                        current,
-                        weight_id=external_weight_id,
-                    )
-                    for row in rows
-                )
-            except Exception:
-                confirmed = False
-            if confirmed:
-                patched = self.repository.patch_artifact_publication(
-                    str(current["artifact_id"]),
-                    provider=PROVIDER_CHANGLIAN,
-                    sync_status="SYNCED",
-                    last_error="",
-                )
-                return {**dict(current), **patched}
-            self.repository.patch_artifact_publication(
-                str(current["artifact_id"]),
-                provider=PROVIDER_CHANGLIAN,
-                sync_status="UNKNOWN",
-                last_error=str(error),
-            )
-            raise PlatformError(
-                "EXTERNAL_WEIGHT_EDIT_UNKNOWN",
-                "新畅联权重文件更新结果无法确认",
-                str(error),
-                "请先核对新畅联该 weightId 的 computePlatformId / chipCode / fileName / filePath；平台不会重复创建新权重。",
-                502,
-            ) from error
-        patched = self.repository.patch_artifact_publication(
-            str(current["artifact_id"]),
-            provider=PROVIDER_CHANGLIAN,
-            sync_status="SYNCED",
-            last_error="",
-        )
-        return {**dict(current), **patched}
+            write_error=error
+            intent["write_error"]=str(error)
+            current={**current,"remote_metadata_json":json.dumps(intent,ensure_ascii=False)}
+            self.repository.patch_artifact_publication(current["artifact_id"],remote_metadata_json=current["remote_metadata_json"])
+        try:
+            return self._confirm_weight_readback(current,external_version_id,client,payload,external_weight_id,previous_artifact_ids=previous_artifact_ids,strict_metadata=bool(write_error and metadata_only))
+        except Exception as error:
+            detail=str(write_error or error)
+            self.repository.patch_artifact_publication(current["artifact_id"],sync_status="UNKNOWN",last_error=detail)
+            raise PlatformError("EXTERNAL_WEIGHT_EDIT_UNKNOWN","新畅联Weight更新结果未读回确认",detail,
+                                "保留原Weight ID和实际接口错误，仅查询恢复；不重复add或delete。",502) from error
 
     def _bind_recovered_weight(
         self,
@@ -2217,6 +2804,10 @@ class ExternalAlgorithmPublishService:
         client: PublishingChangLianClient,
         payload: Mapping[str, Any],
     ) -> Dict[str, Any]:
+        owners = [r for r in self.repository.artifact_publications(str(current.get("publication_key") or ""))
+                  if str(r.get("external_weight_id") or "")==str(recovered_weight_id) and r.get("artifact_id")!=current.get("artifact_id")]
+        if owners:
+            raise PlatformError("EXTERNAL_WEIGHT_OWNER_CONFLICT","远端Weight已有活动Artifact Owner",str(recovered_weight_id),"请核对历史别名，禁止将不同SHA成果重绑或重复认领。",409)
         patched = self.repository.patch_artifact_publication(
             str(current["artifact_id"]),
             provider=PROVIDER_CHANGLIAN,
@@ -2233,7 +2824,15 @@ class ExternalAlgorithmPublishService:
         )
 
     def _sync_weight(self, artifact: Mapping[str, Any], external_version_id: str, client: PublishingChangLianClient) -> Dict[str, Any]:
-        current = self._artifact_projection(str(artifact["artifact_id"])) or dict(artifact)
+        current = {**(self._artifact_projection(str(artifact["artifact_id"])) or {}), **dict(artifact)}
+        if current.get("target")!="original":
+            return self._sync_conversion_weight(current,external_version_id,client)
+        payload = self._weight_payload(current, external_version_id)
+        external_weight_id = str(current.get('external_weight_id') or '')
+        confirmed = json.loads(str(current.get('synced_payload_json') or '{}'))
+        if external_weight_id and str(current.get('sync_status') or '').upper() == 'SYNCED' and all(confirmed.get(key) == value for key, value in payload.items()):
+            return current
+        review_only=str(current.get("last_error") or "").startswith(("EXTERNAL_WEIGHT_REPLACEMENT_REVIEW_REQUIRED:","EXTERNAL_WEIGHT_RECOVERY_AMBIGUOUS:"))
         attempts = int(current.get("attempts") or 0) + 1
         mapping = self.repository.patch_artifact_publication(
             str(current["artifact_id"]),
@@ -2241,23 +2840,41 @@ class ExternalAlgorithmPublishService:
             attempts=attempts,
         )
         current = {**current, **mapping}
-        payload = self._weight_payload(current, external_version_id)
-        external_weight_id = str(current.get("external_weight_id") or "")
         if external_weight_id:
-            if str(current.get("sync_status") or "").upper() == "SYNCED":
-                return current
+            if str(current.get('sync_status') or '').upper() == 'SYNCED':
+                rows = extract_items(client.list_version_weights(external_version_id))
+                if any(self._remote_weight_contract_matches(row, current, weight_id=external_weight_id) for row in rows):
+                    patched = self.repository.patch_artifact_publication(str(current['artifact_id']),
+                        synced_payload_json=json.dumps(payload, ensure_ascii=False, sort_keys=True))
+                    return {**current, **patched}
+            if str(current.get('sync_status') or '').upper() == 'UNKNOWN':
+                rows = extract_items(client.list_version_weights(external_version_id))
+                if any(self._remote_weight_contract_matches(row, current, weight_id=external_weight_id) for row in rows):
+                    patched = self.repository.patch_artifact_publication(
+                        str(current['artifact_id']), sync_status='SYNCED', last_error='',
+                        synced_payload_json=json.dumps(payload, ensure_ascii=False, sort_keys=True),
+                    )
+                    return {**current, **patched}
+                raise PlatformError('EXTERNAL_WEIGHT_EDIT_UNKNOWN', '权重元数据更新结果未确认',
+                    external_weight_id, '远端未返回足够字段证明更新成功；请人工核对该weightId，平台不会盲目再次编辑或新增。', 409)
             return self._edit_existing_weight(
                 current,
                 external_version_id,
                 client,
                 payload,
             )
+        return self._create_or_recover_weight(current,external_version_id,client,payload)
+
+    def _create_or_recover_weight(self, current, external_version_id, client, payload, *, previous_artifact_ids=()):
+        review_only=str(current.get("last_error") or "").startswith(("EXTERNAL_WEIGHT_REPLACEMENT_REVIEW_REQUIRED:","EXTERNAL_WEIGHT_RECOVERY_AMBIGUOUS:"))
         try:
             recovered = self._recover_weight(client, external_version_id, current)
         except PlatformError as error:
             self.repository.patch_artifact_publication(
                 str(current["artifact_id"]), provider=PROVIDER_CHANGLIAN,
-                sync_status="UNKNOWN", last_error=str(error)
+                sync_status=('PENDING' if error.code == 'EXTERNAL_WEIGHT_RECOVERY_UNAVAILABLE'
+                             and str(current.get('sync_status') or '').upper() != 'UNKNOWN' else 'UNKNOWN'),
+                last_error=str(error)
             )
             raise
         if recovered:
@@ -2268,6 +2885,13 @@ class ExternalAlgorithmPublishService:
                 client,
                 payload,
             )
+        if str(current.get('sync_status') or '').upper() == 'UNKNOWN' and not review_only:
+            raise PlatformError('EXTERNAL_WEIGHT_CREATE_UNKNOWN', '新畅联权重登记结果未确认',
+                str(current.get('file_name') or ''), '尚未恢复唯一weightId，不能重复新增；请稍后查询或人工核对远端。', 409)
+        intent={"operation":"ADD","write_pending":True,"desired":dict(payload),"artifact_ids":list(previous_artifact_ids),"prior_weight_id":str(current.get("external_weight_id") or "")}
+        self.repository.patch_artifact_publication(str(current['artifact_id']), sync_status='UNKNOWN',
+            external_weight_id='',last_error='EXTERNAL_WEIGHT_CREATE_UNKNOWN: 新增请求待确认',remote_metadata_json=json.dumps(intent,ensure_ascii=False))
+        current={**current,"external_weight_id":"","remote_metadata_json":json.dumps(intent,ensure_ascii=False)}
         try:
             response = client.create_weight(payload)
         except Exception as error:
@@ -2276,13 +2900,8 @@ class ExternalAlgorithmPublishService:
             except PlatformError:
                 recovered = ""
             if recovered:
-                return self._bind_recovered_weight(
-                    current,
-                    recovered,
-                    external_version_id,
-                    client,
-                    payload,
-                )
+                return self._confirm_weight_readback(current,external_version_id,client,payload,recovered,
+                    previous_artifact_ids=previous_artifact_ids)
             self.repository.patch_artifact_publication(
                 str(current["artifact_id"]), provider=PROVIDER_CHANGLIAN,
                 sync_status="UNKNOWN", last_error=str(error),
@@ -2302,13 +2921,8 @@ class ExternalAlgorithmPublishService:
                 )
                 raise
             if recovered:
-                return self._bind_recovered_weight(
-                    current,
-                    recovered,
-                    external_version_id,
-                    client,
-                    payload,
-                )
+                return self._confirm_weight_readback(current,external_version_id,client,payload,recovered,
+                    previous_artifact_ids=previous_artifact_ids)
         if not weight_id:
             self.repository.patch_artifact_publication(
                 str(current["artifact_id"]), provider=PROVIDER_CHANGLIAN,
@@ -2318,11 +2932,12 @@ class ExternalAlgorithmPublishService:
                 "EXTERNAL_WEIGHT_ID_MISSING", "新畅联未返回权重文件 ID", str(current.get("file_name") or ""),
                 "请让新畅联新增权重接口直接返回 weightId，或确认版本权重列表接口可用于反查。", 502,
             )
-        patched = self.repository.patch_artifact_publication(
-            str(current["artifact_id"]), provider=PROVIDER_CHANGLIAN,
-            external_weight_id=weight_id, sync_status="SYNCED", last_error="",
-        )
-        return {**current, **patched}
+        self.repository.patch_artifact_publication(current["artifact_id"],external_weight_id=weight_id,sync_status="UNKNOWN",last_error="EXTERNAL_WEIGHT_CREATE_UNKNOWN: 等待远端读回")
+        try:
+            return self._confirm_weight_readback({**current,"external_weight_id":weight_id},external_version_id,client,payload,weight_id,previous_artifact_ids=previous_artifact_ids)
+        except Exception as error:
+            self.repository.patch_artifact_publication(current["artifact_id"],sync_status="UNKNOWN",last_error=str(error))
+            raise
 
     def _publish_transport_state(self) -> Dict[str, Any]:
         issues: list[Dict[str, str]] = []
@@ -2426,10 +3041,73 @@ class ExternalAlgorithmPublishService:
             if _artifact_target_identity(row.get("target")) != "training"
         ]
         conversion_active = self.conversion_active(project_id, algorithm_id, version_id)
+        stored = self._publication_artifacts(str(publication['publication_key']),include_inactive=True) if publication else []
+        requests = self.audit.latest_weight_requests(project_id, algorithm_id, version_id)
+        weights = []
+        local_assets = self.model_assets.repository.list(project_id=project_id,algorithm_id=algorithm_id,version_id=version_id,limit=500)
+        choices=self._automatic_delivery_choices(version,classified)
+        version={**version,"_automatic_delivery_choices":choices}
+        for item in classified:
+            current = next((row for row in stored if _artifact_target_identity(row.get('target')) == _artifact_target_identity(item.get('target'))
+                            and row.get('sha256') == item.get('sha256')
+                            and _canonical_chip_code(row.get('chip_code')) == _canonical_chip_code(item.get('chip_code'))), {})
+            local = next((asset for asset in local_assets if _artifact_target_identity(asset.get('target'))==_artifact_target_identity(item.get('target'))
+                          and asset.get('sha256')==item.get('sha256') and _canonical_chip_code(asset.get('chip_code'))==_canonical_chip_code(item.get('chip_code'))), {})
+            row = {**local, **current, **item, 'artifact_id': current.get('artifact_id') or local.get('artifact_id') or item['artifact_id'],
+                   'metadata': local.get('metadata') or current.get('metadata') or {}, 'frozen_tags': item['weight_metadata'].get('tags')}
+            row['compute_platform_id']=current.get('compute_platform_id') or row.get('compute_platform_id')
+            plan=self._artifact_review({**row,**current},version,[*local_assets,*stored])
+            row.update(review_required=plan["review_required"],recovery_plan=plan,
+                       requested_artifact_id=plan["requested_artifact_id"],remote_identity_status="READ_BACK" if json.loads(str(current.get("remote_metadata_json") or "{}")).get("readback_confirmed") and current.get("active",1) else "HISTORICAL_RECEIPT" if current.get("active")==0 else "PENDING_READBACK",
+                       included_in_delivery=not plan["requested_artifact_id"] or plan["requested_artifact_id"]==row["artifact_id"],
+                       delivery_role="HISTORICAL" if plan["requested_artifact_id"] and plan["requested_artifact_id"]!=row["artifact_id"] else "CONFIRMED_OWNER" if current.get("external_weight_id") else "AUTOMATIC_CURRENT" if plan["requested_artifact_id"]==row["artifact_id"] else "UNSELECTED" if plan["review_required"] else "SINGLE_CANDIDATE")
+            row['remote_registered'] = bool(current.get('external_weight_id'))
+            if str(current.get('sync_status') or '').upper() == 'UNKNOWN':
+                row['metadata_sync_status'] = 'UNKNOWN'
+            elif current.get('external_weight_id'):
+                confirmed = json.loads(str(current.get('synced_payload_json') or '{}'))
+                expected = self._weight_metadata_payload({**row, 'metadata': item['weight_metadata']})
+                row['metadata_sync_status'] = 'SYNCED' if all(confirmed.get(key) == value for key, value in expected.items()) else 'PENDING'
+            else:
+                row['metadata_sync_status'] = 'PENDING'
+            confirmed = json.loads(str(current.get('synced_payload_json') or '{}'))
+            observed = json.loads(str(current.get('remote_metadata_json') or '{}'))
+            if observed.get('weight_id') != str(current.get('external_weight_id') or ''):
+                observed = {}
+            prepared = self._weight_metadata_payload({**row, 'metadata': item['weight_metadata']})
+            if (row['metadata'].get('label_validation_status') == 'CONFLICT'):
+                prepared.pop('tags', None)
+                row['metadata_sync_status'] = 'CONFLICT'
+                row['metadata_note'] = str(row['metadata'].get('label_error') or '历史模型标签冲突，禁止自动补齐')
+            request = requests.get(str(row.get('artifact_id') or ''), {})
+            request_body = (request.get('request') or {}).get('json') or {}
+            row.update(request_tags=request_body.get('tags'), request_status=request.get('status'),
+                       request_audit_id=request.get('log_id'), request_endpoint=request.get('endpoint'))
+            row.update(local_tags=row['metadata'].get('tags'), prepared_tags=prepared.get('tags'),
+                       confirmed_tags=confirmed.get('tags'), remote_tags=observed.get('tags'),
+                       remote_tags_status='READ_BACK' if observed.get('tags_present') else 'NOT_RETURNED' if observed else 'NOT_VERIFIED',
+                       remote_tags_checked_at=observed.get('checked_at'))
+            if (observed.get('tags_present') and prepared.get('tags') is not None
+                    and observed.get('tags') != prepared['tags'] and row['metadata_sync_status'] not in {'UNKNOWN','CONFLICT'}):
+                row['metadata_sync_status'] = 'PENDING'
+            weights.append(row)
+        for current in [*stored, *local_assets]:
+            if any(row.get('artifact_id') == current.get('artifact_id') for row in weights):
+                continue
+            plan=self._artifact_review(current,version,stored)
+            included=not plan["requested_artifact_id"] or plan["requested_artifact_id"]==current["artifact_id"]
+            weights.append({**current, 'remote_registered': bool(current.get('external_weight_id')),
+                'included_in_delivery':included,'delivery_role':'UNVERIFIED' if included else 'HISTORICAL',
+                'requested_artifact_id':plan['requested_artifact_id'],
+                'metadata_complete': False, 'metadata_sync_status': 'UNKNOWN',
+                'last_error': '已登记产物当前无法核验：源文件缺失或内容身份已改变，请管理员核对',
+                'review_required':included,'remote_identity_status':'PENDING_READBACK' if included else 'HISTORICAL_RECEIPT',
+                'recovery_plan':plan})
         transport = self._publish_transport_state()
         identity = self._external_identity_state(algorithm, version)
         return {
             "ok": True,
+            "project_id":project_id,
             "algorithm": {
                 "id": algorithm_id,
                 "name": algorithm.get("name"),
@@ -2441,9 +3119,13 @@ class ExternalAlgorithmPublishService:
                 "version_no": version.get("version_no") or "",
                 "external_algo_version_id": str((publication or {}).get("external_algo_version_id") or ""),
                 "external_publish_status": str((publication or {}).get("status") or "").lower(),
+                "model_metadata": version.get("model_metadata") or {},
+                "label_codes": self._frozen_weight_labels(version),
             },
             "publication": publication,
-            "artifacts": self._publication_artifacts(str(publication["publication_key"])) if publication else [],
+            "artifacts": weights,
+            "weight_delivery_status": "PARTIAL" if any(r.get("review_required") or (r.get("sync_status") not in {"SYNCED",None} and r.get("publish_mapping_status")!="ignored") for r in weights if r.get("included_in_delivery",True)) else str((publication or {}).get("status") or "PENDING"),
+            "requires_sync": self.publication_requires_sync(project_id, algorithm, version, publication),
             "discovered": classified,
             "mapped_artifact_count": len(mapped),
             "blocked_artifact_count": len(blocked),
@@ -2515,6 +3197,12 @@ class ExternalAlgorithmPublishService:
             last_error="",
         )
         discovered = self.discover_artifacts(project_id, algorithm, version)
+        local_assets=self.model_assets._register_version_metadata_under_fence(project_id,algorithm_id,version_id)
+        for item in discovered:
+            canonical=next((r for r in local_assets if r["target"]==item["target"] and r["sha256"]==item["sha256"] and _canonical_chip_code(r.get("chip_code"))==_canonical_chip_code(item.get("chip_code"))),None)
+            if canonical: item["artifact_id"]=canonical["artifact_id"]
+        choices=self._automatic_delivery_choices(version,discovered)
+        version={**version,"_automatic_delivery_choices":choices}
         original_selected: list[tuple[Dict[str, Any], Dict[str, Any]]] = []
         original_blocked: list[Dict[str, Any]] = []
         conversion_selected: list[tuple[Dict[str, Any], Dict[str, Any]]] = []
@@ -2685,14 +3373,37 @@ class ExternalAlgorithmPublishService:
         for item, mapping in conversion_selected:
             uploaded: Dict[str, Any] | None = None
             try:
+                peers=self._publication_artifacts(str(publication["publication_key"]))
+                local=next((r for r in local_assets if r.get("target")==item.get("target") and r.get("sha256")==item.get("sha256") and _canonical_chip_code(r.get("chip_code"))==_canonical_chip_code(item.get("chip_code"))),{})
+                same=next((r for r in peers if r.get("artifact_id")==local.get("artifact_id")),{})
+                evidence={r["artifact_id"]:r for r in local_assets}
+                evidence.update({r["artifact_id"]:r for r in peers})
+                plan=self._artifact_review({**item,**local,**same},version,list(evidence.values()))
+                if plan.get("requested_artifact_id") and plan["requested_artifact_id"]!=local.get("artifact_id"):
+                    continue  # Historical asset is retained; it is outside the requested delivery.
+                if plan["review_required"]:
+                    reason=(choices.get(self._delivery_key(item),{}).get("code") or "EXTERNAL_WEIGHT_IDENTITY_UNCONFIRMED")+": "+(plan["reason"] or "身份未确认")
+                    if not same.get("external_weight_id") and local:
+                        pending=self.repository.ensure_artifact_publication(str(publication["publication_key"]),local,mapping)
+                        self.repository.patch_artifact_publication(pending["artifact_id"],sync_status="UNKNOWN",last_error=reason)
+                    conversion_failures.append(f"{item.get('target')}: {reason}；无法安全自动确定，不执行远端写入")
+                    continue
                 stored = self._upload_artifact(item, algorithm, version)
+                existing=self.repository.artifact_publication(stored["artifact_id"]) or {}
+                registration_mapping=dict(mapping)
+                if existing.get("external_weight_id") and existing.get("compute_platform_id")!=mapping.get("compute_platform_id"):
+                    # Preserve the old persisted mapping until remote identity and
+                    # a real parent/child relationship have been verified by sync.
+                    registration_mapping["compute_platform_id"]=existing["compute_platform_id"]
                 provider_mapping = self.repository.ensure_artifact_publication(
                     str(publication["publication_key"]),
                     stored,
-                    mapping,
+                    registration_mapping,
                     provider=PROVIDER_CHANGLIAN,
                 )
-                uploaded = {**stored, **provider_mapping}
+                uploaded = {**stored, **provider_mapping,"compute_platform_id":str(mapping["compute_platform_id"])}
+                selection=choices.get(self._delivery_key(item)) or {}
+                self._record_automatic_delivery(project_id,algorithm_id,version_id,uploaded,{**selection,"artifact_id":stored["artifact_id"]})
                 self._weight_artifact_payload(uploaded)
                 self.artifact_url_probe(str(uploaded.get("public_url") or ""))
                 if hasattr(client, "set_audit_context"):
@@ -2716,6 +3427,8 @@ class ExternalAlgorithmPublishService:
                             last_error=str(getattr(error, "message", "") or error)[:2000],
                         )
                 else:
+                    if uploaded and uploaded.get("artifact_id"):
+                        self.repository.patch_artifact_publication(str(uploaded["artifact_id"]),last_error=f"{code}: {getattr(error, 'message', str(error))}")
                     conversion_failures.append(
                         f"{label}: {getattr(error, 'message', str(error))}"
                     )
@@ -2769,7 +3482,7 @@ class ExternalAlgorithmPublishService:
         status = str(publication.get("status") or "").upper()
         if status == "BLOCKED_CONFIG":
             return False
-        if status != "PUBLISHED":
+        if status not in {"PUBLISHED","PARTIAL"} and not (status=="UNKNOWN" and publication.get("external_algo_version_id")):
             return True
 
         publication_key = str(publication.get("publication_key") or "")
@@ -2777,7 +3490,14 @@ class ExternalAlgorithmPublishService:
             str(row.get("artifact_id") or ""): row
             for row in self._publication_artifacts(publication_key)
         }
-        for item in self.discover_artifacts(project_id, algorithm, version):
+        discovered=self.discover_artifacts(project_id,algorithm,version)
+        choices=self._automatic_delivery_choices(version,discovered)
+        version={**version,"_automatic_delivery_choices":choices}
+        for item in discovered:
+            choice=choices.get(self._delivery_key(item)) or {}
+            if choice.get("error") or (choice.get("artifact_id") and choice["artifact_id"]!=item["artifact_id"]): continue
+            if any(self._delivery_key(peer)==self._delivery_key(item) and self._unconfirmed_weight_write(peer) for peer in stored.values()):
+                return False
             target = str(item.get("target") or "")
             is_original = _artifact_target_identity(target) == "training"
             mapping_state = self._artifact_mapping_state(item)
@@ -2805,6 +3525,11 @@ class ExternalAlgorithmPublishService:
                 ), None)
             if current and str(current.get("sync_status") or "").upper() == "BLOCKED_CONFIG":
                 continue
+            if current and self._artifact_review(current,version,list(stored.values()))["review_required"]:
+                continue
+            if current and str(current.get("sync_status") or "").upper()=="UNKNOWN":
+                if str(current.get("last_error") or "").startswith(("EXTERNAL_WEIGHT_REPLACEMENT_REVIEW_REQUIRED:","EXTERNAL_WEIGHT_RECOVERY_AMBIGUOUS:")): return True
+                continue
             if not current or str(current.get("sync_status") or "").upper() != "SYNCED":
                 return True
 
@@ -2826,6 +3551,16 @@ class ExternalAlgorithmPublishService:
                 return True
             expected_public_url = self.model_assets.public_url(model_asset)
             if not expected_public_url or str(current.get("public_url") or "") != expected_public_url:
+                return True
+            expected_payload = self._weight_payload({
+                **current, 'file_name': item['file_name'], 'size_bytes': item['size_bytes'],
+                'sha256': item['sha256'], 'metadata': {**item['weight_metadata'],
+                    **({'label_validation_status':'CONFLICT'} if (model_asset.get('metadata') or {}).get('label_validation_status')=='CONFLICT' else {})},
+                'compute_platform_id': expected_compute_platform_id, 'remote_chip_code': expected_chip_code,
+                'public_url': expected_public_url,
+            }, str(publication.get('external_algo_version_id') or ''))
+            confirmed = json.loads(str(current.get('synced_payload_json') or '{}'))
+            if any(confirmed.get(key) != value for key, value in expected_payload.items()):
                 return True
         return False
 
@@ -2969,7 +3704,7 @@ class ExternalAlgorithmPublishService:
             )
             if (
                 not publication
-                or str(publication.get("status") or "").upper() != "PUBLISHED"
+                or str(publication.get("status") or "").upper() not in {"PUBLISHED","PARTIAL","UNKNOWN"}
                 or not str(publication.get("external_algo_version_id") or "").strip()
             ):
                 return {"checked": False, "drifted": 0, "reason": "not_published"}
@@ -3062,6 +3797,23 @@ class ExternalAlgorithmPublishService:
             drifted = 0
             blocked = False
             blocked_errors: list[str] = []
+            discovered = self.discover_artifacts(project_id, algorithm, version)
+            for pending in self._publication_artifacts(publication_key):
+                if pending.get("sync_status")!="UNKNOWN": continue
+                observation=json.loads(str(pending.get("remote_metadata_json") or "{}"))
+                try:
+                    weight_id=str(pending.get("external_weight_id") or self._recover_weight_from_rows(weight_rows,{**pending,"external_algo_version_id":external_version_id}))
+                    if not weight_id: continue
+                    self._confirm_weight_readback(pending,external_version_id,client,self._weight_payload(pending,external_version_id),weight_id,
+                        previous_artifact_ids=tuple(observation.get("artifact_ids") or ()),rows=weight_rows)
+                    drifted+=1
+                except PlatformError as error:
+                    self.repository.patch_artifact_publication(pending["artifact_id"],last_error=str(error))
+            if drifted:
+                active=self._publication_artifacts(publication_key)
+                included=[r for r in active if not self._delivery_selection(version,r) or self._delivery_selection(version,r).get("artifact_id")==r["artifact_id"]]
+                if included and all(r.get("sync_status")=="SYNCED" for r in included):
+                    self.repository.patch_publication(publication_key,status="PUBLISHED",last_error="")
             for artifact in self._publication_artifacts(publication_key):
                 if str(artifact.get("sync_status") or "").upper() != "SYNCED":
                     continue
@@ -3077,8 +3829,19 @@ class ExternalAlgorithmPublishService:
                     continue
                 remote = remote_by_id.get(weight_id)
                 if remote is not None:
+                    current_facts = next((item for item in discovered if item['target'] == artifact.get('target')
+                        and item['sha256'] == artifact.get('sha256') and _canonical_chip_code(item['chip_code']) == _canonical_chip_code(artifact.get('chip_code'))), None)
+                    if current_facts is None:
+                        continue
+                    if self._recover_weight_from_rows(weight_rows, artifact) == weight_id:
+                        self.repository.patch_artifact_publication(str(artifact['artifact_id']),
+                            remote_metadata_json=json.dumps({**json.loads(str(artifact.get('remote_metadata_json') or '{}')), 'weight_id':weight_id, 'readback_confirmed':True, 'tags_present':'tags' in remote,
+                                'tags':remote.get('tags'), 'checked_at':utc_now(), 'source':'listByVersion'}, ensure_ascii=False))
+                    artifact = {**artifact, 'metadata': {**current_facts['weight_metadata'],
+                        **({'label_validation_status':'CONFLICT'} if (artifact.get('metadata') or {}).get('label_validation_status')=='CONFLICT' else {})}}
                     if not self._remote_weight_contract_matches(
                         remote, artifact, weight_id=weight_id,
+                        confirmed_payload=json.loads(str(artifact.get('synced_payload_json') or '{}')),
                     ):
                         self.repository.patch_artifact_publication(
                             str(artifact["artifact_id"]),
@@ -3400,12 +4163,17 @@ def external_algorithm_publish_router(
 
     @router.put("/api/v64/external-publish/config")
     def save_publish_config(payload: ExternalPublishConfigPayload):
-        return {"ok": True, "config": service.save_config(payload)}
+        return {"ok": True, "config": _provider_browser_response(service.save_config(payload))}
 
     @router.get("/api/v64/external-publish/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}")
     def get_publication_status(project_id: str, algorithm_id: str, version_id: str):
         get_project(project_id)
         return service.publication_status(project_id, algorithm_id, version_id)
+
+    @router.put("/api/v64/external-publish/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/selection")
+    def select_weight_artifact(project_id: str, algorithm_id: str, version_id: str, payload: WeightArtifactSelection):
+        get_project(project_id)
+        return service.select_publication_artifact(project_id,algorithm_id,version_id,**payload.model_dump())
 
     @router.post("/api/v64/external-publish/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/publish")
     def publish_version(project_id: str, algorithm_id: str, version_id: str):

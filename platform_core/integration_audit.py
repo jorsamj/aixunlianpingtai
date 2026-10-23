@@ -232,6 +232,19 @@ class IntegrationAuditRepository:
             rows = database.execute(sql, args).fetchall()
         return [self._public(row) for row in rows]
 
+    def latest_weight_requests(self, project_id: str, algorithm_id: str, version_id: str) -> dict[str, dict[str, Any]]:
+        """Transport audit only: prepared intent and recovered receipts are not requests."""
+        with closing(self._connect()) as database:
+            rows = database.execute("""
+                SELECT * FROM (
+                    SELECT *, ROW_NUMBER() OVER (PARTITION BY artifact_id ORDER BY created_at DESC, rowid DESC) AS rank
+                    FROM external_interaction_logs
+                    WHERE provider='changlian' AND project_id=? AND algorithm_id=? AND version_id=?
+                      AND operation IN ('weight_add','weight_create','weight_edit') AND method='POST'
+                ) WHERE rank=1
+            """, (str(project_id), str(algorithm_id), str(version_id))).fetchall()
+        return {str(row["artifact_id"]): self._public(row) for row in rows}
+
     def summary(self, *, provider: str = "changlian", hours: int = 24) -> dict[str, Any]:
         hours = max(1, min(24 * 30, int(hours)))
         with closing(self._connect()) as database:

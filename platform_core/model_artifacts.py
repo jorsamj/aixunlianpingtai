@@ -19,11 +19,23 @@ from filelock import FileLock, Timeout
 from pydantic import BaseModel, Field
 
 from .algorithms import list_algorithms
+from .model_metadata import model_metadata
 from .errors import PlatformError
-from .secrets import SecretCredentialStore, secret_ref
+from .secrets import SecretCredentialStore, KeyringSecretStore, secret_ref
 from .storage import (
     StorageProviderFactory, StorageSourceRepository, storage_source_lifecycle_fence,
 )
+
+
+def conversion_completion_rank(metadata, job_id="", sha256=""):
+    """Order only timezone-qualified task completion facts; never file mtime."""
+    raw=str(metadata.get("finished_at") or "")
+    try:
+        stamp=datetime.fromisoformat(raw.replace("Z","+00:00"))
+        if stamp.tzinfo is None: return None
+        return (stamp.timestamp(),str(job_id),str(sha256))
+    except (ValueError,TypeError,OverflowError):
+        return None
 
 
 SUCCESSFUL_CONVERSION_STATUSES = {
@@ -101,6 +113,17 @@ def model_delivery_version_fence(
             lock.release()
         except Exception:
             pass
+
+
+@contextmanager
+def conversion_catalog_fence(data_dir, *, timeout=30):
+    """Serialize dictionary identity changes with conversion admission and binding writes."""
+    root=Path(data_dir)/"model_artifacts"
+    root.mkdir(parents=True,exist_ok=True)
+    try:
+        with FileLock(str(root/".conversion-catalog.lock"),timeout=timeout): yield
+    except Timeout as error:
+        raise PlatformError("CATALOG_BUSY","厂商芯片配置正在变更","", "请稍后重试同一操作。",409) from error
 
 
 def _json_load(path: Path, default: Any) -> Any:
@@ -396,6 +419,130 @@ class ModelArtifactRepository:
         database.execute("PRAGMA busy_timeout=5000")
         return database
 
+    def conversion_catalog(self):
+        with closing(self._connect()) as database:
+            database.execute("CREATE TABLE IF NOT EXISTS conversion_catalog (id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, payload_json TEXT NOT NULL)")
+            database.execute("CREATE TABLE IF NOT EXISTS conversion_catalog_operations (operation_id TEXT PRIMARY KEY, request_digest TEXT NOT NULL, result_json TEXT NOT NULL, before_json TEXT NOT NULL, after_json TEXT NOT NULL, created_at TEXT NOT NULL)")
+            row=database.execute("SELECT revision,payload_json FROM conversion_catalog WHERE id=1").fetchone()
+        return {**json.loads(row["payload_json"]),"revision":row["revision"]} if row else {"vendors":[],"chips":[],"revision":0}
+
+    @staticmethod
+    def _catalog_snapshot(database):
+        row=database.execute("SELECT revision,payload_json FROM conversion_catalog WHERE id=1").fetchone()
+        return {**json.loads(row["payload_json"]),"revision":row["revision"]} if row else {"vendors":[],"chips":[],"revision":0}
+
+    @staticmethod
+    def _commit_catalog(database, previous, value, *, allow_delete=False, allow_rebind=False):
+        from .compute_platform_catalog import validate_conversion_catalog
+        clean=validate_conversion_catalog(value)
+        for kind in ("vendors","chips"):
+            old={r["id"]:r for r in previous[kind]}
+            if not allow_delete and set(old)-{r["id"] for r in clean[kind]}:
+                raise ValueError("已有字典身份不可删除，请停用以保留历史追溯")
+            identity_fields=("template_id",) if kind=="vendors" else ("vendor_id","code","sdk_code")
+            for row in clean[kind]:
+                prior=old.get(row["id"])
+                if not allow_rebind and prior and any(row[k]!=prior[k] for k in identity_fields):
+                    raise ValueError("已有字典身份不可改挂，请停用旧条目并创建新身份")
+                if not prior or row["name"]!=prior["name"]:
+                    name=str(row["name"]).strip().casefold()
+                    peers=[r for r in clean[kind] if r["id"]!=row["id"] and (kind=="vendors" or r["vendor_id"]==row["vendor_id"])]
+                    if any(str(r["name"]).strip().casefold()==name for r in peers):
+                        raise PlatformError("CATALOG_DUPLICATE_NAME","同一范围内名称已存在",str(row["name"]),"请使用不同名称。",409)
+        revision=previous["revision"]+1
+        database.execute("INSERT INTO conversion_catalog(id,revision,payload_json) VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,payload_json=excluded.payload_json",
+            (revision,json.dumps(clean,ensure_ascii=False)))
+        return {**clean,"revision":revision}
+
+    def save_conversion_catalog(self, payload, *, expected_revision):
+        self.conversion_catalog()
+        with conversion_catalog_fence(self.root.parent), closing(self._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            previous=self._catalog_snapshot(database)
+            if type(expected_revision) is not int or expected_revision!=previous["revision"]:
+                raise ValueError("字典revision已变化，请刷新后重试（并发保护）")
+            result=self._commit_catalog(database,previous,payload)
+            database.commit()
+            return result
+
+    def conversion_catalog_references(self, entity, identity, *, diagnostic=False):
+        from .conversion_catalog_references import catalog_references
+        if entity not in {"vendors","chips"}: raise PlatformError("CATALOG_INVALID_REQUEST","字典类型非法",entity,status_code=422)
+        with conversion_catalog_fence(self.root.parent):
+            catalog=self.conversion_catalog()
+            row=next((r for r in catalog[entity] if r["id"]==identity),None)
+            if not row: raise PlatformError("CATALOG_NOT_FOUND","记录不存在",identity,status_code=404)
+            try:
+                references=catalog_references(self.root.parent,catalog,entity,row)
+            except PlatformError as error:
+                if not diagnostic or error.code!="CATALOG_REFERENCE_CHECK_FAILED":raise
+                references={"check_status":"UNVERIFIED","can_delete":False,"reference_count":None,"references":[],
+                    "diagnostic":{"code":error.code,"message":error.message,"detail":error.detail,"solution":error.solution}}
+            return {"entity":entity,"id":identity,"revision":catalog["revision"],**({"record":dict(row)} if diagnostic else {}),**references}
+
+    def conversion_catalog_operation(self, operation_id):
+        self.conversion_catalog()
+        with closing(self._connect()) as database:
+            row=database.execute("SELECT * FROM conversion_catalog_operations WHERE operation_id=?",(str(operation_id),)).fetchone()
+        if not row: raise PlatformError("CATALOG_OPERATION_NOT_FOUND","未找到已确认的操作回执",str(operation_id),status_code=404)
+        return {**json.loads(row["result_json"]),"before":json.loads(row["before_json"]),"after":json.loads(row["after_json"]),"created_at":row["created_at"]}
+
+    def mutate_conversion_catalog(self, payload):
+        from .compute_platform_catalog import new_conversion_catalog_record
+        from .conversion_catalog_references import catalog_references
+        entity=payload.get("entity");action=payload.get("action");operation_id=str(payload.get("operation_id") or "")
+        allowed={"entity","action","operation_id","expected_revision","id","record","confirm_delete"}
+        if set(payload)-allowed or entity not in {"vendors","chips"} or action not in {"create","update","delete","enable","disable"} or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,95}",operation_id):
+            raise PlatformError("CATALOG_INVALID_REQUEST","字典操作参数非法","需要合法entity/action/operation_id",status_code=422)
+        values=payload.get("record") or {}
+        if not isinstance(values,dict) or (action not in {"create","update"} and values): raise PlatformError("CATALOG_VALIDATION_FAILED","当前操作配置字段非法","",status_code=422)
+        digest=hashlib.sha256(json.dumps(payload,sort_keys=True,ensure_ascii=False,separators=(",",":")).encode()).hexdigest()
+        self.conversion_catalog()
+        with conversion_catalog_fence(self.root.parent), closing(self._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            receipt=database.execute("SELECT request_digest,result_json FROM conversion_catalog_operations WHERE operation_id=?",(operation_id,)).fetchone()
+            if receipt:
+                if receipt["request_digest"]!=digest: raise PlatformError("CATALOG_OPERATION_CONFLICT","同一操作标识不能提交不同内容",operation_id,"请核对原操作回执。",409)
+                database.rollback()
+                return {**json.loads(receipt["result_json"]),"replayed":True}
+            previous=self._catalog_snapshot(database)
+            if type(payload.get("expected_revision")) is not int or payload["expected_revision"]!=previous["revision"]:
+                raise PlatformError("CATALOG_REVISION_CONFLICT","字典revision已变化，请刷新后重试","", "请重新读取当前记录，禁止覆盖其他用户的修改。",409)
+            identity=str(payload.get("id") or "")
+            before=next((r for r in previous[entity] if r["id"]==identity),None)
+            if action!="create" and not before: raise PlatformError("CATALOG_NOT_FOUND","记录不存在",identity,status_code=404)
+            if action=="create" and identity: raise PlatformError("CATALOG_INVALID_REQUEST","新增记录不能指定稳定ID",identity,status_code=422)
+            after=None;rebind=False
+            if action=="create":
+                try: after=new_conversion_catalog_record(previous,entity,values)
+                except ValueError as error: raise PlatformError("CATALOG_VALIDATION_FAILED",str(error),"",status_code=422) from error
+            elif action=="delete":
+                if payload.get("confirm_delete") is not True: raise PlatformError("CATALOG_DELETE_CONFIRMATION_REQUIRED","请确认物理删除","",status_code=422)
+            else:
+                if "id" in values: raise PlatformError("CATALOG_ID_IMMUTABLE","稳定ID不可修改",identity,status_code=422)
+                after={**before,**values}
+                if action in {"enable","disable"}: after["enabled"]=action=="enable"
+                fields=("template_id",) if entity=="vendors" else ("vendor_id","code","sdk_code")
+                rebind=any(after.get(k)!=before.get(k) for k in fields)
+            if action=="delete" or rebind:
+                refs=catalog_references(self.root.parent,previous,entity,before)
+                if not refs["can_delete"]: raise PlatformError("CATALOG_REFERENCED","存在业务引用，不能物理删除或改挂",json.dumps(refs,ensure_ascii=False),refs["solution"],409)
+            candidate={"vendors":list(previous["vendors"]),"chips":list(previous["chips"])}
+            if action=="create": candidate[entity].append(after)
+            else: candidate[entity]=[after if r["id"]==identity else r for r in candidate[entity] if action!="delete" or r["id"]!=identity]
+            if after is not None:
+                if not isinstance(after.get("name"),str): raise PlatformError("CATALOG_VALIDATION_FAILED","名称必须是文本","",status_code=422)
+                after["name"]=after["name"].strip()
+            try: saved=self._commit_catalog(database,previous,candidate,allow_delete=action=="delete",allow_rebind=rebind)
+            except ValueError as error:
+                code="CATALOG_DUPLICATE_CODE" if "编码重复" in str(error) else "CATALOG_VALIDATION_FAILED"
+                raise PlatformError(code,str(error),"",status_code=422) from error
+            result={"ok":True,"operation_id":operation_id,"entity":entity,"action":action,"id":(after or before)["id"],"item":after,"revision":saved["revision"],"replayed":False}
+            database.execute("INSERT INTO conversion_catalog_operations VALUES(?,?,?,?,?,?)",(operation_id,digest,json.dumps(result,ensure_ascii=False),json.dumps(before,ensure_ascii=False),json.dumps(after,ensure_ascii=False),utc_now()))
+            database.commit()
+            return result
+
+
     def config(self) -> dict[str, Any]:
         with self.lock:
             stored = _json_load(self.config_path, {})
@@ -503,20 +650,71 @@ class ModelArtifactRepository:
         target = str(discovered.get("target") or "unknown")
         digest = str(discovered["sha256"])
         with closing(self._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
             existing = database.execute(
                 """
-                SELECT artifact_id
+                SELECT artifact_id, metadata_json
                 FROM model_artifacts
                 WHERE project_id = ? AND algorithm_id = ? AND version_id = ?
                   AND target = ? AND chip_code = ? AND sha256 = ?
                 """,
                 (project_id, algorithm_id, version_id, target, chip_code, digest),
             ).fetchone()
+            if existing is None and target == "original":
+                aliases = database.execute("""SELECT artifact_id, metadata_json, source_path FROM model_artifacts
+                    WHERE project_id=? AND algorithm_id=? AND version_id=? AND target IN ('training','best','last')
+                    AND chip_code=? AND sha256=?""", (project_id,algorithm_id,version_id,chip_code,digest)).fetchall()
+                if len(aliases) > 1:
+                    primary = [r for r in aliases if str(r["source_path"]) == str(discovered.get("source_path") or "")]
+                    if len(primary) == 1:
+                        aliases = primary
+                if len(aliases) > 1:
+                    raise PlatformError("MODEL_ARTIFACT_IDENTITY_AMBIGUOUS", "历史模型身份不唯一", version_id, "请人工核对，禁止复制Artifact。", 409)
+                existing = aliases[0] if aliases else None
+            if existing is None and database.execute("SELECT 1 FROM model_artifacts WHERE artifact_id=?", (requested_artifact_id,)).fetchone():
+                raise PlatformError("MODEL_ARTIFACT_IDENTITY_CONFLICT", "Artifact ID与模型文件身份冲突", requested_artifact_id,
+                    "禁止覆盖其他版本、芯片或文件SHA对应的模型记录。", 409)
             artifact_id = (
                 str(existing["artifact_id"])
                 if existing is not None
                 else requested_artifact_id
             )
+            # Only the frozen model contract survives a sparse delivery/storage
+            # refresh. Other task-owned metadata retains replacement semantics.
+            previous = json.loads(existing["metadata_json"] or "{}") if existing is not None else {}
+            for identity in ("local_vendor_id", "local_chip_id"):
+                if previous.get(identity) and metadata.get(identity) and previous[identity] != metadata[identity]:
+                    raise PlatformError("MODEL_ARTIFACT_LOCAL_IDENTITY_CONFLICT", "相同文件身份携带冲突的本地厂商或芯片ID", identity,
+                                        "保留原资产及发布关系，请核对转换任务身份；禁止覆盖历史元数据。", 409)
+            owned = {"tags", "class_mapping", "label_source", "label_validation_status", "label_error", "label_version_id",
+                     "image_width", "image_height", "yolo_version", "precision", "conversion_params", "source_artifact_id",
+                     "local_vendor_id", "local_chip_id", "sdk_chip_code", "template_id", "template_version", "constraint_id", "resource_id", "sdk_version", "parameter_sources",
+                     "manifest_path", "sdk_name", "model_io", "model_validation_status",
+                     "source_sha256", "validation_status", "conversion_status", "runtime_verified", "hardware_verified",
+                     "snapshot_id", "task_id", "framework", "framework_version", "finished_at", "last_label_conflict", "training_precision", "class_count",
+                     "remote_training", "object_identity_verified", "execution_generation", "role", "conversion_identity_verified"}
+            for key in owned:
+                if metadata.get(key) is None and key in previous:
+                    metadata[key] = previous[key]
+            old_tags = previous.get("tags")
+            new_tags = dict(discovered.get("metadata") or {}).get("tags")
+            if old_tags:
+                if new_tags and new_tags != old_tags:
+                    metadata.update(tags=old_tags, class_mapping=previous.get("class_mapping"), class_count=len(old_tags),
+                        label_source=previous.get("label_source", "historical_artifact"),
+                        label_validation_status="CONFLICT", label_error="同一模型身份的冻结类别发生冲突，禁止覆盖或自动补齐",
+                        last_label_conflict={"stored_tags":old_tags,"incoming_tags":new_tags})
+                elif not new_tags:
+                    metadata["tags"] = old_tags
+                    if metadata.get("label_validation_status") != "CONFLICT":
+                        for key in ("class_mapping", "label_source", "label_validation_status", "label_error"):
+                            if key in previous: metadata[key] = previous[key]
+            elif not new_tags:
+                metadata.pop("tags", None)
+            metadata["metadata_missing"] = [key for key in ("image_width","image_height","yolo_version","tags") if not metadata.get(key)]
+            if metadata.get("label_validation_status") == "CONFLICT" and "tags" not in metadata["metadata_missing"]:
+                metadata["metadata_missing"].append("tags")
+            metadata["metadata_complete"] = not metadata["metadata_missing"]
             values = (
                 artifact_id, project_id, algorithm_id, version_id,
                 str(discovered.get("artifact_kind") or "conversion"),
@@ -547,6 +745,7 @@ class ModelArtifactRepository:
                 """,
                 values,
             )
+            database.commit()
         return self.get(artifact_id) or {}
 
     def patch(self, artifact_id: str, **changes: Any) -> dict[str, Any]:
@@ -1392,10 +1591,11 @@ class ModelArtifactService:
         algorithm_id = str(algorithm.get("id") or "")
         version_id = str(version.get("id") or "")
         candidates: list[tuple[str, str, Path, str, dict[str, Any]]] = []
-        for key in ("best_path", "stored_path", "last_path", "path"):
+        frozen_metadata = model_metadata(self.data_dir, version, algorithm=algorithm)
+        for key in ("stored_path", "best_path", "last_path", "path"):
             raw = str(version.get(key) or "").strip()
             if raw:
-                candidates.append(("original", "original", Path(raw).expanduser(), "", {"version_field": key}))
+                candidates.append(("original", "original", Path(raw).expanduser(), "", {"version_field": key, **frozen_metadata}))
         for job in self._conversion_jobs(project_id, algorithm_id, version_id):
             status = str(job.get("status") or "").strip().lower()
             if status and status not in SUCCESSFUL_CONVERSION_STATUSES:
@@ -1416,11 +1616,19 @@ class ModelArtifactService:
                             output_path,
                             str(job.get("id") or ""),
                             {
+                                **model_metadata(self.data_dir, version, params, algorithm=algorithm),
                                 "chip_code": chip,
+                                "requested_parameters": dict(job.get("requested_params") or {}),
+                                "conversion_parameters": dict(params),
+                                "finished_at":str(job.get("conversion_finished_at") or job.get("finished_at") or ""),
+                                "conversion_output_sha256":str(output.get("sha256") or ""),
+                                "conversion_output_size":output.get("size_bytes"),
+                                "source_sha256": str((job.get("source_trace") or {}).get("sha256") or ""),
                                 "validation_status": str(job.get("validation_status") or ""),
                                 "conversion_status": str(job.get("conversion_status") or status),
                                 "runtime_verified": job.get("runtime_verified") is True,
                                 "hardware_verified": job.get("hardware_verified") is True,
+                                "manifest_path": str(job.get("manifest_path") or ""),
                             },
                         ))
         seen: set[tuple[str, str, str]] = set()
@@ -1433,11 +1641,35 @@ class ModelArtifactService:
             if not path.is_file() or path.stat().st_size <= 0:
                 continue
             digest = _sha256(path)
+            if kind == "conversion":
+                metadata["conversion_identity_verified"]=bool(metadata.get("conversion_output_sha256")==digest and metadata.get("conversion_output_size")==path.stat().st_size)
+            if kind == "conversion" and metadata.get("manifest_path"):
+                manifest = _json_load(Path(metadata["manifest_path"]), {})
+                outputs = [r for r in manifest.get("outputs",[]) if Path(str(r.get("name") or "")).name==path.name] if isinstance(manifest,dict) else []
+                source_sha = str(metadata.get("source_sha256") or "")
+                matches = (len(outputs)==1 and outputs[0].get("sha256")==digest and outputs[0].get("size_bytes")==path.stat().st_size
+                           and manifest.get("job_id")==job_id and source_sha and (manifest.get("source") or {}).get("sha256")==source_sha)
+                if matches:
+                    metadata["conversion_identity_verified"]=True
+                    metadata["finished_at"]=str(manifest.get("completed_at") or manifest.get("created_at") or metadata.get("finished_at") or "")
+                    onnx = manifest.get("onnx") or {}
+                    shapes = onnx.get("input_shapes") or []
+                    if target == "onnx" and isinstance(shapes,list) and len(shapes)==1 and isinstance(shapes[0],(list,tuple)) and len(shapes[0])==4:
+                        height, width = shapes[0][2:]
+                        if type(height) is int and type(width) is int and 32<=height<=8192 and 32<=width<=8192:
+                            metadata.update(image_height=height, image_width=width)
+                    metadata["model_io"] = {"onnx":{k:onnx[k] for k in ("input_shapes","input_names","output_names","output_count") if k in onnx},"compiled_model":None}
+                    execution = manifest.get("execution_evidence") or {}
+                    metadata["execution_evidence"] = dict(execution) if isinstance(execution, Mapping) else {}
+                    metadata["execution_evidence_note"] = "" if isinstance(execution, Mapping) else "可选执行证据格式无效，已忽略；文件身份核验不受影响"
+                    tool = manifest.get("tool") or {}
+                    metadata.update(sdk_name=str(tool.get("name") or ""),sdk_version=str(tool.get("version") or ""),
+                                    model_validation_status=str((manifest.get("sophon_validation") or {}).get("model_validation_status") or "unknown"),
+                                    manifest_metadata_error="")
+                else:
+                    metadata["conversion_identity_verified"]=False
+                    metadata["manifest_metadata_error"]="Manifest与真实产物SHA/大小、任务或源模型不匹配，未采信其模型IO信息"
             chip_code = str(metadata.get("chip_code") or "").strip().lower()
-            identity = (target, chip_code, digest)
-            if identity in seen:
-                continue
-            seen.add(identity)
             artifact_id = hashlib.sha256(
                 f"{project_id}:{algorithm_id}:{version_id}:{target}:{chip_code}:{digest}".encode("utf-8")
             ).hexdigest()[:32]
@@ -1456,7 +1688,59 @@ class ModelArtifactService:
                 "size_bytes": path.stat().st_size,
                 "metadata": metadata,
             })
+        # The same bytes can be compiled by several tasks. Choose their proven
+        # latest completion deterministically, without changing content identity.
+        result.sort(key=lambda row:conversion_completion_rank(row.get("metadata") or {},row.get("conversion_job_id"),row["sha256"]) or (0,"",""),reverse=True)
+        unique=[]
+        for row in result:
+            identity=(row["target"],row["chip_code"],row["sha256"])
+            if identity not in seen:
+                seen.add(identity);unique.append(row)
+        result=unique
+        # Link only an evidenced source digest, never the first PT found.
+        originals = [r for r in result if r["target"] == "original"]
+        stored = self.repository.list(project_id=project_id,algorithm_id=algorithm_id,version_id=version_id,limit=500)
+        for row in result:
+            if row["target"] == "original":
+                continue
+            digest = str(row["metadata"].get("source_sha256") or "")
+            sources = [r for r in originals if r["sha256"] == digest]
+            if len(sources) == 1:
+                existing = [r for r in stored if r["target"] in {"original","training","best","last"} and r["sha256"]==digest]
+                if len(existing) <= 1:
+                    row["metadata"]["source_artifact_id"] = existing[0]["artifact_id"] if existing else sources[0]["artifact_id"]
         return result
+
+    def register_version_metadata(self, project_id, algorithm_id, version_id):
+        """Persist local facts without configuring or contacting any remote target."""
+        with model_delivery_version_fence(self.data_dir, project_id, algorithm_id, version_id):
+            return self._register_version_metadata_under_fence(project_id,algorithm_id,version_id)
+
+    def _register_version_metadata_under_fence(self, project_id, algorithm_id, version_id):
+        algorithm, version = self._current_version(project_id, algorithm_id, version_id)
+        if not algorithm or not version or algorithm.get("external_delete_pending") is True:
+            return []
+        rows = []
+        stored_rows = self.repository.list(project_id=project_id,algorithm_id=algorithm_id,version_id=version_id,limit=500)
+        for item in self.discover_version_artifacts(project_id, algorithm, version):
+            targets = {"original","training","best","last"} if item["target"]=="original" else {item["target"]}
+            candidates = [r for r in stored_rows if r["target"] in targets and r["sha256"]==item["sha256"]
+                          and str(r.get("chip_code") or "").lower()==str(item.get("chip_code") or "").lower()]
+            if len(candidates)>1:
+                candidates = [r for r in candidates if r.get("source_path")==item["source_path"]]
+            if len(candidates)>1:
+                raise PlatformError("MODEL_ARTIFACT_IDENTITY_AMBIGUOUS", "模型元数据补齐身份不唯一", version_id, "请人工核对原Artifact。", 409)
+            # Metadata repair never renames/rebinds a delivered file or object.
+            value = {**candidates[0], "metadata":item["metadata"]} if candidates else item
+            rows.append(self.repository.upsert(value))
+        found = {r["artifact_id"] for r in rows}
+        for stored in self.repository.list(project_id=project_id,algorithm_id=algorithm_id,version_id=version_id,limit=500):
+            meta = stored.get("metadata") or {}
+            if (stored["artifact_id"] not in found and meta.get("object_identity_verified") is True
+                    and meta.get("task_id") == str(version.get("task_id") or version.get("job_id") or "")
+                    and stored.get("storage_status") == "UPLOADED"):
+                rows.append(self.repository.upsert({**stored,"metadata":{**meta,**model_metadata(self.data_dir,version,algorithm=algorithm)}}))
+        return rows
 
     def ensure_uploaded(self, discovered: Mapping[str, Any], *, force: bool = False) -> dict[str, Any]:
         row = self.repository.upsert(discovered)
@@ -1628,7 +1912,7 @@ class ModelArtifactService:
                 "请重新上传模型文件；禁止使用缺少服务端 SHA256 元数据的对象。",
                 409,
             )
-        artifact_metadata = dict(metadata or {})
+        artifact_metadata = {**dict(metadata or {}), "object_identity_verified": True}
         chip_code = str(
             artifact_metadata.get("chip_code")
             or artifact_metadata.get("chip")
@@ -1970,3 +2254,16 @@ class ModelArtifactService:
             raise PlatformError("MODEL_ARTIFACT_NOT_FOUND", "模型资产不存在或尚未上传", artifact_id, "请重新执行资产上传。", 404)
         provider = self._provider(str(row["project_id"]), str(row["storage_source_id"]))
         return row, provider
+
+
+def record_version_model_metadata(algorithms_path, algorithm_id, version_id):
+    """Training/conversion completion uses the existing canonical asset owner."""
+    path = Path(algorithms_path)
+    if path.parent.parent.name != "projects":
+        return []
+    data_dir = path.parent.parent.parent
+    service = ModelArtifactService(data_dir=data_dir, project_dir=lambda pid: data_dir / "projects" / pid,
+        algorithms_file=lambda pid: data_dir / "projects" / pid / "algorithms.json",
+        storage_sources_factory=lambda: StorageSourceRepository(data_dir / "storage" / "storage_sources.sqlite3"),
+        storage_credentials_factory=lambda: SecretCredentialStore(KeyringSecretStore()))  # never accessed during metadata registration
+    return service.register_version_metadata(path.parent.name, str(algorithm_id), str(version_id))

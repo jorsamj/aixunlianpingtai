@@ -80,7 +80,7 @@ class StorageManager:
             return normalize_material(row)
         return normalize_material(value)
 
-    def materialize(self, value: str | Mapping[str, object]) -> MaterializedFile:
+    def materialize(self, value: str | Mapping[str, object], *, read_only: bool = False) -> MaterializedFile:
         row = self.material(value)
         if row.get('source_available') is False:
             raise StorageError(code='SOURCE_UNAVAILABLE', message='素材源文件不可用',
@@ -101,7 +101,7 @@ class StorageManager:
                     solution="请在存储源配置中重新扫描，确认内容变化后恢复索引，并复核已有标注。",
                     context={"image_id": row["id"], "source_id": provider.source_id, "object_key": object_key},
                 )
-            if not expected or int(row.get("size_bytes") or 0) != metadata.size_bytes:
+            if not read_only and (not expected or int(row.get("size_bytes") or 0) != metadata.size_bytes):
                 self.materials.patch({str(row["id"]): {"content_sha256": actual, "size_bytes": metadata.size_bytes, "etag": metadata.etag}})
             if local_path is None:
                 return self.cache.materialize(provider, object_key, expected_sha256=actual, suffix=suffix)
@@ -116,7 +116,8 @@ class StorageManager:
                     solution="请重新扫描或重新上传素材以建立完整性信息。",
                     context={"image_id": row["id"], "source_id": provider.source_id},
                 )
-            self.materials.patch({str(row["id"]): {"content_sha256": expected, "size_bytes": metadata.size_bytes, "etag": metadata.etag}})
+            if not read_only:
+                self.materials.patch({str(row["id"]): {"content_sha256": expected, "size_bytes": metadata.size_bytes, "etag": metadata.etag}})
         try:
             return self.cache.materialize(provider, object_key, expected_sha256=expected, suffix=suffix)
         except StorageError as error:
@@ -156,5 +157,8 @@ class StorageManager:
         return self.provider_for(source_id).upload(object_key, source, content_type=content_type)
 
     def delete_source_file(self, value: str | Mapping[str, object]) -> None:
-        row = self.material(value)
-        self.provider_for(str(row["storage_source_id"])).delete(str(row["object_key"]))
+        raise StorageError(
+            code='PHYSICAL_DELETE_SAFETY_UNVERIFIED',
+            message='PHYSICAL_DELETE_SAFETY_UNVERIFIED: 尚未证明源文件无当前、已退休及活动共享引用',
+            solution='请使用统一逻辑删除；底层字节保留，等待可靠物理引用核验。',
+        )

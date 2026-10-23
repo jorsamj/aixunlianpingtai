@@ -21,6 +21,10 @@ on:
       - 'platform_core/remote_material_lifecycle.py'
       - 'platform_core/model_artifacts.py'
       - 'platform_core/training_recovery_api.py'
+      - 'platform_core/material_batches.py'
+      - 'platform_core/training_compatibility.py'
+      - 'tests/unit/test_material_reference_reasons.py'
+      - 'tests/unit/test_training_duplicate_conflicts.py'
       - 'node_agent.py'
       - 'platform_core/remote_training_tasks.py'
       - 'platform_core/training_tasks.py'
@@ -67,6 +71,7 @@ on:
       - 'tests/integration/test_training_task_worker.py'
       - 'tests/integration/test_ultralytics_loader_resource_contract.py'
       - 'tests/api/test_training_request.py'
+      - 'tests/api/test_evaluation_diagnostic_image.py'
       - 'tests/api/test_mother_model_preinstall.py'
       - 'tests/frontend/mother-model-preinstall.test.mjs'
       - 'static/modules/resource-discovery.js'
@@ -138,6 +143,7 @@ on:
       - 'tests/integration/test_training_task_worker.py'
       - 'tests/integration/test_ultralytics_loader_resource_contract.py'
       - 'tests/api/test_training_request.py'
+      - 'tests/api/test_evaluation_diagnostic_image.py'
       - 'tests/api/test_mother_model_preinstall.py'
       - 'tests/frontend/mother-model-preinstall.test.mjs'
       - 'static/modules/resource-discovery.js'
@@ -160,7 +166,7 @@ jobs:
       - name: Install focused training preparation dependencies
         run: >-
           python -m pip install --disable-pip-version-check
-          pytest pillow pyyaml filelock requests psutil keyring cryptography pydantic opencv-python-headless fastapi httpx
+          pytest pillow pyyaml filelock requests psutil keyring cryptography pydantic opencv-python-headless fastapi httpx python-multipart
       - name: Compile remote training preparation chain
         run: >-
           python -m py_compile
@@ -176,6 +182,8 @@ jobs:
           platform_core/snapshots.py
           platform_core/training_lineage.py
           platform_core/training_evaluation.py
+          platform_core/hard_sample_mining.py
+          platform_core/annotation_task_service.py
           platform_core/iteration_actions.py
           platform_core/node_agent_training_runtime.py
           platform_core/node_agent_executor_runtime.py
@@ -198,6 +206,7 @@ jobs:
           tests/unit/test_remote_training_results.py
           tests/unit/test_training_lineage.py
           tests/unit/test_training_evaluation.py
+          tests/unit/test_hard_sample_mining.py
           tests/unit/test_remote_execution_transport.py
           tests/unit/test_remote_material_lifecycle.py
           tests/unit/test_agent_result_upload.py
@@ -229,6 +238,17 @@ jobs:
           tests/unit/test_training_realtime_progress.py
           tests/unit/test_training_precision_contract.py
           tests/unit/test_training_completion_metadata.py
+      - name: Material governance references and training-conflict contracts
+        run: >-
+          python -m pytest -q --confcutdir=tests/unit
+          tests/unit/test_material_reference_reasons.py
+          tests/unit/test_training_duplicate_conflicts.py
+      - name: Linux cgroup v2 and process FD resource evidence
+        if: runner.os == 'Linux'
+        run: >-
+          python -m pytest -vv --confcutdir=tests/unit
+          tests/unit/test_training_resource_contract.py::test_linux_cgroup_v2_snapshot_matches_runtime_memory_files
+          tests/unit/test_training_metrics_fd.py::test_training_metrics_sqlite_fd_count_does_not_grow
       - name: Agent portable training subprocess lifecycle
         run: >-
           python -m pytest -q --confcutdir=tests/unit
@@ -242,6 +262,7 @@ jobs:
           python -m pytest -q --confcutdir=tests/unit
           tests/unit/test_remote_training_results.py
           tests/unit/test_training_evaluation.py
+          tests/unit/test_hard_sample_mining.py
           tests/unit/test_remote_execution_transport.py
           tests/unit/test_remote_material_lifecycle.py
           tests/unit/test_agent_result_upload.py
@@ -273,7 +294,7 @@ jobs:
       - name: Install production-compatible Ultralytics loader runtime
         run: |
           python -m pip install --disable-pip-version-check "torch==2.5.0+cpu" "torchvision==0.20.0+cpu" --index-url https://download.pytorch.org/whl/cpu
-          python -m pip install --disable-pip-version-check pytest "ultralytics==8.4.143"
+          python -m pip install --disable-pip-version-check pytest "ultralytics==8.4.127"
       - name: Verify platform resource truth against real Ultralytics DataLoader
         run: >-
           python -m pytest -q --confcutdir=tests/integration
@@ -307,6 +328,8 @@ jobs:
         run: >-
           python -m pytest -q
           tests/api/test_training_request.py
+          tests/api/test_evaluation_diagnostic_image.py
+          tests/api/test_hard_sample_mining_api.py
           tests/api/test_mother_model_preinstall.py
           tests/api/test_agent_result_upload_api.py
           tests/unit/test_training_scheduler_target.py

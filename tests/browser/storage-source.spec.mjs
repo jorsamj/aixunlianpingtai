@@ -416,7 +416,7 @@ test('YOLO rescan keeps frontend request, review truth, mapping and conflict pol
   await expect(page.locator('#sr61Status')).toContainText('标注变化 2');
   await expect(page.locator('#sr61Status')).toContainText('标注冲突 1');
   await expect(page.locator('#sr61Mapping')).toContainText('smoke');
-  await expect(page.locator('[data-rescan-class="0"] [data-label-code]')).toHaveValue('');
+  await expect(page.locator('[data-rescan-class="0"] [data-label-code]')).toHaveValue('smoke');
   await page.locator('[data-rescan-class="0"] [data-label-code]').selectOption('smoke');
   await page.locator('#sr61AnnotationRemoved').check();
   await page.locator('#sr61AnnotationConflicts').check();
@@ -495,7 +495,7 @@ test('COCO rescan uses the same frontend delta, mapping and confirmation truth',
   await expect.poll(()=>submitted).toEqual({execution_mode:'agent',import_format:'coco'});
   await expect(page.locator('#sr61Status')).toContainText('标注变化 1');
   await expect(page.locator('#sr61Status')).toContainText('标注冲突 1');
-  await expect(page.locator('[data-rescan-class="7"] [data-label-code]')).toHaveValue('');
+  await expect(page.locator('[data-rescan-class="7"] [data-label-code]')).toHaveValue('smoke');
   await page.locator('[data-rescan-class="7"] [data-label-code]').selectOption('smoke');
   await page.getByRole('button',{name:'确认应用'}).click();
   await expect.poll(()=>confirmation).not.toBeNull();
@@ -575,7 +575,7 @@ test('Pascal VOC rescan shares the same frontend delta, mapping and confirmation
   await expect.poll(()=>submitted).toEqual({execution_mode:'agent',import_format:'voc'});
   await expect(page.locator('#sr61Status')).toContainText('标注变化 2');
   await expect(page.locator('#sr61Status')).toContainText('标注冲突 1');
-  await expect(page.locator('[data-rescan-class="0"] [data-label-code]')).toHaveValue('');
+  await expect(page.locator('[data-rescan-class="0"] [data-label-code]')).toHaveValue('fire');
   await page.locator('[data-rescan-class="0"] [data-label-code]').selectOption('fire');
   await page.getByRole('button',{name:'确认应用'}).click();
   await expect.poll(()=>confirmation).not.toBeNull();

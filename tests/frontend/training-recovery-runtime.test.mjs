@@ -21,6 +21,22 @@ function cleanup() {
   delete globalThis.document;
 }
 
+test('terminal resource evidence excludes post-training idle samples and refuses unknown end time', () => {
+  const job = {id:'bounded', status:'done', task_status:'SUCCEEDED',
+    started_at:'2026-10-13T01:00:00Z', finished_at:'2026-10-13T01:10:00Z',
+    runtime_metrics:{samples:[
+      {sampled_at:'2026-10-13T00:59:00Z',gpu_utilization:0},
+      {sampled_at:'2026-10-13T01:01:00Z',gpu_utilization:80},
+      {sampled_at:'2026-10-13T01:09:00Z',gpu_utilization:60,memory_percent:55},
+      {sampled_at:'2026-10-13T01:11:00Z',gpu_utilization:0}
+    ]}};
+  const model=trainingRecoveryDetailModel(job,{});
+  assert.equal(model.gpuUtilization,70);
+  assert.equal(model.resourceSampleCount,2);
+  assert.equal(model.memoryPercent,55);
+  assert.equal(trainingRecoveryDetailModel({...job,finished_at:null},{}).gpuUtilization,null);
+});
+
 test('100/100 epochs never grant recovery without backend recovery truth', () => {
   const job = {
     id: 'train-100',
@@ -323,6 +339,44 @@ test('terminal live event performs one final canonical detail and log reconcilia
   cleanup();
 });
 
+test('detail history loads once and compact polling merges latest epoch without retransferring history', async () => {
+  const state = {project:{id:'p-history'},jobs:[{
+    id:'history-task',task_id:'history-task',status:'running',task_status:'RUNNING',progress_percent:10,
+  }]};
+  const calls=[];
+  globalThis.window={PollRegistryRuntime:{clear(){},startTimeout(){}}};
+  const runtime=installTrainingRecoveryRuntime({
+    getState:()=>state,
+    projectId:()=>state.project.id,
+    fetchImpl:async url=>{
+      calls.push(String(url));
+      if(String(url).endsWith('/log'))return {ok:true,status:200,async text(){return 'running';}};
+      const full=String(url).includes('include_history=true');
+      return response({id:'history-task',task_id:'history-task',status:'running',task_status:'RUNNING',
+        runtime_metrics:full?{
+          epochs:[{epoch:1,sampled_at:'2026-10-13T01:00:00Z'}],
+          samples:[{sampled_at:'2026-10-13T01:00:00Z',gpu_utilization:50}],
+          latest_epoch:{epoch:1,sampled_at:'2026-10-13T01:00:00Z'},
+          latest:{sampled_at:'2026-10-13T01:00:00Z',gpu_utilization:50},
+        }:{
+          latest_epoch:{epoch:2,sampled_at:'2026-10-13T01:01:00Z'},
+          latest:{sampled_at:'2026-10-13T01:01:00Z',gpu_utilization:60},
+        }});
+    },
+  });
+  await runtime.openDetail('history-task');
+  await runtime.refreshOpenDetail();
+  await runtime.refreshOpenDetail();
+  runtime.closeDetail();
+  await runtime.openDetail('history-task');
+  assert.equal(calls.filter(url=>url.includes('include_history=true')).length,1);
+  assert.equal(calls.filter(url=>url.includes('/jobs/history-task')&&!url.endsWith('/log')&&!url.includes('include_history=true')).length,3);
+  assert.deepEqual(state.jobs[0].runtime_metrics.epochs.map(row=>row.epoch),[1,2]);
+  assert.equal(state.jobs[0].runtime_metrics.samples.length,2);
+  runtime.destroy();
+  cleanup();
+});
+
 test('detail model exposes live metrics resources and dataset evidence', () => {
   const model = trainingRecoveryDetailModel({
     id: 'train-live-detail',
@@ -372,6 +426,23 @@ test('detail model exposes live metrics resources and dataset evidence', () => {
   assert.match(model.metricLine, /92\.4 img\/s/);
 });
 
+test('completed detail derives its best recorded mAP50 without inventing absent metrics',()=>{
+  const model=trainingRecoveryDetailModel({
+    id:'completed-history',status:'done',task_status:'SUCCEEDED',current_epoch:3,total_epochs:3,
+    runtime_metrics:{epochs:[
+      {epoch:1,metrics:{'metrics/mAP50(B)':.4}},
+      {epoch:2,metrics:{'metrics/mAP50(B)':.7}},
+      {epoch:3,metrics:{'metrics/mAP50(B)':.6}},
+    ]},
+  },{});
+  assert.equal(model.bestEpoch,2);
+  assert.equal(model.bestMetricLine,'最佳 mAP50 70.0%');
+  assert.equal(model.metricLine,'mAP50 60.0% · Epoch 3');
+  const absent=trainingRecoveryDetailModel({id:'completed-no-metrics',status:'done',task_status:'SUCCEEDED'},{});
+  assert.equal(absent.bestEpoch,null);
+  assert.equal(absent.bestMetricLine,'');
+});
+
 test('detail model keeps requested resolved and runtime precision truth distinct', () => {
   const model = trainingRecoveryDetailModel({
     id: 'train-resource-layers',
@@ -415,6 +486,33 @@ test('detail model keeps requested resolved and runtime precision truth distinct
   assert.equal(model.precision, 'fp16');
   assert.equal(model.gpuName, 'RTX Test');
   assert.equal(model.gpuUuid, 'GPU-test');
+});
+
+test('preparation failure keeps runtime precision undecided and dataset counts ungenerated', async () => {
+  const model = trainingRecoveryDetailModel({
+    id: 'train-preparation-lease-lost',
+    status: 'failed',
+    task_status: 'FAILED',
+    task_stage: 'training_input_preparation_failed',
+    error: 'TRAINING_PREPARATION_FAILED: task execution lease was lost',
+    requested_resources: {precision: 'fp16', batch: 116, workers: 12},
+  }, {
+    primary_stage: 'training_input',
+    primary_message: '训练准备 Worker 的执行租约已失效，未进入模型训练。',
+  });
+
+  assert.equal(model.failureStage, 'training_input');
+  assert.equal(model.requestedPrecision, 'fp16');
+  assert.equal(model.resolvedPrecision, '');
+  assert.equal(model.runtimePrecision, '');
+  assert.equal(model.precision, '');
+  assert.equal(model.datasetCountsGenerated, false);
+  assert.deepEqual(model.datasetCounts, {train: null, validation: null, test: null});
+
+  const {readFileSync} = await import('node:fs');
+  const source = readFileSync(new URL('../../static/modules/training-recovery-runtime.js', import.meta.url), 'utf8');
+  assert.match(source, /model\.datasetCountsGenerated\?`训练/);
+  assert.match(source, /:'未生成'/);
 });
 
 test('detail model exposes runtime resource telemetry from backend metrics truth', () => {
@@ -462,6 +560,21 @@ test('failure detail shows one backend primary reason and collapses secondary di
   assert.match(source, /训练输入标签适配问题/);
 });
 
+test('training detail tabs implement the ARIA keyboard pattern without rerendering on click', async()=>{
+  const {readFileSync}=await import('node:fs');
+  const source=readFileSync(new URL('../../static/modules/training-recovery-runtime.js',import.meta.url),'utf8');
+  assert.match(source,/aria-controls="training-panel-\$\{key\}"/);
+  assert.match(source,/aria-labelledby="training-tab-curves"/);
+  assert.match(source,/tabindex="\$\{key===activeTab\?'0':'-1'\}"/);
+  assert.match(source,/ArrowRight/);
+  assert.match(source,/ArrowLeft/);
+  assert.match(source,/event\.key==='Home'/);
+  assert.match(source,/event\.key==='End'/);
+  const clickBlock=source.slice(source.indexOf('const onClick = event =>'),source.indexOf('const close =',source.indexOf('const onClick = event =>')));
+  assert.doesNotMatch(clickBlock,/renderOpenDetail/);
+  assert.match(clickBlock,/activateTrainingTab/);
+});
+
 test('failed detail prefers backend primary failure contract over frontend heuristics', () => {
   const model = trainingRecoveryDetailModel({
     id: 'train-resource-invalid',
@@ -486,6 +599,48 @@ test('failed detail prefers backend primary failure contract over frontend heuri
     'TRAINING_PREPARATION_FAILED: RESOURCE_MANUAL_INVALID: requested batch=128',
     'job status is not done',
   ]);
+});
+
+test('failed detail renders the backend diagnosis contract without frontend root-cause guessing', async () => {
+  const diagnosis = {
+    code: 'SIGKILL_CAUSE_UNKNOWN',
+    certainty: 'unknown',
+    title: '训练被系统强制终止',
+    summary: '训练进程收到 SIGKILL，但目前没有足够证据确认发送者或原因。',
+    evidence: ['训练进程收到 SIGKILL（returncode=-9）。'],
+    possible_causes: ['系统内存不足', '外部进程终止'],
+    suggestions: ['查看系统 OOM、Worker 和任务执行日志。'],
+    checkpoint_message: '当前没有可恢复的训练断点，需要重新创建训练任务。',
+  };
+  const model = trainingRecoveryDetailModel({
+    id: 'train-sigkill', status: 'failed', task_status: 'FAILED',
+    error: 'training process terminated by SIGKILL',
+  }, {diagnosis, checkpoint_available: false, recoverable: false});
+
+  assert.deepEqual(model.diagnosis, diagnosis);
+  assert.equal(model.diagnosisCertaintyLabel, '原因未明');
+  assert.equal(model.recoverable, false);
+
+  const {readFileSync} = await import('node:fs');
+  const source = readFileSync(new URL('../../static/modules/training-recovery-runtime.js', import.meta.url), 'utf8');
+  assert.match(source, /data-training-failure-diagnosis/);
+  assert.match(source, /data-training-diagnosis-evidence/);
+  assert.match(source, /data-training-diagnosis-suggestions/);
+  assert.match(source, /当前没有可恢复的训练断点，需要重新创建训练任务。/);
+  assert.doesNotMatch(source, /diagnosis.*cuda out of memory/i);
+});
+
+test('confirmed host oom and cuda oom keep distinct backend diagnosis identities', () => {
+  const host = trainingRecoveryDetailModel({id: 'host', status: 'failed'}, {
+    diagnosis: {code: 'HOST_MEMORY_OOM', certainty: 'confirmed', title: '训练失败：服务器内存不足'},
+  });
+  const gpu = trainingRecoveryDetailModel({id: 'gpu', status: 'failed'}, {
+    diagnosis: {code: 'GPU_MEMORY_OOM', certainty: 'confirmed', title: '训练失败：GPU 显存不足'},
+  });
+
+  assert.equal(host.diagnosis.code, 'HOST_MEMORY_OOM');
+  assert.equal(gpu.diagnosis.code, 'GPU_MEMORY_OOM');
+  assert.notEqual(host.diagnosis.title, gpu.diagnosis.title);
 });
 
 test('failed detail prioritizes worker root cause and keeps requested resolved runtime resource layers distinct', () => {
@@ -547,4 +702,64 @@ test('failed detail prioritizes worker root cause and keeps requested resolved r
   assert.equal(model.runtimeWorkers, 0);
   assert.equal(model.runtimeCache, 'ram');
   assert.equal(model.batch, 11);
+});
+
+
+test('offline AMP failure displays Worker FP32 instead of frozen FP16 and explains fallback',()=>{
+  const job={
+    id:'training-offline-amp', status:'running',
+    requested_resources:{precision:'fp16',batch:16},
+    resolved_resources:{resolved_precision:'fp16',resolved_batch:16},
+    runtime_resources:{actual_precision:'fp32',runtime_batch:16},
+    actual_train_params:{precision:'fp32',effective_precision:'fp32',batch:16,amp:false},
+    amp_check_method:'cuda_numeric',amp_check_result:'failed',
+    precision_fallback_reason:'CUDA_FP16_PROBE_FAILED',
+  };
+  const model=trainingRecoveryDetailModel(job,{});
+  assert.equal(model.requestedPrecision,'fp16');
+  assert.equal(model.resolvedPrecision,'fp16');
+  assert.equal(model.runtimePrecision,'fp32');
+  assert.equal(model.precision,'fp32');
+  assert.equal(model.ampCheckMethod,'cuda_numeric');
+  assert.equal(model.ampCheckResult,'failed');
+  assert.equal(model.precisionFallbackReason,'CUDA_FP16_PROBE_FAILED');
+
+  const unstarted=trainingRecoveryDetailModel({
+    ...job,runtime_resources:{},actual_train_params:{precision:'fp32'},
+  },{});
+  assert.equal(unstarted.runtimePrecision,'');
+  assert.equal(unstarted.ampCheckResult,'failed');
+});
+
+test('recovery workflow guard follows the real runtime cache marker', async()=>{
+  const {readFileSync}=await import('node:fs');
+  const main=readFileSync(new URL('../../static/main.mjs',import.meta.url),'utf8');
+  const workflow=readFileSync(new URL('../../.github/workflows/training-recovery-guard.yml',import.meta.url),'utf8');
+  const marker=main.match(/training-recovery-runtime\.js\?v=([0-9]+)/);
+
+  assert.ok(marker,'main.mjs must expose a versioned recovery runtime import');
+  assert.match(workflow,new RegExp(`training-recovery-runtime\\.js\\?v=${marker[1]}`));
+  assert.doesNotMatch(workflow,/grep -F -n -E/,'timer guard must use one grep matcher mode');
+});
+
+test('training detail stays a centered modal and refreshes without replacing its subtree', async () => {
+  const {readFileSync} = await import('node:fs');
+  const source = readFileSync(new URL('../../static/modules/training-recovery-runtime.js', import.meta.url), 'utf8');
+  const styles = readFileSync(new URL('../../static/styles.css', import.meta.url), 'utf8');
+  const workflow = readFileSync(new URL('../../.github/workflows/training-recovery-guard.yml', import.meta.url), 'utf8');
+
+  assert.doesNotMatch(source, /oldDialog\.replaceChildren/);
+  assert.match(source, /patchTrainingDetailDom/);
+  assert.match(source, /previouslyFocusedElement/);
+  assert.match(source, /event\.key === 'Escape'/);
+  assert.match(styles, /\.training-recovery-dialog\{width:min\(1180px,calc\(100vw - 40px\)\)/);
+  assert.doesNotMatch(styles, /\.training-recovery-dialog\{width:100vw;max-width:100vw;height:100dvh/);
+  assert.match(styles, /\.training-recovery-overlay\.is-closing/);
+  assert.match(styles, /\.training-recovery-dialog \.quality-tabs \.btn\{min-width:80px/);
+  assert.match(workflow, /grep -Fq 'function patchTrainingDetailDom\(current, next\)'/);
+  assert.match(workflow, /if grep -Fq 'oldDialog\.replaceChildren'/);
+  assert.match(
+    styles,
+    /@media\(prefers-reduced-motion:reduce\)\{[^}]*\.training-recovery-overlay,\.training-recovery-dialog/,
+  );
 });

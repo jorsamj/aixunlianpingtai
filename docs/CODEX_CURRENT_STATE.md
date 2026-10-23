@@ -1,3 +1,371 @@
+## 2026-10-22｜场景评估、素材与标注UI（代码及隔离CI已验收）
+
+唯一需求/进度/问题/截图：[本轮专项](SCENARIO_MODEL_EVALUATION_UI_GOVERNANCE_2026_10_22.md)。P0分别提交1f606d30/13c70368/b8d04f04；正式训练资格贯穿原Worker/Agent、双模式内联框证据、素材同Owner网格/列表、标注唯一审核/正式色/居中已实现。P1复用原ECharts与严格同基准比较；VERSION42.24.377，最终代码42bf33b2实际23/23 Actions、60/60 Checks、Chrome239/239；本地Node1297/Python213通过，广泛352曾339通过13失败后逐项fresh通过，未宣称重跑全绿。本次文档/旧fixture补提自身完整SHA须再核CI，最终回执与限制见唯一专项。未生产部署/数据/权重写入/GPU；从唯一专项接续，禁止重复建Owner，生产真实精度与许可仍需独立核验。
+
+## 2026-10-22｜训练创建按需准入与Loading（代码及隔离CI已验收）
+
+唯一专项：[生命周期治理第十一节](TRAINING_MATERIAL_LIFECYCLE_GOVERNANCE_2026_10_21.md)。打开/编辑保持安静，仅“开始训练”触发原完整准入与创建；有效阻塞才显示原因，草稿/项目/Modal过期及网络错误隔离。旧自动弹窗/自动正式复检触发被本轮用户要求覆盖，后端与删除GT合同保留。VERSION42.24.376，Node1239通过/Python126通过2环境skip，本地Chrome59独立场景分批通过；实现c0163347287beeca1e3e52fa0e42c71c423527bc实际41/41 Actions、114/114 Checks通过，CI Chrome207/207及first-open15/15；本次文档HEAD自身仍须独立CI。禁止改Uppy/UploadTaskCenter实现，未生产部署/写入/GPU。接续从原submit/summary及新增on-demand Chrome开始，完整RED/问题/限制见唯一专项。
+
+## 2026-10-22｜原 UploadTaskCenter 稳定性修复（代码及隔离CI已验收）
+
+唯一专项：[Uppy专项6A](UPPY_ZIP_ADAPTER_POC_2026_10_22.md)。按钮按action原位保留、进度合帧/500ms保存、关键状态即时保存、稳定rekey/order、原ZIP进度来源与图片详情均在原Owner修复。真实RED及追加审查问题已记录；VERSION42.24.375，Node1239/Python49/Chrome38及收尾定向8通过；18dae908ee841e9b874d27a38a0a8a0f946f2c00实际22/22 Actions、59/59 Checks通过，CI Chrome191/30；首守卫失败及修正已留痕，本次文档HEAD仍须独立核验。无新任务中心、上传控制器或数据库，未操作生产，其他工作区不动。接续先看6A，勿将旧Uppy验收冒充本轮。
+
+## 2026-10-22｜Uppy ZIP适配（代码及隔离CI验收完成）
+
+唯一需求/进度/接续：[Uppy专项](UPPY_ZIP_ADAPTER_POC_2026_10_22.md)。固定Core6.3.0/Dashboard6.0.2/locales5.3.1本地离线；原ZipImportRuntime/v19/TaskCenter/Worker单Owner，PoC14项通过后正式按钮接Uppy并保留原UI回退。VERSION42.24.374；本地Node1237/Python82/Chrome29+15通过，修正2ae6bdf71c24096e4ab75db5696c4609e6832678实际23/23 Actions、62/62 Checks通过（CI Chrome184/15/29）。首提交39/40及旧quality漏适配自动诊断的真实修复均留痕；本次仅补验收文档，其最终实际HEAD仍按专项5.6独立检查GitHub绑定结果。传输交付不等于入库；许可/711KB制品/生产未验证限制见专项。禁止生产部署或生产素材测试，勿重复建设上传控制器。
+
+## 2026-10-22｜训练准入诊断与素材删除一体治理（代码及CI验收完成）
+
+唯一专项：[生命周期治理](TRAINING_MATERIAL_LIFECYCLE_GOVERNANCE_2026_10_21.md)第十节，最新回执/交接10.13。GOV-01–11复用原Owner，自动多阻塞诊断、草稿全部问题排除、不可变预览/幂等Worker逻辑删除、GT整组/跨分页/项目清空、真实成功ID完整复检均完成。成功登录且可访问项目即同权，无admin/白名单/RBAC；清空仍须项目名与精确范围确认。旧隐式删除退役，活动/共享字节保留且释放0；排队10000→9500原范围重冻结。VERSION42.24.373，代码d207ba570a7209d2776b4b6b7240c511691b456a实际31/31 Actions、81/81 Checks、Chrome184/184及Node1209/1209通过；本地Python356+3 Windows symlink skip，Linux CI相应边界实际通过。首推失败及修正已留痕，本次文档/PoC时序增强补提自身SHA须再核CI，以最终GitHub绑定结果为准。禁止生产删除/迁移/部署/GPU；旧单份图片、物理GC和Bundle回收未实施，不重复建设已验收GOV。
+
+## 2026-10-21｜Annotorious人工标注正式集成（代码及CI验收完成）
+
+唯一专项：[Annotorious集成](ANNOTORIOUS_ANNOTATION_INTEGRATION_2026_10_21.md)，**6.10为当前接续**。官方3.9.5本地离线资源、单一GT转换、manual/AI候选同kernel，空GT待标注与显式负样本分离，旧画框DOM/pointer已退役。VERSION42.24.372；代码0e6cff67实际21/21 Actions、55/55 Checks、CI Chrome175/175及Node1192/1192通过。本地Python175、Chrome54独立场景和16项制品校验通过，失败/修正/四视口/100–300框/20次开关证据均归档。本次验收文档补提自身须按最终实际HEAD核验CI；生产未部署/写入/迁移/训练，真实现场条件见专项，禁止重复建设。
+
+## 2026-10-21｜综合治理补充验收（代码及CI限定验收完成）
+
+唯一接续依据：[综合专项](FRONTEND_STARTUP_REPORT_UX_GOVERNANCE_2026_10_21.md)第10节。基线36aff618/VERSION370，最小修复Loading防重/截止/未知结果查询与标注保存归属，报告明确成功数、全部任务与含失败耗时；PARTIAL_SUCCESS保持正式训练成果已提交但独立评测失败的既有口径，不扩大成功标准。Python55、Node1142、Chrome90独立场景分别通过；bbb4950d实际35/35 Actions、98/98 Checks及CI Chrome140/140通过，准确回执见专项10.6；本次仅文档补提，自身检查仍须核验。VERSION42.24.371。未知批量提交缺幂等请求ID，保守查询锁仍需人工核验；ZIP等未逐接口Pending及生产12.08秒实际链路未覆盖，完整矩阵/生产只读方案/测试失败留痕见专项。未生产部署/数据修改。综合补充验收最终4fcbcfc8自身21/21 Actions、55/55 Checks通过；Annotorious按用户确认顺序另行实施，独立状态见顶部入口。
+
+## 2026-10-21｜页面启动、报告与训练任务交互综合治理（代码及CI验收完成）
+
+唯一接续依据：[综合专项](FRONTEND_STARTUP_REPORT_UX_GOVERNANCE_2026_10_21.md)。八项代码需求已实现：Snapshot增量/概要与核心先返回、有界恢复；正常报告/评测弹窗、共享Loading/Tooltip及真实曲线无恢复控件；创建成功立即仅关原窗，完整成功训练次数和排序缓存一致。VERSION42.24.370；实现/修正f0f3010d实际21/21 Actions、55/55 Checks、Chrome128/128通过，本地Python104/Frontend Node1108通过。首提交两条旧夹具失败及修复已留痕。本次仅补记文档，自身新SHA须独立CI，见专项第9节与GitHub提交Checks。生产未部署，现场12.08秒仍需分解核验；取消临时需求已全部撤销，无发布字段改造混入。
+
+## 2026-10-21｜GT素材与训练数据生命周期专项（A进行中，B–F未开始）
+
+唯一需求/进度/问题/验收依据：[专项文档](TRAINING_MATERIAL_LIFECYCLE_GOVERNANCE_2026_10_21.md)。已建立用户新需求基线并部分审计原Material/GT/Prepare/Bundle链；旧合同基线41通过、1软链接能力跳过，不代表新需求验收。历史永久保护取消、排队删减重冻结、单份图片和工作Bundle回收尚未实现；下一步完成活动字节租约/消费者及迁移契约审计后按B→F推进。旧历史条目仅为当时策略，不能覆盖本专项新需求；VERSION42.24.369保持，生产清理/部署未执行，首提交CI失败及隔离测试同步修正已留痕，949961c3实际CI21/21 Actions、55/55 Checks及Chrome112/112通过；本次仅补记文档，自身新SHA仍须独立CI。详见专项，不把基线验收当B–F完成。
+
+## 2026-10-21｜报告交互与确定性ChatGPT材料（本地限定验收完成 / 最终SHA CI待核验）
+
+基线ba6e9c3497c04e69a2e80c3f7dbf07d52fb391c2/VERSION368已fetch/pull且提交前再次一致；其他会话/工作树不动。原v44报告/TaskRecord/Snapshot/ModelArtifact/预览及TrainingRecovery Owner复用：固定模板A-H+4可空现场描述、复制/预览/隐私过滤，无AI调用；本地ECharts交互/生命周期、冻结8–12错误引用及期望评测/图片SHA核验；实际Trainer Optimizer/LR记录、转换源精度约束、迭代实际尺寸/精度及模式保持。完整需求/根因/RED→GREEN/质量审查/测试命令及未验证见[训练质量追踪](TRAINING_QUALITY_REMEDIATION_TRACKER_2026_10_18.md)顶部，完整生成文本见其示例链接。Python去重97通过/Windows已有Linux FD一例skip，Node118、Chrome16场景通过；未扩大到无关业务。VERSION一次递增369，app/main/styles416及必要模块缓存统一；最终实际SHA CI待普通推送，独立回执training-report-materials-ci-final-20261021.json。未生产部署/写入/重训转换；真实Person/Car质量、板端插件标签/性能及现场UI仍NOT VERIFIED，不把基础PASS当业务合格。
+
+## 2026-10-21｜本地厂商/芯片稳定ID与新畅联一对一映射（本地验收完成 / 待最终SHA CI）
+
+基线bb1fed555b60409109b9c62c875b30b72e6c31c5/VERSION367已fetch/pull干净且远端一致；其他会话/工作树未覆盖，上轮23/59 CI回执已核验。完整需求、根因、原target_mappings稳定ID扩展、双向唯一性、历史迁移/回退、危险改挂边界及测试证据见[发布专项](EXTERNAL_ALGORITHM_PUBLISH_PHASE2.md)。原Repo/API/Owner复用，动态本地字典投影，SDK与业务厂商分离；同SDK不同厂商交付/恢复隔离，未知远端分类保持保护；已有Weight分类变化不自动edit，原ID/回执保留。停用历史透传、revision及草稿/保存中返回/迟到保护已闭合。Python去重203、Node28、Chrome1通过，未全仓扩测，版本一次递增368，main/styles415、发布64014，app413不变。最终实际SHA CI待普通推送核验，独立回执stable-vendor-mapping-ci-final-20261021.json；生产字典/DB/OSS/Weight/训练转换/部署未操作，真实provider及历史迁移仍NOT VERIFIED。
+
+首推6339c297实际CI中发布Python/Node/Chrome通过，Syntax and wiring guards检出旧源码契约未同步：退役编辑器丢失仍准确的SDK/字典提示、源码守卫依赖原字段空格及旧“映射变化自动edit”测试名。已恢复真实页面提示/原字段风格，仅将既有workflow一条grep改为本轮更强的“待审核且身份不变”实际测试名，未删除/跳过/削弱动态断言，也未扩展CI触发或测试集合。原完整Syntax and wiring guards本地实际执行退出0，build_identity确认42.24.368；VERSION本轮不二次递增。需以接续修正最终SHA核验全部CI，首推不能当全绿。
+
+## 2026-10-21｜畅联云Weight完整详情与官方withTags分页查询（本地通过 / 最终SHA CI待核验）
+
+基线22587dd7/VERSION366已fetch/pull干净且远端一致，其他工作区/会话未覆盖；上轮26/70最终绿色回执归档。原畅联云数据Runtime/Client/详情及分页API复用，24字段分组详情、Tags正式list withTags=true精确ID分页补查、int64浏览器安全投影、来源/空值/冲突/失败区分、按需缓存及迟到生命周期保护；无新增Owner/轮询/包装。完整需求/官方合同/RED→GREEN/字段/质量审查/限定测试见[接口与详情验收](CHANGLIAN_APIFOX_API_CATALOG.md)。Python去重127、Node32、Chrome3场景通过，VERSION一次递增367，main/styles414及浏览模块缓存63002，原app413保持。最终实际SHA CI待推送核验，回执weight-detail-ci-final-20261021.json；SSH只读拒绝，真实provider Tags/getInfo候选参数及生产历史仍NOT VERIFIED；未部署/写生产DB/OSS/Weight。
+
+首推9d2cdd48的CI复现Client校验层次回归；已将严格ID校验移至原Provider路由并保留默认Client兼容性，新增RED及直接Client9/HTTP1/原失败wire26 GREEN，原发布安全测试未改。VERSION367不二次递增；后续最终SHA CI待核验，详见接口专项。
+
+## 2026-10-21｜Tags / 转换参数 / AMP / SDK 一致性（本地通过 / 待最终SHA CI）
+
+基线b74a3866/VERSION365、fetch/pull干净且远端一致，其他工作区不动；前轮48/131实际CI回执归档。原Owner最小修复空prepared标签、HTTP请求/回执/读回事实、preset精度、异步参数覆盖与页面归属、单资源检测、真实编译模式/ONNX导出与Agent传递/manifest事实。完整需求/根因/矩阵/质量审查/限定验收见[专项](CONVERSION_PARAMETER_CONSISTENCY_2026_10_21.md)。分批JUnit去重403例通过，Node相关文件分批通过，Chrome9种相关场景通过；修复中失败与复测如实记载。VERSION一次递增366，必要app/main/styles413、训练CSS4226354/submit422600、publish64013。无新Owner/包装/监听器/轮询，生产写入/部署禁止；只读SSH拒绝，17/7及真实SDK/GPU/网页未现场核验。最终实际SHA CI待安全推送，按tags-parameters-ci-final-20261021.json独立回执核对，不能提前标绿。
+
+首推058b2ec1实际CI检出两处测试适配问题（轻量夹具误依赖onnx、旧源码守卫要求非冻结pid）；已原位修正，Python1/Node11定向通过，安全断言保留，无CI依赖/范围变更。VERSION366不二次递增；最终后续SHA核验中，详细日志结论见专项。
+
+## 2026-10-21｜字典普通编辑与历史引用校验分离（限定验收完成 / 待最终SHA CI）
+
+最新8d74588d95ffa3549f0769431d92072dfa1300cc/VERSION364已fetch/pull干净；无可见同仓库其他活动开发，其他工作树不动。前轮Weight22/57绿色回执已核验归档，不代表本轮。生产缺失job证据、完整需求、最小方案与定向TDD计划见docs/DYNAMIC_CONVERSION_CATALOG_ACCEPTANCE_2026_10_20.md顶部。普通名称/启停不依赖历史扫描；详情返回真实诊断，不允许can_delete假成功；删除/改挂严格fail closed，只可信任务合同/同项目任务路径可恢复。限定本次Python/API/Node/Chrome，版本最终基线一次递增，生产数据/文件/OSS/Weight/重启/部署均禁止。原scanner/Repo/API/UI已最小修复；原严格删除/改挂保护保留，可信任务身份与matcher一致后才恢复，普通短表单可用/诊断折叠，toggle异步归属已修正。Python分批51及受后续改动影响37/4通过、Node9后短表单7、Chrome既有3+新场景1通过；完整RED/质量审查及夹具排序复测见专项。正式VERSION365一次递增，main412/字典模块2、8版本投影一致；最终实际SHA CI待推送核验。
+
+## 2026-10-20｜Weight自动覆盖发布（A-D限定验收完成 / E待最终SHA CI）
+
+最新b74834c4a8d87090aad64876df50bbf548f2bdac/VERSION363已fetch/pull干净；其他同项目会话未活动、原WIP不动。用户已正式取消常规人工审核：每版本/芯片一个Weight，可信任务完成时间确定最新有效成果，完整性与OSS成功后原ID edit/唯一首次add，全部写后查询确认；本地多SHA和历史审计保留。真实官方edit/detail/list OpenAPI已通过下载入口解析，包含filePath/computePlatformId/chipCode和可选元数据；生产写接口未调用。
+
+完整需求、原始根因、架构/限定TDD计划、生产边界及证据见docs/CONVERSION_WEIGHT_PUBLISH_RECOVERY_2026_10_20.md顶部。只复用原Repo/版本fence/发布Owner/恢复/审计，旧审核UI已改自动交付；官方字段合同已核验，文件身份/跨Artifact未知请求/单Owner/同ID编辑/读回/迟到防回滚已实现并完成分批RED→GREEN，最终限定发布175+2复测、资产11、Node18+缓存1、Chrome4通过；最终历史投影及optional读回补断言定向复验记录见专项；本轮生产数据库/OSS/Weight写入/批量迁移/部署仍禁止。本轮VERSION一次递增364，main411/发布模块64012；上一轮31/83 CI已归档，不代表本轮。
+
+- 首SHA26856b02 CI发现selection HTTP测试导入整个app引入精简环境无yaml；仅夹具改复用轻量error_body，无新增依赖/测试扩围，VERSION364不二次递增；最终后续SHA CI待核验。
+
+- ac4229f3发布CI动态Python282/Node25通过，旧源码行守卫未随统一发现Owner迁移；仅更新既有3项守卫至真实ModelArtifact/芯片/接线，保留全部动态断言及测试范围。VERSION364不变，最终后续SHA CI核验中。
+
+## 2026-10-20｜厂商与芯片完整CRUD（A-D限定验收通过 / CI待最终SHA）
+
+最新ed946c9b43ba7c5e014c60076d5539b6cbdf20b8/VERSION362已fetch/pull干净，无其他同仓库活动会话；前轮40/112绿色按附件核验归档，不借用。本轮升级为部署资源内正式区域及真实单条CRUD/引用安全删除/幂等审计/搜索分页/每资源SDK自动决议；原Repo/字典表/检测/resolve/Worker复用，旧编辑实现退役不并存。完整需求、架构、限定RED→GREEN及质量审查清单见docs/DYNAMIC_CONVERSION_CATALOG_ACCEPTANCE_2026_10_20.md顶部。仅实际受影响测试，通过未受新变更影响不重跑；不加大型CI或扩触发。本轮生产/外部写入/部署仍禁止。
+
+- 本轮VERSION42.24.363一次递增，app411/main410/styles409；七正式入口一致。原Repo/API/detect/resolve唯一Owner，单条CRUD+同库原子审计/全引用安全删除/服务端分页/自动SDK约束，部署页嵌入管理区，旧编辑及CSS移除。无引用待适配SDK可编辑，历史身份受保护。
+- RED→GREEN、Python分批限定结果、Node5+版本断言1、Chrome4流程及实际质量审查整改，详见专项顶部；不重复累计/不跑无关测试。现阶段提交前fetch远端未变，最终CI仍待实际SHA；生产未操作、现场未验证。
+
+- CI接续：首提交2284615ac1d9ede7c4480967af0bfe78abc1afe3的frontend静态守卫要求原beforeInvokeNavigation侧栏hook完整保留。已将catalog.leave移入原performNavigation且先于state.page变更；不改/削弱守卫或工作流。新增定向Node1 RED→GREEN、原CI导航源守卫及Chrome CRUD刷新返回1通过。VERSION保持本轮363不二次递增；需核验后续修正实际SHA，首SHA不能作为最终绿色。
+
+## 2026-10-20｜字典管理UI/UX简化（限定验收通过 / 最终SHA CI待提交 / 生产未部署）
+
+- 基线6f34efd3ef09741147f90dadadb37591751c3c41/VERSION361已fetch/pull且工作树初始干净；无其他同仓库活动会话，原WIP/worktree不改。上轮21/55最终绿色回执已核验归档，不代表本轮。
+- 原字典Owner改默认搜索列表+同modal短表单，自动稳定ID/可信5型号建议/高级折叠/完整revision PUT；原ID/SDK/code保留、厂商模板不可改挂，未知SDK可空但不准入。原resolve抽出共享SDK事实供列表与预检，配置/编译/板卡状态分离，不改外部映射/Weight/执行器。
+- 真实RED与进度：Python4、Node3及HTTP/别名各1、基线Chrome1；修复刷新叠modal及待配置投影500。最终限定Python33、Node32、Chrome2通过（0失败0跳过），七版本入口362一致。完整需求/设计/实施/测试/未验证见docs/DYNAMIC_CONVERSION_CATALOG_ACCEPTANCE_2026_10_20.md顶部。
+- VERSION42.24.362（一次递增），app410/styles408/main409。最终SHA CI回执catalog-ui-simplification-ci-final-20261020.json另存既有visualizations附件目录，下一受验证提交归档。不部署/修改生产数据库、配置、OSS、新畅联或真实转换；现场仍NOT VERIFIED。
+
+## 2026-10-20｜正式部署资源入口补修（限定验收通过 / 最终SHA CI待推送 / 生产未部署）
+
+- 基线8366b4edf79e8a4231fe5033a8c86ec92858bd80，fetch/pull干净且提交前远端未变化；原转换Weight23/59绿色已归档，不作为本轮CI。其他会话与工作树未覆盖。
+- 原renderDeployResources/字典弹窗/API已存在。最小修复正式高级菜单、canonical Owner、导航别名及启动恢复四处接线；模型配置保持独立，无新页面/Owner/包装。普通路径：展开高级功能→部署资源→厂商与芯片字典。
+- RED：Node17通过2失败；恢复基线后Chrome在菜单缺失处失败。GREEN：Node29、Chrome3、字典/API定向Python8通过，0失败0跳过；真实隔离GET/PUT、新增RK3568、刷新、返回及BM1684/BM1684X/RK3568显示/转换选择通过，七版本入口一致。
+- 首提交CI暴露两条旧退役导航期望，与本轮合同冲突；已改为独立正式Owner/菜单并定向2通过（39未选中），其余保护保留，最终SHA仍待CI。
+- 正式版本42.24.360→42.24.361一次递增，app408/main409/nav422518；样式407与发布模块64011保持。详细需求/根因/测试与最终CI附件位置见docs/DYNAMIC_CONVERSION_CATALOG_ACCEPTANCE_2026_10_20.md顶部。本轮未读取/修改生产字典、部署或调用真实外部写接口，现场页面仍待部署后验收。
+
+## 2026-10-20｜转换Weight身份/交付选择与审核（本地限定验收通过 / CI待提交 / 生产未操作）
+
+- 最新fetch基线a3a99ec1760366ddda5193ca60b200c3b719c2d5，VERSION42.24.359；上轮47/128全绿已核验附件，不借用为本轮。其他工作树/可见会话未覆盖，提交前再fetch。
+- 用户最终业务：每版本/芯片一个当前Weight，本地多SHA历史全部保留；明确选择只是本地交付意向，接口合同/唯一身份/写入授权未确认前不替换、不退为多Weight。原Owner/Repo/上传/转换调度复用。
+- 同名异SHA歧义与异名可能重复add、持续UNKNOWN重试、父子分类审核投影、稀疏metadata丢来源及异常阻断唤醒均已定向RED→GREEN；新旧ID/SHA生产证据、实现/测试/dry-run详见docs/CONVERSION_WEIGHT_PUBLISH_RECOVERY_2026_10_20.md。
+- 本轮正式版本按最新基线一次递增42.24.360，main408/发布模块64011，app/styles407保持；限定Python122、API/审计3、Node27、Chrome4通过（重叠不累加），正式七入口一致/永久守卫通过；最终SHA CI待提交。真实源任务/远端Weight/接口替换能力NOT VERIFIED；只读SSH连接被拒绝，未读取生产或发送API/OSS请求，未部署或写入。
+
+## 2026-10-20｜动态厂商字典与真实SDK目标（本地限定验收通过 / 最终SHA CI待推送 / 生产未部署）
+
+- 完整fetch/pull基线7a2492b24de5d6259bf792ed074f1548e66d6eda，原39/109绿色归档不是本轮CI。复用初始干净长期分支工作树，其他工作树/会话未覆盖。
+- 唯一专项docs/DYNAMIC_CONVERSION_CATALOG_ACCEPTANCE_2026_10_20.md保存完整用户V2/第十八条、产品合同、架构、RED、已完成与剩余计划。原ModelArtifactRepository/compute_platform_catalog/Adapter/Worker/Durable MODEL_CONVERSION/发布Owner复用，无平行模型库/队列/调度/轮询。
+- 动态本地厂商/芯片表初始为空，模板不等于业务记录；SDK/本地/外部ID分开。BM1684按1.30.2官方矩阵+实检开放F32、原X/88 F16保留；未知组合不乐观放行。后端统一resolve和POST，真实目标/参数/命名、结构/hash、资产快照可追溯，硬件验证独立。
+- 正式VERSION本轮已一次42.24.358→42.24.359；必要app/main/styles缓存42.25.407、发布模块64010。正式显示继续读后端版本。最终Python262、Node70、Chrome8通过，另7项发布安全定向用例通过；版本七入口一致、语法/diff/原永久守卫通过。最终完整SHA CI待推送，记录于专项指定独立附件。
+- 未部署/重启/安装SDK/改生产密钥或数据库/操作OSS/历史Weight；本机Windows未找到TPU-MLIR工具，真实BM1684编译、模型质量与板卡NOT VERIFIED。生产17项元数据/7Weight补齐仍未执行，须独立授权。
+
+## 2026-10-20｜Weight tags及本地元数据（本地通过 / 最终SHA CI待提交 / 生产补齐未执行）
+
+- 基线0cf65c48bf6c6d0ec0df852128c2faccf4072f8e已完整fetch/pull；历史48/131绿色归档，不代表本轮。VERSION42.24.358，app405/styles402保持，仅main406/发布模块64009必要更新。
+- 原模型标签/JSON add-edit/UNKNOWN/差异检测已有。RED确认通用资产未持久化模型信息+upsert整体替换、PARTIAL幂等ensure重置重试时钟、edit多候选未消歧、无外部映射本地标签投影遗漏。共享原解析合同、原SQL/ModelArtifact/发布Owner增量修复，无平行队列/数据库/轮询。
+- 版本冻结schema/codes或可信Snapshot为唯一来源；Artifact保存验证快照，未知不清空已知、冲突不覆盖。训练/转换先登记本地，与外部/上传配置独立；已有对象身份保持，不复传。原ID唯一edit，缺可选字段不阻断交付；回执和真实远端读回分开。
+- 主Python335通过，版本兼容25、训练/转换传输18通过；Node26、Chrome3通过，0失败0跳过。7缺失实际ID+10隔离对照通过，7edit/10零edit，重复不新增。最后完整SHA仍须CI。
+- 唯一专项docs/WEIGHT_TAGS_SYNC_ACCEPTANCE_2026_10_20.md顶部含只读预检、显式本地修复及原Owner受控外部补齐步骤/7ID表；scripts/audit_weight_metadata.py默认只读，--apply-local也不上传或调用新畅联。
+- 未连接生产执行补齐/部署/重启/改密钥/操作OSS/S3；生产17项尚未实际修复，远端tags持久化需另行授权读回验收。部署启用自动Owner可能恢复历史重试，也须先审核并批准补齐。
+
+## 2026-10-20｜Sophon资源与页面一致性（本地通过 / 最终SHA CI待提交 / 生产未部署）
+
+- 基线a36b9cdec1cd4aa07c9cde2d9c84bc98bb66b479已fetch/pull，历史22/22 Actions、59/59 Checks归档专项。现场两chip真实FP16编译/远程done与probe可用是用户提供证据，不等于板卡验证。
+- 扫描/plugins复用原v39 detect Owner解析secret_ref、鉴权、持久化及公共投影；资源列表/转换弹窗读取同一事实。健康失败清空Sophon能力，恢复重新可用，不泄露密钥；无第二探测/调度/轮询。
+- 本机工具明细仅展示本机；整体Sophon按有效资源汇总，区分本机未配置/本机失败/远程可用。版本修为完整v1.30.2-20260831，远程资源展示工具版本；独立Python保留原逻辑已有测试保护。
+- RED后端8、Node1、Chrome1→限定Python136/136、Node20/20、Chrome10/10（0失败0跳过）；语法/diff/原永久守卫通过。VERSION42.24.358，app缓存405，main404/styles402不变。
+- 唯一专项docs/SOPHON_BMODEL_CONVERSION_ACCEPTANCE_2026_10_20.md；最终CI附件见本轮E节。不修改生产服务/密钥/依赖，不部署，不调用真实新畅联写接口；部署后真实网页与板卡结果仍需现场复验。
+
+## 2026-10-20｜Sophon model_tool CLI兼容（本地测试通过 / 最终SHA CI待提交 / 现场依赖未验证）
+
+- 本轮基线c44752934524dcfc86f89d8cf24fc34f32cee011，完整fetch/pull远端一致。该历史SHA的48/48 Actions、131/131 Checks已归档Sophon专项；不当作本轮CI。
+- 现场TPU-MLIR1.30.2的model_tool不支持--help，Usage后非零不能判工具损坏；仅修共享probe为官方--version+退出码/版本输出校验，保留编译后--info及其他严格合同。
+- RED11 failed/6 passed→最终限定Python98 passed/0 failed/0 skipped（含--info错误芯片/失败保护）；py_compile及diff检查通过。只改共享probe与原Sophon回归测试，无前端变化，不扩跑本地Node/Chrome/硬件。
+- 不安装依赖、不破坏训练环境、不部署、不调用真实新畅联接口。服务器实际缺失依赖与修复后现场health待明确Sophon SSH目标或pip check/traceback核验，NOT VERIFIED。最终CI附件见专项本轮E节。
+- 唯一专项docs/SOPHON_BMODEL_CONVERSION_ACCEPTANCE_2026_10_20.md；VERSION42.24.358与前端缓存均不变。
+
+## 2026-10-20｜Sophon BMODEL（A-D测试通过 / 最终SHA CI待提交 / 生产与硬件未验证）
+
+- 起始62647aeea258a26ba423f0a9db23d8f6f8ba3b1a；上轮23/23 Actions、59/59 Checks已归档原tags专项，不代表本轮绿色。VERSION42.24.358不变。
+- 首期BM1684X/BM1688、FP16、Batch1/static；修复显式芯片/矩形导出与ONNX shape、可运行工具探测及真实产物结构/hash合同。Sophon remote并入原ConversionHandler/MODEL_CONVERSION，原Key/Lease/取消/恢复与确定ID幂等；无第二执行器/数据库/轮询。
+- 发布继续原ModelArtifact/Owner与Weight add/edit，同Version下PT和两chip BMODEL共存，tags冻结原生数组，未知可选信息不阻断；Sophon必要chip严格校验。UI增量字段与真实资源/任务/待硬件状态，app/main缓存404、styles402、发布模块64008。
+- 本地Python313/313、Node40/40、Chrome10/10，0失败0跳过；最后BMODEL edit断言聚焦4通过。硬件2 SKIP/NOT VERIFIED，无真实TPU-MLIR编译或板卡加载证据；独立规格P1两项均补RED关闭。
+- 唯一专项docs/SOPHON_BMODEL_CONVERSION_ACCEPTANCE_2026_10_20.md；提交后最终CI依该文档指定独立附件核对，不能提前宣称CI通过。禁止生产部署/API/OSS/GPU/生产转换；下一会话先读本节和专项后接续。
+
+## 2026-10-20｜训练与转换 Weight tags 专项（A-D测试通过 / E待提交与最终CI / 生产未验证）
+
+- 需求：核验冻结训练类别经原始PT/ONNX/RKNN到新畅联add/edit实际HTTP JSON；tags原生字符串数组、class_id顺序、未知省略且不阻断。上传人/身份/OSS对象标签不在范围。
+- 已完整fetch/pull；分支feature/external-algorithm-publishing，起始HEAD 2cb3ba1617551f59abdc9c66115a0cde29d463f5，远端一致、工作树原始干净，VERSION42.24.358。
+- 已有：冻结类别/Snapshot提取、可选扩展字段、旧ID edit、synced_payload_json与UNKNOWN恢复、转换完成唤醒。待核验：真实训练冻结格式、完整HTTP JSON、ONNX/多类/多版本与历史补齐链路；已确认链路原本实现；真实缺口为贯穿到PreparedRequest.body的验收覆盖。6项链路测试已通过，不制造业务RED，不改业务代码。
+- 预计范围：既有发布/平台/转换通知测试与必要的最小修复、现有handoff；不新建Owner，不部署、不调用真实新畅联写接口、不操作生产OSS或历史数据、不运行真实训练/转换。禁止测试发散。
+- 本地限定Python200/200、Node16/16、Chrome3/3，0失败0跳过；无业务修复、无真实业务RED，初次夹具失败如实记录。最终SHA CI尚未执行，不得提前称全绿。
+- 只读复核关闭1项CI依赖遗漏：原SQL精简Job补psutil；转换链路强化真实Event.set发出断言。最终SHA需独立CI。
+- 当前状态与下一步统一见 docs/WEIGHT_TAGS_SYNC_ACCEPTANCE_2026_10_20.md；阶段变化持续持久化，最终CI须对应最终SHA。
+
+## 2026-10-20｜权重补充元数据发布（最终合同：可选、非阻断）
+
+- 首次SHA 6f83076f的CI发现精简Job缺TestClient依赖、浏览器文本守卫未适配参数化；仅补httpx2及更新守卫匹配，保留核心身份零POST断言与全部实际测试。后续1faa9693的后端200项与Chrome3项已通过，另将唤醒信号守卫同步到既有真实Event.set发出断言及消费后无重复断言；最终SHA重新验收。
+- 基线93c56659，复用ExternalPublicationRepository / ModelArtifact / 原发布与转换通知Owner。六扩展字段可信则传、未知省略，tags未知不发[]；缺失不阻断交付、不改转换成功状态。
+- 原ID edit补齐与确认payload回执、UNKNOWN写入只读恢复、矩形尺寸及冻结标签解析、原版本行内联事实/真实错误展示。无第二队列/数据库/轮询/弹窗Owner；不操作生产。
+- 聚焦Python三文件194 passed、Node三文件41 passed、Chrome单规格3 passed，末次schema/存量19 passed。原始RED/失败及纠偏记录见 docs/WEIGHT_METADATA_ACCEPTANCE_2026_10_20.md。
+- VERSION42.24.358不变；app/styles402不变，仅main403及两个模块缓存更新。最终SHA Actions/Checks需独立验收，附件：C:/Users/jorsam/.codex/visualizations/2026/10/20/01a156ca-1ca0-7b70-8497-bd255da4345e/weight-metadata-acceptance-20261020.md。
+## 2026-10-20｜素材完整性接续审查（本地验证，最终 SHA CI 待验收）
+
+- 完整 fetch/pull 长期分支到 d623a2d6327143571898e778050e5d42cc5e4a4d，六个已知修复全部包含；原工作区保留，复用既有长期分支工作树。
+- 仅修复三项真实复现：标签映射摘要未贯穿普通治理计划/Worker；execute 迟到成功/失败未完整校验弹窗归属；恢复复验把已成功删除项重新记作失败。沿用原计划/Task/DELETE_INDEX/AnnotationRepository/Modal/PollRegistry，无新 Owner。
+- 审计已有 label_schema_digest 贯穿冻结计划、执行清单和逐项删除；标签锁先于 Material 生命周期锁。缺摘要旧计划 fail closed，需要重新审计/预检；已成功项保持历史计数，未完成项仍复验 keeper/GT/hash/Test/引用。
+- 本地新回归 RED：Python 4 failed，Node 2 failed；最小修复及边界补充后聚焦 Python 6 passed，Node 全量 1021 passed。安全扩展最终 116 passed。真实 Chrome 两份规格 19 passed；最后补顶层弹窗按钮归属后聚焦 2 passed。独立复核未发现本次差异的 P0/P1；其 Python 首轮 5 setup error 为 C:/Temp 父目录不存在，换已有短目录后 6 passed，Node 35 passed。首轮新 Chrome 夹具误用 window.state 导致 2 failed，已改为仓库既有 lexical state 并保留所有业务断言。
+- 正式 VERSION=42.24.358 不变；入口 app/main/styles 静态缓存 42.25.402。最终准确 SHA、全部 Actions/Checks、未触发与未验证边界记录在 C:/Users/jorsam/.codex/visualizations/2026/10/20/01a156ca-1ca0-7b70-8497-bd255da4345e/material-integrity-acceptance-20261020.md；不沿用基线 40/40 绿色。
+- 未部署、不重启生产、不连接生产数据库、不执行真实素材删除，不自动发布模型。生产 OSS/S3、历史现场、GPU/A800、大库并发与查询 SLA 仍 NOT VERIFIED。
+## 2026-10-19｜P0 批量 GT 冲突辅助治理
+
+- 本轮唯一进度为 `docs/TRAINING_QUALITY_REMEDIATION_TRACKER_2026_10_18.md` 顶部批量GT节；复用 TrainingCompatibility、原审计/MaterialBatch、ImportCandidateStore、正式 AnnotationRepository 和 DELETE_INDEX，两个入口共用 TrainingMaterialSummaryRuntime。来源证据不代表GT正确，必须人工审核；无第二套存储/队列/Owner/轮询。
+- 正式VERSION42.24.356不变；不连接生产、不覆盖GT、不动历史/Test，不部署。最终SHA及实际Actions/Jobs/Chrome证据以追踪文档指向的独立最终验收附件为准，生产960组进一步根因数量未验证。
+
+## 2026-10-19｜P0 远程清理同步锁误保护精准修复
+
+- 现场只读证据由用户提供；精确豁免 `remote-material/staging-cleanup.json.lock`，不豁免真实台账或其他锁。实际清理调用的 RED→GREEN、API/Worker 和 CI 证据统一见 `docs/TRAINING_QUALITY_REMEDIATION_TRACKER_2026_10_18.md` 顶部专项。
+- 复用原历史引用、MaterialBatch/DELETE_INDEX Owner；Payload/关联任务/执行记录/冻结/Test/Snapshot/模型/未知依赖仍保护，不改任务历史，不操作生产，不改 VERSION=42.24.356。最终 SHA/Actions/Jobs 以独立最终 CI 验收附件为准，不沿用前一 SHA 绿色。
+
+## 2026-10-19｜P0 素材治理与训练冲突删除闭环
+
+- 当前专项唯一进度仍为 `docs/TRAINING_QUALITY_REMEDIATION_TRACKER_2026_10_18.md` 顶部 P0 节；TQ-04 已完成批次不重做。既有素材治理验收文档追加本次证据，最终准确 SHA/Actions/Jobs 以其关联的 CI 附件为准，不继承旧绿色。
+- 仅在可证明 FAILED 输入从未形成现存依赖时释放请求引用；Snapshot/Test/恢复/模型/未知依赖继续保护。同组保留全部保护身份和 keeper。两个入口共用原冻结计划、DELETE_INDEX、MaterialBatchRuntime62 与 PollRegistry；不删除共享源文件，不改历史记录，VERSION仍42.24.356，不部署。
+
+## 2026-10-19｜TQ-04 类别指标真相接续
+
+- 当前任务与实际测试/CI唯一进度入口：`docs/TRAINING_QUALITY_REMEDIATION_TRACKER_2026_10_18.md`。仅维护既有 evaluation/iteration decision/report Owner；禁止生产操作、历史数据重写和 VERSION 变更。最新修复的实际 SHA/CI 需按追踪文档关联的验收证据查询，不沿用旧 SHA 结果。
+
+## 2026-10-18｜安全推送验收阶段（用户已授权 / CI 待最终 SHA 验收）
+
+- 首轮 `edee5fb6fcd32812ee62b0197728dc7ab51d8b0f` CI 发现恢复/素材选择 Chrome build 断言与实际资源不一致，以及新接入 Hardening 守卫锁定退役的注册模块。最小修复只同步精确版本和真实 Production→CheckpointResume→Recovery 继承合同，并增强真实注册对象断言；恢复 Chrome 5/5、素材选择 Chrome 2/2、Node 982/982、两个原始 Bash 永久守卫通过。扩展 Windows 测试的 14 项长路径失败在短 basetemp 消失（19 passed/1 Linux-only skipped）；另 1 项 manual workers=8 与既有 Windows 上限4冲突，不改生产资源保护；相同未变源码的 Ubuntu 124项已实际通过。最终 SHA 仍需重新完整 CI。
+- 用户已授权本轮普通 Fast-forward 推送及必要 CI 修复；禁止强推、main 合并、Release、生产服务/数据操作和正式 VERSION 修改。此前 LOCAL ONLY 记录是上一阶段，不再作为本阶段推送限制。
+- 代码提交基线 `5d3ad65bf7ff287521481a2ac6bfbd1f7caed52e`，远端父提交 `5a28e4539b81c03b4eaa27fa4b6c718138542169`。范围审查确认只涉及图片标注、类别检查、素材治理和训练冲突闭环，复用原 Repository、TrainingCompatibility、Snapshot 与 Task Owner。
+- 推送前独立复核补齐固定 Benchmark 与 duplicate_review 合同：API/Worker 只在真实 Benchmark 解析后正规化；保留原 revision，拒绝客户端 Test 角色及保留素材排除，不暴露私有 Test ID。9 个真实 API→Worker 场景通过，相关 Python 109 passed；Node 全量 981 passed。
+- 发现 Release Regression 与 Training Final Validation Hardening 仅监听旧分支，已接入唯一长期分支，并补源码/测试触发路径及 Node 守卫；不删除测试或放宽断言。正式 VERSION=42.24.356，静态缓存规则不变。
+- 远端验收必须按最终完整 SHA 查询全部 Actions/Jobs，旧 SHA 结果不可继承。最终 SHA、统计及生产只读核验边界将记录于 `C:/Users/jorsam/.codex/visualizations/2026/10/18/training-conflict-p0/CI_FINAL_HANDOFF.md`，该外部验收文件不产生未经 CI 的额外代码提交。
+- 生产 2531 张现场、OSS/S3 历史对象、GPU/A800 和大库并发仍 NOT VERIFIED。历史 Snapshot/Test/模型证据保护保持，不自动解除 FAILED/no-freeze 保护，不删除共享原文件。详见本轮验收文档。
+
+## 2026-10-18｜训练重复冲突与标注/治理闭环（LOCAL ONLY / CI NOT RUN）
+
+- 当前隔离分支 `codex/training-failure-diagnostics`；本轮不得 push、部署、修改正式 VERSION 或操作生产素材。验收与现场边界见 `docs/TRAINING_CONFLICT_GOVERNANCE_ACCEPTANCE_2026_10_18.md`，不能沿用旧 SHA CI。
+- 原始正式 GT 同 SHA 冲突在任务标签投影前检查；预检、准入、Worker 和冻结复验共用原 digest。显式排除仅改变新训练草稿且双 revision/原始角色必须验证；Train/Test 泄漏不可绕过。冻结前后复验、锁内发布，外部平台 HTTP 在标注锁外。
+- 训练差异/失败诊断仍由 TrainingMaterialSummaryRuntime 管理，标注仍由原工作台/AnnotationRepository 保存；未检查类别默认折叠、单一绘制类别、四视口布局。零可删仍能看真实图与保护原因并人工核对 GT，不创建空删除任务；FAILED/no-freeze 不自动解除保护。
+- 移除 MaterialBatch 路由内部重复训练恢复挂载，保留 app 配置完整的唯一 Owner。Snapshot/Test/模型/历史记录不改，共享源文件不删；任务轮询和 DELETE_INDEX 归属不变。
+- VERSION=42.24.356；入口 app/main/styles 缓存=42.25.389。最终 Python 聚焦131、API/素材安全115、Node24完整980、真实Chrome24全部通过（无失败/跳过）；原始日志和截图见验收报告。素材选择沿用原Owner，解析全选期间禁止确认，迟到结果校验项目/选择器归属。GitHub/Linux、生产2531张案例、OSS/A800实机仍 NOT VERIFIED。
+
+## 2026-10-17｜最新交接入口（代码已推送、生产待核验）
+
+- **优先阅读**：[HANDOFF_2026_10_17_CURRENT.md](./HANDOFF_2026_10_17_CURRENT.md)。此文件总结当前项目、近期关键提交、代码 SHA CI、素材治理 P0、安全约束、生产两次 DELETE_INDEX 尚未核验的 Task/日志，以及下一会话第一步。
+- 本轮代码基线 `7de5be0dbbe06953f6ecace2d92496569adcf4e4`、`VERSION.txt=42.24.356`。该代码 SHA 的 GitHub Actions 已独立查询 **24/24 completed/success**；另外 16 类工作流未触发（不计通过）。Codex 报告 **61/61 Jobs 成功**。新写入的交接文档提交**不是**该代码 SHA，不能自动继承它的 CI 结论。
+- 新版**未部署生产**，真实 A800/OSS/S3、历史评测图片及现场第一次/第二次异常素材删除任务未验证；先只读收集 Task ID、状态、错误码、Worker、素材索引/正式标注与旧审计信息。严禁为验证而再次删除生产图片。
+- 本批只更新交接 Markdown，不改程序、VERSION、main、部署、生产数据；后续推送/部署/删数据须依据用户当轮授权。
+
+---
+
+## 2026-10-17｜素材治理推送后的 Chrome 跨平台证据路径修复（FINAL SHA CI OPEN）
+
+- 已授权提交9830f1de快进推送；该 SHA 实际44次Actions运行中43成功、1失败。唯一失败为 Frontend browser-navigation：Ubuntu缺USERPROFILE，两条新增治理用例在截图路径处中止（93 passed / 2 failed），并非可计为通过的环境跳过。
+- 本地清除USERPROFILE稳定复现2 failed / 1 passed；现有三条治理Chrome统一使用Playwright testInfo.outputPath，证据按用例隔离，不依赖Windows或仓库内.codex目录。保留全部业务断言，无生产代码、静态缓存或VERSION变更。
+- 修复后相同无USERPROFILE条件下相关Chrome21/21、Node24完整978/978通过；本轮另有Python41/41。9830的Ubuntu Release runtime-contracts实际456 passed，包含test_material_integrity.py；最终修复SHA须重新验收，不能借用旧SHA成功。
+- VERSION42.24.356不变；不部署、不触碰生产素材/数据库。生产原两次删除Task及真实存储仍待只读现场核验。
+
+## 2026-10-17｜重复与异常素材删除 P0（LOCAL VERIFIED / CI OPEN）
+
+- 既有素材治理计划 Owner 增补 FILTERED / SELECTED_IMAGES / 异常组冻结；全筛选不下发全量 ID，重复 keeper、不同 GT 人工确认、Test/历史引用与扫描未核验保护不变。异常筛选不能绕过去重保护，DELETE_INDEX 不删除共享原始文件。
+- 素材治理在同一个弹窗内完成全选、跨页选择、预检与确认，失败保留上下文；MaterialBatchRuntime62 / PollRegistry 仍是唯一任务状态与轮询 Owner。所有索引删除终态刷新分页并失效旧审计；旧分组不再冒充当前素材。图片尺寸/加载失败时藏框，真实宽高比与 Content API 保持一致。
+- 独立代码复核的发布前失败重试、refresh 期间切换项目、Chrome Worker 跨用例领取三项 Important 已关闭并补回归。未发布 manifest 只有完整身份、归属和 pending 状态完全相同才复用；篡改 409。测试 Worker 唯一 capability 仅用于隔离目标临时 Task，生产调度未改变。
+- VERSION42.24.356 不变；入口 app/main/styles 缓存42.25.388，MaterialBatch build/import422406。最终 Node24 978/978、Python41/41、真实 Chrome21/21；详细结果和现场边界以 docs/MATERIAL_INTEGRITY_P0_ACCEPTANCE_2026_10_17.md 为准。现场原两次 Task ID/日志尚未取得，不声称生产删除数量或根因已核验；未 push、部署或操作生产数据。
+
+## 2026-10-16｜菜单推送后专项修复
+
+最后视觉收口：<=760px状态Tab不缩窄/不逐字换行，只在原栏内滚动；styles42.25.387。正式VERSION与app/main不变，最终CI按最新SHA。
+
+原3be88817远端40工作流/112Job全成功。后续最小修复：独占原子JSON staging与有界Windows替换重试、训练Grid窄屏只在表格内滚动。Node24 972/972、Python75/75、Chrome44/44；VERSION42.24.356，styles42.25.386。修复提交自己的远端CI尚需按最终SHA核验；不沿用原SHA结果。见 ROW_ACTION_MENU_ACCEPTANCE_2026_10_16.md。
+
+## 2026-10-16｜行菜单与导航简化（LOCAL VERIFIED / REMOTE NOT RUN）
+
+基线 85dfb0f5；算法/训练菜单共享唯一展示 Owner，保留全部原业务按钮/权限/确认。nav-project 与顶部重复徽标移除但项目事实保留。Node24 972/972、Chrome 44/44；VERSION 42.24.356、入口缓存 42.25.385。fetch 连接重置，远端新鲜状态未核验，不 push/部署。报告：ROW_ACTION_MENU_ACCEPTANCE_2026_10_16.md（含 Windows ZIP 写文件日志与窄屏训练布局边界）。
+
+## 2026-10-12｜CI 止血阶段：精确 HEAD 复核与修复（完整验收未完成）
+
+- 交接 HEAD `b7c59d9` 的 47 条 Actions：42 成功、5 失败。重复失败集中于评测页面 JS 异常、IoU 对抗样本、ZIP 上传额外 GET、旧诊断文案断言以及存储页 Worker 请求；原始日志已分别核查。
+- 已直接提交到唯一长期分支的四批增量修复：`037e786a` 修复 `previewUrl=row` 错误及无歧义重叠 GT 测试；`12ff43bd` 上传弹窗算法版本选择改为显式聚焦才查询、标签编辑成功响应另核验正式标签；`bbebf341` Worker 获取失败时也适用短期缓存抑制重复 GET；`23fd6704` 问题图返回与排序不重复堆叠评测模态层、历史 lineage Chrome 断言对齐真实“先诊断，再考虑补样”的新语义。
+- 模态层回归覆盖返回/排序后同名弹窗唯一性；绝不取消浏览器测试或将原多余请求列为白名单。最终分支 HEAD 的所有 Actions 必须 `completed/success`，不能凭旧 HEAD 测试或排队任务声称全绿。
+- P1 审计中观察到现有 YOLO 推理仍将普通预测框全部写入 CandidateStore（虽附困难信号和优先级），困难性过滤、候选数量控制、模型标签顺序严格校验、Remote GPU 实际模型可达性和 1k/10k/20k 真正压测均尚未验收；必须在核心 CI 通过后继续，不能宣称困难样本功能已闭环。
+- 严守原 Worker、CandidateStore、AnnotationRepository、Snapshot/Test 唯一事实源；`VERSION.txt=42.24.350` 不变。不合并 main、不建 tag/release、不部署生产。
+
+## 2026-10-12｜P1 YOLO 困难样本挖掘第一批（未完成完整验收）
+
+- 最新阶段沿用 `TaskKind.AI_ANNOTATION` + 原 Worker / CandidateStore / AnnotationRepository：只支持显式选已有素材、普通图片上传选择版本后自动排队两种入口；同一套审核 UI 新增困难信号筛选，没有第二套任务或标注 Owner。
+- `platform_core/hard_sample_mining.py` 为无状态计算：全项目历史快照 Test ID 和 SHA 禁入；YOLO 推理仅输出低置信度/小目标/密集目标/无检测待核查，绝不把无 GT 直接断言为真实 FP/FN。已有训练 PT + 训练快照 label_schema + 内容哈希冻结，Worker 再次校验数据/模型/标签，需 `mining.ultralytics` 能力及真实 CUDA；远端无模型或无 GPU 不假成功。
+- 后端统一创建入口：`POST /api/v64/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/hard-sample-mining`；普通图片上传可选 `mining_algorithm_id/mining_version_id`，上传与挖掘结果独立，挖掘失败不谎称已撤销上传；同批 upload receipt 重试幂等。
+- 现有独立评测 UI 一键选择未标注素材前 100 张；上传 UI 一项可选版本；原人工审核卡片展示困难信号和未确认原因，仍需人工接受、修改或拒绝后才入正式 GT。
+- 安全与缺口：冻结 Test 快照/内容防护在任务创建、Worker 启动、审核 commit 前三次执行；暂不提供 ZIP 导入自动触发、Remote Agent 权重分发、模型间增强/严格基准续训闭环；未完成真实 GPU、20k 压力或浏览器实机验收。这个批次不能宣称 P1 fully delivered / CI passed。
+- `VERSION.txt=42.24.350` 不改，只长期分支；本轮不合并 main、tag、release 或部署生产。GitHub Actions `queued` 不等于 success，最终 HEAD 需重新核验。
+
+## 2026-10-12｜P0 后续核验：阈值可见、真实缩略图、评分匹配一致性（CI 待跑）
+
+- 最新分支已提交 P0 三类定向修复：置信度优先一对一 GT/预测匹配统一类别 TP/FP/FN 与逐图框证据；问题图片卡片改为真实冻结 Test 只读缩略图，不可读时不伪造图；原图失败时隐藏 GT/预测 SVG 防止脱离图片显示假证据。
+- 版本独立评测总体指标直接显示 `protocol.operating_conf` 与 `protocol.matching_iou`，区分 mAP 与固定阈值 TP/FP/FN；历史无可确认协议 mode 时显示「未记录」，不得暗填 0.25/0.5。
+- 增加真实重叠目标评分一致性单元测试、Chrome 缩略图及 409 失效保护、评测阈值和历史降级断言；static app/style cache key 更新。版本 42.24.350 不变。
+- P0 判定仍 BLOCKED：对应精确 HEAD Actions 若 queued/in_progress/failed 不算成功；真实 3 组业务 Test 素材、真 GPU/Storage、1k/10k/20k 压力仍未完成现场验收。P1 不得在这个 P0 门槛通过前当作已实现；未合并 main/tag/release/生产部署。
+
+## 2026-10-10｜P0 Chrome 导航 Owner 收敛（待精确 HEAD CI 验收）
+
+- 核验长期分支基线 HEAD `13f27c7ff0ae2f2c7f75190b745bb0e4b028632f`、VERSION 42.24.350，现有 37 个 Actions 中仅 Frontend Runtime Stabilization 的 browser-navigation 失败（78/79 Chrome 测试通过）。
+- 源 HTML 中 V4/V5/V6 等多版 showPage/onclick 覆写和多个文档捕获监听，最后执行的点击 guard 可能被更早的捕获监听截断。
+- 在隔离 HTML 的 body 顶部注册导航捕获 Owner，调用现存 window.showPage 进行业务渲染，确定性更新活动 section 与 nav，阻断旧 onclick 重复切页，删除之前的超时 guard。只限 sandbox iframe，不触碰父平台 NavigationStability。
+- Chrome 测试扩展设备接入、通道查看的真实点击与页面显隐，原事件/任务/工作流断言全部保留。
+- ZIP 正式就绪 FIFO 与标签批量确认尚未改动。当前提交待精确 HEAD CI 核验。
+
+## 2026-10-10｜旧 HTML 最终脚本导航回归与重复合法按钮
+
+浏览器日志表明原 HTML 的多套导航绑定中，较早 guard 会被后置源脚本遮蔽；最终 guard 仅在 iframe HTML 的所有旧脚本之后安装，使用捕获阶段点击监听、navigation epoch 与两次有限校正，不对平台主窗口增设任何路由或任务 Owner。总览里同一算法同时出现在质量排行与正式资产清单是预期双入口；Chrome 验证任意一个真实算法按钮可见，不要求业务上合理重复的按钮 DOM 全局唯一。缓存键严格同步。精确 HEAD CI 待验，不触碰数据真相与算法调度。
+
+## 2026-10-10｜真实算法清单补充与独立 Demo 导航修复
+
+按新 HEAD 浏览器与单元日志核对：算法一张图只呈现有分数的排行导致无评测算法资产名称被隐藏，现单列算法资产清单（最多 30 项，待评测与已有评测分开标记），保留质量排名真实分数。独立 AI算法底座源 HTML 含多个版本导航 onclick 冲突，事件中心切页曾出现点击后隐藏状态；仅在 iframe 内增设无请求、无定时器、无跨父窗口引用的微任务导航纠正，其他平台 Owner 不触碰。前端缓存键严格同步，旧测试没有跳过。前一 commit CI 未全绿，最新 HEAD 需重新复核。
+
+## 2026-10-10｜算法底座导航/算法一张图/算力三连击演示/真实 PT 与实测图片
+
+在长期分支实现：进入「AI算法底座」时只折叠平台主菜单，独立提供展开/收起按钮；算法总览正式更名「算法一张图」，调整真实指标优先的视觉和信息架构，将无真实源的运行排行与单位分析收纳为可展开区域，保留既有生产 Dashboard Owner。算力一张图 2 秒内连续点击 3 次进入**仅前端演示数据模式**，有明确标识和退出按钮；模拟节点/GPU/监控指标只传给当前渲染函数，绝不改变缓存、API、Agent 或 Scheduler 准入状态。场景算法实测的服务端版本 PT 选项按当前项目正式算法版本以及存在、非空的 best_path/stored_path PT 证据返回，排除 last.pt；前端保留版本身份，不以文件名必须等于 best.pt 作为唯一约束。检测详情优先显示浏览器本次上传原图，在渲染结果图加载失败时按后端真实 bbox 坐标回退，不显示裂图；历史素材若不可访问则明确说明。质量中心子 Tab 文案改为「场景算法实测」。只修改已有单一 Owner 的必要路径，无新增平行调度或检测服务。版本从 42.24.349 增至 42.24.350，静态入口缓存键独立更新。随本次提交纳入原有前端/Chrome 回归测试，最终 CI 和真实 GPU/现场文件仍需精确 HEAD 验证；不部署生产。
+
+## 2026-10-10｜独立演示菜单改名 AI算法底座 + iframe 内长菜单滚动修复
+
+按用户要求仅将平台独立一级菜单和 NavigationStability Page Owner「监所夜间离床研判」统一更名为「AI算法底座」，同步 iframe 的页面可访问性标题；嵌入 HTML 内的监所夜间离床业务示例及数据不改为生产功能。该模块仍仅为独立前端演示，无真实设备接入、后端持久化、推理调度或告警服务。追查前一精确 HEAD `207165a0` 的 Chrome 红灯，唯一失败是独立 Demo 长侧边栏的工作流入口滚动后被父层 #view 拦截点击；仅在 sandbox HTML 内配置 .sidebar flex 与 .nav 独立滚动，保留真实浏览器点击验收，不 force click、不跳过用例。同步更新隔离测试和严格入口缓存断言；VERSION.txt 保持 `42.24.349`，不修改主算法、训练、导入、资源调度的 Owner。新 HEAD CI 须独立验收。
+
+## 2026-10-10｜监所夜间离床研判独立演示菜单（不污染平台模块）
+
+独立 HTML 副本经 Chromium sandbox 真实点击 13 个内页确认可切换；已修复原 Demo 内部 window.events 与 DOM ID 冲突、旧事件列表节点被后续 UI 替换时的空引用、未声明 renderTasksV4 的 ReferenceError。只对独立 HTML 进行了 14 处定点兼容保护，未接入业务服务；浏览器验收覆盖多内页并保留 pageerror 断言。
+
+新增独立一级入口「监所夜间离床研判」，位于原左侧「展开/收起高级功能」菜单下方。用户提供的 4296 行 HTML Demo 完整保存为独立静态资源（主页大屏、事件中心、设备通道、视频任务、模型/算法、工作流、字典模板等），通过仅含 allow-scripts/allow-modals 的 sandbox iframe 呈现。禁止 allow-same-origin；Demo 的 4 处 localStorage 引用转换为 frame 内内存存储以适配受限 origin（跨页面刷新不承诺持久化），所有示例数据/服务状态均为 Demo，**不接通生产监控/告警/训练/调度/OSS**。既有 NavigationStability 注册一个独立 Page Owner，未复用训练/标注/Agent Owner、未增加后台接口/数据库表/轮询；样式仅作用于入口和本页面，退出后 iframe 自行销毁。加入 frontend 静态和 Playwright 隔离验收；最终精确 HEAD CI 尚需独立验证。平台 VERSION.txt 遵照现有冻结约束未改变。
+
+## 2026-10-10｜场景算法实测检测框回退预览
+
+精确 HEAD `032641d2` 的 34/34 Actions、95/95 Check Runs 已核验成功。进一步源码审查发现无 `result_image_url` 时旧结果组件只显示检测列表而不显示真实框。现优先保留服务端结果图；仅在原图 URL 可用而结果图缺失时，按已有推理 `x1/y1/x2/y2` 坐标绘制 SVG 预测框，图片加载失败明确提示、不伪造框、不触碰 Durable Task/模型身份/训练调度。Chrome 场景检测测试新增真实 BMP 与非空坐标断言，静态资源 `app.js`/`styles.css` 缓存键同步递增，`VERSION.txt` 不变。本提交产生的新 HEAD 必须重新验收自己的 CI；真实 GPU 推理与生产数据仍需现场验证。
+
+## 2026-10-10｜训练任务弹窗自动化调度标识
+
+为精确匹配 UI 文案需求，将徽标文字固定为“智能自动化调度”（包含“自动化调度”），保留原有 CSS 和调度器运行逻辑；将原前端训练弹窗正式测试升级为断言确实渲染此徽标。只改视觉文案不增加第二套资源调度。
+
+## 2026-10-10｜训练继承版本浏览器用例状态一致性
+
+在 `995a6f78761088e983fca55d7d4a117f9b28a574` 反馈的两个单测失败中，BaseModal 原拥有者仍只有一套，导入最小化只是 decorater；更新严格断言覆盖旧 BaseModal + 装饰器调用、最小化 CSS 状态清理。版本缓存检测改为与已更改的 ZIP 启动脚本 `4226353` 严格相等。训练版本化用例仍要求“继承当前有效模型版本”、锁定原有模型、80 Epoch 和独立切分，但测试原先仅 mock 算法 GET，Bootstrap 首屏仍无版本，现补齐同一正式成功版本的启动快照响应，防止两个事实源互相矛盾。未改变训练/标签/存储核心或 VERSION.txt。
+
+## 2026-10-10｜UI 合同与精确码映射 Chrome 回归对齐
+按 HEAD `cf4c85443798b71470eda9b5faf4c58d70fb0ba7` 的失败日志，仅更新与本轮明确要求冲突的旧浏览器断言：场景来源按钮改名、模型检测抽检动作名、隐藏 legacy patience 控件改为不存在断言、YOLO/COCO/VOC 外部英文标签与已有 canonical code 精确一致时自动预选且最终确认 payload 必须保持 classId→code。保留原先抽检持久化、映射最终 POST、数据模式及按钮功能断言；未删除测试。label-normalization 与 ZIP 工作流仍断言静态缓存键精确等于实际已加载版本，补 assert 现有 source-label 手动入口；不改变调度或标签 Owner。剩余训练继承身份错配另行审计。
+
+## 2026-10-10｜ZIP 精确同码映射浏览器合同同步
+
+原 `zip-import-refresh-recovery.spec.mjs` 两处旧断言要求同码存在时仍保持空映射，与用户要求“外部英文编码和平台英文相同直接导入”冲突。已更新为：首次读取匹配有效 canonical code 时显示“编码一致”、自动填入目标选择，不产生新的标签 POST；显式创建 source code 并刷新后应继续自动恢复同码映射。确认并启动 ZIP 的服务器 POST 与持久化身份断言仍保留，未跳过测试。
+
+## 2026-10-10｜场景算法实测真实浏览器验收纳入主 CI
+
+`tests/browser/quality-detection-workbench.spec.mjs` 之前存在但不在 `frontend-runtime-stabilization.yml` 显式 Chrome 运行清单内。现将该规格加入已有导航工作流，不新建 CI Owner，也未删除/跳过/放宽其他测试。验收包括场景算法实测、模型版本选择、检测批次详情及原始推理工作流；以精确 HEAD 的 Chrome result 为准。
+
+## 2026-10-10｜控制端展示不依赖 Agent 注册列表
+
+补强算力一张图：若 Service Node API 超时或失败，仍可以独立显示已有的控制端本机 CPU/内存/磁盘/GPU 快照。Agent 节点数量与在线 GPU 不得被误标为 0，明确显示未知；保留请求错误。无新 Agent、无额外轮询或调度逻辑。新增定向测试，更新静态缓存数字版本，VERSION.txt 未变。
+
+## 2026-10-10｜算法总览重复质量请求回归修复
+
+合并算法总览和原生产看板后，发现两个 Owner 同时 GET `/api/v42/.../quality-overview`，导致已有页面性能合同失败。Overview Tabs 现在优先复用原生产 DashboardExtras 按项目隔离的 `dashboard422ExtrasRefreshPromise` 与 `state.v42.quality`，对于该 Owner 读取失败不即时再打第二个 GET；在无原生产 Owner 的单元环境保留本身 GET，保持异步 A→B→A 项目隔离。严格 DOM 测试模拟器实现真实 insertAdjacentHTML 行为，并模拟原生产 owner 对 view 的覆盖；新增单 GET 复用契约。未新增轮询、未删除或放宽测试。
+
+## 2026-10-10｜两张总览/场景检测/导入交互与本机统计补强
+
+本次合并「算法生产总览」与「算法一张图」为算法总览，实测数据优先显示，后段保留业务运行指标空态；算力一张图新增复用 Node Agent 的本机控制端只读 CPU/内存/磁盘/GPU 采样，不将本机直接加入可调度 Agent；训练弹窗显示智能自动调度，不修改调度参数；场景算法实测以单模型为默认，额外可加对比模型，只允许预训练原始 YOLO 模型及正式算法版本 best.pt，沿用真实推理、批次和结果带框图；ZIP/存储导入使用英文 code 完全匹配既有标签，其余仍需手动创建/映射及确认，原图预览放右侧；上传/导入弹窗可最小化且保留原 DOM 上传任务。同步旧测试期望和入口缓存版本，无测试放宽，无 VERSION.txt 变更。最终 CI/真实浏览器状态必须精确 HEAD 核验后认定，不部署生产。
+
+## 2026-10-10｜缓存版本与清洗回归断言对齐
+
+精确 HEAD `fc40336` frontend 单测结果 908/909，唯一红灯为 `clean-task-view.test.mjs` 仍静态断言旧的 main.mjs 缓存标识 `42.25.349`；已仅将精确期望改为当前页面 `42.25.350`，保留原有完整严格断言和 app.js、cleaning.js 缓存防回退核验，不修改清洗业务实现，也不修改 VERSION.txt。
+
+## 2026-10-10｜Chrome 用例接入既有 CI
+
+检查 `frontend-runtime-stabilization.yml` 发现浏览器导航工作流显式枚举 spec 文件，新建 `tests/browser/overview-tabs.spec.mjs` 不会自动运行。现将总览真实 Chrome 用例加入该已有 `browser-navigation` 测试列表；保留原有所有测试，未跳过任何断言，也没有新建第二套 CI owner。是否通过须依据精确 HEAD 对应 job 的 completed/success。
+
+## 2026-10-10｜总览三 Tab Chrome UI 回归用例
+
+新增 `tests/browser/overview-tabs.spec.mjs`：真实 Chrome 路由合同样例检查原生产总览不回退、两张图 Tab 切换、质量指标与算法版本计数、GPU 采样缺预约时的未知态、离线节点风险/非实时资源隔离、中心边缘过滤、1366×768/1920×1080 Tab 可见、节点接口失败后不再展示旧资源。该用例必须由最终 HEAD 的真实 Chrome CI 成功后方可标记通过。
+
+## 2026-10-10｜三 Tab 静态资源缓存版本合同
+
+6bd7384 精确 HEAD 前端 CI 报 material-upload-runtime.test.mjs 断言主入口缓存标记必须为数值点分版本；改为既有规则的 `main.mjs?v=42.25.350`，同时将总览 CSS 与 Runtime 模块查询版本设为 `4226350`。这只是静态缓存键，不修改 VERSION.txt，也不放宽测试。其他已观察到的 training-create patience 控制断言与 GitHub 安装 oss2 依赖不完整问题需与总览修复区分，按最终精确 HEAD 单独审定。
+
+## 2026-10-10｜三 Tab 验收 CI 修正
+
+第一次精确 HEAD `50b7615` 的 frontend 测试 908/909 通过，唯一失败为早期 GPU 测试在缺少预约/调度政策字段时仍期待 candidate=1；已将该测试 fixture 显式提供 active_tasks/reserved_bytes/max_concurrent_per_gpu/memory_safety_bytes，使正向准入断言仍被覆盖，新缺数据 fail-closed 测试保持不变。更新 index 与 main.mjs 的局部静态资源缓存键，不修改 VERSION.txt。需要重新核实本次最终 HEAD 全部 CI。
+
+## 2026-10-10｜三 Tab 首轮验收补强（保持版本 42.24.349）
+
+在长期开发分支核实 a1bb67a970201297afe4c3ebc06f72bb40cad812：21/21 GitHub Actions 成功；未改 main、tag、release、生产部署。确认现有唯一 Overview Tabs Runtime、质量接口、服务节点 Agent、GPU runtime、存储源接口。针对 GPU runtime 仅提供采样、不包含 active_tasks/reserved_bytes/准入阈值这一真实合同，修复缺字段默认为 0 导致的虚假“候选空闲 GPU”：没有真实预约证据时显示 —，绝不把低利用率当成可调度。算法视图改为按当前项目请求 /api/v12/.../algorithms，不依赖可能跨项目滞留的全局缓存；异步请求增加 cache identity fence，阻断 A→B→A 老请求回填；失败清除旧响应并展示错误，返回结构无效不转成零。服务器列表保留在线/超时/禁用/未连接，并禁止离线节点旧采样冒充实时；可按中心/边缘筛选；算法版本数量与模型评测覆盖率分开统计，模型排行可打开已有算法详情；提高核心字号。阈值统计称“资源风险节点”，不冒充历史告警事件。
+
+待接事实源：1）生产推理调用计数：须从业务推理网关/外部平台得到 algorithm_id、调用时间及去重计数；2）策略准确率：须业务判断结果与复核标签及分母；3）单位排行/运行状态：须单位 ID、部署实例、算法 ID 和运行态关联；4）OSS/S3 Bucket 真实容量：须 provider 可审计只读用量接口，暂无则显示未知；5）精确 GPU 调度候选：须现有 Scheduler/Reservation Owner 提供只读准入投影，当前 /api/v62/gpu-runtime 不含预约账本、不能推断。
+
+已增回归：GPU 预约证据缺失、离线节点占用隔离、版本数、项目 A→B→A 迟到响应与失败清空旧算法。精确 HEAD CI 与真实浏览器结果须以后续实际执行为准；未执行/未完成不得标绿。
+
+## 2026-10-10｜总览三 Tab CI 契约补强
+
+恢复前端历史导航静态断言依赖的 `['总览', 'renderDashboardCanonical422']` 映射，保留新 `overviewTabsRuntime` 注册的最终唯一执行 owner（注册顺序由已存在的 NavigationStability Map 覆盖规则保证）；仅修改缓存版本相应的测试期望，不放宽测试。新增算法类型、精度与策略隔离、中心边缘显式位置、离线节点过滤、调度数据失联 fail-closed 的纯函数测试；修正 bytes KB/MB 单位及生产总览上无需交互的刷新按钮。针对 CI 已查实未触碰旧训练创建控制问题，维持其红灯以供后续修复。
+
+## 2026-10-10｜总览三 Tab（42.24.349）
+
+按用户要求，在既有「总览」页中增加「算法生产总览 / 算法一张图 / 算力一张图」三 Tab。复用原生产总览，不重造任务和指标 owner；通过现有 API GET /api/v12/.../algorithms（缓存态）、/api/v42/.../quality-overview、/api/v63/service-nodes、/api/v62/gpu-runtime、/api/v61/storage-sources 展示真实数据。独立视图模块 `static/modules/overview-tabs.js` 为现有总览页面唯一导航 owner，异步 60 秒 TTL、按 project 隔离、真实空态。算法类型和行业排名、模型评测质量；策略准确率、生产调用频率、单位运行状况缺少可信事实源时必须为缺数，不得用训练数冒充。算力展示在线 GPU、中心/边缘/未分类分布、GPU 显存与使用率、CPU/内存/磁盘节点占用、配置的存储源、阈值预警占比；云 Bucket 容量无真实采样时显示未接入。服务节点显式 placement 元数据用于中心/边缘分类，连接模式绝不可代替部署位置；旧数据迁移默认 unclassified。无第二套采集器、无假数据、不开额外后台轮询。仍需 CI 和浏览器验收，仅长期分支，不合并 main/tag/release/deploy。
+
+## 2026-10-10｜企业 Logo 临时替换（42.24.348）
+
+登录封面与系统左上角使用用户上传的贵州高速、贵州中南交通科技有限公司横向 Logo，取真实图像透明边界后的 825×96、64 色 PNG。单一静态资源由登录桌面、登录移动端及导航左上角复用；登录深色背景增加白色铭牌，收起侧边栏裁切仅显示彩色符号。更新 CSS 引用缓存版本；加 PNG 文件头/界面引用静态测试与浏览器加载断言。仍需 GitHub CI 验收，严格禁止 main 合并、Tag、Release、生产部署。
+
 ## 2026-10-10｜独立 RKNN venv 装配边界补充核验
 
 RKNN 转换执行器的 Python 只安装 RKNN SDK，不应导入 platform_core/__init__.py 以致加载平台批量材料 Repository 或额外依赖。执行器仅用标准库与 ONNX 属性执行最后一道兼容性检查；平台内的节点/Worker 仍复用同一探测 owner。新增 Runner 独立运行边界静态回归。
@@ -2640,3 +3008,76 @@ VERSION `42.24.300` adds one project-scoped coordination fence between canonical
 >
 > VERSION `42.24.305`：数据集 MaterialRepository 真页码、训练任务 canonical snapshot 视图和 AI CandidateStore offset 审核均接入唯一 `pagination.js`。cursor consumer 保持兼容，未新增业务 owner。清洗/导入/模型及 phase 3 仍待后续独立批次；精确 HEAD CI 与生产部署为 PENDING。
 >
+## 2026-10-13｜VNext 模型质量工作台（LOCAL VERIFIED / PRODUCTION UAT OPEN）
+
+- 基线 `30f83c48`，唯一 owner 不变：`training_evaluation.py` 负责评测事实，`TrainingRecoveryRuntime` 负责训练详情，`trainingReportCore425` 负责训练报告；没有新增评测引擎、训练状态 owner、轮询器、素材库或标注流程。
+- P0 冻结图片读取按 Evaluation → Snapshot Test ID → SHA256 → 已验证 Bundle/Storage 实际字节闭环；拒绝同名替代、Snapshot 漂移、哈希变化与悬空检测框，安全错误码区分恢复/重试。隔离环境已验证，生产历史对象与真实 OSS 尚未验证。
+- 评测工作台包含总览、类别/真实混淆、Top200 错误图片、真实 Confidence 采样、严格同基准版本对比；同图并排还要求相同 Image ID 与实际字节哈希。训练详情沿用原 runtime 四 Tab，训练报告区分执行、停止、独立评测和业务验收。
+- 本地证据：Python 208 passed / 1 Linux-only skipped；Node 24 frontend 947/947；Real Chrome 51/51；1920×1080、1440×900、1366×768、375×812 的评测、图片、训练详情和报告均截图核验。正式 `VERSION.txt=42.24.355` 未改；未 push、未部署、未执行 GPU 训练。
+- P2 明确保留：全量错误索引、完整场景切片、全量尺寸统计、PDF 导出需要新增可靠证据或迁移；旧记录缺证据时只提示重新评测，不回算或虚构。
+- 本轮交付止于本地提交；GitHub CI、生产历史数据与 GPU 训练仍为 `NOT VERIFIED`。
+
+## 2026-10-13 VNext review-fix closure
+
+- Frozen diagnostic image identity now resolves explicit Image ID or one unique frozen `stored_name`; filename stem is never identity. Snapshot/test/SHA/bundle/storage/response-byte checks remain fail-closed. The bounded 20k identity projection cache holds metadata only and invalidates on file stat change.
+- Training detail keeps one `TrainingRecoveryRuntime`: history is opt-in once per project/task, compact polling merges only latest epoch/resource summary, terminal tasks do not re-arm the 1.5s timer. Synthetic 1000/720 result: 296,333 B full versus 428 B compact. For the same 40 total requests, legacy is `40×full=11.3042 MiB`, current is `1×full+39×compact=0.2985 MiB` (-97.36%); the first full history is included.
+- Strict comparison is keyed by `class_id`; ambiguous legacy duplicate labels are non-comparable. Navigation, missing delta, A/B controls, ARIA tabs and responsive visual hierarchy are covered by Node/Chrome regression.
+- Final differential evidence: focused Python 60 passed / 1 skipped; Node 24.19 952/952; focused Chrome 7/7 and auth-config Chrome 2/2. Fresh Windows full pytest is 2325 passed / 12 skipped / 62 failed; the clean detached `30f83c48` worktree reproduces all 62 with the same exception class and first failing location. Clean baseline full Chrome is 142 passed / 6 failed; final VNext Node 24 full Chrome is 143 passed / 6 failed with the same six names and breakpoints. The extra label-management failure was a stale fixture race (request started versus cache committed) and now passes repeat 5/5 plus the 22-test material slice; the baseline-reproducible service-node startup fixture now passes repeat 3/3. No production code or business assertion was relaxed. See `docs/VNEXT_FINAL_DIFFERENTIAL_AUDIT_2026_10_13.md`. CI, production OSS/history and GPU remain NOT VERIFIED.
+
+## 2026-10-13 multi-file upload queue closure
+
+- ZIP selection now registers every file synchronously before fingerprinting or session creation. One shared two-slot limiter owns browser transfer FIFO across successive selections; merge, scan and label confirmation release the slot and continue on the existing durable server import queue.
+- The existing upload task center shows every active file with size, real progress, queue position, reason and state-specific actions. Active rows are never truncated by terminal-history retention. Browser-only rows become explicit re-selection requests after refresh; persisted sessions retain the existing resume/cancel boundary. Project switches isolate local queue ownership.
+- Per-file invalid, duplicate-content, fingerprint, session and transfer failures remain visible and do not stop siblings. Same-name/different-content ZIPs are accepted. Ordinary material upload remains in its existing chunk owner and accounts for all selected files.
+- Formal `VERSION.txt` is `42.24.356`; cache keys for the changed entry points are aligned. Fresh local evidence: Node 24 frontend 962/962, Python affected contracts 35/35, Chrome 16/16 including 3/5/10 ZIPs, active/queued cancellation and 65 ordinary images. GitHub CI and production network/storage remain NOT VERIFIED; no push, main merge or deployment.
+
+
+## 2026-10-14｜训练失败智能诊断（REMOTE PUSHED / LOCAL CI FIX READY）
+
+- 事实源保持唯一：现有 Worker 在训练进程异常退出时只执行一次有界 Kernel journal 读取，并仅保存与 PID、进程创建时间及任务时间窗匹配的结构化 OOM 摘要；详情 API 不扫描系统日志，也未新增轮询器、诊断 Owner 或自动重试。
+- `training_recovery_truth` 输出后端判定的 `diagnosis`（code/certainty/title/summary/evidence/possible_causes/suggestions/checkpoint_message）。`HOST_MEMORY_OOM` 需要任务关联 Kernel 证据；cgroup 还要求同生命周期 `oom_kill_delta>0` 和 scope identity；纯 `SIGKILL/-9` 固定为 `SIGKILL_CAUSE_UNKNOWN`，CUDA OOM、租约丢失、取消、SQLite lock 等保持独立。
+- 对外诊断与折叠技术详情会脱敏路径、Bearer、token/password/secret/API key。旧任务只按已有证据投影，不回写状态或原始 artifact。没有可信恢复合同固定显示“当前没有可恢复的训练断点，需要重新创建训练任务。”，不出现恢复按钮。
+- 训练详情沿用现有四 Tab 和 `TrainingRecoveryRuntime`；桌面将依据/可能原因/建议紧凑分栏，窄屏回到单列。缓存标识和 Training Recovery Guard 同步，正式 `VERSION.txt=42.24.356` 不变。
+- 远端 HEAD `ab470e8c` 的 44 个实际 Actions 已终态：42 success、2 failure、0 running；Training Recovery Guard 与其余训练关键工作流通过。两项失败分别为 Frontend Runtime 守卫仍硬编码旧 `upload-task-center-3`，以及 ZIP Chrome 测试在标签确认模态框拥有交互焦点时点击其后方任务中心。最小测试/工作流修复已在本地完成并复验 Node 964/964、ZIP Chrome 14/14、诊断 Python 33/33，尚未获准再次 push。真实 Linux journal 权限、生产历史任务和 GPU 训练仍为 NOT VERIFIED。
+
+## 2026-10-14 training creation feedback
+
+- The sole `TrainingSubmitRuntime` now projects canonical execution into three human stages and renders an accessible in-dialog feedback layer only when work is slow. Fast completion keeps the existing button-level loading path.
+- Success remains gated by durable task identity. A lost POST response is reconciled by the planned Task ID; an unresolved outcome is explicitly non-retryable until the user checks the task list.
+- Node 968/968, affected Python 69/69, and focused Real Chrome 1/1 passed. Four responsive viewports plus reduced motion were checked. Formal version remains 42.24.356; CI/production are not verified.
+
+## 2026-10-15 material integrity governance
+
+- Full Audit remains the evidence source. A server-side SQLite plan now freezes full-scope duplicate groups, revisions, SHA256, annotation digests, keeper choices and DELETE actions; the browser receives only counts and a bounded 20-group preview.
+- SAFE_ALL auto-includes only exact-image/exact-annotation groups. Annotation conflicts require a manual keeper; scan failures/anomalies and groups with multiple protected history references are skipped. Training/conversion history, active input tasks, snapshots, algorithms/models and evaluation records are treated as fail-closed references.
+- Execution revalidates the whole plan, freezes the existing MaterialBatch selection, and publishes normal `DELETE_INDEX`. The worker rechecks keeper/delete identity and newly protected references before deletion. It removes index plus formal annotation only, never a shared source object, label dictionary or history record.
+- Local evidence: Python governance 11/11, related batching 19/19, Node 970/970, Real Chrome 1/1 at 1366×768. Scale cases cover 501 planned deletions and 120 groups across API pagination. VERSION remains 42.24.356; GitHub CI, production history/OSS and large-production performance are NOT VERIFIED.
+
+## 2026-10-15 training feedback CI follow-up
+
+- Run 38711917017 found one real Chrome regression: a retry-safe validation error left the new failure overlay intercepting every later configuration click. Training submission and the Ubuntu/Windows static contracts were otherwise successful.
+- Failure feedback is now an in-flow, non-blocking panel; only working/success states retain the modal scrim. Uncertain POST outcomes still disable retry through the existing runtime contract. Styles cache marker is 42.25.379; VERSION stays 42.24.356.
+- The exact failing test was observed RED, then passed 1/1; the workflow's full local Chrome command passed 12/12 and Node passed 970/970. Remote retest is pending.
+- Remote SHA 3718807f completed 35/36 workflows successfully. The sole Frontend failure proved that the long-form error panel could leave the viewport and that its guard still expected the retired MaterialBatch build 422403. The panel is now viewport-bound without a scrim and remains click-through, the exact guard follows build 422405, and two browser fixtures wait for canonical startup truth before injecting test state. The styles cache marker is 42.25.380. Fresh local evidence: Frontend Chrome 84/84, Training Create Chrome 12/12, Node 970/970; remote repair retest remains pending.
+
+## 2026-10-15 automatic resource/OOM guard and training detail modal
+
+- Auto resource resolution now samples the execution Worker host plus cgroup-v2 headroom and jointly budgets batch, loader workers, prefetch, image size, effective precision, cache and concurrent reservations. Manual overflow fails; the second pre-Trainer guard validates frozen host/GPU budgets without mutating parameters.
+- Runtime memory evidence is task/node scoped and reports host/cgroup plus process-tree current/peak memory. USS/PSS is additive; RSS fallback is root-only to avoid shared-page double counting. A Kernel OOM for another PID in the same window remains suspected concurrent evidence, never a confirmed cause for this task.
+- The existing TrainingRecoveryRuntime owns a centered 1180px/94vw desktop dialog with internal scrolling, fixed header/footer, in-place refresh, four stable tabs, Escape/focus restoration, fast-reopen fencing and reduced-motion. Requested/resolved/runtime and host/cgroup/process-tree truth are shown without fabricated zeroes.
+- Fresh local evidence: Node 971/971; focused Python 99 passed / 1 Linux-only skipped; Real Chrome 4/4 at 1920×1080, 1440×900, 1366×768 and 375×812. VERSION remains 42.24.356. Real A800/GPU, Linux journal permissions, production cgroup/OSS and GitHub CI are NOT VERIFIED; no push, merge or deployment.
+
+## 2026-10-15 first CI follow-up for resource and training detail changes
+
+- The first Training Recovery Guard run exposed an obsolete static assertion for `oldDialog.replaceChildren` and a real Ubuntu Chrome geometry gap (68px tab width). The guard now requires `patchTrainingDetailDom` and rejects the retired whole-tree replacement; detail tabs have an explicit 80px minimum width.
+- Existing Remote Training Runtime now has a named Ubuntu-only step that reads real cgroup-v2 `memory.max/memory.current` truth and executes the `/proc/self/fd` stability test. No second workflow was added.
+- Fresh local evidence: Node 971/971, focused Windows Python 99 passed / 2 Linux-only skipped, Real Chrome 5/5. CSS cache marker is 42.25.382; VERSION stays 42.24.356. Remote repair CI and A800/GPU UAT remain pending.
+- Repair SHA 39157527 exposed an obsolete Linux-only exact assertion before the named evidence step. Even with a fully frozen 31 GiB snapshot, the new joint Batch×Workers×Prefetch budget safely selects 8 rather than the old fixed 12. The test now proves GPU count independence, reservation-aware reduction and both plans staying within memory budget, without replacing 12 with another fixed number. The separate Linux test still reads real cgroup files.
+
+## 2026-10-16｜独立评测图片预览专项（LOCAL VERIFIED / PRODUCTION OPEN）
+
+- 历史无 Image ID 的规范化 Bundle 名通过 Snapshot、manifest Image ID、源 SHA256 和评测字节 SHA256 闭环恢复；同名冲突、归一化证据丢失和内容变化继续拒绝。
+- JPEG/PNG/WebP/BMP 按真实格式返回 MIME；EXIF 仅产生保留原哈希的内存展示派生，保持冻结像素坐标。StorageManager.read_only 禁止预览补写正式素材元数据。
+- 列表与详情统一错误码、单图重试和失败隐藏框；仅错误样本 Tab 当前页最多 24 张。Snapshot、Bundle 和历史素材名称投影复用原上限 8 的元数据缓存，文件身份/素材 Revision 变化时失效，响应逐次校验实际字节。
+- Chrome 覆盖四视口、24/20k 按页请求、跨版本迟到结果、错误原因与重试。生产历史对象、OSS/A800 仍为 NOT VERIFIED；现场只读命令：`python -m scripts.diagnose_evaluation_previews --project-id ID --algorithm-id ID --version-id ID`。
+- VERSION=42.24.356，静态入口缓存=42.25.384；保留先前本地 1de328cc，不推送、不部署、不改历史评测或 Snapshot。详细证据见 docs/EVALUATION_DIAGNOSTICS_P0_2026_10_12.md。

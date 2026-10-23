@@ -1,4 +1,4 @@
-import {formatTrainingDuration, trainingBatchActionEligible, trainingProgressView, trainingStageView, visibleTrainingJobs} from './training-task-runtime.js?v=422607';
+import {formatTrainingDuration, trainingBatchActionEligible, trainingProgressView, trainingStageView, visibleTrainingJobs} from './training-task-runtime.js?v=422608';
 import {canonicalTaskProgressPercent, canonicalTaskStatus, trainingDisplayStatus} from './task-runtime-truth.js?v=422424';
 
 const TRAINING_PAGE = '训练任务';
@@ -156,10 +156,10 @@ function taskActions(job) {
   const detail = `<button onclick="openTrainingRecoveryDetail('${id}')">详情</button>`;
   const log = `<button onclick="showTrainLog423('${id}')">日志</button>`;
   if (['starting', 'pausing', 'resuming', 'stopping', 'cancel_requested'].includes(status)) return `${detail}${log}<span class="train428-action-lock">状态切换中</span>`;
-  if (['queued', 'waiting', 'pending'].includes(status)) return `${detail}${log}<button onclick="promoteTrain428('${id}')">插队</button><details class="entity-more"><summary>•••</summary><div><button onclick="stopTrain428('${id}')">停止</button></div></details>`;
-  if (status === 'running') return `${detail}${log}<button onclick="pauseTrain428('${id}')">暂停</button><details class="entity-more"><summary>•••</summary><div><button onclick="stopTrain428('${id}')">停止</button></div></details>`;
-  if (status === 'paused') return `${detail}${log}<button class="primary-link" onclick="resumeTrain428('${id}')">继续</button><details class="entity-more"><summary>•••</summary><div><button onclick="stopTrain428('${id}')">停止</button></div></details>`;
-  return `${detail}${log}${job?.auto_version_id ? `<button onclick="trainingReport425('${id}')">训练报告</button>` : ''}${trainingBatchActionEligible(job, 'delete') ? `<details class="entity-more"><summary>•••</summary><div><button class="danger" onclick="deleteTrain428('${id}')">删除记录</button></div></details>` : ''}`;
+  if (['queued', 'waiting', 'pending'].includes(status)) return `${detail}${log}<button onclick="promoteTrain428('${id}')">插队</button><details class="entity-more"><summary role="button" aria-label="更多操作" aria-haspopup="menu" aria-expanded="false">•••</summary><div><button onclick="stopTrain428('${id}')">停止</button></div></details>`;
+  if (status === 'running') return `${detail}${log}<button onclick="pauseTrain428('${id}')">暂停</button><details class="entity-more"><summary role="button" aria-label="更多操作" aria-haspopup="menu" aria-expanded="false">•••</summary><div><button onclick="stopTrain428('${id}')">停止</button></div></details>`;
+  if (status === 'paused') return `${detail}${log}<button class="primary-link" onclick="resumeTrain428('${id}')">继续</button><details class="entity-more"><summary role="button" aria-label="更多操作" aria-haspopup="menu" aria-expanded="false">•••</summary><div><button onclick="stopTrain428('${id}')">停止</button></div></details>`;
+  return `${detail}${log}${job?.auto_version_id ? `<button onclick="trainingReport425('${id}')">训练报告</button>` : ''}${trainingBatchActionEligible(job, 'delete') ? `<details class="entity-more"><summary role="button" aria-label="更多操作" aria-haspopup="menu" aria-expanded="false">•••</summary><div><button class="danger" onclick="deleteTrain428('${id}')">删除记录</button></div></details>` : ''}`;
 }
 
 export function trainingTaskPresentationRow(job, {batchMode = false, selected = false} = {}) {
@@ -439,7 +439,9 @@ export function installTrainingTaskVisibilityRuntime({
     if (!doc?.createElement) return null;
     const holder = doc.createElement('tbody');
     holder.innerHTML = String(html || '').trim();
-    return holder.firstElementChild || null;
+    const row = holder.firstElementChild || null;
+    if (row?.cells?.[9]) row.cells[9].__actionMarkup = row.cells[9].innerHTML;
+    return row;
   }
 
   function patchProgressCell(currentCell, nextCell) {
@@ -480,8 +482,12 @@ export function installTrainingTaskVisibilityRuntime({
       const nextCell = nextRow.cells[index];
       if (index === 4) {
         patchProgressCell(currentCell, nextCell);
+      } else if (index === 9 && currentCell.__actionMarkup === nextCell.innerHTML) {
+        // Presentation ARIA state must not turn an epoch update into an action rebuild.
+        continue;
       } else if (currentCell.innerHTML !== nextCell.innerHTML) {
         currentCell.innerHTML = nextCell.innerHTML;
+        if (index === 9) currentCell.__actionMarkup = nextCell.innerHTML;
       }
     }
     return currentRow;

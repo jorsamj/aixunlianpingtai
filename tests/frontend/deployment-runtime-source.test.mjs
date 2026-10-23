@@ -22,18 +22,20 @@ test('final deployment test consumes unified durable queue and progress truth wh
   assert.match(finalLayer,/PlatformCore\?\.deployment\?\.deploymentTaskView/);
   assert.match(finalLayer,/PlatformCore\.taskPoller\.waitForTaskTerminal/);
   assert.match(finalLayer,/registry:window\.PollRegistryRuntime/);
-  assert.match(finalLayer,/\/api\/v62\/projects\/\$\{pid\(\)\}\/tasks\//);
+  assert.match(finalLayer,/\/api\/v62\/projects\/\$\{project\}\/tasks\//);
   assert.match(finalLayer,/runtimeText/);
   assert.doesNotMatch(finalLayer,/\['QUEUED','RUNNING','CANCEL_REQUESTED'\]\.includes\(task\.status\)/);
 });
 
 
-test('rockchip conversion UI only permits canonical RK3568 and RK3576',()=>{
-  assert.doesNotMatch(source,/rk3588/i);
-  assert.match(source,/rockchipOrder428=\['rk3568','rk3576'\]/);
-  assert.match(source,/请选择当前转换资源实际支持的瑞芯微芯片/);
-  assert.match(source,/rk3568/);
-  assert.match(source,/rk3576/);
+test('conversion UI uses local dictionary and backend contract instead of a chip enum',()=>{
+  const canonical=source.slice(source.indexOf('/* v42.16 conversion resource readiness'));
+  assert.match(canonical,/api\/v39\/deploy\/catalog/);
+  assert.match(canonical,/deploy\/resolve/);
+  assert.match(canonical,/state\.conv428Catalog\?\.chips/);
+  assert.doesNotMatch(canonical,/rockchipOrder428|\['bm1684x','bm1688'\]/);
+  assert.match(canonical,/state\.conv428Resolved=result/);
+  assert.match(canonical,/button\.disabled=!result\.ready/);
 });
 
 
@@ -109,7 +111,11 @@ test('canonical version conversion creation refreshes only the selected version 
   const end=source.indexOf('  // ---------------------- training creation from algorithm',start);
   assert.ok(start>=0&&end>start);
   const create=source.slice(start,end);
-  assert.match(create,/\/api\/v39\/projects\/\$\{pid\(\)\}\/deploy\/jobs/);
+  assert.match(create,/\/api\/v39\/projects\/\$\{project\}\/deploy\/jobs/);
+  assert.match(create,/project=pid\(\)/);
+  assert.match(create,/if\(project!==pid\(\)\|\|document\.querySelector\('\.convert428-create'\)!==form\)return/);
+  assert.ok(create.indexOf('project=pid()')<create.indexOf('await deployResources428(true)'));
+  assert.doesNotMatch(create,/\/api\/v39\/projects\/\$\{pid\(\)\}/);
   assert.match(create,/deploymentHistory428\(aid,vid,true\)/);
   assert.match(create,/scheduleVersionConversionPoll428\(aid,vid,r\)/);
   assert.doesNotMatch(create,/renderDeployCenter|loadDeployData\(true\)|deploy\/artifacts|source-models/);

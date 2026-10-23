@@ -94,11 +94,12 @@ test('AI candidate editing is visual-first rather than coordinate-first', () => 
   const start = source.indexOf('function ensureCandidateEditorShell60');
   const end = source.indexOf('window.completeAiReview60=async mode=>', start);
   const editor = source.slice(start, end);
-  assert.match(editor, /VISUAL BOX EDITOR/);
-  assert.match(editor, /pointerdown/);
-  assert.match(editor, /pointermove/);
-  assert.match(editor, /pointerup/);
-  assert.match(editor, /data-h="nw"/);
+  assert.match(editor, /AI候选人工编辑/);
+  assert.match(editor, /PlatformCore\?\.createAnnotoriousEditor/);
+  assert.match(editor, /getBoxes:\(\)=>edit\.boxes/);
+  assert.match(editor, /onCommit:\(boxes,\{selectedId\}\)/);
+  assert.match(editor, /review\.edits\.set\(edit\.id,item\.boxes\)/);
+  assert.doesNotMatch(editor, /paintAiCandidateBox60|ai66-edit-box|addEventListener\('pointer/);
   assert.match(editor, /空白处拖拽新建/);
   assert.match(editor, /ai_candidate_reviewed/);
   assert.match(editor, /高级坐标/);

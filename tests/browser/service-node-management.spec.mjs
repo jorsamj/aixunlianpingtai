@@ -40,6 +40,7 @@ function node(overrides = {}) {
 }
 
 test('service node page shows live resources and creates Agent credentials', async ({page}) => {
+  await page.addInitScript(() => localStorage.setItem('cl_v427_advanced', '1'));
   const capabilities = ['training', 'material-import', 'cleaning', 'annotation', 'video', 'conversion', 'conversion.rknn', 'deployment-test', 'deployment-test.rknn', 'model-upload'];
   let nodes = [node()];
   let createdPayload = null;

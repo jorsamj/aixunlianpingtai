@@ -8,6 +8,47 @@ import pytest
 import platform_core.training_metrics as training_metrics
 
 
+def test_detail_metrics_history_is_bounded_chronological_and_summary_default_stays_small(tmp_path):
+    import json
+    database = tmp_path / "metrics.sqlite3"
+    with sqlite3.connect(database) as db:
+        db.execute("CREATE TABLE summary(id INTEGER PRIMARY KEY,value TEXT)")
+        db.execute("INSERT INTO summary VALUES(1,?)", (json.dumps({"images_per_second":12}),))
+        for table in ("epochs", "samples"):
+            db.execute(f"CREATE TABLE {table}(id INTEGER PRIMARY KEY,value TEXT)")
+            db.executemany(f"INSERT INTO {table} VALUES(?,?)",
+                           [(i, json.dumps({"epoch":i})) for i in range(1,1101)])
+    assert training_metrics.read_metrics(database) == {"images_per_second":12}
+    result = training_metrics.read_metrics(database, include_history=True)
+    assert len(result["epochs"]) == 1000
+    assert result["epochs"][0]["epoch"] == 101
+    assert result["epochs"][-1]["epoch"] == 1100
+    assert len(result["samples"]) == 720
+    assert result["samples"][0]["epoch"] == 381
+
+
+def test_training_job_status_keeps_history_opt_in():
+    import inspect
+    import app
+    signature = inspect.signature(app.job_status)
+    assert signature.parameters['include_history'].default is False
+    source = inspect.getsource(app.job_status)
+    assert 'include_history=include_history' in source
+
+
+def test_remote_training_preparation_installs_app_import_dependencies():
+    workflow = (
+        Path(__file__).resolve().parents[2]
+        / ".github"
+        / "workflows"
+        / "remote-training-runtime.yml"
+    ).read_text(encoding="utf-8")
+    install_step = workflow.split(
+        "- name: Install focused training preparation dependencies", 1
+    )[1].split("- name: Compile remote training preparation chain", 1)[0]
+    assert "python-multipart" in install_step
+
+
 class TrackingConnection:
     def __init__(self, connection, counters):
         self._connection = connection
@@ -187,3 +228,84 @@ def test_runtime_worker_truth_comes_from_train_loader(tmp_path):
 
     assert runtime["runtime_batch"] == 50
     assert runtime["runtime_workers"] == 2
+
+
+def test_resource_sample_records_system_memory_without_guessing(tmp_path):
+    metrics = training_metrics.TrainingMetrics(
+        tmp_path / "system-memory.sqlite3",
+        resolved_resources(),
+        gpu_uuid=None,
+        interval=999,
+    )
+    metrics.psutil = SimpleNamespace(
+        cpu_percent=lambda: 42.0,
+        cpu_times_percent=lambda: SimpleNamespace(iowait=3.0),
+        virtual_memory=lambda: SimpleNamespace(percent=61.5),
+    )
+    metrics.sample()
+    result = training_metrics.read_metrics(metrics.path, include_history=True)
+    assert result["latest"]["memory_percent"] == 61.5
+    assert result["samples"][-1]["memory_percent"] == 61.5
+
+
+def test_resource_sample_sums_unique_process_memory_not_shared_rss(tmp_path, monkeypatch):
+    class Process:
+        def __init__(self, uss, children=()):
+            self.uss = uss
+            self._children = list(children)
+
+        def children(self, recursive=False):
+            return list(self._children)
+
+        def memory_full_info(self):
+            return SimpleNamespace(uss=self.uss, pss=self.uss + 10)
+
+        def memory_info(self):
+            return SimpleNamespace(rss=2 * 1024 ** 3)
+
+    child = Process(200 * 1024 ** 2)
+    root = Process(500 * 1024 ** 2, [child])
+    metrics = training_metrics.TrainingMetrics(
+        tmp_path / "process-tree.sqlite3",
+        resolved_resources(node_id="node-a"),
+        interval=999,
+        task_id="train-a",
+    )
+    metrics.psutil = SimpleNamespace(
+        Process=lambda _pid: root,
+        cpu_percent=lambda: 42.0,
+        cpu_times_percent=lambda: SimpleNamespace(iowait=3.0),
+        virtual_memory=lambda: SimpleNamespace(percent=61.5),
+    )
+    monkeypatch.setattr(training_metrics, "host_resource_snapshot", lambda: {
+        "effective_available_bytes": 10 * 1024 ** 3,
+        "host_total_bytes": 31 * 1024 ** 3,
+        "cgroup_limit_bytes": 20 * 1024 ** 3,
+        "cgroup_current_bytes": 10 * 1024 ** 3,
+        "memory_source": "cgroup_v2",
+    })
+
+    metrics.sample()
+    latest = training_metrics.read_metrics(metrics.path)["latest"]
+    assert latest["process_tree_memory_bytes"] == 700 * 1024 ** 2
+    assert latest["process_tree_peak_memory_bytes"] == 700 * 1024 ** 2
+    assert latest["process_tree_memory_measure"] == "uss"
+    assert latest["process_tree_count"] == 2
+    assert latest["task_id"] == "train-a"
+    assert latest["node_id"] == "node-a"
+    assert latest["cgroup_memory_limit_bytes"] == 20 * 1024 ** 3
+
+
+def test_actual_optimizer_and_initial_lr_are_captured_from_trainer_not_request(tmp_path):
+    metrics=training_metrics.TrainingMetrics(tmp_path/'optimizer.sqlite3',resolved_resources(resolved_batch=4,resolved_workers=0),gpu_uuid=None,interval=999)
+    metrics.psutil=None
+    optimizer=type('AdamW',(),{})();optimizer.param_groups=[{'lr':.0003,'initial_lr':.002}]
+    trainer=SimpleNamespace(args=SimpleNamespace(cache=False,optimizer='auto',lr0=.01),optimizer=optimizer,amp=False,
+        train_loader=SimpleNamespace(batch_size=4,num_workers=0,dataset=[1,2,3,4]))
+    try:
+        metrics.on_train_start(trainer)
+        recorded=training_metrics.read_metrics(tmp_path/'optimizer.sqlite3')
+        assert recorded['runtime_optimizer']=='AdamW'
+        assert recorded['runtime_initial_learning_rates']=={'lr/pg0':.002}
+        assert recorded['amp_runtime_enabled'] is False
+    finally:metrics.stop_event.set()

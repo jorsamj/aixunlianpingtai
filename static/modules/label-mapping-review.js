@@ -50,6 +50,9 @@ export function reconcileLabelMappingReview(review, classes) {
     pageSize: review?.pageSize,
     mapping: review?.mapping,
   });
+  next.sourcePlan = review?.sourcePlan||null;
+  next.manualExpanded = Boolean(review?.manualExpanded);
+  next.advancedExpanded = Boolean(review?.advancedExpanded);
   next.query = text(review?.query);
   next.targetQuery = text(review?.targetQuery);
   const allowed = new Set(next.rows.map(row => row.classId));
@@ -204,4 +207,41 @@ export function labelSampleOverlay(bbox) {
     width: percent(x2 - x1),
     height: percent(y2 - y1),
   };
+}
+
+/** Opt-in exact English code binding. No fuzzy alias matching or label creation.
+ * Caller retains the canonical explicit confirmation gate for importing labels. */
+export function applyExactLabelCodeMatches(review,labels=[]) {
+  const allowed=new Map(filterCanonicalLabels(labels).map(label=>[String(label.code).trim().toLowerCase(),String(label.code)]));
+  let matched=0;
+  for(const row of review?.rows||[]) {
+    if(review.mapping[row.classId])continue;
+    const name=String(row.name||'').trim();
+    if(!/^[A-Za-z][A-Za-z0-9_-]*$/.test(name))continue;
+    if(/^class[_-]?\d+$/i.test(name)||/^label[_-]?\d+$/i.test(name)||/^unknown$/i.test(name))continue;
+    const code=allowed.get(name.toLowerCase());
+    if(!code)continue;
+    review.mapping[row.classId]=code;matched++;
+  }
+  return matched;
+}
+
+/** Preview only. Never create labels or overwrite a manual mapping. */
+export function planOriginalLabelMappings(review, labels=[]) {
+  const active=new Map(filterCanonicalLabels(labels).map(row=>[text(row.code).toLowerCase(),text(row.code)]));
+  const reuse=[],create=[],manual=[],preserved=[];
+  for(const row of review?.rows||[]){
+    if(text(review.mapping?.[row.classId])){preserved.push({...row,code:text(review.mapping[row.classId])});continue}
+    const source=text(row.name);
+    if(!/^[A-Za-z][A-Za-z0-9_-]*$/.test(source) ||
+       /^class[_-]?\d+$/i.test(source) || /^label[_-]?\d+$/i.test(source) ||
+       /^unknown$/i.test(source)){
+      manual.push({...row,source,reason:'原始类别含义或英文编码需要人工确认'});
+      continue;
+    }
+    const existing=active.get(source.toLowerCase());
+    if(existing)reuse.push({...row,source,code:existing});
+    else create.push({...row,source,code:source});
+  }
+  return {reuse,create,manual,preserved,total:(review?.rows||[]).length};
 }

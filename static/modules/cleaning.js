@@ -101,30 +101,20 @@ const CLEAN_SCOPE_DEFINITIONS = Object.freeze({
     label: '全部图片',
     detail: '扫描全部正式素材状态，仅给出质量建议，不自动删除。',
   }),
-  annotated: Object.freeze({
-    value: 'annotated',
-    label: '已标注',
-    detail: '仅 annotation_state=annotated；图片质量与正式标注分层处理。',
-  }),
-  unannotated: Object.freeze({
-    value: 'unannotated',
-    label: '未标注',
-    detail: '只检查图片质量；没有标注框不是坏图，也不会被当作异常。',
-  }),
-  confirmed_empty: Object.freeze({
-    value: 'confirmed_empty',
-    label: '已确认无目标',
-    detail: '合法负样本；图片质量通过后继续保留用于训练。',
-  }),
   selected: Object.freeze({
     value: 'selected',
     label: '当前选中图片',
     detail: '只处理当前明确选择的图片，不扩大到其他素材。',
   }),
+  labels: Object.freeze({
+    value: 'labels',
+    label: '选定标签',
+    detail: '命中任一已选正式标签即可纳入；多个标签之间为 OR。',
+  }),
 });
 
 const CLEAN_SCOPE_ORDER = Object.freeze([
-  'all', 'annotated', 'unannotated', 'confirmed_empty', 'selected',
+  'all', 'selected', 'labels',
 ]);
 
 function normalizeCleanScope(value) {
@@ -139,31 +129,72 @@ function uniqueCleanIds(values = []) {
   return [...new Set((values || []).map(value => String(value || '').trim()).filter(Boolean))];
 }
 
-export function cleanScopeChoices({selectedCount = 0, forcedSelected = false} = {}) {
+export function cleanScopeChoices({selectedCount = 0, labelCount = 0, forcedSelected = false} = {}) {
   const count = Math.max(0, Number(selectedCount || 0));
+  const labels = Math.max(0, Number(labelCount || 0));
   return CLEAN_SCOPE_ORDER.map(value => ({
     ...CLEAN_SCOPE_DEFINITIONS[value],
-    available: forcedSelected ? value === 'selected' : value !== 'selected' || count > 0,
+    available: forcedSelected
+      ? value === 'selected'
+      : value === 'labels' ? labels > 0 : true,
     selectedCount: value === 'selected' ? count : null,
+    labelCount: value === 'labels' ? labels : null,
   }));
 }
 
-export function cleanScopeSupportsAnnotationAudit(value = 'all') {
-  const scope = normalizeCleanScope(value);
-  return scope === 'all' || scope === 'annotated' || scope === 'selected';
+export function cleanScopeSupportsAnnotationAudit(value = 'all', annotationState = 'all') {
+  normalizeCleanScope(value);
+  return !['unannotated', 'confirmed_empty'].includes(String(annotationState || 'all'));
 }
 
-export function cleanScopeRequest(value = 'all', selectedIds = [], {forcedSelected = false} = {}) {
+function cleanFilters(filters = {}, annotationState = 'all') {
+  const result = {};
+  const query = String(filters.query || '').trim();
+  const sources = uniqueCleanIds(filters.storage_source_ids || []);
+  const processing = String(filters.processing_status || '').trim().toLowerCase();
+  const split = String(filters.split || '').trim().toLowerCase();
+  if (query) result.query = query;
+  if (sources.length) result.storage_source_ids = sources;
+  if (processing) result.processing_status = processing;
+  if (split) result.split = split;
+  if (annotationState && annotationState !== 'all') result.annotation_state = annotationState;
+  return result;
+}
+
+export function cleanScopeRequest(value = 'all', selectedIds = [], {
+  forcedSelected = false, labels = [], annotationState = 'all', filters = {}, selectionMode = 'explicit',
+} = {}) {
   const scope = normalizeCleanScope(value);
   const ids = uniqueCleanIds(selectedIds);
   if (forcedSelected && scope !== 'selected') {
     throw new Error('本次入口已锁定为当前选中图片');
   }
   if (scope === 'selected') {
+    if (selectionMode === 'filtered') {
+      const normalizedFilters = cleanFilters(filters, annotationState);
+      return {
+        selection_mode: 'selected',
+        clean_scope: annotationState === 'all' ? 'all' : annotationState,
+        image_ids: [],
+        selection_spec: {scope: 'FILTERED', filters: normalizedFilters},
+      };
+    }
     if (!ids.length) throw new Error('当前没有选中的图片');
-    return {clean_scope: 'selected', image_ids: ids};
+    const selectedFilters = cleanFilters(filters, annotationState);
+    const selectionSpec = {scope: 'SELECTED', image_ids: ids};
+    if (Object.keys(selectedFilters).length) selectionSpec.filters = selectedFilters;
+    return {selection_mode: 'selected', clean_scope: annotationState === 'all' ? 'selected' : annotationState, image_ids: ids, selection_spec: selectionSpec};
   }
-  return {clean_scope: scope, image_ids: []};
+  const normalizedLabels = uniqueCleanIds(labels);
+  if (scope === 'labels' && !normalizedLabels.length) throw new Error('请至少选择一个标签');
+  const normalizedFilters = cleanFilters(filters, annotationState);
+  if (scope === 'labels') normalizedFilters.labels = normalizedLabels;
+  return {
+    selection_mode: scope,
+    clean_scope: annotationState === 'all' ? 'all' : annotationState,
+    image_ids: [],
+    selection_spec: {scope: 'FILTERED', filters: normalizedFilters},
+  };
 }
 
 export function cleanExecutionChoices(preflight = {}) {

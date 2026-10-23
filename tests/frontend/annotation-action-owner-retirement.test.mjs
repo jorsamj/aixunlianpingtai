@@ -15,12 +15,12 @@ test('manual annotation save has one public canonical owner', () => {
   assert.match(app, /window\.saveAnn=async function saveAnnotationCanonical420\(silent=false,options=\{\}\)/);
 });
 
-test('manual save requires explicit empty confirmation and advances only once', () => {
+test('manual save distinguishes pending empty from explicit negative and advances only once', () => {
   const coreStart = app.indexOf('window.saveAnnotationCore420=async function');
   const coreEnd = app.indexOf('// ---------- dataset: labels strictly from label library ----------', coreStart);
   const core = app.slice(coreStart, coreEnd);
   assert.match(core, /confirmEmpty=options\?\.confirmEmpty===true/);
-  assert.match(core, /annotation_state:boxes\.length\?'annotated':'confirmed_empty'/);
+  assert.match(core, /annotation_state:boxes\.length\?'annotated':confirmEmpty\?'confirmed_empty':'unannotated'/);
   const stableStart = app.lastIndexOf('Stable single-instance manual\/batch annotation workbench');
   const stableEnd = app.indexOf('Persistent v60 AI annotation UI', stableStart);
   const stable = app.slice(stableStart, stableEnd);
@@ -35,24 +35,27 @@ test('annotation dirty tracking uses explicit core instead of previous-owner cap
 });
 
 
-test('manual annotation uses incremental box patching and explicit empty confirmation', () => {
-  const drawStart = app.lastIndexOf('drawBoxes=function(){');
-  const drawEnd = app.indexOf('bindAnnotationEvents=function()', drawStart);
-  const draw = app.slice(drawStart, drawEnd);
-  assert.match(draw, /querySelectorAll\('\.box424'\)/);
-  assert.match(draw, /keep=new Set\(\)/);
-  assert.doesNotMatch(draw, /querySelectorAll\('\.box,\.drawBox'\).*remove/);
+test('manual annotation delegates editable shapes to one official kernel and preserves explicit review', () => {
+  assert.match(app, /function drawBoxes\(\)\{return window\.syncAnnotationEditor420\?\.\(\)\}/);
+  assert.match(app, /function bindAnnotationEvents\(\)\{return window\.syncAnnotationEditor420\?\.\(\)\}/);
+  assert.equal((app.match(/function ensureAnnotationEditor420\(/g)||[]).length,1);
+  assert.doesNotMatch(app, /className='box box424'|className='drawBox'|annPointerAbort|bound411|bound424/);
+  assert.doesNotMatch(app, /window\.addEventListener\(['"]mouse(?:move|up)/);
 
   const stableStart = app.lastIndexOf('Stable single-instance manual\/batch annotation workbench');
   const stableEnd = app.indexOf('Persistent v60 AI annotation UI', stableStart);
   const stable = app.slice(stableStart, stableEnd);
-  assert.match(stable, /confirmEmptyAnnotationCanonical420/);
+  assert.match(stable, /window\.saveAndConfirmAnnotationReview420=async function/);
+  assert.doesNotMatch(app, /ann420ConfirmEmpty|confirmEmptyAnnotation420/);
   assert.match(stable, /button\.textContent='提交中…'/);
   assert.match(stable, /confirmReview:true,reviewedLabelCodes:selected/);
-  assert.match(stable, /待审核标签（默认不勾选）/);
-  assert.match(stable, /显式全选待审核/);
+  assert.match(stable, /未检查类别（默认不勾选）/);
+  assert.match(stable, /<details[^>]*id="ann420ReviewPanel"/);
+  assert.match(stable, /显式全选未检查类别/);
   assert.match(stable, /restoreLabelSchema414/);
-  assert.match(stable, /wheelZoomBound/);
+  assert.match(stable, /createAnnotoriousEditor/);
+  assert.match(stable, /state\.annotationEditor\?\.flush\?\.\(\)/);
+  assert.match(stable, /window\.destroyAnnotationEditor420\?\.\(\);clearTimeout\(state\.annAutoSaveTimer\)/);
   assert.match(stable, /resetAnnotationZoom420/);
   assert.match(stable, /fitAnnotation420/);
   assert.match(stable, /适应窗口/);

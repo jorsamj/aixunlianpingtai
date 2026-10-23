@@ -106,6 +106,7 @@ def _audit_boxes(
     height: int,
     known_labels: set[str],
     disabled_labels: set[str],
+    pairwise_box_limit: int = AUDIT_MAX_IOU_BOXES,
 ) -> tuple[list[dict[str, Any]], float, dict[str, int], list[int]]:
     issues, add = _issue_collector()
     image_area = float(width * height) if width > 0 and height > 0 else 0.0
@@ -164,12 +165,20 @@ def _audit_boxes(
             exact_seen[exact_key] = index
         comparable.setdefault(label, []).append((index, coords))
 
-    if len(boxes) > AUDIT_MAX_IOU_BOXES:
-        add(
-            "target_count_high",
-            "单图目标数量很高",
-            f"单图共有 {len(boxes)} 个目标，跳过高成本两两 IoU 全比较",
-        )
+    if len(boxes) > pairwise_box_limit:
+        if pairwise_box_limit < AUDIT_MAX_IOU_BOXES:
+            add(
+                "box_pairwise_unchecked",
+                "疑似重叠框未全面核验",
+                f"单图 {len(boxes)} 个框，训练准入只检查精确重复；"
+                f"超过 {pairwise_box_limit} 的 IoU 两两比较交由人工复核",
+            )
+        else:
+            add(
+                "target_count_high",
+                "单图目标数量很高",
+                f"单图共有 {len(boxes)} 个目标，跳过高成本两两 IoU 全比较",
+            )
     else:
         for label, candidates in comparable.items():
             for left in range(len(candidates)):

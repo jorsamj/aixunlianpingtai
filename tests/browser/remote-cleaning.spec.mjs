@@ -57,9 +57,11 @@ test('cleaning execution picker disables Agent for local material and submits ex
   let dialog = page.getByRole('dialog', {name: '创建自动清洗任务'});
   await expect(dialog).toBeVisible();
   await expect(dialog.getByText('执行位置')).toBeVisible();
+  await expect(dialog.locator('#cl427PickerQuery')).toHaveCount(0);
+  await expect(dialog.getByText('不会扩大到其他素材')).toBeVisible();
   await expect(dialog.locator('input[name="cl427Execution"][value="local"]')).toBeChecked();
   await expect(dialog.locator('input[name="cl427Execution"][value="agent"]')).toBeDisabled();
-  await dialog.getByRole('button', {name: '取消'}).click();
+  await dialog.getByRole('button', {name: '取消', exact: true}).click();
 
   let submitted = null;
   await page.route(`**/api/v47/projects/${project.id}/clean-runtime/preflight`, async route => {
@@ -130,7 +132,7 @@ test('cleaning execution picker disables Agent for local material and submits ex
 });
 
 
-test('cleaning range switches preflight and submission by formal annotation_state', async ({page, request}) => {
+test('cleaning keeps primary range separate from secondary formal annotation_state', async ({page, request}) => {
   const project = await createProject(request);
   await selectProject(page, project.id);
 
@@ -146,7 +148,7 @@ test('cleaning range switches preflight and submission by formal annotation_stat
         default_execution_mode: 'local',
         agent_available: false,
         reason: '测试仅使用中央 Worker',
-        selected_count: 0,
+        selected_count: 3,
         eligible_nodes: [],
       }),
     });
@@ -177,28 +179,140 @@ test('cleaning range switches preflight and submission by formal annotation_stat
   const dialog = page.getByRole('dialog', {name: '创建自动清洗任务'});
   await expect(dialog).toBeVisible();
   await expect(dialog.locator('input[name="cl427Scope"][value="all"]')).toBeChecked();
-  await expect(dialog.locator('input[name="cl427Scope"][value="annotated"]')).toBeEnabled();
-  await expect(dialog.locator('input[name="cl427Scope"][value="unannotated"]')).toBeEnabled();
-  await expect(dialog.locator('input[name="cl427Scope"][value="confirmed_empty"]')).toBeEnabled();
-  await expect(dialog.locator('input[name="cl427Scope"][value="selected"]')).toBeDisabled();
+  await expect(dialog.locator('input[name="cl427Scope"][value="selected"]')).toBeEnabled();
+  await expect(dialog.locator('input[name="cl427Scope"][value="labels"]')).toBeDisabled();
+  await expect(dialog.locator('#cl427AnnotationState')).toHaveValue('all');
   await expect(dialog.locator('#cl427AnnotationAuditSection')).toBeVisible();
   await expect(dialog.locator('#cl427AnnotationAudit')).toBeChecked();
 
-  await dialog.locator('input[name="cl427Scope"][value="unannotated"]').check();
+  await dialog.locator('#cl427AnnotationState').selectOption('unannotated');
   await expect(dialog.locator('#cl427AnnotationAuditSection')).toBeHidden();
   await expect.poll(() => preflights.at(-1)?.clean_scope).toBe('unannotated');
+  expect(preflights.at(-1)?.selection_spec.filters.annotation_state).toBe('unannotated');
 
-  await dialog.locator('input[name="cl427Scope"][value="annotated"]').check();
+  await dialog.locator('#cl427AnnotationState').selectOption('annotated');
   await expect.poll(() => preflights.at(-1)?.clean_scope).toBe('annotated');
   expect(preflights.at(-1)?.image_ids).toEqual([]);
+  expect(preflights.at(-1)?.selection_spec).toEqual({
+    scope: 'FILTERED', filters: {annotation_state: 'annotated'},
+  });
   await expect(dialog.getByRole('button', {name: '开始清洗'})).toBeEnabled();
   await dialog.getByRole('button', {name: '开始清洗'}).click();
 
   await expect.poll(() => submitted).not.toBeNull();
   expect(submitted.clean_scope).toBe('annotated');
   expect(submitted.image_ids).toEqual([]);
+  expect(submitted.selection_spec).toEqual({
+    scope: 'FILTERED', filters: {annotation_state: 'annotated'},
+  });
   expect(submitted.execution_mode).toBe('local');
   expect(submitted.annotation_audit).toBe(true);
+});
+
+
+test('cleaning selected-image picker keeps cross-page choices and freezes all filtered results', async ({page, request}, testInfo) => {
+  const project = await createProject(request);
+  await selectProject(page, project.id);
+  const preflights = [];
+  await page.route('**/api/v61/projects/*/materials**', async route => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get('page_size') !== '12') return route.continue();
+    const pageNumber = Number(url.searchParams.get('page') || 1);
+    const query = url.searchParams.get('query') || '';
+    await route.fulfill({
+      status: 200, contentType: 'application/json',
+      body: JSON.stringify({
+        items: Array.from({length: 3}, (_, index) => ({
+          id: `${query || 'page'}-${pageNumber}-${index + 1}`,
+          filename: `${query || 'scene'}-${pageNumber}-${index + 1}.jpg`,
+          url: 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==',
+        })),
+        total: 24, page: pageNumber, page_size: 12, total_pages: 2,
+      }),
+    });
+  });
+  await page.route(`**/api/v47/projects/${project.id}/clean-runtime/preflight`, async route => {
+    const body = route.request().postDataJSON();
+    preflights.push(body);
+    const selected = body.selection_spec?.scope === 'SELECTED'
+      ? body.selection_spec.image_ids?.length || 0
+      : 24;
+    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({
+      local_available: true, agent_available: false, reason: '中央 Worker',
+      selected_count: selected, eligible_nodes: [], label_counts: {},
+    })});
+  });
+
+  await page.goto('/');
+  await waitForCleanRuntime(page);
+  await page.evaluate(() => window.createClean427());
+  const dialog = page.getByRole('dialog', {name: '创建自动清洗任务'});
+  await dialog.locator('input[name="cl427Scope"][value="selected"]').check();
+  await expect(dialog.locator('#cl427PickerGrid')).toContainText('scene-1-1.jpg');
+  await dialog.locator('#cl427PickerGrid button').first().click();
+  await expect(dialog.locator('#cl427SelectedMode')).toContainText('跨页已选 1 张');
+  await dialog.locator('#cl427PickerPager button', {hasText: '下一页'}).click();
+  await expect(dialog.locator('#cl427PickerGrid')).toContainText('scene-2-1.jpg');
+  await dialog.locator('#cl427PickerGrid button').first().click();
+  await expect(dialog.locator('#cl427SelectedMode')).toContainText('跨页已选 2 张');
+  await expect.poll(() => preflights.at(-1)?.selection_spec?.image_ids?.length).toBe(2);
+
+  await dialog.locator('#cl427PickerQuery').fill('smoke');
+  await expect(dialog.locator('#cl427PickerGrid')).toContainText('smoke-1-1.jpg');
+  await expect(dialog.locator('#cl427SelectedMode')).toContainText('跨页已选 2 张');
+  await dialog.getByRole('button', {name: '全选当前筛选结果'}).click();
+  await expect.poll(() => preflights.at(-1)?.selection_spec).toEqual({
+    scope: 'FILTERED', filters: {query: 'smoke'},
+  });
+  await expect(dialog.locator('#cl427SelectedMode')).toContainText('24 张（服务端冻结）');
+  await page.screenshot({path: testInfo.outputPath('clean-selected-scope-1366x768.png'), fullPage: false});
+  await dialog.getByRole('button', {name: '取消选择'}).click();
+  await expect(dialog.getByRole('button', {name: '开始清洗'})).toBeDisabled();
+});
+
+
+test('cleaning label scope shows counts, freezes OR labels, and reports final match count', async ({page, request}, testInfo) => {
+  const response = await request.post('/api/projects', {
+    data: {name: `标签清洗UI-${Date.now()}`, labels: ['fire', 'smoke']},
+  });
+  expect(response.ok()).toBeTruthy();
+  const project = await response.json();
+  await selectProject(page, project.id);
+  let submitted = null;
+  await page.route(`**/api/v47/projects/${project.id}/clean-runtime/preflight`, async route => {
+    const body = route.request().postDataJSON();
+    const selected = body.selection_spec?.filters?.labels || [];
+    await route.fulfill({
+      status: 200, contentType: 'application/json',
+      body: JSON.stringify({
+        local_available: true, agent_available: false, reason: '仅中央 Worker',
+        selected_count: selected.length === 2 ? 7 : selected.length === 1 ? 4 : 12,
+        eligible_nodes: [],
+        label_counts: {fire: {images: 4, boxes: 6}, smoke: {images: 5, boxes: 8}},
+      }),
+    });
+  });
+  await page.route(`**/api/v47/projects/${project.id}/clean-tasks`, async route => {
+    if (route.request().method() !== 'POST') return route.continue();
+    submitted = route.request().postDataJSON();
+    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({id: 'label-clean-ui', status: 'queued'})});
+  });
+  await page.goto('/');
+  await waitForCleanRuntime(page);
+  await page.evaluate(() => window.createClean427());
+  const dialog = page.getByRole('dialog', {name: '创建自动清洗任务'});
+  await dialog.locator('input[name="cl427Scope"][value="labels"]').check();
+  await expect(dialog.locator('#cl427LabelScope')).toBeVisible();
+  await expect(dialog.locator('[data-clean-label="fire"]')).toContainText('4 张');
+  await expect(dialog.locator('[data-clean-label="smoke"]')).toContainText('5 张');
+  await dialog.locator('[data-clean-label="fire"]').click();
+  await dialog.locator('[data-clean-label="smoke"]').click();
+  await expect(dialog.locator('#cl427MatchedCount')).toHaveText('最终匹配 7 张');
+  await page.screenshot({path: testInfo.outputPath('clean-label-scope-1366x768.png'), fullPage: false});
+  await dialog.getByRole('button', {name: '开始清洗'}).click();
+  await expect.poll(() => submitted).not.toBeNull();
+  expect(submitted.selection_spec.scope).toBe('FILTERED');
+  expect(submitted.selection_spec.filters.labels).toEqual(['fire', 'smoke']);
 });
 
 

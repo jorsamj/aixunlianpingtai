@@ -40,3 +40,89 @@ def test_manifest_records_source_tool_outputs_and_validation_state(tmp_path):
     assert manifest["outputs"][0]["sha256"]
     assert manifest["status"] == "converted_unverified"
     assert manifest["hardware_verified"] is False
+
+
+from platform_core.conversion import derive_version_conversion_defaults
+
+
+def test_conversion_defaults_actual_lineage_and_runtime_precision():
+    v = {"job_id": "job1", "training_lineage": {"parameters": {
+        "requested": {"imgsz": 640, "precision": "auto"},
+        "actual": {"imgsz": 800, "precision": "fp32"},
+    }}}
+    observed = derive_version_conversion_defaults(v, {"runtime_precision": "fp32", "imgsz": 640})
+    assert observed["input_size"] == 800
+    assert observed["training_precision"] == "fp32"
+    assert observed["source_job_id"] == "job1"
+
+
+def test_conversion_defaults_amp_flag_is_not_proof_of_runtime_precision():
+    v = {"training_lineage": {"parameters": {"requested": {"imgsz": 800, "precision": "auto", "amp": True}}}}
+    unknown = derive_version_conversion_defaults(v)
+    assert unknown["input_size"] == 800
+    assert unknown["training_precision"] is None
+    assert derive_version_conversion_defaults(v, {"runtime_precision": "fp16"})["training_precision"] == "fp16"
+
+
+def test_conversion_defaults_requested_precision_never_claims_actual_runtime():
+    v = {"training_lineage": {"parameters": {
+        "requested": {"imgsz": 800, "precision": "fp32", "effective_precision": "fp32", "amp": False}
+    }}}
+    unknown = derive_version_conversion_defaults(v, {"imgsz": 800, "precision": "fp32"})
+    assert unknown["input_size"] == 800
+    assert unknown["training_precision"] is None
+    assert "未记录实际" in unknown["precision_source"]
+    confirmed = derive_version_conversion_defaults(
+        v, {"runtime_precision": "fp16", "actual_train_params": {"precision": "fp32"}},
+    )
+    assert confirmed["training_precision"] == "fp16"
+    assert confirmed["precision_source"] == "训练任务实际运行精度"
+
+
+def test_conversion_defaults_actual_train_effective_precision():
+    actual = derive_version_conversion_defaults(
+        {"training_lineage": {"parameters": {"requested": {"precision": "fp32"}}}},
+        {"actual_train_params": {"effective_precision": "fp16"}},
+    )
+    assert actual["training_precision"] == "fp16"
+
+
+def test_conversion_defaults_missing_corrupt_metadata_and_fp16_actual():
+    x = derive_version_conversion_defaults({"training_lineage": {"parameters": {"actual": {"imgsz": -1, "precision": "auto"}}}})
+    assert x["input_size"] == 640
+    assert x["training_precision"] is None
+    v = {"training_lineage": {"parameters": {"actual": {"imgsz": "800", "precision": "fp16"}, "requested": {"imgsz": 640, "precision": "fp32"}}}}
+    assert derive_version_conversion_defaults(v)["training_precision"] == "fp16"
+    assert derive_version_conversion_defaults(v)["input_size"] == 800
+
+
+def test_auto_version_conversion_does_not_override_source_training_defaults():
+    from pathlib import Path
+    app_source = (Path(__file__).resolve().parents[2] / "app.py").read_text(encoding="utf-8")
+    begin = app_source.index("def _v48_auto_convert_version(")
+    end = app_source.index("def _v48_archive_training_version(", begin)
+    code = app_source[begin:end]
+    assert "params={}" in code
+    assert 'params={"input_size":int(job.get("imgsz") or 640),"precision":"fp16"}' not in code
+    assert "v39_create_deploy_job(" in code
+
+
+@pytest.mark.parametrize("precision,mode", [("fp32","force_fp32"),("fp16","allow_fp32_to_fp16")])
+def test_ascend_precision_is_an_explicit_compiler_contract(precision, mode):
+    resolved=validate_target("ascend", {"soc_version":"Ascend310P3", "precision":precision})
+    assert resolved["precision_mode"] == mode
+    with pytest.raises(ValueError, match="precision_mode"):
+        validate_target("ascend", {"soc_version":"Ascend310P3", "precision":precision,
+                                   "precision_mode":"force_fp16"})
+
+@pytest.mark.parametrize("override", [{"opset":17},{"simplify":True}])
+def test_sophon_fixed_export_parameters_are_not_silently_overwritten(override):
+    with pytest.raises(ValueError):
+        validate_target("sophon", {"chip":"bm1684x", "precision":"fp16", **override})
+
+
+@pytest.mark.parametrize("mode", ["must_keep_origin_dtype","allow_mix_precision"])
+def test_ascend_explicit_legacy_modes_remain_visible_as_compiler_policy(mode):
+    assert validate_target("ascend",{"soc_version":"Ascend310P3","precision":"fp16","precision_mode":mode})["precision_mode"]==mode
+    with pytest.raises(ValueError,match="precision_mode"):
+        validate_target("ascend",{"soc_version":"Ascend310P3","precision":"fp32","precision_mode":mode})

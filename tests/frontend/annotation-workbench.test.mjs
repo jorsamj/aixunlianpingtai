@@ -52,6 +52,22 @@ test('save and confirm sends only explicitly checked review labels with CAS iden
   assert.deepEqual(payload.reviewed_label_codes, ['vest']);
 });
 
+test('empty ordinary save is pending and drops negative review proof', () => {
+  const payload = annotationSavePayload({annotation: {version: 4, annotation_state: 'confirmed_empty'},
+    image: {content_sha256: 'sha'}, boxes: [], reviewedLabelCodes: ['vest']});
+  assert.equal(payload.annotation_state, 'unannotated');
+  assert.deepEqual(payload.reviewed_label_codes, []);
+  assert.equal(payload.expected_version, 4);
+  assert.equal(payload.source_content_sha256, 'sha');
+});
+
+test('empty negative save requires explicit confirmation and uses only current checked labels', () => {
+  const payload = annotationSavePayload({annotation: {version: 4, annotation_scope: ['helmet']},
+    boxes: [], confirmEmpty: true, reviewedLabelCodes: ['vest', 'vest']});
+  assert.equal(payload.annotation_state, 'confirmed_empty');
+  assert.deepEqual(payload.reviewed_label_codes, ['vest']);
+});
+
 
 test('stale annotation response cannot replace the newest image', async () => {
   const pending = new Map();

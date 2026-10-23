@@ -180,3 +180,34 @@ test('storage cache decorations do not wrap canonical public owners or refetch s
   assert.match(mainSource, /page === '存储配置'/);
   assert.match(mainSource, /StorageCacheRuntime\?\.refresh/);
 });
+
+
+test('storage worker discovery throttles a failed request on rapid revisit but permits explicit refresh', async () => {
+  const previousWindow = globalThis.window;
+  const previousDocument = globalThis.document;
+  let calls = 0;
+  try {
+    globalThis.window = {PlatformCore: {}, getStorageSourcesSnapshot61: () => []};
+    globalThis.document = {getElementById: () => null, querySelector: () => null};
+    const {installStorageCacheRuntime} = await import('../../static/modules/storage-cache-runtime.js');
+    const runtime = installStorageCacheRuntime({
+      fetchImpl: async () => {
+        calls += 1;
+        if (calls === 1) throw new Error('worker request interrupted by navigation');
+        return {ok: true, json: async () => ({items: []})};
+      },
+      notify: () => {},
+    });
+    await runtime.refresh({sources: []});
+    await runtime.refresh({sources: []});
+    assert.equal(calls, 1, 'rapid revisit cannot emit a second workers GET');
+    await runtime.refresh({sources: [], force: true});
+    assert.equal(calls, 2, 'explicit refresh can recover the worker request');
+    assert.equal(runtime.state().workerInflight, false);
+  } finally {
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+    if (previousDocument === undefined) delete globalThis.document;
+    else globalThis.document = previousDocument;
+  }
+});

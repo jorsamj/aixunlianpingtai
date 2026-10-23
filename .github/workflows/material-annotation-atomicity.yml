@@ -14,6 +14,9 @@ on:
       - platform_core/annotations.py
       - platform_core/material_repository.py
       - platform_core/material_repository_batch.py
+      - platform_core/material_batches.py
+      - tests/api/test_material_integrity.py
+      - tests/api/test_training_conflict_governance.py
       - platform_core/storage/source_repository.py
       - tests/api/test_annotation_sqlite_dataset_delete_atomicity.py
       - tests/unit/test_annotation_repository_scope.py
@@ -66,6 +69,13 @@ jobs:
           tests/api/test_annotation_sqlite_dataset_delete_atomicity.py
           tests/unit/test_annotation_repository_scope.py
           tests/api/test_material_batching.py
+          tests/api/test_material_integrity.py
+          tests/api/test_training_conflict_governance.py
+          tests/api/test_material_governance_actor.py
+          tests/api/test_governance_legacy_guards.py
+          tests/unit/test_governance_retirement.py
+          tests/unit/test_governance_deletion_plans.py
+          tests/unit/test_governance_compatibility_selection.py
           tests/api/test_material_repository_connection_lifecycle.py
           tests/api/test_storage_source_repository_connection_lifecycle.py
           tests/api/test_material_selection_atomicity.py
@@ -89,6 +99,11 @@ jobs:
           python -m pytest -q
           tests/unit/test_annotations.py
           tests/api/test_annotation_flow.py
+          tests/api/test_annotation_unannotated_contract.py
+          tests/unit/test_negative_sample_contract.py
+          tests/unit/test_training_annotation_admission.py
+          tests/unit/test_snapshots.py
+          tests/unit/test_material_annotation_lifecycle.py
           tests/api/test_legacy_annotated_import_guard.py
           tests/api/test_v19_import_scalability.py
           tests/api/test_storage_sources.py

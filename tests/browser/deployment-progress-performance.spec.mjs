@@ -122,6 +122,11 @@ test('canonical version conversion caches history but fetches resources on each 
             version_name: '20260924103000',
             model_name: 'best.pt',
             stored_path: '/models/best.pt',
+            conversion_defaults: {
+              input_size: 800,
+              training_precision: 'fp32',
+              precision_source: '训练任务实际运行精度',
+            },
           },
           items: [],
         }),
@@ -165,6 +170,8 @@ test('canonical version conversion caches history but fetches resources on each 
   const createDialog = page.getByRole('dialog', {name: '新建版本转换'});
   await expect(createDialog).toBeVisible();
   await expect(createDialog.locator('#conv428Resource')).toContainText('ONNX 导出环境');
+  await expect(createDialog.locator('#conv428Input')).toHaveValue('800');
+  await expect(createDialog.locator('#conv428InheritedHint')).toContainText('FP32 · 800 px');
   await expect.poll(() => resourceGets).toBe(1);
   expect(historyGets).toBe(1);
 

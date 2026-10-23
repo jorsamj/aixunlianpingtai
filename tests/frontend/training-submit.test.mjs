@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
+import * as submitModule from '../../static/modules/training-submit.js';
+const collectTrainingAdmissionBlockers=(...args)=>{assert.equal(typeof submitModule.collectTrainingAdmissionBlockers,'function','formal Submit Owner must expose all-blocker projection');return submitModule.collectTrainingAdmissionBlockers(...args)};
+
 import {createTrainingDraft, trainingDraftToRequest} from '../../static/modules/training-draft.js';
 import {
   benchmarkReuseContext,
@@ -10,9 +13,46 @@ import {
   installTrainingSubmitRuntime,
   normalizeTrainingPrecision,
   supplementCandidateContext,
+  trainingSubmitPresentation,
   trainingSubmitReadiness,
   validateTrainingDevice,
 } from '../../static/modules/training-submit.js';
+
+test('training submit projects canonical stages into three truthful user steps', () => {
+  assert.deepEqual(trainingSubmitPresentation('validate-device'), {
+    tone: 'working', activeStep: 0, completedSteps: 0,
+    title: '正在校验训练配置', detail: '正在核验训练设备与算法版本',
+  });
+  assert.deepEqual(trainingSubmitPresentation('build-payload'), {
+    tone: 'working', activeStep: 1, completedSteps: 1,
+    title: '正在核验训练素材', detail: '正在确认素材、标签与训练范围',
+  });
+  assert.deepEqual(trainingSubmitPresentation('posting'), {
+    tone: 'working', activeStep: 2, completedSteps: 2,
+    title: '正在提交训练任务', detail: '服务端正在创建可恢复的持久任务',
+  });
+  assert.deepEqual(trainingSubmitPresentation('created'), {
+    tone: 'success', activeStep: 2, completedSteps: 3,
+    title: '训练任务创建成功', detail: '已加入训练任务队列，系统将自动安排执行',
+  });
+});
+
+test('training submit failure distinguishes safe validation errors from unknown POST outcome', () => {
+  assert.deepEqual(trainingSubmitPresentation('failed', {
+    error: '训练素材为空', failedAt: 'build-payload', taskId: 'train_aaaaaaaaaaaaaaaaaaaa',
+  }), {
+    tone: 'error', activeStep: 1, completedSteps: 1,
+    title: '训练任务未创建', detail: '训练素材为空', retrySafe: true,
+    taskId: 'train_aaaaaaaaaaaaaaaaaaaa',
+  });
+  const unknown = trainingSubmitPresentation('failed', {
+    error: 'Failed to fetch', failedAt: 'posting', taskId: 'train_aaaaaaaaaaaaaaaaaaaa',
+    outcomeUncertain: true,
+  });
+  assert.equal(unknown.tone, 'uncertain');
+  assert.equal(unknown.retrySafe, false);
+  assert.match(unknown.detail, /任务列表.*train_aaaaaaaaaaaaaaaaaaaa/);
+});
 
 function draft(overrides = {}) {
   return createTrainingDraft({
@@ -88,6 +128,7 @@ function durableTask(taskId = 'train_aaaaaaaaaaaaaaaaaaaa', overrides = {}) {
     ok: true,
     task: {
       task_id: taskId,
+      project_id: 'project-1',
       kind: 'TRAINING',
       task_type: 'TRAINING',
       status: 'QUEUED',
@@ -179,7 +220,7 @@ test('submit readiness depends only on canonical draft, base and submitting stat
   assert.deepEqual(trainingSubmitReadiness({draft: draft(), base: {blocked: false}, submitting: true}), {ready: false, reason: 'submitting'});
 });
 
-test('compatibility issues disable submit until the current draft passes', () => {
+test('compatibility issues keep admission blocked until the current draft passes', () => {
   assert.deepEqual(
     trainingSubmitReadiness({
       draft: draft(), base: {blocked: false},
@@ -232,7 +273,7 @@ test('submit runtime owns button readiness instead of legacy train428/train429 m
 
   state.trainingDraft = draft({materialIds: ['one']});
   runtime.updateReadiness();
-  assert.equal(submitButton.disabled, true);
+  assert.equal(submitButton.disabled, false, 'start click must run diagnosis even for incomplete configuration');
   assert.equal(submitButton.dataset.trainingSubmitReason, 'materials');
   cleanup(runtime);
 });
@@ -277,6 +318,7 @@ test('submit runtime is the sole train-start network owner and uses canonical dr
   assert.deepEqual(sent.train_labels, ['fire']);
   assert.equal(sent.queue_priority, 7);
   assert.equal(sent.cache, 'False');
+  await new Promise(resolve => setImmediate(resolve));
   assert.equal(reloaded, 1);
   assert.equal(rendered, 1);
   assert.equal(closed, 1);
@@ -312,16 +354,16 @@ test('iteration block is enforced by TrainingSubmitRuntime before any POST', asy
     notify: message => notices.push(String(message)),
   });
 
-  assert.equal(submitButton.disabled, true);
+  assert.equal(submitButton.disabled, false);
   assert.equal(submitButton.dataset.trainingSubmitReason, 'iteration');
   const result = await window.submitTrain429();
   assert.equal(result, null);
   assert.equal(calls, 0);
-  assert.match(notices.at(-1), /不会回退母算法/);
+  assert.match(notices.at(-1), /没有成功且成果有效的可迭代版本/);
   cleanup(runtime);
 });
 
-test('stale changlian master data disables submit and blocks network POST', async () => {
+test('stale changlian master data allows checking but blocks network POST', async () => {
   const state = baseState();
   state.algorithms = [{
     id: 'alg-1',
@@ -360,7 +402,7 @@ test('stale changlian master data disables submit and blocks network POST', asyn
     notify: message => notices.push(String(message)),
   });
 
-  assert.equal(submitButton.disabled, true);
+  assert.equal(submitButton.disabled, false);
   assert.equal(submitButton.dataset.trainingSubmitReason, 'external-master-data-stale');
   const result = await window.submitTrain429();
 
@@ -392,13 +434,13 @@ test('submit button exposes truthful creation stages while the durable POST is p
   const request = window.submitTrain429();
   assert.equal(runtime.state().lastStage, 'posting');
   assert.equal(submitButton.dataset.trainingSubmitStage, 'posting');
-  assert.equal(submitButton.textContent, '服务端正在核验并创建持久任务…');
+  assert.equal(submitButton.textContent, '正在创建训练任务…');
   assert.equal(submitButton.disabled, true);
 
   release();
   await request;
   assert.equal(runtime.isSubmitting(), false);
-  assert.equal(submitButton.dataset.trainingSubmitStage, 'idle');
+  assert.equal(submitButton.dataset.trainingSubmitStage, 'created');
   assert.equal(submitButton.textContent, '开始训练');
   cleanup(runtime);
 });
@@ -443,6 +485,61 @@ test('double click cannot create two independent training tasks', async () => {
   cleanup(runtime);
 });
 
+test('network interruption verifies the planned task id before reporting failure', async () => {
+  const state = baseState();
+  const {submitButton} = installDom();
+  const accepted = [];
+  let calls = 0;
+  globalThis.window = {
+    submitTrain429: () => 'legacy',
+    fetch: async url => {
+      calls += 1;
+      if (String(url).includes('/train/start')) throw new TypeError('Failed to fetch');
+      return {ok: true, async json() { return durableTask().task; }};
+    },
+  };
+  const runtime = installTrainingSubmitRuntime({
+    getState: () => state,
+    projectId: () => 'project-1',
+    trainingDraftRuntime: {sync: () => draft(), current: () => draft(), base: () => ({blocked: false})},
+    trainingDraftToRequest,
+    trainingTaskRuntime: {acceptCreatedTask: task => accepted.push(task)},
+  });
+
+  const result = await window.submitTrain429();
+  assert.equal(calls, 2);
+  assert.equal(result.recovered, true);
+  assert.equal(accepted[0].task_id, 'train_aaaaaaaaaaaaaaaaaaaa');
+  assert.notEqual(runtime.state().lastStage, 'failed');
+  assert.equal(submitButton.disabled, false);
+  cleanup(runtime);
+});
+
+test('unverifiable POST outcome disables blind retry and keeps planned identity visible', async () => {
+  const state = baseState();
+  const {submitButton} = installDom();
+  const notices = [];
+  globalThis.window = {
+    submitTrain429: () => 'legacy',
+    fetch: async () => { throw new TypeError('Failed to fetch'); },
+  };
+  const runtime = installTrainingSubmitRuntime({
+    getState: () => state,
+    projectId: () => 'project-1',
+    trainingDraftRuntime: {sync: () => draft(), current: () => draft(), base: () => ({blocked: false})},
+    trainingDraftToRequest,
+    notify: message => notices.push(String(message)),
+  });
+
+  assert.equal(await window.submitTrain429(), null);
+  assert.equal(runtime.state().lastStage, 'failed');
+  assert.equal(runtime.state().presentation.tone, 'uncertain');
+  assert.equal(submitButton.disabled, true);
+  assert.equal(submitButton.dataset.trainingSubmitReason, 'outcome-uncertain');
+  assert.match(notices.at(-1), /任务列表.*train_aaaaaaaaaaaaaaaaaaaa/);
+  cleanup(runtime);
+});
+
 test('refresh failure after successful POST does not invite a duplicate training task', async () => {
   const state = baseState();
   installDom();
@@ -468,6 +565,7 @@ test('refresh failure after successful POST does not invite a duplicate training
   assert.equal(result.task.task_id, 'train_aaaaaaaaaaaaaaaaaaaa');
   assert.equal(calls, 1);
   assert.match(notices[0], /训练任务已进入后台队列/);
+  await new Promise(resolve => setImmediate(resolve));
   assert.match(notices.at(-1), /列表刷新失败/);
   cleanup(runtime);
 });
@@ -789,7 +887,9 @@ test('four modes freeze only training semantics while GPU resources resolve at w
       const payload = buildTrainingStartPayload({draft:d, target, algorithm, trainingDraftToRequest});
       assert.equal(payload.training_mode, trainingMode);
       assert.equal(payload.epochs, expectedEpochs);
-      assert.equal(payload.imgsz, imgsz);
+      assert.equal(payload.imgsz, 320, 'explicit image size survives every mode; mode still owns epochs and resources');
+      const defaults = buildTrainingStartPayload({draft:draft({trainingMode,baseVersionId,config:{model:'custom.pt'}}),target,algorithm,trainingDraftToRequest});
+      assert.equal(defaults.imgsz, imgsz, 'mode size remains the fallback only when no selected size exists');
       assert.equal(payload.resource_strategy, 'auto');
       assert.equal(payload.resource_profile, 'performance');
       assert.equal(payload.gpu_policy, 'exclusive');
@@ -838,4 +938,148 @@ test('first-training explicit label rule remains active for every training mode'
     const d = createTrainingDraft({algorithmId:'alg-1',materialIds:['image-1'],trainingMode,resource,newLabelCodes:[]});
     assert.throws(() => buildTrainingStartPayload({draft:d,target,algorithm,trainingDraftToRequest}), /至少选择一个训练标签/);
   }
+});
+
+
+test('all training modes preserve explicit precision and matching AMP intent', () => {
+  for (const trainingMode of ['quick','full','complex','custom']) {
+    for (const precision of ['auto','fp16','fp32']) {
+      const d=draft({trainingMode,config:{model:'custom.pt',precision,amp:true}});
+      const payload=buildTrainingStartPayload({draft:d,target,algorithm,trainingDraftToRequest});
+      assert.equal(payload.precision,precision,trainingMode);
+      assert.equal(payload.amp,precision!=='fp32',trainingMode);
+    }
+  }
+});
+
+test('selected and inherited imgsz precision survive all training mode submissions',()=>{
+ for(const trainingMode of ['quick','full','complex','custom']){
+  const selected=draft({trainingMode,baseVersionId:'previous',config:{model:'best.pt',imgsz:800,precision:'fp32'}});
+  const parameters=buildTrainingEngineParameters({draft:selected,target,algorithm});
+  assert.equal(parameters.imgsz,800,trainingMode);assert.equal(parameters.precision,'fp32',trainingMode);
+ }
+});
+
+function createCloseTimingFixture({reloadRelated, fetch, closeModal} = {}) {
+  const state = baseState();
+  const dom = installDom();
+  globalThis.window = {fetch: fetch || (async () => ({ok:true, json:async () => durableTask()}))};
+  const notices = [];
+  const runtime = installTrainingSubmitRuntime({
+    getState:()=>state, projectId:()=> 'project-1',
+    trainingDraftRuntime:{sync:()=>draft(),current:()=>draft(),base:()=>({blocked:false})},
+    trainingDraftToRequest,reloadRelated,closeModal,notify:message=>notices.push(message),
+  });
+  return {...dom,runtime,notices};
+}
+
+test('created task closes before a pending related-list refresh and submission settles', async () => {
+  let release, closed=0;
+  const fixture=createCloseTimingFixture({reloadRelated:()=>new Promise(resolve=>{release=resolve;}),closeModal:()=>{closed++;}});
+  let settled=false;
+  const pending=fixture.runtime.submit().then(result=>{settled=true;return result;});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(closed,1);
+  assert.equal(settled,true);
+  release();
+  await pending;
+  cleanup(fixture.runtime);
+});
+
+test('late creation response never closes a replacement training form', async () => {
+  let resolveResponse,closed=0;
+  const fixture=createCloseTimingFixture({fetch:()=>new Promise(resolve=>{resolveResponse=resolve;}),closeModal:()=>{closed++;}});
+  const pending=fixture.runtime.submit();
+  await new Promise(resolve=>setImmediate(resolve));
+  const replacement={dataset:{},textContent:'创建训练任务'};
+  const prior=document.querySelector;
+  document.querySelector=selector=>selector==='.train429-create .train428-footer .btn.primary'?replacement:prior(selector);
+  resolveResponse({ok:true,json:async()=>durableTask()});
+  assert.ok(await pending);
+  assert.equal(closed,0);
+  cleanup(fixture.runtime);
+});
+
+test('uncertain creation blocks direct repeated invocation for the same task id', async () => {
+  let posts=0;
+  const fixture=createCloseTimingFixture({fetch:async (_url,init)=>{if(init?.method==='POST'){posts++;throw new Error('network');}return {ok:false,status:404};}});
+  await fixture.runtime.submit();
+  await fixture.runtime.submit();
+  assert.equal(posts,1);
+  cleanup(fixture.runtime);
+});
+
+test('a task returned for another project cannot close the creation form', async () => {
+  let closed=0;
+  const fixture=createCloseTimingFixture({fetch:async()=>({ok:true,json:async()=>durableTask(undefined,{project_id:'other-project'})}),closeModal:()=>{closed++;}});
+  assert.equal(await fixture.runtime.submit(),null);
+  assert.equal(closed,0);
+  cleanup(fixture.runtime);
+});
+
+test('missing project identity never confirms creation or recovered task', async () => {
+  let closed=0,lookups=0;
+  const fixture=createCloseTimingFixture({fetch:async (_url,init)=>{
+    if(init?.method!=='POST')lookups++;
+    return {ok:true,json:async()=>durableTask(undefined,{project_id:undefined})};
+  },closeModal:()=>{closed++;}});
+  assert.equal(await fixture.runtime.submit(),null);
+  assert.equal(closed,0);
+  assert.equal(lookups,1);
+  assert.equal(fixture.runtime.state().presentation.retrySafe,false);
+  cleanup(fixture.runtime);
+});
+
+test('opening a fresh form after success resets old submit feedback without a success overlay', async () => {
+  const fixture=createCloseTimingFixture();
+  const makeRoot=()=>{
+    const classes=new Set();
+    const panel={hidden:true,dataset:{},querySelector:()=>null,querySelectorAll:()=>[],setAttribute(){},removeAttribute(){}};
+    return {classes,panel,isConnected:true,querySelector:()=>panel,classList:{toggle:(key,on)=>on?classes.add(key):classes.delete(key),remove:(...keys)=>keys.forEach(key=>classes.delete(key))}};
+  };
+  let root=makeRoot();
+  const prior=document.querySelector;
+  document.querySelector=selector=>selector==='.train429-create'?root:prior(selector);
+  await fixture.runtime.submit();
+  root=makeRoot();
+  fixture.runtime.updateReadiness();
+  assert.equal(root.classes.has('training-submit-complete'),false);
+  assert.equal(root.panel.hidden,true);
+  assert.equal(fixture.runtime.state().lastStage,'idle');
+  cleanup(fixture.runtime);
+});
+
+
+test('admission collects all confirmed blockers and uses unique affected images rather than issue rows',()=>{
+  const items=collectTrainingAdmissionBlockers({draft:draft(),base:{blocked:true},
+    compatibility:{ready:true,issue_count:76,affected_image_count:38,issue_counts:{duplicate_annotation_conflict:38,partial_review_scope:38}},
+    externalReadiness:{ready:false,reason:'external-master-data-stale',message:'畅联云主数据已过期'}});
+  assert.ok(items.some(row=>row.code==='iteration'));
+  assert.ok(items.some(row=>row.code==='external-master-data-stale'));
+  assert.equal(items.find(row=>row.code==='material-compatibility').count,38);
+  assert.equal(items.find(row=>row.code==='duplicate_annotation_conflict').count,38);
+  assert.equal(items.find(row=>row.code==='partial_review_scope').count,38);
+  assert.ok(items.every(row=>!row.transient));
+});
+
+test('admission distinguishes unfinished checks from a recoverable failed check',()=>{
+  const pending=collectTrainingAdmissionBlockers({draft:draft(),compatibility:{ready:false,loading:true}});
+  assert.equal(pending[0].code,'material-compatibility-loading');assert.equal(pending[0].transient,true);
+  const failed=collectTrainingAdmissionBlockers({draft:draft(),compatibility:{ready:false,loading:false,error:'服务暂不可用'}});
+  assert.equal(failed[0].code,'material-compatibility-error');assert.equal(failed[0].transient,false);
+  assert.match(failed[0].message,/服务暂不可用/);
+});
+
+test('admission does not invent a unique image count from an issue-only response',()=>{
+  const blockers=collectTrainingAdmissionBlockers({draft:draft(),compatibility:{ready:true,issue_count:76}});
+  const material=blockers.find(row=>row.code==='material-compatibility');
+  assert.equal(material.count,null);assert.doesNotMatch(material.message,/76张/);
+});
+
+
+test('a prepared mother model cannot hide a noninteger Batch blocker',()=>{
+  const state=baseState();state.targets=[{...target,base_models:[{value:'custom.pt',model_status:'FOUND'}]}];
+  state.trainingDraft=draft({resource:{strategy:'manual',device:'0',batch:1.5,workers:0}});installDom();globalThis.window={submitTrain429:()=>null};
+  const runtime=installTrainingSubmitRuntime({getState:()=>state,projectId:()=> 'project-1',trainingDraftRuntime:{sync:()=>state.trainingDraft,current:()=>state.trainingDraft,base:()=>({blocked:false})},trainingDraftToRequest});
+  try{assert.equal(runtime.state().readiness.ready,false);assert.match(runtime.state().readiness.blockers.find(row=>row.code==='training-config')?.message||'',/Batch/)}finally{cleanup(runtime)}
 });

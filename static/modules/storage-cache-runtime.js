@@ -306,6 +306,13 @@ export function installStorageCacheRuntime({fetchImpl = globalThis.fetch, notify
         workersLoadedAt = Date.now();
         return latestWorkers;
       })
+      .catch(error => {
+        // Throttle failed/cancelled transport attempts as well: a quick page
+        // revisit must not immediately duplicate a worker discovery request.
+        // The explicit refresh action may still bypass the TTL.
+        workersLoadedAt = Date.now();
+        throw error;
+      })
       .finally(() => { workerInflight = null; });
     return workerInflight;
   };

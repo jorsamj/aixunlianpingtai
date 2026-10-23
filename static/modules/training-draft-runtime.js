@@ -127,6 +127,7 @@ export function installTrainingDraftRuntime({
     const next = createTrainingDraft({
       ...baseDraft,
       ...patch,
+      ...(!Object.hasOwn(patch, 'duplicateReview') && ['materialIds','testMaterialIds','splitMode','algorithmId'].some(key => Object.hasOwn(patch,key)) ? {duplicateReview:null} : {}),
       resource: {...(baseDraft?.resource || {}), ...(patch.resource || {})},
       config: {...(baseDraft?.config || {}), ...(patch.config || {})},
     });

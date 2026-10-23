@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import vm from 'node:vm';
 
 const source = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
 
@@ -48,7 +49,9 @@ test('version conversion keeps chip choice capability-owned and submit returns t
   assert.ok(createStart >= 0 && createEnd > createStart);
   const createLayer = source.slice(createStart, createEnd);
   assert.match(createLayer, /<select id="conv428Chip" class="select"><\/select>/);
-  assert.match(source, /rockchipOrder428=\['rk3568','rk3576'\]/);
+  assert.match(source, /state\.conv428Catalog\?\.chips/);
+  assert.match(source, /deploy\/resolve/);
+  assert.doesNotMatch(source, /rockchipOrder428/);
   assert.doesNotMatch(source, /RK3578/i);
   assert.match(source, /平台不会让用户手工猜型号/);
 
@@ -70,4 +73,44 @@ test('version conversion only offers delete for terminal records without deliver
   assert.match(actions, /deletable=\['failed','stopped','cancelled','blocked_by_environment'\]\.includes\(status\)/);
   assert.match(actions, /deletable\?`<button class="btn mini danger" onclick="deleteDeployJob/);
   assert.doesNotMatch(actions, /!active\?`<button class="btn mini danger" onclick="deleteDeployJob/);
+});
+
+
+test('conversion submit freezes current fields before revalidation and ignores stale resolved values',async()=>{
+  const start=source.indexOf('  const conversionUnknown428=');
+  const end=source.indexOf('// ---------------------- training creation from algorithm',start);
+  const fields={conv428Resource:{value:'r'},conv428Precision:{value:'fp32'},conv428Chip:{value:'bm1684x'},
+    conv428Width:{value:'384'},conv428Height:{value:'640'},conv428Pixel:{value:'bgr'},
+    conv428Mean:{value:'1,2,3'},conv428Scale:{value:'0.1,0.2,0.3'},conv428Letterbox:{checked:false}};
+  const radio={value:'sophon',dataset:{vendorId:'sophon'}},form={dataset:{}},button={disabled:false,setAttribute(){},removeAttribute(){}};
+  const state={conv428ResourcesCurrent:true,conv428Resolved:{ready:true,params:{precision:'fp16',input_width:800,input_height:800,preprocessing:{pixel_format:'rgb'}}},conv428AdvancedValues:{}};
+  const writes=[];let revalidate;
+  const ctx={state,document:{getElementById:id=>fields[id],querySelector:s=>s.includes('conv428Target')?radio:s==='.convert428-create'?form:button},
+    pid:()=> 'p',toast:()=>{},deployResources428:()=>new Promise(r=>revalidate=r),
+    api:async(u,o)=>writes.push(JSON.parse(o.body)),localStorage:{removeItem(){}},cacheKey428:()=>'',closeModal(){},
+    rememberVersionConversion428:()=>({}),deploymentHistory428:async()=>({}),replaceVersionConversionBody428:()=>true,scheduleVersionConversionPoll428(){}};
+  ctx.PlatformCore={withRequestDeadline:operation=>Promise.resolve().then(()=>operation(new AbortController().signal))};ctx.window=ctx;ctx.event={currentTarget:button};vm.runInNewContext(source.slice(start,end),ctx);
+  const pending=ctx.submitConvert428('a','v');
+  await ctx.submitConvert428('a','v');
+  state.conv428Resolved={ready:true,params:{precision:'fp16',input_width:800,input_height:800}};
+  await Promise.resolve();revalidate({items:[{id:'r',status:'ready',targets:['sophon']}]});await pending;
+  assert.equal(writes.length,1);assert.equal(writes[0].params.precision,'fp32');
+  assert.equal(writes[0].params.input_width,384);assert.equal(writes[0].params.input_height,640);
+  assert.equal(writes[0].params.preprocessing.pixel_format,'bgr');assert.equal(writes[0].params.preprocessing.letterbox,false);
+});
+
+
+test('late conversion history cannot close or replace a newer dialog after successful creation',async()=>{
+  const start=source.indexOf('  const conversionUnknown428='),end=source.indexOf('// ---------------------- training creation from algorithm',start);
+  let form={dataset:{}},finish,historyRequested;
+  const waiting=new Promise(r=>historyRequested=r),fields={conv428Resource:{value:'r'},conv428Chip:{value:''},conv428Precision:{value:'fp32'}};
+  const radio={value:'onnx'},button={disabled:false,setAttribute(){},removeAttribute(){}},events=[];
+  const ctx={state:{conv428ResourcesCurrent:true},document:{getElementById:id=>fields[id],querySelector:s=>s.includes('conv428Target')?radio:s==='.convert428-create'?form:button},pid:()=> 'p',
+    deployResources428:async()=>({items:[{id:'r',status:'ready',targets:['onnx']}]}),api:async()=>{},
+    deploymentHistory428:()=>{historyRequested();return new Promise(r=>finish=r)},
+    closeModal:()=>events.push('close'),rememberVersionConversion428:()=>events.push('remember'),toast:()=>{},localStorage:{removeItem(){}},cacheKey428:()=>''};
+  ctx.PlatformCore={withRequestDeadline:operation=>Promise.resolve().then(()=>operation(new AbortController().signal))};ctx.window=ctx;vm.runInNewContext(source.slice(start,end),ctx);
+  const pending=ctx.submitConvert428('a','v');await waiting;
+  form={dataset:{}};finish({items:[]});await pending;
+  assert.deepEqual(events,[]);
 });

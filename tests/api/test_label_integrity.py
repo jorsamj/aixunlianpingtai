@@ -1018,3 +1018,46 @@ def test_projection_repair_rejects_generic_batch_creation(
     )
     assert response.status_code == 422
     assert "LABEL_PREVIEW_REPAIR_DEDICATED_PREPARE_REQUIRED" in response.text
+
+
+def test_full_audit_reports_the_same_duplicate_gt_blocker_as_training(
+    client, seeded_project, tmp_path, monkeypatch
+):
+    project_id, original = seeded_project
+    materials = app_module.material_store(project_id)
+    original = materials.get(original["id"])
+    second = {**original, "id": "duplicate-full-audit", "filename": "duplicate-full-audit.jpg"}
+    materials.upsert(second)
+
+    annotation_repository = AnnotationRepository(app_module.project_dir(project_id))
+    annotation_repository.upsert(
+        original["id"],
+        [{"label": "target", "class_id": 0, "x1": 1, "y1": 1, "x2": 12, "y2": 12}],
+        annotation_state="annotated",
+    )
+    annotation_repository.upsert(
+        second["id"],
+        [{"label": "target", "class_id": 0, "x1": 4, "y1": 4, "x2": 20, "y2": 20}],
+        annotation_state="annotated",
+    )
+    _repository, artifacts, scheduler = _isolated_runtime(tmp_path, monkeypatch)
+    response = client.post(f"/api/v54/projects/{project_id}/labels/integrity/audits")
+    assert response.status_code == 202, response.text
+    task_id = response.json()["task_id"]
+    assert scheduler.run_once() is True
+
+    issues = client.get(
+        f"/api/v54/projects/{project_id}/labels/integrity/audits/{task_id}/issues",
+        params={"limit": 100},
+    )
+    assert issues.status_code == 200, issues.text
+    found = [
+        row for row in issues.json()["items"]
+        if row["issue_type"] == "DUPLICATE_ANNOTATION_CONFLICT"
+    ]
+    assert {row["image_id"] for row in found} == {original["id"], second["id"]}
+    assert all(
+        row["details"]["content_sha256"] == original["content_sha256"]
+        for row in found
+    )
+    assert issues.json()["summary"]["affected_images"] >= 2

@@ -125,11 +125,14 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
   let inflight = null;
   let lastRefreshAt = 0;
   let refreshError = '';
+  let lastRefreshTiming = null;
   let externalProvider = null;
   let trainingWarmupHandle = null;
   let trainingWarmupGeneration = 0;
   let commonTrainingWarmupProjectId = '';
   let commonTrainingWarmupAt = 0;
+  let commonTrainingWarmupPendingProjectId = '';
+  let commonTrainingWarmupHandle = null;
   const COMMON_TRAINING_WARMUP_TTL_MS = 5 * 60 * 1000;
   const renderedRows = new Map();
   const filters = {
@@ -320,20 +323,31 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
       && commonTrainingWarmupProjectId === currentProjectId
       && now - commonTrainingWarmupAt >= 0
       && now - commonTrainingWarmupAt < COMMON_TRAINING_WARMUP_TTL_MS;
-    if (!commonWarmupFresh) {
-      commonTrainingWarmupProjectId = currentProjectId;
-      commonTrainingWarmupAt = now;
-      queueMicrotask(() => {
-        if (destroyed || generation !== trainingWarmupGeneration || String(state().page || '') !== ALGORITHM_PAGE) return;
+    if (!commonWarmupFresh && commonTrainingWarmupPendingProjectId !== currentProjectId) {
+      // Common project data is independent from per-card preflight.
+      // A second paint must not invalidate its timer or mark it warm.
+      if (commonTrainingWarmupHandle != null) {
+        if (typeof window.cancelIdleCallback === 'function') window.cancelIdleCallback(commonTrainingWarmupHandle);
+        else clearTimeout(commonTrainingWarmupHandle);
+      }
+      commonTrainingWarmupPendingProjectId = currentProjectId;
+      const warmCommon = () => {
+        commonTrainingWarmupHandle = null;
+        commonTrainingWarmupPendingProjectId = '';
+        if (destroyed || String(projectId?.() || '') !== currentProjectId || String(state().page || '') !== ALGORITHM_PAGE) return;
+        commonTrainingWarmupProjectId = currentProjectId;
+        commonTrainingWarmupAt = Date.now();
         void warmTrainingInputs('', {includePreflight: false});
-      });
+      };
+      if (typeof window.requestIdleCallback === 'function') commonTrainingWarmupHandle = window.requestIdleCallback(warmCommon, {timeout: 1500});
+      else commonTrainingWarmupHandle = window.setTimeout(warmCommon, 500);
     }
     // Real-time ChangLian preflight remains authoritative. Move the latency
     // off the click path by warming a small visible window while the browser is idle.
     const candidates = rows.filter(row => {
       const meta = providerMeta(row);
       return meta.external && algorithmTrainability(row).ready;
-    }).slice(0, 6);
+    }).slice(0, 2);
     if (!candidates.length) return;
     const run = async () => {
       trainingWarmupHandle = null;
@@ -380,13 +394,22 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
   }
 
   function trainingCount(id) {
-    return (state().jobs || []).filter(job => String(job?.asset_algorithm_id || job?.algorithm_asset_id || job?.algorithm_id || '') === String(id)).length;
+    // The server owns the complete durable history; state.jobs can be windowed.
+    const value = (state().algorithms || []).find(row => String(row.id) === String(id))?.successful_training_count;
+    return Number.isSafeInteger(value) && value >= 0 ? value : null;
+  }
+
+  function setSort(value) {
+    if (!['comprehensive','updated','training','metric'].includes(value)) return;
+    viewState.sort = value;
+    viewState.page = 1;
+    renderPage();
   }
 
   function visibleAlgorithms() {
     const rows = (state().algorithms || []).filter(algorithmMatches);
     if (viewState.sort === 'updated') return [...rows].sort((a, b) => String(b.updated_at || b.created_at || '').localeCompare(String(a.updated_at || a.created_at || '')));
-    if (viewState.sort === 'training') return [...rows].sort((a, b) => trainingCount(b.id) - trainingCount(a.id));
+    if (viewState.sort === 'training') return [...rows].sort((a, b) => (trainingCount(b.id) ?? -1) - (trainingCount(a.id) ?? -1));
     if (viewState.sort === 'metric') return [...rows].sort((a, b) => (algorithmVersionMap50(currentVersion(b)) ?? -1) - (algorithmVersionMap50(currentVersion(a)) ?? -1));
     return [...rows].sort((a, b) => Number(Boolean(activeJob(b.id, state().jobs || []))) - Number(Boolean(activeJob(a.id, state().jobs || []))));
   }
@@ -499,14 +522,14 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
       const published = String(version.external_publish_status || '').toLowerCase() === 'published';
       const downloadable = Boolean(String(version.stored_path || '').trim());
       const pid = encodeURIComponent(String(projectId?.() || ''));
-      return `<div class="alg428-version-row"><div><b>${esc(version.version_name || '-')} ${current ? '<em>当前版本</em>' : ''}</b><span>${dateText(version.finished_at || version.created_at)}</span></div><div><span>mAP50</span><b>${metric == null ? '-' : `${metric.toFixed(1)}%`}</b></div><div class="alg428-version-actions"><button class="btn mini" onclick="openVersionReport429('${esc(algorithm.id)}','${esc(version.id)}')">训练报告</button>${version.training_lineage ? `<button class="btn mini" onclick="openVersionLineage429('${esc(algorithm.id)}','${esc(version.id)}')">训练溯源</button>` : ''}${version.evaluation ? `<button class="btn mini" onclick="openVersionEvaluation429('${esc(algorithm.id)}','${esc(version.id)}')">独立评测</button>` : ''}<button class="btn mini" onclick="openVersionConvert428('${esc(algorithm.id)}','${esc(version.id)}')">转换</button>${downloadable ? `<a class="btn mini" href="/api/v12/projects/${pid}/algorithms/${encodeURIComponent(String(algorithm.id || ''))}/versions/${encodeURIComponent(String(version.id || ''))}/download">下载模型</a>` : ''}${external ? `<button class="btn mini" data-external-publish-action onclick="window.AlgorithmListRuntime.publishVersion('${esc(algorithm.id)}','${esc(version.id)}',this)" ${published ? 'disabled' : ''}>${published ? '已发布' : '发布'}</button>` : ''}${current ? '' : `<button class="btn mini" onclick="openVersionRollback('${esc(algorithm.id)}','${esc(version.id)}')">回退</button>`}</div></div>`;
+      return `<div class="alg428-version-row"><div><b>${esc(version.version_name || '-')} ${current ? '<em>当前版本</em>' : ''}</b><span>${dateText(version.finished_at || version.created_at)}</span></div><div><span>mAP50</span><b>${metric == null ? '-' : `${metric.toFixed(1)}%`}</b></div><div class="alg428-version-actions"><button class="btn mini" onclick="openVersionReport429('${esc(algorithm.id)}','${esc(version.id)}')">训练报告</button>${version.training_lineage ? `<button class="btn mini" onclick="openVersionLineage429('${esc(algorithm.id)}','${esc(version.id)}')">训练溯源</button>` : ''}${version.evaluation ? `<button class="btn mini" onclick="openVersionEvaluation429('${esc(algorithm.id)}','${esc(version.id)}')">独立评测</button>` : ''}<button class="btn mini" onclick="openVersionConvert428('${esc(algorithm.id)}','${esc(version.id)}')">转换</button>${downloadable ? `<a class="btn mini" href="/api/v12/projects/${pid}/algorithms/${encodeURIComponent(String(algorithm.id || ''))}/versions/${encodeURIComponent(String(version.id || ''))}/download">下载模型</a>` : ''}${external ? `<button class="btn mini" data-external-publish-action="${esc(algorithm.id)}:${esc(version.id)}" onclick="window.AlgorithmListRuntime.publishVersion('${esc(algorithm.id)}','${esc(version.id)}',this)" >${published ? '已发布' : '发布'}</button>` : ''}${current ? '' : `<button class="btn mini" onclick="openVersionRollback('${esc(algorithm.id)}','${esc(version.id)}')">回退</button>`}</div></div>`;
     }).join('');
   }
 
   function algorithmRowView(algorithm) {
     const version = currentVersion(algorithm);
     const metric = algorithmVersionMap50(version);
-    const count = trainingCount(algorithm.id);
+    const count = trainingCount(algorithm.id) ?? '—';
     const meta = providerMeta(algorithm);
     const trainability = algorithmTrainability(algorithm);
     const run = activeJob(algorithm.id, state().jobs || []);
@@ -542,7 +565,7 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
               <button onclick="window.AlgorithmListRuntime.openDetail('${esc(algorithm.id)}')">详情</button>
               <button onclick="algorithmReport429('${esc(algorithm.id)}')">报告</button>
               <button class="primary-link" data-algorithm-train="${esc(algorithm.id)}" onclick="startAlgorithmTraining429('${esc(algorithm.id)}')" ${trainability.ready ? '' : `disabled title="${esc(trainability.message || '当前不可训练')}"`}>训练</button>
-              <details class="entity-more"><summary>•••</summary><div><button onclick="editAlgorithm423('${esc(algorithm.id)}')" ${meta.external ? 'disabled' : ''}>编辑</button><button class="danger" onclick="delAlgorithm('${esc(algorithm.id)}')" ${meta.external ? 'disabled' : ''}>删除</button></div></details>
+              <details class="entity-more"><summary role="button" aria-label="更多操作" aria-haspopup="menu" aria-expanded="false">•••</summary><div><button onclick="editAlgorithm423('${esc(algorithm.id)}')" ${meta.external ? 'disabled' : ''}>编辑</button><button class="danger" onclick="delAlgorithm('${esc(algorithm.id)}')" ${meta.external ? 'disabled' : ''}>删除</button></div></details>
             </div>
           </aside>
         </div>
@@ -616,7 +639,7 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
   }
 
   function runtimeState() {
-    return {inflight: Boolean(inflight), lastRefreshAt, error: refreshError, ...filterState(), industry: filters.industry, type: filters.type, sort: viewState.sort, page: viewState.page, categoryOpen: viewState.categoryOpen, draftCategoryIds: [...viewState.draftCategoryIds]};
+    return {inflight: Boolean(inflight), lastRefreshAt, error: refreshError, timing: lastRefreshTiming, ...filterState(), industry: filters.industry, type: filters.type, sort: viewState.sort, page: viewState.page, categoryOpen: viewState.categoryOpen, draftCategoryIds: [...viewState.draftCategoryIds]};
   }
 
   function bindShell(root) {
@@ -637,7 +660,7 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
       if (event.target.closest('[data-algorithm-reset]')) return resetFilters();
       const remove = event.target.closest('[data-remove-filter]');
       if (remove) { const key = String(remove.dataset.removeFilter || ''); if (key.startsWith('category:')) filters.selectedCategoryIds = filters.selectedCategoryIds.filter(id => id !== key.slice(9)); else if (key in filters) filters[key] = 'all'; return renderPage(); }
-      const sort = event.target.closest('[data-algorithm-sort]'); if (sort) { viewState.sort = sort.dataset.algorithmSort; viewState.page = 1; return renderPage(); }
+      const sort = event.target.closest('[data-algorithm-sort]'); if (sort) return setSort(sort.dataset.algorithmSort);
       const page = event.target.closest('[data-algorithm-page]'); if (page && !page.disabled) { viewState.page = Number(page.dataset.algorithmPage || 1); return renderRows(); }
       const toggleRow = event.target.closest('[data-algorithm-toggle]'); if (toggleRow) return toggle(toggleRow.dataset.algorithmToggle);
       if (event.target.closest('[data-algorithm-trainable-only]')) return setFilters({status: filters.status === 'trainable' ? 'all' : 'trainable'});
@@ -709,25 +732,33 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
 
     inflight = (async () => {
       const encoded = encodeURIComponent(pid);
-      const [algorithmBody, jobBody] = await Promise.all([
-        fetchJson(`/api/v12/projects/${encoded}/algorithms`, fetchImpl),
-        fetchJson(`/api/projects/${encoded}/jobs`, fetchImpl),
-      ]);
-
-      const latestGeneration = window.PageRequestScopeRuntime?.stats?.().generation ?? null;
-      const navigationChanged = navigationGeneration != null
-        && latestGeneration != null
-        && latestGeneration !== navigationGeneration;
-      const sameProject = String(projectId?.() || '') === String(pid);
-      const s = state();
-      if (destroyed || navigationChanged || !sameProject) {
-        return {algorithms: s.algorithms || [], jobs: s.jobs || [], cached: false, stale: true};
-      }
-
+      const startedAt = Date.now();
+      // The algorithm catalog is the primary content. Job state is secondary:
+      // slow training task history must not block the first algorithm paint.
+      const algorithmPromise = fetchJson(`/api/v12/projects/${encoded}/algorithms`, fetchImpl);
+      const jobsPromise = fetchJson(`/api/projects/${encoded}/jobs`, fetchImpl)
+        .then(body => ({body}), error => ({error}));
+      const isStale = () => {
+        const latestGeneration = window.PageRequestScopeRuntime?.stats?.().generation ?? null;
+        return destroyed
+          || (navigationGeneration != null && latestGeneration != null && latestGeneration !== navigationGeneration)
+          || String(projectId?.() || '') !== String(pid);
+      };
+      const algorithmBody = await algorithmPromise;
+      const algorithmMs = Date.now() - startedAt;
+      let s = state();
+      if (isStale()) return {algorithms: s.algorithms || [], jobs: s.jobs || [], cached: false, stale: true};
       s.algorithms = listFrom(algorithmBody);
-      s.jobs = listFrom(jobBody);
-      lastRefreshAt = Date.now();
       refreshError = '';
+      if (render && String(s.page || '') === ALGORITHM_PAGE) renderPage();
+      const firstPaintMs = Date.now() - startedAt;
+      const result = await jobsPromise;
+      s = state();
+      if (isStale()) return {algorithms: s.algorithms || [], jobs: s.jobs || [], cached: false, stale: true};
+      lastRefreshTiming = {algorithmMs, firstPaintMs, totalMs: Date.now() - startedAt, projectId: String(pid)};
+      if (result.error) throw result.error;
+      s.jobs = listFrom(result.body);
+      lastRefreshAt = Date.now();
       if (render && String(s.page || '') === ALGORITHM_PAGE) renderPage();
       return {algorithms: s.algorithms, jobs: s.jobs, cached: false, stale: false};
     })();
@@ -773,6 +804,7 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
     setFilters,
     matchesSearch,
     visibleAlgorithms,
+    setSort,
     setExternalProvider,
     openCategoryPicker,
     cancelCategoryPicker,
@@ -791,6 +823,12 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
     destroy() {
       destroyed = true;
       cancelTrainingWarmup();
+      if (commonTrainingWarmupHandle != null) {
+        if (typeof window.cancelIdleCallback === 'function') window.cancelIdleCallback(commonTrainingWarmupHandle);
+        else clearTimeout(commonTrainingWarmupHandle);
+        commonTrainingWarmupHandle = null;
+        commonTrainingWarmupPendingProjectId = '';
+      }
       renderedRows.clear();
       externalProvider = null;
       doc?.removeEventListener?.('click', onRefreshCapture, true);

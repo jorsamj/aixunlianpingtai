@@ -15,19 +15,17 @@ export function installNegativeSampleRuntime({getState} = {}) {
   function decorate() {
     if (destroyed || typeof document === 'undefined') return false;
     const current = state();
-    const toolbar = document.querySelector?.('#modalBody .ann420-stable .ann-toolbar')
-      || document.querySelector?.('.ann420-stable .ann-toolbar');
-    const button = document.getElementById?.('ann420ConfirmEmpty');
+    const toolbar = document.querySelector?.('.ann420-stable #ann420ReviewPanel');
+    const button = document.getElementById?.('ann420SaveReview');
     if (!toolbar || !button || !current?.activeImage || !current?.ann) return false;
 
     const boxes = Array.isArray(current.ann.boxes) ? current.ann.boxes : [];
-    const confirmed = current.ann.annotation_state === 'confirmed_empty';
-    const locked = Boolean(current.annotationHydrating420 || current.annotationLoadError420);
+    const confirmed = !current.annDirty && boxes.length === 0 && current.ann.annotation_state === 'confirmed_empty';
 
     button.dataset.negativeSample = '1';
-    button.title = '明确确认当前图片中不存在本次算法关注的目标；确认后以 confirmed_empty 负样本写入正式标注';
-    button.hidden = locked || boxes.length > 0;
-    const label = confirmed ? '✓ 已确认负样本' : '确认无目标';
+    button.title = '先查看图片并显式选择已审核类别，再保存正式标注与审核范围';
+    button.hidden = false;
+    const label = boxes.length ? '保存并确认审核' : confirmed ? '✓ 已确认负样本' : '确认本图无目标';
     if (button.textContent !== label) button.textContent = label;
     button.classList?.toggle?.('primary', confirmed);
 

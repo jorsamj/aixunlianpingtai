@@ -31,6 +31,7 @@ from .storage.manager import StorageManager
 from .training_compatibility import (
     compatibility_page,
     evaluate_training_compatibility_projection,
+    resolve_training_compatibility_selection,
 )
 
 # Keep the visual page intentionally smaller than the old 120-card page. The
@@ -117,6 +118,7 @@ def _gt_material_filter_page(
     labels: tuple[str, ...] = (),
     require_ground_truth: bool = False,
     include_payload: bool = False,
+    sort_order: str = "oldest",
 ) -> dict:
     """Page processed materials while label/GT predicates come from formal GT.
 
@@ -125,6 +127,9 @@ def _gt_material_filter_page(
     transaction without hydrating annotation JSON or trusting material labels.
     """
     bounded = max(1, min(MAX_SELECTION_SUMMARY_IDS, int(limit)))
+    if sort_order not in ("oldest", "newest"):
+        raise ValueError("sort_order must be oldest or newest")
+    descending = sort_order == "newest"
     if page is not None and cursor:
         raise ValueError("page and cursor cannot be used together")
     selected_labels = tuple(dict.fromkeys(
@@ -182,9 +187,8 @@ def _gt_material_filter_page(
             params = list(base_params)
             if cursor:
                 created_at, image_id = decode_material_cursor(cursor)
-                clauses.append(
-                    "(m.created_at > ? OR (m.created_at = ? AND m.id > ?))"
-                )
+                op = "<" if descending else ">"
+                clauses.append(f"(m.created_at {op} ? OR (m.created_at = ? AND m.id {op} ?))")
                 params.extend((created_at, created_at, image_id))
             where = " WHERE " + " AND ".join(clauses)
             columns = (
@@ -195,7 +199,8 @@ def _gt_material_filter_page(
             sql = (
                 f"SELECT {columns} FROM materials m"
                 + where
-                + " ORDER BY m.created_at, m.id LIMIT ?"
+                + (" ORDER BY m.created_at DESC, m.id DESC LIMIT ?" if descending
+                   else " ORDER BY m.created_at, m.id LIMIT ?")
             )
             query_params = [*params, bounded + 1]
             if offset is not None:
@@ -316,6 +321,9 @@ def _selection_summary(
             "WHERE m.processing_status='processed' "
             "ORDER BY m.id"
         ).fetchall()
+        missing_ids = [str(item[0]) for item in database.execute(
+            'SELECT r.id FROM requested_training_material_ids r LEFT JOIN materials m ON m.id=r.id '
+            'WHERE m.id IS NULL ORDER BY r.id')]
 
     processed_ids = [str(item["id"]) for item in processed_rows]
     size_by_id = {
@@ -339,6 +347,7 @@ def _selection_summary(
     return {
         "requested_count": len(image_ids),
         "matched_count": int(row["matched_count"] or 0),
+        "missing_image_ids": missing_ids,
         "selectable_count": selectable_count,
         "eligible_count": eligible_count,
         "pending_annotation_count": max(0, selectable_count - eligible_count),
@@ -511,6 +520,7 @@ def training_material_picker_router(
         page_size: int | None = None,
         query: str = "",
         label: list[str] | None = Query(default=None),
+        sort_order: str = "oldest",
     ):
         numbered = page is not None or page_size is not None
         requested_page = int(page or 1) if numbered else None
@@ -533,6 +543,7 @@ def training_material_picker_router(
                     query=str(query or "").strip(),
                     labels=selected_labels,
                     include_payload=True,
+                    sort_order=sort_order,
                 )
                 rows = [dict(row) for row in page["items"]]
                 next_cursor = page["next_cursor"]
@@ -546,6 +557,7 @@ def training_material_picker_router(
                     limit=requested_size,
                     query=str(query or "").strip(),
                     processing_status="processed",
+                    sort_order=sort_order,
                 )
                 rows = [dict(row) for row in material_page.items]
                 next_cursor = material_page.next_cursor
@@ -715,6 +727,8 @@ def training_material_picker_router(
             result = evaluate_training_compatibility_projection(
                 data_dir(), repository.project_path, request, algorithm,
             )
+            if body.get('selection_action') == 'RESOLVE_SELECTION':
+                return resolve_training_compatibility_selection(result, body)
             page = compatibility_page(
                 result,
                 query=str(body.get("query") or ""),
@@ -725,7 +739,12 @@ def training_material_picker_router(
                 page_size=body.get("page_size"),
             )
         except ValueError as error:
-            raise HTTPException(status_code=422, detail=str(error)) from error
+            stale_selection = body.get('selection_action') == 'RESOLVE_SELECTION' and any(
+                code in str(error) for code in ('TRAINING_SELECTION_STALE', 'TRAINING_SELECTION_CHANGED', 'TRAINING_REVIEW_STALE')
+            )
+            # Preserve the existing preflight's 422 validation contract. Only
+            # the new revision-bound selection mutation reports a CAS conflict.
+            raise HTTPException(status_code=409 if stale_selection else 422, detail=str(error)) from error
         items = []
         for item in page["items"]:
             image_id = str(item.get("image_id") or "")

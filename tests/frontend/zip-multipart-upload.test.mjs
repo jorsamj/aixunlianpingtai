@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import {zipFingerprint, zipPartPlan} from '../../static/modules/zip-import-runtime.js';
+import {zipBatchDuplicateKey, zipFingerprint, zipPartPlan} from '../../static/modules/zip-import-runtime.js';
 
 test('large ZIP is divided into deterministic resumable parts', () => {
   const parts = zipPartPlan(21, 8, [0,2]);
@@ -35,6 +35,21 @@ test('resume fingerprint includes sampled content so same name size and mtime ca
 
   assert.match(a, /^v2:same\.zip:8:123456:/);
   assert.notEqual(a, b);
+});
+
+test('batch duplicate key ignores browser mtime but preserves name size and sampled content identity', () => {
+  assert.equal(
+    zipBatchDuplicateKey('v2:same.zip:8:1000:abc123'),
+    zipBatchDuplicateKey('v2:same.zip:8:2000:abc123'),
+  );
+  assert.notEqual(
+    zipBatchDuplicateKey('v2:same.zip:8:1000:abc123'),
+    zipBatchDuplicateKey('v2:same.zip:8:1000:def456'),
+  );
+  assert.notEqual(
+    zipBatchDuplicateKey('v2:same.zip:8:1000:abc123'),
+    zipBatchDuplicateKey('v2:renamed.zip:8:1000:abc123'),
+  );
 });
 
 
@@ -80,6 +95,21 @@ test('ZIP complete lost response recovers using the same durable job id without 
   assert.equal(result.status,'merging');
   assert.equal(requests.filter(x=>x.method==='POST').length,1);
   assert.equal(requests.filter(x=>x.method==='GET').length,1);
+});
+
+test('multipart completedParts reports only acknowledged PUTs while other workers are dispatched',async()=>{
+  const {uploadZipMultipartJob}=await import('../../static/modules/zip-import-runtime.js');
+  const f=new File([new Uint8Array(12)],'confirmed.zip',{lastModified:1});
+  const pending=[],events=[];
+  const xhrFactory=()=>({upload:{},status:200,responseText:'{}',open(){},setRequestHeader(){},send(){pending.push(this)},abort(){this.onabort?.()}});
+  const fetchImpl=async url=>Response.json(url.endsWith('/complete')?{id:'confirmed',status:'selecting'}:{upload_id:'confirmed',part_size:4,completed_parts:[],total_parts:3});
+  const task=uploadZipMultipartJob('p',f,{fetchImpl,xhrFactory,onTransfer:event=>events.push(event)});
+  for(let i=0;i<100&&pending.length<3;i++)await new Promise(resolve=>setTimeout(resolve,5));
+  assert.equal(pending.length,3);
+  pending[0].onload();await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(events.at(-1).completedParts,1);
+  pending[1].onload();pending[2].onload();await task;
+  assert.equal(events.at(-1).completedParts,3);
 });
 
 test('ZIP complete unknown network state remains recoverable and never blindly retries POST', async () => {
@@ -136,7 +166,8 @@ test('interrupted ZIP view exposes pause resume and safe cancellation without st
   const source=fs.readFileSync(new URL('../../static/modules/zip-import-runtime.js',import.meta.url),'utf8');
   assert.match(source,/pauseUpload\('/);
   assert.match(source,/promptResume\('/);
-  assert.match(source,/cancelUpload\('/);
+  assert.match(source,/cancelJob\('/);
+  assert.match(source,/\/import\/jobs\/\$\{encodeURIComponent\(jobId\)\}\/cancel/);
   assert.match(source,/input\.closest\?\.\('\.modal'\)/);
   assert.doesNotMatch(source,/window\.closeModal\?\.\(\);open\(\);render\(\)/);
   assert.match(source,/xhr\.timeout=180000/);
@@ -147,5 +178,7 @@ test('failed ZIP network transfer releases stale active controller so same-file 
   const source=fs.readFileSync(new URL('../../static/modules/zip-import-runtime.js',import.meta.url),'utf8');
   // Paused/cancelled sessions deliberately retain control for later resumption;
   // only failed active transfers should drop the stale browser-owned controller.
-  assert.match(source,/catch\(e\)\{const lastUploadProgress=Number\(uploading\?\.progress\|\|0\);uploading=null;[\s\S]*?if\(uploadControl===control&&control\.state==='active'\)uploadControl=null;[\s\S]*?if\(control\.state==='paused'\|\|control\.state==='cancelled'\)return null;/);
+  assert.match(source,/catch\(e\)\{const lastUploadProgress=Number\(uploading\?\.progress\|\|0\)/);
+  assert.match(source,/if\(uploadControl===control&&control\.state==='active'\)uploadControl=null/);
+  assert.match(source,/if\(control\.state==='paused'\|\|control\.state==='cancelled'\)return null/);
 });

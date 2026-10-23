@@ -1,10 +1,28 @@
 import sqlite3
+import subprocess
+import sys
 
 from dataclasses import replace
 
 from platform_core.material_batches import estimate_batch, parse_request, prepare_batch, public_batch
 from platform_core.material_repository import MaterialRepository
 from platform_core.task_runtime import ArtifactStore, TaskKind, TaskRecord, TaskRepository
+
+
+def test_worker_material_module_does_not_require_the_web_framework():
+    source = """
+import builtins
+original_import = builtins.__import__
+def worker_import(name, *args, **kwargs):
+    if name.split('.')[0] in {'fastapi', 'starlette'}:
+        raise ModuleNotFoundError('web framework unavailable in worker: ' + name)
+    return original_import(name, *args, **kwargs)
+builtins.__import__ = worker_import
+from platform_core.material_batches import MaterialBatchHandler, public_batch
+assert MaterialBatchHandler and public_batch
+"""
+    result = subprocess.run([sys.executable, '-c', source], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
 
 
 def test_material_batch_projection_exposes_waiting_resource_truth(tmp_path):

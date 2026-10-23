@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -31,7 +32,11 @@ def probe_rknn_toolkit(
     python_path: str | Path | None = None,
     *,
     timeout: float = 20.0,
+    target_chips: list[str] | None = None,
 ) -> dict[str, Any]:
+    candidates=list(dict.fromkeys(target_chips if target_chips is not None else REMOTE_RKNN_CHIPS))
+    if any(not re.fullmatch(r"rk\d{4}",chip) for chip in candidates):
+        raise ValueError("RKNN目标编码非法")
     candidate = Path(str(python_path or sys.executable).strip()).expanduser()
     try:
         executable = candidate.resolve()
@@ -58,7 +63,7 @@ import onnx
 from rknn.api import RKNN
 
 chips = []
-for chip in ("rk3568", "rk3576"):
+for chip in __TARGET_CHIPS__:
     runtime = RKNN(verbose=False)
     try:
         code = runtime.config(target_platform=chip)
@@ -78,7 +83,7 @@ print(json.dumps({
     "onnx_mapping_available": hasattr(onnx, "mapping"),
     "supported_chips": chips,
 }, ensure_ascii=False))
-""".strip()
+""".strip().replace("__TARGET_CHIPS__",repr(candidates))
 
     try:
         completed = subprocess.run(
@@ -121,7 +126,7 @@ print(json.dumps({
         str(value or "").strip().lower()
         for value in (payload.get("supported_chips") or [])
     }
-    chips = [chip for chip in REMOTE_RKNN_CHIPS if chip in reported]
+    chips = [chip for chip in candidates if chip in reported]
     if not chips:
         result["version"] = version
         result["error"] = (

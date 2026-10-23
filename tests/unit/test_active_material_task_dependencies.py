@@ -9,6 +9,7 @@ from platform_core.material_batches import (
     assert_material_input_admission,
     create_batch,
     estimate_batch,
+    _assert_not_referenced_by_active_tasks,
 )
 from platform_core.material_repository import (
     MaterialRepository,
@@ -41,16 +42,19 @@ def _runtime(tmp_path):
     return project, materials, repository, artifacts
 
 
-def _delete_payload(project_id: str, materials: MaterialRepository, *, source=False):
+def _delete_payload(project_id: str, materials: MaterialRepository, repository, artifacts, *, source=False):
     payload = {
         "operation": "DELETE_SOURCE" if source else "DELETE_INDEX",
         "selection_spec": {"scope": "SELECTED", "image_ids": ["image-1"]},
         "options": {},
     }
-    estimate = estimate_batch(project_id, materials, payload)
+    estimate = estimate_batch(project_id, materials, payload, repository=repository, artifacts=artifacts)
     payload["selection_spec"] = estimate["selection_spec"]
     if source:
         payload["options"]["confirmation_token"] = estimate["confirmation_token"]
+    else:
+        plan = estimate['deletion_preview']
+        payload['options'].update(deletion_plan_id=plan['plan_id'], confirmation_credential=plan['confirmation_credential'])
     return payload
 
 
@@ -93,7 +97,7 @@ def _conversion_payload() -> dict:
     }
 
 
-def test_active_rknn_calibration_blocks_delete_until_conversion_is_terminal(tmp_path):
+def test_active_rknn_reference_survives_logical_retirement_and_physical_delete_stays_denied(tmp_path):
     _project, materials, repository, artifacts = _runtime(tmp_path)
     task_id = "conversion-1"
     artifacts.atomic_write_json(task_id, "request.json", _conversion_payload())
@@ -111,19 +115,23 @@ def test_active_rknn_calibration_blocks_delete_until_conversion_is_terminal(tmp_
             materials,
             repository,
             artifacts,
-            _delete_payload("project-1", materials, source=True),
+            _delete_payload("project-1", materials, repository, artifacts, source=True),
         )
-    assert blocked.value.code == "MATERIAL_ACTIVE_CONVERSION_REFERENCE"
+    assert blocked.value.code == "PHYSICAL_DELETE_SAFETY_UNVERIFIED"
+    # The existing reference owner still detects calibration consumers.
+    with pytest.raises(BatchRequestError) as active:
+        _assert_not_referenced_by_active_tasks('project-1', ['image-1'], materials, repository, artifacts)
+    assert active.value.code == 'MATERIAL_ACTIVE_CONVERSION_REFERENCE'
+    logical = create_batch('project-1', materials, repository, artifacts,
+        _delete_payload('project-1', materials, repository, artifacts))
+    assert logical.kind is TaskKind.MATERIAL_BATCH
 
     repository.request_cancel(task_id)
-    created = create_batch(
-        "project-1",
-        materials,
-        repository,
-        artifacts,
-        _delete_payload("project-1", materials, source=True),
-    )
-    assert created.kind is TaskKind.MATERIAL_BATCH
+    with pytest.raises(BatchRequestError) as terminal:
+        create_batch('project-1', materials, repository, artifacts,
+            _delete_payload('project-1', materials, repository, artifacts, source=True))
+    assert terminal.value.code == 'PHYSICAL_DELETE_SAFETY_UNVERIFIED'
+    assert materials.get('image-1') is not None
 
 
 def test_active_delete_selection_blocks_new_input_admission_and_terminal_releases_it(tmp_path):
@@ -133,7 +141,7 @@ def test_active_delete_selection_blocks_new_input_admission_and_terminal_release
         materials,
         repository,
         artifacts,
-        _delete_payload("project-1", materials),
+        _delete_payload("project-1", materials, repository, artifacts),
     )
 
     with pytest.raises(BatchRequestError) as blocked:
@@ -177,12 +185,12 @@ def test_training_admission_and_delete_publication_share_one_deterministic_fence
         assert admission_holds_fence.wait(5)
         delete_started.set()
         try:
-            create_batch(
+            results["task"] = create_batch(
                 "project-1",
                 materials,
                 repository,
                 artifacts,
-                _delete_payload("project-1", materials),
+                _delete_payload("project-1", materials, repository, artifacts),
             )
         except Exception as error:  # captured for the coordinating thread
             results["error"] = error
@@ -200,8 +208,10 @@ def test_training_admission_and_delete_publication_share_one_deterministic_fence
     assert not training_thread.is_alive()
     assert not delete_thread.is_alive()
     assert repository.get("training-1") is not None
-    assert isinstance(results.get("error"), BatchRequestError)
-    assert results["error"].code == "MATERIAL_ACTIVE_TRAINING_REFERENCE"
+    assert 'error' not in results
+    assert results['task'].kind is TaskKind.MATERIAL_BATCH
+    assert artifacts.read_json('training-1', 'payload.json') == {'train_image_ids':['image-1']}
+    assert materials.get('image-1') is not None
 
 
 def test_frozen_calibration_identity_is_revalidated_at_final_admission(tmp_path):

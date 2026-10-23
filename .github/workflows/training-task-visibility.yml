@@ -7,6 +7,9 @@ on:
       - feature/external-algorithm-publishing
     paths:
       - app.py
+      - platform_core/training_history_projection.py
+      - tests/unit/test_training_history_projection.py
+      - tests/api/test_training_success_counts.py
       - static/index.html
       - static/styles.css
       - static/app.js
@@ -71,6 +74,8 @@ jobs:
           tests/api/test_training_event_stream.py
           tests/api/test_durable_training_controls.py
           tests/api/test_training_terminal_runtime.py
+          tests/unit/test_training_history_projection.py
+          tests/api/test_training_success_counts.py
       - name: Training visibility and identity focused tests
         run: >-
           node --test
@@ -83,7 +88,7 @@ jobs:
       - name: Visibility owner and identity wiring guard
         shell: bash
         run: |
-          grep -Fq "import {installTrainingTaskVisibilityRuntime} from './modules/training-task-visibility-runtime.js?v=422607';" static/main.mjs
+          grep -Fq "import {installTrainingTaskVisibilityRuntime} from './modules/training-task-visibility-runtime.js?v=4226385';" static/main.mjs
           grep -Fq 'const trainingTaskVisibilityRuntime = installTrainingTaskVisibilityRuntime({' static/main.mjs
           grep -Fq "navigationStabilityRuntime.registerPageOwner('训练任务', () => trainingTaskVisibilityRuntime.render())" static/main.mjs
           if grep -Fq '/static/modules/training-task-visibility-runtime.js' static/index.html; then

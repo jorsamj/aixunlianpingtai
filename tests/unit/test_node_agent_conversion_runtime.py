@@ -397,7 +397,7 @@ def _rknn_lease(source_bytes: bytes, *, chip="rk3568", digest=None):
     )
 
 
-def _rknn_worker_script(root: Path, *, manifest_chip="rk3568", hardware_verified=False):
+def _rknn_worker_script(root: Path, *, manifest_chip="rk3568", hardware_verified=False, execution_evidence=None):
     script = root / "deployment_worker.py"
     script.write_text(
         f"""
@@ -429,6 +429,7 @@ job.update(
     runtime_verified=False,
     hardware_verified={str(bool(hardware_verified))},
     validation_status='converted_unverified',
+    execution_evidence={execution_evidence!r},
 )
 (job_dir/'job.json').write_text(json.dumps(job), encoding='utf-8')
 (job_dir/'convert.log').write_text('rknn conversion worker complete\\n', encoding='utf-8')
@@ -812,3 +813,17 @@ raise RuntimeError('Traceback: simulated internal RKNN stack')
     assert "Traceback" not in outcome.error
     assert not any(event[0] == "prepare" for event in client.events)
     assert client.finish_calls[-1]["status"] == "FAILED"
+
+
+def test_agent_forwards_completed_worker_execution_evidence_without_inventing_dtype(tmp_path):
+    source=b"portable-rknn-source-model";root=tmp_path/"runtime";root.mkdir()
+    facts={"resolved_precision":"fp16","compiler_precision":"do_quantization=false","artifact_precision":None,"compiler_completed":True}
+    _rknn_worker_script(root,execution_evidence=facts)
+    client=FakeClient()
+    runner=AgentConversionRunner(client,AgentExecutionWorkdir(tmp_path/"state"),runtime_root=root,
+        ultralytics_python=sys.executable,rknn_python=sys.executable,transfer_session=FakeSession(source),
+        heartbeat_interval=60,process_poll_interval=0.05)
+    outcome=runner.run(_rknn_lease(source))
+    assert outcome.status=="BLOCKED_BY_HARDWARE"
+    confirm=next(event for event in client.events if event[0]=="confirm")
+    assert confirm[1]["execution_evidence"]==facts

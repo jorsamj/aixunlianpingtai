@@ -1,4 +1,4 @@
-import {installZipImportRuntime} from './modules/zip-import-runtime.js?v=422617';
+import {installZipImportRuntime} from './modules/zip-import-runtime.js?v=4226366';
 
 const runtime = installZipImportRuntime({
   getState: () => state,
@@ -7,6 +7,25 @@ const runtime = installZipImportRuntime({
 });
 
 if (runtime) {
+  // The view loads on demand; this original runtime remains the transport owner.
+  window.openUppyZipUpload = async () => {
+    const chooser=document.getElementById('up426Zip');
+    if (!state.project?.id) await window.__v53InitPromise;
+    if (!state.project?.id) { window.toast?.('当前项目尚未加载完成，请稍后重试'); return null; }
+    const projectId=state.project.id;
+    const current=()=>state.project?.id===projectId&&(!chooser||chooser.isConnected);
+    try {
+      const {openUppyZipView} = await import('./modules/uppy-zip-view.js?v=4226365');
+      if(!current())return null;
+      return await openUppyZipView({runtime,projectId});
+    } catch (error) {
+      if(!current())return null;
+      window.toast?.('ZIP组件加载失败，已回退原文件选择');
+      document.getElementById('up426Zip')?.click();
+      return null;
+    }
+  };
+
   const LEGACY_IMPORT_POLL_SENTINEL = -1;
 
   const claimLegacyImportPolling = () => {
@@ -31,7 +50,23 @@ if (runtime) {
       window.toast?.('请选择压缩包');
       return null;
     }
-    return runtime.upload(input).catch(() => null);
+    return (async () => {
+      // The bridge can be invoked programmatically before the first canonical
+      // project snapshot has painted. Join that single readiness promise rather
+      // than rejecting a valid file selection as "当前项目未加载".
+      if (!state.project?.id) {
+        const ready = window.__v53InitPromise || window.__clInit?.();
+        if (ready) await ready;
+      }
+      if (!state.project?.id) {
+        window.toast?.('当前项目尚未加载完成，请稍后重试');
+        return null;
+      }
+      return runtime.uploadBatch(input).catch(error => {
+        window.toast?.(`ZIP 批次处理失败：${error?.message || error}`);
+        return null;
+      });
+    })();
   };
   durableUploadFromImportModal.__zipImportRuntimeBridge = true;
   window.doImportUploadV19 = durableUploadFromImportModal;

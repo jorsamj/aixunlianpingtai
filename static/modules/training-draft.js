@@ -50,6 +50,16 @@ export function trainingBaseVersionFromAlgorithm(algorithm = {}) {
   };
 }
 
+export function trainingInheritedDefaults(algorithm={}) {
+  const base=trainingBaseVersionFromAlgorithm(algorithm);
+  if(!base.hasPrevious)return {};
+  const version=algorithm.versions.find(row=>String(row.id||row.version_id)===base.versionId);
+  const actual=version?.training_lineage?.parameters?.actual||version?.training_report?.actual_train_params||version?.report?.actual_train_params||{};
+  const precision=String(actual.effective_precision||actual.runtime_precision||actual.precision||'').toLowerCase();
+  const size=actual.imgsz;
+  return {...(['fp16','fp32'].includes(precision)?{precision,amp:precision==='fp16'}:{}),...(Number.isInteger(size)&&size>=32&&size<=4096?{imgsz:size}:{})};
+}
+
 export function createTrainingDraft(values = {}) {
   const splitMode = String(values.splitMode || 'random_test_from_training_pool');
   if (!['random_test_from_training_pool', 'independent_test_set'].includes(splitMode)) {
@@ -74,6 +84,14 @@ export function createTrainingDraft(values = {}) {
     baseVersionId: String(values.baseVersionId || '').trim(),
     materialIds,
     testMaterialIds,
+    ...(values.duplicateReview ? {duplicateReview: {
+      ...(values.duplicateReview.review_kind==='EXPLICIT_SELECTION_ADJUSTMENT'?{review_kind:'EXPLICIT_SELECTION_ADJUSTMENT'}:{}),
+      original_train_image_ids: unique(values.duplicateReview.original_train_image_ids),
+      original_test_image_ids: unique(values.duplicateReview.original_test_image_ids),
+      excluded_image_ids: unique(values.duplicateReview.excluded_image_ids),
+      material_revision: Number(values.duplicateReview.material_revision),
+      annotation_revision: Number(values.duplicateReview.annotation_revision),
+    }} : {}),
     splitMode,
     experimentPercent: splitMode === 'random_test_from_training_pool'
       ? numberOr(values.experimentPercent, 20)
@@ -139,6 +157,11 @@ export function trainingDraftToRequest(draft, parameters = {}) {
     queue_priority: normalized.priority,
   };
   if (normalized.resource.batch != null) request.batch = normalized.resource.batch;
+  if (normalized.duplicateReview) {
+    request.duplicate_review = normalized.duplicateReview;
+    request.expected_material_revision = normalized.duplicateReview.material_revision;
+    request.expected_annotation_revision = normalized.duplicateReview.annotation_revision;
+  }
   if (normalized.resource.workers != null) request.workers = normalized.resource.workers;
   if (normalized.resource.cache != null) request.cache = normalized.resource.cache;
   if (Object.hasOwn(request, 'cache')) request.cache = trainingCacheRequestValue(request.cache);

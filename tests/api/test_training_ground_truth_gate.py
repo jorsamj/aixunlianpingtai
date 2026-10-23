@@ -1,4 +1,5 @@
 import pytest
+from types import SimpleNamespace
 
 from platform_core.snapshots import build_snapshot, is_training_ground_truth
 from platform_core.training_splits import SplitManifest, SplitMode, _processed
@@ -223,7 +224,7 @@ def test_training_input_freeze_survives_later_gt_and_label_changes(monkeypatch, 
         }
     ]
 
-    monkeypatch.setattr(training_tasks, "MaterialRepository", lambda _project: object())
+    monkeypatch.setattr(training_tasks, "MaterialRepository", lambda _project: SimpleNamespace(current_revision=lambda: 1))
     monkeypatch.setattr(
         training_tasks,
         "_selected_project_images",
@@ -271,7 +272,7 @@ def test_training_input_freeze_rejects_tampering(monkeypatch, tmp_path):
     train_ids = ("train-1", "train-2", "train-3", "train-4")
     test_ids = ("test-1",)
     rows = _freeze_rows((*train_ids, *test_ids))
-    monkeypatch.setattr(training_tasks, "MaterialRepository", lambda _project: object())
+    monkeypatch.setattr(training_tasks, "MaterialRepository", lambda _project: SimpleNamespace(current_revision=lambda: 1))
     monkeypatch.setattr(
         training_tasks,
         "_selected_project_images",
@@ -314,7 +315,7 @@ def test_training_input_freeze_requires_indexed_content_identity(monkeypatch, tm
     test_ids = ("test-1",)
     rows = _freeze_rows((*train_ids, *test_ids))
     rows[2]["content_sha256"] = ""
-    monkeypatch.setattr(training_tasks, "MaterialRepository", lambda _project: object())
+    monkeypatch.setattr(training_tasks, "MaterialRepository", lambda _project: SimpleNamespace(current_revision=lambda: 1))
     monkeypatch.setattr(
         training_tasks,
         "_selected_project_images",
@@ -377,6 +378,89 @@ def test_training_split_quality_requires_train_positive_for_new_labels_only():
     assert any("smoke" in warning for warning in inherited_only["warnings"])
 
 
+def test_training_split_quality_reports_class_images_components_and_unknown_sources():
+    import platform_core.training_tasks as training_tasks
+    from types import SimpleNamespace
+
+    rows = [
+        {"id": "a", "source_group_id": "video-1", "annotation_state": "annotated",
+         "boxes": [{"label": "smoke"}, {"label": "smoke"}]},
+        {"id": "b", "source_group_id": "video-1", "annotation_state": "annotated",
+         "boxes": [{"label": "smoke"}]},
+        {"id": "c", "group_id": "automatic-cluster-without-camera-origin",
+         "annotation_state": "annotated",
+         "boxes": [{"label": "smoke"}]},
+        {"id": "d", "annotation_state": "annotated",
+         "boxes": [{"label": "smoke"}]},
+        {"id": "e", "annotation_state": "confirmed_empty", "boxes": []},
+    ]
+    manifest = SimpleNamespace(
+        ids={"train": ("a", "b"), "validation": ("c",), "test": ("d", "e")},
+        groups={"a": "video-1", "b": "video-1", "c": "c", "d": "d", "e": "e"},
+    )
+    schema = [{"code": "smoke", "class_id": 0}, {"code": "fire", "class_id": 1}]
+    quality = training_tasks._training_split_quality(
+        rows, manifest, schema, include_class_coverage=True,
+    )
+    coverage = quality["class_coverage"]
+    assert coverage["label_box_counts"]["train"]["smoke"] == 3
+    assert coverage["label_image_counts"]["train"]["smoke"] == 2
+    assert coverage["label_independent_component_counts"]["train"]["smoke"] == 1
+    assert coverage["role_known_source_image_counts"]["train"] == 2
+    assert coverage["role_unknown_source_image_counts"]["validation"] == 1
+    # A split/group key is not proof that an actual camera or video
+    # capture source is known.
+    assert coverage["role_known_source_image_counts"]["validation"] == 0
+    assert coverage["role_confirmed_negative_image_counts"]["test"] == 1
+    assert coverage["provenance_status"] == "partial_unknown"
+    assert quality["active_labels_without_train_positive"] == ["fire"]
+    assert coverage["train_labels_without_test_positive"] == []
+
+
+def test_training_split_quality_marks_missing_test_class_without_inventing_precision():
+    import platform_core.training_tasks as training_tasks
+    from types import SimpleNamespace
+
+    rows = [
+        {"id": "a", "annotation_state": "annotated", "boxes": [{"label": "fire"}]},
+        {"id": "b", "annotation_state": "annotated", "boxes": [{"label": "fire"}]},
+        {"id": "c", "annotation_state": "annotated", "boxes": [{"label": "smoke"}]},
+    ]
+    manifest = SimpleNamespace(ids={
+        "train": ("a",), "validation": ("b",), "test": ("c",)
+    }, groups={"a": "a", "b": "b", "c": "c"})
+    quality = training_tasks._training_split_quality(
+        rows, manifest, [{"code": "fire"}, {"code": "smoke"}],
+        include_class_coverage=True,
+    )
+    assert quality["class_coverage"]["train_labels_without_test_positive"] == ["fire"]
+    assert any("独立试验集" in message for message in quality["warnings"])
+
+
+def test_legacy_split_quality_keeps_frozen_contract_shape_unchanged():
+    import platform_core.training_tasks as training_tasks
+    from types import SimpleNamespace
+
+    rows = [
+        {"id": "a", "boxes": [{"label": "fire"}]},
+        {"id": "b", "boxes": [{"label": "fire"}]},
+        {"id": "c", "boxes": [{"label": "fire"}]},
+    ]
+    manifest = SimpleNamespace(ids={
+        "train": ("a",), "validation": ("b",), "test": ("c",)
+    })
+    legacy = training_tasks._training_split_quality(
+        rows, manifest, [{"code": "fire"}],
+    )
+    assert "class_coverage" not in legacy
+    assert "train_labels_without_test_positive" not in legacy
+    assert set(legacy) == {
+        "role_box_counts", "role_label_counts",
+        "active_labels_without_train_positive",
+        "train_labels_without_validation_positive", "warnings",
+    }
+
+
 def test_training_input_freeze_rejects_all_negative_detection_training(monkeypatch, tmp_path):
     import platform_core.training_tasks as training_tasks
     from platform_core.training_splits import SplitRequest
@@ -389,7 +473,7 @@ def test_training_input_freeze_rejects_all_negative_detection_training(monkeypat
         row["annotation_scope"] = ["smoke"]
         row["boxes"] = []
 
-    monkeypatch.setattr(training_tasks, "MaterialRepository", lambda _project: object())
+    monkeypatch.setattr(training_tasks, "MaterialRepository", lambda _project: SimpleNamespace(current_revision=lambda: 1))
     monkeypatch.setattr(
         training_tasks,
         "_selected_project_images",

@@ -27,10 +27,27 @@ test('material import dock exposes a safe clear-finished action', () => {
 });
 
 
-test('upload task center stays below modal interaction layer', () => {
+test('upload task center opens above ZIP modal but yields to unrelated dialogs', () => {
   const dock = taskCenter.match(/\.utc-root\{[^}]*z-index:(\d+)/);
   const modal = css.match(/\.modal\{[^}]*z-index:(\d+)/);
+  const otherDialogGuard = taskCenter.match(/body:has\(\.modal:not\(\.hidden\):not\(\.import350-modal\)\) \.utc-root\{z-index:(\d+)\}/);
   assert.ok(dock, 'upload task center z-index must be explicit');
   assert.ok(modal, 'modal z-index must be explicit');
-  assert.ok(Number(dock[1]) < Number(modal[1]), `task center z-index ${dock[1]} must stay below modal ${modal[1]}`);
+  assert.ok(otherDialogGuard, 'unrelated dialogs must take precedence over the ZIP upload dock');
+  assert.ok(Number(dock[1]) > Number(modal[1]), 'upload task center must remain clickable while ZIP modal is open');
+  assert.ok(Number(otherDialogGuard[1]) < Number(modal[1]), 'unrelated dialogs must stay above the upload task center');
+  const decisionGuard = taskCenter.match(/body:has\(\.modal\.import350-modal:not\(\.hidden\):not\(\.import350-minimized\) \.zip-label-confirm\) \.utc-root\{z-index:(\d+)\}/);
+  assert.ok(decisionGuard, 'ZIP label confirmation must take precedence over the upload dock');
+  assert.ok(Number(decisionGuard[1]) < Number(modal[1]), 'ZIP label confirmation buttons must not be covered');
+  assert.doesNotMatch(taskCenter, /body:has\(\.modal\.import350-modal:not\(\.hidden\)\) \.utc-root\{z-index:900\}/,
+    'active uploads without label decisions must keep the dock clickable');
+});
+
+test('import modal remains mounted while minimized without creating a second uploader',()=>{
+ const app=readFileSync(new URL('../../static/app.js',import.meta.url),'utf8');
+ const css=readFileSync(new URL('../../static/styles.css',import.meta.url),'utf8');
+ assert.match(app,/decorateImportModal424/);
+ assert.match(app,/data-import-minimize/);
+ assert.match(css,/\.modal\.import350-minimized/);
+ assert.match(css,/\.modal\.import350-minimized \.modal-body\{display:none/);
 });

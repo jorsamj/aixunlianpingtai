@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
-const app = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+const app = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 
 test('render426base page wrapper cannot return', () => {
   assert.equal(app.includes('const render426base=render;'), false);

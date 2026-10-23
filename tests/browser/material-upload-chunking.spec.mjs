@@ -78,4 +78,9 @@ test('65 browser-selected images upload as two sequential server-confirmed chunk
   await expect(dialog.getByText('本次上传 65 张素材')).toBeVisible();
   expect(uploadRequests).toHaveLength(2);
   expect(maxActive).toBe(1);
+  await page.locator('[data-utc-toggle]').click();
+  const task=page.locator('.utc-row[data-utc-kind="browser-upload"]').filter({hasText:'图片上传 · 65 张'});
+  await expect(task).toContainText('上传完成');
+  await task.getByRole('button',{name:'查看详情'}).click();
+  await expect(page.locator('.utc-upload-details')).toContainText('成功 65 · 失败 0');
 });

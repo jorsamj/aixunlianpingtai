@@ -3,6 +3,7 @@ from __future__ import annotations
 import errno
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -13,7 +14,7 @@ import tempfile
 import threading
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
 from typing import Any, Callable, Mapping, Sequence
@@ -43,12 +44,12 @@ from .snapshots import (
 )
 from .storage import StorageManager
 from .task_runtime import ProcessController, TaskKind, TaskStatus, launch_process
-from .training_splits import SplitMode, SplitRequest, build_split_manifest
+from .training_splits import SplitMode, SplitRequest, build_split_manifest, assert_training_duplicate_safety, training_annotation_digest
 from .training_devices import normalize_training_device, training_python, validate_training_device
 from .training_metrics import read_metrics
 from .training_bundle_cache import TrainingBundleCache
 from .training_lineage import build_training_lineage
-from .training_evaluation import build_evaluation_truth, build_iteration_decision
+from .training_evaluation import build_evaluation_truth, build_iteration_decision, build_training_metric_credibility, build_evaluation_benchmark_scope
 
 
 TRAINING_BUNDLE_SAFETY_RESERVE_BYTES = 512 * 1024 * 1024
@@ -790,6 +791,30 @@ def materialize_runtime_yaml(manifest_path: str | Path, destination: str | Path)
     return output
 
 
+def _verify_portable_training_yaml(path: Path, manifest: Mapping[str, Any], snapshot: Mapping[str, Any]) -> None:
+    """Check the existing v3 training layout against its frozen class catalog."""
+    if str(snapshot.get("snapshot_id") or "") != str(manifest.get("snapshot_id") or ""):
+        raise ValueError("portable training snapshot identity mismatch")
+    # Old snapshots have no complete class contract. Do not upgrade or
+    # reinterpret their training layout during historical recovery.
+    if int(manifest.get("schema_version") or 0) < 3 or int(snapshot.get("schema_version") or 0) < 3:
+        return
+    data_path = resolve_dataset_yaml(path)
+    data = yaml.safe_load(data_path.read_text(encoding="utf-8"))
+    if not isinstance(data, Mapping):
+        raise ValueError("portable training YAML must be a mapping")
+    schema = snapshot.get("label_schema") or []
+    names = {int(row["class_id"]): str(row["code"]) for row in schema}
+    if not names or len(names) != len(schema) or data.get("names") != names:
+        raise ValueError("portable training YAML names differ from frozen snapshot")
+    if any(data.get(key) != value for key, value in (
+        ("path", "."), ("train", "images/train"), ("val", "images/validation"),
+    )) or "test" in data:
+        raise ValueError("portable training YAML split paths violate frozen isolation")
+    if "nc" in data and data["nc"] != len(names):
+        raise ValueError("portable training YAML class count differs from frozen snapshot")
+
+
 def _verify_materialized_dataset_evidence(manifest_path: str | Path) -> dict[str, Any]:
     # Fresh copies SHA256 the exact source bytes while streaming them into their
     # isolated temporary destination; reused destinations are SHA256 checked
@@ -803,6 +828,7 @@ def _verify_materialized_dataset_evidence(manifest_path: str | Path) -> dict[str
     if not snapshot.is_file() or not expected_snapshot or _sha256(snapshot) != expected_snapshot:
         raise ValueError("portable training snapshot SHA256 mismatch")
     snapshot_value = json.loads(snapshot.read_text(encoding="utf-8"))
+    _verify_portable_training_yaml(path, manifest, snapshot_value)
     revision = _resolve_relative(
         path.parent,
         str(manifest.get("dataset_revision_ref") or ""),
@@ -848,7 +874,13 @@ def verify_portable_dataset(manifest_path: str | Path) -> dict[str, Any]:
     snapshot_path = _resolve_relative(path.parent, str(manifest.get("snapshot_ref") or ""))
     if not snapshot_path.is_file():
         raise FileNotFoundError("portable training snapshot does not exist")
+    expected_snapshot = str(manifest.get("snapshot_sha256") or "")
+    if (expected_snapshot or int(manifest.get("schema_version") or 0) >= 3) and (
+        not expected_snapshot or _sha256(snapshot_path) != expected_snapshot
+    ):
+        raise ValueError("portable training snapshot SHA256 mismatch")
     snapshot_value = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    _verify_portable_training_yaml(path, manifest, snapshot_value)
     revision_id = str(manifest.get("dataset_revision_id") or "").strip()
     if revision_id:
         revision_path = _resolve_relative(
@@ -965,6 +997,31 @@ def _indexed_content_identity_ready(images: Sequence[Mapping[str, Any]]) -> bool
     return True
 
 
+def revalidate_queued_training_selection(materials: MaterialRepository, split: SplitRequest):
+    """Reduce a queued exact request to live identities, never refill from a filter.
+
+    Called under the existing lifecycle fence, before formal GT/split admission.
+    It is not allowed to rewrite an already-bound input freeze.
+    """
+    requested = tuple(dict.fromkeys((*split.train_image_ids, *split.test_image_ids)))
+    found = set()
+    for offset in range(0, len(requested), 500):
+        found.update(str(row['id']) for row in materials.get_many(requested[offset:offset + 500]))
+    train = tuple(key for key in split.train_image_ids if key in found)
+    test = tuple(key for key in split.test_image_ids if key in found)
+    if len(train) < 2:
+        raise ValueError('TRAINING_SELECTION_INSUFFICIENT: 原请求范围内有效训练素材不足2张，请重新选择素材')
+    if split.mode is SplitMode.INDEPENDENT_TEST_SET and not test:
+        raise ValueError('TRAINING_TEST_SELECTION_INSUFFICIENT: 原请求独立Test素材已不可用，不能自动补选')
+    report = {
+        'requested_train_count': len(split.train_image_ids),
+        'requested_test_count': len(split.test_image_ids),
+        'remaining_train_count': len(train), 'remaining_test_count': len(test),
+        'removed_image_ids': [key for key in requested if key not in found],
+    }
+    return replace(split, train_image_ids=train, test_image_ids=test), report
+
+
 def _selected_project_images(
     materials: MaterialRepository,
     project: Path,
@@ -992,6 +1049,7 @@ def _selected_project_images(
         annotation = annotation_by_id[image_id]
         row['annotation_state'] = annotation['annotation_state']
         row['annotation_scope'] = list(annotation.get('annotation_scope') or [])
+        row['annotation_version'] = int(annotation.get('version') or 0)
         row['annotation_hash'] = str(
             annotation.get('content_digest')
             or row.get('annotation_hash')
@@ -1028,6 +1086,8 @@ class TrainingSelectionResolution:
     effective_images: tuple[dict[str, Any], ...]
     selected_train_image_ids: tuple[str, ...]
     pending_annotation_image_ids: tuple[str, ...]
+    material_revision: int | None = None
+    annotation_revision: int | None = None
 
     def truth(self) -> dict[str, Any]:
         return {
@@ -1060,8 +1120,12 @@ def resolve_training_selection(
     converted into an empty YOLO label. Independent test material remains
     Ground-Truth-only because evaluation without labels is meaningless.
     """
+    materials = MaterialRepository(project)
+    annotations = AnnotationRepository(project)
+    material_revision = materials.current_revision()
+    annotation_revision = annotations.current_revision()
     image_ids = (*split_request.train_image_ids, *split_request.test_image_ids)
-    images = _selected_project_images(MaterialRepository(project), project, image_ids)
+    images = _selected_project_images(materials, project, image_ids)
     by_id = {str(row.get("id") or ""): row for row in images}
 
     effective_train: list[str] = []
@@ -1115,12 +1179,16 @@ def resolve_training_selection(
     effective_images = tuple(
         row for row in images if str(row.get("id") or "") in effective_ids
     )
+    if materials.current_revision() != material_revision or annotations.current_revision() != annotation_revision:
+        raise ValueError("training selection changed during canonical truth read; repeat preflight")
     return TrainingSelectionResolution(
         requested_split=split_request,
         effective_split=effective_split,
         effective_images=effective_images,
         selected_train_image_ids=tuple(split_request.train_image_ids),
         pending_annotation_image_ids=tuple(pending_annotation),
+        material_revision=material_revision,
+        annotation_revision=annotation_revision,
     )
 
 
@@ -1165,6 +1233,7 @@ _TRAINING_INPUT_FREEZE_FIELDS = (
     "external_annotation_needs_review",
     "external_annotation_review_reason",
     "annotation_state",
+    "annotation_version",
     "annotation_scope",
     "annotation_hash",
     "annotated",
@@ -1220,6 +1289,8 @@ def _training_split_quality(
     manifest: Any,
     label_schema: Sequence[Mapping[str, Any]],
     label_contract: Mapping[str, Any] | None = None,
+    *,
+    include_class_coverage: bool = False,
 ) -> dict[str, Any]:
     by_id = {str(row.get("id") or ""): row for row in images}
     role_box_counts: dict[str, int] = {}
@@ -1287,12 +1358,351 @@ def _training_split_quality(
             "训练标签在验证集缺少正样本，相关类别指标不可评估: "
             + ", ".join(missing_validation[:20])
         )
-    return {
+    quality = {
         "role_box_counts": role_box_counts,
         "role_label_counts": role_label_counts,
         "active_labels_without_train_positive": missing_train,
         "train_labels_without_validation_positive": missing_validation,
         "warnings": warnings,
+    }
+    if not include_class_coverage:
+        # Frozen input contracts created before TQ-01 must replay exactly.
+        # Never change their digest or historical quality evidence.
+        return quality
+
+    roles = ("train", "validation", "test")
+    role_label_images: dict[str, dict[str, int]] = {}
+    role_label_components: dict[str, dict[str, int]] = {}
+    role_known_source_images: dict[str, int] = {}
+    role_unknown_source_images: dict[str, int] = {}
+    role_confirmed_negative_images: dict[str, int] = {}
+    # Relationship identifiers such as group_id / near_duplicate_group_id
+    # enforce leakage isolation but do NOT by themselves prove real
+    # provenance (camera, collection session, original video).
+    known_source_fields = (
+        "source_group_id", "video_task_id", "camera_session_id",
+        "capture_session_id",
+    )
+    for role in roles:
+        positive_images: dict[str, int] = {}
+        label_components: dict[str, set[str]] = {}
+        known = unknown = negative = 0
+        for image_id in manifest.ids[role]:
+            row = by_id.get(str(image_id)) or {}
+            code_set = {
+                str(box.get("label") or box.get("code") or "").strip()
+                for box in (row.get("boxes") or [])
+                if isinstance(box, Mapping)
+                and str(box.get("label") or box.get("code") or "").strip()
+            }
+            if not code_set and str(row.get("annotation_state") or "") == "confirmed_empty":
+                negative += 1
+            reliable_source = (
+                any(str(row.get(key) or "").strip() for key in known_source_fields)
+                or (
+                    bool(str(row.get("camera_id") or "").strip())
+                    and bool(str(row.get("session_id") or "").strip())
+                )
+            )
+            if reliable_source:
+                known += 1
+            else:
+                unknown += 1
+            # Component keys are generated by the same leakage guard as the
+            # split manifest. No component identity is inferred from names.
+            component_key = str((getattr(manifest, "groups", None) or {}).get(str(image_id)) or str(image_id))
+            for code in code_set:
+                positive_images[code] = positive_images.get(code, 0) + 1
+                label_components.setdefault(code, set()).add(component_key)
+        role_label_images[role] = dict(sorted(positive_images.items()))
+        role_label_components[role] = {
+            code: len(components) for code, components in sorted(label_components.items())
+        }
+        role_known_source_images[role] = known
+        role_unknown_source_images[role] = unknown
+        role_confirmed_negative_images[role] = negative
+
+    measured_labels = sorted(set(active_codes) | set().union(
+        *(set(codes) for codes in role_label_images.values())
+    ))
+    missing_test = [
+        code for code in sorted(train_labels)
+        if role_label_images["test"].get(code, 0) == 0
+    ]
+    if missing_test:
+        quality["warnings"].append(
+            "训练标签在独立试验集缺少正样本，相关类别不能获得独立测试 AP: "
+            + ", ".join(missing_test[:20])
+        )
+    quality["class_coverage"] = {
+        "schema_version": 1,
+        "label_image_counts": role_label_images,
+        "label_independent_component_counts": role_label_components,
+        "label_box_counts": role_label_counts,
+        "role_confirmed_negative_image_counts": role_confirmed_negative_images,
+        "role_known_source_image_counts": role_known_source_images,
+        "role_unknown_source_image_counts": role_unknown_source_images,
+        "active_label_codes": measured_labels,
+        "train_labels_without_validation_positive": missing_validation,
+        "train_labels_without_test_positive": missing_test,
+        "provenance_status": (
+            "partial_unknown"
+            if any(role_unknown_source_images.values()) else "declared_source_fields_present"
+        ),
+    }
+    if (getattr(manifest, "requested", None) or {}).get("split_strategy") == "multilabel_grouped_v2":
+        diagnostics: dict[str, Any] = {}
+        for code in measured_labels:
+            component_supply = sum(
+                role_label_components[role].get(code, 0) for role in roles
+            )
+            present = [
+                role for role in roles if role_label_components[role].get(code, 0)
+            ]
+            missing = [role for role in roles if role not in present]
+            if not missing:
+                reason = "all_roles_covered"
+            elif component_supply == 0:
+                reason = "no_positive_examples"
+            elif (manifest.mode == SplitMode.INDEPENDENT_TEST_SET and "test" in missing):
+                reason = "fixed_independent_test_has_no_positive"
+            elif component_supply < 3:
+                reason = "insufficient_independent_components"
+            else:
+                reason = "coupled_groups_or_holdout_quota"
+            diagnostics[code] = {
+                "independent_component_count": component_supply,
+                "positive_roles": present,
+                "missing_roles": missing,
+                "reason": reason,
+            }
+        quality["class_coverage"]["partition_diagnostics"] = diagnostics
+        quality["class_coverage"]["partition_strategy"] = "multilabel_grouped_v2"
+    return quality
+
+
+
+def _training_annotation_admission(
+    images: Sequence[Mapping[str, Any]],
+    label_schema: Sequence[Mapping[str, Any]],
+    *,
+    strict_catalog: bool = False,
+) -> dict[str, Any]:
+    """Bounded, read-only quality admission of this exact projected GT selection.
+
+    Existing CLEAN audits are historical artifacts, not proof that the current
+    train/validation/test input passes. Do not mutate the source annotation.
+    """
+    from .annotation_quality import _audit_boxes
+
+    allowed = {
+        str(item.get("code") or "").strip()
+        for item in label_schema if str(item.get("code") or "").strip()
+    }
+    counts: dict[str, int] = {}
+    severities = {"blocking": 0, "manual_review": 0, "warning": 0}
+    samples: dict[str, list[str]] = {key: [] for key in severities}
+    missing_dimensions = 0
+    blocker_codes = {
+        "label_missing", "label_unknown", "label_disabled",
+        "box_invalid", "box_out_of_bounds", "annotation_state_inconsistent",
+    }
+    review_codes = {
+        "box_tiny", "box_large", "box_duplicate_exact",
+        "box_duplicate_iou", "box_pairwise_unchecked",
+        "dimensions_unknown", "annotation_needs_review",
+    }
+
+    def record(code: str, image_id: str, multiplicity: int = 1) -> None:
+        severity = (
+            "blocking" if code in blocker_codes else
+            "manual_review" if code in review_codes else "warning"
+        )
+        count = max(1, int(multiplicity))
+        counts[code] = counts.get(code, 0) + count
+        severities[severity] += count
+        if len(samples[severity]) < 10 and image_id not in samples[severity]:
+            samples[severity].append(image_id)
+
+    for row in images:
+        image_id = str(row.get("id") or "")
+        raw_boxes = list(row.get("boxes") or [])
+        state = str(row.get("annotation_state") or ("annotated" if raw_boxes else "unannotated")).strip().lower()
+        if (state == "annotated" and not raw_boxes or
+                state == "confirmed_empty" and raw_boxes or
+                state not in {"annotated", "confirmed_empty"}):
+            record("annotation_state_inconsistent", image_id)
+        if row.get("annotation_needs_review") or row.get("external_annotation_needs_review"):
+            record("annotation_needs_review", image_id)
+        if not raw_boxes:
+            continue
+        if strict_catalog and not allowed:
+            # A declared project catalog with zero ACTIVE labels must never
+            # silently treat all excluded GT labels as acceptable.
+            for candidate in raw_boxes:
+                if isinstance(candidate, Mapping):
+                    record("label_unknown", image_id)
+        try:
+            width = int(row.get("width") or 0)
+            height = int(row.get("height") or 0)
+        except (TypeError, ValueError, OverflowError):
+            width = height = 0
+        if width <= 0 or height <= 0:
+            missing_dimensions += 1
+            record("dimensions_unknown", image_id)
+        translated: list[dict[str, Any]] = []
+        for box in raw_boxes:
+            if not isinstance(box, Mapping):
+                translated.append({})
+                continue
+            candidate = dict(box)
+            if not all(key in candidate for key in ("x1", "y1", "x2", "y2")):
+                if all(key in candidate for key in ("cx", "cy", "w", "h")):
+                    try:
+                        cx, cy, bw, bh = (
+                            float(candidate[key]) for key in ("cx", "cy", "w", "h")
+                        )
+                        if all(math.isfinite(value) for value in (cx, cy, bw, bh)):
+                            # Match _yolo_line's normalized-vs-pixel semantics.
+                            if max(abs(cx), abs(cy), abs(bw), abs(bh)) <= 1:
+                                cx, cy = cx * max(1, width), cy * max(1, height)
+                                bw, bh = bw * max(1, width), bh * max(1, height)
+                            candidate.update(
+                                x1=cx - bw / 2, y1=cy - bh / 2,
+                                x2=cx + bw / 2, y2=cy + bh / 2,
+                            )
+                    except (TypeError, ValueError, OverflowError):
+                        pass
+            translated.append(candidate)
+        issues, _density, _per_class, _heatmap = _audit_boxes(
+            translated,
+            width=width, height=height,
+            known_labels=allowed, disabled_labels=set(),
+            pairwise_box_limit=32,
+        )
+        for issue in issues:
+            record(
+                str(issue.get("code") or "unknown"),
+                image_id,
+                int(issue.get("count") or 1),
+            )
+
+    result = {
+        "schema_version": 1,
+        "scope": "projected_frozen_training_selection",
+        "audited_images": len(images),
+        "issue_counts": dict(sorted(counts.items())),
+        "severity_counts": severities,
+        "sample_image_ids_by_severity": samples,
+        "images_with_unverified_dimensions": missing_dimensions,
+        "gt_mutated": False,
+    }
+    if severities["blocking"]:
+        reason_codes = sorted(code for code in counts if code in blocker_codes)
+        raise ValueError(
+            "TRAINING_ANNOTATION_ADMISSION_BLOCKED: 当前训练选择包含无效正式标注 "
+            + ", ".join(reason_codes[:8])
+            + "；素材示例 " + ", ".join(samples["blocking"][:5])
+            + "；请人工修正正式 GT 后重新创建任务"
+        )
+    return result
+
+
+
+def _training_source_projection_admission(
+    project: Path,
+    original: Sequence[Mapping[str, Any]],
+    projected: Sequence[Mapping[str, Any]],
+    label_schema: Sequence[Mapping[str, Any]],
+    label_contract: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Check original GT *before* label filtering and verify task projection.
+
+    A projected-only box audit can miss an invalid excluded object that will be
+    redacted when building the training image. Never read mutable live GT here:
+    both sequences are from the same fenced training selection.
+    """
+    from .training_label_tasks import project_training_rows
+
+    meta = _json(project / "meta.json", {})
+    labels = list(meta.get("labels") or []) if isinstance(meta, Mapping) else []
+    label_meta = list(meta.get("label_meta") or []) if isinstance(meta, Mapping) else []
+    active_codes: list[str] = []
+    for index in range(max(len(labels), len(label_meta))):
+        item = label_meta[index] if index < len(label_meta) else {}
+        entry = dict(item) if isinstance(item, Mapping) else {}
+        raw = labels[index] if index < len(labels) else ""
+        code = str(entry.get("code") or (
+            (raw.get("code") or raw.get("name")) if isinstance(raw, Mapping) else raw
+        ) or "").strip()
+        if not code or entry.get("active") is False:
+            continue
+        if str(entry.get("status") or "active").strip().lower() != "active":
+            continue
+        active_codes.append(code)
+    # Existing test fixtures and legacy import projects can have no label
+    # catalog. Do not manufacture a false missing-label blocker in that case;
+    # their task-local effective schema remains the only asserted catalog.
+    declared_catalog = bool(labels or label_meta)
+    source_schema = (
+        [{"code": code} for code in dict.fromkeys(active_codes)]
+        if declared_catalog else [
+            {"code": code} for code in dict.fromkeys([
+                *(str(item.get("code") or "").strip() for item in label_schema),
+                *(
+                    str(box.get("label") or box.get("code") or "").strip()
+                    for row in original for box in (row.get("boxes") or [])
+                    if isinstance(box, Mapping)
+                ),
+            ]) if code
+        ]
+    )
+    source_audit = _training_annotation_admission(
+        original, source_schema, strict_catalog=declared_catalog,
+    )
+    effective_codes = (label_contract or {}).get("effective_label_codes") or ()
+    if effective_codes:
+        expected = project_training_rows(original, label_contract or {})
+    else:
+        expected = original
+    if len(expected) != len(projected):
+        raise ValueError(
+            "TRAINING_PROJECTION_MISMATCH: 原始 GT 与本次投影素材数量不一致"
+        )
+
+    # These fields are the actual label/pixel-redaction contract. Ignore
+    # unrelated UI annotations; never compare to live repository revisions.
+    protected = (
+        "id", "content_sha256", "size_bytes", "width", "height",
+        "annotation_state", "annotation_scope", "boxes", "annotated",
+        "negative_origin", "source_annotation_state", "source_annotation_hash",
+        "source_labels", "training_excluded_boxes",
+        "training_projection_policy", "training_projection_digest",
+    )
+    projected_negatives = excluded_objects = 0
+    for expected_row, actual_row in zip(expected, projected):
+        image_id = str(expected_row.get("id") or "")
+        for key in protected:
+            if expected_row.get(key) != actual_row.get(key):
+                raise ValueError(
+                    f"TRAINING_PROJECTION_MISMATCH: 素材 {image_id} 的 {key} "
+                    "与正式 GT 和训练标签投影合同不一致；请重新创建训练任务"
+                )
+        excluded_objects += len(actual_row.get("training_excluded_boxes") or [])
+        if str(actual_row.get("negative_origin") or "") == "redacted_unselected_labels":
+            projected_negatives += 1
+
+    return {
+        "schema_version": 1,
+        "source_ground_truth_admission": source_audit,
+        "projection_consistency": {
+            "schema_version": 1,
+            "verified_images": len(projected),
+            "excluded_source_object_count": excluded_objects,
+            "redacted_task_negative_image_count": projected_negatives,
+            "status": "verified_against_fenced_original_gt",
+            "original_source_retained_in_freeze": False,
+        },
     }
 
 
@@ -1306,13 +1716,32 @@ def freeze_training_inputs(
     effective_images: Sequence[Mapping[str, Any]] | None = None,
     label_schema_override: Sequence[Mapping[str, Any]] | None = None,
     label_contract: Mapping[str, Any] | None = None,
+    duplicate_review: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Freeze formal DB truth at submit time without reading/copying source bytes."""
+    if selection_resolution is None:
+        original_images = _selected_project_images(MaterialRepository(project), project,
+            (*split_request.train_image_ids, *split_request.test_image_ids))
+        assert_training_duplicate_safety(original_images,
+            split_request.train_image_ids, split_request.test_image_ids)
     resolution = selection_resolution or resolve_training_selection(project, split_request)
     if resolution.requested_split != split_request:
         raise ValueError("training selection resolution does not match the requested split")
+    if ((resolution.material_revision is not None and
+            MaterialRepository(project).current_revision() != resolution.material_revision)
+            or (resolution.annotation_revision is not None and
+            AnnotationRepository(project).current_revision() != resolution.annotation_revision)):
+        raise ValueError("training selection changed before input freeze; repeat preflight")
+    if duplicate_review:
+        from .training_compatibility import validate_duplicate_review
+        validate_duplicate_review(project, {"duplicate_review": duplicate_review}, split_request)
     effective_split = resolution.effective_split
     source_images = [dict(row) for row in resolution.effective_images]
+    # Original formal GT must be checked before task-label projection can hide
+    # an out-of-scope category, empty-state, or coordinate disagreement.
+    assert_training_duplicate_safety(
+        source_images, effective_split.train_image_ids, effective_split.test_image_ids,
+    )
     images = (
         [dict(row) for row in effective_images]
         if effective_images is not None
@@ -1340,15 +1769,26 @@ def freeze_training_inputs(
     )
     if not label_schema:
         raise ValueError("training label schema is empty")
+    # Source audit must precede projected GT audit. Legitimate dropped labels
+    # are validated against the project catalog, not the task's reduced schema.
+    source_projection = _training_source_projection_admission(
+        project, source_images, images, label_schema, label_contract,
+    )
+    annotation_admission = _training_annotation_admission(images, label_schema)
     manifest = build_split_manifest(
         images,
         effective_split,
         seed=int(seed),
         required_train_labels=_requested_new_training_labels(label_contract),
+        split_strategy="multilabel_grouped_v2",
     )
     input_quality = _training_split_quality(
         images, manifest, label_schema, label_contract=label_contract,
+        include_class_coverage=True,
     )
+    input_quality["annotation_admission"] = annotation_admission
+    input_quality["source_ground_truth_admission"] = source_projection["source_ground_truth_admission"]
+    input_quality["projection_consistency"] = source_projection["projection_consistency"]
     snapshot = build_snapshot(
         images,
         manifest,
@@ -1365,6 +1805,7 @@ def freeze_training_inputs(
     }
     value = {
         "schema_version": _TRAINING_INPUT_FREEZE_SCHEMA_VERSION,
+        "split_strategy": "multilabel_grouped_v2",
         "split": split_truth,
         "images": [_frozen_training_row(row) for row in images],
         "label_schema": [dict(item) for item in label_schema],
@@ -1372,6 +1813,16 @@ def freeze_training_inputs(
         "dataset_revision_id": str(snapshot["dataset_revision_id"]),
         "input_quality": input_quality,
         "selection": resolution.truth(),
+        "material_revision": resolution.material_revision,
+        "annotation_revision": resolution.annotation_revision,
+        "original_ground_truth": [{"image_id": str(row.get("id") or ""),
+            "annotation_state": str(row.get("annotation_state") or "unannotated"),
+            "annotation_scope": list(row.get("annotation_scope") or []),
+            "box_count": len(row.get("boxes") or []),
+            "annotation_digest": training_annotation_digest(row),
+            "content_sha256": str(row.get("content_sha256") or ""),
+        } for row in source_images],
+        **({"duplicate_review": dict(duplicate_review)} if duplicate_review else {}),
         **(
             {"label_contract": {
                 key: item for key, item in dict(label_contract).items()
@@ -1382,6 +1833,13 @@ def freeze_training_inputs(
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     value["input_freeze_id"] = _training_input_freeze_digest(value)
+    # Material index writers can advance a revision during split/snapshot work.
+    # Validate the same original selection again at the freeze publication point.
+    if ((resolution.material_revision is not None and
+            MaterialRepository(project).current_revision() != resolution.material_revision)
+            or (resolution.annotation_revision is not None and
+            AnnotationRepository(project).current_revision() != resolution.annotation_revision)):
+        raise ValueError("training selection changed while building input freeze; repeat preflight")
     return value
 
 
@@ -1441,7 +1899,10 @@ def resolve_training_input_freeze(
         required_train_labels=_requested_new_training_labels(
             frozen_contract if isinstance(frozen_contract, Mapping) else None
         ),
+        # Pre-v2 freezes carry no marker: replay the historical split exactly.
+        split_strategy=str(value.get("split_strategy") or "legacy_v1"),
     )
+    frozen_quality = value.get("input_quality") if isinstance(value.get("input_quality"), Mapping) else {}
     input_quality = _training_split_quality(
         images,
         manifest,
@@ -1449,7 +1910,31 @@ def resolve_training_input_freeze(
         label_contract=(
             frozen_contract if isinstance(frozen_contract, Mapping) else None
         ),
+        include_class_coverage="class_coverage" in frozen_quality,
     )
+    if "annotation_admission" in frozen_quality:
+        # Only new freezes carry this key; keep legacy input_quality byte-for-byte.
+        input_quality["annotation_admission"] = _training_annotation_admission(
+            images, label_schema,
+        )
+    # The unfiltered original GT is intentionally not duplicated into the
+    # frozen worker payload. It cannot be re-audited from today's mutable DB.
+    # Instead, the source attestation is protected by input_freeze_id and
+    # anchored to original_ground_truth digests in this frozen contract.
+    if "source_ground_truth_admission" in frozen_quality:
+        original_evidence = value.get("original_ground_truth")
+        source_audit = frozen_quality["source_ground_truth_admission"]
+        projection_proof = frozen_quality.get("projection_consistency")
+        if (not isinstance(source_audit, Mapping)
+                or not isinstance(projection_proof, Mapping)
+                or not isinstance(original_evidence, list)
+                or len(original_evidence) != len(images)
+                or int(source_audit.get("audited_images") or -1) != len(images)
+                or int(projection_proof.get("verified_images") or -1) != len(images)
+                or str(projection_proof.get("status") or "") != "verified_against_fenced_original_gt"):
+            raise ValueError("training frozen source GT attestation is incomplete")
+        input_quality["source_ground_truth_admission"] = dict(source_audit)
+        input_quality["projection_consistency"] = dict(projection_proof)
     if dict(value.get("input_quality") or {}) != input_quality:
         raise ValueError("training input freeze quality evidence mismatch")
     snapshot = build_snapshot(
@@ -2060,6 +2545,12 @@ class TrainingHandler:
             raise RuntimeError("completed training dataset manifest does not match durable task snapshot")
         if str(verification.get("dataset_revision_id") or "") != dataset_revision_id:
             raise RuntimeError("completed training dataset manifest does not match durable dataset revision")
+        # The *verified* materialized Test bundle (exact pixels, YOLO labels,
+        # policy and original snapshot) is the sole source for a strict
+        # independent evaluation binding. Do not infer it from current materials.
+        benchmark_scope = build_evaluation_benchmark_scope(
+            snapshot, _json(manifest_path, {}),
+        )
 
         cache_runtime = context.artifacts.read_json(
             context.task.task_id,
@@ -2195,6 +2686,13 @@ class TrainingHandler:
             "device_evidence": job.get("device_evidence"),
             "device_validation": job.get("device_evidence") or job.get("device_validation") or {},
             "actual_train_params": job.get("actual_train_params"),
+            "amp_preflight": job.get("amp_preflight"),
+            "amp_check_method": job.get("amp_check_method"),
+            "amp_check_result": job.get("amp_check_result"),
+            "precision_fallback_reason": job.get("precision_fallback_reason"),
+            "resolved_precision": job.get("resolved_precision"),
+            "runtime_precision": job.get("runtime_precision"),
+            "requested_precision": job.get("requested_precision"),
             **_training_completion_metadata(job, payload),
             "snapshot_id": snapshot_id,
             "dataset_revision_id": dataset_revision_id,
@@ -2286,14 +2784,25 @@ class TrainingHandler:
             dataset_revision_id=dataset_revision_id,
             model_sha256=model_sha256,
             finished_at=finished_at,
+            benchmark_scope=benchmark_scope,
+        )
+        metric_credibility = build_training_metric_credibility(
+            training_report,
+            evaluation,
+            input_quality=(
+                frozen_input.get("input_quality")
+                if isinstance(frozen_input, Mapping) else None
+            ),
         )
         iteration_decision = build_iteration_decision(
             evaluation,
             quality_gate=quality_gate,
+            metric_credibility=metric_credibility,
         )
         result.update({
             "training_lineage": training_lineage,
             "evaluation": evaluation,
+            "metric_credibility": metric_credibility,
             "iteration_decision": iteration_decision,
         })
         context.artifacts.atomic_write_json(context.task.task_id, "result.json", result)
@@ -2338,6 +2847,7 @@ class TrainingHandler:
                         "dataset_revision_id": dataset_revision_id,
                         "training_lineage": training_lineage,
                         "evaluation": evaluation,
+                        "metric_credibility": metric_credibility,
                         "iteration_decision": iteration_decision,
                         "result_ref": "result.json",
                         "task_id": context.task.task_id,

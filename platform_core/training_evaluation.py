@@ -46,6 +46,21 @@ def _finite(value: Any, default: float = 0.0) -> float:
     return number if math.isfinite(number) else default
 
 
+def _evaluation_score(value: Any, *, status: str, field: str) -> float | None:
+    """Keep unavailable evidence distinct from a measured zero."""
+    if value is None:
+        return None
+    try:
+        numeric = float(value) if not isinstance(value, bool) else None
+    except (TypeError, ValueError, OverflowError):
+        numeric = None
+    if numeric is None or not math.isfinite(numeric) or not 0 <= numeric <= 1:
+        if status == "succeeded":
+            raise ValueError(f"evaluation {field} is not a finite unit score")
+        return None
+    return round(numeric, 6)
+
+
 def _label_name(names: Mapping[int | str, str] | Sequence[str] | None, class_id: int) -> str:
     if isinstance(names, Mapping):
         return str(names.get(class_id, names.get(str(class_id), str(class_id))))
@@ -204,7 +219,24 @@ def evaluate_blind_detection(
             )
         )
 
-    class_ids = sorted({int(row["class_id"]) for row in targets} | {int(row["class_id"]) for row in predictions})
+    # Model class catalog is needed even when a class has ZERO positives
+    # and ZERO predictions. Otherwise a 97% macro mAP can hide an untested
+    # class because the old loop only saw observed ground truth/predictions.
+    catalog_ids: set[int] = set()
+    if isinstance(names, Mapping):
+        for key in names:
+            try:
+                class_id = int(key)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if 0 <= class_id < 10000:
+                catalog_ids.add(class_id)
+    elif isinstance(names, Sequence) and not isinstance(names, (str, bytes)):
+        catalog_ids = set(range(min(len(names), 10000)))
+    observed_ids = {int(row["class_id"]) for row in targets} | {
+        int(row["class_id"]) for row in predictions
+    }
+    class_ids = sorted(catalog_ids | observed_ids)
     per_class: list[dict[str, Any]] = []
     thresholds = tuple(float(value) for value in iou_thresholds) or _DEFAULT_IOUS
     for class_id in class_ids:
@@ -226,10 +258,13 @@ def evaluate_blind_detection(
             {
                 "class_id": class_id,
                 "label": _label_name(names, class_id),
-                "precision": round(precision, 6),
-                "recall": round(recall, 6),
-                "map50": round(aps[0] if aps else 0.0, 6),
-                "map50_95": round(_mean(aps), 6),
+                # Without any positive test ground truth, recall and AP are
+                # undefined (not a measured zero or measured 100%).
+                "evaluation_status": "evaluated" if class_targets else "no_test_ground_truth",
+                "precision": round(precision, 6) if class_targets else None,
+                "recall": round(recall, 6) if class_targets else None,
+                "map50": round(aps[0] if aps else 0.0, 6) if class_targets else None,
+                "map50_95": round(_mean(aps), 6) if class_targets else None,
                 "true_positive": true_positive,
                 "false_positive": false_positive,
                 "false_negative": false_negative,
@@ -246,12 +281,25 @@ def evaluate_blind_detection(
         "metrics/mAP50(B)": round(_mean([float(row["map50"]) for row in scored]), 6),
         "metrics/mAP50-95(B)": round(_mean([float(row["map50_95"]) for row in scored]), 6),
     }
+    class_coverage = {
+        "schema_version": 1,
+        "source": "declared_model_names" if catalog_ids else "observed_only",
+        "total_classes": len(class_ids),
+        "scored_class_ids": [row["class_id"] for row in scored],
+        "class_ids_without_test_ground_truth": [
+            row["class_id"] for row in per_class
+            if row["ground_truth_count"] == 0
+        ],
+        "macro_average_class_count": len(scored),
+    }
     error_samples: list[dict[str, Any]] = []
     operating_predictions = [
         row for row in predictions if float(row["confidence"]) >= float(operating_conf)
     ]
     predictions_by_image: dict[str, list[dict[str, Any]]] = defaultdict(list)
     targets_by_image: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    confusion_counts: dict[tuple[int | None, int | None], int] = defaultdict(int)
+    confusion_images: dict[tuple[int | None, int | None], set[str]] = defaultdict(set)
     for row in operating_predictions:
         predictions_by_image[str(row["image"])].append(row)
     for row in targets:
@@ -260,38 +308,122 @@ def evaluate_blind_detection(
         image_name = image_path.name
         image_predictions = predictions_by_image.get(image_name, [])
         image_targets = targets_by_image.get(image_name, [])
-        pairs = []
-        for prediction_index, prediction in enumerate(image_predictions):
-            for target_index, target in enumerate(image_targets):
-                if int(prediction["class_id"]) != int(target["class_id"]):
-                    continue
-                overlap = _iou(prediction["box"], target["box"])
-                if overlap >= 0.5:
-                    pairs.append((overlap, prediction_index, target_index))
+        # Class-agnostic spatial matching is a separate diagnostic protocol:
+        # wrong-class overlaps belong off diagonal, not fabricated from TP/FP/FN.
+        spatial_used: set[int] = set()
+        for prediction in sorted(image_predictions, key=lambda item: -item['confidence']):
+            overlaps = [(_iou(prediction['box'], target['box']), index)
+                        for index, target in enumerate(image_targets) if index not in spatial_used]
+            best = max(overlaps, default=(0., -1))
+            target_class = None
+            if best[0] >= 0.5:
+                spatial_used.add(best[1])
+                target_class = int(image_targets[best[1]]['class_id'])
+            key = (target_class, int(prediction['class_id']))
+            confusion_counts[key] += 1
+            if len(confusion_images[key]) < 200:
+                confusion_images[key].add(image_name)
+        for index, target in enumerate(image_targets):
+            if index not in spatial_used:
+                key = (int(target['class_id']), None)
+                confusion_counts[key] += 1
+                if len(confusion_images[key]) < 200:
+                    confusion_images[key].add(image_name)
+        # Keep visual FP/FN evidence identical to the class-level scorer:
+        # confidence-first, highest-IoU unmatched GT of the same class.
+        # IoU-first pairing can disagree with _match_flags and hide true errors.
         matched_predictions: set[int] = set()
         matched_targets: set[int] = set()
-        for _overlap, prediction_index, target_index in sorted(pairs, reverse=True):
-            if prediction_index in matched_predictions or target_index in matched_targets:
-                continue
-            matched_predictions.add(prediction_index)
-            matched_targets.add(target_index)
+        for prediction_index in sorted(
+            range(len(image_predictions)),
+            key=lambda index: -float(image_predictions[index]["confidence"]),
+        ):
+            prediction = image_predictions[prediction_index]
+            best_target = -1
+            best_overlap = -1.0
+            for target_index, target in enumerate(image_targets):
+                if target_index in matched_targets or int(prediction["class_id"]) != int(target["class_id"]):
+                    continue
+                overlap = _iou(prediction["box"], target["box"])
+                if overlap >= 0.5 and overlap > best_overlap:
+                    best_overlap = overlap
+                    best_target = target_index
+            if best_target >= 0:
+                matched_predictions.add(prediction_index)
+                matched_targets.add(best_target)
         fp = [row for index, row in enumerate(image_predictions) if index not in matched_predictions]
         fn = [row for index, row in enumerate(image_targets) if index not in matched_targets]
         if fp or fn:
+            width, height = dimensions[image_name]
             error_samples.append({
                 "image": image_name,
+                "image_id": image_path.stem,
+                "image_width": width,
+                "image_height": height,
                 "fp_count": len(fp),
                 "fn_count": len(fn),
                 "fp_labels": sorted({_label_name(names, int(row["class_id"])) for row in fp}),
                 "fn_labels": sorted({_label_name(names, int(row["class_id"])) for row in fn}),
+                # Keep lightweight per-image evidence until severity ranking.
+                # Only the top 200 images need costly box serialization.
+                "_matched_predictions": sorted(matched_predictions),
+                "_matched_targets": sorted(matched_targets),
             })
-        if len(error_samples) >= 200:
-            break
+    # The old first-200 traversal hid later, more serious failures and reported
+    # a false total. Keep all counts, persist only a bounded severity-ranked view.
+    error_sample_count = len(error_samples)
+    error_samples.sort(key=lambda row: (-row["fn_count"], -row["fp_count"], row["image"]))
+    error_samples = error_samples[:200]
+    def evidence_box(row: Mapping[str, Any], matched: bool, kind: str) -> dict[str, Any]:
+        return {
+            "class_id": int(row["class_id"]),
+            "label": _label_name(names, int(row["class_id"])),
+            "box": [round(float(value), 3) for value in row["box"]],
+            "matched": bool(matched),
+            "kind": kind,
+            **({"confidence": round(float(row["confidence"]), 6)} if kind == "prediction" else {}),
+        }
+    for sample in error_samples:
+        name = sample["image"]
+        digest = hashlib.sha256()
+        with (image_root / name).open('rb') as image_file:
+            for chunk in iter(lambda: image_file.read(1024 * 1024), b''):
+                digest.update(chunk)
+        sample['image_content_sha256'] = digest.hexdigest()
+        pred = predictions_by_image.get(name, [])
+        truth = targets_by_image.get(name, [])
+        matched_pred = set(sample.pop("_matched_predictions"))
+        matched_gt = set(sample.pop("_matched_targets"))
+        sample["pred_boxes"] = [evidence_box(row, index in matched_pred, "prediction")
+                                for index, row in enumerate(pred[:120])]
+        sample["gt_boxes"] = [evidence_box(row, index in matched_gt, "ground_truth")
+                              for index, row in enumerate(truth[:120])]
+        sample["boxes_truncated"] = len(pred) > 120 or len(truth) > 120
 
     weak_label_threshold = 0.75
+    confidence_curves = []
+    for class_id in class_ids[:100]:
+        class_predictions = sorted(
+            (row for row in predictions if int(row['class_id']) == class_id),
+            key=lambda row: -row['confidence'],
+        )
+        class_targets = [row for row in targets if int(row['class_id']) == class_id]
+        flags = _match_flags(class_predictions, class_targets, 0.5)
+        points = []
+        for index in range(21):
+            threshold = index / 20
+            selected = [flag for prediction, flag in zip(class_predictions, flags)
+                        if prediction['confidence'] >= threshold]
+            tp = sum(selected)
+            precision = tp / len(selected) if selected else 0.
+            recall = tp / len(class_targets) if class_targets else 0.
+            f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.
+            points.append({'confidence': threshold, 'precision': round(precision, 6),
+                           'recall': round(recall, 6), 'f1': round(f1, 6)})
+        confidence_curves.append({'class_id': class_id, 'label': _label_name(names, class_id), 'points': points})
     weak_labels = [
         str(row["label"])
-        for row in sorted(per_class, key=lambda row: (float(row["recall"]), float(row["map50"])))
+        for row in sorted(scored, key=lambda row: (float(row["recall"]), float(row["map50"])))
         if int(row["ground_truth_count"]) > 0
         and (float(row["recall"]) < weak_label_threshold or float(row["map50"]) < weak_label_threshold)
     ]
@@ -299,9 +431,19 @@ def evaluate_blind_detection(
         "status": "succeeded",
         "metrics": metrics,
         "per_class": per_class,
+        "class_coverage": class_coverage,
         "weak_labels": weak_labels[:100],
         "error_samples": error_samples,
-        "error_sample_count": len(error_samples),
+        "error_sample_count": error_sample_count,
+        "confusion_matrix": {
+            'protocol': 'confidence_first_class_agnostic_iou_0.5',
+            'operating_conf': float(operating_conf),
+            'cells': [{'actual': key[0], 'predicted': key[1], 'count': count,
+                       'images': sorted(confusion_images[key])}
+                      for key, count in confusion_counts.items()],
+        },
+        'confidence_curves': confidence_curves,
+        'confidence_curve_protocol': 'same_class_confidence_first_iou_0.5_grid_0.05',
         "image_count": len(images),
         "ground_truth_box_count": len(targets),
         "prediction_box_count": len(predictions),
@@ -530,38 +672,105 @@ def build_evaluation_truth(
     revision = _sha256_identity(dataset_revision_id, "dataset_revision_id")
     model_digest = _sha256_identity(model_sha256, "model_sha256")
     raw_metrics = raw.get("metrics") if isinstance(raw.get("metrics"), Mapping) else {}
-    metrics = {
-        key: round(_finite(raw_metrics.get(key)), 6)
-        for key in _EVALUATION_METRICS if raw_metrics.get(key) is not None
-    }
+    # Invalid evidence must never become an apparently measured 0.0.
+    # Reject bad metrics from successful Test runs, while retaining failed or
+    # unavailable historical results without manufacturing numeric scores.
+    metrics = {}
+    for key in _EVALUATION_METRICS:
+        value = _evaluation_score(raw_metrics.get(key), status=status, field=key)
+        if value is not None:
+            metrics[key] = value
     per_class = []
     for row in list(raw.get("per_class") or [])[:10000]:
         if not isinstance(row, Mapping):
             continue
+        no_test_gt = str(row.get("evaluation_status") or "") == "no_test_ground_truth"
+        scores = {
+            key: None if no_test_gt else _evaluation_score(
+                row.get(key), status=status, field=f"class {row.get('class_id')} {key}",
+            )
+            for key in ("precision", "recall", "map50", "map50_95")
+        }
+        if (status == "succeeded" and row.get("evaluation_status") == "evaluated"
+                and any(value is None for value in scores.values())):
+            raise ValueError("evaluation evaluated class has missing scores")
         per_class.append({
             "class_id": int(row.get("class_id") or 0),
             "label": str(row.get("label") or "")[:1000],
-            "precision": round(_finite(row.get("precision")), 6),
-            "recall": round(_finite(row.get("recall")), 6),
-            "map50": round(_finite(row.get("map50")), 6),
-            "map50_95": round(_finite(row.get("map50_95")), 6),
+            "evaluation_status": (
+                "no_test_ground_truth" if no_test_gt
+                else "evaluated" if row.get("evaluation_status") == "evaluated"
+                else "legacy_unknown"
+            ),
+            **scores,
             "true_positive": max(0, int(row.get("true_positive") or 0)),
             "false_positive": max(0, int(row.get("false_positive") or 0)),
             "false_negative": max(0, int(row.get("false_negative") or 0)),
             "ground_truth_count": max(0, int(row.get("ground_truth_count") or 0)),
             "prediction_count": max(0, int(row.get("prediction_count") or 0)),
         })
+    raw_coverage = raw.get("class_coverage") if isinstance(raw.get("class_coverage"), Mapping) else {}
+    class_coverage = {}
+    if raw_coverage and int(raw_coverage.get("schema_version") or 0) == 1:
+        class_coverage = {
+            "schema_version": 1,
+            "source": (
+                "declared_model_names"
+                if raw_coverage.get("source") == "declared_model_names"
+                else "observed_only"
+            ),
+            "total_classes": len(per_class),
+            "macro_average_class_count": sum(row["ground_truth_count"] > 0 for row in per_class),
+            "scored_class_ids": sorted(
+                row["class_id"] for row in per_class if row["ground_truth_count"] > 0
+            ),
+            "class_ids_without_test_ground_truth": sorted(
+                row["class_id"] for row in per_class if row["ground_truth_count"] == 0
+            ),
+        }
     weak_labels = [str(value)[:1000] for value in list(raw.get("weak_labels") or [])[:100] if str(value or "").strip()]
     error_samples = []
     for row in list(raw.get("error_samples") or [])[:200]:
         if not isinstance(row, Mapping):
             continue
+        def bounded_boxes(key: str, kind: str) -> list[dict[str, Any]]:
+            clean = []
+            for item in list(row.get(key) or [])[:120]:
+                if not isinstance(item, Mapping):
+                    continue
+                coords = item.get("box")
+                if not isinstance(coords, (list, tuple)) or len(coords) != 4:
+                    continue
+                try:
+                    numbers = [float(x) for x in coords]
+                except (TypeError, ValueError):
+                    continue
+                if not all(math.isfinite(x) for x in numbers):
+                    continue
+                entry = {
+                    "class_id": int(item.get("class_id") or 0),
+                    "label": str(item.get("label") or "")[:100],
+                    "box": [round(x, 3) for x in numbers],
+                    "matched": item.get("matched") is True,
+                    "kind": kind,
+                }
+                if kind == "prediction":
+                    entry["confidence"] = round(min(1., max(0., _finite(item.get("confidence")))), 6)
+                clean.append(entry)
+            return clean
         error_samples.append({
             "image": Path(str(row.get("image") or "")).name[:240],
+            "image_id": str(row.get('image_id') or '')[:240],
+            "image_content_sha256": _sha256_identity(row.get('image_content_sha256'), 'image_content_sha256'),
+            "image_width": max(0, int(row.get("image_width") or 0)),
+            "image_height": max(0, int(row.get("image_height") or 0)),
             "fp_count": max(0, int(row.get("fp_count") or 0)),
             "fn_count": max(0, int(row.get("fn_count") or 0)),
             "fp_labels": [str(value)[:1000] for value in list(row.get("fp_labels") or [])[:100]],
             "fn_labels": [str(value)[:1000] for value in list(row.get("fn_labels") or [])[:100]],
+            "pred_boxes": bounded_boxes("pred_boxes", "prediction"),
+            "gt_boxes": bounded_boxes("gt_boxes", "ground_truth"),
+            "boxes_truncated": row.get("boxes_truncated") is True,
         })
     protocol_raw = raw.get("protocol") if isinstance(raw.get("protocol"), Mapping) else {}
     protocol = {
@@ -571,6 +780,20 @@ def build_evaluation_truth(
         "weak_label_threshold": round(_finite(protocol_raw.get("weak_label_threshold"), 0.75), 6),
         "iou_thresholds": [round(_finite(value), 6) for value in list(protocol_raw.get("iou_thresholds") or [])[:20]],
     }
+    # Only new evaluations that actually record their inference settings
+    # include these fields in the protocol ID. Historic reports remain
+    # readable but are not assumed equivalent to 640/800 evaluations.
+    if protocol_raw.get("predict_imgsz") is not None:
+        predict_imgsz = int(protocol_raw["predict_imgsz"])
+        if predict_imgsz < 128:
+            raise ValueError("evaluation predict_imgsz is invalid")
+        protocol["predict_imgsz"] = predict_imgsz
+    for parameter in ("predict_conf", "predict_nms_iou"):
+        if protocol_raw.get(parameter) is not None:
+            value = float(protocol_raw[parameter])
+            if not math.isfinite(value) or not 0 <= value <= 1:
+                raise ValueError(f"evaluation {parameter} is invalid")
+            protocol[parameter] = round(value, 6)
     evaluation_protocol_identity = {
         "schema_version": EVALUATION_PROTOCOL_SCHEMA_VERSION,
         "protocol": protocol,
@@ -628,8 +851,10 @@ def build_evaluation_truth(
         "model_sha256": model_digest,
         "metrics": metrics,
         "per_class": per_class,
+        **({"class_coverage": class_coverage} if class_coverage else {}),
         "weak_labels": weak_labels,
         "error_samples": error_samples,
+        "error_sample_count": max(len(error_samples), int(raw.get("error_sample_count") or 0)),
         "image_count": max(0, int(raw.get("image_count") or 0)),
         "ground_truth_box_count": max(0, int(raw.get("ground_truth_box_count") or 0)),
         "prediction_box_count": max(0, int(raw.get("prediction_box_count") or 0)),
@@ -638,6 +863,26 @@ def build_evaluation_truth(
         "evaluation_protocol_id": evaluation_protocol_id,
         **({"benchmark_scope": scope} if scope else {}),
     }
+    # Optional vNext evidence. Old reports remain honest missing-data states.
+    matrix = raw.get('confusion_matrix')
+    if isinstance(matrix, Mapping) and matrix.get('protocol') == 'confidence_first_class_agnostic_iou_0.5':
+        identity['confusion_matrix'] = {
+            'protocol': matrix['protocol'], 'operating_conf': _finite(matrix.get('operating_conf')),
+            'cells': [{'actual': int(cell['actual']) if cell.get('actual') is not None else None,
+                       'predicted': int(cell['predicted']) if cell.get('predicted') is not None else None,
+                       'count': max(0, int(cell.get('count') or 0)),
+                       'images': [Path(str(name)).name[:240] for name in list(cell.get('images') or [])[:200]]}
+                      for cell in list(matrix.get('cells') or [])[:10000] if isinstance(cell, Mapping)],
+        }
+    if raw.get('confidence_curve_protocol') == 'same_class_confidence_first_iou_0.5_grid_0.05':
+        identity['confidence_curve_protocol'] = raw['confidence_curve_protocol']
+        identity['confidence_curves'] = [
+            {'class_id': int(curve.get('class_id') or 0), 'label': str(curve.get('label') or '')[:1000],
+             'points': [{key: round(min(1., max(0., _finite(point.get(key)))), 6)
+                        for key in ('confidence', 'precision', 'recall', 'f1')}
+                       for point in list(curve.get('points') or [])[:21] if isinstance(point, Mapping)]}
+            for curve in list(raw.get('confidence_curves') or [])[:100] if isinstance(curve, Mapping)
+        ]
     evaluation_id = hashlib.sha256(json.dumps(
         identity, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
     ).encode("utf-8")).hexdigest()
@@ -649,10 +894,195 @@ def build_evaluation_truth(
     }
 
 
+def build_training_metric_credibility(
+    training_report: Mapping[str, Any] | None,
+    evaluation: Mapping[str, Any] | None,
+    *,
+    input_quality: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Advisory evidence for unusually high Val mAP, NOT a fraud detector.
+
+    Val scores are model-selection metrics; independent blind Test is a
+    different measurement. Lack of data is never interpreted as passing a
+    reliability threshold. This only inspects already persisted evidence.
+    """
+    report = training_report if isinstance(training_report, Mapping) else {}
+    test = evaluation if isinstance(evaluation, Mapping) else {}
+    quality = input_quality if isinstance(input_quality, Mapping) else {}
+    val = report.get("metrics") if isinstance(report.get("metrics"), Mapping) else {}
+    test_metrics = test.get("metrics") if isinstance(test.get("metrics"), Mapping) else {}
+    split = quality.get("class_coverage") if isinstance(quality.get("class_coverage"), Mapping) else {}
+    coverage = test.get("class_coverage") if isinstance(test.get("class_coverage"), Mapping) else {}
+    admission = quality.get("annotation_admission") if isinstance(quality.get("annotation_admission"), Mapping) else {}
+    source_admission = quality.get("source_ground_truth_admission") if isinstance(quality.get("source_ground_truth_admission"), Mapping) else {}
+
+    def score(values: Mapping[str, Any], key: str) -> float | None:
+        try:
+            raw = values.get(key)
+            if raw is None or isinstance(raw, bool):
+                return None
+            result = float(raw)
+            if not math.isfinite(result) or result < 0 or result > 1:
+                return None
+            return round(result, 6)
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+    def count(value: Any) -> int | None:
+        try:
+            if value is None or isinstance(value, bool):
+                return None
+            number = int(value)
+            return number if number >= 0 else None
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+    val_map = score(val, "metrics/mAP50(B)")
+    test_map = score(test_metrics, "metrics/mAP50(B)")
+    val_map95 = score(val, "metrics/mAP50-95(B)")
+    test_map95 = score(test_metrics, "metrics/mAP50-95(B)")
+    test_status = str(test.get("status") or "not_requested").strip().lower()
+    benchmark = test.get("benchmark_scope") if isinstance(test.get("benchmark_scope"), Mapping) else {}
+    binding_level = (
+        str(benchmark.get("binding_level"))
+        if test_status == "succeeded"
+        and benchmark.get("binding_level") in {"snapshot_truth", "bundle_verified"}
+        else "unavailable"
+    )
+    is_high_val = val_map is not None and val_map >= 0.95
+    gap = (
+        round(val_map - test_map, 6)
+        if val_map is not None and test_map is not None and test_status == "succeeded"
+        else None
+    )
+    reasons: list[str] = []
+    actions: list[str] = []
+
+    def flag(reason: str, action: str) -> None:
+        if reason not in reasons:
+            reasons.append(reason)
+        if action not in actions:
+            actions.append(action)
+
+    if is_high_val:
+        if test_status != "succeeded":
+            flag("independent_test_unavailable", "run_independent_blind_test")
+        elif test_map is None or count(test.get("image_count")) in (None, 0):
+            flag("independent_test_metric_or_samples_missing", "inspect_test_execution_truth")
+        if gap is not None and gap >= 0.10:
+            flag("validation_test_map50_gap_at_least_10pp", "inspect_val_test_distribution_and_protocol")
+        if not coverage or coverage.get("source") != "declared_model_names":
+            flag("test_class_coverage_unverified", "verify_model_class_catalog_and_test_gt")
+        else:
+            if not coverage.get("scored_class_ids") or (
+                count(coverage.get("macro_average_class_count")) in (None, 0)
+            ):
+                flag("independent_test_no_scored_positive_classes", "inspect_test_gt_positive_support")
+            if coverage.get("class_ids_without_test_ground_truth"):
+                flag("independent_test_classes_without_gt", "add_independent_test_positive_samples")
+        if not split:
+            flag("frozen_split_coverage_unavailable", "inspect_frozen_split_and_provenance")
+        else:
+            missing_val = split.get("train_labels_without_validation_positive") or []
+            missing_test = split.get("train_labels_without_test_positive") or []
+            if missing_val:
+                flag("validation_classes_without_gt", "review_validation_class_coverage")
+            if missing_test:
+                flag("split_test_classes_without_gt", "review_independent_test_class_coverage")
+            frozen_labels = split.get("active_label_codes")
+            test_declared_count = count(coverage.get("total_classes"))
+            if (isinstance(frozen_labels, (list, tuple))
+                    and test_declared_count is not None
+                    and len(frozen_labels) != test_declared_count):
+                flag("model_class_catalog_differs_from_frozen_training_labels", "inspect_model_class_mapping")
+            known_by_role = split.get("role_known_source_image_counts")
+            unknown_by_role = split.get("role_unknown_source_image_counts")
+            if isinstance(known_by_role, Mapping) and isinstance(unknown_by_role, Mapping):
+                known_test = count(known_by_role.get("test"))
+                unknown_test = count(unknown_by_role.get("test"))
+                actual_test_count = count(test.get("image_count"))
+                if (known_test is not None and unknown_test is not None
+                        and test_status == "succeeded"
+                        and actual_test_count != known_test + unknown_test):
+                    flag("test_scored_images_differ_from_frozen_selection", "inspect_test_materialization_completeness")
+            if not isinstance(unknown_by_role, Mapping):
+                flag("capture_source_evidence_missing", "review_capture_source_metadata")
+            elif any((count(value) or 0) > 0 for value in unknown_by_role.values()):
+                flag("capture_source_partly_unknown", "review_capture_source_metadata")
+            components = split.get("label_independent_component_counts")
+            test_components = components.get("test") if isinstance(components, Mapping) else None
+            if not isinstance(test_components, Mapping):
+                flag("test_independent_component_counts_missing", "review_independent_test_groups")
+            elif any((count(value) or 0) < 3 for value in test_components.values()):
+                # A heuristic warning only: it is NOT a statistical p-value.
+                flag("test_class_fewer_than_three_independent_groups", "expand_test_group_diversity")
+            image_counts = split.get("label_image_counts")
+            test_images_by_class = image_counts.get("test") if isinstance(image_counts, Mapping) else None
+            if not isinstance(test_images_by_class, Mapping):
+                flag("test_positive_image_support_missing", "review_test_positive_image_counts")
+            elif any((count(value) or 0) < 5 for value in test_images_by_class.values()):
+                flag("test_class_fewer_than_five_positive_images", "expand_test_positive_coverage")
+
+        protocol = test.get("protocol") if isinstance(test.get("protocol"), Mapping) else {}
+        if test_status == "succeeded" and (
+            protocol.get("mode") != "blind_image_only_inference_then_hidden_ground_truth_scoring"
+            or not all(protocol.get(key) is not None for key in (
+                "predict_imgsz", "predict_conf", "predict_nms_iou",
+            ))
+        ):
+            flag("independent_test_inference_protocol_incomplete", "verify_prediction_settings")
+        if test_status == "succeeded" and binding_level != "bundle_verified":
+            flag("independent_test_input_binding_unverified", "verify_immutable_test_input_binding")
+
+        for audit in (admission, source_admission):
+            severity = audit.get("severity_counts") if isinstance(audit.get("severity_counts"), Mapping) else {}
+            if (count(severity.get("manual_review")) or 0) > 0:
+                flag("source_or_projected_gt_needs_review", "review_training_annotation_issues")
+
+    # A 97% Val mAP is a trigger for scrutiny, not a conclusion of data
+    # leakage or model accuracy. Even complete held-out evidence does not
+    # verify business event precision or out-of-distribution generalization.
+    status = (
+        "review_required" if is_high_val and reasons
+        else "held_out_evidence_present" if is_high_val
+        else "val_metric_unavailable" if val_map is None
+        else "not_high_val_trigger"
+    )
+    details = {
+        "schema_version": 1,
+        "status": status,
+        "metric_kind": "object_detection_map_not_event_accuracy",
+        "validation_map50": val_map,
+        "validation_map50_95": val_map95,
+        "independent_test_map50": test_map if test_status == "succeeded" else None,
+        "independent_test_map50_95": test_map95 if test_status == "succeeded" else None,
+        "val_minus_test_map50": gap,
+        "test_status": test_status,
+        # One server-owned, persisted evidence level for every report UI.
+        # The browser never infers a binding from a high Test mAP score.
+        "independent_test_binding_level": binding_level,
+        "test_image_count": count(test.get("image_count")),
+        "high_val_threshold": 0.95,
+        "val_test_gap_review_threshold": 0.10,
+        "high_val_triggered": bool(is_high_val),
+        "reason_codes": reasons,
+        "recommended_actions": actions,
+        "leakage_conclusion": "not_determined",
+        "production_accuracy_verified": False,
+        "automatic_execution": False,
+    }
+    encoded = json.dumps(details, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return {
+        **details,
+        "diagnostic_id": hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
+    }
+
+
 def build_iteration_decision(
     evaluation: Mapping[str, Any] | None,
     *,
     quality_gate: Mapping[str, Any] | None = None,
+    metric_credibility: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build one advisory, version-owned next-step decision from evaluation truth.
 
@@ -678,12 +1108,48 @@ def build_iteration_decision(
         if str(label or "").strip()
     ))
     per_class = [row for row in list(value.get("per_class") or []) if isinstance(row, Mapping)]
+    class_coverage = value.get("class_coverage") if isinstance(value.get("class_coverage"), Mapping) else {}
+    missing_test_classes = tuple(class_coverage.get("class_ids_without_test_ground_truth") or ())
     total_fp = sum(max(0, int(row.get("false_positive") or 0)) for row in per_class)
     total_fn = sum(max(0, int(row.get("false_negative") or 0)) for row in per_class)
-    error_sample_count = len([
-        row for row in list(value.get("error_samples") or [])[:200]
-        if isinstance(row, Mapping)
-    ])
+    error_sample_count = max(0, int(value.get("error_sample_count") or 0), len(value.get("error_samples") or []))
+
+    diagnoses: list[dict[str, Any]] = []
+    critical_labels: list[str] = []
+    for row in per_class:
+        label = str(row.get("label") or row.get("class_id") or "-")
+        gt = max(0, int(row.get("ground_truth_count") or 0))
+        tp = max(0, int(row.get("true_positive") or 0))
+        fp = max(0, int(row.get("false_positive") or 0))
+        fn = max(0, int(row.get("false_negative") or 0))
+        recall_value = _evaluation_score(row.get("recall"), status="not_requested", field="class recall")
+        ap_value = _evaluation_score(row.get("map50"), status="not_requested", field="class map50")
+        if gt > 0 and tp == 0 and fn > 0:
+            code, level = "zero_true_positives", "critical"
+            critical_labels.append(label)
+            next_steps = ["inspect_class_mapping", "inspect_prediction_threshold", "review_fp_fn_samples"]
+        elif gt > 0 and (recall_value is None or ap_value is None):
+            code, level = "class_metrics_unavailable", "review"
+            next_steps = ["review_evaluation_configuration", "review_fp_fn_samples"]
+        elif gt > 0 and (recall_value < 0.75 or ap_value < 0.75):
+            code, level = "class_detection_below_reference", "warning"
+            next_steps = ["review_fp_fn_samples", "inspect_annotations", "review_training_coverage"]
+        elif gt == 0 and fp > 0:
+            code, level = "predicted_class_without_test_gt", "review"
+            next_steps = ["inspect_class_mapping", "review_fp_fn_samples"]
+        else:
+            continue
+        diagnoses.append({
+            "label": label, "class_id": int(row.get("class_id") or 0),
+            "code": code, "severity": level,
+            "true_positive": tp, "false_positive": fp, "false_negative": fn,
+            "ground_truth_count": gt,
+            "recall": recall_value, "map50": ap_value,
+            "recommended_actions": next_steps,
+            "root_cause_confirmed": False,
+        })
+    diagnoses.sort(key=lambda item: (0 if item["severity"] == "critical" else 1,
+                                     -item["false_negative"], item["label"]))
 
     reasons: list[str] = []
     actions: list[str] = []
@@ -699,10 +1165,33 @@ def build_iteration_decision(
         decision = "review_required"
         reasons.append("decision_metric_unavailable")
         actions.append("review_evaluation_configuration")
+    elif critical_labels:
+        # A class with real GT and zero TP must never be sent directly to
+        # a supplement-data/ready-for-business flow without diagnosis.
+        decision = "review_required"
+        reasons.append("critical_class_zero_true_positives")
+        actions.extend(("inspect_class_mapping", "inspect_prediction_threshold", "review_fp_fn_samples"))
+    elif any(row["code"] == "class_metrics_unavailable" for row in diagnoses):
+        decision = "review_required"
+        reasons.append("class_metrics_unavailable")
+        actions.append("review_evaluation_configuration")
+    elif missing_test_classes:
+        decision = "review_required"
+        reasons.append("independent_test_class_coverage_incomplete")
+        actions.extend(("review_training_coverage", "expand_independent_test_data"))
+    elif (isinstance(metric_credibility, Mapping)
+          and metric_credibility.get("high_val_triggered") is True
+          and metric_credibility.get("status") == "review_required"):
+        # Only new results pass this advisory. Legacy iteration decisions
+        # replay unchanged when metric_credibility is absent.
+        decision = "review_required"
+        reasons.append("high_validation_map_evidence_needs_review")
+        actions.extend(("inspect_metric_credibility", "review_independent_test_evidence"))
     elif weak_labels:
         decision = "needs_data"
         reasons.append("weak_labels_present")
-        actions.extend(("supplement_weak_label_data", "review_fp_fn_samples"))
+        actions.extend(("review_fp_fn_samples", "inspect_annotations", "review_training_coverage",
+                        "supplement_weak_label_data"))
         if continue_threshold > 0 and metric_value < continue_threshold:
             reasons.append("metric_below_continue_threshold")
     elif continue_threshold > 0 and metric_value < continue_threshold:
@@ -736,6 +1225,8 @@ def build_iteration_decision(
             "stop_threshold": round(stop_threshold, 6),
         },
         "weak_labels": weak_labels,
+        "class_diagnostics": diagnoses[:100],
+        "critical_labels": critical_labels[:100],
         "signals": {
             "false_positive": total_fp,
             "false_negative": total_fn,
@@ -755,16 +1246,94 @@ def build_iteration_decision(
 FEEDBACK_ADOPTION_OUTCOME_SCHEMA_VERSION = 1
 
 
-def _evaluation_class_map(value: Mapping[str, Any] | None) -> dict[str, dict[str, Any]]:
+def _evaluation_class_map(value: Mapping[str, Any] | None) -> tuple[dict[Any, dict[str, Any]], bool, bool]:
     rows = value.get("per_class") if isinstance(value, Mapping) else []
-    result: dict[str, dict[str, Any]] = {}
-    for raw in list(rows or [])[:10000]:
-        if not isinstance(raw, Mapping):
-            continue
+    prepared = [dict(raw) for raw in list(rows or [])[:10000] if isinstance(raw, Mapping)]
+    has_legacy = any(raw.get('class_id') is None for raw in prepared)
+    result: dict[Any, dict[str, Any]] = {}
+    ambiguous = False
+    for raw in prepared:
         label = str(raw.get("label") or "").strip()
-        if label:
-            result[label] = dict(raw)
-    return result
+        if has_legacy:
+            key = ('label', label) if label else None
+        else:
+            class_id = raw.get('class_id')
+            key = ('id', str(class_id)) if class_id is not None else None
+        if key is None or key in result:
+            ambiguous = True
+            continue
+        result[key] = raw
+    return result, has_legacy, ambiguous
+
+
+def compare_evaluations(source: Mapping[str, Any], new: Mapping[str, Any]) -> dict[str, Any]:
+    """Strict same-benchmark comparison of existing evaluation truth."""
+    reasons = []
+    for value in (source, new):
+        if value.get('status') != 'succeeded' or not value.get('evaluation_id'):
+            reasons.append('evaluation_missing')
+    source_scope, new_scope = source.get('benchmark_scope') or {}, new.get('benchmark_scope') or {}
+    for key in ('scope_id', 'content_digest', 'ground_truth_digest', 'label_schema_digest', 'evaluation_input_digest'):
+        if not source_scope.get(key) or not new_scope.get(key):
+            reasons.append('benchmark_evidence_missing')
+        elif source_scope[key] != new_scope[key]:
+            reasons.append('benchmark_scope_mismatch')
+    if source_scope.get('binding_level') != 'bundle_verified' or new_scope.get('binding_level') != 'bundle_verified':
+        reasons.append('benchmark_input_binding_missing')
+    if not source.get('evaluation_protocol_id') or source.get('evaluation_protocol_id') != new.get('evaluation_protocol_id'):
+        reasons.append('evaluation_protocol_mismatch')
+    if reasons:
+        return {'comparable': False, 'reason_codes': sorted(set(reasons)), 'metrics': {}, 'classes': []}
+    metrics = {}
+    for key in _EVALUATION_METRICS:
+        before, after = (source.get('metrics') or {}).get(key), (new.get('metrics') or {}).get(key)
+        if before is not None and after is not None:
+            metrics[key] = {'before': before, 'after': after, 'delta': round(_finite(after)-_finite(before), 6)}
+    before_classes, before_legacy, before_ambiguous = _evaluation_class_map(source)
+    after_classes, after_legacy, after_ambiguous = _evaluation_class_map(new)
+    if before_ambiguous or after_ambiguous:
+        return {'comparable': False, 'reason_codes': ['class_identity_ambiguous'], 'metrics': {}, 'classes': []}
+    if before_legacy != after_legacy:
+        # A mixed old/new comparison is safe only when both sides have unique
+        # display names; rebuild both maps by that explicitly bounded fallback.
+        def legacy_fallback(value):
+            mapped = {}
+            for raw in list((value or {}).get('per_class') or [])[:10000]:
+                if not isinstance(raw, Mapping):
+                    continue
+                label = str(raw.get('label') or '').strip()
+                if not label or label in mapped:
+                    return None
+                mapped[label] = dict(raw)
+            return mapped
+        before_fallback, after_fallback = legacy_fallback(source), legacy_fallback(new)
+        if before_fallback is None or after_fallback is None:
+            return {'comparable': False, 'reason_codes': ['class_identity_ambiguous'], 'metrics': {}, 'classes': []}
+        before_classes = {('label', key): value for key, value in before_fallback.items()}
+        after_classes = {('label', key): value for key, value in after_fallback.items()}
+    classes = []
+    labels = [str(row.get('label') or '') for row in list((source or {}).get('per_class') or []) + list((new or {}).get('per_class') or [])]
+    duplicate_labels = {label for label in labels if label and labels.count(label) > 2}
+    for identity in sorted(set(before_classes) | set(after_classes), key=str):
+        before, after = before_classes.get(identity), after_classes.get(identity)
+        label = str((after or before or {}).get('label') or identity[-1])
+        class_id = (after or before or {}).get('class_id')
+        if before is None or after is None:
+            classes.append({'class_id': class_id, 'label': label, 'comparable': False})
+            continue
+        row = {'class_id': class_id, 'label': label, 'comparable': True, 'metrics': {
+            key: {'before': before.get(key), 'after': after.get(key),
+                  'delta': round(_finite(after[key])-_finite(before[key]), 6)}
+            for key in ('precision', 'recall', 'map50', 'map50_95', 'false_positive', 'false_negative')
+            if key in before and key in after and before.get(key) is not None and after.get(key) is not None
+        }}
+        row['regressed'] = any(row['metrics'].get(key, {}).get('delta', 0) < 0 for key in ('recall', 'map50'))
+        classes.append(row)
+    regressed = [row for row in classes if row.get('comparable') and row.get('regressed')]
+    return {'comparable': True, 'reason_codes': [], 'metrics': metrics, 'classes': classes,
+            'regressed_class_ids': [row['class_id'] for row in regressed if row.get('class_id') is not None],
+            'regressed_labels': [f"{row['label']} · ID {row['class_id']}" if row['label'] in duplicate_labels else row['label']
+                                 for row in regressed]}
 
 
 def build_feedback_adoption_outcome(
@@ -866,8 +1435,24 @@ def build_feedback_adoption_outcome(
                 "delta": round(after - before, 6),
             }
 
-    source_classes = _evaluation_class_map(source)
-    new_classes = _evaluation_class_map(new)
+    def unique_label_rows(value):
+        rows = {}
+        duplicates = set()
+        for raw in list((value or {}).get('per_class') or [])[:10000]:
+            if not isinstance(raw, Mapping):
+                continue
+            label = str(raw.get('label') or '').strip()
+            if not label:
+                continue
+            if label in rows:
+                duplicates.add(label)
+            else:
+                rows[label] = dict(raw)
+        for label in duplicates:
+            rows.pop(label, None)
+        return rows
+    source_classes = unique_label_rows(source)
+    new_classes = unique_label_rows(new)
     weak_labels = list(dict.fromkeys(
         str(value)[:1000]
         for value in list(source.get("weak_labels") or [])[:100]

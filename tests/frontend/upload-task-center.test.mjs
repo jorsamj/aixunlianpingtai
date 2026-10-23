@@ -9,7 +9,11 @@ import {
   mergeUploadTask,
   normalizeDurableUploadTask,
   patchUploadTaskCenterRows,
+  recoverUploadTaskAfterRefresh,
   renderUploadTaskCenterRow,
+  retainUploadTaskRows,
+  stableUploadTaskOrder,
+  summarizeUploadTasks,
 } from '../../static/modules/upload-task-center.js';
 
 test('mergeUploadTask keeps truthful progress and terminal success becomes 100%', () => {
@@ -21,10 +25,61 @@ test('mergeUploadTask keeps truthful progress and terminal success becomes 100%'
   assert.equal(isUploadTaskActive(done), false);
 });
 
+test('unknown processing progress survives persisted JSON hydration without showing upload 100 percent',()=>{
+  const uploaded=mergeUploadTask({}, {id:'zip:unknown',kind:'zip',status:'UPLOADING',progress:100});
+  const merging=mergeUploadTask(uploaded,{status:'MERGING',progress:null,stage:'合并与校验'});
+  assert.equal(merging.progressKnown,false);
+  const recovered=mergeUploadTask({},JSON.parse(JSON.stringify(merging)));
+  assert.equal(recovered.progressKnown,false);
+  assert.match(renderUploadTaskCenterRow(recovered),/等待服务器进度/);
+  assert.doesNotMatch(renderUploadTaskCenterRow(recovered),/>100%/);
+  assert.equal(mergeUploadTask(recovered,{status:'VALIDATING',progress:12}).progressKnown,true);
+});
+
 test('task center treats label mapping/indexing stages as active', () => {
-  for (const status of ['MAPPING_LABELS','WRITING_ANNOTATIONS','INDEXING']) {
+  for (const status of ['WAITING_UPLOAD','MAPPING_LABELS','WRITING_ANNOTATIONS','INDEXING']) {
     assert.equal(isUploadTaskActive({status}), true, status);
   }
+});
+
+test('task center distinguishes browser transfer slots from visible FIFO waiters', () => {
+  const tasks = [
+    {id:'zip:a',status:'UPLOADING',browserTransfer:true},
+    {id:'zip:b',status:'UPLOADING',browserTransfer:true},
+    {id:'zip:c',status:'WAITING_UPLOAD'},
+    {id:'zip:d',status:'WAITING_UPLOAD'},
+    {id:'zip:e',status:'WAITING_UPLOAD'},
+  ];
+  assert.deepEqual(summarizeUploadTasks(tasks), {
+    total:5,
+    active:5,
+    uploading:2,
+    queued:3,
+    terminal:0,
+  });
+});
+
+test('all active uploads survive history bounds and terminal history stays bounded', () => {
+  const active = Array.from({length:27}, (_,index) => ({
+    id:`active-${index}`, status:'WAITING_UPLOAD', createdAt:`2026-10-13T00:${String(index).padStart(2,'0')}:00Z`,
+  }));
+  const terminal = Array.from({length:12}, (_,index) => ({
+    id:`done-${index}`, status:'DONE', createdAt:`2026-10-12T00:${String(index).padStart(2,'0')}:00Z`,
+  }));
+  const retained = retainUploadTaskRows([...terminal,...active], 30);
+  assert.equal(retained.filter(isUploadTaskActive).length, 27);
+  assert.equal(retained.length, 30);
+});
+
+test('browser-only queued ZIP explicitly requires re-selection after refresh', () => {
+  const recovered = recoverUploadTaskAfterRefresh({
+    id:'zip:local-1',kind:'zip',title:'queued.zip',status:'WAITING_UPLOAD',
+    localOnly:true,browserTransfer:false,progress:0,
+  });
+  assert.equal(recovered.status,'INTERRUPTED');
+  assert.equal(recovered.resumeRequired,false);
+  assert.match(recovered.stage,/重新选择/);
+  assert.match(recovered.detail,/浏览器文件/);
 });
 
 test('refresh keeps an interrupted browser ZIP session waiting instead of pretending bytes are still moving', () => {
@@ -104,6 +159,7 @@ test('project switching is navigation-owned and has no permanent interval', () =
   assert.doesNotMatch(runtime, /setInterval\(switchProject,\s*1500\)/);
   assert.doesNotMatch(runtime, /__uploadTaskCenterProjectTimer/);
   assert.match(main, /uploadTaskCenterRuntime\.switchProject\?\.\(\)/);
+  assert.match(main, /Promise\.resolve\(canonicalStartupPromise\)\.then\(\(\) => \{[\s\S]*?uploadTaskCenterRuntime\.switchProject\?\.\(\)/);
 });
 
 
@@ -129,7 +185,7 @@ test('task center source keeps a stable shell and keyed row patch owner', () => 
   assert.match(runtime, /function ensureShell\(root\)/);
   assert.match(runtime, /patchUploadTaskCenterRows\(body, visible\)/);
   assert.match(runtime, /data-progress=/);
-  assert.match(runtime, /build:'upload-task-center-3'/);
+  assert.match(runtime, /build:'upload-task-center-4'/);
 });
 
 
@@ -139,8 +195,9 @@ test('task center durable polling is PollRegistry-owned and hidden tabs do not k
   assert.match(runtime, /registry\?\.startTimeout\(POLL_KEY, pollOwners/);
   assert.match(runtime, /document\.visibilityState === 'hidden'/);
   assert.match(runtime, /visibilitychange/);
-  assert.doesNotMatch(runtime, /setTimeout\(/);
-  assert.doesNotMatch(runtime, /clearTimeout\(/);
+  assert.doesNotMatch(runtime, /setInterval\(/);
+  assert.match(runtime, /window\.setTimeout\(\(\) => persist\(\), 500\)/);
+  assert.match(runtime, /window\.clearTimeout\(persistTimer\)/);
   assert.match(main, /pollRegistry,[\s\S]*ownerPages: window\.PlatformCore\?\.navigation\?\.knownPages/);
 });
 
@@ -153,8 +210,19 @@ test('ZIP task center rows reopen their durable runtime instead of becoming dead
   assert.match(html,/utc-reopenable/);
   assert.match(html,/tabindex="0"/);
   const runtime=readFileSync(new URL('../../static/modules/upload-task-center.js',import.meta.url),'utf8');
-  assert.match(runtime,/ZipImportRuntime\?\.openTask\?\./);
-  assert.match(runtime,/\.utc-row\[data-utc-kind="zip"\]/);
+  assert.match(runtime,/owner\?\.openTask\?\./);
+  assert.match(runtime,/task\.kind === 'zip' && !task\.localOnly/);
+});
+
+test('queued ZIP row shows size, FIFO position and local cancel without pretending to be reopenable',()=>{
+  const html=renderUploadTaskCenterRow({
+    id:'zip:local-3',kind:'zip',title:'third.zip',status:'WAITING_UPLOAD',progress:0,
+    stage:'等待上传',fileSize:1536,queuePosition:1,localOnly:true,
+  });
+  assert.match(html,/1\.5 KB/);
+  assert.match(html,/排队第 1 位/);
+  assert.match(html,/data-utc-action="cancel-local"/);
+  assert.doesNotMatch(html,/utc-reopenable/);
 });
 
 
@@ -165,4 +233,21 @@ test('paused ZIP task remains visible and can be resumed after page refresh', ()
   });
   assert.match(html,/已暂停/);
   assert.match(html,/utc-reopenable/);
+});
+
+test('concurrent uploads keep identity order across changing server timestamps', () => {
+  const first = mergeUploadTask({}, {id:'zip:first',createdAt:'2026-10-12T09:00:00Z',updatedAt:'2026-10-12T09:20:00Z'});
+  const second = mergeUploadTask({}, {id:'zip:second',createdAt:'2026-10-12T09:01:00Z',updatedAt:'2026-10-12T09:02:00Z'});
+  assert.deepEqual(stableUploadTaskOrder([first,second]).map(row=>row.id), ['zip:second','zip:first']);
+  const changed = mergeUploadTask(first, {progress:75,updatedAt:'2026-10-12T09:30:00Z'});
+  assert.deepEqual(stableUploadTaskOrder([changed,second]).map(row=>row.id), ['zip:second','zip:first']);
+});
+
+test('task dock stays clickable over upload modal and supports stable ID rekeying', () => {
+  const source = readFileSync(new URL('../../static/modules/upload-task-center.js', import.meta.url), 'utf8');
+  assert.match(source, /utc-root\{position:fixed;right:20px;bottom:18px;z-index:1300/);
+  assert.match(source, /function rekey\(oldId, newId\)/);
+  assert.match(source, /rows = stableUploadTaskOrder\(rows\)/);
+  assert.doesNotMatch(source, /rows\.sort\(\(a,b\) => String\(b\.updatedAt\)/);
+  assert.doesNotMatch(source, /rows\.slice\(0,\s*10\)/);
 });

@@ -475,7 +475,10 @@ test('quality-center detection keeps multi-image and folder pickers after page r
   await expect(page.locator('#benchFiles64')).toHaveAttribute('multiple', '');
   await expect(page.locator('#benchFolder64')).toHaveAttribute('webkitdirectory', '');
   const detectionShell = page.locator('[data-quality-detection-shell="1"]');
-  await expect(detectionShell.getByRole('button', {name: '选择图片', exact: true})).toBeVisible();
+  await expect(detectionShell.getByRole('tab', {name:'准确性评测', exact:true})).toHaveAttribute('aria-selected','true');
+  await expect(detectionShell.getByRole('button', {name:'选择场景图片', exact:true})).toBeHidden();
+  await detectionShell.getByRole('tab', {name:'快速图片检测', exact:true}).click();
+  await expect(detectionShell.getByRole('button', {name: '选择场景图片', exact: true})).toBeVisible();
   await expect(detectionShell.getByRole('button', {name: '选择文件夹', exact: true})).toBeVisible();
 
   expect(pageErrors).toEqual([]);
@@ -570,6 +573,7 @@ test('ZIP import completion surfaces review action and auto-opens review', async
   });
 
   await expect.poll(async () => page.evaluate(() => state.import411?.stage || ''), {timeout: 10_000}).toBe('导入完成');
+  await expect.poll(async () => page.evaluate(() => state.import411?.jobId || '')).toBe('zip-browser-1');
   await expect.poll(async () => page.evaluate(() => ({
     bound: Boolean(state.import411?.__reviewBound),
     opened: window.__zipReviewOpened,
@@ -646,6 +650,7 @@ test('ZIP import completion uses scoped label and material refresh', async ({pag
     name: 'r20g.zip', mimeType: 'application/zip', buffer: Buffer.from('r20g-zip-probe'),
   });
   await expect.poll(async () => page.evaluate(() => state.import411?.stage || ''), {timeout: 10_000}).toBe('导入完成');
+  await expect.poll(async () => page.evaluate(() => state.import411?.jobId || '')).toBe('zip-r20g-scoped');
   await expect.poll(async () => page.evaluate(() => window.__zipReviewOpenedR20g)).toBe('zip-r20g-scoped');
   await expect(page.locator('#data412Grid')).toContainText('zip-r20g.jpg', {timeout: 10_000});
   page.off('request', onRequest);
@@ -1081,6 +1086,7 @@ test('prompt template delete disappears immediately in model configuration', asy
   page.on('dialog', dialog => dialog.accept());
   await page.goto('/');
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
+  await expect.poll(async () => page.evaluate(() => state.uiReady === true), {timeout: 15_000}).toBe(true);
   await page.evaluate(() => {
     state.page = '模型配置';
     state.modelConfigs = [];
@@ -1217,6 +1223,7 @@ test('formal utility pages avoid unknown-module fallback and retired deployment 
     '质量中心',
     '标签管理',
     '模型配置',
+    '部署资源',
     '组件检测',
     '平台对接',
     '服务节点',
@@ -1239,7 +1246,6 @@ test('formal utility pages avoid unknown-module fallback and retired deployment 
   const aliases = [
     ['部署转换', '算法列表'],
     ['部署产物', '算法列表'],
-    ['部署资源', '模型配置'],
     ['部署插件', '模型配置'],
   ];
   for (const [legacy, canonical] of aliases) {

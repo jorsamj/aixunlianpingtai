@@ -18,6 +18,7 @@ from filelock import FileLock, Timeout
 from pydantic import BaseModel, Field
 
 from .algorithm_sql_store import AlgorithmSqlStore
+from .compute_platform_catalog import compute_platform_catalog
 from .algorithms import list_algorithms
 from .annotations import atomic_write_json
 from .errors import PlatformError
@@ -224,6 +225,12 @@ class ChangLianWeightMutationPayload(BaseModel):
     chipCode: str = ""
     fileName: str = ""
     filePath: str = ""
+    imageWidth: int | None = Field(default=None, ge=1)
+    imageHeight: int | None = Field(default=None, ge=1)
+    yoloVersion: str | None = Field(default=None, pattern=r"^YOLOv\d+[nsmlx]$")
+    fileSize: int | None = Field(default=None, ge=1, le=9223372036854775807)
+    fileSha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    tags: list[str] | None = None
 
 
 class ExternalPlatformConfigPayload(BaseModel):
@@ -856,7 +863,9 @@ class ChangLianClient:
         return self._request("GET", self.endpoints.compute_platform_list_page, auth=True, params=_compact_params(params))
 
     def compute_platforms(self, **filters: Any) -> Any:
-        return self._request("GET", self.endpoints.compute_platform_list, auth=True, params=_compact_params(filters))
+        # listAll must carry every child; a root-only cache cannot safely bind chips.
+        return self._request("GET", self.endpoints.compute_platform_list, auth=True,
+                             params=_compact_params({"showChildren": "true", **filters}))
 
     def version_create(self, payload: Mapping[str, Any]) -> Any:
         body = _dump_version_payload(payload)
@@ -946,9 +955,12 @@ class ChangLianClient:
             }),
         )
 
-    def weight_info(self, weight_id: Any) -> Any:
-        path = self.endpoints.weight_detail.replace("{weightId}", str(weight_id))
-        return self._request("GET", path, auth=True)
+    def weight_info(self, weight_id: Any, *, with_tags: Optional[bool] = None) -> Any:
+        identity = str(weight_id)
+        path = self.endpoints.weight_detail.replace("{weightId}", identity)
+        # Opt-in candidate contract. Existing publication readback remains unchanged.
+        query = {} if with_tags is None else {"params": {"withTags": str(with_tags).lower()}}
+        return self._request("GET", path, auth=True, **query)
 
 
 def _category_id(row: Mapping[str, Any]) -> str:
@@ -1045,6 +1057,22 @@ def _validated_external_items(
             "请核对新畅联接口字段契约；平台不会静默跳过缺少业务 ID 的主数据。",
             502,
         )
+    return rows
+
+
+def _validated_compute_platforms(value: Any) -> list[Dict[str, Any]]:
+    rows = _validated_external_items(
+        value, id_resolver=_compute_platform_id,
+        error_code="EXTERNAL_COMPUTE_PLATFORM_ID_MISSING", entity_name="算力环境",
+    )
+    try:
+        compute_platform_catalog(rows)
+    except ValueError as error:
+        raise PlatformError(
+            "EXTERNAL_COMPUTE_PLATFORM_HIERARCHY_INVALID",
+            "新畅联算力环境父子关系不完整",
+            str(error), "请确认 listAll(showChildren=true) 返回完整且无环的节点。", 502,
+        ) from error
     return rows
 
 
@@ -2148,12 +2176,7 @@ class ExternalAlgorithmPlatformService:
             record(
                 "compute_platforms",
                 "算力环境",
-                lambda: _validated_external_items(
-                    client.compute_platforms(),
-                    id_resolver=_compute_platform_id,
-                    error_code="EXTERNAL_COMPUTE_PLATFORM_ID_MISSING",
-                    entity_name="算力环境",
-                ),
+                lambda: _validated_compute_platforms(client.compute_platforms()),
                 count_items=True,
             )
             self._append_algorithm_readonly_diagnostics(
@@ -2212,12 +2235,7 @@ class ExternalAlgorithmPlatformService:
         record(
             "compute_platforms",
             "算力环境",
-            lambda: _validated_external_items(
-                client.compute_platforms(),
-                id_resolver=_compute_platform_id,
-                error_code="EXTERNAL_COMPUTE_PLATFORM_ID_MISSING",
-                entity_name="算力环境",
-            ),
+            lambda: _validated_compute_platforms(client.compute_platforms()),
             count_items=True,
         )
         self._append_algorithm_readonly_diagnostics(
@@ -2498,12 +2516,7 @@ class ExternalAlgorithmPlatformService:
             )
 
             request_started = time.perf_counter()
-            compute_platforms = _validated_external_items(
-                client.compute_platforms(),
-                id_resolver=_compute_platform_id,
-                error_code="EXTERNAL_COMPUTE_PLATFORM_ID_MISSING",
-                entity_name="算力环境",
-            )
+            compute_platforms = _validated_compute_platforms(client.compute_platforms())
             self._update_sync_operation(
                 project_id,
                 str(operation_id),
@@ -2860,6 +2873,17 @@ class ExternalAlgorithmPlatformService:
         return last_auto.astimezone(timezone.utc) < latest_due_slot
 
 
+def _provider_browser_response(value: Any) -> Any:
+    """Keep provider int64 facts lossless in browser JSON; never alter null/empty values."""
+    if isinstance(value, Mapping):
+        return {str(key): _provider_browser_response(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_provider_browser_response(item) for item in value]
+    if isinstance(value, int) and not isinstance(value, bool) and abs(value) > 2**53 - 1:
+        return str(value)
+    return value
+
+
 def external_algorithm_platform_router(
     *,
     data_dir: Path,
@@ -2957,7 +2981,7 @@ def external_algorithm_platform_router(
 
     @router.get("/provider/products")
     def provider_products(request: Request):
-        return {"ok": True, "response": service._client().products(**dict(request.query_params))}
+        return {"ok": True, "response": _provider_browser_response(service._client().products(**dict(request.query_params)))}
 
     @router.get("/provider/products/{product_id}")
     def provider_product_info(product_id: str):
@@ -3008,7 +3032,7 @@ def external_algorithm_platform_router(
 
     @router.get("/provider/versions/by-product/{product_id}")
     def provider_versions_by_product(product_id: str):
-        return {"ok": True, "response": service._client().version_list_by_product(product_id)}
+        return {"ok": True, "response": _provider_browser_response(service._client().version_list_by_product(product_id))}
 
     @router.get("/provider/versions/by-analysis/{analysis_id}")
     def provider_versions_by_analysis(analysis_id: str):
@@ -3055,11 +3079,11 @@ def external_algorithm_platform_router(
         pageSize: int = Query(..., ge=1, le=500),
     ):
         filters = {key: value for key, value in request.query_params.items() if key not in {"pageNum", "pageSize"}}
-        return {"ok": True, "response": service._client().weight_page(page_num=pageNum, page_size=pageSize, **filters)}
+        return {"ok": True, "response": _provider_browser_response(redact(service._client().weight_page(page_num=pageNum, page_size=pageSize, **filters)))}
 
     @router.get("/provider/weights/by-version/{algo_version_id}")
     def provider_weights_by_version(algo_version_id: str):
-        return {"ok": True, "response": service._client().weight_list_by_version(algo_version_id)}
+        return {"ok": True, "response": _provider_browser_response(service._client().weight_list_by_version(algo_version_id))}
 
     @router.get("/provider/weights/by-product/{product_id}")
     def provider_weights_by_product(
@@ -3105,8 +3129,12 @@ def external_algorithm_platform_router(
         return {"ok": True, "response": service._client().weight_remove(ids)}
 
     @router.get("/provider/weights/{weight_id}")
-    def provider_weight_info(weight_id: str):
-        return {"ok": True, "response": service._client().weight_info(weight_id)}
+    def provider_weight_info(weight_id: str, withTags: Optional[bool] = Query(default=None)):
+        if not weight_id.isascii() or not weight_id.isdecimal() or not 0 < int(weight_id) <= 2**63 - 1:
+            raise PlatformError("EXTERNAL_WEIGHT_ID_INVALID", "weightId 必须为有效的正 int64", "", status_code=400)
+        client = service._client()
+        response = client.weight_info(weight_id) if withTags is None else client.weight_info(weight_id, with_tags=withTags)
+        return {"ok": True, "response": _provider_browser_response(redact(response))}
 
     @router.get("/training-preflight")
     def training_preflight(

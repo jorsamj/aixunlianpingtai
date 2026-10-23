@@ -297,6 +297,20 @@ class ZipMultipartRepository:
             shutil.rmtree(self._dir(upload_id) / 'parts', ignore_errors=True)
         return receipt
 
+    def discard(self, upload_id: str) -> int:
+        """Remove one exact multipart session after its import job is cancelled.
+
+        Callers must first establish that the matching durable import job never
+        crossed its formal commit fence. This method deliberately cannot accept
+        a directory outside this repository, even if a hostile ID is supplied.
+        """
+        with self.lock:
+            upload_dir = self._dir(upload_id).resolve()
+            root = self.root.resolve()
+            if upload_dir.parent != root:
+                raise ValueError('invalid multipart upload identity')
+            return self._remove_upload_dir(upload_dir)
+
     def write_part(self, upload_id: str, part_number: int, stream: BinaryIO) -> dict[str, Any]:
         # Different part numbers are independent and may be written in parallel.
         # A per-part lock protects duplicate retries without serialising the whole upload.
@@ -354,6 +368,7 @@ class ZipMultipartRepository:
         destination: str | Path,
         *,
         on_progress: Callable[[int, int, int, int], object] | None = None,
+        cancel_check: Callable[[], object] | None = None,
     ) -> dict[str, Any]:
         with self.lock:
             meta = self._read(upload_id)
@@ -369,29 +384,37 @@ class ZipMultipartRepository:
             temporary = destination.with_suffix(destination.suffix + '.assembling')
             digest = hashlib.sha256()
             written = 0
-            with temporary.open('wb') as output:
-                for index in range(total_parts):
-                    part_path = self._part_path(upload_id, index)
-                    with part_path.open('rb') as source:
-                        while True:
-                            chunk = source.read(8 * 1024 * 1024)
-                            if not chunk:
-                                break
-                            output.write(chunk)
-                            digest.update(chunk)
-                            written += len(chunk)
-                            if on_progress is not None:
-                                try:
-                                    on_progress(
-                                        written,
-                                        int(meta['file_size']),
-                                        index + 1,
-                                        total_parts,
-                                    )
-                                except Exception:
-                                    # Progress reporting is observability only;
-                                    # it must never corrupt an otherwise-valid assembly.
-                                    pass
+            try:
+                with temporary.open('wb') as output:
+                    for index in range(total_parts):
+                        part_path = self._part_path(upload_id, index)
+                        with part_path.open('rb') as source:
+                            while True:
+                                if cancel_check is not None:
+                                    cancel_check()
+                                chunk = source.read(8 * 1024 * 1024)
+                                if not chunk:
+                                    break
+                                output.write(chunk)
+                                digest.update(chunk)
+                                written += len(chunk)
+                                if on_progress is not None:
+                                    try:
+                                        on_progress(
+                                            written,
+                                            int(meta['file_size']),
+                                            index + 1,
+                                            total_parts,
+                                        )
+                                    except Exception:
+                                        # Progress reporting is observability only;
+                                        # it must never corrupt an otherwise-valid assembly.
+                                        pass
+                if cancel_check is not None:
+                    cancel_check()
+            except Exception:
+                temporary.unlink(missing_ok=True)
+                raise
             if written != int(meta['file_size']):
                 temporary.unlink(missing_ok=True)
                 raise ValueError(f'assembled ZIP size mismatch: {written}/{meta["file_size"]}')

@@ -1,4 +1,8 @@
+import {returnToTrainingConfiguration} from './helpers/training-admission.mjs';
 import {test, expect} from '@playwright/test';
+
+const visualOutput = process.env.CODEX_VISUAL_OUTPUT_DIR || '';
+const visualPath = name => visualOutput ? `${visualOutput}/${name}` : test.info().outputPath(name);
 
 async function selectIsolatedTestProject(page, projectId) {
   await page.route('**/api/v53/bootstrap/snapshot**', async route => {
@@ -93,11 +97,13 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   }));
   await page.route(`**/api/v12/projects/${project.id}/train/start`, async route => {
     submitted = route.request().postDataJSON();
+    await new Promise(resolve => setTimeout(resolve, 1800));
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({ok: true, task: {
         task_id: submitted.task_id,
+        project_id: project.id,
         kind: 'TRAINING',
         task_type: 'TRAINING',
         status: 'QUEUED',
@@ -114,6 +120,7 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   });
 
   await page.goto('/');
+  await page.setViewportSize({width: 1366, height: 768});
   await expect.poll(async () => page.evaluate(() => window.TrainingDraftRuntime?.build || null))
     .toBe('training-draft-runtime-422519');
   await expect.poll(async () => page.evaluate(() => window.TrainingLabelRuntime?.build || null))
@@ -139,6 +146,7 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   await card.getByRole('button', {name: '训练'}).click();
   const dialog = page.getByRole('dialog', {name: '创建训练任务'});
   await expect(dialog).toBeVisible({timeout: 10_000});
+  await returnToTrainingConfiguration(page);
   await expect(dialog.locator('.train-create-saas')).toBeVisible();
   await expect(dialog.locator('.train-create-layout')).toBeVisible();
   await expect(dialog.locator('.train-create-left')).toBeVisible();
@@ -239,8 +247,8 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
     batch: state.trainingDraft.resource.batch,
     optimizer: state.trainingDraft.config.optimizer,
   }))).toEqual({algorithmId, materials: imageIds, device: 'cpu', batch: 16, optimizer: 'AdamW'});
-  await expect(dialog.getByRole('button', {name: '创建训练任务'})).toBeEnabled();
-  expect(await dialog.getByRole('button', {name: '创建训练任务'}).getAttribute('data-training-submit-owner')).toBe('TrainingSubmitRuntime');
+  await expect(dialog.getByRole('button', {name: '开始训练'})).toBeEnabled();
+  expect(await dialog.getByRole('button', {name: '开始训练'}).getAttribute('data-training-submit-owner')).toBe('TrainingSubmitRuntime');
 
   submitted = undefined;
   await page.evaluate(async projectId => {
@@ -255,7 +263,16 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
 
   submitted = undefined;
   expect(await page.evaluate(() => window.submitTrain429?.__trainingSubmitRuntime === true)).toBe(true);
-  await dialog.getByRole('button', {name: '创建训练任务'}).click();
+  await dialog.getByRole('button', {name: '开始训练'}).click();
+  const feedback = dialog.locator('[data-training-submit-feedback]');
+  await expect(feedback).toBeVisible();
+  await expect(feedback).toHaveAttribute('data-tone', 'working');
+  await expect(feedback).toContainText('正在提交训练任务');
+  await expect(feedback).toHaveCSS('opacity', '1');
+  await page.screenshot({path: visualPath('training-create-working.png'), fullPage: true});
+  await expect(dialog).not.toBeVisible();
+  await expect(page.locator('#toast')).toContainText('训练任务已进入后台队列');
+  await page.screenshot({path: visualPath('training-create-success.png'), fullPage: true});
   await expect.poll(async () => {
     if (submitted) return 'submitted';
     const runtime = await page.evaluate(() => window.TrainingSubmitRuntime?.state?.() || null);
@@ -273,6 +290,7 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   expect(submitted.training_mode).toBe('custom');
   expect(submitted.resource_strategy).toBe('manual');
   expect(submitted.device).toBe('cpu');
+
   expect(submitted.gpu_policy).toBe('exclusive');
   expect(submitted.epochs).toBe(30);
   expect(submitted.batch).toBe(16);
@@ -289,13 +307,54 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   await secondCard.getByRole('button', {name: '训练'}).click();
   const secondDialog = page.getByRole('dialog', {name: '创建训练任务'});
   await expect(secondDialog).toBeVisible({timeout: 10_000});
+  await returnToTrainingConfiguration(page);
   await secondDialog.getByRole('button', {name: '选择训练素材'}).click();
   const secondPicker = page.getByRole('dialog', {name: '选择本次训练素材'});
+  let releaseBulk;
+  const bulkGate = new Promise(resolve => {releaseBulk = resolve;});
+  await page.route('**/training-materials/bulk-selection', async route => {await bulkGate;await route.fallback();});
   await secondPicker.getByRole('button', {name: '全选全部可用素材'}).click();
+  await expect(secondPicker.getByRole('button', {name: '确认选择'})).toBeDisabled();
+  releaseBulk();
+  await expect(secondPicker.locator('#trV3PickerCount')).toContainText(`已选 ${imageIds.length} 张`);
   await secondPicker.getByRole('button', {name: '确认选择'}).click();
 
   const secondLabels = secondDialog.locator('#trainingLabelContractPanel');
   await expect(secondLabels.locator('input[data-training-label-code="fire"]')).not.toBeChecked();
   await expect(secondLabels.locator('input[data-training-label-code="smoke"]')).not.toBeChecked();
   await expect.poll(async () => page.evaluate(() => state.trainingDraft?.newLabelCodes || [])).toEqual([]);
+
+  await page.evaluate(() => window.closeModal());
+  await secondCard.getByRole('button', {name: '训练'}).click();
+  const failureDialog = page.getByRole('dialog', {name: '创建训练任务'});
+  await expect(failureDialog).toBeVisible();
+  await returnToTrainingConfiguration(page);
+  await page.evaluate(() => {
+    document.getElementById('tr429TaskId').value = 'invalid-task-id';
+    void window.TrainingSubmitRuntime.submit();
+  });
+  const failure = failureDialog.locator('[data-training-submit-feedback]');
+  await expect(failure).toHaveAttribute('data-tone', 'error');
+  await expect(failure).toContainText('训练暂不可开始');
+  const blockers = page.getByRole('dialog', {name: '训练暂不可开始'});
+  await expect(blockers.locator('[data-admission-code="materials"]')).toContainText('至少需要2张有效训练素材');
+  await blockers.getByRole('button', {name: '返回训练配置', exact: true}).click();
+  await expect(failure).toHaveCSS('opacity', '1');
+  await page.screenshot({path: visualPath('training-create-failure.png'), fullPage: true});
+  for (const viewport of [
+    {width: 1920, height: 1080}, {width: 1440, height: 900},
+    {width: 1366, height: 768}, {width: 375, height: 812},
+  ]) {
+    await page.setViewportSize(viewport);
+    const bounds = await failure.evaluate(element => {
+      const rect = element.getBoundingClientRect();
+      return {left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, pageWidth: document.documentElement.clientWidth, pageHeight: document.documentElement.clientHeight};
+    });
+    expect(bounds.left).toBeGreaterThanOrEqual(0);
+    expect(bounds.right).toBeLessThanOrEqual(bounds.pageWidth);
+    expect(bounds.top).toBeGreaterThanOrEqual(0);
+    expect(bounds.bottom).toBeLessThanOrEqual(bounds.pageHeight);
+  }
+  await page.emulateMedia({reducedMotion: 'reduce'});
+  await expect(failure).toHaveCSS('animation-name', 'none');
 });

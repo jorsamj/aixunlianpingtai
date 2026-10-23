@@ -1,3 +1,5 @@
+import {withRequestDeadline} from './api.js?v=20261021s';
+
 function required(value, message) {
   if (value === null || value === undefined || String(value).trim() === '') throw new Error(message);
   return value;
@@ -84,10 +86,10 @@ export function buildTrainingEngineParameters({draft, target, algorithm} = {}) {
   const mode = String(draft.trainingMode || (draft.resource?.strategy === 'manual' ? 'custom' : 'full'));
   const preset = trainingModePreset(mode, Boolean(draft.baseVersionId));
   // Presets never inherit hidden manual/advanced values from a previous custom
-  // task or an old dialog session. Keep only the explicitly selected mother model;
+  // task or an old dialog session. Keep the explicitly selected mother model and precision;
   // existing optimizer, augmentation and quality defaults remain canonical here.
   const config = preset
-    ? {model: rawConfig.model, stop_threshold: .90, eval_interval: 10, eval_metric: 'map50'}
+    ? {model: rawConfig.model, imgsz: rawConfig.imgsz, precision: rawConfig.precision, amp: rawConfig.amp, stop_threshold: .90, eval_interval: 10, eval_metric: 'map50'}
     : rawConfig;
   return {
     framework: target.framework === 'paddle' ? 'paddle' : 'ultralytics',
@@ -96,7 +98,7 @@ export function buildTrainingEngineParameters({draft, target, algorithm} = {}) {
     algorithm: algorithm.key || '',
     model: config.model || algorithm.base_model || '',
     epochs: preset?.epochs ?? config.epochs ?? (draft.baseVersionId ? 80 : (algorithm.default_epochs ?? 150)),
-    imgsz: preset?.imgsz ?? config.imgsz ?? algorithm.default_imgsz ?? 640,
+    imgsz: config.imgsz ?? preset?.imgsz ?? algorithm.default_imgsz ?? 640,
     batch: integerParameter(draft.resource?.batch ?? config.batch ?? algorithm.default_batch, 8, 'Batch'),
     device: draft.resource?.device || config.device || 'auto',
     include_empty: false,
@@ -126,7 +128,7 @@ export function buildTrainingEngineParameters({draft, target, algorithm} = {}) {
     fliplr: config.fliplr ?? .5,
     cache: draft.resource?.cache ?? config.cache ?? false,
     pretrained: config.pretrained !== false,
-    amp: config.amp !== false,
+    amp: normalizeTrainingPrecision(config.precision) === 'fp32' ? false : normalizeTrainingPrecision(config.precision) === 'fp16' ? true : config.amp !== false,
     single_cls: Boolean(config.single_cls),
     rect: Boolean(config.rect),
     cos_lr: Boolean(config.cos_lr),
@@ -167,24 +169,45 @@ export function validateTrainingDevice(draft, devices = [], target = null) {
   return match;
 }
 
-export function trainingSubmitReadiness({draft, base, target, benchmarkStatus, compatibility, submitting = false} = {}) {
-  if (submitting) return {ready: false, reason: 'submitting'};
-  if (!String(draft?.algorithmId || '').trim()) return {ready: false, reason: 'algorithm'};
-  if (draft?.benchmarkReuseEnabled && benchmarkStatus?.loading) return {ready: false, reason: 'benchmark-loading'};
-  if (draft?.benchmarkReuseEnabled && benchmarkStatus?.load_error) return {ready: false, reason: 'benchmark-error'};
-  if ((draft?.materialIds || []).length < 2) return {ready: false, reason: 'materials'};
-  if (base?.blocked) return {ready: false, reason: 'iteration'};
-  if (!base?.hasPrevious && Array.isArray(target?.base_models)) {
-    try { validatePreparedMotherModel({draft, target}); }
-    catch (_) { return {ready: false, reason: 'mother-model-not-ready'}; }
+export const TRAINING_ADMISSION_ISSUE_NAMES = Object.freeze({
+  missing_annotation:'缺少正式标注', partial_review_scope:'标签审核范围不完整',
+  stale_ground_truth:'标注与当前图片不一致', material_unavailable:'素材不可读取',
+  duplicate_annotation_conflict:'同图不同GT冲突', content_hash_leakage:'Train / Val / Test 内容交叉',
+});
+
+export function collectTrainingAdmissionBlockers({draft,base,target,benchmarkStatus,compatibility,
+  submitting=false,externalReadiness,additional=[]}={}) {
+  const blockers=[];
+  const add=(code,message,{transient=false,count=null,...details}={})=>blockers.push({code,message,transient,count,...details});
+  if(submitting)add('submitting','训练任务正在创建，请等待服务端确认',{transient:true});
+  if(!String(draft?.algorithmId||'').trim())add('algorithm','请选择有效算法');
+  if(draft?.benchmarkReuseEnabled&&benchmarkStatus?.loading)add('benchmark-loading','正在读取固定Test基准',{transient:true});
+  if(draft?.benchmarkReuseEnabled&&benchmarkStatus?.load_error)add('benchmark-error',String(benchmarkStatus.load_error));
+  if((draft?.materialIds||[]).length<2)add('materials','至少需要2张有效训练素材',{count:(draft?.materialIds||[]).length});
+  if(base?.blocked)add('iteration','历史算法没有成功且成果有效的可迭代版本，请核对模型版本');
+  if(!base?.hasPrevious&&Array.isArray(target?.base_models)){
+    try{validatePreparedMotherModel({draft,target})}catch(error){add('mother-model-not-ready',error.message||'母模型未就绪')}
   }
-  if (compatibility !== undefined && compatibility?.ready !== true) {
-    return {ready: false, reason: 'material-compatibility-loading'};
+  if(compatibility!==undefined&&compatibility?.ready!==true){
+    if(compatibility?.error)add('material-compatibility-error',`训练素材检查失败：${compatibility.error}，可重新检查`);
+    else add('material-compatibility-loading','正在检查训练素材，请稍候',{transient:true});
   }
-  if (compatibility !== undefined && Number(compatibility?.issue_count || 0) > 0) {
-    return {ready: false, reason: 'material-compatibility'};
+  if(compatibility?.ready===true&&Number(compatibility.issue_count||0)>0){
+    const raw=compatibility.affected_image_count;
+    const count=raw!==undefined&&raw!==null&&Number.isFinite(Number(raw))?Number(raw):null;
+    add('material-compatibility',count===null?'训练素材存在未处理问题':`本次有 ${count} 张素材不符合训练条件`,{count,issue_count:Number(compatibility.issue_count)});
+    for(const [code,value] of Object.entries(compatibility.issue_counts||{}))if(Number(value)>0){
+      add(code,TRAINING_ADMISSION_ISSUE_NAMES[code]||`其他素材问题（${code}）`,{count:Number(value),count_unit:'问题条目'});
+    }
   }
-  return {ready: true, reason: ''};
+  if(externalReadiness?.ready===false)add(externalReadiness.reason||'external-master-data',externalReadiness.message||'畅联云算法主数据尚未就绪，请重新同步');
+  for(const item of additional)if(item?.code&&!blockers.some(row=>row.code===item.code||row.message===item.message))add(item.code,item.message||item.code,item);
+  return blockers;
+}
+
+export function trainingSubmitReadiness(options={}) {
+  const first=collectTrainingAdmissionBlockers(options)[0];
+  return first?{ready:false,reason:first.code}:{ready:true,reason:''};
 }
 
 export function supplementCandidateContext({asset, draft, base} = {}) {
@@ -260,7 +283,53 @@ export function benchmarkReuseContext({asset, draft, base, benchmark} = {}) {
 
 const CREATED_TRAINING_STATUSES = new Set(['QUEUED', 'WAITING_RESOURCE', 'RUNNING', 'PAUSED']);
 
-export function validateTrainingCreatedResponse(body, expectedTaskId = '') {
+const TRAINING_SUBMIT_PRESENTATIONS = Object.freeze({
+  configuration: Object.freeze({
+    tone: 'working', activeStep: 0, completedSteps: 0,
+    title: '正在校验训练配置', detail: '正在核验训练设备与算法版本',
+  }),
+  materials: Object.freeze({
+    tone: 'working', activeStep: 1, completedSteps: 1,
+    title: '正在核验训练素材', detail: '正在确认素材、标签与训练范围',
+  }),
+  submit: Object.freeze({
+    tone: 'working', activeStep: 2, completedSteps: 2,
+    title: '正在提交训练任务', detail: '服务端正在创建可恢复的持久任务',
+  }),
+  success: Object.freeze({
+    tone: 'success', activeStep: 2, completedSteps: 3,
+    title: '训练任务创建成功', detail: '已加入训练任务队列，系统将自动安排执行',
+  }),
+});
+
+export function trainingSubmitPresentation(stage, options = {}) {
+  const value = String(stage || 'idle');
+  if (value === 'blocked') return {tone:'error',activeStep:1,completedSteps:1,title:'训练暂不可开始',detail:'请查看完整阻塞原因，调整配置后重新检查',retrySafe:true};
+  if (value === 'checking-materials') return {...TRAINING_SUBMIT_PRESENTATIONS.materials,title:'正在检查训练素材、标签与 GT'};
+  if (value === 'created') return {...TRAINING_SUBMIT_PRESENTATIONS.success};
+  if (value === 'failed') {
+    const failedAt = String(options.failedAt || '');
+    const fallback = trainingSubmitPresentation(failedAt || 'sync-draft');
+    const uncertain = options.outcomeUncertain === true;
+    const taskId = String(options.taskId || '').trim();
+    return {
+      tone: uncertain ? 'uncertain' : 'error',
+      activeStep: fallback.activeStep,
+      completedSteps: fallback.completedSteps,
+      title: uncertain ? '正在核对创建结果' : '训练任务未创建',
+      detail: uncertain
+        ? `创建结果尚未确认：${String(options.error || '网络连接中断')}。请先到任务列表核对 ${taskId || '本次任务 ID'}，不要重复提交。`
+        : String(options.error || '请检查训练配置后重试'),
+      retrySafe: !uncertain,
+      taskId,
+    };
+  }
+  if (value === 'build-payload') return {...TRAINING_SUBMIT_PRESENTATIONS.materials};
+  if (value === 'posting') return {...TRAINING_SUBMIT_PRESENTATIONS.submit};
+  return {...TRAINING_SUBMIT_PRESENTATIONS.configuration};
+}
+
+export function validateTrainingCreatedResponse(body, expectedTaskId = '', expectedIdentity = {}) {
   const task = body?.task;
   const taskId = String(task?.task_id || '').trim();
   const kind = String(task?.kind || task?.task_type || '').trim().toUpperCase();
@@ -272,6 +341,12 @@ export function validateTrainingCreatedResponse(body, expectedTaskId = '') {
   const expected = String(expectedTaskId || '').trim();
   if (expected && taskId !== expected) {
     throw new Error(`训练创建返回的任务身份不一致：期望 ${expected}，实际 ${taskId}`);
+  }
+  for (const [field, expectedValue] of [['project_id', expectedIdentity.projectId], ['algorithm_id', expectedIdentity.algorithmId]]) {
+    const actual = String(task[field] || (field === 'algorithm_id' ? task.algorithm_asset_id : '') || '').trim();
+    if (expectedValue && (field === 'project_id' || actual) && actual !== String(expectedValue)) {
+      throw new Error('训练创建返回的项目或算法身份不一致，请查询任务状态');
+    }
   }
   return task;
 }
@@ -324,20 +399,78 @@ export function installTrainingSubmitRuntime({
   let submitting = false;
   let lastStage = 'idle';
   let lastError = '';
+  let lastPresentation = null;
+  let serverRejection = null;
+  let submissionRoot = null;
+  let submissionButton = null;
+  let uncertainTaskId = '';
+  const createdTaskIds = new Set();
+  let submittedProjectId = '';
+  let submittedAlgorithmId = '';
+  let admissionOperation = null;
+  function admissionSignature() {
+    return JSON.stringify([(getState?.()||{}).trainingDraft||trainingDraftRuntime.current?.()||{},
+      document.getElementById?.('tr429Target')?.value||'',document.getElementById?.('tr429Alg')?.value||'']);
+  }
+  function admissionIsCurrent(operation=admissionOperation) {
+    return !!operation&&!destroyed&&String(projectId?.()||'')===operation.projectId
+      &&document.querySelector?.('.train429-create')===operation.root&&operation.root?.isConnected!==false
+      &&String(document.getElementById?.('tr429TaskId')?.value||'')===operation.taskId
+      &&admissionSignature()===operation.signature&&ownsSubmissionModal();
+  }
+  function cancelStaleCheck() {
+    if(admissionOperation&&lastStage!=='posting'&&!admissionIsCurrent())admissionOperation.controller.abort();
+  }
+
+
+  function ownsSubmissionModal() {
+    if (destroyed) return false;
+    const currentRoot = document.querySelector?.('.train429-create');
+    if (submissionRoot) {
+      if (submissionRoot.isConnected === false || currentRoot !== submissionRoot) return false;
+      const owner = submissionRoot.closest?.('[role=dialog],.modal');
+      if (owner) {
+        const layers = [...(document.querySelectorAll?.('.v424-modal-layer') || [])];
+        const top = layers.at(-1) || document.getElementById?.('modal');
+        if (top !== owner || owner.classList?.contains('hidden')) return false;
+      }
+      return true;
+    }
+    return !!submissionButton && document.querySelector?.('.train429-create .train428-footer .btn.primary') === submissionButton;
+  }
+
+  function closeCreatedModal() {
+    if (!ownsSubmissionModal() || (admissionOperation&&!admissionIsCurrent())) return;
+    closeModal?.();
+  }
+
+  function refreshCreatedLists(pid) {
+    Promise.resolve().then(() => {
+      if (destroyed || String(projectId?.() || '') !== String(pid)) return;
+      return reloadRelated?.();
+    }).then(() => {
+      if (!destroyed && String(projectId?.() || '') === String(pid)) renderAlgorithms?.();
+    }).catch(refreshError => {
+      console.warn?.('training task created but list refresh failed', refreshError);
+      if (!destroyed && String(projectId?.() || '') === String(pid)) notify?.('训练任务已创建；列表刷新失败，请稍后手动刷新查看');
+    });
+  }
   const SUBMIT_STAGE_TEXT = Object.freeze({
     idle: '开始训练',
-    'sync-draft': '正在读取训练配置…',
+    'sync-draft': '正在检查训练条件…',
+    'checking-materials': '正在检查训练条件…',
     'validate-version': '正在核验算法版本…',
     'resolve-algorithm': '正在核验算法主数据…',
     'resolve-target': '正在核验训练资源…',
     'resolve-engine': '正在核验训练引擎…',
     'validate-device': '正在核验训练设备…',
     'build-payload': '正在整理训练素材与参数…',
-    posting: '服务端正在核验并创建持久任务…',
+    posting: '正在创建训练任务…',
     created: '训练任务已创建',
   });
 
   function submitButton() {
+    if (submitting && !ownsSubmissionModal()) return null;
     if (typeof document === 'undefined') return null;
     const primary = document.querySelector?.('.train429-create .train428-footer .btn.primary');
     if (primary) return primary;
@@ -345,8 +478,41 @@ export function installTrainingSubmitRuntime({
     return buttons.find(button => /开始训练|正在.*训练|持久任务|训练任务已创建/.test(String(button.textContent || ''))) || null;
   }
 
-  function setSubmitStage(stage) {
+  function renderSubmitFeedback(stage, options = {}) {
+    const root = stage !== 'idle' && !ownsSubmissionModal() ? null : document.querySelector?.('.train429-create');
+    const panel = root?.querySelector?.('[data-training-submit-feedback]');
+    if (stage === 'idle') {
+      if (panel) {
+        panel.hidden = true;
+        panel.removeAttribute?.('data-tone');
+      }
+      root?.classList?.remove?.('training-submit-active', 'training-submit-complete', 'training-submit-failed');
+      return null;
+    }
+    const presentation = trainingSubmitPresentation(stage, options);
+    lastPresentation = presentation;
+    if (!panel) return presentation;
+    panel.hidden = false;
+    panel.dataset.tone = presentation.tone;
+    panel.setAttribute?.('aria-busy', presentation.tone === 'working' ? 'true' : 'false');
+    const title = panel.querySelector?.('[data-training-submit-title]');
+    const detail = panel.querySelector?.('[data-training-submit-detail]');
+    if (title) title.textContent = presentation.title;
+    if (detail) detail.textContent = presentation.detail;
+    [...(panel.querySelectorAll?.('[data-training-submit-step]') || [])].forEach((item, index) => {
+      const status = index < presentation.completedSteps ? 'done' : index === presentation.activeStep ? 'active' : 'pending';
+      item.dataset.status = status;
+      item.setAttribute?.('aria-current', status === 'active' ? 'step' : 'false');
+    });
+    root?.classList?.toggle?.('training-submit-active', presentation.tone === 'working');
+    root?.classList?.toggle?.('training-submit-complete', presentation.tone === 'success');
+    root?.classList?.toggle?.('training-submit-failed', ['error', 'uncertain'].includes(presentation.tone));
+    return presentation;
+  }
+
+  function setSubmitStage(stage, options = {}) {
     lastStage = String(stage || 'idle');
+    renderSubmitFeedback(lastStage, options);
     const button = submitButton();
     if (!button) return lastStage;
     if (!button.dataset.trainingSubmitIdleText) {
@@ -354,13 +520,20 @@ export function installTrainingSubmitRuntime({
     }
     button.dataset.trainingSubmitStage = lastStage;
     button.textContent = submitting
-      ? (SUBMIT_STAGE_TEXT[lastStage] || '正在创建训练任务…')
+      ? (lastStage==='posting'?'正在创建训练任务…':lastStage==='created'?'训练任务已创建':'正在检查训练条件…')
       : button.dataset.trainingSubmitIdleText;
     if (typeof button.setAttribute === 'function') button.setAttribute('aria-busy', submitting ? 'true' : 'false');
     return lastStage;
   }
 
-  function updateReadiness() {
+  function updateReadiness({checked=false,reset=false}={}) {
+    cancelStaleCheck();
+    const currentRoot = document.querySelector?.('.train429-create') || null;
+    if (!submitting && currentRoot && currentRoot !== submissionRoot) {
+      lastStage = 'idle';
+      lastError = '';
+      lastPresentation = null;
+    }
     const state = getState?.() || {};
     const draft = state.trainingDraft || trainingDraftRuntime.current?.() || trainingDraftRuntime.sync();
     const base = trainingDraftRuntime.base?.() || state.trainingDraftBase || {};
@@ -370,18 +543,38 @@ export function installTrainingSubmitRuntime({
     const compatibility = materialSummaryRuntime?.compatibilityFor?.(draft);
     const selectedTargetId = document.getElementById?.('tr429Target')?.value || '';
     const selectedTarget = (state.targets || []).find(row => String(row?.id || '') === String(selectedTargetId));
-    const baseReadiness = trainingSubmitReadiness({
-      draft, base, target:selectedTarget, benchmarkStatus, compatibility, submitting,
-    });
-    const asset = (state.algorithms || []).find(
-      row => String(row?.id || '') === String(draft?.algorithmId || '')
-    );
-    const externalReadiness = asset
-      ? window.ExternalAlgorithmPlatformRuntime?.trainingReadiness?.(asset.id)
-      : null;
-    const readiness = baseReadiness.ready && externalReadiness?.ready === false
-      ? {ready: false, reason: externalReadiness.reason || 'external-master-data'}
-      : baseReadiness;
+    const asset = (state.algorithms || []).find(row=>String(row?.id||'')===String(draft?.algorithmId||''));
+    const externalReadiness = asset ? window.ExternalAlgorithmPlatformRuntime?.trainingReadiness?.(asset.id) : null;
+    const additional=[];
+    const add=(code,error,transient=false)=>additional.push({code,message:String(error?.message||error),transient});
+    if(draft?.algorithmId&&!asset)add('algorithm-unavailable','当前算法身份不存在，请刷新算法列表');
+    if(!projectId?.())add('project-unavailable','当前项目不可用，请重新选择项目');
+    if(!selectedTarget)add('resource-unavailable','训练资源尚未就绪，请等待或重新读取配置',!selectedTargetId);
+    if(selectedTarget){
+      const engineKey=document.getElementById?.('tr429Alg')?.value||'';
+      const engine=(selectedTarget.algorithms||[]).find(row=>String(row.key)===String(engineKey))||(selectedTarget.algorithms||[])[0];
+      if(!engine)add('engine-unavailable','当前资源没有可用训练引擎');
+      try{validateTrainingDevice(draft,state.trainingDevicesV3?.options||[],selectedTarget)}catch(error){add('device-unavailable',error)}
+      if(engine)try{buildTrainingEngineParameters({draft,target:selectedTarget,algorithm:engine})}catch(error){
+        add('training-config',error);
+      }
+    }
+    if(draft?.benchmarkReuseEnabled&&!benchmarkStatus?.loading){
+      try{benchmarkReuseContext({asset,draft,base,benchmark:benchmarkStatus});if((draft.testMaterialIds||[]).length)add('fixed-test-conflict','复用固定Test基准时不能同时选择独立Test素材')}
+      catch(error){add('fixed-test-benchmark',error)}
+    }
+    if(draft?.splitMode==='independent_test_set'&&!draft?.benchmarkReuseEnabled&&!(draft.testMaterialIds||[]).length)add('independent-test-insufficient','独立Test素材不足，请补充后重新预检');
+    if(serverRejection?.root!==currentRoot||serverRejection?.signature!==admissionSignature())serverRejection=null;
+    if(serverRejection)add(serverRejection.code,serverRejection.message);
+    const blockers=collectTrainingAdmissionBlockers({draft,base,target:selectedTarget,benchmarkStatus,compatibility,submitting,externalReadiness,additional});
+    if(uncertainTaskId&&String(document.getElementById?.('tr429TaskId')?.value||'')===uncertainTaskId){
+      blockers.unshift({code:'outcome-uncertain',message:'创建结果尚未确认，请先查询原任务，不能盲目重试',transient:true,count:null});
+    }
+    const readiness={ready:!blockers.length,reason:blockers[0]?.code||'',blockers,
+      checking:blockers.some(row=>row.transient),signature:JSON.stringify([draft,blockers])};
+    materialSummaryRuntime?.updateAdmissionDiagnosis?.({root:currentRoot,
+      taskId:String(document.getElementById?.('tr429TaskId')?.value||''),projectId:String(projectId?.()||''),
+      draft,algorithmName:asset?.name||'',readiness,checked,reset,signature:admissionSignature()});
     let supplementContext = null;
     try {
       supplementContext = supplementCandidateContext({asset, draft, base});
@@ -391,10 +584,14 @@ export function installTrainingSubmitRuntime({
     renderSupplementCandidateSummary(supplementContext);
     const button = submitButton();
     if (button) {
-      button.disabled = !readiness.ready;
+      button.disabled = submitting || Boolean(uncertainTaskId&&String(document.getElementById?.('tr429TaskId')?.value||'')===uncertainTaskId);
+      button.setAttribute?.('aria-busy',submitting?'true':'false');
       button.dataset.trainingSubmitOwner = 'TrainingSubmitRuntime';
       button.dataset.trainingSubmitReason = readiness.reason;
-      if (!submitting) setSubmitStage('idle');
+      if (!submitting && lastStage === 'created') setSubmitStage('created');
+      else if (!submitting && lastStage === 'failed') button.textContent='重新检查';
+      else if (!submitting && lastStage === 'blocked') button.textContent=button.dataset.trainingSubmitIdleText||'开始训练';
+      else if (!submitting) setSubmitStage('idle');
     }
     return readiness;
   }
@@ -405,15 +602,57 @@ export function installTrainingSubmitRuntime({
       notify?.('训练任务正在创建，请勿重复提交');
       return null;
     }
+    const plannedId = String(document.getElementById?.('tr429TaskId')?.value || '').trim();
+    if (createdTaskIds.has(plannedId)) {
+      notify?.(`训练任务已创建，请在任务列表查看 ${plannedId}`);
+      return null;
+    }
+    if (uncertainTaskId && plannedId === uncertainTaskId) {
+      notify?.(`创建结果尚未确认，请先在任务列表查询 ${uncertainTaskId}，不要重复创建`);
+      return null;
+    }
+    submissionRoot = document.querySelector?.('.train429-create') || null;
+    submissionButton = document.querySelector?.('.train429-create .train428-footer .btn.primary') || null;
     submitting = true;
     lastError = '';
+    lastPresentation = null;
+    serverRejection = null;
+    let submittedTaskId = '';
+    let responseReceived = false;
+    let creationAccepted = false;
     setSubmitStage('sync-draft');
-    updateReadiness();
+    updateReadiness({reset:true});
     setSubmitStage('sync-draft');
     try {
       const state = getState?.() || {};
       const draft = trainingDraftRuntime.sync();
       if (!draft) throw new Error('训练草稿尚未就绪，请关闭训练窗口后重新打开。');
+      const operation={root:submissionRoot,taskId:plannedId,projectId:String(projectId?.()||''),signature:admissionSignature(),controller:new AbortController()};
+      admissionOperation=operation;
+      const showBlockers=readiness=>{
+        const blockers=readiness.blockers.filter(row=>!row.transient);
+        if(!blockers.length)return false;
+        setSubmitStage('blocked');updateReadiness({checked:true});
+        if(!materialSummaryRuntime?.openAdmissionDiagnosis?.())notify?.(blockers.map(row=>row.message).join('；'));
+        return true;
+      };
+      const localAdmission=updateReadiness();
+      if(draft.benchmarkReuseEnabled&&localAdmission.blockers.some(row=>['fixed-test-benchmark','benchmark-error'].includes(row.code))){
+        showBlockers(localAdmission);return null;
+      }
+      if(draft.benchmarkReuseEnabled&&localAdmission.blockers.some(row=>row.code==='benchmark-loading'))throw new Error('固定Test基准仍在读取，检查尚未完成，请稍后重新检查');
+      setSubmitStage('checking-materials');
+      let checkedCompatibility;
+      if(materialSummaryRuntime?.refreshCompatibility){
+        checkedCompatibility=await materialSummaryRuntime.refreshCompatibility({force:true,signal:operation.controller.signal});
+        if(!admissionIsCurrent(operation))throw Object.assign(new Error('训练配置或窗口已变化，本次检查已取消'),{name:'AbortError'});
+        if(!checkedCompatibility){const truth=materialSummaryRuntime.compatibilityFor?.(draft);throw new Error(truth?.error||'训练准入检查未完成，请重新检查');}
+        if(checkedCompatibility.compatible===false&&!checkedCompatibility.skipped&&!Number(checkedCompatibility.issue_count||0))throw new Error('训练准入检查未完成：未获得明确通过结果，请重新检查');
+      }
+      const admission=updateReadiness();
+      if(showBlockers(admission))return null;
+      if(admission.blockers.some(row=>row.transient&&row.code!=='submitting'))throw new Error('训练条件检查尚未完成，请等待基础配置就绪后重新检查');
+
 
       setSubmitStage('validate-version');
       const base = trainingDraftRuntime.base?.() || state.trainingDraftBase || {};
@@ -487,50 +726,56 @@ export function installTrainingSubmitRuntime({
         payload.task_id = plannedTaskId;
       }
       const pid = projectId?.();
+      submittedProjectId = pid;
+      submittedAlgorithmId = asset.id;
       if (!pid) throw new Error('当前项目不可用，请刷新页面后重试');
 
-      if (materialSummaryRuntime?.refreshCompatibility) {
-        const checked = await materialSummaryRuntime.refreshCompatibility({
-          force: true,
-          payload,
-        });
-        if (!checked) throw new Error('训练标签适配检查失败，请重试');
-        if (Number(checked.issue_count || 0) > 0) {
-          materialSummaryRuntime.openCompatibilityIssues?.();
-          throw new Error(`仍有 ${Number(checked.issue_count)} 张素材需要补审或排除`);
-        }
+      if(!admissionIsCurrent(operation))throw Object.assign(new Error('训练配置或窗口已变化，本次检查已取消'),{name:'AbortError'});
+      if(checkedCompatibility){
+        payload.expected_material_revision=checkedCompatibility.material_revision;
+        payload.expected_annotation_revision=checkedCompatibility.annotation_revision;
       }
 
       setSubmitStage('posting');
+      submittedTaskId = String(payload.task_id || '');
+      const body = await withRequestDeadline(async signal => {
       const response = await window.fetch(`/api/v12/projects/${pid}/train/start`, {
         method: 'POST',
+        signal,
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify(payload),
       });
+      responseReceived = true;
       if (!response.ok) {
         const raw = await response.text();
         let body = {};
         try { body = JSON.parse(raw); } catch (_) { body = {detail: raw}; }
-        const message = body.message || body.detail || `训练任务创建失败（HTTP ${response.status}）`;
+        const detail=body.detail;
+        const message=body.message||detail?.message||(typeof detail==='string'?detail:'')||`训练任务创建失败（HTTP ${response.status}）`;
         const validationDetail = body.code === 'VALIDATION_ERROR' ? formatTrainingValidationError(body) : '';
-        throw new Error(validationDetail ? `${message}：${validationDetail}` : String(message));
+        throw Object.assign(new Error(validationDetail?`${message}：${validationDetail}`:String(message)),{code:body.code||detail?.code||`HTTP_${response.status}`,detail,solution:body.solution||detail?.solution||'',serverRejected:true,httpStatus:response.status});
       }
-      const body = await response.json();
-      const createdTask = validateTrainingCreatedResponse(body, payload.task_id);
-      setSubmitStage('created');
-      if (payload.iteration_action && state.trainingIterationAction) {
+      creationAccepted = true;
+      return await response.json();
+      }, {label: '训练创建'});
+      const createdTask = validateTrainingCreatedResponse(body, payload.task_id, {projectId: pid, algorithmId: asset.id});
+      if(admissionIsCurrent())setSubmitStage('created');
+      else{lastStage='idle';lastError='';lastPresentation=null;}
+      const currentProjectMatches = !destroyed && String(projectId?.() || '') === String(pid);
+      if (currentProjectMatches && payload.iteration_action && state.trainingIterationAction) {
         state.trainingIterationAction = null;
       }
 
-      trainingTaskRuntime?.acceptCreatedTask?.(createdTask, {
+      if (currentProjectMatches) trainingTaskRuntime?.acceptCreatedTask?.(createdTask, {
         algorithmId: asset.id,
         algorithmName: String(asset.name || '已删除算法'),
         framework: String(payload.framework || target.framework || ''),
         queuePriority: payload.queue_priority,
       });
-      closeModal?.();
-      state.alg428Expanded = state.alg428Expanded || {};
-      state.alg428Expanded[asset.id] = true;
+      if (currentProjectMatches) {
+        state.alg428Expanded = state.alg428Expanded || {};
+        state.alg428Expanded[asset.id] = true;
+      }
       const selection = body?.selection && typeof body.selection === 'object' ? body.selection : null;
       let createdMessage = `训练任务已进入后台队列 · ${createdTask.task_id}`;
       if (selection && Number.isFinite(Number(selection.effective_train_count))) {
@@ -539,21 +784,58 @@ export function installTrainingSubmitRuntime({
       if (selection && Number(selection.pending_annotation_count || 0) > 0) {
         createdMessage += ` · 待标注 ${Math.max(0, Number(selection.pending_annotation_count))} 张已保留`;
       }
+      uncertainTaskId = '';
+      createdTaskIds.add(createdTask.task_id);
+      closeCreatedModal();
       notify?.(createdMessage);
-
-      try {
-        await reloadRelated?.();
-        renderAlgorithms?.();
-      } catch (refreshError) {
-        console.warn?.('training task created but list refresh failed', refreshError);
-        notify?.('训练任务已创建；列表刷新失败，请稍后手动刷新查看');
-      }
+      refreshCreatedLists(pid);
       return body;
     } catch (error) {
+      if(error?.name==='AbortError'&&lastStage!=='posting')return null;
       lastError = String(error?.message || error || '未知训练提交错误');
-      notify?.(lastError);
+      const failedAt = lastStage;
+      if(error?.serverRejected&&[400,409,422].includes(error.httpStatus)&&admissionIsCurrent())serverRejection={root:submissionRoot,signature:admissionOperation.signature,code:error.code,message:lastError};
+      let outcomeUncertain = failedAt === 'posting' && (!responseReceived || creationAccepted || Number(error?.httpStatus)>=500);
+      if (outcomeUncertain && submittedTaskId) {
+        try {
+          const pid = submittedProjectId;
+          const verification = await withRequestDeadline(async signal => { const response = await window.fetch(
+            `/api/v62/projects/${encodeURIComponent(pid)}/tasks/${encodeURIComponent(submittedTaskId)}`,
+            {headers: {'Accept': 'application/json'}, signal},
+          ); return {ok: response.ok, body: response.ok ? await response.json() : null}; }, {label: '训练任务核验'});
+          if (verification.ok) {
+            const taskBody = verification.body;
+            const createdTask = validateTrainingCreatedResponse(
+              {ok: true, task: taskBody?.task || taskBody}, submittedTaskId,
+              {projectId: pid, algorithmId: submittedAlgorithmId},
+            );
+            if(admissionIsCurrent())setSubmitStage('created');
+            else{lastStage='idle';lastError='';lastPresentation=null;}
+            if (!destroyed && String(projectId?.() || '') === String(pid)) {
+              trainingTaskRuntime?.acceptCreatedTask?.(createdTask, {recoveredAfterNetworkError: true});
+            }
+            uncertainTaskId = '';
+            createdTaskIds.add(createdTask.task_id);
+            closeCreatedModal();
+            notify?.(`训练任务已创建并进入后台队列 · ${createdTask.task_id}`);
+            refreshCreatedLists(pid);
+            return {ok: true, task: createdTask, recovered: true};
+          }
+        } catch (_) {
+          outcomeUncertain = true;
+        }
+      }
+      if (outcomeUncertain) uncertainTaskId = submittedTaskId;
+      if(!admissionIsCurrent()){lastStage='idle';lastError='';return null;}
+      setSubmitStage('failed', {
+        error: lastError, failedAt, taskId: submittedTaskId, outcomeUncertain,
+      });
+      updateReadiness({reset:!serverRejection});
+      if(error?.serverRejected&&serverRejection&&ownsSubmissionModal()){updateReadiness({checked:true});materialSummaryRuntime?.openAdmissionDiagnosis?.();}
+      if(ownsSubmissionModal())notify?.(lastPresentation?.detail || lastError);
       return null;
     } finally {
+      admissionOperation=null;
       submitting = false;
       updateReadiness();
     }
@@ -569,10 +851,13 @@ export function installTrainingSubmitRuntime({
     modePreset: trainingModePreset,
     isCanonicalTaskId: isCanonicalTrainingTaskId,
     updateReadiness,
+    cancelStaleCheck,
+    clearAdmissionError:()=>{serverRejection=null;},
     isSubmitting: () => submitting,
-    state: () => ({submitting, networkOwner: true, readiness: updateReadiness(), lastStage, lastError}),
+    state: () => ({submitting, networkOwner: true, readiness: updateReadiness(), lastStage, lastError, presentation: lastPresentation}),
     destroy() {
       destroyed = true;
+      admissionOperation?.controller.abort();
       if (window.submitTrain429 === submit) window.submitTrain429 = originalSubmit;
       if (window.TrainingSubmitRuntime === runtime) window.TrainingSubmitRuntime = null;
       window.__trainingSubmitRuntimeInstalled = false;

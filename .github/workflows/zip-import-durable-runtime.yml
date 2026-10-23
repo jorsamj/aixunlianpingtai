@@ -11,10 +11,22 @@ on:
       - 'requirements.txt'
       - 'platform_core/secrets.py'
       - 'platform_core/zip_multipart.py'
+      - 'platform_core/annotations.py'
+      - 'tests/unit/test_annotations.py'
       - 'platform_core/storage/import_tasks.py'
       - 'static/index.html'
       - 'static/main.mjs'
       - 'static/zip-import-bootstrap.mjs'
+      - 'static/modules/uppy-zip-*.js'
+      - 'static/vendor/uppy/**'
+      - 'tools/vendor_uppy.mjs'
+      - 'tools/third_party_notices/uppy/**'
+      - 'tests/frontend/uppy-*.test.mjs'
+      - 'tests/frontend/zip-transfer-observer.test.mjs'
+      - 'tests/browser/uppy-zip-poc.spec.mjs'
+      - 'tests/browser/helpers/uppy-zip.mjs'
+      - 'package.json'
+      - 'package-lock.json'
       - 'static/modules/zip-import-runtime.js'
       - 'static/modules/upload-task-center.js'
       - 'static/modules/storage-import-progress.js'
@@ -36,6 +48,7 @@ on:
       - 'tests/frontend/storage-import-progress.test.mjs'
       - 'tests/frontend/import-dock-style.test.mjs'
       - 'tests/browser/zip-import-refresh-recovery.spec.mjs'
+      - 'tests/browser/material-upload-chunking.spec.mjs'
       - 'tests/api/test_v19_job_atomic_persistence.py'
       - 'tests/api/test_v19_import_scalability.py'
       - 'tests/api/test_v19_import_report_externalization.py'
@@ -57,6 +70,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install pinned frontend dependencies and verify offline artifacts
+        run: npm ci && npm run verify:uppy
+      - name: Install atomic persistence test dependencies
+        run: python -m pip install --disable-pip-version-check pytest filelock
+      - name: Cross-platform atomic JSON staging and Windows contention
+        run: python -m pytest -q --confcutdir=tests/unit tests/unit/test_annotations.py
       - name: Syntax check
         run: >-
           node --check static/modules/zip-import-runtime.js &&
@@ -71,6 +93,10 @@ jobs:
           tests/frontend/zip-import-durable-runtime.test.mjs
           tests/frontend/zip-label-evidence-and-simple-training-ui.test.mjs
           tests/frontend/zip-multipart-upload.test.mjs
+          tests/frontend/zip-transfer-observer.test.mjs
+          tests/frontend/uppy-zip-adapter.test.mjs
+          tests/frontend/uppy-zip-view.test.mjs
+          tests/frontend/uppy-vendor.test.mjs
           tests/frontend/upload-task-center.test.mjs
           tests/frontend/storage-import-progress.test.mjs
           tests/frontend/import-dock-style.test.mjs
@@ -83,25 +109,39 @@ jobs:
           grep -Fq 'retries=2' static/modules/zip-import-runtime.js
           grep -Fq 'zipFingerprint' static/modules/zip-import-runtime.js
           grep -Fq 'overallZipProgress' static/modules/zip-import-runtime.js
-          grep -Fq "stage:'等待前序 ZIP 导入任务'" static/modules/zip-import-runtime.js
+          grep -Fq "queue_position" static/modules/zip-import-runtime.js
           grep -Fq "PollRegistryRuntime.startTimeout('zip-import-runtime'" static/modules/zip-import-runtime.js
-          grep -Fq 'window.doUploadZip426=input=>upload(input)' static/modules/zip-import-runtime.js
-          grep -Fq 'zip-import-bootstrap.mjs?v=422617' static/index.html
+          grep -Fq 'window.doUploadZip426=input=>uploadBatch(input)' static/modules/zip-import-runtime.js
           grep -Fq 'zipImportRuntime = runtime' static/zip-import-bootstrap.mjs
           grep -Fq 'const durableUploadFromImportModal = () =>' static/zip-import-bootstrap.mjs
           grep -Fq 'window.doImportUploadV19 = durableUploadFromImportModal' static/zip-import-bootstrap.mjs
-          grep -Fq "zip-import-runtime.js?v=422617" static/zip-import-bootstrap.mjs
           if grep -Fq 'classicImportData' static/modules/zip-import-runtime.js; then echo 'retired classic ZIP importData capture was reintroduced' >&2; exit 1; fi
           grep -Fq 'window.doImportData=()=>{' static/modules/zip-import-runtime.js
           grep -Fq "pollOwner" static/modules/upload-task-center.js
           grep -Fq 'INDEX_BATCH_SIZE = 50' platform_core/storage/import_tasks.py
           grep -Fq 'UploadTaskCenterRuntime' static/modules/storage-import-progress.js
           grep -Fq 'resumeRequired' static/modules/upload-task-center.js
-          grep -Fq 'z-index:900' static/modules/upload-task-center.js
-          grep -Fq 'upload task center stays below modal interaction layer' tests/frontend/import-dock-style.test.mjs
+          grep -Fq 'z-index:1300' static/modules/upload-task-center.js
+          grep -Fq 'body:has(.modal:not(.hidden):not(.import350-modal)) .utc-root{z-index:900}' static/modules/upload-task-center.js
+          grep -Fq 'body:has(.modal.import350-modal:not(.hidden):not(.import350-minimized) .zip-label-confirm) .utc-root{z-index:900}' static/modules/upload-task-center.js
+          grep -Fq '.zip-label-confirm .zip-label-workspace .label-mapping-sample-panel:not([hidden]){position:static;' static/styles.css
+          grep -Fq 'upload task center opens above ZIP modal but yields to unrelated dialogs' tests/frontend/import-dock-style.test.mjs
           if grep -Fq 'setInterval(switchProject, 1500)' static/modules/upload-task-center.js; then echo "upload task center project switching must be navigation-owned" >&2; exit 1; fi
           grep -Fq 'uploadTaskCenterRuntime.switchProject?.()' static/main.mjs
-          grep -Fq "upload-task-center.js?v=66009" static/main.mjs
+          # Enforce minimum cache revisions without pinning obsolete exact assets.
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          for filename, pattern, minimum in (
+              ('static/index.html', r'/static/zip-import-bootstrap\.mjs\?v=(\d+)', 4226359),
+              ('static/zip-import-bootstrap.mjs', r'zip-import-runtime\.js\?v=(\d+)', 4226359),
+              ('static/main.mjs', r'upload-task-center\.js\?v=(\d+)', 66009),
+          ):
+              match = re.search(pattern, Path(filename).read_text(encoding='utf-8'))
+              if not match or int(match.group(1)) < minimum:
+                  raise SystemExit(f'{filename}: missing or outdated cache revision (minimum {minimum})')
+          PY
           grep -Eq 'main\.mjs\?v=42\.25\.[0-9]+' static/index.html
           grep -Fq "method:'DELETE'" static/modules/upload-task-center.js
           grep -Fq '>清空已结束</button>' static/modules/upload-task-center.js
@@ -154,6 +194,7 @@ jobs:
           PYTHONPATH=. pytest -q --confcutdir=tests/unit
           tests/unit/test_secrets.py
           tests/unit/test_zip_multipart.py
+          tests/unit/test_annotations.py
           tests/unit/test_audit_v19_partial_import.py
       - name: Durable v19 persistence and bounded 10k hot-state tests
         run: >-
@@ -163,6 +204,7 @@ jobs:
           tests/api/test_v19_import_report_externalization.py
           tests/api/test_v19_import_bounded_admission.py
           tests/api/test_v19_multipart_controls.py
+          tests/api/test_v19_multipart_background_finalize.py
           tests/api/test_zip_class_samples_v19.py
           tests/api/test_v19_import_failure_rollback.py
       - name: Backend syntax and wiring guards
@@ -198,4 +240,4 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
       - name: Real Chrome refresh recovery
-        run: npx playwright test tests/browser/zip-import-refresh-recovery.spec.mjs
+        run: npx playwright test tests/browser/zip-import-refresh-recovery.spec.mjs tests/browser/uppy-zip-poc.spec.mjs tests/browser/material-upload-chunking.spec.mjs

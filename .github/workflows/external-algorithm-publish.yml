@@ -6,6 +6,7 @@ on:
     paths:
       - app.py
       - platform_core/external_algorithm_publish.py
+      - platform_core/compute_platform_catalog.py
       - platform_core/external_publish_request.py
       - platform_core/deployment/conversion_tasks.py
       - platform_core/remote_execution_transport.py
@@ -13,6 +14,8 @@ on:
       - platform_core/algorithm_sql_store.py
       - platform_core/training_tasks.py
       - platform_core/model_artifacts.py
+      - platform_core/model_metadata.py
+      - scripts/audit_weight_metadata.py
       - platform_core/integration_audit.py
       - static/main.mjs
       - static/index.html
@@ -38,6 +41,7 @@ on:
     paths:
       - app.py
       - platform_core/external_algorithm_publish.py
+      - platform_core/compute_platform_catalog.py
       - platform_core/external_publish_request.py
       - platform_core/deployment/conversion_tasks.py
       - platform_core/remote_execution_transport.py
@@ -45,6 +49,8 @@ on:
       - platform_core/algorithm_sql_store.py
       - platform_core/training_tasks.py
       - platform_core/model_artifacts.py
+      - platform_core/model_metadata.py
+      - scripts/audit_weight_metadata.py
       - platform_core/integration_audit.py
       - static/main.mjs
       - static/index.html
@@ -77,7 +83,7 @@ jobs:
         with:
           node-version: '22'
       - name: Install focused Python dependencies
-        run: python -m pip install --disable-pip-version-check pytest fastapi requests filelock keyring psutil
+        run: python -m pip install --disable-pip-version-check pytest fastapi httpx2 requests filelock keyring psutil
       - name: Backend external-publish and model-asset contracts
         run: |
           PYTHONPATH=. pytest -q --confcutdir=tests/unit \
@@ -219,7 +225,11 @@ jobs:
           grep -q "test_publish_original_and_mapped_conversion_when_other_conversion_lacks_mapping" tests/unit/test_external_algorithm_publish.py
           grep -q "test_original_weight_allows_empty_chip_code" tests/unit/test_external_algorithm_publish.py
           grep -q "test_rockchip_missing_chip_is_deferred_until_new_chip_bound_artifact_arrives" tests/unit/test_external_algorithm_publish.py
-          grep -Fq 'chip_code = _canonical_chip_code(artifact.get("chip_code") or "")' platform_core/external_algorithm_publish.py
+          grep -Fq 'actual_chip = local_chip_key(artifact.get("chip_code"))' platform_core/external_algorithm_publish.py
+          grep -Fq 'compute_platform_is_descendant(catalog, leaf, parent_id)' platform_core/external_algorithm_publish.py
+          grep -Fq 'catalog=self.model_assets.repository.conversion_catalog()' platform_core/external_algorithm_publish.py
+          grep -Fq 'test_external_chip_bindings_read_the_local_catalog_without_changing_saved_mappings' tests/unit/test_external_algorithm_publish.py
+          grep -Fq 'def validate_conversion_catalog(' platform_core/compute_platform_catalog.py
           grep -q "test_publish_allows_empty_version_no_and_omits_it_from_remote_payload" tests/unit/test_external_algorithm_publish.py
           grep -q "test_empty_local_version_no_recovers_unique_name_and_analysis_without_duplicate" tests/unit/test_external_algorithm_publish.py
           grep -q "test_empty_local_version_no_fails_closed_when_name_and_analysis_are_not_unique" tests/unit/test_external_algorithm_publish.py
@@ -283,7 +293,9 @@ jobs:
           grep -Fq 'from .external_publish_request import (' platform_core/external_algorithm_publish.py
           grep -Fq 'wait_for_external_publish_owner(30)' platform_core/external_algorithm_publish.py
           ! grep -Fq 'time.sleep(30)' platform_core/external_algorithm_publish.py
-          grep -Fq 'assert wait_for_external_publish_owner(0) is True' tests/unit/test_external_algorithm_publish.py
+          grep -Fq 'assert emitted == [True]' tests/unit/test_external_algorithm_publish.py
+          grep -Fq '        signal()' tests/unit/test_external_algorithm_publish.py
+          grep -Fq 'assert wait_for_external_publish_owner(0) is False' tests/unit/test_external_algorithm_publish.py
           grep -Fq 'test_conversion_publish_request_marks_blocked_by_hardware_version' tests/unit/test_external_algorithm_publish.py
           grep -Fq 'test_conversion_publish_request_rejects_blocked_by_environment' tests/unit/test_external_algorithm_publish.py
           grep -Fq 'request_external_auto_publish_for_conversion_if_enabled(' platform_core/deployment/conversion_tasks.py
@@ -292,7 +304,7 @@ jobs:
           grep -Fq 'data_dir=DATA_DIR, project_id=project_id, conversion_job=cur' app.py
           if grep -Eq 'threading\.Thread|while True|Scheduler|fastapi|APIRouter' platform_core/external_publish_request.py; then echo "conversion publish request must stay lightweight and reuse the existing owner" >&2; exit 1; fi
           test "$(grep -Fc 'threading.Thread(target=worker_loop, name="external-algorithm-auto-publish"' platform_core/external_algorithm_publish.py)" = "1"
-          grep -q "test_published_weight_mapping_change_edits_existing_weight_without_duplicate_create" tests/unit/test_external_algorithm_publish.py
+          grep -q "test_published_weight_mapping_change_requires_review_without_changing_identity" tests/unit/test_external_algorithm_publish.py
           grep -q "test_published_weight_public_url_change_edits_existing_file_path_without_duplicate_create" tests/unit/test_external_algorithm_publish.py
           grep -q "test_published_version_resyncs_when_canonical_model_artifact_is_not_uploaded" tests/unit/test_external_algorithm_publish.py
           grep -Fq 'if not model_asset or str(model_asset.get("storage_status") or "").upper() != "UPLOADED"' platform_core/external_algorithm_publish.py
@@ -370,17 +382,17 @@ jobs:
           if grep -Fq 'id="externalPublishWeightList"' static/modules/external-algorithm-publish.js; then echo "official ChangLian weight endpoint must not be user-editable" >&2; exit 1; fi
           grep -q "publish UI locks recovery endpoints to official OpenAPI" tests/frontend/external-algorithm-publish.test.mjs
           grep -Fq '测试存储' tests/frontend/external-algorithm-publish.test.mjs
-          grep -q "chip_identity = _canonical_chip_code(chip)" platform_core/external_algorithm_publish.py
-          grep -q "key = (target, chip_identity, digest)" platform_core/external_algorithm_publish.py
+          grep -Fq '"chip_code":_canonical_chip_code(source.get("chip_code"))' platform_core/external_algorithm_publish.py
+          grep -Fq 'rows=self.model_assets.discover_version_artifacts(project_id,algorithm,version)' platform_core/external_algorithm_publish.py
           grep -Fq 'len({row["sha256"] for row in artifacts}) == 1' tests/unit/test_external_algorithm_publish.py
           grep -Fq 'assert {row["remote_chip_code"] for row in artifacts} == {"RK3568", "RK3576"}' tests/unit/test_external_algorithm_publish.py
           grep -Fq 'chip_code TEXT NOT NULL DEFAULT' platform_core/model_artifacts.py
           grep -Fq 'ON model_artifacts(' platform_core/model_artifacts.py
           grep -Fq 'project_id, algorithm_id, version_id, target, chip_code, sha256' platform_core/model_artifacts.py
-          grep -Fq 'identity = (target, chip_code, digest)' platform_core/model_artifacts.py
+          grep -Fq 'identity=(row["target"],row["chip_code"],row["sha256"])' platform_core/model_artifacts.py
           grep -Fq 'test_same_sha_rockchip_artifacts_remain_distinct_by_chip' tests/unit/test_model_artifacts.py
           grep -Fq 'test_repository_migrates_legacy_identity_index_to_chip_scope' tests/unit/test_model_artifacts.py
-          grep -Fq '具体芯片型号优先读取真实转换产物。' static/modules/external-algorithm-publish.js
+          grep -Fq '芯片绑定身份读取本地字典；可转换能力和实际芯片以SDK检测及真实产物为准。' static/modules/external-algorithm-publish.js
           grep -q "model_artifacts" platform_core/model_artifacts.py
           grep -q "storage-test" platform_core/external_algorithm_publish.py
           grep -q "run-auto" platform_core/external_algorithm_publish.py
@@ -439,7 +451,7 @@ jobs:
         run: npx playwright test tests/browser/external-algorithm-publish.spec.mjs
       - name: Browser permanent guards
         run: |
-          grep -Fq "changlian manual publish preflight blocks stale version analysis before POST" tests/browser/external-algorithm-publish.spec.mjs
-          grep -Fq "identity_ready: false" tests/browser/external-algorithm-publish.spec.mjs
+          grep -Fq "changlian publish respects core identity and optional metadata:" tests/browser/external-algorithm-publish.spec.mjs
+          grep -Fq "identity_ready: reason==='optional'" tests/browser/external-algorithm-publish.spec.mjs
           grep -Fq "publishWrites).toBe(0)" tests/browser/external-algorithm-publish.spec.mjs
           python -m platform_core.build_identity --check-version-file VERSION.txt

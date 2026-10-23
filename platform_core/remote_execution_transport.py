@@ -118,6 +118,7 @@ class RemoteExecutionTransportService:
         provider_factory: Callable[[str, object, Mapping[str, str]], object] | None = None,
         model_artifacts: ModelArtifactService | None = None,
         task_artifacts=None,
+        task_repository=None,
     ):
         self.data_dir = Path(data_dir)
         self.project_dir = project_dir
@@ -126,6 +127,7 @@ class RemoteExecutionTransportService:
         self.storage_credentials_factory = storage_credentials_factory
         self.provider_factory = provider_factory
         self.task_artifacts = task_artifacts
+        self.task_repository = task_repository
         self.model_artifacts = model_artifacts or ModelArtifactService(
             data_dir=self.data_dir,
             project_dir=self.project_dir,
@@ -811,6 +813,10 @@ class RemoteExecutionTransportService:
                 409,
             )
 
+        if target == "onnx" and values.get("onnx_source_reused") is True:
+            return {"onnx_source_reused": True, **{key:values[key] for key in
+                ("local_vendor_id","local_chip_id","resource_id","sdk_version","source_training_precision") if key in values}}
+
         def integer(name: str, default: int, minimum: int, maximum: int) -> int:
             raw = values.get(name)
             if raw in (None, ""):
@@ -849,14 +855,31 @@ class RemoteExecutionTransportService:
                 422,
             )
 
+        shape = None
+        if "input_height" in values or "input_width" in values or isinstance(values.get("input_size"),(list,tuple)):
+            from .conversion import conversion_input_shape
+            try:
+                shape=conversion_input_shape(values)
+            except ValueError as error:
+                raise RemoteExecutionTransportError("REMOTE_CONVERSION_PARAMS_INVALID",str(error),422) from error
         common = {
-            "input_size": integer("input_size", 640, 32, 4096),
+            "input_size": (shape[0] if shape[0]==shape[1] else list(shape)) if shape else integer("input_size", 640, 32, 4096),
             "batch": integer("batch", 1, 1, 128),
             "opset": integer("opset", 12, 7, 24),
             "dynamic": boolean("dynamic", False),
             "simplify": boolean("simplify", False),
         }
+        if shape:
+            common.update(input_height=shape[0],input_width=shape[1])
+        for key in ("local_vendor_id","local_chip_id","sdk_chip_code","template_id","template_version","constraint_id","resource_id","sdk_version","source_training_precision","parameter_sources"):
+            if key in values:
+                common[key]=values[key]
         if target == "onnx":
+            if values.get("precision") is not None:
+                precision = str(values["precision"]).strip().lower()
+                if precision not in {"fp16", "fp32"}:
+                    raise RemoteExecutionTransportError("REMOTE_CONVERSION_PARAMS_INVALID", "ONNX export precision must be fp16 or fp32", 422)
+                common["precision"] = precision
             return common
 
         chip = str(values.get("chip") or "").strip().lower()
@@ -1552,14 +1575,20 @@ class RemoteExecutionTransportService:
             "sha256": expected_sha,
         }
 
-    @staticmethod
-    def _deployment_remote(task, payload: Mapping[str, Any]) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
+    def _deployment_remote(self, task, payload: Mapping[str, Any]) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
         if str(getattr(task.kind, "value", task.kind)) != "DEPLOYMENT_TEST":
             raise RemoteExecutionTransportError(
                 "REMOTE_TASK_KIND_UNSUPPORTED",
                 "remote object-storage result transport is only implemented for deployment tests",
                 409,
             )
+        from types import SimpleNamespace
+        from .scenario_models import verify_scenario_request, ScenarioModelUnavailable
+        try:
+            verify_scenario_request(SimpleNamespace(task=task, repository=self.task_repository,
+                artifacts=self.task_artifacts), payload)
+        except (ScenarioModelUnavailable, AttributeError) as error:
+            raise RemoteExecutionTransportError('SCENARIO_MODEL_INELIGIBLE', str(error), 409) from error
         remote = payload.get("remote_execution")
         if not isinstance(remote, Mapping):
             raise RemoteExecutionTransportError(
@@ -3432,6 +3461,12 @@ class RemoteExecutionTransportService:
             target,
             conversion.get("params") if isinstance(conversion.get("params"), Mapping) else {},
         )
+        runtime = confirmed.get("runtime_result") or {}
+        execution_evidence = dict(runtime.get("execution_evidence") or {}) if isinstance(runtime, Mapping) else {}
+        if execution_evidence:
+            expected_mode = 'do_quantization=' + str(params.get('precision') == 'int8').lower() if target == 'rockchip' else None
+            if execution_evidence.get('resolved_precision') != params.get('precision') or execution_evidence.get('compiler_precision') != expected_mode:
+                raise RemoteExecutionTransportError("REMOTE_CONVERSION_PARAMETERS_MISMATCH", "Agent compiler evidence differs from admitted parameters", 409)
         result = confirmed.get("result")
         if not isinstance(result, Mapping):
             raise RemoteExecutionTransportError(
@@ -3565,6 +3600,12 @@ class RemoteExecutionTransportService:
             )
             manifest = {
                 "schema_version": 1,
+                "job_id": str(task.task_id),
+                "source": dict(conversion.get("source_trace") or {}),
+                "outputs": [{"name": file_name, "sha256": expected_sha, "size_bytes": expected_size}],
+                "tool": {"name": "onnxruntime" if target == "onnx" else "rknn-toolkit2", "version": execution_evidence.get("sdk_version") or ""},
+                "execution_evidence": execution_evidence,
+                "onnx": {"input_shapes": [execution_evidence["onnx_input_shape"]]} if execution_evidence.get("onnx_input_shape") else {},
                 "task_id": str(task.task_id),
                 "execution_generation": generation,
                 "target": target_manifest,
@@ -3613,6 +3654,7 @@ class RemoteExecutionTransportService:
                     (conversion.get("source_trace") or {}).get("source_id") or job.get("source_id") or ""
                 ) if isinstance(conversion.get("source_trace"), Mapping) else str(job.get("source_id") or ""),
                 "params": params,
+                "execution_evidence": execution_evidence,
                 "status": "done",
                 "progress": 100,
                 "stage": "转换完成",

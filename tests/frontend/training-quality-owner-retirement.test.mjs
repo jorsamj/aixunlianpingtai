@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
+import {readFileSync} from 'node:fs';
 
 const app=await readFile(new URL('../../static/app.js',import.meta.url),'utf8');
 const trainingVisibility=await readFile(new URL('../../static/modules/training-task-visibility-runtime.js',import.meta.url),'utf8');
@@ -31,7 +32,10 @@ test('training picker and quality use latest explicit training-draft paths',()=>
 
 
 test('training report renders canonical random-stage wording without delayed DOM rewrite', () => {
-  assert.match(app, /每次随机试验样本/);
+  const reports=readFileSync(new URL('../../static/modules/reports.js',import.meta.url),'utf8');
+  assert.match(reports, /每次随机试验样本/);
+  assert.match(app,/reports\.trainingReportHtml\(response\)/);
+  assert.equal(reports.includes('固定试验样本'),false);
   assert.equal(app.includes('固定试验样本'), false);
   assert.equal(app.includes('trainingReportCanonical428'), false);
   assert.match(app, /window\.trainingReport425=window\.trainingReport424=window\.trainingReportCore425/);

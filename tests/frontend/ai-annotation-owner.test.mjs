@@ -2,8 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-const source = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
-const main = readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8');
+const source = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+const main = readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 
 test('final AI annotation owner uses durable v60 candidate review flow', () => {
   const legacyV33 = source.lastIndexOf('/api/v33/projects/${pid()}/prelabel-tasks');
@@ -45,8 +45,13 @@ test('AI create dialog uses one canonical owner with explicit decorators', () =>
   assert.match(source, /window\.createAiLabelCore429=function\(opts=\{\}\)/);
   assert.match(source, /window\.decorateAiReferenceLabels417=function\(\)/);
   assert.match(source, /window\.decorateAiReferenceBulk412=function\(\)/);
-  assert.match(source, /window\.createAiLabel429=async function createAiLabelCanonical429\(opts=\{\}\)/);
-  assert.match(source, /MaterialPaginationRuntime61\?\.ensureFullPool\?\.\(\)/);
+  assert.match(source, /window\.createAiLabel429=function createAiLabelCanonical429\(opts=\{\}\)/);
+  const canonicalStart = source.indexOf('window.createAiLabel429=function createAiLabelCanonical429(opts={})');
+  const canonicalEnd = source.indexOf('window.createAiLabel427=window.createAiLabel429;', canonicalStart);
+  const canonical = source.slice(canonicalStart, canonicalEnd);
+  assert.doesNotMatch(canonical, /ensureFullPool/);
+  assert.match(canonical, /window\.createAiLabelCore429\?\.\(opts\)/);
+  assert.match(canonical, /hydrateAiCreate429\?\.\(/);
   assert.match(source, /window\.aiRefSelect412=function aiRefSelectCanonical412\(mode\)/);
 });
 
@@ -111,7 +116,10 @@ test('AI task creation never resolves display names or aliases into canonical la
   assert.doesNotMatch(helper, /display_name|aliases|alias/);
   const submitEnd = source.indexOf('\n\n  function taskRow', submitStart);
   const submit = source.slice(submitStart, submitEnd);
+  assert.match(submit, /if\(submit\?\.disabled\)return false/);
   assert.match(submit, /labels_text:parsed\.text/);
+  assert.match(submit, /prompt_template_id:/);
+  assert.match(submit, /prompt_override:/);
   assert.match(submit, /只接受当前有效的平台标签 code/);
   assert.match(source, /中文名、别名、历史 alias 不会自动转换/);
   assert.doesNotMatch(source, /function normalizedLabelText\(/);

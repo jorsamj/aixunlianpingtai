@@ -36,13 +36,14 @@ def test_external_material_delete_defaults_to_index_only(client, tmp_path):
     before = source_file.read_bytes()
 
     response = client.delete(f"/api/projects/{project_id}/images/{row['id']}")
-    assert response.status_code == 200, response.text
-    assert response.json()["source_deleted"] is False
+    assert response.status_code == 409, response.text
+    assert "MATERIAL_DELETE_PREVIEW_REQUIRED" in response.text
+    governed_delete(client, project_id, [row["id"]])
     assert app_module.material_store(project_id).get(row["id"]) is None
     assert source_file.read_bytes() == before
 
 
-def test_explicit_source_delete_requires_confirmation_and_then_removes_object(client, tmp_path):
+def test_legacy_explicit_source_delete_never_authorizes_physical_reclamation(client, tmp_path):
     project_id, _source_id, root, row = create_external_material(client, tmp_path)
     source_file = root / row["object_key"]
 
@@ -55,20 +56,21 @@ def test_explicit_source_delete_requires_confirmation_and_then_removes_object(cl
         f"/api/projects/{project_id}/images/{row['id']}",
         params={"delete_source": True, "confirmation": "DELETE_SOURCE"},
     )
-    assert deleted.status_code == 200, deleted.text
-    assert deleted.json()["source_deleted"] is True
-    assert not source_file.exists()
-    assert app_module.material_store(project_id).get(row["id"]) is None
+    assert deleted.status_code == 409, deleted.text
+    assert "MATERIAL_DELETE_PREVIEW_REQUIRED" in deleted.text
+    assert source_file.is_file()
+    assert app_module.material_store(project_id).get(row["id"]) is not None
 
 
-def test_batch_external_delete_is_index_only_unless_explicitly_confirmed(client, tmp_path):
+def test_external_batch_delete_requires_governed_plan_and_retains_bytes(client, tmp_path):
     project_id, _source_id, root, first = create_external_material(client, tmp_path)
     second_response = client.post(f"/api/projects/{project_id}/images", files=[("files", ("b.jpg", jpg(), "image/jpeg"))], data={"storage_source_id": first["storage_source_id"]})
     second_response.raise_for_status(); second = second_response.json()["uploaded"][0]
 
     response = client.post(f"/api/v46/projects/{project_id}/images/batch-delete", json={"image_ids": [first["id"], second["id"]], "delete_source": False})
-    assert response.status_code == 200
-    assert response.json()["deleted"] == 2
+    assert response.status_code == 409
+    assert "MATERIAL_DELETE_PREVIEW_REQUIRED" in response.text
+    governed_delete(client, project_id, [first["id"], second["id"]])
     assert (root / first["object_key"]).is_file()
     assert (root / second["object_key"]).is_file()
 
@@ -93,10 +95,10 @@ def test_batch_external_source_delete_requires_confirmation(client, tmp_path):
             "confirmation": "DELETE_SOURCE",
         },
     )
-    assert deleted.status_code == 200, deleted.text
-    assert deleted.json()["deleted"] == 1
-    assert app_module.material_store(project_id).get(row["id"]) is None
-    assert not source_file.exists()
+    assert deleted.status_code == 409, deleted.text
+    assert "MATERIAL_DELETE_PREVIEW_REQUIRED" in deleted.text
+    assert app_module.material_store(project_id).get(row["id"]) is not None
+    assert source_file.is_file()
 
 
 def test_storage_source_with_material_references_cannot_be_deleted(client, tmp_path):
@@ -107,139 +109,62 @@ def test_storage_source_with_material_references_cannot_be_deleted(client, tmp_p
     assert app_module.material_store(project_id).get(row["id"]) is not None
 
 
-def test_source_delete_finishes_index_commit_when_cancel_arrives_after_provider_delete(
-    client, tmp_path, monkeypatch
-):
+def test_source_delete_create_refuses_even_with_old_confirmation_before_provider(client, tmp_path, monkeypatch):
     project_id, _source_id, root, row = create_external_material(client, tmp_path)
-    source_file = root / row["object_key"]
-    repository = TaskRepository(tmp_path / "tasks.sqlite3")
-    artifacts = ArtifactStore(tmp_path / "artifacts")
-    monkeypatch.setattr(app_module, "_SHARED_TASK_REPOSITORY", repository)
-    monkeypatch.setattr(app_module, "_SHARED_TASK_ARTIFACTS", artifacts)
-
-    estimate = client.post(
-        f"/api/v62/projects/{project_id}/material-batches/estimate",
-        json={
-            "operation": "DELETE_SOURCE",
-            "selection_spec": {"scope": "SELECTED", "image_ids": [row["id"]]},
-            "options": {},
-        },
-    )
+    calls = []
+    monkeypatch.setattr(material_batches, '_provider', lambda *_a, **_k: calls.append('provider'))
+    base = f'/api/v62/projects/{project_id}/material-batches'
+    estimate = client.post(base + '/estimate', json={'operation':'DELETE_SOURCE',
+        'selection_spec':{'scope':'SELECTED','image_ids':[row['id']]},'options':{}})
     assert estimate.status_code == 200, estimate.text
-    created = client.post(
-        f"/api/v62/projects/{project_id}/material-batches",
-        json={
-            "operation": "DELETE_SOURCE",
-            "selection_spec": estimate.json()["selection_spec"],
-            "options": {"confirmation_token": estimate.json()["confirmation_token"]},
-        },
-    )
-    assert created.status_code == 202, created.text
-    task_id = created.json()["task_id"]
-
-    real_provider = material_batches._provider
-
-    class CancelAfterDelete:
-        def __init__(self, provider):
-            self.provider = provider
-
-        def __getattr__(self, name):
-            return getattr(self.provider, name)
-
-        def delete(self, object_key):
-            self.provider.delete(object_key)
-            repository.request_cancel(task_id)
-
-    monkeypatch.setattr(
-        material_batches,
-        "_provider",
-        lambda *args, **kwargs: CancelAfterDelete(real_provider(*args, **kwargs)),
-    )
-    scheduler = Scheduler(
-        repository,
-        artifacts,
-        "delete-cancel-worker",
-        {TaskKind.MATERIAL_BATCH: MaterialBatchHandler(app_module.DATA_DIR)},
-        {"materials.batch"},
-        lease_seconds=10,
-    )
-
-    assert scheduler.run_once() is True
-    assert not source_file.exists()
-    assert app_module.material_store(project_id).get(row["id"]) is None
-    assert repository.get(task_id).status.value == "CANCELLED"
+    created = client.post(base, json={'operation':'DELETE_SOURCE', 'selection_spec':estimate.json()['selection_spec'],
+        'options':{'confirmation_token':estimate.json()['confirmation_token']}})
+    assert created.status_code == 409, created.text
+    assert 'PHYSICAL_DELETE_SAFETY_UNVERIFIED' in created.text
+    assert calls == []
+    assert (root / row['object_key']).is_file()
+    assert app_module.material_store(project_id).get(row['id']) is not None
 
 
-def test_ambiguous_source_delete_keeps_claim_and_retry_finishes_index(
-    client, tmp_path, monkeypatch
-):
+def test_legacy_source_worker_and_repeat_never_call_provider_or_remove_identity(client, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from contextlib import closing
     project_id, _source_id, root, row = create_external_material(client, tmp_path)
-    source_file = root / row["object_key"]
-    repository = TaskRepository(tmp_path / "tasks.sqlite3")
-    artifacts = ArtifactStore(tmp_path / "artifacts")
-    monkeypatch.setattr(app_module, "_SHARED_TASK_REPOSITORY", repository)
-    monkeypatch.setattr(app_module, "_SHARED_TASK_ARTIFACTS", artifacts)
+    calls = []
+    monkeypatch.setattr(material_batches, '_provider', lambda *_a, **_k: calls.append('provider'))
+    with closing(material_batches.BatchSelection(tmp_path / 'selection.sqlite3')) as manifest:
+        manifest.database.execute('INSERT INTO selection(image_id) VALUES (?)', (row['id'],))
+        handler = MaterialBatchHandler(app_module.DATA_DIR)
+        for _ in range(2):
+            handler._delete_sources(SimpleNamespace(), manifest, app_module.material_store(project_id),
+                [{'image_id': row['id']}], None, {}, {})
+            state, error = manifest.database.execute('SELECT state,error FROM selection').fetchone()
+            assert state == 'failed' and error == 'PHYSICAL_DELETE_SAFETY_UNVERIFIED'
+    assert calls == []
+    assert (root / row['object_key']).is_file()
+    assert app_module.material_store(project_id).get(row['id']) is not None
 
-    estimate = client.post(
-        f"/api/v62/projects/{project_id}/material-batches/estimate",
-        json={
-            "operation": "DELETE_SOURCE",
-            "selection_spec": {"scope": "SELECTED", "image_ids": [row["id"]]},
-            "options": {},
-        },
-    ).json()
-    created = client.post(
-        f"/api/v62/projects/{project_id}/material-batches",
-        json={
-            "operation": "DELETE_SOURCE",
-            "selection_spec": estimate["selection_spec"],
-            "options": {"confirmation_token": estimate["confirmation_token"]},
-        },
-    )
-    assert created.status_code == 202, created.text
-    task_id = created.json()["task_id"]
-    real_provider = material_batches._provider
 
-    class DeleteThenLoseResponse:
-        def __init__(self, provider):
-            self.provider = provider
-
-        def __getattr__(self, name):
-            return getattr(self.provider, name)
-
-        def delete(self, object_key):
-            self.provider.delete(object_key)
-            raise RuntimeError("simulated worker/provider response loss")
-
-    monkeypatch.setattr(
-        material_batches,
-        "_provider",
-        lambda *args, **kwargs: DeleteThenLoseResponse(real_provider(*args, **kwargs)),
-    )
-    scheduler = Scheduler(
-        repository,
-        artifacts,
-        "delete-recovery-worker",
-        {TaskKind.MATERIAL_BATCH: MaterialBatchHandler(app_module.DATA_DIR)},
-        {"materials.batch"},
-        lease_seconds=10,
-    )
-    assert scheduler.run_once() is True
-    assert not source_file.exists()
-    assert repository.get(task_id).status.value == "FAILED"
-    assert app_module.material_store(project_id).get(row["id"]) is not None
-    with pytest.raises(BatchRequestError) as blocked:
-        assert_material_input_admission(
-            project_id,
-            [row["id"]],
-            app_module.material_store(project_id),
-            repository,
-            artifacts,
-        )
-    assert blocked.value.code == "MATERIAL_DELETE_IN_PROGRESS"
-
-    monkeypatch.setattr(material_batches, "_provider", real_provider)
-    repository.retry(task_id)
-    assert scheduler.run_once() is True
-    assert app_module.material_store(project_id).get(row["id"]) is None
-    assert repository.get(task_id).status.value == "SUCCEEDED"
+def governed_delete(client, pid, image_ids):
+    import app as app_module
+    from platform_core.task_runtime import Scheduler, TaskStatus
+    from platform_core.worker_registry import build_worker_registration
+    base = f'/api/v62/projects/{pid}/material-batches'
+    estimated = client.post(base + '/estimate', json={
+        'operation': 'DELETE_INDEX', 'selection_spec': {'scope': 'SELECTED', 'image_ids': image_ids}})
+    estimated.raise_for_status()
+    preview = estimated.json()['deletion_preview']
+    response = client.post(base, json={'operation': 'DELETE_INDEX', 'selection_spec': estimated.json()['selection_spec'],
+        'options': {'deletion_plan_id': preview['plan_id'], 'confirmation_credential': preview['confirmation_credential']}})
+    assert response.status_code == 202, response.text
+    repository, artifacts = app_module.shared_task_repository(), app_module.shared_task_artifacts()
+    handlers, capabilities = build_worker_registration(app_module.DATA_DIR, {'materials'})
+    scheduler = Scheduler(repository, artifacts, f'governance-clean-{uuid.uuid4().hex}', handlers, capabilities,
+        lease_seconds=5, poll_seconds=0.01)
+    task_id = response.json()['task_id']
+    for _ in range(50):
+        if repository.get(task_id).status in {TaskStatus.SUCCEEDED, TaskStatus.FAILED}:
+            break
+        assert scheduler.run_once()
+    assert repository.get(task_id).status is TaskStatus.SUCCEEDED
+    return response.json()

@@ -99,3 +99,27 @@ test('component page revisit reuses terminal scan snapshot without starting anot
   expect(latestGets).toBe(1);
   expect(scanPosts).toBe(0);
 });
+
+
+test('Sophon component page separates local absence from authenticated remote capability', async ({page}) => {
+  await page.route('**/api/v40/system/components/latest', route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({
+    id:'sophon-component',status:'done',progress:100,summary:{ready:1,missing:3,total:4},
+    components:[...['model_transform','model_deploy','run_calibration'].map(name=>({key:'tpu_'+name,
+      name:'本机 TPU-MLIR '+name,status:'missing',path:'',detail:'本机未配置独立 TPU-MLIR；不影响远程资源使用'})),
+      {key:'remote_sophon',name:'远程部署 · 独立算能资源',status:'ready',version:'v1.30.2-20260831',path:'http://isolated.invalid:8030'}],
+    capabilities:[{name:'算能 BMODEL (FP16)',status:'ready',remote:true,ready:1,total:1,
+      detail:'本机未配置；远程算能资源可用：独立算能资源 · BM1684X / BM1688 · FP16'}]})}));
+  await page.goto('/');
+  await expect.poll(()=>page.evaluate(()=>state.uiReady===true)).toBe(true);
+  await page.evaluate(()=>window.setPage('组件检测'));
+  const capability=page.locator('.capability-card').filter({hasText:'算能 BMODEL'});
+  await expect(capability).toHaveClass(/ready/);
+  await expect(capability).toContainText('本机未配置；远程算能资源可用');
+  await expect(capability).toContainText('BM1684X / BM1688');
+  const local=page.locator('.component-row').filter({hasText:'本机 TPU-MLIR'});
+  await expect(local).toHaveCount(3);
+  await expect(local.first()).toContainText('本机未配置');
+  const remote=page.locator('.component-row').filter({hasText:'远程部署 · 独立算能资源'});
+  await expect(remote).toContainText('v1.30.2-20260831');
+  await expect(remote).toContainText('满足');
+});

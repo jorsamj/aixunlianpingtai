@@ -18,7 +18,7 @@ from .material_store import MaterialSnapshot
 
 
 _Result = TypeVar("_Result")
-_SCHEMA_VERSION = 4
+_SCHEMA_VERSION = 5
 _INIT_LOCK_TIMEOUT = 30
 DATASET_DELETE_CLAIM_FIELD = "_dataset_delete_claim"
 MATERIAL_BATCH_DELETE_CLAIM_FIELD = "_material_batch_delete_claim"
@@ -78,6 +78,21 @@ CREATE TABLE IF NOT EXISTS material_storage_audit (
     task_id TEXT NOT NULL, image_id TEXT NOT NULL, action TEXT NOT NULL,
     old_sha256 TEXT NOT NULL, new_sha256 TEXT NOT NULL, recorded_at TEXT NOT NULL,
     PRIMARY KEY(task_id,image_id)
+);
+CREATE TABLE IF NOT EXISTS material_retirements (
+    task_id TEXT NOT NULL, image_id TEXT NOT NULL, actor_id TEXT NOT NULL,
+    storage_source_id TEXT NOT NULL, object_key TEXT NOT NULL, content_sha256 TEXT NOT NULL,
+    payload_json TEXT NOT NULL, annotation_json TEXT NOT NULL, retired_at TEXT NOT NULL,
+    reclamation_state TEXT NOT NULL DEFAULT 'DEFERRED_SAFETY_UNVERIFIED',
+    reclaimed_bytes INTEGER NOT NULL DEFAULT 0 CHECK(reclaimed_bytes=0),
+    PRIMARY KEY(task_id,image_id)
+);
+CREATE INDEX IF NOT EXISTS ix_material_retirements_source
+    ON material_retirements(storage_source_id,object_key);
+CREATE TABLE IF NOT EXISTS material_cleanup_deferred (
+    cleanup_id TEXT PRIMARY KEY, image_id TEXT NOT NULL, owner TEXT NOT NULL,
+    payload_json TEXT NOT NULL, last_error TEXT NOT NULL, recorded_at TEXT NOT NULL,
+    reclamation_state TEXT NOT NULL DEFAULT 'DEFERRED_SAFETY_UNVERIFIED'
 );
 """
 
@@ -499,6 +514,26 @@ class MaterialRepository:
             row = database.execute("SELECT payload_json FROM materials WHERE id = ?", (str(image_id),)).fetchone()
         return self._row_payload(row) if row else None
 
+    def duplicate_content_groups(self) -> dict[str, list[str]]:
+        """Indexed duplicate-image identities, shared by project audits.
+
+        Hashes come from canonical MaterialRepository, not annotation previews.
+        This read-only query does not inspect or materialize image objects.
+        """
+        groups: dict[str, list[str]] = {}
+        with closing(self._connect()) as database:
+            rows = database.execute(
+                "SELECT lower(trim(m.content_sha256)) AS digest,m.id "
+                "FROM materials m JOIN ("
+                " SELECT lower(trim(content_sha256)) AS digest FROM materials "
+                " WHERE trim(content_sha256)<>'' GROUP BY lower(trim(content_sha256)) HAVING COUNT(*)>1"
+                ") d ON lower(trim(m.content_sha256))=d.digest "
+                "ORDER BY digest,m.id"
+            ).fetchall()
+        for row in rows:
+            groups.setdefault(str(row["digest"]), []).append(str(row["id"]))
+        return groups
+
     def get_by_content_sha256(self, content_sha256: str) -> dict[str, Any] | None:
         content_sha256 = str(content_sha256 or "").strip().lower()
         if (
@@ -825,7 +860,11 @@ class MaterialRepository:
         storage_source_ids: Sequence[str] | None = None, processing_status: str | None = None,
         labels: Sequence[str] | None = None, annotated: bool | None = None,
         split: str | None = None, annotation_state: str | None = None,
+        sort_order: str = "oldest",
     ) -> MaterialPage:
+        if sort_order not in ("oldest", "newest"):
+            raise ValueError("sort_order must be oldest or newest")
+        descending = sort_order == "newest"
         bounded = max(1, min(1000, int(limit)))
         if page is not None and cursor:
             raise ValueError("page and cursor cannot be used together")
@@ -865,15 +904,15 @@ class MaterialRepository:
                 params = list(base_params)
                 if cursor:
                     created_at, image_id = _decode_cursor(cursor)
-                    clauses.append(
-                        "(m.created_at > ? OR (m.created_at = ? AND m.id > ?))"
-                    )
+                    op = "<" if descending else ">"
+                    clauses.append(f"(m.created_at {op} ? OR (m.created_at = ? AND m.id {op} ?))")
                     params.extend((created_at, created_at, image_id))
                 where = " WHERE " + " AND ".join(clauses) if clauses else ""
                 sql = (
                     "SELECT m.id, m.created_at, m.payload_json FROM materials m"
                     + where
-                    + " ORDER BY m.created_at, m.id LIMIT ?"
+                    + (" ORDER BY m.created_at DESC, m.id DESC LIMIT ?" if descending
+                       else " ORDER BY m.created_at, m.id LIMIT ?")
                 )
                 query_params = [*params, bounded + 1]
                 if offset is not None:
@@ -1143,6 +1182,53 @@ class MaterialRepository:
                     database.execute("ROLLBACK")
                 raise
         return changed
+
+    def record_deferred_cleanup(self, record, *, owner, error):
+        import hashlib
+        payload=json.dumps(dict(record),ensure_ascii=False,sort_keys=True)
+        identity=hashlib.sha256((str(owner)+':'+payload).encode()).hexdigest()
+        with closing(self._connect()) as database:
+            database.execute('INSERT INTO material_cleanup_deferred(cleanup_id,image_id,owner,payload_json,last_error,recorded_at) VALUES (?,?,?,?,?,?) ON CONFLICT(cleanup_id) DO UPDATE SET last_error=excluded.last_error',
+                (identity,str(record.get('id') or ''),str(owner),payload,str(error),_now()))
+            database.commit()
+        return identity
+
+    def retirement(self, task_id, image_id):
+        with closing(self._connect()) as database:
+            row=database.execute('SELECT * FROM material_retirements WHERE task_id=? AND image_id=?',(str(task_id),str(image_id))).fetchone()
+            return dict(row) if row else None
+
+    def retire_many(self, image_ids, *, task_id, actor_id="", annotations=None) -> int:
+        """Remove current identities and retain their byte references in one commit.
+
+        This is logical retirement only. No physical reclamation has been proven.
+        The caller owns formal GT backup/compensation and the lifecycle fence.
+        """
+        ids = list(dict.fromkeys(str(value) for value in image_ids))
+        annotations = annotations or {}
+        removed = 0
+        with closing(self._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            try:
+                for offset in range(0, len(ids), 500):
+                    chunk = ids[offset:offset + 500]
+                    placeholders = ','.join('?' for _ in chunk)
+                    rows = database.execute(f'SELECT * FROM materials WHERE id IN ({placeholders})', chunk).fetchall()
+                    for row in rows:
+                        database.execute(
+                            'INSERT INTO material_retirements(task_id,image_id,actor_id,storage_source_id,object_key,content_sha256,payload_json,annotation_json,retired_at) VALUES (?,?,?,?,?,?,?,?,?)',
+                            (str(task_id), str(row['id']), str(actor_id), row['storage_source_id'], row['object_key'], row['content_sha256'], row['payload_json'],
+                             json.dumps(annotations.get(str(row['id']), {}), ensure_ascii=False, sort_keys=True), _now()),
+                        )
+                    database.execute(f'DELETE FROM materials WHERE id IN ({placeholders})', chunk)
+                    removed += len(rows)
+                if removed:
+                    self._bump_revision(database)
+                database.execute('COMMIT')
+            except Exception:
+                database.execute('ROLLBACK')
+                raise
+        return removed
 
     def remove(self, image_ids: Iterable[str]) -> list[dict[str, Any]]:
         ids = list(dict.fromkeys(str(value) for value in image_ids if str(value)))

@@ -2003,6 +2003,8 @@ def test_rknn_conversion_resolves_and_commits_generation_scoped_unverified_artif
     assert confirmed["result"]["target"] == "rockchip"
     assert confirmed["result"]["runtime_verified"] is False
     confirmed["result_ref"] = "remote-results/4/result.json"
+    facts={"resolved_precision":"fp16","compiler_precision":"do_quantization=false","artifact_precision":None,"sdk_version":"2.3.2","onnx_input_shape":[1,3,384,640]}
+    confirmed["runtime_result"]={"execution_evidence":facts}
 
     job_dir = tmp_path / "projects" / "p1" / "deploy" / "jobs" / "convert-rknn"
     job_dir.mkdir(parents=True)
@@ -2015,6 +2017,9 @@ def test_rknn_conversion_resolves_and_commits_generation_scoped_unverified_artif
         "platform_core.external_publish_request.request_external_auto_publish_for_conversion_if_enabled",
         lambda **kwargs: publish_requests.append(kwargs) or True,
     )
+    with pytest.raises(Exception, match="Agent compiler evidence differs"):
+        transport.commit_result_publication(task,payload,evidence,{**confirmed,"runtime_result":{"execution_evidence":{**facts,"resolved_precision":"fp32"}}})
+    assert not (job_dir / "artifacts" / "model_rk3568.rknn").exists()
     committed = transport.commit_result_publication(
         task, payload, evidence, confirmed
     )
@@ -2031,6 +2036,11 @@ def test_rknn_conversion_resolves_and_commits_generation_scoped_unverified_artif
     assert manifest["status"] == "converted_unverified"
     assert manifest["hardware_verified"] is False
     assert manifest["target"]["chip"] == "rk3568"
+    assert manifest["execution_evidence"]==job["execution_evidence"]==facts
+    assert manifest["outputs"][0]["sha256"]==output_sha
+    assert manifest["job_id"]==task.task_id
+    assert manifest["tool"]["version"]=="2.3.2"
+    assert manifest["onnx"]["input_shapes"]==[[1,3,384,640]]
     assert job["validation_status"] == "converted_unverified"
     assert job["hardware_verified"] is False
     assert job["source_trace"]["algorithm_id"] == "a1"
@@ -2466,3 +2476,15 @@ def test_material_storage_rescan_allows_root_only_for_explicit_rescan_intent(tmp
     )
     assert resolved["intent"] == "storage_rescan"
     assert resolved["source"]["prefix"] == ""
+
+
+@pytest.mark.parametrize("precision", ["fp16","fp32"])
+def test_portable_onnx_does_not_drop_explicit_export_precision(precision):
+    result=RemoteExecutionTransportService._portable_conversion_params("onnx",{"precision":precision,"input_size":800,"opset":17})
+    assert result["precision"]==precision
+    assert result["input_size"]==800 and result["opset"]==17
+
+
+def test_portable_existing_onnx_does_not_claim_export_options_were_applied():
+    params=RemoteExecutionTransportService._portable_conversion_params("onnx",{"onnx_source_reused":True,"precision":"fp16","opset":17,"input_size":800})
+    assert params=={"onnx_source_reused":True}

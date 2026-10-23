@@ -168,6 +168,8 @@ class MutationSession:
             return FakeResponse({"code": 200, "data": 501})
         if url.endswith("/internal/algorithm/algorithm-weight/add"):
             return FakeResponse({"code": 200, "data": 701})
+        if url.endswith("/internal/algorithm/algorithm-weight/edit"):
+            return FakeResponse({"code": 200, "data": True})
         raise AssertionError(url)
 
 
@@ -1957,3 +1959,202 @@ def test_bulk_analysis_index_never_overrides_authoritative_detail_training_statu
     assert algorithm["external_analysis_ids"] == []
     assert algorithm["external_analyses"][0]["status"] == "0"
     assert service.current_sync_operation("bulk-detail-truth")["analysis_list_source"] == "list_all"
+
+
+def test_weight_new_dto_fields_preserve_null_versus_explicit_empty_tags():
+    from platform_core.external_algorithm_platform import ChangLianWeightMutationPayload
+    full = ChangLianWeightMutationPayload(
+        algoVersionId=501, computePlatformId=91, imageWidth=800, imageHeight=640,
+        yoloVersion="YOLOv11n", fileSize=14567890, fileSha256="a" * 64,
+        tags=["smoke", "fire"],
+    )
+    payload = full.model_dump(exclude_none=True)
+    assert payload["imageWidth"] == 800
+    assert payload["imageHeight"] == 640
+    assert payload["fileSize"] == 14567890
+    assert payload["fileSha256"] == "a" * 64
+    assert payload["tags"] == ["smoke", "fire"]
+    assert "tags" not in ChangLianWeightMutationPayload(algoVersionId=501).model_dump(exclude_none=True)
+    assert ChangLianWeightMutationPayload(algoVersionId=501, tags=[]).model_dump(exclude_none=True)["tags"] == []
+
+    session = MutationSession()
+    client = _authenticated_mutation_client(session)
+    client.weight_create(payload)
+    _, url, kwargs = session.calls[-1]
+    assert url.endswith("/internal/algorithm/algorithm-weight/add")
+    assert kwargs["json"]["imageWidth"] == 800
+    assert kwargs["json"]["tags"] == ["smoke", "fire"]
+    # The fake mutation session only implements the add endpoint.
+    # Both add/edit share the same serializer; [] must remain explicit.
+    from platform_core.external_algorithm_platform import _dump_weight_payload
+    assert _dump_weight_payload({"weightId": 71, "algoVersionId": 501, "tags": []})["tags"] == []
+
+
+def test_weight_dto_rejects_bad_yolo_model_name_and_zero_file_size():
+    from pydantic import ValidationError
+    from platform_core.external_algorithm_platform import ChangLianWeightMutationPayload
+    for invalid in ("v11", "ultralytics", "best.pt", "YOLOv11", "yolov11n"):
+        with pytest.raises(ValidationError):
+            ChangLianWeightMutationPayload(algoVersionId=501, yoloVersion=invalid)
+    with pytest.raises(ValidationError):
+        ChangLianWeightMutationPayload(algoVersionId=501, fileSize=0)
+    assert ChangLianWeightMutationPayload(
+        algoVersionId=501, yoloVersion="YOLOv11n", fileSize=123
+    ).yoloVersion == "YOLOv11n"
+
+
+def test_changlian_weight_add_and_edit_wire_payloads_preserve_metadata_semantics():
+    session = MutationSession()
+    client = _authenticated_mutation_client(session)
+    added = {
+        "algoVersionId": 501, "computePlatformId": 91,
+        "fileName": "model.rknn", "filePath": "https://models.example/model.rknn",
+        "chipCode": "RK3568", "imageWidth": 640, "imageHeight": 800,
+        "yoloVersion": "YOLOv11n", "fileSize": 14567890,
+        "fileSha256": "b" * 64, "tags": ["smoke", "fire"],
+    }
+    assert client.weight_create(added)["data"] == 701
+    _, path, kwargs = session.calls[-1]
+    assert path.endswith("/internal/algorithm/algorithm-weight/add")
+    assert kwargs["json"] == added
+    assert "weightId" not in kwargs["json"]
+
+    assert client.weight_edit({"weightId": 701, "algoVersionId": 501, "tags": []})["code"] == 200
+    _, path, kwargs = session.calls[-1]
+    assert path.endswith("/internal/algorithm/algorithm-weight/edit")
+    assert kwargs["json"] == {"weightId": 701, "algoVersionId": 501, "tags": []}
+    client.weight_edit({"weightId": 701, "tags": None})
+    assert session.calls[-1][2]["json"] == {"weightId": 701}
+
+
+def test_weight_dto_rejects_out_of_int64_file_size():
+    from pydantic import ValidationError
+    from platform_core.external_algorithm_platform import ChangLianWeightMutationPayload
+    with pytest.raises(ValidationError):
+        ChangLianWeightMutationPayload(algoVersionId=501, fileSize=9223372036854775808)
+
+
+def test_compute_platform_catalog_rejects_cycles_orphans_and_duplicate_ids():
+    from platform_core.compute_platform_catalog import compute_platform_catalog
+    valid = [
+        {"computePlatformId": 100, "parentId": 0, "delFlag": 0},
+        {"computePlatformId": 101, "parentId": 100, "delFlag": 0},
+    ]
+    assert set(compute_platform_catalog(valid)) == {"100", "101"}
+    with pytest.raises(ValueError):
+        compute_platform_catalog([valid[0], valid[0]])
+    with pytest.raises(ValueError):
+        compute_platform_catalog([{"computePlatformId": 101, "parentId": 999}])
+    with pytest.raises(ValueError):
+        compute_platform_catalog([{"computePlatformId": 101, "parentId": 102}, {"computePlatformId": 102, "parentId": 101}])
+
+
+def test_compute_platform_list_all_explicitly_requests_children():
+    class ComputePlatformSession:
+        def __init__(self):
+            self.calls = []
+
+        def request(self, method, url, **kwargs):
+            self.calls.append((method, url, kwargs))
+            return FakeResponse({"code": 200, "data": []})
+
+    session = ComputePlatformSession()
+    client = _authenticated_mutation_client(session)
+    client.compute_platforms()
+    _, path, kwargs = session.calls[-1]
+    assert path.endswith("/internal/base/compute-platform/listAll")
+    assert kwargs["params"]["showChildren"] == "true"
+
+
+@pytest.mark.parametrize("with_tags,expected", [(None, None), (True, {"withTags": "true"}), (False, {"withTags": "false"})])
+def test_weight_info_optional_tags_query_preserves_default_contract(with_tags,expected):
+    session=MutationSession()
+    session.request=lambda method,url,**kwargs: (session.calls.append((method,url,kwargs)) or FakeResponse({"code":200,"data":{"weightId":2112456166616469504,"tags":["Car"]}}))
+    client=_authenticated_mutation_client(session)
+    result=client.weight_info("2112456166616469504",**({} if with_tags is None else {"with_tags":with_tags}))
+    method,url,kwargs=session.calls[0]
+    assert method=="GET" and url.endswith("/getInfo/2112456166616469504")
+    assert kwargs.get("params")==expected
+    assert kwargs["headers"]["Authorization"]=="Bearer token-1"
+    assert result["data"]["tags"]==["Car"]
+
+
+@pytest.mark.parametrize("weight_id", ["invalid", "1/other", "0", "-1", "9223372036854775808"])
+def test_weight_info_rejects_invalid_int64_before_request(weight_id,tmp_path,monkeypatch):
+    from platform_core.external_algorithm_platform import external_algorithm_platform_router
+    def unexpected_client(self):pytest.fail("invalid browser ID must fail before creating a remote client")
+    monkeypatch.setattr(ExternalAlgorithmPlatformService,"_client",unexpected_client)
+    router=external_algorithm_platform_router(data_dir=tmp_path,get_project=lambda p:None,algorithms_file=lambda p:tmp_path/'a.json',secret_store_factory=MemorySecretStore)
+    endpoint=next(r.endpoint for r in router.routes if r.path.endswith('/provider/weights/{weight_id}') and 'GET' in r.methods)
+    with pytest.raises(PlatformError,match="weightId") as error:
+        endpoint(weight_id,withTags=None)
+    assert error.value.code=="EXTERNAL_WEIGHT_ID_INVALID" and error.value.status_code==400
+
+
+@pytest.mark.parametrize("with_tags", [None, True, False])
+def test_provider_weight_detail_router_projects_int64_and_redacts_without_mutating_client(tmp_path,monkeypatch,with_tags):
+    from platform_core.external_algorithm_platform import external_algorithm_platform_router
+    calls=[]
+    original={"code":200,"data":{"weightId":2112456166616469504,"productId":2102998777790074880,"tags":["Car"],"remark":None,"extension":{"token":"private","newField":[]}}}
+    class Client:
+        def weight_info(self,weight_id,**kwargs):
+            calls.append((weight_id,kwargs));return original
+    monkeypatch.setattr(ExternalAlgorithmPlatformService,"_client",lambda self:Client())
+    router=external_algorithm_platform_router(data_dir=tmp_path,get_project=lambda p:None,algorithms_file=lambda p:tmp_path/"a.json",secret_store_factory=MemorySecretStore)
+    endpoint=next(r.endpoint for r in router.routes if r.path.endswith('/provider/weights/{weight_id}') and 'GET' in r.methods)
+    result=endpoint('2112456166616469504',withTags=with_tags)
+    assert result["response"]["data"]["weightId"]=="2112456166616469504"
+    assert result["response"]["data"]["productId"]=="2102998777790074880"
+    assert result["response"]["data"]["tags"]==["Car"] and result["response"]["data"]["remark"] is None
+    assert result["response"]["data"]["extension"]=={"token":"***","newField":[]}
+    assert original["data"]["extension"]["token"]=="private"
+    assert isinstance(original["data"]["weightId"],int)
+    assert calls==[('2112456166616469504',{} if with_tags is None else {"with_tags":with_tags})]
+
+
+@pytest.mark.parametrize("body,status,error", [({"code":500,"msg":"unsupported withTags"},200,"unsupported"),({"code":200,"data":None},400,"HTTP 400")])
+def test_weight_tags_query_errors_do_not_fallback_or_retry(body,status,error):
+    session=MutationSession()
+    session.request=lambda method,url,**kwargs:(session.calls.append((method,url,kwargs)) or FakeResponse(body,status))
+    client=_authenticated_mutation_client(session)
+    with pytest.raises(RuntimeError,match=error):
+        client.weight_info('2112456166616469504',with_tags=True)
+    assert len(session.calls)==1
+
+
+def test_weight_page_tags_uses_official_filters_and_auth():
+    session=MutationSession()
+    session.request=lambda method,url,**kwargs:(session.calls.append((method,url,kwargs)) or FakeResponse({"code":200,"data":[],"total":0}))
+    client=_authenticated_mutation_client(session)
+    client.weight_page(page_num=1,page_size=50,algoVersionId='2109729657292197888',withTags='true')
+    method,url,kwargs=session.calls[0]
+    assert method=='GET' and url.endswith('/algorithm-weight/list')
+    assert kwargs['params']=={'pageNum':1,'pageSize':50,'algoVersionId':'2109729657292197888','withTags':'true'}
+    assert kwargs['headers']['Authorization']=='Bearer token-1'
+
+
+def test_provider_browser_list_projections_preserve_int64_before_json(tmp_path,monkeypatch):
+    from fastapi import Request
+    from platform_core.external_algorithm_platform import external_algorithm_platform_router
+    payload={"code":200,"data":[{"weightId":2112456166616469504,"algoVersionId":2109729657292197888,"productId":2102998777790074880}],"total":1}
+    class Client:
+        def products(self,**kwargs):return payload
+        def version_list_by_product(self,value):return payload
+        def weight_list_by_version(self,value):return payload
+        def weight_page(self,**kwargs):return payload
+    monkeypatch.setattr(ExternalAlgorithmPlatformService,"_client",lambda self:Client())
+    router=external_algorithm_platform_router(data_dir=tmp_path,get_project=lambda p:None,algorithms_file=lambda p:tmp_path/'a.json',secret_store_factory=MemorySecretStore)
+    routes={r.path.rsplit('/provider/',1)[-1]:r.endpoint for r in router.routes if 'GET' in r.methods}
+    request=Request({'type':'http','query_string':b'withTags=true'})
+    for result in [routes['products'](request),routes['versions/by-product/{product_id}']('1'),routes['weights/by-version/{algo_version_id}']('2'),routes['weights/page'](request,pageNum=1,pageSize=50)]:
+        row=result['response']['data'][0]
+        assert row['weightId']=='2112456166616469504' and row['algoVersionId']=='2109729657292197888' and row['productId']=='2102998777790074880'
+    assert isinstance(payload['data'][0]['weightId'],int)
+
+
+def test_weight_info_default_keeps_existing_publisher_client_call_compatible():
+    session=MutationSession()
+    session.request=lambda method,url,**kwargs:(session.calls.append((method,url,kwargs)) or FakeResponse({"code":200,"data":{"weightId":"legacy-weight-1","tags":["Car"]}}))
+    client=_authenticated_mutation_client(session)
+    assert client.weight_info('legacy-weight-1')['data']['tags']==['Car']
+    assert session.calls[0][1].endswith('/getInfo/legacy-weight-1') and 'params' not in session.calls[0][2]

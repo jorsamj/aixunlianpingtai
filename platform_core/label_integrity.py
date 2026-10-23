@@ -18,6 +18,7 @@ from filelock import FileLock
 from .annotation_repository import AnnotationRepository, _normalize_scope
 from .annotations import annotation_summary
 from .material_repository import MaterialRepository
+from .training_splits import training_annotation_digest
 from .task_runtime import TaskKind, TaskRecord, TaskStatus
 from .task_runtime.models import utc_now
 
@@ -296,6 +297,28 @@ def run_label_integrity_audit(project_path: str | Path, artifact_path: str | Pat
                 if progress:
                     progress(scanned)
         audit_batch(batch)
+
+        # Full Audit must cover the exact duplicate-annotation blocker that
+        # training admission enforces. Reuse MaterialRepository's indexed
+        # grouping and training's canonical digest; do not choose a winning GT.
+        for content_sha, image_ids in materials.duplicate_content_groups().items():
+            records = {}
+            for offset in range(0, len(image_ids), 500):
+                records.update(annotations.get_many(image_ids[offset:offset + 500]))
+            if len({training_annotation_digest(records[image_id]) for image_id in image_ids}) <= 1:
+                continue
+            for image_id in image_ids:
+                record = records[image_id]
+                _insert_issue(
+                    database, record, "DUPLICATE_ANNOTATION_CONFLICT", "",
+                    {"box_count": len(record.get("boxes") or []), "scope_ref": 0, "class_ids": set()},
+                    {
+                        "content_sha256": content_sha,
+                        "duplicate_image_ids": image_ids[:50],
+                        "duplicate_image_count": len(image_ids),
+                    },
+                )
+                affected.add(image_id)
 
         database.execute(
             "INSERT INTO issue_groups(issue_type,label_code,image_count,box_count) "

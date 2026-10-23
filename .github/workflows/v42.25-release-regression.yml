@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - refactor/frontend-runtime-stabilization
+      - feature/external-algorithm-publishing
     paths:
       - .github/workflows/v42.25-release-regression.yml
       - a800_rc_acceptance.py
@@ -34,6 +35,17 @@ on:
       - platform_core/training_metrics.py
       - platform_core/training_evaluation.py
       - platform_core/training_tasks.py
+      - platform_core/training_compatibility.py
+      - platform_core/training_splits.py
+      - platform_core/training_recovery_api.py
+      - tests/unit/test_training_stratification_v2.py
+      - tests/unit/test_training_annotation_admission.py
+      - tests/unit/test_training_metric_credibility.py
+      - tests/unit/test_training_duplicate_conflicts.py
+      - tests/unit/test_material_reference_reasons.py
+      - tests/api/test_material_integrity.py
+      - tests/api/test_training_conflict_governance.py
+      - tests/api/test_runtime_router_app_mount.py
       - platform_core/upgrade_guard.py
       - platform_core/video_tasks.py
       - tests/api/test_durable_training_controls.py
@@ -73,6 +85,8 @@ on:
       - tests/unit/test_training_blind_test_contract.py
       - tests/unit/test_training_early_stopping_reason.py
       - tests/unit/test_training_evaluation.py
+      - tests/api/test_training_ground_truth_gate.py
+      - tests/api/test_training_metric_credibility_report.py
       - tests/unit/test_training_progress_v2.py
       - tests/unit/test_training_realtime_progress.py
       - tests/unit/test_training_resource_contract.py
@@ -88,6 +102,7 @@ on:
       - tests/unit/task_runtime/test_public_projection.py
       - tests/unit/test_a800_rc_acceptance.py
       - tests/unit/test_training_metrics_fd.py
+      - tests/unit/test_train_worker_metrics_class_mapping.py
 
 # Durable public truth guard: RUNNING + phase=paused must project as PAUSED while persisted_status stays RUNNING.
 # Durable control guard: once cancellation is durable truth, a late resume cannot revive the task stage/process.
@@ -139,6 +154,10 @@ jobs:
           python -m pytest -q
           tests/api/test_durable_training_controls.py
           tests/api/test_clean_unified_execution_truth.py
+          tests/api/test_material_integrity.py
+          tests/api/test_training_conflict_governance.py
+          tests/unit/test_material_reference_reasons.py
+          tests/api/test_runtime_router_app_mount.py
           tests/api/test_deployment_test_runtime.py
           tests/api/test_training_terminal_runtime.py
           tests/api/test_upload_clean_flow.py
@@ -184,6 +203,7 @@ jobs:
           tests/unit/task_runtime/test_artifact_fencing.py
           tests/unit/test_training_resource_contract.py
           tests/unit/test_training_metrics_fd.py
+          tests/unit/test_train_worker_metrics_class_mapping.py
       - name: Worker execution-fencing smoke check
         run: >-
           python task_worker.py --check --data-dir "${RUNNER_TEMP}/platform-data"
@@ -220,11 +240,17 @@ jobs:
           tests/unit/test_negative_sample_contract.py
           tests/unit/test_annotation_repository_scope.py
           tests/unit/test_training_splits.py
+          tests/unit/test_training_stratification_v2.py
+          tests/unit/test_training_annotation_admission.py
+          tests/unit/test_training_metric_credibility.py
+          tests/unit/test_training_duplicate_conflicts.py
           tests/unit/test_training_components.py
           tests/unit/test_snapshots.py
           tests/unit/test_portable_dataset.py
           tests/unit/test_training_blind_test_contract.py
           tests/unit/test_training_evaluation.py
+          tests/api/test_training_ground_truth_gate.py
+          tests/api/test_training_metric_credibility_report.py
           tests/unit/test_training_resource_contract.py
           tests/unit/test_launcher_workers.py
           tests/unit/test_a800_rc_acceptance.py

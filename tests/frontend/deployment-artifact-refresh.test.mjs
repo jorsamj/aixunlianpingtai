@@ -31,7 +31,7 @@ test('canonical version polling replaces a terminal transition so newly committe
 test('canonical conversion resources are fetched live with no HTTP cache and without retired page data',()=>{
   const resources=owner('  async function deployResources428(force=false){','  window.loadVersionConversionHistory428=deploymentHistory428;');
   assert.match(resources,/deployResourcesInflight428/);
-  assert.match(resources,/api\('\/api\/v39\/deploy\/resources',\{cache:'no-store'\}\)/);
+  assert.match(resources,/api\('\/api\/v39\/deploy\/resources',\{cache:'no-store',signal\}\)/);
   assert.doesNotMatch(resources,/if\(!force\)\{const c=readCache428/);
   assert.doesNotMatch(resources,/source-models|deploy\/artifacts|deploy\/jobs/);
 });
