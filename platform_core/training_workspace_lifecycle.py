@@ -156,7 +156,8 @@ class TrainingWorkspaceLifecycle:
             blockers.append("RECOVERY_DEPENDENCY")
         return {"task_id": task.task_id, "project_id": task.project_id,
                 "eligible": not blockers, "blockers": blockers, "temporary_logical_bytes": size,
-                "scope": "task_work_bundle_only", "physical_space_released": None}
+                "scope": "task_work_bundle_only", "physical_space_released": None,
+                "attempt": task.attempt, "snapshot_id": snapshot.get("snapshot_id")}
 
     def inspect(self, project_id, task_id):
         task = self.repository.get(task_id)
@@ -227,15 +228,20 @@ class TrainingWorkspaceLifecycle:
         if path.exists():
             shutil.rmtree(path)
 
-    def cleanup(self, project_id, task_id, *, actor):
+    def cleanup(self, project_id, task_id, *, actor, expected_attempt=None, expected_snapshot_id=None):
         # Lock lives outside the task-owned work tree and holds no business state.
         self.artifacts._validate_task_id(task_id)
-        locks = self.artifacts.root / ".workspace-locks"
-        locks.mkdir(exist_ok=True)
-        with FileLock(str(locks / (task_id + ".lock")), timeout=5):
+        self._paths(task_id)  # Validate lexical task/work ownership before locking.
+        with FileLock(str(self.artifacts.root / task_id / "workspace-access.lock"), timeout=5):
             with self.repository.training_workspace_guard(task_id) as (task, active):
                 if task.project_id != project_id or task.kind is not TaskKind.TRAINING:
                     raise KeyError(task_id)
+                if expected_attempt is not None and task.attempt != expected_attempt:
+                    raise RuntimeError("WORKSPACE_PREVIEW_STALE")
+                if expected_snapshot_id is not None:
+                    snapshot = self.artifacts.read_json(task_id, "snapshot.json", default={})
+                    if snapshot.get("snapshot_id") != expected_snapshot_id:
+                        raise RuntimeError("WORKSPACE_PREVIEW_STALE")
                 truth = self._inspect(task, active)
                 if not truth["eligible"]:
                     self.artifacts.append_log(task_id, "logs/workspace-cleanup.jsonl", json.dumps({

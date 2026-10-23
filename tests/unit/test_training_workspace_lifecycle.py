@@ -170,3 +170,76 @@ def test_qualification_never_migrates_legacy_algorithm_catalog(tmp_path):
     assert catalog.read_bytes() == before
     assert not (project / "algorithms.sqlite3").exists()
     assert not (project / "algorithms.json.pre-sql-migration-backup").exists()
+
+
+def test_report_stream_holds_workspace_lock_and_can_open_retained_bytes_after_cleanup(tmp_path):
+    import asyncio
+    from filelock import FileLock, Timeout
+    from platform_core.training_workspace_http import TrainingEvidenceFileResponse
+    service, _, artifacts, _ = workspace(tmp_path)
+    bundle = artifacts.artifact_path("t", "work/bundle")
+    image = bundle / "dataset/images/train/x.jpg"
+    snapshot = artifacts.read_json("t", "snapshot.json")
+    digest = hashlib.sha256(image.read_bytes()).hexdigest()
+    artifacts.atomic_write_json("t", "work/bundle/manifest.json", {**snapshot, "splits": {"test": [{
+        "image_id": "x", "image_ref": "dataset/images/train/x.jpg", "content_sha256": digest}]}})
+    artifacts.atomic_write_json("t", "result.json", {"training_report": {"test_result": {
+        "error_samples": [{"image_id": "x", "image": "x.jpg"}]}}})
+    task_root = artifacts.root / "t"
+    scope = {"type": "http", "method": "GET", "headers": [], "asgi": {"spec_version": "2.4"}}
+    sent = []
+    async def receive():
+        return {"type": "http.request"}
+    async def send(message):
+        if message["type"] == "http.response.body":
+            with pytest.raises(Timeout):
+                with FileLock(str(task_root / "workspace-access.lock"), timeout=0):
+                    pass
+            sent.append(message.get("body", b""))
+    def response():
+        return TrainingEvidenceFileResponse(image, workspace_root=task_root, expected_sha256=digest)
+    asyncio.run(response()(scope, receive, send))
+    assert b"".join(sent) == b"task-owned-copy"
+    # A response already created before GC can still deliver the same archived bytes.
+    delayed = response()
+    assert service.cleanup("p", "t", actor="test-user")["status"] == "deleted"
+    sent.clear()
+    asyncio.run(delayed(scope, receive, send))
+    assert b"".join(sent) == b"task-owned-copy"
+    with FileLock(str(task_root / "workspace-access.lock"), timeout=0):
+        pass
+
+
+def test_workspace_api_requires_actor_explicit_confirmation_and_current_preview(tmp_path):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from platform_core.training_recovery_api import training_recovery_router
+    service, repo, artifacts, original = workspace(tmp_path)
+    app = FastAPI()
+    actor = {"actor_id": "logged-in-user"}
+    app.include_router(training_recovery_router(
+        lambda project_id: {"id": project_id}, lambda: repo, lambda: artifacts,
+        project_path_provider=lambda project_id: service.data_dir / "projects" / project_id,
+        workspace_actor_provider=lambda _request, _project: actor,
+    ))
+    with TestClient(app) as client:
+        url = "/api/v62/projects/p/training-tasks/t/workspace"
+        preview = client.get(url)
+        assert preview.status_code == 200
+        truth = preview.json()["workspace"]
+        assert truth["eligible"] is True
+        assert client.post(url + "/cleanup", json={}).status_code == 422
+        payload = {"confirm": "release_training_workspace", "attempt": truth["attempt"],
+                   "snapshot_id": truth["snapshot_id"]}
+        assert client.post(url + "/cleanup", json={**payload, "attempt": 2}).status_code == 409
+        actor.clear()
+        assert client.post(url + "/cleanup", json=payload).status_code == 401
+        actor["actor_id"] = "logged-in-user"
+        assert client.post(url.replace("/projects/p/", "/projects/other/") + "/cleanup", json=payload).status_code == 404
+        result = client.post(url + "/cleanup", json=payload)
+        assert result.status_code == 200, result.text
+        assert result.json()["workspace"]["status"] == "deleted"
+        assert client.post(url + "/cleanup", json=payload).json()["workspace"]["status"] == "already_clean"
+    assert original.read_bytes() == b"original"
+    assert repo.get("t").status is TaskStatus.FAILED
+    assert artifacts.read_json("t", "workspace-cleanup.json")["actor"] == "logged-in-user"

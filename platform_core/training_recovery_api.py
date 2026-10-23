@@ -12,6 +12,7 @@ import re
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import quote
+from starlette.requests import Request
 
 from .task_runtime import TaskKind, TaskStatus
 
@@ -486,6 +487,7 @@ def training_recovery_router(
     agent_clean_selection_page_provider=None,
     agent_clean_selection_read_provider=None,
     project_path_provider=None,
+    workspace_actor_provider=None,
 ):
     from fastapi import APIRouter, Body, HTTPException, Query
 
@@ -497,6 +499,45 @@ def training_recovery_router(
         if task is None or task.project_id != project_id or task.kind is not TaskKind.TRAINING:
             raise HTTPException(status_code=404, detail="训练任务不存在")
         return task
+
+    def workspace_service(project_id):
+        if project_path_provider is None:
+            raise HTTPException(status_code=503, detail="训练临时空间服务不可用")
+        from .training_workspace_lifecycle import TrainingWorkspaceLifecycle
+        return TrainingWorkspaceLifecycle(
+            Path(project_path_provider(project_id)).parent.parent,
+            task_repository(), task_artifacts(),
+        )
+
+    @recovery_router.get("/{task_id}/workspace")
+    def workspace_preview(project_id: str, task_id: str):
+        require_task(project_id, task_id)
+        return {"ok": True, "workspace": workspace_service(project_id).inspect(project_id, task_id)}
+
+    @recovery_router.post("/{task_id}/workspace/cleanup")
+    def workspace_cleanup(project_id: str, task_id: str, request: Request, payload: dict = Body(...)):
+        require_task(project_id, task_id)
+        if workspace_actor_provider is None:
+            raise HTTPException(status_code=503, detail="真实登录身份服务不可用")
+        actor = workspace_actor_provider(request, project_id)
+        actor_id = str((actor or {}).get("actor_id") or "").strip()
+        if not actor_id:
+            raise HTTPException(status_code=401, detail="请先登录平台")
+        if (payload.get("confirm") != "release_training_workspace"
+                or type(payload.get("attempt")) is not int or not payload.get("snapshot_id")):
+            raise HTTPException(status_code=422, detail="请核对临时空间预览并明确确认释放")
+        try:
+            result = workspace_service(project_id).cleanup(
+                project_id, task_id, actor=actor_id, expected_attempt=payload["attempt"],
+                expected_snapshot_id=str(payload["snapshot_id"]),
+            )
+        except RuntimeError as error:
+            raise HTTPException(status_code=409, detail={"code": "TRAINING_WORKSPACE_PROTECTED",
+                "blockers": str(error).split(","), "retryable": False}) from error
+        except OSError as error:
+            raise HTTPException(status_code=503, detail={"code": "TRAINING_WORKSPACE_RETRYABLE",
+                "message": "临时空间释放未完成，可安全重试", "retryable": True}) from error
+        return {"ok": True, "workspace": result}
 
     @recovery_router.get("/{task_id}/input-diagnosis")
     def input_diagnosis(project_id: str, task_id: str,

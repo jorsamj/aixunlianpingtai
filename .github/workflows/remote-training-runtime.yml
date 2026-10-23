@@ -21,6 +21,9 @@ on:
       - 'platform_core/remote_material_lifecycle.py'
       - 'platform_core/model_artifacts.py'
       - 'platform_core/training_recovery_api.py'
+      - 'platform_core/training_workspace_lifecycle.py'
+      - 'platform_core/training_workspace_http.py'
+      - 'tests/unit/test_training_workspace_lifecycle.py'
       - 'platform_core/material_batches.py'
       - 'platform_core/training_compatibility.py'
       - 'tests/unit/test_material_reference_reasons.py'
@@ -97,6 +100,9 @@ on:
       - 'platform_core/remote_material_lifecycle.py'
       - 'platform_core/model_artifacts.py'
       - 'platform_core/training_recovery_api.py'
+      - 'platform_core/training_workspace_lifecycle.py'
+      - 'platform_core/training_workspace_http.py'
+      - 'tests/unit/test_training_workspace_lifecycle.py'
       - 'node_agent.py'
       - 'platform_core/remote_training_tasks.py'
       - 'platform_core/training_tasks.py'
@@ -193,6 +199,8 @@ jobs:
           platform_core/remote_material_lifecycle.py
           platform_core/model_artifacts.py
           platform_core/training_recovery_api.py
+          platform_core/training_workspace_lifecycle.py
+          platform_core/training_workspace_http.py
           node_agent.py
           train_worker.py
           platform_core/task_node_assignments.py
@@ -243,6 +251,7 @@ jobs:
           python -m pytest -q --confcutdir=tests/unit
           tests/unit/test_material_reference_reasons.py
           tests/unit/test_training_duplicate_conflicts.py
+          tests/unit/test_training_workspace_lifecycle.py
       - name: Linux cgroup v2 and process FD resource evidence
         if: runner.os == 'Linux'
         run: >-

@@ -10772,8 +10772,15 @@ def evaluation_diagnostic_image_v1(project_id: str, algorithm_id: str, version_i
                             'X-Evaluation-Original-Format': image_format,
                             'X-Evaluation-Display-Derived': 'true'})
             return Response(output.getvalue(), media_type='image/png', headers=headers)
-        return FileResponse(
+        response_class = FileResponse
+        response_kwargs = {}
+        if evidence_source == 'bundle':
+            from platform_core.training_workspace_http import TrainingEvidenceFileResponse
+            response_class = TrainingEvidenceFileResponse
+            response_kwargs = {'workspace_root': bundle.parent.parent, 'expected_sha256': evidence_sha256}
+        return response_class(
             candidate,
+            **response_kwargs,
             media_type=media_types[image_format],
             headers=headers,
         )
@@ -10821,7 +10828,10 @@ def evaluation_diagnostic_image_v1(project_id: str, algorithm_id: str, version_i
         manifest_path = bundle / 'manifest.json'
         manifest = _evaluation_bundle_identity_index(manifest_path, snapshot_id)
         if manifest.get('snapshot_id') != snapshot_id:
-            manifest = {}
+            bundle = shared_task_artifacts().artifact_path(task_id, 'evidence/bundle').resolve()
+            manifest = _evaluation_bundle_identity_index(bundle / 'manifest.json', snapshot_id)
+            if manifest.get('snapshot_id') != snapshot_id:
+                manifest = {}
     # V3 frozen snapshots carry stored_name. Resolve a unique frozen ID
     # before querying MaterialRepository; legacy snapshots use bounded reads.
     repository = MaterialRepository(project_dir(project_id))
@@ -10910,8 +10920,13 @@ def evaluation_diagnostic_image_v1(project_id: str, algorithm_id: str, version_i
                 member = members[0]
                 ref = str(member.get('image_ref') or '')
                 candidate = (bundle / ref).resolve()
+                preview_root = bundle
+                if not candidate.is_file():
+                    retained = shared_task_artifacts().artifact_path(task_id, 'evidence/bundle').resolve()
+                    candidate = (retained / ref).resolve()
+                    preview_root = retained
                 member_hash = str(member.get('content_sha256') or '').lower()
-                if (candidate.is_relative_to(bundle / 'dataset' / 'images' / 'test')
+                if (candidate.is_relative_to(preview_root / 'dataset' / 'images' / 'test')
                     and str(member.get('source_content_sha256') or '').lower() == expected
                     and re.fullmatch(r'[0-9a-f]{64}', member_hash)
                     and (not evaluated_hash or evaluated_hash == member_hash)
@@ -24122,6 +24137,7 @@ app.include_router(training_recovery_router(
     shared_task_repository,
     shared_task_artifacts,
     project_path_provider=project_dir,
+    workspace_actor_provider=_material_governance_actor,
     agent_execution_payload_resolver=_resolve_agent_execution_payload,
     agent_result_upload_preparer=_prepare_agent_result_upload,
     agent_result_upload_confirmer=_confirm_agent_result_upload,
