@@ -104,7 +104,7 @@ test('TrainingLabelRuntime remains wrapper-free timer-free and summary-backed', 
   assert.match(source, /queueMicrotask/);
   assert.match(source, /classicWrapperOwner: false/);
   assert.match(source, /timerOwner: false/);
-  assert.match(source, /build: 'module-422569'/);
+  assert.match(source, /build: 'module-422570'/);
 });
 
 test('final stable renderers keep historical 423/425 training entrypoints unreachable', () => {
@@ -124,4 +124,9 @@ test('final stable renderers keep historical 423/425 training entrypoints unreac
   const taskSource = visibility.slice(finalTaskRenderer, finalTaskRenderer + 2500);
   assert.equal(taskSource.includes('openTrain425()'), false);
   assert.equal(taskSource.includes('▶ 开始训练'), false);
+});
+
+test('explicit active target survives selecting only cross-label candidates for review',()=>{
+ const view=resolveClientTrainingLabels({materials:[{id:'p',labels:['person']}],selectedIds:['p'],labelCatalog:[{code:'vest'},{code:'person'}],requestedCodes:['vest']});
+ assert.deepEqual(view.available,['person']);assert.deepEqual(view.requested,['vest']);assert.deepEqual(view.selectable,['vest','person']);
 });

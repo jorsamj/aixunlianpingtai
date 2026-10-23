@@ -56,7 +56,9 @@ export function resolveClientTrainingLabels({
       && String(item?.status || 'active').toLowerCase() === 'active'
     ))
     .map(item => String(item.code)));
-  const selectable = available.filter(code => activeCatalog.has(code));
+  // A deliberate target stays selected when reviewing cross-label candidates.
+  // This is a user choice, never evidence of a positive sample.
+  const selectable = sortedAvailableCodes([...available, ...unique(requestedCodes)], labelCatalog).filter(code => activeCatalog.has(code));
   const selectableSet = new Set(selectable);
   const requested = unique(requestedCodes).filter(code => selectableSet.has(code));
   const invalidAvailable = available.filter(code => !activeCatalog.has(code));
@@ -384,7 +386,7 @@ export function installTrainingLabelRuntime({
   queueRefresh();
 
   const runtime = {
-    build: 'module-422569',
+    build: 'module-422570',
     refresh,
     queueRefresh,
     selectedIds: () => selectedIds(getState?.()),
