@@ -124,6 +124,10 @@ apply必须真实登录/项目范围+明确确认，绑定本批image_ids、完�
 
 修正以新提交正常推送，最终结果必须绑定新完整SHA；首推失败保留本记录，不用rerun旧绿遮盖。
 
+### 第二次提交前端接线断言补验
+
+cd4fec7acc89a2edfb2e5590a6e75ea752584fb3的Frontend Runtime Node发现唯一过期精确导航断言：原高级功能集合未含本轮正式临时入口“旧素材兼容迁移”。只在原render-owner-retirement.test.mjs精确集合增加该项，保留唯一导航/无wrapper/无旧页面等所有断言；原navigation相关11项通过。此前路由/HTTP/未知进程保护及依赖修正保持，新SHA仍需完整查询，不引用先前SHA成功项充当前验收。
+
 ### 接续指令
 
 先读本文顶部S2矩阵及本节，再读remote_training_inputs.py / node_agent_training_runtime.py / training_workspace_lifecycle.py / scheduler.py，前端从training-recovery-runtime.js和legacy-material-compatibility.js，缩略图从原StorageManager/MaterialCache，物理GC仅local_material_reclamation.py及tools/reclaim_retired_original.py。禁止重复建设StorageManager/Material/Annotation/BundleCache/Task状态；不要继续训练模板、Uppy或chipCode需求。保留两份未提交模板测试及其他工作树。生产真实量/外部存储/旧数据未知条件以只读计划和独立授权接续，不自动执行清理。
