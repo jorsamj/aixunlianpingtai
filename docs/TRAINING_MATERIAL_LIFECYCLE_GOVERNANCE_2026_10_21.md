@@ -46,6 +46,10 @@ apply必须真实登录/项目范围+明确确认，绑定本批image_ids、完�
 
 实际核心+原Material生命周期18通过；API鉴权/确认/边界/过滤内部证据1通过。真实Chrome独立临时数据1通过，覆盖真实导航、慢scan/preview/apply、候选过滤、明确确认、503同task指纹重试、防重复与离页迟到；开发中2次selector问题仅修测试后GREEN，未修改实现绕过。py_compile/diff通过。API前端/后端贯通，未运行全仓；未在生产执行scan或迁移，不能据隔离数据推断生产是否需要迁移。未知旧数据仍须独立只读核验。
 
+### S2-04 收尾修正：GT绑定冲突只报告
+
+收尾发现缺SHA/size的记录虽读取了正式GT，但未比较投影annotation_version及annotation_source_content_sha256，可能把冲突误列为可补齐。新增两参数场景真实RED（2失败，均误为candidate），原服务最小增加正式版本/源内容身份比较，冲突拒绝apply且保持原素材/GT不变；同两场景与原正常备份幂等用例GREEN共3通过/9未选择。并非修改GT或扩大迁移范围；正常已有完整元数据仍不做强制重哈希。此修复单独提交，准确SHA见下方最终阶段表。
+
 ### S2-05 缩略图已实现，原图物理回收另行补安全合同（父提交fa970912）
 
 原MaterialCache新增按源SHA+thumbnail-v1/EXIF-fit/RGB/JPEGq82/no-upscale/edge版本的派生索引，指向实际JPEG SHA内容缓存；派生索引和图片均受原锁/TTL/配额，坏指针、损坏或驱逐后按需重建。原StorageManager.thumbnail只读，不自动写SHA/size，不另建缓存管理器或数据库；无可信SHA时原图入口继续可用并由兼容工具单独预览。public_material新增thumbnail_url，原素材网格/列表优先缩略图、详情/标注继续原url；卡片签名纳入SHA与缩略图URL。HTTP流式发送全程持原cache锁，finally/断连释放。

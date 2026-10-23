@@ -156,6 +156,14 @@ class LegacyMaterialCompatibilityService:
                 return item
             annotation = self._annotation(image_id)
             item["ground_truth"] = annotation
+            if row.get("annotation_version") is not None and (
+                    not annotation or row["annotation_version"] != annotation.get("version")):
+                item.update(status="conflict", issues=["material and formal GT versions differ"])
+                return item
+            annotation_sha = str(row.get("annotation_source_content_sha256") or "")
+            if annotation_sha and row.get("content_sha256") and annotation_sha != row["content_sha256"]:
+                item.update(status="conflict", issues=["formal GT source differs from material content identity"])
+                return item
             normalized, path, manager = self._source(row)
             legacy = [entry for entry in legacy_rows or [] if str(entry.get("id") or "") == image_id]
             item["legacy_json_evidence"] = legacy
@@ -192,6 +200,9 @@ class LegacyMaterialCompatibilityService:
             if before != _stamp(path) or size <= 0 or size != before[1]:
                 raise ValueError("source changed during inspection")
             actual_sha = digest.hexdigest()
+            if annotation_sha and annotation_sha != actual_sha:
+                item.update(status="conflict", issues=["formal GT source differs from actual original"])
+                return item
             if any(entry.get("content_sha256") and entry["content_sha256"] != actual_sha for entry in legacy):
                 item.update(status="conflict", issues=["legacy JSON content differs from actual source"])
                 return item

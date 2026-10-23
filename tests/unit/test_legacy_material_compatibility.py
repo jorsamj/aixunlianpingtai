@@ -82,6 +82,22 @@ def test_existing_conflicting_identity_is_reported_without_repair(tmp_path):
     assert service.preview(["a"])["items"][0]["status"] == "conflict"
 
 
+@pytest.mark.parametrize("field", ["annotation_source_content_sha256", "annotation_version"])
+def test_gt_binding_conflict_cannot_be_repaired_as_missing_metadata(tmp_path, field):
+    service, materials, annotations, _ = setup_project(tmp_path)
+    annotations.upsert("a", [], annotation_state="unannotated", project_material=False)
+    gt = annotations.get("a")
+    value = "f" * 64 if field.endswith("sha256") else gt["version"] + 1
+    materials.upsert_many([{**materials.get("a"), field: value}])
+    before = materials.get("a")
+    preview = service.preview(["a"])
+    assert preview["items"][0]["status"] == "conflict"
+    with pytest.raises(ValueError):
+        service.apply(["a"], expected_fingerprint=preview["fingerprint"], task_id="gt-conflict", confirmed=True)
+    assert materials.get("a") == before
+    assert annotations.get("a") == gt
+
+
 def test_shared_object_alias_is_report_only_and_cannot_modify_unselected_row(tmp_path):
     service, materials, _, _ = setup_project(tmp_path)
     materials.upsert_many([{**materials.get("a"), "id": "alias"}])
