@@ -1145,10 +1145,17 @@ class AnnotationRepository:
             material_expectations = {}
             for row in rows:
                 image_id = self._id(row['image_id'])
+                scope = row.get('annotation_scope')
+                if row.get('review_evidence') and '*' in _normalize_scope(scope):
+                    # A new scoped human review must not perpetuate an unknown
+                    # historical wildcard as proof for every future task label.
+                    scope = sorted((set(_normalize_scope(scope)) - {'*'})
+                                   | set(_normalize_scope(row['review_evidence'].get('reviewed_label_codes')))
+                                   | {str(box.get('label') or box.get('code') or '') for box in row.get('boxes') or []})
                 prepared = self._content_payload(
                     row.get('boxes') or [],
                     row.get('annotation_state'),
-                    row.get('annotation_scope'),
+                    scope,
                 )
                 self._assert_active_annotation_payload(
                     prepared['boxes'], prepared['annotation_scope'],
@@ -1212,8 +1219,11 @@ class AnnotationRepository:
                                     checked = set(_normalize_scope(row.get('reviewed_label_codes')))
                                     present = {str(box.get('label') or box.get('code') or '') for box in prepared['boxes']}
                                     revoked = prior_absence - checked - present
-                                    if revoked:
-                                        scope = [code for code in json.loads(prepared['scope_payload']) if code not in revoked]
+                                    scope = set(json.loads(prepared['scope_payload']))
+                                    if revoked or ('*' in scope and events):
+                                        if '*' in scope:
+                                            scope = (scope - {'*'}) | present | checked
+                                        scope = sorted(scope - revoked)
                                         prepared = self._content_payload(prepared['boxes'],prepared['annotation_state'],scope)
                             now = datetime.now(timezone.utc).isoformat()
                             db.execute(
