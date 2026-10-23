@@ -662,7 +662,7 @@ def build_runner(
     return runner, runtime_root, workdirs
 
 
-def test_real_subprocess_remote_training_success(tmp_path):
+def test_real_subprocess_remote_training_success(tmp_path, monkeypatch):
     current, downloads = training_lease(tmp_path)
     transfer = FakeTransferSession(downloads)
     client = FakeControlClient(transfer)
@@ -672,6 +672,15 @@ def test_real_subprocess_remote_training_success(tmp_path):
         transfer,
         sleep_seconds=1.2,
     )
+
+    cleanup = runner._cleanup_training_workdir
+    def checked_cleanup(lease, **kwargs):
+        assert kwargs["committed"] is True
+        assert client.model_confirm_calls == 1
+        assert client.finish_calls[-1]["status"] == "SUCCEEDED"
+        assert kwargs.get("model_evidence") == client.model_prepare_calls[-1]
+        return cleanup(lease, **kwargs)
+    monkeypatch.setattr(runner, "_cleanup_training_workdir", checked_cleanup)
 
     outcome = runner.run(current)
 
@@ -1386,9 +1395,47 @@ def test_indexed_training_claim_materializes_frozen_gt_with_one_source_buffer(tm
         assert outcome.status == "SUCCEEDED", outcome.error
         assert set(reads) == set(sources)
         assert [call["url"] for call in transfer.get_calls] == [model_url]
+        args = json.loads((runtime_root / "worker-args.json").read_text(encoding="utf-8"))
+        assert Path(args["model"]) == (workdirs.root / "executions" / current.task_id
+                                       / str(current.generation) / "input/model/base.pt")
         with zipfile.ZipFile(io.BytesIO(transfer.put_calls[-1]["body"])) as archive:
             result = json.loads(archive.read("manifest.json"))
             assert result["input_freeze_id"] == frozen["input_freeze_id"]
             assert result["dataset_revision_id"] == frozen["dataset_revision_id"]
             assert sum(len(rows) for rows in result["dataset_manifest"]["splits"].values()) == 5
     assert not (workdirs.root / "executions" / current.task_id / str(current.generation)).exists()
+
+
+@pytest.mark.parametrize("checkpoint_case", ["unarchived_epoch", "archived_duplicates", "evidence_size_mismatch"])
+def test_committed_agent_cleanup_preserves_unarchived_checkpoints_but_releases_inputs(tmp_path, checkpoint_case):
+    lease, downloads = training_lease(tmp_path)
+    transfer = FakeTransferSession(downloads)
+    runner, _, workdirs = build_runner(tmp_path, FakeControlClient(transfer), transfer)
+    workdir = workdirs.prepare(lease)
+    (workdir / "input").mkdir()
+    (workdir / "input/base.pt").write_bytes(b"temporary model input")
+    weights = workdir / "project/runs/final/weights"
+    weights.mkdir(parents=True)
+    archived = b"confirmed official best model"
+    (weights / "best.pt").write_bytes(archived)
+    models = workdir / "project/models"
+    models.mkdir()
+    (models / "best-copy.pt").write_bytes(archived)
+    evidence = [{"role": "best", "sha256": hashlib.sha256(archived).hexdigest(),
+                 "size_bytes": len(archived)}]
+    if checkpoint_case == "unarchived_epoch":
+        (weights / "epoch20.pt").write_bytes(b"not archived periodic checkpoint")
+    if checkpoint_case == "evidence_size_mismatch":
+        evidence[0]["size_bytes"] += 1
+    runner._cleanup_training_workdir(lease, trainer_started=True, committed=True, model_evidence=evidence)
+    if checkpoint_case == "archived_duplicates":
+        assert not workdir.exists()
+    else:
+        assert not (workdir / "input").exists()
+        assert (weights / "best.pt").read_bytes() == archived
+        if checkpoint_case == "unarchived_epoch":
+            assert (weights / "epoch20.pt").read_bytes() == b"not archived periodic checkpoint"
+        receipt = json.loads((workdir / "workspace-cleanup.json").read_text(encoding="utf-8"))
+        assert receipt["scope"] == "agent_input_only"
+        assert receipt["blockers"] == ["UNARCHIVED_CHECKPOINT"]
+        assert receipt["retained_checkpoint_refs"]

@@ -308,7 +308,7 @@ class AgentTrainingRunner:
         self._recovery_error = ""
         return True
 
-    def _cleanup_training_workdir(self, lease, *, trainer_started, committed):
+    def _cleanup_training_workdir(self, lease, *, trainer_started, committed, model_evidence=None):
         """Process death is proven by the caller; retain uncommitted recovery evidence."""
         from .training_workspace_lifecycle import TrainingWorkspaceLifecycle
         try:
@@ -319,12 +319,29 @@ class AgentTrainingRunner:
         try:
             # Reject links, shared hardlinks and special files before any removal.
             TrainingWorkspaceLifecycle._tree_bytes(workdir)
-            if committed or not trainer_started:
-                self.workdirs.cleanup(lease)
-                return
             checkpoints = [path for path in workdir.rglob("*")
                            if path.suffix.lower() == ".pt" and "input" not in path.relative_to(workdir).parts[:1]]
-            if checkpoints:
+            unarchived = []
+            if committed:
+                archived = {(item["size_bytes"], item["sha256"]) for item in model_evidence or ()
+                            if isinstance(item, Mapping) and type(item.get("size_bytes")) is int
+                            and item["size_bytes"] > 0 and isinstance(item.get("sha256"), str)
+                            and re.fullmatch(r"[0-9a-f]{64}", item["sha256"])}
+                sizes = {size for size, _digest in archived}
+                for path in checkpoints:
+                    try:
+                        if path.stat().st_size in sizes and _sha256_file(path) in archived:
+                            continue
+                    except (OSError, ValueError):
+                        pass  # Unreadable weights remain unverified and retained.
+                    unarchived.append(path.relative_to(workdir).as_posix())
+                if not unarchived:
+                    self.workdirs.cleanup(lease)
+                    return
+            elif not trainer_started and not checkpoints:
+                self.workdirs.cleanup(lease)
+                return
+            if checkpoints and not committed:
                 self.workdirs._atomic_write_json(receipt, {
                     "task_id": lease.task_id, "generation": lease.generation,
                     "status": "retained", "blockers": ["RECOVERY_DEPENDENCY"],
@@ -344,6 +361,8 @@ class AgentTrainingRunner:
                 "task_id": lease.task_id, "generation": lease.generation,
                 "status": "deleted", "scope": "agent_input_only",
                 "deleted_logical_bytes": size, "physical_space_released": None,
+                **({"blockers": ["UNARCHIVED_CHECKPOINT"],
+                    "retained_checkpoint_refs": unarchived} if unarchived else {}),
             })
         except (OSError, ValueError):
             # Cleanup must never turn a confirmed training result into failure.
@@ -619,7 +638,7 @@ class AgentTrainingRunner:
         return str(
             self._download(
                 download,
-                workdir / "model" / file_name,
+                workdir / "input" / "model" / file_name,
                 monitor,
             )
         )
@@ -1286,6 +1305,7 @@ class AgentTrainingRunner:
         log_offset = 0
         trainer_started = False
         committed = False
+        model_evidence: list[dict[str, Any]] = []
         try:
             self._heartbeat(
                 monitor,
@@ -1587,7 +1607,6 @@ class AgentTrainingRunner:
                     "input_freeze_id": payload["inputs"]["input_freeze_id"],
                     "dataset_root": verified_bundle.root} if indexed_inputs else {}),
             )
-            model_evidence: list[dict[str, Any]] = []
             local_model_by_role: dict[str, Path] = {}
             for item in result_archive.models:
                 role = str(item.get("role") or "").strip().lower()
@@ -1877,7 +1896,8 @@ class AgentTrainingRunner:
             monitor.stop()
             _active_lease, active_identity = self._active_process()
             if active_identity is None:
-                self._cleanup_training_workdir(lease, trainer_started=trainer_started, committed=committed)
+                self._cleanup_training_workdir(lease, trainer_started=trainer_started,
+                    committed=committed, model_evidence=model_evidence)
             # If exact process cleanup could not be proven, preserve both the
             # in-memory identity and generation workdir for retry/restart
             # recovery. Never erase the only evidence of a possibly live GPU

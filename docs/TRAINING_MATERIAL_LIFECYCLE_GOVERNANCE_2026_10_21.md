@@ -136,6 +136,22 @@ cd4fec7acc89a2edfb2e5590a6e75ea752584fb3的Frontend Runtime Node发现唯一过�
 
 隔离8027仅原两失败用例先1通过1失败（本机fit未复现CI跨帧；broken稳定RED），修复后同两例2通过（9.4s）。未改标注器、FileResponse、GT、保存合同或新缩略图逻辑，不扩大标注功能，不机械重跑本地全部244；新提交准确CI仍需远端验收。
 
+### 收尾安全问题：成功Agent的额外Checkpoint（进行中）
+
+只读复核发现确定缺口：Agent的committed分支直接整generation清理，跳过失败分支.pt保护；现有train_worker/Agent确实支持--save-period，但最终正式发布仅best/last，epoch*.pt及先前AI追加训练run的Checkpoint未必归档。默认save_period=-1不能证明可删除未知权重。此问题不是生产事故证据，本轮从未执行生产训练/清理；但不能按现状宣称所有Checkpoint均受保护。
+
+已回开S2-02修复：成功也核非input权重，仅SHA/size绑定已确认发布成果且最终提交成功的重复副本可全清；未知Checkpoint保留，成功情况下只清input并在原回执写清范围，避免因此永久留整套图片；失败/取消恢复保护不放宽。必要原Agent unit先RED→GREEN后登记，本节尚不表示修复完成，不新建状态机或模型归档库。
+
+### 额外Checkpoint修正与已取得的准确CI证据
+
+5034b1fbc62b2bf0242967baaf350243c3e56284已实际21/21 Actions、55/55 Checks全部success，Frontend Runtime Stabilization run39905620731的Node1305/1305、Chrome244/244通过；这证明当时已提交代码和夹具，不覆盖随后发现的成功Checkpoint缺口。该缺口不能用已有绿色结果豁免。
+
+原Agent最小修正：committed仍逐个核所有非input .pt；只有size/SHA匹配本次经模型confirm、结果confirm和正式finish完成后的model_evidence，才视为已归档重复副本并允许整generation回收。未知周期/旧阶段Checkpoint或证据不符，仅回收input，原回执明确agent_input_only、UNARCHIVED_CHECKPOINT和保留相对路径。失败/取消仍完整保留有Checkpoint的恢复输入；清理异常不覆盖正式成功结果。
+
+原单元新增三参数（未知epoch/已归档重复best/last/大小不符）真实RED3→GREEN，联合真实子进程成功接线、原失败/不可读保护7通过22未选。主线程再核indexed路径发现1失败2通过：已核验的母模型原在model/base.pt被正确保守保留；现把该输入移至原input/model/专用子目录，继续原下载SHA/size校验，不把任意model目录加入删除白名单。原成功整目录消失断言保留，并补实际Worker args输入路径，三条indexed最终3通过26未选。未扩大训练模板/后台状态，不重复全仓测试；额外Checkpoint保留在Agent本地原generation，尚未扩成新的归档模型版本，不承诺它已上传平台。
+
+上述Checkpoint修正的新提交仍须准确SHA CI，S2-02保持已完成待验收；不能将5034的21/55借用为新提交验收。
+
 ### 接续指令
 
 先读本文顶部S2矩阵及本节，再读remote_training_inputs.py / node_agent_training_runtime.py / training_workspace_lifecycle.py / scheduler.py，前端从training-recovery-runtime.js和legacy-material-compatibility.js，缩略图从原StorageManager/MaterialCache，物理GC仅local_material_reclamation.py及tools/reclaim_retired_original.py。禁止重复建设StorageManager/Material/Annotation/BundleCache/Task状态；不要继续训练模板、Uppy或chipCode需求。保留两份未提交模板测试及其他工作树。生产真实量/外部存储/旧数据未知条件以只读计划和独立授权接续，不自动执行清理。
