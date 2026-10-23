@@ -410,12 +410,11 @@ def _ai_eval_contact_sheet(data_yaml, count, seed, epoch, work_dir):
     """
     from PIL import Image, ImageOps, ImageDraw
     import random
-    val_dir=Path(data_yaml).resolve().parent/"images"/"val"
-    files=[x for x in sorted(val_dir.glob("*")) if x.is_file()]
+    _, _, files, _ = _stage_validation_source(data_yaml)
     if not files:
         raise RuntimeError("试验集没有可供AI介入分析的图片")
     n=max(1,min(int(count or 1),len(files),24))
-    rng=random.Random(int(seed or 0)+int(epoch)*1009)
+    rng=random.Random(int(seed or 0))
     chosen=rng.sample(files,n) if len(files)>n else files[:]
     cols=min(4,max(1,n)); rows=(n+cols-1)//cols; tw,th=240,180
     sheet=Image.new("RGB",(cols*tw,rows*(th+22)),"white")
@@ -453,50 +452,174 @@ def _run_ai_intervention(cfg, trainer, args, epoch, project_dir):
     return {"epoch":epoch,"action":action,"reason":str(dec.get("reason") or "AI未提供原因"),"target_labels":targets,"extra_epochs":extra,"model_name":cfg.get("name") or cfg.get("model_name") or "AI模型","summary":summary,"raw":dec}
 
 
-def stage_gate_random_eval(trainer, args, epoch):
-    """Evaluate the current checkpoint on a fresh deterministic random sample of the trial/val split.
-    val_max_samples=0 means all trial data. Sampling changes by epoch but is reproducible for the same seed+epoch.
-    Falls back to the normal trainer validation metrics if the extra evaluation cannot run.
-    """
-    import random, yaml
-    root=Path(args.data).resolve().parent
-    val_dir=root/'images'/'val'
-    files=[x for x in sorted(val_dir.iterdir()) if x.is_file() and x.suffix.lower() in {'.jpg','.jpeg','.png','.bmp','.webp'}] if val_dir.exists() else []
+def _stage_split_files(root, source, *, optional=False):
+    """Resolve local YAML split directories/lists without escaping the frozen bundle."""
+    extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.webp', '.tif', '.tiff', '.dng', '.mpo', '.pfm', '.heic'}
+    if source is None:
+        return []
+    entries = source if isinstance(source, list) else [source]
+    files = []
+    for entry in entries:
+        if not isinstance(entry, str) or not entry.strip():
+            raise ValueError('验证来源格式无效')
+        path = Path(entry)
+        path = (path if path.is_absolute() else root / path).resolve()
+        if not path.is_relative_to(root):
+            raise ValueError('验证来源超出冻结数据目录')
+        if not path.exists() and optional:
+            continue
+        if path.is_dir():
+            candidates = sorted(x for x in path.rglob('*') if x.is_file() and x.suffix.lower() in extensions)
+        elif path.is_file() and path.suffix.lower() == '.txt':
+            candidates = []
+            for line in path.read_text(encoding='utf-8-sig').splitlines():
+                if not line.strip():
+                    continue
+                item = Path(line.strip())
+                # Ultralytics resolves ./ relative to the manifest, other entries
+                # against the process cwd; reject ambiguous relative spellings.
+                if not item.is_absolute() and not line.strip().startswith('./'):
+                    raise ValueError('验证清单相对路径必须使用 ./')
+                candidates.append(item if item.is_absolute() else path.parent / item)
+        else:
+            raise ValueError('验证来源不存在或不是目录/清单')
+        for candidate in candidates:
+            candidate = candidate.resolve()
+            if not candidate.is_relative_to(root) or not candidate.is_file() or candidate.suffix.lower() not in extensions:
+                raise ValueError('验证清单图片无效或超出冻结数据目录')
+            files.append(candidate)
+    return sorted(set(files))
+
+
+def _stage_validation_source(data_yaml, cache=None):
+    import hashlib
+    import yaml
+
+    data = Path(data_yaml).resolve()
+    raw = data.read_bytes()
+    spec = yaml.safe_load(raw) or {}
+    if not isinstance(spec, dict):
+        raise ValueError('验证数据配置无效')
+    base = Path(spec.get('path') or '.')
+    root = (base if base.is_absolute() else data.parent / base).resolve()
+    files = _stage_split_files(root, spec.get('val', 'images/val'))
     if not files:
-        return dict(getattr(trainer,'metrics',{}) or {}), [], 'normal_validation', '试验集为空，使用训练器当前验证指标'
-    limit=max(0,int(args.val_max_samples or 0))
-    if limit<=0 or limit>=len(files):
-        return dict(getattr(trainer,'metrics',{}) or {}), [x.name for x in files], 'all', ''
-    rng=random.Random(int(args.seed or 0)+int(epoch)*104729)
-    chosen=rng.sample(files,min(limit,len(files)))
-    try:
-        # Save the current epoch checkpoint, then run a standalone validation only on this sample.
-        try: trainer.save_model()
-        except Exception: pass
-        last=Path(str(getattr(trainer,'last','') or ''))
-        if not last.is_file(): last=Path(str(getattr(trainer,'save_dir','')))/'weights'/'last.pt'
-        if not last.is_file():
-            return dict(getattr(trainer,'metrics',{}) or {}), [x.name for x in chosen], 'random_fallback', '当前轮次检查点尚未写出，使用训练器当前验证指标'
-        work=Path(args.project_dir)/'jobs'/args.job_id/'stage_gate'
-        work.mkdir(parents=True,exist_ok=True)
-        txt=work/f'epoch_{epoch}_val.txt'
-        txt.write_text('\n'.join(str(x.resolve()).replace('\\','/') for x in chosen),encoding='utf-8')
-        base=yaml.safe_load(Path(args.data).read_text(encoding='utf-8')) or {}
-        base['path']=str(root).replace('\\','/')
-        base['val']=str(txt.resolve()).replace('\\','/')
-        temp=work/f'epoch_{epoch}_data.yaml';temp.write_text(yaml.safe_dump(base,allow_unicode=True,sort_keys=False),encoding='utf-8')
-        from ultralytics import YOLO
-        gate_model=YOLO(str(last))
-        mm=gate_model.val(data=str(temp),split='val',imgsz=int(args.imgsz),device=args.device,verbose=False)
-        metrics=dict(getattr(mm,'results_dict',{}) or {})
+        raise ValueError('冻结验证集为空')
+    forbidden = set()
+    for split in ('train', 'test'):
+        forbidden.update(_stage_split_files(root, spec.get(split, f'images/{split}'), optional=True))
+    if set(files) & forbidden:
+        raise ValueError('验证集与训练集/独立Test路径冲突')
+    for path in files:
+        if any(part.lower() in {'train', 'training', 'test', 'testing'} for part in path.relative_to(root).parts[:-1]):
+            raise ValueError('训练/独立Test目录不能作为阶段验证来源')
+    def digest(path):
+        with path.open('rb') as stream:
+            return hashlib.file_digest(stream, 'sha256').hexdigest()
+    all_files = sorted(set(files) | forbidden)
+    fingerprint = ((str(data), hashlib.sha256(raw).hexdigest()), tuple(
+        (str(path), stat.st_dev, stat.st_ino, stat.st_ctime_ns, stat.st_mtime_ns, stat.st_size)
+        for path in all_files for stat in (path.stat(),)
+    ))
+    if cache is not None and cache.get('fingerprint') == fingerprint:
+        return root, spec, files, cache['identity']
+    digests = {path: digest(path) for path in all_files}
+    identities = tuple((str(path), digests[path]) for path in files)
+    if {sha for _, sha in identities} & {digests[path] for path in forbidden}:
+        raise ValueError('验证集与训练集/独立Test图片SHA冲突')
+    after = tuple(
+        (str(path), stat.st_dev, stat.st_ino, stat.st_ctime_ns, stat.st_mtime_ns, stat.st_size)
+        for path in all_files for stat in (path.stat(),)
+    )
+    if after != fingerprint[1] or data.read_bytes() != raw:
+        raise ValueError('验证来源在身份核验期间发生变化')
+    identity = (str(data), hashlib.sha256(raw).hexdigest(), identities,
+                tuple((str(path), digests[path]) for path in sorted(forbidden)))
+    if cache is not None:
+        cache.update(fingerprint=fingerprint, identity=identity)
+    return root, spec, files, identity
+
+
+def _stage_measured_metrics(metrics):
+    import math
+
+    measured = {}
+    for key, value in (metrics or {}).items():
         try:
-            del gate_model
-            import torch
-            if torch.cuda.is_available(): torch.cuda.empty_cache()
-        except Exception: pass
-        return metrics,[x.name for x in chosen],'random',''
-    except Exception as e:
-        return dict(getattr(trainer,'metrics',{}) or {}),[x.name for x in chosen],'random_fallback',str(e)
+            numeric = float(value)
+            if math.isfinite(numeric):
+                measured[key] = numeric
+        except (TypeError, ValueError, OverflowError):
+            continue
+    return measured
+
+
+def stage_gate_random_eval(trainer, args, epoch):
+    """Evaluate a fixed validation subset; never turn unproven sources into stop evidence."""
+    import random
+    import yaml
+
+    try:
+        cache = getattr(trainer, '_stage_validation_cache', None)
+        if cache is None:
+            cache = {}
+            trainer._stage_validation_cache = cache
+        root, spec, files, identity = _stage_validation_source(args.data, cache)
+        frozen = getattr(trainer, '_stage_validation_identity', None)
+        if frozen is not None and frozen != identity:
+            raise ValueError('冻结验证集身份/内容发生变化')
+        trainer._stage_validation_identity = identity
+    except Exception as error:
+        return {}, [], 'invalid_source', str(error)
+
+    names = [path.name for path in files]
+    if len(set(names)) != len(names):
+        names = [path.relative_to(root).as_posix() for path in files]
+    def normal_validation(mode, note):
+        # Trainer metrics can only stand for its actual full validation loader.
+        try:
+            runtime = getattr(trainer, 'data', {}) or {}
+            runtime_files = _stage_split_files(root, runtime.get('val'))
+            validator_args = getattr(getattr(trainer, 'validator', None), 'args', None)
+            if runtime_files != files or getattr(validator_args, 'split', 'val') != 'val':
+                raise ValueError('训练器验证来源无法与冻结val对应')
+            if getattr(getattr(trainer, 'args', None), 'val', True) is False:
+                raise ValueError('训练器当前轮次未启用验证')
+            return _stage_measured_metrics(getattr(trainer, 'metrics', {})), names, mode, note
+        except Exception as error:
+            return {}, [], 'invalid_source', str(error)
+
+    limit = max(0, int(args.val_max_samples or 0))
+    if limit <= 0 or limit >= len(files):
+        return normal_validation('all', '')
+    chosen = random.Random(int(args.seed or 0)).sample(files, limit)
+    try:
+        save_model = getattr(trainer, 'save_model', None)
+        if callable(save_model):
+            save_model()
+        last = Path(str(getattr(trainer, 'last', '') or ''))
+        if not last.is_file():
+            last = Path(str(getattr(trainer, 'save_dir', ''))) / 'weights' / 'last.pt'
+        if not last.is_file():
+            raise ValueError('当前轮次检查点尚未写出')
+        work = Path(args.project_dir) / 'jobs' / args.job_id / 'stage_gate'
+        work.mkdir(parents=True, exist_ok=True)
+        txt = work / f'epoch_{epoch}_val.txt'
+        txt.write_text('\n'.join(x.as_posix() for x in chosen), encoding='utf-8')
+        base = dict(spec)
+        base['path'] = root.as_posix()
+        base['val'] = txt.resolve().as_posix()
+        temp = work / f'epoch_{epoch}_data.yaml'
+        temp.write_text(yaml.safe_dump(base, allow_unicode=True, sort_keys=False), encoding='utf-8')
+        from ultralytics import YOLO
+        gate_model = YOLO(str(last))
+        result = gate_model.val(data=str(temp), split='val', imgsz=int(args.imgsz), device=args.device, verbose=False)
+        metrics = _stage_measured_metrics(getattr(result, 'results_dict', {}))
+        del gate_model
+        sampled = [names[files.index(path)] for path in chosen]
+        return metrics, sampled, 'random', ''
+    except Exception as error:
+        return normal_validation('normal_validation', f'子集评估失败，实际使用完整验证集：{error}')
 
 
 def _training_phase_percent(completed_epochs, total_epochs, *, phase_start=20.0, phase_end=90.0):
@@ -677,19 +800,11 @@ def effective_training_patience(requested_patience, requested_epochs, stop_thres
         requested = max(0, int(requested_patience or 0))
     except (TypeError, ValueError, OverflowError):
         requested = 0
-    try:
-        epochs = max(1, int(requested_epochs or 1))
-    except (TypeError, ValueError, OverflowError):
-        epochs = 1
-    try:
-        target = float(stop_threshold or 0)
-    except (TypeError, ValueError, OverflowError):
-        target = 0.0
     if early_stopping_enabled:
         return max(1, requested)
-    # Preserve the selected training horizon (except for an explicitly configured
-    # quality-target gate) instead of silently stopping at patience=100.
-    return max(requested, epochs + 1)
+    # Ultralytics patience=0 means infinity. A finite epochs+1 sentinel can
+    # silently stop time-based runs after the trainer extends its epoch horizon.
+    return 0
 
 
 def decide_training_quality_gate(value, *, metric, stop_threshold, continue_threshold=0.0):

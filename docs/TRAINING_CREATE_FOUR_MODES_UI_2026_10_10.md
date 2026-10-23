@@ -1,3 +1,71 @@
+> 2026-10-23接续：测试遵循用户最新精简要求，仅本轮受影响合同及核心浏览器冒烟；新增存储/兼容任务以生命周期专项顶部为准，不混写业务Owner。
+
+# 2026-10-22｜训练模式配置、创建流程与评测可信度综合治理
+
+本轮唯一综合需求、设计、进度、问题与接续依据。历史四模式记录保留下文；场景/素材/标注既有实现证据继续引用[上一轮专项](SCENARIO_MODEL_EVALUATION_UI_GOVERNANCE_2026_10_22.md)，不复制建设或覆盖其验收口径。
+
+## 当前基线与授权
+
+2026-10-22已fetch长期分支`feature/external-algorithm-publishing`，远端/本地均`3cc331f2fa9b568ec27d59419d6b813a0aab7cb3`，VERSION42.24.377，工作树初始干净。可见会话列表同仓库活动仅当前会话；其余现存worktree保持原状，不声称已核验不可见会话。上一轮最终21/21 Actions、55/55 Checks、Chrome239/239回执已经实际核验，不代表本轮新代码通过。
+
+用户本轮授权开发、隔离测试、文档、正常提交推送；禁止生产部署/生产数据或权重/GT修改/真实GPU训练/强推。不得以模拟检测、人工反馈替代正式评测。任务按P0→P1→P2，不用本轮P2提前改写上一轮未实施记录。
+
+## 需求基线 A–E
+
+- A1–A3：系统管理内训练模式配置；快速/完整默认/复杂/自定义；首训/迭代Epoch建议50/30、250/120、350/180，imgsz640/800/960；默认optimizer/precision/资源auto、GPU exclusive、Worker决议Batch/Workers/Cache；默认早停与目标阈值停止关闭。可编辑/默认/启停至少一模式/恢复初始模板/真实修改记录及revision，后端统一解析、完整参数验证和任务创建时不可变模板快照。960无硬件保证，复杂不等于更准确。
+- B1–B6：原创建Modal内算法模型、素材/标签/划分、四模式、自动调度与可编辑优先级、真实参数摘要及固定底部；高级六分组，避免多层弹窗。审计全部epochs/imgsz/batch/workers/precision/amp/optimizer/LR/增强/资源/验证/停止参数的实际执行；不支持项不得虚假可编辑。早停显式开启才显示patience，auto optimizer不承诺手动LR生效，time与Epoch关系准确。可信负样本include_empty先核实再决定，不能盲改。独立Test禁止参与优化/阶段停止；正式测试在冻结模型后独立进行，训练/val/Test身份与SHA隔离；97%生产值原因NOT VERIFIED。保留仅点击开始训练完整准入、原Loading/防重/诊断/超时/迟到/真实任务。
+- C1–C4：复用已验收成功模型资格、双模式/内联框/历史/人工反馈隔离/A-B与图表；增量核查本次要求的既有素材选择、指定可信独立冻结测试集发起评测。原报告查看不能冒充已支持重评。无可信GT不显示准确率，比较必须同基准协议/类别映射。
+- D：复用原素材Owner工具/筛选/同DOM网格列表/稳定缩略图/坏图重试/选择与分页，仅发现确定偏差再修。
+- E1–E3：复用原唯一右侧显式负样本审核、管理正式色、fit居中/缩放拖动/坐标准确与原保存CAS；不恢复已删除重复按钮或新增标注器。
+- UI：本轮补1280×720，并复验1440×900、1920×1080；真实Chrome截图/按钮/滚动/无横向溢出，新增测试不替代原回归。闭源商用/离线/传递许可必须核验，Ultralytics授权独立列出。
+
+## 最小设计与取舍（审计进行中）
+
+1. 继续用TrainingDraft唯一草稿、TrainingSubmit唯一提交、原TrainReq→Durable TRAINING_PREPARE/TRAINING→Worker资源决议。新服务端训练模式配置成为唯一模板事实；浏览器仅消费其revision投影，删除竞争的硬编码默认与旧自定义参数优先级。创建时冻结模板revision、有效参数及来源，历史/排队任务执行不得重新读取最新模板。过期revision明确冲突并保留草稿，不静默换参数。
+2. 配置优先沿用既有文件/持久配置设施，短跨进程锁+原子替换保存配置与修改记录为一份事实；没有适合的现有配置表时不为了模板单独建数据库。不把外部集成审计数据库挪为系统设置库。权限沿用平台现有真实登录与配置访问，不擅自新增RBAC/管理员白名单；实际入口合同待审计。
+3. 预设切换不继承隐藏自定义参数，首训/迭代由后端可信算法版本判断，不能只信baseVersionId；手动覆盖只在明确自定义策略下生效并留证。auto资源仍在原Worker冻结，UI同时区分模板/提交/实际Runtime。后端最终验证不由前端显示替代。
+4. 先追踪stage_gate_random_eval→data.yaml/val及最终Test链，未证实不指控97%数据泄漏。随机阶段样本必须准确注明来源/身份，必要时固定验证采样；独立Test仅模型冻结后使用。
+5. 创建UI在原Owner/现有组件内收敛，原高级表单迁为同Modal分组面板，不叠新Modal管理器。不重写场景/素材/标注已验收实现；新评测入口必须先确认原TaskKind/Artifact/report合同，不能用无效按钮冒充功能。
+6. 取舍：拒绝前端按钮独自决定预设、拒绝把所有请求值当可信模板、拒绝第二任务库/GT库、拒绝整套FiftyOne平台。优先原ECharts/Annotorious/SVG；候选license/离线/服务依赖审计后再决定，无价值不新增依赖。
+
+## 分批任务与状态
+
+| 编号 | 内容及Owner | 状态 | 证据/剩余/风险 |
+|---|---|---|---|
+| AUDIT | 当前代码/配置设施/参数/阶段val与Test/已有CDE | 进行中 | 基线3cc331f2；未运行新测试，97%原因未证实 |
+| P0-01 | 模式权威配置、revision与快照；原TrainReq/Submit/Draft | 未开始 | 已发现rawConfig.imgsz覆盖预设、预设隐式阈值0.9/每10轮；先写RED |
+| P0-02 | 阶段评估来源、数据/SHA隔离与负样本合同 | 进行中 | 已定位train_worker.py阶段入口，实际上游划分待完整核验 |
+| P0-03 | 按需准入/Loading及场景成功资格增量验收 | 未开始 | 既有能力已验收，不重复重构；本轮新组合未执行 |
+| P1-01 | 原训练创建Modal及高级分组/摘要/三视口 | 未开始 | 仍保持原Modal/Draft/Label/提交Owner |
+| P1-02 | 管理入口、模板编辑/默认/启停/恢复/记录 | 未开始 | 持久设施及权限沿用审计后定案 |
+| P1-03 | C指定可信基准/已有素材与D/E新增分辨率增量 | 未开始 | 不能把已有报告查看宣称指定集重评已实现 |
+| P2-01 | 可视化/困难样本、组件审计、配置历史对比 | 未开始 | 原真实图表已具备；只补确定缺口，不建立外部平台 |
+| FINAL | 相关Python/Node/Chrome/安全提交/最终SHA CI | 未开始 | VERSION377保持至实现完成按规范一次递增；新SHA CI未运行 |
+
+### 可执行步骤与验收纪律
+
+- [x] fetch实际远端/工作树/会话与旧专项基线；先持久化本轮需求。
+- [ ] AUDIT完成后补准确调用链、文件边界、参数支持矩阵及风险结论。
+- [ ] P0模式真实RED：完整模式不得遗留640、预设默认不得隐式停止、服务端不信任篡改Epoch/模式、模板revision CAS/历史冻结/至少一模式、非法值及引擎兼容；最小修复后重跑原training-submit/draft/scheduler-target与新API测试。
+- [ ] P0数据链RED：独立Test从不被阶段val读取、重复SHA跨split拒绝、确认负样本按正式范围保留、缺失指标不触发停止；重跑原training_splits/evaluation/early_stopping/precision及on-demand相关测试。
+- [ ] P1原创建与管理的真实DOM/隔离API/Chrome：四模式首训迭代、参数一致、模板修改与旧任务不变、慢/错/过期、防重、仅开始训练准入、三个视口截图及保留标签/母模型/GT冻结。
+- [ ] CDE已验收功能不重做；按新增入口与1280视口补差距RED→GREEN，原SCN/MAT/ANN回归必须保留。
+- [ ] P2只用真实原评测产物，配置历史对比不伪造效果；新组件若无必要不引入。
+- [ ] 各阶段更新实际文件/Commit/测试数量及失败留痕；推送前fetch核并行，最终完整SHA逐一检查CI，生产能力另列NOT VERIFIED。
+
+## 初始问题记录
+
+| 问题 | 已证实事实 | 状态及下一步 |
+|---|---|---|
+| MODE-IMG | training-submit.js buildTrainingEngineParameters用rawConfig.imgsz优先于preset，模式切换可保留旧图尺寸 | 进行中；真实函数RED后修唯一参数解析 |
+| MODE-STOP | 预设config无条件stop_threshold=.90/eval_interval=10，与用户默认关闭冲突 | 进行中；真实函数RED及后端模板默认一并治理 |
+| MODE-SERVER | validate_train_request目前只验证模式资源策略，不负责权威预设参数解析 | 进行中；审计唯一正式创建入口并冻结真实revision |
+| DATA-STAGE | stage_gate_random_eval按epoch改变seed并用images/val；其与正式Test的上游语义尚待审计 | 待核验；未确认生产泄漏，不能宣称已修复 |
+
+生产/真实GPU/97%数据的实测、模板实际效果、闭源商用既有Ultralytics授权均NOT VERIFIED。
+
+---
+
 ## 2026-10-10｜训练创建布局与标签首屏可见（42.24.346）
 
 - 用户反馈 868px 小窗和单列堆叠使重要训练标签沉底；本次仅布局调整，保留 canonical owner。
@@ -63,3 +131,9 @@
 - 目标训练节点上的 Batch / Workers / Cache 真机资源冻结与 GPU 独占：沿用上一批 `docs/TRAINING_PERFORMANCE_EXCLUSIVE_2026_10_10.md` 的硬件验收 OPEN 条目。
 
 **必须保证标签、素材和任务身份真实合同；不得为了 UI 简化通过降低/删除断言换绿灯。**
+
+### 2026-10-23中断后核验
+
+HEAD仍3cc331f2，VERSION377。子任务额度中断，后端模板和场景新增入口未完成；tests/unit/test_training_modes.py及frontend/training-mode-policy仅为待实现RED，不可宣称GREEN。train_worker已接续阶段来源与patience=0修复，定向两个文件实际29通过/5既有warnings（1.68s，C:/tmp/training-stage-focused-green.log）；之后追加身份核验期间变化拒绝，受影响两个文件再次29通过（1.64s），不重复执行无变更全仓测试。缓存仅trainer内身份投影，不建立第二持久索引；不变来源不重复全量SHA。正式负样本include_emptyFalse合同保持，独立Test未发现用于阶段停止。
+
+2026-10-23收口：验证身份缓存补绑定data.yaml路径，最后仅重跑受影响cache计数用例1通过（0.19s），py_compile/diff检查通过。该阶段不涉及UI，无须重复Chrome。整体模板/UI/存储迁移未完成，不宣称本轮CI或生产验收。
