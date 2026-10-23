@@ -124,7 +124,15 @@ test('project clear requires its exact name and a frozen impact confirmation bef
   const dialogs=[];page.on('dialog',async dialog=>{dialogs.push(dialog.message());await dialog.accept(dialog.type()==='prompt'?fx.project.name:undefined)});
   const task=await page.evaluate(()=>window.runMaterialBatch62('DELETE_INDEX',{scope:'PROJECT'}));
   expect(task.task_id).toBeTruthy();expect(dialogs).toHaveLength(2);expect(dialogs[0]).toContain(fx.project.name);expect(dialogs[1]).toContain('整个项目');expect(dialogs[1]).toContain('释放空间 0 字节');
+  // Worker completion precedes the browser's scheduled poll and paged results
+  // fetch. Observe both real responses before asserting the draft projection.
+  const taskPath=`/api/v62/projects/${fx.project.id}/material-batches/${task.task_id}`;
+  const terminalResponse=page.waitForResponse(async response=>
+    new URL(response.url()).pathname===taskPath&&response.ok()&&(await response.json()).status==='SUCCEEDED');
+  const resultsResponse=page.waitForResponse(response=>
+    new URL(response.url()).pathname===`${taskPath}/results`&&response.ok());
   runWorker(fx.project.id,task.task_id);
+  await Promise.all([terminalResponse,resultsResponse]);
   await expect.poll(()=>page.evaluate(()=>window.TrainingDraftRuntime.current().materialIds.length)).toBe(0);
   expect((await(await request.post(`/api/v62/projects/${fx.project.id}/training-materials/selection-summary`,{data:{image_ids:fx.images.map(x=>x.id)}})).json()).matched_count).toBe(0);
   await expect(page.getByRole('dialog',{name:'创建训练任务',exact:true}).locator('.train428-footer .btn.primary')).toBeEnabled();

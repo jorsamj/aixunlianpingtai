@@ -77,6 +77,12 @@ C实际提交d4aec96cb45aca8f669c78554b846082a7d827db。收尾VERSION42.24.379�
 
 首轮工作流：https://github.com/jorsamj/aixunlianpingtai/actions/runs/39929197461 、https://github.com/jorsamj/aixunlianpingtai/actions/runs/39929204108 。
 
+### 第二轮准确 SHA CI：b009 的 Chrome 回归留痕
+
+b009f0b57a40e49a765103f9fa576adbac345cf7 正常推送后32/33 Actions成功、89/90 Checks成功，不能验收为全绿。Node24为1311通过0失败；Agent Windows373通过，前一轮心跳/导航问题已关闭。Chrome248项中246通过2失败：P2诊断用例点击SVG g的整体文字+框包围盒中心，在Linux字体下命中实际框外图片；改为点击真实绘制rect，不使用force、不减少原选中/GT图层/请求/Modal/清理断言，定向Chrome1通过（7.2秒）。第二个原项目清空用例默认5秒等待草稿移除超时；本地原用例1通过（20.0秒），未复现业务失败。确认Worker进程完成早于浏览器1500ms调度轮询及成功ID分页回执消费，fixture改为等待本task真实SUCCEEDED与/results成功响应后执行原5秒草稿断言，不手工触发回调或改生产轮询；修改后目标1通过（19.9秒）。
+
+截图复查另发现96×72隔离图放大时SVG文字最小12被当成原图坐标，造成显示标签过大；原drawStageBoxes改按实际显示缩放计算12px最小字号，保留坐标/框/匹配合同。原诊断用例新增实际文字高度<24px断言，目标1通过（7.1秒），此前图片证据仍保留。实际失败日志：https://github.com/jorsamj/aixunlianpingtai/actions/runs/39931102586/job/120339305849 。本轮不修改工作流、不跳过任何失败用例；修正提交自身仍需重新核验准确CI。
+
 ### 必须保留的未覆盖项与接续
 
 1. 历史Snapshot未冻结dHash、摄像头时间窗口、完整逐图人工审核版本：近重复未执行，连续帧/审核版本证据不足；不应把本次A1验收理解为已排除这些风险。未来如补充采集，应复用原cleaning.dHash并绑定真实来源SHA及冻结身份，不补造历史。

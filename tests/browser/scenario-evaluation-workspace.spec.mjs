@@ -39,8 +39,9 @@ test('P2 advanced diagnostics reuses original SVG and sample pagination without 
   const sample=structuredClone(c.evaluation.error_samples[0]);sample.pred_boxes[0].matched_iou=.83;sample.pred_boxes[0].target_index=0;
   await page.route('**/evaluation/samples?**',route=>{sampleGets++;return json(route,{evaluation_id:c.evaluation.evaluation_id,items:[sample],total:1,cohort_complete:false});});
   await c.open();await page.getByRole('button',{name:'高级评测',exact:true}).click();const root=page.locator('[data-advanced-evaluation]');await expect(root.getByRole('button',{name:'刷新证据',exact:true})).toBeEnabled();
-  await root.getByRole('tab',{name:'错误诊断',exact:true}).click();await expect(root.locator('figure:not([hidden]) svg rect')).toHaveCount(3);await expect(root).toContainText('IoU 0.830');await expect(root).toContainText('历史仅保留部分问题图片');
-  await root.locator('svg [data-box-index]').last().click();await expect(root.locator('.scn-box-row.selected')).toHaveCount(1);await root.getByRole('checkbox',{name:'正式 GT',exact:true}).uncheck();await expect(root.locator('svg rect')).toHaveCount(2);
+  await root.getByRole('tab',{name:'错误诊断',exact:true}).click();await expect(root.locator('figure:not([hidden]) svg rect')).toHaveCount(3);await expect(root).toContainText('IoU 0.830');expect(await root.locator('figure:not([hidden]) svg text').first().evaluate(el=>el.getBoundingClientRect().height)).toBeLessThan(24);await expect(root).toContainText('历史仅保留部分问题图片');
+  // Click the painted rectangle: the SVG group also includes a label whose bounding-box center can fall on the image.
+  await root.locator('svg [data-box-index]').last().locator('rect').click();await expect(root.locator('.scn-box-row.selected')).toHaveCount(1);await root.getByRole('checkbox',{name:'正式 GT',exact:true}).uncheck();await expect(root.locator('svg rect')).toHaveCount(2);
   expect(sampleGets).toBe(1);await expect(page.getByRole('dialog')).toHaveCount(0);await page.screenshot({path:testInfo.outputPath('p2-diagnostics.png')});
   await page.getByRole('button',{name:'质量概览',exact:true}).click();await expect(root).toHaveCount(0);
 });

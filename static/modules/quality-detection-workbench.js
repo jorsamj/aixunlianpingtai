@@ -188,10 +188,11 @@ export function installQualityDetectionWorkbench({getState,api,toast,modal,close
   function drawStageBoxes64(figure,boxes,width,height){
     const svg=figure.querySelector('svg');if(!svg)return;
     svg.setAttribute('viewBox',`0 0 ${width} ${height}`);
+    const fontSize=Math.max(width/65,12*width/Math.max(1,figure.clientWidth));
     svg.innerHTML=boxes.map((row,index)=>({row,index})).filter(({row})=>(row.layer==='gt'?showGT:showPred)).map(({row,index})=>{
       const box=row.box||[row.x1,row.y1,row.x2,row.y2],color=row.layer==='gt'?'#16a34a':'#2563eb';
       if(box.some((n,i)=>n<0||n>(i%2?height:width)))return '';
-      return `<g role="button" tabindex="0" data-box-index="${index}" aria-label="${esc(row.label)} ${row.layer==='gt'?'正式GT':'预测'}"><rect x="${box[0]}" y="${box[1]}" width="${box[2]-box[0]}" height="${box[3]-box[1]}" fill="${color}" fill-opacity=".05" stroke="${color}" stroke-width="${Math.max(1,width/500)}" vector-effect="non-scaling-stroke"/><text x="${box[0]}" y="${Math.max(12,box[1]-4)}" fill="${color}" font-size="${Math.max(12,width/65)}">${esc(row.label)}${Number.isFinite(row.confidence)?` ${(row.confidence*100).toFixed(1)}%`:''}</text></g>`;
+      return `<g role="button" tabindex="0" data-box-index="${index}" aria-label="${esc(row.label)} ${row.layer==='gt'?'正式GT':'预测'}"><rect x="${box[0]}" y="${box[1]}" width="${box[2]-box[0]}" height="${box[3]-box[1]}" fill="${color}" fill-opacity=".05" stroke="${color}" stroke-width="${Math.max(1,width/500)}" vector-effect="non-scaling-stroke"/><text x="${box[0]}" y="${Math.max(fontSize,box[1]-fontSize/3)}" fill="${color}" font-size="${fontSize}">${esc(row.label)}${Number.isFinite(row.confidence)?` ${(row.confidence*100).toFixed(1)}%`:''}</text></g>`;
     }).join('');
     svg.removeAttribute('hidden');
     const activate=event=>{const target=event.target.closest('[data-box-index]');if(!target||event.type==='keydown'&&!['Enter',' '].includes(event.key))return;if(event.type==='keydown')event.preventDefault();const root=activeEvidence64(),detail=root?.querySelector(`[data-scn-box="${figure.dataset.side}:${target.dataset.boxIndex}"]`);root?.querySelectorAll('[data-scn-box]').forEach(node=>node.classList.toggle('selected',node===detail));detail?.scrollIntoView({block:'nearest'});};
