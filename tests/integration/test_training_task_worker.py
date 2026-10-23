@@ -243,6 +243,10 @@ def test_training_prepare_then_handler_runs_and_commits_verified_result(tmp_path
     assert (artifacts.artifact_path("task-one", "snapshot.json")).is_file()
     assert (artifacts.artifact_path("task-one", "resolved-resources.json")).is_file()
 
+    # A claimable queued task freezes indices, not a complete image/YOLO copy.
+    assert not artifacts.artifact_path("task-one", "work/bundle").exists()
+    assert not artifacts.artifact_path("task-one", "remote-training/training-bundle.zip").exists()
+
     handler = TrainingHandler(data_dir, process_runner=fake_runner)
     scheduler = Scheduler(
         repository,

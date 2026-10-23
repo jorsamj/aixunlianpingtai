@@ -1,3 +1,21 @@
+## 2026-10-23｜正式实施：准备时机第一阶段（本地链路定向通过）
+
+用户已认可只读审计并授权按依赖持续开发，不再扩展训练模板。起始本地5944e1a558a34f7be008b644a5a3b07b4ed132cd，父/远端3cc331f2fa9b568ec27d59419d6b813a0aab7cb3，VERSION377。安全引用refs/codex-safety/storage-resume-20261023已保护5944，未提交的两份训练模板测试保留，其他工作树不动。
+
+### 本阶段实际代码
+
+- 修改`platform_core/remote_training_tasks.py`原_prepare_bundle：本地准备使用indices_only，只冻结原Snapshot/revision与小型input-plan预算元数据，不创建work/bundle、不读取TrainingBundleCache恢复完整图片、不生成YOLO副本。原StorageManager/Task/模型/GT不重建。
+- 本地prepared-input明确materialization_state=DEFERRED，bundle_path为空；原TrainingHandler仍在核验有效assignment、lease和GPU reservation后，读取相同冻结合同并真正获取/生成数据。资源预算逻辑保留原Owner，remote_cache_ready按实际data.yaml是否存在取值，不以索引就绪冒充图片缓存就绪。
+- 远程准备仍走原完整bundle/上传合同，**尚未改成目标Worker按需准备，不能把本地修复写成全部完成**。历史已物化任务保持原兼容，未在本阶段清理任何目录。后续回收、消费者、前端、兼容工具尚未实现。
+
+### 实际验证
+
+复用原`tests/integration/test_training_task_worker.py`完整Task→Prepare→Worker→归档集成用例，只增加排队时work/bundle及远程zip必须不存在的断言。先真实RED1失败（发现排队已物化），修改后同用例GREEN1通过/5既有warnings（2.72s）；仍验证实际Worker生成图片、标签、模型hash、原图引用与完整归档。原`test_remote_training_prepare_task.py`相关回归19通过/5既有warnings（13.14s）。未执行全Python/Node/Chrome或GPU，未增加平行测试框架。日志C:/tmp/storage-preparation-timing-red.log、storage-preparation-timing-green.log、storage-remote-prepare-regression.log。最后仅改真实进度文案，不重复运行无变更业务测试。
+
+本阶段为可独立审查的本地链路修复，推送/精确CI尚未执行；版本在整体交付时按仓库规则处理，不凭本地通过宣称CI绿色。下一步目标是远程任务领取后按需准备及可信消费者登记，再接Bundle回收资格/执行/审计。严禁根据终态直接rmtree；原图物理删除、生产历史Bundle清理、生产迁移/部署均未执行且未获授权。
+
+---
+
 ## 2026-10-23｜统一存储、工作副本及旧素材兼容补充（审计进行中）
 
 本节为最新存储需求与测试约束；既有第十/十一节已验收能力继续复用，旧MLG未实现事项不得标为完成。当前远端/本地HEAD3cc331f2，VERSION42.24.377；其他工作树不动。训练模板及创建流程仍在[训练模式专项](TRAINING_CREATE_FOUR_MODES_UI_2026_10_10.md)接续，属于独立子任务。

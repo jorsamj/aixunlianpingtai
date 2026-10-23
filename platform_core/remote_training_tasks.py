@@ -846,7 +846,7 @@ class TrainingPrepareHandler:
                 if images and all(row.get("width") and row.get("height") for row in images)
                 else None
             ),
-            "remote_cache_ready": True,
+            "remote_cache_ready": (bundle / "data.yaml").is_file(),
             "resolution_device": resolution_device,
             "resolution_gpu_uuid": gpu_uuid or None,
         }
@@ -878,7 +878,7 @@ class TrainingPrepareHandler:
             "estimated_gpu_memory_bytes": resolved.get("estimated_gpu_memory_bytes"),
         }
 
-    def _prepare_bundle(self, context, training_task, payload: Mapping[str, Any]):
+    def _prepare_bundle(self, context, training_task, payload: Mapping[str, Any], *, indices_only=False):
         project = self.data_dir / "projects" / training_task.project_id
         if not (project / "meta.json").is_file():
             raise RemoteTrainingPreparationError(
@@ -960,6 +960,21 @@ class TrainingPrepareHandler:
                 schema,
                 supplement_candidate_set=payload.get("supplement_candidate_set"),
             )
+        if indices_only:
+            # Preparation has its own lease, not ownership of the assigned training
+            # device. Persist only input identity and budget metadata until the
+            # TRAINING owner starts materialization under its execution lease.
+            persist_dataset_revision(project / "dataset_revisions", snapshot)
+            context.artifacts.atomic_write_json(training_task.task_id, "snapshot.json", snapshot)
+            context.artifacts.atomic_write_json(
+                training_task.task_id, "dataset-revision.json", dataset_revision_document(snapshot),
+            )
+            plan = context.artifacts.artifact_path(training_task.task_id, "input-plan/manifest.json")
+            context.artifacts.atomic_write_json(training_task.task_id, "input-plan/manifest.json", {
+                "schema_version": 1, "snapshot_id": snapshot["snapshot_id"],
+                "counts": dict(split_manifest.counts), "materialization_state": "DEFERRED",
+            })
+            return plan.parent, snapshot, split_manifest, images
         cache = TrainingBundleCache(self.data_dir, training_task.project_id)
         cache.root.mkdir(parents=True, exist_ok=True)
         cache_entry = (
@@ -1570,17 +1585,19 @@ class TrainingPrepareHandler:
             ):
                 return self._complete_ready_recovery(context, target, payload)
 
-            bundle, snapshot, split_manifest, images = self._prepare_bundle(
-                context,
-                target,
-                payload,
-            )
+            if target_mode == "local":
+                bundle, snapshot, split_manifest, images = self._prepare_bundle(
+                    context, target, payload, indices_only=True,
+                )
+            else:
+                bundle, snapshot, split_manifest, images = self._prepare_bundle(context, target, payload)
             prepared_input = {
                 "schema_version": 1,
                 "training_task_id": training_task_id,
                 "snapshot_id": str(snapshot.get("snapshot_id") or ""),
                 "dataset_revision_id": str(snapshot.get("dataset_revision_id") or ""),
-                "bundle_path": str(bundle),
+                "bundle_path": str(bundle) if target_mode != "local" else None,
+                "materialization_state": "DEFERRED" if target_mode == "local" else "READY",
                 "selected_image_count": len(images),
             }
             context.artifacts.atomic_write_json(
@@ -1612,7 +1629,7 @@ class TrainingPrepareHandler:
                 self._activate_target(context, training_task_id, updated_payload)
                 result = {**prepared_input, "status": "ready", "target": "local"}
                 context.artifacts.atomic_write_json(context.task.task_id, "result.json", result)
-                self._heartbeat(context, 100, "ready", "本地训练输入已就绪")
+                self._heartbeat(context, 100, "ready", "训练索引已就绪，等待执行 Worker 准备图片")
                 return TaskStatus.SUCCEEDED, "result.json"
 
             source, provider = self._storage(target.project_id)
