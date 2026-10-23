@@ -441,7 +441,7 @@ export function installTrainingMaterialSummaryRuntime({
     if (labelElement) {
       const baseLabels = labels.map(labelDisplay).filter(Boolean).join('、') || '无标签';
       const labelText = !ids.length ? '—' : ready
-        ? `${baseLabels} · 可直接训练 ${summary.eligible_count} / 待标注 ${summary.pending_annotation_count}`
+        ? `${baseLabels} · 正式标注 ${summary.eligible_count} / 待标注 ${summary.pending_annotation_count}`
         : '读取中…';
       setTextIfChanged(labelElement, labelText);
     }
