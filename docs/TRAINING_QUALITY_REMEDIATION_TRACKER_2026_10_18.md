@@ -1,4 +1,4 @@
-## 2026-10-23｜P1跨标签负样本与首次训练兼容性（进行中）
+## 2026-10-23｜P1跨标签负样本与首次训练兼容性（代码及隔离CI已验收）
 
 本节为本轮唯一需求、设计、任务与接续记录。基线d915bd26805ea1d867dbdfdf67794b64496179b0 / VERSION42.24.381，fetch0/0；保留5944及两份未提交训练模板测试，不生产部署/修改素材或数据库/GPU训练。
 
@@ -10,17 +10,41 @@
 
 | 阶段 | 需求与模块 | 优先级 | 状态 | 已完成/剩余 | 证据/风险 |
 |---|---|---|---|---|---|
-| A | 现状/合同审计 | P1 | 已完成待验收 | 共享scope与投影根因已核验；完成正式记录 | 尚无真实GPU精度结论 |
-| B | 训练标签/三角色/V3投影与历史兼容 | P1 | 已完成待验收 | 原training_label_tasks/training_tasks修改及RED→GREEN | 新旧策略不得混用 |
-| C | 原picker角色分页/轻量统计 | P1 | 已完成待验收 | 原API/前端扩展；必要规模回归 | 禁止全素材前端加载 |
-| D | 正式范围批审/原图GT保护/CAS审计 | P1 | 已完成待验收 | 原save_annotation链复用，有限显式确认 | 过期GT/源内容必须拒绝 |
-| E | 真实Chrome/必要回归/版本/提交/CI | P1 | 进行中 | 只运行受影响测试，不全仓重复 | 最终SHA独立核验 |
+| A | 现状/合同审计 | P1 | 已验收 | 共享scope与投影根因已核验；完成正式记录 | 尚无真实GPU精度结论 |
+| B | 训练标签/三角色/V3投影与历史兼容 | P1 | 已验收 | 原training_label_tasks/training_tasks修改及RED→GREEN | 新旧策略不得混用 |
+| C | 原picker角色分页/轻量统计 | P1 | 已验收 | 原API/前端扩展；必要规模回归 | 禁止全素材前端加载 |
+| D | 正式范围批审/原图GT保护/CAS审计 | P1 | 已验收 | 原save_annotation链复用，有限显式确认 | 过期GT/源内容必须拒绝 |
+| E | 真实Chrome/必要回归/版本/提交/CI | P1 | 已验收 | 只运行受影响测试，不全仓重复 | 最终SHA独立核验 |
 
 实施步骤：先共享分类/V3及单元RED/GREEN，再角色页与审核API、原picker，接原创建摘要/准入错误，隔离真实浏览器走vest+person审核/保留框/空标签；审查后版本递增一次、普通提交/推送、记录准确CI。A–H安全场景通过核心单元/相关API/必要浏览器组合覆盖，不为相同合同重复建多套测试。分文件委派由subagent-driven-development技能执行，根任务负责GT审计接线/摘要/浏览器/Git，避免交叉覆盖。
 
-测试与提交：尚未最终验收，后续追加真实命令、数量、失败修正、准确SHA。生产真实NAS/OSS/GPU与模型准确率收益仍NOT VERIFIED；负样本增多未必提升准确率，需要同可信独立Test评测后判断。
+测试与提交：最终代码验收见下方2026-10-24回执；阶段命令、失败修正与准确SHA保留于本节。生产真实NAS/OSS/GPU与模型准确率收益仍NOT VERIFIED；负样本增多未必提升准确率，需要同可信独立Test评测后判断。
 
-### P1本地实现与验证回执（代码完成待准确SHA CI）
+
+### 2026-10-24 最终代码验收与接续
+
+最终代码/测试修正提交：[cd8cde89ed761e3f3d59fa1c4ba10e93522dc3d6](https://github.com/jorsamj/aixunlianpingtai/commit/cd8cde89ed761e3f3d59fa1c4ba10e93522dc3d6)，VERSION42.24.382；同一完整SHA **23/23 Actions、60/60 Checks全部成功**，零失败/跳过/取消。准确证据：[该提交Checks](https://github.com/jorsamj/aixunlianpingtai/commit/cd8cde89ed761e3f3d59fa1c4ba10e93522dc3d6/checks)。文档补提自身会生成新SHA，交付前还须读取该实际HEAD的Checks，不能沿用代码SHA结论；最终文档提交可由本文件历史与分支HEAD定位，无自引用SHA循环。
+
+阶段A–E代码及隔离验收已完成。以下早期“待验收/进行中”叙述保留为当时记录，当前结论以本回执及顶部阶段矩阵为准。
+
+| 场景 | 实际验收证据 | 结论与边界 |
+|---|---|---|
+| A 500vest+3000person | 原picker API一万候选规模用例 | 正500/负0/待审3000；person不自动加入YOLO类别 |
+| B 明确负样本审核 | 正式review API、原事务审计、实际PNG物化及Chrome | 原person框保留；vest空YOLO；任务副本原字节保留 |
+| C 实际含vest | 正式API已有目标框拒绝负审；原标注编辑入口 | 需补真实框，不能后台伪造无目标 |
+| D 无vest正样本 | 正式resolver缺正样本拒绝、主动选择前端及Chrome | 可表达vest意图，不代表有正样本；正式创建拦截 |
+| E 混合图 | V3混合像素/历史V2单元 | 正框像素保护仍在，不全局关闭遮挡 |
+| F 并发/源图片变更 | 正式API与Repository事务5项 | 旧审核CAS冲突；源代际/框变化撤销旧缺席范围；通配符不复活 |
+| G 数据泄漏 | 原两项split/内容SHA隔离用例 | 拒绝相同内容跨split，冻结历史不变 |
+| H 有界性能 | 一万条API+原真实Chrome分页用例 | 单页50/60及原懒加载/缓存，禁止全池浏览器水合；非生产时延证明 |
+
+本地最小必要验证：新增投影核心16项、正式审核/事务5项、picker API12项、原split安全2项通过；其他已运行组合详见上文，不把重跑或扩充前后数量重复累加。Node最终标签/版本20、摘要15、picker16及原提交合同通过；真实Chrome四个独立场景通过（原picker性能、真实vest/person审核、创建摘要、标签唯一生命周期），后续只对变更场景定向复验。仓库自动触发的远端检查按准确SHA核验，未为等待重复跑本地全仓。失败与修正全部保留于上文；取消仅限本轮旧SHA已被替代的运行，最终SHA没有跳过检查。
+
+主要提交链：f765d8e3（共享合同/原picker/审核）、49f34f54（保留明确目标）、67e2ee1b（版本化策略CI合同）、2e54ae8f（GT/源代际失效）、acf067b6及d9e52d2a（正式标注文案/守卫）、12a8fd65（浏览器加载守卫）、db6558d2（旧通配符安全）、5db3e169（首次主动选择跨标签目标）、cd8cde89（加载文案合同测试）。各提交均普通推送长期分支，没有强推或回退其他会话成果。
+
+后续：此P1无需重建；从training_label_tasks.py、training_tasks.py、training_material_picker_api.py和原picker/summary继续排查真实反馈。生产前先只读核验真实标签、GT范围/版本、来源SHA及冻结Test隔离；部署、真实训练和生产数据修改须独立授权。原图、GT、Checkpoint、模型与存储生命周期Owner不变；5944提交仍是祖先，两份训练模板测试保持未跟踪且不纳入本轮提交。NAS/OSS、GPU与精度收益仍NOT VERIFIED，负样本多并不自动说明模型提升。
+
+### P1阶段实现与验证记录（以下待验收为当时状态）
 
 - B：training_label_tasks共享三角色分类，canonical显式类别、真实正样本证据与新策略冻结；training_tasks V3已审核纯负样本保留原字节、空YOLO，混合图按V2保护正框。无V3字段的历史合同仍按旧策略。审核不创建background类别；来源不可用/复核标志/图片摘要漂移不显示已确认。
 - C：原picker增加role-page/原始标签与角色分离筛选、计数；SQL临时表做一次逐候选分类，浏览器最多原60/120条。原selection-summary保留通用摘要，明确选本次标签后才追加任务角色计数；首次无标签时仍可读取素材标签，不形成循环依赖。打开只轻量预览，不能借客户端字段关闭正式准入。
@@ -34,7 +58,7 @@
 
 复现入口：tests/unit/test_reviewed_negative_projection.py、test_negative_sample_contract.py、test_training_label_contract.py及annotation admission；tests/api/test_training_material_picker_api.py/test_training_negative_review.py/test_training_material_selection_summary_api.py/test_runtime_router_app_mount.py；tests/frontend/training-material-picker*、training-material-summary-runtime、training-labels、training-submit、version-marker-owner；tests/browser/training-material-picker-performance.spec.mjs和training-page-material-summary.spec.mjs。原受影响Training Material Picker工作流扩入新增安全测试，不新建CI体系。
 
-修改文件：app.py（仅原正式保存参数与审核回调接线）、AnnotationRepository（事务审计）、training_label_tasks/training_tasks（共享分类/版本化投影）、training_material_picker_api、原picker/summary/submit、main/index精确缓存、VERSION、上述测试/原工作流及现有交接文档。VERSION一次递增42.24.382。B–E当前已完成待验收；提交与最终CI待普通推送后追加，不能把本地通过写成远端绿色。
+修改文件：app.py（仅原正式保存参数与审核回调接线）、AnnotationRepository（事务审计）、training_label_tasks/training_tasks（共享分类/版本化投影）、training_material_picker_api、原picker/summary/submit、main/index精确缓存、VERSION、上述测试/原工作流及现有交接文档。VERSION一次递增42.24.382。当时B–E已完成待验收，提交与CI尚待核验；当前结论已由本节2026-10-24最终代码回执替代，不将本地通过混同远端绿色。
 
 生产边界：未部署/未写生产素材或GT/未物理清理/未训练。不能保证负样本数量越多越准确；需生产前只读核验真实类别/范围/来源，再在同可信冻结Test上比较误检、召回与mAP。NAS/OSS/GPU实际效果仍NOT VERIFIED。下一会话从本节与上述原Owner继续，禁止重建GT、素材、调度或副本生命周期，保留5944和两份模板测试。
 
