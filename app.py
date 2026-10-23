@@ -3418,7 +3418,7 @@ def write_annotation(
     annotation_state=None, annotation_origin: Optional[str] = None,
     *, annotation_scope=None, expected_version: Optional[int] = None,
     source_content_sha256: Optional[str] = None,
-    review_evidence=None,
+    review_evidence=None, reviewed_label_codes=None,
 ):
     # AnnotationRepository is the ground-truth owner. Persist explicit/final
     # truth immediately. If this image had only a deferred plain-upload
@@ -3463,6 +3463,7 @@ def write_annotation(
         source_content_sha256=source_content_sha256,
         annotation_origin=annotation_origin,
         review_evidence=review_evidence,
+        reviewed_label_codes=reviewed_label_codes,
     )
     return saved
 
@@ -5637,6 +5638,7 @@ def save_annotation(project_id: str, image_id: str, payload: AnnotationSave):
             source_content_sha256=(
                 submitted_content_sha256 or current_content_sha256
             ),
+            reviewed_label_codes=reviewed_label_codes,
             review_evidence=({'actor_id': payload._review_actor,
                 'reviewed_label_codes': payload._review_codes or reviewed_label_codes,
                 'source_content_sha256': current_content_sha256} if payload._review_actor else None),

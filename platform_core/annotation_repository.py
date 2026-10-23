@@ -1181,7 +1181,11 @@ class AnnotationRepository:
                 with closing(self._connect()) as db:
                     db.execute('BEGIN IMMEDIATE')
                     try:
+                        has_review_audit = bool(db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='annotation_negative_reviews'").fetchone())
                         for row, image_id, prepared in prepared_rows:
+                            current = (db.execute("SELECT * FROM annotations WHERE image_id=?", (image_id,)).fetchone()
+                                       if has_review_audit or row.get('expected_version') is not None else None)
+                            actual_version = int(current['version']) if current is not None else 0
                             expected_version = row.get('expected_version')
                             if expected_version is not None:
                                 expected_version = int(expected_version)
@@ -1189,17 +1193,28 @@ class AnnotationRepository:
                                     raise ValueError(
                                         'expected annotation version must be >= 0'
                                     )
-                                current = db.execute(
-                                    "SELECT version FROM annotations WHERE image_id=?",
-                                    (image_id,),
-                                ).fetchone()
-                                actual_version = (
-                                    int(current['version']) if current is not None else 0
-                                )
                                 if actual_version != expected_version:
                                     raise AnnotationConflictError(
                                         image_id, expected_version, actual_version
                                     )
+                            # A batch absence review proves this exact GT revision.
+                            # A later box edit must not silently carry that proof forward.
+                            admitted_material = admitted.get(image_id) or {}
+                            prior_source = str(admitted_material.get('annotation_source_content_sha256') or '')
+                            current_source = str(admitted_material.get('content_sha256') or '')
+                            source_changed = (admitted_material.get('annotation_review_reason') == 'SOURCE_CONTENT_CHANGED'
+                                              or bool(prior_source and current_source and prior_source != current_source))
+                            if current is not None and (current['boxes_json'] != prepared['boxes_payload'] or source_changed):
+                                if has_review_audit:
+                                    events = db.execute('SELECT reviewed_scope_json FROM annotation_negative_reviews WHERE image_id=? AND annotation_version<=?',
+                                                        (image_id, actual_version)).fetchall()
+                                    prior_absence = {code for event in events for code in json.loads(event[0])}
+                                    checked = set(_normalize_scope(row.get('reviewed_label_codes')))
+                                    present = {str(box.get('label') or box.get('code') or '') for box in prepared['boxes']}
+                                    revoked = prior_absence - checked - present
+                                    if revoked:
+                                        scope = [code for code in json.loads(prepared['scope_payload']) if code not in revoked]
+                                        prepared = self._content_payload(prepared['boxes'],prepared['annotation_state'],scope)
                             now = datetime.now(timezone.utc).isoformat()
                             db.execute(
                                 """INSERT INTO annotations
@@ -1246,6 +1261,7 @@ class AnnotationRepository:
                                     source_content_sha256 TEXT NOT NULL, annotation_version INTEGER NOT NULL,
                                     annotation_digest TEXT NOT NULL, reviewed_at TEXT NOT NULL,
                                     PRIMARY KEY(image_id,source_version,actor_id,reviewed_scope_json,source_content_sha256))""")
+                                has_review_audit = True
                                 db.execute('INSERT OR IGNORE INTO annotation_negative_reviews VALUES(?,?,?,?,?,?,?,?)',
                                     (image_id, expected_version, actor, json.dumps(labels),
                                      str(evidence.get('source_content_sha256') or ''), decoded['version'],
@@ -1293,7 +1309,7 @@ class AnnotationRepository:
     def upsert(
         self, image_id, boxes, annotation_state=None, annotation_scope=None,
         *, project_material: bool = True, expected_version=None,
-        source_content_sha256=None, annotation_origin=None, review_evidence=None,
+        source_content_sha256=None, annotation_origin=None, review_evidence=None, reviewed_label_codes=None,
     ):
         persisted = self.upsert_many([{
             'image_id': image_id,
@@ -1304,6 +1320,7 @@ class AnnotationRepository:
             'source_content_sha256': source_content_sha256,
             'annotation_origin': annotation_origin,
             'review_evidence': review_evidence,
+            'reviewed_label_codes': reviewed_label_codes,
         }], project_material=project_material, return_rows=True)
         if not persisted:
             raise RuntimeError("annotation upsert did not return a persisted row")

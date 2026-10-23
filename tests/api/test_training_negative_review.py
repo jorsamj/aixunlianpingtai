@@ -1,4 +1,5 @@
 import io
+from pathlib import Path
 import uuid
 from PIL import Image
 import app as platform_app
@@ -33,6 +34,24 @@ def test_formal_negative_review_preserves_person_and_cas_evidence(client,monkeyp
  assert fresh.status_code==200
  stale=client.post(endpoint,json=payload).json();assert not stale['succeeded'] and stale['failures'][0]['status_code']==409
  current=platform_app.read_annotation(pid,iid)
+ assert current['annotation_scope']==['person'], 'changed GT must invalidate batch-reviewed vest absence unless explicitly reviewed again'
+ payload['items'][0]['expected_version']=current['version']
+ assert client.post(endpoint,json=payload).json()['succeeded']==[iid]
+ current=platform_app.read_annotation(pid,iid)
+ # A genuine isolated source change with identical GT boxes cannot inherit H1 absence.
+ import hashlib
+ from platform_core.storage.manager import StorageManager
+ material=platform_app.material_store(pid).get(iid)
+ source=Path(StorageManager(data_dir=platform_app.DATA_DIR,project_id=pid,materials=platform_app.material_store(pid)).materialize(material).path)
+ Image.new('RGB',(100,80),'green').save(source)
+ new_hash=hashlib.sha256(source.read_bytes()).hexdigest()
+ platform_app.material_store(pid).patch({iid:{'content_sha256':new_hash,'size_bytes':source.stat().st_size,'annotation_needs_review':True,'annotation_review_reason':'SOURCE_CONTENT_CHANGED'}})
+ refreshed=client.post(path,json={'boxes':current['boxes'],'annotation_state':'annotated','expected_version':current['version'],'source_content_sha256':new_hash,'reviewed_label_codes':['person']})
+ assert refreshed.status_code==200,refreshed.text
+ current=platform_app.read_annotation(pid,iid)
+ assert current['annotation_scope']==['person'], 'same boxes on a new image must not reuse old absence'
+ image['content_sha256']=new_hash
+ payload['items'][0]['source_content_sha256']=new_hash
  target=client.post(path,json={'boxes':[box,{**box,'id':'vest-1','label':'vest','class_id':0}],'annotation_state':'annotated','expected_version':current['version'],'source_content_sha256':image['content_sha256'],'reviewed_label_codes':['person','vest']}).json()['annotation']
  payload['items'][0]['expected_version']=target['version']
  denied=client.post(endpoint,json=payload).json();assert not denied['succeeded'] and denied['failures'][0]['status_code']==409
