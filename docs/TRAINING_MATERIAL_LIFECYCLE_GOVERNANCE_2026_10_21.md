@@ -128,6 +128,14 @@ apply必须真实登录/项目范围+明确确认，绑定本批image_ids、完�
 
 cd4fec7acc89a2edfb2e5590a6e75ea752584fb3的Frontend Runtime Node发现唯一过期精确导航断言：原高级功能集合未含本轮正式临时入口“旧素材兼容迁移”。只在原render-owner-retirement.test.mjs精确集合增加该项，保留唯一导航/无wrapper/无旧页面等所有断言；原navigation相关11项通过。此前路由/HTTP/未知进程保护及依赖修正保持，新SHA仍需完整查询，不引用先前SHA成功项充当前验收。
 
+### Chrome受影响夹具适配（最终CI待新SHA）
+
+7d0db97efd4c9c0060281caf5ac7f64f52418443准确21 Actions为20成功1失败、55 Checks为54成功1失败。Node1305/1305通过，Chrome244项242通过2失败，新增存储五项实际均通过；失败为既有annotation-ui-governance的fit/broken source。未将其写成已全绿，未删除失败测试。
+
+只改原spec：坏图用例把新卡片thumbnail?edge=384当原图并拼第二个?，造成非法edge/路由不命中；改从真实annotation GET image.url取得原图，用URL.searchParams.set及pathname/flag精确匹配，保留GT POST=0、错误无SVG及重试有SVG。fit公式原client尺寸正确，旧测试分别异步读两个boundingBox可能跨180ms入场动画帧（CI差5.216px）；现在等待原ResizeObserver的实际scale与viewport fit公式收敛后，同一次evaluate原子测量，x/y<2px和手动pan/resize scale/style不变全部保留，不关动画/不固定sleep/不靠重试。
+
+隔离8027仅原两失败用例先1通过1失败（本机fit未复现CI跨帧；broken稳定RED），修复后同两例2通过（9.4s）。未改标注器、FileResponse、GT、保存合同或新缩略图逻辑，不扩大标注功能，不机械重跑本地全部244；新提交准确CI仍需远端验收。
+
 ### 接续指令
 
 先读本文顶部S2矩阵及本节，再读remote_training_inputs.py / node_agent_training_runtime.py / training_workspace_lifecycle.py / scheduler.py，前端从training-recovery-runtime.js和legacy-material-compatibility.js，缩略图从原StorageManager/MaterialCache，物理GC仅local_material_reclamation.py及tools/reclaim_retired_original.py。禁止重复建设StorageManager/Material/Annotation/BundleCache/Task状态；不要继续训练模板、Uppy或chipCode需求。保留两份未提交模板测试及其他工作树。生产真实量/外部存储/旧数据未知条件以只读计划和独立授权接续，不自动执行清理。

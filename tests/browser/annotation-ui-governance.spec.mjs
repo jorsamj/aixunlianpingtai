@@ -10,7 +10,13 @@ async function fixture(page,request){
  const open=async i=>{await page.locator('.data412-card',{hasText:images[i].filename}).getByRole('button',{name:/^(标注|编辑标注)$/}).click();const dialog=page.getByRole('dialog',{name:'图片标注工作台',exact:true});await expect(dialog.locator('svg.a9s-annotationlayer')).toHaveCount(1);await expect.poll(()=>page.evaluate(()=>!state.annotationHydrating420&&!state.annotationEditorFlight&&!state.annotationEditor.snapshot().locked)).toBe(true);return dialog;};
  return {project,images,open,url:i=>`/api/projects/${project.id}/annotations/${images[i].id}`};
 }
-async function centered(page){const box=await page.locator('#annImg').boundingBox(),viewport=await page.locator('.ann-canvas-wrap').boundingBox();expect(Math.abs(box.x+box.width/2-viewport.x-viewport.width/2)).toBeLessThan(2);expect(Math.abs(box.y+box.height/2-viewport.y-viewport.height/2)).toBeLessThan(2);}
+async function centered(page){
+ // Wait for the original ResizeObserver fit, then sample both rectangles in
+ // one layout frame. Separate CDP reads can straddle the native 6px modal entry animation.
+ await expect.poll(()=>page.evaluate(()=>{const image=document.getElementById('annImg'),viewport=document.querySelector('.ann-canvas-wrap');return Math.abs(state.annotationEditor.snapshot().scale-Math.min(viewport.clientWidth/image.naturalWidth,viewport.clientHeight/image.naturalHeight));})).toBeLessThan(.0001);
+ const offset=await page.evaluate(()=>{const image=document.getElementById('annImg').getBoundingClientRect(),viewport=document.querySelector('.ann-canvas-wrap').getBoundingClientRect();return {x:Math.abs(image.x+image.width/2-viewport.x-viewport.width/2),y:Math.abs(image.y+image.height/2-viewport.y-viewport.height/2)};});
+ expect(offset.x).toBeLessThan(2);expect(offset.y).toBeLessThan(2);
+}
 test('ANN UI has one explicit right review owner and centered image across desktop viewports',async({page,request})=>{
  const fx=await fixture(page,request),dialog=await fx.open(0);const before=await dialog.locator('#ann420ConfirmEmpty').count();
  for(const viewport of [{width:1920,height:1080},{width:1440,height:900},{width:1366,height:768}]){await page.setViewportSize(viewport);await dialog.getByRole('button',{name:'适应窗口',exact:true}).click();await page.screenshot({path:`C:/tmp/annotation-ui-${before?'before':'after'}-${viewport.width}.png`});await centered(page);expect(await dialog.evaluate(el=>el.scrollWidth<=el.clientWidth)).toBe(true);}
@@ -31,11 +37,12 @@ test('ANN formal label color follows management edit in class list object and of
 });
 
 test('ANN broken source hides official boxes and retries the original image without GT writes',async({page,request})=>{
- const fx=await fixture(page,request),card=page.locator('.data412-card',{hasText:fx.images[0].filename}),source=(await card.locator('img').getAttribute('src'))+'?ann-ui-broken=1';let broken=true,posts=0;
+ const fx=await fixture(page,request),card=page.locator('.data412-card',{hasText:fx.images[0].filename});
+ const original=(await(await request.get(fx.url(0))).json()).image.url,sourceUrl=new URL(original,page.url());sourceUrl.searchParams.set('ann-ui-broken','1');const source=sourceUrl.pathname+sourceUrl.search;let broken=true,posts=0;
  page.on('request',req=>{if(req.method()==='POST'&&req.url().endsWith(fx.url(0)))posts++;});
  // Only the image URL projection is controlled; formal GT GET/save stay real.
  await page.route(`**${fx.url(0)}`,async route=>{const response=await route.fetch(),body=await response.json();body.image.url=source;return route.fulfill({response,json:body});});
- await page.route(`**${new URL(source,'http://127.0.0.1:8011').pathname}?ann-ui-broken=1`,route=>broken?route.fulfill({status:200,contentType:'image/bmp',body:Buffer.from('broken source bytes')}):route.continue());
+ await page.route(url=>url.pathname===sourceUrl.pathname&&url.searchParams.get('ann-ui-broken')==='1',route=>broken?route.fulfill({status:200,contentType:'image/bmp',body:Buffer.from('broken source bytes')}):route.continue());
  await card.getByRole('button',{name:/^(标注|编辑标注)$/}).click();const dialog=page.getByRole('dialog',{name:'图片标注工作台',exact:true});await expect(dialog.locator('[data-ann-editor-status]')).toContainText('读取失败');await expect(dialog.locator('.a9s-annotationlayer')).toHaveCount(0);broken=false;await dialog.locator('[data-ann-editor-retry]').click();await expect(dialog.locator('svg.a9s-annotationlayer')).toHaveCount(1);expect(posts).toBe(0);
 
 });
