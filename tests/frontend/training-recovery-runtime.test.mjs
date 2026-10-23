@@ -6,6 +6,7 @@ import {
   installTrainingRecoveryRuntime,
   trainingRecoveryDetailModel,
   trainingRecoveryTimeline,
+  trainingWorkspaceView,
 } from '../../static/modules/training-recovery-runtime.js';
 
 function response(body, status = 200) {
@@ -20,6 +21,74 @@ function cleanup() {
   delete globalThis.window;
   delete globalThis.document;
 }
+
+test('workspace release requires server eligibility and exact task preview identity', () => {
+  const truth = {project_id:'p1', task_id:'t1', eligible:true, blockers:[], attempt:2, snapshot_id:'s1', temporary_logical_bytes:2048};
+  assert.equal(trainingWorkspaceView({truth}, 'p1', 't1').canRelease, true);
+  assert.equal(trainingWorkspaceView({truth:{...truth, snapshot_id:''}}, 'p1', 't1').canRelease, false);
+  assert.equal(trainingWorkspaceView({truth:{...truth, project_id:'other'}}, 'p1', 't1').canRelease, false);
+  assert.match(trainingWorkspaceView({truth:{...truth, eligible:false, blockers:['RECOVERY_DEPENDENCY']}}, 'p1', 't1').message, /恢复/);
+  assert.match(trainingWorkspaceView({error:'offline'}, 'p1', 't1').message, /未知/);
+});
+
+test('workspace cleanup uses preview attempt and snapshot and suppresses duplicate and late result', async () => {
+  const state = {jobs:[{id:'t1',task_status:'FAILED',status:'failed'}]};
+  let project = 'p1', finish;
+  const writes = [], notices = [];
+  globalThis.window = {confirm:()=>true, PollRegistryRuntime:{clear(){},startTimeout(){}}};
+  const runtime = installTrainingRecoveryRuntime({getState:()=>state,projectId:()=>project,notify:value=>notices.push(value),
+    fetchImpl:async (url, init={})=>{
+      if (url.endsWith('/workspace/cleanup')) {writes.push(JSON.parse(init.body)); return new Promise(resolve=>{finish=resolve;});}
+      if (url.endsWith('/workspace')) return response({workspace:{project_id:'p1',task_id:'t1',eligible:true,blockers:[],attempt:3,snapshot_id:'s1'}});
+      if (url.endsWith('/recovery')) return response({recovery:{}});
+      if (url.endsWith('/log')) return response({});
+      return response(state.jobs[0]);
+    }});
+  await runtime.openDetail('t1');
+  const first = runtime.cleanupWorkspace();
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(await runtime.cleanupWorkspace(), false);
+  assert.deepEqual(writes,[{confirm:'release_training_workspace',attempt:3,snapshot_id:'s1'}]);
+  project = 'p2';
+  finish(response({workspace:{status:'deleted'}}));
+  assert.equal(await first, false);
+  assert.deepEqual(notices, []);
+  runtime.destroy(); cleanup();
+});
+
+test('workspace history uses the existing modal and only bounded GET pages', async()=>{
+  let project = 'p1'; const calls=[];
+  const root={innerHTML:'',isConnected:true};
+  globalThis.document={querySelectorAll:()=>[root]};
+  globalThis.window={modal:(title)=>assert.match(title,/历史临时空间/)};
+  const runtime=installTrainingRecoveryRuntime({getState:()=>({}),projectId:()=>project,
+    fetchImpl:async(url,init={})=>{calls.push([url,init.method || 'GET']);return response({ok:true,items:[{task_id:'<unsafe>',status:'FAILED',eligible:false,blockers:['RECOVERY_DEPENDENCY'],temporary_logical_bytes:12}],next_cursor:'next'});}});
+  await runtime.openWorkspaceHistory();
+  assert.match(root.innerHTML,/只读/);
+  assert.match(root.innerHTML,/&lt;unsafe&gt;/);
+  assert.doesNotMatch(root.innerHTML,/data-training-workspace-cleanup/);
+  await runtime.loadWorkspaceHistoryPage('next');
+  assert.deepEqual(calls.map(row=>row[1]),['GET','GET']);
+  assert.match(calls[0][0],/workspace-history\?limit=20/);
+  assert.match(calls[1][0],/after=next/);
+  runtime.destroy();cleanup();
+});
+
+test('workspace cleanup protection displays blockers and prevents another mutation',async()=>{
+  const job={id:'t1',task_status:'FAILED',status:'failed'};let writes=0;const notices=[];
+  globalThis.window={confirm:()=>true,PollRegistryRuntime:{clear(){},startTimeout(){}}};
+  const runtime=installTrainingRecoveryRuntime({getState:()=>({jobs:[job]}),projectId:()=>'p1',notify:value=>notices.push(value),fetchImpl:async(url)=>{
+    if(url.endsWith('/workspace/cleanup')) {writes++;return response({detail:{code:'TRAINING_WORKSPACE_PROTECTED',blockers:['RECOVERY_DEPENDENCY']}},409);}
+    if(url.endsWith('/workspace'))return response({workspace:{project_id:'p1',task_id:'t1',attempt:1,snapshot_id:'s1',eligible:true,blockers:[]}});
+    return response(job);
+  }});
+  await runtime.openDetail('t1');
+  assert.equal(await runtime.cleanupWorkspace(),false);
+  assert.equal(await runtime.cleanupWorkspace(),false);
+  assert.equal(writes,1);
+  assert.match(notices[0],/恢复训练仍依赖/);
+  runtime.destroy();cleanup();
+});
 
 test('terminal resource evidence excludes post-training idle samples and refuses unknown end time', () => {
   const job = {id:'bounded', status:'done', task_status:'SUCCEEDED',

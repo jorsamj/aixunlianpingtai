@@ -276,7 +276,7 @@ export function installTrainingTaskVisibilityRuntime({
         <label><span>状态</span><select data-training-status><option value="all">全部状态</option><option value="running">进行中</option><option value="queued">排队中</option><option value="completed">已完成</option><option value="failed">失败</option><option value="stopped">已停止</option></select></label>
         <label><span>所属算法</span><select data-training-algorithm><option value="all">全部算法</option></select></label>
         <label><span>优先级</span><select data-training-priority><option value="all">全部优先级</option><option value="1">1</option><option value="20">20</option><option value="30">30</option><option value="40">40</option><option value="50">50</option><option value="70">70</option></select></label>
-        <button type="button" class="btn primary" data-training-query-apply>查询</button><button type="button" class="btn" data-training-query-reset>重置</button><button type="button" class="btn" data-training-batch-toggle>批量操作</button>
+        <button type="button" class="btn primary" data-training-query-apply>查询</button><button type="button" class="btn" data-training-query-reset>重置</button><button type="button" class="btn" data-training-batch-toggle>批量操作</button><button type="button" class="btn" data-training-workspace-history-open>历史临时空间只读检查</button>
       </div><div class="train428-batchbar" data-training-batchbar hidden>
           <span data-training-batch-count>已选 0 项</span>
           <button type="button" class="btn mini" data-training-batch-select-action="all-visible">全选当前页</button>

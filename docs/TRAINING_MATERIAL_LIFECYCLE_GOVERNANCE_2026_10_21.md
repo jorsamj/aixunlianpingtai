@@ -6,8 +6,8 @@
 |--|--|--|
 |S2-01 远程按需准备|P0/已完成待验收|Prepare仅索引；正式Agent执行lease之后获取冻结Manifest/逐图受控读取；原StorageManager.open_reader与原materializer复用；旧ZIP schema合同保留兼容；RED→GREEN验证排队无副本、冻结GT、SHA与隔离|
 |S2-02 自动安全回收|P0/进行中|原资格/隔离删除/回执接实际终态及重启恢复，无法证明进程死亡则等待，原图/共享cache/模型/Checkpoint不删除|
-|S2-03 详情人工释放与历史只读扫描|P1/未开始|复用原API/详情，真实占用/资格/原因/进度；历史仅dry-run不可执行生产删除|
-|S2-04 旧素材兼容检测及最小迁移|P1/未开始|原图不搬迁、image_id与GT版本不变，只修经证据确认的元数据，备份/CAS/批次幂等恢复|
+|S2-03 详情人工释放与历史只读扫描|P1/已完成待验收|复用原API/详情，真实占用/资格/原因/进度；历史仅dry-run不可执行生产删除|
+|S2-04 旧素材兼容检测及最小迁移|P1/进行中|原图不搬迁、image_id与GT版本不变，只修经证据确认的元数据，备份/CAS/批次幂等恢复|
 |S2-05 缩略图及受控原图物理回收|P2/未开始|在前述P0/P1后补真实缺口，区分逻辑字节与实际空间，OSS/NAS/GPU无法现场核验则NOT VERIFIED|
 
 关键设计取舍：原远程载荷resolver在正式execution lease建立前调用，禁止在那里获取图片。新输入协议使用schema3冻结索引描述；Agent取得真实owner后使用现有node-executor鉴权/代次栅栏读Manifest和源流，所有存储类型复用StorageManager驱动，不在控制端落整份原图缓存/ZIP。替代方案“选定Worker后控制端打包”仍提前复制且留第二份整集，拒绝；直接暴露任意绝对路径或下发存储凭据也不采用。旧schema1/2已排队ZIP保持严格身份/哈希验证兼容，不重写历史任务。元数据可传输，图片/YOLO目录只能在实际Agent执行工作目录物化；冻结GT不能被当前数据库内容替代。
@@ -29,6 +29,14 @@
 远程Agent原finally无条件整目录删除会丢失败Checkpoint，本轮改为只有正式模型结果及任务终态确认后整目录释放；未启动Trainer的失败可释放输入；已启动失败/取消保留日志/配置/任务身份，有Checkpoint时整份输入保留，无Checkpoint仅删除受控input。精确进程终止不确定则全保留。重启精确清除旧进程后同样保护Checkpoint，不将未确认结果当成功。目录先拒绝链接/共享硬链接/特殊文件，隔离后可重试；逻辑删除字节不冒充物理空间。
 
 实际必要RED7后，本地lifecycle+受影响scheduler31通过/1系统symlink权限skip；Agent保留恢复/失败幂等2项先RED，结合取消/栅栏/原进程未知/indexed输入8通过，重启无Checkpoint/有Checkpoint与本地保留4通过。未运行全仓或GPU。真实节点失联/长时间断电/OSS/NAS未验收，失败Checkpoint尚不自动放弃恢复；恢复依赖存在保持阻塞。P1详情正在接原API，历史只读聚合与兼容迁移仍待实施。
+
+### S2-03 详情与历史dry-run（父提交ad556482）
+
+原TrainingRecoveryRuntime显示真实临时逻辑空间、可安全清理/恢复依赖等原因/资格未知及重读；释放明确确认，提交原attempt/Snapshot，原Loading+锁防重复，detail会话/project/task身份拒绝迟到回填，409展示真实阻塞。原训练任务页增加历史临时空间只读入口，原Modal分页展示，不含批量删除。GET v62 training-tasks/workspace-history每页最多20个持久任务，只读汇总已索引work/bundle；未纳入TaskRepository的古老目录不在本接口扫描范围，不能将其结果当全服务器51GB实际盘点。无归属marker的历史任务只报告OWNERSHIP_UNVERIFIED，不自动接管删除。
+
+Node原recovery文件27通过，新增workspace/cache定向5通过；visibility定向5通过，最终cache接线guard1通过（同文件21未选用例，不冒充新跳过）。真实Chrome在独立临时数据/8027运行2通过，包含可清理/阻塞/未知/确认/重复锁/完成与历史GET分页；截图workspace-released.png、workspace-history-readonly.png保存在隔离test-results，已视觉核验。history后端1项实际RED→GREEN证明跨项目、分页及文件字节全不变。只更新准确静态import守卫，没有删除/降低原测试。
+
+旧素材工具仍在实现，未推送/最终SHA CI，生产未部署或清理。当前两项核心提交21c78788/ad556482均保留，本地5944与未提交模板测试不动。
 
 ## 2026-10-23｜回收 API 与报告流式消费者保护（后端进行中）
 

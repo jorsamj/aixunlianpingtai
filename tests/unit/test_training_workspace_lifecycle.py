@@ -87,6 +87,20 @@ def test_wrong_project_is_rejected_before_any_cleanup(tmp_path):
     assert artifacts.artifact_path("t", "work/bundle").is_dir()
 
 
+def test_workspace_history_is_readonly_bounded_and_project_scoped(tmp_path):
+    service, repo, artifacts, original = workspace(tmp_path)
+    repo.create(TaskRecord.new("foreign", "other", TaskKind.TRAINING, "payload.json", "training:gpu"))
+    before = {str(path): path.read_bytes() for path in artifacts.root.rglob("*") if path.is_file()}
+    result = service.history_page("p", limit=1)
+    assert len(result["items"]) == 1
+    assert result["items"][0]["task_id"] == "t"
+    assert result["items"][0]["temporary_logical_bytes"] > 0
+    assert result["dry_run"] is True
+    assert service.history_page("p", after="t")["items"] == []
+    assert before == {str(path): path.read_bytes() for path in artifacts.root.rglob("*") if path.is_file()}
+    assert original.read_bytes() == b"original"
+
+
 def test_delete_interruption_can_retry_without_retouching_originals(tmp_path, monkeypatch):
     service, _, artifacts, original = workspace(tmp_path)
     delete = service._delete_detached

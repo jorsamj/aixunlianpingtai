@@ -258,6 +258,25 @@ class TrainingWorkspaceLifecycle:
             raise KeyError(task_id)
         return self._inspect(task, self._consumers(task))
 
+    def history_page(self, project_id, *, after="", limit=20):
+        """Read-only dry-run for indexed task bundles; never adopts legacy ownership."""
+        limit = max(1, min(20, int(limit)))
+        with closing(self.repository._connect()) as database:
+            rows = database.execute(
+                "SELECT task_id,status FROM tasks WHERE project_id=? AND kind='TRAINING' "
+                "AND task_id>? ORDER BY task_id LIMIT ?", (project_id, str(after), limit + 1),
+            ).fetchall()
+        items = []
+        for task_id, status in rows[:limit]:
+            try:
+                item = self.inspect(project_id, task_id)
+            except (OSError, ValueError, KeyError):
+                item = {"task_id": task_id, "eligible": False, "blockers": ["WORKSPACE_UNVERIFIED"],
+                        "temporary_logical_bytes": None, "scope": "task_work_bundle_only"}
+            items.append({**item, "status": status})
+        return {"items": items, "next_cursor": rows[limit-1][0] if len(rows) > limit else None,
+                "dry_run": True, "scope": "indexed_task_work_bundles", "physical_space_released": None}
+
     def _archive_evidence(self, task, bundle):
         """Retain metadata and actual report error images, never the entire cohort."""
         manifest = self.artifacts.read_json(task.task_id, "work/bundle/manifest.json", default=None)

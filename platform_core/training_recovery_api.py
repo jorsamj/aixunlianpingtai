@@ -510,6 +510,11 @@ def training_recovery_router(
             task_repository(), task_artifacts(),
         )
 
+    @recovery_router.get("/workspace-history")
+    def workspace_history(project_id: str, after: str = "", limit: int = Query(default=20, ge=1, le=20)):
+        get_project(project_id)
+        return {"ok": True, **workspace_service(project_id).history_page(project_id, after=after, limit=limit)}
+
     @recovery_router.get("/{task_id}/workspace")
     def workspace_preview(project_id: str, task_id: str):
         require_task(project_id, task_id)

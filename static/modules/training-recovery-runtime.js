@@ -1,10 +1,12 @@
 import {canonicalTaskProgressPercent, canonicalTaskStatus, isCanonicalTaskActive} from './task-runtime-truth.js?v=422424';
 import {formatTrainingDuration, trainingApiErrorMessage, trainingProgressView} from './training-task-runtime.js?v=422562';
 import {trainingCharts, mountReportCharts, disposeReportViews} from './reports.js?v=20261022a';
+import {withRequestDeadline} from './api.js?v=20261021s';
 
 const RECOVERY_ACTION_REVALIDATE = 'revalidate_checkpoint';
 const SUCCESS_TASK_STATUSES = new Set(['SUCCEEDED', 'PARTIAL_SUCCESS']);
 const FAILED_TASK_STATUSES = new Set(['FAILED', 'BLOCKED_BY_ENVIRONMENT', 'BLOCKED_BY_HARDWARE']);
+const WORKSPACE_BLOCKERS = {TASK_ACTIVE:'任务仍在执行', EXECUTION_LEASE_PRESENT:'执行租约尚未释放', PROCESS_PRESENT:'训练进程仍存在', ACTIVE_CONSUMER:'其他任务正在使用', OWNERSHIP_UNVERIFIED:'临时空间归属尚未验证', UNSAFE_PATH:'临时空间路径未通过安全校验', MODEL_EVIDENCE_UNVERIFIED:'模型归档尚未验证', RECOVERY_DEPENDENCY:'恢复训练仍依赖此临时空间'};
 
 function taskStatusFlags(job = {}) {
   const canonical = canonicalTaskStatus(job);
@@ -445,7 +447,23 @@ function inputIssuesHtml(inputIssues) {
   return `<section class="training-recovery-panel" data-training-input-issues><header><h4>训练输入标签适配问题</h4><span>${Number(inputIssues.issue_count)} 张 · ${start}-${end}</span></header><div class="training-compatibility-list">${items.map(item => `<article class="training-compatibility-item">${item.thumbnail_url ? `<img src="${esc(item.thumbnail_url)}" loading="lazy" alt="">` : ''}<div><b>${esc(item.filename || item.image_id || '-')}</b><p>已审核：${esc((item.annotation_scope || []).join('、') || '无')}</p><p>本次要求：${esc((item.required_label_codes || []).join('、') || '无')}</p><p class="warn">缺失：${esc((item.missing_label_codes || []).join('、') || '无')}</p>${item.image_id ? `<div class="row"><button class="btn mini primary" data-training-input-review="${esc(item.image_id)}">去补审</button><button class="btn mini" data-training-input-exclude="${esc(item.image_id)}">排除本次训练</button></div>` : ''}</div></article>`).join('')}</div><div data-training-input-pagination></div></section>`;
 }
 
-function detailHtml(job, recovery, log = '', inputIssues = null, activeTab = 'curves') {
+export function trainingWorkspaceView(value = {}, project = '', task = '') {
+  const truth = value.truth;
+  const blockers = Array.isArray(truth?.blockers) ? truth.blockers : [];
+  const reasons = WORKSPACE_BLOCKERS;
+  const identity = truth?.project_id === project && truth?.task_id === task && Number.isInteger(truth?.attempt) && truth.attempt >= 0 && Boolean(truth?.snapshot_id);
+  const released = ['deleted','already_clean'].includes(truth?.status);
+  const canRelease = identity && truth.eligible === true && Array.isArray(truth.blockers) && blockers.length === 0 && !value.busy && !value.loading && !released;
+  const message = value.busy ? '正在释放临时空间…' : value.loading ? '正在核验临时空间…' : released ? '临时训练空间已释放' : !truth || !identity ? `临时空间资格未知${value.error ? '：' + value.error : '，请重新核验'}` : canRelease ? '可安全清理本任务临时训练空间' : blockers.length ? `暂不能清理：${blockers.map(code=>reasons[code] || `未知阻塞原因（${code}）`).join('；')}` : '临时空间资格未知，请重新核验';
+  return {canRelease, message, released};
+}
+
+function workspaceHtml(value, project, task) {
+  const model = trainingWorkspaceView(value, project, task);
+  return `<section class="training-recovery-callout" data-training-workspace aria-live="polite" aria-busy="${Boolean(value?.loading || value?.busy)}"><b>临时训练空间</b><p>${value?.loading || value?.busy ? '<i class="loading-spinner" aria-hidden="true"></i> ' : ''}${esc(model.message)}</p><p>临时文件逻辑大小：${value?.truth?.temporary_logical_bytes == null ? '未知' : esc(bytesText(value.truth.temporary_logical_bytes))} · 实际释放磁盘空间：未知</p><button class="btn" data-training-workspace-refresh ${value?.busy || value?.loading ? 'disabled' : ''}>重新核验</button> <button class="btn" data-training-workspace-cleanup ${model.canRelease ? '' : 'disabled'}>${value?.busy ? '正在释放…' : '释放临时空间'}</button></section>`;
+}
+
+function detailHtml(job, recovery, log = '', inputIssues = null, activeTab = 'curves', workspace = null, project = '') {
   const model = trainingRecoveryDetailModel(job, recovery);
   const failed = model.statusKind === 'failed' || model.statusKind === 'recoverable';
   const statusTitle = model.statusKind === 'recoverable'
@@ -516,7 +534,7 @@ function detailHtml(job, recovery, log = '', inputIssues = null, activeTab = 'cu
             <div><small>资源档位</small><b>${esc(model.resourceProfileLabel)}</b><span>${esc(`${model.resourceStrategy || 'auto'} · ${model.gpuPolicy || 'auto'}`)}</span></div>
             <div><small>实际 Batch / Workers / Cache</small><b>${esc(`${model.batch ?? '-'} / ${model.workers ?? '-'} / ${model.cache ?? '-'}`)}</b><span>${esc(model.runtimePrecision || '尚未启动 Trainer')}</span></div>
           </section>
-          ${statusHtml}${conflictHtml}${failureSummaryHtml}${inputIssuesHtml(inputIssues)}${technicalFailureHtml}${warningHtml}
+          ${statusHtml}${conflictHtml}${failureSummaryHtml}${workspace ? workspaceHtml(workspace, project, model.taskId) : ''}${inputIssuesHtml(inputIssues)}${technicalFailureHtml}${warningHtml}
           <section id="training-panel-curves" data-training-panel="curves" role="tabpanel" aria-labelledby="training-tab-curves">${trainingCharts(job?.runtime_metrics?.epochs || job?.training_report?.history || [], model.resourceSamples || [])}</section>
           <div class="training-recovery-columns">
             <section id="training-panel-data" class="training-recovery-panel" data-training-panel="data" role="tabpanel" aria-labelledby="training-tab-data">
@@ -597,6 +615,10 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
   let openFocus = 'overview';
   let openSnapshot = null;
   let detailRefreshPromise = null;
+  let detailSession = 0;
+  let workspace = null;
+  let workspaceReadPromise = null;
+  let workspaceHistory = null;
   const detailHistoryCache = new Map();
   const detailHistoryLoaded = new Set();
   let detailHistoryProjectId = '';
@@ -609,7 +631,7 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
     const raw = await response.text();
     let body = {};
     try { body = raw ? JSON.parse(raw) : {}; } catch (_) { body = {detail: raw}; }
-    if (!response.ok) throw new Error(trainingApiErrorMessage(body, fallback, response?.status));
+    if (!response.ok) throw Object.assign(new Error(trainingApiErrorMessage(body, fallback, response?.status)), {detail:body?.detail});
     return body;
   }
 
@@ -636,6 +658,9 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
   }
 
   function closeDetail({immediate = false} = {}) {
+    detailSession++;
+    workspace = null;
+    workspaceReadPromise = null;
     stopDetailTimer();
     const overlay = doc?.querySelector?.('[data-training-recovery-overlay]');
     disposeReportViews(overlay);
@@ -790,7 +815,7 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
     const focusedTab = old?.querySelector?.('[data-training-tab]:focus')?.dataset?.trainingTab || '';
     const host = doc?.createElement?.('div');
     if (!host) return false;
-    host.innerHTML = detailHtml(job, recovery, log, openSnapshot?.inputIssues || null, activeTab);
+    host.innerHTML = detailHtml(job, recovery, log, openSnapshot?.inputIssues || null, activeTab, workspace, openProjectId);
     const nextOverlay = host.firstElementChild;
     if (!nextOverlay) return false;
     const nextDialog = nextOverlay.querySelector?.('.training-recovery-dialog');
@@ -901,6 +926,9 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
     }
     if (!openTaskId && !previouslyFocusedElement) previouslyFocusedElement = doc?.activeElement || null;
     openTaskId = String(taskId);
+    detailSession++;
+    workspaceReadPromise = null;
+    workspace = !isCanonicalTaskActive(job) ? {loading:true} : null;
     openProjectId = String(projectId?.() || '');
     if (detailHistoryProjectId && detailHistoryProjectId !== openProjectId) {
       detailHistoryCache.clear();
@@ -914,7 +942,7 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
     renderOpenDetail(hydratedJob, openSnapshot.recovery, '', openFocus);
     doc?.querySelector?.('[data-training-recovery-close]')?.focus?.({preventScroll: true});
     try {
-      await refreshOpenDetail({includeRecovery: FAILED_TASK_STATUSES.has(canonicalTaskStatus(job))});
+      await Promise.all([refreshOpenDetail({includeRecovery: FAILED_TASK_STATUSES.has(canonicalTaskStatus(job))}), refreshWorkspace()]);
       return true;
     } catch (error) {
       notify?.(`训练详情刷新失败，已显示当前缓存：${error?.message || error}`);
@@ -958,6 +986,109 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
     return true;
   }
 
+  function workspaceContext() {
+    const project = openProjectId, task = openTaskId, session = detailSession;
+    return {project, task, current:()=>Boolean(task) && project === openProjectId && task === openTaskId && session === detailSession && project === String(projectId?.() || '')};
+  }
+
+  function renderWorkspace() {
+    if (openSnapshot) renderOpenDetail(openSnapshot.job, openSnapshot.recovery, openSnapshot.log);
+  }
+
+  async function refreshWorkspace() {
+    if (!workspace || !openTaskId) return false;
+    if (workspace.busy) return false;
+    if (locks.has(`workspace:${openProjectId}:${openTaskId}`)) {
+      workspace = {error:'释放请求仍在处理，请稍后重新核验'}; renderWorkspace(); return false;
+    }
+    if (workspaceReadPromise) return workspaceReadPromise;
+    const context = workspaceContext();
+    workspace = {...workspace, loading:true, error:''}; renderWorkspace();
+    const promise = (async()=>{
+      try {
+        const body = await withRequestDeadline(async signal=>json(await nativeFetch(`/api/v62/projects/${encodeURIComponent(context.project)}/training-tasks/${encodeURIComponent(context.task)}/workspace`, {signal,headers:{Accept:'application/json'}}), '读取临时空间资格失败'), {label:'临时空间核验'});
+        if (!context.current()) return false;
+        workspace = {truth:body.workspace};
+        return true;
+      } catch (error) {
+        if (context.current()) workspace = {error:String(error.message || error)};
+        return false;
+      } finally {
+        if (context.current()) {workspaceReadPromise = null; renderWorkspace();}
+      }
+    })();
+    workspaceReadPromise = promise;
+    return promise;
+  }
+
+  async function cleanupWorkspace() {
+    const context = workspaceContext(), key = `workspace:${context.project}:${context.task}`;
+    if (!context.current() || locks.has(key) || !trainingWorkspaceView(workspace || {}, context.project, context.task).canRelease) return false;
+    const preview = workspace.truth;
+    if (!window.confirm?.(`确认释放本任务临时训练空间（${bytesText(preview.temporary_logical_bytes)}）？已归档模型和报告证据会保留；释放后本次临时数据不能用于恢复。`)) return false;
+    locks.add(key); workspace = {...workspace,busy:true}; renderWorkspace();
+    try {
+      const body = await withRequestDeadline(async signal=>json(await nativeFetch(`/api/v62/projects/${encodeURIComponent(context.project)}/training-tasks/${encodeURIComponent(context.task)}/workspace/cleanup`, {
+        method:'POST',signal,headers:{'Content-Type':'application/json',Accept:'application/json'},body:JSON.stringify({confirm:'release_training_workspace',attempt:preview.attempt,snapshot_id:preview.snapshot_id}),
+      }), '释放临时空间失败'), {label:'释放临时空间'});
+      if (!context.current()) return false;
+      if (!['deleted','already_clean'].includes(body?.workspace?.status)) throw new Error('未取得临时空间释放凭据');
+      workspace = {truth:{...preview,...body.workspace}};
+      notify?.('临时训练空间已释放；实际释放磁盘空间未知');
+      return true;
+    } catch (error) {
+      if (context.current()) {
+        workspace = Array.isArray(error?.detail?.blockers)
+          ? {truth:{...preview,eligible:false,blockers:error.detail.blockers}}
+          : {error:`释放结果尚未确认，请重新核验：${error.message || error}`};
+        notify?.(trainingWorkspaceView(workspace, context.project, context.task).message);
+      }
+      return false;
+    } finally {
+      locks.delete(key);
+      if (context.current()) renderWorkspace();
+    }
+  }
+
+  async function openWorkspaceHistory() {
+    if (!projectId?.() || typeof window.modal !== 'function') return false;
+    closeDetail({immediate:true});
+    window.modal('历史临时空间只读检查', '<div data-training-workspace-history aria-live="polite">正在读取…</div>', true);
+    const root = [...(doc?.querySelectorAll?.('[data-training-workspace-history]') || [])].at(-1);
+    if (!root) return false;
+    workspaceHistory = {root, project:String(projectId()), sequence:0, loading:false, cursor:'', next:''};
+    return loadWorkspaceHistoryPage('');
+  }
+
+  async function loadWorkspaceHistoryPage(after = '') {
+    const history = workspaceHistory;
+    if (!history || history.loading || !history.root.isConnected || history.project !== String(projectId?.() || '')) return false;
+    history.loading = true;
+    history.cursor = String(after);
+    const sequence = ++history.sequence;
+    const current = ()=>workspaceHistory === history && history.sequence === sequence && history.root.isConnected && history.project === String(projectId?.() || '');
+    history.root.innerHTML = '<p>只读检查，不会删除任何文件；释放请查看对应任务详情。</p><p role="status"><i class="loading-spinner" aria-hidden="true"></i> 正在读取当前页…</p>';
+    try {
+      const params = new URLSearchParams({limit:'20'});
+      if (after) params.set('after',after);
+      const body = await withRequestDeadline(async signal=>json(await nativeFetch(`/api/v62/projects/${encodeURIComponent(history.project)}/training-tasks/workspace-history?${params}`, {signal,headers:{Accept:'application/json'}}), '读取历史临时空间失败'), {label:'历史临时空间检查'});
+      if (!current()) return false;
+      const rows = Array.isArray(body.items) ? body.items.slice(0,20) : [];
+      history.next = String(body.next_cursor || '');
+      history.root.innerHTML = `<p>只读检查，不会删除任何文件；释放请查看对应任务详情。以下为临时文件逻辑大小，实际可释放磁盘空间未知。</p><div class="table-wrap"><table class="table"><thead><tr><th>任务</th><th>状态</th><th>临时文件逻辑大小</th><th>清理资格</th></tr></thead><tbody>${rows.map(row=>{
+        const blockers = Array.isArray(row.blockers) ? row.blockers : [];
+        const message = row.eligible === true && Array.isArray(row.blockers) && !blockers.length ? '服务端允许清理，请进入任务详情重新核验' : blockers.length ? blockers.map(code=>WORKSPACE_BLOCKERS[code] || `未知阻塞原因（${code}）`).join('；') : '清理资格未知';
+        return `<tr><td>${esc(row.task_id || '-')}</td><td>${esc(row.status || '-')}</td><td>${row.temporary_logical_bytes == null ? '未知' : esc(bytesText(row.temporary_logical_bytes))}</td><td>${esc(message)}</td></tr>`;
+      }).join('') || '<tr><td colspan="4">当前页没有可核验的任务记录</td></tr>'}</tbody></table></div><div class="row end"><button class="btn" data-training-workspace-history-page="">回到首页</button><button class="btn" data-training-workspace-history-page="${esc(history.next)}" ${history.next ? '' : 'disabled'}>下一页</button></div>`;
+      return true;
+    } catch (error) {
+      if (current()) history.root.innerHTML = `<p>只读检查结果未知：${esc(error.message || error)}</p><button class="btn" data-training-workspace-history-page="${esc(history.cursor)}">重试当前页</button>`;
+      return false;
+    } finally {
+      if (current()) history.loading = false;
+    }
+  }
+
   async function recover(taskId, action = RECOVERY_ACTION_REVALIDATE) {
     const key = `${taskId}:${action}`;
     if (locks.has(key)) return false;
@@ -989,6 +1120,11 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
   }
 
   const onClick = event => {
+    const historyPage = event.target?.closest?.('[data-training-workspace-history-page]');
+    if (historyPage) {event.preventDefault(); void loadWorkspaceHistoryPage(historyPage.dataset.trainingWorkspaceHistoryPage); return;}
+    if (event.target?.closest?.('[data-training-workspace-history-open]')) {event.preventDefault(); void openWorkspaceHistory(); return;}
+    if (event.target?.closest?.('[data-training-workspace-cleanup]')) {event.preventDefault(); void cleanupWorkspace(); return;}
+    if (event.target?.closest?.('[data-training-workspace-refresh]')) {event.preventDefault(); void refreshWorkspace(); return;}
     const copyTask = event.target?.closest?.('[data-training-copy-task]');
     if (copyTask) {
       event.preventDefault();
@@ -1104,8 +1240,13 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
     refreshOpenDetail,
     acceptLiveTask,
     recover,
+    refreshWorkspace,
+    cleanupWorkspace,
+    openWorkspaceHistory,
+    loadWorkspaceHistoryPage,
     closeDetail,
     destroy() {
+      workspaceHistory = null;
       closeDetail({immediate: true});
       detailHistoryCache.clear();
       detailHistoryLoaded.clear();

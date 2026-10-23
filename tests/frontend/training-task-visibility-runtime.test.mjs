@@ -104,7 +104,7 @@ test('main owns visibility installation before canonical training page registrat
   const index = readFileSync(new URL('../../static/index.html', import.meta.url), 'utf8');
   const source = readFileSync(new URL('../../static/modules/training-task-visibility-runtime.js', import.meta.url), 'utf8');
 
-  const importAt = main.indexOf("import {installTrainingTaskVisibilityRuntime} from './modules/training-task-visibility-runtime.js?v=4226385';");
+  const importAt = main.indexOf("import {installTrainingTaskVisibilityRuntime} from './modules/training-task-visibility-runtime.js?v=4226385-workspace';");
   const installAt = main.indexOf('const trainingTaskVisibilityRuntime = installTrainingTaskVisibilityRuntime({');
   const ownerAt = main.indexOf("navigationStabilityRuntime.registerPageOwner('训练任务', () => trainingTaskVisibilityRuntime.render())");
 
