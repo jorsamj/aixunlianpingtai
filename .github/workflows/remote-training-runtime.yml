@@ -179,6 +179,8 @@ jobs:
         run: >-
           python -m pip install --disable-pip-version-check
           pytest pillow pyyaml filelock requests psutil keyring cryptography pydantic opencv-python-headless fastapi httpx python-multipart
+      - name: Install pinned trainer source for official stopper contract
+        run: python -m pip install --disable-pip-version-check --no-deps "ultralytics==8.4.127"
       - name: Compile remote training preparation chain
         run: >-
           python -m py_compile
@@ -384,7 +386,7 @@ jobs:
           grep -Fq 'test_local_finalization_reuses_same_task_version_before_stale_check' tests/integration/test_training_completed_job_recovery.py
           grep -Fq '"label_schema": frozen_label_schema' platform_core/remote_training_tasks.py
           grep -Fq '"label_schema": frozen_label_schema' platform_core/remote_execution_transport.py
-          grep -Fq 'test_remote_training_prepare_handler_builds_bundle_and_activates_target' tests/integration/test_remote_training_prepare_task.py
+          grep -Fq 'test_remote_training_prepare_handler_freezes_indices_and_activates_target' tests/integration/test_remote_training_prepare_task.py
           grep -Fq 'test_remote_training_result_is_generation_scoped_verified_and_committed_after_gate' tests/unit/test_remote_execution_transport.py
           grep -Fq 'test_remote_training_commit_reuses_existing_task_version_before_base_stale_check' tests/unit/test_remote_execution_transport.py
           grep -Fq 'version_id = self._remote_training_version_id(' platform_core/remote_execution_transport.py
@@ -429,7 +431,7 @@ jobs:
           grep -Fq 'service.training_preflight(' platform_core/remote_training_tasks.py
           grep -Fq 'assert_external_algorithm_master_data_current(self.data_dir, algorithm)' platform_core/remote_training_tasks.py
           ! grep -Fq '_refresh_external_training_algorithm(' app.py
-          grep -Fq "val_dir=root/'images'/'val'" train_worker.py
+          grep -Fq '_stage_validation_source(args.data, cache)' train_worker.py
           grep -Fq 'test_images_dir=dataset_root/"images"/"test"' train_worker.py
           grep -Fq 'current_item="独立评测集盲测"' train_worker.py
           if grep -Fq '独立试验集盲测' train_worker.py; then echo 'final test split must be presented as evaluation, not validation/trial data' >&2; exit 1; fi
@@ -485,7 +487,7 @@ jobs:
           grep -Fq '"decision": "continue_below_target"' train_worker.py
           grep -Fq 'test_below_target_never_stops_training_even_below_reference_line' tests/unit/test_training_early_stopping_reason.py
           grep -Fq 'test_stage_gate_uses_validation_split_not_final_test_split' tests/unit/test_training_early_stopping_reason.py
-          grep -Fq "val_dir=root/'images'/'val'" train_worker.py
+          grep -Fq '_stage_validation_source(args.data, cache)' train_worker.py
           ! grep -Fq 'import sqlite3' platform_core/node_agent_training_runtime.py
           ! grep -Fq 'TaskRepository' platform_core/node_agent_training_runtime.py
           grep -Fq 'return "agent"' platform_core/task_node_assignments.py

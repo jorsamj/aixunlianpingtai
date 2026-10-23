@@ -3002,10 +3002,6 @@ class RemoteExecutionTransportService:
             raise RemoteExecutionTransportError("REMOTE_TRAINING_DIAGNOSTIC_INVALID", str(error), 409) from error
 
     def _training_dataset_result_evidence(self, task, payload, training, result):
-        from .remote_training_results import verify_dataset_manifest_evidence
-        from .training_tasks import resolve_training_input_freeze
-        from .training_splits import SplitMode, SplitRequest
-
         try:
             inputs = training.get("inputs") or {}
             freeze_id = str(inputs.get("input_freeze_id") or "")
@@ -3019,6 +3015,10 @@ class RemoteExecutionTransportService:
             if (not isinstance(frozen, Mapping) or frozen.get("input_freeze_id") != freeze_id
                     or payload.get("input_freeze_id") != freeze_id):
                 raise ValueError("training result durable input freeze mismatch")
+            from .remote_training_results import verify_dataset_manifest_evidence
+            from .training_tasks import resolve_training_input_freeze
+            from .training_splits import SplitMode, SplitRequest
+
             request = SplitRequest(
                 mode=SplitMode(str(payload.get("split_mode"))),
                 train_image_ids=tuple(payload.get("train_image_ids") or ()),

@@ -139,6 +139,8 @@ jobs:
           python -m pip install --disable-pip-version-check
           pytest fastapi uvicorn httpx2 python-multipart pillow pyyaml requests
           opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2
+      - name: Install pinned trainer source for official stopper contract
+        run: python -m pip install --disable-pip-version-check --no-deps "ultralytics==8.4.127"
       - name: Validate release contract test paths
         run: |
           missing=0

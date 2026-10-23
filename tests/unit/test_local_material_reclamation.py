@@ -1,7 +1,10 @@
 from dataclasses import replace
 from PIL import Image
+from pathlib import Path
 import hashlib
 import os
+import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -14,6 +17,14 @@ from platform_core.local_material_reclamation import LocalMaterialReclamationSer
 
 def setup_gc(tmp_path, monkeypatch):
     monkeypatch.setenv("MC_CONTROLLED_LOCAL_MATERIAL_GC", "1")
+    # The isolated data fixture declares a known offline process inventory.
+    # Hosted Linux runners can contain unrelated/uninspectable Python processes;
+    # production must refuse those, not make this unit fixture host-dependent.
+    import platform_core.local_material_reclamation as module
+    process = SimpleNamespace(info={"pid": os.getpid(), "name": Path(sys.executable).name,
+        "exe": sys.executable, "cmdline": [sys.executable, "isolated-gc-unit-test"],
+        "cwd": str(tmp_path)})
+    monkeypatch.setattr(module.psutil, "process_iter", lambda *a, **kw: [process])
     data = tmp_path / "data"
     project = data / "projects/p"
     (project / "uploads").mkdir(parents=True)
@@ -282,5 +293,20 @@ def test_foreign_task_runtime_or_retirement_journal_path_is_rejected(tmp_path, m
     except OSError:
         pytest.skip("host cannot create directory symlinks")
     with pytest.raises(RuntimeError, match="UNSAFE_RECLAMATION_RECEIPT"):
+        apply(service, truth)
+    assert original.exists()
+
+
+@pytest.mark.parametrize("unknown_field", ["cmdline", "cwd"])
+def test_unknown_python_process_evidence_still_refuses_real_reclamation(tmp_path, monkeypatch, unknown_field):
+    import platform_core.local_material_reclamation as module
+    service, materials, original, tasks = setup_gc(tmp_path, monkeypatch)
+    evidence = {"pid": 987654, "name": "python", "exe": "/usr/bin/python",
+                "cmdline": ["python", "unidentified.py"], "cwd": str(tmp_path)}
+    evidence[unknown_field] = None
+    monkeypatch.setattr(module.psutil, "process_iter", lambda *a, **kw: [SimpleNamespace(info=evidence)])
+    truth = service.preview("p", "retire", "a")
+    assert "PROCESS_INSPECTION_UNKNOWN" in truth["blockers"]
+    with pytest.raises(RuntimeError, match="PROCESS_INSPECTION_UNKNOWN"):
         apply(service, truth)
     assert original.exists()

@@ -112,6 +112,18 @@ apply必须真实登录/项目范围+明确确认，绑定本批image_ids、完�
 16. **提交/CI**：上述实现提交真实存在，最终发行/文档收尾SHA的远端证据待本节后续回执；5944与两份模板测试保留，不把本地GREEN当CI。
 17. **生产升级前**：另行授权部署；先只读核配置/版本/原图GT可达性、活跃消费者/旧Worker、实际磁盘量和历史任务身份；维护窗口/备份/小批恢复演练后，分别申请生产元数据迁移或物理回收授权。本轮没有这些执行授权。
 
+### 首推准确SHA CI失败及修正（验收未完成）
+
+首推代码c077c3e7d2e5f46daf2fbf74cd1c6c7bfa9bd108，GitHub实际启动51个Actions/136个Checks（包含仓库既有依赖dispatch，非手工重复跑全仓）。已取得的时点为33成功/17失败/1仍运行，不能宣称绿色。主要失败：
+
+- Storage Cache Governance：56通过1失败，原HTTP fixture直接disconnect；最新Starlette1.9.0依法停止发送，不能断言完整body。改连接期request/完成后disconnect，仍逐send核锁+完整bytes，再加ASGI2.4 send断链释放。原本地1.3.1两项通过，临时解压CI同版1.9.0隔离导入同两项通过，未改生产FileResponse或安装环境。
+- Material Annotation Atomicity：legacy集合18通过10失败，回收测试读取真实Linux宿主进程触发PROCESS_INSPECTION_UNKNOWN。只修隔离fixture提供可检查的离线进程清单，并加cmdline/cwd未知仍拒绝删除两例；单文件16通过1本机symlink skip。生产保护未放宽，Linux新SHA仍待验证。
+- 路由挂载精准断言未包含本轮workspace_actor_provider及agent_training_inputs_provider，多个复用CI失败。更新精确集合并加真实服务端actor/输入Provider函数名断言；原单测定向1通过3未选，仍要求唯一挂载及原Owner。
+- 错freeze结果在拒绝前导入重训练模块，在轻量RKNN/portable等CI缺yaml。只把完整数据集依赖移至freeze/持久身份校验之后，坏身份仍先拒绝；原定向1通过53未选，未增加轻量任务GPU依赖。
+- 保留5944带来的官方stopper源码测试需要固定ultralytics包；两份相关原CI仅补--no-deps ultralytics==8.4.127源码（与既有requirements完全相同），不下载模型、不拉GPU依赖、不跳过测试。原训练守卫的旧排队builds_bundle及硬编码val路径断言更新为真实仅索引测试名和正式validation source调用；完整原guard脚本实际退出0，不删安全断言。
+
+修正以新提交正常推送，最终结果必须绑定新完整SHA；首推失败保留本记录，不用rerun旧绿遮盖。
+
 ### 接续指令
 
 先读本文顶部S2矩阵及本节，再读remote_training_inputs.py / node_agent_training_runtime.py / training_workspace_lifecycle.py / scheduler.py，前端从training-recovery-runtime.js和legacy-material-compatibility.js，缩略图从原StorageManager/MaterialCache，物理GC仅local_material_reclamation.py及tools/reclaim_retired_original.py。禁止重复建设StorageManager/Material/Annotation/BundleCache/Task状态；不要继续训练模板、Uppy或chipCode需求。保留两份未提交模板测试及其他工作树。生产真实量/外部存储/旧数据未知条件以只读计划和独立授权接续，不自动执行清理。
