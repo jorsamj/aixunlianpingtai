@@ -560,40 +560,41 @@ test('single and multi-image uploads always end with cleaning decisions', async 
   await page.locator('#up426Images').setInputFiles({
     name: 'single.bmp', mimeType: 'image/bmp', buffer: bmp(100, 80, [80, 120, 210])
   });
-  const singleDialog = page.getByRole('dialog', {name: '图片上传'});
-  await expect(singleDialog.getByText('成功上传 1 张')).toBeVisible();
-  await expect(singleDialog.getByText('本次上传 1 张素材')).toBeVisible();
-  await expect(singleDialog.getByText('本次图片是否需要清洗？')).toHaveCount(0);
-  expect(await singleDialog.getByRole('button', {name: '批量无需清洗'}).getAttribute('onclick')).toContain('openRecentUploadBatch414("ready")');
-  await singleDialog.getByRole('button', {name: '批量无需清洗'}).click();
-  expect(pageErrors).toEqual([]);
-  const readyDialog = page.getByRole('dialog', {name: '批量无需清洗'});
-  await expect(readyDialog.getByText('共 1 张未处理素材')).toBeVisible();
-  const readyTaskRequest = page.waitForRequest(req => {
-    if (req.method() !== 'POST') return false;
-    const pathname = new URL(req.url()).pathname;
-    return /\/api\/v62\/projects\/[^/]+\/material-batches$/.test(pathname);
-  });
-  await readyDialog.getByRole('button', {name: '确认无需清洗'}).click();
-  const submittedReadyTask = await readyTaskRequest;
-  const readyPayload = submittedReadyTask.postDataJSON();
-  expect(readyPayload.operation).toBe('MARK_CLEAN_SKIPPED');
-  expect(readyPayload.selection_spec?.scope).toBe('SELECTED');
-  expect(readyPayload.selection_spec?.image_ids).toHaveLength(1);
-  expect(pageErrors).toEqual([]);
+  const workspace=page.locator('[data-upload-confirmation]');
+  await expect(workspace.getByRole('heading',{name:'本次上传图片'})).toBeVisible();
+  await expect(workspace.locator('.uc-summary')).toContainText('成功入库 1 张');
+  await expect(workspace.locator('.uc-grid article')).toHaveCount(1);
+  const readyTaskRequest=page.waitForRequest(req=>req.method()==='POST'&&/\/upload-batches\/[^/]+\/decisions$/.test(new URL(req.url()).pathname));
+  await workspace.locator('[data-upload-action=all]').check();
+  await workspace.getByRole('button',{name:'无需清洗，进入标注',exact:true}).click();
+  const submittedReadyTask=await readyTaskRequest;
+  const readyPayload=submittedReadyTask.postDataJSON();
+  expect(readyPayload.clean_image_ids).toEqual([]);
+  expect(readyPayload.ready_image_ids).toHaveLength(1);
+  await expect(page.locator('.ann420-stable')).toBeVisible();
+  const readyReceipt=await(await request.get(new URL(submittedReadyTask.url()).pathname.replace(/\/decisions$/,''))).json();
+  expect(readyReceipt.items[0].decision).toBe('ready');
+  expect(readyReceipt.items[0].image.annotation_state).toBe('unannotated');
+  await page.evaluate(()=>window.closeModal());
+  await workspace.getByRole('button',{name:'稍后处理',exact:true}).click();
 
   await page.locator('.data426-head button[onclick="openDataUpload426()"]').click();
   await page.locator('#up426Images').setInputFiles([
-    {name: 'multi-one.bmp', mimeType: 'image/bmp', buffer: bmp(100, 80, [160, 80, 80])},
-    {name: 'multi-two.bmp', mimeType: 'image/bmp', buffer: bmp(100, 80, [80, 160, 80])}
+    {name:'multi-one.bmp',mimeType:'image/bmp',buffer:bmp(100,80,[160,80,80])},
+    {name:'multi-two.bmp',mimeType:'image/bmp',buffer:bmp(100,80,[80,160,80])}
   ]);
-  const multiDialog = page.getByRole('dialog', {name: '图片上传'});
-  await expect(multiDialog.getByText('成功上传 2 张')).toBeVisible();
-  await expect(multiDialog.getByText('本次上传 2 张素材')).toBeVisible();
-  await multiDialog.getByRole('button', {name: '批量清洗'}).click();
-  const cleanDialog = page.getByRole('dialog', {name: '批量清洗'});
-  await expect(cleanDialog.getByText('共 2 张未处理素材')).toBeVisible();
-  await expect(cleanDialog.getByRole('button', {name: '开始清洗'})).toBeVisible();
+  await expect(workspace.locator('.uc-summary')).toContainText('成功入库 2 张');
+  await expect(workspace.locator('.uc-grid article')).toHaveCount(2);
+  await workspace.locator('[data-upload-action=all]').check();
+  const cleanResponse=page.waitForResponse(res=>res.request().method()==='POST'&&/\/upload-batches\/[^/]+\/decisions$/.test(new URL(res.url()).pathname));
+  await workspace.getByRole('button',{name:'开始清洗',exact:true}).click();
+  const clean=await cleanResponse;expect(clean.ok()).toBeTruthy();
+  const payload=clean.request().postDataJSON();
+  expect(payload.clean_image_ids).toHaveLength(2);expect(payload.ready_image_ids).toEqual([]);
+  const cleaned=await clean.json();expect(cleaned.clean_task_id).toBeTruthy();
+  expect(cleaned.items.every(item=>item.decision==='clean')).toBe(true);
+  await expect(workspace.getByRole('button',{name:'查看清洗进度'})).toHaveCount(2);
+  expect(pageErrors).toEqual([]);
 });
 
 
