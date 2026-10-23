@@ -27,6 +27,9 @@ def test_compatibility_api_requires_login_confirmation_and_hides_internal_eviden
     response = client.get(base + "/scan")
     assert response.status_code == 200
     assert "internal" not in response.text
+    assert client.get(base + "/scan?limit=51").status_code == 422
+    assert client.get(base + "/scan?limit=50&expected_catalog=" + "f"*64).status_code == 200
+    assert calls[-1] == {"cursor":"", "limit":50, "expected_catalog":"f"*64}
     assert "_payloads" not in client.post(base + "/preview",json={"image_ids":["i"]}).text
     assert client.post(base + "/apply",json={"image_ids":["i"]}).status_code == 422
     payload = {"image_ids":["i"], "expected_fingerprint":"f", "task_id":"batch-1", "confirm":"migrate_legacy_material_metadata"}

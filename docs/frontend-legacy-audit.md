@@ -1,3 +1,7 @@
+## 2026-10-23｜旧素材全面检查体验修复
+
+[唯一专项](TRAINING_MATERIAL_LIFECYCLE_GOVERNANCE_2026_10_21.md)顶部为接续依据。一次开始顺序50条、真实汇总及25条明细分页、暂停/刷新/失败恢复已实现；原迁移单独确认，检查不改正式数据。VERSION380，Python15/Chrome3/版本9通过，当前提交CI待核。原图仅逐条检查时点，库外原位改写/无版本GT不冒充全库原子证明；5944及两份模板测试保留，未生产操作。
+
 ## 2026-10-23 P2接续入口
 
 [唯一评测专项](SCENARIO_MODEL_EVALUATION_UI_GOVERNANCE_2026_10_22.md)顶部P2为当前进度；原Owner复用，新增AdvancedEvaluation仅负责展示，不拥有GT/任务/存储/候选；代码9280实际21/21 Actions、55/55 Checks通过；文档新SHA另核，生产未验证。

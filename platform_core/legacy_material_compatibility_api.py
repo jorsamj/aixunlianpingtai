@@ -15,7 +15,7 @@ def legacy_material_compatibility_router(service_provider, actor_provider):
         result = {key: value for key, value in result.items() if not key.startswith("_")}
         if "items" in result:
             result["items"] = [{key: value for key, value in item.items()
-                                if key in {"image_id", "status", "issues", "candidate", "material_owner", "proposed", "ground_truth"}}
+                                if key in {"image_id", "status", "issues", "candidate", "material_owner", "proposed", "ground_truth", "gt_status", "categories"}}
                                for item in result["items"]]
         return result
 
@@ -39,9 +39,10 @@ def legacy_material_compatibility_router(service_provider, actor_provider):
         return values
 
     @router.get("/scan")
-    def scan(project_id: str, request: Request, cursor: str = "", limit: int = Query(50, ge=1, le=50)):
+    def scan(project_id: str, request: Request, cursor: str = "", limit: int = Query(50, ge=1, le=50),
+             expected_catalog: str = Query("", max_length=64)):
         selected = service(request, project_id)
-        return execute(lambda: selected.scan(cursor=cursor, limit=limit))
+        return execute(lambda: selected.scan(cursor=cursor, limit=limit, **({"expected_catalog": expected_catalog} if expected_catalog else {})))
 
     @router.post("/preview")
     def preview(project_id: str, request: Request, payload: dict = Body(...)):

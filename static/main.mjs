@@ -1,6 +1,6 @@
 import {installQualityDetectionWorkbench} from './modules/quality-detection-workbench.js?v=20261023p2';
 import {installAdvancedEvaluation} from './modules/advanced-evaluation.js?v=20261023p2';
-import {renderLegacyMaterialCompatibility} from './modules/legacy-material-compatibility.js?v=20261023';
+import {renderLegacyMaterialCompatibility} from './modules/legacy-material-compatibility.js?v=20261023fullscan';
 import {createAnnotoriousEditor} from './modules/annotorious-editor.js?v=20261022a';
 import {annotationColor,withLegacyBoxIdentities} from './modules/annotation-geometry-adapter.js?v=20261022a';
 import {installConversionCatalogRuntime} from './modules/conversion-catalog-runtime.js?v=2';

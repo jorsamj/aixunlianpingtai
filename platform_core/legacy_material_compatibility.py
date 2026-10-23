@@ -156,6 +156,7 @@ class LegacyMaterialCompatibilityService:
                 return item
             annotation = self._annotation(image_id)
             item["ground_truth"] = annotation
+            item["gt_status"] = annotation.get("annotation_state", "unknown") if annotation else "not_recorded"
             if row.get("annotation_version") is not None and (
                     not annotation or row["annotation_version"] != annotation.get("version")):
                 item.update(status="conflict", issues=["material and formal GT versions differ"])
@@ -256,16 +257,90 @@ class LegacyMaterialCompatibilityService:
                                  "annotations_sqlite": after.get("annotations.sqlite3")},
                 "_revision": revision, "_payloads": {row["id"]: raw for row, raw in rows}}
 
-    def scan(self, *, limit=50, cursor=None):
+    def _scan_catalog(self):
+        """Read existing owner revisions; never initialize schemas or a scan job."""
+        catalog = {"project_id": self.project_id, "images_json": _stamp(self.project / "images.json"),
+                   "uploads_directory": _stamp(self.project / "uploads"),
+                   "legacy_gt_directory": _stamp(self.project / "annotations")}
+        for name, meta in (("materials", "material_meta"), ("annotations", "annotation_meta")):
+            path = self.project / f"{name}.sqlite3"
+            if path.is_file():
+                with closing(_readonly(path)) as db:
+                    exists = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (meta,)).fetchone()
+                    revision = db.execute(f"SELECT value FROM {meta} WHERE key='revision'").fetchone() if exists else None
+                    catalog[name] = [db.execute("PRAGMA user_version").fetchone()[0],
+                                     revision[0] if revision else _stamp(path)]
+            else:
+                catalog[name] = None
+        # Legacy GT has no global revision. Report that limitation explicitly.
+        catalog["legacy_gt_unversioned"] = ((self.project / "annotations").exists())
+        source = self.data_dir / "storage" / "storage_sources.sqlite3"
+        catalog["storage_sources"] = _stamp(source)
+        catalog["storage_sources_wal"] = _stamp(Path(str(source) + "-wal"))
+        return catalog
+
+    def scan(self, *, limit=50, cursor=None, expected_catalog=None):
         self._enabled()
         limit = max(1, min(50, int(limit)))
         cursor = str(cursor or "")
+        before = self._scan_catalog()
+        fingerprint = _digest(before)
+        if expected_catalog and fingerprint != expected_catalog:
+            raise RuntimeError("LEGACY_COMPATIBILITY_STALE")
         rows, owner, revision = self._rows(cursor=cursor, limit=limit + 1)
         more = len(rows) > limit
         rows = rows[:limit]
         legacy_rows = self._legacy()
+        if owner == "legacy_json":
+            ids = [str(row.get("id") or "") for row in legacy_rows]
+            if len(ids) != len(set(ids)) or any(not value for value in ids):
+                raise ValueError("ambiguous legacy material identities")
+        total = None
+        if not expected_catalog:
+            if owner == "sqlite":
+                with closing(_readonly(self.project / "materials.sqlite3")) as db:
+                    total = db.execute("SELECT COUNT(*) FROM materials").fetchone()[0]
+            else:
+                total = len(legacy_rows)
         items = [self._inspect(row, owner, legacy_rows) for row, raw in rows]
+        for item in items:
+            issues = " ".join(item.get("issues", [])).lower()
+            categories = []
+            if "gt" in issues or "annotation" in issues or "ground truth" in issues:
+                categories.append("gt_issue")
+            if item["status"] == "conflict":
+                categories.append("conflict")
+            if item["candidate"]:
+                categories.append("candidate")
+            if item["status"] == "unsupported" or item.get("gt_status") in (None, "unknown", "not_recorded"):
+                categories.append("unknown")
+            # Lazy thumbnails need not already exist. Only a recorded missing
+            # local reference is an anomaly; external references stay unknown.
+            for thumbnail in item.get("thumbnails", []):
+                if not isinstance(thumbnail["reference"], str):
+                    if "unknown" not in categories:
+                        categories.append("unknown")
+                    continue
+                reference = thumbnail["reference"]
+                if reference.startswith(("http:", "https:", "oss:")):
+                    if "unknown" not in categories:
+                        categories.append("unknown")
+                    continue
+                path = Path(reference)
+                if path.is_absolute() or ".." in path.parts:
+                    if "unknown" not in categories:
+                        categories.append("unknown")
+                elif not (self.project / path).is_file() and "thumbnail_issue" not in categories:
+                    categories.append("thumbnail_issue")
+            if not categories and item["status"] == "normal":
+                categories.append("normal")
+            item["categories"] = categories
+        if before != self._scan_catalog():
+            raise RuntimeError("LEGACY_COMPATIBILITY_STALE")
         return {"items": items, "next_cursor": str(rows[-1][0]["id"]) if more else None,
+                "total": total, "catalog_fingerprint": fingerprint,
+                "requires_recheck": before["legacy_gt_unversioned"],
+                "source_consistency": "per_record_inspection_not_atomic_filesystem_snapshot",
                 "needs_migration": any(item["candidate"] for item in items), "material_owner": owner}
 
     def _backup_path(self, task_id):

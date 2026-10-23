@@ -19,7 +19,7 @@ test('advanced legacy compatibility keeps preview identity through retry and fen
         {image_id:'missing-metadata',status:'candidate',candidate:true,issues:['缺失索引']},
         {image_id:'unsupported-source',status:'unsupported',candidate:false,issues:['只读来源']},
         {image_id:'conflicting-source',status:'conflict',candidate:false,issues:['内容冲突']},
-      ]:[{image_id:'LATE_RESPONSE_MUST_STAY_HIDDEN',status:'candidate',candidate:true}],next_cursor:null}});
+       ].sort((a,b)=>a.image_id<b.image_id?-1:1):[{image_id:'LATE_RESPONSE_MUST_STAY_HIDDEN',status:'candidate',candidate:true}],next_cursor:null}});
     }else if(url.pathname.endsWith('/preview')){
       await new Promise(resolve=>{releasePreview=resolve;});
       await route.fulfill({json:{fingerprint,image_ids:['missing-metadata'],needs_migration:true}});
@@ -80,4 +80,44 @@ test('advanced legacy compatibility keeps preview identity through retry and fen
   await expect(page.locator('#view')).not.toContainText('LATE_RESPONSE_MUST_STAY_HIDDEN');
   await expect(page.locator('[data-compat-status]')).toHaveCount(0);
   expect(errors).toEqual([]);
+});
+
+
+async function fullScanFixture(page,{interrupt=false}={}) {
+  await page.addInitScript(()=>localStorage.removeItem('cl_v427_advanced'));
+  await page.goto('/');await expect.poll(()=>page.evaluate(()=>typeof state!=='undefined'&&state.uiReady)).toBe(true);
+  const pid=await page.evaluate(()=>state.project.id),calls=[];let active=0,maxActive=0,failed=false,release;
+  const rows=Array.from({length:120},(_,i)=>({image_id:`full-${String(i).padStart(3,'0')}`,status:i<80?'normal':i<100?'candidate':'conflict',candidate:i>=80&&i<100,issues:[],categories:[i<80?'normal':i<100?'candidate':'conflict']}));
+  await page.route(`**/api/v62/projects/${pid}/legacy-material-compatibility/**`,async route=>{
+    const url=new URL(route.request().url());calls.push(url);expect(route.request().method()).toBe('GET');expect(url.pathname.endsWith('/scan')).toBe(true);
+    active++;maxActive=Math.max(active,maxActive);
+    const cursor=url.searchParams.get('cursor')||'',offset=cursor?rows.findIndex(row=>row.image_id===cursor)+1:0,limit=Number(url.searchParams.get('limit'));
+    if(interrupt&&offset===50&&!failed){failed=true;active--;return route.fulfill({status:503,json:{detail:'受控批次失败'}});}
+    if(interrupt&&offset===50)await new Promise(resolve=>{release=resolve;});
+    const items=rows.slice(offset,offset+limit);active--;
+    await route.fulfill({json:{items,total:offset===0?120:null,catalog_fingerprint:'f'.repeat(64),next_cursor:offset+items.length<120?items.at(-1).image_id:null}});
+  });
+  const open=async()=>{await page.locator('#nav .nav-advanced427 button').click();await page.locator('#nav .nav-btn').filter({has:page.locator('b',{hasText:/^旧素材兼容迁移$/})}).click();await expect(page.locator('[data-compat-scan]')).toBeEnabled();};
+  await open();return {calls,open,get release(){return release},get maxActive(){return maxActive}};
+}
+
+test('one click reads all 120 materials sequentially and renders filtered bounded details',async({page})=>{
+  const c=await fullScanFixture(page);await page.getByRole('button',{name:'开始全面检查',exact:true}).click();
+  await expect(page.locator('[data-compat-status]')).toContainText('全量检查完成');await expect(page.locator('[data-compat-status]')).toContainText('120 / 120');
+  expect(c.calls.map(url=>url.searchParams.get('cursor'))).toEqual(['','full-049','full-099']);expect(c.maxActive).toBe(1);
+  await expect(page.locator('[data-compat-summary]')).toContainText('正常兼容 80');await expect(page.locator('[data-compat-summary]')).toContainText('可迁移 20');
+  await expect(page.locator('[data-compat-results] tbody tr')).toHaveCount(25);await page.getByRole('button',{name:'下一页',exact:true}).click();await expect(page.locator('[data-compat-results] tbody tr').first()).toContainText('full-025');await page.locator('[data-compat-filter]').selectOption('conflict');await expect(page.locator('[data-compat-results] tbody tr')).toHaveCount(20);
+  await expect(page.locator('[data-compat-summary]')).toContainText('数据冲突 20');
+});
+
+test('failed batch is retried once, pause and refresh resume without double counting',async({page})=>{
+  const c=await fullScanFixture(page,{interrupt:true});await page.getByRole('button',{name:'开始全面检查',exact:true}).click();
+  await expect(page.locator('[data-compat-status]')).toContainText('受控批次失败');await expect(page.locator('[data-compat-status]')).toContainText('50 / 120');await expect(page.locator('[data-compat-status]')).not.toContainText('全量检查完成');
+  await page.getByRole('button',{name:'继续检查 / 重试',exact:true}).click();await expect.poll(()=>Boolean(c.release)).toBe(true);await page.getByRole('button',{name:'暂停检查',exact:true}).click();c.release();
+  await expect(page.locator('[data-compat-status]')).toContainText('已暂停');await expect(page.locator('[data-compat-status]')).toContainText('100 / 120');
+  await page.reload();await expect.poll(()=>page.evaluate(()=>state.uiReady)).toBe(true);await c.open();await expect(page.locator('[data-compat-status]')).toContainText('100 / 120');
+  await page.getByRole('button',{name:'继续检查 / 重试',exact:true}).click();await expect(page.locator('[data-compat-status]')).toContainText('全量检查完成');await expect(page.locator('[data-compat-status]')).toContainText('120 / 120');
+  expect(c.calls.filter(url=>url.searchParams.get('cursor')==='full-049')).toHaveLength(2);expect(c.maxActive).toBe(1);
+  await page.route('**/legacy-material-compatibility/scan?**',route=>route.fulfill({status:409,json:{detail:'素材或GT已变化'}}));await page.reload();await expect.poll(()=>page.evaluate(()=>state.uiReady)).toBe(true);await c.open();await expect(page.locator('[data-compat-status]')).toContainText('上次检查版本无法确认');await expect(page.getByRole('button',{name:'继续检查 / 重试',exact:true})).toBeDisabled();await expect(page.locator('[data-compat-status]')).not.toContainText('全量检查完成');
+  await expect(page.locator('[data-compat-summary]')).toContainText('正常兼容 80');await expect(page.locator('[data-compat-summary]')).toContainText('可迁移 20');
 });

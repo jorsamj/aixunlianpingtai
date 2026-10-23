@@ -161,3 +161,48 @@ def test_transaction_cas_catches_write_after_durable_preview(tmp_path, monkeypat
     assert not materials.get("a")["content_sha256"]
     with materials._connect() as db:
         assert db.execute("SELECT COUNT(*) FROM material_storage_audit WHERE task_id='last-gap'").fetchone()[0] == 0
+
+
+def test_full_scan_cursor_counts_readonly_and_rejects_changed_catalog(tmp_path):
+    service, materials, annotations, project = setup_project(tmp_path)
+    source = (project / "uploads/a.png").read_bytes()
+    rows = []
+    for i in range(119):
+        name = f"full-{i:03d}"
+        (project / "uploads" / f"{name}.png").write_bytes(source)
+        rows.append({"id": name, "filename": f"{name}.png", "width": 8, "height": 6})
+    materials.upsert_many(rows)
+    before = {p.relative_to(project): p.read_bytes() for p in project.rglob("*") if p.is_file()}
+    first = service.scan(limit=50)
+    assert first["total"] == 120
+    batches = [first]
+    while batches[-1]["next_cursor"] is not None:
+        batches.append(service.scan(limit=50, cursor=batches[-1]["next_cursor"],
+                                    expected_catalog=first["catalog_fingerprint"]))
+    assert [len(x["items"]) for x in batches] == [50, 50, 20]
+    assert len({row["image_id"] for batch in batches for row in batch["items"]}) == 120
+    assert all(x["catalog_fingerprint"] == first["catalog_fingerprint"] for x in batches)
+    assert before == {p.relative_to(project): p.read_bytes() for p in project.rglob("*") if p.is_file()}
+    (project / "uploads/a.png").unlink()
+    with pytest.raises(RuntimeError, match="STALE"):
+        service.scan(cursor=first["next_cursor"], expected_catalog=first["catalog_fingerprint"])
+    (project / "uploads/a.png").write_bytes(source)
+    first = service.scan(limit=50)
+    annotations.upsert("a", [], annotation_state="unannotated", project_material=False)
+    with pytest.raises(RuntimeError, match="STALE"):
+        service.scan(cursor=first["next_cursor"], expected_catalog=first["catalog_fingerprint"])
+    first = service.scan(limit=50)
+    materials.upsert_many([{**materials.get("full-000"), "filename": "updated-name.png"}])
+    with pytest.raises(RuntimeError, match="STALE"):
+        service.scan(cursor=first["next_cursor"], expected_catalog=first["catalog_fingerprint"])
+
+
+def test_scan_reports_gt_and_thumbnail_anomalies_without_writing(tmp_path):
+    service, materials, annotations, project = setup_project(tmp_path)
+    annotations.upsert("a", [], annotation_state="unannotated", project_material=False)
+    materials.upsert_many([{**materials.get("a"), "thumbnail_path": "thumbnails/missing.jpg"}])
+    result = service.scan()
+    assert "thumbnail_issue" in result["items"][0]["categories"]
+    materials.upsert_many([{**materials.get("a"), "annotation_version": 999}])
+    item = service.scan()["items"][0]
+    assert "gt_issue" in item["categories"] and "conflict" in item["categories"]
