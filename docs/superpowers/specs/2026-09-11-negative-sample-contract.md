@@ -1,3 +1,7 @@
+## 2026-10-23 V3任务级已审核纯负样本补充
+
+用户明确要求新任务对已人工审核、scope覆盖本次全部有效类别且不含任何本次目标的图片保留原始内容，空YOLO文件不代表漏标。唯一进度见[训练质量专项P1](../../TRAINING_QUALITY_REMEDIATION_TRACKER_2026_10_18.md)。新合同冻结reviewed_negative_original_v3_preserve_selected；原GT仍保留其他类别框。混合正样本继续原V2保护选中目标像素；未审核/漂移素材拒绝。无V3字段的历史任务保持原冻结策略，不以新代码改变历史证据。该规则不恢复未经审核的filtered_by_training_labels，不删除旧V1/V2及审计守卫。
+
 # v42.25 Negative Sample Contract
 
 日期：2026-09-11  
