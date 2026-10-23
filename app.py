@@ -23991,6 +23991,15 @@ from platform_core.external_algorithm_publish import (
 from platform_core.material_batches import material_batch_router
 from platform_core.training_material_picker_api import training_material_picker_router
 from platform_core.training_recovery_api import training_recovery_router
+from platform_core.legacy_material_compatibility_api import legacy_material_compatibility_router
+from platform_core.legacy_material_compatibility import LegacyMaterialCompatibilityService
+
+app.include_router(legacy_material_compatibility_router(
+    lambda project_id: LegacyMaterialCompatibilityService(DATA_DIR, project_id,
+        enabled=os.environ.get('LEGACY_MATERIAL_COMPATIBILITY_ENABLED', '1').strip().lower() not in {'0', 'false', 'off'}),
+    _material_governance_actor,
+))
+
 from platform_core.remote_execution_transport import (
     RemoteExecutionTransportError,
     RemoteExecutionTransportService,

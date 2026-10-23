@@ -4967,7 +4967,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   '总览':'总览','质量中心':'总览',
   '算法列表':'算法生成','训练任务':'算法生成','训练资源':'高级功能',
   '素材接入':'数据中心','数据集':'数据中心','视频切帧':'数据中心','自动标注':'数据中心','自动标注及清洗':'数据中心','标签管理':'数据中心',
-  '模型配置':'高级功能','部署资源':'高级功能','部署插件':'高级功能','组件检测':'高级功能','存储配置':'高级功能',
+  '模型配置':'高级功能','部署资源':'高级功能','部署插件':'高级功能','组件检测':'高级功能','存储配置':'高级功能','旧素材兼容迁移':'高级功能',
   '平台对接':'系统与对接','畅联云数据':'系统与对接','服务节点':'系统与对接',
  });
  renderTop=function renderTopCanonical413(){
@@ -5073,7 +5073,7 @@ const LABEL_SCHEMA_CACHE_TTL_MS=2*60*1000;
       {title:'数据中心',items:['数据集','视频切帧','自动标注及清洗','标签管理']},
     ];
     if(state.v427Advanced)groups.push(
-      {title:'高级功能',items:['训练资源','模型配置','部署资源','存储配置','组件检测','服务节点']},
+      {title:'高级功能',items:['训练资源','模型配置','部署资源','存储配置','旧素材兼容迁移','组件检测','服务节点']},
       {title:'系统与对接',items:['平台对接','畅联云数据']}
     );
     document.getElementById('nav').innerHTML=`${groups.map(g=>`<div class="nav-group"><div class="nav-group-title">${g.title}</div>${g.items.map(n=>`<button class="nav-btn ${state.page===n?'active':''}" onclick="if(!this.classList.contains('active'))setPage('${n}')"><span class="nav-left"><i>${icon414[n]||'•'}</i><b>${n}</b></span><span class="nav-arrow">›</span></button>`).join('')}</div>`).join('')}<div class="nav-advanced427"><button onclick="toggleAdvanced427()">${state.v427Advanced?'收起高级功能':'展开高级功能'}</button></div><div class="nav-night-isolated"><button type="button" class="nav-btn nav-night-isolated-btn ${state.page==='AI算法底座'?'active':''}" onclick="if(!this.classList.contains('active'))setPage('AI算法底座')" title="AI算法底座 · 独立演示模块"><span class="nav-night-isolated-main"><span class="nav-left"><i aria-hidden="true">◈</i><b>AI算法底座</b></span><small>独立业务演示系统</small></span><span class="nav-arrow" aria-hidden="true">›</span></button></div><div class="nav-footer"><span>Version</span><b>v${esc(state.versionInfo?.version||'—')}</b></div>`;

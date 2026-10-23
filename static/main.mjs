@@ -1,4 +1,5 @@
 import {installQualityDetectionWorkbench} from './modules/quality-detection-workbench.js?v=20261022a';
+import {renderLegacyMaterialCompatibility} from './modules/legacy-material-compatibility.js?v=20261023';
 import {createAnnotoriousEditor} from './modules/annotorious-editor.js?v=20261022a';
 import {annotationColor,withLegacyBoxIdentities} from './modules/annotation-geometry-adapter.js?v=20261022a';
 import {installConversionCatalogRuntime} from './modules/conversion-catalog-runtime.js?v=2';
@@ -493,6 +494,7 @@ const canonicalWindowPageOwners = [...canonicalWindowPageRenderers].map(([page, 
     return renderer();
   })
 ));
+navigationStabilityRuntime.registerPageOwner('旧素材兼容迁移', () => renderLegacyMaterialCompatibility({projectId:()=>state.project?.id, notify}));
 // Dedicated isolated demo page owner; no Training/Material/Agent/Task owner reuse.
 const unregisterPrisonNightPageOwner = navigationStabilityRuntime.registerPageOwner(
   'AI算法底座', () => renderPrisonNightInspectionPage()

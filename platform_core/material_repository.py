@@ -1268,11 +1268,12 @@ class MaterialRepository:
                 db.rollback()
                 raise
 
-    def reconcile_storage_batch(self, task_id, source_id, changes):
+    def reconcile_storage_batch(self, task_id, source_id, changes, *, expected_revision=None, expected_payloads=None):
         with material_annotation_lifecycle_fence(self.project_path):
-            return self._reconcile_storage_batch_locked(task_id, source_id, changes)
+            return self._reconcile_storage_batch_locked(task_id, source_id, changes,
+                expected_revision=expected_revision, expected_payloads=expected_payloads)
 
-    def _reconcile_storage_batch_locked(self, task_id, source_id, changes):
+    def _reconcile_storage_batch_locked(self, task_id, source_id, changes, *, expected_revision=None, expected_payloads=None):
         """Preserve annotation payload and atomically audit idempotent metadata patches."""
         changes = list(changes)
         if len(changes) > 500:
@@ -1280,9 +1281,31 @@ class MaterialRepository:
         with closing(self._connect()) as db:
             db.execute('BEGIN IMMEDIATE')
             try:
+                if expected_revision is not None and self._revision(db) != expected_revision:
+                    raise RuntimeError("LEGACY_COMPATIBILITY_STALE")
+                if expected_payloads is not None:
+                    for image_id, expected in expected_payloads.items():
+                        row = db.execute("SELECT payload_json FROM materials WHERE id=?", (image_id,)).fetchone()
+                        if row is None or row[0] != expected:
+                            raise RuntimeError("LEGACY_COMPATIBILITY_STALE")
                 db.execute('CREATE TEMP TABLE changes(object_key TEXT PRIMARY KEY,payload TEXT)')
                 db.executemany('INSERT INTO changes VALUES(?,?)',
                                ((r['object_key'], json.dumps(r)) for r in changes))
+                if expected_payloads is not None:
+                    affected = db.execute(
+                        "SELECT m.id,m.payload_json,m.storage_source_id,m.storage_type,m.object_key,"
+                        "m.content_sha256,m.size_bytes,m.etag FROM materials m JOIN changes c USING(object_key) "
+                        "WHERE m.storage_source_id=?", (source_id,),
+                    ).fetchall()
+                    if {row["id"] for row in affected} != set(expected_payloads):
+                        raise RuntimeError("LEGACY_COMPATIBILITY_STALE")
+                    for row in affected:
+                        normalized = normalize_material(json.loads(expected_payloads[row["id"]]))
+                        if any(row[field] != normalized[field] for field in
+                               ("storage_source_id", "storage_type", "object_key", "content_sha256", "size_bytes", "etag")):
+                            raise RuntimeError("LEGACY_COMPATIBILITY_STALE")
+                    if db.execute("SELECT 1 FROM material_storage_audit WHERE task_id=? LIMIT 1", (task_id,)).fetchone():
+                        raise RuntimeError("LEGACY_COMPATIBILITY_TASK_CONFLICT")
                 cursor = db.execute('SELECT m.id,m.payload_json,c.payload FROM materials m '
                     'JOIN changes c USING(object_key) LEFT JOIN material_storage_audit a '
                     'ON a.task_id=? AND a.image_id=m.id WHERE m.storage_source_id=? AND a.image_id IS NULL',
