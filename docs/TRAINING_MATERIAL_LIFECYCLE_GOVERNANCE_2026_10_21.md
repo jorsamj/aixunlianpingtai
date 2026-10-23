@@ -1,14 +1,14 @@
-## 2026-10-23｜第二阶段接续：核心链路已实现，最终SHA CI待验收
+## 2026-10-23｜第二阶段接续：第二阶段代码及隔离CI已验收（生产未操作）
 
 本轮附件48129ab7需求正式接续，基线HEAD `5b79f35d81670fd3cb16346fe01b61eeb508b6ed`/VERSION42.24.377，fetch远端仍3cc331f2，无分叉。5944及前阶段所有提交和两份未提交模板测试保留，不扩大模板功能，不重审全仓、不重复建设已有API。
 
 |任务|优先级/状态|本轮计划与验收|
 |--|--|--|
-|S2-01 远程按需准备|P0/已完成待验收|Prepare仅索引；正式Agent执行lease之后获取冻结Manifest/逐图受控读取；原StorageManager.open_reader与原materializer复用；旧ZIP schema合同保留兼容；RED→GREEN验证排队无副本、冻结GT、SHA与隔离|
-|S2-02 自动安全回收|P0/已完成待验收|原资格/隔离删除/回执接实际终态及重启恢复，无法证明进程死亡则等待，原图/共享cache/模型/Checkpoint不删除|
-|S2-03 详情人工释放与历史只读扫描|P1/已完成待验收|复用原API/详情，真实占用/资格/原因/进度；历史仅dry-run不可执行生产删除|
-|S2-04 旧素材兼容检测及最小迁移|P1/已完成待验收|原图不搬迁、image_id与GT版本不变，只修经证据确认的元数据，备份/CAS/批次幂等恢复|
-|S2-05 缩略图及受控原图物理回收|P2/已完成待验收|在前述P0/P1后补真实缺口，区分逻辑字节与实际空间，OSS/NAS/GPU无法现场核验则NOT VERIFIED|
+|S2-01 远程按需准备|P0/已验收|Prepare仅索引；正式Agent执行lease之后获取冻结Manifest/逐图受控读取；原StorageManager.open_reader与原materializer复用；旧ZIP schema合同保留兼容；RED→GREEN验证排队无副本、冻结GT、SHA与隔离|
+|S2-02 自动安全回收|P0/已验收|原资格/隔离删除/回执接实际终态及重启恢复，无法证明进程死亡则等待，原图/共享cache/模型/Checkpoint不删除|
+|S2-03 详情人工释放与历史只读扫描|P1/已验收|复用原API/详情，真实占用/资格/原因/进度；历史仅dry-run不可执行生产删除|
+|S2-04 旧素材兼容检测及最小迁移|P1/已验收|原图不搬迁、image_id与GT版本不变，只修经证据确认的元数据，备份/CAS/批次幂等恢复|
+|S2-05 缩略图及受控原图物理回收|P2/已验收|在前述P0/P1后补真实缺口，区分逻辑字节与实际空间，OSS/NAS/GPU无法现场核验则NOT VERIFIED|
 
 关键设计取舍：原远程载荷resolver在正式execution lease建立前调用，禁止在那里获取图片。新输入协议使用schema3冻结索引描述；Agent取得真实owner后使用现有node-executor鉴权/代次栅栏读Manifest和源流，所有存储类型复用StorageManager驱动，不在控制端落整份原图缓存/ZIP。替代方案“选定Worker后控制端打包”仍提前复制且留第二份整集，拒绝；直接暴露任意绝对路径或下发存储凭据也不采用。旧schema1/2已排队ZIP保持严格身份/哈希验证兼容，不重写历史任务。元数据可传输，图片/YOLO目录只能在实际Agent执行工作目录物化；冻结GT不能被当前数据库内容替代。
 
@@ -151,6 +151,26 @@ cd4fec7acc89a2edfb2e5590a6e75ea752584fb3的Frontend Runtime Node发现唯一过�
 原单元新增三参数（未知epoch/已归档重复best/last/大小不符）真实RED3→GREEN，联合真实子进程成功接线、原失败/不可读保护7通过22未选。主线程再核indexed路径发现1失败2通过：已核验的母模型原在model/base.pt被正确保守保留；现把该输入移至原input/model/专用子目录，继续原下载SHA/size校验，不把任意model目录加入删除白名单。原成功整目录消失断言保留，并补实际Worker args输入路径，三条indexed最终3通过26未选。未扩大训练模板/后台状态，不重复全仓测试；额外Checkpoint保留在Agent本地原generation，尚未扩成新的归档模型版本，不承诺它已上传平台。
 
 上述Checkpoint修正的新提交仍须准确SHA CI，S2-02保持已完成待验收；不能将5034的21/55借用为新提交验收。
+
+### 最终代码验收回执与文档自身SHA（2026-10-23）
+
+最终业务代码：[42339bd4da00d5f0ea082f2fd16791564bdb990a](https://github.com/jorsamj/aixunlianpingtai/commit/42339bd4da00d5f0ea082f2fd16791564bdb990a)，VERSION **42.24.378**。实际分页取得 **23/23 Actions、62/62 Checks**，每项head_sha严格相同且completed/success，失败/取消/跳过/运行中均0。独立窄范围只读审查该Checkpoint修正未发现确定P0/P1，不取代测试。S2-01–05在本文明确支持范围内标为已验收，指代码和隔离验收，不是生产部署/数据治理完成。
+
+|关键CI|准确运行|绑定SHA|结果|
+|--|--|--|--|
+|Frontend Runtime Stabilization|[run39907205094](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39907205094)|42339bd4da00d5f0ea082f2fd16791564bdb990a|success|
+|Remote Training Runtime|[run39907209414](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39907209414), [run39907205002](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39907205002)|42339bd4da00d5f0ea082f2fd16791564bdb990a|success|
+|Storage Cache Governance|[run39907209329](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39907209329)|42339bd4da00d5f0ea082f2fd16791564bdb990a|success|
+
+本次准确代码SHA的Frontend日志：Node **1305/1305**，Chrome **244/244**通过。此前素材原子性[run39903047831](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39903047831)绑定cd4fec7acc89a2edfb2e5590a6e75ea752584fb3，分步152/30/116通过，其中legacy+原图回收30项Linux无skip，补验本机符号链接限制；这项旧SHA结果明确独立记录，未冒充42339的新运行。存储相关58 Python及21 Node通过已在各自准确日志留证。额外Checkpoint最后本地定向7+3（共10个不同场景）通过；核心存储Chrome5项加CI失败补核标注2项，本地不同场景7项，重复执行不重复计数；没有手动全仓Python/Node/244Chrome重复跑。首推/接线/依赖/HTTP版本/坏图及跨帧夹具的实际FAIL和修正保留上述记录，不以测试删除、放宽断言或跳过安全限制取得绿色。
+
+阶段补充提交：用量/发行c077c3e7d2e5f46daf2fbf74cd1c6c7bfa9bd108；CI环境合同cd4fec7acc89a2edfb2e5590a6e75ea752584fb3；导航精确断言7d0db97efd4c9c0060281caf5ac7f64f52418443；Chrome夹具5034b1fbc62b2bf0242967baaf350243c3e56284（独立21/55及Chrome244通过）；成功Checkpoint保护42339bd4da00d5f0ea082f2fd16791564bdb990a。原5944及前阶段全部提交为祖先，两个未提交训练模板测试始终保留，其他工作树未覆盖。
+
+本轮所有生产操作仍为**未执行**：未部署、未迁移生产数据库、未清理历史Bundle/原图/GT/模型/Checkpoint/OSS/NAS、未真实GPU训练。51GB/31GB/20GB没有重新现场盘点，实际释放量未知；本轮不能承诺全局原图已物理单份，不能把逻辑退役/删除字节当物理释放。额外Checkpoint安全保留在Agent原generation，尚未自动注册新模型版本；真实OSS/NAS、跨服务器性能/断网/旧节点、大库及GPU为NOT VERIFIED。旧快照无inventory_complete时缓存量保守未获取，等待原维护采样，不另加扫描。
+
+证据副本位于本机visualizations/2026/10/21/01a15d6e-6553-7640-9e31-04ade914aca9/storage-lifecycle-second-stage-20261023；GitHub上述绑定提交日志为远端依据，不含凭据。本文及AGENTS/CODEX_CURRENT_STATE的这次更新仅补验收，不改业务/VERSION。**文档补提的新HEAD必须独立再查全部已触发Actions/Checks，不能借42339绿色；文档自身提交身份由git log -1 --format=%H -- docs/TRAINING_MATERIAL_LIFECYCLE_GOVERNANCE_2026_10_21.md获取，最终回执为同证据目录storage-ci-final.json及该实际提交GitHub Checks。** 不为把SHA写回自身而循环产生文档提交；最终交付完整SHA由实际Git及GitHub核对后报告。
+
+下一阶段仅生产前只读核验方案/获批后的受控升级，不自动执行。实际配置、GT/原图可达性、节点混版本、活动/恢复消费者、历史ownership及磁盘量应先核；任何生产部署、元数据迁移或物理释放须分别另行授权。临时兼容工具可关闭/移除，不重复建设已有Storage/Material/Annotation/BundleCache/Task Owner。本文顶部及最终17项回答是当前唯一专项交接依据，较早阶段未实现/待做/未推送描述是历史时点。
 
 ### 接续指令
 
