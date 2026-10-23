@@ -1,6 +1,6 @@
 ## 2026-10-23 P2接续入口
 
-[唯一评测专项](SCENARIO_MODEL_EVALUATION_UI_GOVERNANCE_2026_10_22.md)顶部P2为当前进度；原Owner复用，新增AdvancedEvaluation仅负责展示，不拥有GT/任务/存储/候选；最终SHA CI待核。
+[唯一评测专项](SCENARIO_MODEL_EVALUATION_UI_GOVERNANCE_2026_10_22.md)顶部P2为当前进度；原Owner复用，新增AdvancedEvaluation仅负责展示，不拥有GT/任务/存储/候选；代码9280实际21/21 Actions、55/55 Checks通过；文档新SHA另核，生产未验证。
 
 ## 2026-10-20 转换Weight恢复增量
 

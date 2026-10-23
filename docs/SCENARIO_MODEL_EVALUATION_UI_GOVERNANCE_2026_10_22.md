@@ -20,11 +20,11 @@
 | 编号 | 状态 | 涉及模块/剩余工作 | 提交及证据 |
 |---|---|---|---|
 | P2-A 审计 | 已验收 | 原Owner及缺口已核；存储/GT/Worker不重建 | 基线a0885f6f及本节实绩 |
-| P2-A1 数据可信度 | 已完成待验收 | 冻结身份/泄漏/GT/覆盖API和Tab；时间/dHash等缺证据明确未知 | 21e0d816，见下文RED/GREEN；最终CI待核 |
-| P2-A2 逐框诊断 | 已完成待验收 | 原匹配IoU/索引、全体轻量outcomes、最多200图框证据和分页 | 7b12c789；未保存/截断不补造 |
-| P2-B 深度对比 | 已完成待验收 | 同基准/同GT逐图配对与同步AB；无证据明确未知 | e6fb1a8c；最终CI待核 |
-| P2-C 复核迭代衔接 | 已完成待验收 | 原反馈/CandidateSet/训练入口及Test保护；无自动训练 | d4aec96c；原反馈/CandidateSet/训练草稿定向通过 |
-| P2-F 最终验收 | 进行中 | VERSION379/静态缓存425；Chrome28/Node82+版本9及分批Python通过；推送/CI待核 | 不借旧CI |
+| P2-A1 数据可信度 | 已验收 | 冻结身份/泄漏/GT/覆盖API和Tab；时间/dHash等缺证据明确未知 | 21e0d816，见下文RED/GREEN；代码9280准确CI通过；文档新SHA独立核查 |
+| P2-A2 逐框诊断 | 已验收 | 原匹配IoU/索引、全体轻量outcomes、最多200图框证据和分页 | 7b12c789；未保存/截断不补造 |
+| P2-B 深度对比 | 已验收 | 同基准/同GT逐图配对与同步AB；无证据明确未知 | e6fb1a8c；代码9280准确CI通过；文档新SHA独立核查 |
+| P2-C 复核迭代衔接 | 已验收 | 原反馈/CandidateSet/训练入口及Test保护；无自动训练 | d4aec96c；原反馈/CandidateSet/训练草稿定向通过 |
+| P2-F 最终验收 | 已验收 | VERSION379/静态缓存425；Chrome28/Node82+版本9及分批Python通过；已正常推送；代码CI通过 | 9280实际21/21 Actions、55/55 Checks，不借旧CI |
 
 执行：每阶段新增必要安全RED→最小实现→对应现有Python/Node及少量Chrome→独立正常提交并更新本节。相同代码已通过测试不重复执行；只复用受影响原CI，不扩大全仓测试。生产部署、GT/模型/素材写入和真实训练禁止。本节持续追加实际命令/通过失败跳过/缺口，不把设计当实现。
 
@@ -71,7 +71,7 @@ C实际提交d4aec96cb45aca8f669c78554b846082a7d827db。收尾VERSION42.24.379�
 
 ### 首轮最终 SHA CI 与定向修正（2026-10-23）
 
-正常推送 e3a373edd1b804743a048f9f0e17989667c403b2 后按该 SHA 核验，未借基线绿色。首轮49个Actions中发现2处失败（其余等待完成）：Frontend Runtime Stabilization 原导航源码守卫要求保留原精确接线；Node Agent Executor 的 Windows 成功用例在固定1.2秒模拟阶段窗口中偶发漏过1秒采样的first_batch心跳，其余模型/成果/清理断言通过，同文件372通过1失败。原日志与官方Checks保留，不将该SHA写成通过。
+正常推送 e3a373edd1b804743a048f9f0e17989667c403b2 后按该 SHA 核验，未借基线绿色。首轮49个Actions的检查中先后发现导航守卫及Agent两处失败（工作流尚在执行时的快照）：Frontend Runtime Stabilization 原导航源码守卫要求保留原精确接线；Node Agent Executor 的 Windows 成功用例在固定1.2秒模拟阶段窗口中偶发漏过1秒采样的first_batch心跳，其余模型/成果/清理断言通过，同文件372通过1失败。原日志与官方Checks保留，不将该SHA写成通过。
 
 修正仅恢复原导航守卫表达式并保留新增高级评测deactivate；模拟Worker在原heartbeat实际记录first_batch后才继续，15秒有界失败，不修改Agent生产逻辑，不降低或删除任何原断言。Agent成功目标1通过、相邻失败/取消/独立Test失败合同3通过。另补原SVG检查器的定位几何候选IoU，调用现有sampleEvidenceDiagnostics，不改变正式匹配或指标；原诊断Chrome目标1通过（10.8秒）。main语法及git diff --check通过。下一修正提交必须按其自身SHA再核CI，e3失败不隐瞒、也不代替后续结果。
 
@@ -82,6 +82,14 @@ C实际提交d4aec96cb45aca8f669c78554b846082a7d827db。收尾VERSION42.24.379�
 b009f0b57a40e49a765103f9fa576adbac345cf7 正常推送后32/33 Actions成功、89/90 Checks成功，不能验收为全绿。Node24为1311通过0失败；Agent Windows373通过，前一轮心跳/导航问题已关闭。Chrome248项中246通过2失败：P2诊断用例点击SVG g的整体文字+框包围盒中心，在Linux字体下命中实际框外图片；改为点击真实绘制rect，不使用force、不减少原选中/GT图层/请求/Modal/清理断言，定向Chrome1通过（7.2秒）。第二个原项目清空用例默认5秒等待草稿移除超时；本地原用例1通过（20.0秒），未复现业务失败。确认Worker进程完成早于浏览器1500ms调度轮询及成功ID分页回执消费，fixture改为等待本task真实SUCCEEDED与/results成功响应后执行原5秒草稿断言，不手工触发回调或改生产轮询；修改后目标1通过（19.9秒）。
 
 截图复查另发现96×72隔离图放大时SVG文字最小12被当成原图坐标，造成显示标签过大；原drawStageBoxes改按实际显示缩放计算12px最小字号，保留坐标/框/匹配合同。原诊断用例新增实际文字高度<24px断言，目标1通过（7.1秒），此前图片证据仍保留。实际失败日志：https://github.com/jorsamj/aixunlianpingtai/actions/runs/39931102586/job/120339305849 。本轮不修改工作流、不跳过任何失败用例；修正提交自身仍需重新核验准确CI。
+
+### P2 最终代码验收与文档接续（2026-10-23）
+
+代码修正提交 9280c91244c1efbbd259f5d70ff3ccfbab3e3b9a 已正常推送长期分支，GitHub API按准确head_sha逐项核验：21/21 Actions、55/55 Checks成功，无失败/取消/跳过。VERSION42.24.379。前端Node24测试1311/1311、真实Chrome248/248（12.6分钟）通过，均从同SHA日志核验，不以本地28场景代替。上轮b009的Node1311/1311、Agent Windows373通过仅作对应提交的定向证据，不代替9280最终回执。首轮e3失败和修正经过见上节；未删除测试、降低断言或修改CI工作流。
+
+本节更新本身形成新的文档提交，其实际HEAD及GitHub Checks必须再次独立读取并确认全绿后交付；新会话以本文件所在提交及其官方Checks为最终依据，禁止把9280绿色自动继承给未核查的新SHA。官方回执入口：https://github.com/jorsamj/aixunlianpingtai/commit/9280c91244c1efbbd259f5d70ff3ccfbab3e3b9a/checks ，前端工作流 https://github.com/jorsamj/aixunlianpingtai/actions/runs/39933562202  。
+
+阶段验收仅限代码、隔离数据及上述证据：真实近重复/连续帧、完整人工审核版本缺证据，生产97%可信度、NAS/OSS/GPU与大规模性能未验证；可视框200图/每层120边界保持。未部署生产、未修改生产GT/模型/素材、未启动真实训练。5944祖先及两份未跟踪训练模板测试保留。下一阶段从下列未覆盖项及原Owner接续，不重新建设存储、GT、Worker、评测或CandidateSet。
 
 ### 必须保留的未覆盖项与接续
 
