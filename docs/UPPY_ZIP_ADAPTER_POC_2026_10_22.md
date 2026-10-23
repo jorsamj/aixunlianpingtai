@@ -1,4 +1,4 @@
-## 2026-10-23｜普通图片上传统一与本次上传处理（进行中）
+## 2026-10-23｜普通图片上传统一与本次上传处理（代码及隔离CI已验收）
 
 本节为本轮唯一需求、进度及接续；原ZIP/任务中心验收记录保留。基线5cb25c3ce06e2a4c174814a7c6eb4775bcdeae41，VERSION42.24.380，fetch0/0；5944及两份未跟踪训练模板测试保留，不部署生产或修改历史素材/GT/模型。
 
@@ -13,11 +13,11 @@
 - D：原decisions API和Cleaning/Annotation重用，逐批显式提交/防重/重试，GT状态不因ready变化。必要后端合同缺口最小修复。
 - E：必要Python/Node、真实五图/部分失败/65图顺序分批/刷新/GT/ZIP冒烟；阶段提交，最终准确SHA CI及文档更新。生产真实吞吐未验证，不以隔离数代替。
 
-状态：A审计已完成，B–D代码已完成待验收，E本地定向验证通过、准确提交CI进行中。具体证据与发现的问题见下节。
+状态：A–E已验收（隔离代码/CI范围），生产仍未验证。具体证据与发现的问题见下节。
 
 ### 普通图片本轮实现与限定验收（2026-10-23）
 
-A–D代码已完成待最终CI验收。原传输Owner增加外部view事件及会话指针；新uppy-image-view仅接官方addUploader，复用ZIP的本地官方加载器，没有新增上传协议、数据库、队列或依赖。upload-confirmation读取原v55批次/决策，48条分页、原缩略图/大图、跨批选择及失败明细，既有素材Owner提供入口/恢复。原图、GT、标签、清洗Worker及正式标注Owner不变；app.js仅允许原预览接收离页图片并隐藏其旧决策按钮，避免绕过批次合同。
+A–D代码已完成并通过修正提交的隔离CI验收。原传输Owner增加外部view事件及会话指针；新uppy-image-view仅接官方addUploader，复用ZIP的本地官方加载器，没有新增上传协议、数据库、队列或依赖。upload-confirmation读取原v55批次/决策，48条分页、原缩略图/大图、跨批选择及失败明细，既有素材Owner提供入口/恢复。原图、GT、标签、清洗Worker及正式标注Owner不变；app.js仅允许原预览接收离页图片并隐藏其旧决策按钮，避免绕过批次合同。
 
 RED→GREEN：真实Chrome先发现完成Uppy及底层旧上传选择Modal遮挡确认页，改为通过原Modal生命周期仅关闭所属窗口；checkbox的通用data-action被全局ActionRegistry拦截，改为本模块专属data-upload-action；进入页面触发restore抢占open的generation、遗留loading，新增Node复现失败后为正在读取的Owner加恢复防重，7/7通过。没有降低点击、GT或请求数断言。
 
@@ -37,6 +37,15 @@ npx playwright test tests/browser/uppy-zip-poc.spec.mjs --grep 'Chinese local la
 恢复边界：浏览器只存project/request/batch指针及计数；回执是唯一成功ID和decision来源。未取得回执显示“待核验入库”，30秒截止可重新查询，不能盲目重新上传；重选仅允许明确失败文件名，同名成功/失败无法可靠区分时禁用快捷重试。稍后处理仅延后入口、不改变pending。ready仅进入原标注队列，不自动产生框、confirmed_empty或正式GT。已有后端每批只允许一个清洗任务，本轮遵守该合同：已创建清洗任务的同批剩余图片只能直接标注或稍后处理，不重复创建/修改原任务；未来追加清洗需另审合同。生产吞吐/NAS/OSS/现场大数据未验证。
 
 提交：审计和后端合同证据bede07ff69340199d3bbe881725719b2de6a2909；前端实现422f56a0790b0f2449ddbfb65aa50874fbab5f34、VERSION42.24.381已正常推送长期分支。该提交CI实际42/43 Actions、117/118 Checks通过，前端Chrome249通过1失败：旧material-workflows用例仍查找已按需求取消的上传完成弹窗。已将同一用例更新为本批页面、真实v55 clean/ready请求、原标注和unannotated合同断言，本地单例1/1通过，未删除用例或减少业务检查；其修正提交最终CI另核，不以旧提交绿色冒充本轮。接续仅处理本轮失败检查，禁止重建上传、清洗或GT Owner。5944祖先和两份未跟踪模板测试保留，未生产操作。
+
+### 普通图片最终代码验收与接续回执
+
+- 审计/后端合同：bede07ff69340199d3bbe881725719b2de6a2909；功能代码：422f56a0790b0f2449ddbfb65aa50874fbab5f34；旧用例适配修正：**646aeb0a1c005f38532f96a5fea1eaf95ead576a**，VERSION **42.24.381**，均已正常推送唯一长期分支。
+- 最终代码修正SHA实际 **22/22 Actions、58/58 Checks成功，0失败/取消/跳过/运行中**。精确SHA证据：[Commit Checks](https://github.com/jorsamj/aixunlianpingtai/commit/646aeb0a1c005f38532f96a5fea1eaf95ead576a/checks)、[真实Chrome250/250](https://github.com/jorsamj/aixunlianpingtai/actions/runs/39969940372)。首代码CI的上传等42个已通过工作流记录保留；不把首失败写成全绿。
+- 本地必要验证：Python31/31、Node51/51，普通图片四个独立Chrome场景（65图、5成功、4成功1失败、原单/多上传流程）和ZIP冒烟1个通过；远端原前端Node1322/1322、修正SHA Chrome250/250通过。最后测试修改只有旧页面期望改成新页面/正式批次合同，产品代码未变化。
+- 5944祖先和两份未跟踪训练模板测试保留；推送前远端0/0，无覆盖、强推、生产部署/扫描/素材或GT修改/GPU操作。
+- 本次回执补提仅更新文档；其自身HEAD的CI必须独立查看该提交Checks并在最终交付核验，不能用上述代码SHA代替。无需因文档补提重复本地代码测试。文档自引用不写尚不存在的SHA，最终实际HEAD以GitHub分支及交付报告为准。
+- 下一会话从本节、material-upload-runtime、uppy-image-view、upload-confirmation及既有v55 UploadBatchStore开始。不要再重建上传/清洗/GT体系，不扩大训练模板。生产现场吞吐/外部存储仍NOT VERIFIED；同批追加第二清洗任务的既有限制若需改变，应先审原后端任务身份合同。本轮已完成范围之外不自动迁移或回收数据。
 
 > 最新接续：6A原UploadTaskCenter稳定性补充。旧Uppy验收仍有效；本轮准确SHA验收独立记录在6A.3。
 

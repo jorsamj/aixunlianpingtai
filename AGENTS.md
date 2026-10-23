@@ -1,6 +1,6 @@
-## 2026-10-23｜普通图片Uppy与本次上传处理（代码完成待CI）
+## 2026-10-23｜普通图片Uppy与本次上传处理（代码及隔离CI已验收）
 
-唯一进度：[Uppy专项普通图片节](docs/UPPY_ZIP_ADAPTER_POC_2026_10_22.md)。原multipart64张/128MB顺序Owner、UploadBatchStore及唯一任务中心复用；本地中文Uppy、48条本批确认页、真实失败/待核验、刷新恢复、原清洗/标注已接通，ready不写GT。Python31、必要Node及Chrome五图/部分失败/65分批/ZIP冒烟通过；VERSION381，代码422f56a0首CI42/43，旧上传弹窗用例适配新回执页后本地1/1通过，修正提交最终CI待专项回执。每批仅一个原清洗任务限制保留；生产未验证/未部署/未写入，5944及两份模板测试保留。
+唯一进度：[Uppy专项普通图片节](docs/UPPY_ZIP_ADAPTER_POC_2026_10_22.md)。原multipart64张/128MB顺序Owner、UploadBatchStore及唯一任务中心复用；本地中文Uppy、48条本批确认页、真实失败/待核验、刷新恢复、原清洗/标注已接通，ready不写GT。Python31、必要Node及Chrome五图/部分失败/65分批/ZIP冒烟通过；VERSION381，修正646aeb0a实际22/22 Actions、58/58 Checks、Chrome250/250与Node1322/1322通过；本次文档自身HEAD另核Checks。每批仅一个原清洗任务限制保留；生产未验证/未部署/未写入，5944及两份模板测试保留。
 
 ## 2026-10-23｜旧素材全面检查体验修复
 
