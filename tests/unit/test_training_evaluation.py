@@ -5,6 +5,39 @@ from PIL import Image
 import platform_core.training_evaluation as evaluation
 
 
+def test_p2_trust_checks_frozen_sha_leaks_without_changing_truth():
+    from copy import deepcopy
+    from platform_core.evaluation_analysis import analyze_evaluation_trust
+    snapshot = {'snapshot_id': 'a' * 64, 'schema_version': 3,
+        'ids': {'train': ['train'], 'validation': ['val'], 'test': ['test']},
+        'label_schema': [{'class_id': 0, 'code': 'fire'}],
+        'images': [{'image_id': image_id, 'role': role, 'content_sha256': 'b' * 64,
+                    'annotation_hash': digest * 64, 'annotation_state': 'annotated',
+                    'labels': ['fire'], 'group_id': 'event-1'}
+                   for image_id, role, digest in [('train', 'train', 'c'), ('val', 'validation', 'c'), ('test', 'test', 'd')]]}
+    original = deepcopy(snapshot)
+    result = analyze_evaluation_trust({}, snapshot, {})
+    checks = {row['code']: row for row in result['checks']}
+    assert checks['cross_split_sha256']['status'] == 'risk'
+    assert checks['same_sha_different_gt']['status'] == 'risk'
+    assert checks['source_isolation']['status'] == 'risk'
+    assert checks['identity']['status'] == 'insufficient_evidence'
+    assert checks['near_duplicate']['status'] == 'not_checked'
+    assert checks['video_time']['status'] == 'insufficient_evidence'
+    assert 'score' not in result and snapshot == original
+
+
+def test_p2_trust_missing_metadata_and_uncovered_classes_never_pass():
+    from platform_core.evaluation_analysis import analyze_evaluation_trust
+    result = analyze_evaluation_trust({}, {}, {})
+    assert not any(row['status'] == 'passed' for row in result['checks'])
+    snapshot = {'images': [{'image_id': 'one', 'role': 'test', 'annotation_state': 'unannotated'}],
+                'label_schema': [{'class_id': 0, 'code': 'fire'}, {'class_id': 1, 'code': 'smoke'}]}
+    result = analyze_evaluation_trust({}, snapshot, {})
+    assert next(row for row in result['checks'] if row['code'] == 'ground_truth')['status'] == 'risk'
+    assert all(row['status'] == 'not_covered' for row in result['coverage'])
+
+
 def test_blind_evaluation_finishes_all_predictions_before_reading_hidden_ground_truth(tmp_path: Path, monkeypatch):
     images = tmp_path / "images"
     ground_truth = tmp_path / "hidden"

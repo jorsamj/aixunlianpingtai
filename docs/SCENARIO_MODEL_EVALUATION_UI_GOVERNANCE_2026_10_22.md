@@ -1,5 +1,39 @@
 # 场景算法准确性工作台、素材页及标注UI治理（2026-10-22）
 
+## 2026-10-23｜P2 模型深度评测与迭代优化（唯一接续记录）
+
+用户正式授权在本专项增量实施P2-A1→A2→B→C；下文历史“P2不在本轮”仅指2026-10-22的P0/P1范围。基线a0885f6fe38348deaa6389773e36b8286ce73110 / VERSION42.24.378，fetch后0/0；5944e1a5为祖先，两份未跟踪训练模板测试保留，其他worktree不动。应用会话清单未见其他活动同仓开发，不据此保证不存在外部并行写入；每次推送前再次fetch。
+
+### 需求、审计与最小设计
+
+- 已有：training_evaluation正式盲测/类指标/混淆/阈值曲线、build_evaluation_benchmark_scope、compare_evaluations、iteration_decision、feedback_adoption_outcome、hard_sample_mining和Candidate/Adoption链路。原场景三栏/SVG/同步AB/报告身份读取直接复用；不新增评测引擎、数据库、调度器或素材副本。
+- 部分：错误证据只保留严重程度前200图/每层120框；正确图片缺席不能被解释为正确。现有比较只覆盖指标，缺逐样本改善/退步证据。原split已有SHA/component防漏，清洗已有dHash；不新增ImageHash/Supervision依赖。
+- A1：聚焦只读分析模块读取冻结Snapshot与正式Evaluation，不用当前素材GT替换历史。重建Benchmark身份、核模型/任务/协议/冻结摘要；按SHA与既有source/group查跨划分及内部重复、同SHA不同GT；正式GT状态/类别覆盖显式区分风险、证据不足、未检查。缺少冻结dHash/时间/审核版本不得宣称通过。明细有界分页，不自动删合素材或GT。
+- A2：只在原正式匹配循环补匹配索引/IoU与样本证据；历史仅已存证据可诊断，截断/缺失明确未知。复用原三栏框显示、图片身份API；显示过滤不重算指标。
+- B：复用compare_evaluations前置资格；同一可信GT/图片身份且双方完整匹配证据才能判改善/退步/持续错误/持续正确。缺席样本保持未知，不从旧top200集合差集猜测。AB同步图层复用原组件。
+- C：只接现有复核/挖掘/CandidateSet/Adoption/训练创建/lineage/outcome；冻结Test的image_id与SHA保持服务端拦截。automatic_execution=false、requires_confirmation=true。测试GT更正可复核，不能直接补训后沿用原基准宣称独立提升。
+
+替代方案与风险：否决前端另算TP/FP/FN、全图常驻JSON及新候选表；选择冻结证据只读投影和原正式匹配增强。旧历史无证据无法补造；dHash已有但未冻结时仅未检查；真实NAS/OSS/GPU/生产均NOT VERIFIED，原Ultralytics许可边界不变。
+
+### 阶段清单与验证计划
+
+| 编号 | 状态 | 涉及模块/剩余工作 | 提交及证据 |
+|---|---|---|---|
+| P2-A 审计 | 进行中 | Evaluation/Snapshot、场景UI、Candidate/Adoption准确入口补核 | 基线a0885f6f，只读，无新测试 |
+| P2-A1 数据可信度 | 进行中 | 冻结身份/泄漏/GT/覆盖只读API与高级评测Tab | 未提交；先添加关键合同RED |
+| P2-A2 逐框诊断 | 未开始 | 原匹配证据增强、分页/筛选/三栏 | 未测试 |
+| P2-B 深度对比 | 未开始 | 同基准样本配对与同步AB | 未测试 |
+| P2-C 复核迭代衔接 | 未开始 | 原候选/训练入口/Test保护 | 未测试 |
+| P2-F 最终验收 | 未开始 | 必要Chrome三桌面截图、受影响CI、最终SHA | 不借旧CI |
+
+执行：每阶段新增必要安全RED→最小实现→对应现有Python/Node及少量Chrome→独立正常提交并更新本节。相同代码已通过测试不重复执行；只复用受影响原CI，不扩大全仓测试。生产部署、GT/模型/素材写入和真实训练禁止。本节持续追加实际命令/通过失败跳过/缺口，不把设计当实现。
+
+### P2-A1 本地阶段实绩
+
+新增只读evaluation_analysis.py及原v12 evaluation/trust路由，服务端复用resolve_scenario_model强制成功成果资格；原质量中心增加高级评测，不重构导航。冻结SHA跨/内部重复、同SHA不同GT、group/source交叉和类别覆盖有界明细；不伪造质量分。历史dHash/视频时间/人工审核版本未冻结，明确not_checked/insufficient_evidence，不宣称这些检查已完成。现有Benchmark/模型身份校验不等于生产字节重新审计。
+
+RED：新增Python2项因缺模块失败，Node缺新模块失败。GREEN：原test_training_evaluation.py完整33通过；test_evaluation_diagnostic_image.py的P2资格/只读/分页1通过；scenario-evaluation.test.mjs17通过；真实Chrome新增1场景通过（3桌面宽度、风险/未知、500重试、返回原场景）。浏览器截图由testInfo.outputPath生成p2-before-scenario及p2-trust-1920/1440/1366，1920已人工查看。缺失报告不显示假指标；未跑GPU/生产/全仓。该阶段提交后回填实际SHA；A2/B/C尚未实现，不将禁用Tab当完成。
+
 > 本轮唯一综合需求/进度/问题与接续依据。既有VNext、素材性能与Annotorious文档保留历史，仅增加入口，不复制本轮进度。基线c376be7d5d54cca838dc8456ae2e6906815a5335 / VERSION42.24.376；2026-10-22已重新fetch，远端与本地一致、长期工作树干净。应用会话列表查询超时，未宣称已读取全部其他会话；现存其他worktree不动，推送前再次核验远端与差异。
 
 > **当前结论：P0与P1代码、隔离验收及代码SHA CI已验收，生产未验证。** VERSION42.24.377。业务最终代码42bf33b2bfcc46279c1360632e063f3336f7821e实际23/23 Actions、60/60 Checks通过，CI Chrome239/239。本次文档/旧fixture补提不修改业务；其新HEAD仍须按自身GitHub Checks独立核验，不能继承42bf绿色。下文早期“进行中/未提交”是历史执行留痕，以本段、任务表及末尾最终验收为准。

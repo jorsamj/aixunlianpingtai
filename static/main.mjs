@@ -1,4 +1,5 @@
 import {installQualityDetectionWorkbench} from './modules/quality-detection-workbench.js?v=20261022a';
+import {installAdvancedEvaluation} from './modules/advanced-evaluation.js?v=20261023p2';
 import {renderLegacyMaterialCompatibility} from './modules/legacy-material-compatibility.js?v=20261023';
 import {createAnnotoriousEditor} from './modules/annotorious-editor.js?v=20261022a';
 import {annotationColor,withLegacyBoxIdentities} from './modules/annotation-geometry-adapter.js?v=20261022a';
@@ -186,6 +187,8 @@ window.PlatformCore.runtime.changLianDataBrowserRuntime = changLianDataBrowserRu
 
 const qualityDetectionWorkbench=installQualityDetectionWorkbench({getState:()=>state,api,toast:notify,modal,closeModal,esc});
 window.QualityDetectionWorkbenchRuntime=qualityDetectionWorkbench;
+const advancedEvaluation=installAdvancedEvaluation({getState:()=>state,api});
+window.AdvancedEvaluationRuntime=advancedEvaluation;
 
 const conversionCatalogRuntime = installConversionCatalogRuntime({api,getState:()=>state,modal:(...args)=>modal(...args),closeModal:()=>closeModal()});
 
@@ -451,7 +454,7 @@ const navigationStabilityRuntime = installNavigationStability({
     if (!state.uiReady && window.__v53InitPromise) return window.__v53InitPromise;
     return null;
   },
-  beforeInvokeNavigation: page => {window.toggleMobileSidebarV37?.(false);if(page!=='质量中心')qualityDetectionWorkbench.deactivate();},
+  beforeInvokeNavigation: page => {window.toggleMobileSidebarV37?.(false);if(page!=='质量中心'){qualityDetectionWorkbench.deactivate();advancedEvaluation.deactivate();}},
   knownPages: window.PlatformCore?.navigation?.knownPages || [],
   performNavigation: page => {
     conversionCatalogRuntime.leave();

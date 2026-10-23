@@ -1,5 +1,20 @@
 import {test,expect} from '@playwright/test';
 
+test('P2 advanced trust uses existing qualified models, honest unknowns, retry and page isolation',async({page,request},testInfo)=>{
+  const c=await fixture(page,request);let failed=false,gets=0;
+  await page.route('**/evaluation/trust?**',route=>{gets++;if(failed)return json(route,{detail:'受控可信度读取失败'},500);
+    const parts=new URL(route.request().url()).pathname.split('/');return json(route,{ok:true,project_id:c.project.id,algorithm_id:parts[6],version_id:parts[8],analysis:{checks:[
+      {code:'cross_split_sha256',title:'Train / Val / Test 同图泄漏',status:'risk',count:1,details:[{members:[{image_id:'frozen-test',roles:['train','test']}]}]},
+      {code:'near_duplicate',title:'近重复',status:'not_checked',details:[]},{code:'video_time',title:'视频连续帧',status:'insufficient_evidence',details:[]}],coverage:[{label:'uncovered',status:'not_covered',image_count:0}]}});});
+  await c.open();await page.screenshot({path:testInfo.outputPath('p2-before-scenario.png')});
+  await page.getByRole('button',{name:'高级评测',exact:true}).click();const root=page.locator('[data-advanced-evaluation]');
+  await expect(root).toContainText('存在风险');await expect(root).toContainText('未执行检查');await expect(root).toContainText('证据不足');await expect(root).toContainText('未覆盖');
+  for(const width of [1920,1440,1366]){await page.setViewportSize({width,height:width===1920?1080:width===1440?900:768});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);await page.screenshot({path:testInfo.outputPath(`p2-trust-${width}.png`)});}
+  failed=true;await root.getByRole('button',{name:'刷新证据',exact:true}).click();await expect(root.getByRole('alert')).toContainText('受控可信度读取失败');await expect(root).not.toContainText('正在核验');
+  failed=false;await root.getByRole('button',{name:'重试',exact:true}).click();await expect(root.getByRole('alert')).toHaveCount(0);expect(gets).toBe(3);
+  await page.getByRole('button',{name:'场景算法实测',exact:true}).click();await expect(page.locator('.scenario-workbench')).toBeVisible();await expect(root).toHaveCount(0);
+});
+
 // Real Chrome + isolated real project/algorithm APIs. Model, evaluation and
 // durable task responses below are controlled contracts, not GPU inference.
 const sha=c=>c.repeat(64);

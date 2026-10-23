@@ -11017,6 +11017,35 @@ def evaluation_diagnostic_image_v1(project_id: str, algorithm_id: str, version_i
     return verified_image_response(Path(resolved.path), 'material', expected)
 
 
+def _advanced_evaluation_context(project_id: str, algorithm_id: str, version_id: str):
+    from platform_core.scenario_models import resolve_scenario_model, ScenarioModelUnavailable
+    algorithm, version = _algorithm_version_for_action(project_id, algorithm_id, version_id)
+    try:
+        model = resolve_scenario_model(project_id, project_dir(project_id), algorithm, version,
+            shared_task_repository(), shared_task_artifacts(), use_list_cache=True)
+    except ScenarioModelUnavailable as error:
+        raise HTTPException(status_code=409, detail=f"SCENARIO_MODEL_INELIGIBLE: {error}") from error
+    return version, model
+
+
+@app.get('/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/evaluation/trust')
+def evaluation_trust_analysis(project_id: str, algorithm_id: str, version_id: str,
+                              offset: int = 0, limit: int = 20):
+    from platform_core.evaluation_analysis import analyze_evaluation_trust
+    if offset < 0 or not 1 <= limit <= 50:
+        raise HTTPException(status_code=422, detail="可信度明细分页范围无效")
+    version, model = _advanced_evaluation_context(project_id, algorithm_id, version_id)
+    evaluation = version.get('evaluation') or {}
+    snapshot_id = str(evaluation.get('snapshot_id') or '')
+    snapshot = {}
+    if re.fullmatch(r'[a-f0-9]{64}', snapshot_id):
+        snapshot = read_json(project_dir(project_id) / 'snapshots' / f'{snapshot_id}.json', {})
+    result = analyze_evaluation_trust(evaluation, snapshot, version, verified_model=model,
+                                     detail_offset=offset, detail_limit=limit)
+    return {'ok': True, 'analysis': result, 'project_id': project_id,
+            'algorithm_id': algorithm_id, 'version_id': version_id}
+
+
 @app.get('/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/evaluation/compare/{other_version_id}')
 def compare_version_evaluation(project_id: str, algorithm_id: str, version_id: str, other_version_id: str):
     from platform_core.training_evaluation import compare_evaluations

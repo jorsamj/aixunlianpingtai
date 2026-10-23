@@ -1,6 +1,14 @@
 import test from 'node:test';
+import {trustAnalysisHtml} from '../../static/modules/advanced-evaluation.js';
 import * as evidence from '../../static/modules/scenario-evaluation.js';
 import assert from 'node:assert/strict';
+
+test('P2 trust renders unknown and unchecked separately without invented quality score',()=>{
+ const html=trustAnalysisHtml({checks:[{code:'sha',title:'同图',status:'risk',count:1,details:[{members:[{image_id:'<script>',roles:['train']}]}]},
+  {code:'near',title:'近重复',status:'not_checked',details:[]},{code:'video',title:'连续帧',status:'insufficient_evidence',details:[]}],coverage:[{label:'fire',status:'not_covered',image_count:0}]});
+ assert.match(html,/存在风险/);assert.match(html,/未执行检查/);assert.match(html,/证据不足/);assert.match(html,/未覆盖/);
+ assert.ok(!html.includes('<script>'));assert.ok(!html.includes('综合分'));
+});
 import {eligibleScenarioModels,latestScenarioModel,evaluationTruth,scenarioMetric,visibleEvidenceBoxes,sampleIssueKinds} from '../../static/modules/scenario-evaluation.js';
 const sha='a'.repeat(64),scope={binding_level:'bundle_verified',test_image_count:5,scope_id:'b'.repeat(64),content_digest:'c'.repeat(64),ground_truth_digest:'d'.repeat(64),label_schema_digest:'e'.repeat(64),evaluation_input_digest:'f'.repeat(64),training_input_policy:'sha256_disjoint'};
 const model={model_source:'algorithm_version',algorithm_id:'a',version_id:'v2',scenario_eligible:true,training_task_id:'task2',model_sha256:sha,model_size:25,created_at:'2026-10-22'};

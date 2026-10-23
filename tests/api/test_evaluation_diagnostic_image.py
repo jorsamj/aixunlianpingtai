@@ -10,6 +10,29 @@ from PIL import Image
 from fastapi import HTTPException
 
 
+def test_p2_trust_api_uses_original_model_qualification_and_readonly_snapshot(monkeypatch, tmp_path):
+    platform, version, _, root, _ = _setup(monkeypatch, tmp_path)
+    import platform_core.scenario_models as models
+    calls = []
+    def verify(project_id, project, algorithm, actual_version, *args, **kwargs):
+        calls.append((project_id, algorithm['id'], actual_version['id']))
+        return {'model_sha256': 'f' * 64}
+    monkeypatch.setattr(models, 'resolve_scenario_model', verify)
+    before = {str(path): path.read_bytes() for path in root.rglob('*') if path.is_file()}
+    result = platform.evaluation_trust_analysis('evaluation-project', 'algo', 'v1')
+    assert calls == [('evaluation-project', 'algo', 'v1')]
+    assert result['analysis']['read_only'] is True
+    assert next(row for row in result['analysis']['checks'] if row['code'] == 'identity')['status'] == 'insufficient_evidence'
+    assert before == {str(path): path.read_bytes() for path in root.rglob('*') if path.is_file()}
+    with pytest.raises(HTTPException) as invalid:
+        platform.evaluation_trust_analysis('evaluation-project', 'algo', 'v1', limit=51)
+    assert invalid.value.status_code == 422
+    monkeypatch.setattr(models, 'resolve_scenario_model', lambda *a, **k: (_ for _ in ()).throw(models.ScenarioModelUnavailable('invalid model')))
+    with pytest.raises(HTTPException) as denied:
+        platform.evaluation_trust_analysis('evaluation-project', 'algo', 'v1')
+    assert denied.value.status_code == 409
+
+
 def _setup(monkeypatch, tmp_path: Path):
     import app as platform
     project_id = "evaluation-project"

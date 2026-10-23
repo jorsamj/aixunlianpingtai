@@ -4631,8 +4631,8 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     return `<div class="quality424-shell"><div class="quality424-kpis"><div><span>数据质量</span><b>${d.overall_score||0}</b></div><div><span>素材数量</span><b>${d.images||0}</b></div><div><span>有效标注框</span><b>${d.box_count||0}</b></div><div><span>算法平均质量</span><b>${a.avg_score||0}</b></div><div><span>训练成功率</span><b>${a.train_success_rate==null?'—':Number(a.train_success_rate).toFixed(1)+'%'}</b><small>${a.train_success_rate==null?'暂无已结束训练可统计':`${a.train_success_count||0} 成功 / ${a.train_completed_count||0} 已结束`}</small></div></div><div class="quality411-actions"><span>质量指标采用缓存；数据变化后可手动刷新重新计算。</span><button class="btn primary" onclick="refreshQuality411()">刷新质量指标</button></div><div class="quality424-grid"><section class="panel quality424-card"><div class="panel-head"><div class="panel-title">数据质量</div></div><div class="panel-body quality424-radarbox">${typeof radar424==='function'?radar424(scores):''}<div class="quality424-facts">${fact('已标注',d.annotated_images)}${fact('标签数',d.label_count)}${fact('重复图片',d.duplicate_images)}${fact('低分辨率',d.low_resolution)}${fact('无效框',d.invalid_boxes)}${fact('数据体量',typeof fmtSize424==='function'?fmtSize424(d.total_size_bytes):d.total_size_bytes||0)}</div></div></section><section class="panel quality424-card"><div class="panel-head"><div class="panel-title">算法质量</div></div><div class="panel-body quality424-radarbox">${typeof radar424==='function'?radar424(as,'algorithm'):''}</div></section></div></div>`;
   }
   function qualityTabs411(){
-    const tab=state.qualityCenterTab411==='detect'?'detect':'overview';
-    return `<div class="quality411-tabs" data-quality-tabs="1"><button class="btn ${tab==='overview'?'primary':'soft'}" onclick="setQualityCenterTab411('overview')">质量概览</button><button class="btn ${tab==='detect'?'primary':'soft'}" onclick="setQualityCenterTab411('detect')">场景算法实测</button></div>`;
+    const tab=['detect','advanced'].includes(state.qualityCenterTab411)?state.qualityCenterTab411:'overview';
+    return `<div class="quality411-tabs" data-quality-tabs="1"><button class="btn ${tab==='overview'?'primary':'soft'}" onclick="setQualityCenterTab411('overview')">质量概览</button><button class="btn ${tab==='detect'?'primary':'soft'}" onclick="setQualityCenterTab411('detect')">场景算法实测</button><button class="btn ${tab==='advanced'?'primary':'soft'}" onclick="setQualityCenterTab411('advanced')">高级评测</button></div>`;
   }
   function prependQualityTabs411(){
     const view=document.getElementById('view');if(!view||view.querySelector('[data-quality-tabs="1"]'))return;
@@ -4640,7 +4640,8 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   }
   window.setQualityCenterTab411=async function(tab){
     if(tab!=='detect')window.QualityDetectionWorkbenchRuntime?.deactivate?.();
-    state.qualityCenterTab411=tab==='detect'?'detect':'overview';
+    if(tab!=='advanced')window.AdvancedEvaluationRuntime?.deactivate?.();
+    state.qualityCenterTab411=['detect','advanced'].includes(tab)?tab:'overview';
     window.renderQualityCenter424?.();
     if(state.qualityCenterTab411!=='detect')return;
     try{
@@ -4652,6 +4653,9 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   };
   window.renderQualityCenter424=async function(){
     const view=document.getElementById('view');if(!view)return;
+    if(state.qualityCenterTab411==='advanced'){
+      window.AdvancedEvaluationRuntime?.mount?.();prependQualityTabs411();return;
+    }
     if(state.qualityCenterTab411==='detect'){
       window.renderDetectBench?.();
       prependQualityTabs411();
