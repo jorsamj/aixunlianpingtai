@@ -2,7 +2,7 @@
 import {withRequestDeadline} from './api.js';
 const styles = new WeakMap();
 
-async function loadLocalUppy(target) {
+export async function loadLocalUppy(target) {
   const doc = target.ownerDocument || globalThis.document;
   if (!styles.has(doc)) {
     const loading = new Promise((resolve, reject) => {

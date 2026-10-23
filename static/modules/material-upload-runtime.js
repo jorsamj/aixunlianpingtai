@@ -314,11 +314,11 @@ export function installMaterialUploadRuntime({
 } = {}) {
   if (typeof window === 'undefined' || typeof document === 'undefined') return null;
 
-  const setText = (id, text) => {
+  const writeText = (id, text) => {
     const node = document.getElementById(id);
     if (node) node.textContent = text;
   };
-  const setProgress = (id, percent) => {
+  const writeProgress = (id, percent) => {
     const node = document.getElementById(id);
     if (!node) return;
     const value = Math.max(0, Math.min(100, Number(percent) || 0));
@@ -363,7 +363,8 @@ export function installMaterialUploadRuntime({
     out.innerHTML = `<div class="alert ok">成功上传 ${uploaded.length} 张${failed.length ? `，失败 ${failed.length} 张` : ''} · 服务器已处理 ${aggregate.confirmedFiles}/${aggregate.totalFiles} · ${elapsedSeconds.toFixed(1)} 秒</div>${failedHtml}${failedOverflow}${decision}`;
   };
 
-  async function uploadFiles(files, {storageSourceId = 'default_local', datasetId = 'default', input = null} = {}) {
+  const activeProjects = new Set();
+  async function uploadFiles(files, {externalView = false, beforeConfirmation = null, onEvent = () => {}, onCommitted = () => {}, storageSourceId = 'default_local', datasetId = 'default', input = null} = {}) {
     const rows = Array.from(files || []);
     if (!rows.length) return null;
     const pid = projectId();
@@ -371,18 +372,31 @@ export function installMaterialUploadRuntime({
       notify?.('当前项目未加载，请刷新后重试');
       return null;
     }
+    if (activeProjects.has(String(pid))) throw new Error('当前项目已有图片上传进行中，请在任务中心查看');
+    const currentProject = () => String(projectId()) === String(pid);
+    const setText = (id, text) => { if (!externalView && currentProject()) writeText(id, text); };
+    const setProgress = (id, percent) => { if (!externalView && currentProject()) writeProgress(id, percent); };
+    const session = {projectId: pid, totalFiles: rows.length, batchIds: [], failed: [], status: 'UPLOADING'};
+    const saveSession = () => { try { window.localStorage?.setItem(`material-upload-session:${pid}`, JSON.stringify({...session, failed: session.failed.length})); } catch (_) {} };
     const chunks = partitionMaterialFiles(rows, {maxFiles, maxBytes});
+    activeProjects.add(String(pid));
     const requestSeed = uploadRequestSeed();
     const chunkRequestIds = chunks.map((_, index) => uploadRequestId(requestSeed, index));
+    Object.assign(session, {requestSeed, requestIds: chunkRequestIds});
+    saveSession();
     const uploadTaskId = globalThis.BrowserCapabilityRuntime.createClientId('images:', 32);
     const chunkBytes = chunks.map(chunk => chunk.reduce((sum,file)=>sum+fileSize(file),0));
     const totalBytes = Math.max(1, chunkBytes.reduce((sum,value)=>sum+value,0));
     const bytesBefore = chunkBytes.map((_,index)=>chunkBytes.slice(0,index).reduce((sum,value)=>sum+value,0));
     window.UploadTaskCenterRuntime?.upsert?.({id:uploadTaskId,kind:'browser-upload',title:`图片上传 · ${rows.length} 张`,status:'UPLOADING',progress:0,stage:'准备上传',detail:`${chunks.length} 个批次`});
-    renderShell(rows.length, chunks.length);
+    if (!externalView) renderShell(rows.length, chunks.length);
+    const ownedContent = !externalView ? document.getElementById('up411Result') : null;
+    const ownedModal = ownedContent?.closest?.('.modal');
+    const ownedModalCurrent = () => ownedContent?.isConnected && ownedModal?.contains(ownedContent) && !ownedModal.classList.contains('hidden') && [...document.querySelectorAll('.modal:not(.hidden)')].at(-1) === ownedModal;
     const started = performance.now();
     const state = getState() || {};
     state.recentUploadedMaterials61 = [];
+    let confirmedCount = 0, successCount = 0, failedCount = 0;
     let transferFrame = 0;
     let pendingTransfer = null;
     let lastTaskCenterProgressAt = 0;
@@ -412,7 +426,7 @@ export function installMaterialUploadRuntime({
           status:'UPLOADING',
           progress:overallPercent,
           stage:transferComplete ? `第 ${event.chunkNumber}/${event.chunkCount} 批已上传，等待服务器入库` : `上传第 ${event.chunkNumber}/${event.chunkCount} 批`,
-          detail:`${formatBytes(overallBytes)} / ${formatBytes(totalBytes)}`,
+          detail:`共 ${rows.length} 张 · 已确认 ${confirmedCount} · 成功 ${successCount} · 失败 ${failedCount} · 当前批 ${formatBytes(event.loadedBytes)} / ${formatBytes(event.totalBytes)} · 总计 ${formatBytes(overallBytes)} / ${formatBytes(totalBytes)}`,
         });
       }
     };
@@ -447,6 +461,7 @@ export function installMaterialUploadRuntime({
           onTransfer: context.onTransfer,
         }),
         onEvent: event => {
+          try { onEvent({...event, files: chunks[event.chunkIndex] || [], projectId: pid}); } catch (_) {}
           if (event.type === 'chunk-start') {
             setText('up411Text', `正在上传第 ${event.chunkNumber}/${event.chunkCount} 批`);
             setText('up411TransferText', `当前批次 ${event.chunkSize} 张 · 等待传输`);
@@ -459,7 +474,12 @@ export function installMaterialUploadRuntime({
             });
           } else if (event.type === 'chunk-committed') {
             cancelTransferFrame();
-            patchState(responseRows(event.response, 'uploaded'));
+            confirmedCount = event.confirmedFiles; successCount = event.uploadedCount; failedCount = event.failedCount;
+            if (event.response?.batch_id) session.batchIds.push(String(event.response.batch_id));
+            session.failed.push(...responseRows(event.response, 'failed'));
+            saveSession();
+            if (currentProject()) patchState(responseRows(event.response, 'uploaded'));
+            try { onCommitted({...event, files: chunks[event.chunkIndex], projectId: pid}); } catch (_) {}
             const committedBytes = bytesBefore[event.chunkIndex] + chunkBytes[event.chunkIndex];
             const percent = committedBytes / totalBytes * 100;
             setProgress('up411Bar', percent);
@@ -471,7 +491,7 @@ export function installMaterialUploadRuntime({
               status:'UPLOADING',
               progress:percent,
               stage:`第 ${event.chunkNumber}/${event.chunkCount} 批服务器处理完成`,
-              detail:`已确认 ${event.confirmedFiles}/${event.totalFiles}`,
+              detail:`共 ${event.totalFiles} 张 · 已确认 ${event.confirmedFiles} · 成功 ${event.uploadedCount} · 失败 ${event.failedCount} · 已传输 ${formatBytes(committedBytes)} / ${formatBytes(totalBytes)}`,
             });
           }
         },
@@ -480,23 +500,36 @@ export function installMaterialUploadRuntime({
       setProgress('up411Bar', 100);
       setText('up411Pct', '100%');
       window.UploadTaskCenterRuntime?.upsert?.({id:uploadTaskId,status:'SUCCEEDED',progress:100,stage:'上传完成',detail:`成功 ${aggregate.uploaded.length} · 失败 ${aggregate.failed.length}`});
-      renderResult(aggregate, (performance.now() - started) / 1000);
-      if (getState()?.page === '数据集') {
-        if (typeof window.reloadMaterialPage61 === 'function') await window.reloadMaterialPage61();
-        else window.renderDatasets424?.();
+      session.status = 'SUCCEEDED'; saveSession();
+      if (!externalView && currentProject()) renderResult(aggregate, (performance.now() - started) / 1000);
+      const shouldConfirm = currentProject() && (getState()?.page === '数据集' || ownedModalCurrent());
+      let allowed = true;
+      if (typeof beforeConfirmation === 'function') allowed = beforeConfirmation() !== false;
+      else if (shouldConfirm && ownedModalCurrent()) window.closeModal?.();
+      if (currentProject() && allowed && (shouldConfirm || (externalView && typeof beforeConfirmation === 'function'))) {
+        try { await window.UploadConfirmationRuntime?.open?.({projectId: pid, batchIds: aggregate.batchIds, totalFiles: aggregate.totalFiles, failed: aggregate.failed}); } catch (error) { notify?.(error?.message || '上传已完成，可从上传批次继续处理'); }
+      }
+      if (currentProject() && getState()?.page === '数据集') {
+        Promise.resolve().then(() => {
+          if (!currentProject() || getState()?.page !== '数据集') return;
+          if (typeof window.reloadMaterialPage61 === 'function') return window.reloadMaterialPage61();
+          window.renderDatasets424?.();
+        }).catch(error => notify?.(`上传已完成，列表刷新失败：${error?.message || error}`));
       }
       return aggregate;
     } catch (error) {
       cancelTransferFrame();
+      session.status = 'INTERRUPTED'; saveSession();
       const details = error?.details || {};
       const confirmed = Number(details.confirmedFiles || 0);
       const total = rows.length;
-      const out = document.getElementById('up411Result');
+      const out = !externalView && currentProject() ? document.getElementById('up411Result') : null;
       if (out) out.innerHTML = `<div class="alert err">上传中断：${escapeHtml(error?.message || error)}。服务器已确认处理 ${confirmed}/${total}。为避免网络响应丢失后重复入库，系统不会自动重试当前未确认批次。</div>`;
       window.UploadTaskCenterRuntime?.upsert?.({id:uploadTaskId,status:'FAILED',stage:'上传中断',detail:String(error?.message||error)});
       setText('up411Text', '上传中断');
       throw error;
     } finally {
+      activeProjects.delete(String(pid));
       if (input) input.value = '';
     }
   }

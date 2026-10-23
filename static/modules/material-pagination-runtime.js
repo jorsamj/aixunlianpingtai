@@ -407,6 +407,7 @@ export function installMaterialPaginationRuntime() {
   }
 
   function renderPagedDataset61({forceShell = false} = {}) {
+    if (window.UploadConfirmationRuntime?.renderIfActive?.()) return 'upload-confirmation';
     if (!isPagedDataset() || typeof baseRenderDatasets !== 'function') return false;
     const structure = shellSignature61();
     const needsShell = forceShell || !hasDatasetShell61() || state.materialShellSignature61 !== structure;
@@ -618,6 +619,7 @@ export function installMaterialPaginationRuntime() {
   };
 
   window.renderDatasets424 = function serverPagedDatasets() {
+    if (window.UploadConfirmationRuntime?.renderIfActive?.()) return 'upload-confirmation';
     if (!isPagedDataset()) return baseRenderDatasets?.();
     const signature = filterSignature61();
     const useCachedEntry = cachedEntryPending && signature === state.materialFilterSignature61;
@@ -662,6 +664,7 @@ export function installMaterialPaginationRuntime() {
   function afterNavigate61(page, navigation) {
     const target = String(navigation?.target || (page === '自动标注' ? '自动标注及清洗' : page || ''));
     const full = navigation?.full === true || (navigation?.full == null && requiresFullMaterialPool(target));
+    if(target==='数据集')void window.UploadConfirmationRuntime?.restoreForProject?.(state.project?.id);
     if (full) {
       const action = window.NavigationStability?.action?.(target);
       if (navigation?.fullPoolFresh) return true;
