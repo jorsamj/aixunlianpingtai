@@ -1,3 +1,20 @@
+## 2026-10-23｜普通图片上传统一与本次上传处理（进行中）
+
+本节为本轮唯一需求、进度及接续；原ZIP/任务中心验收记录保留。基线5cb25c3ce06e2a4c174814a7c6eb4775bcdeae41，VERSION42.24.380，fetch0/0；5944及两份未跟踪训练模板测试保留，不部署生产或修改历史素材/GT/模型。
+
+确认需求：普通图片复用本地Uppy Core/Dashboard/简体中文，保留现有64张/128MB顺序multipart、requestId恢复、UploadBatchStore和唯一任务中心；批次字节进度不能伪装逐图百分比。上传成功后素材页内显示“本次上传图片”，身份来自实际服务端批次，不用临时recent数组；25/48条分页缩略图、选择、失败原因。按各真实batch提交clean/ready/pending，清洗接原任务，ready接原人工标注且不改变GT，later保持pending。刷新恢复指针，已决策不重复弹出；无新增永久记录表/原图副本。
+
+代码初审：最终网络Owner在material-upload-runtime.js，五张通常组成一个HTTP批次；其accounted必须等于chunk.length，否则抛合同错误。目前只能确认分批与展示语义，真实五张漏传与否待实际API/Chrome证据。现有后续按钮依赖recentUploadedMaterials61，且没有本次批次专属持久页面，是已确认缺口；legacy app.js中多处旧上传实现不是正式修改目标。
+
+最小设计/计划：
+- A：定向验证五File、multipart五项、服务端成功/失败/真实GT。复用原测试，不全仓审计。
+- B：原传输Owner暴露视图事件/外部view选项，新聚焦Uppy图片view只负责文件选择；原taskcenter显示图片数、批次、真实字节及服务器确认数。禁止第二传输器/队列。
+- C：聚焦upload-confirmation模块读取原v55回执，以真实batchId+imageId关联分页；本地只保存会话指针，原UploadBatchStore唯一truth。与原素材Owner接线，迟到请求/项目/Modal隔离。
+- D：原decisions API和Cleaning/Annotation重用，逐批显式提交/防重/重试，GT状态不因ready变化。必要后端合同缺口最小修复。
+- E：必要Python/Node、真实五图/部分失败/65图顺序分批/刷新/GT/ZIP冒烟；阶段提交，最终准确SHA CI及文档更新。生产真实吞吐未验证，不以隔离数代替。
+
+状态：A审计已完成：原API两文件实际31项通过，真实multipart五有效=5成功、四有效一损坏=4成功1失败；没有发现五张仅入库一张。原ready不改变GT，混合决策/恢复/原清洗任务复用已有。B原Uppy图片view/控制器事件及持久指针已实现，Node23项通过；C确认页/恢复/决策路由Node5项通过，D原API不需生产代码改造。E真实Chrome65图仍2顺序请求通过，五图请求与五卡片已实测；发现已完成Uppy Modal遮挡确认页preview的RED，正在补原Modal身份关闭，不降低点击断言。尚未提交/推送新代码或CI，不将规划及本地通过当最终验收。独立子任务按subagent-driven-development技能在同一工作树划定文件所有权，根任务负责main/app接线、浏览器串行验证与Git，避免并行覆盖。
+
 > 最新接续：6A原UploadTaskCenter稳定性补充。旧Uppy验收仍有效；本轮准确SHA验收独立记录在6A.3。
 
 # Uppy ZIP上传隔离适配PoC与兼容性报告

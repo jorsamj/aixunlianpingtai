@@ -5,6 +5,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
+import pytest
 from PIL import Image, ImageDraw
 
 
@@ -163,6 +164,9 @@ def test_upload_batch_survives_reload_and_tracks_mixed_decisions(client):
     assert rows[uploaded["uploaded"][0]["id"]]["processing_status"] == "cleaning"
     assert rows[uploaded["uploaded"][1]["id"]]["processing_status"] == "processed"
     assert rows[uploaded["uploaded"][1]["id"]]["clean_decision"] == "skipped"
+    assert not rows[uploaded["uploaded"][1]["id"]].get("annotated")
+    for field in ("annotation_state", "annotation_status", "gt_revision", "gt_confirmed_at"):
+        assert rows[uploaded["uploaded"][1]["id"]].get(field) == uploaded["uploaded"][1].get(field)
     assert rows[uploaded["uploaded"][2]["id"]]["processing_status"] == "pending_decision"
 
     tasks = client.get(f"/api/v47/projects/{pid}/clean-tasks").json()["items"]
@@ -757,6 +761,43 @@ def test_upload_batch_rejects_additional_clean_ids_after_task_start(client):
     tasks = client.get(f"/api/v47/projects/{pid}/clean-tasks").json()["items"]
     assert len(tasks) == 1
     assert tasks[0]["request_payload"]["image_ids"] == [first_id]
+
+
+@pytest.mark.parametrize("failure_count", [0, 1])
+def test_five_file_multipart_counts_and_durable_receipt(client, failure_count):
+    import app as app_module
+
+    pid = client.post(
+        "/api/projects", json={"name": "five-file-evidence", "labels": []}
+    ).json()["id"]
+    names = [f"image-{index}.png" for index in range(5)]
+    files = [
+        ("files", (name, image_bytes("checker"), "image/png"))
+        for name in names
+    ]
+    if failure_count:
+        files[-1] = ("files", (names[-1], b"corrupt-image", "image/png"))
+    response = client.post(
+        f"/api/projects/{pid}/images", files=files,
+        data={"dataset_id": "default", "upload_request_id": "five-" + uuid.uuid4().hex},
+    )
+    response.raise_for_status()
+    body = response.json()
+    assert body["uploaded_count"] == 5 - failure_count
+    assert body["failed_count"] == failure_count
+    assert len(body["uploaded"]) + len(body["failed"]) == 5
+    assert app_module.material_store(pid).count() == 5 - failure_count
+    batch = client.get(
+        f"/api/v55/projects/{pid}/upload-batches/{body['batch_id']}"
+    ).json()
+    assert [row["name"] for row in batch["upload_request_manifest"]] == names
+    assert batch["upload_request_status"] == "SUCCEEDED"
+    assert batch["upload_failed"] == body["failed"]
+    assert [item["image_id"] for item in batch["items"]] == body["uploaded_image_ids"]
+    assert all(item["decision"] == "pending" and item["image"]["id"] == item["image_id"] for item in batch["items"])
+    persisted = app_module.upload_batch_store(pid).read(body["batch_id"])
+    assert len(persisted["items"]) == 5 - failure_count
+    assert persisted["upload_failed"] == body["failed"]
 
 
 def test_upload_batch_contains_only_successes_when_some_files_fail(client):
