@@ -128,6 +128,25 @@ class StorageManager:
                 solution='请在存储源配置中重新扫描，确认内容变化后恢复索引，并复核已有标注。',
                 context=error.context) from error
 
+    def thumbnail(self, value: str | Mapping[str, object], *, max_edge=384) -> Path:
+        """Lazy, verified thumbnail; never patch canonical Material/GT metadata."""
+        row = self.material(value)
+        expected = str(row.get("content_sha256") or "")
+        if not expected or row.get("source_available") is False:
+            raise ValueError("thumbnail requires available indexed source SHA256")
+        def source():
+            provider = self.provider_for(str(row["storage_source_id"]))
+            if provider.storage_type is StorageType.LOCAL and hasattr(provider, "root"):
+                current = Path(provider.root)
+                for part in Path(str(row["object_key"])).parts:
+                    current = current / part
+                    if current.is_symlink() or (current.exists() and getattr(current.lstat(), "st_file_attributes", 0) & 0x400):
+                        raise ValueError("unsafe thumbnail original link")
+            suffix = Path(str(row.get("filename") or row["object_key"])).suffix or Path(row["object_key"]).suffix
+            self.cache._thumbnail_path_safe(self.cache.path_for(expected, suffix))
+            return self.materialize(row, read_only=True).path
+        return self.cache.thumbnail(expected, source, max_edge=max_edge)
+
     def invalidate_content_cache(self, content_sha256: str, filename: str) -> None:
         """Safe adapter for the current content-addressed cache; never touches sources."""
         if not content_sha256:

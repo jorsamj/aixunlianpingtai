@@ -73,6 +73,7 @@ jobs:
           tests/api/test_annotation_sqlite_dataset_delete_atomicity.py
           tests/unit/test_annotation_repository_scope.py
           tests/api/test_material_batching.py
+          tests/api/test_material_content.py
           tests/api/test_material_integrity.py
           tests/api/test_training_conflict_governance.py
           tests/api/test_material_governance_actor.py

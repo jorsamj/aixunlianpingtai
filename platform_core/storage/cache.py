@@ -370,6 +370,88 @@ class MaterialCache:
             # Cache cleanup is an optimization. It must never make source access fail.
             return
 
+    def _thumbnail_path_safe(self, path: Path) -> None:
+        # Check lexical components before resolve can conceal a Windows junction.
+        for item in (path.parent, path, Path(str(path) + ".lock")):
+            try:
+                if item.is_symlink() or getattr(item.lstat(), "st_file_attributes", 0) & 0x400:
+                    raise ValueError("unsafe thumbnail cache link")
+            except FileNotFoundError:
+                pass
+        if path.resolve().parent != path.parent.resolve() or not path.resolve().is_relative_to(self.root):
+            raise ValueError("thumbnail cache escaped root")
+
+    def thumbnail(self, source_sha256: str, source_factory, *, max_edge=384) -> Path:
+        """A versioned derived pointer plus JPEG in the existing TTL/quota cache.
+
+        The small pointer and actual content both use ordinary cache file/lock
+        names. Either may be evicted independently; misses simply regenerate.
+        """
+        from contextlib import nullcontext
+        from PIL import Image, ImageOps
+        expected = str(source_sha256 or "").lower()
+        if not _SHA256.fullmatch(expected) or type(max_edge) is not int or not 16 <= max_edge <= 1024:
+            raise ValueError("thumbnail requires verified source SHA256 and edge 16..1024")
+        spec = f"thumbnail-v1:exif-fit-rgb-jpeg-q82:no-upscale:{max_edge}"
+        key = hashlib.sha256((expected + ":" + spec).encode("ascii")).hexdigest()
+        index = self.path_for(key, ".json")
+        self._thumbnail_path_safe(index)
+        index.parent.mkdir(parents=True, exist_ok=True)
+        self._maybe_maintain(protect_path=index)
+        with FileLock(str(index) + ".lock", timeout=300):
+            self._thumbnail_path_safe(index)
+            try:
+                pointer = json.loads(index.read_text(encoding="utf-8"))
+                if pointer.get("source_sha256") == expected and pointer.get("spec") == spec:
+                    target = self.path_for(pointer["content_sha256"], ".jpg")
+                    self._thumbnail_path_safe(target)
+                    if target.parent.exists():
+                        with FileLock(str(target) + ".lock", timeout=300):
+                            if (self._valid(target, pointer["content_sha256"])
+                                    and target.stat().st_size == pointer["size_bytes"]):
+                                self._touch(target)
+                                self._touch(index)
+                                return target
+            except (OSError, ValueError, TypeError, KeyError, AttributeError):
+                pass  # Missing/corrupt pointer or payload is rebuildable.
+            source = Path(source_factory())
+            if source.is_symlink() or getattr(source.lstat(), "st_file_attributes", 0) & 0x400:
+                raise ValueError("unsafe thumbnail source link")
+            source = source.resolve()
+            source_lock = (FileLock(str(source) + ".lock", timeout=300)
+                           if source.is_relative_to(self.root) else nullcontext())
+            temporary = index.parent / f".thumbnail-{uuid.uuid4().hex}.tmp"
+            pointer_temporary = index.parent / f".thumbnail-index-{uuid.uuid4().hex}.tmp"
+            try:
+                with source_lock:
+                    if file_sha256(source) != expected:
+                        raise ValueError("thumbnail source SHA256 changed")
+                    with Image.open(source) as original:
+                        if original.width * original.height > 80_000_000:
+                            raise ValueError("thumbnail source exceeds decoded pixel budget")
+                        image = ImageOps.exif_transpose(original)
+                        image.thumbnail((max_edge, max_edge), Image.Resampling.LANCZOS)
+                        image.convert("RGB").save(temporary, format="JPEG", quality=82, optimize=True)
+                    if file_sha256(source) != expected:
+                        raise ValueError("thumbnail source changed during decode")
+                digest = file_sha256(temporary)
+                target = self.path_for(digest, ".jpg")
+                self._thumbnail_path_safe(target)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with FileLock(str(target) + ".lock", timeout=300):
+                    self._thumbnail_path_safe(target)
+                    os.replace(temporary, target)
+                    self._touch(target)
+                    pointer = {"schema_version": 1, "source_sha256": expected, "spec": spec,
+                               "content_sha256": digest, "size_bytes": target.stat().st_size}
+                    pointer_temporary.write_text(json.dumps(pointer, sort_keys=True), encoding="utf-8")
+                    os.replace(pointer_temporary, index)
+                    self._touch(index)
+                    return target
+            finally:
+                temporary.unlink(missing_ok=True)
+                pointer_temporary.unlink(missing_ok=True)
+
     def materialize(
         self, provider: StorageProvider, object_key: str, *,
         expected_sha256: str, suffix: str = ".bin",

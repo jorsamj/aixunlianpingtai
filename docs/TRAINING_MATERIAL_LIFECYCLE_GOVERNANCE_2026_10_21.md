@@ -8,7 +8,7 @@
 |S2-02 自动安全回收|P0/进行中|原资格/隔离删除/回执接实际终态及重启恢复，无法证明进程死亡则等待，原图/共享cache/模型/Checkpoint不删除|
 |S2-03 详情人工释放与历史只读扫描|P1/已完成待验收|复用原API/详情，真实占用/资格/原因/进度；历史仅dry-run不可执行生产删除|
 |S2-04 旧素材兼容检测及最小迁移|P1/已完成待验收|原图不搬迁、image_id与GT版本不变，只修经证据确认的元数据，备份/CAS/批次幂等恢复|
-|S2-05 缩略图及受控原图物理回收|P2/未开始|在前述P0/P1后补真实缺口，区分逻辑字节与实际空间，OSS/NAS/GPU无法现场核验则NOT VERIFIED|
+|S2-05 缩略图及受控原图物理回收|P2/进行中|在前述P0/P1后补真实缺口，区分逻辑字节与实际空间，OSS/NAS/GPU无法现场核验则NOT VERIFIED|
 
 关键设计取舍：原远程载荷resolver在正式execution lease建立前调用，禁止在那里获取图片。新输入协议使用schema3冻结索引描述；Agent取得真实owner后使用现有node-executor鉴权/代次栅栏读Manifest和源流，所有存储类型复用StorageManager驱动，不在控制端落整份原图缓存/ZIP。替代方案“选定Worker后控制端打包”仍提前复制且留第二份整集，拒绝；直接暴露任意绝对路径或下发存储凭据也不采用。旧schema1/2已排队ZIP保持严格身份/哈希验证兼容，不重写历史任务。元数据可传输，图片/YOLO目录只能在实际Agent执行工作目录物化；冻结GT不能被当前数据库内容替代。
 
@@ -45,6 +45,14 @@ Node原recovery文件27通过，新增workspace/cache定向5通过；visibility�
 apply必须真实登录/项目范围+明确确认，绑定本批image_ids、完整fingerprint与稳定task_id。原生命周期/存储配置锁、全元数据备份fsync+复读+摘要、备份后重新预览、原MaterialRepository事务内revision/完整payload/索引列/实际影响ID精确CAS后变更；原GT/原图/image_id/历史Snapshot全不修改。同task备份中断恢复与commit后audit幂等，后续新写入不被旧备份覆盖。未加入新任务数据库/迁移状态机；每批原子，可离开/停止发下一批，重新读取或同task安全重试。
 
 实际核心+原Material生命周期18通过；API鉴权/确认/边界/过滤内部证据1通过。真实Chrome独立临时数据1通过，覆盖真实导航、慢scan/preview/apply、候选过滤、明确确认、503同task指纹重试、防重复与离页迟到；开发中2次selector问题仅修测试后GREEN，未修改实现绕过。py_compile/diff通过。API前端/后端贯通，未运行全仓；未在生产执行scan或迁移，不能据隔离数据推断生产是否需要迁移。未知旧数据仍须独立只读核验。
+
+### S2-05 缩略图已实现，原图物理回收另行补安全合同（父提交fa970912）
+
+原MaterialCache新增按源SHA+thumbnail-v1/EXIF-fit/RGB/JPEGq82/no-upscale/edge版本的派生索引，指向实际JPEG SHA内容缓存；派生索引和图片均受原锁/TTL/配额，坏指针、损坏或驱逐后按需重建。原StorageManager.thumbnail只读，不自动写SHA/size，不另建缓存管理器或数据库；无可信SHA时原图入口继续可用并由兼容工具单独预览。public_material新增thumbnail_url，原素材网格/列表优先缩略图、详情/标注继续原url；卡片签名纳入SHA与缩略图URL。HTTP流式发送全程持原cache锁，finally/断连释放。
+
+必要专属6项先RED后GREEN，结合原cache_lifecycle/manager受影响共16通过；实际原材料API1通过，确认JPEG边长/重复请求/原图及GT不变；原素材UI Node3通过（同类断言扩展优先缩略图）。真实Chrome隔离1通过，真实上传1200×800 PNG→分页真实thumbnail_url→原materialMedia412发200 JPEG→自然384×256可见，原图URL及前后SHA一致，无pageerror。截图real-material-thumbnail.png已核验。不运行全仓或真实GPU/OSS。
+
+原图物理删除仍不能复用临时Bundle清理：原retirements字段CHECK reclaimed_bytes=0代表逻辑删除，缺源byte读取租约与所有引用写入者栅栏。正在补受控local-only设计/实现；旧节点、不受控NAS/OSS/未知索引必须保持拒绝，不将物理GC标完成，不执行任何生产删除。
 
 ## 2026-10-23｜回收 API 与报告流式消费者保护（后端进行中）
 

@@ -2,6 +2,23 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+
+def test_material_thumbnail_is_lazily_cached_without_changing_original_or_gt(client, seeded_project):
+    import io
+    from PIL import Image
+    project_id, uploaded = seeded_project
+    url = f"/api/v61/projects/{project_id}/materials/{uploaded['id']}/content"
+    original = client.get(url).content
+    annotation_url = f"/api/projects/{project_id}/annotations/{uploaded['id']}"
+    annotation = client.get(annotation_url).json()
+    response = client.get(url + "/thumbnail?edge=32")
+    assert response.status_code == 200, response.text
+    assert response.headers['content-type'] == 'image/jpeg'
+    assert max(Image.open(io.BytesIO(response.content)).size) <= 32
+    assert client.get(url + "/thumbnail?edge=32").content == response.content
+    assert client.get(url).content == original
+    assert client.get(annotation_url).json() == annotation
+
 import app as app_module
 
 

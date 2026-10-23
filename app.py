@@ -1804,6 +1804,8 @@ def public_material(project_id: str, value: Dict[str, Any]) -> Dict[str, Any]:
     if not row.get("object_key") and row.get("stored_name"):
         row["object_key"] = f"uploads/{Path(str(row['stored_name'])).name}"
     row["url"] = material_content_url(project_id, str(row.get("id") or ""))
+    if re.fullmatch(r"[0-9a-f]{64}", str(row.get("content_sha256") or "")):
+        row["thumbnail_url"] = row["url"] + "/thumbnail?edge=384"
     return row
 
 
@@ -2910,6 +2912,45 @@ def material_content_v61(project_id: str, image_id: str):
         return FileResponse(resolved.path)
     except StorageError as error:
         _raise_storage_error(error, status_code=404 if error.code in {"MATERIAL_NOT_FOUND", "STORAGE_OBJECT_NOT_FOUND"} else 503)
+
+
+@app.get("/api/v61/projects/{project_id}/materials/{image_id}/content/thumbnail")
+def material_thumbnail_v61(project_id: str, image_id: str, edge: int = Query(384, ge=16, le=1024)):
+    """Read-derived cache only. Hold the original cache lock through HTTP delivery."""
+    from starlette.background import BackgroundTask
+    get_project(project_id)
+    manager = storage_manager(project_id)
+    for _attempt in range(2):
+        try:
+            path = manager.thumbnail(image_id, max_edge=edge)
+            lock = FileLock(str(path) + '.lock', timeout=5, thread_local=False)
+            lock.acquire()
+            try:
+                if not manager.cache._valid(path, path.stem):
+                    lock.release()
+                    continue  # Original cache maintenance may have won before acquire.
+                stream = path.open('rb')
+                size = path.stat().st_size
+            except BaseException:
+                lock.release()
+                raise
+            def close():
+                stream.close()
+                lock.release()
+            def chunks():
+                try:
+                    while chunk := stream.read(64 * 1024):
+                        yield chunk
+                finally:
+                    close()
+            return StreamingResponse(chunks(), media_type='image/jpeg',
+                headers={'Content-Length':str(size), 'Cache-Control':'private, max-age=0, must-revalidate'},
+                background=BackgroundTask(close))
+        except StorageError as error:
+            _raise_storage_error(error, status_code=503)
+        except (OSError, ValueError) as error:
+            raise HTTPException(503, detail='缩略图暂不可用，可重试；原图和正式 GT 未修改') from error
+    raise HTTPException(503, detail='缩略图缓存正在维护，请重试')
 
 
 def normalize_label(name: str) -> str:
@@ -23999,7 +24040,6 @@ app.include_router(legacy_material_compatibility_router(
         enabled=os.environ.get('LEGACY_MATERIAL_COMPATIBILITY_ENABLED', '1').strip().lower() not in {'0', 'false', 'off'}),
     _material_governance_actor,
 ))
-
 from platform_core.remote_execution_transport import (
     RemoteExecutionTransportError,
     RemoteExecutionTransportService,

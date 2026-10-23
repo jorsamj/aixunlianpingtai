@@ -29,4 +29,7 @@ test('image failure hides the exact projection and retry reuses its original URL
 test('contain media keeps original aspect plane and reports image failure without losing actions',()=>{
  const h=harness();const html=h.window.materialMedia412({id:'i',filename:'long name',url:'/content/i',width:400,height:800,annotated:true});
  assert.match(html,/material-media-plane/);assert.match(html,/width:37.5%/);assert.match(html,/height:100%/);assert.match(html,/materialImageFailed412/);assert.match(html,/retryMaterialImage412/);
+ const thumbnail=h.window.materialMedia412({id:'i',filename:'image',url:'/content/i',thumbnail_url:'/content/i/thumbnail?edge=384',width:400,height:800});
+ assert.ok(thumbnail.includes('src="/content/i/thumbnail?edge=384"'));
+ assert.ok(!thumbnail.includes('src="/content/i"'));
 });

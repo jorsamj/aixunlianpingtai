@@ -1,9 +1,11 @@
 name: Storage Cache Governance
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - refactor/frontend-runtime-stabilization
+      - feature/external-algorithm-publishing
     paths:
       - 'platform_core/storage/**'
       - 'platform_core/task_runtime/worker_instances.py'
@@ -54,6 +56,7 @@ jobs:
       - name: Run storage cache and object-store unit guards
         run: >-
           python -m pytest -q
+          tests/unit/storage/test_material_thumbnails.py
           tests/unit/storage/test_material_cache.py
           tests/unit/storage/test_material_cache_lifecycle.py
           tests/unit/storage/test_material_cache_runtime.py
