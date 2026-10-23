@@ -1,4 +1,4 @@
-import {eligibleScenarioModels,latestScenarioModel,evaluationTruth,scenarioMetric,visibleEvidenceBoxes,sampleIssueKinds,sameFrozenSample} from './scenario-evaluation.js?v=20261022a';
+import {eligibleScenarioModels,latestScenarioModel,evaluationTruth,scenarioMetric,visibleEvidenceBoxes,sampleIssueKinds,sampleEvidenceDiagnostics,sameFrozenSample} from './scenario-evaluation.js?v=20261022a';
 import {withRequestDeadline} from './api.js?v=20261021s';
 
 // The original v64 presentation owner, relocated from app.js. Tasks, polling,
@@ -217,6 +217,10 @@ export function installQualityDetectionWorkbench({getState,api,toast,modal,close
     else detail+=`<div class="scn-human-review"><b>人工主观复核 · 与正式指标分开</b><span id="benchReviewStatus64">${esc(REVIEW_NAMES64[row.review]||'尚未核验')}</span>${[['A',row.a],['B',row.b]].filter(([,value])=>canSubmitBenchFeedback64(value)).map(([side])=>`<button class="btn small" onclick="openBenchFeedback64(${selectedIndex},'${side}')">${side} · 提交抽检反馈</button>`).join('')}${Object.entries(REVIEW_NAMES64).map(([key,label])=>`<button class="btn small" onclick="markBenchReview64(${selectedIndex},'${key}')">${label}</button>`).join('')}</div>`;
     if(kind==='evaluation'){
       detail+=panels.map(panel=>`<div class="scn-match-evidence"><b>${esc(panel.side)} · 正式匹配与辅助诊断</b>${panel.boxes.map(box=>`<p>${esc(box.label)} · ${Number.isFinite(box.matched_iou)?`IoU ${box.matched_iou.toFixed(3)}`:'IoU 未记录'} · ${esc((box.diagnostic_tags||[]).map(tag=>({wrong_class:'类别错误线索',localization:'定位偏差线索',duplicate:'重复检测线索',low_confidence:'低置信度'}[tag]||tag)).join(' / ')||'无额外诊断')} ${Number.isInteger(box.target_index)?`GT #${box.target_index+1}`:''}</p>`).join('')||'<p>本图未保留完整框证据，不能以空框推断正确或漏检。</p>'}</div>`).join('');
+    }
+    if(kind==='evaluation')for(const panel of panels){
+      const clues=sampleEvidenceDiagnostics(panel.sample,{evaluation:panel.evaluation}).localizationCandidates;
+      if(clues.length)detail+=`<div class="scn-match-evidence"><b>${esc(panel.side)} · 定位几何候选（不改变正式匹配）</b>${clues.map(clue=>`<p>预测 #${clue.predictionIndex+1} → GT #${clue.groundTruthIndex+1} · IoU ${clue.iou.toFixed(3)}</p>`).join('')}</div>`;
     }
     aside.innerHTML=detail;
     aside.onclick=event=>{const button=event.target.closest('[data-scn-box]');if(!button)return;const [side,index]=button.dataset.scnBox.split(':'),target=host.querySelector(`figure[data-side="${side}"] svg [data-box-index="${index}"]`);aside.querySelectorAll('[data-scn-box]').forEach(node=>node.classList.toggle('selected',node===button));target?.focus();};

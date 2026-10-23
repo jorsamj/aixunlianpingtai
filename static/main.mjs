@@ -454,7 +454,7 @@ const navigationStabilityRuntime = installNavigationStability({
     if (!state.uiReady && window.__v53InitPromise) return window.__v53InitPromise;
     return null;
   },
-  beforeInvokeNavigation: page => {window.toggleMobileSidebarV37?.(false);if(page!=='质量中心'){qualityDetectionWorkbench.deactivate();advancedEvaluation.deactivate();}},
+  beforeInvokeNavigation: page => {window.toggleMobileSidebarV37?.(false);if(page!=='质量中心')qualityDetectionWorkbench.deactivate();if(page!=='质量中心')advancedEvaluation.deactivate();},
   knownPages: window.PlatformCore?.navigation?.knownPages || [],
   performNavigation: page => {
     conversionCatalogRuntime.leave();

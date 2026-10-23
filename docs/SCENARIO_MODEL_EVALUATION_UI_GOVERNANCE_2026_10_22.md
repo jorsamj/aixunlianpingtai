@@ -23,7 +23,7 @@
 | P2-A1 数据可信度 | 已完成待验收 | 冻结身份/泄漏/GT/覆盖API和Tab；时间/dHash等缺证据明确未知 | 21e0d816，见下文RED/GREEN；最终CI待核 |
 | P2-A2 逐框诊断 | 已完成待验收 | 原匹配IoU/索引、全体轻量outcomes、最多200图框证据和分页 | 7b12c789；未保存/截断不补造 |
 | P2-B 深度对比 | 已完成待验收 | 同基准/同GT逐图配对与同步AB；无证据明确未知 | e6fb1a8c；最终CI待核 |
-| P2-C 复核迭代衔接 | 已完成待验收 | 原反馈/CandidateSet/训练入口及Test保护；无自动训练 | 本地代码及必要测试通过，提交待记 |
+| P2-C 复核迭代衔接 | 已完成待验收 | 原反馈/CandidateSet/训练入口及Test保护；无自动训练 | d4aec96c；原反馈/CandidateSet/训练草稿定向通过 |
 | P2-F 最终验收 | 进行中 | VERSION379/静态缓存425；Chrome28/Node82+版本9及分批Python通过；推送/CI待核 | 不借旧CI |
 
 执行：每阶段新增必要安全RED→最小实现→对应现有Python/Node及少量Chrome→独立正常提交并更新本节。相同代码已通过测试不重复执行；只复用受影响原CI，不扩大全仓测试。生产部署、GT/模型/素材写入和真实训练禁止。本节持续追加实际命令/通过失败跳过/缺口，不把设计当实现。
@@ -68,6 +68,14 @@ Chrome原场景工作台/分析两文件28通过（含4个P2综合场景），�
 
 
 C实际提交d4aec96cb45aca8f669c78554b846082a7d827db。收尾VERSION42.24.379，index app/main/styles425、原训练submit422606、原场景组件20261023p2；版本Owner9项通过，build_identity核验379。原28场景通过后，新增训练基础版本v2断言单场景复验1通过。生产仍未操作。最终实际HEAD以本文件所在提交及GitHub Checks为准，不能以d4/a088代替；CI完成后补代码提交的实际回执，再对任何文档新提交自身独立核查。
+
+### 首轮最终 SHA CI 与定向修正（2026-10-23）
+
+正常推送 e3a373edd1b804743a048f9f0e17989667c403b2 后按该 SHA 核验，未借基线绿色。首轮49个Actions中发现2处失败（其余等待完成）：Frontend Runtime Stabilization 原导航源码守卫要求保留原精确接线；Node Agent Executor 的 Windows 成功用例在固定1.2秒模拟阶段窗口中偶发漏过1秒采样的first_batch心跳，其余模型/成果/清理断言通过，同文件372通过1失败。原日志与官方Checks保留，不将该SHA写成通过。
+
+修正仅恢复原导航守卫表达式并保留新增高级评测deactivate；模拟Worker在原heartbeat实际记录first_batch后才继续，15秒有界失败，不修改Agent生产逻辑，不降低或删除任何原断言。Agent成功目标1通过、相邻失败/取消/独立Test失败合同3通过。另补原SVG检查器的定位几何候选IoU，调用现有sampleEvidenceDiagnostics，不改变正式匹配或指标；原诊断Chrome目标1通过（10.8秒）。main语法及git diff --check通过。下一修正提交必须按其自身SHA再核CI，e3失败不隐瞒、也不代替后续结果。
+
+首轮工作流：https://github.com/jorsamj/aixunlianpingtai/actions/runs/39929197461 、https://github.com/jorsamj/aixunlianpingtai/actions/runs/39929204108 。
 
 ### 必须保留的未覆盖项与接续
 

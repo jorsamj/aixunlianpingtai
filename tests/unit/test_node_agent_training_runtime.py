@@ -479,6 +479,7 @@ def write_fake_train_worker(
     *,
     sleep_seconds=0.0,
     test_result_status="passed",
+    first_batch_ack=None,
 ):
     runtime_root.mkdir(parents=True, exist_ok=True)
     script = runtime_root / "train_worker.py"
@@ -562,7 +563,15 @@ job.update({{
 }})
 job_file.write_text(json.dumps(job), encoding="utf-8")
 print("fake training started", flush=True)
-time.sleep({float(sleep_seconds)!r})
+first_batch_ack = {str(first_batch_ack) if first_batch_ack is not None else None!r}
+if first_batch_ack is not None:
+    deadline = time.monotonic() + 15.0
+    while not Path(first_batch_ack).is_file():
+        if time.monotonic() >= deadline:
+            raise RuntimeError("first_batch heartbeat was not acknowledged")
+        time.sleep(0.05)
+else:
+    time.sleep({float(sleep_seconds)!r})
 
 models = project / "models"
 models.mkdir(parents=True, exist_ok=True)
@@ -608,12 +617,14 @@ def build_runner(
     sleep_seconds=0.0,
     test_result_status="passed",
     resource_resolver=None,
+    first_batch_ack=None,
 ):
     runtime_root = tmp_path / "runtime"
     write_fake_train_worker(
         runtime_root,
         sleep_seconds=sleep_seconds,
         test_result_status=test_result_status,
+        first_batch_ack=first_batch_ack,
     )
     workdirs = AgentExecutionWorkdir(tmp_path / "agent-state")
     if resource_resolver is None:
@@ -666,11 +677,21 @@ def test_real_subprocess_remote_training_success(tmp_path, monkeypatch):
     current, downloads = training_lease(tmp_path)
     transfer = FakeTransferSession(downloads)
     client = FakeControlClient(transfer)
+    first_batch_ack = tmp_path / "first-batch-heartbeat.marker"
+    heartbeat = client.heartbeat
+
+    def acknowledge_first_batch(lease, **kwargs):
+        response = heartbeat(lease, **kwargs)
+        if kwargs.get("stage") == "first_batch":
+            first_batch_ack.write_text("acknowledged", encoding="utf-8")
+        return response
+
+    monkeypatch.setattr(client, "heartbeat", acknowledge_first_batch)
     runner, runtime_root, workdirs = build_runner(
         tmp_path,
         client,
         transfer,
-        sleep_seconds=1.2,
+        first_batch_ack=first_batch_ack,
     )
 
     cleanup = runner._cleanup_training_workdir
