@@ -16,6 +16,10 @@ on:
       - 'static/modules/material-pagination-runtime.js'
       - 'static/modules/training-labels.js'
       - 'static/main.mjs'
+      - 'tests/api/test_training_negative_review.py'
+      - 'tests/unit/test_annotation_negative_review_evidence.py'
+      - 'tests/unit/test_reviewed_negative_projection.py'
+      - 'tests/frontend/training-material-picker-negative-review.test.mjs'
       - 'tests/api/test_training_material_picker_api.py'
       - 'tests/api/test_training_material_selection_summary_api.py'
       - 'tests/api/test_runtime_router_app_mount.py'
@@ -49,6 +53,9 @@ jobs:
       - name: Backend paging thumbnail and summary contracts
         run: >-
           python -m pytest -q
+          tests/api/test_training_negative_review.py
+          tests/unit/test_annotation_negative_review_evidence.py
+          tests/unit/test_reviewed_negative_projection.py
           tests/api/test_training_material_picker_api.py
           tests/api/test_training_material_selection_summary_api.py
           tests/api/test_runtime_router_app_mount.py
@@ -59,6 +66,7 @@ jobs:
           node --check static/modules/training-labels.js &&
           node --check static/main.mjs &&
           node --test
+          tests/frontend/training-material-picker-negative-review.test.mjs
           tests/frontend/training-material-picker-runtime.test.mjs
           tests/frontend/training-material-summary-runtime.test.mjs
           tests/frontend/training-labels.test.mjs

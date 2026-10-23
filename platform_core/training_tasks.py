@@ -57,6 +57,7 @@ TRAINING_BUNDLE_SAFETY_RESERVE_ENV = "TRAINING_BUNDLE_SAFETY_RESERVE_BYTES"
 TRAINING_BUNDLE_COPY_ORPHAN_AGE_SECONDS = 24 * 60 * 60
 TRAINING_PROJECTION_POLICY_V1 = "redact_excluded_objects_v1"
 TRAINING_PROJECTION_POLICY = "redact_excluded_objects_v2_preserve_selected"
+TRAINING_PROJECTION_POLICY_V3 = "reviewed_negative_original_v3_preserve_selected"
 _TRAINING_BUNDLE_COPY_PREFIX = ".training-bundle-copy."
 TRAINING_COMPLETION_GRACE_SECONDS = 5.0
 TRAINING_INPUT_POLICY = "ultralytics_jpeg_repair_v1"
@@ -497,14 +498,27 @@ def _apply_training_projection(
         dict(box) for box in (row.get("training_excluded_boxes") or [])
         if isinstance(box, Mapping)
     ]
-    if not excluded or role == "test":
+    policy = str(row.get("training_projection_policy") or "")
+    if role == "test" or (not excluded and policy != TRAINING_PROJECTION_POLICY_V3):
         return identity
     policy = str(row.get("training_projection_policy") or "")
-    if policy not in {TRAINING_PROJECTION_POLICY_V1, TRAINING_PROJECTION_POLICY}:
+    if policy not in {TRAINING_PROJECTION_POLICY_V1, TRAINING_PROJECTION_POLICY, TRAINING_PROJECTION_POLICY_V3}:
         raise ValueError("excluded training objects require a supported redaction policy")
     projection_digest = str(row.get("training_projection_digest") or "").strip().lower()
     if len(projection_digest) != 64:
         raise ValueError("training projection digest is missing or invalid")
+
+    if policy == TRAINING_PROJECTION_POLICY_V3 and not row.get("boxes"):
+        if row.get("annotation_state") != "confirmed_empty" or not row.get("annotation_scope"):
+            raise ValueError("reviewed negative projection requires scoped formal empty truth")
+        identity.update(training_projection_policy=policy,
+                        training_projection_digest=projection_digest, redacted_object_count=0)
+        return identity
+
+    if not excluded:
+        identity.update(training_projection_policy=policy,
+                        training_projection_digest=projection_digest, redacted_object_count=0)
+        return identity
 
     def pixel_bounds(
         box: Mapping[str, Any], width: int, height: int,
@@ -541,7 +555,7 @@ def _apply_training_projection(
                 raise ValueError(
                     f"TRAINING_IMAGE_INVALID: filename={destination.name}; reason=empty_dimensions"
                 )
-            original = canvas.copy() if policy == TRAINING_PROJECTION_POLICY else None
+            original = canvas.copy() if policy in {TRAINING_PROJECTION_POLICY, TRAINING_PROJECTION_POLICY_V3} else None
             median = tuple(int(value) for value in ImageStat.Stat(canvas).median[:3])
             draw = ImageDraw.Draw(canvas)
             redacted = 0
@@ -1690,7 +1704,7 @@ def _training_source_projection_admission(
         "source_labels", "training_excluded_boxes",
         "training_projection_policy", "training_projection_digest",
     )
-    projected_negatives = excluded_objects = 0
+    projected_negatives = reviewed_original_negatives = excluded_objects = 0
     for expected_row, actual_row in zip(expected, projected):
         image_id = str(expected_row.get("id") or "")
         for key in protected:
@@ -1702,6 +1716,8 @@ def _training_source_projection_admission(
         excluded_objects += len(actual_row.get("training_excluded_boxes") or [])
         if str(actual_row.get("negative_origin") or "") == "redacted_unselected_labels":
             projected_negatives += 1
+        elif str(actual_row.get("negative_origin") or "") == "reviewed_task_negative":
+            reviewed_original_negatives += 1
 
     return {
         "schema_version": 1,
@@ -1711,6 +1727,7 @@ def _training_source_projection_admission(
             "verified_images": len(projected),
             "excluded_source_object_count": excluded_objects,
             "redacted_task_negative_image_count": projected_negatives,
+            "reviewed_original_negative_image_count": reviewed_original_negatives,
             "status": "verified_against_fenced_original_gt",
             "original_source_retained_in_freeze": False,
         },

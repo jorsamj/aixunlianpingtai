@@ -1234,6 +1234,22 @@ class AnnotationRepository:
                                 )
                             decoded = self._decode_persisted_row(persisted)
                             persisted_rows.append(decoded)
+                            evidence = row.get('review_evidence')
+                            if evidence:
+                                actor = str(evidence.get('actor_id') or '').strip()
+                                labels = _normalize_scope(evidence.get('reviewed_label_codes'))
+                                if not actor or not labels or '*' in labels or expected_version is None:
+                                    raise ValueError('review evidence requires actor, concrete labels and expected version')
+                                db.execute("""CREATE TABLE IF NOT EXISTS annotation_negative_reviews (
+                                    image_id TEXT NOT NULL, source_version INTEGER NOT NULL,
+                                    actor_id TEXT NOT NULL, reviewed_scope_json TEXT NOT NULL,
+                                    source_content_sha256 TEXT NOT NULL, annotation_version INTEGER NOT NULL,
+                                    annotation_digest TEXT NOT NULL, reviewed_at TEXT NOT NULL,
+                                    PRIMARY KEY(image_id,source_version,actor_id,reviewed_scope_json,source_content_sha256))""")
+                                db.execute('INSERT OR IGNORE INTO annotation_negative_reviews VALUES(?,?,?,?,?,?,?,?)',
+                                    (image_id, expected_version, actor, json.dumps(labels),
+                                     str(evidence.get('source_content_sha256') or ''), decoded['version'],
+                                     decoded['content_digest'], now))
                             material = admitted.get(image_id) or {}
                             projection = annotation_summary(
                                 decoded['boxes'], decoded['annotation_state'],
@@ -1277,7 +1293,7 @@ class AnnotationRepository:
     def upsert(
         self, image_id, boxes, annotation_state=None, annotation_scope=None,
         *, project_material: bool = True, expected_version=None,
-        source_content_sha256=None, annotation_origin=None,
+        source_content_sha256=None, annotation_origin=None, review_evidence=None,
     ):
         persisted = self.upsert_many([{
             'image_id': image_id,
@@ -1287,10 +1303,20 @@ class AnnotationRepository:
             'expected_version': expected_version,
             'source_content_sha256': source_content_sha256,
             'annotation_origin': annotation_origin,
+            'review_evidence': review_evidence,
         }], project_material=project_material, return_rows=True)
         if not persisted:
             raise RuntimeError("annotation upsert did not return a persisted row")
         return persisted[0]
+
+    def negative_review_evidence(self, image_id, source_version, actor_id, labels, source_hash):
+        """Audit lookup only; current GT remains the training authority."""
+        with closing(self._connect()) as db:
+            if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='annotation_negative_reviews'").fetchone():
+                return None
+            row = db.execute('SELECT * FROM annotation_negative_reviews WHERE image_id=? AND source_version=? AND actor_id=? AND reviewed_scope_json=? AND source_content_sha256=?',
+                (self._id(image_id),int(source_version),str(actor_id),json.dumps(_normalize_scope(labels)),str(source_hash))).fetchone()
+            return dict(row) if row else None
 
     def exists(self, image_id) -> bool:
         image_id = self._id(image_id)

@@ -197,7 +197,9 @@ export function collectTrainingAdmissionBlockers({draft,base,target,benchmarkSta
     const count=raw!==undefined&&raw!==null&&Number.isFinite(Number(raw))?Number(raw):null;
     add('material-compatibility',count===null?'训练素材存在未处理问题':`本次有 ${count} 张素材不符合训练条件`,{count,issue_count:Number(compatibility.issue_count)});
     for(const [code,value] of Object.entries(compatibility.issue_counts||{}))if(Number(value)>0){
-      add(code,TRAINING_ADMISSION_ISSUE_NAMES[code]||`其他素材问题（${code}）`,{count:Number(value),count_unit:'问题条目'});
+      const labelText=(compatibility.effective_label_codes||[]).join('、');
+      const message=code==='partial_review_scope'&&labelText?`${value} 张素材尚未确认是否包含 ${labelText}`:TRAINING_ADMISSION_ISSUE_NAMES[code]||`其他素材问题（${code}）`;
+      add(code,message,{count:Number(value),count_unit:'问题条目'});
     }
   }
   if(externalReadiness?.ready===false)add(externalReadiness.reason||'external-master-data',externalReadiness.message||'畅联云算法主数据尚未就绪，请重新同步');

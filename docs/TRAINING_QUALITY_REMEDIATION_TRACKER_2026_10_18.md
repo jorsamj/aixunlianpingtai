@@ -1,3 +1,43 @@
+## 2026-10-23｜P1跨标签负样本与首次训练兼容性（进行中）
+
+本节为本轮唯一需求、设计、任务与接续记录。基线d915bd26805ea1d867dbdfdf67794b64496179b0 / VERSION42.24.381，fetch0/0；保留5944及两份未提交训练模板测试，不生产部署/修改素材或数据库/GPU训练。
+
+用户确认：首次训练以明确选择的训练标签（例vest）构造YOLO连续类别，不猜算法名/母模型；可选择person/car等跨标签候选，但只有正式GT审核范围覆盖全部有效训练标签、且无目标框的素材可作为负样本。未审核的跨标签图应显示待审核，不能自动确认或删除已有框。首次训练必须有真正目标正样本。混合正样本沿用原像素保护投影；新任务已审核纯负样本保留图像内容、输出空标签，源图与源GT框不变。原AnnotationRepository记录范围、操作者、时间和版本，CAS阻止复用过期审核。Train/Val/Test内容隔离、原Worker按需准备/回收不变。
+
+审计：scope校验本身正确，不应删除；现有project_training_rows将excluded-only已审核图转为任务负样本，但materializer仍遮挡全部排除目标。原picker仅显示通用已标注/待标注，与任务有效标签角色不一致。已有scope补审、分页/缩略图/SVG/标注编辑、正式annotation CAS和最终submit准入可复用。
+
+设计取舍：拒绝自动扩scope和全局关闭遮挡。采用原合同新增版本化V3策略，只对新任务严格已审核纯负样本保留原像素；缺新策略字段的历史合同继续V1/V2。原picker扩展任务角色页/SQL聚合/选中统计和有限批次显式审核，原GT保存链承载版本与审计，不新建GT/任务系统。打开弹窗仅轻量统计，正式创建才执行全量准入。数量比例只提示，不自动丢弃选择。
+
+| 阶段 | 需求与模块 | 优先级 | 状态 | 已完成/剩余 | 证据/风险 |
+|---|---|---|---|---|---|
+| A | 现状/合同审计 | P1 | 已完成待验收 | 共享scope与投影根因已核验；完成正式记录 | 尚无真实GPU精度结论 |
+| B | 训练标签/三角色/V3投影与历史兼容 | P1 | 进行中 | 原training_label_tasks/training_tasks修改及RED→GREEN | 新旧策略不得混用 |
+| C | 原picker角色分页/轻量统计 | P1 | 进行中 | 原API/前端扩展；必要规模回归 | 禁止全素材前端加载 |
+| D | 正式范围批审/原图GT保护/CAS审计 | P1 | 进行中 | 原save_annotation链复用，有限显式确认 | 过期GT/源内容必须拒绝 |
+| E | 真实Chrome/必要回归/版本/提交/CI | P1 | 未开始 | 只运行受影响测试，不全仓重复 | 最终SHA独立核验 |
+
+实施步骤：先共享分类/V3及单元RED/GREEN，再角色页与审核API、原picker，接原创建摘要/准入错误，隔离真实浏览器走vest+person审核/保留框/空标签；审查后版本递增一次、普通提交/推送、记录准确CI。A–H安全场景通过核心单元/相关API/必要浏览器组合覆盖，不为相同合同重复建多套测试。分文件委派由subagent-driven-development技能执行，根任务负责GT审计接线/摘要/浏览器/Git，避免交叉覆盖。
+
+测试与提交：尚未最终验收，后续追加真实命令、数量、失败修正、准确SHA。生产真实NAS/OSS/GPU与模型准确率收益仍NOT VERIFIED；负样本增多未必提升准确率，需要同可信独立Test评测后判断。
+
+### P1本地实现与验证回执（代码完成待准确SHA CI）
+
+- B：training_label_tasks共享三角色分类，canonical显式类别、真实正样本证据与新策略冻结；training_tasks V3已审核纯负样本保留原字节、空YOLO，混合图按V2保护正框。无V3字段的历史合同仍按旧策略。审核不创建background类别；来源不可用/复核标志/图片摘要漂移不显示已确认。
+- C：原picker增加role-page/原始标签与角色分离筛选、计数；SQL临时表做一次逐候选分类，浏览器最多原60/120条。原selection-summary保留通用摘要，明确选本次标签后才追加任务角色计数；首次无标签时仍可读取素材标签，不形成循环依赖。打开只轻量预览，不能借客户端字段关闭正式准入。
+- D：每批最多50张人工逐项勾选/二次确认；原save_annotation校验源SHA/版本/生命周期、保留所有person框，空GT保留已有具体审核范围。AnnotationRepository同事务新增审计表annotation_negative_reviews（仅审核证据，不是第二套GT），绑定原版本/新版本/digest/源SHA/实际登录actor/具体标签/时间。用户不能通过请求指定私有actor。旧版本精确重放仅当当前GT仍等于该审核结果时成功，修订后409。原工作台补框继续复用；不自动确认未查看图片。
+- 创建摘要增加任务正/负/待审核数及>3:1比例提示，不裁减素材。打开不跑全量准入，正式提交继续原检查，审核缺口提示具体数量/有效标签。
+- 只读双阶段审查未发现阻塞项。正式审核本身不以Test/活动租约一概拒绝新GT修订；历史冻结证据不可变，下一轮训练仍由原冻结/最终准入执行SHA去重与Train/Val/Test隔离，不能声称此接口独自完成全部租约检查。
+
+必要验证（非全仓重复）：核心原标签/负样本/标注准入组合72通过；新增核心随后扩充到16通过（包含真实PNG字节一致、零字节vest标签、混合像素、历史V2、伪造标记、无正样本、可信预览、5种漂移及无排除目标正样本不重新编码），不是相加成87。picker API原/新增12通过，规模用例再扩500vest+3000person/10000候选后定向1通过，原摘要/挂载16通过1旧断言失败，挂载准确补入审核与actor回调断言后1通过；真实审核API2+事务证据1共3通过。Node picker16、摘要15及相关选择/labels组合48首47通过1旧cache断言，准确同步后版本/submit75通过。Chrome原分页性能+实际vest/person审核+原创建摘要3/3通过，无浏览器造假评测数据。
+
+真实RED与修正：缺审计参数/缺新summary export先失败后实现；轻量role-page最初复用了要求正样本的正式resolver，通过仅函数内部可信参数拆分预览，客户端无绕过；无标签摘要避免正式解析循环；新审核挂载回调与cache需要同步旧精确守卫。规模fixture误一次写3500GT触发原500安全上限，改为原上限分批写入，不降低限额。旧有5条依赖弃用warning保留。
+
+复现入口：tests/unit/test_reviewed_negative_projection.py、test_negative_sample_contract.py、test_training_label_contract.py及annotation admission；tests/api/test_training_material_picker_api.py/test_training_negative_review.py/test_training_material_selection_summary_api.py/test_runtime_router_app_mount.py；tests/frontend/training-material-picker*、training-material-summary-runtime、training-labels、training-submit、version-marker-owner；tests/browser/training-material-picker-performance.spec.mjs和training-page-material-summary.spec.mjs。原受影响Training Material Picker工作流扩入新增安全测试，不新建CI体系。
+
+修改文件：app.py（仅原正式保存参数与审核回调接线）、AnnotationRepository（事务审计）、training_label_tasks/training_tasks（共享分类/版本化投影）、training_material_picker_api、原picker/summary/submit、main/index精确缓存、VERSION、上述测试/原工作流及现有交接文档。VERSION一次递增42.24.382。B–E当前已完成待验收；提交与最终CI待普通推送后追加，不能把本地通过写成远端绿色。
+
+生产边界：未部署/未写生产素材或GT/未物理清理/未训练。不能保证负样本数量越多越准确；需生产前只读核验真实类别/范围/来源，再在同可信冻结Test上比较误检、召回与mAP。NAS/OSS/GPU实际效果仍NOT VERIFIED。下一会话从本节与上述原Owner继续，禁止重建GT、素材、调度或副本生命周期，保留5944和两份模板测试。
+
 ## 2026-10-23｜P2模型深度评测（代码及隔离CI已验收，生产未验证）
 
 唯一需求/进度/限制：[场景评测专项P2](SCENARIO_MODEL_EVALUATION_UI_GOVERNANCE_2026_10_22.md)。A1只读冻结信任、A2正式匹配证据和有界框、B同基准逐图变化、C原反馈/已审核候选/训练草稿衔接已提交；VERSION42.24.379。原场景Chrome28、Node82及必要Python分批通过，未跑全仓；dHash/连续帧/审核版本缺历史证据保持未检查或未知，框证据上限200图/每层120。5944和两份未跟踪模板测试保留，不部署/不生产写入/不自动训练。代码9280实际21/21 Actions、55/55 Checks通过，Node1311/1311、Chrome248/248；本次文档自身SHA交付前另核CI，不借旧绿；不重建存储、GT、Task或Candidate Owner。

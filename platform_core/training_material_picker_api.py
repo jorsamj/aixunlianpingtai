@@ -19,6 +19,7 @@ from urllib.parse import quote
 
 from filelock import FileLock
 from PIL import Image, ImageOps, UnidentifiedImageError
+from starlette.requests import Request
 
 from .annotation_repository import AnnotationRepository
 from .material_repository import (
@@ -428,6 +429,68 @@ def _bulk_filtered_ids(
     return ids, total if total >= 0 else len(ids)
 
 
+
+def _role_material_page(repository, annotations, contract, *, image_ids=None,
+                        query="", labels=(), sample_role="", page=1, limit=60, sort_order="oldest"):
+    """Evaluate task roles in SQLite, returning only one bounded payload page.
+
+    The deterministic SQL function uses the same classifier as admission; a
+    temporary table evaluates each candidate once, including the count query.
+    """
+    from .training_label_tasks import training_material_role
+    if sample_role not in {"", "positive", "confirmed_negative", "pending_review"}:
+        raise ValueError("invalid sample_role")
+    if not 1 <= int(limit) <= MAX_SELECTION_SUMMARY_IDS or int(page) < 1:
+        raise ValueError("invalid role page bounds")
+    if sort_order not in {"oldest", "newest"}:
+        raise ValueError("sort_order must be oldest or newest")
+    def classify(payload, state, boxes, scope):
+        row = json.loads(payload)
+        row.update(annotation_state=state or "unannotated", boxes=json.loads(boxes or "[]"),
+                   annotation_scope=json.loads(scope or "[]"))
+        return training_material_role(row, contract)["role"]
+    with closing(sqlite3.connect(repository.path, timeout=30)) as db:
+        db.row_factory = sqlite3.Row
+        db.execute("PRAGMA temp_store=FILE")
+        db.execute("ATTACH DATABASE ? AS annotation_gt", (str(annotations.path),))
+        db.create_function("training_role", 4, classify, deterministic=True)
+        clauses = ["m.processing_status='processed'"]
+        params = []
+        if query:
+            clauses.append("m.filename LIKE ? COLLATE NOCASE")
+            params.append("%" + str(query) + "%")
+        if labels:
+            clauses.append("EXISTS (SELECT 1 FROM annotation_gt.annotation_label_references r "
+                           "WHERE r.image_id=m.id AND r.annotation_state='annotated' AND r.box_count>0 "
+                           "AND r.label_code IN (" + ",".join("?" for _ in labels) + "))")
+            params.extend(labels)
+        if image_ids is not None:
+            db.execute("CREATE TEMP TABLE role_selected_ids(id TEXT PRIMARY KEY) WITHOUT ROWID")
+            db.executemany("INSERT OR IGNORE INTO role_selected_ids VALUES (?)", ((i,) for i in image_ids))
+            clauses.append("m.id IN (SELECT id FROM role_selected_ids)")
+        db.commit()
+        db.execute("BEGIN")
+        db.execute("CREATE TEMP TABLE picker_roles AS SELECT m.id,m.created_at,m.payload_json, "
+                   "training_role(m.payload_json,a.annotation_state,a.boxes_json,a.scope_json) AS sample_role "
+                   "FROM materials m LEFT JOIN annotation_gt.annotations a ON a.image_id=m.id WHERE "
+                   + " AND ".join(clauses), params)
+        counts = {role: 0 for role in ("positive", "confirmed_negative", "pending_review")}
+        counts.update({str(r[0]): int(r[1]) for r in db.execute(
+            "SELECT sample_role,COUNT(*) FROM picker_roles GROUP BY sample_role")})
+        total = counts[sample_role] if sample_role else sum(counts.values())
+        if int(page) > max(1, math.ceil(total / int(limit))):
+            raise ValueError("page exceeds total_pages")
+        rows = db.execute("SELECT * FROM picker_roles " + ("WHERE sample_role=? " if sample_role else "")
+                          + ("ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?" if sort_order == "newest" else "ORDER BY created_at,id LIMIT ? OFFSET ?"),
+                          ([sample_role] if sample_role else []) + [int(limit), (int(page)-1)*int(limit)]).fetchall()
+        revisions = (int(db.execute("SELECT value FROM material_meta WHERE key='revision'").fetchone()[0]),
+                     int(db.execute("SELECT value FROM annotation_gt.annotation_meta WHERE key='revision'").fetchone()[0]))
+    return {"items": [{**json.loads(r["payload_json"]), "sample_role": r["sample_role"]} for r in rows],
+            "total": total, "sample_role_counts": counts, "effective_label_codes": list(contract["effective_label_codes"]),
+            "page": int(page), "page_size": int(limit), "limit": int(limit), "next_cursor": None,
+            "total_pages": max(1, math.ceil(total / int(limit))),
+            "repository_revision": revisions[0], "annotation_revision": revisions[1]}
+
 def _thumbnail_identity(row: dict) -> str:
     content_hash = str(row.get("content_sha256") or "").strip().lower()
     if len(content_hash) == 64 and all(char in "0123456789abcdef" for char in content_hash):
@@ -477,6 +540,8 @@ def training_material_picker_router(
     project_path_provider=None,
     algorithm_provider=None,
     compatibility_payload_provider=None,
+    review_negative_provider=None,
+    actor_provider=None,
 ):
     from fastapi import APIRouter, HTTPException, Query
     from fastapi.responses import FileResponse, RedirectResponse
@@ -510,6 +575,71 @@ def training_material_picker_router(
             return repository_for_path(str(project_path))
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
+
+    def task_contract(project_id, body, repository):
+        from .training_label_tasks import resolve_training_label_contract
+        if algorithm_provider is None:
+            raise HTTPException(status_code=503, detail="训练标签适配服务不可用")
+        algorithm = algorithm_provider(project_id, str(body.get("algorithm_asset_id") or ""))
+        if algorithm is None:
+            raise HTTPException(status_code=404, detail="训练算法不存在")
+        # Role previews resolve canonical task labels only. Benchmark scope,
+        # identity checks and admission remain in the explicit compatibility call.
+        return resolve_training_label_contract(data_dir(), repository.project_path, dict(body), algorithm,
+                                               require_positive_evidence=False)
+
+    @router.post("/role-page")
+    def training_role_page(project_id: str, payload: dict):
+        repository = materials(project_id)
+        annotations = annotation_repository_for_path(str(repository.project_path))
+        try:
+            limit = int(payload.get("page_size") or payload.get("limit") or DEFAULT_PAGE_SIZE)
+            if not 1 <= limit <= MAX_PAGE_SIZE:
+                raise ValueError("page_size exceeds page limit")
+            contract = task_contract(project_id, payload, repository)
+            result = _role_material_page(repository, annotations, contract,
+                query=str(payload.get("query") or ""), labels=_normalize_labels(payload.get("labels")),
+                sample_role=str(payload.get("sample_role") or ""), page=int(payload.get("page") or 1), limit=limit,
+                sort_order=str(payload.get("sort_order") or "oldest"))
+            truth = annotations.get_many([row["id"] for row in result["items"]])
+            result["items"] = [{**_public_picker_material(project_id, row, truth.get(row["id"], {})),
+                                "sample_role": row["sample_role"],
+                                "annotation_version": int(truth.get(row["id"], {}).get("version") or 0),
+                                "source_content_sha256": str(row.get("content_sha256") or "")}
+                               for row in result["items"]]
+            return result
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+
+    @router.post("/review-negative")
+    def review_negative(project_id: str, payload: dict, request: Request):
+        if payload.get("confirmed") is not True:
+            raise HTTPException(status_code=422, detail="explicit review confirmation required")
+        items = payload.get("items")
+        if not isinstance(items, list) or not 1 <= len(items) <= 50 or not all(isinstance(i, dict) for i in items):
+            raise HTTPException(status_code=422, detail="review items must contain 1 to 50 images")
+        if len({str(i.get("image_id") or "") for i in items}) != len(items):
+            raise HTTPException(status_code=422, detail="duplicate review image ids")
+        repository = materials(project_id)
+        try:
+            contract = task_contract(project_id, payload, repository)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        if review_negative_provider is None:
+            raise HTTPException(status_code=503, detail="formal annotation review unavailable")
+        actor = actor_provider(request, project_id) if actor_provider else {}
+        succeeded, failures = [], []
+        for item in items:
+            image_id = str(item.get("image_id") or "")
+            try:
+                review_negative_provider(project_id, item, list(contract["effective_label_codes"]), actor)
+                succeeded.append(image_id)
+            except Exception as error:
+                if not hasattr(error, "status_code") and not isinstance(error, ValueError):
+                    raise
+                failures.append({"image_id": image_id, "status_code": getattr(error, "status_code", 422),
+                                 "message": str(getattr(error, "detail", str(error)))})
+        return {"succeeded": succeeded, "failures": failures, "effective_label_codes": contract["effective_label_codes"]}
 
     @router.get("")
     def list_training_materials(
@@ -669,6 +799,14 @@ def training_material_picker_router(
             annotations = annotation_repository_for_path(
                 str(repository.project_path)
             )
+            if body.get("sample_role"):
+                contract = task_contract(project_id, body, repository)
+                role_page = _role_material_page(repository, annotations, contract, query=query, labels=labels,
+                    sample_role=str(body["sample_role"]), limit=MAX_SELECTION_SUMMARY_IDS)
+                if role_page["total"] > MAX_SELECTION_SUMMARY_IDS:
+                    raise ValueError("filtered selection exceeds maximum")
+                return {"items": [row["id"] for row in role_page["items"]], "total": role_page["total"],
+                        "repository_revision": repository.current_revision(), "selection_mode": "filtered"}
             ids, total = _bulk_filtered_ids(
                 repository,
                 annotations,
@@ -694,6 +832,13 @@ def training_material_picker_router(
         repository = materials(project_id)
         annotations = annotation_repository_for_path(str(repository.project_path))
         summary = _selection_summary(repository, annotations, image_ids)
+        if payload.get("algorithm_asset_id") and (payload.get("train_labels") or payload.get("base_version_id")):
+            try:
+                contract = task_contract(project_id, payload, repository)
+                roles = _role_material_page(repository, annotations, contract, image_ids=image_ids, limit=1)
+                summary.update(sample_role_counts=roles["sample_role_counts"], effective_label_codes=roles["effective_label_codes"])
+            except ValueError as error:
+                raise HTTPException(status_code=422, detail=str(error)) from error
         return {**summary, "repository_revision": repository.current_revision()}
 
     @router.post("/compatibility")

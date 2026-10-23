@@ -178,7 +178,14 @@ def test_production_app_mounts_training_picker_exactly_once_at_project_owner():
         "project_path_provider",
         "algorithm_provider",
         "compatibility_payload_provider",
+        "review_negative_provider",
+        "actor_provider",
     }
+    assert isinstance(keywords['review_negative_provider'],ast.Name)
+    assert keywords['review_negative_provider'].id == '_review_training_negative'
+    assert isinstance(keywords['actor_provider'],ast.Name)
+    assert keywords['actor_provider'].id == '_material_governance_actor'
+
     assert isinstance(keywords["project_path_provider"], ast.Name)
     assert keywords["project_path_provider"].id == "project_dir"
     assert isinstance(keywords["algorithm_provider"], ast.Lambda)

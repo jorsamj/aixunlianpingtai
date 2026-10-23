@@ -46,6 +46,13 @@ function htmlEscape(value) {
   })[char]);
 }
 
+export function renderTrainingSampleRoles(summary) {
+  const counts=summary?.sample_role_counts,labels=uniqueIds(summary?.effective_label_codes);
+  if(!counts||!labels.length)return '';
+  const positive=Math.max(0,Number(counts.positive)||0),negative=Math.max(0,Number(counts.confirmed_negative)||0),pending=Math.max(0,Number(counts.pending_review)||0);
+  return `<div data-training-sample-roles><span>本次训练标签 ${htmlEscape(labels.join('、'))}</span><b>正样本 ${positive} · 已确认负样本 ${negative} · 待审核 ${pending}</b>${negative>positive*3?'<small>负样本比例较高，请结合困难样本质量和独立评测判断；不会自动减少所选素材。</small>':''}${pending?'<small>待审核素材须完成本次标签审核后才能参与监督训练。</small>':''}</div>`;
+}
+
 export const GT_CONFLICT_NAMES = Object.freeze({
   LABEL_SCOPE_COUNT_COMPOUND:'类别、范围与框数量复合冲突', COORDINATE_ONLY:'仅框坐标不同',
   SCOPE_AND_GEOMETRY:'范围与框坐标同时不同', OTHER:'其他差异组合',
@@ -403,8 +410,18 @@ export function installTrainingMaterialSummaryRuntime({
     return String(row?.display_name || row?.display_name_zh || row?.name || code || '');
   }
 
+  function pickerDraftPayload() {
+    const draft=currentDraft();
+    return {algorithm_asset_id:String(draft?.algorithmId||''),train_labels:uniqueIds(draft?.newLabelCodes),
+      model:String(draft?.config?.model||'yolo11n.pt'),framework:String(draft?.config?.framework||'ultralytics'),
+      base_version_id:String(draft?.baseVersionId||'')};
+  }
+  function summaryRequestSignature(ids) {
+    return JSON.stringify([String(projectId()||''),trainingMaterialSelectionSignature(ids),pickerDraftPayload()]);
+  }
+
   function summaryReadyFor(ids = currentIds()) {
-    return currentSignature === trainingMaterialSelectionSignature(ids) && Boolean(summary) && !pendingSignature;
+    return currentSignature === summaryRequestSignature(ids) && Boolean(summary) && !pendingSignature;
   }
 
   function summaryFor(ids = currentIds()) {
@@ -451,13 +468,14 @@ export function installTrainingMaterialSummaryRuntime({
       }
       const truth = compatibilityFor();
       const count = Number(truth.affected_image_count ?? truth.issue_count ?? 0);
-      const nextHtml = truth.error
+      const sampleHtml=ready?renderTrainingSampleRoles(summary):'';
+      const nextHtml = sampleHtml + (truth.error
         ? '<span>训练输入检查</span><b class="err">检查失败 · 可重试</b><button class="btn mini" type="button" data-training-compatibility-open>查看原因并重试</button>'
         : truth.loading || !truth.ready
         ? `<span>训练输入检查</span><b>${truth.loading?'检查中…':'点击开始训练后检查'}</b>`
         : count
           ? `<span>训练输入检查</span><b class="warn">${count} 张需处理</b><button class="btn mini" type="button" data-training-compatibility-open>查看并处理冲突</button>`
-          : '<span>标签适配</span><b>已通过</b>';
+          : '<span>标签适配</span><b>已通过</b>');
       if(row.dataset.compatibilityRenderKey!==nextHtml){row.dataset.compatibilityRenderKey=nextHtml;row.innerHTML=nextHtml;row.querySelector?.('[data-training-compatibility-open]')?.addEventListener?.('click', () => openCompatibilityIssues());}
     }
   }
@@ -474,7 +492,7 @@ export function installTrainingMaterialSummaryRuntime({
 
   async function refresh(ids = currentIds(), {force = false} = {}) {
     const normalizedIds = uniqueIds(ids);
-    const signature = trainingMaterialSelectionSignature(normalizedIds);
+    const signature = summaryRequestSignature(normalizedIds);
     if (!force && currentSignature === signature && summary) {
       queueDecorate();
       return summary;
@@ -502,7 +520,7 @@ export function installTrainingMaterialSummaryRuntime({
           method: 'POST',
           signal,
           headers: {'Accept': 'application/json', 'Content-Type': 'application/json'},
-          body: JSON.stringify({image_ids: normalizedIds}),
+          body: JSON.stringify({...pickerDraftPayload(),image_ids: normalizedIds}),
         },
       ),'训练素材摘要读取失败'),{timeoutMs:requestTimeoutMs,label:'训练素材摘要',signal:activeController.signal});
       if (destroyed || sequence !== requestSequence || String(projectId()||'')!==pid) return null;
@@ -520,6 +538,8 @@ export function installTrainingMaterialSummaryRuntime({
         box_count: Math.max(0, Number(body.box_count || 0)),
         size_bytes: Math.max(0, Number(body.size_bytes || 0)),
         label_codes: uniqueIds(body.label_codes),
+        effective_label_codes: uniqueIds(body.effective_label_codes),
+        sample_role_counts: body.sample_role_counts || null,
         label_counts: body.label_counts && typeof body.label_counts === 'object' ? {...body.label_counts} : {},
         repository_revision: body.repository_revision ?? null,
       };
@@ -879,7 +899,7 @@ return `<article class="training-compatibility-item"><img src="${htmlEscape(item
 
   function syncSelection() {
     const ids = currentIds();
-    const signature = trainingMaterialSelectionSignature(ids);
+    const signature = summaryRequestSignature(ids);
     if (signature !== currentSignature && signature !== pendingSignature) void refresh(ids);
     else queueDecorate();
     const draft = currentDraft();
@@ -924,6 +944,7 @@ return `<article class="training-compatibility-item"><img src="${htmlEscape(item
     summaryFor,
     selectedLabelCodes,
     decorateTrainingCreateUi,
+    pickerDraftPayload,
     state() {
       return {
         signature: currentSignature,

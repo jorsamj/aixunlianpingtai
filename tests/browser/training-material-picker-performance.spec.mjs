@@ -27,7 +27,7 @@ test('training material picker opens immediately, renders larger previews, and p
   await page.goto('/');
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
   await expect.poll(async () => page.evaluate(() => window.TrainingMaterialPickerRuntime?.build || null))
-    .toBe('training-material-picker-runtime-422507');
+    .toBe('training-material-picker-runtime-422508');
   await expect.poll(async () => page.evaluate(() => state.uiReady === true)).toBe(true);
 
   const projectId = await page.evaluate(() => state.project?.id);
@@ -173,4 +173,40 @@ test('training material picker opens immediately, renders larger previews, and p
   await page.getByRole('button', {name: '取消'}).click();
 
   expect(pageErrors).toEqual([]);
+});
+
+
+test('vest first training reviews person without changing source boxes or adding a class',async({page,request})=>{
+ const errors=[];page.on('pageerror',e=>errors.push(e.message));
+ const project=await(await request.post('/api/projects',{data:{name:`跨标签-${Date.now()}`,labels:[{code:'vest'},{code:'person'}]}})).json();
+ const created=await(await request.post(`/api/v12/projects/${project.id}/algorithms`,{data:{name:'反光衣识别',industry:'测试',algorithm_type:'yolo_ultralytics'}})).json();
+ const bytes=Buffer.alloc(54+300*80);bytes.write('BM');bytes.writeUInt32LE(bytes.length,2);bytes.writeUInt32LE(54,10);bytes.writeUInt32LE(40,14);bytes.writeInt32LE(100,18);bytes.writeInt32LE(80,22);bytes.writeUInt16LE(1,26);bytes.writeUInt16LE(24,28);
+ const ids=[];let personBefore;
+ for(const [index,label] of ['vest','person'].entries()){
+  bytes.fill(index?140:80,54);
+  const up=await(await request.post(`/api/projects/${project.id}/images`,{multipart:{files:{name:`${label}.bmp`,mimeType:'image/bmp',buffer:Buffer.from(bytes)},dataset_id:'default'}})).json();
+  const image=up.uploaded[0];ids.push(image.id);
+  const ann=await(await request.get(`/api/projects/${project.id}/annotations/${image.id}`)).json();
+  const saved=await(await request.post(`/api/projects/${project.id}/annotations/${image.id}`,{data:{boxes:[{id:label,label,class_id:index,x1:10,y1:10,x2:80,y2:70}],annotation_state:'annotated',expected_version:ann.annotation.version,source_content_sha256:image.content_sha256,reviewed_label_codes:[label]}})).json();
+  if(label==='person')personBefore=saved.annotation;
+ }
+ await page.route('**/api/v53/bootstrap/snapshot**',async route=>{const u=new URL(route.request().url());u.searchParams.set('preferred_project_id',project.id);await route.fallback({url:u.toString()})});
+ await page.goto('/');await expect.poll(()=>page.evaluate(()=>state.uiReady)).toBe(true);
+ await page.evaluate(({id,ids})=>{window.TrainingDraftRuntime.update({algorithmId:id,materialIds:ids,newLabelCodes:['vest'],config:{model:'yolo11n.pt'}});window.openTrainMaterialPickerV3('train')},{id:created.algorithm.id,ids});
+ await expect(page.locator('.train-v3-card')).toHaveCount(2);
+ await expect(page.locator('#trV3TrainingLabels')).toContainText('vest');
+ await expect(page.locator('#trV3RoleCounts')).toContainText('待审核 1');
+ await page.getByRole('button',{name:'审核待确认素材',exact:true}).click();await expect(page.locator('.train-v3-card')).toHaveCount(1);
+ await expect(page.locator('svg.train-v3-box-layer rect[data-label="person"]')).toBeVisible();
+ await page.locator('.train-v3-card input').check();page.once('dialog',dialog=>dialog.accept());
+ await page.getByRole('button',{name:'确认所勾选图片不含本次训练目标',exact:true}).click();
+ await expect(page.locator('#trV3ReviewProgress')).toContainText('已保存 1/1');
+ await expect(page.locator('#trV3RoleCounts')).toContainText('已确认负样本 1');
+ await page.getByRole('button',{name:'结束本批审核',exact:true}).click();
+ await page.getByRole('combobox',{name:'训练样本角色'}).selectOption('confirmed_negative');
+ await expect(page.locator('.train-v3-card')).toHaveCount(1);
+ await expect(page.locator('.train-v3-card')).toContainText('可作为 vest 负样本');
+ const after=await(await request.get(`/api/projects/${project.id}/annotations/${ids[1]}`)).json();
+ expect(after.annotation.boxes).toEqual(personBefore.boxes);expect(after.annotation.annotation_scope).toEqual(['person','vest']);
+ expect(errors).toEqual([]);
 });

@@ -9,6 +9,7 @@ import {
   trainingMaterialSelectionSignature,
   updateTrainingGovernanceSelection,
   renderGtConflictEvidence,
+  renderTrainingSampleRoles,
   removeResolvedTrainingMaterials,
 } from '../../static/modules/training-material-summary-runtime.js';
 import {resolveClientTrainingLabels} from '../../static/modules/training-labels.js';
@@ -180,4 +181,10 @@ test('pending selection summary and stalled compatibility body both release load
     fetchImpl:async url=>url.endsWith('selection-summary')?new Promise(()=>{}):{ok:true,json:()=>new Promise(()=>{})}});
   try{await runtime.refreshCompatibility({force:true});await new Promise(resolve=>setTimeout(resolve,45));assert.equal(runtime.state().loading,false);assert.equal(runtime.compatibilityFor().loading,false);assert.match(messages.join(' '),/超时/)}
   finally{runtime.destroy();Object.assign(globalThis,previous)}
+});
+
+test('sample role summary distinguishes task labels and warns without dropping negatives',()=>{
+ const html=renderTrainingSampleRoles({effective_label_codes:['vest'],sample_role_counts:{positive:500,confirmed_negative:3000,pending_review:200}});
+ assert.match(html,/vest/);assert.match(html,/正样本 500/);assert.match(html,/已确认负样本 3000/);assert.match(html,/待审核 200/);assert.match(html,/比例/);
+ assert.equal(renderTrainingSampleRoles({label_codes:['person']}),'');
 });

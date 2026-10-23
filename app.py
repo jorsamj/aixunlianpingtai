@@ -32,7 +32,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, StrictInt, model_validator
+from pydantic import BaseModel, Field, StrictInt, PrivateAttr, model_validator
 from PIL import Image, ImageDraw
 from filelock import FileLock, Timeout
 
@@ -3418,6 +3418,7 @@ def write_annotation(
     annotation_state=None, annotation_origin: Optional[str] = None,
     *, annotation_scope=None, expected_version: Optional[int] = None,
     source_content_sha256: Optional[str] = None,
+    review_evidence=None,
 ):
     # AnnotationRepository is the ground-truth owner. Persist explicit/final
     # truth immediately. If this image had only a deferred plain-upload
@@ -3461,6 +3462,7 @@ def write_annotation(
         expected_version=expected_version,
         source_content_sha256=source_content_sha256,
         annotation_origin=annotation_origin,
+        review_evidence=review_evidence,
     )
     return saved
 
@@ -5479,6 +5481,8 @@ def get_annotation(project_id: str, image_id: str):
 
 
 class AnnotationSave(BaseModel):
+    _review_actor: str = PrivateAttr(default="")
+    _review_codes: List[str] = PrivateAttr(default_factory=list)
     boxes: List[Dict[str, Any]]
     annotation_state: Optional[Literal["unannotated", "annotated", "confirmed_empty"]] = None
     expected_version: Optional[int] = None
@@ -5633,6 +5637,9 @@ def save_annotation(project_id: str, image_id: str, payload: AnnotationSave):
             source_content_sha256=(
                 submitted_content_sha256 or current_content_sha256
             ),
+            review_evidence=({'actor_id': payload._review_actor,
+                'reviewed_label_codes': payload._review_codes or reviewed_label_codes,
+                'source_content_sha256': current_content_sha256} if payload._review_actor else None),
         )
     except AnnotationConflictError as error:
         raise PlatformError(
@@ -24432,6 +24439,39 @@ app.include_router(material_batch_router(
     training_selection_provider=_training_compatibility_request,
     actor_provider=_material_governance_actor,
 ))
+def _review_training_negative(project_id, item, effective_codes, actor):
+    """Reuse the formal annotation save and its CAS/content/lifecycle fences."""
+    image_id = str(item.get('image_id') or '')
+    expected = item.get('expected_version')
+    source_hash = str(item.get('source_content_sha256') or '').strip().lower()
+    if isinstance(expected, bool) or not isinstance(expected, int) or expected < 0 or len(source_hash) != 64:
+        raise HTTPException(422, detail='审核缺少真实标注版本或图片摘要，请刷新图片')
+    actor_id = str((actor or {}).get('actor_id') or '')
+    if not actor_id:
+        raise HTTPException(401, detail='请先登录后审核素材')
+    current = read_annotation(project_id, image_id)
+    boxes = list(current.get('boxes') or [])
+    if any(str(box.get('label') or box.get('code') or '') in set(effective_codes) for box in boxes):
+        raise HTTPException(409, detail='图片已有本次训练目标，请进入标注工作台审核，不能确认纯负样本')
+    if int(current.get('version') or 0) != expected:
+        evidence = _v50_annotation_repository(project_id).negative_review_evidence(image_id,expected,actor_id,effective_codes,source_hash)
+        material = material_store(project_id).get(image_id)
+        if (evidence and material and not material.get(_V50_DATASET_DELETE_CLAIM_FIELD)
+                and material.get('source_available') is not False
+                and not any(material.get(flag) for flag in ('annotation_needs_review','external_annotation_needs_review','needs_review'))
+                and str(material.get('content_sha256') or '') == source_hash
+                and int(current.get('version') or 0) == evidence['annotation_version']
+                and current.get('content_digest') == evidence['annotation_digest']):
+            return {'ok':True,'annotation':current,'review_evidence':evidence}
+        raise HTTPException(409, detail='正式GT版本已经变化，请重新查看图片后审核')
+    payload = AnnotationSave(boxes=boxes,annotation_state='annotated' if boxes else 'confirmed_empty',
+        expected_version=expected,source_content_sha256=source_hash,
+        reviewed_label_codes=sorted(set(effective_codes) | {str(code) for code in current.get('annotation_scope') or [] if code != '*'}))
+    payload._review_actor = actor_id
+    payload._review_codes = list(effective_codes)
+    return save_annotation(project_id,image_id,payload)
+
+
 app.include_router(training_material_picker_router(
     get_project,
     lambda: DATA_DIR,
@@ -24444,6 +24484,8 @@ app.include_router(training_material_picker_router(
         None,
     ),
     compatibility_payload_provider=_training_compatibility_request,
+    review_negative_provider=_review_training_negative,
+    actor_provider=_material_governance_actor,
 ))
 app.include_router(training_recovery_router(
     get_project,

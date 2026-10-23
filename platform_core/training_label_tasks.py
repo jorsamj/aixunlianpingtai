@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from contextvars import ContextVar
 from datetime import datetime, timezone
@@ -241,7 +242,7 @@ def selected_material_label_codes(
                 if code not in seen:
                     seen.add(code)
                     encountered.append(code)
-                if code not in positive_seen:
+                if code not in positive_seen and training_material_role(annotation, {"effective_label_codes": [code]})["role"] == "positive":
                     positive_seen.add(code)
                     positive_encountered.append(code)
             for value in annotation.get("annotation_scope") or []:
@@ -457,6 +458,8 @@ def resolve_training_label_contract(
     project: str | Path,
     payload: Mapping[str, Any],
     algorithm: Mapping[str, Any],
+    *,
+    require_positive_evidence: bool = True,
 ) -> dict[str, Any]:
     """Resolve the only label schema that may reach YOLO for this task.
 
@@ -516,20 +519,20 @@ def resolve_training_label_contract(
     )
     retained_inherited_codes = [str(item["code"]) for item in retained_inherited]
     retained_inherited_set = set(retained_inherited_codes)
-    available = selected_material_label_codes(
+    available = (selected_material_label_codes(
         project_path,
         payload,
         positive_only=True,
-    )
+    ) if require_positive_evidence else [])
     available_set = set(available)
 
     invalid_requested = [
         code for code in requested
         if code not in available_set and code not in retained_inherited_set
     ]
-    if invalid_requested:
+    if invalid_requested and require_positive_evidence:
         raise ValueError(
-            "本次选择的标签不在已选素材中: " + ", ".join(invalid_requested[:10])
+            "本次训练缺少 " + ", ".join(invalid_requested[:10]) + " 正样本，请先选择或标注包含这些标签的图片（标签不在已选素材的有效正样本中）。"
         )
     if previous is None and not requested:
         raise ValueError(
@@ -567,6 +570,7 @@ def resolve_training_label_contract(
 
     return {
         "schema_version": 1,
+        "training_projection_policy": base.TRAINING_PROJECTION_POLICY_V3,
         "algorithm_id": str(algorithm.get("id") or ""),
         "available_material_label_codes": available,
         "requested_label_codes": requested,
@@ -610,9 +614,10 @@ def _projection_digest(
     allowed: Sequence[str],
     selected_boxes: Sequence[Mapping[str, Any]],
     excluded_boxes: Sequence[Mapping[str, Any]],
+    policy: str = base.TRAINING_PROJECTION_POLICY,
 ) -> str:
     payload = {
-        "policy": base.TRAINING_PROJECTION_POLICY,
+        "policy": policy,
         "source_annotation_state": str(state),
         "effective_label_codes": list(allowed),
         "selected_boxes": [dict(box) for box in selected_boxes],
@@ -670,6 +675,44 @@ def training_material_scope_issue(
     }
 
 
+def training_material_role(row: Mapping[str, Any], contract: Mapping[str, Any]) -> dict[str, Any]:
+    """Classify authoritative formal GT against the complete task review scope."""
+    issue = training_material_scope_issue(row, contract)
+    required = set(_unique_codes(contract.get("effective_label_codes") or []))
+    boxes = list(row.get("boxes") or [])
+    annotation_source = str(row.get("annotation_source_content_sha256") or "").strip().lower()
+    current_source = str(row.get("content_sha256") or "").strip().lower()
+    stale_source = bool(annotation_source and current_source and annotation_source != current_source)
+    if (row.get("source_available") is False or stale_source or
+            any(row.get(key) for key in ("annotation_needs_review", "external_annotation_needs_review", "needs_review"))):
+        return {"role": "pending_review", "scope_issue": {
+            "image_id": str(row.get("id") or row.get("image_id") or ""),
+            "issue_type": "annotation_needs_review", "missing_label_codes": sorted(required)}}
+    try:
+        for box in boxes:
+            if all(key in box for key in ("x1", "y1", "x2", "y2")):
+                values = [float(box[key]) for key in ("x1", "y1", "x2", "y2")]
+                valid = values[2] > values[0] >= 0 and values[3] > values[1] >= 0
+            else:
+                values = [float(box[key]) for key in ("cx", "cy", "w", "h")]
+                valid = values[2] > 0 and values[3] > 0
+            if row.get("width") and row.get("height"):
+                base._yolo_line(box, float(row["width"]), float(row["height"]), 0)
+            if not valid or not all(math.isfinite(v) for v in values):
+                raise ValueError("invalid box")
+        if str(row.get("annotation_state")) == "annotated" and not boxes:
+            raise ValueError("empty positive GT")
+        if str(row.get("annotation_state")) == "confirmed_empty" and boxes:
+            raise ValueError("contradictory empty GT")
+    except (KeyError, TypeError, ValueError):
+        issue = {"image_id": str(row.get("id") or row.get("image_id") or ""),
+                 "issue_type": "invalid_annotation", "missing_label_codes": sorted(required)}
+    if not required or issue is not None:
+        return {"role": "pending_review", "scope_issue": issue}
+    positive = any(str(box.get("label") or box.get("code") or "").strip() in required for box in boxes)
+    return {"role": "positive" if positive else "confirmed_negative", "scope_issue": None}
+
+
 def project_training_rows(
     rows: Sequence[Mapping[str, Any]],
     contract: Mapping[str, Any],
@@ -717,7 +760,11 @@ def project_training_rows(
         else:
             row["source_labels"] = present
 
-        scope_issue = training_material_scope_issue(row, contract)
+        scope_issue = (
+            training_material_role(row, contract)["scope_issue"]
+            if contract.get("training_projection_policy") == base.TRAINING_PROJECTION_POLICY_V3
+            else training_material_scope_issue(row, contract)
+        )
         if scope_issue is not None:
             missing = list(scope_issue["missing_label_codes"])
             if scope_issue["issue_type"] == "missing_annotation":
@@ -730,14 +777,19 @@ def project_training_rows(
                 + ", ".join(missing[:5])
             )
 
-        if excluded_boxes:
+        policy = str(contract.get("training_projection_policy") or base.TRAINING_PROJECTION_POLICY)
+        # Never accept task-local projection claims from incoming material metadata.
+        for key in ("training_excluded_boxes", "training_projection_policy", "training_projection_digest"):
+            row.pop(key, None)
+        if excluded_boxes or policy == base.TRAINING_PROJECTION_POLICY_V3:
             row["training_excluded_boxes"] = excluded_boxes
-            row["training_projection_policy"] = base.TRAINING_PROJECTION_POLICY
+            row["training_projection_policy"] = policy
             row["training_projection_digest"] = _projection_digest(
                 state=state,
                 allowed=allowed_order,
                 selected_boxes=selected_boxes,
                 excluded_boxes=excluded_boxes,
+                policy=policy,
             )
 
         if state == "annotated":
@@ -762,7 +814,7 @@ def project_training_rows(
                 row["annotated"] = True
                 row["boxes"] = []
                 row["annotation_scope"] = sorted(allowed)
-                row["negative_origin"] = "redacted_unselected_labels"
+                row["negative_origin"] = ("reviewed_task_negative" if policy == base.TRAINING_PROJECTION_POLICY_V3 else "redacted_unselected_labels")
             else:
                 row["boxes"] = []
         else:

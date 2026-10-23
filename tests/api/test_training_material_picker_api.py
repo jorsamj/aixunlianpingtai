@@ -389,3 +389,85 @@ def test_training_picker_newest_cursor_has_no_duplicate_materials(tmp_path):
     })
     assert second.status_code == 200, second.text
     assert [row["id"] for row in second.json()["items"]] == ["m0256", "m0255", "m0254"]
+
+
+def test_task_role_sql_page_uses_formal_scope_and_bounds_payload(tmp_path, monkeypatch):
+    from platform_core.training_material_picker_api import _role_material_page
+    client, repository = _client(tmp_path)
+    annotations = AnnotationRepository(repository.project_path)
+    old = annotations.get("m0001")
+    annotations.upsert("m0001", old["boxes"], "annotated", annotation_scope=["person", "smoke"])
+    # The material's denormalized labels must not determine the task role.
+    result = _role_material_page(repository, annotations, {"effective_label_codes": ["smoke"]}, limit=2)
+    assert result["sample_role_counts"] == {"positive": 115, "confirmed_negative": 1, "pending_review": 144}
+    assert len(result["items"]) == 2
+    pending = _role_material_page(repository, annotations, {"effective_label_codes": ["smoke"]},
+                                  labels=["person"], sample_role="pending_review", limit=3)
+    assert pending["total"] == 114
+    assert len(pending["items"]) == 3
+    assert all(row["sample_role"] == "pending_review" for row in pending["items"])
+    selected = _role_material_page(repository, annotations, {"effective_label_codes": ["smoke"]},
+                                   image_ids=["m0000", "m0001", "m0259"], limit=1)
+    assert selected["sample_role_counts"] == {"positive": 1, "confirmed_negative": 1, "pending_review": 1}
+
+
+def test_role_page_and_review_keep_existing_formal_callback(tmp_path, monkeypatch):
+    import platform_core.training_label_tasks as labels
+    def preview_contract(*args, **kwargs):
+        assert kwargs == {"require_positive_evidence": False}
+        return {"effective_label_codes": ["smoke"]}
+    monkeypatch.setattr(labels, "resolve_training_label_contract", preview_contract)
+    _, repository = _client(tmp_path)
+    calls = []
+    def review(project, item, codes, actor):
+        calls.append((project, item, codes, actor))
+        if item["image_id"] == "m0003":
+            from fastapi import HTTPException
+            raise HTTPException(status_code=409, detail="stale GT")
+    app = FastAPI()
+    app.include_router(training_material_picker_router(lambda p: {"id": p}, repository.project_path.parents[1],
+        algorithm_provider=lambda *a: {"id": "a"}, review_negative_provider=review,
+        actor_provider=lambda request, project: {"id": "reviewer"},
+        compatibility_payload_provider=lambda *args: (_ for _ in ()).throw(AssertionError("full admission on preview"))))
+    client = TestClient(app)
+    endpoint = "/api/v62/projects/p1/training-materials"
+    page = client.post(endpoint + "/role-page", json={"algorithm_asset_id": "a", "train_labels": ["smoke"],
+                                                       "sample_role": "pending_review", "page_size": 2})
+    assert page.status_code == 200, page.text
+    assert page.json()["total"] == 145
+    row = page.json()["items"][0]
+    assert row["annotation_version"] == 1
+    assert row["boxes"] and row["source_content_sha256"] and row["content_url"]
+    payload = {"algorithm_asset_id": "a", "items": [{"image_id": "m0001"}, {"image_id": "m0003"}]}
+    assert client.post(endpoint + "/review-negative", json=payload).status_code == 422
+    assert not calls
+    response = client.post(endpoint + "/review-negative", json={**payload, "confirmed": True})
+    assert response.status_code == 200, response.text
+    assert response.json()["succeeded"] == ["m0001"]
+    assert response.json()["failures"] == [{"image_id": "m0003", "status_code": 409, "message": "stale GT"}]
+    assert calls[0][2:] == (["smoke"], {"id": "reviewer"})
+    assert client.post(endpoint + "/review-negative", json={**payload, "confirmed": True,
+        "items": [{"image_id": str(i)} for i in range(51)]}).status_code == 422
+    bulk = client.post(endpoint + "/bulk-selection", json={"algorithm_asset_id": "a", "sample_role": "positive"})
+    assert bulk.status_code == 200, bulk.text
+    assert bulk.json()["total"] == 115
+
+
+def test_ten_thousand_candidates_role_page_returns_only_requested_page(tmp_path):
+    from platform_core.training_material_picker_api import _role_material_page
+    repository = MaterialRepository(tmp_path / "large")
+    repository.upsert_many([_record(i, annotated=False) for i in range(10000)])
+    annotations = AnnotationRepository(repository.project_path)
+    for offset in range(0,3500,500):
+        annotations.upsert_many([{"image_id":f"m{i:04d}","annotation_state":"annotated",
+            "annotation_scope":["vest" if i<500 else "person"],
+            "boxes":[{"label":"vest" if i<500 else "person","x1":10,"y1":10,"x2":40,"y2":50}]} for i in range(offset,offset+500)])
+    initial = _role_material_page(repository, annotations, {"effective_label_codes":["vest"]},
+                                 image_ids=[f"m{i:04d}" for i in range(3500)], limit=1)
+    assert initial["sample_role_counts"] == {"positive":500,"confirmed_negative":0,"pending_review":3000}
+    result = _role_material_page(repository, annotations,
+                                 {"effective_label_codes": ["vest"]}, page=100, limit=50)
+    assert result["total"] == 10000
+    assert result["sample_role_counts"]["pending_review"] == 9500
+    assert len(result["items"]) == 50
+    assert result["page"] == 100

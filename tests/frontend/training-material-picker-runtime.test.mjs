@@ -163,3 +163,10 @@ test('training candidate labels are fully readable and filter chips wrap', () =>
   assert.match(source, /\.train-v3-label-list\{white-space:normal;overflow:visible/);
   assert.match(source, /#trV3Chips\{grid-column:1 \/ -1;max-height:none/);
 });
+
+test('task roles stay separate from original label filters', () => {
+  const query = new URLSearchParams(buildTrainingMaterialQuery({labels:['person'], effectiveLabelCodes:['vest'], sampleRole:'pending_review'}));
+  assert.deepEqual(query.getAll('label'), ['person']);
+  assert.deepEqual(query.getAll('effective_label_code'), ['vest']);
+  assert.equal(query.get('sample_role'), 'pending_review');
+});
