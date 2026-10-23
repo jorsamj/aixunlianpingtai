@@ -229,9 +229,10 @@ def test_actual_response_bytes_must_match_frozen_hash(monkeypatch, tmp_path):
     assert captured.value.detail['code'] == 'IMAGE_HASH_MISMATCH'
 
 
-def test_normalized_bundle_bytes_are_verified_and_original_is_never_silently_substituted(monkeypatch, tmp_path):
+@pytest.mark.parametrize("bundle_ref", ["work/bundle", "evidence/bundle"])
+def test_normalized_bundle_bytes_are_verified_and_original_is_never_silently_substituted(monkeypatch, tmp_path, bundle_ref):
     platform, version, rows, root, image = _setup(monkeypatch, tmp_path)
-    bundle = tmp_path / "artifacts" / "work" / "bundle"
+    bundle = tmp_path / "artifacts" / bundle_ref
     normalized = bundle / "dataset" / "images" / "test" / "test-image.jpg"
     normalized.parent.mkdir(parents=True)
     Image.new("RGB", (120, 80), "green").save(normalized)
@@ -243,7 +244,7 @@ def test_normalized_bundle_bytes_are_verified_and_original_is_never_silently_sub
         "image_id":"test-image","image_ref":"dataset/images/test/test-image.jpg",
         "source_content_sha256":rows[0]["content_sha256"],"content_sha256":evaluated_hash}]}}
     (bundle / "manifest.json").write_text(json.dumps(manifest),encoding="utf-8")
-    monkeypatch.setattr(platform,"shared_task_artifacts",lambda:SimpleNamespace(artifact_path=lambda *_:bundle))
+    monkeypatch.setattr(platform,"shared_task_artifacts",lambda:SimpleNamespace(artifact_path=lambda _task,ref:tmp_path / "artifacts" / ref))
     response=platform.evaluation_diagnostic_image_v1("evaluation-project","algo","v1","test-image.jpg")
     assert Path(response.path) == normalized
     assert Path(response.path).read_bytes() != image.read_bytes()

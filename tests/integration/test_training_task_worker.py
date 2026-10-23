@@ -335,6 +335,22 @@ def test_training_prepare_then_handler_runs_and_commits_verified_result(tmp_path
     assert result["evaluation"] == versions[0]["evaluation"]
     assert result["iteration_decision"] == versions[0]["iteration_decision"]
 
+    from platform_core.training_workspace_lifecycle import TrainingWorkspaceLifecycle
+    lifecycle = TrainingWorkspaceLifecycle(data_dir, repository, artifacts)
+    protected = [*project.glob("uploads/*"), *external_root.glob("incoming/*"),
+                 *project.glob("annotations/*"), archived_model,
+                 artifacts.artifact_path("task-one", "snapshot.json")]
+    before = {path: hashlib.sha256(path.read_bytes()).hexdigest() for path in protected}
+    assert lifecycle.inspect(project_id, "task-one")["eligible"] is True
+    cleaned = lifecycle.cleanup(project_id, "task-one", actor="isolated-integration")
+    assert cleaned["status"] == "deleted"
+    assert not artifacts.artifact_path("task-one", "work/bundle").exists()
+    assert artifacts.read_json("task-one", "evidence/bundle/manifest.json") == bundle_manifest
+    assert {path: hashlib.sha256(path.read_bytes()).hexdigest() for path in protected} == before
+    assert repository.get("task-one").status is TaskStatus.SUCCEEDED
+    assert lifecycle.cleanup(project_id, "task-one", actor="isolated-integration")["status"] == "already_clean"
+
+
 def test_training_model_archive_hashes_during_copy():
     import inspect
 

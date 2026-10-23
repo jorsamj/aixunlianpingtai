@@ -3142,6 +3142,14 @@ class TrainingHandler:
         if context.cancel_requested():
             raise InterruptedError("training cancelled before dataset materialization")
 
+        if prepared_bundle is None:
+            # The assigned TRAINING execution owns these new derived files.
+            # Old prebuilt/historical bundles are never silently adopted for GC.
+            from .training_workspace_lifecycle import mark_training_workspace
+            mark_training_workspace(
+                context.artifacts, context.task, snapshot, payload.get("input_freeze_id"),
+            )
+
         bundle_progress_step = max(1, len(images) // 100) if images else 1
 
         if prepared_bundle is not None:

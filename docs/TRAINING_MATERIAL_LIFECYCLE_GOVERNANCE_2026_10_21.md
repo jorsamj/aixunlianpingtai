@@ -1,3 +1,21 @@
+## 2026-10-23｜回收后端基础实现（进行中，尚未开放入口）
+
+### 代码与边界
+
+准备恢复补验提交 `2003311a`；本地执行 Worker 新增 workspace-lifecycle 归属证明，仅在其实际准备新 Bundle 时写入，不收编历史预制目录。新增 `training_workspace_lifecycle.py` 使用原 TaskRepository/ArtifactStore：只读资格、任务状态/租约/进程及 POSIX 进程组、恢复 Checkpoint、同项目活动训练/准备/评测保守保护；允许清理的路径仅 work/bundle。复用原训练缓存的链接/安全路径校验，拒绝 junction/symlink/shared hardlink/特殊文件。共享缓存、原图、GT、模型、Checkpoint、Snapshot 均不在删除范围。
+
+原 TaskRepository 新增短事务 guard，序列化资格/目录隔离与 create/claim/retry；耗时 unlink 在事务外。先保留 Bundle 元数据/GT 标签及报告实际错误图片，再原位重命名到固定隔离目录，限定删除；失败有 retryable 回执，相同调用可重试，不修改训练真实状态。审计记录请求人/拒绝原因/候选逻辑字节/结果；逻辑删除字节不等于文件系统释放空间。成功回收要求 committed worker checkpoint、任务归档模型 SHA/size 与正式算法版本的模型证据一致。原 AlgorithmSqlStore 增加 readonly 核验（不初始化或迁移旧 JSON）。报告图片及 benchmark 元数据支持已留存的 evidence/bundle，仍核验冻结图片身份及 SHA，不用原图替代已归一化的评测像素。
+
+### 实际证据与未完成
+
+- 必要回收合同：13通过、1跳过（当前 Windows 无 symlink 创建权限；该边界仍需 Linux CI 实测），0失败；包含失败/成功、Checkpoint、活动消费者、身份、错误项目、活进程、限定清理、幂等及删除中断恢复。开发中曾暴露 readonly 算法查询隐式迁移与 Windows rb 句柄 fsync 问题，均已修正；未删除/削弱安全断言。
+- 原完整本地 Prepare→实际 Worker→模型提交集成追加实际清理后核对原图/外部原图/GT/Snapshot/模型 hash 不变，1通过；原报告图片 API 回归37通过，归一化 evidence 路径先 RED1失败再 GREEN。
+- 本次后端服务尚未挂接 API/自动回收/前端。仍须连接报告 HTTP 流式读取期间的消费者锁、活动评测/恢复读取生命周期；当前只实现同项目活动任务的保守阻塞，不宣称细粒度消费者租约完整。
+- 远程排队仍使用旧完整 Bundle，目标 Agent 按需准备未完成。失败有恢复 Checkpoint 时保持阻塞，尚未提供放弃恢复确认。历史目录无归属证明仅报告，不开放删除。
+- 旧素材扫描/迁移、缩略图治理、原图物理删除未完成。本阶段未跑无关 Node/Chrome/全仓测试，未推送/无新 SHA CI，未执行生产动作或真实 GPU。
+
+下一步先接消费者读取保护及回收 API/失败详情，再解决远程按需准备与自动安全回收；核心闭环未验收前不开展生产清理。VERSION仍42.24.377，两份训练模板测试保持未提交。
+
 ## 2026-10-23｜准备恢复边界补验
 
 准备时机阶段提交 `4b927fef22883109695387750de05da2d4574090` 已保留，尚未推送/CI。追加审查发现本地 READY 恢复仍要求旧完整 Bundle；已用同一隔离集成用例得到 RED（1失败），修复为校验 DEFERRED 计划、Snapshot/Revision/冻结身份、counts及资源证据，远程及历史完整 Bundle 校验保持。计划身份/数量/状态篡改均拒绝。定向集成与原远程准备回归合计20通过、0失败、0跳过（5条既有弃用警告，16.92秒）。本条不代表远程按需准备、安全回收、兼容迁移或生产空间释放完成。

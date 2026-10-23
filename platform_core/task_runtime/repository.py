@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from contextlib import closing
+from contextlib import closing, contextmanager
 
 import base64
 import json
@@ -296,6 +296,32 @@ class TaskRepository:
                 (str(task_id),),
             ).fetchone()
         return _from_row(row) if row is not None else None
+
+    @contextmanager
+    def training_workspace_guard(self, task_id: str):
+        """Serialize a short workspace detach against create/claim/retry commits.
+
+        File deletion must happen after leaving this transaction. This adds no
+        task state or schema: the original tasks table remains authoritative.
+        """
+        with closing(self._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            try:
+                row = database.execute("SELECT * FROM tasks WHERE task_id=?", (str(task_id),)).fetchone()
+                if row is None:
+                    raise KeyError(task_id)
+                task = _from_row(row)
+                active = database.execute(
+                    """SELECT * FROM tasks WHERE project_id=? AND task_id<>?
+                       AND kind IN ('TRAINING','TRAINING_PREPARE','DEPLOYMENT_TEST')
+                       AND status IN ('RUNNING','CANCEL_REQUESTED','AWAITING_CONFIRMATION')""",
+                    (task.project_id, task.task_id),
+                ).fetchall()
+                yield task, tuple(_from_row(item) for item in active)
+                database.commit()
+            except BaseException:
+                database.rollback()
+                raise
 
     def resource_queue_position(self, task_id: str) -> int | None:
         """Return the truthful ordering position among queued peers sharing a resource key.

@@ -143,6 +143,34 @@ class AlgorithmSqlStore:
                         conn.rollback()
                     raise
 
+    def has_verified_training_version_readonly(self, task_id: str, snapshot_id: str, models) -> bool:
+        """Attest an already initialized version without migrating legacy data."""
+        if not self.db_path.is_file():
+            return False
+        try:
+            with closing(sqlite3.connect(self.db_path.resolve().as_uri() + "?mode=ro", uri=True)) as conn:
+                conn.row_factory = sqlite3.Row
+                if not self._initialization_complete(conn):
+                    return False
+                rows = conn.execute(
+                    """SELECT versions.* FROM algorithm_versions AS versions
+                       JOIN algorithms ON algorithms.id=versions.algorithm_id
+                       WHERE algorithms.project_id=? AND versions.training_job_id=?
+                       AND versions.artifact_verified=1
+                       AND versions.training_status IN ('SUCCEEDED','PARTIAL_SUCCESS')""",
+                    (self.project_id, str(task_id)),
+                ).fetchall()
+                expected = {(item.get("sha256"), item.get("size_bytes")) for item in models}
+                for row in rows:
+                    version = self._version_from_row(row)
+                    committed = {(item.get("sha256"), item.get("size_bytes"))
+                        for item in version.get("verified_models", []) if isinstance(item, Mapping)}
+                    if expected and version.get("snapshot_id") == snapshot_id and committed == expected:
+                        return True
+                return False
+        except sqlite3.Error:
+            return False
+
     def read_all(self) -> list[dict]:
         self.ensure_ready()
         with self._connect() as conn:

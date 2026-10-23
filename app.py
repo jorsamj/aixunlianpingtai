@@ -10816,6 +10816,8 @@ def evaluation_diagnostic_image_v1(project_id: str, algorithm_id: str, version_i
     manifest = {}
     if re.fullmatch(r'[A-Za-z0-9_-]{1,160}', task_id):
         bundle = shared_task_artifacts().artifact_path(task_id, 'work/bundle').resolve()
+        if not (bundle / 'manifest.json').is_file():
+            bundle = shared_task_artifacts().artifact_path(task_id, 'evidence/bundle').resolve()
         manifest_path = bundle / 'manifest.json'
         manifest = _evaluation_bundle_identity_index(manifest_path, snapshot_id)
         if manifest.get('snapshot_id') != snapshot_id:
@@ -12102,6 +12104,11 @@ def _v48_archive_training_version(project_id: str, job: Dict[str, Any]) -> Optio
             evaluation_task_id, dataset_manifest_ref, default={}
         )
         dataset_manifest = manifest_value if isinstance(manifest_value, dict) else {}
+        if not dataset_manifest and dataset_manifest_ref == "work/bundle/manifest.json":
+            manifest_value = shared_task_artifacts().read_json(
+                evaluation_task_id, "evidence/bundle/manifest.json", default={},
+            )
+            dataset_manifest = manifest_value if isinstance(manifest_value, dict) else {}
     benchmark_scope = build_evaluation_benchmark_scope(
         snapshot_truth if isinstance(snapshot_truth, dict) else None,
         dataset_manifest=dataset_manifest or None,
