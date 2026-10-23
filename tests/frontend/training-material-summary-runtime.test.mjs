@@ -141,7 +141,8 @@ test('training page full-pool hydration is explicitly disabled and summary runti
   assert.match(summaryRuntime, /fullPoolHydration: false/);
   assert.match(summaryRuntime, /selectable_total/);
   assert.match(summaryRuntime, /pending_annotation_count/);
-  assert.match(summaryRuntime, /可直接训练/);
+  assert.match(summaryRuntime, /正式标注/);
+  assert.doesNotMatch(summaryRuntime, /可直接训练/);
   assert.match(summaryRuntime, /待标注/);
   assert.match(labelsRuntime, /materialSummaryRuntime\.summaryReadyFor/);
   assert.match(labelsRuntime, /materialSummaryRuntime\?\.invalidate\?\.\(\)/);
