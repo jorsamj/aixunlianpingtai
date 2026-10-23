@@ -94,3 +94,12 @@ test('recovery browser and CI guards match the exact loaded runtime build', () =
   assert.ok(browser.includes(`.toBe('${build}')`));
   assert.ok(workflow.includes(`grep -Fq "build: '${build}'" static/modules/training-recovery-runtime.js`));
 });
+
+test('training label contract source and browser guard match loaded cache build',()=>{
+ const main=fs.readFileSync(new URL('../../static/main.mjs',import.meta.url),'utf8');
+ const source=fs.readFileSync(new URL('../../static/modules/training-labels.js',import.meta.url),'utf8');
+ const browser=fs.readFileSync(new URL('../browser/training-label-selector.spec.mjs',import.meta.url),'utf8');
+ assert.ok(main.includes('training-labels.js?v=422570'));
+ assert.ok(source.includes("build: 'module-422570'"));
+ assert.ok(browser.includes(".toBe('module-422570')"));
+});
