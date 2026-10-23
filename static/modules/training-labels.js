@@ -56,9 +56,9 @@ export function resolveClientTrainingLabels({
       && String(item?.status || 'active').toLowerCase() === 'active'
     ))
     .map(item => String(item.code)));
-  // A deliberate target stays selected when reviewing cross-label candidates.
+  // Active project labels are deliberate task choices, independent of source labels.
   // This is a user choice, never evidence of a positive sample.
-  const selectable = sortedAvailableCodes([...available, ...unique(requestedCodes)], labelCatalog).filter(code => activeCatalog.has(code));
+  const selectable = sortedAvailableCodes([...activeCatalog], labelCatalog);
   const selectableSet = new Set(selectable);
   const requested = unique(requestedCodes).filter(code => selectableSet.has(code));
   const invalidAvailable = available.filter(code => !activeCatalog.has(code));
@@ -286,7 +286,7 @@ export function installTrainingLabelRuntime({
       panel.innerHTML = `
         <div class="training-label-contract-head"><div><b>训练标签</b><small>正在准备本次训练的标签范围。</small></div><span class="training-label-contract-count">读取中</span></div>
         ${hasBaseVersion ? '<div class="training-label-base"><div class="training-label-base-title"><b>上一版本继承</b><small>自动继承</small></div><div class="training-label-base-loading">正在读取继承标签</div></div>' : ''}
-        <div class="training-label-material"><div class="training-label-material-head"><b>本次素材标签</b><small>默认不选</small></div><div class="training-label-contract-list"><span class="training-label-empty">正在读取素材标签…</span></div></div>`;
+        <div class="training-label-material"><div class="training-label-material-head"><b>本次训练标签</b><small>默认不选</small></div><div class="training-label-contract-list"><span class="training-label-empty">正在读取训练标签…</span></div></div>`;
       return true;
     }
 
@@ -326,10 +326,10 @@ export function installTrainingLabelRuntime({
       : '';
 
     panel.innerHTML = `
-      <div class="training-label-contract-head"><div><b>训练标签</b><small>继承标签自动保留；本次素材标签按需选择。</small></div><span class="training-label-contract-count">新增 ${view.requested.length}</span></div>
+      <div class="training-label-contract-head"><div><b>训练标签</b><small>继承标签自动保留；本次训练标签按需选择。</small></div><span class="training-label-contract-count">新增 ${view.requested.length}</span></div>
       ${baseHtml}
       <div class="training-label-material">
-        <div class="training-label-material-head"><b>本次素材标签</b><small>默认不选</small></div>
+        <div class="training-label-material-head"><b>本次训练标签</b><small>默认不选</small></div>
         <div class="training-label-contract-list">${materialHint ? `<span class="training-label-empty">${materialHint}</span>` : selectableHtml}</div>
       </div>
       ${view.invalidAvailable.length ? '<div class="training-label-warning">部分素材标签已失效，请先到标签管理统一后再训练。</div>' : ''}
@@ -386,7 +386,7 @@ export function installTrainingLabelRuntime({
   queueRefresh();
 
   const runtime = {
-    build: 'module-422570',
+    build: 'module-422571',
     refresh,
     queueRefresh,
     selectedIds: () => selectedIds(getState?.()),

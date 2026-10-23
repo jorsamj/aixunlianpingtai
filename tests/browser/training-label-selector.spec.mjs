@@ -36,6 +36,7 @@ async function seedProject(request) {
     labels: [
       {code: 'fire', display_name: '明火'},
       {code: 'smoke', display_name: '烟雾'},
+      {code: 'vest', display_name: '反光背心'},
     ],
   }})).json();
   const images = [];
@@ -124,7 +125,7 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   await expect.poll(async () => page.evaluate(() => window.TrainingDraftRuntime?.build || null))
     .toBe('training-draft-runtime-422519');
   await expect.poll(async () => page.evaluate(() => window.TrainingLabelRuntime?.build || null))
-    .toBe('module-422570');
+    .toBe('module-422571');
   await expect.poll(async () => page.evaluate(() => window.TrainingSubmitRuntime?.build || ''))
     .toMatch(/^training-submit-\d+$/);
   expect(await page.evaluate(() => ({
@@ -172,6 +173,11 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   const smoke = labels.locator('input[data-training-label-code="smoke"]');
   await expect(fire).not.toBeChecked();
   await expect(smoke).not.toBeChecked();
+  const vest = labels.locator('input[data-training-label-code="vest"]');
+  await expect(vest).not.toBeChecked();
+  await vest.check();
+  await expect.poll(() => page.evaluate(() => state.trainingDraft.newLabelCodes)).toEqual(['vest']);
+  await vest.uncheck();
   await fire.check();
 
   await dialog.locator('[data-mode="custom"]').click();

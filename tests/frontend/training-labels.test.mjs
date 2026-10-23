@@ -40,7 +40,7 @@ test('training material ids come only from canonical draft', () => {
   assert.deepEqual(selectedTrainingMaterialIds(state), ['canonical-1', 'canonical-2']);
 });
 
-test('client label picker only filters current active material labels and explicit choices', () => {
+test('client task choices exclude retired project labels', () => {
   const labelCatalog = [
     {code: 'fire', display_name: '明火', active: true, status: 'active'},
     {code: 'smoke', display_name: '烟雾', active: true, status: 'active'},
@@ -104,7 +104,7 @@ test('TrainingLabelRuntime remains wrapper-free timer-free and summary-backed', 
   assert.match(source, /queueMicrotask/);
   assert.match(source, /classicWrapperOwner: false/);
   assert.match(source, /timerOwner: false/);
-  assert.match(source, /build: 'module-422570'/);
+  assert.match(source, /build: 'module-422571'/);
 });
 
 test('final stable renderers keep historical 423/425 training entrypoints unreachable', () => {
@@ -130,3 +130,14 @@ test('explicit active target survives selecting only cross-label candidates for 
  const view=resolveClientTrainingLabels({materials:[{id:'p',labels:['person']}],selectedIds:['p'],labelCatalog:[{code:'vest'},{code:'person'}],requestedCodes:['vest']});
  assert.deepEqual(view.available,['person']);assert.deepEqual(view.requested,['vest']);assert.deepEqual(view.selectable,['vest','person']);
 });
+
+ test('first cross-label target can be chosen without fabricated positive evidence',()=>{
+ const args={materials:[{id:'p',labels:['person']}],selectedIds:['p'],labelCatalog:[{code:'vest'},{code:'person'},{code:'retired',active:false}],requestedCodes:[]};
+ const initial=resolveClientTrainingLabels(args);
+ assert.deepEqual(initial.selectable,['vest','person']);
+ assert.deepEqual(initial.available,['person']);
+ assert.deepEqual(initial.requested,[]);
+ const chosen=resolveClientTrainingLabels({...args,requestedCodes:['vest']});
+ assert.deepEqual(chosen.requested,['vest']);
+ assert.deepEqual(chosen.available,['person']);
+ });
