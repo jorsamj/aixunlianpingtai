@@ -13,6 +13,9 @@ on:
       - platform_core/labels.py
       - platform_core/annotations.py
       - platform_core/material_repository.py
+      - platform_core/local_material_reclamation.py
+      - tests/unit/test_local_material_reclamation.py
+      - tools/reclaim_retired_original.py
       - platform_core/legacy_material_compatibility.py
       - platform_core/legacy_material_compatibility_api.py
       - tests/unit/test_legacy_material_compatibility.py
@@ -92,7 +95,7 @@ jobs:
           tests/api/test_zip_processing_p2b_single_final_annotation.py
           tests/api/test_zip_processing_p2c_structured_single_final_annotation.py
       - name: Explicit legacy metadata safety contracts
-        run: python -m pytest --confcutdir=tests/unit -q tests/unit/test_legacy_material_compatibility.py tests/unit/test_legacy_material_compatibility_api.py
+        run: python -m pytest --confcutdir=tests/unit -q tests/unit/test_legacy_material_compatibility.py tests/unit/test_legacy_material_compatibility_api.py tests/unit/test_local_material_reclamation.py
       - name: Canonical GT governance guard
         shell: bash
         run: |

@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import base64
 import json
+import hashlib
+import os
+from functools import wraps
 import sqlite3
 import threading
 from contextlib import closing
@@ -255,6 +258,47 @@ _encode_cursor = encode_material_cursor
 _decode_cursor = decode_material_cursor
 
 
+def metadata_evidence_digest(value):
+    """Stable metadata evidence digest shared by existing-owner maintenance tools."""
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"),
+                                    ensure_ascii=False, allow_nan=False).encode()).hexdigest()
+
+
+def existing_sqlite_reader(path):
+    """Open existing SQLite evidence without schema initialization or sidecars."""
+    path = Path(path)
+    wal, shm = Path(str(path) + "-wal"), Path(str(path) + "-shm")
+    for candidate in (path, wal, shm):
+        if candidate.is_symlink():
+            raise ValueError("unsafe SQLite evidence link")
+        try:
+            if getattr(candidate.lstat(), "st_file_attributes", 0) & 0x400:
+                raise ValueError("unsafe SQLite evidence reparse point")
+        except FileNotFoundError:
+            pass
+    if not path.is_file():
+        raise ValueError("existing repository is required")
+    if wal.exists() and not shm.is_file():
+        raise ValueError("unsupported WAL without existing shared memory")
+    suffix = "?mode=ro" + ("&immutable=1" if not wal.exists() else "")
+    connection = sqlite3.connect(path.resolve().as_uri() + suffix, uri=True)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA query_only=ON")
+    return connection
+
+
+def controlled_material_write_fence(function):
+    @wraps(function)
+    def fenced(self, *args, **kwargs):
+        if os.environ.get("MC_CONTROLLED_LOCAL_MATERIAL_GC") != "1":
+            return function(self, *args, **kwargs)
+        project = getattr(self, "project_path", args[0] if args else None)
+        Path(project).mkdir(parents=True, exist_ok=True)
+        with material_annotation_lifecycle_fence(project):
+            return function(self, *args, **kwargs)
+    return fenced
+
+
 class MaterialRepository:
     def __init__(self, project_path: str | Path) -> None:
         self.project_path = Path(project_path)
@@ -282,6 +326,7 @@ class MaterialRepository:
         except sqlite3.Error:
             return None
 
+    @controlled_material_write_fence
     def _initialize(self) -> None:
         if self._read_schema_version_fast() == _SCHEMA_VERSION:
             return
@@ -394,6 +439,18 @@ class MaterialRepository:
     @staticmethod
     def _write_row(database: sqlite3.Connection, value: Mapping[str, Any]) -> dict[str, Any]:
         row = normalize_material(value)
+        if os.environ.get("MC_CONTROLLED_LOCAL_MATERIAL_GC") == "1" and row["storage_source_id"] == "default_local":
+            existing = database.execute("SELECT storage_source_id,object_key FROM materials WHERE id=?", (row["id"],)).fetchone()
+            if existing is None or tuple(existing) != (row["storage_source_id"], row["object_key"]):
+                project = Path(database.execute("PRAGMA database_list").fetchone()[2]).parent
+                original = project / row["object_key"]
+                if not original.is_file() or not original.resolve().is_relative_to(project.resolve()):
+                    raise ValueError("controlled local reference requires an existing canonical source")
+                current = project
+                for part in Path(row["object_key"]).parts:
+                    current = current / part
+                    if current.is_symlink() or getattr(current.lstat(), "st_file_attributes", 0) & 0x400:
+                        raise ValueError("controlled local reference cannot traverse a link")
         database.execute(
             """
             INSERT INTO materials
@@ -451,6 +508,7 @@ class MaterialRepository:
         )
         return row
 
+    @controlled_material_write_fence
     def _migrate_legacy_json(self) -> None:
         legacy = self.project_path / "images.json"
         if not legacy.is_file():
@@ -1059,6 +1117,7 @@ class MaterialRepository:
             "boxes": boxes,
         }
 
+    @controlled_material_write_fence
     def upsert(self, record: Mapping[str, Any]) -> dict[str, Any]:
         image_id = str(record.get("id") or "")
         with closing(self._connect()) as database:
@@ -1075,6 +1134,7 @@ class MaterialRepository:
                 raise
         return persisted
 
+    @controlled_material_write_fence
     def upsert_many(self, records: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
         incoming = [dict(record) for record in records]
         if not incoming:
@@ -1096,6 +1156,7 @@ class MaterialRepository:
                 raise
         return persisted
 
+    @controlled_material_write_fence
     def patch(self, patches: Mapping[str, Mapping[str, Any]]) -> list[dict[str, Any]]:
         changed = []
         with closing(self._connect()) as database:
@@ -1116,6 +1177,7 @@ class MaterialRepository:
                 raise
         return changed
 
+    @controlled_material_write_fence
     def patch_annotation_projections(
         self, projections: Mapping[str, Mapping[str, Any]],
     ) -> list[dict[str, Any]]:
@@ -1193,11 +1255,23 @@ class MaterialRepository:
             database.commit()
         return identity
 
+    @controlled_material_write_fence
+    def record_physical_reclamation_audit(self, operation_id, image_id, content_sha256, *, absent=False):
+        with closing(self._connect()) as database:
+            existing = database.execute("SELECT action,old_sha256,new_sha256 FROM material_storage_audit WHERE task_id=? AND image_id=?",
+                ("physical_" + operation_id, image_id)).fetchone()
+            if existing and (existing["action"] not in {"PHYSICAL_RECLAIMED", "PHYSICAL_ABSENT_AFTER_DETACH"}
+                             or existing["old_sha256"] != content_sha256 or existing["new_sha256"] != ""):
+                raise RuntimeError("RECLAMATION_AUDIT_CONFLICT")
+            database.execute("INSERT OR IGNORE INTO material_storage_audit VALUES(?,?,?,?,?,?)",
+                ("physical_" + operation_id, image_id, "PHYSICAL_ABSENT_AFTER_DETACH" if absent else "PHYSICAL_RECLAIMED", content_sha256, "", _now()))
+
     def retirement(self, task_id, image_id):
         with closing(self._connect()) as database:
             row=database.execute('SELECT * FROM material_retirements WHERE task_id=? AND image_id=?',(str(task_id),str(image_id))).fetchone()
             return dict(row) if row else None
 
+    @controlled_material_write_fence
     def retire_many(self, image_ids, *, task_id, actor_id="", annotations=None) -> int:
         """Remove current identities and retain their byte references in one commit.
 
@@ -1230,6 +1304,7 @@ class MaterialRepository:
                 raise
         return removed
 
+    @controlled_material_write_fence
     def remove(self, image_ids: Iterable[str]) -> list[dict[str, Any]]:
         ids = list(dict.fromkeys(str(value) for value in image_ids if str(value)))
         if not ids:
@@ -1268,6 +1343,7 @@ class MaterialRepository:
                 db.rollback()
                 raise
 
+    @controlled_material_write_fence
     def reconcile_storage_batch(self, task_id, source_id, changes, *, expected_revision=None, expected_payloads=None):
         with material_annotation_lifecycle_fence(self.project_path):
             return self._reconcile_storage_batch_locked(task_id, source_id, changes,
@@ -1369,6 +1445,7 @@ class MaterialRepository:
             ).fetchone()
         return self._row_payload(row) if row else None
 
+    @controlled_material_write_fence
     def mutate(self, fn: Callable[[list[dict[str, Any]]], _Result]) -> _Result:
         """Compatibility transaction for legacy callers without full-table rewrite.
 

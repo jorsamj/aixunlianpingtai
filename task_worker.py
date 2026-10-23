@@ -9,6 +9,7 @@ import uuid
 from pathlib import Path
 
 from platform_core.runtime_paths import resolve_data_dir
+from platform_core.storage.local import controlled_local_startup_guard
 from platform_core.build_identity import resolve_build_id
 from platform_core.node_identity import resolve_node_identity
 from platform_core.storage.material_cache_runtime import MaterialCacheRuntimeReporter
@@ -56,6 +57,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     data_dir = resolve_data_dir(args.data_dir)
+    with controlled_local_startup_guard(data_dir):
+        pass  # Offline maintenance must finish before this Worker initializes.
     node_identity = resolve_node_identity()
     build_id = resolve_build_id(Path(__file__).resolve().parent)
     if not args.check:

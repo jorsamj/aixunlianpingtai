@@ -5,7 +5,7 @@
 |任务|优先级/状态|本轮计划与验收|
 |--|--|--|
 |S2-01 远程按需准备|P0/已完成待验收|Prepare仅索引；正式Agent执行lease之后获取冻结Manifest/逐图受控读取；原StorageManager.open_reader与原materializer复用；旧ZIP schema合同保留兼容；RED→GREEN验证排队无副本、冻结GT、SHA与隔离|
-|S2-02 自动安全回收|P0/进行中|原资格/隔离删除/回执接实际终态及重启恢复，无法证明进程死亡则等待，原图/共享cache/模型/Checkpoint不删除|
+|S2-02 自动安全回收|P0/已完成待验收|原资格/隔离删除/回执接实际终态及重启恢复，无法证明进程死亡则等待，原图/共享cache/模型/Checkpoint不删除|
 |S2-03 详情人工释放与历史只读扫描|P1/已完成待验收|复用原API/详情，真实占用/资格/原因/进度；历史仅dry-run不可执行生产删除|
 |S2-04 旧素材兼容检测及最小迁移|P1/已完成待验收|原图不搬迁、image_id与GT版本不变，只修经证据确认的元数据，备份/CAS/批次幂等恢复|
 |S2-05 缩略图及受控原图物理回收|P2/进行中|在前述P0/P1后补真实缺口，区分逻辑字节与实际空间，OSS/NAS/GPU无法现场核验则NOT VERIFIED|
@@ -53,6 +53,18 @@ apply必须真实登录/项目范围+明确确认，绑定本批image_ids、完�
 必要专属6项先RED后GREEN，结合原cache_lifecycle/manager受影响共16通过；实际原材料API1通过，确认JPEG边长/重复请求/原图及GT不变；原素材UI Node3通过（同类断言扩展优先缩略图）。真实Chrome隔离1通过，真实上传1200×800 PNG→分页真实thumbnail_url→原materialMedia412发200 JPEG→自然384×256可见，原图URL及前后SHA一致，无pageerror。截图real-material-thumbnail.png已核验。不运行全仓或真实GPU/OSS。
 
 原图物理删除仍不能复用临时Bundle清理：原retirements字段CHECK reclaimed_bytes=0代表逻辑删除，缺源byte读取租约与所有引用写入者栅栏。正在补受控local-only设计/实现；旧节点、不受控NAS/OSS/未知索引必须保持拒绝，不将物理GC标完成，不执行任何生产删除。
+
+### S2-05 受控离线原图回收（父提交0513c5a1）
+
+新增LocalMaterialReclamationService复用原Material退役记录、Storage audit、TaskRepository和ArtifactStore，不改schema，不放宽retirements.reclaimed_bytes CHECK=0。原图物理回收与Bundle完全分离，不提供在线删除按钮/API；只有维护进程明确controlled_local_writers且环境MC_CONTROLLED_LOCAL_MATERIAL_GC=1才允许，经运维确认停服并维持独占维护是额外前置。程序同时检查已知Web/Worker/Agent/子进程、注册租约、进程组、未知线程与legacy消费者；原当前app/worker入口使用同maintenance startup barrier，GC全程持有。未知旧进程无法确认时拒绝，不能把两个开关当成所有旧版本/任意外部进程已受控的证明。
+
+只支持本机固定盘default_local/project uploads中的已退休真实图片。全项目live/retired引用/旧索引/GT保留及恢复依赖核验、PIL格式验证、SHA/size/inode/mtime/nlink、源配置/路径/junction/硬链接核验；NAS/OSS、自定义共享根、未知模式明确unsupported。已知终态任务及历史模型不永久阻塞，真实恢复依赖仍保护。引用写入与源读取/写入同原project/byte fence；任务/源/项目锁不等待形成环，任一忙立即拒绝可重试。精确受控范围不涉及原始GT、Checkpoint、模型、Snapshot或共享cache。
+
+昂贵哈希/格式/全引用审计在TaskDB事务外，最后单个本地文件rename+短unlink在原TaskDB guard内，删除前重查任务/进程证据。先持久回执再隔离，detached回执不倒退prepared；unlink后末回执失败可恢复absent_after_detach，补原Owner审计但本次删除bytes记0，物理释放始终未知。审计key绑定退役request+operation digest，detach前检查冲突；回执有摘要/原retirement摘要及准确路径血缘，拒绝伪造/外链。原web内容及报告source FileResponse发送期间持源byte lease；与原FileResponse Range及生命周期兼容。
+
+独立工具tools/reclaim_retired_original.py默认仅预览，要求明确--data-dir/--project/--retirement-task/--image-id，不构造会初始化的Owner。--apply另需准确fingerprint、稳定operation_id、当前项目/图片确认文字与本机真实actor；不能把此脚本当生产执行授权。本轮只执行--help和空隔离目录安全检查（退出2且初始化文件0），未运行任何生产路径。恢复必须沿用同operation_id与指纹；出现新源/未知身份时保留并报告。
+
+实际：相关限定集合67通过1系统symlink skip，原batch4通过；后续血缘/恢复3定向通过、路径1通过1系统skip、未知身份/恢复证据1通过。目录链接边界还须Linux CI实际覆盖。HTTP实际发送锁1通过，原素材API4通过与报告真实格式/原图身份5通过；未重复原报告全37。审查发现的离线进程漏检、恢复倒退、审计身份冲突、预览WAL副作用及回执外链已修并加必要合同，未降低断言。P1共享只读连接/digest移回原MaterialRepository，临时兼容页面/API可移除，正式GC无临时工具依赖。
 
 ## 2026-10-23｜回收 API 与报告流式消费者保护（后端进行中）
 

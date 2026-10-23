@@ -298,6 +298,24 @@ class TaskRepository:
         return _from_row(row) if row is not None else None
 
     @contextmanager
+    def source_reclamation_guard(self):
+        """No-wait final source detach gate against all task create/retry/claim writes."""
+        with closing(self._connect()) as database:
+            database.execute("PRAGMA busy_timeout=0")
+            database.execute("BEGIN IMMEDIATE")
+            try:
+                active = database.execute(
+                    "SELECT task_id FROM tasks WHERE status NOT IN ('SUCCEEDED','PARTIAL_SUCCESS','FAILED','CANCELLED')"
+                ).fetchall()
+                if active:
+                    raise RuntimeError("ACTIVE_TASK")
+                yield database
+                database.commit()
+            except BaseException:
+                database.rollback()
+                raise
+
+    @contextmanager
     def training_workspace_guard(self, task_id: str):
         """Serialize a short workspace detach against create/claim/retry commits.
 

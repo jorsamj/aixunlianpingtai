@@ -15,16 +15,12 @@ from contextlib import closing, ExitStack
 from pathlib import Path
 
 from .annotation_repository import AnnotationRepository
-from .material_repository import MaterialRepository, material_annotation_lifecycle_fence, normalize_material
+from .material_repository import (MaterialRepository, material_annotation_lifecycle_fence, normalize_material,
+    existing_sqlite_reader as _readonly, metadata_evidence_digest as _digest)
 from .storage.local import LocalStorageProvider
 from .storage.manager import StorageManager
 from .storage.source_repository import storage_source_lifecycle_fence
 from .training_bundle_cache import _is_link_like
-
-
-def _digest(value):
-    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"),
-                                    ensure_ascii=False, allow_nan=False).encode()).hexdigest()
 
 
 def _stamp(path):
@@ -36,22 +32,6 @@ def _stamp(path):
     except FileNotFoundError:
         return None
 
-
-def _readonly(path):
-    if _stamp(path) is None:
-        raise ValueError("existing repository is required")
-    wal = Path(str(path) + "-wal")
-    _stamp(wal)
-    _stamp(Path(str(path) + "-shm"))
-    # Without WAL, immutable avoids SQLite creating SHM/WAL on a read-only scan.
-    # A live WAL is readable only with existing SHM; never create sidecars here.
-    if wal.exists() and not Path(str(path) + "-shm").is_file():
-        raise ValueError("unsupported WAL without existing shared memory")
-    suffix = "?mode=ro" + ("&immutable=1" if not wal.exists() else "")
-    connection = sqlite3.connect(path.resolve().as_uri() + suffix, uri=True)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA query_only=ON")
-    return connection
 
 
 class LegacyMaterialCompatibilityService:

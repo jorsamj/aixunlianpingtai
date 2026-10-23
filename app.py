@@ -262,6 +262,9 @@ PROMPT_LIBRARY_FILE = DATA_DIR / "prompt_library.json"
 MODEL_SECRET_STORE: Any = None
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+from platform_core.storage.local import controlled_local_startup_guard
+with controlled_local_startup_guard(DATA_DIR):
+    pass  # An explicit offline reclaim holds this barrier until it has finished.
 if not PROJECTS_FILE.exists():
     PROJECTS_FILE.write_text("[]", encoding="utf-8")
 if not SERVERS_FILE.exists():
@@ -2909,9 +2912,11 @@ def material_content_v61(project_id: str, image_id: str):
     row = manager.material(image_id)
     try:
         resolved = manager.materialize(row)
-        return FileResponse(resolved.path)
+        from platform_core.storage.http import StoredSourceFileResponse
+        return StoredSourceFileResponse(resolved.path, manager=manager, material=row)
     except StorageError as error:
         _raise_storage_error(error, status_code=404 if error.code in {"MATERIAL_NOT_FOUND", "STORAGE_OBJECT_NOT_FOUND"} else 503)
+
 
 
 @app.get("/api/v61/projects/{project_id}/materials/{image_id}/content/thumbnail")
@@ -10819,6 +10824,10 @@ def evaluation_diagnostic_image_v1(project_id: str, algorithm_id: str, version_i
             from platform_core.training_workspace_http import TrainingEvidenceFileResponse
             response_class = TrainingEvidenceFileResponse
             response_kwargs = {'workspace_root': bundle.parent.parent, 'expected_sha256': evidence_sha256}
+        elif evidence_source == 'material':
+            from platform_core.storage.http import StoredSourceFileResponse
+            response_class = StoredSourceFileResponse
+            response_kwargs = {'manager': manager, 'material': material}
         return response_class(
             candidate,
             **response_kwargs,

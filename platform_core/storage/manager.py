@@ -165,6 +165,14 @@ class StorageManager:
             str(row["object_key"]), expires_seconds=expires_seconds
         )
 
+    def source_byte_lease(self, value: str | Mapping[str, object], *, timeout=30):
+        from contextlib import nullcontext
+        row = self.material(value)
+        provider = self.provider_for(str(row["storage_source_id"]))
+        if provider.storage_type is StorageType.LOCAL and hasattr(provider, "byte_lease"):
+            return provider.byte_lease(str(row["object_key"]), timeout=timeout)
+        return nullcontext()  # Physical reclamation does not support remote providers.
+
     def open_reader(self, value: str | Mapping[str, object]) -> BinaryIO:
         row = self.material(value)
         return self.provider_for(str(row["storage_source_id"])).open_reader(str(row["object_key"]))
