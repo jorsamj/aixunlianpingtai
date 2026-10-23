@@ -11032,20 +11032,24 @@ def _advanced_evaluation_context(project_id: str, algorithm_id: str, version_id:
     return version, model
 
 
-@app.get('/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/evaluation/trust')
-def evaluation_trust_analysis(project_id: str, algorithm_id: str, version_id: str,
-                              offset: int = 0, limit: int = 20):
+def _advanced_trust_evidence(project_id, version, model, *, offset=0, limit=20):
     from platform_core.evaluation_analysis import analyze_evaluation_trust
-    if offset < 0 or not 1 <= limit <= 50:
-        raise HTTPException(status_code=422, detail="可信度明细分页范围无效")
-    version, model = _advanced_evaluation_context(project_id, algorithm_id, version_id)
     evaluation = version.get('evaluation') or {}
     snapshot_id = str(evaluation.get('snapshot_id') or '')
     snapshot = {}
     if re.fullmatch(r'[a-f0-9]{64}', snapshot_id):
         snapshot = read_json(project_dir(project_id) / 'snapshots' / f'{snapshot_id}.json', {})
-    result = analyze_evaluation_trust(evaluation, snapshot, version, verified_model=model,
-                                     detail_offset=offset, detail_limit=limit)
+    return analyze_evaluation_trust(evaluation, snapshot, version, verified_model=model,
+                                    detail_offset=offset, detail_limit=limit)
+
+
+@app.get('/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/evaluation/trust')
+def evaluation_trust_analysis(project_id: str, algorithm_id: str, version_id: str,
+                              offset: int = 0, limit: int = 20):
+    if offset < 0 or not 1 <= limit <= 50:
+        raise HTTPException(status_code=422, detail="可信度明细分页范围无效")
+    version, model = _advanced_evaluation_context(project_id, algorithm_id, version_id)
+    result = _advanced_trust_evidence(project_id, version, model, offset=offset, limit=limit)
     return {'ok': True, 'analysis': result, 'project_id': project_id,
             'algorithm_id': algorithm_id, 'version_id': version_id}
 
@@ -11092,6 +11096,35 @@ def compare_version_evaluation(project_id: str, algorithm_id: str, version_id: s
     result['parameter_differences'] = {key: {'before': before.get(key), 'after': after.get(key)}
                                        for key in allowed if before.get(key) != after.get(key)}
     result.update(source_version_id=other_version_id, current_version_id=version_id)
+    return {'ok': True, 'comparison': result}
+
+
+@app.get('/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/evaluation/deep-compare/{other_version_id}')
+def deep_compare_evaluation(project_id: str, algorithm_id: str, version_id: str, other_version_id: str,
+                            offset: int = 0, limit: int = 24, category: str = ''):
+    from platform_core.evaluation_analysis import compare_sample_outcomes
+    if offset < 0 or not 1 <= limit <= 50 or category not in {'', 'improved', 'regressed',
+            'persistent_error', 'persistent_correct', 'unknown'} or version_id == other_version_id:
+        raise HTTPException(status_code=422, detail='版本对比范围无效')
+    current, current_model = _advanced_evaluation_context(project_id, algorithm_id, version_id)
+    previous, previous_model = _advanced_evaluation_context(project_id, algorithm_id, other_version_id)
+    for version, model in ((current, current_model), (previous, previous_model)):
+        evidence = version.get('evaluation') or {}
+        if (evidence.get('model_sha256') != model.get('model_sha256')
+                or evidence.get('task_id') != model.get('training_task_id')):
+            raise HTTPException(status_code=409, detail='评测与正式模型任务身份不一致')
+    trust_checks = [check for version, model in ((current, current_model), (previous, previous_model))
+                    for check in _advanced_trust_evidence(project_id, version, model)['checks']]
+    blocking = [check['code'] for check in trust_checks if check['status'] == 'risk'
+                or check['code'] == 'identity' and check['status'] != 'passed']
+    if blocking:
+        return {'ok': True, 'comparison': {'comparable': False, 'reason_codes': ['benchmark_trust_not_verified'],
+                'blocking_checks': sorted(set(blocking)), 'metrics': {}, 'classes': [], 'samples': [],
+                'source_version_id': other_version_id, 'current_version_id': version_id}}
+    result = compare_sample_outcomes(previous.get('evaluation') or {}, current.get('evaluation') or {},
+                                    offset=offset, limit=limit, category=category)
+    result.update(source_version_id=other_version_id, current_version_id=version_id)
+    result['trust_warnings'] = sorted({check['code'] for check in trust_checks if check['status'] != 'passed'})
     return {'ok': True, 'comparison': result}
 
 

@@ -1,5 +1,17 @@
 import {test,expect} from '@playwright/test';
 
+test('P2 same-benchmark sample comparison pairs both versions and blocks incompatible improvement',async({page,request},testInfo)=>{
+  const c=await fixture(page,request);let compatible=true;
+  const before=structuredClone(c.evaluation.error_samples[0]),after=structuredClone(before);after.fp_count=0;after.pred_boxes=after.pred_boxes.slice(0,1);
+  await page.route('**/evaluation/trust?**',route=>json(route,{project_id:c.project.id,algorithm_id:c.algorithm.id,version_id:'v2',analysis:{checks:[],coverage:[]}}));
+  await page.route('**/evaluation/report',route=>{const version=new URL(route.request().url()).pathname.split('/')[8],evaluation=structuredClone(c.evaluation);if(version==='v1'){evaluation.task_id='training-v1';evaluation.model_sha256=sha('a');evaluation.evaluation_id=sha('9');}return json(route,{algorithm:{id:c.algorithm.id,versions:[{id:version,evaluation}]}});});
+  await page.route('**/evaluation/deep-compare/v1?**',route=>json(route,{comparison:{source_version_id:'v1',current_version_id:'v2',comparable:compatible,reason_codes:compatible?[]:['benchmark_scope_mismatch'],metrics:compatible?{map50:{before:.6,after:.8,delta:.2}}:{},classes:[],sample_counts:{improved:1},sample_cohort_complete:true,total:compatible?1:0,samples:compatible?[{image_id:after.image_id,category:'improved',before,after}]:[]}}));
+  await c.open();await page.getByRole('button',{name:'高级评测',exact:true}).click();const root=page.locator('[data-advanced-evaluation]');await expect(root.getByRole('button',{name:'刷新证据',exact:true})).toBeEnabled();await root.getByRole('tab',{name:'版本对比',exact:true}).click();await root.getByRole('button',{name:'添加对比版本',exact:true}).click();
+  await expect(root).toContainText('+20.0 个百分点');await expect(root.locator('figure:not([hidden])')).toHaveCount(2);await expect(root.locator('[data-comparison-sample]')).toContainText('改善样本');
+  for(const width of [1920,1440,1366]){await page.setViewportSize({width,height:width===1920?1080:width===1440?900:768});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);await page.screenshot({path:testInfo.outputPath(`p2-comparison-${width}.png`)});}
+  compatible=false;await root.getByRole('button',{name:'刷新证据',exact:true}).click();await expect(root).toContainText('不能计算模型提升');await expect(root).not.toContainText('+20.0 个百分点');await expect(root.locator('figure')).toHaveCount(0);
+});
+
 test('P2 advanced diagnostics reuses original SVG and sample pagination without a modal or invented matches',async({page,request},testInfo)=>{
   const c=await fixture(page,request);let sampleGets=0;
   await page.route('**/evaluation/trust?**',route=>json(route,{project_id:c.project.id,algorithm_id:c.algorithm.id,version_id:'v2',analysis:{checks:[],coverage:[]}}));

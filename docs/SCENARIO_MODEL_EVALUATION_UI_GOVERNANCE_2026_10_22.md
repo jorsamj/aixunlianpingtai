@@ -44,6 +44,14 @@ A1实际提交21e0d816e76f7e4cfd84061efeb0ed1b4fbcfdd6（本地，远端CI未验
 
 RED→GREEN：新增分页API先AttributeError；原scorer新增outcome合同先KeyError，最终原单测34通过。图片API39通过；新report概要投影后相关1项复验通过。Node原场景/图表28通过。Chrome新2场景首轮失败：重叠GT框被上层预测框命中（改选择可见最上层实际框，不force）；重试断言早于请求完成（改等真实请求计数和按钮完成）。修正后2通过，未降低功能断言；新诊断截图p2-diagnostics.png。真实GPU/NAS/OSS/大规模内存与生产未验，远端CI未验。A2阶段提交后回填SHA；B/C继续。
 
+A2实际提交7b12c78976ba9c7babbe76635abd952654ef8f37（本地，远端CI未验）。
+
+### P2-B 本地阶段实绩
+
+深度对比复用compare_evaluations，双版本再核原成功成果资格及模型/任务关联；冻结身份不完整或已证实SHA/GT泄漏风险不计算提升。其余未检查风险单独列trust_warnings，不宣称业务适合发布。逐图按同image_id/SHA/尺寸/完整GT摘要与原正式TP/FP/FN分类：错误→无错为改善，无错→错误为退步，均错/均正确分别持续；缺席/GT不同为unknown，不从错误Top200差集推测。全体轻量结果只线性遍历，框证据只合并当前最多50图；无第二套匹配器。类指标复用原比较，TP/FP/FN与Micro F1仅由已存正式类别计数派生，未覆盖不造值。
+
+UI主动添加旧版后显示第二选择器，分页/类别变化、百分点差异、同图AB与同步视角复用原SVG。API新同基准/漂移/双模型绑定1通过，信任门槛补充后P2 trust/deep2通过；原评测新增深度比较1项先ImportError RED再GREEN（验证四类型、缺席未知、GT漂移和Benchmark拒绝）。真实Chrome新增同基准AB/三桌面截图/不同Benchmark不显示提升1通过。最终生命周期小修（重绘前dispose旧SVG/图表）待收尾相关冒烟；C继续。未推送，远端CI未验。
+
 > 本轮唯一综合需求/进度/问题与接续依据。既有VNext、素材性能与Annotorious文档保留历史，仅增加入口，不复制本轮进度。基线c376be7d5d54cca838dc8456ae2e6906815a5335 / VERSION42.24.376；2026-10-22已重新fetch，远端与本地一致、长期工作树干净。应用会话列表查询超时，未宣称已读取全部其他会话；现存其他worktree不动，推送前再次核验远端与差异。
 
 > **当前结论：P0与P1代码、隔离验收及代码SHA CI已验收，生产未验证。** VERSION42.24.377。业务最终代码42bf33b2bfcc46279c1360632e063f3336f7821e实际23/23 Actions、60/60 Checks通过，CI Chrome239/239。本次文档/旧fixture补提不修改业务；其新HEAD仍须按自身GitHub Checks独立核验，不能继承42bf绿色。下文早期“进行中/未提交”是历史执行留痕，以本段、任务表及末尾最终验收为准。

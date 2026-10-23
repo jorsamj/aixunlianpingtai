@@ -5,6 +5,32 @@ from PIL import Image
 import platform_core.training_evaluation as evaluation
 
 
+def test_p2_deep_comparison_uses_exact_frozen_samples_and_never_guesses_absent_correctness():
+    from copy import deepcopy
+    from platform_core.evaluation_analysis import compare_sample_outcomes
+    scope = {key: 'a' * 64 for key in ('scope_id', 'content_digest', 'ground_truth_digest',
+             'label_schema_digest', 'evaluation_input_digest')}
+    scope['binding_level'] = 'bundle_verified'
+    def sample(image_id, errors):
+        return {'image_id': image_id, 'image': image_id + '.jpg', 'image_content_sha256': 'b' * 64,
+                'ground_truth_digest': 'c' * 64, 'image_width': 100, 'image_height': 80,
+                'tp_count': 1 - errors, 'fp_count': errors, 'fn_count': errors}
+    before = {'status': 'succeeded', 'evaluation_id': 'd' * 64, 'evaluation_protocol_id': 'e' * 64,
+              'benchmark_scope': scope, 'image_count': 5,
+              'sample_outcomes': [sample(str(i), error) for i, error in enumerate([1, 0, 1, 0, 1])]}
+    after = deepcopy(before)
+    after['sample_outcomes'] = [sample(str(i), error) for i, error in enumerate([0, 1, 1, 0])]
+    result = compare_sample_outcomes(before, after)
+    assert result['comparable'] is True
+    assert result['sample_counts'] == {'improved': 1, 'regressed': 1, 'persistent_error': 1, 'persistent_correct': 1, 'unknown': 1}
+    assert result['sample_cohort_complete'] is False
+    after['sample_outcomes'][0]['ground_truth_digest'] = 'f' * 64
+    assert compare_sample_outcomes(before, after)['sample_counts']['unknown'] == 2
+    after['benchmark_scope'] = {**scope, 'scope_id': 'f' * 64}
+    rejected = compare_sample_outcomes(before, after)
+    assert rejected['comparable'] is False and rejected['samples'] == []
+
+
 def test_p2_trust_checks_frozen_sha_leaks_without_changing_truth():
     from copy import deepcopy
     from platform_core.evaluation_analysis import analyze_evaluation_trust

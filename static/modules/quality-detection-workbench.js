@@ -519,7 +519,7 @@ export function installQualityDetectionWorkbench({getState,api,toast,modal,close
     deactivate64();displayMode='accuracy';selectedIndex=0;zoom=1;classFilter='';issueFilter='';matrixCell=null;confidence=0;showGT=true;showPred=true;
     reportModel=model;reportVersion={...version,evaluation:{...version.evaluation,error_samples:rows||[]}};
     comparison=other||{};root.classList.add('scenario-workbench');root.id='scenarioEvidence64';
-    renderEvidenceWorkspace64(root,rows||[],'evaluation');
+    renderEvidenceWorkspace64(root,rows||[],'evaluation');renderScenarioAnalysis64();
   }
   return {render:window.renderQualityDetectionBench64,deactivate:deactivate64,destroy:deactivate64,mountEvaluationEvidence};
 }

@@ -16,5 +16,12 @@
 .advanced-status.risk{background:#fff0e4;color:#963e09}
 .advanced-status.not_checked{background:#eff1f5;color:#586475}
 .advanced-coverage span{display:inline-block;padding:8px 12px;margin:4px;border-radius:8px;background:#f2f6fb}
+.advanced-sample-toolbar{display:flex;align-items:end;gap:12px;flex-wrap:wrap;margin:14px 0}
+.advanced-sample-toolbar label{display:grid;gap:6px;font-size:13px}
+.advanced-comparison-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:16px 0}
+.advanced-comparison-metrics section{padding:16px}
+.advanced-comparison-samples{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}
+.advanced-evaluation .scn-inspection{min-width:0}
+.advanced-evaluation .scn-match-evidence p{font-size:12px;overflow-wrap:anywhere}
 @media(max-width:900px){.advanced-trust-grid{grid-template-columns:1fr}.advanced-selectors{grid-template-columns:1fr 1fr}.advanced-benchmark{grid-column:1/-1}}
 @media(max-width:520px){.advanced-selectors{grid-template-columns:1fr}.advanced-heading{align-items:flex-start}.advanced-trust-check header{flex-wrap:wrap}}

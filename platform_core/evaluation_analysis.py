@@ -9,7 +9,7 @@ from collections import defaultdict
 import re
 from typing import Any, Mapping
 
-from .training_evaluation import build_evaluation_benchmark_scope
+from .training_evaluation import build_evaluation_benchmark_scope, compare_evaluations
 
 
 def _digest(value):
@@ -49,6 +49,69 @@ def evaluation_samples(evaluation: Mapping, *, offset=0, limit=24, issue="", cla
             'cohort_complete': complete and len(outcomes) == evaluation.get('image_count'),
             'image_count': evaluation.get('image_count'), 'evaluation_id': evaluation.get('evaluation_id'),
             'filter_scope': 'retained_box_evidence_only' if class_id is not None else 'persisted_sample_outcomes'}
+
+
+def compare_sample_outcomes(source: Mapping, current: Mapping, *, offset=0, limit=24, category=""):
+    """Explain original comparison using persisted counts; never rematch boxes."""
+    comparison = compare_evaluations(source, current)
+    comparison.update(samples=[], sample_counts={}, sample_cohort_complete=False)
+    if not comparison['comparable']:
+        return comparison
+    counts = {}
+    for side, value in (('before', source), ('after', current)):
+        classes = value.get('per_class') or []
+        totals = {key: sum(row[key] for row in classes) for key in ('true_positive', 'false_positive', 'false_negative')
+                  if classes and all(isinstance(row.get(key), int) and row[key] >= 0 for row in classes)}
+        if len(totals) == 3:
+            denominator = 2 * totals['true_positive'] + totals['false_positive'] + totals['false_negative']
+            totals['micro_f1'] = 2 * totals['true_positive'] / denominator if denominator and totals['true_positive'] + totals['false_negative'] > 0 else None
+        counts[side] = totals
+    comparison['detection_counts'] = counts
+    def index(value):
+        rows = value.get('sample_outcomes')
+        if not isinstance(rows, list):
+            return {}, False
+        result = {}
+        for row in rows:
+            key = row.get('image_id')
+            if not key or key in result:
+                return {}, False
+            result[key] = row
+        return result, len(rows) == value.get('image_count')
+    before, before_complete = index(source)
+    after, after_complete = index(current)
+    counts = {key: 0 for key in ('improved', 'regressed', 'persistent_error', 'persistent_correct', 'unknown')}
+    rows = []
+    def details(value, row):
+        detail = next((item for item in value.get('sample_evidence', []) if
+                       item.get('image_id') == row.get('image_id') and
+                       item.get('image_content_sha256') == row.get('image_content_sha256') and
+                       item.get('ground_truth_digest') == row.get('ground_truth_digest')), None)
+        return {**row, **(detail or {}), 'box_evidence_available': detail is not None}
+    for key in sorted(set(before) | set(after)):
+        a, b = before.get(key), after.get(key)
+        kind, reason = 'unknown', 'sample_evidence_missing'
+        if a and b:
+            matching = all(a.get(field) == b.get(field) and a.get(field) is not None for field in (
+                'image_content_sha256', 'ground_truth_digest', 'image_width', 'image_height'))
+            valid_counts = all(isinstance(row.get(field), int) and not isinstance(row.get(field), bool)
+                               and row[field] >= 0 for row in (a, b) for field in ('tp_count', 'fp_count', 'fn_count'))
+            if matching and _digest(a.get('image_content_sha256')) and _digest(a.get('ground_truth_digest')) and valid_counts:
+                old_error, new_error = a['fp_count'] + a['fn_count'] > 0, b['fp_count'] + b['fn_count'] > 0
+                kind = ('persistent_error' if new_error else 'improved') if old_error else ('regressed' if new_error else 'persistent_correct')
+                reason = 'same_frozen_ground_truth_formal_counts'
+            else:
+                reason = 'sample_identity_or_ground_truth_mismatch'
+        counts[kind] += 1
+        if not category or kind == category:
+            rows.append({'image_id': key, 'category': kind, 'reason': reason,
+                         'before': a, 'after': b})
+    page = [{**row, 'before': details(source, row['before']) if row['before'] else None,
+             'after': details(current, row['after']) if row['after'] else None} for row in rows[offset:offset + limit]]
+    comparison.update(samples=page, total=len(rows), offset=offset, limit=limit,
+                      sample_counts=counts, sample_cohort_complete=before_complete and after_complete and set(before) == set(after),
+                      sample_scope='formal_counts_on_identical_frozen_images_and_ground_truth')
+    return comparison
 
 
 def analyze_evaluation_trust(evaluation: Mapping, snapshot: Mapping, version: Mapping,

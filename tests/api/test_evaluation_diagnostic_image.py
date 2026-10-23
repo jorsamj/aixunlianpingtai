@@ -53,6 +53,34 @@ def test_p2_sample_pages_distinguish_missing_evidence_and_never_rescore(monkeypa
     assert 'sample_outcomes' not in public['algorithm']['versions'][0]['evaluation']
 
 
+def test_p2_deep_comparison_revalidates_both_models_and_rejects_benchmark_drift(monkeypatch, tmp_path):
+    platform, _, _, _, _ = _setup(monkeypatch, tmp_path)
+    scope = {key: 'a' * 64 for key in ('scope_id', 'content_digest', 'ground_truth_digest',
+             'label_schema_digest', 'evaluation_input_digest')}
+    scope['binding_level'] = 'bundle_verified'
+    versions = {name: {'id': name, 'evaluation': {'status': 'succeeded', 'evaluation_id': 'b' * 64,
+        'evaluation_protocol_id': 'c' * 64, 'benchmark_scope': dict(scope), 'model_sha256': 'd' * 64,
+        'task_id': name}} for name in ('v1', 'v2')}
+    calls = []
+    def context(project_id, algorithm_id, version_id):
+        calls.append(version_id)
+        return versions[version_id], {'model_sha256': 'd' * 64, 'training_task_id': version_id}
+    monkeypatch.setattr(platform, '_advanced_evaluation_context', context)
+    monkeypatch.setattr(platform, '_advanced_trust_evidence', lambda *a, **k: {'checks': [{'code': 'identity', 'status': 'passed'}]})
+    result = platform.deep_compare_evaluation('evaluation-project', 'algo', 'v2', 'v1')
+    assert calls == ['v2', 'v1'] and result['comparison']['comparable'] is True
+    assert result['comparison']['sample_cohort_complete'] is False
+    versions['v1']['evaluation']['benchmark_scope']['ground_truth_digest'] = 'e' * 64
+    result = platform.deep_compare_evaluation('evaluation-project', 'algo', 'v2', 'v1')
+    assert result['comparison']['comparable'] is False and result['comparison']['metrics'] == {}
+    monkeypatch.setattr(platform, '_advanced_trust_evidence', lambda *a, **k: {'checks': [{'code': 'identity', 'status': 'insufficient_evidence'}]})
+    assert platform.deep_compare_evaluation('evaluation-project', 'algo', 'v2', 'v1')['comparison']['reason_codes'] == ['benchmark_trust_not_verified']
+    versions['v1']['evaluation']['task_id'] = 'wrong'
+    with pytest.raises(HTTPException) as denied:
+        platform.deep_compare_evaluation('evaluation-project', 'algo', 'v2', 'v1')
+    assert denied.value.status_code == 409
+
+
 def _setup(monkeypatch, tmp_path: Path):
     import app as platform
     project_id = "evaluation-project"
