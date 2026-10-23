@@ -2,6 +2,11 @@ from __future__ import annotations
 
 import json
 import zipfile
+import hashlib
+import copy
+import io
+import pytest
+from PIL import Image
 from pathlib import Path
 
 import platform_core.remote_training_results as remote_training_results_module
@@ -97,6 +102,146 @@ def test_training_result_archive_round_trip_verifies_identity_and_models(tmp_pat
     assert verified.manifest["training_report"]["metrics"]["metrics/mAP50(B)"] == 0.75
     assert {row["role"] for row in verified.models} == {"best", "last"}
     assert all((verified.root / row["ref"]).is_file() for row in verified.models)
+
+
+def test_training_result_archive_preserves_frozen_dataset_evidence(tmp_path):
+    project = tmp_path / "agent-project"
+    job = _job(project)
+    dataset = {"schema_version": 3, "snapshot_id": "snapshot-one",
+               "dataset_revision_id": "a" * 64, "splits": {"test": []}}
+    created = create_training_result_archive(
+        project_dir=project, job=job, task_id="train-one",
+        execution_generation=1, snapshot_id="snapshot-one",
+        destination=tmp_path / "result.zip", dataset_manifest=dataset,
+        input_freeze_id="b" * 64,
+    )
+    verified = verify_training_result_archive(
+        created.path, tmp_path / "verified", expected_sha256=created.sha256,
+        expected_size_bytes=created.size_bytes, expected_task_id="train-one",
+        expected_execution_generation=1, expected_snapshot_id="snapshot-one",
+    )
+    assert verified.manifest["dataset_manifest"] == dataset
+    assert verified.manifest["input_freeze_id"] == "b" * 64
+    assert verified.manifest["dataset_revision_id"] == "a" * 64
+    assert verified.manifest["diagnostic_images"] == []
+    assert created.member_count == 3
+
+
+def _dataset_evidence_fixture():
+    snapshot = {"snapshot_id": "s", "dataset_revision_id": "a" * 64,
+                "ids": {key: [key] for key in ("train", "validation", "test")},
+                "label_schema": [{"code": "fire", "class_id": 0}]}
+    rows = [{"id": key, "stored_name": key + ".jpg", "size_bytes": 12,
+             "width": 10, "height": 10, "boxes": [],
+             "content_sha256": "b" * 64} for key in snapshot["ids"]]
+    manifest = {"schema_version": 3, "snapshot_id": "s", "dataset_revision_id": "a" * 64,
+                "training_input_policy": "ultralytics_jpeg_repair_v1",
+                "splits": {key: [{"image_id": key, "source_content_sha256": "b" * 64,
+                    "image_ref": f"dataset/images/{key}/{key}.jpg",
+                    "label_ref": (f"evaluation/ground_truth/test/{key}.txt" if key == "test"
+                                  else f"dataset/labels/{key}/{key}.txt"),
+                    "content_sha256": "b" * 64, "size_bytes": 12, "source_size_bytes": 12,
+                    "label_sha256": hashlib.sha256(b"").hexdigest(), "normalized": False,
+                    "training_input_policy": "ultralytics_jpeg_repair_v1"}]
+                    for key in snapshot["ids"]}}
+    return snapshot, rows, manifest
+
+
+@pytest.mark.parametrize("role", ["train", "validation", "test"])
+def test_dataset_evidence_validates_every_split_label_hash(role):
+    from platform_core.remote_training_results import verify_dataset_manifest_evidence
+    snapshot, rows, manifest = _dataset_evidence_fixture()
+    assert verify_dataset_manifest_evidence(manifest, snapshot, rows) == manifest
+    forged = copy.deepcopy(manifest)
+    forged["splits"][role][0]["label_sha256"] = "c" * 64
+    with pytest.raises(ValueError, match="label"):
+        verify_dataset_manifest_evidence(forged, snapshot, rows)
+    forged = copy.deepcopy(manifest)
+    forged["splits"][role][0]["source_content_sha256"] = "d" * 64
+    with pytest.raises(ValueError, match="source hash"):
+        verify_dataset_manifest_evidence(forged, snapshot, rows)
+    forged = copy.deepcopy(manifest)
+    forged["splits"][role].append(copy.deepcopy(forged["splits"][role][0]))
+    with pytest.raises(ValueError, match="cohort"):
+        verify_dataset_manifest_evidence(forged, snapshot, rows)
+
+
+@pytest.mark.parametrize("role", ["train", "validation", "test"])
+@pytest.mark.parametrize("field,value", [
+    ("source_size_bytes", 13),
+    ("image_ref", "dataset/images/train/other.jpg"),
+    ("label_ref", "dataset/labels/test/test.txt"),
+])
+def test_dataset_evidence_rejects_wrong_source_size_or_noncanonical_role_path(role, field, value):
+    from platform_core.remote_training_results import verify_dataset_manifest_evidence
+    snapshot, rows, manifest = _dataset_evidence_fixture()
+    manifest["splits"][role][0][field] = value
+    with pytest.raises(ValueError, match="source size|canonical"):
+        verify_dataset_manifest_evidence(manifest, snapshot, rows)
+
+
+def _diagnostic_archive(tmp_path, *, sample=None, member_ref="dataset/images/test/test-one.jpg", corrupt=False):
+    project = tmp_path / "agent-project"
+    job = _job(project)
+    pixels = io.BytesIO()
+    Image.new("RGB", (12, 8), (40, 90, 120)).save(pixels, format="JPEG")
+    data = pixels.getvalue()
+    digest = hashlib.sha256(data).hexdigest()
+    job["training_report"]["test_result"]["error_samples"] = [sample or {
+        "image": "test-one.jpg", "image_id": "test-one", "image_content_sha256": digest,
+    }]
+    root = tmp_path / "dataset"
+    path = root / "dataset/images/test/test-one.jpg"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"corrupted" if corrupt else data)
+    manifest = {"schema_version": 3, "snapshot_id": "snapshot-one", "dataset_revision_id": "a" * 64,
+                "splits": {"test": [{"image_id": "test-one", "image_ref": member_ref,
+                    "content_sha256": digest, "size_bytes": len(data)}]}}
+    created = create_training_result_archive(
+        project_dir=project, job=job, task_id="train-one", execution_generation=1,
+        snapshot_id="snapshot-one", destination=tmp_path / "result.zip",
+        dataset_manifest=manifest, dataset_root=root, input_freeze_id="b" * 64,
+    )
+    return created, data
+
+
+def test_training_result_retains_only_actual_error_sample_image(tmp_path):
+    created, data = _diagnostic_archive(tmp_path)
+    verified = verify_training_result_archive(
+        created.path, tmp_path / "verified", expected_sha256=created.sha256,
+        expected_size_bytes=created.size_bytes, expected_task_id="train-one",
+        expected_execution_generation=1, expected_snapshot_id="snapshot-one",
+    )
+    images = verified.manifest["diagnostic_images"]
+    assert len(images) == 1
+    assert images[0]["ref"] == "evidence/bundle/dataset/images/test/test-one.jpg"
+    assert (verified.root / images[0]["ref"]).read_bytes() == data
+    assert created.member_count == 4
+
+
+def test_training_result_extraction_rejects_tampered_diagnostic_bytes(tmp_path):
+    created, _data = _diagnostic_archive(tmp_path)
+    altered = tmp_path / "altered.zip"
+    with zipfile.ZipFile(created.path) as source, zipfile.ZipFile(altered, "w") as target:
+        for name in source.namelist():
+            target.writestr(name, b"tampered" if name.startswith("evidence/") else source.read(name))
+    with pytest.raises(RemoteTrainingResultError, match="diagnostic image bytes"):
+        verify_training_result_archive(
+            altered, tmp_path / "verified", expected_sha256=hashlib.sha256(altered.read_bytes()).hexdigest(),
+            expected_size_bytes=altered.stat().st_size, expected_task_id="train-one",
+            expected_execution_generation=1, expected_snapshot_id="snapshot-one",
+        )
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"corrupt": True},
+    {"member_ref": "../outside.jpg"},
+    {"member_ref": "dataset/images/train/test-one.jpg"},
+    {"sample": {"image": "other.jpg", "image_id": "train-one"}},
+])
+def test_training_result_rejects_unbound_diagnostic_image(tmp_path, kwargs):
+    with pytest.raises(RemoteTrainingResultError):
+        _diagnostic_archive(tmp_path, **kwargs)
 
 
 def test_training_result_archive_rejects_model_outside_task_project(tmp_path):

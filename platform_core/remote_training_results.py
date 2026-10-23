@@ -15,6 +15,7 @@ from typing import Any, Mapping, Sequence
 
 TRAINING_RESULT_SCHEMA_VERSION = 1
 TRAINING_RESULT_MAX_MEMBERS = 128
+_TRAINING_RESULT_MAX_DIAGNOSTIC_IMAGES = 200
 TRAINING_RESULT_MAX_UNCOMPRESSED_BYTES = 16 * 1024 * 1024 * 1024
 SUCCESSFUL_TRAINING_OUTCOMES = frozenset({
     "completed",
@@ -206,6 +207,128 @@ def _verified_model_paths(
     return roles
 
 
+def verify_dataset_manifest_evidence(
+    manifest: Mapping[str, Any], snapshot: Mapping[str, Any], images,
+) -> dict[str, Any]:
+    """Bind worker materialization evidence to all frozen rows, without opening pixels.
+
+    Repaired/redacted pixel hashes remain authenticated worker evidence; label
+    hashes and source identities are independently reproduced from the freeze.
+    """
+    from .training_tasks import TRAINING_INPUT_POLICY, _yolo_line
+
+    if (not isinstance(manifest, Mapping) or manifest.get("schema_version") != 3
+            or manifest.get("snapshot_id") != snapshot.get("snapshot_id")
+            or manifest.get("dataset_revision_id") != snapshot.get("dataset_revision_id")
+            or manifest.get("training_input_policy") != TRAINING_INPUT_POLICY):
+        raise ValueError("dataset manifest frozen identity/policy mismatch")
+    splits = manifest.get("splits")
+    if not isinstance(splits, Mapping) or set(splits) != {"train", "validation", "test"}:
+        raise ValueError("dataset manifest split roles are invalid")
+    by_id = {str(row["id"]): row for row in images}
+    classes = {str(row["code"]): int(row["class_id"]) for row in snapshot["label_schema"]}
+    seen = set()
+    for role in ("train", "validation", "test"):
+        members = splits[role]
+        expected_ids = list(snapshot["ids"][role])
+        if (not isinstance(members, list)
+                or any(not isinstance(member, Mapping) for member in members)
+                or [member.get("image_id") for member in members] != expected_ids):
+            raise ValueError("dataset manifest frozen split cohort/order mismatch")
+        for member in members:
+            image_id = member["image_id"]
+            if image_id in seen:
+                raise ValueError("dataset manifest duplicate image across roles")
+            seen.add(image_id)
+            row = by_id[image_id]
+            if member.get("source_content_sha256") != row.get("content_sha256"):
+                raise ValueError("dataset manifest source hash mismatch")
+            if (type(member.get("source_size_bytes")) is not int
+                    or member["source_size_bytes"] != row.get("size_bytes")):
+                raise ValueError("dataset manifest frozen source size mismatch")
+            original_name = str(row.get("filename") or row.get("stored_name") or row.get("object_key") or "")
+            stored_name = f"{image_id}{Path(original_name).suffix.lower() or '.jpg'}"
+            image_ref = f"dataset/images/{role}/{stored_name}"
+            label_ref = (f"evaluation/ground_truth/test/{Path(stored_name).stem}.txt"
+                         if role == "test" else f"dataset/labels/{role}/{Path(stored_name).stem}.txt")
+            if member.get("image_ref") != image_ref or member.get("label_ref") != label_ref:
+                raise ValueError("dataset manifest canonical role paths mismatch")
+            lines = [_yolo_line(box, float(row.get("width") or 0),
+                                float(row.get("height") or 0), classes[str(box["label"]).strip()])
+                     for box in row.get("boxes") or []]
+            label_sha = hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
+            if member.get("label_sha256") != label_sha:
+                raise ValueError("dataset manifest annotation-derived label hash mismatch")
+            digest = str(member.get("content_sha256") or "")
+            if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+                raise ValueError("dataset manifest training content hash is invalid")
+            if (member.get("training_input_policy") != TRAINING_INPUT_POLICY
+                    or int(member.get("size_bytes") or 0) <= 0
+                    or int(member.get("source_size_bytes") or 0) <= 0):
+                raise ValueError("dataset manifest image policy/size is invalid")
+            excluded = row.get("training_excluded_boxes") or []
+            projected = bool(excluded) and role != "test"
+            if projected:
+                if (member.get("training_projection_policy") != row.get("training_projection_policy")
+                        or member.get("training_projection_digest") != row.get("training_projection_digest")
+                        or member.get("redacted_object_count") != len(excluded)):
+                    raise ValueError("dataset manifest frozen projection mismatch")
+            elif member.get("training_projection_digest") or member.get("redacted_object_count"):
+                raise ValueError("dataset manifest unexpected image projection")
+            if not member.get("normalized") and digest != row.get("content_sha256"):
+                raise ValueError("dataset manifest unmodified training hash mismatch")
+    return dict(manifest)
+
+
+def _diagnostic_image_contract(report, dataset_manifest) -> list[dict[str, Any]]:
+    def reject(message):
+        raise RemoteTrainingResultError("TRAINING_RESULT_DIAGNOSTIC_INVALID", message, 409)
+
+    if not isinstance(report, Mapping) or not isinstance(dataset_manifest, Mapping):
+        reject("training result diagnostic metadata must be objects")
+    test_result = report.get("test_result") or {}
+    if not isinstance(test_result, Mapping):
+        reject("training result diagnostic test report must be an object")
+    samples = test_result.get("error_samples") or []
+    if not isinstance(samples, list) or len(samples) > 200:
+        reject("training result diagnostic samples are invalid")
+    splits = dataset_manifest.get("splits") or {}
+    if not isinstance(splits, Mapping):
+        reject("training result diagnostic splits must be an object")
+    members = splits.get("test") or []
+    if not isinstance(members, list):
+        reject("training result diagnostic test cohort must be a list")
+    images = []
+    seen = set()
+    for sample in samples:
+        if not isinstance(sample, Mapping):
+            reject("training result diagnostic sample must be an object")
+        image_name = str(sample.get("image") or "")
+        if not image_name or _safe_member_name(image_name) != image_name or "/" in image_name or ":" in image_name:
+            reject("training result diagnostic image name is invalid")
+        matches = [row for row in members if isinstance(row, Mapping)
+                   and PurePosixPath(str(row.get("image_ref") or "")).name == image_name
+                   and (not sample.get("image_id") or row.get("image_id") == sample["image_id"])]
+        if len(matches) != 1:
+            reject("training result diagnostic image is outside the unique frozen test cohort")
+        member = matches[0]
+        image_ref = _safe_member_name(member.get("image_ref"))
+        if not image_ref.startswith("dataset/images/test/") or len(PurePosixPath(image_ref).parts) != 4 or ":" in image_ref:
+            reject("training result diagnostic image reference is outside test images")
+        digest = str(member.get("content_sha256") or "")
+        size = int(member.get("size_bytes") or 0)
+        if (len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest)
+                or size <= 0 or (sample.get("image_content_sha256")
+                                 and sample["image_content_sha256"] != digest)):
+            reject("training result diagnostic image hash/size is invalid")
+        if image_ref in seen:
+            continue
+        seen.add(image_ref)
+        images.append({"image_id": member["image_id"], "image_ref": image_ref,
+                       "ref": f"evidence/bundle/{image_ref}", "sha256": digest, "size_bytes": size})
+    return images
+
+
 def create_training_result_archive(
     *,
     project_dir: str | Path,
@@ -215,6 +338,9 @@ def create_training_result_archive(
     snapshot_id: str,
     destination: str | Path,
     include_model_bytes: bool = True,
+    dataset_manifest: Mapping[str, Any] | None = None,
+    input_freeze_id: str = "",
+    dataset_root: str | Path | None = None,
 ) -> TrainingResultArchive:
     project = Path(project_dir).expanduser().resolve()
     models_root = (project / "models").resolve()
@@ -301,20 +427,33 @@ def create_training_result_archive(
         "training_report": training_report,
         "models": models,
     }
+    if dataset_manifest is not None:
+        manifest["dataset_manifest"] = json.loads(json.dumps(dataset_manifest, allow_nan=False))
+        manifest["input_freeze_id"] = str(input_freeze_id or "")
+        manifest["dataset_revision_id"] = str(dataset_manifest.get("dataset_revision_id") or "")
+        diagnostic_images = _diagnostic_image_contract(training_report, dataset_manifest)
+        if diagnostic_images and dataset_root is None:
+            raise RemoteTrainingResultError("TRAINING_RESULT_DIAGNOSTIC_INVALID", "diagnostic dataset root is missing", 409)
+        for item in diagnostic_images:
+            root = Path(dataset_root).resolve()
+            path = (root / item["image_ref"]).resolve()
+            if (not path.is_relative_to(root) or not path.is_file()
+                    or path.stat().st_size != item["size_bytes"] or _sha256(path) != item["sha256"]):
+                raise RemoteTrainingResultError("TRAINING_RESULT_DIAGNOSTIC_INVALID", "diagnostic image bytes differ from evaluated test evidence", 409)
+            archive_members.append((item["ref"], path))
+        manifest["diagnostic_images"] = diagnostic_images
+    elif dataset_root is not None:
+        raise RemoteTrainingResultError("TRAINING_RESULT_DIAGNOSTIC_INVALID", "diagnostic dataset manifest is missing", 409)
     manifest_bytes = json.dumps(
         manifest,
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
-    total_uncompressed = len(manifest_bytes) + (
-        sum(int(item["size_bytes"]) for item in models)
-        if include_model_bytes
-        else 0
-    )
-    member_count = 1 + (len(models) if include_model_bytes else 0)
+    total_uncompressed = len(manifest_bytes) + sum(path.stat().st_size for _ref, path in archive_members)
+    member_count = 1 + len(archive_members)
     if (
-        member_count > TRAINING_RESULT_MAX_MEMBERS
+        member_count > TRAINING_RESULT_MAX_MEMBERS + len(manifest.get("diagnostic_images") or [])
         or total_uncompressed > TRAINING_RESULT_MAX_UNCOMPRESSED_BYTES
     ):
         raise RemoteTrainingResultError(
@@ -408,7 +547,7 @@ def verify_training_result_archive(
         files = 0
         with zipfile.ZipFile(source, "r") as archive_file:
             infos = archive_file.infolist()
-            if not infos or len(infos) > TRAINING_RESULT_MAX_MEMBERS:
+            if not infos or len(infos) > TRAINING_RESULT_MAX_MEMBERS + _TRAINING_RESULT_MAX_DIAGNOSTIC_IMAGES:
                 raise RemoteTrainingResultError(
                     "TRAINING_RESULT_MEMBER_COUNT_INVALID",
                     "training result archive member count is invalid",
@@ -594,6 +733,20 @@ def verify_training_result_archive(
                 "training result has no best/last model",
                 409,
             )
+        if manifest.get("dataset_manifest") is not None:
+            diagnostic_images = _diagnostic_image_contract(
+                manifest.get("training_report") or {}, manifest["dataset_manifest"],
+            )
+            if manifest.get("diagnostic_images") != diagnostic_images:
+                raise RemoteTrainingResultError("TRAINING_RESULT_DIAGNOSTIC_INVALID", "diagnostic image declarations differ from frozen test samples", 409)
+            for item in diagnostic_images:
+                if extracted_evidence.get(item["ref"]) != (item["size_bytes"], item["sha256"]):
+                    raise RemoteTrainingResultError("TRAINING_RESULT_DIAGNOSTIC_INVALID", "diagnostic image bytes differ from declared evidence", 409)
+                allowed_refs.add(item["ref"])
+        elif manifest.get("diagnostic_images"):
+            raise RemoteTrainingResultError("TRAINING_RESULT_DIAGNOSTIC_INVALID", "diagnostic dataset manifest is missing", 409)
+        if len(extracted_evidence) > TRAINING_RESULT_MAX_MEMBERS + len(manifest.get("diagnostic_images") or []):
+            raise RemoteTrainingResultError("TRAINING_RESULT_MEMBER_COUNT_INVALID", "training result member count exceeds its bounded diagnostic allowance", 422)
         actual_files = {
             path.relative_to(temporary).as_posix()
             for path in temporary.rglob("*")

@@ -535,6 +535,7 @@ class AgentExecutionService:
         material_scan_read_provider=None,
         clean_selection_page_provider=None,
         clean_selection_read_provider=None,
+        training_inputs_provider=None,
     ):
         self.repository = repository
         self.artifacts = artifacts
@@ -550,6 +551,7 @@ class AgentExecutionService:
         self.material_scan_read_provider = material_scan_read_provider
         self.clean_selection_page_provider = clean_selection_page_provider
         self.clean_selection_read_provider = clean_selection_read_provider
+        self.training_inputs_provider = training_inputs_provider
         self.nodes = ServiceNodeRepository(
             repository,
             heartbeat_ttl_seconds=self.heartbeat_ttl_seconds,
@@ -1077,6 +1079,85 @@ class AgentExecutionService:
         )
         self.artifacts.append_log(task.task_id, task.log_ref, value)
         return {"ok": True, "bytes": len(value.encode("utf-8"))}
+
+    def _training_inputs(self, node_id, node_token, task_id, execution_lease_token,
+                         execution_generation, *, image_id=None):
+        task = self._owned_execution(
+            node_id, node_token, task_id, execution_lease_token, execution_generation,
+        )
+        payload = self._read_task_payload(task)
+        remote = payload.get("remote_execution")
+        training = remote.get("training") if isinstance(remote, dict) else None
+        if (task.kind is not TaskKind.TRAINING or not isinstance(training, dict)
+                or type(training.get("schema_version")) is not int
+                or training["schema_version"] != 3
+                or not callable(self.training_inputs_provider)):
+            raise AgentExecutionError("REMOTE_TRAINING_INPUTS_UNAVAILABLE",
+                                      "frozen training inputs are unavailable", 409)
+        try:
+            result = self.training_inputs_provider(task, payload, image_id=image_id)
+        except AgentExecutionError:
+            raise
+        except Exception as error:
+            raise AgentExecutionError(
+                str(getattr(error, "code", "REMOTE_TRAINING_INPUTS_FAILED")),
+                str(error), int(getattr(error, "status_code", 500)),
+            ) from error
+        if not isinstance(result, dict):
+            raise AgentExecutionError("REMOTE_TRAINING_INPUTS_INVALID", "invalid input contract", 500)
+        return result
+
+    def training_inputs_manifest(self, node_id, node_token, task_id,
+                                 execution_lease_token, execution_generation):
+        return self._training_inputs(node_id, node_token, task_id,
+                                     execution_lease_token, execution_generation)
+
+    def training_source_read(self, node_id, node_token, task_id,
+                             execution_lease_token, execution_generation, *, image_id):
+        from fastapi.responses import StreamingResponse
+        from starlette.background import BackgroundTask
+        # Authenticate before even validating the requested source identity.
+        self._owned_execution(node_id, node_token, task_id,
+                              execution_lease_token, execution_generation)
+        if not isinstance(image_id, str) or not image_id.strip():
+            raise AgentExecutionError("REMOTE_TRAINING_INPUT_ID_INVALID", "image_id is required", 422)
+        contract = self._training_inputs(node_id, node_token, task_id,
+                                        execution_lease_token, execution_generation, image_id=image_id)
+        reader = contract.get("reader")
+        try:
+            size = contract.get("size_bytes")
+            sha = contract.get("sha256")
+            if (type(size) is not int or size <= 0 or not isinstance(sha, str)
+                    or not re.fullmatch(r"[0-9a-fA-F]{64}", sha)
+                    or not callable(getattr(reader, "read", None))
+                    or not callable(getattr(reader, "close", None))):
+                raise AgentExecutionError("REMOTE_TRAINING_INPUTS_INVALID", "invalid source contract", 500)
+            def chunks():
+                remaining = size
+                try:
+                    while remaining:
+                        self._owned_execution(node_id, node_token, task_id,
+                                              execution_lease_token, execution_generation)
+                        chunk = reader.read(min(1024 * 1024, remaining))
+                        if not isinstance(chunk, bytes) or not chunk or len(chunk) > remaining:
+                            raise AgentExecutionError("REMOTE_TRAINING_INPUTS_INVALID", "source size mismatch", 409)
+                        self._owned_execution(node_id, node_token, task_id,
+                                              execution_lease_token, execution_generation)
+                        remaining -= len(chunk)
+                        if remaining == 0 and reader.read(1) != b"":
+                            raise AgentExecutionError("REMOTE_TRAINING_INPUTS_INVALID", "source exceeds frozen size", 409)
+                        yield chunk
+                finally:
+                    reader.close()
+            return StreamingResponse(chunks(), media_type="application/octet-stream",
+                                     headers={"Content-Length": str(size), "X-Content-SHA256": sha,
+                                              "Cache-Control": "private, no-store",
+                                              "X-Content-Type-Options": "nosniff"},
+                                     background=BackgroundTask(reader.close))
+        except BaseException:
+            if callable(getattr(reader, "close", None)):
+                reader.close()
+            raise
 
     def material_scan_page(
         self,
@@ -2141,6 +2222,7 @@ def agent_executor_router(
     material_scan_read_provider=None,
     clean_selection_page_provider=None,
     clean_selection_read_provider=None,
+    training_inputs_provider=None,
 ):
     from fastapi import APIRouter, Body, Header, HTTPException
 
@@ -2160,6 +2242,7 @@ def agent_executor_router(
             material_scan_read_provider=material_scan_read_provider,
             clean_selection_page_provider=clean_selection_page_provider,
             clean_selection_read_provider=clean_selection_read_provider,
+            training_inputs_provider=training_inputs_provider,
         )
 
     def token(authorization: str | None) -> str:
@@ -2240,6 +2323,21 @@ def agent_executor_router(
             invoke(_execution_generation, payload.get("execution_generation")),
             str(payload.get("text") or ""),
         )
+
+    @router.post("/executions/{task_id}/training-inputs/manifest")
+    def training_inputs_manifest(node_id: str, task_id: str, payload: dict = Body(...),
+                                 authorization: str | None = Header(default=None)):
+        return invoke(service().training_inputs_manifest, node_id, token(authorization), task_id,
+                      str(payload.get("execution_lease_token") or ""),
+                      invoke(_execution_generation, payload.get("execution_generation")))
+
+    @router.post("/executions/{task_id}/training-inputs/read")
+    def training_source_read(node_id: str, task_id: str, payload: dict = Body(...),
+                             authorization: str | None = Header(default=None)):
+        return invoke(service().training_source_read, node_id, token(authorization), task_id,
+                      str(payload.get("execution_lease_token") or ""),
+                      invoke(_execution_generation, payload.get("execution_generation")),
+                      image_id=payload.get("image_id"))
 
     @router.post("/executions/{task_id}/material-scan/page")
     def material_scan_page(

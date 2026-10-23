@@ -615,3 +615,104 @@ def test_conversion_execution_evidence_is_bounded_and_never_claims_artifact_dtyp
     for bad in [{"artifact_precision":"fp16"},{"compiler_completed":"true"},{"compiler_precision":"x"*121},{"onnx_input_shape":[1,3,"guess",640]},{"onnx_input_shape":[1,3,0,640]}]:
         with pytest.raises(Exception):
             _sanitize_runtime_result_metadata({"execution_evidence":bad})
+
+
+def test_frozen_training_input_routes_fence_sources_and_close_stream(tmp_path, monkeypatch):
+    import asyncio
+    from io import BytesIO
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    import platform_core.agent_execution as module
+
+    repository, artifacts = runtime(tmp_path)
+    task = create_task(repository, artifacts)
+    _, token = create_node(repository)
+    _, other_token = create_node(repository, "other-node")
+    service = execution_service(repository, artifacts)
+    claimed = allocate_claim(service, task.task_id, "gpu-agent", token)
+    lease = start(service, task.task_id, "gpu-agent", token, claimed)["execution"]
+    payload = service._read_task_payload(repository.get(task.task_id))
+    payload["remote_execution"]["training"] = {"schema_version": 3}
+    artifacts.atomic_write_json(task.task_id, "request.json", payload)
+    calls = []
+    readers = []
+    class Source(BytesIO):
+        reads = 0
+        def read(self, size=-1):
+            self.reads += 1
+            return super().read(size)
+    def provider(task, payload, *, image_id=None):
+        calls.append(image_id)
+        if image_id is None:
+            return {"schema_version": 3, "images": [{"image_id": "image-a"}]}
+        reader = Source(b"abc")
+        readers.append(reader)
+        return {"reader": reader, "size_bytes": 3, "sha256": "a" * 64}
+    service.training_inputs_provider = provider
+    monkeypatch.setattr(module, "AgentExecutionService", lambda *a, **kw: service)
+    app = FastAPI()
+    app.include_router(module.agent_executor_router(lambda: repository, lambda: artifacts))
+    base = f"/api/v63/node-executor/gpu-agent/executions/{task.task_id}/training-inputs/"
+    headers = {"Authorization": f"Bearer {token}"}
+    body = {"execution_lease_token": lease["lease_token"],
+            "execution_generation": lease["generation"]}
+    with TestClient(app) as client:
+        for endpoint in ("manifest", "read"):
+            stale = {**body, "execution_generation": body["execution_generation"] + 1,
+                     "image_id": "image-a"}
+            assert client.post(base + endpoint, headers=headers, json=stale).status_code == 409
+            denied = client.post(base.replace("gpu-agent", "other-node") + endpoint,
+                                 headers={"Authorization": f"Bearer {other_token}"},
+                                 json={**body, "image_id": "image-a"})
+            assert denied.status_code >= 400
+        assert calls == []
+        assert client.post(base + "manifest", headers=headers, json=body).json()["images"]
+        response = client.post(base + "read", headers=headers, json={**body, "image_id": "image-a"})
+        assert response.content == b"abc"
+        assert response.headers["content-length"] == "3"
+        assert response.headers["cache-control"] == "private, no-store"
+        assert response.headers["x-content-type-options"] == "nosniff"
+        assert readers[-1].closed and readers[-1].reads == 2
+        payload["remote_execution"]["training"]["schema_version"] = "3"
+        artifacts.atomic_write_json(task.task_id, "request.json", payload)
+        assert client.post(base + "read", headers=headers,
+                           json={**body, "image_id": "image-a"}).status_code == 409
+    payload["remote_execution"]["training"]["schema_version"] = 3
+    artifacts.atomic_write_json(task.task_id, "request.json", payload)
+    from types import SimpleNamespace
+    real_owned = service._owned_execution
+    service._owned_execution = lambda *a: SimpleNamespace(kind=TaskKind.MATERIAL_IMPORT, task_id=task.task_id, payload_ref=task.payload_ref)
+    with pytest.raises(AgentExecutionError) as wrong_kind:
+        service.training_inputs_manifest("gpu-agent", token, task.task_id,
+                                        body["execution_lease_token"], body["execution_generation"])
+    assert wrong_kind.value.code == "REMOTE_TRAINING_INPUTS_UNAVAILABLE"
+    service._owned_execution = real_owned
+    response = service.training_source_read("gpu-agent", token, task.task_id,
+                    body["execution_lease_token"], body["execution_generation"], image_id="image-a")
+    extra_reader = Source(b"abcd")
+    service.training_inputs_provider = lambda *a, **kw: {
+        "reader": extra_reader, "size_bytes": 3, "sha256": "a" * 64,
+    }
+    oversized = service.training_source_read("gpu-agent", token, task.task_id,
+                    body["execution_lease_token"], body["execution_generation"], image_id="image-a")
+    async def reject_extra_bytes():
+        with pytest.raises(AgentExecutionError, match="source exceeds frozen size"):
+            await anext(oversized.body_iterator)
+    asyncio.run(reject_extra_bytes())
+    assert extra_reader.closed and extra_reader.reads == 2
+    empty_reader = Source(b"")
+    service.training_inputs_provider = lambda *a, **kw: {
+        "reader": empty_reader, "size_bytes": 0, "sha256": "a" * 64,
+    }
+    with pytest.raises(AgentExecutionError, match="invalid source contract"):
+        service.training_source_read("gpu-agent", token, task.task_id,
+                    body["execution_lease_token"], body["execution_generation"], image_id="image-a")
+    assert empty_reader.closed and empty_reader.reads == 0
+    def revoked(*args, **kwargs):
+        raise AgentExecutionError("STALE", "ownership revoked", 409)
+    service._owned_execution = revoked
+    async def consume():
+        with pytest.raises(AgentExecutionError):
+            await anext(response.body_iterator)
+    asyncio.run(consume())
+    assert readers[-1].closed and readers[-1].reads == 0

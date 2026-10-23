@@ -301,7 +301,7 @@ class FakeSources:
 
 
 @pytest.mark.parametrize("schema_version", [3, 4])
-def test_remote_training_prepare_handler_builds_bundle_and_activates_target(tmp_path, monkeypatch, schema_version):
+def test_remote_training_prepare_handler_freezes_indices_and_activates_target(tmp_path, monkeypatch, schema_version):
     data_dir = tmp_path / "data"
     project_id = _build_project(data_dir)
     repository, artifacts, target_id, prep_id = _runtime(data_dir, project_id)
@@ -371,6 +371,9 @@ def test_remote_training_prepare_handler_builds_bundle_and_activates_target(tmp_
     target = repository.get(target_id)
     assert prep is not None and prep.status is TaskStatus.SUCCEEDED, prep.error if prep else "missing prep"
     assert target is not None and target.status is TaskStatus.QUEUED
+    assert not artifacts.artifact_path(target_id, "work/bundle").exists()
+    assert not artifacts.artifact_path(target_id, "remote-training/training-bundle.zip").exists()
+    assert not any(key.startswith("training-bundles/") for key, _ in provider.upload_calls)
 
     payload = artifacts.read_json(target_id, "payload.json")
     assert payload["remote_input_state"] == "READY"
@@ -379,7 +382,7 @@ def test_remote_training_prepare_handler_builds_bundle_and_activates_target(tmp_
     assert remote["task_kind"] == "TRAINING"
     assert remote["transport"] == "object-storage-v1"
     training = remote["training"]
-    assert training["schema_version"] == 2
+    assert training["schema_version"] == 3
     assert training["framework"] == "ultralytics"
     assert training["snapshot_id"]
     assert len(training["dataset_revision_id"]) == 64
@@ -400,26 +403,43 @@ def test_remote_training_prepare_handler_builds_bundle_and_activates_target(tmp_
     assert training["params"]["time"] == 2.5
     assert training["dataset_bytes"] > 0
     assert training["decoded_dataset_bytes"] == 5 * (640 ** 2) * 3
-    bundle = training["bundle"]
-    assert bundle["storage_source_id"] == source.id
-    assert bundle["object_key"].startswith("training-bundles/")
-    assert len(bundle["sha256"]) == 64
-    assert bundle["size_bytes"] > 0
-    assert bundle["member_count"] > 0
-    assert bundle["verified_files"] == 5
-
-    assert (artifacts.artifact_path(target_id, "snapshot.json")).is_file()
-    assert (artifacts.artifact_path(target_id, "dataset-revision.json")).is_file()
-    manifest = artifacts.read_json(target_id, "work/bundle/manifest.json")
-    assert manifest["dataset_revision_id"] == training["dataset_revision_id"]
-    assert manifest["dataset_revision_ref"] == "dataset-revision.json"
-    assert (artifacts.artifact_path(target_id, "remote-training/training-bundle.zip")).is_file()
+    assert training["inputs"] == {"type": "frozen-manifest-v1", "input_freeze_id": payload["input_freeze_id"]}
+    assert "bundle" not in training
+    assert artifacts.artifact_path(target_id, "snapshot.json").is_file()
+    assert artifacts.artifact_path(target_id, "dataset-revision.json").is_file()
+    plan = artifacts.read_json(target_id, "input-plan/manifest.json")
+    assert plan["snapshot_id"] == training["snapshot_id"]
+    assert plan["materialization_state"] == "DEFERRED"
+    assert not artifacts.artifact_path(target_id, "remote-training/training-bundle.zip").exists()
     assert provider.upload_calls
     prep_result = artifacts.read_json(prep_id, prep.result_ref)
     assert prep_result["training_task_id"] == target_id
     assert prep_result["status"] == "ready"
     assert prep_result["dataset_revision_id"] == training["dataset_revision_id"]
     assert "url" not in str(prep_result).lower()
+
+    # The execution transport replays frozen GT and streams original bytes;
+    # it must not materialize/cache an entire controller-side dataset.
+    from types import SimpleNamespace
+    from platform_core.remote_training_inputs import training_inputs
+    transport = SimpleNamespace(data_dir=data_dir, task_artifacts=artifacts,
+        storage_credentials_factory=lambda: FakeCredentials())
+    frozen_gt = artifacts.read_json(target_id, "input-freeze.json")["images"][0]["boxes"]
+    AnnotationRepository(data_dir / "projects" / project_id).upsert("image-0", [], "unannotated")
+    manifest = training_inputs(transport, target, payload)
+    assert manifest["freeze"]["images"][0]["boxes"] == frozen_gt
+    assert manifest["freeze"]["source_input_freeze_id"] == payload["input_freeze_id"]
+    assert all("stored_path" not in row and "path" not in row for row in manifest["freeze"]["images"])
+    streamed = training_inputs(transport, target, payload, image_id="image-0")
+    try:
+        body = streamed["reader"].read()
+    finally:
+        streamed["reader"].close()
+    assert hashlib.sha256(body).hexdigest() == streamed["sha256"]
+    assert len(body) == streamed["size_bytes"]
+    with pytest.raises(ValueError, match="not in frozen"):
+        training_inputs(transport, target, payload, image_id="not-selected")
+    assert not artifacts.artifact_path(target_id, "work/bundle").exists()
 
 
 def test_remote_training_prepare_failure_blocks_target_instead_of_leaving_it_queued(tmp_path):
@@ -761,7 +781,7 @@ def test_recovery_validates_ready_artifacts_without_reuploading_or_reactivating(
     assert artifacts.read_json(prep_id, "result.json")["status"] == "ready"
 
 
-def test_recovery_rejects_corrupted_ready_bundle_instead_of_reusing_it(tmp_path):
+def test_recovery_rejects_corrupted_ready_freeze_instead_of_reusing_it(tmp_path):
     data_dir = tmp_path / "data"
     project_id = _build_project(data_dir)
     repository, artifacts, target_id, prep_id = _runtime(
@@ -787,9 +807,9 @@ def test_recovery_rejects_corrupted_ready_bundle_instead_of_reusing_it(tmp_path)
     assert first is not None
     context = WorkerContext(first.task, first, repository, artifacts, lease_seconds=30)
     assert handler.run(context)[0] is TaskStatus.SUCCEEDED
-    artifacts.artifact_path(
-        target_id, "remote-training/training-bundle.zip",
-    ).write_bytes(b"corrupted")
+    frozen = artifacts.read_json(target_id, "input-freeze.json")
+    frozen["images"][0]["boxes"][0]["x1"] = 0
+    artifacts.atomic_write_json(target_id, "input-freeze.json", frozen)
     assert repository.release_expired("2999-01-01T00:00:00+00:00") == 1
 
     Scheduler(
@@ -803,9 +823,9 @@ def test_recovery_rejects_corrupted_ready_bundle_instead_of_reusing_it(tmp_path)
     recovered = repository.get(prep_id)
     parent = repository.get(target_id)
     assert recovered is not None and recovered.status is TaskStatus.FAILED
-    assert "archive no longer matches durable evidence" in str(recovered.error)
+    assert "prepared training frozen input is invalid" in str(recovered.error)
     assert parent is not None and parent.status is TaskStatus.FAILED
-    assert "REMOTE_TRAINING_ARCHIVE_EVIDENCE_MISMATCH" in str(parent.error)
+    assert "TRAINING_PREPARED_OUTPUT_INVALID" in str(parent.error)
 
 
 def test_fenced_training_preparer_cannot_fail_queued_parent(tmp_path):

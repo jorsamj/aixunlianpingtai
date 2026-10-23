@@ -201,6 +201,36 @@ class NodeExecutorClient:
             )
         return body
 
+    def training_inputs_manifest(self, lease: RemoteExecutionLease) -> dict[str, Any]:
+        return self._post(
+            f"/executions/{quote(lease.task_id, safe='')}/training-inputs/manifest",
+            {"execution_lease_token": lease.lease_token, "execution_generation": lease.generation},
+        )
+
+    def open_training_source(self, lease: RemoteExecutionLease, image_id: str) -> requests.Response:
+        try:
+            response = self.session.post(
+                f"{self._prefix}/executions/{quote(lease.task_id, safe='')}/training-inputs/read",
+                headers={"Authorization": f"Bearer {self.token}"},
+                json={"execution_lease_token": lease.lease_token,
+                      "execution_generation": lease.generation, "image_id": image_id},
+                stream=True, allow_redirects=False, timeout=self.timeout,
+            )
+        except requests.RequestException as error:
+            raise NodeExecutorHTTPError("NODE_EXECUTOR_TRANSPORT_FAILED", str(error), retryable=True) from error
+        if not 200 <= response.status_code < 300:
+            try:
+                try:
+                    body = response.json()
+                except ValueError:
+                    body = {}
+                code, message = _json_error(body, f"control plane returned HTTP {response.status_code}")
+                raise NodeExecutorHTTPError(code, message, status_code=int(response.status_code),
+                                            retryable=response.status_code in {408, 425, 429} or response.status_code >= 500)
+            finally:
+                response.close()
+        return response
+
     def claim_assignment(self) -> dict[str, Any] | None:
         body = self._post("/assignments/claim")
         if not bool(body.get("claimed")):

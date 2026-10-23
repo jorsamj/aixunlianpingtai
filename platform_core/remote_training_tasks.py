@@ -960,6 +960,31 @@ class TrainingPrepareHandler:
                 schema,
                 supplement_candidate_set=payload.get("supplement_candidate_set"),
             )
+        if indices_only and not freeze_ref:
+            # Old unprepared requests also need durable GT, not a later reread
+            # from mutable AnnotationRepository when the execution is claimed.
+            with material_annotation_lifecycle_fence(project):
+                selection = resolve_training_selection(project, split_request)
+                contract = payload.get("label_contract")
+                projected = (project_training_rows(selection.effective_images, contract)
+                    if isinstance(contract, Mapping) and contract else None)
+                frozen = freeze_training_inputs(
+                    project, split_request, seed=seed,
+                    selection_resolution=selection, effective_images=projected,
+                    supplement_candidate_set=payload.get("supplement_candidate_set"),
+                    label_schema_override=_label_schema(project),
+                    label_contract=payload.get("label_contract"),
+                )
+                images, schema, split_manifest, snapshot = resolve_training_input_freeze(
+                    frozen, split_request, seed=seed,
+                    supplement_candidate_set=payload.get("supplement_candidate_set"),
+                )
+                context.artifacts.atomic_write_json(training_task.task_id, "input-freeze.json", frozen)
+                context.artifacts.atomic_write_json(training_task.task_id, training_task.payload_ref, {
+                    **payload, "input_freeze_ref": "input-freeze.json",
+                    "input_freeze_id": frozen["input_freeze_id"],
+                    "snapshot_id": frozen["snapshot_id"], "dataset_revision_id": frozen["dataset_revision_id"],
+                })
         if indices_only:
             # Preparation has its own lease, not ownership of the assigned training
             # device. Persist only input identity and budget metadata until the
@@ -1352,8 +1377,19 @@ class TrainingPrepareHandler:
             and str(revision.get("dataset_revision_id") or "") == revision_id
             and freeze_valid
         )
-        deferred = target_mode == "local" and prepared.get("materialization_state") == "DEFERRED"
+        deferred = prepared.get("materialization_state") == "DEFERRED"
         if deferred:
+            try:
+                request = SplitRequest(mode=SplitMode(str(payload.get("split_mode"))),
+                    train_image_ids=tuple(payload.get("train_image_ids") or ()),
+                    test_image_ids=tuple(payload.get("test_image_ids") or ()),
+                    experiment_percent=payload.get("experiment_percent"),
+                    validation_percent=float(payload.get("validation_percent") or 20))
+                resolve_training_input_freeze(frozen, request, seed=int(payload.get("seed") or 0),
+                    supplement_candidate_set=payload.get("supplement_candidate_set"))
+            except (ValueError, TypeError, KeyError) as error:
+                raise RemoteTrainingPreparationError("TRAINING_PREPARED_OUTPUT_INVALID",
+                    "prepared training frozen input is invalid", target_status=TaskStatus.FAILED) from error
             plan = context.artifacts.read_json(target.task_id, "input-plan/manifest.json", default={})
             valid_bundle = (
                 prepared.get("bundle_path") is None
@@ -1405,27 +1441,36 @@ class TrainingPrepareHandler:
 
         bundle_ref = training.get("bundle") if isinstance(training, Mapping) else None
         model_ref = training.get("model") if isinstance(training, Mapping) else None
-        if not isinstance(bundle_ref, Mapping) or not isinstance(model_ref, Mapping):
+        inputs = training.get("inputs") if isinstance(training, Mapping) else None
+        if deferred:
+            if (not isinstance(inputs, Mapping) or training.get("schema_version") != 3
+                    or inputs.get("input_freeze_id") != payload.get("input_freeze_id")
+                    or inputs.get("type") != "frozen-manifest-v1" or not freeze_ref):
+                raise RemoteTrainingPreparationError(
+                    "REMOTE_TRAINING_PREPARED_OUTPUT_INVALID", "frozen remote input evidence is incomplete",
+                    target_status=TaskStatus.FAILED,
+                )
+        elif not isinstance(bundle_ref, Mapping):
             raise RemoteTrainingPreparationError(
-                "REMOTE_TRAINING_PREPARED_OUTPUT_INVALID",
-                "remote training object evidence is incomplete",
+                "REMOTE_TRAINING_PREPARED_OUTPUT_INVALID", "remote training bundle evidence is incomplete",
                 target_status=TaskStatus.FAILED,
             )
-        archive = context.artifacts.artifact_path(
-            target.task_id, "remote-training/training-bundle.zip",
-        )
-        if (
-            not archive.is_file()
-            or int(archive.stat().st_size) != int(bundle_ref.get("size_bytes") or 0)
-            or _sha256(archive) != str(bundle_ref.get("sha256") or "").lower()
-        ):
+        if not isinstance(model_ref, Mapping):
             raise RemoteTrainingPreparationError(
-                "REMOTE_TRAINING_ARCHIVE_EVIDENCE_MISMATCH",
-                "local training bundle archive no longer matches durable evidence",
+                "REMOTE_TRAINING_PREPARED_OUTPUT_INVALID", "remote training model evidence is incomplete",
                 target_status=TaskStatus.FAILED,
             )
+        if not deferred:
+            archive = context.artifacts.artifact_path(target.task_id, "remote-training/training-bundle.zip")
+            if (not archive.is_file() or int(archive.stat().st_size) != int(bundle_ref.get("size_bytes") or 0)
+                    or _sha256(archive) != str(bundle_ref.get("sha256") or "").lower()):
+                raise RemoteTrainingPreparationError(
+                    "REMOTE_TRAINING_ARCHIVE_EVIDENCE_MISMATCH",
+                    "local training bundle archive no longer matches durable evidence",
+                    target_status=TaskStatus.FAILED,
+                )
         source, provider = self._storage(target.project_id)
-        for reference in (bundle_ref, model_ref):
+        for reference in ((model_ref,) if deferred else (bundle_ref, model_ref)):
             if str(reference.get("storage_source_id") or "") != str(source.id):
                 raise RemoteTrainingPreparationError(
                     "REMOTE_TRAINING_STORAGE_EVIDENCE_MISMATCH",
@@ -1441,7 +1486,7 @@ class TrainingPrepareHandler:
                     "REMOTE_TRAINING_OBJECT_EVIDENCE_MISMATCH",
                     "prepared remote object no longer matches size/SHA256 evidence",
                 )
-        result.update({"bundle": dict(bundle_ref), "model": dict(model_ref)})
+        result.update({"model": dict(model_ref), **({"inputs": dict(inputs)} if deferred else {"bundle": dict(bundle_ref)})})
         return result
 
     def _complete_ready_recovery(self, context, target, payload: Mapping[str, Any]):
@@ -1598,19 +1643,17 @@ class TrainingPrepareHandler:
             ):
                 return self._complete_ready_recovery(context, target, payload)
 
-            if target_mode == "local":
-                bundle, snapshot, split_manifest, images = self._prepare_bundle(
-                    context, target, payload, indices_only=True,
-                )
-            else:
-                bundle, snapshot, split_manifest, images = self._prepare_bundle(context, target, payload)
+            bundle, snapshot, split_manifest, images = self._prepare_bundle(
+                context, target, payload, indices_only=True,
+            )
+            payload = context.artifacts.read_json(training_task_id, target.payload_ref)
             prepared_input = {
                 "schema_version": 1,
                 "training_task_id": training_task_id,
                 "snapshot_id": str(snapshot.get("snapshot_id") or ""),
                 "dataset_revision_id": str(snapshot.get("dataset_revision_id") or ""),
-                "bundle_path": str(bundle) if target_mode != "local" else None,
-                "materialization_state": "DEFERRED" if target_mode == "local" else "READY",
+                "bundle_path": None,
+                "materialization_state": "DEFERRED",
                 "selected_image_count": len(images),
             }
             context.artifacts.atomic_write_json(
@@ -1647,21 +1690,7 @@ class TrainingPrepareHandler:
 
             source, provider = self._storage(target.project_id)
             self._target(context, training_task_id)
-            self._heartbeat(context, 72, "archiving_bundle", "归档 portable 训练数据")
-            archive = create_training_bundle_archive(
-                bundle,
-                context.artifacts.artifact_path(
-                    training_task_id,
-                    "remote-training/training-bundle.zip",
-                ),
-            )
-            self._heartbeat(context, 78, "uploading_bundle", "上传训练数据到对象存储")
-            bundle_ref = stage_training_bundle_object(
-                project_id=target.project_id,
-                archive=archive,
-                source_id=source.id,
-                provider=provider,
-            )
+            inputs_ref = {"type": "frozen-manifest-v1", "input_freeze_id": payload["input_freeze_id"]}
             self._heartbeat(context, 88, "preparing_base_model", "准备训练基础模型")
             model_ref = self._prepare_base_model(
                 provider=provider,
@@ -1728,7 +1757,7 @@ class TrainingPrepareHandler:
                 "task_kind": "TRAINING",
                 "transport": "object-storage-v1",
                 "training": {
-                    "schema_version": 2,
+                    "schema_version": 3,
                     "framework": "ultralytics",
                     "snapshot_id": str(snapshot.get("snapshot_id") or ""),
                     "dataset_revision_id": str(snapshot.get("dataset_revision_id") or ""),
@@ -1736,7 +1765,7 @@ class TrainingPrepareHandler:
                     "label_schema": frozen_label_schema,
                     "label_codes": frozen_label_codes,
                     "label_contract": frozen_label_contract,
-                    "bundle": bundle_ref,
+                    "inputs": inputs_ref,
                     "model": model_ref,
                     "result": {
                         "storage_source_id": str(source.id),
@@ -1773,7 +1802,7 @@ class TrainingPrepareHandler:
                 "status": "ready",
                 "snapshot_id": remote_execution["training"]["snapshot_id"],
                 "dataset_revision_id": remote_execution["training"]["dataset_revision_id"],
-                "bundle": bundle_ref,
+                "inputs": inputs_ref,
                 "model": model_ref,
             }
             context.artifacts.atomic_write_json(
@@ -1781,7 +1810,7 @@ class TrainingPrepareHandler:
                 "result.json",
                 result,
             )
-            self._heartbeat(context, 100, "ready", "远程训练输入已就绪")
+            self._heartbeat(context, 100, "ready", "远程冻结索引已就绪，等待执行 Agent 获取图片")
             return TaskStatus.SUCCEEDED, "result.json"
         except ExecutionFencedError:
             raise

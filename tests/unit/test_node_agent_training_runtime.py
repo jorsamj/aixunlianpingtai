@@ -1265,3 +1265,83 @@ def test_agent_training_log_tail_reader_is_bounded(tmp_path):
     assert tail.endswith(latest)
     assert early not in tail
 
+
+
+@pytest.mark.parametrize("bad_source", [None, "size", "sha"])
+def test_indexed_training_claim_materializes_frozen_gt_with_one_source_buffer(tmp_path, bad_source):
+    from dataclasses import replace
+    from PIL import Image
+    from platform_core.training_tasks import freeze_training_inputs
+    from platform_core.training_splits import SplitRequest, SplitMode
+    from platform_core.annotation_repository import AnnotationRepository
+    project = tmp_path / "frozen-project"
+    (project / "uploads").mkdir(parents=True)
+    (project / "annotations").mkdir()
+    (project / "meta.json").write_text(json.dumps({"id": "frozen-project", "labels": ["fire"],
+        "label_meta": [{"code": "fire", "class_id": 0}]}), encoding="utf-8")
+    rows, sources = [], {}
+    for index in range(5):
+        image_id = f"input-{index}"
+        image = project / "uploads" / (image_id + ".jpg")
+        Image.new("RGB", (64, 64), (index * 30, 10, 10)).save(image)
+        sources[image_id] = image.read_bytes()
+        rows.append({"id": image_id, "stored_name": image.name, "dataset_id": "pool", "group_id": image_id,
+            "width": 64, "height": 64, "size_bytes": image.stat().st_size,
+            "content_sha256": hashlib.sha256(sources[image_id]).hexdigest(), "annotated": True})
+        (project / "annotations" / (image_id + ".json")).write_text(json.dumps({"image_id": image_id,
+            "boxes": [{"label": "fire", "class_id": 0, "x1": 4, "y1": 4, "x2": 32, "y2": 32}]}), encoding="utf-8")
+    (project / "images.json").write_text(json.dumps(rows), encoding="utf-8")
+    frozen = freeze_training_inputs(project, SplitRequest(mode=SplitMode.INDEPENDENT_TEST_SET,
+        train_image_ids=tuple(row["id"] for row in rows[:4]), test_image_ids=(rows[4]["id"],),
+        validation_percent=25), seed=7)
+    # Subsequent formal GT changes must not affect this execution's labels.
+    AnnotationRepository(project).upsert("input-0", [], "unannotated")
+    current, _ = training_lease(tmp_path)
+    payload = dict(current.payload)
+    payload.pop("bundle")
+    payload.update(snapshot_id=frozen["snapshot_id"], dataset_revision_id=frozen["dataset_revision_id"],
+        counts={"train": 3, "validation": 1, "test": 1, "total": 5},
+        dataset_bytes=sum(len(value) for value in sources.values()),
+        inputs={"type": "frozen-manifest-v1", "input_freeze_id": frozen["input_freeze_id"]})
+    current = replace(current, payload=payload)
+    model_url = "https://storage.example.test/preprovisioned-base"
+    model_bytes = b"already-provisioned-model"
+    payload["model"] = {"type": "object", "download": {"method": "GET", "url": model_url,
+        "file_name": "base.pt", "size_bytes": len(model_bytes),
+        "sha256": hashlib.sha256(model_bytes).hexdigest()}}
+    transfer = FakeTransferSession({model_url: model_bytes})
+    client = FakeControlClient(transfer)
+    reads = []
+    import copy
+    from platform_core.training_tasks import _training_input_freeze_digest
+    transported = copy.deepcopy(frozen)
+    transported["source_input_freeze_id"] = frozen["input_freeze_id"]
+    transported["input_freeze_id"] = _training_input_freeze_digest(transported)
+    client.training_inputs_manifest = lambda lease: {"freeze": transported, "supplement_candidate_set": None}
+    runner, runtime_root, workdirs = build_runner(tmp_path, client, transfer)
+    def open_source(lease, image_id):
+        assert lease is current
+        workdir = workdirs.path_for(lease)
+        # Previous inputs have already entered their final dataset path before
+        # requesting the next source; never stage an entire second source set.
+        assert len(list((workdir / "input/bundle/dataset/images").rglob("*.jpg"))) == len(reads)
+        reads.append(image_id)
+        data = sources[image_id]
+        return FakeResponse(200, b"corrupt" if bad_source == "size" else b"0" * len(data) if bad_source == "sha" else data)
+    client.open_training_source = open_source
+    outcome = runner.run(current)
+    if bad_source:
+        assert outcome.status == "FAILED"
+        assert "size" in outcome.error or "sha256" in outcome.error
+        assert not (runtime_root / "worker-args.json").exists()
+        assert not client.model_prepare_calls
+    else:
+        assert outcome.status == "SUCCEEDED", outcome.error
+        assert set(reads) == set(sources)
+        assert [call["url"] for call in transfer.get_calls] == [model_url]
+        with zipfile.ZipFile(io.BytesIO(transfer.put_calls[-1]["body"])) as archive:
+            result = json.loads(archive.read("manifest.json"))
+            assert result["input_freeze_id"] == frozen["input_freeze_id"]
+            assert result["dataset_revision_id"] == frozen["dataset_revision_id"]
+            assert sum(len(rows) for rows in result["dataset_manifest"]["splits"].values()) == 5
+    assert not (workdirs.root / "executions" / current.task_id / str(current.generation)).exists()

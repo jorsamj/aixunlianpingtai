@@ -1,3 +1,27 @@
+## 2026-10-23｜第二阶段接续：先远程按需准备，再自动回收（进行中）
+
+本轮附件48129ab7需求正式接续，基线HEAD `5b79f35d81670fd3cb16346fe01b61eeb508b6ed`/VERSION42.24.377，fetch远端仍3cc331f2，无分叉。5944及前阶段所有提交和两份未提交模板测试保留，不扩大模板功能，不重审全仓、不重复建设已有API。
+
+|任务|优先级/状态|本轮计划与验收|
+|--|--|--|
+|S2-01 远程按需准备|P0/已完成待验收|Prepare仅索引；正式Agent执行lease之后获取冻结Manifest/逐图受控读取；原StorageManager.open_reader与原materializer复用；旧ZIP schema合同保留兼容；RED→GREEN验证排队无副本、冻结GT、SHA与隔离|
+|S2-02 自动安全回收|P0/未开始|原资格/隔离删除/回执接实际终态及重启恢复，无法证明进程死亡则等待，原图/共享cache/模型/Checkpoint不删除|
+|S2-03 详情人工释放与历史只读扫描|P1/未开始|复用原API/详情，真实占用/资格/原因/进度；历史仅dry-run不可执行生产删除|
+|S2-04 旧素材兼容检测及最小迁移|P1/未开始|原图不搬迁、image_id与GT版本不变，只修经证据确认的元数据，备份/CAS/批次幂等恢复|
+|S2-05 缩略图及受控原图物理回收|P2/未开始|在前述P0/P1后补真实缺口，区分逻辑字节与实际空间，OSS/NAS/GPU无法现场核验则NOT VERIFIED|
+
+关键设计取舍：原远程载荷resolver在正式execution lease建立前调用，禁止在那里获取图片。新输入协议使用schema3冻结索引描述；Agent取得真实owner后使用现有node-executor鉴权/代次栅栏读Manifest和源流，所有存储类型复用StorageManager驱动，不在控制端落整份原图缓存/ZIP。替代方案“选定Worker后控制端打包”仍提前复制且留第二份整集，拒绝；直接暴露任意绝对路径或下发存储凭据也不采用。旧schema1/2已排队ZIP保持严格身份/哈希验证兼容，不重写历史任务。元数据可传输，图片/YOLO目录只能在实际Agent执行工作目录物化；冻结GT不能被当前数据库内容替代。
+
+### S2-01 实施与证据（父提交5b79f35d，本阶段提交见Git历史）
+
+原Prepare统一indices_only；旧未冻结请求通过原GT生命周期锁/投影/冻结Owner补齐一次冻结，排队无完整Bundle或上传ZIP。新远程schema3仅冻结索引；正式execution代次/令牌/租约校验后才能读manifest和原图，逐块重查所有权并在最后一块前核EOF。使用StorageManager.stat/open_reader，Agent逐图核SHA/size并复用一个原始下载缓冲；原materializer延迟读取且仍隔离复制、归一化、生成YOLO标签及隐藏TestGT。模型须为预置可信object，不隐式联网下载母模型。旧schema1/2保留原ZIP校验兼容。
+
+结果归档携带完整物化manifest、冻结来源与dataset revision，以及报告实际错误图片（复用原最多200样本合同），控制端复核源SHA/大小、角色规范路径、冻结GT派生标签SHA与角色数量；保留evidence供原报告读取，避免依赖完整数据集目录。修复/遮挡后的像素哈希由受认证Worker证明，控制端未重下全部图片独立复算，此项限制必须保留。两项审查缺口（源大小仅检查正数、角色路径未绑定）已RED9→GREEN13修正，不放宽安全断言。
+
+实际测试分批执行，不能合并冒充一次全套结果：Prepare集成18通过1失败，失败源于旧测试仍要求排队ZIP；改为真实冻结GT篡改后定向1通过，恢复/取消相关4通过。原单元Agent+portable39通过；后续indexed成功/坏大小/同大小坏SHA定向3通过。resolver预领取不签数据集/拒绝非预置模型1通过。协议相关52通过1既有skip，新增EOF/归属合同1通过。结果manifest相关17通过，实际错误图片归档/篡改/路径/非Test样本6通过，最后证据路径/大小定向13通过。此前真实RED包括排队已复制、缺新合同、源身份不匹配及旧失效fixture；均有针对性修正，没有删除原测试。py_compile与diff检查通过；无需GPU，不执行全仓Python/Node/Chrome。
+
+实际修改集中remote_training_tasks、remote_training_inputs、training_tasks、agent_execution、node_agent_executor_runtime、node_agent_training_runtime、remote_execution_transport、remote_training_results、原recovery router/app接线及相应原测试/工作流。仅验证隔离本地存储和伪训练子进程；真实OSS/NAS、多机下载性能、大规模元数据响应/峰值磁盘未核验。manifest一次传输元数据，2项有界缓存不缓存图片。未推送、没有新SHA CI，不能宣称整体专项完成。下一阶段自动维护与Agent失败Checkpoint保护仍在实现，兼容迁移/P2未开始。生产部署、数据库迁移、真实对象删除、历史Bundle清理和GPU均未执行。
+
 ## 2026-10-23｜回收 API 与报告流式消费者保护（后端进行中）
 
 基础提交 `49898942` 保留，父提交 `2003311a`，未推送/未核验新 SHA CI。报告原 FileResponse 扩展为 task workspace 同锁流式读取：发送期间持锁，断连 finally 释放；已创建但尚未发送的响应若遇回收，改读经同一 SHA 校验的 evidence 字节。元数据读取遇目录隔离竞争也重查归档位置；EXIF 显示派生仍为既有内存响应，未改变评测像素或原图。定向真实 ASGI 文件响应验证发送时锁不能被回收竞争者获取，迟到响应返回相同实际字节，结束后锁释放。

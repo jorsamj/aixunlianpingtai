@@ -56,15 +56,20 @@ def _source(tmp_path: Path):
     return project, rows, snapshot
 
 
-def test_materialized_yaml_is_relative_verified_and_relocatable(tmp_path: Path):
+@pytest.mark.parametrize("defer_source_reads", [False, True])
+def test_materialized_yaml_is_relative_verified_and_relocatable(tmp_path: Path, defer_source_reads):
     project, rows, snapshot = _source(tmp_path)
     requested = []
+    for row in rows:
+        row["size_bytes"] = (project / "uploads" / row["stored_name"]).stat().st_size
 
     def materialize(row):
+        if defer_source_reads and requested:
+            assert len(list((tmp_path / "task/bundle/dataset/images").rglob("*.jpg"))) == len(requested)
         requested.append(row["id"])
         return project / "uploads" / row["stored_name"]
 
-    bundle = materialize_portable_dataset(tmp_path / "task", snapshot, rows, materialize)
+    bundle = materialize_portable_dataset(tmp_path / "task", snapshot, rows, materialize, defer_source_reads=defer_source_reads)
     assert requested == ["image-0", "image-1", "image-2", "image-3"]
     data = yaml.safe_load((bundle / "dataset" / "data.yaml").read_text(encoding="utf-8"))
     assert data["path"] == "."

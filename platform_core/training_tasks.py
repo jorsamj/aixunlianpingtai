@@ -602,6 +602,7 @@ def materialize_portable_dataset(
     materialize: Callable[[Mapping[str, Any]], str | Path],
     *,
     safety_reserve_bytes: int | None = None,
+    defer_source_reads: bool = False,
     progress: Callable[[int, int, Mapping[str, Any]], None] | None = None,
 ) -> Path:
     work, root = _prepare_bundle_root(task_root)
@@ -635,9 +636,16 @@ def materialize_portable_dataset(
             expected_hash = str(locked.get("content_sha256") or "")
             if not expected_hash:
                 raise ValueError(f"snapshot image has no content SHA256: {image_id}")
-            source_path = Path(materialize(row)).resolve()
-            if not source_path.is_file() or source_path.stat().st_size <= 0:
-                raise FileNotFoundError(f"training image does not exist: {source_path.name}")
+            if defer_source_reads:
+                source_path = None
+                size_bytes = int(row.get("size_bytes") or 0)
+                if size_bytes <= 0:
+                    raise ValueError(f"frozen image size is unavailable: {image_id}")
+            else:
+                source_path = Path(materialize(row)).resolve()
+                if not source_path.is_file() or source_path.stat().st_size <= 0:
+                    raise FileNotFoundError(f"training image does not exist: {source_path.name}")
+                size_bytes = source_path.stat().st_size
             planned.append(
                 {
                     "role": role,
@@ -646,7 +654,7 @@ def materialize_portable_dataset(
                     "stored_name": stored_name,
                     "expected_hash": expected_hash,
                     "source_path": source_path,
-                    "size_bytes": source_path.stat().st_size,
+                    "size_bytes": size_bytes,
                 }
             )
 
@@ -665,8 +673,10 @@ def materialize_portable_dataset(
         row = item["row"]
         stored_name = str(item["stored_name"])
         expected_hash = str(item["expected_hash"])
-        source_path = Path(item["source_path"])
         size_bytes = int(item["size_bytes"])
+        source_path = (Path(materialize(row)).resolve() if defer_source_reads else Path(item["source_path"]))
+        if defer_source_reads and (not source_path.is_file() or source_path.stat().st_size != size_bytes):
+            raise ValueError(f"frozen image size changed: {image_id}")
         image_ref = f"dataset/images/{role}/{stored_name}"
         label_ref = (
             f"evaluation/ground_truth/test/{Path(stored_name).stem}.txt"
@@ -1218,6 +1228,7 @@ _TRAINING_INPUT_FREEZE_FIELDS = (
     "storage_source_id",
     "storage_type",
     "object_key",
+    "etag",
     "source_available",
     "annotation_needs_review",
     "annotation_review_reason",

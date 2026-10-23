@@ -24061,6 +24061,10 @@ def _confirm_agent_training_model_uploads(task, payload, *, execution_generation
     )
 
 
+def _agent_training_inputs(task, payload, *, image_id=None):
+    return _remote_execution_transport_service().training_inputs(task, payload, image_id=image_id)
+
+
 def _agent_material_scan_page(task, payload, *, cursor=None, limit=100):
     return _remote_execution_transport_service().material_scan_page(
         task,
@@ -24148,4 +24152,5 @@ app.include_router(training_recovery_router(
     agent_material_scan_read_provider=_agent_material_scan_read,
     agent_clean_selection_page_provider=_agent_clean_selection_page,
     agent_clean_selection_read_provider=_agent_clean_selection_read,
+    agent_training_inputs_provider=_agent_training_inputs,
 ))

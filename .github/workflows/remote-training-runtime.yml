@@ -30,6 +30,7 @@ on:
       - 'tests/unit/test_training_duplicate_conflicts.py'
       - 'node_agent.py'
       - 'platform_core/remote_training_tasks.py'
+      - 'platform_core/remote_training_inputs.py'
       - 'platform_core/training_tasks.py'
       - 'platform_core/algorithms.py'
       - 'platform_core/algorithm_sql_store.py'
@@ -105,6 +106,7 @@ on:
       - 'tests/unit/test_training_workspace_lifecycle.py'
       - 'node_agent.py'
       - 'platform_core/remote_training_tasks.py'
+      - 'platform_core/remote_training_inputs.py'
       - 'platform_core/training_tasks.py'
       - 'platform_core/algorithms.py'
       - 'platform_core/algorithm_sql_store.py'
@@ -179,6 +181,7 @@ jobs:
           platform_core/remote_training_transport.py
           platform_core/remote_training_results.py
           platform_core/remote_training_tasks.py
+          platform_core/remote_training_inputs.py
           platform_core/training_tasks.py
           platform_core/algorithms.py
           platform_core/algorithm_sql_store.py

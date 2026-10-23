@@ -403,10 +403,12 @@ class AgentTrainingRunner:
         contract: Mapping[str, Any],
         destination: Path,
         monitor: ExecutionLeaseMonitor,
+        *, source_response_factory=None,
     ) -> Path:
-        if str(contract.get("method") or "GET").upper() != "GET":
+        if source_response_factory is None and str(contract.get("method") or "GET").upper() != "GET":
             raise AgentTrainingRuntimeError("portable download method must be GET")
-        url = _absolute_http_url(contract.get("url"), "download.url")
+        url = (_absolute_http_url(contract.get("url"), "download.url")
+            if source_response_factory is None else None)
         headers = contract.get("headers")
         if headers is None:
             headers = {}
@@ -417,13 +419,13 @@ class AgentTrainingRunner:
         temporary = destination.with_name(f".{destination.name}.download")
         temporary.unlink(missing_ok=True)
         try:
-            response = self.transfer_session.get(
+            response = (source_response_factory() if source_response_factory is not None else self.transfer_session.get(
                 url,
                 headers={str(key): str(value) for key, value in headers.items()},
                 stream=True,
                 timeout=self.transfer_timeout,
                 allow_redirects=False,
-            )
+            ))
         except requests.RequestException as error:
             raise AgentTrainingRuntimeError(
                 f"portable download failed: {type(error).__name__}: {error}"
@@ -465,6 +467,46 @@ class AgentTrainingRunner:
                 response.close()
             except Exception:
                 pass
+
+    def _materialize_indexed_inputs(self, lease, workdir, monitor):
+        from .training_tasks import materialize_portable_dataset, resolve_remote_training_bundle, resolve_training_input_freeze
+        from .training_splits import SplitRequest, SplitMode
+        self._assert_active(monitor)
+        body = self.client.training_inputs_manifest(lease)
+        self._assert_active(monitor)
+        frozen = body.get("freeze")
+        inputs = lease.payload["inputs"]
+        if (not isinstance(frozen, Mapping) or inputs.get("type") != "frozen-manifest-v1"
+                or frozen.get("source_input_freeze_id") != inputs.get("input_freeze_id")):
+            raise AgentTrainingRuntimeError("frozen input origin identity changed")
+        split = frozen.get("split") or {}
+        request = SplitRequest(mode=SplitMode(split["mode"]),
+            train_image_ids=tuple(split["train_image_ids"]), test_image_ids=tuple(split["test_image_ids"]),
+            experiment_percent=split.get("experiment_percent"), validation_percent=split["validation_percent"])
+        rows, _schema, _manifest, snapshot = resolve_training_input_freeze(
+            frozen, request, seed=split["seed"], supplement_candidate_set=body.get("supplement_candidate_set"),
+        )
+        if (snapshot["snapshot_id"] != lease.payload["snapshot_id"]
+                or snapshot["dataset_revision_id"] != lease.payload["dataset_revision_id"]):
+            raise AgentTrainingRuntimeError("frozen dataset identity changed")
+        if (lease.payload.get("counts") != snapshot.get("counts")
+                or int(lease.payload.get("dataset_bytes") or 0) != sum(int(row["size_bytes"]) for row in rows)):
+            raise AgentTrainingRuntimeError("frozen dataset budget/counts changed")
+        # One bounded download buffer, not a complete second source dataset.
+        buffer = workdir / "input" / "source-image"
+        def materialize(row):
+            self._assert_active(monitor)
+            return self._download({"size_bytes": row["size_bytes"], "sha256": row["content_sha256"]},
+                buffer, monitor, source_response_factory=lambda: self.client.open_training_source(lease, row["id"]))
+        def progress(done, total, _item):
+            self._heartbeat(monitor, progress=2 + 9 * done / max(1, total),
+                stage="REMOTE_TRAINING_PREPARING_INPUTS", current_item=f"已校验训练素材 {done}/{total}")
+        try:
+            bundle = materialize_portable_dataset(workdir / "input", snapshot, rows,
+                materialize, defer_source_reads=True, progress=progress)
+            return resolve_remote_training_bundle(bundle / "manifest.json")
+        finally:
+            buffer.unlink(missing_ok=True)
 
     def _model_argument(
         self,
@@ -1168,6 +1210,9 @@ class AgentTrainingRunner:
             )
         dataset_revision_id = str(payload.get("dataset_revision_id") or "").strip()
 
+        if isinstance(payload.get("inputs"), Mapping) and (payload.get("model") or {}).get("type") != "object":
+            raise AgentTrainingRuntimeError("indexed training requires a verified preprovisioned model object")
+
         workdir = self.workdirs.prepare(lease)
         monitor = ExecutionLeaseMonitor(
             self.client,
@@ -1183,37 +1228,41 @@ class AgentTrainingRunner:
                 progress=2,
                 stage="REMOTE_TRAINING_DOWNLOADING_BUNDLE",
             )
-            bundle = payload.get("bundle")
-            if (
-                not isinstance(bundle, Mapping)
-                or str(bundle.get("type") or "") != "object"
-                or not isinstance(bundle.get("download"), Mapping)
-            ):
-                raise AgentTrainingRuntimeError(
-                    "portable training bundle download is missing"
-                )
-            bundle_download = bundle["download"]
-            archive = self._download(
-                bundle_download,
-                workdir / "input" / "training-bundle.zip",
-                monitor,
-            )
-
-            self._heartbeat(
-                monitor,
-                progress=7,
-                stage="REMOTE_TRAINING_VERIFYING_BUNDLE",
-            )
-            try:
-                verified_bundle = extract_training_bundle_archive(
-                    archive,
-                    workdir / "input" / "bundle",
+            indexed_inputs = isinstance(payload.get("inputs"), Mapping)
+            if indexed_inputs:
+                verified_bundle = self._materialize_indexed_inputs(lease, workdir, monitor)
+            else:
+                bundle = payload.get("bundle")
+                if (
+                    not isinstance(bundle, Mapping)
+                    or str(bundle.get("type") or "") != "object"
+                    or not isinstance(bundle.get("download"), Mapping)
+                ):
+                    raise AgentTrainingRuntimeError(
+                        "portable training bundle download is missing"
+                    )
+                bundle_download = bundle["download"]
+                archive = self._download(
                     bundle_download,
+                    workdir / "input" / "training-bundle.zip",
+                    monitor,
                 )
-            except RemoteTrainingTransportError as error:
-                raise AgentTrainingRuntimeError(
-                    f"{error.code}: {error}"
-                ) from error
+
+                self._heartbeat(
+                    monitor,
+                    progress=7,
+                    stage="REMOTE_TRAINING_VERIFYING_BUNDLE",
+                )
+                try:
+                    verified_bundle = extract_training_bundle_archive(
+                        archive,
+                        workdir / "input" / "bundle",
+                        bundle_download,
+                    )
+                except RemoteTrainingTransportError as error:
+                    raise AgentTrainingRuntimeError(
+                        f"{error.code}: {error}"
+                    ) from error
             if verified_bundle.snapshot_id != snapshot_id:
                 raise AgentTrainingRuntimeError(
                     "portable training bundle snapshot changed"
@@ -1469,6 +1518,9 @@ class AgentTrainingRunner:
                 snapshot_id=snapshot_id,
                 destination=workdir / "output" / "training-result.zip",
                 include_model_bytes=False,
+                **({"dataset_manifest": _read_json(verified_bundle.root / "manifest.json", {}),
+                    "input_freeze_id": payload["inputs"]["input_freeze_id"],
+                    "dataset_root": verified_bundle.root} if indexed_inputs else {}),
             )
             model_evidence: list[dict[str, Any]] = []
             local_model_by_role: dict[str, Path] = {}

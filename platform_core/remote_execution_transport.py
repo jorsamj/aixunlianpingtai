@@ -2128,7 +2128,7 @@ class RemoteExecutionTransportService:
             )
         training_schema = int(training.get("schema_version") or 0)
         if (
-            training_schema not in {1, 2}
+            training_schema not in {1, 2, 3}
             or str(training.get("framework") or "") != "ultralytics"
             or not str(training.get("snapshot_id") or "").strip()
             or (
@@ -2178,30 +2178,32 @@ class RemoteExecutionTransportService:
         bundle = training.get("bundle")
         model_ref = training.get("model")
         result_ref = self._training_result_ref(training)
-        if not isinstance(bundle, Mapping) or not isinstance(model_ref, Mapping):
+        indexed = int(training.get("schema_version") or 0) == 3
+        inputs = training.get("inputs")
+        if not isinstance(model_ref, Mapping) or (not indexed and not isinstance(bundle, Mapping)):
             raise RemoteExecutionTransportError(
-                "REMOTE_EXECUTION_CONTRACT_INVALID",
-                "portable remote training bundle/model references are incomplete",
-                422,
+                "REMOTE_EXECUTION_CONTRACT_INVALID", "portable remote training input/model references are incomplete", 422,
             )
-        bundle_download = self._download_contract(
-            str(task.project_id),
-            bundle,
-            require_server_sha256=True,
-        )
-        bundle_download.update({
-            "uncompressed_size_bytes": _positive_int(
-                bundle.get("uncompressed_size_bytes"),
-                "training.bundle.uncompressed_size_bytes",
-            ),
-            "member_count": _positive_int(
-                bundle.get("member_count"),
-                "training.bundle.member_count",
-            ),
-            "snapshot_id": str(training.get("snapshot_id") or ""),
-        })
+        if indexed:
+            if (not isinstance(inputs, Mapping) or inputs.get("type") != "frozen-manifest-v1"
+                    or inputs.get("input_freeze_id") != payload.get("input_freeze_id")):
+                raise RemoteExecutionTransportError(
+                    "REMOTE_EXECUTION_CONTRACT_INVALID", "remote frozen training input identity mismatch", 422,
+                )
+            _normalized_sha256(inputs.get("input_freeze_id"), "training.inputs.input_freeze_id")
+            bundle_download = None
+        else:
+            bundle_download = self._download_contract(str(task.project_id), bundle, require_server_sha256=True)
+            bundle_download.update({
+                "uncompressed_size_bytes": _positive_int(bundle.get("uncompressed_size_bytes"), "training.bundle.uncompressed_size_bytes"),
+                "member_count": _positive_int(bundle.get("member_count"), "training.bundle.member_count"),
+                "snapshot_id": str(training.get("snapshot_id") or ""),
+            })
 
         model_type = str(model_ref.get("type") or "").strip()
+        if indexed and model_type != "object":
+            raise RemoteExecutionTransportError("REMOTE_TRAINING_BASE_MODEL_NOT_PREPARED",
+                "indexed training requires a verified preprovisioned model object", 409)
         if model_type == "official":
             reference = str(model_ref.get("reference") or "").strip()
             canonical = next(
@@ -2281,7 +2283,7 @@ class RemoteExecutionTransportService:
             if value is None or isinstance(value, (str, int, float, bool))
         }
         dataset_bytes = _positive_int(
-            training.get("dataset_bytes") or bundle.get("uncompressed_size_bytes"),
+            training.get("dataset_bytes") or (bundle or {}).get("uncompressed_size_bytes"),
             "training.dataset_bytes",
         )
         decoded_dataset_bytes = training.get("decoded_dataset_bytes")
@@ -2304,10 +2306,9 @@ class RemoteExecutionTransportService:
             "concurrent_reservations": concurrent_reservations,
             "dataset_bytes": dataset_bytes,
             "decoded_dataset_bytes": decoded_dataset_bytes,
-            "bundle": {
-                "type": "object",
-                "download": bundle_download,
-            },
+            **({"inputs": dict(inputs)} if indexed else {
+                "bundle": {"type": "object", "download": bundle_download},
+            }),
             "model": model,
             "params": safe_params,
             "counts": dict(training.get("counts") or {}) if isinstance(training.get("counts"), Mapping) else {},
@@ -2322,6 +2323,10 @@ class RemoteExecutionTransportService:
                 "upload_protocol": "prepare-after-local-hash-v1",
             },
         }
+
+    def training_inputs(self, task, payload, *, image_id=None):
+        from .remote_training_inputs import training_inputs
+        return training_inputs(self, task, payload, image_id=image_id)
 
     def _prepare_training_result_upload(
         self,
@@ -2747,6 +2752,10 @@ class RemoteExecutionTransportService:
                 "training_outcome": str(manifest.get("training_outcome") or ""),
                 "completion": dict(manifest.get("completion") or {}) if isinstance(manifest.get("completion"), Mapping) else {},
                 "training_report": dict(manifest.get("training_report") or {}) if isinstance(manifest.get("training_report"), Mapping) else {},
+                "dataset_manifest": manifest.get("dataset_manifest"),
+                "input_freeze_id": manifest.get("input_freeze_id"),
+                "origin_dataset_revision_id": manifest.get("dataset_revision_id"),
+                "diagnostic_images": manifest.get("diagnostic_images") or [],
                 "verified_models": [dict(item) for item in verified.models],
                 "output_storage": storage_ref,
                 "runtime_log_ref": str(getattr(task, "log_ref", "") or ""),
@@ -2961,6 +2970,77 @@ class RemoteExecutionTransportService:
             })
         return {"result_ref": "result.json", "result": result}
 
+    def _retain_training_diagnostic_images(self, task, result, dataset_manifest, extracted):
+        import os
+        import tempfile
+        from .remote_training_results import _diagnostic_image_contract
+
+        try:
+            images = _diagnostic_image_contract(result.get("training_report") or {}, dataset_manifest)
+            if result.get("diagnostic_images", []) != images:
+                raise ValueError("diagnostic image declarations do not match frozen test samples")
+            for item in images:
+                source = (extracted / item["ref"]).resolve()
+                if (not source.is_relative_to(extracted.resolve()) or not source.is_file()
+                        or source.stat().st_size != item["size_bytes"] or _sha256(source) != item["sha256"]):
+                    raise ValueError("diagnostic image staging evidence changed")
+                destination = self.task_artifacts.artifact_path(str(task.task_id), item["ref"])
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                descriptor, name = tempfile.mkstemp(dir=destination.parent, prefix=".diagnostic-", suffix=".tmp")
+                temporary = Path(name)
+                try:
+                    with os.fdopen(descriptor, "wb") as output, source.open("rb") as input_stream:
+                        shutil.copyfileobj(input_stream, output, length=1024 * 1024)
+                        output.flush()
+                        os.fsync(output.fileno())
+                    if temporary.stat().st_size != item["size_bytes"] or _sha256(temporary) != item["sha256"]:
+                        raise ValueError("diagnostic image copy evidence changed")
+                    os.replace(temporary, destination)
+                finally:
+                    temporary.unlink(missing_ok=True)
+        except (OSError, ValueError, TypeError, KeyError, RemoteTrainingResultError) as error:
+            raise RemoteExecutionTransportError("REMOTE_TRAINING_DIAGNOSTIC_INVALID", str(error), 409) from error
+
+    def _training_dataset_result_evidence(self, task, payload, training, result):
+        from .remote_training_results import verify_dataset_manifest_evidence
+        from .training_tasks import resolve_training_input_freeze
+        from .training_splits import SplitMode, SplitRequest
+
+        try:
+            inputs = training.get("inputs") or {}
+            freeze_id = str(inputs.get("input_freeze_id") or "")
+            if not freeze_id or result.get("input_freeze_id") != freeze_id:
+                raise ValueError("training result origin input freeze mismatch")
+            if self.task_artifacts is None:
+                raise ValueError("training result frozen artifacts are missing")
+            frozen = self.task_artifacts.read_json(
+                str(task.task_id), str(payload.get("input_freeze_ref") or "input-freeze.json"), default={},
+            )
+            if (not isinstance(frozen, Mapping) or frozen.get("input_freeze_id") != freeze_id
+                    or payload.get("input_freeze_id") != freeze_id):
+                raise ValueError("training result durable input freeze mismatch")
+            request = SplitRequest(
+                mode=SplitMode(str(payload.get("split_mode"))),
+                train_image_ids=tuple(payload.get("train_image_ids") or ()),
+                test_image_ids=tuple(payload.get("test_image_ids") or ()),
+                experiment_percent=payload.get("experiment_percent"),
+                validation_percent=float(payload.get("validation_percent") or 20),
+            )
+            images, _schema, _split, snapshot = resolve_training_input_freeze(
+                frozen, request, seed=int(payload.get("seed") or 0),
+                supplement_candidate_set=payload.get("supplement_candidate_set"),
+            )
+            if (snapshot.get("snapshot_id") != training.get("snapshot_id")
+                    or snapshot.get("dataset_revision_id") != training.get("dataset_revision_id")
+                    or result.get("origin_dataset_revision_id") != training.get("dataset_revision_id")):
+                raise ValueError("training result frozen snapshot/revision mismatch")
+            manifest = verify_dataset_manifest_evidence(result.get("dataset_manifest"), snapshot, images)
+            return snapshot, manifest
+        except (ValueError, TypeError, KeyError, OverflowError) as error:
+            raise RemoteExecutionTransportError(
+                "REMOTE_TRAINING_DATASET_EVIDENCE_INVALID", str(error), 409,
+            ) from error
+
     def _commit_training_result(
         self,
         task,
@@ -2980,6 +3060,12 @@ class RemoteExecutionTransportService:
                 "verified training result metadata is missing",
                 500,
             )
+        schema3_snapshot = None
+        schema3_manifest = None
+        if int(training.get("schema_version") or 0) >= 3:
+            schema3_snapshot, schema3_manifest = self._training_dataset_result_evidence(
+                task, payload, training, result,
+            )
         stage = self._training_result_stage_root(str(task.task_id), generation)
         extracted = stage / "verified"
         marker = stage / "verified.json"
@@ -2989,6 +3075,8 @@ class RemoteExecutionTransportService:
                 "verified training result staging is missing before commit",
                 409,
             )
+        if schema3_manifest is not None:
+            self._retain_training_diagnostic_images(task, result, schema3_manifest, extracted)
 
         project = self.project_dir(str(task.project_id)).resolve()
         models_root = (project / "models").resolve()
@@ -3268,6 +3356,12 @@ class RemoteExecutionTransportService:
             )
             snapshot_truth = snapshot_value if isinstance(snapshot_value, dict) else {}
             dataset_manifest = manifest_value if isinstance(manifest_value, dict) else {}
+        if schema3_manifest is not None:
+            snapshot_truth = schema3_snapshot
+            dataset_manifest = schema3_manifest
+            self.task_artifacts.atomic_write_json(
+                str(task.task_id), "evidence/bundle/manifest.json", dataset_manifest,
+            )
         benchmark_scope = build_evaluation_benchmark_scope(
             snapshot_truth or None,
             dataset_manifest=dataset_manifest or None,

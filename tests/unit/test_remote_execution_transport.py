@@ -1165,6 +1165,39 @@ def _remote_training_fixture(bundle_bytes=b"portable-bundle", *, model=None):
     return task, payload, bundle_bytes, bundle_sha
 
 
+def test_schema3_result_rejects_wrong_origin_freeze_before_commit(tmp_path):
+    transport = service(tmp_path, FakeProvider())
+    task, payload, _, _ = _remote_training_fixture()
+    training = {"schema_version": 3, "inputs": {"input_freeze_id": "a" * 64}}
+    with pytest.raises(RemoteExecutionTransportError, match="freeze"):
+        transport._training_dataset_result_evidence(task, payload, training,
+                                                   {"input_freeze_id": "b" * 64})
+
+
+def test_schema3_diagnostic_image_is_retained_in_task_evidence(tmp_path):
+    artifacts = ArtifactStore(tmp_path / "artifacts")
+    transport = service(tmp_path, FakeProvider(), task_artifacts=artifacts)
+    task, _payload, _, _ = _remote_training_fixture()
+    ref = "dataset/images/test/test-one.jpg"
+    data = b"actual evaluated pixels"
+    digest = hashlib.sha256(data).hexdigest()
+    stage = tmp_path / "verified"
+    source = stage / "evidence/bundle" / ref
+    source.parent.mkdir(parents=True)
+    source.write_bytes(data)
+    manifest = {"splits": {"test": [{"image_id": "test-one", "image_ref": ref,
+        "content_sha256": digest, "size_bytes": len(data)}]}}
+    result = {"training_report": {"test_result": {"error_samples": [{
+        "image": "test-one.jpg", "image_id": "test-one"}]}}, "diagnostic_images": [{
+        "image_id": "test-one", "image_ref": ref, "ref": "evidence/bundle/" + ref,
+        "sha256": digest, "size_bytes": len(data)}]}
+    transport._retain_training_diagnostic_images(task, result, manifest, stage)
+    assert artifacts.artifact_path(task.task_id, "evidence/bundle/" + ref).read_bytes() == data
+    source.write_bytes(b"tampered")
+    with pytest.raises(RemoteExecutionTransportError, match="diagnostic"):
+        transport._retain_training_diagnostic_images(task, result, manifest, stage)
+
+
 def test_remote_training_execution_payload_resolves_signed_bundle_and_assignment_device(tmp_path):
     provider = FakeProvider()
     transport = service(tmp_path, provider)
@@ -1205,6 +1238,32 @@ def test_remote_training_execution_payload_resolves_signed_bundle_and_assignment
     assert "signed.example.test" in resolved["bundle"]["download"]["url"]
     assert "url" not in str(payload)
 
+
+
+def test_indexed_training_payload_does_not_sign_or_stage_dataset_before_execution(tmp_path):
+    provider = FakeProvider()
+    transport = service(tmp_path, provider)
+    task, payload, _data, _digest = _remote_training_fixture()
+    training = payload["remote_execution"]["training"]
+    training.update(schema_version=3, inputs={"type": "frozen-manifest-v1", "input_freeze_id": "a" * 64})
+    training.pop("bundle")
+    payload["input_freeze_id"] = "a" * 64
+    model = b"preprovisioned-model"
+    digest = hashlib.sha256(model).hexdigest()
+    provider.objects["models/base.pt"] = {"data": model, "sha256": digest, "content_type": "application/octet-stream"}
+    training["model"] = {"type": "object", "storage_source_id": "remote-models", "object_key": "models/base.pt",
+                         "file_name": "base.pt", "size_bytes": len(model), "sha256": digest}
+    resolved = transport.resolve_execution_payload(task, payload,
+        {"resolved_execution_config": {"selected_device": "cuda:1"}})
+    assert resolved["inputs"] == training["inputs"]
+    assert "bundle" not in resolved
+    assert [key for key, _ in provider.download_signatures] == ["models/base.pt"]
+    assert not provider.uploads
+    training["model"] = {"type": "official", "reference": "yolo11n.pt"}
+    with pytest.raises(RemoteExecutionTransportError) as captured:
+        transport.resolve_execution_payload(task, payload,
+            {"resolved_execution_config": {"selected_device": "cuda:1"}})
+    assert captured.value.code == "REMOTE_TRAINING_BASE_MODEL_NOT_PREPARED"
 
 def test_remote_training_bundle_requires_server_visible_sha_before_signing(tmp_path):
     provider = FakeProvider()
