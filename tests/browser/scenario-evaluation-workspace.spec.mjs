@@ -1,5 +1,26 @@
 import {test,expect} from '@playwright/test';
 
+test('P2 review and reviewed-candidate handoff retain frozen Test and open original training without executing it',async({page,request},testInfo)=>{
+  const c=await fixture(page,request),posts=[];
+  const version={id:'v2',version_name:'v2',framework:'ultralytics',trainable:true,training_status:'SUCCEEDED',artifact_verified:true,stored_path:'/controlled/v2/best.pt',evaluation:c.evaluation,
+    iteration_decision:{decision:'needs_data',decision_id:sha('8'),evaluation_id:c.evaluation.evaluation_id,automatic_execution:false,requires_confirmation:true,weak_labels:['object']}};
+  await page.route(`**/api/v12/projects/${c.project.id}/algorithms/${c.algorithm.id}`,route=>json(route,{algorithm:{...c.algorithm,current_version_id:'v2',versions:[version]}}));
+  await page.route('**/evaluation/report',route=>json(route,{algorithm:{id:c.algorithm.id,current_version_id:'v2',versions:[version]}}));
+  await page.route('**/evaluation/trust?**',route=>json(route,{project_id:c.project.id,algorithm_id:c.algorithm.id,version_id:'v2',analysis:{evaluation_id:c.evaluation.evaluation_id,checks:[],coverage:[]}}));
+  await page.route('**/evaluation/samples?**',route=>json(route,{evaluation_id:c.evaluation.evaluation_id,items:c.evaluation.error_samples,total:1,cohort_complete:false}));
+  await page.route('**/online-feedback?limit=100',route=>json(route,{items:[]}));
+  await page.route('**/evaluation/review',route=>{posts.push(route.request().postDataJSON());return json(route,{feedback:{id:'controlled-review',status:'confirmed',result:{formal_gt_changed:false}},frozen_test_protected:true});});
+  await page.route('**/iteration-actions/confirm',route=>{posts.push(route.request().postDataJSON());version.confirmed_iteration_action={status:'confirmed',action:'supplement_data',action_id:sha('7'),automatic_execution:false,source:{algorithm_id:c.algorithm.id,version_id:'v2'}};return json(route,{action:version.confirmed_iteration_action});});
+  await page.route('**/hard-sample-mining/reviewed-task/reviewed?**',route=>json(route,{items:[{image_id:'reviewed-image',eligible:true,candidate_digest:sha('6')}],has_more:false}));
+  await page.route('**/hard-sample-mining/reviewed-task/adopt',route=>{posts.push(route.request().postDataJSON());version.supplement_data_candidate_set={candidate_set_id:sha('5'),material_ids:['reviewed-image'],status:'confirmed',automatic_execution:false};return json(route,{candidate_set:version.supplement_data_candidate_set});});
+  await c.open();await page.getByRole('button',{name:'高级评测',exact:true}).click();const root=page.locator('[data-advanced-evaluation]');await expect(root.getByRole('button',{name:'刷新证据',exact:true})).toBeEnabled();await root.getByRole('tab',{name:'复核与迭代',exact:true}).click();
+  await root.locator('[data-review-observation]').selectOption('gt_error');await root.getByRole('button',{name:'保存复核意见',exact:true}).click();await expect(root).toContainText('复核意见已保存，正式GT未修改');expect(posts[0].image_id).toBe('frozen-image');expect(posts[0].expected_evaluation_id).toBe(c.evaluation.evaluation_id);
+  await root.getByRole('button',{name:'确认当前建议',exact:true}).click();await expect(root).toContainText('已确认原持久化建议');await root.locator('[data-mining-task]').fill('reviewed-task');await root.getByRole('button',{name:'检测已审核候选',exact:true}).click();await expect(root.locator('[data-mining-adopt]')).toBeVisible();await root.locator('[data-mining-adopt]').check();await root.locator('[data-mining-confirm]').check();await root.getByRole('button',{name:'确认采纳为原 Candidate Set',exact:true}).click();await expect(root).toContainText('已冻结原Candidate Set');
+  await page.evaluate(()=>{state.targets=[{id:'isolated-cpu',name:'隔离CPU',status:'ready',framework:'ultralytics',python_path:'isolated-python',type:'local',algorithms:[{key:'yolo_detect',name:'隔离检测',base_model:'controlled.pt'}],base_models:[{name:'controlled.pt',path:'/controlled/v2/best.pt'}]}];state.rec={};});
+  await root.getByRole('button',{name:/用于下一轮训练/}).click();await expect(page.locator('.train429-create')).toBeVisible();await expect(page.locator('.train429-create')).toContainText('已预填 1 张已审核候选');expect(await page.evaluate(()=>state.trainingDraft.materialIds)).toContain('reviewed-image');expect(await page.evaluate(()=>state.trainingDraft.baseVersionId)).toBe('v2');expect(posts).toHaveLength(3);expect(c.posts).toHaveLength(0);
+  await page.screenshot({path:testInfo.outputPath('p2-iteration-original-training.png')});
+});
+
 test('P2 same-benchmark sample comparison pairs both versions and blocks incompatible improvement',async({page,request},testInfo)=>{
   const c=await fixture(page,request);let compatible=true;
   const before=structuredClone(c.evaluation.error_samples[0]),after=structuredClone(before);after.fp_count=0;after.pred_boxes=after.pred_boxes.slice(0,1);

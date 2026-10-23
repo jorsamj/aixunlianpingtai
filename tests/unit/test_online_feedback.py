@@ -237,3 +237,14 @@ def test_pending_correct_label_reference_is_bounded_and_released(tmp_path: Path)
         confirmed_at="2026-10-09T00:01:00Z",
     )
     assert repo.pending_label_reference(["smoke"]) == ""
+
+
+def test_evaluation_feedback_never_becomes_supplement_candidate(tmp_path):
+    repo=OnlineFeedbackRepository(tmp_path)
+    source=evidence(); source["source_channel"]="evaluation"
+    row,_=repo.stage(source,feedback_type="correct",note="",created_at="now")
+    row,_=repo.finalize(row["id"],expected_feedback_type="correct",material_id="m1",result={},confirmed_at="now")
+    candidate=build_supplement_candidate(row,{"id":"m1","content_sha256":"b"*64},
+        {"annotation_state":"annotated","content_digest":"c"*64,"boxes":[{"label":"smoke"}]})
+    assert candidate["eligible"] is False
+    assert "FROZEN_EVALUATION_TEST" in candidate["reason_codes"]

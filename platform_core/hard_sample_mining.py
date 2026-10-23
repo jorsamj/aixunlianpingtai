@@ -276,3 +276,73 @@ def infer_with_frozen_yolo(request: dict[str, Any], image: Mapping[str, Any]) ->
         "gt_comparison": signals.get("gt_comparison"),
         "root_cause_confirmed": False,
     }
+
+
+def reviewed_mining_feedback_evidence(*, task_id: str, request: Mapping[str, Any],
+        candidate: Mapping[str, Any], material: Mapping[str, Any],
+        annotation: Mapping[str, Any], commit_summary: Mapping[str, Any]) -> dict[str, Any]:
+    """Project reviewed task/journal and current formal GT into feedback evidence.
+
+    Callers must require a successful task and recheck frozen Test identities.
+    Candidate boxes are mutable during review, so cannot prove original predictions.
+    The journal lacks a GT hash/version; compare every available journal field and
+    bind the current formal annotation digest into the immutable preview identity.
+    """
+    from .online_feedback import validate_prediction_evidence
+
+    def sha(value, field):
+        value = str(value or "").strip().lower()
+        if len(value) != 64 or any(ch not in "0123456789abcdef" for ch in value):
+            raise ValueError(f"reviewed mining {field} must be SHA256")
+        return value
+
+    task_id = str(task_id or "").strip()
+    image_id = str(candidate.get("image_id") or "")
+    if (not task_id or len(task_id) > 200 or not image_id
+        or request.get("mode") != "hard_sample_yolo"
+        or candidate.get("accepted") is not True
+        or candidate.get("status") not in {"success", "empty"}
+        or image_id not in list(request.get("image_ids") or [])
+        or str(material.get("id") or "") != image_id):
+        raise ValueError("reviewed mining requires accepted task-owned material")
+    input_sha = sha((request.get("source_hashes") or {}).get(image_id), "source hash")
+    if sha(material.get("content_sha256"), "material hash") != input_sha:
+        raise ValueError("reviewed mining material content changed")
+    annotation_state = str(annotation.get("annotation_state") or "")
+    annotation_hash = sha(annotation.get("content_digest"), "annotation hash")
+    boxes = list(annotation.get("boxes") or [])
+    if annotation_state not in {"annotated", "confirmed_empty"}:
+        raise ValueError("reviewed mining requires formal annotation truth")
+    if (annotation_state == "annotated") != bool(boxes):
+        raise ValueError("reviewed mining annotation state disagrees with formal boxes")
+    labels = sorted({str(box.get("label") or "") for box in boxes})
+    if (not isinstance(commit_summary, Mapping)
+        or commit_summary.get("image_id") != image_id
+        or commit_summary.get("box_count") != len(boxes)
+        or sorted(commit_summary.get("labels") or []) != labels
+        or commit_summary.get("annotation_state") != annotation_state
+        or commit_summary.get("annotation_origin") != annotation.get("annotation_origin")):
+        raise ValueError("reviewed mining formal annotation no longer matches commit journal")
+    # Future journals may carry stronger identity; honor it if present.
+    for field, current in (("content_digest", annotation_hash), ("annotation_hash", annotation_hash),
+                           ("version", annotation.get("version"))):
+        if field in commit_summary and commit_summary[field] != current:
+            raise ValueError("reviewed mining annotation identity changed")
+    model_sha = sha(request.get("mining_model_sha256"), "model hash")
+    identity = {"task_id":task_id, "image_id":image_id, "model_sha256":model_sha,
+        "input_sha256":input_sha, "annotation_hash":annotation_hash, "annotation_state":annotation_state}
+    canonical = lambda value: json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    prediction_hash = hashlib.sha256(canonical(identity).encode()).hexdigest()
+    evidence = validate_prediction_evidence({
+        "schema_version":1, "prediction_id":"hmreview_" + prediction_hash[:55],
+        "algorithm_id":request.get("mining_algorithm_id"), "version_id":request.get("mining_version_id"),
+        "model_sha256":model_sha, "input_sha256":input_sha,
+        "width":material.get("width"), "height":material.get("height"),
+        "original_filename":material.get("filename"), "detections":[], "engine":"ultralytics",
+        "source_channel":"hard_sample_review", "external_source":task_id, "external_sample_id":image_id,
+        "prediction_evidence_status":"unavailable_review_boxes_mutable",
+    })
+    digest = hashlib.sha256(canonical({"evidence":evidence, **identity,
+        "commit_summary":dict(commit_summary)}).encode()).hexdigest()
+    return {"evidence":evidence, "candidate_digest":digest,
+        "annotation_hash":annotation_hash, "annotation_state":annotation_state}

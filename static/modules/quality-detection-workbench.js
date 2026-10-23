@@ -521,5 +521,5 @@ export function installQualityDetectionWorkbench({getState,api,toast,modal,close
     comparison=other||{};root.classList.add('scenario-workbench');root.id='scenarioEvidence64';
     renderEvidenceWorkspace64(root,rows||[],'evaluation');renderScenarioAnalysis64();
   }
-  return {render:window.renderQualityDetectionBench64,deactivate:deactivate64,destroy:deactivate64,mountEvaluationEvidence};
+  return {render:window.renderQualityDetectionBench64,deactivate:deactivate64,destroy:deactivate64,mountEvaluationEvidence,currentEvaluationSample:()=>reportVersion?.evaluation?.error_samples?.[selectedIndex]||null};
 }

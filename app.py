@@ -7960,7 +7960,10 @@ def _training_supplement_candidate_set(
         })
 
     from platform_core.online_feedback import build_supplement_training_provenance
+    from platform_core.hard_sample_mining import assert_not_frozen_test, HardSampleSafetyError
     try:
+        assert_not_frozen_test(project_dir(project_id), adopted_ids,
+                              {row['id']: row['content_sha256'] for row in truth_rows})
         build_supplement_training_provenance(candidate_set, selected_ids, truth_rows)
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
@@ -11029,6 +11032,7 @@ def _advanced_evaluation_context(project_id: str, algorithm_id: str, version_id:
             shared_task_repository(), shared_task_artifacts(), use_list_cache=True)
     except ScenarioModelUnavailable as error:
         raise HTTPException(status_code=409, detail=f"SCENARIO_MODEL_INELIGIBLE: {error}") from error
+    model['current_version_id'] = str(algorithm.get('current_version_id') or '')
     return version, model
 
 
@@ -11071,14 +11075,14 @@ def evaluation_sample_page(project_id: str, algorithm_id: str, version_id: str,
 
 @app.get('/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/evaluation/report')
 def advanced_evaluation_report(project_id: str, algorithm_id: str, version_id: str):
-    version, _ = _advanced_evaluation_context(project_id, algorithm_id, version_id)
+    version, model = _advanced_evaluation_context(project_id, algorithm_id, version_id)
     # All-cohort outcomes are available only via the paged sample endpoint.
     evaluation = {key: value for key, value in (version.get('evaluation') or {}).items()
                   if key not in {'sample_outcomes', 'sample_evidence'}}
     public = {key: version[key] for key in ('id', 'version_name', 'iteration_decision',
-              'feedback_adoption_outcome') if key in version}
+              'confirmed_iteration_action', 'supplement_data_candidate_set', 'feedback_adoption_outcome') if key in version}
     public['evaluation'] = evaluation
-    return {'ok': True, 'algorithm': {'id': algorithm_id, 'versions': [public]}}
+    return {'ok': True, 'algorithm': {'id': algorithm_id, 'current_version_id': model.get('current_version_id', ''), 'versions': [public]}}
 
 
 @app.get('/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/evaluation/compare/{other_version_id}')
@@ -11126,6 +11130,140 @@ def deep_compare_evaluation(project_id: str, algorithm_id: str, version_id: str,
     result.update(source_version_id=other_version_id, current_version_id=version_id)
     result['trust_warnings'] = sorted({check['code'] for check in trust_checks if check['status'] != 'passed'})
     return {'ok': True, 'comparison': result}
+
+
+class EvaluationReviewReq(BaseModel):
+    expected_evaluation_id: str
+    image_id: str
+    observation: str = ''
+    note: str = ''
+
+
+class ReviewedMiningSelection(BaseModel):
+    image_id: str
+    candidate_digest: str
+
+
+class FreezeReviewedMiningReq(BaseModel):
+    candidates: List[ReviewedMiningSelection]
+    confirmed: bool = False
+
+
+def _reviewed_mining_candidates(project_id, algorithm_id, version_id, task_id, *, offset=0, limit=24, image_ids=None):
+    from itertools import islice
+    from platform_core.hard_sample_mining import reviewed_mining_feedback_evidence, assert_not_frozen_test
+    _, model = _advanced_evaluation_context(project_id, algorithm_id, version_id)
+    task = _require_annotation_review_task(project_id, task_id)
+    if task.kind is not TaskKind.AI_ANNOTATION or task.status is not TaskStatus.SUCCEEDED or not task.result_ref:
+        raise HTTPException(status_code=409, detail='困难样本任务尚未完成正式人工审核入库')
+    artifacts = shared_task_artifacts()
+    request = artifacts.read_json(task_id, task.payload_ref, default={})
+    if (request.get('mode') != 'hard_sample_yolo' or request.get('mining_algorithm_id') != algorithm_id
+            or request.get('mining_version_id') != version_id or request.get('mining_model_sha256') != model.get('model_sha256')):
+        raise HTTPException(status_code=409, detail='困难样本任务来源模型不匹配')
+    store = CandidateStore(artifacts, task_id=task_id)
+    if not store.path.is_file():
+        raise HTTPException(status_code=409, detail='已审核候选索引不可用，不自动重建历史审核事实')
+    items = list(store.get_many(image_ids).values()) if image_ids is not None else list(islice(store.iter_accepted_items(), offset, offset + limit))
+    ids = [str(row.get('image_id') or '') for row in items]
+    if image_ids is not None and set(ids) != set(image_ids):
+        raise HTTPException(status_code=409, detail='部分候选已不存在')
+    materials = {str(row['id']): row for row in material_store(project_id).get_many(ids)}
+    annotations = AnnotationRepository(project_dir(project_id)).get_many(ids)
+    journals = store.get_commit_summaries(ids)
+    try:
+        if ids:
+            assert_not_frozen_test(project_dir(project_id), ids, {key: row.get('content_sha256', '') for key, row in materials.items()})
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    result = []
+    for item in items:
+        image_id = str(item.get('image_id') or '')
+        try:
+            evidence = reviewed_mining_feedback_evidence(task_id=task_id, request=request, candidate=item,
+                material=materials.get(image_id) or {}, annotation=annotations.get(image_id) or {},
+                commit_summary=journals.get(image_id))
+            result.append({'image_id': image_id, 'eligible': True, **evidence})
+        except ValueError as error:
+            result.append({'image_id': image_id, 'eligible': False, 'reason': str(error)})
+    return result
+
+
+@app.get('/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/hard-sample-mining/{task_id}/reviewed')
+def preview_reviewed_mining(project_id: str, algorithm_id: str, version_id: str, task_id: str, offset: int = 0, limit: int = 24):
+    if offset < 0 or not 1 <= limit <= 50:
+        raise HTTPException(status_code=422, detail='审核候选分页范围无效')
+    items = _reviewed_mining_candidates(project_id, algorithm_id, version_id, task_id, offset=offset, limit=limit)
+    return {'ok': True, 'items': items, 'offset': offset, 'limit': limit, 'has_more': len(items) == limit,
+            'automatic_execution': False, 'requires_confirmation': True}
+
+
+@app.post('/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/hard-sample-mining/{task_id}/adopt')
+def adopt_reviewed_mining(project_id: str, algorithm_id: str, version_id: str, task_id: str, payload: FreezeReviewedMiningReq):
+    if not payload.confirmed or not 1 <= len(payload.candidates) <= 50:
+        raise HTTPException(status_code=422, detail='请选择1至50项并明确确认采纳')
+    requested = {row.image_id: row.candidate_digest for row in payload.candidates}
+    if len(requested) != len(payload.candidates):
+        raise HTTPException(status_code=422, detail='采纳候选不能重复')
+    _supplement_data_action(project_id, algorithm_id, version_id)
+    with _storage_source_fence():
+        items = _reviewed_mining_candidates(project_id, algorithm_id, version_id, task_id, image_ids=list(requested))
+        if any(not row['eligible'] or row['candidate_digest'] != requested[row['image_id']] for row in items):
+            raise HTTPException(status_code=409, detail='审核候选、素材或正式GT已变化，请重新预览')
+        repository = _online_feedback_repository(project_id)
+        selections = []
+        for item in items:
+            staged, _ = repository.stage(item['evidence'], feedback_type='needs_correction',
+                note=f"人工审核困难样本 · {task_id}", created_at=now_iso())
+            finalized, _ = repository.finalize(staged['id'], expected_feedback_type='needs_correction',
+                material_id=item['image_id'], result={'annotation_action': 'reviewed_existing_gt',
+                'formal_gt_changed': False, 'source_task_id': task_id, 'automatic_execution': False}, confirmed_at=now_iso())
+            candidate = _supplement_feedback_candidates(project_id, [finalized])[0]
+            if not candidate['eligible']:
+                raise HTTPException(status_code=409, detail='审核候选尚不可训练')
+            selections.append(SupplementFeedbackCandidateSelection(feedback_id=candidate['feedback_id'], candidate_digest=candidate['candidate_digest']))
+        return freeze_supplement_feedback_candidates(project_id, algorithm_id, version_id,
+            FreezeSupplementFeedbackCandidatesReq(candidates=selections))
+
+
+@app.post('/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/evaluation/review')
+def review_evaluation_sample(project_id: str, algorithm_id: str, version_id: str, payload: EvaluationReviewReq):
+    from platform_core.online_feedback import public_feedback
+    if payload.observation not in {'', 'model_error', 'gt_error', 'model_correct', 'unknown', 'hard_sample'} or len(payload.note) > 1000:
+        raise HTTPException(status_code=422, detail='复核意见无效')
+    version, model = _advanced_evaluation_context(project_id, algorithm_id, version_id)
+    evaluation = version.get('evaluation') or {}
+    if evaluation.get('evaluation_id') != payload.expected_evaluation_id or not re.fullmatch(r'[a-f0-9]{64}', payload.expected_evaluation_id):
+        raise HTTPException(status_code=409, detail='评测身份已变化，请重新读取报告')
+    if evaluation.get('model_sha256') != model.get('model_sha256') or evaluation.get('task_id') != model.get('training_task_id'):
+        raise HTTPException(status_code=409, detail='评测模型与正式任务身份不一致')
+    samples = evaluation.get('sample_outcomes') or evaluation.get('error_samples') or []
+    matches = [row for row in samples if str(row.get('image_id') or '') == payload.image_id]
+    if len(matches) != 1:
+        raise HTTPException(status_code=409, detail='冻结样本身份不唯一或未保存')
+    sample = matches[0]
+    # Persist only an opinion in the existing feedback owner. No image/GT write.
+    prediction_id = 'evalreview_' + hashlib.sha256((payload.expected_evaluation_id + ':' + payload.image_id).encode()).hexdigest()[:48]
+    source = {'schema_version': 1, 'prediction_id': prediction_id, 'algorithm_id': algorithm_id,
+              'version_id': version_id, 'model_sha256': model['model_sha256'],
+              'input_sha256': sample.get('image_content_sha256'), 'width': sample.get('image_width'),
+              'height': sample.get('image_height'), 'detections': [], 'engine': 'formal_evaluation',
+              'original_filename': sample.get('image'), 'input_file': '', 'created_at': evaluation.get('finished_at', ''),
+              'source_channel': 'evaluation', 'external_source': payload.expected_evaluation_id,
+              'external_sample_id': payload.image_id}
+    repository = _online_feedback_repository(project_id)
+    try:
+        row, reused = repository.stage(source, feedback_type='needs_correction', note=payload.note, created_at=now_iso())
+        if payload.observation and payload.observation != 'unknown':
+            row, reused = repository.finalize(row['id'], expected_feedback_type='needs_correction',
+                material_id='', result={'review_observation': payload.observation, 'formal_gt_changed': False,
+                    'evaluation_id': payload.expected_evaluation_id, 'image_id': payload.image_id,
+                    'frozen_test_protected': True, 'automatic_execution': False, 'requires_confirmation': True},
+                confirmed_at=now_iso())
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return {'ok': True, 'idempotent': reused, 'feedback': public_feedback(row),
+            'automatic_execution': False, 'requires_confirmation': True, 'frozen_test_protected': True}
 
 
 @app.post("/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/iteration-actions/confirm")
@@ -12788,6 +12926,18 @@ def get_online_feedback(project_id: str, feedback_id: str):
     if row is None:
         raise HTTPException(status_code=404, detail="抽检反馈不存在")
     public = public_feedback(row)
+    if public.get('source', {}).get('source_channel') == 'evaluation':
+        from urllib.parse import quote, urlencode
+        source = public['source']
+        public['input_image_url'] = (
+            f"/api/v12/projects/{quote(project_id, safe='')}/algorithms/{quote(public['algorithm_id'], safe='')}"
+            f"/versions/{quote(public['version_id'], safe='')}/evaluation/images/{quote(source.get('original_filename', ''), safe='')}?"
+            + urlencode({'expected_evaluation_id': source.get('external_source', ''),
+                         'expected_image_id': source.get('external_sample_id', ''), 'expected_sha256': public['input_sha256']})
+        )
+        public['result_image_url'] = ''
+        public['review_only'] = True
+        return {'ok': True, 'feedback': public}
     try:
         evidence, _, _, _ = _online_prediction_evidence(project_id, row["prediction_id"])
         public["input_image_url"] = (
@@ -13002,6 +13152,8 @@ def confirm_online_feedback(
         raise HTTPException(status_code=409, detail="抽检反馈已结束")
     if staged["feedback_type"] != payload.expected_feedback_type:
         raise HTTPException(status_code=409, detail="反馈类型已变化，请刷新后再确认")
+    if (staged.get('payload') or {}).get('source', {}).get('source_channel') == 'evaluation':
+        raise HTTPException(status_code=409, detail='冻结评测只允许在高级评测保存复核意见，不能通过抽检确认写入GT或采纳训练')
     try:
         evidence, input_path, _, _ = _online_prediction_evidence(
             project_id, staged["prediction_id"]

@@ -7957,6 +7957,8 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   }[value]||value||'-');
   const sourceName63=source=>source?.source_channel==='external_upload'
     ?('外部接入'+(source?.external_source?' · '+source.external_source:''))
+    :source?.source_channel==='evaluation'?'冻结评测复核（Test保护）'
+    :source?.source_channel==='hard_sample_review'?'已人工审核困难样本'
     :'平台测试';
 
   function feedbackRows63(){
@@ -8081,6 +8083,9 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   window.openOnlineFeedbackReview63=async function(id){
     try{
       const result=await api(`/api/v63/projects/${pid()}/online-feedback/${encodeURIComponent(id)}`),item=result.feedback||{},source=item.source||{},detections=source.detections||[];
+      if(item.review_only){
+        modal('冻结评测复核',`<div class="online-feedback-review63"><p>该记录只保存人工意见，正式GT未修改，冻结Test禁止直接采纳训练。</p><img class="result-img" src="${esc(item.input_image_url||'')}" alt="冻结评测样本"><p>${esc(item.note||'')} · ${esc(item.result?.review_observation||'待复核')}</p><div class="row end"><button class="btn" onclick="closeModal()">关闭</button><button class="btn primary" onclick="closeModal();Promise.resolve(setPage('质量中心')).then(()=>setQualityCenterTab411('advanced'))">前往高级评测</button></div></div>`,true);return;
+      }
       state.onlineFeedbackReview63={id:String(item.id||''),feedback_type:String(item.feedback_type||'')};
       const datasetOptions=(state.datasets||[]).map(row=>`<option value="${esc(row.id)}" ${row.id===state.datasetId?'selected':''}>${esc(row.name||row.id)}</option>`).join('');
       const actionNote=item.feedback_type==='correct'

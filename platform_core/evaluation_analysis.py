@@ -33,6 +33,9 @@ def evaluation_samples(evaluation: Mapping, *, offset=0, limit=24, issue="", cla
         kinds = set(sample.get('diagnostic_tags') or [])
         for box in sample.get('pred_boxes', []):
             kinds.update(box.get('diagnostic_tags') or [])
+            confidence = box.get('confidence')
+            if isinstance(confidence, (int, float)) and not isinstance(confidence, bool) and 0 <= confidence < .5:
+                kinds.add('low_confidence')
         kinds.update(key for key in ('fp', 'fn', 'tp') if sample.get(f'{key}_count', 0) > 0)
         if issue and issue not in kinds:
             continue
@@ -45,10 +48,13 @@ def evaluation_samples(evaluation: Mapping, *, offset=0, limit=24, issue="", cla
                                          if box.get('matched') is False), default=-1), row.get('image', '')))
     else:
         rows.sort(key=lambda row: (-row.get('fn_count', 0), -row.get('fp_count', 0), row.get('image', '')))
+    box_filter = class_id is not None or issue in {'wrong_class', 'localization', 'low_confidence', 'duplicate'}
     return {'items': rows[offset:offset + limit], 'total': len(rows), 'offset': offset, 'limit': limit,
             'cohort_complete': complete and len(outcomes) == evaluation.get('image_count'),
             'image_count': evaluation.get('image_count'), 'evaluation_id': evaluation.get('evaluation_id'),
-            'filter_scope': 'retained_box_evidence_only' if class_id is not None else 'persisted_sample_outcomes'}
+            'diagnostic_low_confidence_threshold': .5,
+            'filter_scope': 'retained_box_evidence_only' if box_filter else 'persisted_sample_outcomes',
+            'filter_evidence_complete': not box_filter or complete and all(row.get('evidence_complete') is True for row in outcomes)}
 
 
 def compare_sample_outcomes(source: Mapping, current: Mapping, *, offset=0, limit=24, category=""):
@@ -151,7 +157,7 @@ def analyze_evaluation_trust(evaluation: Mapping, snapshot: Mapping, version: Ma
     except (TypeError, ValueError, OverflowError):
         scope = {}
     frozen = evaluation.get("benchmark_scope") or {}
-    if not scope or any(scope.get(key) != frozen.get(key) for key in (
+    if not scope or evaluation.get('image_count') != scope.get('test_image_count') or any(scope.get(key) != frozen.get(key) for key in (
             "content_digest", "ground_truth_digest", "label_schema_digest", "test_image_count")):
         identity_reasons.append({"reason": "benchmark_snapshot_identity_missing_or_mismatched"})
     if frozen.get("binding_level") != "bundle_verified" or any(not _digest(frozen.get(key)) for key in (

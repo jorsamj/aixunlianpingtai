@@ -697,11 +697,28 @@ export function installTrainingSubmitRuntime({
       }
       const iterationAction = state.trainingIterationAction;
       let iterationTaskId = '';
-      if (
-        iterationAction
-        && String(iterationAction?.source?.algorithm_id || '') === String(asset.id || '')
-        && String(iterationAction?.source?.version_id || '') === String(draft.baseVersionId || base.versionId || '')
-      ) {
+      if (iterationAction) {
+        const source = iterationAction.source || {};
+        const currentId = String(asset.current_version_id || '');
+        const version = (asset.versions || []).find(row => String(row.id || '') === currentId);
+        const stored = version?.confirmed_iteration_action;
+        const sameSource = ['algorithm_id', 'version_id', 'decision_id', 'evaluation_id', 'dataset_revision_id', 'snapshot_id']
+          .every(key => String(source[key] || '') === String(stored?.source?.[key] || ''));
+        if (
+          iterationAction.action !== 'continue_training' || iterationAction.status !== 'confirmed'
+          || iterationAction.automatic_execution !== false
+          || !currentId || String(source.algorithm_id || '') !== String(asset.id || '')
+          || String(source.version_id || '') !== currentId
+          || String(draft.baseVersionId || base.versionId || '') !== currentId
+          || !source.decision_id || !source.evaluation_id
+          || source.decision_id !== version?.iteration_decision?.decision_id
+          || source.evaluation_id !== version?.iteration_decision?.evaluation_id
+          || source.evaluation_id !== version?.evaluation?.evaluation_id
+          || !stored || stored.action_id !== iterationAction.action_id
+          || stored.status !== 'confirmed' || stored.action !== 'continue_training' || !sameSource
+        ) {
+          throw new Error('迭代动作已过期或与当前训练草稿不一致，请从当前版本独立评测重新确认继续训练');
+        }
         payload.iteration_action = {
           action_id: String(iterationAction.action_id || ''),
           decision_id: String(iterationAction.source?.decision_id || ''),

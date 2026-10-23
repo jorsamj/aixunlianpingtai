@@ -5,6 +5,21 @@ from PIL import Image
 import platform_core.training_evaluation as evaluation
 
 
+def test_p2_trust_valid_frozen_binding_passes_but_image_count_drift_does_not():
+    from platform_core.evaluation_analysis import analyze_evaluation_trust
+    snapshot = {**_benchmark_snapshot(), 'snapshot_id': '1' * 64, 'dataset_revision_id': '3' * 64}
+    scope = evaluation.build_evaluation_benchmark_scope(snapshot, _benchmark_manifest())
+    truth = evaluation.build_evaluation_truth({'status': 'succeeded', 'image_count': 1,
+        'protocol': {'mode': 'blind', 'matching_iou': .5}}, task_id='training-task',
+        snapshot_id='1' * 64, dataset_revision_id='3' * 64, model_sha256='2' * 64,
+        finished_at='2026-10-23T00:00:00Z', benchmark_scope=scope)
+    def status(value):
+        return analyze_evaluation_trust(value, snapshot, {'task_id': 'training-task'},
+            verified_model={'model_sha256': '2' * 64})['checks'][0]['status']
+    assert status(truth) == 'passed'
+    assert status({**truth, 'image_count': 2}) == 'insufficient_evidence'
+
+
 def test_p2_deep_comparison_uses_exact_frozen_samples_and_never_guesses_absent_correctness():
     from copy import deepcopy
     from platform_core.evaluation_analysis import compare_sample_outcomes

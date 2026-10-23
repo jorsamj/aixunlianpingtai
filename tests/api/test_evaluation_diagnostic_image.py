@@ -10,6 +10,31 @@ from PIL import Image
 from fastapi import HTTPException
 
 
+def test_p2_frozen_evaluation_review_is_only_opinion_and_idempotent(monkeypatch, tmp_path):
+    from platform_core.online_feedback import OnlineFeedbackRepository
+    platform, version, _, root, image = _setup(monkeypatch, tmp_path)
+    evaluation = version['evaluation']
+    evaluation.update(evaluation_id='e' * 64, task_id='training-v1', model_sha256='f' * 64)
+    sample = evaluation['error_samples'][0]
+    sample.update(image_id='test-image', image_content_sha256='d' * 64, image_width=120, image_height=80)
+    monkeypatch.setattr(platform, '_advanced_evaluation_context', lambda *args: (version, {'model_sha256': 'f' * 64, 'training_task_id': 'training-v1'}))
+    repository = OnlineFeedbackRepository(root)
+    monkeypatch.setattr(platform, '_online_feedback_repository', lambda _: repository)
+    before = image.read_bytes()
+    request = platform.EvaluationReviewReq(expected_evaluation_id='e' * 64, image_id='test-image', observation='gt_error')
+    first = platform.review_evaluation_sample('evaluation-project', 'algo', 'v1', request)
+    second = platform.review_evaluation_sample('evaluation-project', 'algo', 'v1', request)
+    assert first['feedback']['id'] == second['feedback']['id'] and second['idempotent'] is True
+    assert first['feedback']['source']['source_channel'] == 'evaluation'
+    assert first['feedback']['result']['formal_gt_changed'] is False
+    assert first['feedback']['result']['frozen_test_protected'] is True
+    assert first['feedback']['material_id'] == ''
+    assert image.read_bytes() == before and not (root / 'annotations.sqlite3').exists()
+    with pytest.raises(HTTPException) as stale:
+        platform.review_evaluation_sample('evaluation-project', 'algo', 'v1', request.model_copy(update={'expected_evaluation_id': 'a' * 64}))
+    assert stale.value.status_code == 409
+
+
 def test_p2_trust_api_uses_original_model_qualification_and_readonly_snapshot(monkeypatch, tmp_path):
     platform, version, _, root, _ = _setup(monkeypatch, tmp_path)
     import platform_core.scenario_models as models
@@ -45,6 +70,11 @@ def test_p2_sample_pages_distinguish_missing_evidence_and_never_rescore(monkeypa
     assert page['items'][0]['box_evidence_available'] is False
     assert 'pred_boxes' not in page['items'][0]
     assert page['evaluation_id'] == 'e' * 64
+    version['evaluation']['sample_evidence'] = [{**version['evaluation']['sample_outcomes'][0],
+        'gt_boxes': [], 'pred_boxes': [{'class_id': 0, 'confidence': .3, 'matched': True}], 'evidence_complete': False}]
+    low = platform.evaluation_sample_page('evaluation-project', 'algo', 'v1', issue='low_confidence')
+    assert low['total'] == 1 and low['filter_scope'] == 'retained_box_evidence_only'
+    assert low['filter_evidence_complete'] is False
     version['evaluation'].pop('sample_outcomes')
     legacy = platform.evaluation_sample_page('evaluation-project', 'algo', 'v1')
     assert legacy['cohort_complete'] is False

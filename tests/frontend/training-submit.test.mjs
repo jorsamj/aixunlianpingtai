@@ -628,11 +628,13 @@ test('durable response task id must match the submitted planned task id', async 
 test('confirmed iteration action lineage is injected only for matching current draft', async () => {
   const state=baseState();
   state.trainingIterationAction={
-    action_id:'a'.repeat(64),action:'continue_training',
+    status:'confirmed',automatic_execution:false,action_id:'a'.repeat(64),action:'continue_training',
     source:{algorithm_id:'alg-1',version_id:'v-current',decision_id:'b'.repeat(64),
       evaluation_id:'c'.repeat(64),dataset_revision_id:'d'.repeat(64),snapshot_id:'snapshot-1'},
     training_draft:{task_id:'train_'+'a'.repeat(24)},
   };
+  state.algorithms[0].current_version_id='v-current';
+  state.algorithms[0].versions=[{id:'v-current',iteration_decision:{decision_id:'b'.repeat(64),evaluation_id:'c'.repeat(64)},evaluation:{evaluation_id:'c'.repeat(64)},confirmed_iteration_action:structuredClone(state.trainingIterationAction)}];
   const value=draft({baseVersionId:'v-current'});
   installDom();
   let sent;
@@ -657,11 +659,13 @@ test('confirmed iteration action lineage is injected only for matching current d
 test('invalid historical iteration task id fails closed before POST', async () => {
   const state=baseState();
   state.trainingIterationAction={
-    action_id:'a'.repeat(64),action:'continue_training',
+    status:'confirmed',automatic_execution:false,action_id:'a'.repeat(64),action:'continue_training',
     source:{algorithm_id:'alg-1',version_id:'v-current',decision_id:'b'.repeat(64),
       evaluation_id:'c'.repeat(64),dataset_revision_id:'d'.repeat(64),snapshot_id:'snapshot-1'},
     training_draft:{task_id:'legacy-task-id'},
   };
+  state.algorithms[0].current_version_id='v-current';
+  state.algorithms[0].versions=[{id:'v-current',iteration_decision:{decision_id:'b'.repeat(64),evaluation_id:'c'.repeat(64)},evaluation:{evaluation_id:'c'.repeat(64)},confirmed_iteration_action:structuredClone(state.trainingIterationAction)}];
   const value=draft({baseVersionId:'v-current'});
   installDom();
   let postCount=0;
@@ -682,29 +686,73 @@ test('invalid historical iteration task id fails closed before POST', async () =
   cleanup(runtime);
 });
 
-test('confirmed iteration action is not injected into unrelated version draft', async () => {
+test('stale iteration version blocks submission without dropping action', async () => {
   const state=baseState();
   state.trainingIterationAction={
-    action_id:'a'.repeat(64),action:'continue_training',
+    status:'confirmed',automatic_execution:false,action_id:'a'.repeat(64),action:'continue_training',
     source:{algorithm_id:'alg-1',version_id:'other',decision_id:'b'.repeat(64),
       evaluation_id:'c'.repeat(64),dataset_revision_id:'',snapshot_id:''},
   };
+  state.algorithms[0].current_version_id='v-current';
+  state.algorithms[0].versions=[{id:'v-current',iteration_decision:{decision_id:'b'.repeat(64),evaluation_id:'c'.repeat(64)},evaluation:{evaluation_id:'c'.repeat(64)},confirmed_iteration_action:structuredClone(state.trainingIterationAction)}];
   const value=draft({baseVersionId:'v-current'});
   installDom();
   let sent;
+  const notices=[];
   globalThis.window={submitTrain429:()=>{},fetch:async(_url,init)=>{
     sent=JSON.parse(init.body);return{ok:true,async json(){return durableTask(sent.task_id)}};
   }};
   const runtime=installTrainingSubmitRuntime({
     getState:()=>state,projectId:()=> 'project-1',
     trainingDraftRuntime:{sync:()=>value,current:()=>value,base:()=>({blocked:false,versionId:'v-current'})},
-    trainingDraftToRequest,
+    trainingDraftToRequest,notify:message=>notices.push(String(message)),
   });
-  await window.submitTrain429();
-  assert.equal(sent.iteration_action,undefined);
+  assert.equal(await window.submitTrain429(),null);
+  assert.equal(sent,undefined);
+  assert.match(notices.at(-1),/迭代动作已过期/);
   assert.ok(state.trainingIterationAction);
   cleanup(runtime);
 });
+
+for (const [name, mutate] of [
+  ['changed current version', state => { state.algorithms[0].current_version_id='v-new'; }],
+  ['changed decision', state => { state.algorithms[0].versions[0].iteration_decision.decision_id='e'.repeat(64); }],
+  ['changed evaluation', state => { state.algorithms[0].versions[0].evaluation.evaluation_id='e'.repeat(64); }],
+  ['changed persisted action', state => { state.algorithms[0].versions[0].confirmed_iteration_action.action_id='e'.repeat(64); }],
+  ['another algorithm action', state => { state.trainingIterationAction.source.algorithm_id='alg-other'; }],
+]) {
+  test(`${name} blocks iteration submission and preserves draft`, async () => {
+  const state=baseState();
+  state.trainingIterationAction={
+    status:'confirmed',automatic_execution:false,action_id:'a'.repeat(64),action:'continue_training',
+    source:{algorithm_id:'alg-1',version_id:'v-current',decision_id:'b'.repeat(64),
+      evaluation_id:'c'.repeat(64),dataset_revision_id:'',snapshot_id:''},
+  };
+  state.algorithms[0].current_version_id='v-current';
+  state.algorithms[0].versions=[{id:'v-current',iteration_decision:{decision_id:'b'.repeat(64),evaluation_id:'c'.repeat(64)},evaluation:{evaluation_id:'c'.repeat(64)},confirmed_iteration_action:structuredClone(state.trainingIterationAction)}];
+  mutate(state);
+  const value=draft({baseVersionId:'v-current'});
+  installDom();
+  let sent;
+  const notices=[];
+  globalThis.window={submitTrain429:()=>{},fetch:async(_url,init)=>{
+    sent=JSON.parse(init.body);return{ok:true,async json(){return durableTask(sent.task_id)}};
+  }};
+  const runtime=installTrainingSubmitRuntime({
+    getState:()=>state,projectId:()=> 'project-1',
+    trainingDraftRuntime:{sync:()=>value,current:()=>value,base:()=>({blocked:false,versionId:'v-current'})},
+    trainingDraftToRequest,notify:message=>notices.push(String(message)),
+  });
+  assert.equal(await window.submitTrain429(),null);
+  assert.equal(sent,undefined);
+  assert.match(notices.at(-1),/迭代动作已过期/);
+  assert.ok(state.trainingIterationAction);
+  assert.equal(value.baseVersionId,'v-current');
+  assert.deepEqual(value.materialIds,['img-1','img-2']);
+  cleanup(runtime);
+});
+
+}
 
 test('supplement candidate context follows the base version and actual selected materials', () => {
   const asset = {

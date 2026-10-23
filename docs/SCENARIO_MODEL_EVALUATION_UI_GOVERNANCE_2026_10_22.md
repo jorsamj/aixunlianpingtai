@@ -19,12 +19,12 @@
 
 | 编号 | 状态 | 涉及模块/剩余工作 | 提交及证据 |
 |---|---|---|---|
-| P2-A 审计 | 进行中 | Evaluation/Snapshot、场景UI、Candidate/Adoption准确入口补核 | 基线a0885f6f，只读，无新测试 |
-| P2-A1 数据可信度 | 进行中 | 冻结身份/泄漏/GT/覆盖只读API与高级评测Tab | 未提交；先添加关键合同RED |
-| P2-A2 逐框诊断 | 未开始 | 原匹配证据增强、分页/筛选/三栏 | 未测试 |
-| P2-B 深度对比 | 未开始 | 同基准样本配对与同步AB | 未测试 |
-| P2-C 复核迭代衔接 | 未开始 | 原候选/训练入口/Test保护 | 未测试 |
-| P2-F 最终验收 | 未开始 | 必要Chrome三桌面截图、受影响CI、最终SHA | 不借旧CI |
+| P2-A 审计 | 已验收 | 原Owner及缺口已核；存储/GT/Worker不重建 | 基线a0885f6f及本节实绩 |
+| P2-A1 数据可信度 | 已完成待验收 | 冻结身份/泄漏/GT/覆盖API和Tab；时间/dHash等缺证据明确未知 | 21e0d816，见下文RED/GREEN；最终CI待核 |
+| P2-A2 逐框诊断 | 已完成待验收 | 原匹配IoU/索引、全体轻量outcomes、最多200图框证据和分页 | 7b12c789；未保存/截断不补造 |
+| P2-B 深度对比 | 已完成待验收 | 同基准/同GT逐图配对与同步AB；无证据明确未知 | e6fb1a8c；最终CI待核 |
+| P2-C 复核迭代衔接 | 已完成待验收 | 原反馈/CandidateSet/训练入口及Test保护；无自动训练 | 本地代码及必要测试通过，提交待记 |
+| P2-F 最终验收 | 进行中 | Chrome28/Node82及分批Python通过；最终版本、推送/CI待做 | 不借旧CI |
 
 执行：每阶段新增必要安全RED→最小实现→对应现有Python/Node及少量Chrome→独立正常提交并更新本节。相同代码已通过测试不重复执行；只复用受影响原CI，不扩大全仓测试。生产部署、GT/模型/素材写入和真实训练禁止。本节持续追加实际命令/通过失败跳过/缺口，不把设计当实现。
 
@@ -51,6 +51,27 @@ A2实际提交7b12c78976ba9c7babbe76635abd952654ef8f37（本地，远端CI未验
 深度对比复用compare_evaluations，双版本再核原成功成果资格及模型/任务关联；冻结身份不完整或已证实SHA/GT泄漏风险不计算提升。其余未检查风险单独列trust_warnings，不宣称业务适合发布。逐图按同image_id/SHA/尺寸/完整GT摘要与原正式TP/FP/FN分类：错误→无错为改善，无错→错误为退步，均错/均正确分别持续；缺席/GT不同为unknown，不从错误Top200差集推测。全体轻量结果只线性遍历，框证据只合并当前最多50图；无第二套匹配器。类指标复用原比较，TP/FP/FN与Micro F1仅由已存正式类别计数派生，未覆盖不造值。
 
 UI主动添加旧版后显示第二选择器，分页/类别变化、百分点差异、同图AB与同步视角复用原SVG。API新同基准/漂移/双模型绑定1通过，信任门槛补充后P2 trust/deep2通过；原评测新增深度比较1项先ImportError RED再GREEN（验证四类型、缺席未知、GT漂移和Benchmark拒绝）。真实Chrome新增同基准AB/三桌面截图/不同Benchmark不显示提升1通过。最终生命周期小修（重绘前dispose旧SVG/图表）待收尾相关冒烟；C继续。未推送，远端CI未验。
+
+B实际提交e6fb1a8c7a4a4d3d552b72b67e7983a01604cdad（本地，远端CI未验）。
+
+### P2-C 本地阶段实绩与安全边界
+
+- 冻结Test“加入复核/保存意见”复用OnlineFeedbackRepository原表和幂等stage/finalize，source_channel=evaluation，明确原Evaluation/图片身份；模型错误、GT错误、模型正确、暂不确定、困难样本均是人工意见，不改正式GT、不复制原图。暂不确定仍待复核；原反馈列表可追溯到高级评测，普通抽检确认入口不能把此类来源写成GT。build_supplement_candidate对evaluation来源一律FROZEN_EVALUATION_TEST。显式更正GT仍打开原Annotation/CAS工作台，不改旧Snapshot。
+- 非Test挖掘使用原v64/AI_ANNOTATION/Worker/CandidateStore，用户明确选择已有eligible范围，稳定request_key防重复。任务详情/审核使用原入口，无第二套队列或轮询。候选预览要求最终SUCCEEDED、模型/任务/素材SHA关联、已accept及原commit journal与当前Annotation事实匹配；旧预览遇GT漂移拒绝。原journal没有GT hash/version的历史限制未伪造，当前GT摘要被冻结进预览；缺少journal/索引则拒绝，不重建历史事实。
+- 原CandidateStore的框可能已被人工编辑，因此来源适配明确prediction_evidence_status不可用，绝不把审核后框当原模型预测。确认后在原反馈Owner记录真实hard_sample_review来源，再调用原build_supplement_candidate/Set及原freeze锁、既有Adoption/Snapshot/lineage/outcome。无需新schema/表/任务库。需当前版本原supplement_data已确认建议，其他建议不能伪装补数据动作。
+- 原assert_not_frozen_test在预览、采纳及训练最终选取处按image_id/SHA保护；新入口不能把Test转训练后继续沿用同基准宣称独立提升。新“用于下一轮训练”只读取当前服务器版本/CandidateSet，再调用原startAlgorithmTraining429和TrainingDraftRuntime预填，基础版本v2实测保持，无train/start请求。automatic_execution=false，requires_confirmation=true；单个已确认版本不可覆盖另一CandidateSet的原限制保留。
+- 发现并修正原training-submit对过期迭代动作静默降级为普通训练：当前算法/版本、草稿基版本、持久action、decision/evaluation/source任一不符明确阻断且保留草稿。原普通无action训练不变。
+
+必要证据：scorer原34整体通过，B比较/身份计数漂移增量分别1通过；身份计数漂移新增断言先实际RED（错误passed）后GREEN。hard_sample_mining/online_feedback原unit26通过（新增来源/未审核/漂移/journal/Test先RED再GREEN）；training-submit Node先RED后54通过，收尾原场景/图表/submit共82通过。API新增真实CandidateStore+原反馈SQLite预览/幂等采纳/GT漂移/Test/活动保护1通过；评测复核只写意见、幂等和身份漂移1通过；受影响P2/原训练iteration/supplement定向12通过，原线上反馈API17通过。框筛选缺证据范围及低置信度0.5只过滤真实已存预测，补充原分页API1通过。
+
+Chrome原场景工作台/分析两文件28通过（含4个P2综合场景），训练基础版本及候选预填追加断言后单项1通过；不是额外29种场景。C首测暴露隐藏modal shell被当作弹窗，改为原#modal:not(.hidden)；隔离训练资源fixture缺algorithms/base_models/rec造成hydrate失败，补完整原合同，不绕过正式资源校验。随后真实原创建窗成功打开；未点击开始训练。截图p2-iteration-original-training已查看。独立只读审查未发现确定P0/P1；提出旧supplement动作未来同版本重评时应加身份复验，未证实当前可触达，作为后续硬化记录而非已修复Bug。
+
+### 必须保留的未覆盖项与接续
+
+1. 历史Snapshot未冻结dHash、摄像头时间窗口、完整逐图人工审核版本：近重复未执行，连续帧/审核版本证据不足；不应把本次A1验收理解为已排除这些风险。未来如补充采集，应复用原cleaning.dHash并绑定真实来源SHA及冻结身份，不补造历史。
+2. 所有新评测保留逐图轻量正式结果；可视框仍有200图/每层120框上限，框相关筛选显示仅覆盖已存证据。超出范围、旧正确图/旧缺失证据保持未知，不能宣称全量逐框覆盖或完整历史复评。无需为P2复制原图。
+3. NAS/OSS/GPU、生产97%实际可信度、大量历史/内存/IO性能和真实挖掘质量仍NOT VERIFIED；未生产部署、数据写入、训练或模型发布。Ultralytics许可独立，未新增ImageHash/Supervision或CDN。
+4. 后续从本节、evaluation_analysis.py、原training_evaluation和advanced-evaluation开始，不能重建Owner。最终CI必须检查本轮实际最终HEAD，不能借a088或各阶段本地测试结论。用户两份未跟踪训练模板测试和5944祖先继续保留。
 
 > 本轮唯一综合需求/进度/问题与接续依据。既有VNext、素材性能与Annotorious文档保留历史，仅增加入口，不复制本轮进度。基线c376be7d5d54cca838dc8456ae2e6906815a5335 / VERSION42.24.376；2026-10-22已重新fetch，远端与本地一致、长期工作树干净。应用会话列表查询超时，未宣称已读取全部其他会话；现存其他worktree不动，推送前再次核验远端与差异。
 
