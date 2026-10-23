@@ -1,3 +1,7 @@
+## 2026-10-23 P2接续入口
+
+[唯一评测专项](SCENARIO_MODEL_EVALUATION_UI_GOVERNANCE_2026_10_22.md)顶部P2为当前进度；原Owner复用，新增AdvancedEvaluation仅负责展示，不拥有GT/任务/存储/候选；最终SHA CI待核。
+
 ## 2026-10-20 转换Weight恢复增量
 
 原发布Owner/版本SQL payload/ModelArtifact复用；行内交付意向选择、原/目标分类与Weight/OSS/UNKNOWN审核投影，单一后端合同，无第二队列、弹窗或轮询。详细架构/证据/进度以docs/CONVERSION_WEIGHT_PUBLISH_RECOVERY_2026_10_20.md为准；生产替换未开放，VERSION42.24.360，main408/发布模块64011。

@@ -1,3 +1,7 @@
+## 2026-10-23 P2接续入口
+
+[唯一评测专项](SCENARIO_MODEL_EVALUATION_UI_GOVERNANCE_2026_10_22.md)顶部P2为当前进度；原Owner复用，新增AdvancedEvaluation仅负责展示，不拥有GT/任务/存储/候选；最终SHA CI待核。
+
 ## 2026-10-20 字典管理UI/UX简化
 
 原字典modal Owner内列表/短表单/搜索/启停，完整草稿及原revision API；同modal原位刷新不叠层。compute_platform_catalog原兼容分支提取单一resolve_chip_capability供GET/PUT检测记录投影和转换准入，无独立探测/判定器。未知技术字段可空且严格阻断任务，历史身份不改挂，外部映射/Weight/转换执行不变。VERSION362、app410/styles408/main409；限定Python33/Node32/Chrome2及七版本入口通过，最终CI附件与完整需求证据见docs/DYNAMIC_CONVERSION_CATALOG_ACCEPTANCE_2026_10_20.md顶部。

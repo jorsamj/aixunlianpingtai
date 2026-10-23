@@ -24,7 +24,7 @@
 | P2-A2 逐框诊断 | 已完成待验收 | 原匹配IoU/索引、全体轻量outcomes、最多200图框证据和分页 | 7b12c789；未保存/截断不补造 |
 | P2-B 深度对比 | 已完成待验收 | 同基准/同GT逐图配对与同步AB；无证据明确未知 | e6fb1a8c；最终CI待核 |
 | P2-C 复核迭代衔接 | 已完成待验收 | 原反馈/CandidateSet/训练入口及Test保护；无自动训练 | 本地代码及必要测试通过，提交待记 |
-| P2-F 最终验收 | 进行中 | Chrome28/Node82及分批Python通过；最终版本、推送/CI待做 | 不借旧CI |
+| P2-F 最终验收 | 进行中 | VERSION379/静态缓存425；Chrome28/Node82+版本9及分批Python通过；推送/CI待核 | 不借旧CI |
 
 执行：每阶段新增必要安全RED→最小实现→对应现有Python/Node及少量Chrome→独立正常提交并更新本节。相同代码已通过测试不重复执行；只复用受影响原CI，不扩大全仓测试。生产部署、GT/模型/素材写入和真实训练禁止。本节持续追加实际命令/通过失败跳过/缺口，不把设计当实现。
 
@@ -65,6 +65,9 @@ B实际提交e6fb1a8c7a4a4d3d552b72b67e7983a01604cdad（本地，远端CI未验�
 必要证据：scorer原34整体通过，B比较/身份计数漂移增量分别1通过；身份计数漂移新增断言先实际RED（错误passed）后GREEN。hard_sample_mining/online_feedback原unit26通过（新增来源/未审核/漂移/journal/Test先RED再GREEN）；training-submit Node先RED后54通过，收尾原场景/图表/submit共82通过。API新增真实CandidateStore+原反馈SQLite预览/幂等采纳/GT漂移/Test/活动保护1通过；评测复核只写意见、幂等和身份漂移1通过；受影响P2/原训练iteration/supplement定向12通过，原线上反馈API17通过。框筛选缺证据范围及低置信度0.5只过滤真实已存预测，补充原分页API1通过。
 
 Chrome原场景工作台/分析两文件28通过（含4个P2综合场景），训练基础版本及候选预填追加断言后单项1通过；不是额外29种场景。C首测暴露隐藏modal shell被当作弹窗，改为原#modal:not(.hidden)；隔离训练资源fixture缺algorithms/base_models/rec造成hydrate失败，补完整原合同，不绕过正式资源校验。随后真实原创建窗成功打开；未点击开始训练。截图p2-iteration-original-training已查看。独立只读审查未发现确定P0/P1；提出旧supplement动作未来同版本重评时应加身份复验，未证实当前可触达，作为后续硬化记录而非已修复Bug。
+
+
+C实际提交d4aec96cb45aca8f669c78554b846082a7d827db。收尾VERSION42.24.379，index app/main/styles425、原训练submit422606、原场景组件20261023p2；版本Owner9项通过，build_identity核验379。原28场景通过后，新增训练基础版本v2断言单场景复验1通过。生产仍未操作。最终实际HEAD以本文件所在提交及GitHub Checks为准，不能以d4/a088代替；CI完成后补代码提交的实际回执，再对任何文档新提交自身独立核查。
 
 ### 必须保留的未覆盖项与接续
 
