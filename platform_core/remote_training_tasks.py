@@ -1352,21 +1352,34 @@ class TrainingPrepareHandler:
             and str(revision.get("dataset_revision_id") or "") == revision_id
             and freeze_valid
         )
-        bundle_root = context.artifacts.artifact_path(target.task_id, "work/bundle").resolve()
-        prepared_bundle = Path(str(prepared.get("bundle_path") or "")).expanduser().resolve()
-        if not valid_documents or prepared_bundle != bundle_root:
+        deferred = target_mode == "local" and prepared.get("materialization_state") == "DEFERRED"
+        if deferred:
+            plan = context.artifacts.read_json(target.task_id, "input-plan/manifest.json", default={})
+            valid_bundle = (
+                prepared.get("bundle_path") is None
+                and isinstance(plan, Mapping)
+                and plan.get("materialization_state") == "DEFERRED"
+                and plan.get("snapshot_id") == snapshot_id
+                and plan.get("counts") == snapshot.get("counts")
+            )
+        else:
+            bundle_root = context.artifacts.artifact_path(target.task_id, "work/bundle").resolve()
+            prepared_bundle = Path(str(prepared.get("bundle_path") or "")).expanduser().resolve()
+            valid_bundle = prepared_bundle == bundle_root
+        if not valid_documents or not valid_bundle:
             raise RemoteTrainingPreparationError(
                 "TRAINING_PREPARED_OUTPUT_INVALID",
                 "prepared training input evidence is incomplete or inconsistent",
                 target_status=TaskStatus.FAILED,
             )
-        verified = resolve_remote_training_bundle(bundle_root / "manifest.json")
-        if verified.snapshot_id != snapshot_id:
-            raise RemoteTrainingPreparationError(
-                "TRAINING_PREPARED_BUNDLE_MISMATCH",
-                "prepared training bundle does not match the frozen snapshot",
-                target_status=TaskStatus.FAILED,
-            )
+        if not deferred:
+            verified = resolve_remote_training_bundle(bundle_root / "manifest.json")
+            if verified.snapshot_id != snapshot_id:
+                raise RemoteTrainingPreparationError(
+                    "TRAINING_PREPARED_BUNDLE_MISMATCH",
+                    "prepared training bundle does not match the frozen snapshot",
+                    target_status=TaskStatus.FAILED,
+                )
 
         result = {
             "training_task_id": target.task_id,

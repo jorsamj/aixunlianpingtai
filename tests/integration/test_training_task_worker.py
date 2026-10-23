@@ -1,13 +1,15 @@
 import hashlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from PIL import Image
+import pytest
 
 from platform_core.algorithms import list_algorithms
 from platform_core.task_runtime import ArtifactStore, Scheduler, TaskKind, TaskRecord, TaskRepository, TaskStatus
 from platform_core.storage import StorageSourceRepository
-from platform_core.remote_training_tasks import TrainingPrepareHandler
+from platform_core.remote_training_tasks import TrainingPrepareHandler, RemoteTrainingPreparationError
 import platform_core.training_tasks as training_tasks_module
 from platform_core.training_tasks import TrainingHandler
 
@@ -246,6 +248,24 @@ def test_training_prepare_then_handler_runs_and_commits_verified_result(tmp_path
     # A claimable queued task freezes indices, not a complete image/YOLO copy.
     assert not artifacts.artifact_path("task-one", "work/bundle").exists()
     assert not artifacts.artifact_path("task-one", "remote-training/training-bundle.zip").exists()
+
+    # Recovery after READY must validate the deferred documents without requiring
+    # image copies or recreating a bundle before the execution Worker starts.
+    recovered = prepare_handler._validate_ready_publication(
+        SimpleNamespace(artifacts=artifacts, task=SimpleNamespace(task_id="trainprep_task-one")),
+        prepared, prepared_payload,
+    )
+    assert recovered["snapshot_id"] == artifacts.read_json("task-one", "snapshot.json")["snapshot_id"]
+    plan = artifacts.read_json("task-one", "input-plan/manifest.json")
+    for changed in ({"snapshot_id": "wrong"}, {"counts": {}}, {"materialization_state": "READY"}):
+        artifacts.atomic_write_json("task-one", "input-plan/manifest.json", {**plan, **changed})
+        with pytest.raises(RemoteTrainingPreparationError, match="incomplete or inconsistent"):
+            prepare_handler._validate_ready_publication(
+                SimpleNamespace(artifacts=artifacts, task=SimpleNamespace(task_id="trainprep_task-one")),
+                prepared, prepared_payload,
+            )
+    artifacts.atomic_write_json("task-one", "input-plan/manifest.json", plan)
+    assert not artifacts.artifact_path("task-one", "work/bundle").exists()
 
     handler = TrainingHandler(data_dir, process_runner=fake_runner)
     scheduler = Scheduler(
