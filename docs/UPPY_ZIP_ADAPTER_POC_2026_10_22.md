@@ -1,3 +1,32 @@
+## 2026-10-24｜ZIP自动标签确认与重复窗口治理（已完成待验收）
+
+本节为本轮唯一需求/进度/接续记录。基线9acc75f799aac4144a9ce0d52c10c5efd6e24a4b / VERSION42.24.383，fetch0/0。代码递增VERSION42.24.384，入口缓存42.25.432，ZIP bootstrap/runtime4226367、view4226366。保护5944祖先、两份未跟踪训练模板测试及其他工作树；未部署/生产扫描/迁移/删除/GT写入。
+
+### 需求、根因与实现
+
+用户合同：服务端selecting+label_confirmation_required+external_classes才显示；同项目同job待确认周期自动一次，用户关闭不重复，确认成功所属窗口关闭，旧状态不重开/重复start；多ZIP文件名/顺序明确，其他上传继续，刷新从原任务中心手动恢复；业务弹窗不被覆盖，不新增poll/第二流程。
+
+真实根因：①uploadBatch/render依赖旧zip411节点，新Uppy没有；②confirmLabels成功后reconcile再open，可恢复旧进度窗口或切下一任务，缺少展示归属；③完成回调原有280ms自动打开“本次导入素材”；④共享上传层交接后若仍登记为上传窗口，首个确认关闭会误抑制其余ZIP；⑤原Modal底层节点会复用，仅节点相同不能证明还是原确认窗口。
+
+最小实现：原ZipImportRuntime持有项目/job/窗口及内容身份、已展示/主动关闭/提交记录；sessionStorage仅保存本标签页UI显示记忆，原localStorage start intent保留服务端已受理凭据（含终态，forget原接口清理）。无第二任务库或轮询。Uppy只注册原上传层，扫描真实就绪后销毁视图并通过原Modal Stack交接；不取消原传输。上传层交接注销、同批其他候选仍保留。存在其他业务窗口则原poll后续再展示；手动任务中心打开先核验原detail API。成功start回执立即关闭本job原内容仍存在的所属层，随后reconcile；新业务窗口复用节点也不会被误关。已受理detail优先于迟到selecting列表，不重新POST。下一个待确认job按原创建顺序显示文件名/任务ID/队列位置，不将其说成同任务重复。旧入口、fallback和Uppy共用此Owner。
+
+完成回调调用autoOpen:false，保留原手动“整理本次导入素材”入口，不自动跳到另一ZIP相关窗口。原后端v19状态机、标签映射/正式标签创建、GT入库、8MB分片/2ZIP槽位/4分片并发和任务中心不改。确认失败保留映射及可重试按钮，不能伪称成功；上传100%尚扫描不提前显示。
+
+修改：static/modules/zip-import-runtime.js、uppy-zip-view.js；static/app.js仅原Modal关闭通知/指定层关闭及完成回调选项；原bootstrap/index缓存、VERSION、必要静态Owner守卫、原两个CI工作流加入新浏览器用例。无后端业务变更。
+
+### RED→GREEN及最小回归
+
+- 最初真实Chrome两个RED：Uppy扫描完成无自动确认；start成功后ZIP窗口仍存在。进一步RED验证多ZIP共享层误关闭、Modal底层复用误关新窗口，均已修复。测试三ZIP曾只等待请求发出即检查下一窗口，正确改为等待当前job确认窗口实际关闭；保留一次start/三素材及job隔离全部断言，不删安全检查。
+- 新tests/browser/zip-label-presentation.spec.mjs共9场景：自动展示；确认关闭+连续旧列表+重复调用只1次start+真实done/1素材且不弹后续窗口；100%扫描与其他业务窗口延期；主动关闭/多poll/刷新/手动恢复；三ZIP分别确认/准确文件名和job/各1次start/真实3素材；迟到start不关新窗口；Uppy原fallback；经典importFile入口；409拒绝保留/安全重试。
+- 真实Chrome：原Uppy15例+新9例首次23通过1失败（上述测试等待边界），该单例修正后1/1通过；同轮新7项曾整体7/7通过。无生产服务或素材，真实隔离HTTP/分片/后台导入/JPEG/GT；scanning/旧列表/409/迟到start通过路由仅注入所测竞态，不伪造导入成功证据。CI执行完整新增9及既有用例。
+- Node：11个相关文件101/101通过；最后两处入口/顶部业务窗口保护修改后仅重跑受影响5文件51/51通过；0失败/跳过。同步守卫只调整真实缓存/函数签名及autoOpen:false，不降低Owner断言。
+- Python：复用tests/api/test_v19_label_mapping.py，9通过、0失败/跳过（9.01s，5条既有弃用warning），覆盖明确确认/冻结映射/禁止隐式创建/正式GT回滚；没有全仓测试或GPU。
+- node --check app/runtime、git diff --check通过。当前阶段A审计及RED/B修复/C本地回归已完成，D提交及准确SHA远端CI进行中；本地通过不能代替CI，提交SHA与最终回执待下一节补充。
+
+### 边界与接续
+
+自动候选仅当前页面上传产生；刷新/主动关闭后须任务中心手动恢复，避免历史任务抢占用户。视图销毁不影响原控制器；原服务器仍对正式导入幂等负责，本轮未更改网络结果不确定的后端合同。UI显示记忆不是服务端任务状态，正常关闭不取消ZIP。未验证生产网络/浏览器多标签同时确认，生产未部署。后续只从本节及原Owner继续，勿重建ZIP轮询/Modal/任务表或自动跳过人工映射。
+
 ## 2026-10-24｜普通图片上传同一需求复核（复用既有实现，无业务代码变更）
 
 用户再次提交55dcc111附件，内容与本文件2026-10-23普通图片专项相同。重新fetch后本地/远端一致：b1b32a445da3a669c1a6c056ebda8502abc890ea，VERSION42.24.382（上传功能在381交付，382为后续跨标签专项）。确认既有Uppy图片view、唯一MaterialUploadRuntime、UploadBatchStore、upload-confirmation、TaskCenter、清洗与Annotation入口仍在；没有重新建设组件/状态机/数据库，没有修改上传/GT/清洗业务代码，文档复核不递增VERSION。

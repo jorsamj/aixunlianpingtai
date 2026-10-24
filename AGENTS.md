@@ -1,3 +1,7 @@
+## 2026-10-24｜ZIP自动标签确认与重复窗口治理（已完成待CI验收）
+
+唯一记录：[Uppy专项顶部](docs/UPPY_ZIP_ADAPTER_POC_2026_10_22.md)。原ZIP Runtime依据服务端待确认状态统一展示、同job自动一次/主动关闭抑制/成功立即关所属内容，旧列表不倒退；Uppy/旧入口共用，多ZIP顺序与文件名明确，原完成回调不再自动弹整理窗口。VERSION384；新Chrome9场景及原Uppy15、Node101/末次受影响51、Python9必要回归已记录，准确提交CI待核。无后端/GT/传输协议变更，5944和两份模板测试保留，无生产操作。
+
 ## 2026-10-24｜创建训练弹窗滚动修复（代码及隔离CI已验收）
 
 唯一记录：[训练创建专项顶部](docs/TRAINING_CREATE_FOUR_MODES_UI_2026_10_10.md)。原CSS收敛高度/单一layout滚动、标签自然展开、footer真实占位；无JS或后端/参数/调度变更，important减少15。五视口真实wheel5/5、原标签提交Chrome1/1及Node27/27通过；VERSION383，CSS cache4226355，代码f5ba6192准确CI 36/36 Actions、99/99 Checks通过，文档最终HEAD自身另核Checks。5944及两份模板测试保留，未部署/未启动训练。

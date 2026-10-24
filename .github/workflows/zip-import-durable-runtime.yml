@@ -240,4 +240,4 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
       - name: Real Chrome refresh recovery
-        run: npx playwright test tests/browser/zip-import-refresh-recovery.spec.mjs tests/browser/uppy-zip-poc.spec.mjs tests/browser/material-upload-chunking.spec.mjs
+        run: npx playwright test tests/browser/zip-import-refresh-recovery.spec.mjs tests/browser/zip-label-presentation.spec.mjs tests/browser/uppy-zip-poc.spec.mjs tests/browser/material-upload-chunking.spec.mjs

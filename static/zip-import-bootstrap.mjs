@@ -1,4 +1,4 @@
-import {installZipImportRuntime} from './modules/zip-import-runtime.js?v=4226366';
+import {installZipImportRuntime} from './modules/zip-import-runtime.js?v=4226367';
 
 const runtime = installZipImportRuntime({
   getState: () => state,
@@ -15,7 +15,7 @@ if (runtime) {
     const projectId=state.project.id;
     const current=()=>state.project?.id===projectId&&(!chooser||chooser.isConnected);
     try {
-      const {openUppyZipView} = await import('./modules/uppy-zip-view.js?v=4226365');
+      const {openUppyZipView} = await import('./modules/uppy-zip-view.js?v=4226366');
       if(!current())return null;
       return await openUppyZipView({runtime,projectId});
     } catch (error) {

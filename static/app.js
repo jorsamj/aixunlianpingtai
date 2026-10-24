@@ -2632,17 +2632,31 @@ window.installUsability417=function(){
     return decorateImportModal424(makeLayer424(title,body,wide),title);
   };
   window.modal=modal;
+  function beforeCloseModal424(layer){
+    window.ZipImportRuntime?.beforeModalClose?.(layer);
+    window.beforeCloseTrainingReport425?.(layer);
+    window.PlatformCore?.reports?.disposeReportViews?.(layer);
+    window.beforeCloseEvaluationPreview429?.(layer);
+  }
   closeModal=function closeModalStackCore424(){
     window.PlatformCore?.presentation?.hideTooltip?.();
-    if(dynamicModalStack.length){const top=dynamicModalStack.pop();window.beforeCloseTrainingReport425?.(top);window.PlatformCore?.reports?.disposeReportViews?.(top);window.beforeCloseEvaluationPreview429?.(top);top.remove();restoreModalFocus424(top);return}
-    window.beforeCloseTrainingReport425?.(baseModal);
-    window.PlatformCore?.reports?.disposeReportViews?.(baseModal);
-    window.beforeCloseEvaluationPreview429?.(baseModal);
+    if(dynamicModalStack.length){const top=dynamicModalStack.pop();beforeCloseModal424(top);top.remove();restoreModalFocus424(top);return}
+    beforeCloseModal424(baseModal);
     baseModal?.classList.remove('import350-modal','import350-minimized');
     closeModalBase();restoreModalFocus424(baseModal);
   };
   window.closeModalCore424=closeModal;
-  window.closeAllModals424=function(){window.PlatformCore?.presentation?.hideTooltip?.();for(const layer of [...dynamicModalStack,baseModal]){window.beforeCloseTrainingReport425?.(layer);window.PlatformCore?.reports?.disposeReportViews?.(layer);window.beforeCloseEvaluationPreview429?.(layer)}while(dynamicModalStack.length)dynamicModalStack.pop().remove();if(baseModal&&!baseModal.classList.contains('hidden'))closeModalBase()};
+  // Close an owned layer without dismissing a newer business window.
+  window.closeModalLayer424=function(layer){
+    if(!layer)return false;
+    const top=dynamicModalStack.at(-1)||baseModal;
+    if(layer===top&&!layer.classList.contains('hidden')){closeModal();return true}
+    const index=dynamicModalStack.indexOf(layer);
+    if(index>=0){dynamicModalStack.splice(index,1);beforeCloseModal424(layer);layer.remove();modalReturnFocus424.delete(layer);return true}
+    if(layer===baseModal&&!layer.classList.contains('hidden')){beforeCloseModal424(layer);baseModal.classList.remove('import350-modal','import350-minimized');closeModalBase();modalReturnFocus424.delete(layer);return true}
+    return false;
+  };
+  window.closeAllModals424=function(){window.PlatformCore?.presentation?.hideTooltip?.();for(const layer of [...dynamicModalStack,baseModal]){beforeCloseModal424(layer)}while(dynamicModalStack.length)dynamicModalStack.pop().remove();if(baseModal&&!baseModal.classList.contains('hidden'))closeModalBase()};
 
   // ---------- all images are one logical data pool ----------
 
@@ -4914,14 +4928,14 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   window.importClean412=()=>{const ids=[...state.import412Selected];if(!ids.length)return toast('请选择需要清洗的素材');closeModal();createClean427({image_ids:ids})};
 
   // ZIP review is owned by the explicit successful import-completion event.
-  window.completeZipImportReview412=function(jobId){
+  window.completeZipImportReview412=function(jobId,{autoOpen=true}={}){
     const t=state.import411;if(!t||String(t.jobId||'')!==String(jobId||'')||t.__reviewBound)return;
     t.__reviewBound=true;
     const extra=`<div class="row end"><button class="btn primary review412-btn" onclick="showImportReview412('${t.jobId}')">整理本次导入素材</button></div>`;
     if(!String(t.resultHtml||'').includes('review412-btn'))t.resultHtml=String(t.resultHtml||'')+extra;
     const syncReview=()=>{const r=document.getElementById('zip411Result');if(r&&!r.querySelector('.review412-btn'))r.insertAdjacentHTML('beforeend',extra)};
     syncReview();setTimeout(syncReview,30);
-    if(!t.__autoReviewOpened){t.__autoReviewOpened=true;setTimeout(()=>window.showImportReview412?.(t.jobId),280)}
+    if(autoOpen&&!t.__autoReviewOpened){t.__autoReviewOpened=true;setTimeout(()=>window.showImportReview412?.(t.jobId),280)}
   };
 
   // -------- selection controls for all material pickers --------

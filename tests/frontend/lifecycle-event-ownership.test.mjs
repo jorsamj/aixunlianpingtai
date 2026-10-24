@@ -8,7 +8,7 @@ const material = fs.readFileSync(new URL('../../static/modules/material-paginati
 test('ZIP import review is event-owned and the body-wide observer cannot return', () => {
   assert.equal(app.includes('const oldZip412=window.doUploadZip426;'), false);
   assert.equal(app.includes('obs.observe(document.body,{childList:true,subtree:true});'), false);
-  assert.equal(app.split('window.completeZipImportReview412=function(jobId)').length - 1, 1);
+  assert.equal(app.split('window.completeZipImportReview412=function(jobId,{autoOpen=true}={})').length - 1, 1);
   assert.equal(app.split('window.completeZipImportReview412?.(job.id)').length - 1, 1);
   assert.equal(app.includes('t.__reviewBound=true;'), true);
   assert.equal(app.includes('t.__autoReviewOpened=true;'), true);
