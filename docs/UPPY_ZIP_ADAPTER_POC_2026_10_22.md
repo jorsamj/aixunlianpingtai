@@ -1,3 +1,19 @@
+## 2026-10-24｜普通图片上传同一需求复核（复用既有实现，无业务代码变更）
+
+用户再次提交55dcc111附件，内容与本文件2026-10-23普通图片专项相同。重新fetch后本地/远端一致：b1b32a445da3a669c1a6c056ebda8502abc890ea，VERSION42.24.382（上传功能在381交付，382为后续跨标签专项）。确认既有Uppy图片view、唯一MaterialUploadRuntime、UploadBatchStore、upload-confirmation、TaskCenter、清洗与Annotation入口仍在；没有重新建设组件/状态机/数据库，没有修改上传/GT/清洗业务代码，文档复核不递增VERSION。
+
+本轮新执行的必要证据：
+- Python：`python -m pytest tests/api/test_upload_clean_flow.py tests/api/test_upload_request_recovery.py -q`，31通过、0失败、0跳过（27.18秒），保留5条既有依赖弃用warning。覆盖混合决策/幂等/回滚/项目范围/正式GT保护及不确定上传回执恢复。
+- Node：`node --test tests/frontend/material-upload-runtime.test.mjs tests/frontend/uppy-image-view.test.mjs tests/frontend/upload-confirmation.test.mjs`，25通过、0失败、0跳过；包括64张/128MB有界顺序批次、缺文件回执拒绝、真实成功ID/退役过滤、重复点击/项目切换、刷新/稍后处理、逐文件等待真实回执及本地资源回退。
+- 真实Chrome：`npx playwright test tests/browser/material-upload-chunking.spec.mjs --grep 'Uppy five' --reporter=line`，2/2通过（10.5秒），隔离项目/真实后端。五张全成功：一个HTTP请求含五个multipart文件、五条服务端成功ID、确认页五图、正确大图、ready进入原标注但GT仍unannotated；四成功一损坏：确认页仅四张成功图，失败原因独立显示，刷新同批恢复，选一图产生原清洗任务、其余三图pending，稍后处理后刷新不再自动展开。
+- 本轮没有重跑全仓；65图分两批/ZIP本地Uppy的既有证据保留于下方原验收，不将历史用例计入本轮2例。当前代码SHA已核验21/21 Actions、55/55 Checks成功：[准确Checks](https://github.com/jorsamj/aixunlianpingtai/commit/b1b32a445da3a669c1a6c056ebda8502abc890ea/checks)。本次仅文档补提产生的新HEAD仍须独立核验后交付，不能借该旧SHA代替。
+
+根因与结论：五图通常是一批multipart、一个任务，不能将任务数当图片数；本轮实测五File→五请求项→五成功回执，未复现漏传，不能据此断言生产所有网络/文件均无漏传。当前任务中心及确认页已区分图片数/批次数/真实字节/成功/失败/待核验，不伪造逐图百分比。成功身份只取服务端本项目批次，失败和退役图不进入成功网格；不复制原图。clean/ready/pending走原v55决策，ready不写GT，稍后不启动清洗或训练。
+
+已知限制继续有效：原后端每批只有一个clean_task_id，确认页禁止同批第二组追加清洗；首次选择不同图片分别clean/ready/pending正常。不能把该限制写成已解决，也不为重复需求擅自重建多任务关联。后续若明确需要同批多轮追加清洗，应先审原清洗任务身份、并发和恢复合同，再最小扩展原Owner。网络结果未知时只查询原requestId，不盲目重传；同名成功/失败无法可靠区分时禁用快捷重试。生产吞吐/NAS/OSS和真实网络仍NOT VERIFIED。
+
+保留5944祖先、两份未跟踪模板测试和其他会话成果；未部署、未操作生产素材/GT/历史副本/模型/迁移，不扩大训练模板或跨标签专项。接续继续使用本文件原普通图片章节，不创建重复需求文档。
+
 ## 2026-10-23｜普通图片上传统一与本次上传处理（代码及隔离CI已验收）
 
 本节为本轮唯一需求、进度及接续；原ZIP/任务中心验收记录保留。基线5cb25c3ce06e2a4c174814a7c6eb4775bcdeae41，VERSION42.24.380，fetch0/0；5944及两份未跟踪训练模板测试保留，不部署生产或修改历史素材/GT/模型。

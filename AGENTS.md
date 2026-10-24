@@ -1,3 +1,7 @@
+## 2026-10-24｜普通图片上传同一需求复核
+
+[唯一专项](docs/UPPY_ZIP_ADAPTER_POC_2026_10_22.md)顶部已记录当前b1b32a44/VERSION382复核：既有本地Uppy/原multipart/本批确认/clean-ready-pending/标注与恢复直接复用，无业务代码变更。新Python31、Node25、真实Chrome五图/部分失败2项通过；原每批一次清洗限制保留，不冒充多轮追加已实现。代码SHA21/21 Actions、55/55 Checks通过；本次文档新HEAD另核CI。5944及两份未跟踪模板测试保留，无生产操作。
+
 ## 2026-10-24｜P1跨标签负样本与首次训练（代码及隔离CI已验收）
 
 唯一需求/进度：[训练质量专项P1](docs/TRAINING_QUALITY_REMEDIATION_TRACKER_2026_10_18.md)。任务标签与原始标签分离，正/已确认负/待审核共享后端合同；人工有限批审保留原框、CAS/源SHA与事务审计；新V3纯负保留像素/空YOLO、混合与历史V2保护不变。VERSION382，必要Python/Node与Chrome四个独立场景通过；代码cd8cde89准确CI 23/23 Actions、60/60 Checks成功，最终文档HEAD自身另核Checks，详见专项回执；不自动确认/丢弃/训练，不生产操作。5944及两份未跟踪模板测试保留。
