@@ -1,4 +1,4 @@
-# 大模型自动标注 API 协议兼容专项（已完成待CI验收）
+# 大模型自动标注 API 协议兼容专项（代码及隔离CI已验收）
 
 ## 基线与范围
 
@@ -29,7 +29,7 @@ auto结构化依次schema/object/提示词+后置校验，只在明确unsupporte
 - [x] B 添加端点、请求、返回/错误/受控fallback RED，再实现原provider最小分支。
 - [x] C API配置持久化/连接测试字段、正式同适配器和无效结果不入GT验证。
 - [x] D 原M4高级配置/保存/刷新编辑，必要Node及真实Chrome配置冒烟。
-- [ ] E 版本/缓存/原相关CI、最小回归、文档及正常提交；最终SHA独立核验。
+- [x] E 版本/缓存/原相关CI、最小回归及代码正常提交推送；代码最终SHA已独立核验，文档提交自身Checks交付前另核。
 
 每阶段记录真实测试/修改/提交/风险，不以Mock成功冒充收费模型实测；现有测试不删除/降断言，不重跑无关全仓/GPU。实施按writing-plans/TDD执行，已确认的用户合同无需再次审批。
 
@@ -74,4 +74,16 @@ CI：原AI Annotation Recovery增加provider/核心与新测试paths、43项跨�
 
 ### 接续与发布边界
 
-E阶段剩余：正常提交、push前fetch，核验准确新SHA CI；结果回填本节，文档自身新HEAD亦核Checks。真实glm收费调用/该账户权限、地域/额度、网络及模型标注效果仍NOT VERIFIED；本轮不提供生产已可用承诺，不索要公开Key、不执行生产部署。受控发布前应使用平台原安全保存的Key，在用户授权环境做一次真实图片标注验证。后续从本文件及原provider/M4/V35工厂继续，不另建provider、GT或任务Owner。
+代码阶段已经完成；文档提交自身最终HEAD的Checks在交付前独立核验，不借用代码提交绿色结论。真实glm收费调用/该账户权限、地域/额度、网络及模型标注效果仍NOT VERIFIED；本轮不提供生产已可用承诺，不索要公开Key、不执行生产部署。受控发布前应使用平台原安全保存的Key，在用户授权环境做一次真实图片标注验证。后续从本文件及原provider/M4/V35工厂继续，不另建provider、GT或任务Owner。
+
+## 最终代码验收回执（2026-10-24）
+
+以下为最终证据；上方43项、配置9项及“待核CI”等为开发过程记录，由本节44项/配置11项和准确SHA验收结论取代。
+
+- 基线80663002fa033dd5d5cb16747e05a743fbfab4f4；实现提交8d806032a706f9dba94d6ac47c6facab94badbc4，错误证据修正3541f625fa255af209a8b1937a79697ffc781701，最终代码982069c8f51b647202a489369d0c4e5c1d6752ae。均正常推送长期分支，VERSION42.24.385，cache42.25.433。
+- 982069c8准确SHA：47/47 Actions、128/128 Checks成功，0失败/取消/跳过/待完成（包含仓库实际触发的push/PR工作流，不把两轮触发视为不同用例）。[准确提交Checks](https://github.com/jorsamj/aixunlianpingtai/commit/982069c8f51b647202a489369d0c4e5c1d6752ae/checks)。
+- [AI Annotation Recovery](https://github.com/jorsamj/aixunlianpingtai/actions/runs/40084180674)：Linux/Windows原恢复合同+新增协议测试各84/84通过，Node恢复合同各39/39；API合同55/55通过，包括最终11项配置、4项正式持久化E2E、原冻结/任务/Chat/Ollama验证。协议专属最终44项，平铺错误及旧UI成功字段断言已包含。
+- [Frontend Runtime](https://github.com/jorsamj/aixunlianpingtai/actions/runs/40084180699)：原Node1328/1328通过，真实Chrome265/265通过（14.7分钟），包含新协议配置保存、刷新及重新编辑。没有为本轮手动重复全仓测试，现有工作流触发范围保留。
+- 工作区只有原有两份未跟踪训练模板测试；5944e1a558a34f7be008b644a5a3b07b4ed132cd保留在祖先链。未提交其内容，未强推、未覆盖其他工作树。
+
+交付结论：Chat/Responses协议、旧配置自动识别、高级配置及同一连接测试/正式适配器已通过代码和隔离验收。用户原/responses配置无需改成/api/v3；这不等同于指定账户真实glm接口调用已通过。没有真实Key、收费请求、生产部署、生产GT/素材修改；生产发布前仍需授权环境真实图片验证。后续文档提交不改变上述业务代码，必须再查询该文档提交自身CI，结果随最终交付提供；文档自身准确HEAD可由该文件最后修改commit定位，避免自引用SHA循环。

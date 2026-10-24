@@ -1,6 +1,6 @@
-## 2026-10-24｜大模型Chat/Responses协议兼容（已完成待CI验收）
+## 2026-10-24｜大模型Chat/Responses协议兼容（代码及隔离CI已验收）
 
-唯一需求/设计/进度：[协议专项](LLM_API_PROTOCOL_COMPATIBILITY_2026_10_24.md)。原provider增加准确路径auto/显式协议、Responses输入/最终文本/失败处理、受控结构化降级和安全错误证据；M4高级配置持久化及原Bootstrap模型投影同步，连接测试/正式v60同工厂，GT校验/人工审核不变。VERSION385/cache433；协议43、配置9/持久化E2E、既有兼容/runtime、Node18及真实Chrome1必要回归通过，准确SHA CI待核。保留5944和两份模板测试；真实GLM/收费接口NOT VERIFIED，不部署。
+唯一需求/设计/进度：[协议专项](LLM_API_PROTOCOL_COMPATIBILITY_2026_10_24.md)。原provider兼容Chat/Responses，准确端点识别、受控结构化降级、安全错误证据；原M4高级配置/Bootstrap投影同步，连接测试与正式v60同工厂及字段校验。VERSION385/cache433；最终代码982069c8准确CI47/47 Actions、128/128 Checks成功，协议44、API55（含配置11/正式E2E4）、Node1328、Chrome265通过。文档自身最终HEAD另核Checks。5944及两份模板测试保留；真实GLM/收费接口NOT VERIFIED，发布前须授权环境实测，不部署。
 
 ## 2026-10-24｜ZIP自动标签确认与重复窗口治理（代码及隔离CI已验收）
 
