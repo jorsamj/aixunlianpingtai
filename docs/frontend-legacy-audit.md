@@ -1,4 +1,4 @@
-## 2026-10-24｜高级功能菜单整合（已完成待CI验收）
+## 2026-10-24｜高级功能菜单整合（代码及隔离CI已验收）
 
 本节为本轮唯一设计、进度及验收记录。基线ee96a837013bbe352df622898152286d104d20a8 / VERSION42.24.385，fetch本地远端0/0；两份未跟踪训练模板测试及5944祖先保留。已检查其他工作树及会话，未发现本分支同时编辑；不操作其他工作树。
 
@@ -23,7 +23,7 @@
 - [x] B 在原navigation-stability和main导航chrome接入菜单元数据/原路由Tab；修正标题、面包屑、active及刷新恢复。
 - [x] C 作用域CSS统一资源、模型、存储及对接页；低频工具说明收纳，旧操作/字典/未知空间语义保留，不改后端。
 - [x] D 原advanced-navigation Node守卫升级合同；少量真实Chrome覆盖四菜单/旧路由/Tab/检测离开恢复/弹窗/缩放。仅运行受影响现有回归，不手动全仓测试。
-- [ ] E 更新VERSION/cache及五份短交接入口，正常提交推送，独立核验准确SHA CI。
+- [x] E VERSION/cache及五份交接入口已更新，代码与测试已正常推送，f95e221f准确SHA CI已验收；文档提交自身最终HEAD的Checks在交付前另核。
 
 风险/边界：真实GPU、NAS/OSS、生产连接/同步/发布均不执行；本轮不新增清理/迁移权限或后端能力。旧路由仍是页面身份，Sidebar折叠不改变业务页；同页Tab不重发请求。测试和提交证据在本节持续补齐，不以写文档代替代码交付。
 
@@ -43,13 +43,25 @@ RED→GREEN：新增Node初始缺模块RED；Chrome明确收到原7菜单而期�
 
 视觉证据：[原7项菜单](screenshots/2026-10-24-advanced-menu/before.png)、[转换字典1440](screenshots/2026-10-24-advanced-menu/conversion-1440.png)、[AI配置1920](screenshots/2026-10-24-advanced-menu/ai-models-1920.png)、[存储1920](screenshots/2026-10-24-advanced-menu/storage-cache-1920.png)、[训练环境1920](screenshots/2026-10-24-advanced-menu/training-environment-1920.png)。全为隔离服务真实Chrome截图，无生产或虚构业务数据；1920/1440/1366及125%等效1093宽已检查无横向溢出，截图路径同时保留在测试输出。旧测试自动重写的历史截图已还原其原HEAD内容，不混入本轮提交。
 
-VERSION42.24.386；app/main/styles cache42.25.434，新页面样式/模块20261024，存储布局缓存20261024-layout。原Frontend Runtime仅追加2个本轮Chrome场景，不新建工作流；精简本地测试不改变原CI既有守卫。阶段E剩余：fetch检查并行后正常提交推送，准确SHA CI尚待核验，不能以本地绿色替代。生产Agent/GPU/NAS/OSS/同步发布NOT VERIFIED，不部署、不扫描生产、不改生产数据。
+VERSION42.24.386；app/main/styles cache42.25.434，新页面样式/模块20261024，存储布局缓存20261024-layout。原Frontend Runtime仅追加2个本轮Chrome场景，不新建工作流；精简本地测试不改变原CI既有守卫。当时阶段E待提交/CI；最终状态以下方验收回执为准，不以本地绿色替代远端CI。生产Agent/GPU/NAS/OSS/同步发布NOT VERIFIED，不部署、不扫描生产、不改生产数据。
 
 ### 提交与CI问题跟踪
 
 代码d281c72120d73a1514125a0412c7d38b2994360f已正常推送。其CI发现Storage Cache Governance仍grep旧缓存422540-lifecycle（该job Python58及Node21通过），Frontend Runtime两个源码守卫仍要求原七菜单列表及label===currentPage。按真实新菜单合同更新原断言/缓存标识，所有安全/唯一Owner/不重建侧栏断言保留；两份受影响Node文件59/59 GREEN。该SHA不能标全绿，守卫修正后须核新SHA，不使用旧结果替代。
 
 守卫修正0ff220419e4da30437ea958119de192762fedec7准确CI为21成功/1失败，55成功/1失败Checks；存储守卫已通过（Python58/Node21），Node1331/1331通过。完整Chrome264通过/3失败：服务节点无闪页用例对象仍期望旧title、版本遍历用例仍期望旧菜单名、提示词缓存用例未选择新Tab。仅同步这三处新UI合同，保留原页面身份/无闪页/版本标记/DOM稳定/GET一次断言；3/3定向Chrome GREEN（11.7s）。业务代码未变，须再核修正新SHA CI，旧失败记录不隐藏。
+
+### 最终代码验收与接续
+
+最终代码/测试提交f95e221f5243b31884737d903a7eac92fe184d8c，VERSION42.24.386；[准确SHA Checks](https://github.com/jorsamj/aixunlianpingtai/commit/f95e221f5243b31884737d903a7eac92fe184d8c/checks)为23/23 Actions、60/60 Checks成功，0失败/取消/跳过/待完成。先前d281/0ff的失败已由上述合同修正关闭，不将其说成绿色。
+
+[最终Frontend Runtime](https://github.com/jorsamj/aixunlianpingtai/actions/runs/40089845478)：Node1331/1331、真实Chrome267/267通过（16.7分钟），包含四菜单/原Owner/Tab/刷新恢复、真实取消隔离、旧业务回归。存储相关Python58/Node21及不可变/节点隔离/签名上传守卫在0ff22041对应Storage Cache Governance通过；本轮没有Python业务改动，未手动重复全仓pytest。所有最终验收区分准确提交，不把不同轮次数字相加。
+
+原始5944e1a558a34f7be008b644a5a3b07b4ed132cd在祖先链中，两份训练模板测试始终未暂存/提交；没有修改其他工作树。仅正常push唯一长期分支，无reset/强推/main合并。代码d281c721、源码守卫0ff22041、浏览器合同f95e221f均已持久化并保留可追溯记录。当前没有已知未完成的本轮代码项。
+
+接续从static/modules/advanced-navigation.js（纯展示映射）、static/main.mjs原navigation chrome、static/app.js最终renderNav/renderTop以及原各业务Owner开始。不要将state.page替换成四个菜单名，不复制业务Renderer、不新建PollRegistry/Modal/任务/存储管理；同页Tab只改展示，异步Owner及API保持原名称。旧素材迁移是原正式已实现工具，迁移/物理删除仍需其原预览确认和授权；菜单整合没有新增这类能力。
+
+文档自身后续提交不改业务代码；最终HEAD由本文件最近修改commit定位，交付前独立核其Checks，避免SHA自引用循环。生产GPU/Agent环境、NAS/OSS、真实平台同步/发布仍NOT VERIFIED；本轮不部署、不修改生产数据库/素材/GT、未进行生产扫描或迁移。必要生产环境验收属于单独授权范围。
 
 ## 2026-10-24｜大模型Chat/Responses协议兼容（代码及隔离CI已验收）
 

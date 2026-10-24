@@ -1,6 +1,6 @@
-## 2026-10-24｜高级功能四入口整合（已完成待CI验收）
+## 2026-10-24｜高级功能四入口整合（代码及隔离CI已验收）
 
-唯一映射/设计/进度：[前端治理记录顶部](frontend-legacy-audit.md)。实际7项收敛为算力与节点、模型转换环境、AI辅助配置、存储管理；迁移入口收纳存储Tab，对接与只读浏览保留独立。原state.page/业务Owner/API/轮询不变，同页Tab仅展示偏好，无后台业务改动。VERSION386/cache434；定向Node33及24、Chrome11/9/4分组通过（有重复不累加），准确SHA CI待核。5944和两份模板测试保留；不部署、不改生产数据。
+唯一映射/设计/进度/截图：[前端治理记录顶部](frontend-legacy-audit.md)。实际7项收敛为算力与节点、模型转换环境、AI辅助配置、存储管理；迁移收纳存储Tab，对接与只读浏览保留独立。原state.page/业务Owner/API/轮询不变，无后端/数据库改动；导航取消reason沿原PageRequestScope隔离。VERSION386/cache434；f95e221f准确CI23/23 Actions、60/60 Checks成功，Node1331/1331、Chrome267/267通过，旧失败及关闭证据见记录。文档自身最终HEAD另核Checks。5944与两份模板测试保留；不部署、不改生产数据，真实GPU/NAS/OSS/对接生产环境NOT VERIFIED。
 
 ## 2026-10-24｜大模型Chat/Responses协议兼容（代码及隔离CI已验收）
 
