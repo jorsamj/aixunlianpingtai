@@ -84,7 +84,7 @@ test('persisted service-node page has its owner installed in the main runtime be
     runtime: 'service-node-runtime-422539',
     owner: true,
   });
-  await expect(page.locator('#title')).toHaveText('服务节点');
+  await expect(page.locator('#title')).toHaveText('算力与节点');
   await expect(page.locator('[data-service-node-page="1"]')).toBeVisible();
   await expect(page.locator('#view')).not.toContainText('模块尚未');
   await expect(page.locator('#view')).not.toContainText('当前页面不存在');

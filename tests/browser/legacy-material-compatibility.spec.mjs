@@ -32,7 +32,7 @@ test('advanced legacy compatibility keeps preview identity through retry and fen
     }
   });
   await page.locator('#nav .nav-advanced427 button').click();
-  await page.locator('#nav .nav-btn').filter({has:page.locator('b',{hasText:/^旧素材兼容迁移$/})}).click();
+  await page.locator('#nav .nav-btn').filter({has:page.locator('b',{hasText:/^存储管理$/})}).click();await page.locator('#advancedPageTabs').getByRole('tab',{name:'旧素材兼容迁移',exact:true}).click();
   const status=page.locator('[data-compat-status]'),scan=page.locator('[data-compat-scan]'),preview=page.locator('[data-compat-preview]'),apply=page.locator('[data-compat-apply]');
   await expect(page.locator('#view').getByRole('heading',{name:'旧素材兼容迁移',exact:true})).toBeVisible();
   await scan.click();
@@ -97,7 +97,7 @@ async function fullScanFixture(page,{interrupt=false}={}) {
     const items=rows.slice(offset,offset+limit);active--;
     await route.fulfill({json:{items,total:offset===0?120:null,catalog_fingerprint:'f'.repeat(64),next_cursor:offset+items.length<120?items.at(-1).image_id:null}});
   });
-  const open=async()=>{await page.locator('#nav .nav-advanced427 button').click();await page.locator('#nav .nav-btn').filter({has:page.locator('b',{hasText:/^旧素材兼容迁移$/})}).click();await expect(page.locator('[data-compat-scan]')).toBeEnabled();};
+  const open=async()=>{await page.locator('#nav .nav-advanced427 button').click();await page.locator('#nav .nav-btn').filter({has:page.locator('b',{hasText:/^存储管理$/})}).click();await page.locator('#advancedPageTabs').getByRole('tab',{name:'旧素材兼容迁移',exact:true}).click();await expect(page.locator('[data-compat-scan]')).toBeEnabled();};
   await open();return {calls,open,get release(){return release},get maxActive(){return maxActive}};
 }
 

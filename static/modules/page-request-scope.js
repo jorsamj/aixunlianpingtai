@@ -89,7 +89,7 @@ export class PageRequestScope {
       }
       return response;
     } catch (error) {
-      if (isAbortError(error) && (controller.signal.aborted || !this.isCurrent(generation, page))) {
+      if ((isAbortError(error) || error === controller.signal.reason) && (controller.signal.aborted || !this.isCurrent(generation, page))) {
         this.abortedRequests += 1;
         // Legacy app.js callers often catch every error and show a toast. Keep a request
         // invalidated by navigation suspended instead: its caller can no longer mutate state/DOM,

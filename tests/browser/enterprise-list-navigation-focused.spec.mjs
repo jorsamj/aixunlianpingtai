@@ -31,42 +31,43 @@ test('advanced navigation hides entries without changing current page and servic
   }));
   await ready(page);
 
-  await expect(navItem(page, '训练资源')).toHaveCount(0);
+  await expect(navItem(page, '算力与节点')).toHaveCount(0);
   await expect(navItem(page, '服务节点')).toHaveCount(0);
   await page.locator('#nav .nav-advanced427 button').click();
-  await expect(navItem(page, '训练资源')).toHaveCount(1);
-  await expect(navItem(page, '服务节点')).toHaveCount(1);
+  await expect(navItem(page, '算力与节点')).toHaveCount(1);
+  await expect(navItem(page, '服务节点')).toHaveCount(0);
 
-  await navItem(page, '训练资源').click();
-  await expect(page.locator('#title')).toHaveText('训练资源');
+  await navItem(page, '算力与节点').click();
+  await page.locator('#advancedPageTabs').getByRole('tab',{name:'训练环境',exact:true}).click();
+  await expect(page.locator('#title')).toHaveText('算力与节点');
   await expect.poll(async () => page.evaluate(() => state.page)).toBe('训练资源');
   await page.locator('#nav .nav-advanced427 button').click();
-  await expect(navItem(page, '训练资源')).toHaveCount(0);
-  await expect(page.locator('#title')).toHaveText('训练资源');
+  await expect(navItem(page, '算力与节点')).toHaveCount(0);
+  await expect(page.locator('#title')).toHaveText('算力与节点');
   await expect(page.locator('#view')).not.toContainText('当前页面模块尚未就绪');
   await expect.poll(async () => page.evaluate(() => state.page)).toBe('训练资源');
 
   await page.locator('#nav .nav-advanced427 button').click();
-  await expect(navItem(page, '训练资源')).toHaveClass(/active/);
-  await navItem(page, '服务节点').click();
-  await expect(page.locator('#title')).toHaveText('服务节点');
-  await expect(navItem(page, '服务节点')).toHaveCount(1);
+  await expect(navItem(page, '算力与节点')).toHaveClass(/active/);
+  await page.locator('#advancedPageTabs').getByRole('tab',{name:'服务节点',exact:true}).click();
+  await expect(page.locator('#title')).toHaveText('算力与节点');
+  await expect(navItem(page, '算力与节点')).toHaveCount(1);
   await page.locator('#nav .nav-advanced427 button').click();
-  await expect(navItem(page, '服务节点')).toHaveCount(0);
-  await expect(page.locator('#title')).toHaveText('服务节点');
+  await expect(navItem(page, '算力与节点')).toHaveCount(0);
+  await expect(page.locator('#title')).toHaveText('算力与节点');
   await expect.poll(async () => page.evaluate(() => state.page)).toBe('服务节点');
   await page.locator('#nav .nav-advanced427 button').click();
-  await expect(navItem(page, '服务节点')).toHaveCount(1);
-  await expect(navItem(page, '服务节点')).toHaveClass(/active/);
+  await expect(navItem(page, '算力与节点')).toHaveCount(1);
+  await expect(navItem(page, '算力与节点')).toHaveClass(/active/);
 
   await navItem(page, '总览').click();
   await page.locator('#nav .nav-advanced427 button').click();
-  await expect(navItem(page, '训练资源')).toHaveCount(0);
+  await expect(navItem(page, '算力与节点')).toHaveCount(0);
   await page.reload();
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
-  await expect(navItem(page, '服务节点')).toHaveCount(0);
+  await expect(navItem(page, '算力与节点')).toHaveCount(0);
   await page.locator('#nav .nav-advanced427 button').click();
-  await expect(navItem(page, '服务节点')).toHaveCount(1);
+  await expect(navItem(page, '算力与节点')).toHaveCount(1);
   expect(pageErrors).toEqual([]);
 });
 
@@ -191,7 +192,7 @@ test('training list view state does not replace durable truth and create still r
   expect(await page.evaluate(() => state.jobs.length)).toBe(5);
   await page.screenshot({path: join(screenshotDir, '04-training-task-running.png'), fullPage: true});
 
-  await expect(navItem(page, '训练资源')).toHaveCount(0);
+  await expect(navItem(page, '算力与节点')).toHaveCount(0);
   await page.getByRole('button', {name: '新建训练任务'}).click();
   await expect(page.locator('#modal')).not.toHaveClass(/hidden/);
   await expect(page.locator('#tr429Target')).toContainText('A800 训练资源');

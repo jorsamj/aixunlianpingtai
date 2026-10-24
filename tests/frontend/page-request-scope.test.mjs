@@ -54,6 +54,19 @@ test('navigating aborts old page GET and quarantines its continuation', async ()
   assert.equal(scope.abortedRequests, 1);
 });
 
+test('native fetch rejection with the exact navigation reason is quarantined too', async () => {
+  const scope = new PageRequestScope({page:'训练资源',fetchImpl:(_url,{signal})=>new Promise((_resolve,reject)=>{
+    signal.addEventListener('abort',()=>reject(signal.reason),{once:true});
+  })});
+  const request=scope.fetch('/api/local_models');
+  scope.navigate('模型配置');
+  assert.equal(await Promise.race([request.then(()=>'settled',()=>'rejected'),new Promise(resolve=>setTimeout(()=>resolve('pending'),15))]),'pending');
+  assert.equal(scope.abortedRequests,1);
+  const error=new Error('real network failure');
+  const active=new PageRequestScope({page:'模型配置',fetchImpl:async()=>{throw error;}});
+  await assert.rejects(active.fetch('/api/model-configs'),error);
+});
+
 test('POST mutations are not automatically cancelled by page navigation', async () => {
   const fake = deferredFetch();
   const scope = new PageRequestScope({page: '训练任务', fetchImpl: fake.fetchImpl});

@@ -419,7 +419,7 @@ test('storage configuration route is rendered by the final storage owner', async
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
 
   await page.evaluate(() => window.setPage('存储配置'));
-  await expect(page.locator('#title')).toContainText('存储配置');
+  await expect(page.locator('#title')).toContainText('存储管理');
   await expect(page.locator('.storage61-shell')).toBeVisible({timeout: 10_000});
   await expect(page.locator('#storage61Rows')).toBeVisible();
 
@@ -716,7 +716,7 @@ test('server storage import confirmation avoids broad related refresh', async ({
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
   await expect.poll(async () => page.evaluate(() => Boolean(state.uiReady))).toBe(true);
   await page.evaluate(() => window.setPage('存储配置'));
-  await expect(page.locator('#title')).toContainText('存储配置');
+  await expect(page.locator('#title')).toContainText('存储管理');
   await page.evaluate(async () => { await window.openStorageImport61(); });
   await expect(page.locator('#si61ImportShell')).toBeVisible();
   await page.evaluate(() => {
@@ -820,7 +820,7 @@ test('training server connection keeps existing form and payload behavior', asyn
   await page.goto('/');
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
   await page.evaluate(() => window.setPage('训练资源'));
-  await expect(page.locator('#title')).toContainText('训练资源');
+  await expect(page.locator('#title')).toContainText('算力与节点');
   await expect(page.locator('#quickServerUrl')).toBeVisible({timeout: 10_000});
 
   let submittedBody = null;
@@ -928,7 +928,7 @@ test('paddle environment activation keeps manual and quick-detect behavior', asy
   await page.goto('/');
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
   await page.evaluate(() => window.setPage('训练资源'));
-  await expect(page.locator('#title')).toContainText('训练资源');
+  await expect(page.locator('#title')).toContainText('算力与节点');
 
   const projectId = await page.evaluate(() => state.project?.id || '');
   const actionRequests = [];
@@ -1022,7 +1022,7 @@ test('model config delete keeps model configuration page consistent', async ({pa
     state.promptTemplates = [];
     render();
   });
-  await expect(page.locator('#title')).toContainText('模型配置');
+  await expect(page.locator('#title')).toContainText('AI 辅助配置');
   await expect(page.locator('#view')).toContainText('R20e 模型配置');
 
   const actionRequests = [];
@@ -1061,6 +1061,7 @@ test('prompt template save appears immediately in model configuration', async ({
     state.modelConfigs = [];
     state.promptTemplates = [];
     render();
+    window.PlatformCore.navigation.selectAdvancedSection('prompts');
     window.openPromptTemplateModalV35();
   });
   await page.locator('#ptName').fill('R20e 新提示词');
@@ -1109,6 +1110,7 @@ test('prompt template delete disappears immediately in model configuration', asy
     render();
   });
   await expect(page.locator('#view')).toContainText('R20e 旧提示词');
+  await page.locator('#advancedPageTabs').getByRole('tab',{name:'提示词模板',exact:true}).click();
   const row = page.locator('tr').filter({hasText: 'R20e 旧提示词'});
   const actionRequests = [];
   page.on('request', request => {
@@ -1244,7 +1246,7 @@ test('formal utility pages avoid unknown-module fallback and retired deployment 
     }, target);
 
     await expect.poll(() => page.evaluate(() => state.page), {timeout: 10_000}).toBe(target);
-    await expect(page.locator('#title')).toHaveText(target);
+    await expect(page.locator('#title')).toHaveText(({'模型配置':'AI 辅助配置','部署资源':'模型转换环境','组件检测':'算力与节点','服务节点':'算力与节点'})[target] || target);
     const fallback = page.locator('#view [data-unknown-page]');
     await expect(fallback, `formal page ${target} must have a concrete renderer owner`).toHaveCount(0);
     await expect(page.locator('#view')).not.toContainText('当前页面模块尚未就绪');
@@ -1262,7 +1264,7 @@ test('formal utility pages avoid unknown-module fallback and retired deployment 
       if (result && typeof result.then === 'function') await result;
     }, legacy);
     await expect.poll(() => page.evaluate(() => state.page), {timeout: 10_000}).toBe(canonical);
-    await expect(page.locator('#title')).toHaveText(canonical);
+    await expect(page.locator('#title')).toHaveText(canonical==='模型配置'?'AI 辅助配置':canonical);
   }
 
   expect(pageErrors).toEqual([]);

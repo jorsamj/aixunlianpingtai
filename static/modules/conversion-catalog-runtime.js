@@ -153,7 +153,7 @@ export function installConversionCatalogRuntime({api,getState,window:win=globalT
   }
   const runtime={mount,leave};
   win.conversionCatalogRuntime=runtime;
-  win.openConversionCatalog428=()=>{const host=doc.querySelector('#conversion-catalog-host');host?.scrollIntoView({behavior:'smooth',block:'start'});host?.focus()};
+  win.openConversionCatalog428=()=>{win.PlatformCore?.navigation?.selectAdvancedSection?.('catalog');const host=doc.querySelector('#conversion-catalog-host');host?.scrollIntoView({behavior:'smooth',block:'start'});host?.focus()};
   return runtime;
 }
 export function catalogOperationId(crypto){

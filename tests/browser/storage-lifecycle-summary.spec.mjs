@@ -20,8 +20,9 @@ test('existing storage page shows scoped known and unavailable usage with force 
     }}});finished++;
   });
   await page.locator('#nav .nav-advanced427 button').click();
-  const storageNav=()=>page.locator('#nav .nav-btn').filter({has:page.locator('b',{hasText:/^存储配置$/})});
+  const storageNav=()=>page.locator('#nav .nav-btn').filter({has:page.locator('b',{hasText:/^存储管理$/})});
   await storageNav().click();
+  await page.locator('#advancedPageTabs').getByRole('tab',{name:'空间与缓存',exact:true}).click();
   const card=page.locator('#storageLifecycleStatus61'),button=card.locator('[data-storage-lifecycle-refresh]');
   await expect(card).toContainText('正在读取可核验');
   await expect(button).toBeDisabled();
@@ -52,6 +53,7 @@ test('existing storage page shows scoped known and unavailable usage with force 
   await expect(page.locator('.train428-page')).toBeVisible();
   await expect(page.locator('#storageLifecycleStatus61')).toHaveCount(0);
   await storageNav().click();
+  await page.locator('#advancedPageTabs').getByRole('tab',{name:'空间与缓存',exact:true}).click();
   await expect(button).toBeEnabled();
   await expect(card).not.toContainText('正在读取');
   await expect(metric('original_index_logical_bytes')).toHaveText('1.00 KB');

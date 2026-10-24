@@ -1,3 +1,7 @@
+## 2026-10-24｜高级功能四入口整合（已完成待CI验收）
+
+唯一映射/设计/进度：[前端治理记录顶部](frontend-legacy-audit.md)。实际7项收敛为算力与节点、模型转换环境、AI辅助配置、存储管理；迁移入口收纳存储Tab，对接与只读浏览保留独立。原state.page/业务Owner/API/轮询不变，同页Tab仅展示偏好，无后台业务改动。VERSION386/cache434；定向Node33及24、Chrome11/9/4分组通过（有重复不累加），准确SHA CI待核。5944和两份模板测试保留；不部署、不改生产数据。
+
 ## 2026-10-24｜大模型Chat/Responses协议兼容（代码及隔离CI已验收）
 
 唯一需求/设计/进度：[协议专项](LLM_API_PROTOCOL_COMPATIBILITY_2026_10_24.md)。原provider兼容Chat/Responses，准确端点识别、受控结构化降级、安全错误证据；原M4高级配置/Bootstrap投影同步，连接测试与正式v60同工厂及字段校验。VERSION385/cache433；最终代码982069c8准确CI47/47 Actions、128/128 Checks成功，协议44、API55（含配置11/正式E2E4）、Node1328、Chrome265通过。文档自身最终HEAD另核Checks。5944及两份模板测试保留；真实GLM/收费接口NOT VERIFIED，发布前须授权环境实测，不部署。

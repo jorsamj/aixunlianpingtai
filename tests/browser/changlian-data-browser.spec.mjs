@@ -145,5 +145,5 @@ test('Weight detail keeps null missing failure and late results distinct through
   await page.locator('[data-cldb-weight="103"]').click();await expect(panel.locator('[role="alert"]')).toContainText('Token expired');await panel.locator('[data-cldb-retry]').click();await expect(panel).toContainText('data=null');await panel.locator('[data-cldb-close]').click();
   await page.locator('[data-cldb-weight="104"]').click();await expect(panel.locator('[role="status"]')).toBeVisible();await expect.poll(()=>typeof delayed).toBe('function');
   await panel.locator('[data-cldb-close]').click();await page.locator('[data-cldb-weight="105"]').click();await expect(panel.locator('.cldb-tags')).toContainText('Car');delayed();await expect(panel.locator('.cldb-tags')).toHaveText('Car');
-  await panel.locator('[data-cldb-close]').click();await page.getByRole('button',{name:/部署资源/}).click();await expect(panel).toHaveCount(0);await page.getByRole('button',{name:/畅联云数据/}).click();await expect(page.locator('.cldb-product')).toBeVisible();
+  await panel.locator('[data-cldb-close]').click();await page.getByRole('button',{name:/模型转换环境/}).click();await expect(panel).toHaveCount(0);await page.getByRole('button',{name:/畅联云数据/}).click();await expect(page.locator('.cldb-product')).toBeVisible();
 });

@@ -1,9 +1,10 @@
+import {ADVANCED_MENUS, advancedPageInfo, installAdvancedNavigation} from './modules/advanced-navigation.js?v=20261024';
 import {installQualityDetectionWorkbench} from './modules/quality-detection-workbench.js?v=20261023p2';
 import {installAdvancedEvaluation} from './modules/advanced-evaluation.js?v=20261023p2';
 import {renderLegacyMaterialCompatibility} from './modules/legacy-material-compatibility.js?v=20261023fullscan';
 import {createAnnotoriousEditor} from './modules/annotorious-editor.js?v=20261022a';
 import {annotationColor,withLegacyBoxIdentities} from './modules/annotation-geometry-adapter.js?v=20261022a';
-import {installConversionCatalogRuntime} from './modules/conversion-catalog-runtime.js?v=2';
+import {installConversionCatalogRuntime} from './modules/conversion-catalog-runtime.js?v=3';
 import {renderPrisonNightInspectionPage} from './modules/prison-night-inspection-entry.mjs?v=20261010g';
 import {actionRegistry, invokeAction, registerAction} from './modules/actions.js?v=421800';
 import {installRowActionMenu} from './modules/row-action-menu.js?v=4226385';
@@ -12,9 +13,9 @@ import {createModalStack, installModalPresentation, loadingSkeleton} from './mod
 import {annotationPreviewFromBoxes, applyAnnotationResult} from './modules/annotation.js?v=422502';
 import {installNegativeSampleRuntime} from './modules/negative-samples.js?v=20261022a';
 import {installTrainingLabelRuntime} from './modules/training-labels.js?v=422571';
-import {installNavigationStability} from './modules/navigation-stability.js?v=422518';
+import {installNavigationStability} from './modules/navigation-stability.js?v=20261024';
 import {persistUiState} from './modules/ui-state.js?v=422500';
-import {installPageRequestScope} from './modules/page-request-scope.js?v=422502';
+import {installPageRequestScope} from './modules/page-request-scope.js?v=20261024';
 import {installPollRegistry} from './modules/poll-registry.js?v=422521';
 import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=4226388';
 import {installExternalAlgorithmPlatformRuntime} from './modules/external-algorithm-platform.js?v=63021';
@@ -327,6 +328,9 @@ window.PlatformCore.runtime.storageImportProgressRuntime = storageImportProgress
 const resourceDiscoveryRuntime = installResourceDiscoveryRuntime({...window.__resourceDiscoveryDependencies, pollRegistry});
 window.PlatformCore.runtime.resourceDiscoveryRuntime = resourceDiscoveryRuntime;
 
+const advancedNavigation = installAdvancedNavigation({getState:()=>state,navigate:page=>window.setPage(page)});
+Object.assign(window.PlatformCore.navigation,{advancedMenus:ADVANCED_MENUS,advancedPageInfo,selectAdvancedSection:advancedNavigation.select});
+
 function renderNavigationChrome() {
   const nav = document.getElementById('nav');
   const buttons = nav ? [...nav.querySelectorAll('.nav-btn')] : [];
@@ -336,13 +340,14 @@ function renderNavigationChrome() {
     const currentPage = String(state.page || '');
     buttons.forEach(button => {
       const label = String(button.querySelector('.nav-left b')?.textContent || '').trim();
-      button.classList.toggle('active', label === currentPage);
+      button.classList.toggle('active', label === (advancedPageInfo(currentPage)?.title || currentPage));
     });
     const version = nav.querySelector('.nav-footer b');
     if (version) version.textContent = `v${String(state.versionInfo?.version || '—')}`;
   }
   window.renderTop?.();
   window.renderSummary?.();
+  advancedNavigation.render();
 }
 
 function applyPostRenderNormalization(page) {

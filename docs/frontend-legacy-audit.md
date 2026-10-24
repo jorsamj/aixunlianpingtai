@@ -1,3 +1,50 @@
+## 2026-10-24｜高级功能菜单整合（已完成待CI验收）
+
+本节为本轮唯一设计、进度及验收记录。基线ee96a837013bbe352df622898152286d104d20a8 / VERSION42.24.385，fetch本地远端0/0；两份未跟踪训练模板测试及5944祖先保留。已检查其他工作树及会话，未发现本分支同时编辑；不操作其他工作树。
+
+|现有入口|实际能力/Owner|原API|去向|后端影响|
+|---|---|---|---|---|
+|服务节点|ServiceNodeRuntime，Agent/Worker/能力/资源/任务/凭据|/api/v63/service-nodes|算力与节点：服务节点|无|
+|训练资源|ResourceDiscoveryRuntime + 原renderResources，环境/模型目录/Paddle/服务器|/api/training_options、/api/resource-discovery/tasks、/api/ultralytics_env、/api/local_models、原环境API|算力与节点：训练环境|无|
+|组件检测|renderComponentCheckV40，缓存/最新扫描/有界轮询|/api/v40/system/components/latest、scan|算力与节点：环境诊断|无|
+|部署资源|renderDeployResources + ConversionCatalogRuntime|/api/v39/deploy、原conversion-catalog API|模型转换环境：资源/字典/工具说明|无|
+|模型配置|最终M4与原提示词Owner，上一轮Responses继续复用|/api/v35/model-configs、prompt-templates|AI辅助配置：AI模型/提示词模板|无|
+|存储配置|renderStorageSources61 + ModelArtifact/StorageCacheRuntime|/api/v61/storage-sources、/api/v62/projects/.../storage/lifecycle-summary、原产物配置|存储管理：资源/空间与缓存|无|
+|旧素材兼容迁移|原legacy-material-compatibility模块与可恢复扫描|原compatibility API|存储管理：旧素材兼容迁移|无|
+|平台对接|ExternalAlgorithmPlatformRuntime：连接/同步/发布/诊断|原external-platform API|保留独立入口，统一页面布局|无|
+|畅联云数据|ChangLianDataBrowser：只读分页浏览|/api/v63/external-algorithm-platform/provider（只读）|保留独立入口，统一页面布局|无|
+
+真实重复是高级侧栏平铺相近入口；训练环境快捷检测与全局组件诊断范围不同，必须都保留；服务节点不是转换工具实体。旧部署插件已归一到模型配置，历史render函数不是新增有效页面，不恢复废弃业务。服务节点面包屑原归系统与对接确实错误。
+
+设计取舍：直接将state.page改成四个新名字会破坏组件/服务节点轮询、资源Action fence及旧跳转；复制页面业务会形成双Owner。选择原路由身份不变，只在现有导航层做四项菜单映射/标题/Tab，原业务Renderer直接挂载#view。Tab外框独立于#view，不包装或复制业务Owner，不使用DOM观察器维持导航；同页分区仅为展示状态，保存于原UI偏好，不能拥有业务任务状态。旧入口继续有效，新菜单名只归一到既有路由。平台操作页与只读浏览保留独立，避免双重Tab与写操作混合。
+
+实施清单（按用户授权审计后继续，无重复审批）：
+- [x] A 基线/有效入口/Owner/API/重复与独立边界核验并向用户报告。
+- [x] B 在原navigation-stability和main导航chrome接入菜单元数据/原路由Tab；修正标题、面包屑、active及刷新恢复。
+- [x] C 作用域CSS统一资源、模型、存储及对接页；低频工具说明收纳，旧操作/字典/未知空间语义保留，不改后端。
+- [x] D 原advanced-navigation Node守卫升级合同；少量真实Chrome覆盖四菜单/旧路由/Tab/检测离开恢复/弹窗/缩放。仅运行受影响现有回归，不手动全仓测试。
+- [ ] E 更新VERSION/cache及五份短交接入口，正常提交推送，独立核验准确SHA CI。
+
+风险/边界：真实GPU、NAS/OSS、生产连接/同步/发布均不执行；本轮不新增清理/迁移权限或后端能力。旧路由仍是页面身份，Sidebar折叠不改变业务页；同页Tab不重发请求。测试和提交证据在本节持续补齐，不以写文档代替代码交付。
+
+### 实施与必要验收记录
+
+新增advanced-navigation.js仅拥有四菜单元数据和Tab展示，不持有业务数据/任务、不包装任何Renderer。main现有navigation chrome调用一次展示；Tab位于#view外，旧业务进度更新不能替换它。同页Tab不执行render/API，跨页Tab调用原setPage；原UI偏好键记录分区，刷新后恢复。导航状态/异步Owner仍是原state.page，服务节点面包屑已纠正。四个新菜单名只normalize到旧Owner，旧入口全部保留。
+
+最终布局：算力与节点=服务节点/训练环境/环境诊断；模型转换环境=转换资源（含实际SDK/编译器状态及可折叠工具链接入说明）/厂商与芯片字典，不设空的SDK独立页；AI辅助配置=AI模型/提示词模板；存储管理=存储资源/空间与缓存/旧素材兼容迁移。平台对接/畅联云数据保留原两入口及原内部Tab，采用同一作用域列表/标题/按钮规范；不自动连接、同步或发布。
+
+UI改动：统一Tab、panel间距、按钮最小高度、资源网格、表格换行及窄屏布局；存储占用改为四列紧凑指标行，避免八张卡片横排嵌套，未知数据仍显示未获取；原compact-note被全局!important隐藏，工具链说明改专属类并折叠，未增加!important。新增CSS只作用于高级/对接页面。原节点表单/凭据、训练环境与模型目录/上传、组件扫描、资源/SDK检测、字典CRUD、M4协议、提示词CRUD、存储/算法产物配置、缓存状态与迁移原流程全部保留。
+
+本轮未修改任何后端文件、数据库Schema或API合同；没有新依赖、新任务Owner/轮询、物理清理能力或P2评测改动。仅storage-cache-runtime的HTML内联布局改class；conversion-catalog原字典快捷入口选中对应Tab。其他跳转仍调用原路由，并呈现新标题/active/menu。相关既有浏览器测试只更新新标题/菜单定位和必要Tab路径，原请求次数、fencing、安全、CRUD断言保持。
+
+RED→GREEN：新增Node初始缺模块RED；Chrome明确收到原7菜单而期望4菜单RED。菜单/路由纯合同与版本首批12通过；原导航/唯一Owner/模型局部保存守卫33/33通过；存储缓存/未知值/迟到隔离和版本24/24通过。Chrome第一组11/11（22.7s）、第二组9/9（25.1s）、末组4/4（16.0s）；包括新增2场景、节点凭据、导航折叠/恢复、旧路由、扫描轮询离开恢复、字典CRUD、提示词CRUD、存储状态和120条迁移恢复。各组有重复，不相加冒充独立数量。上一轮Responses配置保存/刷新/编辑原Chrome1/1（6.7s）通过；最后布局截图单例1/1（9.2s）通过。JS syntax、diff check及Python build_identity检查VERSION386通过；未改Python业务，不手动跑全仓pytest。
+
+导航取消补充：截图发现page-navigation短暂错误提示。原PageRequestScope只识别AbortError，但controller.abort('page-navigation')可能使原生fetch直接拒绝该reason；新增单例RED（rejected而非原隔离语义pending），在原判断中补error===signal.reason，保留generation/aborted条件，不重写请求系统。6/6 Node GREEN，包含真实当前网络失败仍抛出；新Chrome使用原生fetch/AbortController亦验证取消隔离1/1，最后页面与旧清洗/AI review迟到结果保护3/3（16.7s）。未新增请求/轮询Owner。
+
+视觉证据：[原7项菜单](screenshots/2026-10-24-advanced-menu/before.png)、[转换字典1440](screenshots/2026-10-24-advanced-menu/conversion-1440.png)、[AI配置1920](screenshots/2026-10-24-advanced-menu/ai-models-1920.png)、[存储1920](screenshots/2026-10-24-advanced-menu/storage-cache-1920.png)、[训练环境1920](screenshots/2026-10-24-advanced-menu/training-environment-1920.png)。全为隔离服务真实Chrome截图，无生产或虚构业务数据；1920/1440/1366及125%等效1093宽已检查无横向溢出，截图路径同时保留在测试输出。旧测试自动重写的历史截图已还原其原HEAD内容，不混入本轮提交。
+
+VERSION42.24.386；app/main/styles cache42.25.434，新页面样式/模块20261024，存储布局缓存20261024-layout。原Frontend Runtime仅追加2个本轮Chrome场景，不新建工作流；精简本地测试不改变原CI既有守卫。阶段E剩余：fetch检查并行后正常提交推送，准确SHA CI尚待核验，不能以本地绿色替代。生产Agent/GPU/NAS/OSS/同步发布NOT VERIFIED，不部署、不扫描生产、不改生产数据。
+
 ## 2026-10-24｜大模型Chat/Responses协议兼容（代码及隔离CI已验收）
 
 唯一需求/设计/进度：[协议专项](LLM_API_PROTOCOL_COMPATIBILITY_2026_10_24.md)。原provider兼容Chat/Responses，准确端点识别、受控结构化降级、安全错误证据；原M4高级配置/Bootstrap投影同步，连接测试与正式v60同工厂及字段校验。VERSION385/cache433；最终代码982069c8准确CI47/47 Actions、128/128 Checks成功，协议44、API55（含配置11/正式E2E4）、Node1328、Chrome265通过。文档自身最终HEAD另核Checks。5944及两份模板测试保留；真实GLM/收费接口NOT VERIFIED，发布前须授权环境实测，不部署。

@@ -125,7 +125,7 @@ test('model configuration loads prompt templates once and reuses them on revisit
   await page.goto('/');
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
   await page.evaluate(() => window.setPage('模型配置'));
-  await expect(page.locator('#title')).toContainText('模型配置');
+  await expect(page.locator('#title')).toContainText('AI 辅助配置');
   await expect(page.locator('[data-model-config-panel]')).toBeVisible();
   await expect.poll(() => promptGets).toBe(1);
   await page.evaluate(() => {
@@ -178,7 +178,7 @@ test('training resource page reuses recent training options on revisit', async (
   await page.goto('/');
   await expect.poll(async () => page.evaluate(() => state.uiReady === true)).toBe(true);
   await page.evaluate(() => window.setPage('训练资源'));
-  await expect(page.locator('#title')).toContainText('训练资源');
+  await expect(page.locator('#title')).toContainText('算力与节点');
   await expect(page.getByText('缓存训练资源', {exact: true})).toBeVisible({timeout: 10_000});
   await expect.poll(() => optionGets).toBe(1);
   const firstVisitGets = optionGets;

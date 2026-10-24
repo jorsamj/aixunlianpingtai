@@ -1,3 +1,5 @@
+import {ADVANCED_MENUS} from './advanced-navigation.js?v=20261024';
+
 export class NavigationEpochGuard {
   constructor(initialPage = '') {
     this.epoch = 0;
@@ -21,6 +23,8 @@ export class NavigationEpochGuard {
 
 export function normalizeNavigationPage(page) {
   const requested = String(page || '');
+  const advanced = ADVANCED_MENUS.find(menu => menu.title === requested);
+  if (advanced) return advanced.page;
   if (requested === '工作台') return '总览';
   if (requested === '自动标注') return '自动标注及清洗';
   if (requested === '测试发布' || requested === '检测台') return '质量中心';
