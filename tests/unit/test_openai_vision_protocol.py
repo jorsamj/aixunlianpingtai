@@ -233,3 +233,11 @@ def test_model_error_code_is_not_retried_even_if_model_name_contains_schema():
     with pytest.raises(ProviderRequestError):
         annotate(provider(http))
     assert len(http.calls) == 1
+
+
+def test_flat_gateway_error_keeps_original_code_and_request_id():
+    http = HTTP(Reply(404,{"code":"Gateway.ModelMissing","message":"not echoed","request_id":"req-flat"},headers={"content-type":"application/json"}))
+    with pytest.raises(ProviderRequestError) as caught:
+        annotate(provider(http))
+    assert caught.value.server_error_code == "Gateway.ModelMissing"
+    assert caught.value.request_id == "req-flat"

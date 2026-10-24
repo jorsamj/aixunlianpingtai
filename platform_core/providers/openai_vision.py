@@ -158,8 +158,9 @@ class OpenAICompatibleVisionProvider:
             raise ProviderRequestError("无法连接模型服务", code="MODEL_SERVICE_UNREACHABLE", solution="请检查服务地址、网络连接和模型是否已启动。") from None
 
     def _metadata(self, response, payload, image):
-        error = payload.get("error") if isinstance(payload, dict) else None
-        error = error if isinstance(error, dict) else {}
+        root = payload if isinstance(payload, dict) else {}
+        error = root.get("error")
+        error = error if isinstance(error, dict) else root
         sensitive = [self.api_key, image, image.partition(",")[2] if image.startswith("data:") else ""]
         parts = urlsplit(self.endpoint)
         sensitive.extend((parts.username or "", parts.password or "", unquote(parts.password or "")))

@@ -60,7 +60,7 @@ auto结构化依次schema/object/提示词+后置校验，只在明确unsupporte
 
 不将各轮重复用例相加冒充独立数量。最初尝试的test_auto_label_candidates.py包含已退役v47接口，原用例返回410；该文件保持原样，没有删除测试/恢复旧流程/放宽断言。本轮正式验证移至已有test_persistent_ai_annotation_e2e.py的v60+Scheduler+CandidateStore路径。
 
-CI：原AI Annotation Recovery增加provider/核心与新测试paths、43项跨平台单元及原API job运行相关配置/集成；cryptography已是项目依赖，补入该job安装以验证原secret能力；原Frontend Runtime增加单个真实Chrome用例。无新工作流、依赖体系或测试框架。当前本地代码/定向回归完成，正在正常提交推送；准确新SHA CI尚待核验，本地通过不代表远端CI成功。
+CI：原AI Annotation Recovery增加provider/核心与新测试paths、43项跨平台单元及原API job运行相关配置/集成；cryptography已是项目依赖，补入该job安装以验证原secret能力；原Frontend Runtime增加单个真实Chrome用例。无新工作流、依赖体系或测试框架。代码提交8d806032a706f9dba94d6ac47c6facab94badbc4已正常推送；准确该SHA CI正在核验，本地通过不代表远端CI成功。
 
 ### 兼容收尾及最后回归
 
@@ -68,7 +68,8 @@ CI：原AI Annotation Recovery增加provider/核心与新测试paths、43项跨�
 
 平台原API错误HTTP400语义及登录认证不变，上游401/403等通过原错误DTO的可选证据字段分类；v35/v42/v44已保存VLM、未保存VLM和正式Worker都复用同一adapter/字段校验。未新增收费接口调用、后台探测或定时测试。
 
+最终证据兼容复核：平铺网关HTTP错误的code此前未被保留，新增单例RED；元数据提取现同时兼容标准error对象及平铺code/request_id，仍不回显message。该修正不改变请求/候选/GT逻辑，需按修正后新SHA核CI；最终协议用例44项。顺带规范本文件EOF，不保留多余空行。
+
 ### 接续与发布边界
 
 E阶段剩余：正常提交、push前fetch，核验准确新SHA CI；结果回填本节，文档自身新HEAD亦核Checks。真实glm收费调用/该账户权限、地域/额度、网络及模型标注效果仍NOT VERIFIED；本轮不提供生产已可用承诺，不索要公开Key、不执行生产部署。受控发布前应使用平台原安全保存的Key，在用户授权环境做一次真实图片标注验证。后续从本文件及原provider/M4/V35工厂继续，不另建provider、GT或任务Owner。
-
