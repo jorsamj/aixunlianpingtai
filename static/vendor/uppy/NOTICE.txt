@@ -1,0 +1,6 @@
+Uppy 6.0.5 — MIT — Copyright (c) 2018 Transloadit
+Official source: https://github.com/transloadit/uppy and https://registry.npmjs.org/uppy/6.0.5
+The complete official distribution includes unused plugin code. Only consuming code chooses plugins.
+Includes Preact and other MIT/ISC/BSD dependencies; all audited notices are retained in licenses/.
+Includes Airbnb Polyglot BSD-2-Clause interpolation adaptation and Facebook regenerator-runtime attribution.
+See manifest.json for exact artifact hashes, installed versus embedded version limits, and supplemental source notices.

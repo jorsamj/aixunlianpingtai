@@ -10,17 +10,31 @@ function requestUrl(input) {
   return String(input?.url || '');
 }
 
-function isApiRequest(input) {
+function apiPath(input) {
   const raw = requestUrl(input);
-  if (!raw) return false;
-  if (raw.startsWith('/api/')) return true;
-  if (typeof location === 'undefined') return /\/api\//.test(raw);
+  if (!raw) return '';
+  if (raw.startsWith('/api/')) return raw.split('?')[0];
+  if (typeof location === 'undefined') {
+    const match = raw.match(/\/api\/[^?#]*/);
+    return match?.[0] || '';
+  }
   try {
     const parsed = new URL(raw, location.href);
-    return parsed.origin === location.origin && parsed.pathname.startsWith('/api/');
+    return parsed.origin === location.origin ? parsed.pathname : '';
   } catch (_) {
-    return false;
+    return '';
   }
+}
+
+function isApiRequest(input) {
+  return apiPath(input).startsWith('/api/');
+}
+
+function isApplicationLifecycleRequest(input) {
+  const path = apiPath(input);
+  return path === '/api/v53/bootstrap/status'
+    || path === '/api/v53/bootstrap/snapshot'
+    || path === '/api/v53/bootstrap/start';
 }
 
 function isAbortError(error) {
@@ -59,6 +73,7 @@ export class PageRequestScope {
     const method = requestMethod(input, init);
     const scopeEligible = (method === 'GET' || method === 'HEAD')
       && isApiRequest(input)
+      && !isApplicationLifecycleRequest(input)
       && !init?.signal;
     if (!scopeEligible) return nativeFetch(input, init);
 
@@ -74,7 +89,7 @@ export class PageRequestScope {
       }
       return response;
     } catch (error) {
-      if (isAbortError(error) && (controller.signal.aborted || !this.isCurrent(generation, page))) {
+      if ((isAbortError(error) || error === controller.signal.reason) && (controller.signal.aborted || !this.isCurrent(generation, page))) {
         this.abortedRequests += 1;
         // Legacy app.js callers often catch every error and show a toast. Keep a request
         // invalidated by navigation suspended instead: its caller can no longer mutate state/DOM,

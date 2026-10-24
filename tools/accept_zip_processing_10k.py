@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import io
 import json
 import os
@@ -230,6 +231,10 @@ def main() -> None:
     env = os.environ.copy()
     env["MC_TRAIN_DATA_DIR"] = str(data_root)
     env["MC_PLATFORM_VERSION"] = "test"
+    # Use the same explicit test-only auth bypass as the browser/API harnesses.
+    # Production authentication remains enabled; this flag exists solely for
+    # isolated repositories created by acceptance tests.
+    env["MC_ALLOW_MULTIPLE_PROJECTS_FOR_TESTS"] = "1"
     env["PYTHONUNBUFFERED"] = "1"
     base_url = f"http://127.0.0.1:{args.port}"
 
@@ -271,57 +276,145 @@ def main() -> None:
 
         create_project = session.post(
             f"{base_url}/api/projects",
-            json={"name": "zip-10k-processing-acceptance", "description": "", "labels": []},
+            json={
+                "name": "zip-10k-processing-acceptance",
+                "description": "",
+                "labels": [{"code": "object", "display_name": "object"}],
+            },
             timeout=30,
         )
         create_project.raise_for_status()
         project_id = create_project.json()["id"]
         result["project_id"] = project_id
 
-        upload_result: dict[str, object] = {}
         upload_ping_latencies: list[float] = []
         upload_ping_failures = 0
+        zip_size = zip_path.stat().st_size
+        zip_digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+        fingerprint = f"acceptance:{zip_size}:{zip_digest}"
+        session_payload = {
+            "file_name": zip_path.name,
+            "file_size": zip_size,
+            "fingerprint": fingerprint,
+            "part_size": 8 * 1024 * 1024,
+        }
 
-        def do_upload():
-            started = time.perf_counter()
-            try:
-                with zip_path.open("rb") as stream:
-                    response = session.post(
-                        f"{base_url}/api/v19/projects/{project_id}/datasets/default/import/jobs",
-                        files={"file": (zip_path.name, stream, "application/zip")},
-                        timeout=300,
+        upload_started = time.perf_counter()
+        create_started = time.perf_counter()
+        create_upload = session.post(
+            f"{base_url}/api/v19/projects/{project_id}/datasets/default/import/uploads",
+            json=session_payload,
+            timeout=30,
+        )
+        create_upload.raise_for_status()
+        multipart = create_upload.json()
+        multipart_create_seconds = time.perf_counter() - create_started
+        upload_id = str(multipart["upload_id"])
+        part_size = int(multipart["part_size"])
+        total_parts = int(multipart["total_parts"])
+        completed_parts = {int(value) for value in multipart.get("completed_parts") or []}
+        part_seconds: list[float] = []
+        resume_verified = False
+
+        with zip_path.open("rb") as stream:
+            for part_number in range(total_parts):
+                if part_number in completed_parts:
+                    continue
+                offset = part_number * part_size
+                stream.seek(offset)
+                payload = stream.read(min(part_size, zip_size - offset))
+                part_started = time.perf_counter()
+                part_response = session.put(
+                    f"{base_url}/api/v19/projects/{project_id}/import/uploads/{upload_id}/parts/{part_number}",
+                    data=payload,
+                    headers={"Content-Type": "application/octet-stream"},
+                    timeout=120,
+                )
+                part_response.raise_for_status()
+                part_seconds.append(time.perf_counter() - part_started)
+
+                try:
+                    _, latency = timed_get(session, f"{base_url}/api/projects", timeout=5.0)
+                    upload_ping_latencies.append(latency)
+                except Exception:
+                    upload_ping_failures += 1
+
+                # Exercise the real resume seam after at least one durable part:
+                # the same fingerprint must resolve to the same upload session and
+                # expose the already committed part instead of starting over.
+                if not resume_verified:
+                    resumed = session.post(
+                        f"{base_url}/api/v19/projects/{project_id}/datasets/default/import/uploads",
+                        json=session_payload,
+                        timeout=30,
                     )
-                upload_result["http_seconds"] = time.perf_counter() - started
-                upload_result["status_code"] = response.status_code
-                upload_result["body"] = response.json()
-            except BaseException as error:
-                upload_result["error"] = repr(error)
+                    resumed.raise_for_status()
+                    resumed_body = resumed.json()
+                    if str(resumed_body.get("upload_id") or "") != upload_id:
+                        raise AssertionError("multipart resume returned a different upload_id")
+                    if part_number not in {int(value) for value in resumed_body.get("completed_parts") or []}:
+                        raise AssertionError("multipart resume did not expose the committed part")
+                    resume_verified = True
 
-        upload_thread = threading.Thread(target=do_upload, daemon=True)
-        upload_thread.start()
-        while upload_thread.is_alive():
+        finalize_started = time.perf_counter()
+        complete = session.post(
+            f"{base_url}/api/v19/projects/{project_id}/import/uploads/{upload_id}/complete",
+            timeout=30,
+        )
+        if complete.status_code not in {200, 202}:
+            raise RuntimeError(f"multipart complete status={complete.status_code} body={complete.text[:500]}")
+        finalize_deadline = time.monotonic() + 300
+        job = None
+        while time.monotonic() < finalize_deadline:
             try:
-                _, latency = timed_get(session, f"{base_url}/api/projects", timeout=5.0)
+                response, latency = timed_get(
+                    session,
+                    f"{base_url}/api/v19/projects/{project_id}/import/jobs/{upload_id}",
+                    timeout=10.0,
+                )
                 upload_ping_latencies.append(latency)
             except Exception:
                 upload_ping_failures += 1
-            time.sleep(0.05)
-        upload_thread.join()
-        if upload_result.get("error"):
-            raise RuntimeError(f"upload failed: {upload_result['error']}")
-        if int(upload_result.get("status_code") or 0) >= 400:
-            raise RuntimeError(f"upload status={upload_result.get('status_code')} body={upload_result.get('body')}")
-        job = dict(upload_result["body"])
-        job_id = job["id"]
+                time.sleep(0.1)
+                continue
+            body = response.json()
+            state = str(body.get("status") or "").lower()
+            if state == "failed":
+                raise RuntimeError(f"multipart finalize failed: {body.get('error') or body.get('message')}")
+            if state == "selecting":
+                job = body
+                break
+            time.sleep(0.1)
+        if job is None:
+            raise TimeoutError("multipart ZIP did not reach selecting state within 300s")
+
+        preview_response = session.get(
+            f"{base_url}/api/v19/projects/{project_id}/import/jobs/{upload_id}",
+            params={"include_images": "true", "image_limit": 500},
+            timeout=30,
+        )
+        preview_response.raise_for_status()
+        preview_job = preview_response.json()
+        upload_total_seconds = time.perf_counter() - upload_started
+        finalize_seconds = time.perf_counter() - finalize_started
+        job_id = upload_id
         result.update(
             {
                 "job_id": job_id,
-                "create_http_seconds": round(float(upload_result["http_seconds"]), 6),
+                "upload_protocol": "multipart",
+                "multipart_upload_id": upload_id,
+                "multipart_part_size": part_size,
+                "multipart_total_parts": total_parts,
+                "multipart_resume_verified": resume_verified,
+                "multipart_create_seconds": round(multipart_create_seconds, 6),
+                "multipart_part_seconds": [round(value, 6) for value in part_seconds],
+                "multipart_finalize_seconds": round(finalize_seconds, 6),
+                "create_http_seconds": round(upload_total_seconds, 6),
                 "server_upload_seconds": float(job.get("upload_seconds") or 0),
                 "server_scan_seconds": float(job.get("scan_seconds") or 0),
                 "create_image_count": int(job.get("image_count") or 0),
-                "create_preview_count": len(job.get("images") or []),
-                "create_images_truncated": bool(job.get("images_truncated")),
+                "create_preview_count": len(preview_job.get("images") or []),
+                "create_images_truncated": bool(preview_job.get("images_truncated")),
                 "upload_ping_samples": len(upload_ping_latencies),
                 "upload_ping_failures": upload_ping_failures,
                 "upload_ping_p50_ms": round(median(upload_ping_latencies) * 1000, 3) if upload_ping_latencies else 0.0,
@@ -330,10 +423,21 @@ def main() -> None:
             }
         )
 
+        external_classes = list(job.get("external_classes") or [])
+        if not bool(job.get("label_confirmation_required")):
+            raise AssertionError("YOLO 10k acceptance must require explicit label confirmation")
+        if not any(
+            str(row.get("class_id")) == "0" and str(row.get("name") or "") == "object"
+            for row in external_classes
+        ):
+            raise AssertionError(f"unexpected external classes: {external_classes!r}")
+        result["label_confirmation_required"] = True
+        result["external_classes"] = external_classes
+
         start_started = time.perf_counter()
         start_response = session.post(
             f"{base_url}/api/v19/projects/{project_id}/import/jobs/{job_id}/start",
-            json={"selected_paths": []},
+            json={"selected_paths": [], "label_mapping": {"0": "object"}},
             timeout=30,
         )
         start_seconds = time.perf_counter() - start_started
@@ -450,6 +554,10 @@ def main() -> None:
             "terminal_done": terminal_job.get("status") == "done",
             "progress_100": float(terminal_job.get("progress") or 0.0) == 100.0,
             "create_10k": result["create_image_count"] == IMAGE_COUNT,
+            "multipart_protocol": result["upload_protocol"] == "multipart",
+            "multipart_resume": result["multipart_resume_verified"] is True,
+            "multipart_parts_complete": result["multipart_total_parts"] >= 1 and len(result["multipart_part_seconds"]) <= result["multipart_total_parts"],
+            "manual_label_confirmation": result["label_confirmation_required"] is True,
             "bounded_create_preview": result["create_preview_count"] <= 500 and result["create_images_truncated"] is True,
             "report_truth": result["report_imported_images"] == IMAGE_COUNT and result["report_annotated_images"] == IMAGE_COUNT and result["report_boxes"] == IMAGE_COUNT,
             "material_truth": result["material_total"] == IMAGE_COUNT and result["material_boxes"] == IMAGE_COUNT and result["material_annotated"] == IMAGE_COUNT,

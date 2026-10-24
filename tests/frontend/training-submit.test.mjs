@@ -1,14 +1,58 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
+import * as submitModule from '../../static/modules/training-submit.js';
+const collectTrainingAdmissionBlockers=(...args)=>{assert.equal(typeof submitModule.collectTrainingAdmissionBlockers,'function','formal Submit Owner must expose all-blocker projection');return submitModule.collectTrainingAdmissionBlockers(...args)};
+
 import {createTrainingDraft, trainingDraftToRequest} from '../../static/modules/training-draft.js';
 import {
+  benchmarkReuseContext,
   buildTrainingEngineParameters,
   buildTrainingStartPayload,
+  validatePreparedMotherModel,
   installTrainingSubmitRuntime,
+  normalizeTrainingPrecision,
+  supplementCandidateContext,
+  trainingSubmitPresentation,
   trainingSubmitReadiness,
   validateTrainingDevice,
 } from '../../static/modules/training-submit.js';
+
+test('training submit projects canonical stages into three truthful user steps', () => {
+  assert.deepEqual(trainingSubmitPresentation('validate-device'), {
+    tone: 'working', activeStep: 0, completedSteps: 0,
+    title: '正在校验训练配置', detail: '正在核验训练设备与算法版本',
+  });
+  assert.deepEqual(trainingSubmitPresentation('build-payload'), {
+    tone: 'working', activeStep: 1, completedSteps: 1,
+    title: '正在核验训练素材', detail: '正在确认素材、标签与训练范围',
+  });
+  assert.deepEqual(trainingSubmitPresentation('posting'), {
+    tone: 'working', activeStep: 2, completedSteps: 2,
+    title: '正在提交训练任务', detail: '服务端正在创建可恢复的持久任务',
+  });
+  assert.deepEqual(trainingSubmitPresentation('created'), {
+    tone: 'success', activeStep: 2, completedSteps: 3,
+    title: '训练任务创建成功', detail: '已加入训练任务队列，系统将自动安排执行',
+  });
+});
+
+test('training submit failure distinguishes safe validation errors from unknown POST outcome', () => {
+  assert.deepEqual(trainingSubmitPresentation('failed', {
+    error: '训练素材为空', failedAt: 'build-payload', taskId: 'train_aaaaaaaaaaaaaaaaaaaa',
+  }), {
+    tone: 'error', activeStep: 1, completedSteps: 1,
+    title: '训练任务未创建', detail: '训练素材为空', retrySafe: true,
+    taskId: 'train_aaaaaaaaaaaaaaaaaaaa',
+  });
+  const unknown = trainingSubmitPresentation('failed', {
+    error: 'Failed to fetch', failedAt: 'posting', taskId: 'train_aaaaaaaaaaaaaaaaaaaa',
+    outcomeUncertain: true,
+  });
+  assert.equal(unknown.tone, 'uncertain');
+  assert.equal(unknown.retrySafe, false);
+  assert.match(unknown.detail, /任务列表.*train_aaaaaaaaaaaaaaaaaaaa/);
+});
 
 function draft(overrides = {}) {
   return createTrainingDraft({
@@ -17,9 +61,9 @@ function draft(overrides = {}) {
     newLabelCodes: ['fire'],
     experimentPercent: 35,
     validationPercent: 18,
-    resource: {strategy: 'manual', device: '0', gpuPolicy: 'exclusive', batch: 16, workers: 4, cache: false},
+    resource: {strategy: 'manual', profile: 'balanced', device: '0', gpuPolicy: 'exclusive', batch: 16, workers: 4, cache: false},
     config: {
-      model: 'custom.pt', epochs: 30, imgsz: 640, optimizer: 'auto',
+      model: 'custom.pt', epochs: 30, time: 2.5, imgsz: 640, precision: 'fp16', optimizer: 'auto',
       lr0: .01, lrf: .01, momentum: .937, weight_decay: .0005,
       warmup_epochs: 3, close_mosaic: 10, mosaic: 1, mixup: 0,
       hsv_h: .015, hsv_s: .7, hsv_v: .4, degrees: 0, translate: .1,
@@ -41,10 +85,32 @@ const target = {
 };
 const algorithm = target.algorithms[0];
 
+
+test('first training only accepts a selected and prepared .pt checkpoint', () => {
+  const prepared = {id:'remote-agent', framework:'ultralytics', type:'server',
+    base_models:[
+      {value:'/data/platform-data/models/yolo11n.pt', model_status:'FOUND', source:'preinstalled'},
+      {value:'yolo11s.pt', model_status:'DOWNLOADABLE', source:'official'},
+    ]};
+  const d = draft({config:{model:'/data/platform-data/models/yolo11n.pt'}});
+  assert.equal(validatePreparedMotherModel({draft:d,target:prepared}),true);
+  assert.equal(buildTrainingEngineParameters({draft:d,target:prepared,algorithm}).model,
+    '/data/platform-data/models/yolo11n.pt');
+  assert.throws(()=>validatePreparedMotherModel({draft:draft({config:{model:'yolo11s.pt'}}),target:prepared}),/预置/);
+  assert.throws(()=>validatePreparedMotherModel({draft:draft({config:{model:''}}),target:prepared}),/预置/);
+  assert.throws(()=>buildTrainingEngineParameters({draft:draft({config:{model:'yolo11s.pt'}}),target:prepared,algorithm}),/预置/);
+});
+
+test('iteration retains latest checkpoint contract without requiring mother-model selection', () => {
+  const d = draft({baseVersionId:'current-version',config:{model:''}});
+  assert.equal(validatePreparedMotherModel({draft:d,target:{base_models:[]}}),true);
+});
+
 function installDom() {
   const controls = {
     tr429Target: {value: 'gpu-local'},
     tr429Alg: {value: 'yolo_detect'},
+    tr429TaskId: {value: 'train_aaaaaaaaaaaaaaaaaaaa'},
   };
   const submitButton = {disabled: true, dataset: {}, textContent: '开始训练'};
   globalThis.document = {
@@ -55,6 +121,23 @@ function installDom() {
     querySelectorAll() { return [submitButton]; },
   };
   return {controls, submitButton};
+}
+
+function durableTask(taskId = 'train_aaaaaaaaaaaaaaaaaaaa', overrides = {}) {
+  return {
+    ok: true,
+    task: {
+      task_id: taskId,
+      project_id: 'project-1',
+      kind: 'TRAINING',
+      task_type: 'TRAINING',
+      status: 'QUEUED',
+      persisted_status: 'QUEUED',
+      phase: 'queued',
+      progress_percent: 0,
+      ...overrides,
+    },
+  };
 }
 
 function baseState() {
@@ -98,23 +181,74 @@ test('start payload is derived from canonical TrainingDraft instead of legacy id
   assert.equal(payload.validation_percent, 18);
   assert.equal(payload.queue_priority, 7);
   assert.equal(payload.device, '0');
+  assert.equal(payload.resource_strategy, 'manual');
+  assert.equal(payload.resource_profile, 'balanced');
+  assert.equal(payload.gpu_policy, 'exclusive');
+  assert.equal(payload.precision, 'fp16');
+  assert.equal(payload.time, 2.5);
   assert.equal(payload.batch, 16);
   assert.equal(payload.workers, 4);
   assert.equal(payload.cache, 'False');
   assert.equal(payload.model, 'custom.pt');
 });
 
-test('submit readiness depends only on canonical draft, inheritance and submitting state', () => {
-  assert.deepEqual(trainingSubmitReadiness({draft: draft(), inheritance: {blocked: false}}), {ready: true, reason: ''});
-  assert.deepEqual(trainingSubmitReadiness({draft: draft({materialIds: ['only-one']}), inheritance: {blocked: false}}), {ready: false, reason: 'materials'});
-  assert.deepEqual(trainingSubmitReadiness({draft: draft(), inheritance: {blocked: true}}), {ready: false, reason: 'iteration'});
-  assert.deepEqual(trainingSubmitReadiness({draft: draft(), inheritance: {blocked: false}, submitting: true}), {ready: false, reason: 'submitting'});
+test('retired BF16 draft precision migrates to auto instead of claiming unsupported runtime support', () => {
+  assert.equal(normalizeTrainingPrecision('bf16'), 'auto');
+  assert.equal(normalizeTrainingPrecision('FP16'), 'fp16');
+  const value = draft({config: {precision: 'bf16'}});
+  const parameters = buildTrainingEngineParameters({draft: value, target, algorithm});
+  assert.equal(parameters.precision, 'auto');
+});
+
+test('recommended mode preserves scheduler-owned auto device and adaptive profile', () => {
+  const value = draft({
+    resource: {strategy: 'auto', profile: 'performance', device: 'auto', gpuPolicy: 'auto', batch: 8, workers: 0, cache: false},
+    config: {precision: 'auto', time: null},
+  });
+  const parameters = buildTrainingEngineParameters({draft: value, target, algorithm});
+  assert.equal(parameters.resource_strategy, 'auto');
+  assert.equal(parameters.resource_profile, 'performance');
+  assert.equal(parameters.device, 'auto');
+  assert.equal(parameters.precision, 'auto');
+  assert.equal(parameters.time, null);
+});
+
+test('submit readiness depends only on canonical draft, base and submitting state', () => {
+  assert.deepEqual(trainingSubmitReadiness({draft: draft(), base: {blocked: false}}), {ready: true, reason: ''});
+  assert.deepEqual(trainingSubmitReadiness({draft: draft({materialIds: ['only-one']}), base: {blocked: false}}), {ready: false, reason: 'materials'});
+  assert.deepEqual(trainingSubmitReadiness({draft: draft(), base: {blocked: true}}), {ready: false, reason: 'iteration'});
+  assert.deepEqual(trainingSubmitReadiness({draft: draft(), base: {blocked: false}, submitting: true}), {ready: false, reason: 'submitting'});
+});
+
+test('compatibility issues keep admission blocked until the current draft passes', () => {
+  assert.deepEqual(
+    trainingSubmitReadiness({
+      draft: draft(), base: {blocked: false},
+      compatibility: {ready: true, issue_count: 2},
+    }),
+    {ready: false, reason: 'material-compatibility'},
+  );
+  assert.deepEqual(
+    trainingSubmitReadiness({
+      draft: draft(), base: {blocked: false},
+      compatibility: {ready: false, issue_count: null},
+    }),
+    {ready: false, reason: 'material-compatibility-loading'},
+  );
 });
 
 test('device validation fails closed for missing or unavailable device', () => {
   assert.equal(validateTrainingDevice(draft(), [{id: '0', available: true}]).id, '0');
   assert.throws(() => validateTrainingDevice(draft(), [{id: 'cpu', available: true}]), /设备不可用/);
   assert.throws(() => validateTrainingDevice(draft(), [{id: '0', available: false}]), /设备不可用/);
+});
+
+test('scheduler-owned cluster does not depend on controller GPU inventory', () => {
+  const value = draft({resource: {strategy: 'auto', profile: 'balanced', device: 'auto', gpuPolicy: 'auto'}});
+  const resolved = validateTrainingDevice(value, [], {id: 'cluster_scheduler', scheduler_owned: true});
+  assert.equal(resolved.id, 'auto');
+  assert.equal(resolved.type, 'scheduler');
+  assert.equal(resolved.available, true);
 });
 
 test('submit runtime owns button readiness instead of legacy train428/train429 mirrors', () => {
@@ -129,7 +263,7 @@ test('submit runtime owns button readiness instead of legacy train428/train429 m
   const runtime = installTrainingSubmitRuntime({
     getState: () => state,
     projectId: () => 'project-1',
-    trainingDraftRuntime: {sync: () => state.trainingDraft, current: () => state.trainingDraft, inheritance: () => ({blocked: false})},
+    trainingDraftRuntime: {sync: () => state.trainingDraft, current: () => state.trainingDraft, base: () => ({blocked: false})},
     trainingDraftToRequest,
   });
 
@@ -139,7 +273,7 @@ test('submit runtime owns button readiness instead of legacy train428/train429 m
 
   state.trainingDraft = draft({materialIds: ['one']});
   runtime.updateReadiness();
-  assert.equal(submitButton.disabled, true);
+  assert.equal(submitButton.disabled, false, 'start click must run diagnosis even for incomplete configuration');
   assert.equal(submitButton.dataset.trainingSubmitReason, 'materials');
   cleanup(runtime);
 });
@@ -152,23 +286,25 @@ test('submit runtime is the sole train-start network owner and uses canonical dr
   let reloaded = 0;
   let rendered = 0;
   let closed = 0;
+  const accepted = [];
   const notices = [];
   const oldSubmit = () => 'legacy';
   globalThis.window = {
     submitTrain429: oldSubmit,
     fetch: async (_url, init) => {
       sent = JSON.parse(init.body);
-      return {ok: true, async json() { return {task: {id: 'task-1'}}; }};
+      return {ok: true, async json() { return durableTask(sent.task_id); }};
     },
   };
   const runtime = installTrainingSubmitRuntime({
     getState: () => state,
     projectId: () => 'project-1',
-    trainingDraftRuntime: {sync: () => draft(), current: () => draft(), inheritance: () => ({blocked: false})},
+    trainingDraftRuntime: {sync: () => draft(), current: () => draft(), base: () => ({blocked: false})},
     trainingDraftToRequest,
     reloadRelated: async () => { reloaded += 1; },
     renderAlgorithms: () => { rendered += 1; },
     closeModal: () => { closed += 1; },
+    trainingTaskRuntime: {acceptCreatedTask: (task, context) => accepted.push({task, context})},
     notify: message => notices.push(String(message)),
   });
 
@@ -177,16 +313,20 @@ test('submit runtime is the sole train-start network owner and uses canonical dr
   assert.equal(submitButton.disabled, false);
   const result = await window.submitTrain429();
 
-  assert.equal(result.task.id, 'task-1');
+  assert.equal(result.task.task_id, 'train_aaaaaaaaaaaaaaaaaaaa');
   assert.deepEqual(sent.train_image_ids, ['img-1', 'img-2']);
   assert.deepEqual(sent.train_labels, ['fire']);
   assert.equal(sent.queue_priority, 7);
   assert.equal(sent.cache, 'False');
+  await new Promise(resolve => setImmediate(resolve));
   assert.equal(reloaded, 1);
   assert.equal(rendered, 1);
   assert.equal(closed, 1);
+  assert.equal(accepted.length, 1);
+  assert.equal(accepted[0].task.task_id, sent.task_id);
+  assert.equal(accepted[0].context.algorithmId, 'alg-1');
   assert.equal(state.alg428Expanded['alg-1'], true);
-  assert.match(notices[0], /训练任务已进入后台队列/);
+  assert.match(notices[0], /训练任务已进入后台队列 · train_aaaaaaaaaaaaaaaaaaaa/);
 
   runtime.destroy();
   assert.equal(window.submitTrain429, oldSubmit);
@@ -208,18 +348,100 @@ test('iteration block is enforced by TrainingSubmitRuntime before any POST', asy
     trainingDraftRuntime: {
       sync: () => draft(),
       current: () => draft(),
-      inheritance: () => ({blocked: true}),
+      base: () => ({blocked: true}),
     },
     trainingDraftToRequest,
     notify: message => notices.push(String(message)),
   });
 
-  assert.equal(submitButton.disabled, true);
+  assert.equal(submitButton.disabled, false);
   assert.equal(submitButton.dataset.trainingSubmitReason, 'iteration');
   const result = await window.submitTrain429();
   assert.equal(result, null);
   assert.equal(calls, 0);
-  assert.match(notices.at(-1), /不会回退母算法/);
+  assert.match(notices.at(-1), /没有成功且成果有效的可迭代版本/);
+  cleanup(runtime);
+});
+
+test('stale changlian master data allows checking but blocks network POST', async () => {
+  const state = baseState();
+  state.algorithms = [{
+    id: 'alg-1',
+    source_type: 'EXTERNAL',
+    provider_type: 'CHANG_LIAN',
+    external_active: true,
+    external_master_data_digest: 'old-digest',
+  }];
+  const {submitButton} = installDom();
+  const notices = [];
+  let calls = 0;
+  globalThis.window = {
+    submitTrain429: () => 'legacy',
+    fetch: async () => {
+      calls += 1;
+      return {ok: true, async json() { return {}; }};
+    },
+    ExternalAlgorithmPlatformRuntime: {
+      trainingReadiness: () => ({
+        ready: false,
+        status: 'stale',
+        reason: 'external-master-data-stale',
+        message: '当前算法的畅联云主数据需要重新同步，请执行“立即同步”',
+      }),
+    },
+  };
+  const runtime = installTrainingSubmitRuntime({
+    getState: () => state,
+    projectId: () => 'project-1',
+    trainingDraftRuntime: {
+      sync: () => draft(),
+      current: () => draft(),
+      base: () => ({blocked: false}),
+    },
+    trainingDraftToRequest,
+    notify: message => notices.push(String(message)),
+  });
+
+  assert.equal(submitButton.disabled, false);
+  assert.equal(submitButton.dataset.trainingSubmitReason, 'external-master-data-stale');
+  const result = await window.submitTrain429();
+
+  assert.equal(result, null);
+  assert.equal(calls, 0);
+  assert.match(notices.at(-1), /立即同步/);
+  cleanup(runtime);
+});
+
+test('submit button exposes truthful creation stages while the durable POST is pending', async () => {
+  const state = baseState();
+  const {submitButton} = installDom();
+  let release;
+  const pending = new Promise(resolve => { release = resolve; });
+  globalThis.window = {
+    submitTrain429: () => 'legacy',
+    fetch: async () => {
+      await pending;
+      return {ok: true, async json() { return durableTask(); }};
+    },
+  };
+  const runtime = installTrainingSubmitRuntime({
+    getState: () => state,
+    projectId: () => 'project-1',
+    trainingDraftRuntime: {sync: () => draft(), current: () => draft(), base: () => ({blocked: false})},
+    trainingDraftToRequest,
+  });
+
+  const request = window.submitTrain429();
+  assert.equal(runtime.state().lastStage, 'posting');
+  assert.equal(submitButton.dataset.trainingSubmitStage, 'posting');
+  assert.equal(submitButton.textContent, '正在创建训练任务…');
+  assert.equal(submitButton.disabled, true);
+
+  release();
+  await request;
+  assert.equal(runtime.isSubmitting(), false);
+  assert.equal(submitButton.dataset.trainingSubmitStage, 'created');
+  assert.equal(submitButton.textContent, '开始训练');
   cleanup(runtime);
 });
 
@@ -235,13 +457,13 @@ test('double click cannot create two independent training tasks', async () => {
     fetch: async () => {
       calls += 1;
       await pending;
-      return {ok: true, async json() { return {task: {id: 'task-once'}}; }};
+      return {ok: true, async json() { return durableTask(); }};
     },
   };
   const runtime = installTrainingSubmitRuntime({
     getState: () => state,
     projectId: () => 'project-1',
-    trainingDraftRuntime: {sync: () => draft(), current: () => draft(), inheritance: () => ({blocked: false})},
+    trainingDraftRuntime: {sync: () => draft(), current: () => draft(), base: () => ({blocked: false})},
     trainingDraftToRequest,
     notify: message => notices.push(String(message)),
   });
@@ -263,6 +485,61 @@ test('double click cannot create two independent training tasks', async () => {
   cleanup(runtime);
 });
 
+test('network interruption verifies the planned task id before reporting failure', async () => {
+  const state = baseState();
+  const {submitButton} = installDom();
+  const accepted = [];
+  let calls = 0;
+  globalThis.window = {
+    submitTrain429: () => 'legacy',
+    fetch: async url => {
+      calls += 1;
+      if (String(url).includes('/train/start')) throw new TypeError('Failed to fetch');
+      return {ok: true, async json() { return durableTask().task; }};
+    },
+  };
+  const runtime = installTrainingSubmitRuntime({
+    getState: () => state,
+    projectId: () => 'project-1',
+    trainingDraftRuntime: {sync: () => draft(), current: () => draft(), base: () => ({blocked: false})},
+    trainingDraftToRequest,
+    trainingTaskRuntime: {acceptCreatedTask: task => accepted.push(task)},
+  });
+
+  const result = await window.submitTrain429();
+  assert.equal(calls, 2);
+  assert.equal(result.recovered, true);
+  assert.equal(accepted[0].task_id, 'train_aaaaaaaaaaaaaaaaaaaa');
+  assert.notEqual(runtime.state().lastStage, 'failed');
+  assert.equal(submitButton.disabled, false);
+  cleanup(runtime);
+});
+
+test('unverifiable POST outcome disables blind retry and keeps planned identity visible', async () => {
+  const state = baseState();
+  const {submitButton} = installDom();
+  const notices = [];
+  globalThis.window = {
+    submitTrain429: () => 'legacy',
+    fetch: async () => { throw new TypeError('Failed to fetch'); },
+  };
+  const runtime = installTrainingSubmitRuntime({
+    getState: () => state,
+    projectId: () => 'project-1',
+    trainingDraftRuntime: {sync: () => draft(), current: () => draft(), base: () => ({blocked: false})},
+    trainingDraftToRequest,
+    notify: message => notices.push(String(message)),
+  });
+
+  assert.equal(await window.submitTrain429(), null);
+  assert.equal(runtime.state().lastStage, 'failed');
+  assert.equal(runtime.state().presentation.tone, 'uncertain');
+  assert.equal(submitButton.disabled, true);
+  assert.equal(submitButton.dataset.trainingSubmitReason, 'outcome-uncertain');
+  assert.match(notices.at(-1), /任务列表.*train_aaaaaaaaaaaaaaaaaaaa/);
+  cleanup(runtime);
+});
+
 test('refresh failure after successful POST does not invite a duplicate training task', async () => {
   const state = baseState();
   installDom();
@@ -272,22 +549,585 @@ test('refresh failure after successful POST does not invite a duplicate training
     submitTrain429: () => 'legacy',
     fetch: async () => {
       calls += 1;
-      return {ok: true, async json() { return {task: {id: 'created'}}; }};
+      return {ok: true, async json() { return durableTask(); }};
     },
   };
   const runtime = installTrainingSubmitRuntime({
     getState: () => state,
     projectId: () => 'project-1',
-    trainingDraftRuntime: {sync: () => draft(), current: () => draft(), inheritance: () => ({blocked: false})},
+    trainingDraftRuntime: {sync: () => draft(), current: () => draft(), base: () => ({blocked: false})},
     trainingDraftToRequest,
     reloadRelated: async () => { throw new Error('list offline'); },
     notify: message => notices.push(String(message)),
   });
 
   const result = await window.submitTrain429();
-  assert.equal(result.task.id, 'created');
+  assert.equal(result.task.task_id, 'train_aaaaaaaaaaaaaaaaaaaa');
   assert.equal(calls, 1);
   assert.match(notices[0], /训练任务已进入后台队列/);
+  await new Promise(resolve => setImmediate(resolve));
   assert.match(notices.at(-1), /列表刷新失败/);
   cleanup(runtime);
+});
+
+test('2xx without the formal durable task identity is not success and keeps the dialog open', async () => {
+  const state = baseState();
+  installDom();
+  const notices = [];
+  let closed = 0;
+  let accepted = 0;
+  globalThis.window = {
+    submitTrain429: () => 'legacy',
+    fetch: async () => ({
+      ok: true,
+      async json() { return {ok: true, task: {id: 'legacy-only', status: 'QUEUED'}}; },
+    }),
+  };
+  const runtime = installTrainingSubmitRuntime({
+    getState: () => state,
+    projectId: () => 'project-1',
+    trainingDraftRuntime: {sync: () => draft(), current: () => draft(), base: () => ({blocked: false})},
+    trainingDraftToRequest,
+    trainingTaskRuntime: {acceptCreatedTask: () => { accepted += 1; }},
+    closeModal: () => { closed += 1; },
+    notify: message => notices.push(String(message)),
+  });
+
+  assert.equal(await window.submitTrain429(), null);
+  assert.equal(closed, 0);
+  assert.equal(accepted, 0);
+  assert.match(notices.at(-1), /正式任务身份/);
+  cleanup(runtime);
+});
+
+test('durable response task id must match the submitted planned task id', async () => {
+  const state = baseState();
+  installDom();
+  const notices = [];
+  let closed = 0;
+  globalThis.window = {
+    submitTrain429: () => 'legacy',
+    fetch: async () => ({ok: true, async json() { return durableTask('train_bbbbbbbbbbbbbbbbbbbb'); }}),
+  };
+  const runtime = installTrainingSubmitRuntime({
+    getState: () => state,
+    projectId: () => 'project-1',
+    trainingDraftRuntime: {sync: () => draft(), current: () => draft(), base: () => ({blocked: false})},
+    trainingDraftToRequest,
+    closeModal: () => { closed += 1; },
+    notify: message => notices.push(String(message)),
+  });
+
+  assert.equal(await window.submitTrain429(), null);
+  assert.equal(closed, 0);
+  assert.match(notices.at(-1), /任务身份不一致/);
+  cleanup(runtime);
+});
+
+
+test('confirmed iteration action lineage is injected only for matching current draft', async () => {
+  const state=baseState();
+  state.trainingIterationAction={
+    status:'confirmed',automatic_execution:false,action_id:'a'.repeat(64),action:'continue_training',
+    source:{algorithm_id:'alg-1',version_id:'v-current',decision_id:'b'.repeat(64),
+      evaluation_id:'c'.repeat(64),dataset_revision_id:'d'.repeat(64),snapshot_id:'snapshot-1'},
+    training_draft:{task_id:'train_'+'a'.repeat(24)},
+  };
+  state.algorithms[0].current_version_id='v-current';
+  state.algorithms[0].versions=[{id:'v-current',iteration_decision:{decision_id:'b'.repeat(64),evaluation_id:'c'.repeat(64)},evaluation:{evaluation_id:'c'.repeat(64)},confirmed_iteration_action:structuredClone(state.trainingIterationAction)}];
+  const value=draft({baseVersionId:'v-current'});
+  installDom();
+  let sent;
+  globalThis.window={submitTrain429:()=>{},fetch:async(_url,init)=>{
+    sent=JSON.parse(init.body);return{ok:true,async json(){return durableTask(sent.task_id)}};
+  }};
+  const runtime=installTrainingSubmitRuntime({
+    getState:()=>state,projectId:()=> 'project-1',
+    trainingDraftRuntime:{sync:()=>value,current:()=>value,base:()=>({blocked:false,versionId:'v-current'})},
+    trainingDraftToRequest,
+  });
+  await window.submitTrain429();
+  assert.deepEqual(sent.iteration_action,{
+    action_id:'a'.repeat(64),decision_id:'b'.repeat(64),evaluation_id:'c'.repeat(64),
+    version_id:'v-current',dataset_revision_id:'d'.repeat(64),snapshot_id:'snapshot-1',
+  });
+  assert.equal(sent.task_id,'train_'+'a'.repeat(24));
+  assert.equal(state.trainingIterationAction,null);
+  cleanup(runtime);
+});
+
+test('invalid historical iteration task id fails closed before POST', async () => {
+  const state=baseState();
+  state.trainingIterationAction={
+    status:'confirmed',automatic_execution:false,action_id:'a'.repeat(64),action:'continue_training',
+    source:{algorithm_id:'alg-1',version_id:'v-current',decision_id:'b'.repeat(64),
+      evaluation_id:'c'.repeat(64),dataset_revision_id:'d'.repeat(64),snapshot_id:'snapshot-1'},
+    training_draft:{task_id:'legacy-task-id'},
+  };
+  state.algorithms[0].current_version_id='v-current';
+  state.algorithms[0].versions=[{id:'v-current',iteration_decision:{decision_id:'b'.repeat(64),evaluation_id:'c'.repeat(64)},evaluation:{evaluation_id:'c'.repeat(64)},confirmed_iteration_action:structuredClone(state.trainingIterationAction)}];
+  const value=draft({baseVersionId:'v-current'});
+  installDom();
+  let postCount=0;
+  const notices=[];
+  globalThis.window={submitTrain429:()=>{},fetch:async()=>{
+    postCount+=1;return{ok:true,async json(){return durableTask()}};
+  }};
+  const runtime=installTrainingSubmitRuntime({
+    getState:()=>state,projectId:()=> 'project-1',
+    trainingDraftRuntime:{sync:()=>value,current:()=>value,base:()=>({blocked:false,versionId:'v-current'})},
+    trainingDraftToRequest,notify:message=>notices.push(String(message)),
+  });
+
+  assert.equal(await window.submitTrain429(),null);
+  assert.equal(postCount,0);
+  assert.match(notices.at(-1),/历史迭代任务 ID 格式异常/);
+  assert.ok(state.trainingIterationAction);
+  cleanup(runtime);
+});
+
+test('stale iteration version blocks submission without dropping action', async () => {
+  const state=baseState();
+  state.trainingIterationAction={
+    status:'confirmed',automatic_execution:false,action_id:'a'.repeat(64),action:'continue_training',
+    source:{algorithm_id:'alg-1',version_id:'other',decision_id:'b'.repeat(64),
+      evaluation_id:'c'.repeat(64),dataset_revision_id:'',snapshot_id:''},
+  };
+  state.algorithms[0].current_version_id='v-current';
+  state.algorithms[0].versions=[{id:'v-current',iteration_decision:{decision_id:'b'.repeat(64),evaluation_id:'c'.repeat(64)},evaluation:{evaluation_id:'c'.repeat(64)},confirmed_iteration_action:structuredClone(state.trainingIterationAction)}];
+  const value=draft({baseVersionId:'v-current'});
+  installDom();
+  let sent;
+  const notices=[];
+  globalThis.window={submitTrain429:()=>{},fetch:async(_url,init)=>{
+    sent=JSON.parse(init.body);return{ok:true,async json(){return durableTask(sent.task_id)}};
+  }};
+  const runtime=installTrainingSubmitRuntime({
+    getState:()=>state,projectId:()=> 'project-1',
+    trainingDraftRuntime:{sync:()=>value,current:()=>value,base:()=>({blocked:false,versionId:'v-current'})},
+    trainingDraftToRequest,notify:message=>notices.push(String(message)),
+  });
+  assert.equal(await window.submitTrain429(),null);
+  assert.equal(sent,undefined);
+  assert.match(notices.at(-1),/迭代动作已过期/);
+  assert.ok(state.trainingIterationAction);
+  cleanup(runtime);
+});
+
+for (const [name, mutate] of [
+  ['changed current version', state => { state.algorithms[0].current_version_id='v-new'; }],
+  ['changed decision', state => { state.algorithms[0].versions[0].iteration_decision.decision_id='e'.repeat(64); }],
+  ['changed evaluation', state => { state.algorithms[0].versions[0].evaluation.evaluation_id='e'.repeat(64); }],
+  ['changed persisted action', state => { state.algorithms[0].versions[0].confirmed_iteration_action.action_id='e'.repeat(64); }],
+  ['another algorithm action', state => { state.trainingIterationAction.source.algorithm_id='alg-other'; }],
+]) {
+  test(`${name} blocks iteration submission and preserves draft`, async () => {
+  const state=baseState();
+  state.trainingIterationAction={
+    status:'confirmed',automatic_execution:false,action_id:'a'.repeat(64),action:'continue_training',
+    source:{algorithm_id:'alg-1',version_id:'v-current',decision_id:'b'.repeat(64),
+      evaluation_id:'c'.repeat(64),dataset_revision_id:'',snapshot_id:''},
+  };
+  state.algorithms[0].current_version_id='v-current';
+  state.algorithms[0].versions=[{id:'v-current',iteration_decision:{decision_id:'b'.repeat(64),evaluation_id:'c'.repeat(64)},evaluation:{evaluation_id:'c'.repeat(64)},confirmed_iteration_action:structuredClone(state.trainingIterationAction)}];
+  mutate(state);
+  const value=draft({baseVersionId:'v-current'});
+  installDom();
+  let sent;
+  const notices=[];
+  globalThis.window={submitTrain429:()=>{},fetch:async(_url,init)=>{
+    sent=JSON.parse(init.body);return{ok:true,async json(){return durableTask(sent.task_id)}};
+  }};
+  const runtime=installTrainingSubmitRuntime({
+    getState:()=>state,projectId:()=> 'project-1',
+    trainingDraftRuntime:{sync:()=>value,current:()=>value,base:()=>({blocked:false,versionId:'v-current'})},
+    trainingDraftToRequest,notify:message=>notices.push(String(message)),
+  });
+  assert.equal(await window.submitTrain429(),null);
+  assert.equal(sent,undefined);
+  assert.match(notices.at(-1),/迭代动作已过期/);
+  assert.ok(state.trainingIterationAction);
+  assert.equal(value.baseVersionId,'v-current');
+  assert.deepEqual(value.materialIds,['img-1','img-2']);
+  cleanup(runtime);
+});
+
+}
+
+test('supplement candidate context follows the base version and actual selected materials', () => {
+  const asset = {
+    id: 'alg-1', current_version_id: 'ver-1',
+    versions: [{id: 'ver-1', supplement_data_candidate_set: {
+      candidate_set_id: 'a'.repeat(64),
+      material_ids: ['img-2', 'img-3', 'img-not-selected'],
+    }}],
+  };
+  const value = draft({
+    baseVersionId: 'ver-1',
+    materialIds: ['img-1', 'img-2'],
+    testMaterialIds: ['img-3'],
+    splitMode: 'independent_test_set',
+  });
+  const context = supplementCandidateContext({asset, draft: value, base: {versionId: 'ver-1'}});
+  assert.equal(context.candidateSetId, 'a'.repeat(64));
+  assert.equal(context.sourceCandidateCount, 3);
+  assert.deepEqual(context.adoptedMaterialIds, ['img-2', 'img-3']);
+  assert.equal(context.adoptedCount, 2);
+  assert.equal(context.active, true);
+});
+
+test('submit runtime carries candidate_set_id when selected materials adopt feedback candidates', async () => {
+  const value = draft({baseVersionId: 'ver-1'});
+  const state = baseState();
+  state.algorithms = [{
+    id: 'alg-1', current_version_id: 'ver-1',
+    versions: [{id: 'ver-1', supplement_data_candidate_set: {
+      candidate_set_id: 'b'.repeat(64), material_ids: ['img-2'],
+    }}],
+  }];
+  installDom();
+  let sent;
+  globalThis.window = {
+    submitTrain429: () => 'legacy',
+    fetch: async (_url, init) => {
+      sent = JSON.parse(init.body);
+      return {ok: true, async json() { return durableTask(sent.task_id); }};
+    },
+  };
+  const runtime = installTrainingSubmitRuntime({
+    getState: () => state,
+    projectId: () => 'project-1',
+    trainingDraftRuntime: {
+      sync: () => value, current: () => value,
+      base: () => ({blocked: false, versionId: 'ver-1'}),
+    },
+    trainingDraftToRequest,
+  });
+  await window.submitTrain429();
+  assert.equal(sent.supplement_candidate_set_id, 'b'.repeat(64));
+  cleanup(runtime);
+});
+test('fixed benchmark context requires current bundle-verified backend identity', () => {
+  const asset = {id: 'alg-1', current_version_id: 'ver-1'};
+  const value = draft({baseVersionId: 'ver-1', benchmarkReuseEnabled: true});
+  const context = benchmarkReuseContext({
+    asset, draft: value, base: {versionId: 'ver-1'},
+    benchmark: {algorithm_id: 'alg-1', available: true, source_version_id: 'ver-1', scope_id: 'c'.repeat(64), snapshot_id: 'snapshot-1', test_image_count: 12, binding_level: 'bundle_verified'},
+  });
+  assert.equal(context.sourceVersionId, 'ver-1');
+  assert.equal(context.scopeId, 'c'.repeat(64));
+  assert.equal(context.testImageCount, 12);
+  assert.throws(() => benchmarkReuseContext({
+    asset: {...asset, current_version_id: 'ver-2'}, draft: value, base: {versionId: 'ver-1'},
+    benchmark: {algorithm_id: 'alg-1', available: true, source_version_id: 'ver-1', scope_id: 'c'.repeat(64), test_image_count: 12, binding_level: 'bundle_verified'},
+  }), /来源版本已变化/);
+});
+
+test('benchmark availability loading blocks submit readiness until backend truth is known', () => {
+  assert.deepEqual(trainingSubmitReadiness({draft: draft({benchmarkReuseEnabled: true}), base: {blocked: false}, benchmarkStatus: {loading: true}}), {ready: false, reason: 'benchmark-loading'});
+  assert.deepEqual(trainingSubmitReadiness({draft: draft(), base: {blocked: false}, benchmarkStatus: {loading: true}}), {ready: true, reason: ''});
+  assert.deepEqual(trainingSubmitReadiness({draft: draft(), base: {blocked: false}, benchmarkStatus: {available: false, loading: false}}), {ready: true, reason: ''});
+});
+
+test('submit runtime sends only fixed benchmark identity while exact test ids stay server-side', async () => {
+  const value = draft({baseVersionId: 'ver-1', benchmarkReuseEnabled: true});
+  const state = baseState();
+  state.algorithms = [{id: 'alg-1', current_version_id: 'ver-1'}];
+  state.trainingBenchmarkReuse = {algorithm_id: 'alg-1', available: true, source_version_id: 'ver-1', source_version_name: 'v1', scope_id: 'd'.repeat(64), snapshot_id: 'snapshot-1', test_image_count: 9, binding_level: 'bundle_verified', loading: false, load_error: false};
+  installDom();
+  let sent;
+  globalThis.window = {submitTrain429: () => 'legacy', fetch: async (_url, init) => { sent = JSON.parse(init.body); return {ok: true, async json() { return durableTask(sent.task_id); }}; }};
+  const runtime = installTrainingSubmitRuntime({
+    getState: () => state, projectId: () => 'project-1',
+    trainingDraftRuntime: {sync: () => value, current: () => value, base: () => ({blocked: false, versionId: 'ver-1'})},
+    trainingDraftToRequest,
+  });
+  await window.submitTrain429();
+  assert.equal(sent.benchmark_source_version_id, 'ver-1');
+  assert.equal(sent.benchmark_scope_id, 'd'.repeat(64));
+  assert.equal(Object.hasOwn(sent, 'test_image_ids'), false);
+  assert.equal(Object.hasOwn(sent, 'experiment_percent'), false);
+  cleanup(runtime);
+});
+
+
+test('created task notice distinguishes effective training truth from pending annotation selection', async () => {
+  const state = baseState();
+  installDom();
+  const notices = [];
+  globalThis.window = {
+    submitTrain429: () => 'legacy',
+    fetch: async () => ({
+      ok: true,
+      async json() {
+        return {
+          ...durableTask(),
+          selection: {
+            selected_train_count: 10_000,
+            effective_train_count: 2_000,
+            pending_annotation_count: 8_000,
+            test_count: 0,
+          },
+        };
+      },
+    }),
+  };
+  const runtime = installTrainingSubmitRuntime({
+    getState: () => state,
+    projectId: () => 'project-1',
+    trainingDraftRuntime: {
+      sync: () => draft(),
+      current: () => draft(),
+      base: () => ({blocked: false}),
+    },
+    trainingDraftToRequest,
+    notify: message => notices.push(String(message)),
+  });
+
+  const result = await window.submitTrain429();
+  assert.ok(result);
+  assert.match(notices[0], /本轮有效 2000 张/);
+  assert.match(notices[0], /待标注 8000 张已保留/);
+  cleanup(runtime);
+});
+
+
+test('training defaults use exclusive performance with 150 first epochs and 80 iteration epochs', () => {
+  const first = createTrainingDraft({config: {model: 'yolo11n.pt'}});
+  const initial = buildTrainingEngineParameters({draft: first, target, algorithm});
+  assert.equal(initial.epochs, 150);
+  assert.equal(initial.resource_strategy, 'auto');
+  assert.equal(initial.resource_profile, 'performance');
+  assert.equal(initial.gpu_policy, 'exclusive');
+  assert.equal(initial.early_stopping_enabled, false);
+
+  const inherited = createTrainingDraft({baseVersionId: 'verified-previous-version'});
+  const next = buildTrainingEngineParameters({draft: inherited, target, algorithm});
+  assert.equal(next.epochs, 80);
+
+  const manual = createTrainingDraft({
+    baseVersionId: 'verified-previous-version',
+    trainingMode: 'custom',
+    resource: {strategy: 'manual', batch: 8, workers: 0, cache: false},
+    config: {epochs: 300, early_stopping_enabled: true, patience: 40},
+  });
+  const explicit = buildTrainingEngineParameters({draft: manual, target, algorithm});
+  assert.equal(explicit.epochs, 300);
+  assert.equal(explicit.patience, 40);
+  assert.equal(explicit.early_stopping_enabled, true);
+});
+
+
+test('four modes freeze only training semantics while GPU resources resolve at worker start', () => {
+  const specs = [
+    ['quick', 30, 20, 640],
+    ['full', 150, 80, 640],
+    ['complex', 250, 150, 800],
+  ];
+  for (const [trainingMode, firstEpochs, iterationEpochs, imgsz] of specs) {
+    for (const [baseVersionId, expectedEpochs] of [['', firstEpochs], ['previous-ok', iterationEpochs]]) {
+      const d = draft({
+        trainingMode,
+        baseVersionId,
+        resource: {strategy:'manual', profile:'stability', device:'auto', gpuPolicy:'auto', batch:128, workers:8, cache:'ram'},
+        config: {model:'custom.pt', epochs:999, imgsz:320},
+      });
+      const payload = buildTrainingStartPayload({draft:d, target, algorithm, trainingDraftToRequest});
+      assert.equal(payload.training_mode, trainingMode);
+      assert.equal(payload.epochs, expectedEpochs);
+      assert.equal(payload.imgsz, 320, 'explicit image size survives every mode; mode still owns epochs and resources');
+      const defaults = buildTrainingStartPayload({draft:draft({trainingMode,baseVersionId,config:{model:'custom.pt'}}),target,algorithm,trainingDraftToRequest});
+      assert.equal(defaults.imgsz, imgsz, 'mode size remains the fallback only when no selected size exists');
+      assert.equal(payload.resource_strategy, 'auto');
+      assert.equal(payload.resource_profile, 'performance');
+      assert.equal(payload.gpu_policy, 'exclusive');
+      assert.equal(payload.batch, 8); // non-manual candidate only; Worker resolves at execution
+      assert.equal(payload.workers, 0);
+      assert.equal(payload.cache, 'False');
+    }
+  }
+});
+
+test('old automatic GPU policy cannot bypass custom-mode physical GPU exclusivity', () => {
+  const d = draft({
+    trainingMode: 'custom',
+    baseVersionId: 'previous-ok',
+    resource: {strategy:'manual',profile:'performance',device:'auto',gpuPolicy:'auto',batch:8,workers:0,cache:false},
+    config: {model:'custom.pt',epochs:30,imgsz:640},
+  });
+  const payload = buildTrainingStartPayload({draft:d,target,algorithm,trainingDraftToRequest});
+  assert.equal(d.resource.gpuPolicy, 'exclusive');
+  assert.equal(payload.gpu_policy, 'exclusive');
+  assert.equal(payload.resource_strategy, 'manual');
+});
+
+test('custom mode freezes entered Batch Workers Cache and epochs rather than silently adjusting', () => {
+  const d = draft({
+    trainingMode:'custom',
+    resource:{strategy:'manual', profile:'performance', device:'auto', gpuPolicy:'exclusive', batch:64, workers:6, cache:'disk'},
+    config:{model:'custom.pt', epochs:310, imgsz:960, patience:45, early_stopping_enabled:true},
+  });
+  const payload = buildTrainingStartPayload({draft:d, target, algorithm, trainingDraftToRequest});
+  assert.equal(payload.training_mode, 'custom');
+  assert.equal(payload.resource_strategy, 'manual');
+  assert.equal(payload.epochs, 310);
+  assert.equal(payload.imgsz, 960);
+  assert.equal(payload.batch, 64);
+  assert.equal(payload.workers, 6);
+  assert.equal(payload.cache, 'disk');
+  assert.equal(payload.early_stopping_enabled, true);
+});
+
+test('first-training explicit label rule remains active for every training mode', () => {
+  for (const trainingMode of ['quick','full','complex','custom']) {
+    const resource = trainingMode === 'custom'
+      ? {strategy:'manual', batch:8, workers:0, cache:false}
+      : {strategy:'auto'};
+    const d = createTrainingDraft({algorithmId:'alg-1',materialIds:['image-1'],trainingMode,resource,newLabelCodes:[]});
+    assert.throws(() => buildTrainingStartPayload({draft:d,target,algorithm,trainingDraftToRequest}), /至少选择一个训练标签/);
+  }
+});
+
+
+test('all training modes preserve explicit precision and matching AMP intent', () => {
+  for (const trainingMode of ['quick','full','complex','custom']) {
+    for (const precision of ['auto','fp16','fp32']) {
+      const d=draft({trainingMode,config:{model:'custom.pt',precision,amp:true}});
+      const payload=buildTrainingStartPayload({draft:d,target,algorithm,trainingDraftToRequest});
+      assert.equal(payload.precision,precision,trainingMode);
+      assert.equal(payload.amp,precision!=='fp32',trainingMode);
+    }
+  }
+});
+
+test('selected and inherited imgsz precision survive all training mode submissions',()=>{
+ for(const trainingMode of ['quick','full','complex','custom']){
+  const selected=draft({trainingMode,baseVersionId:'previous',config:{model:'best.pt',imgsz:800,precision:'fp32'}});
+  const parameters=buildTrainingEngineParameters({draft:selected,target,algorithm});
+  assert.equal(parameters.imgsz,800,trainingMode);assert.equal(parameters.precision,'fp32',trainingMode);
+ }
+});
+
+function createCloseTimingFixture({reloadRelated, fetch, closeModal} = {}) {
+  const state = baseState();
+  const dom = installDom();
+  globalThis.window = {fetch: fetch || (async () => ({ok:true, json:async () => durableTask()}))};
+  const notices = [];
+  const runtime = installTrainingSubmitRuntime({
+    getState:()=>state, projectId:()=> 'project-1',
+    trainingDraftRuntime:{sync:()=>draft(),current:()=>draft(),base:()=>({blocked:false})},
+    trainingDraftToRequest,reloadRelated,closeModal,notify:message=>notices.push(message),
+  });
+  return {...dom,runtime,notices};
+}
+
+test('created task closes before a pending related-list refresh and submission settles', async () => {
+  let release, closed=0;
+  const fixture=createCloseTimingFixture({reloadRelated:()=>new Promise(resolve=>{release=resolve;}),closeModal:()=>{closed++;}});
+  let settled=false;
+  const pending=fixture.runtime.submit().then(result=>{settled=true;return result;});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(closed,1);
+  assert.equal(settled,true);
+  release();
+  await pending;
+  cleanup(fixture.runtime);
+});
+
+test('late creation response never closes a replacement training form', async () => {
+  let resolveResponse,closed=0;
+  const fixture=createCloseTimingFixture({fetch:()=>new Promise(resolve=>{resolveResponse=resolve;}),closeModal:()=>{closed++;}});
+  const pending=fixture.runtime.submit();
+  await new Promise(resolve=>setImmediate(resolve));
+  const replacement={dataset:{},textContent:'创建训练任务'};
+  const prior=document.querySelector;
+  document.querySelector=selector=>selector==='.train429-create .train428-footer .btn.primary'?replacement:prior(selector);
+  resolveResponse({ok:true,json:async()=>durableTask()});
+  assert.ok(await pending);
+  assert.equal(closed,0);
+  cleanup(fixture.runtime);
+});
+
+test('uncertain creation blocks direct repeated invocation for the same task id', async () => {
+  let posts=0;
+  const fixture=createCloseTimingFixture({fetch:async (_url,init)=>{if(init?.method==='POST'){posts++;throw new Error('network');}return {ok:false,status:404};}});
+  await fixture.runtime.submit();
+  await fixture.runtime.submit();
+  assert.equal(posts,1);
+  cleanup(fixture.runtime);
+});
+
+test('a task returned for another project cannot close the creation form', async () => {
+  let closed=0;
+  const fixture=createCloseTimingFixture({fetch:async()=>({ok:true,json:async()=>durableTask(undefined,{project_id:'other-project'})}),closeModal:()=>{closed++;}});
+  assert.equal(await fixture.runtime.submit(),null);
+  assert.equal(closed,0);
+  cleanup(fixture.runtime);
+});
+
+test('missing project identity never confirms creation or recovered task', async () => {
+  let closed=0,lookups=0;
+  const fixture=createCloseTimingFixture({fetch:async (_url,init)=>{
+    if(init?.method!=='POST')lookups++;
+    return {ok:true,json:async()=>durableTask(undefined,{project_id:undefined})};
+  },closeModal:()=>{closed++;}});
+  assert.equal(await fixture.runtime.submit(),null);
+  assert.equal(closed,0);
+  assert.equal(lookups,1);
+  assert.equal(fixture.runtime.state().presentation.retrySafe,false);
+  cleanup(fixture.runtime);
+});
+
+test('opening a fresh form after success resets old submit feedback without a success overlay', async () => {
+  const fixture=createCloseTimingFixture();
+  const makeRoot=()=>{
+    const classes=new Set();
+    const panel={hidden:true,dataset:{},querySelector:()=>null,querySelectorAll:()=>[],setAttribute(){},removeAttribute(){}};
+    return {classes,panel,isConnected:true,querySelector:()=>panel,classList:{toggle:(key,on)=>on?classes.add(key):classes.delete(key),remove:(...keys)=>keys.forEach(key=>classes.delete(key))}};
+  };
+  let root=makeRoot();
+  const prior=document.querySelector;
+  document.querySelector=selector=>selector==='.train429-create'?root:prior(selector);
+  await fixture.runtime.submit();
+  root=makeRoot();
+  fixture.runtime.updateReadiness();
+  assert.equal(root.classes.has('training-submit-complete'),false);
+  assert.equal(root.panel.hidden,true);
+  assert.equal(fixture.runtime.state().lastStage,'idle');
+  cleanup(fixture.runtime);
+});
+
+
+test('admission collects all confirmed blockers and uses unique affected images rather than issue rows',()=>{
+  const items=collectTrainingAdmissionBlockers({draft:draft(),base:{blocked:true},
+    compatibility:{ready:true,issue_count:76,affected_image_count:38,issue_counts:{duplicate_annotation_conflict:38,partial_review_scope:38}},
+    externalReadiness:{ready:false,reason:'external-master-data-stale',message:'畅联云主数据已过期'}});
+  assert.ok(items.some(row=>row.code==='iteration'));
+  assert.ok(items.some(row=>row.code==='external-master-data-stale'));
+  assert.equal(items.find(row=>row.code==='material-compatibility').count,38);
+  assert.equal(items.find(row=>row.code==='duplicate_annotation_conflict').count,38);
+  assert.equal(items.find(row=>row.code==='partial_review_scope').count,38);
+  assert.ok(items.every(row=>!row.transient));
+});
+
+test('admission distinguishes unfinished checks from a recoverable failed check',()=>{
+  const pending=collectTrainingAdmissionBlockers({draft:draft(),compatibility:{ready:false,loading:true}});
+  assert.equal(pending[0].code,'material-compatibility-loading');assert.equal(pending[0].transient,true);
+  const failed=collectTrainingAdmissionBlockers({draft:draft(),compatibility:{ready:false,loading:false,error:'服务暂不可用'}});
+  assert.equal(failed[0].code,'material-compatibility-error');assert.equal(failed[0].transient,false);
+  assert.match(failed[0].message,/服务暂不可用/);
+});
+
+test('admission does not invent a unique image count from an issue-only response',()=>{
+  const blockers=collectTrainingAdmissionBlockers({draft:draft(),compatibility:{ready:true,issue_count:76}});
+  const material=blockers.find(row=>row.code==='material-compatibility');
+  assert.equal(material.count,null);assert.doesNotMatch(material.message,/76张/);
+});
+
+
+test('a prepared mother model cannot hide a noninteger Batch blocker',()=>{
+  const state=baseState();state.targets=[{...target,base_models:[{value:'custom.pt',model_status:'FOUND'}]}];
+  state.trainingDraft=draft({resource:{strategy:'manual',device:'0',batch:1.5,workers:0}});installDom();globalThis.window={submitTrain429:()=>null};
+  const runtime=installTrainingSubmitRuntime({getState:()=>state,projectId:()=> 'project-1',trainingDraftRuntime:{sync:()=>state.trainingDraft,current:()=>state.trainingDraft,base:()=>({blocked:false})},trainingDraftToRequest});
+  try{assert.equal(runtime.state().readiness.ready,false);assert.match(runtime.state().readiness.blockers.find(row=>row.code==='training-config')?.message||'',/Batch/)}finally{cleanup(runtime)}
 });

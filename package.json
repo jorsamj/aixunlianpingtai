@@ -1,10 +1,24 @@
 {
   "private": true,
   "scripts": {
-    "test": "node --test tests/frontend",
-    "test:browser": "playwright test"
+    "test": "node --test tests/frontend/*.test.mjs",
+    "test:browser": "playwright test",
+    "vendor:annotorious": "node tools/vendor_annotorious.mjs",
+    "verify:annotorious": "node tools/vendor_annotorious.mjs --check",
+    "vendor:uppy": "node tools/vendor_uppy.mjs",
+    "verify:uppy": "node tools/vendor_uppy.mjs --check"
   },
   "devDependencies": {
-    "@playwright/test": "^1.55.0"
+    "@playwright/test": "^1.55.0",
+    "uppy": "6.0.5"
+  },
+  "dependencies": {
+    "@annotorious/annotorious": "3.9.5",
+    "@uppy/core": "6.3.0",
+    "@uppy/dashboard": "6.0.2",
+    "@uppy/locales": "5.3.1"
+  },
+  "engines": {
+    "node": "^22.0.0 || ^24.0.0 || >=26.0.0"
   }
 }

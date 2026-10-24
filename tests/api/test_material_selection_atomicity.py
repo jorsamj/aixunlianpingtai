@@ -16,7 +16,7 @@ def png_bytes() -> bytes:
 def create_project_with_dataset(client):
     project = client.post(
         "/api/projects",
-        json={"name": f"atomic-{uuid.uuid4().hex[:8]}", "labels": []},
+        json={"name": f"atomic-{uuid.uuid4().hex[:8]}", "labels": ["target"]},
     ).json()
     dataset = client.post(
         f"/api/projects/{project['id']}/datasets",
@@ -97,30 +97,19 @@ def run_with_paused_commit(monkeypatch, app_module, project_id: str, invoke, cha
     return outcome["value"], real_material_store(project_id)
 
 
-def test_delete_dataset_selects_latest_rows_inside_atomic_mutation(client, monkeypatch):
+def test_retired_dataset_delete_cannot_expand_to_concurrently_reassigned_rows(client):
     import app as app_module
-
     project_id, dataset_id = create_project_with_dataset(client)
-    first = upload_png(client, project_id, dataset_id, "first.png")
-    reassigned = upload_png(client, project_id, "default", "reassigned.png")
-
-    result, store = run_with_paused_commit(
-        monkeypatch,
-        app_module,
-        project_id,
-        lambda: app_module.delete_dataset(project_id, dataset_id),
-        lambda real_store: real_store.patch(
-            {reassigned["id"]: {"dataset_id": dataset_id}}
-        ),
-    )
-
-    assert result == {"ok": True}
-    assert {row["id"] for row in store.read().rows}.isdisjoint(
-        {first["id"], reassigned["id"]}
-    )
-    uploads = app_module.project_dir(project_id) / "uploads"
-    assert not (uploads / first["stored_name"]).exists()
-    assert not (uploads / reassigned["stored_name"]).exists()
+    first = upload_png(client, project_id, dataset_id, 'first.png')
+    reassigned = upload_png(client, project_id, 'default', 'reassigned.png')
+    app_module.material_store(project_id).patch({reassigned['id']: {'dataset_id': dataset_id}})
+    response = client.delete(f'/api/projects/{project_id}/datasets/{dataset_id}')
+    assert response.status_code == 409
+    assert json.loads(response.json()['detail'])['code'] == 'MATERIAL_DELETE_PREVIEW_REQUIRED'
+    rows = {row['id'] for row in app_module.material_store(project_id).read().rows}
+    assert {first['id'], reassigned['id']} <= rows
+    uploads = app_module.project_dir(project_id) / 'uploads'
+    assert all((uploads / row['stored_name']).is_file() for row in (first, reassigned))
 
 
 def test_delete_dataset_file_lock_failure_keeps_dataset_and_material(
@@ -153,7 +142,7 @@ def test_delete_dataset_file_lock_failure_keeps_dataset_and_material(
 
     assert response.status_code == 409
     detail = json.loads(response.json()["detail"])
-    assert detail["failed_items"][0]["id"] == locked["id"]
+    assert detail["code"] == "MATERIAL_DELETE_PREVIEW_REQUIRED"
     assert any(
         dataset["id"] == dataset_id
         for dataset in app_module.read_json(app_module.datasets_file(project_id), [])

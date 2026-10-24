@@ -61,3 +61,47 @@ def test_v19_terminal_report_externalizes_imported_image_ids_without_breaking_re
     assert review['image_ids'] == image_ids
     assert review['report']['imported_image_ids'] == image_ids
     assert review['job']['status'] == 'done'
+
+def test_v19_clear_terminal_import_jobs_preserves_active_records(client):
+    project = client.post(
+        '/api/projects',
+        json={'name': f'clear-import-jobs-{uuid.uuid4().hex[:8]}', 'description': '', 'labels': []},
+    )
+    project.raise_for_status()
+    project_id = project.json()['id']
+
+    ids = {}
+    for status in ('done', 'failed', 'running', 'selecting'):
+        job_id = f'{status}-{uuid.uuid4().hex[:8]}'
+        ids[status] = job_id
+        app_module.v19_write_job(
+            project_id,
+            {
+                'id': job_id,
+                'project_id': project_id,
+                'dataset_id': 'default',
+                'file_name': f'{status}.zip',
+                'status': status,
+                'stage': status,
+                'progress': 100 if status in {'done', 'failed'} else 20,
+                'created_at': app_module.now_iso(),
+                'updated_at': app_module.now_iso(),
+            },
+        )
+
+    response = client.delete(f'/api/v19/projects/{project_id}/import/jobs')
+    response.raise_for_status()
+    body = response.json()
+
+    assert body['deleted'] == 2
+    assert set(body['deleted_ids']) == {ids['done'], ids['failed']}
+    assert not app_module.v19_job_dir(project_id, ids['done']).exists()
+    assert not app_module.v19_job_dir(project_id, ids['failed']).exists()
+    assert app_module.v19_job_dir(project_id, ids['running']).exists()
+    assert app_module.v19_job_dir(project_id, ids['selecting']).exists()
+
+    listing = client.get(f'/api/v19/projects/{project_id}/import/jobs')
+    listing.raise_for_status()
+    remaining = {row['id'] for row in listing.json()['items']}
+    assert remaining == {ids['running'], ids['selecting']}
+

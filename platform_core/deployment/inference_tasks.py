@@ -65,6 +65,8 @@ def _deployment_result(
 
 
 def _recover_completed_deployment_test(context) -> tuple[TaskStatus, str] | None:
+    from platform_core.scenario_models import verify_scenario_request
+    verify_scenario_request(context, context.artifacts.read_json(context.task.task_id, context.task.payload_ref, default={}))
     task_id = context.task.task_id
     result_ref = "result.json"
     existing = context.artifacts.read_json(task_id, result_ref, default={})
@@ -106,6 +108,8 @@ def _recover_completed_deployment_test(context) -> tuple[TaskStatus, str] | None
 
 def run_deployment_test(context) -> tuple[TaskStatus, str]:
     request = context.artifacts.read_json(context.task.task_id, context.task.payload_ref, default={})
+    from platform_core.scenario_models import verify_scenario_request
+    verify_scenario_request(context, request)
     model_path = str(request.get("model_path") or "").strip()
     model_reference = str(request.get("model_reference") or "").strip()
     model_reference_type = str(request.get("model_reference_type") or "").strip()

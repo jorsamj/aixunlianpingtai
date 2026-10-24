@@ -4,6 +4,7 @@ import fs from 'node:fs';
 
 const app = fs.readFileSync('static/app.js', 'utf8');
 const main = fs.readFileSync('static/main.mjs', 'utf8');
+const algorithmList = fs.readFileSync('static/modules/algorithm-list-runtime.js', 'utf8');
 
 const retired = [
   'window.newAlgorithm=',
@@ -26,9 +27,10 @@ test('legacy algorithm CRUD and shadowed renderer owners stay retired', () => {
 });
 
 test('current algorithm page is fenced to stable renderer and semantic create action', () => {
-  assert.match(app, /if\(state\.page==='算法列表'\)\{renderAlgorithms423\(\);return\}/);
+  assert.match(main, /registerPageOwner\('算法列表'/);
   assert.match(app, /function renderAlgorithms\(\)\{return window\.renderAlgorithms423\?\.\(\)\}/);
-  assert.match(app, /data-action="algorithm\.create"/);
+  assert.doesNotMatch(app, /state\.page==='算法列表'.*renderAlgorithms423/);
+  assert.match(algorithmList, /data-action="algorithm\.create"/);
   assert.match(main, /registerAction\('algorithm\.create',[\s\S]*?window\.openNewAlgorithm423\(\)/);
 });
 

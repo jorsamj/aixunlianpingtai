@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import {buildTrainingMaterialQuery} from '../../static/modules/training-material-picker-runtime.js';
+import {buildTrainingMaterialQuery, renderTrainingMaterialPreview, trainingMaterialSelectionPatch} from '../../static/modules/training-material-picker-runtime.js';
 
 const source = fs.readFileSync(new URL('../../static/modules/training-material-picker-runtime.js', import.meta.url), 'utf8');
 const main = fs.readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8');
@@ -16,7 +16,22 @@ test('training material picker query is cursor paged and server filtered', () =>
   assert.equal(query.get('limit'), '60');
   assert.equal(query.get('cursor'), 'cursor-2');
   assert.equal(query.get('query'), 'smoke 01');
+  assert.equal(query.get('sort_order'), 'newest');
   assert.deepEqual(query.getAll('label'), ['smoke', 'person']);
+});
+
+test('training material picker supports authoritative page-number queries', () => {
+  const query = new URLSearchParams(buildTrainingMaterialQuery({
+    page: 7,
+    pageSize: 20,
+    query: 'smoke',
+    labels: ['smoke'],
+    sortOrder: 'oldest',
+  }));
+  assert.equal(query.get('sort_order'), 'oldest');
+  assert.equal(query.get('page'), '7');
+  assert.equal(query.get('page_size'), '20');
+  assert.equal(query.has('cursor'), false);
 });
 
 test('training picker never hydrates the legacy full image pool', () => {
@@ -28,13 +43,37 @@ test('training picker never hydrates the legacy full image pool', () => {
   assert.match(source, /fetchpriority="\$\{priority\}"/);
 });
 
-test('training picker keeps TrainingDraftRuntime as the selection truth owner', () => {
-  assert.match(source, /const legacyConfirm = window\.confirmTrainMaterialPickerV3/);
-  assert.match(source, /legacyConfirm\.apply/);
+test('training picker keeps TrainingDraftRuntime as the selection truth owner without a legacy confirm wrapper', () => {
+  assert.doesNotMatch(source, /legacyConfirm/);
+  assert.doesNotMatch(source, /\.apply\(this, arguments\)/);
   assert.doesNotMatch(source, /state\(\)\.trainingDraft\s*=/);
+  assert.match(source, /trainingDraftRuntime\.update\(patch\)/);
+  assert.match(source, /window\.refreshTrainingMaterialSelectionUiV3\?\.\(\)/);
+  assert.match(source, /window\.confirmTrainMaterialPickerV3 = function confirmPicker/);
   assert.match(main, /installTrainingMaterialPickerRuntime/);
   assert.match(main, /trainingDraftRuntime,/);
   assert.match(main, /PlatformCore\.runtime\.trainingMaterialPickerRuntime/);
+});
+
+test('canonical picker confirmation preserves train and independent-test mutual exclusion', () => {
+  assert.deepEqual(trainingMaterialSelectionPatch({
+    role: 'train',
+    selectedIds: ['m1', 'm2'],
+    materialIds: ['old'],
+    testMaterialIds: ['m2', 'm3'],
+  }), {
+    materialIds: ['m1', 'm2'],
+    testMaterialIds: ['m3'],
+  });
+  assert.deepEqual(trainingMaterialSelectionPatch({
+    role: 'test',
+    selectedIds: ['m2', 'm4'],
+    materialIds: ['m1', 'm2', 'm3'],
+    testMaterialIds: ['old-test'],
+  }), {
+    materialIds: ['m1', 'm3'],
+    testMaterialIds: ['m2', 'm4'],
+  });
 });
 
 test('picker UI uses larger bounded preview cards rather than a dense thumbnail strip', () => {
@@ -47,6 +86,15 @@ test('picker UI uses larger bounded preview cards rather than a dense thumbnail 
   assert.match(source, /Array\.from\(\{length: 15\}/);
   assert.match(source, /pageCache\.size > CACHE_LIMIT/);
   assert.match(source, /setTimeout\(\(\) => resetFiltersAndLoad\(\), 220\)/);
+});
+
+test('picker delegates all numbered navigation and jump input to shared pagination', () => {
+  assert.match(source, /PlatformCore\?\.pagination\?\.mountPagination/);
+  assert.match(source, /onPageChange:/);
+  assert.match(source, /onPageSizeChange:/);
+  assert.match(source, /page: picker\.page/);
+  assert.match(source, /totalPages: picker\.totalPages/);
+  assert.doesNotMatch(source, /pager\.innerHTML = `<button[^`]*上一页/);
 });
 
 test('picker caps first-paint thumbnails and only expands loading after scroll', () => {
@@ -67,4 +115,58 @@ test('large bulk selection has a single server owner', () => {
   assert.match(source, /method: 'POST'/);
   assert.match(source, /bulkSelectionOwner: 'server'/);
   assert.doesNotMatch(source, /do \{[\s\S]*\/training-materials\/ids/);
+});
+
+test('annotated preview uses source coordinates as the SVG viewBox', () => {
+  const html = renderTrainingMaterialPreview({
+    id: 'm1', filename: 'm1.jpg', width: 400, height: 200,
+    thumbnail_url: '/thumb/m1.jpg', content_url: '/full/m1.jpg',
+    annotation_state: 'annotated',
+    boxes: [{label: 'smoke', x1: 40, y1: 20, x2: 200, y2: 100}],
+  }, {loading: 'eager', priority: 'high'});
+
+  assert.match(html, /viewBox="0 0 400 200"/);
+  assert.match(html, /preserveAspectRatio="xMidYMid meet"/);
+  assert.match(html, /<rect[^>]*x="40"[^>]*y="20"[^>]*width="160"[^>]*height="80"/);
+  assert.match(html, /data-label="smoke"/);
+  assert.match(html, /已标注 · 1 框/);
+});
+
+test('empty boxes preserve confirmed-empty and unannotated as distinct states', () => {
+  const confirmed = renderTrainingMaterialPreview({width: 10, height: 10, annotation_state: 'confirmed_empty', boxes: []});
+  const unannotated = renderTrainingMaterialPreview({width: 10, height: 10, processing_status: 'processed', annotation_state: 'unannotated', boxes: []});
+  assert.match(confirmed, /已确认无目标/);
+  assert.match(unannotated, /已清洗 · 待标注/);
+  assert.doesNotMatch(confirmed, /<svg/);
+  assert.doesNotMatch(unannotated, /<svg/);
+});
+
+
+test('cleaned unannotated materials are selectable for train but fenced from independent test', () => {
+  assert.match(source, /missingTestTruth = picker\.role === 'test'/);
+  assert.match(source, /role: picker\?\.role \|\| 'train'/);
+  assert.match(source, /试验集必须已标注/);
+  assert.match(source, /待标注素材会保留在任务中/);
+  assert.doesNotMatch(source, /blocked\.has\(id\) \|\| String\(row\.annotation_state \|\| ''\) === 'unannotated'/);
+});
+
+test('picker exposes a time ordering control with server paging and filter persistence', () => {
+  const liveSource = fs.readFileSync(new URL('../../static/modules/training-material-picker-runtime.js', import.meta.url), 'utf8');
+  assert.match(liveSource, /id="trV3Sort"/);
+  assert.match(liveSource, /trainMaterialSortV3\(this.value\)/);
+  assert.match(liveSource, /sortOrder: picker.sortOrder/);
+  assert.match(liveSource, /function setSortOrder\(value\)/);
+});
+
+test('training candidate labels are fully readable and filter chips wrap', () => {
+  assert.match(source, /train-v3-label-list/);
+  assert.match(source, /\.train-v3-label-list\{white-space:normal;overflow:visible/);
+  assert.match(source, /#trV3Chips\{grid-column:1 \/ -1;max-height:none/);
+});
+
+test('task roles stay separate from original label filters', () => {
+  const query = new URLSearchParams(buildTrainingMaterialQuery({labels:['person'], effectiveLabelCodes:['vest'], sampleRole:'pending_review'}));
+  assert.deepEqual(query.getAll('label'), ['person']);
+  assert.deepEqual(query.getAll('effective_label_code'), ['vest']);
+  assert.equal(query.get('sample_role'), 'pending_review');
 });

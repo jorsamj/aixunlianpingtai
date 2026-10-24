@@ -1,4 +1,16 @@
+import {returnToTrainingConfiguration} from './helpers/training-admission.mjs';
 import {test, expect} from '@playwright/test';
+
+const visualOutput = process.env.CODEX_VISUAL_OUTPUT_DIR || '';
+const visualPath = name => visualOutput ? `${visualOutput}/${name}` : test.info().outputPath(name);
+
+async function selectIsolatedTestProject(page, projectId) {
+  await page.route('**/api/v53/bootstrap/snapshot**', async route => {
+    const url = new URL(route.request().url());
+    url.searchParams.set('preferred_project_id', projectId);
+    await route.continue({url: url.toString()});
+  });
+}
 
 function bmp(width = 100, height = 80, rgb = [90, 140, 210]) {
   const rowBytes = Math.ceil(width * 3 / 4) * 4;
@@ -24,6 +36,7 @@ async function seedProject(request) {
     labels: [
       {code: 'fire', display_name: '明火'},
       {code: 'smoke', display_name: '烟雾'},
+      {code: 'vest', display_name: '反光背心'},
     ],
   }})).json();
   const images = [];
@@ -41,7 +54,7 @@ async function seedProject(request) {
       class_id: label === 'fire' ? 0 : 1,
       label,
       x1: 10, y1: 10, x2: 70, y2: 60,
-    }]}});
+    }], expected_version: image.annotation_version, source_content_sha256: image.content_sha256}});
     expect(save.ok()).toBeTruthy();
   }
   const created = await (await request.post(`/api/v12/projects/${project.id}/algorithms`, {data: {
@@ -60,7 +73,7 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
     body: JSON.stringify({targets: [{
       id: 'browser-ultralytics', name: '浏览器测试 Ultralytics', type: 'local', framework: 'ultralytics', status: 'ready',
       algorithms: [{key: 'yolo_detect', name: 'Ultralytics Detect', base_model: 'yolo11n.pt', default_epochs: 10, default_imgsz: 640, default_batch: 2}],
-      base_models: [{value: 'yolo11n.pt', label: 'YOLO11n'}],
+      base_models: [{value: 'yolo11n.pt', label: 'YOLO11n', model_status: 'FOUND'}],
     }]})
   }));
   await page.route('**/api/v62/training-devices', route => route.fulfill({
@@ -68,26 +81,53 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
     contentType: 'application/json',
     body: JSON.stringify({recommended: 'cpu', options: [{id: 'cpu', label: 'CPU', available: true}]}),
   }));
+  await page.route('**/api/system/recommendation', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ok: true, recommendation: {
+      device: 'cpu', batch: 2, workers: 0, precision: 'auto', safe_batch_max: 32,
+    }}),
+  }));
+  await page.route('**/api/v62/projects/*/training-materials/compatibility', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      compatible: true, issue_count: 0, items: [], issue_counts: {},
+      filtered_count: 0, next_cursor: null,
+    }),
+  }));
   await page.route(`**/api/v12/projects/${project.id}/train/start`, async route => {
     submitted = route.request().postDataJSON();
+    await new Promise(resolve => setTimeout(resolve, 1800));
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({ok: true, job: {id: 'label-browser-job', status: 'queued'}}),
+      body: JSON.stringify({ok: true, task: {
+        task_id: submitted.task_id,
+        project_id: project.id,
+        kind: 'TRAINING',
+        task_type: 'TRAINING',
+        status: 'QUEUED',
+        persisted_status: 'QUEUED',
+        phase: 'queued',
+        progress_percent: 0,
+      }}),
     });
   });
 
-  await page.addInitScript(projectId => {
-    localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({projectId, page: '算法列表'}));
-  }, project.id);
+  await selectIsolatedTestProject(page, project.id);
+  await page.addInitScript(() => {
+    localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({page: '算法列表'}));
+  });
 
   await page.goto('/');
+  await page.setViewportSize({width: 1366, height: 768});
   await expect.poll(async () => page.evaluate(() => window.TrainingDraftRuntime?.build || null))
-    .toBe('training-draft-runtime-422516');
+    .toBe('training-draft-runtime-422519');
   await expect.poll(async () => page.evaluate(() => window.TrainingLabelRuntime?.build || null))
-    .toBe('module-422513');
-  await expect.poll(async () => page.evaluate(() => window.TrainingSubmitRuntime?.build || null))
-    .toBe('training-submit-422505');
+    .toBe('module-422571');
+  await expect.poll(async () => page.evaluate(() => window.TrainingSubmitRuntime?.build || ''))
+    .toMatch(/^training-submit-\d+$/);
   expect(await page.evaluate(() => ({
     draftOwnsNetwork: window.TrainingDraftRuntime.state().networkOwner,
     draftOwnsClassicWrapper: window.TrainingDraftRuntime.state().classicWrapperOwner,
@@ -105,14 +145,17 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   await page.getByRole('button', {name: /算法列表/}).click();
   const card = page.locator('.alg428-card', {hasText: '烟火标签算法'});
   await card.getByRole('button', {name: '训练'}).click();
-  const dialog = page.getByRole('dialog', {name: '训练 · 烟火标签算法'});
+  const dialog = page.getByRole('dialog', {name: '创建训练任务'});
   await expect(dialog).toBeVisible({timeout: 10_000});
+  await returnToTrainingConfiguration(page);
   await expect(dialog.locator('.train-create-saas')).toBeVisible();
   await expect(dialog.locator('.train-create-layout')).toBeVisible();
   await expect(dialog.locator('.train-create-left')).toBeVisible();
   await expect(dialog.locator('.train-create-right')).toBeVisible();
-  await expect(dialog.locator('#trainUiSummary')).toBeVisible();
-  await expect(dialog.locator('details.train-ui-advanced')).toBeVisible();
+  await expect(dialog.locator('#trainUiSummary')).toBeHidden();
+  await expect(dialog.locator('.train-v3-mode-option')).toHaveCount(4);
+  await expect(dialog.locator('[data-mode="full"]')).toHaveAttribute('aria-pressed', 'true');
+  await expect(dialog.locator('#trainUiLabelSlot')).toBeVisible();
 
   await dialog.getByRole('button', {name: '选择训练素材'}).click();
   const picker = page.getByRole('dialog', {name: '选择本次训练素材'});
@@ -126,28 +169,36 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   await expect(labels).toContainText('烟雾');
   await expect(labels).toHaveCSS('display', 'block');
   await expect(dialog.locator('.train-ui-labels-card #trainingLabelContractPanel')).toBeVisible();
+  const fire = labels.locator('input[data-training-label-code="fire"]');
   const smoke = labels.locator('input[data-training-label-code="smoke"]');
-  await smoke.uncheck();
+  await expect(fire).not.toBeChecked();
+  await expect(smoke).not.toBeChecked();
+  const vest = labels.locator('input[data-training-label-code="vest"]');
+  await expect(vest).not.toBeChecked();
+  await vest.check();
+  await expect.poll(() => page.evaluate(() => state.trainingDraft.newLabelCodes)).toEqual(['vest']);
+  await vest.uncheck();
+  await fire.check();
 
+  await dialog.locator('[data-mode="custom"]').click();
+  await expect(dialog.locator('#trV3ManualBatch')).toBeVisible();
+  await dialog.locator('details.train-create-split-details > summary').click();
   await dialog.locator('#trV3Experiment').fill('35');
   await dialog.locator('#trV3Validation').fill('18');
   await dialog.locator('#tr429Priority').fill('7');
-  await dialog.locator('#trV3ResourceStrategy').selectOption('manual');
-  await dialog.locator('#trV3GpuPolicy').selectOption('exclusive');
+  await expect(dialog.locator('#trV3ResourceStrategy')).toHaveValue('manual');
+  await expect(dialog.locator('#trV3GpuPolicy')).toHaveValue('exclusive');
 
-  const advancedConfig = dialog.locator('details.train-ui-advanced');
-  await advancedConfig.locator('summary').click();
-  await expect(advancedConfig).toHaveAttribute('open', '');
-  await dialog.getByRole('button', {name: '编辑全部训练参数'}).click();
+  await dialog.getByRole('button', {name: '配置更多专业参数'}).click();
   const settings = page.getByRole('dialog', {name: '训练配置设置'});
   await settings.locator('#ts428Epoch').fill('30');
-  await settings.locator('#ts428Batch').fill('16');
-  await settings.locator('details.advanced427-box summary').click();
-  await settings.locator('#ts428Workers').fill('4');
+  await settings.getByText('高级训练参数', {exact: true}).click();
   await settings.locator('#ts428Opt').selectOption('AdamW');
   await settings.locator('#ts428Cache').selectOption('False');
   await settings.getByRole('button', {name: '应用配置'}).click();
   await expect(dialog).toBeVisible();
+  await dialog.locator('#trV3ManualBatch').fill('16');
+  await dialog.locator('#trV3ManualWorkers').fill('4');
   await expect(dialog.locator('#trainUiSummary')).toContainText('YOLO11n');
   await expect(dialog.locator('#trainUiSummary')).toContainText('30');
   await expect(dialog.locator('#trainUiSummary')).toContainText('16');
@@ -219,6 +270,15 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   submitted = undefined;
   expect(await page.evaluate(() => window.submitTrain429?.__trainingSubmitRuntime === true)).toBe(true);
   await dialog.getByRole('button', {name: '开始训练'}).click();
+  const feedback = dialog.locator('[data-training-submit-feedback]');
+  await expect(feedback).toBeVisible();
+  await expect(feedback).toHaveAttribute('data-tone', 'working');
+  await expect(feedback).toContainText('正在提交训练任务');
+  await expect(feedback).toHaveCSS('opacity', '1');
+  await page.screenshot({path: visualPath('training-create-working.png'), fullPage: true});
+  await expect(dialog).not.toBeVisible();
+  await expect(page.locator('#toast')).toContainText('训练任务已进入后台队列');
+  await page.screenshot({path: visualPath('training-create-success.png'), fullPage: true});
   await expect.poll(async () => {
     if (submitted) return 'submitted';
     const runtime = await page.evaluate(() => window.TrainingSubmitRuntime?.state?.() || null);
@@ -233,8 +293,10 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   expect(submitted.experiment_percent).toBe(35);
   expect(submitted.validation_percent).toBe(18);
   expect(submitted.queue_priority).toBe(7);
+  expect(submitted.training_mode).toBe('custom');
   expect(submitted.resource_strategy).toBe('manual');
   expect(submitted.device).toBe('cpu');
+
   expect(submitted.gpu_policy).toBe('exclusive');
   expect(submitted.epochs).toBe(30);
   expect(submitted.batch).toBe(16);
@@ -249,15 +311,56 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   await page.getByRole('button', {name: /算法列表/}).click();
   const secondCard = page.locator('.alg428-card', {hasText: '烟火标签算法'});
   await secondCard.getByRole('button', {name: '训练'}).click();
-  const secondDialog = page.getByRole('dialog', {name: '训练 · 烟火标签算法'});
+  const secondDialog = page.getByRole('dialog', {name: '创建训练任务'});
   await expect(secondDialog).toBeVisible({timeout: 10_000});
+  await returnToTrainingConfiguration(page);
   await secondDialog.getByRole('button', {name: '选择训练素材'}).click();
   const secondPicker = page.getByRole('dialog', {name: '选择本次训练素材'});
+  let releaseBulk;
+  const bulkGate = new Promise(resolve => {releaseBulk = resolve;});
+  await page.route('**/training-materials/bulk-selection', async route => {await bulkGate;await route.fallback();});
   await secondPicker.getByRole('button', {name: '全选全部可用素材'}).click();
+  await expect(secondPicker.getByRole('button', {name: '确认选择'})).toBeDisabled();
+  releaseBulk();
+  await expect(secondPicker.locator('#trV3PickerCount')).toContainText(`已选 ${imageIds.length} 张`);
   await secondPicker.getByRole('button', {name: '确认选择'}).click();
 
   const secondLabels = secondDialog.locator('#trainingLabelContractPanel');
-  await expect(secondLabels.locator('input[data-training-label-code="fire"]')).toBeChecked();
-  await expect(secondLabels.locator('input[data-training-label-code="smoke"]')).toBeChecked();
-  await expect.poll(async () => page.evaluate(() => state.trainingDraft?.newLabelCodes || [])).toEqual(['fire', 'smoke']);
+  await expect(secondLabels.locator('input[data-training-label-code="fire"]')).not.toBeChecked();
+  await expect(secondLabels.locator('input[data-training-label-code="smoke"]')).not.toBeChecked();
+  await expect.poll(async () => page.evaluate(() => state.trainingDraft?.newLabelCodes || [])).toEqual([]);
+
+  await page.evaluate(() => window.closeModal());
+  await secondCard.getByRole('button', {name: '训练'}).click();
+  const failureDialog = page.getByRole('dialog', {name: '创建训练任务'});
+  await expect(failureDialog).toBeVisible();
+  await returnToTrainingConfiguration(page);
+  await page.evaluate(() => {
+    document.getElementById('tr429TaskId').value = 'invalid-task-id';
+    void window.TrainingSubmitRuntime.submit();
+  });
+  const failure = failureDialog.locator('[data-training-submit-feedback]');
+  await expect(failure).toHaveAttribute('data-tone', 'error');
+  await expect(failure).toContainText('训练暂不可开始');
+  const blockers = page.getByRole('dialog', {name: '训练暂不可开始'});
+  await expect(blockers.locator('[data-admission-code="materials"]')).toContainText('至少需要2张有效训练素材');
+  await blockers.getByRole('button', {name: '返回训练配置', exact: true}).click();
+  await expect(failure).toHaveCSS('opacity', '1');
+  await page.screenshot({path: visualPath('training-create-failure.png'), fullPage: true});
+  for (const viewport of [
+    {width: 1920, height: 1080}, {width: 1440, height: 900},
+    {width: 1366, height: 768}, {width: 375, height: 812},
+  ]) {
+    await page.setViewportSize(viewport);
+    const bounds = await failure.evaluate(element => {
+      const rect = element.getBoundingClientRect();
+      return {left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, pageWidth: document.documentElement.clientWidth, pageHeight: document.documentElement.clientHeight};
+    });
+    expect(bounds.left).toBeGreaterThanOrEqual(0);
+    expect(bounds.right).toBeLessThanOrEqual(bounds.pageWidth);
+    expect(bounds.top).toBeGreaterThanOrEqual(0);
+    expect(bounds.bottom).toBeLessThanOrEqual(bounds.pageHeight);
+  }
+  await page.emulateMedia({reducedMotion: 'reduce'});
+  await expect(failure).toHaveCSS('animation-name', 'none');
 });

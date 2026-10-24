@@ -1,4 +1,5 @@
 import io
+import json
 import zipfile
 from pathlib import Path
 
@@ -16,7 +17,7 @@ def _png_bytes() -> bytes:
 def _project(client) -> str:
     response = client.post(
         "/api/projects",
-        json={"name": "v19-failure-rollback", "description": "", "labels": []},
+        json={"name": "v19-failure-rollback", "description": "", "labels": ["target"]},
     )
     response.raise_for_status()
     return response.json()["id"]
@@ -54,7 +55,15 @@ def test_v19_worker_failure_rolls_back_partial_durable_import(client, monkeypatc
     monkeypatch.setattr(app_module, "_v18_import_coco", lambda *args, **kwargs: False)
     monkeypatch.setattr(app_module, "_v18_import_voc", lambda *args, **kwargs: False)
 
-    def fail_after_durable_image(project_id_arg, root, dataset_id, report, progress_cb=None):
+    def fail_after_durable_image(
+        project_id_arg,
+        root,
+        dataset_id,
+        report,
+        progress_cb=None,
+        label_mapping=None,
+        import_context=None,
+    ):
         source = next(Path(root).rglob("image.png"))
 
         def final_annotation(record):
@@ -101,12 +110,12 @@ def test_v19_worker_failure_rolls_back_partial_durable_import(client, monkeypatc
         str(row.get("id")) != image_id
         for row in app_module.material_store(project_id).read().rows
     )
-    assert not _local_stored_path(app_module, project_id, record).exists()
+    assert_deferred_bytes(app_module, project_id, record)
     assert not AnnotationRepository(app_module.project_dir(project_id)).exists(image_id)
     assert app_module._v50_active_image_batch(project_id) is None
 
 
-def test_save_false_discards_new_batch_files_and_sqlite_annotation(client, tmp_path):
+def test_save_false_discards_new_metadata_and_defers_source_cleanup(client, tmp_path):
     import app as app_module
 
     project_id = _project(client)
@@ -137,7 +146,8 @@ def test_save_false_discards_new_batch_files_and_sqlite_annotation(client, tmp_p
     stored_path = _local_stored_path(app_module, project_id, record)
     repository = AnnotationRepository(app_module.project_dir(project_id))
     assert stored_path.exists()
-    assert repository.exists(record["id"])
+    # The deferred formal annotation is not durable until Material commits.
+    assert not repository.exists(record["id"])
 
     app_module._v50_end_image_batch(save=False)
 
@@ -145,6 +155,77 @@ def test_save_false_discards_new_batch_files_and_sqlite_annotation(client, tmp_p
         str(row.get("id")) != record["id"]
         for row in app_module.material_store(project_id).read().rows
     )
-    assert not stored_path.exists()
+    assert_deferred_bytes(app_module, project_id, record)
     assert not repository.exists(record["id"])
     assert app_module._v50_active_image_batch(project_id) is None
+
+
+def test_zip_stop_between_parse_and_db_commit_rolls_back_staged_material(client, monkeypatch):
+    import app as app_module
+
+    project_id = _project(client)
+    app_module.ensure_default_datasets(project_id)
+    created = client.post(
+        f'/api/v19/projects/{project_id}/datasets/default/import/jobs',
+        files={'file': ('stop.zip', _single_image_zip(), 'application/zip')},
+    )
+    created.raise_for_status()
+    job_id = created.json()['id']
+    captured = {}
+    monkeypatch.setattr(app_module, '_v18_import_coco', lambda *args, **kwargs: False)
+    monkeypatch.setattr(app_module, '_v18_import_voc', lambda *args, **kwargs: False)
+
+    def import_then_request_stop(project_id_arg, root, dataset_id, report,
+                                 progress_cb=None, label_mapping=None, import_context=None):
+        source = next(Path(root).rglob('image.png'))
+        record = app_module.add_image_record(
+            project_id_arg, source, source.name, 'imported_yolo', dataset_id,
+            annotation_builder=lambda _: [{
+                'id': 'staged-only', 'class_id': 0, 'label': 'target',
+                'x1': 1.0, 'y1': 1.0, 'x2': 20.0, 'y2': 20.0,
+            }],
+        )
+        captured['record'] = record
+        report['imported_images'] += 1
+        report['annotated_images'] += 1
+        report['boxes'] += 1
+        report.setdefault('imported_image_ids', []).append(record['id'])
+        stopped = client.post(f'/api/v19/projects/{project_id_arg}/import/jobs/{job_id}/stop')
+        assert stopped.status_code == 200
+        assert stopped.json()['cancel_requested'] is True
+        return True
+
+    monkeypatch.setattr(app_module, '_v18_import_yolo', import_then_request_stop)
+    app_module.v19_import_worker(project_id, 'default', job_id, [])
+    job = app_module.v19_read_job(project_id, job_id)
+    assert job['status'] == 'cancelled'
+    record = captured['record']
+    assert app_module.material_store(project_id).get(record['id']) is None
+    assert not AnnotationRepository(app_module.project_dir(project_id)).exists(record['id'])
+    assert_deferred_bytes(app_module, project_id, record)
+    assert not (app_module.v19_job_dir(project_id, job_id) / 'source.zip').exists()
+
+
+def test_zip_stop_rejects_commit_phase(client):
+    import app as app_module
+
+    project_id = _project(client)
+    app_module.ensure_default_datasets(project_id)
+    created = client.post(
+        f'/api/v19/projects/{project_id}/datasets/default/import/jobs',
+        files={'file': ('commit.zip', _single_image_zip(), 'application/zip')},
+    )
+    created.raise_for_status()
+    job_id = created.json()['id']
+    app_module.v19_update_job(project_id, job_id, status='running', phase='DB_COMMIT')
+    response = client.post(f'/api/v19/projects/{project_id}/import/jobs/{job_id}/stop')
+    assert response.status_code == 409
+    assert not app_module.v19_read_job(project_id, job_id).get('cancel_requested')
+
+
+def assert_deferred_bytes(app_module, project_id, record):
+    retained = _local_stored_path(app_module, project_id, record)
+    assert retained.read_bytes() == _png_bytes()
+    with app_module.material_store(project_id)._connect() as database:
+        rows = database.execute('SELECT payload_json,reclamation_state FROM material_cleanup_deferred').fetchall()
+    assert any(json.loads(row[0])['id'] == record['id'] and row[1] == 'DEFERRED_SAFETY_UNVERIFIED' for row in rows)

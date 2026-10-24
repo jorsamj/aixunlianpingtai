@@ -28,10 +28,11 @@ function versionSortKey(version) {
   return String(version?.finished_at || version?.created_at || version?.version_name || '');
 }
 
-export function trainingInheritanceFromAlgorithm(algorithm = {}) {
-  const versions = [...(algorithm?.versions || [])].sort((a, b) => versionSortKey(b).localeCompare(versionSortKey(a)));
+export function trainingBaseVersionFromAlgorithm(algorithm = {}) {
+  const versions = [...(algorithm?.versions || [])]
+    .sort((a, b) => versionSortKey(b).localeCompare(versionSortKey(a)));
   if (!versions.length) {
-    return {hasAny: false, hasPrevious: false, blocked: false, legacy: false, codes: [], versionId: ''};
+    return {hasAny: false, hasPrevious: false, blocked: false, versionId: ''};
   }
 
   const currentVersionId = String(algorithm?.current_version_id || '').trim();
@@ -39,21 +40,24 @@ export function trainingInheritanceFromAlgorithm(algorithm = {}) {
     ? versions.find(version => String(version?.id || version?.version_id || '').trim() === currentVersionId) || null
     : versions.find(successfulVersion) || null;
   if (!previous || !successfulVersion(previous)) {
-    return {hasAny: true, hasPrevious: false, blocked: true, legacy: false, codes: [], versionId: ''};
+    return {hasAny: true, hasPrevious: false, blocked: true, versionId: ''};
   }
-
-  const schema = [...(previous.label_schema || [])]
-    .sort((a, b) => Number(a?.class_id ?? 1e9) - Number(b?.class_id ?? 1e9));
-  const codes = unique(schema.map(item => item?.code));
-  const fallbackCodes = codes.length ? codes : unique(previous.label_codes || []);
   return {
     hasAny: true,
     hasPrevious: true,
     blocked: false,
-    legacy: !fallbackCodes.length,
-    codes: fallbackCodes,
     versionId: String(previous.id || previous.version_id || '').trim(),
   };
+}
+
+export function trainingInheritedDefaults(algorithm={}) {
+  const base=trainingBaseVersionFromAlgorithm(algorithm);
+  if(!base.hasPrevious)return {};
+  const version=algorithm.versions.find(row=>String(row.id||row.version_id)===base.versionId);
+  const actual=version?.training_lineage?.parameters?.actual||version?.training_report?.actual_train_params||version?.report?.actual_train_params||{};
+  const precision=String(actual.effective_precision||actual.runtime_precision||actual.precision||'').toLowerCase();
+  const size=actual.imgsz;
+  return {...(['fp16','fp32'].includes(precision)?{precision,amp:precision==='fp16'}:{}),...(Number.isInteger(size)&&size>=32&&size<=4096?{imgsz:size}:{})};
 }
 
 export function createTrainingDraft(values = {}) {
@@ -62,32 +66,48 @@ export function createTrainingDraft(values = {}) {
     throw new Error('不支持的训练素材切分方式');
   }
 
+  // Existing manual drafts remain valid without a mode field. New create UI
+  // explicitly selects full; the mode belongs to this canonical draft.
+  const legacyManualInput = values.resource?.strategy === 'manual'
+    || (values.trainingMode == null && values.resource != null
+      && values.resource.strategy == null
+      && ['batch', 'workers', 'cache'].some(key => values.resource[key] != null));
+  const requestedMode = String(values.trainingMode || (legacyManualInput ? 'custom' : 'full'));
+  const trainingMode = ['quick', 'full', 'complex', 'custom'].includes(requestedMode) ? requestedMode : 'full';
+  const automaticMode = trainingMode !== 'custom';
   const materialIds = unique(values.materialIds);
   const testMaterialIds = splitMode === 'independent_test_set' ? unique(values.testMaterialIds) : [];
-  const inheritedLabelCodes = unique(values.inheritedLabelCodes);
-  const newLabelCodes = unique(values.newLabelCodes).filter(code => !inheritedLabelCodes.includes(code));
 
   return {
+    trainingMode,
     algorithmId: String(values.algorithmId || '').trim(),
     baseVersionId: String(values.baseVersionId || '').trim(),
     materialIds,
     testMaterialIds,
+    ...(values.duplicateReview ? {duplicateReview: {
+      ...(values.duplicateReview.review_kind==='EXPLICIT_SELECTION_ADJUSTMENT'?{review_kind:'EXPLICIT_SELECTION_ADJUSTMENT'}:{}),
+      original_train_image_ids: unique(values.duplicateReview.original_train_image_ids),
+      original_test_image_ids: unique(values.duplicateReview.original_test_image_ids),
+      excluded_image_ids: unique(values.duplicateReview.excluded_image_ids),
+      material_revision: Number(values.duplicateReview.material_revision),
+      annotation_revision: Number(values.duplicateReview.annotation_revision),
+    }} : {}),
     splitMode,
     experimentPercent: splitMode === 'random_test_from_training_pool'
       ? numberOr(values.experimentPercent, 20)
       : null,
     validationPercent: numberOr(values.validationPercent, 20),
-    inheritedLabelCodes,
-    newLabelCodes,
-    effectiveLabelCodes: unique([...inheritedLabelCodes, ...newLabelCodes]),
-    inheritancePending: Boolean(values.inheritancePending),
+    newLabelCodes: unique(values.newLabelCodes),
+    benchmarkReuseEnabled: Boolean(values.benchmarkReuseEnabled),
     resource: {
-      strategy: String(values.resource?.strategy || 'auto'),
+      strategy: automaticMode ? 'auto' : String(values.resource?.strategy || 'manual'),
+      profile: automaticMode ? 'performance' : String(values.resource?.profile || 'performance'),
       device: String(values.resource?.device || 'auto'),
-      gpuPolicy: String(values.resource?.gpuPolicy || 'auto'),
-      batch: values.resource?.batch ?? null,
-      workers: values.resource?.workers ?? null,
-      cache: values.resource?.cache ?? null,
+      // Legacy auto must not override the single-physical-GPU reservation contract.
+      gpuPolicy: 'exclusive',
+      batch: automaticMode ? null : (values.resource?.batch ?? null),
+      workers: automaticMode ? null : (values.resource?.workers ?? null),
+      cache: automaticMode ? null : (values.resource?.cache ?? null),
     },
     config: {...(values.config || {})},
     priority: numberOr(values.priority, 50),
@@ -98,8 +118,8 @@ export function trainingDraftToRequest(draft, parameters = {}) {
   const normalized = createTrainingDraft(draft);
   if (!normalized.algorithmId) throw new Error('请选择训练算法');
   if (!normalized.materialIds.length) throw new Error('请选择训练素材');
-  if (!normalized.effectiveLabelCodes.length && !normalized.inheritancePending) {
-    throw new Error('至少选择一个训练标签');
+  if (!normalized.baseVersionId && !normalized.newLabelCodes.length) {
+    throw new Error('首次训练至少选择一个训练标签');
   }
   if (!(normalized.validationPercent > 0 && normalized.validationPercent < 100)) {
     throw new Error('验证集比例必须在 0 到 100 之间');
@@ -107,6 +127,9 @@ export function trainingDraftToRequest(draft, parameters = {}) {
   if (normalized.splitMode === 'random_test_from_training_pool'
       && !(normalized.experimentPercent > 0 && normalized.experimentPercent < 100)) {
     throw new Error('试验集比例必须在 0 到 100 之间');
+  }
+  if (normalized.splitMode === 'random_test_from_training_pool' && normalized.validationPercent + normalized.experimentPercent >= 100) {
+    throw new Error('训练集比例必须大于 0；请调整验证集和试验集比例');
   }
   if (normalized.splitMode === 'independent_test_set' && !normalized.testMaterialIds.length) {
     throw new Error('请选择独立试验素材');
@@ -120,6 +143,7 @@ export function trainingDraftToRequest(draft, parameters = {}) {
   const request = {
     ...parameters,
     algorithm_asset_id: normalized.algorithmId,
+    training_mode: normalized.trainingMode,
     split_mode: normalized.splitMode,
     train_image_ids: normalized.materialIds,
     test_image_ids: normalized.testMaterialIds,
@@ -127,11 +151,17 @@ export function trainingDraftToRequest(draft, parameters = {}) {
     validation_percent: normalized.validationPercent,
     train_labels: normalized.newLabelCodes,
     resource_strategy: normalized.resource.strategy,
+    resource_profile: normalized.resource.profile,
     device: normalized.resource.device,
     gpu_policy: normalized.resource.gpuPolicy,
     queue_priority: normalized.priority,
   };
   if (normalized.resource.batch != null) request.batch = normalized.resource.batch;
+  if (normalized.duplicateReview) {
+    request.duplicate_review = normalized.duplicateReview;
+    request.expected_material_revision = normalized.duplicateReview.material_revision;
+    request.expected_annotation_revision = normalized.duplicateReview.annotation_revision;
+  }
   if (normalized.resource.workers != null) request.workers = normalized.resource.workers;
   if (normalized.resource.cache != null) request.cache = normalized.resource.cache;
   if (Object.hasOwn(request, 'cache')) request.cache = trainingCacheRequestValue(request.cache);

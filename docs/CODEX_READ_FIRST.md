@@ -1,3 +1,16 @@
+<!-- READ_FIRST_2026_09_25 -->
+> ## 2026-09-25 最新入口
+>
+> 当前长期开发分支是 feature/external-algorithm-publishing。开始前必须先读取实时 GitHub HEAD；不要使用本文件旧的 refactor/frontend-runtime-stabilization 标题作为当前分支依据。
+>
+> 当前优先读取：
+> 1. docs/CODEX_HANDOFF_2026-09-25_ANNOTATION_CLEANING.md
+> 2. docs/PROJECT_HANDOFF_CURRENT.md
+> 3. docs/CODEX_CURRENT_STATE.md
+> 4. 再按下面历史顺序补背景
+>
+> VERSION.txt 仍必须保持 42.24.0。
+>
 # Codex Read First
 
 This is the shortest entry point for continuing `jorsamj/aixunlianpingtai` on branch `refactor/frontend-runtime-stabilization`.
