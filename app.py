@@ -17049,6 +17049,8 @@ def _v35_test_annotation(runtime_cfg):
                 request_id=str(response.get("request_id") or ""), status_code=200,
             ) from None
         return {
+            "ok": True,
+            "status_code": 200,
             "reachable": True,
             "latency_ms": int(response.get("latency_ms") or 0),
             "provider": response.get("provider") or runtime_cfg.get("provider_type"),

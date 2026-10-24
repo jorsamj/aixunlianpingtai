@@ -172,5 +172,6 @@ def test_legacy_saved_vision_probe_uses_original_secret_reference(client, monkey
     response=client.post(f"/api/{version}/model-configs/{saved['id']}/test")
     assert response.status_code == 200, response.text
     assert response.json()["api_protocol"] == "responses"
+    assert response.json()["ok"] is True and response.json()["status_code"] == 200
     assert calls == [payload["base_url"]]
     assert payload["api_key"] not in response.text

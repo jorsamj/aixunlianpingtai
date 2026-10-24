@@ -70,6 +70,8 @@ CI：原AI Annotation Recovery增加provider/核心与新测试paths、43项跨�
 
 最终证据兼容复核：平铺网关HTTP错误的code此前未被保留，新增单例RED；元数据提取现同时兼容标准error对象及平铺code/request_id，仍不回显message。该修正不改变请求/候选/GT逻辑，需按修正后新SHA核CI；最终协议用例44项。顺带规范本文件EOF，不保留多余空行。
 
+旧UI返回形状复核：testAutoModel422仍展示r.status_code；统一VLM探测后需保留原ok/status_code字段，避免旧入口出现HTTP undefined。原两个密钥别名测试增加这两个断言先RED，统一helper成功返回只在图像/标注校验均通过后提供ok=true/status_code=200；不会以HTTP200绕过校验。两项定向GREEN后正常修正提交，必须核验最新SHA。
+
 ### 接续与发布边界
 
 E阶段剩余：正常提交、push前fetch，核验准确新SHA CI；结果回填本节，文档自身新HEAD亦核Checks。真实glm收费调用/该账户权限、地域/额度、网络及模型标注效果仍NOT VERIFIED；本轮不提供生产已可用承诺，不索要公开Key、不执行生产部署。受控发布前应使用平台原安全保存的Key，在用户授权环境做一次真实图片标注验证。后续从本文件及原provider/M4/V35工厂继续，不另建provider、GT或任务Owner。
