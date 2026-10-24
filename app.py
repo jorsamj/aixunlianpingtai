@@ -16742,6 +16742,8 @@ class V35ModelConfigReq(BaseModel):
     name: str
     provider_type: str = "local"  # local / cloud
     provider_adapter: Optional[str] = ""
+    api_protocol: Literal["auto", "chat_completions", "responses"] = "auto"
+    structured_output: Literal["auto", "json_schema", "json_object", "prompt"] = "auto"
     model_kind: str = "vision_detect"  # vision_detect / vlm / custom_http
     base_url: Optional[str] = ""
     detect_url: Optional[str] = ""
@@ -16884,7 +16886,33 @@ def _v35_sanitize_secret(item: Dict[str, Any]) -> Dict[str, Any]:
     out.pop("secret_ref", None)
     out["has_api_key"] = bool(masked)
     out["api_key_masked"] = masked
+    out.setdefault("api_protocol", "auto")
+    out.setdefault("structured_output", "auto")
+    if (out.get("provider_adapter") or out.get("provider_type")) in {"volcengine_ark", "aliyun_qwen", "local_openai"}:
+        from platform_core.providers.openai_vision import resolve_api_endpoint, PRESETS, ProviderRequestError
+        kind = out.get("provider_adapter") or out.get("provider_type")
+        try:
+            _, out["resolved_api_protocol"] = resolve_api_endpoint(
+                out.get("base_url") or out.get("detect_url") or PRESETS[kind]["base_url"], out["api_protocol"],
+            )
+        except (ValueError, ProviderRequestError):
+            out["protocol_warning"] = "请确认高级设置中的 API 协议及接口地址。"
     return out
+
+
+def _v35_publish_model_config(item=None, *, removed_id=""):
+    # Mutation results update the existing Bootstrap projection. No full rebuild
+    # or second cache: refresh/re-edit must see the same saved configuration.
+    public = _v35_sanitize_secret(item) if item is not None else None
+    snapshot = globals().get("_V53_BOOTSTRAP_SNAPSHOT")
+    if isinstance(snapshot, dict) and snapshot:
+        identity = str(item.get("id") if item is not None else removed_id)
+        rows = snapshot.get("model_configs") or []
+        found = any(str(row.get("id")) == identity for row in rows)
+        snapshot["model_configs"] = [public if str(row.get("id")) == identity else row for row in rows if public is not None or str(row.get("id")) != identity]
+        if public is not None and not found:
+            snapshot["model_configs"] = [public, *snapshot["model_configs"]]
+    return public
 
 
 @app.get("/api/v35/model-configs")
@@ -16912,7 +16940,7 @@ def v35_save_model_config(payload: V35ModelConfigReq):
     items = _v35_model_items()
     items.insert(0, item)
     _v35_save_items(MODEL_CONFIGS_FILE, items[:100])
-    return _v35_sanitize_secret(item)
+    return _v35_publish_model_config(item)
 
 
 @app.put("/api/v35/model-configs/{config_id}")
@@ -16922,6 +16950,9 @@ def v35_update_model_config(config_id: str, payload: V35ModelConfigReq):
     for i, item in enumerate(items):
         if item.get("id") == config_id:
             data = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
+            for field in ("api_protocol", "structured_output"):
+                if field not in payload.model_fields_set:
+                    data[field] = item.get(field) or "auto"
             api_key = str(data.pop("api_key", "") or "")
             reference = str(item.get("secret_ref") or secret_ref("model-config", config_id))
             if api_key:
@@ -16939,7 +16970,7 @@ def v35_update_model_config(config_id: str, payload: V35ModelConfigReq):
     if not found:
         raise HTTPException(status_code=404, detail="模型配置不存在")
     _v35_save_items(MODEL_CONFIGS_FILE, items)
-    return _v35_sanitize_secret(items[i])
+    return _v35_publish_model_config(items[i])
 
 
 @app.delete("/api/v35/model-configs/{config_id}")
@@ -16950,11 +16981,20 @@ def v35_delete_model_config(config_id: str):
     _v35_save_items(MODEL_CONFIGS_FILE, items)
     if removed and removed.get("secret_ref"):
         _v35_secret_store().delete(str(removed.get("secret_ref")))
+    _v35_publish_model_config(removed_id=config_id)
     return {"ok": True}
+
+
+def _v35_is_vision_provider(config):
+    return config.get("model_kind") == "vlm" or config.get("request_mode") == "openai_vision" or (config.get("provider_adapter") or config.get("provider_type")) in {"volcengine_ark", "aliyun_qwen", "local_openai", "ollama"}
 
 
 @app.post("/api/v35/model-configs/test")
 def v35_test_model_config(payload: V35ModelConfigReq):
+    config = payload.model_dump()
+    if _v35_is_vision_provider(config):
+        config["_api_key"] = config.pop("api_key", "") or ""
+        return _v35_test_annotation(config)
     url = (payload.health_url or payload.detect_url or payload.base_url or "").strip()
     if not url:
         raise HTTPException(status_code=400, detail="接口地址为空")
@@ -16983,6 +17023,11 @@ def v35_test_saved_model_annotation(config_id: str):
     runtime_cfg = dict(cfg)
     reference = str(cfg.get("secret_ref") or "")
     runtime_cfg["_api_key"] = _v35_secret_store().get(reference) if reference else ""
+    return _v35_test_annotation(runtime_cfg)
+
+
+def _v35_test_annotation(runtime_cfg):
+    from platform_core.providers.base import ProviderRequestError
     try:
         provider = auto_label_core.provider_factory(runtime_cfg)
         buffer = BytesIO()
@@ -16996,18 +17041,20 @@ def v35_test_saved_model_annotation(config_id: str):
             output_schema=auto_label_core.CANDIDATE_OUTPUT_SCHEMA,
         )
         text = str(response.get("text") or "")
-        boxes = auto_label_core.parse_candidate_response(
-            text,
-            width=128,
-            height=128,
-            label_ids={"fire": 0},
-        )
+        try:
+            boxes = auto_label_core.parse_candidate_response(text, width=128, height=128, label_ids={"fire": 0})
+        except ValueError:
+            raise ProviderRequestError(
+                "模型标注输出未通过平台字段、类别或坐标校验", code="MODEL_OUTPUT_PARSE_ERROR",
+                request_id=str(response.get("request_id") or ""), status_code=200,
+            ) from None
         return {
             "reachable": True,
             "latency_ms": int(response.get("latency_ms") or 0),
             "provider": response.get("provider") or runtime_cfg.get("provider_type"),
             "model": response.get("model") or runtime_cfg.get("model_name"),
             "request_id": response.get("request_id") or "",
+            "api_protocol": response.get("api_protocol") or "auto",
             "raw_preview": text[:500],
             "parsed_boxes": boxes,
         }
@@ -17020,6 +17067,9 @@ def v35_test_saved_model_annotation(config_id: str):
             detail=str(error),
             solution=solution,
             status_code=400,
+            request_id=str(getattr(error, "request_id", "")),
+            server_error_code=str(getattr(error, "server_error_code", "")),
+            upstream_status=int(getattr(error, "status_code", 0)),
         ) from error
 
 
@@ -20214,7 +20264,7 @@ def _v42_startup_scheduler():
 def v42_test_saved_model_config(config_id: str):
     item=next((x for x in _v35_items(MODEL_CONFIGS_FILE) if x.get('id')==config_id),None)
     if not item:raise HTTPException(status_code=404,detail='模型配置不存在')
-    return v35_test_model_config(V35ModelConfigReq(**item))
+    return v35_test_saved_model_annotation(config_id) if _v35_is_vision_provider(item) else v35_test_model_config(V35ModelConfigReq(**item))
 
 @app.post('/api/v42/projects/{project_id}/prelabel-tasks/{task_id}/retry')
 def v42_retry_prelabel_task(project_id: str, task_id: str):
@@ -20655,7 +20705,7 @@ def v44_data_quality(project_id: str, payload: V44QualityReq):
 def v44_test_saved_model_config(config_id: str):
     cfg=next((x for x in _v35_items(MODEL_CONFIGS_FILE) if x.get('id')==config_id),None)
     if not cfg: raise HTTPException(status_code=404,detail='模型配置不存在')
-    return v35_test_model_config(V35ModelConfigReq(**cfg))
+    return v35_test_saved_model_annotation(config_id) if _v35_is_vision_provider(cfg) else v35_test_model_config(V35ModelConfigReq(**cfg))
 
 @app.get('/api/v44/projects/{project_id}/jobs/{job_id}/report')
 def v44_training_report(project_id: str, job_id: str, algorithm_id: str = '', version_id: str = ''):

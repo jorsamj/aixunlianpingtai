@@ -1,3 +1,7 @@
+## 2026-10-24｜大模型Chat/Responses协议兼容（已完成待CI验收）
+
+唯一需求/设计/进度：[协议专项](LLM_API_PROTOCOL_COMPATIBILITY_2026_10_24.md)。原provider增加准确路径auto/显式协议、Responses输入/最终文本/失败处理、受控结构化降级和安全错误证据；M4高级配置持久化及原Bootstrap模型投影同步，连接测试/正式v60同工厂，GT校验/人工审核不变。VERSION385/cache433；协议43、配置9/持久化E2E、既有兼容/runtime、Node18及真实Chrome1必要回归通过，准确SHA CI待核。保留5944和两份模板测试；真实GLM/收费接口NOT VERIFIED，不部署。
+
 ## 2026-10-24｜ZIP自动标签确认与重复窗口治理（代码及隔离CI已验收）
 
 唯一记录：[Uppy专项顶部](UPPY_ZIP_ADAPTER_POC_2026_10_22.md)。原Runtime统一自动确认/主动关闭抑制/成功立即关所属内容，旧列表不倒退；Uppy/旧入口同Owner，原选择层交接及复用节点保护，多ZIP独立顺序，完成后整理窗口改手动。VERSION384；代码/测试610878cd准确CI23/23 Actions、60/60 Checks成功，Chrome264/264、Node1328/1328；ZIP相同业务代码52939779的独立Chrome41/41。历史失败和最小Python9/Node/Chrome证据见专项，文档自身最终HEAD交付前另核Checks。5944及两份模板测试保留，无后端/GT合同变更或生产操作。

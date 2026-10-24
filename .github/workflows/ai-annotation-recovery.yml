@@ -11,6 +11,12 @@ on:
       - platform_core/annotation_candidates.py
       - platform_core/annotation_task_service.py
       - platform_core/annotation_runtime.py
+      - platform_core/providers/**
+      - platform_core/auto_label.py
+      - platform_core/errors.py
+      - tests/unit/test_openai_vision_protocol.py
+      - tests/api/test_model_configs.py
+      - tests/integration/test_fake_vision_provider.py
       - platform_core/annotations.py
       - static/app.js
       - static/styles.css
@@ -34,6 +40,12 @@ on:
       - platform_core/annotation_candidates.py
       - platform_core/annotation_task_service.py
       - platform_core/annotation_runtime.py
+      - platform_core/providers/**
+      - platform_core/auto_label.py
+      - platform_core/errors.py
+      - tests/unit/test_openai_vision_protocol.py
+      - tests/api/test_model_configs.py
+      - tests/integration/test_fake_vision_provider.py
       - platform_core/annotations.py
       - static/app.js
       - static/styles.css
@@ -84,6 +96,7 @@ jobs:
           python -m pytest --confcutdir=tests/unit -q
           tests/unit/test_annotation_candidates.py
           tests/unit/test_annotation_task_service.py
+          tests/unit/test_openai_vision_protocol.py
       - name: Annotation recovery frontend truth
         run: >-
           node --test
@@ -134,7 +147,7 @@ jobs:
         run: >-
           python -m pip install --disable-pip-version-check
           pytest fastapi uvicorn httpx2 python-multipart pillow pyyaml requests
-          opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2
+          opencv-python-headless onnx onnxruntime onnxslim psutil keyring cryptography filelock boto3 oss2
       - name: Compile annotation API contract
         run: >-
           python -m py_compile
@@ -147,6 +160,8 @@ jobs:
           tests/unit/test_annotation_runtime.py
           tests/api/test_annotation_task_runtime.py
           tests/integration/test_persistent_ai_annotation_e2e.py
+          tests/api/test_model_configs.py
+          tests/integration/test_fake_vision_provider.py
       - name: Version and diff guard
         shell: bash
         run: |
