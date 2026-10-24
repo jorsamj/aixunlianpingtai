@@ -133,6 +133,7 @@ test('model configuration loads prompt templates once and reuses them on revisit
     window.__stableModelPromptPanel = document.querySelector('[data-model-prompt-panel]');
   });
   releasePrompts();
+  await page.locator('#advancedPageTabs').getByRole('tab',{name:'提示词模板',exact:true}).click();
   await expect(page.getByText('安全帽提示词', {exact: true})).toBeVisible({timeout: 10_000});
   expect(await page.evaluate(() => ({
     config: window.__stableModelConfigPanel === document.querySelector('[data-model-config-panel]'),

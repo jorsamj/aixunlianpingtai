@@ -49,6 +49,8 @@ VERSION42.24.386；app/main/styles cache42.25.434，新页面样式/模块202610
 
 代码d281c72120d73a1514125a0412c7d38b2994360f已正常推送。其CI发现Storage Cache Governance仍grep旧缓存422540-lifecycle（该job Python58及Node21通过），Frontend Runtime两个源码守卫仍要求原七菜单列表及label===currentPage。按真实新菜单合同更新原断言/缓存标识，所有安全/唯一Owner/不重建侧栏断言保留；两份受影响Node文件59/59 GREEN。该SHA不能标全绿，守卫修正后须核新SHA，不使用旧结果替代。
 
+守卫修正0ff220419e4da30437ea958119de192762fedec7准确CI为21成功/1失败，55成功/1失败Checks；存储守卫已通过（Python58/Node21），Node1331/1331通过。完整Chrome264通过/3失败：服务节点无闪页用例对象仍期望旧title、版本遍历用例仍期望旧菜单名、提示词缓存用例未选择新Tab。仅同步这三处新UI合同，保留原页面身份/无闪页/版本标记/DOM稳定/GET一次断言；3/3定向Chrome GREEN（11.7s）。业务代码未变，须再核修正新SHA CI，旧失败记录不隐藏。
+
 ## 2026-10-24｜大模型Chat/Responses协议兼容（代码及隔离CI已验收）
 
 唯一需求/设计/进度：[协议专项](LLM_API_PROTOCOL_COMPATIBILITY_2026_10_24.md)。原provider兼容Chat/Responses，准确端点识别、受控结构化降级、安全错误证据；原M4高级配置/Bootstrap投影同步，连接测试与正式v60同工厂及字段校验。VERSION385/cache433；最终代码982069c8准确CI47/47 Actions、128/128 Checks成功，协议44、API55（含配置11/正式E2E4）、Node1328、Chrome265通过。文档自身最终HEAD另核Checks。5944及两份模板测试保留；真实GLM/收费接口NOT VERIFIED，发布前须授权环境实测，不部署。

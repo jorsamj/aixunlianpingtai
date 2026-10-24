@@ -356,7 +356,7 @@ test('service node owner commits its own shell without flashing another business
   });
 
   await expect(openService()).resolves.toEqual({
-    page: '服务节点', title: '服务节点', serviceShell: true, wrongBusinessPage: false,
+    page: '服务节点', title: '算力与节点', serviceShell: true, wrongBusinessPage: false,
   });
   await expect(page.locator('[data-service-node-page]')).toBeVisible();
 
@@ -366,7 +366,7 @@ test('service node owner commits its own shell without flashing another business
   await expect(page.locator('#title')).toHaveText('数据集');
 
   await expect(openService()).resolves.toEqual({
-    page: '服务节点', title: '服务节点', serviceShell: true, wrongBusinessPage: false,
+    page: '服务节点', title: '算力与节点', serviceShell: true, wrongBusinessPage: false,
   });
   expect(pageErrors).toEqual([]);
 });
@@ -451,7 +451,7 @@ test('formal version marker stays stable across final render owners and delayed 
 
   for (const route of ['算法列表', '数据集', '训练任务', '自动标注及清洗', '质量中心', '视频切帧', '标签管理', '模型配置', '存储配置']) {
     await page.evaluate(next => window.setPage(next), route);
-    await expect(page.locator('#title')).toContainText(route);
+    await expect(page.locator('#title')).toContainText(({'模型配置':'AI 辅助配置','存储配置':'存储管理'})[route] || route);
     await expectFormalVersion();
   }
 
