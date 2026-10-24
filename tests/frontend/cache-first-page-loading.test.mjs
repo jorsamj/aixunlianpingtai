@@ -229,7 +229,7 @@ test('ordinary page navigation patches chrome state without rebuilding the sideb
   assert.ok(start >= 0 && end > start);
   const chrome = main.slice(start, end);
   assert.match(chrome, /querySelectorAll\('\.nav-btn'\)/);
-  assert.match(chrome, /classList\.toggle\('active', label === currentPage\)/);
+  assert.match(chrome, /classList\.toggle\('active', label === \(advancedPageInfo\(currentPage\)\?\.title \|\| currentPage\)\)/);
   assert.doesNotMatch(chrome, /nav-project/);
   assert.doesNotMatch(source, /class="nav-project"/);
   assert.match(chrome, /if \(!nav \|\| !buttons\.length\)/);
