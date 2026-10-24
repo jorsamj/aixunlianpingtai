@@ -48,6 +48,7 @@ on:
       - 'tests/frontend/storage-import-progress.test.mjs'
       - 'tests/frontend/import-dock-style.test.mjs'
       - 'tests/browser/zip-import-refresh-recovery.spec.mjs'
+      - 'tests/browser/zip-label-presentation.spec.mjs'
       - 'tests/browser/material-upload-chunking.spec.mjs'
       - 'tests/api/test_v19_job_atomic_persistence.py'
       - 'tests/api/test_v19_import_scalability.py'
