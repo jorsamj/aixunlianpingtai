@@ -67,7 +67,15 @@ test('dismissed review does not reopen on polling or refresh and task center man
 test('three concurrent ZIPs keep distinct ordered reviews and each imports exactly once',async({page,request})=>{
  const project=await setup(page,request);await open(page);await watch(page);const starts=new Map();
  page.on('request',r=>{if(r.method()==='POST'&&r.url().endsWith('/start')){const id=r.url().split('/jobs/')[1].split('/')[0];starts.set(id,(starts.get(id)||0)+1)}});
- await add(page,[0,1,2].map(i=>({name:`ordered-${i}.zip`,buffer:archive(`image-${i}`)})));await upload(page);const events=await successes(page,3);
+ let release,completes=0;const gate=new Promise(r=>release=r);
+ await page.route('**/import/uploads/*/complete',async route=>{if(++completes>1)await gate;await route.continue().catch(()=>{});});
+ let events;
+ try{
+  await add(page,[0,1,2].map(i=>({name:`ordered-${i}.zip`,buffer:archive(`image-${i}`)})));await upload(page);
+  await expect(review(page)).toHaveCount(1);const firstId=await review(page).getAttribute('data-review-key');release();events=await successes(page,3);
+  await page.evaluate(()=>window.ZipImportRuntime.reconcile('siblings-completed'));
+  await expect(review(page)).toHaveAttribute('data-review-key',firstId);
+ }finally{release();}
  const seen=new Set();
  for(let i=0;i<3;i++){
   await page.evaluate(()=>window.ZipImportRuntime.reconcile('next-review'));

@@ -244,7 +244,7 @@ test('ZIP source label selection only stages an explicit mapping until final con
 
 test('ZIP browser bootstrap loads the refreshed exact-code and side-evidence module',()=>{
  const boot=readFileSync(new URL('../../static/zip-import-bootstrap.mjs',import.meta.url),'utf8');
- assert.match(boot,/zip-import-runtime\.js\?v=4226367/);
+ assert.match(boot,/zip-import-runtime\.js\?v=4226368/);
 });
 
 

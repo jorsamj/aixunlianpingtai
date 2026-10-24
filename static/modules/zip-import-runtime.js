@@ -342,7 +342,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
     if(!next)return false;
     const id=String(next.id),source=autoReviewCandidates.get(id),top=topModal();
     if(top&&top!==source.layer)return false;
-    if(top){source.onHandoff?.();if(!closeOwnedLayer(top,'handoff'))return false;uploadViews.delete(top)}
+    if(top){source.onHandoff?.();if(!closeOwnedLayer(top,'handoff'))return false;uploadViews.delete(top);source.layer=null;source.onHandoff=null}
     if(!isCurrentProject(source.projectId))return false;
     selectedJobId=id;current=next;patchState(next);return open();
   }
@@ -961,7 +961,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
       if(!isCurrentProject(project))return response;
       if(!response.id)throw new Error('ZIP交付身份不完整，请从任务中心核验');
       publishTransfer('success',control,{jobId:String(response.id),response});
-      const provisional={...response,id:String(response.id),status:response.status||'selecting',stage:response.stage||'上传与校验完成',message:response.message||'上传与ZIP校验完成，等待开始后台导入',progress:Number(response.progress||0),file_name:response.file_name||file.name,uploaded_bytes:Number(response.uploaded_bytes||file.size||0),created_at:response.created_at||new Date().toISOString()};window.UploadTaskCenterRuntime?.rekey?.('zip:'+multipartTaskId,'zip:'+provisional.id);knownJobs.set(String(provisional.id),provisional);if(presentation?.layer===reviewSource.layer)presentation=null;autoReviewCandidates.set(String(provisional.id),reviewSource);foregroundImports.add(String(provisional.id));writeIntent(project,provisional.id,'deferred');
+      const provisional={...response,id:String(response.id),status:response.status||'selecting',stage:response.stage||'上传与校验完成',message:response.message||'上传与ZIP校验完成，等待开始后台导入',progress:Number(response.progress||0),file_name:response.file_name||file.name,uploaded_bytes:Number(response.uploaded_bytes||file.size||0),created_at:response.created_at||new Date().toISOString()};window.UploadTaskCenterRuntime?.rekey?.('zip:'+multipartTaskId,'zip:'+provisional.id);knownJobs.set(String(provisional.id),provisional);if(presentation?.layer===reviewSource.layer&&uploadViews.get(reviewSource.layer)===reviewSource)presentation=null;autoReviewCandidates.set(String(provisional.id),reviewSource);foregroundImports.add(String(provisional.id));writeIntent(project,provisional.id,'deferred');
       try {
         await reconcile('upload');
       } catch (refreshError) {
@@ -1123,7 +1123,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
                 window.UploadTaskCenterRuntime?.rekey?.('zip:'+item.id,'zip:'+jobId);
               }
               knownJobs.set(jobId,provisional);
-              if(presentation?.layer===reviewSource.layer)presentation=null;
+              if(presentation?.layer===reviewSource.layer&&uploadViews.get(reviewSource.layer)===reviewSource)presentation=null;
               autoReviewCandidates.set(jobId,reviewSource);
               foregroundImports.add(jobId);
               writeIntent(project,jobId,'deferred');
@@ -1191,7 +1191,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
       catch(error){notify?.('无法核验 ZIP 当前状态：'+String(error.message||error));return null}
     }
     const source=autoReviewCandidates.get(id);
-    if(source?.projectId===project&&topModal()===source.layer&&!source.closed){source.onHandoff?.();closeOwnedLayer(source.layer,'handoff');uploadViews.delete(source.layer)}
+    if(source?.projectId===project&&topModal()===source.layer&&!source.closed){const layer=source.layer;source.onHandoff?.();closeOwnedLayer(layer,'handoff');uploadViews.delete(layer);source.layer=null;source.onHandoff=null}
     selectedJobId=id;current=job;patchState(job);open();return job;
   }
 
