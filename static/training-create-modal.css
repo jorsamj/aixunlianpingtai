@@ -1,12 +1,14 @@
 /* Create-training modal only. Runtime, draft and submit owners remain unchanged. */
-.training-create-modal-layer{padding:24px}
-.training-create-modal-card{width:min(1380px,92vw)!important;height:auto!important;max-height:90vh!important;border:1px solid rgba(221,231,245,.95);border-radius:20px;box-shadow:0 28px 80px rgba(15,31,72,.22);background:#fff}
-.training-create-modal-card .modal-head{min-height:68px;padding:0 28px;border-bottom:1px solid #e8eef7;background:#fff}
+.training-create-modal-layer{padding:16px 20px}
+.training-create-modal-layer .training-create-modal-card{width:min(1280px,100%);max-width:100%;height:min(94dvh,1000px);max-height:calc(100dvh - 32px);min-height:0;border:1px solid rgba(221,231,245,.95);border-radius:20px;box-shadow:0 25px 80px rgba(12,30,68,.19);background:#fff}
+.training-create-modal-card .modal-head{flex:0 0 auto;min-height:64px;padding:0 26px;border-bottom:1px solid #e8eef7;background:#fff}
 .training-create-modal-card .modal-title{display:flex;align-items:center;gap:12px;color:#0d1b4c;font-size:23px;font-weight:850;letter-spacing:-.02em}
 .training-create-modal-card .modal-title:before{content:"🔥";display:grid;place-items:center;width:38px;height:38px;border-radius:12px;background:#fff3e6;font-size:25px}
 .training-create-modal-card .modal-head .icon{color:#7b8aad;background:transparent;font-size:25px}
 .training-create-modal-card .modal-head .icon:hover{color:#0d1b4c;background:#f3f7fc}
-.training-create-modal-card .modal-body{padding:0 24px;overflow:auto;background:#fff}
+.training-create-modal-card .modal-body{display:flex;flex-direction:column;flex:1 1 auto;min-height:0;padding:0 26px;overflow:hidden;background:#fff}
+/* One bounded configuration viewport; title, provenance and actions keep their own space. */
+.training-create-modal-card .train-create-saas-v2{flex:1 1 auto;min-height:0;overflow:hidden}
 .training-create-modal-card .modal-body>.iteration414{margin:16px 0 0;padding:10px 14px;border-color:#dce7f7;background:#f7fafe}
 .train-create-saas{display:flex;min-height:0;flex-direction:column;color:#344054}
 .train-create-layout{display:grid;grid-template-columns:minmax(0,1.42fr) minmax(360px,.9fr);gap:16px;padding:18px 0 16px;align-items:start}
@@ -103,12 +105,12 @@
 .train-ui-summary-row i{color:#50689c;font-size:15px;font-style:normal}
 .train-ui-summary-row span{color:#667085;font-size:11px}
 .train-ui-summary-row b{min-width:0;overflow:hidden;color:#0d1b4c;font-size:12px;text-overflow:ellipsis;white-space:nowrap}
-.train-create-saas .train428-footer{position:sticky;z-index:4;bottom:0;justify-content:flex-end;margin:0 -24px;padding:14px 24px;border-top:1px solid #e4ebf5;background:rgba(255,255,255,.97);backdrop-filter:blur(8px)}
+.train-create-saas .train428-footer{justify-content:flex-end;margin:0 -24px;padding:14px 24px;border-top:1px solid #e4ebf5;background:rgba(255,255,255,.97);backdrop-filter:blur(8px)}
 .train-create-saas .train428-footer .btn{height:42px;min-width:112px}
 .train-create-saas .train428-footer .train-ui-submit{min-width:150px}
 .train-create-saas .estimate424:empty{display:none}
-@media(max-width:1100px){.training-create-modal-card{width:min(980px,96vw)!important;max-height:94vh!important}.training-create-modal-card .modal-body{padding:0 18px}.train-create-layout{grid-template-columns:1fr}.train-create-right{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.train-create-saas .train428-footer{margin:0 -18px;padding-left:18px;padding-right:18px}}
-@media(max-width:760px){.training-create-modal-layer{padding:8px}.training-create-modal-card{width:100%!important;max-height:96vh!important}.training-create-modal-card .modal-head{min-height:58px;padding:0 16px}.training-create-modal-card .modal-title{font-size:18px}.training-create-modal-card .modal-title:before{width:32px;height:32px;font-size:21px}.training-create-modal-card .modal-body{padding:0 12px}.train-create-layout{padding-top:12px}.train-create-right{display:flex}.train-ui-algorithm-card .form.two,.train-ui-device-card .form.two,.train-ui-split-fields,.train-ui-advanced .train428-config-summary{grid-template-columns:1fr}.train-v3-summary{grid-template-columns:1fr}.train-create-saas .train428-footer{margin:0 -12px;padding:12px}.train-create-saas .train428-footer .btn{min-width:92px}}
+@media(max-width:1100px){.training-create-modal-card .modal-body{padding:0 18px}.train-create-layout{grid-template-columns:1fr}.train-create-right{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.train-create-saas .train428-footer{margin:0 -18px;padding-left:18px;padding-right:18px}}
+@media(max-width:760px){.training-create-modal-layer{padding:8px}.training-create-modal-card .modal-head{min-height:58px;padding:0 16px}.training-create-modal-card .modal-title{font-size:18px}.training-create-modal-card .modal-title:before{width:32px;height:32px;font-size:21px}.training-create-modal-card .modal-body{padding:0 12px}.train-create-layout{padding-top:12px}.train-create-right{display:flex}.train-ui-algorithm-card .form.two,.train-ui-device-card .form.two,.train-ui-split-fields,.train-ui-advanced .train428-config-summary{grid-template-columns:1fr}.train-v3-summary{grid-template-columns:1fr}.train-create-saas .train428-footer{margin:0 -12px;padding:12px}.train-create-saas .train428-footer .btn{min-width:92px}}
 
 /* v42.24.340 — quiet first-open view; advanced controls stay mounted, not duplicated. */
 .train-create-saas{font-size:15px;line-height:1.5}
@@ -162,12 +164,9 @@
 
 
 /* v42.24.344 — compact creation flow; existing label/draft/split owners are retained. */
-.training-create-modal-card{width:min(1280px,calc(100vw - 40px))!important;height:min(94dvh,1000px)!important;max-height:calc(100dvh - 32px)!important;border-radius:20px!important;box-shadow:0 25px 80px rgba(12,30,68,.19)!important}
-.training-create-modal-card .modal-head{min-height:64px;padding:0 26px;background:#fff}
 .training-create-modal-card .modal-title{font-size:22px;letter-spacing:-.03em;font-weight:800}
-.training-create-modal-card .modal-body{flex:1 1 auto;min-height:0;padding:0 26px;background:#fff;overflow:auto}
 .train-create-saas-v2{font-size:16px;line-height:1.5;color:#23304a}
-.train-create-saas-v2 .train-create-layout{display:grid;grid-template-columns:minmax(0,1.08fr) minmax(0,.92fr);grid-template-areas:"algorithm algorithm" "materials labels" "modes labels";gap:16px 20px;align-items:start;padding:18px 0 20px}
+.train-create-saas-v2 .train-create-layout{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:stable;align-content:start;grid-auto-rows:max-content;display:grid;grid-template-columns:minmax(0,1.08fr) minmax(0,.92fr);grid-template-areas:"algorithm algorithm" "materials labels" "modes labels";gap:16px 20px;align-items:start;padding:18px 0 20px}
 .train-create-saas-v2 .train-create-left,.train-create-saas-v2 .train-create-right{display:contents}
 .train-create-saas-v2 .train-ui-algorithm-card{grid-area:algorithm}
 .train-create-saas-v2 .train-ui-data-card{grid-area:materials}
@@ -223,7 +222,7 @@
 .train-create-saas-v2 .train-ui-labels-card>header small{display:block!important;max-width:600px;margin-top:4px;color:#5c708f;font-size:14px;font-weight:550;line-height:1.5}
 .train-create-saas-v2 .train-ui-label-search{height:45px;margin-bottom:12px;border-radius:10px}
 .train-create-saas-v2 .train-ui-label-search input{font-size:15px}
-.train-create-saas-v2 .train-ui-label-slot{min-height:110px;max-height:min(49dvh,520px);overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;padding-right:5px}
+.train-create-saas-v2 .train-ui-label-slot{min-height:110px;overflow:visible}
 .train-create-saas-v2 .train-ui-label-wait{min-height:64px;font-size:14px}
 .train-create-saas-v2 .training-label-contract{border:0!important;background:transparent!important}
 .train-create-saas-v2 .training-label-contract-head{display:none}
@@ -234,15 +233,15 @@
 .train-create-saas-v2 .training-label-choice small{font-size:13px!important}
 .train-create-saas-v2 .training-label-inherited{font-size:14px!important}
 .train-create-saas-v2 .training-label-warning{font-size:14px!important}
-.train-create-saas-v2 .train428-footer{position:sticky;bottom:0;z-index:5;margin:0 -26px;padding:15px 26px;background:rgba(255,255,255,.98);border-top:1px solid #e9edf5;gap:11px}
+.train-create-saas-v2 .train428-footer{position:static;flex:0 0 auto;margin:0 -26px;padding:15px 26px;background:rgba(255,255,255,.98);border-top:1px solid #e9edf5;gap:11px}
 .train-create-saas-v2 .train428-footer .btn{min-height:46px;font-size:16px}
 .train-create-saas-v2 .train428-footer .train-ui-submit{min-width:168px}
 @media(max-width:1050px){
  .train-create-saas-v2 .train-create-layout{grid-template-columns:minmax(0,1fr);grid-template-areas:"algorithm" "materials" "labels" "modes";gap:14px}
- .train-create-saas-v2 .train-ui-label-slot{max-height:min(38dvh,400px)}
 }
 @media(max-width:790px){
- .training-create-modal-card{width:calc(100vw - 16px)!important;height:calc(100dvh - 16px)!important;max-height:calc(100dvh - 16px)!important}
+ .training-create-modal-layer{padding:8px}
+ .training-create-modal-layer .training-create-modal-card{height:calc(100dvh - 16px);max-height:calc(100dvh - 16px)}
  .training-create-modal-card .modal-body{padding:0 14px}
  .train-create-saas-v2 .train-create-layout{padding:12px 0 16px}
  .train-create-saas-v2 .train-ui-card,.train-create-saas-v2 .train428-panel{padding:15px}

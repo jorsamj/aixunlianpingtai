@@ -1,3 +1,37 @@
+## 2026-10-24｜P1 创建训练弹窗滚动修复（已完成待验收）
+
+基线b429f120b954455a29ca63c0d39ecbde1430c464 / VERSION42.24.382，已fetch0/0；5944及两份未跟踪训练模板测试保护。仅前端样式/必要交互与浏览器回归，不改变参数、母模型、划分、调度或后端，不生产部署。
+
+用户合同：固定标题/底部按钮，中间唯一配置滚动区；标签上滚轮不中断外层操作；四模式/高级展开/异步标签/缩放与重开/窗口变化均可访问最后配置。不得增加important或全局滚轮拦截，不重建Modal。
+
+审计风险：training-create-modal.css内旧/新三轮card高度与响应式覆盖，标签slot独立overflow+overscroll contain、body overflow auto、sticky footer同处滚动内容。先用真实Chrome轮事件复现，不能只凭源码确认全部根因。
+
+最小设计：推荐CSS内收敛同类高度规则，原body/root作为受限flex框架，原train-create-layout为唯一滚动区，标签自然展开，原footer静态flex尾部占位；无JS搬节点或新增状态。备选保留嵌套滚动并移除contain仍有滚轮竞争；继续sticky+追加padding易随按钮高度失效，不采用。提交进度按真实证据更新。
+
+计划：A 新增一个聚焦Playwright文件，指定五视口/四模式/实际wheel RED；B 原CSS收敛/唯一滚动及原footer，精确缓存；C 必要Chrome+现有Node，不跑Python全仓；D VERSION一次递增、更新本专项/接续、正常push并核验最终SHA CI。测试仅在隔离项目创建配置，不启动训练。状态A–C本地已完成待验收，D等待准确提交CI；完整记录如下。
+
+### 真实根因、修复与验证
+
+旧版1366×768/60标签：选自定义后，鼠标在标签区域连续45次真实wheel，标签滚到class_48一带，外层仍停在算法/素材上方，下方“配置更多专业参数”不可命中，原测试明确RED。原body overflow auto与标签slot overflow auto/overscroll contain形成双滚动；标签边界不能向外续滚。card高度在初始/1100/760/新版/790断点重复定义并混用vh/dvh，sticky footer位于内容内，进一步增加小屏不确定性；未查到创建弹窗上的wheel/touchmove preventDefault或透明提交遮罩为本次复现原因，不能把未证实项写成根因。
+
+最终仅修改training-create-modal.css的创建弹窗布局：收敛card高度/dvh边界与body flex/min-height约束；原train-create-layout作为唯一有界滚动区；标签自然展开；原footer改为静态flex尾部，真实占位而不覆盖内容；头部不参与压缩。没有移动DOM、增加JS监听/新Modal/滚轮状态，styles.css全局与app.js均未修改。原文件important由65降至50，未新增important。首版单滚动改造曾在窄屏压缩Grid自动行高，标签溢出盖住后面的配置；通过实际elementFromPoint/scroll测量定位，补grid-auto-rows:max-content后恢复，不能将首版局部通过冒充最终完成。
+
+测试夹具起初按精确标题查找而遗漏标题中的🔥，修正为原规范的标题匹配后，才取得上述有效滚轮RED；第一次新布局测试还将固定来源说明当成滚动区，已改为测量真实layout可视交集。未降低45次滚轮/实际命中/完整视口/原训练合同断言。
+
+最终真实Chrome `node node_modules/@playwright/test/cli.js test tests/browser/training-create-scroll.spec.mjs --reporter=line`：**5/5通过，0失败/跳过，1.9分钟**。1920×1080、1366×768、1280×720、760×820、1093×614（1366×768在125%缩放下等效CSS可视区，不冒充实际浏览器缩放）逐一覆盖：首次/标签完成、从标签上滚到下方配置、第60标签、四模式、展开收起数据划分、专业参数应用返回、关闭重开、窗口再次缩小；标题/操作栏完整留在视口；最后只有train-create-layout一个真实滚动容器，pageerror为空，训练创建请求0。滚动只用mouse.wheel，不设置scrollTop或调用scrollIntoView；读scrollHeight/clientHeight用于检查Owner。原training-label-selector唯一生命周期/完整配置/唯一提交用例1/1通过（16.1秒），未修改该原用例。
+
+Node最小相关组合：`node --test tests/frontend/zip-label-evidence-and-simple-training-ui.test.mjs tests/frontend/training-submit-validation.test.mjs tests/frontend/version-marker-owner.test.mjs`，27/27通过、0失败/跳过。源码仅CSS，无后端/参数/划分/母模型/Worker变动，未跑Python全仓或GPU训练；未删除原测试或降低原断言。新增滚轮文件接入已有Frontend Runtime Stabilization浏览器列表，不创建新工作流。
+
+| 证据 | 修复前 | 修复后 |
+|---|---|---|
+| 鼠标在标签上滚轮 | 标签独立滚动封锁，最后配置不可命中 | 同一配置区滚动，标签和最后配置均可达 |
+| 底部操作 | 内容内sticky，依赖滚动/高度覆盖 | flex尾部占位，完整可见，不盖输入 |
+| 窄屏长标签 | 原行为受嵌套滚动影响；首版Grid压缩也实际失败 | 行高按内容排列，单列无交叠 |
+
+[1366修复前截图](evidence/training-create-scroll-2026-10-24/before-1366x768.png) / [修复后截图](evidence/training-create-scroll-2026-10-24/after-1366x768.png)。图片均为隔离项目测试数据，非生产截图。
+
+修改清单：static/training-create-modal.css、static/index.html（仅CSS cache4226355）、VERSION.txt（一次递增42.24.383）、tests/browser/training-create-scroll.spec.mjs、原frontend workflow列表、本专项及短接续入口/两张证据图。相关业务Owner、字段和请求合同不变。测试通过后普通提交/推送长期分支，最终CI回执追加于此；目前不可宣称远端验收完成。生产未部署，移动设备触摸/真实125%缩放及特殊浏览器插件仍未实机覆盖；本轮指定桌面Chrome等效视口均通过，不以CSS修改保证所有生产环境。
+
 > 2026-10-23接续：测试遵循用户最新精简要求，仅本轮受影响合同及核心浏览器冒烟；新增存储/兼容任务以生命周期专项顶部为准，不混写业务Owner。
 
 # 2026-10-22｜训练模式配置、创建流程与评测可信度综合治理

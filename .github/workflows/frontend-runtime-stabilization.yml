@@ -473,6 +473,7 @@ jobs:
           tests/browser/training-evaluation-diagnostics.spec.mjs
           tests/browser/navigation-readiness.spec.mjs
           tests/browser/training-label-selector.spec.mjs
+          tests/browser/training-create-scroll.spec.mjs
           tests/browser/algorithm-report-scope.spec.mjs
           tests/browser/loading-recovery-supplement.spec.mjs
           tests/browser/startup-report-presentation.spec.mjs

@@ -1,3 +1,7 @@
+## 2026-10-24｜创建训练弹窗滚动修复（已完成待验收）
+
+唯一记录：[训练创建专项顶部](TRAINING_CREATE_FOUR_MODES_UI_2026_10_10.md)。原CSS收敛高度/单一layout滚动、标签自然展开、footer真实占位；无JS或后端/参数/调度变更，important减少15。五视口真实wheel5/5、原标签提交Chrome1/1及Node27/27通过；VERSION383，CSS cache4226355，准确SHA CI待回执。5944及两份模板测试保留，未部署/未启动训练。
+
 ## 2026-10-24｜P1跨标签负样本与首次训练（代码及隔离CI已验收）
 
 唯一需求/进度：[训练质量专项P1](TRAINING_QUALITY_REMEDIATION_TRACKER_2026_10_18.md)。任务标签与原始标签分离，正/已确认负/待审核共享后端合同；人工有限批审保留原框、CAS/源SHA与事务审计；新V3纯负保留像素/空YOLO、混合与历史V2保护不变。VERSION382，必要Python/Node与Chrome四个独立场景通过；代码cd8cde89准确CI 23/23 Actions、60/60 Checks成功，最终文档HEAD自身另核Checks，详见专项回执；不自动确认/丢弃/训练，不生产操作。5944及两份未跟踪模板测试保留。
