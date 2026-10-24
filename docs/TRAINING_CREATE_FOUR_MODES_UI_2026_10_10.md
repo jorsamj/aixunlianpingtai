@@ -1,4 +1,4 @@
-## 2026-10-24｜P1 创建训练弹窗滚动修复（已完成待验收）
+## 2026-10-24｜P1 创建训练弹窗滚动修复（代码及隔离CI已验收）
 
 基线b429f120b954455a29ca63c0d39ecbde1430c464 / VERSION42.24.382，已fetch0/0；5944及两份未跟踪训练模板测试保护。仅前端样式/必要交互与浏览器回归，不改变参数、母模型、划分、调度或后端，不生产部署。
 
@@ -8,7 +8,15 @@
 
 最小设计：推荐CSS内收敛同类高度规则，原body/root作为受限flex框架，原train-create-layout为唯一滚动区，标签自然展开，原footer静态flex尾部占位；无JS搬节点或新增状态。备选保留嵌套滚动并移除contain仍有滚轮竞争；继续sticky+追加padding易随按钮高度失效，不采用。提交进度按真实证据更新。
 
-计划：A 新增一个聚焦Playwright文件，指定五视口/四模式/实际wheel RED；B 原CSS收敛/唯一滚动及原footer，精确缓存；C 必要Chrome+现有Node，不跑Python全仓；D VERSION一次递增、更新本专项/接续、正常push并核验最终SHA CI。测试仅在隔离项目创建配置，不启动训练。状态A–C本地已完成待验收，D等待准确提交CI；完整记录如下。
+计划：A 新增一个聚焦Playwright文件，指定五视口/四模式/实际wheel RED；B 原CSS收敛/唯一滚动及原footer，精确缓存；C 必要Chrome+现有Node，不跑Python全仓；D VERSION一次递增、更新本专项/接续、正常push并核验最终SHA CI。测试仅在隔离项目创建配置，不启动训练。状态A–D代码及隔离CI已验收；完整记录如下。
+
+### 最终代码验收与接续回执
+
+VERSION **42.24.383**，实现提交 **[f5ba61920644242973bec74056ac4e4ee9131bd0](https://github.com/jorsamj/aixunlianpingtai/commit/f5ba61920644242973bec74056ac4e4ee9131bd0)** 已普通推送长期分支。该准确SHA **36/36 Actions、99/99 Checks全部成功**，0失败/取消/跳过，证据：[代码Checks](https://github.com/jorsamj/aixunlianpingtai/commit/f5ba61920644242973bec74056ac4e4ee9131bd0/checks)。不引用旧SHA绿色。文档验收补提会产生新HEAD，交付前仍读取最终文档HEAD本身Checks，完整SHA以文件提交历史与交付报告定位，避免自引用循环；不因文档提交重复本地测试。
+
+前后端业务规则保持：此次实际业务源码仅原创建弹窗CSS与index中的CSS缓存参数；没有修改app.py、static/app.js、训练/GT/Worker/Modal生命周期或新增事件处理。原参数、数据划分、母模型、训练创建与队列合同由原Owner继续管理。原标签/创建入口Chrome已回归；本轮浏览器只建立隔离项目并打开配置，新测试创建训练请求为0。没有生产部署、生产GT/素材/模型写入或GPU训练。
+
+接续：本P1已完成，不再增加滚动补丁或新Modal/JS滚轮桥接。后续若有特定浏览器或真实触摸/缩放问题，先在tests/browser/training-create-scroll.spec.mjs加入准确场景，检查原CSS内单一layout滚动、grid行高与footer占位，再最小修改。保留root/body min-height:0与收敛dvh边界，不能恢复标签contain内滚动、sticky重叠或追加important。5944祖先和两份未跟踪模板测试保留，推送前核对远端无分叉；生产浏览器插件、触摸与真实缩放尚未实机验证。
 
 ### 真实根因、修复与验证
 
@@ -30,7 +38,7 @@ Node最小相关组合：`node --test tests/frontend/zip-label-evidence-and-simp
 
 [1366修复前截图](evidence/training-create-scroll-2026-10-24/before-1366x768.png) / [修复后截图](evidence/training-create-scroll-2026-10-24/after-1366x768.png)。图片均为隔离项目测试数据，非生产截图。
 
-修改清单：static/training-create-modal.css、static/index.html（仅CSS cache4226355）、VERSION.txt（一次递增42.24.383）、tests/browser/training-create-scroll.spec.mjs、原frontend workflow列表、本专项及短接续入口/两张证据图。相关业务Owner、字段和请求合同不变。测试通过后普通提交/推送长期分支，最终CI回执追加于此；目前不可宣称远端验收完成。生产未部署，移动设备触摸/真实125%缩放及特殊浏览器插件仍未实机覆盖；本轮指定桌面Chrome等效视口均通过，不以CSS修改保证所有生产环境。
+修改清单：static/training-create-modal.css、static/index.html（仅CSS cache4226355）、VERSION.txt（一次递增42.24.383）、tests/browser/training-create-scroll.spec.mjs、原frontend workflow列表、本专项及短接续入口/两张证据图。相关业务Owner、字段和请求合同不变。测试通过后普通提交/推送长期分支，代码准确CI已完成，回执见本节；文档最终HEAD仍单独核验。生产未部署，移动设备触摸/真实125%缩放及特殊浏览器插件仍未实机覆盖；本轮指定桌面Chrome等效视口均通过，不以CSS修改保证所有生产环境。
 
 > 2026-10-23接续：测试遵循用户最新精简要求，仅本轮受影响合同及核心浏览器冒烟；新增存储/兼容任务以生命周期专项顶部为准，不混写业务Owner。
 
