@@ -548,7 +548,7 @@ test('modal table wrapping and first-field focus survive normalization ownership
   expect(pageErrors).toEqual([]);
 });
 
-test('ZIP import completion surfaces review action and auto-opens review', async ({page}) => {
+test('ZIP import completion preserves manual review without reopening a window', async ({page}) => {
   const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(error));
 
@@ -581,10 +581,14 @@ test('ZIP import completion surfaces review action and auto-opens review', async
     persistedButton: String(state.import411?.resultHtml || '').includes('review412-btn'),
   })), {timeout: 10_000}).toEqual({
     bound: true,
-    opened: 'zip-browser-1',
+    opened: null,
     hasButton: true,
     persistedButton: true,
   });
+  await page.waitForTimeout(350); // Detect the retired 280ms automatic review callback.
+  expect(await page.evaluate(()=>window.__zipReviewOpened)).toBeNull();
+  await page.locator('.review412-btn').click();
+  expect(await page.evaluate(()=>window.__zipReviewOpened)).toBe('zip-browser-1');
 
   expect(pageErrors).toEqual([]);
 });
@@ -651,9 +655,13 @@ test('ZIP import completion uses scoped label and material refresh', async ({pag
   });
   await expect.poll(async () => page.evaluate(() => state.import411?.stage || ''), {timeout: 10_000}).toBe('导入完成');
   await expect.poll(async () => page.evaluate(() => state.import411?.jobId || '')).toBe('zip-r20g-scoped');
-  await expect.poll(async () => page.evaluate(() => window.__zipReviewOpenedR20g)).toBe('zip-r20g-scoped');
+  await expect.poll(()=>page.evaluate(()=>Boolean(state.import411?.__reviewBound))).toBe(true);
+  await page.waitForTimeout(350);
+  expect(await page.evaluate(()=>window.__zipReviewOpenedR20g)).toBeNull();
   await expect(page.locator('#data412Grid')).toContainText('zip-r20g.jpg', {timeout: 10_000});
   page.off('request', onRequest);
+  await page.locator('.review412-btn').click();
+  expect(await page.evaluate(()=>window.__zipReviewOpenedR20g)).toBe('zip-r20g-scoped');
 
   const owned = requests.filter(row => !row.includes('/api/v19/projects/') || !row.endsWith('/import/jobs'));
   expect(owned.some(row => row === 'GET ' + row.slice(4) && row.includes('/api/v12/projects/') && row.endsWith('/labels'))).toBe(true);
