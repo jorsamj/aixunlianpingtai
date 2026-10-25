@@ -1,4 +1,4 @@
-## 2026-10-25｜创建 Loading 与异常恢复专项（进行中）
+## 2026-10-25｜创建 Loading 与异常恢复专项（代码及隔离CI已验收）
 
 本节是本轮唯一接续记录。用户授权：只修改已证实的训练创建异常；复用 TrainingSubmitRuntime、原 Modal、withRequestDeadline、原 TaskRepository 和 task_id 幂等；不改变训练参数、数据划分、GT/冻结、GPU独占或 Worker；不部署生产。其他模块只轻量排查，共享缺陷才修复。
 
@@ -6,11 +6,11 @@
 
 | 阶段 | 需求与模块 | 状态 | 已有证据／剩余 |
 |---|---|---|---|
-| A | 真实代码、最新分支、持久化与幂等审计 | 已完成待验收 | 远端243858b9/VERSION386；原工作区4个标注提交和未提交文件全部保留，新隔离工作树基于远端 |
-| B | 提交全过程异常保护；最终DOM恢复；单一真实阶段 | 已完成待验收 | Chrome新增2例RED：try外异常未释放锁、finally异常按钮aria-busy仍true；修复后17项浏览器通过，最终组合待验 |
-| C | 首次准备请求截止时间、错误/重试、迟到结果隔离 | 已完成待验收 | 原缓存继续复用；资源/推荐/外部算法核验有界，超时单元已GREEN，真实浏览器待验 |
-| D | 创建结果核验、稳定UNKNOWN、原ID查询、后端业务码 | 已完成待验收 | 原30秒截止含JSON读取；新增VERIFYING；未知结果停止动画/保留ID/只查询不POST；后端幂等锁及指纹原有，机器码验证进行中 |
-| E | 最小Node/Python/Chrome、版本、正常提交/准确SHA CI | 进行中 | 已普通推送925f3bf0；审查增量已本地验证，最终SHA CI待核 |
+| A | 真实代码、最新分支、持久化与幂等审计 | 已验收 | 远端243858b9/VERSION386基线；原工作区4个标注提交、全部WIP与两份模板测试保留 |
+| B | 提交全过程异常保护；最终DOM恢复；单一真实阶段 | 已验收 | 原submit同一try/finally；真实DOM与回调异常回归通过 |
+| C | 首次准备请求截止时间、错误/重试、迟到结果隔离 | 已验收 | 资源/推荐/外部算法有界，原缓存复用；挂起缓存取消与真实重试通过 |
+| D | 创建结果核验、稳定UNKNOWN、原ID查询、后端业务码 | 已验收 | 持久化与执行终态分离；原ID收据恢复，409/5xx正文中断按UNKNOWN核验 |
+| E | 最小Node/Python/Chrome、版本、正常提交/准确SHA CI | 已验收 | 代码7fdef286已普通推送；准确33/33 Actions、89/89 Checks成功；文档自身新HEAD另核 |
 
 必须覆盖：成功即结束创建，不等GPU/Worker/列表；400/409/422/500、业务错误、非法JSON、网络/超时；初始渲染及finally异常；成功响应丢失；核验超时保持UNKNOWN而非盲目重建；重复点击；关闭/重新打开/草稿修改/切项目迟到隔离；初始化失败/超时可重试；保留配置与错误；真实DOM按钮/aria-busy/动画/错误及POST数量；无未处理Promise。后端持久任务是唯一成功依据，404查询不能证明并发请求永远未创建，不据此开放新ID重试。
 
@@ -82,6 +82,29 @@
 - 审查确认：外部算法核验的UI外层截止没有取消原Owner缓存中的挂起Promise，重试反复复用同一请求，迟到响应还能发布旧算法。新增真实Chrome先RED：两次超时仅1次请求且旧响应污染；修复后透传原AbortSignal，在原ExternalAlgorithmPlatformRuntime中使用现有withRequestDeadline，忽略已取消缓存、仅清除自己持有的Promise；迟到结果不能发布。没有新建缓存Owner、API客户端或轮询。
 - 新增两例先RED后GREEN，随后409正文中断再RED→GREEN。最后三浏览器文件54/54通过，409补齐后的相关7/7通过；当前共55个不同Chrome场景已通过，不重复累计重跑结果。最后受影响Node四文件95/95（submit、validation、hydration、external platform）通过；此前version/device13例复用，不为等待CI重复跑；Python11例沿用无后端增量。0失败/跳过，没有真实GPU或收费调用。
 - 925f3bf0的CI检查时47 Actions中46成功/1运行中、128 Checks中127成功/1运行中，未用于本次新代码验收。审查增量提交后以新完整SHA重新读取CI。已有两次过时字面守卫失败已如实记录并适配原调用合同，无删除/降级安全测试。
+
+
+### 最终代码验收、文件清单与接续
+
+VERSION **42.24.387**。最终代码 **[7fdef28690c81104a689a06c36800874d021feac](https://github.com/jorsamj/aixunlianpingtai/commit/7fdef28690c81104a689a06c36800874d021feac)** 已正常推送 `feature/external-algorithm-publishing`，准确 **33/33 Actions、89/89 Checks全部成功**，0失败/取消/跳过：[代码Checks](https://github.com/jorsamj/aixunlianpingtai/commit/7fdef28690c81104a689a06c36800874d021feac/checks)。只读复核最终增量无阻塞；409/500正文中断独立核验实际POST→GET→created。验收回执会产生文档新HEAD，交付前另读取该HEAD自身CI；完整SHA由提交历史及交付报告定位，避免自引用循环。文档提交不重复本地测试。
+
+本地必要验收：Python11/11；最后受影响Node四文件95/95，之后只重跑正文中断影响的submit/validation67/67（不重复累计）；其他已有version/device13例复用。真实Chrome55个不同场景通过：三原文件54/54后，新增409正文中断及相关7/7通过。所有最终验收0失败/跳过；历史RED、源码字面守卫失败和修复记录保留。CI原有完整Chrome及Node也通过，没有手工重复全仓或新增工作流/跳过安全断言。
+
+实际修改文件（基线243858b9至最终代码）：
+
+- 业务：`static/modules/training-submit.js`、`static/modules/training-create-hydration.js`、`static/modules/external-algorithm-platform.js`、`static/app.js`、`app.py`、`static/styles.css`。
+- 接入/版本：`static/main.mjs`、`static/index.html`、`VERSION.txt`。
+- Python：`tests/api/test_training_request.py`。
+- Chrome：`tests/browser/training-create-first-open.spec.mjs`、`tests/browser/training-submit-lifecycle.spec.mjs`；原按需准入文件未修改但定向回归。
+- Node：`tests/frontend/external-algorithm-platform.test.mjs`、`tests/frontend/training-create-hydration.test.mjs`、`tests/frontend/training-modal-device-probe.test.mjs`、`tests/frontend/training-submit-validation.test.mjs`、`tests/frontend/training-submit.test.mjs`、`tests/frontend/version-marker-owner.test.mjs`。
+- 原工作流只适配字面守卫：`.github/workflows/training-create-first-open.yml`，仍断言原API/Owner及准备身份保护，不改触发/跳过/安全条件。
+- 持久文档：本文件、`docs/CODEX_CURRENT_STATE.md`、`AGENTS.md`。
+
+前后端一致：v12回执与v62查询校验同一正式TRAINING task_id、项目、算法及原持久状态；恢复到FAILED/BLOCKED等终态只证明“任务已创建”，不显示“训练成功”。后端原锁/指纹/父子准备恢复仍为唯一幂等Owner，业务错误码透传；没有新增任务库或改变Worker/GPU/GT/训练参数。服务端确认持久化就结束创建Loading，刷新列表和训练执行均独立。
+
+接续：本专项可进入**经单独授权的生产部署验收**，当前没有部署。优先在授权环境复验真实网络中断和浏览器配置，不执行GPU训练来验证Loading。真实GPU/NAS/OSS/生产网络仍NOT VERIFIED。禁用sessionStorage时当前页面防重仍有效，跨刷新恢复无法保证；不能用新ID盲目重试。ZIP/图片上传try前同步异常风险仅静态发现OPEN，未复现、未扩改，见上表；不要将本专项当作全平台故障全部关闭。
+
+原标注工作区HEAD仍8ba6ce1a，4个本地提交及全部未提交标注增量与两份模板测试保留；5944祖先可达。本轮训练隔离工作树干净后保留接续。后续回到标注任务时，应安全合并最新远端训练修复并保留该WIP，不得reset/覆盖或把未交付标注增量误报为本轮已推送。
 
 ---
 
