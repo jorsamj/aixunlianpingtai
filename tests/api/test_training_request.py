@@ -1916,3 +1916,13 @@ def test_training_create_lock_timeout_has_uncertain_machine_code(client, seeded_
     assert response.status_code==409
     assert response.json()['code']=='TRAINING_CREATE_IN_PROGRESS'
     assert platform.shared_task_repository().get(payload['task_id']) is None
+
+
+def test_training_missing_mother_model_returns_stable_code_without_task(client, seeded_project):
+    import app as platform
+    project_id, payload = _training_create_replay_fixture(client, seeded_project)
+    payload['model']='definitely-unprepared-training-model.pt'
+    response=client.post(f'/api/v12/projects/{project_id}/train/start',json=payload)
+    assert response.status_code==409,response.text
+    assert response.json()['code']=='TRAINING_MOTHER_MODEL_UNAVAILABLE'
+    assert platform.shared_task_repository().get(payload['task_id']) is None

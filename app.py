@@ -6402,14 +6402,14 @@ def _ready_ultralytics_mother_model(project_id: str, requested: str) -> str:
     """Require a real local weight, never a downloadable filename, at submission."""
     reference = str(requested or "").strip()
     if not reference:
-        raise HTTPException(status_code=409, detail="尚未选择母模型，请先到训练资源上传 .pt 权重")
+        raise HTTPException(status_code=409, detail={"code":"TRAINING_MOTHER_MODEL_UNAVAILABLE","message":"尚未选择母模型，请先到训练资源上传 .pt 权重"})
     resolution = resolve_ultralytics_model(reference, project_id)
     candidate = resolution.path
     if not resolution.found or candidate is None:
-        raise HTTPException(status_code=409, detail=f"母模型 {Path(reference).name} 未就绪；请先在训练资源预置 .pt 权重，训练时不自动下载")
+        raise HTTPException(status_code=409, detail={"code":"TRAINING_MOTHER_MODEL_UNAVAILABLE","message":f"母模型 {Path(reference).name} 未就绪；请先在训练资源预置 .pt 权重，训练时不自动下载"})
     candidate = candidate.resolve()
     if candidate.suffix.lower() != ".pt" or not candidate.is_file() or candidate.stat().st_size < 1024:
-        raise HTTPException(status_code=409, detail="母模型不是可用的本地 .pt 权重文件")
+        raise HTTPException(status_code=409, detail={"code":"TRAINING_MOTHER_MODEL_UNAVAILABLE","message":"母模型不是可用的本地 .pt 权重文件"})
     return str(candidate)
 
 

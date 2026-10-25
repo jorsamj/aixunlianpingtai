@@ -236,3 +236,26 @@ for(const status of ['FAILED','BLOCKED_BY_ENVIRONMENT','SUCCEEDED']){
     expect(fixture.posts()).toBe(1);expect(await page.evaluate(()=>window.accepted[0].status)).toBe(status);
   });
 }
+
+
+test('reopened training form can query prior unknown task without closing the new draft',async({page})=>{
+  const fixture=await mount(page,'unknown');await page.getByRole('button',{name:'开始训练'}).click();await page.evaluate(()=>window.submitPromise);
+  await page.evaluate(()=>{window.openFixture();document.getElementById('tr429TaskId').value='train_bbbbbbbbbbbbbbbbbbbb';window.submitRuntime.updateReadiness();});
+  fixture.ledger.set(taskId,{task_id:taskId,kind:'TRAINING',status:'QUEUED',project_id:'fixture-project',algorithm_id:'alg-1'});
+  await page.getByRole('button',{name:'查询任务状态'}).click();
+  await expect(page.getByRole('dialog')).toBeVisible();
+  await expect(page.locator('.train428-footer .btn.primary')).toBeEnabled();
+  expect(await page.locator('#tr429TaskId').inputValue()).toBe('train_bbbbbbbbbbbbbbbbbbbb');
+  expect(fixture.posts()).toBe(1);
+});
+
+
+test('refresh restores the pending creation identity and queries it without another POST',async({page})=>{
+  const first=await mount(page,'unknown');await page.getByRole('button',{name:'开始训练'}).click();await page.evaluate(()=>window.submitPromise);
+  expect(first.posts()).toBe(1);await page.reload();
+  const restored=await mount(page,'unknown');
+  await expect(page.getByRole('button',{name:'查询任务状态'})).toBeVisible();
+  restored.ledger.set(taskId,{task_id:taskId,kind:'TRAINING',status:'QUEUED',project_id:'fixture-project',algorithm_id:'alg-1'});
+  await page.getByRole('button',{name:'查询任务状态'}).click();
+  await expect(page.getByRole('dialog')).not.toBeVisible();expect(restored.posts()).toBe(0);
+});

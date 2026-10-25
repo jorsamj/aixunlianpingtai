@@ -1521,4 +1521,4 @@ button[aria-busy="true"]:has(.tiny-spinner)::before{display:none}
 #ai60EditStage img{display:block;max-width:none!important;max-height:none!important;width:auto;height:auto;margin:0!important;user-select:none;-webkit-user-drag:none}
 .ai66-edit-tools{display:flex;flex-wrap:wrap;gap:6px;align-items:center}.ai66-edit-tools .select{width:auto;max-width:160px}
 
-.train429-create.training-submit-failed [data-training-query-result]{pointer-events:auto;grid-column:1/-1;justify-self:start}
+.train429-create.training-submit-failed [data-training-query-result],.train429-create.training-submit-failed [data-training-view-tasks]{pointer-events:auto;grid-column:1/-1;justify-self:start}
