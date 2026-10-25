@@ -284,6 +284,8 @@ export function benchmarkReuseContext({asset, draft, base, benchmark} = {}) {
 }
 
 const CREATED_TRAINING_STATUSES = new Set(['QUEUED', 'WAITING_RESOURCE', 'RUNNING', 'PAUSED']);
+// A repository lookup proves persistence even if execution has already ended.
+const PERSISTED_TRAINING_STATUSES = new Set([...CREATED_TRAINING_STATUSES,'AWAITING_CONFIRMATION','PARTIAL_SUCCESS','SUCCEEDED','CANCEL_REQUESTED','CANCELLED','FAILED','BLOCKED_BY_ENVIRONMENT','BLOCKED_BY_HARDWARE']);
 
 const TRAINING_SUBMIT_PRESENTATIONS = Object.freeze({
   configuration: Object.freeze({
@@ -300,7 +302,7 @@ const TRAINING_SUBMIT_PRESENTATIONS = Object.freeze({
   }),
   success: Object.freeze({
     tone: 'success', activeStep: 2, completedSteps: 3,
-    title: '训练任务创建成功', detail: '已加入训练任务队列，系统将自动安排执行',
+    title: '训练任务创建成功', detail: '任务已持久化，执行状态请在训练任务列表查看',
   }),
 });
 
@@ -338,7 +340,7 @@ export function validateTrainingCreatedResponse(body, expectedTaskId = '', expec
   const kind = String(task?.kind || task?.task_type || '').trim().toUpperCase();
   const taskType = String(task?.task_type || task?.kind || '').trim().toUpperCase();
   const status = String(task?.status || '').trim().toUpperCase();
-  if (body?.ok !== true || !taskId || kind !== 'TRAINING' || taskType !== 'TRAINING' || !CREATED_TRAINING_STATUSES.has(status)) {
+  if (body?.ok !== true || !taskId || kind !== 'TRAINING' || taskType !== 'TRAINING' || !(expectedIdentity.persistedLookup?PERSISTED_TRAINING_STATUSES:CREATED_TRAINING_STATUSES).has(status)) {
     throw new Error('训练创建响应缺少正式任务身份，请保留当前窗口并重试');
   }
   const expected = String(expectedTaskId || '').trim();
@@ -648,10 +650,10 @@ export function installTrainingSubmitRuntime({
         if(!response.ok)throw new Error(`查询任务失败（HTTP ${response.status}）；请保留原任务 ID，稍后再次查询`);
         return response.json();
       },{label:'训练任务核验'});
-      const task=validateTrainingCreatedResponse({ok:true,task:body?.task||body},taskId,{projectId:pid,algorithmId:aid});
+      const task=validateTrainingCreatedResponse({ok:true,task:body?.task||body},taskId,{projectId:pid,algorithmId:aid,persistedLookup:true});
       createdTaskIds.add(taskId);uncertainTaskId='';lastStage='created';
       if(String(projectId?.()||'')===String(pid))trainingTaskRuntime?.acceptCreatedTask?.(task,{recoveredAfterNetworkError:true});
-      closeCreatedModal();refreshCreatedLists(pid);notifyUser(`训练任务已创建并进入后台队列 · ${taskId}`);
+      closeCreatedModal();refreshCreatedLists(pid);notifyUser(`已确认训练任务创建 · ${taskId} · 当前状态 ${task.status}`);
       return task;
     }catch(error){
       console.warn('training task status query failed',error);
@@ -910,7 +912,7 @@ export function installTrainingSubmitRuntime({
             const taskBody = verification.body;
             const createdTask = validateTrainingCreatedResponse(
               {ok: true, task: taskBody?.task || taskBody}, submittedTaskId,
-              {projectId: pid, algorithmId: submittedAlgorithmId},
+              {projectId: pid, algorithmId: submittedAlgorithmId,persistedLookup:true},
             );
             createdTaskIds.add(createdTask.task_id);uncertainTaskId='';
             if(admissionIsCurrent())setSubmitStage('created');
@@ -921,7 +923,7 @@ export function installTrainingSubmitRuntime({
             uncertainTaskId = '';
             createdTaskIds.add(createdTask.task_id);
             closeCreatedModal();
-            notifyUser(`训练任务已创建并进入后台队列 · ${createdTask.task_id}`);
+            notifyUser(`已确认训练任务创建 · ${createdTask.task_id} · 当前状态 ${createdTask.status}`);
             refreshCreatedLists(pid);
             return {ok: true, task: createdTask, recovered: true};
           }

@@ -5,6 +5,7 @@ import {readFileSync} from 'node:fs';
 import {
   buildTrainingEngineParameters,
   formatTrainingValidationError,
+  validateTrainingCreatedResponse,
 } from '../../static/modules/training-submit.js';
 
 test('training submit normalizes string batch and workers before strict backend validation', () => {
@@ -255,4 +256,13 @@ test('custom settings retain professional augmentation without a GPU-sharing byp
   assert.match(source, /Workers：自动/);
   assert.match(source, /推荐 \$\{recommendation\.batch\} · 当前估算安全范围 1 ~/);
   assert.match(source, /手动模式是硬约束，不满足预算时会在启动 Trainer 前失败/);
+});
+
+
+test('repository lookup distinguishes persisted execution outcomes from a fresh creation acknowledgment',()=>{
+  for(const status of ['FAILED','BLOCKED_BY_ENVIRONMENT','BLOCKED_BY_HARDWARE','SUCCEEDED','CANCELLED','CANCEL_REQUESTED','PARTIAL_SUCCESS']){
+    const body={ok:true,task:{task_id:'train_aaaaaaaaaaaaaaaaaaaa',kind:'TRAINING',status,project_id:'p',algorithm_id:'a'}};
+    assert.throws(()=>validateTrainingCreatedResponse(body,body.task.task_id,{projectId:'p',algorithmId:'a'}));
+    assert.equal(validateTrainingCreatedResponse(body,body.task.task_id,{projectId:'p',algorithmId:'a',persistedLookup:true}).status,status);
+  }
 });

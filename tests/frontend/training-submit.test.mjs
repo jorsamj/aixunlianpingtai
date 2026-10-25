@@ -33,7 +33,7 @@ test('training submit projects canonical stages into three truthful user steps',
   });
   assert.deepEqual(trainingSubmitPresentation('created'), {
     tone: 'success', activeStep: 2, completedSteps: 3,
-    title: '训练任务创建成功', detail: '已加入训练任务队列，系统将自动安排执行',
+    title: '训练任务创建成功', detail: '任务已持久化，执行状态请在训练任务列表查看',
   });
 });
 

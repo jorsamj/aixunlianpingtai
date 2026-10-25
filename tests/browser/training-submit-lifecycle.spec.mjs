@@ -225,3 +225,14 @@ test('manual query failure shows its actual reason and stays query-only',async({
   await expect(page.locator('[data-training-submit-feedback]')).toHaveAttribute('aria-busy','false');
   expect(fixture.posts()).toBe(1);
 });
+
+
+for(const status of ['FAILED','BLOCKED_BY_ENVIRONMENT','SUCCEEDED']){
+  test(`persisted ${status} task proves creation without claiming training succeeded`,async({page})=>{
+    const fixture=await mount(page,'unknown');await page.getByRole('button',{name:'开始训练'}).click();await page.evaluate(()=>window.submitPromise);
+    fixture.ledger.set(taskId,{task_id:taskId,kind:'TRAINING',status,project_id:'fixture-project',algorithm_id:'alg-1'});
+    await page.getByRole('button',{name:'查询任务状态'}).click();
+    await expect(page.getByRole('dialog')).not.toBeVisible();
+    expect(fixture.posts()).toBe(1);expect(await page.evaluate(()=>window.accepted[0].status)).toBe(status);
+  });
+}

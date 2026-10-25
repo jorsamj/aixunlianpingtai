@@ -58,6 +58,14 @@
 
 代码提交 `b6fe43e8b9ca3ddcf843dd64839a705a342c3cd8` 已正常推送，远端从243858b9快进；该SHA启动49个原有Actions，未新建/扩展CI。首轮两个系统的device-probe contract及frontend Node发现同一旧守卫：必须字面匹配无signal的直接api请求。实际请求现由原withRequestDeadline约束，网络Owner未改变；更新原守卫以继续检查先开Modal再后台探测、缓存复用和过期重验，新增currentPreparation限制断言。单文件3/3通过。未删除测试或降低业务断言，不宣称首SHA全绿；后续修正SHA自身必须重新验收。
 
+### 持久化与执行终态分离／第二次CI守卫
+
+修正守卫提交 `6711b861f00554d47680db3f5ea0572ff76c52f5` 的Training Create First Open在Permanent guard阶段发现工作流还硬编码同一无signal请求。原检查改为精确检查带signal请求，并增加原Modal归属检查；其他CI条件/安全断言/触发范围不变。
+
+新增3个真实Chrome先RED：网络结果未知后，按原ID查到FAILED/BLOCKED_BY_ENVIRONMENT/SUCCEEDED任务，旧验证器只接受创建时的队列/运行态，导致已持久化任务仍报UNKNOWN。仅正式仓库GET核验允许原TaskStatus持久状态；直接POST成功回执仍保持原严格状态约束，不把FAILED放宽成训练成功。TaskRuntime接收原状态，反馈只说明“创建已确认”，不伪造训练成功或仍排队。Node新增一个循环合同验证7种终态/阻塞状态仅在lookup可用；3个Chrome状态用例GREEN，query等6/6通过。原正式任务类型/项目/ID校验仍保留。
+
+当前本地不同用例合计：Node90（原86+device3+lookup1），Python7，Chrome50（原47+3）；分批验证不重复累计。尚未将后续SHA CI标为通过。
+
 ---
 
 ## 2026-10-24｜P1 创建训练弹窗滚动修复（代码及隔离CI已验收）
