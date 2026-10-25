@@ -54,6 +54,10 @@
 - 语法、py_compile、diff check通过；未执行全仓测试或真实训练。前后端业务码、202正式任务ID和查询同ID校验一致，未修改Worker或训练参数。
 - 修改：原submit/hydration、app训练准备3处、app.py训练错误投影/锁错误、原样式及缓存版本、以上必要测试、VERSION及专项入口文档。当前提交将正常推送，准确SHA与CI回执在此节后续补充。
 
+### 首推CI及守卫适配
+
+代码提交 `b6fe43e8b9ca3ddcf843dd64839a705a342c3cd8` 已正常推送，远端从243858b9快进；该SHA启动49个原有Actions，未新建/扩展CI。首轮两个系统的device-probe contract及frontend Node发现同一旧守卫：必须字面匹配无signal的直接api请求。实际请求现由原withRequestDeadline约束，网络Owner未改变；更新原守卫以继续检查先开Modal再后台探测、缓存复用和过期重验，新增currentPreparation限制断言。单文件3/3通过。未删除测试或降低业务断言，不宣称首SHA全绿；后续修正SHA自身必须重新验收。
+
 ---
 
 ## 2026-10-24｜P1 创建训练弹窗滚动修复（代码及隔离CI已验收）

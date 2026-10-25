@@ -12,7 +12,7 @@ test('opening training modal does not wait for GPU device probe', () => {
   assert.notEqual(end, -1, 'canonical training open owner must have an end');
   const block = source.slice(start, end);
   const modalOpen = block.indexOf('window.openTrainingCreateDialog429?.(algorithmId)');
-  const deviceProbe = block.indexOf("api('/api/v62/training-devices')");
+  const deviceProbe = block.indexOf("api('/api/v62/training-devices',{signal})");
   assert.notEqual(modalOpen, -1, 'canonical owner must open the real training form');
   assert.notEqual(deviceProbe, -1, 'device probe must remain present');
   assert.ok(modalOpen < deviceProbe, 'modal must open before the potentially slow GPU probe starts');
@@ -25,9 +25,10 @@ test('training device inventory persists across browser reloads and revalidates 
   assert.match(source, /localStorage\.setItem\(trainingDeviceCacheKeyV3\(\)/);
   assert.match(source, /localStorage\.removeItem\(trainingDeviceCacheKeyV3\(\)\)/);
   assert.match(source, /state\.trainingDevicesV3\?\.options\?\.length\?state\.trainingDevicesV3:restoreTrainingDeviceCacheV3\(\)/);
-  assert.match(source, /if\(!cacheFresh\)void api\('\/api\/v62\/training-devices'\)/);
+  assert.match(source, /if\(!cacheFresh\)void window\.PlatformCore\.withRequestDeadline\(signal=>api\('\/api\/v62\/training-devices',\{signal\}\)/);
   assert.match(source, /applyDevices\(cachedDevices,\{persist:false,paint:false\}\)/);
-  assert.match(source, /if\(!cacheFresh\)void api\('\/api\/v62\/training-devices'\)/);
+  assert.match(source,/if\(!currentPreparation\(\)\)return;state\.trainingDevicesV3=/);
+  assert.match(source, /if\(!cacheFresh\)void window\.PlatformCore\.withRequestDeadline\(signal=>api\('\/api\/v62\/training-devices',\{signal\}\)/);
 });
 
 
