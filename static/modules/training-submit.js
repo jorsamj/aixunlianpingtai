@@ -742,7 +742,7 @@ export function installTrainingSubmitRuntime({
     let submittedTaskId = '';
     let responseReceived = false;
     let responseStatus = 0;
-    let rejectionBodyRead = false;
+    let rejectionBodyDecoded = false;
     let creationAccepted = false;
     try {
       setSubmitStage('sync-draft');
@@ -891,9 +891,11 @@ export function installTrainingSubmitRuntime({
       responseStatus = Number(response.status) || 0;
       if (!response.ok) {
         const raw = await response.text();
-        rejectionBodyRead = true;
         let body = {};
-        try { body = JSON.parse(raw); } catch (_) { body = {detail: raw}; }
+        try {
+          body = JSON.parse(raw);
+          rejectionBodyDecoded = Boolean(body) && typeof body === 'object' && !Array.isArray(body);
+        } catch (_) { body = {detail: raw}; }
         const detail=body.detail;
         const message=body.message||detail?.message||(typeof detail==='string'?detail:'')||`训练任务创建失败（HTTP ${response.status}）`;
         const validationDetail = body.code === 'VALIDATION_ERROR' ? formatTrainingValidationError(body) : '';
@@ -949,7 +951,7 @@ export function installTrainingSubmitRuntime({
       try{if(admissionOperation)currentErrorView=admissionIsCurrent();}
       catch(contextError){console.error('training error context unavailable',contextError);}
       if(error?.serverRejected&&[400,409,422].includes(error.httpStatus)&&admissionOperation&&currentErrorView)serverRejection={root:submissionRoot,signature:admissionOperation.signature,code:error.code,message:lastError};
-      let outcomeUncertain = failedAt === 'posting' && (!responseReceived || !rejectionBodyRead || creationAccepted || responseStatus>=500 || Number(error?.httpStatus)>=500 || error?.code==='TRAINING_CREATE_IN_PROGRESS');
+      let outcomeUncertain = failedAt === 'posting' && (!responseReceived || !rejectionBodyDecoded || creationAccepted || responseStatus>=500 || Number(error?.httpStatus)>=500 || error?.code==='TRAINING_CREATE_IN_PROGRESS');
       if(outcomeUncertain)serverRejection=null;
       else if(submittedTaskId)clearPending(submittedProjectId);
       if (outcomeUncertain && submittedTaskId) {

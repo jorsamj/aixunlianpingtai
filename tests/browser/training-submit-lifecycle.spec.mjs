@@ -261,21 +261,21 @@ test('refresh restores the pending creation identity and queries it without anot
 });
 
 
-for(const status of [500,409]) {
-test(`HTTP ${status} response body interruption queries the original task instead of unlocking a new creation`,async({page})=>{
+for(const [status,malformed] of [[500,false],[409,false],[409,true]]) {
+test(`HTTP ${status} ${malformed?'malformed JSON':'response body interruption'} queries the original task instead of unlocking a new creation`,async({page})=>{
   const fixture=await mount(page,'unknown');
   fixture.ledger.set(taskId,{task_id:taskId,kind:'TRAINING',status:'QUEUED',project_id:'fixture-project',algorithm_id:'alg-1'});
-  await page.evaluate(status=>{
+  await page.evaluate(({status,malformed})=>{
     const fetch=window.fetch;
     window.failedBodyPosts=0;
     window.fetch=(url,options)=>{
       if(String(url).endsWith('/train/start')){
         window.failedBodyPosts++;
-        return Promise.resolve({ok:false,status,text:async()=>{throw new TypeError('body connection interrupted');}});
+        return Promise.resolve({ok:false,status,text:async()=>{if(malformed)return '{broken';throw new TypeError('body connection interrupted');}});
       }
       return fetch(url,options);
     };
-  },status);
+  },{status,malformed});
   await page.getByRole('button',{name:'开始训练'}).click();await page.evaluate(()=>window.submitPromise);
   await expect(page.getByRole('dialog')).not.toBeVisible();
   expect(await page.evaluate(()=>window.failedBodyPosts)).toBe(1);

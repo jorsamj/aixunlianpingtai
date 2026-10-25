@@ -84,6 +84,13 @@
 - 925f3bf0的CI检查时47 Actions中46成功/1运行中、128 Checks中127成功/1运行中，未用于本次新代码验收。审查增量提交后以新完整SHA重新读取CI。已有两次过时字面守卫失败已如实记录并适配原调用合同，无删除/降级安全测试。
 
 
+
+### 最终解析边界补齐：409损坏JSON
+
+最终复核在同一错误解码分支确认：409正文完整返回但JSON损坏时，仍无法确定是否锁竞争，不能当作明确拒绝。真实Chrome新增409损坏JSON先RED；改为仅成功解码非空非数组JSON对象后认可拒绝正文，其余保留UNKNOWN/原ID查询。相应7项Chrome（完整400/409/422/500、409/500正文中断、409损坏JSON）7/7，Node submit/validation67/67，无失败或跳过；Chrome共56个不同场景。只读复核此最小增量无阻塞，不扩改业务规则。
+
+7fdef286的33/33 Actions、89/89 Checks及完整Chrome290/290仍为前一代码证据；2650413e为前一文档提交。本增量正常推送后必须按新完整SHA核验CI，不能引用前一SHA替代。当前增量状态已完成待验收，后续准确回执补在本节。
+
 ### 最终代码验收、文件清单与接续
 
 VERSION **42.24.387**。最终代码 **[7fdef28690c81104a689a06c36800874d021feac](https://github.com/jorsamj/aixunlianpingtai/commit/7fdef28690c81104a689a06c36800874d021feac)** 已正常推送 `feature/external-algorithm-publishing`，准确 **33/33 Actions、89/89 Checks全部成功**，0失败/取消/跳过：[代码Checks](https://github.com/jorsamj/aixunlianpingtai/commit/7fdef28690c81104a689a06c36800874d021feac/checks)。只读复核最终增量无阻塞；409/500正文中断独立核验实际POST→GET→created。验收回执会产生文档新HEAD，交付前另读取该HEAD自身CI；完整SHA由提交历史及交付报告定位，避免自引用循环。文档提交不重复本地测试。
