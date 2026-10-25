@@ -6184,10 +6184,11 @@ materialIntegrityDialog47(Number(plan.included_groups||0)?'重复素材治理预
 
   // ---------- training iteration: authoritative base refresh ----------
   window.loadTrainingIterationBase414=async function(aid){
+    const openingProject=String(pid()),openingRoot=document.querySelector('.train429-create');
     if(!Object.prototype.hasOwnProperty.call(state.iteration414,aid))state.iteration414[aid]=null;
-    try{const r=await api(`/api/v54/projects/${pid()}/algorithms/${aid}/iteration-base?framework=ultralytics`);state.iteration414[aid]=r.base||{}}
-    catch(e){state.iteration414[aid]={error:String(e.message||e)}}
-    showIterationBase414(aid);
+    try{const r=await window.PlatformCore.withRequestDeadline(signal=>api(`/api/v54/projects/${openingProject}/algorithms/${aid}/iteration-base?framework=ultralytics`,{signal}),{label:'训练迭代配置'});if(String(pid())!==openingProject)return null;state.iteration414[aid]=r.base||{}}
+    catch(e){if(String(pid())!==openingProject)return null;state.iteration414[aid]={error:String(e.message||e)}}
+    if(openingRoot && document.querySelector('.train429-create')===openingRoot)showIterationBase414(aid);
     return state.iteration414[aid];
   };
   window.showIterationBaseCore414=function(aid){const dynamic=[...document.querySelectorAll('.v424-modal-layer')].at(-1),layer=dynamic||document.querySelector('#modal:not(.hidden)'),body=layer?.querySelector('.modal-body');if(!body)return;let box=body.querySelector('.iteration414');if(!box){box=document.createElement('div');box.className='iteration414';body.prepend(box)}const p=iterationPresentation414(state.iteration414[aid]);box.innerHTML=`<span>迭代起点</span><b>${esc(p.title)}</b>${p.detail?`<em>${esc(p.detail)}</em>`:''}`};
@@ -6886,19 +6887,20 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   };
   async function loadTrainingBenchmarkReuseV1(aid,{paint=true}={}){
     const algorithmId=String(aid||'');
+    const openingProject=String(pid()),openingRoot=document.querySelector('.train429-create');
     state.trainingBenchmarkReuse={algorithm_id:algorithmId,available:false,loading:true,load_error:false,reason:''};
     window.TrainingDraftRuntime?.update?.({benchmarkReuseEnabled:false});
     if(paint)renderSplit();window.TrainingSubmitRuntime?.updateReadiness?.();
     try{
-      const value=await api(`/api/v12/projects/${pid()}/algorithms/${encodeURIComponent(algorithmId)}/benchmark-reuse`);
+      const value=await window.PlatformCore.withRequestDeadline(signal=>api(`/api/v12/projects/${openingProject}/algorithms/${encodeURIComponent(algorithmId)}/benchmark-reuse`,{signal}),{label:'固定评测基准读取'});
       const activeAlgorithmId=String(document.querySelector('.train429-create')?.dataset?.algorithmId||'');
-      if(activeAlgorithmId!==algorithmId)return;
+      if(activeAlgorithmId!==algorithmId || String(pid())!==openingProject || document.querySelector('.train429-create')!==openingRoot)return;
       state.trainingBenchmarkReuse={...value,algorithm_id:algorithmId,loading:false,load_error:false};
       // Fixed Benchmark is opt-in. An available historic test bundle must not
       // silently turn the default 60/20/20 percentage test split into a 0% bar.
     }catch(error){
       const activeAlgorithmId=String(document.querySelector('.train429-create')?.dataset?.algorithmId||'');
-      if(activeAlgorithmId!==algorithmId)return;
+      if(activeAlgorithmId!==algorithmId || String(pid())!==openingProject || document.querySelector('.train429-create')!==openingRoot)return;
       state.trainingBenchmarkReuse={algorithm_id:algorithmId,available:false,loading:false,load_error:true,reason:String(error?.message||error||'固定评测基准读取失败')};
       window.TrainingDraftRuntime?.update?.({benchmarkReuseEnabled:false});
     }
@@ -6938,9 +6940,11 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     if(result===false)return false;
     window.syncTrainingIteration417?.(algorithmId);
     window.prepareTrainingExperiment415?.();
-    const applyDevices=(devices,{persist=true,paint=true}={})=>{state.trainingDevicesV3={...devices,loading:false};if(persist){state.trainingDevicesV3LoadedAt=Date.now();persistTrainingDeviceCacheV3(devices)}const options=devices?.options||[],autoOption=options.find(row=>String(row?.id||'')==='auto'&&row?.available!==false),requestedDevice=autoOption?'auto':String(devices?.recommended||'auto'),available=autoOption||options.find(row=>String(row?.id||'')===requestedDevice&&row?.available!==false)||options.find(row=>row?.available!==false),recommendedDevice=String(available?.id||requestedDevice);const deviceSelect=document.getElementById('trV3Device');if(deviceSelect)deviceSelect.value=recommendedDevice;window.TrainingDraftRuntime?.update?.({resource:{device:recommendedDevice}});if(paint)renderSplit()};
+    const openingProject=String(pid()),openingRoot=document.querySelector('.train429-create');
+    const currentPreparation=()=>String(pid())===openingProject && document.querySelector('.train429-create')===openingRoot;
+    const applyDevices=(devices,{persist=true,paint=true}={})=>{if(!currentPreparation())return;state.trainingDevicesV3={...devices,loading:false};if(persist){state.trainingDevicesV3LoadedAt=Date.now();persistTrainingDeviceCacheV3(devices)}const options=devices?.options||[],autoOption=options.find(row=>String(row?.id||'')==='auto'&&row?.available!==false),requestedDevice=autoOption?'auto':String(devices?.recommended||'auto'),available=autoOption||options.find(row=>String(row?.id||'')===requestedDevice&&row?.available!==false)||options.find(row=>row?.available!==false),recommendedDevice=String(available?.id||requestedDevice);const deviceSelect=document.getElementById('trV3Device');if(deviceSelect)deviceSelect.value=recommendedDevice;window.TrainingDraftRuntime?.update?.({resource:{device:recommendedDevice}});if(paint)renderSplit()};
     if(hasCachedDevices)applyDevices(cachedDevices,{persist:false,paint:false});
-    if(!cacheFresh)void api('/api/v62/training-devices').then(devices=>applyDevices(devices,{persist:true})).catch(error=>{state.trainingDevicesV3={...(state.trainingDevicesV3||{}),loading:false,error:String(error.message||error)}});
+    if(!cacheFresh)void window.PlatformCore.withRequestDeadline(signal=>api('/api/v62/training-devices',{signal}),{label:'训练设备读取'}).then(devices=>applyDevices(devices,{persist:true})).catch(error=>{if(!currentPreparation())return;state.trainingDevicesV3={...(state.trainingDevicesV3||{}),loading:false,error:String(error.message||error)}});
     window.TrainingDraftRuntime?.update?.({algorithmId});
     void window.loadTrainingIterationBase414?.(algorithmId);
     void loadTrainingBenchmarkReuseV1(algorithmId,{paint:false});

@@ -94,7 +94,7 @@ test('external ChangLian training re-reads algorithm truth in hydration before c
   assert.match(hydration, /externalChangLian/);
   assert.match(hydration, /const needsExternalPreflight = externalChangLian && !externalPreflightFresh/);
   assert.match(hydration, /if \(!needsPreparation\) return openForm\(aid\)/);
-  assert.match(hydration, /needsExternalPreflight && typeof preflight === 'function' \? preflight\(aid\)/);
+  assert.match(hydration, /needsExternalPreflight && typeof preflight === 'function' \? withRequestDeadline\(\(\)=>preflight\(aid\)/);
   assert.match(externalRuntime, /training-preflight\?project_id=/);
   assert.match(externalRuntime, /algorithm_id=\$\{encodeURIComponent\(id\)\}/);
   const ownerStart = source.indexOf('window.openTrainingCreateCanonical429=async function(aid)');

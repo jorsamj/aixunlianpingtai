@@ -1,3 +1,61 @@
+## 2026-10-25｜创建 Loading 与异常恢复专项（进行中）
+
+本节是本轮唯一接续记录。用户授权：只修改已证实的训练创建异常；复用 TrainingSubmitRuntime、原 Modal、withRequestDeadline、原 TaskRepository 和 task_id 幂等；不改变训练参数、数据划分、GT/冻结、GPU独占或 Worker；不部署生产。其他模块只轻量排查，共享缺陷才修复。
+
+### 需求基线与实施计划
+
+| 阶段 | 需求与模块 | 状态 | 已有证据／剩余 |
+|---|---|---|---|
+| A | 真实代码、最新分支、持久化与幂等审计 | 已完成待验收 | 远端243858b9/VERSION386；原工作区4个标注提交和未提交文件全部保留，新隔离工作树基于远端 |
+| B | 提交全过程异常保护；最终DOM恢复；单一真实阶段 | 已完成待验收 | Chrome新增2例RED：try外异常未释放锁、finally异常按钮aria-busy仍true；修复后17项浏览器通过，最终组合待验 |
+| C | 首次准备请求截止时间、错误/重试、迟到结果隔离 | 已完成待验收 | 原缓存继续复用；资源/推荐/外部算法核验有界，超时单元已GREEN，真实浏览器待验 |
+| D | 创建结果核验、稳定UNKNOWN、原ID查询、后端业务码 | 已完成待验收 | 原30秒截止含JSON读取；新增VERIFYING；未知结果停止动画/保留ID/只查询不POST；后端幂等锁及指纹原有，机器码验证进行中 |
+| E | 最小Node/Python/Chrome、版本、正常提交/准确SHA CI | 进行中 | 尚未推送，无本轮CI结论 |
+
+必须覆盖：成功即结束创建，不等GPU/Worker/列表；400/409/422/500、业务错误、非法JSON、网络/超时；初始渲染及finally异常；成功响应丢失；核验超时保持UNKNOWN而非盲目重建；重复点击；关闭/重新打开/草稿修改/切项目迟到隔离；初始化失败/超时可重试；保留配置与错误；真实DOM按钮/aria-busy/动画/错误及POST数量；无未处理Promise。后端持久任务是唯一成功依据，404查询不能证明并发请求永远未创建，不据此开放新ID重试。
+
+### 已确认根因、设计和取舍
+
+1. submitting=true之后的setSubmitStage/updateReadiness在try外，直接异常跳过finally。将所有启动更新移入同一try，finally先释放内部锁，再尽力正常更新，最后仅针对原Modal DOM执行不读取业务数据的恢复；异常记录console，不用空catch隐藏。
+2. finally原来只调用updateReadiness；该方法依赖草稿、诊断和其他runtime，异常会遗留DOM禁用/动画。最终恢复独立于这些依赖，但仍在原提交Owner内，不建第二套Loading。明确未知结果保留禁用和查询动作。
+3. 创建请求异常后的核验仍显示posting。沿原lastStage增加verifying；查询失败回到稳定failed/uncertain，不伪造成功；任务ID保留，查询按钮只GET。后台刷新失败不得推翻持久创建成功。
+4. hydration原请求没有自身截止时间；复用现有withRequestDeadline，含响应解码。沿原项目/epoch/Modal检查，并阻止超时或销毁后结果发布；缓存快开保持原路径。
+5. 后端已有同ID锁、请求SHA指纹、202持久化回执及父/准备子任务中断恢复；不重建幂等表。兼容性错误detail有业务code但原HTTP handler只投影通用CONFLICT，本轮限训练入口透传正式业务码；锁竞争应提示结果核验而非明确失败。
+
+### 保护与边界
+
+原工作区 `8ba6ce1a` 及4个标注提交、全部标注WIP、5944祖先和两份未跟踪训练模板测试未覆盖。独立修复工作树 training-create-recovery；本轮不将未交付标注增量推送为训练修复。无生产访问/素材/GT修改/真实训练。最终提交与CI仍待实际执行。
+
+
+### 轻量相同问题排查（静态核查，不冒充动态验收）
+
+| 操作 | 现有Owner与观察 | 本轮处置 |
+|---|---|---|
+| ZIP导入 | zip-import-runtime.confirmLabels有原finally，但submittingLabelJobs.add之后、try之前仍执行mappingReview/DOM更新；潜在同步异常可留下提交集合 | OPEN，未复现、未扩改；原轮询/上传不重建 |
+| 普通图片上传 | material-upload-runtime.uploadFiles原finally释放activeProjects；activeProjects.add至try之间仍有ID生成/任务中心/渲染操作，潜在同步异常会遗留集合 | OPEN，未复现，不宣称已修复 |
+| 清洗、批量标注、标签统一、素材审计 | 共用material-batches原提交Promise/finally，30秒请求截止与UNKNOWN查询；禁用按钮的同步属性更新在Promise外 | 本轮未发现与训练共用的已复现底层问题；运行期异常仍NOT VERIFIED |
+| AI标注创建 | 原页面/TaskRuntime仍是Owner；另有标注闭环WIP在原工作区，尚未交付 | 本轮不混入该WIP，不扩大AI业务改造 |
+| 模型转换创建 | 原submitConvert428有防重/unknown查询和finally；未替换转换Owner | 仅静态审查，未执行真实转换 |
+
+### 补充根因与验收过程
+
+- 扩展真实Chrome发现：关闭训练表单后，设备读取迟到仍会更新trainingDraft、缓存及renderSplit。新增用例先RED；对设备/迭代起点/固定Benchmark准备沿原PlatformCore.withRequestDeadline绑定截止时间，并校验原项目与Modal DOM身份，不写新窗口。
+- 第一轮三文件Chrome共42例：41通过、1失败（旧409污染已编辑草稿），未隐瞒。修正错误展示的草稿身份保护，定向3/3通过；后续最终组合另记。
+- Node76/76通过；Python7/7通过、48未选中，无跳过（旧同ID并发/父子恢复/GT冲突及新增锁竞争）。前置RED：Chrome渲染2失败；Python业务码3失败；设备迟到1失败。未运行全仓Python/Node/Chrome。
+- 404查询不是“确定没有创建”的原子证明，仍保留UNKNOWN和原ID查询；不自动重发POST。既有持久ID/请求指纹不变。
+- VERSION一次386→387；styles/app/main缓存435，submit模块422608，hydration422557。此时未推送，最终准确提交CI待核验。
+
+### 本地最终验收（远端CI未核验）
+
+- Python `tests/api/test_training_request.py -k 'duplicate_original_gt_conflict or create_lock_timeout or concurrent_same_training_id or prepare_child_creation_failure or parent_insert_crash or final_admission_rejects_stale'`：7 passed / 0 failed / 0 skipped，48 deselected。
+- Node submit/validation/hydration/version四文件86 passed / 0 failed；最后仅submit改动再定向54 passed，不重复累计。
+- 三份用户指定Chrome文件最终组合45 passed / 0 failed（含真实草稿、GT诊断、原Modal与受控API）；随后新增“UNKNOWN关闭重开新ID不可绕过防重”和“手动查询失败展示真实原因”分别通过，共47个不同场景已通过。最后身份变化定向5/5与query定向3/3，重叠不累计。请求全部隔离，不是实际GPU训练证据。
+- 三份正式浏览器文件覆盖：成功/排队无需等待GPU、慢/失败刷新、4xx/5xx、网络断开、请求永挂超时、非法JSON、初始/finally异常、成功响应丢失、核验超时、重复点击、关闭重开、项目/草稿变化、准备失败/超时重试、保留配置、回调异常。新增用例断言真实DOM的按钮/aria-busy/阶段提示/无活动动画/POST次数，pageerror检查不产生未处理拒绝。
+- 语法、py_compile、diff check通过；未执行全仓测试或真实训练。前后端业务码、202正式任务ID和查询同ID校验一致，未修改Worker或训练参数。
+- 修改：原submit/hydration、app训练准备3处、app.py训练错误投影/锁错误、原样式及缓存版本、以上必要测试、VERSION及专项入口文档。当前提交将正常推送，准确SHA与CI回执在此节后续补充。
+
+---
+
 ## 2026-10-24｜P1 创建训练弹窗滚动修复（代码及隔离CI已验收）
 
 基线b429f120b954455a29ca63c0d39ecbde1430c464 / VERSION42.24.382，已fetch0/0；5944及两份未跟踪训练模板测试保护。仅前端样式/必要交互与浏览器回归，不改变参数、母模型、划分、调度或后端，不生产部署。

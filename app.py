@@ -8163,8 +8163,10 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
         with FileLock(str(locks_dir / f"{task_id}.lock"), timeout=30):
             return _enqueue_explicit_training_locked(project_id, payload, task_id)
     except Timeout as error:
-        raise HTTPException(
-            status_code=409, detail="相同训练任务正在创建，请使用同一 task_id 稍后重试",
+        raise PlatformError(
+            code="TRAINING_CREATE_IN_PROGRESS", status_code=409,
+            message="相同训练任务正在创建，请按原任务 ID 查询创建结果",
+            detail=task_id, solution="保留原任务 ID，确认结果后再操作。",
         ) from error
 
 
@@ -11499,7 +11501,20 @@ def v12_start_train(project_id: str, payload: TrainReq):
             status_code=409,
             detail="v12 训练创建必须提交 split_mode 并走 Durable Training 主路径；旧训练路径已禁止绕过冻结标签与 Snapshot 合同",
         )
-    return _enqueue_explicit_training(project_id, payload)
+    try:
+        return _enqueue_explicit_training(project_id, payload)
+    except HTTPException as error:
+        # Keep the existing detailed admission contract and expose its machine
+        # code at the same top level as validation/provider errors.
+        detail = error.detail
+        if isinstance(detail, dict) and detail.get("code"):
+            raise PlatformError(
+                code=str(detail["code"]), status_code=error.status_code,
+                message=str(detail.get("message") or "训练准入检查未通过"),
+                detail=json.dumps(detail, ensure_ascii=False),
+                solution="请查看完整阻塞原因，修改训练配置后重新检查。",
+            ) from error
+        raise
 
 def _v48_resource_key(job: Dict[str, Any]) -> str:
     return str(job.get("resource_key") or ("remote:" + str((job.get("remote") or {}).get("server_id") or "remote") if job.get("target") == "remote" else "local:default"))

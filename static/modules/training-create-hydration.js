@@ -1,3 +1,5 @@
+import {withRequestDeadline} from './api.js?v=20261021s';
+
 export function trainingOptionsHydrated(targets = []) {
   return (targets || []).some(target => (
     target?.status === 'ready'
@@ -19,6 +21,7 @@ export function installTrainingCreateHydrationRuntime({
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     return response.json();
   },
+  requestTimeoutMs = 30000,
   preflight,
   preflightFresh,
   openTrainingForm,
@@ -51,7 +54,7 @@ export function installTrainingCreateHydrationRuntime({
     const state = getState?.() || {};
     const algorithm = (state.algorithms || []).find(item => String(item?.id || '') === String(aid || ''));
     const name = algorithm?.name || '训练任务';
-    window.modal?.(`训练 · ${name}`, `<div class="train429-create train-create-loading" data-training-create-shell="1" data-training-algorithm-id="${escapeHtml(aid)}" data-training-open-token="${token}"><div class="train-create-loading-card"><b>正在准备训练配置</b><span data-training-create-status>正在读取训练资源、推荐配置与算法状态…</span></div><div class="row end"><button class="btn" onclick="closeModal()">取消</button><button class="btn primary" data-training-create-retry disabled>重试</button></div></div>`, true);
+    window.modal?.(`训练 · ${name}`, `<div class="train429-create train-create-loading" data-training-create-shell="1" aria-busy="true" data-training-algorithm-id="${escapeHtml(aid)}" data-training-open-token="${token}"><div class="train-create-loading-card"><b>正在准备训练配置</b><span data-training-create-status>正在读取训练资源、推荐配置与算法状态…</span></div><div class="row end"><button class="btn" onclick="closeModal()">取消</button><button class="btn primary" data-training-create-retry disabled>重试</button></div></div>`, true);
   };
   const shellRoot = (token, aid) => {
     if (typeof document === 'undefined') return null;
@@ -70,6 +73,9 @@ export function installTrainingCreateHydrationRuntime({
     const root = shellRoot(token, aid);
     if (!root) return;
     root.classList?.add?.('error');
+    root.setAttribute('aria-busy','false');
+    const title=root.querySelector('.train-create-loading-card b');
+    if(title)title.textContent='训练配置准备失败';
     const status = root.querySelector?.('[data-training-create-status]');
     if (status) status.textContent = error?.message || String(error);
     const retry = root.querySelector?.('[data-training-create-retry]');
@@ -111,9 +117,9 @@ export function installTrainingCreateHydrationRuntime({
 
     optionsController = new AbortController();
     const controller = optionsController;
-    const task = request(`/api/training_options?project_id=${encodeURIComponent(pid)}`, {signal: controller.signal})
+    const task = withRequestDeadline(signal=>request(`/api/training_options?project_id=${encodeURIComponent(pid)}`, {signal}),{timeoutMs:requestTimeoutMs,label:'训练资源准备',signal:controller.signal})
       .then(optionsResult => {
-        if (String(projectId?.() || '') !== projectKey) return getState?.()?.targets || [];
+        if (destroyed || controller.signal.aborted || String(projectId?.() || '') !== projectKey) return getState?.()?.targets || [];
         const liveState = getState?.() || state;
         liveState.targets = optionsResult?.targets || [];
         commonLoadedAt = Date.now();
@@ -135,9 +141,9 @@ export function installTrainingCreateHydrationRuntime({
 
     recommendationController = new AbortController();
     const controller = recommendationController;
-    const task = request('/api/system/recommendation', {signal: controller.signal})
+    const task = withRequestDeadline(signal=>request('/api/system/recommendation', {signal}),{timeoutMs:requestTimeoutMs,label:'训练推荐配置',signal:controller.signal})
       .then(recommendationResult => {
-        if (String(projectId?.() || '') !== projectKey) return getState?.()?.rec ?? null;
+        if (destroyed || controller.signal.aborted || String(projectId?.() || '') !== projectKey) return getState?.()?.rec ?? null;
         const liveState = getState?.() || state;
         liveState.rec = recommendationResult;
         return recommendationResult;
@@ -197,7 +203,7 @@ export function installTrainingCreateHydrationRuntime({
         && typeof preflightFresh === 'function'
         && preflightFresh(algorithmId) === true;
       if (includePreflight && externalChangLian && !externalPreflightFresh && typeof preflight === 'function') {
-        jobs.push(preflight(algorithmId));
+        jobs.push(withRequestDeadline(()=>preflight(algorithmId),{timeoutMs:requestTimeoutMs,label:'算法状态核验'}));
       }
       return Promise.all(jobs);
     })().catch(() => null).finally(() => prewarmInflight.delete(key));
@@ -207,6 +213,7 @@ export function installTrainingCreateHydrationRuntime({
 
   const start = async aid => {
     const token = ++openEpoch;
+    const openingProject=String(projectId?.()||'');
     const state = getState?.() || {};
     const algorithm = (state.algorithms || []).find(item => String(item?.id || '') === String(aid || ''));
     const externalChangLian = String(algorithm?.source_type || '').toUpperCase() === 'EXTERNAL'
@@ -226,16 +233,16 @@ export function installTrainingCreateHydrationRuntime({
     try {
       await Promise.all([
         hydrate(),
-        needsExternalPreflight && typeof preflight === 'function' ? preflight(aid) : Promise.resolve(null),
+        needsExternalPreflight && typeof preflight === 'function' ? withRequestDeadline(()=>preflight(aid),{timeoutMs:requestTimeoutMs,label:'算法状态核验'}) : Promise.resolve(null),
       ]);
     } catch (error) {
-      if (!destroyed && token === openEpoch && shellIsCurrent(token, aid)) {
+      if (!destroyed && token === openEpoch && openingProject===String(projectId?.()||'') && shellIsCurrent(token, aid)) {
         renderShellError(token, aid, error);
         notify(error?.message || String(error));
       }
       return null;
     }
-    if (destroyed || token !== openEpoch || !shellIsCurrent(token, aid)) return null;
+    if (destroyed || token !== openEpoch || openingProject!==String(projectId?.()||'') || !shellIsCurrent(token, aid)) return null;
     dismissShell(token, aid);
     return openForm(aid);
   };

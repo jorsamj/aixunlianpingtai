@@ -682,3 +682,22 @@ test('verified fixed benchmark stays aligned from backend availability to traini
   expect(submitted.test_image_ids).toBeUndefined();
   expect(submitted.experiment_percent).toBeUndefined();
 });
+
+
+test('late training device preparation cannot rewrite a closed form or another business modal',async({page,request})=>{
+  const {project,algorithmId}=await seedProject(request);
+  let release;const gate=new Promise(resolve=>{release=resolve;});let reads=0;
+  await page.route('**/api/v62/training-devices',async route=>{reads++;await gate;return route.fulfill({json:{recommended:'cpu',options:[{id:'cpu',available:true}]}});});
+  await selectIsolatedTestProject(page,project.id,'算法列表');await page.goto('/');
+  await expect.poll(()=>page.evaluate(()=>state.uiReady===true)).toBe(true);
+  await page.evaluate(async algorithmId=>{
+    state.targets=[{id:'local',type:'local',framework:'ultralytics',status:'ready',algorithms:[{key:'detect',base_model:'yolo11n.pt'}],base_models:[{value:'yolo11n.pt',model_status:'FOUND'}]}];state.rec={device:'auto'};state.trainingDevicesV3={options:[]};state.trainingDevicesV3LoadedAt=0;
+    await window.openTrainingCreateCanonical429(algorithmId);
+  },algorithmId);
+  await expect.poll(()=>reads).toBe(1);
+  const before=await page.evaluate(()=>JSON.stringify(state.trainingDraft));
+  await page.evaluate(()=>{window.closeModal();window.modal('其他业务','<input id="other-business" value="保留">');});
+  release();await page.waitForResponse('**/api/v62/training-devices');
+  await expect(page.locator('#other-business')).toHaveValue('保留');
+  expect(await page.evaluate(()=>JSON.stringify(state.trainingDraft))).toBe(before);
+});

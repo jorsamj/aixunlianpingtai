@@ -1721,6 +1721,7 @@ def test_duplicate_original_gt_conflict_is_rejected_before_task_or_payload_creat
     assert response.status_code == 409, response.text
     detail = json.loads(response.json()["detail"])
     assert detail["code"] == ("CONTENT_HASH_LEAKAGE" if cross_role else "DUPLICATE_ANNOTATION_CONFLICT")
+    assert response.json()["code"] == detail["code"]
     assert {item["image_id"] for item in detail["items"] if item["issue_type"] in {
         "content_hash_leakage", "duplicate_annotation_conflict"}} == {a, b}
     assert platform.shared_task_repository().get(payload["task_id"]) is None
@@ -1900,3 +1901,18 @@ def test_training_parent_insert_crash_recovers_missing_job_and_prepare_child(
     assert job_path.is_file()
     assert app_module.shared_task_repository().get(f"trainprep_{request['task_id']}").status is TaskStatus.QUEUED
     assert app_module.shared_task_artifacts().read_json(request["task_id"], "payload.json") == frozen
+
+
+def test_training_create_lock_timeout_has_uncertain_machine_code(client, seeded_project, monkeypatch):
+    import app as platform
+    from filelock import Timeout
+    project_id, payload = _training_create_replay_fixture(client, seeded_project)
+    class BusyLock:
+        def __init__(self,*args,**kwargs): pass
+        def __enter__(self): raise Timeout('isolated-create-lock')
+        def __exit__(self,*args): pass
+    monkeypatch.setattr(platform,'FileLock',BusyLock)
+    response=client.post(f'/api/v12/projects/{project_id}/train/start',json=payload)
+    assert response.status_code==409
+    assert response.json()['code']=='TRAINING_CREATE_IN_PROGRESS'
+    assert platform.shared_task_repository().get(payload['task_id']) is None

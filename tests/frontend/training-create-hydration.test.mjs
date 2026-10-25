@@ -59,6 +59,7 @@ test('first training open paints a shell before parallel hydration and then runs
     assert.equal(formOpenCalls, 0);
     assert.equal(shellCalls.length, 1);
     assert.equal(shellCalls[0].aid, 'alg-1');
+    await Promise.resolve();
     assert.deepEqual(calls, ['/api/training_options?project_id=project-1', '/api/system/recommendation']);
     releaseRecommendation();
     releaseOptions();
@@ -313,4 +314,18 @@ test('recent external preflight opens the canonical training form without a prep
   } finally {
     globalThis.window = originalWindow;
   }
+});
+
+
+test('preparation deadline settles never-resolving inputs and prevents late publication', async () => {
+  const previous=globalThis.window;globalThis.window={};
+  const state={targets:[],rec:null};let release;const notices=[];let opened=0;
+  const runtime=installTrainingCreateHydrationRuntime({getState:()=>state,projectId:()=> 'p',requestTimeoutMs:20,
+    request:()=>new Promise(resolve=>{release=resolve;}),openTrainingForm:()=>{opened++;},openShell:()=>{},isShellCurrent:()=>true,notify:value=>notices.push(value)});
+  try {
+    await runtime.start('a');
+    assert.equal(opened,0);assert.match(notices.join(' '),/超时/);
+    release({targets:[{id:'late'}]});await new Promise(resolve=>setTimeout(resolve,0));
+    assert.deepEqual(state.targets,[]);
+  }finally{runtime.destroy();globalThis.window=previous;}
 });

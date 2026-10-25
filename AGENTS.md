@@ -1,3 +1,7 @@
+## 2026-10-25｜训练创建Loading与异常恢复（验收进行中）
+
+唯一需求/根因/测试/接续：[训练创建专项](docs/TRAINING_CREATE_FOUR_MODES_UI_2026_10_10.md)顶部。原submit全过程try/finally、独立最终DOM恢复、VERIFYING/稳定UNKNOWN及原ID查询、准备请求截止/旧项目和Modal隔离、后端业务码透传与锁竞争核验；VERSION387。原标注工作区4个未推提交与WIP、5944及两份模板测试全部保留，隔离修复不混入；本地Python7/Node86/Chrome47不同场景通过；准确SHA CI待核。不部署、不改生产数据或启动训练。
+
 ## 2026-10-24｜高级功能四入口整合（代码及隔离CI已验收）
 
 唯一映射/设计/进度/截图：[前端治理记录顶部](docs/frontend-legacy-audit.md)。实际7项收敛为算力与节点、模型转换环境、AI辅助配置、存储管理；迁移收纳存储Tab，对接与只读浏览保留独立。原state.page/业务Owner/API/轮询不变，无后端/数据库改动；导航取消reason沿原PageRequestScope隔离。VERSION386/cache434；f95e221f准确CI23/23 Actions、60/60 Checks成功，Node1331/1331、Chrome267/267通过，旧失败及关闭证据见记录。文档自身最终HEAD另核Checks。5944与两份模板测试保留；不部署、不改生产数据，真实GPU/NAS/OSS/对接生产环境NOT VERIFIED。
