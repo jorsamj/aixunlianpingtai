@@ -10,7 +10,7 @@
 | B | 提交全过程异常保护；最终DOM恢复；单一真实阶段 | 已验收 | 原submit同一try/finally；真实DOM与回调异常回归通过 |
 | C | 首次准备请求截止时间、错误/重试、迟到结果隔离 | 已验收 | 资源/推荐/外部算法有界，原缓存复用；挂起缓存取消与真实重试通过 |
 | D | 创建结果核验、稳定UNKNOWN、原ID查询、后端业务码 | 已验收 | 持久化与执行终态分离；原ID收据恢复，409/5xx正文中断按UNKNOWN核验 |
-| E | 最小Node/Python/Chrome、版本、正常提交/准确SHA CI | 已验收 | 代码7fdef286已普通推送；准确33/33 Actions、89/89 Checks成功；文档自身新HEAD另核 |
+| E | 最小Node/Python/Chrome、版本、正常提交/准确SHA CI | 已验收 | 最终代码382c1b95已普通推送；准确26/26 Actions、68/68 Checks成功；文档自身新HEAD另核 |
 
 必须覆盖：成功即结束创建，不等GPU/Worker/列表；400/409/422/500、业务错误、非法JSON、网络/超时；初始渲染及finally异常；成功响应丢失；核验超时保持UNKNOWN而非盲目重建；重复点击；关闭/重新打开/草稿修改/切项目迟到隔离；初始化失败/超时可重试；保留配置与错误；真实DOM按钮/aria-busy/动画/错误及POST数量；无未处理Promise。后端持久任务是唯一成功依据，404查询不能证明并发请求永远未创建，不据此开放新ID重试。
 
@@ -89,13 +89,13 @@
 
 最终复核在同一错误解码分支确认：409正文完整返回但JSON损坏时，仍无法确定是否锁竞争，不能当作明确拒绝。真实Chrome新增409损坏JSON先RED；改为仅成功解码非空非数组JSON对象后认可拒绝正文，其余保留UNKNOWN/原ID查询。相应7项Chrome（完整400/409/422/500、409/500正文中断、409损坏JSON）7/7，Node submit/validation67/67，无失败或跳过；Chrome共56个不同场景。只读复核此最小增量无阻塞，不扩改业务规则。
 
-7fdef286的33/33 Actions、89/89 Checks及完整Chrome290/290仍为前一代码证据；2650413e为前一文档提交。本增量正常推送后必须按新完整SHA核验CI，不能引用前一SHA替代。当前增量状态已完成待验收，后续准确回执补在本节。
+7fdef286的33/33 Actions、89/89 Checks及完整Chrome290/290仍为前一代码证据；2650413e为前一文档提交。本增量正常推送后必须按新完整SHA核验CI，不能引用前一SHA替代。最终增量已验收：**[382c1b95d6067c9c18a6094f894058a84fb32c21](https://github.com/jorsamj/aixunlianpingtai/commit/382c1b95d6067c9c18a6094f894058a84fb32c21)** 已普通推送，准确 **26/26 Actions、68/68 Checks全部成功**，0失败/取消/跳过：[最终代码Checks](https://github.com/jorsamj/aixunlianpingtai/commit/382c1b95d6067c9c18a6094f894058a84fb32c21/checks)。本节回执优先于下面7fdef286的历史代码回执。文档自身后续提交不改业务代码，最终HEAD仍须单独核验CI并在交付报告列出。
 
 ### 最终代码验收、文件清单与接续
 
 VERSION **42.24.387**。最终代码 **[7fdef28690c81104a689a06c36800874d021feac](https://github.com/jorsamj/aixunlianpingtai/commit/7fdef28690c81104a689a06c36800874d021feac)** 已正常推送 `feature/external-algorithm-publishing`，准确 **33/33 Actions、89/89 Checks全部成功**，0失败/取消/跳过：[代码Checks](https://github.com/jorsamj/aixunlianpingtai/commit/7fdef28690c81104a689a06c36800874d021feac/checks)。只读复核最终增量无阻塞；409/500正文中断独立核验实际POST→GET→created。验收回执会产生文档新HEAD，交付前另读取该HEAD自身CI；完整SHA由提交历史及交付报告定位，避免自引用循环。文档提交不重复本地测试。
 
-本地必要验收：Python11/11；最后受影响Node四文件95/95，之后只重跑正文中断影响的submit/validation67/67（不重复累计）；其他已有version/device13例复用。真实Chrome55个不同场景通过：三原文件54/54后，新增409正文中断及相关7/7通过。所有最终验收0失败/跳过；历史RED、源码字面守卫失败和修复记录保留。CI原有完整Chrome及Node也通过，没有手工重复全仓或新增工作流/跳过安全断言。
+本地必要验收：Python11/11；最后受影响Node四文件95/95，之后只重跑正文中断/损坏JSON影响的submit/validation67/67（不重复累计）；其他已有version/device13例复用。真实Chrome56个不同场景通过：三原文件54/54后，新增409正文中断、409损坏JSON及相关7/7通过。所有最终验收0失败/跳过；历史RED、源码字面守卫失败和修复记录保留。CI原有完整Chrome及Node也通过，没有手工重复全仓或新增工作流/跳过安全断言。
 
 实际修改文件（基线243858b9至最终代码）：
 
