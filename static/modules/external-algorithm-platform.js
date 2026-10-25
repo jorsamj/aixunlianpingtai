@@ -1,3 +1,5 @@
+import {withRequestDeadline} from './api.js?v=20261021s';
+
 const PAGE = '平台对接';
 const API_ROOT = '/api/v63/external-algorithm-platform';
 const PLATFORM_CONFIG_SNAPSHOT_KEY = 'cl_external_platform_config_snapshot_v1';
@@ -557,20 +559,20 @@ export function installExternalAlgorithmPlatformRuntime({
     return Boolean(cached?.algorithm) && age >= 0 && age < Math.max(0, Number(maxAgeMs) || 0);
   }
 
-  async function preflightTraining(algorithmId, {request, force = false, maxAgeMs = 30000} = {}) {
+  async function preflightTraining(algorithmId, {request, force = false, maxAgeMs = 30000, signal} = {}) {
     const pid = currentProjectId();
     const id = String(algorithmId || '').trim();
     if (!pid || !id) throw new Error('当前训练算法或项目不可用');
     const key = `${pid}:${id}`;
     const cached = trainingPreflightCache.get(key);
     if (!force && cached?.algorithm && Date.now() - cached.loadedAt < maxAgeMs) return cached.algorithm;
-    if (cached?.promise) return cached.promise;
-    const requester = typeof request === 'function' ? request : url => requestJson(url);
+    if (cached?.promise && !cached.signal?.aborted) return cached.promise;
+    const requester = typeof request === 'function' ? request : (url, options) => requestJson(url, options);
     const promise = (async () => {
-      const body = await requester(`${API_ROOT}/training-preflight?project_id=${encodeURIComponent(pid)}&algorithm_id=${encodeURIComponent(id)}`);
+      const body = await withRequestDeadline(requestSignal => requester(`${API_ROOT}/training-preflight?project_id=${encodeURIComponent(pid)}&algorithm_id=${encodeURIComponent(id)}`, {signal:requestSignal}), {signal,label:'算法状态核验'});
       const fresh = body?.algorithm;
       if (!body?.ready || !fresh) throw new Error('训练算法不存在、已下架或当前没有可训练的视觉分析配置');
-      if (currentProjectId() !== pid) throw new Error('当前项目已切换，请重新打开训练窗口');
+      if (destroyed || currentProjectId() !== pid) throw new Error('当前项目已切换，请重新打开训练窗口');
       const rows = state().algorithms || [];
       const index = rows.findIndex(item => String(item?.id || '') === id);
       if (index >= 0) rows[index] = fresh;
@@ -578,9 +580,12 @@ export function installExternalAlgorithmPlatformRuntime({
       trainingPreflightCache.set(key, {algorithm: fresh, loadedAt: Date.now()});
       return fresh;
     })();
-    trainingPreflightCache.set(key, {promise, loadedAt: Date.now()});
+    trainingPreflightCache.set(key, {promise, signal, loadedAt: Date.now()});
     try { return await promise; }
-    catch (error) { trainingPreflightCache.delete(key); throw error; }
+    catch (error) {
+      if (trainingPreflightCache.get(key)?.promise === promise) trainingPreflightCache.delete(key);
+      throw error;
+    }
   }
 
   function decorateAlgorithmDetail(algorithm) {

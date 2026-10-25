@@ -95,7 +95,7 @@ jobs:
           grep -Fq 'benchmarkReuseContext' static/modules/training-submit.js
           grep -Fq 'benchmark_source_version_id' static/modules/training-submit.js
           grep -Fq 'ExternalAlgorithmPlatformRuntime?.trainingReadiness?.' static/modules/training-submit.js
-          grep -Fq 'preflight: algorithmId => externalAlgorithmPlatformRuntime.preflightTraining' static/main.mjs
+          grep -Fq 'preflight: (algorithmId, {signal} = {}) => externalAlgorithmPlatformRuntime.preflightTraining' static/main.mjs
           grep -Fq 'training label UI shows only server-resolved canonical inheritance without merge audit ownership' tests/frontend/training-labels.test.mjs
           grep -Fq 'labelHistoryOwner: false' static/modules/training-labels.js
           grep -Fq 'labelInheritanceOwner: false' static/modules/training-draft-runtime.js

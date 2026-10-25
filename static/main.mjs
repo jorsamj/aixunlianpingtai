@@ -18,7 +18,7 @@ import {persistUiState} from './modules/ui-state.js?v=422500';
 import {installPageRequestScope} from './modules/page-request-scope.js?v=20261024';
 import {installPollRegistry} from './modules/poll-registry.js?v=422521';
 import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=4226388';
-import {installExternalAlgorithmPlatformRuntime} from './modules/external-algorithm-platform.js?v=63021';
+import {installExternalAlgorithmPlatformRuntime} from './modules/external-algorithm-platform.js?v=63022';
 import {installChangLianDataBrowserRuntime} from './modules/changlian-data-browser.js?v=63002';
 import {installExternalAlgorithmPublishRuntime} from './modules/external-algorithm-publish.js?v=64015';
 import {installModelArtifactRuntime} from './modules/model-artifact-runtime.js?v=65009';
@@ -271,7 +271,7 @@ const trainingCreateHydrationRuntime = installTrainingCreateHydrationRuntime({
   getState: () => state,
   projectId: () => state.project?.id,
   request: api,
-  preflight: algorithmId => externalAlgorithmPlatformRuntime.preflightTraining(algorithmId, {request: api}),
+  preflight: (algorithmId, {signal} = {}) => externalAlgorithmPlatformRuntime.preflightTraining(algorithmId, {request: api, signal}),
   preflightFresh: algorithmId => externalAlgorithmPlatformRuntime.trainingPreflightFresh(algorithmId),
   openTrainingForm: window.openTrainingCreateCanonical429,
   notify,

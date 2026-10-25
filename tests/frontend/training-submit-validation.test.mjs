@@ -90,12 +90,12 @@ test('external ChangLian training re-reads algorithm truth in hydration before c
   const hydration = readFileSync(new URL('../../static/modules/training-create-hydration.js', import.meta.url), 'utf8');
   const main = readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8');
   const externalRuntime = readFileSync(new URL('../../static/modules/external-algorithm-platform.js', import.meta.url), 'utf8');
-  assert.match(main, /preflight: algorithmId => externalAlgorithmPlatformRuntime\.preflightTraining/);
+  assert.match(main, /preflight: \(algorithmId, \{signal\} = \{\}\) => externalAlgorithmPlatformRuntime\.preflightTraining/);
   assert.match(main, /openTrainingForm: window\.openTrainingCreateCanonical429/);
   assert.match(hydration, /externalChangLian/);
   assert.match(hydration, /const needsExternalPreflight = externalChangLian && !externalPreflightFresh/);
   assert.match(hydration, /if \(!needsPreparation\) return openForm\(aid\)/);
-  assert.match(hydration, /needsExternalPreflight && typeof preflight === 'function' \? withRequestDeadline\(\(\)=>preflight\(aid\)/);
+  assert.match(hydration, /needsExternalPreflight && typeof preflight === 'function' \? withRequestDeadline\(signal=>preflight\(aid,\{signal\}\)/);
   assert.match(externalRuntime, /training-preflight\?project_id=/);
   assert.match(externalRuntime, /algorithm_id=\$\{encodeURIComponent\(id\)\}/);
   const ownerStart = source.indexOf('window.openTrainingCreateCanonical429=async function(aid)');

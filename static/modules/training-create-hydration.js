@@ -203,7 +203,7 @@ export function installTrainingCreateHydrationRuntime({
         && typeof preflightFresh === 'function'
         && preflightFresh(algorithmId) === true;
       if (includePreflight && externalChangLian && !externalPreflightFresh && typeof preflight === 'function') {
-        jobs.push(withRequestDeadline(()=>preflight(algorithmId),{timeoutMs:requestTimeoutMs,label:'算法状态核验'}));
+        jobs.push(withRequestDeadline(signal=>preflight(algorithmId,{signal}),{timeoutMs:requestTimeoutMs,label:'算法状态核验'}));
       }
       return Promise.all(jobs);
     })().catch(() => null).finally(() => prewarmInflight.delete(key));
@@ -233,7 +233,7 @@ export function installTrainingCreateHydrationRuntime({
     try {
       await Promise.all([
         hydrate(),
-        needsExternalPreflight && typeof preflight === 'function' ? withRequestDeadline(()=>preflight(aid),{timeoutMs:requestTimeoutMs,label:'算法状态核验'}) : Promise.resolve(null),
+        needsExternalPreflight && typeof preflight === 'function' ? withRequestDeadline(signal=>preflight(aid,{signal}),{timeoutMs:requestTimeoutMs,label:'算法状态核验'}) : Promise.resolve(null),
       ]);
     } catch (error) {
       if (!destroyed && token === openEpoch && openingProject===String(projectId?.()||'') && shellIsCurrent(token, aid)) {

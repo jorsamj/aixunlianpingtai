@@ -259,3 +259,52 @@ test('refresh restores the pending creation identity and queries it without anot
   await page.getByRole('button',{name:'查询任务状态'}).click();
   await expect(page.getByRole('dialog')).not.toBeVisible();expect(restored.posts()).toBe(0);
 });
+
+
+for(const status of [500,409]) {
+test(`HTTP ${status} response body interruption queries the original task instead of unlocking a new creation`,async({page})=>{
+  const fixture=await mount(page,'unknown');
+  fixture.ledger.set(taskId,{task_id:taskId,kind:'TRAINING',status:'QUEUED',project_id:'fixture-project',algorithm_id:'alg-1'});
+  await page.evaluate(status=>{
+    const fetch=window.fetch;
+    window.failedBodyPosts=0;
+    window.fetch=(url,options)=>{
+      if(String(url).endsWith('/train/start')){
+        window.failedBodyPosts++;
+        return Promise.resolve({ok:false,status,text:async()=>{throw new TypeError('body connection interrupted');}});
+      }
+      return fetch(url,options);
+    };
+  },status);
+  await page.getByRole('button',{name:'开始训练'}).click();await page.evaluate(()=>window.submitPromise);
+  await expect(page.getByRole('dialog')).not.toBeVisible();
+  expect(await page.evaluate(()=>window.failedBodyPosts)).toBe(1);
+  expect(await page.evaluate(()=>window.accepted.map(task=>task.task_id))).toEqual([taskId]);
+});
+}
+
+test('external preflight timeout evicts its pending request so retry performs a new request',async({page})=>{
+  await mount(page,'unknown');
+  await page.route('**/api/v63/external-algorithm-platform/**',route=>route.fulfill({json:{}}));
+  const result=await page.evaluate(async()=>{
+    const {installExternalAlgorithmPlatformRuntime}=await import('/static/modules/external-algorithm-platform.js');
+    const {withRequestDeadline}=await import('/static/modules/api.js');
+    const state={algorithms:[{id:'alg-1',name:'old'}]};
+    const runtime=installExternalAlgorithmPlatformRuntime({getState:()=>state,projectId:()=> 'fixture-project'});
+    let requests=0,release,aborted=false;
+    const request=(_url,{signal}={})=>{
+      requests++;
+      if(requests===1){signal?.addEventListener('abort',()=>{aborted=true;});return new Promise(resolve=>{release=resolve;});}
+      return Promise.resolve({ready:true,algorithm:{id:'alg-1',name:'fresh'}});
+    };
+    let firstError,secondError;
+    try{await withRequestDeadline(signal=>runtime.preflightTraining('alg-1',{request,signal}),{timeoutMs:20});}catch(error){firstError=error.code;}
+    await Promise.resolve();
+    let second;
+    try{second=await withRequestDeadline(signal=>runtime.preflightTraining('alg-1',{request,signal}),{timeoutMs:50});}catch(error){secondError=error.code;}
+    release({ready:true,algorithm:{id:'alg-1',name:'stale'}});await new Promise(resolve=>setTimeout(resolve,0));
+    const result={requests,aborted,firstError,secondError,second:second?.name,current:state.algorithms[0].name,fresh:runtime.trainingPreflightFresh('alg-1')};
+    runtime.destroy();return result;
+  });
+  expect(result).toEqual({requests:2,aborted:true,firstError:'REQUEST_TIMEOUT',second:'fresh',current:'fresh',fresh:true});
+});
