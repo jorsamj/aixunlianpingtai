@@ -1,10 +1,6 @@
-## 2026-10-26｜FiftyOne 可选智能分析（本地验收/最终CI待核）
+## 2026-10-26｜FiftyOne可选智能分析（代码及隔离CI已验收）
 
-[唯一专项](docs/FIFTYONE_SMART_MATERIAL_AUDIT_2026_10_26.md)顶部为当前接续：B2c219ab7/C9ebf89f9，原任务/存储/GT Owner 复用，三个业务入口、默认关闭、只读建议与原人工保存已接通；定向Python、Node31、新Chrome5/原业务Chrome5及真实故障/取消通过，旧v47失败与现行v60补验留痕。VERSION390，最终SHA安全推送/CI待核。生产许可、Linux/NAS/OSS/大库NOT VERIFIED；早期PoC目录删除被自动审批拒绝保留。5944、原标注WIP及两份模板测试不动；不生产操作。
-
-## 2026-10-26｜FiftyOne可选智能素材分析（B隔离PoC通过/C待接线）
-
-唯一需求/设计/进度：[智能分析专项](docs/FIFTYONE_SMART_MATERIAL_AUDIT_2026_10_26.md)。fetch基线c88b6151/VERSION389，原Owner复用、默认关闭、独立环境/派生结果、正式数据只读；原定向基线24通过；尚未接入业务或验证真实引擎，不宣称完整兼容。临时PoC已获授权，真实Brain/4项故障隔离通过；正式任务与三个业务入口未接线，候选依赖只在本机临时目录下载审计，不加入主服务。不生产操作，原WIP/5944/模板测试保留。
+[唯一专项](docs/FIFTYONE_SMART_MATERIAL_AUDIT_2026_10_26.md)顶部为接续：VERSION390，代码fd850e62准确23/23 Actions、58/58 Checks成功；三个原区域/原Task与GT Owner/默认关闭、真实Brain、只读复核及原保存已接通。旧CI失败及修复留痕。超过2000张完整分析未实现；生产许可、Linux/NAS/OSS/真实模型与生产性能NOT VERIFIED，早期PoC删除被自动审批拒绝保留。原WIP/5944/两份模板测试保留，不生产操作。本次纯文档HEAD自身CI另核。
 
 ## 2026-10-26｜ZIP旧数据零损坏补验（隔离及专项CI已通过）
 
