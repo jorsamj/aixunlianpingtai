@@ -156,7 +156,7 @@ test('browser wiring loads chunk runtime after classic app and keeps legacy deci
   const runtime = fs.readFileSync('static/modules/material-upload-runtime.js', 'utf8');
   const classic = index.match(/<script src="\/static\/app\.js\?v=([^"]+)"><\/script>/);
   const main = index.match(/<script type="module" src="\/static\/main\.mjs\?v=([^"]+)"><\/script>/);
-  const upload = index.match(/<script type="module" src="\/static\/material-upload-bootstrap\.mjs\?v=422534"><\/script>/);
+  const upload = index.match(/<script type="module" src="\/static\/material-upload-bootstrap\.mjs\?v=422535"><\/script>/);
   assert.ok(classic && main && upload, 'classic app, main runtime and upload bootstrap must all be loaded');
   assert.match(classic[1], /^\d+(?:\.\d+)+$/, 'classic app must carry a numeric cache-bust marker');
   assert.match(main[1], /^\d+(?:\.\d+)+$/, 'main runtime must carry a numeric cache-bust marker');

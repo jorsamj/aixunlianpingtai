@@ -1,6 +1,6 @@
 ## 2026-10-26｜FiftyOne 可选智能分析（本地验收/最终CI待核）
 
-[唯一专项](docs/FIFTYONE_SMART_MATERIAL_AUDIT_2026_10_26.md)顶部为当前接续：B2c219ab7/C9ebf89f9，原任务/存储/GT Owner 复用，三个业务入口、默认关闭、只读建议与原人工保存已接通；定向Python、Node31、新Chrome5/原业务Chrome5及真实故障/取消通过，旧v47失败与现行v60补验留痕。VERSION390，最终SHA安全推送/CI待核。生产许可、Linux/NAS/OSS/大库NOT VERIFIED；早期PoC目录删除被自动审批拒绝保留。5944、原标注WIP及两份模板测试不动；不生产操作。
+[唯一专项](FIFTYONE_SMART_MATERIAL_AUDIT_2026_10_26.md)顶部为当前接续：B2c219ab7/C9ebf89f9，原任务/存储/GT Owner 复用，三个业务入口、默认关闭、只读建议与原人工保存已接通；定向Python、Node31、新Chrome5/原业务Chrome5及真实故障/取消通过，旧v47失败与现行v60补验留痕。VERSION390，最终SHA安全推送/CI待核。生产许可、Linux/NAS/OSS/大库NOT VERIFIED；早期PoC目录删除被自动审批拒绝保留。5944、原标注WIP及两份模板测试不动；不生产操作。
 
 ## 2026-10-26｜FiftyOne可选智能素材分析（B隔离PoC通过/C待接线）
 
