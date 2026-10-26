@@ -1948,7 +1948,7 @@
     "baseline": "4ff267796b557e41045590159d3b67788f0eb8aa",
     "historical_ddl_source": "71f5d221eb722678afa2ebf40209fc331e3f1a33",
     "fixture_file": "tests/fixtures/material_repository_schema5.sql",
-    "fixture_sha256": "7803f39e83c912e993d132854f90bd83d6f8d1a2b2820ac23aba0651423ec0b6",
+    "fixture_sha256": "10426d3219aac661d2a230896c1c9fdfec174b20b1fc60f342899198afaeac16",
     "production_data_accessed": false,
     "business_code_changed": false,
     "version": "42.24.389",
@@ -1971,6 +1971,18 @@
       "interruption preserves v5 business data",
       "restored backup is v5 with all evidence unchanged; retry succeeds"
     ],
-    "exact_commit_ci": "see this commit associated GitHub Checks; older acceptance is not substituted"
+    "exact_commit_ci": "see this commit associated GitHub Checks; older acceptance is not substituted",
+    "fixture_worktree_windows_sha256": "7803f39e83c912e993d132854f90bd83d6f8d1a2b2820ac23aba0651423ec0b6",
+    "fixture_hash_scope": "fixture_sha256 is committed Git blob bytes (LF); Windows worktree CRLF digest is separately recorded; SQL text identical after newline normalization; no material SHA changed",
+    "validation_commit": "57052f30439c0d9b145ca620458ac24f58752a2d",
+    "validation_ci": {
+      "actions_passed": 22,
+      "actions_total": 22,
+      "checks_passed": 56,
+      "checks_total": 56,
+      "failed": 0,
+      "cancelled": 0,
+      "skipped": 0
+    }
   }
 }
