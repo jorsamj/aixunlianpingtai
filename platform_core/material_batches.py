@@ -3763,7 +3763,8 @@ def public_batch(task, artifacts, repository=None):
             "material_integrity_plan_id": options.get("material_integrity_plan_id"),
             **integrity_progress,
             **repair_stats,
-            **({"smart_audit_progress":checkpoint.get("smart_audit_progress"),"smart_audit_summary":result} if request.get("operation")=="SMART_AUDIT" else {}),
+            **({"smart_audit_progress":checkpoint.get("smart_audit_progress"),"smart_audit_summary":result,
+                "attempt":task.attempt,"result_ready":bool(task.result_ref)} if request.get("operation")=="SMART_AUDIT" else {}),
             "log_available": available, "log_ref": task.log_ref if available else None,
             "created_at": task.created_at, "updated_at": task.updated_at, "finished_at": task.finished_at}
 

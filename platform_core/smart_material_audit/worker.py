@@ -15,7 +15,7 @@ from filelock import FileLock
 import psutil
 
 from ..annotation_repository import AnnotationRepository
-from ..material_repository import MaterialRepository
+from ..material_repository import MaterialRepository, DATASET_DELETE_CLAIM_FIELD, MATERIAL_BATCH_DELETE_CLAIM_FIELD
 from ..storage.manager import StorageManager
 from ..storage.source_repository import StorageSourceRepository
 from ..storage.import_tasks import _provider
@@ -54,6 +54,8 @@ def _stop_observed(identities):
 
 
 def _materialize_input(manager,image,cached,cache_bytes):
+    if image.get(DATASET_DELETE_CLAIM_FIELD) or image.get(MATERIAL_BATCH_DELETE_CLAIM_FIELD):
+        raise ValueError('素材存在删除或恢复占用，保持原记录且未检查')
     material=manager.material(image)
     if material.get('source_available') is False:
         raise ValueError('原素材源标记不可用，未检查')
@@ -190,7 +192,13 @@ def run_audit(context, data_dir):
                                 peak_rss=max(peak_rss,rss)
                             except psutil.NoSuchProcess:
                                 pass
-                            peak_disk=max(peak_disk,sum(p.stat().st_size for p in working.rglob('*') if p.is_file()))
+                            disk=0
+                            for path in working.rglob('*'):
+                                try:
+                                    if path.is_file(): disk+=path.stat().st_size
+                                except FileNotFoundError:
+                                    pass  # Child cleanup can race this observational sample.
+                            peak_disk=max(peak_disk,disk)
                             progress_path=runtime/'progress.json'
                             if progress_path.is_file():
                                 progress=_read_json(progress_path)

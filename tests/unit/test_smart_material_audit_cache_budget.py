@@ -43,3 +43,10 @@ def test_same_cached_sha_reuses_pinned_file_without_recursive_lock_or_download(t
     local=MaterializedFile(tmp_path/'shared.jpg','a'*64,10,True)
     assert _materialize_input(manager,image,{str(local.path):local},10) is local
     assert calls=={'download':0,'stat':0}
+
+@pytest.mark.parametrize('field',['_dataset_delete_claim','_material_batch_delete_claim'])
+def test_active_delete_claim_is_preserved_without_reading_source(tmp_path,field):
+    manager,image,calls=manager_for(tmp_path,10);image[field]={'owner':'retain'}
+    with pytest.raises(ValueError,match='删除或恢复占用'):
+        _materialize_input(manager,image,{},0)
+    assert image[field]=={'owner':'retain'} and calls=={'download':0,'stat':0}

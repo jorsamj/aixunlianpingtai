@@ -1,0 +1,24 @@
+.smart-material-audit{display:grid;gap:16px;color:var(--text,#1e293b);min-width:0}
+.smart-material-audit [hidden]{display:none}
+.smart-material-audit .sma-toolbar,.smart-material-audit .sma-summary,.smart-material-audit .sma-checks,.smart-material-audit [data-history]{display:flex;align-items:center;flex-wrap:wrap;gap:10px}
+.smart-material-audit .sma-toolbar label{display:flex;align-items:center;gap:8px;white-space:nowrap;flex:0 0 auto}
+.smart-material-audit [data-status]{min-height:24px;color:var(--muted,#64748b)}
+.smart-material-audit [data-status][role=alert]{color:#b42318}
+.smart-material-audit details{border:1px solid var(--line,#dce3ec);border-radius:10px;padding:12px}
+.smart-material-audit summary{cursor:pointer}
+.smart-material-audit .sma-checks span{padding:8px 12px;background:var(--soft,#f1f5f9);border-radius:8px}
+.smart-material-audit .sma-columns{display:grid;grid-template-columns:minmax(180px,1fr) minmax(300px,2.7fr) minmax(210px,1.2fr);gap:16px;min-height:340px}
+.smart-material-audit .sma-columns>aside,.smart-material-audit .sma-columns>main{min-width:0;overflow-wrap:anywhere;border:1px solid var(--line,#dce3ec);border-radius:12px;padding:12px}
+.smart-material-audit .sma-issue{width:100%;display:grid;gap:7px;text-align:left;background:var(--panel,#fff);color:inherit;border:1px solid var(--line,#dce3ec);border-radius:8px;padding:12px;margin-bottom:8px;cursor:pointer}
+.smart-material-audit .sma-issue:hover,.smart-material-audit .sma-issue:focus-visible{border-color:#3974e9;background:#f3f7ff}
+.smart-material-audit .sma-issue small{color:var(--muted,#64748b)}
+.smart-material-audit .sma-images{display:grid;gap:12px}
+.smart-material-audit figure{margin:0;min-width:0}.smart-material-audit figure>img{width:100%;height:280px;object-fit:contain;background:#f1f5f9}
+.smart-material-audit figcaption{padding:8px;font-size:12px;color:var(--muted,#64748b)}
+.smart-material-audit pre{white-space:pre-wrap;max-height:220px;overflow:auto;font-size:12px;background:var(--soft,#f1f5f9);padding:10px;border-radius:8px}
+.smart-material-audit .sma-verdicts{display:grid;gap:8px;margin-top:12px}
+.smart-material-audit textarea{width:100%;min-height:80px}
+.smart-material-audit .sma-viewport{height:300px;position:relative;overflow:hidden;background:#f1f5f9;touch-action:none}
+.smart-material-audit .sma-world{position:absolute;left:0;top:0}.smart-material-audit .sma-world img{max-width:none;max-height:none;display:block}
+@media(max-width:1000px){.smart-material-audit .sma-columns{grid-template-columns:180px minmax(260px,1fr)}.smart-material-audit [data-review]{grid-column:1/-1}}
+@media(max-width:650px){.smart-material-audit .sma-columns{display:flex;flex-direction:column}.smart-material-audit [data-issues]{max-height:240px;overflow:auto}.smart-material-audit .sma-toolbar>button{flex:1 1 auto}}

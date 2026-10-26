@@ -7,6 +7,17 @@ import pytest
 from platform_core.annotation_repository import AnnotationRepository
 from platform_core.material_repository import MaterialRepository
 from platform_core.storage.source_repository import StorageSourceRepository
+from platform_core.smart_material_audit.evidence import load_evidence
+
+def test_model_evidence_never_creates_or_migrates_missing_or_legacy_stores(tmp_path):
+    options={'algorithm_id':'legacy','version_id':'old'}
+    project=tmp_path/'not-created'
+    assert not load_evidence(project,options,None,None)['predictions']
+    assert not project.exists()
+    project.mkdir();source=project/'algorithms.json';source.write_text('[{"id":"legacy"}]')
+    before=source.read_bytes()
+    assert not load_evidence(project,options,None,None)['predictions']
+    assert source.read_bytes()==before and not (project/'algorithms.sqlite3').exists()
 
 
 def snapshot(path):

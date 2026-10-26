@@ -26,7 +26,7 @@ from platform_core.task_runtime.worker import WorkerContext,ExecutionFencedError
 
 def main():
     parser=argparse.ArgumentParser();parser.add_argument("python");parser.add_argument("--out",required=True)
-    parser.add_argument('--case',choices=['success','bind_failure','partial_retry','missing_engine'],default='success')
+    parser.add_argument('--case',choices=['success','bind_failure','partial_retry','missing_engine','cancel'],default='success')
     parser.add_argument('--missing-python',default='');args=parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="smart-durable-owned-") as temporary:
         root=Path(temporary);project=root/"projects/p";(project/"uploads").mkdir(parents=True)
@@ -63,6 +63,29 @@ def main():
             assert args.missing_python
             (root/'smart_material_audit.json').write_text(json.dumps(dict(enabled=True,python=args.missing_python)))
         try:
+            if args.case=='cancel':
+                worker=threading.Thread(target=scheduler.run_once);worker.start();deadline=time.monotonic()+60
+                observed=[]
+                while time.monotonic()<deadline:
+                    current=repository.get(task.task_id)
+                    if current.process_pid:
+                        try:
+                            descendants=psutil.Process(current.process_pid).children(recursive=True)
+                            observed=[(p.pid,p.create_time()) for p in descendants]
+                            if any(p.name().lower().startswith('mongod') for p in descendants):break
+                        except psutil.NoSuchProcess:pass
+                    time.sleep(.1)
+                else:raise AssertionError('owned Mongo process was not started')
+                repository.request_cancel(task.task_id);worker.join(60);assert not worker.is_alive()
+                completed=repository.get(task.task_id);assert completed.status==TaskStatus.CANCELLED,completed
+                assert materials.read()==original_materials and annotations.summary()==original_gt
+                assert not list(artifacts.root.rglob('working-*'))
+                for identity,created in observed:
+                    try:assert psutil.Process(identity).create_time()!=created
+                    except psutil.NoSuchProcess:pass
+                receipt=dict(case='cancel',status=completed.status.value,owned_mongo_observed=True,owned_processes_remaining=0,
+                    formal_material_gt_unchanged=True,temporary_roots_cleaned=True)
+                Path(args.out).write_text(json.dumps(receipt,indent=2),encoding='utf-8');print(json.dumps(receipt));return
             assert scheduler.run_once()
         finally:
             WorkerContext.bind_process=original_bind

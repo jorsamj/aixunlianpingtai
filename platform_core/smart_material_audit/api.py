@@ -141,6 +141,10 @@ def smart_material_audit_router(get_project,data_dir_provider,task_repository,ta
     @router.post('/{task_id}/findings/{issue_id}/review')
     def review(project_id:str,task_id:str,issue_id:str,request:Request,payload:dict=Body(...)):
         task=task_for(project_id,task_id)
+        expected=payload.get('expected_generation')
+        if isinstance(expected,bool) or not isinstance(expected,int) or expected!=task.attempt:
+            raise HTTPException(409,detail={'code':'SMART_AUDIT_GENERATION_CHANGED','message':'分析代际已变化，请重新读取当前结果'})
+        payload={key:value for key,value in payload.items() if key!='expected_generation'}
         path,_=result_for(task,None)
         actor=actor_provider(request,project_id)
         project=project_path(data_dir_provider(),project_id)

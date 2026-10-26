@@ -49,3 +49,9 @@ def test_new_task_api_is_project_scoped_idempotent_and_not_ready_is_not_empty_su
     assert client.get(base+'/'+task_id+'/findings').status_code==409
     assert client.get('/api/v62/projects/other/smart-material-audit/'+task_id+'/findings').status_code==404
     assert len(repository.list(project_id='p',limit=50).items)==1
+    # Reject stale/missing/bool generations before any result/source materialization.
+    for generation in [None,True,99]:
+        response=client.post(base+'/'+task_id+'/findings/old/review',json={
+            'verdict':'no_issue','expected_review_token':'old','expected_generation':generation})
+        assert response.status_code==409
+        assert response.json()['detail']['code']=='SMART_AUDIT_GENERATION_CHANGED'

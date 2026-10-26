@@ -19,6 +19,8 @@ def load_evidence(project, options, repository, artifacts):
         return empty
     try:
         project = Path(project)
+        if not project.is_dir():
+            return dict(empty,reason="项目不存在；不创建或迁移算法存储")
         store = AlgorithmSqlStore(project / "algorithms.json")
         # Use the existing Owner's row decoder; never ensure_ready/read_one,
         # because those intentionally migrate legacy stores in normal workflows.

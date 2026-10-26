@@ -2,6 +2,40 @@
 
 本文件是本专项唯一需求、设计、进度和接续依据。用户附件681f3943与“最高优先级：现有业务兼容性与零破坏原则”共同构成需求基线；后者优先。2026-10-26真实fetch成功，远端/本地均c88b6151797bf7a122b891f4e336697dd041802a，VERSION42.24.389，初始工作区干净。其他工作树、5944e1a5、原标注WIP和两份训练模板测试保持原样。
 
+## 当前交付状态：C/D/E 已完成待最终 SHA CI（2026-10-26）
+
+- A 审计已验收；B 引擎提交 `2c219ab7b51481ef984e16f1ad408858cc338e95`；C 后端提交 `9ebf89f991c3ed3294a0f0449755a04a60fd0e74`。本节优先于下面按时间保留的早期“尚未接线/待许可”记录。用户已正式允许本机隔离 PoC，生产许可另行确认。
+- C/D/E 已在原素材批任务 Owner 上接通：上传后本批确认（普通图片及 ZIP 已入库后整理）、素材管理/异常 Full Audit、标签完整性区域三个入口共用一个三栏分析面板。原任务提交/轮询及原 Modal、Annotorious、GT 保存继续复用；无新任务中心、无新 API Client、无全局新轮询。仅主动打开时查询可选能力和历史，默认关闭不发智能业务请求。默认整个筛选范围，不暗中限当前页；单次上限默认1000、配置最多2000，超限拒绝并说明，不能当作全库验收。
+- 当前公开合同增加仅 SMART_AUDIT 使用的 attempt/result_ready；重试清零、输入/结果摘要及 review expected_generation 一致。一次不确定提交保留原 request_id/范围并幂等重放；使用原 unknown 存储中的 smart:project 键，不阻断原 CLEAN 提交。分析失败不改变原清洗/上传回执状态。
+- 派生候选 SQL 每页25条；当前图片、对比图片、只读 GT/预测图层及缩放均复用官方 Annotorious。证据过期不把旧框叠到新像素。人工复核分确认问题/无需修改/未知；“已修正”仅在原工作台真实 GT 保存成功后，再校验新 GT 版本/摘要及源 SHA。自动训练和自动删除均不存在；高级评测与困难样本跳转仍由原页面负责。窗口关闭/任务切换/代际变化立即失效旧请求并清理预览。
+
+### 实际验收与失败记录
+
+| 范围 | 实际结果 | 证据/边界 |
+|---|---|---|
+| C 原库只读、schema5、GT、缓存、幂等任务、分页与复核 | 69 passed / 0 failed / 0 skipped | 本文 C 阶段命令；非全仓 |
+| C/D 审查补齐（代际、缺旧存储不迁移、删除 claim、缓存预算及公开合同） | 18 passed / 0 failed / 0 skipped | 定向 readonly/cache_budget/new API/public truth；与69重叠不累加 |
+| 原上传清洗与 GT API 关闭组 | 42 passed 后遇1旧 v47用例失败 | [真实旧失败日志](evidence/fiftyone-off-legacy-failure-2026-10-26.log)；3c7b0060 中该接口已经返回410，不是本轮回归；没有修改或删除该旧测试 |
+| 现行 v60 AI 候选/原 Worker 注册/训练成果计数合同 | 44 passed / 0 failed / 0 skipped | [关闭组现行合同](evidence/fiftyone-canonical-off-2026-10-26.log)，替代退役接口验证，不把 mock provider 称真实收费模型 |
+| 原异常删除预览/并发 GT 与历史保护 | 2 passed / 0 failed / 0 skipped | test_material_integrity.py 两个原安全用例；隔离数据逻辑索引操作，不是生产删除 |
+| Node 原批任务提交/上传确认与新范围/未知恢复 | 31 passed / 0 failed / 0 skipped | [Node 日志](evidence/fiftyone-node-2026-10-26.log) |
+| Chrome 原业务关闭组 | 5 passed | 普通上传后的清洗决策、ZIP 自动确认、真实人工 GT 保存、标签 CRUD、训练创建原入口；[日志](evidence/fiftyone-chrome-off-2026-10-26.log) |
+| Chrome 新面板开/关、失败、迟到响应、代际、对比图重试、原 GT 保存衔接 | 5 passed | [日志](evidence/fiftyone-chrome-integration-2026-10-26.log)。分析 API 使用明确受控夹具；Annotorious/DOM/原 GT 保存为实际平台，不冒充真实模型质量；真实 FO 由 B/C 隔离工具另验 |
+| 视觉复验 | 1920×1080、1366×768 | [1920](evidence/fiftyone-smart-audit-1920.png)、[1366](evidence/fiftyone-smart-audit-1366.png)、[原工作台保存后的返回](evidence/fiftyone-smart-review-original-editor.png)；补齐 hidden 控件被原 btn display 覆盖问题，定向1项复验通过 |
+| 真实取消 | CANCELLED，观察到所属 Mongo，最终所属进程0、工作目录清理、原图/GT不变 | [取消回执](evidence/fiftyone-task-cancel-2026-10-26.json)，不是仅 mock 取消 |
+
+审查发现并已定向修复：旧代际详情污染、任务选择被旧轮询抢占、第二张失败图片误载第一张、只读预览消费首次 Esc。首轮浏览器夹具误把静态 JS/CSS 算智能 API 请求、把原隐藏 Modal 要求为 DOM 删除、BMP header 填充不合法、把 SVG 包装节点算两框、误要求恢复已被原 Owner 正常清空的标注队列，均按原合同纠正并保留关键真实数据/点击/身份断言；没有改原业务来迎合夹具。独立只读审查已确认修复，审查不冒充测试。
+
+### 安装、关闭与资源边界
+
+仅 `<data_dir>/smart_material_audit.json` 可选配置，缺省等价 `{ "enabled": false }`。隔离开发示例为 `{ "enabled": true, "python": "C:/tmp/fiftyone-audit-1221/Scripts/python.exe", "max_images": 1000, "timeout_seconds": 600 }`；不得把本机路径当作生产配置。只接受独立 venv 且非 system-site-packages；原 materials Worker 注册时获取附加 capability，旧 Worker 不会误领。启用环境须由部署方核验后按原 Worker 生命周期重启相应 materials 角色，本轮未操作生产。关闭后不再受理新分析、不启动新引擎，派生历史仍可查看；已运行任务通过原取消入口停止。
+
+成功场景峰值进程树 RSS 622628864 字节、临时逻辑字节314835676；故障集合峰值 RSS623509504。临时 Mongo journal 导致约300MiB逻辑增长，不等于物理分配量。没有额外永久图片副本；可选 venv 约894976080字节，wheelhouse240052148字节，供后续离线验收保留，与原环境分离。真实任务成功、失败、取消会按精确归属清理各自工作目录。
+
+**早期 PoC 清理遗留**：已核验 `C:/Users/jorsam/AppData/Local/Temp/smart-audit-poc-8lktx64b` 为首次失败隔离夹具（ownership database_name=smart_audit_bf59f7eaf2824e88a374ff445b50eeb0），无对应 Python/mongod 进程，逻辑314811347字节；带绝对路径、owner、无 reparse 校验的 Remove-Item 被自动审批安全审查拒绝。未绕过限制，该早期目录保持原样，不宣称全机PoC磁盘已清空。不是正式数据目录。
+
+仍 NOT VERIFIED：生产许可/分发声明与 LGPL/native 义务、Linux 离线锁、NAS/OSS/S3、生产真实预测错标质量、1万/10万库规模、生产性能与物理磁盘占用。HOG/颜色192维不等于语义模型。开启组已验真实独立引擎及原 OpenCV 并行、缺环境后原 CLEAN；未将所有业务都在 Mongo 运行期间逐项全链路复测，兼容矩阵按实际证据限定。无生产部署、安装、数据库迁移、GT/素材修改或真实训练。VERSION 本轮一次递增42.24.390，最终代码及文档 SHA CI 待安全推送后独立补记。
+
 ## C 后端接线本地验收（2026-10-26，尚未完成前端及最终 CI）
 
 B 提交 `2c219ab7b51481ef984e16f1ad408858cc338e95` 已保留。C 复用原 MATERIAL_BATCH、BatchSelection、TaskRepository、资源锁、lease/fence、取消与重试，额外 capability 隔离旧 Worker。新增专用 API，默认关闭，当前结果按 execution generation 隔离；历史结果不冒充重试结果。正式库使用原 Repository 的只读入口，schema5 不触发升级。原 StorageManager 只在分析实例关闭缓存自动 GC；128 文件/512MiB 预算在远程下载前核验，同 SHA 引用复用。
@@ -69,31 +103,31 @@ B 提交 `2c219ab7b51481ef984e16f1ad408858cc338e95` 已保留。C 复用原 MATE
 
 | 阶段 | 状态 | 完成证据/剩余事项 |
 |---|---|---|
-| A审计/回归基线 | 已完成待验收 | 主要Owner/远端核对及增量方案已记录；原材料/清洗/上传/Worker定向24项通过，不代表完整兼容组 |
-| B真实引擎隔离验证 | 已完成待验收 | 真实相似/泄漏/uniqueness/mistakenness API、四同图退化和4项隔离场景通过；生产预测接线仍属C/D |
-| C任务/清洗审核 | 未开始 | 默认关闭、分页、取消/恢复、无正式数据写入及旧Worker兼容 |
-| D标签/人工复核 | 未开始 | 原接口/GT CAS/源SHA、审核过期与失败保护 |
-| E上传后入口 | 未开始 | 原批次/ZIP完成后显式异步入口、不阻塞回执 |
-| F回归/审查/准确CI | 未开始 | 必须先A关闭组，再B开启组；未通过不交付 |
+| A审计/回归基线 | 已验收 | 主要Owner/远端核对及增量方案已记录；原材料/清洗/上传/Worker定向24项通过，不代表完整兼容组 |
+| B真实引擎隔离验证 | 已验收 | 真实相似/泄漏/uniqueness/mistakenness API、四同图退化和4项隔离场景通过；生产预测接线仍属C/D |
+| C任务/清洗审核 | 已完成待验收 | 默认关闭、分页、取消/恢复、无正式数据写入及旧Worker兼容 |
+| D标签/人工复核 | 已完成待验收 | 原接口/GT CAS/源SHA、审核过期与失败保护 |
+| E上传后入口 | 已完成待验收 | 原批次/ZIP完成后显式异步入口、不阻塞回执 |
+| F回归/审查/准确CI | 进行中 | 必须先A关闭组，再B开启组；未通过不交付 |
 
 ## 兼容性验收表
 
-下列是待执行的验收，不是以未改代码代替通过。当前没有业务修改，没有测试/Commit/CI可以认作本专项完成。
+下列按实际隔离验证范围记录；生产和未执行路径不因“未改代码”推定通过。关闭组范围见顶部；开启组完整原业务全链路仍 NOT VERIFIED。
 
 | 原模块 | 修改前行为 | 修改后必须保持 | 本专项回归 |
 |---|---|---|---|
-| 图片上传 | 原multipart/Uppy/批次回执 | 上传成功不等待分析 | NOT VERIFIED |
-| ZIP导入 | 原分片、标签确认、后台入库 | 原协议/恢复/GT不变 | NOT VERIFIED |
-| 素材管理 | 原分页筛选/预览/安全删除 | 不增加全库前端加载 | NOT VERIFIED |
-| 素材清洗 | SHA/dHash/OpenCV/正式结果 | 不换算法/阈值/成功含义 | NOT VERIFIED |
-| 异常审核 | Full Audit/GT冲突及预检 | 智能候选不进入自动删除 | NOT VERIFIED |
-| 标签统一 | 原映射/Full Audit | 不改正式标签及原流程 | NOT VERIFIED |
-| 人工标注 | Annotorious/GT CAS/源SHA | 仍通过原保存接口 | NOT VERIFIED |
-| AI标注 | 原provider/候选/审核 | 不依赖引擎可用性 | NOT VERIFIED |
-| 训练创建 | 原准入/冻结/创建 | 不接入本分析依赖 | NOT VERIFIED |
-| 训练任务 | 原lease/恢复/成果 | 不改状态和副本生命周期 | NOT VERIFIED |
-| Worker调度 | capability/资源独占/fence | 不新增调度器或抢占 | NOT VERIFIED |
-| 模型成果 | 原版本/Checkpoint/可信结果 | 只读引用、不改成果 | NOT VERIFIED |
+| 图片上传 | 原multipart/Uppy/批次回执 | 上传成功不等待分析 | 关闭组API与Chrome上传决策通过；开启组全链路 NOT VERIFIED |
+| ZIP导入 | 原分片、标签确认、后台入库 | 原协议/恢复/GT不变 | 关闭组原Chrome自动确认通过；真实生产ZIP NOT VERIFIED |
+| 素材管理 | 原分页筛选/预览/安全删除 | 不增加全库前端加载 | 原浏览器分页/标注入口及新面板范围通过；大库 NOT VERIFIED |
+| 素材清洗 | SHA/dHash/OpenCV/正式结果 | 不换算法/阈值/成功含义 | 原API通过，缺引擎后同Scheduler原CLEAN成功；算法不替换 |
+| 异常审核 | Full Audit/GT冲突及预检 | 智能候选不进入自动删除 | 原两个删除/GT并发保护API通过；新入口不传自动删组 |
+| 标签统一 | 原映射/Full Audit | 不改正式标签及原流程 | 标签CRUD Chrome通过；完整统一流程 NOT VERIFIED |
+| 人工标注 | Annotorious/GT CAS/源SHA | 仍通过原保存接口 | 原人工保存Chrome及新面板→原GT保存衔接通过 |
+| AI标注 | 原provider/候选/审核 | 不依赖引擎可用性 | 现行v60原候选/API通过；真实收费模型 NOT VERIFIED |
+| 训练创建 | 原准入/冻结/创建 | 不接入本分析依赖 | 原标签/提交Chrome通过；真实GPU禁止/NOT VERIFIED |
+| 训练任务 | 原lease/恢复/成果 | 不改状态和副本生命周期 | 原任务公开合同与安全case通过；真实训练恢复 NOT VERIFIED |
+| Worker调度 | capability/资源独占/fence | 不新增调度器或抢占 | 原注册/能力隔离、fence、重试、实际取消通过 |
+| 模型成果 | 原版本/Checkpoint/可信结果 | 只读引用、不改成果 | 原成功成果计数合同通过；真实模型质量 NOT VERIFIED |
 
 大库1万/10万、真实NAS/OSS/S3、生产性能、GPU、生产商业许可及部署全部NOT VERIFIED。每阶段仅运行受影响必要测试，不重复全仓测试。不自动部署。
 

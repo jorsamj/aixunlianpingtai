@@ -56,7 +56,8 @@ import {applyExactLabelCodeMatches, bulkSetLabelMapping, buildManualLabelMapping
 import {installResourceDiscoveryRuntime} from './modules/resource-discovery.js?v=422402';
 import {installServiceNodeRuntime} from './modules/service-node-runtime.js?v=422550';
 import {installOverviewTabsRuntime} from './modules/overview-tabs.js?v=4226362';
-import {installMaterialBatchRuntime} from './modules/material-batches.js?v=422410';
+import {installMaterialBatchRuntime} from './modules/material-batches.js?v=422411';
+import {installSmartMaterialAudit} from './modules/smart-material-audit.js?v=20261026';
 import {mountPagination, normalizePagination, paginationPageSizes, paginationTokens, renderPagination, validatePageInput} from './modules/pagination.js?v=422603';
 
 const UI_BUILD_VERSION = '42.25.0-dev';
@@ -315,6 +316,7 @@ installMaterialBatchRuntime({
     if (state.page === '数据集') await window.reloadMaterialPage61?.();
   },
 });
+installSmartMaterialAudit({getState:()=>state,api,modal:(...args)=>window.modal(...args),notify});
 window.installServerMaterialImport61?.();
 const uploadTaskCenterRuntime = installUploadTaskCenter({
   getState: () => state,

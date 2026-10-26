@@ -73,6 +73,10 @@ export function installMaterialBatchRuntime({projectId, projectName, currentPage
   }
 
   function announce(task) {
+    if (task.operation === 'SMART_AUDIT') {
+      try { window.SmartMaterialAuditRuntime?.onTask?.(task); } catch (_) {}
+      return;
+    }
     window.updateTrainingIntegrityAudit47?.(task);
     window.updateMaterialIntegrityTask47?.(task);
     window.updateMaterialIntegrityAudit47?.(task);
@@ -279,6 +283,36 @@ export function installMaterialBatchRuntime({projectId, projectName, currentPage
     poll,
     resume,
     stop: stopPolling,
+    pendingSmart: () => unknowns()[`smart:${pid()}`] || null,
+    submitSmart(payload) {
+      const project = pid(), key = `smart:${project}`;
+      if (!project) return Promise.reject(new Error('请先选择项目'));
+      if (submissions.has(key)) return submissions.get(key);
+      const pending = unknowns()[key];
+      const body = pending?.payload || payload;
+      const promise = Promise.resolve().then(async () => {
+        if (pid() !== project) throw new Error('项目已切换');
+        markUnknown(key, {operation:'SMART_AUDIT', payload:body});
+        try {
+          const task = await request(`/api/v62/projects/${encodeURIComponent(project)}/smart-material-audit`, {
+            method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body),
+          });
+          if (!task?.task_id || task.project_id !== project || task.operation !== 'SMART_AUDIT' || task.kind !== 'MATERIAL_BATCH')
+            throw new Error('智能分析受理身份未确认；重试将使用原请求，不重复创建');
+          markUnknown(key, null);
+          if (pid() === project) {
+            try {remember(task);} catch (_) {tell('分析任务已创建；浏览器恢复记录未保存，可从历史任务查看');}
+            announce(task);poll(task.task_id);
+          }
+          return task;
+        } catch (error) {
+          if (!pending && error.httpStatus && error.httpStatus < 500) markUnknown(key,null);
+          throw error;
+        }
+      }).finally(() => submissions.delete(key));
+      submissions.set(key,promise);
+      return promise;
+    },
   });
   window.MaterialBatchRuntime62 = runtime;
   resume();

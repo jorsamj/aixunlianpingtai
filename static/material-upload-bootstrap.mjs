@@ -1,5 +1,5 @@
 import {installImageUppyView} from './modules/uppy-image-view.js?v=20261023images';
-import {installUploadConfirmationRuntime} from './modules/upload-confirmation.js?v=20261023images';
+import {installUploadConfirmationRuntime} from './modules/upload-confirmation.js?v=20261026';
 import {installMaterialUploadRuntime} from './modules/material-upload-runtime.js?v=422544';
 
 const runtime = installMaterialUploadRuntime({

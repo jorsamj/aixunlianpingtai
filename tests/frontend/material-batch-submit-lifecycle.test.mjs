@@ -14,6 +14,30 @@ async function fixture(run,{refresh}={}) {
     await run({calls,messages});
   } finally {Object.assign(globalThis,previous)}
 }
+test('smart analysis uncertainty retries the same request without blocking original CLEAN',()=>fixture(async()=>{
+  const requests=[];let cleanPosts=0;
+  globalThis.fetch=async(url,options={})=>{
+    if(url.endsWith('smart-material-audit')){requests.push(JSON.parse(options.body));throw new TypeError('lost response');}
+    if(url.endsWith('/estimate'))return Response.json({supported:true,count:1,selection_spec:{scope:'CURRENT_PAGE',image_ids:['one']}});
+    if(options.method==='POST')cleanPosts++;
+    return Response.json({task_id:'clean',operation:'CLEAN',status:'SUCCEEDED'});
+  };
+  const body={selection_spec:{scope:'SELECTED',image_ids:['one']},options:{request_id:'original'}};
+  await assert.rejects(window.MaterialBatchRuntime62.submitSmart(body),/lost/);
+  assert.deepEqual(window.MaterialBatchRuntime62.pendingSmart().payload,body);
+  await window.runMaterialBatch62('CLEAN',{scope:'CURRENT_PAGE'});
+  assert.equal(cleanPosts,1);
+  await assert.rejects(window.MaterialBatchRuntime62.submitSmart({...body,options:{request_id:'replacement'}}),/lost/);
+  assert.equal(requests.length,2);assert.deepEqual(requests[0],requests[1]);
+}));
+test('smart analysis coalesces clicks, validates project identity and clears accepted pending',()=>fixture(async()=>{
+  let release,posts=0;
+  const task={task_id:'smart-1',project_id:'p1',kind:'MATERIAL_BATCH',operation:'SMART_AUDIT',status:'SUCCEEDED'};
+  globalThis.fetch=async(url,options={})=>{if(options.method==='POST'){posts++;return new Promise(resolve=>release=()=>resolve(Response.json(task)));}return Response.json(task);};
+  const first=window.MaterialBatchRuntime62.submitSmart({options:{request_id:'one'}}),second=window.MaterialBatchRuntime62.submitSmart({options:{request_id:'two'}});
+  assert.equal(first,second);await new Promise(resolve=>setImmediate(resolve));release();await first;
+  assert.equal(posts,1);assert.equal(window.MaterialBatchRuntime62.pendingSmart(),null);
+}));
 test('material estimate and create share one submission and release the original busy button',()=>fixture(async()=>{
   let release,posts=0;
   globalThis.fetch=async url=>{
