@@ -1,3 +1,7 @@
+## 2026-10-26｜ZIP旧数据零损坏补验（隔离通过，准确CI交付前另核）
+
+[唯一专项新增14条矩阵](ZIP_IMPORT_METADATA_PERFORMANCE_2026_10_26.md)。基线4ff26779/VERSION389；历史71f真实schema5 DDL及SQLite备份，全业务表/原图/GT/Snapshot/任务与模型引用、缺dataset default及旧claim、升级中断/恢复2场景通过；相关13/13。仅测试/夹具/CI/文档，无业务代码或版本变更；索引5→6必要性、首次锁风险与备份回退已明示，未生产部署/迁移。最终提交自身CI未通过不得建议上线，旧绿色不替代；原WIP/5944/模板保留。
+
 ## 2026-10-26｜ZIP导入素材索引性能（代码及隔离CI已验收）
 
 唯一需求/设计/性能/失败及接续：[ZIP性能专项](ZIP_IMPORT_METADATA_PERFORMANCE_2026_10_26.md)。VERSION389，代码69451cbb准确48/48 Actions、129/129 Checks及Linux真实HTTP10k成功；本地A–D原逐图全量1001/10001→0，D1855.60→321.15秒，Windows完整HTTP10k445.52秒。schema6稀疏索引/原锁及恢复保留、只读兼容5/6；CRT EACCES读冲突有界恢复，无虚假0。文档自身最终HEAD另核CI；生产、大图及NAS/OSS/S3未验，不部署/改生产；原标注WIP/5944/模板测试保留。
