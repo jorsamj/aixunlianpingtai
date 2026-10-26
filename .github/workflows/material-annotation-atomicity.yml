@@ -10,6 +10,9 @@ on:
       - .github/workflows/material-annotation-atomicity.yml
       - app.py
       - platform_core/annotation_repository.py
+      - platform_core/smart_material_audit/**
+      - tests/unit/test_smart_material_audit_*.py
+      - tests/api/test_smart_material_audit.py
       - platform_core/labels.py
       - platform_core/annotations.py
       - platform_core/material_repository.py
@@ -126,3 +129,12 @@ jobs:
           tests/api/test_storage_sources.py
           tests/api/test_storage_upload.py
           tests/api/test_zip_processing_p1.py
+      - name: Optional smart audit safety contracts (no engine installation)
+        run: >-
+          python -m pytest -q
+          tests/unit/test_smart_material_audit_contract.py
+          tests/unit/test_smart_material_audit_readonly.py
+          tests/unit/test_smart_material_audit_tasks.py
+          tests/unit/test_smart_material_audit_results.py
+          tests/unit/test_smart_material_audit_cache_budget.py
+          tests/api/test_smart_material_audit.py

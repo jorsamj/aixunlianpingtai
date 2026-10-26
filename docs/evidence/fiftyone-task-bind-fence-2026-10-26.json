@@ -1,0 +1,9 @@
+{
+  "case": "bind_failure",
+  "status": "RUNNING",
+  "owned_processes_remaining": 0,
+  "temporary_roots_cleaned": true,
+  "formal_material_gt_unchanged": true,
+  "base_clean_task_passed": false,
+  "scope": "isolated original Worker + actual subprocess fault"
+}

@@ -24751,6 +24751,11 @@ app.include_router(material_batch_router(
     training_selection_provider=_training_compatibility_request,
     actor_provider=_material_governance_actor,
 ))
+from platform_core.smart_material_audit.api import smart_material_audit_router
+app.include_router(smart_material_audit_router(
+    _authorize_business_file_project,lambda:DATA_DIR,shared_task_repository,shared_task_artifacts,
+    actor_provider=_material_governance_actor,
+))
 def _review_training_negative(project_id, item, effective_codes, actor):
     """Reuse the formal annotation save and its CAS/content/lifecycle fences."""
     image_id = str(item.get('image_id') or '')

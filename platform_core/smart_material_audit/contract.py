@@ -2,11 +2,17 @@
 from __future__ import annotations
 
 import re
+import json
+import hashlib
 from pathlib import Path
 
 
 FEATURE = "hog-color-v1"
 MAX_IMAGES = 2000
+
+
+def manifest_digest(value):
+    return hashlib.sha256(json.dumps(value,ensure_ascii=False,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
 
 
 def validate_manifest(value):

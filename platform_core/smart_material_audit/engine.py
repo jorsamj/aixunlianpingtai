@@ -18,16 +18,24 @@ import subprocess
 import socket
 import ipaddress
 import math
+import secrets
 
 if __package__:
-    from .contract import FEATURE, validate_manifest
+    from .contract import FEATURE, validate_manifest, manifest_digest
 else:
-    from contract import FEATURE, validate_manifest
+    from contract import FEATURE, validate_manifest, manifest_digest
 
 
 def _digest(path):
     with Path(path).open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def _progress(root, stage, scanned, total, succeeded, failed):
+    temporary = root / "progress.tmp"
+    temporary.write_text(json.dumps({"stage":stage,"scanned":scanned,"total":total,
+        "succeeded":succeeded,"failed":failed,"basis":"image_features_not_whole_task"}),encoding="utf-8")
+    os.replace(temporary,root/"progress.json")
 
 
 def _feature(path):
@@ -61,6 +69,8 @@ def _mistakenness(dataset, rows, ids, brain, fo):
             continue
         with Image.open(row["path"]) as image:
             width, height = image.size
+        if proof.get("image_width") != width or proof.get("image_height") != height:
+            continue
 
         def detections(boxes, predicted):
             output = []
@@ -112,6 +122,15 @@ def _configure(root, database_name):
     if "fiftyone" in sys.modules:
         raise RuntimeError("FiftyOne engine requires a fresh isolated process")
     root.mkdir(parents=True, exist_ok=False)
+    for name in ('home','tmp','mpl','appdata'):
+        (root/name).mkdir()
+    # Upstream constants derive ~/.fiftyone directly, ignoring config-path
+    # overrides for some welcome/migration files. Isolate HOME as well.
+    os.environ.update(HOME=str(root/'home'),USERPROFILE=str(root/'home'),
+        TMP=str(root/'tmp'),TEMP=str(root/'tmp'),MPLCONFIGDIR=str(root/'mpl'),
+        APPDATA=str(root/'appdata'),LOCALAPPDATA=str(root/'appdata'),XDG_CACHE_HOME=str(root/'home'/'.cache'))
+    import tempfile
+    tempfile.tempdir=str(root/'tmp')
     (root / "ownership.json").write_text(json.dumps({"database_name": database_name}), encoding="utf-8")
     config = root / "config.json"
     config.write_text("{}", encoding="utf-8")
@@ -198,7 +217,7 @@ def _isolated_mongo(root):
     directory = root / "database"
     directory.mkdir()
     argv = [str(executable), "--dbpath", str(directory), "--bind_ip", "127.0.0.1", "--port", "0",
-            "--logpath", str(root / "mongo.log")]
+            "--auth", "--logpath", str(root / "mongo.log")]
     if os.name != "nt":
         argv.append("--nounixsocket")
     # Reuse the pinned upstream single-client parent-death monitor, never its
@@ -218,7 +237,25 @@ def _isolated_mongo(root):
                 if listeners:
                     if len(listeners) != 1 or listeners[0].laddr.ip != "127.0.0.1":
                         raise RuntimeError("unexpected MongoDB listen address")
-                    os.environ["FIFTYONE_DATABASE_URI"] = f"mongodb://127.0.0.1:{listeners[0].laddr.port}"
+                    from pymongo import MongoClient
+                    from pymongo.errors import OperationFailure
+                    port=listeners[0].laddr.port
+                    address=f"mongodb://127.0.0.1:{port}"
+                    username='smart_'+uuid.uuid4().hex
+                    password=secrets.token_urlsafe(32)
+                    # Localhost exception bootstraps only this fresh owned server.
+                    # Never put credentials in argv, artifacts, response or logs.
+                    with MongoClient(address,serverSelectionTimeoutMS=5000) as admin:
+                        admin.admin.command('createUser',username,pwd=password,roles=[{'role':'root','db':'admin'}])
+                    with MongoClient(address,serverSelectionTimeoutMS=5000) as anonymous:
+                        try:
+                            anonymous.admin.command('listDatabases')
+                        except OperationFailure as error:
+                            if error.code!=13:
+                                raise
+                        else:
+                            raise RuntimeError('temporary MongoDB authentication is not enforced')
+                    os.environ["FIFTYONE_DATABASE_URI"] = f"mongodb://{username}:{password}@127.0.0.1:{port}/?authSource=admin"
                     os.environ["FIFTYONE_DISABLE_SERVICES"] = "1"
                     yield
                     return
@@ -242,6 +279,7 @@ def _analyze(value, root, database_name):
     import fiftyone.core.odm.database as database
 
     result = {"schema_version": 1, "project_id": value["project_id"], "task_id": value["task_id"],
+              "execution_generation":value.get("execution_generation",0),"input_digest":manifest_digest(value),
               "engine": "fiftyone", "feature": FEATURE, "feature_description": "HOG形状与颜色直方图，非语义模型；仅供人工复核",
               "total": len(value["images"]), "scanned": 0, "failed": 0, "failures": [], "similar_pairs": [],
               "uniqueness": [], "checks": {}, "database_cleaned": False,
@@ -269,6 +307,7 @@ def _analyze(value, root, database_name):
                 result["failed"] += 1
                 result["failures"].append({"image_id": row["image_id"], "reason": type(error).__name__ + ": " + str(error)[:200]})
             result["scanned"] += 1
+            _progress(root,"smart_features",result["scanned"],result["total"],len(rows),result["failed"])
         result["succeeded"] = len(rows)
         if not rows:
             raise ValueError("SMART_AUDIT_NO_READABLE_INPUT")
@@ -277,6 +316,7 @@ def _analyze(value, root, database_name):
         mapping = dict(zip(ids, rows))
         vectors = np.asarray(embeddings, dtype="float32")
         if len(rows) > 1:
+            _progress(root,"smart_similarity",result["scanned"],result["total"],len(rows),result["failed"])
             # The pinned sklearn backend centers its array in-place. Euclidean
             # distance is translation-invariant; centered cosine is not. Supply
             # a copy and report this exact metric rather than a fake percentage.
@@ -306,6 +346,7 @@ def _analyze(value, root, database_name):
         else:
             result["checks"]["visual_similarity"] = {"status": "not_checked", "reason": "不足两张可读图片"}
             result["checks"]["leakage"] = {"status": "not_checked", "reason": "不足两张可读图片"}
+        _progress(root,"smart_mistakenness",result["scanned"],result["total"],len(rows),result["failed"])
         result["checks"]["mistakenness"], result["annotation_candidates"] = _mistakenness(dataset, rows, ids, brain, fo)
         result["checks"]["hardness"] = {"status": "not_checked", "reason": "不生成缺少logits依据的困难度分数"}
         result["complete"] = result["failed"] == 0

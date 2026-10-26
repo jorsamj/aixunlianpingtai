@@ -2,6 +2,16 @@
 
 本文件是本专项唯一需求、设计、进度和接续依据。用户附件681f3943与“最高优先级：现有业务兼容性与零破坏原则”共同构成需求基线；后者优先。2026-10-26真实fetch成功，远端/本地均c88b6151797bf7a122b891f4e336697dd041802a，VERSION42.24.389，初始工作区干净。其他工作树、5944e1a5、原标注WIP和两份训练模板测试保持原样。
 
+## C 后端接线本地验收（2026-10-26，尚未完成前端及最终 CI）
+
+B 提交 `2c219ab7b51481ef984e16f1ad408858cc338e95` 已保留。C 复用原 MATERIAL_BATCH、BatchSelection、TaskRepository、资源锁、lease/fence、取消与重试，额外 capability 隔离旧 Worker。新增专用 API，默认关闭，当前结果按 execution generation 隔离；历史结果不冒充重试结果。正式库使用原 Repository 的只读入口，schema5 不触发升级。原 StorageManager 只在分析实例关闭缓存自动 GC；128 文件/512MiB 预算在远程下载前核验，同 SHA 引用复用。
+
+派生发现 SQL 分页，复核令牌绑定源 SHA、GT 摘要和版本；只有原标注接口真实保存了新 GT，才允许记录已修正。不会写正式 GT、自动训练或自动删除。子进程使用独立非 system-site-packages venv、私有 HOME/配置/临时目录，Mongo 随机回环端口及临时认证，进程身份与父 Worker fence 绑定。
+
+实际定向回归 **69 passed / 0 failed / 0 skipped**，包括旧 schema5、删除 claim、GT 生命周期、源配置、缓存、任务公开合同以及新 API/幂等/分页/复核安全。未跑全仓。真实引擎通过原 Scheduler 的四个隔离场景：成功、bind 阶段 fence 丢失、部分失败后同 Task ID 重试、缺引擎后关闭增强功能继续运行原 CLEAN。对应回执见 evidence/fiftyone-task-*-2026-10-26.json。fixture 首次错误使用 public_dict、错误模拟 bind 权限异常、已修正为原 to_public_dict/真实 fence 语义；不改变原 Scheduler 状态判定。
+
+成功样本进程树峰值 RSS 622628864 字节、临时逻辑空间 314835676 字节；不是物理分配量或生产性能结论。原图/GT 摘要不变、无额外永久图片副本、已确认所属工作目录和进程清理。独立 venv 和 wheelhouse 为后续验收保留。前端三个区域、关闭组完整兼容矩阵、Node/Chrome、最终 SHA CI **未完成**；NAS/OSS/Linux/大库/真实模型错标质量仍 NOT VERIFIED。后续从原 material-batches.js 的提交/轮询 Owner 接 UI，不建第二套任务中心，不扩大存储/训练范围。
+
 ## 不可改变的合同
 
 - MaterialRepository、AnnotationRepository、TaskRepository、StorageManager、原Worker及Annotorious继续拥有正式事实与操作流程；不新增任务、素材、GT或调度系统。

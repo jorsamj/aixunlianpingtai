@@ -42,10 +42,12 @@ def main():
         if args.with_prediction_fixture:
             # Controlled API fixture only; not outputs of a real trained model.
             for row in records:
+                with Image.open(row["path"]) as source:
+                    width,height=source.size
                 row.update(gt_boxes=[], pred_boxes=[dict(label="orange", x1=10, y1=8, x2=40, y2=50, confidence=.99)],
                     annotation_state="confirmed_empty", annotation_digest="b"*64,
                     prediction_evidence=dict(evaluation_id="c"*64, model_sha256="d"*64,
-                        benchmark_scope_id="e"*64, image_content_sha256=row["content_sha256"]))
+                        benchmark_scope_id="e"*64, image_content_sha256=row["content_sha256"],image_width=width,image_height=height))
         before = {row["image_id"]: Path(row["path"]).read_bytes() for row in records}
         result = analyze(dict(project_id="isolated", task_id="poc", feature="hog-color-v1",
             images=records, threshold=.4, frozen_split_evidence="a" * 64), root / "engine")

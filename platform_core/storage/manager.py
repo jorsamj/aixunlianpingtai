@@ -26,6 +26,7 @@ class StorageManager:
         sources: StorageSourceRepository | None = None,
         credentials: SecretCredentialStore | None = None,
         provider_resolver: ProviderResolver | None = None,
+        cache_maintenance: bool = True,
     ) -> None:
         self.data_dir = Path(data_dir).resolve()
         self.project_id = str(project_id)
@@ -37,6 +38,7 @@ class StorageManager:
         cache_location = resolve_material_cache_location(self.data_dir)
         self.cache = MaterialCache(
             cache_location.root,
+            allow_maintenance=cache_maintenance,
             cache_scope=cache_location.cache_scope,
             cache_root_source=cache_location.cache_root_source,
         )

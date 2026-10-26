@@ -177,6 +177,17 @@ def _controlled_source_write(function):
 
 
 class StorageSourceRepository:
+    @classmethod
+    def open_readonly(cls, path: str | Path):
+        """No source defaults, schema upgrade, lifecycle write lock or mkdir."""
+        owner = cls.__new__(cls)
+        owner.path = Path(path)
+        owner._read_only = True
+        owner.reference_counter = lambda _source_id: 0
+        with closing(owner._connect()) as database:
+            database.execute("SELECT id,runtime_revision FROM storage_sources LIMIT 0")
+        return owner
+
     @_controlled_source_write
     def __init__(
         self,
@@ -222,6 +233,10 @@ class StorageSourceRepository:
                     raise
 
     def _connect(self) -> sqlite3.Connection:
+        if getattr(self, "_read_only", False):
+            database = sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True, timeout=5, isolation_level=None)
+            database.row_factory = sqlite3.Row
+            return database
         database = sqlite3.connect(self.path, timeout=5, isolation_level=None)
         database.row_factory = sqlite3.Row
         # Configure lock waiting before any pragma that may need a schema/write

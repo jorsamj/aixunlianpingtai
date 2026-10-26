@@ -306,6 +306,18 @@ def controlled_material_write_fence(function):
 
 
 class MaterialRepository:
+    @classmethod
+    def open_readonly(cls, project_path: str | Path):
+        """Read an existing supported index without initialization or migration."""
+        owner = cls.__new__(cls)
+        owner.project_path = Path(project_path)
+        owner.path = owner.project_path / "materials.sqlite3"
+        owner._read_only = True
+        with closing(owner._connect()) as database:
+            if int(database.execute("PRAGMA user_version").fetchone()[0]) not in MATERIAL_READ_SCHEMA_VERSIONS:
+                raise ValueError("unsupported read-only material schema")
+        return owner
+
     def __init__(self, project_path: str | Path) -> None:
         self.project_path = Path(project_path)
         self.project_path.mkdir(parents=True, exist_ok=True)
@@ -314,6 +326,10 @@ class MaterialRepository:
         self._migrate_legacy_json()
 
     def _connect(self) -> sqlite3.Connection:
+        if getattr(self, "_read_only", False):
+            database = sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True, timeout=30, isolation_level=None)
+            database.row_factory = sqlite3.Row
+            return database
         database = sqlite3.connect(self.path, timeout=30, isolation_level=None)
         database.row_factory = sqlite3.Row
         database.execute("PRAGMA busy_timeout=30000")

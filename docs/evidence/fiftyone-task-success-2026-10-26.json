@@ -1,0 +1,52 @@
+{
+  "task_id": "smart_f68032ac0f6c3774c9f5a6c0a618fc7d",
+  "status": "SUCCEEDED",
+  "attempt": 1,
+  "summary": {
+    "checks": {
+      "hardness": {
+        "reason": "不生成缺少logits依据的困难度分数",
+        "status": "not_checked"
+      },
+      "leakage": {
+        "reason": "缺少完整可信冻结划分",
+        "status": "not_checked"
+      },
+      "mistakenness": {
+        "checked": 0,
+        "reason": "未提供经过核验的模型预测与正式GT证据",
+        "status": "not_checked"
+      },
+      "visual_similarity": {
+        "checked": 2,
+        "status": "completed"
+      }
+    },
+    "current": null,
+    "current_image_id": null,
+    "engine": "fiftyone",
+    "error_examples": [],
+    "errors": [],
+    "execution_generation": 1,
+    "extra_permanent_image_copies": 0,
+    "failed": 0,
+    "feature": "hog-color-v1",
+    "finding_count": 1,
+    "flagged": 0,
+    "input_evidence_reason": "未选择可信模型评测；划分泄漏与错标分析未检查",
+    "peak_process_tree_rss_bytes": 622628864,
+    "peak_temporary_logical_bytes": 314835676,
+    "processed": 2,
+    "selection_frozen": true,
+    "shared_cache_references": 0,
+    "succeeded": 2,
+    "temporary_data_cleaned": true,
+    "total": 2
+  },
+  "findings_count": 1,
+  "original_material_gt_sources_unchanged": true,
+  "legacy_worker_cannot_claim": true,
+  "source_image_files": 2,
+  "permanent_extra_image_copies": 0,
+  "scope": "isolated original TaskRepository/Scheduler/MaterialBatchHandler + real FiftyOne, no web/production/GPU"
+}

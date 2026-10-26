@@ -119,6 +119,18 @@ class AnnotationLabelStateError(ValueError):
 
 
 class AnnotationRepository:
+    @classmethod
+    def open_readonly(cls, project_path: str | Path):
+        """Inspect existing canonical GT without creating or upgrading a registry."""
+        owner = cls.__new__(cls)
+        owner.project_path = Path(project_path)
+        owner.path = owner.project_path / "annotations.sqlite3"
+        owner._read_only = True
+        with closing(owner._connect()) as database:
+            if int(database.execute("PRAGMA user_version").fetchone()[0]) != _SCHEMA_VERSION:
+                raise ValueError("unsupported read-only annotation schema")
+        return owner
+
     def __init__(self, project_path: str | Path):
         self.project_path = Path(project_path)
         self.project_path.mkdir(parents=True, exist_ok=True)
@@ -126,6 +138,10 @@ class AnnotationRepository:
         self._initialize()
 
     def _connect(self):
+        if getattr(self, "_read_only", False):
+            db = sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True, timeout=30)
+            db.row_factory = sqlite3.Row
+            return db
         db = sqlite3.connect(self.path, timeout=30)
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA busy_timeout=30000")

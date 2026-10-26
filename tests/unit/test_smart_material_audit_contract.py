@@ -45,3 +45,11 @@ def test_engine_network_guard_rejects_external_dns_without_loading_engine():
         assert socket.getaddrinfo("127.0.0.1", 12345)
     assert socket.getaddrinfo is original
     assert "fiftyone" not in sys.modules
+
+
+def test_enabled_analysis_rejects_platform_python_environment(tmp_path):
+    import json
+    from platform_core.smart_material_audit import require_enabled
+    (tmp_path / "smart_material_audit.json").write_text(json.dumps({"enabled": True, "python": sys.executable}))
+    with pytest.raises(ValueError, match="独立"):
+        require_enabled(tmp_path)

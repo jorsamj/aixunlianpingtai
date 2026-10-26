@@ -116,8 +116,10 @@ class MaterialCache:
         recent_access_grace_seconds: int | None = None,
         cache_scope: str = "explicit_root",
         cache_root_source: str = "constructor",
+        allow_maintenance: bool = True,
     ) -> None:
         self.root = Path(root).resolve()
+        self.allow_maintenance = bool(allow_maintenance)
         self.cache_scope = str(cache_scope or "explicit_root")
         self.cache_root_source = str(cache_root_source or "constructor")
         self.max_bytes = _configured_non_negative_int(
@@ -397,6 +399,8 @@ class MaterialCache:
         return result
 
     def _maybe_maintain(self, *, protect_path: Path) -> None:
+        if not self.allow_maintenance:
+            return
         interval = self.maintenance_interval_seconds
         now = time.monotonic()
         if interval > 0 and self._last_maintenance_monotonic and now - self._last_maintenance_monotonic < interval:

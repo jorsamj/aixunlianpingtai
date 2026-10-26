@@ -2383,6 +2383,9 @@ class MaterialBatchHandler:
         payload = context.artifacts.read_json(
             context.task.task_id, context.task.payload_ref, default={}
         )
+        if str((payload or {}).get("operation") or "").upper() == "SMART_AUDIT":
+            from .smart_material_audit.worker import run_audit
+            return run_audit(context,self.data_dir)
         if str((payload or {}).get("operation") or "").upper() == BatchOperation.AUDIT_LABEL_INTEGRITY.value:
             try:
                 return self._run_label_integrity_audit(context)
@@ -3647,6 +3650,8 @@ class MaterialBatchHandler:
 def public_batch(task, artifacts, repository=None):
     checkpoint = artifacts.read_json(task.task_id, CHECKPOINT_REF, default={})
     request = artifacts.read_json(task.task_id, task.payload_ref, default={})
+    if request.get('operation')=='SMART_AUDIT' and (task.status is TaskStatus.QUEUED or checkpoint.get('execution_generation')!=task.attempt):
+        checkpoint={'total':checkpoint.get('total'),'processed':0,'succeeded':0,'failed':0,'selection_frozen':bool(checkpoint.get('selection_frozen'))}
     result = (
         artifacts.read_json(task.task_id, RESULT_REF, default={})
         if request.get("operation") in {
@@ -3658,6 +3663,8 @@ def public_batch(task, artifacts, repository=None):
         }
         else {}
     )
+    if request.get("operation") == "SMART_AUDIT" and task.result_ref:
+        result = artifacts.read_json(task.task_id,task.result_ref,default={})
     truth = task_to_public(task, repository) if repository is not None else None
     frozen = bool(checkpoint.get("selection_frozen"))
     error_examples = checkpoint.get("error_examples", [])[:10]
@@ -3734,12 +3741,12 @@ def public_batch(task, artifacts, repository=None):
             "processed": checkpoint.get("processed", 0), "succeeded": checkpoint.get("succeeded", 0),
             "failed": checkpoint.get("failed", 0), "current_image_id": checkpoint.get("current_image_id"),
             "flagged": checkpoint.get("flagged", 0),
-            "scan_only": request.get("operation") == BatchOperation.CLEAN.value,
+            "scan_only": request.get("operation") in {BatchOperation.CLEAN.value,"SMART_AUDIT"},
             "review_required": request.get("operation") == BatchOperation.AI_ANNOTATE.value and task.status is TaskStatus.AWAITING_CONFIRMATION,
             "review_url": (f"/api/v60/projects/{task.project_id}/annotation-tasks/{task.task_id}"
                            if request.get("operation") == BatchOperation.AI_ANNOTATE.value else None),
-            "results_url": (f"/api/v62/projects/{task.project_id}/material-batches/{task.task_id}/results"
-                            if request.get("operation") in {BatchOperation.CLEAN.value,BatchOperation.DELETE_INDEX.value} else None),
+            "results_url": (f"/api/v62/projects/{task.project_id}/smart-material-audit/{task.task_id}/findings" if request.get("operation")=="SMART_AUDIT" else f"/api/v62/projects/{task.project_id}/material-batches/{task.task_id}/results"
+                            if request.get("operation") in {BatchOperation.CLEAN.value,BatchOperation.DELETE_INDEX.value,"SMART_AUDIT"} else None),
             "error_examples": error_examples, "selection_frozen": frozen,
             "result": result if result else None,
             "logical_removed": result.get('logical_removed',checkpoint.get('logical_removed',0)),
@@ -3756,6 +3763,7 @@ def public_batch(task, artifacts, repository=None):
             "material_integrity_plan_id": options.get("material_integrity_plan_id"),
             **integrity_progress,
             **repair_stats,
+            **({"smart_audit_progress":checkpoint.get("smart_audit_progress"),"smart_audit_summary":result} if request.get("operation")=="SMART_AUDIT" else {}),
             "log_available": available, "log_ref": task.log_ref if available else None,
             "created_at": task.created_at, "updated_at": task.updated_at, "finished_at": task.finished_at}
 
@@ -4152,6 +4160,8 @@ def material_batch_router(
     @router.post("/{task_id}/retry", status_code=202)
     def retry(project_id: str, task_id: str):
         task = require_task(project_id, task_id)
+        if "materials.smart_audit" in task.required_capabilities:
+            raise HTTPException(409,detail="请从智能分析入口核验开关并重试")
         if task.status not in {TaskStatus.FAILED, TaskStatus.PARTIAL_SUCCESS, TaskStatus.CANCELLED,
                                TaskStatus.BLOCKED_BY_ENVIRONMENT, TaskStatus.BLOCKED_BY_HARDWARE}:
             raise HTTPException(409, detail="only incomplete terminal batches can be retried")
@@ -4392,4 +4402,12 @@ def material_batch_router(
 
 
 def worker_registration(data_dir):
-    return {"handlers": {TaskKind.MATERIAL_BATCH: MaterialBatchHandler(data_dir)}, "capabilities": {"materials.batch"}}
+    capabilities = {"materials.batch"}
+    from .smart_material_audit import require_enabled
+    try:
+        require_enabled(data_dir)
+    except (ValueError,OSError):
+        pass  # Optional configuration must never prevent the original Worker starting.
+    else:
+        capabilities.add("materials.smart_audit")
+    return {"handlers": {TaskKind.MATERIAL_BATCH: MaterialBatchHandler(data_dir)}, "capabilities": capabilities}
