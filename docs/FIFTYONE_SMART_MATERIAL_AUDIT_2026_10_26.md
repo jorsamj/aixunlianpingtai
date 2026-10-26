@@ -60,7 +60,7 @@
 | 阶段 | 状态 | 完成证据/剩余事项 |
 |---|---|---|
 | A审计/回归基线 | 已完成待验收 | 主要Owner/远端核对及增量方案已记录；原材料/清洗/上传/Worker定向24项通过，不代表完整兼容组 |
-| B真实引擎隔离验证 | 阻塞 | 已提出本机临时MongoDB隔离PoC许可选择，等待用户答复；未安装/运行服务、未选定权重 |
+| B真实引擎隔离验证 | 已完成待验收 | 真实相似/泄漏/uniqueness/mistakenness API、四同图退化和4项隔离场景通过；生产预测接线仍属C/D |
 | C任务/清洗审核 | 未开始 | 默认关闭、分页、取消/恢复、无正式数据写入及旧Worker兼容 |
 | D标签/人工复核 | 未开始 | 原接口/GT CAS/源SHA、审核过期与失败保护 |
 | E上传后入口 | 未开始 | 原批次/ZIP完成后显式异步入口、不阻塞回执 |
@@ -120,3 +120,24 @@ db wheel只列自身dist-info/licenses/LICENSE，不能据此宣称bundled mongo
 完整wheelhouse首次下载在scipy-1.18.1（36.7MB）传输中发生files.pythonhosted.org读取超时，pip退出1；不是依赖冲突或引擎执行失败，未安装任何候选包。不能宣称离线安装包已齐备或真实引擎已通过。已读取的三份核心wheel元数据/摘要见[制品初查回执](evidence/fiftyone-wheel-initial-audit-2026-10-26.json)。后续获得运行许可后使用已缓存制品重试下载，不重跑已通过的24项基线。
 
 **阻塞及下一步**：用户附件第八节明确“有许可证风险时要明确列出，不能擅自引入”。已说明SSPL问题，并通过问题卡请求选择是否允许仅在本机隔离PoC运行临时MongoDB，生产安装/分发另行确认。答复前不推进实际引擎运行及依赖它的业务集成。获得允许后先完成B真实执行及制品许可清单，随后按C→D→E→F接续，不能跳过关闭组回归或称为已完成集成。此限制来自用户原始要求，不是引入额外的管理员/部署审批流程。
+
+## 用户授权接续与真实问题（2026-10-26）
+
+用户选择“允许隔离PoC，生产许可另行确认”，并明确原Python/Worker环境及正式数据不可修改。此前许可问题已解除本机PoC阻塞，生产安装/分发仍未授权。安装仅C:/tmp/fiftyone-audit-1221，独立venv非system-site-packages，120个wheel共240052148字节，离线pip安装成功且pip check无冲突；原requirements不改。
+
+首批配置/输入合同6项RED→GREEN；默认无配置不建文件、不导入FiftyOne。首次真实执行中过早读取安装中的namespace失败，待安装完成后恢复；第一次完整真实引擎执行相似配对断言失败且Windows临时目录清理遇文件锁，尚未修复验收，未隐藏失败。静态核验发现FiftyOne MultiClientService按服务类型复用既有服务，且stop仅断开客户端；不能依赖此机制保证独立dbpath。改为sidecar显式启动专属mongod、回环随机端口、禁默认服务、精确进程句柄等待退出，正在真实复测。所有临时路径均属本次PoC，原图只读引用，不访问正式库。
+
+首个视觉特征选用明确标注的hog-color-v1（HOG形状+颜色直方图192维），不加载模型、无权重许可/下载、不冒充语义模型，也不替换dHash；真实匹配/相似/泄漏/uniqueness仍调用FiftyOne Brain。任意候选都须人工复核。首版输入上限2000（默认1000）以拒绝未经验证的大库内存风险；1万/10万未实测且不声称支持，后续扩容必须给出真实索引和内存证据。
+
+## B阶段本地验收回执（2026-10-26）
+
+- A文档3c7b0060383781fabca394cbaa0485c441a68382自身21/21 Actions、55/55 Checks成功；不是B代码CI。
+- 独立venv仅在C:/tmp，离线pip安装成功、pip check无冲突；锁文件optional-dependencies/fiftyone-windows-py312.lock.txt含120个精确版本/wheel哈希，仅Windows/CPython3.12，不加入主服务requirements。完整元数据/许可路径见evidence/fiftyone-resolved-wheels-2026-10-26.json。传递LGPL组件与MongoDB SSPL的生产分发义务仍待审核；不宣称清单等于法律许可通过。没有模型权重或GPU依赖下载。
+- 真实官方接口compute_similarity、compute_near_duplicates、compute_leaky_splits、compute_uniqueness已运行，缩放JPEG与原PNG实际欧氏距离0.330387324，第三张不同图片不进入该配对。预测空缺明确未检查。compute_mistakenness以受控预测/GT夹具真实运行，copy_missing=False，3张显式空GT得到3个疑似漏标候选；这是API结构验证，不是真实训练模型质量结论。证据evidence/fiftyone-real-engine-2026-10-26.json。
+- 实际失败：默认cosine后端会中心化输入，改变余弦语义并原位修改数组；改为归一化特征Euclidean及传副本，阈值与距离如实记录，不输出相似百分比。独特性不是质量分，四张全相同图片导致上游NaN；独立审查发现后改为null/not_checked，allow_nan=False，四同图真实复测通过。Brain无GT匹配时的mistakenness=-1也转换为null，不冒充有效分数。
+- 默认MultiClientService存在跨dbpath服务复用及stop不等待退出的问题，未采用。只使用其固定版本single-client父进程死亡监视器，显式自有mongod、随机回环端口、独立数据库名/目录、禁默认服务及Python外网socket，finally删除精确自有数据库并等待退出；禁止任意Mongo扫描/批量终止。强制guardian停顿时，原ProcessController按PID/创建时间/命令hash升级终止已验收。
+- 正常、os._exit崩溃、超时取消三项真实隔离验收通过，期间原image_metrics（含OpenCV）正常；guardian_stall第四项通过，原环境已安装包列表指纹前后一致，所有本次子进程结束。首guardian测试的监测器在进程恰好退出时遭NoSuchProcess，修正仅监测器退出竞态后复测通过；没有降低“进程零遗留”或原图SHA断言。证据evidence/fiftyone-fault-isolation-2026-10-26.json及fiftyone-guardian-stall-2026-10-26.json。
+- 资源实测：整棵进程树峰值RSS最大623509504字节（约594.6MiB）；临时文件逻辑大小峰值314813143字节（约300.2MiB），MongoDB journal占主要部分，非图片集副本；已随本次自有临时根目录清除。物理分配量未测。正常冷PoC总42.953秒含启动及原OpenCV首次加载，Brain小样本分析约4–5秒；guardian故障case总71.078秒含30秒关闭截止。不能拿这些数字推断大库/生产性能。
+- 保留可复用的开发环境894976080字节、离线wheelhouse240052148字节；均在本机C:/tmp且不提交二进制。没有复制正式素材，测试使用2–4张合成图片，原路径/字节不变。
+- 纯主环境合同7/7通过（默认关闭无FiftyOne import、无目录创建、严格bool/输入身份、外网DNS拒绝及socket恢复）。没有重跑24项未受影响基线，也没有跑全仓或GPU。
+- C/D/E尚未实现：正式任务/可信预测/GT绑定、分页审核与原标注保存联动、上传入口、关闭组完整回归、浏览器与最终准确CI；本阶段不称平台集成完成，不建议生产部署。
