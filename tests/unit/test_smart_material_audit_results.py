@@ -1,9 +1,8 @@
 import json
 import pytest
 
-import pytest
-
 from platform_core.annotation_repository import AnnotationRepository
+from platform_core.material_batches import BatchRequestError
 from platform_core.material_repository import MaterialRepository
 
 @pytest.mark.parametrize('checked',[True,False])
@@ -25,7 +24,23 @@ def test_native_annotation_summary_distinguishes_box_image_and_unknown_counts(tm
     assert summary['class_difference_images']==(1 if checked else None)
     assert summary['label_conflicts'] is None
     assert summary['pending_candidates']==2 and summary['confirmed_candidates']==0
-from platform_core.material_batches import BatchRequestError
+
+def test_more_than_ten_thousand_derived_findings_are_sql_paged_without_material_changes(tmp_path):
+    from itertools import combinations
+    from platform_core.smart_material_audit.results import build_results,findings_page
+    project=tmp_path/'p';materials=MaterialRepository(project);AnnotationRepository(project)
+    ids=[f'image-{i:03}' for i in range(144)]
+    materials.upsert_many(dict(id=key,filename=key+'.png',content_sha256='a'*64) for key in ids)
+    before=materials.read()
+    # Derived-pair pagination fixture only; no claim of 10k-image engine throughput.
+    inputs=[dict(image_id=key,content_sha256='a'*64) for key in ids]
+    pairs=[{'image_ids':[a,b],'distance':.1} for a,b in combinations(ids,2)]
+    path=tmp_path/'derived.sqlite3';build_results(path,inputs,{'similar_pairs':pairs,'checks':{}},generation=1)
+    first=findings_page(path,project,offset=0,limit=25)
+    last=findings_page(path,project,offset=10000,limit=25)
+    assert first['total']==last['total']==10296 and len(first['items'])==len(last['items'])==25
+    assert not {r['issue_id'] for r in first['items']}&{r['issue_id'] for r in last['items']}
+    assert materials.read()==before
 
 
 def test_findings_pagination_review_identity_and_no_formal_writes(tmp_path):

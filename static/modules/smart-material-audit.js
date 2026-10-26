@@ -16,11 +16,12 @@ export function auditSelection({scope='FILTERED',filters={},imageIds=[],pageIds=
 }
 export function auditCheckText(check={}) {
   if(check.status==='completed') return `已检查${check.checked==null?'':` · ${Number(check.checked)} 张`}`;
+  if(check.status==='partial') return `部分检查${check.checked==null?'':` · ${Number(check.checked)} 张`}${check.not_checked==null?'':` · ${Number(check.not_checked)} 张未检查`}`;
   return ({not_checked:'未检查',unknown:'未知',risk:'有风险',partial:'部分检查',failed:'失败'})[check.status]||'未检查';
 }
 export function annotationSummaryText(summary={}) {
   const value=key=>summary[key]==null?'未检查':String(summary[key]);
-  return `疑似标注异常 ${value('suspected_images')} 张 · 疑似漏标 ${value('possible_missing_boxes')} 框 · 疑似多标 ${value('possible_spurious_boxes')} 框 · 类别差异 ${value('class_difference_images')} 张 · 定位偏差 ${value('location_difference_images')} 张 · 待复核 ${value('pending_candidates')} 条 · 已确认问题或修正 ${value('confirmed_candidates')} 条 · 标签冲突：由原 Full Audit 核验`;
+  return `疑似标注异常 ${value('suspected_images')} 张 · 疑似漏标 ${value('possible_missing_boxes')} 框 · 疑似多标 ${value('possible_spurious_boxes')} 框 · 类别差异 ${value('class_difference_images')} 张 · 定位偏差 ${value('location_difference_images')} 张 · 标注证据未覆盖 ${value('annotation_not_checked_images')} 张 · 待复核 ${value('pending_candidates')} 条 · 已确认问题或修正 ${value('confirmed_candidates')} 条 · 标签冲突：由原 Full Audit 核验`;
 }
 
 // Presentation only: submission, durable identity and polling remain MaterialBatchRuntime62's.
@@ -127,6 +128,7 @@ export function installSmartMaterialAudit({getState,api,modal,notify}={}) {
     reason.textContent=[evidence.possible_missing>0?`疑似漏标 ${evidence.possible_missing} 框`:'',evidence.possible_spurious>0?`疑似多标 ${evidence.possible_spurious} 框`:'',evidence.mistakenness>.5?'疑似类别差异':'',evidence.mistakenness_loc>.5?'疑似框位置偏差':'',Number.isFinite(evidence.distance)?`单位特征距离 ${evidence.distance.toFixed(4)}（越小越近，不是百分比）`:'',evidence.reason||''].filter(Boolean).join('；')||'需人工核验，不能据此自动判定正式错误。';raw.before(reason);
     const source=document.createElement('p');source.textContent=`来源批次：${item.inputs?.[item.image_id]?.source_batch_id||'未记录'}`;raw.before(source);
     const disclosure=document.createElement('details'),title=document.createElement('summary');title.textContent='查看分析证据';raw.replaceWith(disclosure);disclosure.append(title,raw);
+    if(item.review){const receipt=document.createElement('p'),names={confirmed_issue:'确认存在问题',no_issue:'无需修改',corrected:'已修正',unknown:'暂无法确认'};receipt.textContent=`最近复核：${names[item.review.verdict]||'未知'} · ${item.review.actor_id||'未记录人员'} · ${item.review.reviewed_at||''}${item.review_valid?'':'（已失效，需重新核验）'}${item.review.note?` · ${item.review.note}`:''}`;disclosure.after(receipt);}
     v.root.querySelectorAll('[data-verdict]').forEach(b=>b.onclick=()=>void action(v,async()=>{
       if(v.task.task_id!==taskId||v.task.attempt!==attempt||v.item!==item)throw new Error('分析结果已切换，请重新核验');
       await request(v,`${base(v.project)}/${encodeURIComponent(taskId)}/findings/${encodeURIComponent(id)}/review`,post({verdict:b.dataset.verdict,expected_generation:attempt,expected_review_token:item.review_token,note:v.root.querySelector('[data-note]').value}));

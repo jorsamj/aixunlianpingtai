@@ -12,6 +12,7 @@ test('completed analysis and unknown checks never claim business correctness',()
   assert.equal(auditCheckText({status:'completed',checked:2}),'已检查 · 2 张');
   assert.equal(auditCheckText({status:'not_checked'}),'未检查');
   assert.equal(auditCheckText({status:'unknown'}),'未知');
+  assert.equal(auditCheckText({status:'partial',checked:2,not_checked:3}),'部分检查 · 2 张 · 3 张未检查');
   assert.equal(auditCheckText({}),'未检查');
 });
 test('label suggestions separate native box counts, pending candidates and unchecked fields',()=>{
