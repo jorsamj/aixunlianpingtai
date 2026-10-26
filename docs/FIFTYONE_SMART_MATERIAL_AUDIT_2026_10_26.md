@@ -2,6 +2,12 @@
 
 本文件是本专项唯一需求、设计、进度和接续依据。用户附件681f3943与“最高优先级：现有业务兼容性与零破坏原则”共同构成需求基线；后者优先。2026-10-26真实fetch成功，远端/本地均c88b6151797bf7a122b891f4e336697dd041802a，VERSION42.24.389，初始工作区干净。其他工作树、5944e1a5、原标注WIP和两份训练模板测试保持原样。
 
+## 只读分析完成不重置原素材操作（2026-10-26）
+
+基础修正 `b6a506693478b5844ecd8a7549787f90cba7cf3c` 已准确33/33 Actions、87/87 Checks成功，[完整回执](evidence/fiftyone-ci-b6a50669-success.json)；[真实Chrome297/297](evidence/fiftyone-chrome-b6a50669-success.json)通过，关闭08da原素材导入刷新失败。
+
+收尾发现并修复只读副作用：原 MaterialBatchRuntime 终态 refresh 回调会清空 data412Selected、退出删除模式并刷新素材；SMART_AUDIT没有改素材，不应触发。现在只对SMART_AUDIT跳过该回调，仍先通知派生视图、停止原轮询、清理任务记忆；原清洗/删除/AI任务的刷新原样保留。新增只读终态用例 RED（refresh=1）→GREEN（refresh=0），原提交/失败/删除等15项Node通过，独立只读审查无阻塞。此小修复提交须核验自身最终SHA，不能借b6绿色。
+
 ## CI失败闭环与重试排队展示修正（2026-10-26）
 
 `08da45d53519e388ecd3b66590e4fc979c10e87d` 实际21/22 Actions、55/56 Checks成功，Chrome295通过1失败，失败为原 `source-import-completion-scope` 导入完成后未观察到素材分页刷新；[准确失败回执](evidence/fiftyone-ci-08da45d5-failure.json)。不将其认作全绿，不通过简单重跑掩盖。

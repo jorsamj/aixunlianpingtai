@@ -38,6 +38,16 @@ test('smart analysis coalesces clicks, validates project identity and clears acc
   assert.equal(first,second);await new Promise(resolve=>setImmediate(resolve));release();await first;
   assert.equal(posts,1);assert.equal(window.MaterialBatchRuntime62.pendingSmart(),null);
 }));
+test('read-only smart completion never refreshes or clears the original material editing selection',async()=>{
+  let refreshed=0;
+  await fixture(async()=>{
+    const task={task_id:'smart-readonly',project_id:'p1',kind:'MATERIAL_BATCH',operation:'SMART_AUDIT',status:'SUCCEEDED'};
+    globalThis.fetch=async()=>Response.json(task);
+    await window.MaterialBatchRuntime62.submitSmart({options:{request_id:'readonly'}});
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(refreshed,0);
+  },{refresh:async()=>refreshed++});
+});
 test('material estimate and create share one submission and release the original busy button',()=>fixture(async()=>{
   let release,posts=0;
   globalThis.fetch=async url=>{

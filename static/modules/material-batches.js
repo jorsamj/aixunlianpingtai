@@ -121,7 +121,9 @@ export function installMaterialBatchRuntime({projectId, projectName, currentPage
           registry.startTimeout(pollKey(id), POLL_OWNERS, tick, 1500);
         } else {
           stopPolling(id);
-          try {await refresh?.();} catch(error) {tell('素材任务已结束，列表刷新失败，可手动刷新：'+(error.message||error));}
+          if (task.operation !== 'SMART_AUDIT') {
+            try {await refresh?.();} catch(error) {tell('素材任务已结束，列表刷新失败，可手动刷新：'+(error.message||error));}
+          }
           if (pid() !== projectAtStart) return;
           if (task.operation === 'DELETE_INDEX' && typeof window.invalidateMaterialIntegrityGovernance47 === 'function') {
             await window.invalidateMaterialIntegrityGovernance47(task);
