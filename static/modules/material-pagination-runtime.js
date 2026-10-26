@@ -580,6 +580,9 @@ export function installMaterialPaginationRuntime() {
   window.batchDelete426 = window.batchDelete429 = () => window.runMaterialBatch62?.('DELETE_INDEX',{scope:'SELECTED',imageIds:[...(state.data424Selected||[])]});
   window.reloadMaterialPage61 = async () => {
     invalidateFullPool61();
+    // A mutation needs evidence newer than any same-filter request already in flight.
+    // Starting the replacement increments requestSerial and fences the older response.
+    pageLoadFlightKey = '';
     const result = await loadMaterialPage61({reset: true});
     try { await window.ZipImportRuntime?.reconcile?.('material-page'); } catch (_) {}
     return result;

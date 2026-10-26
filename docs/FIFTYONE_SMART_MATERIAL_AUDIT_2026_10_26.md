@@ -2,6 +2,14 @@
 
 本文件是本专项唯一需求、设计、进度和接续依据。用户附件681f3943与“最高优先级：现有业务兼容性与零破坏原则”共同构成需求基线；后者优先。2026-10-26真实fetch成功，远端/本地均c88b6151797bf7a122b891f4e336697dd041802a，VERSION42.24.389，初始工作区干净。其他工作树、5944e1a5、原标注WIP和两份训练模板测试保持原样。
 
+## CI失败闭环与重试排队展示修正（2026-10-26）
+
+`08da45d53519e388ecd3b66590e4fc979c10e87d` 实际21/22 Actions、55/56 Checks成功，Chrome295通过1失败，失败为原 `source-import-completion-scope` 导入完成后未观察到素材分页刷新；[准确失败回执](evidence/fiftyone-ci-08da45d5-failure.json)。不将其认作全绿，不通过简单重跑掩盖。
+
+使用 systematic-debugging 定位：原 `reloadMaterialPage61` 可能复用导入/修改之前同项目、筛选、页码的未完成请求，未重新读取新素材。新受控真实Chrome将旧请求挂起，RED只有1次旧读取而非2次；最小修复在原 reload 入口清空 pageLoadFlightKey，启动替代请求，继续用原 requestSerial/flight身份隔离旧返回。没有新分页Owner/队列/全库读取；普通同条件导航仍 single-flight。Chrome3项GREEN（旧请求挂起期间突变后刷新、原导入终态无全量fan-out、智能重试），Node25项GREEN。原测试增加启动完成前置条件，并按真实请求事件等待，替代任意900ms睡眠；保留“必须刷新”和“不得广泛请求”全部断言。分页模块cache422613，其他发布缓存/正式VERSION390不重复递增。
+
+另核验原 TaskRepository.retry 在入队时清空 result_ref，但 attempt 直到 Worker 领取才递增。分析面板额外在 result_ready 从真变假时立即清三栏/失效旧请求，避免排队期间展示旧复核内容；后端原拒绝规则不变。已加入同attempt QUEUED→新attempt RUNNING和迟到旧详情的Chrome回归。两处独立只读审查无阻塞；后续修正准确SHA必须重新验收CI。
+
 ## 兼容性审查收尾：远程缓存引用不阻塞原读取（2026-10-26）
 
 原分析适配曾沿用每对象 FileLock 保护整个执行期，而原 MaterialCache.materialize 也使用同一独占锁（默认等待300秒），因此可能让原清洗/训练读取相同远程缓存等待分析结束。现在只在短锁内核验 SHA 并建立 `working/remote-references` 私有硬链接，立即释放共享缓存锁；同 SHA 复用该引用。硬链接同 inode、不复制图片字节，原缓存被原 GC 淘汰后引用仍有效；最终仅移除本任务 working 内的链接，不删除共享缓存/正式原图。跨文件系统不能链接时明确未检查，不回退复制或长锁。原 StorageManager/MaterialCache 主业务合同不改。

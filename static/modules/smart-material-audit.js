@@ -43,6 +43,7 @@ export function installSmartMaterialAudit({getState,api,modal,notify}={}) {
     if(v.task&&v.task.task_id!==task.task_id)return;
     if(v.task?.updated_at&&task.updated_at<v.task.updated_at)return;
     const wasActive=!v.task||isMaterialBatchActive(v.task),oldAttempt=v.task?.attempt;
+    const resultsCleared=Boolean(v.task?.result_ready&&!task.result_ready);
     v.task=task;
     const progress=task.smart_audit_progress||{};
     const phase=({smart_inputs:'只读核验输入',smart_features:'提取图像特征',smart_similarity:'计算视觉相似性',smart_mistakenness:'核验错标证据',smart_engine:'隔离引擎处理中'})[progress.stage||task.phase]||task.phase||'';
@@ -51,7 +52,7 @@ export function installSmartMaterialAudit({getState,api,modal,notify}={}) {
     v.root.querySelector('[data-cancel]').hidden=!isMaterialBatchActive(task);
     v.root.querySelector('[data-retry]').hidden=!['FAILED','CANCELLED','PARTIAL_SUCCESS','BLOCKED_BY_ENVIRONMENT','BLOCKED_BY_HARDWARE'].includes(task.status);
     v.root.querySelector('[data-checks]').innerHTML=Object.entries(task.smart_audit_summary?.checks||{}).map(([key,check])=>`<span title="${escape(check.reason||'')}">${escape(checks[key]||key)}：<b>${escape(auditCheckText(check))}</b></span>`).join('');
-    if(oldAttempt!==task.attempt) {resetResults(v);}
+    if(oldAttempt!==task.attempt||resultsCleared) {resetResults(v);}
     if(!isMaterialBatchActive(task)&&(wasActive||oldAttempt!==task.attempt)&&task.result_ready) void findings(v);
   }
   function resetResults(v) {v.offset=0;v.detailSequence++;v.listSequence++;v.item=null;for(const editor of v.editors||[])editor.destroy();v.editors=[];for(const name of ['issues','detail','review'])v.root.querySelector(`[data-${name}]`).replaceChildren();v.root.querySelector('[data-annotation-summary]')?.remove();if(v.source==='labels'){const box=document.querySelector('[data-smart-audit-label-summary]');if(box)box.textContent='当前分析结果尚未读取，不使用旧任务计数。';}}

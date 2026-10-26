@@ -121,7 +121,8 @@ test('explicit full material hydration is lazy, cached and single-flight', () =>
   assert.match(runtime, /if \(!force && snapshot\?\.fresh\) return snapshot\.items\.slice\(\)/);
   assert.match(runtime, /const rows = await loadFullPool61\(\)/);
   assert.match(runtime, /ensureFullPool: ensureFullPool61/);
-  assert.match(runtime, /invalidateFullPool61\(\);\r?\n    const result = await loadMaterialPage61/);
+  const reload=runtime.slice(runtime.indexOf('window.reloadMaterialPage61 = async'),runtime.indexOf('const baseMarkReady'));
+  assert.match(reload, /invalidateFullPool61\(\);[\s\S]*pageLoadFlightKey = '';[\s\S]*const result = await loadMaterialPage61/);
 });
 
 

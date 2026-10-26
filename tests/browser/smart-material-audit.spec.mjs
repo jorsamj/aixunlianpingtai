@@ -44,10 +44,13 @@ test('smart audit retry invalidates delayed old details and second image retry p
   let release;const pending=new Promise(resolve=>release=resolve);let started=false;
   await page.route('**/smart-material-audit/smart-browser/findings/issue-one',async route=>{started=true;await pending;await route.fulfill({json:{...fixture.issue,generation:1}});});
   await panel.locator('[data-issue]').click();await expect.poll(()=>started).toBe(true);
-  await page.evaluate(task=>window.SmartMaterialAuditRuntime.onTask({...task,attempt:2,status:'RUNNING',result_ready:false,updated_at:'2026-10-26T02:00:00Z'}),fixture.task());
+  // The original repository clears result_ref immediately, but increments attempt only on claim.
+  await page.evaluate(task=>window.SmartMaterialAuditRuntime.onTask({...task,attempt:1,status:'QUEUED',result_ready:false,updated_at:'2026-10-26T02:00:00Z'}),fixture.task());
   release();await expect(panel.locator('[data-review]')).toBeEmpty();await expect(panel.locator('[data-detail]')).toBeEmpty();
   await page.evaluate(task=>window.SmartMaterialAuditRuntime.onTask({...task,task_id:'unselected-task',attempt:3,status:'SUCCEEDED',updated_at:'2026-10-26T03:00:00Z'}),fixture.task());
-  await expect(panel.locator('[data-status]')).toContainText('处理中');expect(fixture.reviews()).toHaveLength(0);expect(fixture.errors).toEqual([]);
+  await expect(panel.locator('[data-status]')).toContainText('排队中');
+  await page.evaluate(task=>window.SmartMaterialAuditRuntime.onTask({...task,attempt:2,status:'RUNNING',result_ready:false,updated_at:'2026-10-26T04:00:00Z'}),fixture.task());
+  await expect(panel.locator('[data-review]')).toBeEmpty();expect(fixture.reviews()).toHaveLength(0);expect(fixture.errors).toEqual([]);
 });
 
 test('smart audit ON uses original submission owner, real DOM pagination, readonly GT layers and review',async({page,request},testInfo)=>{
