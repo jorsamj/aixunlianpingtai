@@ -2,6 +2,17 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {confirmationRows, decisionGroups, installUploadConfirmationRuntime} from '../../static/modules/upload-confirmation.js';
 const receipt=(id, ids)=>({id,items:ids.map(image_id=>({image_id,decision:'pending',image:{id:image_id,filename:`${image_id}.jpg`}})),upload_request_status:'SUCCEEDED'});
+test('optional smart audit receives only selected admitted image IDs and never changes upload decisions',async()=>{
+ const state={project:{id:'p'}},opened=[];let posts=0;
+ const root={dataset:{},set innerHTML(value){this.html=value;},querySelector:()=>null};
+ const container={querySelector:()=>root,firstElementChild:root,children:[root]};
+ const runtime=installUploadConfirmationRuntime({getState:()=>state,window:{openSmartMaterialAudit:options=>opened.push(options)},storage:{getItem:()=>null,setItem(){}},
+  api:async(_url,options)=>{if(options.method==='POST')posts++;return receipt('batch',['1','2']);}});
+ await runtime.open({projectId:'p',batchIds:['batch']});runtime.mount(container);
+ root.onchange({target:{dataset:{id:'2'},checked:true}});
+ root.onclick({target:{closest:()=>({disabled:false,dataset:{uploadAction:'smart'}})}});
+ assert.deepEqual(opened,[{imageIds:['2'],projectId:'p',source:'upload'}]);assert.equal(posts,0);assert.equal(state.annotationQueue414,undefined);
+});
 test('confirmation identity uses persisted successful images and filters missing, retired, duplicate rows',()=>{
   const a=receipt('a',['1','2']);a.items.push({image_id:'3',decision:'pending',missing:true,image:null});a.items[1].image.retired_at='now';
   assert.deepEqual(confirmationRows([a,receipt('b',['1','4'])]).map(r=>r.image_id),['1','4']);

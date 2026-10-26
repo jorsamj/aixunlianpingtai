@@ -14,6 +14,7 @@ def main():
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--with-prediction-fixture", action="store_true")
+    parser.add_argument("--with-location-fixture", action="store_true")
     parser.add_argument("--identical-fixture", action="store_true")
     args = parser.parse_args()
     from PIL import Image, ImageDraw
@@ -48,6 +49,14 @@ def main():
                     annotation_state="confirmed_empty", annotation_digest="b"*64,
                     prediction_evidence=dict(evaluation_id="c"*64, model_sha256="d"*64,
                         benchmark_scope_id="e"*64, image_content_sha256=row["content_sha256"],image_width=width,image_height=height))
+        if args.with_location_fixture:
+            for row in records:
+                with Image.open(row['path']) as source:width,height=source.size
+                row.update(gt_boxes=[dict(label='orange',x1=10,y1=8,x2=50,y2=55)],
+                    pred_boxes=[dict(label='orange',x1=20,y1=8,x2=60,y2=55,confidence=.99)],
+                    annotation_state='annotated',annotation_digest='b'*64,
+                    prediction_evidence=dict(evaluation_id='c'*64,model_sha256='d'*64,benchmark_scope_id='e'*64,
+                        image_content_sha256=row['content_sha256'],image_width=width,image_height=height))
         before = {row["image_id"]: Path(row["path"]).read_bytes() for row in records}
         result = analyze(dict(project_id="isolated", task_id="poc", feature="hog-color-v1",
             images=records, threshold=.4, frozen_split_evidence="a" * 64), root / "engine")
@@ -55,7 +64,11 @@ def main():
         assert result["scanned"] == len(names) and result["failed"] == 0
         assert any(set(pair["image_ids"]) == {"image-0", "image-1"} for pair in result["similar_pairs"])
         assert result["checks"]["leakage"]["status"] == "completed"
-        if args.with_prediction_fixture:
+        if args.with_location_fixture:
+            assert len(result['annotation_candidates'])==len(names)
+            assert all(row['mistakenness_loc']>.5 and row['mistakenness']<.5 for row in result['annotation_candidates'])
+            assert all(row['native_box_signals'][0]['gt_box_index']==0 for row in result['annotation_candidates'])
+        elif args.with_prediction_fixture:
             assert result["checks"]["mistakenness"]["status"] == "completed"
             assert len(result["annotation_candidates"]) == len(names)
             assert all(row["possible_missing"] == 1 for row in result["annotation_candidates"])

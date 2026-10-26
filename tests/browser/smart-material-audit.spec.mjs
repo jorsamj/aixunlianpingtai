@@ -80,8 +80,9 @@ test('smart review enters the original annotation editor and records corrected o
   const uploaded=await request.post(`/api/projects/${fixture.project.id}/images`,{multipart:{dataset_id:'default',files:{name:'review-original.bmp',mimeType:'image/bmp',buffer}}});expect(uploaded.ok()).toBeTruthy();
   const image=(await uploaded.json()).uploaded[0];fixture.issue.image_id=image.id;fixture.issue.inputs={[image.id]:{gt_boxes:[],pred_boxes:[]}};
   await request.post(`/api/v52/projects/${fixture.project.id}/images/mark-ready`,{data:{image_ids:[image.id]}});
-  await page.evaluate(()=>{state.annotationQueue414=['prior-queue'];});
-  await page.getByRole('button',{name:'智能质量分析',exact:true}).click();const panel=page.locator('.smart-material-audit');await expect(panel.locator('[data-create]')).toBeEnabled();page.once('dialog',dialog=>dialog.accept());await panel.locator('[data-create]').click();
+  await page.evaluate(async()=>{state.annotationQueue414=['prior-queue'];await setPage('标签管理');});
+  await page.getByRole('button',{name:'智能质量建议与人工复核',exact:true}).click();const panel=page.locator('.smart-material-audit');await expect(panel.locator('[data-create]')).toBeEnabled();page.once('dialog',dialog=>dialog.accept());await panel.locator('[data-create]').click();
+  await expect(page.locator('[data-smart-audit-label-summary]')).toContainText('待复核');
   await panel.getByRole('button',{name:'打开原标注工作台'}).click();const dialog=page.getByRole('dialog',{name:'图片标注工作台',exact:true});await expect(dialog).toBeVisible();
   await expect.poll(()=>page.evaluate(()=>Boolean(state.annotationEditor?.snapshot&&!state.annotationHydrating420&&!state.annotationEditor.snapshot().locked))).toBe(true);
   const rect=await dialog.locator('#annImg').boundingBox();await page.mouse.move(rect.x+rect.width*.2,rect.y+rect.height*.2);await page.mouse.down();await page.mouse.move(rect.x+rect.width*.65,rect.y+rect.height*.65,{steps:8});await page.mouse.up();

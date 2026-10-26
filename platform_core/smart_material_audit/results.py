@@ -140,8 +140,24 @@ def findings_page(path, project, *, offset=0, limit=25, issue_type="", issue_id=
                 item['inputs']={key:{k:v for k,v in facts.items() if k not in {'gt_boxes','pred_boxes','prediction_evidence'}}
                     for key,facts in item['inputs'].items()}
         review_counts['pending']=sum(counts.values())-sum(review_counts[key] for key in ('confirmed_issue','no_issue','corrected'))
+        checks=json.loads(db.execute("SELECT value_json FROM metadata WHERE key='checks'").fetchone()[0])
+        annotation=checks.get('mistakenness',{})
+        checked=annotation.get('status') in {'completed','partial'}
+        metrics=db.execute("""SELECT COALESCE(SUM(json_extract(evidence_json,'$.possible_missing')),0),
+            COALESCE(SUM(json_extract(evidence_json,'$.possible_spurious')),0),
+            COALESCE(SUM(CASE WHEN json_extract(evidence_json,'$.mistakenness')>0.5 THEN 1 ELSE 0 END),0),
+            COALESCE(SUM(CASE WHEN json_extract(evidence_json,'$.mistakenness_loc')>0.5 THEN 1 ELSE 0 END),0)
+            FROM findings WHERE issue_type='suspected_annotation'""").fetchone()
+        annotation_summary={'suspected_images':counts.get('suspected_annotation',0) if checked else None,
+            'possible_missing_boxes':metrics[0] if checked else None,'possible_spurious_boxes':metrics[1] if checked else None,
+            'class_difference_images':metrics[2] if checked else None,
+            'location_difference_images':metrics[3] if checked and annotation.get('location_evidence') else None,
+            'label_conflicts':None,'label_conflict_owner':'original_full_audit',
+            'pending_candidates':review_counts['pending'],
+            'confirmed_candidates':review_counts['confirmed_issue']+review_counts['corrected'],
+            'annotation_not_checked_images':max(0,db.execute('SELECT COUNT(*) FROM inputs').fetchone()[0]-int(annotation.get('checked',0)))}
         return {"items":items,"total":total,"offset":offset,"limit":limit,'review_counts':review_counts,'review_counts_by_type':by_type,
-            "counts":counts,"checks":json.loads(db.execute("SELECT value_json FROM metadata WHERE key='checks'").fetchone()[0]),
+            "counts":counts,"checks":checks,'annotation_summary':annotation_summary,
             "generation":json.loads(db.execute("SELECT value_json FROM metadata WHERE key='generation'").fetchone()[0]),
             "read_only_sources":True}
 

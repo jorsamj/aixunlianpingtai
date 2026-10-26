@@ -76,6 +76,7 @@ def _materialize_input(manager,image,cached,cache_bytes):
 
 def run_audit(context, data_dir):
     from ..material_batches import BatchSelection
+    started=time.monotonic()
     config = configuration(data_dir)
     task_id = context.task.task_id
     project = project_path(data_dir, context.task.project_id)
@@ -138,6 +139,7 @@ def run_audit(context, data_dir):
                                 cached_inputs[str(local.path)]=local
                         record = gt.get(image_id)
                         row = {"image_id":image_id,"filename":image.get('filename',image_id),"path":str(local.path),
+                            "source_batch_id":image.get('upload_batch_id') or image.get('import_batch_id') or image.get('source_task_id'),
                             "content_sha256":local.content_sha256,"annotation_version":record.get('version') if record else None,
                             "annotation_digest":annotations.record_digest(record) if record is not None else None,
                             "annotation_state":record.get('annotation_state') if record else 'unknown',
@@ -239,6 +241,7 @@ def run_audit(context, data_dir):
         summary=manifest.summary()
         summary.update(engine='fiftyone',feature=FEATURE,checks=outcome['checks'],input_evidence_reason=evidence['reason'],
             finding_count=len(outcome.get('similar_pairs',[]))+len(outcome.get('annotation_candidates',[]))+len(failures),
+            elapsed_seconds=round(time.monotonic()-started,3),
             execution_generation=generation,temporary_data_cleaned=True,extra_permanent_image_copies=0,
             shared_cache_references=len(locked),peak_process_tree_rss_bytes=peak_rss,peak_temporary_logical_bytes=peak_disk)
         context.save_checkpoint(summary)

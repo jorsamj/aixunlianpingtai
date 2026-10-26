@@ -107,14 +107,28 @@ def _mistakenness(dataset, rows, ids, brain, fo):
         # Brain uses -1 when no matched GT exists; this is unavailable, not a score.
         if score is not None and score < 0:
             score = None
-        if missing or spurious or score is not None and score > .5:
+        box_signals=[];locations=[]
+        # Project Brain's own matched-box fields; never rematch IoU or recompute formal metrics.
+        for index,detection in enumerate(sample['formal_gt_copy'].detections):
+            location=getattr(detection,'mistakenness_loc',None)
+            if location is not None and math.isfinite(float(location)) and location>=0:
+                locations.append(float(location))
+            classification=getattr(detection,'mistakenness',None)
+            if (location is not None and location>.5 or classification is not None and classification>.5
+                    or getattr(detection,'possible_spurious',False)):
+                box_signals.append({'gt_box_index':index,'mistakenness':classification,'mistakenness_loc':location,
+                    'possible_spurious':bool(getattr(detection,'possible_spurious',False))})
+        location=max(locations) if locations else None
+        if missing or spurious or score is not None and score > .5 or location is not None and location>.5:
             candidates.append({"image_id": row["image_id"], "issue_type": "suspected_annotation",
                 "possible_missing": missing, "possible_spurious": spurious, "mistakenness": score,
+                'mistakenness_loc':location,'native_box_signals':box_signals[:120],
+                'native_box_signals_truncated':len(box_signals)>120,
                 "annotation_digest": row["annotation_digest"], "prediction_evidence": row["prediction_evidence"],
                 "reason": "模型与GT存在差异，仅为疑似问题，需人工复核；不改变正式评测统计",
                 "requires_confirmation": True})
     return {"status": "completed" if len(eligible) == len(rows) else "partial",
-            "checked": len(eligible), "not_checked": len(rows)-len(eligible)}, candidates
+            "checked": len(eligible), "not_checked": len(rows)-len(eligible),'location_evidence':True}, candidates
 
 
 def _configure(root, database_name):

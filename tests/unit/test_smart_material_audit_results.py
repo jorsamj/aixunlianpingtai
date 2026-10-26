@@ -1,9 +1,30 @@
 import json
+import pytest
 
 import pytest
 
 from platform_core.annotation_repository import AnnotationRepository
 from platform_core.material_repository import MaterialRepository
+
+@pytest.mark.parametrize('checked',[True,False])
+def test_native_annotation_summary_distinguishes_box_image_and_unknown_counts(tmp_path,checked):
+    from platform_core.smart_material_audit.results import build_results,findings_page
+    project=tmp_path/'p';materials=MaterialRepository(project);AnnotationRepository(project)
+    inputs=[]
+    for name in ['a','b']:
+        materials.upsert(dict(id=name,filename=name+'.png',content_sha256='a'*64))
+        inputs.append(dict(image_id=name,content_sha256='a'*64))
+    path=tmp_path/'derived.sqlite3'
+    check={'status':'completed','checked':2,'location_evidence':True} if checked else {'status':'not_checked','checked':0}
+    build_results(path,inputs,{'annotation_candidates':[{'image_id':'a','possible_missing':2,'possible_spurious':0,'mistakenness':.1,'mistakenness_loc':.8},
+        {'image_id':'b','possible_missing':1,'possible_spurious':1,'mistakenness':.9,'mistakenness_loc':.1}],'checks':{'mistakenness':check}},generation=1)
+    summary=findings_page(path,project)['annotation_summary']
+    assert summary['suspected_images']==(2 if checked else None)
+    assert summary['possible_missing_boxes']==(3 if checked else None)
+    assert summary['location_difference_images']==(1 if checked else None)
+    assert summary['class_difference_images']==(1 if checked else None)
+    assert summary['label_conflicts'] is None
+    assert summary['pending_candidates']==2 and summary['confirmed_candidates']==0
 from platform_core.material_batches import BatchRequestError
 
 

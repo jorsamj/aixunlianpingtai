@@ -18,6 +18,10 @@ export function auditCheckText(check={}) {
   if(check.status==='completed') return `已检查${check.checked==null?'':` · ${Number(check.checked)} 张`}`;
   return ({not_checked:'未检查',unknown:'未知',risk:'有风险',partial:'部分检查',failed:'失败'})[check.status]||'未检查';
 }
+export function annotationSummaryText(summary={}) {
+  const value=key=>summary[key]==null?'未检查':String(summary[key]);
+  return `疑似标注异常 ${value('suspected_images')} 张 · 疑似漏标 ${value('possible_missing_boxes')} 框 · 疑似多标 ${value('possible_spurious_boxes')} 框 · 类别差异 ${value('class_difference_images')} 张 · 定位偏差 ${value('location_difference_images')} 张 · 待复核 ${value('pending_candidates')} 条 · 已确认问题或修正 ${value('confirmed_candidates')} 条 · 标签冲突：由原 Full Audit 核验`;
+}
 
 // Presentation only: submission, durable identity and polling remain MaterialBatchRuntime62's.
 export function installSmartMaterialAudit({getState,api,modal,notify}={}) {
@@ -42,14 +46,15 @@ export function installSmartMaterialAudit({getState,api,modal,notify}={}) {
     v.task=task;
     const progress=task.smart_audit_progress||{};
     const phase=({smart_inputs:'只读核验输入',smart_features:'提取图像特征',smart_similarity:'计算视觉相似性',smart_mistakenness:'核验错标证据',smart_engine:'隔离引擎处理中'})[progress.stage||task.phase]||task.phase||'';
-    message(v,`${materialBatchTaskText(task)} · 已处理 ${Number(task.processed||0)}/${Number(task.total||0)} · ${phase}${progress.scanned==null?'':` · 特征已读取 ${progress.scanned}/${progress.total}（不是整项任务完成度）`}`);
+    const elapsed=task.smart_audit_summary?.elapsed_seconds;
+    message(v,`${materialBatchTaskText(task)} · 已处理 ${Number(task.processed||0)}/${Number(task.total||0)} · 成功 ${Number(task.succeeded||0)} · 失败 ${Number(task.failed||0)} · 未处理 ${Math.max(0,Number(task.total||0)-Number(task.processed||0))}${elapsed==null?'':` · 处理耗时 ${elapsed} 秒`} · ${phase}${progress.scanned==null?'':` · 特征已读取 ${progress.scanned}/${progress.total}（不是整项任务完成度）`}`);
     v.root.querySelector('[data-cancel]').hidden=!isMaterialBatchActive(task);
     v.root.querySelector('[data-retry]').hidden=!['FAILED','CANCELLED','PARTIAL_SUCCESS','BLOCKED_BY_ENVIRONMENT','BLOCKED_BY_HARDWARE'].includes(task.status);
     v.root.querySelector('[data-checks]').innerHTML=Object.entries(task.smart_audit_summary?.checks||{}).map(([key,check])=>`<span title="${escape(check.reason||'')}">${escape(checks[key]||key)}：<b>${escape(auditCheckText(check))}</b></span>`).join('');
     if(oldAttempt!==task.attempt) {resetResults(v);}
     if(!isMaterialBatchActive(task)&&(wasActive||oldAttempt!==task.attempt)&&task.result_ready) void findings(v);
   }
-  function resetResults(v) {v.offset=0;v.detailSequence++;v.listSequence++;v.item=null;for(const editor of v.editors||[])editor.destroy();v.editors=[];for(const name of ['issues','detail','review'])v.root.querySelector(`[data-${name}]`).replaceChildren();}
+  function resetResults(v) {v.offset=0;v.detailSequence++;v.listSequence++;v.item=null;for(const editor of v.editors||[])editor.destroy();v.editors=[];for(const name of ['issues','detail','review'])v.root.querySelector(`[data-${name}]`).replaceChildren();v.root.querySelector('[data-annotation-summary]')?.remove();if(v.source==='labels'){const box=document.querySelector('[data-smart-audit-label-summary]');if(box)box.textContent='当前分析结果尚未读取，不使用旧任务计数。';}}
   async function chooseTask(v,id) {
     resetResults(v);v.task=null;v.desiredTaskId=id;
     const task=await request(v,`/api/v62/projects/${encodeURIComponent(v.project)}/material-batches/${encodeURIComponent(id)}`);
@@ -73,9 +78,15 @@ export function installSmartMaterialAudit({getState,api,modal,notify}={}) {
       const page=await request(v,`${base(v.project)}/${encodeURIComponent(id)}/findings?limit=25&offset=${v.offset}&issue_type=${encodeURIComponent(v.filter)}`);
       if(!active(v)||v.task.task_id!==id||v.task.attempt!==attempt||page.generation!==attempt||token!==v.listSequence)return;
       v.total=page.total;
+      let summary=v.root.querySelector('[data-annotation-summary]');
+      if(!summary){summary=document.createElement('p');summary.dataset.annotationSummary='';v.root.querySelector('[data-checks]').after(summary);}
+      summary.textContent=annotationSummaryText(page.annotation_summary);
+      const labelSummary=document.querySelector('[data-smart-audit-label-summary]');
+      if(labelSummary&&v.source==='labels')labelSummary.textContent=`Task ${id} · ${annotationSummaryText(page.annotation_summary)}`;
       v.root.querySelector('[data-count]').textContent=`候选 ${page.total} 条 · 第 ${Math.floor(v.offset/25)+1} 页 · 人工复核 ${Object.entries(page.review_counts||{}).map(([k,n])=>`${({confirmed_issue:'确认问题',no_issue:'无需修改',corrected:'已修正',unknown:'待确认',stale:'已失效'})[k]||k} ${n}`).join(' / ')}`;
       v.root.querySelector('[data-issues]').innerHTML=page.items.map(item=>`<button class="sma-issue" data-issue="${escape(item.issue_id)}"><b>${escape(types[item.issue_type]||item.issue_type)}</b><span>${escape(item.image_id)}${item.related_image_id?` ↔ ${escape(item.related_image_id)}`:''}</span><small>${item.stale?'证据已变化，需复核':item.review_valid?'已人工复核':'待人工复核'}</small></button>`).join('')||'<p>当前筛选没有候选。未检查项仍保持未检查，不代表全库无问题。</p>';
       v.root.querySelectorAll('[data-issue]').forEach(b=>b.onclick=()=>void action(v,()=>detail(v,b.dataset.issue)));
+      v.root.querySelectorAll('[data-issue]').forEach(button=>{const item=page.items.find(row=>row.issue_id===button.dataset.issue),img=document.createElement('img');img.src=`/api/v61/projects/${encodeURIComponent(v.project)}/materials/${encodeURIComponent(item.image_id)}/content/thumbnail?edge=128`;img.alt=item.inputs?.[item.image_id]?.filename||item.image_id;img.loading='lazy';img.width=80;img.height=54;img.style.objectFit='contain';img.onerror=()=>{img.remove();const hint=document.createElement('small');hint.textContent='缩略图暂不可用，可查看原图';button.append(hint);};button.prepend(img);});
       v.root.querySelector('[data-prev]').disabled=v.offset===0;v.root.querySelector('[data-next]').disabled=v.offset+25>=page.total;
       if(page.items.length)await detail(v,page.items[0].issue_id);
     }catch(e){if(active(v)&&token===v.listSequence)message(v,e.message||e,true);}
@@ -111,6 +122,10 @@ export function installSmartMaterialAudit({getState,api,modal,notify}={}) {
       if(img.complete&&img.naturalWidth)void start();else img.onload=()=>void start();
     }
     v.root.querySelector('[data-review]').innerHTML=`<h3>证据与人工复核</h3><pre>${escape(JSON.stringify(item.evidence,null,2))}</pre><p>原 GT、预测及复核身份均绑定当前图片内容。此处不自动改标注、删除素材或训练。</p><textarea class="input" data-note maxlength="1000" placeholder="复核备注"></textarea><div class="sma-verdicts"><button class="btn" data-verdict="confirmed_issue">确认存在问题</button><button class="btn" data-verdict="no_issue">无需修改</button><button class="btn" data-verdict="unknown">暂无法确认</button></div>`;
+    const raw=v.root.querySelector('[data-review] pre'),evidence=item.evidence||{},reason=document.createElement('p');
+    reason.textContent=[evidence.possible_missing>0?`疑似漏标 ${evidence.possible_missing} 框`:'',evidence.possible_spurious>0?`疑似多标 ${evidence.possible_spurious} 框`:'',evidence.mistakenness>.5?'疑似类别差异':'',evidence.mistakenness_loc>.5?'疑似框位置偏差':'',Number.isFinite(evidence.distance)?`单位特征距离 ${evidence.distance.toFixed(4)}（越小越近，不是百分比）`:'',evidence.reason||''].filter(Boolean).join('；')||'需人工核验，不能据此自动判定正式错误。';raw.before(reason);
+    const source=document.createElement('p');source.textContent=`来源批次：${item.inputs?.[item.image_id]?.source_batch_id||'未记录'}`;raw.before(source);
+    const disclosure=document.createElement('details'),title=document.createElement('summary');title.textContent='查看分析证据';raw.replaceWith(disclosure);disclosure.append(title,raw);
     v.root.querySelectorAll('[data-verdict]').forEach(b=>b.onclick=()=>void action(v,async()=>{
       if(v.task.task_id!==taskId||v.task.attempt!==attempt||v.item!==item)throw new Error('分析结果已切换，请重新核验');
       await request(v,`${base(v.project)}/${encodeURIComponent(taskId)}/findings/${encodeURIComponent(id)}/review`,post({verdict:b.dataset.verdict,expected_generation:attempt,expected_review_token:item.review_token,note:v.root.querySelector('[data-note]').value}));
@@ -157,8 +172,8 @@ export function installSmartMaterialAudit({getState,api,modal,notify}={}) {
   }
   const runtime={open,onTask(task){if(view)taskChanged(view,task);},beforeModalClose(layer){if(view&&(layer===view.layer||layer.contains(view.root)))dispose(view);if(reviewIntent&&layer.querySelector('.ann420-stable'))reviewIntent=null;},async onAnnotationSaved(project,imageId,workbench){
     const intent=reviewIntent;if(!intent||intent.project!==project||intent.imageId!==imageId||intent.workbench!==workbench||pid()!==project)return;
-    try {const recorded=await withRequestDeadline(async signal=>{const item=await api(`${base(project)}/${encodeURIComponent(intent.taskId)}/findings/${encodeURIComponent(intent.issueId)}`,{signal});if(reviewIntent!==intent||pid()!==project)return false;if(item.generation!==intent.attempt)throw new Error('分析代际已变化');await api(`${base(project)}/${encodeURIComponent(intent.taskId)}/findings/${encodeURIComponent(intent.issueId)}/review`,{...post({verdict:'corrected',expected_generation:intent.attempt,expected_review_token:item.review_token}),signal});return true;},{timeoutMs:30000,label:'人工复核回执'});if(recorded&&pid()===project)tell('标注已保存，分析复核回执已更新');}
-    catch(_){tell('标注已保存；分析复核回执未更新，可在智能分析中重新核验');}
+    try {const recorded=await withRequestDeadline(async signal=>{const item=await api(`${base(project)}/${encodeURIComponent(intent.taskId)}/findings/${encodeURIComponent(intent.issueId)}`,{signal});if(reviewIntent!==intent||pid()!==project)return false;if(item.generation!==intent.attempt)throw new Error('分析代际已变化');await api(`${base(project)}/${encodeURIComponent(intent.taskId)}/findings/${encodeURIComponent(intent.issueId)}/review`,{...post({verdict:'corrected',expected_generation:intent.attempt,expected_review_token:item.review_token}),signal});return true;},{timeoutMs:30000,label:'人工复核回执'});if(recorded&&pid()===project){tell('标注已保存，分析复核回执已更新');if(view?.task?.task_id===intent.taskId&&view.task.attempt===intent.attempt)void findings(view);}}
+    catch(_){if(pid()===project)tell('标注已保存；分析复核回执未更新，可在智能分析中重新核验');}
   }};
   window.SmartMaterialAuditRuntime=runtime;
   window.openSmartMaterialAudit=options=>open(options).catch(error=>tell(error.message||error));
