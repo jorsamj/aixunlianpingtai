@@ -169,7 +169,10 @@ def test_production_app_mounts_training_picker_exactly_once_at_project_owner():
     assert len(mounts) == 1
     call = mounts[0]
     assert len(call.args) == 2
-    assert isinstance(call.args[0], ast.Name) and call.args[0].id == "get_project"
+    assert isinstance(call.args[0], ast.Name) and call.args[0].id == "_authorize_business_file_project"
+    gate = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_authorize_business_file_project")
+    calls = {node.func.id for node in ast.walk(gate) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)}
+    assert {"get_project", "list_projects"} <= calls
     assert isinstance(call.args[1], ast.Lambda)
     assert isinstance(call.args[1].body, ast.Name)
     assert call.args[1].body.id == "DATA_DIR"

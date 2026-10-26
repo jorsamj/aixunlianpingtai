@@ -143,3 +143,11 @@ OSS专属key、源/版本/文件SHA及共享引用验证；硬删前保留并验
 - VERSION本轮一次387→388；app/main/styles缓存436，external63023、algorithm-list4226389。版本Owner10/10，原auth/external全部永久守卫实际退出0；主业务不重跑无变更全组。
 
 Git网络出现TLS握手失败，HTTP代理/OpenSSL/SOCKS和直连均未成功；GitHub连接器与GitHub API仍可读，已新核验远端仍60dd80d8，无其他提交被覆盖。本地阶段成果全部保留。若Git传输持续失败，将采用GitHub Git Data API上传同一对象/仅快进更新，不强推、不使用第三方代理托管凭据；最终准确远端SHA及CI必须另核验，当前尚未推送，不宣称CI通过。
+
+## 首轮远端 CI 及最小兼容修正
+
+阶段提交 ee9750ab、06ce390d、ab40a9fb 已经通过 GitHub Git Data API 原对象上传及 force=false 快进推送，返回 SHA 与本地逐一完全相同；未改写共享历史。首轮最终 ab40a9fbcd9dcdb2c3811acbabe365761ab55525 实际 49 Actions：30成功/19失败；132 Checks：109成功/23失败，不能作为验收通过。
+
+失败根因与修改：新增 auth 测试的整包导入触发精简环境缺少 filelock，改复用既有 importlib AUTH；旧外部发布产品夹具补充真实必验 productType/status；严格解析兼容原客户端既有业务成功码0和200，仍拒绝布尔码、错误码、不完整字段与总量；素材选择器源码守卫迁移至更严格的项目授权回调，并断言仍复用 get_project/list_projects；一项字典 HTTP 测试在 monkeypatch DATA_DIR 后不再满足隔离绕过，现使用真实签名登录 Cookie，不放宽生产认证。多工作流共享上述测试而产生重复失败，不是19个独立缺陷。
+
+修正后最小本地证据：auth/audit/router三文件29通过；产品及原发布相关24通过；不可信产品快照13通过；字典真实登录HTTP1通过。首次新增成功码200测试的审计预期仍写0造成失败，已同步为实际参数后上述29通过。VERSION保持388，不重复递增；无删除测试、降低安全断言或扩张CI依赖。修正提交及其准确SHA的全部CI仍待后续核验。

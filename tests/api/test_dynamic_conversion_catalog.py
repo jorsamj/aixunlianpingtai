@@ -191,6 +191,7 @@ def test_missing_job_record_http_allows_rename_and_toggle_but_never_identity_or_
     monkeypatch.setattr(api,"DATA_DIR",tmp_path);monkeypatch.setattr(api,"v39_list_deploy_resources",lambda:{"items":[]})
     repo=ModelArtifactRepository(tmp_path);vendor,chip=seed(repo);missing_job_task(tmp_path)
     client=TestClient(api.app)
+    client.cookies.set(api.SESSION_COOKIE_NAME,api._CHANGLIAN_AUTH_SESSIONS.issue('isolated-catalog-user'))
     detail=client.get(f"/api/v39/deploy/catalog/records/vendors/{vendor['id']}")
     assert detail.status_code==200 and detail.json()["references"]["can_delete"] is False
     assert detail.json()["references"]["check_status"]=="UNVERIFIED"

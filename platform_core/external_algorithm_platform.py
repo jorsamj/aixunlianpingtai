@@ -513,7 +513,7 @@ def validated_product_snapshot(value: Any, *, numeric_ids: bool = False) -> list
         invalid("产品列表必须返回包含 data 数组的对象")
     if numeric_ids and "code" not in value:
         invalid("实际产品接口缺少明确的业务成功状态")
-    if "code" in value and (isinstance(value["code"], bool) or str(value["code"]) != "200"):
+    if "code" in value and (isinstance(value["code"], bool) or str(value["code"]) not in {"0", "200"}):
         invalid("产品列表业务状态不是成功")
     rows = value["data"]
     if "total" in value:

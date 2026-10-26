@@ -356,6 +356,8 @@ class FakeChangLianSyncClient:
             "code": 200,
             "data": [{
                 "productId": "product-live-1",
+                "productType": 3,
+                "status": 1,
                 "productName": "抽烟检测",
                 "categoryId": "category-smoking",
             }],
