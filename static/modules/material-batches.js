@@ -271,8 +271,10 @@ export function installMaterialBatchRuntime({projectId, projectName, currentPage
   };
   window.reviewMaterialBatch62 = taskId => window.reviewAiLabel427?.(taskId);
   window.cancelMaterialBatch62 = async taskId => {
-    const task = await json(await fetch(`${base()}/${encodeURIComponent(taskId)}/cancel`, {method: 'POST'}));
-    remember(task); announce(task); return task;
+    const project = pid();
+    const task = await request(`/api/v62/projects/${encodeURIComponent(project)}/material-batches/${encodeURIComponent(taskId)}/cancel`, {method:'POST'});
+    if (pid() === project) {remember(task); announce(task);}
+    return task;
   };
   window.retryMaterialBatch62 = async taskId => {
     const task = await json(await fetch(`${base()}/${encodeURIComponent(taskId)}/retry`, {method: 'POST'}));

@@ -12,7 +12,7 @@ async function setup(page,request,{enabled=true}={}) {
     if(path.endsWith('/status'))return route.fulfill({json:{enabled,max_images:1000,message:enabled?'隔离分析可用':'智能分析未启用，原业务不受影响'}});
     if(path.endsWith('/models'))return route.fulfill({json:{items:[],next_cursor:null}});
     if(path.endsWith('/estimate'))return route.fulfill({json:{count:120,selection_spec:{scope:'FILTERED',filters:{},repository_revision:1}}});
-    if(path.endsWith('/review')){reviews.push(route.request().postDataJSON());return route.fulfill({json:issue});}
+    if(path.endsWith('/review')){const body=route.request().postDataJSON();reviews.push(body);issue.review={...body,actor_id:'controlled-reviewer',reviewed_at:'2026-10-26T01:01:00Z'};issue.review_valid=true;return route.fulfill({json:issue});}
     if(path.endsWith('/findings/issue-one'))return route.fulfill({json:{...issue,generation:task?.attempt||1}});
     if(path.endsWith('/findings'))return route.fulfill({json:{...pageResult,generation:task?.attempt||1,review_counts:{confirmed_issue:reviews.length}}});
     if(route.request().method()==='POST'){creates++;if(failCreate)return route.fulfill({status:503,json:{detail:{message:'隔离引擎不可用'}}});task={task_id:'smart-browser',kind:'MATERIAL_BATCH',project_id:project.id,operation:'SMART_AUDIT',status:'SUCCEEDED',processed:120,total:120,attempt:1,result_ready:true,updated_at:'2026-10-26T01:00:00Z',smart_audit_summary:{checks:{visual_similarity:{status:'completed',checked:120},mistakenness:{status:'not_checked',reason:'无可信预测'}}}};return route.fulfill({status:202,json:task});}
@@ -63,6 +63,7 @@ test('smart audit ON uses original submission owner, real DOM pagination, readon
   await expect(panel.locator('.sma-world svg')).toHaveCount(1);await panel.getByRole('checkbox',{name:'GT',exact:true}).uncheck();await panel.getByRole('checkbox',{name:'GT',exact:true}).check();
   await panel.getByRole('button',{name:'放大',exact:true}).click();await panel.getByRole('button',{name:'适应窗口'}).click();
   await panel.getByRole('button',{name:'确认存在问题',exact:true}).click();await expect.poll(()=>fixture.reviews().length).toBe(1);expect(fixture.reviews()[0].expected_review_token).toBe('token-one');
+  await expect(panel.locator('[data-review]')).toContainText('controlled-reviewer');
   await page.screenshot({path:testInfo.outputPath('smart-audit-1920.png'),fullPage:true});
   await page.setViewportSize({width:1366,height:768});expect(await panel.evaluate(el=>el.scrollWidth<=el.clientWidth+1)).toBe(true);
   await page.screenshot({path:testInfo.outputPath('smart-audit-1366.png'),fullPage:true});
@@ -71,7 +72,10 @@ test('smart audit ON uses original submission owner, real DOM pagination, readon
 
 test('smart audit failed admission is recoverable and late status after close cannot reopen a modal',async({page,request})=>{
   const fixture=await setup(page,request);fixture.fail();await page.getByRole('button',{name:'智能质量分析',exact:true}).click();
-  const panel=page.locator('.smart-material-audit');await expect(panel.locator('[data-create]')).toBeEnabled();page.once('dialog',dialog=>dialog.accept());await panel.locator('[data-create]').click();await expect(panel.locator('[data-status]')).toContainText('引擎不可用');await expect(panel.locator('[data-create]')).toBeEnabled();
+  const panel=page.locator('.smart-material-audit');await expect(panel.locator('[data-create]')).toBeEnabled();
+  await page.evaluate(()=>window.SmartMaterialAuditRuntime.onTask({task_id:'previous-view-task',project_id:state.project.id,operation:'SMART_AUDIT',attempt:1,status:'SUCCEEDED'}));
+  await expect(panel.locator('[data-status]')).toContainText('隔离分析可用');
+  page.once('dialog',dialog=>dialog.accept());await panel.locator('[data-create]').click();await expect(panel.locator('[data-status]')).toContainText('引擎不可用');await expect(panel.locator('[data-create]')).toBeEnabled();
   await page.keyboard.press('Escape');await expect(panel).not.toBeVisible();
   await page.evaluate(()=>{modal('其他业务','<button>仍可操作</button>');window.SmartMaterialAuditRuntime.onTask({task_id:'late',project_id:state.project.id,operation:'SMART_AUDIT',status:'SUCCEEDED'});});
   await expect(page.getByRole('button',{name:'仍可操作',exact:true})).toBeVisible();await expect(page.locator('.smart-material-audit')).toHaveCount(0);expect(fixture.errors).toEqual([]);

@@ -4,16 +4,28 @@ import {installMaterialBatchRuntime} from '../../static/modules/material-batches
 import {readFileSync} from 'node:fs';
 import {withRequestDeadline} from '../../static/modules/api.js';
 
-async function fixture(run,{refresh}={}) {
+async function fixture(run,{refresh,projectId=()=> 'p1'}={}) {
   const previous={window:globalThis.window,localStorage:globalThis.localStorage,fetch:globalThis.fetch};
   const storage=new Map(),calls=[],messages=[];
   globalThis.localStorage={getItem:key=>storage.get(key)||null,setItem:(key,value)=>storage.set(key,value)};
   globalThis.window={confirm:()=>true};
   try {
-    installMaterialBatchRuntime({projectId:()=> 'p1',currentPageIds:()=>['one'],refresh,notify:value=>messages.push(value),requestTimeoutMs:15,pollRegistry:{clear(){},startTimeout(){}}});
+    installMaterialBatchRuntime({projectId,currentPageIds:()=>['one'],refresh,notify:value=>messages.push(value),requestTimeoutMs:15,pollRegistry:{clear(){},startTimeout(){}}});
     await run({calls,messages});
   } finally {Object.assign(globalThis,previous)}
 }
+test('material cancellation is bounded and late old-project cancellation cannot announce into the next project',async()=>{
+ let project='p1';
+ await fixture(async()=>{
+  globalThis.fetch=async()=>new Promise(()=>{});
+  const result=await Promise.race([window.cancelMaterialBatch62('pending').catch(error=>error.code),new Promise(resolve=>setTimeout(()=>resolve('unbounded'),80))]);
+  assert.equal(result,'REQUEST_TIMEOUT');
+  let release,announced=0;window.SmartMaterialAuditRuntime={onTask:()=>announced++};
+  globalThis.fetch=async()=>new Promise(resolve=>release=()=>resolve(Response.json({task_id:'old',project_id:'p1',operation:'SMART_AUDIT',status:'CANCEL_REQUESTED'})));
+  const cancel=window.cancelMaterialBatch62('old');await new Promise(resolve=>setImmediate(resolve));project='p2';release();await cancel;
+  assert.equal(announced,0);assert.equal(localStorage.getItem('aixunlian.material-batches.v62'),null);
+ },{projectId:()=>project});
+});
 test('smart analysis uncertainty retries the same request without blocking original CLEAN',()=>fixture(async()=>{
   const requests=[];let cleanPosts=0;
   globalThis.fetch=async(url,options={})=>{
