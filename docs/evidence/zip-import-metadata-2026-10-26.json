@@ -1,0 +1,1947 @@
+{
+  "kind": "isolated measurements; NOT production performance",
+  "source_before": {
+    "git_head": "71f5d221eb722678afa2ebf40209fc331e3f1a33",
+    "environment": {
+      "os": "Windows-11-10.0.26200-SP0",
+      "python": "3.12.7",
+      "cpu": "Intel64 Family 6 Model 197 Stepping 2, GenuineIntel",
+      "logical_cpus": 16,
+      "storage": "local disk; real 32x32 PNG; fsync enabled",
+      "free_disk_bytes": 118499385344
+    },
+    "kind": "isolated synthetic-history, real-file conversion integration microbenchmark",
+    "timing": "conversion and final commit; excludes ZIP transfer, scan and extraction; stages inclusive",
+    "results": [
+      {
+        "case": "A",
+        "existing": 1000,
+        "incoming": 1000,
+        "elapsed_seconds": 44.43304580001859,
+        "images_per_second": 22.50577204409385,
+        "mean_image_seconds": 0.03909446740045678,
+        "p50_image_seconds": 0.03755689997342415,
+        "p95_image_seconds": 0.054126700037159026,
+        "stage_seconds": {
+          "A_image_dimensions": 2.9973465998191386,
+          "C_copy_fsync_and_same_pass_sha256": 6.598050698521547,
+          "B_storage_upload": 8.426246000803076,
+          "G_full_material_read": 17.487713499518577,
+          "F_orphan_claims": 19.11664650036255,
+          "E_delete_recovery": 19.21125200059032,
+          "D_dataset_admission": 20.102211299992632,
+          "H_annotation_conversion_staging": 0.0433845006627962,
+          "H_annotation_durable_commit": 0.9621118999784812,
+          "I_final_batch_commit": 1.1912199999787845
+        },
+        "calls": {
+          "A_image_dimensions": 1000,
+          "C_copy_fsync_and_same_pass_sha256": 1000,
+          "B_storage_upload": 1000,
+          "material_sql_statements": 12015,
+          "material_sql_selects": 4006,
+          "G_full_material_read": 1001,
+          "F_orphan_claims": 1001,
+          "E_delete_recovery": 1001,
+          "D_dataset_admission": 1001,
+          "H_annotation_conversion_staging": 1000,
+          "H_annotation_durable_commit": 2,
+          "I_final_batch_commit": 1
+        },
+        "rss_start_bytes": 110551040,
+        "rss_sampled_peak_bytes": 119545856,
+        "rss_after_bytes": 124248064,
+        "imported": 1000,
+        "verified_material_and_gt": 1000,
+        "remote_image_reads": 0
+      },
+      {
+        "case": "B",
+        "existing": 5000,
+        "incoming": 1000,
+        "elapsed_seconds": 97.06704310001805,
+        "images_per_second": 10.302157849493758,
+        "mean_image_seconds": 0.09136531570006627,
+        "p50_image_seconds": 0.08809269999619573,
+        "p95_image_seconds": 0.14937330002430826,
+        "stage_seconds": {
+          "A_image_dimensions": 3.084336399973836,
+          "C_copy_fsync_and_same_pass_sha256": 6.742399599577766,
+          "B_storage_upload": 8.572496100270655,
+          "G_full_material_read": 65.41291160066612,
+          "F_orphan_claims": 71.26832519983873,
+          "E_delete_recovery": 71.37027440057136,
+          "D_dataset_admission": 72.55500949849375,
+          "H_annotation_conversion_staging": 0.04713950032601133,
+          "H_annotation_durable_commit": 0.9599061999469995,
+          "I_final_batch_commit": 1.2393429999938235
+        },
+        "calls": {
+          "A_image_dimensions": 1000,
+          "C_copy_fsync_and_same_pass_sha256": 1000,
+          "B_storage_upload": 1000,
+          "material_sql_statements": 12015,
+          "material_sql_selects": 4006,
+          "G_full_material_read": 1001,
+          "F_orphan_claims": 1001,
+          "E_delete_recovery": 1001,
+          "D_dataset_admission": 1001,
+          "H_annotation_conversion_staging": 1000,
+          "H_annotation_durable_commit": 2,
+          "I_final_batch_commit": 1
+        },
+        "rss_start_bytes": 122277888,
+        "rss_sampled_peak_bytes": 131952640,
+        "rss_after_bytes": 131530752,
+        "imported": 1000,
+        "verified_material_and_gt": 1000,
+        "remote_image_reads": 0
+      },
+      {
+        "case": "C",
+        "existing": 10000,
+        "incoming": 1000,
+        "elapsed_seconds": 165.88634109997656,
+        "images_per_second": 6.02822386321318,
+        "mean_image_seconds": 0.1601955775008537,
+        "p50_image_seconds": 0.15816844999790192,
+        "p95_image_seconds": 0.23051199998008087,
+        "stage_seconds": {
+          "A_image_dimensions": 3.1256676010088995,
+          "C_copy_fsync_and_same_pass_sha256": 8.833572200499475,
+          "B_storage_upload": 10.71707759948913,
+          "G_full_material_read": 125.98549499979708,
+          "F_orphan_claims": 137.69749019952724,
+          "E_delete_recovery": 137.81299510056851,
+          "D_dataset_admission": 138.98189480026485,
+          "H_annotation_conversion_staging": 0.04872689914191142,
+          "H_annotation_durable_commit": 0.9973887999658473,
+          "I_final_batch_commit": 1.352167900011409
+        },
+        "calls": {
+          "A_image_dimensions": 1000,
+          "C_copy_fsync_and_same_pass_sha256": 1000,
+          "B_storage_upload": 1000,
+          "material_sql_statements": 12015,
+          "material_sql_selects": 4006,
+          "G_full_material_read": 1001,
+          "F_orphan_claims": 1001,
+          "E_delete_recovery": 1001,
+          "D_dataset_admission": 1001,
+          "H_annotation_conversion_staging": 1000,
+          "H_annotation_durable_commit": 2,
+          "I_final_batch_commit": 1
+        },
+        "rss_start_bytes": 129183744,
+        "rss_sampled_peak_bytes": 145793024,
+        "rss_after_bytes": 145772544,
+        "imported": 1000,
+        "verified_material_and_gt": 1000,
+        "remote_image_reads": 0
+      },
+      {
+        "case": "D",
+        "existing": 10000,
+        "incoming": 10000,
+        "elapsed_seconds": 1855.5999903000193,
+        "images_per_second": 5.389092504997895,
+        "mean_image_seconds": 0.17954931346052327,
+        "p50_image_seconds": 0.16793830000096932,
+        "p95_image_seconds": 0.27493949997005984,
+        "stage_seconds": {
+          "A_image_dimensions": 32.644077503762674,
+          "C_copy_fsync_and_same_pass_sha256": 111.7812882984872,
+          "B_storage_upload": 131.80920390057145,
+          "G_full_material_read": 1407.7923172996962,
+          "F_orphan_claims": 1537.1573792986455,
+          "E_delete_recovery": 1538.6174972003791,
+          "D_dataset_admission": 1551.4610284976661,
+          "H_annotation_conversion_staging": 0.4827148016775027,
+          "H_annotation_durable_commit": 13.620911400183104,
+          "I_final_batch_commit": 15.595926799986046
+        },
+        "calls": {
+          "A_image_dimensions": 10000,
+          "C_copy_fsync_and_same_pass_sha256": 10000,
+          "B_storage_upload": 10000,
+          "material_sql_statements": 120105,
+          "material_sql_selects": 40042,
+          "G_full_material_read": 10001,
+          "F_orphan_claims": 10001,
+          "E_delete_recovery": 10001,
+          "D_dataset_admission": 10001,
+          "H_annotation_conversion_staging": 10000,
+          "H_annotation_durable_commit": 20,
+          "I_final_batch_commit": 1
+        },
+        "rss_start_bytes": 143077376,
+        "rss_sampled_peak_bytes": 182235136,
+        "rss_after_bytes": 182841344,
+        "imported": 10000,
+        "verified_material_and_gt": 10000,
+        "remote_image_reads": 0
+      }
+    ]
+  },
+  "source_after": {
+    "git_head": "7f8c014ccdb95e3ddb3ce35fa6e14365c08ab7e2",
+    "environment": {
+      "os": "Windows-11-10.0.26200-SP0",
+      "python": "3.12.7",
+      "cpu": "Intel64 Family 6 Model 197 Stepping 2, GenuineIntel",
+      "logical_cpus": 16,
+      "storage": "local disk; real 32x32 PNG; fsync enabled",
+      "free_disk_bytes": 118275403776
+    },
+    "kind": "isolated synthetic-history, real-file conversion integration microbenchmark",
+    "timing": "conversion and final commit; excludes ZIP transfer, scan and extraction; stages inclusive",
+    "results": [
+      {
+        "case": "A",
+        "existing": 1000,
+        "incoming": 1000,
+        "elapsed_seconds": 31.79946370003745,
+        "images_per_second": 31.447071228400066,
+        "mean_image_seconds": 0.02690561049967073,
+        "p50_image_seconds": 0.02734460000647232,
+        "p95_image_seconds": 0.036753399996086955,
+        "stage_seconds": {
+          "A_image_dimensions": 2.641307499143295,
+          "C_copy_fsync_and_same_pass_sha256": 6.673270399449393,
+          "B_storage_upload": 8.487308800162282,
+          "F_orphan_claims": 7.853451700648293,
+          "E_delete_recovery": 7.999460399383679,
+          "D_dataset_admission": 8.815703501168173,
+          "H_annotation_conversion_staging": 0.042450700246263295,
+          "H_annotation_durable_commit": 1.181141200067941,
+          "I_final_batch_commit": 1.4030567000154406
+        },
+        "calls": {
+          "A_image_dimensions": 1000,
+          "C_copy_fsync_and_same_pass_sha256": 1000,
+          "B_storage_upload": 1000,
+          "material_sql_statements": 11014,
+          "material_sql_selects": 3005,
+          "F_orphan_claims": 1001,
+          "E_delete_recovery": 1001,
+          "D_dataset_admission": 1001,
+          "H_annotation_conversion_staging": 1000,
+          "H_annotation_durable_commit": 2,
+          "I_final_batch_commit": 1
+        },
+        "rss_start_bytes": 109604864,
+        "rss_sampled_peak_bytes": 113848320,
+        "rss_after_bytes": 121151488,
+        "imported": 1000,
+        "verified_material_and_gt": 1000,
+        "remote_image_reads": 0
+      },
+      {
+        "case": "B",
+        "existing": 5000,
+        "incoming": 1000,
+        "elapsed_seconds": 31.63081250002142,
+        "images_per_second": 31.61474274488911,
+        "mean_image_seconds": 0.02649541540077189,
+        "p50_image_seconds": 0.026073650020407513,
+        "p95_image_seconds": 0.03825959999812767,
+        "stage_seconds": {
+          "A_image_dimensions": 2.7377017002436332,
+          "C_copy_fsync_and_same_pass_sha256": 6.455491099972278,
+          "B_storage_upload": 8.250360398960765,
+          "F_orphan_claims": 7.685481701395474,
+          "E_delete_recovery": 7.823509599955287,
+          "D_dataset_admission": 8.618838800408412,
+          "H_annotation_conversion_staging": 0.04150790098356083,
+          "H_annotation_durable_commit": 1.3094374999636784,
+          "I_final_batch_commit": 1.5842318999930285
+        },
+        "calls": {
+          "A_image_dimensions": 1000,
+          "C_copy_fsync_and_same_pass_sha256": 1000,
+          "B_storage_upload": 1000,
+          "material_sql_statements": 11014,
+          "material_sql_selects": 3005,
+          "F_orphan_claims": 1001,
+          "E_delete_recovery": 1001,
+          "D_dataset_admission": 1001,
+          "H_annotation_conversion_staging": 1000,
+          "H_annotation_durable_commit": 2,
+          "I_final_batch_commit": 1
+        },
+        "rss_start_bytes": 119099392,
+        "rss_sampled_peak_bytes": 119472128,
+        "rss_after_bytes": 120827904,
+        "imported": 1000,
+        "verified_material_and_gt": 1000,
+        "remote_image_reads": 0
+      },
+      {
+        "case": "C",
+        "existing": 10000,
+        "incoming": 1000,
+        "elapsed_seconds": 30.189775600039866,
+        "images_per_second": 33.1237970512997,
+        "mean_image_seconds": 0.025231358800840098,
+        "p50_image_seconds": 0.024353450018679723,
+        "p95_image_seconds": 0.037671900005079806,
+        "stage_seconds": {
+          "A_image_dimensions": 2.6309025002410635,
+          "C_copy_fsync_and_same_pass_sha256": 6.328328701260034,
+          "B_storage_upload": 7.975546699599363,
+          "F_orphan_claims": 7.274467600393109,
+          "E_delete_recovery": 7.4039591999026015,
+          "D_dataset_admission": 8.173372799530625,
+          "H_annotation_conversion_staging": 0.043293200549669564,
+          "H_annotation_durable_commit": 1.0781612999853678,
+          "I_final_batch_commit": 1.2888294999720529
+        },
+        "calls": {
+          "A_image_dimensions": 1000,
+          "C_copy_fsync_and_same_pass_sha256": 1000,
+          "B_storage_upload": 1000,
+          "material_sql_statements": 11014,
+          "material_sql_selects": 3005,
+          "F_orphan_claims": 1001,
+          "E_delete_recovery": 1001,
+          "D_dataset_admission": 1001,
+          "H_annotation_conversion_staging": 1000,
+          "H_annotation_durable_commit": 2,
+          "I_final_batch_commit": 1
+        },
+        "rss_start_bytes": 121085952,
+        "rss_sampled_peak_bytes": 121552896,
+        "rss_after_bytes": 122511360,
+        "imported": 1000,
+        "verified_material_and_gt": 1000,
+        "remote_image_reads": 0
+      },
+      {
+        "case": "D",
+        "existing": 10000,
+        "incoming": 10000,
+        "elapsed_seconds": 321.1522416000371,
+        "images_per_second": 31.137880122456057,
+        "mean_image_seconds": 0.02694675603006617,
+        "p50_image_seconds": 0.02631319998181425,
+        "p95_image_seconds": 0.03878659999463707,
+        "stage_seconds": {
+          "A_image_dimensions": 27.225881300109904,
+          "C_copy_fsync_and_same_pass_sha256": 67.2509903999744,
+          "B_storage_upload": 85.57401130371727,
+          "F_orphan_claims": 78.20878649980295,
+          "E_delete_recovery": 79.67984690150479,
+          "D_dataset_admission": 87.80644100147765,
+          "H_annotation_conversion_staging": 0.4241506984690204,
+          "H_annotation_durable_commit": 13.747117400052957,
+          "I_final_batch_commit": 15.357338699977845
+        },
+        "calls": {
+          "A_image_dimensions": 10000,
+          "C_copy_fsync_and_same_pass_sha256": 10000,
+          "B_storage_upload": 10000,
+          "material_sql_statements": 110104,
+          "material_sql_selects": 30041,
+          "F_orphan_claims": 10001,
+          "E_delete_recovery": 10001,
+          "D_dataset_admission": 10001,
+          "H_annotation_conversion_staging": 10000,
+          "H_annotation_durable_commit": 20,
+          "I_final_batch_commit": 1
+        },
+        "rss_start_bytes": 120942592,
+        "rss_sampled_peak_bytes": 151068672,
+        "rss_after_bytes": 149925888,
+        "imported": 10000,
+        "verified_material_and_gt": 10000,
+        "remote_image_reads": 0
+      }
+    ]
+  },
+  "http_windows_source_equivalent_to": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf",
+  "http_windows": {
+    "acceptance_passed": true,
+    "image_count": 10000,
+    "material_total": 10000,
+    "annotation_total": 10000,
+    "annotation_boxes": 10000,
+    "terminal_progress": 100.0,
+    "server_processing_seconds": 445.52,
+    "worker_wall_seconds": 445.621504,
+    "create_http_seconds": 2.08563,
+    "start_http_seconds": 0.059085,
+    "poll_p50_ms": 9.453,
+    "poll_p95_ms": 18.975,
+    "poll_max_ms": 387.989,
+    "rss_peak_mb": 212.172,
+    "rss_growth_peak_mb": 110.086,
+    "fd_baseline": 0,
+    "fd_peak_growth": 0,
+    "fd_end_growth": 0,
+    "sqlite_lock_busy_incidents": 0,
+    "assertions": {
+      "annotation_truth": true,
+      "bounded_create_preview": true,
+      "control_plane_responsive": true,
+      "create_10k": true,
+      "fd_recovered": true,
+      "hot_job_bounded": true,
+      "manifest_truth": true,
+      "manual_label_confirmation": true,
+      "material_truth": true,
+      "multipart_parts_complete": true,
+      "multipart_protocol": true,
+      "multipart_resume": true,
+      "no_import_errors": true,
+      "progress_100": true,
+      "progress_is_live": true,
+      "report_truth": true,
+      "rss_bounded": true,
+      "sqlite_no_lock_busy": true,
+      "start_is_background": true,
+      "stored_file_truth": true,
+      "terminal_done": true,
+      "upload_control_plane_responsive": true
+    },
+    "fd_measurement_supported": false,
+    "fd_measurement_note": "Windows num_fds unavailable; zero FD values are not acceptance evidence. Linux CI separately verifies FDs."
+  },
+  "http_linux_ci": {
+    "acceptance_passed": true,
+    "image_count": 10000,
+    "material_total": 10000,
+    "annotation_total": 10000,
+    "annotation_boxes": 10000,
+    "terminal_progress": 100.0,
+    "server_processing_seconds": 27.71,
+    "worker_wall_seconds": 27.933261,
+    "create_http_seconds": 0.999027,
+    "poll_p95_ms": 3.671,
+    "poll_max_ms": 128.562,
+    "rss_peak_mb": 192.309,
+    "rss_growth_peak_mb": 69.898,
+    "fd_baseline": 11,
+    "fd_peak_growth": 5,
+    "fd_end_growth": 0,
+    "sqlite_lock_busy_incidents": 0,
+    "assertions": {
+      "annotation_truth": true,
+      "bounded_create_preview": true,
+      "control_plane_responsive": true,
+      "create_10k": true,
+      "fd_recovered": true,
+      "hot_job_bounded": true,
+      "manifest_truth": true,
+      "manual_label_confirmation": true,
+      "material_truth": true,
+      "multipart_parts_complete": true,
+      "multipart_protocol": true,
+      "multipart_resume": true,
+      "no_import_errors": true,
+      "progress_100": true,
+      "progress_is_live": true,
+      "report_truth": true,
+      "rss_bounded": true,
+      "sqlite_no_lock_busy": true,
+      "start_is_background": true,
+      "stored_file_truth": true,
+      "terminal_done": true,
+      "upload_control_plane_responsive": true
+    },
+    "fd_snapshot_supported": true
+  },
+  "metadata_upgrade": {
+    "kind": "isolated metadata-only SQLite backup from genuine original benchmark schema5",
+    "rows": 20000,
+    "source_schema": 5,
+    "target_schema": 6,
+    "initial_upgrade_seconds": 0.11631650000344962,
+    "fresh_process_reopen_seconds": 0.009582199971191585,
+    "payload_digest_unchanged": true,
+    "material_revision_unchanged": true,
+    "claim_query_plan": [
+      "SEARCH materials USING INDEX ix_materials_dataset_delete_claim (<expr>=?)",
+      "USE TEMP B-TREE FOR ORDER BY"
+    ],
+    "original_images_or_gt_copied": false
+  },
+  "core_ci": {
+    "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf",
+    "runs": [
+      {
+        "id": 40276912396,
+        "name": "External Algorithm Platform",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276912396",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf",
+        "run_attempt": 1
+      },
+      {
+        "id": 40276912013,
+        "name": "Video Frame Recovery",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276912013",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf",
+        "run_attempt": 1
+      },
+      {
+        "id": 40276911768,
+        "name": "Portable Deployment",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911768",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf",
+        "run_attempt": 1
+      },
+      {
+        "id": 40276911891,
+        "name": "GPU Runtime Truth",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911891",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf",
+        "run_attempt": 1
+      },
+      {
+        "id": 40276911889,
+        "name": "Remote RKNN Board Runtime Protocol",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911889",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf",
+        "run_attempt": 1
+      },
+      {
+        "id": 40276911834,
+        "name": "Training Input Integrity",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911834",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf",
+        "run_attempt": 1
+      },
+      {
+        "id": 40276911780,
+        "name": "Remote Conversion Runtime",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911780",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf",
+        "run_attempt": 1
+      },
+      {
+        "id": 40276911917,
+        "name": "Task Runtime Truth",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911917",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf",
+        "run_attempt": 1
+      },
+      {
+        "id": 40276911832,
+        "name": "Central Node Assignment",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911832",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf",
+        "run_attempt": 1
+      },
+      {
+        "id": 40276911898,
+        "name": "Node Agent Executor",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911898",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf",
+        "run_attempt": 1
+      },
+      {
+        "id": 40276911806,
+        "name": "Remote Cleaning Runtime",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911806",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf",
+        "run_attempt": 1
+      },
+      {
+        "id": 40276911894,
+        "name": "External Algorithm Publish",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911894",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf",
+        "run_attempt": 1
+      },
+      {
+        "id": 40276911961,
+        "name": "AI Annotation Recovery",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911961",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf",
+        "run_attempt": 1
+      },
+      {
+        "id": 40276912111,
+        "name": "Online Feedback Runtime",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276912111",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf",
+        "run_attempt": 1
+      },
+      {
+        "id": 40276911943,
+        "name": "Remote Material Import",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911943",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf",
+        "run_attempt": 1
+      },
+      {
+        "id": 40276911837,
+        "name": "Remote Training Runtime",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911837",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf",
+        "run_attempt": 1
+      },
+      {
+        "id": 40276911804,
+        "name": "Label Normalization Contract",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911804",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf",
+        "run_attempt": 1
+      },
+      {
+        "id": 40276911879,
+        "name": "ChangLian Login Auth",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911879",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf",
+        "run_attempt": 1
+      },
+      {
+        "id": 40276911775,
+        "name": "Storage Cache Governance",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911775",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf",
+        "run_attempt": 1
+      },
+      {
+        "id": 40276911777,
+        "name": "Resource Discovery SQLite Stability",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911777",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf",
+        "run_attempt": 1
+      },
+      {
+        "id": 40276904379,
+        "name": "Training Material Picker",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904379",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf",
+        "run_attempt": 1
+      },
+      {
+        "id": 40276904325,
+        "name": "Training Recovery Guard",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904325",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf",
+        "run_attempt": 1
+      },
+      {
+        "id": 40276904316,
+        "name": "Central Node Assignment",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904316",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf",
+        "run_attempt": 1
+      },
+      {
+        "id": 40276904482,
+        "name": "Training Task Visibility",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904482",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf",
+        "run_attempt": 1
+      },
+      {
+        "id": 40276904326,
+        "name": "Training Create First Open",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904326",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf",
+        "run_attempt": 1
+      },
+      {
+        "id": 40276904419,
+        "name": "v42.25 Release Regression",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904419",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf",
+        "run_attempt": 1
+      },
+      {
+        "id": 40276904311,
+        "name": "Remote Material Import",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904311",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf",
+        "run_attempt": 1
+      },
+      {
+        "id": 40276904319,
+        "name": "Online Feedback Runtime",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904319",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf",
+        "run_attempt": 1
+      },
+      {
+        "id": 40276904336,
+        "name": "AI Annotation Recovery",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904336",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf",
+        "run_attempt": 1
+      },
+      {
+        "id": 40276904376,
+        "name": "Node Agent Executor",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904376",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf",
+        "run_attempt": 1
+      },
+      {
+        "id": 40276904466,
+        "name": "ZIP Import Durable Runtime",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904466",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf",
+        "run_attempt": 1
+      },
+      {
+        "id": 40276904369,
+        "name": "Material Upload Chunking",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904369",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf",
+        "run_attempt": 1
+      },
+      {
+        "id": 40276904448,
+        "name": "Label Normalization Contract",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904448",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf",
+        "run_attempt": 1
+      },
+      {
+        "id": 40276904342,
+        "name": "ZIP Processing 10k Acceptance",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904342",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf",
+        "run_attempt": 1
+      },
+      {
+        "id": 40276904422,
+        "name": "Algorithm SQL Store",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904422",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf",
+        "run_attempt": 1
+      },
+      {
+        "id": 40276904308,
+        "name": "External Algorithm Platform",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904308",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf",
+        "run_attempt": 1
+      },
+      {
+        "id": 40276904347,
+        "name": "Remote RKNN Board Runtime Protocol",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904347",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf",
+        "run_attempt": 1
+      },
+      {
+        "id": 40276904372,
+        "name": "Material Annotation Atomicity",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904372",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf",
+        "run_attempt": 1
+      },
+      {
+        "id": 40276904307,
+        "name": "Task Runtime Truth",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904307",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf",
+        "run_attempt": 1
+      },
+      {
+        "id": 40276904380,
+        "name": "Training Input Integrity",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904380",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf",
+        "run_attempt": 1
+      },
+      {
+        "id": 40276904394,
+        "name": "Portable Deployment",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904394",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf",
+        "run_attempt": 1
+      },
+      {
+        "id": 40276904373,
+        "name": "Material Upload Cleaning Performance",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904373",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf",
+        "run_attempt": 1
+      },
+      {
+        "id": 40276904356,
+        "name": "Remote Training Runtime",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904356",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf",
+        "run_attempt": 1
+      },
+      {
+        "id": 40276904465,
+        "name": "ChangLian Login Auth",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904465",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf",
+        "run_attempt": 1
+      },
+      {
+        "id": 40276904322,
+        "name": "External Algorithm Publish",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904322",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf",
+        "run_attempt": 1
+      },
+      {
+        "id": 40276904429,
+        "name": "Remote Cleaning Runtime",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904429",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf",
+        "run_attempt": 1
+      },
+      {
+        "id": 40276904390,
+        "name": "Remote Conversion Runtime",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904390",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf",
+        "run_attempt": 1
+      },
+      {
+        "id": 40276904418,
+        "name": "Frontend Runtime Stabilization",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904418",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf",
+        "run_attempt": 1
+      }
+    ],
+    "checks": [
+      {
+        "id": 121421484928,
+        "name": "contract",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276912396/job/121421484928",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421484849,
+        "name": "real-chrome",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276912396/job/121421484849",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421484260,
+        "name": "real-chrome",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276912111/job/121421484260",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421484252,
+        "name": "contract (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276912111/job/121421484252",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421484235,
+        "name": "contract (ubuntu-24.04)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276912111/job/121421484235",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421484124,
+        "name": "contract (ubuntu-24.04)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911943/job/121421484124",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421484054,
+        "name": "api",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911943/job/121421484054",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421484009,
+        "name": "contract",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911894/job/121421484009",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421483966,
+        "name": "recovery-contract (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276912013/job/121421483966",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421483935,
+        "name": "real-chrome",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911943/job/121421483935",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421483792,
+        "name": "real-chrome",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911894/job/121421483792",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421483791,
+        "name": "contract (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911943/job/121421483791",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421483685,
+        "name": "recovery-contract (ubuntu-24.04)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911961/job/121421483685",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421483657,
+        "name": "contract",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911879/job/121421483657",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421483656,
+        "name": "recovery-contract (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911961/job/121421483656",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421483575,
+        "name": "recovery-contract (ubuntu-24.04)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276912013/job/121421483575",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421483496,
+        "name": "sqlite-lifecycle (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911777/job/121421483496",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421483478,
+        "name": "contract (ubuntu-24.04)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911898/job/121421483478",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421483476,
+        "name": "contract (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911889/job/121421483476",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421483470,
+        "name": "annotation-api-contract",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911961/job/121421483470",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421483459,
+        "name": "real-chrome",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911889/job/121421483459",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421483457,
+        "name": "contract (ubuntu-24.04)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911806/job/121421483457",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421483442,
+        "name": "browser",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911879/job/121421483442",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421483432,
+        "name": "jpeg-cache-integrity (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911834/job/121421483432",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421483413,
+        "name": "node-scoped-reservations (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911891/job/121421483413",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421483402,
+        "name": "contract (ubuntu-24.04)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911889/job/121421483402",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421483379,
+        "name": "api",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911898/job/121421483379",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421483336,
+        "name": "ultralytics-loader-contract",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911837/job/121421483336",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421483332,
+        "name": "real-chrome",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911806/job/121421483332",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421483321,
+        "name": "runtime-truth (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911917/job/121421483321",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421483311,
+        "name": "contract (ubuntu-24.04)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911832/job/121421483311",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421483268,
+        "name": "api",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911806/job/121421483268",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421483256,
+        "name": "storage-cache-governance",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911775/job/121421483256",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421483250,
+        "name": "sqlite-lifecycle (ubuntu-24.04)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911777/job/121421483250",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421483239,
+        "name": "preparation-contract (ubuntu-24.04)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911837/job/121421483239",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421483234,
+        "name": "contract (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911832/job/121421483234",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421483212,
+        "name": "runtime-truth (ubuntu-24.04)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911917/job/121421483212",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421483197,
+        "name": "api",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911889/job/121421483197",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421483189,
+        "name": "node-scoped-reservations (ubuntu-24.04)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911891/job/121421483189",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421483187,
+        "name": "preparation-contract (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911837/job/121421483187",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421483183,
+        "name": "contract (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911898/job/121421483183",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421483170,
+        "name": "transport-contract (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911768/job/121421483170",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421483164,
+        "name": "agent-contract (ubuntu-24.04)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911780/job/121421483164",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421483119,
+        "name": "contract (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911806/job/121421483119",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421483117,
+        "name": "real-chrome",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911780/job/121421483117",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421483097,
+        "name": "jpeg-cache-integrity (ubuntu-24.04)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911834/job/121421483097",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421483054,
+        "name": "transport-contract (ubuntu-24.04)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911768/job/121421483054",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421483033,
+        "name": "agent-contract (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911780/job/121421483033",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421483028,
+        "name": "api",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911837/job/121421483028",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421483016,
+        "name": "api",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911832/job/121421483016",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421482922,
+        "name": "contract",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911804/job/121421482922",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421482858,
+        "name": "control-plane",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911780/job/121421482858",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421482765,
+        "name": "api",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276911768/job/121421482765",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421462070,
+        "name": "contract (ubuntu-24.04)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904316/job/121421462070",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421462016,
+        "name": "contract (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904316/job/121421462016",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461937,
+        "name": "contract",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904465/job/121421461937",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461936,
+        "name": "real-chrome",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904482/job/121421461936",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461916,
+        "name": "api",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904429/job/121421461916",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461914,
+        "name": "browser",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904465/job/121421461914",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461908,
+        "name": "api",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904316/job/121421461908",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461858,
+        "name": "contract (ubuntu-24.04)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904466/job/121421461858",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461845,
+        "name": "real-chrome-refresh",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904466/job/121421461845",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461829,
+        "name": "training-data-contracts",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904419/job/121421461829",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461822,
+        "name": "contract (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904429/job/121421461822",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461806,
+        "name": "contract (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904376/job/121421461806",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461802,
+        "name": "contract (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904311/job/121421461802",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461775,
+        "name": "contract (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904466/job/121421461775",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461771,
+        "name": "contract (ubuntu-24.04)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904429/job/121421461771",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461749,
+        "name": "real-chrome",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904390/job/121421461749",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461744,
+        "name": "transport-contract (ubuntu-24.04)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904394/job/121421461744",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461737,
+        "name": "contract (ubuntu-24.04)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904376/job/121421461737",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461721,
+        "name": "visibility-contracts",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904482/job/121421461721",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461710,
+        "name": "recovery-contract (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904336/job/121421461710",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461697,
+        "name": "frontend",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904418/job/121421461697",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461691,
+        "name": "real-chrome-lineage",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904422/job/121421461691",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461683,
+        "name": "annotation-api-contract",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904336/job/121421461683",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461659,
+        "name": "api-idempotency",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904369/job/121421461659",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461656,
+        "name": "jpeg-cache-integrity (ubuntu-24.04)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904380/job/121421461656",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461654,
+        "name": "real-chrome-picker",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904379/job/121421461654",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461637,
+        "name": "transport-contract (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904394/job/121421461637",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461621,
+        "name": "real-chrome",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904429/job/121421461621",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461617,
+        "name": "backend-persistence",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904466/job/121421461617",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461615,
+        "name": "agent-contract (ubuntu-24.04)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904390/job/121421461615",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461606,
+        "name": "contract",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904322/job/121421461606",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461601,
+        "name": "contract (ubuntu-24.04)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904311/job/121421461601",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461597,
+        "name": "frontend-contract (ubuntu-24.04)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904369/job/121421461597",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461586,
+        "name": "agent-contract (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904390/job/121421461586",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461582,
+        "name": "runtime-contracts",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904419/job/121421461582",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461581,
+        "name": "api",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904311/job/121421461581",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461575,
+        "name": "contract (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904326/job/121421461575",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461561,
+        "name": "browser-navigation",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904418/job/121421461561",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461549,
+        "name": "frontend-contract (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904369/job/121421461549",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461545,
+        "name": "api",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904376/job/121421461545",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461533,
+        "name": "preparation-contract (ubuntu-24.04)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904356/job/121421461533",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461515,
+        "name": "contract",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904308/job/121421461515",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461503,
+        "name": "contracts",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904422/job/121421461503",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461491,
+        "name": "ultralytics-loader-contract",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904356/job/121421461491",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461475,
+        "name": "cross-platform-hot-path (ubuntu-24.04)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904373/job/121421461475",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461474,
+        "name": "preparation-contract (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904356/job/121421461474",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461471,
+        "name": "control-plane",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904390/job/121421461471",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461466,
+        "name": "contract",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904448/job/121421461466",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461450,
+        "name": "recovery-contract (ubuntu-24.04)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904336/job/121421461450",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461447,
+        "name": "contract (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904347/job/121421461447",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461438,
+        "name": "real-chrome",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904311/job/121421461438",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461435,
+        "name": "api",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904347/job/121421461435",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461434,
+        "name": "real-chrome",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904319/job/121421461434",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461425,
+        "name": "contract (ubuntu-24.04)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904347/job/121421461425",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461424,
+        "name": "checkpoint-resume-contracts (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904325/job/121421461424",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461417,
+        "name": "real-chrome-recovery",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904325/job/121421461417",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461401,
+        "name": "runtime-truth (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904307/job/121421461401",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461398,
+        "name": "contract (ubuntu-24.04)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904319/job/121421461398",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461371,
+        "name": "cross-platform-hot-path (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904373/job/121421461371",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461356,
+        "name": "contract (ubuntu-24.04)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904326/job/121421461356",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461344,
+        "name": "genuine-10k-processing",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904342/job/121421461344",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461326,
+        "name": "api",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904394/job/121421461326",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461323,
+        "name": "contracts",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904379/job/121421461323",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461312,
+        "name": "checkpoint-resume-contracts (ubuntu-24.04)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904325/job/121421461312",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461303,
+        "name": "annotation-material-contracts",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904372/job/121421461303",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461292,
+        "name": "real-chrome",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904347/job/121421461292",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461288,
+        "name": "real-chrome-upload",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904369/job/121421461288",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461282,
+        "name": "real-chrome",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904322/job/121421461282",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461273,
+        "name": "jpeg-cache-integrity (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904380/job/121421461273",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461259,
+        "name": "durable-api-flow",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904373/job/121421461259",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461247,
+        "name": "recovery-contracts",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904325/job/121421461247",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461199,
+        "name": "api",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904356/job/121421461199",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461158,
+        "name": "real-chrome",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904326/job/121421461158",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461157,
+        "name": "contract (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904319/job/121421461157",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461152,
+        "name": "runtime-truth (ubuntu-24.04)",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904307/job/121421461152",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      },
+      {
+        "id": 121421461144,
+        "name": "real-chrome",
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40276904308/job/121421461144",
+        "head_sha": "69451cbb65fdf0ebeba6bccb18e8ac9b3d7b87cf"
+      }
+    ],
+    "legacy_status_api": "pending",
+    "all_actions_and_checks_succeeded": true
+  },
+  "sqlite_version": "3.45.3",
+  "disk": "YMTC YMSS2ED08B66MC; local Windows test disk",
+  "known_failed_runs": [
+    "HTTP1 progress77.63->0.0; no successful final receipt",
+    "HTTP2 explicit503; Windows CRT EACCES lacking winerror; no successful final receipt"
+  ]
+}
