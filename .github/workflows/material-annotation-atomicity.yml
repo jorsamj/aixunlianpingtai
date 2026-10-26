@@ -137,4 +137,5 @@ jobs:
           tests/unit/test_smart_material_audit_tasks.py
           tests/unit/test_smart_material_audit_results.py
           tests/unit/test_smart_material_audit_cache_budget.py
+          tests/unit/test_smart_material_audit_cache_reference.py
           tests/api/test_smart_material_audit.py

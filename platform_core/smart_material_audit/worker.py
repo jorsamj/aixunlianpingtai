@@ -1,7 +1,7 @@
 """Original MATERIAL_BATCH Worker adapter; no alternate scheduler or GT writes."""
 from __future__ import annotations
 
-from contextlib import closing, ExitStack
+from contextlib import closing
 import json
 import os
 from pathlib import Path
@@ -21,6 +21,7 @@ from ..storage.source_repository import StorageSourceRepository
 from ..storage.import_tasks import _provider
 from ..storage.errors import StorageError, redact_storage_error
 from ..storage.models import StorageType
+from ..storage.cache import MaterializedFile
 from ..task_runtime import TaskStatus
 from ..task_runtime.process_control import launch_process, ProcessController, ProcessIdentity, hash_command
 from ..task_runtime.task_logs import append_task_log
@@ -74,6 +75,27 @@ def _materialize_input(manager,image,cached,cache_bytes):
     return manager.materialize(material,read_only=True)
 
 
+def _pin_cached_reference(cache,local,working):
+    """Keep immutable bytes without holding the cache's exclusive reader lock.
+
+    A hard link adds no image copy. Cross-device storage is explicitly unchecked
+    rather than copied or allowed to block ordinary cache consumers for a task.
+    """
+    source=local.path
+    if not source.resolve().is_relative_to(cache.root) or source.is_symlink() or getattr(source.lstat(),'st_file_attributes',0)&0x400:
+        raise ValueError('缓存引用身份不可核验')
+    destination=Path(working)/'remote-references'/source.name
+    destination.parent.mkdir(parents=True,exist_ok=True)
+    with FileLock(str(source)+'.lock',timeout=0):
+        if not cache._valid(source,local.content_sha256):
+            raise ValueError('缓存源已变化，未检查')
+        try:
+            os.link(source,destination,follow_symlinks=False)
+        except OSError as error:
+            raise ValueError('无法建立任务私有安全硬链接；未复制图片，当前记录未检查') from error
+    return MaterializedFile(destination,local.content_sha256,local.size_bytes,True)
+
+
 def run_audit(context, data_dir):
     from ..material_batches import BatchSelection
     started=time.monotonic()
@@ -82,7 +104,7 @@ def run_audit(context, data_dir):
     project = project_path(data_dir, context.task.project_id)
     request = context.artifacts.read_json(task_id,context.task.payload_ref)
     selection_path = context.artifacts.artifact_path(task_id,"selection.sqlite3")
-    with FileLock(str(selection_path)+".lock",timeout=60), closing(BatchSelection(selection_path)) as manifest, ExitStack() as pins:
+    with FileLock(str(selection_path)+".lock",timeout=60), closing(BatchSelection(selection_path)) as manifest:
         if not manifest.frozen():
             raise ValueError("智能分析缺少原任务冻结范围")
         ids = [r[0] for r in manifest.database.execute("SELECT image_id FROM selection ORDER BY image_id LIMIT ?",(config['max_images']+1,))]
@@ -104,7 +126,7 @@ def run_audit(context, data_dir):
         marker = working/"ownership.json"
         marker.write_text(json.dumps(ownership),encoding="utf-8")
         observed = {}
-        inputs, failures, locked = [], [], set()
+        inputs, failures, cache_keys = [], [], set()
         cached_inputs={}
         cache_bytes = 0
         outcome = None
@@ -130,13 +152,14 @@ def run_audit(context, data_dir):
                         if not image or not image.get('content_sha256'):
                             raise ValueError("素材缺失或没有可信SHA；不自动补写或迁移")
                         local = _materialize_input(manager,image,cached_inputs,cache_bytes)
-                        if local.path.resolve().is_relative_to(manager.cache.root):
-                            if str(local.path) not in locked:
-                                if len(locked) >= 128 or cache_bytes+local.size_bytes > 512*1024*1024:
+                        if not local.path.resolve().is_relative_to(working.resolve()) and local.path.resolve().is_relative_to(manager.cache.root):
+                            if str(local.path) not in cache_keys:
+                                if len(cache_keys) >= 128 or cache_bytes+local.size_bytes > 512*1024*1024:
                                     raise ValueError("共享缓存引用超出当前已验证上限")
-                                pins.enter_context(FileLock(str(local.path)+'.lock',timeout=0))
-                                locked.add(str(local.path));cache_bytes+=local.size_bytes
-                                cached_inputs[str(local.path)]=local
+                                cache_key=str(local.path)
+                                local=_pin_cached_reference(manager.cache,local,working)
+                                cache_keys.add(cache_key);cache_bytes+=local.size_bytes
+                                cached_inputs[cache_key]=local
                         record = gt.get(image_id)
                         row = {"image_id":image_id,"filename":image.get('filename',image_id),"path":str(local.path),
                             "source_batch_id":image.get('upload_batch_id') or image.get('import_batch_id') or image.get('source_task_id'),
@@ -243,7 +266,7 @@ def run_audit(context, data_dir):
             finding_count=len(outcome.get('similar_pairs',[]))+len(outcome.get('annotation_candidates',[]))+len(failures),
             elapsed_seconds=round(time.monotonic()-started,3),
             execution_generation=generation,temporary_data_cleaned=True,extra_permanent_image_copies=0,
-            shared_cache_references=len(locked),peak_process_tree_rss_bytes=peak_rss,peak_temporary_logical_bytes=peak_disk)
+            shared_cache_references=len(cache_keys),peak_process_tree_rss_bytes=peak_rss,peak_temporary_logical_bytes=peak_disk)
         context.save_checkpoint(summary)
         reference=f'smart-audit/{generation}/result.json'
         context.artifacts.atomic_write_json(task_id,reference,summary)
