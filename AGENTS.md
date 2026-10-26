@@ -1,3 +1,7 @@
+## 2026-10-26｜ZIP任务记录安全P0（本地验收完成／待准确SHA CI）
+
+[唯一专项](docs/ZIP_IMPORT_RECORD_SAFETY_2026_10_26.md)记录根因、RED/GREEN与接续。原停止栅栏保护活动删除/提交/迟到写入，终态轻量证据归档与临时清理分离；原ZIP/任务中心UNKNOWN、退避及跨标签页恢复，持久写错/死前驱有诊断。VERSION391，必要Python44及窄修复2、Node101、Chrome5不同场景通过，独立审查问题已闭合；最终提交/CI待核，不借旧绿。生产两任务入库及事故原因未知；不生产操作、不重建Owner，原WIP/5944/两份模板测试保留。
+
 ## 2026-10-26｜FiftyOne可选智能分析（代码及隔离CI已验收）
 
 [唯一专项](docs/FIFTYONE_SMART_MATERIAL_AUDIT_2026_10_26.md)顶部为接续：VERSION390，代码fd850e62准确23/23 Actions、58/58 Checks成功；三个原区域/原Task与GT Owner/默认关闭、真实Brain、只读复核及原保存已接通。旧CI失败及修复留痕。超过2000张完整分析未实现；生产许可、Linux/NAS/OSS/真实模型与生产性能NOT VERIFIED，早期PoC删除被自动审批拒绝保留。原WIP/5944/两份模板测试保留，不生产操作。本次纯文档HEAD自身CI另核。

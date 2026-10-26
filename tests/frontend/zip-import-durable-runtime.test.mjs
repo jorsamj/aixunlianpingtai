@@ -83,7 +83,7 @@ test('all browser ZIP entry points are owned by the durable v19 runtime',()=>{
   assert.match(source,/window\.doImportData=\(\)=>/);
   assert.match(appSource,/window\.importData=function\(\)/);
   assert.match(appSource,/导入素材 \/ 标注/);
-  assert.match(source,/function forgetTerminal\(\)/);
+  assert.match(source,/function forgetTerminal\(ids=null\)/);
   assert.match(source,/knownJobs\.delete\(id\)/);
   assert.match(source,/请统一到平台标签后再入库/);
   assert.doesNotMatch(source,/\/api\/v18\/projects/);
@@ -244,7 +244,7 @@ test('ZIP source label selection only stages an explicit mapping until final con
 
 test('ZIP browser bootstrap loads the refreshed exact-code and side-evidence module',()=>{
  const boot=readFileSync(new URL('../../static/zip-import-bootstrap.mjs',import.meta.url),'utf8');
- assert.match(boot,/zip-import-runtime\.js\?v=4226368/);
+ assert.match(boot,/zip-import-runtime\.js\?v=4226370/);
 });
 
 

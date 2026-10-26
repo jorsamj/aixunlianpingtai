@@ -95,8 +95,10 @@ def test_v19_clear_terminal_import_jobs_preserves_active_records(client):
 
     assert body['deleted'] == 2
     assert set(body['deleted_ids']) == {ids['done'], ids['failed']}
-    assert not app_module.v19_job_dir(project_id, ids['done']).exists()
-    assert not app_module.v19_job_dir(project_id, ids['failed']).exists()
+    # UI dismissal retains the authoritative outcome; temporary files may be
+    # reclaimed, but clearing a list must not erase the import's evidence.
+    assert app_module.v19_read_job(project_id, ids['done'])['history_hidden'] is True
+    assert app_module.v19_read_job(project_id, ids['failed'])['history_hidden'] is True
     assert app_module.v19_job_dir(project_id, ids['running']).exists()
     assert app_module.v19_job_dir(project_id, ids['selecting']).exists()
 

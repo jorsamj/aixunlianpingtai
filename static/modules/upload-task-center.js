@@ -31,6 +31,7 @@ function statusPresentation(status) {
   if (['FAILED','INTERRUPTED'].includes(key)) return {label:'失败', cls:'bad'};
   if (['CANCELLED','CANCELED'].includes(key)) return {label:'已取消', cls:'muted'};
   if (key === 'PAUSED') return {label:'已暂停', cls:'warn'};
+  if (key === 'UNKNOWN') return {label:'状态无法确认', cls:'warn'};
   if (key === 'WAITING_UPLOAD') return {label:'排队中', cls:'warn'};
   if (['QUEUED','WAITING','WAITING_RESOURCE','SELECTING'].includes(key)) return {label:'等待中', cls:'warn'};
   return {label:'进行中', cls:'run'};
@@ -61,10 +62,11 @@ export function stableUploadTaskOrder(tasks = []) {
 /** Never hide active work merely because terminal history reached its bound. */
 export function retainUploadTaskRows(tasks = [], maximum = MAX_ROWS) {
   const ordered = stableUploadTaskOrder(Array.isArray(tasks) ? tasks : []);
-  const active = ordered.filter(isUploadTaskActive);
+  const protectedRow = row=>isUploadTaskActive(row)||upper(row.status)==='UNKNOWN';
+  const active = ordered.filter(protectedRow);
   const limit = Math.max(1, Number(maximum) || MAX_ROWS);
   if (active.length >= limit) return active;
-  const terminal = ordered.filter(task => !isUploadTaskActive(task)).slice(0, limit - active.length);
+  const terminal = ordered.filter(task => !protectedRow(task)).slice(0, limit - active.length);
   const retained = new Set([...active, ...terminal].map(task => String(task.id || '')));
   return ordered.filter(task => retained.has(String(task.id || '')));
 }
@@ -123,6 +125,21 @@ export function normalizeDurableUploadTask(task, row) {
     updatedAt:task?.updated_at || nowIso(),
     resumeRequired:false,
     browserTransfer:false,
+    progressKnown: true,
+    verificationReason:'', nextVerifyAt:0,
+  });
+}
+
+export function unverifiedUploadTask(row, error = null) {
+  const missing = Number(error?.status) === 404;
+  return mergeUploadTask(row, {
+    status:'UNKNOWN', stage:'状态无法确认', progressKnown:false,
+    verificationReason:missing?'RECORD_MISSING':error?'UNAVAILABLE':'VERIFYING',
+    detail:missing?'服务器未找到该任务记录。当前进度为最后一次记录，不能代表实际执行状态。'
+      :error?`服务器状态暂时无法核验：${error.message || error}。最后记录不代表实时进度。`:'正在核验服务器任务状态；最后记录不代表实时进度。',
+    updatedAt:row.updatedAt,
+    nextVerifyAt:error?Date.now()+(missing?60000:15000):0,
+    browserTransfer:false, resumeRequired:false,
   });
 }
 
@@ -149,6 +166,7 @@ export function recoverUploadTaskAfterRefresh(row = {}) {
   if (row.kind === 'browser-upload' && isUploadTaskActive(row) && !row.serverUrl) {
     return mergeUploadTask(row, {status:'INTERRUPTED', stage:'上传已中断', detail:'页面刷新后需重新选择文件；已创建的后台任务会自动恢复显示。'});
   }
+  if (row.kind === 'zip' && !row.localOnly && isUploadTaskActive(row)) return unverifiedUploadTask(row);
   return row;
 }
 
@@ -176,7 +194,7 @@ export function renderUploadTaskCenterRow(row = {}) {
   const reopenable=String(row.kind||'')==='zip'&&!row.localOnly;
   const size=Number(row.fileSize)>0?formatBytes(row.fileSize):'';
   const queue=Number(row.queuePosition)>0?`排队第 ${Number(row.queuePosition)} 位`:'';
-  const leftMeta=[row.progressKnown === false ? '等待服务器进度' : `${progress.toFixed(progress % 1 ? 1 : 0)}%`,size,queue].filter(Boolean).join(' · ');
+  const leftMeta=[upper(row.status)==='UNKNOWN'?`最后记录 ${progress}% · 任务 ${row.id}`:row.progressKnown === false ? '等待服务器进度' : `${progress.toFixed(progress % 1 ? 1 : 0)}%`,size,queue].filter(Boolean).join(' · ');
   const actions=taskActionMarkup(row);
   return `<div class="utc-row${reopenable?' utc-reopenable':''}" data-utc-id="${esc(row.id)}" data-utc-kind="${esc(row.kind||'')}" data-utc-local="${row.localOnly?'1':'0'}" ${reopenable?'role="button" tabindex="0" aria-label="重新打开 ZIP 导入任务"':''}><div class="utc-top"><div class="utc-name"><b>${esc(row.title)}</b><small>${esc(row.stage || presentation.label)}</small></div><span class="utc-pill ${presentation.cls}">${presentation.label}</span></div><div class="utc-progress"><i data-progress="${progress.toFixed(2)}" style="transform:scaleX(${scale.toFixed(4)});opacity:${row.progressKnown === false ? 0 : 1}"></i></div><div class="utc-meta"><span>${esc(leftMeta)}</span><span>${esc(formatTime(row.updatedAt))}</span></div>${detail}${actions?`<div class="utc-actions">${actions}</div>`:''}</div>`;
 }
@@ -321,7 +339,9 @@ async function responseJson(response) {
   const text = await response.text();
   let body = {};
   try { body = JSON.parse(text); } catch (_) { body = {detail:text}; }
-  throw new Error(String(body?.message || body?.detail || `HTTP ${response.status}`));
+  const error = new Error(String(body?.message || body?.detail || `HTTP ${response.status}`));
+  error.status=response.status;
+  throw error;
 }
 
 export function installUploadTaskCenter({getState, projectId, notify, fetchImpl = globalThis.fetch, pollRegistry, ownerPages} = {}) {
@@ -574,18 +594,21 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
     const project = pid();
     if (project && hasTerminalZipUploadTasks(rows)) {
       try {
-        await withRequestDeadline(signal => fetchImpl(
-          `/api/v19/projects/${encodeURIComponent(project)}/import/jobs`,
+        const result = await withRequestDeadline(signal => fetchImpl(
+          `/api/v19/projects/${encodeURIComponent(project)}/import/jobs?job_ids=${encodeURIComponent(rows.filter(row=>row.kind==='zip'&&!row.localOnly&&TERMINAL_STATUSES.has(upper(row.status))).map(row=>row.id.replace(/^zip:/,'')).join(','))}`,
           {method:'DELETE', credentials:'same-origin', signal},
         ).then(responseJson), {timeoutMs:30000, label:'清空上传记录'});
         if (destroyed || project !== pid()) return rows;
-        window.ZipImportRuntime?.forgetTerminal?.();
+        const cleared = new Set((result.deleted_ids || []).map(id=>'zip:'+id));
+        window.ZipImportRuntime?.forgetTerminal?.(result.deleted_ids || []);
+        rows=rows.filter(row=>row.kind!=='zip'||!cleared.has(row.id));
+        if (result.kept?.length) notify?.(`服务器保留 ${result.kept.length} 条任务：活动、状态未确认或清理失败；正式数据未删除。`);
       } catch (error) {
         notify?.(`清空导入记录失败：${error?.message || error}`);
         return rows;
       }
     }
-    rows = clearCompletedUploadTasks(rows);
+    rows = rows.filter(row=>row.kind==='zip'&&!row.localOnly || !TERMINAL_STATUSES.has(upper(row.status)));
     persist();
     render();
     arm();
@@ -638,12 +661,12 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
   }
 
   async function refreshDurable(row) {
-    if (!row?.serverUrl || row?.pollOwner || !isUploadTaskActive(row)) return row;
+    if (!row?.serverUrl || row?.pollOwner || (!isUploadTaskActive(row) && upper(row.status)!=='UNKNOWN') || Number(row.nextVerifyAt)>Date.now()) return row;
     try {
       const body = await responseJson(await fetchImpl(row.serverUrl, {credentials:'same-origin'}));
       return normalizeDurableUploadTask(body, row);
     } catch (error) {
-      return mergeUploadTask(row, {detail:`状态刷新失败：${error?.message || error}`});
+      return unverifiedUploadTask(row, error);
     }
   }
 
@@ -653,7 +676,7 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
     if (project !== lastProjectId) {
       switchProject();
     }
-    const active = rows.filter(row => isUploadTaskActive(row) && row.serverUrl && !row.pollOwner);
+    const active = rows.filter(row => (isUploadTaskActive(row) || upper(row.status)==='UNKNOWN') && Number(row.nextVerifyAt||0)<=Date.now() && row.serverUrl && !row.pollOwner);
     if (active.length) {
       const updates = await Promise.all(active.map(refreshDurable));
       if (destroyed || project !== pid() || project !== lastProjectId) return;
@@ -671,9 +694,11 @@ export function installUploadTaskCenter({getState, projectId, notify, fetchImpl 
   function arm() {
     if (destroyed) return null;
     registry?.clear?.(POLL_KEY);
-    const needsPoll = rows.some(row => isUploadTaskActive(row) && row.serverUrl && !row.pollOwner);
+    const candidates=rows.filter(row=>(isUploadTaskActive(row)||upper(row.status)==='UNKNOWN')&&row.serverUrl&&!row.pollOwner);
+    const needsPoll = candidates.length>0;
     if (!needsPoll || document.visibilityState === 'hidden' || !registry?.startTimeout) return null;
-    return registry?.startTimeout(POLL_KEY, pollOwners, () => poll().catch(() => arm()), POLL_MS);
+    const delay=Math.max(POLL_MS,Math.min(...candidates.map(row=>Math.max(0,Number(row.nextVerifyAt||0)-Date.now()))));
+    return registry?.startTimeout(POLL_KEY, pollOwners, () => poll().catch(() => arm()), delay);
   }
 
   function switchProject() {

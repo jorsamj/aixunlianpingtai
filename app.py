@@ -14324,11 +14324,15 @@ def v19_import_jobs_dir(project_id: str) -> Path:
 
 
 def v19_job_dir(project_id: str, job_id: str) -> Path:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", str(job_id)):
+        raise HTTPException(status_code=422, detail="非法 ZIP 任务标识")
     return v19_import_jobs_dir(project_id) / job_id
 
 
 def v19_job_file(project_id: str, job_id: str) -> Path:
-    return v19_job_dir(project_id, job_id) / "job.json"
+    active = v19_job_dir(project_id, job_id) / "job.json"
+    archived = v19_import_jobs_dir(project_id) / ".history" / str(job_id) / "job.json"
+    return archived if not active.exists() and archived.is_file() else active
 
 
 def v19_scan_images_file(project_id: str, job_id: str) -> Path:
@@ -14336,7 +14340,9 @@ def v19_scan_images_file(project_id: str, job_id: str) -> Path:
 
 
 def v19_report_file(project_id: str, job_id: str) -> Path:
-    return v19_job_dir(project_id, job_id) / "report.json"
+    active = v19_job_dir(project_id, job_id) / "report.json"
+    archived = v19_import_jobs_dir(project_id) / ".history" / str(job_id) / "report.json"
+    return archived if not active.exists() and archived.is_file() else active
 
 
 def v19_write_import_report(project_id: str, job_id: str, report: Dict[str, Any]):
@@ -14346,6 +14352,11 @@ def v19_write_import_report(project_id: str, job_id: str, report: Dict[str, Any]
 
 
 def v19_read_import_report(project_id: str, job_id: str, job: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    with _v19_stop_fence(project_id, job_id):
+        return _v19_read_import_report_locked(project_id, job_id, job)
+
+
+def _v19_read_import_report_locked(project_id: str, job_id: str, job: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     current = dict(job or v19_read_job(project_id, job_id) or {})
     if current.get("report_ref"):
         value = read_json(v19_report_file(project_id, job_id), {})
@@ -14394,12 +14405,15 @@ def v19_read_job(project_id: str, job_id: str) -> Dict[str, Any]:
     # A read failure is not an empty successful task. In particular, Windows
     # may briefly deny a reader during atomic replacement of job.json.
     for attempt in range(4):
+        f = v19_job_file(project_id, job_id)
         try:
             job = json.loads(f.read_text(encoding="utf-8"))
             if not isinstance(job, dict) or str(job.get("id") or "") != str(job_id):
                 raise ValueError("invalid ZIP job identity")
             return job
         except FileNotFoundError as error:
+            if attempt < 3 and v19_job_file(project_id, job_id) != f:
+                continue  # terminal evidence was atomically archived during read
             raise HTTPException(status_code=404, detail="导入任务不存在") from error
         except PermissionError as error:
             # CRT file opens can report EACCES without a winerror attribute
@@ -14413,7 +14427,29 @@ def v19_read_job(project_id: str, job_id: str) -> Dict[str, Any]:
             raise HTTPException(status_code=503, detail="ZIP_JOB_STATE_UNAVAILABLE: 导入任务状态不可读取或无效，请稍后重新查询。") from error
 
 
-def v19_write_job(project_id: str, job: Dict[str, Any]):
+def v19_write_job(project_id: str, job: Dict[str, Any], *, allow_restart=False):
+    job_id = str(job["id"])
+    v19_job_dir(project_id, job_id).mkdir(parents=True, exist_ok=True)
+    with _v19_stop_fence(project_id, job_id):
+        try:
+            previous = v19_read_job(project_id, job_id)
+        except HTTPException as error:
+            if error.status_code != 404:
+                raise
+            previous = {}
+        terminal = {"done", "failed", "cancelled", "canceled"}
+        if str(previous.get("status") or "").lower() in terminal and str(job.get("status") or "").lower() not in terminal:
+            if not (allow_restart and previous.get("status") == "failed" and not previous.get("history_hidden")):
+                raise HTTPException(status_code=409, detail="ZIP 任务已结束，拒绝迟到状态覆盖")
+        if previous.get("cancel_requested"):
+            job["cancel_requested"] = True
+        if previous.get("history_hidden"):
+            job["history_hidden"] = True
+            job["history_hidden_at"] = previous.get("history_hidden_at")
+        _v19_write_job_locked(project_id, job)
+
+
+def _v19_write_job_locked(project_id: str, job: Dict[str, Any]):
     job["updated_at"] = now_iso()
     f = v19_job_file(project_id, job["id"])
     f.parent.mkdir(parents=True, exist_ok=True)
@@ -14564,6 +14600,13 @@ def v19_zip_display_progress(job: Mapping[str, Any]) -> Dict[str, Any]:
 def v19_public_job(project_id: str, job: Dict[str, Any], image_limit: int = 0) -> Dict[str, Any]:
     result = dict(job or {})
     result.pop("images", None)
+    # A readable but stale job.json is not proof that a worker still runs after
+    # a failed state write. A diagnostic only invalidates that exact file
+    # revision; a later successful write restores the original authority.
+    if str(result.get("status") or "").lower() not in {"done", "failed", "cancelled", "canceled"}:
+        if _v19_unresolved_diagnostic(project_id, str(result.get("id"))):
+            result.update(last_known_status=result.get("status"), status="unknown",
+                          verificationReason="UNAVAILABLE", error="任务状态写入或执行异常，最后记录不能代表实际执行状态；请核验任务诊断。")
     result["zip_display_progress"] = v19_zip_display_progress(result)
     limit = max(0, min(500, int(image_limit or 0)))
     if limit:
@@ -14575,11 +14618,91 @@ def v19_public_job(project_id: str, job: Dict[str, Any], image_limit: int = 0) -
 
 def v19_update_job(project_id: str, job_id: str, **kwargs):
     try:
-        job = v19_read_job(project_id, job_id)
-        job.update(kwargs)
-        v19_write_job(project_id, job)
+        with _v19_stop_fence(project_id, job_id):
+            job = v19_read_job(project_id, job_id)
+            if str(job.get("status") or "").lower() in {"done", "failed", "cancelled", "canceled"}:
+                raise RuntimeError("ZIP_JOB_ALREADY_TERMINAL: 已结束任务不能接受迟到进度")
+            job.update(kwargs)
+            v19_write_job(project_id, job)
+            return job
+    except Exception as error:
+        _v19_job_diagnostic(project_id, job_id, error, operation="state_update")
+        raise
+
+
+def _v19_job_record_token(project_id, job_id):
+    try:
+        stat = v19_job_file(project_id, job_id).stat()
+        return {"mtime_ns": stat.st_mtime_ns, "size": stat.st_size, "inode": stat.st_ino}
+    except OSError:
+        return None
+
+
+def _v19_unresolved_diagnostic(project_id, job_id):
+    diagnostic = read_json(v19_import_jobs_dir(project_id) / ".diagnostics" / (str(job_id) + ".json"), {})
+    if diagnostic.get("operation") not in {"state_update", "worker_failure", "worker_exit", "finalize_exit", "rollback"}:
+        return None
+    token = _v19_job_record_token(project_id, job_id)
+    return diagnostic if token and diagnostic.get("observed_record") == token else None
+
+
+def _v19_job_diagnostic(project_id: str, job_id: str, error: Exception, *, operation: str,
+                        job=None, report=None, committed=False):
+    """Independent failure evidence, never a replacement successful task record."""
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.error("ZIP job %s/%s %s failed: %s", project_id, job_id, operation, error, exc_info=True)
+    evidence = {
+        "project_id": project_id, "job_id": job_id, "operation": operation,
+        "code": "ZIP_JOB_RECORD_UNAVAILABLE", "outcome": "unknown",
+        "error": str(getattr(error, "detail", error)), "recorded_at": now_iso(),
+        "file_name": (job or {}).get("file_name"),
+        "formal_commit_completed": bool(committed),
+        "observed_record": _v19_job_record_token(project_id, job_id),
+        "report": {k: v for k, v in (report or {}).items() if k in {
+            "imported_images", "annotated_images", "boxes", "missing_images",
+            "skipped_images", "invalid_boxes", "unmatched_labels", "batch_id",
+        }},
+    }
+    try:
+        path = v19_import_jobs_dir(project_id) / ".diagnostics" / (str(job_id) + ".json")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        previous = read_json(path, {})
+        decisive = {"state_update", "worker_failure", "worker_exit", "finalize_exit", "rollback"}
+        if (operation not in decisive and previous.get("operation") in decisive
+                and previous.get("observed_record") == evidence.get("observed_record")):
+            # Secondary temp-cleanup errors must never erase proof that the
+            # worker stopped, or resurrect its stale RUNNING FIFO predecessor.
+            evidence = {**previous, "secondary_error": {
+                "operation": operation, "error": evidence["error"],
+                "recorded_at": evidence["recorded_at"],
+            }}
+        atomic_write_json(path, evidence)
     except Exception:
-        pass
+        logger.exception("ZIP diagnostic persistence failed for %s/%s", project_id, job_id)
+
+
+def _v19_fail_worker(project_id, job_id, error, *, job, report, started, committed=False):
+    # Do not reread a missing record in an unprotected exception handler, and
+    # never synthesize a successful record or delete committed formal data.
+    try:
+        with _v19_stop_fence(project_id, job_id):
+            current = v19_read_job(project_id, job_id)
+            if current.get("status") in {"done", "cancelled", "canceled"}:
+                return
+            current.update(
+                status="failed", stage="导入异常，需核验" if committed else "导入失败",
+                phase="FAILED", error=str(getattr(error, "detail", error)),
+                report=report, formal_commit_completed=bool(committed),
+                processing_seconds=round(max(0.0, time.time()-started), 2),
+                finished_at=now_iso(), message="正式素材未被删除；请根据任务证据核验" if committed else str(getattr(error, "detail", error)),
+            )
+            v19_write_job(project_id, current)
+    except Exception as state_error:
+        _v19_job_diagnostic(project_id, job_id, state_error, operation="worker_failure_record",
+                            job=job, report=report, committed=committed)
+    _v19_job_diagnostic(project_id, job_id, error, operation="worker_failure",
+                        job=job, report=report, committed=committed)
 
 
 def v19_scan_zip(zip_path: Path, progress_cb=None) -> Dict[str, Any]:
@@ -14869,7 +14992,9 @@ class _V19ImportStopped(RuntimeError):
 
 
 def _v19_stop_fence(project_id: str, job_id: str) -> FileLock:
-    return FileLock(str(v19_job_dir(project_id, job_id) / ".stop.lock"), timeout=120)
+    # The same original lock must be reentrant for state updates inside commit,
+    # start and cancel; never unlink its inode during history cleanup.
+    return FileLock(str(v19_job_dir(project_id, job_id) / ".stop.lock"), timeout=120, is_singleton=True)
 
 
 def _v19_check_stop(project_id: str, job_id: str) -> None:
@@ -14877,7 +15002,7 @@ def _v19_check_stop(project_id: str, job_id: str) -> None:
         raise _V19ImportStopped("用户中断了尚未提交的 ZIP 素材导入")
 
 
-def _v19_cleanup_uncommitted_job(project_id: str, job_id: str) -> Dict[str, Any]:
+def _v19_cleanup_uncommitted_job(project_id: str, job_id: str, *, preserve_report=False) -> Dict[str, Any]:
     """Delete only files owned by one pre-commit ZIP job; keep job.json audit."""
     jobs_root = v19_import_jobs_dir(project_id).resolve()
     job_root = (jobs_root / str(job_id)).resolve()
@@ -14890,6 +15015,8 @@ def _v19_cleanup_uncommitted_job(project_id: str, job_id: str) -> Dict[str, Any]
         "source.zip", "source.zip.assembling", "scan-images.json",
         "scan-class-samples.json", "report.json",
     ):
+        if preserve_report and name == "report.json":
+            continue
         path = job_root / name
         if not path.exists():
             continue
@@ -14961,6 +15088,11 @@ def _v19_fifo_import_jobs(project_id: str) -> List[Dict[str, Any]]:
     for filename in v19_import_jobs_dir(project_id).glob("*/job.json"):
         job = read_json(filename, {})
         if isinstance(job, dict) and str(job.get("status") or "").lower() == "running":
+            diagnostic = _v19_unresolved_diagnostic(project_id, str(job.get("id") or filename.parent.name))
+            if diagnostic and diagnostic.get("operation") in {"worker_failure", "worker_exit"}:
+                # The original worker has unwound the formal-import lock.
+                # Do not let an unwritable stale record strand other ZIPs.
+                continue
             jobs.append(job)
 
     def order(job):
@@ -14999,8 +15131,19 @@ def _v19_wait_fifo_turn(project_id: str, job_id: str) -> None:
 
 
 def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_paths: List[str]):
+    try:
+        _v19_import_worker_impl(project_id, dataset_id, job_id, selected_paths)
+    except Exception as error:
+        # Includes initial read failure and failures inside cancellation recovery.
+        _v19_job_diagnostic(project_id, job_id, error, operation="worker_exit")
+
+
+def _v19_import_worker_impl(project_id: str, dataset_id: str, job_id: str, selected_paths: List[str]):
     job = v19_read_job(project_id, job_id)
+    if job.get("status") in {"done", "cancelled", "canceled", "failed"}:
+        return
     processing_started = time.time()
+    committed = False
     job_dir = v19_job_dir(project_id, job_id)
     zip_path = job_dir / "source.zip"
     extracted = job_dir / "extracted"
@@ -15179,6 +15322,7 @@ def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_pa
                                 project_id, frozen_mapping,
                             )
                             _v50_end_image_batch(save=True)
+                            committed = True
                     except BaseException:
                         if _v50_active_image_batch(project_id):
                             _v50_end_image_batch(save=False)
@@ -15231,22 +15375,20 @@ def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_pa
         else:
             v19_update_job(project_id, job_id, report=report)
             _v19_finish_cancel(project_id, job_id, message=str(stopped))
-    except HTTPException as e:
-        current = v19_read_job(project_id, job_id)
-        failed_progress = v19_zip_display_progress(current)["overall_progress"]
-        v19_update_job(project_id, job_id, status="failed", stage="导入失败", progress=failed_progress,
-                       phase="FAILED", error=str(e.detail), report=report,
-                       processing_seconds=round(max(0.0, time.time()-processing_started),2),
-                       finished_at=now_iso(), message=str(e.detail))
     except Exception as e:
-        current = v19_read_job(project_id, job_id)
-        failed_progress = v19_zip_display_progress(current)["overall_progress"]
-        v19_update_job(project_id, job_id, status="failed", stage="导入失败", progress=failed_progress,
-                       phase="FAILED", error=str(e), report=report,
-                       processing_seconds=round(max(0.0, time.time()-processing_started),2),
-                       finished_at=now_iso(), message=str(e))
+        if _v50_active_image_batch(project_id):
+            try:
+                _v50_end_image_batch(save=False)
+            except Exception as rollback_error:
+                _v19_job_diagnostic(project_id, job_id, rollback_error, operation="rollback", job=job, report=report)
+        _v19_fail_worker(project_id, job_id, e, job=job, report=report,
+                          started=processing_started, committed=committed)
     finally:
-        shutil.rmtree(extracted, ignore_errors=True)
+        try:
+            if extracted.exists():
+                shutil.rmtree(extracted)
+        except OSError as error:
+            _v19_job_diagnostic(project_id, job_id, error, operation="extracted_cleanup", job=job, report=report, committed=committed)
 
 
 
@@ -15393,6 +15535,15 @@ _V19_UPLOAD_FINALIZE_ACTIVE: set[Tuple[str, str]] = set()
 
 
 def _v19_finalize_multipart_upload(project_id: str, upload_id: str):
+    try:
+        _v19_finalize_multipart_upload_impl(project_id, upload_id)
+    except Exception as error:
+        # Even a failed secondary read in the existing finalize/cancel handler
+        # leaves independent evidence instead of terminating a daemon silently.
+        _v19_job_diagnostic(project_id, upload_id, error, operation="finalize_exit")
+
+
+def _v19_finalize_multipart_upload_impl(project_id: str, upload_id: str):
     key = (str(project_id), str(upload_id))
     jd = v19_job_dir(project_id, upload_id)
     jd.mkdir(parents=True, exist_ok=True)
@@ -15813,6 +15964,8 @@ def v19_start_import_job(project_id: str, job_id: str, payload: V19ImportStartRe
 
 def _v19_start_import_job_locked(project_id: str, job_id: str, payload: V19ImportStartReq):
     job = v19_read_job(project_id, job_id)
+    if job.get("history_hidden"):
+        raise HTTPException(status_code=409, detail="该记录已清空历史并释放临时文件，不能重复启动")
     if job.get("cancel_requested"):
         raise HTTPException(status_code=409, detail="该 ZIP 任务正在取消，不能确认标签或启动正式导入")
     if job.get("status") == "running":
@@ -15919,7 +16072,7 @@ def _v19_start_import_job_locked(project_id: str, job_id: str, payload: V19Impor
         selected_count=len(selected_paths) or job.get("image_count", 0),
         message="标签确认已冻结，正在等待项目级导入锁",
     )
-    v19_write_job(project_id, job)
+    v19_write_job(project_id, job, allow_restart=True)
     th = threading.Thread(
         target=v19_import_worker,
         args=(project_id, job.get("dataset_id") or "default", job_id, selected_paths),
@@ -16010,7 +16163,7 @@ def v19_list_import_jobs(project_id: str):
     d = v19_import_jobs_dir(project_id)
     for jf in d.glob("*/job.json"):
         job = read_json(jf, {})
-        if job:
+        if job and not job.get("history_hidden"):
             _v19_recover_multipart_finalize(project_id, job)
             # Selecting jobs keep a bounded preview for compatibility. Running/terminal polling stays O(1).
             preview = 300 if job.get("status") == "selecting" else 0
@@ -16027,36 +16180,75 @@ def v19_list_import_jobs(project_id: str):
 
 @app.get("/api/v19/projects/{project_id}/import/jobs/{job_id}")
 def v19_get_import_job(project_id: str, job_id: str, include_images: bool = False, image_limit: int = 500):
+    get_project(project_id)
     job = v19_read_job(project_id, job_id)
     _v19_recover_multipart_finalize(project_id, job)
     result = v19_public_job(project_id, job, image_limit=image_limit if include_images else 0)
-    result["queue_position"] = _v19_fifo_queue_position(project_id, job_id)
+    queue_phase = str(job.get("phase") or "").upper()
+    result["queue_position"] = _v19_fifo_queue_position(project_id, job_id) if queue_phase == "QUEUE" or (not queue_phase and job.get("status") == "running") else None
     return result
 
 
 @app.delete("/api/v19/projects/{project_id}/import/jobs")
-def v19_clear_terminal_import_jobs(project_id: str):
+def v19_clear_terminal_import_jobs(project_id: str, job_ids: str = ""):
     get_project(project_id)
-    terminal = {"done", "failed", "cancelled", "canceled"}
+    requested = [value for value in job_ids.split(",") if value]
+    if len(requested) > 200 or len(job_ids) > 26000:
+        raise HTTPException(status_code=422, detail="一次核验的历史任务过多，请分批清空")
     deleted = []
     kept = []
-    for job_file in v19_import_jobs_dir(project_id).glob("*/job.json"):
-        job = read_json(job_file, {})
-        job_id = str(job.get("id") or job_file.parent.name)
-        status = str(job.get("status") or "").strip().lower()
-        if status in terminal:
-            shutil.rmtree(job_file.parent, ignore_errors=True)
+    candidates = {path.parent.name for path in v19_import_jobs_dir(project_id).glob("*/job.json")}
+    for job_id in sorted(candidates | set(requested)):
+        try:
+            _v19_hide_terminal_job(project_id, job_id)
             deleted.append(job_id)
-        else:
-            kept.append({"id": job_id, "status": status})
+        except HTTPException as error:
+            kept.append({"id": job_id, "reason": error.detail, "http_status": error.status_code})
+        except Exception as error:
+            _v19_job_diagnostic(project_id, job_id, error, operation="history_cleanup")
+            kept.append({"id": job_id, "reason": "临时文件清理失败，记录已保留", "http_status": 503})
     return {"ok": True, "deleted": len(deleted), "deleted_ids": deleted, "kept": kept}
+
+
+def _v19_hide_terminal_job(project_id: str, job_id: str):
+    get_project(project_id)
+    with _v19_stop_fence(project_id, job_id):
+        job = v19_read_job(project_id, job_id)
+        if str(job.get("status") or "").lower() not in {"done", "failed", "cancelled", "canceled"}:
+            raise HTTPException(status_code=409, detail="任务正在执行或等待确认，不能直接删除；如需终止，请使用正式取消流程。")
+        try:
+            cleanup = _v19_cleanup_uncommitted_job(project_id, job_id, preserve_report=True)
+        except Exception as error:
+            _v19_job_diagnostic(project_id, job_id, error, operation="history_cleanup", job=job)
+            raise HTTPException(status_code=503, detail="临时文件清理失败，任务记录与导入证据已保留，可安全重试") from error
+        # Preserve the original task and bounded report: UI history dismissal
+        # must never erase evidence or unlink the shared stop fence.
+        job.update(project_id=project_id, batch_id=job.get("batch_id") or job_id,
+                   history_hidden=True, history_hidden_at=now_iso(),
+                   temporary_cleanup=cleanup)
+        v19_write_job(project_id, job)
+        # Keep history addressable by the original project+job ID, but outside
+        # normal */job.json discovery. Leave the existing stop-lock inode in
+        # place so concurrent waiters can never acquire a second lock.
+        archive = v19_import_jobs_dir(project_id) / ".history" / job_id
+        try:
+            archive.mkdir(parents=True, exist_ok=True)
+            source_report = v19_job_dir(project_id, job_id) / "report.json"
+            if source_report.is_file():
+                os.replace(source_report, archive / "report.json")
+            source_job = v19_job_dir(project_id, job_id) / "job.json"
+            if source_job.is_file():
+                os.replace(source_job, archive / "job.json")
+        except OSError as error:
+            _v19_job_diagnostic(project_id, job_id, error, operation="history_archive", job=job)
+            raise HTTPException(status_code=503, detail="历史归档未完成，证据仍保留；请按同一任务 ID 重试清理") from error
+        return {"ok": True, "id": job_id, "history_hidden": True,
+                "evidence_retained": True, "cleanup": cleanup}
 
 
 @app.delete("/api/v19/projects/{project_id}/import/jobs/{job_id}")
 def v19_delete_import_job(project_id: str, job_id: str):
-    v19_read_job(project_id, job_id)
-    shutil.rmtree(v19_job_dir(project_id, job_id), ignore_errors=True)
-    return {"ok": True}
+    return _v19_hide_terminal_job(project_id, job_id)
 
 # ============================================================
 # v30: 模型/算法导出包 + 部署环境选择

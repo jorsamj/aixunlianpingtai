@@ -44,6 +44,7 @@ on:
       - tests/api/test_v19_import_scalability.py
       - tests/api/test_v19_import_failure_rollback.py
       - tests/api/test_v19_job_atomic_persistence.py
+      - tests/api/test_v19_job_record_safety.py
       - tests/api/test_v19_import_report_externalization.py
       - tests/api/test_v52_import_review_owner.py
       - tests/api/test_zip_processing_p1.py
@@ -99,6 +100,7 @@ jobs:
           tests/api/test_material_selection_atomicity.py
           tests/api/test_v19_import_failure_rollback.py
           tests/api/test_v19_job_atomic_persistence.py
+          tests/api/test_v19_job_record_safety.py
           tests/api/test_v19_import_report_externalization.py
           tests/api/test_v52_import_review_owner.py
           tests/api/test_zip_processing_p2a_annotation_connections.py

@@ -1,3 +1,7 @@
+## 2026-10-26｜ZIP记录丢失与UNKNOWN接续
+
+本轮任务删除/轻量审计/状态核验与恢复的唯一进度见[ZIP记录安全专项](ZIP_IMPORT_RECORD_SAFETY_2026_10_26.md)，不在本文件重复维护。原Uppy/v19/UploadTaskCenter Owner保留，无生产操作。
+
 ## 2026-10-26 ZIP入库元数据性能接续
 
 本轮索引查询、任务状态读取兼容及完整HTTP10k证据统一见[ZIP性能专项](ZIP_IMPORT_METADATA_PERFORMANCE_2026_10_26.md)。原Uppy、multipart、标签确认、任务中心及并发Owner保持，不在本文件复制性能进度。
