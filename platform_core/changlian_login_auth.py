@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import closing
+
 import base64
 import hashlib
 import hmac
@@ -43,6 +45,29 @@ class ChangLianLoginError(RuntimeError):
         self.detail = str(detail)
         self.solution = str(solution)
         self.status_code = int(status_code)
+
+
+def isolated_test_access_enabled(data_dir: Path, *, environ=None) -> bool:
+    """A production flag alone must never disable authentication.
+
+    Existing API/browser harnesses use an explicit test build and an explicitly
+    configured disposable directory beneath the operating system temp root.
+    """
+    import tempfile
+    env = os.environ if environ is None else environ
+    if str(env.get('MC_ALLOW_MULTIPLE_PROJECTS_FOR_TESTS', '')).strip() != '1':
+        return False
+    if str(env.get('MC_PLATFORM_VERSION', '')).strip() not in {'test', 'browser-test'}:
+        return False
+    configured = str(env.get('MC_TRAIN_DATA_DIR', '')).strip()
+    if not configured:
+        return False
+    try:
+        root = Path(data_dir).resolve()
+        temporary = Path(tempfile.gettempdir()).resolve()
+        return root == Path(configured).resolve() and root != temporary and root.is_relative_to(temporary)
+    except (OSError, ValueError):
+        return False
 
 
 def _clean_base_url(value: Any) -> str:
@@ -295,7 +320,7 @@ class SignedSessionManager:
         # One canonical session manager owns durable logout revocations.
         # Read checks must fail closed if this database becomes unavailable.
         self.revocations_path = self.root / "changlian-revocations.sqlite3"
-        with sqlite3.connect(self.revocations_path, timeout=10) as database:
+        with closing(sqlite3.connect(self.revocations_path, timeout=10)) as database, database:
             database.execute(
                 "CREATE TABLE IF NOT EXISTS revoked_sessions "
                 "(identity_hash TEXT PRIMARY KEY, hard_expires_at INTEGER NOT NULL)"
@@ -343,10 +368,10 @@ class SignedSessionManager:
     def _is_revoked(self, claims: Mapping[str, Any]) -> bool:
         # mode=ro prevents a lost/unmounted database from silently creating
         # an empty one and resurrecting sessions that were logged out.
-        with sqlite3.connect(
+        with closing(sqlite3.connect(
             self.revocations_path.resolve().as_uri() + "?mode=ro",
             uri=True, timeout=10,
-        ) as database:
+        )) as database, database:
             return database.execute(
                 "SELECT 1 FROM revoked_sessions WHERE identity_hash=? LIMIT 1",
                 (self._revocation_hash(claims),),
@@ -360,10 +385,10 @@ class SignedSessionManager:
             return False
         identity_hash = self._revocation_hash(claims)
         deadline = int(claims.get("hard_exp") or claims.get("exp") or current)
-        with sqlite3.connect(
+        with closing(sqlite3.connect(
             self.revocations_path.resolve().as_uri() + "?mode=rw",
             uri=True, timeout=10,
-        ) as database:
+        )) as database, database:
             database.execute(
                 "INSERT OR REPLACE INTO revoked_sessions(identity_hash,hard_expires_at) VALUES (?,?)",
                 (identity_hash, deadline),

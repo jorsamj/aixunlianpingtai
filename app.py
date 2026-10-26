@@ -229,9 +229,8 @@ def _default_data_dir() -> Path:
 DATA_DIR = _default_data_dir()
 DEFAULT_PROJECT_ID = "f1fb1e6fa373"
 DEFAULT_PROJECT_NAME = "默认空间"
-ALLOW_MULTIPLE_PROJECTS_FOR_TESTS = os.environ.get(
-    "MC_ALLOW_MULTIPLE_PROJECTS_FOR_TESTS", ""
-).strip() == "1"
+from platform_core.changlian_login_auth import isolated_test_access_enabled
+ALLOW_MULTIPLE_PROJECTS_FOR_TESTS = isolated_test_access_enabled(DATA_DIR)
 
 _SHARED_TASK_REPOSITORY: Optional[TaskRepository] = None
 _SHARED_TASK_ARTIFACTS: Optional[ArtifactStore] = None
@@ -291,7 +290,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
-app.mount("/data", StaticFiles(directory=str(DATA_DIR)), name="data")
 
 _CHANGLIAN_LOGIN_BASE_URL = os.environ.get(
     "MC_CHANGLIAN_LOGIN_BASE_URL",
@@ -379,13 +377,7 @@ def _public_auth_session(claims: Mapping[str, Any]) -> Dict[str, Any]:
 
 
 def _auth_test_bypass_enabled() -> bool:
-    # Some focused browser harnesses import app.py before their environment
-    # bootstrap completes. Re-read the existing test-only flag at request time
-    # so authentication never breaks unrelated isolated regression suites.
-    return (
-        ALLOW_MULTIPLE_PROJECTS_FOR_TESTS
-        or os.environ.get("MC_ALLOW_MULTIPLE_PROJECTS_FOR_TESTS", "").strip() == "1"
-    )
+    return ALLOW_MULTIPLE_PROJECTS_FOR_TESTS and isolated_test_access_enabled(DATA_DIR)
 
 
 @app.middleware("http")
@@ -1456,6 +1448,208 @@ def get_project(project_id: str) -> Dict[str, Any]:
         raise HTTPException(status_code=404, detail="项目不存在")
     return read_json(meta, {})
 
+
+
+def _authorize_business_file_project(project_id: str) -> Dict[str, Any]:
+    # Login is verified by the existing middleware. Production exposes one
+    # canonical space; existence alone is not proof of access to another space.
+    if not re.fullmatch(r'[A-Za-z0-9_-]{1,96}', str(project_id)):
+        raise HTTPException(404, detail='文件不存在或无权访问')
+    if not _auth_test_bypass_enabled() and not any(str(row.get('id')) == str(project_id) for row in list_projects()):
+        raise HTTPException(404, detail='文件不存在或无权访问')
+    return get_project(project_id)
+
+
+def _business_file_url(project_id: str, kind: str, identifier: str) -> str:
+    from platform_core.business_files import BusinessFileService
+    return BusinessFileService.url(project_id, kind, identifier)
+
+
+def _raise_file_storage_error(error, status_code=503):
+    code = str(getattr(error, 'code', 'FILE_UNAVAILABLE'))
+    if not re.fullmatch(r'[A-Z_0-9]{1,80}', code):
+        code = 'FILE_UNAVAILABLE'
+    raise HTTPException(status_code, detail={'code': code, 'message': '文件暂不可用或无权访问',
+        'retryable': bool(getattr(error, 'retryable', False))}) from None
+
+
+def _business_material_by_name(project_id, stored_name):
+    matches = [row for row in material_store(project_id).read().rows
+               if row.get('stored_name') == stored_name]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _business_file_records(project_id, kind, identifier):
+    """Project existing owners only; directory entries never register public bytes."""
+    from platform_core.business_files import _read, _plain
+    root = project_dir(project_id)
+    def record(path, digest='', alias=None):
+        row = {'project_id': project_id, 'path': str(path), 'sha256': digest}
+        if alias is not None:
+            row['identifier'] = alias
+        return row
+    if kind in {'models', 'jobs', 'runs'}:
+        # This is the SQL-backed algorithm owner, not its retained JSON mirror.
+        for algorithm in list_algorithm_assets(algorithms_file(project_id)):
+            for version in algorithm.get('versions') or []:
+                for output in version.get('exported_models') or []:
+                    if isinstance(output, dict) and output.get('path') and output.get('sha256'):
+                        yield record(output['path'], output['sha256'])
+                for field in ('stored_path', 'best_path', 'last_path'):
+                    path = str(version.get(field) or '')
+                    if path:
+                        alias = f"versions/{algorithm['id']}/{version['id']}/{Path(path).name}"
+                        digest = str(version.get('sha256') or version.get('model_sha256') or '')
+                        if identifier == alias and Path(path).is_file():
+                            yield record(path, digest or sha256_file(Path(path)), alias)
+                        yield record(path, digest)
+        jobs = root / 'jobs'
+        if jobs.is_dir():
+            _plain(jobs, DATA_DIR)
+            for metadata in jobs.glob('*/job.json'):
+                job = _read(metadata, DATA_DIR)
+                if job.get('project_id', project_id) != project_id:
+                    continue
+                for path in job.get('models') or []:
+                    if isinstance(path, str):
+                        yield record(path)
+                for output in list(job.get('outputs') or []) + list(job.get('exported_models') or []):
+                    if isinstance(output, dict) and output.get('path'):
+                        yield record(output['path'], str(output.get('sha256') or ''))
+        if (DATA_DIR / 'model_artifacts' / 'artifacts.sqlite3').is_file():
+            from platform_core.model_artifacts import ModelArtifactRepository
+            repo = ModelArtifactRepository(DATA_DIR)
+            offset = 0
+            while True:
+                rows = repo.list(project_id=project_id, limit=500, offset=offset)
+                for item in rows:
+                    path = str(item.get('source_path') or '')
+                    if path:
+                        alias = f"artifacts/{item['id']}/{Path(path).name}" if 'id' in item else f"artifacts/{item['artifact_id']}/{Path(path).name}"
+                        yield record(path, str(item.get('sha256') or ''), alias if identifier == alias else None)
+                if len(rows) < 500:
+                    break
+                offset += len(rows)
+    elif kind == 'deployment':
+        parts = identifier.split('/')
+        if len(parts) < 3 or parts[0] != 'jobs':
+            return
+        job_id = parts[1]
+        job = _read(_deploy_job_dir(project_id, job_id) / 'job.json', DATA_DIR)
+        if job.get('id') != job_id or job.get('project_id', project_id) != project_id:
+            return
+        if job.get('status') not in {'done', 'blocked_by_hardware'}:
+            return
+        for item in job.get('outputs') or []:
+            if isinstance(item, dict) and item.get('path'):
+                yield record(item['path'], str(item.get('sha256') or ''))
+    elif kind == 'predictions':
+        parts = identifier.split('/')
+        if len(parts) == 2:
+            task = shared_task_repository().get(parts[0])
+            if task is None or task.project_id != project_id or task.kind is not TaskKind.DEPLOYMENT_TEST:
+                return
+            request = shared_task_artifacts().read_json(task.task_id, task.payload_ref, default={})
+            expected_input = root / 'predictions' / task.task_id / parts[1]
+            if parts[1].startswith('input.') and str(request.get('input_path') or '') == str(expected_input):
+                yield record(expected_input)
+            if parts[1] == 'result.jpg' and task.status in {TaskStatus.SUCCEEDED, TaskStatus.PARTIAL_SUCCESS}:
+                result = shared_task_artifacts().read_json(task.task_id, task.result_ref, default={}) if task.result_ref else {}
+                expected = root / 'predictions' / task.task_id / 'result.jpg'
+                result_path = str(result.get('output_path') or request.get('output_path') or '')
+                if result_path == str(expected):
+                    yield record(expected)
+            return
+        if len(parts) != 1:
+            return
+        name = parts[0]
+        prediction_id = Path(name).stem.rsplit('_', 1)[0]
+        metadata = root / 'predictions' / f'{prediction_id}.evidence.json'
+        if not metadata.is_file():
+            return
+        evidence = _read(metadata, DATA_DIR)
+        if evidence.get('prediction_id') != prediction_id:
+            return
+        for item in (evidence.get('files') or {}).values():
+            if isinstance(item, dict) and item.get('name') == name and item.get('sha256'):
+                yield record(root / 'predictions' / name, item['sha256'])
+                return
+        # Legacy online-feedback records already bind the input digest and
+        # formal version. Preserve only their two known image roles.
+        if evidence.get('algorithm_id') and evidence.get('version_id'):
+            verified, input_path, _, _ = _online_prediction_evidence(project_id, prediction_id)
+            if name == verified.get('input_file'):
+                yield record(input_path, verified['input_sha256'])
+            elif name == f'{prediction_id}_result.jpg':
+                yield record(root / 'predictions' / name, str(verified.get('result_sha256') or ''))
+    elif kind == 'exports' and '/' not in identifier:
+        package = Path(identifier).stem
+        meta = root / 'exports' / package / 'model_meta.json'
+        if not meta.is_file():
+            return
+        item = _read(meta, DATA_DIR)
+        export_id = str(item.get('export_id') or '')
+        if (item.get('project_id') == project_id and export_id
+                and package.endswith('_' + export_id) and item.get('model_file')
+                and item.get('model_path_source')):
+            yield record(root / 'exports' / identifier, str(item.get('zip_sha256') or ''))
+
+
+def _resolve_business_file(project_id, kind, identifier):
+    from platform_core.business_files import BusinessFileService, BusinessFileNotFound
+    _authorize_business_file_project(project_id)
+    try:
+        return BusinessFileService(DATA_DIR,
+            records=lambda pid, category: _business_file_records(pid, category, identifier),
+            material_lookup=_business_material_by_name, storage_manager=storage_manager,
+        ).resolve(project_id, kind, identifier)
+    except (BusinessFileNotFound, StorageError, OSError, ValueError, KeyError):
+        raise HTTPException(404, detail='文件不存在或无权访问') from None
+
+
+def _business_file_response(project_id, kind, identifier, *, download=False):
+    item = _resolve_business_file(project_id, kind, identifier)
+    headers = {'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff'}
+    kwargs = {'media_type': item.media_type, 'headers': headers}
+    if download:
+        kwargs['filename'] = item.filename
+    if item.manager is not None:
+        from platform_core.storage.http import StoredSourceFileResponse
+        return StoredSourceFileResponse(item.path, manager=item.manager, material=item.material, **kwargs)
+    return FileResponse(item.path, **kwargs)
+
+
+@app.get('/api/projects/{project_id}/files/{kind}/{identifier:path}')
+def controlled_business_file(project_id: str, kind: str, identifier: str):
+    return _business_file_response(project_id, kind, identifier)
+
+
+@app.get('/data/projects/{project_id}/{relativepath:path}')
+def controlled_legacy_business_file(project_id: str, relativepath: str):
+    kind, separator, identifier = relativepath.partition('/')
+    if not separator:
+        raise HTTPException(404, detail='文件不存在或无权访问')
+    return _business_file_response(project_id, kind, identifier)
+
+
+def _register_prediction_files(project_id, prediction_id, input_path, output_path, evidence=None):
+    path = project_dir(project_id) / 'predictions' / f'{prediction_id}.evidence.json'
+    value = dict(evidence or read_json(path, {}))
+    value.update(project_id=project_id, prediction_id=prediction_id)
+    value['files'] = {role: {'name': item.name, 'sha256': sha256_file(item)}
+                      for role, item in (('input', Path(input_path)), ('result', Path(output_path)))
+                      if item.is_file()}
+    write_json(path, value)
+
+
+def _authorized_model_url(project_id, model_path):
+    try:
+        relative = Path(model_path).absolute().relative_to(project_dir(project_id).absolute())
+        kind, identifier = relative.as_posix().split('/', 1)
+        _resolve_business_file(project_id, kind, identifier)
+        return _business_file_url(project_id, kind, identifier)
+    except (HTTPException, ValueError):
+        return ''
 
 
 def _material_governance_actor(request: Request, project_id: str) -> Dict[str, Any]:
@@ -2806,6 +3000,7 @@ def label_review_sample_content_v61(
     class_id: str,
     object_key: str = Query(..., min_length=1, max_length=4096),
 ):
+    _authorize_business_file_project(project_id)
     _task, _request, store = _label_review_candidate_store(project_id, task_id)
     sample = store.external_class_sample(class_id, object_key)
     if sample is None:
@@ -2816,7 +3011,7 @@ def label_review_sample_content_v61(
         )
         stream = provider.open_reader(str(sample["object_key"]))
     except StorageError as error:
-        _raise_storage_error(
+        _raise_file_storage_error(
             error,
             status_code=404 if error.code == "STORAGE_OBJECT_NOT_FOUND" else 503,
         )
@@ -2836,7 +3031,7 @@ def label_review_sample_content_v61(
     return StreamingResponse(
         body(),
         media_type=_label_sample_content_type(str(sample.get("filename") or "")),
-        headers={"Cache-Control": "private, max-age=60"},
+        headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"},
     )
 
 
@@ -2907,15 +3102,18 @@ def list_material_ids_v61(
 
 @app.get("/api/v61/projects/{project_id}/materials/{image_id}/content")
 def material_content_v61(project_id: str, image_id: str):
-    get_project(project_id)
-    manager = storage_manager(project_id)
-    row = manager.material(image_id)
+    _authorize_business_file_project(project_id)
     try:
+        manager = storage_manager(project_id)
+        row = manager.material(image_id)
         resolved = manager.materialize(row)
         from platform_core.storage.http import StoredSourceFileResponse
-        return StoredSourceFileResponse(resolved.path, manager=manager, material=row)
+        return StoredSourceFileResponse(resolved.path, manager=manager, material=row,
+            headers={'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'})
     except StorageError as error:
-        _raise_storage_error(error, status_code=404 if error.code in {"MATERIAL_NOT_FOUND", "STORAGE_OBJECT_NOT_FOUND"} else 503)
+        _raise_file_storage_error(error, status_code=404 if error.code in {"MATERIAL_NOT_FOUND", "STORAGE_OBJECT_NOT_FOUND"} else 503)
+    except (OSError, ValueError):
+        raise HTTPException(404, detail='文件不存在或无权访问') from None
 
 
 @app.get('/api/v62/projects/{project_id}/storage/lifecycle-summary')
@@ -2929,10 +3127,10 @@ def storage_lifecycle_summary_v62(project_id: str):
 def material_thumbnail_v61(project_id: str, image_id: str, edge: int = Query(384, ge=16, le=1024)):
     """Read-derived cache only. Hold the original cache lock through HTTP delivery."""
     from starlette.background import BackgroundTask
-    get_project(project_id)
-    manager = storage_manager(project_id)
+    _authorize_business_file_project(project_id)
     for _attempt in range(2):
         try:
+            manager = storage_manager(project_id)
             path = manager.thumbnail(image_id, max_edge=edge)
             lock = FileLock(str(path) + '.lock', timeout=5, thread_local=False)
             lock.acquire()
@@ -2955,10 +3153,10 @@ def material_thumbnail_v61(project_id: str, image_id: str, edge: int = Query(384
                 finally:
                     close()
             return StreamingResponse(chunks(), media_type='image/jpeg',
-                headers={'Content-Length':str(size), 'Cache-Control':'private, max-age=0, must-revalidate'},
+                headers={'Content-Length':str(size), 'Cache-Control':'private, no-store', 'X-Content-Type-Options':'nosniff'},
                 background=BackgroundTask(close))
         except StorageError as error:
-            _raise_storage_error(error, status_code=503)
+            _raise_file_storage_error(error, status_code=503)
         except (OSError, ValueError) as error:
             raise HTTPException(503, detail='缩略图暂不可用，可重试；原图和正式 GT 未修改') from error
     raise HTTPException(503, detail='缩略图缓存正在维护，请重试')
@@ -5780,7 +5978,7 @@ def build_dataset(project_id: str, payload: BuildDatasetReq):
 
 @app.get("/api/projects/{project_id}/dataset/download")
 def download_dataset(project_id: str):
-    get_project(project_id)
+    _authorize_business_file_project(project_id)
     dataset = project_dir(project_id) / "dataset"
     yaml_path = dataset / "data.yaml"
     if not yaml_path.exists():
@@ -5933,7 +6131,7 @@ def build_paddle_dataset(project_id: str, payload: BuildPaddleDatasetReq):
 
 @app.get("/api/projects/{project_id}/dataset/download_paddle")
 def download_paddle_dataset(project_id: str):
-    get_project(project_id)
+    _authorize_business_file_project(project_id)
     dataset = project_dir(project_id) / "paddle_dataset"
     if not (dataset / "annotations" / "instance_train.json").exists():
         raise HTTPException(status_code=404, detail="请先生成飞桨/COCO数据集")
@@ -8930,7 +9128,8 @@ def list_models_internal(project_id: str) -> List[Dict[str, Any]]:
         rows.append({
             "name": f.name,
             "path": str(f),
-            "url": f"/data/projects/{project_id}/models/{f.name}",
+            "url": _authorized_model_url(project_id, f),
+            "download_note": "" if job else "仅已登记业务产物支持下载；未登记文件需恢复来源记录。",
             "size_mb": round(f.stat().st_size / 1024 / 1024, 2),
             "type": typ,
             "updated_at": datetime.fromtimestamp(f.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
@@ -8953,11 +9152,7 @@ def list_models(project_id: str):
 
 @app.get("/api/projects/{project_id}/models/{model_name}/download")
 def download_model(project_id: str, model_name: str):
-    get_project(project_id)
-    path = project_dir(project_id) / "models" / safe_filename(model_name)
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="模型不存在")
-    return FileResponse(path, filename=path.name)
+    return _business_file_response(project_id, 'models', model_name, download=True)
 
 
 @app.post("/api/projects/{project_id}/predict")
@@ -9005,20 +9200,36 @@ async def predict_image(
             draw.rectangle([x1, max(0, y1 - 24), x1 + min(320, len(text) * 12 + 10), y1], fill=(255, 30, 30))
             draw.text((x1 + 4, max(0, y1 - 21)), text, fill=(255, 255, 255))
         img.save(out_path, quality=92)
-        return {"ok": True, "detections": detections, "image_url": f"/data/projects/{project_id}/predictions/{out_path.name}", "labels": project["labels"]}
+        _register_prediction_files(project_id, pred_id, in_path, out_path)
+        return {"ok": True, "detections": detections, "image_url": _business_file_url(project_id, 'predictions', out_path.name), "labels": project["labels"]}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"预测失败：{e}")
 
 
 @app.post("/api/projects/{project_id}/export/onnx")
 def export_onnx(project_id: str, model_name: str = Form(...)):
-    get_project(project_id)
+    _authorize_business_file_project(project_id)
     p = project_dir(project_id)
-    model_path = p / "models" / safe_filename(model_name)
-    if not model_path.exists():
-        raise HTTPException(status_code=404, detail="模型不存在")
+    model_path = _resolve_business_file(project_id, 'models', model_name).path
     if model_path.suffix.lower() == ".onnx":
-        return {"ok": True, "onnx": str(model_path), "download_url": f"/data/projects/{project_id}/models/{model_path.name}"}
+        return {"ok": True, "onnx": str(model_path), "download_url": _business_file_url(project_id, 'models', model_path.name)}
+    # Extend the existing training record. Unbound standalone files cannot
+    # manufacture a new model registry merely by being exportable.
+    source_job = None
+    source_version = None
+    for jf in (p / 'jobs').glob('*/job.json'):
+        job = read_json(jf, {})
+        if any(Path(str(raw)).absolute() == model_path for raw in job.get('models') or []):
+            source_job = (jf, job)
+            break
+    if source_job is None:
+        for algorithm in list_algorithm_assets(algorithms_file(project_id)):
+            for version in algorithm.get('versions') or []:
+                if Path(str(version.get('stored_path') or '')).absolute() == model_path:
+                    source_version = (algorithm['id'], version)
+                    break
+    if source_job is None and source_version is None:
+        raise HTTPException(409, detail='模型缺少可追加导出记录的原训练任务，请从正式模型转换入口导出。')
     try:
         from ultralytics import YOLO
         model = YOLO(str(model_path))
@@ -9027,7 +9238,16 @@ def export_onnx(project_id: str, model_name: str = Form(...)):
         dst = p / "models" / f"{model_path.stem}.onnx"
         if exported_path.exists():
             shutil.copy2(exported_path, dst)
-        return {"ok": True, "onnx": str(dst), "download_url": f"/data/projects/{project_id}/models/{dst.name}"}
+        owner = source_job[1] if source_job is not None else source_version[1]
+        entries = [row for row in owner.get('exported_models') or [] if row.get('path') != str(dst)]
+        entries.append({'path': str(dst), 'sha256': sha256_file(dst), 'source_path': str(model_path), 'format': 'onnx'})
+        if source_job is not None:
+            owner['exported_models'] = entries
+            write_json(source_job[0], owner)
+        else:
+            update_algorithm_version(algorithms_file(project_id), source_version[0], owner['id'],
+                                     {'exported_models': entries}, now=now_iso())
+        return {"ok": True, "onnx": str(dst), "download_url": _business_file_url(project_id, 'models', dst.name)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"导出失败：{e}")
 
@@ -10431,7 +10651,7 @@ def build_coco_dataset_v12(project_id: str, dataset_id: Optional[str] = None, in
 
 @app.get("/api/v12/projects/{project_id}/datasets/{dataset_id}/export/{fmt}")
 def v12_export_dataset(project_id: str, dataset_id: str, fmt: str):
-    get_project(project_id)
+    _authorize_business_file_project(project_id)
     fmt = fmt.lower()
     if fmt in {"yolo", "ultralytics"}:
         build = build_yolo_dataset_v12(project_id, dataset_id, include_empty=True)
@@ -10789,6 +11009,7 @@ def evaluation_diagnostic_image_v1(project_id: str, algorithm_id: str, version_i
     Authorize the version/evaluation and the exact snapshot/material digest
     before returning bytes. Historical or unbound test snapshots fail closed.
     """
+    _authorize_business_file_project(project_id)
     def reject(code, message, status=409, retryable=False):
         raise HTTPException(status_code=status, detail={
             'code': code, 'message': message, 'retryable': retryable,
@@ -12204,15 +12425,15 @@ def v12_retry_version_cleanup(project_id: str, algorithm_id: str, operation_id: 
 
 @app.get("/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/download")
 def v12_download_version(project_id: str, algorithm_id: str, version_id: str):
+    _authorize_business_file_project(project_id)
     algos = list_algorithms_internal(project_id)
     for a in algos:
         if a.get("id") == algorithm_id:
             for v in a.get("versions", []):
                 if v.get("id") == version_id:
                     path = Path(v.get("stored_path", ""))
-                    if not path.exists():
-                        raise HTTPException(status_code=404, detail="模型文件不存在")
-                    return FileResponse(path, filename=path.name)
+                    identifier = f"versions/{algorithm_id}/{version_id}/{path.name}"
+                    return _business_file_response(project_id, 'models', identifier, download=True)
     raise HTTPException(status_code=404, detail="版本不存在")
 
 
@@ -12764,7 +12985,7 @@ async def v12_predict_image(
         "prediction_id": pred_id,
         "feedback_eligible": False,
         "detections": data.get("detections", []),
-        "image_url": f"/data/projects/{project_id}/predictions/{out_path.name}",
+        "image_url": _business_file_url(project_id, 'predictions', out_path.name),
         "labels": project.get("labels", []),
         "elapsed_ms": data.get("elapsed_ms", 0),
         "model": data.get("model") or Path(str(model_value)).name,
@@ -12793,7 +13014,7 @@ async def v12_predict_image(
                 "created_at": now_iso(),
                 "source_channel": "platform_test",
             })
-            write_json(p / "predictions" / f"{pred_id}.evidence.json", evidence)
+            _register_prediction_files(project_id, pred_id, in_path, out_path, evidence)
             response.update({
                 "feedback_eligible": True,
                 "algorithm_id": evidence["algorithm_id"],
@@ -12804,6 +13025,7 @@ async def v12_predict_image(
         except (OSError, ValueError):
             # Prediction remains usable even when evidence cannot be promoted.
             response["feedback_eligible"] = False
+    _register_prediction_files(project_id, pred_id, in_path, out_path)
     return response
 
 
@@ -12964,12 +13186,10 @@ def get_online_feedback(project_id: str, feedback_id: str):
         return {'ok': True, 'feedback': public}
     try:
         evidence, _, _, _ = _online_prediction_evidence(project_id, row["prediction_id"])
-        public["input_image_url"] = (
-            f"/data/projects/{project_id}/predictions/{evidence['input_file']}"
-        )
+        public["input_image_url"] = _business_file_url(project_id, 'predictions', evidence['input_file'])
         result_image = project_dir(project_id) / "predictions" / f"{row['prediction_id']}_result.jpg"
         public["result_image_url"] = (
-            f"/data/projects/{project_id}/predictions/{result_image.name}"
+            _business_file_url(project_id, 'predictions', result_image.name)
             if result_image.is_file() else ""
         )
     except (HTTPException, ValueError):
@@ -15751,6 +15971,7 @@ def v19_label_samples(project_id: str, job_id: str, class_id: str):
 
 @app.get("/api/v19/projects/{project_id}/import/jobs/{job_id}/classes/{class_id}/sample-content")
 def v19_label_sample_content(project_id: str, job_id: str, class_id: str, index: int = Query(ge=0, le=11)):
+    _authorize_business_file_project(project_id)
     sample = _v19_zip_class_sample(project_id, job_id, class_id, index)
     image_path = str(sample.get("image_path") or "")
     suffix = Path(image_path).suffix.lower()
@@ -16273,10 +16494,12 @@ def _do_export_model_package(project_id: str, payload: ModelExportReq):
     _write_export_text(work / "README.md", readme)
     zip_path = p / "exports" / f"{pkg_name}.zip"
     _zip_dir(work, zip_path)
+    metadata.update(zip_sha256=sha256_file(zip_path), zip_size_bytes=zip_path.stat().st_size)
+    _write_export_json(work / 'model_meta.json', metadata)
     return {
         "ok": True,
         "name": zip_path.name,
-        "download_url": f"/data/projects/{project_id}/exports/{zip_path.name}",
+        "download_url": _business_file_url(project_id, 'exports', zip_path.name),
         "path": str(zip_path),
         "note": note,
         "metadata": metadata,
@@ -19347,7 +19570,7 @@ async def _v39_create_rknn_hardware_test_under_version_fence(
         "input_size": input_size,
         "model_path": str(model_path),
         "input_path": str(input_path),
-        "image_url": f"/data/projects/{project_id}/predictions/{task_id}/result.jpg",
+        "image_url": _business_file_url(project_id, 'predictions', f'{task_id}/result.jpg'),
         "remote_execution": remote_execution,
     }
     shared_task_artifacts().atomic_write_json(task_id, "request.json", request)
@@ -19482,30 +19705,49 @@ def v39_list_deploy_artifacts(project_id: str):
             if not p.exists():continue
             ext=p.suffix.lower().lstrip('.')
             if ext not in {"onnx","engine","bmodel","om","rknn","pdmodel","pdiparams","json","yml","yaml"}:continue
+            try:
+                _resolve_business_file(project_id, 'deployment', f"jobs/{j.get('id')}/{o.get('rel') or ''}")
+            except HTTPException:
+                continue
             rows.append({**o,"job_id":j.get("id"),"target":j.get("target"),"resource_name":j.get("resource",{}).get("name"),"source_name":j.get("source_name"),"params":j.get("params",{}),"created_at":j.get("finished_at") or j.get("created_at"),"download_url":f"/api/v39/projects/{project_id}/deploy/jobs/{j.get('id')}/artifact?rel={requests.utils.quote(str(o.get('rel') or ''))}"})
     return {"ok":True,"items":rows}
 
 
 @app.get("/api/v39/projects/{project_id}/deploy/jobs/{job_id}/artifact")
 def v39_download_deploy_artifact(project_id: str, job_id: str, rel: str):
-    _read_deploy_job(project_id,job_id)
-    jd=_deploy_job_dir(project_id,job_id).resolve();p=(jd/rel).resolve()
-    if jd not in p.parents and p!=jd:raise HTTPException(status_code=400,detail="非法文件路径")
-    if not p.exists() or not p.is_file():raise HTTPException(status_code=404,detail="部署产物不存在")
-    return FileResponse(p,filename=p.name)
+    return _business_file_response(project_id, 'deployment', f'jobs/{job_id}/{rel}', download=True)
 
 
 @app.get("/api/v39/projects/{project_id}/deploy/jobs/{job_id}/package")
 def v39_download_deploy_package(project_id: str, job_id: str):
+    _authorize_business_file_project(project_id)
     job=_read_deploy_job(project_id,job_id);jd=_deploy_job_dir(project_id,job_id);ad=jd/"artifacts"
     if job.get("status")!="done" or not ad.exists():raise HTTPException(status_code=400,detail="当前任务还没有可下载部署产物")
+    members = []
+    for output in job.get('outputs') or []:
+        if not isinstance(output, dict) or not output.get('rel'):
+            raise HTTPException(404, detail='文件不存在或无权访问')
+        from platform_core.business_files import _ALLOWED, _parts
+        if Path(str(output['rel'])).suffix.lower() not in _ALLOWED['deployment']:
+            continue
+        descriptor = _resolve_business_file(project_id, 'deployment', f"jobs/{job_id}/{output['rel']}")
+        parts = _parts(str(output['rel']))
+        relative = parts[1:] if parts[0] == 'artifacts' else parts
+        if not relative:
+            raise HTTPException(404, detail='文件不存在或无权访问')
+        members.append((descriptor, Path('model').joinpath(*relative)))
+    if not members or len({archive_path.as_posix() for _, archive_path in members}) != len(members):
+        raise HTTPException(404, detail='文件不存在或无权访问')
     package=jd/f"deploy_{job_id}.zip"
+    from platform_core.business_files import _plain
+    _plain(jd, DATA_DIR)
+    if package.exists() or package.is_symlink():
+        _plain(package, DATA_DIR)
     with zipfile.ZipFile(package,"w",zipfile.ZIP_DEFLATED) as zf:
-        for p in ad.rglob("*"):
-            if p.is_file():zf.write(p,Path("model")/p.relative_to(ad))
-        for extra,name in [(jd/"job.json","conversion_job.json"),(jd/"convert.log","conversion.log")]:
-            if extra.exists():zf.write(extra,name)
-    return FileResponse(package,filename=f"{safe_filename(job.get('source_name') or 'model')}_{job.get('target')}_deploy.zip")
+        for item, archive_path in members:
+            zf.write(item.path, archive_path)
+    return FileResponse(package,filename=f"{safe_filename(job.get('source_name') or 'model')}_{job.get('target')}_deploy.zip",
+                        headers={'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'})
 
 
 # ============================================================
@@ -23383,8 +23625,8 @@ async def _create_deployment_test_under_version_fence(
         "downloadable": model_resolution.downloadable,
         "environment_status": model_resolution.environment_status,
         "input_path": str(input_path), "output_path": str(output_path),
-        "input_image_url": f"/data/projects/{project_id}/predictions/{task_id}/input{extension}",
-        "image_url": f"/data/projects/{project_id}/predictions/{task_id}/result.jpg",
+        "input_image_url": _business_file_url(project_id, 'predictions', f'{task_id}/input{extension}'),
+        "image_url": _business_file_url(project_id, 'predictions', f'{task_id}/result.jpg'),
         "framework": framework, "python_path": python_path,
         "runner_path": str(BASE_DIR / ("predict_paddle_runner.py" if framework == "paddle" else "predict_ultralytics_runner.py")),
         "conf": max(0.0, min(1.0, float(conf))), "runtime_format": suffix.lstrip("."),
@@ -23540,7 +23782,7 @@ def promote_deployment_test_to_feedback_evidence(project_id: str, task_id: str):
             "model_sha256": evidence["model_sha256"],
             "input_sha256": evidence["input_sha256"],
             "detections": list(evidence.get("detections") or []),
-            "image_url": f"/data/projects/{project_id}/predictions/{evidence_result.name}",
+            "image_url": _business_file_url(project_id, 'predictions', evidence_result.name),
         }
 
     shutil.copy2(source_input, evidence_input)
@@ -23565,7 +23807,7 @@ def promote_deployment_test_to_feedback_evidence(project_id: str, task_id: str):
         "created_at": str(task.finished_at or now_iso()),
         "source_channel": "quality_center_detection",
     })
-    write_json(evidence_path, evidence)
+    _register_prediction_files(project_id, prediction_id, evidence_input, evidence_result, evidence)
     return {
         "ok": True,
         "idempotent": False,
@@ -23576,7 +23818,7 @@ def promote_deployment_test_to_feedback_evidence(project_id: str, task_id: str):
         "model_sha256": model_sha256,
         "input_sha256": evidence["input_sha256"],
         "detections": list(evidence.get("detections") or []),
-        "image_url": f"/data/projects/{project_id}/predictions/{evidence_result.name}",
+        "image_url": _business_file_url(project_id, 'predictions', evidence_result.name),
     }
 
 
@@ -24500,7 +24742,7 @@ app.include_router(external_algorithm_publish_router(
     storage_credentials_factory=storage_credentials,
 ))
 app.include_router(material_batch_router(
-    get_project,
+    _authorize_business_file_project,
     material_store,
     shared_task_repository,
     shared_task_artifacts,
@@ -24542,7 +24784,7 @@ def _review_training_negative(project_id, item, effective_codes, actor):
 
 
 app.include_router(training_material_picker_router(
-    get_project,
+    _authorize_business_file_project,
     lambda: DATA_DIR,
     project_path_provider=project_dir,
     algorithm_provider=lambda project_id, algorithm_id: next(

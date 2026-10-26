@@ -5,6 +5,9 @@ on:
     paths:
       - app.py
       - platform_core/changlian_login_auth.py
+      - platform_core/business_files.py
+      - tests/unit/test_business_files.py
+      - tests/api/test_controlled_business_files.py
       - static/index.html
       - static/login.html
       - static/login.js
@@ -22,6 +25,9 @@ on:
     paths:
       - app.py
       - platform_core/changlian_login_auth.py
+      - platform_core/business_files.py
+      - tests/unit/test_business_files.py
+      - tests/api/test_controlled_business_files.py
       - static/index.html
       - static/login.html
       - static/login.js
@@ -63,7 +69,8 @@ jobs:
           grep -Fq 'httponly=True' app.py
           grep -Fq 'auth_guard_decision' app.py
           grep -Fq 'def _auth_test_bypass_enabled()' app.py
-          grep -Fq 'MC_ALLOW_MULTIPLE_PROJECTS_FOR_TESTS' app.py
+          grep -Fq 'MC_ALLOW_MULTIPLE_PROJECTS_FOR_TESTS' platform_core/changlian_login_auth.py
+          grep -Fq 'isolated_test_access_enabled(DATA_DIR)' app.py
           grep -Fq '"upstream_token_expiry_source": "test_bypass"' app.py
           grep -Fq '_MACHINE_NODE_EXECUTOR_PREFIX' platform_core/changlian_login_auth.py
           grep -Fq '_MACHINE_HEARTBEAT_RE' platform_core/changlian_login_auth.py
@@ -88,7 +95,9 @@ jobs:
           python -m pip install --disable-pip-version-check
           fastapi uvicorn python-multipart pillow pyyaml requests
           opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock
-          boto3 oss2 cryptography pydantic
+          boto3 oss2 cryptography pydantic pytest httpx
+      - name: Controlled business-file security contracts
+        run: python -m pytest -q tests/unit/test_business_files.py tests/api/test_controlled_business_files.py
       - name: Install frontend dependencies
         run: npm ci
       - name: Real browser login persistence

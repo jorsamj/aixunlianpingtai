@@ -289,3 +289,17 @@ def test_logout_fails_closed_if_durable_revocation_store_is_missing(tmp_path: Pa
     manager.revocations_path.unlink()
     with pytest.raises(Exception, match="unable to open database"):
         manager.verify(token, now=1001)
+
+
+@pytest.mark.parametrize('version,flag,expected', [('42.24.387','1',False),('browser-test','1',True),('test','1',True),('test','0',False)])
+def test_auth_bypass_requires_isolated_test_configuration(tmp_path,version,flag,expected):
+    from platform_core.changlian_login_auth import isolated_test_access_enabled
+    env={'MC_PLATFORM_VERSION':version,'MC_ALLOW_MULTIPLE_PROJECTS_FOR_TESTS':flag,'MC_TRAIN_DATA_DIR':str(tmp_path)}
+    assert isolated_test_access_enabled(tmp_path,environ=env) is expected
+
+
+def test_test_auth_bypass_rejects_non_temporary_production_root(tmp_path):
+    from platform_core.changlian_login_auth import isolated_test_access_enabled
+    production=Path(tmp_path.anchor)/'platform-production-data'
+    env={'MC_PLATFORM_VERSION':'test','MC_ALLOW_MULTIPLE_PROJECTS_FOR_TESTS':'1','MC_TRAIN_DATA_DIR':str(production)}
+    assert isolated_test_access_enabled(production,environ=env) is False
