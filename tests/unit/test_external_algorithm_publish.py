@@ -4727,3 +4727,13 @@ def test_stable_mapping_http_contract_revision_and_browser_projection(tmp_path,m
         conflict=client.put('/api/v64/external-publish/config',json=payload)
         assert conflict.status_code==409 and conflict.json()['code']=='EXTERNAL_MAPPING_REVISION_CONFLICT'
         assert client.get('/api/v64/external-publish/config').json()['config']['target_mappings']==saved.json()['config']['target_mappings']
+
+
+@pytest.mark.parametrize('state',['SUSPECTED_DELETED','CONFIRMED_DELETED','CLEANUP_PENDING','CLEANUP_RUNNING','CLEANUP_FAILED','CLEANUP_COMPLETED'])
+def test_external_publication_blocks_only_the_algorithm_pending_deletion_verification(tmp_path,state):
+    service=object.__new__(ExternalAlgorithmPublishService)
+    service.data_dir=tmp_path
+    algorithm={'id':'a1','source_type':'EXTERNAL','provider_type':'CHANG_LIAN','external_active':True,'external_deletion_status':state}
+    with pytest.raises(PlatformError) as error:
+        service._assert_current_external_identity(algorithm,{'id':'v1'})
+    assert error.value.code=='EXTERNAL_PRODUCT_DELETION_UNVERIFIED'

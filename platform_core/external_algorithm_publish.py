@@ -1817,6 +1817,12 @@ class ExternalAlgorithmPublishService:
         algorithm: Mapping[str, Any],
         version: Mapping[str, Any],
     ) -> None:
+        deletion_state = str(algorithm.get("external_deletion_status") or "NORMAL")
+        if deletion_state != "NORMAL":
+            raise PlatformError(
+                "EXTERNAL_PRODUCT_DELETION_UNVERIFIED", "该算法远端身份待核实，暂缓新发布",
+                deletion_state, "请在同步详情重新核实；已有训练和转换任务继续保留。", 409,
+            )
         if algorithm.get("external_active") is False:
             raise PlatformError(
                 "EXTERNAL_ALGORITHM_INACTIVE",

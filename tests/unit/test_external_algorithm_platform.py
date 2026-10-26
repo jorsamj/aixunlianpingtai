@@ -308,7 +308,7 @@ def test_external_mirror_preserves_local_and_existing_versions(tmp_path: Path):
     assert algorithm_is_external_readonly(path, external["id"]) is True
 
 
-def test_missing_external_product_is_deleted_with_versions(tmp_path: Path):
+def test_missing_external_product_is_suspected_and_preserves_versions(tmp_path: Path):
     path = tmp_path / "algorithms.json"
     save_algorithms(path, [
         {
@@ -338,9 +338,13 @@ def test_missing_external_product_is_deleted_with_versions(tmp_path: Path):
     )
 
     rows = list_algorithms(path)
-    assert result["deleted"] == 1
+    assert result["deleted"] == 0
+    assert result["suspected_deleted"] == 1
     assert result["inactivated"] == 0
-    assert [row["id"] for row in rows] == ["local-keep"]
+    external = next(row for row in rows if row["id"] == "external-p1")
+    assert external["external_deletion_status"] == "SUSPECTED_DELETED"
+    assert external["versions"] == [{"id": "v1"}]
+    assert {row["id"] for row in rows} == {"local-keep", "external-p1"}
 
 
 def test_remote_status_two_is_retained_as_inactive_not_deleted(tmp_path: Path):
@@ -500,7 +504,7 @@ def test_service_sync_saves_redacted_config_cache_history_and_mirror(tmp_path: P
     assert row["source_type"] == SOURCE_EXTERNAL
 
 
-def test_sync_uses_complete_product_set_and_purges_only_truly_missing_algorithm(tmp_path: Path):
+def test_empty_sync_retains_algorithm_and_never_calls_purger(tmp_path: Path):
     calls = []
 
     class CompleteListClient(FakeChangLianClient):
@@ -565,18 +569,17 @@ def test_sync_uses_complete_product_set_and_purges_only_truly_missing_algorithm(
     )
 
     assert calls[-1].get("status") == ""
-    assert purger.items == [("project-hard-delete", "external-p1", "p1")]
-    assert result["mirror"]["deleted"] == 1
-    assert list_algorithms(algorithms_path) == []
-    counts = result["sync"]["counts"]
-    assert counts["algorithms_purged"] == 1
-    assert counts["tasks_deleted"] == 2
-    assert counts["artifacts_deleted"] == 3
-    assert counts["remote_objects_deleted"] == 3
-    assert counts["publications_deleted"] == 1
+    assert purger.items == []
+    assert result["mirror"]["deleted"] == 0
+    retained = list_algorithms(algorithms_path)[0]
+    assert retained["external_deletion_status"] == "SUSPECTED_DELETED"
+    assert retained["versions"] == [{"id": "v1"}]
+    assert retained["external_active"] is True
+    assert all(result["sync"]["counts"][key] == 0 for key in (
+        "algorithms_purged", "tasks_deleted", "artifacts_deleted", "remote_objects_deleted", "publications_deleted"))
 
 
-def test_failed_missing_algorithm_purge_keeps_delivery_retirement_marker(tmp_path: Path):
+def test_suspected_missing_algorithm_does_not_invoke_destructive_purger(tmp_path: Path):
     class MissingProductClient(FakeChangLianClient):
         def products(self, **_filters):
             return {"data": []}
@@ -615,21 +618,16 @@ def test_failed_missing_algorithm_purge_keeps_delivery_retirement_marker(tmp_pat
         "current_version_id": "v1",
     }])
 
-    with pytest.raises(Exception):
-        service.sync(
-            project_id="project-delete-failed",
-            algorithms_path=algorithms_path,
-        )
-
+    service.sync(project_id="project-delete-failed", algorithms_path=algorithms_path)
     retained = list_algorithms(algorithms_path)
     assert len(retained) == 1
-    assert retained[0]["external_active"] is False
-    assert retained[0]["external_status"] == "deleted_pending_cleanup"
-    assert retained[0]["external_delete_pending"] is True
+    assert retained[0]["external_active"] is True
+    assert retained[0]["external_deletion_status"] == "SUSPECTED_DELETED"
+    assert not retained[0].get("external_delete_pending")
     assert retained[0]["versions"] == [{"id": "v1"}]
 
 
-def test_reappeared_external_algorithm_clears_delivery_retirement_marker(tmp_path: Path):
+def test_reappeared_external_algorithm_cannot_revoke_confirmed_cleanup_marker(tmp_path: Path):
     service = _configured_external_service(tmp_path, FakeChangLianClient)
     algorithms_path = tmp_path / "project-reappeared" / "algorithms.json"
     algorithms_path.parent.mkdir(parents=True)
@@ -654,10 +652,10 @@ def test_reappeared_external_algorithm_clears_delivery_retirement_marker(tmp_pat
 
     assert result["ok"] is True
     row = list_algorithms(algorithms_path)[0]
-    assert row["external_active"] is True
-    assert row["external_status"] == "1"
-    assert row["external_delete_pending"] is False
-    assert row["external_delete_pending_at"] == ""
+    assert row["external_active"] is False
+    assert row["external_status"] == "deleted_pending_cleanup"
+    assert row["external_delete_pending"] is True
+    assert row["external_delete_pending_at"] == "2026-10-04T00:00:00+00:00"
     assert row["versions"] == [{"id": "v1"}]
 
 
@@ -1198,7 +1196,7 @@ def test_sync_fails_closed_when_product_id_is_missing(tmp_path: Path):
     with pytest.raises(Exception) as error:
         service.sync(project_id="p-product-id", algorithms_path=algorithms_path)
 
-    assert getattr(error.value, "code", "") == "EXTERNAL_PRODUCT_ID_MISSING"
+    assert getattr(error.value, "code", "") == "EXTERNAL_PRODUCT_RESPONSE_INVALID"
     assert list_algorithms(algorithms_path) == []
     assert service.repository.cache().get("provider") is None
     assert service.repository.history()[0]["status"] == "failed"
@@ -2158,3 +2156,58 @@ def test_weight_info_default_keeps_existing_publisher_client_call_compatible():
     client=_authenticated_mutation_client(session)
     assert client.weight_info('legacy-weight-1')['data']['tags']==['Car']
     assert session.calls[0][1].endswith('/getInfo/legacy-weight-1') and 'params' not in session.calls[0][2]
+
+
+@pytest.mark.parametrize("response", [None, {}, {"data": None}, {"data": {"records": []}},
+    {"data": [None]}, {"code": 500, "data": []}, {"data": [], "total": 7},
+    {"data": [{"productId": "p1", "productName": "产品", "productType": 3, "status": 1}] * 2}])
+def test_invalid_product_observation_preserves_last_valid_generation(tmp_path, response):
+    service = _configured_external_service(tmp_path, FakeChangLianClient)
+    path = tmp_path / "projects" / "p" / "algorithms.json"
+    path.parent.mkdir(parents=True)
+    save_algorithms(path, [])
+    service.sync(project_id="p", algorithms_path=path)
+    original_cache = service.repository.cache()
+    original_rows = list_algorithms(path)
+    class BrokenClient(FakeChangLianClient):
+        def products(self, **filters): return response
+    service.client_factory = BrokenClient
+    with pytest.raises(PlatformError):
+        service.sync(project_id="p", algorithms_path=path)
+    assert service.repository.cache() == original_cache
+    assert list_algorithms(path) == original_rows
+
+
+def test_suspected_deletion_does_not_cancel_running_training(tmp_path):
+    from platform_core.task_runtime import ArtifactStore, TaskRecord, TaskKind, TaskRepository
+    service = _configured_external_service(tmp_path, FakeChangLianClient)
+    path = tmp_path / "projects" / "p" / "algorithms.json"
+    path.parent.mkdir(parents=True)
+    save_algorithms(path, [])
+    service.sync(project_id="p", algorithms_path=path)
+    row = list_algorithms(path)[0]
+    artifacts = ArtifactStore(tmp_path / "task_runtime/artifacts")
+    tasks = TaskRepository(tmp_path / "task_runtime/tasks.sqlite3")
+    artifacts.atomic_write_json("active-training", "request.json", {"algorithm_asset_id": row["id"]})
+    tasks.create(TaskRecord.new("active-training", "p", TaskKind.TRAINING, "request.json", "training:remote:p"))
+    tasks.claim_next("trainer", (TaskKind.TRAINING,), (), 30)
+    class EmptyClient(FakeChangLianClient):
+        def products(self, **filters): return {"code": 200, "data": [], "total": 0}
+    service.client_factory = EmptyClient
+    service.sync(project_id="p", algorithms_path=path)
+    assert tasks.get("active-training").status.value == "RUNNING"
+    assert list_algorithms(path)[0]["external_deletion_status"] == "SUSPECTED_DELETED"
+    service.client_factory = FakeChangLianClient
+    service.sync(project_id="p", algorithms_path=path)
+    assert list_algorithms(path)[0]["external_deletion_status"] == "NORMAL"
+    assert tasks.get("active-training").status.value == "RUNNING"
+
+
+@pytest.mark.parametrize("status,body", [(403, {"code": 403}), (500, {"code": 200, "data": []}),
+    (200, {"code": 500, "data": []})])
+def test_real_product_http_errors_never_become_empty_success(status, body):
+    session = FakeSession()
+    session.request = lambda *a, **k: FakeResponse(body, status)
+    client = _authenticated_mutation_client(session)
+    with pytest.raises(Exception):
+        client.products(status="")

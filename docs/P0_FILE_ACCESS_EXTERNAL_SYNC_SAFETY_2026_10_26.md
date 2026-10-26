@@ -102,3 +102,28 @@ PY
 独立只读审查复现P1兼容回归：正式Paddle outputs中的infer_cfg.yml被文件类型过滤，ZIP还拍平目录。新增API test_conversion_package_preserves_registered_inference_config_and_directory_layout先RED。修复仅允许可信outputs的正式json/yml/yaml配置，保持经过路径检查的原相对层级；未登记邻接配置仍拒绝。相关API+resolver+原deployment_artifact_visibility共52 passed / 2 Windows symlink skip。审查者独立重验新增案例1 passed，当前P001无已证实阻塞。
 
 P001将独立本地提交（完整SHA见本文件下一阶段记录/提交历史），暂不单独部署。P002当前WIP不加入该提交。VERSION按本轮一次递增留待最终集成，当前阶段仍387；不代表生产已升级。准确SHA CI待最终正常push后核验，不能把本地定向通过写成远端全绿。
+
+
+## P0-02核心后端验收与独立复核（本地、CI待验）
+
+P001独立提交 **ee9750ab10090dce6291a3786ba52e625e6af512** 已保留；当前P002未推送。严格产品snapshot解析保留官方code/data、字段、唯一ID/total契约；未知、混合坏行、分页截断、HTTP/业务失败不能变空数组。合法空/产品缺失只进入SUSPECTED_DELETED，不调用同步purger；恢复出现解除疑似，正常上架/分析方式资格仍原合同。所有缺失都被保护，不用不可验证的数量阈值授权删除，空集或大幅骤减也不能越过确认；有效存在产品仍可更新。
+
+删除确认仅服务器可信适配器调用CleanupRepository(..., contracts=(VerifiedDeletionContract(...),)).confirm_deleted(..., DeletionEvidence(...scope='PRODUCT_DELETED'))，contracts默认空。没有HTTP确认/force入口。适配器必须先校验真实服务商契约、事件签名及身份，普通404、空详情、连续缺失和用户提供的版本remove文档均不构成产品删除证据。生产自动确认仍关闭，需服务商补充权威产品删除契约；不能宣称本轮已验证真实Provider删除事件。
+
+算法隔离与outbox在原algorithms.sqlite3同事务提交，新的TaskKind.EXTERNAL_ALGORITHM_CLEANUP由原storage Worker/Scheduler处理；原heartbeat仅派送已提交意图，不新建调度器。每个删除cycle稳定operation/task ID；旧lease/旧cycle不能触碰新代。先收集归属及引用、原版本锁、请求安全取消并通过Worker heartbeat有界等待退出，再按持久计划及回执执行。失败同ID重试，主记录最后移除，outbox/audit保留。
+
+OSS专属key、源/版本/文件SHA及共享引用验证；硬删前保留并验证恢复副本，删除后读回，失败不报成功。跨DB/文件/OSS没有假全局事务。正常位置移除但恢复副本明确recovery_retained=true，不能宣称物理磁盘已全部释放。历史目录含symlink/junction当前保守阻断，需要原Owner核验；不强删共享目标。
+
+独立复核发现并关闭P1：其他任务合法label_contract.base_model_reference冻结Checkpoint、其他历史版本只有stored_path且无ModelArtifact时，原新增guard漏检。两例先RED后GREEN，补全全项目Task payload/checkpoint/result及正式引用、所有隔离root/source与其他版本路径检查，在任何cancel/OSS/rename前及原version fence下即时复验；计划后插入消费者也阻断。审查者独立4项通过（冻结训练、历史版本、跨项目、迟到消费者），无已证实残留阻塞。旧LocalPurger.purge破坏执行体已退役，直接拒绝，实际清理只有原Durable handler。
+
+原conversion request新增冻结algorithm_id/version_id/source_id，来源于服务端解析的source/source_trace；原portable用例先RED后20/20通过。清理API与原外部发布/同步router复用同项目范围校验；实际跨项目cleanup状态请求先RED，再连原相关6项共7/7通过。疑似仅阻该算法新发布，父发布保护新增6先RED，连原正常发布共7/7通过。
+
+实际后端测试：
+
+- external platform/cleanup/auto_sync/model_artifacts/algorithm_sql_store/worker_registry六文件短临时路径：262 passed / 1 Windows symlink skip，0失败。
+- 首次原模型4项因Windows长路径WinError3失败，改短basetemp定向4/4验证，再上述全组通过；未降低断言。
+- 补审后的cleanup文件40 passed / 1同类skip，覆盖OSS失败/备份、对象共享/归属、最终SQL失败、中途退出/重启、重复/并发、旧lease与cycle、活跃安全退出、冻结与跨项目引用、迟到consumer。
+- 最近核实时间新增1项RED→GREEN：first时间保持、checked_at随成功观察推进，无重复state history或业务revision；相关5项定向通过。
+- 原两份受影响CI源码守卫已迁移：从“缺失必硬删/同步purge锁”改为缺失保留、不调用purger、确认marker、原Worker kind及version fence；动态安全断言全部保留。原guard脚本本地实际退出auth=0、external=0。新增cleanup测试只接原external工作流及必要标准依赖，不新建CI。
+
+前端正在最终集成：Node38/38、原Browser2+新增P0三项分批5/5；新增绘制异常2个独立RED后GREEN，相关Chrome2/2和最后1/1，保持原按钮/Modal/轮询Owner。VERSION最终统一388/cache436，版本Owner10/10通过；尚无远端CI结论。

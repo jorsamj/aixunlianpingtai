@@ -299,6 +299,9 @@ def test_local_onnx_creation_persists_portable_contract_without_changing_local_e
     task = repository.created[0]
     assert task.kind is TaskKind.MODEL_CONVERSION
     request = artifacts.rows[(task.task_id, "request.json")]
+    assert request['algorithm_id'] == 'algorithm-a'
+    assert request['version_id'] == 'version-1'
+    assert request['source_id'] == 'version::algorithm-a::version-1'
     assert request["execution_mode"] == "local"
     assert request["remote_execution"]["task_kind"] == "MODEL_CONVERSION"
     assert request["job_dir"]

@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import shutil
-from contextlib import ExitStack
 import threading
 import time
 from dataclasses import asdict, dataclass
@@ -502,6 +500,50 @@ def extract_items(value: Any) -> list[Dict[str, Any]]:
     return []
 
 
+def validated_product_snapshot(value: Any, *, numeric_ids: bool = False) -> list[Dict[str, Any]]:
+    """Validate the documented product list envelope without inferring deletion.
+
+    listAll has no documented completeness/deletion guarantee. Even a valid
+    empty observation must never authorize a destructive reconciliation.
+    """
+    def invalid(reason: str):
+        raise PlatformError("EXTERNAL_PRODUCT_RESPONSE_INVALID", "新畅联产品响应不完整或格式异常",
+                            reason, "保留上次有效数据；请核对官方接口响应后重试。", 502)
+    if not isinstance(value, dict) or not isinstance(value.get("data"), list):
+        invalid("产品列表必须返回包含 data 数组的对象")
+    if numeric_ids and "code" not in value:
+        invalid("实际产品接口缺少明确的业务成功状态")
+    if "code" in value and (isinstance(value["code"], bool) or str(value["code"]) != "200"):
+        invalid("产品列表业务状态不是成功")
+    rows = value["data"]
+    if "total" in value:
+        total = value["total"]
+        if isinstance(total, bool) or not isinstance(total, int) or total < 0 or total != len(rows):
+            invalid("listAll 返回总量与记录数量不一致")
+    identities = set()
+    result = []
+    for index, row in enumerate(rows, 1):
+        if not isinstance(row, dict):
+            invalid(f"第 {index} 条产品记录不是对象")
+        identity = row.get("productId")
+        if isinstance(identity, bool) or not isinstance(identity, (str, int)) or not str(identity).strip():
+            invalid(f"第 {index} 条产品缺少合法 productId")
+        identity = str(identity).strip()
+        if numeric_ids and (not identity.isascii() or not identity.isdigit() or not 0 < int(identity) <= 9223372036854775807 or identity != str(int(identity))):
+            invalid(f"第 {index} 条产品 productId 不是正 int64")
+        if identity in identities:
+            invalid(f"第 {index} 条产品 ID 重复")
+        if not isinstance(row.get("productName"), str) or not row["productName"].strip():
+            invalid(f"第 {index} 条产品缺少名称")
+        if isinstance(row.get("productType"), bool) or str(row.get("productType")) != "3":
+            invalid(f"第 {index} 条产品 productType 缺失或不是算法产品")
+        if isinstance(row.get("status"), bool) or str(row.get("status")) not in {"1", "2"}:
+            invalid(f"第 {index} 条产品 status 缺失或未知")
+        identities.add(identity)
+        result.append(dict(row))
+    return result
+
+
 def flatten_category_tree(value: Any) -> list[Dict[str, Any]]:
     roots = extract_items(value)
     result: list[Dict[str, Any]] = []
@@ -837,7 +879,11 @@ class ChangLianClient:
         params = dict(filters)
         params.setdefault("productType", "3")
         params.setdefault("status", "1")
-        return self._request("GET", self.endpoints.product_list, auth=True, params=_compact_params(params))
+        response = self._request("GET", self.endpoints.product_list, auth=True, params=_compact_params(params))
+        # Validate real provider IDs at the boundary; internal legacy snapshots
+        # retain their historical stable string identities.
+        validated_product_snapshot(response, numeric_ids=True)
+        return response
 
     def product_info(self, product_id: Any) -> Any:
         path = self.endpoints.product_detail.replace("{productId}", str(product_id))
@@ -1271,6 +1317,7 @@ def mirror_products_to_algorithms(
             "external_status": product_status,
             "external_delete_pending": False,
             "external_delete_pending_at": "",
+            "external_deletion_status": "NORMAL",
             "external_last_synced_at": synced_at,
             "external_master_data_digest": str(master_digest or ""),
         }
@@ -1279,19 +1326,21 @@ def mirror_products_to_algorithms(
 
 
 class ExternalAlgorithmLocalPurger:
-    """Delete local state owned by a provider algorithm that no longer exists remotely.
-
-    The remote master-data product has already disappeared, so this purger never
-    calls ChangLian delete APIs. It only removes local derivative state and the
-    platform's model-delivery objects. Running durable work is cancelled first;
-    metadata deletion is deferred until the worker has acknowledged cancellation.
-    """
-
-    _ACTIVE = {"QUEUED", "RUNNING", "CANCEL_REQUESTED", "AWAITING_CONFIRMATION"}
+    """Shared legacy identity helpers; execution moved to the Durable handler."""
 
     def __init__(self, data_dir: Path, secret_store_factory: Callable[[], Any]):
         self.data_dir = Path(data_dir)
         self.secret_store_factory = secret_store_factory
+
+    def model_service(self):
+        from .model_artifacts import ModelArtifactService
+        from .storage import StorageSourceRepository
+        return ModelArtifactService(
+            data_dir=self.data_dir, project_dir=lambda pid: self._project_root(pid),
+            algorithms_file=lambda pid: self._project_root(pid) / "algorithms.json",
+            storage_sources_factory=lambda: StorageSourceRepository(self.data_dir / "storage" / "storage_sources.sqlite3"),
+            storage_credentials_factory=lambda: SecretCredentialStore(self.secret_store_factory()),
+        )
 
     def _project_root(self, project_id: str) -> Path:
         return self.data_dir / "projects" / str(project_id)
@@ -1327,175 +1376,11 @@ class ExternalAlgorithmLocalPurger:
         ).strip()
 
     def purge(self, project_id: str, algorithm: Mapping[str, Any]) -> Dict[str, int]:
-        from .external_algorithm_publish import ExternalPublicationRepository
-        from .model_artifacts import ModelArtifactService
-        from .storage import StorageSourceRepository
-        from .task_runtime import ArtifactStore, TaskKind, TaskRepository, TaskStatus
+        # Destructive synchronous reconciliation is retired. The durable handler
+        # is the sole execution owner after verified confirmation has committed.
+        raise PlatformError("EXTERNAL_ALGORITHM_DURABLE_CLEANUP_REQUIRED", "请通过已确认删除的持久清理任务执行",
+                            "", "缺失产品只能标记待核验，不能直接清理。", 409)
 
-        project_id = str(project_id)
-        algorithm_id = str(algorithm.get("id") or "").strip()
-        if not algorithm_id:
-            raise PlatformError(
-                "EXTERNAL_ALGORITHM_DELETE_ID_MISSING",
-                "外部算法删除身份不完整",
-                str(algorithm.get("external_product_id") or ""),
-                "请重新同步新畅联主数据。",
-                409,
-            )
-
-        project_root = self._project_root(project_id)
-        task_repository = TaskRepository(self.data_dir / "task_runtime" / "tasks.sqlite3")
-        task_artifacts = ArtifactStore(self.data_dir / "task_runtime" / "artifacts")
-        owned_task_ids: set[str] = set()
-        training_task_ids: set[str] = set()
-        conversion_task_ids: set[str] = set()
-        legacy_active: list[str] = []
-
-        jobs_root = project_root / "jobs"
-        for job_file in jobs_root.glob("*/job.json") if jobs_root.exists() else ():
-            try:
-                job = json.loads(job_file.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                job = {}
-            task_id = str(job.get("task_id") or job.get("id") or job_file.parent.name)
-            durable = task_repository.get(task_id)
-            payload = (
-                task_artifacts.read_json(task_id, durable.payload_ref, default={})
-                if durable is not None else {}
-            )
-            if self._training_algorithm_id(job, payload) != algorithm_id:
-                continue
-            training_task_ids.add(task_id)
-            owned_task_ids.add(task_id)
-            status = str(job.get("status") or "").strip().lower()
-            if durable is None and status in {
-                "queued", "waiting", "pending", "running", "paused", "cancel_requested"
-            }:
-                legacy_active.append(f"TRAINING:{task_id}")
-
-        deploy_roots = [
-            project_root / "deploy" / "jobs",
-            project_root / "deployment" / "jobs",
-        ]
-        deploy_dirs: dict[str, Path] = {}
-        for root in deploy_roots:
-            for job_file in root.glob("*/job.json") if root.exists() else ():
-                try:
-                    job = json.loads(job_file.read_text(encoding="utf-8"))
-                except (OSError, json.JSONDecodeError):
-                    job = {}
-                if self._deploy_algorithm_id(job) != algorithm_id:
-                    continue
-                task_id = str(job.get("task_id") or job.get("id") or job_file.parent.name)
-                conversion_task_ids.add(task_id)
-                owned_task_ids.add(task_id)
-                deploy_dirs[task_id] = job_file.parent
-                durable = task_repository.get(task_id)
-                status = str(job.get("status") or "").strip().lower()
-                if durable is None and status in {
-                    "queued", "waiting", "pending", "running", "cancel_requested"
-                }:
-                    legacy_active.append(f"MODEL_CONVERSION:{task_id}")
-
-        # Include remote-input preparation tasks linked to owned training tasks,
-        # and deployment tests linked to owned conversion tasks.
-        cursor = None
-        while True:
-            page = task_repository.list(project_id=project_id, limit=100, cursor=cursor)
-            for task in page.items:
-                payload = task_artifacts.read_json(
-                    task.task_id, task.payload_ref, default={}
-                )
-                if not isinstance(payload, Mapping):
-                    payload = {}
-                if (
-                    task.kind is TaskKind.TRAINING_PREPARE
-                    and str(payload.get("training_task_id") or "") in training_task_ids
-                ):
-                    owned_task_ids.add(task.task_id)
-                elif (
-                    task.kind is TaskKind.DEPLOYMENT_TEST
-                    and str(payload.get("source_conversion_job_id") or "") in conversion_task_ids
-                ):
-                    owned_task_ids.add(task.task_id)
-            cursor = page.next_cursor
-            if not cursor:
-                break
-
-        pending: list[str] = []
-        for task_id in sorted(owned_task_ids):
-            task = task_repository.get(task_id)
-            if task is None:
-                continue
-            if task.status.value in self._ACTIVE:
-                try:
-                    task = task_repository.request_cancel(task_id)
-                except Exception as error:
-                    pending.append(f"{task.kind.value}:{task_id}:{error}")
-                    continue
-            if task.status in {TaskStatus.RUNNING, TaskStatus.CANCEL_REQUESTED}:
-                pending.append(f"{task.kind.value}:{task_id}")
-
-        if legacy_active or pending:
-            detail = "；".join((legacy_active + pending)[:20])
-            raise PlatformError(
-                "EXTERNAL_ALGORITHM_DELETE_WAITING_FOR_TASKS",
-                "外部算法已从新畅联删除，正在停止其本地任务",
-                detail,
-                "平台已请求取消 durable 任务；待运行任务退出后再次同步即可完成算法及训练成果硬删除。",
-                409,
-            )
-
-        tasks_deleted = 0
-        for task_id in sorted(owned_task_ids):
-            task = task_repository.get(task_id)
-            if task is not None:
-                try:
-                    if task_repository.delete_terminal(
-                        task_id, project_id=project_id, kind=task.kind,
-                    ):
-                        tasks_deleted += 1
-                except ValueError:
-                    raise PlatformError(
-                        "EXTERNAL_ALGORITHM_DELETE_TASK_ACTIVE",
-                        "外部算法仍有非终态任务，暂不能删除",
-                        f"{task.kind.value}:{task_id}",
-                        "请等待任务停止后重新同步。",
-                        409,
-                    )
-            task_artifacts.delete_task(task_id)
-            shutil.rmtree(jobs_root / task_id, ignore_errors=True)
-            for root in deploy_roots:
-                shutil.rmtree(root / task_id, ignore_errors=True)
-            shutil.rmtree(project_root / "predictions" / task_id, ignore_errors=True)
-
-        # Remove model objects (including OSS) before dropping their canonical rows.
-        model_assets = ModelArtifactService(
-            data_dir=self.data_dir,
-            project_dir=lambda pid: self._project_root(pid),
-            algorithms_file=lambda pid: self._project_root(pid) / "algorithms.json",
-            storage_sources_factory=lambda: StorageSourceRepository(
-                self.data_dir / "storage" / "storage_sources.sqlite3"
-            ),
-            storage_credentials_factory=lambda: SecretCredentialStore(
-                self.secret_store_factory()
-            ),
-        )
-        artifact_summary = model_assets.purge_algorithm(project_id, algorithm_id)
-        publication_summary = ExternalPublicationRepository(
-            self.data_dir
-        ).delete_algorithm(project_id, algorithm_id, provider=PROVIDER_CHANGLIAN)
-
-        shutil.rmtree(
-            project_root / "algorithm_versions" / algorithm_id,
-            ignore_errors=True,
-        )
-
-        return {
-            "tasks_deleted": tasks_deleted,
-            **artifact_summary,
-            **publication_summary,
-        }
 
 
 def algorithm_is_external_readonly(algorithms_path: Path, algorithm_id: str) -> bool:
@@ -2294,6 +2179,9 @@ class ExternalAlgorithmPlatformService:
                 409,
             )
         product_id = str(algorithm.get("external_product_id") or "").strip()
+        if algorithm.get("external_delete_pending") is True:
+            raise PlatformError("EXTERNAL_ALGORITHM_CONFIRMED_DELETED", "该算法已确认删除，不能创建新训练",
+                                "", "请查看外部算法清理状态。", 409)
         if not product_id:
             raise PlatformError(
                 "EXTERNAL_PRODUCT_ID_MISSING",
@@ -2499,14 +2387,8 @@ class ExternalAlgorithmPlatformService:
             )
 
             request_started = time.perf_counter()
-            # Deletion truth must come from the complete provider product set.
-            # status=2 means inactive; complete absence means deleted.
-            products = _validated_external_items(
-                client.products(status=""),
-                id_resolver=_product_id,
-                error_code="EXTERNAL_PRODUCT_ID_MISSING",
-                entity_name="算法产品",
-            )
+            # Omitted status is an observation, never authoritative deletion proof.
+            products = validated_product_snapshot(client.products(status=""))
             self._update_sync_operation(
                 project_id,
                 str(operation_id),
@@ -2620,136 +2502,21 @@ class ExternalAlgorithmPlatformService:
             }
             previous_cache = self.repository.cache()
 
-            self._update_sync_operation(
-                project_id,
-                str(operation_id),
-                current_phase="purge_removed_algorithms",
-            )
-            incoming_product_ids = {_product_id(row) for row in products if _product_id(row)}
-            existing_external = [
-                dict(row)
-                for row in list_algorithms(Path(algorithms_path))
-                if str(row.get("source_type") or "").upper() == SOURCE_EXTERNAL
-                and str(row.get("provider_type") or "").upper() == PROVIDER_CHANGLIAN
-            ]
-            purge_summary = {
-                "algorithms_purged": 0,
-                "tasks_deleted": 0,
-                "artifacts_deleted": 0,
-                "remote_objects_deleted": 0,
-                "publications_deleted": 0,
-            }
-            removed_external = [
-                row
-                for row in existing_external
-                if not str(row.get("external_product_id") or "")
-                or str(row.get("external_product_id") or "") not in incoming_product_ids
-            ]
-            from .model_artifacts import model_delivery_version_fence
-            retirement_store = AlgorithmSqlStore(Path(algorithms_path))
-            # Keep one existing delivery fence per current version until the
-            # canonical mirror has hard-deleted the missing external algorithm.
-            # A durable delete-pending marker blocks new publish/auto-upload work
-            # if purge or mirror later fails and the local row must remain.
-            with ExitStack() as delivery_fences:
-                locked: set[tuple[str, str]] = set()
-                for existing_algorithm in sorted(
-                    removed_external,
-                    key=lambda row: str(row.get("id") or ""),
-                ):
-                    algorithm_id = str(existing_algorithm.get("id") or "").strip()
-                    for version in sorted(
-                        (
-                            row for row in (existing_algorithm.get("versions") or [])
-                            if isinstance(row, Mapping) and str(row.get("id") or "").strip()
-                        ),
-                        key=lambda row: str(row.get("id") or ""),
-                    ):
-                        version_id = str(version.get("id") or "").strip()
-                        identity = (algorithm_id, version_id)
-                        if identity in locked:
-                            continue
-                        delivery_fences.enter_context(
-                            model_delivery_version_fence(
-                                self.data_dir,
-                                project_id,
-                                algorithm_id,
-                                version_id,
-                            )
-                        )
-                        locked.add(identity)
-
-                for existing_algorithm in removed_external:
-                    algorithm_id = str(existing_algorithm.get("id") or "").strip()
-                    retiring = retirement_store.patch_algorithm(
-                        algorithm_id,
-                        {
-                            "external_active": False,
-                            "external_status": "deleted_pending_cleanup",
-                            "external_delete_pending": True,
-                            "external_delete_pending_at": synced_at,
-                        },
-                    )
-                    # Re-read/acquire any version that appeared while the first
-                    # lock set was being established. New publication is now
-                    # blocked by external_active=False/delete-pending.
-                    for version in sorted(
-                        (
-                            row for row in (retiring.get("versions") or [])
-                            if isinstance(row, Mapping) and str(row.get("id") or "").strip()
-                        ),
-                        key=lambda row: str(row.get("id") or ""),
-                    ):
-                        version_id = str(version.get("id") or "").strip()
-                        identity = (algorithm_id, version_id)
-                        if identity in locked:
-                            continue
-                        delivery_fences.enter_context(
-                            model_delivery_version_fence(
-                                self.data_dir,
-                                project_id,
-                                algorithm_id,
-                                version_id,
-                            )
-                        )
-                        locked.add(identity)
-
-                    current = self.local_purger.purge(project_id, retiring)
-                    purge_summary["algorithms_purged"] += 1
-                    for key in (
-                        "tasks_deleted", "artifacts_deleted", "remote_objects_deleted",
-                        "publications_deleted",
-                    ):
-                        purge_summary[key] += int(current.get(key) or 0)
-
-                self._update_sync_operation(
-                    project_id,
-                    str(operation_id),
-                    current_phase="cache_commit",
+            purge_summary = {"algorithms_purged": 0, "tasks_deleted": 0,
+                             "artifacts_deleted": 0, "remote_objects_deleted": 0,
+                             "publications_deleted": 0}
+            self._update_sync_operation(project_id, str(operation_id), current_phase="cache_commit")
+            self.repository.save_cache(cache)
+            try:
+                self._update_sync_operation(project_id, str(operation_id), current_phase="algorithm_mirror_commit")
+                mirror = mirror_products_to_algorithms(
+                    algorithms_path=algorithms_path, products=products, categories=categories,
+                    analyses_by_product=analyses_by_product, provider=PROVIDER_CHANGLIAN,
+                    synced_at=synced_at, master_digest=digest,
                 )
-                self.repository.save_cache(cache)
-                try:
-                    self._update_sync_operation(
-                        project_id,
-                        str(operation_id),
-                        current_phase="algorithm_mirror_commit",
-                    )
-                    mirror = mirror_products_to_algorithms(
-                        algorithms_path=algorithms_path,
-                        products=products,
-                        categories=categories,
-                        analyses_by_product=analyses_by_product,
-                        provider=PROVIDER_CHANGLIAN,
-                        synced_at=synced_at,
-                        master_digest=digest,
-                    )
-                except Exception:
-                    # Cache and algorithm mirror are one successful generation.
-                    try:
-                        self.repository.save_cache(previous_cache)
-                    except Exception:
-                        pass
-                    raise
+            except Exception:
+                self.repository.save_cache(previous_cache)
+                raise
 
             counts = {
                 "categories": len(categories),
@@ -3168,7 +2935,47 @@ def external_algorithm_platform_router(
         return {
             "ok": True,
             "operation": service.current_sync_operation(project_id),
+            "cleanup_summary": cleanup_summary(project_id),
         }
+
+    def cleanup_repository(project_id):
+        from .external_algorithm_cleanup import CleanupRepository
+        get_project(project_id)
+        return CleanupRepository(algorithms_file(project_id))
+
+    def cleanup_summary(project_id):
+        return cleanup_repository(project_id).summary()
+
+    @router.get("/cleanup-operations")
+    def cleanup_operations(project_id: str = Query(..., min_length=1),
+                           limit: int = Query(25, ge=1, le=100), offset: int = Query(0, ge=0)):
+        repository = cleanup_repository(project_id)
+        operations = repository.public_operations(limit=limit, offset=offset)
+        total = sum(repository.summary().values())
+        return {"ok": True, "items": operations, "total": total,
+                "offset": offset, "limit": limit, "has_more": offset + limit < total,
+                "next_offset": offset + limit if offset + limit < total else None}
+
+    @router.get("/cleanup-operations/{operation_id}")
+    def cleanup_operation_detail(operation_id: str, project_id: str = Query(..., min_length=1)):
+        operation = cleanup_repository(project_id).public_operation(operation_id)
+        if operation is None:
+            raise PlatformError("EXTERNAL_CLEANUP_NOT_FOUND", "未找到该项目的清理记录", "", status_code=404)
+        return {"ok": True, "operation": operation}
+
+    @router.post("/cleanup-operations/{operation_id}/retry")
+    def cleanup_operation_retry(operation_id: str, project_id: str = Query(..., min_length=1)):
+        from .external_algorithm_cleanup import FAILED
+        repository = cleanup_repository(project_id)
+        operation = repository.get(operation_id)
+        if operation is None:
+            raise PlatformError("EXTERNAL_CLEANUP_NOT_FOUND", "未找到该项目的清理记录", "", status_code=404)
+        if operation["state"] != FAILED:
+            raise PlatformError("EXTERNAL_CLEANUP_NOT_RETRYABLE", "仅清理失败的任务可以重试", "", status_code=409)
+        # Dispatch validates the original payload/task identity and retries the
+        # same Durable task. No endpoint can submit deletion evidence or force.
+        repository.dispatch(service.data_dir, retry_failed=True, operation_id=operation_id)
+        return {"ok": True, "operation": repository.get(operation_id)}
 
     @router.get("/sync-history")
     def sync_history(limit: int = Query(default=20, ge=1, le=100)):

@@ -273,3 +273,10 @@ def test_conversion_package_preserves_registered_inference_config_and_directory_
     with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
         assert set(archive.namelist())=={'model/inference_model/'+name for name in expected}
         for name,body in expected.items():assert archive.read('model/inference_model/'+name)==body
+
+
+def test_cleanup_status_cannot_cross_current_project_scope(client,authenticated_project_files):
+    platform,pid,image,other=authenticated_project_files
+    other_pid,other_image=other
+    response=client.get('/api/v63/external-algorithm-platform/cleanup-operations',params={'project_id':other_pid})
+    assert response.status_code in (403,404)

@@ -95,6 +95,10 @@ class ExternalAlgorithmAutoSyncReporter:
 
     def report(self) -> bool:
         """Fast Worker-heartbeat hook; returns True only when a run was started."""
+        # Deliver only already-committed local cleanup intents on the existing
+        # heartbeat. Actual I/O and cleanup are owned by the Durable Scheduler.
+        from .external_algorithm_cleanup import dispatch_cleanup_outboxes
+        dispatch_cleanup_outboxes(self.data_dir)
         if not self.service.auto_sync_due():
             return False
 

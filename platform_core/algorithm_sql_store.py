@@ -693,6 +693,8 @@ class AlgorithmSqlStore:
                 added = updated = unchanged = deleted = 0
                 for product_id, master_raw in incoming.items():
                     master = dict(master_raw)
+                    master.update(external_deletion_status="NORMAL", external_deletion_since="",
+                                  external_deletion_reason="", external_cleanup_operation_id="")
                     algorithm_id = existing.get(str(product_id))
                     if not algorithm_id:
                         item = {
@@ -712,6 +714,14 @@ class AlgorithmSqlStore:
                     current = self._read_one_conn(conn, algorithm_id)
                     if current is None:
                         continue
+                    # A provider observation cannot revoke a confirmed cleanup
+                    # generation. Only an explicit recovery procedure may do so.
+                    if current.get("external_delete_pending") is True:
+                        unchanged += 1
+                        continue
+                    if current.get("external_deletion_status") == "SUSPECTED_DELETED":
+                        master["external_deletion_history"] = [*(current.get("external_deletion_history") or []),
+                            {"state": "NORMAL", "observed_at": synced_at, "source": "product_reappeared"}]
                     # Observation metadata and local derivative/version state do
                     # not constitute an external master-data graph change.
                     # In particular, external_last_synced_at advances on every
@@ -774,21 +784,29 @@ class AlgorithmSqlStore:
                         )
                         unchanged += 1
                 incoming_ids = {str(key) for key in incoming}
+                suspected = 0
+                new_suspicions = 0
                 for row in rows:
                     pid = str(row["external_product_id"] or "")
                     if pid in incoming_ids:
                         continue
-                    # A provider row that is absent from the complete (unfiltered)
-                    # remote product set is deleted locally rather than converted
-                    # into a synthetic "inactive" tombstone. Cross-store task /
-                    # artifact cleanup is owned by ExternalAlgorithmPlatformService
-                    # before this metadata transaction runs.
-                    changed = conn.execute(
-                        "DELETE FROM algorithms WHERE project_id=? AND id=?",
-                        (self.project_id, str(row["id"])),
-                    ).rowcount
-                    deleted += int(changed or 0)
-                if added or updated or deleted:
+                    current = self._read_one_conn(conn, str(row["id"]))
+                    if current is None or current.get("external_delete_pending") is True:
+                        continue
+                    if current.get("external_deletion_status") != "SUSPECTED_DELETED":
+                        new_suspicions += 1
+                        current.update(external_deletion_status="SUSPECTED_DELETED",
+                                       external_deletion_since=synced_at,
+                                       external_deletion_reason="本次产品列表未包含该产品；缺少权威删除证据，保留全部成果")
+                        current["external_deletion_history"] = [*(current.get("external_deletion_history") or []),
+                            {"state": "SUSPECTED_DELETED", "observed_at": synced_at, "source": "product_list_observation",
+                             "authoritative": False}]
+                    # Fresh observation metadata is durable without changing the
+                    # business graph/revision or repeating the suspicion event.
+                    current["external_deletion_checked_at"] = synced_at
+                    self._update_algorithm_conn(conn, current)
+                    suspected += 1
+                if added or updated or deleted or new_suspicions:
                     self._bump_revision(conn)
                 conn.commit()
             except Exception:
@@ -798,6 +816,7 @@ class AlgorithmSqlStore:
             "added": added,
             "updated": updated,
             "unchanged": unchanged,
+            "suspected_deleted": suspected,
             "deleted": deleted,
             # Compatibility field for older UI/history readers. Missing remote
             # products are no longer represented as inactive tombstones.

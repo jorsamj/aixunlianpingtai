@@ -19176,6 +19176,9 @@ def _v39_create_deploy_job_under_version_fence(
         th=threading.Thread(target=_sync_remote_deploy_job,args=(project_id,job_id),daemon=True);DEPLOY_REMOTE_THREADS[job_id]=th;th.start()
     else:
         request_payload = {
+            "algorithm_id": str(source.get("algorithm_id") or source_trace.get("algorithm_id") or ""),
+            "version_id": str(source.get("version_id") or source_trace.get("version_id") or ""),
+            "source_id": str(source.get("id") or job["source_id"]),
             "job_dir": str(jd),
             "worker_path": str(BASE_DIR / "deployment_worker.py"),
             "python_path": sys.executable,
@@ -24728,13 +24731,13 @@ def _agent_clean_selection_read(task, payload, *, image_id):
 
 app.include_router(external_algorithm_platform_router(
     data_dir=DATA_DIR,
-    get_project=get_project,
+    get_project=_authorize_business_file_project,
     algorithms_file=algorithms_file,
     secret_store_factory=_v35_secret_store,
 ))
 app.include_router(external_algorithm_publish_router(
     data_dir=DATA_DIR,
-    get_project=get_project,
+    get_project=_authorize_business_file_project,
     project_dir=project_dir,
     algorithms_file=algorithms_file,
     external_secret_store_factory=_v35_secret_store,

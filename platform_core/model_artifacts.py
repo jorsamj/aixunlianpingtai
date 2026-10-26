@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import shutil
 import json
 import mimetypes
 import re
@@ -2206,6 +2207,90 @@ class ModelArtifactService:
             "artifacts_deleted": len(removed),
             "remote_objects_deleted": remote_deleted,
         }
+
+    def purge_confirmed_artifact(self, frozen: Mapping[str, Any], recovery_dir: Path, *, before_delete=None) -> None:
+        """One verified cleanup-plan item, with a checked local recovery copy.
+
+        Called only under the existing delivery version fence. A canonical key
+        and absence of other references are required even for historic rows.
+        Unknown/shared ownership fails closed instead of guessing a prefix.
+        """
+        artifact_id = str(frozen["artifact_id"])
+        from .external_algorithm_cleanup import assert_safe_cleanup_path
+        recovery_dir = Path(recovery_dir)
+        backup = recovery_dir / (artifact_id + ".bin")
+        if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}", artifact_id):
+            raise PlatformError("EXTERNAL_CLEANUP_ARTIFACT_INVALID", "产物身份非法", "", "请核对清理计划。", 409)
+        assert_safe_cleanup_path(backup, self.data_dir)
+        def verified_backup():
+            if backup.is_symlink() or not backup.is_file():
+                return False
+            digest = hashlib.sha256()
+            with backup.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            return backup.stat().st_size == int(frozen["size_bytes"]) and digest.hexdigest() == frozen["sha256"]
+        with closing(self.repository._connect()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            current = db.execute("SELECT * FROM model_artifacts WHERE artifact_id=?", (artifact_id,)).fetchone()
+            if current is None:
+                if verified_backup():
+                    return
+                raise PlatformError("EXTERNAL_CLEANUP_ARTIFACT_CHANGED", "产物记录已变化且没有可信恢复副本", "", "请核验清理回执。", 409)
+            for key in ("project_id", "algorithm_id", "version_id", "sha256", "storage_source_id", "object_key", "source_path", "size_bytes"):
+                if str(current[key] or "") != str(frozen.get(key) or ""):
+                    raise PlatformError("EXTERNAL_CLEANUP_ARTIFACT_CHANGED", "产物身份已变化", "", "请重新核验清理计划。", 409)
+            source_id, key = str(current["storage_source_id"] or ""), str(current["object_key"] or "")
+            provider = None
+            if source_id or key:
+                expected = build_artifact_object_key(
+                    root_prefix=self.repository.config().get("root_prefix") or "changlian-ai/artifacts",
+                    project_id=current["project_id"], algorithm_id=current["algorithm_id"], version_id=current["version_id"],
+                    target=current["target"], chip_code=current["chip_code"], sha256=current["sha256"], file_name=current["file_name"],
+                )
+                if not source_id or key != expected:
+                    raise PlatformError("EXTERNAL_CLEANUP_OBJECT_UNVERIFIED", "OSS对象归属未验证", "", "保留对象并核对完整身份。", 409)
+                shared = db.execute("SELECT 1 FROM model_artifacts WHERE storage_source_id=? AND object_key=? AND artifact_id<>? LIMIT 1", (source_id, key, artifact_id)).fetchone()
+                if shared:
+                    raise PlatformError("EXTERNAL_CLEANUP_OBJECT_SHARED", "OSS对象仍有其他产物引用", "", "保留共享对象并核对引用。", 409)
+                provider = self._provider(str(current["project_id"]), source_id)
+            if not verified_backup():
+                recovery_dir.mkdir(parents=True, exist_ok=True)
+                temporary = backup.with_suffix(".partial")
+                assert_safe_cleanup_path(temporary, self.data_dir)
+                if provider and provider.exists(key):
+                    provider.download(key, temporary)
+                else:
+                    source_path = Path(str(current["source_path"]))
+                    assert_safe_cleanup_path(source_path, self.project_dir(str(current["project_id"])))
+                    if source_path.is_symlink() or not source_path.is_file():
+                        raise PlatformError("EXTERNAL_CLEANUP_BACKUP_MISSING", "缺少可验证的模型恢复副本", "", "保留产物记录并人工核验。", 409)
+                    shutil.copyfile(source_path, temporary)
+                temporary.replace(backup)
+                if not verified_backup():
+                    raise PlatformError("EXTERNAL_CLEANUP_BACKUP_INVALID", "模型恢复副本校验失败", "", "保留产物并核对SHA。", 409)
+            if provider and provider.exists(key):
+                # An existing recovery copy cannot authorize deleting an object
+                # that was replaced since a failed attempt.
+                verification = backup.with_suffix(".verify")
+                assert_safe_cleanup_path(verification, self.data_dir)
+                provider.download(key, verification)
+                digest = hashlib.sha256()
+                with verification.open("rb") as stream:
+                    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                        digest.update(chunk)
+                if verification.stat().st_size != int(frozen["size_bytes"]) or digest.hexdigest() != frozen["sha256"]:
+                    raise PlatformError("EXTERNAL_CLEANUP_OBJECT_CHANGED", "OSS对象内容已变化", "", "保留对象并核验恢复副本。", 409)
+                verification.unlink()
+                if before_delete:
+                    before_delete()
+                provider.delete(key)
+                if provider.exists(key):
+                    raise PlatformError("EXTERNAL_CLEANUP_OBJECT_DELETE_UNCONFIRMED", "OSS对象删除未确认", "", "保留记录并重试清理。", 409)
+            if before_delete:
+                before_delete()
+            db.execute("DELETE FROM model_artifacts WHERE artifact_id=?", (artifact_id,))
+            db.commit()
 
     def retry(self, artifact_id: str) -> dict[str, Any]:
         initial = self.repository.get(artifact_id)

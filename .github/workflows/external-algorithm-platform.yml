@@ -7,6 +7,8 @@ on:
       - requirements.txt
       - platform_core/secrets.py
       - platform_core/external_algorithm_platform.py
+      - platform_core/external_algorithm_cleanup.py
+      - tests/unit/test_external_algorithm_cleanup.py
       - platform_core/compute_platform_catalog.py
       - platform_core/external_algorithm_auto_sync.py
       - task_worker.py
@@ -49,6 +51,8 @@ on:
       - requirements.txt
       - platform_core/secrets.py
       - platform_core/external_algorithm_platform.py
+      - platform_core/external_algorithm_cleanup.py
+      - tests/unit/test_external_algorithm_cleanup.py
       - platform_core/compute_platform_catalog.py
       - platform_core/external_algorithm_auto_sync.py
       - task_worker.py
@@ -95,12 +99,13 @@ jobs:
         with:
           node-version: '22'
       - name: Install focused Python dependencies
-        run: python -m pip install --disable-pip-version-check pytest fastapi requests filelock keyring cryptography
+        run: python -m pip install --disable-pip-version-check pytest fastapi httpx requests filelock keyring cryptography psutil pyyaml pillow
       - name: Backend external-platform contracts
         run: |
           PYTHONPATH=. pytest -q --confcutdir=tests/unit \
             tests/unit/test_secrets.py \
             tests/unit/test_external_algorithm_platform.py \
+            tests/unit/test_external_algorithm_cleanup.py \
             tests/unit/test_external_algorithm_auto_sync.py \
             tests/unit/test_algorithm_sql_store.py \
             tests/unit/test_integration_audit.py \
@@ -116,7 +121,7 @@ jobs:
             tests/frontend/startup-render-owner.test.mjs
       - name: Syntax and wiring guards
         run: |
-          python -m py_compile app.py task_worker.py platform_core/secrets.py platform_core/external_algorithm_platform.py platform_core/external_algorithm_auto_sync.py platform_core/integration_audit.py platform_core/storage/source_repository.py
+          python -m py_compile app.py task_worker.py platform_core/secrets.py platform_core/external_algorithm_platform.py platform_core/external_algorithm_cleanup.py platform_core/external_algorithm_auto_sync.py platform_core/integration_audit.py platform_core/storage/source_repository.py
           node --check static/modules/external-algorithm-platform.js
           node --check static/modules/changlian-data-browser.js
           node --check static/modules/model-artifact-runtime.js
@@ -222,17 +227,19 @@ jobs:
           if grep -Fq 'str(_value_from(row, "status") or "")' platform_core/external_algorithm_platform.py; then echo "analysis status must preserve numeric zero" >&2; exit 1; fi
           grep -Fq 'item["external_analysis_ids"] = self._trainable_analysis_ids(item, analyses)' platform_core/algorithm_sql_store.py
           grep -Fq 'test_changlian_trainable_analysis_subset_survives_sql_round_trip' tests/unit/test_algorithm_sql_store.py
-          grep -Fq 'test_missing_external_product_is_deleted_with_versions' tests/unit/test_external_algorithm_platform.py
+          grep -Fq 'test_missing_external_product_is_suspected_and_preserves_versions' tests/unit/test_external_algorithm_platform.py
           grep -Fq 'test_remote_status_two_is_retained_as_inactive_not_deleted' tests/unit/test_external_algorithm_platform.py
-          grep -Fq 'test_sync_uses_complete_product_set_and_purges_only_truly_missing_algorithm' tests/unit/test_external_algorithm_platform.py
-          grep -Fq 'test_failed_missing_algorithm_purge_keeps_delivery_retirement_marker' tests/unit/test_external_algorithm_platform.py
-          grep -Fq '"external_delete_pending": True' platform_core/external_algorithm_platform.py
-          grep -Fq 'with ExitStack() as delivery_fences:' platform_core/external_algorithm_platform.py
-          grep -Fq 'model_delivery_version_fence(' platform_core/external_algorithm_platform.py
+          grep -Fq 'test_empty_sync_retains_algorithm_and_never_calls_purger' tests/unit/test_external_algorithm_platform.py
+          grep -Fq 'test_suspected_missing_algorithm_does_not_invoke_destructive_purger' tests/unit/test_external_algorithm_platform.py
+          grep -Fq 'external_delete_pending=True' platform_core/external_algorithm_cleanup.py
+          grep -Fq 'ExitStack() as fences:' platform_core/external_algorithm_cleanup.py
+          grep -Fq 'model_delivery_version_fence(' platform_core/external_algorithm_cleanup.py
           grep -Fq 'client.products(status="")' platform_core/external_algorithm_platform.py
           grep -Fq 'class ExternalAlgorithmLocalPurger' platform_core/external_algorithm_platform.py
-          grep -Fq 'DELETE FROM algorithms WHERE project_id=? AND id=?' platform_core/algorithm_sql_store.py
-          if grep -Fq 'current["external_active"] = False' platform_core/algorithm_sql_store.py; then echo "missing ChangLian products must be hard-deleted, not tombstoned inactive" >&2; exit 1; fi
+          grep -Fq 'DELETE FROM algorithms WHERE project_id=? AND id=?' platform_core/external_algorithm_cleanup.py
+          if grep -Fq 'self.local_purger.purge(' platform_core/external_algorithm_platform.py; then echo "sync must never perform destructive cleanup" >&2; exit 1; fi
+          grep -Fq 'EXTERNAL_ALGORITHM_CLEANUP' platform_core/task_runtime/models.py
+          grep -Fq 'scope != "PRODUCT_DELETED"' platform_core/external_algorithm_cleanup.py
           grep -q "EXTERNAL_COMPUTE_PLATFORM_ID_MISSING" platform_core/external_algorithm_platform.py
           grep -q "test_connection_fails_when_product_records_have_no_business_id" tests/unit/test_external_algorithm_platform.py
           grep -q "test_changlian_legacy_endpoint_paths_migrate_to_internal_namespaces" tests/unit/test_external_algorithm_platform.py
