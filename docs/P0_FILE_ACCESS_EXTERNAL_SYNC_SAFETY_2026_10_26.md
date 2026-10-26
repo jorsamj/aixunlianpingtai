@@ -2,6 +2,10 @@
 
 本文件为本轮唯一需求、设计、进度、故障及验收依据。用户附件80541c09已授权实际开发、隔离测试、普通提交推送长期分支，不部署、不轮换生产密钥、不执行生产删除/扫描/迁移。开始HEAD60dd80d8c6f18a3f93550e2c6028c59ffa07bc9a，VERSION42.24.387；fetch远端0/0，当前隔离工作树干净。原标注4本地提交/WIP、5944与两份模板测试保留，其他工作树不改。
 
+## 2026-10-26 最终代码验收及接续（生产未部署）
+
+代码最终 **da4de46736a782aa8b11ad55784b3478cbd1ef19 / VERSION42.24.388**，已推送唯一长期分支，准确 **22/22 Actions、59/59 Checks全部成功**。本轮两个已复现漏洞已完成代码与隔离验收：取消整库静态暴露；异常/缺失产品不会触发破坏清理。可信产品删除事件尚无服务商正式契约，生产自动确认默认关闭；用户提供的版本remove接口不等于产品删除，不调用生产。真实生产代理、既往暴露、NAS/OSS与Worker退出仍NOT VERIFIED。下文开发初期“未修复/未提交/待CI”为历史过程，当前结论以本节及末尾回执为准。文档提交自身最终HEAD须交付前独立核验Checks，不借用代码SHA绿色。
+
 ## 需求基线
 
 P0-01：取消DATA_DIR静态映射；保留正式静态资源。素材原图/缩略图、训练/推理图片、PT/ONNX/转换成果、ZIP及历史地址必须经登录、项目访问范围、可信业务记录及文件归属校验。禁止任意path下载、路径穿越、越界链接、敏感内部文件、未登记文件和错误绝对路径泄露。生产不能仅因测试多项目标志而绕过登录。提供独立授权的密钥轮换、访问日志核验和重新登录影响说明，代码不自动轮换。
@@ -21,12 +25,12 @@ P0-02：外部列表必须区分合法空、格式/业务/HTTP错误、不完整
 
 | 阶段 | 具体修改及证据 | 状态 |
 |---|---|---|
-| A | 限定调用链、接口文档、业务记录、现有测试审计；不读生产目录 | 已完成待验收 |
-| B | P0-01受控文件/原业务兼容、安全RED→GREEN、真实Chrome与独立安全复核；Linux链接和准确SHA CI待验 | 已完成待验收 |
-| C | 原同步Owner严格产品合同、疑似保留与故障注入；本地已验证，准确CI待核 | 已完成待验收 |
-| D | 原TaskRepository/Worker清理/outbox/恢复及共享Checkpoint保护，独立复核通过；准确CI待核 | 已完成待验收 |
-| E | 原Runtime真实状态/分页/同ID重试/有界Loading与ABA隔离，Node43/Chrome分批通过；准确CI待核 | 已完成待验收 |
-| F | 版本388与原守卫通过；本地分阶段提交，最终安全推送及准确SHA CI进行中 | 进行中 |
+| A | 原文件/同步/清理Owner及官方合同定向审计，版本删除与产品删除区分 | 已验收 |
+| B | 受控文件及旧地址兼容，真实API/Chrome和独立安全复核，Linux安全50/50无跳过 | 已验收 |
+| C | 严格产品合同及疑似保留，错误/缺失/不完整输入无破坏 | 已验收 |
+| D | 原Worker持久清理、租约/消费者/Checkpoint/OSS备份和恢复，真实Provider契约默认关闭 | 已验收 |
+| E | 原前端七态/计数/分页/同ID重试/有界Loading与ABA隔离 | 已验收 |
+| F | VERSION388、安全快进推送、代码SHA22/22 Actions及59/59 Checks；文档自身HEAD另核 | 已验收 |
 
 每阶段先复现再修复。文件安全API复用tests/conftest.py隔离目录与TestClient；认证另构造真实SignedSessionManager cookie，未经登录必须失败。同步故障复用tests/unit/test_external_algorithm_platform.py与原fake HTTP，不调用真实Provider/OSS。浏览器沿原external-algorithm-platform/质量/素材用例做必要冒烟，不跑真实训练，不新增第二测试框架。
 
@@ -153,3 +157,17 @@ Git网络出现TLS握手失败，HTTP代理/OpenSSL/SOCKS和直连均未成功�
 修正后最小本地证据：auth/audit/router三文件29通过；产品及原发布相关24通过；不可信产品快照13通过；字典真实登录HTTP1通过。首次新增成功码200测试的审计预期仍写0造成失败，已同步为实际参数后上述29通过。VERSION保持388，不重复递增；无删除测试、降低安全断言或扩张CI依赖。修正提交及其准确SHA的全部CI仍待后续核验。
 
 修正代码5eea5b0d9b73bc965e5d2066c845b5317cb41005已正常快进推送。新CI发现一项未改动的旧ZIP测试时序：只等两次setImmediate就读取尚未完成内容指纹/会话rekey的行，1342项Node中1341通过、此项undefined progress失败。原ZIP业务本轮无diff；测试改为有2秒截止地等待真实XHR分片已派发，再注入进度并执行原有不倒退断言，新增必须确有分片的断言，不降低业务验证。该文件8/8通过；不改上传控制器或协议。最终新SHA仍须重新核验CI，5eea失败不当作绿色。
+
+
+## 最终代码回执、兼容性与发布边界
+
+- 最终代码：[da4de46736a782aa8b11ad55784b3478cbd1ef19](https://github.com/jorsamj/aixunlianpingtai/commit/da4de46736a782aa8b11ad55784b3478cbd1ef19)，VERSION42.24.388。准确22/22 Actions、59/59 Checks成功，失败0、取消0、跳过0。[最终前端工作流](https://github.com/jorsamj/aixunlianpingtai/actions/runs/40267329749) Node1342/1342、真实Chrome291/291成功；不是本地重复全仓执行。
+- 改动安全/后端的5eea5b0d准确登录工作流已成功：[Linux文件安全与登录](https://github.com/jorsamj/aixunlianpingtai/actions/runs/40267037033)，受控文件安全50/50无跳过，登录Chrome2/2。其全体CI不能写成全绿：旧ZIP测试失败、后续推送导致部分原作业取消；后续da4de只修复测试等待且完整准确CI全绿。本地Windows软链接跳过的边界已由Linux实际执行覆盖。
+- 本地核心Python六文件262通过/1 Windows链接skip；补审cleanup40通过/1同类skip；P001相关52通过/2同类skip；项目隔离7、发布保护7、转换身份20通过。CI修正相关29+24+13+1分组通过，重叠不相加。Node最后受影响两文件43通过，原ZIP8通过；本地Chrome按前文定向场景分批通过，最终仓库Chrome291通过。首轮失败、RED及修复过程全部保留，未删除测试/降低安全断言。
+- 主要代码：app.py；platform_core/business_files.py、changlian_login_auth.py；external_algorithm_platform.py、external_algorithm_cleanup.py、external_algorithm_auto_sync.py、external_algorithm_publish.py；algorithm_sql_store.py、model_artifacts.py、storage/rescan_tasks.py、task_runtime/models.py；原static/modules/external-algorithm-platform.js、algorithm-list-runtime.js及main/styles/index缓存。受影响单测/API/Chrome与原两份工作流同步，完整文件差异以基线60dd80d8至上述提交为准。
+- 不强制迁移历史图片/GT，不重建Task/Storage/Material Owner；原数据库按既有schema初始化新增持久清理元数据。正式部署需先一致备份数据库及outbox，不执行生产迁移。未登记历史模型不会开放任意目录下载，需恢复可信来源；登记的图片/模型/导出及Paddle配置层级已验证。
+- 代码不轮换签名密钥、旧登录会话不因本次代码更新自动失效；潜在泄露后须运维另行授权轮换并通知重新登录。生产反向代理不可另行直出/data。备份、日志核验、手动轮换、验证与回滚限制见本文件操作章节。
+- “清理已完成”保留recovery_retained及恢复副本，不能宣称磁盘空间全部释放；未知引用、活动消费者、symlink/junction保守停止。真实产品删除事件签名/语义、生产NAS/OSS、活动Worker退出、访问日志和旧密钥泄露范围不在隔离测试可证明范围。
+- 原标注工作树HEAD8ba6ce1a的4本地提交/WIP、5944e1a558a34f7be008b644a5a3b07b4ed132cd及两份未跟踪训练模板测试已再次核对，全部保留。没有生产部署、删除、扫描、迁移、收费模型调用或真实训练。
+
+接续：先由部署人员按操作章节核验代理、完整备份和密钥处置；真实产品删除契约取得前保持自动确认关闭，不把版本remove/404/空列表改成产品删除证据。需要启用真实自动确认时，仅在原VerifiedDeletionContract适配点验证服务商证据，不新增强删HTTP入口。文档收尾提交不再修改业务代码/VERSION；其自身准确SHA CI由最终交付核对GitHub Checks并归档，不形成自引用SHA或借旧绿。
