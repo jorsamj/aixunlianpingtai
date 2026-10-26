@@ -15,7 +15,7 @@ from contextlib import closing, ExitStack
 from pathlib import Path
 
 from .annotation_repository import AnnotationRepository
-from .material_repository import (MaterialRepository, material_annotation_lifecycle_fence, normalize_material,
+from .material_repository import (MaterialRepository, MATERIAL_READ_SCHEMA_VERSIONS, material_annotation_lifecycle_fence, normalize_material,
     existing_sqlite_reader as _readonly, metadata_evidence_digest as _digest)
 from .storage.local import LocalStorageProvider
 from .storage.manager import StorageManager
@@ -72,7 +72,7 @@ class LegacyMaterialCompatibilityService:
                                                 else str(row.get("id") or "") > cursor)]
             return [(row, json.dumps(row, sort_keys=True)) for row in selected[:limit]], "legacy_json", None
         with closing(_readonly(path)) as db:
-            if db.execute("PRAGMA user_version").fetchone()[0] != 5:
+            if db.execute("PRAGMA user_version").fetchone()[0] not in MATERIAL_READ_SCHEMA_VERSIONS:
                 raise ValueError("unsupported material schema; no implicit migration")
             revision = int(db.execute("SELECT value FROM material_meta WHERE key='revision'").fetchone()[0])
             if ids is None:

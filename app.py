@@ -4553,28 +4553,9 @@ def _v50_clear_orphan_dataset_delete_claims(
     } if journal_root.exists() else set()
     with _V50_ACTIVE_DATASET_DELETIONS_GUARD:
         valid_tokens.update(_V50_ACTIVE_DATASET_DELETION_TOKENS)
-    snapshot = material_store(project_id).read().rows
-    if not any(
-        str(row.get("dataset_id") or "default") == str(dataset_id)
-        and
-        row.get(_V50_DATASET_DELETE_CLAIM_FIELD)
-        and row.get(_V50_DATASET_DELETE_CLAIM_FIELD) not in valid_tokens
-        for row in snapshot
-    ):
-        return []
-
-    def clear(rows):
-        changed = []
-        for row in rows:
-            if str(row.get("dataset_id") or "default") != str(dataset_id):
-                continue
-            token = row.get(_V50_DATASET_DELETE_CLAIM_FIELD)
-            if token and token not in valid_tokens:
-                row.pop(_V50_DATASET_DELETE_CLAIM_FIELD, None)
-                changed.append(str(row.get("id")))
-        return changed
-
-    return material_store(project_id).mutate(clear)
+    return material_store(project_id).clear_orphan_dataset_delete_claims(
+        dataset_id, valid_tokens,
+    )
 
 
 def _v50_recover_dataset_deletions_locked(
@@ -4605,9 +4586,8 @@ def _v50_recover_dataset_deletions(
     dataset_ids = {
         str(journal.get("dataset_id") or "default") for journal in journals
     }
-    for row in material_store(project_id).read().rows:
-        if row.get(_V50_DATASET_DELETE_CLAIM_FIELD):
-            dataset_ids.add(str(row.get("dataset_id") or "default"))
+    for row in material_store(project_id).list_dataset_delete_claims():
+        dataset_ids.add(str(row.get("dataset_id") or "default"))
     recovered = []
     for current_dataset_id in sorted(dataset_ids):
         with _v50_dataset_locks(project_id, [current_dataset_id]):

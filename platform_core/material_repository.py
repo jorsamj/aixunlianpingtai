@@ -21,7 +21,9 @@ from .material_store import MaterialSnapshot
 
 
 _Result = TypeVar("_Result")
-_SCHEMA_VERSION = 5
+_SCHEMA_VERSION = 6
+# Schema 6 adds only an index; existing read-only lifecycle evidence is identical.
+MATERIAL_READ_SCHEMA_VERSIONS = frozenset({5, 6})
 _INIT_LOCK_TIMEOUT = 30
 DATASET_DELETE_CLAIM_FIELD = "_dataset_delete_claim"
 MATERIAL_BATCH_DELETE_CLAIM_FIELD = "_material_batch_delete_claim"
@@ -52,6 +54,10 @@ CREATE INDEX IF NOT EXISTS ix_materials_filename ON materials(filename COLLATE N
 CREATE INDEX IF NOT EXISTS ix_materials_created ON materials(created_at, id);
 CREATE INDEX IF NOT EXISTS ix_materials_content_sha256 ON materials(content_sha256) WHERE content_sha256 <> '';
 CREATE INDEX IF NOT EXISTS ix_materials_content_sha256_normalized ON materials(lower(trim(content_sha256))) WHERE content_sha256 <> '';
+CREATE INDEX IF NOT EXISTS ix_materials_dataset_delete_claim
+    ON materials(COALESCE(CAST(json_extract(payload_json, '$.dataset_id') AS TEXT), 'default'),
+                 json_extract(payload_json, '$._dataset_delete_claim'))
+    WHERE json_extract(payload_json, '$._dataset_delete_claim') IS NOT NULL;
 CREATE TABLE IF NOT EXISTS material_labels (
     material_id TEXT NOT NULL REFERENCES materials(id) ON DELETE CASCADE,
     label_code TEXT NOT NULL,
@@ -571,6 +577,64 @@ class MaterialRepository:
         with closing(self._connect()) as database:
             row = database.execute("SELECT payload_json FROM materials WHERE id = ?", (str(image_id),)).fetchone()
         return self._row_payload(row) if row else None
+
+    def _dataset_delete_claims(self, database, dataset_id=None) -> list[dict[str, Any]]:
+        # Pin the sparse index: choosing the created_at index to satisfy ORDER
+        # BY would otherwise permit a full-table walk on every image admission.
+        query = (
+            "SELECT payload_json FROM materials INDEXED BY ix_materials_dataset_delete_claim "
+            "WHERE json_extract(payload_json, '$._dataset_delete_claim') IS NOT NULL "
+        )
+        parameters = ()
+        if dataset_id is not None:
+            # Missing/empty/false legacy identities belong to default under
+            # the existing Python predicate; filter candidates exactly below.
+            keys = ("default", "", "0", "0.0") if str(dataset_id) == "default" else (str(dataset_id),)
+            if str(dataset_id) == "True":
+                keys = ("True", "1")
+            query += ("AND COALESCE(CAST(json_extract(payload_json, '$.dataset_id') AS TEXT), 'default') "
+                      "IN (" + ",".join("?" for _ in keys) + ") ")
+            parameters = keys
+        stored = database.execute(query + "ORDER BY created_at,id", parameters).fetchall()
+        rows = [self._row_payload(row) for row in stored]
+        return [row for row in rows if row.get(DATASET_DELETE_CLAIM_FIELD) and (
+            dataset_id is None or str(row.get("dataset_id") or "default") == str(dataset_id)
+        )]
+
+    def list_dataset_delete_claims(self, dataset_id=None) -> list[dict[str, Any]]:
+        """Read only marked metadata; observe other processes without a cache."""
+        with closing(self._connect()) as database:
+            return self._dataset_delete_claims(database, dataset_id)
+
+    @controlled_material_write_fence
+    def clear_orphan_dataset_delete_claims(self, dataset_id, valid_tokens) -> list[str]:
+        """Caller retains its dataset lock and journal/active-token checks.
+
+        The common unmarked path stays read-only. Re-read under the writer
+        transaction before changing any row so newer claims/metadata survive.
+        """
+        dataset_id = str(dataset_id or "default")
+        valid_tokens = set(valid_tokens)
+        if not any(row[DATASET_DELETE_CLAIM_FIELD] not in valid_tokens
+                   for row in self.list_dataset_delete_claims(dataset_id)):
+            return []
+        with closing(self._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            try:
+                changed = []
+                for row in self._dataset_delete_claims(database, dataset_id):
+                    if row[DATASET_DELETE_CLAIM_FIELD] in valid_tokens:
+                        continue
+                    row.pop(DATASET_DELETE_CLAIM_FIELD)
+                    self._write_row(database, row)
+                    changed.append(str(row["id"]))
+                if changed:
+                    self._bump_revision(database)
+                database.execute("COMMIT")
+                return changed
+            except Exception:
+                database.execute("ROLLBACK")
+                raise
 
     def duplicate_content_groups(self) -> dict[str, list[str]]:
         """Indexed duplicate-image identities, shared by project audits.

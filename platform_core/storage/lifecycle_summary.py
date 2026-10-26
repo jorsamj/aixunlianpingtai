@@ -4,7 +4,7 @@ import sqlite3
 from contextlib import closing
 from pathlib import Path
 
-from platform_core.material_repository import existing_sqlite_reader
+from platform_core.material_repository import existing_sqlite_reader, MATERIAL_READ_SCHEMA_VERSIONS
 from .cache import resolve_material_cache_location
 from .material_cache_runtime import read_material_cache_snapshot
 
@@ -26,7 +26,7 @@ def storage_lifecycle_summary(data_dir, project_id):
     metrics = {key:{'value':None,'scope':scope} for key,scope in scopes.items()}
     try:
         with closing(existing_sqlite_reader(project / 'materials.sqlite3')) as db:
-            if db.execute('PRAGMA user_version').fetchone()[0] == 5:
+            if db.execute('PRAGMA user_version').fetchone()[0] in MATERIAL_READ_SCHEMA_VERSIONS:
                 count, size, missing = db.execute(
                     'SELECT COUNT(*),COALESCE(SUM(size_bytes),0),COALESCE(SUM(CASE WHEN size_bytes<=0 THEN 1 ELSE 0 END),0) FROM materials'
                 ).fetchone()

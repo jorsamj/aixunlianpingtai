@@ -13,6 +13,8 @@ on:
       - platform_core/labels.py
       - platform_core/annotations.py
       - platform_core/material_repository.py
+      - tests/unit/test_material_repository_delete_claims.py
+      - tests/api/test_zip_import_metadata_queries.py
       - platform_core/local_material_reclamation.py
       - tests/unit/test_local_material_reclamation.py
       - tools/reclaim_retired_original.py
@@ -73,6 +75,8 @@ jobs:
       - name: Annotation SQLite and material atomicity contracts
         run: >-
           python -m pytest -q
+          tests/unit/test_material_repository_delete_claims.py
+          tests/api/test_zip_import_metadata_queries.py
           tests/api/test_annotation_sqlite_dataset_delete_atomicity.py
           tests/unit/test_annotation_repository_scope.py
           tests/api/test_material_batching.py

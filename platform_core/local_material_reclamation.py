@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 import psutil
 from filelock import Timeout
 
-from .material_repository import (MaterialRepository, material_annotation_lifecycle_fence, normalize_material,
+from .material_repository import (MaterialRepository, MATERIAL_READ_SCHEMA_VERSIONS, material_annotation_lifecycle_fence, normalize_material,
     existing_sqlite_reader as _readonly, metadata_evidence_digest as _digest)
 from .storage.local import LocalStorageProvider, controlled_local_startup_guard
 from .storage.cache import file_sha256
@@ -238,7 +238,7 @@ class LocalMaterialReclamationService:
                 continue
             try:
                 with closing(_readonly(dbpath)) as db:
-                    if db.execute("PRAGMA user_version").fetchone()[0] != 5:
+                    if db.execute("PRAGMA user_version").fetchone()[0] not in MATERIAL_READ_SCHEMA_VERSIONS:
                         blockers.append("UNKNOWN_PROJECT_INDEX")
                         continue
                     live = [dict(row) for row in db.execute("SELECT id,payload_json,storage_source_id,object_key FROM materials ORDER BY id")]
