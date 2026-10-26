@@ -118,7 +118,8 @@ export function installMaterialBatchRuntime({projectId, projectName, currentPage
         remember(task);
         announce(task);
         if (isMaterialBatchActive(task)) {
-          registry.startTimeout(pollKey(id), POLL_OWNERS, tick, 1500);
+          if (task.operation === 'SMART_AUDIT') registry.startTimeout(pollKey(id), [...POLL_OWNERS,'标签管理','素材接入'], tick, 1500);
+          else registry.startTimeout(pollKey(id), POLL_OWNERS, tick, 1500);
         } else {
           stopPolling(id);
           if (task.operation !== 'SMART_AUDIT') {

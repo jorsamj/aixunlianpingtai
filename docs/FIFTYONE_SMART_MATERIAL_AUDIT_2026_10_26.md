@@ -2,6 +2,10 @@
 
 本文件是本专项唯一需求、设计、进度和接续依据。用户附件681f3943与“最高优先级：现有业务兼容性与零破坏原则”共同构成需求基线；后者优先。2026-10-26真实fetch成功，远端/本地均c88b6151797bf7a122b891f4e336697dd041802a，VERSION42.24.389，初始工作区干净。其他工作树、5944e1a5、原标注WIP和两份训练模板测试保持原样。
 
+## 标签/素材接入跨页轮询归属（2026-10-26）
+
+原素材批任务POLL_OWNERS不含标签管理/素材接入，PollRegistry.leave进入这些页会清除原SMART key。现在只对SMART_AUDIT的原active分支，在同一 `material-batch:<task_id>` key增加两个页面Owner；普通清洗、删除等仍使用原POLL_OWNERS。没有新增poller或状态库。Node owner契约RED→GREEN，原相关17项通过；真实Chrome受控排队任务关闭面板后导航标签，确认同key保留、继续GET且终态停止，通过。此处不是声称“标签页首次创建任务必定不轮询”，修的是跨页保留范围。
+
 ## 取消截止与新窗口归属收尾（2026-10-26）
 
 原通用 cancelMaterialBatch62 使用裸 fetch，若永久Pending，智能分析面板也会一直 busy。现在在同一原 Owner 复用已有 request/withRequestDeadline，并捕获原 project，仅仍在该项目才 remember/announce；不是新建API Client。超时后按原Task ID查询/取消可重试，不会创建新任务。新增Pending与项目切换回包RED→GREEN，相关原提交/删除/只读完成等16项Node通过；首次夹具未等待异步请求启动导致release未赋值，仅修正夹具同步点后通过。

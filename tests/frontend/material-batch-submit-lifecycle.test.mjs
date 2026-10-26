@@ -4,16 +4,26 @@ import {installMaterialBatchRuntime} from '../../static/modules/material-batches
 import {readFileSync} from 'node:fs';
 import {withRequestDeadline} from '../../static/modules/api.js';
 
-async function fixture(run,{refresh,projectId=()=> 'p1'}={}) {
+async function fixture(run,{refresh,projectId=()=> 'p1',pollRegistry={clear(){},startTimeout(){}}}={}) {
   const previous={window:globalThis.window,localStorage:globalThis.localStorage,fetch:globalThis.fetch};
   const storage=new Map(),calls=[],messages=[];
   globalThis.localStorage={getItem:key=>storage.get(key)||null,setItem:(key,value)=>storage.set(key,value)};
   globalThis.window={confirm:()=>true};
   try {
-    installMaterialBatchRuntime({projectId,currentPageIds:()=>['one'],refresh,notify:value=>messages.push(value),requestTimeoutMs:15,pollRegistry:{clear(){},startTimeout(){}}});
+    installMaterialBatchRuntime({projectId,currentPageIds:()=>['one'],refresh,notify:value=>messages.push(value),requestTimeoutMs:15,pollRegistry});
     await run({calls,messages});
   } finally {Object.assign(globalThis,previous)}
 }
+test('smart audit uses the original poll key on labels and intake without expanding ordinary task owners',async()=>{
+ const owners=[];
+ await fixture(async()=>{
+  const task={task_id:'smart-live',project_id:'p1',kind:'MATERIAL_BATCH',operation:'SMART_AUDIT',status:'RUNNING'};
+  globalThis.fetch=async()=>Response.json(task);
+  await window.MaterialBatchRuntime62.submitSmart({options:{request_id:'labels'}});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.ok(owners.some(row=>row.key==='material-batch:smart-live'&&row.pages.includes('标签管理')&&row.pages.includes('素材接入')));
+ },{pollRegistry:{clear(){},startTimeout:(key,pages)=>owners.push({key,pages})}});
+});
 test('material cancellation is bounded and late old-project cancellation cannot announce into the next project',async()=>{
  let project='p1';
  await fixture(async()=>{

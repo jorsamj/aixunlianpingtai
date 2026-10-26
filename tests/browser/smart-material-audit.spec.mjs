@@ -1,10 +1,10 @@
 import {test,expect} from '@playwright/test';
 
-async function setup(page,request,{enabled=true}={}) {
+async function setup(page,request,{enabled=true,queued=false}={}) {
   const project=await(await request.post('/api/projects',{data:{name:`智能分析隔离-${Date.now()}`,labels:[{code:'object',display_name:'目标',color:'#2563eb'}]}})).json();
   await page.route('**/api/v53/bootstrap/snapshot**',route=>{const url=new URL(route.request().url());url.searchParams.set('preferred_project_id',project.id);return route.continue({url:String(url)});});
   await page.addInitScript(()=>localStorage.setItem('mc_train_ui_state_v34',JSON.stringify({page:'数据集'})));
-  let creates=0,reviews=[],failCreate=false,task=null;
+  let creates=0,reviews=[],failCreate=false,task=null,taskGets=0;
   const issue={issue_id:'issue-one',image_id:'image-one',related_image_id:null,issue_type:'suspected_annotation',review_token:'token-one',stale:false,review_valid:false,generation:1,evidence:{missing_count:1},inputs:{'image-one':{gt_boxes:[{id:'gt1',label:'object',class_id:0,x1:5,y1:5,x2:40,y2:40}],pred_boxes:[]}}};
   const pageResult={items:[issue],total:1,offset:0,limit:25,review_counts:{confirmed_issue:reviews.length},checks:{},generation:1};
   await page.route(`**/api/v62/projects/${project.id}/smart-material-audit**`,async route=>{
@@ -15,15 +15,27 @@ async function setup(page,request,{enabled=true}={}) {
     if(path.endsWith('/review')){const body=route.request().postDataJSON();reviews.push(body);issue.review={...body,actor_id:'controlled-reviewer',reviewed_at:'2026-10-26T01:01:00Z'};issue.review_valid=true;return route.fulfill({json:issue});}
     if(path.endsWith('/findings/issue-one'))return route.fulfill({json:{...issue,generation:task?.attempt||1}});
     if(path.endsWith('/findings'))return route.fulfill({json:{...pageResult,generation:task?.attempt||1,review_counts:{confirmed_issue:reviews.length}}});
-    if(route.request().method()==='POST'){creates++;if(failCreate)return route.fulfill({status:503,json:{detail:{message:'隔离引擎不可用'}}});task={task_id:'smart-browser',kind:'MATERIAL_BATCH',project_id:project.id,operation:'SMART_AUDIT',status:'SUCCEEDED',processed:120,total:120,attempt:1,result_ready:true,updated_at:'2026-10-26T01:00:00Z',smart_audit_summary:{checks:{visual_similarity:{status:'completed',checked:120},mistakenness:{status:'not_checked',reason:'无可信预测'}}}};return route.fulfill({status:202,json:task});}
+    if(route.request().method()==='POST'){creates++;if(failCreate)return route.fulfill({status:503,json:{detail:{message:'隔离引擎不可用'}}});task={task_id:'smart-browser',kind:'MATERIAL_BATCH',project_id:project.id,operation:'SMART_AUDIT',status:queued?'QUEUED':'SUCCEEDED',processed:queued?0:120,total:120,attempt:1,result_ready:!queued,updated_at:'2026-10-26T01:00:00Z',smart_audit_summary:queued?{}:{checks:{visual_similarity:{status:'completed',checked:120},mistakenness:{status:'not_checked',reason:'无可信预测'}}}};return route.fulfill({status:202,json:task});}
     return route.fallback();
   });
-  await page.route(`**/api/v62/projects/${project.id}/material-batches**`,route=>route.fulfill({json:route.request().url().includes('?')?{items:task?[task]:[],next_cursor:null}:task}));
+  await page.route(`**/api/v62/projects/${project.id}/material-batches**`,route=>{if(!route.request().url().includes('?'))taskGets++;return route.fulfill({json:route.request().url().includes('?')?{items:task?[{...task}]:[],next_cursor:null}:{...task}});});
   await page.route('**/materials/image-one/content',route=>route.fulfill({contentType:'image/svg+xml',body:'<svg xmlns="http://www.w3.org/2000/svg" width="100" height="80"><rect width="100" height="80" fill="#e2e8f0"/></svg>'}));
   const errors=[];page.on('pageerror',e=>errors.push(e.message));
   await page.goto('/');await expect.poll(()=>page.evaluate(()=>Boolean(window.SmartMaterialAuditRuntime&&state.uiReady))).toBe(true);
-  return {project,errors,issue,creates:()=>creates,reviews:()=>reviews,fail(){failCreate=true;},task:()=>task};
+  return {project,errors,issue,creates:()=>creates,reviews:()=>reviews,gets:()=>taskGets,fail(){failCreate=true;},task:()=>task};
 }
+
+test('active smart task keeps its existing poll key across navigation into labels',async({page,request})=>{
+  const fixture=await setup(page,request,{queued:true});
+  await page.getByRole('button',{name:'智能质量分析',exact:true}).click();const panel=page.locator('.smart-material-audit');await expect(panel.locator('[data-create]')).toBeEnabled();page.once('dialog',dialog=>dialog.accept());await panel.locator('[data-create]').click();
+  await expect(panel.locator('[data-status]')).toContainText('排队中');await expect.poll(()=>fixture.gets()).toBeGreaterThan(0);
+  await page.keyboard.press('Escape');await expect(panel).not.toBeVisible();await page.evaluate(()=>setPage('标签管理'));
+  expect(await page.evaluate(()=>window.PollRegistryRuntime.snapshot().some(row=>row.key==='material-batch:smart-browser'))).toBe(true);
+  const before=fixture.gets();Object.assign(fixture.task(),{status:'SUCCEEDED',processed:120,result_ready:true,updated_at:'2026-10-26T02:00:00Z'});
+  await expect.poll(()=>fixture.gets()).toBeGreaterThan(before);
+  await expect.poll(()=>page.evaluate(()=>window.PollRegistryRuntime.snapshot().some(row=>row.key==='material-batch:smart-browser'))).toBe(false);
+  expect(fixture.errors).toEqual([]);
+});
 
 test('smart audit OFF has no startup requests and original material/label pages remain usable',async({page,request})=>{
   const calls=[];page.on('request',req=>{if(req.url().includes('/api/v62/')&&req.url().includes('/smart-material-audit'))calls.push(req.url());});
