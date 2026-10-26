@@ -476,3 +476,13 @@ test('category picker rows are whole-row interactive for drill-down and leaf sel
   assert.match(source, /return toggleDraftCategory\(row\.id\)/);
   assert.match(source, /event\.target === categoryRow && \['Enter', ' '\]\.includes\(event\.key\)/);
 });
+
+test('suspected deletion remains visible beside an existing running task and preserves training availability', () => {
+  const source=fs.readFileSync(new URL('../../static/modules/algorithm-list-runtime.js',import.meta.url),'utf8');
+  const start=source.indexOf('  function algorithmRowView('),end=source.indexOf('  function renderRows()',start);
+  const context={algorithm:{id:'a',name:'疑似算法',external_active:true,external_deletion_status:'SUSPECTED_DELETED',versions:[]},
+    currentVersion:()=>null,algorithmVersionMap50:()=>null,trainingCount:()=>0,providerMeta:()=>({external:true,sourceLabel:'新畅联',deletion:{state:'SUSPECTED_DELETED',label:'待核实'}}),algorithmTrainability:()=>({ready:true}),activeJob:()=>({status:'running'}),trainingStatusText:()=> '训练中',state:()=>({jobs:[],alg428Expanded:{}}),algorithmTypeText:()=>'',dateText:()=>'',versionRows:()=>'',esc:value=>String(value??'')};
+  const html=vm.runInNewContext(`${source.slice(start,end)};algorithmRowView(algorithm).html`,context);
+  assert.match(html,/data-external-deletion="SUSPECTED_DELETED"/);assert.match(html,/待核实/);assert.match(html,/训练中/);
+  assert.doesNotMatch(html,/data-algorithm-train="a"[^>]*disabled/);
+});

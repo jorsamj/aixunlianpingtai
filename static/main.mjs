@@ -17,8 +17,8 @@ import {installNavigationStability} from './modules/navigation-stability.js?v=20
 import {persistUiState} from './modules/ui-state.js?v=422500';
 import {installPageRequestScope} from './modules/page-request-scope.js?v=20261024';
 import {installPollRegistry} from './modules/poll-registry.js?v=422521';
-import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=4226388';
-import {installExternalAlgorithmPlatformRuntime} from './modules/external-algorithm-platform.js?v=63022';
+import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=4226389';
+import {installExternalAlgorithmPlatformRuntime} from './modules/external-algorithm-platform.js?v=63023';
 import {installChangLianDataBrowserRuntime} from './modules/changlian-data-browser.js?v=63002';
 import {installExternalAlgorithmPublishRuntime} from './modules/external-algorithm-publish.js?v=64015';
 import {installModelArtifactRuntime} from './modules/model-artifact-runtime.js?v=65009';
@@ -170,6 +170,7 @@ const algorithmListRuntime = installAlgorithmListRuntime({
 window.PlatformCore.runtime.algorithmListRuntime = algorithmListRuntime;
 
 const externalAlgorithmPlatformRuntime = installExternalAlgorithmPlatformRuntime({
+  modal: (...args) => modal(...args),
   getState: () => state,
   projectId: () => state.project?.id,
   notify,

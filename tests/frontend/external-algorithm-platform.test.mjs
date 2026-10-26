@@ -463,3 +463,100 @@ test('sync operation UI exposes listAll optimization source without changing pro
   assert.doesNotMatch(html, /%/);
   assert.equal(externalSyncOperationPhaseText('fetch_analysis_index'), '读取分析方式索引');
 });
+
+
+test('deletion presentation distinguishes suspected, confirmed, running, failure and complete without false success',async()=>{
+  const {externalDeletionPresentation}=await import('../../static/modules/external-algorithm-platform.js');
+  assert.equal(typeof externalDeletionPresentation,'function');
+  for(const [state,label,busy] of [['SUSPECTED_DELETED','待核实',false],['CONFIRMED_DELETED','已确认删除',false],['CLEANUP_PENDING','等待安全清理',true],['CLEANUP_RUNNING','安全清理中',true],['CLEANUP_FAILED','清理失败',false],['CLEANUP_COMPLETED','清理已完成',false]]){
+    const actual=externalDeletionPresentation({external_deletion_status:state});
+    assert.equal(actual.label,label);assert.equal(actual.busy,busy);
+  }
+});
+
+test('sync summary displays genuine deletion counts and no invented cleanup percentage',()=>{
+  const html=externalSyncOperationHtml({status:'success',counts:{suspected_deleted:2,cleanup_pending:1,cleanup_failed:0}});
+  assert.match(html,/待核实/);assert.match(html,/待清理/);assert.match(html,/清理失败/);
+  assert.doesNotMatch(html,/\d+%/);
+});
+
+test('cleanup details preserve suspected evidence and only permit failed safe retry', async () => {
+  const {externalCleanupOperationHtml}=await import('../../static/modules/external-algorithm-platform.js');
+  assert.equal(typeof externalCleanupOperationHtml,'function');
+  const suspected=externalCleanupOperationHtml({operation_id:'suspect:a',state:'SUSPECTED_DELETED',phase:'verification',counts:{processed:3},evidence:{reason:'分页不完整'}});
+  assert.match(suspected,/待核实/);assert.match(suspected,/已有任务继续/);assert.match(suspected,/新发布暂缓/);assert.match(suspected,/重新核实/);assert.doesNotMatch(suspected,/data-cleanup-retry/);
+  const failed=externalCleanupOperationHtml({operation_id:'op1',state:'CLEANUP_FAILED',phase:'assets',counts:{processed:3,total:9},error:'文件被占用'});
+  assert.match(failed,/data-cleanup-retry="op1"/);assert.match(failed,/文件被占用/);assert.doesNotMatch(failed,/已有任务继续/);assert.match(failed,/恢复副本/);assert.match(failed,/3/);assert.doesNotMatch(failed,/\d+%/);
+  assert.doesNotMatch(externalCleanupOperationHtml({state:'CLEANUP_RUNNING'}),/data-cleanup-retry/);
+});
+
+async function isolatedExternalRuntime(t, fetcher) {
+  const {installExternalAlgorithmPlatformRuntime}=await import('../../static/modules/external-algorithm-platform.js');
+  const saved={window:globalThis.window,document:globalThis.document,MutationObserver:globalThis.MutationObserver};
+  const state={page:'',project:{id:'A'}};
+  const json=body=>({ok:true,status:200,text:async()=>JSON.stringify(body)});
+  globalThis.document={body:{},getElementById:()=>null,querySelector:()=>null,querySelectorAll:()=>[]};
+  globalThis.MutationObserver=class {observe(){} disconnect(){}};
+  globalThis.window={fetch:async(url,options)=>{
+    if(url.endsWith('/config')) return json({config:{mode:'external',base_url:'https://example.invalid',credentials:{configured:true}}});
+    if(url.endsWith('/cache')) return json({cache:{}});
+    if(url.includes('/cleanup-operations?')) return json({items:[],total:0,offset:0,limit:25,has_more:false});
+    return fetcher(url,options,json);
+  }};
+  const runtime=installExternalAlgorithmPlatformRuntime({getState:()=>state,projectId:()=>state.project.id});
+  t.after(()=>{runtime.destroy();for(const [key,value] of Object.entries(saved)){if(value===undefined)delete globalThis[key];else globalThis[key]=value;}});
+  await runtime.loadConfig({silent:true});
+  return {runtime,state,json};
+}
+
+for(const aba of [true,false]) test(`sync status rejects ${aba?'ABA':'older same-project'} reads before they can block a new POST`,async t=>{
+  let releaseOld,reads=0,posts=0;
+  const {runtime,state,json}=await isolatedExternalRuntime(t,async(url,options,json)=>{
+    if(options.method==='POST'){posts+=1;return json({operation:{operation_id:'created',status:'success'}});}
+    reads+=1;
+    if(reads===1)return new Promise(resolve=>{releaseOld=resolve});
+    return json({operation:{operation_id:`new-${state.project.id}`,status:'success'}});
+  });
+  const old=runtime.loadSyncOperation({silent:true});await new Promise(resolve=>setImmediate(resolve));
+  if(aba){state.project.id='B';await runtime.loadSyncOperation({silent:true});}
+  state.project.id='A';await runtime.loadSyncOperation({silent:true});
+  releaseOld(json({operation:{operation_id:'old-A',status:'running'}}));
+  assert.equal((await old).operation_id,'new-A');
+  await runtime.syncNow();assert.equal(posts,1);
+});
+
+test('malformed successful JSON status response preserves running operation and reports parse failure',async t=>{
+  let malformed=false;
+  const {runtime}=await isolatedExternalRuntime(t,async(url,options,json)=>malformed?{ok:true,status:200,text:async()=>'{broken'}:json({operation:{operation_id:'running-original',status:'running'}}));
+  await runtime.loadSyncOperation({silent:true});malformed=true;
+  await assert.rejects(runtime.loadSyncOperation({silent:true}),error=>error.name==='ParseError'&&error.code==='INVALID_JSON_RESPONSE');
+  assert.equal((await runtime.syncNow()).operation_id,'running-original');
+});
+
+
+test('stale status errors cannot replace a newer same-project read',async t=>{
+  let rejectOld,reads=0;
+  const {runtime}=await isolatedExternalRuntime(t,async(url,options,json)=>{
+    if(++reads===1)return new Promise((resolve,reject)=>{rejectOld=reject});
+    return json({operation:{operation_id:'new-current',status:'running'}});
+  });
+  const old=runtime.loadSyncOperation({silent:true});await new Promise(resolve=>setImmediate(resolve));
+  await runtime.loadSyncOperation({silent:true});rejectOld(new Error('stale network failure'));
+  assert.equal((await old).operation_id,'new-current');
+});
+
+test('an old POST receipt cannot overwrite the new A scope after A to B to A',async t=>{
+  let releasePost,posts=0;
+  const {runtime,state,json}=await isolatedExternalRuntime(t,async(url,options,json)=>{
+    if(options.method==='POST'){
+      if(++posts===1)return new Promise(resolve=>{releasePost=resolve});
+      return json({operation:{operation_id:'duplicate',status:'success'}});
+    }
+    return json({operation:{operation_id:`new-${state.project.id}`,status:'running'}});
+  });
+  const old=runtime.syncNow();await new Promise(resolve=>setImmediate(resolve));
+  state.project.id='B';await runtime.loadSyncOperation({silent:true});
+  state.project.id='A';await runtime.loadSyncOperation({silent:true});
+  releasePost(json({operation:{operation_id:'old-post-A',status:'success'}}));await old;
+  assert.equal((await runtime.syncNow()).operation_id,'new-A');assert.equal(posts,1);
+});

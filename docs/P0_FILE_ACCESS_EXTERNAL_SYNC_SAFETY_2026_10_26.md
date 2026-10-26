@@ -23,10 +23,10 @@ P0-02：外部列表必须区分合法空、格式/业务/HTTP错误、不完整
 |---|---|---|
 | A | 限定调用链、接口文档、业务记录、现有测试审计；不读生产目录 | 已完成待验收 |
 | B | P0-01受控文件/原业务兼容、安全RED→GREEN、真实Chrome与独立安全复核；Linux链接和准确SHA CI待验 | 已完成待验收 |
-| C | 原同步Owner严格产品合同与疑似状态，异常不进入purger；本地故障注入进行中 | 进行中 |
-| D | 原TaskRepository/Worker清理/outbox/恢复、版本锁/归属/备份与故障注入 | 进行中 |
-| E | 原Runtime真实状态/分页/同ID重试/有界Loading，Node38、Chrome4通过，追加作用域验收中 | 进行中 |
-| F | 最小受影响Python/Node/Chrome、VERSION一次递增、逐阶段普通提交、push前fetch、准确最终SHA CI、部署与轮换手册 | 未开始 |
+| C | 原同步Owner严格产品合同、疑似保留与故障注入；本地已验证，准确CI待核 | 已完成待验收 |
+| D | 原TaskRepository/Worker清理/outbox/恢复及共享Checkpoint保护，独立复核通过；准确CI待核 | 已完成待验收 |
+| E | 原Runtime真实状态/分页/同ID重试/有界Loading与ABA隔离，Node43/Chrome分批通过；准确CI待核 | 已完成待验收 |
+| F | 版本388与原守卫通过；本地分阶段提交，最终安全推送及准确SHA CI进行中 | 进行中 |
 
 每阶段先复现再修复。文件安全API复用tests/conftest.py隔离目录与TestClient；认证另构造真实SignedSessionManager cookie，未经登录必须失败。同步故障复用tests/unit/test_external_algorithm_platform.py与原fake HTTP，不调用真实Provider/OSS。浏览器沿原external-algorithm-platform/质量/素材用例做必要冒烟，不跑真实训练，不新增第二测试框架。
 
@@ -127,3 +127,19 @@ OSS专属key、源/版本/文件SHA及共享引用验证；硬删前保留并验
 - 原两份受影响CI源码守卫已迁移：从“缺失必硬删/同步purge锁”改为缺失保留、不调用purger、确认marker、原Worker kind及version fence；动态安全断言全部保留。原guard脚本本地实际退出auth=0、external=0。新增cleanup测试只接原external工作流及必要标准依赖，不新建CI。
 
 前端正在最终集成：Node38/38、原Browser2+新增P0三项分批5/5；新增绘制异常2个独立RED后GREEN，相关Chrome2/2和最后1/1，保持原按钮/Modal/轮询Owner。VERSION最终统一388/cache436，版本Owner10/10通过；尚无远端CI结论。
+
+
+## P002阶段提交、前端最终本地验收及推送状态
+
+核心后端本地提交 **06ce390d660b21677f575b4547c5ab618e47a8a4**，接在P001 ee9750ab之后，未覆盖其他工作树。疑似发布6+正常发布1、conversion portable20及实际项目隔离7通过；共享问题修复后独立4项复验通过，后端没有已证实残留阻塞。Windows softlink能力限制待Linux CI，不标验收。
+
+前端沿原external platform/algorithm list Runtime、原Modal及单一poll promise完成：真实七态、同步/清理数量、25行分页、同步记录/技术详情、疑似核实、失败同task重试、刷新恢复、活跃训练与待核实同时显示。只疑似承诺现有任务继续；确认后说明安全停止和等待，不把失败/恢复副本当训练仍继续。不新增确认或强制硬删入口。
+
+真实前端异常发现与修复：
+
+- 首次绘制在try外导致后续点击无POST、finally绘制失败遗留disabled/aria-busy，两独立Chrome先RED后GREEN；finally先恢复原按钮，再执行可能失败的面板渲染，异常仍上报。
+- 独立审查再复现A→B→A旧GET覆盖成功新A且误锁，新增Node覆盖ABA/同项目旧GET/旧错误/旧POST/HTTP200坏JSON共5个RED后GREEN。GET成功和错误均校验scope generation+read ordinal，POST首次回执即校验submission epoch；200坏JSON抛明确ParseError，保留原running供重新查询。
+- 最后相关Node43/43；Chrome原2+P0三项合计5/5，之后绘制fault case两处注入及既有HTTP场景定向2/2、最终fault1/1；项目迟到/分页1/1，HTTP/永挂/坏JSON查询1/1。独立审查5项复验确认ABA关闭。重叠不重复累计，不冒充单次全仓通过。
+- VERSION本轮一次387→388；app/main/styles缓存436，external63023、algorithm-list4226389。版本Owner10/10，原auth/external全部永久守卫实际退出0；主业务不重跑无变更全组。
+
+Git网络出现TLS握手失败，HTTP代理/OpenSSL/SOCKS和直连均未成功；GitHub连接器与GitHub API仍可读，已新核验远端仍60dd80d8，无其他提交被覆盖。本地阶段成果全部保留。若Git传输持续失败，将采用GitHub Git Data API上传同一对象/仅快进更新，不强推、不使用第三方代理托管凭据；最终准确远端SHA及CI必须另核验，当前尚未推送，不宣称CI通过。

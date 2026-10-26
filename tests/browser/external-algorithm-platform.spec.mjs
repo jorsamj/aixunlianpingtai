@@ -444,3 +444,152 @@ test('stale changlian algorithm is visibly blocked before training submit', asyn
   await expect(trainButton).toBeDisabled();
   await expect(trainButton).toHaveAttribute('title', /立即同步/);
 });
+
+async function prepareCleanupPlatform(page, request, operations) {
+  const project = await (await request.post('/api/projects', {data:{name:`清理专项-${Date.now()}`,labels:[{code:'test',display_name:'测试'}]}})).json();
+  await selectIsolatedTestProject(page, project.id);
+  const json = (route, body, status=200) => route.fulfill({status,contentType:'application/json',body:JSON.stringify(body)});
+  await page.route('**/api/v63/external-algorithm-platform/**', async route => {
+    const url=new URL(route.request().url());
+    if(url.pathname.endsWith('/config')) return json(route,{config:{mode:'external',base_url:'https://example.invalid',credentials:{configured:true},cache:{master_data_digest:'digest'}}});
+    if(url.pathname.endsWith('/cache')) return json(route,{cache:{categories:[],products:[],master_data_digest:'digest'}});
+    if(url.pathname.endsWith('/sync-history')) return json(route,{items:[{operation_id:'sync-old',status:'failed',current_phase:'fetch_products',error:'产品分页不完整',counts:{products:2},success_count:2,error_count:1}]});
+    if(url.pathname.endsWith('/sync-operation')) return json(route,{operation:{operation_id:'sync-old',status:'success',current_phase:'completed'},cleanup_summary:{SUSPECTED_DELETED:1,CLEANUP_FAILED:1,CLEANUP_PENDING:0,CLEANUP_RUNNING:0,CLEANUP_COMPLETED:0}});
+    if(url.pathname.endsWith('/cleanup-operations')) {const offset=Number(url.searchParams.get('offset')||0);return json(route,{items:operations.slice(offset,offset+25),total:operations.length,offset,limit:25,has_more:offset+25<operations.length});}
+    if(url.pathname.includes('/cleanup-operations/')) {
+      const id=decodeURIComponent(url.pathname.split('/').at(-1));
+      return json(route,{operation:operations.find(row=>row.operation_id===id)});
+    }
+    if(url.pathname.endsWith('/readiness')) return json(route,{ok:true});
+    return route.continue();
+  });
+  await page.goto('/');
+  await expect.poll(()=>page.evaluate(()=>state.uiReady===true)).toBe(true);
+  await page.evaluate(()=>window.setPage('平台对接'));
+  await expect(page.locator('[data-external-platform-page]')).toBeVisible();
+  await page.locator('[data-external-platform-tab="sync"]').click();
+  return {project,json};
+}
+
+test('P0 cleanup UI restores suspected and failed operations, retries same ID and discards closed modal response',async({page,request})=>{
+  const operations=[{operation_id:'suspect:a',algorithm_id:'a',algorithm_name:'疑似算法',state:'SUSPECTED_DELETED',phase:'verification_required',evidence:{reason:'分页不完整'},counts:{processed:0,total:1}},
+    {operation_id:'failed-op',algorithm_id:'b',algorithm_name:'失败算法',state:'CLEANUP_FAILED',phase:'failed',error:'文件占用，未完成',counts:{processed:2,total:5},task_id:'same-task'}];
+  const {json}=await prepareCleanupPlatform(page,request,operations);
+  await expect(page.getByText('疑似算法',{exact:true})).toBeVisible();
+  await page.locator('[data-cleanup-detail="suspect:a"]').click();
+  let detail=page.locator('[data-cleanup-modal-root]').last();
+  await expect(detail).toContainText('待核实');await expect(detail).toContainText('已有任务继续');await expect(detail).toContainText('新发布暂缓');
+  await expect(detail.locator('[data-cleanup-retry]')).toHaveCount(0);
+  await page.evaluate(()=>window.closeModal());
+  let retryIds=[];
+  await page.route('**/cleanup-operations/failed-op/retry?*',async route=>{
+    retryIds.push(new URL(route.request().url()).pathname);
+    operations[1]={...operations[1],state:'CLEANUP_COMPLETED',phase:'completed',counts:{processed:5,total:5},error:''};
+    await json(route,{ok:true,operation:operations[1]});
+  });
+  await page.locator('[data-cleanup-detail="failed-op"]').click();
+  detail=page.locator('[data-cleanup-modal-root]').last();
+  await expect(detail).toContainText('文件占用，未完成');await detail.locator('[data-cleanup-retry]').click();
+  await expect(detail).toContainText('清理已完成');expect(retryIds).toEqual(['/api/v63/external-algorithm-platform/cleanup-operations/failed-op/retry']);
+  await page.evaluate(()=>window.closeModal());
+  let release,readStarted;
+  const reading=new Promise(resolve=>{readStarted=resolve});
+  await page.route('**/cleanup-operations/suspect%3Aa?*',async route=>{readStarted();await new Promise(resolve=>{release=resolve});await json(route,{operation:operations[0]});});
+  await page.locator('[data-cleanup-detail="suspect:a"]').click();await reading;
+  await page.evaluate(()=>window.closeModal());release();
+  await expect(page.locator('[data-cleanup-modal-root]')).toHaveCount(0);
+  await page.unroute('**/cleanup-operations/suspect%3Aa?*');
+  await page.reload();await expect.poll(()=>page.evaluate(()=>state.uiReady===true)).toBe(true);
+  await page.evaluate(()=>window.setPage('平台对接'));await page.locator('[data-external-platform-tab="sync"]').click();
+  await expect(page.getByText('疑似算法',{exact:true})).toBeVisible();await expect(page.getByText('清理已完成',{exact:true}).last()).toBeVisible();
+  await page.locator('[data-external-platform-tab="history"]').click();await page.locator('[data-sync-history-detail]').click();
+  await expect(page.locator('.external-sync-operation').last()).toContainText('产品分页不完整');
+  await page.evaluate(()=>window.closeModal());
+  const asset={id:'a',name:'疑似算法',source_type:'EXTERNAL',provider_type:'CHANG_LIAN',external_active:true,external_deletion_status:'SUSPECTED_DELETED',external_deletion_reason:'列表缺少，待重新核实',external_master_data_digest:'digest',external_analyses:[{analysis_id:'analysis',analysis_type:'1',status:'1'}],versions:[]};
+  await page.route('**/api/v12/projects/*/algorithms',route=>json(route,{items:[asset]}));
+  await page.route('**/api/projects/*/jobs',route=>json(route,[{id:'existing-task',algorithm_id:'a',status:'running'}]));
+  await page.evaluate(async()=>{await window.setPage('算法列表');await window.AlgorithmListRuntime.refresh({render:true});});
+  const card=page.locator('[data-algorithm-id="a"]');
+  await expect(card.locator('[data-external-deletion="SUSPECTED_DELETED"]')).toContainText('待核实');
+  await expect(card.locator('[data-algorithm-train="a"]')).toBeEnabled();
+  await card.getByRole('button',{name:'详情',exact:true}).click();
+  await expect(page.locator('[data-external-algorithm-detail]')).toContainText('已有任务继续；新发布暂缓');
+  await page.locator('[data-algorithm-cleanup-detail]').click();
+  await expect(page.locator('[data-cleanup-modal-root]').last()).toContainText('待核实');
+});
+
+test('P0 manual sync HTTP failure and hanging request restore original button and preserve cache',async({page,request})=>{
+  const {json}=await prepareCleanupPlatform(page,request,[]);
+  await page.route('**/external-algorithm-platform/sync?*',route=>json(route,{message:'上游分页失败'},502));
+  const sync=page.locator('#externalPlatformSync');
+  await sync.click();await expect(sync).toBeEnabled();await expect(page.locator('#externalSyncOperation')).toContainText('上游分页失败');
+  let requestSeen;const started=new Promise(resolve=>{requestSeen=resolve});
+  await page.route('**/external-algorithm-platform/sync?*',async route=>{requestSeen();await new Promise(()=>{});});
+  await page.clock.install();
+  await sync.click();await started;await expect(sync).toHaveAttribute('aria-busy','true');
+  await page.clock.fastForward(31000);
+  await expect(sync).toBeEnabled();await expect(sync).toHaveAttribute('aria-busy','false');await expect(page.locator('#externalSyncOperation')).toContainText('超时');
+  await expect(page.locator('[data-external-platform-page]')).toBeVisible();
+  let statusReads=0;
+  await page.route('**/external-algorithm-platform/sync-operation?*',async route=>{
+    statusReads+=1;
+    if(statusReads===1) return json(route,{operation:{operation_id:'still-running',status:'running',current_phase:'fetch_products',processed_products:1,total_products:5}});
+    await new Promise(()=>{});
+  });
+  await page.locator('[data-sync-refresh]').click();
+  await expect(page.locator('#externalSyncOperation')).toContainText('正在同步');
+  await page.clock.fastForward(1000);
+  await expect.poll(()=>statusReads).toBe(2);
+  await page.clock.fastForward(31000);
+  await expect(page.locator('#externalSyncOperation')).toContainText('暂无法读取同步状态');
+  await expect(page.locator('#externalSyncOperation')).toContainText('正在同步');
+  await expect(page.locator('#externalSyncOperation')).not.toContainText('同步失败');
+  await expect(page.locator('[data-sync-refresh]')).toBeEnabled();
+  await page.unroute('**/external-algorithm-platform/sync-operation?*');
+  await page.route('**/external-algorithm-platform/sync-operation?*',route=>route.fulfill({status:200,contentType:'application/json',body:'{broken JSON'}));
+  await page.locator('[data-sync-refresh]').click();
+  await expect(page.locator('#externalSyncOperation')).toContainText('JSON 解析失败');
+  await expect(page.locator('#externalSyncOperation')).toContainText('正在同步');
+  await expect(page.locator('[data-sync-refresh]')).toBeEnabled();
+  await expect(page.locator('[data-sync-refresh]')).toHaveAttribute('aria-busy','false');
+});
+
+
+test('P0 cleanup pagination stays bounded and old project detail cannot fill the current modal',async({page,request})=>{
+  const operations=Array.from({length:26},(_,i)=>({operation_id:`suspect:${i}`,algorithm_id:`${i}`,algorithm_name:`核实算法${i}`,state:'SUSPECTED_DELETED',phase:'verification_required',counts:{processed:0,total:1}}));
+  const {json}=await prepareCleanupPlatform(page,request,operations);
+  await expect(page.locator('[data-cleanup-detail]')).toHaveCount(25);await expect(page.getByText('核实算法25',{exact:true})).toHaveCount(0);
+  await page.locator('[data-cleanup-page="25"]').click();await expect(page.locator('[data-cleanup-detail]')).toHaveCount(1);await expect(page.getByText('核实算法25',{exact:true})).toBeVisible();
+  let release,begin;const started=new Promise(resolve=>{begin=resolve});
+  await page.route('**/cleanup-operations/suspect%3A25?*',async route=>{begin();await new Promise(resolve=>{release=resolve});await json(route,{operation:{...operations[25],algorithm_name:'旧项目迟到内容'}});});
+  await page.locator('[data-cleanup-detail="suspect:25"]').click();await started;
+  await page.evaluate(()=>{state.project={...state.project,id:'different-project'};});release();
+  await expect(page.locator('[data-cleanup-modal-root]')).not.toContainText('旧项目迟到内容');
+  await page.evaluate(()=>window.closeModal());
+});
+
+test('P0 sync rendering faults release original busy state before another real click',async({page,request})=>{
+  const {json}=await prepareCleanupPlatform(page,request,[]);
+  let posts=0;
+  await page.route('**/external-algorithm-platform/sync?*',route=>{posts+=1;return json(route,{operation:{operation_id:`sync-${posts}`,status:'success',current_phase:'completed',counts:{added:0,updated:0}}});});
+  await page.evaluate(()=>{
+    window.__cleanupOriginalGet=document.getElementById;
+    let once=true;
+    document.getElementById=function(id){if(id==='externalSyncOperation'&&once){once=false;throw new Error('injected initial sync paint failure');}return window.__cleanupOriginalGet.call(this,id);};
+  });
+  const sync=page.locator('#externalPlatformSync');
+  await sync.click();
+  await page.evaluate(()=>{document.getElementById=window.__cleanupOriginalGet;});
+  await expect(sync).toBeEnabled();await expect(sync).toHaveAttribute('aria-busy','false');
+  await sync.click();await expect.poll(()=>posts).toBe(1);
+  await expect(sync).toBeEnabled();
+  await page.evaluate(()=>{
+    let reads=0;window.__syncFinalPaintFailed=false;
+    document.getElementById=function(id){if(id==='externalSyncOperation'&&++reads===4){window.__syncFinalPaintFailed=true;throw new Error('injected final sync paint failure');}return window.__cleanupOriginalGet.call(this,id);};
+  });
+  await sync.click();await expect.poll(()=>posts).toBe(2);
+  await expect.poll(()=>page.evaluate(()=>window.__syncFinalPaintFailed)).toBe(true);
+  await page.evaluate(()=>{document.getElementById=window.__cleanupOriginalGet;});
+  await expect(sync).toBeEnabled();await expect(sync).toHaveAttribute('aria-busy','false');
+  await sync.click();await expect.poll(()=>posts).toBe(3);await expect(sync).toBeEnabled();
+});

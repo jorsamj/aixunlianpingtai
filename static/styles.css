@@ -1522,3 +1522,5 @@ button[aria-busy="true"]:has(.tiny-spinner)::before{display:none}
 .ai66-edit-tools{display:flex;flex-wrap:wrap;gap:6px;align-items:center}.ai66-edit-tools .select{width:auto;max-width:160px}
 
 .train429-create.training-submit-failed [data-training-query-result],.train429-create.training-submit-failed [data-training-view-tasks]{pointer-events:auto;grid-column:1/-1;justify-self:start}
+
+.external-cleanup-summary,.external-cleanup-actions{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin:12px 0}.external-cleanup-summary>span{padding:7px 10px;background:var(--bg-soft,#f5f7fb);border-radius:6px}.external-cleanup-detail pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:320px;overflow:auto}.external-cleanup-detail details{margin:12px 0}
