@@ -499,6 +499,7 @@ jobs:
           tests/browser/training-duplicate-conflicts.spec.mjs
           tests/browser/source-import-completion-scope.spec.mjs
           tests/browser/zip-label-presentation.spec.mjs
+          tests/browser/zip-record-missing.spec.mjs
           tests/browser/upload-task-center-performance.spec.mjs
           tests/browser/video-task-performance.spec.mjs
           tests/browser/component-scan-performance.spec.mjs
