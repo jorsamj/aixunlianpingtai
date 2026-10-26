@@ -5,6 +5,7 @@ import hashlib
 import math
 import re
 import os
+import errno
 import shutil
 import subprocess
 import sys
@@ -14390,9 +14391,26 @@ def v19_normalize_zip_path(name: str) -> str:
 
 def v19_read_job(project_id: str, job_id: str) -> Dict[str, Any]:
     f = v19_job_file(project_id, job_id)
-    if not f.exists():
-        raise HTTPException(status_code=404, detail="导入任务不存在")
-    return read_json(f, {})
+    # A read failure is not an empty successful task. In particular, Windows
+    # may briefly deny a reader during atomic replacement of job.json.
+    for attempt in range(4):
+        try:
+            job = json.loads(f.read_text(encoding="utf-8"))
+            if not isinstance(job, dict) or str(job.get("id") or "") != str(job_id):
+                raise ValueError("invalid ZIP job identity")
+            return job
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail="导入任务不存在") from error
+        except PermissionError as error:
+            # CRT file opens can report EACCES without a winerror attribute
+            # for the same short sharing conflict. Persistent denial returns503.
+            retryable = getattr(error, "winerror", None) in {5, 32, 33} or error.errno == errno.EACCES
+            if retryable and attempt < 3:
+                time.sleep(0.005 * (attempt + 1))
+                continue
+            raise HTTPException(status_code=503, detail="ZIP_JOB_READ_UNAVAILABLE: 导入任务状态暂时不可读取，请稍后重新查询。") from error
+        except (OSError, ValueError) as error:
+            raise HTTPException(status_code=503, detail="ZIP_JOB_STATE_UNAVAILABLE: 导入任务状态不可读取或无效，请稍后重新查询。") from error
 
 
 def v19_write_job(project_id: str, job: Dict[str, Any]):

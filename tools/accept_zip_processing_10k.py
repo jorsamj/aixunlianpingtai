@@ -468,7 +468,11 @@ def main() -> None:
             body = response.json()
             progress = float(body.get("progress") or 0.0)
             if progress + 1e-9 < last_progress:
-                raise AssertionError(f"progress regressed: {last_progress} -> {progress}")
+                raise AssertionError(
+                    f"progress regressed: {last_progress} -> {progress}; "
+                    f"HTTP {response.status_code}, job={body.get('id')!r}, "
+                    f"status={body.get('status')!r}, phase={body.get('phase')!r}"
+                )
             last_progress = progress
             progress_values.append(progress)
             observed_updates.add(str(body.get("updated_at") or ""))
