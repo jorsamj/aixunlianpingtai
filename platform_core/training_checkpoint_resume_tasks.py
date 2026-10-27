@@ -358,7 +358,7 @@ def _publish_finalization_replay(context, candidate: Mapping[str, Any]) -> None:
     )
 
 
-def _mark_resume_job(candidate: Mapping[str, Any]) -> None:
+def _mark_resume_job(candidate: Mapping[str, Any], context=None) -> None:
     job = dict(candidate["job"])
     job.update(
         status="running",
@@ -378,6 +378,9 @@ def _mark_resume_job(candidate: Mapping[str, Any]) -> None:
             f"{int(candidate['resume_from_epoch'])}/{int(candidate['requested_epochs'])} 继续训练"
         ),
     )
+    if context is not None:
+        from .training_timing import begin_attempt
+        begin_attempt(job, context.task.attempt, context.lease.worker_id, context.task.updated_at)
     base.atomic_write_json(Path(candidate["job_file"]), job)
 
 
@@ -472,7 +475,7 @@ class CheckpointResumeRecoveryHandler(recovery.RecoveryHardenedLabelContractTrai
             return super().recover(context)
 
         _publish_resume_admission(context, candidate)
-        _mark_resume_job(candidate)
+        _mark_resume_job(candidate, context)
         current_progress = max(
             20.0,
             float(candidate["job"].get("progress_percent") or 0.0),

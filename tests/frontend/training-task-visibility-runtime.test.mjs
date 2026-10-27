@@ -104,7 +104,7 @@ test('main owns visibility installation before canonical training page registrat
   const index = readFileSync(new URL('../../static/index.html', import.meta.url), 'utf8');
   const source = readFileSync(new URL('../../static/modules/training-task-visibility-runtime.js', import.meta.url), 'utf8');
 
-  const importAt = main.indexOf("import {installTrainingTaskVisibilityRuntime} from './modules/training-task-visibility-runtime.js?v=4226385-workspace';");
+  const importAt = main.indexOf("import {installTrainingTaskVisibilityRuntime} from './modules/training-task-visibility-runtime.js?v=4226386-timing';");
   const installAt = main.indexOf('const trainingTaskVisibilityRuntime = installTrainingTaskVisibilityRuntime({');
   const ownerAt = main.indexOf("navigationStabilityRuntime.registerPageOwner('训练任务', () => trainingTaskVisibilityRuntime.render())");
 
@@ -360,6 +360,18 @@ test('local training clock advances elapsed and ETA without a network refresh', 
   assert.equal(elapsed.textContent, '1m 21s');
   assert.equal(eta.dataset.seconds, '139');
   assert.equal(eta.textContent, '2m 19s');
+});
+
+test('wall clock accounts for delayed ticks and paused training while terminal rows freeze', () => {
+  const elapsed = {dataset: {seconds: '80', anchorSeconds: '80', anchorMs: '1000'}};
+  const row = {querySelector: selector => selector.includes('elapsed') ? elapsed : null};
+  const root = {querySelectorAll: () => [row]};
+  tickTrainingClockRows(root, 1, 11000);
+  assert.equal(elapsed.dataset.seconds, '90');
+  tickTrainingClockRows(root, 1, 11000);
+  assert.equal(elapsed.dataset.seconds, '90');
+  assert.match(trainingTaskPresentationRow({id: 'paused', status: 'paused', training_display_progress: {wall_elapsed_seconds: 90}}), /data-clock-active="1"/);
+  assert.match(trainingTaskPresentationRow({id: 'done', status: 'done', training_display_progress: {wall_elapsed_seconds: 90}}), /data-clock-active="0"/);
 });
 
 

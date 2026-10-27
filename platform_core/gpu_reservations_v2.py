@@ -376,7 +376,7 @@ class NodeScopedGPUResourceManager(GPUResourceManager):
         if task["kind"] != "TRAINING" or str(task["resource_key"]).startswith("training:remote:"):
             return True, None
         try:
-            payload = self.artifacts.read_json(task["task_id"], task["payload_ref"], default={})
+            payload = task["_gpu_payload"] if "_gpu_payload_prepared" in task.keys() else self.artifacts.read_json(task["task_id"], task["payload_ref"], default={})
             device = normalize_training_device(payload.get("requested_device", payload.get("device")))
         except (OSError, TypeError, ValueError, AttributeError):
             return False, "GPU_REQUEST_INVALID: training payload or device is invalid"

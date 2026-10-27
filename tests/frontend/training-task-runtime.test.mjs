@@ -3,9 +3,17 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {installTrainingTaskRuntime, mergeTrainingJobRows} from '../../static/modules/training-task-runtime.js';
+import {trainingProgressView} from '../../static/modules/training-task-runtime.js';
 import {filterTrainingTaskJobs, trainingTaskPresentationRow as trainingTaskRow} from '../../static/modules/training-task-visibility-runtime.js';
 
 const visibleTrainingJobs = (jobs, tab = 'active') => filterTrainingTaskJobs(jobs, {tab});
+
+test('unknown canonical wall time never falls back to a resumed process duration', () => {
+  assert.equal(trainingProgressView({training_display_progress: {wall_elapsed_seconds: null},
+    training_progress: {elapsed_seconds: 16380}, elapsed_seconds: 16380}).elapsedSeconds, null);
+  assert.equal(trainingProgressView({training_display_progress: {wall_elapsed_seconds: 21600},
+    training_progress: {elapsed_seconds: 10800}}).elapsedSeconds, 21600);
+});
 
 function response(body) {
   return {

@@ -73,7 +73,9 @@ export function trainingProgressView(job = {}) {
   const totalEpochs = finiteNumber(display.total_epochs) ?? finiteNumber(progress.total_epochs) ?? finiteNumber(job.total_epochs) ?? finiteNumber(job.epochs);
   const currentBatch = finiteNumber(display.current_batch) ?? finiteNumber(progress.current_batch) ?? finiteNumber(job.current_batch);
   const totalBatches = finiteNumber(display.total_batches) ?? finiteNumber(progress.total_batches) ?? finiteNumber(job.total_batches);
-  const elapsedSeconds = finiteNumber(display.elapsed_seconds) ?? finiteNumber(progress.elapsed_seconds) ?? finiteNumber(job.elapsed_seconds);
+  const elapsedSeconds = Object.hasOwn(display, 'wall_elapsed_seconds')
+    ? finiteNumber(display.wall_elapsed_seconds)
+    : finiteNumber(display.elapsed_seconds) ?? finiteNumber(progress.elapsed_seconds) ?? finiteNumber(job.elapsed_seconds);
   const etaSeconds = finiteNumber(display.eta_seconds) ?? finiteNumber(progress.eta_seconds) ?? finiteNumber(job.eta_seconds);
   const throughput = finiteNumber(display.throughput) ?? finiteNumber(progress.images_per_second);
   const losses = progress.losses || {};

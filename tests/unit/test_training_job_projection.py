@@ -98,7 +98,8 @@ def test_training_display_progress_combines_durable_lifecycle_with_worker_teleme
     assert display["overall_progress"] == 42.5
     assert display["current_epoch"] == 5
     assert display["current_batch"] == 4
-    assert display["elapsed_seconds"] == 60.0
+    assert display["elapsed_seconds"] is None
+    assert display["current_process_elapsed_seconds"] == 60.0
     assert display["eta_seconds"] == 61.0
     assert display["throughput"] == 10.25
     assert display["message"] == "Epoch 5/10 · Batch 4/8"
@@ -169,7 +170,8 @@ def test_display_projection_uses_frozen_worker_telemetry_after_durable_overlay()
     assert overlaid["progress_percent"] == 48.5
     assert overlaid["current_item"] == "Epoch 6/10 · Batch 7/10"
     assert overlaid["current_batch"] == 7
-    assert overlaid["elapsed_seconds"] == 75.0
+    assert overlaid["elapsed_seconds"] is None
+    assert overlaid["training_display_progress"]["current_process_elapsed_seconds"] == 75.0
     assert overlaid["eta_seconds"] == 80.0
 
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from platform_core.task_runtime.process_start_gate import execution_environment
+
 import errno
 import hashlib
 import json
@@ -2234,12 +2236,12 @@ def _run_training_process(context, argv: Sequence[str], job_file: Path) -> dict[
             launched = launch_process(
                 argv,
                 cwd=root,
-                env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
+                env={**os.environ, **execution_environment(context), "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
                 stdout=log,
                 stderr=subprocess.STDOUT,
                 text=True,
             )
-            context.repository.bind_process(context.task.task_id, context.lease.lease_token, launched.identity)
+            context.bind_process(launched.identity)
             controller = ProcessController()
             next_metrics = 0.0
             completion_seen_at = None
@@ -2252,9 +2254,7 @@ def _run_training_process(context, argv: Sequence[str], job_file: Path) -> dict[
                         # process tree cannot be proven stopped. Keep managing
                         # the cancellation and retry instead of publishing a
                         # false CANCELLED terminal state.
-                        context.repository.heartbeat(
-                            context.task.task_id,
-                            context.lease.lease_token,
+                        context.heartbeat(
                             stage="cancelling",
                             current_item=f"waiting for verified process cleanup: {error}",
                         )
@@ -2269,9 +2269,7 @@ def _run_training_process(context, argv: Sequence[str], job_file: Path) -> dict[
                     expected_models_root=expected_models_root,
                 ) is None:
                     completion_seen_at = completion_seen_at or time.monotonic()
-                    context.repository.heartbeat(
-                        context.task.task_id,
-                        context.lease.lease_token,
+                    context.heartbeat(
                         progress=95,
                         stage="finalizing",
                         current_item="verified training complete; finalizing",
@@ -2285,9 +2283,7 @@ def _run_training_process(context, argv: Sequence[str], job_file: Path) -> dict[
                         except PermissionError as error:
                             # A verified model is not permission to release a
                             # GPU that an unverified process may still use.
-                            context.repository.heartbeat(
-                                context.task.task_id,
-                                context.lease.lease_token,
+                            context.heartbeat(
                                 progress=95,
                                 stage="finalizing",
                                 current_item=f"waiting for verified process cleanup: {error}",
@@ -2298,11 +2294,9 @@ def _run_training_process(context, argv: Sequence[str], job_file: Path) -> dict[
                     time.sleep(0.1)
                     continue
                 completion_seen_at = None
-                current_task = context.repository.get(context.task.task_id)
+                current_task = context.assert_current_execution()
                 if current_task is not None and current_task.stage == "paused":
-                    context.repository.heartbeat(
-                        context.task.task_id,
-                        context.lease.lease_token,
+                    context.heartbeat(
                         stage="paused",
                     )
                     time.sleep(0.25)
@@ -2311,16 +2305,14 @@ def _run_training_process(context, argv: Sequence[str], job_file: Path) -> dict[
                     metrics = read_metrics(context.artifacts.artifact_path(context.task.task_id, "training-metrics.sqlite3"))
                     # Feed scheduler evidence with ownership fencing; never infer unknown CPU/IO pressure.
                     from .gpu_resources import update_reservation_evidence
-                    update_reservation_evidence(context.repository, context.lease, metrics)
+                    context.run_owned(lambda: update_reservation_evidence(context.repository, context.lease, metrics))
                     next_metrics = time.monotonic() + 5
                 progress = float(job.get("progress_percent") or 20)
                 current = str(job.get("current_item") or job.get("message") or job.get("current_epoch") or "") or None
                 training_started = bool(
                     job.get("training_started") or job.get("current_epoch") or job.get("training_progress")
                 )
-                context.repository.heartbeat(
-                    context.task.task_id,
-                    context.lease.lease_token,
+                context.heartbeat(
                     progress=max(20, min(95, progress)),
                     stage="training" if training_started else "trainer_startup",
                     current_item=current,
@@ -3009,9 +3001,7 @@ class TrainingHandler:
                 f"TRAINING_DEVICE_ASSIGNMENT_MISMATCH: requested={requested_device}; assigned={assigned_device}"
             )
         python_executable = _training_python(self.data_dir)
-        context.repository.heartbeat(
-            context.task.task_id,
-            context.lease.lease_token,
+        context.heartbeat(
             progress=1,
             stage="device_admission",
             current_item="验证训练设备分配",
@@ -3035,9 +3025,7 @@ class TrainingHandler:
         project = self.data_dir / "projects" / context.task.project_id
         if not (project / "meta.json").is_file():
             raise FileNotFoundError("training project does not exist")
-        context.repository.heartbeat(
-            context.task.task_id,
-            context.lease.lease_token,
+        context.heartbeat(
             progress=2,
             stage="preparing_materials",
             current_item="读取本次训练素材",
@@ -3143,9 +3131,7 @@ class TrainingHandler:
                 materialized_paths[str(row.get("id"))] = Path(resolved.path).resolve()
                 if index == 1 or index == total_materials or index % material_progress_step == 0:
                     progress = 2 + (6 * index / max(1, total_materials))
-                    context.repository.heartbeat(
-                        context.task.task_id,
-                        context.lease.lease_token,
+                    context.heartbeat(
                         progress=progress,
                         stage="preparing_materials",
                         current_item=f"校验训练素材 {index}/{total_materials}",
@@ -3193,9 +3179,7 @@ class TrainingHandler:
                 },
             )
         elif cache_entry is not None:
-            context.repository.heartbeat(
-                context.task.task_id,
-                context.lease.lease_token,
+            context.heartbeat(
                 progress=10,
                 stage="materializing",
                 current_item=f"复用已验证训练数据 0/{len(images)}",
@@ -3204,9 +3188,7 @@ class TrainingHandler:
             def cache_progress(completed: int, total: int, _item: Mapping[str, Any]) -> None:
                 if completed != 1 and completed != total and completed % bundle_progress_step != 0:
                     return
-                context.repository.heartbeat(
-                    context.task.task_id,
-                    context.lease.lease_token,
+                context.heartbeat(
                     progress=10 + (8 * completed / max(1, total)),
                     stage="materializing",
                     current_item=f"复用已验证训练数据 {completed}/{total}",
@@ -3228,9 +3210,7 @@ class TrainingHandler:
                 },
             )
         else:
-            context.repository.heartbeat(
-                context.task.task_id,
-                context.lease.lease_token,
+            context.heartbeat(
                 progress=10,
                 stage="materializing",
                 current_item=f"准备训练数据 0/{len(images)}",
@@ -3239,9 +3219,7 @@ class TrainingHandler:
             def bundle_progress(completed: int, total: int, _item: Mapping[str, Any]) -> None:
                 if completed != 1 and completed != total and completed % bundle_progress_step != 0:
                     return
-                context.repository.heartbeat(
-                    context.task.task_id,
-                    context.lease.lease_token,
+                context.heartbeat(
                     progress=10 + (8 * completed / max(1, total)),
                     stage="materializing",
                     current_item=f"准备训练数据 {completed}/{total}",
@@ -3405,6 +3383,12 @@ class TrainingHandler:
                 "split_seed": int(seed),
             },
         }
+        from .training_timing import begin_attempt
+        previous_job = _json(job_file, {})
+        for timing_key in ("first_started_at", "training_attempts"):
+            if timing_key in previous_job:
+                job[timing_key] = previous_job[timing_key]
+        begin_attempt(job, context.task.attempt, context.lease.worker_id, context.task.updated_at)
         atomic_write_json(job_file, job)
         if context.cancel_requested():
             raise InterruptedError("training cancelled before trainer launch")
@@ -3420,9 +3404,7 @@ class TrainingHandler:
             model,
             python_executable=python_executable,
         )
-        context.repository.heartbeat(
-            context.task.task_id,
-            context.lease.lease_token,
+        context.heartbeat(
             progress=20,
             stage="starting_trainer",
             current_item="启动训练进程",

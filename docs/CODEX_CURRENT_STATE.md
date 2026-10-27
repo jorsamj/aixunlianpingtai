@@ -1,3 +1,7 @@
+## 2026-10-27｜训练SQLite锁、Lease与跨恢复计时（本地验收中）
+
+[唯一专项](TRAINING_SQLITE_LEASE_TIMING_2026_10_27.md)记录644/391基线、真实锁复现、有限重试/确认期限、原fencing/GPU保护、短事务及子进程登记前启动校验；原job执行片段、三时间/UTC/最终Worker与列表详情同步。VERSION392，定向Python/Node/Chrome及审查问题见专项；最终提交与准确SHA CI未完成，不能借ZIP旧绿。实际生产锁持有者、原任务首末/累计/Worker及真实GPU未核准；不部署/不改生产，5944及其他WIP保留。
+
 ## 2026-10-26｜ZIP任务记录安全P0（代码及隔离CI已验收）
 
 [唯一专项](ZIP_IMPORT_RECORD_SAFETY_2026_10_26.md)记录根因、RED/GREEN与接续。原停止栅栏保护活动删除/提交/迟到写入，终态轻量证据归档与临时清理分离；原ZIP/任务中心UNKNOWN、退避及跨标签页恢复，持久写错/死前驱有诊断。VERSION391，必要Python44及窄修复2、Node101、Chrome5不同场景通过，独立审查问题已闭合；业务代码f181a9e0准确22/22 Actions、59/59 Checks成功，Node1355/1355、原Chrome298/298；本次纯文档及新增Chrome接线自身HEAD交付前另核，不借旧绿。生产两任务入库及事故原因未知；不生产操作、不重建Owner，原WIP/5944/两份模板测试保留。

@@ -22,11 +22,11 @@ import {installExternalAlgorithmPlatformRuntime} from './modules/external-algori
 import {installChangLianDataBrowserRuntime} from './modules/changlian-data-browser.js?v=63002';
 import {installExternalAlgorithmPublishRuntime} from './modules/external-algorithm-publish.js?v=64015';
 import {installModelArtifactRuntime} from './modules/model-artifact-runtime.js?v=65009';
-import {installTrainingRecoveryRuntime} from './modules/training-recovery-runtime.js?v=20261022a-workspace';
+import {installTrainingRecoveryRuntime} from './modules/training-recovery-runtime.js?v=20261027-timing';
 import {installTrainingMaterialPickerRuntime} from './modules/training-material-picker-runtime.js?v=422612';
 import {installTrainingMaterialSummaryRuntime} from './modules/training-material-summary-runtime.js?v=422610';
-import {installTrainingTaskRuntime} from './modules/training-task-runtime.js?v=422608';
-import {installTrainingTaskVisibilityRuntime} from './modules/training-task-visibility-runtime.js?v=4226385-workspace';
+import {installTrainingTaskRuntime} from './modules/training-task-runtime.js?v=422609';
+import {installTrainingTaskVisibilityRuntime} from './modules/training-task-visibility-runtime.js?v=4226386-timing';
 import {installTrainingProgressStream} from './modules/training-progress-stream.js?v=422570';
 import {createTrainingDraft, trainingDraftToRequest, trainingBaseVersionFromAlgorithm, trainingInheritedDefaults} from './modules/training-draft.js?v=422513';
 import {installTrainingDraftRuntime} from './modules/training-draft-runtime.js?v=422520';

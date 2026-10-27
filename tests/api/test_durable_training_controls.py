@@ -32,8 +32,13 @@ def test_durable_training_pause_resume_and_stop_use_verified_process_identity(cl
         "control-test", {TaskKind.TRAINING}, {capability}, lease_seconds=60
     )
     assert lease is not None
+    job_dir = app_module.project_dir(project_id) / "jobs" / task_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    ready = job_dir / "lock-ready"
     launched = launch_process(
-        [sys.executable, "-c", "import time\nwhile True: time.sleep(0.1)"],
+        [sys.executable, "-c", "import time,sys; from filelock import FileLock; from pathlib import Path\n"
+         "with FileLock(sys.argv[1]):\n Path(sys.argv[2]).write_text('ready'); time.sleep(.4)\n"
+         "while True: time.sleep(0.1)", str(job_dir / "job.json.state.lock"), str(ready)],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -46,6 +51,10 @@ def test_durable_training_pause_resume_and_stop_use_verified_process_identity(cl
     )
     controller = ProcessController()
     try:
+        deadline = time.monotonic() + 5
+        while not ready.exists() and time.monotonic() < deadline:
+            time.sleep(.01)
+        assert ready.exists()
         paused = client.post(f"/api/v48/projects/{project_id}/jobs/{task_id}/pause")
         assert paused.status_code == 200, paused.text
         assert repository.get(task_id).stage == "paused"

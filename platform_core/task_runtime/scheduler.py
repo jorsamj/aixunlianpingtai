@@ -3,11 +3,14 @@ from __future__ import annotations
 import logging
 import sqlite3
 import threading
+import random
+import time
 from datetime import datetime, timezone
 from collections.abc import Mapping
 
 from .models import TaskKind, TaskStatus
 from .worker import ExecutionFencedError, TaskHandler, WorkerContext
+from .sqlite_busy import is_sqlite_busy
 
 
 logger = logging.getLogger(__name__)
@@ -44,6 +47,8 @@ class Scheduler:
         self.maintenance = maintenance
         self.maintenance_seconds = max(1.0, float(maintenance_seconds))
         self._maintenance_wake = threading.Event()
+        self._active_context = None
+        self._service_stop = None
         if self.gpu_resources is None and TaskKind.TRAINING in self.handlers:
             from ..gpu_resources import GPUResourceManager
             self.gpu_resources = GPUResourceManager(repository, artifacts)
@@ -51,6 +56,10 @@ class Scheduler:
     def _renew_lease(self, context: WorkerContext, stop: threading.Event) -> None:
         interval = max(1.0, self.lease_seconds / 3)
         while not stop.wait(interval):
+            if self._service_stop is not None and self._service_stop.is_set():
+                context.mark_lease_lost()
+                context.terminate_bound_process()
+                return
             try:
                 context.heartbeat()
             except ExecutionFencedError as error:
@@ -69,9 +78,7 @@ class Scheduler:
 
     @staticmethod
     def _is_transient_sqlite_error(error: BaseException) -> bool:
-        return isinstance(error, sqlite3.OperationalError) and any(
-            marker in str(error).lower() for marker in ("locked", "busy")
-        )
+        return is_sqlite_busy(error)
 
     @classmethod
     def _lease_failure_classification(cls, error: BaseException) -> str:
@@ -257,7 +264,14 @@ class Scheduler:
             self.repository,
             self.artifacts,
             lease_seconds=self.lease_seconds,
+            service_stop=self._service_stop,
         )
+        self._active_context = context
+        if self._service_stop is not None and self._service_stop.is_set():
+            context.mark_lease_lost()
+            context.terminate_bound_process()
+            self._active_context = None
+            return False
         handler = self.handlers[lease.task.kind]
         stop_renewal = threading.Event()
         renewal = threading.Thread(
@@ -326,13 +340,21 @@ class Scheduler:
             if context.lease_lost:
                 context.terminate_bound_process()
             self._maintenance_wake.set()
+            self._active_context = None
         return True
 
     def serve_forever(self, stop: threading.Event | None = None) -> None:
         stop_event = stop or threading.Event()
+        self._service_stop = stop_event
         renewal_stop = threading.Event()
         renewal = None
         maintenance_thread = None
+        instance_error = []
+        def fence_active():
+            context = self._active_context
+            if context is not None:
+                context.mark_lease_lost()
+                context.terminate_bound_process()
         if callable(self.maintenance):
             def maintain() -> None:
                 while not renewal_stop.is_set() and not stop_event.is_set():
@@ -352,7 +374,17 @@ class Scheduler:
                     try:
                         self.worker_instance.renew()
                     except PermissionError:
+                        logger.error("worker instance ownership lost worker=%s", self.worker_id)
                         stop_event.set()
+                        fence_active()
+                        return
+                    except Exception as error:
+                        # renew() already exhausted its confirmed lease window;
+                        # never extend authority locally while SQLite is busy.
+                        logger.exception("worker instance renewal failed worker=%s", self.worker_id)
+                        instance_error.append(error)
+                        stop_event.set()
+                        fence_active()
                         return
                     if self.gpu_resources is not None:
                         try:
@@ -366,10 +398,26 @@ class Scheduler:
             renewal = threading.Thread(target=renew_instance, name="worker-instance-lease", daemon=True)
             renewal.start()
         try:
+            last_busy_log = float('-inf')
+            busy_count = 0
             while not stop_event.is_set():
-                if not self.run_once():
-                    stop_event.wait(self.poll_seconds)
+                try:
+                    did_work = self.run_once()
+                    busy_count = 0
+                    if not did_work:
+                        stop_event.wait(self.poll_seconds)
+                except sqlite3.OperationalError as error:
+                    if not is_sqlite_busy(error):
+                        raise
+                    busy_count += 1
+                    if time.monotonic() - last_busy_log >= 30:
+                        logger.warning("worker scheduler SQLite busy worker=%s; claim deferred", self.worker_id, exc_info=True)
+                        last_busy_log = time.monotonic()
+                    stop_event.wait(random.uniform(.1, min(2.0, .25 * 2**min(busy_count, 3))))
+            if instance_error and not is_sqlite_busy(instance_error[0]):
+                raise instance_error[0]
         finally:
+            fence_active()
             renewal_stop.set()
             self._maintenance_wake.set()
             if maintenance_thread is not None:
@@ -377,4 +425,9 @@ class Scheduler:
             if renewal is not None:
                 renewal.join(timeout=max(1.0, self.worker_instance.lease_seconds / 3 + 0.5))
             if self.worker_instance is not None:
-                self.worker_instance.release()
+                try:
+                    self.worker_instance.release()
+                except sqlite3.OperationalError as error:
+                    if not is_sqlite_busy(error):
+                        raise
+                    logger.warning("worker instance release unconfirmed worker=%s", self.worker_id)

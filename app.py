@@ -1274,6 +1274,12 @@ def enrich_job_runtime(
                 default={},
             )
             if isinstance(durable_result, dict):
+                lineage = durable_result.get("training_lineage") or {}
+                if (isinstance(lineage, dict) and lineage.get("task_id") == durable.task_id
+                        and durable_result.get("task_id") == durable.task_id):
+                    execution = lineage.get("execution") or {}
+                    if isinstance(execution, dict) and execution.get("worker_id"):
+                        job["verified_last_worker_id"] = str(execution["worker_id"])
                 dataset_manifest_ref = str(
                     durable_result.get("dataset_manifest_ref") or ""
                 ).strip()
@@ -11942,12 +11948,19 @@ def v48_pause_job(project_id: str, job_id: str):
     if durable is not None:
         if durable.status is not TaskStatus.RUNNING or durable.stage == "paused":
             raise HTTPException(status_code=400, detail="只有训练中的任务可以暂停")
-        try:
+        from platform_core.training_timing import update_job as update_timed_job, now_utc
+        updates = {"status": "paused", "message": "训练已暂停"}
+        def transition():
             ProcessController().suspend_tree(_durable_process_identity(durable))
             shared_task_repository().set_stage(job_id, "paused")
+            updates["paused_at"] = now_utc()
+        try:
+            # Acquire the shared state lock before suspending the child. A
+            # suspended callback must never own the lock needed to finish pause.
+            job = update_timed_job(jf, updates, before_update=transition)
         except (ProcessLookupError, PermissionError) as error:
             raise HTTPException(status_code=409, detail=f"训练进程身份校验失败：{error}") from error
-        job.update(status="paused",message="训练已暂停",paused_at=now_iso(),updated_at=now_iso()); write_json(jf,job); sync_jobs_index(project_id)
+        sync_jobs_index(project_id)
         return job
     if job.get("status")!="running": raise HTTPException(status_code=400,detail="只有训练中的任务可以暂停")
     if job.get("target")=="remote":
@@ -11970,15 +11983,20 @@ def v48_resume_job(project_id: str, job_id: str):
     if durable is not None:
         if durable.status is not TaskStatus.RUNNING or durable.stage != "paused":
             raise HTTPException(status_code=400, detail="只有已暂停任务可以继续")
-        try:
+        from platform_core.training_timing import update_job as update_timed_job, now_utc
+        updates = {"status": "running", "message": "训练已继续"}
+        def transition():
             ProcessController().resume_tree(_durable_process_identity(durable))
             shared_task_repository().set_stage(job_id, "training")
+            updates["resumed_at"] = now_utc()
+            updates["paused_at"] = ""
+        try:
+            # Acquire the shared state lock before suspending the child. A
+            # suspended callback must never own the lock needed to finish pause.
+            job = update_timed_job(jf, updates, before_update=transition)
         except (ProcessLookupError, PermissionError) as error:
             raise HTTPException(status_code=409, detail=f"训练进程身份校验失败：{error}") from error
-        if job.get("paused_at"):
-            pdt = _parse_dt_value(job.get("paused_at"))
-            if pdt: job["paused_seconds"] = int(job.get("paused_seconds") or 0) + max(0, int((datetime.now() - pdt).total_seconds()))
-        job.update(status="running",message="训练已继续",resumed_at=now_iso(),paused_at="",updated_at=now_iso()); write_json(jf,job); sync_jobs_index(project_id)
+        sync_jobs_index(project_id)
         return job
     if job.get("status")!="paused": raise HTTPException(status_code=400,detail="只有已暂停任务可以继续")
     if job.get("target")=="remote":

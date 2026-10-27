@@ -323,6 +323,11 @@ export function trainingRecoveryDetailModel(job = {}, recovery = {}) {
     elapsedSeconds: progressView.elapsedSeconds,
     etaSeconds: progressView.etaSeconds,
     elapsedText: formatTrainingDuration(progressView.elapsedSeconds),
+    activeTrainingText: formatTrainingDuration(job?.training_display_progress?.active_training_seconds),
+    activeTrainingComplete: job?.training_display_progress?.active_training_seconds_complete === true,
+    attemptElapsedText: formatTrainingDuration(job?.training_display_progress?.attempt_elapsed_seconds),
+    firstStartedAt: job?.training_display_progress?.first_started_at || '未知',
+    wallFinishedAt: job?.training_display_progress?.wall_finished_at || '未完成或证据缺失',
     etaText: flags.success ? '-' : formatTrainingDuration(progressView.etaSeconds),
     metricLine: progressView.metricLine || observedMetricLine,
     bestEpoch: bestMap50?.epoch ?? null,
@@ -529,7 +534,7 @@ function detailHtml(job, recovery, log = '', inputIssues = null, activeTab = 'cu
           <section class="training-recovery-summary ${esc(model.statusKind)}">
             <div><small>整体进度</small><b>${model.progressPercent.toFixed(0)}%</b><i><span style="transform:scaleX(${(model.progressPercent / 100).toFixed(4)})"></span></i></div>
             <div><small>${completed ? '训练进度 / 最佳指标' : 'Epoch / Batch'}</small><b>${esc(epochSummary)}</b><span>${esc(metricSummary)}</span></div>
-            <div><small>已用 / 剩余</small><b>${esc(model.elapsedText)} / ${esc(model.etaText)}</b><span>${esc(model.stage || model.statusMessage || '-')}</span></div>
+            <div><small>总历时 / 预计剩余</small><b>${esc(model.elapsedText)} / ${esc(model.etaText)}</b><span>${esc(model.stage || model.statusMessage || '-')}</span></div>
             <div><small>实际设备</small><b>${esc(model.actualDevice || model.assignedDevice || model.requestedDevice || '-')}</b><span>${esc(model.gpuName || model.workerId || '-')}</span></div>
             <div><small>资源档位</small><b>${esc(model.resourceProfileLabel)}</b><span>${esc(`${model.resourceStrategy || 'auto'} · ${model.gpuPolicy || 'auto'}`)}</span></div>
             <div><small>实际 Batch / Workers / Cache</small><b>${esc(`${model.batch ?? '-'} / ${model.workers ?? '-'} / ${model.cache ?? '-'}`)}</b><span>${esc(model.runtimePrecision || '尚未启动 Trainer')}</span></div>
@@ -554,6 +559,9 @@ function detailHtml(job, recovery, log = '', inputIssues = null, activeTab = 'cu
             <section id="training-panel-resources" class="training-recovery-panel" data-training-panel="resources" role="tabpanel" aria-labelledby="training-tab-resources">
               <header><h4>运行证据</h4><span>${esc(model.resourceTimeBasis)} · ${model.resourceSampleCount} 个区间采样</span></header>
               <div class="training-recovery-kv"><span>Task Status</span><b>${esc(model.canonicalStatus || model.taskStatus || '-')}</b></div>
+              <div class="training-recovery-kv"><span>累计实际训练</span><b>${esc(model.activeTrainingText)}${model.activeTrainingComplete ? '' : '（已记录片段，非完整累计）'}</b></div>
+              <div class="training-recovery-kv"><span>本次执行历时</span><b>${esc(model.attemptElapsedText)}</b></div>
+              <div class="training-recovery-kv"><span>首次训练 / 最终完成（UTC）</span><b>${esc(model.firstStartedAt)} / ${esc(model.wallFinishedAt)}</b></div>
               <div class="training-recovery-kv"><span>执行节点</span><b>${esc(model.workerId || '未上报')}</b></div>
               <div class="training-recovery-kv"><span>GPU UUID</span><b title="${esc(model.gpuUuid || '')}">${esc(model.gpuUuid || '未上报')}</b></div>
               <div class="training-recovery-kv"><span>训练结果</span><b>${esc(model.trainingOutcome || '-')}</b></div>

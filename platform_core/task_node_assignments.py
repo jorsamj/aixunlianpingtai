@@ -18,7 +18,7 @@ from .training_devices import normalize_training_device
 from .task_runtime import TaskKind
 from .task_runtime.fenced_repository import FencedTaskRepository
 from .task_runtime.models import TaskStatus, utc_now
-from .task_runtime.repository import _from_row
+from .task_runtime.repository import _from_row, admission_preparer
 
 
 ASSIGNMENT_STATES = ("ASSIGNED", "CLAIMED", "RELEASED")
@@ -1041,6 +1041,7 @@ class AssignmentAwareFencedTaskRepository(FencedTaskRepository):
                 return True, None
             return caller(database, candidate, owner, token, expires_at, now)
 
+        assignment_guard.prepare = admission_preparer(caller)
         return super().claim_next(
             worker_id,
             kinds,

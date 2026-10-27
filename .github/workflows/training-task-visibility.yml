@@ -88,7 +88,7 @@ jobs:
       - name: Visibility owner and identity wiring guard
         shell: bash
         run: |
-          grep -Fq "import {installTrainingTaskVisibilityRuntime} from './modules/training-task-visibility-runtime.js?v=4226385-workspace';" static/main.mjs
+          grep -Fq "import {installTrainingTaskVisibilityRuntime} from './modules/training-task-visibility-runtime.js?v=4226386-timing';" static/main.mjs
           grep -Fq 'const trainingTaskVisibilityRuntime = installTrainingTaskVisibilityRuntime({' static/main.mjs
           grep -Fq "navigationStabilityRuntime.registerPageOwner('训练任务', () => trainingTaskVisibilityRuntime.render())" static/main.mjs
           if grep -Fq '/static/modules/training-task-visibility-runtime.js' static/index.html; then

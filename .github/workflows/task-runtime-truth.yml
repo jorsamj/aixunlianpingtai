@@ -9,6 +9,7 @@ on:
       - app.py
       - platform_core/task_runtime/**
       - platform_core/training_job_projection.py
+      - platform_core/training_timing.py
       - platform_core/material_batches.py
       - static/modules/task-runtime-truth.js
       - static/modules/task-poller.js
@@ -21,6 +22,8 @@ on:
       - static/modules/deployment-tests.js
       - static/modules/resource-discovery.js
       - tests/unit/test_training_job_projection.py
+      - tests/unit/test_training_timing.py
+      - tests/unit/task_runtime/test_sqlite_busy_recovery.py
       - tests/unit/test_material_batch_public_truth.py
       - tests/unit/task_runtime/test_public_projection.py
       - tests/frontend/task-runtime-truth.test.mjs
@@ -39,6 +42,7 @@ on:
       - app.py
       - platform_core/task_runtime/**
       - platform_core/training_job_projection.py
+      - platform_core/training_timing.py
       - platform_core/material_batches.py
       - static/modules/task-runtime-truth.js
       - static/modules/task-poller.js
@@ -51,6 +55,8 @@ on:
       - static/modules/deployment-tests.js
       - static/modules/resource-discovery.js
       - tests/unit/test_training_job_projection.py
+      - tests/unit/test_training_timing.py
+      - tests/unit/task_runtime/test_sqlite_busy_recovery.py
       - tests/unit/test_material_batch_public_truth.py
       - tests/unit/task_runtime/test_public_projection.py
       - tests/frontend/task-runtime-truth.test.mjs
@@ -99,6 +105,8 @@ jobs:
         run: >-
           python -m pytest --confcutdir=tests/unit -q
           tests/unit/test_training_job_projection.py
+          tests/unit/test_training_timing.py
+          tests/unit/task_runtime/test_sqlite_busy_recovery.py
           tests/unit/test_material_batch_public_truth.py
           tests/unit/task_runtime/test_public_projection.py
       - name: Frontend runtime truth guards

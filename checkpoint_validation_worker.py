@@ -150,6 +150,8 @@ def _blind_test(best_model, data_yaml: Path, device: str, imgsz: int = 640) -> d
 
 
 def main() -> int:
+    from platform_core.task_runtime.process_start_gate import wait_for_execution_binding
+    wait_for_execution_binding()
     parser = argparse.ArgumentParser()
     parser.add_argument("--project-dir", required=True)
     parser.add_argument("--data", required=True)

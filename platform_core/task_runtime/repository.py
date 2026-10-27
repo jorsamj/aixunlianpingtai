@@ -15,11 +15,16 @@ from filelock import FileLock
 
 from .models import TaskKind, TaskLease, TaskPage, TaskRecord, TaskStatus, utc_now
 from .process_control import ProcessIdentity
+from .sqlite_busy import busy_timeout_ms, retry_busy
 from ..gpu_resources import ensure_gpu_runtime_schema
 
 
 _SCHEMA_VERSION = 1
 _INIT_LOCK_TIMEOUT = 30
+
+
+def admission_preparer(admission):
+    return getattr(admission, "prepare", None) or getattr(getattr(admission, "__self__", None), "prepare_admission", None)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS tasks (
@@ -190,7 +195,7 @@ class TaskRepository:
     def _connect(self) -> sqlite3.Connection:
         database = sqlite3.connect(self.path, timeout=5, isolation_level=None)
         database.row_factory = sqlite3.Row
-        database.execute("PRAGMA busy_timeout=5000")
+        database.execute(f"PRAGMA busy_timeout={busy_timeout_ms()}")
         database.execute("PRAGMA synchronous=FULL")
         return database
 
@@ -495,6 +500,7 @@ class TaskRepository:
             database.commit()
         return changed == 1
 
+    @retry_busy
     def release_expired(self, now: datetime | str | None = None) -> int:
         now_text = _iso(now)
         with closing(self._connect()) as database:
@@ -503,6 +509,7 @@ class TaskRepository:
             database.commit()
         return count
 
+    @retry_busy
     def claim_next(
         self,
         worker_id: str,
@@ -542,47 +549,70 @@ class TaskRepository:
                 """,
                 (*kind_values, int(admission is not None), now_text),
             ).fetchall()
-            chosen = None
-            for candidate in rows:
-                if not set(json.loads(candidate["required_capabilities"] or "[]")) <= available:
+            database.commit()
+        prepare = admission_preparer(admission)
+        for candidate in rows:
+            if not set(json.loads(candidate["required_capabilities"] or "[]")) <= available:
+                continue
+            # Only this candidate's immutable payload is read, outside a writer
+            # transaction. Do not preload every queued task or duplicate a queue.
+            prepared = prepare(candidate) if callable(prepare) else None
+            with closing(self._connect()) as database:
+                database.execute("BEGIN IMMEDIATE")
+                now = datetime.now(timezone.utc)
+                now_text = now.isoformat()
+                expires_at = (now + timedelta(seconds=max(1, int(lease_seconds)))).isoformat()
+                # A lease may have expired while payload I/O was in progress.
+                # Fenced repositories conservatively hold uninspected processes.
+                self._release_expired_in(database, now_text)
+                current = database.execute("SELECT * FROM tasks WHERE task_id=? AND status='QUEUED'", (candidate["task_id"],)).fetchone()
+                if current is None or any(current[key] != candidate[key] for key in (
+                    "kind", "payload_ref", "resource_key", "required_capabilities",
+                )):
+                    database.rollback()
                     continue
+                delegated = admission is not None and current["kind"] == "TRAINING" and not str(current["resource_key"]).startswith("training:remote:")
+                if not delegated and database.execute("SELECT 1 FROM tasks WHERE resource_key=? AND status IN ('RUNNING','CANCEL_REQUESTED') AND lease_expires_at>? LIMIT 1", (current["resource_key"], now_text)).fetchone():
+                    database.rollback()
+                    continue
+                admitted = dict(current)
+                if callable(prepare):
+                    admitted["_gpu_payload_prepared"] = True
+                    admitted["_gpu_payload"] = prepared
                 if admission is not None:
-                    allowed, reason = admission(database, candidate, worker_id, token, expires_at, now_text)
+                    allowed, reason = admission(database, admitted, worker_id, token, expires_at, now_text)
                     if not allowed:
                         database.execute("UPDATE tasks SET stage='resource_waiting', resource_wait_reason=?, updated_at=? "
                                          "WHERE task_id=? AND (stage<>'resource_waiting' OR resource_wait_reason IS NOT ?)",
                                          (reason, now_text, candidate["task_id"], reason))
+                        database.commit()
                         continue
-                chosen = candidate
-                break
-            if chosen is None:
+                changed = database.execute(
+                    """
+                    UPDATE tasks
+                       SET status='RUNNING',
+                           stage=CASE
+                               WHEN kind='MATERIAL_IMPORT' AND accepted=1 AND stage='indexing_queued'
+                                   THEN 'indexing'
+                               ELSE 'running'
+                           END,
+                           worker_id=?, lease_token=?,
+                           lease_expires_at=?, attempt=attempt+1, updated_at=?, finished_at=NULL, resource_wait_reason=NULL
+                     WHERE task_id=? AND status='QUEUED'
+                    """,
+                    (worker_id, token, expires_at, now_text, current["task_id"]),
+                ).rowcount
+                if changed != 1:
+                    database.rollback()
+                    continue
+                row = database.execute(
+                    "SELECT * FROM tasks WHERE task_id=?",
+                    (current["task_id"],),
+                ).fetchone()
                 database.commit()
-                return None
-            changed = database.execute(
-                """
-                UPDATE tasks
-                   SET status='RUNNING',
-                       stage=CASE
-                           WHEN kind='MATERIAL_IMPORT' AND accepted=1 AND stage='indexing_queued'
-                               THEN 'indexing'
-                           ELSE 'running'
-                       END,
-                       worker_id=?, lease_token=?,
-                       lease_expires_at=?, attempt=attempt+1, updated_at=?, finished_at=NULL, resource_wait_reason=NULL
-                 WHERE task_id=? AND status='QUEUED'
-                """,
-                (worker_id, token, expires_at, now_text, chosen["task_id"]),
-            ).rowcount
-            if changed != 1:
-                database.rollback()
-                return None
-            row = database.execute(
-                "SELECT * FROM tasks WHERE task_id=?",
-                (chosen["task_id"],),
-            ).fetchone()
-            database.commit()
-        task = _from_row(row)
-        return TaskLease(task, token, str(worker_id), expires_at)
+            task = _from_row(row)
+            return TaskLease(task, token, str(worker_id), expires_at)
+        return None
 
     def heartbeat(
         self,

@@ -20,7 +20,8 @@ from platform_core.training_precision import (
 
 
 def now_iso():
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    from datetime import timezone
+    return datetime.now(timezone.utc).isoformat()
 
 
 def read_json(path: Path, default):
@@ -52,10 +53,8 @@ def write_json(path: Path, data):
 
 
 def update_job(job_file: Path, **kwargs):
-    job = read_json(job_file, {})
-    job.update(kwargs)
-    job["updated_at"] = now_iso()
-    write_json(job_file, job)
+    from platform_core.training_timing import update_job as update_training_job
+    return update_training_job(job_file, kwargs, writer=write_json)
 
 
 def publish_startup_stage(job_file: Path, stage: str, message: str, progress_percent: float, **extra):
@@ -950,6 +949,8 @@ def derive_training_completion_metadata(
 
 
 def main():
+    from platform_core.task_runtime.process_start_gate import wait_for_execution_binding
+    wait_for_execution_binding()
     parser = argparse.ArgumentParser()
     parser.add_argument("--project-dir", required=True)
     parser.add_argument("--data", required=True)
@@ -1282,6 +1283,7 @@ def main():
                 publish_startup_stage(job_file, "initializing_dataloader", "初始化训练数据加载器", 27)
 
             def verify_runtime(trainer):
+                update_job(job_file, training_segment_started_at=now_iso())
                 runtime_resources = telemetry.on_train_start(trainer)
                 if str(trainer.device) != runtime_device:
                     raise RuntimeError(f"TRAINING_DEVICE_RUNTIME_MISMATCH: expected={runtime_device}; actual={trainer.device}")
@@ -1349,6 +1351,7 @@ def main():
             )
             with scoped_worker_amp_check(amp_decision):
                 train_result = model.train(**train_args)
+            update_job(job_file, training_segment_finished_at=now_iso())
         except Exception as train_error:
             is_oom = (
                 isinstance(train_error, torch.cuda.OutOfMemoryError)
@@ -1383,6 +1386,7 @@ def main():
                 attach_ai_continuation_callbacks(model,job_file,telemetry,base_completed_epochs=base_completed_epochs,extra_epochs=extra,attach_resource_callbacks=lambda target: attach_resource_callbacks(target,cont_args))
                 with scoped_worker_amp_check(amp_decision):
                     train_result=model.train(**cont_args)
+                update_job(job_file, training_segment_finished_at=now_iso())
                 phase["finished_at"]=now_iso()
                 update_job(job_file,ai_continuation=phase,progress_percent=95.0,current_epoch=cumulative_total_epochs,total_epochs=cumulative_total_epochs,current_batch=None,total_batches=None,current_item="AI追加训练完成，正在校验模型产物",message="AI追加训练完成，正在校验模型产物")
         run_dir = Path(getattr(model.trainer,"save_dir",runs_dir/args.run_name))

@@ -7,6 +7,38 @@ async function waitForCanonicalApp(page) {
   ).toBe(true);
 }
 
+test('resumed training shows total wall duration and freezes terminal evidence across refresh', async ({page}) => {
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.goto('/');
+  await waitForCanonicalApp(page);
+  const project = await page.evaluate(() => state.project.id);
+  const timing = {
+    wall_elapsed_seconds: 21600, elapsed_seconds: 21600, active_training_seconds: 18000,
+    active_training_seconds_complete: true, attempt_elapsed_seconds: 10800,
+    first_started_at: '2026-10-26T20:00:00Z', wall_finished_at: '2026-10-27T02:00:00Z',
+  };
+  const job = {id: 'timing-resumed', task_id: 'timing-resumed', status: 'done', task_status: 'SUCCEEDED',
+    task_worker_id: 'verified-resume-worker', task_name: '续训计时核验', asset_algorithm_name: '隔离训练',
+    training_progress: {elapsed_seconds: 10800}, training_display_progress: timing,
+    current_epoch: 300, total_epochs: 300, progress_percent: 100};
+  await page.route(`**/api/projects/${encodeURIComponent(project)}/jobs`, route => route.fulfill({json: [job]}));
+  await page.route(`**/api/projects/${encodeURIComponent(project)}/jobs/timing-resumed`, route => route.fulfill({json: job}));
+  await page.route(`**/api/projects/${encodeURIComponent(project)}/jobs/timing-resumed/log`, route => route.fulfill({json: ''}));
+  await page.evaluate(() => window.setPage('训练任务'));
+  await page.evaluate(() => window.TrainingTaskRuntime.refresh({render: true, force: true, source: 'timing-test'}));
+  await page.locator('[data-training-tab="completed"]').click();
+  const row = page.locator('[data-job-id="timing-resumed"]');
+  await expect(row).toContainText('verified-resume-worker');
+  await expect(row.locator('[data-training-clock="elapsed"]')).toHaveText('6h 0m');
+  await page.waitForTimeout(1200);
+  await expect(row.locator('[data-training-clock="elapsed"]')).toHaveText('6h 0m');
+  await row.getByRole('button', {name: '详情', exact: true}).click();
+  await expect(page.locator('[data-training-recovery-overlay]')).toContainText('5h 0m');
+  await expect(page.locator('[data-training-recovery-overlay]')).toContainText('3h 0m');
+  expect(errors).toEqual([]);
+});
+
 test('training task refresh and actions patch the final table without rebuilding the page', async ({page}) => {
   const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(error));

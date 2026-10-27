@@ -1,4 +1,4 @@
-import {formatTrainingDuration, trainingBatchActionEligible, trainingProgressView, trainingStageView, visibleTrainingJobs} from './training-task-runtime.js?v=422608';
+import {formatTrainingDuration, trainingBatchActionEligible, trainingProgressView, trainingStageView, visibleTrainingJobs} from './training-task-runtime.js?v=422609';
 import {canonicalTaskProgressPercent, canonicalTaskStatus, trainingDisplayStatus} from './task-runtime-truth.js?v=422424';
 
 const TRAINING_PAGE = '训练任务';
@@ -172,9 +172,11 @@ export function trainingTaskPresentationRow(job, {batchMode = false, selected = 
   const taskName = [job?.task_name, job?.run_name, job?.auto_version_name].map(v => String(v || '').trim()).find(v => v && v !== '训练任务') || `训练 · ${id.slice(-8) || '待分配'}`;
   const elapsed = progress.elapsedSeconds == null ? '' : Math.max(0, Number(progress.elapsedSeconds) || 0);
   const eta = progress.etaSeconds == null ? '' : Math.max(0, Number(progress.etaSeconds) || 0);
-  const active = ['starting', 'running', 'pausing', 'resuming', 'stopping', 'cancel_requested'].includes(status);
+  const active = ['starting', 'running', 'pausing', 'paused', 'resuming', 'stopping', 'cancel_requested'].includes(status);
   const checkbox = batchMode ? `<label class="train428-select"><input type="checkbox" data-training-batch-select="${esc(id)}" ${selected ? 'checked' : ''} aria-label="选择训练任务 ${esc(taskName)}"><span></span></label>` : '';
-  const started = String(job?.started_at || job?.created_at || '').replace('T', ' ').replace('Z', '').slice(0, 19) || '-';
+  const timing = job?.training_display_progress || {};
+  const startedAt = Object.hasOwn(timing, 'first_started_at') ? timing.first_started_at : job?.started_at;
+  const started = startedAt && Number.isFinite(Date.parse(startedAt)) ? new Date(startedAt).toLocaleString('zh-CN', {hour12: false}) : '未知';
   const progressMeta = [];
   const completion = completionRuntimeMeta(job, progress);
   if (completion) progressMeta.push(completion);
@@ -193,10 +195,10 @@ export function trainingTaskPresentationRow(job, {batchMode = false, selected = 
       : 'Checkpoint 已保留')
     : '';
   const stageDetails = [stage.detail, queueRuntimeMeta(job), job?.task_worker_id ? `执行节点 ${job.task_worker_id}` : '', recoveryMeta].filter(Boolean).join(' · ');
-  return `<tr data-job-id="${esc(id)}" data-clock-active="${active ? '1' : '0'}" class="${batchMode ? 'is-batch-mode' : ''}${selected ? ' is-selected' : ''}"><td><div class="train428-algorithm-cell">${checkbox}<div class="train428-taskname"><b title="${esc(algorithmName)}">${esc(algorithmName)}</b></div></div></td><td><div class="train428-taskname"><b title="${esc(taskName)}">${esc(taskName)}</b>${job?.auto_version_name && taskName !== job.auto_version_name ? `<em>版本 ${esc(job.auto_version_name)}</em>` : ''}</div></td><td><span class="entity-status ${statusBucket(job)}">${esc(statusText(status, job))}</span></td><td><span class="train428-priority-number">${priorityValue(job)}</span></td><td><div class="train428-progress-main"><div class="progress424"><i data-progress="${percent.toFixed(2)}" style="transform:scaleX(${(Math.max(0, Math.min(100, percent)) / 100).toFixed(4)})"></i></div><b>${percent.toFixed(0)}%</b></div><span class="train428-progress-txt">${esc(progressMeta.join(' · ') || stage.label)}</span></td><td><span class="train428-clock" data-training-clock="elapsed" data-seconds="${elapsed}">${esc(formatTrainingDuration(progress.elapsedSeconds))}</span></td><td><span class="train428-clock" data-training-clock="eta" data-seconds="${eta}">${esc(formatTrainingDuration(progress.etaSeconds))}</span></td><td><div class="train428-stage"><b>${esc(stage.label)}</b>${stageDetails ? `<small title="${esc(stageDetails)}">${esc(stageDetails)}</small>` : ''}</div></td><td><span class="train428-started">${esc(started)}</span></td><td><div class="entity-row-actions train428-actions-cell">${taskActions(job)}</div></td></tr>`;
+  return `<tr data-job-id="${esc(id)}" data-clock-active="${active ? '1' : '0'}" class="${batchMode ? 'is-batch-mode' : ''}${selected ? ' is-selected' : ''}"><td><div class="train428-algorithm-cell">${checkbox}<div class="train428-taskname"><b title="${esc(algorithmName)}">${esc(algorithmName)}</b></div></div></td><td><div class="train428-taskname"><b title="${esc(taskName)}">${esc(taskName)}</b>${job?.auto_version_name && taskName !== job.auto_version_name ? `<em>版本 ${esc(job.auto_version_name)}</em>` : ''}</div></td><td><span class="entity-status ${statusBucket(job)}">${esc(statusText(status, job))}</span></td><td><span class="train428-priority-number">${priorityValue(job)}</span></td><td><div class="train428-progress-main"><div class="progress424"><i data-progress="${percent.toFixed(2)}" style="transform:scaleX(${(Math.max(0, Math.min(100, percent)) / 100).toFixed(4)})"></i></div><b>${percent.toFixed(0)}%</b></div><span class="train428-progress-txt">${esc(progressMeta.join(' · ') || stage.label)}</span></td><td><span class="train428-clock" data-training-clock="elapsed" data-seconds="${elapsed}" data-anchor-seconds="${elapsed}" data-anchor-ms="${performance.now()}">${esc(formatTrainingDuration(progress.elapsedSeconds))}</span></td><td><span class="train428-clock" data-training-clock="eta" data-seconds="${eta}">${esc(formatTrainingDuration(progress.etaSeconds))}</span></td><td><div class="train428-stage"><b>${esc(stage.label)}</b>${stageDetails ? `<small title="${esc(stageDetails)}">${esc(stageDetails)}</small>` : ''}</div></td><td><span class="train428-started">${esc(started)}</span></td><td><div class="entity-row-actions train428-actions-cell">${taskActions(job)}</div></td></tr>`;
 }
 
-export function tickTrainingClockRows(root, stepSeconds = 1) {
+export function tickTrainingClockRows(root, stepSeconds = 1, nowMilliseconds = performance.now()) {
   const step = Math.max(1, Math.floor(Number(stepSeconds) || 1));
   const rows = root?.querySelectorAll?.('tr[data-clock-active="1"]') || [];
   let changed = 0;
@@ -207,7 +209,11 @@ export function tickTrainingClockRows(root, stepSeconds = 1) {
     if (elapsed && elapsed.dataset?.seconds !== '') {
       const current = Number(elapsed.dataset.seconds);
       if (Number.isFinite(current)) {
-        const next = Math.max(0, current + step);
+        const anchor = Number(elapsed.dataset.anchorSeconds);
+        const anchorMs = Number(elapsed.dataset.anchorMs);
+        const next = elapsed.dataset.anchorMs != null && Number.isFinite(anchor) && Number.isFinite(anchorMs)
+          ? Math.max(current, anchor + Math.max(0, nowMilliseconds - anchorMs) / 1000)
+          : Math.max(0, current + step);
         elapsed.dataset.seconds = String(next);
         elapsed.textContent = formatTrainingDuration(next);
         changed += 1;
@@ -288,7 +294,7 @@ export function installTrainingTaskVisibilityRuntime({
           <button type="button" class="btn mini danger" data-training-batch-action="delete">删除记录</button>
         </div></section>
       <section class="entity-table-surface training-table-surface"><div class="table-wrap"><table class="table train428-table entity-table">
-        <thead><tr><th>所属算法</th><th>训练任务</th><th>状态</th><th>优先级</th><th>进度</th><th>已用时间</th><th>剩余时间</th><th>当前阶段</th><th>开始时间</th><th>操作</th></tr></thead>
+        <thead><tr><th>所属算法</th><th>训练任务</th><th>状态</th><th>优先级</th><th>进度</th><th>总历时</th><th>剩余时间</th><th>当前阶段</th><th>首次训练开始</th><th>操作</th></tr></thead>
         <tbody></tbody>
       </table></div><footer class="entity-pagination"><div data-training-pagination></div></footer></section>
     </section>`;
