@@ -1,3 +1,9 @@
+## 当前接续：代码、隔离回归与独立审查完成
+
+VERSION42.24.392。核心及修正提交`d37400c6adb266fcb3829d4c07883b4315a16ef8`已准确通过47/47 Actions、128/128 Checks；Node1357/1357、Chrome301/301。固定回执见[CI证据](evidence/training-sqlite-lease-timing-code-ci-d37400c6.json)。末次必要小修正：暂停ETA明确为空时不回退旧秒数，Node33/33及真实Chrome1/1通过，并与本次最终交接文档同提。**交付前必须再次读取最终HEAD自身的GitHub Checks，不能用固定d374回执替代。** 本文件实际提交SHA用`git log -1 --format=%H -- docs/TRAINING_SQLITE_LEASE_TIMING_2026_10_27.md`确定，最终在线验收以该提交Checks永久记录为准，不在文档内伪造自引用提交SHA。
+
+生产任务真实首末/累计/Worker与锁持有者、Linux systemd/GPU/NAS/OSS仍NOT VERIFIED，未部署/未改生产。前ZIP治理保留，原WIP/5944及模板测试保留。下面包含完整设计、失败和修正留痕及后续只读证据计划。
+
 # 训练 SQLite 繁忙、租约与跨恢复计时专项
 
 ## 基线与授权
@@ -20,10 +26,10 @@
 |阶段|工作|状态|
 |---|---|---|
 |A|现有事务、租约、计时与Worker合同审计/RED|已验收|
-|B|统一有限SQLite繁忙处理；缩短已证实长事务；租约截止与主循环/实例隔离|已完成待验收|
-|C|真实训练开始/执行段与结束持久合同，UTC投影与Worker历史|已完成待验收|
-|D|列表总历时/详情三时间，原时钟与恢复UI复用|已完成待验收|
-|E|必要故障注入/浏览器/审查、提交及准确SHA CI|进行中|
+|B|统一有限SQLite繁忙处理；缩短已证实长事务；租约截止与主循环/实例隔离|已验收|
+|C|真实训练开始/执行段与结束持久合同，UTC投影与Worker历史|已验收|
+|D|列表总历时/详情三时间，原时钟与恢复UI复用|已验收|
+|E|必要故障注入/浏览器/审查、提交及准确SHA CI|已验收|
 
 复用原连接、TaskRepository、WorkerContext、ProcessController、GPU原子准入、原训练job/metrics、原列表和PollRegistry。暂定统一忙处理只重试SQLITE_BUSY/SQLITE_LOCKED，限定次数/总预算/抖动，事务回滚及关闭；Lease重试不得越过最后已确认有效期，owner/generation改变立即fence，不伪造续约。过期进程检查/静态payload读取移出写事务，事务内仍核验相同任务修订与所有权；不确定继续保护资源。
 
@@ -91,3 +97,13 @@
 - 最新代次若尚未初始化Trainer记录，不得借前代Worker或本次开始时间；按durable.attempt严格匹配，缺少证据仍未知。计时/projection14/14通过，0失败0跳过。
 
 以上均保留原安全及动态断言，VERSION392不重复递增。守卫修正`6e864290757be51b64585ea7d6e68589dc693f27`已推送，尚不足以覆盖本节新修正；后续最终SHA必须重新核验CI。
+
+## 最终交付与后续步骤
+
+- 核心后端、三时间与Worker投影、前端列表详情、故障注入与审查已闭合；没有新增任务/计时数据库、调度系统、上传Owner。所有已确认缺陷有必要回归，未跑本地全仓。
+- d37400c6固定CI准确47/47 Actions、128/128 Checks全成功（0失败/0取消）；Linux原runtime truth48 Python/89 Node，完整前端1357 Node、301 Chrome通过。此为固定代码回执，最终文档及ETA修正提交自身仍须交付前核验，永久证据由GitHub Checks绑定实际SHA。
+- 暂停时总历时增长，ETA为未知，不应再回退旧剩余时间；正常结束后总历时冻结。原metrics/原训练秒数保留为单进程证据，历史缺首始或中断片段时明确未知/非完整累计。
+- 核心运行文件：`task_runtime/sqlite_busy.py`、`worker.py`、`scheduler.py`、`worker_instances.py`、`fenced_repository.py`、`repository.py`及原GPU/node包装；计时从`training_timing.py`、`training_job_projection.py`、原train/resume worker callbacks、v48控制和三个前端runtime接续。
+- 必要测试入口：`tests/unit/task_runtime/test_sqlite_busy_recovery.py`、`tests/unit/test_training_timing.py`、原`test_training_job_projection.py`、`test_training_realtime_progress.py`、`tests/api/test_durable_training_controls.py`；原Node runtime/visibility/recovery及Chrome`training-task-performance.spec.mjs`。无需再重复跑已经相同代码通过的本地集合。
+- 正式生产只读复核仍需独立授权和范围：仅该任务记录/首次真实训练事件/恢复事件/最终任务结束及Worker成果lineage、小窗口journal与SQLite写事务证据；不改记录、不重置任务、不删除Checkpoint、不删WAL/SHM、不扫描生产素材。发现实际长锁Owner再做最小有证据修复，不能从本轮代码审计归咎ZIP或Web。
+- 不得自动部署。原任务4h33不能自动回填成某个推测值；这轮修正建立今后可靠证据与展示合同，并保护旧记录。

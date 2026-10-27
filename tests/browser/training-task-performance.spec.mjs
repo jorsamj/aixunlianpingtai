@@ -22,11 +22,16 @@ test('resumed training shows total wall duration and freezes terminal evidence a
     task_worker_id: 'verified-resume-worker', task_name: '续训计时核验', asset_algorithm_name: '隔离训练',
     training_progress: {elapsed_seconds: 10800}, training_display_progress: timing,
     current_epoch: 300, total_epochs: 300, progress_percent: 100};
-  await page.route(`**/api/projects/${encodeURIComponent(project)}/jobs`, route => route.fulfill({json: [job]}));
+  const paused = {id: 'timing-paused', status: 'paused', task_status: 'RUNNING', phase: 'paused',
+    task_name: '暂停计时核验', training_display_progress: {wall_elapsed_seconds: 80, eta_seconds: null},
+    training_progress: {eta_seconds: 300}, eta_seconds: 300};
+  await page.route(`**/api/projects/${encodeURIComponent(project)}/jobs`, route => route.fulfill({json: [job, paused]}));
   await page.route(`**/api/projects/${encodeURIComponent(project)}/jobs/timing-resumed`, route => route.fulfill({json: job}));
   await page.route(`**/api/projects/${encodeURIComponent(project)}/jobs/timing-resumed/log`, route => route.fulfill({json: ''}));
   await page.evaluate(() => window.setPage('训练任务'));
   await page.evaluate(() => window.TrainingTaskRuntime.refresh({render: true, force: true, source: 'timing-test'}));
+  await page.locator('[data-training-tab="all"]').click();
+  await expect(page.locator('[data-job-id="timing-paused"] [data-training-clock="eta"]')).toHaveText('-');
   await page.locator('[data-training-tab="completed"]').click();
   const row = page.locator('[data-job-id="timing-resumed"]');
   await expect(row).toContainText('verified-resume-worker');

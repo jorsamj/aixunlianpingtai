@@ -76,7 +76,9 @@ export function trainingProgressView(job = {}) {
   const elapsedSeconds = Object.hasOwn(display, 'wall_elapsed_seconds')
     ? finiteNumber(display.wall_elapsed_seconds)
     : finiteNumber(display.elapsed_seconds) ?? finiteNumber(progress.elapsed_seconds) ?? finiteNumber(job.elapsed_seconds);
-  const etaSeconds = finiteNumber(display.eta_seconds) ?? finiteNumber(progress.eta_seconds) ?? finiteNumber(job.eta_seconds);
+  const etaSeconds = Object.hasOwn(display, 'eta_seconds')
+    ? finiteNumber(display.eta_seconds)
+    : finiteNumber(progress.eta_seconds) ?? finiteNumber(job.eta_seconds);
   const throughput = finiteNumber(display.throughput) ?? finiteNumber(progress.images_per_second);
   const losses = progress.losses || {};
   const metrics = progress.metrics || {};

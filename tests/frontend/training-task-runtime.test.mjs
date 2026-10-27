@@ -13,6 +13,8 @@ test('unknown canonical wall time never falls back to a resumed process duration
     training_progress: {elapsed_seconds: 16380}, elapsed_seconds: 16380}).elapsedSeconds, null);
   assert.equal(trainingProgressView({training_display_progress: {wall_elapsed_seconds: 21600},
     training_progress: {elapsed_seconds: 10800}}).elapsedSeconds, 21600);
+  assert.equal(trainingProgressView({status: 'paused', training_display_progress: {eta_seconds: null},
+    training_progress: {eta_seconds: 300}, eta_seconds: 300}).etaSeconds, null);
 });
 
 function response(body) {
