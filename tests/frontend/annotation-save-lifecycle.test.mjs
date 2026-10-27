@@ -15,7 +15,7 @@ function harness(request){
  const window={PlatformCore:{},NegativeSampleRuntime:{decorate(){}}};
  const context={window,state,document:{getElementById:key=>key==='ann414Save'?button:key==='annSaveState'?status:null,querySelector:()=>null,querySelectorAll:()=>[]},pid:()=>project,api:(url,opts)=>{calls.push({url,opts});return request(url,opts)},toast:m=>messages.push(m),drawBoxes(){},renderAnnSide(){},queueIds:()=>['i1','i2'],setTimeout:(fn,ms)=>{const key=++id;timers.set(key,{fn,ms});return key},clearTimeout:key=>timers.delete(key),AbortController,Promise,Error,Set,WeakMap,WeakSet,JSON,Number,String};
  const apiSource=readFileSync(new URL('../../static/modules/api.js',import.meta.url),'utf8');
- vm.runInNewContext(apiSource.slice(0,apiSource.indexOf('export function messageFromApiError')).replace('export async function','async function')+'\nwindow.PlatformCore.withRequestDeadline=withRequestDeadline;',context);
+ vm.runInNewContext(apiSource.slice(0,apiSource.indexOf('export function messageFromApiError')).replace(/^export /gm,'')+'\nwindow.PlatformCore.withRequestDeadline=withRequestDeadline;',context);
  vm.runInNewContext(source.slice(prefix>=0?prefix:start,end),context);
  const canonicalStart=source.indexOf('  window.saveAnn=async function saveAnnotationCanonical420');
  vm.runInNewContext(source.slice(canonicalStart,source.indexOf('\n  window.resetAnnotationZoom420',canonicalStart)),context);

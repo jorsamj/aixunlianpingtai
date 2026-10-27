@@ -35,6 +35,10 @@ RED及修复：新API最初3失败；暂存恢复与丢父保护新增2失败；
 
 变更范围：app.py原v61/v64、原Task模型/Repository、原部署Worker/Agent/runner及节点准入；static/app.js原benchPredictOne、原API可选上传字节回调、workbench、部署阶段文案与必要缓存；新增一个准备适配模块，未新增任务数据库、轮询Owner、调度系统或GT结构。原CI工作流仅补受影响文件和现有测试接线。
 
+### 首推CI反馈（保留失败，不借旧绿）
+
+首提交`bdab34d4570bf0e78ad79458554ab988f2d656bd`已普通推送。Frontend CI实际1377例1345通过、32失败，均为两份旧VM测试夹具：annotation-save-lifecycle只移除一个export导致新可选XHR导出语法错误（30例）；scenario-stop-lifecycle按旧无参签名截取不到函数（2例）。只修正原夹具导出剥离/函数边界及必要已有依赖注入，保留全部原断言、业务代码与CI范围不变；定向原32/32已通过。修正后新SHA须重新核验，首推不当全绿。
+
 ### 风险、部署前条件与接续
 
 - 生产故障请求的实际OSS/模型/SQLite耗时尚NOT VERIFIED；不得把代码同步慢路径当现场唯一根因。
