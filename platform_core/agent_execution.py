@@ -366,6 +366,30 @@ def _sanitize_runtime_result_metadata(value: object) -> dict[str, Any]:
                 if type(evidence[key]) is not bool:
                     raise AgentExecutionError("REMOTE_RESULT_METADATA_INVALID", f"execution_evidence.{key} must be boolean", 422)
                 clean[key] = evidence[key]
+        # Keep verified channel adaptation facts when Agent transports the result.
+        for field in ("source_color_order", "input_color_order"):
+            if field in evidence:
+                value_color = evidence[field]
+                if value_color is not None and value_color not in ("rgb", "bgr"):
+                    raise AgentExecutionError("REMOTE_RESULT_METADATA_INVALID", f"invalid {field}", 422)
+                clean[field] = value_color
+        adapter = evidence.get("color_adapter")
+        if adapter is not None:
+            if not isinstance(adapter, dict) or set(adapter) - {
+                "source_color_order", "input_color_order", "status", "applied",
+                "verified", "method", "check"
+            }:
+                raise AgentExecutionError("REMOTE_RESULT_METADATA_INVALID", "invalid color adapter evidence", 422)
+            for field in ("source_color_order", "input_color_order"):
+                if field in adapter and adapter[field] not in ("rgb", "bgr"):
+                    raise AgentExecutionError("REMOTE_RESULT_METADATA_INVALID", "invalid adapter color order", 422)
+            for field in ("applied", "verified"):
+                if field in adapter and type(adapter[field]) is not bool:
+                    raise AgentExecutionError("REMOTE_RESULT_METADATA_INVALID", "invalid adapter verification", 422)
+            for field in ("status", "method", "check"):
+                if field in adapter and (not isinstance(adapter[field], str) or len(adapter[field]) > 120):
+                    raise AgentExecutionError("REMOTE_RESULT_METADATA_INVALID", "invalid adapter method", 422)
+            clean["color_adapter"] = dict(adapter)
         shape = evidence.get("onnx_input_shape")
         if shape is not None:
             if not isinstance(shape, list) or len(shape)!=4 or any(type(d) is not int or not 0<d<=8192 for d in shape):

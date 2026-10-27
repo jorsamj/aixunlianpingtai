@@ -114,6 +114,13 @@ def validate_target(kind: str, params: Mapping[str, Any], *, require_calibration
     target = str(kind or "").strip().lower()
     values = dict(params or {})
     precision = str(values.get("precision") or "fp16").strip().lower()
+    # Explicit opt-in: never reinterpret historical conversion jobs as RGB.
+    from .color_adapter import color_contract
+    color = color_contract(values)
+    if color:
+        if target == "paddle_inference" and color["source_color_order"] != color["input_color_order"]:
+            raise ValueError("Paddle Inference直出不经过ONNX，暂不支持变更输入颜色")
+        values.update(color)
     if target in {"rockchip", "rknn"}:
         chip = str(values.get("chip") or "").strip().lower()
         import re
@@ -157,6 +164,10 @@ def validate_target(kind: str, params: Mapping[str, Any], *, require_calibration
                 raise ValueError(f"Sophon {field}与当前Adapter支持的预处理/后处理合同不一致")
         if preprocessing.get("owner", "caller") != "caller":
             raise ValueError("Sophon首期预处理由caller执行，不重复融合到ONNX或BMODEL")
+        # A changed input color is an ONNX graph adaptation, not a mere label.
+        # Keep runtime-facing pixel_format synchronized with the selected contract.
+        if color:
+            preprocessing["pixel_format"] = color["input_color_order"]
         pixel = str(preprocessing.get("pixel_format", values.get("pixel_format", "rgb"))).lower()
         if pixel not in {"rgb", "bgr"}:
             raise ValueError("Sophon pixel_format必须为rgb或bgr")

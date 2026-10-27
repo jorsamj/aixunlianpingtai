@@ -207,13 +207,22 @@ def paddle_inference_to_onnx(model_dir: Path, out_dir: Path, resource: Dict[str,
 
 
 def prepare_onnx(source: Path, out_dir: Path, resource: Dict[str, Any], params: Dict[str, Any], log_file: Path) -> Path:
+    from platform_core.color_adapter import adapt_onnx_color_input
+
     ext = source.suffix.lower()
     if ext in {'.pt', '.pth', '.onnx'}:
-        return export_pt_to_onnx(source, out_dir, resource, params, log_file)
-    if ext in {'.pdparams', '.pdmodel', '.pdiparams'}:
+        original = export_pt_to_onnx(source, out_dir, resource, params, log_file)
+    elif ext in {'.pdparams', '.pdmodel', '.pdiparams'}:
         inf = export_paddle_inference(source, out_dir, resource, params, log_file)
-        return paddle_inference_to_onnx(inf, out_dir, resource, params, log_file)
-    raise RuntimeError(f'当前源模型格式 {ext} 暂不能转换为 ONNX。')
+        original = paddle_inference_to_onnx(inf, out_dir, resource, params, log_file)
+    else:
+        raise RuntimeError(f'当前源模型格式 {ext} 暂不能转换为 ONNX。')
+    converted, evidence = adapt_onnx_color_input(original, out_dir, params)
+    params['color_adapter_evidence'] = evidence
+    if evidence.get('applied'):
+        append_log(log_file, '颜色适配生效：' + evidence['source_color_order'].upper()
+                   + ' → ' + evidence['input_color_order'].upper() + '；ONNX Runtime数值等价验证通过。')
+    return converted
 
 
 def preflight_vendor_tool(target: str, resource: Dict[str, Any], params: Dict[str, Any]):
@@ -366,7 +375,7 @@ def build_sophon(onnx: Path, out_dir: Path, resource: Dict[str, Any], params: Di
     environment = verified_toolchain if verified_toolchain is not None else require_sophon_toolchain(resource, chip=params["chip"], precision=params["precision"])
     tools, py = environment["tools"], environment["python_path"]
     height, width = conversion_input_shape(params)
-    # The ONNX tensor is already RGB/NCHW normalized by its caller. Do not fuse
+    # Caller supplies normalized NCHW in the selected input_color_order. Do not fuse
     # mean/scale/letterbox again. The exact caller contract travels in manifest.
     name = safe_name(str(params.get("model_name") or onnx.stem))
     mlir = out_dir / f"{name}.mlir"
@@ -611,6 +620,9 @@ def main():
             'source_training_precision': params.get('source_training_precision'),
             'resolved_precision': params.get('precision'),
             'compiler_precision': compiler_precision,
+            'input_color_order': params.get('input_color_order'),
+            'source_color_order': params.get('source_color_order'),
+            'color_adapter': params.get('color_adapter_evidence'),
             'artifact_precision': None,  # No dtype inspection; compiler mode is not an artifact dtype.
             'onnx_export': 'reused_existing_onnx' if source.suffix.lower() == '.onnx' else 'exported',
             'onnx_export_parameters_applied': source.suffix.lower() != '.onnx',

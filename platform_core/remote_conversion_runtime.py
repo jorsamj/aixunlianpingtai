@@ -61,6 +61,17 @@ def validate_remote_artifacts(directory, job):
         for actual in (target, parameters):
             if type(actual.get(field)) is not type(expected[field]) or actual[field] != expected[field]:
                 raise ValueError(f"远程 manifest 转换参数不匹配：{field}")
+    # Remote artifacts must prove the requested channel contract, not only chip/shape.
+    if "input_color_order" in expected:
+        for field in ("source_color_order", "input_color_order"):
+            if target.get(field) != expected[field] or parameters.get(field) != expected[field]:
+                raise ValueError(f"远程颜色适配合同不一致：{field}")
+        color_evidence = (manifest.get("execution_evidence") or {}).get("color_adapter") or {}
+        if expected["source_color_order"] != expected["input_color_order"] and not (
+            color_evidence.get("applied") is True and color_evidence.get("verified") is True
+            and color_evidence.get("input_color_order") == expected["input_color_order"]
+        ):
+            raise ValueError("远程产物缺少已通过数值验证的颜色适配证据")
     trace = job.get("source_trace") or {}
     source_path = Path(str(job.get("source_path") or ""))
     recorded_sha = str(trace.get("sha256") or "").lower()
