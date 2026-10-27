@@ -9344,7 +9344,7 @@ def _iter_active_project_tasks(project_id: str):
     while True:
         page = repository.list(
             project_id=project_id,
-            kinds=(TaskKind.TRAINING, TaskKind.MODEL_CONVERSION, TaskKind.DEPLOYMENT_TEST),
+            kinds=(TaskKind.TRAINING, TaskKind.MODEL_CONVERSION, TaskKind.DEPLOYMENT_TEST, TaskKind.DEPLOYMENT_PREPARE),
             statuses=_ACTIVE_VERSION_REFERENCE_STATUSES,
             limit=100,
             cursor=cursor,
@@ -9636,7 +9636,17 @@ def _algorithm_version_active_references(
             job = read_json(_deploy_job_dir(project_id, task.task_id) / "job.json", {})
             if _deploy_job_references_version(job, algorithm_id, version_id):
                 add("MODEL_CONVERSION", task.task_id, f"该版本仍有活动模型转换任务 {task.task_id}")
-        elif task.kind is TaskKind.DEPLOYMENT_TEST:
+        elif task.kind in {TaskKind.DEPLOYMENT_TEST, TaskKind.DEPLOYMENT_PREPARE}:
+            identity = (request or {}).get("model_identity") or {}
+            if task.kind is TaskKind.DEPLOYMENT_PREPARE:
+                parent_id = (request or {}).get("parent_task_id")
+                parent = shared_task_repository().get(parent_id) if parent_id else None
+                if parent and parent.project_id == project_id:
+                    parent_request = shared_task_artifacts().read_json(parent.task_id, parent.payload_ref, default={})
+                    identity = parent_request.get("model_identity") or {}
+            if identity.get("algorithm_id") == algorithm_id and identity.get("version_id") == version_id:
+                add("DEPLOYMENT_TEST", task.task_id, f"该版本仍有活动检测或准备任务 {task.task_id}")
+                continue
             source_conversion_job_id = str(
                 (request or {}).get("source_conversion_job_id") or ""
             ).strip()
@@ -23703,6 +23713,14 @@ def public_deployment_test(task: TaskRecord) -> Dict[str, Any]:
     repository = shared_task_repository()
     truth = task_to_public(task, repository)
     result = shared_task_artifacts().read_json(task.task_id, task.result_ref, default={}) if task.result_ref else {}
+    request = shared_task_artifacts().read_json(task.task_id, task.payload_ref, default={})
+    preparation = None
+    if task.status is TaskStatus.QUEUED and "deployment.input.pending" in task.required_capabilities:
+        child = repository.get(task.task_id + "-prepare")
+        if child and child.project_id == task.project_id and child.kind is TaskKind.DEPLOYMENT_PREPARE:
+            preparation = task_to_public(child, repository)
+            truth.update(phase=preparation.get("phase") or "PREPARING_MODEL",
+                         current_item=preparation.get("current_item"), progress_percent=0)
     return {
         **truth,
         # v61 compatibility aliases remain for the existing deployment UI/API contract.
@@ -23710,6 +23728,8 @@ def public_deployment_test(task: TaskRecord) -> Dict[str, Any]:
         "progress": truth.get("progress_percent", task.progress),
         "stage": truth.get("phase", task.stage),
         "result": result or {},
+        "input_image_url": request.get("input_image_url", ""),
+        "preparation": preparation,
     }
 
 
@@ -23724,6 +23744,8 @@ async def create_deployment_test(
     detection_item_total: int = Form(0), detection_side: str = Form(""),
     model_label: str = Form(""), original_filename: str = Form(""),
     model_scope: str = Form(""),
+    creation_id: str = Form(""),
+    detection_sides: str = Form(""),
     file: UploadFile = File(...),
 ):
     with _algorithm_version_reference_fence(
@@ -23731,6 +23753,57 @@ async def create_deployment_test(
         str(algorithm_id or "").strip(),
         str(version_id or "").strip(),
     ):
+        if creation_id:
+            from platform_core.deployment.scenario_preparation import accept_creation, creation_task_id
+            get_project(project_id)
+            if model_scope != "scenario" or model_source != "algorithm_version" or not algorithm_id or not version_id:
+                raise HTTPException(status_code=409, detail="场景检测创建必须指定正式算法训练版本")
+            _, version = _algorithm_version_for_action(project_id, algorithm_id, version_id)
+            from platform_core.algorithms import is_trainable_version
+            if (not is_trainable_version(version, 'ultralytics') or version.get('trainable') is not True
+                    or version.get('framework') != 'ultralytics'):
+                raise HTTPException(status_code=409, detail="SCENARIO_MODEL_INELIGIBLE: 仅允许正式成功训练且已核验的模型版本")
+            batch_id = str(detection_batch_id or "").strip()
+            side = str(detection_side or "").upper()
+            expected_sides = sorted(set(filter(None, detection_sides.upper().split(',')))) or [side]
+            if (not batch_id or len(batch_id) > 64 or not all(ch.isascii() and (ch.isalnum() or ch in '_-') for ch in batch_id)
+                    or side not in {'A', 'B'} or side not in expected_sides or not set(expected_sides) <= {'A', 'B'}
+                    or not 0 <= detection_item_index < detection_item_total <= 100000):
+                raise HTTPException(status_code=400, detail="检测批次或图片/模型侧身份无效")
+            try:
+                task_id = creation_task_id(project_id, creation_id)
+            except ValueError as error:
+                raise HTTPException(status_code=400, detail=str(error)) from error
+            extension = Path(file.filename or 'test.jpg').suffix.lower()
+            if extension not in IMAGE_EXTS:
+                extension = '.jpg'
+            envs = inference_env_items(probe_modules=False)
+            environment = next((row for row in envs if row.get('framework') == 'ultralytics'
+                                and (row.get('id') == inference_env_id if inference_env_id else row.get('status') == 'ready')), None)
+            if not environment or not environment.get('python_path'):
+                raise HTTPException(status_code=400, detail="没有可用的测试环境，请重新选择")
+            image = await file.read()
+            if not image:
+                raise HTTPException(status_code=400, detail="测试图片为空")
+            request = {
+                'model_scope': 'scenario', 'framework': 'ultralytics', 'runtime_format': 'pt',
+                'python_path': environment['python_path'], 'runner_path': str(BASE_DIR / 'predict_ultralytics_runner.py'),
+                'conf': max(0.0, min(1.0, float(conf))), 'input_extension': extension,
+                'input_url_template': _business_file_url(project_id, 'predictions', f'{task_id}/input{extension}'),
+                'output_url_template': _business_file_url(project_id, 'predictions', f'{task_id}/result.jpg'),
+                'model_identity': {'algorithm_id': algorithm_id, 'version_id': version_id, 'model_source': model_source,
+                                   'label': str(model_label)[:300], 'model_name': str(model_name)[:300], 'framework': 'ultralytics', 'runtime_format': 'pt'},
+                'detection_batch': {'batch_id': batch_id, 'item_index': detection_item_index,
+                                    'item_total': detection_item_total, 'side': side,
+                                    'expected_sides': expected_sides,
+                                    'original_filename': Path(str(original_filename or file.filename or 'test.jpg')).name[:255]},
+            }
+            try:
+                record = await asyncio.to_thread(accept_creation, shared_task_repository(), shared_task_artifacts(),
+                                                project_id, creation_id, request, image, project_dir(project_id) / 'predictions')
+            except ValueError as error:
+                raise HTTPException(status_code=409, detail=str(error)) from error
+            return JSONResponse(status_code=202, content=public_deployment_test(record))
         return await _create_deployment_test_under_version_fence(
             project_id=project_id,
             model_name=model_name,
@@ -23918,15 +23991,95 @@ async def _create_deployment_test_under_version_fence(
     return JSONResponse(status_code=202, content=public_deployment_test(record))
 
 
+@app.get("/api/v61/projects/{project_id}/deployment-test-creations/{creation_id}")
+def get_deployment_creation(project_id: str, creation_id: str):
+    from platform_core.deployment.scenario_preparation import creation_state
+    get_project(project_id)
+    try:
+        state, task = creation_state(shared_task_repository(), shared_task_artifacts(), project_id, creation_id)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    from platform_core.deployment.scenario_preparation import staged_creation
+    staged = staged_creation(shared_task_artifacts(), project_id, creation_id, project_dir(project_id) / "predictions") if state == "NOT_CREATED" else None
+    return {"creation_state": state, "task_id": task.task_id if task else None,
+            "staged_input_available": staged is not None,
+            "task": public_deployment_test(task) if task else None}
+
+
+@app.post("/api/v61/projects/{project_id}/deployment-test-creations/{creation_id}/recover")
+async def recover_deployment_creation(project_id: str, creation_id: str):
+    from platform_core.deployment.scenario_preparation import creation_state, staged_creation, recover_creation
+    get_project(project_id)
+    repository, artifacts = shared_task_repository(), shared_task_artifacts()
+    try:
+        state, task = creation_state(repository, artifacts, project_id, creation_id)
+        if state == "CREATED":
+            return JSONResponse(status_code=202, content=public_deployment_test(task))
+        if state != "NOT_CREATED":
+            raise HTTPException(status_code=409, detail="创建结果仍待核验，请查询原请求")
+        predictions = project_dir(project_id) / "predictions"
+        staged = staged_creation(artifacts, project_id, creation_id, predictions)
+        if staged is None:
+            raise HTTPException(status_code=404, detail="没有可恢复的原图")
+        identity = staged[0]["model_identity"]
+        with _algorithm_version_reference_fence(project_id, identity["algorithm_id"], identity["version_id"]):
+            _, version = _algorithm_version_for_action(project_id, identity["algorithm_id"], identity["version_id"])
+            from platform_core.algorithms import is_trainable_version
+            if (not is_trainable_version(version, 'ultralytics') or version.get('trainable') is not True
+                    or version.get('framework') != 'ultralytics'):
+                raise HTTPException(status_code=409, detail="SCENARIO_MODEL_INELIGIBLE: 模型版本不再符合资格")
+            record = await asyncio.to_thread(recover_creation, repository, artifacts, project_id, creation_id, predictions)
+        return JSONResponse(status_code=202, content=public_deployment_test(record))
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
 @app.get("/api/v61/projects/{project_id}/deployment-tests/{task_id}")
 def get_deployment_test(project_id: str, task_id: str):
     return public_deployment_test(_require_shared_task(project_id, task_id, TaskKind.DEPLOYMENT_TEST))
 
 
+@app.post("/api/v61/projects/{project_id}/deployment-tests/{task_id}/retry")
+def retry_deployment_test(project_id: str, task_id: str):
+    from platform_core.deployment.scenario_preparation import creation_lock
+    repository, artifacts = shared_task_repository(), shared_task_artifacts()
+    with creation_lock(artifacts, task_id):
+        parent = _require_shared_task(project_id, task_id, TaskKind.DEPLOYMENT_TEST)
+        child = repository.get(task_id + '-prepare')
+        failed = {TaskStatus.FAILED, TaskStatus.BLOCKED_BY_ENVIRONMENT, TaskStatus.BLOCKED_BY_HARDWARE, TaskStatus.CANCELLED}
+        pending = 'deployment.input.pending' in parent.required_capabilities
+        if parent.status in failed:
+            if any(value is not None for value in (parent.process_pid, parent.process_create_time, parent.process_command_hash)):
+                from platform_core.task_runtime.process_control import ProcessIdentityMismatchError
+                if parent.process_pid is None or parent.process_create_time is None or not parent.process_command_hash:
+                    raise HTTPException(status_code=409, detail="原检测进程身份不完整，请先核验，不能重复执行")
+                try:
+                    process = ProcessController().inspect(_durable_process_identity(parent))
+                    if ProcessController._execution_alive(process):
+                        raise HTTPException(status_code=409, detail="原检测进程仍存活，请先停止并核验，不能重复执行")
+                except (ProcessLookupError, ProcessIdentityMismatchError):
+                    pass  # exact old process is gone; an unrelated reused PID is never signalled
+                except PermissionError as error:
+                    raise HTTPException(status_code=409, detail="无法确认原检测进程已退出，请先核验") from error
+            if pending and child and child.status in {TaskStatus.RUNNING, TaskStatus.CANCEL_REQUESTED}:
+                raise HTTPException(status_code=409, detail="原准备任务仍在收尾，请查询状态后安全重试")
+            parent = repository.retry(task_id)
+        elif parent.status not in {TaskStatus.QUEUED, TaskStatus.RUNNING}:
+            raise HTTPException(status_code=409, detail="只有失败或取消的检测可以重试")
+        if pending and child and child.status in failed:
+            repository.retry(child.task_id)
+        return public_deployment_test(parent)
+
+
 @app.post("/api/v61/projects/{project_id}/deployment-tests/{task_id}/cancel")
 def cancel_deployment_test(project_id: str, task_id: str):
     _require_shared_task(project_id, task_id, TaskKind.DEPLOYMENT_TEST)
-    return public_deployment_test(shared_task_repository().request_cancel(task_id))
+    repository = shared_task_repository()
+    task = repository.request_cancel(task_id)
+    child = repository.get(task_id + "-prepare")
+    if child and child.project_id == project_id and child.kind is TaskKind.DEPLOYMENT_PREPARE:
+        repository.request_cancel(child.task_id)
+    return public_deployment_test(task)
 
 
 @app.post("/api/v64/projects/{project_id}/deployment-tests/{task_id}/feedback-evidence")
@@ -24083,15 +24236,18 @@ def _public_detection_batch(project_id: str, batch_id: str, rows):
             "original_filename": str(meta.get("original_filename") or ""),
             "review": {},
             "models": {},
+            "expected_sides": [],
         })
         side = str(meta.get("side") or "").upper()
-        truth = task_to_public(task, repository)
+        item['expected_sides'] = sorted(set(item['expected_sides']) | set(meta.get('expected_sides') or [side]))
+        truth = public_deployment_test(task)
         model = request.get("model_identity") if isinstance(request.get("model_identity"), dict) else {}
         public_result = {
             "task_id": task.task_id,
             "status": truth.get("status"),
             "progress_percent": truth.get("progress_percent"),
             "phase": truth.get("phase"),
+            "creation_id": request.get("creation_id"),
             "model": model,
             "input_image_url": str(request.get("input_image_url") or ""),
             "result_image_url": str((result or {}).get("image_url") or request.get("image_url") or ""),
@@ -24116,8 +24272,8 @@ def _public_detection_batch(project_id: str, batch_id: str, rows):
     items = [grouped[index] for index in sorted(grouped)]
     completed = sum(
         1 for item in items
-        if item["models"] and all(
-            str(model.get("status") or "") in {"SUCCEEDED", "FAILED", "CANCELLED"}
+        if set(item['expected_sides']) <= set(item['models']) and item["models"] and all(
+            str(model.get("status") or "") in {"SUCCEEDED", "FAILED", "CANCELLED", "BLOCKED_BY_ENVIRONMENT", "BLOCKED_BY_HARDWARE"}
             for model in item["models"].values()
         )
     )
@@ -24134,6 +24290,7 @@ def _public_detection_batch(project_id: str, batch_id: str, rows):
         "created_at": min(created_values) if created_values else "",
         "updated_at": max(created_values) if created_values else "",
         "items": items,
+        "expected_sides": sorted({side for item in items for side in item['expected_sides']}),
     }
 
 

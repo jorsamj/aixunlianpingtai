@@ -1,5 +1,5 @@
 import {ADVANCED_MENUS, advancedPageInfo, installAdvancedNavigation} from './modules/advanced-navigation.js?v=20261024';
-import {installQualityDetectionWorkbench} from './modules/quality-detection-workbench.js?v=20261023p2';
+import {installQualityDetectionWorkbench} from './modules/quality-detection-workbench.js?v=20261027-recovery';
 import {installAdvancedEvaluation} from './modules/advanced-evaluation.js?v=20261023p2';
 import {renderLegacyMaterialCompatibility} from './modules/legacy-material-compatibility.js?v=20261023fullscan';
 import {createAnnotoriousEditor} from './modules/annotorious-editor.js?v=20261022a';
@@ -8,7 +8,7 @@ import {installConversionCatalogRuntime} from './modules/conversion-catalog-runt
 import {renderPrisonNightInspectionPage} from './modules/prison-night-inspection-entry.mjs?v=20261010g';
 import {actionRegistry, invokeAction, registerAction} from './modules/actions.js?v=421800';
 import {installRowActionMenu} from './modules/row-action-menu.js?v=4226385';
-import {messageFromApiError, withRequestDeadline} from './modules/api.js?v=20261021s';
+import {messageFromApiError, withRequestDeadline, fetchWithUploadProgress} from './modules/api.js?v=20261027-detection';
 import {createModalStack, installModalPresentation, loadingSkeleton} from './modules/modal.js?v=20261021';
 import {annotationPreviewFromBoxes, applyAnnotationResult} from './modules/annotation.js?v=422502';
 import {installNegativeSampleRuntime} from './modules/negative-samples.js?v=20261022a';
@@ -38,7 +38,7 @@ import {annotationReviewView, annotationSavePayload, createAnnotationWorkbench, 
 import {createTaskPoller, isTaskActive, taskProgress, waitForTaskTerminal} from './modules/task-poller.js?v=422002';
 import {annotationTaskView, buildCandidateDecisions} from './modules/annotation-task-view.js?v=422002';
 import {applyCleanConfirmation, cleanExecutionChoices, cleanExecutionMode, cleanSchedulingRequest, cleanScopeChoices, cleanScopeRequest, cleanScopeSupportsAnnotationAudit, cleanTaskView, isActiveCleanTask} from './modules/cleaning.js?v=422570';
-import {deploymentTaskView} from './modules/deployment-tests.js?v=422518';
+import {deploymentTaskView} from './modules/deployment-tests.js?v=422519';
 import {activeLabelOptions} from './modules/labels.js?v=421800';
 import {filterByAnyLabel, labelDisplay, labelsFromReferences, replaceMaterial} from './modules/materials.js?v=421800';
 import {uploadBatchFromResponse} from './modules/upload.js?v=421800';
@@ -114,6 +114,7 @@ window.PlatformCore = {
   presentation: {...modalPresentation, loadingSkeleton},
   messageFromApiError,
   withRequestDeadline,
+  fetchWithUploadProgress,
   annotation: {annotationPreviewFromBoxes, applyAnnotationResult},
   createAnnotoriousEditor,
   annotationWorkbench: {annotationReviewView, annotationSavePayload, createAnnotationWorkbench, queueWindow, annotationColor, withLegacyBoxIdentities},

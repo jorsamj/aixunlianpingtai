@@ -1,5 +1,5 @@
 const $=s=>document.querySelector(s);const $$=s=>Array.from(document.querySelectorAll(s));
-const api=async(url,opt={})=>{const uploadTicket=opt.body instanceof FormData&&String(opt.method||'').toUpperCase()==='POST'&&/^\/api\/projects\/[^/?]+\/images$/.test(url)?preparePlainUpload411(opt.body):null;const r=await fetch(url,opt);if(uploadTicket&&r.ok)finishPlainUpload411(uploadTicket);if(!r.ok){const raw=await r.text();let body={};try{body=JSON.parse(raw)}catch{body={detail:raw}}const message=body.message||body.detail?.message||'操作失败',detail=typeof body.detail==='string'&&body.detail!==message?`：${body.detail}`:'',solution=body.solution?`\n建议：${body.solution}`:'';const error=new Error(`${message}${detail}${solution}`||'请求失败');error.code=body.code||body.detail?.code||`HTTP_${r.status}`;error.httpStatus=r.status;if(uploadTicket&&error.code==='UPLOAD_REQUEST_MANIFEST_MISMATCH')finishPlainUpload411(uploadTicket);throw error}const ct=r.headers.get('content-type')||'';return ct.includes('json')?r.json():r.text()};
+const api=async(url,opt={})=>{const uploadTicket=opt.body instanceof FormData&&String(opt.method||'').toUpperCase()==='POST'&&/^\/api\/projects\/[^/?]+\/images$/.test(url)?preparePlainUpload411(opt.body):null;const r=await (typeof opt.onUploadProgress==='function'&&window.PlatformCore?.fetchWithUploadProgress?window.PlatformCore.fetchWithUploadProgress(url,opt):fetch(url,opt));if(uploadTicket&&r.ok)finishPlainUpload411(uploadTicket);if(!r.ok){const raw=await r.text();let body={};try{body=JSON.parse(raw)}catch{body={detail:raw}}const message=body.message||body.detail?.message||'操作失败',detail=typeof body.detail==='string'&&body.detail!==message?`：${body.detail}`:'',solution=body.solution?`\n建议：${body.solution}`:'';const error=new Error(`${message}${detail}${solution}`||'请求失败');error.code=body.code||body.detail?.code||`HTTP_${r.status}`;error.httpStatus=r.status;if(uploadTicket&&error.code==='UPLOAD_REQUEST_MANIFEST_MISMATCH')finishPlainUpload411(uploadTicket);throw error}const ct=r.headers.get('content-type')||'';return ct.includes('json')?r.json():r.text()};
 // Shared request identity for ordinary image uploads (fetch + XHR).
 // Session retry metadata is not a second Material/Annotation source of truth.
 const PLAIN_UPLOAD_PENDING_KEY411='plain-image-upload-request-ids-v1';
@@ -7896,7 +7896,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     if(title)title.textContent=(model?.label||model?.model_name||model?.path||'模型测试')+' · '+String(view.statusText||task?.status||'运行中');
     if(label)label.textContent=percent.toFixed(percent%1?1:0)+'%';
     if(bar){bar.dataset.progress=percent.toFixed(2);bar.style.transform='scaleX('+(percent/100).toFixed(4)+')'}
-    if(detail)detail.textContent=[view.runtimeText,view.phase].filter(Boolean).join(' · ');
+    if(detail)detail.textContent=[view.runtimeText,view.phaseText||view.phase].filter(Boolean).join(' · ');
     return true;
   }
   window.renderDetectionResult=function renderDetectionResultCanonical61(result,title){
@@ -7906,29 +7906,60 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   window.benchPredictOne=async function(selectId,file,conf,batchMeta=null){
     if(!file)throw new Error('请选择测试图片');const select=document.getElementById(selectId),model=batchMeta?.model||(state.testModels||[])[Number(select?.value)];if(!model)throw new Error('请选择可用测试模型');
     const format=String(model.runtime_format||String(model.path||'').split('.').pop()||'').toLowerCase(),vendor=['rknn','om','bmodel'].includes(format),framework=model.framework||'ultralytics';
-    const env=vendor?{}:(state.inferenceEnvs||[]).find(item=>item.framework===framework&&item.status==='ready');if(!vendor&&!env)throw new Error(`当前没有可用的${framework==='paddle'?'Paddle':'Ultralytics'} Runtime`);
+    const env=vendor?{}:(state.inferenceEnvs||[]).find(item=>item.framework===framework&&item.status==='ready');
     const project=String(batchMeta?.project_id||pid());
     const form=new FormData();if(batchMeta?.model_scope==='scenario')form.append('model_scope','scenario');form.append('file',file);form.append('model_name',model.model_name||model.path||'');form.append('model_source',model.model_source||'project');form.append('local_path',model.path||'');form.append('algorithm_id',model.algorithm_id||'');form.append('version_id',model.version_id||'');form.append('conf',conf||.25);form.append('inference_framework',framework);form.append('inference_env_id',env?.id||'');form.append('model_label',model.label||model.model_name||model.path||'');
     if(batchMeta?.batch_id){
       form.append('detection_batch_id',String(batchMeta.batch_id));form.append('detection_item_index',String(batchMeta.item_index??0));form.append('detection_item_total',String(batchMeta.item_total??1));form.append('detection_side',String(batchMeta.side||''));form.append('original_filename',String(batchMeta.original_filename||file.name||''));
+      if(batchMeta.model_scope==='scenario')form.append('detection_sides',String(batchMeta.expected_sides||batchMeta.side||''));
     }
-    let task;
-    try{task=await window.PlatformCore.withRequestDeadline(signal=>api(`/api/v61/projects/${project}/deployment-tests`,{method:'POST',body:form,signal}),{label:'检测任务创建'});}
-    catch(error){error.creationUncertain=!error.httpStatus||error.httpStatus>=500;throw error;}
+    const idempotentCreation=batchMeta?.model_scope==='scenario'&&!!batchMeta?.batch_id;
+    const creationId=idempotentCreation?String(batchMeta?.creation_id||crypto.randomUUID()):'';
+    if(idempotentCreation){form.append('creation_id',creationId);batchMeta.creation_id=creationId;}
+    const create=()=>{
+      if(batchMeta?.should_create&&!batchMeta.should_create())throw Object.assign(new Error('已停止后续检测，未重新提交原请求'),{httpStatus:400});
+      if(!vendor&&!env)throw Object.assign(new Error(`当前没有可用的${framework==='paddle'?'Paddle':'Ultralytics'} Runtime`),{httpStatus:400});
+      if(typeof file.arrayBuffer!=='function')throw Object.assign(new Error('服务端确认尚未创建且本地原图已随刷新释放，请重新选择原图'),{httpStatus:400});
+      const onUploadProgress=idempotentCreation?bytes=>{
+        const loaded=Math.max(0,Number(bytes.loadedBytes??bytes.loaded)||0),total=Math.max(0,Number(bytes.totalBytes??bytes.total)||0),complete=total>0&&loaded>=total;
+        batchMeta?.onProgress?.({id:null,status:'UPLOADING',status_text:complete?'正在创建检测任务':'正在上传图片',phase:complete?'CREATING_TASK':'UPLOADING_IMAGE',current_item:`已上传 ${loaded}${total?` / ${total}`:'（总量未知）'} 字节`});
+      }:undefined;
+      return window.PlatformCore.withRequestDeadline(signal=>api(`/api/v61/projects/${project}/deployment-tests`,{method:'POST',body:form,signal,onUploadProgress}),{label:'检测任务创建'});
+    };
+    const recoverStaged=()=>{
+      if(batchMeta?.should_create&&!batchMeta.should_create())throw Object.assign(new Error('已停止后续检测，未重新提交原请求'),{httpStatus:400});
+      return window.PlatformCore.withRequestDeadline(signal=>api(`/api/v61/projects/${project}/deployment-test-creations/${encodeURIComponent(creationId)}/recover`,{method:'POST',signal}),{label:'恢复原检测任务'});
+    };
+    let task=idempotentCreation?batchMeta?.initial_task:null;
+    try{
+      if(idempotentCreation&&!task&&batchMeta?.recover_creation){
+        const found=await window.PlatformCore.withRequestDeadline(signal=>api(`/api/v61/projects/${project}/deployment-test-creations/${encodeURIComponent(creationId)}`,{signal}),{label:'核验检测创建结果'});
+        if(found.creation_state==='CREATED')task=found.task||{id:found.task_id,status:'QUEUED'};
+        else if(found.creation_state==='NOT_CREATED'){if(found.staged_input_available)task=await recoverStaged();}
+        else throw Object.assign(new Error('检测创建仍在处理中，请稍后核验原请求'),{creationUncertain:true});
+      }
+      if(!task)try{task=await create();}catch(error){
+        if(!idempotentCreation||error.httpStatus&&error.httpStatus<500)throw error;
+        const found=await window.PlatformCore.withRequestDeadline(signal=>api(`/api/v61/projects/${project}/deployment-test-creations/${encodeURIComponent(creationId)}`,{signal}),{label:'核验检测创建结果'});
+        if(found.creation_state==='CREATED')task=found.task||{id:found.task_id,status:'QUEUED'};
+        else if(found.creation_state==='NOT_CREATED')task=found.staged_input_available?await recoverStaged():await create();
+        else throw Object.assign(new Error('检测创建仍在处理中，请稍后核验原请求'),{creationUncertain:true});
+      }
+    }catch(error){error.creationUncertain=!!error.creationUncertain||!error.httpStatus||error.httpStatus>=500;error.creation_id=creationId;throw error;}
     const taskId=task.id||task.task_id;
-    if(!taskId)throw new Error('部署测试任务创建失败');
-    task=await window.PlatformCore.taskPoller.waitForTaskTerminal({
+    if(!taskId)throw Object.assign(new Error('部署测试任务身份待核验，请恢复原请求'),{creationUncertain:true,creation_id:creationId});
+    try{task=await window.PlatformCore.taskPoller.waitForTaskTerminal({
       initialTask:task,
       registry:window.PollRegistryRuntime,
       key:`deployment-test:${taskId}`,
       ownerPages:['质量中心'],
       delay:900,
       maxAttempts:700,
-      load:()=>api(`/api/v62/projects/${project}/tasks/${taskId}`),
-      onUpdate:current=>{if(String(pid())===project)patchDeploymentTestProgress(current,taskId,model);batchMeta?.onProgress?.(current)},
-    });
-    if(task.status!=='SUCCEEDED')throw new Error(task.error||`部署测试未通过：${task.status}`);
-    const completed=await api(`/api/v61/projects/${project}/deployment-tests/${taskId}`);
+      load:()=>window.PlatformCore.withRequestDeadline(signal=>api(idempotentCreation?`/api/v61/projects/${project}/deployment-tests/${taskId}`:`/api/v62/projects/${project}/tasks/${taskId}`,{signal}),{label:'检测任务状态'}),
+      onUpdate:current=>{if(String(pid())===project){patchDeploymentTestProgress(current,taskId,model);batchMeta?.onProgress?.(current)}},
+    });}catch(error){error.creationUncertain=true;error.task_id=taskId;error.creation_id=creationId;throw error;}
+    if(task.status!=='SUCCEEDED')throw Object.assign(new Error(task.error||`部署测试未通过：${task.status}`),{task_id:taskId,task_status:task.status});
+    let completed;try{completed=await window.PlatformCore.withRequestDeadline(signal=>api(`/api/v61/projects/${project}/deployment-tests/${taskId}`,{signal}),{label:'检测结果读取'});}catch(error){error.creationUncertain=true;error.task_id=taskId;error.creation_id=creationId;throw error;}
     return {r:completed.result||{},m:model,env,task_id:taskId};
   };
 })();

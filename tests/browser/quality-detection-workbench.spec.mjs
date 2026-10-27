@@ -199,6 +199,7 @@ test('quality detection Real Chrome UI contract drives durable tasks for compare
   await page.locator('#benchRun64').click();
   await expect.poll(()=>creates.length).toBe(3);
   expect(creates[2].raw).toContain('\r\n\r\nA\r\n');
+  await expect.poll(()=>page.evaluate(()=>state.benchBatch64?.running)).toBe(false);
   await expect(page.locator('#scenarioQuickEvidence64 .scn-stages>section')).toHaveCount(1);
   await expect(page.getByRole('dialog',{name:'检测详情'})).toHaveCount(0);
 
@@ -237,6 +238,89 @@ test('quality detection Real Chrome UI contract drives durable tasks for compare
   }finally{
     await fs.rm(folder,{recursive:true,force:true});
   }
+
+  // An uncertain create remains inspectable and recovers the original task,
+  // even when no durable batch exists yet. No second upload is sent.
+  await page.evaluate(()=>window.clearBenchFiles64());
+  await page.locator('#benchFiles64').setInputFiles({name:'uncertain.bmp',mimeType:'image/bmp',buffer:bmp()});
+  await page.locator('#benchMode64').selectOption('a');
+  let lostCreates=0,lookupState='CREATING',creationId='';
+  await page.route(`**/api/v61/projects/${encoded}/deployment-tests`,async route=>{
+    lostCreates++;
+    const raw=route.request().postDataBuffer().toString('utf8');
+    creationId=raw.match(/name="creation_id"\r\n\r\n([^\r]+)/)?.[1]||'';
+    await route.abort('failed');
+  });
+  await page.route(`**/api/v61/projects/${encoded}/deployment-test-creations/*`,route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({creation_state:lookupState,task_id:'recovered-one',task:{id:'recovered-one',status:'QUEUED',phase:'PREPARING_MODEL'}})}));
+  await page.locator('#benchRun64').click();
+  await expect(page.locator('#benchRun64')).toHaveText('核验并恢复本次检测');
+  await expect(page.locator('#benchRun64')).toBeEnabled();
+  await expect(page.locator('#scenarioQuickEvidence64 figure img')).toBeVisible();
+  expect(creationId).toBeTruthy();
+  await page.reload();
+  await page.evaluate(()=>window.setPage('质量中心'));
+  await page.getByRole('button',{name:'场景算法实测',exact:true}).click();
+  await expect(page.locator('#benchRun64')).toHaveText('核验并恢复本次检测');
+  expect(await page.evaluate(()=>typeof state.benchBatch64.results[0].file.arrayBuffer)).toBe('undefined');
+  lookupState='CREATED';
+  await page.locator('#benchRun64').click();
+  await expect(page.locator('#benchBatchList64 .bench64-result-row.done')).toHaveCount(1);
+  expect(lostCreates).toBe(1);
+
+  await page.evaluate(()=>window.clearBenchFiles64());
+  await page.locator('#benchFiles64').setInputFiles({name:'partial.bmp',mimeType:'image/bmp',buffer:bmp()});
+  await page.locator('#benchAddCompare64').click();
+  await page.locator('#benchMode64').selectOption('compare');
+  let partialCreates=0,retries=0,failedB=true;
+  await page.route(`**/api/v61/projects/${encoded}/deployment-tests`,async route=>{
+    partialCreates++;
+    const raw=route.request().postDataBuffer().toString('utf8');
+    expect(raw).toContain('name="detection_sides"');expect(raw).toContain('\r\n\r\nA,B\r\n');
+    const side=raw.match(/name="detection_side"\r\n\r\n([^\r]+)/)?.[1];
+    await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({id:`retry-${side}`,status:'QUEUED',phase:'PREPARING_INPUT',input_image_url:'/placeholder.jpg'})});
+  });
+  await page.route(`**/api/v61/projects/${encoded}/deployment-tests/retry-*`,route=>{
+    const id=new URL(route.request().url()).pathname.split('/').at(-1);
+    return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({id,status:id==='retry-B'&&failedB?'FAILED':'SUCCEEDED',phase:'GENERATING_RESULT',error:id==='retry-B'&&failedB?'隔离准备失败':'',result:{detections:[{label:'object',confidence:.91,x1:10,y1:8,x2:52,y2:44}],input_image_url:'/placeholder.jpg'}})});
+  });
+  await page.route(`**/api/v61/projects/${encoded}/deployment-tests/retry-B/retry`,route=>{
+    retries++;failedB=false;return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({id:'retry-B',status:'QUEUED',phase:'PREPARING_MODEL'})});
+  });
+  await page.locator('#benchRun64').click();
+  await expect(page.locator('#benchBatchList64 .bench64-result-row.failed')).toHaveCount(1);
+  await expect(page.locator('#scenarioQuickEvidence64 svg rect').first()).toBeVisible();
+  await expect(page.getByRole('button',{name:'重试 B 原检测任务',exact:true})).toBeVisible();
+  await page.getByRole('button',{name:'重试 B 原检测任务',exact:true}).click();
+  await expect(page.locator('#benchBatchList64 .bench64-result-row.done')).toHaveCount(1);
+  expect(partialCreates).toBe(2);expect(retries).toBe(1);
+
+  await page.route(`**/api/v64/projects/${encoded}/detection-batches/history-active`,route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({batch:{batch_id:'history-active',total:1,items:[{index:0,original_filename:'history-active.bmp',expected_sides:['A','B'],models:{A:{status:'QUEUED',phase:'PREPARING_MODEL',task_id:'history-active-a',model:models[3],input_image_url:'/placeholder.jpg'}}}]}})}));
+  await page.evaluate(()=>window.openDetectionBatch64('history-active'));
+  await expect(page.locator('#benchBatchList64 .bench64-result-row.partial')).toHaveCount(1);
+  expect(partialCreates).toBe(2);
+
+  // Slow image decoding must survive ongoing task phases without image DOM churn.
+  await page.evaluate(()=>window.clearBenchFiles64());
+  await page.locator('#benchFiles64').setInputFiles({name:'slow.bmp',mimeType:'image/bmp',buffer:bmp()});
+  await page.locator('#benchMode64').selectOption('a');
+  let releaseImage,slowRequests=0,phaseReads=0,slowFinished=false;
+  const imageReady=new Promise(resolve=>{releaseImage=resolve;});
+  await page.route('**/slow-original.bmp',async route=>{slowRequests++;await imageReady;await route.fulfill({status:200,contentType:'image/bmp',body:bmp()});});
+  await page.route(`**/api/v61/projects/${encoded}/deployment-tests`,route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({id:'slow-task',status:'QUEUED',phase:'PREPARING_MODEL',input_image_url:'/slow-original.bmp'})}));
+  await page.route(`**/api/v61/projects/${encoded}/deployment-tests/slow-task`,route=>{
+    phaseReads++;return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({id:'slow-task',status:slowFinished?'SUCCEEDED':'QUEUED',phase:phaseReads%2?'PREPARING_INPUT':'LOADING_RUNTIME',input_image_url:'/slow-original.bmp',result:slowFinished?{detections:[],input_image_url:'/slow-original.bmp'}:undefined})});
+  });
+  await page.locator('#benchRun64').click();
+  await expect.poll(()=>slowRequests).toBeGreaterThan(0);
+  const slowImage=page.locator('#scenarioQuickEvidence64 .scn-stage img').first();
+  await slowImage.evaluate(node=>window.__slowEvidenceImage=node);
+  await expect.poll(()=>phaseReads).toBeGreaterThanOrEqual(3);
+  const sameImage=await slowImage.evaluate(node=>node===window.__slowEvidenceImage);
+  releaseImage();
+  await expect.poll(()=>slowImage.evaluate(node=>node.naturalWidth)).toBe(96);
+  expect(sameImage).toBe(true);
+  slowFinished=true;
+  await expect(page.locator('#benchBatchList64 .bench64-result-row.done')).toHaveCount(1);
 
   await page.locator('.scn-history summary').click();
   const history=page.locator('.bench64-history-row',{hasText:'history-batch'});

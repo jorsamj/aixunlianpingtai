@@ -1,3 +1,51 @@
+## 2026-10-27｜快速检测卡死、幂等创建与批次恢复（已完成待验收：最终SHA CI待核）
+
+基线fef8ddc27d8a8d017938f25a249ef1e284fbfda6 / VERSION42.24.392，fetch一致、工作树干净。保护训练锁/ZIP治理、5944及其他WIP；不部署/生产读写/真实GPU。用户本轮完整15项异常与图片预览要求纳入此唯一专项。
+
+已确认代码根因：v61在持久Task创建前进行scenario完整核验、模型hash与stage_deployment_test OSS传输；benchPredictOne无请求幂等ID，30s后仅creationUncertain。原批次从已持久部署任务重建，创建未落库时404无法解除未知锁。行先标running，预览无成功侧时直接空占位，状态文案并非Worker事实。真实生产慢在SHA/存储/SQLite哪一步尚未现场确认，不把代码风险当生产锁持有者证据。
+
+设计及执行计划（沿用户已确认范围直接实施）：
+
+- [x] A RED：必要API幂等/未创建/锁失败、Worker准备与恢复、前端未知/原图/部分成功的失败复现。
+- [x] B 在原TaskRepository复用准备子任务模式：新增DEPLOYMENT_PREPARE仅为原DEPLOYMENT_TEST持久准备阶段，父/子同库原子受理，父在准备成功前不可领取；不建新数据库或调度器。旧未传creation_id的v61行为兼容。场景新入口先持久ID、原图和选择身份，慢资格/SHA/OSS在原deployment-test角色Worker执行并按原fencing激活父任务。资格未通过始终不得推理。
+- [x] C creation_id稳定映射project+batch+item+side；相同身份不同内容拒绝409，同身份重试返回原Task，GET原创建身份明确CREATED/CREATING/NOT_CREATED，查询失败不得冒充未创建。缺失可用同ID安全提交（即使迟到POST仍只创建一次）。
+- [x] D 原workbench/API/poller统一恢复：真实创建/排队/准备/推理/结果阶段；状态未知同步预览且保留File本地原图，成功立即框展示、部分失败仍可查看，原批次刷新及安全重试/停止，不以解除按钮锁制造重复任务。
+- [x] E 定向Python/Node/Chrome、独立规格与质量复核、版本一次递增、普通提交push，最终SHA准确CI；不重复本地全仓测试。
+
+取舍：单纯延长30s掩盖慢准备，不采用；简单404清锁会与迟到POST重复创建，不采用；Web BackgroundTasks无持久恢复保障，不采用。沿原prepare→原Scheduler→原Worker/Agent路径，远程portable合同必须在慢准备完成后才可分配，不降模型资格/GT保护。状态与幂等证据存原Task与原payload，文件写入在SQLite事务外，发布前重新核验所有权。
+
+### 实际实现与验收证据
+
+VERSION42.24.393/cache440。本轮状态：代码已完成待验收，最终提交CI尚未核验，不能据本地绿色建议生产部署。
+
+| 需求 | 实际修改与结果 | 验证 |
+|---|---|---|
+| 稳定受理与重复提交 | scenario_preparation、TaskRepository原库原子插入父检测/准备子任务；project+creation_id确定ID，图片SHA及模型参数摘要冲突409 | API正常/重复/冲突、提交后响应丢失、真实SQLite写锁回滚 |
+| 创建快速返回 | 原v61新场景入口202返回持久Task；完整模型资格、SHA、OSS准备移到原deployment-test Worker角色；旧无creation_id接口兼容 | API禁止同步慢准备；模型资格仍双层核验 |
+| 异常恢复 | GET原创建身份区分CREATED/CREATING/NOT_CREATED/UNKNOWN；客户端有限自动核验与手动继续，查询失败不冒充未创建 | Node真实30s截止模拟、500已提交/请求未到达/查询失败 |
+| 无需重复上传 | SQLite失败留存的原图/初始请求可按原ID恢复；POST recover重算SHA/摘要并沿原版本fence受理；存在子任务/准备成果而父记录丢失保持UNKNOWN | 新2项先RED（缺暂存恢复、丢父误报未创建）后GREEN；篡改原图409 |
+| Worker安全 | 准备父任务不可分配节点；子lease/attempt/有效期校验后原子释放，写锁等待后重新取时间；模型引用保护包括准备子任务 | 真实过期lease/重启第二代准备、取消/迟到fence、版本引用、活PID拒绝重试 |
+| 真实阶段 | 原runner/本地Worker/远程Agent上报准备模型、输入、运行环境、推理、结果；字节上传来自XHR，整体数量来自真实侧任务 | runner1、Agent12；无GPU；阶段读错有诊断，不造百分比 |
+| 原图与详情 | 上传即本地原图，未知/失败仍保留，成功叠框；仅进度变化保留img DOM，A成功B失败仍可查看A | Chrome慢图跨3次阶段更新保持同一img并成功解码；部分失败、原任务重试 |
+| 刷新/停止 | 本地仅持久身份元数据，服务端原批次/Task恢复；停止后续检测不冒充取消正在运行任务；晚到响应不能再提交 | Node项目/代次/停止守卫、刷新无File恢复；Chrome刷新与缺B历史 |
+
+本地必要测试（重叠轮次不累计）：新API最终16/16，新增安全断言后定向2/2；此前相关API/资格/节点/非Web Worker组合120通过。runner新1/1、原Agent含新增阶段12/12。最终定向Node45/45（creation recovery、quality center、API、版本入口）；原相关分组57/57亦通过但不与45累计。最终真实Chrome原quality-detection-workbench单个复合场景1/1、28.5秒，覆盖单/多图、A/B、未知创建、原任务恢复、刷新、部分失败/原ID重试、慢图片与详情。API和浏览器均为隔离数据/模拟模型服务，不宣称生产推理端到端通过。没有运行本地全仓测试或真实GPU。
+
+RED及修复：新API最初3失败；暂存恢复与丢父保护新增2失败；慢图片因进度重建img造成请求中断真实RED，改原位保留后GREEN。审查发现写锁后lease时间陈旧、活动准备引用遗漏、活PID重试与缺B/CANCELLED误计完成，均已修复并有动态断言。测试夹具的共享队列前驱、异步首图导致旧测试提前清理、刷新默认隐藏B选择器也已按真实流程修正，未降低业务断言。独立只读最终复核未发现新增阻断。
+
+变更范围：app.py原v61/v64、原Task模型/Repository、原部署Worker/Agent/runner及节点准入；static/app.js原benchPredictOne、原API可选上传字节回调、workbench、部署阶段文案与必要缓存；新增一个准备适配模块，未新增任务数据库、轮询Owner、调度系统或GT结构。原CI工作流仅补受影响文件和现有测试接线。
+
+### 风险、部署前条件与接续
+
+- 生产故障请求的实际OSS/模型/SQLite耗时尚NOT VERIFIED；不得把代码同步慢路径当现场唯一根因。
+- 真实OSS/NAS、Linux远程Agent、收费/生产模型、GPU及生产性能NOT VERIFIED；仅隔离协议与进程测试。部署需Web、原deployment-test Worker及Agent/runner对应版本一致，否则新准备kind不会被旧Worker消费。
+- 基于Task元数据受理不等于模型已获准推理；完整成果/字节核验仍在Worker释放父任务前进行，失败保留原图及明确错误。
+- 已有持久证据却缺父记录为UNKNOWN并拒绝自动重建，须排查存储/记录损坏；不自动清除未知证据。浏览器从未传到服务端且刷新丢失File时，服务端没有原图可恢复，不伪造已上传。
+- 停止按钮语义是停止后续图片；已经受理任务继续由原任务系统管理。失败任务重试前检查活进程身份，未知进程保持保护。
+- 本轮不部署、不生产扫描/写入/素材删除/GT修改、不真实训练，5944及其他工作树WIP保留。
+- 接续先看本节、scenario_preparation.py、原benchPredictOne与新API/Node回归；不得新建第二套检测Owner。提交SHA以本节Git历史为准，最终准确CI回执待下方追加。
+
+
 # 场景算法准确性工作台、素材页及标注UI治理（2026-10-22）
 
 ## 2026-10-23｜P2 模型深度评测与迭代优化（唯一接续记录）

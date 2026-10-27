@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import logging
 import re
 import subprocess
 import sys
@@ -586,6 +587,8 @@ class AgentDeploymentRunner:
                 current_item=input_name,
             )
             started_at = time.perf_counter()
+            runtime_phase = workdir / "runtime-phase.json"
+            runtime_phase.unlink(missing_ok=True)
             with runtime_log.open("w", encoding="utf-8", errors="ignore") as log:
                 launched = launch_process(
                     command,
@@ -595,11 +598,25 @@ class AgentDeploymentRunner:
                     text=True,
                     encoding="utf-8",
                     errors="ignore",
+                    env={**os.environ, "CHANGLIAN_DEPLOYMENT_PROGRESS": str(runtime_phase)},
                 )
                 self._set_identity(launched.identity)
+                last_phase = ""
+                phase_warning_reported = False
                 try:
                     while launched.process.poll() is None:
                         self._assert_active(monitor)
+                        if runtime_phase.is_file():
+                            try:
+                                phase = json.loads(runtime_phase.read_text(encoding="utf-8")).get("phase")
+                            except (OSError, ValueError) as error:
+                                if not phase_warning_reported:
+                                    logging.getLogger(__name__).warning("agent deployment phase evidence unavailable task=%s generation=%s error=%s", lease.task_id, lease.generation, type(error).__name__)
+                                    phase_warning_reported = True
+                                phase = None
+                            if phase in {"PREPARING_MODEL", "INFERENCING", "GENERATING_RESULT"} and phase != last_phase:
+                                self._heartbeat(monitor, progress=35, stage="REMOTE_" + phase, current_item=input_name)
+                                last_phase = phase
                         time.sleep(self.process_poll_interval)
                 except (InterruptedError, RemoteExecutionFenced):
                     self.controller.terminate_tree(launched.identity, timeout=5.0)

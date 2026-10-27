@@ -133,6 +133,8 @@ def task_node_capability(task, artifacts) -> str | None:
     if task.kind in fixed:
         return fixed[task.kind]
     if task.kind is TaskKind.DEPLOYMENT_TEST:
+        if "deployment.input.pending" in task.required_capabilities:
+            return None
         try:
             payload = artifacts.read_json(task.task_id, task.payload_ref, default={})
         except (OSError, TypeError, ValueError):

@@ -1,3 +1,7 @@
+## 2026-10-27｜场景检测创建恢复（已完成待最终SHA CI）
+
+[唯一专项](docs/SCENARIO_MODEL_EVALUATION_UI_GOVERNANCE_2026_10_22.md)顶部记录真实根因、原Task异步准备/幂等创建与暂存原图恢复、lease与引用保护、真实阶段及原图稳定预览。VERSION393；新API16、最终Node45、Chrome复合场景1通过，独立审查无新增阻断；最终SHA CI待核，不借旧绿。生产OSS/GPU/性能NOT VERIFIED，不部署；5944/其他WIP保留，接续从专项顶部与原Owner开始。
+
 ## 2026-10-27｜训练SQLite锁、Lease与跨恢复计时（代码及隔离验收完成）
 
 [唯一专项](docs/TRAINING_SQLITE_LEASE_TIMING_2026_10_27.md)记录有限忙重试/确认期限、原fencing/GPU保护、短事务及登记前启动校验；原job执行片段/三时间/UTC/最终Worker与列表详情同步。VERSION392，d37400c6准确47/47 Actions、128/128 Checks成功，Node1357/Chrome301通过；末次ETA未知保护及文档自身HEAD交付前另核，不借旧绿。实际生产锁持有者、原任务首末/累计/Worker及真实GPU未核准；不部署/改生产，原ZIP/WIP/5944/模板保留。接续仅按专项的定向只读证据计划，不重复建设Owner或回填推测时间。

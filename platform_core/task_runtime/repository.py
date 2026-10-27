@@ -294,6 +294,54 @@ class TaskRepository:
             database.commit()
         return created
 
+    @retry_busy
+    def create_deployment_pair(self, parent: TaskRecord, child: TaskRecord) -> TaskRecord:
+        """Publish one detection plus its preparation atomically in the original queue."""
+        from .artifacts import ArtifactStore
+        from .task_logs import create_task_log
+        if (parent.kind is not TaskKind.DEPLOYMENT_TEST or child.kind is not TaskKind.DEPLOYMENT_PREPARE
+                or child.task_id != parent.task_id + "-prepare" or child.project_id != parent.project_id):
+            raise ValueError("invalid deployment preparation pair")
+        artifacts = ArtifactStore(self.path.parent / "artifacts")
+        for record in (parent, child):
+            create_task_log(artifacts, record.task_id, record.log_ref)
+        with closing(self._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            for record in (parent, child):
+                values = _to_values(record)
+                database.execute(f"INSERT INTO tasks ({','.join(values)}) VALUES ({','.join('?' for _ in values)})", tuple(values.values()))
+            database.commit()
+        return parent
+
+    @retry_busy
+    def settle_deployment_preparation(self, parent_id, child_lease, *, error=None, prepared_ref=None):
+        """Only the associated live preparation generation can release/fail its queued parent."""
+        if child_lease.task.task_id != str(parent_id) + "-prepare":
+            raise PermissionError("deployment preparation association mismatch")
+        with closing(self._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            now = utc_now()
+            child = database.execute("SELECT * FROM tasks WHERE task_id=?", (child_lease.task.task_id,)).fetchone()
+            if (child is None or child["kind"] != TaskKind.DEPLOYMENT_PREPARE.value
+                    or child["status"] != 'RUNNING' or child["lease_token"] != child_lease.lease_token
+                    or child["attempt"] != child_lease.task.attempt or not child["lease_expires_at"]
+                    or child["lease_expires_at"] <= now):
+                raise PermissionError("deployment preparation execution is fenced")
+            parent = database.execute("SELECT * FROM tasks WHERE task_id=?", (str(parent_id),)).fetchone()
+            if parent is None or parent["kind"] != 'DEPLOYMENT_TEST' or parent["project_id"] != child["project_id"]:
+                raise PermissionError("deployment preparation parent mismatch")
+            if parent["status"] != 'QUEUED':
+                raise InterruptedError("deployment parent is no longer queued")
+            if error is None:
+                if prepared_ref != f"scenario/prepared-{child_lease.task.attempt}.json":
+                    raise ValueError("invalid prepared deployment reference")
+                database.execute("UPDATE tasks SET required_capabilities=?,payload_ref=?,stage='queued',updated_at=? WHERE task_id=?",
+                                 (json.dumps(['deployment.runtime']), prepared_ref, now, str(parent_id)))
+            else:
+                database.execute("UPDATE tasks SET status='FAILED',stage='preparation_failed',error=?,finished_at=?,updated_at=? WHERE task_id=?",
+                                 (str(error)[:8000], now, now, str(parent_id)))
+            database.commit()
+
     def get(self, task_id: str) -> TaskRecord | None:
         with closing(self._connect()) as database:
             row = database.execute(

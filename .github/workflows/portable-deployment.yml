@@ -28,6 +28,10 @@ on:
       - 'tests/unit/test_node_agent_entrypoint.py'
       - 'tests/unit/storage/test_object_store_immutability.py'
       - 'tests/api/test_deployment_test_runtime.py'
+      - 'tests/api/test_detection_creation_recovery.py'
+      - 'tests/unit/test_deployment_runtime_progress.py'
+      - 'platform_core/deployment/scenario_preparation.py'
+      - 'platform_core/deployment/inference_tasks.py'
       - 'tests/api/test_scenario_model_eligibility.py'
       - 'tests/api/test_agent_result_upload_api.py'
       - 'tests/api/test_runtime_router_app_mount.py'
@@ -61,6 +65,10 @@ on:
       - 'tests/unit/test_node_agent_entrypoint.py'
       - 'tests/unit/storage/test_object_store_immutability.py'
       - 'tests/api/test_deployment_test_runtime.py'
+      - 'tests/api/test_detection_creation_recovery.py'
+      - 'tests/unit/test_deployment_runtime_progress.py'
+      - 'platform_core/deployment/scenario_preparation.py'
+      - 'platform_core/deployment/inference_tasks.py'
       - 'tests/api/test_scenario_model_eligibility.py'
       - 'tests/api/test_agent_result_upload_api.py'
       - 'tests/api/test_runtime_router_app_mount.py'
@@ -151,6 +159,8 @@ jobs:
           platform_core/storage/s3.py
           platform_core/storage/oss.py
           tests/api/test_deployment_test_runtime.py
+          tests/api/test_detection_creation_recovery.py
+          tests/unit/test_deployment_runtime_progress.py
           tests/api/test_scenario_model_eligibility.py
           tests/api/test_agent_result_upload_api.py
           tests/api/test_runtime_router_app_mount.py
@@ -159,6 +169,8 @@ jobs:
         run: >-
           python -m pytest -q
           tests/api/test_deployment_test_runtime.py
+          tests/api/test_detection_creation_recovery.py
+          tests/unit/test_deployment_runtime_progress.py
           tests/api/test_scenario_model_eligibility.py
           tests/api/test_agent_result_upload_api.py
           tests/api/test_runtime_router_app_mount.py

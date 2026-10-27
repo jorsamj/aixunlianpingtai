@@ -1,5 +1,32 @@
 // Bounds one existing owner's operation, including response decoding. This
 // utility neither sends requests nor retries mutations.
+// Optional upload transport for the original api() owner. Response decoding,
+// business errors, deadlines and mutation recovery remain with that owner.
+export function fetchWithUploadProgress(url, options = {}, xhrFactory = () => new XMLHttpRequest()) {
+  return new Promise((resolve, reject) => {
+    const xhr = xhrFactory(), signal = options.signal;
+    const cleanup = () => signal?.removeEventListener('abort', abort);
+    const fail = error => {cleanup();reject(error);};
+    const abort = () => {xhr.abort();fail(Object.assign(new Error('上传已取消，创建结果需要核验'), {name:'AbortError'}));};
+    if (signal?.aborted) return fail(Object.assign(new Error('请求已取消'), {name:'AbortError'}));
+    xhr.open(options.method || 'POST', url, true);
+    xhr.withCredentials = options.credentials === 'include';
+    for (const [key, value] of new Headers(options.headers || {})) xhr.setRequestHeader(key, value);
+    xhr.upload.onprogress = event => options.onUploadProgress?.({loadedBytes:event.loaded,totalBytes:event.lengthComputable?event.total:null,
+      loaded:event.loaded,total:event.total,lengthComputable:event.lengthComputable});
+    xhr.onerror = () => fail(new TypeError('图片传输网络异常，创建结果需要核验'));
+    xhr.onabort = () => fail(Object.assign(new Error('图片传输已中断'), {name:'AbortError'}));
+    xhr.onload = () => {
+      cleanup();
+      if (!xhr.status) {reject(new TypeError('图片上传响应状态未知，请核验原请求'));return;}
+      resolve(new Response(xhr.status === 204 ? null : xhr.responseText, {status:xhr.status,
+        headers:{'Content-Type':xhr.getResponseHeader('Content-Type') || 'application/octet-stream'}}));
+    };
+    signal?.addEventListener('abort', abort, {once:true});
+    try {xhr.send(options.body);} catch (error) {fail(error);}
+  });
+}
+
 export async function withRequestDeadline(operation, {timeoutMs = 30000, label = '请求', signal} = {}) {
   const controller = new AbortController();
   let timer, onAbort;

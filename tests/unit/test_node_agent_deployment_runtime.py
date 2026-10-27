@@ -80,6 +80,7 @@ class FakeControlClient:
         self.cancel_at_heartbeat = cancel_at_heartbeat
         self.fence_at_heartbeat = fence_at_heartbeat
         self.heartbeat_calls = 0
+        self.phases = []
         self.logs = []
         self.prepare_calls = []
         self.confirm_calls = []
@@ -88,6 +89,7 @@ class FakeControlClient:
 
     def heartbeat(self, _lease, **kwargs):
         self.heartbeat_calls += 1
+        self.phases.append(kwargs.get("stage"))
         if self.fence_at_heartbeat and self.heartbeat_calls >= self.fence_at_heartbeat:
             raise NodeExecutorHTTPError(
                 "EXECUTION_FENCED",
@@ -591,3 +593,17 @@ def test_rknn_board_runtime_rejects_chip_mismatch_before_process(tmp_path):
     assert outcome.status == "FAILED"
     assert "matching this task" in outcome.error
     assert client.prepare_calls == []
+
+
+def test_agent_reads_real_runtime_phase_without_control_plane_database(tmp_path):
+    current, downloads = lease()
+    transfer = FakeTransferSession(downloads)
+    client = FakeControlClient(transfer)
+    runner, runtime_root, _ = build_runner(tmp_path, client, transfer, sleep_seconds=.2)
+    script = runtime_root / "predict_ultralytics_runner.py"
+    text = script.read_text(encoding="utf-8").replace("time.sleep(0.2)",
+        "import os; Path(os.environ['CHANGLIAN_DEPLOYMENT_PROGRESS']).write_text(json.dumps({'phase':'INFERENCING'}), encoding='utf-8'); time.sleep(.2)")
+    script.write_text(text, encoding="utf-8")
+    outcome = runner.run(current)
+    assert outcome.status == "SUCCEEDED"
+    assert "REMOTE_INFERENCING" in client.phases

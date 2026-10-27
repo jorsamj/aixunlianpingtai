@@ -4,6 +4,8 @@ import json
 import subprocess
 import sys
 import time
+import os
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -144,7 +146,9 @@ def run_deployment_test(context) -> tuple[TaskStatus, str]:
     log_path = context.artifacts.artifact_path(context.task.task_id, log_ref)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     command = [python_path, str(runner), "--model", model_argument, "--input", str(image), "--output", str(output), "--conf", str(float(request.get("conf") or 0.25))]
-    context.heartbeat(progress=5, stage="LOADING_RUNTIME", current_item=image.name)
+    context.heartbeat(progress=0, stage="LOADING_RUNTIME", current_item=image.name)
+    progress_path = context.artifacts.artifact_path(context.task.task_id, f"runtime-phase-{context.task.attempt}.json")
+    progress_path.unlink(missing_ok=True)
     started = time.perf_counter()
     controller = ProcessController()
     with log_path.open("w", encoding="utf-8", errors="ignore") as log:
@@ -156,13 +160,27 @@ def run_deployment_test(context) -> tuple[TaskStatus, str]:
             text=True,
             encoding="utf-8",
             errors="ignore",
+            env={**os.environ, "CHANGLIAN_DEPLOYMENT_PROGRESS": str(progress_path)},
         )
         try:
             context.bind_process(launched.identity)
+            last_phase = "LOADING_RUNTIME"
+            phase_warning_reported = False
             while launched.process.poll() is None:
                 if context.cancel_requested():
                     controller.terminate_tree(launched.identity)
                     raise InterruptedError("deployment test cancelled")
+                if progress_path.is_file():
+                    try:
+                        phase = json.loads(progress_path.read_text(encoding="utf-8")).get("phase")
+                    except (OSError, ValueError) as error:
+                        if not phase_warning_reported:
+                            logging.getLogger(__name__).warning("deployment phase evidence unavailable task=%s generation=%s error=%s", context.task.task_id, context.task.attempt, type(error).__name__)
+                            phase_warning_reported = True
+                        phase = None  # interrupted atomic telemetry read; no fabricated stage
+                    if phase in {"PREPARING_MODEL", "INFERENCING", "GENERATING_RESULT"} and phase != last_phase:
+                        context.heartbeat(stage=phase, current_item=image.name)
+                        last_phase = phase
                 time.sleep(0.2)
         except ExecutionFencedError:
             controller.terminate_tree(launched.identity)
@@ -209,7 +227,9 @@ class DeploymentTestHandler:
 
 
 def worker_registration(_data_dir: Path):
+    from .scenario_preparation import ScenarioPreparationHandler
     return {
-        "handlers": {TaskKind.DEPLOYMENT_TEST: DeploymentTestHandler()},
-        "capabilities": {"deployment.runtime"},
+        "handlers": {TaskKind.DEPLOYMENT_TEST: DeploymentTestHandler(),
+                     TaskKind.DEPLOYMENT_PREPARE: ScenarioPreparationHandler(_data_dir)},
+        "capabilities": {"deployment.runtime", "deployment.prepare"},
     }

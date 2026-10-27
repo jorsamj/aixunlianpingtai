@@ -11,11 +11,13 @@ export function installQualityDetectionWorkbench({getState,api,toast,modal,close
 
   let reportSequence=0,reportController=null,reportLoading=false,reportError='',reportVersion=null,reportModel=null;
   let mountedProject='',historySequence=0,batchOpenSequence=0;
+  let creationVerifyKey64='',creationVerifyGeneration64=0;
   let comparisonSequence=0,comparisonController=null,comparison={};
   let matrixCell=null,curveClass='',classPage=0;
   const reportViews=()=>window.PlatformCore?.reports;
   let displayMode='accuracy',selectedIndex=0,listMode='grid',zoom=1,selectedBox=null;
   let classFilter='',confidence=.25,issueFilter='',showPred=true,showGT=true;
+  const quickEvidenceRenders64=new WeakMap();
   function detectionModels64(){return eligibleScenarioModels(state.scenarioTestModels||[]);}
   function modelGroup64(model){return `算法 · ${(state.algorithms||[]).find(row=>String(row.id)===String(model.algorithm_id))?.name||model.algorithm_name||model.algorithm_id}`;}
   const modelIdentity64=model=>model?`${model.algorithm_id}:${model.version_id}:${model.training_task_id}:${model.model_sha256}`:'';
@@ -166,6 +168,7 @@ export function installQualityDetectionWorkbench({getState,api,toast,modal,close
     const labels=[...new Set(rows.flatMap(row=>kind==='evaluation'?[...(row.gt_boxes||[]),...(row.pred_boxes||[])]:[...(row.a?.r?.detections||[]),...(row.b?.r?.detections||[])]).map(box=>String(box.label||'')).filter(Boolean))];
     const classOptions=kind==='evaluation'?(reportVersion.evaluation.per_class||[]).map(row=>({value:Number.isInteger(row.class_id)?`id:${row.class_id}`:String(row.label),name:row.label})):labels.map(label=>({value:label,name:label}));
     root.innerHTML=`${kind==='evaluation'?`<div class="scn-evidence-counts">${[['tp','已匹配 TP'],['fp','误检 FP'],['fn','漏检 FN']].map(([key,label])=>`<button class="btn small" aria-pressed="${issueFilter===key}" onclick="scenarioEvidenceFilter64('issue','${key}')">${label}</button>`).join('')}<span>仅筛选已保存证据（最多200图、每层120框），不代表完整测试集。</span>${matrixCell?'<button class="btn small" onclick="scenarioClearMatrix64()">清除矩阵筛选</button>':''}</div>`:''}<div class="scn-evidence-tools"><div class="row"><button class="btn small" onclick="scenarioEvidenceLayout64('grid')" aria-pressed="${listMode==='grid'}">图片网格</button><button class="btn small" onclick="scenarioEvidenceLayout64('list')" aria-pressed="${listMode==='list'}">图片列表</button><label>类别<select class="select" data-scn-class onchange="scenarioEvidenceFilter64('class',this.value)"><option value="">全部类别</option>${classOptions.map(row=>`<option value="${esc(row.value)}" ${row.value===classFilter?'selected':''}>${esc(row.name)}</option>`).join('')}</select></label>${kind==='evaluation'?`<label>问题类型<select class="select" data-scn-issue onchange="scenarioEvidenceFilter64('issue',this.value)">${[['','全部证据'],['tp','已匹配 TP'],['fp','误检'],['fn','漏检'],['wrong_class','类别错误'],['localization','定位待复核'],['low_confidence','低置信度（<0.5）']].map(([value,name])=>`<option value="${value}" ${value===issueFilter?'selected':''}>${name}</option>`).join('')}</select></label>`:''}</div><div class="row"><label><input type="checkbox" ${showPred?'checked':''} onchange="scenarioEvidenceFilter64('pred',this.checked)">预测框</label><label><input type="checkbox" ${showGT?'checked':''} ${kind==='evaluation'?'':'disabled'} onchange="scenarioEvidenceFilter64('gt',this.checked)">正式 GT</label><label>显示阈值<input class="input" data-scn-confidence type="number" value="${confidence}" min="0" max="1" step=".05" onchange="scenarioEvidenceFilter64('confidence',this.value)"></label><button class="btn small" onclick="scenarioEvidenceZoom64(-.25)" aria-label="缩小图片">−</button><button class="btn small" onclick="scenarioEvidenceZoom64(.25)" aria-label="放大图片">＋</button><button class="btn small" onclick="scenarioEvidenceZoom64(0)">适应窗口</button></div></div><div class="scn-inspection"><aside class="scn-queue ${listMode}" aria-label="图片结果队列">${choices.slice(selectedPage*24,(selectedPage+1)*24).map(({row,index})=>`<button class="scn-sample ${index===selectedIndex?'selected':''}" data-scn-sample="${index}" onclick="scenarioSelectSample64(${index})"><span class="scn-thumb" data-scn-thumb="${index}">${thumbnailUrl64(row,kind)?`<img src="${esc(thumbnailUrl64(row,kind))}" loading="lazy" alt="${esc(row.image||row.file?.name||'图片缩略图')}" onerror="this.hidden=true;this.parentElement.dataset.imageError='图片不可用'">`: ''}${kind==='evaluation'?`<b>${Number(row.fp_count||0)} FP · ${Number(row.fn_count||0)} FN</b>`:`<b>${({done:'完成',failed:'失败',running:'检测中',pending:'待提交',partial:'已停止后续',not_submitted:'未提交'})[row.status]||row.status}</b>`}</span><strong title="${esc(row.image||row.file?.name||'')}">${esc(row.image||row.file?.webkitRelativePath||row.file?.name||'图片')}</strong></button>`).join('')||'<div class="scn-empty">暂无匹配图片；未记录的错误类型不能由前端猜测。</div>'}<div class="scn-pagination"><button class="btn small" ${selectedPage===0?'disabled':''} onclick="scenarioEvidencePage64(-1)">上一页</button><span>${selectedPage+1}/${pages}</span><button class="btn small" ${selectedPage+1>=pages?'disabled':''} onclick="scenarioEvidencePage64(1)">下一页</button></div></aside><section class="scn-image-workspace"><div class="scn-image-navigation"><button class="btn small" ${choices.findIndex(item=>item.index===selectedIndex)<=0?'disabled':''} onclick="scenarioStepSample64(-1)">上一张</button><span>${choices.length?choices.findIndex(item=>item.index===selectedIndex)+1:0} / ${choices.length}</span><button class="btn small" ${choices.findIndex(item=>item.index===selectedIndex)>=choices.length-1?'disabled':''} onclick="scenarioStepSample64(1)">下一张</button></div><div class="scn-stages" data-scn-stages></div></section><aside class="scn-box-details" data-scn-box-details><h4>检测框与复核</h4><p>选择图片后查看真实框证据。</p></aside></div>`;
+    if(kind==='quick')root.querySelectorAll('[data-scn-sample]').forEach(node=>{const row=rows[Number(node.dataset.scnSample)],badge=node.querySelector('.scn-thumb b');if(badge&&row?.status==='cancelled')badge.textContent='已停止';else if(badge&&row?.status==='partial')badge.textContent='部分结果可用';});
     renderSelectedEvidence64(root,kind);
   }
   function activeEvidence64(){return document.querySelector(displayMode==='accuracy'?'#scenarioEvidence64':'#scenarioQuickEvidence64');}
@@ -202,7 +205,8 @@ export function installQualityDetectionWorkbench({getState,api,toast,modal,close
     revokeEvidenceUrls64();const controller=new AbortController();evidenceController=controller;
     const row=evidenceRows64(kind)[selectedIndex],host=root.querySelector('[data-scn-stages]'),aside=root.querySelector('[data-scn-box-details]');if(!row||!host)return;
     const project=String(pid()),current=()=>root.isConnected&&String(pid())===project&&!controller.signal.aborted;
-    const panels=kind==='evaluation'?[{side:'A',title:reportVersion.version_name||reportVersion.id,sample:row,model:reportModel,evaluation:reportVersion.evaluation}]:[['A',row.a],['B',row.b]].filter(([,value])=>value).map(([side,value])=>({side,title:resultName64(value,side),sample:{pred_boxes:value.r?.detections||[]},url:row.inputImageUrl||value.r?.input_image_url||row.previewUrl||'',value}));
+    const panels=kind==='evaluation'?[{side:'A',title:reportVersion.version_name||reportVersion.id,sample:row,model:reportModel,evaluation:reportVersion.evaluation}]:[['A',row.a],['B',row.b]].filter(([side,value])=>value||batch64()?.mode==='compare'||batch64()?.mode===side.toLowerCase()||batch64()?.mode==='restored'&&side==='A').map(([side,value])=>({side,title:resultName64(value,`${side} · ${row.sideProgress?.[side]||row.error||'等待任务结果'}`),sample:{pred_boxes:value?.r?.detections||[]},url:row.inputImageUrl||value?.r?.input_image_url||row.previewUrl||'',value}));
+    if(kind==='quick')for(const panel of panels)if(!panel.value&&row.sideTasks?.[panel.side]?.status==='CANCELLED')panel.title=`${panel.side} · 已停止`;
     if(kind==='evaluation'&&comparison.result?.comparable&&comparison.version){const other=(comparison.version.evaluation.error_samples||[]).find(sample=>sameFrozenSample(row,sample));if(other)panels.push({side:'B',title:comparison.version.version_name||comparison.version.id,sample:other,model:comparison.model,evaluation:comparison.version.evaluation});}
     if(!panels.length){host.innerHTML=`<div class="scn-empty" role="status"><b>${row.status==='failed'?'检测失败':row.status==='running'?'正在处理图片':row.status==='unknown'?'创建结果待核验':'等待检测结果'}</b><p>${esc(row.error||'真实任务完成后会直接显示首张图片。')}</p></div>`;return;}
     host.classList.toggle('paired',panels.length>1);host.innerHTML=panels.map(panel=>`<section><header>${esc(panel.side)} · ${esc(panel.title)}</header><div class="scn-stage"><p role="status">正在读取图片…</p><figure data-side="${panel.side}" hidden><img alt="${esc(row.image||row.file?.name||'检测原图')}" decoding="async"><svg hidden aria-label="预测与正式GT检测框" preserveAspectRatio="none"></svg></figure><button class="btn small" data-scn-image-retry hidden onclick="scenarioSelectSample64(${selectedIndex})">重试图片</button></div></section>`).join('');
@@ -223,6 +227,7 @@ export function installQualityDetectionWorkbench({getState,api,toast,modal,close
       const clues=sampleEvidenceDiagnostics(panel.sample,{evaluation:panel.evaluation}).localizationCandidates;
       if(clues.length)detail+=`<div class="scn-match-evidence"><b>${esc(panel.side)} · 定位几何候选（不改变正式匹配）</b>${clues.map(clue=>`<p>预测 #${clue.predictionIndex+1} → GT #${clue.groundTruthIndex+1} · IoU ${clue.iou.toFixed(3)}</p>`).join('')}</div>`;
     }
+    if(kind==='quick')detail+=Object.entries(row.sideTasks||{}).filter(([,task])=>task.id&&['FAILED','BLOCKED_BY_ENVIRONMENT','BLOCKED_BY_HARDWARE'].includes(task.status)).map(([side])=>`<button class="btn" onclick="retryBenchSide64(${selectedIndex},'${side}')">重试 ${side} 原检测任务</button>`).join('');
     aside.innerHTML=detail;
     aside.onclick=event=>{const button=event.target.closest('[data-scn-box]');if(!button)return;const [side,index]=button.dataset.scnBox.split(':'),target=host.querySelector(`figure[data-side="${side}"] svg [data-box-index="${index}"]`);aside.querySelectorAll('[data-scn-box]').forEach(node=>node.classList.toggle('selected',node===button));target?.focus();};
     const scrollPanels=[...host.querySelectorAll('.scn-stage')];let syncing=false;
@@ -255,6 +260,27 @@ export function installQualityDetectionWorkbench({getState,api,toast,modal,close
   function fileKey64(file){return [file?.name,file?.size,file?.lastModified,file?.webkitRelativePath||''].join('|')}
   function validImage64(file){return /^image\//i.test(String(file?.type||''))||IMAGE_RE64.test(String(file?.name||''))}
   function batch64(){return state.benchBatch64||null}
+  function clearCreationVerification64(){
+    creationVerifyGeneration64++;if(creationVerifyKey64)window.PollRegistryRuntime?.clear(creationVerifyKey64);creationVerifyKey64='';
+  }
+  function scheduleCreationVerification64(run,project){
+    if(!run?.outcomeUncertain||run.running||run.autoVerifyStopped||Number(run.autoVerifyAttempts||0)>=5||batch64()!==run||String(pid())!==project||state.page!=='质量中心'||!document.querySelector('.scenario-workbench'))return;
+    const key=`detection-creation-verify:${project}:${run.id}`;if(creationVerifyKey64===key)return;
+    const delays=[1000,2000,4000,8000,15000],generation=creationVerifyGeneration64;creationVerifyKey64=key;
+    window.PollRegistryRuntime?.startTimeout(key,['质量中心'],async()=>{
+      if(creationVerifyKey64===key)creationVerifyKey64='';
+      if(generation!==creationVerifyGeneration64||run.autoVerifyStopped||run.running||!run.outcomeUncertain||batch64()!==run||String(pid())!==project||state.page!=='质量中心'||!document.querySelector('.scenario-workbench'))return;
+      run.autoVerifyAttempts=Number(run.autoVerifyAttempts||0)+1;
+      await window.runBenchBatch64(true,true);
+    },delays[Number(run.autoVerifyAttempts||0)]);
+  }
+  function saveCreationMetadata64(run,project){
+    if(run&&String(pid())===String(project)&&state.benchBatch64!==run)return;
+    try{const key=`detection-creations64:${project}`;if(!run||!run.running&&!run.outcomeUncertain){localStorage.removeItem(key);return;}localStorage.setItem(key,JSON.stringify({...run,running:false,outcomeUncertain:true,results:run.results.map(row=>({...row,file:{name:row.file.name,webkitRelativePath:row.file.webkitRelativePath||''},previewUrl:'',status:['done','failed'].includes(row.status)?row.status:'unknown'}))}));}catch(_){}
+  }
+  function restoreCreationMetadata64(project){
+    try{const saved=JSON.parse(localStorage.getItem(`detection-creations64:${project}`)||'null');if(saved?.id&&saved.results?.length&&saved.results.every(row=>row.creationIds))return saved;}catch(_){}return null;
+  }
   function resultName64(result,fallback){return result?.m?.label||result?.m?.model_name||result?.m?.path||fallback}
 
   window.addBenchFiles64=function(input){
@@ -266,10 +292,11 @@ export function installQualityDetectionWorkbench({getState,api,toast,modal,close
     if(invalid)toast(`已忽略 ${invalid} 个非图片文件`);
   };
   window.clearBenchFiles64=function(){
-    if(state.benchBatch64?.running||state.benchBatch64?.outcomeUncertain)return toast('检测进行中或创建结果未知，请先等待完成或核验原批次');
+    if(state.benchBatch64?.running||state.benchBatch64?.outcomeUncertain)return toast('检测进行中或结果待核验，请先完成或恢复原请求');
     revokeEvidenceUrls64();
     for(const row of state.benchBatch64?.results||[]){if(row.previewUrl)URL.revokeObjectURL(row.previewUrl)}
     state.benchFiles64=[];state.benchBatch64=null;renderBenchFileQueue64();renderBenchBatch64();
+    saveCreationMetadata64(null,String(pid()));
   };
   window.removeBenchFile64=function(key){
     state.benchFiles64=(state.benchFiles64||[]).filter(file=>fileKey64(file)!==String(key));
@@ -292,17 +319,28 @@ export function installQualityDetectionWorkbench({getState,api,toast,modal,close
     const run=batch64(),box=document.getElementById('benchBatchSummary64');if(!box)return;
     if(!run){box.innerHTML='<div class="bench64-empty"><b>暂无本次检测结果</b><span>选择图片后开始检测，批量结果会保留在当前页面。</span></div>';return}
     const percent=run.total?Math.round(run.completed/run.total*100):0;
-    box.innerHTML=`<div class="bench64-summary-grid"><div><span>本次图片</span><b>${run.total}</b></div><div><span>已完成</span><b>${run.completed}</b></div><div><span>成功</span><b>${run.success}</b></div><div><span>失败</span><b>${run.failed}</b></div><div><span>进度</span><b>${percent}%</b></div></div><div class="bench64-runbar"><i style="transform:scaleX(${(percent/100).toFixed(4)})"></i></div><div class="row between"><span class="item-sub">${run.outcomeUncertain?'创建结果待核验；服务端可能已接收，请查询原批次，勿重复创建。':run.running?'正在按图片顺序执行真实模型推理。':run.cancelled?'已停止后续图片检测，已提交任务仍由任务中心管理。':'本次检测已结束。'}</span>${run.running?'<button class="btn danger small" onclick="stopBenchBatch64()">停止后续检测</button>':''}${run.outcomeUncertain?`<button class="btn" onclick="openDetectionBatch64('${esc(run.id)}')">查询本次批次结果</button>`:''}</div><p class="scn-run-status" role="status">${esc(run.progressMessage||'')}</p>`;
+    box.innerHTML=`<div class="bench64-summary-grid"><div><span>本次图片</span><b>${run.total}</b></div><div><span>已完成</span><b>${run.completed}</b></div><div><span>成功</span><b>${run.success}</b></div><div><span>失败</span><b>${run.failed}</b></div><div><span>进度</span><b>${percent}%</b></div></div><div class="bench64-runbar"><i style="transform:scaleX(${(percent/100).toFixed(4)})"></i></div><div class="row between"><span class="item-sub">${run.outcomeUncertain?'创建结果待核验；可按原请求身份查询并恢复。':run.running?'正在提交或处理检测任务，实际阶段见下方任务状态。':run.cancelled?'已停止后续图片检测，已提交任务仍由任务中心管理。':'本次检测已结束。'}</span>${run.running?'<button class="btn danger small" onclick="stopBenchBatch64()">停止后续检测</button>':''}${run.outcomeUncertain?'<button class="btn" onclick="runBenchBatch64(true)">核验并恢复本次检测</button>':''}</div><p class="scn-run-status" role="status">${esc(run.progressMessage||'')}</p>`;
+    const counts={submitted:0,queued:0,preparing:0,inferencing:0};
+    for(const row of run.results||[]){
+      const tasks=Object.values(row.sideTasks||{}).filter(task=>task.id);if(!tasks.length)continue;counts.submitted++;
+      const active=tasks.filter(task=>['QUEUED','RUNNING','PREPARING','WAITING_RESOURCE'].includes(String(task.status||'').toUpperCase()));
+      if(active.some(task=>/^(REMOTE_)?(INFERENCING|INFERENCE|PREDICTING|GENERATING_RESULT|VERIFYING_RESULT|UPLOADING_RESULT)$/i.test(task.phase||'')))counts.inferencing++;
+      else if(active.some(task=>/^(REMOTE_)?(PREPARING_MODEL|PREPARING_INPUT|DOWNLOADING_INPUT|LOADING_RUNTIME)$/i.test(task.phase||'')))counts.preparing++;
+      else if(active.some(task=>String(task.status).toUpperCase()==='QUEUED'))counts.queued++;
+    }
+    box.innerHTML+=`<div class="bench64-summary-grid">${[['submitted','已提交图片'],['queued','排队图片'],['preparing','准备图片'],['inferencing','检测中图片']].map(([key,label])=>`<div><span>${label}</span><b>${counts[key]}</b></div>`).join('')}</div><p class="item-sub">数量按图片去重，A/B 同图只计一次；同图优先显示检测中、准备、排队。任一侧失败计入失败图片，全部预期侧成功才计入成功，已成功侧仍可查看。</p>`;
+    if(run.outcomeUncertain){const remaining=Math.max(0,5-Number(run.autoVerifyAttempts||0));box.innerHTML+=`<p class="item-sub" role="status">${run.autoVerifyStopped?'已停止自动核验；可手动核验原请求。':remaining?`结果暂时无法确认：继续核验。最多剩余 ${remaining} 次自动核验，结束后可手动恢复，不会无限等待。`:'自动核验已用尽 5 次预算；请手动核验原请求，不会无限等待。'}</p>${!run.autoVerifyStopped&&remaining?'<button class="btn danger small" onclick="stopBenchBatch64()">停止后续检测</button>':''}`;}
   }
-  function updateScenarioProgress64(run,task,project){
+  function updateScenarioProgress64(run,task,project,row,index,side){
     if(String(pid())!==project||state.benchBatch64!==run)return;
-    const view=window.PlatformCore.deployment.deploymentTaskView(task);run.progressMessage=[view.statusText,view.phase,view.runtimeText].filter(Boolean).join(' · ');
+    const view=window.PlatformCore.deployment.deploymentTaskView(task);run.progressMessage=[view.statusText,view.phaseText||view.phase,view.runtimeText].filter(Boolean).join(' · ');
+    if(row){row.sideProgress||={};row.sideTasks||={};row.sideTasks[side]={id:task.id||task.task_id,status:task.status,phase:task.phase||task.stage||''};if(task.input_image_url)row.inputImageUrl=task.input_image_url;row.sideProgress[side]=run.progressMessage;row.status='running';patchBenchRow64(index,true);}
     const node=document.querySelector('.scn-run-status');if(node)node.textContent=run.progressMessage;
   }
   function rowHtml64(row,index){
     const aCount=Number(row.a?.r?.detections?.length||0),bCount=Number(row.b?.r?.detections?.length||0),review=row.review?REVIEW_NAMES64[row.review]||row.review:'未核验';
-    const status=row.status==='done'?'完成':row.status==='failed'?'失败':row.status==='running'?'检测中':row.status==='unknown'?'创建结果待核验':row.status==='partial'?'A已完成，B未提交':row.status==='not_submitted'?'未提交':'等待';
-    return `<div class="bench64-result-row ${row.status}" data-bench-result-id="${escAttr64(row.id)}"><div class="bench64-result-main"><b>${esc(row.file.webkitRelativePath||row.file.name)}</b><span>${status}${row.error?' · '+esc(row.error):''}</span></div><div><span>A 模型</span><b>${row.a?aCount+' 个目标':'—'}</b></div><div><span>B 模型</span><b>${row.b?bCount+' 个目标':'—'}</b></div><div><span>人工核验</span><b>${esc(review)}</b></div><button class="btn mini" ${row.status==='done'?'':'disabled'} onclick="openBenchResult64(${index})">查看详情</button></div>`;
+    const status=row.status==='done'?'完成':row.status==='failed'?'失败':row.status==='cancelled'?'已停止':row.status==='running'?(row.sideProgress?.[row.pendingSide]||'正在提交任务'):row.status==='unknown'?'创建结果待核验':row.status==='partial'?'部分结果可用，其他侧未完成':row.status==='not_submitted'?'未提交':'等待';
+    return `<div class="bench64-result-row ${row.status}" data-bench-result-id="${escAttr64(row.id)}"><div class="bench64-result-main"><b>${esc(row.file.webkitRelativePath||row.file.name)}</b><span>${esc(status)}${row.error?' · '+esc(row.error):''}</span></div><div><span>A 模型</span><b>${row.a?aCount+' 个目标':'—'}</b></div><div><span>B 模型</span><b>${row.b?bCount+' 个目标':'—'}</b></div><div><span>人工核验</span><b>${esc(review)}</b></div><button class="btn mini" onclick="scenarioSelectSample64(${index})">查看详情</button></div>`;
   }
   window.renderBenchBatch64=function(){
     summary64();
@@ -312,33 +350,48 @@ export function installQualityDetectionWorkbench({getState,api,toast,modal,close
     list.innerHTML=run.results.map(rowHtml64).join('');
     renderEvidenceWorkspace64(document.getElementById('scenarioQuickEvidence64'),run.results,'quick');
   };
-  function patchBenchRow64(index){
+  function patchBenchRow64(index,progressOnly=false){
     summary64();
     const run=batch64(),list=document.getElementById('benchBatchList64'),row=run?.results?.[index];if(!list||!row)return;
     let current=list.querySelector(`[data-bench-result-id="${CSS.escape(String(row.id))}"]`);
     const shell=document.createElement('div');shell.innerHTML=rowHtml64(row,index);const next=shell.firstElementChild;
     if(current&&next)current.replaceWith(next);else if(next)list.appendChild(next);
-    if(index===selectedIndex||!document.querySelector('#scenarioQuickEvidence64 .scn-inspection'))renderEvidenceWorkspace64(document.getElementById('scenarioQuickEvidence64'),run.results,'quick');
+    if(index===selectedIndex||!document.querySelector('#scenarioQuickEvidence64 .scn-inspection')){
+      const root=document.getElementById('scenarioQuickEvidence64'),previous=quickEvidenceRenders64.get(row);
+      const evidenceChanged=!previous||previous.a!==row.a||previous.b!==row.b||previous.input!==row.inputImageUrl;
+      if(!progressOnly||evidenceChanged||!root?.querySelector('.scn-inspection')){
+        renderEvidenceWorkspace64(root,run.results,'quick');quickEvidenceRenders64.set(row,{a:row.a,b:row.b,input:row.inputImageUrl});
+      }else{
+        const side=row.pendingSide,header=root.querySelector(`figure[data-side="${side}"]`)?.closest('section')?.querySelector('header');
+        if(header&&!row[String(side).toLowerCase()])header.textContent=`${side} · ${row.sideProgress?.[side]||''}`;
+      }
+    }
   }
-  window.stopBenchBatch64=function(){if(state.benchBatch64?.running)state.benchBatch64.cancelled=true};
+  window.stopBenchBatch64=function(){const run=batch64();if(run){run.cancelled=true;run.autoVerifyStopped=true;clearCreationVerification64();saveCreationMetadata64(run,String(pid()));summary64();}};
 
-  window.runBenchBatch64=async function(){
+  window.runBenchBatch64=async function(recover=false,automatic=false){
     if(state.benchBatch64?.running)return toast('本次检测仍在进行中');
-    if(state.benchBatch64?.outcomeUncertain)return toast('上次创建结果尚未确认，请先查询本次批次，不能盲目重试');
-    const files=[...(state.benchFiles64||[])];if(!files.length)return toast('请先选择一张或多张图片');
-    const mode=document.getElementById('benchMode64')?.value||'compare',conf=Math.max(0.001,Math.min(1,Number(document.getElementById('benchConf')?.value||.25)));
+    if(automatic&&state.benchBatch64?.autoVerifyStopped)return;
+    if(state.benchBatch64?.outcomeUncertain&&!recover)return window.runBenchBatch64(true);
+    const files=recover?state.benchBatch64.results.map(row=>row.file):[...(state.benchFiles64||[])];if(!files.length)return toast('请先选择一张或多张图片');
+    const mode=recover?state.benchBatch64.mode:document.getElementById('benchMode64')?.value||'compare',conf=recover?state.benchBatch64.conf:Math.max(0.001,Math.min(1,Number(document.getElementById('benchConf')?.value||.25)));
     const a=document.getElementById('benchModelA'),b=document.getElementById('benchModelB');
-    if((mode==='compare'||mode==='a')&&!a?.value)return toast('请选择 A 模型');
-    if((mode==='compare'||mode==='b')&&!b?.value)return toast('请选择 B 模型');
-    const runId=`bench-${Date.now()}`,project=String(pid()),models={A:selectedModel64('A'),B:selectedModel64('B')},run={id:runId,mode,total:files.length,completed:0,success:0,failed:0,running:true,cancelled:false,results:files.map((file,index)=>({id:`${runId}-${index}`,batchId:runId,itemIndex:index,file,status:'pending',a:null,b:null,error:'',review:'',reviewNote:''}))};
+    if(!recover&&(mode==='compare'||mode==='a')&&!a?.value)return toast('请选择 A 模型');
+    if(!recover&&(mode==='compare'||mode==='b')&&!b?.value)return toast('请选择 B 模型');
+    const runId=`bench-${crypto.randomUUID()}`,project=String(pid()),models=recover?state.benchBatch64.models:{A:selectedModel64('A'),B:selectedModel64('B')},run=recover?state.benchBatch64:{id:runId,mode,conf,models,total:files.length,completed:0,success:0,failed:0,running:true,cancelled:false,results:files.map((file,index)=>({id:`${runId}-${index}`,batchId:runId,itemIndex:index,file,status:'pending',a:null,b:null,error:'',review:'',reviewNote:'',creationIds:{A:crypto.randomUUID(),B:crypto.randomUUID()}}))};
+    clearCreationVerification64();if(!automatic){run.autoVerifyAttempts=0;run.autoVerifyStopped=false;}
+    run.running=true;run.cancelled=false;run.outcomeUncertain=false;
+    saveCreationMetadata64(run,project);
     selectedIndex=0;state.benchBatch64=run;renderBenchBatch64();
     const button=document.getElementById('benchRun64');if(button){button.disabled=true;button.textContent='检测进行中…'}
+    const shouldCreate=()=>!run.cancelled&&!run.autoVerifyStopped&&state.benchBatch64===run&&String(pid())===project;
     try{
       for(let index=0;index<run.results.length;index++){
         if(run.cancelled||state.benchBatch64!==run||String(pid())!==project)break;
-        const row=run.results[index];row.status='running';patchBenchRow64(index);
+        if(run.retryIndex!=null&&Number(run.retryIndex)!==index)continue;
+        const row=run.results[index];if(['done','failed'].includes(row.status))continue;const wasUnknown=row.status==='unknown';row.status='running';row.error='';patchBenchRow64(index);
         try{
-          if(mode==='compare'||mode==='a'){row.pendingSide='A';row.a=await window.benchPredictOne('benchModelA',row.file,conf,{batch_id:run.id,item_index:index,item_total:run.total,side:'A',model:models.A,project_id:project,model_scope:'scenario',onProgress:task=>updateScenarioProgress64(run,task,project),original_filename:row.file.webkitRelativePath||row.file.name});}
+          if((!run.restored||row.sideTasks?.A?.id)&&(run.retrySide?run.retrySide==='A':mode==='compare'||mode==='a')&&!row.a){row.pendingSide='A';row.a=await window.benchPredictOne('benchModelA',row.file,conf,{should_create:shouldCreate,expected_sides:mode==='compare'?'A,B':mode.toUpperCase(),initial_task:row.resumeTasks?.A,creation_id:row.creationIds.A,recover_creation:wasUnknown,batch_id:run.id,item_index:index,item_total:run.total,side:'A',model:models.A,project_id:project,model_scope:'scenario',onProgress:task=>updateScenarioProgress64(run,task,project,row,index,'A'),original_filename:row.file.webkitRelativePath||row.file.name});}
           if(state.benchBatch64!==run||String(pid())!==project)break;
           if(run.cancelled){
             row.status=mode==='a'?'done':'partial';
@@ -346,16 +399,30 @@ export function installQualityDetectionWorkbench({getState,api,toast,modal,close
             for(const pending of run.results.slice(index+1))if(pending.status==='pending')pending.status='not_submitted';
             renderBenchBatch64();break;
           }
-          if(mode==='compare'||mode==='b'){row.pendingSide='B';row.b=await window.benchPredictOne('benchModelB',row.file,conf,{batch_id:run.id,item_index:index,item_total:run.total,side:'B',model:models.B,project_id:project,model_scope:'scenario',onProgress:task=>updateScenarioProgress64(run,task,project),original_filename:row.file.webkitRelativePath||row.file.name});}
-          row.status='done';run.success+=1;
-        }catch(error){row.status=error.creationUncertain?'unknown':'failed';row.error=String(error?.message||error);if(error.creationUncertain){run.outcomeUncertain=true;run.cancelled=true;}else run.failed+=1;}
+          if((!run.restored||row.sideTasks?.B?.id)&&(run.retrySide?run.retrySide==='B':mode==='compare'||mode==='b')&&!row.b){row.pendingSide='B';row.b=await window.benchPredictOne('benchModelB',row.file,conf,{should_create:shouldCreate,expected_sides:mode==='compare'?'A,B':mode.toUpperCase(),initial_task:row.resumeTasks?.B,creation_id:row.creationIds.B,recover_creation:wasUnknown,batch_id:run.id,item_index:index,item_total:run.total,side:'B',model:models.B,project_id:project,model_scope:'scenario',onProgress:task=>updateScenarioProgress64(run,task,project,row,index,'B'),original_filename:row.file.webkitRelativePath||row.file.name});}
+          row.status=mode==='compare'&&(!row.a||!row.b)?'partial':'done';if(row.status==='done')run.success+=1;
+        }catch(error){row.status=error.creationUncertain?'unknown':'failed';row.error=String(error?.message||error);if(error.task_id){row.resumeTasks||={};row.resumeTasks[row.pendingSide]={id:error.task_id,status:'QUEUED'};row.sideTasks||={};row.sideTasks[row.pendingSide]={id:error.task_id,status:error.task_status||'UNKNOWN'};}if(error.creationUncertain){run.outcomeUncertain=true;run.cancelled=true;}else run.failed+=1;}
         if(row.status!=='unknown')run.completed+=1;if(String(pid())===project&&state.benchBatch64===run){patchBenchRow64(index);if(row.status==='done'&&!run.firstResultShown){run.firstResultShown=true;document.getElementById('scenarioQuickEvidence64')?.scrollIntoView({block:'start',behavior:'auto'});}}
       }
     }finally{
-      run.running=false;if(String(pid())===project&&state.benchBatch64===run)summary64();
-      if(button?.isConnected){button.disabled=!!run.outcomeUncertain;button.textContent=run.outcomeUncertain?'请先核验创建结果':'开始本次检测'}
-      if(String(pid())===project)void window.loadDetectionBatches64?.({force:true});
+      run.running=false;run.completed=run.results.filter(row=>['done','failed'].includes(row.status)).length;run.success=run.results.filter(row=>row.status==='done').length;run.failed=run.results.filter(row=>row.status==='failed').length;saveCreationMetadata64(run,project);if(String(pid())===project&&state.benchBatch64===run)summary64();
+      if(button?.isConnected&&String(pid())===project&&state.benchBatch64===run){button.disabled=false;button.textContent=run.outcomeUncertain?'核验并恢复本次检测':'开始本次检测'}
+      if(String(pid())===project&&state.benchBatch64===run){if(run.outcomeUncertain)scheduleCreationVerification64(run,project);else clearCreationVerification64();void window.loadDetectionBatches64?.({force:true});}
     }
+  };
+
+  window.retryBenchSide64=async function(index,side){
+    const run=batch64(),row=run?.results?.[Number(index)],task=row?.sideTasks?.[side],project=String(pid());
+    if(!row||run.running||!task?.id||!['FAILED','BLOCKED_BY_ENVIRONMENT','BLOCKED_BY_HARDWARE'].includes(task.status))return;
+    run.running=true;summary64();
+    try{
+      const reply=await withRequestDeadline(signal=>api(`/api/v61/projects/${project}/deployment-tests/${encodeURIComponent(task.id)}/retry`,{method:'POST',signal}),{label:'重试原检测任务'});
+      if(String(pid())!==project||batch64()!==run)return;
+      const resumed=reply.task||reply;if(String(resumed.id||resumed.task_id)!==String(task.id))throw new Error('重试返回的任务身份不一致');
+      row.resumeTasks||={};row.resumeTasks[side]=resumed;row.status='unknown';row.error='';run.outcomeUncertain=true;
+    }catch(error){if(String(pid())===project&&batch64()===run)toast(error.message||error);return;}
+    finally{run.running=false;}
+    run.retrySide=side;run.retryIndex=Number(index);try{await window.runBenchBatch64(true);}finally{if(!run.outcomeUncertain){delete run.retrySide;delete run.retryIndex;}}
   };
 
   window.markBenchReview64=async function(index,value){
@@ -408,7 +475,7 @@ export function installQualityDetectionWorkbench({getState,api,toast,modal,close
   };
 
   function durableSide64(model){
-    if(!model||model.status&&model.status!=='SUCCEEDED')return null;
+    if(!model||model.status!=='SUCCEEDED'||!Array.isArray(model.detections))return null;
     const identity=model.model||{};
     return {
       task_id:model.task_id||'',
@@ -422,14 +489,18 @@ export function installQualityDetectionWorkbench({getState,api,toast,modal,close
   function batchFromDurable64(batch){
     const items=batch?.items||[],results=items.map(item=>{
       const a=durableSide64(item.models?.A),b=durableSide64(item.models?.B),statuses=[item.models?.A?.status,item.models?.B?.status].filter(Boolean);
-      const failed=statuses.some(status=>status==='FAILED'),pending=statuses.some(status=>!['SUCCEEDED','FAILED','CANCELLED'].includes(String(status||'')));
+      const expected=item.expected_sides||batch.expected_sides||Object.keys(item.models||{}),missing=(Array.isArray(expected)?expected:String(expected).split(',')).some(side=>!item.models?.[side]);
+      const failed=statuses.some(status=>['FAILED','BLOCKED_BY_ENVIRONMENT','BLOCKED_BY_HARDWARE'].includes(status)),pending=statuses.some(status=>!['SUCCEEDED','FAILED','CANCELLED','BLOCKED_BY_ENVIRONMENT','BLOCKED_BY_HARDWARE'].includes(String(status||'')));
+      const cancelled=statuses.includes('CANCELLED'),sides=Array.isArray(expected)?expected:String(expected).split(','),complete=sides.length>0&&sides.every(side=>item.models?.[side]?.status==='SUCCEEDED'&&(side==='A'?a:b));
       return {
         id:`${batch.batch_id}-${item.index}`,batchId:batch.batch_id,itemIndex:Number(item.index||0),
         file:{name:item.original_filename||`图片 ${Number(item.index||0)+1}`},originalFilename:item.original_filename||'',inputImageUrl:item.models?.A?.input_image_url||item.models?.B?.input_image_url||'',
-        status:pending?'running':failed?'failed':'done',a,b,error:item.models?.A?.error||item.models?.B?.error||'',review:item.review?.review||'',reviewNote:item.review?.note||''
+        status:pending?'unknown':failed?'failed':cancelled?(a||b?'partial':'cancelled'):missing||!complete?(a||b?'partial':'not_submitted'):'done',a,b,creationIds:{A:item.models?.A?.creation_id||crypto.randomUUID(),B:item.models?.B?.creation_id||crypto.randomUUID()},resumeTasks:Object.fromEntries(Object.entries(item.models||{}).filter(([,value])=>value.task_id&&!['SUCCEEDED','FAILED','CANCELLED','BLOCKED_BY_ENVIRONMENT','BLOCKED_BY_HARDWARE'].includes(value.status)).map(([side,value])=>[side,{id:value.task_id,status:'QUEUED'}])),sideTasks:Object.fromEntries(Object.entries(item.models||{}).map(([side,value])=>[side,{id:value.task_id,status:value.status}])),sideProgress:Object.fromEntries(Object.entries(item.models||{}).map(([side,value])=>[side,value.phase||value.status])),error:item.models?.A?.error||item.models?.B?.error||'',review:item.review?.review||'',reviewNote:item.review?.note||''
       };
     });
-    return {id:batch.batch_id,mode:'restored',total:Number(batch.total||results.length),completed:Number(batch.completed_items||0),success:Math.max(0,Number(batch.completed_items||0)-Number(batch.failed_items||0)),failed:Number(batch.failed_items||0),running:false,cancelled:false,results};
+    results.forEach((row,index)=>{for(const [side,task] of Object.entries(row.sideTasks||{})){const source=items[index].models[side];task.phase=source.phase||'';if(row.resumeTasks?.[side])Object.assign(row.resumeTasks[side],{status:task.status,phase:task.phase,input_image_url:source.input_image_url});}});
+    const expected=[batch.expected_sides||[],...items.map(item=>item.expected_sides||[])].flatMap(value=>Array.isArray(value)?value:String(value).split(',')),hasA=expected.includes('A')||items.some(item=>item.models?.A),hasB=expected.includes('B')||items.some(item=>item.models?.B),models={A:items.find(item=>item.models?.A)?.models.A.model,B:items.find(item=>item.models?.B)?.models.B.model};
+    return {id:batch.batch_id,restored:true,outcomeUncertain:results.some(row=>row.status==='unknown'),mode:hasA&&hasB?'compare':hasB?'b':'a',models,conf:.25,total:Number(batch.total||results.length),completed:results.filter(row=>['done','failed'].includes(row.status)).length,success:results.filter(row=>row.status==='done').length,failed:results.filter(row=>row.status==='failed').length,running:false,cancelled:false,results};
   }
   window.renderDetectionBatchHistory64=function(){
     const root=document.getElementById('benchRecentBatches64');if(!root)return;
@@ -463,6 +534,7 @@ export function installQualityDetectionWorkbench({getState,api,toast,modal,close
       }
       state.benchBatch64=batchFromDurable64(result.batch);window.setScenarioMode64('quick');window.renderBenchBatch64();
       const button=document.getElementById('benchRun64');if(button){button.disabled=false;button.textContent='开始本次检测';}
+      if(state.benchBatch64?.outcomeUncertain)void window.runBenchBatch64(true);
     }catch(error){if(String(pid())===project&&sequence===batchOpenSequence&&state.benchBatch64===pending&&error.name!=='AbortError')toast(error.message||error);}
   };
 
@@ -510,16 +582,19 @@ export function installQualityDetectionWorkbench({getState,api,toast,modal,close
       if(notices&&notices.innerHTML!==nextNotices)notices.innerHTML=nextNotices;
       patchBenchModelBrowser64('A');patchBenchModelBrowser64('B');
     }
+    if(mounted&&!state.benchBatch64)state.benchBatch64=restoreCreationMetadata64(project);
     if(mounted){
       window.renderBenchFileQueue64();window.renderBenchBatch64();window.renderDetectionBatchHistory64();
-      patchBenchModelBrowser64('A');patchBenchModelBrowser64('B');window.setScenarioMode64('accuracy');
+      patchBenchModelBrowser64('A');patchBenchModelBrowser64('B');window.setScenarioMode64(state.benchBatch64?.outcomeUncertain?'quick':'accuracy');
+      if(state.benchBatch64?.outcomeUncertain){const button=document.getElementById('benchRun64');if(button)button.textContent='核验并恢复本次检测';}
     }else{
       summary64();window.renderDetectionBatchHistory64();
     }
+    if(state.benchBatch64?.outcomeUncertain)scheduleCreationVerification64(state.benchBatch64,project);
     void window.loadDetectionBatches64();window.renderOnlineFeedbackPanel63?.(view);
   };
 
-  function deactivate64(){comparisonController?.abort();comparisonSequence++;comparison={};reportViews()?.disposeReportViews?.(document.querySelector('.scenario-workbench'));reportController?.abort();reportSequence++;reportLoading=false;reportError='';reportVersion=null;reportModel=null;batchOpenSequence++;revokeEvidenceUrls64();}
+  function deactivate64(){clearCreationVerification64();if(batch64())batch64().autoVerifyStopped=true;comparisonController?.abort();comparisonSequence++;comparison={};reportViews()?.disposeReportViews?.(document.querySelector('.scenario-workbench'));reportController?.abort();reportSequence++;reportLoading=false;reportError='';reportVersion=null;reportModel=null;batchOpenSequence++;revokeEvidenceUrls64();}
   function mountEvaluationEvidence(root,{model,version,rows,comparison:other}={}){
     deactivate64();displayMode='accuracy';selectedIndex=0;zoom=1;classFilter='';issueFilter='';matrixCell=null;confidence=0;showGT=true;showPred=true;
     reportModel=model;reportVersion={...version,evaluation:{...version.evaluation,error_samples:rows||[]}};
