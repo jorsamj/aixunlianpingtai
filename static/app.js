@@ -7914,7 +7914,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
       if(batchMeta.model_scope==='scenario')form.append('detection_sides',String(batchMeta.expected_sides||batchMeta.side||''));
     }
     const idempotentCreation=batchMeta?.model_scope==='scenario'&&!!batchMeta?.batch_id;
-    const creationId=idempotentCreation?String(batchMeta?.creation_id||crypto.randomUUID()):'';
+    const creationId=idempotentCreation?String(batchMeta?.creation_id||`${batchMeta.batch_id}-${batchMeta.item_index??0}-${batchMeta.side||selectId}`):'';
     if(idempotentCreation){form.append('creation_id',creationId);batchMeta.creation_id=creationId;}
     const create=()=>{
       if(batchMeta?.should_create&&!batchMeta.should_create())throw Object.assign(new Error('已停止后续检测，未重新提交原请求'),{httpStatus:400});
