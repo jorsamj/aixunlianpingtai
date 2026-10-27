@@ -952,12 +952,12 @@ test('Sophon FP32 user parameters survive SDK recheck and truthful execution det
   await dialog.locator('#conv428Width').fill('640');await dialog.locator('#conv428Height').fill('384');await dialog.locator('#conv428Height').blur();
   await expect(dialog.locator('#conv428Precision')).toHaveValue('fp32');
   await dialog.locator('#conv428Preprocess > summary').click();
-  await dialog.locator('#conv428Pixel').selectOption('bgr');await dialog.locator('#conv428Letterbox').uncheck();
+  await dialog.locator('#conv428InputColor').selectOption('bgr');await dialog.locator('#conv428Letterbox').uncheck();
   await expect(dialog.locator('[data-convert-submit]')).toBeEnabled();
   await page.screenshot({path:testInfo.outputPath('sophon-precision-form.png')});
   await dialog.locator('[data-convert-submit]').click();await expect.poll(()=>submitted).not.toBeNull();
   expect(posts).toBe(1);expect(submitted.params).toMatchObject({precision:'fp32',chip:'bm1684x',input_width:640,input_height:384,
-    preprocessing:{pixel_format:'bgr',letterbox:false}});
+    source_color_order:'rgb',input_color_order:'bgr',preprocessing:{pixel_format:'bgr',letterbox:false}});
   const history=page.getByRole('dialog',{name:'版本转换'});await history.locator('.convert428-evidence > summary').click();
   await expect(history).toContainText('F32');await expect(history).toContainText('未核验');await expect(history).toContainText('未实机验证');
   await page.screenshot({path:testInfo.outputPath('sophon-precision-evidence.png')});

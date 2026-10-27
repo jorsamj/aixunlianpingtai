@@ -80,7 +80,7 @@ test('conversion submit freezes current fields before revalidation and ignores s
   const start=source.indexOf('  const conversionUnknown428=');
   const end=source.indexOf('// ---------------------- training creation from algorithm',start);
   const fields={conv428Resource:{value:'r'},conv428Precision:{value:'fp32'},conv428Chip:{value:'bm1684x'},
-    conv428Width:{value:'384'},conv428Height:{value:'640'},conv428Pixel:{value:'bgr'},
+    conv428Width:{value:'384'},conv428Height:{value:'640'},conv428InputColor:{value:'bgr'},
     conv428Mean:{value:'1,2,3'},conv428Scale:{value:'0.1,0.2,0.3'},conv428Letterbox:{checked:false}};
   const radio={value:'sophon',dataset:{vendorId:'sophon'}},form={dataset:{}},button={disabled:false,setAttribute(){},removeAttribute(){}};
   const state={conv428ResourcesCurrent:true,conv428Resolved:{ready:true,params:{precision:'fp16',input_width:800,input_height:800,preprocessing:{pixel_format:'rgb'}}},conv428AdvancedValues:{}};
@@ -96,6 +96,7 @@ test('conversion submit freezes current fields before revalidation and ignores s
   await Promise.resolve();revalidate({items:[{id:'r',status:'ready',targets:['sophon']}]});await pending;
   assert.equal(writes.length,1);assert.equal(writes[0].params.precision,'fp32');
   assert.equal(writes[0].params.input_width,384);assert.equal(writes[0].params.input_height,640);
+  assert.equal(writes[0].params.input_color_order,'bgr');assert.equal(writes[0].params.source_color_order,'rgb');
   assert.equal(writes[0].params.preprocessing.pixel_format,'bgr');assert.equal(writes[0].params.preprocessing.letterbox,false);
 });
 
