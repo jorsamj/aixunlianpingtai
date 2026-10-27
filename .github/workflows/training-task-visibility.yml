@@ -164,7 +164,7 @@ jobs:
           grep -Fq "'cancel_requested'" static/modules/poll-registry.js
           grep -Fq 'id="tr429TaskId"' static/app.js
           grep -Fq '<label>算法名称</label>' static/app.js
-          grep -Fq '<th>所属算法</th><th>训练任务</th><th>状态</th><th>优先级</th><th>进度</th><th>已用时间</th><th>剩余时间</th><th>当前阶段</th><th>开始时间</th><th>操作</th>' static/modules/training-task-visibility-runtime.js
+          grep -Fq '<th>所属算法</th><th>训练任务</th><th>状态</th><th>优先级</th><th>进度</th><th>总历时</th><th>剩余时间</th><th>当前阶段</th><th>首次训练开始</th><th>操作</th>' static/modules/training-task-visibility-runtime.js
           grep -Fq 'data-training-task-shell="canonical"' static/modules/training-task-visibility-runtime.js
           grep -Fq 'data-training-batch-toggle' static/modules/training-task-visibility-runtime.js
           grep -Fq 'batchAction,' static/modules/training-task-runtime.js
