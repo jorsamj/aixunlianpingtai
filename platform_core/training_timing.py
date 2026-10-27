@@ -44,6 +44,9 @@ def begin_attempt(job, generation, worker_id, started_at):
 
 def record_update(job, updates, observed_at=None):
     observed_at = observed_at or now_utc()
+    transition_at = updates.get("paused_at") if str(updates.get("status") or "").lower() == "paused" else updates.get("resumed_at")
+    if utc(transition_at):
+        observed_at = transition_at
     generation = job.get("training_attempt_generation")
     entry = next((row for row in job.get("training_attempts", []) if row.get("generation") == generation), None)
     if entry is None:
@@ -122,6 +125,11 @@ def timing_view(job, runtime=None, *, now=None):
             entries[generation] = row
     ordered = [entries[key] for key in sorted(entries)]
     latest = ordered[-1] if ordered else {}
+    current_attempt = runtime.get("attempt")
+    if current_attempt is not None and latest.get("generation") != current_attempt:
+        # A newer execution may fail before the Trainer record is initialized.
+        # Its Worker/start must not be borrowed from the previous generation.
+        latest = {}
     active_values = []
     for row in ordered:
         try:
@@ -130,7 +138,7 @@ def timing_view(job, runtime=None, *, now=None):
         except (ValueError, TypeError, OverflowError):
             active_values.append(None)
     active = sum(float(value) for value in active_values if value is not None) if ordered and any(value is not None for value in active_values) else None
-    active_complete = bool(ordered) and sorted(entries) == list(range(1, max(entries) + 1)) and all(value is not None for value in active_values) and all(row.get("training_closed") and not row.get("interrupted") for row in ordered)
+    active_complete = bool(latest) and sorted(entries) == list(range(1, max(entries) + 1)) and all(value is not None for value in active_values) and all(row.get("training_closed") and not row.get("interrupted") for row in ordered)
     attempt_end = (runtime.get("finished_at") or latest.get("finished_at") or job.get("finished_at")) if terminal else now
     return {
         "first_started_at": first, "timing_observed_at": now,

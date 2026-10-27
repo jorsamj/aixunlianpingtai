@@ -78,7 +78,7 @@ def test_batch_progress_callback_is_throttled_but_flushes_the_last_batch(tmp_pat
             callbacks[event] = callback
 
     clock = iter([100.0, 100.1, 100.2, 100.3])
-    monkeypatch.setattr(train_worker.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(train_worker, "time", SimpleNamespace(monotonic=lambda: next(clock)))
     train_worker.attach_training_batch_progress(Model(), job_file, requested_total_epochs=10)
     assert "on_train_batch_end" in callbacks
 

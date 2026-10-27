@@ -564,8 +564,14 @@ test('three ZIPs finish upload and independently await human label confirmation'
 
 test('late ZIP inventory response cannot cross a project switch',async({page})=>{
   await page.goto('/');
+  await expect.poll(()=>page.evaluate(()=>Boolean(window.ZipImportRuntime && state.uiReady))).toBe(true);
   const result=await page.evaluate(async()=>{
+    await window.__v53InitPromise;
     window.ZipImportRuntime?.destroy?.();
+    // This isolated runtime uses synthetic projects. Its cache must use the
+    // same project fixture, not active jobs from the real page's selected project.
+    const originalTaskCenter=window.UploadTaskCenterRuntime;
+    window.UploadTaskCenterRuntime={list:()=>[],upsert:()=>{}};
     const {installZipImportRuntime}=await import('/static/modules/zip-import-runtime.js?v=project-fence-test');
     const state={project:{id:'project-a'},labels:[],page:'数据集'};
     let releaseProjectA;
@@ -589,6 +595,7 @@ test('late ZIP inventory response cannot cross a project switch',async({page})=>
     }
     const ids=runtime.snapshot().jobs.map(job=>job.id);
     runtime.destroy();
+    window.UploadTaskCenterRuntime=originalTaskCenter;
     return {ids,requests};
   });
   expect(result.ids).toEqual(['job-b']);

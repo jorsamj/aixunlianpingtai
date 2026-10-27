@@ -39,7 +39,9 @@ def test_training_intervals_exclude_pause_and_do_not_double_count_events():
     job = {}
     begin_attempt(job, 1, "worker", "2026-10-26T10:00:00Z")
     record_update(job, {"first_batch_at": "2026-10-26T10:01:00Z"}, "2026-10-26T10:01:00Z")
-    record_update(job, {"status": "paused"}, "2026-10-26T11:01:00Z")
+    # SQL acknowledgement may be delayed after the OS has actually suspended
+    # the process. Count to the suspension event, not the later write time.
+    record_update(job, {"status": "paused", "paused_at": "2026-10-26T11:01:00Z"}, "2026-10-26T11:02:00Z")
     record_update(job, {"status": "paused"}, "2026-10-26T11:02:00Z")
     record_update(job, {"resumed_at": "2026-10-26T12:01:00Z"}, "2026-10-26T12:01:00Z")
     record_update(job, {"training_segment_finished_at": "2026-10-26T13:01:00Z"}, "2026-10-26T13:01:00Z")
@@ -66,3 +68,12 @@ def test_post_training_validation_remains_in_current_worker_execution():
         "started_at": "2026-10-26T10:00:00Z", "finished_at": "2026-10-26T11:00:00Z"}]}
     view = timing_view(job, {"status": "RUNNING"}, now="2026-10-26T12:00:00Z")
     assert view["attempt_elapsed_seconds"] == 7200
+
+
+def test_unrecorded_new_generation_does_not_inherit_previous_worker_or_attempt():
+    job = {"training_attempts": [{"generation": 1, "worker_id": "old-worker",
+        "started_at": "2026-10-26T10:00:00Z", "active_seconds": 100, "training_closed": True}]}
+    view = timing_view(job, {"status": "FAILED", "attempt": 2, "finished_at": "2026-10-26T12:00:00Z"})
+    assert view["last_training_worker_id"] is None
+    assert view["attempt_elapsed_seconds"] is None
+    assert view["active_training_seconds_complete"] is False

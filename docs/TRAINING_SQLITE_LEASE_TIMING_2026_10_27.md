@@ -82,3 +82,12 @@
 ## 远端CI接续（首推不能标绿）
 
 实现提交`1c84424759a0cc53f0ab9fb6feea5a30b9416600`已普通推送长期分支。首轮50 Actions/133 Checks中已发现Frontend及Recovery/Visibility源码守卫失败：原Recovery workflow仍精确要求旧20261022a缓存，原Visibility guard仍精确要求“已用时间/开始时间”表头。仅同步原守卫至实际20261027-timing和“总历时/首次训练开始”，未删/跳过动态断言，也未扩大CI范围。对应Node守卫1/1和两个完整原bash guard退出0；本地首次用过长Windows-c命令截断执行，改为原脚本临时文件后完整执行通过。VERSION保持392，不二次递增。该实现SHA的完整CI与后续修正最终SHA仍继续核验，不能使用首推绿色结论。
+
+### CI中追加发现与最小修正
+
+- 实现SHA的Windows Remote Training准备测试发生`StopIteration`：旧节流fixture全局替换time.monotonic为4值序列，新增真实FileLock也会调用同一系统模块；改为只替换train_worker模块的time引用，原批1/批2不落盘/末批强制刷新断言全部保留。未改变训练节流业务。
+- ZIP真实Chrome跨项目fixture用虚拟project-a/b，但读取实际所选项目的全局任务中心缓存，CI先前测试产生3条活动记录后导致期望精确job-b失败。仅该测试等待原启动完成，并为其虚拟项目使用空的同范围任务中心fixture，原生产Runtime/缓存/跨项目保护代码零改动。完整原14场景Chrome35.4秒全部通过；单场景先行也通过。不能把此测试夹具修正说成ZIP业务重做。
+- 暂停/继续计时取实际OS操作完成的UTC时刻，不把后续SQLite确认等待算入训练；原控制/节流/计时17项通过，追加实际暂停时刻与滞后写入测试通过。
+- 最新代次若尚未初始化Trainer记录，不得借前代Worker或本次开始时间；按durable.attempt严格匹配，缺少证据仍未知。计时/projection14/14通过，0失败0跳过。
+
+以上均保留原安全及动态断言，VERSION392不重复递增。守卫修正`6e864290757be51b64585ea7d6e68589dc693f27`已推送，尚不足以覆盖本节新修正；后续最终SHA必须重新核验CI。

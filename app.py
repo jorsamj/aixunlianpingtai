@@ -11952,8 +11952,8 @@ def v48_pause_job(project_id: str, job_id: str):
         updates = {"status": "paused", "message": "训练已暂停"}
         def transition():
             ProcessController().suspend_tree(_durable_process_identity(durable))
-            shared_task_repository().set_stage(job_id, "paused")
             updates["paused_at"] = now_utc()
+            shared_task_repository().set_stage(job_id, "paused")
         try:
             # Acquire the shared state lock before suspending the child. A
             # suspended callback must never own the lock needed to finish pause.
@@ -11987,8 +11987,8 @@ def v48_resume_job(project_id: str, job_id: str):
         updates = {"status": "running", "message": "训练已继续"}
         def transition():
             ProcessController().resume_tree(_durable_process_identity(durable))
-            shared_task_repository().set_stage(job_id, "training")
             updates["resumed_at"] = now_utc()
+            shared_task_repository().set_stage(job_id, "training")
             updates["paused_at"] = ""
         try:
             # Acquire the shared state lock before suspending the child. A
