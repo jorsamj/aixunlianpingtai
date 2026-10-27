@@ -1,6 +1,6 @@
-## 2026-10-27｜场景检测创建恢复（已完成待最终SHA CI）
+## 2026-10-27｜场景检测创建恢复（代码及隔离CI已验收）
 
-[唯一专项](docs/SCENARIO_MODEL_EVALUATION_UI_GOVERNANCE_2026_10_22.md)顶部记录真实根因、原Task异步准备/幂等创建与暂存原图恢复、lease与引用保护、真实阶段及原图稳定预览。VERSION393；新API16、最终Node45、Chrome复合场景1通过，独立审查无新增阻断；最终SHA CI待核，不借旧绿。生产OSS/GPU/性能NOT VERIFIED，不部署；5944/其他WIP保留，接续从专项顶部与原Owner开始。
+[唯一专项](docs/SCENARIO_MODEL_EVALUATION_UI_GOVERNANCE_2026_10_22.md)顶部记录原Task异步准备/幂等身份/暂存原图恢复、lease与模型引用保护、真实阶段及稳定原图预览。VERSION393；代码28fbea92准确35/35 Actions、97/97 Checks成功，Node1377/1377、Chrome301/301；旧失败与修正留痕。文档提交自身HEAD另核CI，不借旧绿。生产OSS/GPU/性能NOT VERIFIED，不部署；5944/其他WIP保留。本机工具断连后仅文档经远端安全快进提交，接续先fetch保护本地状态，从专项与原Owner继续。
 
 ## 2026-10-27｜训练SQLite锁、Lease与跨恢复计时（代码及隔离验收完成）
 
