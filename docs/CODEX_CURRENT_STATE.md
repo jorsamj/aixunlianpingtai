@@ -1,6 +1,6 @@
-## 2026-10-28｜目标负样本、池管理与真实YOLO导出（本地限定验收完成，最终CI待核验）
+## 2026-10-28｜目标负样本、池管理与真实YOLO导出（代码及隔离CI已验收）
 
-[唯一专项](TRAINING_QUALITY_REMEDIATION_TRACKER_2026_10_18.md)顶部记录目标/素材版本绑定确认、原GT不变、Prepare实际空标签及正样本门槛、池关联与独立管理分类、原Picker/三步提交及按需CSC预览。VERSION397；真实导出、定向Python/Node及Chrome两场景通过，准确最终SHA CI待提交核验。无生产/GPU操作；旧V1–V3、原Task/Draft/GT/Storage保留，5944及其他工作树/WIP不动。未验证NAS/OSS/真实模型效果，勿将池成员当所有算法的已确认负样本。
+[唯一专项](TRAINING_QUALITY_REMEDIATION_TRACKER_2026_10_18.md)顶部记录目标/素材版本绑定确认、原GT不变、Prepare实际空标签及正样本门槛、池关联与独立管理分类、原Picker/三步提交及按需CSC预览。VERSION397；真实导出、必要Python/Node及Chrome相关场景分批通过；最终代码92203c8c准确21/21 Actions、57/57 Checks成功，旧失败及修正留痕。本次文档自身HEAD另核CI，不借旧绿。无生产/GPU操作；旧V1–V3、原Task/Draft/GT/Storage保留，5944及其他工作树/WIP不动。未验证NAS/OSS/真实模型效果，勿将池成员当所有算法的已确认负样本。
 
 ## 2026-10-28｜三步训练工作台、可信素材历史与四预设CSC（代码及隔离CI已验收）
 
