@@ -19,7 +19,7 @@ _DDL = (
     "INSERT OR IGNORE INTO negative_pool_meta VALUES (1,0)",
 )
 _LIVE = "json_extract(m.payload_json,'$._dataset_delete_claim') IS NULL AND json_extract(m.payload_json,'$._material_batch_delete_claim') IS NULL AND COALESCE(json_extract(m.payload_json,'$.deleted'),0)=0 AND json_extract(m.payload_json,'$.deleted_at') IS NULL"
-_REVIEW = "COALESCE(json_extract(m.payload_json,'$.annotation_state'),json_extract(m.payload_json,'$.annotation_status'),CASE WHEN m.annotated<>0 THEN 'annotated' ELSE 'unannotated' END)"
+_REVIEW = "CASE WHEN COALESCE(json_extract(m.payload_json,'$.annotation_needs_review'),0)<>0 OR COALESCE(json_extract(m.payload_json,'$.external_annotation_needs_review'),0)<>0 OR COALESCE(json_extract(m.payload_json,'$.needs_review'),0)<>0 THEN 'stale' ELSE COALESCE(json_extract(m.payload_json,'$.annotation_state'),json_extract(m.payload_json,'$.annotation_status'),CASE WHEN m.annotated<>0 THEN 'annotated' ELSE 'unannotated' END) END"
 
 
 class NegativePool:

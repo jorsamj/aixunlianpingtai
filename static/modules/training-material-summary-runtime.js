@@ -400,6 +400,9 @@ export function installTrainingMaterialSummaryRuntime({
     if(negativeCheck?.root&&layer?.contains?.(negativeCheck.root))negativeCheck.controller.abort();
   }
   async function confirmPendingNegatives({draft=currentDraft(),root,isCurrent=()=>true}={}) {
+    // An insufficient selection cannot start training; the existing admission
+    // owner must report its materials/label blockers together.
+    if(uniqueIds(draft?.materialIds).length<2)return true;
     if(negativeCheck)throw new Error('负样本确认正在处理，请勿重复提交');
     const controller=new AbortController(),pid=String(projectId()||''),payload=compatibilityPayload(draft);
     const current=()=>!destroyed&&!controller.signal.aborted&&String(projectId()||'')===pid&&isCurrent();

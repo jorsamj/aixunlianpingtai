@@ -54,6 +54,10 @@ def test_filters_full_selection_and_atomic_rejection(tmp_path):
     assert pool.query()['total']==4
     row=repo.get('0'); row['_dataset_delete_claim']={'token':'active'}; repo.upsert_many([row])
     assert pool.query()['total']==3
+    repo.patch({'1':{'annotation_needs_review':True}})
+    assert pool.query(review_status='stale')['items'][0]['id']=='1'
+    assert pool.query(review_status='stale',ids_only=True)['items']==['1']
+    assert pool.query(review_status='unannotated')['total']==2
     with pytest.raises(ValueError):
         pool.members(['0'])
 

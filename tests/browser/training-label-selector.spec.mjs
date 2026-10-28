@@ -276,6 +276,10 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   submitted = undefined;
   expect(await page.evaluate(() => window.submitTrain429?.__trainingSubmitRuntime === true)).toBe(true);
   await dialog.getByRole('button', {name: '开始训练'}).click();
+  const negativeConfirmation=page.getByRole('dialog',{name:'本次训练包含待确认负样本',exact:true});
+  await expect(negativeConfirmation).toContainText('待确认负样本 2');
+  expect(submitted).toBeUndefined();
+  await negativeConfirmation.getByRole('button',{name:'确认并创建训练任务',exact:true}).click();
   const feedback = dialog.locator('[data-training-submit-feedback]');
   await expect(feedback).toBeVisible();
   await expect(feedback).toHaveAttribute('data-tone', 'working');
