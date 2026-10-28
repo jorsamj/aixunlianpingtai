@@ -92,6 +92,14 @@
 - [布局前1366](images/training-workbench-20261028/before-1366.png) / [布局后第一步](images/training-workbench-20261028/after-1366x768-step1.png)
 - [第二步基础](images/training-workbench-20261028/after-1366x768-step2-basic.png) / [自定义](images/training-workbench-20261028/after-1366x768-step2-custom.png) / [跨设备增强](images/training-workbench-20261028/after-1366x768-step2-robustness.png) / [最终确认](images/training-workbench-20261028/after-1366x768-step3-feedback.png)
 
+### 首推CI问题及定向修正（不借旧绿色）
+
+首推代码`b2e116bf086b7ae2c5f9208803e76d786981885a`已正常推送。CI发现原RemoteExecutionTransport允许省略TaskRepository，但新增投影无条件构造`Path(None)`，导致多个复用该测试的工作流失败；已保持原可选构造合同，仅正式存在原TaskRepository时写投影，生产generation/fencing检查不降低。原失败transport用例定向1/1通过。另两个测试适配问题：新API冻结测试的无Worker helper缺`run_owned`（补齐该预执行夹具能力，不改生产lease）；旧labels精确build仍指向422571，已更新为实际422572。API1/1、原labels Node10/10通过，未删除原断言。旧ZIP联动源码守卫还引用已删除的v2 CSS选择器及15px字号，已对应当前统一modal作用域/13px紧凑标签更新，原四模式/唯一字段/ZIP业务断言保留，5/5通过。
+
+首推Release Regression的SQLite关闭用例出现10连接未关闭；本轮未改TaskRepository连接Owner，该用例本地单独1/1通过，尚不能认定根因或已修复。保留待后续准确SHA核验，不删断言、不缩小CI范围。
+
+VERSION396本轮不二次递增。后续修正SHA及CI必须独立核验，首推不能标记全绿。
+
 ### 接续、剩余风险与交付状态
 
 VERSION42.24.396，entry app443/main442、CSS4226356及受影响模块cache已更新。推送前fetch确认远端仍为6df8cf0e；本地未提交时不声称已有SHA。最终提交及准确SHA的CI回执在下一节追加。当前B–E为本地完成待远端验收，不借上一版绿色。

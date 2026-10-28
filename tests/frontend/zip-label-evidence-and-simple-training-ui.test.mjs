@@ -53,8 +53,8 @@ test('training first-open exposes four modes and visible canonical labels withou
   assert.doesNotMatch(creation,/id="tr429QuickEpoch"/);
   assert.doesNotMatch(creation,/编辑全部训练参数/);
   assert.match(creation,/train-v3-internals" hidden/);
-  assert.match(modalStyles,/train-create-saas-v2/);
-  assert.match(modalStyles,/training-label-choice b\{font-size:15px/);
+  assert.match(modalStyles,/\.training-create-modal-card/);
+  assert.match(modalStyles,/training-label-choice b\{font-size:13px/);
   assert.match(training,/const labelPanel=document\.getElementById\('trainingLabelContractPanel'\)/);
   assert.match(training,/labelSlot\.appendChild\(labelPanel\)/);
 });

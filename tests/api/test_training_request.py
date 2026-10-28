@@ -87,6 +87,8 @@ def _freeze_admitted_training(app_module, task_id: str):
     context = SimpleNamespace(
         artifacts=app_module.shared_task_artifacts(),
         repository=app_module.shared_task_repository(),
+        # This helper executes only the pre-execution contract, without a Worker lease.
+        run_owned=lambda operation: operation(),
     )
     frozen_payload = handler._freeze_request_contract(context, target, payload)
     app_module.shared_task_artifacts().atomic_write_json(

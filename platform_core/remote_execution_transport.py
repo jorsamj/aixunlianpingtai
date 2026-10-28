@@ -3320,11 +3320,12 @@ class RemoteExecutionTransportService:
         report = dict(report) if isinstance(report, Mapping) else {}
         from .training_material_usage import TrainingMaterialUsage
         usage_runtime = confirmed.get('runtime_result') or {}
-        TrainingMaterialUsage(self.task_repository).record_execution(task.task_id,
-            first_batch=usage_runtime.get('training_started') is True,
-            completed_epoch=usage_runtime.get('usage_completed_epoch') is True,
-            validation_observed=usage_runtime.get('usage_validation_observed') is True,
-            generation=generation, owner=(task.task_id, None, generation))
+        if self.task_repository is not None:
+            TrainingMaterialUsage(self.task_repository).record_execution(task.task_id,
+                first_batch=usage_runtime.get('training_started') is True,
+                completed_epoch=usage_runtime.get('usage_completed_epoch') is True,
+                validation_observed=usage_runtime.get('usage_validation_observed') is True,
+                generation=generation, owner=(task.task_id, None, generation))
         completion = result.get("completion")
         completion = dict(completion) if isinstance(completion, Mapping) else {}
         test_result = report.get("test_result")
