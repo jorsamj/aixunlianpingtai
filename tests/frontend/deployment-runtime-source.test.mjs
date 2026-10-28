@@ -101,7 +101,9 @@ test('canonical version conversion manual refresh reloads only the selected vers
   const end=source.indexOf('window.refreshActiveVersionConvert428=',start);
   assert.ok(start>=0&&end>start);
   const owner=source.slice(start,end);
-  assert.match(owner,/deploymentHistory428\(aid,vid,true\)/);
+  assert.match(owner,/deploymentHistory428\(aid,vid,true,conversionHistoryQuery428\(view\),view\.controller\.signal\)/);
+  assert.match(owner,/view\.controller\?\.abort\(\)/);
+  assert.match(owner,/epoch!==view\.epoch\|\|project!==pid\(\)\|\|versionConversionRoot428\(aid,vid\)!==root/);
   assert.match(owner,/scheduleVersionConversionPoll428\(aid,vid,r\)/);
   assert.doesNotMatch(owner,/loadDeployData|source-models|deploy\/artifacts|deploy\/resources/);
 });
