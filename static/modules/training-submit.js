@@ -309,6 +309,7 @@ const TRAINING_SUBMIT_PRESENTATIONS = Object.freeze({
 export function trainingSubmitPresentation(stage, options = {}) {
   const value = String(stage || 'idle');
   if (value === 'blocked') return {tone:'error',activeStep:1,completedSteps:1,title:'训练暂不可开始',detail:'请查看完整阻塞原因，调整配置后重新检查',retrySafe:true};
+  if (value === 'checking-negatives') return {...TRAINING_SUBMIT_PRESENTATIONS.materials,title:'正在核验本次目标负样本',detail:'必要时请确认图片不含所选目标；原图与正式标注保持不变'};
   if (value === 'checking-materials') return {...TRAINING_SUBMIT_PRESENTATIONS.materials,title:'正在检查训练素材、标签与 GT'};
   if (value === 'verifying') return {tone:'working',activeStep:2,completedSteps:2,title:'正在确认创建结果',detail:'创建请求已中断，正在按原任务 ID 核对持久化结果'};
   if (value === 'created') return {...TRAINING_SUBMIT_PRESENTATIONS.success};
@@ -775,6 +776,16 @@ export function installTrainingSubmitRuntime({
         showBlockers(localAdmission);return null;
       }
       if(draft.benchmarkReuseEnabled&&localAdmission.blockers.some(row=>row.code==='benchmark-loading'))throw new Error('固定Test基准仍在读取，检查尚未完成，请稍后重新检查');
+      setSubmitStage('checking-negatives');
+      if(materialSummaryRuntime?.confirmPendingNegatives){
+        const signature=admissionSignature();
+        // No admission operation owns a nested confirmation layer. Capture again after it closes.
+        admissionOperation=null;
+        const valid=()=>ownsSubmissionModal()&&admissionSignature()===signature;
+        const accepted=await materialSummaryRuntime.confirmPendingNegatives({draft,root:submissionRoot,isCurrent:valid});
+        if(!accepted||!valid())return null;
+        admissionOperation=operation;
+      }
       setSubmitStage('checking-materials');
       let checkedCompatibility;
       if(materialSummaryRuntime?.refreshCompatibility){

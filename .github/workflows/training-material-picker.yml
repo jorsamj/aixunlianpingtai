@@ -11,6 +11,13 @@ on:
       - 'platform_core/annotation_repository.py'
       - 'platform_core/training_recovery_api.py'
       - 'platform_core/material_repository.py'
+      - 'platform_core/negative_pool.py'
+      - 'platform_core/negative_pool_api.py'
+      - 'static/modules/negative-pool-runtime.js'
+      - 'static/modules/negative-pool.css'
+      - 'tests/unit/test_negative_pool.py'
+      - 'tests/frontend/negative-pool-runtime.test.mjs'
+      - 'tests/browser/target-negative-workflow.spec.mjs'
       - 'static/modules/training-material-picker-runtime.js'
       - 'static/modules/training-material-summary-runtime.js'
       - 'static/modules/material-pagination-runtime.js'
@@ -56,6 +63,7 @@ jobs:
           tests/api/test_training_negative_review.py
           tests/unit/test_annotation_negative_review_evidence.py
           tests/unit/test_reviewed_negative_projection.py
+          tests/unit/test_negative_pool.py
           tests/api/test_training_material_picker_api.py
           tests/api/test_training_material_selection_summary_api.py
           tests/api/test_runtime_router_app_mount.py
@@ -67,6 +75,7 @@ jobs:
           node --check static/main.mjs &&
           node --test
           tests/frontend/training-material-picker-negative-review.test.mjs
+          tests/frontend/negative-pool-runtime.test.mjs
           tests/frontend/training-material-picker-runtime.test.mjs
           tests/frontend/training-material-summary-runtime.test.mjs
           tests/frontend/training-labels.test.mjs
@@ -171,3 +180,4 @@ jobs:
           npx playwright test
           tests/browser/training-material-picker-performance.spec.mjs
           tests/browser/training-page-material-summary.spec.mjs
+          tests/browser/target-negative-workflow.spec.mjs

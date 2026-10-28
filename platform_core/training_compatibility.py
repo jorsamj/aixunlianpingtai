@@ -147,7 +147,8 @@ def _issue_for_row(
                 "missing_label_codes": required,
             }
         else:
-            issue = training_material_scope_issue(row, contract)
+            from .training_label_tasks import training_material_role
+            issue = training_material_role(row, contract)["scope_issue"]
     if issue is None:
         return None
     dataset_id = str(row.get("dataset_id") or "")
@@ -178,7 +179,8 @@ def evaluate_training_compatibility(
     if duplicates.issues:
         return replace(duplicates, duplicate_review=review,
             label_contract={"effective_label_codes": list(payload.get("train_labels") or [])})
-    selection = resolve_training_selection(project_path, split)
+    intent_contract = resolve_training_label_contract(data_dir, project_path, payload, algorithm, require_positive_evidence=False)
+    selection = resolve_training_selection(project_path, split, label_contract=intent_contract)
     effective = selection.effective_split
     contract_payload = {
         **dict(payload),

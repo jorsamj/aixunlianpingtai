@@ -43,7 +43,7 @@ export function trainingMaterialSelectionPatch({role = 'train', selectedIds = []
     };
 }
 
-export function buildTrainingMaterialQuery({cursor = null, page = null, pageSize = DEFAULT_PAGE_SIZE, query = '', labels = [], sortOrder = 'newest', effectiveLabelCodes = [], sampleRole = '', sourceIds = [], createdFrom = '', createdTo = '', annotationState = '', usageState = '', historyScope = '', algorithmId = '', historyPolicy = 'new_for_algorithm', role = 'train'} = {}) {
+export function buildTrainingMaterialQuery({cursor = null, page = null, pageSize = DEFAULT_PAGE_SIZE, query = '', labels = [], sortOrder = 'newest', effectiveLabelCodes = [], sampleRole = '', sourceIds = [], createdFrom = '', createdTo = '', annotationState = '', usageState = '', historyScope = '', algorithmId = '', historyPolicy = 'new_for_algorithm', role = 'train', negativePoolOnly = false, negativeCategoryIds = []} = {}) {
   const params = new URLSearchParams();
   if (page != null) {
     params.set('page', String(page));
@@ -58,6 +58,8 @@ export function buildTrainingMaterialQuery({cursor = null, page = null, pageSize
   if (sampleRole) params.set('sample_role', sampleRole);
   uniqueIds(sourceIds).forEach(id => params.append('storage_source_id', id));
   for (const [key,value] of Object.entries({created_from:createdFrom,created_to:createdTo,annotation_state:annotationState,usage_state:usageState,history_scope:historyScope,algorithm_asset_id:algorithmId,history_policy:historyPolicy,role})) if(value)params.set(key,String(value));
+  if(negativePoolOnly)params.set('negative_pool_only','true');
+  uniqueIds(negativeCategoryIds).forEach(id=>params.append('negative_category_id',id));
   params.set('sort_order', sortOrder === 'oldest' ? 'oldest' : 'newest');
   return params.toString();
 }
@@ -218,6 +220,7 @@ export function installTrainingMaterialPickerRuntime({
     return `${signature()}::page:${Math.max(1, Number(page) || 1)}`;
   }
 
+  const revisionKey=value=>JSON.stringify([value.repository_revision??0,value.annotation_revision??0,value.usage_revision||'unknown',value.negative_confirmation_revision??0,value.negative_pool_revision??0]);
   function remember(key, value) {
     if (pageCache.has(key)) pageCache.delete(key);
     pageCache.set(key, value);
@@ -234,8 +237,9 @@ export function installTrainingMaterialPickerRuntime({
       : '独立试验集必须具备正式 Ground Truth，未标注素材只展示但不可选择';
     return `<div class="train-v3-picker server-paged">
       <header><div><b>${title}</b><span>${rule}</span></div><strong id="trV3PickerCount">正在读取素材…</strong></header>
-      <div class="train-v3-workspace"><aside class="train-v3-filters">${role === 'train' ? `<section class="train-v3-role-tools"><b id="trV3TrainingLabels">本次训练标签：读取中…</b><p id="trV3RoleCounts" aria-live="polite"></p><select id="trV3RoleFilter" class="select" aria-label="训练样本角色" onchange="TrainingMaterialPickerRuntime.setSampleRole(this.value)"><option value="">全部素材</option><option value="positive">正样本</option><option value="confirmed_negative">已确认负样本</option><option value="pending_review">待审核素材</option></select> <button class="btn" onclick="TrainingMaterialPickerRuntime.startReview()">审核待确认素材</button><div id="trV3ReviewTools" hidden><p>逐张查看图片和已有标注后，勾选本页需确认的图片（每批最多 50 张）。</p><button class="btn primary" onclick="TrainingMaterialPickerRuntime.confirmReview()">确认所勾选图片不含本次训练目标</button> <button class="btn" onclick="TrainingMaterialPickerRuntime.stopReview()">结束本批审核</button><span id="trV3ReviewProgress" role="status"></span></div></section>` : ''}
+      <div class="train-v3-workspace"><aside class="train-v3-filters">${role === 'train' ? `<section class="train-v3-role-tools"><b id="trV3TrainingLabels">本次训练标签：读取中…</b><p id="trV3RoleCounts" aria-live="polite"></p><select id="trV3RoleFilter" class="select" aria-label="训练样本角色" onchange="TrainingMaterialPickerRuntime.setSampleRole(this.value)"><option value="">全部素材</option><option value="positive">正样本</option><option value="confirmed_negative">已确认负样本</option><option value="pending_negative">待确认负样本</option><option value="pending_review">标注或来源待修复</option></select> <button class="btn" onclick="TrainingMaterialPickerRuntime.startReview()">审核待确认素材</button><div id="trV3ReviewTools" hidden><p>逐张查看图片和已有标注后，勾选本页需确认的图片（每批最多 50 张）。</p><button class="btn primary" onclick="TrainingMaterialPickerRuntime.confirmReview()">确认所勾选图片不含本次训练目标</button> <button class="btn" onclick="TrainingMaterialPickerRuntime.stopReview()">结束本批审核</button><span id="trV3ReviewProgress" role="status"></span></div></section>` : ''}
       <div class="train-v3-filter"><input id="trV3Q" class="input" placeholder="搜索图片名称" oninput="trainMaterialSearchV3(this.value)"><select id="trV3Sort" class="select" aria-label="按加入时间排序" onchange="trainMaterialSortV3(this.value)"><option value="newest">最新加入优先</option><option value="oldest">最早加入优先</option></select><div id="trV3Chips" class="data426-chips"><button class="data426-chip clear on" data-label="" onclick="clearTrainMaterialLabelsV3()">全部标签</button>${chips}</div></div>
+      ${role==='train'?`<label>素材范围<select class="select" aria-label="素材范围" onchange="TrainingMaterialPickerRuntime.setFilter('negativePoolOnly',this.value)"><option value="">普通素材（含负样本池）</option><option value="pool">负样本池</option></select></label><label>负样本分类<select class="select" multiple aria-label="负样本分类筛选" id="trV3NegativeCategories" onchange="TrainingMaterialPickerRuntime.setFilter('negativeCategoryIds',[...this.selectedOptions].map(o=>o.value).join(','))"><option disabled>正在读取分类…</option></select></label>`:''}
       <label>存储来源<input class="input" placeholder="来源ID，多个用逗号分隔" onchange="TrainingMaterialPickerRuntime.setFilter('sourceIds',this.value)"></label>
       <label>加入时间从<input type="date" class="input" onchange="TrainingMaterialPickerRuntime.setFilter('createdFrom',this.value)"></label><label>至<input type="date" class="input" onchange="TrainingMaterialPickerRuntime.setFilter('createdTo',this.value)"></label>
       <label>正式标注<select class="select" onchange="TrainingMaterialPickerRuntime.setFilter('annotationState',this.value)"><option value="">全部状态</option><option value="annotated">已标注</option><option value="confirmed_empty">已确认无目标</option><option value="unannotated">未标注</option></select></label>
@@ -315,7 +319,7 @@ export function installTrainingMaterialPickerRuntime({
     const labelHost = document.getElementById('trV3TrainingLabels');
     if (labelHost) labelHost.textContent = `本次训练标签：${(picker.effectiveLabels || []).join('、') || '请先选择训练标签'}`;
     const roleCounts = document.getElementById('trV3RoleCounts');
-    if (roleCounts) {const c=picker.roleCounts || {}; roleCounts.textContent = `筛选范围 · 正样本 ${c.positive || 0} · 已确认负样本 ${c.confirmed_negative || 0} · 待审核 ${c.pending_review || 0}（待审核暂不能参加监督训练）`;}
+    if (roleCounts) {const c=picker.roleCounts || {}; roleCounts.textContent = `筛选范围 · 正样本 ${c.positive || 0} · 已确认负样本 ${c.confirmed_negative || 0} · 待确认负样本 ${c.pending_negative || 0} · 待修复 ${c.pending_review || 0}`;}
     const count = document.getElementById('trV3PickerCount');
     if (count) count.textContent = `筛选结果 ${picker.total} 张 · 已选 ${picker.selected.size} 张`;
     const meta = document.getElementById('trV3PageMeta');
@@ -372,7 +376,7 @@ export function installTrainingMaterialPickerRuntime({
       const selected = picker.reviewing ? picker.reviewSelected.has(id) : picker.selected.has(id);
       const crossRoleBlocked = blocked.has(id);
       const missingTestTruth = picker.role === 'test' && String(row.annotation_state || '') === 'unannotated';
-      const unavailable = crossRoleBlocked || missingTestTruth || (picker.reviewing && row.sample_role !== 'pending_review');
+      const unavailable = crossRoleBlocked || missingTestTruth || (picker.reviewing && row.sample_role !== 'pending_negative');
       const blockReason = crossRoleBlocked ? '已用于另一素材集' : (missingTestTruth ? '试验集必须已标注' : '');
       const labelText = (row.labels || []).map(labelDisplay).filter(Boolean).join('、')
         || (String(row.annotation_state || '') === 'unannotated' ? '待标注' : '无标签');
@@ -382,7 +386,7 @@ export function installTrainingMaterialPickerRuntime({
         <input type="checkbox" ${selected ? 'checked' : ''} ${unavailable ? 'disabled' : ''} onchange="toggleTrainMaterialV3('${esc(id)}',this.checked,this)">
         ${renderTrainingMaterialPreview(row, {loading, priority})}
         <b title="${esc(row.filename || '')}">${esc(row.filename || id)}</b><span class="train-v3-label-list" title="${esc(labelText)}">${esc(labelText)}</span>
-        ${picker.role === 'train' ? `<span class="train-v3-sample-role" data-sample-role="${esc(row.sample_role || '')}">${esc(({positive:'正样本',confirmed_negative:`可作为 ${(picker.effectiveLabels || []).join('、')} 负样本`,pending_review:`待确认是否包含 ${(picker.effectiveLabels || []).join('、')}`})[row.sample_role] || '尚未判定')}</span>` : ''}
+        ${picker.role === 'train' ? `<span class="train-v3-sample-role" data-sample-role="${esc(row.sample_role || '')}">${esc(({positive:'正样本',confirmed_negative:`可作为 ${(picker.effectiveLabels || []).join('、')} 负样本`,pending_negative:`待确认不含 ${(picker.effectiveLabels || []).join('、')}`,pending_review:'标注或来源需修复'})[row.sample_role] || '尚未判定')}</span>` : ''}
         <span>${esc(row.storage_source_id || '')} · ${esc((row.created_at || '').slice(0,10))}</span>
         <details onclick="event.stopPropagation()" ontoggle="if(this.open)TrainingMaterialPickerRuntime.loadHistory('${esc(id)}',this)"><summary>训练历史 · 已知训练 ${Number(row.training_usage?.training_task_count || 0)} 次 · ${esc(({used:'已使用',possible:'可能使用',selected:'仅已选入',eval_only:'仅参与评测',unused:'有据未使用',unknown:'未知'})[row.training_usage?.state] || '未知')}</summary><p>${esc((row.training_usage?.task_ids || []).join('、') || '缺少完整执行证据，不能判定从未使用')}</p></details>
         <a class="btn mini" href="${esc(row.content_url || '#')}" target="_blank" rel="noopener" onclick="event.stopPropagation()">查看原图</a>
@@ -413,7 +417,7 @@ export function installTrainingMaterialPickerRuntime({
       try {
         const revision=await withRequestDeadline(async signal=>{const r=await fetchImpl(`/api/v62/projects/${encodeURIComponent(pid)}/training-materials/revision?algorithm_asset_id=${encodeURIComponent(taskPayload().algorithm_asset_id || '')}`,{signal});return readJson(r,'素材版本读取失败');},{signal:controller.signal,label:'素材版本读取'});
         if(!current())return;
-        if(JSON.stringify(revision)!==cached.versionKey){pageCache.clear();return loadPage({page:requestedPage});}
+        if(revisionKey(revision)!==cached.versionKey){pageCache.clear();return loadPage({page:requestedPage});}
       } catch(error) {if(current()){notify(error.code==='REQUEST_TIMEOUT'?'素材读取超时，请重试':error.message); const grid=document.getElementById('trV3Grid');if(grid)grid.innerHTML='<button class="btn" onclick="TrainingMaterialPickerRuntime.loadPage()">读取失败 · 重试</button>';}return;}
       picker.effectiveLabels = cached.effective_label_codes || [];
       picker.roleCounts = cached.sample_role_counts || {};
@@ -465,7 +469,7 @@ export function installTrainingMaterialPickerRuntime({
       picker.pageSize = Math.max(1, Number(body.page_size || picker.pageSize));
       picker.totalPages = Math.max(1, Number(body.total_pages || 1));
       picker.repositoryRevision = body.repository_revision ?? null;
-      remember(key, {...body,versionKey:JSON.stringify({repository_revision:body.repository_revision,annotation_revision:body.annotation_revision,usage_revision:body.usage_revision || 'unknown'})});
+      remember(key, {...body,versionKey:revisionKey(body)});
       picker.loading = false;
       renderPage();
     } catch (error) {
@@ -489,7 +493,7 @@ export function installTrainingMaterialPickerRuntime({
 
   function filterPayload() {
     const f=picker?.filters || {};
-    return {role:picker?.role==='test'?'test':'train',storage_source_ids:uniqueIds(f.sourceIds),annotation_state:f.annotationState || '',created_from:f.createdFrom || '',created_to:f.createdTo || '',usage_state:f.usageState || '',history_scope:f.historyScope || '',
+    return {role:picker?.role==='test'?'test':'train',storage_source_ids:uniqueIds(f.sourceIds),annotation_state:f.annotationState || '',created_from:f.createdFrom || '',created_to:f.createdTo || '',usage_state:f.usageState || '',history_scope:f.historyScope || '',negative_pool_only:Boolean(f.negativePoolOnly),negative_category_ids:uniqueIds(f.negativeCategoryIds),
       ...(picker?.role==='robustness'?{image_ids:picker.scopeIds}:{} )};
   }
 
@@ -554,7 +558,6 @@ export function installTrainingMaterialPickerRuntime({
     if (!pid) return notify('当前项目不存在');
     cancelViewportFrame();
     activeController?.abort();picker?.bulkController?.abort();picker?.historyControllers?.forEach(c=>c.abort());++requestSequence;clearTimeout(searchTimer);
-    pageCache.clear();
     injectStyles();
     if (typeof role === 'object') role=role.role;
     picker = {
@@ -570,6 +573,13 @@ export function installTrainingMaterialPickerRuntime({
     modalLayer=window.modal?.(title, modalHtml(picker.role), true);
     renderSkeleton();
     void loadPage({reset: true});
+    if(picker.role==='train'){
+      const owner=picker,controller=new AbortController();owner.historyControllers.add(controller);
+      void withRequestDeadline(async signal=>readJson(await fetchImpl(`/api/v61/projects/${encodeURIComponent(pid)}/negative-pool/categories`,{signal}),'负样本分类读取失败'),{signal:controller.signal,label:'负样本分类'}).then(data=>{
+        if(picker!==owner||projectId()!==pid)return;
+        const select=document.getElementById('trV3NegativeCategories');if(select)select.innerHTML=(data.items||[]).filter(row=>row.enabled!==false).map(row=>`<option value="${esc(row.id)}" ${(owner.filters.negativeCategoryIds||[]).includes(row.id)?'selected':''}>${esc(row.name)}</option>`).join('')||'<option disabled>暂无负样本分类</option>';
+      }).catch(error=>{if(picker===owner&&error.name!=='AbortError'){const select=document.getElementById('trV3NegativeCategories');if(select)select.innerHTML='<option disabled>读取失败，重新打开可重试</option>';}}).finally(()=>owner.historyControllers.delete(controller));
+    }
   }
 
   function setSearch(value) {
@@ -606,7 +616,7 @@ export function installTrainingMaterialPickerRuntime({
     if (!picker || picker.reviewPending) return;
     const value = String(id || '');
     if (picker.reviewing) {
-      if (picker.items.find(row=>String(row.id)===value)?.sample_role !== 'pending_review') return;
+      if (picker.items.find(row=>String(row.id)===value)?.sample_role !== 'pending_negative') return;
       if (on && picker.reviewSelected.size >= 50) {if(checkbox)checkbox.checked=false;return notify('每批最多审核 50 张');}
       on ? picker.reviewSelected.add(value) : picker.reviewSelected.delete(value);
       checkbox?.closest('.train-v3-card')?.classList.toggle('on', Boolean(on));
@@ -663,7 +673,7 @@ export function installTrainingMaterialPickerRuntime({
   };
 
   const runtime = {
-    build: 'training-material-picker-runtime-422614',
+    build: 'training-material-picker-runtime-422615',
     open,
     setSampleRole(value) {
       if (!picker || picker.reviewPending) return;
@@ -671,12 +681,12 @@ export function installTrainingMaterialPickerRuntime({
         const select=document.getElementById('trV3RoleFilter');if(select)select.value=picker.sampleRole;
         notify('选择本次训练标签后可按样本角色筛选');return;
       }
-      picker.sampleRole = ['positive','confirmed_negative','pending_review'].includes(value) ? value : '';
+      picker.sampleRole = ['positive','confirmed_negative','pending_negative','pending_review'].includes(value) ? value : '';
       return resetFiltersAndLoad();
     },
     startReview() {
       if (!picker?.effectiveLabels?.length) return notify('请先选择本次训练标签');
-      picker.reviewing=true; picker.reviewSelected.clear(); picker.sampleRole='pending_review';
+      picker.reviewing=true; picker.reviewSelected.clear(); picker.sampleRole='pending_negative';
       const tools=document.getElementById('trV3ReviewTools'); if(tools)tools.hidden=false;
       return resetFiltersAndLoad();
     },
@@ -697,25 +707,22 @@ export function installTrainingMaterialPickerRuntime({
     },
     async confirmReview() {
       if (!picker?.reviewing || picker.reviewPending) return;
-      const rows=picker.items.filter(row=>picker.reviewSelected.has(String(row.id)) && row.sample_role==='pending_review');
+      const rows=picker.items.filter(row=>picker.reviewSelected.has(String(row.id)) && row.sample_role==='pending_negative');
       if(!rows.length)return notify('请先逐张查看并勾选本页图片');
       if(!window.confirm(`确认已查看这 ${rows.length} 张图片，均不包含 ${(picker.effectiveLabels || []).join('、')}？原有标注框会保留。`))return;
       const owner=picker, pid=projectId(); owner.reviewPending=true;
       const progress=document.getElementById('trV3ReviewProgress');
       if(progress)progress.textContent=`正在保存 ${rows.length} 张审核结果…`;
       try {
-        const body=await withRequestDeadline(async signal=>{
-        const response=await fetchImpl(`/api/v62/projects/${encodeURIComponent(pid)}/training-materials/review-negative`,{
-          signal,
-          method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},
-          body:JSON.stringify({...taskPayload(),confirmed:true,items:rows.map(row=>({image_id:String(row.id),
-            expected_version:row.annotation_version,source_content_sha256:row.source_content_sha256 || row.content_sha256}))})});
-        return readJson(response,'审核保存失败，请重试');
-        },{timeoutMs:30000,label:'负样本审核保存'});
+        const context={...taskPayload(),image_ids:rows.map(row=>String(row.id))};
+        const post=async(action,body)=>withRequestDeadline(async signal=>readJson(await fetchImpl(`/api/v62/projects/${encodeURIComponent(pid)}/training-materials/${action}`,{
+          signal,method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}),'审核保存失败，请重试'),{timeoutMs:30000,label:'负样本确认保存'});
+        const preview=await post('negative-preview',context);
+        if(preview.counts?.pending_review||preview.counts?.positive)throw new Error('素材或标注已变化，请重新核验，不能确认为负样本');
+        if(Number(preview.pending_count)>0)await post('confirm-negatives',{...context,confirmed:true,proof_digest:preview.proof_digest});
         if(picker!==owner || projectId()!==pid)return;
-        const succeeded=uniqueIds(body.succeeded); succeeded.forEach(id=>owner.reviewSelected.delete(id));
-        const failures=body.failures || [];
-        if(progress)progress.textContent=`已保存 ${succeeded.length}/${rows.length} 张`+(failures.length?`；${failures.length} 张失败，请核对后重试：${failures.map(item=>item.message || item.reason || item.image_id).join('；')}`:'；可继续下一批');
+        rows.forEach(row=>owner.reviewSelected.delete(String(row.id)));
+        if(progress)progress.textContent=`已保存 ${rows.length}/${rows.length} 张任务目标确认；原图和正式标注未修改`;
         pageCache.clear(); await loadPage({reset:true});
         window.TrainingMaterialSummaryRuntime?.invalidate?.();
         void window.TrainingMaterialSummaryRuntime?.refresh?.(undefined,{force:true});
@@ -748,7 +755,8 @@ export function installTrainingMaterialPickerRuntime({
     },
     setFilter(key,value) {
       if(!picker || picker.reviewPending || picker.bulkPending)return;
-      picker.filters[key]=key==='sourceIds'?String(value).split(',').map(v=>v.trim()).filter(Boolean):value;
+      picker.filters[key]=['sourceIds','negativeCategoryIds'].includes(key)?uniqueIds(String(value).split(',')):key==='negativePoolOnly'?value==='pool':value;
+      if(key==='negativeCategoryIds'&&picker.filters[key].length)picker.filters.negativePoolOnly=true;
       return resetFiltersAndLoad();
     },
     setView(value) {if(picker){picker.view=value==='list'?'list':'grid';renderPage();}},

@@ -22,6 +22,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 from starlette.requests import Request
 
 from .annotation_repository import AnnotationRepository
+from .negative_pool import NegativePool
 from .material_repository import (
     MaterialRepository,
     decode_material_cursor,
@@ -183,10 +184,27 @@ def _public_usage_fact(fact):
         "algorithm_ids":sorted({r["algorithm_id"] for r in details})}
 
 
+def _pool_filters(repository, filters):
+    body=dict(filters or {})
+    categories=body.get('negative_category_ids') or []
+    if body.get('negative_pool_only') or categories:
+        from .negative_pool import NegativePool
+        pool=NegativePool(repository)
+        revision=pool.revision()
+        body['negative_pool_image_ids']=pool.candidate_ids(category_ids=categories)
+        if pool.revision()!=revision:
+            raise ValueError('负样本池已更新，请重试')
+        body['negative_pool_revision']=revision
+    return body
+
+
 def _picker_filter_sql(filters=None):
     """Shared predicates; formal annotation truth always belongs to AnnotationRepository."""
     f = dict(filters or {})
     clauses, params = [], []
+    if f.get('negative_pool_image_ids') is not None:
+        clauses.append('m.id IN (SELECT value FROM json_each(?))')
+        params.append(json.dumps(f['negative_pool_image_ids']))
     sources = _normalize_selection_ids(f.get("storage_source_ids") or [])
     if sources:
         clauses.append("m.storage_source_id IN (" + ",".join("?" for _ in sources) + ")")
@@ -269,7 +287,7 @@ def _gt_material_filter_page(
             "(gt.annotation_state='confirmed_empty' AND gt.scope_ref=1)))"
         )
 
-    extra_clauses, extra_params = _picker_filter_sql(filters)
+    extra_clauses, extra_params = _picker_filter_sql(_pool_filters(repository, filters))
     base_clauses.extend(extra_clauses)
     base_params.extend(extra_params)
     base_where = " WHERE " + " AND ".join(base_clauses)
@@ -356,6 +374,8 @@ def _gt_material_filter_page(
         "total": total,
         "material_revision": material_revision,
         "annotation_revision": annotation_revision,
+            "negative_confirmation_revision": annotation_repository.task_negative_confirmation_revision(),
+            "negative_pool_revision": NegativePool(repository).revision(),
     }
 
 
@@ -548,7 +568,7 @@ def _bulk_filtered_ids(
 
 @lru_cache(maxsize=8)
 def _cached_role_index(material_path, annotation_path, material_revision, annotation_revision, contract_json, filters_json):
-    from .training_label_tasks import training_material_role
+    from .training_label_tasks import training_material_role, task_negative_confirmable
     contract = json.loads(contract_json)
     filters = json.loads(filters_json)
     clauses = ["m.processing_status='processed'"]
@@ -571,28 +591,32 @@ def _cached_role_index(material_path, annotation_path, material_revision, annota
                      int(db.execute("SELECT value FROM annotation_gt.annotation_meta WHERE key='revision'").fetchone()[0]))
         if revisions != (material_revision, annotation_revision):
             raise ValueError("素材或标注已更新，请重试")
-        for row in db.execute("SELECT m.id,m.created_at,m.payload_json,a.annotation_state,a.boxes_json,a.scope_json FROM materials m LEFT JOIN annotation_gt.annotations a ON a.image_id=m.id WHERE " + " AND ".join(clauses) + " ORDER BY m.created_at,m.id", params):
+        for row in db.execute("SELECT m.id,m.created_at,m.payload_json,a.annotation_state,a.boxes_json,a.scope_json,a.version,a.content_digest FROM materials m LEFT JOIN annotation_gt.annotations a ON a.image_id=m.id WHERE " + " AND ".join(clauses) + " ORDER BY m.created_at,m.id", params):
             payload = json.loads(row["payload_json"])
             payload.update(annotation_state=row["annotation_state"] or "unannotated", boxes=json.loads(row["boxes_json"] or "[]"), annotation_scope=json.loads(row["scope_json"] or "[]"))
-            result.append((row["id"], training_material_role(payload, contract)["role"]))
+            payload.update(id=row["id"], annotation_version=int(row["version"] or 0), annotation_hash=str(row["content_digest"] or ""))
+            role = training_material_role(payload, contract)["role"]
+            if role == "pending_review" and task_negative_confirmable(payload, contract):
+                role = "pending_negative"
+            result.append((row["id"], role))
     return tuple(result)
 
 
 def _role_material_page(repository, annotations, contract, *, image_ids=None,
                         query="", labels=(), sample_role="", page=1, limit=60, sort_order="oldest", filters=None, include_payload=True):
-    if sample_role not in {"", "positive", "confirmed_negative", "pending_review"}:
+    if sample_role not in {"", "positive", "confirmed_negative", "pending_negative", "pending_review"}:
         raise ValueError("invalid sample_role")
     if not 1 <= int(limit) <= MAX_SELECTION_SUMMARY_IDS or int(page) < 1:
         raise ValueError("invalid role page bounds")
     if sort_order not in {"oldest", "newest"}:
         raise ValueError("invalid sort_order")
-    selected = {k:v for k,v in (filters or {}).items() if k in {"storage_source_ids","created_from","created_to","annotation_state","usage_image_ids","usage_excluded_image_ids","image_ids"}}
+    selected = {k:v for k,v in _pool_filters(repository, filters).items() if k in {"storage_source_ids","created_from","created_to","annotation_state","usage_image_ids","usage_excluded_image_ids","image_ids","negative_pool_image_ids","negative_pool_revision"}}
     selected.update(query=str(query or "").strip(), labels=sorted(set(labels)))
     if image_ids is not None: selected["image_ids"] = sorted(set(image_ids))
     revisions = (repository.current_revision(), annotations.current_revision())
     index = _cached_role_index(str(repository.path), str(annotations.path), *revisions,
         json.dumps(contract, sort_keys=True), json.dumps(selected, sort_keys=True))
-    counts = {role:0 for role in ("positive", "confirmed_negative", "pending_review")}
+    counts = {role:0 for role in ("positive", "confirmed_negative", "pending_negative", "pending_review")}
     for _, role in index: counts[role] = counts.get(role,0) + 1
     visible = [row for row in index if not sample_role or row[1] == sample_role]
     total = len(visible)
@@ -605,7 +629,8 @@ def _role_material_page(repository, annotations, contract, *, image_ids=None,
     return {"items":[{**rows[i], "sample_role":role} for i,role in visible if i in rows],
             "total":total,"sample_role_counts":counts,"effective_label_codes":list(contract["effective_label_codes"]),
             "page":int(page),"page_size":int(limit),"limit":int(limit),"next_cursor":None,
-            "total_pages":max(1,math.ceil(total/int(limit))),"repository_revision":revisions[0],"annotation_revision":revisions[1]}
+            "total_pages":max(1,math.ceil(total/int(limit))),"repository_revision":revisions[0],"annotation_revision":revisions[1],
+            "negative_confirmation_revision":annotations.task_negative_confirmation_revision(), "negative_pool_revision":NegativePool(repository).revision()}
 
 
 def _thumbnail_identity(row: dict) -> str:
@@ -762,7 +787,7 @@ def training_material_picker_router(
         repository = materials(project_id)
         annotations = annotation_repository_for_path(str(repository.project_path))
         usage_revision = TrainingMaterialUsage(repository.project_path.parent.parent / "task_runtime" / "tasks.sqlite3").read_revision()
-        return {"repository_revision":repository.current_revision(), "annotation_revision":annotations.current_revision(), "usage_revision":usage_revision}
+        return {"repository_revision":repository.current_revision(), "annotation_revision":annotations.current_revision(), "usage_revision":usage_revision, "negative_confirmation_revision":annotations.task_negative_confirmation_revision(), "negative_pool_revision":NegativePool(repository).revision()}
 
     @router.post("/page")
     def scoped_picker_page(project_id: str, payload: dict):
@@ -814,6 +839,59 @@ def training_material_picker_router(
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
 
+    def negative_plan(project_id, payload):
+        from .training_label_tasks import (task_negative_confirmable, task_negative_identity,
+            task_negative_context, training_material_role, _ORIGINAL_SELECTED_PROJECT_IMAGES)
+        repository = materials(project_id)
+        contract = task_contract(project_id, payload, repository)
+        ids = _normalize_selection_ids([*(payload.get("train_image_ids") or []),
+            *(payload.get("val_image_ids") or []), *(payload.get("selected_image_ids") or []), *(payload.get("image_ids") or []),
+            *(payload.get("test_image_ids") or [])])
+        rows = _ORIGINAL_SELECTED_PROJECT_IMAGES(repository, repository.project_path, ids)
+        counts = dict(positive=0, confirmed_negative=0, pending_negative=0, pending_review=0)
+        pending = []
+        for row in rows:
+            role = training_material_role(row, contract)["role"]
+            if role == "pending_review" and task_negative_confirmable(row, contract):
+                role = "pending_negative"
+                pending.append(task_negative_identity(row, contract))
+            counts[role] += 1
+        digest = hashlib.sha256(json.dumps({"context":task_negative_context(contract),
+            "selected":sorted(ids), "identities":[task_negative_identity(row, contract) for row in rows], "pending":pending}, sort_keys=True).encode()).hexdigest()
+        return repository, contract, counts, pending, digest
+
+    @router.post("/negative-preview")
+    def negative_preview(project_id: str, payload: dict):
+        try:
+            _, contract, counts, pending, digest = negative_plan(project_id, payload)
+            return {"counts":counts, "pending_count":len(pending), "pending_preview":[{**e,"image_url":f"/api/v62/projects/{project_id}/training-materials/{e['image_id']}/thumbnail"} for e in pending[:20]],
+                    "proof_digest":digest, "effective_label_codes":contract["effective_label_codes"]}
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+
+    @router.post("/confirm-negatives")
+    def confirm_negatives(project_id: str, payload: dict, request: Request):
+        if payload.get("confirmed") is not True:
+            raise HTTPException(status_code=422, detail="explicit confirmation required")
+        if actor_provider is None:
+            raise HTTPException(status_code=503, detail="authenticated actor unavailable")
+        actor = actor_provider(request, project_id)
+        try:
+            from .training_label_tasks import task_negative_context
+            from .material_repository import material_annotation_lifecycle_fence
+            repository = materials(project_id)
+            with material_annotation_lifecycle_fence(repository.project_path):
+                repository, contract, counts, pending, digest = negative_plan(project_id, payload)
+                if payload.get("proof_digest") != digest:
+                    raise HTTPException(status_code=409, detail="素材或标注已变化，请重新检查并确认")
+                if counts["pending_review"]:
+                    raise ValueError("存在失效或无效标注，不能确认为负样本")
+                receipts = AnnotationRepository(repository.project_path).confirm_task_negatives(
+                    task_negative_context(contract), pending, actor)
+            return {"confirmed_count":len(receipts), "receipt_ids":receipts}
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+
     @router.post("/review-negative")
     def review_negative(project_id: str, payload: dict, request: Request):
         if payload.get("confirmed") is not True:
@@ -855,6 +933,8 @@ def training_material_picker_router(
         label: list[str] | None = Query(default=None),
         sort_order: str = "oldest",
         storage_source_id: list[str] | None = Query(default=None),
+        negative_pool_only: bool = False,
+        negative_category_id: list[str] | None = Query(default=None),
         annotation_state: str = "", created_from: str = "", created_to: str = "",
         usage_state: str = "", algorithm_asset_id: str = "", history_policy: str = "new_for_algorithm", role: str = "train", history_scope: str = "",
     ):
@@ -868,7 +948,7 @@ def training_material_picker_router(
             str(repository.project_path)
         )
         selected_labels = tuple(label or ())
-        shared_filters = {"storage_source_ids":storage_source_id or [], "annotation_state":annotation_state, "created_from":created_from, "created_to":created_to}
+        shared_filters = {"storage_source_ids":storage_source_id or [], "annotation_state":annotation_state, "created_from":created_from, "created_to":created_to, "negative_pool_only":negative_pool_only,"negative_category_ids":negative_category_id or []}
         shared_filters = {k:v for k,v in shared_filters.items() if v}
         try:
             shared_filters, usage = _usage_filters(repository, {**shared_filters, "usage_state":usage_state,"algorithm_asset_id":algorithm_asset_id,"history_policy":history_policy,"role":role,"history_scope":history_scope})
@@ -927,6 +1007,8 @@ def training_material_picker_router(
             "limit": requested_size,
             "repository_revision": repository_revision,
             "annotation_revision": annotation_revision,
+            "negative_confirmation_revision": annotation_repository.task_negative_confirmation_revision(),
+            "negative_pool_revision": NegativePool(repository).revision(),
             "usage_revision": usage["revision"],
         }
         if numbered:
@@ -994,6 +1076,8 @@ def training_material_picker_router(
             "total": total,
             "repository_revision": repository_revision,
             "annotation_revision": annotation_revision,
+            "negative_confirmation_revision": annotation_repository.task_negative_confirmation_revision(),
+            "negative_pool_revision": NegativePool(repository).revision(),
         }
 
     @router.post("/bulk-selection")
@@ -1002,7 +1086,7 @@ def training_material_picker_router(
         body = payload if isinstance(payload, dict) else {}
         try:
             if body.get("all_available"):
-                body = {k:v for k,v in body.items() if k in {"algorithm_asset_id","role","all_available","train_labels","base_version_id","model","framework","image_ids","history_policy"}}
+                body = {k:v for k,v in body.items() if k in {"algorithm_asset_id","role","all_available","train_labels","base_version_id","model","framework","image_ids","history_policy","negative_pool_only","negative_category_ids"}}
             body, usage = _usage_filters(repository, body)
             labels = _normalize_labels(body.get("labels"))
             query = "" if bool(body.get("all_available")) else str(body.get("query") or "").strip()
@@ -1052,7 +1136,8 @@ def training_material_picker_router(
             try:
                 contract = task_contract(project_id, payload, repository)
                 roles = _role_material_page(repository, annotations, contract, image_ids=image_ids, limit=1)
-                summary.update(sample_role_counts=roles["sample_role_counts"], effective_label_codes=roles["effective_label_codes"])
+                _, _, counts, pending, _ = negative_plan(project_id, dict(payload, image_ids=image_ids))
+                summary.update(sample_role_counts=counts, effective_label_codes=roles["effective_label_codes"])
             except ValueError as error:
                 raise HTTPException(status_code=422, detail=str(error)) from error
         return {**summary, "repository_revision": repository.current_revision()}
@@ -1127,6 +1212,28 @@ def training_material_picker_router(
             "items": items,
             "repository_revision": repository.current_revision(),
         }
+
+    @router.get("/{image_id}/robustness-preview")
+    def robustness_preview(project_id: str, image_id: str, preset: str = 'bt601_limited'):
+        from .training_robustness import PRESETS, transform_rgb
+        from io import BytesIO
+        import base64
+        if preset not in PRESETS:
+            raise HTTPException(422, detail='未知颜色预设')
+        row = materials(project_id).get(image_id)
+        if not row or row.get('_dataset_delete_claim') or row.get('_material_batch_delete_claim') or row.get('source_available') is False:
+            raise HTTPException(409, detail='素材当前不可用于预览')
+        thumbnail = training_material_thumbnail(project_id, image_id, 256)
+        if not getattr(thumbnail, 'path', None):
+            raise HTTPException(503, detail='缩略图暂不可用，请从素材详情核对来源后重试')
+        def encoded(image):
+            stream = BytesIO(); image.save(stream, format='PNG')
+            return 'data:image/png;base64,' + base64.b64encode(stream.getvalue()).decode('ascii')
+        with Image.open(thumbnail.path) as source:
+            before = source.convert('RGB'); after = transform_rgb(before, preset)
+            return {'preset':preset, 'before':encoded(before), 'after':encoded(after),
+                    'pixel_changed':before.tobytes()!=after.tobytes(), 'width':before.width, 'height':before.height,
+                    'scope':'thumbnail_preview_only', 'transform_version':'rgb_yuv_decoder_mismatch_v1'}
 
     @router.get("/{image_id}/thumbnail")
     def training_material_thumbnail(project_id: str, image_id: str, size: int = DEFAULT_THUMBNAIL_SIZE):

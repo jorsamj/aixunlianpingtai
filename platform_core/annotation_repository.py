@@ -1352,6 +1352,53 @@ class AnnotationRepository:
             raise RuntimeError("annotation upsert did not return a persisted row")
         return persisted[0]
 
+    def task_negative_confirmation_revision(self):
+        with closing(self._connect()) as db:
+            if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_negative_confirmations'").fetchone():
+                return 0
+            return int(db.execute('SELECT COUNT(*) FROM task_negative_confirmations').fetchone()[0])
+
+    def task_negative_receipts(self, context_key, image_ids=None):
+        """Read additive task evidence without migrating or changing formal GT."""
+        with closing(self._connect()) as db:
+            if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_negative_confirmations'").fetchone():
+                return []
+            ids = list(dict.fromkeys(str(i) for i in image_ids or []))
+            result = []
+            for offset in range(0, max(1, len(ids)), 500):
+                chunk = ids[offset:offset+500]
+                query = 'SELECT evidence_json FROM task_negative_confirmations WHERE context_key=?'
+                params = [context_key]
+                if chunk:
+                    query += " AND json_extract(evidence_json,'$.image_id') IN (" + ','.join('?' for _ in chunk) + ')'
+                    params.extend(chunk)
+                result.extend(json.loads(row[0]) for row in db.execute(query, params))
+            return result
+
+    def confirm_task_negatives(self, context_key, evidences, actor):
+        with closing(self._connect()) as db:
+            with db:
+                db.execute("BEGIN IMMEDIATE")
+                db.execute("CREATE TABLE IF NOT EXISTS task_negative_confirmations (receipt_id TEXT PRIMARY KEY, context_key TEXT NOT NULL, evidence_json TEXT NOT NULL)")
+                db.execute("CREATE INDEX IF NOT EXISTS task_negative_context_idx ON task_negative_confirmations(context_key)")
+                current_by_id = {}
+                ids = [self._id(e['image_id']) for e in evidences]
+                for offset in range(0, len(ids), 500):
+                    chunk = ids[offset:offset+500]
+                    current_by_id.update({str(r['image_id']): r for r in db.execute(
+                        'SELECT * FROM annotations WHERE image_id IN (' + ','.join('?' for _ in chunk) + ')', chunk)})
+                for evidence in evidences:
+                    image_id = self._id(evidence['image_id'])
+                    current = current_by_id.get(image_id)
+                    record = self._decode_persisted_row(current) if current else self._legacy_record(image_id)
+                    if (int(record.get('version') or 0) != evidence['annotation_version'] or
+                            str(record.get('content_digest') or '') != evidence['annotation_hash']):
+                        raise ValueError('标注已变化，请重新检查并确认')
+                    value = dict(evidence, actor=actor, confirmed_at=datetime.now(timezone.utc).isoformat())
+                    db.execute('INSERT OR IGNORE INTO task_negative_confirmations VALUES(?,?,?)',
+                               (evidence['receipt_id'], context_key, json.dumps(value, ensure_ascii=False, sort_keys=True)))
+        return [e['receipt_id'] for e in evidences]
+
     def negative_review_evidence(self, image_id, source_version, actor_id, labels, source_hash):
         """Audit lookup only; current GT remains the training authority."""
         with closing(self._connect()) as db:

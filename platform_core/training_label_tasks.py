@@ -568,8 +568,9 @@ def resolve_training_label_contract(
     if [int(item.get("class_id", -1)) for item in effective] != list(range(len(effective))):
         raise ValueError("训练标签 class_id 必须连续为 0..N-1")
 
-    return {
+    contract = {
         "schema_version": 1,
+        "strict_target_negative_scope": True,
         "training_projection_policy": base.TRAINING_PROJECTION_POLICY_V3,
         "algorithm_id": str(algorithm.get("id") or ""),
         "available_material_label_codes": available,
@@ -590,6 +591,14 @@ def resolve_training_label_contract(
         "mother_model_labels_inherited": False,
         "project_label_count": len(project_rank),
     }
+
+    receipt_ids = _unique_codes([*(payload.get("train_image_ids") or []), *(payload.get("val_image_ids") or []),
+        *(payload.get("selected_image_ids") or []), *(payload.get("image_ids") or []), *(payload.get("test_image_ids") or [])])
+    receipts = AnnotationRepository(project_path).task_negative_receipts(task_negative_context(contract), receipt_ids)
+    if receipts:
+        contract["task_negative_confirmations"] = receipts
+        contract["training_projection_policy"] = base.TRAINING_PROJECTION_POLICY_V4
+    return contract
 
 
 def _contract_for_project(project: Path) -> dict[str, Any] | None:
@@ -634,6 +643,34 @@ def _projection_digest(
     ).hexdigest()
 
 
+def task_negative_context(contract):
+    value = [str(contract.get("algorithm_id") or ""), sorted(contract.get("effective_label_codes") or [])]
+    return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+
+
+def task_negative_identity(row, contract):
+    value = {"image_id": str(row.get("id") or row.get("image_id") or ""),
+             "source_content_sha256": str(row.get("content_sha256") or ""),
+             "annotation_version": int(row.get("annotation_version") or row.get("version") or 0),
+             "annotation_hash": str(row.get("annotation_hash") or row.get("content_digest") or ""),
+             "context_key": task_negative_context(contract)}
+    value["receipt_id"] = hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+    return value
+
+
+def task_negative_confirmable(row, contract):
+    # Validate geometry/source flags using the existing role classifier, with
+    # only task-local scope supplied. This never writes the formal annotation.
+    if row.get("_dataset_delete_claim") or row.get("_material_batch_delete_claim"):
+        return False
+    if len(str(row.get("content_sha256") or "")) != 64:
+        return False
+    candidate = dict(row, annotation_scope=list(contract.get("effective_label_codes") or []))
+    if not candidate.get("boxes") and candidate.get("annotation_state") == "unannotated":
+        candidate["annotation_state"] = "confirmed_empty"
+    return training_material_role(candidate, {"effective_label_codes": contract.get("effective_label_codes")})["role"] == "confirmed_negative"
+
+
 def training_material_scope_issue(
     row: Mapping[str, Any],
     contract: Mapping[str, Any],
@@ -660,7 +697,10 @@ def training_material_scope_issue(
         issue_type = "missing_annotation"
         missing = sorted(set(required))
     else:
-        missing = [] if "*" in reviewed else sorted(set(required) - reviewed)
+        wildcard_reviewed = "*" in reviewed
+        if contract.get("strict_target_negative_scope") and not (set(present) & set(required)):
+            wildcard_reviewed = False
+        missing = [] if wildcard_reviewed else sorted(set(required) - reviewed)
         if not missing:
             return None
         issue_type = "partial_review_scope"
@@ -707,6 +747,11 @@ def training_material_role(row: Mapping[str, Any], contract: Mapping[str, Any]) 
     except (KeyError, TypeError, ValueError):
         issue = {"image_id": str(row.get("id") or row.get("image_id") or ""),
                  "issue_type": "invalid_annotation", "missing_label_codes": sorted(required)}
+    positive = any(str(box.get("label") or box.get("code") or "").strip() in required for box in boxes)
+    if not positive and issue and issue.get("issue_type") in {"missing_annotation", "partial_review_scope"}:
+        identity = task_negative_identity(row, contract)
+        if any(e.get("receipt_id") == identity["receipt_id"] for e in contract.get("task_negative_confirmations") or []):
+            issue = None
     if not required or issue is not None:
         return {"role": "pending_review", "scope_issue": issue}
     positive = any(str(box.get("label") or box.get("code") or "").strip() in required for box in boxes)
@@ -723,6 +768,8 @@ def project_training_rows(
     projected: list[dict[str, Any]] = []
     for original in rows:
         row = dict(original)
+        if contract.get("strict_target_negative_scope"):
+            row["strict_target_negative_scope"] = True
         state = str(row.get("annotation_state") or "unannotated")
         raw_scope = [str(value) for value in row.get("annotation_scope") or []]
         boxes = [dict(box) for box in (row.get("boxes") or [])]
@@ -762,7 +809,7 @@ def project_training_rows(
 
         scope_issue = (
             training_material_role(row, contract)["scope_issue"]
-            if contract.get("training_projection_policy") == base.TRAINING_PROJECTION_POLICY_V3
+            if contract.get("training_projection_policy") in {base.TRAINING_PROJECTION_POLICY_V3, base.TRAINING_PROJECTION_POLICY_V4}
             else training_material_scope_issue(row, contract)
         )
         if scope_issue is not None:
@@ -781,7 +828,7 @@ def project_training_rows(
         # Never accept task-local projection claims from incoming material metadata.
         for key in ("training_excluded_boxes", "training_projection_policy", "training_projection_digest"):
             row.pop(key, None)
-        if excluded_boxes or policy == base.TRAINING_PROJECTION_POLICY_V3:
+        if excluded_boxes or policy in {base.TRAINING_PROJECTION_POLICY_V3, base.TRAINING_PROJECTION_POLICY_V4}:
             row["training_excluded_boxes"] = excluded_boxes
             row["training_projection_policy"] = policy
             row["training_projection_digest"] = _projection_digest(
@@ -791,6 +838,15 @@ def project_training_rows(
                 excluded_boxes=excluded_boxes,
                 policy=policy,
             )
+
+        if policy == base.TRAINING_PROJECTION_POLICY_V4 and not selected_boxes:
+            evidence = task_negative_identity(original, contract)
+            row["task_negative_confirmation"] = next((e for e in contract.get("task_negative_confirmations") or [] if e.get("receipt_id") == evidence["receipt_id"]), None)
+            row.update(annotation_state="confirmed_empty", annotated=True, boxes=[], annotation_scope=sorted(allowed), negative_origin="reviewed_task_negative")
+            if row["task_negative_confirmation"]:
+                row["training_projection_digest"] = hashlib.sha256((row["training_projection_digest"] + evidence["receipt_id"]).encode()).hexdigest()
+            state = "confirmed_empty"
+            raw_scope = sorted(allowed)
 
         if state == "annotated":
             reviewed = {str(value).strip() for value in raw_scope if str(value).strip()}

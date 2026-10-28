@@ -25189,6 +25189,18 @@ def _review_training_negative(project_id, item, effective_codes, actor):
     return save_annotation(project_id,image_id,payload)
 
 
+from platform_core.negative_pool_api import create_negative_pool_router
+
+def _negative_pool_training_usage(project_id, rows):
+    from platform_core.training_material_usage import TrainingMaterialUsage
+    database = DATA_DIR / 'task_runtime' / 'tasks.sqlite3'
+    if not database.is_file():
+        return {}
+    return TrainingMaterialUsage(database).query_filter(project_id, '', rows, exclude_used=False)['by_image_id']
+
+app.include_router(create_negative_pool_router(material_store, _authorize_business_file_project,
+    public_material, usage_for_page=_negative_pool_training_usage))
+
 app.include_router(training_material_picker_router(
     _authorize_business_file_project,
     lambda: DATA_DIR,

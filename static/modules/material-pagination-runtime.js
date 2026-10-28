@@ -408,6 +408,7 @@ export function installMaterialPaginationRuntime() {
 
   function renderPagedDataset61({forceShell = false} = {}) {
     if (window.UploadConfirmationRuntime?.renderIfActive?.()) return 'upload-confirmation';
+    if(window.NegativePoolRuntime?.active('materials'))return window.NegativePoolRuntime.renderPool('materials');
     if (!isPagedDataset() || typeof baseRenderDatasets !== 'function') return false;
     const structure = shellSignature61();
     const needsShell = forceShell || !hasDatasetShell61() || state.materialShellSignature61 !== structure;
@@ -451,6 +452,7 @@ export function installMaterialPaginationRuntime() {
         state.materialFilterSignature61 = filterSignature61();
         rememberDatasetPage61();
         const mode = renderPagedDataset61();
+    window.NegativePoolRuntime?.decorateOriginal('materials');
         const [unprocessedTotal, processedTotal] = await totalsPromise;
         if (serial !== requestSerial || state.page !== expectedPage || !isPagedDataset()) return {stale: true};
         info.unprocessedTotal = unprocessedTotal;

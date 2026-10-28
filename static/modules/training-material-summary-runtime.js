@@ -49,8 +49,8 @@ function htmlEscape(value) {
 export function renderTrainingSampleRoles(summary) {
   const counts=summary?.sample_role_counts,labels=uniqueIds(summary?.effective_label_codes);
   if(!counts||!labels.length)return '';
-  const positive=Math.max(0,Number(counts.positive)||0),negative=Math.max(0,Number(counts.confirmed_negative)||0),pending=Math.max(0,Number(counts.pending_review)||0);
-  return `<div data-training-sample-roles><span>本次训练标签 ${htmlEscape(labels.join('、'))}</span><b>正样本 ${positive} · 已确认负样本 ${negative} · 待审核 ${pending}</b>${negative>positive*3?'<small>负样本比例较高，请结合困难样本质量和独立评测判断；不会自动减少所选素材。</small>':''}${pending?'<small>待审核素材须完成本次标签审核后才能参与监督训练。</small>':''}</div>`;
+  const n=key=>Math.max(0,Number(counts[key])||0);
+  return `<div data-training-sample-roles><span>本次训练标签 ${htmlEscape(labels.join('、'))}</span><b>正样本 ${n('positive')} · 已确认负样本 ${n('confirmed_negative')} · 待确认负样本 ${n('pending_negative')}</b>${n('pending_review')?`<small>另有 ${n('pending_review')} 张素材需修复标注或来源问题。</small>`:''}${n('pending_negative')?'<small>仅在最终创建时确认这些图片不含本次目标；原标注不会修改。</small>':''}${n('confirmed_negative')>n('positive')*3?'<small>负样本比例较高，请结合独立评测判断；不会自动减少所选素材。</small>':''}</div>`;
 }
 
 export const GT_CONFLICT_NAMES = Object.freeze({
@@ -163,6 +163,8 @@ export function installTrainingMaterialSummaryRuntime({
 
   const state = () => getState() || {};
   let destroyed = false;
+  let negativeCheck = null;
+  let negativeDialog = null;
   let requestSequence = 0;
   let compatibilitySequence = 0;
   let activeController = null;
@@ -393,6 +395,46 @@ export function installTrainingMaterialSummaryRuntime({
     };
   }
 
+  function beforeModalClose(layer) {
+    if(negativeDialog?.node&&layer?.contains?.(negativeDialog.node))negativeDialog.finish(false,false);
+    if(negativeCheck?.root&&layer?.contains?.(negativeCheck.root))negativeCheck.controller.abort();
+  }
+  async function confirmPendingNegatives({draft=currentDraft(),root,isCurrent=()=>true}={}) {
+    if(negativeCheck)throw new Error('负样本确认正在处理，请勿重复提交');
+    const controller=new AbortController(),pid=String(projectId()||''),payload=compatibilityPayload(draft);
+    const current=()=>!destroyed&&!controller.signal.aborted&&String(projectId()||'')===pid&&isCurrent();
+    negativeCheck={root,controller};
+    const post=(action,body)=>withRequestDeadline(async signal=>readJson(await fetchImpl(
+      `/api/v62/projects/${encodeURIComponent(pid)}/training-materials/${action}`,{method:'POST',signal,
+        headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}),'负样本核验失败'),
+      {timeoutMs:requestTimeoutMs,signal:controller.signal,label:'负样本核验'});
+    try {
+      const preview=await post('negative-preview',payload);
+      if(!current())return false;
+      // Invalid/stale GT must use the existing diagnosis, never an absence assertion.
+      if(Number(preview.counts?.pending_review))return true;
+      if(!Number(preview.counts?.positive)&&Object.values(preview.counts||{}).some(Number))throw new Error('本次素材没有所选目标的有效正样本，不能创建全负样本目标检测训练。');
+      if(!Number(preview.pending_count))return true;
+      if(typeof window.modal!=='function')throw new Error('负样本确认窗口不可用，请刷新后重试');
+      const accepted=await new Promise(resolve=>{
+        const c=preview.counts||{},layer=window.modal('本次训练包含待确认负样本',
+          `<section data-training-negative-confirmation><p>本次目标：<b>${htmlEscape((preview.effective_label_codes||[]).join('、'))}</b></p><p>正样本 ${Number(c.positive)||0} · 已确认负样本 ${Number(c.confirmed_negative)||0} · 待确认负样本 ${Number(preview.pending_count)||0}</p><p>请确认待确认图片不包含本次目标类别，避免漏标影响模型效果。确认仅记录对应目标和素材版本，不修改原图或正式标注。</p><div class="training-negative-previews">${(preview.pending_preview||[]).map(row=>`<figure><img src="${htmlEscape(row.image_url||'')}" alt="待确认素材 ${htmlEscape(row.image_id)}" loading="lazy"><figcaption>${htmlEscape(row.image_id)}</figcaption></figure>`).join('')}</div><p class="muted">${Number(preview.pending_count)>20?'仅预览前20张；如尚未检查全部素材，请返回检查。':''}</p><div class="row end"><button type="button" class="btn" data-negative-return>返回检查</button><button type="button" class="btn primary" data-negative-confirm>确认并创建训练任务</button></div></section>`,true);
+        const node=layer?.querySelector?.('[data-training-negative-confirmation]')||document.querySelector('[data-training-negative-confirmation]');
+        if(!node){resolve(false);return;}
+        let settled=false;
+        const finish=(value,close=true)=>{if(settled)return;settled=true;negativeDialog=null;controller.signal.removeEventListener('abort',abort);if(close)window.closeModalLayer424?.(layer);resolve(value)};
+        const abort=()=>finish(false);negativeDialog={node,finish};controller.signal.addEventListener('abort',abort,{once:true});
+        node.querySelector('[data-negative-return]').onclick=()=>finish(false);
+        node.querySelector('[data-negative-confirm]').onclick=()=>finish(true);
+      });
+      if(!accepted||!current())return false;
+      await post('confirm-negatives',{...payload,confirmed:true,proof_digest:preview.proof_digest});
+      if(!current())return false;
+      invalidate();await refresh(currentIds(),{force:true});
+      return current();
+    }finally{negativeDialog?.finish(false);negativeCheck=null;}
+  }
+
   function compatibilityFor(draft = currentDraft()) {
     const signature = trainingCompatibilitySignature(draft || {});
     if (compatibilityPendingSignature === signature) {
@@ -458,7 +500,7 @@ export function installTrainingMaterialSummaryRuntime({
         }
       }
     }
-    const host = document.querySelector?.('.train429-data-summary');
+    const host = document.querySelector?.('.train429-data-summary') || document.querySelector?.('.train429-create .train-v3-summary')?.parentElement;
     if (host) {
       let row = host.querySelector?.('[data-training-compatibility-summary]');
       if (!row) {
@@ -920,6 +962,8 @@ return `<article class="training-compatibility-item"><img src="${htmlEscape(item
     build: 'training-material-summary-runtime-422606',
     refresh,
     refreshCompatibility,
+    confirmPendingNegatives,
+    beforeModalClose,
     invalidateCompatibility,
     compatibilityFor,
     openCompatibilityIssues,
@@ -961,6 +1005,7 @@ return `<article class="training-compatibility-item"><img src="${htmlEscape(item
       };
     },
     destroy() {
+      negativeCheck?.controller.abort();
       destroyed = true;
       deletionSessions.clear();
       activeController?.abort?.();

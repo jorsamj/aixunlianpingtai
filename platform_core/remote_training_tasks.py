@@ -589,7 +589,8 @@ class TrainingPrepareHandler:
                 "validation_percent": split.validation_percent,
             })
             if not compatibility.issues:
-                selection = resolve_training_selection(project, split)
+                intent_contract = resolve_training_label_contract(self.data_dir, project, payload, algorithm, require_positive_evidence=False)
+                selection = resolve_training_selection(project, split, label_contract=intent_contract)
                 effective_split = selection.effective_split
                 supplement = self._resolve_supplement_candidate_set(project, algorithm, payload, effective_split)
                 label_request = dict(payload)
@@ -977,8 +978,8 @@ class TrainingPrepareHandler:
             # Old unprepared requests also need durable GT, not a later reread
             # from mutable AnnotationRepository when the execution is claimed.
             with material_annotation_lifecycle_fence(project):
-                selection = resolve_training_selection(project, split_request)
                 contract = payload.get("label_contract")
+                selection = resolve_training_selection(project, split_request, label_contract=contract)
                 projected = (project_training_rows(selection.effective_images, contract)
                     if isinstance(contract, Mapping) and contract else None)
                 frozen = freeze_training_inputs(

@@ -1,3 +1,4 @@
+import {installNegativePoolRuntime} from './modules/negative-pool-runtime.js?v=20261028';
 import {ADVANCED_MENUS, advancedPageInfo, installAdvancedNavigation} from './modules/advanced-navigation.js?v=20261024';
 import {installQualityDetectionWorkbench} from './modules/quality-detection-workbench.js?v=20261028-ui';
 import {installAdvancedEvaluation} from './modules/advanced-evaluation.js?v=20261023p2';
@@ -23,15 +24,15 @@ import {installChangLianDataBrowserRuntime} from './modules/changlian-data-brows
 import {installExternalAlgorithmPublishRuntime} from './modules/external-algorithm-publish.js?v=64015';
 import {installModelArtifactRuntime} from './modules/model-artifact-runtime.js?v=65009';
 import {installTrainingRecoveryRuntime} from './modules/training-recovery-runtime.js?v=20261028-csc';
-import {installTrainingMaterialPickerRuntime} from './modules/training-material-picker-runtime.js?v=422614';
-import {installTrainingMaterialSummaryRuntime} from './modules/training-material-summary-runtime.js?v=422610';
+import {installTrainingMaterialPickerRuntime} from './modules/training-material-picker-runtime.js?v=422615';
+import {installTrainingMaterialSummaryRuntime} from './modules/training-material-summary-runtime.js?v=422611';
 import {installTrainingTaskRuntime} from './modules/training-task-runtime.js?v=422609';
 import {installTrainingTaskVisibilityRuntime} from './modules/training-task-visibility-runtime.js?v=4226386-timing';
 import {installTrainingProgressStream} from './modules/training-progress-stream.js?v=422570';
 import {createTrainingDraft, trainingDraftToRequest, trainingBaseVersionFromAlgorithm, trainingInheritedDefaults} from './modules/training-draft.js?v=422514';
 import {installTrainingDraftRuntime} from './modules/training-draft-runtime.js?v=422520';
 import {TRAINING_DRAFT_CONTROL_IDS, installTrainingDraftControls} from './modules/training-draft-controls.js?v=422502';
-import {benchmarkReuseContext, buildTrainingEngineParameters, buildTrainingStartPayload, installTrainingSubmitRuntime, trainingSubmitReadiness, validateTrainingDevice} from './modules/training-submit.js?v=422610';
+import {benchmarkReuseContext, buildTrainingEngineParameters, buildTrainingStartPayload, installTrainingSubmitRuntime, trainingSubmitReadiness, validateTrainingDevice} from './modules/training-submit.js?v=422611';
 import {installTrainingCreateHydrationRuntime} from './modules/training-create-hydration.js?v=422558';
 import {installAutoLabelPollRuntime} from './modules/auto-label-poll-runtime.js?v=422503';
 import {annotationReviewView, annotationSavePayload, createAnnotationWorkbench, queueWindow} from './modules/annotation-workbench.js?v=422595';
@@ -48,7 +49,7 @@ import {qualityChartModel} from './modules/quality.js?v=421800';
 import {reportPresentation, metricChart, trainingCharts, formatPercentagePointDelta, metricCredibilityHtml, chatGPTAnalysisMaterial, trainingReportHtml, mountTrainingReport, mountReportCharts, evaluationChartGroups, mountEvaluationCharts, disposeReportViews, lineageReportHtml} from './modules/reports.js?v=20261022a';
 import {isActiveVideoTask, normalizeVideoTask, videoTaskFormValues} from './modules/video-tasks.js?v=421900';
 import {buildStorageSourcePayload, defaultStorageSource, enabledStorageSources, sourceMatches, storageSourceLabel} from './modules/storage.js?v=422202';
-import {buildMaterialQuery, installMaterialPaginationRuntime, requiresFullMaterialPool} from './modules/material-pagination-runtime.js?v=422613';
+import {buildMaterialQuery, installMaterialPaginationRuntime, requiresFullMaterialPool} from './modules/material-pagination-runtime.js?v=422614';
 import {installStorageImportProgressRuntime, storageImportProgressText} from './modules/storage-import-progress.js?v=422525';
 import {installUploadTaskCenter} from './modules/upload-task-center.js?v=66014';
 import {buildServerImportRequest, buildImportConfirmation, serverImportView} from './modules/server-material-import.js?v=422526';
@@ -303,6 +304,37 @@ const autoLabelPollRuntime = installAutoLabelPollRuntime({
 window.PlatformCore.runtime.autoLabelPollRuntime = autoLabelPollRuntime;
 
 installMaterialPaginationRuntime();
+installNegativePoolRuntime({getState:()=>state,api,pid:()=>state.project?.id,esc,toast:notify,
+  modal:(...args)=>window.modal(...args),closeModal:()=>window.closeModal(),
+  addToDraft:async ids=>{
+    const projectId=String(state.project?.id||'');
+    const applySelection=()=>{
+      if(String(state.project?.id||'')!==projectId)throw new Error('项目已变化，请重新选择');
+      const draft=trainingDraftRuntime.current(),blocked=new Set(draft.testMaterialIds||[]),accepted=ids.filter(id=>!blocked.has(id));
+      trainingDraftRuntime.update({materialIds:[...new Set([...(draft.materialIds||[]),...accepted])]});
+      trainingMaterialSummaryRuntime.invalidate();window.refreshTrainingMaterialSelectionUiV3?.();
+      notify(`已加入 ${accepted.length} 张训练素材；最终创建时核验目标与负样本确认。`);
+    };
+    let selected=trainingDraftRuntime.current();
+    if(!state.algorithms?.some(row=>String(row.id)===String(selected?.algorithmId||''))){
+      const choices=state.algorithms||[];
+      if(!choices.length)throw new Error('请先创建训练算法，再选择负样本');
+      {
+        const layer=window.modal('选择训练算法',`<form data-negative-pool-algorithm><label>算法<select class="select" name="algorithm">${choices.map(row=>`<option value="${esc(row.id)}">${esc(row.name||row.id)}</option>`).join('')}</select></label><div class="row end"><button class="btn" type="button" data-cancel>取消</button><button class="btn primary" type="submit">进入训练配置</button></div></form>`);
+        const form=layer.querySelector('[data-negative-pool-algorithm]');
+        form.querySelector('[data-cancel]').onclick=()=>window.closeModalLayer424(layer);
+        form.onsubmit=async event=>{event.preventDefault();const button=form.querySelector('[type=submit]');button.disabled=true;try{
+          if(String(state.project?.id||'')!==projectId)throw new Error('项目已变化，请重新选择');
+          const value=new FormData(form).get('algorithm');window.closeModalLayer424(layer);
+          await window.openTrainingCreateCanonical429(value);applySelection();
+        }catch(error){notify(error.message||String(error))}finally{if(form.isConnected)button.disabled=false}};
+      }
+      return;
+    }
+    applySelection();
+  }
+});
+
 installMaterialBatchRuntime({
   projectId: () => state.project?.id,
   projectName: () => state.project?.name,

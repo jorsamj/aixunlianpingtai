@@ -133,3 +133,86 @@ def test_v3_positive_without_exclusions_is_not_reencoded(tmp_path):
  path=tmp_path/'positive.png';Image.new('RGB',(20,20),'red').save(path)
  before=path.read_bytes();identity=base._apply_training_projection(path,projected,'train',{})
  assert path.read_bytes()==before and identity['redacted_object_count']==0
+
+
+@pytest.mark.parametrize("kind", ["empty", "person", "mixed"])
+def test_target_receipt_v4_real_exports_preserve_original(tmp_path, kind):
+    import hashlib
+    import json
+    from platform_core.training_label_tasks import task_negative_identity
+    from platform_core.annotation_repository import AnnotationRepository
+    source = tmp_path / "source.png"
+    Image.new("RGB", (20,20), "blue").save(source)
+    boxes = [] if kind == "empty" else row(("person",))["boxes"]
+    if kind == "mixed":
+        boxes.append({"label":"vest", "x1":3,"y1":3,"x2":8,"y2":8})
+    repo = AnnotationRepository(tmp_path / "project")
+    if boxes:
+        repo.upsert("n", boxes, annotation_state="annotated", annotation_scope=["person","vest"] if kind == "mixed" else ["person"])
+    annotation = repo.get("n")
+    before = deepcopy(annotation)
+    original = dict(annotation, id="n", annotation_version=annotation["version"], annotation_hash=annotation.get("content_digest", ""),
+        filename=source.name, stored_name=source.name, width=20, height=20,
+        content_sha256=hashlib.sha256(source.read_bytes()).hexdigest())
+    contract = dict(CONTRACT, algorithm_id="a", training_projection_policy=base.TRAINING_PROJECTION_POLICY_V4)
+    if kind != "mixed":
+        evidence = task_negative_identity(original, contract)
+        assert training_material_role(original, contract)["role"] == "pending_review"
+        repo.confirm_task_negatives(evidence["context_key"], [evidence], {"id":"test"})
+        contract["task_negative_confirmations"] = repo.task_negative_receipts(evidence["context_key"])
+    projected = project_training_rows([original], contract)[0]
+    from platform_core.snapshots import build_snapshot
+    durable = build_snapshot([projected], ["n"], [], [{"code":"vest","class_id":0}], seed=1)
+    if kind != "mixed":
+        assert durable["images"][0]["task_negative_confirmation"]["receipt_id"] == evidence["receipt_id"]
+    snapshot = {"schema_version":3,"snapshot_id":kind,"ids":{"train":["n"],"validation":[],"test":[]},
+        "label_schema":[{"code":"vest","class_id":0}],"images":[{"image_id":"n","role":"train",
+        "content_sha256":original["content_sha256"],"annotation_state":projected["annotation_state"],"annotation_scope":["vest"]}]}
+    bundle = base.materialize_portable_dataset(tmp_path / "task", snapshot, [projected], lambda _: source, safety_reserve_bytes=0)
+    output = (bundle / "dataset/labels/train/n.txt").read_text()
+    assert output.startswith("0 ") if kind == "mixed" else output == ""
+    assert (bundle / "dataset/images/train/n.png").read_bytes() == source.read_bytes()
+    assert (bundle / "dataset/data.yaml").exists()
+    assert repo.get("n") == before
+    if kind != "mixed":
+        assert projected["task_negative_confirmation"]["receipt_id"] == evidence["receipt_id"]
+        for field, value in [("annotation_version", 999), ("content_sha256", "b"*64), ("annotation_hash", "changed")]:
+            assert training_material_role(dict(original, **{field:value}), contract)["role"] == "pending_review"
+
+
+def test_actual_train_split_all_negative_rejected():
+    from types import SimpleNamespace
+    manifest = SimpleNamespace(ids={"train":["n"],"validation":["p"],"test":[]})
+    with pytest.raises(ValueError, match="训练集没有任何正样本"):
+        base._training_split_quality([{"id":"n","boxes":[]},{"id":"p","boxes":row()["boxes"]}], manifest, [{"code":"person"}])
+
+
+def test_new_target_scope_rejects_legacy_wildcard_but_preserves_frozen_replay():
+    from platform_core.training_label_tasks import task_negative_identity, task_negative_confirmable
+    original={"id":"legacy", "annotation_state":"confirmed_empty", "annotation_scope":["*"],
+              "boxes":[], "content_sha256":"a"*64, "annotation_version":1, "annotation_hash":"gt"}
+    legacy=dict(CONTRACT,algorithm_id="a")
+    current=dict(legacy,strict_target_negative_scope=True)
+    assert training_material_role(original,legacy)["role"]=="confirmed_negative"
+    assert training_material_role(original,current)["role"]=="pending_review"
+    assert task_negative_confirmable(original,current)
+    assert training_material_role(dict(original,annotation_scope=["vest"]),current)["role"]=="confirmed_negative"
+    evidence=task_negative_identity(original,current)
+    current['task_negative_confirmations']=[evidence]
+    assert training_material_role(original,current)["role"]=="confirmed_negative"
+    assert training_material_role(original,dict(current,effective_label_codes=['cigarette']))["role"]=="pending_review"
+    assert training_material_role(original,dict(current,algorithm_id='b'))["role"]=="pending_review"
+    assert project_training_rows([original],legacy)[0]['annotation_scope']==['*']
+
+
+def test_task_confirmation_first_write_rolls_back_on_stale_gt(tmp_path):
+    import sqlite3
+    from platform_core.annotation_repository import AnnotationRepository
+    repository=AnnotationRepository(tmp_path/'project')
+    original=repository.get('n')
+    evidence={'image_id':'n','annotation_version':999,'annotation_hash':'stale','receipt_id':'r'}
+    with pytest.raises(ValueError,match='标注已变化'):
+        repository.confirm_task_negatives('context',[evidence],{'actor_id':'test'})
+    assert repository.get('n')==original
+    with sqlite3.connect(repository.path) as db:
+        assert db.execute("SELECT name FROM sqlite_master WHERE name='task_negative_confirmations'").fetchone() is None

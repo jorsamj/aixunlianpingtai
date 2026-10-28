@@ -1026,3 +1026,46 @@ def test_queued_selection_refuses_insufficient_original_scope(tmp_path,remaining
     materials.upsert_many([{'id':f'image-{i}','filename':f'{i}.jpg'} for i in range(remaining)]+([{'id':'test','filename':'t.jpg'}] if test_present else []))
     split=SplitRequest(SplitMode.INDEPENDENT_TEST_SET,('image-0','image-1','image-2'),('test',))
     with pytest.raises(ValueError,match=code):_queued_recheck(materials,split)
+
+
+
+def test_target_negative_receipts_survive_prepare_freeze_and_real_dataset(tmp_path):
+    from types import SimpleNamespace
+    from platform_core.training_label_tasks import resolve_training_label_contract, task_negative_identity, _ORIGINAL_SELECTED_PROJECT_IMAGES
+    from platform_core.training_tasks import resolve_training_input_freeze, materialize_portable_dataset
+    from platform_core.training_splits import SplitRequest, SplitMode
+    data_dir=tmp_path/'data'; pid=_build_project(data_dir); project=data_dir/'projects'/pid
+    meta=json.loads((project/'meta.json').read_text());meta['labels'].append('person');meta['label_meta'].append({'code':'person','class_id':1})
+    (project/'meta.json').write_text(json.dumps(meta))
+    annotations=AnnotationRepository(project)
+    annotations.upsert('image-1',[],annotation_state='unannotated',annotation_scope=[])
+    person={'label':'person','x1':5,'y1':5,'x2':40,'y2':40}
+    annotations.upsert('image-2',[person],annotation_state='annotated',annotation_scope=['person'])
+    annotations.upsert('image-3',[person,dict(person,label='fire')],annotation_state='annotated',annotation_scope=['person','fire'])
+    repository,artifacts,target_id,_=_runtime(data_dir,pid)
+    payload=artifacts.read_json(target_id,'payload.json');payload.update(schema_version=4,train_labels=['fire'],validation_percent=50,seed=1)
+    algorithm={'id':'algorithm-fire','versions':[]}
+    contract=resolve_training_label_contract(data_dir,project,payload,algorithm,require_positive_evidence=False)
+    originals=_ORIGINAL_SELECTED_PROJECT_IMAGES(MaterialRepository(project),project,payload['train_image_ids'])
+    evidences=[task_negative_identity(row,contract) for row in originals if row['id'] in ['image-1','image-2']]
+    annotations.confirm_task_negatives(evidences[0]['context_key'],evidences,{'actor_id':'test'})
+    from platform_core.training_compatibility import evaluate_training_compatibility
+    assert not evaluate_training_compatibility(data_dir,project,payload,algorithm).issues
+    before=annotations.get_many(payload['train_image_ids']);source_bytes={r['id']:(project/'uploads'/r['stored_name']).read_bytes() for r in originals}
+    updated=RemoteTrainingPrepareHandler(data_dir)._freeze_request_contract(SimpleNamespace(artifacts=artifacts,repository=repository,run_owned=lambda operation:operation()),repository.get(target_id),payload)
+    frozen=artifacts.read_json(target_id,'input-freeze.json');split=frozen['split']
+    rows,schema,manifest,snapshot=resolve_training_input_freeze(frozen,SplitRequest(mode=SplitMode(split['mode']),train_image_ids=tuple(split['train_image_ids']),test_image_ids=tuple(split['test_image_ids']),validation_percent=split['validation_percent'],experiment_percent=split['experiment_percent']),seed=split['seed'])
+    assert {r['id'] for r in rows} >= {'image-1','image-2','image-3'}
+    snapshot_by_id={r['image_id']:r for r in snapshot['images']}
+    assert snapshot_by_id['image-1']['task_negative_confirmation']['receipt_id']==evidences[0]['receipt_id']
+    output=materialize_portable_dataset(tmp_path/'actual-task',snapshot,rows,lambda row:project/'uploads'/row['stored_name'],safety_reserve_bytes=0)
+    for iid in ['image-1','image-2','image-3']:
+        role=snapshot_by_id[iid]['role'];text=(output/f'dataset/labels/{role}/{iid}.txt').read_text()
+        assert text.startswith('0 ') if iid=='image-3' else text==''
+        assert (output/f'dataset/images/{role}/{iid}.jpg').read_bytes()==source_bytes[iid]
+    assert annotations.get_many(payload['train_image_ids'])==before
+    import yaml
+    exported=yaml.safe_load((output/'dataset/data.yaml').read_text())
+    assert exported['names']=={0:'fire'}
+    assert exported['train']=='images/train' and exported['val']=='images/validation'
+    assert 'test' not in exported

@@ -62,6 +62,8 @@ TRAINING_PROJECTION_POLICY = "redact_excluded_objects_v2_preserve_selected"
 TRAINING_PROJECTION_POLICY_V3 = "reviewed_negative_original_v3_preserve_selected"
 _TRAINING_BUNDLE_COPY_PREFIX = ".training-bundle-copy."
 TRAINING_COMPLETION_GRACE_SECONDS = 5.0
+TRAINING_PROJECTION_POLICY_V4 = "target_confirmation_original_v4"
+
 TRAINING_INPUT_POLICY = "ultralytics_jpeg_repair_v1"
 _JPEG_SUFFIXES = {".jpg", ".jpeg", ".jpe", ".jfif"}
 _JPEG_NORMALIZATION_LOCK = threading.Lock()
@@ -501,6 +503,11 @@ def _apply_training_projection(
         if isinstance(box, Mapping)
     ]
     policy = str(row.get("training_projection_policy") or "")
+    if policy == TRAINING_PROJECTION_POLICY_V4:
+        if len(str(row.get("training_projection_digest") or "")) != 64:
+            raise ValueError("training projection digest is missing or invalid")
+        identity.update(training_projection_policy=policy, training_projection_digest=row["training_projection_digest"], redacted_object_count=0)
+        return identity
     if role == "test" or (not excluded and policy != TRAINING_PROJECTION_POLICY_V3):
         return identity
     policy = str(row.get("training_projection_policy") or "")
@@ -1145,6 +1152,7 @@ def _processed_training_candidate(row: Mapping[str, Any]) -> bool:
 def resolve_training_selection(
     project: Path,
     split_request: SplitRequest,
+    *, label_contract: Mapping[str, Any] | None = None,
 ) -> TrainingSelectionResolution:
     """Separate user-selectable cleaned material from formal supervised truth.
 
@@ -1167,7 +1175,10 @@ def resolve_training_selection(
         row = by_id[str(image_id)]
         boxes = list(row.get("boxes") or [])
         state = str(row.get("annotation_state") or "unannotated")
-        if is_training_ground_truth(state, boxes):
+        from .training_label_tasks import training_material_role
+        task_confirmed = bool(label_contract and label_contract.get("training_projection_policy") == TRAINING_PROJECTION_POLICY_V4
+            and training_material_role(row, label_contract)["role"] == "confirmed_negative")
+        if is_training_ground_truth(state, boxes) or task_confirmed:
             effective_train.append(str(image_id))
         elif state == "unannotated" and not boxes and _processed_training_candidate(row):
             pending_annotation.append(str(image_id))
@@ -1257,6 +1268,8 @@ _TRAINING_INPUT_FREEZE_FIELDS = (
     "annotation_needs_review",
     "annotation_review_reason",
     "annotation_source_content_sha256",
+    "strict_target_negative_scope",
+    "task_negative_confirmation",
     "negative_origin",
     "source_annotation_state",
     "source_annotation_hash",
@@ -1692,8 +1705,14 @@ def _training_source_projection_admission(
             ]) if code
         ]
     )
+    source_audit_rows = original
+    if (label_contract or {}).get("training_projection_policy") == TRAINING_PROJECTION_POLICY_V4:
+        from .training_label_tasks import training_material_role
+        source_audit_rows = [dict(row, annotation_state="confirmed_empty")
+            if not row.get("boxes") and training_material_role(row, label_contract)["role"] == "confirmed_negative"
+            else row for row in original]
     source_audit = _training_annotation_admission(
-        original, source_schema, strict_catalog=declared_catalog,
+        source_audit_rows, source_schema, strict_catalog=declared_catalog,
     )
     effective_codes = (label_contract or {}).get("effective_label_codes") or ()
     if effective_codes:
@@ -1710,7 +1729,7 @@ def _training_source_projection_admission(
     protected = (
         "id", "content_sha256", "size_bytes", "width", "height",
         "annotation_state", "annotation_scope", "boxes", "annotated",
-        "negative_origin", "source_annotation_state", "source_annotation_hash",
+        "task_negative_confirmation", "negative_origin", "source_annotation_state", "source_annotation_hash",
         "source_labels", "training_excluded_boxes",
         "training_projection_policy", "training_projection_digest",
     )

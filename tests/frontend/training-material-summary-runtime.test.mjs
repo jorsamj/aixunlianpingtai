@@ -185,7 +185,7 @@ test('pending selection summary and stalled compatibility body both release load
 });
 
 test('sample role summary distinguishes task labels and warns without dropping negatives',()=>{
- const html=renderTrainingSampleRoles({effective_label_codes:['vest'],sample_role_counts:{positive:500,confirmed_negative:3000,pending_review:200}});
- assert.match(html,/vest/);assert.match(html,/正样本 500/);assert.match(html,/已确认负样本 3000/);assert.match(html,/待审核 200/);assert.match(html,/比例/);
+ const html=renderTrainingSampleRoles({effective_label_codes:['vest'],sample_role_counts:{positive:500,confirmed_negative:3000,pending_negative:200,pending_review:2}});
+ assert.match(html,/vest/);assert.match(html,/正样本 500/);assert.match(html,/已确认负样本 3000/);assert.match(html,/待确认负样本 200/);assert.match(html,/2 张素材需修复/);assert.match(html,/比例/);
  assert.equal(renderTrainingSampleRoles({label_codes:['person']}),'');
 });

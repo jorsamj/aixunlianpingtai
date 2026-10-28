@@ -69,3 +69,47 @@ def test_negative_review_keeps_previously_reviewed_empty_scopes(client,monkeypat
  result=client.post(f'/api/v62/projects/{pid}/training-materials/review-negative',json={'algorithm_asset_id':'a','train_labels':['vest'],'confirmed':True,'items':[{'image_id':image['id'],'expected_version':saved['version'],'source_content_sha256':image['content_sha256']}]}).json()
  assert result['succeeded']==[image['id']]
  assert client.get(path).json()['annotation']['annotation_scope']==['person','vest']
+
+
+
+def test_task_negative_confirmation_does_not_write_gt_and_invalidates(client, monkeypatch):
+ project=client.post('/api/projects',json={'name':'task-negative-'+uuid.uuid4().hex[:8],'labels':[{'code':'vest'},{'code':'person'}]}).json()
+ pid=project['id'];buffer=io.BytesIO();Image.new('RGB',(100,80),'blue').save(buffer,format='PNG')
+ image=client.post(f'/api/projects/{pid}/images',files=[('files',('person.png',buffer.getvalue(),'image/png'))]).json()['uploaded'][0]
+ iid=image['id'];path=f'/api/projects/{pid}/annotations/{iid}'
+ platform_app.material_store(pid).patch({iid:{'processing_status':'processed'}})
+ monkeypatch.setattr(platform_app,'list_algorithms_internal',lambda _pid:[{'id':'a','versions':[]}])
+ before=client.get(path).json()['annotation']
+ endpoint=f'/api/v62/projects/{pid}/training-materials'
+ body={'algorithm_asset_id':'a','train_labels':['vest'],'model':'yolo11n.pt','train_image_ids':[iid]}
+ initial_revision=client.get(endpoint+'/revision').json()
+ preview=client.post(endpoint+'/negative-preview',json=body)
+ assert preview.status_code==200,preview.text
+ assert preview.json()['counts']['pending_negative']==1
+ role_page=client.post(endpoint+'/role-page',json=dict(body,sample_role='pending_negative'))
+ assert role_page.status_code==200,role_page.text
+ assert role_page.json()['sample_role_counts']['pending_negative']==1
+ assert role_page.json()['items'][0]['id']==iid
+ assert client.post(endpoint+'/confirm-negatives',json=dict(body,confirmed=False,proof_digest=preview.json()['proof_digest'])).status_code==422
+ assert client.post(endpoint+'/confirm-negatives',json=dict(body,confirmed=True,proof_digest='forged')).status_code==409
+ confirmed=client.post(endpoint+'/confirm-negatives',json=dict(body,confirmed=True,proof_digest=preview.json()['proof_digest']))
+ assert confirmed.status_code==200,confirmed.text
+ assert confirmed.json()['confirmed_count']==1
+ revised=client.get(endpoint+'/revision').json()
+ assert revised['negative_confirmation_revision']==initial_revision['negative_confirmation_revision']+1
+ assert revised['annotation_revision']==initial_revision['annotation_revision']
+ role_page=client.post(endpoint+'/role-page',json=dict(body,sample_role='confirmed_negative'))
+ assert role_page.status_code==200,role_page.text
+ assert role_page.json()['sample_role_counts']['confirmed_negative']==1
+ assert role_page.json()['negative_confirmation_revision']==revised['negative_confirmation_revision']
+ assert client.get(path).json()['annotation']==before
+ fresh=client.post(endpoint+'/negative-preview',json=body).json()
+ assert fresh['counts']['confirmed_negative']==1 and fresh['pending_count']==0
+ summary=client.post(endpoint+'/selection-summary',json=dict(body,image_ids=[iid]))
+ assert summary.status_code==200,summary.text
+ assert summary.json()['sample_role_counts']['confirmed_negative']==1
+ current=platform_app.material_store(pid).get(iid)
+ platform_app.material_store(pid).patch({iid:{'content_sha256':'b'*64}})
+ changed=client.post(endpoint+'/negative-preview',json=body).json()
+ assert changed['counts']['confirmed_negative']==0
+ assert client.get(path).json()['annotation']==before

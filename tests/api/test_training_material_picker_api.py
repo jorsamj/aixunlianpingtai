@@ -60,6 +60,40 @@ def _client(tmp_path):
     return TestClient(app), repository
 
 
+def test_negative_pool_filter_parity_and_role_cache_revision(tmp_path, monkeypatch):
+    from platform_core.negative_pool import NegativePool
+    import platform_core.training_label_tasks as labels
+    monkeypatch.setattr(labels, 'resolve_training_label_contract', lambda *a, **k: {'effective_label_codes':['smoke']})
+    _,repository=_client(tmp_path)
+    pool=NegativePool(repository)
+    a=pool.category(name='手机')['id']; b=pool.category(name='反光')['id']
+    pool.members(['m0000','m0001'],category_ids=[a])
+    pool.members(['m0002'],category_ids=[b])
+    assert pool.candidate_ids([a])==['m0000','m0001']
+    revision=pool.revision()
+    app=FastAPI()
+    app.include_router(training_material_picker_router(lambda p:{'id':p},repository.project_path.parents[1],algorithm_provider=lambda *a:{'id':'a'}))
+    with TestClient(app) as client:
+        endpoint='/api/v62/projects/p1/training-materials'
+        query={'negative_pool_only':True,'negative_category_id':a,'history_policy':'include_history'}
+        page=client.get(endpoint,params=query)
+        assert page.status_code==200,page.text
+        assert {r['id'] for r in page.json()['items']}=={'m0000','m0001'}
+        body={'negative_pool_only':True,'negative_category_ids':[a],'history_policy':'include_history','algorithm_asset_id':'a'}
+        roles=client.post(endpoint+'/role-page',json=body)
+        assert roles.status_code==200,roles.text
+        assert roles.json()['sample_role_counts']['positive']==1
+        assert roles.json()['sample_role_counts']['pending_negative']==1
+        bulk=client.post(endpoint+'/bulk-selection',json=body)
+        assert bulk.status_code==200,bulk.text
+        assert set(bulk.json()['items'])=={'m0000','m0001'}
+        pool.members(['m0001'],action='remove')
+        assert pool.revision()!=revision
+        updated=client.post(endpoint+'/role-page',json=body)
+        assert updated.status_code==200,updated.text
+        assert updated.json()['total']==1
+
+
 def test_training_picker_is_server_paged_and_filtered(tmp_path):
     client, _repository = _client(tmp_path)
 
@@ -399,16 +433,16 @@ def test_task_role_sql_page_uses_formal_scope_and_bounds_payload(tmp_path, monke
     annotations.upsert("m0001", old["boxes"], "annotated", annotation_scope=["person", "smoke"])
     # The material's denormalized labels must not determine the task role.
     result = _role_material_page(repository, annotations, {"effective_label_codes": ["smoke"]}, limit=2)
-    assert result["sample_role_counts"] == {"positive": 115, "confirmed_negative": 1, "pending_review": 144}
+    assert result["sample_role_counts"] == {"positive": 115, "confirmed_negative": 1, "pending_negative": 144, "pending_review": 0}
     assert len(result["items"]) == 2
     pending = _role_material_page(repository, annotations, {"effective_label_codes": ["smoke"]},
-                                  labels=["person"], sample_role="pending_review", limit=3)
+                                  labels=["person"], sample_role="pending_negative", limit=3)
     assert pending["total"] == 114
     assert len(pending["items"]) == 3
-    assert all(row["sample_role"] == "pending_review" for row in pending["items"])
+    assert all(row["sample_role"] == "pending_negative" for row in pending["items"])
     selected = _role_material_page(repository, annotations, {"effective_label_codes": ["smoke"]},
                                    image_ids=["m0000", "m0001", "m0259"], limit=1)
-    assert selected["sample_role_counts"] == {"positive": 1, "confirmed_negative": 1, "pending_review": 1}
+    assert selected["sample_role_counts"] == {"positive": 1, "confirmed_negative": 1, "pending_negative": 1, "pending_review": 0}
 
 
 def test_role_page_and_review_keep_existing_formal_callback(tmp_path, monkeypatch):
@@ -432,7 +466,7 @@ def test_role_page_and_review_keep_existing_formal_callback(tmp_path, monkeypatc
     client = TestClient(app)
     endpoint = "/api/v62/projects/p1/training-materials"
     page = client.post(endpoint + "/role-page", json={"algorithm_asset_id": "a", "train_labels": ["smoke"],
-                                                       "sample_role": "pending_review", "page_size": 2})
+                                                       "sample_role": "pending_negative", "page_size": 2})
     assert page.status_code == 200, page.text
     assert page.json()["total"] == 145
     row = page.json()["items"][0]
@@ -464,11 +498,11 @@ def test_ten_thousand_candidates_role_page_returns_only_requested_page(tmp_path)
             "boxes":[{"label":"vest" if i<500 else "person","x1":10,"y1":10,"x2":40,"y2":50}]} for i in range(offset,offset+500)])
     initial = _role_material_page(repository, annotations, {"effective_label_codes":["vest"]},
                                  image_ids=[f"m{i:04d}" for i in range(3500)], limit=1)
-    assert initial["sample_role_counts"] == {"positive":500,"confirmed_negative":0,"pending_review":3000}
+    assert initial["sample_role_counts"] == {"positive":500,"confirmed_negative":0,"pending_negative":3000,"pending_review":0}
     result = _role_material_page(repository, annotations,
                                  {"effective_label_codes": ["vest"]}, page=100, limit=50)
     assert result["total"] == 10000
-    assert result["sample_role_counts"]["pending_review"] == 9500
+    assert result["sample_role_counts"]["pending_negative"] == 9500
     assert len(result["items"]) == 50
     assert result["page"] == 100
 
@@ -614,3 +648,25 @@ def test_picker_history_filters_original_and_derived_source_consistently(tmp_pat
     bulk=client.post('/api/v62/projects/p1/training-materials/bulk-selection',json={'algorithm_asset_id':'a'}).json()
     assert 'm0000' not in bulk['items'] and 'm0001' not in bulk['items']
     assert page['total']==258 and len(bulk['items'])==258
+
+
+def test_robustness_preview_reuses_thumbnail_without_modifying_source(tmp_path, monkeypatch):
+    import base64
+    from io import BytesIO
+    client, repository = _client(tmp_path)
+    source = tmp_path / "preview.png"
+    Image.new("RGB", (40, 24), (180, 60, 25)).save(source)
+    before = source.read_bytes()
+    row = repository.get("m0001")
+    monkeypatch.setattr("platform_core.training_material_picker_api.StorageManager.materialize", lambda *a: SimpleNamespace(path=source))
+    for preset in ("bt601_limited", "bt601_full", "bt709_limited", "bt709_full"):
+        response = client.get(f"/api/v62/projects/p1/training-materials/m0001/robustness-preview?preset={preset}")
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["scope"] == "thumbnail_preview_only"
+        assert body["pixel_changed"] is True
+        with Image.open(BytesIO(base64.b64decode(body["after"].split(",")[1]))) as result:
+            assert result.size == (40, 24)
+    assert source.read_bytes() == before
+    assert repository.get("m0001") == row
+    assert client.get("/api/v62/projects/p1/training-materials/m0001/robustness-preview?preset=invalid").status_code == 422
