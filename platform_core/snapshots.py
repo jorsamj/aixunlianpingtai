@@ -362,6 +362,7 @@ def build_snapshot(
     seed: int | None = None,
     *,
     supplement_candidate_set: Mapping[str, Any] | None = None,
+    robustness_policy: Mapping[str, Any] | None = None,
 ) -> dict:
     if isinstance(train_image_ids, SplitManifest):
         if label_schema is not None:
@@ -371,6 +372,7 @@ def build_snapshot(
             train_image_ids,
             val_image_ids,
             supplement_candidate_set=supplement_candidate_set,
+            robustness_policy=robustness_policy,
         )  # type: ignore[arg-type]
     if label_schema is None or seed is None:
         raise TypeError("旧版 snapshot 需要 label_schema 和 seed")
@@ -439,6 +441,7 @@ def _build_snapshot_v2(
     label_schema: Sequence[Mapping[str, Any]],
     *,
     supplement_candidate_set: Mapping[str, Any] | None = None,
+    robustness_policy: Mapping[str, Any] | None = None,
 ) -> dict:
     stable_schema = _stable_schema(label_schema)
     schema_codes = {str(item["code"]) for item in stable_schema}
@@ -480,6 +483,8 @@ def _build_snapshot_v2(
                 {
                     "image_id": image_id,
                     "role": role,
+                    **({key: str(image[key]) for key in ('source_root_id','derived_from_image_id')
+                        if image.get(key)}),
                     "dataset_id": str(image.get("dataset_id") or ""),
                     "source_type": str(image.get("source_type") or "upload"),
                     "source_ref": str(image.get("video_task_id") or image.get("source_ref") or ""),
@@ -552,6 +557,8 @@ def _build_snapshot_v2(
     }
     if supplement_provenance:
         payload["supplement_provenance"] = supplement_provenance
+    if robustness_policy is not None:
+        payload["robustness_policy"] = dict(robustness_policy)
     snapshot_id = hashlib.sha256(_canonical(payload).encode("utf-8")).hexdigest()
     return {
         "snapshot_id": snapshot_id,

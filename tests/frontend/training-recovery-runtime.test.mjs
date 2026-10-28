@@ -832,3 +832,11 @@ test('training detail stays a centered modal and refreshes without replacing its
     /@media\(prefers-reduced-motion:reduce\)\{[^}]*\.training-recovery-overlay,\.training-recovery-dialog/,
   );
 });
+
+
+test('recovery keeps original split counts distinct from verified augmented input counts',()=>{
+  const summary={original_train_images:10,augmented_images:4,actual_train_images:14};
+  const model=trainingRecoveryDetailModel({dataset_counts:{train:10,validation:3,test:2},robustness_summary:summary});
+  assert.deepEqual(model.datasetCounts,{train:10,validation:3,test:2});
+  assert.deepEqual(model.robustnessSummary,summary);
+});

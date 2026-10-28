@@ -3318,6 +3318,13 @@ class RemoteExecutionTransportService:
         primary = str(primary_path)
         report = result.get("training_report")
         report = dict(report) if isinstance(report, Mapping) else {}
+        from .training_material_usage import TrainingMaterialUsage
+        usage_runtime = confirmed.get('runtime_result') or {}
+        TrainingMaterialUsage(self.task_repository).record_execution(task.task_id,
+            first_batch=usage_runtime.get('training_started') is True,
+            completed_epoch=usage_runtime.get('usage_completed_epoch') is True,
+            validation_observed=usage_runtime.get('usage_validation_observed') is True,
+            generation=generation, owner=(task.task_id, None, generation))
         completion = result.get("completion")
         completion = dict(completion) if isinstance(completion, Mapping) else {}
         test_result = report.get("test_result")
@@ -3362,6 +3369,9 @@ class RemoteExecutionTransportService:
             self.task_artifacts.atomic_write_json(
                 str(task.task_id), "evidence/bundle/manifest.json", dataset_manifest,
             )
+        from .training_robustness import augmentation_summary
+        if summary := augmentation_summary(dataset_manifest):
+            report['robustness_summary'] = summary
         benchmark_scope = build_evaluation_benchmark_scope(
             snapshot_truth or None,
             dataset_manifest=dataset_manifest or None,
@@ -3421,6 +3431,7 @@ class RemoteExecutionTransportService:
             benchmark_scope=benchmark_scope,
         )
         training_lineage = build_training_lineage(
+            robustness_policy=(schema3_snapshot or {}).get('robustness_policy'),
             task_id=str(task.task_id),
             snapshot_id=str(training.get("snapshot_id") or ""),
             dataset_revision_id=str(training.get("dataset_revision_id") or ""),

@@ -144,7 +144,7 @@ test('empty boxes preserve confirmed-empty and unannotated as distinct states', 
 
 test('cleaned unannotated materials are selectable for train but fenced from independent test', () => {
   assert.match(source, /missingTestTruth = picker\.role === 'test'/);
-  assert.match(source, /role: picker\?\.role \|\| 'train'/);
+  assert.match(source, /role: picker\?\.role === 'robustness' \? 'train' : \(picker\?\.role \|\| 'train'\)/);
   assert.match(source, /试验集必须已标注/);
   assert.match(source, /待标注素材会保留在任务中/);
   assert.doesNotMatch(source, /blocked\.has\(id\) \|\| String\(row\.annotation_state \|\| ''\) === 'unannotated'/);
@@ -169,4 +169,13 @@ test('task roles stay separate from original label filters', () => {
   assert.deepEqual(query.getAll('label'), ['person']);
   assert.deepEqual(query.getAll('effective_label_code'), ['vest']);
   assert.equal(query.get('sample_role'), 'pending_review');
+});
+
+test('picker query carries shared source time formal annotation and usage filters', () => {
+  const q = new URLSearchParams(buildTrainingMaterialQuery({sourceIds:['nas'], createdFrom:'2026-10-01', createdTo:'2026-10-28', annotationState:'confirmed_empty', usageState:'unknown'}));
+  assert.deepEqual(q.getAll('storage_source_id'), ['nas']);
+  assert.equal(q.get('created_from'), '2026-10-01');
+  assert.equal(q.get('created_to'), '2026-10-28');
+  assert.equal(q.get('annotation_state'), 'confirmed_empty');
+  assert.equal(q.get('usage_state'), 'unknown');
 });

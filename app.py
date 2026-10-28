@@ -4688,6 +4688,26 @@ def _system_recommendation_payload(cuda: bool = False, gpu_name: str = "未探�
     return {"ok": True, "cpu_count": cpu, "ram_gb": ram_gb, "cuda": cuda, "gpu": gpu_name, "recommendation": rec}
 
 
+class TrainingRobustnessPolicyReq(BaseModel):
+    policy: Dict[str, Any]
+    expected_revision: str
+
+
+@app.get('/api/v62/training/robustness-policy')
+def training_robustness_policy():
+    from platform_core.training_robustness import read_global_policy
+    return read_global_policy(DATA_DIR)
+
+
+@app.put('/api/v62/training/robustness-policy')
+def save_training_robustness_policy(payload: TrainingRobustnessPolicyReq):
+    from platform_core.training_robustness import save_global_policy
+    try:
+        return save_global_policy(DATA_DIR, payload.policy, payload.expected_revision)
+    except ValueError as error:
+        raise HTTPException(status_code=409 if 'revision' in str(error) else 422, detail=str(error)) from error
+
+
 @app.get("/api/system/recommendation")
 def system_recommendation():
     # Probe torch in a child process so a broken/slow Windows CUDA runtime can
@@ -7609,6 +7629,9 @@ class TrainReq(BaseModel):
             if isinstance(value.get("cache"), bool):
                 value["cache"] = "True" if value["cache"] else "False"
             value["device"] = normalize_training_device(value.get("device", "auto"))
+            if isinstance(value.get("robustness_policy"), dict):
+                allowed = {"mode", "selection", "copies", "presets", "seed"}
+                value["robustness_policy"] = {key: item for key, item in value["robustness_policy"].items() if key in allowed}
         return value
 
     framework: str = "ultralytics"  # ultralytics / paddle
@@ -7619,6 +7642,8 @@ class TrainReq(BaseModel):
     imgsz: int = 640
     batch: StrictInt = 8
     training_mode: Optional[Literal["quick", "full", "complex", "custom"]] = None
+    history_policy: Optional[Literal["new_for_algorithm", "include_history"]] = None
+    robustness_policy: Optional[Dict[str, Any]] = None
     resource_strategy: Literal["auto", "manual"] = "auto"
     resource_profile: Literal["balanced", "performance", "stability"] = "performance"
     device: str = "auto"
@@ -8422,8 +8447,16 @@ def _enqueue_explicit_training_locked(project_id: str, payload: TrainReq, task_i
         payload.model = prepared_model
         raw_request["model"] = prepared_model
     prepare_task_id = f"trainprep_{task_id}"
+    frozen_robustness = {}
+    if payload.robustness_policy is not None:
+        from platform_core.training_robustness import resolve_policy
+        try:
+            frozen_robustness = {"robustness_policy": resolve_policy(DATA_DIR, payload.robustness_policy)}
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
     request_payload = {
         **raw_request,
+        **frozen_robustness,
         "schema_version": 4,
         "request_identity": request_identity,
         "admission_request": raw_request,

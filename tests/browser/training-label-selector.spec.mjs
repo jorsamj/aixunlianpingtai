@@ -125,7 +125,7 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   await expect.poll(async () => page.evaluate(() => window.TrainingDraftRuntime?.build || null))
     .toBe('training-draft-runtime-422519');
   await expect.poll(async () => page.evaluate(() => window.TrainingLabelRuntime?.build || null))
-    .toBe('module-422571');
+    .toBe('module-422572');
   await expect.poll(async () => page.evaluate(() => window.TrainingSubmitRuntime?.build || ''))
     .toMatch(/^training-submit-\d+$/);
   expect(await page.evaluate(() => ({
@@ -152,7 +152,7 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   await expect(dialog.locator('.train-create-layout')).toBeVisible();
   await expect(dialog.locator('.train-create-left')).toBeVisible();
   await expect(dialog.locator('.train-create-right')).toBeVisible();
-  await expect(dialog.locator('#trainUiSummary')).toBeHidden();
+  await expect(dialog.locator('#trainUiSummary')).toBeVisible();
   await expect(dialog.locator('.train-v3-mode-option')).toHaveCount(4);
   await expect(dialog.locator('[data-mode="full"]')).toHaveAttribute('aria-pressed', 'true');
   await expect(dialog.locator('#trainUiLabelSlot')).toBeVisible();
@@ -180,22 +180,26 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   await vest.uncheck();
   await fire.check();
 
-  await dialog.locator('[data-mode="custom"]').click();
-  await expect(dialog.locator('#trV3ManualBatch')).toBeVisible();
   await dialog.locator('details.train-create-split-details > summary').click();
   await dialog.locator('#trV3Experiment').fill('35');
   await dialog.locator('#trV3Validation').fill('18');
   await dialog.locator('#tr429Priority').fill('7');
-  await expect(dialog.locator('#trV3ResourceStrategy')).toHaveValue('manual');
   await expect(dialog.locator('#trV3GpuPolicy')).toHaveValue('exclusive');
 
-  await dialog.getByRole('button', {name: '配置更多专业参数'}).click();
-  const settings = page.getByRole('dialog', {name: '训练配置设置'});
+  await dialog.locator('[data-training-step-next]').click();
+  await dialog.locator('[data-mode="custom"]').click();
+  await expect(dialog.locator('#trV3ManualBatch')).toBeVisible();
+  const settings = dialog.locator('#trainWorkbenchParameters');
+  await settings.locator('details').filter({has:page.locator('#ts428Epoch')}).locator('summary').click();
   await settings.locator('#ts428Epoch').fill('30');
-  await settings.getByText('高级训练参数', {exact: true}).click();
+  await settings.locator('details').filter({has:page.locator('#ts428Opt')}).locator('summary').click();
+  await expect(settings.locator('#ts428Lr0')).toBeDisabled();
   await settings.locator('#ts428Opt').selectOption('AdamW');
+  await expect(settings.locator('#ts428Lr0')).toBeEnabled();
+  for(const id of ['ts428FlipUD','ts428FlipLR','ts428Rect'])await expect(settings.locator('#'+id)).toHaveCount(1);
+  await settings.locator('details').filter({has:page.locator('#ts428Cache')}).locator('summary').click();
   await settings.locator('#ts428Cache').selectOption('False');
-  await settings.getByRole('button', {name: '应用配置'}).click();
+  await expect(page.getByRole('dialog',{name:'训练配置设置'})).toHaveCount(0);
   await expect(dialog).toBeVisible();
   await dialog.locator('#trV3ManualBatch').fill('16');
   await dialog.locator('#trV3ManualWorkers').fill('4');
@@ -253,6 +257,8 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
     batch: state.trainingDraft.resource.batch,
     optimizer: state.trainingDraft.config.optimizer,
   }))).toEqual({algorithmId, materials: imageIds, device: 'cpu', batch: 16, optimizer: 'AdamW'});
+  await dialog.locator('[data-training-step-next]').click();
+  await expect(dialog.locator('#trainWorkbenchConfirmation')).toContainText('尚未分配');
   await expect(dialog.getByRole('button', {name: '开始训练'})).toBeEnabled();
   expect(await dialog.getByRole('button', {name: '开始训练'}).getAttribute('data-training-submit-owner')).toBe('TrainingSubmitRuntime');
 
@@ -336,6 +342,7 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   await expect(failureDialog).toBeVisible();
   await returnToTrainingConfiguration(page);
   await page.evaluate(() => {
+    window.setTrainingWorkbenchStep(3);
     document.getElementById('tr429TaskId').value = 'invalid-task-id';
     void window.TrainingSubmitRuntime.submit();
   });

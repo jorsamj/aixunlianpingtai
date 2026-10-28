@@ -580,8 +580,9 @@ class AgentTrainingRunner:
             return self._download({"size_bytes": row["size_bytes"], "sha256": row["content_sha256"]},
                 buffer, monitor, source_response_factory=lambda: self.client.open_training_source(lease, row["id"]))
         def progress(done, total, _item):
-            self._heartbeat(monitor, progress=2 + 9 * done / max(1, total),
-                stage="REMOTE_TRAINING_PREPARING_INPUTS", current_item=f"已校验训练素材 {done}/{total}")
+            augmented=bool(_item.get('augmentation'))
+            self._heartbeat(monitor, progress=(11 + 2 * done / max(1,total)) if augmented else 2 + 9 * done / max(1, total),
+                stage="REMOTE_TRAINING_AUGMENTING" if augmented else "REMOTE_TRAINING_PREPARING_INPUTS", current_item=("生成跨设备增强图片 " if augmented else "已校验训练素材 ")+f"{done}/{total}")
         try:
             bundle = materialize_portable_dataset(workdir / "input", snapshot, rows,
                 materialize, defer_source_reads=True, progress=progress)
@@ -1237,6 +1238,9 @@ class AgentTrainingRunner:
             "early_stopping_patience",
             "best_epoch",
             "completed_epochs",
+            "training_started",
+            "usage_completed_epoch",
+            "usage_validation_observed",
             "requested_epochs",
             "runtime_stop_policy",
             "requested_device",

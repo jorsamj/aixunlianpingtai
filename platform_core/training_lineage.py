@@ -150,6 +150,7 @@ def build_training_lineage(
     training_outcome: Any = "",
     completion_reason: Any = "",
     finished_at: Any = "",
+    robustness_policy: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     task = _text(task_id)
     if not task:
@@ -215,4 +216,6 @@ def build_training_lineage(
         outcome["finished_at"] = value
     if outcome:
         lineage["outcome"] = outcome
+    if robustness_policy is not None:
+        lineage['robustness_policy'] = dict(robustness_policy)
     return lineage

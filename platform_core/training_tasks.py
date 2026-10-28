@@ -746,6 +746,10 @@ def materialize_portable_dataset(
         )
         if progress is not None:
             progress(completed, total_items, item)
+    from .training_robustness import augment_bundle
+    derived = augment_bundle(root, snapshot, splits, snapshot.get('robustness_policy'), progress,
+                             safety_reserve_bytes=reserve_bytes)
+    training_total_size_bytes += sum(item['size_bytes'] for item in derived)
     # Independent test images stay portable, but their hidden answers are deliberately
     # absent from the Ultralytics training YAML. Final evaluation is image-only inference
     # followed by a separate scorer that opens evaluation/ground_truth/test afterwards.
@@ -783,6 +787,8 @@ def materialize_portable_dataset(
         "data_yaml_ref": "dataset/data.yaml",
         "total_size_bytes": training_total_size_bytes,
         "splits": splits,
+        **({'robustness_policy': snapshot['robustness_policy'],
+            'robustness_derived_count': len(derived)} if snapshot.get('robustness_policy') else {}),
         "construction_verification": {
             "image_integrity": "source_sha256_verified_then_training_input_normalized",
             "training_input_policy": TRAINING_INPUT_POLICY,
@@ -1228,6 +1234,8 @@ _TRAINING_INPUT_FREEZE_FIELDS = (
     "path",
     "source_type",
     "source_ref",
+    "source_root_id",
+    "derived_from_image_id",
     "video_task_id",
     "group_id",
     "source_group_id",
@@ -1747,6 +1755,8 @@ def freeze_training_inputs(
     label_schema_override: Sequence[Mapping[str, Any]] | None = None,
     label_contract: Mapping[str, Any] | None = None,
     duplicate_review: Mapping[str, Any] | None = None,
+    robustness_policy: Mapping[str, Any] | None = None,
+    history_admission: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Freeze formal DB truth at submit time without reading/copying source bytes."""
     if selection_resolution is None:
@@ -1767,6 +1777,12 @@ def freeze_training_inputs(
         validate_duplicate_review(project, {"duplicate_review": duplicate_review}, split_request)
     effective_split = resolution.effective_split
     source_images = [dict(row) for row in resolution.effective_images]
+    derivative_parent_ids = {str(row[key]) for row in source_images
+        for key in ('source_root_id', 'derived_from_image_id') if row.get(key)}
+    if derivative_parent_ids:
+        existing_parent_ids = {str(row['id']) for row in MaterialRepository(project).get_many(derivative_parent_ids)}
+        if derivative_parent_ids - existing_parent_ids:
+            raise ValueError('TRAINING_DERIVATIVE_PARENT_UNKNOWN: derivative parent is missing from this project; independent split cannot be certified')
     # Original formal GT must be checked before task-label projection can hide
     # an out-of-scope category, empty-state, or coordinate disagreement.
     assert_training_duplicate_safety(
@@ -1811,6 +1827,7 @@ def freeze_training_inputs(
         seed=int(seed),
         required_train_labels=_requested_new_training_labels(label_contract),
         split_strategy="multilabel_grouped_v2",
+        forbidden_test_image_ids=(history_admission or {}).get('forbidden_test_image_ids', ()),
     )
     input_quality = _training_split_quality(
         images, manifest, label_schema, label_contract=label_contract,
@@ -1819,11 +1836,16 @@ def freeze_training_inputs(
     input_quality["annotation_admission"] = annotation_admission
     input_quality["source_ground_truth_admission"] = source_projection["source_ground_truth_admission"]
     input_quality["projection_consistency"] = source_projection["projection_consistency"]
+    from .training_robustness import resolve_policy, select_train_ids
+    frozen_robustness = resolve_policy(project.parent.parent, robustness_policy) if robustness_policy is not None else None
+    if frozen_robustness and frozen_robustness['enabled']:
+        select_train_ids(manifest.ids['train'], frozen_robustness)
     snapshot = build_snapshot(
         images,
         manifest,
         label_schema,
         supplement_candidate_set=supplement_candidate_set,
+        robustness_policy=frozen_robustness,
     )
     split_truth = {
         "mode": effective_split.mode.value,
@@ -1843,6 +1865,8 @@ def freeze_training_inputs(
         "dataset_revision_id": str(snapshot["dataset_revision_id"]),
         "input_quality": input_quality,
         "selection": resolution.truth(),
+        **({'robustness_policy': frozen_robustness} if frozen_robustness is not None else {}),
+        **({'history_admission': dict(history_admission)} if history_admission else {}),
         "material_revision": resolution.material_revision,
         "annotation_revision": resolution.annotation_revision,
         "original_ground_truth": [{"image_id": str(row.get("id") or ""),
@@ -1931,6 +1955,7 @@ def resolve_training_input_freeze(
         ),
         # Pre-v2 freezes carry no marker: replay the historical split exactly.
         split_strategy=str(value.get("split_strategy") or "legacy_v1"),
+        forbidden_test_image_ids=(value.get('history_admission') or {}).get('forbidden_test_image_ids', ()),
     )
     frozen_quality = value.get("input_quality") if isinstance(value.get("input_quality"), Mapping) else {}
     input_quality = _training_split_quality(
@@ -1972,6 +1997,7 @@ def resolve_training_input_freeze(
         manifest,
         label_schema,
         supplement_candidate_set=supplement_candidate_set,
+        robustness_policy=value.get('robustness_policy'),
     )
     if str(snapshot.get("snapshot_id") or "") != str(value.get("snapshot_id") or ""):
         raise ValueError("training input freeze snapshot identity mismatch")
@@ -2245,6 +2271,7 @@ def _run_training_process(context, argv: Sequence[str], job_file: Path) -> dict[
             controller = ProcessController()
             next_metrics = 0.0
             completion_seen_at = None
+            usage_evidence_level = 0
             while launched.process.poll() is None:
                 if context.cancel_requested():
                     try:
@@ -2312,6 +2339,15 @@ def _run_training_process(context, argv: Sequence[str], job_file: Path) -> dict[
                 training_started = bool(
                     job.get("training_started") or job.get("current_epoch") or job.get("training_progress")
                 )
+                from .training_material_usage import TrainingMaterialUsage, usage_owner
+                observed_usage_level = (2 if job.get('usage_completed_epoch') is True else (1 if job.get('training_started') else 0)) + (4 if job.get('usage_validation_observed') is True else 0)
+                if observed_usage_level > usage_evidence_level:
+                    context.run_owned(lambda: TrainingMaterialUsage(context.repository).record_execution(
+                        context.task.task_id, first_batch=True,
+                        completed_epoch=job.get('usage_completed_epoch') is True,
+                        validation_observed=job.get('usage_validation_observed') is True,
+                        generation=int(getattr(context, 'execution_generation', 0)), owner=usage_owner(context)))
+                    usage_evidence_level = observed_usage_level
                 context.heartbeat(
                     progress=max(20, min(95, progress)),
                     stage="training" if training_started else "trainer_startup",
@@ -2548,6 +2584,13 @@ class TrainingHandler:
             raise RuntimeError("completed training is missing its durable dataset snapshot")
         snapshot_id = str(snapshot["snapshot_id"])
         dataset_revision_id = str(snapshot.get("dataset_revision_id") or "")
+        from .training_material_usage import record_context_snapshot, usage_owner
+        usage_index = record_context_snapshot(context, context.task, payload, snapshot)
+        context.run_owned(lambda: usage_index.record_execution(context.task.task_id,
+            first_batch=job.get('training_started') is True,
+            completed_epoch=job.get('usage_completed_epoch') is True,
+            validation_observed=job.get('usage_validation_observed') is True,
+            generation=int(getattr(context, 'execution_generation', 0)), owner=usage_owner(context)))
         if not dataset_revision_id:
             raise RuntimeError("completed training is missing its durable dataset revision")
         completion_error = _training_completion_error(
@@ -2766,6 +2809,7 @@ class TrainingHandler:
         model_size_bytes = int(primary_evidence["size_bytes"])
         completion = _training_completion_metadata(job, payload)
         training_lineage = build_training_lineage(
+            robustness_policy=snapshot.get('robustness_policy'),
             task_id=context.task.task_id,
             snapshot_id=snapshot_id,
             dataset_revision_id=dataset_revision_id,
@@ -3143,6 +3187,8 @@ class TrainingHandler:
         revision = dataset_revision_document(snapshot)
         persist_dataset_revision(project / "dataset_revisions", snapshot)
         context.artifacts.atomic_write_json(context.task.task_id, "snapshot.json", snapshot)
+        from .training_material_usage import record_context_snapshot
+        context.run_owned(lambda: record_context_snapshot(context, context.task, payload, snapshot))
         context.artifacts.atomic_write_json(
             context.task.task_id,
             "dataset-revision.json",
@@ -3220,9 +3266,9 @@ class TrainingHandler:
                 if completed != 1 and completed != total and completed % bundle_progress_step != 0:
                     return
                 context.heartbeat(
-                    progress=10 + (8 * completed / max(1, total)),
-                    stage="materializing",
-                    current_item=f"准备训练数据 {completed}/{total}",
+                    progress=(18 + 2 * completed / max(1, total)) if _item.get('augmentation') else 10 + (8 * completed / max(1, total)),
+                    stage="augmenting" if _item.get('augmentation') else "materializing",
+                    current_item=("生成跨设备增强图片 " if _item.get('augmentation') else "准备训练数据 ")+f"{completed}/{total}",
                 )
 
             bundle = materialize_portable_dataset(
@@ -3330,6 +3376,7 @@ class TrainingHandler:
         job_dir = project / "jobs" / context.task.task_id
         job_dir.mkdir(parents=True, exist_ok=True)
         job_file = job_dir / "job.json"
+        from .training_robustness import augmentation_summary
         job = {
             "id": context.task.task_id,
             "task_id": context.task.task_id,
@@ -3363,6 +3410,7 @@ class TrainingHandler:
             "actual_device": None,
             "device_validation": device_evidence,
             "current_item": "启动训练进程",
+            "robustness_summary": augmentation_summary(_json(bundle / "manifest.json", {})),
             "created_at": context.task.created_at,
             "artifact_verified": False,
             "resource_strategy": payload.get("resource_strategy", "auto"),

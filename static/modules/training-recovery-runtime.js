@@ -393,6 +393,7 @@ export function trainingRecoveryDetailModel(job = {}, recovery = {}) {
     timeLimit: actual.time ?? job?.time ?? requested.time ?? null,
     datasetCountsGenerated: ['train', 'training', 'train_images', 'validation', 'val', 'validation_images', 'test', 'test_images']
       .some((key) => Object.prototype.hasOwnProperty.call(counts, key) && counts[key] != null),
+    robustnessSummary: job?.robustness_summary || job?.training_report?.robustness_summary || null,
     datasetCounts: {
       train: numberOrNull(counts.train ?? counts.training ?? counts.train_images),
       validation: numberOrNull(counts.validation ?? counts.val ?? counts.validation_images),
@@ -553,7 +554,7 @@ function detailHtml(job, recovery, log = '', inputIssues = null, activeTab = 'cu
               <div class="training-recovery-kv"><span>实际 Runtime</span><b>${esc('Batch ' + (model.runtimeBatch ?? '-') + ' · Workers ' + (model.runtimeWorkers ?? '-') + ' · Precision ' + (model.runtimePrecision || '-') + ' · Cache ' + (model.runtimeCache ?? '-'))}</b></div>
               <div class="training-recovery-kv"><span>AMP 检查</span><b>${esc((model.ampCheckMethod || "未记录") + " · " + (model.ampCheckResult || "未验证"))}</b></div>
               ${model.precisionFallbackReason ? `<div class="training-recovery-kv"><span>精度回退原因</span><b>${esc(model.precisionFallbackReason)}</b></div>` : ""}
-              <div class="training-recovery-kv"><span>数据量</span><b>${esc(model.datasetCountsGenerated?`训练 ${model.datasetCounts.train} · 验证 ${model.datasetCounts.validation} · 评测 ${model.datasetCounts.test}`:'未生成')}</b></div>
+              <div class="training-recovery-kv"><span>数据量</span><b>${esc(model.datasetCountsGenerated?`训练 ${model.datasetCounts.train} · 验证 ${model.datasetCounts.validation} · 评测 ${model.datasetCounts.test}`:'未生成')}</b></div>${model.robustnessSummary?`<div class="training-recovery-kv"><span>跨设备增强实际输入</span><b>${esc(`原训练 ${model.robustnessSummary.original_train_images} + 增强 ${model.robustnessSummary.augmented_images} = ${model.robustnessSummary.actual_train_images} 张`)}</b></div>`:''}
               <div class="training-recovery-kv"><span>成果模型</span><b title="${esc(artifacts)}">${esc(artifacts)}</b></div>
             </section>
             <section id="training-panel-resources" class="training-recovery-panel" data-training-panel="resources" role="tabpanel" aria-labelledby="training-tab-resources">
@@ -1242,7 +1243,7 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
   };
 
   const runtime = {
-    build: 'training-recovery-runtime-4226390',
+    build: 'training-recovery-runtime-4226391',
     hydrateJobs,
     openDetail,
     refreshOpenDetail,

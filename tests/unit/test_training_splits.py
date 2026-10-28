@@ -23,6 +23,26 @@ def image(image_id, dataset, content_hash, group, source="upload"):
     }
 
 
+def test_parent_exposed_component_cannot_enter_random_test():
+    rows = [image(str(index), 'source', f'h{index}', f'g{index}') for index in range(20)]
+    rows[1]['group_id'] = rows[0]['group_id']
+    request = SplitRequest(mode=SplitMode.RANDOM_TEST_FROM_TRAINING_POOL,
+        train_image_ids=tuple(str(index) for index in range(20)), experiment_percent=25, validation_percent=20)
+    for seed in range(6):
+        manifest = build_split_manifest(rows, request, seed=seed, forbidden_test_image_ids=['0'])
+        assert not {'0', '1'} & set(manifest.ids['test'])
+
+
+@pytest.mark.parametrize('parent_field', ['source_root_id', 'derived_from_image_id'])
+def test_original_id_and_derivative_share_identity_namespace(parent_field):
+    rows = [image(str(index), 'source', f'h{index}', f'g{index}') for index in range(8)]
+    rows[-1][parent_field] = '0'
+    request = SplitRequest(mode=SplitMode.INDEPENDENT_TEST_SET,
+        train_image_ids=tuple(str(index) for index in range(7)), test_image_ids=('7',), validation_percent=20)
+    with pytest.raises((ValueError, RuntimeError)):
+        build_split_manifest(rows, request, seed=3)
+
+
 def test_mode_a_uses_exact_independent_test_images_and_derives_validation_from_selected_training_images():
     rows = [image(str(index), "train-ds", f"h{index}", f"g{index}") for index in range(10)]
     rows.append(image("test", "test-ds", "ht", "gt"))

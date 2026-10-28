@@ -10,7 +10,7 @@ export function trainingOptionsHydrated(targets = []) {
 }
 
 export function trainingCreationInputsReady(state = {}) {
-  return trainingOptionsHydrated(state.targets) && state.rec != null;
+  return trainingOptionsHydrated(state.targets);
 }
 
 export function installTrainingCreateHydrationRuntime({
@@ -40,53 +40,51 @@ export function installTrainingCreateHydrationRuntime({
   let recommendationInflight = null;
   let optionsController = null;
   let recommendationController = null;
-  let commonLoadedAt = 0;
-  let commonProjectId = '';
+  let commonLoadedAt = trainingOptionsHydrated(getState?.()?.targets) ? Date.now() : 0;
+  let commonProjectId = String(projectId?.()||'');
+  let recommendationLoadedAt = 0;
+  let activeOpening = null;
   let openEpoch = 0;
   let destroyed = false;
   const COMMON_INPUT_TTL_MS = 5 * 60 * 1000;
   const prewarmInflight = new Map();
 
-  const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-  })[char]);
-  const defaultOpenShell = (aid, token) => {
-    const state = getState?.() || {};
-    const algorithm = (state.algorithms || []).find(item => String(item?.id || '') === String(aid || ''));
-    const name = algorithm?.name || '训练任务';
-    window.modal?.(`训练 · ${name}`, `<div class="train429-create train-create-loading" data-training-create-shell="1" aria-busy="true" data-training-algorithm-id="${escapeHtml(aid)}" data-training-open-token="${token}"><div class="train-create-loading-card"><b>正在准备训练配置</b><span data-training-create-status>正在读取训练资源、推荐配置与算法状态…</span></div><div class="row end"><button class="btn" onclick="closeModal()">取消</button><button class="btn primary" data-training-create-retry disabled>重试</button></div></div>`, true);
-  };
-  const shellRoot = (token, aid) => {
-    if (typeof document === 'undefined') return null;
-    const root = document.querySelector?.(`[data-training-create-shell="1"][data-training-open-token="${token}"]`);
-    return root && String(root.dataset?.trainingAlgorithmId || '') === String(aid || '') ? root : null;
-  };
-  const defaultIsShellCurrent = (token, aid) => Boolean(shellRoot(token, aid));
-  const defaultCloseShell = (token, aid) => {
-    if (shellRoot(token, aid)) window.closeModal?.();
-  };
-  const showShell = openShell || defaultOpenShell;
-  const shellIsCurrent = isShellCurrent || defaultIsShellCurrent;
-  const dismissShell = closeShell || defaultCloseShell;
-
-  function renderShellError(token, aid, error) {
-    const root = shellRoot(token, aid);
-    if (!root) return;
-    root.classList?.add?.('error');
-    root.setAttribute('aria-busy','false');
-    const title=root.querySelector('.train-create-loading-card b');
-    if(title)title.textContent='训练配置准备失败';
-    const status = root.querySelector?.('[data-training-create-status]');
-    if (status) status.textContent = error?.message || String(error);
-    const retry = root.querySelector?.('[data-training-create-retry]');
-    if (retry) {
-      retry.disabled = false;
-      retry.addEventListener?.('click', () => {
-        dismissShell(token, aid);
-        void start(aid);
-      }, {once: true});
-    }
+  const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+  const clockNow=()=>globalThis.performance?.now?.()??Date.now();
+  const jsonSize=value=>typeof TextEncoder==='undefined'?null:new TextEncoder().encode(JSON.stringify(value)).length;
+  const stageLabels={resources:'训练资源',recommendation:'推荐配置',preflight:'外部算法状态'};
+  const liveOpening=()=>activeOpening && !destroyed && activeOpening.project===String(projectId?.()||'') && activeOpening.root?.isConnected && activeOpening.root===document.querySelector('.train429-create');
+  function paintStages(){
+    if(!liveOpening())return;
+    const stages=getState?.()?.trainingCreationLoading||{};
+    let box=activeOpening.root.querySelector('[data-training-input-status]');
+    if(!box){box=document.createElement('div');box.dataset.trainingInputStatus='1';activeOpening.root.prepend(box);}
+    box.setAttribute('aria-live','polite');
+    const html=Object.entries(stageLabels).map(([key,title])=>{
+      const value=stages[key]||{},status=value.status||'idle';
+      const label=({ready:'已就绪',loading:'正在读取',error:'读取失败',unavailable:'暂无可用资源',idle:'未检查'})[status]||status;
+      const note=key==='recommendation'&&['loading','error'].includes(status)?'使用内置默认配置，尚未获取实时推荐':'';
+      return `<div data-training-input="${key}" data-status="${status}"><b>${title}</b><span>${escapeHtml(label)}</span>${note?`<small>${note}</small>`:''}${value.error?`<small>${escapeHtml(value.error)}</small>`:''}${['error','unavailable'].includes(status)?`<button type="button" class="btn mini" data-training-input-retry="${key}">重试</button>`:''}</div>`;
+    }).join('');
+    if(box.innerHTML!==html)box.innerHTML=html;
+    if(!box.dataset.bound){box.dataset.bound='1';box.addEventListener('click',event=>{const key=event.target.closest('[data-training-input-retry]')?.dataset.trainingInputRetry;if(key)void retry(key);});}
+    window.TrainingSubmitRuntime?.updateReadiness?.();
   }
+  function stage(name,patch){
+    const state=getState?.()||{},pid=String(projectId?.()||'');
+    if(!state.trainingCreationLoading||state.trainingCreationLoading.projectId!==pid)state.trainingCreationLoading={projectId:pid};
+    state.trainingCreationLoading[name]={...(state.trainingCreationLoading[name]||{}),...patch};
+    paintStages();
+  }
+  async function retry(name){
+    if(!liveOpening())return null;
+    try{
+      if(name==='resources')return await hydrateOptions({force:true,requireTrainable:false});
+      if(name==='recommendation')return await hydrateRecommendation({force:true});
+      return await hydratePreflight(activeOpening.aid,{force:true});
+    }catch(error){return null;}
+  }
+  function diagnostics(){return JSON.parse(JSON.stringify(getState?.()?.trainingCreationLoading||{}));}
   const projectContext = () => {
     const state = getState?.() || {};
     const pid = projectId?.();
@@ -94,6 +92,9 @@ export function installTrainingCreateHydrationRuntime({
     const projectKey = String(pid);
     if (commonProjectId && commonProjectId !== projectKey) {
       commonLoadedAt = 0;
+      recommendationLoadedAt = 0;
+      state.rec = null;
+      state.targets = [];
       optionsController?.abort?.('project-changed');
       recommendationController?.abort?.('project-changed');
       optionsController = null;
@@ -112,9 +113,10 @@ export function installTrainingCreateHydrationRuntime({
     const usable = requireTrainable
       ? trainingOptionsHydrated(state.targets)
       : Array.isArray(state.targets) && state.targets.length > 0;
-    if (!force && ((revalidate && fresh) || (!revalidate && usable))) return state.targets || [];
+    if (!force && (fresh || (!revalidate && usable && !commonLoadedAt))) {if(!commonLoadedAt)commonLoadedAt=Date.now();stage('resources',{status:trainingOptionsHydrated(state.targets)?'ready':'unavailable',cacheHit:true});return state.targets || [];}
     if (optionsInflight?.projectKey === projectKey) return optionsInflight.promise;
 
+    const started=clockNow();stage('resources',{status:'loading',error:'',cacheHit:false,url:'/api/training_options',requestCount:Number(state.trainingCreationLoading?.resources?.requestCount||0)+1});
     optionsController = new AbortController();
     const controller = optionsController;
     const task = withRequestDeadline(signal=>request(`/api/training_options?project_id=${encodeURIComponent(pid)}`, {signal}),{timeoutMs:requestTimeoutMs,label:'训练资源准备',signal:controller.signal})
@@ -124,8 +126,11 @@ export function installTrainingCreateHydrationRuntime({
         liveState.targets = optionsResult?.targets || [];
         commonLoadedAt = Date.now();
         commonProjectId = projectKey;
+        stage('resources',{status:trainingOptionsHydrated(liveState.targets)?'ready':'unavailable',durationMs:Math.round(clockNow()-started),jsonBytes:jsonSize(optionsResult),error:''});
+        if(liveOpening())window.applyTrainingCreationResources?.();
         return liveState.targets;
       })
+      .catch(error=>{if(!destroyed&&String(projectId?.()||'')===projectKey&&!controller.signal.aborted)stage('resources',{status:'error',durationMs:Math.round(clockNow()-started),error:String(error.message||error)});throw error;})
       .finally(() => {
         if (optionsInflight?.promise === task) optionsInflight = null;
         if (optionsController === controller) optionsController = null;
@@ -136,9 +141,10 @@ export function installTrainingCreateHydrationRuntime({
 
   const hydrateRecommendation = async ({force = false} = {}) => {
     const {state, projectKey} = projectContext();
-    if (!force && state.rec != null) return state.rec;
+    if (!force && state.rec != null && (!recommendationLoadedAt||Date.now()-recommendationLoadedAt<60000)){if(!recommendationLoadedAt)recommendationLoadedAt=Date.now();stage('recommendation',{status:'ready',cacheHit:true,error:''});return state.rec;}
     if (recommendationInflight?.projectKey === projectKey) return recommendationInflight.promise;
 
+    const started=clockNow();stage('recommendation',{status:'loading',error:'',cacheHit:false,url:'/api/system/recommendation',requestCount:Number(state.trainingCreationLoading?.recommendation?.requestCount||0)+1});
     recommendationController = new AbortController();
     const controller = recommendationController;
     const task = withRequestDeadline(signal=>request('/api/system/recommendation', {signal}),{timeoutMs:requestTimeoutMs,label:'训练推荐配置',signal:controller.signal})
@@ -146,8 +152,11 @@ export function installTrainingCreateHydrationRuntime({
         if (destroyed || controller.signal.aborted || String(projectId?.() || '') !== projectKey) return getState?.()?.rec ?? null;
         const liveState = getState?.() || state;
         liveState.rec = recommendationResult;
+        recommendationLoadedAt=Date.now();
+        stage('recommendation',{status:'ready',durationMs:Math.round(clockNow()-started),jsonBytes:jsonSize(recommendationResult),error:''});
         return recommendationResult;
       })
+      .catch(error=>{if(!destroyed&&String(projectId?.()||'')===projectKey&&!controller.signal.aborted)stage('recommendation',{status:'error',durationMs:Math.round(clockNow()-started),error:String(error.message||error)});throw error;})
       .finally(() => {
         if (recommendationInflight?.promise === task) recommendationInflight = null;
         if (recommendationController === controller) recommendationController = null;
@@ -195,15 +204,15 @@ export function installTrainingCreateHydrationRuntime({
     const externalChangLian = Boolean(algorithm)
       && String(algorithm?.source_type || '').toUpperCase() === 'EXTERNAL'
       && ['CHANG_LIAN', 'CHANGLIAN'].includes(String(algorithm?.provider_type || '').toUpperCase());
-    const key = externalChangLian && includePreflight ? algorithmId : '__common__';
+    const key = String(projectId?.()||'')+':'+(externalChangLian && includePreflight ? algorithmId : '__common__');
     if (prewarmInflight.has(key)) return prewarmInflight.get(key);
     const task = (async () => {
-      const jobs = [hydrate()];
+      const jobs = [hydrateOptions({requireTrainable:false,revalidate:true}), hydrateRecommendation()];
       const externalPreflightFresh = externalChangLian
         && typeof preflightFresh === 'function'
         && preflightFresh(algorithmId) === true;
       if (includePreflight && externalChangLian && !externalPreflightFresh && typeof preflight === 'function') {
-        jobs.push(withRequestDeadline(signal=>preflight(algorithmId,{signal}),{timeoutMs:requestTimeoutMs,label:'算法状态核验'}));
+        jobs.push(hydratePreflight(algorithmId));
       }
       return Promise.all(jobs);
     })().catch(() => null).finally(() => prewarmInflight.delete(key));
@@ -211,40 +220,33 @@ export function installTrainingCreateHydrationRuntime({
     return task;
   };
 
+  const preflightInflight=new Map();
+  async function hydratePreflight(aid,{force=false}={}){
+    const project=String(projectId?.()||''),key=project+':'+aid;
+    const algorithm=(getState?.()?.algorithms||[]).find(row=>String(row.id)===String(aid));
+    const external=String(algorithm?.source_type||'').toUpperCase()==='EXTERNAL'&&['CHANG_LIAN','CHANGLIAN'].includes(String(algorithm?.provider_type||'').toUpperCase());
+    if(!external||!force&&preflightFresh?.(aid)===true){stage('preflight',{status:'ready',error:'',cacheHit:true});return null;}
+    if(preflightInflight.has(key))return preflightInflight.get(key);
+    stage('preflight',{status:'loading',error:''});const started=clockNow();
+    const pending=withRequestDeadline(signal=>preflight(aid,{signal}),{timeoutMs:requestTimeoutMs,label:'算法状态核验'})
+      .then(result=>{if(String(projectId?.()||'')===project&&activeOpening?.aid===String(aid))stage('preflight',{status:'ready',durationMs:Math.round(clockNow()-started),error:''});return result;})
+      .catch(error=>{if(String(projectId?.()||'')===project&&activeOpening?.aid===String(aid))stage('preflight',{status:'error',durationMs:Math.round(clockNow()-started),error:String(error.message||error)});throw error;})
+      .finally(()=>preflightInflight.delete(key));preflightInflight.set(key,pending);return pending;
+  }
   const start = async aid => {
-    const token = ++openEpoch;
-    const openingProject=String(projectId?.()||'');
-    const state = getState?.() || {};
-    const algorithm = (state.algorithms || []).find(item => String(item?.id || '') === String(aid || ''));
-    const externalChangLian = String(algorithm?.source_type || '').toUpperCase() === 'EXTERNAL'
-      && ['CHANG_LIAN', 'CHANGLIAN'].includes(String(algorithm?.provider_type || '').toUpperCase());
-    const needsHydration = !trainingCreationInputsReady(state);
-    const externalPreflightFresh = externalChangLian
-      && typeof preflightFresh === 'function'
-      && preflightFresh(aid) === true;
-    const needsExternalPreflight = externalChangLian && !externalPreflightFresh;
-    const needsPreparation = needsHydration || needsExternalPreflight;
-
-    // Cached training inputs and a recent authoritative external preflight are already usable.
-    // Open the real form immediately instead of flashing a temporary preparation modal.
-    if (!needsPreparation) return openForm(aid);
-
-    showShell(aid, token);
-    try {
-      await Promise.all([
-        hydrate(),
-        needsExternalPreflight && typeof preflight === 'function' ? withRequestDeadline(signal=>preflight(aid,{signal}),{timeoutMs:requestTimeoutMs,label:'算法状态核验'}) : Promise.resolve(null),
-      ]);
-    } catch (error) {
-      if (!destroyed && token === openEpoch && openingProject===String(projectId?.()||'') && shellIsCurrent(token, aid)) {
-        renderShellError(token, aid, error);
-        notify(error?.message || String(error));
-      }
-      return null;
-    }
-    if (destroyed || token !== openEpoch || openingProject!==String(projectId?.()||'') || !shellIsCurrent(token, aid)) return null;
-    dismissShell(token, aid);
-    return openForm(aid);
+    const token=++openEpoch,project=String(projectId?.()||''),started=clockNow();
+    projectContext();
+    const opened=await openForm(aid);
+    if(destroyed||token!==openEpoch||project!==String(projectId?.()||''))return null;
+    const root=typeof document==='undefined'?null:document.querySelector('.train429-create');
+    activeOpening={token,project,aid:String(aid),root};
+    stage('resources',{openedInMs:Math.round(clockNow()-started)});
+    // Start independent loads after the real form has mounted. Neither recommendation
+    // nor preflight success is invented; submission still uses its canonical checks.
+    void hydrateOptions({requireTrainable:false,revalidate:true}).catch(()=>{});
+    void hydrateRecommendation().catch(()=>{});
+    void hydratePreflight(aid).catch(()=>{});
+    paintStages();return opened;
   };
 
   window.startAlgorithmTraining429 = start;
@@ -252,12 +254,17 @@ export function installTrainingCreateHydrationRuntime({
   const runtime = Object.freeze({
     hydrate,
     hydrateCommon,
+    hydrateOptions,
+    hydrateRecommendation,
+    diagnostics,
+    retry,
     start,
     prewarm,
-    build: 'training-create-hydration-422540',
+    build: 'training-create-hydration-20261028',
     destroy() {
       destroyed = true;
       openEpoch += 1;
+      activeOpening=null;
       optionsController?.abort?.('runtime-destroyed');
       recommendationController?.abort?.('runtime-destroyed');
       optionsController = null;

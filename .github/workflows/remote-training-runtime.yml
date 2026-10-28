@@ -410,9 +410,9 @@ jobs:
           import re
 
           source = Path("static/app.js").read_text(encoding="utf-8")
-          match = re.search(r'<select id="ts428Precision"[^>]*>(.*?)</select>', source, re.S)
+          match = re.search(r'<select id="trV3ManualPrecision"[^>]*>(.*?)</select>', source, re.S)
           if not match:
-              raise SystemExit("training precision selector ts428Precision is missing")
+              raise SystemExit("training precision selector trV3ManualPrecision is missing")
           training_precision = match.group(1)
           for value in ("auto", "fp16", "fp32"):
               if f'value="{value}"' not in training_precision:

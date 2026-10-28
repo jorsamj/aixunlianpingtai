@@ -716,3 +716,11 @@ def test_frozen_training_input_routes_fence_sources_and_close_stream(tmp_path, m
             await anext(response.body_iterator)
     asyncio.run(consume())
     assert readers[-1].closed and readers[-1].reads == 0
+
+
+def test_training_consumption_evidence_survives_transport_normalization():
+    from platform_core.agent_execution import _sanitize_runtime_result_metadata
+    facts={'training_started':True,'usage_completed_epoch':True,'usage_validation_observed':False}
+    assert _sanitize_runtime_result_metadata(facts)==facts
+    with pytest.raises(AgentExecutionError,match='boolean'):
+        _sanitize_runtime_result_metadata({'usage_completed_epoch':'true'})

@@ -1,5 +1,46 @@
 import {returnToTrainingConfiguration} from './helpers/training-admission.mjs';
 import {test, expect} from '@playwright/test';
+import {mkdir,readFile,writeFile} from 'node:fs/promises';
+import path from 'node:path';
+
+test('global robustness editor sends complete policy and retains task choices across CAS conflict',async({page,request})=>{
+  const {project}=await seedProject(request);
+  const originalPolicy=(await(await request.get('/api/v62/training/robustness-policy')).json()).policy;
+  try{
+  await page.route('**/api/training_options**',route=>route.fulfill({json:{targets:[{id:'global-policy-cpu',name:'CPU',type:'local',framework:'ultralytics',status:'ready',algorithms:[{key:'yolo_detect',default_epochs:150,default_imgsz:640}],base_models:[{value:'yolo11n.pt',model_status:'FOUND'}]}]}}));
+  await page.route('**/api/system/recommendation',route=>route.fulfill({json:{device:'cpu',batch:1,workers:0}}));await page.route('**/api/v62/training-devices',route=>route.fulfill({json:{recommended:'cpu',options:[{id:'cpu',label:'CPU',available:true}]}}));
+  await selectIsolatedTestProject(page,project.id);await page.goto('/');await expect.poll(()=>page.evaluate(()=>Boolean(window.TrainingCreateHydrationRuntime&&state.uiReady))).toBe(true);await page.locator('.alg428-card',{hasText:'首次打开配置回归'}).getByRole('button',{name:'训练',exact:true}).click();const dialog=page.getByRole('dialog',{name:'创建训练任务'});await dialog.locator('[data-training-step-next]').click();
+  const global=dialog.locator('.training-global-policy');await global.locator('summary').click();await expect(global.locator('[data-robustness-global-save]')).toBeEnabled();const taskBefore=await page.evaluate(()=>JSON.stringify(state.trainingDraft.robustness_policy));
+  await global.locator('[data-robustness-global-mode]').selectOption('enabled');await global.locator('[data-global-selection]').selectOption('count');await global.locator('[data-global-count]').fill('12');await global.locator('[data-global-copies]').fill('2');await global.locator('[data-global-seed]').fill('19');await global.locator('[data-global-preset="bt601_full"]').uncheck();
+  const put=page.waitForResponse(response=>response.url().endsWith('/api/v62/training/robustness-policy')&&response.request().method()==='PUT');await global.locator('[data-robustness-global-save]').click();const response=await put;expect(response.ok()).toBe(true);const payload=response.request().postDataJSON();expect(payload.policy).toMatchObject({mode:'enabled',selection:{mode:'count',count:12},copies:2,seed:19,presets:['bt601_limited','bt709_limited','bt709_full']});expect(payload.expected_revision).toBeDefined();await expect(global.locator('[data-robustness-global-feedback]')).toContainText('已保存');expect(await page.evaluate(()=>JSON.stringify(state.trainingDraft.robustness_policy))).toBe(taskBefore);await expect(dialog.locator('[data-robustness-global-preview]')).toContainText('12');
+  const latest=await(await request.get('/api/v62/training/robustness-policy')).json();const external=await request.put('/api/v62/training/robustness-policy',{data:{policy:{...latest.policy,seed:20},expected_revision:latest.revision}});expect(external.ok()).toBe(true);await global.locator('[data-global-seed]').fill('21');const conflict=page.waitForResponse(res=>res.url().endsWith('/api/v62/training/robustness-policy')&&res.request().method()==='PUT');await global.locator('[data-robustness-global-save]').click();expect((await conflict).status()).toBe(409);await expect(global.locator('[data-robustness-global-feedback]')).not.toContainText('已保存');await expect(global.locator('[data-global-seed]')).toHaveValue('21');expect(await page.evaluate(()=>JSON.stringify(state.trainingDraft.robustness_policy))).toBe(taskBefore);
+  }finally{const current=await(await request.get('/api/v62/training/robustness-policy')).json();const restored=await request.put('/api/v62/training/robustness-policy',{data:{policy:originalPolicy,expected_revision:current.revision}});expect(restored.ok()).toBe(true)}
+});
+
+test('formal workbench opens while independent resources and recommendation settle without losing edits',async({page,request,context})=>{
+  const {project}=await seedProject(request),samples=[];
+  for(const controlled of [false,true]){
+    const probe=controlled?await context.newPage():page;
+    let releaseResources,releaseRecommendation,optionsCalls=0,recommendationCalls=0,failedDiagnostics=null;
+    const resourceGate=new Promise(resolve=>releaseResources=resolve),recommendationGate=new Promise(resolve=>releaseRecommendation=resolve);
+    const options={targets:[{id:'progressive-cpu',name:'隔离CPU',type:'local',framework:'ultralytics',status:'ready',algorithms:[{key:'yolo_detect',default_epochs:150,default_imgsz:640,default_batch:1}],base_models:[{value:'yolo11n.pt',label:'YOLO11n',model_status:'FOUND'}]}]};
+    await probe.route('**/api/training_options**',async route=>{optionsCalls++;if(controlled)await resourceGate;return route.fulfill({json:options})});
+    await probe.route('**/api/system/recommendation',async route=>{recommendationCalls++;if(controlled&&recommendationCalls===1){await recommendationGate;return route.fulfill({status:500,json:{detail:'controlled recommendation failure'}})}return route.fulfill({json:{device:'cpu',batch:1,workers:0}})});
+    await probe.route('**/api/v62/training-devices',route=>route.fulfill({json:{recommended:'cpu',options:[{id:'cpu',label:'CPU',available:true}]}}));
+    await selectIsolatedTestProject(probe,project.id);await probe.goto('/');await expect.poll(()=>probe.evaluate(()=>Boolean(window.TrainingCreateHydrationRuntime&&state.uiReady))).toBe(true);
+    const button=probe.locator('.alg428-card',{hasText:'首次打开配置回归'}).getByRole('button',{name:'训练',exact:true});await button.evaluate(node=>node.addEventListener('click',()=>{window.__formalTrainingClickAt=performance.now()},{once:true}));await button.click();
+    const dialog=probe.getByRole('dialog',{name:'创建训练任务'});await expect(dialog.locator('[data-training-step-panel="1"]')).toBeVisible();const openedInMs=await probe.evaluate(()=>performance.now()-window.__formalTrainingClickAt);expect(openedInMs).toBeLessThan(1000);
+    if(controlled){
+      await expect(dialog.locator('[data-training-input="resources"]')).toHaveAttribute('data-status','loading');await dialog.locator('[data-training-label-code="smoke"]').check();await dialog.locator('[data-training-step-next]').click();await dialog.locator('[data-mode="custom"]').click();await dialog.locator('#trainWorkbenchParameters details').first().locator('summary').click();await dialog.locator('#ts428Epoch').fill('77');await dialog.locator('[data-training-step-next]').click();await expect(dialog.locator('.train-ui-submit')).toBeDisabled();
+      await new Promise(resolve=>setTimeout(resolve,1000));releaseResources();releaseRecommendation();await expect.poll(()=>probe.evaluate(()=>window.TrainingCreateHydrationRuntime.diagnostics().resources.status)).toBe('ready');await expect.poll(()=>probe.evaluate(()=>window.TrainingCreateHydrationRuntime.diagnostics().recommendation.status)).toBe('error');
+      failedDiagnostics=await probe.evaluate(()=>window.TrainingCreateHydrationRuntime.diagnostics());
+      await dialog.locator('[data-training-step="1"]').click();await expect(dialog.locator('[data-training-label-code="smoke"]')).toBeChecked();await dialog.locator('[data-training-input-retry="recommendation"]').click();await expect.poll(()=>probe.evaluate(()=>window.TrainingCreateHydrationRuntime.diagnostics().recommendation.status)).toBe('ready');await expect(dialog.locator('[data-training-label-code="smoke"]')).toBeChecked();await dialog.locator('[data-training-step-next]').click();await expect(dialog.locator('#ts428Epoch')).toHaveValue('77');
+    }else await expect.poll(()=>probe.evaluate(()=>window.TrainingCreateHydrationRuntime.diagnostics().resources.status)).toBe('ready');
+    samples.push({scenario:controlled?'controlled pending then recommendation 500 and isolated retry':'normal mocked isolated inputs',clickToFormalRootMs:Math.round(openedInMs),optionsCalls,recommendationCalls,failedDiagnostics,diagnostics:await probe.evaluate(()=>window.TrainingCreateHydrationRuntime.diagnostics()),controlledGateMinimumMs:controlled?1000:0});
+    expect(optionsCalls).toBe(1);expect(recommendationCalls).toBe(controlled?2:1);await probe.locator('.train-ui-cancel').click();if(controlled)await probe.close();
+  }
+  const directory=path.resolve('docs/images/training-workbench-20261028');await mkdir(directory,{recursive:true});const filename=path.join(directory,'load-measurements.json');let existing={};try{existing=JSON.parse(await readFile(filename,'utf8'))}catch{}await writeFile(filename,JSON.stringify({...existing,scope:existing.scope||'Isolated Chrome with intercepted resource/recommendation responses; not production latency. Timing samples and any separately measured baseline are recorded independently.',samples},null,2));
+});
 
 async function selectIsolatedTestProject(page, projectId, pageName = '算法列表') {
   await page.route('**/api/v53/bootstrap/snapshot**', async route => {
@@ -127,21 +168,14 @@ test('hard refresh algorithm list prewarms training configuration before the fir
   await expect(dialog.locator('#tr429MotherModel')).toHaveValue('yolo11n.pt');
   await expect(page.locator('[data-training-admission-dialog]')).toHaveCount(0);
   await expect(dialog.locator('[data-training-admission-open]:visible')).toHaveCount(0);
-  await expect(dialog.getByRole('button',{name:'开始训练',exact:true})).toBeEnabled();
+  await expect(dialog.locator('.train-ui-submit')).toBeEnabled();
   await expect(dialog.locator('[data-mode="full"]')).toHaveAttribute('aria-pressed', 'true');
-  // Labels must sit next to materials, not below the mode options.
-  const desktopLayout = await dialog.evaluate(node => {
-    const rect = selector => node.querySelector(selector).getBoundingClientRect();
-    const card = rect('.modal-card'), materials = rect('.train-ui-data-card');
-    const labels = rect('.train-ui-labels-card'), modes = rect('.train-v3-mode-card');
-    return {width: card.width, materials: {top: materials.top, right: materials.right},
-      labels: {top: labels.top, left: labels.left}, modeTop: modes.top};
-  });
-  expect(desktopLayout.width).toBeGreaterThan(1000);
-  expect(Math.abs(desktopLayout.materials.top - desktopLayout.labels.top)).toBeLessThan(16);
-  expect(desktopLayout.labels.left).toBeGreaterThanOrEqual(desktopLayout.materials.right);
-  expect(desktopLayout.modeTop).toBeGreaterThan(desktopLayout.materials.top);
-
+  // Data and labels share the first persistent panel; modes have one owner in step two.
+  await expect(dialog.locator('[data-training-step-panel="1"] .train-ui-data-card')).toBeVisible();
+  await expect(dialog.locator('[data-training-step-panel="1"] .train-ui-labels-card')).toBeVisible();
+  await expect(dialog.locator('[data-training-step-panel="2"]')).toBeHidden();
+  await expect(dialog.locator('#trainUiSummary')).toBeVisible();
+  await expect(dialog.locator('.train-ui-submit')).toBeHidden();
 
   expect(trainingOptionsCalls).toBe(beforeOptions);
   expect(recommendationCalls).toBe(beforeRecommendation);
@@ -178,16 +212,19 @@ test('hard refresh algorithm list prewarms training configuration before the fir
   await page.waitForTimeout(180);
   expect(trainingDeviceCalls).toBe(deviceCallsAfterFirstOpen);
 
-  // Small screens must show labels between materials and training modes.
+  // Small screens keep data and labels ordered in step one; modes remain in step two.
   await page.setViewportSize({width: 760, height: 820});
   const mobileLayout = await secondDialog.evaluate(node => {
     const top = selector => node.querySelector(selector).getBoundingClientRect().top;
     return {algorithm: top('.train-ui-algorithm-card'), materials: top('.train-ui-data-card'),
-      labels: top('.train-ui-labels-card'), modes: top('.train-v3-mode-card')};
+      labels: top('.train-ui-labels-card')};
   });
   expect(mobileLayout.algorithm).toBeLessThan(mobileLayout.materials);
   expect(mobileLayout.materials).toBeLessThan(mobileLayout.labels);
-  expect(mobileLayout.labels).toBeLessThan(mobileLayout.modes);
+  await expect(secondDialog.locator('[data-training-step-panel="2"]')).toBeHidden();
+  await secondDialog.locator('[data-training-step="2"]').click();
+  await expect(secondDialog.locator('[data-training-step-panel="1"]')).toBeHidden();
+  await expect(secondDialog.locator('.train-v3-mode-card')).toBeVisible();
 });
 
 
@@ -440,23 +477,23 @@ test('training target is the only automatic early-stop control', async ({page, r
   await expect(dialog).toBeVisible({timeout: 10_000});
   await returnToTrainingConfiguration(page);
 
+  await dialog.locator('[data-training-step="2"]').click();
   await dialog.locator('[data-mode="custom"]').click();
-  await expect(dialog.getByRole('button', {name: '配置更多专业参数'})).toBeVisible();
-  await dialog.getByRole('button', {name: '配置更多专业参数'}).click();
-  const settings = page.getByRole('dialog', {name: '训练配置设置'});
+  const settings=dialog.locator('#trainWorkbenchParameters');
   await expect(settings).toBeVisible();
-  await expect(settings.getByText('阶段试验与目标')).toBeVisible();
-  await expect(settings.getByText('未达继续 / 达标提前完成')).toBeVisible();
+  await expect(page.getByRole('dialog',{name:'训练配置设置'})).toHaveCount(0);
+  await settings.locator('details').filter({has:page.locator('#ts428Metric')}).locator('summary').click();
+  await settings.locator('details').filter({has:page.locator('#ts428EarlyStop')}).locator('summary').click();
   await expect(settings.getByText('目标指标', {exact: true})).toBeVisible();
   await expect(settings.locator('#ts428Metric')).toHaveValue('map50');
   await expect(settings.getByText('目标正确率', {exact: true})).toBeVisible();
   await expect(settings.locator('#ts428Goal')).toHaveValue('90');
   await expect(settings.locator('#ts428Low')).toHaveCount(0);
-  await expect(settings.locator('#ts428Patience')).toHaveCount(0); // Hidden/removed legacy patience control
+  await expect(settings.locator('#ts428Patience')).toHaveCount(1); // Explicit early-stop request, separate from the target metric
   await expect(settings.locator('#ts428EarlyStop')).not.toBeChecked();
   await expect(settings.getByText('低于此正确率停止')).toHaveCount(0);
 
-  await settings.getByRole('button', {name: '应用配置'}).click();
+  await expect(settings).toContainText('以 Worker 回执为准');
   await expect(dialog.locator('[data-mode="custom"]')).toHaveAttribute('aria-pressed', 'true');
   const config = await page.evaluate(() => window.trainingConfigCanonical428?.());
   expect(config.stop_threshold).toBe(0.9);
@@ -607,6 +644,7 @@ test('frozen feedback candidates stay aligned with training submit provenance', 
   await expect(dialog.locator('[data-supplement-candidate-summary]')).toContainText('反馈补数据');
   await expect(dialog.locator('[data-supplement-candidate-value]')).toHaveText('1 / 1 张');
 
+  await dialog.locator('[data-training-step="3"]').click();
   const submitButton = dialog.getByRole('button', {name: '开始训练'});
   await expect(submitButton).toBeEnabled();
   const jobListReadsBeforeSubmit = jobListReads;
@@ -673,6 +711,7 @@ test('verified fixed benchmark stays aligned from backend availability to traini
   await expect(dialog.locator('.train-v3-summary>div').first().locator('span')).toHaveText('训练候选素材');
   await expect(dialog.locator('.train-v3-note')).toContainText('系统自动保留');
   await page.evaluate(({algorithmId}) => {window.TrainingDraftRuntime.update({algorithmId});window.TrainingDraftRuntime.setMaterialIds(['train-material-a','train-material-b']);window.TrainingSubmitRuntime.updateReadiness();}, {algorithmId});
+  await dialog.locator('[data-training-step="3"]').click();
   const submitButton=dialog.getByRole('button',{name:'开始训练'});
   await expect(submitButton).toBeEnabled();
   await submitButton.click();

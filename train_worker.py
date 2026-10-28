@@ -1236,6 +1236,7 @@ def main():
         def on_fit_epoch_end(trainer):
             nonlocal gate_reason, ai_plan, ai_rounds
             progress = publish_epoch_progress(job_file, telemetry, trainer, int(args.epochs))
+            update_job(job_file, usage_completed_epoch=True)
             epoch = int(progress.get("epoch") or (int(getattr(trainer,"epoch",0))+1))
             if ai_enabled and epoch in ai_epochs and ai_rounds < max(1,int(args.ai_max_rounds or 1)) and ai_cfg:
                 try:
@@ -1339,6 +1340,7 @@ def main():
             target.add_callback("on_train_start", verify_runtime)
             target.add_callback("on_train_batch_start", first_batch)
             target.add_callback("on_train_epoch_start", telemetry.on_epoch_start)
+            target.add_callback('on_val_end', lambda _validator: update_job(job_file, usage_validation_observed=True))
         attach_resource_callbacks(model)
         attach_training_batch_progress(model, job_file, int(args.epochs))
         training_start_monotonic = time.monotonic()

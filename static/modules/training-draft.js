@@ -99,6 +99,8 @@ export function createTrainingDraft(values = {}) {
     validationPercent: numberOr(values.validationPercent, 20),
     newLabelCodes: unique(values.newLabelCodes),
     benchmarkReuseEnabled: Boolean(values.benchmarkReuseEnabled),
+    history_policy: String(values.history_policy || 'new_for_algorithm'),
+    robustness_policy: JSON.parse(JSON.stringify(values.robustness_policy || {mode:'inherit'})),
     resource: {
       strategy: automaticMode ? 'auto' : String(values.resource?.strategy || 'manual'),
       profile: automaticMode ? 'performance' : String(values.resource?.profile || 'performance'),
@@ -144,6 +146,8 @@ export function trainingDraftToRequest(draft, parameters = {}) {
     ...parameters,
     algorithm_asset_id: normalized.algorithmId,
     training_mode: normalized.trainingMode,
+    history_policy: normalized.history_policy,
+    robustness_policy: normalized.robustness_policy,
     split_mode: normalized.splitMode,
     train_image_ids: normalized.materialIds,
     test_image_ids: normalized.testMaterialIds,

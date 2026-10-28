@@ -37,6 +37,84 @@ class FakeCredentials:
         return {}
 
 
+def test_explicit_history_policy_rechecks_usage_and_freezes_robustness(tmp_path):
+    from types import SimpleNamespace
+    from platform_core.training_material_usage import TrainingMaterialUsage
+    data_dir = tmp_path / 'data'
+    project_id = _build_project(data_dir)
+    project = data_dir / 'projects' / project_id
+    repository, artifacts, target_id, _prep_id = _runtime(data_dir, project_id)
+    payload = artifacts.read_json(target_id, 'payload.json')
+    payload.update(schema_version=4, train_labels=['fire'], history_policy='new_for_algorithm',
+        robustness_policy={'mode': 'enabled', 'selection': {'mode': 'ratio', 'ratio': 100}})
+    index = TrainingMaterialUsage(repository)
+    material = MaterialRepository(project).get('image-0')
+    index.record_selected(project_id, 'algorithm-fire', 'prior', {'snapshot_id': 'prior-snapshot',
+        'images': [{'image_id': 'image-0', 'role': 'train', 'content_sha256': material['content_sha256']}]})
+    index.record_execution('prior', first_batch=True)
+    handler = RemoteTrainingPrepareHandler(data_dir)
+    updated = handler._freeze_request_contract(SimpleNamespace(artifacts=artifacts, repository=repository, run_owned=lambda operation: operation()),
+        repository.get(target_id), payload)
+    assert 'image-0' not in updated['train_image_ids']
+    frozen = artifacts.read_json(target_id, 'input-freeze.json')
+    assert frozen['history_admission']['excluded_train_image_ids'] == ['image-0']
+    assert frozen['robustness_policy']['enabled'] is True
+    assert index.query_filter(project_id, 'algorithm-fire', [MaterialRepository(project).get('image-1')])['by_image_id']['image-1']['state'] == 'selected'
+
+
+def test_usage_maintenance_dry_run_interrupt_and_resume_preserves_owners(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from platform_core.training_usage_maintenance import rebuild_owner_batch
+    from platform_core.training_material_usage import TrainingMaterialUsage
+    from platform_core.training_tasks import resolve_training_input_freeze
+    from platform_core.training_splits import SplitMode, SplitRequest
+    data_dir = tmp_path/'data'
+    project_id = _build_project(data_dir)
+    repository, artifacts, target_id, _prep_id = _runtime(data_dir, project_id)
+    payload = artifacts.read_json(target_id, 'payload.json')
+    payload.update(schema_version=4, train_labels=['fire'])
+    updated = RemoteTrainingPrepareHandler(data_dir)._freeze_request_contract(SimpleNamespace(artifacts=artifacts), repository.get(target_id), payload)
+    frozen = artifacts.read_json(target_id, 'input-freeze.json')
+    split = frozen['split']
+    _rows, _schema, _manifest, snapshot = resolve_training_input_freeze(frozen, SplitRequest(
+        mode=SplitMode(split['mode']), train_image_ids=tuple(split['train_image_ids']),
+        test_image_ids=tuple(split['test_image_ids']), validation_percent=split['validation_percent'],
+        experiment_percent=split['experiment_percent']), seed=split['seed'])
+    artifacts.atomic_write_json(target_id, 'payload.json', updated)
+    artifacts.atomic_write_json(target_id, 'snapshot.json', snapshot)
+    job = data_dir/'projects'/project_id/'jobs'/target_id/'job.json'
+    job.parent.mkdir(parents=True)
+    job.write_text(json.dumps({'id': target_id, 'snapshot_id': snapshot['snapshot_id'],
+        'training_started': True, 'status': 'FAILED'}))
+    owner_task = repository.get(target_id)
+    material_bytes = (data_dir/'projects'/project_id/'uploads'/'image-0.jpg').read_bytes()
+    dry = rebuild_owner_batch(data_dir, project_id)
+    assert dry['eligible_task_ids'] == [target_id]
+    assert not (data_dir/'task_runtime'/'maintenance').exists()
+    original = TrainingMaterialUsage.record_selected
+    def interrupt_after_write(self, *args, **kwargs):
+        original(self, *args, **kwargs)
+        raise RuntimeError('simulated interruption')
+    monkeypatch.setattr(TrainingMaterialUsage, 'record_selected', interrupt_after_write)
+    with pytest.raises(RuntimeError, match='interruption'):
+        rebuild_owner_batch(data_dir, project_id, apply=True)
+    monkeypatch.setattr(TrainingMaterialUsage, 'record_selected', original)
+    resumed = rebuild_owner_batch(data_dir, project_id, apply=True)
+    assert resumed['complete_scan'] is True
+    assert rebuild_owner_batch(data_dir, project_id, apply=True)['scanned'] == 0
+    with closing_connection(repository.path) as database:
+        assert database.execute('SELECT COUNT(*) FROM training_material_usage').fetchone()[0] == 5
+    assert repository.get(target_id) == owner_task
+    assert (data_dir/'projects'/project_id/'uploads'/'image-0.jpg').read_bytes() == material_bytes
+    assert TrainingMaterialUsage(repository).query_filter(project_id, 'algorithm-fire',
+        [MaterialRepository(data_dir/'projects'/project_id).get('image-0')])['by_image_id']['image-0']['state'] in {'possible','selected'}
+
+
+def closing_connection(path):
+    from contextlib import closing
+    return closing(sqlite3.connect(path))
+
+
 def test_external_training_preflight_preserves_canonical_failure_code(tmp_path, monkeypatch):
     class FailingService:
         def __init__(self, **_kwargs):

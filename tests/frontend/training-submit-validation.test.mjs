@@ -85,7 +85,7 @@ test('compact training UI keeps four modes and canonical label/material selectio
   assert.doesNotMatch(source, /<option value="shared">共享<\/option>/);
 });
 
-test('external ChangLian training re-reads algorithm truth in hydration before canonical form open and training log refresh stays modal-local', () => {
+test('external ChangLian training hydrates truth independently after immediate form mount and log refresh stays modal-local', () => {
   const source = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
   const hydration = readFileSync(new URL('../../static/modules/training-create-hydration.js', import.meta.url), 'utf8');
   const main = readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8');
@@ -93,9 +93,10 @@ test('external ChangLian training re-reads algorithm truth in hydration before c
   assert.match(main, /preflight: \(algorithmId, \{signal\} = \{\}\) => externalAlgorithmPlatformRuntime\.preflightTraining/);
   assert.match(main, /openTrainingForm: window\.openTrainingCreateCanonical429/);
   assert.match(hydration, /externalChangLian/);
-  assert.match(hydration, /const needsExternalPreflight = externalChangLian && !externalPreflightFresh/);
-  assert.match(hydration, /if \(!needsPreparation\) return openForm\(aid\)/);
-  assert.match(hydration, /needsExternalPreflight && typeof preflight === 'function' \? withRequestDeadline\(signal=>preflight\(aid,\{signal\}\)/);
+  assert.match(hydration, /const opened=await openForm\(aid\)/);
+  assert.match(hydration, /void hydratePreflight\(aid\)\.catch/);
+  assert.match(hydration, /withRequestDeadline\(signal=>preflight\(aid,\{signal\}\)/);
+  assert.ok(hydration.indexOf('const opened=await openForm(aid)')<hydration.indexOf('void hydratePreflight(aid)'));
   assert.match(externalRuntime, /training-preflight\?project_id=/);
   assert.match(externalRuntime, /algorithm_id=\$\{encodeURIComponent\(id\)\}/);
   const ownerStart = source.indexOf('window.openTrainingCreateCanonical429=async function(aid)');
@@ -234,7 +235,7 @@ test('scheduler-owned cluster hides controller CUDA and enforces GPU exclusivity
   assert.match(source, /中央自动分配/);
   assert.match(source, /单卡独占训练/);
   assert.match(source, /不会把控制机本地 cuda:N 当作远端集群设备/);
-  assert.match(source, /existing\?\.dataset\?\.targetId===targetId/);
+  assert.match(source, /existing\?\.dataset\?\.resourceSignature===resourceSignature/);
   assert.match(source, /gpuPolicy:'exclusive'/);
   assert.doesNotMatch(source, /<option value="auto">兼容自动隔离<\/option>/);
 });
@@ -247,11 +248,11 @@ test('custom settings retain professional augmentation without a GPU-sharing byp
     'ts428MultiScale', 'ts428HsvH', 'ts428HsvS', 'ts428HsvV',
     'ts428Translate', 'ts428Scale', 'ts428FlipUD', 'ts428FlipLR', 'ts428Rect',
   ]) assert.match(source, new RegExp('id="' + id + '"'));
-  assert.match(source, /multi_scale:num\('ts428MultiScale'/);
-  assert.match(source, /hsv_h:num\('ts428HsvH'/);
-  assert.match(source, /translate:num\('ts428Translate'/);
-  assert.match(source, /fliplr:num\('ts428FlipLR'/);
-  assert.match(source, /rect:!!document\.getElementById\('ts428Rect'\)/);
+  assert.match(source, /MultiScale:'multi_scale'/);
+  assert.match(source, /HsvH:'hsv_h'/);
+  assert.match(source, /Translate:'translate'/);
+  assert.match(source, /FlipLR:'fliplr'/);
+  assert.match(source, /Rect:'rect'/);
   assert.match(source, /Batch：自动/);
   assert.match(source, /Workers：自动/);
   assert.match(source, /推荐 \$\{recommendation\.batch\} · 当前估算安全范围 1 ~/);

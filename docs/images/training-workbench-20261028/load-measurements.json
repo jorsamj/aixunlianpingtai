@@ -1,0 +1,113 @@
+{
+  "scope": "Isolated real Chrome with intercepted resource/recommendation responses; not production latency. Baseline loads the exact 6df8cf0e hydration owner; controlled recommendation gate is released 1000ms after click.",
+  "samples": [
+    {
+      "scenario": "normal mocked isolated inputs",
+      "clickToFormalRootMs": 67,
+      "optionsCalls": 1,
+      "recommendationCalls": 1,
+      "failedDiagnostics": null,
+      "diagnostics": {
+        "projectId": "1cfed8fca7db",
+        "resources": {
+          "status": "ready",
+          "error": "",
+          "cacheHit": true,
+          "url": "/api/training_options",
+          "requestCount": 1,
+          "durationMs": 7,
+          "jsonBytes": 291,
+          "openedInMs": 30
+        },
+        "recommendation": {
+          "status": "ready",
+          "error": "",
+          "cacheHit": true,
+          "url": "/api/system/recommendation",
+          "requestCount": 1,
+          "durationMs": 8,
+          "jsonBytes": 38
+        },
+        "preflight": {
+          "status": "ready",
+          "error": "",
+          "cacheHit": true
+        }
+      },
+      "controlledGateMinimumMs": 0
+    },
+    {
+      "scenario": "controlled pending then recommendation 500 and isolated retry",
+      "clickToFormalRootMs": 57,
+      "optionsCalls": 1,
+      "recommendationCalls": 2,
+      "failedDiagnostics": {
+        "projectId": "1cfed8fca7db",
+        "resources": {
+          "status": "ready",
+          "error": "",
+          "cacheHit": false,
+          "url": "/api/training_options",
+          "requestCount": 1,
+          "openedInMs": 28,
+          "durationMs": 1554,
+          "jsonBytes": 291
+        },
+        "recommendation": {
+          "status": "error",
+          "error": "操作失败：controlled recommendation failure",
+          "cacheHit": false,
+          "url": "/api/system/recommendation",
+          "requestCount": 1,
+          "durationMs": 1561
+        },
+        "preflight": {
+          "status": "ready",
+          "error": "",
+          "cacheHit": true
+        }
+      },
+      "diagnostics": {
+        "projectId": "1cfed8fca7db",
+        "resources": {
+          "status": "ready",
+          "error": "",
+          "cacheHit": false,
+          "url": "/api/training_options",
+          "requestCount": 1,
+          "openedInMs": 28,
+          "durationMs": 1554,
+          "jsonBytes": 291
+        },
+        "recommendation": {
+          "status": "ready",
+          "error": "",
+          "cacheHit": false,
+          "url": "/api/system/recommendation",
+          "requestCount": 2,
+          "durationMs": 12,
+          "jsonBytes": 38
+        },
+        "preflight": {
+          "status": "ready",
+          "error": "",
+          "cacheHit": true
+        }
+      },
+      "controlledGateMinimumMs": 1000
+    }
+  ],
+  "baseline": {
+    "sha": "6df8cf0e",
+    "scenario": "old hydration with controlled 1000ms recommendation gate",
+    "clickToFormalRootMs": 1484,
+    "optionsCalls": 1,
+    "recommendationCalls": 1
+  },
+  "comparableAfter": {
+    "scenario": "new hydration with same controlled 1000ms recommendation gate",
+    "clickToFormalRootMs": 145,
+    "optionsCalls": 1,
+    "recommendationCalls": 1
+  }
+}

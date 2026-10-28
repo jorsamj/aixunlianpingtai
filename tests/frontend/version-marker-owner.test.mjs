@@ -50,13 +50,13 @@ test('entry bundles use cache-bust markers independently from formal release tru
   assert.match(index, /\/static\/main\.mjs\?v=\d+(?:\.\d+)*/);
   assert.match(index, /\/static\/styles\.css\?v=\d+(?:\.\d+)*/);
   assert.equal(index.includes('/static/styles.css?v=42.25.436'), true);
-  assert.equal(index.includes('/static/app.js?v=42.25.442'), true);
-  assert.equal(index.includes('/static/main.mjs?v=42.25.441'), true);
+  assert.equal(index.includes('/static/app.js?v=42.25.443'), true);
+  assert.equal(index.includes('/static/main.mjs?v=42.25.442'), true);
   assert.equal(index.includes('/static/modules/storage-cache-runtime.js?v=20261024-layout'), true);
   assert.match(main, /\.\/modules\/model-artifact-runtime\.js\?v=\d+/);
   assert.match(main, /\.\/modules\/training-task-runtime\.js\?v=\d+/);
   assert.match(main, /\.\/modules\/training-create-hydration\.js\?v=\d+/);
-  assert.equal(main.includes("./modules/training-submit.js?v=422608"), true);
+  assert.equal(main.includes("./modules/training-submit.js?v=422609"), true);
   assert.equal(main.includes("./modules/auto-label-poll-runtime.js?v=422503"), true);
   assert.equal(index.includes('/static/modules/training-task-visibility-runtime.js'), false);
   assert.equal(main.includes("./modules/training-task-visibility-runtime.js?v=4226386"), true);
@@ -77,19 +77,19 @@ test('negative sample runtime is cache-busted with canonical owner retirement', 
 });
 
 test('training material picker canonical confirm asset is current', () => {
-  assert.equal(main.includes("./modules/training-material-picker-runtime.js?v=422612"), true);
+  assert.equal(main.includes("./modules/training-material-picker-runtime.js?v=422614"), true);
   const runtime = fs.readFileSync(new URL('../../static/modules/training-material-picker-runtime.js', import.meta.url), 'utf8');
   const browser = fs.readFileSync(new URL('../browser/training-material-picker-performance.spec.mjs', import.meta.url), 'utf8');
-  assert.ok(runtime.includes("build: 'training-material-picker-runtime-422508'"));
-  assert.ok(browser.includes(".toBe('training-material-picker-runtime-422508')"));
+  assert.ok(runtime.includes("build: 'training-material-picker-runtime-422614'"));
+  assert.ok(browser.includes(".toBe('training-material-picker-runtime-422614')"));
 });
 
 test('recovery browser and CI guards match the exact loaded runtime build', () => {
-  const build = 'training-recovery-runtime-4226390';
+  const build = 'training-recovery-runtime-4226391';
   const runtime = fs.readFileSync(new URL('../../static/modules/training-recovery-runtime.js', import.meta.url), 'utf8');
   const browser = fs.readFileSync(new URL('../browser/training-recovery.spec.mjs', import.meta.url), 'utf8');
   const workflow = fs.readFileSync(new URL('../../.github/workflows/training-recovery-guard.yml', import.meta.url), 'utf8');
-  assert.ok(main.includes('./modules/training-recovery-runtime.js?v=20261027-timing'));
+  assert.ok(main.includes('./modules/training-recovery-runtime.js?v=20261028-csc'));
   assert.ok(runtime.includes(`build: '${build}'`));
   assert.ok(browser.includes(`.toBe('${build}')`));
   assert.ok(workflow.includes(`grep -Fq "build: '${build}'" static/modules/training-recovery-runtime.js`));
@@ -99,7 +99,7 @@ test('training label contract source and browser guard match loaded cache build'
  const main=fs.readFileSync(new URL('../../static/main.mjs',import.meta.url),'utf8');
  const source=fs.readFileSync(new URL('../../static/modules/training-labels.js',import.meta.url),'utf8');
  const browser=fs.readFileSync(new URL('../browser/training-label-selector.spec.mjs',import.meta.url),'utf8');
- assert.ok(main.includes('training-labels.js?v=422571'));
- assert.ok(source.includes("build: 'module-422571'"));
- assert.ok(browser.includes(".toBe('module-422571')"));
+ assert.ok(main.includes('training-labels.js?v=422572'));
+ assert.ok(source.includes("build: 'module-422572'"));
+ assert.ok(browser.includes(".toBe('module-422572')"));
 });

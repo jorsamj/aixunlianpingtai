@@ -1,93 +1,44 @@
 import {test, expect} from '@playwright/test';
+import {mkdir} from 'node:fs/promises';
+import path from 'node:path';
 
-const viewports = [
-  {width:1920,height:1080}, {width:1366,height:768}, {width:1280,height:720},
-  {width:760,height:820}, {width:1093,height:614, equivalentZoom:'1366×768 / 125%'},
-];
-
-async function fixture(page, request) {
-  const project = await (await request.post('/api/projects', {data:{name:`滚动回归-${Date.now()}`,labels:Array.from({length:60},(_,i)=>({code:`class_${i}`,display_name:`训练类别 ${i} 较长名称`}))}})).json();
-  const result = await (await request.post(`/api/v12/projects/${project.id}/algorithms`, {data:{name:'弹窗滚轮隔离算法',industry:'测试',algorithm_type:'yolo_ultralytics'}})).json();
-  await page.route('**/api/v53/bootstrap/snapshot**',async route=>{const url=new URL(route.request().url());url.searchParams.set('preferred_project_id',project.id);await route.fallback({url:String(url)});});
-  await page.route('**/api/training_options**',route=>route.fulfill({json:{targets:[{id:'scroll-cpu',name:'隔离CPU',type:'local',framework:'ultralytics',status:'ready',algorithms:[{key:'yolo_detect',name:'Detect',base_model:'yolo11n.pt',default_epochs:1,default_imgsz:640,default_batch:1}],base_models:[{value:'yolo11n.pt',label:'YOLO11n',model_status:'FOUND'}]}]}}));
-  await page.route('**/api/system/recommendation',route=>route.fulfill({json:{device:'cpu',batch:1,workers:0}}));
-  await page.route('**/api/v62/training-devices',async route=>{await new Promise(resolve=>setTimeout(resolve,350));await route.fulfill({json:{recommended:'cpu',options:[{id:'cpu',label:'CPU',available:true}]}});});
-  let creates=0;
-  await page.route('**/train/start',route=>{creates++;return route.fulfill({status:409,json:{detail:'滚动验收禁止启动训练'}});});
-  await page.addInitScript(()=>localStorage.setItem('mc_train_ui_state_v34',JSON.stringify({page:'算法列表'})));
-  await page.goto('/');
-  await expect.poll(()=>page.evaluate(()=>Boolean(window.TrainingLabelRuntime && state.uiReady))).toBe(true);
-  const open=async()=>{
-    await page.locator('.alg428-card',{hasText:'弹窗滚轮隔离算法'}).getByRole('button',{name:'训练',exact:true}).click();
-    const dialog=page.getByRole('dialog',{name:/创建训练任务/});
-    await expect(dialog.locator('[data-training-label-code]')).toHaveCount(60);
-    return dialog;
-  };
-  return {open, creates:()=>creates,algorithmId:result.algorithm.id};
+const visualDir=path.resolve('docs/images/training-workbench-20261028');
+const viewports=[{width:1920,height:1080},{width:1440,height:900},{width:1366,height:768},{width:1093,height:614},{width:375,height:812}];
+async function fixture(page,request,{labels=60,delay=0}={}){
+  const project=await(await request.post('/api/projects',{data:{name:`工作台-${Date.now()}`,labels:Array.from({length:labels},(_,i)=>({code:`class_${i}`,display_name:`训练类别 ${i}`}))}})).json();
+  const result=await(await request.post(`/api/v12/projects/${project.id}/algorithms`,{data:{name:'工作台隔离算法',industry:'测试',algorithm_type:'yolo_ultralytics'}})).json();
+  await page.route('**/api/v53/bootstrap/snapshot**',route=>{const url=new URL(route.request().url());url.searchParams.set('preferred_project_id',project.id);return route.continue({url:String(url)})});
+  let optionsCalls=0,recommendationCalls=0,creates=0;
+  await page.route('**/api/training_options**',async route=>{optionsCalls++;if(delay)await new Promise(resolve=>setTimeout(resolve,delay));return route.fulfill({json:{targets:[{id:'workbench-cpu',name:'隔离CPU',type:'local',framework:'ultralytics',status:'ready',algorithms:[{key:'yolo_detect',name:'Detect',base_model:'yolo11n.pt',default_epochs:150,default_imgsz:640,default_batch:1}],base_models:[{value:'yolo11n.pt',label:'YOLO11n',model_status:'FOUND'}]}]}})});
+  await page.route('**/api/system/recommendation',route=>{recommendationCalls++;return route.fulfill({json:{device:'cpu',batch:1,workers:0}})});
+  await page.route('**/api/v62/training-devices',route=>route.fulfill({json:{recommended:'cpu',options:[{id:'cpu',label:'CPU',available:true}]}}));
+  await page.route('**/train/start',route=>{creates++;return route.fulfill({status:409,json:{detail:'隔离测试禁止真实训练'}})});
+  await page.addInitScript(()=>localStorage.setItem('mc_train_ui_state_v34',JSON.stringify({page:'算法列表'})));await page.goto('/');await expect.poll(()=>page.evaluate(()=>Boolean(window.TrainingLabelRuntime&&state.uiReady))).toBe(true);
+  const open=async()=>{await page.locator('.alg428-card',{hasText:'工作台隔离算法'}).getByRole('button',{name:'训练',exact:true}).click();const dialog=page.getByRole('dialog',{name:'创建训练任务'});await expect(dialog.locator('[data-training-step-panel="1"]')).toBeVisible();await expect(dialog.locator('[data-training-label-code]')).toHaveCount(Math.min(24,labels));return dialog};
+  return {open,project,algorithmId:result.algorithm.id,counts:()=>({optionsCalls,recommendationCalls,creates})};
 }
-
-async function bounds(dialog) {
-  return dialog.evaluate(node=>{
-    const card=node.matches('.modal-card')?node:node.querySelector('.modal-card');
-    const r=card.getBoundingClientRect(),head=card.querySelector('.modal-head').getBoundingClientRect(),foot=card.querySelector('.train428-footer').getBoundingClientRect(),layout=card.querySelector('.train-create-layout').getBoundingClientRect();
-    return {left:r.left+28,right:r.right-28,top:Math.max(head.bottom+8,layout.top+2),bottom:Math.min(foot.top-8,r.bottom-10,layout.bottom-2)};
-  });
-}
-async function wheel(page,dialog,delta,labels=false) {
-  const b=await bounds(dialog);let x=b.left+8,y=b.top+12;
-  if(labels){
-    const r=await dialog.locator('#trainUiLabelSlot').boundingBox();
-    if(r&&r.y<b.bottom&&r.y+r.height>b.top){x=Math.min(b.right-5,Math.max(b.left+5,r.x+r.width/2));y=(Math.max(b.top,r.y)+Math.min(b.bottom,r.y+r.height))/2;}
-  }
-  await page.mouse.move(x,y);await page.mouse.wheel(0,delta);
-  await page.waitForTimeout(55); // Native compositor scroll must settle before measuring hit targets.
-}
-async function usable(dialog,target) {
-  const r=await target.boundingBox();if(!r)return false;const b=await bounds(dialog);
-  if(r.y<b.top||r.y+r.height>b.bottom)return false;
-  return target.evaluate(node=>{const r=node.getBoundingClientRect();return node.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));});
-}
-async function reach(page,dialog,target,{labels=false}={}) {
-  for(let i=0;i<45;i++){
-    if(await usable(dialog,target))return;
-    const r=await target.boundingBox(),b=await bounds(dialog);
-    await wheel(page,dialog,r&&r.y<b.top?-220:220,labels);
-  }
-  expect(await usable(dialog,target),'actual wheel must expose an unobscured usable configuration').toBe(true);
-}
-async function top(page,dialog) {for(let i=0;i<4;i++)await wheel(page,dialog,-3000);}
-
-for(const viewport of viewports)test(`training configuration wheel remains usable ${viewport.width}x${viewport.height}`,async({page,request},testInfo)=>{
-  test.setTimeout(90_000);await page.setViewportSize({width:viewport.width,height:viewport.height});
-  const errors=[];page.on('pageerror',e=>errors.push(e.message));
-  const f=await fixture(page,request);let dialog=await f.open();
-  await top(page,dialog);
-  await reach(page,dialog,dialog.locator('[data-mode="custom"]'));
-  await dialog.locator('[data-mode="custom"]').click();
-  await top(page,dialog);
-  const bottom=dialog.locator('.train-v3-all-settings');
-  await reach(page,dialog,bottom,{labels:true});
-  await dialog.screenshot({path:testInfo.outputPath('wheel-after-labels.png')});
-  await reach(page,dialog,dialog.locator('[data-training-label-code="class_59"]').locator('..'),{labels:true});
-  await reach(page,dialog,bottom);
-  await bottom.click();
-  const settings=page.getByRole('dialog',{name:/训练配置设置/});await expect(settings).toBeVisible();
-  await settings.getByRole('button',{name:'应用配置',exact:true}).click();
-  for(const mode of ['quick','full','complex','custom']){
-    await top(page,dialog);await reach(page,dialog,dialog.locator(`[data-mode="${mode}"]`));await dialog.locator(`[data-mode="${mode}"]`).click();
-    const details=dialog.locator('.train-create-split-details');await reach(page,dialog,details.locator('summary'));await details.locator('summary').click();
-    await reach(page,dialog,dialog.locator('#trV3Validation'));await expect(dialog.locator('#trV3Validation')).toBeEditable();
-    await reach(page,dialog,details.locator('summary'));await details.locator('summary').click();
-    await reach(page,dialog,mode==='custom'?bottom:dialog.locator('.train-v3-mode-brief'));
-    await expect(dialog.locator('.train-ui-submit')).toBeInViewport();
-    await expect(dialog.locator('.modal-head')).toBeInViewport();
-    for(const selector of ['.modal-head','.train428-footer']){const r=await dialog.locator(selector).boundingBox();expect(r.y).toBeGreaterThanOrEqual(0);expect(r.y+r.height).toBeLessThanOrEqual(page.viewportSize().height);}
-  }
-  await dialog.locator('.train-ui-cancel').click();dialog=await f.open();await top(page,dialog);
-  await reach(page,dialog,dialog.locator('[data-mode="custom"]'));await dialog.locator('[data-mode="custom"]').click();
-  await page.setViewportSize({width:Math.max(720,viewport.width-80),height:Math.max(550,viewport.height-90)});
-  await reach(page,dialog,dialog.locator('.train-v3-all-settings'),{labels:true});
-  const owners=await dialog.evaluate(node=>[...node.querySelectorAll('*')].filter(el=>['auto','scroll'].includes(getComputedStyle(el).overflowY)&&el.scrollHeight>el.clientHeight+2).map(el=>el.className));
-  expect(owners).toEqual(['train-create-layout']);
-  expect(f.creates()).toBe(0);expect(errors).toEqual([]);
+async function capture(dialog,name){await mkdir(visualDir,{recursive:true});await expect(dialog.page().locator('#toast')).toBeHidden({timeout:5000});await dialog.screenshot({path:path.join(visualDir,name)});}
+async function shellInside(page,dialog){for(const selector of ['.modal-head','.train428-footer']){const box=await dialog.locator(selector).boundingBox();expect(box.y).toBeGreaterThanOrEqual(0);expect(box.y+box.height).toBeLessThanOrEqual(page.viewportSize().height+1)}const box=await dialog.boundingBox();expect(box.x).toBeGreaterThanOrEqual(0);expect(box.x+box.width).toBeLessThanOrEqual(page.viewportSize().width+1)}
+for(const viewport of viewports)test(`training three-step wheel and inline parameters ${viewport.width}x${viewport.height}`,async({page,request})=>{
+  await page.setViewportSize(viewport);const errors=[];page.on('pageerror',error=>errors.push(error.message));const f=await fixture(page,request),dialog=await f.open(),size=`${viewport.width}x${viewport.height}`;
+  await expect(dialog.locator('.train-ui-submit')).toBeHidden();await shellInside(page,dialog);await capture(dialog,`after-${size}-step1.png`);
+  await expect(dialog.locator('#trainUiSummary')).toContainText('640');
+  await dialog.locator('#trainUiLabelSearch').fill('class_59');await dialog.locator('[data-training-label-code="class_59"]').check();await expect(dialog.locator('#trainUiLabelSearch')).toHaveValue('class_59');
+  await dialog.locator('[data-training-step-next]').click();await expect(dialog.locator('[data-training-step-panel="1"]')).toBeHidden();await expect(dialog.locator('[data-training-step-panel="2"]')).toBeVisible();await expect(dialog.locator('.training-parameter-group')).toHaveCount(7);await expect(dialog.locator('#trV3ManualPrecision')).toHaveCount(1);await expect(dialog.locator('#ts428Precision')).toHaveCount(0);await capture(dialog,`after-${size}-step2-basic.png`);
+  for(const mode of ['quick','full','complex','custom']){await dialog.locator(`[data-mode="${mode}"]`).click();await expect(dialog.locator(`[data-mode="${mode}"]`)).toHaveAttribute('aria-pressed','true');await shellInside(page,dialog)}
+  const layout=dialog.locator('.train-create-layout'),bounds=await layout.boundingBox();await layout.evaluate(node=>node.scrollTop=0);await page.mouse.move(bounds.x+bounds.width/3,bounds.y+Math.min(120,bounds.height/2));await page.mouse.wheel(0,400);await expect.poll(()=>layout.evaluate(node=>node.scrollTop)).toBeGreaterThan(0);await page.mouse.wheel(0,-2000);await expect.poll(()=>layout.evaluate(node=>node.scrollTop)).toBe(0);await shellInside(page,dialog);
+  const parameters=dialog.locator('#trainWorkbenchParameters');await parameters.locator('details').filter({has:page.locator('#ts428Epoch')}).locator('summary').click();await dialog.locator('#ts428Epoch').fill('37');await dialog.locator('#trV3ManualPrecision').selectOption('fp32');await dialog.locator('#trainRobustnessMode').selectOption('enabled');await dialog.locator('#trainRobustnessSelection').selectOption('count');await dialog.locator('#trainRobustnessCount').fill('12');await capture(dialog,`after-${size}-step2-custom.png`);await dialog.locator('#trainRobustnessMode').scrollIntoViewIfNeeded();await capture(dialog,`after-${size}-step2-robustness.png`);
+  await dialog.locator('[data-training-step-next]').click();await expect(dialog.locator('.train-ui-submit')).toBeVisible();await expect(dialog.locator('#trainWorkbenchConfirmation')).toContainText('尚未分配');await expect(dialog.locator('#trainWorkbenchConfirmation')).toContainText('37');await dialog.locator('.train-ui-submit').click();
+  const blockers=page.getByRole('dialog',{name:'训练暂不可开始'});if(await blockers.isVisible())await blockers.getByRole('button',{name:'返回训练配置',exact:true}).click();await expect(dialog.locator('[data-training-submit-feedback]')).toBeVisible();await capture(dialog,`after-${size}-step3-feedback.png`);
+  await dialog.locator('[data-training-step="1"]').click();await expect(dialog.locator('#trainUiLabelSearch')).toHaveValue('class_59');await expect(dialog.locator('[data-training-label-code="class_59"]')).toBeChecked();await shellInside(page,dialog);await dialog.locator('[data-training-step="2"]').click();await expect(dialog.locator('#ts428Epoch')).toHaveValue('37');await expect(dialog.locator('#trV3ManualPrecision')).toHaveValue('fp32');expect(f.counts().creates).toBe(0);expect(errors).toEqual([]);
+});
+test('1000 labels stay bounded and stable through toggles search hydration and ten opens',async({page,request})=>{
+  test.setTimeout(90_000);const f=await fixture(page,request,{labels:1000,delay:1600});let dialog=await f.open();
+  const first=dialog.locator('[data-training-label-code="class_0"]');await first.evaluate(node=>{window.__trainingLabelNode=node;window.__trainingLabelPanel=node.closest('#trainingLabelContractPanel')});
+  for(let index=0;index<10;index++)await dialog.locator(`[data-training-label-code="class_${index}"]`).check();for(let index=0;index<3;index++)await dialog.locator(`[data-training-label-code="class_${index}"]`).uncheck();
+  await expect.poll(()=>page.evaluate(()=>state.trainingDraft.newLabelCodes.length)).toBe(7);expect(await first.evaluate(node=>node===window.__trainingLabelNode&&node.closest('#trainingLabelContractPanel')===window.__trainingLabelPanel)).toBe(true);await expect(dialog.locator('[data-training-label-code="class_2"]')).toBeFocused();await expect(dialog.locator('[data-training-label-code]')).toHaveCount(24);
+  await dialog.locator('#trainUiLabelSearch').fill('class_999');await expect(dialog.locator('[data-training-label-code]')).toHaveCount(1);await dialog.locator('[data-training-label-code="class_999"]').check();await expect(dialog.locator('#trainUiLabelSearch')).toHaveValue('class_999');
+  await dialog.locator('[data-training-step-next]').click();await dialog.locator('[data-mode="custom"]').click();await dialog.locator('#trainWorkbenchParameters details').first().locator('summary').click();await dialog.locator('#ts428Epoch').fill('77');await dialog.locator('#trV3ManualPrecision').selectOption('fp32');await expect.poll(()=>page.evaluate(()=>state.trainingCreationLoading?.resources?.status)).toBe('ready');await expect(dialog.locator('#ts428Epoch')).toHaveValue('77');await expect(dialog.locator('#trV3ManualPrecision')).toHaveValue('fp32');
+  const counts=f.counts();expect(counts.optionsCalls).toBeLessThanOrEqual(1);expect(counts.recommendationCalls).toBeLessThanOrEqual(1);expect(counts.creates).toBe(0);
+  for(let index=0;index<10;index++){await dialog.locator('.train-ui-cancel').click();dialog=await f.open();await expect.poll(()=>page.evaluate(()=>state.trainingDraft.newLabelCodes.length)).toBe(0);await expect(dialog.locator('[data-training-label-code]')).toHaveCount(24)}expect(f.counts()).toEqual(counts);
 });

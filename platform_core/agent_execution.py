@@ -301,6 +301,13 @@ def _sanitize_runtime_result_metadata(value: object) -> dict[str, Any]:
         )
 
     result: dict[str, Any] = {}
+    # Authenticated TRAINING result evidence must survive transport normalization.
+    # A truthy string is not execution evidence.
+    for key in ('training_started', 'usage_completed_epoch', 'usage_validation_observed'):
+        if key in value:
+            if type(value[key]) is not bool:
+                raise AgentExecutionError('REMOTE_RESULT_METADATA_INVALID', f'{key} must be boolean', 422)
+            result[key] = value[key]
     if "ok" in value:
         result["ok"] = bool(value.get("ok"))
 
@@ -1033,6 +1040,12 @@ class AgentExecutionService:
                 "remote execution heartbeat lost ownership",
                 409,
             ) from error
+        if current.kind is TaskKind.TRAINING and str(stage or '') == 'first_batch':
+            from .training_material_usage import TrainingMaterialUsage
+            self._owned_execution(node_id, node_token, task_id, execution_lease_token, execution_generation)
+            TrainingMaterialUsage(self.repository).record_execution(
+                task_id, first_batch=True, generation=int(execution_generation),
+                owner=(task_id, execution_lease_token, int(execution_generation)))
         if resolution is not None or runtime is not None:
             # Re-prove generation/node ownership immediately before publishing
             # Agent-observed training truth. This projects the one frozen

@@ -69,7 +69,7 @@ test('training create canonical owner uses deterministic repaint points instead 
   const dialogEnd = app.indexOf('\n  window.openTrainingCreateDialog423=', dialogStart);
   assert.ok(dialogStart >= 0 && dialogEnd > dialogStart);
   const dialogOwner = app.slice(dialogStart, dialogEnd);
-  assert.match(dialogOwner, /trainTarget429\(\)\};/);
+  assert.match(dialogOwner, /applyTrainingCreationResources\?\.\(\)/);
   assert.doesNotMatch(dialogOwner, /setTimeout\(trainTarget429/);
 
   const iterationStart = app.indexOf('window.loadTrainingIterationBase414=async function(aid)');

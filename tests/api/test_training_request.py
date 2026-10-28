@@ -1926,3 +1926,50 @@ def test_training_missing_mother_model_returns_stable_code_without_task(client, 
     assert response.status_code==409,response.text
     assert response.json()['code']=='TRAINING_MOTHER_MODEL_UNAVAILABLE'
     assert platform.shared_task_repository().get(payload['task_id']) is None
+
+
+def test_robustness_global_policy_api_cas_and_validation(client):
+    import app as platform
+    request=platform.TrainReq(robustness_policy={'mode':'enabled','source':'global','global_revision':'forged'})
+    assert request.robustness_policy=={'mode':'enabled'}
+    current=client.get('/api/v62/training/robustness-policy').json()
+    assert current['revision']=='0' and current['policy']['enabled'] is False
+    body={'mode':'enabled','selection':{'mode':'count','count':1},'copies':2,'presets':['bt709_limited'],'seed':42}
+    saved=client.put('/api/v62/training/robustness-policy',json={'policy':body,'expected_revision':'0'})
+    assert saved.status_code==200, saved.text
+    assert saved.json()['policy']['enabled'] is True
+    assert client.put('/api/v62/training/robustness-policy',json={'policy':body,'expected_revision':'0'}).status_code==409
+    assert client.put('/api/v62/training/robustness-policy',json={'policy':{**body,'copies':4},'expected_revision':saved.json()['revision']}).status_code==422
+
+
+def test_training_task_freezes_global_robustness_before_queue_and_replay(client,seeded_project):
+    import app as platform
+    from platform_core.training_robustness import read_global_policy,save_global_policy
+    project_id,first=seeded_project
+    images=[_mark_training_ready(client,project_id,first),
+            _upload_training_ready(client,project_id,'robust-two.jpg',(31,47,63)),
+            _upload_training_ready(client,project_id,'robust-three.jpg',(79,97,113))]
+    algorithm=client.post(f'/api/v12/projects/{project_id}/algorithms',json={'name':'robust-freeze','algorithm_type':'yolo_ultralytics'}).json()['algorithm']
+    original=read_global_policy(platform.DATA_DIR)
+    enabled=save_global_policy(platform.DATA_DIR,{'mode':'enabled','selection':{'mode':'ratio','ratio':100},'copies':1,'presets':['bt601_limited'],'seed':17},original['revision'])
+    request={'task_id':platform._new_training_task_id(),'framework':'ultralytics','algorithm_asset_id':algorithm['id'],'model':'yolo11n.pt',
+      'split_mode':'random_test_from_training_pool','train_image_ids':[row['id'] for row in images],'test_image_ids':[],
+      'experiment_percent':20,'validation_percent':20,'train_labels':['fire'],'history_policy':'new_for_algorithm','robustness_policy':{'mode':'inherit'}}
+    try:
+        response=client.post(f'/api/v12/projects/{project_id}/train/start',json=request)
+        assert response.status_code==202,response.text
+        task=response.json()['task'];task_id=task.get('id') or task['task_id']
+        payload=platform.shared_task_artifacts().read_json(task_id,'payload.json')
+        assert payload['robustness_policy']['global_revision']==enabled['revision']
+        assert payload['robustness_policy']['enabled'] is True
+        save_global_policy(platform.DATA_DIR,{'mode':'disabled'},enabled['revision'])
+        replay=client.post(f'/api/v12/projects/{project_id}/train/start',json=request)
+        assert replay.status_code==202,replay.text
+        frozen_payload=_freeze_admitted_training(platform,task_id)
+        frozen=platform.shared_task_artifacts().read_json(task_id,'input-freeze.json')
+        assert frozen['robustness_policy']['enabled'] is True
+        assert frozen['robustness_policy']['global_revision']==enabled['revision']
+        assert frozen_payload['history_admission']['policy']=='new_for_algorithm'
+    finally:
+        now=read_global_policy(platform.DATA_DIR)
+        save_global_policy(platform.DATA_DIR,original['policy'],now['revision'])

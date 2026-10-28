@@ -71,6 +71,8 @@ def _public_picker_material(project_id: str, row: dict, annotation: dict) -> dic
         "id": image_id,
         "image_id": image_id,
         "filename": str(row.get("filename") or image_id),
+        "storage_source_id": str(row.get("storage_source_id") or "default_local"),
+        "created_at": str(row.get("created_at") or ""),
         "width": max(0, int(row.get("width") or 0)),
         "height": max(0, int(row.get("height") or 0)),
         "labels": labels,
@@ -108,6 +110,114 @@ def _normalize_labels(values: object) -> tuple[str, ...]:
     return tuple(dict.fromkeys(str(value or "").strip() for value in values if str(value or "").strip()))
 
 
+@lru_cache(maxsize=4)
+def _cached_usage_pool(project_path, task_path, material_revision, algorithm_id, usage_revision, role, exclude_used):
+    from .training_material_usage import TrainingMaterialUsage
+    repository = MaterialRepository(Path(project_path))
+    usage = TrainingMaterialUsage(task_path)
+    # Stream only relation identities. Never hydrate a second whole material pool.
+    fields = ("group_id","video_task_id","source_group_id","near_duplicate_group_id","sequence_group_id",
+              "camera_session_id","capture_session_id","camera_id","session_id","stored_name","stored_path","path",
+              "source_root_id","derived_from_image_id")
+    columns = ",".join("json_extract(payload_json, '$."+field+"') AS "+field for field in fields)
+    combined = {"revision":usage_revision,"coverage":"unknown","by_image_id":{},"excluded_image_ids":[],"unknown_image_ids":[],"state_ids":{"unknown":[],"unused":[]}}
+    with closing(sqlite3.connect(repository.path, timeout=30)) as db:
+        db.row_factory=sqlite3.Row
+        cursor=db.execute("SELECT id,content_sha256,"+columns+" FROM materials WHERE processing_status='processed'")
+        while True:
+            rows=cursor.fetchmany(500)
+            if not rows: break
+            result=usage.query_filter(repository.project_path.name,algorithm_id,[dict(r) for r in rows],exclude_used=exclude_used,role=role)
+            combined["coverage"]=result["coverage"]
+            for image_id,fact in result["by_image_id"].items():
+                if not fact.get("history_details") and fact["state"] in {"unknown","unused"}:
+                    combined["state_ids"][fact["state"]].append(image_id)
+                else: combined["by_image_id"][image_id]=fact
+            combined["excluded_image_ids"].extend(result["excluded_image_ids"])
+            combined["unknown_image_ids"].extend(result["unknown_image_ids"])
+    if repository.current_revision()!=material_revision or usage.read_revision()!=usage_revision:
+        raise ValueError("素材或历史证据已更新，请重试")
+    return combined
+
+
+def _usage_filters(repository, filters):
+    from .training_material_usage import TrainingMaterialUsage
+    body = dict(filters or {})
+    state = str(body.get("usage_state") or "")
+    if state and state not in {"used", "possible", "selected", "unused", "unknown", "eval_only"}:
+        raise ValueError("invalid usage_state")
+    scope = str(body.get("history_scope") or "")
+    if scope not in {"", "current_only", "other_only"}: raise ValueError("invalid history_scope")
+    algorithm_id = str(body.get("algorithm_asset_id") or "")
+    task_path = repository.project_path.parent.parent / "task_runtime" / "tasks.sqlite3"
+    policy = str(body.get("history_policy") or "new_for_algorithm")
+    if policy not in {"new_for_algorithm", "include_history"}: raise ValueError("invalid history_policy")
+    usage_revision = TrainingMaterialUsage(task_path).read_revision()
+    if policy == "include_history" and not state and not scope:
+        return body, {"revision":usage_revision,"coverage":"unknown","by_image_id":{},"excluded_image_ids":[],"unknown_image_ids":[]}
+    facts = _cached_usage_pool(str(repository.project_path), str(task_path), repository.current_revision(),
+        algorithm_id, usage_revision, str(body.get("role") or "train"), policy == "new_for_algorithm")
+    excluded=set(facts["excluded_image_ids"])
+    if state or scope:
+        eligible=[key for key,value in facts["by_image_id"].items() if (not state or value["state"] == state) and not value["excluded"] and (not scope or (value.get("current_algorithm_trained",False) and not value.get("other_algorithm_trained",False) if scope=="current_only" else value.get("other_algorithm_trained",False) and not value.get("current_algorithm_trained",False)))]
+        if state and not scope:
+            eligible.extend(i for i in facts.get("state_ids",{}).get(state,[]) if i not in excluded)
+        body["usage_image_ids"]=eligible
+    elif excluded:
+        body["usage_excluded_image_ids"]=sorted(excluded)
+    return body, facts
+
+
+def _page_usage_facts(repository, body, rows):
+    from .training_material_usage import TrainingMaterialUsage
+    path=repository.project_path.parent.parent / "task_runtime" / "tasks.sqlite3"
+    return TrainingMaterialUsage(path).query_filter(repository.project_path.name,str(body.get("algorithm_asset_id") or ""),
+        rows,exclude_used=body.get("history_policy","new_for_algorithm")=="new_for_algorithm",role=str(body.get("role") or "train"))
+
+
+def _public_usage_fact(fact):
+    details=fact.get("history_details") or []
+    return {**{k:v for k,v in fact.items() if k not in {"history_details","task_ids"}},
+        "training_task_count":len({r["task_id"] for r in details if r["role"]=="train" and r["evidence"]>=2}),
+        "possible_training_task_count":len({r["task_id"] for r in details if r["role"]=="train" and r["evidence"]==1}),
+        "algorithm_ids":sorted({r["algorithm_id"] for r in details})}
+
+
+def _picker_filter_sql(filters=None):
+    """Shared predicates; formal annotation truth always belongs to AnnotationRepository."""
+    f = dict(filters or {})
+    clauses, params = [], []
+    sources = _normalize_selection_ids(f.get("storage_source_ids") or [])
+    if sources:
+        clauses.append("m.storage_source_id IN (" + ",".join("?" for _ in sources) + ")")
+        params.extend(sources)
+    for key, operator in (("created_from", ">="), ("created_to", "<=")):
+        value = str(f.get(key) or "").strip()
+        if value:
+            from datetime import datetime
+            datetime.fromisoformat(value.replace("Z", "+00:00"))
+            clauses.append(f"julianday(m.created_at) {operator} julianday(?)")
+            params.append(value + ("T23:59:59.999999+00:00" if key == "created_to" and len(value) == 10 else ""))
+    state = str(f.get("annotation_state") or "")
+    if state:
+        if state not in {"annotated", "confirmed_empty", "unannotated"}:
+            raise ValueError("invalid annotation_state")
+        clauses.append("COALESCE((SELECT a.annotation_state FROM annotation_gt.annotations a WHERE a.image_id=m.id),'unannotated')=?")
+        params.append(state)
+    if f.get("usage_excluded_image_ids"):
+        clauses.append("m.id NOT IN (SELECT value FROM json_each(?))")
+        params.append(json.dumps(f["usage_excluded_image_ids"]))
+    if f.get("usage_image_ids") is not None:
+        clauses.append("m.id IN (SELECT value FROM json_each(?))")
+        params.append(json.dumps(f["usage_image_ids"]))
+    if f.get("image_ids") is not None:
+        # Caller-owned selection scope, never inferred from global material state.
+        ids = _normalize_selection_ids(f["image_ids"])
+        clauses.append("m.id IN (SELECT value FROM json_each(?))")
+        params.append(json.dumps(ids))
+    return clauses, params
+
+
 def _gt_material_filter_page(
     repository: MaterialRepository,
     annotations: AnnotationRepository,
@@ -120,6 +230,7 @@ def _gt_material_filter_page(
     require_ground_truth: bool = False,
     include_payload: bool = False,
     sort_order: str = "oldest",
+    filters: dict | None = None,
 ) -> dict:
     """Page processed materials while label/GT predicates come from formal GT.
 
@@ -158,6 +269,9 @@ def _gt_material_filter_page(
             "(gt.annotation_state='confirmed_empty' AND gt.scope_ref=1)))"
         )
 
+    extra_clauses, extra_params = _picker_filter_sql(filters)
+    base_clauses.extend(extra_clauses)
+    base_params.extend(extra_params)
     base_where = " WHERE " + " AND ".join(base_clauses)
     with closing(sqlite3.connect(repository.path, timeout=30)) as database:
         database.row_factory = sqlite3.Row
@@ -374,9 +488,10 @@ def _bulk_filtered_ids(
     query: str = "",
     labels: tuple[str, ...] = (),
     require_ground_truth: bool = False,
+    filters: dict | None = None,
 ) -> tuple[list[str], int]:
     """Resolve a large filtered selection server-side with one HTTP request."""
-    if labels or require_ground_truth:
+    if labels or require_ground_truth or filters:
         page = _gt_material_filter_page(
             repository,
             annotations,
@@ -385,6 +500,7 @@ def _bulk_filtered_ids(
             labels=labels,
             require_ground_truth=require_ground_truth,
             include_payload=False,
+            filters=filters,
         )
         total = max(0, int(page["total"]))
         if total > MAX_SELECTION_SUMMARY_IDS:
@@ -430,66 +546,67 @@ def _bulk_filtered_ids(
 
 
 
-def _role_material_page(repository, annotations, contract, *, image_ids=None,
-                        query="", labels=(), sample_role="", page=1, limit=60, sort_order="oldest"):
-    """Evaluate task roles in SQLite, returning only one bounded payload page.
-
-    The deterministic SQL function uses the same classifier as admission; a
-    temporary table evaluates each candidate once, including the count query.
-    """
+@lru_cache(maxsize=8)
+def _cached_role_index(material_path, annotation_path, material_revision, annotation_revision, contract_json, filters_json):
     from .training_label_tasks import training_material_role
+    contract = json.loads(contract_json)
+    filters = json.loads(filters_json)
+    clauses = ["m.processing_status='processed'"]
+    params = []
+    if filters.get("query"):
+        clauses.append("m.filename LIKE ? COLLATE NOCASE")
+        params.append("%" + filters["query"] + "%")
+    labels = filters.get("labels") or []
+    if labels:
+        clauses.append("EXISTS (SELECT 1 FROM annotation_gt.annotation_label_references r WHERE r.image_id=m.id AND r.annotation_state='annotated' AND r.box_count>0 AND r.label_code IN (" + ",".join("?" for _ in labels) + "))")
+        params.extend(labels)
+    extra, values = _picker_filter_sql(filters)
+    clauses.extend(extra); params.extend(values)
+    result = []
+    with closing(sqlite3.connect(material_path, timeout=30)) as db:
+        db.row_factory = sqlite3.Row
+        db.execute("ATTACH DATABASE ? AS annotation_gt", (annotation_path,))
+        db.execute("BEGIN")
+        revisions = (int(db.execute("SELECT value FROM material_meta WHERE key='revision'").fetchone()[0]),
+                     int(db.execute("SELECT value FROM annotation_gt.annotation_meta WHERE key='revision'").fetchone()[0]))
+        if revisions != (material_revision, annotation_revision):
+            raise ValueError("素材或标注已更新，请重试")
+        for row in db.execute("SELECT m.id,m.created_at,m.payload_json,a.annotation_state,a.boxes_json,a.scope_json FROM materials m LEFT JOIN annotation_gt.annotations a ON a.image_id=m.id WHERE " + " AND ".join(clauses) + " ORDER BY m.created_at,m.id", params):
+            payload = json.loads(row["payload_json"])
+            payload.update(annotation_state=row["annotation_state"] or "unannotated", boxes=json.loads(row["boxes_json"] or "[]"), annotation_scope=json.loads(row["scope_json"] or "[]"))
+            result.append((row["id"], training_material_role(payload, contract)["role"]))
+    return tuple(result)
+
+
+def _role_material_page(repository, annotations, contract, *, image_ids=None,
+                        query="", labels=(), sample_role="", page=1, limit=60, sort_order="oldest", filters=None, include_payload=True):
     if sample_role not in {"", "positive", "confirmed_negative", "pending_review"}:
         raise ValueError("invalid sample_role")
     if not 1 <= int(limit) <= MAX_SELECTION_SUMMARY_IDS or int(page) < 1:
         raise ValueError("invalid role page bounds")
     if sort_order not in {"oldest", "newest"}:
-        raise ValueError("sort_order must be oldest or newest")
-    def classify(payload, state, boxes, scope):
-        row = json.loads(payload)
-        row.update(annotation_state=state or "unannotated", boxes=json.loads(boxes or "[]"),
-                   annotation_scope=json.loads(scope or "[]"))
-        return training_material_role(row, contract)["role"]
-    with closing(sqlite3.connect(repository.path, timeout=30)) as db:
-        db.row_factory = sqlite3.Row
-        db.execute("PRAGMA temp_store=FILE")
-        db.execute("ATTACH DATABASE ? AS annotation_gt", (str(annotations.path),))
-        db.create_function("training_role", 4, classify, deterministic=True)
-        clauses = ["m.processing_status='processed'"]
-        params = []
-        if query:
-            clauses.append("m.filename LIKE ? COLLATE NOCASE")
-            params.append("%" + str(query) + "%")
-        if labels:
-            clauses.append("EXISTS (SELECT 1 FROM annotation_gt.annotation_label_references r "
-                           "WHERE r.image_id=m.id AND r.annotation_state='annotated' AND r.box_count>0 "
-                           "AND r.label_code IN (" + ",".join("?" for _ in labels) + "))")
-            params.extend(labels)
-        if image_ids is not None:
-            db.execute("CREATE TEMP TABLE role_selected_ids(id TEXT PRIMARY KEY) WITHOUT ROWID")
-            db.executemany("INSERT OR IGNORE INTO role_selected_ids VALUES (?)", ((i,) for i in image_ids))
-            clauses.append("m.id IN (SELECT id FROM role_selected_ids)")
-        db.commit()
-        db.execute("BEGIN")
-        db.execute("CREATE TEMP TABLE picker_roles AS SELECT m.id,m.created_at,m.payload_json, "
-                   "training_role(m.payload_json,a.annotation_state,a.boxes_json,a.scope_json) AS sample_role "
-                   "FROM materials m LEFT JOIN annotation_gt.annotations a ON a.image_id=m.id WHERE "
-                   + " AND ".join(clauses), params)
-        counts = {role: 0 for role in ("positive", "confirmed_negative", "pending_review")}
-        counts.update({str(r[0]): int(r[1]) for r in db.execute(
-            "SELECT sample_role,COUNT(*) FROM picker_roles GROUP BY sample_role")})
-        total = counts[sample_role] if sample_role else sum(counts.values())
-        if int(page) > max(1, math.ceil(total / int(limit))):
-            raise ValueError("page exceeds total_pages")
-        rows = db.execute("SELECT * FROM picker_roles " + ("WHERE sample_role=? " if sample_role else "")
-                          + ("ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?" if sort_order == "newest" else "ORDER BY created_at,id LIMIT ? OFFSET ?"),
-                          ([sample_role] if sample_role else []) + [int(limit), (int(page)-1)*int(limit)]).fetchall()
-        revisions = (int(db.execute("SELECT value FROM material_meta WHERE key='revision'").fetchone()[0]),
-                     int(db.execute("SELECT value FROM annotation_gt.annotation_meta WHERE key='revision'").fetchone()[0]))
-    return {"items": [{**json.loads(r["payload_json"]), "sample_role": r["sample_role"]} for r in rows],
-            "total": total, "sample_role_counts": counts, "effective_label_codes": list(contract["effective_label_codes"]),
-            "page": int(page), "page_size": int(limit), "limit": int(limit), "next_cursor": None,
-            "total_pages": max(1, math.ceil(total / int(limit))),
-            "repository_revision": revisions[0], "annotation_revision": revisions[1]}
+        raise ValueError("invalid sort_order")
+    selected = {k:v for k,v in (filters or {}).items() if k in {"storage_source_ids","created_from","created_to","annotation_state","usage_image_ids","usage_excluded_image_ids","image_ids"}}
+    selected.update(query=str(query or "").strip(), labels=sorted(set(labels)))
+    if image_ids is not None: selected["image_ids"] = sorted(set(image_ids))
+    revisions = (repository.current_revision(), annotations.current_revision())
+    index = _cached_role_index(str(repository.path), str(annotations.path), *revisions,
+        json.dumps(contract, sort_keys=True), json.dumps(selected, sort_keys=True))
+    counts = {role:0 for role in ("positive", "confirmed_negative", "pending_review")}
+    for _, role in index: counts[role] = counts.get(role,0) + 1
+    visible = [row for row in index if not sample_role or row[1] == sample_role]
+    total = len(visible)
+    if sort_order == "newest": visible.reverse()
+    if int(page) > max(1, math.ceil(total/int(limit))): raise ValueError("page exceeds total_pages")
+    visible = visible[(int(page)-1)*int(limit):int(page)*int(limit)]
+    rows = {r["id"]:r for r in repository.get_many([r[0] for r in visible])} if include_payload else {i:{"id":i} for i,_ in visible}
+    if (repository.current_revision(), annotations.current_revision()) != revisions:
+        raise ValueError("素材或标注已更新，请重试")
+    return {"items":[{**rows[i], "sample_role":role} for i,role in visible if i in rows],
+            "total":total,"sample_role_counts":counts,"effective_label_codes":list(contract["effective_label_codes"]),
+            "page":int(page),"page_size":int(limit),"limit":int(limit),"next_cursor":None,
+            "total_pages":max(1,math.ceil(total/int(limit))),"repository_revision":revisions[0],"annotation_revision":revisions[1]}
+
 
 def _thumbnail_identity(row: dict) -> str:
     content_hash = str(row.get("content_sha256") or "").strip().lower()
@@ -588,6 +705,86 @@ def training_material_picker_router(
         return resolve_training_label_contract(data_dir(), repository.project_path, dict(body), algorithm,
                                                require_positive_evidence=False)
 
+    @router.post("/history")
+    def picker_history(project_id: str, payload: dict):
+        from .training_material_usage import TrainingMaterialUsage
+        repository = materials(project_id)
+        row = repository.get(str(payload.get("image_id") or ""))
+        if row is None: raise HTTPException(status_code=404, detail="素材不存在")
+        task_path = repository.project_path.parent.parent / "task_runtime" / "tasks.sqlite3"
+        fact = TrainingMaterialUsage(task_path).query_filter(project_id, str(payload.get("algorithm_asset_id") or ""), [row], exclude_used=False)
+        detail = fact["by_image_id"].get(row["id"], {"state":"unknown","task_ids":[]})
+        records = detail.get("history_details") or []
+        try:
+            page, size = int(payload.get("page") or 1), int(payload.get("page_size") or 20)
+            if page < 1 or not 1 <= size <= 100: raise ValueError()
+        except (ValueError,TypeError): raise HTTPException(status_code=422,detail="invalid history page")
+        records.sort(key=lambda r:(r["task_id"],r["role"]),reverse=True)
+        exposed_ids=sorted({r["task_id"] for r in records if r["role"]=="train" and r["evidence"]>=2})
+        possible_ids=sorted({r["task_id"] for r in records if r["role"]=="train" and r["evidence"]==1})
+        visible = records[(page-1)*size:page*size]
+        task_ids=sorted({r["task_id"] for r in visible})
+        tasks, legacy_trace, last_completed = {}, [], None
+        if task_path.is_file():
+            with closing(sqlite3.connect(task_path.resolve().as_uri()+"?mode=ro", uri=True, timeout=5)) as db:
+                db.row_factory=sqlite3.Row
+                if db.execute("SELECT 1 FROM sqlite_master WHERE name='tasks'").fetchone():
+                    if not records:
+                        legacy_trace=[dict(r) for r in db.execute("SELECT task_id,status,created_at,finished_at FROM tasks WHERE project_id=? AND kind='TRAINING' ORDER BY created_at DESC,task_id DESC LIMIT 20",(project_id,))]
+                    for task in db.execute("SELECT task_id,status,stage,created_at,finished_at FROM tasks WHERE project_id=? AND task_id IN (SELECT value FROM json_each(?))", (project_id,json.dumps(task_ids))):
+                        tasks[task["task_id"]]=dict(task)
+                    last_completed=db.execute("SELECT MAX(finished_at) FROM tasks WHERE project_id=? AND task_id IN (SELECT value FROM json_each(?))",(project_id,json.dumps(exposed_ids))).fetchone()[0]
+        algorithms = {}
+        if algorithm_provider:
+            for aid in {r["algorithm_id"] for r in visible}:
+                algorithms[aid]=algorithm_provider(project_id,aid) or {}
+        items=[]
+        for record in visible:
+            algorithm=algorithms.get(record["algorithm_id"],{})
+            versions=[]
+            for version in algorithm.get("versions") or []:
+                lineage=version.get("training_lineage") or {}
+                if str(version.get("training_job_id") or lineage.get("task_id") or "") != record["task_id"]: continue
+                snapshot=str(version.get("snapshot_id") or lineage.get("snapshot_id") or "")
+                if snapshot and snapshot != record["snapshot_id"]: continue
+                versions.append({"id":version.get("id"),"name":version.get("name") or version.get("version_name")})
+            items.append({**record,**tasks.get(record["task_id"],{}),"algorithm_name":algorithm.get("name") or record["algorithm_id"],
+                          "version_id":versions[0]["id"] if len(versions)==1 else None,"versions":versions})
+        return {**{k:v for k,v in detail.items() if k not in {"history_details","task_ids"}},"coverage":fact["coverage"],
+                "legacy_trace":legacy_trace,"items":items,"page":page,"page_size":size,"total":len(records),
+                "summary":{"training_task_count":len(exposed_ids),"possible_training_task_count":len(possible_ids),
+                           "last_completed_at":last_completed,"algorithm_ids":sorted({r["algorithm_id"] for r in records}),
+                           "evidence_scope":"known_indexed_evidence"},"revision":fact["revision"]}
+
+    @router.get("/revision")
+    def picker_revision(project_id: str, algorithm_asset_id: str = ""):
+        from .training_material_usage import TrainingMaterialUsage
+        repository = materials(project_id)
+        annotations = annotation_repository_for_path(str(repository.project_path))
+        usage_revision = TrainingMaterialUsage(repository.project_path.parent.parent / "task_runtime" / "tasks.sqlite3").read_revision()
+        return {"repository_revision":repository.current_revision(), "annotation_revision":annotations.current_revision(), "usage_revision":usage_revision}
+
+    @router.post("/page")
+    def scoped_picker_page(project_id: str, payload: dict):
+        repository = materials(project_id)
+        annotations = annotation_repository_for_path(str(repository.project_path))
+        try:
+            size = int(payload.get("page_size") or DEFAULT_PAGE_SIZE)
+            if not 1 <= size <= MAX_PAGE_SIZE: raise ValueError("invalid page_size")
+            body, usage = _usage_filters(repository, payload)
+            page_number = int(body.get("page") or 1)
+            result = _gt_material_filter_page(repository, annotations, limit=size, page=page_number,
+                query=str(body.get("query") or ""), labels=_normalize_labels(body.get("labels")),
+                include_payload=True, sort_order=str(body.get("sort_order") or "newest"),filters=body)
+            usage = _page_usage_facts(repository,body,result["items"])
+            truth = annotations.get_many([r["id"] for r in result["items"]])
+            return {"items":[{**_public_picker_material(project_id,r,truth.get(r["id"],{})),
+                    "training_usage":_public_usage_fact(usage["by_image_id"].get(r["id"],{"state":"unknown"}))} for r in result["items"]],
+                    "total":result["total"],"page":page_number,"page_size":size,"total_pages":max(1,math.ceil(result["total"]/size)),
+                    "repository_revision":result["material_revision"],"annotation_revision":result["annotation_revision"],"usage_revision":usage["revision"]}
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+
     @router.post("/role-page")
     def training_role_page(project_id: str, payload: dict):
         repository = materials(project_id)
@@ -596,13 +793,19 @@ def training_material_picker_router(
             limit = int(payload.get("page_size") or payload.get("limit") or DEFAULT_PAGE_SIZE)
             if not 1 <= limit <= MAX_PAGE_SIZE:
                 raise ValueError("page_size exceeds page limit")
+            payload, usage = _usage_filters(repository, payload)
             contract = task_contract(project_id, payload, repository)
             result = _role_material_page(repository, annotations, contract,
                 query=str(payload.get("query") or ""), labels=_normalize_labels(payload.get("labels")),
                 sample_role=str(payload.get("sample_role") or ""), page=int(payload.get("page") or 1), limit=limit,
-                sort_order=str(payload.get("sort_order") or "oldest"))
+                sort_order=str(payload.get("sort_order") or "oldest"), filters=payload)
+            usage = _page_usage_facts(repository,payload,result["items"])
+            result["usage_revision"] = usage["revision"]
             truth = annotations.get_many([row["id"] for row in result["items"]])
+            if (repository.current_revision(), annotations.current_revision()) != (result["repository_revision"], result["annotation_revision"]):
+                raise ValueError("素材或标注已更新，请重试")
             result["items"] = [{**_public_picker_material(project_id, row, truth.get(row["id"], {})),
+                                "training_usage": _public_usage_fact(usage["by_image_id"].get(row["id"], {"state":"unknown"})),
                                 "sample_role": row["sample_role"],
                                 "annotation_version": int(truth.get(row["id"], {}).get("version") or 0),
                                 "source_content_sha256": str(row.get("content_sha256") or "")}
@@ -651,6 +854,9 @@ def training_material_picker_router(
         query: str = "",
         label: list[str] | None = Query(default=None),
         sort_order: str = "oldest",
+        storage_source_id: list[str] | None = Query(default=None),
+        annotation_state: str = "", created_from: str = "", created_to: str = "",
+        usage_state: str = "", algorithm_asset_id: str = "", history_policy: str = "new_for_algorithm", role: str = "train", history_scope: str = "",
     ):
         numbered = page is not None or page_size is not None
         requested_page = int(page or 1) if numbered else None
@@ -662,8 +868,11 @@ def training_material_picker_router(
             str(repository.project_path)
         )
         selected_labels = tuple(label or ())
+        shared_filters = {"storage_source_ids":storage_source_id or [], "annotation_state":annotation_state, "created_from":created_from, "created_to":created_to}
+        shared_filters = {k:v for k,v in shared_filters.items() if v}
         try:
-            if selected_labels:
+            shared_filters, usage = _usage_filters(repository, {**shared_filters, "usage_state":usage_state,"algorithm_asset_id":algorithm_asset_id,"history_policy":history_policy,"role":role,"history_scope":history_scope})
+            if selected_labels or shared_filters:
                 page = _gt_material_filter_page(
                     repository,
                     annotation_repository,
@@ -674,6 +883,7 @@ def training_material_picker_router(
                     labels=selected_labels,
                     include_payload=True,
                     sort_order=sort_order,
+                    filters=shared_filters,
                 )
                 rows = [dict(row) for row in page["items"]]
                 next_cursor = page["next_cursor"]
@@ -696,19 +906,20 @@ def training_material_picker_router(
                 annotation_revision = annotation_repository.current_revision()
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
+        usage = _page_usage_facts(repository,shared_filters,rows)
         annotations = annotation_repository.get_many(
             [str(row.get("id") or "") for row in rows]
         )
         response = {
             "items": [
-                _public_picker_material(
+                {**_public_picker_material(
                     project_id,
                     row,
                     annotations.get(
                         str(row.get("id") or ""),
                         {"annotation_state": "unannotated", "boxes": []},
                     ),
-                )
+                ), "training_usage":_public_usage_fact(usage["by_image_id"].get(str(row.get("id")), {"state":"unknown"}))}
                 for row in rows
             ],
             "next_cursor": next_cursor,
@@ -716,6 +927,7 @@ def training_material_picker_router(
             "limit": requested_size,
             "repository_revision": repository_revision,
             "annotation_revision": annotation_revision,
+            "usage_revision": usage["revision"],
         }
         if numbered:
             total_pages = max(1, math.ceil(total / requested_size))
@@ -789,6 +1001,9 @@ def training_material_picker_router(
         repository = materials(project_id)
         body = payload if isinstance(payload, dict) else {}
         try:
+            if body.get("all_available"):
+                body = {k:v for k,v in body.items() if k in {"algorithm_asset_id","role","all_available","train_labels","base_version_id","model","framework","image_ids","history_policy"}}
+            body, usage = _usage_filters(repository, body)
             labels = _normalize_labels(body.get("labels"))
             query = "" if bool(body.get("all_available")) else str(body.get("query") or "").strip()
             if bool(body.get("all_available")):
@@ -802,7 +1017,7 @@ def training_material_picker_router(
             if body.get("sample_role"):
                 contract = task_contract(project_id, body, repository)
                 role_page = _role_material_page(repository, annotations, contract, query=query, labels=labels,
-                    sample_role=str(body["sample_role"]), limit=MAX_SELECTION_SUMMARY_IDS)
+                    sample_role=str(body["sample_role"]), limit=MAX_SELECTION_SUMMARY_IDS, filters=body, include_payload=False)
                 if role_page["total"] > MAX_SELECTION_SUMMARY_IDS:
                     raise ValueError("filtered selection exceeds maximum")
                 return {"items": [row["id"] for row in role_page["items"]], "total": role_page["total"],
@@ -813,6 +1028,7 @@ def training_material_picker_router(
                 query=query,
                 labels=labels,
                 require_ground_truth=role == "test",
+                filters=body,
             )
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error

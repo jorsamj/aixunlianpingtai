@@ -6,17 +6,17 @@ import {
   trainingOptionsHydrated,
 } from '../../static/modules/training-create-hydration.js';
 
-test('training create inputs require complete ready target and recommendation', () => {
+test('training resources require a complete target while recommendation is optional', () => {
   assert.equal(trainingOptionsHydrated([{status: 'ready'}]), false);
   assert.equal(trainingOptionsHydrated([{status: 'ready', algorithms: [], base_models: []}]), false);
   assert.equal(trainingOptionsHydrated([{status: 'ready', algorithms: [{key: 'yolo11n'}], base_models: []}]), true);
   assert.equal(trainingCreationInputsReady({
     targets: [{status: 'ready', algorithms: [{key: 'yolo11n'}], base_models: []}],
     rec: null,
-  }), false);
+  }), true);
 });
 
-test('first training open paints a shell before parallel hydration and then runs the canonical form owner', async () => {
+test('first training open mounts the real form immediately and publishes independent hydration', async () => {
   const originalWindow = globalThis.window;
   const calls = [];
   let formOpenCalls = 0;
@@ -30,8 +30,8 @@ test('first training open paints a shell before parallel hydration and then runs
   const openTrainingForm = aid => {
     formOpenCalls += 1;
     assert.equal(aid, 'alg-1');
-    assert.equal(state.targets[0].id, 'gpu-a800');
-    assert.equal(state.rec.device, 'cuda:0');
+    assert.equal(state.targets[0].id, 'stale');
+    assert.equal(state.rec, null);
     return 'opened';
   };
   try {
@@ -56,17 +56,20 @@ test('first training open paints a shell before parallel hydration and then runs
       closeShell: () => shellCalls.push({closed: true}),
     });
     const pending = runtime.start('alg-1');
-    assert.equal(formOpenCalls, 0);
-    assert.equal(shellCalls.length, 1);
-    assert.equal(shellCalls[0].aid, 'alg-1');
-    await Promise.resolve();
+    assert.equal(formOpenCalls, 1);
+    assert.equal(shellCalls.length, 0);
+    await pending;
     assert.deepEqual(calls, ['/api/training_options?project_id=project-1', '/api/system/recommendation']);
     releaseRecommendation();
     releaseOptions();
     const result = await pending;
     assert.equal(result, 'opened');
     assert.equal(formOpenCalls, 1);
-    assert.deepEqual(shellCalls.at(-1), {closed: true});
+    assert.equal(shellCalls.length, 0);
+    await new Promise(resolve=>setTimeout(resolve,0));
+    assert.equal(state.targets[0].id,'gpu-a800');
+    assert.equal(state.rec.device,'cuda:0');
+    runtime.destroy();
   } finally {
     globalThis.window = originalWindow;
   }
@@ -202,8 +205,9 @@ test('external preflight starts in parallel with training options and recommenda
       closeShell: () => {},
     });
     const pending = runtime.start('external-1');
+    assert.equal(await pending,'opened');
     await Promise.resolve();
-    assert.deepEqual(new Set(started), new Set(['shell', '/api/training_options?project_id=project-1', '/api/system/recommendation', 'preflight:external-1']));
+    assert.deepEqual(new Set(started), new Set(['/api/training_options?project_id=project-1', '/api/system/recommendation', 'preflight:external-1']));
     release();
     await pending;
   } finally {
@@ -211,7 +215,7 @@ test('external preflight starts in parallel with training options and recommenda
   }
 });
 
-test('closed or superseded shell cannot open a stale training dialog', async () => {
+test('superseded hydration never reopens a form after its immediate initial mount', async () => {
   const originalWindow = globalThis.window;
   const opened = [];
   const currentTokens = new Set();
@@ -239,7 +243,10 @@ test('closed or superseded shell cannot open a stale training dialog', async () 
     const second = runtime.start('alg-2');
     release();
     await Promise.all([first, second]);
-    assert.deepEqual(opened, ['alg-2']);
+    assert.deepEqual(opened, ['alg-1','alg-2']);
+    await new Promise(resolve=>setTimeout(resolve,0));
+    assert.deepEqual(opened,['alg-1','alg-2']);
+    runtime.destroy();
   } finally {
     globalThis.window = originalWindow;
   }
@@ -324,7 +331,11 @@ test('preparation deadline settles never-resolving inputs and prevents late publ
     request:()=>new Promise(resolve=>{release=resolve;}),openTrainingForm:()=>{opened++;},openShell:()=>{},isShellCurrent:()=>true,notify:value=>notices.push(value)});
   try {
     await runtime.start('a');
-    assert.equal(opened,0);assert.match(notices.join(' '),/超时/);
+    assert.equal(opened,1);
+    await new Promise(resolve=>setTimeout(resolve,35));
+    assert.equal(runtime.diagnostics().resources.status,'error');
+    assert.match(runtime.diagnostics().resources.error,/超时/);
+    assert.equal(runtime.diagnostics().recommendation.status,'error');
     release({targets:[{id:'late'}]});await new Promise(resolve=>setTimeout(resolve,0));
     assert.deepEqual(state.targets,[]);
   }finally{runtime.destroy();globalThis.window=previous;}

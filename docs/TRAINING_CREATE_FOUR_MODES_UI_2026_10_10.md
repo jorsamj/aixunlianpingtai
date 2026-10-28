@@ -1,3 +1,105 @@
+## 2026-10-28｜三步训练工作台、素材历史与跨设备增强（本地限定验收完成，最终SHA CI待核验）
+
+这是用户本轮附件及全部补充要求的唯一进度入口，旧节仅代表原版本。基线远端6df8cf0e / VERSION42.24.395，原a741075c退役WIP与5944/模板/其他工作树不动；本轮复用干净targeted-upload-tabs-ui工作树，只向长期分支正常推送，不生产部署/训练/改GT或原图。用户最后指令覆盖早先广泛测试要求：仅必要语法、少量核心安全合同及实际浏览器冒烟；保留已有测试，不扩大框架。
+
+### 审计与设计基线
+
+- 打开链：trainingCreationInputsReady旧合同依赖资源+recommendation，start Promise.all等待两者及外部preflight后再开正式表单；system/recommendation每次独立Torch探测最长8秒。生产究竟阻塞资源/网络/SQLite还是远端尚未现场测量，不把代码风险当生产已证实根因。
+- 标签链：checkbox→唯一Draft.update→Submit/readiness与其他UI→summary.innerHTML→body MutationObserver→label.refresh→panel.innerHTML。label-only订阅保护不足以阻止跨区域重建。改仅明确挂载/目录/继承身份变化刷新；选择/计数差量更新，搜索与panel稳定，页内最多24真实checkbox。
+- Picker：open清空selected，cache-hit先于请求序号/abort，旧响应可覆盖命中页；role-page每请求全候选JSON+GT分类并重建TEMP。复用原分页/Repo/GTclassifier/缩略图，按Material+GT+usage+contract版本有界缓存，跨页bulk同过滤合同，保持50000显式上限。
+- 历史：原training_history_projection仅内存JSON缓存，不是逐素材使用索引；Snapshot是冻结/角色证据，Task SUCCEEDED/FAILED不是逐图使用证据。原first_batch及epoch执行事实用于新可重建usage投影，selected/possible/used/evaluation/unknown严格区分，旧缺证据保持unknown。父模型暴露来源不得当新独立Test；普通历史val/test可以重新划分，原固定Benchmark仍受保护。
+- 划分：继续原SHA/同源组件+固定seed+分组Test/Val机制，新增source_root/derived来源关联。先资格再随机，不拆同组凑比例，保存真实counts/ratios。已有历史冻结重放不变。
+- UI：原Modal内部重组为数据模型→方案→确认，保留同一Draft/Submit；右侧只读摘要、单滚动内容/固定footer，7组高级参数原位编辑，模式/精度/参数唯一入口。异步输入独立状态和重试，正式表单先出现，资源未就绪不能提交；推荐失败只提示、不伪装实时建议，提交前原准入/preflight/幂等/UNKNOWN仍强制。
+- 增强：平台全局默认关闭、任务继承或显式启停；新请求在正式Task受理前解析并冻结global revision，旧None不改变旧任务hash。原冻结/缓存/portable materialize后只生成train派生PNG及相同YOLO标签，原图/GT/val/test不变；ratio/count/manual、1–3总副本、四preset固定seed，任务专属目录、派生清单/hash与恢复幂等。矩阵范围误配仅模拟设备差异，不宣称具体摄像头标定。
+
+### 阶段进度
+
+| 阶段 | 内容 | 状态 | 证据/待办 |
+|---|---|---|---|
+| A | Owner、业务合同及旧UI审计 | 已完成待验收 | 原四视口before截图已存docs/images/training-workbench-20261028；生产耗时未测 |
+| B | 立即打开、独立加载/缓存、稳定标签和草稿 | 已完成待验收 | 原Owner已接线；独立加载/失败重试/1000标签/10次开关真实Chrome通过 |
+| C | Picker性能、统一过滤/恢复/批选与历史 | 已完成待验收 | API与Node定向通过；100–50000条隔离性能4/4，50k冷555ms/缓存19ms；生产未验 |
+| D | 可信使用投影、祖先/同源资格及冻结 | 已完成待验收 | 原Task库可重建投影/执行事实/fencing；缺祖先证据禁止新独立Test，可信固定Benchmark仍复用原Owner |
+| E | CPU train-only颜色增强及全局/任务策略 | 已完成待验收 | 四预设金值、原图/空标签/重试/原准备提交链通过；实际GPU/设备效果NOT VERIFIED |
+| F | 三步布局/截图/最小回归/文档提交 | 进行中 | VERSION396；本地限定验收及截图完成，尚未提交/推送，最终SHA CI待核验 |
+
+相关实现文件、测试回执及问题关闭证据随阶段补充。不得用文档描述代替代码实现；未验证历史coverage/实际GPU/NAS/OSS与生产性能都保留NOT VERIFIED。
+
+参考技术合同：[Ultralytics当前配置](https://docs.ultralytics.com/usage/cfg/)、[BT.601官方标准](https://www.itu.int/rec/r-rec-bt.601/)、[BT.709官方标准](https://www.itu.int/dms_pubrec/itu-r/rec/bt/R-REC-BT.709-6-201506-I!!PDF-E.pdf)。当前官方页面已含更新版参数，不自动把全部参数加进本项目：以当前实际Runner允许参数为准，不新增未经验证BGR/CutMix/fraction等能力。Ultralytics许可边界不因本轮增强改变。
+
+### 实际实现与兼容取舍（2026-10-28）
+
+- 前端：`static/app.js` 重组原Modal为真实三步，仅最后一步可创建；模式和参数单一编辑入口，7组高级参数、只读有效参数摘要。`training-create-modal.css` 收敛旧布局，0条`!important`。`training-labels.js` 删除body全局观察与旧注入样式，稳定搜索/选择DOM，每页24真实输入，继承标签分离。`training-draft.js`/`training-submit.js` 保持原状态与幂等/UNKNOWN核验。
+- 加载：`training-create-hydration.js` 在任何非关键远程请求之前打开正式表单，资源/推荐/preflight独立状态、独立重试；资源5分钟、推荐1分钟项目隔离缓存及并发合并。资源未确认禁止提交，preflight仍由原提交准入强制。诊断含URL/次数/耗时/缓存/JSON重序列化字节数（不是压缩网络字节数），不含凭据。没有为本轮增加全站缓存框架。
+- Picker：原runtime/API共享过滤，左筛选/右网格或列表/固定确认；恢复草稿，12页有界缓存、修订核验、超时/取消/过期隔离；保留跨页全选/反选/全可用/清除及显式50000上限。role分类8项版本缓存，普通页批查历史；不在打开时补建全部旧任务索引。
+- 历史：`training_material_usage.py` 在原Task SQLite库添加可丢弃投影表/索引及修订触发器，不改原Task表业务语义；selected/possible/used/evaluation/unknown由原Snapshot与真实first-batch/epoch/validation事实形成，失败不抹除已经暴露的事实。当前算法/其他算法过滤与批量选择一致。`training_usage_maintenance.py`及CLI默认dry-run，有限批次/持久游标/中断重放，只写投影，未运行生产补建。
+- 划分：原`training_splits.py`/`snapshots.py`继续固定种子与SHA/来源组机制；新增父子来源身份统一、祖先暴露不可成为新独立Test。未知父模型历史默认报`TRAINING_TEST_ANCESTRY_UNKNOWN`，只有原后端已验证固定Benchmark复用可例外；不静默猜测未训练。历史无新字段请求保持原hash/冻结合同。UI默认新素材策略，明确允许用户改用历史素材；固定Test保护不随此选项关闭。
+- Worker：原local/Agent materialize完成划分后生成train增强；`training_tasks.py`/`remote_training_tasks.py`/`train_worker.py`/`node_agent_training_runtime.py`/`remote_execution_transport.py`沿原lease/fence/报告Owner记录真实使用事实。`agent_execution.py`保留严格bool执行证据（字符串不冒充事实）。回收、StorageManager、AnnotationRepository与原GPU独占不重建。原模型提交报告及恢复详情分别显示原train数量、增强数量、实际输入数量，Snapshot原始划分数量不被改写。
+- 全局策略：原配置目录JSON+原FileLock+原子替换/CAS修订；默认关闭，任务继承或显式启停。新任务正式受理时冻结global revision，客户端不能伪造来源；排队期间修改全局不改变已受理任务。旧任务缺字段不强行继承新策略。
+
+### 四种CSC预设：明确输入、数学定义与验证
+
+基准假设为Pillow解码后的8-bit非线性RGB（R′G′B′），未知摄像头YUV/传输函数/ICC标定，不能还原真实摄像头管线。本期模拟**编码矩阵/范围被接收方误解读**的设备链路差异；预设名表示编码端，接收端在本期固定为另一矩阵及另一范围。不是标准往返色彩转换，不宣称对应某台设备的精确输出。HSV保持原功能，CSC与HSV分开配置、可叠加；不修改元数据冒充增强。
+
+归一化RGB至[0,1]：Y′=KrR′+(1−Kr−Kb)G′+KbB′；Cb=(B′−Y′)/(2(1−Kb))，Cr=(R′−Y′)/(2(1−Kr))。601使用Kr=.299/Kb=.114，709使用Kr=.2126/Kb=.0722。Limited编码Y=16+219Y′、C=128+224C；Full编码Y=255Y′、C=128+255C。编码量化使用nearest-even，Full裁剪0–255；按接收方范围还原后使用接收方矩阵反解RGB，输出nearest-even并裁剪0–255，保存PNG。没有采用相匹配逆变换，避免恒等抵消。
+
+| 预设 | 本期编码→误解码假设 | 输入RGB(71,137,213)的实际输出 | 基本结果 |
+|---|---|---|---|
+| BT.601 Limited | 601 Limited→709 Full | (70,132,204) | 像素改变、尺寸不变、重放字节一致 |
+| BT.601 Full | 601 Full→709 Limited | (58,138,232) | 像素改变、尺寸不变、重放字节一致 |
+| BT.709 Limited | 709 Limited→601 Full | (81,135,197) | 像素改变、尺寸不变、重放字节一致 |
+| BT.709 Full | 709 Full→601 Limited | (73,142,223) | 像素改变、尺寸不变、重放字节一致 |
+
+四个输出互不相同，金值断言保存在`tests/unit/test_training_robustness.py`。饱和/灰度等个别输入可能因量化不变；实际副本若与原解码RGB完全相同，报`CSC_NO_PIXEL_CHANGE`而不计为增强。数量超过最终train可用原图报`CSC_SELECTION_COUNT_EXCEEDS_TRAIN`，不静默截断。每张选中原图总副本数1–3，按seed在已选预设中确定分配；四预设均可选择/独立验证，不意味着每张图默认生成四张。
+
+严格顺序：素材资格/去重→冻结划分→后台train-only增强→训练。比例/数量/手动抽样只针对最终train；手选落入val/test报错。派生清单保留source_root/direct parent/source_group、变换版本/编码解码参数/seed/source与派生SHA。原图、原GT、val/test不变，原YOLO标签字节继承，已确认负样本保持空标签；未审核素材不转负样本，负样本管理分类不注册检测类别。任务重放使用同一确定身份，不重复累计。不在弹窗打开时读解码图片，前端数量是预估，报告实际数量来自校验后的manifest。
+
+### 最小回归与失败关闭证据
+
+未运行全仓本地测试或真实GPU训练，以下是按改动分组的实际结果，存在重叠，**不相加冒充唯一用例总数**：
+
+| 范围 | 实际结果 | 说明 |
+|---|---|---|
+| 后端定向原合同与新增历史/CSC | 初轮75通过、3 Windows symlink跳过；后续受影响核心37通过、冻结14通过 | skip不算通过，Linux最终CI另核 |
+| Picker API/Node | API18通过，新增同源子图查询/批选一致1通过；Node20通过 | 不读取全历史JSON |
+| 维护中断/重放、未知祖先、API全局CAS/受理冻结 | 对应独立小组2、1、2通过 | 无生产补建或收费接口 |
+| CSC四金值/负样本/无效副本/严格数量/真实准备提交链 | 分组3、3、2通过 | 原Trainer以隔离轻量回调验证，无GPU，无300轮训练 |
+| 前端工作台/标签/提交 | Node66通过；hydrate与Draft32通过；原Owner守卫17通过 | 原幂等、UNKNOWN保留 |
+| 恢复详情/Agent执行事实 | 各1通过 | 原train/aug总量分开，bool严格透传 |
+| 真实Chrome | 新UI8种独立场景通过，新增1440×900布局1通过；旧关键6场景通过 | 截图/真实wheel/1000标签24DOM/10次开关/全局保存恢复；不是生产训练 |
+| 最终缓存Owner | Node10/10通过 | 源build/browser/workflow与实际加载cache同步 |
+| 最终语法及差异 | Python23、JS21语法检查0失败，diff --check通过 | 没有执行无关全仓测试 |
+
+测试过程中的RED和修正：旧ready合同阻止表单先开；旧步骤测试仍在隐藏面板操作，随新三步流程显式切步后原业务断言保留；旧源码守卫依赖已退役DOM入口，迁移至唯一真实Owner。独立审查发现未知父模型Test资格和Picker来源字段缺失，已加后端拒绝及查询/批选一致回归；Agent序列化曾丢执行事实，已严格bool透传回归；CSC数量静默截断/像素恒等计数已改明确失败。缓存版本四条旧精确值守卫初次失败，更新源/Chrome/CI至新build后10/10通过。未删除安全断言或跳过旧测试以求绿色。
+
+### 隔离性能及视觉证据
+
+[实际测量JSON](images/training-workbench-20261028/load-measurements.json)：同一隔离Chrome推荐接口受控延迟1000ms，旧6df8cf0e正式表单1484ms，新正式表单145ms，各请求一次；普通隔离输入67ms、受控失败时57ms打开，推荐500后局部重试。测量对象是正式表单而非旧等待壳；早期临时计时误量等待壳已校正，不能引用该数值。生产接口/SQLite/OSS具体阻塞点NOT VERIFIED，不能将本数字当生产SLA。
+
+隔离无框素材微基准（毫秒），对应现有performance测试4/4通过：
+
+| 素材量 | 首次role页 | 缓存页 | bulk ID |
+|---|---:|---:|---:|
+| 100 | 22.59 | 13.87 | 11.34 |
+| 1000 | 30.19 | 14.26 | 16.00 |
+| 10000 | 112.70 | 18.92 | 13.97 |
+| 50000 | 555.22 | 19.40 | 38.48 |
+
+这些夹具不代表真实GT密度、NAS/OSS缩略图和生产性能。旧role-page全候选重复分类的确定代码路径已消除；没有相同机器同夹具旧版微基准，不编造旧耗时。
+
+截图目录`docs/images/training-workbench-20261028`：旧版1920/1440/1366/760四张；新版1920×1080、1440×900、1366×768、1093×614（125%等效可视区）、375×812，每视口五种状态。均真实Chrome，固定头尾与真实滚轮；未把deviceScaleFactor当真实浏览器缩放。
+
+- [布局前1366](images/training-workbench-20261028/before-1366.png) / [布局后第一步](images/training-workbench-20261028/after-1366x768-step1.png)
+- [第二步基础](images/training-workbench-20261028/after-1366x768-step2-basic.png) / [自定义](images/training-workbench-20261028/after-1366x768-step2-custom.png) / [跨设备增强](images/training-workbench-20261028/after-1366x768-step2-robustness.png) / [最终确认](images/training-workbench-20261028/after-1366x768-step3-feedback.png)
+
+### 接续、剩余风险与交付状态
+
+VERSION42.24.396，entry app443/main442、CSS4226356及受影响模块cache已更新。推送前fetch确认远端仍为6df8cf0e；本地未提交时不声称已有SHA。最终提交及准确SHA的CI回执在下一节追加。当前B–E为本地完成待远端验收，不借上一版绿色。
+
+生产部署、真实NAS/OSS/远程GPU、摄像头色彩标定、模型误报/香烟召回改善、旧历史缺证据恢复都NOT VERIFIED。无生产读写、无真实训练、无原图/GT迁移。未知历史默认保守；受控CLI可后续按独立范围补建，不能自动清空未知。模型效果需后续同一冻结可信Benchmark独立评测，本次不承诺数值提升。
+
+新会话从本节、原hydration/Draft/Submit、training_robustness、training_material_usage及Picker API继续；不得重建Task/Storage/GT/缓存/标注Owner，不扩大上一轮训练模板。原a741075c WIP、5944、两份模板测试及其他工作树保留。任何实际问题必须记录，不用文档宣称代替实现。
+
 ## 2026-10-25｜创建 Loading 与异常恢复专项（代码及隔离CI已验收）
 
 本节是本轮唯一接续记录。用户授权：只修改已证实的训练创建异常；复用 TrainingSubmitRuntime、原 Modal、withRequestDeadline、原 TaskRepository 和 task_id 幂等；不改变训练参数、数据划分、GT/冻结、GPU独占或 Worker；不部署生产。其他模块只轻量排查，共享缺陷才修复。

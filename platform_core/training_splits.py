@@ -93,6 +93,18 @@ def _identity(row: Mapping[str, Any]) -> str:
 
 def _relation_tokens(row: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
     tokens: list[tuple[str, str]] = []
+    # Originals and derivatives share one identity namespace. A child must join
+    # its original even when only the child carries provenance fields.
+    image_id = str(row.get('id') or row.get('image_id') or '').strip()
+    if image_id:
+        tokens.append(('image_id', image_id))
+    for field in ('source_root_id', 'derived_from_image_id'):
+        value = row.get(field)
+        if value is None or value == '':
+            continue
+        if not isinstance(value, str) or value.strip() in {'.','..'} or any(char in value for char in ('/','\\',':')):
+            raise ValueError('training derivative source identity must be a project image id')
+        tokens.append(('image_id', value.strip()))
     content_hash = str(row.get("content_sha256") or "").strip().lower()
     if content_hash:
         tokens.append(("content_sha256", content_hash))
@@ -740,6 +752,7 @@ def build_split_manifest(
     seed: int,
     required_train_labels: Sequence[str] = (),
     split_strategy: str = "legacy_v1",
+    forbidden_test_image_ids: Sequence[str] = (),
 ) -> SplitManifest:
     if split_strategy not in {"legacy_v1", "multilabel_grouped_v2"}:
         raise ValueError("unknown training split strategy")
@@ -796,6 +809,11 @@ def build_split_manifest(
     reserved_train_components = _reserve_required_train_components(
         train_pool, component_keys, required_labels, int(seed),
     )
+    history_test_components = {component_keys[item] for item in forbidden_test_image_ids if item in component_keys}
+    if request.mode == SplitMode.INDEPENDENT_TEST_SET and any(
+        component_keys[str(row['id'])] in history_test_components for row in independent_test_rows
+    ):
+        raise ValueError('TRAINING_TEST_HISTORY_EXPOSURE: parent model has seen selected Test materials')
     test_seed = int(seed)
     digest = hashlib.sha256(f"validation:{seed}".encode("utf-8")).digest()
     validation_seed = int.from_bytes(digest[:8], "big")
@@ -820,7 +838,7 @@ def build_split_manifest(
             test_seed,
             min_remaining_groups=2,
             **({"min_future_positive_groups": 2} if split_strategy == "multilabel_grouped_v2" else {}),
-            reserved_component_keys=reserved_train_components,
+            reserved_component_keys=set(reserved_train_components) | history_test_components,
         )
         # Percentages are measured against the complete frozen pool.
         # The test holdout is frozen first, so rebase the validation target
@@ -860,6 +878,7 @@ def build_split_manifest(
         "excluded_duplicate_ids": list(excluded_duplicate_ids),
         "duplicate_group_count": len(duplicate_groups),
         **({"split_strategy": split_strategy} if split_strategy == "multilabel_grouped_v2" else {}),
+        **({'forbidden_test_image_ids': sorted(set(forbidden_test_image_ids))} if forbidden_test_image_ids else {}),
         **(
             {
                 "required_train_labels": list(required_labels),

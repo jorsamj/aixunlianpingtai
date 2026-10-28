@@ -574,6 +574,11 @@ class TrainingPrepareHandler:
                     "expected_material_revision": MaterialRepository(project).current_revision(),
                     "expected_annotation_revision": AnnotationRepository(project).current_revision(),
                     "duplicate_review": None}
+            from .training_material_usage import admit_history_selection
+            history_admission = None
+            if payload.get('history_policy') is not None:
+                split, history_admission = admit_history_selection(context, target, project, algorithm, payload, split,
+                    verified_benchmark_reuse=bool(benchmark_reuse))
             duplicate_review = (
                 normalize_benchmark_duplicate_review(project, payload, split)
                 if benchmark_reuse else validate_duplicate_review(project, payload, split)
@@ -636,14 +641,22 @@ class TrainingPrepareHandler:
                 label_schema_override=label_contract["effective_label_schema"],
                 label_contract=label_contract,
                 duplicate_review=duplicate_review,
+                robustness_policy=payload.get('robustness_policy'),
+                history_admission=history_admission,
             )
             context.artifacts.atomic_write_json(target.task_id, "input-freeze.json", frozen)
+            if payload.get('history_policy') is not None:
+                from .training_material_usage import record_context_snapshot
+                _rows, _schema, _manifest, usage_snapshot = resolve_training_input_freeze(
+                    frozen, split, seed=int(payload.get('seed') or 0), supplement_candidate_set=supplement)
+                record_context_snapshot(context, target, payload, usage_snapshot)
             truth = selection.truth()
             updated = {
                 **payload,
                 "schema_version": 4,
                 "input_request_selection_ref": "input-request-selection.json",
                 "input_selection_recheck": selection_recheck,
+                **({'history_admission': history_admission} if history_admission else {}),
                 "split_mode": effective_split.mode.value,
                 "train_image_ids": list(effective_split.train_image_ids),
                 "test_image_ids": list(effective_split.test_image_ids),
@@ -974,6 +987,8 @@ class TrainingPrepareHandler:
                     supplement_candidate_set=payload.get("supplement_candidate_set"),
                     label_schema_override=_label_schema(project),
                     label_contract=payload.get("label_contract"),
+                    robustness_policy=payload.get('robustness_policy'),
+                    history_admission=payload.get('history_admission'),
                 )
                 images, schema, split_manifest, snapshot = resolve_training_input_freeze(
                     frozen, split_request, seed=seed,
@@ -991,6 +1006,8 @@ class TrainingPrepareHandler:
             # TRAINING owner starts materialization under its execution lease.
             persist_dataset_revision(project / "dataset_revisions", snapshot)
             context.artifacts.atomic_write_json(training_task.task_id, "snapshot.json", snapshot)
+            from .training_material_usage import record_context_snapshot
+            context.run_owned(lambda: record_context_snapshot(context, training_task, payload, snapshot))
             context.artifacts.atomic_write_json(
                 training_task.task_id, "dataset-revision.json", dataset_revision_document(snapshot),
             )
@@ -1098,6 +1115,8 @@ class TrainingPrepareHandler:
             "dataset-revision.json",
             revision,
         )
+        from .training_material_usage import record_context_snapshot
+        context.run_owned(lambda: record_context_snapshot(context, training_task, payload, snapshot))
         return bundle, snapshot, split_manifest, images
 
     def _stage_direct_model(
