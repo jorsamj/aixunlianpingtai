@@ -11,7 +11,6 @@ import json
 from pathlib import Path
 import uuid
 
-import numpy as np
 
 
 PRESETS = ('bt601_limited', 'bt601_full', 'bt709_limited', 'bt709_full')
@@ -116,6 +115,7 @@ def decode_yuv8(data, width, height, *, preset, input_format, output_color_order
     resize or model normalization is performed. NV12/I420 require even sizes.
     YUV444 denotes planar Y then U then V, not interleaved YUV bytes.
     """
+    import numpy as np  # Numerical engine is needed only when executing pixel decoding.
     coefficients = _coefficients(preset)
     fmt = str(input_format).strip().upper()
     order = str(output_color_order).strip().upper()
@@ -223,6 +223,7 @@ def write_csc_deployment_bundle(output_dir, contract, *, include_reference_sourc
 
 
 if __name__ == '__main__':
+    import numpy as np
     import argparse
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('input')

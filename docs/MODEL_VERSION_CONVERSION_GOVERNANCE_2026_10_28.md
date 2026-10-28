@@ -88,6 +88,6 @@ none明确不额外适配；device_default不推测设备矩阵；历史缺失�
 
 实际业务文件：static/app.js、static/styles.css、static/index.html、app.py、deployment_worker.py、platform_core/conversion.py、conversion_csc.py、conversion_resource_detection.py、conversion_history.py、remote_conversion_runtime.py、node_agent_conversion_runtime.py、remote_execution_transport.py；相应原测试与现有remote-conversion工作流接线。VERSION.txt仅本轮递增398。
 
-最终提交与CI：待正常提交和推送后补准确SHA。03728393（上一负样本文档）已21/21 Actions、57/57 Checks成功，与本轮无关，不能用作本轮验收。
+首次提交ea213f1fdc384cffce63c60c81ed4f89b8ba4dc4已正常推送，但CI检出三项需修正：精简传输环境顶层导入NumPy、原启动Owner禁止新MutationObserver、原RKNN板端验证按钮被详情折叠。已将NumPy延迟至像素解码（不扩CI依赖），清理沿原Modal beforeClose且精确form/ticket处理，板端验证/停止等操作保持卡片直接可用；不削弱原测试。修正后Python24通过，standalone无site-packages合同/参考ZIP生成通过，Node50通过，原RKNN板端完整流程及慢资源Chrome2/2通过。最初-S直接导入包会因原filelock依赖失败，改runpy单独验证CSC依赖边界，不宣称整个平台无第三方依赖。VERSION398不二次递增。最终修正SHA和CI待核验。03728393（上一负样本文档）已21/21 Actions、57/57 Checks成功，与本轮无关，不能用作本轮验收。
 
 接续仅处理准确SHA CI真实失败或本专项剩余验证；不重建训练、GT、任务、缓存或Modal。生产SDK/远程Agent/板端/BMCV接入、真实母模型大文件、生产接口耗时和用户给定A800/BM1688帧尚未验证，需授权环境独立实测。关闭或不选CSC不依赖参考模块执行；原模型与下载保留。未生产部署、安装依赖、转换真实模型或删除用户文件。
