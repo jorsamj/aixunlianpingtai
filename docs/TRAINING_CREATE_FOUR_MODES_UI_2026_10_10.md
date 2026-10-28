@@ -113,6 +113,14 @@ VERSION396本轮不二次递增。后续修正SHA及CI必须独立核验，首�
 
 仅调整原workflow执行方式：Playwright原生两个shard，各独立GitHub runner/隔离后端、各仍workers=1、20分钟上限和完整原文件清单不变；fail-fast=false保留两份结果，不新增框架/用例/范围，不增加接口超时、不跳过或降低断言。`--list`发现核对原303=分片154+149，交集0、遗漏0；这是发现检查，不冒充执行通过。此调整避免重复串行跑到20分钟被取消；必须核验新SHA实际结果。
 
+### 浏览器分片负载与旧hydration夹具
+
+`4a703c2d5ad2a7acc7e144be059b75953ad07b56`实际21 Actions为20成功/1取消，56 Checks为55成功/1取消；第一分片154/154通过（7.4分钟），第二分片149项再次超过20分钟取消，没有完成汇总，不宣称其通过。两个分片按文件分配的数量不等于运行耗时均衡。
+
+定点审计只发现`training-submit-lifecycle.spec.mjs`两项first-open HTTP/timeout仍假定旧阻塞等待壳，已对应真实原hydration改为正式表单立即挂载、resources/recommendation独立错误及重试，保留HTTP500/超时恢复/只开一次，并增加编辑保留断言；只跑这两项2/2 Chrome通过。其余Submit最小DOM和admission/workspace不应机械加步骤，未改、未重跑。
+
+原303项文件清单与20分钟/单Worker保持不变，使用原生3 shard并启用line reporter便于定位长用例。发现核对303=101+107+95，无重复/遗漏；没有运行本地全仓。三组分片的真实执行仍须核验新提交，不将分片发现数当通过数。本次只有测试/CI/本节记录变化，业务代码仍与6baf0037一致。
+
 ### 接续、剩余风险与交付状态
 
 VERSION42.24.396，entry app445/main442、CSS4226356及受影响模块cache已更新。推送前fetch确认远端仍为6df8cf0e；本地未提交时不声称已有SHA。最终提交及准确SHA的CI回执在下一节追加。当前B–E为本地完成待远端验收，不借上一版绿色。

@@ -161,7 +161,7 @@ test('verification timeout becomes a stable unknown state with query action',asy
 });
 
 for(const failure of ['http','timeout']){
-  test(`first-open preparation ${failure} stops loading and retry opens real form`,async({page})=>{
+  test(`first-open preparation ${failure} stops its independent loading and retries without replacing the real form`,async({page})=>{
     await mount(page,'reject');
     await page.clock.install();
     await page.evaluate(async failure=>{
@@ -170,7 +170,7 @@ for(const failure of ['http','timeout']){
       window.modal=(title,body)=>{document.getElementById('fixture').innerHTML=body;};
       window.closeModal=()=>{document.getElementById('fixture').innerHTML='';};
       const state={targets:[],rec:null};
-      window.hydration=installTrainingCreateHydrationRuntime({getState:()=>state,projectId:()=> 'p',openTrainingForm:()=>{window.realFormOpened++;},
+      window.hydration=installTrainingCreateHydrationRuntime({getState:()=>state,projectId:()=> 'p',openTrainingForm:()=>{window.realFormOpened++;window.modal('创建训练任务','<div class="train429-create" data-training-project-id="p" data-algorithm-id="a"><div data-training-input-status></div><input id="preparationDraft" value="保留本次配置"></div>');},
         request:async url=>{
           if(window.preparationFail){if(failure==='timeout')return new Promise(()=>{});throw new Error('HTTP 500');}
           return url.includes('training_options')?{targets:[{id:'cpu',status:'ready',algorithms:[{key:'detect'}],base_models:[]}]}:{device:'cpu'};
@@ -179,11 +179,19 @@ for(const failure of ['http','timeout']){
     },failure);
     if(failure==='timeout')await page.clock.fastForward(30001);
     await page.evaluate(()=>window.preparationPromise);
-    await expect(page.locator('[data-training-create-shell]')).toHaveAttribute('aria-busy','false');
-    await expect(page.locator('[data-training-create-status]')).toContainText(failure==='timeout'?'超时':'HTTP 500');
-    await expect(page.getByRole('button',{name:'重试',exact:true})).toBeEnabled();
+    await expect(page.locator('[data-training-create-shell]')).toHaveCount(0);
+    await expect(page.locator('.train429-create')).toBeVisible();
+    await expect(page.locator('[data-training-input="resources"]')).toHaveAttribute('data-status','error');
+    await expect(page.locator('[data-training-input="resources"]')).toContainText(failure==='timeout'?'超时':'HTTP 500');
+    await expect(page.locator('[data-training-input-retry="resources"]')).toBeEnabled();
+    await page.locator('#preparationDraft').fill('失败期间编辑保留');
     await page.evaluate(()=>{window.preparationFail=false;});
-    await page.getByRole('button',{name:'重试',exact:true}).click();
+    await page.locator('[data-training-input-retry="resources"]').click();
+    await expect(page.locator('[data-training-input="resources"]')).toHaveAttribute('data-status','ready');
+    await expect(page.locator('[data-training-input="recommendation"]')).toHaveAttribute('data-status','error');
+    await page.locator('[data-training-input-retry="recommendation"]').click();
+    await expect(page.locator('[data-training-input="recommendation"]')).toHaveAttribute('data-status','ready');
+    await expect(page.locator('#preparationDraft')).toHaveValue('失败期间编辑保留');
     await expect.poll(()=>page.evaluate(()=>window.realFormOpened)).toBe(1);
   });
 }
