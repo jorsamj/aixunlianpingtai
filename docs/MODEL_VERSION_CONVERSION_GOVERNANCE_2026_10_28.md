@@ -97,3 +97,5 @@ none明确不额外适配；device_default不推测设备矩阵；历史缺失�
 b763105cd41387a86981d583b4697fea4f96e509保留首轮修复。后续CI发现旧history源码守卫与Chrome route仅接受无query地址，分页请求落入真实404；现仅将原夹具更新为query-keyed缓存、force/signal及分页地址，保留并增强节点稳定、并发去重、只刷新活动任务、终态自动显示产物/下载和UNKNOWN防重断言，未删或跳过测试。定向Node21/21、原进度/缓存/产物Chrome3/3、原pending/rejected恢复Chrome2/2通过。额外只读检查发现ZIP create_system会随Windows/Linux不同，原用例追加断言先RED再固定为3，最小ZIP与远程篡改验证2/2 GREEN，LF/时间/权限同样固定。此变更不影响原始模型及旧无CSC任务；新CSC远程执行要求兼容的同版参考合同，不能混用未升级Worker并宣称成功。
 
 a4bec87e16a5cbacaac8ceb5340352c36e7968b0后续CI仍检出deployment-runtime-source中一条手动刷新旧函数签名；已同步为当前filter/page+signal并增强abort/project/epoch/DOM隔离断言，单文件11/11通过。未修改业务代码或工作流。最终以接续新SHA验收，不能把a4或b763当全绿。
+
+最终交付检查补齐详情原已有数据的展示：同一证据区同时呈现source_identity/SHA、请求参数、有效参数、完整执行/SDK证据，避免API已返回而页面只显示精度摘要；没有新接口或状态来源。原服务端筛选Chrome用例额外断言源SHA/SDK并更新真实截图，1/1通过；入口缓存449与版本Owner10/10通过。

@@ -1047,7 +1047,7 @@ test('version history requests bounded server pages and complete filters with tr
  const queries=[];
  await page.route('**/api/v42/projects/*/algorithms/paged-a/versions/v1/deployments*',route=>{
   const q=Object.fromEntries(new URL(route.request().url()).searchParams);queries.push(q);const current=Number(q.page||1),filtered=q.target==='sophon';
-  return route.fulfill({json:{algorithm:{name:'Paged history'},version:{id:'v1',version_name:'v1',stored_path:'/isolated/best.pt',model_name:'best.pt'},page:current,page_size:20,total:filtered?2:41,total_pages:filtered?1:3,complete:false,unreadable_count:1,items:[{id:'page-'+current,target:'sophon',target_name:'算能',status:'done',progress:100,created_at:'2026-10-28',params:{chip:'bm1688',precision:'fp16'},outputs:[]}]}})
+  return route.fulfill({json:{algorithm:{name:'Paged history'},version:{id:'v1',version_name:'v1',stored_path:'/isolated/best.pt',model_name:'best.pt'},page:current,page_size:20,total:filtered?2:41,total_pages:filtered?1:3,complete:false,unreadable_count:1,items:[{id:'page-'+current,target:'sophon',target_name:'算能',status:'done',progress:100,created_at:'2026-10-28',source_identity:{sha256:'a'.repeat(64)},execution_evidence:{sdk_version:'isolated-sdk'},params:{chip:'bm1688',precision:'fp16'},outputs:[]}]}})
  });
  await page.goto('/');await expect.poll(()=>page.evaluate(()=>state.uiReady===true)).toBe(true);await page.evaluate(()=>window.openVersionConvert428('paged-a','v1'));
  const dialog=page.getByRole('dialog',{name:'版本转换'});
@@ -1057,5 +1057,5 @@ test('version history requests bounded server pages and complete filters with tr
  await dialog.locator('[name="target"]').selectOption('sophon');await dialog.locator('[name="chip"]').fill('bm1688');await dialog.locator('[name="precision"]').selectOption('fp16');await dialog.locator('[name="csc"]').selectOption('legacy_unknown');
  await expect.poll(()=>queries.at(-1)?.csc).toBe('legacy_unknown');expect(queries.at(-1)).toMatchObject({page:'1',page_size:'20',target:'sophon',chip:'bm1688',precision:'fp16',csc:'legacy_unknown'});
  await expect(dialog.locator('.convert428-history-pager')).toContainText('共 2 条');
- await dialog.locator('.convert428-job-details > summary').click();await dialog.getByRole('button',{name:'刷新',exact:true}).click();await expect(dialog.locator('.convert428-job-details')).toHaveJSProperty('open',true);await dialog.locator('.convert428-evidence > summary').click();await page.screenshot({path:'docs/artifacts/conversion-modal-controlled-20261028/current-history-details-1920.png'});
+ await dialog.locator('.convert428-job-details > summary').click();await dialog.getByRole('button',{name:'刷新',exact:true}).click();await expect(dialog.locator('.convert428-job-details')).toHaveJSProperty('open',true);await dialog.locator('.convert428-evidence > summary').click();await expect(dialog.locator('.convert428-evidence')).toContainText('isolated-sdk');await expect(dialog.locator('.convert428-evidence')).toContainText('a'.repeat(64));await page.screenshot({path:'docs/artifacts/conversion-modal-controlled-20261028/current-history-details-1920.png'});
 });
