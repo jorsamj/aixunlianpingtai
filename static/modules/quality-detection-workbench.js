@@ -388,7 +388,7 @@ export function installQualityDetectionWorkbench({getState,api,toast,modal,close
     clearCreationVerification64();if(!automatic){run.autoVerifyAttempts=0;run.autoVerifyStopped=false;}
     run.running=true;run.cancelled=false;run.outcomeUncertain=false;
     saveCreationMetadata64(run,project);
-    if(!recover){for(const row of batch64()?.results||[]){if(row.previewUrl)URL.revokeObjectURL(row.previewUrl);}}
+    if(!recover){for(const row of state.benchBatch64?.results||[]){if(row.previewUrl)URL.revokeObjectURL(row.previewUrl);}}
     selectedIndex=0;state.benchBatch64=run;renderBenchBatch64();
     const button=document.getElementById('benchRun64');if(button){button.disabled=true;button.textContent='检测进行中…'}
     const shouldCreate=()=>!run.cancelled&&!run.autoVerifyStopped&&state.benchBatch64===run&&String(pid())===project;
