@@ -1,6 +1,6 @@
-## 2026-10-28｜三步训练工作台、可信素材历史与四预设CSC（本地限定验收完成）
+## 2026-10-28｜三步训练工作台、可信素材历史与四预设CSC（代码及隔离CI已验收）
 
-[唯一专项](docs/TRAINING_CREATE_FOUR_MODES_UI_2026_10_10.md)顶部记录正式表单先开/独立加载、稳定分页标签、原Picker筛选恢复、Task库可重建使用投影与祖先/同源隔离、train-only四CSC及原报告实际数量。VERSION396；定向语法/核心合同和真实Chrome已通过，截图/金值/隔离性能及失败修正见专项，最终提交SHA与CI待核验，不借旧绿。原Task/Draft/Submit/GT/Storage及fencing不重建；5944、a741075c WIP/模板及其他工作树保留。无生产操作/真实GPU；NAS/OSS/摄像头/模型效果NOT VERIFIED。接续先核对专项及准确HEAD，勿重复建设。
+[唯一专项](docs/TRAINING_CREATE_FOUR_MODES_UI_2026_10_10.md)顶部记录正式表单先开/独立加载、稳定分页标签、原Picker筛选恢复、Task库可重建使用投影与祖先/同源隔离、train-only四CSC及原报告实际数量。VERSION396；业务e1ed27bf准确39/39 Actions、109/109 Checks成功，Node1386/1386、原Chrome303/303通过；截图/四金值/隔离性能及失败修正见专项。本次纯文档HEAD自身CI另核，不借旧绿。原Task/Draft/Submit/GT/Storage及fencing不重建；5944、a741075c WIP/模板及其他工作树保留。无生产操作/真实GPU；NAS/OSS/摄像头/模型效果NOT VERIFIED。接续先核对专项及准确HEAD，勿重复建设。
 
 ## 2026-10-28｜上传与场景进度UI/高级Tab定点修复（代码及隔离CI已验收）
 
