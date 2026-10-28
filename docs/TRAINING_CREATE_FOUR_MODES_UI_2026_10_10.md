@@ -103,9 +103,13 @@
 
 VERSION396本轮不二次递增。后续修正SHA及CI必须独立核验，首推不能标记全绿。
 
+### 首开永久守卫收尾
+
+`d5615f7c852adf00683858f705760c0789e5d4d3`已推送。该SHA的Release Regression（含此前连接关闭用例）实际成功；只说明准确SHA本次通过，前一轮偶发根因仍未确认。其首开CI剩余两平台失败为永久源码守卫：旧同步preflight测试名、旧整体save的continue_threshold字符串、禁止独立patience编辑。已保持原训练语义：不新增patience入口，原checkbox请求与Worker实际决议分开，目标编辑仍强制continue_threshold=0。永久守卫仅将前两项绑定新真实Owner，保留禁止第二patience与低分停止保护。完整现有bash守卫退出0、定向Node23/23通过。对应Chrome早停用例先暴露本轮测试仍期待新增patience1个，恢复原0个断言；再暴露内联组丢失Worker执行说明，已补真实请求/实际说明，最终1/1通过。app cache445，VERSION396不二次递增。
+
 ### 接续、剩余风险与交付状态
 
-VERSION42.24.396，entry app444/main442、CSS4226356及受影响模块cache已更新。推送前fetch确认远端仍为6df8cf0e；本地未提交时不声称已有SHA。最终提交及准确SHA的CI回执在下一节追加。当前B–E为本地完成待远端验收，不借上一版绿色。
+VERSION42.24.396，entry app445/main442、CSS4226356及受影响模块cache已更新。推送前fetch确认远端仍为6df8cf0e；本地未提交时不声称已有SHA。最终提交及准确SHA的CI回执在下一节追加。当前B–E为本地完成待远端验收，不借上一版绿色。
 
 生产部署、真实NAS/OSS/远程GPU、摄像头色彩标定、模型误报/香烟召回改善、旧历史缺证据恢复都NOT VERIFIED。无生产读写、无真实训练、无原图/GT迁移。未知历史默认保守；受控CLI可后续按独立范围补建，不能自动清空未知。模型效果需后续同一冻结可信Benchmark独立评测，本次不承诺数值提升。
 

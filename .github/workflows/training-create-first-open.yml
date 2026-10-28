@@ -121,7 +121,7 @@ jobs:
           grep -Fq 'window.saveAnn=async function saveAnnotationCanonical420(silent=false,options={})' static/app.js
           if grep -Fq 'baseSaveAnnotation417=window.saveAnn' static/app.js; then echo 'retired annotation save wrapper was reintroduced' >&2; exit 1; fi
           grep -Fq "annotation_state:boxes.length?'annotated':confirmEmpty?'confirmed_empty':'unannotated'" static/app.js
-          grep -Fq 'external ChangLian training re-reads algorithm truth in hydration before canonical form open and training log refresh stays modal-local' tests/frontend/training-submit-validation.test.mjs
+          grep -Fq 'external ChangLian training hydrates truth independently after immediate form mount and log refresh stays modal-local' tests/frontend/training-submit-validation.test.mjs
           grep -Fq 'canonical training visibility uses its same-scope status helper' tests/frontend/training-submit-validation.test.mjs
           grep -Fq "'done','finished','completed','succeeded','success'" static/app.js
           grep -Fq "a.train_success_rate==null?{}:{'训练成功率':a.train_success_rate}" static/app.js
@@ -132,7 +132,7 @@ jobs:
           grep -Fq '固定评测素材由系统自动保留，不会混入训练' static/app.js
           grep -Fq '阶段试验与目标' static/app.js
           grep -Fq '未达继续 / 达标提前完成' static/app.js
-          grep -Fq "continue_threshold:0,stop_threshold:goal" static/app.js
+          grep -Fq "if(key==='stop_threshold')config.continue_threshold=0" static/app.js
           if grep -Fq 'id="ts428Low"' static/app.js; then echo 'training target UI must not expose low-score runtime stop' >&2; exit 1; fi
           if grep -Fq 'id="ts428Patience"' static/app.js; then echo 'target training UI must not expose a competing patience stop control' >&2; exit 1; fi
           grep -Fq 'verified fixed benchmark stays aligned from backend availability to training submit' tests/browser/training-create-first-open.spec.mjs
