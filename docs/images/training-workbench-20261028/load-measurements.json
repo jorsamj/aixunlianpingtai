@@ -3,12 +3,12 @@
   "samples": [
     {
       "scenario": "normal mocked isolated inputs",
-      "clickToFormalRootMs": 67,
+      "clickToFormalRootMs": 61,
       "optionsCalls": 1,
       "recommendationCalls": 1,
       "failedDiagnostics": null,
       "diagnostics": {
-        "projectId": "1cfed8fca7db",
+        "projectId": "94d6b79a8c17",
         "resources": {
           "status": "ready",
           "error": "",
@@ -17,7 +17,7 @@
           "requestCount": 1,
           "durationMs": 7,
           "jsonBytes": 291,
-          "openedInMs": 30
+          "openedInMs": 25
         },
         "recommendation": {
           "status": "ready",
@@ -25,7 +25,7 @@
           "cacheHit": true,
           "url": "/api/system/recommendation",
           "requestCount": 1,
-          "durationMs": 8,
+          "durationMs": 7,
           "jsonBytes": 38
         },
         "preflight": {
@@ -38,19 +38,19 @@
     },
     {
       "scenario": "controlled pending then recommendation 500 and isolated retry",
-      "clickToFormalRootMs": 57,
+      "clickToFormalRootMs": 51,
       "optionsCalls": 1,
       "recommendationCalls": 2,
       "failedDiagnostics": {
-        "projectId": "1cfed8fca7db",
+        "projectId": "94d6b79a8c17",
         "resources": {
           "status": "ready",
           "error": "",
           "cacheHit": false,
           "url": "/api/training_options",
           "requestCount": 1,
-          "openedInMs": 28,
-          "durationMs": 1554,
+          "openedInMs": 27,
+          "durationMs": 1544,
           "jsonBytes": 291
         },
         "recommendation": {
@@ -59,7 +59,7 @@
           "cacheHit": false,
           "url": "/api/system/recommendation",
           "requestCount": 1,
-          "durationMs": 1561
+          "durationMs": 1550
         },
         "preflight": {
           "status": "ready",
@@ -68,15 +68,15 @@
         }
       },
       "diagnostics": {
-        "projectId": "1cfed8fca7db",
+        "projectId": "94d6b79a8c17",
         "resources": {
           "status": "ready",
           "error": "",
           "cacheHit": false,
           "url": "/api/training_options",
           "requestCount": 1,
-          "openedInMs": 28,
-          "durationMs": 1554,
+          "openedInMs": 27,
+          "durationMs": 1544,
           "jsonBytes": 291
         },
         "recommendation": {
@@ -85,7 +85,7 @@
           "cacheHit": false,
           "url": "/api/system/recommendation",
           "requestCount": 2,
-          "durationMs": 12,
+          "durationMs": 9,
           "jsonBytes": 38
         },
         "preflight": {

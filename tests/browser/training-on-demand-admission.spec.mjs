@@ -70,7 +70,7 @@ async function assertQuiet(page,calls){
 test('formal first open and ordinary editing stay quiet even without selected materials',async({page,request},testInfo)=>{
   const f=await fixture(page,request,{empty:true});
   await assertQuiet(page,f.calls);
-  await training(page).locator('[data-training-step="2"]').click();await training(page).locator('[data-mode="quick"]').click();
+  await training(page).locator('button[data-training-step="2"]').click();await training(page).locator('[data-mode="quick"]').click();
   await expect(training(page).locator('[data-mode="quick"]')).toHaveAttribute('aria-pressed','true');
   await assertQuiet(page,f.calls);await expect(start(page)).toBeEnabled();await expect(start(page)).toHaveText('开始训练');
   await page.screenshot({path:testInfo.outputPath('quiet-formal-first-open.png')});
@@ -84,7 +84,7 @@ test('one click checks real GT, shows busy stages and creates exactly one durabl
   const checkGate=gate(),postGate=gate();
   f.setCheck(async route=>{await checkGate.promise;await route.continue();});
   f.setCreate(async route=>{await postGate.promise;await route.continue();});
-  await training(page).locator('[data-training-step="3"]').click();await start(page).click();
+  await training(page).locator('button[data-training-step="3"]').click();await start(page).click();
   await expect(start(page)).toHaveText('正在检查训练条件…');await expect(start(page)).toBeDisabled();await expect(start(page)).toHaveAttribute('aria-busy','true');
   await expect(training(page).locator('[data-training-submit-feedback]')).toBeVisible();
   await expect(training(page).locator('[data-training-submit-feedback]')).toHaveCSS('opacity','1');
@@ -107,7 +107,7 @@ test('one click checks real GT, shows busy stages and creates exactly one durabl
 test('real differing GT is fully diagnosed only after start and closing details preserves the draft',async({page,request},testInfo)=>{
   const f=await fixture(page,request,{realCompatibility:true,conflict:true});await assertQuiet(page,f.calls);
   const before=await page.evaluate(()=>window.TrainingDraftRuntime.current());
-  await training(page).locator('[data-training-step="3"]').click();await start(page).click();await expect(diagnostic(page)).toBeVisible();
+  await training(page).locator('button[data-training-step="3"]').click();await start(page).click();await expect(diagnostic(page)).toBeVisible();
   await expect(diagnostic(page)).toContainText('同图不同GT冲突');await expect(diagnostic(page)).toContainText('2');
   expect(f.calls.posts).toHaveLength(0);
   const truth=await page.evaluate(()=>window.TrainingMaterialSummaryRuntime.compatibilityFor());
@@ -121,11 +121,11 @@ test('real differing GT is fully diagnosed only after start and closing details 
 
 test('all confirmed blockers appear together; edit expires the reason and next click rechecks (controlled API truth)',async({page,request})=>{
   const f=await fixture(page,request);f.setCheck(route=>route.fulfill({json:blocked}));
-  await training(page).locator('[data-training-step="3"]').click();await start(page).click();await expect(diagnostic(page)).toContainText('缺少正式标注');await expect(diagnostic(page)).toContainText('同图不同GT冲突');
+  await training(page).locator('button[data-training-step="3"]').click();await start(page).click();await expect(diagnostic(page)).toContainText('缺少正式标注');await expect(diagnostic(page)).toContainText('同图不同GT冲突');
   await diagnostic(page).getByRole('button',{name:'返回训练配置',exact:true}).click();await expect(reason(page)).toBeVisible();
-  await training(page).locator('[data-training-step="2"]').click();await training(page).locator('[data-mode="quick"]').click();await expect(reason(page)).toBeHidden();
+  await training(page).locator('button[data-training-step="2"]').click();await training(page).locator('[data-mode="quick"]').click();await expect(reason(page)).toBeHidden();
   const checks=f.calls.checks.length;await page.waitForTimeout(150);expect(f.calls.checks).toHaveLength(checks);
-  await training(page).locator('[data-training-step="3"]').click();await start(page).click();await expect.poll(()=>f.calls.checks.length).toBe(checks+1);await expect(diagnostic(page)).toBeVisible();expect(f.calls.posts).toHaveLength(0);
+  await training(page).locator('button[data-training-step="3"]').click();await start(page).click();await expect.poll(()=>f.calls.checks.length).toBe(checks+1);await expect(diagnostic(page)).toBeVisible();expect(f.calls.posts).toHaveLength(0);
 });
 
 for(const fault of ['HTTP 500','network disconnect','timeout']){
@@ -133,12 +133,12 @@ for(const fault of ['HTTP 500','network disconnect','timeout']){
     const f=await fixture(page,request);const pending=gate();
     f.setCheck(async route=>{if(fault==='HTTP 500')return route.fulfill({status:500,json:{detail:'isolated check service unavailable'}});if(fault==='network disconnect')return route.abort('internetdisconnected');await pending.promise;await route.fulfill({json:compatible}).catch(()=>{});});
     if(fault==='timeout')await page.clock.install();
-    await training(page).locator('[data-training-step="3"]').click();await start(page).click();await expect.poll(()=>f.calls.checks.length).toBe(1);
+    await training(page).locator('button[data-training-step="3"]').click();await start(page).click();await expect.poll(()=>f.calls.checks.length).toBe(1);
     if(fault==='timeout')await page.clock.fastForward(30001);
     await expect(start(page)).toBeEnabled();await expect(start(page)).toHaveText('重新检查');await expect(start(page)).toHaveAttribute('aria-busy','false');await expect(diagnostic(page)).toHaveCount(0);await expect(reason(page)).toBeHidden();
     await expect(training(page)).toContainText(/失败|超时|重新检查/);expect(f.calls.posts).toHaveLength(0);
     f.setCheck(route=>route.fulfill({json:blocked}));pending.release();
-    await training(page).locator('[data-training-step="3"]').click();await start(page).click();await expect.poll(()=>f.calls.checks.length).toBe(2);await expect(diagnostic(page)).toBeVisible();expect(f.calls.posts).toHaveLength(0);
+    await training(page).locator('button[data-training-step="3"]').click();await start(page).click();await expect.poll(()=>f.calls.checks.length).toBe(2);await expect(diagnostic(page)).toBeVisible();expect(f.calls.posts).toHaveLength(0);
   });
 }
 
@@ -146,7 +146,7 @@ for(const change of ['close','draft','project']){
   test(`late successful check after ${change} cannot create or reopen a modal (controlled delayed reply)`,async({page,request})=>{
     const f=await fixture(page,request);const pending=gate();let delivered=false;
     f.setCheck(async route=>{await pending.promise;await route.fulfill({json:compatible}).catch(()=>{});delivered=true;});
-    await training(page).locator('[data-training-step="3"]').click();await start(page).click();await expect.poll(()=>f.calls.checks.length).toBe(1);
+    await training(page).locator('button[data-training-step="3"]').click();await start(page).click();await expect.poll(()=>f.calls.checks.length).toBe(1);
     if(change==='close')await training(page).getByRole('button',{name:'关闭',exact:true}).click();
     if(change==='draft')await page.evaluate(()=>window.TrainingDraftRuntime.update({trainingMode:'quick',materialIds:[]}));
     if(change==='project'){
@@ -163,7 +163,7 @@ for(const change of ['close','draft','project']){
 
 test('backend rechecks after a passed frontend check and rejection never becomes success (controlled rejection)',async({page,request})=>{
   const f=await fixture(page,request);f.setCreate(route=>route.fulfill({status:409,json:{code:'DUPLICATE_ANNOTATION_CONFLICT',detail:'正式创建二次核验：GT 已变化'}}));
-  await training(page).locator('[data-training-step="3"]').click();await start(page).click();await expect.poll(()=>f.calls.posts.length).toBe(1);
+  await training(page).locator('button[data-training-step="3"]').click();await start(page).click();await expect.poll(()=>f.calls.posts.length).toBe(1);
   await expect(training(page)).toBeVisible();await expect(page.locator('body')).toContainText('GT 已变化');
   expect(await page.evaluate(id=>(state.jobs||[]).some(row=>String(row.task_id||row.id)===id),f.calls.posts[0].task_id)).toBe(false);
   await expect(page.locator('body')).not.toContainText('训练任务创建成功');
@@ -172,7 +172,7 @@ test('backend rechecks after a passed frontend check and rejection never becomes
 test('uncertain creation retains its task identity and blocks blind duplicate creation (controlled lost response)',async({page,request})=>{
   const f=await fixture(page,request);f.setCreate(route=>route.abort('failed'));
   const taskId=await training(page).locator('#tr429TaskId').inputValue();
-  await training(page).locator('[data-training-step="3"]').click();await start(page).click();await expect.poll(()=>f.calls.lookups.length).toBe(1);
+  await training(page).locator('button[data-training-step="3"]').click();await start(page).click();await expect.poll(()=>f.calls.lookups.length).toBe(1);
   await expect(training(page)).toBeVisible();await expect(training(page)).toContainText(/创建结果尚未确认|核对创建结果/);
   await page.evaluate(()=>window.TrainingSubmitRuntime.submit());expect(f.calls.posts).toHaveLength(1);
   expect(f.calls.posts[0].task_id).toBe(taskId);await expect(training(page).locator('#tr429TaskId')).toHaveValue(taskId);
@@ -187,7 +187,7 @@ test('a late backend rejection cannot attach old blockers to an edited draft in 
     await route.fulfill({status:409,json:{code:'DUPLICATE_ANNOTATION_CONFLICT',detail:staleMessage}});
     delivered=true;
   });
-  await training(page).locator('[data-training-step="3"]').click();await start(page).click();await expect.poll(()=>f.calls.posts.length).toBe(1);
+  await training(page).locator('button[data-training-step="3"]').click();await start(page).click();await expect.poll(()=>f.calls.posts.length).toBe(1);
   await expect(start(page)).toHaveText('正在创建训练任务…');
   await page.evaluate(()=>{window.originalPostingRoot=document.querySelector('.train429-create');});
   // Simulate a canonical configuration update while the original POST is in flight;
@@ -213,7 +213,7 @@ test('a confirmed unavailable fixed Benchmark is a business blocker without an i
     window.TrainingDraftRuntime.update({benchmarkReuseEnabled:true});
   },{algorithmId:f.algorithmId,benchmarkReason});
   f.setCheck(route=>route.fulfill({status:500,json:{detail:'invalid fixed-Benchmark selection must not be sent'}}));
-  await expect(reason(page)).toBeHidden();await training(page).locator('[data-training-step="3"]').click();await start(page).click();
+  await expect(reason(page)).toBeHidden();await training(page).locator('button[data-training-step="3"]').click();await start(page).click();
   await expect(diagnostic(page)).toBeVisible();
   await expect(diagnostic(page).locator('[data-admission-code="fixed-test-benchmark"]')).toContainText(benchmarkReason);
   await expect(diagnostic(page)).not.toContainText('检查失败');
@@ -228,7 +228,7 @@ for (const recovered of [false,true]) test(`late ${recovered?'lookup-recovered':
   const task=()=>({task_id:f.calls.posts[0].task_id,kind:'TRAINING',task_type:'TRAINING',status:'QUEUED',persisted_status:'QUEUED',project_id:f.project.id,algorithm_id:f.algorithmId});
   f.setCreate(async route=>{await pending.promise;if(recovered)return route.abort('failed');return route.fulfill({json:{ok:true,task:task()}});});
   if(recovered)await page.route(`**/api/v62/projects/${f.project.id}/tasks/*`,route=>route.fulfill({json:{task:task()}}));
-  await training(page).locator('[data-training-step="3"]').click();await start(page).click();await expect.poll(()=>f.calls.posts.length).toBe(1);
+  await training(page).locator('button[data-training-step="3"]').click();await start(page).click();await expect.poll(()=>f.calls.posts.length).toBe(1);
   // Simulate a canonical configuration update while the original POST is in flight;
   // the visible submit overlay correctly prevents ordinary pointer edits.
   await page.evaluate(()=>window.TrainingDraftRuntime.update({trainingMode:'quick'}));

@@ -609,7 +609,7 @@ export function installTrainingSubmitRuntime({
     const externalReadiness = asset ? window.ExternalAlgorithmPlatformRuntime?.trainingReadiness?.(asset.id) : null;
     const additional=[];
     const add=(code,error,transient=false)=>additional.push({code,message:String(error?.message||error),transient});
-    const resourceLoad=String(state.trainingCreationLoading?.projectId||'')===String(projectId?.()||'')?state.trainingCreationLoading?.resources:null;
+    const resourceLoad=currentRoot?.dataset?.workbenchMounted==='true'&&String(state.trainingCreationLoading?.projectId||'')===String(projectId?.()||'')?state.trainingCreationLoading?.resources:null;
     if(resourceLoad&&resourceLoad.status!=='ready')add('resource-'+resourceLoad.status,resourceLoad.status==='loading'?'训练资源正在读取，请稍候':resourceLoad.error||'训练资源未就绪，请重新读取资源',resourceLoad.status==='loading');
     if(draft?.algorithmId&&!asset)add('algorithm-unavailable','当前算法身份不存在，请刷新算法列表');
     if(!projectId?.())add('project-unavailable','当前项目不可用，请重新选择项目');
@@ -738,10 +738,6 @@ export function installTrainingSubmitRuntime({
     if(workbench?.dataset?.workbenchMounted==='true'&&workbench.dataset.trainingStep!=='3'){
       window.setTrainingWorkbenchStep?.(3);notifyUser('请在确认创建步骤核对本次配置后，再点击开始训练');return null;
     }
-    const resources=(getState?.()||{}).trainingCreationLoading;
-    if(resources&&String(resources.projectId||'')===String(projectId?.()||'')&&resources.resources?.status!=='ready'){
-      notifyUser(resources.resources?.error||'训练资源尚未准备完成，请等待或重试');window.focusTrainingWorkbenchField?.('resource');return null;
-    }
     submittedProjectId=String(projectId?.()||'');
     submissionRoot = document.querySelector?.('.train429-create') || null;
     submissionButton = document.querySelector?.('.train429-create .train428-footer .btn.primary') || null;
@@ -755,6 +751,10 @@ export function installTrainingSubmitRuntime({
     let rejectionBodyDecoded = false;
     let creationAccepted = false;
     try {
+      const resources=(getState?.()||{}).trainingCreationLoading;
+      if(submissionRoot?.dataset?.workbenchMounted==='true'&&resources&&String(resources.projectId||'')===String(projectId?.()||'')&&resources.resources?.status!=='ready'){
+        notifyUser(resources.resources?.error||'训练资源尚未准备完成，请等待或重试');window.focusTrainingWorkbenchField?.('resource');return null;
+      }
       setSubmitStage('sync-draft');
       updateReadiness({reset:true});
       setSubmitStage('sync-draft');

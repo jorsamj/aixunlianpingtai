@@ -63,6 +63,7 @@ async function openDraft(page,f) {
   await page.locator('[data-algorithm-card]',{hasText:'真实冲突回归'}).getByRole('button',{name:'训练',exact:true}).click();
   await expect(page.getByRole('dialog',{name:/创建训练任务/})).toBeVisible();
   await page.evaluate(f=>{window.TrainingDraftRuntime.update({algorithmId:f.algorithmId,newLabelCodes:['person','vehicle'],materialIds:f.ids,splitMode:'random_test_from_training_pool',experimentPercent:20,validationPercent:20});},f);
+  await page.getByRole('dialog',{name:'创建训练任务',exact:true}).locator('button[data-training-step="3"]').click();
   await page.getByRole('button',{name:'开始训练',exact:true}).click();
   await expect.poll(()=>page.evaluate(()=>window.TrainingMaterialSummaryRuntime.compatibilityFor().issue_count)).toBe(2);
   await page.getByRole('dialog',{name:'训练暂不可开始',exact:true}).getByRole('button',{name:'返回训练配置',exact:true}).click();
@@ -282,6 +283,7 @@ test('real duplicate GT comparison edits the original annotation and rechecks be
   await evidence(page,testInfo,'precheck-resolved');expect(trainPosts).toHaveLength(0);
   await page.getByRole('button',{name:'返回训练配置 · 保留草稿',exact:true}).click();
   const accepted=page.waitForResponse(r=>r.url().endsWith('/train/start')&&r.request().method()==='POST');
+  await page.getByRole('dialog',{name:'创建训练任务',exact:true}).locator('button[data-training-step="3"]').click();
   await page.getByRole('button',{name:'开始训练',exact:true}).click();const admission=await accepted;expect(admission.ok(),await admission.text()).toBeTruthy();expect(trainPosts).toHaveLength(1);
   const history=JSON.parse(isolatedPython(f.project.id,`import json,app; print(json.dumps(app.shared_task_artifacts().read_json(${JSON.stringify(f.oldTask)},'payload.json')))`));expect(history).toEqual(f.history);
 });
