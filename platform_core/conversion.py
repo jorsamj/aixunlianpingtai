@@ -218,6 +218,14 @@ def validate_target(kind: str, params: Mapping[str, Any], *, require_calibration
         values.update(input_height=height,input_width=width)
     if require_calibration and precision == "int8" and not str(values.get("calibration_snapshot") or "").strip():
         raise ValueError("INT8 转换必须关联不可变 calibration_snapshot")
+    if "csc" in values:
+        from .conversion_csc import resolve_csc_params
+        resolved_csc = resolve_csc_params(values, str(values.get('kind') or target),
+            input_color_order=values.get('input_color_order') or (values.get('preprocessing') or {}).get('pixel_format') or 'rgb')
+        values['csc'] = resolved_csc['requested']
+        values['csc_contract'] = resolved_csc
+    else:
+        values.pop('csc_contract', None)  # An untrusted derived field cannot stand alone.
     return values
 
 

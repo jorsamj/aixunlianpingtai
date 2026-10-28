@@ -527,7 +527,7 @@ class AgentConversionRunner:
             "input_height", "input_width", "local_vendor_id", "local_chip_id", "sdk_chip_code",
             "template_id", "template_version", "constraint_id", "resource_id", "sdk_version", "source_training_precision", "parameter_sources",
             "chip", "precision", "mean", "rknn_std", "onnx_source_reused",
-            "calibration_count", "calibration_snapshot",
+            "calibration_count", "calibration_snapshot", "source_color_order", "input_color_order", "csc",
         )
         safe_params = {
             key: params.get(key)

@@ -1,3 +1,7 @@
+## 2026-10-28｜模型版本转换模块优化（本地定向验收完成，最终CI待核验）
+
+[唯一专项](docs/MODEL_VERSION_CONVERSION_GOVERNANCE_2026_10_28.md)记录原Owner渐进加载/单资源300秒观察与检测、20条服务端历史分页与只更新活动任务、CSC四矩阵及外部参考ZIP。VERSION398；真实微型ONNX/参考CLI、远程合同与提交回滚、定向Node41及Chrome通过；受控旧1380ms/新36–79ms不代表生产。CSC未安装设备、applied=false/板端NOT VERIFIED；不部署/生产操作，5944/模板与其他工作树保留。最终提交自身CI另核，勿借旧绿。
+
 ## 2026-10-28｜目标负样本、池管理与真实YOLO导出（代码及隔离CI已验收）
 
 [唯一专项](TRAINING_QUALITY_REMEDIATION_TRACKER_2026_10_18.md)顶部记录目标/素材版本绑定确认、原GT不变、Prepare实际空标签及正样本门槛、池关联与独立管理分类、原Picker/三步提交及按需CSC预览。VERSION397；真实导出、必要Python/Node及Chrome相关场景分批通过；最终代码92203c8c准确21/21 Actions、57/57 Checks成功，旧失败及修正留痕。本次文档自身HEAD另核CI，不借旧绿。无生产/GPU操作；旧V1–V3、原Task/Draft/GT/Storage保留，5944及其他工作树/WIP不动。未验证NAS/OSS/真实模型效果，勿将池成员当所有算法的已确认负样本。

@@ -89,7 +89,7 @@ test('conversion submit freezes current fields before revalidation and ignores s
     pid:()=> 'p',toast:()=>{},deployResources428:()=>new Promise(r=>revalidate=r),
     api:async(u,o)=>writes.push(JSON.parse(o.body)),localStorage:{removeItem(){}},cacheKey428:()=>'',closeModal(){},
     rememberVersionConversion428:()=>({}),deploymentHistory428:async()=>({}),replaceVersionConversionBody428:()=>true,scheduleVersionConversionPoll428(){}};
-  ctx.PlatformCore={withRequestDeadline:operation=>Promise.resolve().then(()=>operation(new AbortController().signal))};ctx.window=ctx;ctx.event={currentTarget:button};vm.runInNewContext(source.slice(start,end),ctx);
+  ctx.PlatformCore={withRequestDeadline:operation=>Promise.resolve().then(()=>operation(new AbortController().signal))};ctx.window=ctx;ctx.event={currentTarget:button};vm.runInNewContext(source.split('\n').find(line=>line.includes('window.conversionCscRequest428=function'))+'\n'+source.slice(start,end),ctx);
   const pending=ctx.submitConvert428('a','v');
   await ctx.submitConvert428('a','v');
   state.conv428Resolved={ready:true,params:{precision:'fp16',input_width:800,input_height:800}};
@@ -110,8 +110,18 @@ test('late conversion history cannot close or replace a newer dialog after succe
     deployResources428:async()=>({items:[{id:'r',status:'ready',targets:['onnx']}]}),api:async()=>{},
     deploymentHistory428:()=>{historyRequested();return new Promise(r=>finish=r)},
     closeModal:()=>events.push('close'),rememberVersionConversion428:()=>events.push('remember'),toast:()=>{},localStorage:{removeItem(){}},cacheKey428:()=>''};
-  ctx.PlatformCore={withRequestDeadline:operation=>Promise.resolve().then(()=>operation(new AbortController().signal))};ctx.window=ctx;vm.runInNewContext(source.slice(start,end),ctx);
+  ctx.PlatformCore={withRequestDeadline:operation=>Promise.resolve().then(()=>operation(new AbortController().signal))};ctx.window=ctx;vm.runInNewContext(source.split('\n').find(line=>line.includes('window.conversionCscRequest428=function'))+'\n'+source.slice(start,end),ctx);
   const pending=ctx.submitConvert428('a','v');await waiting;
   form={dataset:{}};finish({items:[]});await pending;
   assert.deepEqual(events,[]);
+});
+
+
+test('history loader sends bounded server filters and separates query cache/inflight identity',async()=>{
+ const start=source.indexOf('  async function deploymentHistory428('),end=source.indexOf('  async function deployResources428(',start),calls=[];
+ const ctx={URLSearchParams,pid:()=> 'project-a',cacheKey428:(...args)=>args.join(':'),readCache428:()=>null,writeCache428:()=>{},conversionHistoryInflight428:new Map(),api:async(url)=>{calls.push(url);return {items:[],total:41,page:2,page_size:20}}};
+ ctx.window={PlatformCore:{withRequestDeadline:fn=>fn(new AbortController().signal)}};
+ vm.runInNewContext(source.slice(start,end)+'\nglobalThis.load=deploymentHistory428;',ctx);
+ await ctx.load('a','v',true,{page:2,page_size:20,target:'sophon',chip:'bm1688',precision:'fp16',csc:'bt709_full',created_from:'2026-10-01'});
+ const query=new URL(calls[0],'http://fixture').searchParams;assert.equal(query.get('page_size'),'20');assert.equal(query.get('page'),'2');assert.equal(query.get('force'),'true');assert.equal(query.get('target'),'sophon');assert.equal(query.get('csc'),'bt709_full');assert.equal(query.get('created_from'),'2026-10-01');
 });

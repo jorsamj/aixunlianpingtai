@@ -813,8 +813,18 @@ class RemoteExecutionTransportService:
                 409,
             )
 
+        extra = {}
+        try:
+            from .color_adapter import color_contract
+            extra.update(color_contract(values) or {})
+            if 'csc' in values:
+                from .conversion_csc import resolve_csc_params
+                csc = resolve_csc_params(values,target,input_color_order=extra.get('input_color_order','rgb'))
+                extra.update(csc=csc['requested'],csc_contract=csc)
+        except ValueError as error:
+            raise RemoteExecutionTransportError('REMOTE_CONVERSION_PARAMS_INVALID',str(error),422) from error
         if target == "onnx" and values.get("onnx_source_reused") is True:
-            return {"onnx_source_reused": True, **{key:values[key] for key in
+            return {"onnx_source_reused": True, **extra, **{key:values[key] for key in
                 ("local_vendor_id","local_chip_id","resource_id","sdk_version","source_training_precision") if key in values}}
 
         def integer(name: str, default: int, minimum: int, maximum: int) -> int:
@@ -863,6 +873,7 @@ class RemoteExecutionTransportService:
             except ValueError as error:
                 raise RemoteExecutionTransportError("REMOTE_CONVERSION_PARAMS_INVALID",str(error),422) from error
         common = {
+            **extra,
             "input_size": (shape[0] if shape[0]==shape[1] else list(shape)) if shape else integer("input_size", 640, 32, 4096),
             "batch": integer("batch", 1, 1, 128),
             "opset": integer("opset", 12, 7, 24),
@@ -3637,6 +3648,7 @@ class RemoteExecutionTransportService:
         created_destination = False
         manifest_path: Path | None = None
         previous_manifest: bytes | None = None
+        previous_csc_files: dict[str, bytes | None] = {}
         job_tmp: Path | None = None
         job_committed = False
         try:
@@ -3729,6 +3741,18 @@ class RemoteExecutionTransportService:
                     "storage": dict(output_storage),
                 },
             }
+            if params.get('csc_contract'):
+                execution_evidence['csc'] = params['csc_contract']
+                manifest['parameters'] = params
+                manifest['target'].update(csc=params['csc'],csc_contract=params['csc_contract'])
+                if params['csc_contract'].get('capability')=='contract_only':
+                    from .conversion_csc import write_csc_deployment_bundle
+                    for name in ('csc_deployment_contract.json','csc_deployment_reference.zip'):
+                        path=artifacts/name
+                        previous_csc_files[name]=path.read_bytes() if path.is_file() else None
+                    write_csc_deployment_bundle(artifacts, params['csc_contract'], include_reference_sources=False)
+                    manifest['outputs'].extend({'name':name,'sha256':_sha256(artifacts/name),'size_bytes':(artifacts/name).stat().st_size}
+                        for name in ('csc_deployment_contract.json','csc_deployment_reference.zip'))
             manifest_path = artifacts / "manifest.json"
             previous_manifest = (
                 manifest_path.read_bytes()
@@ -3802,6 +3826,9 @@ class RemoteExecutionTransportService:
                     },
                 ],
             })
+            if (params.get('csc_contract') or {}).get('capability')=='contract_only':
+                job['outputs'].extend({'name':name,'path':str(artifacts/name),'rel':'artifacts/'+name,'size_mb':round((artifacts/name).stat().st_size/1024/1024,3)}
+                    for name in ('csc_deployment_contract.json','csc_deployment_reference.zip'))
             job_tmp = job_dir / ".job.json.remote.tmp"
             job_tmp.write_text(
                 json.dumps(job, ensure_ascii=False, sort_keys=True),
@@ -3826,12 +3853,22 @@ class RemoteExecutionTransportService:
                 "runtime_verified": runtime_verified,
                 "hardware_verified": False,
             }
-        except Exception:
+        except Exception as commit_error:
             # If this invocation downloaded a new local artifact but failed
             # before job.json became durable, it is not yet a deliverable
             # conversion result. Roll back only files created/overwritten by
             # this invocation so the next execution generation is not blocked.
             if not job_committed:
+                for name, previous in previous_csc_files.items():
+                    path=artifacts/name
+                    try:
+                        if previous is None:
+                            path.unlink(missing_ok=True)
+                        else:
+                            restored=artifacts/('.'+name+'.rollback.tmp')
+                            restored.write_bytes(previous);restored.replace(path)
+                    except OSError as restore_error:
+                        commit_error.add_note('CSC reference rollback incomplete: '+name+' ('+type(restore_error).__name__+')')
                 try:
                     if job_tmp is not None:
                         job_tmp.unlink(missing_ok=True)

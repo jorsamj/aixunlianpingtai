@@ -704,12 +704,15 @@ def test_model_conversion_result_uses_generation_scoped_immutable_output(tmp_pat
     assert "url" not in str(result).lower()
 
 
+@pytest.mark.parametrize('with_csc',[False,True])
 def test_model_conversion_commit_materializes_verified_onnx_for_existing_deploy_ui(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, with_csc
 ):
     transport, provider, _model, _digest, contract = _portable_conversion_contract(
         tmp_path, monkeypatch
     )
+    if with_csc:
+        contract['conversion']['params']['csc']={'preset':'bt709_full','input_format':'NV12','deployment_contract_acknowledged':True}
     task = SimpleNamespace(
         task_id="convert-1",
         kind=TaskKind.MODEL_CONVERSION,
@@ -760,18 +763,25 @@ def test_model_conversion_commit_materializes_verified_onnx_for_existing_deploy_
     assert job["result_ref"] == "remote-results/3/result.json"
     assert job["source_trace"]["algorithm_id"] == "a1"
     assert job["source_trace"]["version_id"] == "v1"
-    assert {row["rel"] for row in job["outputs"]} == {
-        "artifacts/model.onnx",
-        "artifacts/manifest.json",
-    }
+    expected_outputs={'artifacts/model.onnx','artifacts/manifest.json'}
+    if with_csc:
+        expected_outputs |= {'artifacts/csc_deployment_contract.json','artifacts/csc_deployment_reference.zip'}
+        assert job['execution_evidence']['csc']['applied'] is False
+        assert job['execution_evidence']['csc']['device_observed']=='unknown'
+        assert (job_dir/'artifacts/csc_deployment_reference.zip').is_file()
+    assert {row['rel'] for row in job['outputs']} == expected_outputs
 
 
+@pytest.mark.parametrize('with_csc',[False,True])
 def test_model_conversion_commit_rolls_back_new_local_file_before_job_commit(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, with_csc
 ):
     transport, provider, _model, _digest, contract = _portable_conversion_contract(
         tmp_path, monkeypatch
     )
+    if with_csc:
+        contract['conversion']['params']['csc']={'preset':'bt709_full','input_format':'NV12','deployment_contract_acknowledged':True}
+    source_before=_model.read_bytes()
     task = SimpleNamespace(
         task_id="convert-rollback",
         kind=TaskKind.MODEL_CONVERSION,
@@ -817,6 +827,11 @@ def test_model_conversion_commit_rolls_back_new_local_file_before_job_commit(
     assert not (job_dir / "artifacts" / "model.onnx").exists()
     assert not (job_dir / "artifacts" / "manifest.json").exists()
     assert json.loads(job_file.read_text(encoding="utf-8"))["status"] == "queued"
+
+    assert _model.read_bytes()==source_before
+    if with_csc:
+        assert not list((job_dir/'artifacts').glob('csc_*'))
+        assert not (job_dir/'artifacts/CSC_DEPLOYMENT_README.md').exists()
 
 
 def test_model_conversion_commit_rejects_conflicting_existing_local_artifact(
@@ -2547,3 +2562,14 @@ def test_portable_onnx_does_not_drop_explicit_export_precision(precision):
 def test_portable_existing_onnx_does_not_claim_export_options_were_applied():
     params=RemoteExecutionTransportService._portable_conversion_params("onnx",{"onnx_source_reused":True,"precision":"fp16","opset":17,"input_size":800})
     assert params=={"onnx_source_reused":True}
+
+
+def test_portable_csc_and_color_contract_are_preserved_without_claiming_device_application():
+    params={'onnx_source_reused':True,'input_color_order':'bgr','source_color_order':'rgb',
+        'csc':{'preset':'bt709_full','input_format':'I420','deployment_contract_acknowledged':True}}
+    resolved=RemoteExecutionTransportService._portable_conversion_params('onnx',params)
+    assert resolved['csc']==params['csc'] and resolved['input_color_order']=='bgr'
+    assert resolved['csc_contract']['output_color_order']=='BGR' and resolved['csc_contract']['applied'] is False
+    assert resolved['csc_contract']['board_verification']=='NOT VERIFIED'
+    with pytest.raises(RemoteExecutionTransportError):
+        RemoteExecutionTransportService._portable_conversion_params('onnx',{**params,'csc':{**params['csc'],'require_embedded':True}})

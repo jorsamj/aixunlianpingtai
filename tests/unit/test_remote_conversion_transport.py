@@ -306,3 +306,27 @@ def test_existing_conversion_handler_with_real_queue_and_lease(task,monkeypatch,
         result=artifacts.read_json('same-id',result_ref)
         assert result['hardware_verified'] is False
         if mode!='recover':assert stops==['http://isolated.invalid/api/deploy/jobs/same-id/stop']
+
+
+def test_csc_remote_reference_matches_frozen_contract_and_rejects_tampering(tmp_path):
+    from platform_core.conversion import validate_target, file_record
+    from platform_core.conversion_csc import write_csc_deployment_bundle
+    directory=tmp_path/'remote';directory.mkdir()
+    with zipfile.ZipFile(io.BytesIO(bundle())) as archive:archive.extractall(directory)
+    manifest=json.loads((directory/'manifest.json').read_text())
+    request={**contract(),'csc':{'preset':'bt601_limited','input_format':'NV12','deployment_contract_acknowledged':True}}
+    expected=validate_target('sophon',request)
+    manifest['target']=expected;manifest['parameters']=expected
+    manifest['execution_evidence']={'csc':expected['csc_contract']}
+    write_csc_deployment_bundle(directory,expected['csc_contract'],include_reference_sources=False)
+    manifest['outputs'].extend(file_record(directory/name,relative_to=directory) for name in
+        ('csc_deployment_contract.json','csc_deployment_reference.zip'))
+    (directory/'manifest.json').write_text(json.dumps(manifest))
+    source=tmp_path/'source.onnx';source.write_bytes(b'source')
+    job={'id':'same-id','params':request,'source_path':str(source),'source_trace':manifest['source']}
+    assert runtime.validate_remote_artifacts(directory,job)['target']['csc_contract']['applied'] is False
+    (directory/'csc_deployment_reference.zip').write_bytes(b'tampered')
+    manifest['outputs']=[file_record(directory/entry['name'],relative_to=directory) for entry in manifest['outputs']]
+    (directory/'manifest.json').write_text(json.dumps(manifest))
+    with pytest.raises(ValueError,match='可信参考'):
+        runtime.validate_remote_artifacts(directory,job)

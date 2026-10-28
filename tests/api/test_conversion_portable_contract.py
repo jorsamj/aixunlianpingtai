@@ -273,19 +273,21 @@ def _patch_creation(monkeypatch, tmp_path, transport):
     return model, jobs, artifacts, repository
 
 
+@pytest.mark.parametrize('with_csc',[False,True])
 def test_local_onnx_creation_persists_portable_contract_without_changing_local_execution(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, with_csc
 ):
     transport = FakeTransport(result=_contract())
     model, jobs, artifacts, repository = _patch_creation(monkeypatch, tmp_path, transport)
 
+    csc={'preset':'bt601_full','input_format':'NV12','deployment_contract_acknowledged':True}
     response = app_module.v39_create_deploy_job(
         "p1",
         app_module.DeployJobReq(
             source_id="version::algorithm-a::version-1",
             target="onnx",
             resource_id="local-onnx",
-            params={"input_size": 640, "opset": 12},
+            params={"input_size": 640, "opset": 12, **({"csc":csc} if with_csc else {})},
         ),
     )
 
@@ -311,6 +313,12 @@ def test_local_onnx_creation_persists_portable_contract_without_changing_local_e
     assert transport.calls[0]["algorithm_id"] == "algorithm-a"
     assert transport.calls[0]["version_id"] == "version-1"
     assert transport.calls[0]["target"] == "onnx"
+
+    if with_csc:
+        assert jobs[job['id']]['params']['csc']==csc
+        assert jobs[job['id']]['params']['csc_contract']['applied'] is False
+        assert jobs[job['id']]['params']['csc_contract']['preset']=='bt601_full'
+        assert transport.calls[0]['params']['csc']==csc
 
 
 def test_local_onnx_creation_survives_portable_staging_unavailable(tmp_path, monkeypatch):

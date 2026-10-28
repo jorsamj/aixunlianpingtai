@@ -570,6 +570,10 @@ def main():
             outputs.extend([copy_artifact(onnx, artifacts), copy_artifact(rknn, artifacts)])
         else:
             raise RuntimeError(f'不支持的转换目标：{target}')
+        if (params.get('csc_contract') or {}).get('capability')=='contract_only':
+            from platform_core.conversion_csc import write_csc_deployment_bundle
+            write_csc_deployment_bundle(artifacts, params['csc_contract'], include_reference_sources=False)
+            outputs.extend(artifacts/name for name in ('csc_deployment_contract.json','csc_deployment_reference.zip'))
         onnx_output = next((p for p in outputs if p.is_file() and p.suffix.lower() == '.onnx'), None)
         output_records = [file_record(p, relative_to=artifacts) for p in outputs if p.is_file()]
         for directory in [p for p in outputs if p.is_dir()]:
@@ -623,6 +627,7 @@ def main():
             'input_color_order': params.get('input_color_order'),
             'source_color_order': params.get('source_color_order'),
             'color_adapter': params.get('color_adapter_evidence'),
+            'csc': params.get('csc_contract'),
             'artifact_precision': None,  # No dtype inspection; compiler mode is not an artifact dtype.
             'onnx_export': 'reused_existing_onnx' if source.suffix.lower() == '.onnx' else 'exported',
             'onnx_export_parameters_applied': source.suffix.lower() != '.onnx',
@@ -637,7 +642,7 @@ def main():
         write_json(artifacts/'manifest.json', manifest)
         output_rows=[]
         for p in artifacts.rglob('*'):
-            if p.is_file():
+            if p.is_file() and p.suffix.lower() not in {'.py','.md'}:
                 output_rows.append({'name':p.name,'path':str(p),'rel':str(p.relative_to(job_dir)),'size_mb':round(p.stat().st_size/1024/1024,3)})
         runtime_verified = target == 'onnx'
         update(job_file, status='done', progress=100, stage='转换完成', message='ONNX Runtime 已真实加载验证' if runtime_verified else '部署模型已生成（尚未实机验证）', finished_at=now(), outputs=output_rows, params=params, execution_evidence=evidence, validation_status='runtime_verified' if runtime_verified else 'converted_unverified', runtime_verified=runtime_verified, manifest_path=str(artifacts/'manifest.json'))

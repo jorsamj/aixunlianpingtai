@@ -1,8 +1,12 @@
 import pytest
 import app as api
 from fastapi import HTTPException
-from tests.unit.test_dynamic_conversion_catalog import catalog, live
+from tests.unit.test_dynamic_conversion_catalog import catalog, live as _live
 
+
+def live():
+    from datetime import datetime, timezone
+    return {**_live(),'last_checked_at':datetime.now(timezone.utc).isoformat()}
 
 def test_resolve_uses_local_dictionary_sdk_identity_and_backend_defaults(tmp_path,monkeypatch):
     from platform_core.model_artifacts import ModelArtifactRepository
@@ -92,7 +96,7 @@ def test_existing_onnx_shape_is_the_default_input_contract(tmp_path,monkeypatch)
 def test_catalog_management_metadata_does_not_change_saved_identities_or_external_config(tmp_path,monkeypatch):
     from platform_core.model_artifacts import ModelArtifactRepository
     monkeypatch.setattr(api,"DATA_DIR",tmp_path)
-    monkeypatch.setattr(api,"v39_list_deploy_resources",lambda:{"items":[live()]})
+    monkeypatch.setattr(api,"v39_list_deploy_resources",lambda **_:{"items":[live()]})
     repo=ModelArtifactRepository(tmp_path);repo.save_conversion_catalog(catalog(),expected_revision=0)
     external=tmp_path/"external_algorithm_publish"/"config.json"
     external.parent.mkdir();external.write_text('{"keep":"mapping"}')
@@ -244,3 +248,43 @@ def test_onnx_admission_records_requested_options_and_only_marks_actual_reuse(tm
         assert "onnx_source_reused" not in params
         assert params["precision"]=="fp32" and params["opset"]==17
     assert staged[0]["params"]==params
+
+
+def test_resolve_reads_observations_without_running_any_detector(tmp_path,monkeypatch):
+    from platform_core.model_artifacts import ModelArtifactRepository
+    monkeypatch.setattr(api,'DATA_DIR',tmp_path)
+    ModelArtifactRepository(tmp_path).save_conversion_catalog(catalog(),expected_revision=0)
+    monkeypatch.setattr(api,'_resolve_deploy_source',lambda *a:{'kind':'imported','path':str(tmp_path/'best.pt')})
+    resource=live()
+    monkeypatch.setattr(api,'_deploy_resource_by_id',lambda *a:resource)
+    monkeypatch.setattr(api,'_detect_local_deploy_resource',lambda *a:pytest.fail('preview must not probe SDK'))
+    body=api.DeployJobReq(source_id='s',target='sophon',resource_id='s',params={'local_vendor_id':'local-s','local_chip_id':'chip-84'})
+    first=api.v39_resolve_conversion('p',body)
+    assert first['ready'] and first['resource_detection']['state']=='available'
+    assert first['timings_ms']['total']>=0
+    resource['last_checked_at']='2000-01-01T00:00:00+00:00'
+    stale=api.v39_resolve_conversion('p',body)
+    assert not stale['ready'] and stale['resource_detection']['state']=='expired'
+    monkeypatch.setattr(api,'_builtin_deploy_resources',lambda:pytest.fail('read-only list cannot start all probes'))
+    monkeypatch.setattr(api,'_builtin_deploy_resource_summary',lambda:[])
+    monkeypatch.setattr(api,'_load_saved_deploy_resources',lambda:[resource])
+    assert any(r['id']==resource['id'] for r in api.v39_list_deploy_resources(detect_missing=False)['items'])
+
+
+def test_version_history_paginates_its_full_legacy_scope_without_global_truncation(tmp_path,monkeypatch):
+    import json
+    monkeypatch.setattr(api,'get_project',lambda p:{'id':p})
+    monkeypatch.setattr(api,'list_algorithms_internal',lambda p:[{'id':'a','name':'algorithm','versions':[{'id':'old','model_name':'source.onnx'}]}])
+    monkeypatch.setattr(api,'_version_deploy_conversion_defaults',lambda *a:{'input_size':640})
+    monkeypatch.setattr(api,'deploy_root',lambda p:tmp_path/'deploy')
+    for index in range(7):
+        root=tmp_path/'deploy/jobs'/str(index);root.mkdir(parents=True)
+        (root/'job.json').write_text(json.dumps({'id':str(index),'status':'done','source_meta':{'algorithm_id':'a','version_id':'old'},
+            'target':'onnx','created_at':'2026-10-28T10:00:00Z','params':{'csc':{'preset':'bt709_full'}} if index<5 else {},
+            'execution_evidence':{'csc':{'applied':False,'device_observed':'unknown'}},'outputs':[]}))
+    result=api.v423_version_deployments('p','a','old',page=2,page_size=2,csc='bt709_full')
+    assert result['total']==5 and result['total_pages']==3 and len(result['items'])==2
+    assert all(row['params']['csc']['preset']=='bt709_full' for row in result['items'])
+    assert result['items'][0]['execution_evidence']['csc']['applied'] is False
+    legacy=api.v423_version_deployments('p','a','old',csc='legacy_unknown')
+    assert legacy['total']==2

@@ -1524,3 +1524,9 @@ button[aria-busy="true"]:has(.tiny-spinner)::before{display:none}
 .train429-create.training-submit-failed [data-training-query-result],.train429-create.training-submit-failed [data-training-view-tasks]{pointer-events:auto;grid-column:1/-1;justify-self:start}
 
 .external-cleanup-summary,.external-cleanup-actions{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin:12px 0}.external-cleanup-summary>span{padding:7px 10px;background:var(--bg-soft,#f5f7fb);border-radius:6px}.external-cleanup-detail pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:320px;overflow:auto}.external-cleanup-detail details{margin:12px 0}
+
+/* Conversion workbench: retain the site palette and original modal owner. */
+.convert428-job-details>summary{cursor:pointer;padding:12px 0;font-weight:600;color:var(--primary,#2563eb)}
+.convert428-v2 .convert428-job[hidden]{display:none}.convert428-create [id$="Load"]{font-size:12px;color:var(--muted,#64748b);padding:6px 0}
+
+.convert428-history-filters{display:flex;gap:10px;align-items:end;flex-wrap:wrap}.convert428-history-filters label{display:grid;gap:5px;font-size:12px}.convert428-history-filters .input,.convert428-history-filters .select{max-width:175px}.convert428-history-pager{padding-top:14px}

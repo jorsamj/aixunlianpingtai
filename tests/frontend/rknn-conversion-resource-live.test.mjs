@@ -23,7 +23,7 @@ class Select {
 function setup(getResource) {
   const select = new Select();
   const chip = new Select();
-  const warning = {textContent: ''};
+  const warning = {textContent: ''};const sourceNote={textContent:''};
   const status = {innerHTML: ''};
   const submit = {disabled: false};
   const precision = new Select();
@@ -57,7 +57,7 @@ function setup(getResource) {
   };
   const storage = new Map();
   const ctx = {
-    window: null, ...actions, document: doc, state, pid: () => 'project-a',
+    AbortController, clearTimeout, window: null, ...actions, document: doc, state, pid: () => 'project-a',
     api: async (url,options) => {
       if(url==='/api/v39/deploy/catalog')return catalog;
       if(!url.endsWith('/deploy/resolve'))throw new Error('unexpected legacy resource API');
@@ -71,7 +71,7 @@ function setup(getResource) {
     },
     toast: message => warning.textContent = message,
     esc: value => String(value ?? ''),
-    modal: (_title, markup) => {opened = true;form={};modalMarkup = String(markup);},
+    modal: (_title, markup) => {opened = true;select.value='';form={querySelector: selector=>selector==='.convert428-source-note'?sourceNote:selector.includes('data-conversion-vendors')?{set innerHTML(value){modalMarkup=modalMarkup.replace(/(<section data-conversion-vendors>[\s\S]*?<div class="convert428-targets">)[\s\S]*?(<\/div><\/section>)/,(_,a,b)=>a+value+b)}}:null,insertAdjacentHTML:()=>{}};modalMarkup = String(markup);},
     setTimeout: fn => fn(),
     localStorage: {
       getItem: key => storage.get(key) ?? null,
@@ -82,7 +82,7 @@ function setup(getResource) {
   ctx.window = ctx;
   vm.runInNewContext(runtimeSource, ctx, {filename: 'app.js:canonical-conversion'});
   return {win:ctx, state, elements:elems, select, chip, precision, warning, status, submit, radio, calls, storage,
-    catalog,get modalMarkup(){return modalMarkup}};
+    catalog,sourceNote,get modalMarkup(){return modalMarkup}};
 }
 const resource = (id, chips, state = 'ready', mode='local') => ({
   id, name: id, kind: 'rockchip', mode, status: state,
@@ -157,7 +157,7 @@ test('T01-T03: opening fetches authoritative RKNN chips despite an old cached sn
   }));
   await h.win.openNewConvertCore416('algo','v1');
   assert.equal(h.calls.length,1);
-  assert.equal(h.calls[0],true);
+  assert.equal(h.calls[0],false);
   assert.equal(h.select.value,'a800');
   assert.deepEqual(h.chip.options.map(o=>o.value),['','rk3568','rk3576']);
   h.chip.value=h.radio.value==='sophon'?'bm1688':'rk3568';await h.win.refreshConvertContract428();
@@ -189,7 +189,7 @@ test('T06-T07: SDK failure and resource offline disable conversion without stale
   await h.win.openNewConvertCore416('algo','v1');
   response={items:[resource('a800',[], 'missing')]};
   await h.win.refreshVersionConversionResources428();
-  assert.equal(h.select.value,'');
+  assert.equal(h.select.value,'a800');
   assert.equal(h.submit.disabled,true);
   assert.deepEqual(h.chip.options.map(o=>o.value),['','rk3568','rk3576']);
 });
@@ -205,7 +205,9 @@ test('T09: an older asynchronous response cannot overwrite the latest refresh', 
   await latest;
   deliverOld({items:[resource('old',['rk3568'])]});
   await inFlight;
-  assert.equal(h.select.value,'new');
+  assert.equal(h.select.value,'a800');
+  assert.equal(h.state.conv428Resources[0].id,'new');
+  assert.equal(h.submit.disabled,true);
   assert.deepEqual(h.chip.options.map(o=>o.value),['','rk3568','rk3576']);
 });
 
@@ -247,8 +249,8 @@ test('new conversion UI inherits PT actual precision and size, but RKNN uses onl
       conversion_defaults:{input_size:800,training_precision:'fp32',precision_source:'训练任务实际运行精度'}}
   });
   await h.win.openNewConvertCore416('algo','v2');
-  assert.match(h.modalMarkup,/id="conv428Input"[^>]*value="800"/);
-  assert.match(h.modalMarkup,/源模型训练：FP32 · 800 px/);
+  assert.equal(h.elements.conv428Input.value,800);
+  assert.match(h.sourceNote.textContent,/源模型训练：FP32 · 800 × 800 px/);
   // This mock resource supports RKNN FP16, not FP32.
   h.chip.value='rk3568';await h.win.refreshConvertContract428();
   assert.equal(h.precision.value,'fp16');
@@ -370,3 +372,5 @@ test('failed selected detection cannot erase a different ready resource',async()
   assert.equal(h.select.value,'b');assert.equal(h.state.conv428ResourcesCurrent,true);
   assert.equal(h.state.conv428Resources.find(r=>r.id==='b').status,'ready');
 });
+
+ test('formal form appears before a stalled resource read; independent catalog/source still hydrate',async()=>{let finish;const h=setup(()=>new Promise(resolve=>finish=resolve));const pending=h.win.openNewConvertCore416('a','v');assert.match(h.modalMarkup,/convert428-create/);await new Promise(resolve=>setImmediate(resolve));assert.equal(h.state.conv428SourceReady,true);assert.ok(h.state.conv428Catalog.vendors.length);assert.equal(h.submit.disabled,true);finish(ready());await pending;assert.equal(h.state.conv428ResourcesCurrent,true)});

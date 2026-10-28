@@ -18747,8 +18747,11 @@ class DeployResourceReq(BaseModel):
 
 
 @app.get("/api/v39/deploy/resources")
-def v39_list_deploy_resources():
-    return {"ok": True, "items": _builtin_deploy_resources() + [_deploy_resource_public(x) for x in _load_saved_deploy_resources()], **_builtin_deploy_resource_cache_meta()}
+def v39_list_deploy_resources(detect_missing: bool = True):
+    from platform_core.conversion_resource_detection import observe
+    builtin = (_builtin_deploy_resources() if detect_missing else
+        (_DEPLOY_BUILTIN_RESOURCE_CACHE.snapshot()["items"] or _builtin_deploy_resource_summary()))
+    return {"ok": True, "items": [_deploy_resource_public(observe(x)) for x in builtin + _load_saved_deploy_resources()], **_builtin_deploy_resource_cache_meta()}
 
 
 @app.post("/api/v39/deploy/resources")
@@ -18793,26 +18796,26 @@ def v39_delete_deploy_resource(resource_id: str):
 
 
 @app.post("/api/v39/deploy/resources/{resource_id}/detect")
-def v39_detect_deploy_resource(resource_id: str):
-    if resource_id.startswith("builtin_"):
-        item = next((x for x in _builtin_deploy_resources(force=True) if x.get("id") == resource_id), None)
-        if not item: raise HTTPException(status_code=404, detail="内置部署资源不存在")
-        return item
-    items = _load_saved_deploy_resources()
-    idx = next((i for i,x in enumerate(items) if x.get("id") == resource_id), None)
-    if idx is None: raise HTTPException(status_code=404, detail="部署资源不存在")
-    item = items[idx]; runtime = _deploy_resource_runtime(item)
-    mode = str(item.get("mode") or "local").strip().lower()
-    if mode == "remote":
-        checked = _detect_remote_deploy_resource(runtime)
-    elif mode == "agent":
-        checked = _detect_agent_deploy_resource(runtime)
-    else:
-        checked = _detect_local_deploy_resource(runtime)
-    checked.pop("api_key", None)
-    if item.get("secret_ref"): checked["secret_ref"] = item.get("secret_ref")
-    items[idx] = checked; _save_deploy_resources(items)
+def v39_detect_deploy_resource(resource_id: str, force: bool = True):
+    resource = _deploy_resource_by_id(resource_id)
+    checked = _inspect_conversion_resource(resource, force=force)
+    if not resource_id.startswith("builtin_"):
+        # A late inspection must never overwrite newly edited resource configuration.
+        items = _load_saved_deploy_resources()
+        idx = next((i for i,x in enumerate(items) if x.get("id")==resource_id), None)
+        if idx is None or str(items[idx].get("updated_at") or "") != str(resource.get("updated_at") or ""):
+            raise HTTPException(409, detail="资源配置已变化，请重新检测")
+        clean = dict(checked); clean.pop("api_key", None)
+        items[idx] = clean; _save_deploy_resources(items)
     return _deploy_resource_public(checked)
+
+
+def _inspect_conversion_resource(resource, *, force=False):
+    from platform_core.conversion_resource_detection import detect
+    mode = str(resource.get("mode") or "local").lower()
+    detector = (_detect_remote_deploy_resource if mode=="remote" else
+        _detect_agent_deploy_resource if mode=="agent" else _detect_local_deploy_resource)
+    return detect(resource, detector, force=force)
 
 
 @app.post("/api/v39/deploy/local/auto-detect")
@@ -18886,7 +18889,7 @@ def _resolve_deploy_source(project_id: str, source_id: str) -> Dict[str, Any]:
 
 
 def _deploy_resource_by_id(resource_id: str) -> Dict[str, Any]:
-    for r in _builtin_deploy_resources():
+    for r in (_DEPLOY_BUILTIN_RESOURCE_CACHE.snapshot()["items"] or _builtin_deploy_resource_summary()):
         if r.get("id") == resource_id: return r
     for r in _load_saved_deploy_resources():
         if r.get("id") == resource_id: return _deploy_resource_runtime(r)
@@ -18935,8 +18938,10 @@ def _conversion_catalog_repository(data_dir):
 def v39_conversion_catalog():
     from platform_core.compute_platform_catalog import conversion_templates, conversion_catalog_metadata
     catalog=_conversion_catalog_repository(DATA_DIR).conversion_catalog()
-    metadata=conversion_catalog_metadata(catalog,resources=v39_list_deploy_resources()["items"])
+    metadata=conversion_catalog_metadata(catalog,resources=v39_list_deploy_resources(detect_missing=False)["items"])
+    from platform_core.conversion_csc import CONTRACT_TARGETS, csc_capabilities
     return {"ok":True, **catalog, **metadata, "templates":conversion_templates(),
+            "csc_capabilities_by_target":{target:csc_capabilities(target) for target in CONTRACT_TARGETS},
             "constraint_ids":["tpu-mlir-1.30.2","sophon-fp16-verified","rknn-verified","atc-detected"]}
 
 
@@ -19008,8 +19013,21 @@ def v39_catalog_detect_chip(identity: str, payload: Dict[str, Any]):
     return {"ok":True,"id":identity,"revision":catalog["revision"],"capability":facts,"detected_resource_ids":[r["id"] for r in checked]}
 
 
-def _conversion_contract_for_source(project_id, source, resource, params, target):
-    from platform_core.compute_platform_catalog import resolve_conversion_contract, conversion_templates
+from functools import lru_cache as _conversion_lru_cache
+
+
+@_conversion_lru_cache(maxsize=64)
+def _conversion_onnx_shape_preview(path, file_signature):
+    # Preview only: admission passes preview=False and always reopens the source.
+    import onnx
+    model=onnx.load(str(path),load_external_data=False)
+    initializers={value.name for value in model.graph.initializer}
+    return tuple(tuple(d.dim_value for d in item.type.tensor_type.shape.dim)
+        for item in model.graph.input if item.name not in initializers)
+
+
+def _conversion_contract_for_source(project_id, source, resource, params, target, *, preview=False):
+    from platform_core.compute_platform_catalog import resolve_conversion_contract, resolve_chip_capability, conversion_templates
     catalog=_conversion_catalog_repository(DATA_DIR).conversion_catalog()
     vendor_id=str(params.get("local_vendor_id") or "")
     chip_id=str(params.get("local_chip_id") or "")
@@ -19030,9 +19048,14 @@ def _conversion_contract_for_source(project_id, source, resource, params, target
     if path.suffix.lower()==".onnx" and path.is_file():
         try:
             import onnx
-            model=onnx.load(str(path),load_external_data=False)
-            onnx_shapes=[[d.dim_value for d in item.type.tensor_type.shape.dim] for item in model.graph.input
-                         if item.name not in {i.name for i in model.graph.initializer}]
+            if preview:
+                stat=path.stat()
+                onnx_shapes=[list(shape) for shape in _conversion_onnx_shape_preview(str(path.resolve()),
+                    (stat.st_size,stat.st_mtime_ns,stat.st_ctime_ns,stat.st_ino))]
+            else:
+                model=onnx.load(str(path),load_external_data=False)
+                onnx_shapes=[[d.dim_value for d in item.type.tensor_type.shape.dim] for item in model.graph.input
+                             if item.name not in {i.name for i in model.graph.initializer}]
             if not any(k in params for k in ("input_height","input_width","input_size")) and len(onnx_shapes)==1 and len(onnx_shapes[0])==4:
                 params={**params,"input_height":onnx_shapes[0][2],"input_width":onnx_shapes[0][3]}
                 shape_from_onnx=True
@@ -19045,7 +19068,7 @@ def _conversion_contract_for_source(project_id, source, resource, params, target
     for entry in catalog["chips"]:
         if entry["vendor_id"]!=vendor_id:
             continue
-        capability=resolve_conversion_contract(catalog,vendor_id=vendor_id,chip_id=entry["id"],resource=resource,version=version,params={},training_job=training_job)
+        capability=resolve_chip_capability(catalog,vendor_id=vendor_id,chip_id=entry["id"],resource=resource)
         result["chip_options"].append({"id":entry["id"],"name":entry["name"],"enabled":entry.get("enabled",True),
             "status":capability["status"],"status_label":status_labels[capability["status"]],"reason":"；".join(capability["errors"])})
     if result["ready"] and result["template"].get("adapter")!=target:
@@ -19066,13 +19089,24 @@ def _conversion_contract_for_source(project_id, source, resource, params, target
 
 @app.post("/api/v39/projects/{project_id}/deploy/resolve")
 def v39_resolve_conversion(project_id: str, payload: DeployJobReq):
+    from platform_core.conversion_resource_detection import observe
+    from platform_core.conversion_csc import csc_capabilities
+    began=time.perf_counter()
     source=_resolve_deploy_source(project_id,payload.source_id)
-    resource=_deploy_resource_by_id(payload.resource_id) if payload.resource_id else {}
-    mode=str(resource.get("mode") or "local")
-    if payload.resource_id:
-        resource=(_detect_remote_deploy_resource(resource) if mode=="remote" else
-                  _detect_agent_deploy_resource(resource) if mode=="agent" else _detect_local_deploy_resource(resource))
-    return _conversion_contract_for_source(project_id,source,resource,dict(payload.params or {}),payload.target)
+    source_done=time.perf_counter()
+    resource=observe(_deploy_resource_by_id(payload.resource_id)) if payload.resource_id else {}
+    resource_done=time.perf_counter()
+    result=_conversion_contract_for_source(project_id,source,resource,dict(payload.params or {}),payload.target,preview=True)
+    result['timings_ms']={'source_lookup':round((source_done-began)*1000,3),
+        'resource_read':round((resource_done-source_done)*1000,3),
+        'contract_resolution':round((time.perf_counter()-resource_done)*1000,3),
+        'total':round((time.perf_counter()-began)*1000,3)}
+    if result.get('ready') and resource and (resource.get('detection') or {}).get('state') in {'not_checked','checking','expired','failed'}:
+        result.update(ready=False,status='pending_detection',errors=['所选资源尚未完成有效检测，请检测该资源后重试'])
+    result['resource_detection']=resource.get('detection') or {}
+    result['csc_capabilities']=csc_capabilities(payload.target)
+    return result
+
 
 
 
@@ -19844,14 +19878,34 @@ async def _v39_create_rknn_hardware_test_under_version_fence(
     })
 
 
+from platform_core.conversion_history import ConversionHistoryProjection
+_CONVERSION_HISTORY_PROJECTION = ConversionHistoryProjection()
+
+
+def _conversion_history_csc(job):
+    params=job.get('params') or {}
+    csc=params.get('csc') or {}
+    return str(csc.get('preset') or 'legacy_unknown') if isinstance(csc,dict) else 'legacy_unknown'
+
+
+def _conversion_history_page(project_id, **query):
+    try:
+        if query.get('csc')=='unknown': query['csc']='legacy_unknown'
+        return _CONVERSION_HISTORY_PROJECTION.query(deploy_root(project_id)/'jobs',
+            read_json=read_json,overlay=_overlay_durable_deploy_job,csc_value=_conversion_history_csc,**query)
+    except ValueError as error:
+        raise HTTPException(422,detail=str(error)) from error
+
+
 @app.get("/api/v39/projects/{project_id}/deploy/jobs")
 def v39_list_deploy_jobs(project_id: str):
-    root=deploy_root(project_id)/"jobs";rows=[]
-    for jf in root.glob("*/job.json"):
-        j=_overlay_durable_deploy_job(read_json(jf,{}))
-        if j:rows.append(j)
-    rows.sort(key=lambda x:x.get("created_at",""),reverse=True)
-    return {"ok":True,"items":rows[:100]}
+    # Preserve the generic legacy response; version views use their scoped projection.
+    root=deploy_root(project_id)/'jobs';rows=[]
+    for jf in root.glob('*/job.json'):
+        job=_overlay_durable_deploy_job(read_json(jf,{}))
+        if job:rows.append(job)
+    rows.sort(key=lambda row:row.get('created_at',''),reverse=True)
+    return {'ok':True,'items':rows[:100]}
 
 
 @app.get("/api/v39/projects/{project_id}/deploy/jobs/{job_id}")
@@ -20473,7 +20527,9 @@ def _version_deploy_conversion_defaults(project_id: str, version: Mapping[str, A
 
 
 @app.get('/api/v42/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/deployments')
-def v423_version_deployments(project_id: str, algorithm_id: str, version_id: str):
+def v423_version_deployments(project_id: str, algorithm_id: str, version_id: str,
+    page: int=1, page_size: int=100, status: str='', target: str='', chip: str='',
+    precision: str='', csc: str='', created_from: str='', created_to: str='', force: bool=False):
     get_project(project_id)
     algo = next((a for a in list_algorithms_internal(project_id) if a.get('id') == algorithm_id), None)
     if not algo:
@@ -20481,20 +20537,18 @@ def v423_version_deployments(project_id: str, algorithm_id: str, version_id: str
     version = next((v for v in (algo.get('versions') or []) if v.get('id') == version_id), None)
     if not version:
         raise HTTPException(status_code=404, detail='算法版本不存在')
+    history = _conversion_history_page(project_id,algorithm_id=algorithm_id,version_id=version_id,
+        page=page,page_size=page_size,status=status,target=target,chip=chip,precision=precision,csc=csc,
+        created_from=created_from,created_to=created_to,force=force)
     rows = []
-    for job in v39_list_deploy_jobs(project_id).get('items', []):
-        source = job.get('source_meta') or {}
-        exact = (source.get('algorithm_id') == algorithm_id and source.get('version_id') == version_id)
-        exact = exact or job.get('source_id') == f'version::{algorithm_id}::{version_id}'
-        if not exact:
-            continue
+    for job in history['items']:
         outputs = []
         for out in job.get('outputs') or []:
             pp = Path(str(out.get('path') or ''))
             outputs.append({
                 'name': out.get('name') or pp.name, 'size_mb': out.get('size_mb'), 'rel': out.get('rel'),
                 'exists': bool(pp.exists()),
-                'download_url': f"/api/v39/projects/{project_id}/deploy/jobs/{job.get('id')}/artifact?rel={requests.utils.quote(str(out.get('rel') or ''))}" if out.get('rel') else ''
+                'download_url': f"/api/v39/projects/{project_id}/deploy/jobs/{job.get('id')}/artifact?rel={requests.utils.quote(str(out.get('rel') or ''))}" if out.get('rel') and pp.suffix.lower() not in {'.py','.md'} else ''
             })
         target = str(job.get('target') or '')
         rows.append({
@@ -20502,7 +20556,10 @@ def v423_version_deployments(project_id: str, algorithm_id: str, version_id: str
             'status': job.get('status'), 'stage': job.get('stage'), 'progress': job.get('progress'),
             'source_name': job.get('source_name') or '',
             'resource_name': (job.get('resource') or {}).get('name') or '',
-            'params': job.get('params') or {}, 'outputs': outputs,
+            'params': job.get('params') or {}, 'requested_params':job.get('requested_params') or {},
+            'execution_evidence':job.get('execution_evidence') or {},
+            'source_identity':{k:(job.get('source_trace') or {}).get(k) for k in ('source_id','sha256','algorithm_id','version_id')},
+            'outputs': outputs,
             'task_id': job.get('task_id') or '', 'task_status': job.get('task_status') or '',
             'durable_status': job.get('durable_status') or '', 'current_item': job.get('current_item') or '',
             'priority': job.get('priority'), 'queue_rank': job.get('queue_rank'),
@@ -20521,7 +20578,8 @@ def v423_version_deployments(project_id: str, algorithm_id: str, version_id: str
     rows.sort(key=lambda x: x.get('created_at') or '', reverse=True)
     visible_version = dict(version)
     visible_version["conversion_defaults"] = _version_deploy_conversion_defaults(project_id, version)
-    return {'ok': True, 'algorithm': {'id': algo.get('id'), 'name': algo.get('name')}, 'version': visible_version, 'items': rows}
+    return {'ok': True, **{k:v for k,v in history.items() if k!='items'},
+        'algorithm': {'id': algo.get('id'), 'name': algo.get('name')}, 'version': visible_version, 'items': rows}
 
 
 class V42SourceReq(BaseModel):

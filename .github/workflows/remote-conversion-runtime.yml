@@ -13,6 +13,13 @@ on:
       - 'platform_core/rknn_runtime.py'
       - 'platform_core/service_nodes.py'
       - 'platform_core/conversion.py'
+      - 'platform_core/conversion_csc.py'
+      - 'platform_core/conversion_history.py'
+      - 'platform_core/conversion_resource_detection.py'
+      - 'tests/unit/test_conversion_csc.py'
+      - 'tests/unit/test_conversion_history.py'
+      - 'tests/unit/test_conversion_resource_detection.py'
+      - 'tests/api/test_conversion_jobs.py'
       - 'platform_core/compute_platform_catalog.py'
       - 'platform_core/model_metadata.py'
       - 'platform_core/model_artifacts.py'
@@ -66,6 +73,13 @@ on:
       - 'platform_core/rknn_runtime.py'
       - 'platform_core/service_nodes.py'
       - 'platform_core/conversion.py'
+      - 'platform_core/conversion_csc.py'
+      - 'platform_core/conversion_history.py'
+      - 'platform_core/conversion_resource_detection.py'
+      - 'tests/unit/test_conversion_csc.py'
+      - 'tests/unit/test_conversion_history.py'
+      - 'tests/unit/test_conversion_resource_detection.py'
+      - 'tests/api/test_conversion_jobs.py'
       - 'platform_core/compute_platform_catalog.py'
       - 'platform_core/model_metadata.py'
       - 'platform_core/model_artifacts.py'
@@ -217,6 +231,10 @@ jobs:
           tests/api/test_sophon_remote_admission.py
           tests/unit/test_dynamic_conversion_catalog.py
           tests/api/test_dynamic_conversion_catalog.py
+          tests/unit/test_conversion_csc.py
+          tests/unit/test_conversion_history.py
+          tests/unit/test_conversion_resource_detection.py
+          tests/api/test_conversion_jobs.py::test_existing_onnx_conversion_ships_explicit_csc_reference_without_weight_changes
       - name: Permanent Remote Conversion guards
         shell: bash
         run: |

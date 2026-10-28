@@ -1,3 +1,4 @@
+import {mkdirSync,readFileSync,writeFileSync} from 'node:fs';
 import {test, expect} from '@playwright/test';
 
 // Isolated UI contract fixtures. These are not SDK compilation or hardware evidence.
@@ -76,7 +77,7 @@ test('vision providers, candidate review, and vendor target parameters are expli
   expect(configured.ok()).toBeTruthy();
   const vendorAlgorithmId = 'vendor-target-algorithm';
   const vendorVersionId = 'vendor-target-version';
-  await page.route(`**/api/v42/projects/${project.id}/algorithms/${vendorAlgorithmId}/versions/${vendorVersionId}/deployments`, route => route.fulfill({
+  await page.route(`**/api/v42/projects/${project.id}/algorithms/${vendorAlgorithmId}/versions/${vendorVersionId}/deployments*`, route => route.fulfill({
     status: 200,
     contentType: 'application/json',
     body: JSON.stringify({
@@ -85,7 +86,7 @@ test('vision providers, candidate review, and vendor target parameters are expli
       items: []
     })
   }));
-  await page.route('**/api/v39/deploy/resources', route => route.fulfill({
+  await page.route(/\/api\/v39\/deploy\/resources(?:\?.*)?$/, route => route.fulfill({
     status: 200,
     contentType: 'application/json',
     body: JSON.stringify({items: [
@@ -199,7 +200,7 @@ test('version conversion shows configured compiler resources and their readiness
   }})).json();
   const algorithmId = 'algorithm-resource-test';
   const versionId = 'version-resource-test';
-  await page.route(`**/api/v42/projects/${project.id}/algorithms/${algorithmId}/versions/${versionId}/deployments`, route => route.fulfill({
+  await page.route(`**/api/v42/projects/${project.id}/algorithms/${algorithmId}/versions/${versionId}/deployments*`, route => route.fulfill({
     status: 200,
     contentType: 'application/json',
     body: JSON.stringify({
@@ -208,7 +209,7 @@ test('version conversion shows configured compiler resources and their readiness
       items: []
     })
   }));
-  await page.route('**/api/v39/deploy/resources', route => route.fulfill({
+  await page.route(/\/api\/v39\/deploy\/resources(?:\?.*)?$/, route => route.fulfill({
     status: 200,
     contentType: 'application/json',
     body: JSON.stringify({items: [
@@ -256,7 +257,7 @@ test('deployment resource editor exposes service-node Agent for RKNN', async ({p
   const algorithmId = 'algorithm-rknn-agent-resource';
   const versionId = 'version-rknn-agent-resource';
 
-  await page.route(`**/api/v42/projects/${project.id}/algorithms/${algorithmId}/versions/${versionId}/deployments`, route => route.fulfill({
+  await page.route(`**/api/v42/projects/${project.id}/algorithms/${algorithmId}/versions/${versionId}/deployments*`, route => route.fulfill({
     status: 200,
     contentType: 'application/json',
     body: JSON.stringify({
@@ -265,7 +266,7 @@ test('deployment resource editor exposes service-node Agent for RKNN', async ({p
       items: []
     })
   }));
-  await page.route('**/api/v39/deploy/resources', route => route.fulfill({
+  await page.route(/\/api\/v39\/deploy\/resources(?:\?.*)?$/, route => route.fulfill({
     status: 200,
     contentType: 'application/json',
     body: JSON.stringify({items: [{
@@ -340,7 +341,7 @@ test('RKNN converted_unverified job exposes board verification and upgrades afte
   let releaseHardwareSuccess;
   const hardwareSuccessGate = new Promise(resolve => { releaseHardwareSuccess = resolve; });
 
-  await page.route(`**/api/v42/projects/${project.id}/algorithms/${algorithmId}/versions/${versionId}/deployments`, route => route.fulfill({
+  await page.route(`**/api/v42/projects/${project.id}/algorithms/${algorithmId}/versions/${versionId}/deployments*`, route => route.fulfill({
     status: 200,
     contentType: 'application/json',
     body: JSON.stringify({
@@ -542,7 +543,7 @@ test('RKNN Agent INT8 conversion submits frozen calibration selection from the U
   let submitted = null;
   let created = false;
 
-  await page.route(`**/api/v42/projects/${project.id}/algorithms/${algorithmId}/versions/${versionId}/deployments`, route => route.fulfill({
+  await page.route(`**/api/v42/projects/${project.id}/algorithms/${algorithmId}/versions/${versionId}/deployments*`, route => route.fulfill({
     status: 200,
     contentType: 'application/json',
     body: JSON.stringify({
@@ -551,7 +552,7 @@ test('RKNN Agent INT8 conversion submits frozen calibration selection from the U
       items: created ? [{id: 'rknn-int8-job', target: 'rockchip', target_name: '瑞芯微 RKNN', status: 'running', stage: 'RKNN 编译中', progress: 37, message: '正在生成 RKNN 产物', params: {chip: 'rk3568', precision: 'int8'}, resource_name: 'RKNN Agent · RK3568', outputs: []}] : []
     })
   }));
-  await page.route('**/api/v39/deploy/resources', route => route.fulfill({
+  await page.route(/\/api\/v39\/deploy\/resources(?:\?.*)?$/, route => route.fulfill({
     status: 200,
     contentType: 'application/json',
     body: JSON.stringify({items: [{
@@ -640,11 +641,11 @@ test('Sophon submits explicit rectangular FP16 parameters and keeps BMODEL hardw
   const project=await (await request.post('/api/projects',{data:{name:`Sophon UI-${Date.now()}`,labels:[{code:'smoke'}]}})).json();
   let ready=false,submitted=null,created=false;
   await selectIsolatedTestProject(page,project.id);
-  await page.route('**/api/v39/deploy/resources',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({items:[{
+  await page.route(/\/api\/v39\/deploy\/resources(?:\?.*)?$/,route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({items:[{
     id:'sophon-remote',name:'独立 TPU-MLIR',kind:'sophon',mode:'remote',status:ready?'ready':'missing',
     targets:ready?['sophon']:[],supported_chips:ready?['bm1684x','bm1688']:[],supported_precisions:ready?['fp16']:[],
     version:ready?'v1.30.2-20260831':'',message:ready?'TPU-MLIR自检通过':'TPU_MLIR_NOT_FOUND：model_deploy.py缺失'}]})}));
-  await page.route(`**/api/v42/projects/${project.id}/algorithms/sophon-a/versions/v1/deployments`,route=>route.fulfill({
+  await page.route(`**/api/v42/projects/${project.id}/algorithms/sophon-a/versions/v1/deployments*`,route=>route.fulfill({
     status:200,contentType:'application/json',body:JSON.stringify({algorithm:{id:'sophon-a',name:'烟火算法'},
       version:{id:'v1',version_name:'v1',model_name:'best.pt',stored_path:'/isolated/best.pt',
         conversion_defaults:{input_size:800,input_width:800,input_height:800,training_precision:'fp32'}},
@@ -700,8 +701,8 @@ test('formal deployment menu persists vendor chips and selects BM1684 FP32 throu
   await page.unroute('**/api/v39/deploy/catalog');
   const project=await (await request.post('/api/projects',{data:{name:'动态BM1684-'+Date.now(),labels:[{code:'fire'}]}})).json();
   await selectIsolatedTestProject(page,project.id);
-  await page.route('**/api/v39/deploy/resources',r=>r.fulfill({json:{items:[{id:'sdk',kind:'sophon',name:'独立SDK',mode:'remote',status:'ready',targets:['sophon'],version:'v1.30.2-20260831',supported_chips:['bm1684','bm1688'],supported_precisions:['fp16','fp32']}]}}));
-  await page.route('**/api/v42/projects/*/algorithms/dynamic-a/versions/v1/deployments',r=>r.fulfill({json:{algorithm:{id:'dynamic-a',name:'动态转换'},version:{id:'v1',model_name:'best.pt',stored_path:'/isolated/best.pt',conversion_defaults:{input_size:800,input_width:800,input_height:800,training_precision:'fp32'}},items:[]}}));
+  await page.route(/\/api\/v39\/deploy\/resources(?:\?.*)?$/,r=>r.fulfill({json:{items:[{id:'sdk',kind:'sophon',name:'独立SDK',mode:'remote',status:'ready',targets:['sophon'],version:'v1.30.2-20260831',supported_chips:['bm1684','bm1688'],supported_precisions:['fp16','fp32']}]}}));
+  await page.route('**/api/v42/projects/*/algorithms/dynamic-a/versions/v1/deployments*',r=>r.fulfill({json:{algorithm:{id:'dynamic-a',name:'动态转换'},version:{id:'v1',model_name:'best.pt',stored_path:'/isolated/best.pt',conversion_defaults:{input_size:800,input_width:800,input_height:800,training_precision:'fp32'}},items:[]}}));
   await page.route('**/api/v39/projects/*/deploy/resolve',async route=>{
     const p=route.request().postDataJSON().params,chip=data.chips.find(c=>c.id===p.local_chip_id),precision=chip?.sdk_code==='bm1684'?'fp32':'fp16';
     await route.fulfill({json:{ready:!!chip&&(!p.precision||p.precision===precision),errors:chip?[]:['请选择目标芯片'],allowed_precisions:[precision],
@@ -921,9 +922,9 @@ test('Sophon FP32 user parameters survive SDK recheck and truthful execution det
   const resource={id:'precision-sdk',kind:'sophon',name:'独立 TPU-MLIR',mode:'remote',status:'ready',targets:['sophon'],
     supported_chips:['bm1684x','bm1688'],supported_precisions:['fp16','fp32'],version:'v1.30.2-20260831'};
   let submitted=null,detects=0,posts=0;
-  await page.route('**/api/v39/deploy/resources',r=>r.fulfill({json:{items:[resource]}}));
+  await page.route(/\/api\/v39\/deploy\/resources(?:\?.*)?$/,r=>r.fulfill({json:{items:[resource]}}));
   await page.route('**/api/v39/deploy/resources/precision-sdk/detect',r=>{detects++;return r.fulfill({json:resource})});
-  await page.route('**/api/v42/projects/*/algorithms/precision-a/versions/v1/deployments',r=>r.fulfill({json:{
+  await page.route('**/api/v42/projects/*/algorithms/precision-a/versions/v1/deployments*',r=>r.fulfill({json:{
     algorithm:{id:'precision-a',name:'参数一致性'},version:{id:'v1',version_name:'v1',model_name:'best.pt',stored_path:'/isolated/best.pt',
       conversion_defaults:{input_size:800,input_width:800,input_height:800,training_precision:'fp16'}},
     items:submitted?[{id:'pjob',target:'sophon',resource_name:resource.name,status:'blocked_by_hardware',progress:100,
@@ -958,7 +959,7 @@ test('Sophon FP32 user parameters survive SDK recheck and truthful execution det
   await dialog.locator('[data-convert-submit]').click();await expect.poll(()=>submitted).not.toBeNull();
   expect(posts).toBe(1);expect(submitted.params).toMatchObject({precision:'fp32',chip:'bm1684x',input_width:640,input_height:384,
     source_color_order:'rgb',input_color_order:'bgr',preprocessing:{pixel_format:'bgr',letterbox:false}});
-  const history=page.getByRole('dialog',{name:'版本转换'});await history.locator('.convert428-evidence > summary').click();
+  const history=page.getByRole('dialog',{name:'版本转换'});await history.locator('.convert428-job-details > summary').click();await history.locator('.convert428-evidence > summary').click();
   await expect(history).toContainText('F32');await expect(history).toContainText('未核验');await expect(history).toContainText('未实机验证');
   await page.screenshot({path:testInfo.outputPath('sophon-precision-evidence.png')});
 });
@@ -967,8 +968,8 @@ test('Sophon FP32 user parameters survive SDK recheck and truthful execution det
 test('existing ONNX keeps its graph and hides inapplicable export controls',async({page,request})=>{
   const project=await (await request.post('/api/projects',{data:{name:`onnx-reuse-${Date.now()}`,labels:[{code:'fire'}]}})).json();
   await selectIsolatedTestProject(page,project.id);let submitted;
-  await page.route('**/api/v39/deploy/resources',r=>r.fulfill({json:{items:[{id:'onnx',name:'ONNX',kind:'ultralytics',status:'ready',targets:['onnx']}]}}));
-  await page.route('**/api/v42/projects/*/algorithms/reuse-a/versions/v1/deployments',r=>r.fulfill({json:{algorithm:{id:'reuse-a'},
+  await page.route(/\/api\/v39\/deploy\/resources(?:\?.*)?$/,r=>r.fulfill({json:{items:[{id:'onnx',name:'ONNX',kind:'ultralytics',status:'ready',targets:['onnx']}]}}));
+  await page.route('**/api/v42/projects/*/algorithms/reuse-a/versions/v1/deployments*',r=>r.fulfill({json:{algorithm:{id:'reuse-a'},
     version:{id:'v1',version_name:'source-onnx',model_name:'model.onnx',stored_path:'/isolated/model.onnx',conversion_defaults:{source_format:'onnx',input_width:640,input_height:384}},items:[]}}));
   await page.route('**/api/v39/projects/*/deploy/jobs',r=>{submitted=r.request().postDataJSON();return r.fulfill({json:{ok:true,job:{id:'reuse'}}})});
   await page.goto('/');await expect.poll(()=>page.evaluate(()=>state.uiReady===true)).toBe(true);
@@ -978,4 +979,83 @@ test('existing ONNX keeps its graph and hides inapplicable export controls',asyn
   await expect(dialog.locator('#conv428InheritedHint')).toContainText('保留原图');
   await dialog.locator('[data-convert-submit]').click();await expect.poll(()=>submitted).toBeTruthy();
   for(const key of ['precision','opset','dynamic','simplify','input_size'])expect(submitted.params).not.toHaveProperty(key);
+});
+
+
+test('conversion formal modal survives slow resources and isolated catalog failure with retry',async({page})=>{
+  let release,failed=true;
+  const barrier=new Promise(resolve=>release=resolve);
+  await page.route(/\/api\/v39\/deploy\/resources(?:\?.*)?$/,async route=>{await barrier;await route.fulfill({json:{items:[{id:'onnx-late',name:'ONNX late',kind:'ultralytics',mode:'local',status:'ready',targets:['onnx']}]}})});
+  await page.route('**/api/v39/deploy/catalog',route=>route.fulfill(failed?{status:503,json:{message:'catalog isolated failure'}}:{json:uiCatalog}));
+  await page.route('**/api/v42/projects/*/algorithms/immediate-a/versions/v1/deployments*',route=>route.fulfill({json:{algorithm:{name:'Immediate source'},version:{id:'v1',version_name:'v1',stored_path:'/isolated/best.pt',model_name:'best.pt',conversion_defaults:{input_size:640}},items:[]}}));
+  await page.goto('/');await expect.poll(()=>page.evaluate(()=>state.uiReady===true)).toBe(true);
+  await page.evaluate(()=>{void window.openNewConvert428('immediate-a','v1')});
+  const dialog=page.getByRole('dialog',{name:'新建版本转换'});
+  await expect(dialog).toBeVisible();await expect(dialog.locator('#conv428SourceLoad')).toHaveText('源版本已核验');
+  await expect(dialog.locator('#conv428CatalogLoad')).toContainText('catalog isolated failure');
+  await dialog.locator('#conv428Input').fill('800');await dialog.locator('#conv428Input').dispatchEvent('change');
+  await expect(dialog.locator('[data-convert-submit]')).toBeDisabled();
+  failed=false;await dialog.locator('#conv428CatalogLoad').getByRole('button',{name:'重试'}).click();
+  await expect(dialog.locator('[data-conversion-vendors]')).toContainText('算能');
+  await expect(dialog.locator('#conv428Input')).toHaveValue('800');
+  release();await expect(dialog.locator('#conv428Resource')).toHaveValue('onnx-late');
+  await expect(dialog.locator('#conv428Input')).toHaveValue('800');
+  await expect(dialog).toBeVisible();
+});
+
+
+test('controlled current modal appears before held resource response using recorded baseline evidence',async({page})=>{
+ const output='docs/artifacts/conversion-modal-controlled-20261028';
+ const recorded=JSON.parse(readFileSync(output+'/timing.json','utf8'));
+ const baseline=recorded.results.find(row=>row.mode==='baseline');expect(baseline.modal_observed_ms).toBeGreaterThanOrEqual(1100);
+ let measuring=false,released=false;const counts={resources:0,source_history:0,catalog:0};
+ await page.route(/\/api\/v39\/deploy\/resources(?:\?.*)?$/,async route=>{if(measuring)counts.resources++;await new Promise(resolve=>setTimeout(resolve,1200));released=true;await route.fulfill({json:{items:[{id:'timing-onnx',name:'ONNX timing',kind:'ultralytics',mode:'local',status:'ready',targets:['onnx']}]}})});
+ await page.route('**/api/v39/deploy/catalog',route=>{if(measuring)counts.catalog++;return route.fulfill({json:uiCatalog})});
+ await page.route('**/api/v42/projects/*/algorithms/timing-a/versions/v1/deployments*',route=>{if(measuring)counts.source_history++;return route.fulfill({json:{algorithm:{name:'Controlled timing'},version:{id:'v1',version_name:'v1',stored_path:'/isolated/best.pt',model_name:'best.pt',conversion_defaults:{input_size:640}},items:[]}})});
+ await page.goto('/');await expect.poll(()=>page.evaluate(()=>state.uiReady===true)).toBe(true);await page.evaluate(()=>{for(const key of Object.keys(localStorage))if(key.includes('verdeploy'))localStorage.removeItem(key)});
+ measuring=true;const start=await page.evaluate(()=>{const now=performance.now();void window.openNewConvert428('timing-a','v1');return now});
+ await expect(page.getByRole('dialog',{name:'新建版本转换'})).toBeVisible();const appeared=await page.evaluate(()=>performance.now());
+ expect(released,'formal form must appear before the held resource response').toBe(false);await expect(page.locator('#conv428Resource')).toHaveValue('timing-onnx');
+ expect(counts).toEqual({resources:1,source_history:1,catalog:1});
+ writeFileSync(output+'/current-timing-check.json',JSON.stringify({environment:'isolated real Chrome protocol fixtures; NOT production',baseline_evidence:'timing.json from prior measured run; baseline NOT rerun by this test',recorded_baseline_sha:recorded.baseline_sha,recorded_baseline_modal_ms:baseline.modal_observed_ms,current_modal_observed_ms:Math.round(appeared-start),controlled_resource_delay_ms:1200,request_counts:counts},null,2));
+});
+
+
+test('CSC direct target saves acknowledged external contract without claiming device application',async({page})=>{
+ await page.setViewportSize({width:1920,height:1440});
+ let submitted;
+ const capabilities={target:'onnx',capability:'contract_only',presets:['bt601_limited','bt601_full','bt709_limited','bt709_full'],input_formats:['NV12','I420','YUV444'],modes:['none','device_default'],embedded_supported:false,execution_location:'external_preprocessing',board_verification:'NOT VERIFIED'};
+ await page.route('**/api/v39/deploy/catalog',route=>route.fulfill({json:{...uiCatalog,csc_capabilities_by_target:{onnx:capabilities}}}));
+ await page.route(/\/api\/v39\/deploy\/resources(?:\?.*)?$/,route=>route.fulfill({json:{items:[{id:'csc-onnx',name:'ONNX CSC contract',kind:'ultralytics',mode:'local',status:'ready',targets:['onnx']}]}}));
+ await page.route('**/api/v42/projects/*/algorithms/csc-a/versions/v1/deployments*',route=>route.fulfill({json:{algorithm:{name:'CSC external'},version:{id:'v1',version_name:'v1',model_name:'best.pt',stored_path:'/isolated/best.pt',conversion_defaults:{input_size:640}},items:[]}}));
+ await page.route('**/api/v39/projects/*/deploy/jobs',route=>{submitted=route.request().postDataJSON();return route.fulfill({json:{ok:true,job:{id:'csc-job'}}})});
+ await page.goto('/');await expect.poll(()=>page.evaluate(()=>state.uiReady===true)).toBe(true);await page.evaluate(()=>window.openNewConvert428('csc-a','v1'));
+ const dialog=page.getByRole('dialog',{name:'新建版本转换'});await dialog.locator('#conv428CscPreset').selectOption('bt709_full');
+ await expect(dialog.locator('#conv428CscExternal')).toBeVisible();await expect(dialog.locator('#conv428CscStatus')).toContainText('未应用到设备');
+ await dialog.locator('#conv428CscFormat').selectOption('NV12');await dialog.locator('#conv428CscAck').check();
+ await expect(dialog.locator('[data-convert-submit]')).toBeEnabled();await page.screenshot({path:'docs/artifacts/conversion-modal-controlled-20261028/current-csc-create-1920.png'});
+ await page.setViewportSize({width:1366,height:768});await dialog.locator('.modal-body').hover();await page.mouse.wheel(0,2200);
+ await expect(dialog.locator('[data-convert-submit]')).toBeInViewport();await expect(dialog.locator('[data-convert-submit]')).toBeEnabled();
+ expect(await dialog.evaluate(node=>node.scrollWidth<=node.clientWidth&&node.querySelector('.modal-body').scrollWidth<=node.querySelector('.modal-body').clientWidth)).toBe(true);
+ await page.screenshot({path:'docs/artifacts/conversion-modal-controlled-20261028/current-csc-create-1366.png'});await dialog.locator('[data-convert-submit]').click();
+ await expect.poll(()=>submitted).toBeTruthy();expect(submitted.params.csc).toEqual({preset:'bt709_full',require_embedded:false,input_format:'NV12',deployment_contract_acknowledged:true});
+});
+
+
+test('version history requests bounded server pages and complete filters with truthful totals',async({page})=>{
+ await page.setViewportSize({width:1920,height:1440});
+ const queries=[];
+ await page.route('**/api/v42/projects/*/algorithms/paged-a/versions/v1/deployments*',route=>{
+  const q=Object.fromEntries(new URL(route.request().url()).searchParams);queries.push(q);const current=Number(q.page||1),filtered=q.target==='sophon';
+  return route.fulfill({json:{algorithm:{name:'Paged history'},version:{id:'v1',version_name:'v1',stored_path:'/isolated/best.pt',model_name:'best.pt'},page:current,page_size:20,total:filtered?2:41,total_pages:filtered?1:3,complete:false,unreadable_count:1,items:[{id:'page-'+current,target:'sophon',target_name:'算能',status:'done',progress:100,created_at:'2026-10-28',params:{chip:'bm1688',precision:'fp16'},outputs:[]}]}})
+ });
+ await page.goto('/');await expect.poll(()=>page.evaluate(()=>state.uiReady===true)).toBe(true);await page.evaluate(()=>window.openVersionConvert428('paged-a','v1'));
+ const dialog=page.getByRole('dialog',{name:'版本转换'});
+ await expect(dialog.locator('.convert428-summary')).toContainText('41');expect(queries[0].page_size).toBe('20');
+ await expect(dialog.locator('[data-history-notice]')).toContainText('无法读取 1 条');await expect(dialog).toContainText('历史未记录');
+ await dialog.getByRole('button',{name:'下一页',exact:true}).click();await expect(dialog.locator('.convert428-history-pager')).toContainText('第 2 / 3 页');expect(queries.at(-1).page).toBe('2');
+ await dialog.locator('[name="target"]').selectOption('sophon');await dialog.locator('[name="chip"]').fill('bm1688');await dialog.locator('[name="precision"]').selectOption('fp16');await dialog.locator('[name="csc"]').selectOption('legacy_unknown');
+ await expect.poll(()=>queries.at(-1)?.csc).toBe('legacy_unknown');expect(queries.at(-1)).toMatchObject({page:'1',page_size:'20',target:'sophon',chip:'bm1688',precision:'fp16',csc:'legacy_unknown'});
+ await expect(dialog.locator('.convert428-history-pager')).toContainText('共 2 条');
+ await dialog.locator('.convert428-job-details > summary').click();await dialog.getByRole('button',{name:'刷新',exact:true}).click();await expect(dialog.locator('.convert428-job-details')).toHaveJSProperty('open',true);await dialog.locator('.convert428-evidence > summary').click();await page.screenshot({path:'docs/artifacts/conversion-modal-controlled-20261028/current-history-details-1920.png'});
 });

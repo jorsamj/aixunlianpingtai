@@ -72,6 +72,23 @@ def validate_remote_artifacts(directory, job):
             and color_evidence.get("input_color_order") == expected["input_color_order"]
         ):
             raise ValueError("远程产物缺少已通过数值验证的颜色适配证据")
+    if "csc" in expected:
+        for actual in (target, parameters):
+            if actual.get('csc') != expected['csc'] or actual.get('csc_contract') != expected['csc_contract']:
+                raise ValueError('远程CSC合同与冻结请求不一致')
+        if (manifest.get('execution_evidence') or {}).get('csc') != expected['csc_contract']:
+            raise ValueError('远程CSC部署约定证据缺失或不一致')
+        outputs = {r.get('name') for r in manifest.get('outputs') or []}
+        if expected['csc_contract'].get('capability')=='contract_only' and not {'csc_deployment_contract.json','csc_deployment_reference.zip'} <= outputs:
+            raise ValueError('远程CSC部署辅助产物不完整')
+        if expected['csc_contract'].get('capability')=='contract_only':
+            from tempfile import TemporaryDirectory
+            from .conversion_csc import write_csc_deployment_bundle
+            with TemporaryDirectory(prefix='conversion-csc-verify-') as temporary:
+                write_csc_deployment_bundle(temporary, expected['csc_contract'], include_reference_sources=False)
+                for name in ('csc_deployment_contract.json','csc_deployment_reference.zip'):
+                    if not (directory/name).is_file() or sha256_file(directory/name)!=sha256_file(Path(temporary)/name):
+                        raise ValueError('远程CSC部署辅助文件与平台可信参考不一致：'+name)
     trace = job.get("source_trace") or {}
     source_path = Path(str(job.get("source_path") or ""))
     recorded_sha = str(trace.get("sha256") or "").lower()
@@ -253,7 +270,7 @@ def synchronize_remote_conversion(context, request, *, recovering=False, http=re
                 job.update(status="blocked_by_hardware", hardware_verified=False, conversion_status="converted",
                     stage="等待目标硬件验证", progress=100, manifest_path=str(artifacts / "manifest.json"),
                     outputs=[{"name":p.name,"path":str(p),"rel":str(p.relative_to(jd)),"size_bytes":p.stat().st_size}
-                             for p in artifacts.rglob("*") if p.is_file()])
+                             for p in artifacts.rglob("*") if p.is_file() and p.suffix.lower() not in {".py",".md"}])
                 persist()
                 return job
             persist()
