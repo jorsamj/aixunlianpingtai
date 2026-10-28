@@ -42,5 +42,14 @@ test('device revalidation keeps scheduler-owned auto ahead of stale concrete GPU
   const draftWrite=block.indexOf('TrainingDraftRuntime?.update?.({resource:{device:recommendedDevice}})');
   assert.ok(domWrite>=0&&draftWrite>domWrite);
   assert.match(block,/autoOption=options\.find\(row=>String\(row\?\.id\|\|''\)==='auto'/);
-  assert.match(block,/requestedDevice=autoOption\?'auto'/);
+  const owner=source.slice(start,end+'renderSplit()}'.length);
+  for(const [requested,expected] of [['auto','auto'],['cpu','cpu'],['gone-gpu','auto']]){
+    const state={trainingDraft:{resource:{device:requested}}},control={},writes=[];
+    const apply=new Function('state','currentPreparation','persistTrainingDeviceCacheV3','document','window','renderSplit',
+      owner+';return applyDevices;')(state,()=>true,()=>{}, {getElementById:()=>control},
+        {TrainingDraftRuntime:{update:value=>writes.push(value)}},()=>{});
+    apply({recommended:'cuda:0',options:[{id:'auto',available:true},{id:'cpu',available:true},{id:'cuda:0',available:true}]});
+    assert.equal(control.value,expected);
+    assert.equal(writes.at(-1).resource.device,expected);
+  }
 });

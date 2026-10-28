@@ -6824,6 +6824,8 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     algorithmSelect.value=algorithms.some(row=>String(row.key)===oldAlgorithm)?oldAlgorithm:String(algorithms[0]?.key||'');
     const modelSelect=root.querySelector('#tr429MotherModel'),models=(target?.base_models||[]).filter(row=>String(row.model_status||'').toUpperCase()==='FOUND'&&/\.pt$/i.test(String(row.value||''))),draft=state.trainingDraft||{},wanted=String(draft.config?.model||'');
     if(modelSelect){modelSelect.disabled=Boolean(state.trainingDraftBase?.hasPrevious)||!models.length;modelSelect.innerHTML=state.trainingDraftBase?.hasPrevious?'<option value="">继承当前有效版本 best.pt</option>':models.map(row=>`<option value="${esc(row.value)}">${esc(row.label||row.value)}</option>`).join('')||'<option value="">等待可用基础模型</option>';if(models.some(row=>String(row.value)===wanted))modelSelect.value=wanted;else if(!wanted&&models.length&&!state.trainingDraftBase?.hasPrevious)window.TrainingDraftRuntime?.update?.({config:{model:String(models[0].value)}})}
+    const engine=algorithms.find(row=>String(row.key)===algorithmSelect.value),currentConfig=state.trainingDraft?.config||{};
+    if(currentConfig.imgsz==null&&Number(engine?.default_imgsz)>0){const size=Number(engine.default_imgsz);window.TrainingDraftRuntime?.update?.({config:{imgsz:size}});const input=root.querySelector('#ts428Size');if(input)input.value=String(size)}
     window.refreshTrainingMaterialSelectionUiV3?.();window.refreshTrainingCreateUi?.();window.TrainingSubmitRuntime?.updateReadiness?.();return true;
   };
   function eligibleFor(role){const s=splitState(),blocked=s.mode==='independent_test_set'?s[otherRole(role)]:new Set();return allCandidates().filter(row=>!blocked.has(imageId(row)))}
