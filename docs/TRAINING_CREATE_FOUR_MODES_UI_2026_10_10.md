@@ -107,6 +107,12 @@ VERSION396本轮不二次递增。后续修正SHA及CI必须独立核验，首�
 
 `d5615f7c852adf00683858f705760c0789e5d4d3`已推送。该SHA的Release Regression（含此前连接关闭用例）实际成功；只说明准确SHA本次通过，前一轮偶发根因仍未确认。其首开CI剩余两平台失败为永久源码守卫：旧同步preflight测试名、旧整体save的continue_threshold字符串、禁止独立patience编辑。已保持原训练语义：不新增patience入口，原checkbox请求与Worker实际决议分开，目标编辑仍强制continue_threshold=0。永久守卫仅将前两项绑定新真实Owner，保留禁止第二patience与低分停止保护。完整现有bash守卫退出0、定向Node23/23通过。对应Chrome早停用例先暴露本轮测试仍期待新增patience1个，恢复原0个断言；再暴露内联组丢失Worker执行说明，已补真实请求/实际说明，最终1/1通过。app cache445，VERSION396不二次递增。
 
+### 准确代码SHA的CI与浏览器总任务超时
+
+代码`6baf0037bf686ad64269e51ebaac6650fc7a3e9f`正常推送后，实际41 Actions为40成功/0失败/1取消，113 Checks为112成功/0失败/1取消。原Frontend Runtime Stabilization的303项串行Chrome因GitHub明确注解`The job has exceeded the maximum execution time of 20m0s`取消（[原运行](https://github.com/jorsamj/aixunlianpingtai/actions/runs/40668307650)）。日志无完成汇总，不能推断303项通过，也不把取消写成绿色。
+
+仅调整原workflow执行方式：Playwright原生两个shard，各独立GitHub runner/隔离后端、各仍workers=1、20分钟上限和完整原文件清单不变；fail-fast=false保留两份结果，不新增框架/用例/范围，不增加接口超时、不跳过或降低断言。`--list`发现核对原303=分片154+149，交集0、遗漏0；这是发现检查，不冒充执行通过。此调整避免重复串行跑到20分钟被取消；必须核验新SHA实际结果。
+
 ### 接续、剩余风险与交付状态
 
 VERSION42.24.396，entry app445/main442、CSS4226356及受影响模块cache已更新。推送前fetch确认远端仍为6df8cf0e；本地未提交时不声称已有SHA。最终提交及准确SHA的CI回执在下一节追加。当前B–E为本地完成待远端验收，不借上一版绿色。

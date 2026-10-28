@@ -434,6 +434,10 @@ jobs:
   browser-navigation:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -457,7 +461,7 @@ jobs:
         # This admission test creates real random .pt weights locally (no GPU or download).
         # Keep heavyweight ML dependencies isolated to the browser job.
         run: >-
-          npx playwright test
+          npx playwright test --shard=${{ matrix.shard }}/2
           tests/browser/navigation-stability.spec.mjs
           tests/browser/overview-tabs.spec.mjs
           tests/browser/prison-night-isolation.spec.mjs
