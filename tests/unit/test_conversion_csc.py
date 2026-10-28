@@ -93,6 +93,7 @@ def test_reference_package_uses_existing_safe_zip_contract(tmp_path):
     assert (tmp_path/'csc_deployment_reference.zip').read_bytes()==original
     with zipfile.ZipFile(tmp_path/'csc_deployment_reference.zip') as archive:
         assert set(archive.namelist())=={'csc_reference.py','CSC_DEPLOYMENT_README.md','csc_deployment_contract.json'}
+        assert all(info.create_system==3 for info in archive.infolist()), 'ZIP bytes must be platform-independent for remote hash verification'
         assert json.loads(archive.read('csc_deployment_contract.json'))['contract']==contract
 
 

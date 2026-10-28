@@ -214,6 +214,7 @@ def write_csc_deployment_bundle(output_dir, contract, *, include_reference_sourc
         with zipfile.ZipFile(temporary, 'w', compression=zipfile.ZIP_STORED) as bundle:
             for name, content in files.items():
                 info=zipfile.ZipInfo(name, date_time=(1980,1,1,0,0,0))
+                info.create_system=3  # Stable ZIP metadata across Windows control plane and Linux Worker.
                 info.external_attr=0o644 << 16
                 bundle.writestr(info, content)
         temporary.replace(archive)

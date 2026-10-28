@@ -17,8 +17,8 @@ for(const flow of ['clean','convert','publish','annotation'])for(const outcome o
    await route.fulfill({json:body});
  });
  if(flow==='convert'){
-   await page.route('**/api/v39/deploy/resources',route=>route.fulfill({json:{items:[{id:'loading-resource',status:'ready',targets:['onnx']}]}}));
-   await page.route('**/api/v42/projects/*/algorithms/loading-a/versions/loading-v/deployments',route=>{reads++;return route.fulfill({json:{algorithm:{id:'loading-a'},version:{id:'loading-v'},items:[]}})});
+   await page.route('**/api/v39/deploy/resources?detect_missing=false',route=>route.fulfill({json:{items:[{id:'loading-resource',status:'ready',targets:['onnx']}]}}));
+   await page.route('**/api/v42/projects/*/algorithms/loading-a/versions/loading-v/deployments*',route=>{reads++;return route.fulfill({json:{algorithm:{id:'loading-a'},version:{id:'loading-v'},items:[]}})});
  }
  await page.clock.install();
  await page.evaluate(({flow})=>{
