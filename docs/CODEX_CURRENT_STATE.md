@@ -1,6 +1,6 @@
-## 2026-10-28｜模型版本转换模块优化（本地定向验收完成，最终CI待核验）
+## 2026-10-28｜模型版本转换模块优化（代码及隔离CI已验收）
 
-[唯一专项](docs/MODEL_VERSION_CONVERSION_GOVERNANCE_2026_10_28.md)记录原Owner渐进加载/单资源300秒观察与检测、20条服务端历史分页与只更新活动任务、CSC四矩阵及外部参考ZIP。VERSION398；真实微型ONNX/参考CLI、远程合同与提交回滚、定向Node41及Chrome通过；受控旧1380ms/新36–79ms不代表生产。CSC未安装设备、applied=false/板端NOT VERIFIED；不部署/生产操作，5944/模板与其他工作树保留。最终提交自身CI另核，勿借旧绿。
+[唯一专项](docs/MODEL_VERSION_CONVERSION_GOVERNANCE_2026_10_28.md)记录原Owner渐进加载/单资源300秒观察与检测、20条服务端历史分页与只更新活动任务、CSC四矩阵及外部参考ZIP。VERSION398；真实微型ONNX/参考CLI、远程合同与提交回滚、定向Node41及Chrome通过；受控旧1380ms/新36–79ms不代表生产。CSC未安装设备、applied=false/板端NOT VERIFIED；不部署/生产操作，5944/模板与其他工作树保留。代码f2af4af35e45b86920bbddcc63aa13df816d178b准确41/41 Actions、115/115 Checks成功；文档自身提交Checks独立核验，勿借旧绿。
 
 ## 2026-10-28｜目标负样本、池管理与真实YOLO导出（代码及隔离CI已验收）
 
