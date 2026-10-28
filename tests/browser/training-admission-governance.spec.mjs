@@ -39,6 +39,14 @@ async function fixture(page,request,{hold=false}={}){
     if(i>=38){const ann=await request.post(`/api/projects/${project.id}/annotations/${image.id}`,{data:{boxes:[{id:`good-${i}`,class_id:0,label:'smoke',x1:1,y1:1,x2:8,y2:8}],annotation_state:'annotated',reviewed_label_codes:['smoke'],expected_version:image.annotation_version,source_content_sha256:image.content_sha256}});expect(ann.ok()).toBeTruthy();}
   }
   const ready=await request.post(`/api/v52/projects/${project.id}/images/mark-ready`,{data:{image_ids:images.map(x=>x.id)}});expect(ready.ok()).toBeTruthy();
+  // Empty GT is now explicitly confirmable as a task negative. This governance
+  // fixture must represent genuinely stale review evidence, not mere emptiness.
+  const roots=fs.readdirSync(os.tmpdir()).filter(name=>name.startsWith('xjalgo-browser-')).map(name=>path.join(os.tmpdir(),name)).filter(root=>fs.existsSync(path.join(root,'projects',project.id)));
+  expect(roots).toHaveLength(1);
+  execFileSync('python',['-c',`import app
+app.material_store(${JSON.stringify(project.id)}).patch({image_id:{'annotation_needs_review':True,'annotation_review_reason':'SOURCE_CONTENT_CHANGED'} for image_id in ${JSON.stringify(images.slice(0,38).map(x=>x.id))}})
+`],{encoding:'utf8',env:{...process.env,MC_TRAIN_DATA_DIR:roots[0],MC_PLATFORM_VERSION:'browser-test'}});
+
   await page.route('**/api/v53/bootstrap/snapshot**',async route=>{const url=new URL(route.request().url());url.searchParams.set('preferred_project_id',project.id);await route.fallback({url:String(url)});});
   let release;const gate=new Promise(resolve=>{release=resolve});
   await page.route(`**/api/v62/projects/${project.id}/training-materials/compatibility`,async route=>{await gate;await route.continue();});
@@ -63,7 +71,7 @@ test('38 real incompatible materials diagnose only after start and preserve the 
   const diagnostic=page.getByRole('dialog',{name:'训练暂不可开始',exact:true});
   await expect(diagnostic).toBeVisible();
   await expect(diagnostic).toContainText('38 张');
-  await expect(diagnostic).toContainText('缺少正式标注');
+  await expect(diagnostic).toContainText('38 张标注与当前图片不一致');
   const training=page.getByRole('dialog',{name:'创建训练任务',exact:true});await expect(training).toBeVisible();
   expect(await page.evaluate(()=>window.TrainingDraftRuntime.current().materialIds.length)).toBe(40);
   await diagnostic.getByRole('button',{name:'返回训练配置',exact:true}).click();
