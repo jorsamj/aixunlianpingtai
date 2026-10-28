@@ -105,3 +105,28 @@ test('diagnostic task resumes through original route and viewing integration nev
   }
   expect(writes).toEqual([]);
 });
+
+
+test('advanced tabs use scoped underline styling across four groups and narrow screens',async({page})=>{
+  await ready(page);
+  for(const owner of ['服务节点','部署资源','模型配置','存储配置']) {
+    await page.evaluate(owner=>setPage(owner),owner);
+    const tabs=page.locator('#advancedPageTabs');
+    await expect(tabs).toBeVisible();
+    for(const width of [1440,760,375]) {
+      await page.setViewportSize({width,height:820});
+      const selected=tabs.locator('[aria-selected="true"]');
+      await expect(selected).toHaveCount(1);
+      const style=await selected.evaluate(el=>{const s=getComputedStyle(el);return {background:s.backgroundColor,radius:s.borderRadius,font:s.fontSize,weight:s.fontWeight,line:s.borderBottomWidth,wrap:getComputedStyle(el.parentElement).flexWrap};});
+      expect(style).toEqual({background:'rgba(0, 0, 0, 0)',radius:'0px',font:'14px',weight:'600',line:'3px',wrap:'nowrap'});
+      expect(await tabs.evaluate(el=>el.getBoundingClientRect().right<=innerWidth+1)).toBe(true);
+    }
+    const last=tabs.getByRole('tab').nth(1);
+    await last.click();await expect(last).toHaveAttribute('aria-selected','true');
+    await last.hover();await last.focus();await page.keyboard.press('Tab');await page.keyboard.press('Shift+Tab');
+    expect(await last.evaluate(el=>getComputedStyle(el).outlineStyle)).not.toBe('none');
+    const label=await last.textContent();
+    await page.reload();
+    await expect(tabs.locator('[aria-selected="true"]')).toHaveText(label);
+  }
+});

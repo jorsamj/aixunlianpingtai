@@ -55,6 +55,12 @@ test('quality detection Real Chrome UI contract drives durable tasks for compare
   let modelLoads=0;
   let envLoads=0;
 
+  await page.addInitScript(()=>{
+    const create=URL.createObjectURL.bind(URL),revoke=URL.revokeObjectURL.bind(URL);
+    window.__selectionPreviewUrls=new Set();
+    URL.createObjectURL=file=>{const url=create(file);if(['first.bmp','second.bmp'].includes(file.name))window.__selectionPreviewUrls.add(url);return url;};
+    URL.revokeObjectURL=url=>{window.__selectionPreviewUrls.delete(url);revoke(url);};
+  });
   await selectIsolatedTestProject(page,project.id);
   await page.route(`**/api/v12/projects/${encoded}/test_models**`,route=>{
     modelLoads+=1;
@@ -152,6 +158,23 @@ test('quality detection Real Chrome UI contract drives durable tasks for compare
   await expect(b.locator('option')).toContainText('helmet-v7');
   await page.getByRole('tab',{name:'快速图片检测',exact:true}).click();
 
+  await expect(page.getByRole('button',{name:'选择图片',exact:true})).toHaveCount(1);
+  await expect(page.getByRole('button',{name:'选择文件夹',exact:true})).toHaveCount(1);
+  await expect(page.locator('.scn-file-actions .filepicker426-btn')).toHaveCount(0);
+  await page.locator('#benchFiles64').setInputFiles([
+    {name:'first.bmp',mimeType:'image/bmp',buffer:bmp(96,72)},
+    {name:'second.bmp',mimeType:'image/bmp',buffer:bmp(72,96)},
+  ]);
+  await expect(page.locator('#benchPreview64')).toBeVisible();
+  await expect(page.locator('#benchPreview64 span')).toHaveText('first.bmp');
+  await page.locator('#benchFileList64 .bench64-file-chip').nth(1).click();
+  await expect(page.locator('#benchPreview64 span')).toHaveText('second.bmp');
+  await expect.poll(()=>page.locator('#benchPreview64 img').evaluate(img=>img.naturalWidth)).toBe(72);
+  await page.locator('#benchFileList64 .bench64-file-chip').nth(1).locator('i').click();
+  await expect(page.locator('#benchPreview64 span')).toHaveText('first.bmp');
+  await page.getByRole('button',{name:'清空本次',exact:true}).click();
+  await expect(page.locator('#benchPreview64 img')).toHaveCount(0);
+  expect(await page.evaluate(()=>window.__selectionPreviewUrls.size)).toBe(0);
   await a.selectOption('1');
   await b.selectOption('2');
   await page.locator('#benchConf').fill('0.42');
@@ -167,6 +190,10 @@ test('quality detection Real Chrome UI contract drives durable tasks for compare
   await page.locator('#benchRun64').click();
   await expect(page.locator('#benchBatchList64 .bench64-result-row.done')).toHaveCount(1);
   await expect.poll(()=>creates.length).toBe(2);
+  await expect(page.locator('.deployment-test-live')).toHaveCount(0);
+  await expect(page.locator('#benchBatchSummary64')).toHaveCount(1);
+  await expect(page.locator('.bench64-runbar')).toHaveCount(0);
+
   expect(creates[0].raw).toContain('name="detection_side"');
   expect(creates[0].raw).toContain('\r\n\r\nA\r\n');
   expect(creates[1].raw).toContain('\r\n\r\nB\r\n');
@@ -198,6 +225,7 @@ test('quality detection Real Chrome UI contract drives durable tasks for compare
   await page.locator('#benchMode64').selectOption('a');
   await page.locator('#benchRun64').click();
   await expect.poll(()=>creates.length).toBe(3);
+  await expect(page.locator('.deployment-test-live')).toHaveCount(0);
   expect(creates[2].raw).toContain('\r\n\r\nA\r\n');
   await expect.poll(()=>page.evaluate(()=>state.benchBatch64?.running)).toBe(false);
   await expect(page.locator('#scenarioQuickEvidence64 .scn-stages>section')).toHaveCount(1);

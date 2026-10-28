@@ -1,5 +1,5 @@
 import {ADVANCED_MENUS, advancedPageInfo, installAdvancedNavigation} from './modules/advanced-navigation.js?v=20261024';
-import {installQualityDetectionWorkbench} from './modules/quality-detection-workbench.js?v=20261027-recovery';
+import {installQualityDetectionWorkbench} from './modules/quality-detection-workbench.js?v=20261028-ui';
 import {installAdvancedEvaluation} from './modules/advanced-evaluation.js?v=20261023p2';
 import {renderLegacyMaterialCompatibility} from './modules/legacy-material-compatibility.js?v=20261023fullscan';
 import {createAnnotoriousEditor} from './modules/annotorious-editor.js?v=20261022a';
@@ -53,7 +53,7 @@ import {installStorageImportProgressRuntime, storageImportProgressText} from './
 import {installUploadTaskCenter} from './modules/upload-task-center.js?v=66014';
 import {buildServerImportRequest, buildImportConfirmation, serverImportView} from './modules/server-material-import.js?v=422526';
 import {applyExactLabelCodeMatches, bulkSetLabelMapping, buildManualLabelMapping, createLabelMappingReview, filterCanonicalLabels, labelMappingReviewPage, labelMappingReviewSummary, labelSampleOverlay, reconcileLabelMappingReview, setLabelMapping, setLabelMappingReviewPage, setLabelMappingReviewSearch, setLabelMappingSelected, setLabelMappingTargetSearch} from './modules/label-mapping-review.js?v=4226353';
-import {installResourceDiscoveryRuntime} from './modules/resource-discovery.js?v=422402';
+import {installResourceDiscoveryRuntime} from './modules/resource-discovery.js?v=422403';
 import {installServiceNodeRuntime} from './modules/service-node-runtime.js?v=422550';
 import {installOverviewTabsRuntime} from './modules/overview-tabs.js?v=4226362';
 import {installMaterialBatchRuntime} from './modules/material-batches.js?v=422411';

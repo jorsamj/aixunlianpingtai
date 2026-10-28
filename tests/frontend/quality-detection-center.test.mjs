@@ -50,8 +50,8 @@ test('quality detection only projects server-qualified training algorithms and v
 
 test('quality detection accepts single, multi and folder image input and runs real inference tasks', () => {
   const source = workbench;
-  assert.match(source, /id="benchFiles64" type="file" accept="image\/\*" multiple/);
-  assert.match(source, /id="benchFolder64" type="file" accept="image\/\*" multiple webkitdirectory directory/);
+  assert.match(source, /id="benchFiles64" data-file426="1" type="file" accept="image\/\*" multiple/);
+  assert.match(source, /id="benchFolder64" data-file426="1" type="file" accept="image\/\*" multiple webkitdirectory directory/);
   assert.match(source, /window\.runBenchBatch64=async function/);
   assert.match(source, /await window\.benchPredictOne\('benchModelA'/);
   assert.match(source, /await window\.benchPredictOne\('benchModelB'/);

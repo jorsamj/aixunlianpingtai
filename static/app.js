@@ -3012,7 +3012,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   // Replace all native file selectors with platform-styled controls.
   function beautifyFileInputs426(root=document){
     root.querySelectorAll?.('input[type=file]:not([data-file426])').forEach(input=>{
-      if(input.dataset.pretty426)return; input.dataset.pretty426='1'; input.classList.add('native-file426');
+      if(input.dataset.file426!==undefined||input.dataset.pretty426||input.hidden||input.style.display==='none'||input.classList.contains('hidden-file426'))return; input.dataset.pretty426='1'; input.classList.add('native-file426');
       const wrap=document.createElement('span');wrap.className='filepicker426';
       const btn=document.createElement('button');btn.type='button';btn.className='btn filepicker426-btn';
       const accept=String(input.getAttribute('accept')||'').toLowerCase();btn.textContent=accept.includes('video')?'＋ 上传视频文件':accept.includes('image')?'＋ 选择图片':'＋ 选择本地文件';
@@ -7958,7 +7958,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
       delay:900,
       maxAttempts:700,
       load:()=>window.PlatformCore.withRequestDeadline(signal=>api(idempotentCreation?`/api/v61/projects/${project}/deployment-tests/${taskId}`:`/api/v62/projects/${project}/tasks/${taskId}`,{signal}),{label:'检测任务状态'}),
-      onUpdate:current=>{if(String(pid())===project){patchDeploymentTestProgress(current,taskId,model);batchMeta?.onProgress?.(current)}},
+      onUpdate:current=>{if(String(pid())===project){if(batchMeta?.model_scope!=='scenario')patchDeploymentTestProgress(current,taskId,model);batchMeta?.onProgress?.(current)}},
     });}catch(error){error.creationUncertain=true;error.task_id=taskId;error.creation_id=creationId;throw error;}
     if(task.status!=='SUCCEEDED')throw Object.assign(new Error(task.error||`部署测试未通过：${task.status}`),{task_id:taskId,task_status:task.status});
     let completed;try{completed=await window.PlatformCore.withRequestDeadline(signal=>api(`/api/v61/projects/${project}/deployment-tests/${taskId}`,{signal}),{label:'检测结果读取'});}catch(error){error.creationUncertain=true;error.task_id=taskId;error.creation_id=creationId;throw error;}

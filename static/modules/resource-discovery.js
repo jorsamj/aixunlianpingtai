@@ -172,7 +172,7 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
       ? rows.map(model => `<article class="item"><div><b>${escapeHtml(model.name || model.label || '')}</b><div class="item-sub">${bytes(model.size_bytes)} · 已预置 · 可供首次训练及 GPU Agent 分发</div></div><span class="pill ok">已就绪</span></article>`).join('')
       : '<div class="empty">尚未预置母模型。先将官方 YOLO11n/s/m 或可信自定义 .pt 权重下载到电脑，再从这里上传；训练任务不会自动从 GitHub 下载。</div>';
     return `<div class="rd-cache-head"><div><b>训练母模型库</b><span>持久存储 · 只选择本机真实存在的 .pt · 上传后可用于 GPU 集群</span></div>
-        <div class="row"><input id="rdMotherModelFile" type="file" accept=".pt" style="display:none" onchange="uploadResourceMotherModel(this)">
+        <div class="row"><input id="rdMotherModelFile" data-file426="1" type="file" accept=".pt" style="display:none" onchange="uploadResourceMotherModel(this)">
         <button class="btn primary small" onclick="document.getElementById('rdMotherModelFile')?.click()">上传母模型 .pt</button></div></div>
         <div class="item-sub">仅上传可信来源权重。已同名的不同文件不会覆盖，上传结束前不会加入训练列表。</div><div class="card-list">${summary}</div>`;
   }

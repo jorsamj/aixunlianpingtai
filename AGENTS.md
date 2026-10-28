@@ -1,3 +1,7 @@
+## 2026-10-28｜上传与场景进度UI/高级Tab定点修复（本地验收完成，最终CI待核验）
+
+[唯一专项](docs/SCENARIO_MODEL_EVALUATION_UI_GOVERNANCE_2026_10_22.md)顶部记录隐藏输入重复美化、原队列预览/URL释放、scenario唯一批次进度及四组下划线Tab。VERSION395；定向Node120及Chrome7种场景通过，原业务Owner/路由/后台合同保留。最终提交自身CI另核，不借旧绿；生产推理/母模型大文件未验，不部署。原a741075c/退役WIP/5944与其他工作树全部保留。
+
 ## 2026-10-27｜场景检测创建恢复（代码及隔离CI已验收）
 
 [唯一专项](docs/SCENARIO_MODEL_EVALUATION_UI_GOVERNANCE_2026_10_22.md)顶部记录原Task异步准备/幂等身份/暂存原图恢复、lease与模型引用保护、真实阶段及稳定原图预览。VERSION393；代码28fbea92准确35/35 Actions、97/97 Checks成功，Node1377/1377、Chrome301/301；旧失败与修正留痕。文档提交自身HEAD另核CI，不借旧绿。生产OSS/GPU/性能NOT VERIFIED，不部署；5944/其他WIP保留。本机工具断连后仅文档经远端安全快进提交，接续先fetch保护本地状态，从专项与原Owner继续。
