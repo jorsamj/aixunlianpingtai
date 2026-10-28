@@ -1,4 +1,5 @@
 import {test, expect} from '@playwright/test';
+import {mkdirSync, writeFileSync} from 'node:fs';
 
 const PIXEL = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
 
@@ -32,6 +33,18 @@ test('training material picker opens immediately, renders larger previews, and p
 
   const projectId = await page.evaluate(() => state.project?.id);
   expect(projectId).toBeTruthy();
+  const statusRead = await page.evaluate(async pid => {
+    const start=performance.now();
+    const response=await fetch(`/api/projects/${encodeURIComponent(pid)}/jobs`);
+    const headersAt=performance.now(),text=await response.text();
+    return {environment:'isolated browser test boot project; NOT production',status:response.status,
+      response_bytes:new TextEncoder().encode(text).length,rows:JSON.parse(text).length,
+      headers_observed_ms:headersAt-start,total_ms:performance.now()-start,
+      request_id:response.headers.get('X-Request-ID'),server_timing:response.headers.get('Server-Timing')};
+  },projectId);
+  expect(statusRead.status).toBe(200);
+  if(statusRead.request_id)expect(statusRead.request_id).toMatch(/^[0-9a-f]{32}$/);
+  if(process.env.MC_PERF_AUDIT_OUTPUT){mkdirSync(process.env.MC_PERF_AUDIT_OUTPUT,{recursive:true});writeFileSync(process.env.MC_PERF_AUDIT_OUTPUT+'/browser-status.json',JSON.stringify(statusRead,null,2));}
   const encoded = encodeURIComponent(projectId);
   const requests = [];
   const thumbnailRequests = [];

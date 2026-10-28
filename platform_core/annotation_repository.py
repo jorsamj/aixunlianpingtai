@@ -1,6 +1,8 @@
 """Primary annotation storage; legacy JSON is read only until an explicit update."""
 from __future__ import annotations
 
+from .performance_diagnostics import observe_connection
+
 import hashlib
 import json
 import sqlite3
@@ -141,11 +143,11 @@ class AnnotationRepository:
         if getattr(self, "_read_only", False):
             db = sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True, timeout=30)
             db.row_factory = sqlite3.Row
-            return db
+            return observe_connection(db)
         db = sqlite3.connect(self.path, timeout=30)
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA busy_timeout=30000")
-        return db
+        return observe_connection(db)
 
     def _read_schema_version_fast(self) -> int | None:
         if not self.path.is_file():

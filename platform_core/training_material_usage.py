@@ -5,6 +5,8 @@ coverage complete. Neither terminal failure nor process launch erases exposure.
 """
 from __future__ import annotations
 
+from .performance_diagnostics import observe_connection, stage, count
+
 import json
 import sqlite3
 from contextlib import closing
@@ -26,7 +28,7 @@ class TrainingMaterialUsage:
         else:
             db = sqlite3.connect(self.path.resolve().as_uri() + '?mode=ro', uri=True, timeout=5)
         db.row_factory = sqlite3.Row
-        return db
+        return observe_connection(db)
 
     @staticmethod
     def _schema(db):
@@ -179,10 +181,14 @@ class TrainingMaterialUsage:
         if not self.path.is_file():
             return 'unknown'
         with closing(self._connect()) as db:
-            if not db.execute("SELECT 1 FROM sqlite_master WHERE name='training_usage_meta'").fetchone():
-                return 'unknown'
-            row = db.execute('SELECT revision FROM training_usage_meta WHERE id=1').fetchone()
-            return str(row[0]) if row else 'unknown'
+            return self._read_revision(db)
+
+    @staticmethod
+    def _read_revision(db):
+        if not db.execute("SELECT 1 FROM sqlite_master WHERE name='training_usage_meta'").fetchone():
+            return 'unknown'
+        row = db.execute('SELECT revision FROM training_usage_meta WHERE id=1').fetchone()
+        return str(row[0]) if row else 'unknown'
 
     def rebuild_batch(self, project_id, task_ids, load_owner_evidence, *, limit=100):
         """Explicit bounded maintenance; never invoked by listing.
@@ -212,6 +218,7 @@ class TrainingMaterialUsage:
 
     def query_filter(self, project_id, algorithm_id, images, *, parent_task_ids=(), exclude_used=True, role='train'):
         images = list(images)
+        count("usage_candidate_rows",len(images))
         index = self._query_candidates(project_id, algorithm_id, images)
         parent_ids = set(map(str, parent_task_ids))
         token_rows = {}
@@ -256,8 +263,9 @@ class TrainingMaterialUsage:
                 'excluded_image_ids': [key for key, value in by_id.items() if value['excluded']],
                 'unknown_image_ids': [key for key, value in by_id.items() if value['state'] == 'unknown']}
 
+    @stage("usage_lookup")
     def _query_candidates(self, project_id, algorithm_id, images):
-        result = {'records': [], 'revision': self.read_revision(), 'coverage': 'unknown'}
+        result = {'records': [], 'revision': 'unknown', 'coverage': 'unknown'}
         if not self.path.is_file():
             return result
         tokens = sorted({token for image in images for token in
@@ -265,6 +273,7 @@ class TrainingMaterialUsage:
         with closing(self._connect()) as db:
             db.execute('BEGIN')
             if not db.execute("SELECT 1 FROM sqlite_master WHERE name='training_usage_tokens'").fetchone():
+                result['revision'] = self._read_revision(db)
                 if self._empty_project_history(db, project_id):
                     result['coverage'] = 'complete'
                 return result
@@ -273,6 +282,8 @@ class TrainingMaterialUsage:
             ready_table = db.execute("SELECT 1 FROM sqlite_master WHERE name='training_usage_token_schema'").fetchone()
             if not ready_table or not db.execute('SELECT 1 FROM training_usage_token_schema WHERE version=1').fetchone():
                 result['coverage'] = 'unknown'
+            # Preserve the original malformed-schema error instead of silently
+            # accepting a token index whose mandatory revision table vanished.
             revision = db.execute('SELECT revision FROM training_usage_meta WHERE id=1').fetchone()
             result['revision'] = str(revision[0]) if revision else 'unknown'
             matched = {}

@@ -7,6 +7,9 @@ on:
       - feature/external-algorithm-publishing
     paths:
       - 'app.py'
+      - 'platform_core/performance_diagnostics.py'
+      - 'tests/api/test_platform_performance_diagnostics.py'
+      - 'tests/performance/test_platform_hot_paths.py'
       - 'platform_core/training_material_picker_api.py'
       - 'platform_core/annotation_repository.py'
       - 'platform_core/training_recovery_api.py'
@@ -67,6 +70,8 @@ jobs:
           tests/api/test_training_material_picker_api.py
           tests/api/test_training_material_selection_summary_api.py
           tests/api/test_runtime_router_app_mount.py
+          tests/api/test_platform_performance_diagnostics.py
+          tests/performance/test_platform_hot_paths.py
       - name: Frontend syntax and contracts
         run: >-
           node --check static/modules/training-material-picker-runtime.js &&

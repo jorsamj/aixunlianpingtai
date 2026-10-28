@@ -381,6 +381,10 @@ def _auth_test_bypass_enabled() -> bool:
     return ALLOW_MULTIPLE_PROJECTS_FOR_TESTS and isolated_test_access_enabled(DATA_DIR)
 
 
+from platform_core.performance_diagnostics import PerformanceDiagnosticsMiddleware, stage as performance_stage, count as performance_count
+app.add_middleware(PerformanceDiagnosticsMiddleware)
+
+
 @app.middleware("http")
 async def changlian_login_guard(request: Request, call_next):
     if _auth_test_bypass_enabled():
@@ -1179,6 +1183,10 @@ def _terminate_pid_tree(pid: Any) -> bool:
         return False
 
 
+_TRAINING_TASK_NOT_LOADED = object()
+
+
+@performance_stage("task_projection")
 def enrich_job_runtime(
     project_id: str,
     job: Dict[str, Any],
@@ -1187,6 +1195,7 @@ def enrich_job_runtime(
     worker_runtime=None,
     queued_candidates=None,
     allow_version_archive: bool = True,
+    durable_task=_TRAINING_TASK_NOT_LOADED,
 ) -> Dict[str, Any]:
     if not job:
         return job
@@ -1222,7 +1231,7 @@ def enrich_job_runtime(
     worker_error = str(job.get("error") or "").strip()
     worker_message = str(job.get("message") or "").strip()
     worker_progress_truth = dict(job)
-    durable = repository.get(str(job_id)) if job_id else None
+    durable = (repository.get(str(job_id)) if job_id else None) if durable_task is _TRAINING_TASK_NOT_LOADED else durable_task
     public_runtime = None
     if durable is not None and durable.project_id == project_id and durable.kind is TaskKind.TRAINING:
         mapped = {
@@ -8658,9 +8667,11 @@ def add_job_to_index(project_id: str, job: Dict[str, Any]):
 @app.get("/api/projects/{project_id}/jobs")
 def list_jobs(project_id: str):
     get_project(project_id)
-    try: _v48_dispatch_training_queues(project_id)
-    except Exception: pass
-    rows = sync_jobs_index(project_id)
+    history_context = None
+    try: history_context = _v48_dispatch_training_queues(project_id)
+    except Exception: performance_count("legacy_queue.failures")
+    rows = (sync_jobs_index(project_id, history_context=history_context)
+            if history_context is not None else sync_jobs_index(project_id))
     if not isinstance(rows, list):
         rows = read_json(project_dir(project_id) / "jobs" / "index.json", [])
     return rows
@@ -9040,6 +9051,7 @@ _TRAINING_JOB_PROJECTIONS = {}
 _TRAINING_COUNT_PAYLOADS = {}
 
 
+@performance_stage("training_history")
 def _training_history_context(project_id: str):
     rows = _TRAINING_HISTORY_PROJECTION.read(
         project_dir(project_id) / "jobs", lambda path: read_json(path, {}),
@@ -9053,6 +9065,8 @@ def _training_history_context(project_id: str):
         cursor = page.next_cursor
         if not cursor:
             break
+    performance_count("history_job_rows", len(rows))
+    performance_count("history_task_rows", len(durable))
     return rows, repository, durable
 
 
@@ -9081,11 +9095,12 @@ def _successful_training_counts(project_id: str):
     })
 
 
-def sync_jobs_index(project_id: str):
+@performance_stage("training_index")
+def sync_jobs_index(project_id: str, *, history_context=None):
     jobs_dir = project_dir(project_id) / "jobs"
     # Serialise only the read projection, never worker publication or scheduling.
     with _TRAINING_JOB_PROJECTION_LOCK:
-        raw_rows, repository, durable = _training_history_context(project_id)
+        raw_rows, repository, durable = history_context if history_context is not None else _training_history_context(project_id)
         key = str(jobs_dir.resolve())
         previous = _TRAINING_JOB_PROJECTIONS.get(key, {})
         current = {}
@@ -9100,6 +9115,14 @@ def sync_jobs_index(project_id: str):
             if old is not None and old[0] == raw and old[1] == revision and not _training_job_is_active(old[2]):
                 job = old[2]
             else:
+                projection_task = durable.get(str(raw.get("id") or ""))
+                if projection_task is None or projection_task.status not in {
+                    TaskStatus.SUCCEEDED, TaskStatus.PARTIAL_SUCCESS, TaskStatus.FAILED, TaskStatus.CANCELLED,
+                }:
+                    # Active leases and newly adopted legacy identities retain
+                    # the original fresh get; only known terminal rows use the
+                    # already-read record for this response projection.
+                    projection_task = _TRAINING_TASK_NOT_LOADED
                 job = enrich_job_runtime(
                     project_id, dict(raw), repository=repository,
                     worker_runtime=worker_runtime, queued_candidates=queued_candidates,
@@ -9107,6 +9130,7 @@ def sync_jobs_index(project_id: str):
                     # version receipt here. Current Durable handlers own their
                     # own finalized version; never rebuild that on GET.
                     allow_version_archive=task is None,
+                    durable_task=projection_task,
                 )
             current[str(raw.get("id") or identity)] = (raw, revision, job)
             jobs.append(job)
@@ -11903,7 +11927,8 @@ def _v56_migrate_queued_priority(job_file: Path, job: Dict[str, Any]) -> Dict[st
     return migrated
 
 
-def _v48_dispatch_training_queues(project_id: str) -> None:
+@performance_stage("legacy_queue")
+def _v48_dispatch_training_queues(project_id: str) -> Optional[tuple]:
     """Run one task per resource, using lower-number-first priority and FIFO ties."""
     with _LEGACY_V48_TRAIN_QUEUE_LOCK:
         rows=[]
@@ -11928,6 +11953,10 @@ def _v48_dispatch_training_queues(project_id: str) -> None:
             except Exception as e:
                 j.update(status="failed",message=f"训练启动失败：{e}",finished_at=now_iso(),updated_at=now_iso(),never_started=True)
                 write_json(jf,j)
+        # Only the all-Durable path is read-only here. Reuse its snapshot within
+        # this request, never across requests. Any legacy row keeps the original
+        # post-dispatch reread, including legacy launch/recovery side effects.
+        return (history, _repository, durable) if not rows else None
 
 
 @app.post("/api/v48/projects/{project_id}/jobs/{job_id}/promote")

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from ..performance_diagnostics import observe_connection
+
 from contextlib import closing, contextmanager
 
 import base64
@@ -197,7 +199,7 @@ class TaskRepository:
         database.row_factory = sqlite3.Row
         database.execute(f"PRAGMA busy_timeout={busy_timeout_ms()}")
         database.execute("PRAGMA synchronous=FULL")
-        return database
+        return observe_connection(database)
 
     def _read_schema_version_fast(self) -> int | None:
         if not self.path.is_file():

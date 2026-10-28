@@ -4,7 +4,7 @@ import pytest
 from platform_core.training_material_usage import TrainingMaterialUsage
 
 
-def test_unknown_selected_possible_and_failed_are_distinct(tmp_path):
+def test_unknown_selected_possible_and_failed_are_distinct(tmp_path, monkeypatch):
     path = tmp_path / 'tasks.sqlite3'
     sqlite3.connect(path).close()
     index = TrainingMaterialUsage(path)
@@ -21,6 +21,14 @@ def test_unknown_selected_possible_and_failed_are_distinct(tmp_path):
     assert index.query_filter('p', 'algo', images)['by_image_id']['a']['state'] == 'possible'
     index.record_execution('task', completed_epoch=True, generation=1)
     assert index.query_filter('p', 'algo', images)['by_image_id']['a']['state'] == 'used'
+    connections=[]
+    connect=index._connect
+    def observed_connect(*args, **kwargs):
+        connections.append(True)
+        return connect(*args, **kwargs)
+    monkeypatch.setattr(index, '_connect', observed_connect)
+    assert index.query_filter('p', 'algo', images)['by_image_id']['a']['state'] == 'used'
+    assert len(connections)==1, 'revision and history query must share their read transaction'
 
 
 def test_same_content_parent_validation_and_benchmark_protection(tmp_path):

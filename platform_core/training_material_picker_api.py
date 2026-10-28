@@ -6,6 +6,8 @@ aggregated inside SQLite, and thumbnails are created lazily on demand.
 """
 from __future__ import annotations
 
+from .performance_diagnostics import observe_connection, stage, count
+
 import hashlib
 import json
 import math
@@ -112,6 +114,7 @@ def _normalize_labels(values: object) -> tuple[str, ...]:
 
 
 @lru_cache(maxsize=4)
+@stage("usage_pool_build")
 def _cached_usage_pool(project_path, task_path, material_revision, algorithm_id, usage_revision, role, exclude_used):
     from .training_material_usage import TrainingMaterialUsage
     repository = MaterialRepository(Path(project_path))
@@ -122,7 +125,7 @@ def _cached_usage_pool(project_path, task_path, material_revision, algorithm_id,
               "source_root_id","derived_from_image_id")
     columns = ",".join("json_extract(payload_json, '$."+field+"') AS "+field for field in fields)
     combined = {"revision":usage_revision,"coverage":"unknown","by_image_id":{},"excluded_image_ids":[],"unknown_image_ids":[],"state_ids":{"unknown":[],"unused":[]}}
-    with closing(sqlite3.connect(repository.path, timeout=30)) as db:
+    with closing(observe_connection(sqlite3.connect(repository.path, timeout=30))) as db:
         db.row_factory=sqlite3.Row
         cursor=db.execute("SELECT id,content_sha256,"+columns+" FROM materials WHERE processing_status='processed'")
         while True:
@@ -156,6 +159,7 @@ def _usage_filters(repository, filters):
     usage_revision = TrainingMaterialUsage(task_path).read_revision()
     if policy == "include_history" and not state and not scope:
         return body, {"revision":usage_revision,"coverage":"unknown","by_image_id":{},"excluded_image_ids":[],"unknown_image_ids":[]}
+    count("usage_pool_requests")
     facts = _cached_usage_pool(str(repository.project_path), str(task_path), repository.current_revision(),
         algorithm_id, usage_revision, str(body.get("role") or "train"), policy == "new_for_algorithm")
     excluded=set(facts["excluded_image_ids"])
@@ -567,6 +571,7 @@ def _bulk_filtered_ids(
 
 
 @lru_cache(maxsize=8)
+@stage("role_index_build")
 def _cached_role_index(material_path, annotation_path, material_revision, annotation_revision, contract_json, filters_json):
     from .training_label_tasks import training_material_role, task_negative_confirmable
     contract = json.loads(contract_json)
@@ -583,7 +588,7 @@ def _cached_role_index(material_path, annotation_path, material_revision, annota
     extra, values = _picker_filter_sql(filters)
     clauses.extend(extra); params.extend(values)
     result = []
-    with closing(sqlite3.connect(material_path, timeout=30)) as db:
+    with closing(observe_connection(sqlite3.connect(material_path, timeout=30))) as db:
         db.row_factory = sqlite3.Row
         db.execute("ATTACH DATABASE ? AS annotation_gt", (annotation_path,))
         db.execute("BEGIN")
@@ -599,9 +604,11 @@ def _cached_role_index(material_path, annotation_path, material_revision, annota
             if role == "pending_review" and task_negative_confirmable(payload, contract):
                 role = "pending_negative"
             result.append((row["id"], role))
+    count("role_candidate_rows",len(result))
     return tuple(result)
 
 
+@stage("role_page")
 def _role_material_page(repository, annotations, contract, *, image_ids=None,
                         query="", labels=(), sample_role="", page=1, limit=60, sort_order="oldest", filters=None, include_payload=True):
     if sample_role not in {"", "positive", "confirmed_negative", "pending_negative", "pending_review"}:
@@ -614,6 +621,7 @@ def _role_material_page(repository, annotations, contract, *, image_ids=None,
     selected.update(query=str(query or "").strip(), labels=sorted(set(labels)))
     if image_ids is not None: selected["image_ids"] = sorted(set(image_ids))
     revisions = (repository.current_revision(), annotations.current_revision())
+    count("role_index_requests")
     index = _cached_role_index(str(repository.path), str(annotations.path), *revisions,
         json.dumps(contract, sort_keys=True), json.dumps(selected, sort_keys=True))
     counts = {role:0 for role in ("positive", "confirmed_negative", "pending_negative", "pending_review")}
