@@ -1,5 +1,7 @@
 ## 2026-10-28｜重复上传控件、检测进度及高级 Tab 定点修复
 
+文档HEAD失败与补验留痕：`0f3936104adb527043c7c77c9d34dcf59f7ce40f`准确20/21 Actions、54/55 Checks成功，原Chrome302项中301通过1失败；`auto-label-polling.spec.mjs` 的AI候选审核在准备项目POST `/api/projects`阶段出现 `socket hang up`，尚未执行页面交互，日志没有给出断连根因。2026-10-28本地仅复验该原用例1/1通过（7秒），没有修改业务代码、超时、断言或工作流。不能把本地复验当远端通过；本次纯文档提交继续按自身准确SHA核验CI，不借代码提交绿色。此故障不声明根因已修复。
+
 最终代码回执：`ed19d9f1464cf3d6eba87c4e3b0ef1e60ba850b6` 已正常推送长期分支。2026-10-28核对该准确SHA **22/22 Actions、58/58 Checks success**（0失败/取消/跳过），前端日志 **Node1381/1381、Chrome302/302（18.3分钟）**。修正后的停止保护定向16项通过，原安全断言未改。证据：[该提交](https://github.com/jorsamj/aixunlianpingtai/commit/ed19d9f1464cf3d6eba87c4e3b0ef1e60ba850b6)、[Chrome及前端工作流](https://github.com/jorsamj/aixunlianpingtai/actions/runs/40647731885)。本次仅补记验收的文档提交自身Checks须独立核验，不能借用代码提交绿色。
 
 交付范围：重复文件按钮已去除，图片选择/切换/清空及URL释放恢复；scenario只显示原批次主进度，非scenario旧进度不变；四组高级Tab仅CSS统一。上传、Uppy/原回退、ZIP暂停恢复、去重过滤、任务真实轮询及历史/A-B/人工复核均保留。可进入用户部署评审，但不代表生产真实推理或大权重上传已验证，未自动部署。接续只处理另行确认的生产验证或已有版本退役专项，不重复改造本轮Owner。版本退役代码仍在原工作树a741075c及WIP，未混入本轮。
