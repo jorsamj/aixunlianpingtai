@@ -223,6 +223,10 @@ test('training submit sends the selected candidate pool and configured experimen
   await dialog.locator('#tr429Priority').fill('0');
   await dialog.locator('button[data-training-step="3"]').click();
   await dialog.locator('.train428-footer .btn.primary').click();
+  const negativeConfirmation=page.getByRole('dialog',{name:'本次训练包含待确认负样本',exact:true});
+  await expect(negativeConfirmation).toContainText('待确认负样本 2');
+  expect(submitted).toBeUndefined();
+  await negativeConfirmation.getByRole('button',{name:'确认并创建训练任务',exact:true}).click();
   await expect(page.locator('#toast')).toContainText('任务优先级必须是 1~999 的整数');
   expect(submitted).toBeUndefined();
   await dialog.locator('button[data-training-step="1"]').click();

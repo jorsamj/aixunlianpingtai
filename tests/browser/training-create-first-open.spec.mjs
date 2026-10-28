@@ -68,6 +68,8 @@ async function seedProject(request) {
 }
 
 async function routeCompatibleTrainingMaterials(page) {
+  // These two provenance fixtures use synthetic material IDs, like their existing compatibility stub.
+  await page.route('**/api/v62/projects/*/training-materials/negative-preview',route=>route.fulfill({json:{counts:{positive:route.request().postDataJSON().train_image_ids.length,confirmed_negative:0,pending_negative:0,pending_review:0},pending_count:0,effective_label_codes:['smoke']}}));
   await page.route('**/api/v62/projects/*/training-materials/compatibility', route => route.fulfill({
     status: 200,
     contentType: 'application/json',

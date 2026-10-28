@@ -15,7 +15,7 @@
 继续原AnnotationRepository、MaterialRepository、Task/Snapshot、Submit/Modal。任务确认作为有版本和目标范围的独立审核证据，不能把任务确认写回原GT框或修改原图；原V3投影按经验证证据生成任务局部空标签。池关联与管理分类只落原素材存储扩展，旧无记录默认不在池，不另建图片库/类别映射/训练引擎。高级预览若已有CSC入口复用，只补真正缺口。
 
 - [x] N1/P0：在现有reviewed-negative导出测试增加空图、其他类、混合三种真实文件断言及原图/GT不变、全负拒绝；先跑RED，再沿原training_label_tasks/projection/snapshot/materialize修复。
-- [x] N2/P0：扩展原AnnotationRepository确认凭据及Picker summary/compatibility；提交前只读预览与显式确认，服务端重新验证project/目标/源SHA/GT版本；原TrainReq/Draft/Submit携带确认引用，Worker冻结同证据。不确认不自动导出空标签。
+- [x] N2/P0：扩展原AnnotationRepository确认凭据及Picker summary/compatibility；提交前只读预览与显式确认，服务端重新验证project/目标/源SHA/GT版本；沿原Submit提交并由后端解析确认引用，Worker冻结同证据。不确认不自动导出空标签。
 - [x] N3/P0：原MaterialRepository上的池成员/一级分类关联和分页筛选/跨页ID批选/幂等管理API；不改正样本标签，旧数据兼容、删除只移关联，不删素材。
 - [x] N4/P0：素材页训练素材/负样本池Tab、标签页正样本标签/负样本分类Tab、原Picker池筛选与加入草稿；紧凑布局，复用原Modal/请求/任务机制。
 - [x] N5/P0：原三步素材摘要显示正/已确认负/待确认负数量，最终Submit仅有pending时一次确认，关闭/迟到/重试/草稿变化保护；旧业务校验不降低。
@@ -63,6 +63,9 @@
 
 
 后续 `24f5c55310fa3d0265b344db1697e69467835f80` 的原Frontend Chrome标签生命周期场景仍按旧通配审核直接提交：本轮fire目标下两张smoke图必须先明确确认。已增加真实确认交互，且断言确认前未POST，原全部参数/唯一Submit/成功关闭断言保留。复验发现空素材草稿被新预检先报标签错误，现不足2张直接交原准入Owner统一报告材料阻塞，不跳过后端规则；该完整原场景 **1/1通过**。池审核状态补识别原needs_review/external/annotation标志为stale，同一SQL支持列表和跨页筛选；原定向筛选用例 **1/1通过**。这些为明确问题的最小修正，无测试扩围，尚需以新SHA CI独立验收。
+
+
+`0d350b38b468ca1e0a92140423c7afa12eb00ba8` 的First Open剩余3条旧夹具未适配，不能标绿：两个反馈/Benchmark来源追溯用例使用不存在的虚拟素材ID且原已mock全部compatibility，现同一夹具补齐“无待确认、正样本”预检响应，仅用于UI来源合同，不冒充真实GT验证；另一个真实fire/smoke素材用例补点击显式确认再校验非法优先级，仍断言优先级0不POST，重试保持原候选池/划分/参数。三项精确grep复验 **3/3通过**。真实负样本判定/receipt/导出由前述隔离API与实际文件、真实Chrome独立覆盖，不通过fixture修改放宽后端规则。本轮最终共7种相关Chrome场景分批通过，不把重复执行计入数量，不新增全仓本地回归。
 
 ## 2026-10-27｜训练稳定性接续入口
 
