@@ -10,7 +10,7 @@ export function installNegativePoolRuntime({getState,api,pid,esc,toast,modal,clo
   const view=()=>document.getElementById('view');
   const base=()=>`/api/v61/projects/${encodeURIComponent(pid())}/negative-pool`;
   const reviewName=value=>({annotated:'已标注',unannotated:'待标注',confirmed_empty:'已确认空图',stale:'审核已过期',unknown:'未知 / 未核验'}[value]||'未知 / 未核验');
-  const usageName=value=>{if(!value||value==='unknown')return '未知';if(typeof value==='string')return value;return [value.current_algorithm_trained?'当前算法已使用':'',value.other_algorithm_trained?'其他算法已使用':'',value.state||''].filter(Boolean).join(' · ')||'未知'};
+  const usageName=value=>{if(!value||value==='unknown')return '未知';if(typeof value==='string')return value;return [value.current_algorithm_trained?'当前算法已使用':'',value.other_algorithm_trained?'其他算法已使用':'',({used:'已参与训练',possible:'可能已参与训练',selected:'仅被选入任务',eval_only:'仅用于评估',unused:'有据未使用',unknown:'历史未知'})[value.state]||'历史未知'].filter(Boolean).join(' · ')||'未知'};
   const button=(action,text,extra='')=>`<button type="button" class="btn" data-np="${action}" ${extra}>${text}</button>`;
   const err=e=>toast(e.message||String(e));
   function resetProject(){if(project!==String(pid())){project=String(pid());active='materials';labelTab='positive';filters={};selected.clear();page=1;epoch++}}

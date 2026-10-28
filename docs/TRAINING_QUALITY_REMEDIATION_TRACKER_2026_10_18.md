@@ -53,6 +53,14 @@
 
 接续从本节、原training_label_tasks/Prepare/Picker及新增pool适配层继续。不要另建负样本图片库、目标类别、任务或审核系统；池成员资格不代表对任意算法无目标。提交与CI见后续准确SHA回执；本轮不部署、不改生产数据库/素材/GT，不跑真实训练。
 
+### 首推CI问题与最小修正（2026-10-28）
+
+首推 `8a17b23d96f84418fba7605eae360bceda1ecaf1` 不是绿色验收：Training Material Picker后端53通过/16失败，根因是本轮增加通用分页revision时误用外层变量annotation_repository；已改用该函数参数annotations，不改变查询/筛选/权限合同。受影响原Picker/summary API两文件实际 **33/33通过**。First Open原素材选择Chrome失败同属该500，等待修正SHA独立CI。
+
+原Picker Chrome还要求“待审核”旧文案及审核后把person的GT scope扩到vest；本轮明确要求任务确认不修改正式GT，已同步为“待确认负样本”，并将断言加强为整份原annotation前后相等，保留实际确认与角色转换。该原Chrome场景定向 **1/1通过**。没有删除测试或降低安全断言。
+
+补核自定义日期截止日发现仅比较当天零点，现date-only结束日期包含完整UTC日（timestamp仍精确），同一列表/全筛选ID共享SQL；原筛选/事务用例补断言后 **1/1通过**。训练历史状态补中文显示，JS语法通过。VERSION保持本轮397，不重复递增。修正后必须核验新SHA，不沿用旧结论。
+
 ## 2026-10-27｜训练稳定性接续入口
 
 SQLite锁、Lease/GPU保护、断点续训三时间及最终Worker专项见[唯一记录](TRAINING_SQLITE_LEASE_TIMING_2026_10_27.md)，不重建既有训练/GT/调度。最终SHA验收以该专项为准。

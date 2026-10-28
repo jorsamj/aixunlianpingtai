@@ -151,7 +151,12 @@ class NegativePool:
                 parsed = datetime.fromisoformat(str(value).replace('Z','+00:00'))
                 if parsed.tzinfo is None:
                     parsed = parsed.replace(tzinfo=timezone.utc)
-                clauses.append('n.joined_at '+operator+' ?')
+                # A date-only upper bound includes that whole UTC calendar day.
+                bound_operator = operator
+                if operator == '<=' and len(str(value)) == 10:
+                    parsed += timedelta(days=1)
+                    bound_operator = '<'
+                clauses.append('n.joined_at '+bound_operator+' ?')
                 params.append(parsed.astimezone(timezone.utc).isoformat())
         # Original formal annotation projection, never target-specific negative approval.
         if review_status:

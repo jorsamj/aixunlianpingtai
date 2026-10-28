@@ -46,6 +46,9 @@ def test_filters_full_selection_and_atomic_rejection(tmp_path):
     assert len(pool.query(review_status='unannotated',ids_only=True)['items'])==4
     assert pool.query(joined_days=7)['total']==4
     assert pool.query(joined_to='2000-01-01')['total']==0
+    day=pool.query()['items'][0]['negative_pool']['joined_at'][:10]
+    assert pool.query(joined_from=day,joined_to=day)['total']==4
+    assert len(pool.query(joined_from=day,joined_to=day,ids_only=True)['items'])==4
     with pytest.raises(ValueError):
         pool.members(['0','missing'],action='remove')
     assert pool.query()['total']==4

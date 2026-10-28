@@ -374,7 +374,7 @@ def _gt_material_filter_page(
         "total": total,
         "material_revision": material_revision,
         "annotation_revision": annotation_revision,
-            "negative_confirmation_revision": annotation_repository.task_negative_confirmation_revision(),
+            "negative_confirmation_revision": annotations.task_negative_confirmation_revision(),
             "negative_pool_revision": NegativePool(repository).revision(),
     }
 

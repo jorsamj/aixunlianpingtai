@@ -195,7 +195,7 @@ test('vest first training reviews person without changing source boxes or adding
  await page.evaluate(({id,ids})=>{window.TrainingDraftRuntime.update({algorithmId:id,materialIds:ids,newLabelCodes:['vest'],config:{model:'yolo11n.pt'}});window.openTrainMaterialPickerV3('train')},{id:created.algorithm.id,ids});
  await expect(page.locator('.train-v3-card')).toHaveCount(2);
  await expect(page.locator('#trV3TrainingLabels')).toContainText('vest');
- await expect(page.locator('#trV3RoleCounts')).toContainText('待审核 1');
+ await expect(page.locator('#trV3RoleCounts')).toContainText('待确认负样本 1');
  await page.getByRole('button',{name:'审核待确认素材',exact:true}).click();await expect(page.locator('.train-v3-card')).toHaveCount(1);
  await expect(page.locator('svg.train-v3-box-layer rect[data-label="person"]')).toBeVisible();
  await page.locator('.train-v3-card input').check();page.once('dialog',dialog=>dialog.accept());
@@ -207,6 +207,6 @@ test('vest first training reviews person without changing source boxes or adding
  await expect(page.locator('.train-v3-card')).toHaveCount(1);
  await expect(page.locator('.train-v3-card')).toContainText('可作为 vest 负样本');
  const after=await(await request.get(`/api/projects/${project.id}/annotations/${ids[1]}`)).json();
- expect(after.annotation.boxes).toEqual(personBefore.boxes);expect(after.annotation.annotation_scope).toEqual(['person','vest']);
+ expect(after.annotation).toEqual(personBefore);
  expect(errors).toEqual([]);
 });
