@@ -9,9 +9,27 @@ import {
   trainingMaterialSelectionSignature,
   updateTrainingGovernanceSelection,
   renderGtConflictEvidence,
+  renderTrainingSampleConfirmation,
   renderTrainingSampleRoles,
   removeResolvedTrainingMaterials,
 } from '../../static/modules/training-material-summary-runtime.js';
+
+test('multiclass final confirmation reports partial positives separately from task backgrounds and GT blockers',()=>{
+  const html=renderTrainingSampleConfirmation({effective_label_codes:['person','head'],
+    pending_count:1,counts:{positive:3,confirmed_negative:0,pending_negative:1,pending_review:1},
+    coverage:{selected_count:5,eligible_count:4,full_coverage_count:1,partial_coverage_count:2,
+      zero_target_count:1,classes:[{code:'person',image_count:2,box_count:2},{code:'head',image_count:2,box_count:2}],
+      problems:[{image_id:'bad<id>',issue_type:'missing_annotation',missing_label_codes:['head']}]},
+    pending_preview:[{image_id:'bg1',image_url:'/private/background.png'}]});
+  assert.match(html,/部分类别覆盖 · 仍是正样本/);
+  assert.match(html,/只有在逐一确认画面确实不含本次所选目标/);
+  assert.match(html,/正式 GT 或素材问题，不能靠普通确认放行/);
+  assert.match(html,/head.*2 张/);
+  assert.ok(!html.includes('bad<id>'),'untrusted material IDs must be escaped');
+  assert.match(html,/返回调整/);
+  assert.match(html,/确认并创建/);
+  assert.ok(!html.includes('每张素材必须有全部类别'));
+});
 import {resolveClientTrainingLabels} from '../../static/modules/training-labels.js';
 
 test('shared GT evidence distinguishes unknown cause and null metrics without trusting HTML', () => {

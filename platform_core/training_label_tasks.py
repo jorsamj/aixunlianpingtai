@@ -669,13 +669,15 @@ def task_negative_identity(row, contract):
 def task_negative_confirmable(row, contract):
     # Validate geometry/source flags using the existing role classifier, with
     # only task-local scope supplied. This never writes the formal annotation.
+    # An uncommitted AI candidate or an unannotated image has no formal GT:
+    # task-level confirmation cannot turn it into an approved empty sample.
+    if str(row.get("annotation_state") or "unannotated") not in {"annotated", "confirmed_empty"}:
+        return False
     if row.get("_dataset_delete_claim") or row.get("_material_batch_delete_claim"):
         return False
     if len(str(row.get("content_sha256") or "")) != 64:
         return False
     candidate = dict(row, annotation_scope=list(contract.get("effective_label_codes") or []))
-    if not candidate.get("boxes") and candidate.get("annotation_state") == "unannotated":
-        candidate["annotation_state"] = "confirmed_empty"
     return training_material_role(candidate, {"effective_label_codes": contract.get("effective_label_codes")})["role"] == "confirmed_negative"
 
 

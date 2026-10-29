@@ -994,29 +994,65 @@ def training_material_picker_router(
         from .training_label_tasks import (task_negative_confirmable, task_negative_identity,
             task_negative_context, training_material_role, _ORIGINAL_SELECTED_PROJECT_IMAGES)
         repository = materials(project_id)
+        annotations = AnnotationRepository(repository.project_path)
+        revisions = (repository.current_revision(), annotations.current_revision())
         contract = task_contract(project_id, payload, repository)
         ids = _normalize_selection_ids([*(payload.get("train_image_ids") or []),
             *(payload.get("val_image_ids") or []), *(payload.get("selected_image_ids") or []), *(payload.get("image_ids") or []),
-            *(payload.get("test_image_ids") or [])])
+        ])
         rows = _ORIGINAL_SELECTED_PROJECT_IMAGES(repository, repository.project_path, ids)
         counts = dict(positive=0, confirmed_negative=0, pending_negative=0, pending_review=0)
-        pending = []
+        pending, problems = [], []
+        labels = list(contract["effective_label_codes"])
+        label_set = set(labels)
+        class_images = {code: 0 for code in labels}
+        class_boxes = {code: 0 for code in labels}
+        full, partial = 0, 0
         for row in rows:
-            role = training_material_role(row, contract)["role"]
+            result = training_material_role(row, contract)
+            role = result["role"]
             if role == "pending_review" and task_negative_confirmable(row, contract):
                 role = "pending_negative"
                 pending.append(task_negative_identity(row, contract))
             counts[role] += 1
+            if role == "positive":
+                per_image = {}
+                for box in row.get("boxes") or []:
+                    code = str(box.get("label") or box.get("code") or "").strip()
+                    if code in label_set:
+                        per_image[code] = per_image.get(code, 0) + 1
+                        class_boxes[code] += 1
+                for code in per_image:
+                    class_images[code] += 1
+                if len(per_image) == len(labels):
+                    full += 1
+                elif per_image:
+                    partial += 1
+            elif role == "pending_review" and len(problems) < 10:
+                issue = result.get("scope_issue") or {}
+                problems.append({"image_id": str(row.get("id") or row.get("image_id") or ""),
+                    "issue_type": str(issue.get("issue_type") or "invalid_ground_truth"),
+                    "missing_label_codes": list(issue.get("missing_label_codes") or [])})
+        if revisions != (repository.current_revision(), annotations.current_revision()):
+            raise ValueError("素材或正式标注在样本检查期间发生变化，请重新检查")
+        coverage = {"selected_count": len(rows), "eligible_count": len(rows) - counts["pending_review"],
+            "full_coverage_count": full, "partial_coverage_count": partial,
+            "zero_target_count": counts["confirmed_negative"] + counts["pending_negative"],
+            "classes": [{"code": code, "image_count": class_images[code], "box_count": class_boxes[code]} for code in labels],
+            "problems": problems, "material_revision": revisions[0], "annotation_revision": revisions[1]}
         digest = hashlib.sha256(json.dumps({"context":task_negative_context(contract),
-            "selected":sorted(ids), "identities":[task_negative_identity(row, contract) for row in rows], "pending":pending}, sort_keys=True).encode()).hexdigest()
-        return repository, contract, counts, pending, digest
+            "base_version_id":str(payload.get("base_version_id") or ""),
+            "test_image_ids":sorted(_normalize_selection_ids(payload.get("test_image_ids") or [])),
+            "revisions": revisions, "selected":sorted(ids),
+            "identities":[task_negative_identity(row, contract) for row in rows], "pending":pending}, sort_keys=True).encode()).hexdigest()
+        return repository, contract, counts, pending, digest, coverage
 
     @router.post("/negative-preview")
     def negative_preview(project_id: str, payload: dict):
         try:
-            _, contract, counts, pending, digest = negative_plan(project_id, payload)
+            _, contract, counts, pending, digest, coverage = negative_plan(project_id, payload)
             return {"counts":counts, "pending_count":len(pending), "pending_preview":[{**e,"image_url":f"/api/v62/projects/{project_id}/training-materials/{e['image_id']}/thumbnail"} for e in pending[:20]],
-                    "proof_digest":digest, "effective_label_codes":contract["effective_label_codes"]}
+                    "proof_digest":digest, "effective_label_codes":contract["effective_label_codes"], "coverage":coverage}
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
 
@@ -1032,7 +1068,7 @@ def training_material_picker_router(
             from .material_repository import material_annotation_lifecycle_fence
             repository = materials(project_id)
             with material_annotation_lifecycle_fence(repository.project_path):
-                repository, contract, counts, pending, digest = negative_plan(project_id, payload)
+                repository, contract, counts, pending, digest, _ = negative_plan(project_id, payload)
                 if payload.get("proof_digest") != digest:
                     raise HTTPException(status_code=409, detail="素材或标注已变化，请重新检查并确认")
                 if counts["pending_review"]:
@@ -1293,7 +1329,7 @@ def training_material_picker_router(
             try:
                 contract = task_contract(project_id, payload, repository)
                 roles = _role_material_page(repository, annotations, contract, image_ids=image_ids, limit=1)
-                _, _, counts, pending, _ = negative_plan(project_id, dict(payload, image_ids=image_ids))
+                _, _, counts, pending, _, _ = negative_plan(project_id, dict(payload, image_ids=image_ids))
                 summary.update(sample_role_counts=counts, effective_label_codes=roles["effective_label_codes"])
             except ValueError as error:
                 raise HTTPException(status_code=422, detail=str(error)) from error

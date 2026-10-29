@@ -1,4 +1,28 @@
-> **最新需求及进度（2026-10-29 / 42.24.412）**：训练素材状态及“本次可新增标签”正样本证据合同，完整记录见本文末尾同日小节；以下为此前三步训练工作台的历史记录。
+> **最新训练业务变更（2026-10-29 / 42.24.419）**：独立编号 TRAIN-SAMPLE-P0-01 的多类别覆盖和最终样本确认改动，见下节。原 42.24.412 素材状态/新增标签证据合同记录继续保留在本文末尾；本项不归入性能治理任务书。
+
+## 2026-10-29｜TRAIN-SAMPLE-P0-01 多类别正样本与最终确认（已改代码，待 CI/生产验收）
+
+**需求边界**：每张图片无需同时包含 `person`、`head` 等本次全部训练类别。只有正式有效 GT 且审核范围已覆盖本次目标的图片，才可以按实际 GT 框输出单类/多类正样本；不能根据“某类没有框”自动认定该类真实不存在。原 GT 未提交、AI 候选未 Commit、坐标/来源异常、审核范围缺失均不能通过普通任务级确认放行。
+
+**复核出的现状**：
+
+- `training_label_tasks.py::training_material_scope_issue` 原本已允许**审核范围完整**的部分标签正样本，`project_training_rows` 也保留选中目标框，不要求每图都有全部框；本轮复用，不重复开发投影引擎。审核范围缺失仍必须人工核对，不能擅自填全。
+- `training_material_picker_api.py::negative_plan` 原 `/negative-preview` 只有总体四种角色数量，没有 per-class 图片/框数、完整/部分覆盖、问题素材及绑定修订的总览。确认流程只在待确认负样本数大于零时出现，单纯部分覆盖没有业务告知。
+- `training_label_tasks.py::task_negative_confirmable` 曾把无标注素材临时伪装为 `confirmed_empty` 判定可确认，这会将未形成正式 GT 的图片错误转为任务级负样本准入；该隐患已修补。
+- 原素材选择器仍暴露“确认目标范围内无目标”批量入口，即使最后一步已经有统一确认；本次从选择器可见交互中移除该入口，保留原正式 GT 审核 API 及既有权限、历史兼容。
+
+**已实施、前后端唯一合同**：
+
+1. `/negative-preview` 原 `counts/pending_count/proof_digest` 保持兼容，新增 `coverage`：`selected_count`、`eligible_count`、`full_coverage_count`、`partial_coverage_count`、`zero_target_count`、每类 `classes[].{code,image_count,box_count}`、最多十条正式 GT `problems`、`material_revision` 和 `annotation_revision`。只对最终请求传入的精确选择 ID 计算；不在素材列表首屏扫全库。
+2. Proof Digest 继续包含素材 SHA、GT version/hash、任务目标；增加所选独立 Test 身份、`base_version_id` 以及素材/GT 仓库修订。`/confirm-negatives` 仍在生命周期围栏内重算证明并对过期确认返回 409；不允许通过前端传入 `confirmed=true` 跳过不合格 GT。
+3. 未完成 GT 从 `pending_negative` 收紧为 `pending_review`；真正已经具有正式 GT、仅缺本次目标范围证明的候选背景，仍须用户确认后登记**任务级**收据，不更新原始图片、正式 GT 或素材负样本身份。保留既有 Worker 标签投影、稳定 class_id、标签继承、版本权重和 Train/Val/独立 Test 隔离合同。
+4. 在最后一步点击创建时，复用 `TrainingSubmitRuntime`→`negative-preview`→必要时唯一 `确认本次训练样本` 弹窗→`confirm-negatives`（原收据/版本复验）→`refreshCompatibility`（完整准入/重复与泄漏检查）→原 `train/start` 幂等创建。弹窗展示大数字、每类正式框、完整/部分/零覆盖、真实待确认背景及不能普通放行的问题；返回调整不修改唯一 Draft。只存在部分覆盖（没有待确认背景）也显示一次知晓确认，而不会写额外负样本收据。
+5. 迭代父版本 `base_version_id` 已纳入前端最终预检请求；对其它算法/标签/素材变化，原 `admissionSignature` 取消旧弹窗和旧创建；服务端验证 GT/source/revision 变化，不允许陈旧证明写入。网络结果未知仍由原提交 Owner 查询同一个任务 ID，不因本项重复创建。
+6. 提交阶段在候选背景任务收据之前**不能直接做最终兼容性验证**（原后端依赖该收据完成任务级负样本投影）；因此采用先做最终样本/GT 证据预检，再在写入前执行原完整兼容性预检和正式创建门槛。不可解释为尚未做过完整准入就已受理任务。
+
+**验证台账（按真实结果，非生产验收）**：Python 单元 `test_training_label_contract.py` 定向 8 项通过（含多类别投影、正式 GT 准入门槛），Node 训练摘要/选择器/版本守卫、训练提交/标签/Owner 等八文件通过；`test_training_negative_review.py` API 集成在当前沙箱 40 秒无输出后超时，**未通过也未断言产品回归失败**，须在有正常 TestClient 线程支持的 CI/隔离服务重跑。Playwright/真实 Worker/大素材以及生产 GT Revision 竞态尚未执行；相关用例已按正式 GT 审核语义更新。最终提交 SHA、GitHub Actions 与部署状态须在实际推送后补录，未部署生产。
+
+**回退及余项**：只回退 TRAIN-SAMPLE-P0-01 的源代码/入口缓存版本，不迁移数据库、不清洗素材、不覆盖 GT。后续必须定向核验真实浏览器的“返回调整/确认并创建”、有活跃 Worker 时确认及 GT 并发变化、A/B 标签继承和生产用户授权后的体验。性能、ZIP 404、`training_options` 超时留在独立性能任务书。
 
 ## 2026-10-28｜三步训练工作台、素材历史与跨设备增强（代码及隔离CI已验收）
 

@@ -53,6 +53,29 @@ export function renderTrainingSampleRoles(summary) {
   return `<div data-training-sample-roles><span>本次训练标签 ${htmlEscape(labels.join('、'))}</span><b>正样本 ${n('positive')} · 已确认负样本 ${n('confirmed_negative')} · 待确认负样本 ${n('pending_negative')}</b>${n('pending_review')?`<small>另有 ${n('pending_review')} 张素材需修复标注或来源问题。</small>`:''}${n('pending_negative')?'<small>仅在最终创建时确认这些图片不含本次目标；原标注不会修改。</small>':''}${n('confirmed_negative')>n('positive')*3?'<small>负样本比例较高，请结合独立评测判断；不会自动减少所选素材。</small>':''}</div>`;
 }
 
+const SAMPLE_ISSUE_NAMES=Object.freeze({
+  missing_annotation:'尚无正式 GT',partial_review_scope:'本次目标审核范围不完整',
+  invalid_annotation:'正式标注异常',annotation_needs_review:'素材或 GT 需要重新审核',
+  invalid_ground_truth:'正式 GT 不可用',
+});
+
+export function renderTrainingSampleConfirmation(preview={}) {
+  const coverage=preview.coverage||{},c=preview.counts||{},labels=uniqueIds(preview.effective_label_codes);
+  const number=value=>Math.max(0,Number(value)||0);
+  const classes=(coverage.classes||[]).map(item=>`<li><b>${htmlEscape(item.code)}</b><strong>${number(item.image_count)} 张</strong><span>${number(item.box_count)} 个正式框</span></li>`).join('');
+  const problems=(coverage.problems||[]).map(row=>`<li><b>${htmlEscape(row.image_id)}</b><span>${htmlEscape(SAMPLE_ISSUE_NAMES[row.issue_type]||row.issue_type)}${(row.missing_label_codes||[]).length?` · 待审核 ${htmlEscape(row.missing_label_codes.join('、'))}`:''}</span></li>`).join('');
+  const samples=(preview.pending_preview||[]).map(row=>`<figure><img src="${htmlEscape(row.image_url||'')}" alt="候选背景素材 ${htmlEscape(row.image_id)}" loading="lazy"><figcaption>${htmlEscape(row.image_id)}</figcaption></figure>`).join('');
+  return `<section class="training-sample-confirm" data-training-negative-confirmation>
+    <div class="training-sample-hero"><span>本次训练 · ${htmlEscape(labels.join('、'))}</span><div class="training-sample-main-count"><strong>${number(coverage.selected_count)}</strong><span>张选中素材</span></div><b>${number(coverage.eligible_count)} 张通过 GT 基础检查</b></div>
+    <div class="training-sample-stat-grid"><article><strong>${number(coverage.full_coverage_count)}</strong><span>全部类别覆盖</span></article><article><strong>${number(coverage.partial_coverage_count)}</strong><span>部分类别覆盖 · 仍是正样本</span></article><article><strong>${number(coverage.zero_target_count)}</strong><span>本次目标零覆盖</span></article></div>
+    <h3>各类别的正式标注</h3><ul class="training-sample-classes">${classes}</ul>
+    ${number(coverage.partial_coverage_count)?'<p class="training-sample-note">部分覆盖的图片保留其已有的合法目标框，不会被改成整图负样本。</p>':''}
+    ${number(preview.pending_count)?`<section class="training-sample-alert"><b>${number(preview.pending_count)} 张候选背景图需要人工确认</b><p>只有在逐一确认画面确实不含本次所选目标、正式 GT 已提交且有效的情况下，才能纳入本次训练。这里的确认只形成任务级证据，不改原始图片或正式标注。</p><details><summary>查看部分待确认素材（最多 20 张）</summary><div class="training-negative-previews">${samples}</div></details>${number(preview.pending_count)>20?'<small>以上仅是示例，不能替代对其余候选素材的检查。不确定时请返回调整或审核。</small>':''}</section>`:''}
+    ${number(c.pending_review)?`<section class="training-sample-blockers"><b>${number(c.pending_review)} 张存在正式 GT 或素材问题，不能靠普通确认放行</b><ul>${problems}</ul></section>`:''}
+    <div class="row end training-sample-actions"><button type="button" class="btn" data-negative-return>返回调整</button><button type="button" class="btn primary" data-negative-confirm>确认并创建</button></div>
+  </section>`;
+}
+
 export const GT_CONFLICT_NAMES = Object.freeze({
   LABEL_SCOPE_COUNT_COMPOUND:'类别、范围与框数量复合冲突', COORDINATE_ONLY:'仅框坐标不同',
   SCOPE_AND_GEOMETRY:'范围与框坐标同时不同', OTHER:'其他差异组合',
@@ -384,6 +407,7 @@ export function installTrainingMaterialSummaryRuntime({
       train_image_ids: uniqueIds(draft?.materialIds),
       test_image_ids: uniqueIds(draft?.testMaterialIds),
       train_labels: uniqueIds(draft?.newLabelCodes),
+      base_version_id: String(draft?.baseVersionId || ''),
       model: String(draft?.config?.model || 'yolo11n.pt'),
       framework: String(draft?.config?.framework || 'ultralytics'),
       experiment_percent: draft?.experimentPercent ?? 20,
@@ -417,11 +441,11 @@ export function installTrainingMaterialSummaryRuntime({
       // Invalid/stale GT must use the existing diagnosis, never an absence assertion.
       if(Number(preview.counts?.pending_review))return true;
       if(!Number(preview.counts?.positive)&&Object.values(preview.counts||{}).some(Number))throw new Error('本次素材没有所选目标的有效正样本，不能创建全负样本目标检测训练。');
-      if(!Number(preview.pending_count))return true;
+      const requiresConfirmation=Number(preview.pending_count)>0||Number(preview.coverage?.partial_coverage_count)>0;
+      if(!requiresConfirmation)return true;
       if(typeof window.modal!=='function')throw new Error('负样本确认窗口不可用，请刷新后重试');
       const accepted=await new Promise(resolve=>{
-        const c=preview.counts||{},layer=window.modal('本次训练包含待确认负样本',
-          `<section data-training-negative-confirmation><p>本次目标：<b>${htmlEscape((preview.effective_label_codes||[]).join('、'))}</b></p><p>正样本 ${Number(c.positive)||0} · 已确认负样本 ${Number(c.confirmed_negative)||0} · 待确认负样本 ${Number(preview.pending_count)||0}</p><p>请确认待确认图片不包含本次目标类别，避免漏标影响模型效果。确认仅记录对应目标和素材版本，不修改原图或正式标注。</p><div class="training-negative-previews">${(preview.pending_preview||[]).map(row=>`<figure><img src="${htmlEscape(row.image_url||'')}" alt="待确认素材 ${htmlEscape(row.image_id)}" loading="lazy"><figcaption>${htmlEscape(row.image_id)}</figcaption></figure>`).join('')}</div><p class="muted">${Number(preview.pending_count)>20?'仅预览前20张；如尚未检查全部素材，请返回检查。':''}</p><div class="row end"><button type="button" class="btn" data-negative-return>返回检查</button><button type="button" class="btn primary" data-negative-confirm>确认并创建训练任务</button></div></section>`,true);
+        const layer=window.modal('确认本次训练样本',renderTrainingSampleConfirmation(preview),true);
         const node=layer?.querySelector?.('[data-training-negative-confirmation]')||document.querySelector('[data-training-negative-confirmation]');
         if(!node){resolve(false);return;}
         let settled=false;
@@ -431,9 +455,12 @@ export function installTrainingMaterialSummaryRuntime({
         node.querySelector('[data-negative-confirm]').onclick=()=>finish(true);
       });
       if(!accepted||!current())return false;
-      await post('confirm-negatives',{...payload,confirmed:true,proof_digest:preview.proof_digest});
+      // A review receipt and the eventual task must refer to exactly the same
+      // selection, inherited version and GT snapshot. No receipt is created for
+      // partial positive coverage alone, but the backend still checks the proof.
+      const confirmation=await post('confirm-negatives',{...payload,confirmed:true,proof_digest:preview.proof_digest});
       if(!current())return false;
-      invalidate();await refresh(currentIds(),{force:true});
+      if(Number(confirmation.confirmed_count)>0){invalidate();await refresh(currentIds(),{force:true});}
       return current();
     }finally{negativeDialog?.finish(false);negativeCheck=null;}
   }

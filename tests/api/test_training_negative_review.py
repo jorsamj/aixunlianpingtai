@@ -80,6 +80,11 @@ def test_task_negative_confirmation_does_not_write_gt_and_invalidates(client, mo
  platform_app.material_store(pid).patch({iid:{'processing_status':'processed'}})
  monkeypatch.setattr(platform_app,'list_algorithms_internal',lambda _pid:[{'id':'a','versions':[]}])
  before=client.get(path).json()['annotation']
+ formal=client.post(path,json={'boxes':[],'annotation_state':'confirmed_empty',
+     'expected_version':before['version'],'source_content_sha256':image['content_sha256'],
+     'reviewed_label_codes':['person']})
+ assert formal.status_code==200,formal.text
+ before=formal.json()['annotation']
  endpoint=f'/api/v62/projects/{pid}/training-materials'
  body={'algorithm_asset_id':'a','train_labels':['vest'],'model':'yolo11n.pt','train_image_ids':[iid]}
  initial_revision=client.get(endpoint+'/revision').json()
@@ -113,3 +118,65 @@ def test_task_negative_confirmation_does_not_write_gt_and_invalidates(client, mo
  changed=client.post(endpoint+'/negative-preview',json=body).json()
  assert changed['counts']['confirmed_negative']==0
  assert client.get(path).json()['annotation']==before
+
+
+def test_multiclass_training_preview_keeps_partial_positives_and_rejects_uncommitted_gt(client,monkeypatch):
+ project=client.post('/api/projects',json={'name':'coverage-'+uuid.uuid4().hex[:8],
+     'labels':[{'code':'person'},{'code':'head'}]}).json()
+ pid=project['id']
+ monkeypatch.setattr(platform_app,'list_algorithms_internal',lambda _pid:[{'id':'a','versions':[]}])
+ selected=[]
+ for index,channels in enumerate([('person','head'),('person',),('head',),(),()]):
+     buffer=io.BytesIO()
+     Image.new('RGB',(80,80),(index*35,40,150)).save(buffer,format='PNG')
+     upload=client.post(f'/api/projects/{pid}/images',files=[('files',(f'gt-{index}.png',buffer.getvalue(),'image/png'))]).json()['uploaded'][0]
+     iid=upload['id'];selected.append(iid)
+     platform_app.material_store(pid).patch({iid:{'processing_status':'processed'}})
+     # Last image intentionally has no committed GT, including any AI candidate.
+     if index==4:continue
+     old=client.get(f'/api/projects/{pid}/annotations/{iid}').json()['annotation']
+     boxes=[{'id':f'{code}-{index}','label':code,'class_id':0 if code=='person' else 1,
+         'x1':8,'y1':8,'x2':42,'y2':50} for code in channels]
+     saved=client.post(f'/api/projects/{pid}/annotations/{iid}',json={
+         'boxes':boxes,'annotation_state':'annotated' if boxes else 'confirmed_empty',
+         'reviewed_label_codes':['person','head'] if boxes else ['person'],
+         'expected_version':old['version'],'source_content_sha256':upload['content_sha256']})
+     assert saved.status_code==200,saved.text
+ endpoint=f'/api/v62/projects/{pid}/training-materials'
+ payload={'algorithm_asset_id':'a','train_labels':['person','head'],'model':'yolo11n.pt',
+     'train_image_ids':selected,'base_version_id':''}
+ response=client.post(endpoint+'/negative-preview',json=payload)
+ assert response.status_code==200,response.text
+ preview=response.json();coverage=preview['coverage']
+ assert coverage['selected_count']==5
+ assert coverage['full_coverage_count']==1
+ assert coverage['partial_coverage_count']==2
+ assert coverage['zero_target_count']==1
+ assert coverage['eligible_count']==4
+ assert preview['counts']=={'positive':3,'confirmed_negative':0,'pending_negative':1,'pending_review':1}
+ assert {item['code']:(item['image_count'],item['box_count']) for item in coverage['classes']}=={
+     'person':(2,2),'head':(2,2)}
+ assert coverage['problems'][0]['image_id']==selected[4]
+ # A task-level acknowledgment cannot launder the uncommitted image into a background sample.
+ denied=client.post(endpoint+'/confirm-negatives',json={**payload,'confirmed':True,'proof_digest':preview['proof_digest']})
+ assert denied.status_code==422
+ # Partial positive coverage alone is enough to trigger an informational review;
+ # formally reviewed class absence never removes the other positive GT boxes.
+ allowed=client.post(endpoint+'/negative-preview',json={**payload,'train_image_ids':selected[:3]})
+ assert allowed.status_code==200,allowed.text
+ assert allowed.json()['coverage']['partial_coverage_count']==2
+ assert allowed.json()['pending_count']==0
+ acknowledged=client.post(endpoint+'/confirm-negatives',json={**payload,'train_image_ids':selected[:3],
+     'confirmed':True,'proof_digest':allowed.json()['proof_digest']})
+ assert acknowledged.status_code==200,acknowledged.text
+ assert acknowledged.json()['confirmed_count']==0
+ target=f'/api/projects/{pid}/annotations/{selected[1]}'
+ previous=client.get(target).json()['annotation']
+ revised=client.post(target,json={'boxes':[{**previous['boxes'][0],'x2':43}],
+     'annotation_state':'annotated','reviewed_label_codes':['person','head'],
+     'expected_version':previous['version'],
+     'source_content_sha256':platform_app.material_store(pid).get(selected[1])['content_sha256']})
+ assert revised.status_code==200,revised.text
+ stale=client.post(endpoint+'/confirm-negatives',json={**payload,'train_image_ids':selected[:3],
+     'confirmed':True,'proof_digest':allowed.json()['proof_digest']})
+ assert stale.status_code==409,'a pre-confirmation GT revision must invalidate the old proof'

@@ -17,6 +17,7 @@ from platform_core.training_label_tasks import (
     project_training_rows,
     resolve_training_label_contract,
     selected_material_label_codes,
+    task_negative_confirmable,
     training_material_scope_issue,
 )
 from platform_core.training_splits import SplitMode, SplitRequest, build_split_manifest
@@ -651,6 +652,35 @@ def test_projection_rejects_unreviewed_class_in_task_schema(selected_codes):
     assert projected[0]["annotation_state"] == "confirmed_empty"
     assert projected[0]["annotation_scope"] == ["fire"]
     assert projected[0]["negative_origin"] == "redacted_unselected_labels"
+
+
+def test_multiclass_projected_gt_preserves_partial_positive_boxes_and_class_identity():
+    rows = [
+        {"id":"only-person", "annotation_state":"annotated", "annotation_scope":["person","head"],
+            "boxes":[_box("person")]},
+        {"id":"only-head", "annotation_state":"annotated", "annotation_scope":["person","head"],
+            "boxes":[_box("head")]},
+        {"id":"both", "annotation_state":"annotated", "annotation_scope":["person","head"],
+            "boxes":[_box("person"),_box("head")]},
+    ]
+    projected = project_training_rows(rows, {"effective_label_codes":["person","head"]})
+    assert [row["annotation_state"] for row in projected] == ["annotated"]*3
+    assert [[box["label"] for box in row["boxes"]] for row in projected] == [
+        ["person"],["head"],["person","head"]]
+    assert all("negative_origin" not in row for row in projected)
+    assert all(row["annotation_scope"] == ["head","person"] for row in projected)
+
+
+def test_uncommitted_gt_is_never_a_task_confirmable_negative():
+    contract={"effective_label_codes":["person","head"]}
+    row={"id":"image-a", "annotation_state":"unannotated", "annotation_scope":[],
+         "boxes":[],"content_sha256":"a"*64}
+    assert task_negative_confirmable(row,contract) is False
+    assert task_negative_confirmable({**row,"annotation_state":"annotated"},contract) is False
+    assert task_negative_confirmable({**row,"annotation_state":"confirmed_empty",
+        "annotation_scope":["person"]},contract) is True
+    assert task_negative_confirmable({**row,"annotation_state":"confirmed_empty",
+        "source_available":False},contract) is False
 
 
 def test_projection_drops_unselected_boxes_without_creating_fake_negative(tmp_path: Path):

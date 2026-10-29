@@ -8,10 +8,10 @@ async function seed(request,count=4){
  const images=[];
  for(let i=0;i<count;i++){
   const response=await request.post(`/api/projects/${project.id}/images`,{multipart:{files:{name:`negative-${i}.bmp`,mimeType:'image/bmp',buffer:bitmap(i)}}});expect(response.ok()).toBeTruthy();const image=(await response.json()).uploaded[0];images.push(image);
-  if(i){const ann=(await(await request.get(`/api/projects/${project.id}/annotations/${image.id}`)).json()).annotation;
+  {const ann=(await(await request.get(`/api/projects/${project.id}/annotations/${image.id}`)).json()).annotation;
    const box={id:`b-${i}`,label:i===1?'person':'cigarette',class_id:i===1?1:0,x1:1,y1:1,x2:8,y2:8};
-   const boxes=i===3?[box,{...box,id:'person',label:'person',class_id:1}]:[box];
-   const saved=await request.post(`/api/projects/${project.id}/annotations/${image.id}`,{data:{boxes,annotation_state:'annotated',expected_version:ann.version,source_content_sha256:image.content_sha256,reviewed_label_codes:boxes.map(b=>b.label)}});expect(saved.ok()).toBeTruthy();
+   const boxes=i===0?[]:i===3?[box,{...box,id:'person',label:'person',class_id:1}]:[box];
+   const saved=await request.post(`/api/projects/${project.id}/annotations/${image.id}`,{data:{boxes,annotation_state:i===0?'confirmed_empty':'annotated',expected_version:ann.version,source_content_sha256:image.content_sha256,reviewed_label_codes:i===0?['person']:boxes.map(b=>b.label)}});expect(saved.ok()).toBeTruthy();
   }
  }
  expect((await request.post(`/api/v52/projects/${project.id}/images/mark-ready`,{data:{image_ids:images.map(i=>i.id)}})).ok()).toBeTruthy();
@@ -34,9 +34,9 @@ test('target negative confirmation happens only on final creation, preserves GT 
  await page.evaluate(({id,ids})=>window.TrainingDraftRuntime.update({algorithmId:id,materialIds:ids,newLabelCodes:['cigarette']}),{id:f.algorithm.id,ids:f.images.map(i=>i.id)});
  await expect(dialog.locator('[data-training-sample-roles]')).toContainText('待确认负样本 2');expect(previews).toBe(0);expect(confirms).toBe(0);
  await expect.poll(()=>page.evaluate(()=>state.trainingCreationLoading.resources.status)).toBe('ready');await dialog.locator('button[data-training-step="3"]').click();await dialog.locator('.train-ui-submit').click();
- const confirmation=page.getByRole('dialog',{name:'本次训练包含待确认负样本',exact:true});await expect(confirmation).toBeVisible();expect(creates).toBe(0);await expect.poll(()=>confirmation.locator('img').evaluateAll(nodes=>nodes.every(n=>n.complete&&n.naturalWidth>0))).toBe(true);await shot(page,'target-confirmation.png');
- await confirmation.getByRole('button',{name:'返回检查',exact:true}).click();await expect(confirmation).toHaveCount(0);expect(confirms).toBe(0);expect(creates).toBe(0);
- await dialog.locator('.train-ui-submit').click();await expect(confirmation).toBeVisible();await confirmation.getByRole('button',{name:'确认并创建训练任务',exact:true}).click();
+ const confirmation=page.getByRole('dialog',{name:'确认本次训练样本',exact:true});await expect(confirmation).toBeVisible();expect(creates).toBe(0);await expect(confirmation).toContainText('候选背景图需要人工确认');await confirmation.locator('summary').click();await expect.poll(()=>confirmation.locator('img').evaluateAll(nodes=>nodes.every(n=>n.complete&&n.naturalWidth>0))).toBe(true);await shot(page,'target-confirmation.png');
+ await confirmation.getByRole('button',{name:'返回调整',exact:true}).click();await expect(confirmation).toHaveCount(0);expect(confirms).toBe(0);expect(creates).toBe(0);
+ await dialog.locator('.train-ui-submit').click();await expect(confirmation).toBeVisible();await confirmation.getByRole('button',{name:'确认并创建',exact:true}).click();
  await expect.poll(()=>creates).toBe(1);expect(confirms).toBe(1);await expect(confirmation).toHaveCount(0);
  await expect.poll(()=>page.evaluate(()=>window.TrainingSubmitRuntime.isSubmitting())).toBe(false);
  await page.getByRole('dialog',{name:'训练暂不可开始',exact:true}).getByRole('button',{name:'返回训练配置',exact:true}).click();await dialog.locator('button[data-training-step="3"]').click();await dialog.locator('.train-ui-submit').click();await expect.poll(()=>creates).toBe(2);expect(confirms).toBe(1);await expect(confirmation).toHaveCount(0);
