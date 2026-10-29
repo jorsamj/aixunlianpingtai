@@ -179,7 +179,12 @@ def evaluate_training_compatibility(
     if duplicates.issues:
         return replace(duplicates, duplicate_review=review,
             label_contract={"effective_label_codes": list(payload.get("train_labels") or [])})
-    intent_contract = resolve_training_label_contract(data_dir, project_path, payload, algorithm, require_positive_evidence=False)
+    # Selection intent needs the target labels, not a checkpoint byte digest.
+    # The final verified contract below still hashes the selected best.pt once.
+    intent_contract = resolve_training_label_contract(
+        data_dir, project_path, payload, algorithm,
+        require_positive_evidence=False, include_base_weight_digest=False,
+    )
     selection = resolve_training_selection(project_path, split, label_contract=intent_contract)
     effective = selection.effective_split
     contract_payload = {

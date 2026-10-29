@@ -410,6 +410,8 @@ def _frozen_base_contract(
     selection: Mapping[str, Any],
     mother_model: str,
     framework: str,
+    *,
+    include_weight_digest: bool = True,
 ) -> dict[str, Any]:
     framework_value = str(framework or "ultralytics").strip().lower()
     reference = str(selection.get("base_model_path") or mother_model or "").strip()
@@ -447,7 +449,7 @@ def _frozen_base_contract(
     resolved = candidate.resolve()
     result.update(
         base_model_reference=str(resolved),
-        base_model_sha256=base._sha256(resolved),
+        base_model_sha256=base._sha256(resolved) if include_weight_digest else "",
         base_model_size_bytes=int(resolved.stat().st_size),
     )
     return result
@@ -460,6 +462,7 @@ def resolve_training_label_contract(
     algorithm: Mapping[str, Any],
     *,
     require_positive_evidence: bool = True,
+    include_base_weight_digest: bool = True,
 ) -> dict[str, Any]:
     """Resolve the only label schema that may reach YOLO for this task.
 
@@ -468,6 +471,10 @@ def resolve_training_label_contract(
     NEW task labels are resolved through current canonical governance. Explicit
     merged_into decisions collapse inherited labels; plain inactive/missing
     labels fail closed. Mother-model classes never enter the contract.
+
+    ``include_base_weight_digest=False`` is reserved for non-persisted role or
+    selection-intent projections. All final training/freeze contracts retain
+    the default True and rehash the exact selected checkpoint before use.
     """
 
     data_root = Path(data_dir).resolve()
@@ -498,6 +505,7 @@ def resolve_training_label_contract(
         base_selection,
         mother,
         framework_value,
+        include_weight_digest=include_base_weight_digest,
     )
 
     inherited: list[dict[str, Any]] = []

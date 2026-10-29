@@ -1,3 +1,7 @@
+## 2026-10-29｜迭代 role-page 预览哈希去重（42.24.416 / CI 与生产待核）
+
+基线远端 `aeba9f07`／42.24.415。B 算法带 `base_version_id` 的角色页原通过 `task_contract → resolve_training_label_contract → _frozen_base_contract` 逐页 SHA256 全读 `best.pt`，属于已确认代码级 I/O 放大；42.24.416 仅为非持久化角色/选材意图显式省去 digest，最终训练/Worker freeze 仍计算原 SHA，保留 GT、继承标签与 class_id、权重可用性。原诊断增加角色合同、历史过滤、页使用关系阶段；完整候选角色/使用池冷索引仍待生产取证，不能宣称 26.5s 完全消失。唯一台账 `docs/performance/2026-10-29-p0-followup.md`；新 SHA CI 与生产待核，不部署、迁移或删除。
+
 ## 2026-10-29｜P0 空选材合同兼容性修正（42.24.415 / CI 待精确验收）
 
 42.24.414 精确 SHA `11609861` 的 `contracts` Job 暴露原 API 合同：即使空 `image_ids`，对外摘要仍需真实 `eligible_total`；曾改为 `null` 为本批回归，415 已按原合同恢复，修正测试路由 `_IncludedRouter` 枚举。前端 413 已令空选材零 HTTP，后端仅在真正选定素材后调用迭代训练 `task_contract`；正式 GT 与提交准入不变。新 CI/生产待核，未部署。详见唯一台账 `docs/performance/2026-10-29-p0-followup.md`。

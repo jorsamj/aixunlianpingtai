@@ -589,7 +589,12 @@ class TrainingPrepareHandler:
                 "validation_percent": split.validation_percent,
             })
             if not compatibility.issues:
-                intent_contract = resolve_training_label_contract(self.data_dir, project, payload, algorithm, require_positive_evidence=False)
+                # Project only target roles here; the final label_contract
+                # below is the single authoritative checkpoint hash freeze.
+                intent_contract = resolve_training_label_contract(
+                    self.data_dir, project, payload, algorithm,
+                    require_positive_evidence=False, include_base_weight_digest=False,
+                )
                 selection = resolve_training_selection(project, split, label_contract=intent_contract)
                 effective_split = selection.effective_split
                 supplement = self._resolve_supplement_candidate_set(project, algorithm, payload, effective_split)

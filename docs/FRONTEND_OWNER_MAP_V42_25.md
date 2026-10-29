@@ -1,3 +1,5 @@
+> **2026-10-29 / 42.24.416**：训练素材 Picker、Draft、Summary 前端 Owner 与 API 形状均不变；后端旧 `task_contract` 只读角色预览跳过模型完整 SHA，正式冻结依然 SHA256。新增原诊断阶段；冷使用/角色索引待现场计时，不增平行状态。参见 `docs/performance/2026-10-29-p0-followup.md`，CI/生产待验。
+
 > **2026-10-29 / 42.24.415**：414 将原 API 空摘要总池数改成 `null` 破坏既有合同，已按 CI 恢复真实计数。前端继续由原 SummaryRuntime 在零选材时免发 HTTP，故 UI 仍不被整池查询阻塞。无新增 Owner，新 CI/生产待核，不部署，见 `docs/performance/2026-10-29-p0-followup.md`。
 
 > **2026-10-29 P0 / 42.24.413**：原 `training-create-hydration`、`TrainingMaterialSummaryRuntime` 与资源 `renderResources` 不换 owner；零选材摘要不发请求，训练资源旧服务器卡片只在手动“检测”时 POST 并按同一 `training_options` 回填。服务端旧服务器/Paddle 快照与训练提交准入分离。详见 [唯一 P0 台账](performance/2026-10-29-p0-followup.md)；精确 CI、现场 P50/P95 未验证。

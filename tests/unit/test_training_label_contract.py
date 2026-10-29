@@ -247,6 +247,53 @@ def test_iteration_inherits_previous_schema_and_appends_new_label(tmp_path: Path
     assert frozen_base["base_model_path"] == str(model.resolve())
 
 
+def test_picker_role_preview_skips_full_checkpoint_hash_without_weakening_submission(tmp_path: Path, monkeypatch):
+    import platform_core.training_label_tasks as label_tasks
+    data_dir, project = _project(tmp_path)
+    model = project / "best.pt"
+    model.write_bytes(b"verified-training-checkpoint")
+    algorithm = {"id": "algorithm", "versions": [{
+        "id": "version-one", "stored_path": str(model),
+        "training_status": "SUCCEEDED", "artifact_verified": True,
+        "trainable": True, "framework": "ultralytics",
+        "label_schema": [{"code": "fire", "class_id": 0}],
+    }]}
+    calls = []
+    actual_sha256 = label_tasks.base._sha256
+
+    def tracked_sha256(path):
+        calls.append(str(path))
+        return actual_sha256(path)
+
+    monkeypatch.setattr(label_tasks.base, "_sha256", tracked_sha256)
+    payload = {"base_version_id": "version-one", "model": "yolo11n.pt", "train_labels": []}
+    preview = resolve_training_label_contract(
+        data_dir, project, payload, algorithm, require_positive_evidence=False,
+        include_base_weight_digest=False,
+    )
+    assert preview["effective_label_codes"] == ["fire"]
+    assert preview["base_model_reference"] == str(model.resolve())
+    assert preview["base_model_size_bytes"] == model.stat().st_size
+    assert preview["base_model_sha256"] == ""
+    assert calls == []
+
+    formal = resolve_training_label_contract(
+        data_dir, project, payload, algorithm, require_positive_evidence=False,
+    )
+    assert formal["base_model_sha256"] == hashlib.sha256(model.read_bytes()).hexdigest()
+    assert calls == [str(model.resolve())]
+
+    # Digest-free preview must still reject an unavailable inherited weight.
+    model.unlink()
+    from platform_core.errors import PlatformError
+    with pytest.raises(PlatformError) as error:
+        resolve_training_label_contract(
+            data_dir, project, payload, algorithm,
+            require_positive_evidence=False, include_base_weight_digest=False,
+        )
+    assert error.value.code == "ITERATION_BASE_UNAVAILABLE"
+
+
 def test_input_freeze_identity_changes_when_frozen_base_model_changes(tmp_path: Path):
     _data_dir, project = _project(tmp_path)
     images = tuple(

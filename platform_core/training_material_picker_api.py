@@ -162,6 +162,7 @@ def _cached_usage_pool(project_path, task_path, material_revision, algorithm_id,
     return combined
 
 
+@stage("training.usage_filters")
 def _usage_filters(repository, filters):
     from .training_material_usage import TrainingMaterialUsage
     body = dict(filters or {})
@@ -191,6 +192,7 @@ def _usage_filters(repository, filters):
     return body, facts
 
 
+@stage("training.page_usage")
 def _page_usage_facts(repository, body, rows):
     from .training_material_usage import TrainingMaterialUsage
     path=repository.project_path.parent.parent / "task_runtime" / "tasks.sqlite3"
@@ -853,6 +855,7 @@ def training_material_picker_router(
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
 
+    @stage("training.role_contract")
     def task_contract(project_id, body, repository):
         from .training_label_tasks import resolve_training_label_contract
         if algorithm_provider is None:
@@ -862,8 +865,11 @@ def training_material_picker_router(
             raise HTTPException(status_code=404, detail="训练算法不存在")
         # Role previews resolve canonical task labels only. Benchmark scope,
         # identity checks and admission remain in the explicit compatibility call.
+        # A role preview needs the verified effective label schema, not a
+        # frozen checkpoint digest. Formal training admission still hashes the
+        # actual best.pt through the default contract path before execution.
         return resolve_training_label_contract(data_dir(), repository.project_path, dict(body), algorithm,
-                                               require_positive_evidence=False)
+                                               require_positive_evidence=False, include_base_weight_digest=False)
 
     @router.post("/history")
     def picker_history(project_id: str, payload: dict):

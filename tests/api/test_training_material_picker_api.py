@@ -659,7 +659,7 @@ def test_task_role_sql_page_uses_formal_scope_and_bounds_payload(tmp_path, monke
 def test_role_page_and_review_keep_existing_formal_callback(tmp_path, monkeypatch):
     import platform_core.training_label_tasks as labels
     def preview_contract(*args, **kwargs):
-        assert kwargs == {"require_positive_evidence": False}
+        assert kwargs == {"require_positive_evidence": False, "include_base_weight_digest": False}
         return {"effective_label_codes": ["smoke"]}
     monkeypatch.setattr(labels, "resolve_training_label_contract", preview_contract)
     _, repository = _client(tmp_path)
