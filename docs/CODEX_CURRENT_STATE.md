@@ -1,10 +1,12 @@
-## 2026-10-29｜性能诊断与万级素材/GT 本地补验（42.24.411，LOCAL GREEN／CI 待新 SHA）
+## 2026-10-29｜性能诊断与万级素材/GT 隔离验收（42.24.411，代码 SHA CI 全绿）
 
 唯一长期开发分支 `feature/external-algorithm-publishing`。起点远端 HEAD `9e6edbb38d1db54731c00e058e31f771c1f1c854`、VERSION `42.24.410`、干净工作区；精确基线 GitHub Actions **24/24**、Checks **65/65** 均成功。目标版本 `42.24.411`，最终提交及其 CI 必须在推送后另验；未部署生产。
 
+代码提交 `5ddc516499b99c80b6fe980b64a6d84c860aa466` 已通过 GitHub 精确 SHA 检查套件 **25/25**、Job Checks **68/68**，Chrome/Windows 均 success；Blob 与完整 Tree 校验一致。此后更新进度文档的纯文档提交 SHA/CI 需单独确认，不借代码提交绿色；当前 HEAD 以 `git rev-parse HEAD` 为准。生产现场仍未验收。
+
 - **P0-01 已开发待验证**：在原 opt-in `MC_PERFORMANCE_DIAGNOSTICS=1` 增补现有 Repository SQLite execute/fetch/transaction 计时、外部畅联鉴权等待与真实 HTTP、缓存 SHA 文件读取，以及 v63 安全路由类别。原 API body、Token singleflight、正式 GT/训练资格不变；SQL/项目/URL/凭证不记日志，未知锁等待仍为 `null`。本机首次新增诊断测试 RED（原模块无 `connect_sqlite`），GREEN 及 API 合同通过；浏览器/生产真实 P95 未验。
 - **P0-02 已开发待验证**：隔离 12k Material+GT 全标签/角色/深页/统计次数与 EXPLAIN 新回归通过，50k 冷/热角色及 6k 两类 SQL 性能对照完成。对 `%LIKE%` 的延迟取页未见稳定提速，故不改 SQL、不加索引/FTS/迁移，不破坏原材料/GT/任务真值。
-- **测试**：相关 Python **208/208**，原 FastAPI 性能 API **3/3**，完整 Node **1396/1396**；本机 Chromium 不可用，待新 SHA 的真实 Chrome CI。`AGENTS.md` 长期规范没有变化，因此按文档管理规则不堆日志。
+- **测试**：相关 Python **208/208**，原 FastAPI 性能 API **3/3**，完整 Node **1396/1396**；本机 Chromium 不可用，但代码 SHA 的真实 Chrome CI 已通过；文档补记提交须再验。`AGENTS.md` 长期规范没有变化，因此按文档管理规则不堆日志。
 - **剩余 P0**：P0-03 浏览器代理/网络服务端同 ID 采样（待开发）、P0-04 旧训练跨 Worker 与归档现场验收（已开发待验证）、P0-05 算能等芯片真实 SDK 耗时与 UNKNOWN（已开发待验证）。P1：工作副本候选清理、普通历史 Train/Val/Test 原图溯源均待生产只读取证，禁止删除、重建或伪造。
 - **下一轮**：先核准确新 HEAD 与 Actions/Checks；读取唯一主进度 `docs/performance/2026-10-29-p0-followup.md` 顶部；按 P0-03→04→05 继续，生产 HAR、SQLite 冷/热 P95、真实 SDK 均未验证，不能凭合成数据宣布可部署或根因确定。不合并 main/Tag/Release、不 force push、不自行部署。
 

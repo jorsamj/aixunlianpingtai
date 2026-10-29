@@ -1,12 +1,14 @@
-## 2026-10-29｜性能治理接续：42.24.411 本地验证，准确 SHA CI 待核
+## 2026-10-29｜性能治理接续：42.24.411 代码 SHA CI 全绿，现场待验
 
-项目：畅联云算法训练平台（FastAPI/Python、JavaScript、SQLite、MaterialRepository、AnnotationRepository、TaskRepository/Worker、外部畅联 API、Storage/Cache）。唯一分支 `feature/external-algorithm-publishing`；起点 `9e6edbb38d1db54731c00e058e31f771c1f1c854`、VERSION `42.24.410`，起点 24/24 Actions + 65/65 Checks 已成功。该 SHA 是**起点**，本批目标 VERSION `42.24.411`，提交/准确新 SHA CI 待核验，无生产部署。
+项目：畅联云算法训练平台（FastAPI/Python、JavaScript、SQLite、MaterialRepository、AnnotationRepository、TaskRepository/Worker、外部畅联 API、Storage/Cache）。唯一分支 `feature/external-algorithm-publishing`；起点 `9e6edbb38d1db54731c00e058e31f771c1f1c854`、VERSION `42.24.410`，起点 24/24 Actions + 65/65 Checks 已成功。该 SHA 是**起点**，本批现为 VERSION `42.24.411`，代码提交 CI 已核验、后续文档补记提交 CI 独立核验；无生产部署。
 
-**本批**：P0-01 原 `performance_diagnostics.py` 补 SQLite 查询真实 execute/fetch/transaction 耗时、畅联签名/Token 与业务 HTTP 分项、缓存 SHA 文件读取分项、v63 路由分类；只在环境开关启用时运行，未知锁等待继续 `null`，不记敏感 URL/SQL/凭证，原 API body 不变。P0-02 新增 12k 条 Material/正式 GT 多标签、负样本角色、深 OFFSET、GT 跨页 Count 缓存和 EXPLAIN 隔离证据；5 万角色索引冷/热样本与 6k 两类 SQL 对照。关键词 `%LIKE%` 无稳定更优候选，**未修改 SQL、FTS、schema**。相关 Python 208/208、完整 FastAPI 3/3、Node 1396/1396；本机 Chrome 不可用，待准确 SHA CI 的浏览器 Jobs。
+代码远端提交 **`5ddc516499b99c80b6fe980b64a6d84c860aa466`**；GitHub Checks 公开页面精确 SHA 检查套件 **25/25**、Job **68/68** success，包含真实 Chrome/Windows；15 文件 Blob 与完整 Tree 逐一一致。后续纯文档补记提交自己的 CI 须另验，不能以代码 CI 替代。正式生产性能与设备取证未完成。
+
+**本批**：P0-01 原 `performance_diagnostics.py` 补 SQLite 查询真实 execute/fetch/transaction 耗时、畅联签名/Token 与业务 HTTP 分项、缓存 SHA 文件读取分项、v63 路由分类；只在环境开关启用时运行，未知锁等待继续 `null`，不记敏感 URL/SQL/凭证，原 API body 不变。P0-02 新增 12k 条 Material/正式 GT 多标签、负样本角色、深 OFFSET、GT 跨页 Count 缓存和 EXPLAIN 隔离证据；5 万角色索引冷/热样本与 6k 两类 SQL 对照。关键词 `%LIKE%` 无稳定更优候选，**未修改 SQL、FTS、schema**。相关 Python 208/208、完整 FastAPI 3/3、Node 1396/1396；本机 Chrome 不可用，代码 SHA 的浏览器 CI 已通过。
 
 **必须保留**：一个业务 final Owner/一份 canonical truth；原 Image ID、正式 GT、负样本/训练角色、Train/Val/Test 隔离、跨页全选、Token 作用域与 401 不重放 POST、任务幂等及 UNKNOWN、Worker/资源 fencing、存储安全及材料 revision。诊断是原模块的可关闭观测，不得变成第二套 Tracing；局部 SQL 计时不等于独立锁等待或浏览器 Stalled。
 
-**权威需求状态**：`docs/performance/2026-10-29-p0-followup.md` 顶部 P0-01～05/P1-01～02，包含背景、根因、代码、测试和现场门槛；旧条目是历史证据，不要重复开发。P0-01/02 当前 **已开发待验证**（需新 SHA CI/真实大库与网络）；P0-03 **待开发**（脱敏 HAR 与 request_id/代理/直连/Server-Timing 同步）；P0-04/05 **已开发待验证**（旧多 Worker、Sophon 等外部设备）；P1 生产文件/原图溯源待安全现场取证。
+**权威需求状态**：`docs/performance/2026-10-29-p0-followup.md` 顶部 P0-01～05/P1-01～02，包含背景、根因、代码、测试和现场门槛；旧条目是历史证据，不要重复开发。P0-01/02 当前 **已开发待验证**（缺真实大库与网络生产证据，非 CI 阻塞）；P0-03 **待开发**（脱敏 HAR 与 request_id/代理/直连/Server-Timing 同步）；P0-04/05 **已开发待验证**（旧多 Worker、Sophon 等外部设备）；P1 生产文件/原图溯源待安全现场取证。
 
 **下一步**：确认远端未被其他会话更新；完成新 SHA Actions/Checks；获得用户授权的只读现场证据再分析 P0-03/04/05；严禁真实训练、转换、发布、部署、生产数据删除/迁移、高并发压测、合并 main/Tag/Release/force push。未见生产 P50/P95、锁持有者、真实设备 SDK 耗时，不得虚构结论。此处只做接续摘要，逐项进度只在主文档维护。
 
