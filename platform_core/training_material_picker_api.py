@@ -6,7 +6,7 @@ aggregated inside SQLite, and thumbnails are created lazily on demand.
 """
 from __future__ import annotations
 
-from .performance_diagnostics import observe_connection, stage, count
+from .performance_diagnostics import connect_sqlite, observe_connection, stage, count
 
 import hashlib
 import json
@@ -131,7 +131,7 @@ def _cached_usage_pool(project_path, task_path, material_revision, algorithm_id,
               "source_root_id","derived_from_image_id")
     columns = ",".join("json_extract(payload_json, '$."+field+"') AS "+field for field in fields)
     combined = {"revision":usage_revision,"coverage":"unknown","by_image_id":{},"excluded_image_ids":[],"unknown_image_ids":[],"state_ids":{"unknown":[],"unused":[]}}
-    with closing(observe_connection(sqlite3.connect(repository.path, timeout=30))) as db:
+    with closing(observe_connection(connect_sqlite(repository.path, timeout=30))) as db:
         db.row_factory=sqlite3.Row
         cursor=db.execute("SELECT id,content_sha256,"+columns+" FROM materials WHERE processing_status='processed'")
         while True:
@@ -347,7 +347,7 @@ def _gt_material_filter_page(
     base_clauses.extend(extra_clauses)
     base_params.extend(extra_params)
     base_where = " WHERE " + " AND ".join(base_clauses)
-    with closing(sqlite3.connect(repository.path, timeout=30)) as database:
+    with closing(observe_connection(connect_sqlite(repository.path, timeout=30))) as database:
         database.row_factory = sqlite3.Row
         database.execute("PRAGMA busy_timeout=30000")
         database.execute("PRAGMA temp_store=FILE")
@@ -466,7 +466,7 @@ def _cached_pool_training_totals(
             int(material_revision),
             actual_revision,
         )
-    with closing(sqlite3.connect(project / "materials.sqlite3", timeout=30)) as database:
+    with closing(observe_connection(connect_sqlite(project / "materials.sqlite3", timeout=30))) as database:
         database.execute("PRAGMA busy_timeout=30000")
         database.execute("PRAGMA temp_store=FILE")
         database.execute(
@@ -497,7 +497,7 @@ def _selection_summary(
     image_ids: list[str],
 ) -> dict:
     """Aggregate selected-material facts while formal GT stays Annotation-owned."""
-    with closing(sqlite3.connect(repository.path, timeout=30)) as database:
+    with closing(observe_connection(connect_sqlite(repository.path, timeout=30))) as database:
         database.row_factory = sqlite3.Row
         database.execute("PRAGMA busy_timeout=30000")
         database.execute("PRAGMA temp_store=FILE")
@@ -654,7 +654,7 @@ def _cached_role_index(material_path, annotation_path, material_revision, annota
     extra, values = _picker_filter_sql(filters)
     clauses.extend(extra); params.extend(values)
     result = []
-    with closing(observe_connection(sqlite3.connect(material_path, timeout=30))) as db:
+    with closing(observe_connection(connect_sqlite(material_path, timeout=30))) as db:
         db.row_factory = sqlite3.Row
         db.execute("ATTACH DATABASE ? AS annotation_gt", (annotation_path,))
         db.execute("BEGIN")
@@ -829,7 +829,7 @@ def training_material_picker_router(
         task_ids=sorted({r["task_id"] for r in visible})
         tasks, legacy_trace, last_completed = {}, [], None
         if task_path.is_file():
-            with closing(sqlite3.connect(task_path.resolve().as_uri()+"?mode=ro", uri=True, timeout=5)) as db:
+            with closing(observe_connection(connect_sqlite(task_path.resolve().as_uri()+"?mode=ro", uri=True, timeout=5))) as db:
                 db.row_factory=sqlite3.Row
                 if db.execute("SELECT 1 FROM sqlite_master WHERE name='tasks'").fetchone():
                     if not records:

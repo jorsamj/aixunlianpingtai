@@ -15,7 +15,7 @@ from filelock import FileLock, Timeout
 
 from .base import StorageProvider
 from .errors import StorageError
-from ..performance_diagnostics import count as performance_count, stage as performance_stage
+from ..performance_diagnostics import count as performance_count, measure as performance_measure, stage as performance_stage
 
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -79,7 +79,11 @@ def _configured_non_negative_int(name: str, default: int, override: int | None) 
 def file_sha256(path: str | Path) -> str:
     digest = hashlib.sha256()
     with Path(path).open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+        while True:
+            with performance_measure('file.read'):
+                chunk = stream.read(1024 * 1024)
+            if not chunk:
+                break
             digest.update(chunk)
             performance_count('sha256_bytes',len(chunk))
     return digest.hexdigest()

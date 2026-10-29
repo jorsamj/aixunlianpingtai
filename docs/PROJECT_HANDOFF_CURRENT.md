@@ -1,3 +1,15 @@
+## 2026-10-29｜性能治理接续：42.24.411 本地验证，准确 SHA CI 待核
+
+项目：畅联云算法训练平台（FastAPI/Python、JavaScript、SQLite、MaterialRepository、AnnotationRepository、TaskRepository/Worker、外部畅联 API、Storage/Cache）。唯一分支 `feature/external-algorithm-publishing`；起点 `9e6edbb38d1db54731c00e058e31f771c1f1c854`、VERSION `42.24.410`，起点 24/24 Actions + 65/65 Checks 已成功。该 SHA 是**起点**，本批目标 VERSION `42.24.411`，提交/准确新 SHA CI 待核验，无生产部署。
+
+**本批**：P0-01 原 `performance_diagnostics.py` 补 SQLite 查询真实 execute/fetch/transaction 耗时、畅联签名/Token 与业务 HTTP 分项、缓存 SHA 文件读取分项、v63 路由分类；只在环境开关启用时运行，未知锁等待继续 `null`，不记敏感 URL/SQL/凭证，原 API body 不变。P0-02 新增 12k 条 Material/正式 GT 多标签、负样本角色、深 OFFSET、GT 跨页 Count 缓存和 EXPLAIN 隔离证据；5 万角色索引冷/热样本与 6k 两类 SQL 对照。关键词 `%LIKE%` 无稳定更优候选，**未修改 SQL、FTS、schema**。相关 Python 208/208、完整 FastAPI 3/3、Node 1396/1396；本机 Chrome 不可用，待准确 SHA CI 的浏览器 Jobs。
+
+**必须保留**：一个业务 final Owner/一份 canonical truth；原 Image ID、正式 GT、负样本/训练角色、Train/Val/Test 隔离、跨页全选、Token 作用域与 401 不重放 POST、任务幂等及 UNKNOWN、Worker/资源 fencing、存储安全及材料 revision。诊断是原模块的可关闭观测，不得变成第二套 Tracing；局部 SQL 计时不等于独立锁等待或浏览器 Stalled。
+
+**权威需求状态**：`docs/performance/2026-10-29-p0-followup.md` 顶部 P0-01～05/P1-01～02，包含背景、根因、代码、测试和现场门槛；旧条目是历史证据，不要重复开发。P0-01/02 当前 **已开发待验证**（需新 SHA CI/真实大库与网络）；P0-03 **待开发**（脱敏 HAR 与 request_id/代理/直连/Server-Timing 同步）；P0-04/05 **已开发待验证**（旧多 Worker、Sophon 等外部设备）；P1 生产文件/原图溯源待安全现场取证。
+
+**下一步**：确认远端未被其他会话更新；完成新 SHA Actions/Checks；获得用户授权的只读现场证据再分析 P0-03/04/05；严禁真实训练、转换、发布、部署、生产数据删除/迁移、高并发压测、合并 main/Tag/Release/force push。未见生产 P50/P95、锁持有者、真实设备 SDK 耗时，不得虚构结论。此处只做接续摘要，逐项进度只在主文档维护。
+
 ## 2026-10-29｜P0 新畅联重复鉴权远端往返治理（42.24.410，本地已验证／CI 待核）
 
 接续 `1d027803`／42.24.409。业务请求独立创建的 `ChangLianClient` 原会每次签名、申请 Token，本批在原服务内为已保存的配置加有界作用域的进程内单飞 Token；不共享 HTTP Session、草稿配置或业务结果。8 并发从 8+8 次认证降到 1+1，保留 8 次业务查询；401 不自动重放 POST，退出与配置变更失效。相关 Python 137/137、Node 1396/1396 通过；发布与自动同步更广回归、准确 SHA CI、实际网络 P95 待最终验收。关键词 `%LIKE%` 强制改 SQL 无稳定收益，未修改。唯一专项 [P0 性能记录](performance/2026-10-29-p0-followup.md)。未登录/部署/改写生产，不 merge main/tag/release/force push。

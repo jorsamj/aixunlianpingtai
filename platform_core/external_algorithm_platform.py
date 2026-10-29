@@ -21,6 +21,7 @@ from .algorithms import list_algorithms
 from .annotations import atomic_write_json
 from .errors import PlatformError
 from .integration_audit import IntegrationAuditRepository, redact
+from .performance_diagnostics import measure
 from .secrets import SecretCredentialStore, secret_ref
 
 
@@ -744,7 +745,8 @@ class ChangLianClient:
         headers = dict(kwargs.pop("headers", {}) or {})
         headers.setdefault("Accept", "application/json")
         if auth:
-            token_type, token = self.token()
+            with measure('external.auth_wait'):
+                token_type, token = self.token()
             # The official OpenAPI compilation declares Authorization: Bearer
             # for all internal business APIs. "Access-Token" in logout prose
             # names the token value; it is not the HTTP header name.
@@ -758,13 +760,16 @@ class ChangLianClient:
             "json": kwargs.get("json") or {},
         }
         try:
-            response = self.session.request(
-                method.upper(),
-                self._url(path),
-                headers=headers,
-                timeout=self.timeout,
-                **kwargs,
-            )
+            kind = ('external.http.auth' if path in {self.endpoints.test_sign, self.endpoints.token}
+                    else 'external.http.business')
+            with measure(kind):
+                response = self.session.request(
+                    method.upper(),
+                    self._url(path),
+                    headers=headers,
+                    timeout=self.timeout,
+                    **kwargs,
+                )
         except requests.RequestException as error:
             self._emit_audit({
                 "operation": self._operation_for_path(path), "status": "UNKNOWN", "method": method,

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .performance_diagnostics import observe_connection, stage, count
+from .performance_diagnostics import connect_sqlite, observe_connection, stage, count
 
 import base64
 from collections import OrderedDict
@@ -363,10 +363,10 @@ class MaterialRepository:
 
     def _connect(self) -> sqlite3.Connection:
         if getattr(self, "_read_only", False):
-            database = sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True, timeout=30, isolation_level=None)
+            database = connect_sqlite(self.path.resolve().as_uri() + "?mode=ro", uri=True, timeout=30, isolation_level=None)
             database.row_factory = sqlite3.Row
             return observe_connection(database)
-        database = sqlite3.connect(self.path, timeout=30, isolation_level=None)
+        database = connect_sqlite(self.path, timeout=30, isolation_level=None)
         database.row_factory = sqlite3.Row
         database.execute("PRAGMA busy_timeout=30000")
         database.execute("PRAGMA foreign_keys=ON")

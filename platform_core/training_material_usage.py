@@ -5,7 +5,7 @@ coverage complete. Neither terminal failure nor process launch erases exposure.
 """
 from __future__ import annotations
 
-from .performance_diagnostics import observe_connection, stage, count
+from .performance_diagnostics import connect_sqlite, observe_connection, stage, count
 
 import json
 import sqlite3
@@ -24,9 +24,9 @@ class TrainingMaterialUsage:
         if write:
             if not self.path.is_file():
                 raise FileNotFoundError('usage projection requires the existing task database')
-            db = sqlite3.connect(self.path, timeout=5)
+            db = connect_sqlite(self.path, timeout=5)
         else:
-            db = sqlite3.connect(self.path.resolve().as_uri() + '?mode=ro', uri=True, timeout=5)
+            db = connect_sqlite(self.path.resolve().as_uri() + '?mode=ro', uri=True, timeout=5)
         db.row_factory = sqlite3.Row
         return observe_connection(db)
 
@@ -170,7 +170,7 @@ class TrainingMaterialUsage:
             return False
         algorithm_db = project / 'algorithms.sqlite3'
         if algorithm_db.is_file():
-            with closing(sqlite3.connect(algorithm_db.resolve().as_uri()+'?mode=ro', uri=True)) as algorithms:
+            with closing(observe_connection(connect_sqlite(algorithm_db.resolve().as_uri()+'?mode=ro', uri=True))) as algorithms:
                 if not algorithms.execute("SELECT 1 FROM sqlite_master WHERE name='algorithm_versions'").fetchone():
                     return False
                 return algorithms.execute('SELECT 1 FROM algorithm_versions LIMIT 1').fetchone() is None

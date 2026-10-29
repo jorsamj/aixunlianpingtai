@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ..performance_diagnostics import observe_connection
+from ..performance_diagnostics import connect_sqlite, observe_connection
 
 from contextlib import closing, contextmanager
 
@@ -195,7 +195,7 @@ class TaskRepository:
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
-        database = sqlite3.connect(self.path, timeout=5, isolation_level=None)
+        database = connect_sqlite(self.path, timeout=5, isolation_level=None)
         database.row_factory = sqlite3.Row
         database.execute(f"PRAGMA busy_timeout={busy_timeout_ms()}")
         database.execute("PRAGMA synchronous=FULL")

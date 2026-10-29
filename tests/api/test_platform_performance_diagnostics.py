@@ -22,6 +22,8 @@ def test_hot_path_diagnostics_are_opt_in_correlated_and_do_not_log_inputs(client
     assert facts['request_id']==request_id and facts['endpoint']=='training.jobs'
     assert facts['counts']['training_history.calls']==1
     assert facts['counts']['repository_sql_statements']>0
+    assert facts['sql_cumulative_ms'] is not None and facts['sql_cumulative_ms'] > 0
+    assert facts['stages_ms']['sql.execute'] > 0
     assert facts['sql_scope']=='instrumented_repository_connections'
     assert facts['sqlite_lock_wait_ms'] is None
     assert 'private-audit-secret' not in json.dumps(facts)
