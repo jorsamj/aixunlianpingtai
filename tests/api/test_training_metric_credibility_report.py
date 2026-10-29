@@ -23,7 +23,13 @@ def _setup_report(monkeypatch, tmp_path, *, durable_result=None):
     (jobs / "job.json").write_text(json.dumps(job), encoding="utf-8")
     monkeypatch.setattr(platform, "get_project", lambda _: {"id": "p"})
     monkeypatch.setattr(platform, "project_dir", lambda _: project)
-    monkeypatch.setattr(platform, "enrich_job_runtime", lambda _p, value: value)
+    def read_only_runtime(_project, value, *, allow_version_archive):
+        # The report is a GET. Preserve the real API contract and reject any
+        # accidental regression to an archival/write-enabled runtime read.
+        assert allow_version_archive is False
+        return value
+
+    monkeypatch.setattr(platform, "enrich_job_runtime", read_only_runtime)
     monkeypatch.setattr(platform, "_v45_training_history", lambda _job: [])
     monkeypatch.setattr(
         platform, "_durable_training_task",
