@@ -180,7 +180,7 @@ test('canonical version conversion caches history but fetches resources on each 
   await expect(createDialog.locator('#conv428InheritedHint')).toContainText('FP32 · 800 px');
   await expect.poll(() => resourceGets).toBe(1);
   expect(historyGets).toBe(2);
-  expect(forcedHistoryGets).toBe(1);
+  expect(forcedHistoryGets).toBe(0);
 
   await createDialog.getByRole('button', {name: '取消'}).click();
   await historyDialog.getByRole('button', {name: '选择转换目标'}).click();
@@ -188,5 +188,5 @@ test('canonical version conversion caches history but fetches resources on each 
   await expect(reopened.locator('#conv428Resource')).toContainText('ONNX 导出环境');
   await page.waitForTimeout(100);
   expect({historyGets, resourceGets}).toEqual({historyGets:2, resourceGets:2});
-  expect(forcedHistoryGets).toBe(1);
+  expect(forcedHistoryGets).toBe(0);
 });
