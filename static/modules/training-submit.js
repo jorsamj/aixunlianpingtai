@@ -776,6 +776,25 @@ export function installTrainingSubmitRuntime({
         showBlockers(localAdmission);return null;
       }
       if(draft.benchmarkReuseEnabled&&localAdmission.blockers.some(row=>row.code==='benchmark-loading'))throw new Error('固定Test基准仍在读取，检查尚未完成，请稍后重新检查');
+      setSubmitStage('checking-materials');
+      let checkedCompatibility;
+      if(materialSummaryRuntime?.refreshCompatibility){
+        checkedCompatibility=await materialSummaryRuntime.refreshCompatibility({force:true,signal:operation.controller.signal});
+        if(!admissionIsCurrent(operation))throw Object.assign(new Error('训练配置或窗口已变化，本次检查已取消'),{name:'AbortError'});
+        if(!checkedCompatibility){const truth=materialSummaryRuntime.compatibilityFor?.(draft);throw new Error(truth?.error||'训练准入检查未完成，请重新检查');}
+        if(checkedCompatibility.compatible===false&&!checkedCompatibility.skipped&&!Number(checkedCompatibility.issue_count||0))throw new Error('训练准入检查未完成：未获得明确通过结果，请重新检查');
+      }
+      // Only a missing task-level absence receipt may be addressed by the
+      // final sample confirmation. Genuine GT, duplicate and leakage issues
+      // must reach the existing diagnosis before any confirmation dialog.
+      const issueCounts=checkedCompatibility?.issue_counts||{};
+      const hardIssue=Number(checkedCompatibility?.issue_count||0)>0&&(
+        !Object.keys(issueCounts).length||Object.entries(issueCounts).some(
+          ([code,count])=>Number(count)>0&&code!=='partial_review_scope'));
+      if(hardIssue){
+        if(showBlockers(updateReadiness()))return null;
+        throw new Error('训练素材存在不能通过样本确认解决的问题，请先修复正式 GT');
+      }
       setSubmitStage('checking-negatives');
       if(materialSummaryRuntime?.confirmPendingNegatives){
         const signature=admissionSignature();
@@ -786,13 +805,14 @@ export function installTrainingSubmitRuntime({
         if(!accepted||!valid())return null;
         admissionOperation=operation;
       }
-      setSubmitStage('checking-materials');
-      let checkedCompatibility;
-      if(materialSummaryRuntime?.refreshCompatibility){
+      // A newly issued task-local receipt can resolve a partial-review-scope
+      // blocker. Re-evaluate only when the initial preflight had such issues;
+      // otherwise the original verified result remains authoritative.
+      if(Number(checkedCompatibility?.issue_count||0)>0&&materialSummaryRuntime?.refreshCompatibility){
+        setSubmitStage('checking-materials');
         checkedCompatibility=await materialSummaryRuntime.refreshCompatibility({force:true,signal:operation.controller.signal});
         if(!admissionIsCurrent(operation))throw Object.assign(new Error('训练配置或窗口已变化，本次检查已取消'),{name:'AbortError'});
-        if(!checkedCompatibility){const truth=materialSummaryRuntime.compatibilityFor?.(draft);throw new Error(truth?.error||'训练准入检查未完成，请重新检查');}
-        if(checkedCompatibility.compatible===false&&!checkedCompatibility.skipped&&!Number(checkedCompatibility.issue_count||0))throw new Error('训练准入检查未完成：未获得明确通过结果，请重新检查');
+        if(!checkedCompatibility)throw new Error('样本确认后的训练准入复检未完成，请重试');
       }
       const admission=updateReadiness();
       if(showBlockers(admission))return null;

@@ -155,6 +155,48 @@ function cleanup(runtime) {
   delete globalThis.document;
 }
 
+test('formal GT conflict diagnosis runs before final task-level background confirmation', async () => {
+  installDom();
+  globalThis.window={fetch:async()=>{throw new Error('a blocked task must not be posted');}};
+  const actions=[];
+  const runtime=installTrainingSubmitRuntime({
+    getState:()=>baseState(),projectId:()=> 'project-1',
+    trainingDraftRuntime:{sync:()=>draft(),current:()=>draft(),base:()=>({blocked:false})},
+    trainingDraftToRequest,
+    materialSummaryRuntime:{
+      compatibilityFor:()=>({ready:true,issue_count:2,affected_image_count:2}),
+      refreshCompatibility:async()=>{actions.push('formal-gt-check');return {compatible:false,issue_count:2};},
+      updateAdmissionDiagnosis:()=>{},
+      openAdmissionDiagnosis:()=>{actions.push('formal-gt-diagnosis');return true;},
+      confirmPendingNegatives:async()=>{actions.push('background-confirmation');return true;},
+    },
+  });
+  assert.equal(await runtime.submit(),null);
+  assert.deepEqual(actions,['formal-gt-check','formal-gt-diagnosis']);
+  cleanup(runtime);
+});
+
+test('a confirmable review-scope gap reaches final confirmation after compatibility preflight', async () => {
+  installDom();
+  globalThis.window={fetch:async()=>{throw new Error('returning to edit must not create a task');}};
+  const actions=[];
+  const runtime=installTrainingSubmitRuntime({
+    getState:()=>baseState(),projectId:()=> 'project-1',
+    trainingDraftRuntime:{sync:()=>draft(),current:()=>draft(),base:()=>({blocked:false})},
+    trainingDraftToRequest,
+    materialSummaryRuntime:{
+      compatibilityFor:()=>({ready:true,issue_count:1,issue_counts:{partial_review_scope:1}}),
+      refreshCompatibility:async()=>{actions.push('formal-gt-check');return {compatible:false,issue_count:1,issue_counts:{partial_review_scope:1}};},
+      updateAdmissionDiagnosis:()=>{},
+      openAdmissionDiagnosis:()=>{actions.push('unwanted-diagnosis');return true;},
+      confirmPendingNegatives:async()=>{actions.push('final-sample-review');return false;},
+    },
+  });
+  assert.equal(await runtime.submit(),null);
+  assert.deepEqual(actions,['formal-gt-check','final-sample-review']);
+  cleanup(runtime);
+});
+
 test('engine parameters preserve explicit false/zero resource and YOLO settings', () => {
   const value = draft({
     resource: {strategy: 'manual', device: '0', gpuPolicy: 'exclusive', batch: 16, workers: 0, cache: false},

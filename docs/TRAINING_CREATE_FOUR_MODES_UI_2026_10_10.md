@@ -1,4 +1,10 @@
-> **最新训练业务变更（2026-10-29 / 42.24.420）**：独立编号 TRAIN-SAMPLE-P0-01 的多类别覆盖和最终样本确认改动及 419 CI 合同修复，见下节。原 42.24.412 素材状态/新增标签证据合同记录继续保留在本文末尾；本项不归入性能治理任务书。
+> **最新训练业务变更（2026-10-29 / 42.24.421）**：独立编号 TRAIN-SAMPLE-P0-01 的多类别覆盖、最终样本确认与真实浏览器 CI 反馈修复，见下节。原 42.24.412 素材状态/新增标签证据合同记录继续保留在本文末尾；本项不归入性能治理任务书。
+
+### 42.24.421｜最终样本确认前诊断正式 GT 冲突（待 421 CI）
+
+`42.24.420` 精确远端 SHA `69fc7464683162eb0317fef958c38c689c80c446` 的 Actions 最终 **23 项中 22 成功、1 失败**。失败是 `Frontend Runtime Stabilization` 的 `browser-navigation (2)`：107 例中 97 成功，10 例 `training-duplicate-conflicts.spec.mjs` 全部在原 `openDraft()` 先决检查等待 `compatibilityFor().issue_count === 2` 超时、实际为 `null`。同一工作流其余 Chrome 分片与前端 Job 成功；`Training Material Picker`、`Training Create First Open` 亦成功。新样本确认在旧的兼容性诊断前执行，对该夹具两张部分类别正样本先弹最终确认，挡住了应优先展示的「同 SHA 不同正式 GT」冲突入口；**不是准许冲突通过，而是错误的弹窗时序**。
+
+421 调整 `TrainingSubmitRuntime` 的最终提交时序：先强制运行原 `/compatibility`；只要存在重复 GT、跨 Train/Test 泄漏、源异常、未审核 GT 等**非 `partial_review_scope`**硬阻碍，先显示既有阻止创建/补审诊断，绝不展示样本确认。只有仍可通过原任务级收据解决的 `partial_review_scope`，才继续 `/negative-preview`、必要时统一确认及原 `/confirm-negatives`；预检已有该类问题时，凭收据再复检 `/compatibility`，不能在确认后绕过准入。正常首次兼容性通过则只请求一次；只有任务级待确认范围才可能第二次查询。保持原训练创建任务 ID、幂等、版本/GT 证据围栏，无 Worker/数据库修改。新增两项 Node 回归：真实 GT 冲突优先诊断；候选背景范围缺口仍进入最后二次确认且「返回调整」不创建任务。定向 Node `training-submit`/`training-submit-validation`/`training-material-summary-runtime` 执行通过；正式 421 CI、真实浏览器和生产尚待核对，**未部署生产**。
 
 ### 42.24.420｜419 精确 SHA 的 CI 回归修正（待 420 CI）
 
@@ -20,9 +26,9 @@
 1. `/negative-preview` 原 `counts/pending_count/proof_digest` 保持兼容，新增 `coverage`：`selected_count`、`eligible_count`、`full_coverage_count`、`partial_coverage_count`、`zero_target_count`、每类 `classes[].{code,image_count,box_count}`、最多十条正式 GT `problems`、`material_revision` 和 `annotation_revision`。只对最终请求传入的精确选择 ID 计算；不在素材列表首屏扫全库。
 2. Proof Digest 继续包含素材 SHA、GT version/hash、任务目标；增加所选独立 Test 身份、`base_version_id` 以及素材/GT 仓库修订。`/confirm-negatives` 仍在生命周期围栏内重算证明并对过期确认返回 409；不允许通过前端传入 `confirmed=true` 跳过不合格 GT。
 3. 未完成 GT 从 `pending_negative` 收紧为 `pending_review`；真正已经具有正式 GT、仅缺本次目标范围证明的候选背景，仍须用户确认后登记**任务级**收据，不更新原始图片、正式 GT 或素材负样本身份。保留既有 Worker 标签投影、稳定 class_id、标签继承、版本权重和 Train/Val/独立 Test 隔离合同。
-4. 在最后一步点击创建时，复用 `TrainingSubmitRuntime`→`negative-preview`→必要时唯一 `确认本次训练样本` 弹窗→`confirm-negatives`（原收据/版本复验）→`refreshCompatibility`（完整准入/重复与泄漏检查）→原 `train/start` 幂等创建。弹窗展示大数字、每类正式框、完整/部分/零覆盖、真实待确认背景及不能普通放行的问题；返回调整不修改唯一 Draft。只存在部分覆盖（没有待确认背景）也显示一次知晓确认，而不会写额外负样本收据。
+4. 在最后一步点击创建时，复用 `TrainingSubmitRuntime`→`refreshCompatibility`（先挡住硬 GT/重复/泄漏异常）→`negative-preview`→必要时唯一 `确认本次训练样本` 弹窗→`confirm-negatives`（原收据/版本复验）→仅在预检存在可确认范围缺口时再次 `refreshCompatibility`→原 `train/start` 幂等创建。弹窗展示大数字、每类正式框、完整/部分/零覆盖、真实待确认背景及不能普通放行的问题；返回调整不修改唯一 Draft。只存在部分覆盖（没有待确认背景）也显示一次知晓确认，而不会写额外负样本收据。
 5. 迭代父版本 `base_version_id` 已纳入前端最终预检请求；对其它算法/标签/素材变化，原 `admissionSignature` 取消旧弹窗和旧创建；服务端验证 GT/source/revision 变化，不允许陈旧证明写入。网络结果未知仍由原提交 Owner 查询同一个任务 ID，不因本项重复创建。
-6. 提交阶段在候选背景任务收据之前**不能直接做最终兼容性验证**（原后端依赖该收据完成任务级负样本投影）；因此采用先做最终样本/GT 证据预检，再在写入前执行原完整兼容性预检和正式创建门槛。不可解释为尚未做过完整准入就已受理任务。
+6. 候选背景的初次兼容性检查可能仅因缺少本次任务级收据产生 `partial_review_scope`，故不能把它和重复 GT 等不可确认的 blocker 混同；421 分离「硬阻碍先诊断」和「任务级收据后复验」，不把初次缺收据视为永久失败，也不允许确认掩盖真实 GT 冲突。不可解释为尚未做过完整准入就已受理任务。
 
 **验证台账（按真实结果，非生产验收）**：Python 单元 `test_training_label_contract.py` 定向 8 项通过（含多类别投影、正式 GT 准入门槛），Node 训练摘要/选择器/版本守卫、训练提交/标签/Owner 等八文件通过；`test_training_negative_review.py` API 集成在当前沙箱 40 秒无输出后超时，**未通过也未断言产品回归失败**，须在有正常 TestClient 线程支持的 CI/隔离服务重跑。Playwright/真实 Worker/大素材以及生产 GT Revision 竞态尚未执行；相关用例已按正式 GT 审核语义更新。最终提交 SHA、GitHub Actions 与部署状态须在实际推送后补录，未部署生产。
 
