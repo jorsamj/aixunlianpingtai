@@ -284,7 +284,13 @@ test('real duplicate GT comparison edits the original annotation and rechecks be
   await page.getByRole('button',{name:'返回训练配置 · 保留草稿',exact:true}).click();
   const accepted=page.waitForResponse(r=>r.url().endsWith('/train/start')&&r.request().method()==='POST');
   await page.getByRole('dialog',{name:'创建训练任务',exact:true}).locator('button[data-training-step="3"]').click();
-  await page.getByRole('button',{name:'开始训练',exact:true}).click();const admission=await accepted;expect(admission.ok(),await admission.text()).toBeTruthy();expect(trainPosts).toHaveLength(1);
+  await page.getByRole('button',{name:'开始训练',exact:true}).click();
+  // Corrected duplicate GT leaves two single-category positives. The final
+  // sample-coverage review is required, but no negative receipt is created.
+  const confirmation=page.getByRole('dialog',{name:'确认本次训练样本',exact:true});
+  await expect(confirmation).toContainText('部分类别覆盖');
+  await confirmation.getByRole('button',{name:'确认并创建',exact:true}).click();
+  const admission=await accepted;expect(admission.ok(),await admission.text()).toBeTruthy();expect(trainPosts).toHaveLength(1);
   const history=JSON.parse(isolatedPython(f.project.id,`import json,app; print(json.dumps(app.shared_task_artifacts().read_json(${JSON.stringify(f.oldTask)},'payload.json')))`));expect(history).toEqual(f.history);
 });
 

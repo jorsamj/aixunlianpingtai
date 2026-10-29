@@ -1,11 +1,18 @@
-> **最新训练业务变更（2026-10-29 / 42.24.422）**：独立编号 TRAIN-SAMPLE-P0-01 的多类别覆盖、最终样本确认与真实浏览器 CI 反馈修复，见下节。原 42.24.412 素材状态/新增标签证据合同记录继续保留在本文末尾；本项不归入性能治理任务书。
+> **最新训练业务变更（2026-10-29 / 42.24.423）**：独立编号 TRAIN-SAMPLE-P0-01 的多类别覆盖、最终样本确认与真实浏览器 CI 反馈修复，见下节。原 42.24.412 素材状态/新增标签证据合同记录继续保留在本文末尾；本项不归入性能治理任务书。
+
+### 42.24.423｜修复 GT 后的部分覆盖确认浏览器回归（待 423 CI）
+
+`training-duplicate-conflicts.spec.mjs` 的真实闭环先发现同 SHA 不同正式 GT，用户在原工作台把错误框改回 `person`，再重新校验、最终提交。修改后的两张素材各只有 `person`，本次标签集合仍含 `person`、`vehicle`：按照 TRAIN-SAMPLE-P0-01 它们是**部分类别覆盖的正样本**，不是待确认负样本；最终提交必须先弹一次「确认本次训练样本」，再触发 `/train/start`。421 的同文件 106/107 通过、最后 1 例仍沿旧业务时序直接 `waitForResponse`，等不到用户未确认前本就不该发出的 POST。423 只修正该现有真实 Chrome 回归，明确检查「部分类别覆盖」并点击「确认并创建」后才要求恰好一次原任务提交。测试环境不启动训练；原 GT 历史审计与重复冲突修复过程保持不变。
+
+截至 423 编写时，422 精确 SHA `d15d64634a37467ed70148cce4840b5215d08d30` 已触发 41 项工作流，其中 `Training Input Integrity`、`Training Create First Open`、`Training Material Picker` 和 `Frontend Runtime Stabilization` 的 `browser-navigation (3)` 已成功，部分长尾仍在执行；未将未完成视为通过。423 需按实际新 SHA 全量统计，不宣称生产验收。本项无代码逻辑回退、无新迁移、无生产部署。
 
 ### 42.24.422｜确认后缓存一致性与提交准入状态竞态修复（待 422 CI）
 
-`42.24.421` 远端 SHA `7f1bd5e7b6ba9bad77dda724d97fa5c8e0e73bf8` 的关联 CI 出现两处真实 Chrome 失败（最终全部工作流统计另查该精确 SHA）：
+`42.24.421` 远端 SHA `7f1bd5e7b6ba9bad77dda724d97fa5c8e0e73bf8` 的最终 Actions 为 **39 项触发、36 成功、3 失败、0 运行中**。失败集中于三处真实 Chrome 用例（下列前两项通过 422 对应专项 CI 验证）：
 
 - `Training Create First Open` contract Ubuntu/Windows 均通过、real-Chrome 17/18 通过。剩余 1 例在人工确认候选背景后，应继续报告后端「任务优先级必须是 1~999 的整数」，却被前端缓存临时 `material-compatibility-loading` 取代（toast 为「训练条件检查尚未完成」）。修复是提交 Owner 在请求完成、草稿签名仍有效时，用**本次刚验证的服务端兼容性响应**计算当前准入；仅覆盖当前这一次判断，不写平行缓存、不把其它真实 blocker 当成成功。新增 Node 测试覆盖「后台显示仍 loading，但最终请求已完成」场景。
 - `Training Material Picker` API/合同成功、real-Chrome 4/5 通过。唯一失败是 `target-negative-workflow`：最终样本确认能够打开，但点击「确认并创建」后 5 秒没有进入原 `train/start`。追到原 `training_compatibility.py` 的 `@lru_cache`：缓存键只有素材 revision、正式 GT revision、标签与数据集摘要，**遗漏任务级负样本确认收据 revision**；新增的先兼容性预检填入旧结果后，收据插入并不改变正式 GT revision，最终复检误用确认前旧结果。422 复用 `AnnotationRepository.task_negative_confirmation_revision()`（现成只读计数，不建表/不迁移）加入同一缓存键；成功写入收据后自然失效，仅确认前后受影响的选择重算。新增隔离夹具测试断言：收据计数从 0 到 1 时缓存重新评价；重复同一修订仍命中。正式 GT 未修改，任务级证据持续可审计。
+- `Frontend Runtime Stabilization` real-Chrome 的 `training-label-selector` 用例也读到同一个不准确的「训练条件检查尚未完成」，属于第一项缓存显示竞态，422 已按同源 Owner 修复；`training-duplicate-conflicts` 中 107 例有 106 通过（原先 420 同文件 10 例失败），剩余一例在修复真实 GT 后变成两张部分覆盖正样本，旧断言不经新增的最后一步样本知晓确认直接等待 `/train/start` 导致超时。该用例必须按本项新合同先确认部分覆盖、再等待原提交；不应撤销新确认门槛。
 
 本轮仅改原 `TrainingSubmitRuntime`、原兼容性投影缓存键、现有业务进度记录及相关定向测试/静态缓存版本。Node 相关测试与 Python `py_compile` 本地通过；`pytest` 在当前临时运行环境未安装，后端新增测试须以 422 CI 为准。尚未部署生产、未操作真实图片/数据库、无迁移。`42.24.421` 的另一个核心回归（重复 GT 硬阻碍优先于确认弹窗）保持，等待真实 Chrome CI 对照验证。
 
