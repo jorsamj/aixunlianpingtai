@@ -4837,8 +4837,7 @@ def create_project(payload: ProjectCreate):
 def read_project(project_id: str):
     project = get_project(project_id)
     images = load_images(project_id)
-    sync_jobs_index(project_id)
-    jobs = read_json(project_dir(project_id) / "jobs" / "index.json", [])
+    jobs = sync_jobs_index(project_id, read_only=True)
     models = list_models_internal(project_id)
     annotated = 0
     boxes = 0
@@ -8694,11 +8693,9 @@ def add_job_to_index(project_id: str, job: Dict[str, Any]):
 @app.get("/api/projects/{project_id}/jobs")
 def list_jobs(project_id: str):
     get_project(project_id)
-    history_context = None
-    try: history_context = _v48_dispatch_training_queues(project_id)
-    except Exception: performance_count("legacy_queue.failures")
-    rows = (sync_jobs_index(project_id, history_context=history_context)
-            if history_context is not None else sync_jobs_index(project_id))
+    # GET is a live projection, never a scheduling or legacy archival trigger.
+    # Old queues are maintained independently by the startup maintenance owner.
+    rows = sync_jobs_index(project_id, read_only=True)
     if not isinstance(rows, list):
         rows = read_json(project_dir(project_id) / "jobs" / "index.json", [])
     return rows
@@ -9097,8 +9094,8 @@ def _training_history_context(project_id: str):
     return rows, repository, durable
 
 
-def _successful_training_counts(project_id: str):
-    rows, _repository, durable = _training_history_context(project_id)
+def _successful_training_counts(project_id: str, *, history_context=None):
+    rows, _repository, durable = history_context if history_context is not None else _training_history_context(project_id)
     rows = [row for row in rows if not row.get("project_id") or str(row["project_id"]) == str(project_id)]
     identities = {str(row.get("task_id") or row.get("id") or "") for row in rows}
     for identity, task in durable.items():
@@ -9123,7 +9120,7 @@ def _successful_training_counts(project_id: str):
 
 
 @performance_stage("training_index")
-def sync_jobs_index(project_id: str, *, history_context=None):
+def sync_jobs_index(project_id: str, *, history_context=None, read_only: bool = False):
     jobs_dir = project_dir(project_id) / "jobs"
     # Serialise only the read projection, never worker publication or scheduling.
     with _TRAINING_JOB_PROJECTION_LOCK:
@@ -9139,7 +9136,13 @@ def sync_jobs_index(project_id: str, *, history_context=None):
             task = durable.get(identity)
             revision = (task.updated_at, task.status.value, task.result_ref) if task else None
             old = previous.get(str(raw.get("id") or identity))
-            if old is not None and old[0] == raw and old[1] == revision and not _training_job_is_active(old[2]):
+            pending_legacy_archive = (
+                not read_only and task is None
+                and str(raw.get("status") or "").lower() in {"done", "finished", "completed", "succeeded", "success"}
+                and raw.get("artifact_verified") is True and bool(raw.get("asset_algorithm_id"))
+                and not raw.get("auto_version_id")
+            )
+            if old is not None and old[0] == raw and old[1] == revision and not _training_job_is_active(old[2]) and not pending_legacy_archive:
                 job = old[2]
             else:
                 projection_task = durable.get(str(raw.get("id") or ""))
@@ -9156,7 +9159,7 @@ def sync_jobs_index(project_id: str, *, history_context=None):
                     # Pre-Durable workers still complete their idempotent
                     # version receipt here. Current Durable handlers own their
                     # own finalized version; never rebuild that on GET.
-                    allow_version_archive=task is None,
+                    allow_version_archive=not read_only and task is None,
                     durable_task=projection_task,
                 )
             current[str(raw.get("id") or identity)] = (raw, revision, job)
@@ -9164,7 +9167,7 @@ def sync_jobs_index(project_id: str, *, history_context=None):
         index = _training_job_index_rows(jobs)
         # Unchanged terminal history needs neither JSON serialization nor writes.
         old_index = [entry[2] for entry in previous.values()]
-        if not (jobs_dir / "index.json").exists() or index != _training_job_index_rows(old_index):
+        if not read_only and (not (jobs_dir / "index.json").exists() or index != _training_job_index_rows(old_index)):
             write_json(jobs_dir / "index.json", index)
         _TRAINING_JOB_PROJECTIONS[key] = current
         return index
@@ -11956,34 +11959,129 @@ def _v56_migrate_queued_priority(job_file: Path, job: Dict[str, Any]) -> Dict[st
 
 @performance_stage("legacy_queue")
 def _v48_dispatch_training_queues(project_id: str) -> Optional[tuple]:
-    """Run one task per resource, using lower-number-first priority and FIFO ties."""
+    """Explicit legacy maintenance only, fenced across HTTP worker processes."""
     with _LEGACY_V48_TRAIN_QUEUE_LOCK:
-        rows=[]
-        history, _repository, durable = _training_history_context(project_id)
-        for j in history:
-            jf = project_dir(project_id) / "jobs" / str(j.get("id") or "") / "job.json"
-            if j and str(j.get("task_id") or j.get("id") or "") in durable:
+        # The old thread lock never protected multiple Uvicorn processes.
+        # Hold this short-lived project owner fence across the remote/local
+        # launch and persisted status so a second worker cannot double-start.
+        lock_path = project_dir(project_id) / "jobs" / ".legacy-dispatch.lock"
+        try:
+            with FileLock(str(lock_path), timeout=0):
+                return _v48_dispatch_training_queues_locked(project_id)
+        except Timeout:
+            performance_count("legacy_queue.busy")
+            return None
+
+
+def _v48_dispatch_training_queues_locked(project_id: str) -> Optional[tuple]:
+    rows = []
+    history, repository, durable = _training_history_context(project_id)
+    for job in history:
+        jf = project_dir(project_id) / "jobs" / str(job.get("id") or "") / "job.json"
+        if str(job.get("task_id") or job.get("id") or "") in durable:
+            continue
+        if job.get("status") == "queued":
+            job = _v56_migrate_queued_priority(jf, job)
+        rows.append((jf, job))
+    busy = {_v48_resource_key(job) for _, job in rows if job.get("status") in {"running", "paused"}}
+    queued = sorted(
+        [(jf, job) for jf, job in rows if job.get("status") == "queued"],
+        key=lambda pair: _v56_training_queue_sort_key(pair[1]),
+    )
+    for jf, job in queued:
+        key = _v48_resource_key(job)
+        if key in busy:
+            continue
+        try:
+            _v48_launch_saved_job(project_id, job)
+            busy.add(key)
+        except Exception as error:
+            job.update(status="failed", message=f"训练启动失败：{error}",
+                       finished_at=now_iso(), updated_at=now_iso(), never_started=True)
+            write_json(jf, job)
+    return (history, repository, durable) if not rows else None
+
+
+def _v48_legacy_needs_maintenance(job: Mapping[str, Any]) -> bool:
+    status = str(job.get("status") or "").strip().lower()
+    if status in {"queued", "running", "paused"}:
+        return True
+    return (
+        status in {"done", "finished", "completed", "success", "succeeded"}
+        and job.get("artifact_verified") is True
+        and bool(job.get("asset_algorithm_id"))
+        and not job.get("auto_version_id")
+        and not job.get("never_started")
+    )
+
+
+def _v48_legacy_maintenance_tick() -> bool:
+    """Maintain only pre-Durable tasks, independent of API read frequency.
+
+    A Durable task with a retained legacy job.json is *never* re-dispatched.
+    The caller owns the cadence; concurrent service workers share the launch
+    file fence, while archival retains its original version CAS guard.
+    """
+    monitoring = False
+    for project in list_projects():
+        project_id = str(project.get("id") or "")
+        if not project_id:
+            continue
+        try:
+            history, _repository, durable = _training_history_context(project_id)
+            pending = any(
+                _v48_legacy_needs_maintenance(row)
+                for row in history
+                if str(row.get("task_id") or row.get("id") or "") not in durable
+            )
+            if not pending:
                 continue
-            if j.get("status") == "queued":
-                j = _v56_migrate_queued_priority(jf, j)
-            if j: rows.append((jf,j))
-        busy={_v48_resource_key(j) for _,j in rows if j.get("status") in {"running","paused"}}
-        queued=sorted(
-            [(jf,j) for jf,j in rows if j.get("status")=="queued"],
-            key=lambda pair: _v56_training_queue_sort_key(pair[1]),
+            monitoring = True
+            _v48_dispatch_training_queues(project_id)
+            sync_jobs_index(project_id)
+        except Exception:
+            # A transient schema/IO error must not mark unknown queued work
+            # complete or stop the maintenance owner permanently.
+            performance_count("legacy_queue.failures")
+            monitoring = True
+    return monitoring
+
+
+_LEGACY_TRAINING_MAINTENANCE_THREAD: Optional[threading.Thread] = None
+_LEGACY_TRAINING_MAINTENANCE_STOP = threading.Event()
+_LEGACY_TRAINING_MAINTENANCE_LOCK = threading.Lock()
+
+
+def _v48_legacy_maintenance_loop() -> None:
+    # No new pre-Durable jobs are admitted. Exit after the first empty scan;
+    # an old queue discovered on startup stays scheduled through completion.
+    while not _LEGACY_TRAINING_MAINTENANCE_STOP.is_set():
+        try:
+            if not _v48_legacy_maintenance_tick():
+                return
+        except Exception:
+            # A transient failure enumerating projects must not strand old
+            # queued jobs. Retry after the same bounded idle cadence.
+            performance_count("legacy_queue.failures")
+        _LEGACY_TRAINING_MAINTENANCE_STOP.wait(30)
+
+
+@app.on_event("startup")
+def _v48_start_legacy_training_maintenance() -> None:
+    global _LEGACY_TRAINING_MAINTENANCE_THREAD
+    with _LEGACY_TRAINING_MAINTENANCE_LOCK:
+        if _LEGACY_TRAINING_MAINTENANCE_THREAD and _LEGACY_TRAINING_MAINTENANCE_THREAD.is_alive():
+            return
+        _LEGACY_TRAINING_MAINTENANCE_STOP.clear()
+        _LEGACY_TRAINING_MAINTENANCE_THREAD = threading.Thread(
+            target=_v48_legacy_maintenance_loop, name="legacy-training-maintenance", daemon=True,
         )
-        for jf,j in queued:
-            key=_v48_resource_key(j)
-            if key in busy: continue
-            try:
-                _v48_launch_saved_job(project_id,j); busy.add(key)
-            except Exception as e:
-                j.update(status="failed",message=f"训练启动失败：{e}",finished_at=now_iso(),updated_at=now_iso(),never_started=True)
-                write_json(jf,j)
-        # Only the all-Durable path is read-only here. Reuse its snapshot within
-        # this request, never across requests. Any legacy row keeps the original
-        # post-dispatch reread, including legacy launch/recovery side effects.
-        return (history, _repository, durable) if not rows else None
+        _LEGACY_TRAINING_MAINTENANCE_THREAD.start()
+
+
+@app.on_event("shutdown")
+def _v48_stop_legacy_training_maintenance() -> None:
+    _LEGACY_TRAINING_MAINTENANCE_STOP.set()
 
 
 @app.post("/api/v48/projects/{project_id}/jobs/{job_id}/promote")
@@ -12655,6 +12753,16 @@ def _v48_auto_convert_version(project_id: str, algorithm_id: str, version: Dict[
 
 
 def _v48_archive_training_version(project_id: str, job: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Serialise legacy finalisation even when multiple HTTP workers recover it."""
+    identity = str(job.get("id") or "")
+    if not identity or not re.fullmatch(r"[A-Za-z0-9_-]{1,96}", identity):
+        return None
+    lock_path = project_dir(project_id) / "jobs" / identity / ".legacy-archive.lock"
+    with FileLock(str(lock_path), timeout=30):
+        return _v48_archive_training_version_locked(project_id, job)
+
+
+def _v48_archive_training_version_locked(project_id: str, job: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if not job or job.get("auto_version_id") or job.get("never_started"):
         return None
     normalized_status = str(job.get("status") or "").strip().upper()
@@ -21408,7 +21516,7 @@ def v44_test_saved_model_config(config_id: str):
 def v44_training_report(project_id: str, job_id: str, algorithm_id: str = '', version_id: str = ''):
     get_project(project_id);jf=project_dir(project_id)/'jobs'/job_id/'job.json'
     if not jf.exists(): raise HTTPException(status_code=404,detail='训练任务不存在')
-    job=enrich_job_runtime(project_id,read_json(jf,{}));report=job.get('training_report') or {}
+    job=enrich_job_runtime(project_id,read_json(jf,{}),allow_version_archive=False);report=job.get('training_report') or {}
     matches = [(algorithm, version) for algorithm in list_algorithms_internal(project_id)
                for version in algorithm.get('versions', [])
                if (not algorithm_id or str(algorithm.get('id')) == algorithm_id)
@@ -24899,10 +25007,10 @@ def _v53_job_summary(source: Mapping[str, Any]) -> Dict[str, Any]:
     return row
 
 
-def _v53_live_jobs(project_id: str) -> List[Dict[str, Any]]:
+def _v53_live_jobs(project_id: str, *, history_context=None) -> List[Dict[str, Any]]:
     """Overlay volatile training truth without rebuilding the whole bootstrap snapshot."""
     try:
-        current = sync_jobs_index(project_id)
+        current = sync_jobs_index(project_id, history_context=history_context, read_only=True)
         if isinstance(current, list):
             return [_v53_job_summary(row) for row in current]
     except Exception:
@@ -24965,9 +25073,10 @@ def _v53_snapshot_with_live_jobs(snapshot: Mapping[str, Any], project_id: str) -
             refreshed["generated_at"] = now_iso()
             _V53_BOOTSTRAP_SNAPSHOT = refreshed
 
-    counts = _successful_training_counts(project_id)
+    history_context = _training_history_context(project_id)
+    counts = _successful_training_counts(project_id, history_context=history_context)
     payload["algorithms"] = [{**algorithm, "successful_training_count": counts.get(str(algorithm.get("id") or ""), 0)} for algorithm in payload.get("algorithms", [])]
-    payload["jobs"] = _v53_live_jobs(project_id)
+    payload["jobs"] = _v53_live_jobs(project_id, history_context=history_context)
     payload["jobs_generated_at"] = now_iso()
     return payload
 
@@ -24979,8 +25088,9 @@ def _v53_build_snapshot(project_id:str, prepared_targets:Optional[List[Dict[str,
     algorithms, algorithm_revision = _v53_algorithms_with_revision(project_id)
     materials=material_store(project_id).summary()
     annotations=AnnotationRepository(project_dir(project_id)).summary()
-    jobs=_v53_live_jobs(project_id)
-    counts=_successful_training_counts(project_id)
+    history_context=_training_history_context(project_id)
+    jobs=_v53_live_jobs(project_id, history_context=history_context)
+    counts=_successful_training_counts(project_id, history_context=history_context)
     algorithms=[{**algorithm,"successful_training_count":counts.get(str(algorithm.get("id") or ""),0)} for algorithm in algorithms]
     model_configs=[_v35_sanitize_secret(item) for item in _v35_model_items()]
     generated_at=now_iso()

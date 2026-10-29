@@ -263,6 +263,28 @@ class TrainingMaterialUsage:
                 'excluded_image_ids': [key for key, value in by_id.items() if value['excluded']],
                 'unknown_image_ids': [key for key, value in by_id.items() if value['state'] == 'unknown']}
 
+    @staticmethod
+    def _token_lookup_sql(batch_size):
+        """Make each requested token an exact lookup on the existing composite PK.
+
+        A 200-way OR previously let SQLite scan every token in a project before
+        filtering. VALUES drives one indexed (project,kind,value) seek per token.
+        Deduplicate only the narrow usage identity before reading full rows:
+        DISTINCT on u.* forced a wide temporary sort and lost the index gain.
+        """
+        if not 1 <= batch_size <= 200:
+            raise ValueError('token lookup batch size must be 1..200')
+        placeholders = ','.join('(?,?)' for _ in range(batch_size))
+        return (
+            'WITH requested_tokens(token_kind,token_value) AS (VALUES ' + placeholders + ') '
+            ', matched AS MATERIALIZED ('
+            'SELECT DISTINCT t.task_id,t.image_id,t.role FROM requested_tokens r '
+            'JOIN training_usage_tokens t ON t.project_id=? '
+            'AND t.token_kind=r.token_kind AND t.token_value=r.token_value) '
+            'SELECT u.* FROM matched m JOIN training_material_usage u '
+            'ON u.task_id=m.task_id AND u.image_id=m.image_id AND u.role=m.role'
+        )
+
     @stage("usage_lookup")
     def _query_candidates(self, project_id, algorithm_id, images):
         result = {'records': [], 'revision': 'unknown', 'coverage': 'unknown'}
@@ -289,9 +311,8 @@ class TrainingMaterialUsage:
             matched = {}
             for start in range(0, len(tokens), 200):
                 batch = tokens[start:start+200]
-                clause = ' OR '.join('(t.token_kind=? AND t.token_value=?)' for _ in batch)
-                params = [str(project_id), *(value for token in batch for value in token)]
-                for row in db.execute('SELECT DISTINCT u.* FROM training_usage_tokens t JOIN training_material_usage u ON u.task_id=t.task_id AND u.image_id=t.image_id AND u.role=t.role WHERE t.project_id=? AND ('+clause+')', params):
+                params = [*(value for token in batch for value in token), str(project_id)]
+                for row in db.execute(self._token_lookup_sql(len(batch)), params):
                     value = dict(row)
                     matched[(value['task_id'],value['image_id'],value['role'])] = value
             result['records'] = list(matched.values())

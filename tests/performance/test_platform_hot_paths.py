@@ -111,6 +111,7 @@ def test_jobs_read_cost_with_unchanged_terminal_history(tmp_path, monkeypatch):
             rows=api.list_jobs('audit')
         assert len(rows)==50 and all(row['status']=='failed' for row in rows)
         assert facts['history_calls']==1 and facts['task_list_calls']==3
+        assert facts['legacy_queue_calls']==0, 'GET must not execute legacy maintenance'
         assert facts['task_rows_read']==220 and facts['db_connections']<20
         results.append({'case':label,'returned_tasks':len(rows),'history_tasks':220,**dict(facts)})
     report('jobs',results)
@@ -193,7 +194,7 @@ def test_picker_cost_cold_hot_filters_and_revisions(tmp_path,monkeypatch):
     report('picker_http',http)
 
 
-def test_legacy_queue_keeps_post_dispatch_reread(tmp_path,monkeypatch):
+def test_legacy_maintenance_dispatches_without_a_get(tmp_path,monkeypatch):
     import app as api
     from platform_core.training_history_projection import TrainingHistoryProjection
     project=tmp_path/'projects'/'legacy';directory=project/'jobs'/'old';directory.mkdir(parents=True)
@@ -202,6 +203,7 @@ def test_legacy_queue_keeps_post_dispatch_reread(tmp_path,monkeypatch):
     repository=TaskRepository(tmp_path/'task_runtime'/'tasks.sqlite3')
     monkeypatch.setattr(api,'get_project',lambda p:{'id':p})
     monkeypatch.setattr(api,'project_dir',lambda p:project)
+    monkeypatch.setattr(api,'list_projects',lambda:[{'id':'legacy'}])
     monkeypatch.setattr(api,'shared_task_repository',lambda:repository)
     monkeypatch.setattr(api,'_TRAINING_HISTORY_PROJECTION',TrainingHistoryProjection())
     monkeypatch.setattr(api,'_TRAINING_JOB_PROJECTIONS',{})
@@ -213,6 +215,10 @@ def test_legacy_queue_keeps_post_dispatch_reread(tmp_path,monkeypatch):
     with measured(monkeypatch) as facts,monkeypatch.context() as patch:
         timed(patch,facts,api,'_training_history_context','history')
         rows=api.list_jobs('legacy')
-    assert attempted==['old'] and facts['history_calls']==2
+    assert attempted==[] and facts['history_calls']==1
+    assert rows[0]['status']=='queued'
+    assert api._v48_legacy_maintenance_tick() is True
+    assert attempted==['old']
+    rows=api.list_jobs('legacy')
     assert rows[0]['status']=='failed' and 'isolated legacy launcher failure' in rows[0]['message']
     assert json.loads((directory/'job.json').read_text(encoding='utf-8'))['never_started'] is True

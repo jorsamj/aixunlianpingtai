@@ -1,3 +1,7 @@
+## 2026-10-29｜P0 性能续批：训练 GET 无副作用与使用历史索引（隔离 GREEN／CI 待核验）
+
+以 `e777983c`／`42.24.404` 为隔离基线，本批版本 `42.24.405`。原训练 GET 不再启动旧队列或写归档，旧 pre-Durable 队列由服务启动的专用兼容维护周期继续；跨 Worker 原调度/版本归档均增加文件锁，正式 Durable Owner 不变。素材用量 token 仍使用原 Task DB 主键索引，只在窄身份上去重后读行，无新库/迁移。Python 189 及追加边界 9、Node 全量 1396 通过；真实生产性能、旧任务现场及最终 SHA CI 未验。完整 A–F、基线、RED 与后续 P0 在 `docs/performance/2026-10-29-p0-followup.md`，接续先核当前 HEAD 和该文档。禁止生产部署/数据操作、merge main、Tag/Release、force push。
+
 ## 2026-10-29｜训练回收与异常证据定向修复（LOCAL VERIFIED / CI及生产未验证）
 
 [唯一审计报告](docs/TRAINING_WORKSPACE_EVIDENCE_AUDIT_2026_10_29.md)：远端40327743/VERSION399隔离基线；原Lifecycle补异常outcomes/框证据归档、显式ID与SHA保护、自动阻塞/归档失败回执。定向71通过/1系统symlink权限跳过，真实原API清理前后相同字节验证通过。用户已授权提交到开发分支；本次提交CI待核验，未部署；保留其他工作树WIP。Checkpoint恢复、未知历史所有权继续保护，远端最终回收/生产启动与接口性能NOT VERIFIED，不能称全量最终回收已验收。无前端/DB/版本更改。

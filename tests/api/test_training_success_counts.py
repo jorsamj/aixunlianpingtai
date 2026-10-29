@@ -136,6 +136,10 @@ def test_snapshot_defers_large_report_evidence_without_changing_on_demand_report
     assert 'dataset_selected_ids' not in row
     assert len(json.dumps(row)) < len(json.dumps(original)) * .05
     assert json.loads(path.read_text()) == original
+    # Bootstrap GET must no longer persist the global history index. Explicit
+    # maintenance still retains the full original report evidence there.
+    assert not (path.parent.parent / 'index.json').exists()
+    platform.sync_jobs_index(project)
     index = json.loads((path.parent.parent / 'index.json').read_text(encoding='utf-8'))
     assert index[0]['training_report']['history'] == history
     response = client.get(f'/api/v44/projects/{project}/jobs/evidence/report')
