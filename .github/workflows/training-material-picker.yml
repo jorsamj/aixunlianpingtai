@@ -11,6 +11,7 @@ on:
       - 'tests/api/test_platform_performance_diagnostics.py'
       - 'tests/performance/test_platform_hot_paths.py'
       - 'platform_core/training_material_picker_api.py'
+      - 'platform_core/training_compatibility.py'
       - 'platform_core/annotation_repository.py'
       - 'platform_core/training_recovery_api.py'
       - 'platform_core/material_repository.py'
@@ -27,6 +28,7 @@ on:
       - 'static/modules/training-labels.js'
       - 'static/main.mjs'
       - 'tests/api/test_training_negative_review.py'
+      - 'tests/performance/test_training_compatibility_paging.py'
       - 'tests/unit/test_annotation_negative_review_evidence.py'
       - 'tests/unit/test_reviewed_negative_projection.py'
       - 'tests/frontend/training-material-picker-negative-review.test.mjs'
@@ -59,11 +61,12 @@ jobs:
           fastapi httpx uvicorn python-multipart pillow pyyaml requests
           opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2 pytest
       - name: Compile picker backend
-        run: python -m py_compile platform_core/annotation_repository.py platform_core/training_material_picker_api.py platform_core/training_recovery_api.py
+        run: python -m py_compile platform_core/annotation_repository.py platform_core/training_material_picker_api.py platform_core/training_compatibility.py platform_core/training_recovery_api.py
       - name: Backend paging thumbnail and summary contracts
         run: >-
           python -m pytest -q
           tests/api/test_training_negative_review.py
+          tests/performance/test_training_compatibility_paging.py
           tests/unit/test_annotation_negative_review_evidence.py
           tests/unit/test_reviewed_negative_projection.py
           tests/unit/test_negative_pool.py
