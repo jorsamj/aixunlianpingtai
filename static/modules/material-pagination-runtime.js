@@ -65,6 +65,8 @@ export function installMaterialPaginationRuntime() {
   let requestSerial = 0;
   let pageLoadFlight = null;
   let pageLoadFlightKey = '';
+  let statusCountsFlight = null;
+  let statusCountsFlightKey = '';
   let searchTimer = null;
   let suppressCardReload = false;
   let refreshBusy = false;
@@ -79,7 +81,11 @@ export function installMaterialPaginationRuntime() {
   state.materialPage61 = state.materialPage61 || {
     cursor: '', nextCursor: '', cursorStack: [], page: 1, total: 0,
     unprocessedTotal: 0, processedTotal: 0,
+    statusCountsAvailable: false, statusCountsScope: '',
   };
+  if (typeof state.materialPage61.statusCountsAvailable !== 'boolean') {
+    state.materialPage61.statusCountsAvailable = false;
+  }
   state.materialShellSignature61 = state.materialShellSignature61 || '';
 
   const projectId = () => String(state.project?.id || '');
@@ -203,6 +209,8 @@ export function installMaterialPaginationRuntime() {
         total: Number(info.total || 0),
         unprocessedTotal: Number(info.unprocessedTotal || 0),
         processedTotal: Number(info.processedTotal || 0),
+        statusCountsScope: info.statusCountsScope || '',
+        statusCountsAvailable: info.statusCountsAvailable === true,
       },
     };
     return true;
@@ -244,19 +252,22 @@ export function installMaterialPaginationRuntime() {
     }));
   }
 
-  async function fetchStatusTotal61(processingStatus) {
+  async function fetchStatusCounts61() {
     const pid = projectId();
-    if (!pid) return 0;
-    const params = buildMaterialQuery({
-      limit: 1,
-      sourceId: String(state.materialSourceFilter61 || 'all'),
-      processingStatus,
-    });
-    const page = await responseJson(await materialFetch(`/api/v61/projects/${encodeURIComponent(pid)}/materials?${params}`, {
+    if (!pid) return {unprocessed: 0, processed: 0};
+    const sourceId = String(state.materialSourceFilter61 || 'all');
+    const key = JSON.stringify([pid, sourceId]);
+    if (statusCountsFlight && statusCountsFlightKey === key) return statusCountsFlight;
+    const params = new URLSearchParams();
+    if (sourceId !== 'all') params.append('storage_source_id', sourceId);
+    const task = materialFetch(`/api/v61/projects/${encodeURIComponent(pid)}/materials/status-counts?${params}`, {
       headers: {Accept: 'application/json'},
       credentials: 'same-origin',
-    }));
-    return Number(page.total || 0);
+    }).then(responseJson);
+    statusCountsFlight = task;
+    statusCountsFlightKey = key;
+    try { return await task; }
+    finally { if (statusCountsFlight === task) { statusCountsFlight = null; statusCountsFlightKey = ''; } }
   }
 
   async function refreshSummary61() {
@@ -264,16 +275,12 @@ export function installMaterialPaginationRuntime() {
     if (!pid || !isPagedDataset()) return;
     const expectedPage = state.page;
     try {
-      const totalParams = buildMaterialQuery({limit: 1});
-      const annotatedParams = buildMaterialQuery({limit: 1, annotated: 'marked'});
-      const [totalPage, annotatedPage] = await Promise.all([
-        responseJson(await materialFetch(`/api/v61/projects/${encodeURIComponent(pid)}/materials?${totalParams}`, {headers: {Accept: 'application/json'}, credentials: 'same-origin'})),
-        responseJson(await materialFetch(`/api/v61/projects/${encodeURIComponent(pid)}/materials?${annotatedParams}`, {headers: {Accept: 'application/json'}, credentials: 'same-origin'})),
-      ]);
+      const counts = await fetchStatusCounts61();
+      if (projectId() !== pid) return;
       if (state.page !== expectedPage || !isPagedDataset()) return;
       state.materialSummary61 = {
-        total: Number(totalPage.total || 0),
-        annotated: Number(annotatedPage.total || 0),
+        total: Number(counts.total || 0),
+        annotated: Number(counts.annotated || 0),
       };
       decorateSummary61();
     } catch (_error) {
@@ -358,8 +365,8 @@ export function installMaterialPaginationRuntime() {
   function decorateDataset61() {
     const info = state.materialPage61;
     const tabs = [...document.querySelectorAll('.data424-tabs button')];
-    if (tabs[0]?.querySelector('b')) tabs[0].querySelector('b').textContent = String(info.unprocessedTotal || 0);
-    if (tabs[1]?.querySelector('b')) tabs[1].querySelector('b').textContent = String(info.processedTotal || 0);
+    if (tabs[0]?.querySelector('b')) tabs[0].querySelector('b').textContent = info.statusCountsAvailable === false ? '—' : String(info.unprocessedTotal || 0);
+    if (tabs[1]?.querySelector('b')) tabs[1].querySelector('b').textContent = info.statusCountsAvailable === false ? '—' : String(info.processedTotal || 0);
     const count = document.getElementById('data412Count');
     if (count) count.textContent = `${info.total || 0} 张`;
     const selectedCount = document.getElementById('data412SelCount');
@@ -433,15 +440,14 @@ export function installMaterialPaginationRuntime() {
     const requestedPage = page === undefined ? Math.max(1, Number(info.page) || 1) : Math.max(1, Number(page) || 1);
     const flightKey = JSON.stringify([projectId(), filterSignature61(), requestedPage, transport.pageSize || 48]);
     if (pageLoadFlight && pageLoadFlightKey === flightKey) return pageLoadFlight;
+    const countsScope = JSON.stringify([projectId(), String(state.materialSourceFilter61 || 'all')]);
+    if (info.statusCountsScope !== countsScope) info.statusCountsAvailable = false;
 
     const run = (async () => {
       const serial = ++requestSerial;
       const expectedPage = state.page;
       try {
-        const totalsPromise = Promise.all([
-          fetchStatusTotal61('unprocessed'),
-          fetchStatusTotal61('processed'),
-        ]);
+        const totalsPromise = fetchStatusCounts61().catch(error => ({error}));
         const materialPage = await fetchMaterialPage61(requestedPage);
         if (serial !== requestSerial || state.page !== expectedPage || !isPagedDataset()) return {stale: true};
         state.images = Array.isArray(materialPage.items) ? materialPage.items : [];
@@ -453,10 +459,22 @@ export function installMaterialPaginationRuntime() {
         rememberDatasetPage61();
         const mode = renderPagedDataset61();
     window.NegativePoolRuntime?.decorateOriginal('materials');
-        const [unprocessedTotal, processedTotal] = await totalsPromise;
+        const counts = await totalsPromise;
         if (serial !== requestSerial || state.page !== expectedPage || !isPagedDataset()) return {stale: true};
-        info.unprocessedTotal = unprocessedTotal;
-        info.processedTotal = processedTotal;
+        if (counts.error) {
+          info.statusCountsAvailable = false;
+          window.toast?.(`素材状态数量读取失败，可刷新重试：${counts.error.message || counts.error}`);
+        } else {
+          info.unprocessedTotal = Number(counts.unprocessed || 0);
+          info.processedTotal = Number(counts.processed || 0);
+          info.statusCountsAvailable = true;
+          info.statusCountsScope = countsScope;
+          state.materialSummary61 = {
+            total: Number(counts.total || 0),
+            annotated: Number(counts.annotated || 0),
+          };
+          decorateSummary61();
+        }
         rememberDatasetPage61();
         decorateDataset61();
         return {stale: false, mode, items: state.images, total: info.total};

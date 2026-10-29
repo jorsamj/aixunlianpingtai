@@ -112,6 +112,24 @@ test('identical material page loads are single-flight instead of issuing duplica
   assert.match(runtime, /JSON\.stringify\(\[projectId\(\), filterSignature61\(\), requestedPage, transport\.pageSize \|\| 48\]\)/);
 });
 
+test('dataset tab and dashboard counters share a nonblocking, single-flight summary request', () => {
+  const runtime = fs.readFileSync(new URL('../../static/modules/material-pagination-runtime.js', import.meta.url), 'utf8');
+  assert.match(runtime, /async function fetchStatusCounts61\(\)/);
+  assert.match(runtime, /\/materials\/status-counts\?/);
+  assert.match(runtime, /statusCountsFlight && statusCountsFlightKey === key/);
+  assert.match(runtime, /const totalsPromise = fetchStatusCounts61\(\)\.catch\(error => \(\{error\}\)\)/);
+  assert.match(runtime, /const counts = await fetchStatusCounts61\(\)/);
+  assert.match(runtime, /info\.statusCountsAvailable = false/);
+  assert.match(runtime, /if \(info\.statusCountsScope !== countsScope\) info\.statusCountsAvailable = false/);
+  assert.match(runtime, /info\.statusCountsScope = countsScope/);
+  assert.match(runtime, /info\.statusCountsAvailable === false \? '—'/);
+  assert.doesNotMatch(runtime, /fetchStatusTotal61/);
+  const summary = runtime.slice(runtime.indexOf('  async function refreshSummary61()'), runtime.indexOf('  function decorateSummary61()'));
+  assert.doesNotMatch(summary, /\/materials\?/);
+  assert.match(summary, /total: Number\(counts\.total/);
+  assert.match(summary, /annotated: Number\(counts\.annotated/);
+});
+
 test('explicit full material hydration is lazy, cached and single-flight', () => {
   const runtime = fs.readFileSync(new URL('../../static/modules/material-pagination-runtime.js', import.meta.url), 'utf8');
   assert.match(runtime, /const FULL_MATERIAL_REVISIT_REUSE_MS = 10 \* 1000/);

@@ -3124,6 +3124,16 @@ def list_material_ids_v61(
     return {"items": page.items, "next_cursor": page.next_cursor, "total": page.total}
 
 
+@app.get("/api/v61/projects/{project_id}/materials/status-counts")
+def material_status_counts_v61(
+    project_id: str, storage_source_id: Optional[List[str]] = Query(default=None),
+):
+    get_project(project_id)
+    # One database snapshot, one aggregation on cache miss; unlike two
+    # page-size=1 requests this never hydrates image JSON or a page of cards.
+    return material_store(project_id).processing_status_counts(storage_source_id)
+
+
 @app.get("/api/v61/projects/{project_id}/materials/{image_id}/content")
 def material_content_v61(project_id: str, image_id: str):
     _authorize_business_file_project(project_id)

@@ -3,6 +3,7 @@ from __future__ import annotations
 from .performance_diagnostics import observe_connection
 
 import base64
+from collections import OrderedDict
 import json
 import hashlib
 import os
@@ -32,6 +33,9 @@ MATERIAL_BATCH_DELETE_CLAIM_FIELD = "_material_batch_delete_claim"
 _MATERIAL_ANNOTATION_LIFECYCLE_LOCK = ".material-annotation-lifecycle.lock"
 _LIFECYCLE_LOCK_TIMEOUT = 60
 _LIFECYCLE_LOCAL = threading.local()
+_STATUS_COUNTS_CACHE_LOCK = threading.Lock()
+_STATUS_COUNTS_CACHE: OrderedDict[tuple[Any, ...], dict[str, int]] = OrderedDict()
+_STATUS_COUNTS_CACHE_LIMIT = 128
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS materials (
     id TEXT PRIMARY KEY,
@@ -979,20 +983,65 @@ class MaterialRepository:
         return self.count_filtered(filters)
 
     def summary(self) -> dict[str, int]:
-        """Read indexed counters without hydrating material payloads or files."""
-        with closing(self._connect()) as database:
-            row = database.execute("""SELECT COUNT(*) AS total,
-                COALESCE(SUM(annotated), 0) AS annotated,
-                COALESCE(SUM(box_count), 0) AS boxes
-                FROM materials""").fetchone()
-            return {**{key: int(row[key]) for key in row.keys()},
-                    "revision": self._revision(database)}
+        """Reuse the revision-keyed material counters for F5/bootstrap summaries."""
+        counts = self.processing_status_counts()
+        return {key: counts[key] for key in ("total", "annotated", "boxes", "revision")}
 
     def count_filtered(self, filters: MaterialFilters | Mapping[str, Any] | None = None) -> int:
         clauses, params = self._filters(filters)
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         with closing(self._connect()) as database:
             return int(database.execute("SELECT COUNT(*) FROM materials m" + where, params).fetchone()[0])
+
+    def processing_status_counts(self, storage_source_ids: Sequence[str] | None = None) -> dict[str, int]:
+        """One read-only, revision-keyed projection for material summary counters.
+
+        Only the two status badges respect the storage source filter; the
+        dashboard totals always span every source. Search/labels constrain the
+        visible page, not these counters. A revision change invalidates the
+        bounded cross-request cache, including writes by other workers.
+        """
+        sources = tuple(sorted(set(str(item) for item in (storage_source_ids or ()) if str(item))))
+        stat = self.path.stat()
+        with closing(self._connect()) as database:
+            database.execute("BEGIN")
+            try:
+                revision = self._revision(database)
+                key = (str(self.path.resolve()), stat.st_dev, stat.st_ino, revision, sources)
+                with _STATUS_COUNTS_CACHE_LOCK:
+                    cached = _STATUS_COUNTS_CACHE.get(key)
+                    if cached is not None:
+                        _STATUS_COUNTS_CACHE.move_to_end(key)
+                if cached is not None:
+                    database.execute("COMMIT")
+                    return dict(cached)
+                status_source_clause = ""
+                if sources:
+                    status_source_clause = "m.storage_source_id IN (" + ",".join("?" for _ in sources) + ") AND "
+                row = database.execute(
+                    "SELECT "
+                    "COUNT(*) AS total, "
+                    "COALESCE(SUM(m.annotated),0) AS annotated, "
+                    "COALESCE(SUM(m.box_count),0) AS boxes, "
+                    "COALESCE(SUM(CASE WHEN " + status_source_clause + "m.processing_status IN "
+                    "('unprocessed','pending_decision','cleaning') THEN 1 ELSE 0 END),0) AS unprocessed, "
+                    "COALESCE(SUM(CASE WHEN " + status_source_clause + "m.processing_status='processed' "
+                    "THEN 1 ELSE 0 END),0) AS processed "
+                    "FROM materials m", (*sources, *sources),
+                ).fetchone()
+                result = {key: int(row[key]) for key in ("total", "annotated", "boxes", "unprocessed", "processed")}
+                result["revision"] = int(revision)
+                database.execute("COMMIT")
+            except Exception:
+                if database.in_transaction:
+                    database.execute("ROLLBACK")
+                raise
+        with _STATUS_COUNTS_CACHE_LOCK:
+            _STATUS_COUNTS_CACHE[key] = dict(result)
+            _STATUS_COUNTS_CACHE.move_to_end(key)
+            while len(_STATUS_COUNTS_CACHE) > _STATUS_COUNTS_CACHE_LIMIT:
+                _STATUS_COUNTS_CACHE.popitem(last=False)
+        return result
 
     def list_page(
         self, *, cursor: str | None = None, page: int | None = None,

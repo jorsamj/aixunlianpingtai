@@ -26,6 +26,49 @@ def material(image_id: str, *, source: str = "default_local", labels=(), status=
     }
 
 
+def test_material_summary_badges_share_one_revision_keyed_aggregation(tmp_path, monkeypatch):
+    repository = MaterialRepository(tmp_path)
+    repository.upsert_many([
+        material("m-0", source="default_local", status="pending_decision", labels=["fire"]),
+        material("m-1", source="remote-a", status="cleaning"),
+        material("m-2", source="remote-a", status="processed", labels=["smoke"]),
+        material("m-3", source="remote-b", status="unprocessed"),
+        material("m-4", source="remote-b", status="processed"),
+    ])
+    aggregation_sql = []
+    original_connect = repository._connect
+
+    def tracked_connect():
+        connection = original_connect()
+        connection.set_trace_callback(
+            lambda sql: aggregation_sql.append(sql) if "AS unprocessed" in sql else None
+        )
+        return connection
+
+    monkeypatch.setattr(repository, "_connect", tracked_connect)
+    global_counts = repository.processing_status_counts()
+    assert {key: global_counts[key] for key in ("total", "annotated", "boxes", "unprocessed", "processed")} == {
+        "total": 5, "annotated": 2, "boxes": 2, "unprocessed": 3, "processed": 2,
+    }
+    assert repository.summary() == {
+        key: global_counts[key] for key in ("total", "annotated", "boxes", "revision")
+    }
+    assert len(aggregation_sql) == 1  # warm F5 summary reuses the same cached projection
+
+    remote = repository.processing_status_counts(["remote-a"])
+    assert (remote["unprocessed"], remote["processed"]) == (1, 1)
+    assert (remote["total"], remote["annotated"]) == (5, 2)  # dashboard is global
+    assert repository.processing_status_counts(["remote-a", "remote-a"]) == remote
+    assert len(aggregation_sql) == 2  # same normalized source filter hits cache
+
+    # Another repository instance imitates another worker committing a material.
+    MaterialRepository(tmp_path).patch({"m-1": {"processing_status": "processed"}})
+    updated = repository.processing_status_counts(["remote-a"])
+    assert updated["revision"] > remote["revision"]
+    assert (updated["unprocessed"], updated["processed"]) == (0, 2)
+    assert len(aggregation_sql) == 3
+
+
 def test_ready_material_repository_bypasses_init_lock(tmp_path, monkeypatch):
     MaterialRepository(tmp_path)
 
