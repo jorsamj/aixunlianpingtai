@@ -34,7 +34,7 @@ def _record(index: int, *, annotated: bool = True) -> dict:
     }
 
 
-def _client(tmp_path):
+def _client(tmp_path, *, return_app=False):
     data_dir = tmp_path / "data"
     project_path = data_dir / "projects" / "p1"
     repository = MaterialRepository(project_path)
@@ -60,7 +60,8 @@ def _client(tmp_path):
         lambda project_id: {"id": project_id} if project_id == "p1" else None,
         lambda: data_dir,
     ))
-    return TestClient(app), repository
+    client = TestClient(app)
+    return (client, repository, app) if return_app else (client, repository)
 
 
 def test_picker_objective_annotation_issue_is_not_target_role_or_generic_review():
@@ -88,14 +89,15 @@ def test_new_label_evidence_does_not_accept_unavailable_source_or_invalid_formal
 
 
 def test_iteration_selection_summary_accepts_empty_preview_without_submission_validation(tmp_path, monkeypatch):
-    client, _repo = _client(tmp_path)
+    _client_instance, _repo, app = _client(tmp_path, return_app=True)
     # The existing API still returns true pool totals to external callers.
     # Only the submission contract and role index are forbidden for preview.
     import platform_core.training_material_picker_api as picker_api
     monkeypatch.setattr(picker_api, "_role_material_page", lambda *_args, **_kwargs: pytest.fail("empty preview classified task roles"))
-    # Invoke the registered FastAPI endpoint directly as well: this contract
-    # remains deterministic on test hosts where TestClient's loop can stall.
-    route = next(route for route in client.app.routes
+    # Direct invocation avoids TestClient loop stalls on some hosts. Resolve
+    # the endpoint from the original FastAPI app, not TestClient.app, which
+    # may be an ASGI wrapper with different routing introspection semantics.
+    route = next(route for route in app.routes
                  if getattr(route, "path", "").endswith("/training-materials/selection-summary"))
     summary = route.endpoint("p1", {
         "algorithm_asset_id": "algorithm-a", "base_version_id": "version-v1",

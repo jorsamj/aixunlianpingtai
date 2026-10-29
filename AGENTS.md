@@ -1,3 +1,7 @@
+## 2026-10-29｜Training Material Picker CI 路由兼容纠正（42.24.417 / 待新 SHA CI）
+
+42.24.416 精确 SHA `52c3ecf7` 的全部 30 个工作流中 29 成功、1 失败，红项为 `Training Material Picker/contracts` 中的 1 个路由测试 `StopIteration`（另 81 个后端用例及 real Chrome Job 成功）。原用例从 `TestClient.app.routes` 枚举路由，测试框架版本差异导致代理对象没有命中；417 仅令测试助手显式返回原始 FastAPI app 并从其 `.routes` 调用原 endpoint，保留零选材/迭代真实总数与免角色扫描断言。没有业务运行时代码改动。更新唯一台账 `docs/performance/2026-10-29-p0-followup.md`；新 SHA CI/生产未验，禁止直接部署、清理及强推。
+
 ## 2026-10-29｜迭代 role-page 预览哈希去重（42.24.416 / CI 与生产待核）
 
 基线远端 `aeba9f07`／42.24.415。B 算法带 `base_version_id` 的角色页原通过 `task_contract → resolve_training_label_contract → _frozen_base_contract` 逐页 SHA256 全读 `best.pt`，属于已确认代码级 I/O 放大；42.24.416 仅为非持久化角色/选材意图显式省去 digest，最终训练/Worker freeze 仍计算原 SHA，保留 GT、继承标签与 class_id、权重可用性。原诊断增加角色合同、历史过滤、页使用关系阶段；完整候选角色/使用池冷索引仍待生产取证，不能宣称 26.5s 完全消失。唯一台账 `docs/performance/2026-10-29-p0-followup.md`；新 SHA CI 与生产待核，不部署、迁移或删除。

@@ -1,3 +1,5 @@
+> **2026-10-29 / 42.24.417 素材选择器 CI 单测纠正**：`52c3ecf7`／42.24.416 经 GitHub 完整只读检查为 **29/30 Actions 通过**；唯一红项 Training Material Picker/contracts 中 1/82 后端用例因 `TestClient.app.routes` 路由枚举 `StopIteration`，real Chrome 已通过。417 定向让测试从原始 FastAPI app `.routes` 找真实 endpoint，不变更运行时代码、GT/训练提交合同或数据库。新 SHA CI/生产待验，详见 `performance/2026-10-29-p0-followup.md`。
+
 > **2026-10-29 / 42.24.416 迭代角色页 P0**：原 `/role-page` 在继承版本的只读角色合同内逐页完整 SHA256 `best.pt`；本批仅角色预览和选材意图显式省略哈希，最终提交/Worker 冻结照常真实 SHA256。原诊断增加角色/历史/页使用关系分段；12k/50k 候选与现场 22.87s 根因仍待实测。准确 CI/生产未验，未部署。详见 [唯一台账](performance/2026-10-29-p0-followup.md)。
 
 > **2026-10-29 / 42.24.415 P0 合同纠正**：CI 证实 414 空摘要 `eligible_total=null` 违反既有真实全池总数合同，已回滚；只保留 413 前端零选材免请求、后端空态不进入训练提交角色校验。修正 `_IncludedRouter` 测试枚举。精确新 SHA CI 与 A800 仍待核，未部署。详见 [唯一台账](performance/2026-10-29-p0-followup.md)。
