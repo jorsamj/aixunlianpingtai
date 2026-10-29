@@ -342,7 +342,8 @@ def _gt_material_filter_page(
             "(gt.annotation_state='confirmed_empty' AND gt.scope_ref=1)))"
         )
 
-    extra_clauses, extra_params = _picker_filter_sql(_pool_filters(repository, filters))
+    pool_filters = _pool_filters(repository, filters)
+    extra_clauses, extra_params = _picker_filter_sql(pool_filters)
     base_clauses.extend(extra_clauses)
     base_params.extend(extra_params)
     base_where = " WHERE " + " AND ".join(base_clauses)
@@ -386,6 +387,9 @@ def _gt_material_filter_page(
                 negative_pool_revision = str(database.execute(
                     "SELECT revision FROM negative_pool_meta WHERE id=1"
                 ).fetchone()[0])
+            if ("negative_pool_revision" in pool_filters
+                    and str(pool_filters["negative_pool_revision"]) != negative_pool_revision):
+                raise ValueError("负样本池已更新，请重试")
             total = _gt_filtered_count_snapshot(
                 database, repository, annotations, base_where, base_params,
                 material_revision, annotation_revision,
@@ -696,11 +700,15 @@ def _role_material_page(repository, annotations, contract, *, image_ids=None,
     rows = {r["id"]:r for r in repository.get_many([r[0] for r in visible])} if include_payload else {i:{"id":i} for i,_ in visible}
     if (repository.current_revision(), annotations.current_revision()) != revisions:
         raise ValueError("素材或标注已更新，请重试")
+    negative_pool_revision = NegativePool(repository).revision()
+    if ("negative_pool_revision" in selected
+            and str(selected["negative_pool_revision"]) != negative_pool_revision):
+        raise ValueError("负样本池已更新，请重试")
     return {"items":[{**rows[i], "sample_role":role} for i,role in visible if i in rows],
             "total":total,"sample_role_counts":counts,"effective_label_codes":list(contract["effective_label_codes"]),
             "page":int(page),"page_size":int(limit),"limit":int(limit),"next_cursor":None,
             "total_pages":max(1,math.ceil(total/int(limit))),"repository_revision":revisions[0],"annotation_revision":revisions[1],
-            "negative_confirmation_revision":annotations.task_negative_confirmation_revision(), "negative_pool_revision":NegativePool(repository).revision()}
+            "negative_confirmation_revision":annotations.task_negative_confirmation_revision(), "negative_pool_revision":negative_pool_revision}
 
 
 def _thumbnail_identity(row: dict) -> str:

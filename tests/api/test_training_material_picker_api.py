@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 from types import SimpleNamespace
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from PIL import Image
@@ -215,6 +216,55 @@ def test_gt_page_reuses_attached_snapshot_for_negative_revisions(tmp_path, monke
     assert page["total"] == 115
     assert page["negative_confirmation_revision"] == 1
     assert page["negative_pool_revision"] == expected_pool_revision
+
+
+def test_gt_page_rejects_stale_negative_pool_filter_snapshot(tmp_path, monkeypatch):
+    """Membership changed after prefiltering must never masquerade as a fresh GT page."""
+    from platform_core.negative_pool import NegativePool
+
+    _client_instance, repository = _client(tmp_path)
+    annotations = AnnotationRepository(repository.project_path)
+    pool = NegativePool(repository)
+    category = pool.category(name="安全教育")['id']
+    pool.members(["m0000"], category_ids=[category])
+    original_pool_filters = picker_module._pool_filters
+
+    def changed_after_selection(*args, **kwargs):
+        selected = original_pool_filters(*args, **kwargs)
+        pool.members(["m0002"], category_ids=[category])
+        return selected
+
+    monkeypatch.setattr(picker_module, "_pool_filters", changed_after_selection)
+    with pytest.raises(ValueError, match="负样本池已更新"):
+        picker_module._gt_material_filter_page(
+            repository, annotations, limit=20, include_payload=False,
+            filters={"negative_pool_only": True, "negative_category_ids": [category]},
+        )
+
+
+def test_role_page_rejects_stale_negative_pool_filter_snapshot(tmp_path, monkeypatch):
+    from platform_core.negative_pool import NegativePool
+
+    _client_instance, repository = _client(tmp_path)
+    annotations = AnnotationRepository(repository.project_path)
+    pool = NegativePool(repository)
+    category = pool.category(name="行为风险")['id']
+    pool.members(["m0000"], category_ids=[category])
+    original_pool_filters = picker_module._pool_filters
+
+    def changed_after_selection(*args, **kwargs):
+        selected = original_pool_filters(*args, **kwargs)
+        pool.members(["m0002"], category_ids=[category])
+        return selected
+
+    monkeypatch.setattr(picker_module, "_pool_filters", changed_after_selection)
+    monkeypatch.setattr(picker_module, "_cached_role_index", lambda *args: (("m0000", "positive"),))
+    with pytest.raises(ValueError, match="负样本池已更新"):
+        picker_module._role_material_page(
+            repository, annotations, {"effective_label_codes": ["smoke"]},
+            include_payload=False,
+            filters={"negative_pool_only": True, "negative_category_ids": [category]},
+        )
 
 
 def test_training_picker_batch_reads_formal_annotation_truth_for_current_page(tmp_path, monkeypatch):

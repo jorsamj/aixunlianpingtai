@@ -1,3 +1,7 @@
+## 2026-10-29｜P0 负样本池并发筛选快照保护（42.24.409 / LOCAL GREEN，CI 待核）
+
+接续 `3fdc5f33`／42.24.408（23/23 Actions、61/61 Checks 全绿）。修复负样本池候选 ID 已计算后，池成员在正式 GT 分页事务/角色索引读取前被其他请求修改，旧 ID 结果却携带新池 revision 的竞态。GT 分页直接复用上一版同事务读取的池 revision 与预筛选 revision 比对；角色页在既有结尾 revision 获取点增加比对且复用结果，不额外开连接。两条精确并发测试 RED→GREEN，Python 35/35、完整 Node 1396/1396。生产负样本业务语义/原 GT/训练资格/SQLite schema 均未更改，不自动重试或触发训练。新 SHA CI、真实大库/代理/外部芯片、畅联云请求仍待核验。详见 `docs/performance/2026-10-29-p0-followup.md`；不部署、不改生产数据、不合并 main、不强推。
+
 ## 2026-10-29｜P0 正式 GT 翻页修订号同事务一致性（42.24.408 / LOCAL GREEN，CI 待核）
 
 接续 `95e52d32`／42.24.407。原正式 GT 选择器在分页数据库事务提交后，为 `negative_confirmation_revision` 和 `negative_pool_revision` 又分别打开 Annotation/Material 连接，导致多余开销及旧页搭配新修订号的竞争窗口。本批在已有 `ATTACH annotation_gt` 的同一只读事务内读取两个标记，历史表不存在仍返回原默认值，未修改训练角色、负样本判断、素材/GT/任务及 schema。新增针对二次连接的 RED→GREEN；相关 Python 33/33、前端 Node 1396/1396 通过。准确新 SHA 的 CI 仍须核对；真实生产 HAR、正式 GT 10k+ 冷查询、代理与外部芯片/畅联云调用时序未验。不部署、不改生产数据、不合并 main、不强推。A–F 见 `docs/performance/2026-10-29-p0-followup.md`。
