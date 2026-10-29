@@ -36,6 +36,9 @@ _LIFECYCLE_LOCAL = threading.local()
 _STATUS_COUNTS_CACHE_LOCK = threading.Lock()
 _STATUS_COUNTS_CACHE: OrderedDict[tuple[Any, ...], dict[str, int]] = OrderedDict()
 _STATUS_COUNTS_CACHE_LIMIT = 128
+_FILTERED_COUNTS_CACHE_LOCK = threading.Lock()
+_FILTERED_COUNTS_CACHE: OrderedDict[tuple[Any, ...], int] = OrderedDict()
+_FILTERED_COUNTS_CACHE_LIMIT = 128
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS materials (
     id TEXT PRIMARY KEY,
@@ -262,6 +265,33 @@ def decode_material_cursor(cursor: str) -> tuple[str, str]:
         return str(value[0]), str(value[1])
     except Exception as error:
         raise ValueError("invalid material cursor") from error
+
+
+def _deferred_material_page_sql(
+    where: str, *, descending: bool, include_payload: bool, offset: bool,
+) -> str:
+    """Page narrow indexed identities before reading full material payloads.
+
+    This deliberately keeps the original WHERE and (created_at,id) ordering.
+    For ID-only or payload-dependent predicates, a CTE adds overhead without
+    avoiding a payload read, so retain the original one-pass query plan.
+    """
+    order = " DESC" if descending else ""
+    sort = f" ORDER BY m.created_at{order}, m.id{order} LIMIT ?"
+    if (not include_payload or "m.filename LIKE" in where
+            or "json_extract(m.payload_json" in where):
+        columns = "m.id, m.created_at, m.payload_json" if include_payload else "m.id, m.created_at"
+        return "SELECT " + columns + " FROM materials m" + where + sort + (" OFFSET ?" if offset else "")
+    keys = (
+        "WITH page_keys AS MATERIALIZED ("
+        "SELECT m.id, m.created_at FROM materials m" + where + sort
+        + (" OFFSET ?" if offset else "") + ") "
+    )
+    return (
+        keys + "SELECT m.id, m.created_at, m.payload_json FROM page_keys p "
+        "JOIN materials m ON m.id=p.id"
+        + f" ORDER BY p.created_at{order}, p.id{order}"
+    )
 
 
 # Backward-compatible internal aliases. New cross-module consumers should use
@@ -989,9 +1019,39 @@ class MaterialRepository:
 
     def count_filtered(self, filters: MaterialFilters | Mapping[str, Any] | None = None) -> int:
         clauses, params = self._filters(filters)
-        where = " WHERE " + " AND ".join(clauses) if clauses else ""
         with closing(self._connect()) as database:
-            return int(database.execute("SELECT COUNT(*) FROM materials m" + where, params).fetchone()[0])
+            database.execute("BEGIN")
+            try:
+                value = self._count_filtered_snapshot(database, clauses, params)
+                database.execute("COMMIT")
+                return value
+            except Exception:
+                if database.in_transaction:
+                    database.execute("ROLLBACK")
+                raise
+
+    def _count_filtered_snapshot(self, database, clauses, params) -> int:
+        """Reuse one exact count only while the authoritative Material revision agrees.
+
+        Never cache a result independently of project DB identity and revision;
+        an external worker's completed write invalidates the next read.
+        """
+        stat = self.path.stat()
+        key = (str(self.path.resolve()), stat.st_dev, stat.st_ino,
+               self._revision(database), tuple(clauses), tuple(params))
+        with _FILTERED_COUNTS_CACHE_LOCK:
+            cached = _FILTERED_COUNTS_CACHE.get(key)
+            if cached is not None:
+                _FILTERED_COUNTS_CACHE.move_to_end(key)
+                return cached
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        total = int(database.execute("SELECT COUNT(*) FROM materials m" + where, params).fetchone()[0])
+        with _FILTERED_COUNTS_CACHE_LOCK:
+            _FILTERED_COUNTS_CACHE[key] = total
+            _FILTERED_COUNTS_CACHE.move_to_end(key)
+            while len(_FILTERED_COUNTS_CACHE) > _FILTERED_COUNTS_CACHE_LIMIT:
+                _FILTERED_COUNTS_CACHE.popitem(last=False)
+        return total
 
     def processing_status_counts(self, storage_source_ids: Sequence[str] | None = None) -> dict[str, int]:
         """One read-only, revision-keyed projection for material summary counters.
@@ -1066,14 +1126,7 @@ class MaterialRepository:
             database.execute("BEGIN")
             try:
                 base_clauses, base_params = self._filters(filter_values)
-                base_where = (
-                    " WHERE " + " AND ".join(base_clauses)
-                    if base_clauses else ""
-                )
-                total = int(database.execute(
-                    "SELECT COUNT(*) FROM materials m" + base_where,
-                    base_params,
-                ).fetchone()[0])
+                total = self._count_filtered_snapshot(database, base_clauses, base_params)
                 offset = None
                 if page is not None:
                     try:
@@ -1097,15 +1150,11 @@ class MaterialRepository:
                     clauses.append(f"(m.created_at {op} ? OR (m.created_at = ? AND m.id {op} ?))")
                     params.extend((created_at, created_at, image_id))
                 where = " WHERE " + " AND ".join(clauses) if clauses else ""
-                sql = (
-                    "SELECT m.id, m.created_at, m.payload_json FROM materials m"
-                    + where
-                    + (" ORDER BY m.created_at DESC, m.id DESC LIMIT ?" if descending
-                       else " ORDER BY m.created_at, m.id LIMIT ?")
+                sql = _deferred_material_page_sql(
+                    where, descending=descending, include_payload=True, offset=offset is not None,
                 )
                 query_params = [*params, bounded + 1]
                 if offset is not None:
-                    sql += " OFFSET ?"
                     query_params.append(offset)
                 rows = database.execute(sql, query_params).fetchall()
                 database.execute("COMMIT")

@@ -27,6 +27,7 @@ from .annotation_repository import AnnotationRepository
 from .negative_pool import NegativePool
 from .material_repository import (
     MaterialRepository,
+    _deferred_material_page_sql,
     decode_material_cursor,
     encode_material_cursor,
 )
@@ -328,20 +329,12 @@ def _gt_material_filter_page(
                 clauses.append(f"(m.created_at {op} ? OR (m.created_at = ? AND m.id {op} ?))")
                 params.extend((created_at, created_at, image_id))
             where = " WHERE " + " AND ".join(clauses)
-            columns = (
-                "m.id, m.created_at, m.payload_json"
-                if include_payload else
-                "m.id, m.created_at"
-            )
-            sql = (
-                f"SELECT {columns} FROM materials m"
-                + where
-                + (" ORDER BY m.created_at DESC, m.id DESC LIMIT ?" if descending
-                   else " ORDER BY m.created_at, m.id LIMIT ?")
+            sql = _deferred_material_page_sql(
+                where, descending=descending,
+                include_payload=include_payload, offset=offset is not None,
             )
             query_params = [*params, bounded + 1]
             if offset is not None:
-                sql += " OFFSET ?"
                 query_params.append(offset)
             rows = database.execute(sql, query_params).fetchall()
             material_revision = int(database.execute(
