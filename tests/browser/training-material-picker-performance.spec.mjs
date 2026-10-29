@@ -208,10 +208,11 @@ test('vest first training selects person as candidate without picker confirmatio
  await page.evaluate(({id,ids})=>{window.TrainingDraftRuntime.update({algorithmId:id,materialIds:ids,newLabelCodes:['vest'],config:{model:'yolo11n.pt'}});window.openTrainMaterialPickerV3('train')},{id:created.algorithm.id,ids});
  await expect(page.locator('.train-v3-card')).toHaveCount(2);
  await expect(page.locator('#trV3TrainingLabels')).toContainText('vest');
- await expect(page.locator('#trV3RoleCounts')).toContainText('待确认无目标 1');
+ await expect(page.locator('#trV3RoleCounts')).toContainText('完整类别覆盖在最终创建时核验');
  await expect(page.getByRole('button',{name:'确认目标范围内无目标',exact:true})).toHaveCount(0);
  await page.getByRole('combobox',{name:'按本次训练目标筛选'}).selectOption('pending_negative');
  await expect(page.locator('.train-v3-card')).toHaveCount(1);
+ await expect(page.locator('#trV3RoleCounts')).toContainText('待确认无目标 1');
  await expect(page.locator('svg.train-v3-box-layer rect[data-label="person"]')).toBeVisible();
  await expect(page.locator('.train-v3-card input')).toBeChecked();
  await page.getByRole('button',{name:'确认选择',exact:true}).click();
