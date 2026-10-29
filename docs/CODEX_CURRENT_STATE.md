@@ -1,3 +1,7 @@
+## 2026-10-29｜P0 正式 GT 计数与性能诊断完善（42.24.407，LOCAL GREEN / CI 待核）
+
+`f45e8934`／`42.24.406` 已 25/25 GitHub Actions、65/65 Checks 全绿，未部署。接续 [专项 A–F](performance/2026-10-29-p0-followup.md)：GT 选择器的重复 `COUNT(*)` 以素材/正式标注两个独立 revision、两份 SQLite 文件身份和精准筛选哈希缓存，128 项有界；新增 RED→GREEN 覆盖跨页复用、GT 编辑和素材状态变更两次失效。保持原 AnnotationRepository 的真值、负样本、标签、排序和训练角色。默认关闭的性能诊断现在显示素材列表/计数与显式资源检测的独立耗时，不记录资源身份、SQL、API Key，也不主动触发 SDK/远端探测。本轮本地 Python 与 Node 结果、最终 SHA CI 以专项最新记录和实际核验为准；生产 HAR/远端耗时/真实规模仍须现场只读验收，禁止生产自动部署/数据修改。
+
 ## 2026-10-29｜P0 素材深分页与筛选计数（42.24.406，LOCAL GREEN / SHA CI 待核）
 
 延续 [P0 任务记录](performance/2026-10-29-p0-followup.md)。本批只调整 `MaterialRepository` 和正式 GT 选择器的分页 SQL：在无 payload 过滤条件时先用窄索引翻页，再只对当前页补取 JSON；`LIKE '%...%'`、JSON 过滤仍保留原查询计划，所有排序、页码、cursor、total、角色及负样本业务语义不变。筛选总数按 SQLite DB 身份及 revision 做 128 项有界跨请求缓存；第二 Repository 模拟其他 Worker 提交后缓存失效。旧清洗确认测试新增针对原有效范围校验的 mock，生产的证据校验保持不变。6000 条合成样本的深页旧/新约 0.18/0.09–0.10 ms，仅用于证明路径效果，绝不代表生产数据。定向回归和最终 CI 以本轮实际命令/准确 SHA 为准；网络 Stalled、畅联云/芯片外部检测、正式 GT 大库及线上 P95 尚待只读取证；不部署、不触碰正式数据。

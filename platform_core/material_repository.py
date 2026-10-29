@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .performance_diagnostics import observe_connection
+from .performance_diagnostics import observe_connection, stage, count
 
 import base64
 from collections import OrderedDict
@@ -1030,6 +1030,7 @@ class MaterialRepository:
                     database.execute("ROLLBACK")
                 raise
 
+    @stage("material.filtered_count")
     def _count_filtered_snapshot(self, database, clauses, params) -> int:
         """Reuse one exact count only while the authoritative Material revision agrees.
 
@@ -1043,6 +1044,7 @@ class MaterialRepository:
             cached = _FILTERED_COUNTS_CACHE.get(key)
             if cached is not None:
                 _FILTERED_COUNTS_CACHE.move_to_end(key)
+                count("material_filtered_count_cache_hits")
                 return cached
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         total = int(database.execute("SELECT COUNT(*) FROM materials m" + where, params).fetchone()[0])
@@ -1103,6 +1105,7 @@ class MaterialRepository:
                 _STATUS_COUNTS_CACHE.popitem(last=False)
         return result
 
+    @stage("material.list_page")
     def list_page(
         self, *, cursor: str | None = None, page: int | None = None,
         limit: int = 100, query: str = "",

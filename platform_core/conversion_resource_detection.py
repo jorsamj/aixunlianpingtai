@@ -10,6 +10,7 @@ import json
 import threading
 
 from .resource_cache import ResourceCache
+from .performance_diagnostics import stage
 
 TTL_SECONDS = 300
 _entries = {}
@@ -61,6 +62,7 @@ def observe(resource):
     return row
 
 
+@stage("conversion.resource_inspection")
 def detect(resource, detector, *, force=False):
     _, cache, lock, checking = _entry(resource)
     previous = cache.snapshot()['updated_at']
@@ -73,6 +75,7 @@ def detect(resource, detector, *, force=False):
         # If another caller completed this same request while we waited, reuse it.
         if force and cache.snapshot()['updated_at'] == previous:
             cache.invalidate()
+        @stage("conversion.detector_call")
         def load():
             checking.set()
             try:

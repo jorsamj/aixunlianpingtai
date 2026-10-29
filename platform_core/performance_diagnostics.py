@@ -25,6 +25,9 @@ _ENDPOINTS = (
     (re.compile(r'/api/v61/projects/[^/]+/materials/[^/]+/content/thumbnail'), 'material.thumbnail'),
     (re.compile(r'/api/v42/projects/[^/]+/algorithms/[^/]+/versions/[^/]+/deployments'), 'conversion.history'),
     (re.compile(r'/api/v39/deploy/resources'), 'conversion.resources'),
+    (re.compile(r'/api/v39/deploy/resources/[^/]+/detect'), 'conversion.resource_detect'),
+    (re.compile(r'/api/v39/deploy/local/auto-detect'), 'conversion.local_detect'),
+    (re.compile(r'/api/v39/deploy/catalog/chips/[^/]+/detect'), 'conversion.chip_detect'),
     (re.compile(r'/api/v41/deploy/plugins'), 'conversion.plugins'),
     (re.compile(r'/api/v19/projects/[^/]+/import/jobs(?:/[^/]+)?'), 'upload.jobs'),
 )

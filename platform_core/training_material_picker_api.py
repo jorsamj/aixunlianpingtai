@@ -14,6 +14,8 @@ import math
 import os
 import sqlite3
 import tempfile
+import threading
+from collections import OrderedDict
 from contextlib import closing
 from functools import lru_cache
 from pathlib import Path
@@ -51,6 +53,9 @@ BULK_SELECTION_SCAN_SIZE = 500
 # enough while avoiding the decode/cache cost of full-size source images.
 DEFAULT_THUMBNAIL_SIZE = 192
 ALLOWED_THUMBNAIL_SIZES = {160, 192, 224, 256, 320, 384}
+_GT_FILTER_COUNTS_LOCK = threading.Lock()
+_GT_FILTER_COUNTS: OrderedDict[tuple, int] = OrderedDict()
+_GT_FILTER_COUNTS_LIMIT = 128
 
 
 def _safe_project_path(data_dir: Path, project_id: str) -> Path:
@@ -241,6 +246,51 @@ def _picker_filter_sql(filters=None):
     return clauses, params
 
 
+@stage("training.gt_filtered_count")
+def _gt_filtered_count_snapshot(
+    database: sqlite3.Connection,
+    repository: MaterialRepository,
+    annotations: AnnotationRepository,
+    where: str,
+    params: list[object],
+    material_revision: int,
+    annotation_revision: int,
+) -> int:
+    """Cache formal-GT counts only for an exact two-database read snapshot.
+
+    Material updates and annotation revisions are independent; both are
+    mandatory in the cache identity so a GT edit never serves a stale total.
+    """
+    material_stat = repository.path.stat()
+    annotation_stat = annotations.path.stat()
+    key = (
+        str(repository.path.resolve()), material_stat.st_dev, material_stat.st_ino,
+        material_revision,
+        str(annotations.path.resolve()), annotation_stat.st_dev, annotation_stat.st_ino,
+        annotation_revision,
+        # Bulk selection filters can contain tens of thousands of image IDs.
+        # A bounded entry count alone must not retain entire ID lists as keys.
+        hashlib.sha256(json.dumps([where, params], ensure_ascii=False,
+                                  separators=(",", ":")).encode("utf-8")).digest(),
+    )
+    with _GT_FILTER_COUNTS_LOCK:
+        cached = _GT_FILTER_COUNTS.get(key)
+        if cached is not None:
+            _GT_FILTER_COUNTS.move_to_end(key)
+            count("training_gt_count_cache_hits")
+            return cached
+    total = int(database.execute(
+        "SELECT COUNT(*) FROM materials m" + where, params,
+    ).fetchone()[0])
+    with _GT_FILTER_COUNTS_LOCK:
+        _GT_FILTER_COUNTS[key] = total
+        _GT_FILTER_COUNTS.move_to_end(key)
+        while len(_GT_FILTER_COUNTS) > _GT_FILTER_COUNTS_LIMIT:
+            _GT_FILTER_COUNTS.popitem(last=False)
+    return total
+
+
+@stage("training.gt_page")
 def _gt_material_filter_page(
     repository: MaterialRepository,
     annotations: AnnotationRepository,
@@ -306,10 +356,21 @@ def _gt_material_filter_page(
         )
         database.execute("BEGIN")
         try:
-            total = int(database.execute(
-                "SELECT COUNT(*) FROM materials m" + base_where,
-                base_params,
+            material_revision = int(database.execute(
+                "SELECT value FROM material_meta WHERE key='revision'"
             ).fetchone()[0])
+            annotation_revision_row = database.execute(
+                "SELECT value FROM annotation_gt.annotation_meta "
+                "WHERE key='revision'"
+            ).fetchone()
+            annotation_revision = (
+                int(annotation_revision_row[0])
+                if annotation_revision_row is not None else 0
+            )
+            total = _gt_filtered_count_snapshot(
+                database, repository, annotations, base_where, base_params,
+                material_revision, annotation_revision,
+            )
             offset = None
             if page is not None:
                 page_number = int(page)
@@ -337,17 +398,6 @@ def _gt_material_filter_page(
             if offset is not None:
                 query_params.append(offset)
             rows = database.execute(sql, query_params).fetchall()
-            material_revision = int(database.execute(
-                "SELECT value FROM material_meta WHERE key='revision'"
-            ).fetchone()[0])
-            annotation_revision_row = database.execute(
-                "SELECT value FROM annotation_gt.annotation_meta "
-                "WHERE key='revision'"
-            ).fetchone()
-            annotation_revision = (
-                int(annotation_revision_row[0])
-                if annotation_revision_row is not None else 0
-            )
             database.execute("COMMIT")
         except Exception:
             database.execute("ROLLBACK")

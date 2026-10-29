@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from types import SimpleNamespace
 
 from fastapi import FastAPI
@@ -9,6 +10,7 @@ from PIL import Image
 from platform_core.annotation_repository import AnnotationRepository
 from platform_core.material_repository import MaterialRepository
 from platform_core.training_material_picker_api import training_material_picker_router
+import platform_core.training_material_picker_api as picker_module
 
 
 def _record(index: int, *, annotated: bool = True) -> dict:
@@ -140,6 +142,48 @@ def test_training_picker_is_server_paged_and_filtered(tmp_path):
     assert search.status_code == 200
     assert search.json()["total"] == 1
     assert search.json()["items"][0]["id"] == "m0007"
+
+
+def test_formal_gt_filtered_count_reused_and_invalidated_by_both_revisions(tmp_path, monkeypatch):
+    client, repository = _client(tmp_path)
+    statements = []
+    connect = sqlite3.connect
+
+    def tracked_connect(path, *args, **kwargs):
+        database = connect(path, *args, **kwargs)
+        if str(path) == str(repository.path):
+            database.set_trace_callback(statements.append)
+        return database
+
+    monkeypatch.setattr(picker_module.sqlite3, "connect", tracked_connect)
+    endpoint = "/api/v62/projects/p1/training-materials"
+    filters = [("label", "smoke"), ("limit", "30")]
+
+    first = client.get(endpoint, params=filters)
+    second = client.get(endpoint, params=[*filters, ("page", "2")])
+    assert first.status_code == second.status_code == 200
+    assert first.json()["total"] == second.json()["total"] == 115
+
+    def count_queries():
+        return [sql for sql in statements if "SELECT COUNT(*) FROM materials m" in sql]
+
+    assert len(count_queries()) == 1, "same GT/material revisions should reuse the exact filtered count"
+
+    AnnotationRepository(repository.project_path).upsert(
+        "m0000", [{"id": "changed-label", "label": "person", "class_id": 1,
+                   "x1": 40, "y1": 20, "x2": 200, "y2": 100}],
+        "annotated", project_material=False,
+    )
+    after_gt_change = client.get(endpoint, params=filters)
+    assert after_gt_change.status_code == 200
+    assert after_gt_change.json()["total"] == 114
+    assert len(count_queries()) == 2
+
+    repository.patch_many(["m0002"], {"processing_status": "pending_decision"})
+    after_material_change = client.get(endpoint, params=filters)
+    assert after_material_change.status_code == 200
+    assert after_material_change.json()["total"] == 113
+    assert len(count_queries()) == 3
 
 
 def test_training_picker_batch_reads_formal_annotation_truth_for_current_page(tmp_path, monkeypatch):
