@@ -10,6 +10,45 @@ from PIL import Image
 from fastapi import HTTPException
 
 
+def test_outcome_only_error_preview_survives_workspace_cleanup(monkeypatch, tmp_path):
+    from dataclasses import replace
+    from platform_core.task_runtime import ArtifactStore, TaskKind, TaskRecord, TaskRepository, TaskStatus
+    from platform_core.training_workspace_lifecycle import TrainingWorkspaceLifecycle, mark_training_workspace
+    platform, version, rows, root, original = _setup(monkeypatch, tmp_path)
+    artifacts = ArtifactStore(tmp_path / "task-artifacts")
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    task = replace(TaskRecord.new("evidence-task", "evaluation-project", TaskKind.TRAINING,
+                                 "payload.json", "training:cpu"),
+                   status=TaskStatus.FAILED, attempt=1, finished_at="2026-10-29T00:00:00+00:00")
+    repository.create(task)
+    snapshot = json.loads((root / 'snapshots' / ('a' * 64 + '.json')).read_text(encoding='utf-8'))
+    snapshot['snapshot_id'] = 'a' * 64
+    artifacts.atomic_write_json(task.task_id, 'snapshot.json', snapshot)
+    artifacts.atomic_write_json(task.task_id, 'payload.json', {'target': 'local', 'input_freeze_id': 'freeze'})
+    mark_training_workspace(artifacts, task, snapshot, 'freeze')
+    image_ref = 'dataset/images/test/test-image.jpg'
+    image = artifacts.artifact_path(task.task_id, 'work/bundle/' + image_ref)
+    image.parent.mkdir(parents=True)
+    Image.new('RGB', (120, 80), 'green').save(image)
+    digest = hashlib.sha256(image.read_bytes()).hexdigest()
+    artifacts.atomic_write_json(task.task_id, 'work/bundle/manifest.json', {
+        'snapshot_id': 'a' * 64, 'splits': {'test': [{'image_id': 'test-image', 'image_ref': image_ref,
+        'source_content_sha256': rows[0]['content_sha256'], 'content_sha256': digest}]}})
+    evaluation = version['evaluation']
+    evaluation.update(task_id=task.task_id, error_samples=[], sample_outcomes=[{
+        'image_id': 'test-image', 'image': 'test-image.jpg', 'image_content_sha256': digest, 'fn_count': 1}])
+    artifacts.atomic_write_json(task.task_id, 'result.json', {'training_report': {'test_result': evaluation}})
+    monkeypatch.setattr(platform, 'shared_task_artifacts', lambda: artifacts)
+    before = platform.evaluation_diagnostic_image_v1('evaluation-project', 'algo', 'v1', 'test-image.jpg')
+    expected = Path(before.path).read_bytes()
+    service = TrainingWorkspaceLifecycle(tmp_path, repository, artifacts)
+    assert service.cleanup('evaluation-project', task.task_id, actor='test')['status'] == 'deleted'
+    after = platform.evaluation_diagnostic_image_v1('evaluation-project', 'algo', 'v1', 'test-image.jpg')
+    assert Path(after.path).read_bytes() == expected
+    assert 'evidence' in Path(after.path).parts
+    assert original.exists()
+
+
 def test_p2_frozen_evaluation_review_is_only_opinion_and_idempotent(monkeypatch, tmp_path):
     from platform_core.online_feedback import OnlineFeedbackRepository
     platform, version, _, root, image = _setup(monkeypatch, tmp_path)

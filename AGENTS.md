@@ -1,3 +1,7 @@
+## 2026-10-29｜训练回收与异常证据定向修复（LOCAL VERIFIED / CI及生产未验证）
+
+[唯一审计报告](docs/TRAINING_WORKSPACE_EVIDENCE_AUDIT_2026_10_29.md)：远端40327743/VERSION399隔离基线；原Lifecycle补异常outcomes/框证据归档、显式ID与SHA保护、自动阻塞/归档失败回执。定向71通过/1系统symlink权限跳过，真实原API清理前后相同字节验证通过。用户已授权提交到开发分支；本次提交CI待核验，未部署；保留其他工作树WIP。Checkpoint恢复、未知历史所有权继续保护，远端最终回收/生产启动与接口性能NOT VERIFIED，不能称全量最终回收已验收。无前端/DB/版本更改。
+
 ## 2026-10-29｜全平台性能第一阶段审计与两链轻量修复（代码及隔离CI已验收）
 
 [唯一专项](docs/PLATFORM_PERFORMANCE_AUDIT_2026_10_28.md)记录220历史/1000素材真实隔离计时。原/jobs仅all-Durable同请求复用、终态N+1消除，legacy后读/活动fresh get保留；素材usage重复revision连接移除，冷角色全局计算保留且不宣称整体提速。默认关闭纯ASGI标量诊断/Request ID；VERSION399，定向Python、Node22与Chrome1通过，未全仓/生产/GPU操作。其他登录/算法/素材/设备/转换/上传仅审计与排序，下一步须用户确认；5944/模板/其他工作树保留，代码4cd4e3e47c3a1e65910345bb3924b2ec2ad55985准确47/47 Actions、130/130 Checks成功；文档自身HEAD的CI独立核验。

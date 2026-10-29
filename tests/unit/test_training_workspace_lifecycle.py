@@ -9,6 +9,68 @@ from platform_core.task_runtime import ArtifactStore, TaskKind, TaskRecord, Task
 from platform_core.training_workspace_lifecycle import TrainingWorkspaceLifecycle, mark_training_workspace
 
 
+@pytest.mark.parametrize("source", ["sample_outcomes", "sample_evidence"])
+def test_cleanup_retains_diagnostic_samples_outside_top_errors(tmp_path, source):
+    service, repo, artifacts, original = workspace(tmp_path)
+    image = artifacts.artifact_path("t", "work/bundle/dataset/images/train/x.jpg")
+    digest = hashlib.sha256(image.read_bytes()).hexdigest()
+    snapshot = artifacts.read_json("t", "snapshot.json")
+    artifacts.atomic_write_json("t", "work/bundle/manifest.json", {**snapshot, "splits": {
+        "test": [{"image_id": "x", "image_ref": "dataset/images/train/x.jpg", "content_sha256": digest}]}})
+    artifacts.atomic_write_json("t", "result.json", {"training_report": {"test_result": {
+        source: [{"image_id": "x", "image": "x.jpg", "image_content_sha256": digest, "fn_count": 1}]}}})
+    service.cleanup("p", "t", actor="test")
+    assert artifacts.artifact_path("t", "evidence/bundle/dataset/images/train/x.jpg").read_bytes() == b"task-owned-copy"
+    assert original.read_bytes() == b"original"
+
+
+def test_archive_rejects_explicit_id_even_when_filename_matches(tmp_path):
+    service, repo, artifacts, _ = workspace(tmp_path)
+    image = artifacts.artifact_path("t", "work/bundle/dataset/images/train/x.jpg")
+    snapshot = artifacts.read_json("t", "snapshot.json")
+    artifacts.atomic_write_json("t", "work/bundle/manifest.json", {**snapshot, "splits": {"test": [
+        {"image_id": "x", "image_ref": "dataset/images/train/x.jpg",
+         "content_sha256": hashlib.sha256(image.read_bytes()).hexdigest()}]}})
+    artifacts.atomic_write_json("t", "result.json", {"training_report": {"test_result": {
+        "error_samples": [{"image_id": "foreign", "image": "x.jpg"}]}}})
+    with pytest.raises(RuntimeError, match="REPORT_IMAGE_IDENTITY_UNVERIFIED"):
+        service.cleanup("p", "t", actor="test")
+    assert image.exists()
+
+
+def test_automatic_maintenance_records_recovery_blocker(tmp_path):
+    service, _, artifacts, _ = workspace(tmp_path)
+    artifacts.atomic_write_json("t", "failure.json", {"recoverable": True})
+    service.maintain()
+    receipt = artifacts.read_json("t", "workspace-cleanup.json")
+    assert receipt["status"] == "blocked"
+    assert "RECOVERY_DEPENDENCY" in receipt["blockers"]
+
+
+def test_automatic_archival_failure_is_visible_and_retries(tmp_path, monkeypatch):
+    service, _, artifacts, _ = workspace(tmp_path)
+    archive = service._archive_evidence
+    monkeypatch.setattr(service, '_archive_evidence', lambda *args: (_ for _ in ()).throw(
+        RuntimeError('REPORT_IMAGE_HASH_MISMATCH')))
+    assert service.maintain()['deleted'] == 0
+    receipt = artifacts.read_json('t', 'workspace-cleanup.json')
+    assert receipt['status'] == 'retryable'
+    assert receipt['blockers'] == ['REPORT_IMAGE_HASH_MISMATCH']
+    assert artifacts.artifact_path('t', 'work/bundle').exists()
+    monkeypatch.setattr(service, '_archive_evidence', archive)
+    service.maintain()  # reset bounded cursor
+    assert service.maintain()['deleted'] == 1
+
+
+def test_diagnostic_retry_receipt_without_bundle_is_already_clean(tmp_path):
+    service, _, artifacts, _ = workspace(tmp_path)
+    service._record_maintenance_wait('t', 'retryable', ['REPORT_IMAGE_HASH_MISMATCH'])
+    service._delete_detached(artifacts.artifact_path('t', 'work/bundle'))
+    assert service.cleanup('p', 't', actor='test')['status'] == 'already_clean'
+    assert artifacts.read_json('t', 'workspace-cleanup.json')['deleted_logical_bytes'] == 0
+
+
+
 def workspace(tmp_path, status=TaskStatus.FAILED):
     data = tmp_path / "data"
     project = data / "projects" / "p"

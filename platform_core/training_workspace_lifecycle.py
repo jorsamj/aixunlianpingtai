@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import shutil
 import stat
@@ -193,15 +194,40 @@ class TrainingWorkspaceLifecycle:
                     continue
                 truth = self.inspect(project_id, task_id)
                 if not truth["eligible"]:
+                    self._record_maintenance_wait(task_id, "blocked", truth["blockers"])
                     continue
                 result = self.cleanup(project_id, task_id, actor="automatic-workspace-maintenance",
                     expected_attempt=truth["attempt"], expected_snapshot_id=truth["snapshot_id"])
                 deleted += result.get("status") == "deleted"
-            except Exception:
+            except Exception as error:
                 # Original cleanup records deletion failures. Never let maintenance
                 # break lease renewal/claiming or authorize deletion after an error.
-                continue
+                code = str(error)
+                if not code or any(char not in "ABCDEFGHIJKLMNOPQRSTUVWXYZ_" for char in code):
+                    code = type(error).__name__
+                self._record_maintenance_wait(task_id, "retryable", [code])
         return {"examined": len(rows), "deleted": deleted}
+
+    def _record_maintenance_wait(self, task_id, status, blockers):
+        """Diagnostics never replace an in-flight detach receipt or authorize deletion."""
+        try:
+            self._paths(task_id)
+            with FileLock(str(self.artifacts.root / task_id / "workspace-access.lock"), timeout=0):
+                previous = self.artifacts.read_json(task_id, RECEIPT, default={})
+                if (previous.get("status") in {"pending", "deleted"}
+                        or previous.get("status") == "retryable" and "candidate_logical_bytes" in previous):
+                    return
+                if previous.get("status") == status and previous.get("blockers") == blockers:
+                    return
+                self.artifacts.atomic_write_json(task_id, RECEIPT, {
+                    "schema_version": 1, "task_id": task_id, "status": status,
+                    "blockers": blockers, "updated_at": utc_now(),
+                    "scope": "task_work_bundle_only", "deleted_logical_bytes": 0,
+                    "physical_space_released": None,
+                })
+        except Exception:
+            # A busy workspace or unavailable artifact store cannot grant cleanup.
+            logging.getLogger(__name__).warning("Workspace maintenance diagnostic unavailable for %s", task_id)
 
     def _inspect(self, task, active, *, verify_evidence=True):
         blockers = []
@@ -286,18 +312,34 @@ class TrainingWorkspaceLifecycle:
         if manifest.get("snapshot_id") != snapshot.get("snapshot_id"):
             raise RuntimeError("BUNDLE_MANIFEST_UNVERIFIED")
         result = self.artifacts.read_json(task.task_id, task.result_ref or "result.json", default={})
-        samples = ((result.get("training_report") or {}).get("test_result") or {}).get("error_samples") or []
+        evaluation = ((result.get("training_report") or {}).get("test_result") or {})
+        samples = list(evaluation.get("error_samples") or [])
+        samples.extend(evaluation.get("sample_evidence") or [])
+        # The complete outcome index exceeds the Top200 box evidence. Retain
+        # every abnormal image, but do not copy the complete correct cohort.
+        samples.extend(row for row in evaluation.get("sample_outcomes") or []
+                       if row.get("fp_count") or row.get("fn_count"))
         members = [row for rows in manifest.get("splits", {}).values() for row in rows]
+        by_id, by_name = {}, {}
+        for row in members:
+            by_id.setdefault(row.get("image_id"), []).append(row)
+            by_name.setdefault(Path(str(row.get("image_ref") or "")).name, []).append(row)
         refs = {"manifest.json", "snapshot.json", "dataset-revision.json", "dataset/data.yaml"}
         # Preserve all small GT labels as evidence. Original formal GT is untouched.
         refs.update(str(row["label_ref"]) for row in members if row.get("label_ref"))
         for sample in samples:
-            matches = [row for row in members if
-                (sample.get("image_id") and row.get("image_id") == sample["image_id"])
-                or Path(str(row.get("image_ref") or "")).name == sample.get("image")]
+            matches = (by_id.get(sample["image_id"], []) if sample.get("image_id")
+                       else by_name.get(sample.get("image"), []))
             if len(matches) != 1:
                 raise RuntimeError("REPORT_IMAGE_IDENTITY_UNVERIFIED")
             row = matches[0]
+            if (sample.get("image") and Path(str(row.get("image_ref") or "")).name != sample["image"]):
+                raise RuntimeError("REPORT_IMAGE_IDENTITY_UNVERIFIED")
+            if (sample.get("image_content_sha256")
+                    and sample["image_content_sha256"] != row.get("content_sha256")):
+                raise RuntimeError("REPORT_IMAGE_HASH_MISMATCH")
+            if row["image_ref"] in refs:
+                continue
             image = _resolve_relative(bundle, row["image_ref"])
             if _sha(image) != row.get("content_sha256"):
                 raise RuntimeError("REPORT_IMAGE_HASH_MISMATCH")
@@ -398,7 +440,8 @@ class TrainingWorkspaceLifecycle:
                 bundle, detached = self._paths(task_id)
                 receipt = self.artifacts.read_json(task_id, RECEIPT, default={})
                 if not bundle.exists() and not detached.exists():
-                    if receipt.get("status") in {"pending", "retryable"}:
+                    if (receipt.get("status") in {"pending", "retryable"}
+                            and "candidate_logical_bytes" in receipt):
                         receipt = {**receipt, "status": "deleted", "finished_at": utc_now(),
                             "deleted_logical_bytes": receipt["candidate_logical_bytes"],
                             "physical_space_released": None}

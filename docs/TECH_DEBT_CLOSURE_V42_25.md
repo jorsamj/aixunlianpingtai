@@ -1,3 +1,7 @@
+## 2026-10-29｜训练回收与异常证据定向修复（LOCAL VERIFIED / CI及生产未验证）
+
+[唯一审计报告](docs/TRAINING_WORKSPACE_EVIDENCE_AUDIT_2026_10_29.md)：远端40327743/VERSION399隔离基线；原Lifecycle补异常outcomes/框证据归档、显式ID与SHA保护、自动阻塞/归档失败回执。定向71通过/1系统symlink权限跳过，真实原API清理前后相同字节验证通过。用户已授权提交到开发分支；本次提交CI待核验，未部署；保留其他工作树WIP。Checkpoint恢复、未知历史所有权继续保护，远端最终回收/生产启动与接口性能NOT VERIFIED，不能称全量最终回收已验收。无前端/DB/版本更改。
+
 ## 2026-10-24｜高级功能四入口整合（代码及隔离CI已验收）
 
 唯一映射/设计/进度/截图：[前端治理记录顶部](frontend-legacy-audit.md)。实际7项收敛为算力与节点、模型转换环境、AI辅助配置、存储管理；迁移收纳存储Tab，对接与只读浏览保留独立。原state.page/业务Owner/API/轮询不变，无后端/数据库改动；导航取消reason沿原PageRequestScope隔离。VERSION386/cache434；f95e221f准确CI23/23 Actions、60/60 Checks成功，Node1331/1331、Chrome267/267通过，旧失败及关闭证据见记录。文档自身最终HEAD另核Checks。5944与两份模板测试保留；不部署、不改生产数据，真实GPU/NAS/OSS/对接生产环境NOT VERIFIED。
