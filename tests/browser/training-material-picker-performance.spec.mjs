@@ -133,7 +133,7 @@ test('training material picker opens immediately, renders larger previews, and p
   await expect(firstCard.locator('svg.train-v3-box-layer rect[data-label="smoke"]')).toHaveAttribute('x', '40');
   await expect(firstCard.locator('.train-v3-annotation-state[data-annotation-state="annotated"]')).toContainText('已标注 · 1 框');
   const pendingCard = page.locator('[data-material-id="picker-1-059"]');
-  await expect(pendingCard.locator('.train-v3-annotation-state[data-annotation-state="unannotated"]')).toContainText('已清洗 · 待标注');
+  await expect(pendingCard.locator('.train-v3-annotation-state[data-annotation-state="unannotated"]')).toContainText('未标注 · 已清洗');
   await expect(pendingCard.locator('input')).toBeEnabled();
 
   await page.locator('#trV3Grid').evaluate(element => { element.scrollTop = element.scrollHeight; element.dispatchEvent(new Event('scroll')); });
@@ -208,17 +208,17 @@ test('vest first training reviews person without changing source boxes or adding
  await page.evaluate(({id,ids})=>{window.TrainingDraftRuntime.update({algorithmId:id,materialIds:ids,newLabelCodes:['vest'],config:{model:'yolo11n.pt'}});window.openTrainMaterialPickerV3('train')},{id:created.algorithm.id,ids});
  await expect(page.locator('.train-v3-card')).toHaveCount(2);
  await expect(page.locator('#trV3TrainingLabels')).toContainText('vest');
- await expect(page.locator('#trV3RoleCounts')).toContainText('待确认负样本 1');
- await page.getByRole('button',{name:'审核待确认素材',exact:true}).click();await expect(page.locator('.train-v3-card')).toHaveCount(1);
+ await expect(page.locator('#trV3RoleCounts')).toContainText('待确认无目标 1');
+ await page.getByRole('button',{name:'确认目标范围内无目标',exact:true}).click();await expect(page.locator('.train-v3-card')).toHaveCount(1);
  await expect(page.locator('svg.train-v3-box-layer rect[data-label="person"]')).toBeVisible();
  await page.locator('.train-v3-card input').check();page.once('dialog',dialog=>dialog.accept());
  await page.getByRole('button',{name:'确认所勾选图片不含本次训练目标',exact:true}).click();
  await expect(page.locator('#trV3ReviewProgress')).toContainText('已保存 1/1');
- await expect(page.locator('#trV3RoleCounts')).toContainText('已确认负样本 1');
- await page.getByRole('button',{name:'结束本批审核',exact:true}).click();
- await page.getByRole('combobox',{name:'训练样本角色'}).selectOption('confirmed_negative');
+ await expect(page.locator('#trV3RoleCounts')).toContainText('已确认无目标 1');
+ await page.getByRole('button',{name:'结束本批确认',exact:true}).click();
+ await page.getByRole('combobox',{name:'按本次训练目标筛选'}).selectOption('confirmed_negative');
  await expect(page.locator('.train-v3-card')).toHaveCount(1);
- await expect(page.locator('.train-v3-card')).toContainText('可作为 vest 负样本');
+ await expect(page.locator('.train-v3-card')).toContainText('已确认不含 vest');
  const after=await(await request.get(`/api/projects/${project.id}/annotations/${ids[1]}`)).json();
  expect(after.annotation).toEqual(personBefore);
  expect(errors).toEqual([]);

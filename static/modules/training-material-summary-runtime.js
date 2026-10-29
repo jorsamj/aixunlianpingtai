@@ -474,7 +474,7 @@ export function installTrainingMaterialSummaryRuntime({
   }
 
   function selectedLabelCodes(ids = currentIds()) {
-    return uniqueIds(summaryFor(ids)?.label_codes || []);
+    return uniqueIds(summaryFor(ids)?.positive_label_codes || []);
   }
 
   function decorateTrainingCreateUi() {
@@ -583,6 +583,7 @@ export function installTrainingMaterialSummaryRuntime({
         box_count: Math.max(0, Number(body.box_count || 0)),
         size_bytes: Math.max(0, Number(body.size_bytes || 0)),
         label_codes: uniqueIds(body.label_codes),
+        positive_label_codes: uniqueIds(body.positive_label_codes),
         effective_label_codes: uniqueIds(body.effective_label_codes),
         sample_role_counts: body.sample_role_counts || null,
         label_counts: body.label_counts && typeof body.label_counts === 'object' ? {...body.label_counts} : {},

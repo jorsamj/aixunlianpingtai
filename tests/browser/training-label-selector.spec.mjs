@@ -174,10 +174,7 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   await expect(fire).not.toBeChecked();
   await expect(smoke).not.toBeChecked();
   const vest = labels.locator('input[data-training-label-code="vest"]');
-  await expect(vest).not.toBeChecked();
-  await vest.check();
-  await expect.poll(() => page.evaluate(() => state.trainingDraft.newLabelCodes)).toEqual(['vest']);
-  await vest.uncheck();
+  await expect(vest).toHaveCount(0); // Active catalog label without selected GT positive.
   await fire.check();
 
   await dialog.locator('details.train-create-split-details > summary').click();

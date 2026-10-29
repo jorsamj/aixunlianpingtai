@@ -76,6 +76,17 @@ def _public_picker_material(project_id: str, row: dict, annotation: dict) -> dic
         for box in boxes
         if str(box.get("label") or box.get("code") or "").strip()
     })
+    source_hash = str(row.get("content_sha256") or "").strip().lower()
+    annotation_source_hash = str(row.get("annotation_source_content_sha256") or "").strip().lower()
+    annotation_issue = (
+        "material_unavailable" if row.get("source_available") is False
+        else "stale_ground_truth" if source_hash and annotation_source_hash and source_hash != annotation_source_hash
+        else "annotation_needs_review" if any(row.get(key) for key in (
+            "annotation_needs_review", "external_annotation_needs_review", "needs_review"))
+        else "invalid_annotation" if (annotation_state == "annotated" and not boxes)
+        or (annotation_state == "confirmed_empty" and annotation.get("boxes"))
+        else ""
+    )
     return {
         "id": image_id,
         "image_id": image_id,
@@ -90,6 +101,7 @@ def _public_picker_material(project_id: str, row: dict, annotation: dict) -> dic
         "boxes": boxes,
         "processing_status": str(row.get("processing_status") or ""),
         "annotation_state": annotation_state,
+        "annotation_issue_type": annotation_issue,
         "training_state": (
             "trainable"
             if annotation_state in {"annotated", "confirmed_empty"}
@@ -491,12 +503,51 @@ def _cached_pool_training_totals(
     return selectable_total, eligible_total, actual_revision
 
 
+def _validated_positive_training_label_codes(repository, annotations, image_ids, candidate_codes):
+    """Validate only selected formal positives; stop once every candidate has proof.
+
+    The indexed GT summary supplies candidate box codes, not sufficient proof
+    that the material source or box coordinates remain valid. Recheck actual
+    selected image identities through the existing training role contract.
+    This never scans unselected materials or loads the entire project pool.
+    """
+    from .training_label_tasks import training_material_role
+    pending = set(candidate_codes)
+    confirmed = set()
+    for offset in range(0, len(image_ids), 500):
+        if not pending:
+            break
+        chunk = image_ids[offset:offset + 500]
+        truth = annotations.get_many(chunk)
+        candidate_ids = [image_id for image_id in chunk if
+            truth[image_id].get("annotation_state") == "annotated" and
+            any(str(box.get("label") or box.get("code") or "").strip() in pending
+                for box in truth[image_id].get("boxes") or [])]
+        if not candidate_ids:
+            continue
+        materials = {str(row["id"]):row for row in repository.get_many(candidate_ids)}
+        for image_id in candidate_ids:
+            row = materials.get(image_id)
+            if not row or row.get("processing_status") != "processed":
+                continue
+            annotation = truth[image_id]
+            present = {str(box.get("label") or box.get("code") or "").strip()
+                for box in annotation.get("boxes") or []} & pending
+            if present and training_material_role({**row, **annotation},
+                    {"effective_label_codes":sorted(present)})["role"] == "positive":
+                confirmed.update(present)
+                pending.difference_update(present)
+    return [code for code in candidate_codes if code in confirmed]
+
+
 def _selection_summary(
     repository: MaterialRepository,
     annotations: AnnotationRepository,
     image_ids: list[str],
 ) -> dict:
     """Aggregate selected-material facts while formal GT stays Annotation-owned."""
+    start_material_revision = repository.current_revision()
+    start_annotation_revision = annotations.current_revision()
     with closing(observe_connection(connect_sqlite(repository.path, timeout=30))) as database:
         database.row_factory = sqlite3.Row
         database.execute("PRAGMA busy_timeout=30000")
@@ -540,6 +591,8 @@ def _selection_summary(
     eligible_count = len(eligible_ids)
     selectable_count = int(row["selectable_count"] or 0)
     label_counts = dict(truth["label_counts"])
+    positive_label_codes = _validated_positive_training_label_codes(
+        repository, annotations, processed_ids, list(label_counts))
 
     material_revision = repository.current_revision()
     selectable_total, eligible_total, pool_annotation_revision = (
@@ -549,6 +602,9 @@ def _selection_summary(
             int(annotations.current_revision()),
         )
     )
+    if (repository.current_revision(), annotations.current_revision()) != (
+            start_material_revision, start_annotation_revision) or int(truth["revision"]) != start_annotation_revision:
+        raise ValueError("素材或正式标注在汇总期间已变化，请重新读取")
     return {
         "requested_count": len(image_ids),
         "matched_count": int(row["matched_count"] or 0),
@@ -560,6 +616,7 @@ def _selection_summary(
         "size_bytes": sum(size_by_id.get(image_id, 0) for image_id in eligible_ids),
         "selectable_size_bytes": int(row["selectable_size_bytes"] or 0),
         "label_codes": list(label_counts),
+        "positive_label_codes": positive_label_codes,
         "label_counts": label_counts,
         "selectable_total": selectable_total,
         "eligible_total": eligible_total,
@@ -907,12 +964,22 @@ def training_material_picker_router(
             truth = annotations.get_many([row["id"] for row in result["items"]])
             if (repository.current_revision(), annotations.current_revision()) != (result["repository_revision"], result["annotation_revision"]):
                 raise ValueError("素材或标注已更新，请重试")
-            result["items"] = [{**_public_picker_material(project_id, row, truth.get(row["id"], {})),
-                                "training_usage": _public_usage_fact(usage["by_image_id"].get(row["id"], {"state":"unknown"})),
-                                "sample_role": row["sample_role"],
-                                "annotation_version": int(truth.get(row["id"], {}).get("version") or 0),
-                                "source_content_sha256": str(row.get("content_sha256") or "")}
-                               for row in result["items"]]
+            from .training_label_tasks import training_material_role
+            visible = []
+            for row in result["items"]:
+                annotation = truth.get(row["id"], {})
+                issue = None
+                if row["sample_role"] == "pending_review":
+                    candidate = {**row, "annotation_state":annotation.get("annotation_state", "unannotated"),
+                        "boxes":annotation.get("boxes") or [], "annotation_scope":annotation.get("annotation_scope") or []}
+                    issue = training_material_role(candidate, contract).get("scope_issue")
+                visible.append({**_public_picker_material(project_id, row, annotation),
+                    "training_usage": _public_usage_fact(usage["by_image_id"].get(row["id"], {"state":"unknown"})),
+                    "sample_role": row["sample_role"],
+                    "sample_role_issue_type": str((issue or {}).get("issue_type") or ""),
+                    "annotation_version": int(annotation.get("version") or 0),
+                    "source_content_sha256": str(row.get("content_sha256") or "")})
+            result["items"] = visible
             return result
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
@@ -1209,7 +1276,10 @@ def training_material_picker_router(
             raise HTTPException(status_code=422, detail=str(error)) from error
         repository = materials(project_id)
         annotations = annotation_repository_for_path(str(repository.project_path))
-        summary = _selection_summary(repository, annotations, image_ids)
+        try:
+            summary = _selection_summary(repository, annotations, image_ids)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
         if payload.get("algorithm_asset_id") and (payload.get("train_labels") or payload.get("base_version_id")):
             try:
                 contract = task_contract(project_id, payload, repository)

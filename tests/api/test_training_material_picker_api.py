@@ -10,7 +10,7 @@ from PIL import Image
 
 from platform_core.annotation_repository import AnnotationRepository
 from platform_core.material_repository import MaterialRepository
-from platform_core.training_material_picker_api import training_material_picker_router
+from platform_core.training_material_picker_api import training_material_picker_router, _public_picker_material, _selection_summary
 import platform_core.training_material_picker_api as picker_module
 
 
@@ -61,6 +61,69 @@ def _client(tmp_path):
         lambda: data_dir,
     ))
     return TestClient(app), repository
+
+
+def test_picker_objective_annotation_issue_is_not_target_role_or_generic_review():
+    material = _record(1)
+    annotation = {"annotation_state":"annotated", "boxes":[{
+        "label":"person", "x1":10, "y1":10, "x2":50, "y2":60}]}
+    assert _public_picker_material("p1", material, annotation)["annotation_issue_type"] == ""
+    assert _public_picker_material("p1", {**material,"source_available":False}, annotation)["annotation_issue_type"] == "material_unavailable"
+    assert _public_picker_material("p1", {**material,"annotation_needs_review":True}, annotation)["annotation_issue_type"] == "annotation_needs_review"
+    assert _public_picker_material("p1", {**material,"annotation_source_content_sha256":"f"*64}, annotation)["annotation_issue_type"] == "stale_ground_truth"
+    assert _public_picker_material("p1", material, {"annotation_state":"annotated", "boxes":[]})["annotation_issue_type"] == "invalid_annotation"
+
+
+def test_new_label_evidence_does_not_accept_unavailable_source_or_invalid_formal_box(tmp_path):
+    client, repo = _client(tmp_path)
+    repo.patch({"m0000":{"source_available":False}})
+    AnnotationRepository(repo.project_path).upsert(
+        "m0250", [{"label":"helmet","x1":80,"y1":30,"x2":10,"y2":100}],
+        annotation_state="annotated",annotation_scope=["helmet"],project_material=False)
+    response = client.post("/api/v62/projects/p1/training-materials/selection-summary",
+        json={"image_ids":["m0000","m0250"]})
+    assert response.status_code == 200, response.text
+    assert response.json()["label_codes"] == ["helmet", "smoke"]
+    assert response.json()["positive_label_codes"] == []
+
+
+def test_selection_positive_evidence_rejects_concurrent_material_revision(tmp_path, monkeypatch):
+    _, repository = _client(tmp_path)
+    annotations = AnnotationRepository(repository.project_path)
+    original = annotations.get_many
+    changed = False
+
+    def concurrent_change(ids):
+        nonlocal changed
+        result = original(ids)
+        if not changed:
+            changed = True
+            repository.patch({"m0000":{"size_bytes":98765}})
+        return result
+
+    monkeypatch.setattr(annotations, "get_many", concurrent_change)
+    with pytest.raises(ValueError, match="已变化"):
+        _selection_summary(repository, annotations, ["m0000"])
+
+
+def test_picker_target_issue_is_explained_without_relaxing_negative_review(tmp_path, monkeypatch):
+    import platform_core.training_label_tasks as labels
+    monkeypatch.setattr(labels, "resolve_training_label_contract", lambda *args, **kwargs: {
+        "effective_label_codes": ["smoke"]})
+    _, repo = _client(tmp_path)
+    repo.patch({"m0000":{"source_available":False}})
+    app = FastAPI()
+    app.include_router(training_material_picker_router(
+        lambda project_id:{"id":project_id},repo.project_path.parents[1],
+        algorithm_provider=lambda *args:{"id":"algorithm"}))
+    with TestClient(app) as client:
+        result = client.post("/api/v62/projects/p1/training-materials/role-page", json={
+            "algorithm_asset_id":"algorithm", "history_policy":"include_history", "query":"material-0000"})
+        assert result.status_code == 200, result.text
+        row = result.json()["items"][0]
+        assert row["sample_role"] == "pending_review"
+        assert row["sample_role_issue_type"] == "annotation_needs_review"
+        assert row["annotation_issue_type"] == "material_unavailable"
 
 
 def test_negative_pool_filter_parity_and_role_cache_revision(tmp_path, monkeypatch):
@@ -457,6 +520,7 @@ def test_training_picker_summary_and_test_bulk_ignore_stale_material_annotation_
     assert facts["pending_annotation_count"] == 1
     assert facts["box_count"] == 1
     assert facts["label_codes"] == ["smoke"]
+    assert facts["positive_label_codes"] == ["smoke"]
     assert facts["label_counts"] == {"smoke": 1}
     assert facts["size_bytes"] == repository.get("m0250")["size_bytes"]
     assert facts["eligible_total"] == 230

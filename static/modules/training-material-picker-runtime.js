@@ -96,12 +96,16 @@ export function renderTrainingMaterialPreview(row = {}, {loading = 'lazy', prior
   const overlay = shapes
     ? `<svg class="train-v3-box-layer" viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid meet" aria-hidden="true">${shapes}</svg>`
     : '';
-  const status = state === 'annotated'
+  const objectiveIssue = row.annotation_issue_type
+    || (['invalid_annotation','annotation_needs_review'].includes(row.sample_role_issue_type) ? row.sample_role_issue_type : '');
+  const issueName = ({material_unavailable:'素材来源不可用',stale_ground_truth:'标注内容与素材不一致',
+    annotation_needs_review:'标注来源或一致性需核验',invalid_annotation:'标注数据无效'})[objectiveIssue];
+  const status = issueName ? `标注异常 · ${issueName}` : state === 'annotated'
     ? `已标注 · ${boxes.length} 框`
     : state === 'confirmed_empty'
       ? '已确认无目标'
       : String(row.processing_status || '') === 'processed'
-        ? '已清洗 · 待标注'
+        ? '未标注 · 已清洗'
         : '未标注';
   const thumbnail = row.thumbnail_url || row.content_url || '';
   return `<div class="train-v3-preview" data-annotation-state="${state}"><img src="${IMAGE_PLACEHOLDER}" data-src="${esc(thumbnail)}" data-fallback="${esc(row.content_url || '')}" loading="${loading}" decoding="async" fetchpriority="${priority}" alt="">${overlay}<span class="train-v3-annotation-state ${state}" data-annotation-state="${state}">${status}</span></div>`;
@@ -229,15 +233,17 @@ export function installTrainingMaterialPickerRuntime({
 
   function modalHtml(role) {
     const title = role === 'robustness' ? '增强训练素材' : role === 'train' ? '训练候选素材' : '独立试验素材';
+    const context = taskPayload();
+    const hasTaskLabels = uniqueIds(context.train_labels).length > 0 || Boolean(context.base_version_id);
     const chips = (state().labels || []).map(row => (
       `<button class="data426-chip" data-label="${esc(row.code)}" onclick="toggleTrainMaterialLabelV3('${esc(row.code)}')">${esc(row.display_name || row.code)}</button>`
     )).join('');
     const rule = role === 'robustness' ? '仅从当前训练素材中选择增强候选；实际训练角色将在提交时核验' : role === 'train'
-      ? '已清洗素材都可选；待标注素材会保留在任务中，但不会被当作空标签进入本轮监督训练'
+      ? '当前选择未确定训练目标时，先按正式标注状态选择素材；待标注素材会保留在任务中，但不会自动变成负样本'
       : '独立试验集必须具备正式 Ground Truth，未标注素材只展示但不可选择';
     return `<div class="train-v3-picker server-paged">
       <header><div><b>${title}</b><span>${rule}</span></div><strong id="trV3PickerCount">正在读取素材…</strong></header>
-      <div class="train-v3-workspace"><aside class="train-v3-filters">${role === 'train' ? `<section class="train-v3-role-tools"><b id="trV3TrainingLabels">本次训练标签：读取中…</b><p id="trV3RoleCounts" aria-live="polite"></p><select id="trV3RoleFilter" class="select" aria-label="训练样本角色" onchange="TrainingMaterialPickerRuntime.setSampleRole(this.value)"><option value="">全部素材</option><option value="positive">正样本</option><option value="confirmed_negative">已确认负样本</option><option value="pending_negative">待确认负样本</option><option value="pending_review">标注或来源待修复</option></select> <button class="btn" onclick="TrainingMaterialPickerRuntime.startReview()">审核待确认素材</button><div id="trV3ReviewTools" hidden><p>逐张查看图片和已有标注后，勾选本页需确认的图片（每批最多 50 张）。</p><button class="btn primary" onclick="TrainingMaterialPickerRuntime.confirmReview()">确认所勾选图片不含本次训练目标</button> <button class="btn" onclick="TrainingMaterialPickerRuntime.stopReview()">结束本批审核</button><span id="trV3ReviewProgress" role="status"></span></div></section>` : ''}
+      <div class="train-v3-workspace"><aside class="train-v3-filters">${role === 'train' && hasTaskLabels ? `<section class="train-v3-role-tools"><b id="trV3TrainingLabels">本次训练目标：读取中…</b><p id="trV3RoleCounts" aria-live="polite"></p><select id="trV3RoleFilter" class="select" aria-label="按本次训练目标筛选" onchange="TrainingMaterialPickerRuntime.setSampleRole(this.value)"><option value="">全部素材</option><option value="positive">含本次目标</option><option value="confirmed_negative">已确认不含本次目标</option><option value="pending_negative">尚需确认不含本次目标</option><option value="pending_review">标注或目标范围需核验</option></select> <button class="btn" onclick="TrainingMaterialPickerRuntime.startReview()">确认目标范围内无目标</button><div id="trV3ReviewTools" hidden><p>逐张查看图片和已有标注后，勾选本页需确认的图片（每批最多 50 张）。</p><button class="btn primary" onclick="TrainingMaterialPickerRuntime.confirmReview()">确认所勾选图片不含本次训练目标</button> <button class="btn" onclick="TrainingMaterialPickerRuntime.stopReview()">结束本批确认</button><span id="trV3ReviewProgress" role="status"></span></div></section>` : ''}
       <div class="train-v3-filter"><input id="trV3Q" class="input" placeholder="搜索图片名称" oninput="trainMaterialSearchV3(this.value)"><select id="trV3Sort" class="select" aria-label="按加入时间排序" onchange="trainMaterialSortV3(this.value)"><option value="newest">最新加入优先</option><option value="oldest">最早加入优先</option></select><div id="trV3Chips" class="data426-chips"><button class="data426-chip clear on" data-label="" onclick="clearTrainMaterialLabelsV3()">全部标签</button>${chips}</div></div>
       ${role==='train'?`<label>素材范围<select class="select" aria-label="素材范围" onchange="TrainingMaterialPickerRuntime.setFilter('negativePoolOnly',this.value)"><option value="">普通素材（含负样本池）</option><option value="pool">负样本池</option></select></label><label>负样本分类<select class="select" multiple aria-label="负样本分类筛选" id="trV3NegativeCategories" onchange="TrainingMaterialPickerRuntime.setFilter('negativeCategoryIds',[...this.selectedOptions].map(o=>o.value).join(','))"><option disabled>正在读取分类…</option></select></label>`:''}
       <label>存储来源<input class="input" placeholder="来源ID，多个用逗号分隔" onchange="TrainingMaterialPickerRuntime.setFilter('sourceIds',this.value)"></label>
@@ -319,7 +325,7 @@ export function installTrainingMaterialPickerRuntime({
     const labelHost = document.getElementById('trV3TrainingLabels');
     if (labelHost) labelHost.textContent = `本次训练标签：${(picker.effectiveLabels || []).join('、') || '请先选择训练标签'}`;
     const roleCounts = document.getElementById('trV3RoleCounts');
-    if (roleCounts) {const c=picker.roleCounts || {}; roleCounts.textContent = `筛选范围 · 正样本 ${c.positive || 0} · 已确认负样本 ${c.confirmed_negative || 0} · 待确认负样本 ${c.pending_negative || 0} · 待修复 ${c.pending_review || 0}`;}
+    if (roleCounts) {const c=picker.roleCounts || {}; roleCounts.textContent = `按当前训练目标 · 含目标 ${c.positive || 0} · 已确认无目标 ${c.confirmed_negative || 0} · 待确认无目标 ${c.pending_negative || 0} · 标注或范围需核验 ${c.pending_review || 0}`;}
     const count = document.getElementById('trV3PickerCount');
     if (count) count.textContent = `筛选结果 ${picker.total} 张 · 已选 ${picker.selected.size} 张`;
     const meta = document.getElementById('trV3PageMeta');
@@ -379,14 +385,14 @@ export function installTrainingMaterialPickerRuntime({
       const unavailable = crossRoleBlocked || missingTestTruth || (picker.reviewing && row.sample_role !== 'pending_negative');
       const blockReason = crossRoleBlocked ? '已用于另一素材集' : (missingTestTruth ? '试验集必须已标注' : '');
       const labelText = (row.labels || []).map(labelDisplay).filter(Boolean).join('、')
-        || (String(row.annotation_state || '') === 'unannotated' ? '待标注' : '无标签');
+        || (String(row.annotation_state || '') === 'unannotated' ? '未标注' : '无标签');
       const loading = index < THUMBNAIL_EAGER_COUNT ? 'eager' : 'lazy';
       const priority = index < THUMBNAIL_EAGER_COUNT ? 'high' : 'low';
       return `<label class="train-v3-card ${selected ? 'on' : ''} ${unavailable ? 'blocked' : ''}" data-material-id="${esc(id)}" data-block-reason="${esc(blockReason)}">
         <input type="checkbox" ${selected ? 'checked' : ''} ${unavailable ? 'disabled' : ''} onchange="toggleTrainMaterialV3('${esc(id)}',this.checked,this)">
         ${renderTrainingMaterialPreview(row, {loading, priority})}
         <b title="${esc(row.filename || '')}">${esc(row.filename || id)}</b><span class="train-v3-label-list" title="${esc(labelText)}">${esc(labelText)}</span>
-        ${picker.role === 'train' ? `<span class="train-v3-sample-role" data-sample-role="${esc(row.sample_role || '')}">${esc(({positive:'正样本',confirmed_negative:`可作为 ${(picker.effectiveLabels || []).join('、')} 负样本`,pending_negative:`待确认不含 ${(picker.effectiveLabels || []).join('、')}`,pending_review:'标注或来源需修复'})[row.sample_role] || '尚未判定')}</span>` : ''}
+        ${picker.role === 'train' && (picker.sampleRole || picker.reviewing) && picker.effectiveLabels?.length ? `<span class="train-v3-sample-role" data-sample-role="${esc(row.sample_role || '')}">${esc(({positive:'含本次目标',confirmed_negative:`已确认不含 ${(picker.effectiveLabels || []).join('、')}`,pending_negative:`尚需确认不含 ${(picker.effectiveLabels || []).join('、')}`,pending_review:({missing_annotation:'未标注',partial_review_scope:'所需目标范围尚未确认',invalid_annotation:'标注数据无效',annotation_needs_review:'标注或来源一致性需核验',material_unavailable:'素材来源不可用',stale_ground_truth:'标注内容与素材不一致'})[row.annotation_issue_type || row.sample_role_issue_type] || '标注异常，请核验原因'})[row.sample_role] || '')}</span>` : ''}
         <span>${esc(row.storage_source_id || '')} · ${esc((row.created_at || '').slice(0,10))}</span>
         <details onclick="event.stopPropagation()" ontoggle="if(this.open)TrainingMaterialPickerRuntime.loadHistory('${esc(id)}',this)"><summary>训练历史 · 已知训练 ${Number(row.training_usage?.training_task_count || 0)} 次 · ${esc(({used:'已使用',possible:'可能使用',selected:'仅已选入',eval_only:'仅参与评测',unused:'有据未使用',unknown:'未知'})[row.training_usage?.state] || '未知')}</summary><p>${esc((row.training_usage?.task_ids || []).join('、') || '缺少完整执行证据，不能判定从未使用')}</p></details>
         <a class="btn mini" href="${esc(row.content_url || '#')}" target="_blank" rel="noopener" onclick="event.stopPropagation()">查看原图</a>

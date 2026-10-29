@@ -39,6 +39,13 @@ function sortedAvailableCodes(values, labelCatalog = []) {
   });
 }
 
+function temporaryLabel(code) {
+  const value = String(code || '').trim().toLowerCase();
+  return ['unknown', 'unmapped', 'temporary', 'temp', 'class'].includes(value)
+    || /^(?:class|cls)[_-]?\d+$/.test(value)
+    || /^(?:unknown|unmapped|temp)_/.test(value);
+}
+
 export function resolveClientTrainingLabels({
   materials,
   selectedIds,
@@ -56,12 +63,12 @@ export function resolveClientTrainingLabels({
       && String(item?.status || 'active').toLowerCase() === 'active'
     ))
     .map(item => String(item.code)));
-  // Active project labels are deliberate task choices, independent of source labels.
-  // This is a user choice, never evidence of a positive sample.
-  const selectable = sortedAvailableCodes([...activeCatalog], labelCatalog);
+  // Existing summary contains only selected formal GT box labels. An active
+  // project label without a selected positive is NOT a new task choice.
+  const selectable = available.filter(code => activeCatalog.has(code) && !temporaryLabel(code));
   const selectableSet = new Set(selectable);
   const requested = unique(requestedCodes).filter(code => selectableSet.has(code));
-  const invalidAvailable = available.filter(code => !activeCatalog.has(code));
+  const invalidAvailable = available.filter(code => !activeCatalog.has(code) || temporaryLabel(code));
   return {available, selectable, requested, invalidAvailable};
 }
 
@@ -86,10 +93,10 @@ function canonicalSelectedCodes(state) {
   return unique(state?.trainingDraft?.newLabelCodes || []);
 }
 
-function selectionForState(state, algorithmId, selectable) {
+export function selectionForState(state, sessionKey, selectable) {
   const available = new Set(selectable);
-  if (state.trainingLabelAlgorithmId !== algorithmId) {
-    state.trainingLabelAlgorithmId = algorithmId;
+  if (state.trainingLabelAlgorithmId !== sessionKey) {
+    state.trainingLabelAlgorithmId = sessionKey;
     return [];
   }
   return canonicalSelectedCodes(state).filter(code => available.has(code));
@@ -216,7 +223,8 @@ export function installTrainingLabelRuntime({
 
   const availableCodesFor = (state, ids) => {
     if (!ids.length) return [];
-    if (!materialSummaryRuntime) return selectedMaterialLabelCodes(state.images || [], ids, state.labels || []);
+    // Never use local Material projection/visible-page labels as formal GT.
+    if (!materialSummaryRuntime) return [];
     if (!materialSummaryRuntime.summaryReadyFor?.(ids)) {
       void materialSummaryRuntime.refresh?.(ids);
       return null;
@@ -254,7 +262,15 @@ export function installTrainingLabelRuntime({
     if (!placement?.host || !algorithmId) return false;
 
     const ids = selectedIds(state);
-    const draftRequested = canonicalSelectedCodes(state);
+    let draftRequested = canonicalSelectedCodes(state);
+    const sessionKey = JSON.stringify([String(projectId?.() || state?.project?.id || ''),algorithmId,
+      String(state?.trainingDraft?.baseVersionId || '')]);
+    const sessionChanged = state.trainingLabelAlgorithmId !== sessionKey;
+    if (sessionChanged) {
+      state.trainingLabelAlgorithmId = sessionKey;
+      if (draftRequested.length) syncDraftLabels(state, []);
+      draftRequested = [];
+    }
     ensureBasePreview(state);
     const previewKey = basePreviewKey(state);
     const hasBaseVersion = Boolean(previewKey);
@@ -291,8 +307,12 @@ export function installTrainingLabelRuntime({
     const baseCodes = new Set(baseLabels.map(row => row.code));
     const initial = resolveFor(state, ids, draftRequested, availableCodes);
     const materialSelectable = initial.selectable.filter(code => !baseCodes.has(code));
-    const selectedCodes = selectionForState(state, algorithmId, materialSelectable);
-    if (selectedCodes.join('\u0000') !== draftRequested.join('\u0000')) syncDraftLabels(state, selectedCodes);
+    const selectedCodes = selectionForState(state, sessionKey, materialSelectable);
+    if (selectedCodes.join('\u0000') !== draftRequested.join('\u0000')) {
+      syncDraftLabels(state, selectedCodes);
+      const removed = draftRequested.filter(code => !materialSelectable.includes(code));
+      if (!sessionChanged && removed.length) notify?.(`已取消不再受所选素材正样本支持的新增标签：${removed.map(code => displayName(state,code)).join('、')}`);
+    }
     const view = resolveFor(state, ids, selectedCodes, availableCodes);
     const selectedSet = new Set(view.requested);
     const finalMaterialSelectable = view.selectable.filter(code => !baseCodes.has(code));
@@ -307,17 +327,20 @@ export function installTrainingLabelRuntime({
           <div class="training-label-base-list">${baseLabels.map(row => `<span class="training-label-base-chip" data-training-base-label="${esc(row.code)}"><i>✓</i><b>${esc(row.display_name || row.code)}</b><small>${esc(row.code)}</small></span>`).join('')}</div>
         </div>`
       : '';
-    const materialHint = ids.length && !finalMaterialSelectable.length && baseLabels.length
-      ? '当前素材标签已由上一版本继承，无需重复选择。'
+    const materialHint = !ids.length ? '请先选择训练素材。' : !finalMaterialSelectable.length
+      ? baseLabels.length
+        ? '当前所选素材没有可新增的已标注目标标签；上一版本继承标签保持不变。'
+        : '当前所选素材没有可新增的已标注目标标签，请选择或标注正样本。'
       : '';
 
     panel.innerHTML = `
       <div class="training-label-contract-head"><div><b>训练标签</b><small>继承标签自动保留；本次训练标签按需选择。</small></div><span class="training-label-contract-count">新增 ${view.requested.length}</span></div>
       ${baseHtml}
       <div class="training-label-material">
-        <div class="training-label-material-head"><b>本次训练标签</b><small>默认不选</small></div>
+        <div class="training-label-material-head"><b>本次可新增标签</b><small>仅来自已选素材的正式正样本 · 默认不选</small></div>
         <div class="training-label-contract-list"></div>
       </div>
+      ${materialHint ? `<div class="training-label-material-hint">${esc(materialHint)}</div>` : ''}
       ${view.invalidAvailable.length ? '<div class="training-label-warning">部分素材标签已失效，请先到标签管理统一后再训练。</div>' : ''}
     `;
 

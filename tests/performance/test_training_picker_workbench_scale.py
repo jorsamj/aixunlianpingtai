@@ -5,7 +5,7 @@ import time
 import pytest
 from platform_core.material_repository import MaterialRepository
 from platform_core.annotation_repository import AnnotationRepository
-from platform_core.training_material_picker_api import _role_material_page, _cached_role_index, _gt_material_filter_page
+from platform_core.training_material_picker_api import _role_material_page, _cached_role_index, _gt_material_filter_page, _validated_positive_training_label_codes
 import platform_core.training_material_picker_api as picker_module
 
 @pytest.mark.parametrize('size',[100,1000,10000,50000])
@@ -119,6 +119,16 @@ def test_twelve_thousand_materials_formal_gt_multi_label_and_deep_page_contract(
     assert roles['sample_role_counts']['confirmed_negative'] > 0
     assert all('sample_role' in row and 'id' in row for row in roles['items'])
 
+    began = time.perf_counter()
+    evidence_codes = _validated_positive_training_label_codes(
+        repo, annotations, [f'img-{i:06d}' for i in range(total)], ['fire', 'smoke', 'person'])
+    positive_proof_ms = (time.perf_counter()-began)*1000
+    assert evidence_codes == ['fire', 'smoke', 'person']
+    began = time.perf_counter()
+    assert _validated_positive_training_label_codes(
+        repo, annotations, [f'img-{i:06d}' for i in range(total)], ['unproven']) == []
+    worst_case_proof_ms = (time.perf_counter()-began)*1000
+
     with sqlite3.connect(repo.path) as db:
         plan = [row[3] for row in db.execute('EXPLAIN QUERY PLAN '
             'SELECT m.id FROM materials m WHERE m.filename LIKE ? COLLATE NOCASE '
@@ -127,4 +137,6 @@ def test_twelve_thousand_materials_formal_gt_multi_label_and_deep_page_contract(
     print(json.dumps({'materials':total,'filtered_total':selected.total,
         'formal_gt_total':filtered['total'],'roles':roles['sample_role_counts'],
         'gt_cold_ms':round(gt_cold_ms,2),'gt_warm_ms':round(gt_warm_ms,2),
-        'role_cold_ms':round(role_cold_ms,2),'keyword_explain':plan},ensure_ascii=False))
+        'role_cold_ms':round(role_cold_ms,2),'positive_proof_ms':round(positive_proof_ms,2),
+        'worst_case_proof_ms':round(worst_case_proof_ms,2),
+        'keyword_explain':plan},ensure_ascii=False))

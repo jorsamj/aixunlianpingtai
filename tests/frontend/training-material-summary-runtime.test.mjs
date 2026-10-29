@@ -189,3 +189,30 @@ test('sample role summary distinguishes task labels and warns without dropping n
  assert.match(html,/vest/);assert.match(html,/正样本 500/);assert.match(html,/已确认负样本 3000/);assert.match(html,/待确认负样本 200/);assert.match(html,/2 张素材需修复/);assert.match(html,/比例/);
  assert.equal(renderTrainingSampleRoles({label_codes:['person']}),'');
 });
+
+test('selected positive codes use formal evidence and ignore late response from previous selection', async()=>{
+  const previous={window:globalThis.window,document:globalThis.document};
+  const requests=[];
+  const draft={algorithmId:'algorithm',materialIds:['page-a'],newLabelCodes:[]};
+  globalThis.window={};
+  globalThis.document={body:{},getElementById:()=>null,querySelector:()=>null,querySelectorAll:()=>[]};
+  const runtime=installTrainingMaterialSummaryRuntime({getState:()=>({trainingDraft:draft}),
+    projectId:()=> 'p',trainingDraftRuntime:{materialIds:()=>draft.materialIds,current:()=>draft},
+    fetchImpl:(_url,options)=>new Promise(resolve=>requests.push({resolve,body:JSON.parse(options.body)}))});
+  const response=(codes,labelCodes=codes)=>({ok:true,json:async()=>({requested_count:1,
+    label_codes:labelCodes,positive_label_codes:codes,repository_revision:1})});
+  try{
+    const old=runtime.refresh(['page-a']);
+    await new Promise(resolve=>setImmediate(resolve));
+    draft.materialIds=['page-b'];
+    const fresh=runtime.refresh(['page-b']);
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(requests.length,2);
+    requests[1].resolve(response(['smoke'],['smoke','scope-only']));
+    await fresh;
+    requests[0].resolve(response(['fire']));
+    await old;
+    assert.deepEqual(runtime.selectedLabelCodes(['page-b']),['smoke']);
+    assert.deepEqual(runtime.selectedLabelCodes(['page-a']),[]);
+  }finally{runtime.destroy();Object.assign(globalThis,previous)}
+});

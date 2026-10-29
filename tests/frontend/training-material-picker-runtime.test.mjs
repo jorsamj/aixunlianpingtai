@@ -6,6 +6,12 @@ import {buildTrainingMaterialQuery, renderTrainingMaterialPreview, trainingMater
 const source = fs.readFileSync(new URL('../../static/modules/training-material-picker-runtime.js', import.meta.url), 'utf8');
 const main = fs.readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8');
 
+test('ordinary material selection does not project an undefined training-target role as a review state',()=>{
+  assert.match(source,/role === 'train' && hasTaskLabels/);
+  assert.match(source,/当前选择未确定训练目标/);
+  assert.doesNotMatch(source,/审核待确认素材/);
+});
+
 test('training material picker query is cursor paged and server filtered', () => {
   const query = new URLSearchParams(buildTrainingMaterialQuery({
     cursor: 'cursor-2',
@@ -136,9 +142,15 @@ test('empty boxes preserve confirmed-empty and unannotated as distinct states', 
   const confirmed = renderTrainingMaterialPreview({width: 10, height: 10, annotation_state: 'confirmed_empty', boxes: []});
   const unannotated = renderTrainingMaterialPreview({width: 10, height: 10, processing_status: 'processed', annotation_state: 'unannotated', boxes: []});
   assert.match(confirmed, /已确认无目标/);
-  assert.match(unannotated, /已清洗 · 待标注/);
+  assert.match(unannotated, /未标注 · 已清洗/);
   assert.doesNotMatch(confirmed, /<svg/);
   assert.doesNotMatch(unannotated, /<svg/);
+});
+
+test('objective material annotation anomaly gives its cause without inventing a sample role',()=>{
+  const html=renderTrainingMaterialPreview({annotation_state:'annotated',boxes:[{label:'person',x1:1,y1:2,x2:10,y2:12}],width:50,height:50,annotation_issue_type:'material_unavailable'});
+  assert.match(html,/标注异常 · 素材来源不可用/);
+  assert.doesNotMatch(html,/待审核|待确认负样本/);
 });
 
 

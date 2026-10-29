@@ -1,3 +1,5 @@
+> **最新需求及进度（2026-10-29 / 42.24.412）**：训练素材状态及“本次可新增标签”正样本证据合同，完整记录见本文末尾同日小节；以下为此前三步训练工作台的历史记录。
+
 ## 2026-10-28｜三步训练工作台、素材历史与跨设备增强（代码及隔离CI已验收）
 
 这是用户本轮附件及全部补充要求的唯一进度入口，旧节仅代表原版本。基线远端6df8cf0e / VERSION42.24.395，原a741075c退役WIP与5944/模板/其他工作树不动；本轮复用干净targeted-upload-tabs-ui工作树，只向长期分支正常推送，不生产部署/训练/改GT或原图。用户最后指令覆盖早先广泛测试要求：仅必要语法、少量核心安全合同及实际浏览器冒烟；保留已有测试，不扩大框架。
@@ -450,3 +452,28 @@ Node最小相关组合：`node --test tests/frontend/zip-label-evidence-and-simp
 HEAD仍3cc331f2，VERSION377。子任务额度中断，后端模板和场景新增入口未完成；tests/unit/test_training_modes.py及frontend/training-mode-policy仅为待实现RED，不可宣称GREEN。train_worker已接续阶段来源与patience=0修复，定向两个文件实际29通过/5既有warnings（1.68s，C:/tmp/training-stage-focused-green.log）；之后追加身份核验期间变化拒绝，受影响两个文件再次29通过（1.64s），不重复执行无变更全仓测试。缓存仅trainer内身份投影，不建立第二持久索引；不变来源不重复全量SHA。正式负样本include_emptyFalse合同保持，独立Test未发现用于阶段停止。
 
 2026-10-23收口：验证身份缓存补绑定data.yaml路径，最后仅重跑受影响cache计数用例1通过（0.19s），py_compile/diff检查通过。该阶段不涉及UI，无须重复Chrome。整体模板/UI/存储迁移未完成，不宣称本轮CI或生产验收。
+## 2026-10-29｜训练素材客观状态与新增标签正样本证据合同（42.24.412）
+
+**需求与验收状态：已开发待验证**（本机定向回归已通过；本节在代码提交前记录，准确 SHA 的 GitHub Actions、真实生产现场仍须验收）。唯一长期分支 `feature/external-algorithm-publishing`，从 `95ebbe5a3afa82aa88a8b5d0c6e8a8ee9bbcda49` / `42.24.411` 干净工作区接续；本批不部署、不改生产素材/正式 GT/任务/模型、不操作 GPU、不修改 DB schema。旧的训练工作台与标签治理章节仍为历史依据。
+
+### 原始需求及明确验收规则
+
+| 编号 | 需求、问题背景及验收规则 | 状态 |
+| --- | --- | --- |
+| TRAIN-LABEL-01 | 创建训练任务的普通素材选择器不应笼统显示“待审核”；未确定训练标签时先展示“已标注 / 已确认无目标 / 未标注 / 标注异常（原因）”，不可把未标注当已确认负样本；只有确定本次目标后，才允许进入依赖目标的角色筛选和负样本确认。 | 已开发待验证 |
+| TRAIN-LABEL-02 | “本次可新增标签”仅从**当前确实选中**的正式 GT 有效正样本框取 canonical code，与项目启用标签匹配并排除停用/临时/未映射/已继承标签；不以全项目标签库、未选素材、负样本范围或独立 Test 制造新增类别；跨页去重、选项随素材选择变化，旧勾选失去证据则清除。 | 已开发待验证 |
+| TRAIN-LABEL-03 | 上一训练版本继承的标签独立展示并保持原排序、class_id、治理合并与默认继承，不因本次样本缺少对应目标而删除；首次训练无正样本不得凭空新增类别；切换项目/算法/母版本不得遗留临时勾选。 | 已开发待验证 |
+| TRAIN-LABEL-04 | 原正式 GT、来源异常、目标范围完整性、负样本显式确认、Train/Val/Test 隔离和提交前后端 preflight 保持；素材选择与标签查询不得建立第二 Owner、项目级全表扫描或新任务架构，过期回包不得覆盖新选择。 | 已开发待验证 |
+
+### 复现根因与最小改造
+
+- **RED（前端）**：原 `resolveClientTrainingLabels` 从整个 `activeCatalog` 生成可选标签，即便本次素材没有该标签的正样本，前端仍能勾选、最终被后端 `resolve_training_label_contract` 拒绝。新增定向测试先失败后通过；改为仅使用原 `TrainingMaterialSummaryRuntime` 的服务端选中素材 `positive_label_codes`，且只有活动、合法、非临时的标签进入新增区。原默认“不自动勾选”保留；继承标签继续走原 inherited API/合并合同，且不可重复作为新增项。
+- **RED（后端）**：原 `selection-summary.label_codes` 的索引 GT 标签汇总不足以证明素材来源/坐标有效；隔离测试构造有标签但来源不可用、旧来源 hash、无效坐标的选中图片，原汇总仍会给出不可训练类别。现在在 `platform_core/training_material_picker_api.py` 使用**原 `training_material_role` 真值规则**对已选正式 GT 正样本做有界分批核验，新增独立 `positive_label_codes`，保留旧 `label_codes` 响应字段兼容现有消费者；只查询所选 ID、不读取全库图片明细、不写正式 GT。素材/标注双 revision 在请求起止不同则显式 422 重试，拒绝拼接混合事实。
+- **RED（素材角色 UI）**：旧 Picker 在标签未确定时也展示 `pending_review`、正/负角色和“审核待确认素材”，混淆“当前目标的角色检查”与“正式标注事实”。现在普通列表优先显示客观标注状态及具体异常原因，仅已指定目标的角色筛选保留明确语义的“含本次目标 / 已确认无目标 / 尚需确认无目标 / 标注或目标范围需核验”，真实负样本人工确认 Owner、接口和前置校验未动。
+- **交互一致性**：摘要刷新仍复用原 abort/请求序列与选中素材签名；更换项目/算法/继承版本清除上次临时新增勾选，取消素材后失去证据的新增标签立即撤销并提示，不修改继承类和历史版本的 class_id。
+
+**涉及文件**：`platform_core/training_material_picker_api.py`、`static/modules/training-labels.js`、`static/modules/training-material-picker-runtime.js`、`static/modules/training-material-summary-runtime.js`、`static/main.mjs`；回归位于 `tests/api/test_training_material_picker_api.py`、`tests/performance/test_training_picker_workbench_scale.py`、`tests/frontend/training-labels.test.mjs`、`tests/frontend/training-material-picker-runtime.test.mjs`、`tests/frontend/training-material-summary-runtime.test.mjs` 和有关 `tests/browser/` 用例；版本入口联动测试已更新。
+
+**本地验证与真实范围**：最终代码完整前端 Node 回归 **1403/1403** 通过；后端训练合同、负样本和选择器相关 Python **93/93** 通过（现有 9 条依赖弃用警告）；`git diff --check`、Python 编译及相关 JS 语法通过。受限沙箱的 `npm test` 曾仅在 Uppy 厂商依赖测试出现环境失败，在标准权限环境完整重跑 1403/1403 通过。新增 12,000 条**隔离合成素材**证据核验约 14.03ms，极端全未证实候选约 101.17ms，本机数据不是生产 P95。浏览器真机 CI、准确 SHA 所有 Checks 尚待最终完成。无前端全库拉取、无 FTS/数据库迁移、无生产训练。真实 NAS/OSS、GT 历史遗留、负样本现场确认与并发真实 P95 **NOT VERIFIED**。
+
+**下一步**：已经确认远端基线仍为 `95ebbe5a`，安全普通快进推送；追踪提交自己的 GitHub Actions（含 Chrome）；只有 CI 验收后才将代码回归标为已完成，生产体验仍单独“待现场验证”；若出现准确 SHA 红色 Job，按日志修复，禁止借旧 SHA 绿色结论。

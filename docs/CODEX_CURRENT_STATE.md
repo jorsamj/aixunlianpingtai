@@ -1,3 +1,5 @@
+> **最新接续（2026-10-29 / 42.24.412）**：训练素材状态及新增标签正样本证据修复，具体进度见本文末尾的同日记录及 [训练工作台专项](TRAINING_CREATE_FOUR_MODES_UI_2026_10_10.md)。以下 42.24.411 小节是上一批已核验历史。
+
 ## 2026-10-29｜性能诊断与万级素材/GT 隔离验收（42.24.411，代码 SHA CI 全绿）
 
 唯一长期开发分支 `feature/external-algorithm-publishing`。起点远端 HEAD `9e6edbb38d1db54731c00e058e31f771c1f1c854`、VERSION `42.24.410`、干净工作区；精确基线 GitHub Actions **24/24**、Checks **65/65** 均成功。目标版本 `42.24.411`，最终提交及其 CI 必须在推送后另验；未部署生产。
@@ -3219,3 +3221,6 @@ VERSION `42.24.300` adds one project-scoped coordination fence between canonical
 - 列表与详情统一错误码、单图重试和失败隐藏框；仅错误样本 Tab 当前页最多 24 张。Snapshot、Bundle 和历史素材名称投影复用原上限 8 的元数据缓存，文件身份/素材 Revision 变化时失效，响应逐次校验实际字节。
 - Chrome 覆盖四视口、24/20k 按页请求、跨版本迟到结果、错误原因与重试。生产历史对象、OSS/A800 仍为 NOT VERIFIED；现场只读命令：`python -m scripts.diagnose_evaluation_previews --project-id ID --algorithm-id ID --version-id ID`。
 - VERSION=42.24.356，静态入口缓存=42.25.384；保留先前本地 1de328cc，不推送、不部署、不改历史评测或 Snapshot。详细证据见 docs/EVALUATION_DIAGNOSTICS_P0_2026_10_12.md。
+## 2026-10-29｜训练素材状态及可新增标签范围修复（42.24.412，CI 待核）
+
+唯一长期开发分支 `feature/external-algorithm-publishing`；本轮从已确认远端 `95ebbe5a3afa82aa88a8b5d0c6e8a8ee9bbcda49` / `42.24.411` 继续，目标 VERSION `42.24.412`，准确新提交 SHA、是否推送及全部 CI 应在提交后核实，**未部署生产**。唯一权威需求、RED/GREEN、根因、代码、风险和本轮验收状态见 [训练工作台专项](TRAINING_CREATE_FOUR_MODES_UI_2026_10_10.md)。原 `selection-summary` 现独立返回仅选中素材有效正式 GT 正样本的 `positive_label_codes`；新增标签不再来自全项目字典，选材变化撤销无证据勾选；上一版本继承排序和 class_id 原合同不变；普通 Picker 不再以笼统待审核代替标注状态，按目标确认负样本与正式 preflight 仍安全保留。12k 隔离素材回归已新增；Node/Python、浏览器准确 SHA 最终状态需按提交证据更新。后续按原 [P0 性能记录](performance/2026-10-29-p0-followup.md) 继续真实 HAR、跨 Worker、芯片探测现场验收；不得因本次 UI 修复宣称生产 P95 已验。

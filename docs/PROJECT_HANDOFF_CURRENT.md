@@ -1,3 +1,5 @@
+> **最新接续（2026-10-29 / 42.24.412）**：训练素材状态与标签证据修复，进度记录在本文末及 [训练工作台专项](TRAINING_CREATE_FOUR_MODES_UI_2026_10_10.md)。下面的 42.24.411 为历史基线。
+
 ## 2026-10-29｜性能治理接续：42.24.411 代码 SHA CI 全绿，现场待验
 
 项目：畅联云算法训练平台（FastAPI/Python、JavaScript、SQLite、MaterialRepository、AnnotationRepository、TaskRepository/Worker、外部畅联 API、Storage/Cache）。唯一分支 `feature/external-algorithm-publishing`；起点 `9e6edbb38d1db54731c00e058e31f771c1f1c854`、VERSION `42.24.410`，起点 24/24 Actions + 65/65 Checks 已成功。该 SHA 是**起点**，本批现为 VERSION `42.24.411`，代码提交 CI 已核验、后续文档补记提交 CI 独立核验；无生产部署。
@@ -3095,3 +3097,6 @@ Current code candidate is VERSION `42.24.300`. Formal Ground Truth cannot commit
 - 列表与详情统一错误码、单图重试和失败隐藏框；仅错误样本 Tab 当前页最多 24 张。Snapshot、Bundle 和历史素材名称投影复用原上限 8 的元数据缓存，文件身份/素材 Revision 变化时失效，响应逐次校验实际字节。
 - Chrome 覆盖四视口、24/20k 按页请求、跨版本迟到结果、错误原因与重试。生产历史对象、OSS/A800 仍为 NOT VERIFIED；现场只读命令：`python -m scripts.diagnose_evaluation_previews --project-id ID --algorithm-id ID --version-id ID`。
 - VERSION=42.24.356，静态入口缓存=42.25.384；保留先前本地 1de328cc，不推送、不部署、不改历史评测或 Snapshot。详细证据见 docs/EVALUATION_DIAGNOSTICS_P0_2026_10_12.md。
+## 2026-10-29｜训练标签正样本证据与素材状态接续（42.24.412，CI 待核）
+
+当前唯一长期分支 `feature/external-algorithm-publishing`，本次起点 `95ebbe5a3afa82aa88a8b5d0c6e8a8ee9bbcda49` / VERSION `42.24.411`；目标 `42.24.412`，新提交和 CI 必须独立核验，未部署生产/训练/模型转换、未改正式 GT 或 DB。**专项单一权威进度**见 [训练工作台与新标签需求](TRAINING_CREATE_FOUR_MODES_UI_2026_10_10.md)。后续会话先核真实 HEAD/VERSION/工作区与准确 SHA CI，避免覆盖并行开发；从原 `training_material_picker_api.py` 的已选正式 GT `positive_label_codes`、原 `TrainingMaterialSummaryRuntime`、原 `training-labels.js` 和原 Picker 接续。不可从全项目 activeCatalog 产生新增类别，不得凭 `annotation_scope` 或负样本造正样本；保留上一版本标签顺序/class_id/合并治理及后台训练准入、目标范围与负样本确认。普通选材仅客观标注事实，明确目标才按正负样本角色筛选；没有额外的人工作业链。隔离 12k 性能测量不是生产 P95，浏览器 HAR、真实历史 GT 与准入仍待现场只读验收。旧性能 P0 仍参考 [原治理进度](performance/2026-10-29-p0-followup.md)，不要重复改造。`AGENTS.md` 长期约束未变，不加入逐批日志。
