@@ -112,7 +112,9 @@ jobs:
           grep -Fq 'overallZipProgress' static/modules/zip-import-runtime.js
           grep -Fq "queue_position" static/modules/zip-import-runtime.js
           grep -Fq "PollRegistryRuntime.startTimeout('zip-import-runtime'" static/modules/zip-import-runtime.js
-          grep -Fq 'window.doUploadZip426=input=>uploadBatch(input)' static/modules/zip-import-runtime.js
+          # The public entrypoint must surface errors instead of discarding a
+          # rejected upload-batch promise (the previous exact grep went stale).
+          grep -Fq 'window.doUploadZip426=input=>uploadBatch(input).catch(reportUploadBatchError)' static/modules/zip-import-runtime.js
           grep -Fq 'zipImportRuntime = runtime' static/zip-import-bootstrap.mjs
           grep -Fq 'const durableUploadFromImportModal = () =>' static/zip-import-bootstrap.mjs
           grep -Fq 'window.doImportUploadV19 = durableUploadFromImportModal' static/zip-import-bootstrap.mjs
@@ -144,11 +146,14 @@ jobs:
                   raise SystemExit(f'{filename}: missing or outdated cache revision (minimum {minimum})')
           PY
           grep -Eq 'main\.mjs\?v=42\.25\.[0-9]+' static/index.html
-          grep -Fq "method:'DELETE'" static/modules/upload-task-center.js
+          # The task-center clear button is display-only. Actual server ZIP
+          # deletion remains an explicit separate action in classic app.js.
+          if grep -Fq "method:'DELETE'" static/modules/upload-task-center.js; then echo 'task-center clear must not delete server evidence' >&2; exit 1; fi
+          grep -Fq 'for (const row of removed) dismissedIds.add(row.id)' static/modules/upload-task-center.js
           grep -Fq '>清空已结束</button>' static/modules/upload-task-center.js
-          grep -Fq '已清空 ${cleared} 条已结束任务' static/modules/upload-task-center.js
+          grep -Fq '已清空 ${removed.length} 条已结束任务（仅移除展示记录）' static/modules/upload-task-center.js
           grep -Fq 'task center labels terminal cleanup as clear ended, not clear completed' tests/frontend/upload-task-center.test.mjs
-          grep -Fq 'window.ZipImportRuntime?.forgetTerminal?.(result.deleted_ids || [])' static/modules/upload-task-center.js
+          if grep -Fq 'window.ZipImportRuntime?.forgetTerminal?.(' static/modules/upload-task-center.js; then echo 'display-only clear must not erase ZIP history' >&2; exit 1; fi
           grep -Fq 'function forgetTerminal(ids=null)' static/modules/zip-import-runtime.js
           grep -Fq 'knownJobs.delete(id)' static/modules/zip-import-runtime.js
           grep -Fq 'DEFAULT_TTL_SECONDS = 24 * 60 * 60' platform_core/zip_multipart.py

@@ -168,7 +168,9 @@ test('canonical version conversion caches history but fetches resources on each 
   const historyDialog = page.getByRole('dialog', {name: '版本转换'});
   await expect(historyDialog).toBeVisible();
   await expect.poll(() => historyGets).toBe(2);
-  expect(forcedHistoryGets).toBe(1); // the visible history gets one authoritative page refresh
+  // Opening bypasses the browser preview and reads the authoritative page,
+  // but no longer forces a full server-side deployment-directory rescan.
+  expect(forcedHistoryGets).toBe(0);
 
   await historyDialog.getByRole('button', {name: '选择转换目标'}).click();
   const createDialog = page.getByRole('dialog', {name: '新建版本转换'});

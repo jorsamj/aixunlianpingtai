@@ -1,7 +1,7 @@
 import {test, expect} from '@playwright/test';
 import {archive,setup} from './helpers/uppy-zip.mjs';
 
-test('missing ZIP survives refresh as UNKNOWN, backs off, shows details, and recovers without duplicate start',async({page,request})=>{
+test('confirmed missing ZIP survives refresh without polling, shows stale evidence and recovers only on manual reconcile',async({page,request})=>{
   const p=await (await request.post('/api/projects',{data:{name:'ZIP-record-missing-'+Date.now(),labels:[]}})).json();
   const old={id:'zip:missing-fixture',kind:'zip',title:'isolated-missing.zip',status:'RUNNING',progress:72.7,
     stage:'解析图片与标注',updatedAt:'2026-10-26T03:00:00Z',createdAt:'2026-10-26T02:00:00Z',
@@ -32,23 +32,23 @@ test('missing ZIP survives refresh as UNKNOWN, backs off, shows details, and rec
   await expect.poll(()=>lookups).toBe(1);
   await page.locator('[data-utc-toggle]').click();
   const row=page.locator('[data-utc-id="zip:missing-fixture"]');
-  await expect(row).toContainText('状态无法确认');
+  // A confirmed 404 becomes an explicitly invalid historical display record,
+  // not a live UNKNOWN task that keeps its old polling cadence.
+  await expect(row).toContainText('历史记录已失效');
   await expect(row).toContainText('最后记录 72.7%');
   await expect(row).toContainText('服务器未找到该任务记录');
   await expect(page.locator('[data-utc-id="zip:other-fixture"] .utc-pill')).toHaveText('进行中');
   await page.evaluate(async()=>{for(let n=0;n<6;n++)await window.ZipImportRuntime.reconcile('poll')});
   expect(lookups).toBe(1);
-  await row.getByRole('button',{name:'查看任务'}).click();
-  const modal=page.getByRole('dialog',{name:'ZIP 数据导入'});
-  await expect(modal).toBeVisible();
-  await expect(modal).toContainText('任务 ID：missing-fixture');
-  await expect(modal).toContainText('2026-10-26T03:00:00Z');
-  await modal.getByRole('button',{name:'关闭窗口'}).click();
+  await expect(row).toContainText('任务 zip:missing-fixture');
+  await expect(row.getByRole('button',{name:'移除展示记录'})).toBeVisible();
+  // An invalid server reference is not reopened by an implicit detail GET.
+  await expect(row.getByRole('button',{name:'查看任务'})).toHaveCount(0);
   expect(starts).toBe(0);
   await page.reload();
   await expect.poll(()=>page.evaluate(()=>window.UploadTaskCenterRuntime?.list().find(x=>x.id==='zip:missing-fixture')?.status)).toBe('UNKNOWN');
-  // Refresh must preserve the existing backoff, not start another 1Hz loop.
-  expect(lookups).toBe(2); // one automatic lookup plus one explicit details lookup
+  // A confirmed missing record stops automatic polling even across F5.
+  expect(lookups).toBe(1);
   restored=true;
   await page.evaluate(()=>window.ZipImportRuntime.reconcile('manual'));
   await expect.poll(()=>page.evaluate(()=>window.UploadTaskCenterRuntime.list().find(x=>x.id==='zip:missing-fixture')?.status)).toBe('DONE');
