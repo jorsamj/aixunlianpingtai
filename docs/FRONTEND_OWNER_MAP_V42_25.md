@@ -1,4 +1,4 @@
-> **2026-10-29 / 42.24.414**：`TrainingMaterialSummaryRuntime` 保持 42.24.413 零选材本地空态；本批只补原 API Owner 为空请求绕过全池 GT 汇总。无第二套前端 Owner。精确 CI/现场待核，不部署；参见 `docs/performance/2026-10-29-p0-followup.md`。
+> **2026-10-29 / 42.24.415**：414 将原 API 空摘要总池数改成 `null` 破坏既有合同，已按 CI 恢复真实计数。前端继续由原 SummaryRuntime 在零选材时免发 HTTP，故 UI 仍不被整池查询阻塞。无新增 Owner，新 CI/生产待核，不部署，见 `docs/performance/2026-10-29-p0-followup.md`。
 
 > **2026-10-29 P0 / 42.24.413**：原 `training-create-hydration`、`TrainingMaterialSummaryRuntime` 与资源 `renderResources` 不换 owner；零选材摘要不发请求，训练资源旧服务器卡片只在手动“检测”时 POST 并按同一 `training_options` 回填。服务端旧服务器/Paddle 快照与训练提交准入分离。详见 [唯一 P0 台账](performance/2026-10-29-p0-followup.md)；精确 CI、现场 P50/P95 未验证。
 

@@ -1,4 +1,4 @@
-> **2026-10-29 / 42.24.414 P0 查询修复**：空选材 `selection-summary` 不冷构造项目 GT 总数，非空仍使用原权威合同；无新数据迁移/缓存 Owner。准确提交 SHA 的 CI 与真实生产 26.5s 仍需核验，未部署。唯一进度台账：`docs/performance/2026-10-29-p0-followup.md`。
+> **2026-10-29 / 42.24.415 P0 查询合同回归修复**：CI 证实 414 空 `image_ids` 的 `eligible_total` 变 `null` 违反原精确总数合同，415 已回滚；413 前端免空请求与后端不误触发提交校验仍保留。不扩建 Owner，不迁移；准确 CI/生产待核，未部署。唯一台账：`docs/performance/2026-10-29-p0-followup.md`。
 
 > **2026-10-29 P0 性能接续（42.24.413，本地绿/CI 待验）**：原 `training_options` 每次旧服务器串行检测及 Paddle 目录扫描已改为显式检测快照读取；`selection-summary` 空选材预览不再执行训练提交校验。技术债清理主线仍暂停，没有其他全局 owner 重构。证据、测试及现场开放项以 [P0 续批唯一台账](performance/2026-10-29-p0-followup.md) 为准；未部署。
 
