@@ -582,7 +582,7 @@ export function installTrainingSubmitRuntime({
     return lastStage;
   }
 
-  function updateReadiness({checked=false,reset=false}={}) {
+  function updateReadiness({checked=false,reset=false,compatibilityOverride=undefined}={}) {
     cancelStaleCheck();
     const currentRoot = document.querySelector?.('.train429-create') || null;
     if (!submitting && currentRoot && currentRoot !== submissionRoot) {
@@ -603,7 +603,8 @@ export function installTrainingSubmitRuntime({
     const benchmarkStatus = String(state.trainingBenchmarkReuse?.algorithm_id || '') === String(draft?.algorithmId || '')
       ? state.trainingBenchmarkReuse
       : null;
-    const compatibility = materialSummaryRuntime?.compatibilityFor?.(draft);
+    const compatibility = compatibilityOverride===undefined
+      ? materialSummaryRuntime?.compatibilityFor?.(draft) : compatibilityOverride;
     const selectedTargetId = document.getElementById?.('tr429Target')?.value || '';
     const selectedTarget = (state.targets || []).find(row => String(row?.id || '') === String(selectedTargetId));
     const asset = (state.algorithms || []).find(row=>String(row?.id||'')===String(draft?.algorithmId||''));
@@ -792,7 +793,7 @@ export function installTrainingSubmitRuntime({
         !Object.keys(issueCounts).length||Object.entries(issueCounts).some(
           ([code,count])=>Number(count)>0&&code!=='partial_review_scope'));
       if(hardIssue){
-        if(showBlockers(updateReadiness()))return null;
+        if(showBlockers(updateReadiness({compatibilityOverride:{...checkedCompatibility,ready:true}})))return null;
         throw new Error('训练素材存在不能通过样本确认解决的问题，请先修复正式 GT');
       }
       setSubmitStage('checking-negatives');
@@ -814,7 +815,11 @@ export function installTrainingSubmitRuntime({
         if(!admissionIsCurrent(operation))throw Object.assign(new Error('训练配置或窗口已变化，本次检查已取消'),{name:'AbortError'});
         if(!checkedCompatibility)throw new Error('样本确认后的训练准入复检未完成，请重试');
       }
-      const admission=updateReadiness();
+      // Use the fresh, signature-checked response for this submission. Other
+      // background decorators may briefly expose a loading compatibility
+      // snapshot; they must not invalidate an already verified admission.
+      const admission=updateReadiness({compatibilityOverride:checkedCompatibility
+        ? {...checkedCompatibility,ready:true} : undefined});
       if(showBlockers(admission))return null;
       if(admission.blockers.some(row=>row.transient&&row.code!=='submitting'))throw new Error('训练条件检查尚未完成，请等待基础配置就绪后重新检查');
 

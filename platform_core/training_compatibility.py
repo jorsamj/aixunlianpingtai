@@ -347,6 +347,7 @@ def _evaluate_training_compatibility_projection_cached(
     algorithm_json: str,
     material_revision: int,
     annotation_revision: int,
+    task_negative_confirmation_revision: int,
     label_schema_digest: str,
     dataset_digest: str,
 ) -> TrainingCompatibilityResult:
@@ -354,11 +355,11 @@ def _evaluate_training_compatibility_projection_cached(
 
     Revision and file digests are intentionally part of the key even though
     the evaluator reads the repositories itself.  They make cached values
-    impossible to reuse after canonical Material, Annotation, label-schema or
-    dataset display metadata changes.  Final training admission never calls
-    this helper.
+    impossible to reuse after canonical Material, Annotation, task-level
+    negative receipt, label-schema or dataset display metadata changes.
+    Final training admission never calls this helper.
     """
-    del material_revision, annotation_revision, label_schema_digest, dataset_digest
+    del material_revision, annotation_revision, task_negative_confirmation_revision, label_schema_digest, dataset_digest
     return evaluate_training_compatibility(
         Path(data_dir),
         Path(project),
@@ -389,6 +390,7 @@ def evaluate_training_compatibility_projection(
         _canonical_json(algorithm),
         int(materials.current_revision()),
         int(annotations.current_revision()),
+        int(annotations.task_negative_confirmation_revision()),
         _file_digest(project_path / "meta.json"),
         _file_digest(project_path / "datasets.json"),
     )

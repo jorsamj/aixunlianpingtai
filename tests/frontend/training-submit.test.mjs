@@ -197,6 +197,29 @@ test('a confirmable review-scope gap reaches final confirmation after compatibil
   cleanup(runtime);
 });
 
+test('completed server compatibility stays authoritative while background UI cache is loading', async () => {
+  installDom();
+  let posts=0;
+  globalThis.window={fetch:async (_url,init)=>{
+    if(init?.method==='POST')posts++;
+    return {ok:true,json:async()=>durableTask()};
+  }};
+  const runtime=installTrainingSubmitRuntime({
+    getState:()=>baseState(),projectId:()=> 'project-1',
+    trainingDraftRuntime:{sync:()=>draft(),current:()=>draft(),base:()=>({blocked:false})},
+    trainingDraftToRequest,
+    materialSummaryRuntime:{
+      compatibilityFor:()=>({ready:false,loading:true,issue_count:null}),
+      refreshCompatibility:async()=>({compatible:true,issue_count:0}),
+      updateAdmissionDiagnosis:()=>{},
+      confirmPendingNegatives:async()=>true,
+    },
+  });
+  assert.ok(await runtime.submit(), 'a verified response should not be blocked by stale loading presentation');
+  assert.equal(posts,1);
+  cleanup(runtime);
+});
+
 test('engine parameters preserve explicit false/zero resource and YOLO settings', () => {
   const value = draft({
     resource: {strategy: 'manual', device: '0', gpuPolicy: 'exclusive', batch: 16, workers: 0, cache: false},

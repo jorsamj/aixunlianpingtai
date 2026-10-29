@@ -100,3 +100,44 @@ def test_compatibility_page_switch_reuses_evaluation_and_bounds_response(
         f"compatibility_{selection_size}_two_page_seconds",
         round(elapsed, 6),
     )
+
+
+def test_task_negative_receipt_invalidates_cached_compatibility(tmp_path, monkeypatch):
+    """Final preflight after task evidence must not reuse pre-confirmation issues."""
+    project = tmp_path / "project"
+    project.mkdir()
+    calls = 0
+    receipt_revision = 0
+
+    def fake_evaluate(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return TrainingCompatibilityResult(
+            label_contract={"effective_label_codes": ["person"]},
+            issues=({"image_id": "image-1", "issue_type": "partial_review_scope"},)
+            if receipt_revision == 0 else (),
+            material_revision=7,
+            annotation_revision=11,
+            selection_truth={"selected_count": 2},
+        )
+
+    monkeypatch.setattr(compatibility_module, "evaluate_training_compatibility", fake_evaluate)
+    monkeypatch.setattr(compatibility_module.MaterialRepository, "current_revision", lambda _self: 7)
+    monkeypatch.setattr(compatibility_module.AnnotationRepository, "current_revision", lambda _self: 11)
+    monkeypatch.setattr(compatibility_module.AnnotationRepository,
+                        "task_negative_confirmation_revision", lambda _self: receipt_revision)
+    compatibility_module._evaluate_training_compatibility_projection_cached.cache_clear()
+    payload = {"algorithm_asset_id": "algorithm-1", "image_ids": ["image-1", "image-2"],
+               "train_labels": ["person"]}
+    algorithm = {"id": "algorithm-1", "framework": "ultralytics"}
+
+    before = evaluate_training_compatibility_projection(tmp_path, project, payload, algorithm)
+    receipt_revision = 1
+    after = evaluate_training_compatibility_projection(tmp_path, project, payload, algorithm)
+    repeated = evaluate_training_compatibility_projection(tmp_path, project, payload, algorithm)
+
+    assert len(before.issues) == 1
+    assert after.issues == ()
+    assert after is repeated
+    assert before is not after
+    assert calls == 2
