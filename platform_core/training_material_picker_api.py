@@ -367,6 +367,25 @@ def _gt_material_filter_page(
                 int(annotation_revision_row[0])
                 if annotation_revision_row is not None else 0
             )
+            # Both auxiliary revision markers describe this exact page snapshot.
+            # Reading them after COMMIT opened two fresh connections and could
+            # mix newer negative evidence with older material/GT page results.
+            negative_confirmation_revision = 0
+            if database.execute(
+                "SELECT 1 FROM annotation_gt.sqlite_master "
+                "WHERE type='table' AND name='task_negative_confirmations'"
+            ).fetchone() is not None:
+                negative_confirmation_revision = int(database.execute(
+                    "SELECT COUNT(*) FROM annotation_gt.task_negative_confirmations"
+                ).fetchone()[0])
+            negative_pool_revision = "0"
+            if database.execute(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type='table' AND name='negative_pool_meta'"
+            ).fetchone() is not None:
+                negative_pool_revision = str(database.execute(
+                    "SELECT revision FROM negative_pool_meta WHERE id=1"
+                ).fetchone()[0])
             total = _gt_filtered_count_snapshot(
                 database, repository, annotations, base_where, base_params,
                 material_revision, annotation_revision,
@@ -421,8 +440,8 @@ def _gt_material_filter_page(
         "total": total,
         "material_revision": material_revision,
         "annotation_revision": annotation_revision,
-            "negative_confirmation_revision": annotations.task_negative_confirmation_revision(),
-            "negative_pool_revision": NegativePool(repository).revision(),
+        "negative_confirmation_revision": negative_confirmation_revision,
+        "negative_pool_revision": negative_pool_revision,
     }
 
 

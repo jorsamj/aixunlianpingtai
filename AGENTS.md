@@ -1,3 +1,7 @@
+## 2026-10-29｜P0 正式 GT 翻页修订号同事务一致性（42.24.408 / LOCAL GREEN，CI 待核）
+
+接续 `95e52d32`／42.24.407。原正式 GT 选择器在分页数据库事务提交后，为 `negative_confirmation_revision` 和 `negative_pool_revision` 又分别打开 Annotation/Material 连接，导致多余开销及旧页搭配新修订号的竞争窗口。本批在已有 `ATTACH annotation_gt` 的同一只读事务内读取两个标记，历史表不存在仍返回原默认值，未修改训练角色、负样本判断、素材/GT/任务及 schema。新增针对二次连接的 RED→GREEN；相关 Python 33/33、前端 Node 1396/1396 通过。准确新 SHA 的 CI 仍须核对；真实生产 HAR、正式 GT 10k+ 冷查询、代理与外部芯片/畅联云调用时序未验。不部署、不改生产数据、不合并 main、不强推。A–F 见 `docs/performance/2026-10-29-p0-followup.md`。
+
 ## 2026-10-29｜P0 正式 GT 计数与芯片探测计时（42.24.407 / LOCAL GREEN，CI 待核）
 
 以 `f45e8934`／`42.24.406` 为基线，前一版 25/25 Actions、65/65 Checks 准确 SHA 全绿。本批在原 GT 选择器内按原材料和正式标注双 revision 缓存精准 `COUNT(*)`，跨页复用，两者任一变更即失效，按数据库身份及筛选哈希限 128 项，避免把数万素材 ID 保留在内存键中。新增默认关闭的素材计数/分页与显式芯片/部署资源探测阶段计时（Server-Timing/脱敏标量日志）。不主动检测、不同步、不过滤/放宽训练角色、无 DB schema 改动。新业务及诊断回归见 `docs/performance/2026-10-29-p0-followup.md`；真实生产 LIKE 查询、浏览器代理 Stalled、远端芯片/畅联云实测仍 NOT VERIFIED，不部署、不改生产数据、不强推。

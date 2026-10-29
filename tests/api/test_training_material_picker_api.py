@@ -186,6 +186,37 @@ def test_formal_gt_filtered_count_reused_and_invalidated_by_both_revisions(tmp_p
     assert len(count_queries()) == 3
 
 
+def test_gt_page_reuses_attached_snapshot_for_negative_revisions(tmp_path, monkeypatch):
+    """A filtered page must not reopen both DBs after its page snapshot ends."""
+    from platform_core.negative_pool import NegativePool
+
+    _client_instance, repository = _client(tmp_path)
+    annotations = AnnotationRepository(repository.project_path)
+    pool = NegativePool(repository)
+    pool.category(name="已审核负样本")
+    expected_pool_revision = pool.revision()
+    with sqlite3.connect(annotations.path) as database:
+        database.execute(
+            "CREATE TABLE task_negative_confirmations ("
+            "receipt_id TEXT PRIMARY KEY, context_key TEXT NOT NULL, evidence_json TEXT NOT NULL)"
+        )
+        database.execute(
+            "INSERT INTO task_negative_confirmations VALUES ('receipt-1','task-1','{}')"
+        )
+
+    def unexpected_extra_connection(*args, **kwargs):
+        raise AssertionError("revision metadata must come from the attached page snapshot")
+
+    monkeypatch.setattr(annotations, "task_negative_confirmation_revision", unexpected_extra_connection)
+    monkeypatch.setattr(NegativePool, "revision", unexpected_extra_connection)
+    page = picker_module._gt_material_filter_page(
+        repository, annotations, limit=20, labels=("smoke",), include_payload=False,
+    )
+    assert page["total"] == 115
+    assert page["negative_confirmation_revision"] == 1
+    assert page["negative_pool_revision"] == expected_pool_revision
+
+
 def test_training_picker_batch_reads_formal_annotation_truth_for_current_page(tmp_path, monkeypatch):
     client, repository = _client(tmp_path)
     annotations = AnnotationRepository(repository.project_path)
