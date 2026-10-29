@@ -96,6 +96,11 @@ test('dataset paging, search and refresh patch cards without rebuilding the shel
   await page.route('**/api/v61/projects/*/materials**', async route => {
     const url = new URL(route.request().url());
     if (url.pathname.endsWith('/materials/ids')) return route.fallback();
+    if (url.pathname.endsWith('/materials/status-counts')) {
+      return route.fulfill({status: 200, json: {
+        unprocessed: 0, processed: 96, total: 96, annotated: 96, boxes: 96, revision: 1,
+      }});
+    }
 
     const status = url.searchParams.get('processing_status');
     const query = url.searchParams.get('query') || '';
@@ -279,19 +284,29 @@ test('auto-label task creation stays paged and never hydrates the full material 
 test('dataset return paints the cached page before a background refresh replaces it', async ({page}) => {
   const pixel = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
   let mainReads = 0;
+  let statusCountsReads = 0;
   let slowReturn = false;
 
   await page.route('**/api/v61/projects/*/materials**', async route => {
     const url = new URL(route.request().url());
     if (url.pathname.endsWith('/materials/ids')) return route.fallback();
+    if (url.pathname.endsWith('/materials/status-counts')) {
+      statusCountsReads += 1;
+      return route.fulfill({status: 200, json: {
+        unprocessed: 0, processed: 1, total: 1, annotated: 1, boxes: 1, revision: 1,
+      }});
+    }
+    if (!url.pathname.endsWith('/materials')) return route.fallback();
     const limit = Number(url.searchParams.get('limit') || 48);
     if (limit === 1) {
       await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({items: [], total: 1, next_cursor: null})});
       return;
     }
     mainReads += 1;
-    if (slowReturn && mainReads >= 2) await new Promise(resolve => setTimeout(resolve, 650));
-    const name = mainReads >= 2 ? 'fresh-after-return.jpg' : 'cached-before-return.jpg';
+    if (slowReturn) await new Promise(resolve => setTimeout(resolve, 650));
+    // The summary endpoint must not count as a material-page read, and extra
+    // initial page requests must not turn the initial snapshot into "fresh".
+    const name = slowReturn ? 'fresh-after-return.jpg' : 'cached-before-return.jpg';
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -319,6 +334,7 @@ test('dataset return paints the cached page before a background refresh replaces
   });
   await expect(page.locator('#data412Grid')).toContainText('cached-before-return.jpg', {timeout: 10_000});
   await expect.poll(async () => page.evaluate(() => window.MaterialPaginationRuntime61.state().cachedItems)).toBe(1);
+  await expect.poll(() => statusCountsReads).toBeGreaterThan(0);
 
   await page.evaluate(() => window.setPage('训练任务'));
   await expect(page.locator('#title')).toContainText('训练任务');
@@ -330,6 +346,7 @@ test('dataset return paints the cached page before a background refresh replaces
       processing_status: 'processed',
     }];
   });
+  const readsBeforeReturn = mainReads;
   slowReturn = true;
 
   await page.evaluate(() => window.setPage('数据集'));
@@ -337,7 +354,7 @@ test('dataset return paints the cached page before a background refresh replaces
   await expect(page.locator('#data412Grid')).toContainText('cached-before-return.jpg', {timeout: 250});
   await expect(page.locator('#data412Grid')).not.toContainText('full-pool-should-not-flash.jpg');
   await expect(page.locator('#data412Grid')).toContainText('fresh-after-return.jpg', {timeout: 5_000});
-  expect(mainReads).toBeGreaterThanOrEqual(2);
+  expect(mainReads).toBeGreaterThan(readsBeforeReturn);
 });
 
 

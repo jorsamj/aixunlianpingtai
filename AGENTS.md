@@ -881,3 +881,7 @@ Resource Discovery SQLite 仍保持 **CODE-LEVEL CLOSED / production soak OPEN**
 - 列表与详情统一错误码、单图重试和失败隐藏框；仅错误样本 Tab 当前页最多 24 张。Snapshot、Bundle 和历史素材名称投影复用原上限 8 的元数据缓存，文件身份/素材 Revision 变化时失效，响应逐次校验实际字节。
 - Chrome 覆盖四视口、24/20k 按页请求、跨版本迟到结果、错误原因与重试。生产历史对象、OSS/A800 仍为 NOT VERIFIED；现场只读命令：`python -m scripts.diagnose_evaluation_previews --project-id ID --algorithm-id ID --version-id ID`。
 - VERSION=42.24.356，静态入口缓存=42.25.384；保留先前本地 1de328cc，不推送、不部署、不改历史评测或 Snapshot。详细证据见 docs/EVALUATION_DIAGNOSTICS_P0_2026_10_12.md。
+
+## 2026-10-29｜P0 素材翻页 Chrome 回归修正（LOCAL VERIFIED / CI OPEN）
+
+VERSION 42.24.404；`Frontend Runtime Stabilization` 浏览器分片旧夹具的 `**/materials**` 同时拦截新 `/materials/status-counts`，把状态聚合误记为列表主请求并提前切换初始图片。已显式分离两个 API 的真实形状，初次列表读取与回访刷新由操作阶段驱动，保留缓存先显示、背景真实更新及列表请求确实发生的业务断言。仅更新浏览器测试/记录，不改生产接口或状态 owner；Node 1396/1396、JS 语法通过，真实 Chrome/远端 CI 待新 SHA 验证。不得借上轮 42.24.403 的转换绿色声称本轮全部 CI 通过；未部署生产。
