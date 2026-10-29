@@ -2097,7 +2097,7 @@ window.installUsability417=function(){
     try{localStorage.removeItem(DEPLOY_PLUGIN_CACHE_KEY)}catch(_){}
   };
   restoreDeployPluginCacheV41();
-  const pluginState=s=>`<span class="pill ${s==='ready'?'ok':'err'}">${s==='ready'?'可用':'缺少 SDK/工具链'}</span>`;
+  const pluginState=s=>`<span class="pill ${s==='ready'?'ok':s==='unchecked'?'warn':'err'}">${s==='ready'?'已检测可用':s==='unchecked'?'待检测/已过期':'当前未验证可用'}</span>`;
   window.loadDeployPluginsV41=async({force=false}={})=>{const age=Date.now()-Number(state.deployPluginsLoadedAt||0);if(!force&&state.deployPluginsLoadedAt>0&&age>=0&&age<DEPLOY_PLUGIN_CACHE_TTL_MS)return state.deployPlugins;const r=await safe(api('/api/v41/deploy/plugins'));if(r){state.deployPlugins=r.items||[];state.deployHostOs=r.host_os||'';state.deployPluginsLoadedAt=Date.now();persistDeployPluginCacheV41()}return state.deployPlugins};
   function pluginCard(p){
     const chips=(p.chips||[]).slice(0,7).map(x=>`<span class="chip-tag">${esc(x)}</span>`).join('');
@@ -2105,7 +2105,7 @@ window.installUsability417=function(){
   }
   window.renderDeployPluginsV41=async({force=false}={})=>{
     const hasSnapshot=state.deployPluginsLoadedAt>0||(state.deployPlugins||[]).length>0;
-    document.getElementById('view').innerHTML=`<section class="panel"><div class="panel-head"><div><div class="panel-title">部署插件</div><div class="subline">平台适配层调用厂商官方 SDK / 编译器</div></div><button class="btn" onclick="renderDeployPluginsV41({force:true})">重新检测</button></div><div class="panel-body" id="pluginGridV41">${hasSnapshot?`<div class="deploy-resource-grid">${state.deployPlugins.map(pluginCard).join('')}</div>`:'<div class="loading">首次检测部署插件...</div>'}</div></section>`;
+    document.getElementById('view').innerHTML=`<section class="panel"><div class="panel-head"><div><div class="panel-title">部署插件</div><div class="subline">本页显示最近一次检测状态；到“部署资源”手动执行实时检测</div></div><button class="btn" onclick="renderDeployPluginsV41({force:true})">刷新状态</button></div><div class="panel-body" id="pluginGridV41">${hasSnapshot?`<div class="deploy-resource-grid">${state.deployPlugins.map(pluginCard).join('')}</div>`:'<div class="loading">正在读取插件状态...</div>'}</div></section>`;
     await loadDeployPluginsV41({force});const box=document.getElementById('pluginGridV41');if(box)box.innerHTML=`<div class="deploy-resource-grid">${state.deployPlugins.map(pluginCard).join('')}</div>`;
   };
   window.openRknnSdkInstallerV41=async()=>{
@@ -3510,8 +3510,11 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   const conversionHistoryViews428=new Map();
   function conversionHistoryView428(aid,vid){const key=`${pid()}:${aid}:${vid}`;if(!conversionHistoryViews428.has(key))conversionHistoryViews428.set(key,{page:1,page_size:20,filters:{},epoch:0,controller:null,timer:null});return conversionHistoryViews428.get(key)}
   function conversionHistoryQuery428(view){return {page:view.page,page_size:view.page_size,...view.filters}}
-  async function deploymentHistory428(aid,vid,force=false,query={page:1,page_size:20},signal){
-    const project=pid(),params=new URLSearchParams({...query,force:String(force)}),inflightKey=`${project}:${aid}:${vid}:${params}`;
+  async function deploymentHistory428(aid,vid,force=false,query={page:1,page_size:20},signal,serverForce=false){
+    // Browser freshness and server directory rescans are separate decisions.
+    // Opening a dialog bypasses stale localStorage without forcing a full
+    // server inventory while another request already refreshed it.
+    const project=pid(),params=new URLSearchParams({...query,force:String(serverForce)}),inflightKey=`${project}:${aid}:${vid}:${params}`;
     const k=cacheKey428('verdeploy',aid,vid,String(new URLSearchParams(query)));
     if(!force){const c=readCache428(k);if(c)return c}
     if(!signal&&conversionHistoryInflight428.has(inflightKey))return conversionHistoryInflight428.get(inflightKey);
@@ -3586,17 +3589,48 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     },1500)
   }
   let historyOpenEpoch428=0;
-  window.openVersionConvert428=async function(aid,vid){const project=pid(),epoch=++historyOpenEpoch428;modal('版本转换',`<div class="convert428" data-version-conversion-aid="${esc(aid)}" data-version-conversion-vid="${esc(vid)}"><div role="status">正在读取转换记录…</div><button class="btn primary" onclick="openNewConvert428('${esc(aid)}','${esc(vid)}')">新建转换</button></div>`,true);const root=versionConversionRoot428(aid,vid),view=conversionHistoryView428(aid,vid);view.controller?.abort();view.controller=new AbortController();const queryEpoch=++view.epoch;try{const r=await deploymentHistory428(aid,vid,true,conversionHistoryQuery428(view),view.controller.signal);if(queryEpoch!==view.epoch||project!==pid()||epoch!==historyOpenEpoch428||versionConversionRoot428(aid,vid)!==root)return;rememberVersionConversion428(aid,vid,r);replaceVersionConversionBody428(aid,vid,r);scheduleVersionConversionPoll428(aid,vid,r)}catch(e){if(queryEpoch!==view.epoch||project!==pid()||epoch!==historyOpenEpoch428||versionConversionRoot428(aid,vid)!==root)return;root.innerHTML=`<div class="alert err">转换记录读取失败：${esc(e.message||e)}</div><button class="btn" onclick="openVersionConvert428('${esc(aid)}','${esc(vid)}')">重试记录</button><button class="btn primary" onclick="openNewConvert428('${esc(aid)}','${esc(vid)}')">新建转换</button>`}};
-  window.refreshVersionConvert428=async function(aid,vid,{quiet=false}={}){const project=pid(),root=versionConversionRoot428(aid,vid),view=conversionHistoryView428(aid,vid);clearTimeout(view.timer);view.controller?.abort();view.controller=new AbortController();const epoch=++view.epoch;try{const r=await deploymentHistory428(aid,vid,true,conversionHistoryQuery428(view),view.controller.signal);if(epoch!==view.epoch||project!==pid()||versionConversionRoot428(aid,vid)!==root)return null;view.page=Number(r.page||view.page);rememberVersionConversion428(aid,vid,r);replaceVersionConversionBody428(aid,vid,r);scheduleVersionConversionPoll428(aid,vid,r);if(!quiet)toast('已重新读取转换记录');return r}catch(e){if(epoch!==view.epoch||project!==pid()||versionConversionRoot428(aid,vid)!==root)return null;const notice=root?.querySelector('[data-history-notice]');if(notice)notice.textContent='记录查询失败，可点击刷新重试：'+(e.message||e);else toast(e.message||e);return null}};
+  window.openVersionConvert428=async function(aid,vid){const project=pid(),epoch=++historyOpenEpoch428,view=conversionHistoryView428(aid,vid),cached=readCache428(cacheKey428('verdeploy',aid,vid,String(new URLSearchParams(conversionHistoryQuery428(view))))),hasPreview=Boolean(cached?.version&&Array.isArray(cached?.items));modal('版本转换',hasPreview?`${historyHtml428(aid,vid,cached)}<div role="status" class="convert428-cache-refresh">上次记录，正在核验最新状态…</div>`:`<div class="convert428" data-version-conversion-aid="${esc(aid)}" data-version-conversion-vid="${esc(vid)}"><div role="status">正在读取转换记录…</div><button class="btn primary" onclick="openNewConvert428('${esc(aid)}','${esc(vid)}')">新建转换</button></div>`,true);const root=versionConversionRoot428(aid,vid);view.controller?.abort();view.controller=new AbortController();const queryEpoch=++view.epoch;try{const r=await deploymentHistory428(aid,vid,true,conversionHistoryQuery428(view),view.controller.signal);if(queryEpoch!==view.epoch||project!==pid()||epoch!==historyOpenEpoch428||versionConversionRoot428(aid,vid)!==root)return;rememberVersionConversion428(aid,vid,r);replaceVersionConversionBody428(aid,vid,r);scheduleVersionConversionPoll428(aid,vid,r)}catch(e){if(queryEpoch!==view.epoch||project!==pid()||epoch!==historyOpenEpoch428||versionConversionRoot428(aid,vid)!==root)return;if(hasPreview){const notice=root.querySelector('[data-history-notice]');if(notice)notice.textContent='最新记录读取失败；以下为上次数据：'+(e.message||e);root.closest('.modal-body')?.querySelector('.convert428-cache-refresh')?.remove();return;}root.innerHTML=`<div class="alert err">转换记录读取失败：${esc(e.message||e)}</div><button class="btn" onclick="openVersionConvert428('${esc(aid)}','${esc(vid)}')">重试记录</button><button class="btn primary" onclick="openNewConvert428('${esc(aid)}','${esc(vid)}')">新建转换</button>`}};
+  window.refreshVersionConvert428=async function(aid,vid,{quiet=false}={}){const project=pid(),root=versionConversionRoot428(aid,vid),view=conversionHistoryView428(aid,vid);clearTimeout(view.timer);view.controller?.abort();view.controller=new AbortController();const epoch=++view.epoch;try{const r=await deploymentHistory428(aid,vid,true,conversionHistoryQuery428(view),view.controller.signal,!quiet);if(epoch!==view.epoch||project!==pid()||versionConversionRoot428(aid,vid)!==root)return null;view.page=Number(r.page||view.page);rememberVersionConversion428(aid,vid,r);replaceVersionConversionBody428(aid,vid,r);scheduleVersionConversionPoll428(aid,vid,r);if(!quiet)toast('已重新读取转换记录');return r}catch(e){if(epoch!==view.epoch||project!==pid()||versionConversionRoot428(aid,vid)!==root)return null;const notice=root?.querySelector('[data-history-notice]');if(notice)notice.textContent='记录查询失败，可点击刷新重试：'+(e.message||e);else toast(e.message||e);return null}};
   window.refreshActiveVersionConvert428=async function(){const ctx=state.conv428VersionContext||{};if(!ctx.aid||!ctx.vid)return false;return Boolean(await window.refreshVersionConvert428(ctx.aid,ctx.vid,{quiet:true}))};
   function targetResources428(rows,target){return(rows||[]).filter(x=>x.status==='ready'&&(x.targets||[]).includes(target))}
   window.openNewConvertLegacy428=async function(aid,vid){try{const rr=await deployResources428(false),hist=await deploymentHistory428(aid,vid,false),v=hist.version||{};if(!String(v.stored_path||'').trim())return toast('当前版本没有可用模型产物');modal('新建版本转换',`<div class="convert428-create"><section><b>源版本</b><div class="convert428-source"><span>${esc(hist.algorithm?.name||'-')}</span><strong>${esc(v.version_name||'-')}</strong><em>${esc(v.model_name||'')}</em></div></section><section><b>转换目标</b><div class="convert428-targets">${['ascend','rockchip','sophon'].map((t,i)=>`<label><input type="radio" name="conv428Target" value="${t}" ${i===0?'checked':''} onchange="refreshConvertResource428()"><i></i><b>${esc(TARGET_NAMES428[t])}</b><span>${t==='ascend'?'输出 .om':t==='rockchip'?'输出 .rknn':'输出 .bmodel'}</span></label>`).join('')}</div></section><section><div class="form two"><div class="field"><label>转换资源</label><select id="conv428Resource" class="select"></select><button type="button" class="btn mini" onclick="refreshVersionConversionResources428(true)">检测当前资源</button></div><div class="field"><label>精度</label><select id="conv428Precision" class="select"><option value="fp16">FP16</option><option value="fp32">FP32</option><option value="int8">INT8（需要校准数据）</option></select></div><div class="field"><label>输入尺寸</label><input id="conv428Input" class="input" value="640"></div><div class="field"><label>芯片型号</label><select id="conv428Chip" class="select"></select></div></div></section><div id="conv428Warn" class="alert soft"></div><div class="row end"><button class="btn" onclick="closeModal()">取消</button><button class="btn primary" onclick="submitConvert428('${aid}','${vid}')">开始转换</button></div></div>`,true);state.conv428Resources=rr.items||[];setTimeout(refreshConvertResource428,20)}catch(e){toast(e.message||e)}};
   window.refreshConvertResourceLegacy428_1=function(){const t=document.querySelector('input[name="conv428Target"]:checked')?.value||'ascend',rows=targetResources428(state.conv428Resources,t),sel=document.getElementById('conv428Resource'),chip=document.getElementById('conv428Chip'),warn=document.getElementById('conv428Warn');if(sel){sel.innerHTML=rows.map(x=>`<option value="${x.id}">${esc(x.name)}</option>`).join('')||'<option value="">暂无可用转换资源</option>';sel.onchange=()=>{const r=(state.conv428Resources||[]).find(x=>x.id===sel.value);if(t==='rockchip'&&chip){chip.value=(r?.supported_chips||[])[0]||''}else if(t==='ascend'&&chip){const socs=r?.detected_soc_versions||r?.remote_health?.soc_versions||[];chip.value=socs[0]||''}}}const first=rows[0];if(chip){if(t==='rockchip')chip.value=(first?.supported_chips||[])[0]||'';else if(t==='sophon')chip.value='bm1684x';else{const socs=first?.detected_soc_versions||first?.remote_health?.soc_versions||[];chip.value=socs[0]||''}}if(warn)warn.textContent=rows.length?(t==='ascend'&&!chip?.value?'转换资源可用，但未自动识别 Atlas soc_version；请填写最终部署芯片型号，例如 Ascend310P3。':'将使用已检测可用的真实转换资源执行。'):'当前没有已检测为可用的转换资源，请展开“高级功能 → 模型转换环境”配置并检测后再试。'};
   const conversionUnknown428=new Set(),conversionPending428=new Set();
+  const conversionRequestKey428=(project,aid,vid)=>`cl_train_conversion_pending_v1:${project}:${aid}:${vid}`;
+  function pendingConversion428(project,aid,vid){
+    try{const value=JSON.parse(localStorage.getItem(conversionRequestKey428(project,aid,vid))||'null');return value?.request_id&&value?.payload?.request_id===value.request_id?value:null}catch(_){return null}
+  }
+  function savePendingConversion428(project,aid,vid,value){try{localStorage.setItem(conversionRequestKey428(project,aid,vid),JSON.stringify(value))}catch(_){}}
+  function clearPendingConversion428(project,aid,vid){conversionUnknown428.delete(`${project}:${aid}:${vid}`);try{localStorage.removeItem(conversionRequestKey428(project,aid,vid))}catch(_){}}
+  function newConversionRequestId428(){return `conv_${window.crypto?.randomUUID?.().replace(/-/g,'')||`${Date.now().toString(36)}${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`}`}
+  window.verifyPendingConversion428=async function(aid,vid){
+    const project=pid(),pending=pendingConversion428(project,aid,vid);
+    if(!pending)return false;
+    try{
+      const result=await window.PlatformCore.withRequestDeadline(signal=>api(`/api/v39/projects/${project}/deploy/jobs/by-request/${encodeURIComponent(pending.request_id)}`,{signal}),{label:'核验转换创建结果'});
+      if(project!==pid())return true;
+      if(result.found&&result.job?.id){clearPendingConversion428(project,aid,vid);toast('已确认原转换任务创建成功，不会重复创建');return window.openVersionConvert428(aid,vid)}
+      const message=result.pending?'服务器正在准备原转换请求，请稍后继续核验。':'尚未查到原转换任务；可按相同请求 ID 安全重试，不会创建第二份。';
+      modal('转换结果待确认',`<div class="alert warn">${esc(message)}</div><div class="row end"><button class="btn" onclick="verifyPendingConversion428('${esc(aid)}','${esc(vid)}')">再次核验</button><button class="btn primary" onclick="retryPendingConversion428('${esc(aid)}','${esc(vid)}')">按原请求安全重试</button></div>`,true);
+    }catch(error){if(project===pid())modal('转换结果待确认',`<div class="alert warn">核验失败：${esc(error.message||error)}。原请求可能仍在执行，请勿以新请求创建。</div><div class="row end"><button class="btn" onclick="verifyPendingConversion428('${esc(aid)}','${esc(vid)}')">再次核验</button><button class="btn primary" onclick="retryPendingConversion428('${esc(aid)}','${esc(vid)}')">按原请求安全重试</button></div>`,true)}
+    return true;
+  };
+  window.retryPendingConversion428=async function(aid,vid){
+    const project=pid(),key=`${project}:${aid}:${vid}`,pending=pendingConversion428(project,aid,vid);
+    if(!pending||conversionPending428.has(key))return;
+    conversionPending428.add(key);
+    try{
+      await window.PlatformCore.withRequestDeadline(signal=>api(`/api/v39/projects/${project}/deploy/jobs`,{method:'POST',signal,headers:{'Content-Type':'application/json'},body:JSON.stringify(pending.payload)}),{label:'原转换请求重试',mutation:true});
+      if(project!==pid())return;
+      clearPendingConversion428(project,aid,vid);
+      await window.openVersionConvert428(aid,vid);
+    }catch(error){if(project===pid())toast('原请求结果仍需核验：'+(error.message||error));}
+    finally{conversionPending428.delete(key)}
+  };
   window.submitConvert428=async function(aid,vid){
     const form=document.querySelector('.convert428-create'),project=pid(),radio=document.querySelector('input[name="conv428Target"]:checked'),target=radio?.value||'onnx',rid=document.getElementById('conv428Resource')?.value,button=window.event?.currentTarget||document.querySelector('.convert428-create [data-convert-submit]');
     const submissionKey=`${project}:${aid}:${vid}`;
-    if(conversionUnknown428.has(submissionKey)){toast('转换创建结果待确认，正在查询现有记录，本次不会再次提交。');return window.openVersionConvert428(aid,vid);}
+    if(conversionUnknown428.has(submissionKey)||pendingConversion428(project,aid,vid)){toast('存在待确认的原转换请求，先核验或按原请求安全重试。');return window.verifyPendingConversion428(aid,vid);}
     if(form?.dataset?.submitting||conversionPending428.has(submissionKey))return;
     if(state.conv428SourceReady===false)return toast('源版本尚未核验，请重试源版本读取');
     if(!rid||state.conv428ResourcesCurrent!==true)return toast('转换资源尚未完成实时核验，请点击刷新资源');
@@ -3640,12 +3674,16 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
         throw new Error('部署资源已下线或能力已改变，请刷新资源后重新选择');
       state.conv428Resources=verified.items||[];
       state.conv428ResourcesCurrent=true;
+      const request_id=newConversionRequestId428();
+      const payload={source_id:`version::${aid}::${vid}`,target,resource_id:rid,params,dataset_id:datasetId,calibration_split:calibrationSplit,calibration_count:calibrationCount,request_id};
+      savePendingConversion428(project,aid,vid,{request_id,payload,createdAt:Date.now()});
       posted=true;
-      await window.PlatformCore.withRequestDeadline(signal=>api(`/api/v39/projects/${project}/deploy/jobs`,{method:'POST',signal,headers:{'Content-Type':'application/json'},body:JSON.stringify({source_id:`version::${aid}::${vid}`,target,resource_id:rid,params,dataset_id:datasetId,calibration_split:calibrationSplit,calibration_count:calibrationCount})}),{label:'转换任务创建'});
+      await window.PlatformCore.withRequestDeadline(signal=>api(`/api/v39/projects/${project}/deploy/jobs`,{method:'POST',signal,headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}),{label:'转换任务创建',mutation:true});
       created=true;
+      clearPendingConversion428(project,aid,vid);
       localStorage.removeItem(cacheKey428('verdeploy',aid,vid));
       if(project!==pid()||document.querySelector('.convert428-create')!==form)return;
-      const history=await window.PlatformCore.withRequestDeadline(()=>deploymentHistory428(aid,vid,true),{label:'转换记录查询'});
+      const history=await window.PlatformCore.withRequestDeadline(()=>deploymentHistory428(aid,vid,true,{page:1,page_size:20},undefined,true),{label:'转换记录查询'});
       if(project!==pid()||document.querySelector('.convert428-create')!==form)return;
       closeModal();
       const r=rememberVersionConversion428(aid,vid,history);
@@ -3653,8 +3691,9 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
       scheduleVersionConversionPoll428(aid,vid,r);
       toast('转换任务已受理，可在当前版本持续查看进度')
     }catch(e){
-      const uncertain=posted&&!created&&!(Number(e.httpStatus)>=400&&Number(e.httpStatus)<500);
+      const uncertain=posted&&!created&&!(Number(e.httpStatus)>=400&&Number(e.httpStatus)<500&&Number(e.httpStatus)!==409);
       if(uncertain)conversionUnknown428.add(submissionKey);
+      else if(posted&&!created)clearPendingConversion428(project,aid,vid);
       if(project===pid()&&document.querySelector('.convert428-create')===form){if(button){button.disabled=created;button.textContent=created?'任务已创建':uncertain?'查询转换结果':'开始转换'}toast(created?'转换任务已创建，历史记录刷新失败：'+(e.message||e):uncertain?'转换创建结果待确认；请查询记录，不要重复创建。 '+(e.message||e):(e.message||e))}
     }finally{conversionPending428.delete(submissionKey);if(button?.isConnected)button.removeAttribute('aria-busy');if(form?.dataset&&!created)delete form.dataset.submitting}
   };

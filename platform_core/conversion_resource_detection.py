@@ -21,6 +21,11 @@ _OBSERVATIONS = {'status', 'targets', 'supported_chips', 'supported_precisions',
 
 def configuration_identity(resource):
     config = {k:v for k,v in resource.items() if k not in _OBSERVATIONS}
+    # A detector or another Web worker can persist newer observations without
+    # changing resource configuration. Never let an older process-local TTL
+    # snapshot override those durable facts (including a newly failed probe).
+    config['_observed_status'] = str(resource.get('status') or '')
+    config['_observed_at'] = str(resource.get('last_checked_at') or '')
     return hashlib.sha256(json.dumps(config, sort_keys=True, default=str).encode()).hexdigest()
 
 

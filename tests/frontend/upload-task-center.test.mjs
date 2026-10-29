@@ -5,6 +5,7 @@ import {readFileSync} from 'node:fs';
 import {
   clearCompletedUploadTasks,
   hasTerminalZipUploadTasks,
+  isUploadTaskRecordMissing,
   isUploadTaskActive,
   mergeUploadTask,
   normalizeDurableUploadTask,
@@ -125,7 +126,7 @@ test('clear ended import history removes every terminal state but preserves acti
   );
 });
 
-test('terminal ZIP history requires durable backend cleanup before local removal', () => {
+test('terminal ZIP history can be identified without deleting backend audit', () => {
   assert.equal(hasTerminalZipUploadTasks([
     {id:'zip:done', kind:'zip', status:'DONE'},
     {id:'storage:done', kind:'storage-import', status:'SUCCEEDED'},
@@ -142,8 +143,22 @@ test('task center labels terminal cleanup as clear ended, not clear completed', 
   const runtime = readFileSync(new URL('../../static/modules/upload-task-center.js', import.meta.url), 'utf8');
   assert.match(runtime, />清空已结束<\/button>/);
   assert.doesNotMatch(runtime, />清空已完成<\/button>/);
-  assert.match(runtime, /已清空 \$\{cleared\} 条已结束任务/);
+  assert.match(runtime, /已清空 \$\{removed\.length\} 条已结束任务/);
   assert.doesNotMatch(runtime, /已清空 \$\{cleared\} 条已完成任务/);
+  assert.doesNotMatch(runtime, /method:'DELETE'/);
+  assert.match(runtime, /HIDDEN_PREFIX/);
+});
+
+test('404 task stays UNKNOWN until list reconciliation, then can be dismissed locally', () => {
+  const row = {id:'zip:lost',kind:'zip',status:'UNKNOWN',progress:72,
+    verificationReason:'RECORD_MISSING',serverUrl:'/jobs/lost'};
+  assert.equal(isUploadTaskRecordMissing(row),true);
+  assert.match(renderUploadTaskCenterRow(row),/记录待核验/);
+  assert.match(renderUploadTaskCenterRow(row),/重新核验/);
+  const confirmed={...row,verificationReason:'RECORD_MISSING_CONFIRMED'};
+  assert.match(renderUploadTaskCenterRow(confirmed),/记录已失效/);
+  assert.match(renderUploadTaskCenterRow(confirmed),/移除展示记录/);
+  assert.doesNotMatch(renderUploadTaskCenterRow(confirmed),/utc-reopenable/);
 });
 
 test('task center yields durable polling while a focused runtime owns the task', () => {

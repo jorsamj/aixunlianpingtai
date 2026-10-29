@@ -15,11 +15,14 @@ from filelock import FileLock, Timeout
 
 from .base import StorageProvider
 from .errors import StorageError
+from ..performance_diagnostics import count as performance_count, stage as performance_stage
 
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _CACHE_FILE = re.compile(r"^([0-9a-f]{64})(\.[a-z0-9]{1,12}|\.bin)$")
 _STATUS_NAME = "status.json"
+_MAINTENANCE_ATTEMPT_NAME = ".maintenance-attempt"
+_MAINTENANCE_LOCK_NAME = ".maintenance.lock"
 MATERIAL_CACHE_DIR_ENV = "MC_MATERIAL_CACHE_DIR"
 MATERIAL_CACHE_MAX_BYTES_ENV = "MATERIAL_CACHE_MAX_BYTES"
 MATERIAL_CACHE_TTL_SECONDS_ENV = "MATERIAL_CACHE_TTL_SECONDS"
@@ -72,11 +75,13 @@ def _configured_non_negative_int(name: str, default: int, override: int | None) 
     return value
 
 
+@performance_stage('sha256')
 def file_sha256(path: str | Path) -> str:
     digest = hashlib.sha256()
     with Path(path).open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
+            performance_count('sha256_bytes',len(chunk))
     return digest.hexdigest()
 
 
@@ -171,6 +176,7 @@ class MaterialCache:
             # Access metadata must never turn a valid cache hit into a task failure.
             pass
 
+    @performance_stage('material_cache_inventory')
     def _candidate_files(self, *, inventory_errors: list[str] | None = None) -> list[_CacheCandidate]:
         errors = inventory_errors if inventory_errors is not None else []
         try:
@@ -252,6 +258,7 @@ class MaterialCache:
             except Exception:
                 pass
 
+    @performance_stage('material_cache_maintenance')
     def maintain(
         self,
         *,
@@ -405,9 +412,26 @@ class MaterialCache:
         now = time.monotonic()
         if interval > 0 and self._last_maintenance_monotonic and now - self._last_maintenance_monotonic < interval:
             return
-        self._last_maintenance_monotonic = now
         try:
-            self.maintain(protect_paths=(protect_path,))
+            self.root.mkdir(parents=True, exist_ok=True)
+            # StorageManager is request-scoped. An instance-only timestamp caused
+            # every thumbnail request to inventory the entire shared cache.
+            # Coordinate attempts across instances *and* worker processes.
+            with FileLock(str(self.root / _MAINTENANCE_LOCK_NAME), timeout=0):
+                attempt = self.root / _MAINTENANCE_ATTEMPT_NAME
+                if interval > 0:
+                    try:
+                        age = time.time() - attempt.stat().st_mtime
+                        if 0 <= age < interval:
+                            self._last_maintenance_monotonic = time.monotonic()
+                            return
+                    except FileNotFoundError:
+                        pass
+                self._last_maintenance_monotonic = time.monotonic()
+                # Stamp before scanning: a failed best-effort cleanup must not
+                # trigger another expensive scan for each incoming image.
+                attempt.touch()
+                self.maintain(protect_paths=(protect_path,))
         except Exception:
             # Cache cleanup is an optimization. It must never make source access fail.
             return
@@ -423,7 +447,8 @@ class MaterialCache:
         if path.resolve().parent != path.parent.resolve() or not path.resolve().is_relative_to(self.root):
             raise ValueError("thumbnail cache escaped root")
 
-    def thumbnail(self, source_sha256: str, source_factory, *, max_edge=384) -> Path:
+    def thumbnail(self, source_sha256: str, source_factory, *, max_edge=384,
+                  hold_verified_lock: bool = False) -> Path | tuple[Path, FileLock]:
         """A versioned derived pointer plus JPEG in the existing TTL/quota cache.
 
         The small pointer and actual content both use ordinary cache file/lock
@@ -448,12 +473,21 @@ class MaterialCache:
                     target = self.path_for(pointer["content_sha256"], ".jpg")
                     self._thumbnail_path_safe(target)
                     if target.parent.exists():
-                        with FileLock(str(target) + ".lock", timeout=300):
+                        target_lock = FileLock(str(target) + ".lock", timeout=300, thread_local=False)
+                        target_lock.acquire()
+                        keep_lock = False
+                        try:
                             if (self._valid(target, pointer["content_sha256"])
                                     and target.stat().st_size == pointer["size_bytes"]):
                                 self._touch(target)
                                 self._touch(index)
+                                if hold_verified_lock:
+                                    keep_lock = True
+                                    return target, target_lock
                                 return target
+                        finally:
+                            if not keep_lock:
+                                target_lock.release()
             except (OSError, ValueError, TypeError, KeyError, AttributeError):
                 pass  # Missing/corrupt pointer or payload is rebuildable.
             source = Path(source_factory())
@@ -480,7 +514,10 @@ class MaterialCache:
                 target = self.path_for(digest, ".jpg")
                 self._thumbnail_path_safe(target)
                 target.parent.mkdir(parents=True, exist_ok=True)
-                with FileLock(str(target) + ".lock", timeout=300):
+                target_lock = FileLock(str(target) + ".lock", timeout=300, thread_local=False)
+                target_lock.acquire()
+                keep_lock = False
+                try:
                     self._thumbnail_path_safe(target)
                     os.replace(temporary, target)
                     self._touch(target)
@@ -489,7 +526,13 @@ class MaterialCache:
                     pointer_temporary.write_text(json.dumps(pointer, sort_keys=True), encoding="utf-8")
                     os.replace(pointer_temporary, index)
                     self._touch(index)
+                    if hold_verified_lock:
+                        keep_lock = True
+                        return target, target_lock
                     return target
+                finally:
+                    if not keep_lock:
+                        target_lock.release()
             finally:
                 temporary.unlink(missing_ok=True)
                 pointer_temporary.unlink(missing_ok=True)

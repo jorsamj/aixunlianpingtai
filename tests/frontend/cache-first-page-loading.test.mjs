@@ -238,7 +238,7 @@ test('ordinary page navigation patches chrome state without rebuilding the sideb
 
 
 test('version conversion reuses cached history and dedupes focused background reads', () => {
-  const start = source.indexOf('async function deploymentHistory428(aid,vid,force=false,query={page:1,page_size:20},signal)');
+  const start = source.indexOf('async function deploymentHistory428(aid,vid,force=false,query={page:1,page_size:20},signal,serverForce=false)');
   const end = source.indexOf('\n  async function deployResources428(force=false)', start);
   assert.ok(start >= 0 && end > start);
   const history = source.slice(start, end);
@@ -247,7 +247,7 @@ test('version conversion reuses cached history and dedupes focused background re
   assert.match(history, /\/api\/v42\/projects\/\$\{project\}\/algorithms\/\$\{aid\}\/versions\/\$\{vid\}\/deployments\?\$\{params\}/);
   assert.match(history, /writeCache428\(k,r\)/);
   assert.match(history, /cacheKey428\('verdeploy',aid,vid,String\(new URLSearchParams\(query\)\)\)/);
-  assert.match(history, /params=new URLSearchParams\(\{\.\.\.query,force:String\(force\)\}\)/);
+  assert.match(history, /params=new URLSearchParams\(\{\.\.\.query,force:String\(serverForce\)\}\)/);
   assert.match(history, /if\(!signal&&conversionHistoryInflight428\.has\(inflightKey\)\)/);
   assert.match(history, /withRequestDeadline\(deadlineSignal=>api/);
   assert.match(history, /signal:deadlineSignal/);

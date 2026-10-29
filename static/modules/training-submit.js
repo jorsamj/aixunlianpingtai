@@ -924,7 +924,7 @@ export function installTrainingSubmitRuntime({
       }
       creationAccepted = true;
       return await response.json();
-      }, {label: '训练创建'});
+      }, {label: '训练创建', mutation:true});
       const createdTask = validateTrainingCreatedResponse(body, payload.task_id, {projectId: pid, algorithmId: asset.id});
       createdTaskIds.add(createdTask.task_id);
       clearPending(pid);

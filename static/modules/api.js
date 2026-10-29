@@ -27,7 +27,7 @@ export function fetchWithUploadProgress(url, options = {}, xhrFactory = () => ne
   });
 }
 
-export async function withRequestDeadline(operation, {timeoutMs = 30000, label = '请求', signal} = {}) {
+export async function withRequestDeadline(operation, {timeoutMs = 30000, label = '请求', signal, mutation = false} = {}) {
   const controller = new AbortController();
   let timer, onAbort;
   const cancelled = new Promise((_, reject) => {
@@ -38,7 +38,12 @@ export async function withRequestDeadline(operation, {timeoutMs = 30000, label =
     if (signal?.aborted) onAbort();
     else signal?.addEventListener('abort', onAbort, {once: true});
     timer = setTimeout(() => {
-      reject(Object.assign(new Error(`${label}超时；提交结果可能已被服务端受理，请先查询状态。`), {code: 'REQUEST_TIMEOUT'}));
+      const detail = mutation
+        ? '提交结果尚未确认；服务端可能已受理，请先核验状态，勿直接重复提交。'
+        : '读取未完成，请检查网络后重试。';
+      reject(Object.assign(new Error(`${label}超时；${detail}`), {
+        code:'REQUEST_TIMEOUT', outcome:mutation?'UNKNOWN':'READ_TIMEOUT',
+      }));
       controller.abort();
     }, timeoutMs);
   });

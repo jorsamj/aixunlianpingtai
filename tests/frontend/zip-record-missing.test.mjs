@@ -44,6 +44,7 @@ test('missing cached ZIP is verified once, retained UNKNOWN, backed off, then se
     assert.equal(queries,1);
     assert.equal(rows[0].status,'UNKNOWN');
     assert.equal(rows[0].progress,72.7);
+    assert.equal(rows[0].verificationReason,'RECORD_MISSING_CONFIRMED');
     assert.match(rows[0].detail,/服务器未找到/);
     for(let i=0;i<6;i++)await runtime.reconcile('poll');
     assert.equal(queries,1);

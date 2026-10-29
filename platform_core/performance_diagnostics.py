@@ -1,9 +1,10 @@
-"""Opt-in scalar diagnostics for two existing read APIs; no SQL/input logging."""
+"""Opt-in, bounded scalar timings for hot paths; never record input or SQL."""
 from collections import Counter
 from contextvars import ContextVar
 from functools import wraps
 import logging
 import os
+import random
 import re
 from time import perf_counter
 from uuid import uuid4
@@ -11,6 +12,26 @@ from uuid import uuid4
 
 _current = ContextVar('platform_performance_trace', default=None)
 _logger = logging.getLogger('platform.performance')
+
+_ENDPOINTS = (
+    (re.compile(r'/api/v53/bootstrap/(?:snapshot|status)'), 'bootstrap'),
+    (re.compile(r'/api/v12/projects/[^/]+/algorithms'), 'algorithm.list'),
+    (re.compile(r'/api/training_options'), 'training.options'),
+    (re.compile(r'/api/projects/[^/]+/jobs'), 'training.jobs'),
+    (re.compile(r'/api/projects/[^/]+/jobs/[^/]+'), 'training.status'),
+    (re.compile(r'/api/v62/projects/[^/]+/tasks/[^/]+'), 'training.durable_status'),
+    (re.compile(r'/api/v62/projects/[^/]+/training-materials(?:/(?:page|role-page|bulk-selection))?'), 'training.materials'),
+    (re.compile(r'/api/v61/projects/[^/]+/materials'), 'material.list'),
+    (re.compile(r'/api/v61/projects/[^/]+/materials/[^/]+/content/thumbnail'), 'material.thumbnail'),
+    (re.compile(r'/api/v42/projects/[^/]+/algorithms/[^/]+/versions/[^/]+/deployments'), 'conversion.history'),
+    (re.compile(r'/api/v39/deploy/resources'), 'conversion.resources'),
+    (re.compile(r'/api/v41/deploy/plugins'), 'conversion.plugins'),
+    (re.compile(r'/api/v19/projects/[^/]+/import/jobs(?:/[^/]+)?'), 'upload.jobs'),
+)
+
+
+def _endpoint(path):
+    return next((name for pattern, name in _ENDPOINTS if pattern.fullmatch(path)), None)
 
 
 def count(name, amount=1):
@@ -50,15 +71,23 @@ class PerformanceDiagnosticsMiddleware:
     async def __call__(self, scope, receive, send):
         if scope['type']!='http' or os.environ.get('MC_PERFORMANCE_DIAGNOSTICS')!='1':
             return await self.app(scope,receive,send)
-        path=scope.get('path','')
-        endpoint=('training.jobs' if re.fullmatch(r'/api/projects/[^/]+/jobs',path) else
-            'training.materials' if re.fullmatch(r'/api/v62/projects/[^/]+/training-materials(?:/(?:page|role-page|bulk-selection))?',path) else None)
+        endpoint=_endpoint(scope.get('path',''))
         if endpoint is None: return await self.app(scope,receive,send)
+        # 48 thumbs on a page must not become 48 verbose log entries.
+        if endpoint=='material.thumbnail' and random.randrange(32)!=0:
+            return await self.app(scope,receive,send)
         _logger.setLevel(logging.INFO)
         if not _logger.hasHandlers(): _logger.addHandler(logging.StreamHandler())
-        trace={'request_id':uuid4().hex,'endpoint':endpoint,'counts':Counter(),'stages_ms':Counter(),
+        trace={'request_id':uuid4().hex,'endpoint':endpoint,'method':scope.get('method',''),
+               'counts':Counter(),'stages_ms':Counter(), 'response_bytes':0,
                'sql_scope':'instrumented_repository_connections','sqlite_lock_wait_ms':None,
-               'external_process_ms':None}
+               'sql_cumulative_ms':None, 'external_process_ms':None}
+        for key, value in scope.get('headers',[]):
+            if key.lower()==b'x-client-operation-id':
+                candidate=value.decode('ascii','ignore')
+                if re.fullmatch(r'[A-Za-z0-9_-]{8,64}',candidate):
+                    trace['client_operation_id']=candidate
+                break
         token=_current.set(trace);began=perf_counter()
         async def observed_send(message):
             if message['type']=='http.response.start':
@@ -74,6 +103,8 @@ class PerformanceDiagnosticsMiddleware:
                 else: headers.append((b'server-timing',timing))
                 headers.append((b'x-request-id',trace['request_id'].encode('ascii')))
                 message={**message,'headers':headers}
+            elif message['type']=='http.response.body':
+                trace['response_bytes']+=len(message.get('body') or b'')
             await send(message)
         try:
             await self.app(scope,receive,observed_send)

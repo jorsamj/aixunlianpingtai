@@ -1123,7 +1123,15 @@ def _job_log_text(project_id: str, job_id: str, limit: int = 120000) -> str:
     if not f.exists():
         return ""
     try:
-        return f.read_text(encoding="utf-8", errors="ignore")[-limit:]
+        # A legacy training log can grow to GBs. Progress inference only needs
+        # its bounded tail; never read the entire file for a status/list GET.
+        max_chars = max(0, int(limit))
+        if not max_chars:
+            return ""
+        max_bytes = max_chars * 4 + 4
+        with f.open("rb") as stream:
+            stream.seek(max(0, f.stat().st_size - max_bytes))
+            return stream.read(max_bytes).decode("utf-8", errors="ignore")[-max_chars:]
     except Exception:
         return ""
 
@@ -3140,42 +3148,51 @@ def storage_lifecycle_summary_v62(project_id: str):
 
 
 @app.get("/api/v61/projects/{project_id}/materials/{image_id}/content/thumbnail")
-def material_thumbnail_v61(project_id: str, image_id: str, edge: int = Query(384, ge=16, le=1024)):
-    """Read-derived cache only. Hold the original cache lock through HTTP delivery."""
+def material_thumbnail_v61(project_id: str, image_id: str, request: Request, edge: int = Query(384, ge=16, le=1024)):
+    """Read-derived cache only. Keep the verified bytes locked through delivery."""
     from starlette.background import BackgroundTask
     _authorize_business_file_project(project_id)
-    for _attempt in range(2):
+    try:
+        manager = storage_manager(project_id)
+        # Validation happens exactly once under the payload lock inside cache.
+        # Passing that same lock to the response closes the former release/
+        # reacquire race without hashing the payload for a second time.
+        path, lock = manager.thumbnail(image_id, max_edge=edge, hold_verified_lock=True)
+        etag = f'"{path.stem}"'
+        cache_headers = {
+            'Cache-Control':'private, no-cache, must-revalidate',
+            'ETag':etag,
+            'Vary':'Cookie, Authorization',
+            'X-Content-Type-Options':'nosniff',
+        }
+        # Authorization occurs above even for 304; the browser must revalidate
+        # each reuse and can never obtain a shared/public thumbnail cache hit.
+        if etag in (part.strip() for part in request.headers.get('if-none-match','').split(',')):
+            lock.release()
+            return Response(status_code=304, headers=cache_headers)
         try:
-            manager = storage_manager(project_id)
-            path = manager.thumbnail(image_id, max_edge=edge)
-            lock = FileLock(str(path) + '.lock', timeout=5, thread_local=False)
-            lock.acquire()
-            try:
-                if not manager.cache._valid(path, path.stem):
-                    lock.release()
-                    continue  # Original cache maintenance may have won before acquire.
-                stream = path.open('rb')
-                size = path.stat().st_size
-            except BaseException:
-                lock.release()
-                raise
-            def close():
+            stream = path.open('rb')
+            size = path.stat().st_size
+        except BaseException:
+            lock.release()
+            raise
+        def close():
+            if not stream.closed:
                 stream.close()
                 lock.release()
-            def chunks():
-                try:
-                    while chunk := stream.read(64 * 1024):
-                        yield chunk
-                finally:
-                    close()
-            return StreamingResponse(chunks(), media_type='image/jpeg',
-                headers={'Content-Length':str(size), 'Cache-Control':'private, no-store', 'X-Content-Type-Options':'nosniff'},
-                background=BackgroundTask(close))
-        except StorageError as error:
-            _raise_file_storage_error(error, status_code=503)
-        except (OSError, ValueError) as error:
-            raise HTTPException(503, detail='缩略图暂不可用，可重试；原图和正式 GT 未修改') from error
-    raise HTTPException(503, detail='缩略图缓存正在维护，请重试')
+        def chunks():
+            try:
+                while chunk := stream.read(64 * 1024):
+                    yield chunk
+            finally:
+                close()
+        return StreamingResponse(chunks(), media_type='image/jpeg',
+            headers={**cache_headers,'Content-Length':str(size)},
+            background=BackgroundTask(close))
+    except StorageError as error:
+        _raise_file_storage_error(error, status_code=503)
+    except (OSError, ValueError) as error:
+        raise HTTPException(503, detail='缩略图暂不可用，可重试；原图和正式 GT 未修改') from error
 
 
 def normalize_label(name: str) -> str:
@@ -18952,6 +18969,7 @@ class DeployJobReq(BaseModel):
     dataset_id: str = "default"
     calibration_split: str = "train"
     calibration_count: int = 100
+    request_id: str = ""  # Optional client idempotency identity; legacy callers unchanged.
 
 
 from functools import lru_cache
@@ -19259,6 +19277,65 @@ def _sync_remote_deploy_job(project_id: str, job_id: str):
 
 @app.post("/api/v39/projects/{project_id}/deploy/jobs")
 def v39_create_deploy_job(project_id: str, payload: DeployJobReq):
+    if not payload.request_id:
+        return _v39_create_deploy_job_with_version_fence(project_id, payload)
+    job_id = _deploy_request_job_id(project_id, payload.request_id)
+    locks = DATA_DIR / "task_runtime" / "conversion_create_locks"
+    locks.mkdir(parents=True, exist_ok=True)
+    try:
+        # Only the same idempotency key is serialized. Other conversions do not
+        # contend for this lock; persistent jobs remain the single source of truth.
+        with FileLock(str(locks / f"{job_id}.lock"), timeout=30):
+            job_path = _deploy_job_dir(project_id, job_id)
+            if (job_path / "job.json").exists():
+                previous = read_json(job_path / "job.json", {})
+                if (previous.get("project_id") != project_id or
+                        previous.get("request_id") != payload.request_id or
+                        previous.get("request_identity") != _deploy_request_identity(payload)):
+                    raise HTTPException(status_code=409, detail="转换请求 ID 已绑定不同内容，不可重复提交")
+                return {"ok": True, "job": _read_deploy_job(project_id, job_id), "idempotent": True}
+            if job_path.exists():
+                # A crash may leave source/calibration files without a durable
+                # receipt. Never silently launch a second conversion over them.
+                raise HTTPException(status_code=409, detail="转换请求存在未确认的准备目录，请检查原任务后处理")
+            return _v39_create_deploy_job_with_version_fence(project_id, payload)
+    except Timeout as error:
+        raise PlatformError(
+            code="CONVERSION_CREATE_IN_PROGRESS", status_code=409,
+            message="相同转换请求正在创建，请按请求 ID 查询结果",
+            detail=payload.request_id, solution="请保留原请求 ID，不要换一个 ID 重复提交。",
+        ) from error
+
+
+def _deploy_request_job_id(project_id: str, request_id: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{12,80}", str(request_id or "")):
+        raise HTTPException(status_code=422, detail="转换请求 ID 格式不正确")
+    return hashlib.sha256(f"conversion\x00{project_id}\x00{request_id}".encode("utf-8")).hexdigest()[:24]
+
+
+def _deploy_request_identity(payload: DeployJobReq) -> str:
+    canonical = payload.model_dump(mode="json", exclude={"request_id"})
+    return hashlib.sha256(json.dumps(canonical, ensure_ascii=False, sort_keys=True,
+        separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+@app.get("/api/v39/projects/{project_id}/deploy/jobs/by-request/{request_id}")
+def v39_conversion_job_by_request(project_id: str, request_id: str):
+    get_project(project_id)
+    job_id = _deploy_request_job_id(project_id, request_id)
+    path = _deploy_job_dir(project_id, job_id)
+    if (path / "job.json").exists():
+        job = read_json(path / "job.json", {})
+        if job.get("project_id") == project_id and job.get("request_id") == request_id:
+            return {"ok": True, "found": True, "pending": False,
+                    "job": _read_deploy_job(project_id, job_id)}
+        raise HTTPException(status_code=409, detail="转换请求 ID 状态冲突")
+    # A submitted HTTP request may still be preparing input files before its
+    # first job receipt. No-result alone is never permission to use a new ID.
+    return {"ok": True, "found": False, "pending": path.exists()}
+
+
+def _v39_create_deploy_job_with_version_fence(project_id: str, payload: DeployJobReq):
     source = _resolve_deploy_source(project_id, payload.source_id)
     algorithm_id = str(source.get("algorithm_id") or "").strip()
     version_id = str(source.get("version_id") or "").strip()
@@ -19398,7 +19475,9 @@ def _v39_create_deploy_job_under_version_fence(
             ) from error
         params["calibration_count"] = int(portable_calibration["item_count"])
         params["calibration_snapshot"] = str(portable_calibration["snapshot_id"])
-    job_id=uuid.uuid4().hex[:12];jd=_deploy_job_dir(project_id,job_id);srcd=jd/"source";srcd.mkdir(parents=True,exist_ok=True)
+    job_id=(_deploy_request_job_id(project_id, payload.request_id)
+            if payload.request_id else uuid.uuid4().hex[:12])
+    jd=_deploy_job_dir(project_id,job_id);srcd=jd/"source";srcd.mkdir(parents=True,exist_ok=True)
     src=Path(str(source.get("path")));local_src=srcd/src.name;shutil.copy2(src,local_src)
     params.setdefault("config_path",source.get("config_path") or "")
     params.setdefault("model_name",src.stem)
@@ -19445,7 +19524,7 @@ def _v39_create_deploy_job_under_version_fence(
         for field in ("label_schema", "label_codes", "yolo", "training_lineage", "snapshot_id", "snapshot"):
             if field in version:
                 source_trace[field] = json.loads(json.dumps(version[field], ensure_ascii=False))
-    job={"id":job_id,"project_id":project_id,"source_id":payload.source_id,"source_name":src.name,"source_path":str(local_src),"source_meta":source,"source_trace":source_trace,"target":payload.target,"resource_id":payload.resource_id,"resource":resource_for_job,"params":params,"requested_params":dict(payload.params or {}),"dataset_id":payload.dataset_id,"calibration_split":payload.calibration_split,"calibration_dir":str(cal_dir) if cal_dir else "","status":"queued","stage":"等待启动","progress":0,"message":"等待启动","created_at":now_iso(),"updated_at":now_iso(),"outputs":[]}
+    job={"id":job_id,"project_id":project_id,"source_id":payload.source_id,"source_name":src.name,"source_path":str(local_src),"source_meta":source,"source_trace":source_trace,"target":payload.target,"resource_id":payload.resource_id,"resource":resource_for_job,"params":params,"requested_params":dict(payload.params or {}),"dataset_id":payload.dataset_id,"calibration_split":payload.calibration_split,"calibration_dir":str(cal_dir) if cal_dir else "","status":"queued","stage":"等待启动","progress":0,"message":"等待启动","created_at":now_iso(),"updated_at":now_iso(),"outputs":[],"request_id":str(payload.request_id or ""),"request_identity":_deploy_request_identity(payload) if payload.request_id else ""}
     portable_conversion = None
     conversion_target = str(payload.target or "").strip().lower()
     should_stage_portable = (
@@ -20341,7 +20420,15 @@ def _detect_local_deploy_resource(item: Dict[str, Any]) -> Dict[str, Any]:
 
 @app.get('/api/v41/deploy/plugins')
 def v41_deploy_plugins():
-    saved=_load_saved_deploy_resources(); builtin=_builtin_deploy_resources(); resources=builtin+saved
+    from platform_core.conversion_resource_detection import observe
+    saved=_load_saved_deploy_resources()
+    # Do not even schedule the builtin SDK scanner on a catalog GET. The
+    # ordinary resource endpoint may refresh its existing background snapshot;
+    # the plugin catalog itself only projects already-known evidence.
+    builtin=_DEPLOY_BUILTIN_RESOURCE_CACHE.snapshot()["items"] or _builtin_deploy_resource_summary()
+    # GET is a read-only catalog. SDK import, remote health probing and saving
+    # observations belong to the explicit /deploy/resources/{id}/detect POST.
+    resources=[_deploy_resource_public(observe(r)) for r in builtin+saved]
     rows=[]
     from platform_core.compute_platform_catalog import conversion_templates
     catalog=_conversion_catalog_repository(DATA_DIR).conversion_catalog()
@@ -20352,18 +20439,18 @@ def v41_deploy_plugins():
         matches=[r for r in resources if str(r.get('kind'))==p['id'] or (p['id']=='onnx' and str(r.get('kind')) in {'ultralytics','paddle'})]
         ready=[]
         for r in matches:
-            try:
-                # Reuse the authenticated detect owner and persist fresh facts so
-                # resource lists and conversion dialogs see the same result.
-                chk=(v39_detect_deploy_resource(str(r['id'])) if r in saved else
-                     _detect_local_deploy_resource(r))
-            except Exception:chk={**r,'status':'missing','targets':[]}
+            chk=r
+            if chk.get('detection',{}).get('state')!='available':
+                continue
             if p['id']=='rockchip':
                 if chk.get('status')=='ready' and 'rockchip' in (chk.get('targets') or []) and chk.get('supported_chips'):
                     ready.append(chk)
             elif chk.get('status')=='ready' and (p['id'] in (chk.get('targets') or []) or (p['id']=='onnx' and 'onnx' in (chk.get('targets') or []))):
                 ready.append(chk)
-        p['status']='ready' if ready else 'missing'; p['resources']=ready; p['configured_count']=len(matches)
+        p['status']='ready' if ready else ('unchecked' if matches and any(
+            r.get('detection',{}).get('state') in {'checking','not_checked','expired'} for r in matches
+        ) else 'missing')
+        p['resources']=ready; p['configured_count']=len(matches)
         rows.append(p)
     return {'ok':True,'items':rows,'version':APP_VERSION,'host_os':'windows' if os.name=='nt' else 'linux'}
 

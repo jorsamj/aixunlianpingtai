@@ -56,7 +56,7 @@ test('canonical version conversion reuses cached history and resource truth with
   assert.match(source,/window\.loadVersionConversionHistory428=deploymentHistory428/);
   assert.match(source,/window\.loadVersionConversionResources428=deployResources428/);
   assert.match(source,/version-conversion:\$\{aid\}:\$\{vid\}/);
-  assert.match(source,/deploymentHistory428\(aid,vid,true\)/);
+  assert.match(source,/deploymentHistory428\(aid,vid,true,conversionHistoryQuery428\(view\),view\.controller\.signal\)/);
 });
 
 test('deployment plugin page restores only a sanitized persisted card snapshot',()=> {
@@ -101,7 +101,7 @@ test('canonical version conversion manual refresh reloads only the selected vers
   const end=source.indexOf('window.refreshActiveVersionConvert428=',start);
   assert.ok(start>=0&&end>start);
   const owner=source.slice(start,end);
-  assert.match(owner,/deploymentHistory428\(aid,vid,true,conversionHistoryQuery428\(view\),view\.controller\.signal\)/);
+  assert.match(owner,/deploymentHistory428\(aid,vid,true,conversionHistoryQuery428\(view\),view\.controller\.signal,!quiet\)/);
   assert.match(owner,/view\.controller\?\.abort\(\)/);
   assert.match(owner,/epoch!==view\.epoch\|\|project!==pid\(\)\|\|versionConversionRoot428\(aid,vid\)!==root/);
   assert.match(owner,/scheduleVersionConversionPoll428\(aid,vid,r\)/);
@@ -118,7 +118,7 @@ test('canonical version conversion creation refreshes only the selected version 
   assert.match(create,/if\(project!==pid\(\)\|\|document\.querySelector\('\.convert428-create'\)!==form\)return/);
   assert.ok(create.indexOf('project=pid()')<create.indexOf('await deployResources428(true)'));
   assert.doesNotMatch(create,/\/api\/v39\/projects\/\$\{pid\(\)\}/);
-  assert.match(create,/deploymentHistory428\(aid,vid,true\)/);
+  assert.match(create,/deploymentHistory428\(aid,vid,true,\{page:1,page_size:20\},undefined,true\)/);
   assert.match(create,/scheduleVersionConversionPoll428\(aid,vid,r\)/);
   assert.doesNotMatch(create,/renderDeployCenter|loadDeployData\(true\)|deploy\/artifacts|source-models/);
 });

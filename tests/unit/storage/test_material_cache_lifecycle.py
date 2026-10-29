@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 
 from filelock import FileLock
 
@@ -140,3 +141,35 @@ def test_material_cache_maintenance_publishes_compact_observability_snapshot(tmp
     assert status["max_bytes"] == 1024
     assert status["ttl_seconds"] == 3600
     assert status["generated_at"]
+
+
+def test_request_scoped_caches_share_one_maintenance_attempt(tmp_path, monkeypatch):
+    root = tmp_path / "shared-cache"
+    calls = []
+    original = MaterialCache.maintain
+
+    def counted(self, **kwargs):
+        calls.append(self)
+        return original(self, **kwargs)
+
+    monkeypatch.setattr(MaterialCache, "maintain", counted)
+
+    def one_request(_):
+        cache = MaterialCache(root, maintenance_interval_seconds=300)
+        cache._maybe_maintain(protect_path=cache.path_for("a" * 64))
+
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        list(pool.map(one_request, range(48)))
+
+    assert len(calls) == 1
+    assert (root / "status.json").is_file()
+
+
+def test_zero_interval_keeps_explicit_per_call_maintenance(tmp_path, monkeypatch):
+    cache = MaterialCache(tmp_path / "cache", maintenance_interval_seconds=0)
+    calls = []
+    monkeypatch.setattr(cache, "maintain", lambda **kw: calls.append(kw))
+    target = cache.path_for("a" * 64)
+    cache._maybe_maintain(protect_path=target)
+    cache._maybe_maintain(protect_path=target)
+    assert len(calls) == 2

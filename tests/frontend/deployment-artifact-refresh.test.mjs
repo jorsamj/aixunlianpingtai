@@ -18,7 +18,7 @@ test('canonical version history cache is single-flight and authoritative refresh
   assert.match(history,/\/api\/v42\/projects\/\$\{project\}\/algorithms\/\$\{aid\}\/versions\/\$\{vid\}\/deployments\?\$\{params\}/);
   assert.match(history,/conversionHistoryInflight428\.delete\(inflightKey\)/);
   assert.match(history,/if\(!force\)\{const c=readCache428\(k\);if\(c\)return c\}/);
-  assert.match(history,/params=new URLSearchParams\(\{\.\.\.query,force:String\(force\)\}\)/);
+  assert.match(history,/params=new URLSearchParams\(\{\.\.\.query,force:String\(serverForce\)\}\)/);
   assert.match(history,/if\(!signal&&conversionHistoryInflight428\.has\(inflightKey\)\)/);
   assert.match(history,/conversionHistoryInflight428\.get\(inflightKey\)===task/);
   assert.match(history,/signal:deadlineSignal/);

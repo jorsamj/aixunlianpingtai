@@ -106,7 +106,7 @@ def _sophon_scan():
     return scan
 
 
-@pytest.mark.parametrize("entry", ["scan", "plugins", "detect"])
+@pytest.mark.parametrize("entry", ["scan", "detect"])
 def test_sophon_authenticated_detection_updates_resource_list_and_public_projection(sophon_resources, entry):
     import json
     rows, state = sophon_resources
@@ -119,12 +119,6 @@ def test_sophon_authenticated_detection_updates_resource_list_and_public_project
         local = [c for c in result["components"] if c["key"].startswith("tpu_")]
         assert len(local) == 3 and all(c["status"] == "missing" and c["name"].startswith("本机") for c in local)
         assert all(not c["path"] for c in local)
-    elif entry == "plugins":
-        result = api.v41_deploy_plugins()
-        plugin = next(p for p in result["items"] if p["id"] == "sophon")
-        assert plugin["status"] == "ready" and len(plugin["resources"]) == 1
-        assert plugin["resources"][0]["version"] == "v1.30.2-20260831"
-        assert plugin["resources"][0]["has_api_key"] is True
     else:
         result = api.v39_detect_deploy_resource("sophon-remote")
         assert result["status"] == "ready" and result["version"] == "v1.30.2-20260831"
@@ -134,6 +128,20 @@ def test_sophon_authenticated_detection_updates_resource_list_and_public_project
     assert rows[0]["secret_ref"] == "isolated-ref"
     assert "isolated-key" not in json.dumps(result) and "isolated-ref" not in json.dumps(result)
     assert "isolated-key" not in json.dumps(rows)
+
+
+def test_sophon_plugin_catalog_does_not_trigger_remote_health_probe(sophon_resources):
+    rows, state = sophon_resources
+    result = api.v41_deploy_plugins()
+    plugin = next(p for p in result["items"] if p["id"] == "sophon")
+    assert plugin["status"] in {"missing", "unchecked"}
+    assert not plugin["resources"]
+    assert not state["calls"]
+    assert rows[0]["status"] == "missing"
+    api.v39_detect_deploy_resource("sophon-remote")
+    plugin = next(p for p in api.v41_deploy_plugins()["items"] if p["id"] == "sophon")
+    assert plugin["status"] == "ready" and len(plugin["resources"]) == 1
+    assert plugin["resources"][0]["has_api_key"] is True
 
 
 @pytest.mark.parametrize("failure", ["auth", "sdk"])
@@ -150,6 +158,9 @@ def test_sophon_scan_failure_and_recovery_propagates_to_plugins_and_conversion_l
     assert ("401" if failure == "auth" else "model_deploy failed") in listed["message"]
     assert next(p for p in api.v41_deploy_plugins()["items"] if p["id"] == "sophon")["status"] == "missing"
     state["mode"] = "ready"
+    # Browsing the catalog never repairs a failed remote resource by probing.
+    assert next(p for p in api.v41_deploy_plugins()["items"] if p["id"] == "sophon")["status"] == "missing"
+    api.v39_detect_deploy_resource("sophon-remote")
     assert next(p for p in api.v41_deploy_plugins()["items"] if p["id"] == "sophon")["status"] == "ready"
     assert api.v39_list_deploy_resources()["items"][0]["status"] == "ready"
     assert next(c for c in _sophon_scan()["capabilities"] if c["name"].startswith("算能"))["status"] == "ready"

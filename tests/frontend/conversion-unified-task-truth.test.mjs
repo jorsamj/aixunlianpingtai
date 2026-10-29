@@ -123,5 +123,7 @@ test('history loader sends bounded server filters and separates query cache/infl
  ctx.window={PlatformCore:{withRequestDeadline:fn=>fn(new AbortController().signal)}};
  vm.runInNewContext(source.slice(start,end)+'\nglobalThis.load=deploymentHistory428;',ctx);
  await ctx.load('a','v',true,{page:2,page_size:20,target:'sophon',chip:'bm1688',precision:'fp16',csc:'bt709_full',created_from:'2026-10-01'});
- const query=new URL(calls[0],'http://fixture').searchParams;assert.equal(query.get('page_size'),'20');assert.equal(query.get('page'),'2');assert.equal(query.get('force'),'true');assert.equal(query.get('target'),'sophon');assert.equal(query.get('csc'),'bt709_full');assert.equal(query.get('created_from'),'2026-10-01');
+ const query=new URL(calls[0],'http://fixture').searchParams;assert.equal(query.get('page_size'),'20');assert.equal(query.get('page'),'2');assert.equal(query.get('force'),'false');assert.equal(query.get('target'),'sophon');assert.equal(query.get('csc'),'bt709_full');assert.equal(query.get('created_from'),'2026-10-01');
+ await ctx.load('a','v',true,{page:1,page_size:20},undefined,true);
+ assert.equal(new URL(calls[1],'http://fixture').searchParams.get('force'),'true');
 });

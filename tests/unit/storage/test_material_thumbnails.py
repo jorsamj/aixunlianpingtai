@@ -103,3 +103,28 @@ def test_existing_cache_maintenance_respects_thumbnail_response_lock(tmp_path):
         assert result["skipped_locked"] >= 1
     cache.maintain()
     assert not thumbnail.exists()
+
+
+def test_http_lease_uses_one_hash_and_blocks_eviction(tmp_path, monkeypatch):
+    from platform_core.storage import cache as cache_module
+    original = source(tmp_path)
+    cache = MaterialCache(tmp_path / "cache", max_bytes=1, recent_access_grace_seconds=0)
+    digest = file_sha256(original)
+    thumbnail = cache.thumbnail(digest, lambda: original, max_edge=120)
+    calls = []
+    original_hash = cache_module.file_sha256
+
+    def counted(path):
+        calls.append(str(path))
+        return original_hash(path)
+
+    monkeypatch.setattr(cache_module, "file_sha256", counted)
+    path, lease = cache.thumbnail(digest, lambda: (_ for _ in ()).throw(AssertionError("cache miss")),
+                                  max_edge=120, hold_verified_lock=True)
+    try:
+        assert path == thumbnail
+        assert calls == [str(thumbnail)]
+        assert cache.maintain()["skipped_locked"] >= 1
+        assert thumbnail.exists()
+    finally:
+        lease.release()
