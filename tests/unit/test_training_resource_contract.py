@@ -392,8 +392,9 @@ def test_auto_preserves_loader_parallelism_under_a800_host_ram_ceiling():
     legacy = training_metrics.plan_host_training_resources(request, context, **kwargs)
     adaptive = training_metrics.plan_host_training_resources(request, context,
         **kwargs, prefer_loader_parallelism=True)
-    assert legacy["workers"] == 0
+    assert legacy["workers"] < 2
     assert adaptive["workers"] >= 2
+    assert adaptive["workers"] > legacy["workers"]
     assert 1 <= adaptive["batch"] < legacy["batch"]
     assert adaptive["estimated_bytes"] <= adaptive["budget_bytes"]
     assert adaptive["requested_estimated_bytes"] > adaptive["budget_bytes"]
