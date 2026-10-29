@@ -1,3 +1,7 @@
+## 2026-10-29｜训练资源 GET 有界化与空选材 P0（42.24.413 / LOCAL GREEN，CI 与生产待核）
+
+接续真实分支 `03b53089`／42.24.412。P0 确认证据：`training_options` GET 串行旧服务器 HTTP（上限 20×4s）、Paddle 递归目录、项目历史模型扫描；迭代 `selection-summary` 对空 `image_ids` 调用训练提交合同。42.24.413 定向收敛：旧服务器状态读已保存且未过期的显式检测快照（未检测/过期 fail-closed），原 `/test` 与新增按保存 ID 的检测刷新并锁保护；Paddle 显式启用生成算法/权重快照；GET 不读历史 `job.json`、不递归 scan、不访问旧服务器网络；零选材摘要本地空态和后端空态一致。保留旧权威版本、GT、训练提交非空准入、Worker 与 ZIP Owner。Python 137/137、Node 1404/1404，生产 26.5 秒分段和 role-page 大规模实测未取得；准确新 SHA CI 待核，未部署/迁移/删除。唯一追踪 `docs/performance/2026-10-29-p0-followup.md`，禁止将代码风险直接认作已计时的生产根因。
+
 ## 2026-10-29｜P0 畅联云保存凭证的鉴权请求单飞（42.24.410 / LOCAL GREEN，CI 待核）
 
 接续 `1d027803`／42.24.409。外部算法平台 HTTP 路由虽复用服务实例，却每次构造新 `ChangLianClient`，导致并行/重复业务 GET 各自触发 test-sign + Token 两个远程鉴权请求。本批只为**同一服务进程已保存的配置**添加按 base URL／凭证／鉴权端点 SHA256 指纹隔离、到期失效的内存 Token 单飞；客户端 HTTP Session、业务 API、正式数据完全不共享。配置保存、登出、401 撤销使缓存失效；401 后不自动重发有副作用的 POST，草稿测试连接不参与缓存。新增先 RED 后 GREEN 的 8 路并行、一致性、撤销、防重发与草稿隔离回归，Python 相关 137/137、Node 1396/1396 通过。`LIKE '%keyword%'` 强制窄 ID CTE 在 4 万行合成数据中无稳定收益，因此未修改 SQL。真实生产网络 P95、其他 Worker 进程 Token 复用与 GT 大库搜索仍 NOT VERIFIED。准确新 SHA CI 待核，未部署生产、不改生产数据、不合并 main、不强推。详见 `docs/performance/2026-10-29-p0-followup.md`。

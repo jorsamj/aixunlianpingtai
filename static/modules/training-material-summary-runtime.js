@@ -496,7 +496,7 @@ export function installTrainingMaterialSummaryRuntime({
       const title = card.querySelector('span');
       const value = card.querySelector('b');
       if (title?.textContent?.trim() === '可选素材' && value) {
-        const totalText = summary ? String(Math.max(0, Number(summary.selectable_total || 0))) : '…';
+        const totalText = summary?.selectable_total == null ? '—' : String(Math.max(0, Number(summary.selectable_total || 0)));
         setTextIfChanged(value, totalText);
         if (value.dataset.serverTruth !== 'training-material-summary') {
           value.dataset.serverTruth = 'training-material-summary';
@@ -550,6 +550,25 @@ export function installTrainingMaterialSummaryRuntime({
       summary = null;
       queueDecorate();
       return null;
+    }
+
+    if (!normalizedIds.length) {
+      // No selected GT exists yet. Keep a real zero-selection preview without
+      // starting a global material count or the iteration submission contract.
+      ++requestSequence;
+      activeController?.abort?.();
+      activeController = null;
+      pendingSignature = null;
+      currentSignature = signature;
+      lastError = '';
+      summary = {requested_count:0,matched_count:0,selectable_count:0,
+        eligible_count:0,pending_annotation_count:0,selectable_total:null,
+        eligible_total:null,pending_annotation_total:null,box_count:0,size_bytes:0,
+        label_codes:[],positive_label_codes:[],effective_label_codes:[],
+        sample_role_counts:null,label_counts:{},repository_revision:null};
+      queueDecorate();
+      window.TrainingLabelRuntime?.queueRefresh?.();
+      return summary;
     }
 
     const sequence = ++requestSequence;

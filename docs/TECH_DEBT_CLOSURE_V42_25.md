@@ -1,3 +1,5 @@
+> **2026-10-29 P0 性能接续（42.24.413，本地绿/CI 待验）**：原 `training_options` 每次旧服务器串行检测及 Paddle 目录扫描已改为显式检测快照读取；`selection-summary` 空选材预览不再执行训练提交校验。技术债清理主线仍暂停，没有其他全局 owner 重构。证据、测试及现场开放项以 [P0 续批唯一台账](performance/2026-10-29-p0-followup.md) 为准；未部署。
+
 ## 2026-10-29｜训练回收与异常证据定向修复（LOCAL VERIFIED / CI及生产未验证）
 
 [唯一审计报告](docs/TRAINING_WORKSPACE_EVIDENCE_AUDIT_2026_10_29.md)：远端40327743/VERSION399隔离基线；原Lifecycle补异常outcomes/框证据归档、显式ID与SHA保护、自动阻塞/归档失败回执。定向71通过/1系统symlink权限跳过，真实原API清理前后相同字节验证通过。用户已授权提交到开发分支；本次提交CI待核验，未部署；保留其他工作树WIP。Checkpoint恢复、未知历史所有权继续保护，远端最终回收/生产启动与接口性能NOT VERIFIED，不能称全量最终回收已验收。无前端/DB/版本更改。

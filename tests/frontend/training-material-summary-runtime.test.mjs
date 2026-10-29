@@ -47,6 +47,22 @@ test('selection signature is stable and duplicate independent', () => {
   );
 });
 
+test('empty iteration preview is local and does not start submission-only role validation', async()=>{
+  const previous={window:globalThis.window,document:globalThis.document};
+  const draft={algorithmId:'algorithm',baseVersionId:'v1',materialIds:[],newLabelCodes:[]};
+  let fetches=0;
+  globalThis.window={};globalThis.document={body:{},getElementById:()=>null,querySelector:()=>null,querySelectorAll:()=>[]};
+  const runtime=installTrainingMaterialSummaryRuntime({getState:()=>({trainingDraft:draft}),projectId:()=> 'p',
+    trainingDraftRuntime:{materialIds:()=>draft.materialIds,current:()=>draft},fetchImpl:async()=>{fetches++;throw new Error('must not query empty selection')}});
+  try{
+    const result=await runtime.refresh([]);
+    assert.equal(result.requested_count,0);
+    assert.deepEqual(result.positive_label_codes,[]);
+    assert.equal(runtime.summaryReadyFor([]),true);
+    assert.equal(fetches,0);
+  }finally{runtime.destroy();Object.assign(globalThis,previous)}
+});
+
 test('all issues selection is distinct from current filtered selection across pages',()=>{
   const selected=updateTrainingGovernanceSelection(null,{mode:'issues',key:'p/rev',total:3,allTotal:38});
   assert.equal(selected.all_issues,true);assert.equal(selected.all_filtered,false);assert.equal(selected.count,38);

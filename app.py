@@ -7277,18 +7277,82 @@ def _remote_capabilities(server: Dict[str, Any]) -> Dict[str, Any]:
         return {"ok": False, "error": str(e)}
 
 
+_LEGACY_HEALTH_TTL_SECONDS = 600
+_LEGACY_ALGORITHM_FIELDS = frozenset({"key", "name", "framework", "base_model", "engine", "task",
+                                      "default_epochs", "default_imgsz", "default_batch", "recommended"})
+_LEGACY_MODEL_FIELDS = frozenset({"label", "value", "framework", "source", "name", "model_status"})
+
+
+def _legacy_health_identity(server: Dict[str, Any]) -> str:
+    """Bind a saved probe to the current endpoint and secret without exposing either."""
+    identity = json.dumps([
+        str(server.get("id") or ""), str(server.get("base_url") or "").rstrip("/"),
+        str(server.get("api_key") or ""),
+    ], ensure_ascii=False)
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
+def _cached_legacy_health(server: Dict[str, Any]) -> Dict[str, Any]:
+    snapshot = server.get("health_snapshot")
+    if not isinstance(snapshot, dict) or snapshot.get("identity") != _legacy_health_identity(server):
+        return {"ok": False, "status": "unknown", "error": "尚未检测，请到训练资源手动检测"}
+    try:
+        age = time.time() - float(snapshot.get("checked_at_epoch") or 0)
+    except (ValueError, TypeError, OverflowError):
+        age = float("inf")
+    if age < 0 or age > _LEGACY_HEALTH_TTL_SECONDS:
+        return {"ok": False, "status": "unknown", "error": "检测结果已过期，请手动重新检测"}
+    if not snapshot.get("ok"):
+        return {"ok": False, "status": "offline", "error": "上次健康检测失败，请手动重新检测"}
+    return {"ok": True, "status": "ready", "framework": snapshot.get("framework") or "ultralytics",
+            "algorithms": snapshot.get("algorithms") or [], "base_models": snapshot.get("base_models") or [],
+            "checked_at": snapshot.get("checked_at") or ""}
+
+
+def _record_legacy_health(server_id: str, checked_server: Dict[str, Any], caps: Dict[str, Any]) -> None:
+    """Publish an explicit check only if the saved server is still unchanged."""
+    with FileLock(str(SERVERS_FILE) + ".lock", timeout=30):
+        servers = read_json(SERVERS_FILE, [])
+        for server in servers:
+            if str(server.get("id") or "") != str(server_id):
+                continue
+            if _legacy_health_identity(server) != _legacy_health_identity(checked_server):
+                return
+            server["health_snapshot"] = {
+                "identity": _legacy_health_identity(server),
+                "checked_at_epoch": time.time(), "checked_at": now_iso(),
+                "ok": bool(caps.get("ok")),
+                "framework": str(caps.get("framework") or "ultralytics") if caps.get("ok") else "",
+                "algorithms": [{key: value for key, value in row.items() if key in _LEGACY_ALGORITHM_FIELDS}
+                               for row in (caps.get("algorithms") or [])[:500] if isinstance(row, dict)]
+                if caps.get("ok") and isinstance(caps.get("algorithms"), list) else [],
+                "base_models": [{key: value for key, value in row.items() if key in _LEGACY_MODEL_FIELDS}
+                                for row in (caps.get("base_models") or [])[:200] if isinstance(row, dict)]
+                if caps.get("ok") and isinstance(caps.get("base_models"), list) else [],
+            }
+            atomic_write_json(SERVERS_FILE, servers)
+            return
+
+
 @app.get("/api/training_options")
+@performance_stage("training_options")
 def training_options(project_id: Optional[str] = None):
     """Offer real preloaded mother weights and preserve verified version iteration."""
     options: List[Dict[str, Any]] = []
     has_iteration_base = False
     if project_id:
         try:
-            has_iteration_base = any(
-                is_trainable_version(version, "ultralytics")
-                for algorithm in list_algorithms_internal(project_id)
-                for version in (algorithm.get("versions") or [])
-            )
+            # Only the current effective version qualifies. This is a local
+            # algorithm index read; no per-version reports or job.json scans.
+            for algorithm in list_algorithm_assets(algorithms_file(project_id)):
+                try:
+                    current_id = resolve_current_version_id(algorithm, framework="ultralytics")
+                except PlatformError:
+                    continue
+                current = next((v for v in (algorithm.get("versions") or []) if str(v.get("id") or "") == current_id), None)
+                if current and is_trainable_version(current, "ultralytics"):
+                    has_iteration_base = True
+                    break
         except Exception:
             has_iteration_base = False
     # 本机 Ultralytics
@@ -7303,22 +7367,9 @@ def training_options(project_id: Optional[str] = None):
         # Shared MODEL directory is already searched by canonical ModelResolver.
         # Never advertise a missing official name as a training-ready weight.
         models.extend(_prepared_mother_model_rows())
-        if not models:
-            resolution = resolve_ultralytics_model("yolo11n.pt", project_id)
-            if resolution.found:
-                models.append({
-                    "label": "yolo11n.pt（已就绪）",
-                    "value": str(resolution.path),
-                    "framework":"ultralytics", "source":"official",
-                    **resolution.as_dict(),
-                })
-        if project_id:
-            try:
-                for m in list_models_internal(project_id):
-                    if m.get("type") == "pt":
-                        models.append({"label": f"项目模型：{m.get('name')}", "value": m.get("path"), "framework":"ultralytics", "source":"project", "model_status":"FOUND", "downloadable":False, "environment_status":str(ultra.get("status") or "AVAILABLE").upper()})
-            except Exception:
-                pass
+        # Iteration weights belong to the verified version resolver, not the
+        # first-training mother-model catalog. Do not scan all historical job
+        # JSONs (list_models_internal/ModelResolver) on this read-only GET.
         # 训练算法从当前训练资源读取。Ultralytics 本质是同一个 detect 训练器，yolo11n/s/m 是基础权重/模型规模。
         available = " ".join([str(x.get("label", "")) + " " + str(x.get("value", "")) for x in models]).lower()
         algs = []
@@ -7341,16 +7392,20 @@ def training_options(project_id: Optional[str] = None):
             "algorithms": algs,
             "base_models": models,
         })
-    # 本机飞桨：v21 起不再写死 PP-YOLOE，而是扫描 PaddleDetection/configs 下真实可训练配置。
+    # Explicit Paddle activation owns config/weight discovery; ordinary GET
+    # uses that saved evidence, never recursively walks configs or weights.
     paddle = get_active_paddle_env()
     if paddle and (paddle.get("python_path") or paddle.get("paddledet_dir") or paddle.get("paddlex_dir")):
         py_ok = bool(paddle.get("python_path") and Path(paddle.get("python_path", "")).exists())
         pd_dir = paddle.get("paddledet_dir", "")
-        scan = scan_paddledet_algorithms(pd_dir) if pd_dir else {"ok": False, "items": [], "error": "未配置 PaddleDetection 目录"}
-        algs = scan.get("items", []) or [a for a in TRAINING_CATALOG["algorithms"] if a.get("framework") == "paddle"]
+        scan = paddle.get("algorithm_scan") if isinstance(paddle.get("algorithm_scan"), dict) else {}
+        if not isinstance(scan.get("items"), list):
+            scan = {"ok": False, "items": [], "error": "尚无训练配置扫描快照，请重新检测并启用飞桨环境"}
+        algs = scan.get("items", [])
         weights = [{"label": "使用配置默认预训练权重 / 自动下载", "value": "", "framework":"paddle", "source":"default"}]
-        weights.extend(scan_paddle_weights(pd_dir))
-        status = "ready" if py_ok and scan.get("ok") and algs else ("warning" if py_ok else "offline")
+        weights.extend(paddle.get("weight_scan") if isinstance(paddle.get("weight_scan"), list) else [])
+        config_ok = bool(pd_dir and (Path(pd_dir) / "configs").is_dir())
+        status = "ready" if py_ok and config_ok and scan.get("ok") and algs else ("warning" if py_ok else "offline")
         options.append({
             "id":"local_paddle",
             "name": paddle.get("name") or "本机飞桨",
@@ -7423,18 +7478,20 @@ def training_options(project_id: Optional[str] = None):
             },
         })
 
-    # 旧远程训练服务器入口继续保留作兼容；正式执行仍由中央调度器拥有节点分配权。
+    # Legacy servers remain visible, but only an explicit, unexpired health
+    # check may make them selectable. This GET must perform zero remote I/O.
     for s in read_json(SERVERS_FILE, []):
-        caps = _remote_capabilities(s)
+        caps = _cached_legacy_health(s)
         options.append({
             "id": f"server:{s.get('id')}",
             "server_id": s.get("id"),
             "name": s.get("name") or s.get("base_url"),
             "type":"server",
             "framework": caps.get("framework", "ultralytics") if caps.get("ok") else "unknown",
-            "status":"ready" if caps.get("ok") else "offline",
+            "status": caps.get("status", "unknown"),
             "base_url": s.get("base_url"),
             "error": caps.get("error"),
+            "last_checked_at": caps.get("checked_at", ""),
             "algorithms": caps.get("algorithms", []),
             "base_models": caps.get("base_models", []),
         })
@@ -7482,10 +7539,11 @@ def select_paddle_env(payload: PaddleEnvReq):
     if env["paddledet_dir"] and not Path(env["paddledet_dir"]).exists():
         # 允许先保存但标记不可训练，避免用户只是先配置地址
         env["warning"] = "PaddleDetection 目录不存在，飞桨训练会失败；请先安装或修正目录。"
-    else:
-        scan = scan_paddledet_algorithms(env.get("paddledet_dir", ""))
-        env["algorithm_scan"] = {"ok": scan.get("ok"), "total": scan.get("total", 0), "families": scan.get("families", {}), "error": scan.get("error", "")}
-    write_json(PADDLE_ENV_FILE, env)
+    elif env["paddledet_dir"]:
+        scan = scan_paddledet_algorithms(env["paddledet_dir"])
+        env["algorithm_scan"] = scan
+        env["weight_scan"] = scan_paddle_weights(env["paddledet_dir"])
+    atomic_write_json(PADDLE_ENV_FILE, env)
     return {"ok": True, "active": env}
 
 
@@ -7611,18 +7669,20 @@ def save_train_server(payload: TrainServerReq):
     base_url = payload.base_url.strip().rstrip("/")
     if not name or not base_url:
         raise HTTPException(status_code=400, detail="服务器名称和地址不能为空")
-    servers = read_json(SERVERS_FILE, [])
     server_id = uuid.uuid4().hex[:10]
     item = {"id": server_id, "name": name, "base_url": base_url, "api_key": payload.api_key or "", "created_at": now_iso()}
-    servers.insert(0, item)
-    write_json(SERVERS_FILE, servers[:20])
+    with FileLock(str(SERVERS_FILE) + ".lock", timeout=30):
+        servers = read_json(SERVERS_FILE, [])
+        servers.insert(0, item)
+        atomic_write_json(SERVERS_FILE, servers[:20])
     return item
 
 
 @app.delete("/api/train_servers/{server_id}")
 def delete_train_server(server_id: str):
-    servers = [s for s in read_json(SERVERS_FILE, []) if s.get("id") != server_id]
-    write_json(SERVERS_FILE, servers)
+    with FileLock(str(SERVERS_FILE) + ".lock", timeout=30):
+        servers = [s for s in read_json(SERVERS_FILE, []) if s.get("id") != server_id]
+        atomic_write_json(SERVERS_FILE, servers)
     return {"ok": True}
 
 
@@ -7633,9 +7693,31 @@ def test_train_server(payload: TrainServerReq):
         headers = {"X-API-Key": payload.api_key or ""}
         r = requests.get(f"{base_url}/api/remote/health", headers=headers, timeout=8)
         r.raise_for_status()
-        return {"ok": True, "response": r.json()}
+        data = r.json()
+        # A draft connection test must never overwrite a different saved
+        # identity. Saved entries may reuse the measured capabilities on GET.
+        for saved in read_json(SERVERS_FILE, []):
+            if (str(saved.get("base_url") or "").rstrip("/") == base_url
+                    and str(saved.get("api_key") or "") == str(payload.api_key or "")
+                    and str(saved.get("name") or "") == str(payload.name or "").strip()):
+                caps = {"ok": True, **data} if isinstance(data, dict) else {"ok": False}
+                _record_legacy_health(str(saved.get("id") or ""), saved, caps)
+        return {"ok": True, "response": data}
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"连接失败：{e}")
+
+
+@app.post("/api/train_servers/{server_id}/test")
+def test_saved_train_server(server_id: str):
+    """Explicitly probe a configured legacy target; no probe on list/read."""
+    server = next((row for row in read_json(SERVERS_FILE, []) if row.get("id") == server_id), None)
+    if server is None:
+        raise HTTPException(status_code=404, detail="训练服务器不存在")
+    capabilities = _remote_capabilities(server)
+    _record_legacy_health(server_id, server, capabilities)
+    if not capabilities.get("ok"):
+        raise HTTPException(status_code=503, detail="训练服务器检测失败，请检查网络或服务配置")
+    return {"ok": True, "last_checked_at": now_iso()}
 
 
 @app.get("/api/v62/training-devices")

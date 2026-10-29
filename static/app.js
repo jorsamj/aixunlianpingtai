@@ -338,10 +338,24 @@ window.viewResourceAlgorithms=(targetId)=>{
   const t=(state.targets||[]).find(x=>x.id===targetId); if(!t)return;
   modal(`${t.name} · 可训练算法`, `<div class="hint-card"><div class="item-title">识别结果：${(t.algorithms||[]).length} 个算法配置</div><div class="item-sub">${esc(familySummary(t)||'系统会扫描 PaddleDetection/configs 目录下的 .yml/.yaml 配置，并自动生成训练命令模板。')}</div></div>${renderAlgoListForModal(t.algorithms||[])}`, true);
 };
+window.testSavedTrainServer=async(serverId,button)=>{
+  if(!serverId||button?.disabled)return;
+  const action=window.NavigationStability?.action?.(state.page);
+  if(button){button.disabled=true;button.textContent='检测中…';}
+  try{
+    await api(`/api/train_servers/${encodeURIComponent(serverId)}/test`,{method:'POST'});
+    const options=await api(`/api/training_options?project_id=${encodeURIComponent(pid())}`);
+    if((action&&!action.isCurrent())||state.page!=='训练资源')return;
+    state.targets=options.targets||[];
+    window.patchTrainingResourceCardsV3?.();
+    toast('检测完成，已更新服务器状态');
+  }catch(error){if(!action||action.isCurrent())toast(error?.message||'检测失败，请重试');}
+  finally{if(button?.isConnected){button.disabled=false;button.textContent='检测';}}
+};
 function trainingResourceCardsHtmlV3(){
   return (state.targets||[]).map(t=>`<div class="res-card ${t.status==='ready'?'ready':'warn'}">
     <div class="res-main"><div class="res-icon">${t.framework==='paddle'?'桨':t.type==='server'?'服':'U'}</div><div><div class="item-title">${esc(t.name)}</div><div class="item-sub">${t.framework==='paddle'?'飞桨 PaddleDetection':t.framework==='ultralytics'?'Ultralytics':'未知'} · ${t.type==='server'?'训练服务器':'本机环境'} ${t.version?'· '+esc(t.version):''}</div>${t.framework==='paddle'?`<div class="item-sub">${esc(familySummary(t)||t.scan?.error||'未扫描到 configs，请确认 PaddleDetection 目录')}</div>`:''}</div></div>
-    <div class="res-meta"><span class="pill ${t.status==='ready'?'ok':'warn'}">${t.status==='ready'?'可用':t.status==='offline'?'不可用':'待确认'}</span><span class="pill blue">${(t.algorithms||[]).length} 个算法</span><span class="pill">${(t.base_models||[]).length} 个权重</span>${t.framework==='paddle'?`<button class="btn mini" onclick="viewResourceAlgorithms('${esc(t.id)}')">查看算法</button>`:''}</div>
+    <div class="res-meta"><span class="pill ${t.status==='ready'?'ok':'warn'}">${t.status==='ready'?'可用':t.status==='offline'?'不可用':'待确认'}</span><span class="pill blue">${(t.algorithms||[]).length} 个算法</span><span class="pill">${(t.base_models||[]).length} 个权重</span>${t.id?.startsWith('server:')&&!t.scheduler_owned?`<button class="btn mini" onclick='testSavedTrainServer(${esc(JSON.stringify(String(t.server_id||'')))},this)'>检测</button>`:''}${t.framework==='paddle'?`<button class="btn mini" onclick="viewResourceAlgorithms('${esc(t.id)}')">查看算法</button>`:''}</div>
   </div>`).join('');
 }
 window.patchTrainingResourceCardsV3=function(){

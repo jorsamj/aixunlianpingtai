@@ -50,8 +50,8 @@ test('entry bundles use cache-bust markers independently from formal release tru
   assert.match(index, /\/static\/main\.mjs\?v=\d+(?:\.\d+)*/);
   assert.match(index, /\/static\/styles\.css\?v=\d+(?:\.\d+)*/);
   assert.equal(index.includes('/static/styles.css?v=42.25.437'), true);
-  assert.equal(index.includes('/static/app.js?v=42.25.449'), true);
-  assert.equal(index.includes('/static/main.mjs?v=42.25.444'), true);
+  assert.equal(index.includes('/static/app.js?v=42.25.450'), true);
+  assert.equal(index.includes('/static/main.mjs?v=42.25.445'), true);
   assert.equal(index.includes('/static/modules/storage-cache-runtime.js?v=20261024-layout'), true);
   assert.match(main, /\.\/modules\/model-artifact-runtime\.js\?v=\d+/);
   assert.match(main, /\.\/modules\/training-task-runtime\.js\?v=\d+/);

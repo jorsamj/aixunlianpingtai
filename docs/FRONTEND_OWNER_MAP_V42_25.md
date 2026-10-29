@@ -1,3 +1,5 @@
+> **2026-10-29 P0 / 42.24.413**：原 `training-create-hydration`、`TrainingMaterialSummaryRuntime` 与资源 `renderResources` 不换 owner；零选材摘要不发请求，训练资源旧服务器卡片只在手动“检测”时 POST 并按同一 `training_options` 回填。服务端旧服务器/Paddle 快照与训练提交准入分离。详见 [唯一 P0 台账](performance/2026-10-29-p0-followup.md)；精确 CI、现场 P50/P95 未验证。
+
 ## 2026-10-29｜训练回收与异常证据定向修复（LOCAL VERIFIED / CI及生产未验证）
 
 [唯一审计报告](docs/TRAINING_WORKSPACE_EVIDENCE_AUDIT_2026_10_29.md)：远端40327743/VERSION399隔离基线；原Lifecycle补异常outcomes/框证据归档、显式ID与SHA保护、自动阻塞/归档失败回执。定向71通过/1系统symlink权限跳过，真实原API清理前后相同字节验证通过。用户已授权提交到开发分支；本次提交CI待核验，未部署；保留其他工作树WIP。Checkpoint恢复、未知历史所有权继续保护，远端最终回收/生产启动与接口性能NOT VERIFIED，不能称全量最终回收已验收。无前端/DB/版本更改。

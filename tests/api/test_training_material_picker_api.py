@@ -87,6 +87,22 @@ def test_new_label_evidence_does_not_accept_unavailable_source_or_invalid_formal
     assert response.json()["positive_label_codes"] == []
 
 
+def test_iteration_selection_summary_accepts_empty_preview_without_submission_validation(tmp_path):
+    client, _repo = _client(tmp_path)
+    # Invoke the registered FastAPI endpoint directly as well: this contract
+    # remains deterministic on test hosts where TestClient's loop can stall.
+    route = next(route for route in client.app.routes
+                 if route.path.endswith("/training-materials/selection-summary"))
+    summary = route.endpoint("p1", {
+        "algorithm_asset_id": "algorithm-a", "base_version_id": "version-v1",
+        "image_ids": [], "train_labels": [],
+    })
+    assert summary["requested_count"] == 0
+    assert summary["matched_count"] == 0
+    assert summary["eligible_count"] == 0
+    assert summary["positive_label_codes"] == []
+
+
 def test_selection_positive_evidence_rejects_concurrent_material_revision(tmp_path, monkeypatch):
     _, repository = _client(tmp_path)
     annotations = AnnotationRepository(repository.project_path)

@@ -1280,7 +1280,10 @@ def training_material_picker_router(
             summary = _selection_summary(repository, annotations, image_ids)
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
-        if payload.get("algorithm_asset_id") and (payload.get("train_labels") or payload.get("base_version_id")):
+        # Previewing an empty selection is not a training submission. In
+        # particular, an iteration's base_version_id must not invoke the
+        # submission-only nonempty train_image_ids contract before picking.
+        if image_ids and payload.get("algorithm_asset_id") and (payload.get("train_labels") or payload.get("base_version_id")):
             try:
                 contract = task_contract(project_id, payload, repository)
                 roles = _role_material_page(repository, annotations, contract, image_ids=image_ids, limit=1)
