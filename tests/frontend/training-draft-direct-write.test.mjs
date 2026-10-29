@@ -86,10 +86,12 @@ test('app.js visible training entrypoint owns canonical reset before rendering t
 
 test('final classic picker split and settings actions own their canonical writes directly', () => {
   const app = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
-  const confirmAt = app.lastIndexOf('window.confirmTrainMaterialPickerV3=function(){');
+  const picker = readFileSync(new URL('../../static/modules/training-material-picker-runtime.js', import.meta.url), 'utf8');
   const splitAt = app.lastIndexOf('window.setTrainSplitModeV3=mode=>{');
   const saveAt = app.lastIndexOf('window.saveTrainSettings428=function saveTrainingSettingsCanonical428(){');
-  assert.ok(confirmAt >= 0 && app.slice(confirmAt, confirmAt + 1400).includes('TrainingDraftRuntime.update(patch)'));
+  assert.equal(app.includes('window.confirmTrainMaterialPickerV3=function(){'), false);
+  assert.match(picker, /window\.confirmTrainMaterialPickerV3 = function confirmPicker\(\)/);
+  assert.match(picker, /trainingDraftRuntime\.update\(patch\)/);
   assert.ok(splitAt >= 0 && app.slice(splitAt, splitAt + 800).includes('TrainingDraftRuntime.update({splitMode'));
   assert.ok(saveAt >= 0 && app.slice(saveAt, saveAt + 1800).includes('TrainingDraftRuntime?.update?.({config:c})'));
 });

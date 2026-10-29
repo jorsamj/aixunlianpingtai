@@ -148,6 +148,35 @@ def test_picker_target_issue_is_explained_without_relaxing_negative_review(tmp_p
         assert row["annotation_issue_type"] == "material_unavailable"
 
 
+def test_iteration_picker_first_page_does_not_build_all_candidate_role_index(tmp_path, monkeypatch):
+    import platform_core.training_label_tasks as labels
+    monkeypatch.setattr(labels, "resolve_training_label_contract", lambda *args, **kwargs: {
+        "effective_label_codes": ["smoke", "person"]})
+    _, repository = _client(tmp_path)
+    monkeypatch.setattr(picker_module, "_cached_role_index",
+        lambda *args, **kwargs: pytest.fail("first page scanned all candidate GT"))
+    app = FastAPI()
+    app.include_router(training_material_picker_router(
+        lambda project_id: {"id": project_id}, repository.project_path.parents[1],
+        algorithm_provider=lambda *args: {"id": "algorithm"}))
+    with TestClient(app) as client:
+        response = client.post("/api/v62/projects/p1/training-materials/role-page", json={
+            "algorithm_asset_id": "algorithm", "history_policy": "include_history",
+            "defer_role_counts": True, "page": 1, "page_size": 20,
+            "sort_order": "newest",
+        })
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["total"] == 260
+    assert len(result["items"]) == 20
+    assert result["sample_role_counts"] is None
+    assert result["role_counts_complete"] is False
+    assert result["effective_label_codes"] == ["smoke", "person"]
+    assert all(row["sample_role"] in {
+        "positive", "confirmed_negative", "pending_negative", "pending_review"
+    } for row in result["items"])
+
+
 def test_negative_pool_filter_parity_and_role_cache_revision(tmp_path, monkeypatch):
     from platform_core.negative_pool import NegativePool
     import platform_core.training_label_tasks as labels

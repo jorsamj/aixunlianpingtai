@@ -112,7 +112,7 @@ _HOST_MEMORY_FRACTIONS = {
 
 def plan_host_training_resources(
     request, context, *, profile, batch, workers, cache, snapshot, concurrency=1,
-    activation_precision_factor=None,
+    activation_precision_factor=None, prefer_loader_parallelism=False,
 ):
     """Jointly bound Batch/DataLoader memory without hard-coded 32/2 values."""
     available = max(0, int(snapshot.get("effective_available_bytes") or 0))
@@ -154,6 +154,23 @@ def plan_host_training_resources(
     selected_batch = max(1, int(batch))
     selected_workers = max(0, int(workers))
     estimated, batch_workspace, per_worker = estimate(selected_batch, selected_workers)
+    requested_estimated = estimated
+    if prefer_loader_parallelism and selected_workers > 0 and estimated > budget:
+        # A VRAM-maximized batch can starve the input pipeline: the old host
+        # planner discarded all workers before considering a smaller batch.
+        # Preserve a modest, CPU-dependent loader lane when it fits the same
+        # *unchanged* RAM ceiling. This is AUTO only; manual remains exact.
+        target_workers = min(selected_workers, max(1, math.ceil(math.sqrt(selected_workers))))
+        candidate_batch = selected_batch
+        candidate_estimate, _, _ = estimate(candidate_batch, target_workers)
+        while candidate_batch > 1 and candidate_estimate > budget:
+            candidate_batch -= 1
+            candidate_estimate, _, _ = estimate(candidate_batch, target_workers)
+        if candidate_estimate <= budget:
+            selected_batch, selected_workers = candidate_batch, target_workers
+            while selected_workers < workers and estimate(selected_batch, selected_workers + 1)[0] <= budget:
+                selected_workers += 1
+            estimated, batch_workspace, per_worker = estimate(selected_batch, selected_workers)
     while selected_workers > 0 and estimated > budget:
         selected_workers -= 1
         estimated, batch_workspace, per_worker = estimate(selected_batch, selected_workers)
@@ -169,6 +186,7 @@ def plan_host_training_resources(
         "workers": selected_workers,
         "budget_bytes": budget,
         "estimated_bytes": estimated,
+        "requested_estimated_bytes": requested_estimated,
         "remaining_required_bytes": max(0, estimated - trainer_base),
         "trainer_base_bytes": trainer_base,
         "batch_workspace_bytes": batch_workspace,
@@ -481,6 +499,7 @@ def resolve_resources(request, context, model, torch):
             snapshot=host_snapshot,
             concurrency=concurrency,
             activation_precision_factor=activation_precision_factor,
+            prefer_loader_parallelism=True,
         )
         if host_plan["batch"] != batch:
             adjustments.append(
@@ -523,7 +542,12 @@ def resolve_resources(request, context, model, torch):
         )
         if host_plan["batch"] != batch or host_plan["workers"] != workers:
             raise ValueError(
-                "RESOURCE_MANUAL_INVALID: requested batch/workers exceed current host memory budget"
+                "RESOURCE_MANUAL_INVALID: host RAM budget exceeded; "
+                f"requested batch={batch}, workers={workers}, "
+                f"estimated={host_plan['requested_estimated_bytes']} bytes, "
+                f"budget={host_plan['budget_bytes']} bytes, "
+                f"suggested batch={host_plan['batch']}, workers={host_plan['workers']}; "
+                f"source={host_snapshot['memory_source']}"
             )
     else:
         if candidate_batch != batch:

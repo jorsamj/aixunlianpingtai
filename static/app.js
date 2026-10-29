@@ -7056,35 +7056,12 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     window.TrainingDraftRuntime?.update?.({validationPercent:validation,experimentPercent:experiment});window.refreshTrainingCreateUi?.();
   };
   window.refreshTrainingMaterialSelectionUiV3=renderSplit;
-  function pickerRows(){const p=state.trainMaterialPickerV3;if(!p)return[];const blocked=splitState().mode==='independent_test_set'?splitState()[otherRole(p.role)]:new Set();return(trainingApi()?.filterTrainingMaterials(state.images||[],{query:p.query,labelCodes:[...p.labels]})||[]).filter(row=>!blocked.has(imageId(row)))}
-  function renderPicker(){
-    const p=state.trainMaterialPickerV3,grid=document.getElementById('trV3Grid');if(!p||!grid)return;const rows=pickerRows(),pages=Math.max(1,Math.ceil(rows.length/p.pageSize));p.page=Math.min(Math.max(1,p.page),pages);const start=(p.page-1)*p.pageSize,current=rows.slice(start,start+p.pageSize);
-    grid.innerHTML=current.map(row=>{const id=imageId(row),on=p.selected.has(id);return `<label class="train-v3-card ${on?'on':''}"><input type="checkbox" ${on?'checked':''} onchange="toggleTrainMaterialV3('${id}',this.checked,this)"><img src="${row.url}" loading="lazy" decoding="async"><b title="${esc(row.filename||'')}">${esc(row.filename||'')}</b><span>${esc((row.labels||[]).map(labelText).join('、')||'无标签')}</span></label>`}).join('')||'<div class="empty">没有符合筛选条件的可训练图片</div>';
-    const count=document.getElementById('trV3PickerCount');if(count)count.textContent=`筛选结果 ${rows.length} 张 · 已选 ${p.selected.size} 张`;
-    const pager=document.getElementById('trV3Pager');if(pager)pager.innerHTML=`<button class="btn mini" ${p.page<=1?'disabled':''} onclick="trainMaterialPageV3(-1)">上一页</button><span>${p.page} / ${pages}</span><button class="btn mini" ${p.page>=pages?'disabled':''} onclick="trainMaterialPageV3(1)">下一页</button>`;
-  }
-  window.openTrainMaterialPickerV3=async function(role){
-    // The legacy V3 selector still pages locally. Load its pool only when opened,
-    // including when training was launched from the algorithm list.
-    const fetchPool=window.__materialPaging61?.originalFetch||window.fetch.bind(window);
-    const response=await fetchPool(`/api/projects/${pid()}/images`);
-    if(!response.ok)return toast('训练素材读取失败，请重试');
-    state.images=await response.json();
-    state.trainMaterialPickerV3={role,selected:new Set(),labels:new Set(),query:'',page:1,pageSize:80};
-    modal(role==='train'?'选择本次训练素材':'选择独立试验素材',`<div class="train-v3-picker"><header><div><b>${role==='train'?'训练候选素材':'独立试验素材'}</b><span>只有明确勾选的图片会进入本次任务</span></div><strong id="trV3PickerCount"></strong></header><div class="train-v3-filter"><input id="trV3Q" class="input" placeholder="搜索图片名称" oninput="trainMaterialSearchV3(this.value)"><div id="trV3Chips" class="data426-chips"><button class="data426-chip clear on" data-label="" onclick="clearTrainMaterialLabelsV3()">全部标签</button>${(state.labels||[]).map(row=>`<button class="data426-chip" data-label="${esc(row.code)}" onclick="toggleTrainMaterialLabelV3('${esc(row.code)}')">${esc(row.display_name||row.code)}</button>`).join('')}</div></div><div class="picker412-actions train-v3-batch"><button class="btn mini" onclick="trainMaterialSelectV3('select-filtered')">选择当前筛选结果</button><button class="btn mini" onclick="trainMaterialSelectV3('invert-filtered')">反选当前筛选结果</button><button class="btn mini" onclick="trainMaterialSelectV3('select-all')">全选全部可用素材</button><button class="btn mini" onclick="trainMaterialSelectV3('clear-all')">全部不选</button></div><div id="trV3Grid" class="train-v3-grid"></div><div id="trV3Pager" class="data426-pager"></div><div class="row end"><button class="btn" onclick="closeModal()">取消</button><button class="btn primary" onclick="confirmTrainMaterialPickerV3()">确认选择</button></div></div>`,true);setTimeout(renderPicker,20)
-  };
-  window.trainMaterialSearchV3=value=>{const p=state.trainMaterialPickerV3;if(!p)return;p.query=String(value||'');p.page=1;renderPicker()};
-  window.toggleTrainMaterialLabelV3=function(code){const p=state.trainMaterialPickerV3;if(!p)return;p.labels.has(code)?p.labels.delete(code):p.labels.add(code);p.page=1;document.querySelectorAll('#trV3Chips .data426-chip').forEach(button=>button.classList.toggle('on',button.dataset.label?p.labels.has(button.dataset.label):!p.labels.size));renderPicker()};
-  window.clearTrainMaterialLabelsV3=()=>{const p=state.trainMaterialPickerV3;if(!p)return;p.labels.clear();p.page=1;document.querySelectorAll('#trV3Chips .data426-chip').forEach(button=>button.classList.toggle('on',!button.dataset.label));renderPicker()};
-  window.toggleTrainMaterialV3=(id,on,checkbox)=>{const p=state.trainMaterialPickerV3;if(!p)return;on?p.selected.add(String(id)):p.selected.delete(String(id));checkbox?.closest('.train-v3-card')?.classList.toggle('on',!!on);const count=document.getElementById('trV3PickerCount');if(count)count.textContent=`筛选结果 ${pickerRows().length} 张 · 已选 ${p.selected.size} 张`};
-  window.trainMaterialSelectV3=function(action){const p=state.trainMaterialPickerV3;if(!p)return;const filtered=pickerRows().map(imageId),eligible=eligibleFor(p.role).map(imageId);p.selected=new Set(trainingApi().applyMaterialSelection([...p.selected],filtered,eligible,action));renderPicker()};
-  window.trainMaterialPageV3=delta=>{const p=state.trainMaterialPickerV3;if(!p)return;p.page=Math.max(1,p.page+Number(delta||0));renderPicker()};
-  window.confirmTrainMaterialPickerV3=function(){
-    const p=state.trainMaterialPickerV3;if(!p)return;
-    if(!window.TrainingDraftRuntime?.update)return toast('训练草稿模块尚未加载，请刷新后重试');
-    const current=splitState(),selected=[...p.selected].map(String),selectedSet=new Set(selected);
-    const patch=p.role==='test'?{materialIds:[...current.train].filter(id=>!selectedSet.has(String(id))),testMaterialIds:selected}:{materialIds:selected,testMaterialIds:[...current.test].filter(id=>!selectedSet.has(String(id)))};
-    window.TrainingDraftRuntime.update(patch);closeModal();setTimeout(renderSplit,20)
+  // Canonical selector is installed by main.mjs; never fall back to the
+  // legacy full /images pool before opening a modal.
+  window.openTrainMaterialPickerV3=function(role){
+    const runtime=window.TrainingMaterialPickerRuntime;
+    if(runtime?.open)return runtime.open(role);
+    return toast('素材选择器尚未就绪，请稍后重试');
   };
   window.setTrainSplitModeV3=mode=>{
     if(!window.TrainingDraftRuntime?.update)return toast('训练草稿模块尚未加载，请刷新后重试');

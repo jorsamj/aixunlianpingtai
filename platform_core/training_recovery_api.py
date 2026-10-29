@@ -165,10 +165,32 @@ def _primary_failure(task, failure: Mapping[str, Any]) -> dict[str, Any]:
         "RESOURCE_MANUAL_INVALID": "手动资源配置无法满足当前运行预算。请降低 Batch / Workers，或改用系统推荐配置。",
         "GPU_MEMORY_INSUFFICIENT": "当前 GPU 资源不足以安全启动训练，请调整配置或等待可用资源。",
     }
+    primary_message = messages.get(str(code or ""), raw)
+    if code == "RESOURCE_MANUAL_INVALID" and "host RAM budget exceeded" in raw:
+        memory = re.search(
+            r"estimated=(\d+) bytes, budget=(\d+) bytes, "
+            r"suggested batch=(\d+), workers=(\d+)", raw,
+        )
+        if memory:
+            estimated, budget, batch, workers = (int(part) for part in memory.groups())
+            primary_message = (
+                f"执行节点内存预算不足：当前配置估算 {estimated / 1024**3:.1f} GiB，"
+                f"允许预算 {budget / 1024**3:.1f} GiB；"
+                f"可尝试 Batch {batch}、Workers {workers}，或使用自动资源配置。"
+            )
+    elif "Insufficient disk space for training bundle" in raw:
+        disk = re.search(r"free=(\d+) bytes, required=(\d+) bytes", raw)
+        if disk:
+            free, required = (int(part) for part in disk.groups())
+            primary_message = (
+                f"训练素材准备磁盘空间不足：剩余 {free / 1024**3:.1f} GiB，"
+                f"本次准备预计至少需要 {required / 1024**3:.1f} GiB；"
+                "请释放可安全回收的工作空间或减少任务数据量。"
+            )
     return {
         "primary_error_code": code,
         "primary_stage": stage,
-        "primary_message": messages.get(str(code or ""), raw),
+        "primary_message": primary_message,
         "secondary_diagnostics": diagnostics,
     }
 

@@ -735,7 +735,8 @@ def _cached_role_index(material_path, annotation_path, material_revision, annota
 
 @stage("role_page")
 def _role_material_page(repository, annotations, contract, *, image_ids=None,
-                        query="", labels=(), sample_role="", page=1, limit=60, sort_order="oldest", filters=None, include_payload=True):
+                        query="", labels=(), sample_role="", page=1, limit=60, sort_order="oldest", filters=None, include_payload=True,
+                        defer_role_counts=False):
     if sample_role not in {"", "positive", "confirmed_negative", "pending_negative", "pending_review"}:
         raise ValueError("invalid sample_role")
     if not 1 <= int(limit) <= MAX_SELECTION_SUMMARY_IDS or int(page) < 1:
@@ -745,6 +746,41 @@ def _role_material_page(repository, annotations, contract, *, image_ids=None,
     selected = {k:v for k,v in _pool_filters(repository, filters).items() if k in {"storage_source_ids","created_from","created_to","annotation_state","usage_image_ids","usage_excluded_image_ids","image_ids","negative_pool_image_ids","negative_pool_revision"}}
     selected.update(query=str(query or "").strip(), labels=sorted(set(labels)))
     if image_ids is not None: selected["image_ids"] = sorted(set(image_ids))
+    # Default picker navigation needs the visible page, not every candidate's
+    # decoded GT. Keep the historical exact role-count/filter contract for
+    # callers that explicitly request it (including role-filtered pages).
+    if defer_role_counts and not sample_role:
+        page_data = _gt_material_filter_page(repository, annotations,
+            limit=limit, page=int(page), query=query, labels=labels,
+            sort_order=sort_order, filters=selected, include_payload=include_payload)
+        rows = page_data["items"]
+        truth = annotations.get_many([row["id"] for row in rows]) if include_payload else {}
+        from .training_label_tasks import training_material_role, task_negative_confirmable
+        visible = []
+        for row in rows:
+            if not include_payload:
+                visible.append({"id":row})
+                continue
+            annotation = truth.get(row["id"], {})
+            candidate = {**row, "annotation_state":annotation.get("annotation_state", "unannotated"),
+                "boxes":annotation.get("boxes") or [], "annotation_scope":annotation.get("annotation_scope") or [],
+                "annotation_version":int(annotation.get("version") or 0),
+                "annotation_hash":str(annotation.get("content_digest") or "")}
+            role = training_material_role(candidate, contract)["role"]
+            if role == "pending_review" and task_negative_confirmable(candidate, contract):
+                role = "pending_negative"
+            visible.append({**row, "sample_role":role})
+        revisions = (page_data["material_revision"], page_data["annotation_revision"])
+        if (repository.current_revision(), annotations.current_revision()) != revisions:
+            raise ValueError("素材或标注已更新，请重试")
+        count("role_visible_rows", len(visible))
+        return {"items":visible, "total":page_data["total"], "sample_role_counts":None,
+                "role_counts_complete":False, "effective_label_codes":list(contract["effective_label_codes"]),
+                "page":int(page), "page_size":int(limit), "limit":int(limit), "next_cursor":None,
+                "total_pages":max(1, math.ceil(page_data["total"]/int(limit))),
+                "repository_revision":revisions[0], "annotation_revision":revisions[1],
+                "negative_confirmation_revision":page_data["negative_confirmation_revision"],
+                "negative_pool_revision":page_data["negative_pool_revision"]}
     revisions = (repository.current_revision(), annotations.current_revision())
     count("role_index_requests")
     index = _cached_role_index(str(repository.path), str(annotations.path), *revisions,
@@ -964,7 +1000,8 @@ def training_material_picker_router(
             result = _role_material_page(repository, annotations, contract,
                 query=str(payload.get("query") or ""), labels=_normalize_labels(payload.get("labels")),
                 sample_role=str(payload.get("sample_role") or ""), page=int(payload.get("page") or 1), limit=limit,
-                sort_order=str(payload.get("sort_order") or "oldest"), filters=payload)
+                sort_order=str(payload.get("sort_order") or "oldest"), filters=payload,
+                defer_role_counts=payload.get("defer_role_counts") is True)
             usage = _page_usage_facts(repository,payload,result["items"])
             result["usage_revision"] = usage["revision"]
             truth = annotations.get_many([row["id"] for row in result["items"]])

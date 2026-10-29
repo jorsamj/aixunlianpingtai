@@ -325,7 +325,11 @@ export function installTrainingMaterialPickerRuntime({
     const labelHost = document.getElementById('trV3TrainingLabels');
     if (labelHost) labelHost.textContent = `本次训练标签：${(picker.effectiveLabels || []).join('、') || '请先选择训练标签'}`;
     const roleCounts = document.getElementById('trV3RoleCounts');
-    if (roleCounts) {const c=picker.roleCounts || {}; roleCounts.textContent = `按当前训练目标 · 含目标 ${c.positive || 0} · 已确认无目标 ${c.confirmed_negative || 0} · 待确认无目标 ${c.pending_negative || 0} · 标注或范围需核验 ${c.pending_review || 0}`;}
+    if (roleCounts) {
+      const c=picker.roleCounts;
+      roleCounts.textContent = c ? `按当前训练目标 · 含目标 ${c.positive || 0} · 已确认无目标 ${c.confirmed_negative || 0} · 待确认无目标 ${c.pending_negative || 0} · 标注或范围需核验 ${c.pending_review || 0}`
+        : '优先展示本页素材；完整类别覆盖在最终创建时核验';
+    }
     const count = document.getElementById('trV3PickerCount');
     if (count) count.textContent = `筛选结果 ${picker.total} 张 · 已选 ${picker.selected.size} 张`;
     const meta = document.getElementById('trV3PageMeta');
@@ -426,7 +430,7 @@ export function installTrainingMaterialPickerRuntime({
         if(revisionKey(revision)!==cached.versionKey){pageCache.clear();return loadPage({page:requestedPage});}
       } catch(error) {if(current()){notify(error.code==='REQUEST_TIMEOUT'?'素材读取超时，请重试':error.message); const grid=document.getElementById('trV3Grid');if(grid)grid.innerHTML='<button class="btn" onclick="TrainingMaterialPickerRuntime.loadPage()">读取失败 · 重试</button>';}return;}
       picker.effectiveLabels = cached.effective_label_codes || [];
-      picker.roleCounts = cached.sample_role_counts || {};
+      picker.roleCounts = cached.sample_role_counts || null;
       picker.items = cached.items;
       picker.total = cached.total;
       picker.page = Math.max(1, Number(cached.page || requestedPage));
@@ -461,14 +465,15 @@ export function installTrainingMaterialPickerRuntime({
         : scoped ? `/api/v62/projects/${encodeURIComponent(pid)}/training-materials/page` : `/api/v62/projects/${encodeURIComponent(pid)}/training-materials?${query}`, {
         signal,
         ...((withRoles || scoped) ? {method:'POST', body:JSON.stringify({...taskPayload(), ...filterPayload(), page:requestedPage,
-          page_size:picker.pageSize, query:picker.query, labels:[...picker.labels], sort_order:picker.sortOrder, sample_role:picker.sampleRole})} : {}),
+          page_size:picker.pageSize, query:picker.query, labels:[...picker.labels], sort_order:picker.sortOrder, sample_role:picker.sampleRole,
+          defer_role_counts:!picker.sampleRole})} : {}),
         headers: {'Accept': 'application/json', 'Content-Type':'application/json'},
       });
       return readJson(response, '训练素材读取失败，请重试');
       }, {signal:controller.signal,label:'训练素材读取'});
       if (!current()) return;
       picker.effectiveLabels = body.effective_label_codes || [];
-      picker.roleCounts = body.sample_role_counts || {};
+      picker.roleCounts = body.sample_role_counts || null;
       picker.items = Array.isArray(body.items) ? body.items : [];
       picker.total = Math.max(0, Number(body.total || 0));
       picker.page = Math.max(1, Number(body.page || requestedPage));
@@ -567,7 +572,7 @@ export function installTrainingMaterialPickerRuntime({
     injectStyles();
     if (typeof role === 'object') role=role.role;
     picker = {
-      sampleRole:'', effectiveLabels:[], roleCounts:{}, reviewing:false, reviewSelected:new Set(),
+      sampleRole:'', effectiveLabels:[], roleCounts:null, reviewing:false, reviewSelected:new Set(),
       role: ['test','robustness'].includes(role) ? role : 'train',
       filters:{}, view:'grid', historyControllers:new Set(), scopeIds:uniqueIds(draft().materialIds),
       query: '', labels: new Set(), sortOrder: 'newest', selected: new Set(uniqueIds(role==='robustness'?draft().robustness_policy?.selection?.image_ids:role==='test'?draft().testMaterialIds:draft().materialIds).filter(id=>!blockedIds(role).has(id) && (role!=='robustness' || uniqueIds(draft().materialIds).includes(id)))),

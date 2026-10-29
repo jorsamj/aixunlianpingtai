@@ -5,6 +5,7 @@ import {buildTrainingMaterialQuery, renderTrainingMaterialPreview, trainingMater
 
 const source = fs.readFileSync(new URL('../../static/modules/training-material-picker-runtime.js', import.meta.url), 'utf8');
 const main = fs.readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8');
+const app = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
 
 test('ordinary material selection does not project an undefined training-target role as a review state',()=>{
   assert.match(source,/role === 'train' && hasTaskLabels/);
@@ -47,6 +48,20 @@ test('training picker never hydrates the legacy full image pool', () => {
   assert.doesNotMatch(source, /\/api\/projects\/\$\{[^}]+\}\/images/);
   assert.match(source, /loading="\$\{loading\}"/);
   assert.match(source, /fetchpriority="\$\{priority\}"/);
+});
+
+test('ordinary iteration picker defers full role statistics until explicitly filtered or submitted', () => {
+  assert.match(source, /defer_role_counts:!picker\.sampleRole/);
+  assert.match(source, /picker\.roleCounts = body\.sample_role_counts \|\| null/);
+  assert.match(source, /完整类别覆盖在最终创建时核验/);
+  assert.match(source, /const hasTaskLabels=uniqueIds\(context\.train_labels\)\.length > 0 \|\| Boolean\(context\.base_version_id\)/);
+});
+
+test('legacy train button does not await an all-images response before showing the canonical picker', () => {
+  assert.match(app, /window\.openTrainMaterialPickerV3=function\(role\)/);
+  assert.match(app, /TrainingMaterialPickerRuntime/);
+  assert.doesNotMatch(app, /const fetchPool=window\.__materialPaging61\?\.originalFetch/);
+  assert.doesNotMatch(app, /const response=await fetchPool\(`\/api\/projects\/\$\{pid\(\)\}\/images`\)/);
 });
 
 test('training picker keeps TrainingDraftRuntime as the selection truth owner without a legacy confirm wrapper', () => {

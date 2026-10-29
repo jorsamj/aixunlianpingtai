@@ -383,6 +383,22 @@ def test_manual_keeps_exact_values(monkeypatch):
     assert result["resolved_cache"] is False
 
 
+def test_auto_preserves_loader_parallelism_under_a800_host_ram_ceiling():
+    request = {"imgsz":800, "precision":"fp32", "prefetch_factor":2}
+    context = {"train_image_count":10000, "dataset_bytes":0}
+    snapshot = {"effective_available_bytes":25 * GIB}
+    kwargs = dict(profile="balanced", batch=128, workers=8, cache=False,
+                  snapshot=snapshot)
+    legacy = training_metrics.plan_host_training_resources(request, context, **kwargs)
+    adaptive = training_metrics.plan_host_training_resources(request, context,
+        **kwargs, prefer_loader_parallelism=True)
+    assert legacy["workers"] == 0
+    assert adaptive["workers"] >= 2
+    assert 1 <= adaptive["batch"] < legacy["batch"]
+    assert adaptive["estimated_bytes"] <= adaptive["budget_bytes"]
+    assert adaptive["requested_estimated_bytes"] > adaptive["budget_bytes"]
+
+
 def test_auto_tiny_dataset_caps_batch_and_workers_to_executable_loader_truth(monkeypatch):
     _patch_host(monkeypatch)
     result = training_metrics.resolve_resources(
