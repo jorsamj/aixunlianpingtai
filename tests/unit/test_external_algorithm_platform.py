@@ -1,5 +1,8 @@
 from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+import threading
+import time
 
 import pytest
 
@@ -72,6 +75,128 @@ def test_changlian_auth_chain_uses_test_sign_then_token_then_bearer():
         "/internal/auth/token",
         "/internal/base/category/tree",
     ]
+
+
+def test_saved_changlian_credentials_share_one_auth_exchange_across_request_clients(tmp_path: Path):
+    """Each API handler builds a client; it should not re-sign and re-token every GET."""
+    calls = []
+    lock = threading.Lock()
+
+    class CountingSession:
+        def request(self, method, url, **kwargs):
+            path = url.split("changlian.example")[-1]
+            with lock:
+                calls.append((path, kwargs))
+            if path == "/internal/auth/test-sign":
+                time.sleep(0.005)
+                return FakeResponse({"code": 200, "data": {"timestamp": "100", "nonce": "abc", "signature": "sig"}})
+            if path == "/internal/auth/token":
+                return FakeResponse({"code": 200, "data": {"accessToken": "token-shared", "tokenType": "Bearer", "expiresIn": 3600}})
+            if path == "/internal/base/category/tree":
+                assert kwargs["headers"]["Authorization"] == "Bearer token-shared"
+                return FakeResponse({"code": 200, "data": []})
+            if path == "/internal/auth/logout":
+                return FakeResponse({"code": 200, "data": True})
+            raise AssertionError(path)
+
+    memory = MemorySecretStore()
+    service = ExternalAlgorithmPlatformService(
+        data_dir=tmp_path, secret_store_factory=lambda: memory,
+        client_factory=lambda **kwargs: ChangLianClient(session=CountingSession(), **kwargs),
+    )
+    service.save(ExternalPlatformConfigPayload(
+        mode="external", provider="changlian", base_url="https://changlian.example",
+        access_key="ak", access_secret="secret", endpoints=EndpointPayload(),
+    ))
+    clients = [service._client() for _ in range(8)]
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        assert all(response["data"] == [] for response in pool.map(lambda c: c.category_tree(), clients))
+    assert sum(path == "/internal/auth/test-sign" for path, _ in calls) == 1
+    assert sum(path == "/internal/auth/token" for path, _ in calls) == 1
+    assert sum(path == "/internal/base/category/tree" for path, _ in calls) == 8
+
+    service._client().logout()
+    service._client().category_tree()
+    assert sum(path == "/internal/auth/token" for path, _ in calls) == 2
+
+    service.save(ExternalPlatformConfigPayload(
+        mode="external", provider="changlian", base_url="https://changlian.example",
+        access_key="ak", access_secret="rotated-secret", endpoints=EndpointPayload(),
+    ))
+    service._client().category_tree()
+    assert sum(path == "/internal/auth/token" for path, _ in calls) == 3
+
+
+def test_saved_changlian_token_401_invalidates_without_replaying_post(tmp_path: Path):
+    events = []
+    token_number = 0
+
+    class RevocationSession:
+        def request(self, method, url, **kwargs):
+            nonlocal token_number
+            path = url.split("changlian.example")[-1]
+            events.append((method, path))
+            if path == "/internal/auth/test-sign":
+                return FakeResponse({"code": 200, "data": {"timestamp": "100", "nonce": "abc", "signature": "sig"}})
+            if path == "/internal/auth/token":
+                token_number += 1
+                return FakeResponse({"code": 200, "data": {"accessToken": f"token-{token_number}", "expiresIn": 3600}})
+            if path == "/internal/algorithm/algorithm-version/add":
+                return FakeResponse({"code": 401, "message": "revoked"}, status_code=401)
+            if path == "/internal/base/category/tree":
+                assert kwargs["headers"]["Authorization"] == f"Bearer token-{token_number}"
+                return FakeResponse({"code": 200, "data": []})
+            raise AssertionError(path)
+
+    memory = MemorySecretStore()
+    service = ExternalAlgorithmPlatformService(
+        data_dir=tmp_path, secret_store_factory=lambda: memory,
+        client_factory=lambda **kwargs: ChangLianClient(session=RevocationSession(), **kwargs),
+    )
+    service.save(ExternalPlatformConfigPayload(
+        mode="external", provider="changlian", base_url="https://changlian.example",
+        access_key="ak", access_secret="secret", endpoints=EndpointPayload(),
+    ))
+    service._client().category_tree()
+    assert token_number == 1
+
+    with pytest.raises(RuntimeError, match="HTTP 401"):
+        service._client()._request("POST", "/internal/algorithm/algorithm-version/add", auth=True, json={"analysisId": 1})
+    assert sum(path == "/internal/algorithm/algorithm-version/add" for _, path in events) == 1
+    assert token_number == 1  # A failed mutation must not be posted again.
+
+    service._client().category_tree()
+    assert token_number == 2
+    assert sum(path == "/internal/auth/test-sign" for _, path in events) == 2
+
+
+def test_changlian_draft_auth_does_not_share_saved_token(tmp_path: Path):
+    memory = MemorySecretStore()
+    sessions = []
+
+    def new_client(**kwargs):
+        session = FakeSession()
+        sessions.append(session)
+        return ChangLianClient(session=session, **kwargs)
+
+    service = ExternalAlgorithmPlatformService(
+        data_dir=tmp_path, secret_store_factory=lambda: memory, client_factory=new_client,
+    )
+    service.save(ExternalPlatformConfigPayload(
+        mode="external", provider="changlian", base_url="https://changlian.example",
+        access_key="ak", access_secret="secret", endpoints=EndpointPayload(),
+    ))
+    service._client().category_tree()
+    assert len(sessions[0].calls) == 3
+    service._client().category_tree()
+    assert len(sessions[1].calls) == 1  # Saved token is reused by the next client.
+
+    draft = ExternalPlatformConfigPayload(
+        mode="external", provider="changlian", base_url="https://changlian.example",
+        access_key="ak", access_secret="secret", endpoints=EndpointPayload(),
+    )
+    service._client_for_payload(draft).category_tree()
+    assert len(sessions[2].calls) == 3  # Test-connection credentials never enter the saved cache.
 
 
 def test_changlian_default_endpoints_match_documented_core_contract():

@@ -607,6 +607,39 @@ def _dump_weight_payload(payload: Mapping[str, Any]) -> Dict[str, Any]:
             body[key] = _remote_json_id(body[key])
     return body
 
+class _SharedChangLianBearer:
+    """Process-local, service-scoped singleflight token for saved credentials.
+
+    Never share requests.Session objects, expose a token in persisted state, or
+    reuse a token under a changed URL/credential/endpoint fingerprint.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._scope = ""
+        self._token_type = "Bearer"
+        self._token = ""
+        self._expires_at = 0.0
+
+    def acquire(self, scope: str, refresh: Callable[[], tuple[str, str, float]]) -> tuple[str, str]:
+        with self._lock:
+            if self._scope == scope and self._token and time.monotonic() < self._expires_at:
+                return self._token_type, self._token
+            token_type, token, expires_at = refresh()
+            self._scope = scope
+            self._token_type = token_type
+            self._token = token
+            self._expires_at = expires_at
+            return token_type, token
+
+    def invalidate(self, scope: str | None = None, *, rejected_token: str | None = None) -> None:
+        with self._lock:
+            if (scope is None or scope == self._scope) and (rejected_token is None or rejected_token == self._token):
+                self._scope = ""
+                self._token = ""
+                self._expires_at = 0.0
+
+
 class ChangLianClient:
     def __init__(
         self,
@@ -629,6 +662,7 @@ class ChangLianClient:
         self._token_type = "Bearer"
         self._token_expires_at = 0.0
         self._token_lock = threading.Lock()
+        self._shared_bearer_cache: _SharedChangLianBearer | None = None
         self.audit_callback = audit_callback
         self.audit_context: Dict[str, Any] = {}
         if not self.access_key or not self.access_secret:
@@ -642,6 +676,12 @@ class ChangLianClient:
 
     def _url(self, path: str) -> str:
         return urljoin(self.base_url + "/", str(path or "").lstrip("/"))
+
+    def _auth_scope(self) -> str:
+        return hashlib.sha256(json.dumps([
+            self.base_url, self.access_key, self.access_secret,
+            self.endpoints.test_sign, self.endpoints.token,
+        ], ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
 
     def set_audit_context(self, **context: Any) -> None:
         self.audit_context.update({key: value for key, value in context.items() if value not in (None, "")})
@@ -756,6 +796,13 @@ class ChangLianClient:
             "error_code": business_code if (business_failed or not http_ok) else "",
             "error_message": message if (business_failed or not http_ok) else "",
         })
+        if auth and response.status_code == 401:
+            # Do not replay a potentially mutating request. A later explicit
+            # request may authenticate afresh after the server revoked a token.
+            if self._shared_bearer_cache is not None:
+                self._shared_bearer_cache.invalidate(self._auth_scope(), rejected_token=token)
+            self._token = ""
+            self._token_expires_at = 0.0
         if not http_ok:
             suffix = f"：{message}" if message else ""
             raise RuntimeError(f"外部平台请求失败 HTTP {response.status_code}{suffix}")
@@ -779,7 +826,25 @@ class ChangLianClient:
             "Signature": str(signature),
         }
 
+    def _fetch_new_token(self) -> tuple[str, str, float]:
+        signature_headers = self._signature()
+        headers = {"Access-Key": self.access_key, **signature_headers}
+        body = _unwrap(self._request("POST", self.endpoints.token, headers=headers))
+        if not isinstance(body, dict):
+            raise RuntimeError("Token 接口返回格式不正确")
+        token = _value_from(body, "accessToken", "access_token", "token")
+        if not token:
+            raise RuntimeError("Token 接口未返回 accessToken")
+        token_type = str(_value_from(body, "tokenType", "token_type") or "Bearer")
+        try:
+            expires_in = max(30, int(_value_from(body, "expiresIn", "expires_in") or 3600))
+        except (TypeError, ValueError):
+            expires_in = 3600
+        return token_type, str(token), time.monotonic() + max(15, int(expires_in * 0.8))
+
     def token(self) -> tuple[str, str]:
+        if self._shared_bearer_cache is not None:
+            return self._shared_bearer_cache.acquire(self._auth_scope(), self._fetch_new_token)
         now = time.monotonic()
         if self._token and now < self._token_expires_at:
             return self._token_type, self._token
@@ -787,22 +852,10 @@ class ChangLianClient:
             now = time.monotonic()
             if self._token and now < self._token_expires_at:
                 return self._token_type, self._token
-            signature_headers = self._signature()
-            headers = {"Access-Key": self.access_key, **signature_headers}
-            body = _unwrap(self._request("POST", self.endpoints.token, headers=headers))
-            if not isinstance(body, dict):
-                raise RuntimeError("Token 接口返回格式不正确")
-            token = _value_from(body, "accessToken", "access_token", "token")
-            if not token:
-                raise RuntimeError("Token 接口未返回 accessToken")
-            token_type = str(_value_from(body, "tokenType", "token_type") or "Bearer")
-            try:
-                expires_in = max(30, int(_value_from(body, "expiresIn", "expires_in") or 3600))
-            except (TypeError, ValueError):
-                expires_in = 3600
-            self._token = str(token)
+            token_type, token, expires_at = self._fetch_new_token()
+            self._token = token
             self._token_type = token_type
-            self._token_expires_at = time.monotonic() + max(15, int(expires_in * 0.8))
+            self._token_expires_at = expires_at
             return token_type, self._token
 
     def probe(self) -> Dict[str, Any]:
@@ -819,6 +872,8 @@ class ChangLianClient:
         try:
             return self._request("POST", self.endpoints.logout, auth=True)
         finally:
+            if self._shared_bearer_cache is not None:
+                self._shared_bearer_cache.invalidate(self._auth_scope())
             self._token = ""
             self._token_expires_at = 0.0
 
@@ -1527,6 +1582,7 @@ class ExternalAlgorithmPlatformService:
             self.data_dir, secret_store_factory,
         )
         self.thread_factory = thread_factory
+        self._shared_bearer_cache = _SharedChangLianBearer()
 
     def _credential_store(self) -> SecretCredentialStore:
         return SecretCredentialStore(self.secret_store_factory())
@@ -1902,6 +1958,7 @@ class ExternalAlgorithmPlatformService:
                 )
             credential_store.set(ref, merged)
         self.repository.save_config(payload.model_dump(exclude={"access_key", "access_secret"}))
+        self._shared_bearer_cache.invalidate()
         return self.public_config()
 
     def _client_for_payload(self, payload: Optional[ExternalPlatformConfigPayload] = None) -> ChangLianClient:
@@ -1929,13 +1986,18 @@ class ExternalAlgorithmPlatformService:
             access_key = str(payload.access_key or "").strip() or str(stored.get("access_key_id") or "")
             access_secret = str(payload.access_secret or "") or str(stored.get("access_secret") or "")
             endpoints = ChangLianEndpoints.from_mapping(payload.endpoints.model_dump())
-        return self.client_factory(
+        client = self.client_factory(
             base_url=base_url,
             access_key=access_key,
             access_secret=access_secret,
             endpoints=endpoints,
             audit_callback=self.audit.record,
         )
+        # Only saved provider credentials participate in shared auth. Draft
+        # connection tests stay isolated; each client owns its HTTP session.
+        if payload is None and isinstance(client, ChangLianClient):
+            client._shared_bearer_cache = self._shared_bearer_cache
+        return client
 
     def _client(self) -> ChangLianClient:
         return self._client_for_payload()

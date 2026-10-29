@@ -1,3 +1,7 @@
+## 2026-10-29｜P0 ChangLian token 单飞（42.24.410，LOCAL GREEN / CI PENDING）
+
+基线 `1d027803`；v63 原路由保留服务实例但逐请求新客户端每次签名/取 Token。仅正式保存配置使用服务级进程内 SHA256 凭证指纹/过期失效 Token，8 并发签名+Token 由 8+8 降为 1+1；草稿测试隔离、401 不重发写请求、登出/保存失效、HTTP Session 不共享。Python 137/137、Node 1396/1396 通过；真实生产耗时和新 SHA CI 待查，绝不借旧 CI 放行。`LIKE` 4 万行合成对照未稳定获益，未改动。工作继续追踪 [专项](performance/2026-10-29-p0-followup.md)，不生产部署/数据操作、不合并 main/tag/release/force push。
+
 ## 2026-10-22｜场景评估、素材与标注UI（代码及隔离CI已验收）
 
 唯一需求/进度/问题/截图：[本轮专项](SCENARIO_MODEL_EVALUATION_UI_GOVERNANCE_2026_10_22.md)。P0分别提交1f606d30/13c70368/b8d04f04；正式训练资格贯穿原Worker/Agent、双模式内联框证据、素材同Owner网格/列表、标注唯一审核/正式色/居中已实现。P1复用原ECharts与严格同基准比较；VERSION42.24.377，最终代码42bf33b2实际23/23 Actions、60/60 Checks、Chrome239/239；本地Node1297/Python213通过，广泛352曾339通过13失败后逐项fresh通过，未宣称重跑全绿。本次文档/旧fixture补提自身完整SHA须再核CI，最终回执与限制见唯一专项。未生产部署/数据/权重写入/GPU；从唯一专项接续，禁止重复建Owner，生产真实精度与许可仍需独立核验。

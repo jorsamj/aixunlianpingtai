@@ -1,3 +1,7 @@
+## 2026-10-29｜P0 畅联云保存凭证的鉴权请求单飞（42.24.410 / LOCAL GREEN，CI 待核）
+
+接续 `1d027803`／42.24.409。外部算法平台 HTTP 路由虽复用服务实例，却每次构造新 `ChangLianClient`，导致并行/重复业务 GET 各自触发 test-sign + Token 两个远程鉴权请求。本批只为**同一服务进程已保存的配置**添加按 base URL／凭证／鉴权端点 SHA256 指纹隔离、到期失效的内存 Token 单飞；客户端 HTTP Session、业务 API、正式数据完全不共享。配置保存、登出、401 撤销使缓存失效；401 后不自动重发有副作用的 POST，草稿测试连接不参与缓存。新增先 RED 后 GREEN 的 8 路并行、一致性、撤销、防重发与草稿隔离回归，Python 相关 137/137、Node 1396/1396 通过。`LIKE '%keyword%'` 强制窄 ID CTE 在 4 万行合成数据中无稳定收益，因此未修改 SQL。真实生产网络 P95、其他 Worker 进程 Token 复用与 GT 大库搜索仍 NOT VERIFIED。准确新 SHA CI 待核，未部署生产、不改生产数据、不合并 main、不强推。详见 `docs/performance/2026-10-29-p0-followup.md`。
+
 ## 2026-10-29｜P0 负样本池并发筛选快照保护（42.24.409 / LOCAL GREEN，CI 待核）
 
 接续 `3fdc5f33`／42.24.408（23/23 Actions、61/61 Checks 全绿）。修复负样本池候选 ID 已计算后，池成员在正式 GT 分页事务/角色索引读取前被其他请求修改，旧 ID 结果却携带新池 revision 的竞态。GT 分页直接复用上一版同事务读取的池 revision 与预筛选 revision 比对；角色页在既有结尾 revision 获取点增加比对且复用结果，不额外开连接。两条精确并发测试 RED→GREEN，Python 35/35、完整 Node 1396/1396。生产负样本业务语义/原 GT/训练资格/SQLite schema 均未更改，不自动重试或触发训练。新 SHA CI、真实大库/代理/外部芯片、畅联云请求仍待核验。详见 `docs/performance/2026-10-29-p0-followup.md`；不部署、不改生产数据、不合并 main、不强推。
