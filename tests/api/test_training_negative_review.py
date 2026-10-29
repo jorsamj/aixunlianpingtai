@@ -156,6 +156,9 @@ def test_multiclass_training_preview_keeps_partial_positives_and_rejects_uncommi
  assert preview['counts']=={'positive':3,'confirmed_negative':0,'pending_negative':1,'pending_review':1}
  assert {item['code']:(item['image_count'],item['box_count']) for item in coverage['classes']}=={
      'person':(2,2),'head':(2,2)}
+ assert [item['image_id'] for item in coverage['partial_preview']]==selected[1:3]
+ assert [item['label_box_counts'] for item in coverage['partial_preview']]==[{'person':1},{'head':1}]
+ assert all('/thumbnail' in item['image_url'] for item in coverage['partial_preview'])
  assert coverage['problems'][0]['image_id']==selected[4]
  # A task-level acknowledgment cannot launder the uncommitted image into a background sample.
  denied=client.post(endpoint+'/confirm-negatives',json={**payload,'confirmed':True,'proof_digest':preview['proof_digest']})

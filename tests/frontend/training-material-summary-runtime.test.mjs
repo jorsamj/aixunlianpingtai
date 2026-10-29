@@ -19,12 +19,19 @@ test('multiclass final confirmation reports partial positives separately from ta
     pending_count:1,counts:{positive:3,confirmed_negative:0,pending_negative:1,pending_review:1},
     coverage:{selected_count:5,eligible_count:4,full_coverage_count:1,partial_coverage_count:2,
       zero_target_count:1,classes:[{code:'person',image_count:2,box_count:2},{code:'head',image_count:2,box_count:2}],
+      partial_preview:[{image_id:'only-person',image_url:'/person.png',label_box_counts:{person:1}},
+        {image_id:'only<head>',image_url:'/head.png',label_box_counts:{head:2}}],
       problems:[{image_id:'bad<id>',issue_type:'missing_annotation',missing_label_codes:['head']}]},
     pending_preview:[{image_id:'bg1',image_url:'/private/background.png'}]});
   assert.match(html,/部分类别覆盖 · 仍是正样本/);
   assert.match(html,/只有在逐一确认画面确实不含本次所选目标/);
   assert.match(html,/正式 GT 或素材问题，不能靠普通确认放行/);
   assert.match(html,/head.*2 张/);
+  assert.match(html,/查看部分覆盖正样本/);
+  assert.match(html,/person 1 框/);
+  assert.match(html,/head 2 框/);
+  assert.match(html,/已确认 0 · 待确认 1/);
+  assert.ok(!html.includes('only<head>'),'untrusted partial material IDs must be escaped');
   assert.ok(!html.includes('bad<id>'),'untrusted material IDs must be escaped');
   assert.match(html,/返回调整/);
   assert.match(html,/确认并创建/);

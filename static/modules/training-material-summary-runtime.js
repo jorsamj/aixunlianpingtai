@@ -65,11 +65,17 @@ export function renderTrainingSampleConfirmation(preview={}) {
   const classes=(coverage.classes||[]).map(item=>`<li><b>${htmlEscape(item.code)}</b><strong>${number(item.image_count)} 张</strong><span>${number(item.box_count)} 个正式框</span></li>`).join('');
   const problems=(coverage.problems||[]).map(row=>`<li><b>${htmlEscape(row.image_id)}</b><span>${htmlEscape(SAMPLE_ISSUE_NAMES[row.issue_type]||row.issue_type)}${(row.missing_label_codes||[]).length?` · 待审核 ${htmlEscape(row.missing_label_codes.join('、'))}`:''}</span></li>`).join('');
   const samples=(preview.pending_preview||[]).map(row=>`<figure><img src="${htmlEscape(row.image_url||'')}" alt="候选背景素材 ${htmlEscape(row.image_id)}" loading="lazy"><figcaption>${htmlEscape(row.image_id)}</figcaption></figure>`).join('');
+  const partialSamples=(coverage.partial_preview||[]).map(row=>{
+    const counts=Object.entries(row.label_box_counts||{}).filter(([code,count])=>labels.includes(code)&&number(count)>0)
+      .map(([code,count])=>`${htmlEscape(code)} ${number(count)} 框`).join(' · ');
+    return `<figure><img src="${htmlEscape(row.image_url||'')}" alt="部分覆盖正样本 ${htmlEscape(row.image_id)}" loading="lazy"><figcaption><b>${htmlEscape(row.image_id)}</b><span>${counts}</span></figcaption></figure>`;
+  }).join('');
   return `<section class="training-sample-confirm" data-training-negative-confirmation>
     <div class="training-sample-hero"><span>本次训练 · ${htmlEscape(labels.join('、'))}</span><div class="training-sample-main-count"><strong>${number(coverage.selected_count)}</strong><span>张选中素材</span></div><b>${number(coverage.eligible_count)} 张通过 GT 基础检查</b></div>
-    <div class="training-sample-stat-grid"><article><strong>${number(coverage.full_coverage_count)}</strong><span>全部类别覆盖</span></article><article><strong>${number(coverage.partial_coverage_count)}</strong><span>部分类别覆盖 · 仍是正样本</span></article><article><strong>${number(coverage.zero_target_count)}</strong><span>本次目标零覆盖</span></article></div>
+    <div class="training-sample-stat-grid"><article><strong>${number(coverage.full_coverage_count)}</strong><span>全部类别覆盖</span></article><article><strong>${number(coverage.partial_coverage_count)}</strong><span>部分类别覆盖 · 仍是正样本</span></article><article><strong>${number(coverage.zero_target_count)}</strong><span>本次目标零覆盖</span><small>已确认 ${number(c.confirmed_negative)} · 待确认 ${number(c.pending_negative)}</small></article></div>
     <h3>各类别的正式标注</h3><ul class="training-sample-classes">${classes}</ul>
     ${number(coverage.partial_coverage_count)?'<p class="training-sample-note">部分覆盖的图片保留其已有的合法目标框，不会被改成整图负样本。</p>':''}
+    ${partialSamples?`<details class="training-sample-partials"><summary>查看部分覆盖正样本（最多 8 张）</summary><div class="training-negative-previews">${partialSamples}</div></details>`:''}
     ${number(preview.pending_count)?`<section class="training-sample-alert"><b>${number(preview.pending_count)} 张候选背景图需要人工确认</b><p>只有在逐一确认画面确实不含本次所选目标、正式 GT 已提交且有效的情况下，才能纳入本次训练。这里的确认只形成任务级证据，不改原始图片或正式标注。</p><details><summary>查看部分待确认素材（最多 20 张）</summary><div class="training-negative-previews">${samples}</div></details>${number(preview.pending_count)>20?'<small>以上仅是示例，不能替代对其余候选素材的检查。不确定时请返回调整或审核。</small>':''}</section>`:''}
     ${number(c.pending_review)?`<section class="training-sample-blockers"><b>${number(c.pending_review)} 张存在正式 GT 或素材问题，不能靠普通确认放行</b><ul>${problems}</ul></section>`:''}
     <div class="row end training-sample-actions"><button type="button" class="btn" data-negative-return>返回调整</button><button type="button" class="btn primary" data-negative-confirm>确认并创建</button></div>

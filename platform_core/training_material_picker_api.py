@@ -1045,6 +1045,7 @@ def training_material_picker_router(
         class_images = {code: 0 for code in labels}
         class_boxes = {code: 0 for code in labels}
         full, partial = 0, 0
+        partial_preview = []
         for row in rows:
             result = training_material_role(row, contract)
             role = result["role"]
@@ -1065,6 +1066,11 @@ def training_material_picker_router(
                     full += 1
                 elif per_image:
                     partial += 1
+                    if len(partial_preview) < 8:
+                        image_id = str(row.get("id") or row.get("image_id") or "")
+                        partial_preview.append({"image_id": image_id,
+                            "image_url": f"/api/v62/projects/{project_id}/training-materials/{image_id}/thumbnail",
+                            "label_box_counts": per_image})
             elif role == "pending_review" and len(problems) < 10:
                 issue = result.get("scope_issue") or {}
                 problems.append({"image_id": str(row.get("id") or row.get("image_id") or ""),
@@ -1076,7 +1082,8 @@ def training_material_picker_router(
             "full_coverage_count": full, "partial_coverage_count": partial,
             "zero_target_count": counts["confirmed_negative"] + counts["pending_negative"],
             "classes": [{"code": code, "image_count": class_images[code], "box_count": class_boxes[code]} for code in labels],
-            "problems": problems, "material_revision": revisions[0], "annotation_revision": revisions[1]}
+            "partial_preview": partial_preview, "problems": problems,
+            "material_revision": revisions[0], "annotation_revision": revisions[1]}
         digest = hashlib.sha256(json.dumps({"context":task_negative_context(contract),
             "base_version_id":str(payload.get("base_version_id") or ""),
             "test_image_ids":sorted(_normalize_selection_ids(payload.get("test_image_ids") or [])),

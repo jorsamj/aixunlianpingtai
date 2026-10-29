@@ -1,4 +1,14 @@
-> **最新训练业务变更（2026-10-29 / 42.24.424）**：独立编号 TRAIN-SAMPLE-P0-01 的多类别覆盖、最终样本确认与真实浏览器 CI 反馈修复，见下节。原 42.24.412 素材状态/新增标签证据合同记录继续保留在本文末尾；本项不归入性能治理任务书。
+> **最新训练业务变更（2026-10-30 / 42.24.428）**：独立编号 TRAIN-SAMPLE-P0-01 的多类别覆盖、最终样本确认及典型正样本证据补齐，见下节。原 42.24.412 素材状态/新增标签证据合同记录继续保留在本文末尾；本项不归入性能治理任务书。
+
+### 42.24.428｜最终确认的部分类别正样本缩略图与框数核对（待本次精确 SHA CI）
+
+**本次核对基线**：唯一长期分支 `172e2aa81056c306a2c449642adf65371f73020c`、VERSION `42.24.427`；该 SHA 当时精确查询到 **22/22 个实际触发的 Actions 工作流成功，0 失败**。这属于远端 CI 结果，不是本次 428 的结果，也不能推导生产性能或训练效果。另一条选材弹窗首开与 A800 自动 Batch/Workers 资源规划已在 `42.24.425～427` 的原实现中修改，详见 `docs/performance/2026-10-29-p0-followup.md`，本项没有再次改动这些独立性能/调度逻辑。
+
+**任务书复核结论**：`42.24.419～424` 已实施主体：选材阶段不要求每图全类别或逐张负样本确认；服务端正式 GT `training_material_role` 允许审核范围完整时的部分正样本，`project_training_rows` 保留实际合法框、稳定 class_id，缺失审核范围/未 Commit 不能靠“包含负样本”放行；最终 `/compatibility` 先挡真实 GT 冲突，再用 `/negative-preview` 计算选中快照、覆盖、类别框数和修订，通过一次大弹窗知晓确认，`/confirm-negatives` 对 digest/修订做过期拒绝，`/train/start` 带 material/annotation revision 和原幂等 task_id。原浏览器与 API 测试覆盖取消、单任务创建及陈旧 GT 拒绝，原 Worker 投影/数据集隔离没有改动。**不重复建立第二套流程、任务 API、GT 字典或状态。**
+
+**本次补齐的可视核验缺口**：原确认页对待确认背景图有最多 20 张缩略图，对“只有 person/只有 head”的正样本仅有汇总数字，无法展开比对典型图片和本次实际保留框数。现直接复用 `negative_plan` 正在逐行计算的 `per_image`，在原 `coverage.partial_preview` 最多返回 **8 张**该类正式正样本的图片 ID、既有缩略图 URL、按本次标签过滤的真实框数；原 `renderTrainingSampleConfirmation` 将其做折叠查看，明确标记为“部分覆盖正样本”，并在“零覆盖”指标分别展示已确认/待确认数。其余图片不加载，缩略图仍浏览器 `loading=lazy`；未增加图片扫描、全池预读、正式 GT 写入或额外 HTTP 业务接口。改动局限 `training_material_picker_api.py`、`training-material-summary-runtime.js`、`negative-pool.css` 和既有静态资源缓存入口。
+
+**测试状态与剩余风险**：已有 Python `test_multiclass_training_preview_keeps_partial_positives_and_rejects_uncommitted_gt` 扩展验证 2 张部分覆盖的 `image_id`/真实框数/缩略图 URL，原 Node 确认页面回归扩展核对卡片、负样本独立计数和恶意 ID HTML 转义。Node 定向、Python 语法及全量 CI 结果须分别按实际执行记录，不得把 CI 待执行写成通过。生产 GT 视觉漏标只可能由人工审核确认，不能由数据库或 UI 推断；生产 Worker、A800 显存、磁盘 P95 和真正场景准确率均仍需现场授权验收。未部署生产、未迁移或删除任何素材副本。
 
 ### 42.24.424｜固定 CI 覆盖任务级收据缓存失效（待 424 CI）
 
