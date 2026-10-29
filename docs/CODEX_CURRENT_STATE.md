@@ -1,3 +1,5 @@
+> **2026-10-29 / 42.24.418 素材选择器 CI 合同测试纠正**：`a694ee4d`／417 在 Training Material Picker/contracts 再次因路由 introspection `StopIteration` 失败（81/82 后端通过，Chrome Job 通过），因此 417 不是通过版本。418 移除该失败用例对 `.routes` 内部结构的依赖，调用已有同路由公共 HTTP 合同并断言迭代空选材的真实统计、免角色扫描；本地 HTTP Portal 存在超时等待故未宣称该用例本地通过，准确新 SHA CI 待验，生产和运行时代码未动。详见 `performance/2026-10-29-p0-followup.md`。
+
 > **2026-10-29 / 42.24.417 素材选择器 CI 单测纠正**：`52c3ecf7`／42.24.416 经 GitHub 完整只读检查为 **29/30 Actions 通过**；唯一红项 Training Material Picker/contracts 中 1/82 后端用例因 `TestClient.app.routes` 路由枚举 `StopIteration`，real Chrome 已通过。417 定向让测试从原始 FastAPI app `.routes` 找真实 endpoint，不变更运行时代码、GT/训练提交合同或数据库。新 SHA CI/生产待验，详见 `performance/2026-10-29-p0-followup.md`。
 
 > **2026-10-29 / 42.24.416 迭代角色页 P0**：原 `/role-page` 在继承版本的只读角色合同内逐页完整 SHA256 `best.pt`；本批仅角色预览和选材意图显式省略哈希，最终提交/Worker 冻结照常真实 SHA256。原诊断增加角色/历史/页使用关系分段；12k/50k 候选与现场 22.87s 根因仍待实测。准确 CI/生产未验，未部署。详见 [唯一台账](performance/2026-10-29-p0-followup.md)。

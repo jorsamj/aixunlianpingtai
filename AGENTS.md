@@ -1,3 +1,7 @@
+## 2026-10-29｜素材选择器 CI 回归继续纠正（42.24.418 / 待 CI）
+
+精确 SHA `a694ee4d` 的 Training Material Picker 仍为 81/82 后端合同通过、1 个路由枚举 `StopIteration`，Chrome 成功。417 从 `TestClient.app.routes` 改为 FastAPI `app.routes` 仍不兼容 CI 的 include-router 封装；418 将该用例完全改为与既有成功测试一致的 `TestClient.post` 公共 HTTP 合同，撤回专用 helper 返回分支。该环境本地 HTTP 调用等待已按 25s 上限停止，不能伪称本地通过；准确新 SHA GitHub CI 待验。只改测试/文档/VERSION，生产/数据/正式 GT/Worker 未动；唯一台账 `docs/performance/2026-10-29-p0-followup.md`。
+
 ## 2026-10-29｜Training Material Picker CI 路由兼容纠正（42.24.417 / 待新 SHA CI）
 
 42.24.416 精确 SHA `52c3ecf7` 的全部 30 个工作流中 29 成功、1 失败，红项为 `Training Material Picker/contracts` 中的 1 个路由测试 `StopIteration`（另 81 个后端用例及 real Chrome Job 成功）。原用例从 `TestClient.app.routes` 枚举路由，测试框架版本差异导致代理对象没有命中；417 仅令测试助手显式返回原始 FastAPI app 并从其 `.routes` 调用原 endpoint，保留零选材/迭代真实总数与免角色扫描断言。没有业务运行时代码改动。更新唯一台账 `docs/performance/2026-10-29-p0-followup.md`；新 SHA CI/生产未验，禁止直接部署、清理及强推。
