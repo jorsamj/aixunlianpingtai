@@ -1,3 +1,7 @@
+## 2026-10-29｜空选材 API 冷统计收敛（42.24.414 / 待准确 CI 与生产验证）
+
+接续 42.24.413 远端 `768f3656`。`selection-summary` 的 `image_ids=[]` 已经避开训练非空合同，但 API 后端仍无条件 `_selection_summary`，可能冷扫描整个正式 GT 池；42.24.414 保留鉴权/项目修订号，空请求返回 0 个已选的真实摘要，整池统计保留 `null` 未知，不建新 Owner，不改变正式提交。相关测试结果和新 SHA/CI 需精确补记。唯一台账：`docs/performance/2026-10-29-p0-followup.md`；生产未部署，不可声称已解决现场 TTFB。
+
 ## 2026-10-29｜训练资源 GET 有界化与空选材 P0（42.24.413 / LOCAL GREEN，CI 与生产待核）
 
 接续真实分支 `03b53089`／42.24.412。P0 确认证据：`training_options` GET 串行旧服务器 HTTP（上限 20×4s）、Paddle 递归目录、项目历史模型扫描；迭代 `selection-summary` 对空 `image_ids` 调用训练提交合同。42.24.413 定向收敛：旧服务器状态读已保存且未过期的显式检测快照（未检测/过期 fail-closed），原 `/test` 与新增按保存 ID 的检测刷新并锁保护；Paddle 显式启用生成算法/权重快照；GET 不读历史 `job.json`、不递归 scan、不访问旧服务器网络；零选材摘要本地空态和后端空态一致。保留旧权威版本、GT、训练提交非空准入、Worker 与 ZIP Owner。Python 137/137、Node 1404/1404，生产 26.5 秒分段和 role-page 大规模实测未取得；准确新 SHA CI 待核，未部署/迁移/删除。唯一追踪 `docs/performance/2026-10-29-p0-followup.md`，禁止将代码风险直接认作已计时的生产根因。

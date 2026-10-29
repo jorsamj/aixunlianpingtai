@@ -1275,6 +1275,20 @@ def training_material_picker_router(
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
         repository = materials(project_id)
+        if not image_ids:
+            # An empty preview has no selected GT to summarize. In particular,
+            # do not cold-build the entire project's GT pool totals just to
+            # display zero selected materials. Unknown pool totals remain null.
+            return {
+                "requested_count": 0, "matched_count": 0, "missing_image_ids": [],
+                "selectable_count": 0, "eligible_count": 0,
+                "pending_annotation_count": 0, "box_count": 0,
+                "size_bytes": 0, "selectable_size_bytes": 0,
+                "label_codes": [], "positive_label_codes": [], "label_counts": {},
+                "selectable_total": None, "eligible_total": None,
+                "pending_annotation_total": None, "annotation_revision": None,
+                "repository_revision": repository.current_revision(),
+            }
         annotations = annotation_repository_for_path(str(repository.project_path))
         try:
             summary = _selection_summary(repository, annotations, image_ids)

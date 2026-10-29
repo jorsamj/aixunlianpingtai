@@ -1,3 +1,5 @@
+> **2026-10-29 / 42.24.414**：前端沿用 42.24.413 的空选材本地摘要，不新增状态管理。后端补齐其他 API 调用方的轻量空态合同（整池数为 `null` 未知）；GT 与提交校验不变。CI/生产待核，未部署，见 `docs/performance/2026-10-29-p0-followup.md`。
+
 > **2026-10-29 / 42.24.413 P0 追加**：保留原 TrainingCreateHydration/TrainingDraft/Submit owner，只针对其 `/api/training_options` 后端读取路径移除旧服务器串行健康探测、Paddle 递归 scan、历史模型目录；训练资源卡片复用原 renderer 增加旧服务器显式检测。原 SummaryRuntime 的空选择本地合法预览，无平行状态。完整需求/根因/测试状态见 [P0 单一台账](performance/2026-10-29-p0-followup.md)，准确 CI/生产待验。
 
 ## 2026-10-29｜训练回收与异常证据定向修复（LOCAL VERIFIED / CI及生产未验证）

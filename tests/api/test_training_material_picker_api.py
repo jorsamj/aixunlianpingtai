@@ -87,8 +87,13 @@ def test_new_label_evidence_does_not_accept_unavailable_source_or_invalid_formal
     assert response.json()["positive_label_codes"] == []
 
 
-def test_iteration_selection_summary_accepts_empty_preview_without_submission_validation(tmp_path):
+def test_iteration_selection_summary_accepts_empty_preview_without_submission_validation(tmp_path, monkeypatch):
     client, _repo = _client(tmp_path)
+    # No full-project annotation scan or cached total builder may run on an
+    # empty preview, even on an iteration with an inherited base version.
+    import platform_core.training_material_picker_api as picker_api
+    monkeypatch.setattr(picker_api, "_selection_summary", lambda *_: pytest.fail("empty preview summarized pool"))
+    monkeypatch.setattr(picker_api, "_cached_pool_training_totals", lambda *_: pytest.fail("empty preview scanned GT pool"))
     # Invoke the registered FastAPI endpoint directly as well: this contract
     # remains deterministic on test hosts where TestClient's loop can stall.
     route = next(route for route in client.app.routes
@@ -101,6 +106,8 @@ def test_iteration_selection_summary_accepts_empty_preview_without_submission_va
     assert summary["matched_count"] == 0
     assert summary["eligible_count"] == 0
     assert summary["positive_label_codes"] == []
+    assert summary["selectable_total"] is None
+    assert summary["eligible_total"] is None
 
 
 def test_selection_positive_evidence_rejects_concurrent_material_revision(tmp_path, monkeypatch):

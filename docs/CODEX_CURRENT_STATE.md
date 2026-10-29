@@ -1,3 +1,5 @@
+> **2026-10-29 / 42.24.414 新增 P0 收敛**：原 `training_material_picker_api.py` 空选材摘要不再冷算项目全量 GT 总数；项目及 revision 真相仍校验，空选中数为真实 0、全池数未知为 `null`。延续 42.24.413 训练资源 GET 无旧服务器串行探测/递归模型扫描。新 SHA CI 与 A800 实测待核，未部署。详见 [P0 台账](performance/2026-10-29-p0-followup.md)。
+
 > **最新 P0 接续（2026-10-29 / 42.24.413，本地已验证、CI/生产待验）**：`training_options` 已从旧服务器请求期串行健康检测、Paddle configs/weights rglob、项目训练历史 `job.json` 扫描转为有界快照/轻量索引；迭代 `selection-summary` 的 `image_ids=[]` 合法，前端零选材本地空态。旧服务器检测缺失/过期显示未知、需显式检测；旧 Paddle 配置需手动重新启用形成新快照。Python 137/137、Node 1404/1404，现场 26.5s 分段、`role-page`、P50/P95 尚未取证。详见 [P0 续批台账](performance/2026-10-29-p0-followup.md)；最终 SHA/CI 必须独立核验，未部署。
 
 > **最新接续（2026-10-29 / 42.24.412）**：训练素材状态及新增标签正样本证据修复，业务/测试提交 `86c83c30fd2056f61dd58fb79772bc1f3cc86cbc` 已通过精确 SHA GitHub **21/21 套件、57/57 Job、浏览器导航 107/107**；纯文档补记提交自己的 CI 需再核，仍未部署生产。详情见本文末尾及 [训练工作台专项](TRAINING_CREATE_FOUR_MODES_UI_2026_10_10.md)。以下 42.24.411 小节是上一批历史。
