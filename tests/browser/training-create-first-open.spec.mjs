@@ -27,10 +27,22 @@ test('formal workbench opens while independent resources and recommendation sett
     await probe.route('**/api/training_options**',async route=>{optionsCalls++;if(controlled)await resourceGate;return route.fulfill({json:options})});
     await probe.route('**/api/system/recommendation',async route=>{recommendationCalls++;if(controlled&&recommendationCalls===1){await recommendationGate;return route.fulfill({status:500,json:{detail:'controlled recommendation failure'}})}return route.fulfill({json:{device:'cpu',batch:1,workers:0}})});
     await probe.route('**/api/v62/training-devices',route=>route.fulfill({json:{recommended:'cpu',options:[{id:'cpu',label:'CPU',available:true}]}}));
+    // This isolated hydration test must supply an actually selected formal
+    // positive fixture; the full project catalog is no longer label evidence.
+    await probe.route('**/api/v62/projects/*/training-materials/selection-summary',async route=>{
+      const ids=route.request().postDataJSON()?.image_ids||[];
+      const count=ids.includes('hydration-positive-smoke')?1:0;
+      await route.fulfill({json:{requested_count:ids.length,matched_count:count,selectable_count:count,
+        eligible_count:count,eligible_total:count,box_count:count,size_bytes:count*1024,
+        label_codes:count?['smoke']:[],positive_label_codes:count?['smoke']:[],
+        label_counts:count?{smoke:count}:{},repository_revision:1}});
+    });
     await selectIsolatedTestProject(probe,project.id);await probe.goto('/');await expect.poll(()=>probe.evaluate(()=>Boolean(window.TrainingCreateHydrationRuntime&&state.uiReady))).toBe(true);
     const button=probe.locator('.alg428-card',{hasText:'首次打开配置回归'}).getByRole('button',{name:'训练',exact:true});await button.evaluate(node=>node.addEventListener('click',()=>{window.__formalTrainingClickAt=performance.now()},{once:true}));await button.click();
     const dialog=probe.getByRole('dialog',{name:'创建训练任务'});await expect(dialog.locator('[data-training-step-panel="1"]')).toBeVisible();const openedInMs=await probe.evaluate(()=>performance.now()-window.__formalTrainingClickAt);expect(openedInMs).toBeLessThan(1000);
     if(controlled){
+      await probe.evaluate(()=>window.TrainingDraftRuntime.setMaterialIds(['hydration-positive-smoke']));
+      await expect(dialog.locator('[data-training-label-code="smoke"]')).toBeVisible();
       await expect(dialog.locator('[data-training-input="resources"]')).toHaveAttribute('data-status','loading');await dialog.locator('[data-training-label-code="smoke"]').check();await dialog.locator('[data-training-step-next]').click();await dialog.locator('[data-mode="custom"]').click();await dialog.locator('#trainWorkbenchParameters details').first().locator('summary').click();await dialog.locator('#ts428Epoch').fill('77');await dialog.locator('[data-training-step-next]').click();await expect(dialog.locator('.train-ui-submit')).toBeDisabled();
       await new Promise(resolve=>setTimeout(resolve,1000));releaseResources();releaseRecommendation();await expect.poll(()=>probe.evaluate(()=>window.TrainingCreateHydrationRuntime.diagnostics().resources.status)).toBe('ready');await expect.poll(()=>probe.evaluate(()=>window.TrainingCreateHydrationRuntime.diagnostics().recommendation.status)).toBe('error');
       failedDiagnostics=await probe.evaluate(()=>window.TrainingCreateHydrationRuntime.diagnostics());

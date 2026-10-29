@@ -60,7 +60,9 @@ test('training page stays paged and selected labels come from server summary', a
       {code: 'phone', display_name: '电话'},
     ];
     state.algorithms = [{id: 'summary-algorithm', name: '摘要测试算法', versions: []}];
-    document.body.insertAdjacentHTML('beforeend', `
+    // Mount the synthetic host inside the app content column, outside the
+    // fixed sidebar's hit area, so checkbox tests exercise a real user click.
+    document.querySelector('main.main').insertAdjacentHTML('beforeend', `
       <div id="summaryTestHost" class="train429-create">
         <div class="train428-panel">
           <div class="train-v3-summary">
