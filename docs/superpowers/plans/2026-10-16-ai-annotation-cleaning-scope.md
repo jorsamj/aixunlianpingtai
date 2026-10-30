@@ -1,5 +1,12 @@
 # AI 预标注、清洗范围与提示词创建体验实施计划
 
+## 2026-10-31｜42.24.450 审核候选可视空间与 CI 角标阻断修复（准确 SHA CI 待核）
+
+- **449 精确 CI 结果**：已推送 `bc337e01bdb40ddac37f771f486205ed5404a2fa`，GitHub API 返回 **21/21 工作流已结束：20 success、1 failure**。失败唯一 [Frontend Runtime Stabilization](https://github.com/jorsamj/aixunlianpingtai/actions/runs/41126707135)，其中 Chrome browser-navigation (1)、(2)、frontend 全部 success，(3) 94/95 通过；唯一失败 `training-evaluation-diagnostics.spec.mjs:304` 的测试 `#acceptance-fixture-badge` 固定右下角覆盖了“返回独立评测”真实按钮，Playwright click 在 60 秒内被同一测试角标反复拦截。这不是 AI 审核业务/GT 失败，也不能视为通过。
+- **449 可视证据复核**：下载并目视检查新版 Chrome 1440×900 图片，Noto CJK 中文正确，AI 编辑器显示 640×480 工业场景图、可见矩形框和 98% 合理适配比例，主工作台在真实浏览器中不再出现 1 像素/GIF 空白或 54700% 缩放。进一步确认审核列表在映射工具默认展开时，标签区占去过多垂直空间，下方图片预览被挤压；这是用户原始 P0“视觉重点不突出”的真实缺口。
+- **450 改动**：原 `ai66-label-tools` 改为默认收起，集中展示候选图片；只有首次读取到来源标签尚不能映射为平台活动正式标签时才主动展开并显示待映射数。以后用户主动展开/收起不被翻页/轮询覆盖，标签映射/批量统一 API 和校验不变。浏览器夹具设置已知正式 `fire` 标签，验证可直接看图；另一现有 54 张来源未知标签用例验证自动展开并继续编辑/创建/跨页。修复评测及训练恢复两个测试-only 的右下角“非生产数据”徽标 `pointer-events:none`，保留可见标识但永不挡住操作控件；不修改真实产品的功能按钮。
+- **边界和回归**：只改审核主区展示默认值、Chrome 测试 fixture/角标、前端 Source Guard、版本静态缓存键和台账，不改变 CandidateStore/审核 Request ID、Worker→GT、生产模型/OSS、标签规范化、SQLite schema 或真实业务数据。目标精确 SHA 需重新核完整 Actions 与三 Chrome 分片并下载新版三视口截图；真实生产环境、多存储源/大库 P50/P95、外部模型、生产任务 SQLite v2→v3 备份与迁移/回滚依然未验。
+
 ## 2026-10-31｜42.24.449 AI 审核三视口截图可视化证据修正（准确 SHA CI 待核）
 
 - **448 完成证据**：GitHub 精确提交 `60e8cdca60841f22f292c3dc7315474747c73fd8` 的原生 Actions API **42/42 success、0 failure**；Frontend Runtime Stabilization 三个 Chrome 分片与前端单测均 success。浏览器先前的审核确认未退出、主区 Annotorious 禁交互/编辑标签失效、训练千标签勾选失焦等失败用例已恢复。完整 Node 本地 **1426/1426**。仍仅是 CI，不等于真实生产 OSS/远程模型和业务数据验收。

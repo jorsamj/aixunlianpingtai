@@ -1015,3 +1015,7 @@ VERSION 42.24.404；`Frontend Runtime Stabilization` 浏览器分片旧夹具的
 ## 2026-10-31｜42.24.449 Chrome 三视口中文字体与真实尺寸截图夹具（准确 SHA CI 待核）
 
 448 精确 GitHub 提交 `60e8cdca` 全部 **42/42 Actions 成功**，真实 Chrome 三分片全绿、Node 1426/1426。但下载截图发现旧审核用例用 1×1 像素 GIF 充当候选图，导致画布放大至 54700%、图片区空白；且 CI Ubuntu 中文缺字，无法审查布局与文字。449 仅改原 Playwright 审核视觉 fixture 为标明非生产数据的 640×480 场景 SVG/真实候选坐标，检查图片自然尺寸、候选框、画布初始化与合理缩放，保留 1920/1440/1366 三视口截图及原路由测试；原 Frontend Runtime Stabilization 浏览器作业安装 Noto CJK 字体，输出可读中文截图。没有更改生产 CSS/模型、Task/Candidate/GT、数据库、OSS/Worker；生产视觉/P95、生产 v2→v3 迁移与回滚仍未验证。需核 449 精确 SHA CI 与截图后再记录，不能把 448 结果算作 449。唯一专项见 `docs/superpowers/plans/2026-10-16-ai-annotation-cleaning-scope.md`。
+
+## 2026-10-31｜42.24.450 审核标签工具按需展开与非生产角标点击阻挡（准确 SHA CI 待核）
+
+449 精确 SHA `bc337e01` GitHub **21 Actions 20 绿/1 红**：Frontend Runtime Stabilization 的 Chrome 1/2 通过、3 分片 94/95，仅 `training-evaluation-diagnostics` 中固定右下角的 `#acceptance-fixture-badge` 挡住“返回独立评测”导致 60 秒点击超时。449 已下载并检查真实 1440 Chrome 中文与 640×480 画布，字符和 98% 缩放正确；但默认展开的“标签映射与批量统一”遮占了过多图片区高度。450 保留测试徽标但设置 `pointer-events:none`（评测与训练恢复两处）；AI 审核标签工具默认收起，仅首次发现未映射正式活动标签时展开并提示数量，之后尊重人工手动开关。增强原浏览器两种 canonical/unmapped 场景验证，不改请求/候选/GT/Worker，`VERSION=42.24.450`、静态缓存键同步。生产三视口真实图/OSS/远程模型/P95、SQLite 迁移尚未完成；准确 SHA CI 与截图待核。唯一专项见原 AI 文档。

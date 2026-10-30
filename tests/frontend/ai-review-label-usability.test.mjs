@@ -64,6 +64,14 @@ test('AI mapping renderer skips rebuild when labels and mapping signature are un
   assert.match(source, /datalist\.dataset\.signature!==signature/);
 });
 
+test('review prioritizes candidate pictures while opening unresolved label mapping only on first load', () => {
+  const source = reviewBlock();
+  assert.match(source, /<details class="ai66-label-tools">/, 'the optional mapping tools must not consume the initial review viewport');
+  assert.match(source, /mappingTools\.open=unmapped>0/, 'unresolved source labels must still be shown for correction');
+  assert.match(source, /!review\.pageLoading&&!review\.mappingPanelInitialized/, 'pagination must not override a human-opened or human-closed panel');
+  assert.match(source, /mappingPanelInitialized:false/, 'each independent review task needs its own one-time initial mapping decision');
+});
+
 
 test('AI review is a dedicated human-review workbench with explicit per-image accept and reject', () => {
   const source = reviewBlock();

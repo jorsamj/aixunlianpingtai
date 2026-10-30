@@ -8089,7 +8089,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
         <div class="row"><span class="muted-line ai66-shortcuts">快捷键：← → 选择图片，A 采用，R 拒绝，Alt+← → 翻页</span><button class="btn mini" onclick="reviewPageSelect60(true)">本页全选</button><button class="btn mini" onclick="reviewPageSelect60(false)">本页全不选</button></div>
       </div>
       <datalist id="ai60PlatformLabelOptions"></datalist>
-      <details class="ai66-label-tools" open>
+      <details class="ai66-label-tools">
         <summary>标签映射与批量统一</summary>
         <div id="ai60LabelMapping"></div>
         <section class="ai60-bulk-review">
@@ -8114,6 +8114,13 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   function renderAiLabelMapping60(){
     const review=state.ai60Review,box=document.getElementById('ai60LabelMapping');if(!review||!box)return;
     const rows=review.labelSummary||[],labels=aiReviewLabels60(),datalist=document.getElementById('ai60PlatformLabelOptions');
+    const knownCodes=new Set(labels.map(label=>String(label.code)));
+    const unmapped=rows.filter(row=>{const source=String(row.label||''),target=String(review.labelMapping.get(source)||source);return source&&!knownCodes.has(target)}).length;
+    const mappingTools=box.closest('.ai66-label-tools'),summary=mappingTools?.querySelector('summary');
+    if(summary)summary.textContent=unmapped?`标签映射与批量统一 · ${unmapped} 个标签待映射`:'标签映射与批量统一';
+    // Prioritize candidate images. Expand once only when formal labels need
+    // correction; later pagination or polling must honor the user's toggle.
+    if(mappingTools&&!review.pageLoading&&!review.mappingPanelInitialized){mappingTools.open=unmapped>0;review.mappingPanelInitialized=true}
     if(datalist){
       const signature=labels.map(label=>`${label.code}:${label.display_name||label.display_name_zh||''}`).join('|');
       if(datalist.dataset.signature!==signature){
@@ -8272,7 +8279,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
       document.querySelector('.ai-review-page-shell')?.remove();
     }
     window.AutoLabelPollRuntime?.deactivate?.();
-    state.ai60Review={id:String(id),offset:0,limit:24,total:0,items:[],decisions:new Map(),edits:new Map(),seen:new Map(),labelSummary:[],labelMapping:new Map(),filter:'all',pageRequestEpoch:0,closed:false,ownerPage:String(state.page||'自动标注及清洗'),pageLoading:true,pageError:'',pendingRequest:aiReviewReadPending60(String(id)),submitting:false};
+    state.ai60Review={id:String(id),offset:0,limit:24,total:0,items:[],decisions:new Map(),edits:new Map(),seen:new Map(),labelSummary:[],labelMapping:new Map(),mappingPanelInitialized:false,filter:'all',pageRequestEpoch:0,closed:false,ownerPage:String(state.page||'自动标注及清洗'),pageLoading:true,pageError:'',pendingRequest:aiReviewReadPending60(String(id)),submitting:false};
     if(!fromRoute)window.AiReviewRouteRuntime?.open?.(String(id));
     return loadReviewPage(0);
   };

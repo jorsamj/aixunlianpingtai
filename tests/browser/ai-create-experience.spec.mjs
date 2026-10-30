@@ -288,6 +288,7 @@ test('AI creation preview calls the real single-image endpoint without creating 
 
 test('AI candidate editor stays inside the review workspace without opening a nested dialog', async ({page}, testInfo) => {
   await ready(page);
+  await page.evaluate(()=>{if(!state.labels.some(row=>row.code==='fire'))state.labels.push({code:'fire',display_name:'明火',status:'active'})});
   await page.route('**/api/v60/projects/*/annotation-tasks/ai-ux-fixture/candidates**', route=>route.fulfill({
     status:200,contentType:'application/json',body:JSON.stringify({
       total:2,items:[{image_id:'one',filename:'scene-one.png',url:REVIEW_SCENE_ONE,width:640,height:480,status:'completed',boxes:[{id:'seed-one',label:'fire',x1:243,y1:175,x2:360,y2:408,confidence:0.94}]},
@@ -299,6 +300,7 @@ test('AI candidate editor stays inside the review workspace without opening a ne
   await expect(page.locator('.ai-review-workbench-modal')).toHaveCount(0);
   await expect(page.locator('.ai66-candidate-card .data412-box')).toHaveCount(2);
   await expect(page.locator('.ai66-candidate-card img').first()).toHaveJSProperty('naturalWidth',640);
+  expect(await page.locator('.ai66-label-tools').evaluate(node=>node.open)).toBe(false);
   const before=await page.locator('.v424-modal-layer').count();
   await page.getByRole('button',{name:'编辑候选框'}).first().click();
   await expect(page.locator('.ai66-review.ai66-editing .ai66-edit')).toBeVisible();

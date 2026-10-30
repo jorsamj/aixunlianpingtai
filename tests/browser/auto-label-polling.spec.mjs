@@ -235,6 +235,7 @@ test('AI candidate review keeps searchable mapping edits and inline labels throu
 
   const mappingRoot=review.locator('#ai60LabelMapping');
   await expect(mappingRoot.locator('.ai60-mapping-row')).toHaveCount(3);
+  expect(await review.locator('.ai66-label-tools').evaluate(node=>node.open)).toBe(true);
   await page.evaluate(() => {
     window.__stableAiMappingFirst = document.querySelector('#ai60LabelMapping .ai60-mapping-row');
     window.renderAiLabelMapping60?.();
