@@ -3114,14 +3114,26 @@ def list_material_ids_v61(
     query: str = "", storage_source_id: Optional[List[str]] = Query(default=None),
     processing_status: Optional[str] = None,
     label: Optional[List[str]] = Query(default=None), annotated: Optional[bool] = None,
+    narrow: bool = False, expected_revision: Optional[int] = None,
 ):
     get_project(project_id)
-    page = material_store(project_id).list_ids(
-        cursor=cursor, limit=limit, query=query,
-        storage_source_ids=storage_source_id, processing_status=processing_status,
-        labels=label, annotated=annotated,
-    )
-    return {"items": page.items, "next_cursor": page.next_cursor, "total": page.total}
+    repository = material_store(project_id)
+    revision = repository.current_revision()
+    if expected_revision is not None and revision != expected_revision:
+        raise HTTPException(status_code=409, detail="素材库已更新，请重新解析当前筛选结果")
+    filters = dict(query=query, storage_source_ids=storage_source_id or (),
+                   processing_status=processing_status, labels=label or (), annotated=annotated)
+    if narrow:
+        # Bulk selection needs only IDs. Reuse the canonical material predicate,
+        # avoiding list_page() JSON/detail hydration for every selected image.
+        page = repository.iter_filtered_ids(filters, cursor=cursor, limit=limit,
+                                            include_total=cursor is None)
+    else:
+        page = repository.list_ids(cursor=cursor, limit=limit, **filters)
+    if repository.current_revision() != revision:
+        raise HTTPException(status_code=409, detail="素材库在解析期间发生变化，请重试")
+    return {"items": page.items, "next_cursor": page.next_cursor,
+            "total": page.total, "repository_revision": revision}
 
 
 @app.get("/api/v61/projects/{project_id}/materials/status-counts")

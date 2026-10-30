@@ -1,3 +1,7 @@
+## 2026-10-30｜42.24.433 AI 标注 UX/跨页选择续批（准确 CI 待核验）
+
+432 基线 `5dcd7186`；已修 AI 创建页等 3 路配置结束才加载第一页的串行等待、隐式勾选、AI 选择本页无跨页操作；复用 `/materials/ids` 的窄字段 SQL 谓词 + 素材修订 409、单一选择 Set 原子合并及 50000 上限。v60 审核候选由内嵌第二弹层改为已有审核工作区内联三栏，保留 Annotorious/GT durable commit；AI 任务列表补服务器 cursor 翻页及当前页组合过滤。详情、已知未完成项和本批测试边界直接更新原 `docs/superpowers/plans/2026-10-16-ai-annotation-cleaning-scope.md`。生产 HAR/P95、Chrome 截图、Pytest 和真实外部模型/OSS 未做现场验证；不部署、不改正式标注、训练历史或数据副本。
+
 ## 2026-10-30｜42.24.432 跨页选择负样本证据修订补齐
 
 在 `1592b939`／42.24.431 的已验证普通 GET 前推与组合筛选基础上，本批只补已有 `/bulk-selection` 和 `TrainingMaterialPickerRuntime.bulkAction()` 的负样本池、负样本确认两种修订号比对，并为角色路径补原使用历史末端重验；角色批量超过 50000 明示实际数。既有 5 修订项页缓存与 `picker.selected`、历史筛选、Train/Val/Test、正式 GT 保留；浏览器 Stalled、生产冷/热 P95 未证实，不能将代码层安全性等同于现场性能闭环。详见唯一进度文档 `docs/performance/2026-10-29-p0-followup.md`，不部署、不清理素材、不重建缓存或选择系统。

@@ -4503,28 +4503,68 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   let aiPromptPreviewTimer429=0;
   window.scheduleAiPromptPreview429=function(){clearTimeout(aiPromptPreviewTimer429);aiPromptPreviewTimer429=setTimeout(()=>previewAiPrompt429(),180)};
   window.previewAiPrompt429=async function(){const draft=aiCreateCurrent429(),root=document.getElementById('ai429PromptPreview');if(!draft||!root)return;const epoch=draft.epoch,prompt=String(document.getElementById('ai429Prompt')?.value||'');root.innerHTML='<span class="loading-line">正在生成最终提示词预览…</span>';try{const labels=[...draft.labels].map(code=>{const row=(state.labels||[]).find(label=>String(label.code)===code)||{};return{code,display_name_zh:aiCreateLabelName429(row)||code}});const result=await api('/api/v35/prompt-templates/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt,labels,image_width:640,image_height:480,business_instruction:String(document.getElementById('ai429Instruction')?.value||'')})});if(aiCreateIsCurrent429(epoch))root.innerHTML=`<pre>${esc(result.rendered_prompt||'')}</pre>`}catch(error){if(aiCreateIsCurrent429(epoch))root.innerHTML=`<div class="inline-error"><span>${esc(error.message||error)}</span><button class="btn mini" onclick="previewAiPrompt429()">重试</button></div>`}};
-  function aiCreateRenderMaterials429(){const draft=aiCreateCurrent429(),root=document.getElementById('ai429MaterialGrid'),pager=document.getElementById('ai429MaterialPager'),summary=document.getElementById('ai429MaterialCount');if(!draft||!root)return;if(draft.materialLoading){root.innerHTML='<div class="ai-create-loading"><i></i><span>正在读取这一页素材…</span></div>';return}if(draft.materialError){root.innerHTML=`<div class="inline-error"><span>${esc(draft.materialError)}</span><button class="btn mini" onclick="loadAiCreateMaterials429()">重试</button></div>`;return}root.innerHTML=(draft.materialItems||[]).map(row=>{const id=String(row.id||''),on=draft.images.has(id);return `<button type="button" class="ai-create-material ${on?'on':''}" onclick="toggleAiCreateMaterial429('${esc(id)}')"><img src="${esc(row.url||'')}" loading="lazy"><span><b title="${esc(row.filename||id)}">${esc(row.filename||id)}</b><small>${on?'已选择':'点击选择'}</small></span><i>${on?'✓':'+'}</i></button>`}).join('')||'<div class="empty compact">当前页没有未标注素材</div>';if(summary)summary.textContent=`已选 ${draft.images.size} 张 · 匹配 ${draft.materialTotal} 张`;if(pager){const pages=Math.max(1,Math.ceil(draft.materialTotal/draft.pageSize));pager.innerHTML=`<button class="btn mini" ${draft.page<=1?'disabled':''} onclick="aiCreateMaterialPage429(-1)">上一页</button><span>${draft.page} / ${pages}</span><button class="btn mini" ${draft.page>=pages?'disabled':''} onclick="aiCreateMaterialPage429(1)">下一页</button><button class="btn mini" onclick="selectAiCreatePage429()">选择本页</button>`}}
+  function aiCreateRenderMaterials429(){
+    const draft=aiCreateCurrent429(),root=document.getElementById('ai429MaterialGrid'),pager=document.getElementById('ai429MaterialPager'),summary=document.getElementById('ai429MaterialCount');
+    if(!draft||!root)return;
+    if(summary)summary.textContent=`已选 ${draft.images.size} 张 · 匹配 ${draft.materialTotal} 张`;
+    if(draft.materialLoading)root.innerHTML='<div class="ai-create-loading"><i></i><span>正在读取这一页素材…</span></div>';
+    else if(draft.materialError)root.innerHTML=`<div class="inline-error"><span>${esc(draft.materialError)}</span><button class="btn mini" onclick="loadAiCreateMaterials429()">重试</button></div>`;
+    else root.innerHTML=(draft.materialItems||[]).map(row=>{const id=String(row.id||''),on=draft.images.has(id);return `<button type="button" class="ai-create-material ${on?'on':''}" onclick="toggleAiCreateMaterial429('${esc(id)}')"><img src="${esc(row.url||'')}" loading="lazy" decoding="async"><span><b title="${esc(row.filename||id)}">${esc(row.filename||id)}</b><small>${on?'已选择':'点击选择'}</small></span><i>${on?'✓':'+'}</i></button>`}).join('')||'<div class="empty compact">当前页没有未标注素材</div>';
+    if(pager){const pages=Math.max(1,Math.ceil(draft.materialTotal/draft.pageSize));pager.innerHTML=`<button class="btn mini" ${draft.page<=1?'disabled':''} onclick="aiCreateMaterialPage429(-1)">上一页</button><span>${draft.page} / ${pages}</span><button class="btn mini" ${draft.page>=pages?'disabled':''} onclick="aiCreateMaterialPage429(1)">下一页</button><button class="btn mini" onclick="selectAiCreatePage429()">选择本页</button><button class="btn mini primary" ${draft.bulkLoading||draft.materialLoading||draft.materialError?'disabled':''} onclick="selectAllAiCreateFiltered429()">${draft.bulkLoading?'正在解析…':'全选当前筛选结果'}</button><button class="btn mini" ${draft.bulkLoading||!draft.images.size?'disabled':''} onclick="clearAiCreateSelection429()">清空选择</button>`}
+    const bulk=document.getElementById('ai429BulkFeedback');if(bulk)bulk.textContent=draft.bulkLoading?`正在核验筛选结果 ${draft.bulkCount||0} 张，原有选择不变…`:draft.bulkError||'';
+  }
   window.toggleAiCreateMaterial429=function(id){const draft=aiCreateCurrent429();if(!draft)return;draft.images.has(id)?draft.images.delete(id):draft.images.add(id);draft.selectionTouched=true;aiCreateRenderMaterials429()};
   window.selectAiCreatePage429=function(){const draft=aiCreateCurrent429();if(!draft)return;(draft.materialItems||[]).forEach(row=>draft.images.add(String(row.id)));draft.selectionTouched=true;aiCreateRenderMaterials429()};
+  window.clearAiCreateSelection429=function(){const draft=aiCreateCurrent429();if(!draft||draft.bulkLoading)return;draft.images.clear();draft.selectionTouched=true;draft.bulkError='';aiCreateRenderMaterials429()};
+  window.selectAllAiCreateFiltered429=async function(){
+    const draft=aiCreateCurrent429();if(!draft||draft.bulkLoading||draft.materialLoading||draft.materialError)return;
+    const epoch=draft.epoch,project=String(pid()),query=String(draft.query||''),sequence=++draft.bulkEpoch;
+    const current=()=>aiCreateCurrent429()===draft&&aiCreateIsCurrent429(epoch)&&String(pid())===project&&draft.bulkEpoch===sequence;
+    const cap=50000,ids=new Set();let cursor='',revision=null,total=0;
+    draft.bulkLoading=true;draft.bulkError='';draft.bulkCount=0;aiCreateRenderMaterials429();
+    try{
+      do{
+        if(!current())return;
+        const params=new URLSearchParams({limit:'500',annotated:'false',narrow:'true'});
+        if(query)params.set('query',query);
+        if(cursor)params.set('cursor',cursor);
+        if(revision!==null)params.set('expected_revision',String(revision));
+        const result=await api(`/api/v61/projects/${project}/materials/ids?${params}`);
+        if(!current())return;
+        if(revision===null){revision=Number(result.repository_revision);total=Number(result.total||0)}
+        if(!Number.isSafeInteger(revision)||Number(result.repository_revision)!==revision)throw new Error('素材库发生更新，请重试选择');
+        if(total>cap)throw new Error(`当前筛选结果有 ${total} 张，超过单次安全上限 ${cap} 张，请缩小筛选范围`);
+        for(const id of result.items||[]){ids.add(String(id));if(ids.size>cap)throw new Error(`选择超过安全上限 ${cap} 张，请缩小筛选范围`)}
+        draft.bulkCount=ids.size;cursor=String(result.next_cursor||'');aiCreateRenderMaterials429();
+      }while(cursor);
+      // Never mutate the authoritative selection until every ID page succeeds.
+      if(!current())return;
+      if(ids.size!==total)throw new Error(`筛选结果已变化：预期 ${total} 张，实际 ${ids.size} 张，请重试`);
+      for(const id of ids)draft.images.add(id);
+      draft.selectionTouched=true;
+    }catch(error){if(current())draft.bulkError=String(error.message||error||'跨页选择失败，请重试')}
+    finally{if(current()){draft.bulkLoading=false;aiCreateRenderMaterials429()}}
+  };
   window.aiCreateMaterialPage429=function(delta){const draft=aiCreateCurrent429();if(!draft)return;draft.page=Math.max(1,draft.page+Number(delta||0));loadAiCreateMaterials429()};
-  window.loadAiCreateMaterials429=async function(){const draft=aiCreateCurrent429();if(!draft)return;const epoch=draft.epoch;draft.query=String(document.getElementById('ai429MaterialQ')?.value||draft.query||'').trim();draft.materialLoading=true;draft.materialError='';aiCreateRenderMaterials429();const params=new URLSearchParams({page:String(draft.page),page_size:String(draft.pageSize),annotated:'false'});if(draft.query)params.set('query',draft.query);try{const result=await api(`/api/v61/projects/${pid()}/materials?${params}`);if(!aiCreateIsCurrent429(epoch))return;draft.materialItems=Array.isArray(result.items)?result.items:[];draft.materialTotal=Number(result.total||0);if(!draft.selectionTouched&&!draft.images.size)draft.materialItems.forEach(row=>draft.images.add(String(row.id)));draft.materialLoading=false;aiCreateRenderMaterials429()}catch(error){if(!aiCreateIsCurrent429(epoch))return;draft.materialLoading=false;draft.materialError=String(error.message||error||'素材读取失败');aiCreateRenderMaterials429()}};
-  window.searchAiCreateMaterials429=function(){const draft=aiCreateCurrent429();if(!draft)return;clearTimeout(draft.searchTimer);draft.searchTimer=setTimeout(()=>{draft.page=1;loadAiCreateMaterials429()},260)};
+  window.loadAiCreateMaterials429=function(){const draft=aiCreateCurrent429();if(!draft)return Promise.resolve();const epoch=draft.epoch,project=String(pid());draft.query=String(document.getElementById('ai429MaterialQ')?.value??draft.query??'').trim();const params=new URLSearchParams({page:String(draft.page),page_size:String(draft.pageSize),annotated:'false'});if(draft.query)params.set('query',draft.query);const key=`${project}?${params}`;if(draft.materialLoading&&draft.materialPending&&draft.materialRequestKey===key)return draft.materialPending;const sequence=++draft.materialRequestEpoch;draft.materialRequestKey=key;draft.materialLoading=true;draft.materialError='';aiCreateRenderMaterials429();const current=()=>aiCreateCurrent429()===draft&&aiCreateIsCurrent429(epoch)&&String(pid())===project&&draft.materialRequestEpoch===sequence;const pending=api(`/api/v61/projects/${project}/materials?${params}`).then(result=>{if(!current())return;draft.materialItems=Array.isArray(result.items)?result.items:[];draft.materialTotal=Number(result.total||0)}).catch(error=>{if(current())draft.materialError=String(error.message||error||'素材读取失败')}).finally(()=>{if(current()){draft.materialLoading=false;draft.materialPending=null;aiCreateRenderMaterials429()}});draft.materialPending=pending;return pending};
+  window.searchAiCreateMaterials429=function(){const draft=aiCreateCurrent429();if(!draft)return;++draft.bulkEpoch;draft.bulkLoading=false;draft.bulkError='';clearTimeout(draft.searchTimer);draft.searchTimer=setTimeout(()=>{draft.page=1;loadAiCreateMaterials429()},260)};
   window.aiCreateRenderReferences429=function(){const draft=aiCreateCurrent429(),root=document.getElementById('ai429RefGrid'),pager=document.getElementById('ai429RefPager'),summary=document.getElementById('ai429ReferenceCount');if(!draft||!root)return;if(draft.referenceLoading){root.innerHTML='<div class="ai-create-loading"><i></i><span>正在读取参考素材…</span></div>';return}if(draft.referenceError){root.innerHTML=`<div class="inline-error"><span>${esc(draft.referenceError)}</span><button class="btn mini" onclick="loadAiCreateReferences429()">重试</button></div>`;return}root.innerHTML=(draft.referenceItems||[]).map(row=>{const id=String(row.id||''),on=state.ai429RefSelected.has(id);return `<button type="button" data-image-id="${esc(id)}" class="ai-create-material ${on?'on':''}" onclick="toggleRef429('${esc(id)}');aiCreateRenderReferences429()"><img src="${esc(row.url||'')}" loading="lazy"><span><b title="${esc(row.filename||id)}">${esc(row.filename||id)}</b><small>${on?'已选择':'点击作为参考'}</small></span><i>${on?'✓':'+'}</i></button>`}).join('')||'<div class="empty compact">当前页没有已标注参考素材</div>';if(summary)summary.textContent=`已选 ${state.ai429RefSelected.size} 张 · 仅作视觉示例，不改变任务标签`;if(pager){const pages=Math.max(1,Math.ceil(draft.referenceTotal/draft.referencePageSize));pager.innerHTML=`<button class="btn mini" ${draft.referencePage<=1?'disabled':''} onclick="aiCreateReferencePage429(-1)">上一页</button><span>${draft.referencePage} / ${pages}</span><button class="btn mini" ${draft.referencePage>=pages?'disabled':''} onclick="aiCreateReferencePage429(1)">下一页</button>`}};
   window.loadAiCreateReferences429=async function(){const draft=aiCreateCurrent429();if(!draft)return;const epoch=draft.epoch;draft.referenceQuery=String(document.getElementById('ai429RefQ')?.value||draft.referenceQuery||'').trim();draft.referenceLoading=true;draft.referenceError='';aiCreateRenderReferences429();const params=new URLSearchParams({page:String(draft.referencePage),page_size:String(draft.referencePageSize),annotated:'true'});if(draft.referenceQuery)params.set('query',draft.referenceQuery);try{const result=await api(`/api/v61/projects/${pid()}/materials?${params}`);if(!aiCreateIsCurrent429(epoch))return;draft.referenceItems=Array.isArray(result.items)?result.items:[];draft.referenceTotal=Number(result.total||0);draft.referenceLoaded=true;draft.referenceLoading=false;aiCreateRenderReferences429()}catch(error){if(!aiCreateIsCurrent429(epoch))return;draft.referenceLoading=false;draft.referenceError=String(error.message||error||'参考素材读取失败');aiCreateRenderReferences429()}};
   window.aiCreateReferenceOpened429=function(element){const draft=aiCreateCurrent429();if(element?.open&&draft&&!draft.referenceLoaded&&!draft.referenceLoading)loadAiCreateReferences429()};
   window.searchAiCreateReferences429=function(){const draft=aiCreateCurrent429();if(!draft)return;clearTimeout(draft.referenceSearchTimer);draft.referenceSearchTimer=setTimeout(()=>{draft.referencePage=1;loadAiCreateReferences429()},260)};
   window.aiCreateReferencePage429=function(delta){const draft=aiCreateCurrent429();if(!draft)return;draft.referencePage=Math.max(1,draft.referencePage+Number(delta||0));loadAiCreateReferences429()};
-  window.hydrateAiCreate429=async function(epoch){const draft=aiCreateCurrent429();if(!draft||draft.epoch!==epoch)return;const results=await Promise.allSettled([api('/api/v35/model-configs'),api('/api/v35/prompt-templates'),api(`/api/v12/projects/${pid()}/labels`)]);if(!aiCreateIsCurrent429(epoch))return;if(results[0].status==='fulfilled')state.modelConfigs=results[0].value?.items||[];if(results[1].status==='fulfilled')state.promptTemplates=results[1].value?.items||[];if(results[2].status==='fulfilled')state.labels=results[2].value?.items||[];draft.hydrationError=results.some(row=>row.status==='rejected')?'部分配置读取失败，可重试；已加载内容仍可继续编辑。':'';const status=document.getElementById('ai429Hydration');if(status)status.innerHTML=draft.hydrationError?`<div class="inline-error"><span>${esc(draft.hydrationError)}</span><button class="btn mini" onclick="hydrateAiCreate429(${epoch})">重试</button></div>`:'<span class="ready">模型、模板与标签已同步</span>';aiCreateRenderModels429();aiCreateRenderTemplates429();aiCreateRenderLabels429();if(!document.getElementById('ai429Prompt')?.value)restoreAiPrompt429();loadAiCreateMaterials429()};
+  window.hydrateAiCreate429=async function(epoch){const draft=aiCreateCurrent429();if(!draft||draft.epoch!==epoch)return;const project=String(pid());const results=await Promise.allSettled([api('/api/v35/model-configs'),api('/api/v35/prompt-templates'),api(`/api/v12/projects/${project}/labels`)]);if(!aiCreateIsCurrent429(epoch)||String(pid())!==project)return;if(results[0].status==='fulfilled')state.modelConfigs=results[0].value?.items||[];if(results[1].status==='fulfilled')state.promptTemplates=results[1].value?.items||[];if(results[2].status==='fulfilled')state.labels=results[2].value?.items||[];draft.hydrationError=results.some(row=>row.status==='rejected')?'部分配置读取失败，可重试；已加载内容仍可继续编辑。':'';const status=document.getElementById('ai429Hydration');if(status)status.innerHTML=draft.hydrationError?`<div class="inline-error"><span>${esc(draft.hydrationError)}</span><button class="btn mini" onclick="hydrateAiCreate429(${epoch})">重试</button></div>`:'<span class="ready">模型、模板与标签已同步</span>';aiCreateRenderModels429();aiCreateRenderTemplates429();aiCreateRenderLabels429();if(!document.getElementById('ai429Prompt')?.value)restoreAiPrompt429()};
   window.createAiLabelCore429=function(opts={}){
     const epoch=Number(state.ai429CreateEpoch||0)+1;state.ai429CreateEpoch=epoch;
     const explicit=[...new Set((opts.image_ids||[]).map(String).filter(Boolean))];
-    const initial=explicit.length?explicit:(state.images||[]).filter(row=>!row.annotated).map(row=>String(row.id));
+    const initial=explicit;
     state.ai429RefLabels=new Set();state.ai429RefSelected=new Set();
-    state.ai429Create={epoch,images:new Set(initial),labels:new Set(),modelId:'',templateId:'',page:1,pageSize:12,query:'',materialItems:[],materialTotal:0,materialLoading:true,materialError:'',selectionTouched:explicit.length>0,locked:explicit.length>0,referencePage:1,referencePageSize:8,referenceQuery:'',referenceItems:[],referenceTotal:0,referenceLoading:false,referenceLoaded:false,referenceError:''};
+    state.ai429Create={epoch,images:new Set(initial),labels:new Set(),modelId:'',templateId:'',page:1,pageSize:12,query:'',materialItems:[],materialTotal:0,materialLoading:false,materialError:'',materialRequestEpoch:0,materialRequestKey:'',materialPending:null,bulkEpoch:0,bulkLoading:false,bulkCount:0,bulkError:'',selectionTouched:explicit.length>0,locked:explicit.length>0,referencePage:1,referencePageSize:8,referenceQuery:'',referenceItems:[],referenceTotal:0,referenceLoading:false,referenceLoaded:false,referenceError:''};
     modal('创建AI自动标注任务',`<div class="ailabel427 ai429 ai-create-workbench" data-ai-create-epoch="${epoch}"><div id="ai429Hydration" class="ai-create-hydration"><span class="loading-line">正在同步模型、模板与标签；可先选择素材…</span></div><section class="ai-create-section"><header><div><b>1. 选择待标注素材</b><span>只分页读取未标注素材，不会加载完整素材池；跨页选择会持续保留。</span></div><strong id="ai429MaterialCount">已选 ${initial.length} 张</strong></header><div class="ai-create-toolbar"><input id="ai429MaterialQ" class="input" placeholder="搜索素材名称" oninput="searchAiCreateMaterials429()"></div><div id="ai429MaterialGrid" class="ai-create-material-grid"><div class="ai-create-loading"><i></i><span>准备素材分页…</span></div></div><div id="ai429MaterialPager" class="ai-create-pager"></div></section><section class="ai-create-section"><header><div><b>2. 选择视觉模型</b><span>只展示已配置模型；任务创建时冻结模型版本与安全凭据引用。</span></div></header><input id="ai429Model" type="hidden"><div id="ai429Models" class="ai-create-models"><div class="skeleton-line"></div></div></section><section class="ai-create-section"><header><div><b>3. 选择有效标签</b><span>必须显式选择当前标签库英文 code；中文名、别名、历史 alias 不会自动转换。</span></div><strong id="ai429LabelCount">已选 0 个</strong></header><input id="ai429Labels" type="hidden"><input id="ai429LabelQ" class="input" placeholder="搜索标签中文名或 code" oninput="aiCreateRenderLabels429()"><div id="ai429LabelGrid" class="ai-create-label-grid"><div class="skeleton-line"></div></div></section><section class="ai-create-section"><header><div><b>4. 提示词</b><span>模板是起点；当前任务可独立编辑，提交后冻结，不受模板后续修改影响。</span></div></header><div class="form two"><div class="field"><label>提示词模板</label><select id="ai429Template" class="select" onchange="aiCreateTemplateChanged429()"><option>正在读取…</option></select></div><div class="field"><label>业务补充说明</label><input id="ai429Instruction" class="input" maxlength="2000" placeholder="例如：只标注清晰可见且面积大于 20px 的目标" oninput="scheduleAiPromptPreview429()"></div></div><div class="field"><div class="row between"><label>本任务完整提示词</label><button type="button" class="btn mini" onclick="restoreAiPrompt429()">恢复模板原文</button></div><textarea id="ai429Prompt" class="input ai-create-prompt" rows="7" maxlength="12000" placeholder="正在读取提示词…" oninput="this.dataset.userEdited='1';scheduleAiPromptPreview429()"></textarea><small>允许变量：labels_json、image_width、image_height、business_instruction、output_schema。</small></div><details class="ai-create-preview"><summary>预览最终提示词</summary><div id="ai429PromptPreview"><span>选择标签后生成预览</span></div></details></section><details class="advanced427-box ai-create-advanced"><summary>高级设置</summary><div class="form two"><div class="field"><label>置信度阈值</label><input id="ai429Threshold" class="input" type="number" min="0" max="1" step="0.01" value="0.45"></div><div class="field check"><label><input id="ai429Overwrite" type="checkbox"> 覆盖相同标签旧标注</label></div></div></details><div class="ai-create-footer"><span>候选结果仍须人工审核后才写入正式标注。</span><div class="row"><button class="btn" onclick="closeModal()">取消</button><button id="ai429Submit" class="btn primary" onclick="submitAiLabel429()">创建AI标注任务</button></div></div></div>`,true);
     const advanced=document.querySelector(`.ai-create-workbench[data-ai-create-epoch="${epoch}"] .ai-create-advanced`);
     if(advanced){advanced.insertAdjacentHTML('beforeend','<section class="ai429-ref"><header><div><b>参考图片（可选）</b><span>仅作为视觉示例，不会自动添加或改变本次标签。</span></div><input id="ai429RefQ" class="input" placeholder="搜索已标注参考素材" oninput="searchAiCreateReferences429()"></header><div id="ai429ReferenceCount" class="muted-line">已选 0 张 · 仅作视觉示例，不改变任务标签</div><div id="ai429RefGrid" class="ai-create-material-grid"><div class="empty compact">展开高级设置后按需读取</div></div><div id="ai429RefPager" class="ai-create-pager"></div></section>');advanced.addEventListener('toggle',()=>window.aiCreateReferenceOpened429?.(advanced),{passive:true})}
-    aiCreateRenderMaterials429();return epoch;
+    document.getElementById('ai429MaterialPager')?.insertAdjacentHTML('afterend','<div id="ai429BulkFeedback" class="ai-create-bulk-feedback" role="status" aria-live="polite"></div>');
+    aiCreateRenderMaterials429();loadAiCreateMaterials429();return epoch;
   };
 
 
@@ -7598,12 +7638,12 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     if(top?.querySelector?.('.ai60-progress'))stopAiTaskDetail60({resumeList:true});
     if(top?.querySelector?.('.ai66-edit')){destroyAiCandidateEditor60();state.ai60Edit=null}
   };
-  window.showAiTask60=async function(id){
+  window.showAiTask60=async function(id,{initialTask=null}={}){
     const detailId=String(id||'');
     const key=`ai-task-detail:${detailId}`;
     try{
       stopAiTaskDetail60({resumeList:false});
-      const first=await api(taskApi(detailId));progressShell(first);renderProgress(first);
+      const first=initialTask||await api(taskApi(detailId));progressShell(first);renderProgress(first);
       window.AutoLabelPollRuntime?.deactivate?.();
       state.ai60DetailPollKey=key;
       const terminal=await window.PlatformCore.taskPoller.waitForTaskTerminal({
@@ -7636,6 +7676,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   window.submitAiLabel429=async function(ids=[]){
     const submit=document.getElementById('ai429Submit');if(submit?.disabled)return false;
     const draft=state.ai429Create||{};
+    if(draft.bulkLoading)return toast('请等待当前筛选结果解析完成后再创建任务');
     if(!ids.length)ids=[...(draft.images||new Set())];
     if(!ids.length)return toast('没有需要标注的图片');
     const parsed=explicitCanonicalAiLabelText(document.getElementById('ai429Labels')?.value||'');
@@ -7658,8 +7699,10 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     try{
       if(submit){submit.disabled=true;submit.textContent='正在创建…'}
       const task=await api(taskApi(),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-      closeModal();
-      showAiTask60(task.id);
+      await closeModal();
+      // The durable 202 response already is the receipt; detail refresh must
+      // not delay it or turn a successful create into a creation error.
+      void showAiTask60(task.id,{initialTask:task});
     }catch(error){const submit=document.getElementById('ai429Submit');if(submit){submit.disabled=false;submit.textContent='创建AI标注任务'}toast(error.message||error)}
   };
 
@@ -7667,13 +7710,21 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     const view=taskView(task),labels=(task.requested_labels||[]).map(code=>window.PlatformCore.materials.labelDisplay(code,state.labels)).join('、')||'-';
     return `<tr data-task-id="${esc(task.id)}"><td><b>${esc(task.name||task.id)}</b><div class="muted-line">${esc(labels)}</div></td><td><span class="pill ${view.active?'run':view.status==='AWAITING_CONFIRMATION'?'warn':view.status==='SUCCEEDED'?'ok':view.status==='FAILED'?'err':''}">${esc(view.statusText)}</span>${view.runtimeText?`<div class="muted-line">${esc(view.runtimeText)}</div>`:''}</td><td><div class="op427-progress"><i><em style="transform:scaleX(${Math.max(0,Math.min(100,Number(view.percent||0)))/100});transform-origin:left center"></em></i><span>${esc(view.progressText)} · ${Number(view.percent||0).toFixed(1)}%</span></div></td><td>${view.boxes}</td><td>${time(task.created_at)}<div class="muted-line">${elapsed(task)}</div></td><td><div class="row"><button class="btn mini" onclick="showAiTask60('${task.id}')">详情</button>${view.canReview?`<button class="btn mini primary" onclick="reviewAiLabel427('${task.id}')">审核</button>`:''}${view.canRetry?`<button class="btn mini" onclick="retryAiTask60('${task.id}')">重试</button>`:''}</div></td></tr>`;
   }
-  function renderAiTaskRows60(tasks){const body=document.getElementById('ai60TaskRows');if(!body)return;if(window.AutoLabelPollRuntime?.patchRows?.(body,tasks))return;body.innerHTML=tasks.map(taskRow).join('')||'<tr><td colspan="6">暂无AI标注任务</td></tr>'}
+  function renderAiTaskRows60(tasks){
+    const body=document.getElementById('ai60TaskRows');if(!body)return;
+    const query=String(state.ai60TaskSearch||'').trim().toLowerCase(),filter=String(state.ai60TaskStatus||'');
+    const visible=(tasks||[]).filter(task=>(!query||`${task.name||''} ${task.id||''} ${task.model_config_name||''}`.toLowerCase().includes(query))
+      &&(!filter||String(task.status||'').toUpperCase()===filter));
+    if(!query&&!filter&&window.AutoLabelPollRuntime?.patchRows?.(body,visible)){}else body.innerHTML=visible.map(taskRow).join('')||'<tr><td colspan="6">当前页没有匹配的任务，可切换筛选或翻页</td></tr>';
+    const pager=document.getElementById('ai60TaskPager');if(pager){const index=Number(state.ai60TaskPageIndex||0),hasNext=!!state.ai60TaskNextCursor;pager.innerHTML=`<span>第 ${index+1} 页 · 当前页 ${visible.length} / ${tasks.length} 条</span><button class="btn mini" ${index===0?'disabled':''} onclick="aiTaskPage60(-1)">上一页</button><button class="btn mini" ${hasNext?'':'disabled'} onclick="aiTaskPage60(1)">下一页</button>`}
+  }
+  window.setAiTaskFilters60=function(){state.ai60TaskSearch=String(document.getElementById('ai60TaskSearch')?.value||'');state.ai60TaskStatus=String(document.getElementById('ai60TaskStatus')?.value||'');if(state.ai60TaskSearch||state.ai60TaskStatus||state.ai60TaskPageIndex)window.AutoLabelPollRuntime?.deactivate?.();else window.AutoLabelPollRuntime?.activate?.(state.annotationTasks60||[]);renderAiTaskRows60(state.annotationTasks60||[])};
   function renderAiTaskPage60({loading=false}={}){
     const view=document.getElementById('view');if(!view)return;
     let shell=view.querySelector(':scope > .ops427[data-ai-task-shell="1"]');
     if(!shell){
       const mount=document.createElement('section');mount.className='ops427';mount.dataset.aiTaskShell='1';
-      mount.innerHTML=`<div class="ops427-head"><div class="seg"><button data-ai-tab="label" class="on" onclick="state.v427OpsTab='label';renderOps427()">AI自动标注</button><button data-ai-tab="clean" onclick="state.v427OpsTab='clean';renderOps427()">自动清洗</button></div><button class="btn primary" onclick="createAiLabel427()">＋ 创建AI标注任务</button></div><section class="panel"><div class="table-wrap"><table class="table"><thead><tr><th>任务</th><th>状态</th><th>真实处理进度</th><th>候选框</th><th>创建/耗时</th><th>操作</th></tr></thead><tbody id="ai60TaskRows"></tbody></table></div></section>`;
+      mount.innerHTML=`<div class="ops427-head"><div class="seg"><button data-ai-tab="label" class="on" onclick="state.v427OpsTab='label';renderOps427()">AI自动标注</button><button data-ai-tab="clean" onclick="state.v427OpsTab='clean';renderOps427()">自动清洗</button></div><button class="btn primary" onclick="createAiLabel427()">＋ 创建AI标注任务</button></div><section class="panel"><div class="ai60-task-toolbar"><input class="input" id="ai60TaskSearch" value="${esc(state.ai60TaskSearch||'')}" placeholder="搜索当前页任务名称、模型或ID" oninput="setAiTaskFilters60()"><select class="select" id="ai60TaskStatus" onchange="setAiTaskFilters60()"><option value="">全部状态</option>${['QUEUED','RUNNING','AWAITING_CONFIRMATION','PARTIAL_SUCCESS','SUCCEEDED','FAILED','CANCELLED','BLOCKED_BY_ENVIRONMENT','BLOCKED_BY_HARDWARE'].map(status=>`<option value="${status}" ${state.ai60TaskStatus===status?'selected':''}>${esc(status==='AWAITING_CONFIRMATION'?'待审核':status)}</option>`).join('')}</select></div><div class="table-wrap"><table class="table"><thead><tr><th>任务</th><th>状态</th><th>真实处理进度</th><th>候选框</th><th>创建/耗时</th><th>操作</th></tr></thead><tbody id="ai60TaskRows"></tbody></table></div><div id="ai60TaskPager" class="ai60-task-pager"></div></section>`;
       view.replaceChildren(mount);shell=mount;
     }
     shell.querySelector('[data-ai-tab="label"]')?.classList.add('on');
@@ -7683,28 +7734,54 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     if(!loading)renderAiTaskRows60(state.annotationTasks60||[]);
   }
   const AI_TASK_PAGE_ENTRY_REUSE_MS=5000;
+  function ensureAiTaskProject60(){
+    const project=String(pid());if(state.ai60TaskProjectId===project)return;
+    state.ai60TaskProjectId=project;state.ai60TaskCursors=[''];state.ai60TaskPageIndex=0;state.ai60TaskNextCursor='';
+    state.annotationTasks60=[];state.annotationTasks60LoadedAt=0;
+  }
   function refreshAnnotationTasks60(){
-    if(state.annotationTasks60RefreshPromise)return state.annotationTasks60RefreshPromise;
-    state.annotationTasks60RefreshPromise=api(`${taskApi()}?limit=50`).then(response=>{
+    ensureAiTaskProject60();
+    const project=String(pid());
+    if(state.annotationTasks60RefreshPromise&&state.ai60TaskRefreshProject===project)return state.annotationTasks60RefreshPromise;
+    const pageIndex=Number(state.ai60TaskPageIndex||0),cursor=(state.ai60TaskCursors||[''])[pageIndex]||'';
+    const params=new URLSearchParams({limit:'50'});if(cursor)params.set('cursor',cursor);
+    state.ai60TaskRefreshProject=project;
+    const pending=api(`${taskApi()}?${params}`).then(response=>{
+      if(state.ai60TaskProjectId!==project||Number(state.ai60TaskPageIndex||0)!==pageIndex)return state.annotationTasks60;
       state.annotationTasks60=response.items||[];
+      state.ai60TaskNextCursor=String(response.next_cursor||'');
       state.annotationTasks60LoadedAt=Date.now();
       return state.annotationTasks60;
-    }).finally(()=>{state.annotationTasks60RefreshPromise=null});
-    return state.annotationTasks60RefreshPromise;
+    });
+    const tracked=pending.finally(()=>{if(state.annotationTasks60RefreshPromise===tracked)state.annotationTasks60RefreshPromise=null});
+    state.annotationTasks60RefreshPromise=tracked;return tracked;
   }
   window.refreshAnnotationTasks60=refreshAnnotationTasks60;
+  window.aiTaskPage60=async function(delta){
+    await state.annotationTasks60RefreshPromise?.catch(()=>{});
+    const current=Number(state.ai60TaskPageIndex||0),next=current+(delta>0?1:-1),history=state.ai60TaskCursors||[''];
+    if(next<0||delta>0&&!state.ai60TaskNextCursor)return;
+    if(next===history.length)history.push(state.ai60TaskNextCursor);
+    state.ai60TaskCursors=history;state.ai60TaskPageIndex=next;state.annotationTasks60=[];state.annotationTasks60LoadedAt=0;
+    window.AutoLabelPollRuntime?.deactivate?.();
+    const body=document.getElementById('ai60TaskRows');if(body)body.innerHTML='<tr><td colspan="6">正在读取目标页…</td></tr>';
+    try{await refreshAnnotationTasks60();if(state.page==='自动标注及清洗'){renderAiTaskRows60(state.annotationTasks60||[]);if(next===0&&!state.ai60TaskSearch&&!state.ai60TaskStatus)window.AutoLabelPollRuntime?.activate?.(state.annotationTasks60||[])}}
+    catch(error){if(body)body.innerHTML=`<tr><td colspan="6">${esc(error.message||error)} <button class="btn mini" onclick="aiTaskPageRetry60()">重试</button></td></tr>`}
+  };
+  window.aiTaskPageRetry60=async()=>{try{await refreshAnnotationTasks60();renderAiTaskRows60(state.annotationTasks60||[])}catch(error){toast(error.message||error)}};
   window.renderOps427=function(){
     if((state.v427OpsTab||'label')==='clean'){window.AutoLabelPollRuntime?.deactivate?.();return window.renderCleanOps427?.()}
+    ensureAiTaskProject60();
     window.PollRegistryRuntime?.replaceCleanTaskTimer?.();
     const hasSnapshot=Number(state.annotationTasks60LoadedAt||0)>0||(state.annotationTasks60||[]).length>0;
     renderAiTaskPage60({loading:!hasSnapshot});
-    if(hasSnapshot)window.AutoLabelPollRuntime?.activate?.(state.annotationTasks60);
+    if(hasSnapshot&&!state.ai60TaskPageIndex&&!state.ai60TaskSearch&&!state.ai60TaskStatus)window.AutoLabelPollRuntime?.activate?.(state.annotationTasks60);
     const age=Date.now()-Number(state.annotationTasks60LoadedAt||0);
     if(hasSnapshot&&age>=0&&age<AI_TASK_PAGE_ENTRY_REUSE_MS)return;
     void refreshAnnotationTasks60().then(tasks=>{
       if(state.page!=='自动标注及清洗'||(state.v427OpsTab||'label')!=='label')return;
       renderAiTaskRows60(tasks||[]);
-      window.AutoLabelPollRuntime?.activate?.(state.annotationTasks60);
+      if(!state.ai60TaskPageIndex&&!state.ai60TaskSearch&&!state.ai60TaskStatus)window.AutoLabelPollRuntime?.activate?.(state.annotationTasks60);
     }).catch(error=>{
       if(state.page!=='自动标注及清洗'||(state.v427OpsTab||'label')!=='label')return;
       if(!hasSnapshot){const body=document.getElementById('ai60TaskRows');if(body)body.innerHTML=`<tr><td colspan="6">AI标注任务读取失败：${esc(error.message||error)}</td></tr>`}
@@ -7887,12 +7964,28 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     renderAiLabelMapping60();
     const rows=reviewVisibleItems60(review),grid=document.getElementById('ai60ReviewGrid');
     const hardSignalNames={low_confidence:'低置信度',small_target:'小目标',dense_targets:'密集目标',no_detection_unverified:'无检测·待核查',gt_disagreement_fp:'与正式标注不一致·疑似误检',gt_disagreement_fn:'与正式标注不一致·疑似漏检'};
-    if(grid)grid.innerHTML=rows.map(item=>{const id=String(item.image_id),image=imageById(id)||item,reviewable=item.status!=='failed',accepted=review.decisions.get(id)!==false,edited=review.edits.has(id),boxCount=(item.boxes||[]).length;return `<article class="review427-card ai66-candidate-card ${reviewable?'':'failed'} ${accepted?'accepted':'rejected'}" data-ai66-image-id="${esc(id)}"><div class="review427-img ai-candidate-stage"><img src="${esc(item.url||image.url||'')}" loading="lazy" decoding="async">${(item.boxes||[]).map(box=>candidateOverlay(box,image)).join('')}<strong>${item.status==='failed'?'处理失败':boxCount?`${boxCount} 个候选框`:(Array.isArray(item.hard_sample_signals)?'未检测到·待人工核查':'AI判断无目标')}</strong></div><div class="ai66-candidate-body"><div><b>${esc(item.filename||image.filename||item.image_id)}</b><span>${item.error?esc(item.error):[...new Set((item.boxes||[]).map(box=>box.label))].map(label=>esc(window.PlatformCore.materials.labelDisplay(label,state.labels))).join(' · ')||'无目标候选'}</span></div>${Array.isArray(item.hard_sample_signals)?`<small class="ai66-hard-signals">${item.hard_sample_signals.map(code=>esc(hardSignalNames[code]||code)).join(' · ')||'本图暂无特殊困难信号'} · 优先级 ${Number(item.hard_sample_priority||0)} · 原因待确认</small>`:''}${edited?'<em>已人工修改</em>':''}</div>${reviewable?`<footer><button class="btn mini ${accepted?'primary':''}" data-ai66-decision="accept" onclick="setAiDecision60('${id}',true)">采用</button><button class="btn mini ${accepted?'':'danger'}" data-ai66-decision="reject" onclick="setAiDecision60('${id}',false)">拒绝</button><button class="btn mini" onclick="editAiCandidate60('${id}')">编辑候选框</button></footer>`:''}</article>`}).join('')||'<div class="empty ai66-review-empty">当前筛选条件下没有候选图片</div>';
+    if(grid)grid.innerHTML=review.pageLoading?'<div class="ai-create-loading">正在读取当前页候选图片…</div>':review.pageError?`<div class="inline-error ai66-review-empty"><span>${esc(review.pageError)}</span><button class="btn mini" onclick="retryAiReviewPage60()">重试</button></div>`:rows.map(item=>{const id=String(item.image_id),image=imageById(id)||item,reviewable=item.status!=='failed',accepted=review.decisions.get(id)!==false,edited=review.edits.has(id),boxCount=(item.boxes||[]).length;return `<article class="review427-card ai66-candidate-card ${reviewable?'':'failed'} ${accepted?'accepted':'rejected'}" data-ai66-image-id="${esc(id)}"><div class="review427-img ai-candidate-stage"><img src="${esc(item.url||image.url||'')}" loading="lazy" decoding="async">${(item.boxes||[]).map(box=>candidateOverlay(box,image)).join('')}<strong>${item.status==='failed'?'处理失败':boxCount?`${boxCount} 个候选框`:(Array.isArray(item.hard_sample_signals)?'未检测到·待人工核查':'AI判断无目标')}</strong></div><div class="ai66-candidate-body"><div><b>${esc(item.filename||image.filename||item.image_id)}</b><span>${item.error?esc(item.error):[...new Set((item.boxes||[]).map(box=>box.label))].map(label=>esc(window.PlatformCore.materials.labelDisplay(label,state.labels))).join(' · ')||'无目标候选'}</span></div>${Array.isArray(item.hard_sample_signals)?`<small class="ai66-hard-signals">${item.hard_sample_signals.map(code=>esc(hardSignalNames[code]||code)).join(' · ')||'本图暂无特殊困难信号'} · 优先级 ${Number(item.hard_sample_priority||0)} · 原因待确认</small>`:''}${edited?'<em>已人工修改</em>':''}</div>${reviewable?`<footer><button class="btn mini ${accepted?'primary':''}" data-ai66-decision="accept" onclick="setAiDecision60('${id}',true)">采用</button><button class="btn mini ${accepted?'':'danger'}" data-ai66-decision="reject" onclick="setAiDecision60('${id}',false)">拒绝</button><button class="btn mini" onclick="editAiCandidate60('${id}')">编辑候选框</button></footer>`:''}</article>`}).join('')||'<div class="empty ai66-review-empty">当前筛选条件下没有候选图片</div>';
     const pager=document.getElementById('ai60ReviewPager');if(pager)window.PlatformCore?.pagination?.mountPagination?.(pager,{page:Math.floor(review.offset/review.limit)+1,pageSize:review.limit,total:review.total,totalPages:Math.max(1,Math.ceil(review.total/review.limit)),hasPrevious:review.offset>0,hasNext:review.offset+review.items.length<review.total},{label:'AI标注审核分页',onPageChange: page=>loadReviewPage((page-1)*review.limit)});
   }
-  async function loadReviewPage(offset){const review=state.ai60Review;if(!review||review.closed)return false;const requestEpoch=Number(review.pageRequestEpoch||0)+1;review.pageRequestEpoch=requestEpoch;const nextOffset=Math.max(0,offset),response=await api(`${taskApi(review.id)}/candidates?limit=${review.limit}&cursor=${nextOffset}`);if(state.ai60Review!==review||review.closed||String(state.page||'')!==String(review.ownerPage||'')||Number(review.pageRequestEpoch||0)!==requestEpoch)return false;review.offset=nextOffset;review.total=response.total||0;review.items=(response.items||[]).map(item=>{const id=String(item.image_id),edited=review.edits.get(id);return edited?{...item,boxes:edited.map(box=>({...box}))}:item});if(Array.isArray(response.label_summary)){review.labelSummary=response.label_summary;for(const row of review.labelSummary){const source=String(row.label||'');if(source&&!review.labelMapping.has(source))review.labelMapping.set(source,source)}}review.seen.clear();for(const item of review.items){review.seen.set(String(item.image_id),item);if(item.status!=='failed'&&!review.decisions.has(String(item.image_id)))review.decisions.set(String(item.image_id),item.accepted===false?false:true)}renderReviewPage();return true}
-  window.reviewAiLabel427=async function(id){try{state.ai60Review={id:String(id),offset:0,limit:24,total:0,items:[],decisions:new Map(),edits:new Map(),seen:new Map(),labelSummary:[],labelMapping:new Map(),filter:'all',pageRequestEpoch:0,closed:false,ownerPage:String(state.page||'自动标注及清洗')};await loadReviewPage(0)}catch(error){toast(error.message||error)}};
-  window.aiReviewPage60=async direction=>{const review=state.ai60Review;if(!review||review.closed)return;try{await loadReviewPage(review.offset+direction*review.limit)}catch(error){toast(error.message||error)}};
+  async function loadReviewPage(offset){
+    const review=state.ai60Review;if(!review||review.closed)return false;
+    const requestEpoch=++review.pageRequestEpoch,nextOffset=Math.max(0,offset);
+    const current=()=>state.ai60Review===review&&!review.closed&&String(state.page||'')===String(review.ownerPage||'')&&review.pageRequestEpoch===requestEpoch;
+    review.pageLoading=true;review.pageError='';renderReviewPage();
+    try{
+      const response=await api(`${taskApi(review.id)}/candidates?limit=${review.limit}&cursor=${nextOffset}`);
+      if(!current())return false;
+      review.offset=nextOffset;review.total=response.total||0;
+      review.items=(response.items||[]).map(item=>{const id=String(item.image_id),edited=review.edits.get(id);return edited?{...item,boxes:edited.map(box=>({...box}))}:item});
+      if(Array.isArray(response.label_summary)){review.labelSummary=response.label_summary;for(const row of review.labelSummary){const source=String(row.label||'');if(source&&!review.labelMapping.has(source))review.labelMapping.set(source,source)}}
+      review.seen.clear();for(const item of review.items){review.seen.set(String(item.image_id),item);if(item.status!=='failed'&&!review.decisions.has(String(item.image_id)))review.decisions.set(String(item.image_id),item.accepted===false?false:true)}
+      return true;
+    }catch(error){if(current())review.pageError=String(error.message||error||'候选图片读取失败');return false}
+    finally{if(current()){review.pageLoading=false;renderReviewPage()}}
+  }
+  window.reviewAiLabel427=async function(id){state.ai60Review={id:String(id),offset:0,limit:24,total:0,items:[],decisions:new Map(),edits:new Map(),seen:new Map(),labelSummary:[],labelMapping:new Map(),filter:'all',pageRequestEpoch:0,closed:false,ownerPage:String(state.page||'自动标注及清洗'),pageLoading:true,pageError:''};return loadReviewPage(0)};
+  window.retryAiReviewPage60=()=>loadReviewPage(state.ai60Review?.offset||0);
+  window.aiReviewPage60=direction=>{const review=state.ai60Review;if(!review||review.closed)return;return loadReviewPage(review.offset+direction*review.limit)};
   window.closeAiReview60=()=>{
     const review=state.ai60Review;
     if(review){review.closed=true;review.pageRequestEpoch=Number(review.pageRequestEpoch||0)+1}
@@ -7909,13 +8002,20 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   function aiCandidateEditImage60(){const edit=state.ai60Edit;return imageById(edit?.id)||state.ai60Review?.seen.get(edit?.id)||{}}
   function destroyAiCandidateEditor60(){const edit=state.ai60Edit;if(!edit)return;edit.closed=true;edit.abort?.abort();edit.editor?.destroy();edit.editor=null}
   window.destroyAiCandidateEditor60=destroyAiCandidateEditor60;
+  function leaveAiCandidateEditor60(){destroyAiCandidateEditor60();state.ai60Edit=null;document.querySelector('.ai66-edit')?.remove?.();document.querySelector('.ai66-review')?.classList?.remove?.('ai66-editing')}
+  window.cancelAiCandidateEdit60=()=>{if(state.ai60Edit?.dirty&&!window.confirm('候选框有尚未保存的修改，确定放弃吗？'))return;leaveAiCandidateEditor60()};
+  function renderAiCandidateQueue60(){
+    const review=state.ai60Review,edit=state.ai60Edit,root=document.getElementById('ai66EditQueue');if(!review||!edit||!root)return;
+    root.innerHTML=`<strong>本页素材 · ${review.items.length} 张</strong>${review.items.map((item,index)=>{const id=String(item.image_id),selected=id===edit.id;return `<button type="button" class="ai66-edit-queue-item ${selected?'on':''}" ${item.status==='failed'?'disabled':''} onclick="editAiCandidate60('${esc(id)}')"><img loading="lazy" decoding="async" src="${esc(item.url||imageById(id)?.url||'')}"><span><b>${esc(item.filename||id)}</b><small>${index+1} · ${(item.boxes||[]).length} 框 ${review.edits.has(id)?'· 已修改':''}</small></span></button>`}).join('')}`;
+  }
   function ensureCandidateEditorShell60(){
     if(document.querySelector('.ai66-edit'))return;
-    modal('编辑AI候选框',`<div class="ai66-edit"><header class="ai66-edit-head"><div><span>AI候选人工编辑</span><b id="ai66EditFilename">候选图片</b><small>空白处拖拽新建 · 拖动框移动 · 四角缩放</small></div><label><span>新框标签</span><select id="ai66EditNewLabel" class="select" onchange="chooseAiCandidateLabel60(this.value)"></select></label></header>
+    const reviewRoot=document.querySelector('.ai66-review');if(!reviewRoot)return;
+    reviewRoot.insertAdjacentHTML('beforeend',`<div class="ai66-edit"><header class="ai66-edit-head"><div><span>AI候选人工编辑</span><b id="ai66EditFilename">候选图片</b><small>空白处拖拽新建 · 拖动框移动 · 四角缩放</small></div><label><span>新框标签</span><select id="ai66EditNewLabel" class="select" onchange="chooseAiCandidateLabel60(this.value)"></select></label></header>
       <div class="ai66-edit-tools"><button class="btn mini" data-ai60-mode="select" onclick="setAiCandidateMode60('select')">选择/编辑</button><button class="btn mini" data-ai60-mode="draw" onclick="setAiCandidateMode60('draw')">画框</button><button class="btn mini" data-ai60-mode="pan" onclick="setAiCandidateMode60('pan')">平移</button><button class="btn mini" data-ai60-visibility onclick="toggleAiCandidateVisibility60()">隐藏框</button><select class="select" data-ai60-filter onchange="filterAiCandidateClass60(this.value)"><option value="">全部类别</option></select><button class="btn mini" onclick="undoAiCandidate60()">撤销</button><button class="btn mini" onclick="redoAiCandidate60()">重做</button><button class="btn mini" onclick="zoomAiCandidate60(-0.1)">缩小</button><span id="ai60EditZoom">100%</span><button class="btn mini" onclick="zoomAiCandidate60(0.1)">放大</button><button class="btn mini" onclick="resetAiCandidateZoom60()">100%</button><button class="btn mini" onclick="fitAiCandidate60()">适应窗口</button></div>
-      <div class="ai66-edit-main"><div class="ai66-edit-canvas"><div id="ai60EditViewport"><div id="ai60EditStage" class="ai66-edit-stage"><img id="ai60EditImg" alt="AI候选图片"></div></div></div><aside class="ai66-edit-inspector"><div class="side-title"><span>候选对象</span><b id="ai66EditCount">0</b></div><div id="ai60EditObjects"></div><details class="ai66-edit-advanced"><summary>高级坐标</summary><div id="ai60EditCoordinates"></div></details></aside></div>
-      <footer class="ai66-edit-footer"><span id="ai60EditStatus">正在读取图片…</span><button class="btn" onclick="closeModal()">取消</button><button class="btn primary" onclick="saveAiCandidateEdit60()">保存候选修改</button></footer></div>`,true);
-    const root=document.querySelector('.ai66-edit');root?.closest('.modal-card')?.classList.add('ai-candidate-editor-modal');root?.closest('.v424-modal-layer,.modal')?.classList.add('ai-candidate-editor-layer');
+      <div class="ai66-edit-main"><aside id="ai66EditQueue" class="ai66-edit-queue"></aside><div class="ai66-edit-canvas"><div id="ai60EditViewport"><div id="ai60EditStage" class="ai66-edit-stage"><img id="ai60EditImg" alt="AI候选图片"></div></div></div><aside class="ai66-edit-inspector"><div class="side-title"><span>候选对象</span><b id="ai66EditCount">0</b></div><div id="ai60EditObjects"></div><details class="ai66-edit-advanced"><summary>高级坐标</summary><div id="ai60EditCoordinates"></div></details></aside></div>
+      <footer class="ai66-edit-footer"><span id="ai60EditStatus">正在读取图片…</span><button class="btn" onclick="cancelAiCandidateEdit60()">返回列表</button><button class="btn primary" onclick="saveAiCandidateEdit60()">保存候选修改</button></footer></div>`);
+    reviewRoot.classList.add('ai66-editing');
   }
   function renderAiCandidateObjects60(){
     const edit=state.ai60Edit;if(!edit)return;const labels=aiReviewLabels60(),objects=document.getElementById('ai60EditObjects'),coords=document.getElementById('ai60EditCoordinates'),count=document.getElementById('ai66EditCount');if(count)count.textContent=String(edit.boxes.length);
@@ -7943,10 +8043,10 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     })().catch(error=>{if(current()){toast(error.message||error);const status=document.getElementById('ai60EditStatus');if(status)status.textContent='编辑器读取失败，请关闭后重试'}}).finally(()=>{edit.pending=null});
   }
   function renderCandidateEditor60(){
-    const edit=state.ai60Edit,item=state.ai60Review?.seen.get(edit?.id),image=aiCandidateEditImage60();if(!edit||!item)return;ensureCandidateEditorShell60();const filename=document.getElementById('ai66EditFilename');if(filename)filename.textContent=item.filename||image.filename||item.image_id;
+    const edit=state.ai60Edit,item=state.ai60Review?.seen.get(edit?.id),image=aiCandidateEditImage60();if(!edit||!item)return;ensureCandidateEditorShell60();renderAiCandidateQueue60();const filename=document.getElementById('ai66EditFilename');if(filename)filename.textContent=item.filename||image.filename||item.image_id;
     const labelOptions=aiReviewLabels60().map(label=>`<option value="${esc(label.code)}">${esc(label.display_name||label.code)} · ${esc(label.code)}</option>`).join('');const newLabel=document.getElementById('ai66EditNewLabel');if(newLabel){newLabel.innerHTML=labelOptions;newLabel.value=edit.labelCode||''}const filter=document.querySelector('.ai66-edit [data-ai60-filter]');if(filter)filter.innerHTML='<option value="">全部类别</option>'+labelOptions;renderAiCandidateStage60();renderAiCandidateObjects60();bindAiCandidateEditor60();
   }
-  window.editAiCandidate60=id=>{const item=state.ai60Review?.seen.get(String(id));if(!item)return;destroyAiCandidateEditor60();const labels=aiReviewLabels60(),boxes=(item.boxes||[]).map(box=>({...box,id:box.id??window.BrowserCapabilityRuntime.createClientId('candidate-',20)}));state.ai60Edit={id:String(id),boxes,activeBox:boxes.length?0:null,labelCode:labels.find(label=>String(label.code)===String(boxes[0]?.label))?.code||labels[0]?.code||'',history:[],redo:[],dirty:false,closed:false};renderCandidateEditor60()};
+  window.editAiCandidate60=id=>{const item=state.ai60Review?.seen.get(String(id));if(!item||item.status==='failed')return;if(state.ai60Edit?.id===String(id))return;if(state.ai60Edit?.dirty&&!window.confirm('候选框有尚未保存的修改，确定切换图片吗？'))return;destroyAiCandidateEditor60();const labels=aiReviewLabels60(),boxes=(item.boxes||[]).map(box=>({...box,id:box.id??window.BrowserCapabilityRuntime.createClientId('candidate-',20)}));state.ai60Edit={id:String(id),boxes,activeBox:boxes.length?0:null,labelCode:labels.find(label=>String(label.code)===String(boxes[0]?.label))?.code||labels[0]?.code||'',history:[],redo:[],dirty:false,closed:false};renderCandidateEditor60()};
   window.selectAiCandidateBox60=index=>{const edit=state.ai60Edit;if(!edit)return;if(edit.editor){edit.editor.select(edit.boxes[index]?.id);return}edit.activeBox=Number(index);renderAiCandidateObjects60()};
   window.chooseAiCandidateLabel60=code=>{const edit=state.ai60Edit,label=aiReviewLabels60().find(row=>String(row.code)===String(code));if(!edit||!label)return;edit.labelCode=label.code;const select=document.getElementById('ai66EditNewLabel');if(select)select.value=label.code;edit.editor?.sync({label})};
   window.updateAiCandidateBox60=(index,key,value)=>{const edit=state.ai60Edit,box=edit?.boxes[index];if(!box)return;const view=edit.editor?.snapshot();if(view&&(!view.visible||view.filteredCodes&&!view.filteredCodes.includes(String(box.label))))return;if(key==='label'){const label=aiReviewLabels60().find(item=>String(item.code)===String(value));if(!label)return;if(edit.editor){if(edit.editor.select(box.id))edit.editor.reclassSelected(label);return}const next=edit.boxes.map((row,at)=>at===index?{...row,label:label.code,class_id:label.class_id}:row);commitCandidateDraft60(edit,next,box.id)}else{if(!['x1','y1','x2','y2'].includes(key))return;if(String(value).trim()===''||!Number.isFinite(Number(value))){toast('候选框坐标必须是有效数字');renderAiCandidateObjects60();return}const next=edit.boxes.map((row,at)=>at===index?{...row,[key]:Number(value)}:row);commitCandidateDraft60(edit,next,box.id)}renderAiCandidateStage60();renderAiCandidateObjects60()};
@@ -7960,7 +8060,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   window.resetAiCandidateZoom60=()=>state.ai60Edit?.editor?.resetZoom();
   window.fitAiCandidate60=()=>state.ai60Edit?.editor?.fit();
   window.addAiCandidateBox60=()=>{state.ai60Edit?.editor?.setMode('draw');candidateEditorTools60()};
-  window.saveAiCandidateEdit60=()=>{const edit=state.ai60Edit,review=state.ai60Review;if(!edit||edit.closed)return;edit.editor?.flush();if(!candidateBoxesValid60(edit.boxes))return toast('候选框坐标或标签无效，请检查图片边界');const item=review?.seen.get(edit.id);if(!item)return;item.boxes=edit.boxes.map(box=>({...box,source:'ai_candidate_reviewed'}));review.edits.set(edit.id,item.boxes);review.decisions.set(edit.id,true);destroyAiCandidateEditor60();state.ai60Edit=null;closeModal();renderReviewPage()};
+  window.saveAiCandidateEdit60=()=>{const edit=state.ai60Edit,review=state.ai60Review;if(!edit||edit.closed)return;edit.editor?.flush();if(!candidateBoxesValid60(edit.boxes))return toast('候选框坐标或标签无效，请检查图片边界');const item=review?.seen.get(edit.id);if(!item)return;item.boxes=edit.boxes.map(box=>({...box,source:'ai_candidate_reviewed'}));review.edits.set(edit.id,item.boxes);review.decisions.set(edit.id,true);leaveAiCandidateEditor60();renderReviewPage()};
   window.completeAiReview60=async mode=>{
     const review=state.ai60Review;if(!review)return;
     const ownerPage=String(state.page||''),action=window.NavigationStability?.action?.(state.page);

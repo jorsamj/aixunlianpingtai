@@ -67,6 +67,7 @@ test('AI create opens immediately while configuration and material pages load la
   expect(elapsed).toBeLessThan(300);
   await expect(page.getByRole('dialog', {name: '创建AI自动标注任务'})).toBeVisible();
   await expect(page.locator('#ai429Hydration')).toContainText('正在同步');
+  await expect.poll(()=>requests.slice(before).filter(item=>item.endsWith('/materials')).length).toBe(1);
   expect(requests.slice(before).some(item => item.endsWith('/materials/ids'))).toBe(false);
 
   await expect(page.locator('#ai429Models')).toContainText('场景视觉模型', {timeout: 5000});
@@ -147,4 +148,116 @@ test('AI create keeps the form on configuration or submit failure and fences dup
   await expect(page.locator('#ai429Prompt')).toHaveValue('保留本次输入 {{labels_json}} {{output_schema}}');
   await expect(page.locator('#ai429Labels')).toHaveValue('fire');
   await expect(page.locator('#ai429Submit')).toBeEnabled();
+});
+
+test('AI create resolves all filtered pages atomically, preserves earlier choices, and rejects stale revisions', async ({page}, testInfo) => {
+  await installDelayedCreationApis(page, {materialDelayMs: 30});
+  const calls=[];
+  await page.route('**/api/v61/projects/*/materials/ids**', route => {
+    const url=new URL(route.request().url()),query=url.searchParams.get('query')||'';
+    calls.push({query,revision:url.searchParams.get('expected_revision'),narrow:url.searchParams.get('narrow')});
+    if(query==='conflict')return route.fulfill({status:409,contentType:'application/json',body:JSON.stringify({detail:'素材库已更新，请重试'})});
+    const rows=query==='alpha'?Array.from({length:100},(_,i)=>`a-${i}`):
+      Array.from({length:50},(_,i)=>i<20?`a-${i}`:`b-${i}`);
+    const pageNumber=Number(url.searchParams.get('cursor')||'0'),size=Math.ceil(rows.length/5);
+    return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({
+      repository_revision:7,total:pageNumber===0?rows.length:-1,
+      items:rows.slice(pageNumber*size,(pageNumber+1)*size),
+      next_cursor:pageNumber<4?String(pageNumber+1):null,
+    })});
+  });
+  await ready(page);
+  await page.evaluate(()=>window.createAiLabel429());
+  const search=page.locator('#ai429MaterialQ');
+  await search.fill('alpha');
+  await expect.poll(()=>page.evaluate(()=>state.ai429Create?.query==='alpha'&&!state.ai429Create.materialLoading)).toBe(true);
+  await page.getByRole('button',{name:'全选当前筛选结果'}).click();
+  await expect(page.locator('#ai429MaterialCount')).toContainText('已选 100 张');
+  await search.fill('beta');
+  await expect.poll(()=>page.evaluate(()=>state.ai429Create?.query==='beta'&&!state.ai429Create.materialLoading)).toBe(true);
+  await page.getByRole('button',{name:'全选当前筛选结果'}).click();
+  await expect(page.locator('#ai429MaterialCount')).toContainText('已选 130 张');
+  expect(calls.filter(call=>call.query==='alpha')).toHaveLength(5);
+  expect(calls.filter(call=>call.query==='beta')).toHaveLength(5);
+  expect(calls.every(call=>call.narrow==='true')).toBe(true);
+  expect(calls.filter(call=>call.revision!==null).every(call=>call.revision==='7')).toBe(true);
+  await search.fill('conflict');
+  await expect.poll(()=>page.evaluate(()=>state.ai429Create?.query==='conflict'&&!state.ai429Create.materialLoading)).toBe(true);
+  await page.getByRole('button',{name:'全选当前筛选结果'}).click();
+  await expect(page.locator('#ai429BulkFeedback')).toContainText('素材库已更新');
+  await expect(page.locator('#ai429MaterialCount')).toContainText('已选 130 张');
+  for(const viewport of [{width:1920,height:1080},{width:1440,height:900},{width:1366,height:768}]){
+    await page.setViewportSize(viewport);
+    await page.screenshot({path:testInfo.outputPath(`ai-create-filtered-${viewport.width}x${viewport.height}.png`),fullPage:false});
+  }
+});
+
+test('AI candidate editor stays inside the review workspace without opening a nested dialog', async ({page}, testInfo) => {
+  await ready(page);
+  await page.route('**/api/v60/projects/*/annotation-tasks/ai-ux-fixture/candidates**', route=>route.fulfill({
+    status:200,contentType:'application/json',body:JSON.stringify({
+      total:2,items:[{image_id:'one',filename:'scene-one.png',url:PIXEL,width:1,height:1,status:'completed',boxes:[]},
+        {image_id:'two',filename:'scene-two.png',url:PIXEL,width:1,height:1,status:'completed',boxes:[]}],label_summary:[],
+    }),
+  }));
+  await page.evaluate(()=>window.reviewAiLabel427('ai-ux-fixture'));
+  const before=await page.locator('.v424-modal-layer').count();
+  await page.getByRole('button',{name:'编辑候选框'}).first().click();
+  await expect(page.locator('.ai66-review.ai66-editing .ai66-edit')).toBeVisible();
+  expect(await page.locator('.v424-modal-layer').count()).toBe(before);
+  await expect(page.locator('#ai66EditQueue')).toContainText('scene-two.png');
+  await page.locator('.ai66-edit-queue-item').nth(1).click();
+  await expect(page.locator('#ai66EditFilename')).toContainText('scene-two.png');
+  for(const viewport of [{width:1920,height:1080},{width:1440,height:900},{width:1366,height:768}]){
+    await page.setViewportSize(viewport);
+    await page.screenshot({path:testInfo.outputPath(`ai-inline-review-${viewport.width}x${viewport.height}.png`),fullPage:false});
+  }
+  await page.getByRole('button',{name:'返回列表'}).click();
+  await expect(page.locator('.ai66-review.ai66-editing')).toHaveCount(0);
+  await expect(page.locator('.ai66-review-grid')).toBeVisible();
+  for(const viewport of [{width:1920,height:1080},{width:1440,height:900},{width:1366,height:768}]){
+    await page.setViewportSize(viewport);
+    await page.screenshot({path:testInfo.outputPath(`ai-review-${viewport.width}x${viewport.height}.png`),fullPage:false});
+  }
+});
+
+test('AI task list pages on the server and keeps search/status scoped to the visible page', async ({page}) => {
+  const requests=[];
+  await page.route('**/api/v60/projects/*/annotation-tasks?**', route=>{
+    const url=new URL(route.request().url()),second=url.searchParams.get('cursor')==='cursor-two';
+    requests.push(url.searchParams.get('cursor')||'first');
+    const item={id:second?'task-beta':'task-alpha',name:second?'Beta 标注':'Alpha 标注',status:second?'SUCCEEDED':'QUEUED',
+      created_at:'2026-10-30T01:00:00Z',total_count:30,completed_count:second?30:0,model_config_name:'视觉模型',progress:second?100:0};
+    return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({items:[item],next_cursor:second?null:'cursor-two'})});
+  });
+  await ready(page);
+  await page.evaluate(()=>{state.page='自动标注及清洗';state.v427OpsTab='label';window.renderOps427()});
+  await expect(page.locator('#ai60TaskRows')).toContainText('Alpha 标注');
+  await page.locator('#ai60TaskSearch').fill('missing');
+  await expect(page.locator('#ai60TaskRows')).toContainText('没有匹配');
+  await page.locator('#ai60TaskSearch').fill('');
+  await page.locator('#ai60TaskPager').getByRole('button',{name:'下一页'}).click();
+  await expect(page.locator('#ai60TaskRows')).toContainText('Beta 标注');
+  expect(requests).toContain('cursor-two');
+  await page.locator('#ai60TaskStatus').selectOption('QUEUED');
+  await expect(page.locator('#ai60TaskRows')).toContainText('没有匹配');
+  await page.locator('#ai60TaskStatus').selectOption('');
+  await expect(page.locator('#ai60TaskRows')).toContainText('Beta 标注');
+});
+
+test('AI candidate page opens immediately and offers retry instead of indefinite skeleton', async ({page}) => {
+  await ready(page);
+  let reads=0;
+  await page.route('**/api/v60/projects/*/annotation-tasks/ai-retry-fixture/candidates**', route=>{
+    reads++;
+    return route.fulfill({status:reads===1?503:200,contentType:'application/json',body:reads===1?
+      JSON.stringify({detail:'暂时无法读取候选结果'}):JSON.stringify({items:[],total:0,label_summary:[]})});
+  });
+  await page.evaluate(()=>{void window.reviewAiLabel427('ai-retry-fixture')});
+  await expect(page.locator('.ai66-review')).toBeVisible();
+  await expect(page.locator('.ai66-review-grid')).toContainText('暂时无法读取候选结果');
+  await page.locator('.ai66-review-grid').getByRole('button',{name:'重试'}).click();
+  await expect(page.locator('.ai66-review-grid')).toContainText('没有候选图片');
+  await expect(page.locator('.ai66-review-grid .ai-create-loading')).toHaveCount(0);
+  expect(reads).toBe(2);
 });

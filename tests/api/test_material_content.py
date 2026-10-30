@@ -94,3 +94,30 @@ def test_material_source_and_multi_label_or_filters(client, seeded_project):
     ids = client.get(f"/api/v61/projects/{project_id}/materials/ids", params=[("label", "fire")])
     assert ids.status_code == 200
     assert uploaded["id"] in ids.json()["items"]
+
+
+def test_material_id_only_cursor_keeps_full_filter_and_revision_contract(client, seeded_project):
+    project_id, uploaded = seeded_project
+    endpoint = f"/api/v61/projects/{project_id}/materials/ids"
+    first = client.get(endpoint, params={
+        "narrow": "true", "annotated": "false", "query": uploaded["filename"],
+        "limit": 1,
+    })
+    assert first.status_code == 200, first.text
+    body = first.json()
+    assert body["items"] == [uploaded["id"]]
+    assert body["total"] == 1
+    assert isinstance(body["repository_revision"], int)
+
+    matching = client.get(endpoint, params={
+        "narrow": "true", "annotated": "false", "query": uploaded["filename"],
+        "expected_revision": body["repository_revision"],
+    })
+    assert matching.status_code == 200, matching.text
+    assert matching.json()["items"] == body["items"]
+
+    outdated = client.get(endpoint, params={
+        "narrow": "true", "annotated": "false", "query": uploaded["filename"],
+        "expected_revision": body["repository_revision"] + 1,
+    })
+    assert outdated.status_code == 409

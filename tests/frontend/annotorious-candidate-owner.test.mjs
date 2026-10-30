@@ -26,7 +26,7 @@ test('candidate opening assigns missing IDs once, preserves metadata and never c
   const h=harness();h.window.editAiCandidate60('i');const edit=h.state.ai60Edit;
   assert.equal(edit.boxes[0].id,'new-1');assert.equal(h.original.id,undefined);assert.equal(h.state.ai60Review.edits.size,0);
   h.window.updateAiCandidateBox60(0,'x1','12');assert.equal(edit.boxes[0].x1,12);assert.equal(h.item.boxes[0].x1,10);
-  h.window.saveAiCandidateEdit60();assert.equal(h.state.ai60Review.edits.get('i')[0].source_task_id,'ai-task');assert.equal(h.state.ai60Review.edits.get('i')[0].id,'new-1');assert.equal(h.state.ai60Review.edits.get('i')[0].source,'ai_candidate_reviewed');assert.equal(h.closed,1);
+  h.window.saveAiCandidateEdit60();assert.equal(h.state.ai60Review.edits.get('i')[0].source_task_id,'ai-task');assert.equal(h.state.ai60Review.edits.get('i')[0].id,'new-1');assert.equal(h.state.ai60Review.edits.get('i')[0].source,'ai_candidate_reviewed');assert.equal(h.closed,0,'saving candidate changes must not close the review workspace');assert.equal(h.state.ai60Edit,null);
 });
 test('candidate coordinates reject out of image and invalid rectangles without mutating draft',()=>{
   const h=harness();h.window.editAiCandidate60('i');const edit=h.state.ai60Edit;
