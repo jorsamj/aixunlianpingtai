@@ -51,7 +51,9 @@ test('AI official candidate editing saves a review draft without GT writes and s
     decisionBody=route.request().postDataJSON();return route.fulfill({json:{queued_for_commit:false,applied_images:1,boxes_added:decisionBody.decisions[0].boxes.length,image_summaries:[]}});
   });
   await page.evaluate(()=>window.reviewAiLabel427('isolated-review'));
-  const review=page.getByRole('dialog',{name:'AI标注审核工作台 · 待确认',exact:true});await expect(review).toBeVisible();
+  const review=page.locator('.ai-review-page-shell');await expect(review).toBeVisible();
+  await expect(review.getByRole('button',{name:'返回任务列表'})).toBeVisible();
+  await expect(page.locator('.ai-review-workbench-modal')).toHaveCount(0);
   await review.getByRole('button',{name:'编辑候选框',exact:true}).click();
   // Candidate editing is part of the review workbench, not a nested dialog.
   const edit=review.locator('.ai66-edit');await expect(edit.locator('svg.a9s-annotationlayer')).toHaveCount(1);

@@ -8027,6 +8027,9 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     finally{if(button?.isConnected){button.disabled=false;button.textContent='刷新'}}
   };
   window.renderOps427=function(){
+    if(state.ai60Review&&!state.ai60Review.closed&&state.page==='自动标注及清洗'){
+      renderReviewPage();return;
+    }
     if((state.v427OpsTab||'label')==='clean'){window.AutoLabelPollRuntime?.deactivate?.();return window.renderCleanOps427?.()}
     ensureAiTaskProject60();
     window.PollRegistryRuntime?.replaceCleanTaskTimer?.();
@@ -8054,8 +8057,12 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   // Share the existing reviewed candidate-box renderer with the creation preview.
   window.aiCandidateOverlay60=candidateOverlay;
   function ensureReviewShell(){
-    if(document.querySelector('.ai60-review'))return;
-    modal('AI标注审核工作台 · 待确认',`<div class="review427 ai60-review ai66-review">
+    if(document.querySelector('.ai-review-page-shell .ai60-review'))return;
+    if(state.page!=='自动标注及清洗')return;
+    const host=document.getElementById('view');if(!host)return;
+    host.innerHTML=`<section class="ai-review-page-shell" aria-label="AI自动标注人工审核工作台">
+      <nav class="ai-review-page-nav"><button class="btn" type="button" onclick="closeAiReview60()">← 返回任务列表</button><div><strong>AI标注审核工作台</strong><span>只审核本任务候选结果；正式 GT 仍通过原 Worker 提交</span></div><span class="ai-review-page-task">任务 ${esc(state.ai60Review?.id||'')}</span></nav>
+      <div class="review427 ai60-review ai66-review">
       <header class="ai66-review-head">
         <div><span class="ai66-eyebrow">HUMAN REVIEW</span><h3>AI候选结果审核</h3><p>AI候选结果不会自动写入正式标注；只有人工确认后的结果才会写入正式标注。</p></div>
         <div id="ai60ReviewSummary" class="ai66-review-summary"></div>
@@ -8092,9 +8099,8 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
       </details>
       <div id="ai60ReviewGrid" class="review427-grid ai66-review-grid"></div>
       <div class="row between ai60-review-footer ai66-review-footer"><div id="ai60ReviewPager"></div><div class="row"><span id="ai60ReviewReceiptNote" class="muted-line" hidden>已有审核操作待核验，请勿重复提交。</span><button class="btn primary" id="ai60ReviewReceiptLookup" onclick="completeAiReview60('partial')" hidden>查询审核结果</button><button class="btn danger" data-ai-review-submit onclick="completeAiReview60('reject')">全部拒绝</button><button class="btn" data-ai-review-submit onclick="completeAiReview60('partial')">采用已选择</button><button class="btn primary" data-ai-review-submit onclick="completeAiReview60('accept')">全部接受</button><button class="btn" onclick="closeAiReview60()">暂不处理</button></div></div>
-    </div>`,true);
-    const root=document.querySelector('.ai60-review'),card=root?.closest('.modal-card'),layer=root?.closest('.v424-modal-layer,.modal');
-    card?.classList.add('ai-review-workbench-modal');layer?.classList.add('ai-review-workbench-layer');
+      </div>
+    </section>`;
   }  function aiReviewLabels60(){
     return (state.labels||[]).filter(item=>item?.code&&String(item.status||'active').toLowerCase()==='active');
   }
@@ -8249,7 +8255,23 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   }
   window.reviewAiLabel427=async function(id){
     const top=[...document.querySelectorAll('.v424-modal-layer')].at(-1)||document.getElementById('modal');
-    if(top?.querySelector?.('.ai60-progress')){const closed=await closeModal();if(closed===false)return false}
+    if(top?.querySelector?.('.ai60-progress,button[onclick*="reviewAiLabel427"]')){
+      const closed=await closeModal();if(closed===false)return false;
+    }
+    if(state.page!=='自动标注及清洗'){
+      await Promise.resolve(window.setPage?.('自动标注及清洗'));
+      if(state.page!=='自动标注及清洗')return false;
+    }
+    const previous=state.ai60Review;
+    if(previous&&!previous.closed){
+      if(String(previous.id)===String(id))return loadReviewPage(previous.offset);
+      if(previous.submitting){toast('当前审核操作正在提交，请等待回执');return false}
+      if(state.ai60Edit?.dirty&&!window.confirm('候选框有尚未保存的修改，确定切换审核任务吗？'))return false;
+      previous.closed=true;previous.pageRequestEpoch=Number(previous.pageRequestEpoch||0)+1;
+      destroyAiCandidateEditor60();state.ai60Edit=null;
+      document.querySelector('.ai-review-page-shell')?.remove();
+    }
+    window.AutoLabelPollRuntime?.deactivate?.();
     state.ai60Review={id:String(id),offset:0,limit:24,total:0,items:[],decisions:new Map(),edits:new Map(),seen:new Map(),labelSummary:[],labelMapping:new Map(),filter:'all',pageRequestEpoch:0,closed:false,ownerPage:String(state.page||'自动标注及清洗'),pageLoading:true,pageError:'',pendingRequest:aiReviewReadPending60(String(id)),submitting:false};
     return loadReviewPage(0);
   };
@@ -8259,10 +8281,10 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   document.addEventListener('keydown',event=>{
     const review=state.ai60Review,root=document.querySelector('.ai66-review');
     if(!review||review.closed||review.submitting||review.pendingRequest||review.pageLoading||review.pageError||!root||state.ai60Edit||event.defaultPrevented||event.ctrlKey||event.metaKey||event.shiftKey||event.isComposing)return;
-    if(!root.closest('.modal-card')?.isConnected)return;
+    if(!root.closest('.ai-review-page-shell')?.isConnected)return;
     const target=event.target;
     if(target?.closest?.('input,textarea,select,[contenteditable="true"],button'))return;
-    if(target?.closest?.('.v424-modal-layer,.modal')!==root.closest('.v424-modal-layer,.modal'))return;
+    if(!root.contains(target))return;
     const key=String(event.key||'').toLowerCase();
     if(event.altKey){
       if(key!=='arrowleft'&&key!=='arrowright')return;
@@ -8289,9 +8311,18 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   });
   window.closeAiReview60=()=>{
     const review=state.ai60Review;
+    if(review?.submitting){toast('当前审核操作正在提交，请等待回执');return false}
+    if(state.ai60Edit?.dirty&&!window.confirm('候选框有尚未保存的修改，确定离开审核工作台吗？'))return false;
     if(review){review.closed=true;review.pageRequestEpoch=Number(review.pageRequestEpoch||0)+1}
     destroyAiCandidateEditor60();state.ai60Edit=null;
-    closeModal();
+    state.ai60Review=null;
+    if(state.page==='自动标注及清洗'){
+      renderOps427();
+      void refreshAnnotationTasks60().then(tasks=>{
+        if(tasks!==null&&state.page==='自动标注及清洗')renderAiTaskRows60(tasks);
+      }).catch(error=>toast(error.message||error));
+    }
+    return true;
   };
   window.reviewPageSelect60=accepted=>{
     const review=state.ai60Review;if(!review)return;

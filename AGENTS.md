@@ -1,3 +1,7 @@
+## 2026-10-30｜42.24.446 AI 自动标注独立主区审核工作台（本批 CI/生产待核）
+
+原 `reviewAiLabel427` 不再打开审核全屏模态框，而在“自动标注及清洗”的主内容区展示独立审核工作台。保留原 CandidateStore 按页读取、已选/标签映射/困难候选、原 Annotorious 候选框编辑、Request ID 回执与原 Worker→AnnotationRepository 正式 GT 写入；未创建新任务或 GT owner。任务切换关闭旧编辑器、阻断晚到响应、未保存修改询问；提交中禁止退出或切换。审核页临时隐藏无关的全局指标以给图片/编辑画布更多空间。原 Chrome 用例改验主区页面、无嵌套审核弹窗、三视口截图及返回。开源选择为已集成的 Annotorious（BSD-3-Clause），仅参考 LabelU、Label Studio 交互，不引入 React 或新服务。前端 Node **1421/1421 通过**；本地缺 Chrome 和 FastAPI 浏览器启动依赖，真实 Chrome 及准确 SHA CI 待核。独立 URL 深链接/浏览器后退尚未实施；OSS/远程模型/P95 和生产 DB v2→v3 迁移均待核。本批不部署、不迁移、不 merge main/tag/release/force-push。完整记录见原 [AI 专项](docs/superpowers/plans/2026-10-16-ai-annotation-cleaning-scope.md)。
+
 ## 2026-10-30｜42.24.445 AI 标注任务阶段统计持久投影（准确 SHA CI 待核）
 
 在原 CandidateStore 的候选 SQLite / commits journal 精确统计候选图、失败、采用、拒绝、待审和本任务正式 GT Commit 记录。原 TaskRepository 加法 schema v2→v3 建轻量投影；生成每 100 张/完成、人工决策及正式 GT journal 后同步；列表一次批量读当前页，旧任务只在可见页后台有界核算，未知不伪造为零。原生 JS 显示三行阶段计数，限次自动刷新。未做外部同步统计，不表示当前 GT 未被覆盖。97 项后端定向与追加 4 项通过；完整前端 Node 在允许子进程的环境 **1421/1421 通过**。未做真实 Chrome、外部 OSS/模型、生产迁移；部署前必须先一致性备份生产任务 DB（包括 WAL）并独立验证 v2→v3/回滚，绝不可改 PRAGMA 版本冒充回滚。详情见原 AI 专项，P0 未完成。

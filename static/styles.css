@@ -970,6 +970,14 @@ body.sidebar-collapsed{--side-w:76px}.sidebar-collapsed .brand-text,.sidebar-col
 .material-integrity47-protection{margin:8px 0;font-size:12px;line-height:1.6;color:#7b5215;overflow-wrap:anywhere}
 @media(max-width:640px){.training-duplicate-comparison .material-integrity47-grid{grid-template-columns:1fr;max-height:60vh}.training-duplicate-comparison .btn{min-height:44px}}
 /* v66 AI candidate review workbench */
+.main:has(.ai-review-page-shell) .summary{display:none}
+.view:has(.ai-review-page-shell){max-width:none;padding:12px 18px 18px;overflow:hidden}
+.ai-review-page-shell{display:flex;flex-direction:column;height:100%;min-height:560px;min-width:0;overflow:hidden;border:1px solid #dfe7f1;border-radius:16px;background:#f5f8fc;box-shadow:0 14px 36px rgba(24,42,70,.07)}
+.ai-review-page-nav{display:flex;flex:0 0 auto;align-items:center;gap:18px;min-height:62px;padding:10px 20px;border-bottom:1px solid #e4ebf4;background:#fff}
+.ai-review-page-nav>div{display:grid;gap:3px;min-width:0}.ai-review-page-nav strong{font-size:15px;color:#172b4d}.ai-review-page-nav>div span{color:#718198;font-size:11px}
+.ai-review-page-task{margin-left:auto;color:#718198;font-size:11px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ai-review-page-shell>.ai66-review{flex:1;min-height:0;height:auto}
+.ai-review-page-shell .ai66-review-tools{flex-wrap:wrap}.ai-review-page-shell .ai66-review-grid{overscroll-behavior:contain}
 .ai-review-workbench-layer{padding:14px!important;background:rgba(8,15,29,.54)!important;backdrop-filter:blur(8px)}
 .ai-review-workbench-modal{width:min(1680px,calc(100vw - 28px))!important;height:calc(100vh - 28px)!important;max-height:none!important;border-radius:16px!important;background:#f5f8fc;box-shadow:0 30px 90px rgba(2,8,23,.32)}
 .ai-review-workbench-modal>.modal-head{height:50px!important;min-height:50px;background:#fff}
@@ -1017,6 +1025,8 @@ body.sidebar-collapsed{--side-w:76px}.sidebar-collapsed .brand-text,.sidebar-col
 .ai66-review-footer #ai60ReviewPager .platform-pagination__error{width:100%}
 @media(max-width:1180px){.ai66-review-kpis{grid-template-columns:repeat(4,minmax(0,1fr))}}
 @media(max-width:900px){
+  .view:has(.ai-review-page-shell){padding:8px}
+  .ai-review-page-shell{min-height:500px;border-radius:12px}.ai-review-page-nav{padding:8px 12px;gap:10px;flex-wrap:wrap}.ai-review-page-nav>div span,.ai-review-page-task{display:none}
   .ai-review-workbench-layer{padding:4px!important}
   .ai-review-workbench-modal{width:calc(100vw - 8px)!important;height:calc(100vh - 8px)!important}
   .ai66-review-head{padding:12px}.ai66-review-head p{display:none}

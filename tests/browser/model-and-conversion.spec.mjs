@@ -146,11 +146,12 @@ test('vision providers, candidate review, and vendor target parameters are expli
     })
   }));
   await page.evaluate(() => window.reviewAiLabel427('fake-task'));
-  const candidateDialog = page.getByRole('dialog', {name: 'AI标注审核工作台 · 待确认'});
-  await expect(candidateDialog.getByText(/不会自动写入正式标注/)).toBeVisible();
-  await expect(candidateDialog.locator('.data412-box')).toBeVisible();
-  await expect(candidateDialog.getByRole('button', {name: '全部接受'})).toBeVisible();
-  await candidateDialog.getByRole('button', {name: '暂不处理'}).click();
+  const reviewPage = page.locator('.ai-review-page-shell');
+  await expect(reviewPage.getByText(/不会自动写入正式标注/)).toBeVisible();
+  await expect(reviewPage.locator('.data412-box')).toBeVisible();
+  await expect(reviewPage.getByRole('button', {name: '全部接受'})).toBeVisible();
+  await reviewPage.getByRole('button', {name: '暂不处理'}).click();
+  await expect(reviewPage).toHaveCount(0);
 
   await page.evaluate(([aid, vid]) => window.openVersionConvert428(aid, vid), [vendorAlgorithmId, vendorVersionId]);
   const versionDialog = page.getByRole('dialog', {name: '版本转换'});

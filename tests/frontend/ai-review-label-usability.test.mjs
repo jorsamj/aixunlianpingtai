@@ -68,7 +68,9 @@ test('AI mapping renderer skips rebuild when labels and mapping signature are un
 test('AI review is a dedicated human-review workbench with explicit per-image accept and reject', () => {
   const source = reviewBlock();
   assert.match(source, /AI标注审核工作台/);
-  assert.match(source, /ai-review-workbench-modal/);
+  assert.match(source, /ai-review-page-shell/);
+  assert.match(source, /返回任务列表/);
+  assert.doesNotMatch(source.slice(source.indexOf('function ensureReviewShell()'), source.indexOf('function aiReviewLabels60()')), /modal\('AI标注审核工作台/);
   assert.match(source, /data-ai66-filter="empty"/);
   assert.match(source, /window\.setAiDecision60/);
   assert.match(source, />采用<\/button>/);

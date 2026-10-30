@@ -1,5 +1,13 @@
 # AI 预标注、清洗范围与提示词创建体验实施计划
 
+## 2026-10-30｜42.24.446 AI 自动标注独立审核主区工作台（本批精确 SHA CI 待核）
+
+- **边界与开源选型**：项目原 `static/vendor/annotorious`/页面已接通 Annotorious 3.9.5（Vanilla JS、BSD-3-Clause），直接复用，不重复安装或套 Label Studio 第二套服务。LabelU-Kit、Label Studio 的审核导航/信息层次仅作为参考；不引入 React/构建系统迁移。审核仍限 AI_ANNOTATION 任务的 Candidate，人工标注已有入口保持独立；二者最终使用唯一 AnnotationRepository 正式 GT。
+- **交互**：原 `reviewAiLabel427` 从全屏审核模态框移到“自动标注及清洗”主内容区，顶部明确任务归属与“返回任务列表”，去掉页面无关的全局 KPI；原审核候选图/困难候选、过滤、分页、标签映射、批量统一、接受/拒绝、快捷键、同页三栏 Annotorious 编辑复用原状态与 API，没有新增任务/候选/GT Owner。审阅标签和正式提交范围不变，提交仍使用原 `request_id` 和原 Worker；未知网络回执仍需查询，不自动重试。
+- **生命周期**：打开另一任务先结束旧实例并使旧异步请求失效；相同任务刷新沿用原分页草稿；未保存候选框在返回/切任务前确认，正在提交审核时不允许离开；退出后原任务列表按真实 API 复载。新页面是主区内独立视图，**不是已实现 URL 深链接或浏览器 History 级独立路由**，后者仍列待办。旧审核样式保留为兼容 CSS，但运行时不创建其模态层。
+- **回归**：调整原 `annotorious-lifecycle`、`auto-label-polling`、`model-and-conversion`、`ai-create-experience` 浏览器断言，检查主区入口、无内嵌审核弹层、原 Candidate 编辑/正式 GT 所有权、返回任务列表，保留 1920×1080、1440×900、1366×768 真截图产物。版本号/静态 JS、CSS 缓存键同步；前端完整 Node 在正常子进程权限下 **1421/1421 通过**；受限沙箱 181/182 个文件，唯一 Uppy 子进程权限导致失败，与本次审核无关。本地 Chrome 与浏览器测试服务依赖不可用，**未运行真实 Chrome**；最终 SHA Actions 与截图需要另核，不能据源码断言“视觉已验收”。
+- **部署风险和剩余 P0**：此批不改 SQLite schema，但前批 445 的 TaskRepository v2→v3 尚未在生产迁移，部署前必须先备份任务数据库/WAL 并演练可恢复回滚。真实 Chrome 三视口**视觉人工复核**、海量素材/OSS/远程模型 P50/P95、独立 URL/后退体验、正式 GT 当前态的跨任务归属审计、外部同步真实计数等仍待完成；不部署生产、不碰真实 GT、不 merge main/tag/release/force-push。
+
 ## 2026-10-30｜42.24.445 AI 任务阶段统计持久投影（当前批准确 SHA CI 待核）
 
 - **业务口径**：候选图=`success+empty`（不等于候选框个数）；生成失败=`failed`；已审=`accepted+rejected`；待审=`unreviewed`；`gt_committed` 仅为本任务成功写入正式 AnnotationRepository 后的唯一 Image ID Commit 日志行数，**不是外部同步成功数，也不能保证今日 GT 未被别的任务覆盖**。缺乏历史证据时返回 `stage_statistics:null`，绝不把未知显示为零。

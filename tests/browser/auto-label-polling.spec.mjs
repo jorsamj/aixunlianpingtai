@@ -227,8 +227,9 @@ test('AI candidate review keeps searchable mapping edits and inline labels throu
   await expect(taskRow).toBeVisible({timeout:10_000});
   await taskRow.getByRole('button',{name:'审核'}).click();
 
-  const review=page.getByRole('dialog',{name:'AI标注审核工作台 · 待确认',exact:true});
+  const review=page.locator('.ai-review-page-shell');
   await expect(review).toBeVisible();
+  await expect(review.getByRole('button',{name:'返回任务列表'})).toBeVisible();
   await expect(review.locator('#ai60ReviewGrid .review427-card')).toHaveCount(24);
   await expect(review.locator('#ai60PlatformLabelOptions option')).toHaveCount(34);
 
@@ -273,7 +274,7 @@ test('AI candidate review keeps searchable mapping edits and inline labels throu
 
   const firstCard=review.locator('#ai60ReviewGrid .review427-card').first();
   await firstCard.getByRole('button',{name:'编辑候选框'}).click();
-  // The editor is inline within the existing review dialog.
+  // Candidate editing stays inline within the independent review page.
   const editor=review.locator('.ai66-edit');
   await expect(editor).toBeVisible();
   await editor.locator('.ai66-edit-object select').first().selectOption('helmet');

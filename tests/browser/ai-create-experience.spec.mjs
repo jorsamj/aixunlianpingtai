@@ -272,6 +272,8 @@ test('AI candidate editor stays inside the review workspace without opening a ne
     }),
   }));
   await page.evaluate(()=>window.reviewAiLabel427('ai-ux-fixture'));
+  await expect(page.locator('.ai-review-page-shell')).toBeVisible();
+  await expect(page.locator('.ai-review-workbench-modal')).toHaveCount(0);
   const before=await page.locator('.v424-modal-layer').count();
   await page.getByRole('button',{name:'编辑候选框'}).first().click();
   await expect(page.locator('.ai66-review.ai66-editing .ai66-edit')).toBeVisible();
@@ -288,8 +290,14 @@ test('AI candidate editor stays inside the review workspace without opening a ne
   await expect(page.locator('.ai66-review-grid')).toBeVisible();
   for(const viewport of [{width:1920,height:1080},{width:1440,height:900},{width:1366,height:768}]){
     await page.setViewportSize(viewport);
+    const geometry=await page.locator('.ai-review-page-shell').boundingBox();
+    expect(geometry).not.toBeNull();
+    expect(geometry.x+geometry.width).toBeLessThanOrEqual(viewport.width+1);
     await page.screenshot({path:testInfo.outputPath(`ai-review-${viewport.width}x${viewport.height}.png`),fullPage:false});
   }
+  await page.locator('.ai-review-page-nav').getByRole('button',{name:'返回任务列表'}).click();
+  await expect(page.locator('.ai-review-page-shell')).toHaveCount(0);
+  await expect(page.locator('#ai60TaskRows')).toBeVisible();
 });
 
 test('AI review timeout resolves the original operation receipt without a second decision POST', async ({page}) => {
