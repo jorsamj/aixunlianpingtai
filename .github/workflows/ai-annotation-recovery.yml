@@ -153,12 +153,14 @@ jobs:
           python -m py_compile
           app.py
           tests/api/test_annotation_task_runtime.py
+          tests/api/test_annotation_preview.py
           tests/integration/test_persistent_ai_annotation_e2e.py
       - name: Durable annotation API truth
         run: >-
           python -m pytest -q
           tests/unit/test_annotation_runtime.py
           tests/api/test_annotation_task_runtime.py
+          tests/api/test_annotation_preview.py
           tests/integration/test_persistent_ai_annotation_e2e.py
           tests/api/test_model_configs.py
           tests/integration/test_fake_vision_provider.py

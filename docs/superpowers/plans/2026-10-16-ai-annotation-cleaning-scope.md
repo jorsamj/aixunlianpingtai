@@ -19,6 +19,7 @@
 | `static/app.js`、`static/styles.css`、`static/index.html` | 原创建工作台试跑区域、候选框画布、当前选择/参数修改栅栏、静态资源缓存键 |
 | `tests/api/test_annotation_preview.py` | 有界单图、未知 ID、图片过大、错误不泄露、没有 Durable Task/候选持久化副作用 |
 | `tests/browser/ai-create-experience.spec.mjs` | 模型真实 API 请求合同 mock、图像框预览、参数变更失效、503 原位重试、未创建任务、三个桌面视口截图 |
+| `.github/workflows/ai-annotation-recovery.yml` | 将新增 API 测试接入已有 Durable Annotation API 作业，不建立新 CI 工作流 |
 
 本地已执行 `node --check static/app.js`、`python -m py_compile app.py tests/api/test_annotation_preview.py` 与 `git diff --check`；本机无 `pytest` / `@playwright/test` / Chrome 依赖，新增 Python、浏览器测试需最终 SHA 的 CI 补验。**真实 GLM/Qwen/OSS 冷加载、模型费用、推理 P50/P95、网络等待都未现场实测**；不能声称生产已有 2 秒 SLA。
 
