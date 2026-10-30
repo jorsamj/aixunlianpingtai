@@ -1,5 +1,14 @@
 # AI 预标注、清洗范围与提示词创建体验实施计划
 
+## 2026-10-30｜42.24.443 AI 标注任务全历史名称/模型/ID 搜索（本批准确 SHA CI 待核）
+
+- **基线**：442 `2696b6e0` 的 49/49 Actions 与真实 Chrome 已通过。本批只处理 AI 任务列表“前端仅搜索当前 50 条”的真实假空态，不触及创建、审核提交、Worker、GT、OSS 原产物和外部模型执行。
+- **原数据源增量索引**：在 `TaskRepository.tasks` 原 SQLite 表加 `annotation_name` / `annotation_model_name` / `annotation_model_id` / `annotation_search_ready`，原 schema version 1→2 加法迁移并保留所有已有行；原 `create` 只对 AI_ANNOTATION 从已冻结的 `request.json` 提取三个非敏感字段，**与插入任务行同事务**写入。任何模型管理的后续修改不改变任务创建时选择的模型名；不创建第二套任务表、搜索服务或自动 GT 写入。
+- **历史兼容与降级**：旧任务首个带非空 `q` 的列表请求先查原表中待索引数量，后台线程分批（每次至多 100 条）只读原 `request.json`、同库按项目更新元数据；跨 Web 进程用项目文件锁互斥。API 在全部历史可查前返回 `202 indexing` 与 `indexed/total/remaining`，**不把部分索引的结果渲染成“查无此任务”**；损坏/缺失文件单独标记并返回 `503 index_failed`，须修复来源后由显式“重试索引”恢复，绝不伪造任务名称。普通无 `q` 的列表仍使用原轻量 status+cursor，不执行全历史文件扫描；后台派生索引可能与查询并发，但不改变 Task 状态/正式业务数据。
+- **服务端筛选与前端归属**：`GET /api/v60/projects/{project_id}/annotation-tasks` 在原 `status/cursor/limit` 外增加 `q`（最多 120 字符）、可选 `retry_index`；在原 SQLite `WHERE` 条件中同时匹配任务 ID、冻结任务名、冻结模型名称、冻结模型 ID，转义 `%`、`_`、`\\`，再按 `(created_at, task_id)` 游标分页。原生 JS 同一搜索输入 300ms 防抖，条件变化立即中止旧 fetch 并废弃旧代次/游标；索引中显示可核验进度且后台短期重试，导航离开不继续请求、不弹旧错误，故障显示重试按钮。没有新增独立轮询器或前端缓存系统。
+- **证据**：增加 TaskRepository 67 条异构任务跨页命中与 literal LIKE、旧任务每批限量回填/损坏及修复、FastAPI 202→完整搜索/搜索长度、Node Owner、Playwright 历史搜索与首次索引进度用例。需在准确新 SHA GitHub CI 中核后端/Chrome；本环境缺 Python/浏览器依赖不能替代 CI。真实大库、OSS/远端模型冷启动及 P50/P95 **尚未现场测量**，三视口视觉审阅与完整业务闭环仍未验收。
+- **仍未完成 P0**：任务列表候选/已审核/正式入库/外部同步的阶段性真值聚合；独立路由持续审核工作台与更完善的键盘/尺寸交互；真实 OSS、远端模型、大素材库浏览器 HAR/后端 SQL 分段性能；三视口改前改后截图人工评审。不可据本批宣称全部 P0 完成或可以直接部署生产。
+
 ## 2026-10-30｜42.24.442 审核操作 ID 与原 GT 状态的强绑定（精确 SHA CI 待核）
 
 - **精确上一版基线**：441 `d5d3ac10` 已检查 49/49 GitHub Actions 全部成功，三组原 Chrome 分片与 AI Annotation Recovery 均通过；这是代码本身 CI 通过，不等于生产 OSS/视觉 P95 已验。

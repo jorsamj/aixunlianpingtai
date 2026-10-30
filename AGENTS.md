@@ -1,3 +1,7 @@
+## 2026-10-30｜42.24.443 AI 标注任务全历史名称/模型/ID 服务端搜索（待准确 SHA CI）
+
+接续 442 `2696b6e0`（49/49 Actions 全绿）。原 AI 列表仅先取 50 条再本页名称过滤，造成更早任务的假空态；本批在**原 TaskRepository tasks 表**加四个仅搜索用元数据列，`user_version 1→2` 加法迁移，创建 AI_ANNOTATION 时与任务持久行同事务冻结名称、模型显示名及模型配置 ID，不存提示词/密钥，不改 GT/Worker。旧任务首个带 `q` 的查询触发进程后台单飞、跨进程锁保护、每批上限 100 的冻结 request.json 只读回填；未回填完 HTTP 202 显示明确进度、不可返回部分结果冒充空值；损坏请求返回 503、可显式重试，普通无搜索 GET 不访问历史 request 全库。查询通过原 SQLite `WHERE` 在 cursor/LIMIT **之前**合并 `status`、项目、名称、模型及任务 ID，LIKE 转义防通配符误判；原生 JS 搜索防抖、取消旧请求及临时索引进度重查，并取消仅本页的伪搜索。后端/Node/真实浏览器回归新增。仅更新项目代码，**未部署、未改生产 DB/数据**；CI 与大规模真实 P95 尚待准确 SHA 核验。剩余 P0：阶段真实统计列、独立路由工作台视觉与快捷键、OSS/远端模型冷启动及三视口截图人工验收。详细记录见原 AI 专项文档。
+
 ## 2026-10-30｜42.24.442 审核回执只认本操作的持久 Commit 证据（准确 SHA CI 待核）
 
 441 `d5d3ac10` 已核准确 **49/49 GitHub Actions 全绿**（AI 后端与三组真实 Chrome 均成功）。二次风险审计发现旧失败操作 A 的 pending 回执若被后续新操作 B 的终态 GT 证据直接恢复，会把 B 的提交结果错误归给 A。442 只在原 `review/result.json` 与 `review/confirmation.json` 保存可选 `review_request_id`，按本操作 ID 精确匹配才能将 pending 恢复为 completed；旧无 ID 兼容，不能借其他操作完成恢复。前端按原本待核 ID 校验 GET 回执编号，浏览器 E2E stub 使用真实请求 ID；无第二套 GT/Task Owner。新增同 Task 两操作 A/B 错归属与真实确认回执恢复测试，隔离后端 39/39、全前端 Node 1419/1419，本批准确 SHA Chrome/CI 待核；不改生产，不部署。

@@ -21,7 +21,7 @@ from .sqlite_busy import busy_timeout_ms, retry_busy
 from ..gpu_resources import ensure_gpu_runtime_schema
 
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 _INIT_LOCK_TIMEOUT = 30
 
 
@@ -56,7 +56,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     lease_expires_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    finished_at TEXT
+    finished_at TEXT,
+    annotation_name TEXT,
+    annotation_model_name TEXT,
+    annotation_model_id TEXT,
+    annotation_search_ready INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_task_claim
     ON tasks(status, priority, created_at, task_id);
@@ -115,6 +119,15 @@ def _to_values(record: TaskRecord) -> dict:
     )
     values["accepted"] = None if record.accepted is None else int(record.accepted)
     return values
+
+
+def _annotation_search_fields(request: dict) -> tuple[str, str, str]:
+    """Only searchable, non-secret columns derived from the immutable request."""
+    return (
+        str(request.get("task_name") or "AI自动标注任务"),
+        str(request.get("model_config_name") or ""),
+        str(request.get("model_config_id") or ""),
+    )
 
 
 def _from_row(row: sqlite3.Row) -> TaskRecord:
@@ -247,6 +260,17 @@ class TaskRepository:
                 _add_column_if_missing(
                     database, "tasks", columns, "resource_wait_reason", "TEXT"
                 )
+                for name, definition in (
+                    ("annotation_name", "TEXT"),
+                    ("annotation_model_name", "TEXT"),
+                    ("annotation_model_id", "TEXT"),
+                    ("annotation_search_ready", "INTEGER NOT NULL DEFAULT 0"),
+                ):
+                    _add_column_if_missing(database, "tasks", columns, name, definition)
+                database.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_task_annotation_search_pending "
+                    "ON tasks(project_id, kind, annotation_search_ready, created_at)"
+                )
                 worker_columns = {
                     str(row[1])
                     for row in database.execute(
@@ -277,8 +301,22 @@ class TaskRepository:
         from .task_logs import create_task_log
 
         # Persist the real artifact before exposing its reference in a task row.
-        create_task_log(artifacts or ArtifactStore(self.path.parent / "artifacts"), record.task_id, record.log_ref)
+        artifact_store = artifacts or ArtifactStore(self.path.parent / "artifacts")
+        create_task_log(artifact_store, record.task_id, record.log_ref)
         values = _to_values(record)
+        if record.kind is TaskKind.AI_ANNOTATION:
+            # Freeze search metadata with the task row; future model edits must
+            # never rewrite the name/model originally selected by the user.
+            try:
+                request = artifact_store.read_json(record.task_id, record.payload_ref)
+                if isinstance(request, dict):
+                    name, model, model_id = _annotation_search_fields(request)
+                    values.update(annotation_name=name, annotation_model_name=model,
+                                  annotation_model_id=model_id, annotation_search_ready=1)
+            except (OSError, ValueError):
+                # Preserve original creation semantics if an artifact is
+                # temporarily unavailable. The bounded backfill can recover it.
+                pass
         columns = ",".join(values)
         placeholders = ",".join("?" for _ in values)
         with closing(self._connect()) as database:
@@ -456,6 +494,7 @@ class TaskRepository:
         statuses: Iterable[TaskStatus | str] | None = None,
         limit: int = 50,
         cursor: str | None = None,
+        annotation_query: str = "",
     ) -> TaskPage:
         bounded_limit = max(1, min(100, int(limit)))
         clauses: list[str] = []
@@ -471,6 +510,15 @@ class TaskRepository:
             values = [item.value if isinstance(item, TaskStatus) else str(item) for item in statuses]
             clauses.append(f"status IN ({','.join('?' for _ in values)})")
             parameters.extend(values)
+        if annotation_query:
+            escaped = (str(annotation_query).casefold().replace("\\", "\\\\")
+                       .replace("%", "\\%").replace("_", "\\_"))
+            pattern = f"%{escaped}%"
+            clauses.append("(LOWER(task_id) LIKE ? ESCAPE '\\' OR "
+                           "LOWER(COALESCE(annotation_name,'')) LIKE ? ESCAPE '\\' OR "
+                           "LOWER(COALESCE(annotation_model_name,'')) LIKE ? ESCAPE '\\' OR "
+                           "LOWER(COALESCE(annotation_model_id,'')) LIKE ? ESCAPE '\\')")
+            parameters.extend([pattern] * 4)
         if cursor:
             created_at, task_id = _decode_cursor(cursor)
             clauses.append("(created_at < ? OR (created_at = ? AND task_id < ?))")
@@ -487,6 +535,65 @@ class TaskRepository:
         if has_more and visible:
             next_cursor = _encode_cursor(visible[-1]["created_at"], visible[-1]["task_id"])
         return TaskPage(tuple(_from_row(row) for row in visible), next_cursor)
+
+    def annotation_search_progress(self, project_id: str) -> dict[str, int]:
+        """Index readiness is project-scoped; never return partial search as complete."""
+        with closing(self._connect()) as database:
+            row = database.execute(
+                "SELECT COUNT(*) AS total, "
+                "COALESCE(SUM(CASE WHEN annotation_search_ready=0 THEN 1 ELSE 0 END),0) AS pending, "
+                "COALESCE(SUM(CASE WHEN annotation_search_ready=2 THEN 1 ELSE 0 END),0) AS failed "
+                "FROM tasks WHERE project_id=? AND kind=?",
+                (project_id, TaskKind.AI_ANNOTATION.value),
+            ).fetchone()
+        return {key: int(row[key]) for key in ("total", "pending", "failed")}
+
+    @retry_busy
+    def backfill_annotation_search_batch(self, project_id: str, artifacts=None, *, limit: int = 100) -> int:
+        """Read at most one batch of legacy requests; never scan artifacts on list GET."""
+        from .artifacts import ArtifactStore
+
+        store = artifacts or ArtifactStore(self.path.parent / "artifacts")
+        with closing(self._connect()) as database:
+            rows = database.execute(
+                "SELECT task_id,payload_ref FROM tasks "
+                "WHERE project_id=? AND kind=? AND annotation_search_ready=0 "
+                "ORDER BY created_at DESC,task_id DESC LIMIT ?",
+                (project_id, TaskKind.AI_ANNOTATION.value, max(1, min(200, int(limit)))),
+            ).fetchall()
+        if not rows:
+            return 0
+        metadata = []
+        for row in rows:
+            try:
+                request = store.read_json(str(row["task_id"]), str(row["payload_ref"]))
+                if not isinstance(request, dict):
+                    raise ValueError("missing or malformed task request")
+                name, model, model_id = _annotation_search_fields(request)
+                metadata.append((name, model, model_id, 1, row["task_id"], project_id))
+            except (OSError, ValueError):
+                metadata.append((None, None, None, 2, row["task_id"], project_id))
+        with closing(self._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            database.executemany(
+                "UPDATE tasks SET annotation_name=?,annotation_model_name=?,annotation_model_id=?,"
+                "annotation_search_ready=? WHERE task_id=? AND project_id=? AND annotation_search_ready=0",
+                metadata,
+            )
+            database.commit()
+        return len(rows)
+
+    @retry_busy
+    def retry_failed_annotation_search(self, project_id: str) -> int:
+        with closing(self._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            changed = database.execute(
+                "UPDATE tasks SET annotation_search_ready=0 WHERE project_id=? AND kind=? "
+                "AND annotation_search_ready=2",
+                (project_id, TaskKind.AI_ANNOTATION.value),
+            ).rowcount
+            database.commit()
+        return int(changed)
 
     def _release_expired_in(self, database: sqlite3.Connection, now: str) -> int:
         count = database.execute(

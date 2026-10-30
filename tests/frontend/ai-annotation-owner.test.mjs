@@ -163,11 +163,16 @@ test('AI create initializes every asynchronous request counter before incrementi
   }
 });
 
-test('AI task status is filtered by the original paged API before cursor pagination', () => {
+test('AI task status and full-history name/model/id search are filtered by durable API before paging', () => {
   const listStart = source.indexOf('function renderAiTaskRows60(tasks)');
   const listEnd = source.indexOf('\n  window.renderOps427=function()', listStart);
   const list = source.slice(listStart, listEnd);
   assert.match(list, /if\(status\)params\.set\('status',status\)/);
+  assert.match(list, /if\(query\)params\.set\('q',query\)/);
+  assert.match(list, /if\(response\.indexing\)/);
+  assert.match(list, /setTimeout\(run,300\)/);
+  assert.match(list, /clearTimeout\(state\.ai60TaskIndexTimer\)/);
+  assert.doesNotMatch(list, /\.filter\(task=>!query/);
   assert.match(list, /state\.ai60TaskCursors=\[''\];state\.ai60TaskPageIndex=0/);
   assert.match(list, /state\.ai60TaskController\?\.abort\?\.\(\)/);
   assert.match(list, /state\.ai60TaskRequestEpoch===sequence/);

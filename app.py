@@ -18,6 +18,7 @@ import zipfile
 import random
 import sqlite3
 import mimetypes
+import logging
 from urllib.parse import quote
 from contextlib import closing, contextmanager
 from contextvars import ContextVar
@@ -23891,19 +23892,91 @@ def preview_annotation_image(project_id: str, payload: AnnotationTaskCreateReq):
     }
 
 
+_annotation_search_worker_lock = threading.Lock()
+_annotation_search_workers: Dict[str, threading.Thread] = {}
+_annotation_search_worker_errors: Dict[str, str] = {}
+
+
+def _backfill_annotation_search(project_id: str) -> None:
+    """One bounded legacy-index pass per batch, off the interactive request path."""
+    repository = shared_task_repository()
+    lock_path = str(repository.path.resolve()) + ".annotation-search." + hashlib.sha256(
+        project_id.encode("utf-8")
+    ).hexdigest()[:20] + ".lock"
+    try:
+        # A second web process may serve the same project. Only one writer
+        # enumerates its frozen request artifacts at a time.
+        with FileLock(lock_path, timeout=0):
+            while repository.backfill_annotation_search_batch(
+                project_id, shared_task_artifacts(), limit=100
+            ):
+                time.sleep(0.01)
+    except Timeout:
+        pass  # Another web process owns the backfill; its DB progress is shared.
+    except Exception:
+        logging.exception("AI annotation legacy search index failed for project %s", project_id)
+        with _annotation_search_worker_lock:
+            _annotation_search_worker_errors[project_id] = "历史任务索引失败，请检查服务日志后重试"
+    finally:
+        with _annotation_search_worker_lock:
+            _annotation_search_workers.pop(project_id, None)
+
+
+def _start_annotation_search_backfill(project_id: str) -> None:
+    with _annotation_search_worker_lock:
+        active = _annotation_search_workers.get(project_id)
+        if active and active.is_alive():
+            return
+        worker = threading.Thread(
+            target=_backfill_annotation_search, args=(project_id,),
+            name="annotation-search-index", daemon=True,
+        )
+        _annotation_search_workers[project_id] = worker
+        worker.start()
+
+
 @app.get("/api/v60/projects/{project_id}/annotation-tasks")
-def list_annotation_tasks(project_id: str, limit: int = 50, cursor: Optional[str] = None, status: str = ""):
+def list_annotation_tasks(project_id: str, limit: int = 50, cursor: Optional[str] = None,
+                          status: str = "", q: str = "", retry_index: bool = False):
     get_project(project_id)
     selected_status = str(status or "").strip().upper()
     if selected_status and selected_status not in {item.value for item in TaskStatus}:
         raise HTTPException(status_code=422, detail="AI 标注任务状态筛选条件无效")
     repository = shared_task_repository()
+    query = str(q or "").strip()
+    if len(query) > 120:
+        raise HTTPException(status_code=422, detail="搜索内容最多 120 个字符")
+    if query:
+        if retry_index:
+            repository.retry_failed_annotation_search(project_id)
+            with _annotation_search_worker_lock:
+                _annotation_search_worker_errors.pop(project_id, None)
+        progress = repository.annotation_search_progress(project_id)
+        if progress["failed"]:
+            return JSONResponse(status_code=503, content={
+                "detail": f"{progress['failed']} 条历史任务的原始请求不可读取，搜索暂不完整；修复记录后点击重试索引",
+                "index_failed": True,
+            })
+        with _annotation_search_worker_lock:
+            error = _annotation_search_worker_errors.get(project_id)
+        if error:
+            return JSONResponse(status_code=503, content={"detail": error, "index_failed": True})
+        if progress["pending"]:
+            _start_annotation_search_backfill(project_id)
+            return JSONResponse(status_code=202, content={
+                "indexing": True,
+                "indexed": progress["total"] - progress["pending"],
+                "total": progress["total"],
+                "remaining": progress["pending"],
+                "items": [], "next_cursor": None,
+            })
     page = repository.list(
         project_id=project_id,
         kinds={TaskKind.AI_ANNOTATION},
         statuses={selected_status} if selected_status else None,
         limit=max(1, min(100, int(limit))),
         cursor=cursor,
+        annotation_query=query,
     )
     worker_runtime = WorkerInstanceService(repository).list_runtime()
     queued_candidates = (

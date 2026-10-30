@@ -222,6 +222,31 @@ def test_annotation_task_status_filters_the_full_durable_history_before_cursor_p
     assert client.get(base, params={"status": "UNKNOWN"}).status_code == 422
 
 
+def test_annotation_search_waits_for_complete_legacy_index_instead_of_false_empty(
+    client, seeded_project, isolated_task_runtime, monkeypatch,
+):
+    project_id, _image = seeded_project
+    repository, artifacts = isolated_task_runtime
+    missing = "unindexed-legacy"
+    repository.create(TaskRecord.new(
+        missing, project_id, TaskKind.AI_ANNOTATION, "request.json", "vision:local",
+    ), artifacts=artifacts)
+    monkeypatch.setattr(app_module, "_start_annotation_search_backfill", lambda _project_id: None)
+    endpoint = f"/api/v60/projects/{project_id}/annotation-tasks"
+    pending = client.get(endpoint, params={"q": "历史关键字", "status": "QUEUED"})
+    assert pending.status_code == 202
+    assert pending.json()["indexing"] is True
+    assert pending.json()["remaining"] == 1
+    artifacts.atomic_write_json(missing, "request.json", {
+        "task_name": "历史关键字", "model_config_name": "模型甲",
+    })
+    repository.backfill_annotation_search_batch(project_id, artifacts)
+    found = client.get(endpoint, params={"q": "历史关键字", "status": "QUEUED"})
+    assert found.status_code == 200
+    assert [item["id"] for item in found.json()["items"]] == [missing]
+    assert client.get(endpoint, params={"q": "x" * 121}).status_code == 422
+
+
 def test_annotation_task_nonqueued_status_does_not_scan_global_pending_queue(
     client, seeded_project, isolated_task_runtime, monkeypatch,
 ):

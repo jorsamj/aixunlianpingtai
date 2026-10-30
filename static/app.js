@@ -7903,36 +7903,43 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   }
   function renderAiTaskRows60(tasks){
     const body=document.getElementById('ai60TaskRows');if(!body)return;
-    const query=String(state.ai60TaskSearch||'').trim().toLowerCase(),status=String(state.ai60TaskStatus||'');
-    const visible=(tasks||[]).filter(task=>!query||`${task.name||''} ${task.id||''} ${task.model_config_name||''}`.toLowerCase().includes(query));
-    if(!query&&!status&&window.AutoLabelPollRuntime?.patchRows?.(body,visible)){}else body.innerHTML=visible.map(taskRow).join('')||'<tr><td colspan="6">当前筛选页没有匹配任务，请调整筛选或翻页</td></tr>';
-    const pager=document.getElementById('ai60TaskPager');if(pager){const index=Number(state.ai60TaskPageIndex||0),hasNext=!!state.ai60TaskNextCursor;pager.innerHTML=`<span>第 ${index+1} 页 · 当前页 ${visible.length} / ${tasks.length} 条</span><button class="btn mini" ${index===0?'disabled':''} onclick="aiTaskPage60(-1)">上一页</button><button class="btn mini" ${hasNext?'':'disabled'} onclick="aiTaskPage60(1)">下一页</button>`}
+    const query=String(state.ai60TaskSearch||'').trim(),status=String(state.ai60TaskStatus||'');
+    const visible=tasks||[];
+    if(state.ai60TaskIndexing){const progress=state.ai60TaskIndexing;body.innerHTML=`<tr><td colspan="6">首次搜索正在建立历史任务索引：${Number(progress.indexed||0)} / ${Number(progress.total||0)} 条。索引期间不显示不完整的搜索结果。</td></tr>`}
+    else if(!query&&!status&&window.AutoLabelPollRuntime?.patchRows?.(body,visible)){}
+    else body.innerHTML=visible.map(taskRow).join('')||'<tr><td colspan="6">全部历史任务中没有匹配结果，请调整搜索或状态筛选</td></tr>';
+    const pager=document.getElementById('ai60TaskPager');if(pager){const index=Number(state.ai60TaskPageIndex||0),hasNext=!!state.ai60TaskNextCursor&&!state.ai60TaskIndexing;pager.innerHTML=state.ai60TaskIndexing?'<span>索引进行中，完成后自动展示结果</span>':`<span>第 ${index+1} 页 · 当前页 ${visible.length} 条</span><button class="btn mini" ${index===0?'disabled':''} onclick="aiTaskPage60(-1)">上一页</button><button class="btn mini" ${hasNext?'':'disabled'} onclick="aiTaskPage60(1)">下一页</button>`}
   }
   window.setAiTaskFilters60=function(){
     const status=String(document.getElementById('ai60TaskStatus')?.value||'');
-    state.ai60TaskSearch=String(document.getElementById('ai60TaskSearch')?.value||'');
-    if(state.ai60TaskSearch||status||state.ai60TaskPageIndex)window.AutoLabelPollRuntime?.deactivate?.();
-    if(status!==String(state.ai60TaskStatus||'')){
-      state.ai60TaskStatus=status;state.ai60TaskCursors=[''];state.ai60TaskPageIndex=0;state.ai60TaskNextCursor='';
-      state.annotationTasks60=[];state.annotationTasks60LoadedAt=0;
-      const body=document.getElementById('ai60TaskRows');if(body)body.innerHTML='<tr><td colspan="6">正在按状态读取全部历史任务…</td></tr>';
-      void refreshAnnotationTasks60().then(tasks=>{
-        if(tasks!==null&&state.page==='自动标注及清洗'&&(state.v427OpsTab||'label')==='label'){
-          renderAiTaskRows60(tasks);
-          if(!status&&!state.ai60TaskSearch)window.AutoLabelPollRuntime?.activate?.(tasks);
-        }
-      }).catch(error=>{if(state.page==='自动标注及清洗'&&String(state.ai60TaskStatus||'')===status){const node=document.getElementById('ai60TaskRows');if(node)node.innerHTML=`<tr><td colspan="6">读取任务失败：${esc(error.message||error)} <button class="btn mini" onclick="aiTaskPageRetry60()">重试</button></td></tr>`}});
-      return;
-    }
-    if(!state.ai60TaskSearch&&!status&&!state.ai60TaskPageIndex)window.AutoLabelPollRuntime?.activate?.(state.annotationTasks60||[]);
-    renderAiTaskRows60(state.annotationTasks60||[]);
+    const search=String(document.getElementById('ai60TaskSearch')?.value||'').trim();
+    const searchChanged=search!==String(state.ai60TaskSearch||'').trim();
+    const statusChanged=status!==String(state.ai60TaskStatus||'');
+    if(!searchChanged&&!statusChanged)return;
+    state.ai60TaskSearch=search;state.ai60TaskStatus=status;
+    state.ai60TaskCursors=[''];state.ai60TaskPageIndex=0;state.ai60TaskNextCursor='';
+    state.annotationTasks60=[];state.annotationTasks60LoadedAt=0;state.ai60TaskIndexing=null;
+    state.ai60TaskController?.abort?.();state.ai60TaskRequestEpoch=Number(state.ai60TaskRequestEpoch||0)+1;
+    state.annotationTasks60RefreshPromise=null;state.ai60TaskRequestKey='';
+    clearTimeout(state.ai60TaskSearchTimer);clearTimeout(state.ai60TaskIndexTimer);
+    window.AutoLabelPollRuntime?.deactivate?.();
+    const body=document.getElementById('ai60TaskRows');if(body)body.innerHTML='<tr><td colspan="6">正在查询全部历史任务…</td></tr>';
+    const run=()=>{if(state.page!=='自动标注及清洗'||(state.v427OpsTab||'label')!=='label'||String(state.ai60TaskSearch||'').trim()!==search||String(state.ai60TaskStatus||'')!==status)return;
+      void refreshAnnotationTasks60().then(tasks=>{if(tasks!==null){renderAiTaskRows60(tasks);if(!search&&!status)window.AutoLabelPollRuntime?.activate?.(tasks)}})
+        .catch(error=>showAiTaskListError60(error));};
+    if(searchChanged)state.ai60TaskSearchTimer=setTimeout(run,300);else run();
   };
+  function showAiTaskListError60(error){
+    if(state.page!=='自动标注及清洗'||(state.v427OpsTab||'label')!=='label')return;
+    clearTimeout(state.ai60TaskIndexTimer);state.ai60TaskIndexing=null;
+    const body=document.getElementById('ai60TaskRows');if(body)body.innerHTML=`<tr><td colspan="6">历史任务查询失败：${esc(error.message||error)} <button class="btn mini" onclick="aiTaskPageRetry60(true)">重试</button></td></tr>`;
+  }
   function renderAiTaskPage60({loading=false}={}){
     const view=document.getElementById('view');if(!view)return;
     let shell=view.querySelector(':scope > .ops427[data-ai-task-shell="1"]');
     if(!shell){
       const mount=document.createElement('section');mount.className='ops427';mount.dataset.aiTaskShell='1';
-      mount.innerHTML=`<div class="ops427-head"><div class="seg"><button data-ai-tab="label" class="on" onclick="state.v427OpsTab='label';renderOps427()">AI自动标注</button><button data-ai-tab="clean" onclick="state.v427OpsTab='clean';renderOps427()">自动清洗</button></div><button class="btn primary" onclick="createAiLabel427()">＋ 创建AI标注任务</button></div><section class="panel"><div class="ai60-task-toolbar"><input class="input" id="ai60TaskSearch" value="${esc(state.ai60TaskSearch||'')}" placeholder="搜索本页任务名称、模型或ID" oninput="setAiTaskFilters60()"><select class="select" id="ai60TaskStatus" aria-label="按全部历史任务状态筛选" onchange="setAiTaskFilters60()"><option value="">全部状态</option>${['QUEUED','RUNNING','CANCEL_REQUESTED','AWAITING_CONFIRMATION','PARTIAL_SUCCESS','SUCCEEDED','FAILED','CANCELLED','BLOCKED_BY_ENVIRONMENT','BLOCKED_BY_HARDWARE'].map(status=>`<option value="${status}" ${state.ai60TaskStatus===status?'selected':''}>${esc(taskView({status}).statusText)}</option>`).join('')}</select></div><div class="table-wrap"><table class="table"><thead><tr><th>任务</th><th>状态</th><th>真实处理进度</th><th>候选框</th><th>创建/耗时</th><th>操作</th></tr></thead><tbody id="ai60TaskRows"></tbody></table></div><div id="ai60TaskPager" class="ai60-task-pager"></div></section>`;
+      mount.innerHTML=`<div class="ops427-head"><div class="seg"><button data-ai-tab="label" class="on" onclick="state.v427OpsTab='label';renderOps427()">AI自动标注</button><button data-ai-tab="clean" onclick="state.v427OpsTab='clean';renderOps427()">自动清洗</button></div><button class="btn primary" onclick="createAiLabel427()">＋ 创建AI标注任务</button></div><section class="panel"><div class="ai60-task-toolbar"><input class="input" id="ai60TaskSearch" value="${esc(state.ai60TaskSearch||'')}" placeholder="搜索全部历史任务名称、模型或ID" oninput="setAiTaskFilters60()"><select class="select" id="ai60TaskStatus" aria-label="按全部历史任务状态筛选" onchange="setAiTaskFilters60()"><option value="">全部状态</option>${['QUEUED','RUNNING','CANCEL_REQUESTED','AWAITING_CONFIRMATION','PARTIAL_SUCCESS','SUCCEEDED','FAILED','CANCELLED','BLOCKED_BY_ENVIRONMENT','BLOCKED_BY_HARDWARE'].map(status=>`<option value="${status}" ${state.ai60TaskStatus===status?'selected':''}>${esc(taskView({status}).statusText)}</option>`).join('')}</select></div><div class="table-wrap"><table class="table"><thead><tr><th>任务</th><th>状态</th><th>真实处理进度</th><th>候选框</th><th>创建/耗时</th><th>操作</th></tr></thead><tbody id="ai60TaskRows"></tbody></table></div><div id="ai60TaskPager" class="ai60-task-pager"></div></section>`;
       mount.querySelector('.ai60-task-toolbar')?.insertAdjacentHTML('beforeend','<button type="button" id="ai60TaskRefresh" class="btn" onclick="aiTaskPageRetry60()">刷新</button>');
       view.replaceChildren(mount);shell=mount;
     }
@@ -7946,23 +7953,37 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   function ensureAiTaskProject60(){
     const project=String(pid());if(state.ai60TaskProjectId===project)return;
     state.ai60TaskController?.abort?.();state.ai60TaskRequestEpoch=Number(state.ai60TaskRequestEpoch||0)+1;
+    clearTimeout(state.ai60TaskSearchTimer);clearTimeout(state.ai60TaskIndexTimer);state.ai60TaskIndexing=null;
     state.ai60TaskProjectId=project;state.ai60TaskCursors=[''];state.ai60TaskPageIndex=0;state.ai60TaskNextCursor='';
     state.annotationTasks60=[];state.annotationTasks60LoadedAt=0;
   }
-  function refreshAnnotationTasks60(){
+  function refreshAnnotationTasks60({retryIndex=false}={}){
     ensureAiTaskProject60();
     const project=String(pid());
     const pageIndex=Number(state.ai60TaskPageIndex||0),cursor=(state.ai60TaskCursors||[''])[pageIndex]||'';
-    const status=String(state.ai60TaskStatus||'');
-    const params=new URLSearchParams({limit:'50'});if(cursor)params.set('cursor',cursor);if(status)params.set('status',status);
-    const key=`${project}|${pageIndex}|${cursor}|${status}`;
+    const status=String(state.ai60TaskStatus||''),query=String(state.ai60TaskSearch||'').trim();
+    const params=new URLSearchParams({limit:'50'});if(cursor)params.set('cursor',cursor);if(status)params.set('status',status);if(query)params.set('q',query);if(retryIndex)params.set('retry_index','true');
+    const key=`${project}|${pageIndex}|${cursor}|${status}|${query}|${retryIndex}`;
     if(state.annotationTasks60RefreshPromise&&state.ai60TaskRequestKey===key)return state.annotationTasks60RefreshPromise;
     state.ai60TaskController?.abort?.();
     const controller=new AbortController(),sequence=Number(state.ai60TaskRequestEpoch||0)+1;
     state.ai60TaskRequestEpoch=sequence;state.ai60TaskRequestKey=key;state.ai60TaskController=controller;
-    const current=()=>state.ai60TaskProjectId===project&&Number(state.ai60TaskPageIndex||0)===pageIndex&&String(state.ai60TaskStatus||'')===status&&state.ai60TaskRequestEpoch===sequence;
+    const current=()=>state.ai60TaskProjectId===project&&Number(state.ai60TaskPageIndex||0)===pageIndex&&String(state.ai60TaskStatus||'')===status&&String(state.ai60TaskSearch||'').trim()===query&&state.ai60TaskRequestEpoch===sequence;
     const pending=api(`${taskApi()}?${params}`,{signal:controller.signal}).then(response=>{
       if(!current())return null;
+      if(response.indexing){
+        state.ai60TaskIndexing=response;state.annotationTasks60=[];state.ai60TaskNextCursor='';
+        clearTimeout(state.ai60TaskIndexTimer);
+        if(state.page==='自动标注及清洗'&&(state.v427OpsTab||'label')==='label'){
+          state.ai60TaskIndexTimer=setTimeout(()=>{
+            if(current()&&state.page==='自动标注及清洗'&&(state.v427OpsTab||'label')==='label'){
+              void refreshAnnotationTasks60().then(items=>{if(items!==null)renderAiTaskRows60(items)}).catch(showAiTaskListError60);
+            }
+          },1500);
+        }
+        return [];
+      }
+      clearTimeout(state.ai60TaskIndexTimer);state.ai60TaskIndexing=null;
       state.annotationTasks60=response.items||[];
       state.ai60TaskNextCursor=String(response.next_cursor||'');
       state.annotationTasks60LoadedAt=Date.now();
@@ -7973,7 +7994,6 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   }
   window.refreshAnnotationTasks60=refreshAnnotationTasks60;
   window.aiTaskPage60=async function(delta){
-    await state.annotationTasks60RefreshPromise?.catch(()=>{});
     const current=Number(state.ai60TaskPageIndex||0),next=current+(delta>0?1:-1),history=state.ai60TaskCursors||[''];
     if(next<0||delta>0&&!state.ai60TaskNextCursor)return;
     if(next===history.length)history.push(state.ai60TaskNextCursor);
@@ -7983,10 +8003,10 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     try{const tasks=await refreshAnnotationTasks60();if(tasks!==null&&state.page==='自动标注及清洗'){renderAiTaskRows60(tasks);if(next===0&&!state.ai60TaskSearch&&!state.ai60TaskStatus)window.AutoLabelPollRuntime?.activate?.(tasks)}}
     catch(error){if(body)body.innerHTML=`<tr><td colspan="6">${esc(error.message||error)} <button class="btn mini" onclick="aiTaskPageRetry60()">重试</button></td></tr>`}
   };
-  window.aiTaskPageRetry60=async()=>{
+  window.aiTaskPageRetry60=async(retryIndex=false)=>{
     const button=document.getElementById('ai60TaskRefresh');if(button?.disabled)return;
     if(button){button.disabled=true;button.textContent='刷新中…'}
-    try{const tasks=await refreshAnnotationTasks60();if(tasks!==null)renderAiTaskRows60(tasks)}
+    try{const tasks=await refreshAnnotationTasks60({retryIndex:!!retryIndex});if(tasks!==null)renderAiTaskRows60(tasks)}
     catch(error){const body=document.getElementById('ai60TaskRows');if(body&&!body.children.length)body.innerHTML=`<tr><td colspan="6">任务刷新失败：${esc(error.message||error)} <button class="btn mini" onclick="aiTaskPageRetry60()">重试</button></td></tr>`;else toast(error.message||error)}
     finally{if(button?.isConnected){button.disabled=false;button.textContent='刷新'}}
   };

@@ -327,30 +327,57 @@ test('AI review timeout resolves the original operation receipt without a second
   expect(posts).toBe(1);
 });
 
-test('AI task list pages server-side, filters status across history and keeps name search local', async ({page}) => {
+test('AI task list pages and searches the full durable history before cursor pagination', async ({page}) => {
   const requests=[];
   await page.route('**/api/v60/projects/*/annotation-tasks?**', route=>{
-    const url=new URL(route.request().url()),status=url.searchParams.get('status')||'',second=url.searchParams.get('cursor')==='cursor-two';
-    requests.push({cursor:url.searchParams.get('cursor')||'first',status});
-    const item={id:second?'task-beta':'task-alpha',name:second?'Beta 标注':'Alpha 标注',status:second?'SUCCEEDED':'QUEUED',
+    const url=new URL(route.request().url()),status=url.searchParams.get('status')||'',search=url.searchParams.get('q')||'',second=url.searchParams.get('cursor')==='cursor-two';
+    requests.push({cursor:url.searchParams.get('cursor')||'first',status,search});
+    const item={id:search?'task-deep-history':second?'task-beta':'task-alpha',name:search?'历史命中任务':second?'Beta 标注':'Alpha 标注',status:second?'SUCCEEDED':'QUEUED',
       created_at:'2026-10-30T01:00:00Z',total_count:30,completed_count:second?30:0,model_config_name:'视觉模型',progress:second?100:0};
-    return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({items:[item],next_cursor:second||status?null:'cursor-two'})});
+    return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({items:search==='missing'?[]:[item],next_cursor:second||status||search?null:'cursor-two'})});
   });
   await ready(page);
   await page.evaluate(()=>{state.page='自动标注及清洗';state.v427OpsTab='label';window.renderOps427()});
   await expect(page.locator('#ai60TaskRows')).toContainText('Alpha 标注');
   await page.locator('#ai60TaskSearch').fill('missing');
-  await expect(page.locator('#ai60TaskRows')).toContainText('没有匹配');
+  await expect(page.locator('#ai60TaskRows')).toContainText('没有匹配结果');
+  expect(requests).toContainEqual({cursor:'first',status:'',search:'missing'});
+  await page.locator('#ai60TaskSearch').fill('历史关键字');
+  await expect(page.locator('#ai60TaskRows')).toContainText('历史命中任务');
+  expect(requests).toContainEqual({cursor:'first',status:'',search:'历史关键字'});
   await page.locator('#ai60TaskSearch').fill('');
+  await expect(page.locator('#ai60TaskRows')).toContainText('Alpha 标注');
   await page.locator('#ai60TaskPager').getByRole('button',{name:'下一页'}).click();
   await expect(page.locator('#ai60TaskRows')).toContainText('Beta 标注');
-  expect(requests).toContainEqual({cursor:'cursor-two',status:''});
+  expect(requests).toContainEqual({cursor:'cursor-two',status:'',search:''});
   await page.locator('#ai60TaskStatus').selectOption('QUEUED');
   await expect(page.locator('#ai60TaskRows')).toContainText('Alpha 标注');
-  expect(requests).toContainEqual({cursor:'first',status:'QUEUED'});
+  expect(requests).toContainEqual({cursor:'first',status:'QUEUED',search:''});
   await expect(page.locator('#ai60TaskPager')).toContainText('第 1 页');
   await page.locator('#ai60TaskStatus').selectOption('');
   await expect(page.locator('#ai60TaskRows')).toContainText('Alpha 标注');
+});
+
+test('AI task search reports legacy indexing then shows only complete server results', async ({page}) => {
+  let searchRequests=0;
+  await page.route('**/api/v60/projects/*/annotation-tasks?**', route=>{
+    const query=new URL(route.request().url()).searchParams.get('q')||'';
+    if(query){
+      searchRequests++;
+      if(searchRequests===1)return route.fulfill({status:202,contentType:'application/json',body:JSON.stringify({indexing:true,indexed:2,total:6,remaining:4,items:[],next_cursor:null})});
+      return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({items:[{
+        id:'archived-task',name:'完整历史搜索结果',status:'SUCCEEDED',created_at:'2026-10-30T01:00:00Z',total_count:2,
+      }],next_cursor:null})});
+    }
+    return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({items:[],next_cursor:null})});
+  });
+  await ready(page);
+  await page.evaluate(()=>{state.page='自动标注及清洗';state.v427OpsTab='label';window.renderOps427()});
+  await page.locator('#ai60TaskSearch').fill('归档');
+  await expect(page.locator('#ai60TaskRows')).toContainText('历史任务索引：2 / 6');
+  await expect(page.locator('#ai60TaskRows')).toContainText('不显示不完整的搜索结果');
+  await expect(page.locator('#ai60TaskRows')).toContainText('完整历史搜索结果',{timeout:5000});
+  expect(searchRequests).toBeGreaterThanOrEqual(2);
 });
 
 test('rapid AI task status switching discards stale pages and errors', async ({page}) => {

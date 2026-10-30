@@ -8,6 +8,7 @@ import pytest
 
 import platform_core.task_runtime.repository as task_repository_module
 from platform_core.task_runtime import TaskKind, TaskRecord, TaskRepository, TaskStatus
+from platform_core.task_runtime import ArtifactStore
 
 
 def add(
@@ -29,6 +30,110 @@ def add(
             required_capabilities=(capability,),
         )
     )
+
+
+def test_annotation_search_across_durable_history_and_cursor_before_page_limit(tmp_path):
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    artifacts = ArtifactStore(tmp_path / "artifacts")
+    for index in range(67):
+        task_id = f"annotation-{index:03d}"
+        artifacts.atomic_write_json(task_id, "request.json", {
+            "task_name": "目标-烟雾" if index in {1, 15, 62} else "普通任务",
+            "model_config_name": "远端视觉模型" if index == 64 else "默认模型",
+            "model_config_id": "m-archive" if index == 66 else "m-default",
+        })
+        repository.create(TaskRecord.new(
+            task_id, "project-a", TaskKind.AI_ANNOTATION, "request.json", "vision:local",
+        ), artifacts=artifacts)
+    assert repository.annotation_search_progress("project-a") == {
+        "total": 67, "pending": 0, "failed": 0,
+    }
+    cursor = None
+    matched = []
+    for _ in range(3):
+        page = repository.list(project_id="project-a", kinds={TaskKind.AI_ANNOTATION},
+                               annotation_query="烟雾", limit=1, cursor=cursor)
+        assert len(page.items) == 1
+        matched.append(page.items[0].task_id)
+        cursor = page.next_cursor
+    assert set(matched) == {"annotation-001", "annotation-015", "annotation-062"}
+    assert cursor is None
+    assert [item.task_id for item in repository.list(
+        project_id="project-a", kinds={TaskKind.AI_ANNOTATION},
+        annotation_query="远端视觉模型",
+    ).items] == ["annotation-064"]
+    assert [item.task_id for item in repository.list(
+        project_id="project-a", kinds={TaskKind.AI_ANNOTATION},
+        annotation_query="m-archive",
+    ).items] == ["annotation-066"]
+    # LIKE wildcards must be literals, never unexpectedly match every task.
+    assert not repository.list(project_id="project-a", kinds={TaskKind.AI_ANNOTATION},
+                               annotation_query="%_\\").items
+
+
+def test_annotation_search_schema_migrates_v1_in_place_without_dropping_tasks(tmp_path):
+    path = tmp_path / "tasks.sqlite3"
+    migration_fields = (
+        "    finished_at TEXT,\n"
+        "    annotation_name TEXT,\n"
+        "    annotation_model_name TEXT,\n"
+        "    annotation_model_id TEXT,\n"
+        "    annotation_search_ready INTEGER NOT NULL DEFAULT 0\n"
+    )
+    assert migration_fields in task_repository_module.SCHEMA
+    with sqlite3.connect(path) as database:
+        database.executescript(task_repository_module.SCHEMA.replace(
+            migration_fields, "    finished_at TEXT\n",
+        ))
+        database.execute("ALTER TABLE tasks ADD COLUMN resource_wait_reason TEXT")
+        legacy = TaskRecord.new("historic", "project-1", TaskKind.AI_ANNOTATION,
+                                "request.json", "vision:legacy")
+        values = task_repository_module._to_values(legacy)
+        database.execute(
+            f"INSERT INTO tasks ({','.join(values)}) VALUES ({','.join('?' for _ in values)})",
+            tuple(values.values()),
+        )
+        database.execute("PRAGMA user_version=1")
+    migrated = TaskRepository(path)
+    assert migrated.get("historic") is not None
+    assert migrated.annotation_search_progress("project-1") == {
+        "total": 1, "pending": 1, "failed": 0,
+    }
+    with sqlite3.connect(path) as database:
+        assert int(database.execute("PRAGMA user_version").fetchone()[0]) == 2
+
+
+def test_annotation_search_legacy_batch_backfill_is_bounded_and_reports_corrupt(tmp_path):
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    artifacts = ArtifactStore(tmp_path / "artifacts")
+    for index in range(5):
+        repository.create(TaskRecord.new(
+            f"legacy-{index}", "project-a", TaskKind.AI_ANNOTATION,
+            "request.json", "vision:local",
+        ), artifacts=artifacts)
+    assert repository.annotation_search_progress("project-a")["pending"] == 5
+    for index in range(4):
+        artifacts.atomic_write_json(f"legacy-{index}", "request.json", {
+            "task_name": f"历史任务{index}", "model_config_name": "历史视觉模型",
+        })
+    assert repository.backfill_annotation_search_batch("project-a", artifacts, limit=2) == 2
+    assert repository.annotation_search_progress("project-a")["pending"] == 3
+    assert repository.backfill_annotation_search_batch("project-a", artifacts, limit=10) == 3
+    assert repository.annotation_search_progress("project-a") == {
+        "total": 5, "pending": 0, "failed": 1,
+    }
+    assert len(repository.list(project_id="project-a", kinds={TaskKind.AI_ANNOTATION},
+                               annotation_query="历史视觉模型").items) == 4
+    artifacts.atomic_write_json("legacy-4", "request.json", {
+        "task_name": "已恢复的任务", "model_config_name": "恢复模型",
+    })
+    assert repository.retry_failed_annotation_search("project-a") == 1
+    assert repository.backfill_annotation_search_batch("project-a", artifacts) == 1
+    assert repository.annotation_search_progress("project-a")["failed"] == 0
+    assert [item.task_id for item in repository.list(
+        project_id="project-a", kinds={TaskKind.AI_ANNOTATION},
+        annotation_query="已恢复的任务",
+    ).items] == ["legacy-4"]
 
 
 def test_ready_task_repository_bypasses_init_lock(tmp_path, monkeypatch):
