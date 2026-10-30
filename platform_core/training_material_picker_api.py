@@ -1409,15 +1409,27 @@ def training_material_picker_router(
             annotations = annotation_repository_for_path(
                 str(repository.project_path)
             )
+            # Bulk selection is an atomic UI operation. Both auxiliary facts
+            # already participate in picker page revisions; never accept an
+            # ID set assembled while either one changes.
+            negative_confirmation_revision = annotations.task_negative_confirmation_revision()
+            negative_pool_revision = NegativePool(repository).revision()
             if body.get("sample_role"):
                 contract = task_contract(project_id, body, repository)
                 role_page = _role_material_page(repository, annotations, contract, query=query, labels=labels,
                     sample_role=str(body["sample_role"]), limit=MAX_SELECTION_SUMMARY_IDS, filters=body, include_payload=False)
                 if role_page["total"] > MAX_SELECTION_SUMMARY_IDS:
-                    raise ValueError("filtered selection exceeds maximum")
+                    raise ValueError(f"筛选结果共 {role_page['total']} 张，超过单次选择上限 {MAX_SELECTION_SUMMARY_IDS} 张")
+                if TrainingMaterialUsage(repository.project_path.parent.parent / "task_runtime" / "tasks.sqlite3").read_revision() != usage['revision']:
+                    raise ValueError("训练历史已更新，请重试批量选择")
+                if (annotations.task_negative_confirmation_revision() != negative_confirmation_revision
+                        or NegativePool(repository).revision() != negative_pool_revision):
+                    raise ValueError("负样本池或确认记录已更新，请重新解析批量选择")
                 return {"items": [row["id"] for row in role_page["items"]], "total": role_page["total"],
                         "repository_revision": repository.current_revision(),
                         "annotation_revision": annotations.current_revision(), "usage_revision": usage['revision'],
+                        "negative_confirmation_revision": negative_confirmation_revision,
+                        "negative_pool_revision": negative_pool_revision,
                         "selection_mode": "filtered"}
             ids, total = _bulk_filtered_ids(
                 repository,
@@ -1429,6 +1441,9 @@ def training_material_picker_router(
             )
             if TrainingMaterialUsage(repository.project_path.parent.parent / "task_runtime" / "tasks.sqlite3").read_revision() != usage['revision']:
                 raise ValueError("训练历史已更新，请重试批量选择")
+            if (annotations.task_negative_confirmation_revision() != negative_confirmation_revision
+                    or NegativePool(repository).revision() != negative_pool_revision):
+                raise ValueError("负样本池或确认记录已更新，请重新解析批量选择")
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
         return {
@@ -1437,6 +1452,8 @@ def training_material_picker_router(
             "repository_revision": repository.current_revision(),
             "annotation_revision": annotations.current_revision(),
             "usage_revision": usage['revision'],
+            "negative_confirmation_revision": negative_confirmation_revision,
+            "negative_pool_revision": negative_pool_revision,
             "selection_mode": "all_available" if bool(body.get("all_available")) else "filtered",
         }
 

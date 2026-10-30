@@ -494,6 +494,8 @@ export function installTrainingMaterialPickerRuntime({
       picker.repositoryRevision = cached.repository_revision ?? null;
       picker.annotationRevision = cached.annotation_revision ?? null;
       picker.usageRevision = cached.usage_revision ?? null;
+      picker.negativePoolRevision = cached.negative_pool_revision ?? null;
+      picker.negativeConfirmationRevision = cached.negative_confirmation_revision ?? null;
       picker.loading = false;
       renderPage();
       return;
@@ -540,6 +542,8 @@ export function installTrainingMaterialPickerRuntime({
       picker.repositoryRevision = body.repository_revision ?? null;
       picker.annotationRevision = body.annotation_revision ?? null;
       picker.usageRevision = body.usage_revision ?? null;
+      picker.negativePoolRevision = body.negative_pool_revision ?? null;
+      picker.negativeConfirmationRevision = body.negative_confirmation_revision ?? null;
       remember(key, {...body,versionKey:revisionKey(body)});
       picker.loading = false;
       renderPage();
@@ -588,6 +592,8 @@ export function installTrainingMaterialPickerRuntime({
     const body = await readJson(response, '训练素材批量选择读取失败');
     return {ids:uniqueIds(body.items),revision:body.repository_revision,
       usageRevision:body.usage_revision,annotationRevision:body.annotation_revision,
+      negativePoolRevision:body.negative_pool_revision,
+      negativeConfirmationRevision:body.negative_confirmation_revision,
       total:Number(body.total || 0)};
     },{signal:picker?.bulkController?.signal,label:'素材批量选择'});
   }
@@ -616,7 +622,9 @@ export function installTrainingMaterialPickerRuntime({
       if(result.total!==result.ids.length ||
          (picker.repositoryRevision!==null && result.revision!==picker.repositoryRevision) ||
          (picker.annotationRevision!==null && result.annotationRevision!==picker.annotationRevision) ||
-         (picker.usageRevision!==null && result.usageRevision!==picker.usageRevision)){
+         (picker.usageRevision!==null && result.usageRevision!==picker.usageRevision) ||
+         (picker.negativePoolRevision!==null && result.negativePoolRevision!==picker.negativePoolRevision) ||
+         (picker.negativeConfirmationRevision!==null && result.negativeConfirmationRevision!==picker.negativeConfirmationRevision)){
         notify('素材版本或筛选结果已变化，请刷新当前页后重试批量选择');
         return;
       }
@@ -650,6 +658,7 @@ export function installTrainingMaterialPickerRuntime({
       pageSize: DEFAULT_PAGE_SIZE, page: 1, totalPages: 1,
       items: [], total: 0, loading: false, repositoryRevision: null,
       annotationRevision: null, usageRevision: null,
+      negativePoolRevision: null, negativeConfirmationRevision: null,
     };
     state().trainMaterialPickerV3 = picker;
     const title = picker.role === 'robustness' ? '选择增强训练素材' : picker.role === 'train' ? '选择本次训练素材' : '选择独立试验素材';

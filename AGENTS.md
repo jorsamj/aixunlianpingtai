@@ -1,3 +1,7 @@
+## 2026-10-30｜42.24.432 跨页选择负样本证据修订补齐
+
+在 `1592b939`／42.24.431 的已验证普通 GET 前推与组合筛选基础上，本批只补已有 `/bulk-selection` 和 `TrainingMaterialPickerRuntime.bulkAction()` 的负样本池、负样本确认两种修订号比对，并为角色路径补原使用历史末端重验；角色批量超过 50000 明示实际数。既有 5 修订项页缓存与 `picker.selected`、历史筛选、Train/Val/Test、正式 GT 保留；浏览器 Stalled、生产冷/热 P95 未证实，不能将代码层安全性等同于现场性能闭环。详见唯一进度文档 `docs/performance/2026-10-29-p0-followup.md`，不部署、不清理素材、不重建缓存或选择系统。
+
 ## 2026-10-30｜42.24.431 训练素材普通 GET 历史排除 SQL 前推与跨页筛选 P0
 
 基线 `5bb4c732`／42.24.430；已确认原 `list_training_materials → _usage_filters → _cached_usage_pool` 默认冷请求在分页前流式扫描全素材历史并反复查 Task token。431 对默认 `new_for_algorithm` 用原使用证据索引在准确分页 SQL 中进行同源/衍生/哈希/分组排除；只有显式历史状态/范围筛选仍执行原全局事实投影。`TrainingMaterialPickerRuntime` 原位限制请求身份、同查询去重、组合筛选逐项移除与清空、全筛选跨页选择的修订号与数量核验。隔离 1 万素材/千条已暴露证据：旧冷首页 509.70ms，新冷 151.86ms、新热 15.47ms；小样本 100 张冷 9.33→10.98ms 并未提速。以上仅本机受控 SQLite 夹具，不是 A800 或 HAR 实测。真正浏览器 Stalled、服务端 P95/并发、真实首训迭代仍待生产与精确 SHA CI；不部署、不删数据。唯一进度与详细对照 `docs/performance/2026-10-29-p0-followup.md`。

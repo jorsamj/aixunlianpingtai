@@ -4,7 +4,7 @@ import sqlite3
 from types import SimpleNamespace
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from PIL import Image
 
@@ -446,6 +446,8 @@ def test_training_picker_bulk_selection_resolves_filtered_ids_in_one_request(tmp
     assert filtered_body["total"] == 115
     assert len(filtered_body["items"]) == 115
     assert len(set(filtered_body["items"])) == 115
+    assert "negative_pool_revision" in filtered_body
+    assert "negative_confirmation_revision" in filtered_body
 
     all_available = client.post(
         "/api/v62/projects/p1/training-materials/bulk-selection",
@@ -456,6 +458,8 @@ def test_training_picker_bulk_selection_resolves_filtered_ids_in_one_request(tmp
     assert all_body["selection_mode"] == "all_available"
     assert all_body["total"] == 260
     assert len(all_body["items"]) == 260
+    assert "negative_pool_revision" in all_body
+    assert "negative_confirmation_revision" in all_body
 
     test_only = client.post(
         "/api/v62/projects/p1/training-materials/bulk-selection",
@@ -464,6 +468,38 @@ def test_training_picker_bulk_selection_resolves_filtered_ids_in_one_request(tmp
     assert test_only.status_code == 200
     assert test_only.json()["total"] == 230
     assert len(test_only.json()["items"]) == 230
+
+
+@pytest.mark.parametrize("source", ["pool", "confirmation"])
+def test_training_picker_bulk_refuses_changed_negative_evidence(tmp_path, monkeypatch, source):
+    _, repository = _client(tmp_path)
+    # Exercise the unchanged real router endpoint without a TestClient portal;
+    # this environment's Starlette TestClient cannot finish an HTTP exchange.
+    router = training_material_picker_router(
+        lambda project_id: {"id": project_id} if project_id == "p1" else None,
+        lambda: tmp_path / "data",
+    )
+    endpoint = next(route.endpoint for route in router.routes if route.path.endswith("/training-materials/bulk-selection"))
+    if source == "pool":
+        owner = picker_module.NegativePool
+        name = "revision"
+    else:
+        owner = AnnotationRepository
+        name = "task_negative_confirmation_revision"
+    original = getattr(owner, name)
+    reads = 0
+
+    def changed_after_snapshot(self):
+        nonlocal reads
+        reads += 1
+        revision = original(self)
+        return revision if reads == 1 else f"{revision}-changed"
+
+    monkeypatch.setattr(owner, name, changed_after_snapshot)
+    with pytest.raises(HTTPException) as raised:
+        endpoint("p1", {"algorithm_asset_id": "algo", "all_available": True})
+    assert raised.value.status_code == 422
+    assert "负样本池或确认记录已更新" in raised.value.detail
 
 
 def test_training_picker_thumbnail_is_lazy_cached(tmp_path, monkeypatch):
@@ -726,6 +762,8 @@ def test_role_page_and_review_keep_existing_formal_callback(tmp_path, monkeypatc
     bulk = client.post(endpoint + "/bulk-selection", json={"algorithm_asset_id": "a", "sample_role": "positive"})
     assert bulk.status_code == 200, bulk.text
     assert bulk.json()["total"] == 115
+    assert "negative_pool_revision" in bulk.json()
+    assert "negative_confirmation_revision" in bulk.json()
 
 
 def test_ten_thousand_candidates_role_page_returns_only_requested_page(tmp_path):

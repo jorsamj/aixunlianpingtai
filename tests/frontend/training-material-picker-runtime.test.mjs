@@ -167,6 +167,10 @@ test('picker refuses duplicate in-flight pages and stale cross-page bulk respons
   assert.match(source, /result\.total!==result\.ids\.length/);
   assert.match(source, /result\.annotationRevision!==picker\.annotationRevision/);
   assert.match(source, /result\.usageRevision!==picker\.usageRevision/);
+  assert.match(source, /result\.negativePoolRevision!==picker\.negativePoolRevision/);
+  assert.match(source, /result\.negativeConfirmationRevision!==picker\.negativeConfirmationRevision/);
+  assert.match(source, /negativePoolRevision:body\.negative_pool_revision/);
+  assert.match(source, /negativeConfirmationRevision:body\.negative_confirmation_revision/);
   assert.match(source, /picker\.selected\.add\(id\)/);
   assert.match(source, /picker\.selected\.has\(id\) \? picker\.selected\.delete\(id\) : picker\.selected\.add\(id\)/);
   assert.doesNotMatch(source, /task: taskPayload\(\)/);
