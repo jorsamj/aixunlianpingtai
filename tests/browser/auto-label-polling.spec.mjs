@@ -273,7 +273,8 @@ test('AI candidate review keeps searchable mapping edits and inline labels throu
 
   const firstCard=review.locator('#ai60ReviewGrid .review427-card').first();
   await firstCard.getByRole('button',{name:'编辑候选框'}).click();
-  const editor=page.getByRole('dialog',{name:'编辑AI候选框'});
+  // The editor is inline within the existing review dialog.
+  const editor=review.locator('.ai66-edit');
   await expect(editor).toBeVisible();
   await editor.locator('.ai66-edit-object select').first().selectOption('helmet');
   await editor.locator('.ai66-edit-advanced').evaluate(node=>{node.open=true});
@@ -292,12 +293,12 @@ test('AI candidate review keeps searchable mapping edits and inline labels throu
   const firstAfterPaging=review.locator('#ai60ReviewGrid .review427-card').first();
   await expect(firstAfterPaging).toContainText('安全帽');
   await firstAfterPaging.getByRole('button',{name:'编辑候选框'}).click();
-  const editorAfterPaging=page.getByRole('dialog',{name:'编辑AI候选框'});
+  const editorAfterPaging=review.locator('.ai66-edit');
   await expect(editorAfterPaging).toBeVisible();
   await expect(editorAfterPaging.locator('.ai66-edit-object select').first()).toHaveValue('helmet');
   await editorAfterPaging.locator('.ai66-edit-advanced').evaluate(node=>{node.open=true});
   await expect(editorAfterPaging.locator('.ai66-edit-coord input[type="number"]').first()).toHaveValue('12');
-  await editorAfterPaging.getByRole('button',{name:'取消'}).click();
+  await editorAfterPaging.getByRole('button',{name:'返回列表'}).click();
   await expect(editorAfterPaging).toBeHidden();
   await expect(review).toBeVisible();
 

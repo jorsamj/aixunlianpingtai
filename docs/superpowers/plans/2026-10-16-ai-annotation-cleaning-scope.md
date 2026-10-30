@@ -66,3 +66,9 @@
 - OSS 冷/热、外部模型远程推理、训练素材与 AI 材料页面交互合同、实际生产全量素材高压负载、人工截屏视觉验收仍待有权限环境执行；生产数据库与正式 GT 未动。
 
 仅长期开发分支正常快进提交；无 main merge、force push、tag、release 或生产部署。精确 SHA CI 与 Chrome 的最终结论须在远端运行完成后另行核对。
+
+### 远端真实 Chrome 回归与补正（续）
+
+- `740326d1` 的 **Frontend Runtime Stabilization / browser-navigation (1)** 实际运行 105 项，其中 102 通过、3 失败。逐项查看 CI 原始错误后，确认失败用例仍假定「候选框编辑是第二层对话框」（2 项），或假定「创建任务自动选择素材第一页」（1 项）；这两项前提恰与本次业务修复相冲突。
+- 更新已有 `tests/browser/annotorious-lifecycle.spec.mjs` 和 `tests/browser/auto-label-polling.spec.mjs` 的定位范围为同一个审核工作台内的 `.ai66-edit`，仍保留真实 Annotorious 画框、保存、翻页、映射与正式 `/decisions` 断言；创建失败恢复用例改为显式点击一张素材后提交，仍验证防重复 POST 和表单内容不丢失。没有删除用例、跳过测试或降低实际功能断言。
+- 待新提交的准确 SHA 重新执行真实 Chrome 和后端合同；旧 SHA 的 102/105 **不能**冒充新提交已全部通过。

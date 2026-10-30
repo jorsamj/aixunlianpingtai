@@ -140,6 +140,11 @@ test('AI create keeps the form on configuration or submit failure and fences dup
   await page.locator('#ai429Hydration').getByRole('button', {name: '重试'}).click();
   await expect(page.locator('#ai429Models')).toContainText('场景视觉模型');
   await page.getByRole('button', {name: /明火/}).click();
+  // Creation no longer implicitly selects an entire material page. The user
+  // must explicitly choose the image before submitting the task.
+  await expect(page.locator('#ai429MaterialGrid button')).toHaveCount(1);
+  await page.locator('#ai429MaterialGrid button').first().click();
+  await expect(page.locator('#ai429MaterialCount')).toContainText('已选 1 张');
   await page.locator('#ai429Prompt').fill('保留本次输入 {{labels_json}} {{output_schema}}');
   await page.locator('#ai429Submit').click();
   await page.evaluate(() => window.submitAiLabel429());
