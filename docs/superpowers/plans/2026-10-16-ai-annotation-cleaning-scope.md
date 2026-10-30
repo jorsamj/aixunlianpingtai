@@ -1,5 +1,13 @@
 # AI 预标注、清洗范围与提示词创建体验实施计划
 
+## 2026-10-30｜42.24.437 P0 真实浏览器对比证据保留续批（待精确 CI）
+
+- 基线为 `a818e1d8`／42.24.436，该精确 SHA 的 41 个 GitHub Actions 工作流 **40 成功、1 失败**。`AI Annotation Recovery` 通过；失败的 `Frontend Runtime Stabilization / browser-navigation (1)` 为 105/106，其中新增创建配置确认用例检测到真实 `#ai429Confirmation` 仍 hidden。另一个 `v42.25 Release Regression` 曾因 `psutil` 暂停状态立即断言失败，原 SHA 单 Job 重跑后成功；这是已记录的独立时序波动，本批不混入进程控制逻辑修改。
+- 创建确认故障根因是新增 `renderAiCreateConfirmation429` 位于提交函数的闭包，却调用了创建工作台另一个闭包中不可见的 `aiCreateLabelName429`，抛出运行时异常后面板未被填充。这与此前候选框渲染跨闭包错误同类。**本批已替换为平台公开且原任务列表一直在用的 `window.PlatformCore.materials.labelDisplay` 唯一展示入口**，增加禁止再次引用私有 helper 的 Node 合同，并单独更新 app.js 缓存键；不复制标签映射逻辑、不改变正式 GT 标签规则。
+- 同时为原 Playwright 用例增加「配置完成但尚未确认」和「最终确认已展开」两个时点的 1920×1080、1440×900、1366×768 截图，避免仅保留成功后状态而无法比较同一浏览器流程的前后变化。
+- 原 `.github/workflows/frontend-runtime-stabilization.yml` 的浏览器作业会生成 `test-results`，但没有上传截图的 action。现沿用同一 workflow/shard，增加 `if: always()` 的 GitHub artifact 上传：仅留 `ai-create-*`、`ai-inline-review-*`、`ai-review-*` 图片与失败 trace，保留 30 天；不新增 workflow、测试系统或生产运行态数据。
+- **这属于验收证据保全，不代表视觉满意度或性能已达标**。需在 437 精确 SHA 的真实 Chrome CI 跑完后核对截图产物、分辨率及位置；若有失败，按具体 trace 修复。与 `42.24.436` 的完整业务回归、AI 任务真实远程服务/OSS 冷加载、P50/P95 均应分别记录，不得借「生成截图」宣称整项 P0 完成。
+
 ## 2026-10-30｜42.24.436 创建任务最终确认续批（准确 SHA CI 待验）
 
 ### A. 基线与本批边界

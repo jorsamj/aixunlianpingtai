@@ -507,3 +507,15 @@ jobs:
           tests/browser/upload-task-center-performance.spec.mjs
           tests/browser/video-task-performance.spec.mjs
           tests/browser/component-scan-performance.spec.mjs
+      - name: Preserve AI annotation screenshots and browser failure traces
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-annotation-ui-${{ github.event.pull_request.head.sha || github.sha }}-shard-${{ matrix.shard }}
+          path: |
+            test-results/**/ai-create-*.png
+            test-results/**/ai-inline-review-*.png
+            test-results/**/ai-review-*.png
+            test-results/**/trace.zip
+          if-no-files-found: ignore
+          retention-days: 30

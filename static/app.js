@@ -7741,10 +7741,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     const root=document.getElementById('ai429Confirmation');if(!root)return;
     const model=(state.modelConfigs||[]).find(row=>String(row.id)===body.model_config_id)||{};
     const template=(state.promptTemplates||[]).find(row=>String(row.id)===body.prompt_template_id)||{};
-    const labelNames=body.labels_text.split('、').map(code=>{
-      const row=(state.labels||[]).find(label=>String(label.code)===code);
-      return `${aiCreateLabelName429(row)||code} (${code})`;
-    });
+    const labelNames=body.labels_text.split('、').map(code=>`${window.PlatformCore.materials.labelDisplay(code,state.labels)} (${code})`);
     const field=(title,value)=>`<div><span>${esc(title)}</span><strong>${esc(value)}</strong></div>`;
     root.innerHTML=`<header><div><span class="ai-create-confirm-kicker">创建前最后核对</span><h3>本次 AI 标注任务概览</h3><p>以下为即将提交的实际选项，确认后才创建任务；正式标注仍须人工审核。</p></div><span class="ai-create-confirm-count">${body.image_ids.length}<small>张素材</small></span></header>
       <div class="ai-create-confirm-grid">${field('任务名称',body.task_name)}${field('视觉模型',`${model.name||model.model_name||body.model_config_id} · ${model.provider_adapter||model.provider_type||'已配置'}`)}${field('目标标签',labelNames.join('、'))}${field('置信度阈值',`${Math.round(body.threshold*100)}%`)}${field('已有标注处理',body.overwrite?'审核后按现有覆盖合同处理相同标签':'保留已有标注，不主动覆盖')}${field('参考素材',`${body.reference_image_ids.length} 张（可选）`)}${field('提示词模板',body.prompt_template_id?`${template.name||body.prompt_template_id} · v${Number(template.version||1)}`:'模型默认模板')}${field('业务补充说明',body.business_instruction||'无')}</div>
@@ -7780,7 +7777,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     const snapshot=JSON.stringify(body);
     if(draft.confirmationSnapshot!==snapshot){
       draft.confirmationSnapshot=snapshot;
-      renderAiCreateConfirmation429(body);
+      try{renderAiCreateConfirmation429(body)}catch(error){draft.confirmationSnapshot='';return toast('本次配置概览渲染失败，请重试核对')}
       if(submit)submit.textContent='确认创建任务';
       return false;
     }

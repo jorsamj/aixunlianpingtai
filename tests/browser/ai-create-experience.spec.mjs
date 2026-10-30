@@ -146,6 +146,10 @@ test('AI create keeps the form on configuration or submit failure and fences dup
   await page.locator('#ai429MaterialGrid button').first().click();
   await expect(page.locator('#ai429MaterialCount')).toContainText('已选 1 张');
   await page.locator('#ai429Prompt').fill('保留本次输入 {{labels_json}} {{output_schema}}');
+  for(const viewport of [{width:1920,height:1080},{width:1440,height:900},{width:1366,height:768}]){
+    await page.setViewportSize(viewport);
+    await page.screenshot({path:testInfo.outputPath(`ai-create-before-confirmation-${viewport.width}x${viewport.height}.png`),fullPage:false});
+  }
   await page.locator('#ai429Submit').click();
   await expect(page.locator('#ai429Confirmation')).toBeVisible();
   await expect(page.locator('#ai429Confirmation')).toContainText('1张素材');

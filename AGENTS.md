@@ -1,3 +1,7 @@
+## 2026-10-30｜42.24.437 AI 创建核对真实截图证据保存（准确 SHA CI 待核）
+
+436 业务提交 `a818e1d8` 真实 Chrome 抓到创建确认面板隐藏的跨闭包私有函数错误（同分片 105/106），437 改为复用原公开 `PlatformCore.materials.labelDisplay` 并增防回归及 app.js 缓存键。新增原 Playwright 三视口「核对前/核对后」截图和原 frontend-runtime-stabilization 浏览器 job 的 30 天截图/失败 trace artifact 上传。不新增工作流、不改业务 Owner/API/GT/生产数据；本批真实 Chrome/截图上传结果仍以准确 SHA CI 为准。详细证据与剩余 P0 见原 AI 专项文档，不得声称 P0 完成。
+
 ## 2026-10-30｜42.24.436 AI 创建任务最终有效配置核对（准确 SHA CI 待核）
 
 基线 `2470ef2a`／435；在原 `ai429Create` Owner 内增原位配置核对（首次无 POST、用户复核后提交）、配置变化失效、请求期门禁与旧窗栅栏。复用原 v60 Task、模型/标签/GT/审核 API，不引入多层弹窗或第二实现。定向 Node 已过；浏览器隔离测试环境缺 Chrome 且下载失败，需以最终提交 SHA 的真实 Chrome CI 验证；生产 OSS/远程模型/P95 未验，未部署。跨历史任务列表聚合与筛选、独立路由、服务端创建幂等仍未做。接续及精确证据见 `docs/superpowers/plans/2026-10-16-ai-annotation-cleaning-scope.md`，不得将本批当作整项 P0 完成。

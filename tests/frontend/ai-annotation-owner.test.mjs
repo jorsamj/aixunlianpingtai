@@ -128,6 +128,11 @@ test('AI task creation never resolves display names or aliases into canonical la
 test('AI create requires an effective-configuration review before its only durable POST', () => {
   assert.match(source, /id="ai429Confirmation"/);
   assert.match(source, /function renderAiCreateConfirmation429\(body\)/);
+  const confirmationStart = source.lastIndexOf('function renderAiCreateConfirmation429(body)');
+  const confirmationEnd = source.indexOf('\n  window.submitAiLabel429=async function(ids=[])', confirmationStart);
+  const confirmation = source.slice(confirmationStart, confirmationEnd);
+  assert.match(confirmation, /window\.PlatformCore\.materials\.labelDisplay/);
+  assert.doesNotMatch(confirmation, /aiCreateLabelName429/);
   assert.match(source, /function aiCreateInvalidateConfirmation429\(\)/);
   const start = source.lastIndexOf('window.submitAiLabel429=async function(ids=[])');
   const end = source.indexOf('\n\n  function taskRow', start);
@@ -136,6 +141,7 @@ test('AI create requires an effective-configuration review before its only durab
   assert.match(submit, /if\(draft\.confirmationSnapshot!==snapshot\)/);
   assert.match(submit, /renderAiCreateConfirmation429\(body\)/);
   assert.ok(submit.indexOf('renderAiCreateConfirmation429(body)') < submit.indexOf('const task=await api(taskApi(),'));
+  assert.match(submit, /catch\(error\)\{draft\.confirmationSnapshot='';return toast\('本次配置概览渲染失败/);
   assert.match(submit, /if\(draft\.submitting\)return false/);
   assert.match(submit, /draft\.submitting=true/);
   assert.match(submit, /if\(!current\(\)\)return true/);
