@@ -138,6 +138,40 @@ test('large bulk selection has a single server owner', () => {
   assert.doesNotMatch(source, /do \{[\s\S]*\/training-materials\/ids/);
 });
 
+test('combined filters remain in one server query and cross-page selection uses that query', () => {
+  const params = new URLSearchParams(buildTrainingMaterialQuery({
+    page: 3, pageSize: 60, query: 'camera', labels: ['person', 'smoke'],
+    sourceIds: ['nas-1'], negativePoolOnly: true, negativeCategoryIds: ['hard-negative'],
+    createdFrom: '2026-10-01', createdTo: '2026-10-30',
+    annotationState: 'annotated', usageState: 'unknown', historyScope: 'other_only',
+    algorithmId: 'algo-b', historyPolicy: 'include_history',
+  }));
+  assert.equal(params.get('page'), '3');
+  assert.deepEqual(params.getAll('label'), ['person', 'smoke']);
+  for (const [key, value] of Object.entries({
+    query: 'camera', storage_source_id: 'nas-1', negative_pool_only: 'true',
+    negative_category_id: 'hard-negative', created_from: '2026-10-01', created_to: '2026-10-30',
+    annotation_state: 'annotated', usage_state: 'unknown', history_scope: 'other_only',
+    algorithm_asset_id: 'algo-b', history_policy: 'include_history',
+  })) assert.equal(params.get(key), value);
+  assert.match(source, /sample_role: allAvailable \? '' : \(picker\?\.sampleRole/);
+  assert.match(source, /labels: allAvailable \? \[\] : \[\.\.\.\(picker\?\.labels/);
+  assert.match(source, /\.\.\.taskPayload\(\), \.\.\.filterPayload\(\)/);
+  assert.match(source, /function clearFilters\(\)/);
+  assert.match(source, /function removeFilter\(key\)/);
+});
+
+test('picker refuses duplicate in-flight pages and stale cross-page bulk responses', () => {
+  assert.match(source, /activePageKey === key/);
+  assert.match(source, /activePageKey=null/);
+  assert.match(source, /result\.total!==result\.ids\.length/);
+  assert.match(source, /result\.annotationRevision!==picker\.annotationRevision/);
+  assert.match(source, /result\.usageRevision!==picker\.usageRevision/);
+  assert.match(source, /picker\.selected\.add\(id\)/);
+  assert.match(source, /picker\.selected\.has\(id\) \? picker\.selected\.delete\(id\) : picker\.selected\.add\(id\)/);
+  assert.doesNotMatch(source, /task: taskPayload\(\)/);
+});
+
 test('annotated preview uses source coordinates as the SVG viewBox', () => {
   const html = renderTrainingMaterialPreview({
     id: 'm1', filename: 'm1.jpg', width: 400, height: 200,

@@ -24,7 +24,7 @@ import {installChangLianDataBrowserRuntime} from './modules/changlian-data-brows
 import {installExternalAlgorithmPublishRuntime} from './modules/external-algorithm-publish.js?v=64015';
 import {installModelArtifactRuntime} from './modules/model-artifact-runtime.js?v=65009';
 import {installTrainingRecoveryRuntime} from './modules/training-recovery-runtime.js?v=20261028-csc';
-import {installTrainingMaterialPickerRuntime} from './modules/training-material-picker-runtime.js?v=422618';
+import {installTrainingMaterialPickerRuntime} from './modules/training-material-picker-runtime.js?v=422619';
 import {installTrainingMaterialSummaryRuntime} from './modules/training-material-summary-runtime.js?v=422615';
 import {installTrainingTaskRuntime} from './modules/training-task-runtime.js?v=422609';
 import {installTrainingTaskVisibilityRuntime} from './modules/training-task-visibility-runtime.js?v=4226386-timing';

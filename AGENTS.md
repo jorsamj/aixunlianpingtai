@@ -1,3 +1,7 @@
+## 2026-10-30｜42.24.431 训练素材普通 GET 历史排除 SQL 前推与跨页筛选 P0
+
+基线 `5bb4c732`／42.24.430；已确认原 `list_training_materials → _usage_filters → _cached_usage_pool` 默认冷请求在分页前流式扫描全素材历史并反复查 Task token。431 对默认 `new_for_algorithm` 用原使用证据索引在准确分页 SQL 中进行同源/衍生/哈希/分组排除；只有显式历史状态/范围筛选仍执行原全局事实投影。`TrainingMaterialPickerRuntime` 原位限制请求身份、同查询去重、组合筛选逐项移除与清空、全筛选跨页选择的修订号与数量核验。隔离 1 万素材/千条已暴露证据：旧冷首页 509.70ms，新冷 151.86ms、新热 15.47ms；小样本 100 张冷 9.33→10.98ms 并未提速。以上仅本机受控 SQLite 夹具，不是 A800 或 HAR 实测。真正浏览器 Stalled、服务端 P95/并发、真实首训迭代仍待生产与精确 SHA CI；不部署、不删数据。唯一进度与详细对照 `docs/performance/2026-10-29-p0-followup.md`。
+
 ## 2026-10-30｜42.24.430 Chrome 关联刷新错误提示定向纠正
 
 429 SHA `a3cee98c` 的 39 条 GitHub Actions 38 绿/1 红，唯一真实 Chrome `refresh-error` 在旧窗成功关闭后仍应告知后台列表刷新失败。430 仅修原 `TrainingSubmitRuntime.refreshCreatedLists` 的归属边界：原 DOM 根、原 task_id 保留合法提示，替换表单继续隔离。Node 59/59；430 自身 Chrome/CI 待准 SHA 验收。唯一 P0 台账 `docs/performance/2026-10-29-p0-followup.md`；生产未部署、未删除素材。

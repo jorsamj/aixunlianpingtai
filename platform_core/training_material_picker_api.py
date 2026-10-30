@@ -166,6 +166,7 @@ def _cached_usage_pool(project_path, task_path, material_revision, algorithm_id,
 def _usage_filters(repository, filters):
     from .training_material_usage import TrainingMaterialUsage
     body = dict(filters or {})
+    body.pop('__usage_sql_exclusion', None)
     state = str(body.get("usage_state") or "")
     if state and state not in {"used", "possible", "selected", "unused", "unknown", "eval_only"}:
         raise ValueError("invalid usage_state")
@@ -177,6 +178,20 @@ def _usage_filters(repository, filters):
     if policy not in {"new_for_algorithm", "include_history"}: raise ValueError("invalid history_policy")
     usage_revision = TrainingMaterialUsage(task_path).read_revision()
     if policy == "include_history" and not state and not scope:
+        return body, {"revision":usage_revision,"coverage":"unknown","by_image_id":{},"excluded_image_ids":[],"unknown_image_ids":[]}
+    if policy == "new_for_algorithm" and not state and not scope:
+        # Default first-page/count/bulk operations must not hydrate every
+        # material and query the Task usage index in 500-row Python batches.
+        # Preserve exact derivative/hash/group matching in the indexed SQL
+        # anti-join; explicit history-state/scope filters retain the full path.
+        usage_index = TrainingMaterialUsage(task_path)
+        if usage_index.has_exposed_records(repository.project_path.name, algorithm_id,
+                                           role=str(body.get('role') or 'train')):
+            body['__usage_sql_exclusion'] = {
+                'path': str(task_path), 'project_id': repository.project_path.name,
+                'algorithm_id': algorithm_id, 'role': str(body.get('role') or 'train'),
+                'revision': usage_revision,
+            }
         return body, {"revision":usage_revision,"coverage":"unknown","by_image_id":{},"excluded_image_ids":[],"unknown_image_ids":[]}
     count("usage_pool_requests")
     facts = _cached_usage_pool(str(repository.project_path), str(task_path), repository.current_revision(),
@@ -249,6 +264,24 @@ def _picker_filter_sql(filters=None):
     if f.get("usage_excluded_image_ids"):
         clauses.append("m.id NOT IN (SELECT value FROM json_each(?))")
         params.append(json.dumps(f["usage_excluded_image_ids"]))
+    sql_exclusion = f.get('__usage_sql_exclusion')
+    if sql_exclusion:
+        roles = ("train", "validation") if sql_exclusion['role'] == 'test' else ("train",)
+        clauses.append(
+            "NOT EXISTS (SELECT 1 FROM "
+            "json_each(picker_relation_tokens(m.id,m.content_sha256,m.payload_json)) rel "
+            "CROSS JOIN usage_index.training_usage_tokens t "
+            "CROSS JOIN usage_index.training_material_usage u "
+            "WHERE t.project_id=? "
+            "AND t.token_kind=json_extract(rel.value,'$[0]') "
+            "AND t.token_value=json_extract(rel.value,'$[1]') "
+            "AND u.task_id=t.task_id AND u.image_id=t.image_id AND u.role=t.role "
+            "AND u.algorithm_id=? AND u.evidence>0 AND u.role IN (" + ",".join("?" for _ in roles) + "))"
+        )
+        params.extend((sql_exclusion['project_id'], sql_exclusion['algorithm_id'], *roles))
+        # The existing exact-count cache must also expire on Task usage writes.
+        clauses.append("(SELECT revision FROM usage_index.training_usage_meta WHERE id=1)=?")
+        params.append(sql_exclusion['revision'])
     if f.get("usage_image_ids") is not None:
         clauses.append("m.id IN (SELECT value FROM json_each(?))")
         params.append(json.dumps(f["usage_image_ids"]))
@@ -258,6 +291,29 @@ def _picker_filter_sql(filters=None):
         clauses.append("m.id IN (SELECT value FROM json_each(?))")
         params.append(json.dumps(ids))
     return clauses, params
+
+
+def _picker_relation_tokens(image_id, content_hash, payload_json):
+    """Exactly the same relation identities used by TrainingMaterialUsage."""
+    from .training_splits import _relation_tokens
+    payload = json.loads(payload_json or '{}')
+    fields = ('group_id', 'video_task_id', 'source_group_id',
+              'near_duplicate_group_id', 'sequence_group_id', 'camera_session_id',
+              'capture_session_id', 'camera_id', 'session_id', 'stored_name',
+              'stored_path', 'path', 'source_root_id', 'derived_from_image_id')
+    row = {field: payload.get(field) for field in fields}
+    row.update(id=image_id, content_sha256=content_hash)
+    return json.dumps(_relation_tokens(row), ensure_ascii=False)
+
+
+def _attach_usage_exclusion(db, filters):
+    sql_exclusion = (filters or {}).get('__usage_sql_exclusion')
+    if sql_exclusion:
+        # Read-only attached Task evidence, within the same snapshot as GT.
+        task_uri = Path(sql_exclusion['path']).resolve().as_uri() + '?mode=ro'
+        db.execute('ATTACH DATABASE ? AS usage_index', (task_uri,))
+        db.create_function('picker_relation_tokens', 3, _picker_relation_tokens,
+                           deterministic=True)
 
 
 @stage("training.gt_filtered_count")
@@ -361,7 +417,8 @@ def _gt_material_filter_page(
     base_clauses.extend(extra_clauses)
     base_params.extend(extra_params)
     base_where = " WHERE " + " AND ".join(base_clauses)
-    with closing(observe_connection(connect_sqlite(repository.path, timeout=30))) as database:
+    with closing(observe_connection(connect_sqlite(repository.path, timeout=30,
+                    uri=bool(pool_filters.get('__usage_sql_exclusion'))))) as database:
         database.row_factory = sqlite3.Row
         database.execute("PRAGMA busy_timeout=30000")
         database.execute("PRAGMA temp_store=FILE")
@@ -369,8 +426,14 @@ def _gt_material_filter_page(
             "ATTACH DATABASE ? AS annotation_gt",
             (str(annotations.path),),
         )
+        _attach_usage_exclusion(database, pool_filters)
         database.execute("BEGIN")
         try:
+            sql_exclusion = pool_filters.get('__usage_sql_exclusion')
+            if sql_exclusion and str(database.execute(
+                'SELECT revision FROM usage_index.training_usage_meta WHERE id=1'
+            ).fetchone()[0]) != str(sql_exclusion['revision']):
+                raise ValueError('训练历史已更新，请重试素材查询')
             material_revision = int(database.execute(
                 "SELECT value FROM material_meta WHERE key='revision'"
             ).fetchone()[0])
@@ -713,10 +776,17 @@ def _cached_role_index(material_path, annotation_path, material_revision, annota
     extra, values = _picker_filter_sql(filters)
     clauses.extend(extra); params.extend(values)
     result = []
-    with closing(observe_connection(connect_sqlite(material_path, timeout=30))) as db:
+    with closing(observe_connection(connect_sqlite(material_path, timeout=30,
+                    uri=bool(filters.get('__usage_sql_exclusion'))))) as db:
         db.row_factory = sqlite3.Row
         db.execute("ATTACH DATABASE ? AS annotation_gt", (annotation_path,))
+        _attach_usage_exclusion(db, filters)
         db.execute("BEGIN")
+        sql_exclusion=filters.get('__usage_sql_exclusion')
+        if sql_exclusion and str(db.execute(
+            'SELECT revision FROM usage_index.training_usage_meta WHERE id=1'
+        ).fetchone()[0]) != str(sql_exclusion['revision']):
+            raise ValueError('训练历史已更新，请重试素材查询')
         revisions = (int(db.execute("SELECT value FROM material_meta WHERE key='revision'").fetchone()[0]),
                      int(db.execute("SELECT value FROM annotation_gt.annotation_meta WHERE key='revision'").fetchone()[0]))
         if revisions != (material_revision, annotation_revision):
@@ -743,7 +813,7 @@ def _role_material_page(repository, annotations, contract, *, image_ids=None,
         raise ValueError("invalid role page bounds")
     if sort_order not in {"oldest", "newest"}:
         raise ValueError("invalid sort_order")
-    selected = {k:v for k,v in _pool_filters(repository, filters).items() if k in {"storage_source_ids","created_from","created_to","annotation_state","usage_image_ids","usage_excluded_image_ids","image_ids","negative_pool_image_ids","negative_pool_revision"}}
+    selected = {k:v for k,v in _pool_filters(repository, filters).items() if k in {"storage_source_ids","created_from","created_to","annotation_state","usage_image_ids","usage_excluded_image_ids","__usage_sql_exclusion","image_ids","negative_pool_image_ids","negative_pool_revision"}}
     selected.update(query=str(query or "").strip(), labels=sorted(set(labels)))
     if image_ids is not None: selected["image_ids"] = sorted(set(image_ids))
     # Default picker navigation needs the visible page, not every candidate's
@@ -1313,11 +1383,12 @@ def training_material_picker_router(
 
     @router.post("/bulk-selection")
     def resolve_training_material_bulk_selection(project_id: str, payload: dict):
+        from .training_material_usage import TrainingMaterialUsage
         repository = materials(project_id)
         body = payload if isinstance(payload, dict) else {}
         try:
             if body.get("all_available"):
-                body = {k:v for k,v in body.items() if k in {"algorithm_asset_id","role","all_available","train_labels","base_version_id","model","framework","image_ids","history_policy","negative_pool_only","negative_category_ids"}}
+                body = {k:v for k,v in body.items() if k in {"algorithm_asset_id","role","all_available","train_labels","base_version_id","model","framework","image_ids","history_policy"}}
             body, usage = _usage_filters(repository, body)
             labels = _normalize_labels(body.get("labels"))
             query = "" if bool(body.get("all_available")) else str(body.get("query") or "").strip()
@@ -1336,7 +1407,9 @@ def training_material_picker_router(
                 if role_page["total"] > MAX_SELECTION_SUMMARY_IDS:
                     raise ValueError("filtered selection exceeds maximum")
                 return {"items": [row["id"] for row in role_page["items"]], "total": role_page["total"],
-                        "repository_revision": repository.current_revision(), "selection_mode": "filtered"}
+                        "repository_revision": repository.current_revision(),
+                        "annotation_revision": annotations.current_revision(), "usage_revision": usage['revision'],
+                        "selection_mode": "filtered"}
             ids, total = _bulk_filtered_ids(
                 repository,
                 annotations,
@@ -1345,12 +1418,16 @@ def training_material_picker_router(
                 require_ground_truth=role == "test",
                 filters=body,
             )
+            if TrainingMaterialUsage(repository.project_path.parent.parent / "task_runtime" / "tasks.sqlite3").read_revision() != usage['revision']:
+                raise ValueError("训练历史已更新，请重试批量选择")
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
         return {
             "items": ids,
             "total": total,
             "repository_revision": repository.current_revision(),
+            "annotation_revision": annotations.current_revision(),
+            "usage_revision": usage['revision'],
             "selection_mode": "all_available" if bool(body.get("all_available")) else "filtered",
         }
 

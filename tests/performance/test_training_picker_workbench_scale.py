@@ -8,6 +8,50 @@ from platform_core.annotation_repository import AnnotationRepository
 from platform_core.training_material_picker_api import _role_material_page, _cached_role_index, _gt_material_filter_page, _validated_positive_training_label_codes
 import platform_core.training_material_picker_api as picker_module
 
+
+@pytest.mark.parametrize('size', [100, 1000, 10000])
+def test_default_history_picker_before_after_sql_microbenchmark(tmp_path, size):
+    """Measured isolated SQLite fixture, never a claim about A800 production."""
+    from platform_core.training_material_usage import TrainingMaterialUsage
+    repo = MaterialRepository(tmp_path / 'data' / 'projects' / 'fixture')
+    for start in range(0, size, 500):
+        repo.upsert_many([{'id':f'm{i:06d}', 'filename':f'{i}.jpg',
+                           'object_key':f'{i}.jpg', 'processing_status':'processed',
+                           'content_sha256':f'{i+1:064x}'}
+                          for i in range(start, min(start+500,size))])
+    gt = AnnotationRepository(repo.project_path)
+    task_path=repo.project_path.parent.parent/'task_runtime'/'tasks.sqlite3'
+    task_path.parent.mkdir(parents=True,exist_ok=True)
+    sqlite3.connect(task_path).close()
+    usage=TrainingMaterialUsage(task_path)
+    exposed_count = min(size // 5, 1000)
+    originals = repo.get_many([f'm{i:06d}' for i in range(exposed_count)])
+    usage.record_selected('fixture','a','old-task',{'snapshot_id':'s','images':[
+        {'image_id':row['id'],'role':'train','content_sha256':row['content_sha256']}
+        for row in originals]},source_images=originals)
+    usage.record_execution('old-task',completed_epoch=True)
+
+    picker_module._cached_usage_pool.cache_clear()
+    begin=time.perf_counter()
+    before=picker_module._cached_usage_pool(str(repo.project_path),str(task_path),
+        repo.current_revision(),'a',usage.read_revision(),'train',True)
+    before_page=_gt_material_filter_page(repo,gt,limit=60,page=1,
+        filters={'usage_excluded_image_ids':before['excluded_image_ids']})
+    before_ms=(time.perf_counter()-begin)*1000
+
+    begin=time.perf_counter()
+    filters,_=picker_module._usage_filters(repo,{'algorithm_asset_id':'a'})
+    after_page=_gt_material_filter_page(repo,gt,limit=60,page=1,filters=filters)
+    after_ms=(time.perf_counter()-begin)*1000
+    begin=time.perf_counter()
+    hot_page=_gt_material_filter_page(repo,gt,limit=60,page=1,filters=filters)
+    hot_ms=(time.perf_counter()-begin)*1000
+    assert before_page['items']==after_page['items']==hot_page['items']
+    assert before_page['total']==after_page['total']==size-exposed_count
+    print(json.dumps({'fixture_only':True,'rows':size,'exposed_rows':exposed_count,
+        'old_cold_ms':round(before_ms,2),'sql_cold_ms':round(after_ms,2),
+        'sql_hot_ms':round(hot_ms,2)}))
+
 @pytest.mark.parametrize('size',[100,1000,10000,50000])
 def test_picker_role_index_microbenchmark(tmp_path,size):
     repo=MaterialRepository(tmp_path / 'project')

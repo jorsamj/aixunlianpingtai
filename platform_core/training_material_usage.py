@@ -183,6 +183,26 @@ class TrainingMaterialUsage:
         with closing(self._connect()) as db:
             return self._read_revision(db)
 
+    def has_exposed_records(self, project_id, algorithm_id, *, role='train'):
+        """Indexed presence probe for the picker default history policy.
+
+        Only evidence that the existing query_filter excludes is relevant;
+        incomplete historical coverage must never be interpreted as unused.
+        """
+        if not self.path.is_file():
+            return False
+        roles = ('train', 'validation') if role == 'test' else ('train',)
+        with closing(self._connect()) as db:
+            if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='training_usage_tokens'").fetchone():
+                return False
+            if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='training_material_usage'").fetchone():
+                return False
+            return db.execute(
+                'SELECT 1 FROM training_material_usage WHERE project_id=? AND algorithm_id=? '
+                'AND evidence>0 AND role IN (' + ','.join('?' for _ in roles) + ') LIMIT 1',
+                (str(project_id), str(algorithm_id), *roles),
+            ).fetchone() is not None
+
     @staticmethod
     def _read_revision(db):
         if not db.execute("SELECT 1 FROM sqlite_master WHERE name='training_usage_meta'").fetchone():
