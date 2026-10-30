@@ -1011,3 +1011,7 @@ VERSION 42.24.404；`Frontend Runtime Stabilization` 浏览器分片旧夹具的
 ## 2026-10-31｜42.24.448 审核独立页真实 Chrome 红项与训练标签焦点修复（精确 SHA CI 待核）
 
 447 远端精确提交 `95dabdba` 已通过 GitHub API 检查 **42 个工作流 41 成功、1 失败**；红项为 Frontend Runtime Stabilization 的 2 个 Chrome 分片共 4 个浏览器用例：审核提交回执成功但工作台仍停留、Annotorious 主区画框/改标签失效，以及训练千标签在延迟资源 hydration 下复选框 DOM 身份丢失。448 在原 `static/app.js` 的审核 Owner 中只允许**已确认回执的内部完成路径**在 `submitting` 临界区退出（用户手动退出仍被拦）；独立主区 Annotorious 不再被 DOM 中长期隐藏的 `#modal` 假阻断，真正可见模态层仍禁用底层画框。原训练标签 Runtime 按可见标签/继承语义而非素材 ID 全数组判定重绘，并在配置/标签名称 hydration 时保留素材列表/勾选 DOM。既有 Candidate、决策 Request ID、GT Worker、训练草稿完全复用；无 schema/生产数据变化。新增真实行为和 Source Guard 定向回归，提升权限后的**完整前端 Node 1426/1426 通过**；448 精确 GitHub Chrome/完整 CI 与截图仍待核。不部署生产、不改 SQLite、OSS/外部模型及大规模 P95 未实测、不 merge main/tag/release/force-push。唯一专项见 `docs/superpowers/plans/2026-10-16-ai-annotation-cleaning-scope.md`。
+
+## 2026-10-31｜42.24.449 Chrome 三视口中文字体与真实尺寸截图夹具（准确 SHA CI 待核）
+
+448 精确 GitHub 提交 `60e8cdca` 全部 **42/42 Actions 成功**，真实 Chrome 三分片全绿、Node 1426/1426。但下载截图发现旧审核用例用 1×1 像素 GIF 充当候选图，导致画布放大至 54700%、图片区空白；且 CI Ubuntu 中文缺字，无法审查布局与文字。449 仅改原 Playwright 审核视觉 fixture 为标明非生产数据的 640×480 场景 SVG/真实候选坐标，检查图片自然尺寸、候选框、画布初始化与合理缩放，保留 1920/1440/1366 三视口截图及原路由测试；原 Frontend Runtime Stabilization 浏览器作业安装 Noto CJK 字体，输出可读中文截图。没有更改生产 CSS/模型、Task/Candidate/GT、数据库、OSS/Worker；生产视觉/P95、生产 v2→v3 迁移与回滚仍未验证。需核 449 精确 SHA CI 与截图后再记录，不能把 448 结果算作 449。唯一专项见 `docs/superpowers/plans/2026-10-16-ai-annotation-cleaning-scope.md`。

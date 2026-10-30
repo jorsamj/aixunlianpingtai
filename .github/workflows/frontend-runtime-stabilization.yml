@@ -446,6 +446,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
+      - name: Install Chinese font for legible visual review screenshots
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends fonts-noto-cjk
       - name: Install backend browser-test dependencies
         run: >-
           python -m pip install --disable-pip-version-check

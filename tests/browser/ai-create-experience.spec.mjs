@@ -1,6 +1,29 @@
 import {test, expect} from '@playwright/test';
 
 const PIXEL = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
+// Deterministic 640×480 scene fixtures for browser *visual* QA only. The
+// single-pixel API fixture exercises requests, but cannot validate image
+// placement, candidate overlays, or the Annotorious fit/zoom experience.
+function reviewVisualScene(offset=0){
+  const source=`<svg xmlns="http://www.w3.org/2000/svg" width="640" height="480" viewBox="0 0 640 480">
+    <defs><linearGradient id="wall" x2="0" y2="1"><stop stop-color="#cbd5df"/><stop offset="1" stop-color="#899ba9"/></linearGradient><linearGradient id="floor" x2="0" y2="1"><stop stop-color="#677987"/><stop offset="1" stop-color="#394956"/></linearGradient></defs>
+    <rect width="640" height="480" fill="url(#wall)"/><path d="M0 270L640 240V480H0Z" fill="url(#floor)"/>
+    <path d="M0 272L640 241M40 480L250 266M610 480L425 249" stroke="#e7ecee" stroke-width="3" opacity=".55"/>
+    <rect x="22" y="64" width="160" height="182" rx="6" fill="#657887" stroke="#e2e9ee" stroke-width="6"/>
+    <rect x="33" y="73" width="137" height="127" fill="#a7c4d0"/><path d="M37 167l45-42 35 34 52-49" fill="none" stroke="#c5dce5" stroke-width="8"/>
+    <rect x="440" y="104" width="169" height="157" rx="7" fill="#465d72" stroke="#a5b5c0" stroke-width="5"/>
+    <rect x="457" y="119" width="51" height="109" rx="3" fill="#9bb4bc"/><rect x="525" y="119" width="65" height="109" rx="3" fill="#889eaa"/>
+    <g transform="translate(${offset} 0)"><ellipse cx="305" cy="388" rx="65" ry="16" fill="#2c3947" opacity=".35"/>
+      <path d="M282 322l-6 72m50-72 9 72" stroke="#303e4d" stroke-width="20" stroke-linecap="round"/>
+      <path d="M271 233h66l14 108h-94Z" fill="#f3a836" stroke="#c5812b" stroke-width="4"/>
+      <path d="M269 249l-27 73m103-73 24 70" stroke="#bb8061" stroke-width="15" stroke-linecap="round"/>
+      <circle cx="303" cy="206" r="25" fill="#b98567"/><path d="M274 203a29 29 0 0 1 58 0" fill="#f1cc38" stroke="#b18d18" stroke-width="5"/>
+    </g><rect x="44" y="362" width="134" height="78" rx="4" fill="#b68954" stroke="#f4d29b" stroke-width="4"/>
+    <path d="M44 384h134M110 362v78" stroke="#835e3c" stroke-width="3"/><circle cx="600" cy="38" r="11" fill="#2b455b" stroke="#e9edf0" stroke-width="4"/>
+  </svg>`;
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(source)}`;
+}
+const REVIEW_SCENE_ONE=reviewVisualScene(0),REVIEW_SCENE_TWO=reviewVisualScene(95);
 const models = {items: [{
   id: 'vision-model-1', name: '场景视觉模型', model_name: 'vision-v1',
   provider_type: 'local_openai', provider_adapter: 'local_openai',
@@ -267,13 +290,15 @@ test('AI candidate editor stays inside the review workspace without opening a ne
   await ready(page);
   await page.route('**/api/v60/projects/*/annotation-tasks/ai-ux-fixture/candidates**', route=>route.fulfill({
     status:200,contentType:'application/json',body:JSON.stringify({
-      total:2,items:[{image_id:'one',filename:'scene-one.png',url:PIXEL,width:1,height:1,status:'completed',boxes:[]},
-        {image_id:'two',filename:'scene-two.png',url:PIXEL,width:1,height:1,status:'completed',boxes:[]}],label_summary:[],
+      total:2,items:[{image_id:'one',filename:'scene-one.png',url:REVIEW_SCENE_ONE,width:640,height:480,status:'completed',boxes:[{id:'seed-one',label:'fire',x1:243,y1:175,x2:360,y2:408,confidence:0.94}]},
+        {image_id:'two',filename:'scene-two.png',url:REVIEW_SCENE_TWO,width:640,height:480,status:'completed',boxes:[{id:'seed-two',label:'fire',x1:330,y1:175,x2:453,y2:408,confidence:0.88}]}],label_summary:[{label:'fire',images:2,boxes:2}],
     }),
   }));
   await page.evaluate(()=>window.reviewAiLabel427('ai-ux-fixture'));
   await expect(page.locator('.ai-review-page-shell')).toBeVisible();
   await expect(page.locator('.ai-review-workbench-modal')).toHaveCount(0);
+  await expect(page.locator('.ai66-candidate-card .data412-box')).toHaveCount(2);
+  await expect(page.locator('.ai66-candidate-card img').first()).toHaveJSProperty('naturalWidth',640);
   const before=await page.locator('.v424-modal-layer').count();
   await page.getByRole('button',{name:'编辑候选框'}).first().click();
   await expect(page.locator('.ai66-review.ai66-editing .ai66-edit')).toBeVisible();
@@ -281,6 +306,9 @@ test('AI candidate editor stays inside the review workspace without opening a ne
   await expect(page.locator('#ai66EditQueue')).toContainText('scene-two.png');
   await page.locator('.ai66-edit-queue-item').nth(1).click();
   await expect(page.locator('#ai66EditFilename')).toContainText('scene-two.png');
+  await expect(page.locator('#ai60EditImg')).toHaveJSProperty('naturalWidth',640);
+  await expect(page.locator('#ai60EditStatus')).toContainText('候选草稿');
+  await expect.poll(async()=>Number((await page.locator('#ai60EditZoom').textContent()).replace('%',''))).toBeLessThanOrEqual(200);
   for(const viewport of [{width:1920,height:1080},{width:1440,height:900},{width:1366,height:768}]){
     await page.setViewportSize(viewport);
     await page.screenshot({path:testInfo.outputPath(`ai-inline-review-${viewport.width}x${viewport.height}.png`),fullPage:false});

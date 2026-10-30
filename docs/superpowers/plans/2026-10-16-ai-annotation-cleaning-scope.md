@@ -1,5 +1,12 @@
 # AI 预标注、清洗范围与提示词创建体验实施计划
 
+## 2026-10-31｜42.24.449 AI 审核三视口截图可视化证据修正（准确 SHA CI 待核）
+
+- **448 完成证据**：GitHub 精确提交 `60e8cdca60841f22f292c3dc7315474747c73fd8` 的原生 Actions API **42/42 success、0 failure**；Frontend Runtime Stabilization 三个 Chrome 分片与前端单测均 success。浏览器先前的审核确认未退出、主区 Annotorious 禁交互/编辑标签失效、训练千标签勾选失焦等失败用例已恢复。完整 Node 本地 **1426/1426**。仍仅是 CI，不等于真实生产 OSS/远程模型和业务数据验收。
+- **真实截图审查发现**：448 的 AI 审核截图产物已下载并人工查看，确实涵盖 1920×1080、1440×900、1366×768 及创建前/后核对等 18 张图片；但原 `ai-create-experience` 候选审核图片 fixture 为 1×1 GIF，截图候选缩略图大面积空白、Annotorious 显示荒谬的 54700% 放大倍率，而且 CI Ubuntu Chrome 未安装中文字体导致大量方框字。**因此“截图存在”不能冒充“视觉已验收”。** 这些是测试输入和测试机字体缺陷，不据此直接断言生产环境的真实图片也加载失败。
+- **449 修正**：只在原 Chrome 浏览器测试将审核专用图片 fixture 替换为明确标注“非生产业务”的确定性 640×480 工业场景 SVG，带两个真实几何候选框。审核卡片/主画布在截图前验证图片 `naturalWidth=640`、框数量、编辑器已完成初始化且适应窗口的缩放不超过 200%。原三视口截图与浏览器前后退、保存候选/GT 操作测试不删不绕过。Chrome workflow 仅在浏览器作业安装 Noto CJK 中文字体，使截图字形可读；没有给生产页面引入字库或网络依赖。
+- **边界**：本批仅测试工件、CI 运行器和接续文档、`VERSION.txt=42.24.449`，不变更任何模型推理、AI Candidate、正式 AnnotationRepository/Worker、数据库 schema 或训练资源。真实素材视觉主观验收、全量无裁切/窄屏 UX、远端模型/OSS/10k 素材 P50/P95、生产 SQLite v2→v3 一致性备份迁移/回滚及部署仍需分批授权验证。必须对 449 精确 SHA 重新检查 42 个 Actions 和新截图，不能借 448 全绿覆盖。
+
 ## 2026-10-31｜42.24.448 独立审核 UI 真浏览器修复与训练标签非破坏性重绘（待准确 SHA CI）
 
 - **447 准确 CI 证据**：长期开发分支 `95dabdba6d39fe83901a09b457b7c0ca320cb3ac`，GitHub 原生 API 对精确 SHA 返回 **42 条 Actions：41 success、1 failure**，不能只看插件返回的前 20 条。失败为 [Frontend Runtime Stabilization](https://github.com/jorsamj/aixunlianpingtai/actions/runs/41110882872)：Chrome 分片 1 的审核回执成功未关主区、AI 候选框拖拽未产生新框、跨页人工修改标签未保持，共 3 项；分片 2 的千标签批量勾选在异步刷新后原 DOM 节点不稳定，共 1 项。其余工作流通过不代表这些浏览器体验已验收。
