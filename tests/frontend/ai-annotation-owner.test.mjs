@@ -219,6 +219,7 @@ test('AI review submission uses durable operation receipts and never blindly rep
   assert.match(block, /review\.submitting/);
   assert.match(block, /body=\{decisions,.*request_id:newAiCreateRequestId429\(\)/);
   assert.match(block, /decisions\/by-request\/\$\{encodeURIComponent\(pending\.request_id\)\}/);
+  assert.match(block, /receipt\?\.request_id!==pending\.request_id/);
   assert.match(block, /receipt\?\.status==='completed'/);
   assert.match(block, /勿再次提交/);
   assert.match(source, /id="ai60ReviewReceiptLookup"/);

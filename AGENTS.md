@@ -1,3 +1,7 @@
+## 2026-10-30｜42.24.442 审核回执只认本操作的持久 Commit 证据（准确 SHA CI 待核）
+
+441 `d5d3ac10` 已核准确 **49/49 GitHub Actions 全绿**（AI 后端与三组真实 Chrome 均成功）。二次风险审计发现旧失败操作 A 的 pending 回执若被后续新操作 B 的终态 GT 证据直接恢复，会把 B 的提交结果错误归给 A。442 只在原 `review/result.json` 与 `review/confirmation.json` 保存可选 `review_request_id`，按本操作 ID 精确匹配才能将 pending 恢复为 completed；旧无 ID 兼容，不能借其他操作完成恢复。前端按原本待核 ID 校验 GET 回执编号，浏览器 E2E stub 使用真实请求 ID；无第二套 GT/Task Owner。新增同 Task 两操作 A/B 错归属与真实确认回执恢复测试，隔离后端 39/39、全前端 Node 1419/1419，本批准确 SHA Chrome/CI 待核；不改生产，不部署。
+
 ## 2026-10-30｜42.24.441 AI 审核持久操作回执与网络结果未知保护（准确 SHA CI 待核）
 
 440 `3aa8301a` 的 AI Annotation Recovery 与真实 Chrome 已通过；49 个 Actions **48 成功、1 失败**：通用 Release Regression 的进程暂停状态立即断言第一次失败 1/554，单 Job 重跑仍在同类暂停断言（另一用例）失败，不能声称 CI 全绿。本批只在原 v60 AI 审核 `/decisions` 增可选 `request_id`，ArtifactStore 内原任务作用域操作日志与 `review.lock` 串行；同 ID 同配置只返回原回执、改配置 409，未确认结果返回 202，GET `.../decisions/by-request/{id}` 查询原结果且仅在原 Task 已发生真实持久状态迁移时恢复丢失回执。JS 同一审核任务在本地保存待核操作编号，超时优先查询，未知状态仅允许继续查询不再盲发 POST，明确操作中反馈与重复提交门禁。旧无 ID 客户端行为原样，CandidateStore→审核→GT/Worker 合同不变。新 API 及 Chrome/Node 回归已加入，定向后端 37/37、全前端 Node 1419/1419；441 准确 SHA Chrome、OSS/真实远程模型与大规模 P95 未验。不部署生产、不改正式标注。唯一详细记录在 `docs/superpowers/plans/2026-10-16-ai-annotation-cleaning-scope.md`。

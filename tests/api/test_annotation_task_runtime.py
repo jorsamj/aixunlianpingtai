@@ -321,7 +321,8 @@ def test_annotation_review_operation_pending_is_not_resubmitted(
 
     # Simulate a process dying after the durable Task transition but before
     # writing the operation response; GET must recover without replaying edits.
-    result = {"applied_images": 0, "boxes_added": 0, "review": {"accepted": 0, "rejected": 1}}
+    result = {"applied_images": 0, "boxes_added": 0, "review": {"accepted": 0, "rejected": 1},
+              "review_request_id": payload.request_id}
     artifacts.atomic_write_json(task_id, "review/result.json", result)
     isolated_task_runtime[0].complete_review(
         task_id, TaskStatus.SUCCEEDED, "review/result.json", accepted=False,
@@ -331,6 +332,52 @@ def test_annotation_review_operation_pending_is_not_resubmitted(
     assert recovered.json()["status"] == "completed"
     assert recovered.json()["result"]["task"]["accepted"] is False
     assert client.post(url, json=payload.model_dump()).json()["idempotent"] is True
+
+
+def test_annotation_review_pending_receipt_cannot_claim_other_operation_commit(
+    client, seeded_project, isolated_task_runtime,
+):
+    project_id, _image = seeded_project
+    repository, artifacts = isolated_task_runtime
+    task_id = _awaiting(project_id, 1, repository, artifacts)
+    old_request_id = "ai-review-old-failed-001"
+    artifacts.atomic_write_json(task_id, app_module._annotation_review_operation_path(old_request_id), {
+        "request_id": old_request_id, "project_id": project_id, "identity": "old-invalid-payload",
+        "status": "pending",
+    })
+    url = f"/api/v60/projects/{project_id}/annotation-tasks/{task_id}/decisions"
+    newer = client.post(url, json={
+        "decisions": [], "reject_unmentioned": True, "commit": True,
+        "request_id": "ai-review-new-valid-001",
+    })
+    assert newer.status_code == 200
+    assert newer.json()["task"]["status"] == "SUCCEEDED"
+    assert artifacts.read_json(task_id, "review/result.json")["review_request_id"] == "ai-review-new-valid-001"
+    old = client.get(f"{url}/by-request/{old_request_id}")
+    assert old.status_code == 202
+    assert old.json()["status"] == "pending"
+
+
+def test_annotation_review_recovers_accepted_commit_handoff_only_for_matching_request(
+    client, seeded_project, isolated_task_runtime,
+):
+    project_id, _image = seeded_project
+    repository, artifacts = isolated_task_runtime
+    task_id = _awaiting(project_id, 1, repository, artifacts)
+    request_id = "ai-review-accepted-lost-001"
+    artifacts.atomic_write_json(task_id, app_module._annotation_review_operation_path(request_id), {
+        "request_id": request_id, "project_id": project_id,
+        "identity": "same-completed-request", "status": "pending",
+    })
+    artifacts.atomic_write_json(task_id, "review/confirmation.json", {
+        "accepted": True, "review_request_id": request_id,
+    })
+    repository.resume_after_review_confirmation(task_id)
+    url = f"/api/v60/projects/{project_id}/annotation-tasks/{task_id}/decisions"
+    lookup = client.get(f"{url}/by-request/{request_id}")
+    assert lookup.status_code == 200, lookup.text
+    assert lookup.json()["result"]["queued_for_commit"] is True
+    assert lookup.json()["result"]["task"]["status"] == "QUEUED"
 
 
 def test_annotation_review_operation_validates_identity_and_scope(

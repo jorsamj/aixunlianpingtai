@@ -303,8 +303,9 @@ test('AI review timeout resolves the original operation receipt without a second
   }));
   await page.route(`**/api/v60/projects/*/annotation-tasks/${taskId}/decisions/by-request/*`, route=>{
     lookups++;
+    const requestId=new URL(route.request().url()).pathname.split('/').at(-1);
     return route.fulfill({status:lookups===1?202:200,contentType:'application/json',body:JSON.stringify(lookups===1?
-      {status:'pending',request_id:'ai-review-stable-001'}:{status:'completed',request_id:'ai-review-stable-001',result:{
+      {status:'pending',request_id:requestId}:{status:'completed',request_id:requestId,result:{
         ok:true,task:{id:taskId,status:'SUCCEEDED',accepted:false,total_count:1,completed_count:1},
         review:{accepted:0,rejected:1},applied_images:0,boxes_added:0,
       }}),
@@ -317,7 +318,7 @@ test('AI review timeout resolves the original operation receipt without a second
     return route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({detail:'审核提交回执暂时不可用'})});
   });
   await page.evaluate(id=>window.reviewAiLabel427(id),taskId);
-  await page.locator('[data-ai-review-submit]').getByText('全部拒绝').click();
+  await page.getByRole('button',{name:'全部拒绝'}).click();
   await expect(page.locator('#ai60ReviewReceiptLookup')).toBeVisible();
   expect(posts).toBe(1);
   await page.locator('#ai60ReviewReceiptLookup').click();

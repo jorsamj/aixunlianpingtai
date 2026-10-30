@@ -24116,12 +24116,16 @@ def _annotation_review_recover_completed(task: TaskRecord, receipt: Dict[str, An
     if task.status is TaskStatus.AWAITING_CONFIRMATION:
         return None
     artifacts = shared_task_artifacts()
-    summary = CandidateStore(artifacts, task_id=task.task_id).summary()
+    request_id = str(receipt.get("request_id") or "")
     final = artifacts.read_json(task.task_id, "review/result.json", default=None)
-    if isinstance(final, dict) and task.status in {TaskStatus.SUCCEEDED, TaskStatus.PARTIAL_SUCCESS}:
+    if (isinstance(final, dict) and final.get("review_request_id") == request_id
+            and task.status in {TaskStatus.SUCCEEDED, TaskStatus.PARTIAL_SUCCESS}):
+        summary = CandidateStore(artifacts, task_id=task.task_id).summary()
         return {"ok": True, "task": public_annotation_task(task, summary=summary), **final}
     confirmation = artifacts.read_json(task.task_id, "review/confirmation.json", default=None)
-    if isinstance(confirmation, dict) and confirmation.get("accepted") is True:
+    if (isinstance(confirmation, dict) and confirmation.get("accepted") is True
+            and confirmation.get("review_request_id") == request_id):
+        summary = CandidateStore(artifacts, task_id=task.task_id).summary()
         return {
             "ok": True, "queued_for_commit": True,
             "task": public_annotation_task(task, summary=summary),
@@ -24248,6 +24252,8 @@ def _decide_annotation_candidates(project_id: str, task_id: str, payload: Annota
             "image_summaries": [],
             "image_summaries_truncated": False,
         }
+        if payload.request_id:
+            result["review_request_id"] = payload.request_id
         shared_task_artifacts().atomic_write_json(task.task_id, "review/result.json", result)
         final_status = TaskStatus.PARTIAL_SUCCESS if summary.get("failed") else TaskStatus.SUCCEEDED
         updated = shared_task_repository().complete_review(
@@ -24264,6 +24270,8 @@ def _decide_annotation_candidates(project_id: str, task_id: str, payload: Annota
         "label_mapping": mapping,
         "review": summary,
     }
+    if payload.request_id:
+        confirmation["review_request_id"] = payload.request_id
     shared_task_artifacts().atomic_write_json(
         task.task_id, "review/confirmation.json", confirmation,
     )

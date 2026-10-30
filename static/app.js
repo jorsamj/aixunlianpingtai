@@ -8349,7 +8349,9 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   async function aiReviewLookupReceipt60(review){
     const pending=review.pendingRequest||aiReviewReadPending60(review.id);
     if(!pending)return null;
-    return api(`${taskApi(review.id)}/decisions/by-request/${encodeURIComponent(pending.request_id)}`);
+    const receipt=await api(`${taskApi(review.id)}/decisions/by-request/${encodeURIComponent(pending.request_id)}`);
+    if(receipt?.request_id!==pending.request_id)throw new Error('审核操作回执编号不一致，请核验任务状态');
+    return receipt;
   }
   window.completeAiReview60=async mode=>{
     const review=state.ai60Review;if(!review||review.closed||review.submitting)return;

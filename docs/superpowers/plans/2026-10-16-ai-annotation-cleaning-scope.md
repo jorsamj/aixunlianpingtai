@@ -1,5 +1,12 @@
 # AI 预标注、清洗范围与提示词创建体验实施计划
 
+## 2026-10-30｜42.24.442 审核操作 ID 与原 GT 状态的强绑定（精确 SHA CI 待核）
+
+- **精确上一版基线**：441 `d5d3ac10` 已检查 49/49 GitHub Actions 全部成功，三组原 Chrome 分片与 AI Annotation Recovery 均通过；这是代码本身 CI 通过，不等于生产 OSS/视觉 P95 已验。
+- 在 441 `d5d3ac10` 上完成更严格的故障恢复审计：旧请求 A 已写 pending 意图，但校验失败；后续新请求 B 正式完成，若只按任务已非待审核且存在 result/confirmation 文件恢复，会把 B 结果**错归为 A**。这不应发生，即使 A 的客户端早已收到 400。
+- 仅在原 `review/result.json` 和 `review/confirmation.json` 记录该次可选 `review_request_id`（旧客户端不传时不写），`_annotation_review_recover_completed` 必须同时核对持久任务状态、对应权威文件、**同一原操作 ID**，才能返回 200 completed；否则仍返回 202 pending，不会重复执行，也不会误认其他人的审核结果。正常成功回执和 Task/Candidate/GT 已有路径不动。
+- 浏览器查询结果增加 `receipt.request_id` 与本地 pending ID 精确校验；Playwright 503→pending→completed 用实际请求路径 ID，而不是伪造固定编号。新增 FastAPI 同任务 A/B 不得互认、确认文件与 Task QUEUED 的 ACK 丢失恢复，受控测试 39/39 通过。完整 Node、准确 SHA 真实 Chrome 和外部模型/OSS/P95 仍待核，不部署、不修改正式数据。
+
 ## 2026-10-30｜42.24.441 AI 人工审核提交断线防重与可核验回执（精确 SHA CI 待核）
 
 - **上一版本 CI 事实**：440 `3aa8301a` AI Annotation Recovery、Frontend Runtime Stabilization/真实 Chrome 均成功，49 项中 48 成功；通用 Release Regression 的两个 Linux 暂停进程状态立刻判定用例先后在首轮及单 Job 重跑失败，因此该版本 CI 非全绿，本批不把它伪装成无关紧要的绿版，也不在 AI 专项里混改进程控制。
