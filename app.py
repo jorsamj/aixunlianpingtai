@@ -23890,17 +23890,25 @@ def preview_annotation_image(project_id: str, payload: AnnotationTaskCreateReq):
 
 
 @app.get("/api/v60/projects/{project_id}/annotation-tasks")
-def list_annotation_tasks(project_id: str, limit: int = 50, cursor: Optional[str] = None):
+def list_annotation_tasks(project_id: str, limit: int = 50, cursor: Optional[str] = None, status: str = ""):
     get_project(project_id)
+    selected_status = str(status or "").strip().upper()
+    if selected_status and selected_status not in {item.value for item in TaskStatus}:
+        raise HTTPException(status_code=422, detail="AI 标注任务状态筛选条件无效")
     repository = shared_task_repository()
     page = repository.list(
         project_id=project_id,
         kinds={TaskKind.AI_ANNOTATION},
+        statuses={selected_status} if selected_status else None,
         limit=max(1, min(100, int(limit))),
         cursor=cursor,
     )
     worker_runtime = WorkerInstanceService(repository).list_runtime()
-    queued_candidates = repository.queued_candidates()
+    queued_candidates = (
+        repository.queued_candidates()
+        if any(task.status is TaskStatus.QUEUED for task in page.items)
+        else ()
+    )
     return {
         "items": [
             public_annotation_task(

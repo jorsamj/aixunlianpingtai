@@ -195,6 +195,50 @@ def test_annotation_task_list_is_bounded_and_private_fields_are_absent(client, s
     assert all(forbidden.isdisjoint(item) for item in body["items"])
 
 
+def test_annotation_task_status_filters_the_full_durable_history_before_cursor_paging(
+    client, seeded_project, isolated_task_runtime,
+):
+    project_id, _image = seeded_project
+    repository, artifacts = isolated_task_runtime
+    awaiting_id = _awaiting(project_id, 1, repository, artifacts)
+    queued_ids = {_queued(project_id, repository, artifacts) for _ in range(3)}
+    base = f"/api/v60/projects/{project_id}/annotation-tasks"
+    cursor = None
+    actual = []
+    for _ in range(3):
+        response = client.get(base, params={
+            "status": "QUEUED", "limit": 1, **({"cursor": cursor} if cursor else {}),
+        })
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert len(body["items"]) == 1
+        actual.append(body["items"][0]["id"])
+        cursor = body["next_cursor"]
+    assert set(actual) == queued_ids
+    assert cursor is None
+    awaiting = client.get(base, params={"status": "AWAITING_CONFIRMATION", "limit": 1})
+    assert awaiting.status_code == 200
+    assert [item["id"] for item in awaiting.json()["items"]] == [awaiting_id]
+    assert client.get(base, params={"status": "UNKNOWN"}).status_code == 422
+
+
+def test_annotation_task_nonqueued_status_does_not_scan_global_pending_queue(
+    client, seeded_project, isolated_task_runtime, monkeypatch,
+):
+    project_id, _image = seeded_project
+    repository, artifacts = isolated_task_runtime
+    task_id = _awaiting(project_id, 1, repository, artifacts)
+    def unexpected_queue_scan():
+        raise AssertionError("nonqueued page must not scan unrelated queued tasks")
+    monkeypatch.setattr(repository, "queued_candidates", unexpected_queue_scan)
+    response = client.get(
+        f"/api/v60/projects/{project_id}/annotation-tasks",
+        params={"status": "AWAITING_CONFIRMATION"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["items"][0]["id"] == task_id
+
+
 def test_candidate_result_is_paged_and_all_rejected_remains_false(client, seeded_project, isolated_task_runtime):
     project_id, _image = seeded_project
     repository, artifacts = isolated_task_runtime

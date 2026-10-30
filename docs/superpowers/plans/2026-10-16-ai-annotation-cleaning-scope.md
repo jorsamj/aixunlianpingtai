@@ -1,5 +1,13 @@
 # AI 预标注、清洗范围与提示词创建体验实施计划
 
+## 2026-10-30｜42.24.440 原 AI 任务状态服务端筛选续批（准确 SHA CI 待核）
+
+- 439 `3442fd23` 的 49 个精确 SHA Actions **49/49 全部成功**；唯一初红是与本 AI 创建无关的 Windows `test_training_cancellation_kills_worker_and_never_publishes_success` 进程启动 `started.marker` 时序断言，已对失败 Job 单独重跑通过。AI 创建真实 Chrome 含三视口截图和标注 API 都成功，但这不代表生产视觉满意度与 P95 达标。
+- 原 AI 任务列表 `/api/v60/.../annotation-tasks` 是 50 条 cursor 分页后才在浏览器筛 `status`，会出现当前页无符合任务但更早页有的**错误空态**。440 在原 GET 增可选合法 `status` 参数，直接传给唯一 TaskRepository `statuses`，再排序分页；没有排队任务的当前页不再额外扫描全局待执行队列。不遍历任务 payload、不新增索引迁移、保持无过滤 API 返回格式。
+- 前端仅改原 `renderOps427`/`refreshAnnotationTasks60` Owner：状态变化重置 cursor 首页；请求身份包括 project/page/cursor/status，取消旧的 fetch、旧结果/旧错误隔离；同一在途查询继续 single-flight；中文状态复用 `PlatformCore.annotationTasks.annotationTaskView`，当前状态页可显式刷新且按钮有即时反馈。本页名称/模型搜索保留，不冒充全历史搜索。
+- 证据：新 FastAPI 测试构造待审核和多个排队任务，证明状态过滤在 `limit=1` 游标之前执行及非法状态 422；原 Playwright 测试改为验证翻页后状态筛选重置至历史首页，增加快速切换 QUEUED→SUCCEEDED 的迟到响应保护；前端静态 Owner 合同已补。定向 API/Node 通过；需要完整 Node、440 精确 SHA Chrome 与真实素材规模 P95 补验。
+- **下一待办**：任务名称/模型的全历史索引查询及正式候选/审核/入库投影；审核 POST 的结果未知时按操作 ID 查询及幂等；独立工作台的连续操作 UX；OSS/远程模型的真实性能与三视口人工视觉核查。不能将状态先筛后分页等同于整个 P0 完工；不部署生产、不改 GT。
+
 ## 2026-10-30｜42.24.439 创建任务防重复与原回执恢复（待精确 SHA CI）
 
 - 问题：原创建 UI 只禁止本次打开期间的并行 POST；服务端使用随机 Task ID，若 Worker 已收到任务但 HTTP 回执因代理/网络中断丢失，下一次点击会创建第二个真实 AI 任务。**浏览器按钮门禁并非服务端幂等**。

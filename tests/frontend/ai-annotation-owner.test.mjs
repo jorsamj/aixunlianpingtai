@@ -163,6 +163,17 @@ test('AI create initializes every asynchronous request counter before incrementi
   }
 });
 
+test('AI task status is filtered by the original paged API before cursor pagination', () => {
+  const listStart = source.indexOf('function renderAiTaskRows60(tasks)');
+  const listEnd = source.indexOf('\n  window.renderOps427=function()', listStart);
+  const list = source.slice(listStart, listEnd);
+  assert.match(list, /if\(status\)params\.set\('status',status\)/);
+  assert.match(list, /state\.ai60TaskCursors=\[''\];state\.ai60TaskPageIndex=0/);
+  assert.match(list, /state\.ai60TaskController\?\.abort\?\.\(\)/);
+  assert.match(list, /state\.ai60TaskRequestEpoch===sequence/);
+  assert.doesNotMatch(list, /String\(task\.status\|\|''\)\.toUpperCase\(\)===filter/);
+});
+
 test('AI create owns cancellation of obsolete fetches and timers in the existing modal lifecycle', () => {
   assert.match(source, /window\.beforeCloseAiCreate429\?\.\(layer\)/);
   const start=source.indexOf('function disposeAiCreateRequests429(draft)');

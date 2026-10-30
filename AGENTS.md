@@ -1,3 +1,7 @@
+## 2026-10-30｜42.24.440 AI 标注任务状态先筛后分页（准确 SHA CI 待核）
+
+439 准确 SHA `3442fd23` 的 49/49 Actions 在 Windows 远程训练进程启动时序用例单 Job 重试后全部成功，原 AI 专项 Chrome/后端均通过。本批仅复用原 v60 TaskRepository `statuses` 查询：API 支持精确状态并在 server cursor `LIMIT` 前过滤历史，非法状态 422；原 AI 任务页面选择状态时重置游标，请求按项目/状态/页身份去重、Abort 旧请求且旧结果不回写，保留本页名称搜索和原 Task Poller。状态中文复用公开 `annotationTaskView`，提供当前列表刷新按钮与真实加载反馈；不创建搜索缓存/新表/新 Task Owner。本批**仍不支持跨历史名称/模型全文搜索与审核/入库聚合**，须在原 TaskRepository 设计正式索引后再做。定向 API/Node 通过，完整回归、真实 Chrome 和生产 P95 待 440 精确 SHA 验证；没有部署或修改正式 GT。唯一记录在 `docs/superpowers/plans/2026-10-16-ai-annotation-cleaning-scope.md`。
+
 ## 2026-10-30｜42.24.439 AI 标注创建请求持久防重（准确 SHA CI 待核）
 
 原创建流程只有浏览器 `submitting` 门禁，POST 已落库但 HTTP 回执丢失时重试可能生成第二个任务。仅在原 v60 `AI_ANNOTATION` TaskRepository/ArtifactStore 内增可选 `request_id`：同 ID 在原项目及相同完整配置下重复提交返回原真实回执，配置冲突 409，跨进程 FileLock/确定性 task_id 防并发双建；新 GET `by-request` 查询权威 Task 真值，旧调用方不传 ID 的行为不变。创建 UI 按一次实际确认配置生成稳定请求 ID，断网先查询原回执、普通失败沿用原 ID 重试，改变配置才换 ID。**438 `7254db9` 的 Chrome 4 个创建用例失败**，已发现新 hydration/reference/preview 计数器未初始化，`++undefined` 导致 `NaN` 及有效响应被误判为过期；439 初始化所有计数器为 0 并加静态防回归。没有新表/Task/GT owner、没有自动重发模型推理。后端 32/32、全前端 Node 1416/1416 已通过（防回归更新后须再跑），本批精确 SHA 浏览器 CI / 真实生产网络仍待验；原列表全历史筛选、审核决策幂等、独立路由和 OSS P95 未闭环。详见 `docs/superpowers/plans/2026-10-16-ai-annotation-cleaning-scope.md`；禁止生产数据操作/自行部署。

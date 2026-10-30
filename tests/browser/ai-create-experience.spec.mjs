@@ -292,14 +292,14 @@ test('AI candidate editor stays inside the review workspace without opening a ne
   }
 });
 
-test('AI task list pages on the server and keeps search/status scoped to the visible page', async ({page}) => {
+test('AI task list pages server-side, filters status across history and keeps name search local', async ({page}) => {
   const requests=[];
   await page.route('**/api/v60/projects/*/annotation-tasks?**', route=>{
-    const url=new URL(route.request().url()),second=url.searchParams.get('cursor')==='cursor-two';
-    requests.push(url.searchParams.get('cursor')||'first');
+    const url=new URL(route.request().url()),status=url.searchParams.get('status')||'',second=url.searchParams.get('cursor')==='cursor-two';
+    requests.push({cursor:url.searchParams.get('cursor')||'first',status});
     const item={id:second?'task-beta':'task-alpha',name:second?'Beta 标注':'Alpha 标注',status:second?'SUCCEEDED':'QUEUED',
       created_at:'2026-10-30T01:00:00Z',total_count:30,completed_count:second?30:0,model_config_name:'视觉模型',progress:second?100:0};
-    return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({items:[item],next_cursor:second?null:'cursor-two'})});
+    return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({items:[item],next_cursor:second||status?null:'cursor-two'})});
   });
   await ready(page);
   await page.evaluate(()=>{state.page='自动标注及清洗';state.v427OpsTab='label';window.renderOps427()});
@@ -309,11 +309,34 @@ test('AI task list pages on the server and keeps search/status scoped to the vis
   await page.locator('#ai60TaskSearch').fill('');
   await page.locator('#ai60TaskPager').getByRole('button',{name:'下一页'}).click();
   await expect(page.locator('#ai60TaskRows')).toContainText('Beta 标注');
-  expect(requests).toContain('cursor-two');
+  expect(requests).toContainEqual({cursor:'cursor-two',status:''});
   await page.locator('#ai60TaskStatus').selectOption('QUEUED');
-  await expect(page.locator('#ai60TaskRows')).toContainText('没有匹配');
+  await expect(page.locator('#ai60TaskRows')).toContainText('Alpha 标注');
+  expect(requests).toContainEqual({cursor:'first',status:'QUEUED'});
+  await expect(page.locator('#ai60TaskPager')).toContainText('第 1 页');
   await page.locator('#ai60TaskStatus').selectOption('');
-  await expect(page.locator('#ai60TaskRows')).toContainText('Beta 标注');
+  await expect(page.locator('#ai60TaskRows')).toContainText('Alpha 标注');
+});
+
+test('rapid AI task status switching discards stale pages and errors', async ({page}) => {
+  const paths=[];
+  await page.route('**/api/v60/projects/*/annotation-tasks?**', async route=>{
+    const status=new URL(route.request().url()).searchParams.get('status')||'';
+    paths.push(status);
+    if(status==='QUEUED')await new Promise(resolve=>setTimeout(resolve,1200));
+    const item={id:`filtered-${status||'all'}`,name:`${status||'ALL'} 任务`,status:status||'RUNNING',created_at:'2026-10-30T01:00:00Z'};
+    try{await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({items:[item],next_cursor:null})})}catch(_aborted){}
+  });
+  await ready(page);
+  await page.evaluate(()=>{state.page='自动标注及清洗';state.v427OpsTab='label';window.renderOps427()});
+  await expect(page.locator('#ai60TaskRows')).toContainText('ALL 任务');
+  await page.locator('#ai60TaskStatus').selectOption('QUEUED');
+  await page.locator('#ai60TaskStatus').selectOption('SUCCEEDED');
+  await expect(page.locator('#ai60TaskRows')).toContainText('SUCCEEDED 任务');
+  await page.waitForTimeout(1500);
+  await expect(page.locator('#ai60TaskRows')).not.toContainText('QUEUED 任务');
+  expect(paths).toContain('QUEUED');
+  expect(paths).toContain('SUCCEEDED');
 });
 
 test('AI candidate page opens immediately and offers retry instead of indefinite skeleton', async ({page}) => {
