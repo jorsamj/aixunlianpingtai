@@ -145,6 +145,30 @@ test('AI create requires an effective-configuration review before its only durab
   assert.match(submit, /if\(draft\.submitting\)return false/);
   assert.match(submit, /draft\.submitting=true/);
   assert.match(submit, /if\(!current\(\)\)return true/);
+  assert.match(submit, /ownerRoot=document\.querySelector/);
+  assert.match(submit, /ownerRoot\?\.isConnected/);
+  assert.doesNotMatch(submit, /aiCreateIsCurrent429|aiCreateLabelName429/);
+});
+
+test('AI create owns cancellation of obsolete fetches and timers in the existing modal lifecycle', () => {
+  assert.match(source, /window\.beforeCloseAiCreate429\?\.\(layer\)/);
+  const start=source.indexOf('function disposeAiCreateRequests429(draft)');
+  const end=source.indexOf('function aiCreateLabelName429',start);
+  const dispose=source.slice(start,end);
+  assert.ok(start>0&&end>start);
+  for(const name of ['materialController','referenceController','bulkController','hydrationController','previewController']){
+    assert.match(dispose,new RegExp(name));
+  }
+  assert.match(dispose,/state\.ai429Create=null/);
+  const material=source.slice(source.indexOf('window.loadAiCreateMaterials429=function'),source.indexOf('window.searchAiCreateMaterials429=function'));
+  assert.match(material,/draft\.materialController\?\.abort\(\)/);
+  assert.match(material,/signal:controller\.signal/);
+  const references=source.slice(source.indexOf('window.loadAiCreateReferences429=async function'),source.indexOf('window.aiCreateReferenceOpened429'));
+  assert.match(references,/draft\.referenceController\?\.abort\(\)/);
+  assert.match(references,/signal:controller\.signal/);
+  const hydration=source.slice(source.indexOf('window.hydrateAiCreate429=async function'),source.indexOf('window.createAiLabelCore429'));
+  assert.match(hydration,/draft\.hydrationController\?\.abort\(\)/);
+  assert.match(hydration,/signal:controller\.signal/);
 });
 
 

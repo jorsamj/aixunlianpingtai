@@ -2651,6 +2651,7 @@ window.installUsability417=function(){
     window.TrainingMaterialPickerRuntime?.beforeModalClose?.(layer);
     try{window.SmartMaterialAuditRuntime?.beforeModalClose?.(layer);}catch(_){}
     window.ZipImportRuntime?.beforeModalClose?.(layer);
+    window.beforeCloseAiCreate429?.(layer);
     window.beforeCloseTrainingReport425?.(layer);
     window.PlatformCore?.reports?.disposeReportViews?.(layer);
     window.beforeCloseEvaluationPreview429?.(layer);
@@ -4489,6 +4490,21 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   // ---------- AI task creation: immediate shell + paged, fenced hydration ----------
   function aiCreateCurrent429(){return state.ai429Create||null}
   function aiCreateIsCurrent429(epoch){return Number(aiCreateCurrent429()?.epoch)===Number(epoch)&&!!document.querySelector(`.ai429[data-ai-create-epoch="${epoch}"]`)}
+  function disposeAiCreateRequests429(draft){
+    if(!draft)return;
+    clearTimeout(draft.searchTimer);clearTimeout(draft.referenceSearchTimer);clearTimeout(aiPromptPreviewTimer429);
+    for(const key of ['materialController','referenceController','bulkController','hydrationController','previewController'])draft[key]?.abort?.();
+    draft.materialRequestEpoch=(draft.materialRequestEpoch||0)+1;
+    draft.referenceRequestEpoch=(draft.referenceRequestEpoch||0)+1;
+    draft.bulkEpoch=(draft.bulkEpoch||0)+1;
+    draft.hydrationEpoch=(draft.hydrationEpoch||0)+1;
+  }
+  window.beforeCloseAiCreate429=function(layer){
+    const root=layer?.querySelector?.('.ai-create-workbench'),draft=aiCreateCurrent429();
+    if(!root||!draft||Number(root.dataset.aiCreateEpoch)!==Number(draft.epoch))return;
+    disposeAiCreateRequests429(draft);
+    state.ai429Create=null;
+  };
   function aiCreateLabelName429(label){return String(label?.display_name_zh||label?.display_name||label?.code||'')}
   function aiCreateSyncLabelInput429(){const draft=aiCreateCurrent429(),input=document.getElementById('ai429Labels'),count=document.getElementById('ai429LabelCount');if(input)input.value=[...(draft?.labels||[])].join('、');if(count)count.textContent=`已选 ${draft?.labels?.size||0} 个`}
   function aiCreateRenderLabels429(){const draft=aiCreateCurrent429(),root=document.getElementById('ai429LabelGrid');if(!draft||!root)return;const q=String(document.getElementById('ai429LabelQ')?.value||'').trim().toLowerCase();const rows=(state.labels||[]).filter(label=>{const code=String(label.code||'').toLowerCase(),name=aiCreateLabelName429(label).toLowerCase();return !q||code.includes(q)||name.includes(q)});root.innerHTML=rows.map(label=>{const code=String(label.code||''),on=draft.labels.has(code);return `<button type="button" class="ai-create-label ${on?'on':''}" onclick="toggleAiCreateLabel429('${esc(code)}')"><i>${on?'✓':'+'}</i><span><b>${esc(aiCreateLabelName429(label)||code)}</b><small>${esc(code)}</small></span></button>`}).join('')||'<div class="empty compact">没有匹配的有效标签</div>';aiCreateSyncLabelInput429()}
@@ -4575,6 +4591,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   window.selectAllAiCreateFiltered429=async function(){
     const draft=aiCreateCurrent429();if(!draft||draft.bulkLoading||draft.materialLoading||draft.materialError)return;
     const epoch=draft.epoch,project=String(pid()),query=String(draft.query||''),sequence=++draft.bulkEpoch;
+    draft.bulkController?.abort();const controller=new AbortController();draft.bulkController=controller;
     const current=()=>aiCreateCurrent429()===draft&&aiCreateIsCurrent429(epoch)&&String(pid())===project&&draft.bulkEpoch===sequence;
     const cap=50000,ids=new Set();let cursor='',revision=null,total=0;
     draft.bulkLoading=true;draft.bulkError='';draft.bulkCount=0;aiCreateRenderMaterials429();
@@ -4585,7 +4602,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
         if(query)params.set('query',query);
         if(cursor)params.set('cursor',cursor);
         if(revision!==null)params.set('expected_revision',String(revision));
-        const result=await api(`/api/v61/projects/${project}/materials/ids?${params}`);
+        const result=await api(`/api/v61/projects/${project}/materials/ids?${params}`,{signal:controller.signal});
         if(!current())return;
         if(revision===null){revision=Number(result.repository_revision);total=Number(result.total||0)}
         if(!Number.isSafeInteger(revision)||Number(result.repository_revision)!==revision)throw new Error('素材库发生更新，请重试选择');
@@ -4598,19 +4615,70 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
       if(ids.size!==total)throw new Error(`筛选结果已变化：预期 ${total} 张，实际 ${ids.size} 张，请重试`);
       for(const id of ids)draft.images.add(id);
       draft.selectionTouched=true;aiCreatePreviewInvalidate429();
-    }catch(error){if(current())draft.bulkError=String(error.message||error||'跨页选择失败，请重试')}
-    finally{if(current()){draft.bulkLoading=false;aiCreateRenderMaterials429()}}
+    }catch(error){if(current()&&error?.name!=='AbortError')draft.bulkError=String(error.message||error||'跨页选择失败，请重试')}
+    finally{if(current()){draft.bulkLoading=false;draft.bulkController=null;aiCreateRenderMaterials429()}}
   };
   window.aiCreateMaterialPage429=function(delta){const draft=aiCreateCurrent429();if(!draft)return;draft.page=Math.max(1,draft.page+Number(delta||0));loadAiCreateMaterials429()};
-  window.loadAiCreateMaterials429=function(){const draft=aiCreateCurrent429();if(!draft)return Promise.resolve();const epoch=draft.epoch,project=String(pid());draft.query=String(document.getElementById('ai429MaterialQ')?.value??draft.query??'').trim();const params=new URLSearchParams({page:String(draft.page),page_size:String(draft.pageSize),annotated:'false'});if(draft.query)params.set('query',draft.query);const key=`${project}?${params}`;if(draft.materialLoading&&draft.materialPending&&draft.materialRequestKey===key)return draft.materialPending;const sequence=++draft.materialRequestEpoch;draft.materialRequestKey=key;draft.materialLoading=true;draft.materialError='';aiCreateRenderMaterials429();const current=()=>aiCreateCurrent429()===draft&&aiCreateIsCurrent429(epoch)&&String(pid())===project&&draft.materialRequestEpoch===sequence;const pending=api(`/api/v61/projects/${project}/materials?${params}`).then(result=>{if(!current())return;draft.materialItems=Array.isArray(result.items)?result.items:[];draft.materialTotal=Number(result.total||0)}).catch(error=>{if(current())draft.materialError=String(error.message||error||'素材读取失败')}).finally(()=>{if(current()){draft.materialLoading=false;draft.materialPending=null;aiCreateRenderMaterials429()}});draft.materialPending=pending;return pending};
-  window.searchAiCreateMaterials429=function(){const draft=aiCreateCurrent429();if(!draft)return;++draft.bulkEpoch;draft.bulkLoading=false;draft.bulkError='';clearTimeout(draft.searchTimer);draft.searchTimer=setTimeout(()=>{draft.page=1;loadAiCreateMaterials429()},260)};
+  window.loadAiCreateMaterials429=function(){
+    const draft=aiCreateCurrent429();if(!draft)return Promise.resolve();
+    const epoch=draft.epoch,project=String(pid());
+    draft.query=String(document.getElementById('ai429MaterialQ')?.value??draft.query??'').trim();
+    const params=new URLSearchParams({page:String(draft.page),page_size:String(draft.pageSize),annotated:'false'});
+    if(draft.query)params.set('query',draft.query);
+    const key=`${project}?${params}`;
+    if(draft.materialLoading&&draft.materialPending&&draft.materialRequestKey===key)return draft.materialPending;
+    draft.materialController?.abort();
+    const controller=new AbortController(),sequence=++draft.materialRequestEpoch;
+    draft.materialController=controller;draft.materialRequestKey=key;draft.materialLoading=true;draft.materialError='';aiCreateRenderMaterials429();
+    const current=()=>aiCreateCurrent429()===draft&&aiCreateIsCurrent429(epoch)&&String(pid())===project&&draft.materialRequestEpoch===sequence;
+    const pending=api(`/api/v61/projects/${project}/materials?${params}`,{signal:controller.signal})
+      .then(result=>{if(!current())return;draft.materialItems=Array.isArray(result.items)?result.items:[];draft.materialTotal=Number(result.total||0)})
+      .catch(error=>{if(current()&&error?.name!=='AbortError')draft.materialError=String(error.message||error||'素材读取失败')})
+      .finally(()=>{if(current()){draft.materialLoading=false;draft.materialController=null;draft.materialPending=null;aiCreateRenderMaterials429()}});
+    draft.materialPending=pending;return pending;
+  };
+  window.searchAiCreateMaterials429=function(){const draft=aiCreateCurrent429();if(!draft)return;++draft.bulkEpoch;draft.bulkController?.abort();draft.bulkLoading=false;draft.bulkError='';draft.materialController?.abort();++draft.materialRequestEpoch;draft.materialPending=null;draft.materialLoading=true;aiCreateRenderMaterials429();clearTimeout(draft.searchTimer);draft.searchTimer=setTimeout(()=>{draft.page=1;loadAiCreateMaterials429()},260)};
   window.aiCreateRenderReferences429=function(){const draft=aiCreateCurrent429(),root=document.getElementById('ai429RefGrid'),pager=document.getElementById('ai429RefPager'),summary=document.getElementById('ai429ReferenceCount');if(!draft||!root)return;if(draft.referenceLoading){root.innerHTML='<div class="ai-create-loading"><i></i><span>正在读取参考素材…</span></div>';return}if(draft.referenceError){root.innerHTML=`<div class="inline-error"><span>${esc(draft.referenceError)}</span><button class="btn mini" onclick="loadAiCreateReferences429()">重试</button></div>`;return}root.innerHTML=(draft.referenceItems||[]).map(row=>{const id=String(row.id||''),on=state.ai429RefSelected.has(id);return `<button type="button" data-image-id="${esc(id)}" class="ai-create-material ${on?'on':''}" onclick="toggleRef429('${esc(id)}');aiCreateRenderReferences429()"><img src="${esc(row.url||'')}" loading="lazy"><span><b title="${esc(row.filename||id)}">${esc(row.filename||id)}</b><small>${on?'已选择':'点击作为参考'}</small></span><i>${on?'✓':'+'}</i></button>`}).join('')||'<div class="empty compact">当前页没有已标注参考素材</div>';if(summary)summary.textContent=`已选 ${state.ai429RefSelected.size} 张 · 仅作视觉示例，不改变任务标签`;if(pager){const pages=Math.max(1,Math.ceil(draft.referenceTotal/draft.referencePageSize));pager.innerHTML=`<button class="btn mini" ${draft.referencePage<=1?'disabled':''} onclick="aiCreateReferencePage429(-1)">上一页</button><span>${draft.referencePage} / ${pages}</span><button class="btn mini" ${draft.referencePage>=pages?'disabled':''} onclick="aiCreateReferencePage429(1)">下一页</button>`}};
-  window.loadAiCreateReferences429=async function(){const draft=aiCreateCurrent429();if(!draft)return;const epoch=draft.epoch;draft.referenceQuery=String(document.getElementById('ai429RefQ')?.value||draft.referenceQuery||'').trim();draft.referenceLoading=true;draft.referenceError='';aiCreateRenderReferences429();const params=new URLSearchParams({page:String(draft.referencePage),page_size:String(draft.referencePageSize),annotated:'true'});if(draft.referenceQuery)params.set('query',draft.referenceQuery);try{const result=await api(`/api/v61/projects/${pid()}/materials?${params}`);if(!aiCreateIsCurrent429(epoch))return;draft.referenceItems=Array.isArray(result.items)?result.items:[];draft.referenceTotal=Number(result.total||0);draft.referenceLoaded=true;draft.referenceLoading=false;aiCreateRenderReferences429()}catch(error){if(!aiCreateIsCurrent429(epoch))return;draft.referenceLoading=false;draft.referenceError=String(error.message||error||'参考素材读取失败');aiCreateRenderReferences429()}};
+  window.loadAiCreateReferences429=async function(){
+    const draft=aiCreateCurrent429();if(!draft)return;
+    const epoch=draft.epoch,project=String(pid());
+    draft.referenceController?.abort();
+    const controller=new AbortController(),sequence=++draft.referenceRequestEpoch;
+    draft.referenceController=controller;
+    draft.referenceQuery=String(document.getElementById('ai429RefQ')?.value||draft.referenceQuery||'').trim();
+    draft.referenceLoading=true;draft.referenceError='';aiCreateRenderReferences429();
+    const params=new URLSearchParams({page:String(draft.referencePage),page_size:String(draft.referencePageSize),annotated:'true'});
+    if(draft.referenceQuery)params.set('query',draft.referenceQuery);
+    const current=()=>aiCreateCurrent429()===draft&&aiCreateIsCurrent429(epoch)&&String(pid())===project&&draft.referenceRequestEpoch===sequence;
+    try{
+      const result=await api(`/api/v61/projects/${project}/materials?${params}`,{signal:controller.signal});
+      if(!current())return;
+      draft.referenceItems=Array.isArray(result.items)?result.items:[];draft.referenceTotal=Number(result.total||0);draft.referenceLoaded=true;
+    }catch(error){if(current()&&error?.name!=='AbortError')draft.referenceError=String(error.message||error||'参考素材读取失败')}
+    finally{if(current()){draft.referenceLoading=false;draft.referenceController=null;aiCreateRenderReferences429()}}
+  };
   window.aiCreateReferenceOpened429=function(element){const draft=aiCreateCurrent429();if(element?.open&&draft&&!draft.referenceLoaded&&!draft.referenceLoading)loadAiCreateReferences429()};
-  window.searchAiCreateReferences429=function(){const draft=aiCreateCurrent429();if(!draft)return;clearTimeout(draft.referenceSearchTimer);draft.referenceSearchTimer=setTimeout(()=>{draft.referencePage=1;loadAiCreateReferences429()},260)};
+  window.searchAiCreateReferences429=function(){const draft=aiCreateCurrent429();if(!draft)return;draft.referenceController?.abort();++draft.referenceRequestEpoch;draft.referenceLoading=true;aiCreateRenderReferences429();clearTimeout(draft.referenceSearchTimer);draft.referenceSearchTimer=setTimeout(()=>{draft.referencePage=1;loadAiCreateReferences429()},260)};
   window.aiCreateReferencePage429=function(delta){const draft=aiCreateCurrent429();if(!draft)return;draft.referencePage=Math.max(1,draft.referencePage+Number(delta||0));loadAiCreateReferences429()};
-  window.hydrateAiCreate429=async function(epoch){const draft=aiCreateCurrent429();if(!draft||draft.epoch!==epoch)return;const project=String(pid());const results=await Promise.allSettled([api('/api/v35/model-configs'),api('/api/v35/prompt-templates'),api(`/api/v12/projects/${project}/labels`)]);if(!aiCreateIsCurrent429(epoch)||String(pid())!==project)return;if(results[0].status==='fulfilled')state.modelConfigs=results[0].value?.items||[];if(results[1].status==='fulfilled')state.promptTemplates=results[1].value?.items||[];if(results[2].status==='fulfilled')state.labels=results[2].value?.items||[];draft.hydrationError=results.some(row=>row.status==='rejected')?'部分配置读取失败，可重试；已加载内容仍可继续编辑。':'';const status=document.getElementById('ai429Hydration');if(status)status.innerHTML=draft.hydrationError?`<div class="inline-error"><span>${esc(draft.hydrationError)}</span><button class="btn mini" onclick="hydrateAiCreate429(${epoch})">重试</button></div>`:'<span class="ready">模型、模板与标签已同步</span>';aiCreateRenderModels429();aiCreateRenderTemplates429();aiCreateRenderLabels429();if(!document.getElementById('ai429Prompt')?.value)restoreAiPrompt429()};
+  window.hydrateAiCreate429=async function(epoch){
+    const draft=aiCreateCurrent429();if(!draft||draft.epoch!==epoch)return;
+    const project=String(pid());draft.hydrationController?.abort();
+    const controller=new AbortController(),sequence=++draft.hydrationEpoch;draft.hydrationController=controller;
+    const options={signal:controller.signal};
+    const results=await Promise.allSettled([api('/api/v35/model-configs',options),api('/api/v35/prompt-templates',options),api(`/api/v12/projects/${project}/labels`,options)]);
+    if(aiCreateCurrent429()!==draft||!aiCreateIsCurrent429(epoch)||String(pid())!==project||draft.hydrationEpoch!==sequence)return;
+    draft.hydrationController=null;
+    if(results[0].status==='fulfilled')state.modelConfigs=results[0].value?.items||[];
+    if(results[1].status==='fulfilled')state.promptTemplates=results[1].value?.items||[];
+    if(results[2].status==='fulfilled')state.labels=results[2].value?.items||[];
+    draft.hydrationError=results.some(row=>row.status==='rejected')?'部分配置读取失败，可重试；已加载内容仍可继续编辑。':'';
+    const status=document.getElementById('ai429Hydration');
+    if(status)status.innerHTML=draft.hydrationError?`<div class="inline-error"><span>${esc(draft.hydrationError)}</span><button class="btn mini" onclick="hydrateAiCreate429(${epoch})">重试</button></div>`:'<span class="ready">模型、模板与标签已同步</span>';
+    aiCreateRenderModels429();aiCreateRenderTemplates429();aiCreateRenderLabels429();
+    if(!document.getElementById('ai429Prompt')?.value)restoreAiPrompt429();
+  };
   window.createAiLabelCore429=function(opts={}){
+    disposeAiCreateRequests429(aiCreateCurrent429());
     const epoch=Number(state.ai429CreateEpoch||0)+1;state.ai429CreateEpoch=epoch;
     const explicit=[...new Set((opts.image_ids||[]).map(String).filter(Boolean))];
     const initial=explicit;
@@ -7741,7 +7809,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     const root=document.getElementById('ai429Confirmation');if(!root)return;
     const model=(state.modelConfigs||[]).find(row=>String(row.id)===body.model_config_id)||{};
     const template=(state.promptTemplates||[]).find(row=>String(row.id)===body.prompt_template_id)||{};
-    const labelNames=body.labels_text.split('、').map(code=>`${window.PlatformCore.materials.labelDisplay(code,state.labels)} (${code})`);
+    const labelNames=body.labels_text.split('、').map(code=>window.PlatformCore.materials.labelDisplay(code,state.labels));
     const field=(title,value)=>`<div><span>${esc(title)}</span><strong>${esc(value)}</strong></div>`;
     root.innerHTML=`<header><div><span class="ai-create-confirm-kicker">创建前最后核对</span><h3>本次 AI 标注任务概览</h3><p>以下为即将提交的实际选项，确认后才创建任务；正式标注仍须人工审核。</p></div><span class="ai-create-confirm-count">${body.image_ids.length}<small>张素材</small></span></header>
       <div class="ai-create-confirm-grid">${field('任务名称',body.task_name)}${field('视觉模型',`${model.name||model.model_name||body.model_config_id} · ${model.provider_adapter||model.provider_type||'已配置'}`)}${field('目标标签',labelNames.join('、'))}${field('置信度阈值',`${Math.round(body.threshold*100)}%`)}${field('已有标注处理',body.overwrite?'审核后按现有覆盖合同处理相同标签':'保留已有标注，不主动覆盖')}${field('参考素材',`${body.reference_image_ids.length} 张（可选）`)}${field('提示词模板',body.prompt_template_id?`${template.name||body.prompt_template_id} · v${Number(template.version||1)}`:'模型默认模板')}${field('业务补充说明',body.business_instruction||'无')}</div>
@@ -7782,7 +7850,8 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
       return false;
     }
     const ownerEpoch=draft.epoch,ownerProject=String(pid());
-    const current=()=>state.ai429Create===draft&&aiCreateIsCurrent429(ownerEpoch)&&String(pid())===ownerProject;
+    const ownerRoot=document.querySelector(`.ai429[data-ai-create-epoch="${ownerEpoch}"]`);
+    const current=()=>state.ai429Create===draft&&!!ownerRoot?.isConnected&&String(pid())===ownerProject;
     draft.submitting=true;
     try{
       if(submit){submit.disabled=true;submit.textContent='正在创建…'}

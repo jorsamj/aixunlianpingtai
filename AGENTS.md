@@ -1,3 +1,7 @@
+## 2026-10-30｜42.24.438 AI 创建旧请求取消及关闭释放（准确 SHA CI 待核）
+
+437 `be405299` 的真实 Chrome 抓到提交 POST 503 后按钮未恢复：`current()` 误跨闭包调用 `aiCreateIsCurrent429`；438 改为原 DOM + 草稿 + 项目身份，Node 合同阻止私有 helper 回归。在原 `ai429Create`/`beforeCloseModal424` Owner 内增加五种异步 HTTP 控制器及搜索计时器的关闭/切换取消，结合原 epoch/project 栅栏防旧结果/错误串窗；同条件素材 GET 仍原位去重，跨页筛选仍完整成功后才原子合并。创建 POST/审核/正式 GT/Worker 不主动中断；客户端 AbortSignal 并不表示服务端已停止执行。标签核对减少重复 code 展示，前端原生 JS/路由/数据库不变。精确 SHA CI 与真实大库 P95 待验，详见 `docs/superpowers/plans/2026-10-16-ai-annotation-cleaning-scope.md`。
+
 ## 2026-10-30｜42.24.437 AI 创建核对真实截图证据保存（准确 SHA CI 待核）
 
 436 业务提交 `a818e1d8` 真实 Chrome 抓到创建确认面板隐藏的跨闭包私有函数错误（同分片 105/106），437 改为复用原公开 `PlatformCore.materials.labelDisplay` 并增防回归及 app.js 缓存键。新增原 Playwright 三视口「核对前/核对后」截图和原 frontend-runtime-stabilization 浏览器 job 的 30 天截图/失败 trace artifact 上传。不新增工作流、不改业务 Owner/API/GT/生产数据；本批真实 Chrome/截图上传结果仍以准确 SHA CI 为准。详细证据与剩余 P0 见原 AI 专项文档，不得声称 P0 完成。

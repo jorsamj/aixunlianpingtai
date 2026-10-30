@@ -99,6 +99,7 @@ test('closing and reopening fences stale AI create hydration and remains usable 
   await page.evaluate(() => window.createAiLabel429());
   const first = await page.locator('.ai-create-workbench').getAttribute('data-ai-create-epoch');
   await page.getByRole('button', {name: '取消'}).click();
+  await expect.poll(() => page.evaluate(() => state.ai429Create === null)).toBe(true);
   await page.evaluate(() => window.createAiLabel429());
   const second = await page.locator('.ai-create-workbench').getAttribute('data-ai-create-epoch');
   expect(Number(second)).toBeGreaterThan(Number(first));
@@ -154,7 +155,7 @@ test('AI create keeps the form on configuration or submit failure and fences dup
   await expect(page.locator('#ai429Confirmation')).toBeVisible();
   await expect(page.locator('#ai429Confirmation')).toContainText('1张素材');
   await expect(page.locator('#ai429Confirmation')).toContainText('场景视觉模型');
-  await expect(page.locator('#ai429Confirmation')).toContainText('明火 (fire)');
+  await expect(page.locator('#ai429Confirmation')).toContainText('fire · 明火');
   expect(submitCount).toBe(0);
   await page.locator('.ai-create-advanced').click();
   await page.locator('#ai429Threshold').fill('0.6');

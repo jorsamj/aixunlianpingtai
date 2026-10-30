@@ -1,5 +1,24 @@
 # AI 预标注、清洗范围与提示词创建体验实施计划
 
+## 2026-10-30｜42.24.438 创建页请求生命周期主动取消续批（待精确 CI）
+
+### 需求与原始缺口
+
+- 用户明确反馈「等不及关闭页面、再打开其他功能时，似乎后台仍在不断请求」，要求过期请求不耗浏览器带宽、不回写新页面、不弹旧错误。437 之前原创建 Owner 已有 epoch/项目栅栏，防止大部分旧结果回写；但 `/materials` 分页、`/materials/ids` 跨页解析、参考素材分页、模型/模板/标签并行 hydration **没有向 `fetch` 传 AbortSignal**，关窗或改筛选不主动中断网络等候。
+
+### 本批改动
+
+0. 437 准确 SHA `be405299` 的真实 Chrome `browser-navigation (1)` 已检查到 105/106：确认页现在可以正确展开，但模拟后端 POST 503 后，创建按钮一直 disabled。根因与上一批相同——提交闭包的 `current()` 又调用了只在创建闭包可见的 `aiCreateIsCurrent429`，catch 自己抛异常，导致按钮永不恢复。438 将它替换为**当前草稿身份 + 原 DOM 节点 isConnected + 项目 ID** 的直接栅栏；Node 源合同明确禁止在提交闭包引用这两个私有函数。437 已成功上传真实 Chrome 失败 trace/截图工件，可复核，不能标记 437 全绿。
+1. 仅复用原生 `ai429Create` 草稿和现有 `beforeCloseModal424` 生命周期，在其原模态卸载时调用 `beforeCloseAiCreate429`：取消素材、参考素材、跨页 ID 查询、配置 hydration、单图试跑的已有 fetch 控制器和搜索/提示词计时器，同时使原代次失效，释放本次草稿的选择集合。新打开创建页时也先取消旧草稿遗留请求，不新建请求管理框架。
+2. 主素材页同条件在途请求仍去重；不同分页/搜索条件立即取消前一个请求，并用原 `materialRequestEpoch` 栅栏保证取消后的旧响应、旧错误不能覆盖当前页。参考素材新增同一 Owner 的单一 controller/sequence；配置重试按同一 epoch 取消旧的三路并行 HTTP；跨页筛选解析在修改条件/关窗后中断当前游标链，不改变已经确认的选择 Set。
+3. 创建最终配置确认中的标签复用原共享 `PlatformCore.materials.labelDisplay` 原样输出，不再重复追加英文 code。版本与 app.js 静态资源键同步；无新路由、数据库、模型、任务、GT、训练 Worker 或外部存储接口变动。
+
+### 验证边界和接续
+
+- `tests/frontend/ai-annotation-owner.test.mjs` 增补模态 close hook、五类 fetch 取消控制器、material/reference/hydration 真实 signal 传递的静态合同；既有 Playwright 关窗重开用例增断言草稿释放。需最终 SHA 真实 Chrome 检查路由延迟、关闭后重试/错误不串窗、批量 5 页筛选不重复。
+- **AbortController 只保证客户端不再等待旧 HTTP 结果；不能断言服务器已经接受的请求停止了 SQL/OSS/模型计算。** 要减少服务端已启动查询的工作量，仍须后端接口有界执行和现场追踪验证；不是已达到性能 P95 的证据。创建 POST 和审核正式入库均未主动取消，也不得因为页面关闭就推断持久任务失败。
+- 本批尚未触及任务全历史索引搜索、状态聚合列、服务端创建/审核操作幂等、独立路由、OSS/远程模型 P95；这些仍按原 P0 优先级续做。无生产读写或部署。
+
 ## 2026-10-30｜42.24.437 P0 真实浏览器对比证据保留续批（待精确 CI）
 
 - 基线为 `a818e1d8`／42.24.436，该精确 SHA 的 41 个 GitHub Actions 工作流 **40 成功、1 失败**。`AI Annotation Recovery` 通过；失败的 `Frontend Runtime Stabilization / browser-navigation (1)` 为 105/106，其中新增创建配置确认用例检测到真实 `#ai429Confirmation` 仍 hidden。另一个 `v42.25 Release Regression` 曾因 `psutil` 暂停状态立即断言失败，原 SHA 单 Job 重跑后成功；这是已记录的独立时序波动，本批不混入进程控制逻辑修改。
