@@ -1,3 +1,7 @@
+## 2026-10-30｜42.24.434 AI 自动标注真实单图试跑（新 SHA CI 待核）
+
+前一批 433 提交 `80502b0d` 已完成准确 22/22 Actions、真实 Chrome 307/307。本批补齐创建 UI 此前仅有提示词文本预览的缺口：`/api/v60/.../annotation-preview` 复用原模型冻结/凭据/提示词与单图 Worker 推理代码，无新模型、任务、Candidate 或 GT Owner；仅点击后显式调用一张真实素材，16 MiB 上限/模型错误脱敏。前端复用 `ai429Create` 选择 Set、参数变化令旧结果失效、失败原位重试、框叠加及三视口截图测试。详细记录及未完成项见 `docs/superpowers/plans/2026-10-16-ai-annotation-cleaning-scope.md`；**真实 OSS/外部供应商/P95/生产未实测，未部署**。继续按原项目 Task/GT/审核权威合同推进，不重建标注系统。
+
 ## 2026-10-30｜42.24.433 AI 标注 UX/跨页选择续批（准确 CI 待核验）
 
 432 基线 `5dcd7186`；已修 AI 创建页等 3 路配置结束才加载第一页的串行等待、隐式勾选、AI 选择本页无跨页操作；复用 `/materials/ids` 的窄字段 SQL 谓词 + 素材修订 409、单一选择 Set 原子合并及 50000 上限。v60 审核候选由内嵌第二弹层改为已有审核工作区内联三栏，保留 Annotorious/GT durable commit；AI 任务列表补服务器 cursor 翻页及当前页组合过滤。详情、已知未完成项和本批测试边界直接更新原 `docs/superpowers/plans/2026-10-16-ai-annotation-cleaning-scope.md`。生产 HAR/P95、Chrome 截图、Pytest 和真实外部模型/OSS 未做现场验证；不部署、不改正式标注、训练历史或数据副本。

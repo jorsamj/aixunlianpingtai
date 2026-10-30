@@ -4495,14 +4495,62 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   window.aiCreateRenderLabels429=aiCreateRenderLabels429;
   window.toggleAiCreateLabel429=function(code){const draft=aiCreateCurrent429();if(!draft)return;draft.labels.has(code)?draft.labels.delete(code):draft.labels.add(code);aiCreateRenderLabels429();scheduleAiPromptPreview429()};
   function aiCreateRenderModels429(){const draft=aiCreateCurrent429(),root=document.getElementById('ai429Models');if(!draft||!root)return;const rows=state.modelConfigs||[];if(!rows.length){root.innerHTML='<div class="alert warn"><b>还没有可用视觉模型</b><span>请先在 AI 辅助配置中添加并验证视觉模型。</span></div>';return}if(!draft.modelId||!rows.some(row=>String(row.id)===draft.modelId))draft.modelId=String(rows.find(row=>row.default_for_annotation)?.id||rows[0].id||'');root.innerHTML=rows.map(row=>{const id=String(row.id||''),on=id===draft.modelId;return `<label class="ai-create-model ${on?'on':''}"><input type="radio" name="ai429ModelChoice" value="${esc(id)}" ${on?'checked':''} onchange="selectAiCreateModel429('${esc(id)}')"><i></i><span><b>${esc(row.name||row.model_name||id)}</b><small>${esc(row.model_name||'视觉模型')} · ${esc(row.provider_adapter||row.provider_type||'已配置')}</small></span>${row.default_for_annotation?'<em>默认</em>':''}</label>`}).join('');const hidden=document.getElementById('ai429Model');if(hidden)hidden.value=draft.modelId}
-  window.selectAiCreateModel429=function(id){const draft=aiCreateCurrent429();if(!draft)return;draft.modelId=String(id||'');aiCreateRenderModels429();if(!draft.templateId)restoreAiPrompt429()};
+  window.selectAiCreateModel429=function(id){const draft=aiCreateCurrent429();if(!draft)return;draft.modelId=String(id||'');aiCreateRenderModels429();aiCreatePreviewInvalidate429();if(!draft.templateId)restoreAiPrompt429()};
   function aiCreateTemplateText429(){const draft=aiCreateCurrent429(),template=(state.promptTemplates||[]).find(row=>String(row.id)===String(draft?.templateId));if(template)return String(template.prompt||'');const model=(state.modelConfigs||[]).find(row=>String(row.id)===String(draft?.modelId));return String(model?.annotation_prompt_template||'你是视觉目标检测标注助手。只标注标签库中的目标：{{labels_json}}。图片尺寸为 {{image_width}}x{{image_height}}。{{business_instruction}}必须只返回符合此结构的 JSON：{{output_schema}}')}
   function aiCreateRenderTemplates429(){const draft=aiCreateCurrent429(),select=document.getElementById('ai429Template');if(!draft||!select)return;const previous=draft.templateId;select.innerHTML=`<option value="">使用模型默认提示词</option>${(state.promptTemplates||[]).map(row=>`<option value="${esc(row.id)}">${esc(row.name||row.id)} · v${Number(row.version||1)}</option>`).join('')}`;select.value=(state.promptTemplates||[]).some(row=>String(row.id)===String(previous))?previous:'';draft.templateId=select.value}
   window.aiCreateTemplateChanged429=function(){const draft=aiCreateCurrent429();if(!draft)return;draft.templateId=String(document.getElementById('ai429Template')?.value||'');const template=(state.promptTemplates||[]).find(row=>String(row.id)===draft.templateId);if(template?.model_config_id)draft.modelId=String(template.model_config_id);if(Array.isArray(template?.labels)&&template.labels.length)draft.labels=new Set(template.labels.filter(code=>(state.labels||[]).some(label=>String(label.code)===String(code))));aiCreateRenderModels429();aiCreateRenderLabels429();restoreAiPrompt429()};
   window.restoreAiPrompt429=function(){const area=document.getElementById('ai429Prompt');if(!area)return;area.value=aiCreateTemplateText429();area.dataset.userEdited='0';scheduleAiPromptPreview429()};
   let aiPromptPreviewTimer429=0;
-  window.scheduleAiPromptPreview429=function(){clearTimeout(aiPromptPreviewTimer429);aiPromptPreviewTimer429=setTimeout(()=>previewAiPrompt429(),180)};
+  window.scheduleAiPromptPreview429=function(){aiCreatePreviewInvalidate429();clearTimeout(aiPromptPreviewTimer429);aiPromptPreviewTimer429=setTimeout(()=>previewAiPrompt429(),180)};
   window.previewAiPrompt429=async function(){const draft=aiCreateCurrent429(),root=document.getElementById('ai429PromptPreview');if(!draft||!root)return;const epoch=draft.epoch,prompt=String(document.getElementById('ai429Prompt')?.value||'');root.innerHTML='<span class="loading-line">正在生成最终提示词预览…</span>';try{const labels=[...draft.labels].map(code=>{const row=(state.labels||[]).find(label=>String(label.code)===code)||{};return{code,display_name_zh:aiCreateLabelName429(row)||code}});const result=await api('/api/v35/prompt-templates/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt,labels,image_width:640,image_height:480,business_instruction:String(document.getElementById('ai429Instruction')?.value||'')})});if(aiCreateIsCurrent429(epoch))root.innerHTML=`<pre>${esc(result.rendered_prompt||'')}</pre>`}catch(error){if(aiCreateIsCurrent429(epoch))root.innerHTML=`<div class="inline-error"><span>${esc(error.message||error)}</span><button class="btn mini" onclick="previewAiPrompt429()">重试</button></div>`}};
+  function aiCreatePreviewInvalidate429(){
+    const draft=aiCreateCurrent429();if(!draft)return;
+    draft.previewEpoch=(draft.previewEpoch||0)+1;draft.previewController?.abort?.();draft.previewController=null;draft.previewLoading=false;
+    const root=document.getElementById('ai429InferenceResult');if(root)root.innerHTML='<div class="muted-line">配置或素材已变化，请重新试跑。此前结果不会作为本次配置的依据。</div>';
+    const button=document.getElementById('ai429InferenceStart');if(button){button.disabled=false;button.textContent='对这张素材试跑'}
+  }
+  function aiCreateRenderPreviewSamples429(){
+    const draft=aiCreateCurrent429(),select=document.getElementById('ai429PreviewImage');if(!draft||!select)return;
+    const first=draft.images.values().next().value;
+    const selectedPage=(draft.materialItems||[]).filter(item=>draft.images.has(String(item.id))).map(item=>({id:String(item.id),filename:String(item.filename||item.id)}));
+    const previous=String(draft.previewImageId||'');
+    const options=[...(previous&&draft.images.has(previous)?[{id:previous,filename:String(selectedPage.find(item=>item.id===previous)?.filename||previous)}]:[]),
+      ...(first?[{id:String(first),filename:String(selectedPage.find(item=>item.id===first)?.filename||first)}]:[]),...selectedPage];
+    const unique=[...new Map(options.map(item=>[item.id,item])).values()].slice(0,13);
+    const choice=unique.some(item=>item.id===previous)?previous:String(first||'');
+    draft.previewImageId=choice;
+    select.innerHTML=unique.map(item=>`<option value="${esc(item.id)}" ${item.id===choice?'selected':''}>${esc(item.filename)}</option>`).join('')||'<option value="">请先选择素材</option>';
+    select.disabled=!unique.length;
+    const button=document.getElementById('ai429InferenceStart');if(button)button.disabled=!unique.length||!!draft.previewLoading;
+  }
+  window.aiCreatePreviewSampleChanged429=function(id){const draft=aiCreateCurrent429();if(!draft)return;draft.previewImageId=String(id||'');aiCreatePreviewInvalidate429()};
+  window.runAiCreatePreview429=async function(){
+    const draft=aiCreateCurrent429(),root=document.getElementById('ai429InferenceResult'),button=document.getElementById('ai429InferenceStart');
+    if(!draft||!root||draft.previewLoading)return;
+    const imageId=String(document.getElementById('ai429PreviewImage')?.value||'');
+    if(!imageId||!draft.images.has(imageId)){root.textContent='请先选择一张真实待标注素材';return}
+    const labels=[...draft.labels],modelId=String(document.getElementById('ai429Model')?.value||'');
+    if(!labels.length||!modelId){root.textContent='请先选择模型和至少一个有效标签';return}
+    const threshold=Number(document.getElementById('ai429Threshold')?.value||0.45);
+    const payload={image_ids:[imageId],labels_text:labels.join('、'),model_config_id:modelId,
+      prompt_template_id:String(document.getElementById('ai429Template')?.value||'')||null,
+      prompt_override:String(document.getElementById('ai429Prompt')?.value||'').trim(),
+      business_instruction:String(document.getElementById('ai429Instruction')?.value||'').trim(),threshold};
+    const project=String(pid()),epoch=draft.epoch,sequence=++draft.previewEpoch;
+    draft.previewController?.abort?.();const controller=new AbortController();draft.previewController=controller;draft.previewLoading=true;
+    if(button){button.disabled=true;button.textContent='模型试跑中…'}
+    root.innerHTML='<div class="ai-create-loading"><i></i><span>正在对选中图片调用模型，结果仅供预览，不写入正式标注…</span></div>';
+    const current=()=>aiCreateCurrent429()===draft&&aiCreateIsCurrent429(epoch)&&String(pid())===project&&draft.previewEpoch===sequence;
+    try{
+      const response=await window.PlatformCore.withRequestDeadline(signal=>api(`/api/v60/projects/${project}/annotation-preview`,{
+        method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal,
+      }),{timeoutMs:30000,label:'AI标注图片试跑',signal:controller.signal});
+      if(!current())return;
+      const image=response.image||{},boxes=Array.isArray(response.boxes)?response.boxes:[];
+      root.innerHTML=`<div class="ai-create-inference-summary"><b>${esc(image.filename||imageId)}</b><span>${boxes.length} 个候选框 · 模型耗时 ${Number(response.latency_ms||0)}ms · 仅供预览</span></div><div class="ai-create-inference-canvas"><img src="${esc(image.url||'')}" alt="试跑素材" loading="lazy" decoding="async">${boxes.map(box=>candidateOverlay(box,image)).join('')}</div><div class="ai-create-inference-labels">${boxes.map(box=>`<span>${esc(window.PlatformCore.materials.labelDisplay(box.label,state.labels))} ${Math.round(Number(box.confidence||0)*100)}%</span>`).join('')||'<span>模型未识别出超过当前阈值的目标；不等于人工确认无目标。</span>'}</div>`;
+    }catch(error){if(current())root.innerHTML=`<div class="inline-error"><span>${esc(error.message||error)}</span><button class="btn mini" onclick="runAiCreatePreview429()">重试</button></div>`}
+    finally{if(current()){draft.previewLoading=false;draft.previewController=null;if(button?.isConnected){button.disabled=false;button.textContent='对这张素材试跑'}}}
+  };
   function aiCreateRenderMaterials429(){
     const draft=aiCreateCurrent429(),root=document.getElementById('ai429MaterialGrid'),pager=document.getElementById('ai429MaterialPager'),summary=document.getElementById('ai429MaterialCount');
     if(!draft||!root)return;
@@ -4512,10 +4560,11 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     else root.innerHTML=(draft.materialItems||[]).map(row=>{const id=String(row.id||''),on=draft.images.has(id);return `<button type="button" class="ai-create-material ${on?'on':''}" onclick="toggleAiCreateMaterial429('${esc(id)}')"><img src="${esc(row.url||'')}" loading="lazy" decoding="async"><span><b title="${esc(row.filename||id)}">${esc(row.filename||id)}</b><small>${on?'已选择':'点击选择'}</small></span><i>${on?'✓':'+'}</i></button>`}).join('')||'<div class="empty compact">当前页没有未标注素材</div>';
     if(pager){const pages=Math.max(1,Math.ceil(draft.materialTotal/draft.pageSize));pager.innerHTML=`<button class="btn mini" ${draft.page<=1?'disabled':''} onclick="aiCreateMaterialPage429(-1)">上一页</button><span>${draft.page} / ${pages}</span><button class="btn mini" ${draft.page>=pages?'disabled':''} onclick="aiCreateMaterialPage429(1)">下一页</button><button class="btn mini" onclick="selectAiCreatePage429()">选择本页</button><button class="btn mini primary" ${draft.bulkLoading||draft.materialLoading||draft.materialError?'disabled':''} onclick="selectAllAiCreateFiltered429()">${draft.bulkLoading?'正在解析…':'全选当前筛选结果'}</button><button class="btn mini" ${draft.bulkLoading||!draft.images.size?'disabled':''} onclick="clearAiCreateSelection429()">清空选择</button>`}
     const bulk=document.getElementById('ai429BulkFeedback');if(bulk)bulk.textContent=draft.bulkLoading?`正在核验筛选结果 ${draft.bulkCount||0} 张，原有选择不变…`:draft.bulkError||'';
+    aiCreateRenderPreviewSamples429();
   }
-  window.toggleAiCreateMaterial429=function(id){const draft=aiCreateCurrent429();if(!draft)return;draft.images.has(id)?draft.images.delete(id):draft.images.add(id);draft.selectionTouched=true;aiCreateRenderMaterials429()};
-  window.selectAiCreatePage429=function(){const draft=aiCreateCurrent429();if(!draft)return;(draft.materialItems||[]).forEach(row=>draft.images.add(String(row.id)));draft.selectionTouched=true;aiCreateRenderMaterials429()};
-  window.clearAiCreateSelection429=function(){const draft=aiCreateCurrent429();if(!draft||draft.bulkLoading)return;draft.images.clear();draft.selectionTouched=true;draft.bulkError='';aiCreateRenderMaterials429()};
+  window.toggleAiCreateMaterial429=function(id){const draft=aiCreateCurrent429();if(!draft)return;draft.images.has(id)?draft.images.delete(id):draft.images.add(id);draft.selectionTouched=true;aiCreatePreviewInvalidate429();aiCreateRenderMaterials429()};
+  window.selectAiCreatePage429=function(){const draft=aiCreateCurrent429();if(!draft)return;(draft.materialItems||[]).forEach(row=>draft.images.add(String(row.id)));draft.selectionTouched=true;aiCreatePreviewInvalidate429();aiCreateRenderMaterials429()};
+  window.clearAiCreateSelection429=function(){const draft=aiCreateCurrent429();if(!draft||draft.bulkLoading)return;draft.images.clear();draft.selectionTouched=true;draft.bulkError='';aiCreatePreviewInvalidate429();aiCreateRenderMaterials429()};
   window.selectAllAiCreateFiltered429=async function(){
     const draft=aiCreateCurrent429();if(!draft||draft.bulkLoading||draft.materialLoading||draft.materialError)return;
     const epoch=draft.epoch,project=String(pid()),query=String(draft.query||''),sequence=++draft.bulkEpoch;
@@ -4541,7 +4590,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
       if(!current())return;
       if(ids.size!==total)throw new Error(`筛选结果已变化：预期 ${total} 张，实际 ${ids.size} 张，请重试`);
       for(const id of ids)draft.images.add(id);
-      draft.selectionTouched=true;
+      draft.selectionTouched=true;aiCreatePreviewInvalidate429();
     }catch(error){if(current())draft.bulkError=String(error.message||error||'跨页选择失败，请重试')}
     finally{if(current()){draft.bulkLoading=false;aiCreateRenderMaterials429()}}
   };
@@ -4564,6 +4613,8 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     const advanced=document.querySelector(`.ai-create-workbench[data-ai-create-epoch="${epoch}"] .ai-create-advanced`);
     if(advanced){advanced.insertAdjacentHTML('beforeend','<section class="ai429-ref"><header><div><b>参考图片（可选）</b><span>仅作为视觉示例，不会自动添加或改变本次标签。</span></div><input id="ai429RefQ" class="input" placeholder="搜索已标注参考素材" oninput="searchAiCreateReferences429()"></header><div id="ai429ReferenceCount" class="muted-line">已选 0 张 · 仅作视觉示例，不改变任务标签</div><div id="ai429RefGrid" class="ai-create-material-grid"><div class="empty compact">展开高级设置后按需读取</div></div><div id="ai429RefPager" class="ai-create-pager"></div></section>');advanced.addEventListener('toggle',()=>window.aiCreateReferenceOpened429?.(advanced),{passive:true})}
     document.getElementById('ai429MaterialPager')?.insertAdjacentHTML('afterend','<div id="ai429BulkFeedback" class="ai-create-bulk-feedback" role="status" aria-live="polite"></div>');
+    document.querySelector('.ai-create-workbench .ai-create-preview')?.insertAdjacentHTML('afterend',`<section class="ai-create-section ai-create-inference"><header><div><b>5. 试跑一张素材（可选）</b><span>调用所选模型真实检测，结果仅在此展示，不生成任务、候选记录或正式标注。远程模型可能产生调用费用。</span></div></header><div class="row ai-create-inference-toolbar"><select id="ai429PreviewImage" class="select" aria-label="选择试跑素材" onchange="aiCreatePreviewSampleChanged429(this.value)"><option value="">请先选择素材</option></select><button type="button" id="ai429InferenceStart" class="btn" onclick="runAiCreatePreview429()" disabled>对这张素材试跑</button></div><div id="ai429InferenceResult" role="status" aria-live="polite"><span class="muted-line">选好素材、模型和标签后，可先试跑一张图检查效果。</span></div></section>`);
+    document.getElementById('ai429Threshold')?.addEventListener('input',aiCreatePreviewInvalidate429);
     aiCreateRenderMaterials429();loadAiCreateMaterials429();return epoch;
   };
 

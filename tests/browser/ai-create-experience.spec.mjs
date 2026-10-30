@@ -197,6 +197,44 @@ test('AI create resolves all filtered pages atomically, preserves earlier choice
   }
 });
 
+test('AI creation preview calls the real single-image endpoint without creating a task', async ({page}, testInfo) => {
+  await installDelayedCreationApis(page, {materialDelayMs: 20});
+  const payloads=[];
+  let previewCount=0,created=0;
+  await page.route('**/api/v60/projects/*/annotation-preview', async route => {
+    payloads.push(route.request().postDataJSON());
+    previewCount++;
+    return route.fulfill({status:previewCount===2?503:200,contentType:'application/json',body:JSON.stringify(previewCount===2?
+      {detail:'暂时无法联系模型'}:{preview_only:true,image:{id:'ai-image-1',filename:'scene-1.jpg',url:PIXEL,width:640,height:480},
+        boxes:[{label:'fire',confidence:0.93,x1:80,y1:60,x2:200,y2:220}],latency_ms:145,model:'vision-v1',provider:'local_openai'})});
+  });
+  await page.route('**/api/v60/projects/*/annotation-tasks', route=>{created++;return route.abort()});
+  await ready(page);
+  await page.evaluate(()=>window.createAiLabel429());
+  await expect(page.locator('#ai429MaterialGrid button')).toHaveCount(6);
+  await page.locator('#ai429MaterialGrid button').first().click();
+  await page.getByRole('button',{name:/明火/}).click();
+  await expect(page.locator('#ai429PreviewImage')).toHaveValue('ai-image-1');
+  await page.locator('#ai429InferenceStart').click();
+  await expect(page.locator('#ai429InferenceResult')).toContainText('1 个候选框');
+  await expect(page.locator('#ai429InferenceResult .data412-box')).toHaveCount(1);
+  expect(payloads[0].image_ids).toEqual(['ai-image-1']);
+  expect(payloads[0].labels_text).toBe('fire');
+  expect(created).toBe(0);
+  await page.locator('#ai429Prompt').fill('本轮提示词 {{labels_json}} {{output_schema}}');
+  await expect(page.locator('#ai429InferenceResult')).toContainText('配置或素材已变化');
+  await page.locator('#ai429InferenceStart').click();
+  await expect(page.locator('#ai429InferenceResult')).toContainText('暂时无法联系模型');
+  await page.locator('#ai429InferenceResult').getByRole('button',{name:'重试'}).click();
+  await expect(page.locator('#ai429InferenceResult')).toContainText('1 个候选框');
+  expect(payloads[2].prompt_override).toContain('本轮提示词');
+  expect(created).toBe(0);
+  for(const viewport of [{width:1920,height:1080},{width:1440,height:900},{width:1366,height:768}]){
+    await page.setViewportSize(viewport);
+    await page.screenshot({path:testInfo.outputPath(`ai-one-image-preview-${viewport.width}x${viewport.height}.png`),fullPage:false});
+  }
+});
+
 test('AI candidate editor stays inside the review workspace without opening a nested dialog', async ({page}, testInfo) => {
   await ready(page);
   await page.route('**/api/v60/projects/*/annotation-tasks/ai-ux-fixture/candidates**', route=>route.fulfill({

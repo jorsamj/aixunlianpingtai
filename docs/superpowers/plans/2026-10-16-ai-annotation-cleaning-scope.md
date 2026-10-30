@@ -1,5 +1,33 @@
 # AI 预标注、清洗范围与提示词创建体验实施计划
 
+> **2026-10-30 / 42.24.434 真实单图试跑接续**：前一批 `80502b0d`（42.24.433）已对准确提交完成 22/22 GitHub Actions、真实 Chrome 307/307；本批新增单图模型试跑及创建界面原位框预览，CI/真实模型仍须按本批最终 SHA 验收。不部署生产。
+
+## 2026-10-30｜P0 AI 标注真实试跑预览续批（42.24.434）
+
+### 补齐的断点
+
+- 上批创建页「预览最终提示词」仅渲染文字，不能验证模型对真实业务图片的视觉输出；原 `/api/v35/model-configs/{id}/test-annotation` 是固定白底 128×128 连接验证，不适合冒充真实素材预览。
+- 新增与原 v60 任务入口同路由组的 `POST /api/v60/projects/{project_id}/annotation-preview`，明确要求恰好一张真实素材，复用 `_annotation_create_payload` 的项目/素材/标签/模型冻结校验、`annotation_runtime.prepare_request(runtime=True)` 的密钥引用与提示词、`annotation_task_service.load_task_images` 的原存储源及 `annotate_one` 的真实 provider/解析/阈值/NMS。图片已知体积及本地物化后都限制 16 MiB。无 TaskRecord、CandidateStore、review decision、正式 GT 的写入代码。
+- 创建页沿用现有 `ai429Create` 草稿和唯一 `draft.images`，在提示词区之后增一个「试跑一张素材（可选）」区域；当前页已选素材可挑样，异步请求可取消、30 秒有界、失败原位重试，结果在原界面按图片尺寸叠加候选框并显示模型耗时。修改标签、提示词、模型、阈值或选择集合时主动废弃原结果；关闭/切换创建代次后不回写旧结果。
+- 远程模型可能产生实际调用费用，因此仅明确点击试跑才触发；没有预取、后台循环、批量自动推理，也不将「零候选框」解释成人工正式负样本。
+
+### 实际修改及回归入口
+
+| 路径 | 作用 |
+| --- | --- |
+| `app.py` | 单张视觉试跑只读业务输出 API、单张/16 MiB 防护与外部错误脱敏 |
+| `static/app.js`、`static/styles.css`、`static/index.html` | 原创建工作台试跑区域、候选框画布、当前选择/参数修改栅栏、静态资源缓存键 |
+| `tests/api/test_annotation_preview.py` | 有界单图、未知 ID、图片过大、错误不泄露、没有 Durable Task/候选持久化副作用 |
+| `tests/browser/ai-create-experience.spec.mjs` | 模型真实 API 请求合同 mock、图像框预览、参数变更失效、503 原位重试、未创建任务、三个桌面视口截图 |
+
+本地已执行 `node --check static/app.js`、`python -m py_compile app.py tests/api/test_annotation_preview.py` 与 `git diff --check`；本机无 `pytest` / `@playwright/test` / Chrome 依赖，新增 Python、浏览器测试需最终 SHA 的 CI 补验。**真实 GLM/Qwen/OSS 冷加载、模型费用、推理 P50/P95、网络等待都未现场实测**；不能声称生产已有 2 秒 SLA。
+
+### 尚未完成
+
+- 创建与审核仍是单层宽屏弹窗，不是独立导航页面；缺完整最终确认配置页。
+- 任务列表搜索仍只对当前 cursor 页，状态/候选/审核/正式入库的全局组合筛选与聚合统计未完成；不能用逐任务遍历同步补齐。
+- 多图连贯试跑、真实远程供应商时延与 OSS 暂存成本尚未取证；需要有授权测试环境后单独测量。当前本批仅一个显式单图试跑，不把模型连接测试或夹具视为模型准确率验收。
+
 > 2026-10-30 P0 AI 标注体验续批：基线 `5dcd7186`／`42.24.432`，本批开发版本 `42.24.433`。以下「续批证据」仅陈述本批实改和验证边界；不会把已有的模型/审核/GT 功能重复计为新建，也不把隔离浏览器夹具称为生产实测。
 
 > 本计划以用户 2026-10-16 的专项修复指令为已确认设计；只在现有 v60 AI 标注、v47 CLEAN MaterialBatch 与 MaterialSelectionSpec Owner 内增量实现。

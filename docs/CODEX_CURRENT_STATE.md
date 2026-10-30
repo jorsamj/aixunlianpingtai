@@ -1,3 +1,5 @@
+> **2026-10-30 / 42.24.434 AI 自动标注真实单图试跑**：433 的代码提交 `80502b0d` 精确 22/22 GitHub Actions、真实 Chrome 307/307 已验。本批在原 v60 AI annotation API/Worker 适配器上增量增加单素材显式真实试跑，输出不会创建 Task/Candidate 或覆盖 GT；创建区同层选图、错误重试与结果变更失效。详细测试与遗留见 [唯一 AI 计划](superpowers/plans/2026-10-16-ai-annotation-cleaning-scope.md)；本批最终 SHA CI、真实远程模型和 OSS 性能未验，未部署。
+
 > **2026-10-30 / 42.24.429**：428 基线 `b13d8705` 已核准确 38/38 GitHub Actions 全绿；413/415/416/425/427 的 P0 Owner 已存在。此次原 TrainingSubmit 迟到成功/核验结果不再提示到替换的训练弹窗，原持久任务/GT/幂等不动；生产 A800 磁盘、请求 P50/P95、角色精确冷索引、ZIP 恢复、多类别 Worker 与副本清理均未现场验证。见 [唯一 P0 进度](performance/2026-10-29-p0-followup.md)，429 自身 SHA CI 待推送核验，未部署。
 
 > **2026-10-29 / 42.24.418 素材选择器 CI 合同测试纠正**：`a694ee4d`／417 在 Training Material Picker/contracts 再次因路由 introspection `StopIteration` 失败（81/82 后端通过，Chrome Job 通过），因此 417 不是通过版本。418 移除该失败用例对 `.routes` 内部结构的依赖，调用已有同路由公共 HTTP 合同并断言迭代空选材的真实统计、免角色扫描；本地 HTTP Portal 存在超时等待故未宣称该用例本地通过，准确新 SHA CI 待验，生产和运行时代码未动。详见 `performance/2026-10-29-p0-followup.md`。

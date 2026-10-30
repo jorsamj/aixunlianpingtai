@@ -23777,6 +23777,63 @@ def create_annotation_task(project_id: str, payload: AnnotationTaskCreateReq):
     return JSONResponse(status_code=202, content=public_annotation_task(record))
 
 
+@app.post("/api/v60/projects/{project_id}/annotation-preview")
+def preview_annotation_image(project_id: str, payload: AnnotationTaskCreateReq):
+    """Explicit one-image model dry run; never create a task, candidate or GT.
+
+    Reuse the same frozen model, prompt, label contract and inference adapter as
+    AI_ANNOTATION. A preview is deliberately bounded and opt-in because the
+    configured provider may be remote and may charge for each inference.
+    """
+    if len(payload.image_ids) != 1 or not str(payload.image_ids[0]).strip():
+        raise HTTPException(status_code=422, detail="试跑预览每次只能选择一张真实素材")
+    get_project(project_id)
+    image_id = str(payload.image_ids[0]).strip()
+    rows = material_store(project_id).get_many([image_id])
+    if len(rows) != 1 or str(rows[0].get("id") or "") != image_id:
+        raise HTTPException(status_code=409, detail="试跑素材已变化或不存在，请重新选择")
+    # Reject known oversized sources before OSS materialization. Check local
+    # size again below because metadata is not a trust boundary.
+    max_bytes = 16 * 1024 * 1024
+    if int(rows[0].get("size_bytes") or 0) > max_bytes:
+        raise HTTPException(status_code=413, detail="试跑图片超过 16 MiB，请换一张素材")
+    request, _provider_key = _annotation_create_payload(project_id, payload)
+    from platform_core.annotation_runtime import prepare_request
+    from platform_core.annotation_task_service import annotate_one, load_task_images
+
+    try:
+        runtime = prepare_request(DATA_DIR, project_id, request, runtime=True)
+        image = load_task_images(project_id, [image_id])[0]
+        path = Path(str(image.get("path") or ""))
+        if path.stat().st_size > max_bytes:
+            raise HTTPException(status_code=413, detail="试跑图片超过 16 MiB，请换一张素材")
+        result = annotate_one(runtime, image)
+    except HTTPException:
+        raise
+    except (FileNotFoundError, OSError) as error:
+        raise HTTPException(status_code=409, detail="试跑素材暂不可读取，请核查存储源后重试") from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)[:300]) from error
+    except Exception as error:
+        # Provider errors can contain upstream headers; do not echo credentials
+        # or third-party response bodies into a browser error message.
+        raise HTTPException(status_code=502, detail="AI 模型试跑失败，请检查模型配置与连接状态后重试") from error
+    return {
+        "image": {
+            "id": image_id,
+            "filename": str(image.get("filename") or image_id),
+            "url": str(image.get("url") or ""),
+            "width": int(image.get("width") or 0),
+            "height": int(image.get("height") or 0),
+        },
+        "boxes": result["boxes"],
+        "latency_ms": result["latency_ms"],
+        "model": result["model"],
+        "provider": result["provider"],
+        "preview_only": True,
+    }
+
+
 @app.get("/api/v60/projects/{project_id}/annotation-tasks")
 def list_annotation_tasks(project_id: str, limit: int = 50, cursor: Optional[str] = None):
     get_project(project_id)
