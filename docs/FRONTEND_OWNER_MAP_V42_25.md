@@ -1,3 +1,5 @@
+> **2026-10-30 / 42.24.429**：保留唯一 TrainingSubmit/Draft/Hydration/Picker Owner；修复旧 POST 成功或恢复回执对已替换表单的通知泄漏，真实任务仍通过原 TaskRuntime/幂等核验。版本缓存键随唯一模块增量更新，无并行 renderer/状态；基线 428 CI 38/38 绿，生产未验证。详见 [P0 唯一台账](performance/2026-10-29-p0-followup.md)。
+
 > **2026-10-29 / 42.24.416**：训练素材 Picker、Draft、Summary 前端 Owner 与 API 形状均不变；后端旧 `task_contract` 只读角色预览跳过模型完整 SHA，正式冻结依然 SHA256。新增原诊断阶段；冷使用/角色索引待现场计时，不增平行状态。参见 `docs/performance/2026-10-29-p0-followup.md`，CI/生产待验。
 
 > **2026-10-29 / 42.24.415**：414 将原 API 空摘要总池数改成 `null` 破坏既有合同，已按 CI 恢复真实计数。前端继续由原 SummaryRuntime 在零选材时免发 HTTP，故 UI 仍不被整池查询阻塞。无新增 Owner，新 CI/生产待核，不部署，见 `docs/performance/2026-10-29-p0-followup.md`。

@@ -483,7 +483,7 @@ export function installTrainingSubmitRuntime({
     catch(error) { console.error('training modal close failed',error); }
   }
 
-  function refreshCreatedLists(pid) {
+  function refreshCreatedLists(pid, taskId = '') {
     Promise.resolve().then(() => {
       if (destroyed || String(projectId?.() || '') !== String(pid)) return;
       return reloadRelated?.();
@@ -491,7 +491,12 @@ export function installTrainingSubmitRuntime({
       if (!destroyed && String(projectId?.() || '') === String(pid)) renderAlgorithms?.();
     }).catch(refreshError => {
       console.warn?.('training task created but list refresh failed', refreshError);
-      if (!destroyed && String(projectId?.() || '') === String(pid)) notifyUser('训练任务已创建；列表刷新失败，请稍后手动刷新查看');
+      const activeForm = document.querySelector?.('.train429-create');
+      if (!destroyed && String(projectId?.() || '') === String(pid)
+          && (!activeForm || (ownsSubmissionModal()
+            && String(document.getElementById?.('tr429TaskId')?.value || '') === String(taskId)))) {
+        notifyUser('训练任务已创建；列表刷新失败，请稍后手动刷新查看');
+      }
     });
   }
   const SUBMIT_STAGE_TEXT = Object.freeze({
@@ -693,7 +698,6 @@ export function installTrainingSubmitRuntime({
     if(submitting || !pendingOutcome()?.taskId || !ownsSubmissionModal())return null;
     const pending=pendingOutcome();
     const taskId=pending.taskId,pid=pending.projectId,aid=pending.algorithmId;
-    const sameTaskForm=String(document.getElementById?.('tr429TaskId')?.value||'')===taskId;
     submitting=true;
     try{
       setSubmitStage('verifying');
@@ -703,17 +707,22 @@ export function installTrainingSubmitRuntime({
         return response.json();
       },{label:'训练任务核验'});
       const task=validateTrainingCreatedResponse({ok:true,task:body?.task||body},taskId,{projectId:pid,algorithmId:aid,persistedLookup:true});
+      const sameTaskForm=ownsSubmissionModal()&&String(document.getElementById?.('tr429TaskId')?.value||'')===taskId;
       createdTaskIds.add(taskId);clearPending(pid);lastStage=sameTaskForm?'created':'idle';
       if(String(projectId?.()||'')===String(pid))trainingTaskRuntime?.acceptCreatedTask?.(task,{recoveredAfterNetworkError:true});
       if(sameTaskForm)closeCreatedModal();
-      refreshCreatedLists(pid);notifyUser(`已确认训练任务创建 · ${taskId} · 当前状态 ${task.status}`);
+      refreshCreatedLists(pid,taskId);
+      if(sameTaskForm)notifyUser(`已确认训练任务创建 · ${taskId} · 当前状态 ${task.status}`);
       return task;
     }catch(error){
       console.warn('training task status query failed',error);
       if(createdTaskIds.has(taskId)){
-        lastStage=sameTaskForm?'created':'idle';if(sameTaskForm)closeCreatedModal();refreshCreatedLists(pid);
+        const sameTaskForm=ownsSubmissionModal()&&String(document.getElementById?.('tr429TaskId')?.value||'')===taskId;
+        lastStage=sameTaskForm?'created':'idle';if(sameTaskForm)closeCreatedModal();refreshCreatedLists(pid,taskId);
         return {task_id:taskId};
       }
+      const sameTaskForm=ownsSubmissionModal()&&String(document.getElementById?.('tr429TaskId')?.value||'')===taskId;
+      if(!sameTaskForm){lastStage='idle';lastError='';return null;}
       lastStage='failed';lastError=String(error?.message||error);
       lastPresentation=trainingSubmitPresentation('failed',{error:lastError,failedAt:'posting',outcomeUncertain:true,taskId});
       if(ownsSubmissionModal())notifyUser(lastError);
@@ -951,6 +960,7 @@ export function installTrainingSubmitRuntime({
       return await response.json();
       }, {label: '训练创建', mutation:true});
       const createdTask = validateTrainingCreatedResponse(body, payload.task_id, {projectId: pid, algorithmId: asset.id});
+      const notifyOriginalForm = admissionIsCurrent();
       createdTaskIds.add(createdTask.task_id);
       clearPending(pid);
       if(admissionIsCurrent())setSubmitStage('created');
@@ -978,16 +988,19 @@ export function installTrainingSubmitRuntime({
       if (selection && Number(selection.pending_annotation_count || 0) > 0) {
         createdMessage += ` · 待标注 ${Math.max(0, Number(selection.pending_annotation_count))} 张已保留`;
       }
-      closeCreatedModal();
-      notifyUser(createdMessage);
-      refreshCreatedLists(pid);
+      if (notifyOriginalForm) {
+        closeCreatedModal();
+        notifyUser(createdMessage);
+      }
+      refreshCreatedLists(pid,createdTask.task_id);
       return body;
     } catch (error) {
       if(submittedTaskId&&createdTaskIds.has(submittedTaskId)){
         console.error('training created; completion callback failed',error);
-        lastStage='created';
-        closeCreatedModal();
-        refreshCreatedLists(submittedProjectId);
+        const sameTaskForm=admissionIsCurrent();
+        lastStage=sameTaskForm?'created':'idle';
+        if(sameTaskForm)closeCreatedModal();
+        refreshCreatedLists(submittedProjectId,submittedTaskId);
         return {ok:true,task_id:submittedTaskId};
       }
       if(error?.name==='AbortError'&&lastStage!=='posting')return null;
@@ -1015,21 +1028,25 @@ export function installTrainingSubmitRuntime({
               {ok: true, task: taskBody?.task || taskBody}, submittedTaskId,
               {projectId: pid, algorithmId: submittedAlgorithmId,persistedLookup:true},
             );
+            const notifyOriginalForm=admissionIsCurrent();
             createdTaskIds.add(createdTask.task_id);clearPending(pid);
             if(admissionIsCurrent())setSubmitStage('created');
             else{lastStage='idle';lastError='';lastPresentation=null;}
             if (!destroyed && String(projectId?.() || '') === String(pid)) {
               trainingTaskRuntime?.acceptCreatedTask?.(createdTask, {recoveredAfterNetworkError: true});
             }
-            closeCreatedModal();
-            notifyUser(`已确认训练任务创建 · ${createdTask.task_id} · 当前状态 ${createdTask.status}`);
-            refreshCreatedLists(pid);
+            if (notifyOriginalForm) {
+              closeCreatedModal();
+              notifyUser(`已确认训练任务创建 · ${createdTask.task_id} · 当前状态 ${createdTask.status}`);
+            }
+            refreshCreatedLists(pid,createdTask.task_id);
             return {ok: true, task: createdTask, recovered: true};
           }
         } catch (verificationError) {
           if(createdTaskIds.has(submittedTaskId)){
             console.error('training verified; completion callback failed',verificationError);
-            closeCreatedModal();refreshCreatedLists(submittedProjectId);return {ok:true,task_id:submittedTaskId};
+            if(admissionIsCurrent())closeCreatedModal();
+            refreshCreatedLists(submittedProjectId,submittedTaskId);return {ok:true,task_id:submittedTaskId};
           }
           console.warn('training creation verification failed', verificationError);
           outcomeUncertain = true;

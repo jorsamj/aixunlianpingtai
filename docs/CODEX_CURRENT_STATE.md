@@ -1,3 +1,5 @@
+> **2026-10-30 / 42.24.429**：428 基线 `b13d8705` 已核准确 38/38 GitHub Actions 全绿；413/415/416/425/427 的 P0 Owner 已存在。此次原 TrainingSubmit 迟到成功/核验结果不再提示到替换的训练弹窗，原持久任务/GT/幂等不动；生产 A800 磁盘、请求 P50/P95、角色精确冷索引、ZIP 恢复、多类别 Worker 与副本清理均未现场验证。见 [唯一 P0 进度](performance/2026-10-29-p0-followup.md)，429 自身 SHA CI 待推送核验，未部署。
+
 > **2026-10-29 / 42.24.418 素材选择器 CI 合同测试纠正**：`a694ee4d`／417 在 Training Material Picker/contracts 再次因路由 introspection `StopIteration` 失败（81/82 后端通过，Chrome Job 通过），因此 417 不是通过版本。418 移除该失败用例对 `.routes` 内部结构的依赖，调用已有同路由公共 HTTP 合同并断言迭代空选材的真实统计、免角色扫描；本地 HTTP Portal 存在超时等待故未宣称该用例本地通过，准确新 SHA CI 待验，生产和运行时代码未动。详见 `performance/2026-10-29-p0-followup.md`。
 
 > **2026-10-29 / 42.24.417 素材选择器 CI 单测纠正**：`52c3ecf7`／42.24.416 经 GitHub 完整只读检查为 **29/30 Actions 通过**；唯一红项 Training Material Picker/contracts 中 1/82 后端用例因 `TestClient.app.routes` 路由枚举 `StopIteration`，real Chrome 已通过。417 定向让测试从原始 FastAPI app `.routes` 找真实 endpoint，不变更运行时代码、GT/训练提交合同或数据库。新 SHA CI/生产待验，详见 `performance/2026-10-29-p0-followup.md`。

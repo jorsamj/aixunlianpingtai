@@ -1110,6 +1110,22 @@ test('late creation response never closes a replacement training form', async ()
   resolveResponse({ok:true,json:async()=>durableTask()});
   assert.ok(await pending);
   assert.equal(closed,0);
+  assert.equal(fixture.notices.some(message=>message.includes('训练任务已进入后台队列')),false,
+    'the old creation result must not toast over a replacement form');
+  cleanup(fixture.runtime);
+});
+
+test('late related-list failure does not toast into a different task form', async () => {
+  let rejectRefresh;
+  const fixture=createCloseTimingFixture({reloadRelated:()=>new Promise((_resolve,reject)=>{rejectRefresh=reject;})});
+  assert.ok(await fixture.runtime.submit());
+  await new Promise(resolve=>setImmediate(resolve));
+  fixture.controls.tr429TaskId.value='train_bbbbbbbbbbbbbbbbbbbb';
+  const prior=document.querySelector;
+  document.querySelector=selector=>selector==='.train429-create'?{dataset:{}}:prior(selector);
+  rejectRefresh(new Error('related list failed'));
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(fixture.notices.some(message=>message.includes('列表刷新失败')),false);
   cleanup(fixture.runtime);
 });
 

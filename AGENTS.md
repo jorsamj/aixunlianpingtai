@@ -1,3 +1,7 @@
+## 2026-10-30｜42.24.429 P0 旧训练弹窗通知归属与 428 复核
+
+基线 `b13d8705`／42.24.428，准确 SHA GitHub Actions 38/38 completed/success。413/415/416/425/427 的训练资源快照、空摘要、迭代角色免 SHA、默认当前页/原全池入口退役与 Chrome 断言已有代码，不重复建设。新 RED 证明旧训练创建 POST 成功返回后仍可向替换表单发送旧通知；仅在原 Submit Owner 增加成功/恢复/关联刷新提示的弹窗归属栅栏，保留任务 ID、UNKNOWN 幂等和 Worker/GT 合同。生产 A800 磁盘、26.5s、精确角色冷索引、ZIP 404、实际 GPU 预算、多类别与工作副本清理现场均 NOT VERIFIED；未部署/删除。唯一进度台账 `docs/performance/2026-10-29-p0-followup.md`，本批准确 SHA CI 待推送后核验。
+
 ## 2026-10-29｜素材选择器 CI 回归继续纠正（42.24.418 / 待 CI）
 
 精确 SHA `a694ee4d` 的 Training Material Picker 仍为 81/82 后端合同通过、1 个路由枚举 `StopIteration`，Chrome 成功。417 从 `TestClient.app.routes` 改为 FastAPI `app.routes` 仍不兼容 CI 的 include-router 封装；418 将该用例完全改为与既有成功测试一致的 `TestClient.post` 公共 HTTP 合同，撤回专用 helper 返回分支。该环境本地 HTTP 调用等待已按 25s 上限停止，不能伪称本地通过；准确新 SHA GitHub CI 待验。只改测试/文档/VERSION，生产/数据/正式 GT/Worker 未动；唯一台账 `docs/performance/2026-10-29-p0-followup.md`。
