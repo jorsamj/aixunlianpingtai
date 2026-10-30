@@ -265,6 +265,85 @@ def test_candidate_result_is_paged_and_all_rejected_remains_false(client, seeded
     assert all(item["accepted"] is False for item in reloaded["items"])
 
 
+def test_annotation_review_operation_receipt_prevents_second_commit(
+    client, seeded_project, isolated_task_runtime,
+):
+    project_id, _image = seeded_project
+    repository, artifacts = isolated_task_runtime
+    task_id = _awaiting(project_id, 3, repository, artifacts)
+    url = f"/api/v60/projects/{project_id}/annotation-tasks/{task_id}/decisions"
+    payload = {
+        "decisions": [], "reject_unmentioned": True, "commit": True,
+        "request_id": "ai-review-stable-001",
+    }
+    first = client.post(url, json=payload)
+    assert first.status_code == 200, first.text
+    assert first.json()["review"]["rejected"] == 3
+    assert first.json()["task"]["accepted"] is False
+
+    lookup = client.get(f"{url}/by-request/{payload['request_id']}")
+    assert lookup.status_code == 200
+    assert lookup.json()["status"] == "completed"
+    assert lookup.json()["result"] == first.json()
+    repeated = client.post(url, json=payload)
+    assert repeated.status_code == 200
+    assert repeated.json()["idempotent"] is True
+    assert repeated.json()["review"]["rejected"] == 3
+    assert artifacts.read_json(task_id, "review/result.json")["applied_images"] == 0
+
+    changed = client.post(url, json={**payload, "accept_unmentioned": True})
+    assert changed.status_code == 409
+
+
+def test_annotation_review_operation_pending_is_not_resubmitted(
+    client, seeded_project, isolated_task_runtime,
+):
+    project_id, _image = seeded_project
+    _repository, artifacts = isolated_task_runtime
+    task_id = _awaiting(project_id, 1, *isolated_task_runtime)
+    payload = app_module.AnnotationDecisionReq(
+        decisions=[], reject_unmentioned=True, request_id="ai-review-pending-001",
+    )
+    path = app_module._annotation_review_operation_path(payload.request_id)
+    artifacts.atomic_write_json(task_id, path, {
+        "request_id": payload.request_id, "project_id": project_id,
+        "identity": app_module._annotation_review_operation_identity(payload),
+        "status": "pending",
+    })
+    url = f"/api/v60/projects/{project_id}/annotation-tasks/{task_id}/decisions"
+    response = client.post(url, json=payload.model_dump())
+    assert response.status_code == 202, response.text
+    assert response.json()["status"] == "pending"
+    assert isolated_task_runtime[0].get(task_id).status == TaskStatus.AWAITING_CONFIRMATION
+    lookup = client.get(f"{url}/by-request/{payload.request_id}")
+    assert lookup.status_code == 202
+    assert lookup.json()["task"]["status"] == "AWAITING_CONFIRMATION"
+
+    # Simulate a process dying after the durable Task transition but before
+    # writing the operation response; GET must recover without replaying edits.
+    result = {"applied_images": 0, "boxes_added": 0, "review": {"accepted": 0, "rejected": 1}}
+    artifacts.atomic_write_json(task_id, "review/result.json", result)
+    isolated_task_runtime[0].complete_review(
+        task_id, TaskStatus.SUCCEEDED, "review/result.json", accepted=False,
+    )
+    recovered = client.get(f"{url}/by-request/{payload.request_id}")
+    assert recovered.status_code == 200, recovered.text
+    assert recovered.json()["status"] == "completed"
+    assert recovered.json()["result"]["task"]["accepted"] is False
+    assert client.post(url, json=payload.model_dump()).json()["idempotent"] is True
+
+
+def test_annotation_review_operation_validates_identity_and_scope(
+    client, seeded_project, isolated_task_runtime,
+):
+    project_id, _image = seeded_project
+    task_id = _awaiting(project_id, 1, *isolated_task_runtime)
+    url = f"/api/v60/projects/{project_id}/annotation-tasks/{task_id}/decisions"
+    assert client.post(url, json={"decisions": [], "request_id": "../invalid"}).status_code == 422
+    assert client.get(f"{url}/by-request/../invalid").status_code != 200
+    assert client.get(f"{url}/by-request/ai-review-unknown-001").status_code == 404
+
+
 def test_reject_all_skips_candidate_label_full_scans(
     client, seeded_project, isolated_task_runtime, monkeypatch,
 ):

@@ -1,3 +1,7 @@
+## 2026-10-30｜42.24.441 AI 审核持久操作回执与网络结果未知保护（准确 SHA CI 待核）
+
+440 `3aa8301a` 的 AI Annotation Recovery 与真实 Chrome 已通过；49 个 Actions **48 成功、1 失败**：通用 Release Regression 的进程暂停状态立即断言第一次失败 1/554，单 Job 重跑仍在同类暂停断言（另一用例）失败，不能声称 CI 全绿。本批只在原 v60 AI 审核 `/decisions` 增可选 `request_id`，ArtifactStore 内原任务作用域操作日志与 `review.lock` 串行；同 ID 同配置只返回原回执、改配置 409，未确认结果返回 202，GET `.../decisions/by-request/{id}` 查询原结果且仅在原 Task 已发生真实持久状态迁移时恢复丢失回执。JS 同一审核任务在本地保存待核操作编号，超时优先查询，未知状态仅允许继续查询不再盲发 POST，明确操作中反馈与重复提交门禁。旧无 ID 客户端行为原样，CandidateStore→审核→GT/Worker 合同不变。新 API 及 Chrome/Node 回归已加入，定向后端 37/37、全前端 Node 1419/1419；441 准确 SHA Chrome、OSS/真实远程模型与大规模 P95 未验。不部署生产、不改正式标注。唯一详细记录在 `docs/superpowers/plans/2026-10-16-ai-annotation-cleaning-scope.md`。
+
 ## 2026-10-30｜42.24.440 AI 标注任务状态先筛后分页（准确 SHA CI 待核）
 
 439 准确 SHA `3442fd23` 的 49/49 Actions 在 Windows 远程训练进程启动时序用例单 Job 重试后全部成功，原 AI 专项 Chrome/后端均通过。本批仅复用原 v60 TaskRepository `statuses` 查询：API 支持精确状态并在 server cursor `LIMIT` 前过滤历史，非法状态 422；原 AI 任务页面选择状态时重置游标，请求按项目/状态/页身份去重、Abort 旧请求且旧结果不回写，保留本页名称搜索和原 Task Poller。状态中文复用公开 `annotationTaskView`，提供当前列表刷新按钮与真实加载反馈；不创建搜索缓存/新表/新 Task Owner。本批**仍不支持跨历史名称/模型全文搜索与审核/入库聚合**，须在原 TaskRepository 设计正式索引后再做。定向 API/Node 通过，完整回归、真实 Chrome 和生产 P95 待 440 精确 SHA 验证；没有部署或修改正式 GT。唯一记录在 `docs/superpowers/plans/2026-10-16-ai-annotation-cleaning-scope.md`。

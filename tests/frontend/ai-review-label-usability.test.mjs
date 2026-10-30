@@ -79,8 +79,8 @@ test('AI review is a dedicated human-review workbench with explicit per-image ac
 
 test('AI review confirmation follows durable commit to terminal and invalidates material truth', () => {
   const source = reviewBlock();
-  const start = source.indexOf('window.completeAiReview60=async mode=>');
-  const end = source.indexOf('window.confirmAiLabel427=', start);
+  const start = source.indexOf('async function finishAiReview60(');
+  const end = source.indexOf('async function aiReviewLookupReceipt60(', start);
   const complete = source.slice(start, end);
   assert.match(complete, /waitForTaskTerminal/);
   assert.match(complete, /ai-review-commit:/);

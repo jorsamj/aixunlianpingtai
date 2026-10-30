@@ -23356,6 +23356,8 @@ class AnnotationDecisionReq(BaseModel):
     accept_unmentioned: bool = False
     commit: bool = True
     label_mapping: Dict[str, str] = Field(default_factory=dict)
+    # Optional durable review submission identity; legacy callers remain valid.
+    request_id: str = ""
 
 
 def _v47_parse_label_text(
@@ -24058,8 +24060,106 @@ def get_annotation_candidates(project_id: str, task_id: str, limit: int = 50, cu
 def decide_annotation_candidates(project_id: str, task_id: str, payload: AnnotationDecisionReq):
     from filelock import FileLock
     _require_annotation_review_task(project_id, task_id)
+    request_id = str(payload.request_id or "").strip()
+    if request_id:
+        _annotation_review_operation_path(request_id)
     with FileLock(str(shared_task_artifacts().artifact_path(task_id, "review.lock")), timeout=30):
-        return _decide_annotation_candidates(project_id, task_id, payload)
+        if not request_id:
+            return _decide_annotation_candidates(project_id, task_id, payload)
+        artifacts = shared_task_artifacts()
+        path = _annotation_review_operation_path(request_id)
+        identity = _annotation_review_operation_identity(payload)
+        previous = artifacts.read_json(task_id, path, default=None)
+        if isinstance(previous, dict):
+            if (previous.get("request_id") != request_id
+                    or previous.get("project_id") != project_id
+                    or previous.get("identity") != identity):
+                raise HTTPException(status_code=409, detail="同一审核操作编号的提交内容不一致")
+            if previous.get("status") == "completed" and isinstance(previous.get("result"), dict):
+                return {**previous["result"], "idempotent": True}
+            # A process may have stopped after mutating candidates but before
+            # acknowledging review. Never blindly execute such a POST again.
+            return JSONResponse(status_code=202, content={
+                "status": "pending", "request_id": request_id,
+                "message": "审核结果尚待核验，请查询原操作编号，勿再次提交",
+            })
+        artifacts.atomic_write_json(task_id, path, {
+            "request_id": request_id, "project_id": project_id,
+            "identity": identity, "status": "pending", "created_at": now_iso(),
+        })
+        result = _decide_annotation_candidates(project_id, task_id, payload)
+        artifacts.atomic_write_json(task_id, path, {
+            "request_id": request_id, "project_id": project_id,
+            "identity": identity, "status": "completed", "created_at": now_iso(),
+            "result": result,
+        })
+        return result
+
+
+def _annotation_review_operation_path(request_id: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{12,80}", request_id):
+        raise HTTPException(status_code=422, detail="审核操作编号格式无效")
+    digest = hashlib.sha256(request_id.encode("utf-8")).hexdigest()
+    return f"review/operations/{digest}.json"
+
+
+def _annotation_review_operation_identity(payload: AnnotationDecisionReq) -> str:
+    canonical = json.dumps(
+        payload.model_dump(mode="json", exclude={"request_id"}),
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _annotation_review_recover_completed(task: TaskRecord, receipt: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Recover a lost reply only from a durable Task transition, never from candidate edits alone."""
+    if task.status is TaskStatus.AWAITING_CONFIRMATION:
+        return None
+    artifacts = shared_task_artifacts()
+    summary = CandidateStore(artifacts, task_id=task.task_id).summary()
+    final = artifacts.read_json(task.task_id, "review/result.json", default=None)
+    if isinstance(final, dict) and task.status in {TaskStatus.SUCCEEDED, TaskStatus.PARTIAL_SUCCESS}:
+        return {"ok": True, "task": public_annotation_task(task, summary=summary), **final}
+    confirmation = artifacts.read_json(task.task_id, "review/confirmation.json", default=None)
+    if isinstance(confirmation, dict) and confirmation.get("accepted") is True:
+        return {
+            "ok": True, "queued_for_commit": True,
+            "task": public_annotation_task(task, summary=summary),
+            "review": summary,
+            "label_summary": CandidateStore(artifacts, task_id=task.task_id).label_summary(),
+        }
+    return None
+
+
+@app.get("/api/v60/projects/{project_id}/annotation-tasks/{task_id}/decisions/by-request/{request_id}")
+def get_annotation_review_operation(project_id: str, task_id: str, request_id: str):
+    from filelock import FileLock, Timeout
+    task = _require_annotation_review_task(project_id, task_id)
+    path = _annotation_review_operation_path(request_id)
+    receipt = shared_task_artifacts().read_json(
+        task_id, path, default=None,
+    )
+    if not isinstance(receipt, dict) or receipt.get("request_id") != request_id or receipt.get("project_id") != project_id:
+        raise HTTPException(status_code=404, detail="尚无该审核操作的持久回执")
+    if receipt.get("status") != "completed":
+        try:
+            with FileLock(str(shared_task_artifacts().artifact_path(task_id, "review.lock")), timeout=5):
+                receipt = shared_task_artifacts().read_json(task_id, path, default=receipt)
+                if receipt.get("status") != "completed":
+                    task = _require_annotation_review_task(project_id, task_id)
+                    recovered = _annotation_review_recover_completed(task, receipt)
+                    if recovered is not None:
+                        receipt = {**receipt, "status": "completed", "result": recovered}
+                        shared_task_artifacts().atomic_write_json(task_id, path, receipt)
+        except Timeout:
+            pass  # The original POST still owns the review lock; expose pending.
+    if receipt.get("status") == "completed" and isinstance(receipt.get("result"), dict):
+        return {"status": "completed", "request_id": request_id, "result": receipt["result"]}
+    return JSONResponse(status_code=202, content={
+        "status": "pending", "request_id": request_id,
+        "task": public_annotation_task(task),
+        "message": "审核结果尚待核验，请不要重复提交；可查看任务当前状态",
+    })
 
 
 def _decide_annotation_candidates(project_id: str, task_id: str, payload: AnnotationDecisionReq):

@@ -1,5 +1,14 @@
 # AI 预标注、清洗范围与提示词创建体验实施计划
 
+## 2026-10-30｜42.24.441 AI 人工审核提交断线防重与可核验回执（精确 SHA CI 待核）
+
+- **上一版本 CI 事实**：440 `3aa8301a` AI Annotation Recovery、Frontend Runtime Stabilization/真实 Chrome 均成功，49 项中 48 成功；通用 Release Regression 的两个 Linux 暂停进程状态立刻判定用例先后在首轮及单 Job 重跑失败，因此该版本 CI 非全绿，本批不把它伪装成无关紧要的绿版，也不在 AI 专项里混改进程控制。
+- **问题与约束**：原 `completeAiReview60` 仅发一次 POST，但若服务端已经修改 Candidate 并唤醒正式 GT Worker、HTTP 回执在代理丢失，浏览器再点会得到 409 且不能分辨「真的没提交」和「已经入库中」；禁止通过简单重试重复提交，也不能将 Candidate 的审核成功冒充正式 GT 已写入。
+- **后端**：原 v60 `AnnotationDecisionReq` 仅增可选 `request_id`，旧无 ID 调用保持原合同。复用每个 Task ArtifactStore 与已有 `review.lock`，在修改任何候选前写入按 ID 哈希命名的 pending 意图，并在成功响应后写 completed 回执、冻结原请求内容 SHA256；同 Task/ID/内容重复 POST 返回原响应 `idempotent=true`，同 ID 改决策/映射则 409。新 `GET .../annotation-tasks/{id}/decisions/by-request/{request_id}` 查询持久结果，使用原锁等待在途 POST，仅在原 Task 已离开 AWAITING_CONFIRMATION 且已有 `review/result.json` 或 `review/confirmation.json` 的权威事实时恢复「已改状态但 ACK 未落盘」的回执；不满足条件返回 pending（202），不盲目重新执行 Candidate/GT 副作用。此 pending 可能需要人工核验，**不得宣称所有进程崩溃场景自动恢复**。
+- **前端**：审核页提交同 Task/Project 稳定操作 ID 写入本地 pending，原按钮禁并发、收到了不确定 HTTP 结果先按 ID GET，未完成/断网只保留「查询审核结果」而不能发第二个 POST；只有收到 completed 原结果才关闭当前审核并开始原 Task Poller 的正式 GT 入库等待。旧弹窗/其他任务的 UI 结果按 review 实例和导航 action 隔离。未重写 CandidateStore、Annotorious、任务/GT/轮询 Owner。
+- **测试**：后端增加提交/重复/配置冲突/非法 ID/缺少回执/pending 防二次执行/持久 Task 状态转移后的恢复回执；原 Playwright 加入真实 Chrome 模拟 POST 503→第一次 GET pending→显式查询 completed，断言只有一次审核 POST；Node Owner、导航栅栏与旧审核测试已同步。隔离 FastAPI 37/37，完整 Node 1419/1419，真实 Chrome 须待准确 SHA CI。不包含生产 OSS 现场、真实视觉模型与真实 10k+ 素材 P95。
+- **剩余 P0**：AI 任务名称/模型跨全部历史的服务端索引查询；候选/人工审核/正式 GT/外部同步各阶段真实计数；独立路由连续审核工作台的产品级视觉与键盘操作；真实外部存储/模型冷启动性能、三视口前后截图人工审阅。不直接部署生产，不删除/修改原素材或 GT。
+
 ## 2026-10-30｜42.24.440 原 AI 任务状态服务端筛选续批（准确 SHA CI 待核）
 
 - 439 `3442fd23` 的 49 个精确 SHA Actions **49/49 全部成功**；唯一初红是与本 AI 创建无关的 Windows `test_training_cancellation_kills_worker_and_never_publishes_success` 进程启动 `started.marker` 时序断言，已对失败 Job 单独重跑通过。AI 创建真实 Chrome 含三视口截图和标注 API 都成功，但这不代表生产视觉满意度与 P95 达标。

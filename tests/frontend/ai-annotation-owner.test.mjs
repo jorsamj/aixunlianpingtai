@@ -197,7 +197,7 @@ test('AI create owns cancellation of obsolete fetches and timers in the existing
 
 
 test('AI review commit temporarily owns polling without racing the task list poller', () => {
-  const start = source.lastIndexOf('window.completeAiReview60=async mode=>');
+  const start = source.lastIndexOf('async function finishAiReview60(');
   const end = source.indexOf('// Retired UI entrypoints remain only as compatibility aliases.', start);
   assert.ok(start > 0 && end > start);
   const block = source.slice(start, end);
@@ -207,6 +207,21 @@ test('AI review commit temporarily owns polling without racing the task list pol
   assert.match(block, /AutoLabelPollRuntime\?\.activate/);
   assert.match(block, /pauseListPoll&&state\.page===ownerPage/);
   assert.doesNotMatch(block, /createTaskPoller/);
+});
+
+test('AI review submission uses durable operation receipts and never blindly repeats an unknown POST', () => {
+  const start = source.lastIndexOf('function aiReviewPendingKey60(');
+  const end = source.indexOf('// Retired UI entrypoints remain only as compatibility aliases.', start);
+  const block = source.slice(start, end);
+  assert.ok(start > 0 && end > start);
+  assert.match(block, /ai-review-operation:/);
+  assert.match(block, /localStorage\.setItem/);
+  assert.match(block, /review\.submitting/);
+  assert.match(block, /body=\{decisions,.*request_id:newAiCreateRequestId429\(\)/);
+  assert.match(block, /decisions\/by-request\/\$\{encodeURIComponent\(pending\.request_id\)\}/);
+  assert.match(block, /receipt\?\.status==='completed'/);
+  assert.match(block, /勿再次提交/);
+  assert.match(source, /id="ai60ReviewReceiptLookup"/);
 });
 
 test('AI task detail polling is modal-scoped and PollRegistry-owned', () => {

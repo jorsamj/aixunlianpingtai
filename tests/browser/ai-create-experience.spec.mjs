@@ -292,6 +292,40 @@ test('AI candidate editor stays inside the review workspace without opening a ne
   }
 });
 
+test('AI review timeout resolves the original operation receipt without a second decision POST', async ({page}) => {
+  await ready(page);
+  let posts=0,lookups=0;
+  const taskId='ai-review-receipt-fixture';
+  await page.route(`**/api/v60/projects/*/annotation-tasks/${taskId}/candidates**`, route=>route.fulfill({
+    status:200,contentType:'application/json',body:JSON.stringify({
+      total:1,items:[{image_id:'one',filename:'one.jpg',url:PIXEL,width:1,height:1,status:'empty',boxes:[]}],label_summary:[],
+    }),
+  }));
+  await page.route(`**/api/v60/projects/*/annotation-tasks/${taskId}/decisions/by-request/*`, route=>{
+    lookups++;
+    return route.fulfill({status:lookups===1?202:200,contentType:'application/json',body:JSON.stringify(lookups===1?
+      {status:'pending',request_id:'ai-review-stable-001'}:{status:'completed',request_id:'ai-review-stable-001',result:{
+        ok:true,task:{id:taskId,status:'SUCCEEDED',accepted:false,total_count:1,completed_count:1},
+        review:{accepted:0,rejected:1},applied_images:0,boxes_added:0,
+      }}),
+    });
+  });
+  await page.route(`**/api/v60/projects/*/annotation-tasks/${taskId}/decisions`, route=>{
+    posts++;
+    const body=route.request().postDataJSON();
+    expect(body.request_id).toMatch(/^[A-Za-z0-9_-]{12,80}$/);
+    return route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({detail:'审核提交回执暂时不可用'})});
+  });
+  await page.evaluate(id=>window.reviewAiLabel427(id),taskId);
+  await page.locator('[data-ai-review-submit]').getByText('全部拒绝').click();
+  await expect(page.locator('#ai60ReviewReceiptLookup')).toBeVisible();
+  expect(posts).toBe(1);
+  await page.locator('#ai60ReviewReceiptLookup').click();
+  await expect(page.locator('.ai66-review')).toHaveCount(0);
+  expect(lookups).toBe(2);
+  expect(posts).toBe(1);
+});
+
 test('AI task list pages server-side, filters status across history and keeps name search local', async ({page}) => {
   const requests=[];
   await page.route('**/api/v60/projects/*/annotation-tasks?**', route=>{

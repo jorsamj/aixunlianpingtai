@@ -8055,7 +8055,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
         </section>
       </details>
       <div id="ai60ReviewGrid" class="review427-grid ai66-review-grid"></div>
-      <div class="row between ai60-review-footer ai66-review-footer"><div id="ai60ReviewPager"></div><div class="row"><button class="btn danger" onclick="completeAiReview60('reject')">全部拒绝</button><button class="btn" onclick="completeAiReview60('partial')">采用已选择</button><button class="btn primary" onclick="completeAiReview60('accept')">全部接受</button><button class="btn" onclick="closeAiReview60()">暂不处理</button></div></div>
+      <div class="row between ai60-review-footer ai66-review-footer"><div id="ai60ReviewPager"></div><div class="row"><span id="ai60ReviewReceiptNote" class="muted-line" hidden>已有审核操作待核验，请勿重复提交。</span><button class="btn primary" id="ai60ReviewReceiptLookup" onclick="completeAiReview60('partial')" hidden>查询审核结果</button><button class="btn danger" data-ai-review-submit onclick="completeAiReview60('reject')">全部拒绝</button><button class="btn" data-ai-review-submit onclick="completeAiReview60('partial')">采用已选择</button><button class="btn primary" data-ai-review-submit onclick="completeAiReview60('accept')">全部接受</button><button class="btn" onclick="closeAiReview60()">暂不处理</button></div></div>
     </div>`,true);
     const root=document.querySelector('.ai60-review'),card=root?.closest('.modal-card'),layer=root?.closest('.v424-modal-layer,.modal');
     card?.classList.add('ai-review-workbench-modal');layer?.classList.add('ai-review-workbench-layer');
@@ -8184,6 +8184,11 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   function renderReviewPage(){
     const review=state.ai60Review;if(!review)return;ensureReviewShell();
     renderReviewMetrics60(review);
+    const needsLookup=!!review.pendingRequest;
+    const receiptNote=document.getElementById('ai60ReviewReceiptNote'),receiptLookup=document.getElementById('ai60ReviewReceiptLookup');
+    if(receiptNote)receiptNote.hidden=!needsLookup;
+    if(receiptLookup)receiptLookup.hidden=!needsLookup;
+    document.querySelectorAll('[data-ai-review-submit]').forEach(button=>{button.hidden=needsLookup});
     renderAiLabelMapping60();
     const rows=reviewVisibleItems60(review),grid=document.getElementById('ai60ReviewGrid');
     const hardSignalNames={low_confidence:'低置信度',small_target:'小目标',dense_targets:'密集目标',no_detection_unverified:'无检测·待核查',gt_disagreement_fp:'与正式标注不一致·疑似误检',gt_disagreement_fn:'与正式标注不一致·疑似漏检'};
@@ -8209,7 +8214,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   window.reviewAiLabel427=async function(id){
     const top=[...document.querySelectorAll('.v424-modal-layer')].at(-1)||document.getElementById('modal');
     if(top?.querySelector?.('.ai60-progress')){const closed=await closeModal();if(closed===false)return false}
-    state.ai60Review={id:String(id),offset:0,limit:24,total:0,items:[],decisions:new Map(),edits:new Map(),seen:new Map(),labelSummary:[],labelMapping:new Map(),filter:'all',pageRequestEpoch:0,closed:false,ownerPage:String(state.page||'自动标注及清洗'),pageLoading:true,pageError:''};
+    state.ai60Review={id:String(id),offset:0,limit:24,total:0,items:[],decisions:new Map(),edits:new Map(),seen:new Map(),labelSummary:[],labelMapping:new Map(),filter:'all',pageRequestEpoch:0,closed:false,ownerPage:String(state.page||'自动标注及清洗'),pageLoading:true,pageError:'',pendingRequest:aiReviewReadPending60(String(id)),submitting:false};
     return loadReviewPage(0);
   };
   window.retryAiReviewPage60=()=>loadReviewPage(state.ai60Review?.offset||0);
@@ -8289,15 +8294,29 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   window.fitAiCandidate60=()=>state.ai60Edit?.editor?.fit();
   window.addAiCandidateBox60=()=>{state.ai60Edit?.editor?.setMode('draw');candidateEditorTools60()};
   window.saveAiCandidateEdit60=()=>{const edit=state.ai60Edit,review=state.ai60Review;if(!edit||edit.closed)return;edit.editor?.flush();if(!candidateBoxesValid60(edit.boxes))return toast('候选框坐标或标签无效，请检查图片边界');const item=review?.seen.get(edit.id);if(!item)return;item.boxes=edit.boxes.map(box=>({...box,source:'ai_candidate_reviewed'}));review.edits.set(edit.id,item.boxes);review.decisions.set(edit.id,true);leaveAiCandidateEditor60();renderReviewPage()};
-  window.completeAiReview60=async mode=>{
-    const review=state.ai60Review;if(!review)return;
-    const ownerPage=String(state.page||''),action=window.NavigationStability?.action?.(state.page);
-    const decisions=mode==='partial'?[...review.decisions].map(([image_id,accepted])=>({image_id,accepted,...(review.edits.has(image_id)?{boxes:review.edits.get(image_id)}:{})})):mode==='accept'?[...review.edits].map(([image_id,boxes])=>({image_id,accepted:true,boxes})):[];
-    const label_mapping=Object.fromEntries([...review.labelMapping].filter(([source,target])=>source&&target&&source!==target));
-    const body={decisions,reject_unmentioned:mode!=='accept',accept_unmentioned:mode==='accept',commit:true,label_mapping};
-    try{
-      const result=await api(`${taskApi(review.id)}/decisions`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-      if(action&&!action.isCurrent())return;
+  function aiReviewPendingKey60(id){return `ai-review-operation:${pid()}:${id}`}
+  function aiReviewReadPending60(id){
+    try{const record=JSON.parse(localStorage.getItem(aiReviewPendingKey60(id))||'null');return /^[A-Za-z0-9_-]{12,80}$/.test(String(record?.request_id||''))?record:null}catch(_){return null}
+  }
+  function aiReviewSavePending60(review,record){
+    review.pendingRequest=record;
+    try{localStorage.setItem(aiReviewPendingKey60(review.id),JSON.stringify(record))}catch(_){/* In-memory identity still prevents a second submission. */}
+    if(state.ai60Review===review)renderReviewPage();
+  }
+  function aiReviewClearPending60(review){
+    review.pendingRequest=null;
+    try{localStorage.removeItem(aiReviewPendingKey60(review.id))}catch(_){}
+    if(state.ai60Review===review)renderReviewPage();
+  }
+  function aiReviewSetSubmitting60(review,busy){
+    review.submitting=busy;
+    if(state.ai60Review!==review)return;
+    document.querySelectorAll('.ai66-review-footer button').forEach(button=>{button.disabled=busy});
+    const footer=document.querySelector('.ai66-review-footer');if(footer)footer.setAttribute('aria-busy',String(busy));
+  }
+  async function finishAiReview60(review,result,mode,ownerPage,action){
+      if(state.ai60Review!==review||review.closed||(action&&!action.isCurrent()))return;
+      aiReviewClearPending60(review);
       applyTaskResult(result);window.closeAiReview60?.();
       if(!result.queued_for_commit){
         toast(mode==='reject'?'本次AI结果已拒绝，正式标注未被修改':`已采用 ${result.applied_images||0} 张，写入 ${result.boxes_added||0} 个框`);
@@ -8326,7 +8345,51 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
       const status=String(terminal?.status||'').toUpperCase();
       if(['SUCCEEDED','PARTIAL_SUCCESS'].includes(status))toast('AI审核结果已写入正式标注');
       else toast(terminal?.error||'AI审核写入未成功，请查看任务详情');
-    }catch(error){if(action&&!action.isCurrent())return;toast(error.message||error)}
+  }
+  async function aiReviewLookupReceipt60(review){
+    const pending=review.pendingRequest||aiReviewReadPending60(review.id);
+    if(!pending)return null;
+    return api(`${taskApi(review.id)}/decisions/by-request/${encodeURIComponent(pending.request_id)}`);
+  }
+  window.completeAiReview60=async mode=>{
+    const review=state.ai60Review;if(!review||review.closed||review.submitting)return;
+    const ownerPage=String(state.page||''),action=window.NavigationStability?.action?.(state.page);
+    aiReviewSetSubmitting60(review,true);
+    try{
+      let pending=review.pendingRequest||aiReviewReadPending60(review.id);
+      if(pending){
+        const receipt=await aiReviewLookupReceipt60(review);
+        if(receipt?.status==='completed'&&receipt.result){
+          await finishAiReview60(review,receipt.result,pending.mode||mode,ownerPage,action);
+        }else if(state.ai60Review===review&&!review.closed){
+          toast('原审核操作尚未确认结果。请稍后再次查询或查看任务状态，勿重复提交');
+        }
+        return;
+      }
+      const decisions=mode==='partial'?[...review.decisions].map(([image_id,accepted])=>({image_id,accepted,...(review.edits.has(image_id)?{boxes:review.edits.get(image_id)}:{})})):mode==='accept'?[...review.edits].map(([image_id,boxes])=>({image_id,accepted:true,boxes})):[];
+      const label_mapping=Object.fromEntries([...review.labelMapping].filter(([source,target])=>source&&target&&source!==target));
+      const body={decisions,reject_unmentioned:mode!=='accept',accept_unmentioned:mode==='accept',commit:true,label_mapping,request_id:newAiCreateRequestId429()};
+      aiReviewSavePending60(review,{request_id:body.request_id,mode,created_at:Date.now()});
+      const result=await api(`${taskApi(review.id)}/decisions`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      if(result?.status==='pending'){
+        if(state.ai60Review===review&&!review.closed)toast('审核操作已受理，正在核对持久回执；请使用查询结果按钮');
+        return;
+      }
+      if(!result?.task)throw new Error('审核请求未返回有效回执，需按原操作编号查询，不要再次提交');
+      await finishAiReview60(review,result,mode,ownerPage,action);
+    }catch(error){
+      if(state.ai60Review!==review||review.closed||(action&&!action.isCurrent()))return;
+      if([400,422].includes(Number(error.httpStatus))){aiReviewClearPending60(review);toast(error.message||error);return}
+      try{
+        const receipt=await aiReviewLookupReceipt60(review);
+        if(receipt?.status==='completed'&&receipt.result){
+          const original=review.pendingRequest;
+          await finishAiReview60(review,receipt.result,original?.mode||mode,ownerPage,action);
+          return;
+        }
+      }catch(_lookupError){/* A missing/failed lookup cannot prove the POST never executed. */}
+      if(state.ai60Review===review&&!review.closed)toast(`${error.message||error}。审核结果尚不确定，请查询原操作编号或查看任务状态，勿再次提交`);
+    }finally{aiReviewSetSubmitting60(review,false)}
   };
   // Retired UI entrypoints remain only as compatibility aliases. They must
   // never recreate the legacy v47 annotation task/confirm flow.

@@ -44,8 +44,12 @@ test('v60 review completion is the final AI commit owner and fences stale UI eff
   assert.match(taskApi, /annotation-tasks/, 'v60 taskApi must keep the durable annotation-task endpoint');
 
   const owner = liveOwner('window.completeAiReview60=async mode=>', 4200);
-  assertFenceBefore(owner, 'applyTaskResult(result)', 'completeAiReview60');
-  assert.ok(owner.indexOf('window.closeAiReview60?.()') > owner.indexOf('action&&!action.isCurrent()'), 'completeAiReview60 must not close a new-page review after navigation');
+  const finisher = app.slice(app.lastIndexOf('async function finishAiReview60('), app.lastIndexOf('async function aiReviewLookupReceipt60('));
+  assert.match(owner, /NavigationStability\?\.action\?\.\(state\.page\)/, 'review submission must capture the navigation action');
+  assert.ok(finisher.indexOf('action&&!action.isCurrent()')>=0, 'shared review receipt handler must fence stale state');
+  assert.ok(finisher.indexOf('applyTaskResult(result)') > finisher.indexOf('action&&!action.isCurrent()'), 'review completion must fence stale task patching');
+  assert.ok(finisher.indexOf('window.closeAiReview60?.()') > finisher.indexOf('action&&!action.isCurrent()'), 'review completion must not close a newer review');
+  assert.match(owner, /finishAiReview60\(review,result,mode,ownerPage,action\)/);
   assert.match(owner, /taskApi\(review\.id\)\}\/decisions/, 'v60 review completion must commit through the durable task decisions endpoint');
   assert.match(owner, /commit:true/, 'v60 review completion must preserve explicit commit semantics');
   assert.match(app, /window\.confirmAiLabel427=id=>completeAiReview60\('partial'\);/, 'legacy confirmAiLabel427 must remain only as a v60 compatibility alias');
