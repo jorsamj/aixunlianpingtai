@@ -2,6 +2,12 @@
 
 > **2026-10-30 / 42.24.434 真实单图试跑接续**：前一批 `80502b0d`（42.24.433）已对准确提交完成 22/22 GitHub Actions、真实 Chrome 307/307；本批新增单图模型试跑及创建界面原位框预览，CI/真实模型仍须按本批最终 SHA 验收。不部署生产。
 
+## 2026-10-30｜42.24.435 单图试跑 CI 候选框修复（准确 SHA 待核验）
+
+- 42.24.434 准确 SHA `312e4b7a` 的 AI Annotation Recovery 后端合同通过；Chrome browser-navigation (1) 105/106，仅新增单图试跑用例失败，真实 Playwright 提示 `candidateOverlay is not defined`。此为前端作用域错误：创建工作台与审核工作台分别处于独立闭包；HTTP 已响应、图片及候选框数据存在，但展示调用了另一作用域的函数。
+- 原位共享唯一的 `candidateOverlay` 绘制函数（暴露为 `window.aiCandidateOverlay60`），创建工作台引用该函数，不新增第二套坐标计算、审核状态或 GT 写入。更新独立 app.js 缓存键及原 marker 测试；新真实 Chrome 用例应覆盖框叠加、修改配置废弃、503 重试、任务未创建三个视口。
+- 上轮 `744ec1c2` 同步修复 Frontend Runtime Stabilization 的旧缓存键测试；本次不跳过或删除任何失败测试。由于本地执行容器临时不可用，本批修复在原 GitHub 分支作有租约的单次提交，并以准确 SHA GitHub Actions 作为可执行验证；**生产真实模型、OSS、P95 与浏览器用户侧 Stalled 未验证，未部署**。
+
 ## 2026-10-30｜P0 AI 标注真实试跑预览续批（42.24.434）
 
 ### 补齐的断点

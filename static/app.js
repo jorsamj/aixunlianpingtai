@@ -4547,7 +4547,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
       }),{timeoutMs:30000,label:'AI标注图片试跑',signal:controller.signal});
       if(!current())return;
       const image=response.image||{},boxes=Array.isArray(response.boxes)?response.boxes:[];
-      root.innerHTML=`<div class="ai-create-inference-summary"><b>${esc(image.filename||imageId)}</b><span>${boxes.length} 个候选框 · 模型耗时 ${Number(response.latency_ms||0)}ms · 仅供预览</span></div><div class="ai-create-inference-canvas"><img src="${esc(image.url||'')}" alt="试跑素材" loading="lazy" decoding="async">${boxes.map(box=>candidateOverlay(box,image)).join('')}</div><div class="ai-create-inference-labels">${boxes.map(box=>`<span>${esc(window.PlatformCore.materials.labelDisplay(box.label,state.labels))} ${Math.round(Number(box.confidence||0)*100)}%</span>`).join('')||'<span>模型未识别出超过当前阈值的目标；不等于人工确认无目标。</span>'}</div>`;
+      root.innerHTML=`<div class="ai-create-inference-summary"><b>${esc(image.filename||imageId)}</b><span>${boxes.length} 个候选框 · 模型耗时 ${Number(response.latency_ms||0)}ms · 仅供预览</span></div><div class="ai-create-inference-canvas"><img src="${esc(image.url||'')}" alt="试跑素材" loading="lazy" decoding="async">${boxes.map(box=>window.aiCandidateOverlay60(box,image)).join('')}</div><div class="ai-create-inference-labels">${boxes.map(box=>`<span>${esc(window.PlatformCore.materials.labelDisplay(box.label,state.labels))} ${Math.round(Number(box.confidence||0)*100)}%</span>`).join('')||'<span>模型未识别出超过当前阈值的目标；不等于人工确认无目标。</span>'}</div>`;
     }catch(error){if(current())root.innerHTML=`<div class="inline-error"><span>${esc(error.message||error)}</span><button class="btn mini" onclick="runAiCreatePreview429()">重试</button></div>`}
     finally{if(current()){draft.previewLoading=false;draft.previewController=null;if(button?.isConnected){button.disabled=false;button.textContent='对这张素材试跑'}}}
   };
@@ -7845,6 +7845,8 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     const rawConfidence=box.confidence,confidence=Number(rawConfidence),suffix=rawConfidence!==null&&rawConfidence!==undefined&&rawConfidence!==''&&Number.isFinite(confidence)?` · ${Math.round(confidence*100)}%`:'';
     return `<i class="data412-box" style="left:${x}%;top:${y}%;width:${w}%;height:${h}%"><em>${esc(window.PlatformCore.materials.labelDisplay(box.label,state.labels)+suffix)}</em></i>`;
   }
+  // Share the existing reviewed candidate-box renderer with the creation preview.
+  window.aiCandidateOverlay60=candidateOverlay;
   function ensureReviewShell(){
     if(document.querySelector('.ai60-review'))return;
     modal('AI标注审核工作台 · 待确认',`<div class="review427 ai60-review ai66-review">
