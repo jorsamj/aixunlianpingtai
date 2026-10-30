@@ -1007,3 +1007,7 @@ Resource Discovery SQLite 仍保持 **CODE-LEVEL CLOSED / production soak OPEN**
 ## 2026-10-29｜P0 素材翻页 Chrome 回归修正（LOCAL VERIFIED / CI OPEN）
 
 VERSION 42.24.404；`Frontend Runtime Stabilization` 浏览器分片旧夹具的 `**/materials**` 同时拦截新 `/materials/status-counts`，把状态聚合误记为列表主请求并提前切换初始图片。已显式分离两个 API 的真实形状，初次列表读取与回访刷新由操作阶段驱动，保留缓存先显示、背景真实更新及列表请求确实发生的业务断言。仅更新浏览器测试/记录，不改生产接口或状态 owner；Node 1396/1396、JS 语法通过，真实 Chrome/远端 CI 待新 SHA 验证。不得借上轮 42.24.403 的转换绿色声称本轮全部 CI 通过；未部署生产。
+
+## 2026-10-31｜42.24.448 审核独立页真实 Chrome 红项与训练标签焦点修复（精确 SHA CI 待核）
+
+447 远端精确提交 `95dabdba` 已通过 GitHub API 检查 **42 个工作流 41 成功、1 失败**；红项为 Frontend Runtime Stabilization 的 2 个 Chrome 分片共 4 个浏览器用例：审核提交回执成功但工作台仍停留、Annotorious 主区画框/改标签失效，以及训练千标签在延迟资源 hydration 下复选框 DOM 身份丢失。448 在原 `static/app.js` 的审核 Owner 中只允许**已确认回执的内部完成路径**在 `submitting` 临界区退出（用户手动退出仍被拦）；独立主区 Annotorious 不再被 DOM 中长期隐藏的 `#modal` 假阻断，真正可见模态层仍禁用底层画框。原训练标签 Runtime 按可见标签/继承语义而非素材 ID 全数组判定重绘，并在配置/标签名称 hydration 时保留素材列表/勾选 DOM。既有 Candidate、决策 Request ID、GT Worker、训练草稿完全复用；无 schema/生产数据变化。新增真实行为和 Source Guard 定向回归，提升权限后的**完整前端 Node 1426/1426 通过**；448 精确 GitHub Chrome/完整 CI 与截图仍待核。不部署生产、不改 SQLite、OSS/外部模型及大规模 P95 未实测、不 merge main/tag/release/force-push。唯一专项见 `docs/superpowers/plans/2026-10-16-ai-annotation-cleaning-scope.md`。

@@ -8310,9 +8310,11 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     if(!id)return;
     event.preventDefault();window.setAiDecision60(id,key==='a');
   });
-  window.closeAiReview60=({fromRoute=false,skipRender=false}={})=>{
+  window.closeAiReview60=({fromRoute=false,skipRender=false,afterCommit=false}={})=>{
     const review=state.ai60Review;
-    if(review?.submitting){toast('当前审核操作正在提交，请等待回执');return false}
+    // The verified receipt completes inside the submitting critical section.
+    // Only that internal completion may leave while the external UI stays locked.
+    if(review?.submitting&&!afterCommit){toast('当前审核操作正在提交，请等待回执');return false}
     if(state.ai60Edit?.dirty&&!window.confirm('候选框有尚未保存的修改，确定离开审核工作台吗？'))return false;
     if(review){review.closed=true;review.pageRequestEpoch=Number(review.pageRequestEpoch||0)+1}
     destroyAiCandidateEditor60();state.ai60Edit=null;
@@ -8366,7 +8368,14 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   function bindAiCandidateEditor60(){
     const edit=state.ai60Edit,root=document.querySelector('.ai66-edit'),image=document.getElementById('ai60EditImg'),viewport=document.getElementById('ai60EditViewport'),world=document.getElementById('ai60EditStage');if(!edit||edit.closed||!root||!image||!viewport||!world||edit.editor||edit.pending)return;
     const review=state.ai60Review,project=String(pid()),page=String(state.page||'');const current=()=>state.ai60Edit===edit&&!edit.closed&&state.ai60Review===review&&String(pid())===project&&String(state.page||'')===page&&root.isConnected;
-    const active=()=>{if(!current())return false;const top=[...document.querySelectorAll('.v424-modal-layer')].at(-1)||document.getElementById('modal');return !top||top.contains(root)};edit.abort=new AbortController();
+    const active=()=>{
+      if(!current())return false;
+      // Review is a main-area page now. An inactive legacy #modal remains in
+      // the DOM but must never disable the Annotorious editor outside it.
+      const visibleModal=[...document.querySelectorAll('.v424-modal-layer,#modal')]
+        .filter(node=>node.isConnected&&!node.hidden&&!node.classList.contains('hidden')&&node.getClientRects().length>0).at(-1);
+      return !visibleModal||visibleModal.contains(root);
+    };edit.abort=new AbortController();
     edit.pending=(async()=>{
       if(!image.complete||!image.naturalWidth)await window.PlatformCore.withRequestDeadline(signal=>new Promise((resolve,reject)=>{image.addEventListener('load',resolve,{once:true,signal});image.addEventListener('error',()=>reject(new Error('候选图片读取失败')),{once:true,signal});signal.addEventListener('abort',()=>reject(new Error('候选编辑已关闭')),{once:true})}),{timeoutMs:30000,label:'候选图片读取',signal:edit.abort.signal});if(!current())return;
       const factory=window.PlatformCore?.createAnnotoriousEditor;if(!factory)throw new Error('标注组件尚未就绪，请刷新后重试');
@@ -8418,7 +8427,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   async function finishAiReview60(review,result,mode,ownerPage,action){
       if(state.ai60Review!==review||review.closed||(action&&!action.isCurrent()))return;
       aiReviewClearPending60(review);
-      applyTaskResult(result);window.closeAiReview60?.();
+      applyTaskResult(result);window.closeAiReview60?.({afterCommit:true});
       if(!result.queued_for_commit){
         toast(mode==='reject'?'本次AI结果已拒绝，正式标注未被修改':`已采用 ${result.applied_images||0} 张，写入 ${result.boxes_added||0} 个框`);
         await refreshAnnotationTasks60().catch(()=>[]);

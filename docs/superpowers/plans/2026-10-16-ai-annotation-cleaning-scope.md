@@ -1,5 +1,12 @@
 # AI 预标注、清洗范围与提示词创建体验实施计划
 
+## 2026-10-31｜42.24.448 独立审核 UI 真浏览器修复与训练标签非破坏性重绘（待准确 SHA CI）
+
+- **447 准确 CI 证据**：长期开发分支 `95dabdba6d39fe83901a09b457b7c0ca320cb3ac`，GitHub 原生 API 对精确 SHA 返回 **42 条 Actions：41 success、1 failure**，不能只看插件返回的前 20 条。失败为 [Frontend Runtime Stabilization](https://github.com/jorsamj/aixunlianpingtai/actions/runs/41110882872)：Chrome 分片 1 的审核回执成功未关主区、AI 候选框拖拽未产生新框、跨页人工修改标签未保持，共 3 项；分片 2 的千标签批量勾选在异步刷新后原 DOM 节点不稳定，共 1 项。其余工作流通过不代表这些浏览器体验已验收。
+- **原 Owner 的根因**：`finishAiReview60` 在 `review.submitting` 为 true 时调用原退出函数，但 447 新保护对任何退出都拒绝；提交结果已被确认却无法切回任务列表。仅内部持久回执成功路径通过 `afterCommit` 明示放行，外部返回/导航继续拒绝在途提交。原 `bindAiCandidateEditor60` 的 `active()` 仍要求 `#modal` 包含编辑器，迁出主区后隐藏 legacy modal 仍存在，导致 Annotorious 所有可编辑操作被禁用。现仅真正可见的 modal 能阻断主区操作；候选草稿仍通过原保存后审核提交路径，绝不直接写正式 GT。新增 Node 具体行为测试与内外两种关闭合同。
+- **训练标签**：原 `TrainingLabelRuntime.refresh()` 的签名包含完整选材 ID，后台摘要/标签名称 hydration 可能造成整个 `#trainingLabelContractPanel` 子树替换，打断刚选中的焦点、用户勾选或检索。签名改为真正影响展示的标签和来源有效性/素材是否为空；准备完成后只协调头部/继承/警告等区域，原标签列表保持同一 DOM 节点，逐个更新标签文字与勾选态；分页/过滤及原草稿唯一选择源不变。既有真实 Chrome 千标签用例继续作为质量门槛，不修改断言绕过失败。
+- **回归与边界**：Node 完整测试 183 个文件在提升子进程权限后 **1426/1426 通过**，同时记录受限沙箱曾发生的 Uppy vendor EPERM 非业务故障；新增定向文件和代码语法再验。`static/index.html` app/main 与 `static/main.mjs` 标签模块缓存键同步、`VERSION.txt=42.24.448`。后端/SQLite/训练 Worker/已存任务/正式 GT 均未修改；无生产 DB v2→v3 迁移、无 OSS/远端模型 P50/P95 或实际生产大库证据。提交后必须查 **完整精确 SHA** 的全部 workflows、三浏览器分片、失败 trace 与三视口截图，不能以本地 Node 推定 Chrome 全绿。
+
 ## 2026-10-30｜42.24.447 URL 审核连续操作与 446 红项修复（准确 SHA CI 待核）
 
 - **精确 446 CI**：提交 `7eb9dd3e` 可查询的 20 个 Actions 中 19 success、1 failure；失败的 `Label Normalization Contract` 只在 Permanent source guards 的硬编码 `annotation-task-view.js?v=422002`（实际 `422445`），其后端及前端标签规范化合同均 PASS。447 只改为存在性断言 `annotation-task-view.js?v=`，保留原模块和版本缓存隔离，新增 Node 防未来旧字符串回归。

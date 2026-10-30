@@ -44,6 +44,22 @@ test('candidate cancellation fences late factory completion and discards draft c
   resolveFactory({destroy:()=>destroyed++});await pending;
   assert.equal(destroyed,1);assert.equal(h.state.ai60Review.edits.size,0);assert.equal(h.item.boxes[0].x1,10);assert.equal(edit.closed,true);
 });
+test('main-area review editor ignores the hidden legacy modal but respects a real overlay',async()=>{
+  let isActive;
+  const root={isConnected:true,querySelectorAll:()=>[],querySelector:()=>null};
+  const image={complete:true,naturalWidth:100,naturalHeight:100,getAttribute:()=> 'i.png',setAttribute:()=>{}};
+  const modal={isConnected:true,hidden:false,classList:{contains:()=>true},getClientRects:()=>[],contains:()=>false};
+  const document={querySelector:()=>root,getElementById:id=>id==='ai60EditImg'?image:id==='ai60EditViewport'||id==='ai60EditStage'?{}:id==='modal'?modal:null,querySelectorAll:()=>[modal]};
+  const h=harness({document,pid:()=> 'p'});
+  h.window.PlatformCore={createAnnotoriousEditor:options=>{isActive=options.isActive;return new Promise(()=>{})}};
+  h.window.editAiCandidate60('i');
+  await Promise.resolve();
+  assert.equal(typeof isActive,'function');
+  assert.equal(isActive(),true,'hidden #modal cannot disable independent review canvas');
+  modal.classList.contains=()=>false;modal.getClientRects=()=>[{}];
+  assert.equal(isActive(),false,'visible overlay prevents editing the page behind it');
+  h.window.destroyAiCandidateEditor60();
+});
 test('candidate draft has one history and undo/redo never write reviewed decisions',()=>{
   const h=harness();h.window.editAiCandidate60('i');h.window.updateAiCandidateBox60(0,'x1','12');h.window.updateAiCandidateBox60(0,'x1','14');
   h.window.undoAiCandidate60();assert.equal(h.state.ai60Edit.boxes[0].x1,12);h.window.undoAiCandidate60();assert.equal(h.state.ai60Edit.boxes[0].x1,10);

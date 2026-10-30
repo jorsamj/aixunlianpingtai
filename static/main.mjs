@@ -13,7 +13,7 @@ import {messageFromApiError, withRequestDeadline, fetchWithUploadProgress} from 
 import {createModalStack, installModalPresentation, loadingSkeleton} from './modules/modal.js?v=20261021';
 import {annotationPreviewFromBoxes, applyAnnotationResult} from './modules/annotation.js?v=422502';
 import {installNegativeSampleRuntime} from './modules/negative-samples.js?v=20261022a';
-import {installTrainingLabelRuntime} from './modules/training-labels.js?v=422573';
+import {installTrainingLabelRuntime} from './modules/training-labels.js?v=422574';
 import {installNavigationStability} from './modules/navigation-stability.js?v=20261024';
 import {persistUiState} from './modules/ui-state.js?v=422500';
 import {installPageRequestScope} from './modules/page-request-scope.js?v=20261024';

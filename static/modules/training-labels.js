@@ -163,7 +163,14 @@ export function installTrainingLabelRuntime({
     const visible=rows.slice((labelPage-1)*pageSize,labelPage*pageSize),selected=new Set(canonicalSelectedCodes(getState?.()));
     const same=list.children.length===visible.length&&visible.every((row,index)=>list.children[index]?.querySelector('input')?.dataset.trainingLabelCode===row.code);
     if(!same){const nodes=visible.map(row=>{const label=document.createElement('label');label.className='training-label-choice';label.innerHTML=`<input type="checkbox" data-training-label-code="${esc(row.code)}"><span><b>${esc(row.name)}</b><small>${esc(row.code)}</small></span>`;return label});if(!nodes.length){const empty=document.createElement('span');empty.className='training-label-empty';empty.textContent=labelRows.length?'没有匹配的标签':'没有可新增的标签';nodes.push(empty)}list.replaceChildren(...nodes)}
-    for(const input of list.querySelectorAll('[data-training-label-code]'))input.checked=selected.has(input.dataset.trainingLabelCode);
+    for(const [index,input] of [...list.querySelectorAll('[data-training-label-code]')].entries()){
+      input.checked=selected.has(input.dataset.trainingLabelCode);
+      // A late catalog-name hydration must update text without replacing the
+      // focused checkbox a user is currently toggling.
+      const title=input.parentElement?.querySelector('b'),code=input.parentElement?.querySelector('small');
+      if(title&&title.textContent!==visible[index]?.name)title.textContent=visible[index].name;
+      if(code&&code.textContent!==visible[index]?.code)code.textContent=visible[index].code;
+    }
     let pager=panel.querySelector('#trainingLabelPager');if(!pager){pager=document.createElement('div');pager.id='trainingLabelPager';pager.className='training-label-pager';pager.innerHTML='<button type="button" class="btn mini" data-label-prev>上一页</button><span></span><button type="button" class="btn mini" data-label-next>下一页</button>';panel.appendChild(pager);pager.querySelector('[data-label-prev]').onclick=()=>{labelPage--;paintPage()};pager.querySelector('[data-label-next]').onclick=()=>{labelPage++;paintPage()}}
     pager.querySelector('span').textContent=`${labelPage} / ${pages} · ${rows.length} 个标签`;pager.querySelector('[data-label-prev]').disabled=labelPage<=1;pager.querySelector('[data-label-next]').disabled=labelPage>=pages;
   };
@@ -316,7 +323,10 @@ export function installTrainingLabelRuntime({
     const view = resolveFor(state, ids, selectedCodes, availableCodes);
     const selectedSet = new Set(view.requested);
     const finalMaterialSelectable = view.selectable.filter(code => !baseCodes.has(code));
-    const signature=JSON.stringify([algorithmId,previewKey,baseLabels,finalMaterialSelectable.map(code=>[code,displayName(state,code)]),view.invalidAvailable,ids]);
+    // The visible rows and inherited labels determine the DOM. Selected image
+    // IDs may hydrate in the background without changing those rows; rebuilding
+    // checkboxes on that transition loses focus and interrupts rapid selection.
+    const signature=JSON.stringify([algorithmId,previewKey,baseLabels,finalMaterialSelectable.map(code=>[code,displayName(state,code)]),view.invalidAvailable,Boolean(ids.length)]);
     if(panelSignature===signature){updateCount(state);paintPage();return true}
     panelSignature=signature;
     labelRows=finalMaterialSelectable.map(code=>({code,name:displayName(state,code),search:(displayName(state,code)+' '+code).toLowerCase()}));
@@ -333,7 +343,7 @@ export function installTrainingLabelRuntime({
         : '当前所选素材没有可新增的已标注目标标签，请选择或标注正样本。'
       : '';
 
-    panel.innerHTML = `
+    const readyHtml = `
       <div class="training-label-contract-head"><div><b>训练标签</b><small>继承标签自动保留；本次训练标签按需选择。</small></div><span class="training-label-contract-count">新增 ${view.requested.length}</span></div>
       ${baseHtml}
       <div class="training-label-material">
@@ -343,6 +353,23 @@ export function installTrainingLabelRuntime({
       ${materialHint ? `<div class="training-label-material-hint">${esc(materialHint)}</div>` : ''}
       ${view.invalidAvailable.length ? '<div class="training-label-warning">部分素材标签已失效，请先到标签管理统一后再训练。</div>' : ''}
     `;
+    const template=document.createElement('div');template.innerHTML=readyHtml;
+    const material=panel.querySelector('.training-label-material'),incoming=template.querySelector('.training-label-material');
+    if(material&&incoming){
+      const oldHead=material.querySelector('.training-label-material-head'),newHead=incoming.querySelector('.training-label-material-head');
+      if(oldHead&&newHead&&oldHead.innerHTML!==newHead.innerHTML)oldHead.innerHTML=newHead.innerHTML;
+      const desired=[...template.children].map(node=>node===incoming?material:node);
+      // Reconcile only siblings; never replace the live material list merely
+      // because resources or label names finish hydrating in the background.
+      for(const [index,next] of desired.entries()){
+        const current=panel.children[index];
+        if(current===next)continue;
+        if(next===material){if(current!==material)panel.insertBefore(material,current||null)}
+        else if(current?.className===next.className){if(current.innerHTML!==next.innerHTML)current.innerHTML=next.innerHTML}
+        else panel.insertBefore(next,current||null);
+      }
+      while(panel.children.length>desired.length)panel.lastElementChild.remove();
+    }else panel.innerHTML=readyHtml;
 
     paintPage();
     return true;
@@ -387,7 +414,7 @@ export function installTrainingLabelRuntime({
   queueRefresh();
 
   const runtime = {
-    build: 'module-422572',
+    build: 'module-422574',
     refresh,
     queueRefresh,
     filter(value){const next=String(value||'').trim().toLowerCase();if(next!==filterQuery){filterQuery=next;labelPage=1;paintPage()}},
