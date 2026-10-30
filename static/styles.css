@@ -996,6 +996,8 @@ body.sidebar-collapsed{--side-w:76px}.sidebar-collapsed .brand-text,.sidebar-col
 .ai66-review-grid{flex:1;min-height:0;max-height:none!important;overflow:auto!important;display:grid!important;grid-template-columns:repeat(auto-fill,minmax(240px,1fr))!important;grid-auto-rows:max-content;align-content:start;gap:10px!important;padding:12px 20px}
 .ai66-candidate-card{display:flex;min-width:0;flex-direction:column;padding:0!important;border:1px solid #dfe6ef!important;border-radius:12px!important;background:#fff;box-shadow:0 3px 10px rgba(24,42,70,.035);overflow:hidden}
 .ai66-candidate-card.accepted{border-color:#aac7f5!important}
+.ai66-candidate-card:focus-visible{outline:3px solid #3478dc;outline-offset:3px;box-shadow:0 0 0 5px rgba(52,120,220,.12)!important}
+.ai66-shortcuts{font-size:12px;white-space:normal}
 .ai66-candidate-card.rejected{opacity:.72;border-color:#e5b8bc!important;background:#fffafa}
 .ai66-candidate-body{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;padding:9px 10px 7px}
 .ai66-candidate-body>div{min-width:0}

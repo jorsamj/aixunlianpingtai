@@ -8063,7 +8063,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
           <button data-ai66-filter="low" onclick="setAiReviewFilter60('low')">低置信度</button><button data-ai66-filter="hard" onclick="setAiReviewFilter60('hard')">困难候选</button>
           <button data-ai66-filter="failed" onclick="setAiReviewFilter60('failed')">失败</button>
         </div>
-        <div class="row"><button class="btn mini" onclick="reviewPageSelect60(true)">本页全选</button><button class="btn mini" onclick="reviewPageSelect60(false)">本页全不选</button></div>
+        <div class="row"><span class="muted-line ai66-shortcuts">快捷键：← → 选择图片，A 采用，R 拒绝，Alt+← → 翻页</span><button class="btn mini" onclick="reviewPageSelect60(true)">本页全选</button><button class="btn mini" onclick="reviewPageSelect60(false)">本页全不选</button></div>
       </div>
       <datalist id="ai60PlatformLabelOptions"></datalist>
       <details class="ai66-label-tools" open>
@@ -8212,7 +8212,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     renderAiLabelMapping60();
     const rows=reviewVisibleItems60(review),grid=document.getElementById('ai60ReviewGrid');
     const hardSignalNames={low_confidence:'低置信度',small_target:'小目标',dense_targets:'密集目标',no_detection_unverified:'无检测·待核查',gt_disagreement_fp:'与正式标注不一致·疑似误检',gt_disagreement_fn:'与正式标注不一致·疑似漏检'};
-    if(grid)grid.innerHTML=review.pageLoading?'<div class="ai-create-loading">正在读取当前页候选图片…</div>':review.pageError?`<div class="inline-error ai66-review-empty"><span>${esc(review.pageError)}</span><button class="btn mini" onclick="retryAiReviewPage60()">重试</button></div>`:rows.map(item=>{const id=String(item.image_id),image=imageById(id)||item,reviewable=item.status!=='failed',accepted=review.decisions.get(id)!==false,edited=review.edits.has(id),boxCount=(item.boxes||[]).length;return `<article class="review427-card ai66-candidate-card ${reviewable?'':'failed'} ${accepted?'accepted':'rejected'}" data-ai66-image-id="${esc(id)}"><div class="review427-img ai-candidate-stage"><img src="${esc(item.url||image.url||'')}" loading="lazy" decoding="async">${(item.boxes||[]).map(box=>candidateOverlay(box,image)).join('')}<strong>${item.status==='failed'?'处理失败':boxCount?`${boxCount} 个候选框`:(Array.isArray(item.hard_sample_signals)?'未检测到·待人工核查':'AI判断无目标')}</strong></div><div class="ai66-candidate-body"><div><b>${esc(item.filename||image.filename||item.image_id)}</b><span>${item.error?esc(item.error):[...new Set((item.boxes||[]).map(box=>box.label))].map(label=>esc(window.PlatformCore.materials.labelDisplay(label,state.labels))).join(' · ')||'无目标候选'}</span></div>${Array.isArray(item.hard_sample_signals)?`<small class="ai66-hard-signals">${item.hard_sample_signals.map(code=>esc(hardSignalNames[code]||code)).join(' · ')||'本图暂无特殊困难信号'} · 优先级 ${Number(item.hard_sample_priority||0)} · 原因待确认</small>`:''}${edited?'<em>已人工修改</em>':''}</div>${reviewable?`<footer><button class="btn mini ${accepted?'primary':''}" data-ai66-decision="accept" onclick="setAiDecision60('${id}',true)">采用</button><button class="btn mini ${accepted?'':'danger'}" data-ai66-decision="reject" onclick="setAiDecision60('${id}',false)">拒绝</button><button class="btn mini" onclick="editAiCandidate60('${id}')">编辑候选框</button></footer>`:''}</article>`}).join('')||'<div class="empty ai66-review-empty">当前筛选条件下没有候选图片</div>';
+    if(grid)grid.innerHTML=review.pageLoading?'<div class="ai-create-loading">正在读取当前页候选图片…</div>':review.pageError?`<div class="inline-error ai66-review-empty"><span>${esc(review.pageError)}</span><button class="btn mini" onclick="retryAiReviewPage60()">重试</button></div>`:rows.map(item=>{const id=String(item.image_id),image=imageById(id)||item,reviewable=item.status!=='failed',accepted=review.decisions.get(id)!==false,edited=review.edits.has(id),boxCount=(item.boxes||[]).length;return `<article tabindex="0" aria-label="审核图片 ${esc(item.filename||image.filename||id)}" class="review427-card ai66-candidate-card ${reviewable?'':'failed'} ${accepted?'accepted':'rejected'}" data-ai66-image-id="${esc(id)}"><div class="review427-img ai-candidate-stage"><img src="${esc(item.url||image.url||'')}" loading="lazy" decoding="async">${(item.boxes||[]).map(box=>candidateOverlay(box,image)).join('')}<strong>${item.status==='failed'?'处理失败':boxCount?`${boxCount} 个候选框`:(Array.isArray(item.hard_sample_signals)?'未检测到·待人工核查':'AI判断无目标')}</strong></div><div class="ai66-candidate-body"><div><b>${esc(item.filename||image.filename||item.image_id)}</b><span>${item.error?esc(item.error):[...new Set((item.boxes||[]).map(box=>box.label))].map(label=>esc(window.PlatformCore.materials.labelDisplay(label,state.labels))).join(' · ')||'无目标候选'}</span></div>${Array.isArray(item.hard_sample_signals)?`<small class="ai66-hard-signals">${item.hard_sample_signals.map(code=>esc(hardSignalNames[code]||code)).join(' · ')||'本图暂无特殊困难信号'} · 优先级 ${Number(item.hard_sample_priority||0)} · 原因待确认</small>`:''}${edited?'<em>已人工修改</em>':''}</div>${reviewable?`<footer><button class="btn mini ${accepted?'primary':''}" data-ai66-decision="accept" onclick="setAiDecision60('${id}',true)">采用</button><button class="btn mini ${accepted?'':'danger'}" data-ai66-decision="reject" onclick="setAiDecision60('${id}',false)">拒绝</button><button class="btn mini" onclick="editAiCandidate60('${id}')">编辑候选框</button></footer>`:''}</article>`}).join('')||'<div class="empty ai66-review-empty">当前筛选条件下没有候选图片</div>';
     const pager=document.getElementById('ai60ReviewPager');if(pager)window.PlatformCore?.pagination?.mountPagination?.(pager,{page:Math.floor(review.offset/review.limit)+1,pageSize:review.limit,total:review.total,totalPages:Math.max(1,Math.ceil(review.total/review.limit)),hasPrevious:review.offset>0,hasNext:review.offset+review.items.length<review.total},{label:'AI标注审核分页',onPageChange: page=>loadReviewPage((page-1)*review.limit)});
   }
   async function loadReviewPage(offset){
@@ -8239,6 +8239,38 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   };
   window.retryAiReviewPage60=()=>loadReviewPage(state.ai60Review?.offset||0);
   window.aiReviewPage60=direction=>{const review=state.ai60Review;if(!review||review.closed)return;return loadReviewPage(review.offset+direction*review.limit)};
+  // Navigation changes only the current draft decision; never auto-commits GT.
+  document.addEventListener('keydown',event=>{
+    const review=state.ai60Review,root=document.querySelector('.ai66-review');
+    if(!review||review.closed||review.submitting||review.pendingRequest||review.pageLoading||review.pageError||!root||state.ai60Edit||event.defaultPrevented||event.ctrlKey||event.metaKey||event.shiftKey||event.isComposing)return;
+    if(!root.closest('.modal-card')?.isConnected)return;
+    const target=event.target;
+    if(target?.closest?.('input,textarea,select,[contenteditable="true"],button'))return;
+    if(target?.closest?.('.v424-modal-layer,.modal')!==root.closest('.v424-modal-layer,.modal'))return;
+    const key=String(event.key||'').toLowerCase();
+    if(event.altKey){
+      if(key!=='arrowleft'&&key!=='arrowright')return;
+      const direction=key==='arrowright'?1:-1;
+      if(direction<0&&review.offset===0)return;
+      if(direction>0&&review.offset+review.items.length>=review.total)return;
+      event.preventDefault();loadReviewPage(review.offset+direction*review.limit);return;
+    }
+    if(!['arrowleft','arrowright','a','r'].includes(key))return;
+    const cards=[...root.querySelectorAll('.ai66-candidate-card:not(.failed)')];
+    if(!cards.length)return;
+    const focused=target?.closest?.('.ai66-candidate-card');
+    let index=cards.indexOf(focused);
+    if(key==='arrowleft'||key==='arrowright'){
+      index=Math.max(0,Math.min(cards.length-1,index+(key==='arrowright'?1:-1)));
+      if(index<0)index=0;
+      event.preventDefault();cards[index].focus({preventScroll:true});cards[index].scrollIntoView({block:'nearest'});
+      return;
+    }
+    if(index<0)return;
+    const id=cards[index].dataset.ai66ImageId;
+    if(!id)return;
+    event.preventDefault();window.setAiDecision60(id,key==='a');
+  });
   window.closeAiReview60=()=>{
     const review=state.ai60Review;
     if(review){review.closed=true;review.pageRequestEpoch=Number(review.pageRequestEpoch||0)+1}

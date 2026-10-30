@@ -5,6 +5,20 @@ import { readFileSync } from 'node:fs';
 const source = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 const main = readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 
+test('AI review keyboard navigation is draft-only and guarded while committing or editing', () => {
+  const start = source.indexOf('// Navigation changes only the current draft decision; never auto-commits GT.');
+  const end = source.indexOf('window.closeAiReview60=', start);
+  assert.ok(start > 0 && end > start);
+  const shortcuts = source.slice(start, end);
+  assert.match(shortcuts, /review\.submitting\|\|review\.pendingRequest\|\|review\.pageLoading/);
+  assert.match(shortcuts, /state\.ai60Edit/);
+  assert.match(shortcuts, /input,textarea,select/);
+  assert.match(shortcuts, /loadReviewPage\(review\.offset\+direction\*review\.limit\)/);
+  assert.match(shortcuts, /window\.setAiDecision60\(id,key==='a'\)/);
+  assert.doesNotMatch(shortcuts, /completeAiReview60\(/);
+  assert.match(source, /快捷键：← → 选择图片/);
+});
+
 test('final AI annotation owner uses durable v60 candidate review flow', () => {
   const legacyV33 = source.lastIndexOf('/api/v33/projects/${pid()}/prelabel-tasks');
   const legacyV35 = source.lastIndexOf('/api/v35/projects/${pid()}/prelabel-tasks');
