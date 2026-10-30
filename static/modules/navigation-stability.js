@@ -77,6 +77,7 @@ export function installNavigationStability({
   pollRegistry,
   persistNavigationState,
   waitForNavigationReady,
+  canNavigate,
   beforeInvokeNavigation,
   performNavigation,
   knownPages,
@@ -130,6 +131,7 @@ export function installNavigationStability({
   if (hasClassicPredecessor || hasNamedNavigationOwner) {
     window.setPage = function stableSetPage(page, ...args) {
       const requested = normalizeNavigationPage(page);
+      if (canNavigate?.(requested) === false) return false;
       requestScope?.navigate?.(requested);
       pending.clear();
       const navigationEpoch = guard.navigate(requested);

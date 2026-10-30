@@ -50,8 +50,8 @@ test('entry bundles use cache-bust markers independently from formal release tru
   assert.match(index, /\/static\/main\.mjs\?v=\d+(?:\.\d+)*/);
   assert.match(index, /\/static\/styles\.css\?v=\d+(?:\.\d+)*/);
   assert.equal(index.includes('/static/styles.css?v=42.25.442'), true);
-  assert.equal(index.includes('/static/app.js?v=42.25.465'), true);
-  assert.equal(index.includes('/static/main.mjs?v=42.25.455'), true);
+  assert.equal(index.includes('/static/app.js?v=42.25.466'), true);
+  assert.equal(index.includes('/static/main.mjs?v=42.25.456'), true);
   assert.equal(index.includes('/static/modules/storage-cache-runtime.js?v=20261024-layout'), true);
   assert.match(main, /\.\/modules\/model-artifact-runtime\.js\?v=\d+/);
   assert.match(main, /\.\/modules\/training-task-runtime\.js\?v=\d+/);
@@ -65,6 +65,13 @@ test('entry bundles use cache-bust markers independently from formal release tru
   assert.equal(index.includes('/static/zip-import-bootstrap.mjs?v=4226371'), true);
   assert.equal(index.includes('/static/training-checkpoint-resume-bootstrap.mjs?v=422541'), true);
   assert.equal(index.includes('<span id="versionBadge" class="version-badge">v—</span>'), true);
+});
+
+test('label-normalization source guard checks the annotation module import without a stale build pin', () => {
+  const workflow = fs.readFileSync(new URL('../../.github/workflows/label-normalization-contract.yml', import.meta.url), 'utf8');
+  assert.match(main, /annotation-task-view\.js\?v=\d+/);
+  assert.ok(workflow.includes("'annotation-task-view.js?v='"));
+  assert.doesNotMatch(workflow, /'annotation-task-view\.js\?v=\d+'/);
 });
 
 test('formal platform version is not re-embedded into visible static chrome', () => {

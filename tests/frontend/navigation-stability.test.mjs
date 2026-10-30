@@ -129,6 +129,27 @@ test('named performNavigation is the sole actual page owner when configured', ()
   cleanup();
 });
 
+test('guarded AI review prevents navigation before any page epoch or request ownership changes', () => {
+  const state = {page:'自动标注及清洗'};
+  const calls = [];
+  globalThis.document = {getElementById:()=>({dataset:{}})};
+  globalThis.window = {};
+  const runtime = installNavigationStability({
+    getState:()=>state,
+    canNavigate:page=>{calls.push(`guard:${page}`);return page==='自动标注及清洗'},
+    requestScope:{navigate:page=>calls.push(`request:${page}`)},
+    pollRegistry:{beforeNavigate:page=>calls.push(`poll:${page}`)},
+    performNavigation:page=>{calls.push(`render:${page}`);state.page=page},
+  });
+  const before = runtime.guard.epoch;
+  assert.equal(globalThis.window.setPage('数据集'), false);
+  assert.equal(runtime.guard.epoch, before);
+  assert.equal(state.page, '自动标注及清洗');
+  assert.deepEqual(calls, ['guard:数据集']);
+  runtime.destroy();
+  cleanup();
+});
+
 test('named performNavigation installs global setPage without a classic predecessor', () => {
   const state = {page: '算法列表'};
   let renders = 0;

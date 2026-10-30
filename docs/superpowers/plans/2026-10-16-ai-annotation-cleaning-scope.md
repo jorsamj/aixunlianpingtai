@@ -1,5 +1,13 @@
 # AI 预标注、清洗范围与提示词创建体验实施计划
 
+## 2026-10-30｜42.24.447 URL 审核连续操作与 446 红项修复（准确 SHA CI 待核）
+
+- **精确 446 CI**：提交 `7eb9dd3e` 可查询的 20 个 Actions 中 19 success、1 failure；失败的 `Label Normalization Contract` 只在 Permanent source guards 的硬编码 `annotation-task-view.js?v=422002`（实际 `422445`），其后端及前端标签规范化合同均 PASS。447 只改为存在性断言 `annotation-task-view.js?v=`，保留原模块和版本缓存隔离，新增 Node 防未来旧字符串回归。
+- **真实主区路由**：保留 446 的同一原生 JS `reviewAiLabel427`/Candidate 编辑/GT Worker Owner；新 `ai-review-route.js` 只管理 `#ai-review/<task_id>` 地址，不读/写业务数据。进入任务产生历史记录，浏览器后退退出，前进重进；刷新后等主应用 ready 再按原项目真实 Candidate API 加载，未把候选框、正式 GT、token 或模型参数存在 URL。任务 ID 格式/长度校验，不允许任意路径片段。
+- **导航保护**：`NavigationStability` 增可选 `canNavigate`，在 page request/epoch、poll owner 变化**之前**检查；保存前/提交中离开则阻止页面切换，浏览器历史移动后若用户拒绝离开则恢复当前审核地址。顶部“返回任务列表”使用原关闭函数并清 URL，切其他主菜单先释放候选编辑器及任务草稿再导航，不残留审核状态。Pending POST 的原 Request ID 仍按现存 localStorage/GET 回执恢复，不自动重发 POST。新版未扩展 Task、Candidate、正式 GT 或 SQLite schema。
+- **本批回归**：`tests/frontend/ai-review-route.test.mjs`、导航 early guard、防过时缓存版本的 Source Guard 测试，以及 `ai-create-experience.spec.mjs` 对浏览器 back/forward/reload、原工作台/三视口截图的延伸。完整 Node 回归已通过；原 Label Normalization Contract 工作流失败的 `Permanent source guards` 脚本在本地按原 YAML 直接执行通过。真实 Chrome/GitHub CI 以本批最后 SHA 结果为准，不能把静态 UI 测试等同于真机视觉检查。
+- **剩余 P0**：URL 入口按当前项目隔离（跨项目直达尚未实现）；OS 级生产 Chrome/OSS/远程模型/大批素材 P50/P95、GT 当前态审计及外部同步计数未现场验证。生产任务 DB 前批的 v2→v3 迁移仍须一致性备份与可恢复回滚演练，未部署、未修改生产数据。
+
 ## 2026-10-30｜42.24.446 AI 自动标注独立审核主区工作台（本批精确 SHA CI 待核）
 
 - **边界与开源选型**：项目原 `static/vendor/annotorious`/页面已接通 Annotorious 3.9.5（Vanilla JS、BSD-3-Clause），直接复用，不重复安装或套 Label Studio 第二套服务。LabelU-Kit、Label Studio 的审核导航/信息层次仅作为参考；不引入 React/构建系统迁移。审核仍限 AI_ANNOTATION 任务的 Candidate，人工标注已有入口保持独立；二者最终使用唯一 AnnotationRepository 正式 GT。

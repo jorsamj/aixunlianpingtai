@@ -309,7 +309,7 @@ jobs:
                   '/static/zip-import-bootstrap.mjs?v=',
               ),
               'static/main.mjs': (
-                  'annotation-task-view.js?v=422002',
+                  'annotation-task-view.js?v=',
                   'server-material-import.js?v=422526',
               ),
               'static/zip-import-bootstrap.mjs': (

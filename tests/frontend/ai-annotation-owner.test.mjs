@@ -115,7 +115,7 @@ test('retired v47 AI review clients are absent from the production frontend', ()
     'v427AiConfirm',
   ]) assert.equal(source.includes(token), false, token);
   assert.match(source, /window\.submitAiLabel427=\(ids=\[\]\)=>window\.submitAiLabel429\(ids\)/);
-  assert.match(source, /window\.reviewAiLabel427=async function\(id\)/);
+  assert.match(source, /window\.reviewAiLabel427=async function\(id(?:,|\))/);
   assert.match(source, /window\.confirmAiLabel427=id=>completeAiReview60\('partial'\)/);
 });
 

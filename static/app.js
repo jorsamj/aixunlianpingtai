@@ -8253,7 +8253,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     }catch(error){if(current())review.pageError=String(error.message||error||'候选图片读取失败');return false}
     finally{if(current()){review.pageLoading=false;renderReviewPage()}}
   }
-  window.reviewAiLabel427=async function(id){
+  window.reviewAiLabel427=async function(id,{fromRoute=false}={}){
     const top=[...document.querySelectorAll('.v424-modal-layer')].at(-1)||document.getElementById('modal');
     if(top?.querySelector?.('.ai60-progress,button[onclick*="reviewAiLabel427"]')){
       const closed=await closeModal();if(closed===false)return false;
@@ -8273,6 +8273,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     }
     window.AutoLabelPollRuntime?.deactivate?.();
     state.ai60Review={id:String(id),offset:0,limit:24,total:0,items:[],decisions:new Map(),edits:new Map(),seen:new Map(),labelSummary:[],labelMapping:new Map(),filter:'all',pageRequestEpoch:0,closed:false,ownerPage:String(state.page||'自动标注及清洗'),pageLoading:true,pageError:'',pendingRequest:aiReviewReadPending60(String(id)),submitting:false};
+    if(!fromRoute)window.AiReviewRouteRuntime?.open?.(String(id));
     return loadReviewPage(0);
   };
   window.retryAiReviewPage60=()=>loadReviewPage(state.ai60Review?.offset||0);
@@ -8309,14 +8310,15 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     if(!id)return;
     event.preventDefault();window.setAiDecision60(id,key==='a');
   });
-  window.closeAiReview60=()=>{
+  window.closeAiReview60=({fromRoute=false,skipRender=false}={})=>{
     const review=state.ai60Review;
     if(review?.submitting){toast('当前审核操作正在提交，请等待回执');return false}
     if(state.ai60Edit?.dirty&&!window.confirm('候选框有尚未保存的修改，确定离开审核工作台吗？'))return false;
     if(review){review.closed=true;review.pageRequestEpoch=Number(review.pageRequestEpoch||0)+1}
     destroyAiCandidateEditor60();state.ai60Edit=null;
     state.ai60Review=null;
-    if(state.page==='自动标注及清洗'){
+    if(!fromRoute)window.AiReviewRouteRuntime?.leave?.();
+    if(!skipRender&&state.page==='自动标注及清洗'){
       renderOps427();
       void refreshAnnotationTasks60().then(tasks=>{
         if(tasks!==null&&state.page==='自动标注及清洗')renderAiTaskRows60(tasks);

@@ -38,6 +38,7 @@ import {installAutoLabelPollRuntime} from './modules/auto-label-poll-runtime.js?
 import {annotationReviewView, annotationSavePayload, createAnnotationWorkbench, queueWindow} from './modules/annotation-workbench.js?v=422595';
 import {createTaskPoller, isTaskActive, taskProgress, waitForTaskTerminal} from './modules/task-poller.js?v=422002';
 import {annotationTaskView, annotationStageStatistics, buildCandidateDecisions} from './modules/annotation-task-view.js?v=422445';
+import {installAiReviewRoute} from './modules/ai-review-route.js?v=422647';
 import {applyCleanConfirmation, cleanExecutionChoices, cleanExecutionMode, cleanSchedulingRequest, cleanScopeChoices, cleanScopeRequest, cleanScopeSupportsAnnotationAudit, cleanTaskView, isActiveCleanTask} from './modules/cleaning.js?v=422570';
 import {deploymentTaskView} from './modules/deployment-tests.js?v=422519';
 import {activeLabelOptions} from './modules/labels.js?v=421800';
@@ -495,6 +496,7 @@ const navigationStabilityRuntime = installNavigationStability({
     if (!state.uiReady && window.__v53InitPromise) return window.__v53InitPromise;
     return null;
   },
+  canNavigate: page => window.AiReviewRouteRuntime?.beforeNavigate?.(page) !== false,
   beforeInvokeNavigation: page => {window.toggleMobileSidebarV37?.(false);if(page!=='质量中心')qualityDetectionWorkbench.deactivate();if(page!=='质量中心')advancedEvaluation.deactivate();},
   knownPages: window.PlatformCore?.navigation?.knownPages || [],
   performNavigation: page => {
@@ -517,6 +519,12 @@ const navigationStabilityRuntime = installNavigationStability({
   },
 });
 window.PlatformCore.runtime.navigationStabilityRuntime = navigationStabilityRuntime;
+window.AiReviewRouteRuntime = installAiReviewRoute({
+  getReview: () => state.ai60Review,
+  open: (id, options) => window.reviewAiLabel427?.(id, options),
+  close: options => window.closeAiReview60?.(options),
+  notify,
+});
 
 // Core product pages now have one navigation owner each. Historical app.js
 // renderers remain compatibility entry points, but navigation no longer walks
@@ -635,6 +643,7 @@ Promise.resolve(canonicalStartupPromise).then(() => {
     state.__startupCanonicalPainted = true;
   }
   refreshCurrentPageOwner(startupPage);
+  void window.AiReviewRouteRuntime?.restore?.();
 });
 
 document.documentElement.dataset.uiBuild = UI_BUILD_VERSION;

@@ -295,9 +295,17 @@ test('AI candidate editor stays inside the review workspace without opening a ne
     expect(geometry.x+geometry.width).toBeLessThanOrEqual(viewport.width+1);
     await page.screenshot({path:testInfo.outputPath(`ai-review-${viewport.width}x${viewport.height}.png`),fullPage:false});
   }
+  expect(new URL(page.url()).hash).toBe('#ai-review/ai-ux-fixture');
+  await page.goBack();
+  await expect(page.locator('.ai-review-page-shell')).toHaveCount(0);
+  await page.goForward();
+  await expect(page.locator('.ai-review-page-shell')).toBeVisible();
+  await page.reload();
+  await expect(page.locator('.ai-review-page-shell')).toBeVisible({timeout:20_000});
   await page.locator('.ai-review-page-nav').getByRole('button',{name:'返回任务列表'}).click();
   await expect(page.locator('.ai-review-page-shell')).toHaveCount(0);
   await expect(page.locator('#ai60TaskRows')).toBeVisible();
+  expect(new URL(page.url()).hash).toBe('');
 });
 
 test('AI review timeout resolves the original operation receipt without a second decision POST', async ({page}) => {

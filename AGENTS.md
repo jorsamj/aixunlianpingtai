@@ -1,3 +1,9 @@
+## 2026-10-30｜42.24.447 AI 审核 URL 恢复与标签守卫修复（本批 CI 待核）
+
+446 精确远端 `7eb9dd3e` 当前可查询 20 个 workflow 19 成功、1 失败：`Label Normalization Contract` 的 Permanent source guards 仍检查早已退役的 `annotation-task-view.js?v=422002`，而 `static/main.mjs` 实际引用 `v=422445`；后端/前端标签合同步骤均通过。447 改为守卫实际模块引用前缀，不再跟随每次静态缓存键重复修改 CI，Node 新增守卫回归。
+
+审核工作台在 446 原单一 Candidate/GT Owner 上补 `#ai-review/<task_id>` 浏览器地址、前进后退、重新加载后恢复及主菜单离开清理；入口仅存任务 ID，刷新后依原 API 重新读取，不在 URL 保存候选、标注框、token 或 GT。`NavigationStability` 添加可选 `canNavigate` 前置保护，在任何 request epoch/轮询 owner 变化之前阻止未保存退出或提交中切页；同一 Task 的原审核回执去重/Worker 继续保留。新增纯 URL/导航单测和真实 Chrome 后退/前进/刷新用例；前端完整 Node 回归已通过，原 Label Normalization Workflow 的 Permanent source guards 脚本已在本地单独运行通过，Chrome 尚待 447 精确 SHA CI 验证；不引入第二路由 Task/GT 模块。生产任务 DB v2→v3 迁移/备份回滚、OSS/远程模型及大库 P95 仍未执行。不部署、merge main、tag、release 或 force push。详细记录在原 [AI 专项](docs/superpowers/plans/2026-10-16-ai-annotation-cleaning-scope.md)。
+
 ## 2026-10-30｜42.24.446 AI 自动标注独立主区审核工作台（本批 CI/生产待核）
 
 原 `reviewAiLabel427` 不再打开审核全屏模态框，而在“自动标注及清洗”的主内容区展示独立审核工作台。保留原 CandidateStore 按页读取、已选/标签映射/困难候选、原 Annotorious 候选框编辑、Request ID 回执与原 Worker→AnnotationRepository 正式 GT 写入；未创建新任务或 GT owner。任务切换关闭旧编辑器、阻断晚到响应、未保存修改询问；提交中禁止退出或切换。审核页临时隐藏无关的全局指标以给图片/编辑画布更多空间。原 Chrome 用例改验主区页面、无嵌套审核弹窗、三视口截图及返回。开源选择为已集成的 Annotorious（BSD-3-Clause），仅参考 LabelU、Label Studio 交互，不引入 React 或新服务。前端 Node **1421/1421 通过**；本地缺 Chrome 和 FastAPI 浏览器启动依赖，真实 Chrome 及准确 SHA CI 待核。独立 URL 深链接/浏览器后退尚未实施；OSS/远程模型/P95 和生产 DB v2→v3 迁移均待核。本批不部署、不迁移、不 merge main/tag/release/force-push。完整记录见原 [AI 专项](docs/superpowers/plans/2026-10-16-ai-annotation-cleaning-scope.md)。
