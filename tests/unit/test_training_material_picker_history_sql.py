@@ -76,12 +76,15 @@ def test_default_history_sql_matches_full_pool_and_batch_scope(tmp_path: Path):
         assert any('SEARCH t USING COVERING INDEX' in line and 'project_id=?' in line
                    for line in plan),plan
         first = _gt_material_filter_page(repo,annotations,filters=filters,limit=15,page=1)
+        first_hydrated = _gt_material_filter_page(repo,annotations,filters=filters,
+                                                  limit=15,page=1,include_payload=True)
         second = _gt_material_filter_page(repo,annotations,filters=filters,limit=15,page=2)
         all_rows = _gt_material_filter_page(repo,annotations,filters=filters,limit=60,page=1)
         expected = {row['id'] for row in rows} - set(original['excluded_image_ids'])
         assert set(all_rows['items']) == expected
         assert first['total']==second['total']==all_rows['total']==len(expected)
         assert set(first['items']).isdisjoint(second['items'])
+        assert [row['id'] for row in first_hydrated['items']] == first['items']
         assert 'm0009' in expected  # Another algorithm's training does not exclude.
         assert 'm0010' in expected  # Selected but never executed is not exposed.
         assert ('m0011' in expected) == (role=='train')
@@ -96,7 +99,8 @@ def test_default_history_sql_matches_full_pool_and_batch_scope(tmp_path: Path):
     # The role-filtered path must attach the same Task evidence and preserve GT.
     filters, _ = _usage_filters(repo,{'algorithm_asset_id':'a'})
     page = _role_material_page(repo,annotations,{'effective_label_codes':['person']},
-                               filters=filters,sample_role='positive',limit=60)
+                               filters=filters,sample_role='positive',limit=60,
+                               include_payload=True)
     assert 'm0009' in [row['id'] for row in page['items']]
     assert 'm0010' in [row['id'] for row in page['items']]
 

@@ -1044,11 +1044,14 @@ def training_material_picker_router(
             size = int(payload.get("page_size") or DEFAULT_PAGE_SIZE)
             if not 1 <= size <= MAX_PAGE_SIZE: raise ValueError("invalid page_size")
             body, usage = _usage_filters(repository, payload)
+            usage_revision = usage['revision']
             page_number = int(body.get("page") or 1)
             result = _gt_material_filter_page(repository, annotations, limit=size, page=page_number,
                 query=str(body.get("query") or ""), labels=_normalize_labels(body.get("labels")),
                 include_payload=True, sort_order=str(body.get("sort_order") or "newest"),filters=body)
             usage = _page_usage_facts(repository,body,result["items"])
+            if usage['revision'] != usage_revision:
+                raise ValueError('训练历史已更新，请重试素材查询')
             truth = annotations.get_many([r["id"] for r in result["items"]])
             return {"items":[{**_public_picker_material(project_id,r,truth.get(r["id"],{})),
                     "training_usage":_public_usage_fact(usage["by_image_id"].get(r["id"],{"state":"unknown"}))} for r in result["items"]],
@@ -1066,6 +1069,7 @@ def training_material_picker_router(
             if not 1 <= limit <= MAX_PAGE_SIZE:
                 raise ValueError("page_size exceeds page limit")
             payload, usage = _usage_filters(repository, payload)
+            usage_revision = usage['revision']
             contract = task_contract(project_id, payload, repository)
             result = _role_material_page(repository, annotations, contract,
                 query=str(payload.get("query") or ""), labels=_normalize_labels(payload.get("labels")),
@@ -1073,6 +1077,8 @@ def training_material_picker_router(
                 sort_order=str(payload.get("sort_order") or "oldest"), filters=payload,
                 defer_role_counts=payload.get("defer_role_counts") is True)
             usage = _page_usage_facts(repository,payload,result["items"])
+            if usage['revision'] != usage_revision:
+                raise ValueError('训练历史已更新，请重试素材查询')
             result["usage_revision"] = usage["revision"]
             truth = annotations.get_many([row["id"] for row in result["items"]])
             if (repository.current_revision(), annotations.current_revision()) != (result["repository_revision"], result["annotation_revision"]):
@@ -1253,6 +1259,7 @@ def training_material_picker_router(
         shared_filters = {k:v for k,v in shared_filters.items() if v}
         try:
             shared_filters, usage = _usage_filters(repository, {**shared_filters, "usage_state":usage_state,"algorithm_asset_id":algorithm_asset_id,"history_policy":history_policy,"role":role,"history_scope":history_scope})
+            usage_revision = usage['revision']
             if selected_labels or shared_filters:
                 page = _gt_material_filter_page(
                     repository,
@@ -1288,6 +1295,8 @@ def training_material_picker_router(
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
         usage = _page_usage_facts(repository,shared_filters,rows)
+        if usage['revision'] != usage_revision:
+            raise HTTPException(status_code=409, detail='训练历史已更新，请重试素材查询')
         annotations = annotation_repository.get_many(
             [str(row.get("id") or "") for row in rows]
         )
