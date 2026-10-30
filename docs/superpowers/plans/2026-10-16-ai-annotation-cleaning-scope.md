@@ -23,6 +23,8 @@
 
 本地已执行 `node --check static/app.js`、`python -m py_compile app.py tests/api/test_annotation_preview.py` 与 `git diff --check`；本机无 `pytest` / `@playwright/test` / Chrome 依赖，新增 Python、浏览器测试需最终 SHA 的 CI 补验。**真实 GLM/Qwen/OSS 冷加载、模型费用、推理 P50/P95、网络等待都未现场实测**；不能声称生产已有 2 秒 SLA。
 
+**首次准确 SHA CI 补验**：`312e4b7a` 的 AI Annotation Recovery 已通过 Ubuntu/Windows 和含新单图预览测试的 API 合同；Frontend Runtime Stabilization 的 Node 1413/1414，唯一失败是 `version-marker-owner.test.mjs` 仍固定旧静态资源缓存键 `42.25.438/453`，新入口已改为 `42.25.439/454`。原测试仍严格逐项断言缓存键，本批仅把对应新预期同步为真实入口值，本地该文件 1/1 通过。浏览器分片及最终修订 SHA CI 仍需单独验收，不能借 API 绿色宣称前端全绿。
+
 ### 尚未完成
 
 - 创建与审核仍是单层宽屏弹窗，不是独立导航页面；缺完整最终确认配置页。
