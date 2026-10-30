@@ -23345,6 +23345,9 @@ class AnnotationTaskCreateReq(BaseModel):
     business_instruction: str = ""
     prompt_override: str = Field(default="", max_length=12000)
     preview_count: int = 0
+    # Browser retries keep this stable until the confirmed configuration changes.
+    # Older API callers may omit it and retain their original creation behavior.
+    request_id: str = ""
 
 
 class AnnotationDecisionReq(BaseModel):
@@ -23759,22 +23762,74 @@ def create_hard_sample_mining(project_id: str, algorithm_id: str, version_id: st
     )
 
 
-@app.post("/api/v60/projects/{project_id}/annotation-tasks")
-def create_annotation_task(project_id: str, payload: AnnotationTaskCreateReq):
+def _persist_annotation_task_create(
+    project_id: str, payload: AnnotationTaskCreateReq, task_id: str, *, identity: str = "",
+):
     request, provider_key = _annotation_create_payload(project_id, payload)
-    task_id = uuid.uuid4().hex[:12]
+    if identity:
+        request["create_request_identity"] = identity
     with _storage_source_fence():
         shared_task_artifacts().atomic_write_json(task_id, "request.json", request)
-        record = shared_task_repository().create(TaskRecord.new(
-            task_id,
-            project_id,
-            TaskKind.AI_ANNOTATION,
-            "request.json",
-            f"vision:{provider_key}",
-            priority=50,
+        return shared_task_repository().create(TaskRecord.new(
+            task_id, project_id, TaskKind.AI_ANNOTATION, "request.json",
+            f"vision:{provider_key}", priority=50,
             required_capabilities=("vision_provider",),
         ))
-    return JSONResponse(status_code=202, content=public_annotation_task(record))
+
+
+@app.post("/api/v60/projects/{project_id}/annotation-tasks")
+def create_annotation_task(project_id: str, payload: AnnotationTaskCreateReq):
+    request_id = str(payload.request_id or "").strip()
+    if not request_id:
+        record = _persist_annotation_task_create(project_id, payload, uuid.uuid4().hex[:12])
+        return JSONResponse(status_code=202, content=public_annotation_task(record))
+
+    task_id = _annotation_create_id(project_id, request_id)
+    identity = _annotation_create_identity(payload)
+    get_project(project_id)
+    locks = DATA_DIR / "task_runtime" / "annotation_create_locks"
+    locks.mkdir(parents=True, exist_ok=True)
+    try:
+        with FileLock(str(locks / f"{task_id}.lock"), timeout=30):
+            repository = shared_task_repository()
+            existing = repository.get(task_id)
+            if existing is not None:
+                if existing.project_id != project_id or existing.kind is not TaskKind.AI_ANNOTATION:
+                    raise HTTPException(status_code=409, detail="AI 标注创建请求身份冲突")
+                frozen = shared_task_artifacts().read_json(task_id, "request.json", default={})
+                if frozen.get("create_request_identity") != identity:
+                    raise HTTPException(status_code=409, detail="创建请求 ID 已绑定不同配置，请重新确认配置")
+                return JSONResponse(status_code=202, content={**public_annotation_task(existing), "idempotent": True})
+
+            # A stranded artifact is not proof that the durable queue accepted
+            # the task. Do not silently overwrite it on a retry.
+            if shared_task_artifacts().artifact_path(task_id, "request.json").exists():
+                raise HTTPException(status_code=409, detail="创建请求存在未完成的准备记录，请核查原任务")
+            record = _persist_annotation_task_create(project_id, payload, task_id, identity=identity)
+            return JSONResponse(status_code=202, content=public_annotation_task(record))
+    except Timeout as error:
+        raise HTTPException(status_code=409, detail="同一 AI 标注请求仍在创建，请按原请求 ID 查询结果") from error
+
+
+def _annotation_create_id(project_id: str, request_id: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{12,80}", request_id):
+        raise HTTPException(status_code=422, detail="AI 标注创建请求 ID 格式不正确")
+    return "ai" + hashlib.sha256(f"annotation-create\x00{project_id}\x00{request_id}".encode("utf-8")).hexdigest()[:20]
+
+
+def _annotation_create_identity(payload: AnnotationTaskCreateReq) -> str:
+    body = payload.model_dump(mode="json", exclude={"request_id"})
+    return hashlib.sha256(json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+@app.get("/api/v60/projects/{project_id}/annotation-tasks/by-request/{request_id}")
+def get_annotation_task_by_create_request(project_id: str, request_id: str):
+    get_project(project_id)
+    task_id = _annotation_create_id(project_id, request_id)
+    task = shared_task_repository().get(task_id)
+    if task is None or task.project_id != project_id or task.kind is not TaskKind.AI_ANNOTATION:
+        raise HTTPException(status_code=404, detail="尚未找到该 AI 标注创建请求的任务回执")
+    return public_annotation_task(task)
 
 
 @app.post("/api/v60/projects/{project_id}/annotation-preview")

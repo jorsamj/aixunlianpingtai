@@ -112,6 +112,7 @@ test('closing and reopening fences stale AI create hydration and remains usable 
 test('AI create keeps the form on configuration or submit failure and fences duplicate submit', async ({page}, testInfo) => {
   let modelReads = 0;
   let submitCount = 0;
+  const submitRequestIds = [];
   await page.route('**/api/v35/model-configs', async route => {
     modelReads += 1;
     if (modelReads === 1) {
@@ -131,6 +132,7 @@ test('AI create keeps the form on configuration or submit failure and fences dup
   await page.route('**/api/v60/projects/*/annotation-tasks', async route => {
     if (route.request().method() !== 'POST') return route.continue();
     submitCount += 1;
+    submitRequestIds.push(route.request().postDataJSON()?.request_id);
     await new Promise(resolve => setTimeout(resolve, 250));
     await route.fulfill({status: 503, contentType: 'application/json', body: JSON.stringify({message: '模型连接失败'})});
   });
@@ -173,6 +175,11 @@ test('AI create keeps the form on configuration or submit failure and fences dup
   await expect(page.getByRole('dialog', {name: '创建AI自动标注任务'})).toBeVisible();
   await expect(page.locator('#ai429Prompt')).toHaveValue('保留本次输入 {{labels_json}} {{output_schema}}');
   await expect(page.locator('#ai429Labels')).toHaveValue('fire');
+  await expect(page.locator('#ai429Submit')).toBeEnabled();
+  await page.locator('#ai429Submit').click();
+  await expect.poll(() => submitCount).toBe(2);
+  expect(submitRequestIds[0]).toMatch(/^ai-[0-9a-f]{32}$/);
+  expect(submitRequestIds[1]).toBe(submitRequestIds[0]);
   await expect(page.locator('#ai429Submit')).toBeEnabled();
 });
 

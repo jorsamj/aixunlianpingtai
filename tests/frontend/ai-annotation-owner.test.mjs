@@ -148,6 +148,19 @@ test('AI create requires an effective-configuration review before its only durab
   assert.match(submit, /ownerRoot=document\.querySelector/);
   assert.match(submit, /ownerRoot\?\.isConnected/);
   assert.doesNotMatch(submit, /aiCreateIsCurrent429|aiCreateLabelName429/);
+  assert.match(submit, /draft\.createRequestId=newAiCreateRequestId429\(\)/);
+  assert.match(submit, /body\.request_id=draft\.createRequestId/);
+  assert.match(submit, /by-request\/\$\{encodeURIComponent\(body\.request_id\)\}/);
+});
+
+test('AI create initializes every asynchronous request counter before incrementing it', () => {
+  const creationStart = source.indexOf('window.createAiLabelCore429=function(opts={})');
+  const creationEnd = source.indexOf('\n\n  // ---------- training from processed', creationStart);
+  const create = source.slice(creationStart, creationEnd);
+  for (const counter of ['materialRequestEpoch', 'referenceRequestEpoch', 'bulkEpoch', 'hydrationEpoch', 'previewEpoch']) {
+    assert.match(create, new RegExp(`${counter}:0`));
+    assert.match(source, new RegExp(`\\+\\+draft\\.${counter}`));
+  }
 });
 
 test('AI create owns cancellation of obsolete fetches and timers in the existing modal lifecycle', () => {

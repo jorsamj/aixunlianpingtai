@@ -1,3 +1,7 @@
+## 2026-10-30｜42.24.439 AI 标注创建请求持久防重（准确 SHA CI 待核）
+
+原创建流程只有浏览器 `submitting` 门禁，POST 已落库但 HTTP 回执丢失时重试可能生成第二个任务。仅在原 v60 `AI_ANNOTATION` TaskRepository/ArtifactStore 内增可选 `request_id`：同 ID 在原项目及相同完整配置下重复提交返回原真实回执，配置冲突 409，跨进程 FileLock/确定性 task_id 防并发双建；新 GET `by-request` 查询权威 Task 真值，旧调用方不传 ID 的行为不变。创建 UI 按一次实际确认配置生成稳定请求 ID，断网先查询原回执、普通失败沿用原 ID 重试，改变配置才换 ID。**438 `7254db9` 的 Chrome 4 个创建用例失败**，已发现新 hydration/reference/preview 计数器未初始化，`++undefined` 导致 `NaN` 及有效响应被误判为过期；439 初始化所有计数器为 0 并加静态防回归。没有新表/Task/GT owner、没有自动重发模型推理。后端 32/32、全前端 Node 1416/1416 已通过（防回归更新后须再跑），本批精确 SHA 浏览器 CI / 真实生产网络仍待验；原列表全历史筛选、审核决策幂等、独立路由和 OSS P95 未闭环。详见 `docs/superpowers/plans/2026-10-16-ai-annotation-cleaning-scope.md`；禁止生产数据操作/自行部署。
+
 ## 2026-10-30｜42.24.438 AI 创建旧请求取消及关闭释放（准确 SHA CI 待核）
 
 437 `be405299` 的真实 Chrome 抓到提交 POST 503 后按钮未恢复：`current()` 误跨闭包调用 `aiCreateIsCurrent429`；438 改为原 DOM + 草稿 + 项目身份，Node 合同阻止私有 helper 回归。在原 `ai429Create`/`beforeCloseModal424` Owner 内增加五种异步 HTTP 控制器及搜索计时器的关闭/切换取消，结合原 epoch/project 栅栏防旧结果/错误串窗；同条件素材 GET 仍原位去重，跨页筛选仍完整成功后才原子合并。创建 POST/审核/正式 GT/Worker 不主动中断；客户端 AbortSignal 并不表示服务端已停止执行。标签核对减少重复 code 展示，前端原生 JS/路由/数据库不变。精确 SHA CI 与真实大库 P95 待验，详见 `docs/superpowers/plans/2026-10-16-ai-annotation-cleaning-scope.md`。

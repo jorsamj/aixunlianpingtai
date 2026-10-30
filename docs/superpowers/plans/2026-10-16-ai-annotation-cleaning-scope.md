@@ -1,5 +1,14 @@
 # AI 预标注、清洗范围与提示词创建体验实施计划
 
+## 2026-10-30｜42.24.439 创建任务防重复与原回执恢复（待精确 SHA CI）
+
+- 问题：原创建 UI 只禁止本次打开期间的并行 POST；服务端使用随机 Task ID，若 Worker 已收到任务但 HTTP 回执因代理/网络中断丢失，下一次点击会创建第二个真实 AI 任务。**浏览器按钮门禁并非服务端幂等**。
+- 后端：原 `AnnotationTaskCreateReq` 新增可选 `request_id`，旧调用合同完全兼容；服务端按项目 + ID 算确定 `AI_ANNOTATION` Task ID，以本地已有 `FileLock` 对相同 ID 跨进程序列化，并在原 `TaskRepository` 和 `ArtifactStore.request.json` 中记录完整用户请求的 SHA256 绑定。相同配置再次 POST 返回原任务（202、`idempotent=true`），同 ID 改配置 409；`GET .../annotation-tasks/by-request/{request_id}` 只按原 Task 真值查回执，不能把孤立准备产物当成功。没有重建新任务表、缓存或 Worker。
+- 创建页：最终配置第一次核对时生成稳定 ID，配置发生变化才更换；提交失败后沿用原 ID，网络错误先查询原回执，成功后展示原任务；既有模型/素材、跨页选择、正式 GT 不变。不重复自动调用模型/创建任务。
+- **438 精确 SHA Chrome 结果**：`7254db9c` 的 browser-navigation (1) 有 4 个创建用例失败；三路模型/标签/模板实际响应因新增 `hydrationEpoch` 未初始化，`++undefined` 为 `NaN`、旧响应判断失效，一直显示骨架。参考分页 `referenceRequestEpoch` 与试跑 `previewEpoch` 同源风险。439 在唯一创建草稿一次性初始化全部五类请求 epoch 为 0，增加 Node 静态合同，待 439 Chrome 重验；不得把 438 当作绿版。
+- 本地回归：原标注 API 模块加入请求重复、后续模型配置变化仍返回原冻结快照、冲突配置 409、非法 ID 与未知 ID 404，**28/28 通过**；原 Node 增 `request_id` 合同，Chrome E2E 增两次模拟 503 同 ID。完成全量 Node / 精确 SHA CI 后才能宣称本批通过；未运行真实远程模型或生产网络、没有 P95 结论。
+- 遗留：人工审核 `/decisions` 的断线提交幂等和状态查询；任务列表历史索引/跨页搜索与聚合列；独立导航工作页；OSS 原图/远程模型的真实浏览器分段耗时和视觉评估。无生产部署和数据变更。
+
 ## 2026-10-30｜42.24.438 创建页请求生命周期主动取消续批（待精确 CI）
 
 ### 需求与原始缺口

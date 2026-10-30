@@ -91,6 +91,58 @@ def test_annotation_task_create_is_private_and_worker_queued(
     assert request["model_config_revision"] == body["model_config_revision"]
 
 
+def test_annotation_create_request_id_recovers_receipt_without_second_task(
+    client, seeded_project, isolated_task_runtime, monkeypatch,
+):
+    project_id, image = seeded_project
+    monkeypatch.setattr(app_module, "_v35_model_items", lambda: [{
+        "id": "model-retry", "name": "初始模型", "model_name": "vision-v1",
+        "provider_type": "local_openai", "detect_url": "http://vision.local/v1",
+    }])
+    payload = {
+        "image_ids": [image["id"]], "labels_text": "fire",
+        "model_config_id": "model-retry", "request_id": "ai-retry-receipt-001",
+    }
+    first = client.post(f"/api/v60/projects/{project_id}/annotation-tasks", json=payload)
+    assert first.status_code == 202, first.text
+    task_id = first.json()["id"]
+    assert task_id.startswith("ai")
+    receipt = client.get(
+        f"/api/v60/projects/{project_id}/annotation-tasks/by-request/{payload['request_id']}"
+    )
+    assert receipt.status_code == 200 and receipt.json()["id"] == task_id
+
+    # A later model edit must not cause a retry to freeze a different version.
+    monkeypatch.setattr(app_module, "_v35_model_items", lambda: [])
+    retry = client.post(f"/api/v60/projects/{project_id}/annotation-tasks", json=payload)
+    assert retry.status_code == 202 and retry.json()["id"] == task_id
+    assert retry.json()["idempotent"] is True
+    repository, artifacts = isolated_task_runtime
+    assert len(repository.list(project_id=project_id, kinds={TaskKind.AI_ANNOTATION}).items) == 1
+    assert len(artifacts.read_json(task_id, "request.json")["create_request_identity"]) == 64
+
+    changed = client.post(f"/api/v60/projects/{project_id}/annotation-tasks", json={
+        **payload, "business_instruction": "different setting",
+    })
+    assert changed.status_code == 409
+    assert len(repository.list(project_id=project_id, kinds={TaskKind.AI_ANNOTATION}).items) == 1
+
+
+def test_annotation_create_request_id_rejects_invalid_and_missing_receipts(
+    client, seeded_project, isolated_task_runtime,
+):
+    project_id, image = seeded_project
+    invalid = client.post(f"/api/v60/projects/{project_id}/annotation-tasks", json={
+        "image_ids": [image["id"]], "labels_text": "fire",
+        "request_id": "../invalid",
+    })
+    assert invalid.status_code == 422
+    missing = client.get(
+        f"/api/v60/projects/{project_id}/annotation-tasks/by-request/ai-missing-task-001"
+    )
+    assert missing.status_code == 404
+
+
 def test_annotation_task_freezes_template_version_and_task_prompt_override(
     client, seeded_project, isolated_task_runtime, monkeypatch,
 ):
