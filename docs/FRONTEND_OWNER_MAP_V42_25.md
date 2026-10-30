@@ -1208,3 +1208,5 @@ Status: **CLOSED** on `refactor/frontend-runtime-stabilization`.
 - Training-detail traffic is compared with equal request counts: first-minute 40 requests are `40×296,333 B` legacy versus `296,333 B + 39×428 B` current. The first history read is included.
 - Full evidence and trace paths are recorded in `docs/VNEXT_FINAL_DIFFERENTIAL_AUDIT_2026_10_13.md`; GitHub Ubuntu and production data remain unverified.
 
+> **2026-10-30 / 42.24.430**：429 Chrome 发现隐藏但未移除的原训练弹窗需要继续接收自身后台列表失败提示；原 `training-submit.js` 依据同一 DOM 根及 task_id 判定，无并行 Toast/Submit Owner，替换表单仍安全。Node 59/59，准 SHA CI 待核。见 [P0 台账](performance/2026-10-29-p0-followup.md)。
+

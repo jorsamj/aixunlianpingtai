@@ -3238,3 +3238,4 @@ VERSION `42.24.300` adds one project-scoped coordination fence between canonical
 ## 2026-10-29｜训练素材状态及可新增标签范围修复（42.24.412，CI 待核）
 
 唯一长期开发分支 `feature/external-algorithm-publishing`；本轮从已确认远端 `95ebbe5a3afa82aa88a8b5d0c6e8a8ee9bbcda49` / `42.24.411` 继续，目标 VERSION `42.24.412`，准确新提交 SHA、是否推送及全部 CI 应在提交后核实，**未部署生产**。唯一权威需求、RED/GREEN、根因、代码、风险和本轮验收状态见 [训练工作台专项](TRAINING_CREATE_FOUR_MODES_UI_2026_10_10.md)。原 `selection-summary` 现独立返回仅选中素材有效正式 GT 正样本的 `positive_label_codes`；新增标签不再来自全项目字典，选材变化撤销无证据勾选；上一版本继承排序和 class_id 原合同不变；普通 Picker 不再以笼统待审核代替标注状态，按目标确认负样本与正式 preflight 仍安全保留。12k 隔离素材回归已新增；Node/Python、浏览器准确 SHA 最终状态需按提交证据更新。后续按原 [P0 性能记录](performance/2026-10-29-p0-followup.md) 继续真实 HAR、跨 Worker、芯片探测现场验收；不得因本次 UI 修复宣称生产 P95 已验。
+> **2026-10-30 / 42.24.430**：429 `a3cee98c` 完整 Actions 38 成功/1 失败，Chrome 唯一 `refresh-error` 是成功关窗后后台列表刷新失败被新归属保护误抑制；430 仅允许原 DOM 根与任务 ID 未变时提示，仍隔离替换训练弹窗。Node 59/59，本次新 SHA CI 待核；唯一台账 [P0 进度](performance/2026-10-29-p0-followup.md)，未部署。

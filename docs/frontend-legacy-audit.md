@@ -1446,3 +1446,5 @@ Status: **CLOSED** on `refactor/frontend-runtime-stabilization`.
 - Node 24.19 direct frontend selection is 952/952 and the VNext quality/recovery Chrome slice is 7/7. The equal-request 1000/720 benchmark is `40×full=11.3042 MiB` versus `1×full+39×compact=0.2985 MiB`, including initial history.
 - Final VNext Node 24 full Chrome is 143/149, leaving only the same six baseline failures. `docs/VNEXT_FINAL_DIFFERENTIAL_AUDIT_2026_10_13.md` owns the per-test evidence. Production imagery, OSS, GPU and GitHub Ubuntu remain `NOT VERIFIED`.
 
+> **2026-10-30 / 42.24.430**：429 `a3cee98c` Chrome refresh-error 回归发现原窗隐藏仍需关联列表失败通知；430 只更正 `refreshCreatedLists` 同原 DOM/任务 ID 归属，不恢复旧提示污染新窗，Node 59/59。准确 SHA CI 待验，生产未部署。详见 [P0 台账](performance/2026-10-29-p0-followup.md)。
+

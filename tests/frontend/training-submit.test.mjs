@@ -1129,6 +1129,14 @@ test('late related-list failure does not toast into a different task form', asyn
   cleanup(fixture.runtime);
 });
 
+test('original closed training form can still report background list refresh failure', async () => {
+  const fixture=createCloseTimingFixture({reloadRelated:async()=>{throw new Error('refresh unavailable');}});
+  assert.ok(await fixture.runtime.submit());
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(fixture.notices.some(message=>message.includes('列表刷新失败')),true);
+  cleanup(fixture.runtime);
+});
+
 test('uncertain creation blocks direct repeated invocation for the same task id', async () => {
   let posts=0;
   const fixture=createCloseTimingFixture({fetch:async (_url,init)=>{if(init?.method==='POST'){posts++;throw new Error('network');}return {ok:false,status:404};}});

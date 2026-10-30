@@ -493,7 +493,7 @@ export function installTrainingSubmitRuntime({
       console.warn?.('training task created but list refresh failed', refreshError);
       const activeForm = document.querySelector?.('.train429-create');
       if (!destroyed && String(projectId?.() || '') === String(pid)
-          && (!activeForm || (ownsSubmissionModal()
+          && (!activeForm || (activeForm === submissionRoot
             && String(document.getElementById?.('tr429TaskId')?.value || '') === String(taskId)))) {
         notifyUser('训练任务已创建；列表刷新失败，请稍后手动刷新查看');
       }

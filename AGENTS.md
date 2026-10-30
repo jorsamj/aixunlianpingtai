@@ -1,3 +1,7 @@
+## 2026-10-30｜42.24.430 Chrome 关联刷新错误提示定向纠正
+
+429 SHA `a3cee98c` 的 39 条 GitHub Actions 38 绿/1 红，唯一真实 Chrome `refresh-error` 在旧窗成功关闭后仍应告知后台列表刷新失败。430 仅修原 `TrainingSubmitRuntime.refreshCreatedLists` 的归属边界：原 DOM 根、原 task_id 保留合法提示，替换表单继续隔离。Node 59/59；430 自身 Chrome/CI 待准 SHA 验收。唯一 P0 台账 `docs/performance/2026-10-29-p0-followup.md`；生产未部署、未删除素材。
+
 ## 2026-10-30｜42.24.429 P0 旧训练弹窗通知归属与 428 复核
 
 基线 `b13d8705`／42.24.428，准确 SHA GitHub Actions 38/38 completed/success。413/415/416/425/427 的训练资源快照、空摘要、迭代角色免 SHA、默认当前页/原全池入口退役与 Chrome 断言已有代码，不重复建设。新 RED 证明旧训练创建 POST 成功返回后仍可向替换表单发送旧通知；仅在原 Submit Owner 增加成功/恢复/关联刷新提示的弹窗归属栅栏，保留任务 ID、UNKNOWN 幂等和 Worker/GT 合同。生产 A800 磁盘、26.5s、精确角色冷索引、ZIP 404、实际 GPU 预算、多类别与工作副本清理现场均 NOT VERIFIED；未部署/删除。唯一进度台账 `docs/performance/2026-10-29-p0-followup.md`，本批准确 SHA CI 待推送后核验。
