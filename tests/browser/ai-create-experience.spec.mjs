@@ -108,7 +108,7 @@ test('closing and reopening fences stale AI create hydration and remains usable 
   await page.screenshot({path: testInfo.outputPath('ai-create-mobile-390x844.png'), fullPage: false});
 });
 
-test('AI create keeps the form on configuration or submit failure and fences duplicate submit', async ({page}) => {
+test('AI create keeps the form on configuration or submit failure and fences duplicate submit', async ({page}, testInfo) => {
   let modelReads = 0;
   let submitCount = 0;
   await page.route('**/api/v35/model-configs', async route => {
@@ -146,6 +146,22 @@ test('AI create keeps the form on configuration or submit failure and fences dup
   await page.locator('#ai429MaterialGrid button').first().click();
   await expect(page.locator('#ai429MaterialCount')).toContainText('已选 1 张');
   await page.locator('#ai429Prompt').fill('保留本次输入 {{labels_json}} {{output_schema}}');
+  await page.locator('#ai429Submit').click();
+  await expect(page.locator('#ai429Confirmation')).toBeVisible();
+  await expect(page.locator('#ai429Confirmation')).toContainText('1张素材');
+  await expect(page.locator('#ai429Confirmation')).toContainText('场景视觉模型');
+  await expect(page.locator('#ai429Confirmation')).toContainText('明火 (fire)');
+  expect(submitCount).toBe(0);
+  await page.locator('.ai-create-advanced').click();
+  await page.locator('#ai429Threshold').fill('0.6');
+  await expect(page.locator('#ai429Confirmation')).toBeHidden();
+  await page.locator('#ai429Submit').click();
+  await expect(page.locator('#ai429Confirmation')).toContainText('60%');
+  expect(submitCount).toBe(0);
+  for(const viewport of [{width:1920,height:1080},{width:1440,height:900},{width:1366,height:768}]){
+    await page.setViewportSize(viewport);
+    await page.screenshot({path:testInfo.outputPath(`ai-create-confirmation-${viewport.width}x${viewport.height}.png`),fullPage:false});
+  }
   await page.locator('#ai429Submit').click();
   await page.evaluate(() => window.submitAiLabel429());
   await expect.poll(() => submitCount).toBe(1);

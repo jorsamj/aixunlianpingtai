@@ -1,3 +1,5 @@
+> **2026-10-30 / 42.24.436 AI 创建最终确认续批（本批准确 SHA CI 待验）**：从 HEAD `2470ef2a`／VERSION 435 接手，仅在原 `ai429Create` 内实现核对真实有效配置→用户二次确认→原 POST，配置变化确认失效、提交门禁、旧对话框返回栅栏、空阈值校验；新版 CSS/JS 资源键与回归已补。完整 Node 在正常隔离环境 **1415/1415 通过**（沙箱初始 Uppy 临时符号链接测试权限限制）；本地隔离 FastAPI 可启动，但 Chrome 缺失且下载 0 MiB ZIP，真实浏览器/最终 SHA CI 待验。后端跨历史任务搜索与统计、独立路由、服务端请求幂等、OSS/模型性能及生产 HAR/P95 **均未完成**。准确范围、证据与接续顺序见 [唯一 AI 计划](superpowers/plans/2026-10-16-ai-annotation-cleaning-scope.md)；未部署/改生产 GT。
+
 > **2026-10-30 / 42.24.434 AI 自动标注真实单图试跑**：433 的代码提交 `80502b0d` 精确 22/22 GitHub Actions、真实 Chrome 307/307 已验。本批在原 v60 AI annotation API/Worker 适配器上增量增加单素材显式真实试跑，输出不会创建 Task/Candidate 或覆盖 GT；创建区同层选图、错误重试与结果变更失效。详细测试与遗留见 [唯一 AI 计划](superpowers/plans/2026-10-16-ai-annotation-cleaning-scope.md)；本批最终 SHA CI、真实远程模型和 OSS 性能未验，未部署。
 
 > **2026-10-30 / 42.24.429**：428 基线 `b13d8705` 已核准确 38/38 GitHub Actions 全绿；413/415/416/425/427 的 P0 Owner 已存在。此次原 TrainingSubmit 迟到成功/核验结果不再提示到替换的训练弹窗，原持久任务/GT/幂等不动；生产 A800 磁盘、请求 P50/P95、角色精确冷索引、ZIP 恢复、多类别 Worker 与副本清理均未现场验证。见 [唯一 P0 进度](performance/2026-10-29-p0-followup.md)，429 自身 SHA CI 待推送核验，未部署。

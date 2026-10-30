@@ -4505,9 +4505,16 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   window.previewAiPrompt429=async function(){const draft=aiCreateCurrent429(),root=document.getElementById('ai429PromptPreview');if(!draft||!root)return;const epoch=draft.epoch,prompt=String(document.getElementById('ai429Prompt')?.value||'');root.innerHTML='<span class="loading-line">正在生成最终提示词预览…</span>';try{const labels=[...draft.labels].map(code=>{const row=(state.labels||[]).find(label=>String(label.code)===code)||{};return{code,display_name_zh:aiCreateLabelName429(row)||code}});const result=await api('/api/v35/prompt-templates/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt,labels,image_width:640,image_height:480,business_instruction:String(document.getElementById('ai429Instruction')?.value||'')})});if(aiCreateIsCurrent429(epoch))root.innerHTML=`<pre>${esc(result.rendered_prompt||'')}</pre>`}catch(error){if(aiCreateIsCurrent429(epoch))root.innerHTML=`<div class="inline-error"><span>${esc(error.message||error)}</span><button class="btn mini" onclick="previewAiPrompt429()">重试</button></div>`}};
   function aiCreatePreviewInvalidate429(){
     const draft=aiCreateCurrent429();if(!draft)return;
+    aiCreateInvalidateConfirmation429();
     draft.previewEpoch=(draft.previewEpoch||0)+1;draft.previewController?.abort?.();draft.previewController=null;draft.previewLoading=false;
     const root=document.getElementById('ai429InferenceResult');if(root)root.innerHTML='<div class="muted-line">配置或素材已变化，请重新试跑。此前结果不会作为本次配置的依据。</div>';
     const button=document.getElementById('ai429InferenceStart');if(button){button.disabled=false;button.textContent='对这张素材试跑'}
+  }
+  function aiCreateInvalidateConfirmation429(){
+    const draft=aiCreateCurrent429();if(!draft?.confirmationSnapshot||draft.submitting)return;
+    draft.confirmationSnapshot='';
+    const root=document.getElementById('ai429Confirmation');if(root)root.hidden=true;
+    const button=document.getElementById('ai429Submit');if(button)button.textContent='核对并创建';
   }
   function aiCreateRenderPreviewSamples429(){
     const draft=aiCreateCurrent429(),select=document.getElementById('ai429PreviewImage');if(!draft||!select)return;
@@ -4608,12 +4615,18 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     const explicit=[...new Set((opts.image_ids||[]).map(String).filter(Boolean))];
     const initial=explicit;
     state.ai429RefLabels=new Set();state.ai429RefSelected=new Set();
-    state.ai429Create={epoch,images:new Set(initial),labels:new Set(),modelId:'',templateId:'',page:1,pageSize:12,query:'',materialItems:[],materialTotal:0,materialLoading:false,materialError:'',materialRequestEpoch:0,materialRequestKey:'',materialPending:null,bulkEpoch:0,bulkLoading:false,bulkCount:0,bulkError:'',selectionTouched:explicit.length>0,locked:explicit.length>0,referencePage:1,referencePageSize:8,referenceQuery:'',referenceItems:[],referenceTotal:0,referenceLoading:false,referenceLoaded:false,referenceError:''};
+    state.ai429Create={epoch,images:new Set(initial),labels:new Set(),modelId:'',templateId:'',taskName:`AI自动标注-${new Date().toLocaleString()}`,confirmationSnapshot:'',submitting:false,page:1,pageSize:12,query:'',materialItems:[],materialTotal:0,materialLoading:false,materialError:'',materialRequestEpoch:0,materialRequestKey:'',materialPending:null,bulkEpoch:0,bulkLoading:false,bulkCount:0,bulkError:'',selectionTouched:explicit.length>0,locked:explicit.length>0,referencePage:1,referencePageSize:8,referenceQuery:'',referenceItems:[],referenceTotal:0,referenceLoading:false,referenceLoaded:false,referenceError:''};
     modal('创建AI自动标注任务',`<div class="ailabel427 ai429 ai-create-workbench" data-ai-create-epoch="${epoch}"><div id="ai429Hydration" class="ai-create-hydration"><span class="loading-line">正在同步模型、模板与标签；可先选择素材…</span></div><section class="ai-create-section"><header><div><b>1. 选择待标注素材</b><span>只分页读取未标注素材，不会加载完整素材池；跨页选择会持续保留。</span></div><strong id="ai429MaterialCount">已选 ${initial.length} 张</strong></header><div class="ai-create-toolbar"><input id="ai429MaterialQ" class="input" placeholder="搜索素材名称" oninput="searchAiCreateMaterials429()"></div><div id="ai429MaterialGrid" class="ai-create-material-grid"><div class="ai-create-loading"><i></i><span>准备素材分页…</span></div></div><div id="ai429MaterialPager" class="ai-create-pager"></div></section><section class="ai-create-section"><header><div><b>2. 选择视觉模型</b><span>只展示已配置模型；任务创建时冻结模型版本与安全凭据引用。</span></div></header><input id="ai429Model" type="hidden"><div id="ai429Models" class="ai-create-models"><div class="skeleton-line"></div></div></section><section class="ai-create-section"><header><div><b>3. 选择有效标签</b><span>必须显式选择当前标签库英文 code；中文名、别名、历史 alias 不会自动转换。</span></div><strong id="ai429LabelCount">已选 0 个</strong></header><input id="ai429Labels" type="hidden"><input id="ai429LabelQ" class="input" placeholder="搜索标签中文名或 code" oninput="aiCreateRenderLabels429()"><div id="ai429LabelGrid" class="ai-create-label-grid"><div class="skeleton-line"></div></div></section><section class="ai-create-section"><header><div><b>4. 提示词</b><span>模板是起点；当前任务可独立编辑，提交后冻结，不受模板后续修改影响。</span></div></header><div class="form two"><div class="field"><label>提示词模板</label><select id="ai429Template" class="select" onchange="aiCreateTemplateChanged429()"><option>正在读取…</option></select></div><div class="field"><label>业务补充说明</label><input id="ai429Instruction" class="input" maxlength="2000" placeholder="例如：只标注清晰可见且面积大于 20px 的目标" oninput="scheduleAiPromptPreview429()"></div></div><div class="field"><div class="row between"><label>本任务完整提示词</label><button type="button" class="btn mini" onclick="restoreAiPrompt429()">恢复模板原文</button></div><textarea id="ai429Prompt" class="input ai-create-prompt" rows="7" maxlength="12000" placeholder="正在读取提示词…" oninput="this.dataset.userEdited='1';scheduleAiPromptPreview429()"></textarea><small>允许变量：labels_json、image_width、image_height、business_instruction、output_schema。</small></div><details class="ai-create-preview"><summary>预览最终提示词</summary><div id="ai429PromptPreview"><span>选择标签后生成预览</span></div></details></section><details class="advanced427-box ai-create-advanced"><summary>高级设置</summary><div class="form two"><div class="field"><label>置信度阈值</label><input id="ai429Threshold" class="input" type="number" min="0" max="1" step="0.01" value="0.45"></div><div class="field check"><label><input id="ai429Overwrite" type="checkbox"> 覆盖相同标签旧标注</label></div></div></details><div class="ai-create-footer"><span>候选结果仍须人工审核后才写入正式标注。</span><div class="row"><button class="btn" onclick="closeModal()">取消</button><button id="ai429Submit" class="btn primary" onclick="submitAiLabel429()">创建AI标注任务</button></div></div></div>`,true);
     const advanced=document.querySelector(`.ai-create-workbench[data-ai-create-epoch="${epoch}"] .ai-create-advanced`);
     if(advanced){advanced.insertAdjacentHTML('beforeend','<section class="ai429-ref"><header><div><b>参考图片（可选）</b><span>仅作为视觉示例，不会自动添加或改变本次标签。</span></div><input id="ai429RefQ" class="input" placeholder="搜索已标注参考素材" oninput="searchAiCreateReferences429()"></header><div id="ai429ReferenceCount" class="muted-line">已选 0 张 · 仅作视觉示例，不改变任务标签</div><div id="ai429RefGrid" class="ai-create-material-grid"><div class="empty compact">展开高级设置后按需读取</div></div><div id="ai429RefPager" class="ai-create-pager"></div></section>');advanced.addEventListener('toggle',()=>window.aiCreateReferenceOpened429?.(advanced),{passive:true})}
     document.getElementById('ai429MaterialPager')?.insertAdjacentHTML('afterend','<div id="ai429BulkFeedback" class="ai-create-bulk-feedback" role="status" aria-live="polite"></div>');
     document.querySelector('.ai-create-workbench .ai-create-preview')?.insertAdjacentHTML('afterend',`<section class="ai-create-section ai-create-inference"><header><div><b>5. 试跑一张素材（可选）</b><span>调用所选模型真实检测，结果仅在此展示，不生成任务、候选记录或正式标注。远程模型可能产生调用费用。</span></div></header><div class="row ai-create-inference-toolbar"><select id="ai429PreviewImage" class="select" aria-label="选择试跑素材" onchange="aiCreatePreviewSampleChanged429(this.value)"><option value="">请先选择素材</option></select><button type="button" id="ai429InferenceStart" class="btn" onclick="runAiCreatePreview429()" disabled>对这张素材试跑</button></div><div id="ai429InferenceResult" role="status" aria-live="polite"><span class="muted-line">选好素材、模型和标签后，可先试跑一张图检查效果。</span></div></section>`);
+    document.querySelector('.ai-create-workbench .ai-create-footer')?.insertAdjacentHTML('beforebegin','<section id="ai429Confirmation" class="ai-create-confirmation" role="region" aria-label="本次创建配置确认" hidden></section>');
+    const submit=document.getElementById('ai429Submit');if(submit)submit.textContent='核对并创建';
+    const createRoot=document.querySelector(`.ai-create-workbench[data-ai-create-epoch="${epoch}"]`);
+    createRoot?.addEventListener('input',event=>{if(event.target?.matches?.('#ai429Overwrite,#ai429Threshold,#ai429Instruction,#ai429Prompt'))aiCreateInvalidateConfirmation429()});
+    createRoot?.addEventListener('change',event=>{if(event.target?.matches?.('#ai429Overwrite,#ai429Threshold,#ai429Instruction,#ai429Prompt,#ai429Template'))aiCreateInvalidateConfirmation429()});
+    createRoot?.addEventListener('click',event=>{if(event.target?.closest?.('#ai429RefGrid [data-image-id]'))aiCreateInvalidateConfirmation429()});
     document.getElementById('ai429Threshold')?.addEventListener('input',aiCreatePreviewInvalidate429);
     aiCreateRenderMaterials429();loadAiCreateMaterials429();return epoch;
   };
@@ -7724,9 +7737,25 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     const unknown=parts.filter(value=>!allowed.has(value));
     return {text:parts.join('、'),unknown};
   }
+  function renderAiCreateConfirmation429(body){
+    const root=document.getElementById('ai429Confirmation');if(!root)return;
+    const model=(state.modelConfigs||[]).find(row=>String(row.id)===body.model_config_id)||{};
+    const template=(state.promptTemplates||[]).find(row=>String(row.id)===body.prompt_template_id)||{};
+    const labelNames=body.labels_text.split('、').map(code=>{
+      const row=(state.labels||[]).find(label=>String(label.code)===code);
+      return `${aiCreateLabelName429(row)||code} (${code})`;
+    });
+    const field=(title,value)=>`<div><span>${esc(title)}</span><strong>${esc(value)}</strong></div>`;
+    root.innerHTML=`<header><div><span class="ai-create-confirm-kicker">创建前最后核对</span><h3>本次 AI 标注任务概览</h3><p>以下为即将提交的实际选项，确认后才创建任务；正式标注仍须人工审核。</p></div><span class="ai-create-confirm-count">${body.image_ids.length}<small>张素材</small></span></header>
+      <div class="ai-create-confirm-grid">${field('任务名称',body.task_name)}${field('视觉模型',`${model.name||model.model_name||body.model_config_id} · ${model.provider_adapter||model.provider_type||'已配置'}`)}${field('目标标签',labelNames.join('、'))}${field('置信度阈值',`${Math.round(body.threshold*100)}%`)}${field('已有标注处理',body.overwrite?'审核后按现有覆盖合同处理相同标签':'保留已有标注，不主动覆盖')}${field('参考素材',`${body.reference_image_ids.length} 张（可选）`)}${field('提示词模板',body.prompt_template_id?`${template.name||body.prompt_template_id} · v${Number(template.version||1)}`:'模型默认模板')}${field('业务补充说明',body.business_instruction||'无')}</div>
+      <details class="ai-create-confirm-prompt"><summary>查看本次完整提示词配置</summary><pre>${esc(body.prompt_override||'未单独覆盖；使用所选模型及模板的冻结提示词')}</pre></details>
+      <p class="ai-create-confirm-note">预计处理 ${body.image_ids.length} 张素材；真实模型调用次数可能因重试不同。创建后以任务回执及后端冻结配置为准。</p>`;
+    root.hidden=false;
+    root.scrollIntoView?.({block:'nearest'});
+  }
   window.submitAiLabel429=async function(ids=[]){
     const submit=document.getElementById('ai429Submit');if(submit?.disabled)return false;
-    const draft=state.ai429Create||{};
+    const draft=state.ai429Create||{};if(draft.submitting)return false;
     if(draft.bulkLoading)return toast('请等待当前筛选结果解析完成后再创建任务');
     if(!ids.length)ids=[...(draft.images||new Set())];
     if(!ids.length)return toast('没有需要标注的图片');
@@ -7739,22 +7768,37 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
       image_ids:ids.map(String),
       labels_text:parsed.text,
       reference_image_ids:[...(state.ai429RefSelected||new Set())].map(String),
-      threshold:+document.getElementById('ai429Threshold')?.value||.45,
+      threshold:Number(document.getElementById('ai429Threshold')?.value??.45),
       overwrite:!!document.getElementById('ai429Overwrite')?.checked,
-      task_name:`AI自动标注-${new Date().toLocaleString()}`,
+      task_name:String(draft.taskName||`AI自动标注-${new Date().toLocaleString()}`),
       model_config_id:modelConfigId,
       prompt_template_id:String(document.getElementById('ai429Template')?.value||'')||null,
       prompt_override:String(document.getElementById('ai429Prompt')?.value||'').trim(),
       business_instruction:String(document.getElementById('ai429Instruction')?.value||'').trim(),
     };
+    if(document.getElementById('ai429Threshold')?.value===''||!Number.isFinite(body.threshold)||body.threshold<0||body.threshold>1)return toast('置信度阈值必须在 0 到 1 之间');
+    const snapshot=JSON.stringify(body);
+    if(draft.confirmationSnapshot!==snapshot){
+      draft.confirmationSnapshot=snapshot;
+      renderAiCreateConfirmation429(body);
+      if(submit)submit.textContent='确认创建任务';
+      return false;
+    }
+    const ownerEpoch=draft.epoch,ownerProject=String(pid());
+    const current=()=>state.ai429Create===draft&&aiCreateIsCurrent429(ownerEpoch)&&String(pid())===ownerProject;
+    draft.submitting=true;
     try{
       if(submit){submit.disabled=true;submit.textContent='正在创建…'}
       const task=await api(taskApi(),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      if(!task?.id)throw new Error('创建请求缺少任务回执，请到任务列表核实，勿重复提交');
+      if(!current())return true;
       await closeModal();
       // The durable 202 response already is the receipt; detail refresh must
       // not delay it or turn a successful create into a creation error.
       void showAiTask60(task.id,{initialTask:task});
-    }catch(error){const submit=document.getElementById('ai429Submit');if(submit){submit.disabled=false;submit.textContent='创建AI标注任务'}toast(error.message||error)}
+      return true;
+    }catch(error){if(current()){const button=document.getElementById('ai429Submit');if(button){button.disabled=false;button.textContent='确认创建任务'}toast(error.message||error)}return false}
+    finally{draft.submitting=false}
   };
 
   function taskRow(task){

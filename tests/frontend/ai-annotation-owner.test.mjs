@@ -125,6 +125,22 @@ test('AI task creation never resolves display names or aliases into canonical la
   assert.doesNotMatch(source, /function normalizedLabelText\(/);
 });
 
+test('AI create requires an effective-configuration review before its only durable POST', () => {
+  assert.match(source, /id="ai429Confirmation"/);
+  assert.match(source, /function renderAiCreateConfirmation429\(body\)/);
+  assert.match(source, /function aiCreateInvalidateConfirmation429\(\)/);
+  const start = source.lastIndexOf('window.submitAiLabel429=async function(ids=[])');
+  const end = source.indexOf('\n\n  function taskRow', start);
+  const submit = source.slice(start, end);
+  assert.match(submit, /const snapshot=JSON\.stringify\(body\)/);
+  assert.match(submit, /if\(draft\.confirmationSnapshot!==snapshot\)/);
+  assert.match(submit, /renderAiCreateConfirmation429\(body\)/);
+  assert.ok(submit.indexOf('renderAiCreateConfirmation429(body)') < submit.indexOf('const task=await api(taskApi(),'));
+  assert.match(submit, /if\(draft\.submitting\)return false/);
+  assert.match(submit, /draft\.submitting=true/);
+  assert.match(submit, /if\(!current\(\)\)return true/);
+});
+
 
 test('AI review commit temporarily owns polling without racing the task list poller', () => {
   const start = source.lastIndexOf('window.completeAiReview60=async mode=>');
