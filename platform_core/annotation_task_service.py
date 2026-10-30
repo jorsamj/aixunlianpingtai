@@ -117,6 +117,15 @@ def _assert_generation_commit(context) -> None:
         raise InterruptedError("AI annotation task cancelled before candidate commit")
 
 
+def sync_annotation_statistics(repository, task, store: CandidateStore) -> dict[str, int]:
+    """Refresh a task-list projection from the authoritative per-task SQLite store."""
+    counts = store.statistics()
+    projection = getattr(repository, "set_annotation_statistics", None)
+    if task.kind is TaskKind.AI_ANNOTATION and callable(projection):
+        projection(task.task_id, counts)
+    return counts
+
+
 def run_ai_annotation(
     context,
     *,
@@ -213,6 +222,7 @@ def run_ai_annotation(
     ) as append_candidate:
         for index in range(start, len(images)):
             if context.cancel_requested():
+                sync_annotation_statistics(context.repository, context.task, store)
                 return WorkerOutcome(TaskStatus.CANCELLED, "candidates/manifest.json")
             image = images[index]
             try:
@@ -273,9 +283,11 @@ def run_ai_annotation(
                 stage="AI_ANNOTATION",
                 current_item=str(image.get("id") or ""),
             )
+            if (index + 1) % 100 == 0:
+                sync_annotation_statistics(context.repository, context.task, store)
 
 
-    summary = store.summary()
+    summary = sync_annotation_statistics(context.repository, context.task, store)
     context.artifacts.atomic_write_json(context.task.task_id, "generation.json", {
         "summary": summary,
         "generation_partial": bool(failed),
@@ -682,6 +694,7 @@ def commit_confirmed_review(context):
         cancelled=context.cancel_requested,
         review_scope=review_scope,
     )
+    sync_annotation_statistics(context.repository, context.task, store)
     if mapping:
         try:
             from app import remember_project_label_aliases

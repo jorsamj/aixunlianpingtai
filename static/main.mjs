@@ -37,7 +37,7 @@ import {installTrainingCreateHydrationRuntime} from './modules/training-create-h
 import {installAutoLabelPollRuntime} from './modules/auto-label-poll-runtime.js?v=422503';
 import {annotationReviewView, annotationSavePayload, createAnnotationWorkbench, queueWindow} from './modules/annotation-workbench.js?v=422595';
 import {createTaskPoller, isTaskActive, taskProgress, waitForTaskTerminal} from './modules/task-poller.js?v=422002';
-import {annotationTaskView, buildCandidateDecisions} from './modules/annotation-task-view.js?v=422002';
+import {annotationTaskView, annotationStageStatistics, buildCandidateDecisions} from './modules/annotation-task-view.js?v=422445';
 import {applyCleanConfirmation, cleanExecutionChoices, cleanExecutionMode, cleanSchedulingRequest, cleanScopeChoices, cleanScopeRequest, cleanScopeSupportsAnnotationAudit, cleanTaskView, isActiveCleanTask} from './modules/cleaning.js?v=422570';
 import {deploymentTaskView} from './modules/deployment-tests.js?v=422519';
 import {activeLabelOptions} from './modules/labels.js?v=421800';
@@ -120,7 +120,7 @@ window.PlatformCore = {
   createAnnotoriousEditor,
   annotationWorkbench: {annotationReviewView, annotationSavePayload, createAnnotationWorkbench, queueWindow, annotationColor, withLegacyBoxIdentities},
   taskPoller: {createTaskPoller, isTaskActive, taskProgress, waitForTaskTerminal},
-  annotationTasks: {annotationTaskView, buildCandidateDecisions},
+  annotationTasks: {annotationTaskView, annotationStageStatistics, buildCandidateDecisions},
   cleaning: {applyCleanConfirmation, cleanExecutionChoices, cleanExecutionMode, cleanSchedulingRequest, cleanScopeChoices, cleanScopeRequest, cleanScopeSupportsAnnotationAudit, cleanTaskView, isActiveCleanTask},
   deployment: {deploymentTaskView},
   labels: {activeLabelOptions},

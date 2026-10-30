@@ -2,7 +2,16 @@ import test from 'node:test';
 import {readFileSync} from 'node:fs';
 import assert from 'node:assert/strict';
 
-import {annotationTaskView, buildCandidateDecisions} from '../../static/modules/annotation-task-view.js';
+import {annotationTaskView, annotationStageStatistics, buildCandidateDecisions} from '../../static/modules/annotation-task-view.js';
+
+test('stage statistics show durable journal counts only and distinguish missing projections', () => {
+  assert.equal(annotationStageStatistics({}), null);
+  const task = {stage_statistics: {total: 10, success: 6, empty: 2, failed: 2,
+    accepted: 5, rejected: 1, unreviewed: 2, boxes: 13, gt_committed: 3}};
+  assert.deepEqual(annotationStageStatistics(task), {generated: 8, failed: 2, pending: 2,
+    reviewed: 6, accepted: 5, rejected: 1, gtCommitted: 3, total: 10});
+  assert.equal(annotationStageStatistics({stage_statistics: {...task.stage_statistics, gt_committed: 9}}), null);
+});
 
 test('annotation task view exposes truthful progress and review action', () => {
   const running = annotationTaskView({status: 'RUNNING', progress: 31.7, completed_count: 38, total_count: 120, failed_count: 7});

@@ -3258,3 +3258,5 @@ VERSION `42.24.300` adds one project-scoped coordination fence between canonical
 > **2026-10-30 / 42.24.443 AI 标注全历史任务搜索（精确 SHA CI 待核）**：基线 442 `2696b6e0`／49/49 Actions 全绿。原任务列表只搜索当前 50 条，本批在唯一 `TaskRepository.tasks` 增可迁移的搜索元数据和原请求冻结时同步写，旧任务按项目锁在后台有界分批只读回填；未完整之前 202 显示索引进度、损坏 503 显式重试，不以部分数据报空；服务端 `q + status + cursor` 在 SQL 中先过滤再分页。原生 JS 防抖、Abort 与索引状态防串页，新增 unit/API/Node/Chrome 回归。未部署、未接触生产任务或 GT，GitHub 精确 SHA CI、生产 P95/OSS 实测和阶段统计/独立路由审核 P0 仍待完成。详见 [专项任务与回归](superpowers/plans/2026-10-16-ai-annotation-cleaning-scope.md)。
 ## 2026-10-30｜42.24.444 AI 审核键盘操作增量
 基线 443 `6ec1f217`；候选卡片支持可见焦点、左右选图、A/R 采用或拒绝草稿、Alt+左右翻页；不通过快捷键提交 GT，加载/输入/编辑/审核结果未知时禁用。Node 182 个文件在沙箱 181 通过，Uppy 子进程 EPERM 的单文件提升权限后 3/3 通过。真实 Chrome/OSS/P95 未验；原 AI 专项 P0 仍未完成。
+## 2026-10-30｜42.24.445 AI 标注任务阶段统计（本批 CI/生产待核）
+原 CandidateStore 候选与已提交 GT journal 为唯一统计源；TaskRepository v3 加法投影用于一次查询当前页，旧任务有界后台回填且未知不显示为 0。生成、人工审核、正式 GT 提交后更新投影，原生 JS 展示候选图、已审/待审、GT 提交记录；外部同步/当前 GT 未覆盖不在该计数中。后端 97 项、追加 4 项通过，完整前端 Node 在允许子进程环境 1421/1421 通过。真实 Chrome/OSS/P95/生产迁移未验。生产部署前要求任务 DB 一致性备份和 v2→v3 回滚演练。详见原 AI 专项文档。

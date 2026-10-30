@@ -526,6 +526,17 @@ class CandidateStore:
                     summary["unreviewed" if row["accepted"] is None else "accepted" if row["accepted"] else "rejected"] += count
         return summary
 
+    def statistics(self) -> dict[str, int]:
+        """Exact per-task stage counts, including only durably journaled GT commits.
+
+        The commit journal is written after the formal AnnotationRepository batch.
+        It means 'committed by this task', not that the GT remains unchanged today.
+        """
+        summary = self.summary()
+        with closing(self._connect()) as db:
+            summary["gt_committed"] = int(db.execute("SELECT COUNT(*) FROM commits").fetchone()[0])
+        return summary
+
     def all_items(self):
         """Compatibility only; production consumers must use iter_items."""
         return list(self.iter_items())

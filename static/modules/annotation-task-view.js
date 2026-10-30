@@ -60,6 +60,27 @@ export function annotationTaskView(task = {}) {
   };
 }
 
+export function annotationStageStatistics(task = {}) {
+  const source = task.stage_statistics;
+  if (!source || typeof source !== 'object') return null;
+  const keys = ['total', 'success', 'empty', 'failed', 'accepted', 'rejected', 'unreviewed', 'gt_committed'];
+  if (keys.some(key => !Number.isSafeInteger(source[key]) || source[key] < 0)) return null;
+  const generated = source.success + source.empty;
+  if (source.total !== generated + source.failed
+      || generated !== source.accepted + source.rejected + source.unreviewed
+      || source.gt_committed > source.accepted) return null;
+  return {
+    generated,
+    failed: source.failed,
+    pending: source.unreviewed,
+    reviewed: source.accepted + source.rejected,
+    accepted: source.accepted,
+    rejected: source.rejected,
+    gtCommitted: source.gt_committed,
+    total: source.total,
+  };
+}
+
 export function buildCandidateDecisions(items = [], {commit = true} = {}) {
   return {
     decisions: items

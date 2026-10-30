@@ -7899,7 +7899,9 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
 
   function taskRow(task){
     const view=taskView(task),labels=(task.requested_labels||[]).map(code=>window.PlatformCore.materials.labelDisplay(code,state.labels)).join('、')||'-';
-    return `<tr data-task-id="${esc(task.id)}"><td><b>${esc(task.name||task.id)}</b><div class="muted-line">${esc(labels)}</div></td><td><span class="pill ${view.active?'run':view.status==='AWAITING_CONFIRMATION'?'warn':view.status==='SUCCEEDED'?'ok':view.status==='FAILED'?'err':''}">${esc(view.statusText)}</span>${view.runtimeText?`<div class="muted-line">${esc(view.runtimeText)}</div>`:''}</td><td><div class="op427-progress"><i><em style="transform:scaleX(${Math.max(0,Math.min(100,Number(view.percent||0)))/100});transform-origin:left center"></em></i><span>${esc(view.progressText)} · ${Number(view.percent||0).toFixed(1)}%</span></div></td><td>${view.boxes}</td><td>${time(task.created_at)}<div class="muted-line">${elapsed(task)}</div></td><td><div class="row"><button class="btn mini" onclick="showAiTask60('${task.id}')">详情</button>${view.canReview?`<button class="btn mini primary" onclick="reviewAiLabel427('${task.id}')">审核</button>`:''}${view.canRetry?`<button class="btn mini" onclick="retryAiTask60('${task.id}')">重试</button>`:''}</div></td></tr>`;
+    const stats=window.PlatformCore?.annotationTasks?.annotationStageStatistics(task);
+    const stages=stats?`<div class="ai60-task-stages"><span>候选图 ${stats.generated} · 失败 ${stats.failed}</span><span>已审 ${stats.reviewed} · 待审 ${stats.pending}</span><b>GT 提交记录 ${stats.gtCommitted}</b></div>`:'<span class="muted-line">统计尚未核算</span>';
+    return `<tr data-task-id="${esc(task.id)}"><td><b>${esc(task.name||task.id)}</b><div class="muted-line">${esc(labels)}</div></td><td><span class="pill ${view.active?'run':view.status==='AWAITING_CONFIRMATION'?'warn':view.status==='SUCCEEDED'?'ok':view.status==='FAILED'?'err':''}">${esc(view.statusText)}</span>${view.runtimeText?`<div class="muted-line">${esc(view.runtimeText)}</div>`:''}</td><td><div class="op427-progress"><i><em style="transform:scaleX(${Math.max(0,Math.min(100,Number(view.percent||0)))/100});transform-origin:left center"></em></i><span>${esc(view.progressText)} · ${Number(view.percent||0).toFixed(1)}%</span></div></td><td>${stages}</td><td>${time(task.created_at)}<div class="muted-line">${elapsed(task)}</div></td><td><div class="row"><button class="btn mini" onclick="showAiTask60('${task.id}')">详情</button>${view.canReview?`<button class="btn mini primary" onclick="reviewAiLabel427('${task.id}')">审核</button>`:''}${view.canRetry?`<button class="btn mini" onclick="retryAiTask60('${task.id}')">重试</button>`:''}</div></td></tr>`;
   }
   function renderAiTaskRows60(tasks){
     const body=document.getElementById('ai60TaskRows');if(!body)return;
@@ -7922,6 +7924,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     state.ai60TaskController?.abort?.();state.ai60TaskRequestEpoch=Number(state.ai60TaskRequestEpoch||0)+1;
     state.annotationTasks60RefreshPromise=null;state.ai60TaskRequestKey='';
     clearTimeout(state.ai60TaskSearchTimer);clearTimeout(state.ai60TaskIndexTimer);
+    clearTimeout(state.ai60TaskStatsTimer);state.ai60TaskStatsRetryKey='';state.ai60TaskStatsRetryCount=0;
     window.AutoLabelPollRuntime?.deactivate?.();
     const body=document.getElementById('ai60TaskRows');if(body)body.innerHTML='<tr><td colspan="6">正在查询全部历史任务…</td></tr>';
     const run=()=>{if(state.page!=='自动标注及清洗'||(state.v427OpsTab||'label')!=='label'||String(state.ai60TaskSearch||'').trim()!==search||String(state.ai60TaskStatus||'')!==status)return;
@@ -7939,7 +7942,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     let shell=view.querySelector(':scope > .ops427[data-ai-task-shell="1"]');
     if(!shell){
       const mount=document.createElement('section');mount.className='ops427';mount.dataset.aiTaskShell='1';
-      mount.innerHTML=`<div class="ops427-head"><div class="seg"><button data-ai-tab="label" class="on" onclick="state.v427OpsTab='label';renderOps427()">AI自动标注</button><button data-ai-tab="clean" onclick="state.v427OpsTab='clean';renderOps427()">自动清洗</button></div><button class="btn primary" onclick="createAiLabel427()">＋ 创建AI标注任务</button></div><section class="panel"><div class="ai60-task-toolbar"><input class="input" id="ai60TaskSearch" value="${esc(state.ai60TaskSearch||'')}" placeholder="搜索全部历史任务名称、模型或ID" oninput="setAiTaskFilters60()"><select class="select" id="ai60TaskStatus" aria-label="按全部历史任务状态筛选" onchange="setAiTaskFilters60()"><option value="">全部状态</option>${['QUEUED','RUNNING','CANCEL_REQUESTED','AWAITING_CONFIRMATION','PARTIAL_SUCCESS','SUCCEEDED','FAILED','CANCELLED','BLOCKED_BY_ENVIRONMENT','BLOCKED_BY_HARDWARE'].map(status=>`<option value="${status}" ${state.ai60TaskStatus===status?'selected':''}>${esc(taskView({status}).statusText)}</option>`).join('')}</select></div><div class="table-wrap"><table class="table"><thead><tr><th>任务</th><th>状态</th><th>真实处理进度</th><th>候选框</th><th>创建/耗时</th><th>操作</th></tr></thead><tbody id="ai60TaskRows"></tbody></table></div><div id="ai60TaskPager" class="ai60-task-pager"></div></section>`;
+      mount.innerHTML=`<div class="ops427-head"><div class="seg"><button data-ai-tab="label" class="on" onclick="state.v427OpsTab='label';renderOps427()">AI自动标注</button><button data-ai-tab="clean" onclick="state.v427OpsTab='clean';renderOps427()">自动清洗</button></div><button class="btn primary" onclick="createAiLabel427()">＋ 创建AI标注任务</button></div><section class="panel"><div class="ai60-task-toolbar"><input class="input" id="ai60TaskSearch" value="${esc(state.ai60TaskSearch||'')}" placeholder="搜索全部历史任务名称、模型或ID" oninput="setAiTaskFilters60()"><select class="select" id="ai60TaskStatus" aria-label="按全部历史任务状态筛选" onchange="setAiTaskFilters60()"><option value="">全部状态</option>${['QUEUED','RUNNING','CANCEL_REQUESTED','AWAITING_CONFIRMATION','PARTIAL_SUCCESS','SUCCEEDED','FAILED','CANCELLED','BLOCKED_BY_ENVIRONMENT','BLOCKED_BY_HARDWARE'].map(status=>`<option value="${status}" ${state.ai60TaskStatus===status?'selected':''}>${esc(taskView({status}).statusText)}</option>`).join('')}</select></div><div class="table-wrap"><table class="table"><thead><tr><th>任务</th><th>状态</th><th>真实处理进度</th><th>标注阶段</th><th>创建/耗时</th><th>操作</th></tr></thead><tbody id="ai60TaskRows"></tbody></table></div><div id="ai60TaskPager" class="ai60-task-pager"></div></section>`;
       mount.querySelector('.ai60-task-toolbar')?.insertAdjacentHTML('beforeend','<button type="button" id="ai60TaskRefresh" class="btn" onclick="aiTaskPageRetry60()">刷新</button>');
       view.replaceChildren(mount);shell=mount;
     }
@@ -7954,6 +7957,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     const project=String(pid());if(state.ai60TaskProjectId===project)return;
     state.ai60TaskController?.abort?.();state.ai60TaskRequestEpoch=Number(state.ai60TaskRequestEpoch||0)+1;
     clearTimeout(state.ai60TaskSearchTimer);clearTimeout(state.ai60TaskIndexTimer);state.ai60TaskIndexing=null;
+    clearTimeout(state.ai60TaskStatsTimer);state.ai60TaskStatsRetryKey='';state.ai60TaskStatsRetryCount=0;
     state.ai60TaskProjectId=project;state.ai60TaskCursors=[''];state.ai60TaskPageIndex=0;state.ai60TaskNextCursor='';
     state.annotationTasks60=[];state.annotationTasks60LoadedAt=0;
   }
@@ -7987,6 +7991,18 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
       state.annotationTasks60=response.items||[];
       state.ai60TaskNextCursor=String(response.next_cursor||'');
       state.annotationTasks60LoadedAt=Date.now();
+      const statsKey=`${project}|${pageIndex}|${cursor}|${status}|${query}`;
+      if(state.ai60TaskStatsRetryKey!==statsKey){state.ai60TaskStatsRetryKey=statsKey;state.ai60TaskStatsRetryCount=0}
+      clearTimeout(state.ai60TaskStatsTimer);
+      if(response.statistics_indexing&&Number(state.ai60TaskStatsRetryCount||0)<3){
+        state.ai60TaskStatsRetryCount+=1;
+        state.ai60TaskStatsTimer=setTimeout(()=>{
+          if(state.page==='自动标注及清洗'&&(state.v427OpsTab||'label')==='label'
+              &&state.ai60TaskStatsRetryKey===statsKey){
+            void refreshAnnotationTasks60().then(items=>{if(items!==null)renderAiTaskRows60(items)}).catch(showAiTaskListError60);
+          }
+        },1800);
+      }
       return state.annotationTasks60;
     }).catch(error=>{if(!current()||error?.name==='AbortError')return null;throw error});
     const tracked=pending.finally(()=>{if(state.annotationTasks60RefreshPromise===tracked){state.annotationTasks60RefreshPromise=null;state.ai60TaskController=null}});

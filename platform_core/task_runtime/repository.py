@@ -21,7 +21,7 @@ from .sqlite_busy import busy_timeout_ms, retry_busy
 from ..gpu_resources import ensure_gpu_runtime_schema
 
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 _INIT_LOCK_TIMEOUT = 30
 
 
@@ -68,6 +68,12 @@ CREATE INDEX IF NOT EXISTS idx_task_resource
     ON tasks(resource_key, status, lease_expires_at);
 CREATE INDEX IF NOT EXISTS idx_task_project_list
     ON tasks(project_id, created_at DESC, task_id DESC);
+CREATE TABLE IF NOT EXISTS annotation_task_statistics (
+    task_id TEXT PRIMARY KEY REFERENCES tasks(task_id),
+    project_id TEXT NOT NULL,
+    counts_json TEXT NOT NULL,
+    synced_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS worker_instances (
     instance_key TEXT PRIMARY KEY,
     owner_token TEXT NOT NULL,
@@ -389,6 +395,48 @@ class TaskRepository:
                 (str(task_id),),
             ).fetchone()
         return _from_row(row) if row is not None else None
+
+    @retry_busy
+    def set_annotation_statistics(self, task_id: str, counts: dict[str, int], *, only_if_absent: bool = False) -> None:
+        """Persist one genuine CandidateStore/commit journal snapshot, never synthetic zeroes."""
+        keys = ("total", "success", "empty", "failed", "accepted", "rejected",
+                "unreviewed", "boxes", "gt_committed")
+        if set(counts) != set(keys) or any(type(counts[key]) is not int or counts[key] < 0 for key in keys):
+            raise ValueError("invalid annotation statistics")
+        if counts["total"] != counts["success"] + counts["empty"] + counts["failed"]:
+            raise ValueError("annotation generation totals do not reconcile")
+        if counts["success"] + counts["empty"] != counts["accepted"] + counts["rejected"] + counts["unreviewed"]:
+            raise ValueError("annotation review totals do not reconcile")
+        if counts["gt_committed"] > counts["accepted"]:
+            raise ValueError("formal GT journal exceeds accepted candidates")
+        with closing(self._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            task = database.execute("SELECT project_id,kind FROM tasks WHERE task_id=?", (str(task_id),)).fetchone()
+            if task is None or task["kind"] != TaskKind.AI_ANNOTATION.value:
+                raise ValueError("annotation statistics require an existing AI task")
+            conflict = ("DO NOTHING" if only_if_absent else
+                        "DO UPDATE SET counts_json=excluded.counts_json,synced_at=excluded.synced_at")
+            database.execute(
+                "INSERT INTO annotation_task_statistics(task_id,project_id,counts_json,synced_at) VALUES (?,?,?,?) "
+                f"ON CONFLICT(task_id) {conflict}",
+                (str(task_id), task["project_id"], json.dumps(counts, sort_keys=True), utc_now()),
+            )
+            database.commit()
+
+    def annotation_statistics_many(self, project_id: str, task_ids: Iterable[str]) -> dict[str, dict]:
+        ids = list(dict.fromkeys(str(task_id) for task_id in task_ids if str(task_id)))
+        if not ids:
+            return {}
+        if len(ids) > 100:
+            raise ValueError("annotation statistics lookup limited to one task page")
+        with closing(self._connect()) as database:
+            rows = database.execute(
+                f"SELECT task_id,counts_json,synced_at FROM annotation_task_statistics "
+                f"WHERE project_id=? AND task_id IN ({','.join('?' for _ in ids)})",
+                (str(project_id), *ids),
+            ).fetchall()
+        return {str(row["task_id"]): {"counts": json.loads(row["counts_json"]),
+                                      "synced_at": row["synced_at"]} for row in rows}
 
     @contextmanager
     def source_reclamation_guard(self):

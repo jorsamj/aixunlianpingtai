@@ -6,6 +6,23 @@ from platform_core.annotation_candidates import CandidateDecision, CandidateStor
 from platform_core.task_runtime import ArtifactStore, TaskKind, TaskRecord, TaskRepository, TaskStatus
 
 
+def test_candidate_statistics_count_only_durable_unique_gt_journal(tmp_path):
+    store = CandidateStore(ArtifactStore(tmp_path), task_id="statistics")
+    store.initialize(labels=["fire"], total_images=3)
+    store.append_items([
+        {"image_id": "a", "status": "success", "boxes": [{"label": "fire"}]},
+        {"image_id": "b", "status": "empty", "boxes": []},
+        {"image_id": "c", "status": "failed", "boxes": []},
+    ])
+    assert store.statistics() == dict(total=3, success=1, empty=1, failed=1,
+                                      accepted=0, rejected=0, unreviewed=2, boxes=1, gt_committed=0)
+    store.apply_decisions([CandidateDecision("a", True), CandidateDecision("b", False)])
+    assert store.statistics()["gt_committed"] == 0
+    store.record_commit_summaries([{"image_id": "a", "box_count": 1}])
+    store.record_commit_summaries([{"image_id": "a", "box_count": 1}])
+    assert store.statistics()["gt_committed"] == 1
+
+
 def test_shared_runtime_contract_exposes_annotation_dependencies(tmp_path: Path):
     artifacts = ArtifactStore(tmp_path / "artifacts")
     repository = TaskRepository(tmp_path / "tasks.sqlite3")

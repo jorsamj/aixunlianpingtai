@@ -100,7 +100,34 @@ def test_annotation_search_schema_migrates_v1_in_place_without_dropping_tasks(tm
         "total": 1, "pending": 1, "failed": 0,
     }
     with sqlite3.connect(path) as database:
-        assert int(database.execute("PRAGMA user_version").fetchone()[0]) == 2
+        assert int(database.execute("PRAGMA user_version").fetchone()[0]) == 3
+
+
+def test_annotation_statistics_migrate_from_v2_and_batch_scope_exactly(tmp_path):
+    path = tmp_path / "tasks.sqlite3"
+    repository = TaskRepository(path)
+    ai = TaskRecord.new("ai-real", "p1", TaskKind.AI_ANNOTATION, "request.json", "vision:m")
+    repository.create(ai)
+    repository.create(TaskRecord.new("training", "p1", TaskKind.TRAINING, "request.json", "gpu:m"))
+    # Simulate a previously deployed schema-v2 database with existing task rows.
+    with sqlite3.connect(path) as db:
+        db.execute("DROP TABLE annotation_task_statistics")
+        db.execute("PRAGMA user_version=2")
+    migrated = TaskRepository(path)
+    assert migrated.get("ai-real") is not None
+    assert migrated.annotation_statistics_many("p1", ["ai-real"]) == {}
+    counts = dict(total=3, success=1, empty=1, failed=1, accepted=1,
+                  rejected=0, unreviewed=1, boxes=2, gt_committed=1)
+    migrated.set_annotation_statistics("ai-real", counts)
+    assert migrated.annotation_statistics_many("p1", ["ai-real"])["ai-real"]["counts"] == counts
+    assert migrated.annotation_statistics_many("p2", ["ai-real"]) == {}
+    assert migrated.annotation_statistics_many("p1", ["training"]) == {}
+    with pytest.raises(ValueError):
+        migrated.set_annotation_statistics("training", counts)
+    with pytest.raises(ValueError):
+        migrated.set_annotation_statistics("ai-real", {**counts, "gt_committed": 2})
+    with sqlite3.connect(path) as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 3
 
 
 def test_annotation_search_legacy_batch_backfill_is_bounded_and_reports_corrupt(tmp_path):

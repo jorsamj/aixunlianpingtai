@@ -264,6 +264,50 @@ def test_annotation_task_nonqueued_status_does_not_scan_global_pending_queue(
     assert response.json()["items"][0]["id"] == task_id
 
 
+def test_annotation_stage_statistics_are_durable_and_batch_read_without_candidate_scan(
+    client, seeded_project, isolated_task_runtime, monkeypatch,
+):
+    project_id, _ = seeded_project
+    repository, artifacts = isolated_task_runtime
+    task_id = _awaiting(project_id, 3, repository, artifacts)
+    endpoint = f"/api/v60/projects/{project_id}/annotation-tasks"
+    # Old tasks have no projection. A list must not invent a plausible zero.
+    old = client.get(endpoint).json()["items"][0]
+    assert old["stage_statistics"] is None
+    # Opening this one task reconciles the authoritative candidate store.
+    detail = client.get(f"{endpoint}/{task_id}")
+    assert detail.status_code == 200
+    assert detail.json()["stage_statistics"]["unreviewed"] == 3
+    def unexpected_candidate_scan(*args, **kwargs):
+        raise AssertionError("list must not scan per-task candidate SQLite")
+    monkeypatch.setattr(CandidateStore, "summary", unexpected_candidate_scan)
+    row = client.get(endpoint).json()["items"][0]
+    assert row["stage_statistics"]["total"] == 3
+    assert row["stage_statistics"]["unreviewed"] == 3
+    assert row["stage_statistics"]["gt_committed"] == 0
+    assert row["statistics_synced_at"]
+
+
+def test_historical_statistics_backfill_is_bounded_and_never_invents_missing_evidence(
+    seeded_project, isolated_task_runtime,
+):
+    project_id, _ = seeded_project
+    repository, artifacts = isolated_task_runtime
+    valid = _awaiting(project_id, 2, repository, artifacts)
+    missing = _queued(project_id, repository, artifacts)
+    with app_module._annotation_statistics_lock:
+        app_module._annotation_statistics_pending[project_id] = {valid, missing}
+    app_module._backfill_annotation_statistics_page(project_id, repository, artifacts)
+    rows = repository.annotation_statistics_many(project_id, [valid, missing])
+    assert rows[valid]["counts"]["unreviewed"] == 2
+    assert missing not in rows
+    # A later background snapshot may not overwrite a newer human-review result.
+    newer = {**rows[valid]["counts"], "accepted": 1, "unreviewed": 1}
+    repository.set_annotation_statistics(valid, newer)
+    repository.set_annotation_statistics(valid, rows[valid]["counts"], only_if_absent=True)
+    assert repository.annotation_statistics_many(project_id, [valid])[valid]["counts"] == newer
+
+
 def test_candidate_result_is_paged_and_all_rejected_remains_false(client, seeded_project, isolated_task_runtime):
     project_id, _image = seeded_project
     repository, artifacts = isolated_task_runtime

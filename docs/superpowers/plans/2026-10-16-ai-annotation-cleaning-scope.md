@@ -1,5 +1,12 @@
 # AI 预标注、清洗范围与提示词创建体验实施计划
 
+## 2026-10-30｜42.24.445 AI 任务阶段统计持久投影（当前批准确 SHA CI 待核）
+
+- **业务口径**：候选图=`success+empty`（不等于候选框个数）；生成失败=`failed`；已审=`accepted+rejected`；待审=`unreviewed`；`gt_committed` 仅为本任务成功写入正式 AnnotationRepository 后的唯一 Image ID Commit 日志行数，**不是外部同步成功数，也不能保证今日 GT 未被别的任务覆盖**。缺乏历史证据时返回 `stage_statistics:null`，绝不把未知显示为零。
+- 统计来源仍只有原 `CandidateStore` SQLite 的 indexed candidates 与正式 GT 写入后的 commits journal。后端在生成阶段每 100 张及完成、人工决策后、Worker 正式入库后同步原 `TaskRepository` 轻量投影。列表页先正常 cursor 查询 Task，再一次 `IN(...)` 批量读当前页统计；不在 HTTP GET 上逐任务全量扫描或同步重算。旧任务仅针对可见页异步有界回填（每批 25、每项目最多暂存 200 个 ID），新数据/人工审核可覆盖旧回填，短期未知保留原位并自动限次刷新。单任务详情从权威 CandidateStore 可修复投影。
+- 原任务数据库 `PRAGMA user_version 2→3` **仅加** `annotation_task_statistics` 表，无删除/重建已有 Task、Candidate、GT。旧库保持原搜索元数据兼容；回退至 444 之前必须恢复已验证的任务 DB 备份，否则旧代码可能拒绝打开高版本 schema；不可直接把 `user_version` 改回 2 冒充回滚。**生产尚未执行迁移**。部署前需停写/获得一致性备份（含 SQLite WAL/SHM 或 SQLite backup API）、沙箱模拟升级并验证失败回滚、再按独立授权执行生产升级。
+- 定向后端 `97/97`（后加历史回填检查 `4/4`），全前端 Node 在正常子进程权限下 **1421/1421 通过**；沙箱内唯一 Uppy vendor 子进程 EPERM 不属于业务断言失败。没有真实 Chrome 三视口、外部 OSS/远程模型 P95、生产迁移/部署验证。本批**不代表 P0 完成**；下一步需独立审核路由、审阅/GT 当前态审计和外部同步真实来源对接。
+
 ## 2026-10-30｜AI 审核连续操作快捷键增量（本批待提交、Chrome 未核）
 
 - 在原 `.ai66-review` 审核工作台中增加候选卡片键盘焦点和高可见度焦点环：左右方向键在本页候选图片间移动，`A` 采用、`R` 拒绝当前焦点图，`Alt+←/→` 在有前后页时翻页。页面明确标注快捷键；失败候选不可做人工采用/拒绝。

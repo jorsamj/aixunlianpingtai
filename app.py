@@ -70,7 +70,7 @@ from platform_core.algorithms import (
 )
 from platform_core import auto_label as auto_label_core
 from platform_core.annotation_candidates import CandidateDecision, CandidateStore
-from platform_core.annotation_task_service import commit_candidate_decisions
+from platform_core.annotation_task_service import commit_candidate_decisions, sync_annotation_statistics
 from platform_core.annotation_runtime import prepare_request as prepare_annotation_request
 from platform_core.bootstrap import choose_project, choose_requested_project
 from platform_core.runtime_paths import resolve_data_dir
@@ -23471,6 +23471,7 @@ def public_annotation_task(
     summary: Optional[dict] = None,
     worker_runtime=None,
     queued_candidates=None,
+    statistics_synced_at: Optional[str] = None,
 ) -> Dict[str, Any]:
     progress_summary = summary or {}
     repository = shared_task_repository()
@@ -23533,6 +23534,8 @@ def public_annotation_task(
         "completed_count": min(total_count, completed_count) if total_count else completed_count,
         "failed_count": failed_count,
         "summary": progress_summary,
+        "stage_statistics": progress_summary if "gt_committed" in progress_summary else None,
+        "statistics_synced_at": statistics_synced_at,
     }
 
 
@@ -23935,6 +23938,55 @@ def _start_annotation_search_backfill(project_id: str) -> None:
         worker.start()
 
 
+# History reconciliation only ever touches the visible page, off the HTTP
+# request. A running/reviewing task's normal owner wins any snapshot race.
+_annotation_statistics_lock = threading.Lock()
+_annotation_statistics_pending: Dict[str, set[str]] = {}
+_annotation_statistics_workers: Dict[str, threading.Thread] = {}
+
+
+def _backfill_annotation_statistics_page(project_id: str, repository, artifacts) -> None:
+    while True:
+        with _annotation_statistics_lock:
+            pending = _annotation_statistics_pending.get(project_id, set())
+            if not pending:
+                _annotation_statistics_workers.pop(project_id, None)
+                _annotation_statistics_pending.pop(project_id, None)
+                return
+            task_ids = [pending.pop() for _ in range(min(25, len(pending)))]
+        existing = repository.annotation_statistics_many(project_id, task_ids)
+        for task_id in task_ids:
+            if task_id in existing:
+                continue
+            task = repository.get(task_id)
+            if not task or task.project_id != project_id or task.kind is not TaskKind.AI_ANNOTATION or not task.result_ref:
+                continue
+            try:
+                counts = CandidateStore(artifacts, task_id=task_id).statistics()
+                repository.set_annotation_statistics(task_id, counts, only_if_absent=True)
+            except (FileNotFoundError, ValueError, OSError, sqlite3.Error):
+                # Missing/corrupt historical evidence must remain unknown,
+                # never a fabricated zero. A later detail request can retry.
+                continue
+
+
+def _start_annotation_statistics_backfill(project_id: str, task_ids: list[str], repository, artifacts) -> None:
+    if not task_ids:
+        return
+    with _annotation_statistics_lock:
+        pending = _annotation_statistics_pending.setdefault(project_id, set())
+        pending.update(task_ids[:max(0, 200 - len(pending))])
+        active = _annotation_statistics_workers.get(project_id)
+        if active and active.is_alive():
+            return
+        worker = threading.Thread(
+            target=_backfill_annotation_statistics_page,
+            args=(project_id, repository, artifacts), name="annotation-stats-reconcile", daemon=True,
+        )
+        _annotation_statistics_workers[project_id] = worker
+        worker.start()
+
+
 @app.get("/api/v60/projects/{project_id}/annotation-tasks")
 def list_annotation_tasks(project_id: str, limit: int = 50, cursor: Optional[str] = None,
                           status: str = "", q: str = "", retry_index: bool = False):
@@ -23978,6 +24030,17 @@ def list_annotation_tasks(project_id: str, limit: int = 50, cursor: Optional[str
         cursor=cursor,
         annotation_query=query,
     )
+    statistics = repository.annotation_statistics_many(
+        project_id, [task.task_id for task in page.items],
+    )
+    missing_statistics = [
+        task.task_id for task in page.items
+        if task.task_id not in statistics and task.result_ref
+        and task.status not in {TaskStatus.QUEUED, TaskStatus.RUNNING, TaskStatus.CANCEL_REQUESTED}
+    ]
+    _start_annotation_statistics_backfill(
+        project_id, missing_statistics, repository, shared_task_artifacts(),
+    )
     worker_runtime = WorkerInstanceService(repository).list_runtime()
     queued_candidates = (
         repository.queued_candidates()
@@ -23988,12 +24051,15 @@ def list_annotation_tasks(project_id: str, limit: int = 50, cursor: Optional[str
         "items": [
             public_annotation_task(
                 task,
+                summary=(statistics.get(task.task_id) or {}).get("counts"),
+                statistics_synced_at=(statistics.get(task.task_id) or {}).get("synced_at"),
                 worker_runtime=worker_runtime,
                 queued_candidates=queued_candidates,
             )
             for task in page.items
         ],
         "next_cursor": page.next_cursor,
+        "statistics_indexing": bool(missing_statistics),
     }
 
 
@@ -24013,7 +24079,13 @@ def _require_annotation_review_task(project_id: str, task_id: str):
 @app.get("/api/v60/projects/{project_id}/annotation-tasks/{task_id}")
 def get_annotation_task(project_id: str, task_id: str):
     task = _require_annotation_review_task(project_id, task_id)
-    return public_annotation_task(task, summary=_annotation_summary(task))
+    summary = _annotation_summary(task)
+    if summary and task.kind is TaskKind.AI_ANNOTATION:
+        summary = sync_annotation_statistics(
+            shared_task_repository(), task,
+            CandidateStore(shared_task_artifacts(), task_id=task.task_id),
+        )
+    return public_annotation_task(task, summary=summary)
 
 
 @app.get("/api/v60/projects/{project_id}/annotation-material-states")
@@ -24306,7 +24378,7 @@ def _decide_annotation_candidates(project_id: str, task_id: str, payload: Annota
         store.decide_unmentioned(True, exclude=decided_ids)
     elif payload.reject_unmentioned:
         store.decide_unmentioned(False, exclude=decided_ids)
-    summary = store.summary()
+    summary = sync_annotation_statistics(shared_task_repository(), task, store)
     if summary["unreviewed"] or not payload.commit:
         return {
             "ok": True,
