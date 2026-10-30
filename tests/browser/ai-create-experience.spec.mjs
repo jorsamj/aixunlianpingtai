@@ -338,6 +338,48 @@ test('AI candidate editor stays inside the review workspace without opening a ne
   expect(new URL(page.url()).hash).toBe('');
 });
 
+test('1366x768 AI review keeps the scrollable candidates, editor, and real footer actions usable', async ({page}, testInfo) => {
+  await page.setViewportSize({width:1366,height:768});
+  await ready(page);
+  await page.evaluate(()=>{if(!state.labels.some(row=>row.code==='fire'))state.labels.push({code:'fire',display_name:'明火',status:'active'})});
+  const items=Array.from({length:24},(_,index)=>({
+    image_id:`compact-${index+1}`,filename:`candidate-${index+1}.png`,url:REVIEW_SCENE_ONE,
+    width:640,height:480,status:'completed',
+    boxes:[{id:`candidate-box-${index+1}`,label:'fire',x1:243,y1:175,x2:360,y2:408,confidence:0.91}],
+  }));
+  await page.route('**/api/v60/projects/*/annotation-tasks/ai-compact-fixture/candidates**',route=>route.fulfill({
+    status:200,contentType:'application/json',body:JSON.stringify({total:24,items,label_summary:[{label:'fire',images:24,boxes:24}]}),
+  }));
+  await page.evaluate(()=>window.reviewAiLabel427('ai-compact-fixture'));
+  const cards=page.locator('.ai66-candidate-card');
+  await expect(cards).toHaveCount(24);
+  await expect(cards.first().locator('img')).toHaveJSProperty('naturalWidth',640);
+  const position=await page.evaluate(()=>{
+    const grid=document.querySelector('.ai66-review-grid'),footer=document.querySelector('.ai66-review-footer');
+    const candidate=grid?.getBoundingClientRect(),actions=footer?.getBoundingClientRect();
+    return {scrollable:grid.scrollHeight>grid.clientHeight,gridBottom:candidate.bottom,
+      footerTop:actions.top,footerBottom:actions.bottom,windowHeight:innerHeight};
+  });
+  expect(position.scrollable).toBe(true);
+  expect(position.footerTop).toBeGreaterThanOrEqual(position.gridBottom-1);
+  expect(position.footerBottom).toBeLessThanOrEqual(position.windowHeight+1);
+  await cards.last().scrollIntoViewIfNeeded();
+  expect(await page.locator('.ai66-review-grid').evaluate(node=>node.scrollTop)).toBeGreaterThan(0);
+  await cards.last().getByRole('button',{name:'拒绝'}).click();
+  await expect(cards.last()).toHaveClass(/rejected/);
+  await expect(page.getByRole('button',{name:'采用已选择'})).toBeInViewport();
+  await page.screenshot({path:testInfo.outputPath('ai-review-1366x768-scrolled.png'),fullPage:false});
+  await cards.first().getByRole('button',{name:'编辑候选框'}).click();
+  await expect(page.locator('.ai66-review.ai66-editing .ai66-edit')).toBeVisible();
+  await expect(page.locator('#ai60EditImg')).toHaveJSProperty('naturalWidth',640);
+  await expect(page.locator('.ai66-edit-footer').getByRole('button',{name:'保存候选修改'})).toBeInViewport();
+  await page.screenshot({path:testInfo.outputPath('ai-editor-1366x768.png'),fullPage:false});
+  await page.locator('.ai66-edit-footer').getByRole('button',{name:'返回列表'}).click();
+  await expect(page.locator('.ai66-review-grid')).toBeVisible();
+  await page.getByRole('button',{name:'暂不处理'}).click();
+  await expect(page.locator('.ai-review-page-shell')).toHaveCount(0);
+});
+
 test('AI review timeout resolves the original operation receipt without a second decision POST', async ({page}) => {
   await ready(page);
   let posts=0,lookups=0;

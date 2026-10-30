@@ -1448,3 +1448,5 @@ Status: **CLOSED** on `refactor/frontend-runtime-stabilization`.
 
 > **2026-10-30 / 42.24.430**：429 `a3cee98c` Chrome refresh-error 回归发现原窗隐藏仍需关联列表失败通知；430 只更正 `refreshCreatedLists` 同原 DOM/任务 ID 归属，不恢复旧提示污染新窗，Node 59/59。准确 SHA CI 待验，生产未部署。详见 [P0 台账](performance/2026-10-29-p0-followup.md)。
 
+> **2026-10-31 / 42.24.451 AI 审核前端 Owner 边界**：只更新原 `static/app.js` 任务列表展示、唯一 `annotation-task-view.js` 统计投影、`styles.css` 短屏密度和同一 Playwright 用例；不新增 review renderer、分页或轮询 owner。当前候选结果与真实 GT owner 完全保留，Node 1427/1427，本批真实 Chrome/精确 SHA CI 待核。详见 [AI 专项](superpowers/plans/2026-10-16-ai-annotation-cleaning-scope.md)，不将历史 GT 日志冒充当前态。
+

@@ -5543,3 +5543,4 @@ GitHub 当前没有 CI status，不能把“测试代码已写”表述成“已
 - 列表与详情统一错误码、单图重试和失败隐藏框；仅错误样本 Tab 当前页最多 24 张。Snapshot、Bundle 和历史素材名称投影复用原上限 8 的元数据缓存，文件身份/素材 Revision 变化时失效，响应逐次校验实际字节。
 - Chrome 覆盖四视口、24/20k 按页请求、跨版本迟到结果、错误原因与重试。生产历史对象、OSS/A800 仍为 NOT VERIFIED；现场只读命令：`python -m scripts.diagnose_evaluation_previews --project-id ID --algorithm-id ID --version-id ID`。
 - VERSION=42.24.356，静态入口缓存=42.25.384；保留先前本地 1de328cc，不推送、不部署、不改历史评测或 Snapshot。详细证据见 docs/EVALUATION_DIAGNOSTICS_P0_2026_10_12.md。
+> **2026-10-31 / 42.24.451（本地完成、提交/CI 待核）**：GitHub 开发分支基线 `ce6eb5d5`。候选图/框/失败、采用/拒绝/待审、GT 历史提交记录由现有统计投影显示；短屏 CSS 收紧头部，原 Chrome 用例加 1366×768 下 24 张候选图滚动、按钮、编辑、退出。正常子进程权限 Node 1427/1427；浏览器/后端环境本地缺失，未验 Chrome 或生产。`VERSION.txt=42.24.451`，资源缓存键同步。后续逐项核最终 SHA Actions、生产 GT 当前态/OSS/大库 P95、SQLite 迁移备份回滚。完整细节见 [AI 专项](superpowers/plans/2026-10-16-ai-annotation-cleaning-scope.md)，禁止主分支合并或生产操作。

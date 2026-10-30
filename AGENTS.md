@@ -1,3 +1,9 @@
+## 2026-10-31｜42.24.451 AI 阶段统计展示与 1366×768 审核操作验收（本地绿，准确 SHA CI 待核）
+
+从唯一开发分支 `ce6eb5d5` / 450 接续，未获取另一会话不可见的本地 451 工作树。本批只复用原 `CandidateStore.statistics()` 已持久返回的 `boxes`，在原 `annotationStageStatistics` 审核所有数字后将任务列表分成候选图/候选框/失败、采用/拒绝/待审和明确的 **GT 历史提交记录**；缺失/损坏投影仍为待核算，不把历史提交当当前有效 GT。短屏 CSS 仅在桌面高度不超过 820px 时压缩非关键头部，保留候选区自身滚动和固定底部动作。原 Chrome `ai-create-experience` 新增 1366×768 的 24 图真实画布加载、列表内部滚动、末张拒绝、底栏可视点击及编辑器进入/返回合同，不用 1×1 图片冒充视觉验收。
+
+本地 Node 全量在正常子进程权限下 **1427/1427 通过**；受限沙箱的 Uppy vendor 子进程单文件失败，提权复跑 **3/3**。`node --check` 与差异检查通过；本环境缺系统 Chrome/FastAPI/pytest，新增 Chrome 场景和完整精确 SHA Actions 均 **NOT VERIFIED**，要以推送后运行与截图为准。没有修改后端 Task/Candidate/GT/Worker、SQLite schema、OSS、模型权重、生产环境；生产 GT 当前态审计、真实 OSS/远端模型和大库 P50/P95、任务 DB v2→v3 一致性备份迁移与回滚仍开放。不 merge main、不 tag/release、不 force push、不部署生产。唯一专项：`docs/superpowers/plans/2026-10-16-ai-annotation-cleaning-scope.md`。
+
 ## 2026-10-30｜42.24.447 AI 审核 URL 恢复与标签守卫修复（本批 CI 待核）
 
 446 精确远端 `7eb9dd3e` 当前可查询 20 个 workflow 19 成功、1 失败：`Label Normalization Contract` 的 Permanent source guards 仍检查早已退役的 `annotation-task-view.js?v=422002`，而 `static/main.mjs` 实际引用 `v=422445`；后端/前端标签合同步骤均通过。447 改为守卫实际模块引用前缀，不再跟随每次静态缓存键重复修改 CI，Node 新增守卫回归。

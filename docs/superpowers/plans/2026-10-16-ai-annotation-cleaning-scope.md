@@ -1,5 +1,12 @@
 # AI 预标注、清洗范围与提示词创建体验实施计划
 
+## 2026-10-31｜42.24.451 阶段统计真实口径及 1366×768 可操作性（准确 SHA CI 待核）
+
+- **唯一事实来源与展示修正**：原 `CandidateStore.statistics()` 持久投影已经包含 `total/success/empty/failed/accepted/rejected/unreviewed/boxes/gt_committed`，无需重扫正式 GT 或增加统计表。本批在原 `annotationStageStatistics` 统一验证 `boxes` 为非负安全整数，将列表明确分为「候选图/候选框/失败」「采用/拒绝/待审」「GT 历史提交记录」。`gt_committed` 是本任务向正式 `AnnotationRepository` 成功写入的 Image ID journal 计数，**不是当前仍有效的 GT 数量，不是外部同步数**。旧任务缺投影或非法计数保持「统计尚未核算」，不虚构零值。
+- **短屏体验**：只对桌面宽度至少 1200px、视口高度最多 820px 的审核主区收紧顶栏、KPI、过滤工具和页脚留白，不更改审核状态、分页、滚动 Owner 或移动端布局；候选图仍有独立滚动区，底部审核按钮不跟着候选图滚走。原 `ai-create-experience.spec.mjs` 新增 1366×768、24 张非生产 640×480 场景图片/候选框夹具，检查滚动容器高度、末张图拒绝点击、底栏可视性、编辑器切换和返回。原三视口截图与审核功能用例保留。
+- **验证边界**：正常子进程权限下 183 文件 Node **1427/1427**；受限 sandbox 的 Uppy vendor 子进程单文件不能运行，独立提权后 **3/3**。JS 语法/`git diff --check` 通过；本地没有系统 Chrome、FastAPI 或 pytest，新增 Chrome 验收和全量 GitHub Actions **NOT VERIFIED**，必须按最终提交 SHA 复查并下载截图。`VERSION.txt=42.24.451`，静态 app/main/module/CSS 缓存键同步。没有 Python/DB schema/生产数据变更，不部署、不迁移。
+- **后续 P0 顺序**：先锁定 451 SHA 的完整 CI 及 Chrome 三分片，再验证当前有效 GT 与历史提交的差异（只读事实审计），之后实测真实 OSS/远程模型/大库分页及审核 P50/P95；生产上线前必须一致性备份并演练 SQLite v2→v3 迁移和可恢复回滚。禁止以 CI fixture 性能、历史 GT 记录或自动化绿灯代替生产现场验收。
+
 ## 2026-10-31｜42.24.450 审核候选可视空间与 CI 角标阻断修复（准确 SHA CI 待核）
 
 - **449 精确 CI 结果**：已推送 `bc337e01bdb40ddac37f771f486205ed5404a2fa`，GitHub API 返回 **21/21 工作流已结束：20 success、1 failure**。失败唯一 [Frontend Runtime Stabilization](https://github.com/jorsamj/aixunlianpingtai/actions/runs/41126707135)，其中 Chrome browser-navigation (1)、(2)、frontend 全部 success，(3) 94/95 通过；唯一失败 `training-evaluation-diagnostics.spec.mjs:304` 的测试 `#acceptance-fixture-badge` 固定右下角覆盖了“返回独立评测”真实按钮，Playwright click 在 60 秒内被同一测试角标反复拦截。这不是 AI 审核业务/GT 失败，也不能视为通过。

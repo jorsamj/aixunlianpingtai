@@ -63,7 +63,7 @@ export function annotationTaskView(task = {}) {
 export function annotationStageStatistics(task = {}) {
   const source = task.stage_statistics;
   if (!source || typeof source !== 'object') return null;
-  const keys = ['total', 'success', 'empty', 'failed', 'accepted', 'rejected', 'unreviewed', 'gt_committed'];
+  const keys = ['total', 'success', 'empty', 'failed', 'accepted', 'rejected', 'unreviewed', 'boxes', 'gt_committed'];
   if (keys.some(key => !Number.isSafeInteger(source[key]) || source[key] < 0)) return null;
   const generated = source.success + source.empty;
   if (source.total !== generated + source.failed
@@ -71,6 +71,7 @@ export function annotationStageStatistics(task = {}) {
       || source.gt_committed > source.accepted) return null;
   return {
     generated,
+    boxes: source.boxes,
     failed: source.failed,
     pending: source.unreviewed,
     reviewed: source.accepted + source.rejected,

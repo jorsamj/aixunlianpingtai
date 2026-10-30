@@ -8,9 +8,15 @@ test('stage statistics show durable journal counts only and distinguish missing 
   assert.equal(annotationStageStatistics({}), null);
   const task = {stage_statistics: {total: 10, success: 6, empty: 2, failed: 2,
     accepted: 5, rejected: 1, unreviewed: 2, boxes: 13, gt_committed: 3}};
-  assert.deepEqual(annotationStageStatistics(task), {generated: 8, failed: 2, pending: 2,
+  assert.deepEqual(annotationStageStatistics(task), {generated: 8, boxes: 13, failed: 2, pending: 2,
     reviewed: 6, accepted: 5, rejected: 1, gtCommitted: 3, total: 10});
   assert.equal(annotationStageStatistics({stage_statistics: {...task.stage_statistics, gt_committed: 9}}), null);
+  assert.equal(annotationStageStatistics({stage_statistics: {...task.stage_statistics, boxes: undefined}}), null);
+  assert.equal(annotationStageStatistics({stage_statistics: {...task.stage_statistics, boxes: -1}}), null);
+  const app = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+  assert.match(app, /候选图 \$\{stats\.generated\} · 候选框 \$\{stats\.boxes\} · 失败/);
+  assert.match(app, /采用 \$\{stats\.accepted\} · 拒绝 \$\{stats\.rejected\} · 待审/);
+  assert.match(app, /GT 历史提交记录 \$\{stats\.gtCommitted\}/);
 });
 
 test('annotation task view exposes truthful progress and review action', () => {

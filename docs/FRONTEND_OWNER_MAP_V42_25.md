@@ -1210,3 +1210,5 @@ Status: **CLOSED** on `refactor/frontend-runtime-stabilization`.
 
 > **2026-10-30 / 42.24.430**：429 Chrome 发现隐藏但未移除的原训练弹窗需要继续接收自身后台列表失败提示；原 `training-submit.js` 依据同一 DOM 根及 task_id 判定，无并行 Toast/Submit Owner，替换表单仍安全。Node 59/59，准 SHA CI 待核。见 [P0 台账](performance/2026-10-29-p0-followup.md)。
 
+> **2026-10-31 / 42.24.451 AI 审核 Owner 小幅展示修正**：`annotationStageStatistics` 仅从已存在的 Task 投影验证并映射候选框/人工决策/历史 GT 记录，`taskRow` 只渲染；审核独立页仍由 `reviewAiLabel427`/Candidate/Annotorious 唯一 owner 管理。1366×768 CSS + 24 图 Playwright 点击/滚动回归不引入新 shell/状态。Node 1427/1427；Chrome/最终 CI 未核，生产未动。详情见 [AI 专项](superpowers/plans/2026-10-16-ai-annotation-cleaning-scope.md)。
+
