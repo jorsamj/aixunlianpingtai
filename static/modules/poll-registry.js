@@ -13,6 +13,18 @@ const TRAINING_POLL_STATUSES = new Set([
   'stopping',
   'cancel_requested',
 ]);
+const TRAINING_POLL_TASK_STATUSES = new Set([
+  'ACCEPTED',
+  'QUEUED',
+  'WAITING_RESOURCE',
+  'PREPARING',
+  'RUNNING',
+  'PAUSING',
+  'RESUMING',
+  'STOPPING',
+  'CANCEL_REQUESTED',
+  'RETRYING',
+]);
 
 export class PollRegistry {
   constructor() {
@@ -40,7 +52,7 @@ export class PollRegistry {
     return timer;
   }
 
-  startTimeout(key, ownerPages, callback, delay, {setFn = setTimeout, clearFn = clearTimeout} = {}) {
+  startTimeout(key, ownerPages, callback, delay, {setFn = setTimeout, clearFn = clearTimeout, onClear = null} = {}) {
     if (typeof callback !== 'function') throw new Error('poll callback must be a function');
     const ms = Number(delay);
     if (!Number.isFinite(ms) || ms <= 0) throw new Error('poll delay must be positive');
@@ -52,15 +64,16 @@ export class PollRegistry {
       return callback(...args);
     };
     timer = setFn(wrapped, ms);
-    this.entries.set(key, {timer, owners: ownerSet(ownerPages), clearFn, managed: true, delay: ms});
+    this.entries.set(key, {timer, owners: ownerSet(ownerPages), clearFn, onClear, managed: true, delay: ms});
     return timer;
   }
 
   clear(key) {
     const entry = this.entries.get(key);
     if (!entry) return false;
-    try { entry.clearFn(entry.timer); } catch (_) {}
     this.entries.delete(key);
+    try { entry.clearFn(entry.timer); } catch (_) {}
+    try { entry.onClear?.(); } catch (_) {}
     return true;
   }
 
@@ -94,6 +107,11 @@ export function installPollRegistry({getState} = {}) {
   const videoOwner = '视频切帧';
   const sourceOwner = '素材接入';
   const cleanOwner = '自动标注及清洗';
+  const doc = typeof document !== 'undefined' ? document : null;
+  let visibilityRefresh = null;
+  let trainingRealtimeActive = false;
+  let sourcePollingBusy = false;
+  const isVisible = () => !doc?.visibilityState || doc.visibilityState === 'visible';
 
   function state() { return getState?.() || {}; }
 
@@ -109,13 +127,15 @@ export function installPollRegistry({getState} = {}) {
   }
 
   function trainingTaskNeedsPolling(task) {
+    const taskStatus = String(task?.task_status || '').trim().toUpperCase();
+    if (taskStatus) return TRAINING_POLL_TASK_STATUSES.has(taskStatus);
     return TRAINING_POLL_STATUSES.has(String(task?.status || '').toLowerCase());
   }
 
   function replaceTrainingJobTimer() {
     const s = state();
     registry.clear('training-jobs');
-    if (String(s.page || '') !== trainingOwner) return null;
+    if (String(s.page || '') !== trainingOwner || !isVisible()) return null;
     if (!s.project?.id) return null;
     if (!(s.jobs || []).some(trainingTaskNeedsPolling)) return null;
 
@@ -129,8 +149,6 @@ export function installPollRegistry({getState} = {}) {
         try {
           if (typeof window.TrainingTaskRuntime?.refresh === 'function') {
             await window.TrainingTaskRuntime.refresh({render: true, source: 'poll'});
-          } else if (typeof window.refreshJobsOnly === 'function') {
-            await window.refreshJobsOnly();
           }
         } catch (_) {
           // Keep the last truthful state. A still-dynamic task may retry next cycle.
@@ -138,7 +156,39 @@ export function installPollRegistry({getState} = {}) {
           replaceTrainingJobTimer();
         }
       },
-      2000,
+      trainingRealtimeActive ? 10000 : 2000,
+    );
+  }
+
+  function setTrainingRealtimeActive(active) {
+    const next = Boolean(active);
+    if (trainingRealtimeActive === next) return next;
+    trainingRealtimeActive = next;
+    replaceTrainingJobTimer();
+    return next;
+  }
+
+  function syncTrainingClockTimer() {
+    const s = state();
+    const key = 'training-clock';
+    const canTick = String(s.page || '') === trainingOwner
+      && Boolean(s.project?.id)
+      && isVisible()
+      && typeof window.TrainingTaskVisibilityRuntime?.tickClock === 'function'
+      && (s.jobs || []).some(trainingTaskNeedsPolling);
+
+    if (!canTick) {
+      registry.clear(key);
+      return null;
+    }
+    const existing = registry.entries.get(key);
+    if (existing?.timer != null) return existing.timer;
+
+    return registry.startInterval(
+      key,
+      trainingOwner,
+      () => window.TrainingTaskVisibilityRuntime?.tickClock?.(1),
+      1000,
     );
   }
 
@@ -155,7 +205,7 @@ export function installPollRegistry({getState} = {}) {
       s.video424Timer = null;
     }
     registry.clear('video-frames');
-    if (String(s.page || '') !== videoOwner) return null;
+    if (String(s.page || '') !== videoOwner || !isVisible()) return null;
     if (!(s.video424 || []).some(videoTaskActive)) return null;
 
     s.video424Timer = registry.startTimeout(
@@ -182,7 +232,7 @@ export function installPollRegistry({getState} = {}) {
   function replaceCleanTaskTimer() {
     const s = state();
     registry.clear('clean-tasks-v47');
-    if (String(s.page || '') !== cleanOwner) return null;
+    if (String(s.page || '') !== cleanOwner || !isVisible()) return null;
     if (String(s.v427OpsTab || 'label') !== 'clean') return null;
     if (!(s.clean427 || []).some(cleanTaskActive)) return null;
 
@@ -205,13 +255,14 @@ export function installPollRegistry({getState} = {}) {
   function replaceSourceTimer() {
     const s = state();
     registry.clear('sources');
-    if (String(s.page || '') !== sourceOwner) return null;
-
+    if (String(s.page || '') !== sourceOwner || !isVisible()) return null;
     const callback = async () => {
       const current = state();
-      if (String(current.page || '') !== sourceOwner) return;
-      if (!current.project?.id) return;
-      if (typeof window.refreshSources422 === 'function') await window.refreshSources422();
+      if (!isVisible() || String(current.page || '') !== sourceOwner || !current.project?.id || sourcePollingBusy) return;
+      sourcePollingBusy = true;
+      try {
+        if (typeof window.refreshSources422 === 'function') await window.refreshSources422();
+      } finally {sourcePollingBusy = false;}
     };
     return registry.startInterval(
       'sources',
@@ -220,6 +271,71 @@ export function installPollRegistry({getState} = {}) {
       2500,
     );
   }
+
+  async function resyncVisiblePage() {
+    const s = state();
+    if (doc?.visibilityState && doc.visibilityState !== 'visible') return false;
+    if (!s.project?.id) return false;
+    const page = String(s.page || '');
+
+    if (page === trainingOwner) {
+      registry.clear('training-jobs');
+      try {
+        if (typeof window.TrainingTaskRuntime?.refresh !== 'function') return false;
+        await window.TrainingTaskRuntime.refresh({render: true, force: true, source: 'visibility'});
+      } finally {
+        replaceTrainingJobTimer();
+        syncTrainingClockTimer();
+      }
+      return true;
+    }
+
+    if (page === videoOwner) {
+      registry.clear('video-frames');
+      try {
+        if (typeof window.refreshVideo424Delta === 'function') await window.refreshVideo424Delta();
+      } finally {
+        replaceVideo424Timer();
+      }
+      return true;
+    }
+
+    if (page === cleanOwner && String(s.v427OpsTab || 'label') === 'clean') {
+      registry.clear('clean-tasks-v47');
+      try {
+        if (typeof window.refreshCleanOps427Delta === 'function') await window.refreshCleanOps427Delta();
+      } finally {
+        replaceCleanTaskTimer();
+      }
+      return true;
+    }
+
+    if (page === sourceOwner) {
+      registry.clear('sources');
+      try {
+        if (typeof window.refreshSources422 === 'function') await window.refreshSources422();
+      } finally {
+        replaceSourceTimer();
+      }
+      return true;
+    }
+
+    return false;
+  }
+
+  const onVisibilityChange = () => {
+    if (doc?.visibilityState === 'hidden') {
+      for (const key of ['training-jobs','training-clock','video-frames','clean-tasks-v47','sources']) registry.clear(key);
+      state().video424Timer = null;
+      return;
+    }
+    if (doc?.visibilityState !== 'visible' || visibilityRefresh) return;
+    visibilityRefresh = Promise.resolve(resyncVisiblePage()).finally(() => {
+      visibilityRefresh = null;
+      syncTrainingClockTimer();
+    });
+  };
+  doc?.addEventListener?.('visibilitychange', onVisibilityChange);
 
   const runtime = {
     registry,
@@ -230,7 +346,11 @@ export function installPollRegistry({getState} = {}) {
       return registry.startTimeout(key, ownerPages, callback, delay, options);
     },
     clear(key) { return registry.clear(key); },
+    resyncVisiblePage,
+    setTrainingRealtimeActive,
+    trainingRealtimeActive() { return trainingRealtimeActive; },
     replaceTrainingJobTimer,
+    syncTrainingClockTimer,
     replaceVideo424Timer,
     replaceCleanTaskTimer,
     replaceSourceTimer,
@@ -239,12 +359,20 @@ export function installPollRegistry({getState} = {}) {
       clearLegacyReferences(nextPage);
     },
     afterNavigate(page) {
-      if (String(page || state().page || '') === trainingOwner) return replaceTrainingJobTimer();
+      if (String(page || state().page || '') === trainingOwner) {
+        const timer = replaceTrainingJobTimer();
+        syncTrainingClockTimer();
+        return timer;
+      }
+      registry.clear('training-clock');
       return null;
     },
     snapshot() { return registry.snapshot(); },
     destroy() {
       registry.clearAll();
+      doc?.removeEventListener?.('visibilitychange', onVisibilityChange);
+      visibilityRefresh = null;
+      trainingRealtimeActive = false;
       const s = state();
       s.video424Timer = null;
       if (window.PollRegistryRuntime === runtime) window.PollRegistryRuntime = null;
@@ -255,6 +383,7 @@ export function installPollRegistry({getState} = {}) {
   window.PollRegistryRuntime = runtime;
   window.__pollRegistryInstalled = true;
   replaceTrainingJobTimer();
+  syncTrainingClockTimer();
   replaceVideo424Timer();
   replaceCleanTaskTimer();
   replaceSourceTimer();

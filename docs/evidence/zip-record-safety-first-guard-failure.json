@@ -1,0 +1,22 @@
+{
+  "head_sha": "f0eda114d97da3d2cb6bdb3a441cf5a36e332f67",
+  "purpose": "首推失败证据，不代表最终CI",
+  "failed_checks": [
+    {
+      "id": 121669683308,
+      "name": "contract (ubuntu-24.04)",
+      "status": "completed",
+      "conclusion": "failure",
+      "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40350710283/job/121669683308",
+      "head_sha": "f0eda114d97da3d2cb6bdb3a441cf5a36e332f67"
+    },
+    {
+      "id": 121669682932,
+      "name": "contract (windows-latest)",
+      "status": "completed",
+      "conclusion": "failure",
+      "html_url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/40350710283/job/121669682932",
+      "head_sha": "f0eda114d97da3d2cb6bdb3a441cf5a36e332f67"
+    }
+  ]
+}

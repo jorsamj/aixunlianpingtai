@@ -4,6 +4,9 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
+from platform_core.task_runtime import Scheduler, TaskKind, TaskStatus
+from platform_core.worker_registry import resolve_worker_registration
+
 
 TERMINAL_STATUSES = {"done", "completed", "finished", "failed", "stopped"}
 
@@ -90,29 +93,45 @@ def test_real_cpu_training_produces_verified_version_and_report(client):
             "mosaic": 0.0,
             "close_mosaic": 0,
             "seed": 7,
-            "train_image_ids": [images[0]["id"], images[1]["id"]],
-            "val_image_ids": [images[2]["id"]],
+            "train_labels": ["fire", "smoke"],
+            "split_mode": "independent_test_set",
+            "train_image_ids": [images[0]["id"], images[1]["id"], images[2]["id"]],
+            "test_image_ids": [images[3]["id"]],
+            "validation_percent": 34,
         },
     )
-    assert start.status_code == 200, start.text
-    job_id = start.json()["job"]["id"]
+    assert start.status_code == 202, start.text
+    job_id = start.json()["task"]["id"]
 
-    deadline = time.monotonic() + 300
-    job = {}
-    while time.monotonic() < deadline:
-        response = client.get(f"/api/projects/{project_id}/jobs/{job_id}")
-        response.raise_for_status()
-        job = response.json()
-        if job.get("status") in TERMINAL_STATUSES:
-            break
-        time.sleep(0.5)
+    import app as app_module
 
+    registration = resolve_worker_registration(Path(app_module.DATA_DIR), {"training"})
+    scheduler = Scheduler(
+        app_module.shared_task_repository(),
+        app_module.shared_task_artifacts(),
+        "real-yolo-e2e-worker",
+        registration.handlers,
+        registration.capabilities,
+        lease_seconds=60,
+    )
+    assert scheduler.run_once() is True
+
+    durable = app_module.shared_task_repository().get(job_id)
+    assert durable is not None and durable.status is TaskStatus.SUCCEEDED, durable
+
+    response = client.get(f"/api/projects/{project_id}/jobs/{job_id}")
+    response.raise_for_status()
+    job = response.json()
     log = client.get(f"/api/projects/{project_id}/jobs/{job_id}/log").text
     assert job.get("status") in {"done", "completed", "finished"}, log[-12_000:]
     artifact = job.get("best_path") or job.get("last_path")
     assert artifact and Path(artifact).is_file(), job
     assert job.get("artifact_verified") is True
     assert job.get("auto_version_id"), job
+
+    frozen = app_module.shared_task_artifacts().read_json(job_id, "input-freeze.json", default={})
+    assert [row["code"] for row in frozen["label_schema"]] == ["fire", "smoke"]
+    assert frozen["label_contract"]["effective_label_codes"] == ["fire", "smoke"]
 
     version_report = client.get(f"/api/v44/projects/{project_id}/jobs/{job_id}/report")
     version_report.raise_for_status()

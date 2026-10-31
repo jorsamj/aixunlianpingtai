@@ -18,6 +18,7 @@ export function annotationTaskView(task = {}) {
   const waitReason = String(task.resource_wait_reason || '').trim();
   const workerId = String(task.worker_id || '').trim();
   const attempt = Math.max(0, Math.trunc(Number(task.attempt || 0)));
+  const phase = String(task.phase || task.stage || '').toUpperCase();
   const queuedRuntime = queuePosition
     ? `资源队列第 ${queuePosition} 位${waitReason ? ` · ${waitReason}` : ''}`
     : (waitReason ? `等待资源 · ${waitReason}` : '');
@@ -25,12 +26,20 @@ export function annotationTaskView(task = {}) {
     attempt > 1
     && ['RUNNING', 'CANCEL_REQUESTED'].includes(status)
   ) ? `恢复执行 · 第 ${attempt} 次执行${workerId ? ` · Worker ${workerId}` : ''}` : '';
-  const runtimeText = ['QUEUED', 'WAITING_RESOURCE'].includes(status)
+  const reviewRuntime = phase === 'APPLYING_REVIEW'
+    ? String(task.current_item || '正在统一标签并写入正式标注')
+    : '';
+  const runtimeText = reviewRuntime || (['QUEUED', 'WAITING_RESOURCE'].includes(status)
     ? queuedRuntime
-    : (recoveryRuntime || (workerId ? `Worker ${workerId}` : ''));
+    : (recoveryRuntime || (workerId ? `Worker ${workerId}` : '')));
+  const statusText = phase === 'REVIEW_QUEUED'
+    ? '等待标注入库'
+    : phase === 'APPLYING_REVIEW'
+      ? '统一标签并入库'
+      : (LABELS[status] || status || '未知');
   return {
     status,
-    statusText: LABELS[status] || status || '未知',
+    statusText,
     percent: progress.percent,
     completed,
     total,
@@ -48,6 +57,28 @@ export function annotationTaskView(task = {}) {
     canRetry: new Set(['PARTIAL_SUCCESS', 'SUCCEEDED', 'CANCELLED', 'FAILED', 'BLOCKED_BY_ENVIRONMENT', 'BLOCKED_BY_HARDWARE']).has(status),
     accepted: task.accepted,
     error: String(task.error || '')
+  };
+}
+
+export function annotationStageStatistics(task = {}) {
+  const source = task.stage_statistics;
+  if (!source || typeof source !== 'object') return null;
+  const keys = ['total', 'success', 'empty', 'failed', 'accepted', 'rejected', 'unreviewed', 'boxes', 'gt_committed'];
+  if (keys.some(key => !Number.isSafeInteger(source[key]) || source[key] < 0)) return null;
+  const generated = source.success + source.empty;
+  if (source.total !== generated + source.failed
+      || generated !== source.accepted + source.rejected + source.unreviewed
+      || source.gt_committed > source.accepted) return null;
+  return {
+    generated,
+    boxes: source.boxes,
+    failed: source.failed,
+    pending: source.unreviewed,
+    reviewed: source.accepted + source.rejected,
+    accepted: source.accepted,
+    rejected: source.rejected,
+    gtCommitted: source.gt_committed,
+    total: source.total,
   };
 }
 

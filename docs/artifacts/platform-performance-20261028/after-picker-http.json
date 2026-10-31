@@ -1,0 +1,28 @@
+{
+  "environment": "isolated real repositories; instrumented; NOT production",
+  "samples": [
+    {
+      "case": "cold",
+      "total_ms": 186.96579999959795,
+      "response_bytes": 58147,
+      "request_id": "43e6e365bef94acabe3fbbe05501881a",
+      "server_timing": "total;dur=185.320, usage_lookup;dur=27.280, usage_pool_build;dur=58.196, role_index_build;dur=35.122, role_page;dur=69.860"
+    },
+    {
+      "case": "warm-1",
+      "total_ms": 74.7269999992568,
+      "response_bytes": 58147,
+      "request_id": "db0f69ee83c9480593ad8d91fa7e9e7d",
+      "server_timing": "total;dur=73.081, role_page;dur=31.345, usage_lookup;dur=7.887"
+    },
+    {
+      "case": "warm-2",
+      "total_ms": 73.91069999721367,
+      "response_bytes": 58147,
+      "request_id": "15bb7e87ba7e49379c91f71dc5e74c76",
+      "server_timing": "total;dur=72.899, role_page;dur=34.356, usage_lookup;dur=5.177"
+    }
+  ],
+  "lock_wait_ms": "NOT SEPARATELY MEASURED; SQL timing includes any wait",
+  "network_ms": "NOT MEASURED"
+}

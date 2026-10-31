@@ -1,19 +1,44 @@
 from __future__ import annotations
 
+from .performance_diagnostics import connect_sqlite, observe_connection, stage, count
+
 import base64
+from collections import OrderedDict
 import json
+import hashlib
+import os
+from functools import wraps
 import sqlite3
+import threading
 from contextlib import closing
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
 from typing import Any, Callable, Iterable, Mapping, Sequence, TypeVar
+
+from filelock import FileLock
 
 from .material_selection import MaterialFilters
 from .material_store import MaterialSnapshot
 
 
 _Result = TypeVar("_Result")
+_SCHEMA_VERSION = 6
+# Schema 6 adds only an index; existing read-only lifecycle evidence is identical.
+MATERIAL_READ_SCHEMA_VERSIONS = frozenset({5, 6})
+_INIT_LOCK_TIMEOUT = 30
+DATASET_DELETE_CLAIM_FIELD = "_dataset_delete_claim"
+MATERIAL_BATCH_DELETE_CLAIM_FIELD = "_material_batch_delete_claim"
+_MATERIAL_ANNOTATION_LIFECYCLE_LOCK = ".material-annotation-lifecycle.lock"
+_LIFECYCLE_LOCK_TIMEOUT = 60
+_LIFECYCLE_LOCAL = threading.local()
+_STATUS_COUNTS_CACHE_LOCK = threading.Lock()
+_STATUS_COUNTS_CACHE: OrderedDict[tuple[Any, ...], dict[str, int]] = OrderedDict()
+_STATUS_COUNTS_CACHE_LIMIT = 128
+_FILTERED_COUNTS_CACHE_LOCK = threading.Lock()
+_FILTERED_COUNTS_CACHE: OrderedDict[tuple[Any, ...], int] = OrderedDict()
+_FILTERED_COUNTS_CACHE_LIMIT = 128
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS materials (
     id TEXT PRIMARY KEY,
@@ -38,12 +63,24 @@ CREATE INDEX IF NOT EXISTS ix_materials_filename ON materials(filename COLLATE N
 CREATE INDEX IF NOT EXISTS ix_materials_created ON materials(created_at, id);
 CREATE INDEX IF NOT EXISTS ix_materials_content_sha256 ON materials(content_sha256) WHERE content_sha256 <> '';
 CREATE INDEX IF NOT EXISTS ix_materials_content_sha256_normalized ON materials(lower(trim(content_sha256))) WHERE content_sha256 <> '';
+CREATE INDEX IF NOT EXISTS ix_materials_dataset_delete_claim
+    ON materials(COALESCE(CAST(json_extract(payload_json, '$.dataset_id') AS TEXT), 'default'),
+                 json_extract(payload_json, '$._dataset_delete_claim'))
+    WHERE json_extract(payload_json, '$._dataset_delete_claim') IS NOT NULL;
 CREATE TABLE IF NOT EXISTS material_labels (
+    material_id TEXT NOT NULL REFERENCES materials(id) ON DELETE CASCADE,
+    label_code TEXT NOT NULL,
+    box_count INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(material_id, label_code)
+);
+CREATE INDEX IF NOT EXISTS ix_material_labels_code ON material_labels(label_code, material_id);
+CREATE TABLE IF NOT EXISTS material_annotation_scopes (
     material_id TEXT NOT NULL REFERENCES materials(id) ON DELETE CASCADE,
     label_code TEXT NOT NULL,
     PRIMARY KEY(material_id, label_code)
 );
-CREATE INDEX IF NOT EXISTS ix_material_labels_code ON material_labels(label_code, material_id);
+CREATE INDEX IF NOT EXISTS ix_material_annotation_scopes_code
+    ON material_annotation_scopes(label_code, material_id);
 CREATE TABLE IF NOT EXISTS material_meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -59,6 +96,21 @@ CREATE TABLE IF NOT EXISTS material_storage_audit (
     task_id TEXT NOT NULL, image_id TEXT NOT NULL, action TEXT NOT NULL,
     old_sha256 TEXT NOT NULL, new_sha256 TEXT NOT NULL, recorded_at TEXT NOT NULL,
     PRIMARY KEY(task_id,image_id)
+);
+CREATE TABLE IF NOT EXISTS material_retirements (
+    task_id TEXT NOT NULL, image_id TEXT NOT NULL, actor_id TEXT NOT NULL,
+    storage_source_id TEXT NOT NULL, object_key TEXT NOT NULL, content_sha256 TEXT NOT NULL,
+    payload_json TEXT NOT NULL, annotation_json TEXT NOT NULL, retired_at TEXT NOT NULL,
+    reclamation_state TEXT NOT NULL DEFAULT 'DEFERRED_SAFETY_UNVERIFIED',
+    reclaimed_bytes INTEGER NOT NULL DEFAULT 0 CHECK(reclaimed_bytes=0),
+    PRIMARY KEY(task_id,image_id)
+);
+CREATE INDEX IF NOT EXISTS ix_material_retirements_source
+    ON material_retirements(storage_source_id,object_key);
+CREATE TABLE IF NOT EXISTS material_cleanup_deferred (
+    cleanup_id TEXT PRIMARY KEY, image_id TEXT NOT NULL, owner TEXT NOT NULL,
+    payload_json TEXT NOT NULL, last_error TEXT NOT NULL, recorded_at TEXT NOT NULL,
+    reclamation_state TEXT NOT NULL DEFAULT 'DEFERRED_SAFETY_UNVERIFIED'
 );
 """
 
@@ -78,6 +130,56 @@ class MaterialIdPage:
 
     def __iter__(self):
         return iter(self.items)
+
+
+class AnnotationMaterialLifecycleError(RuntimeError):
+    """A formal annotation no longer matches its canonical Material identity."""
+
+
+class AnnotationProjectionConflictError(RuntimeError):
+    """The same canonical Annotation version was projected with two identities."""
+
+
+class MaterialTaskInputConflictError(RuntimeError):
+    """A task input can no longer be admitted against canonical Material truth."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = str(code)
+
+
+@contextmanager
+def material_annotation_lifecycle_fence(
+    project_path: str | Path, *, timeout: float = _LIFECYCLE_LOCK_TIMEOUT,
+):
+    """Serialize short Material lifecycle commits with formal Annotation writes.
+
+    The lock carries no business state. Reentrancy is process-thread local so
+    existing owners can compose helpers without acquiring the same FileLock
+    twice. Other threads and processes still contend on the project lock file.
+    """
+    lock_path = str(
+        (Path(project_path).resolve() / _MATERIAL_ANNOTATION_LIFECYCLE_LOCK)
+    )
+    held = getattr(_LIFECYCLE_LOCAL, "held", None)
+    if held is None:
+        held = {}
+        _LIFECYCLE_LOCAL.held = held
+    current = held.get(lock_path)
+    if current is not None:
+        current[1] += 1
+        try:
+            yield
+        finally:
+            current[1] -= 1
+        return
+    lock = FileLock(lock_path, timeout=timeout)
+    with lock:
+        held[lock_path] = [lock, 1]
+        try:
+            yield
+        finally:
+            held.pop(lock_path, None)
 
 
 def _now() -> str:
@@ -149,12 +251,12 @@ def normalize_material(value: Mapping[str, Any]) -> dict[str, Any]:
     return row
 
 
-def _encode_cursor(created_at: str, image_id: str) -> str:
+def encode_material_cursor(created_at: str, image_id: str) -> str:
     raw = json.dumps([created_at, image_id], ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
 
-def _decode_cursor(cursor: str) -> tuple[str, str]:
+def decode_material_cursor(cursor: str) -> tuple[str, str]:
     try:
         padded = str(cursor) + "=" * (-len(str(cursor)) % 4)
         value = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")))
@@ -165,22 +267,198 @@ def _decode_cursor(cursor: str) -> tuple[str, str]:
         raise ValueError("invalid material cursor") from error
 
 
+def _deferred_material_page_sql(
+    where: str, *, descending: bool, include_payload: bool, offset: bool,
+) -> str:
+    """Page narrow indexed identities before reading full material payloads.
+
+    This deliberately keeps the original WHERE and (created_at,id) ordering.
+    For ID-only or payload-dependent predicates, a CTE adds overhead without
+    avoiding a payload read, so retain the original one-pass query plan.
+    """
+    order = " DESC" if descending else ""
+    sort = f" ORDER BY m.created_at{order}, m.id{order} LIMIT ?"
+    if (not include_payload or "m.filename LIKE" in where
+            or "json_extract(m.payload_json" in where):
+        columns = "m.id, m.created_at, m.payload_json" if include_payload else "m.id, m.created_at"
+        return "SELECT " + columns + " FROM materials m" + where + sort + (" OFFSET ?" if offset else "")
+    keys = (
+        "WITH page_keys AS MATERIALIZED ("
+        "SELECT m.id, m.created_at FROM materials m" + where + sort
+        + (" OFFSET ?" if offset else "") + ") "
+    )
+    return (
+        keys + "SELECT m.id, m.created_at, m.payload_json FROM page_keys p "
+        "JOIN materials m ON m.id=p.id"
+        + f" ORDER BY p.created_at{order}, p.id{order}"
+    )
+
+
+# Backward-compatible internal aliases. New cross-module consumers should use
+# the public names so cursor ordering has one canonical codec.
+_encode_cursor = encode_material_cursor
+_decode_cursor = decode_material_cursor
+
+
+def metadata_evidence_digest(value):
+    """Stable metadata evidence digest shared by existing-owner maintenance tools."""
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"),
+                                    ensure_ascii=False, allow_nan=False).encode()).hexdigest()
+
+
+def existing_sqlite_reader(path):
+    """Open existing SQLite evidence without schema initialization or sidecars."""
+    path = Path(path)
+    wal, shm = Path(str(path) + "-wal"), Path(str(path) + "-shm")
+    for candidate in (path, wal, shm):
+        if candidate.is_symlink():
+            raise ValueError("unsafe SQLite evidence link")
+        try:
+            if getattr(candidate.lstat(), "st_file_attributes", 0) & 0x400:
+                raise ValueError("unsafe SQLite evidence reparse point")
+        except FileNotFoundError:
+            pass
+    if not path.is_file():
+        raise ValueError("existing repository is required")
+    if wal.exists() and not shm.is_file():
+        raise ValueError("unsupported WAL without existing shared memory")
+    suffix = "?mode=ro" + ("&immutable=1" if not wal.exists() else "")
+    connection = sqlite3.connect(path.resolve().as_uri() + suffix, uri=True)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA query_only=ON")
+    return connection
+
+
+def controlled_material_write_fence(function):
+    @wraps(function)
+    def fenced(self, *args, **kwargs):
+        if os.environ.get("MC_CONTROLLED_LOCAL_MATERIAL_GC") != "1":
+            return function(self, *args, **kwargs)
+        project = getattr(self, "project_path", args[0] if args else None)
+        Path(project).mkdir(parents=True, exist_ok=True)
+        with material_annotation_lifecycle_fence(project):
+            return function(self, *args, **kwargs)
+    return fenced
+
+
 class MaterialRepository:
+    @classmethod
+    def open_readonly(cls, project_path: str | Path):
+        """Read an existing supported index without initialization or migration."""
+        owner = cls.__new__(cls)
+        owner.project_path = Path(project_path)
+        owner.path = owner.project_path / "materials.sqlite3"
+        owner._read_only = True
+        with closing(owner._connect()) as database:
+            if int(database.execute("PRAGMA user_version").fetchone()[0]) not in MATERIAL_READ_SCHEMA_VERSIONS:
+                raise ValueError("unsupported read-only material schema")
+        return owner
+
     def __init__(self, project_path: str | Path) -> None:
         self.project_path = Path(project_path)
         self.project_path.mkdir(parents=True, exist_ok=True)
         self.path = self.project_path / "materials.sqlite3"
-        with closing(self._connect()) as database:
-            database.executescript(_SCHEMA)
+        self._initialize()
         self._migrate_legacy_json()
 
     def _connect(self) -> sqlite3.Connection:
-        database = sqlite3.connect(self.path, timeout=30, isolation_level=None)
+        if getattr(self, "_read_only", False):
+            database = connect_sqlite(self.path.resolve().as_uri() + "?mode=ro", uri=True, timeout=30, isolation_level=None)
+            database.row_factory = sqlite3.Row
+            return observe_connection(database)
+        database = connect_sqlite(self.path, timeout=30, isolation_level=None)
         database.row_factory = sqlite3.Row
-        database.execute("PRAGMA journal_mode=WAL")
-        database.execute("PRAGMA foreign_keys=ON")
         database.execute("PRAGMA busy_timeout=30000")
-        return database
+        database.execute("PRAGMA foreign_keys=ON")
+        return observe_connection(database)
+
+    def _read_schema_version_fast(self) -> int | None:
+        if not self.path.is_file():
+            return None
+        try:
+            with closing(
+                sqlite3.connect(self.path, timeout=0.25, isolation_level=None)
+            ) as database:
+                database.execute("PRAGMA busy_timeout=250")
+                return int(database.execute("PRAGMA user_version").fetchone()[0])
+        except sqlite3.Error:
+            return None
+
+    @controlled_material_write_fence
+    def _initialize(self) -> None:
+        if self._read_schema_version_fast() == _SCHEMA_VERSION:
+            return
+        lock = FileLock(
+            str(self.path.resolve()) + ".init.lock",
+            timeout=_INIT_LOCK_TIMEOUT,
+        )
+        with lock:
+            with closing(self._connect()) as database:
+                version = int(database.execute("PRAGMA user_version").fetchone()[0])
+                if version == _SCHEMA_VERSION:
+                    return
+                if version > _SCHEMA_VERSION:
+                    raise RuntimeError(
+                        f"material repository schema {version} is newer than supported {_SCHEMA_VERSION}"
+                    )
+                mode = str(database.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+                if mode != "wal":
+                    mode = str(database.execute("PRAGMA journal_mode=WAL").fetchone()[0]).lower()
+                if mode != "wal":
+                    raise RuntimeError(
+                        f"material repository requires WAL mode, got {mode}"
+                    )
+                database.executescript(_SCHEMA)
+                if version < 2:
+                    database.execute(
+                        """
+                        INSERT OR IGNORE INTO material_annotation_scopes(material_id, label_code)
+                        SELECT m.id, CAST(scope.value AS TEXT)
+                          FROM materials m, json_each(m.payload_json, '$.annotation_scope') AS scope
+                         WHERE trim(CAST(scope.value AS TEXT)) <> ''
+                           AND COALESCE(
+                               json_extract(m.payload_json, '$.annotation_state'),
+                               json_extract(m.payload_json, '$.annotation_status'),
+                               ''
+                           ) = 'confirmed_empty'
+                        """
+                    )
+                if version < 3:
+                    columns = {
+                        str(row[1])
+                        for row in database.execute(
+                            "PRAGMA table_info(material_labels)"
+                        ).fetchall()
+                    }
+                    if "box_count" not in columns:
+                        database.execute(
+                            "ALTER TABLE material_labels "
+                            "ADD COLUMN box_count INTEGER NOT NULL DEFAULT 0"
+                        )
+                    database.execute(
+                        """
+                        UPDATE material_labels
+                           SET box_count = COALESCE((
+                               SELECT CAST(counts.value AS INTEGER)
+                                 FROM materials m,
+                                      json_each(m.payload_json, '$.label_counts') AS counts
+                                WHERE m.id = material_labels.material_id
+                                  AND CAST(counts.key AS TEXT) = material_labels.label_code
+                                LIMIT 1
+                           ), 0)
+                        """
+                    )
+                if version < 4:
+                    database.execute("DELETE FROM material_annotation_scopes")
+                    database.execute(
+                        """
+                        INSERT OR IGNORE INTO material_annotation_scopes(material_id, label_code)
+                        SELECT m.id, TRIM(CAST(scope.value AS TEXT))
+                          FROM materials m, json_each(m.payload_json, '$.annotation_scope') AS scope
+                         WHERE TRIM(CAST(scope.value AS TEXT)) <> ''
+                        """
+                    )
+                database.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
 
     def journal_mode(self) -> str:
         with closing(self._connect()) as database:
@@ -219,6 +497,18 @@ class MaterialRepository:
     @staticmethod
     def _write_row(database: sqlite3.Connection, value: Mapping[str, Any]) -> dict[str, Any]:
         row = normalize_material(value)
+        if os.environ.get("MC_CONTROLLED_LOCAL_MATERIAL_GC") == "1" and row["storage_source_id"] == "default_local":
+            existing = database.execute("SELECT storage_source_id,object_key FROM materials WHERE id=?", (row["id"],)).fetchone()
+            if existing is None or tuple(existing) != (row["storage_source_id"], row["object_key"]):
+                project = Path(database.execute("PRAGMA database_list").fetchone()[2]).parent
+                original = project / row["object_key"]
+                if not original.is_file() or not original.resolve().is_relative_to(project.resolve()):
+                    raise ValueError("controlled local reference requires an existing canonical source")
+                current = project
+                for part in Path(row["object_key"]).parts:
+                    current = current / part
+                    if current.is_symlink() or getattr(current.lstat(), "st_file_attributes", 0) & 0x400:
+                        raise ValueError("controlled local reference cannot traverse a link")
         database.execute(
             """
             INSERT INTO materials
@@ -244,25 +534,58 @@ class MaterialRepository:
             ),
         )
         database.execute("DELETE FROM material_labels WHERE material_id = ?", (row["id"],))
+        raw_label_counts = (
+            row.get("label_counts")
+            if isinstance(row.get("label_counts"), Mapping)
+            else {}
+        )
         database.executemany(
-            "INSERT INTO material_labels(material_id, label_code) VALUES (?, ?)",
-            ((row["id"], label) for label in row["labels"]),
+            "INSERT INTO material_labels(material_id, label_code, box_count) "
+            "VALUES (?, ?, ?)",
+            (
+                (
+                    row["id"],
+                    label,
+                    max(0, int(raw_label_counts.get(label) or 0)),
+                )
+                for label in row["labels"]
+            ),
+        )
+        scopes = sorted({
+            str(label).strip()
+            for label in row.get("annotation_scope") or []
+            if str(label).strip()
+        })
+        database.execute(
+            "DELETE FROM material_annotation_scopes WHERE material_id = ?",
+            (row["id"],),
+        )
+        database.executemany(
+            "INSERT INTO material_annotation_scopes(material_id, label_code) VALUES (?, ?)",
+            ((row["id"], label) for label in scopes),
         )
         return row
 
+    @controlled_material_write_fence
     def _migrate_legacy_json(self) -> None:
         legacy = self.project_path / "images.json"
         if not legacy.is_file():
             return
-        stat = legacy.stat()
-        signature = f"{stat.st_size}:{stat.st_mtime_ns}"
+        # Fast-path the common steady state before touching a potentially large
+        # legacy JSON file. The same predicates are rechecked inside the writer
+        # transaction below, so this optimization cannot reintroduce the race.
         with closing(self._connect()) as database:
             migrated = database.execute(
                 "SELECT 1 FROM material_migrations WHERE source = 'images.json'"
             ).fetchone()
-            existing = int(database.execute("SELECT COUNT(*) FROM materials").fetchone()[0])
+            existing = int(
+                database.execute("SELECT COUNT(*) FROM materials").fetchone()[0]
+            )
         if migrated or existing:
             return
+
+        stat = legacy.stat()
+        signature = f"{stat.st_size}:{stat.st_mtime_ns}"
         value = json.loads(legacy.read_text(encoding="utf-8"))
         rows = value.get("items", []) if isinstance(value, dict) else value
         if not isinstance(rows, list):
@@ -270,6 +593,18 @@ class MaterialRepository:
         with closing(self._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
             try:
+                # Recheck after acquiring the writer transaction. Concurrent
+                # process startup may have completed the migration after this
+                # process read the legacy JSON but before BEGIN IMMEDIATE won.
+                migrated = database.execute(
+                    "SELECT 1 FROM material_migrations WHERE source = 'images.json'"
+                ).fetchone()
+                existing = int(
+                    database.execute("SELECT COUNT(*) FROM materials").fetchone()[0]
+                )
+                if migrated or existing:
+                    database.execute("ROLLBACK")
+                    return
                 for source in rows:
                     self._write_row(database, source)
                 if rows:
@@ -280,7 +615,8 @@ class MaterialRepository:
                 )
                 database.execute("COMMIT")
             except Exception:
-                database.execute("ROLLBACK")
+                if database.in_transaction:
+                    database.execute("ROLLBACK")
                 raise
 
     def read(self) -> MaterialSnapshot:
@@ -294,6 +630,99 @@ class MaterialRepository:
             row = database.execute("SELECT payload_json FROM materials WHERE id = ?", (str(image_id),)).fetchone()
         return self._row_payload(row) if row else None
 
+    def _dataset_delete_claims(self, database, dataset_id=None) -> list[dict[str, Any]]:
+        # Pin the sparse index: choosing the created_at index to satisfy ORDER
+        # BY would otherwise permit a full-table walk on every image admission.
+        query = (
+            "SELECT payload_json FROM materials INDEXED BY ix_materials_dataset_delete_claim "
+            "WHERE json_extract(payload_json, '$._dataset_delete_claim') IS NOT NULL "
+        )
+        parameters = ()
+        if dataset_id is not None:
+            # Missing/empty/false legacy identities belong to default under
+            # the existing Python predicate; filter candidates exactly below.
+            keys = ("default", "", "0", "0.0") if str(dataset_id) == "default" else (str(dataset_id),)
+            if str(dataset_id) == "True":
+                keys = ("True", "1")
+            query += ("AND COALESCE(CAST(json_extract(payload_json, '$.dataset_id') AS TEXT), 'default') "
+                      "IN (" + ",".join("?" for _ in keys) + ") ")
+            parameters = keys
+        stored = database.execute(query + "ORDER BY created_at,id", parameters).fetchall()
+        rows = [self._row_payload(row) for row in stored]
+        return [row for row in rows if row.get(DATASET_DELETE_CLAIM_FIELD) and (
+            dataset_id is None or str(row.get("dataset_id") or "default") == str(dataset_id)
+        )]
+
+    def list_dataset_delete_claims(self, dataset_id=None) -> list[dict[str, Any]]:
+        """Read only marked metadata; observe other processes without a cache."""
+        with closing(self._connect()) as database:
+            return self._dataset_delete_claims(database, dataset_id)
+
+    @controlled_material_write_fence
+    def clear_orphan_dataset_delete_claims(self, dataset_id, valid_tokens) -> list[str]:
+        """Caller retains its dataset lock and journal/active-token checks.
+
+        The common unmarked path stays read-only. Re-read under the writer
+        transaction before changing any row so newer claims/metadata survive.
+        """
+        dataset_id = str(dataset_id or "default")
+        valid_tokens = set(valid_tokens)
+        if not any(row[DATASET_DELETE_CLAIM_FIELD] not in valid_tokens
+                   for row in self.list_dataset_delete_claims(dataset_id)):
+            return []
+        with closing(self._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            try:
+                changed = []
+                for row in self._dataset_delete_claims(database, dataset_id):
+                    if row[DATASET_DELETE_CLAIM_FIELD] in valid_tokens:
+                        continue
+                    row.pop(DATASET_DELETE_CLAIM_FIELD)
+                    self._write_row(database, row)
+                    changed.append(str(row["id"]))
+                if changed:
+                    self._bump_revision(database)
+                database.execute("COMMIT")
+                return changed
+            except Exception:
+                database.execute("ROLLBACK")
+                raise
+
+    def duplicate_content_groups(self) -> dict[str, list[str]]:
+        """Indexed duplicate-image identities, shared by project audits.
+
+        Hashes come from canonical MaterialRepository, not annotation previews.
+        This read-only query does not inspect or materialize image objects.
+        """
+        groups: dict[str, list[str]] = {}
+        with closing(self._connect()) as database:
+            rows = database.execute(
+                "SELECT lower(trim(m.content_sha256)) AS digest,m.id "
+                "FROM materials m JOIN ("
+                " SELECT lower(trim(content_sha256)) AS digest FROM materials "
+                " WHERE trim(content_sha256)<>'' GROUP BY lower(trim(content_sha256)) HAVING COUNT(*)>1"
+                ") d ON lower(trim(m.content_sha256))=d.digest "
+                "ORDER BY digest,m.id"
+            ).fetchall()
+        for row in rows:
+            groups.setdefault(str(row["digest"]), []).append(str(row["id"]))
+        return groups
+
+    def get_by_content_sha256(self, content_sha256: str) -> dict[str, Any] | None:
+        content_sha256 = str(content_sha256 or "").strip().lower()
+        if (
+            len(content_sha256) != 64
+            or any(ch not in "0123456789abcdef" for ch in content_sha256)
+        ):
+            return None
+        with closing(self._connect()) as database:
+            row = database.execute(
+                "SELECT payload_json FROM materials "
+                "WHERE lower(trim(content_sha256))=? ORDER BY created_at,id LIMIT 1",
+                (content_sha256,),
+            ).fetchone()
+        return self._row_payload(row) if row else None
+
     def get_many(self, image_ids: Iterable[str]) -> list[dict[str, Any]]:
         ids = list(dict.fromkeys(str(value) for value in image_ids if str(value)))
         if not ids:
@@ -305,6 +734,126 @@ class MaterialRepository:
             ).fetchall()
         by_id = {str(row["id"]): self._row_payload(row) for row in rows}
         return [by_id[image_id] for image_id in ids if image_id in by_id]
+
+    def assert_task_input_admission(
+        self,
+        image_ids: Iterable[str],
+        *,
+        expected_inputs: Sequence[Mapping[str, Any]] | None = None,
+    ) -> None:
+        """Revalidate task inputs inside the shared Material lifecycle fence.
+
+        Storage I/O and expensive snapshot construction belong outside this
+        method.  This is the final short commit-time check before an input task
+        becomes durable, and therefore validates only canonical Material truth
+        plus any already-frozen identity evidence.
+        """
+        ids = list(dict.fromkeys(
+            str(value).strip() for value in image_ids if str(value).strip()
+        ))
+        expected_by_id = {
+            str(item.get("image_id") or item.get("id") or "").strip(): dict(item)
+            for item in (expected_inputs or ())
+            if isinstance(item, Mapping)
+            and str(item.get("image_id") or item.get("id") or "").strip()
+        }
+        if expected_by_id and set(expected_by_id) != set(ids):
+            raise MaterialTaskInputConflictError(
+                "MATERIAL_INPUT_IDENTITY_CHANGED",
+                "frozen task input identity does not match the admitted material selection",
+            )
+        with material_annotation_lifecycle_fence(self.project_path):
+            for offset in range(0, len(ids), 500):
+                chunk = ids[offset:offset + 500]
+                rows = self.get_many(chunk)
+                by_id = {str(row.get("id") or ""): row for row in rows}
+                for image_id in chunk:
+                    row = by_id.get(image_id)
+                    if row is None:
+                        raise MaterialTaskInputConflictError(
+                            "MATERIAL_INPUT_UNAVAILABLE",
+                            f"material {image_id} does not exist",
+                        )
+                    if (
+                        row.get(DATASET_DELETE_CLAIM_FIELD)
+                        or row.get(MATERIAL_BATCH_DELETE_CLAIM_FIELD)
+                    ):
+                        raise MaterialTaskInputConflictError(
+                            "MATERIAL_DELETE_IN_PROGRESS",
+                            f"material {image_id} is being deleted",
+                        )
+                    if row.get("source_available") is False:
+                        raise MaterialTaskInputConflictError(
+                            "MATERIAL_INPUT_UNAVAILABLE",
+                            f"material {image_id} source is unavailable",
+                        )
+                    expected = expected_by_id.get(image_id)
+                    if expected is None:
+                        continue
+                    current_identity = (
+                        str(row.get("storage_source_id") or ""),
+                        str(row.get("object_key") or ""),
+                        int(row.get("size_bytes") or 0),
+                        str(row.get("content_sha256") or "").strip().lower(),
+                    )
+                    expected_identity = (
+                        str(expected.get("storage_source_id") or ""),
+                        str(expected.get("object_key") or ""),
+                        int(expected.get("size_bytes") or 0),
+                        str(expected.get("sha256") or expected.get("content_sha256") or "")
+                        .strip()
+                        .lower(),
+                    )
+                    if current_identity != expected_identity:
+                        raise MaterialTaskInputConflictError(
+                            "MATERIAL_INPUT_IDENTITY_CHANGED",
+                            f"material {image_id} changed after its task input was frozen",
+                        )
+
+    def assert_formal_annotation_admission(
+        self, expected_content_sha256_by_id: Mapping[str, str | None],
+    ) -> dict[str, dict[str, Any]]:
+        """Return current Material rows only when a formal GT commit is safe.
+
+        Callers may omit an expected digest to bind an internal operation to
+        the generation current at commit time. User/candidate flows pass their
+        frozen digest so an H1 decision cannot be committed against H2.
+        """
+        expected = {
+            str(image_id): (
+                str(content_sha256 or "").strip().lower() or None
+            )
+            for image_id, content_sha256 in expected_content_sha256_by_id.items()
+            if str(image_id)
+        }
+        if len(expected) > 500:
+            raise ValueError("formal annotation admission is limited to 500 image ids")
+        with material_annotation_lifecycle_fence(self.project_path):
+            rows = self.get_many(expected)
+            by_id = {str(row.get("id") or ""): row for row in rows}
+            for image_id, expected_hash in expected.items():
+                row = by_id.get(image_id)
+                if row is None:
+                    raise AnnotationMaterialLifecycleError(
+                        f"material {image_id} does not exist"
+                    )
+                if (
+                    row.get(DATASET_DELETE_CLAIM_FIELD)
+                    or row.get(MATERIAL_BATCH_DELETE_CLAIM_FIELD)
+                ):
+                    raise AnnotationMaterialLifecycleError(
+                        f"material {image_id} is being deleted"
+                    )
+                if row.get("source_available") is False:
+                    raise AnnotationMaterialLifecycleError(
+                        f"material {image_id} source is unavailable"
+                    )
+                current_hash = str(row.get("content_sha256") or "").strip().lower()
+                if expected_hash is not None and expected_hash != current_hash:
+                    raise AnnotationMaterialLifecycleError(
+                        f"material {image_id} content changed"
+                    )
+            return by_id
 
     def find_existing_content_hashes(self, hashes: Iterable[str]) -> set[str]:
         """Return normalized content SHA256 values already indexed by the repository."""
@@ -464,51 +1013,166 @@ class MaterialRepository:
         return self.count_filtered(filters)
 
     def summary(self) -> dict[str, int]:
-        """Read indexed counters without hydrating material payloads or files."""
-        with closing(self._connect()) as database:
-            row = database.execute("""SELECT COUNT(*) AS total,
-                COALESCE(SUM(annotated), 0) AS annotated,
-                COALESCE(SUM(box_count), 0) AS boxes
-                FROM materials""").fetchone()
-            return {**{key: int(row[key]) for key in row.keys()},
-                    "revision": self._revision(database)}
+        """Reuse the revision-keyed material counters for F5/bootstrap summaries."""
+        counts = self.processing_status_counts()
+        return {key: counts[key] for key in ("total", "annotated", "boxes", "revision")}
 
     def count_filtered(self, filters: MaterialFilters | Mapping[str, Any] | None = None) -> int:
         clauses, params = self._filters(filters)
-        where = " WHERE " + " AND ".join(clauses) if clauses else ""
         with closing(self._connect()) as database:
-            return int(database.execute("SELECT COUNT(*) FROM materials m" + where, params).fetchone()[0])
+            database.execute("BEGIN")
+            try:
+                value = self._count_filtered_snapshot(database, clauses, params)
+                database.execute("COMMIT")
+                return value
+            except Exception:
+                if database.in_transaction:
+                    database.execute("ROLLBACK")
+                raise
 
+    @stage("material.filtered_count")
+    def _count_filtered_snapshot(self, database, clauses, params) -> int:
+        """Reuse one exact count only while the authoritative Material revision agrees.
+
+        Never cache a result independently of project DB identity and revision;
+        an external worker's completed write invalidates the next read.
+        """
+        stat = self.path.stat()
+        key = (str(self.path.resolve()), stat.st_dev, stat.st_ino,
+               self._revision(database), tuple(clauses), tuple(params))
+        with _FILTERED_COUNTS_CACHE_LOCK:
+            cached = _FILTERED_COUNTS_CACHE.get(key)
+            if cached is not None:
+                _FILTERED_COUNTS_CACHE.move_to_end(key)
+                count("material_filtered_count_cache_hits")
+                return cached
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        total = int(database.execute("SELECT COUNT(*) FROM materials m" + where, params).fetchone()[0])
+        with _FILTERED_COUNTS_CACHE_LOCK:
+            _FILTERED_COUNTS_CACHE[key] = total
+            _FILTERED_COUNTS_CACHE.move_to_end(key)
+            while len(_FILTERED_COUNTS_CACHE) > _FILTERED_COUNTS_CACHE_LIMIT:
+                _FILTERED_COUNTS_CACHE.popitem(last=False)
+        return total
+
+    @stage("material.status_counts")
+    def processing_status_counts(self, storage_source_ids: Sequence[str] | None = None) -> dict[str, int]:
+        """One read-only, revision-keyed projection for material summary counters.
+
+        Only the two status badges respect the storage source filter; the
+        dashboard totals always span every source. Search/labels constrain the
+        visible page, not these counters. A revision change invalidates the
+        bounded cross-request cache, including writes by other workers.
+        """
+        sources = tuple(sorted(set(str(item) for item in (storage_source_ids or ()) if str(item))))
+        stat = self.path.stat()
+        with closing(self._connect()) as database:
+            database.execute("BEGIN")
+            try:
+                revision = self._revision(database)
+                key = (str(self.path.resolve()), stat.st_dev, stat.st_ino, revision, sources)
+                with _STATUS_COUNTS_CACHE_LOCK:
+                    cached = _STATUS_COUNTS_CACHE.get(key)
+                    if cached is not None:
+                        _STATUS_COUNTS_CACHE.move_to_end(key)
+                if cached is not None:
+                    database.execute("COMMIT")
+                    return dict(cached)
+                status_source_clause = ""
+                if sources:
+                    status_source_clause = "m.storage_source_id IN (" + ",".join("?" for _ in sources) + ") AND "
+                row = database.execute(
+                    "SELECT "
+                    "COUNT(*) AS total, "
+                    "COALESCE(SUM(m.annotated),0) AS annotated, "
+                    "COALESCE(SUM(m.box_count),0) AS boxes, "
+                    "COALESCE(SUM(CASE WHEN " + status_source_clause + "m.processing_status IN "
+                    "('unprocessed','pending_decision','cleaning') THEN 1 ELSE 0 END),0) AS unprocessed, "
+                    "COALESCE(SUM(CASE WHEN " + status_source_clause + "m.processing_status='processed' "
+                    "THEN 1 ELSE 0 END),0) AS processed "
+                    "FROM materials m", (*sources, *sources),
+                ).fetchone()
+                result = {key: int(row[key]) for key in ("total", "annotated", "boxes", "unprocessed", "processed")}
+                result["revision"] = int(revision)
+                database.execute("COMMIT")
+            except Exception:
+                if database.in_transaction:
+                    database.execute("ROLLBACK")
+                raise
+        with _STATUS_COUNTS_CACHE_LOCK:
+            _STATUS_COUNTS_CACHE[key] = dict(result)
+            _STATUS_COUNTS_CACHE.move_to_end(key)
+            while len(_STATUS_COUNTS_CACHE) > _STATUS_COUNTS_CACHE_LIMIT:
+                _STATUS_COUNTS_CACHE.popitem(last=False)
+        return result
+
+    @stage("material.list_page")
     def list_page(
-        self, *, cursor: str | None = None, limit: int = 100, query: str = "",
+        self, *, cursor: str | None = None, page: int | None = None,
+        limit: int = 100, query: str = "",
         storage_source_ids: Sequence[str] | None = None, processing_status: str | None = None,
         labels: Sequence[str] | None = None, annotated: bool | None = None,
         split: str | None = None, annotation_state: str | None = None,
+        sort_order: str = "oldest",
     ) -> MaterialPage:
+        if sort_order not in ("oldest", "newest"):
+            raise ValueError("sort_order must be oldest or newest")
+        descending = sort_order == "newest"
         bounded = max(1, min(1000, int(limit)))
+        if page is not None and cursor:
+            raise ValueError("page and cursor cannot be used together")
         filter_values = MaterialFilters(
             query=query, storage_source_ids=tuple(storage_source_ids or ()),
             processing_status=processing_status, split=split, labels=tuple(labels or ()),
             annotated=annotated, annotation_state=annotation_state,
         )
-        clauses, params = self._filters(filter_values)
-        if cursor:
-            created_at, image_id = _decode_cursor(cursor)
-            clauses.append("(m.created_at > ? OR (m.created_at = ? AND m.id > ?))")
-            params.extend((created_at, created_at, image_id))
-        where = " WHERE " + " AND ".join(clauses) if clauses else ""
         with closing(self._connect()) as database:
-            rows = database.execute(
-                "SELECT m.id, m.created_at, m.payload_json FROM materials m" + where + " ORDER BY m.created_at, m.id LIMIT ?",
-                [*params, bounded + 1],
-            ).fetchall()
+            database.execute("BEGIN")
+            try:
+                base_clauses, base_params = self._filters(filter_values)
+                total = self._count_filtered_snapshot(database, base_clauses, base_params)
+                offset = None
+                if page is not None:
+                    try:
+                        page_number = int(page)
+                    except (TypeError, ValueError) as error:
+                        raise ValueError("page must be a positive integer") from error
+                    total_pages = max(1, (total + bounded - 1) // bounded)
+                    if page_number < 1:
+                        raise ValueError("page must be a positive integer")
+                    if page_number > total_pages:
+                        raise ValueError(
+                            f"page {page_number} exceeds total_pages {total_pages}"
+                        )
+                    offset = (page_number - 1) * bounded
+
+                clauses = list(base_clauses)
+                params = list(base_params)
+                if cursor:
+                    created_at, image_id = _decode_cursor(cursor)
+                    op = "<" if descending else ">"
+                    clauses.append(f"(m.created_at {op} ? OR (m.created_at = ? AND m.id {op} ?))")
+                    params.extend((created_at, created_at, image_id))
+                where = " WHERE " + " AND ".join(clauses) if clauses else ""
+                sql = _deferred_material_page_sql(
+                    where, descending=descending, include_payload=True, offset=offset is not None,
+                )
+                query_params = [*params, bounded + 1]
+                if offset is not None:
+                    query_params.append(offset)
+                rows = database.execute(sql, query_params).fetchall()
+                database.execute("COMMIT")
+            except Exception:
+                if database.in_transaction:
+                    database.execute("ROLLBACK")
+                raise
         visible = rows[:bounded]
         next_cursor = None
         if len(rows) > bounded and visible:
             next_cursor = _encode_cursor(str(visible[-1]["created_at"]), str(visible[-1]["id"]))
         return MaterialPage(
             items=[self._row_payload(row) for row in visible], next_cursor=next_cursor,
-            total=self.count_filtered(filter_values),
+            total=total,
         )
 
     def iter_filtered_ids(
@@ -542,6 +1206,102 @@ class MaterialRepository:
         page = self.list_page(**kwargs)
         return MaterialIdPage([str(row["id"]) for row in page.items], page.next_cursor, page.total)
 
+    def label_usage(self) -> dict[str, dict[str, int]]:
+        """Aggregate label usage from the normalized label index."""
+        with closing(self._connect()) as database:
+            rows = database.execute(
+                """
+                SELECT label_code AS label,
+                       COUNT(*) AS images,
+                       SUM(box_count) AS boxes
+                  FROM material_labels
+                 WHERE box_count > 0
+                 GROUP BY label_code
+                 ORDER BY label_code
+                """
+            ).fetchall()
+        return {
+            str(row["label"]): {
+                "images": int(row["images"] or 0),
+                "boxes": int(row["boxes"] or 0),
+            }
+            for row in rows
+        }
+
+    def label_reference_usage(self) -> dict[str, dict[str, int]]:
+        """Count positive and all-state scope references from normalized indexes."""
+        with closing(self._connect()) as database:
+            positive = {
+                str(row["label"]): int(row["images"] or 0)
+                for row in database.execute(
+                    "SELECT label_code AS label, COUNT(*) AS images "
+                    "FROM material_labels GROUP BY label_code"
+                ).fetchall()
+            }
+            scoped = {
+                str(row["label"]): int(row["images"] or 0)
+                for row in database.execute(
+                    "SELECT label_code AS label, COUNT(*) AS images "
+                    "FROM material_annotation_scopes "
+                    "WHERE label_code <> '*' GROUP BY label_code"
+                ).fetchall()
+            }
+        return {
+            code: {
+                "positive_images": positive.get(code, 0),
+                "scope_images": scoped.get(code, 0),
+                "affected_images": positive.get(code, 0) + scoped.get(code, 0),
+            }
+            for code in sorted(set(positive) | set(scoped))
+        }
+
+    def label_reference_preview(self, label_codes: Sequence[str]) -> dict[str, int]:
+        codes = list(dict.fromkeys(
+            str(code).strip() for code in (label_codes or ())
+            if str(code).strip() and str(code).strip() != "*"
+        ))
+        if not codes:
+            return {
+                "positive_images": 0,
+                "scope_images": 0,
+                "affected_images": 0,
+                "boxes": 0,
+            }
+        if len(codes) > 100:
+            raise ValueError("label reference preview is limited to 100 labels")
+        placeholders = ",".join("?" for _ in codes)
+        with closing(self._connect()) as database:
+            positive = int(database.execute(
+                f"SELECT COUNT(DISTINCT material_id) FROM material_labels "
+                f"WHERE label_code IN ({placeholders})",
+                codes,
+            ).fetchone()[0])
+            scoped = int(database.execute(
+                f"SELECT COUNT(DISTINCT material_id) FROM material_annotation_scopes "
+                f"WHERE label_code IN ({placeholders})",
+                codes,
+            ).fetchone()[0])
+            affected = int(database.execute(
+                "SELECT COUNT(DISTINCT material_id) FROM ("
+                f"SELECT material_id FROM material_labels WHERE label_code IN ({placeholders}) "
+                "UNION ALL "
+                f"SELECT material_id FROM material_annotation_scopes WHERE label_code IN ({placeholders})"
+                ")",
+                [*codes, *codes],
+            ).fetchone()[0])
+            boxes = int(database.execute(
+                f"SELECT COALESCE(SUM(box_count),0) FROM material_labels "
+                f"WHERE label_code IN ({placeholders})",
+                codes,
+            ).fetchone()[0])
+        return {
+            "positive_images": positive,
+            "scope_images": scoped,
+            "affected_images": affected,
+            "boxes": boxes,
+        }
+
+    @controlled_material_write_fence
     def upsert(self, record: Mapping[str, Any]) -> dict[str, Any]:
         image_id = str(record.get("id") or "")
         with closing(self._connect()) as database:
@@ -558,6 +1318,7 @@ class MaterialRepository:
                 raise
         return persisted
 
+    @controlled_material_write_fence
     def upsert_many(self, records: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
         incoming = [dict(record) for record in records]
         if not incoming:
@@ -579,6 +1340,7 @@ class MaterialRepository:
                 raise
         return persisted
 
+    @controlled_material_write_fence
     def patch(self, patches: Mapping[str, Mapping[str, Any]]) -> list[dict[str, Any]]:
         changed = []
         with closing(self._connect()) as database:
@@ -599,6 +1361,134 @@ class MaterialRepository:
                 raise
         return changed
 
+    @controlled_material_write_fence
+    def patch_annotation_projections(
+        self, projections: Mapping[str, Mapping[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Apply derived Annotation projections without allowing version regression."""
+        incoming = {
+            str(image_id): dict(projection)
+            for image_id, projection in projections.items()
+            if str(image_id)
+        }
+        if len(incoming) > 500:
+            raise ValueError("annotation projection batch is limited to 500 image ids")
+        if not incoming:
+            return []
+        changed = []
+        with closing(self._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            try:
+                for image_id, projection in incoming.items():
+                    incoming_version = int(projection.get("annotation_version") or 0)
+                    incoming_digest = str(
+                        projection.get("annotation_hash") or ""
+                    ).strip()
+                    if incoming_version <= 0 or not incoming_digest:
+                        raise ValueError(
+                            "annotation projection requires a positive version and digest"
+                        )
+                    existing = database.execute(
+                        "SELECT payload_json FROM materials WHERE id = ?",
+                        (image_id,),
+                    ).fetchone()
+                    if existing is None:
+                        continue
+                    current = self._row_payload(existing)
+                    current_version = int(current.get("annotation_version") or 0)
+                    current_digest = str(current.get("annotation_hash") or "").strip()
+                    if incoming_version < current_version:
+                        continue
+                    if incoming_version == current_version:
+                        if incoming_digest != current_digest:
+                            raise AnnotationProjectionConflictError(
+                                f"material {image_id} annotation projection version "
+                                f"{incoming_version} has conflicting digests"
+                            )
+                        # Equal GT version/hash may still have legacy/stale
+                        # derived preview and label fields from older workers.
+                        # Repair only evidence-backed projections, never
+                        # permit a different digest at the same version.
+                        drifted = any(
+                            field in projection and current.get(field) != projection[field]
+                            for field in (
+                                "annotation_preview", "labels", "label_counts",
+                                "annotation_scope",
+                            )
+                        )
+                        if not drifted:
+                            continue
+                    current.update(projection)
+                    changed.append(self._write_row(database, current))
+                if changed:
+                    self._bump_revision(database)
+                database.execute("COMMIT")
+            except Exception:
+                if database.in_transaction:
+                    database.execute("ROLLBACK")
+                raise
+        return changed
+
+    def record_deferred_cleanup(self, record, *, owner, error):
+        import hashlib
+        payload=json.dumps(dict(record),ensure_ascii=False,sort_keys=True)
+        identity=hashlib.sha256((str(owner)+':'+payload).encode()).hexdigest()
+        with closing(self._connect()) as database:
+            database.execute('INSERT INTO material_cleanup_deferred(cleanup_id,image_id,owner,payload_json,last_error,recorded_at) VALUES (?,?,?,?,?,?) ON CONFLICT(cleanup_id) DO UPDATE SET last_error=excluded.last_error',
+                (identity,str(record.get('id') or ''),str(owner),payload,str(error),_now()))
+            database.commit()
+        return identity
+
+    @controlled_material_write_fence
+    def record_physical_reclamation_audit(self, operation_id, image_id, content_sha256, *, absent=False):
+        with closing(self._connect()) as database:
+            existing = database.execute("SELECT action,old_sha256,new_sha256 FROM material_storage_audit WHERE task_id=? AND image_id=?",
+                ("physical_" + operation_id, image_id)).fetchone()
+            if existing and (existing["action"] not in {"PHYSICAL_RECLAIMED", "PHYSICAL_ABSENT_AFTER_DETACH"}
+                             or existing["old_sha256"] != content_sha256 or existing["new_sha256"] != ""):
+                raise RuntimeError("RECLAMATION_AUDIT_CONFLICT")
+            database.execute("INSERT OR IGNORE INTO material_storage_audit VALUES(?,?,?,?,?,?)",
+                ("physical_" + operation_id, image_id, "PHYSICAL_ABSENT_AFTER_DETACH" if absent else "PHYSICAL_RECLAIMED", content_sha256, "", _now()))
+
+    def retirement(self, task_id, image_id):
+        with closing(self._connect()) as database:
+            row=database.execute('SELECT * FROM material_retirements WHERE task_id=? AND image_id=?',(str(task_id),str(image_id))).fetchone()
+            return dict(row) if row else None
+
+    @controlled_material_write_fence
+    def retire_many(self, image_ids, *, task_id, actor_id="", annotations=None) -> int:
+        """Remove current identities and retain their byte references in one commit.
+
+        This is logical retirement only. No physical reclamation has been proven.
+        The caller owns formal GT backup/compensation and the lifecycle fence.
+        """
+        ids = list(dict.fromkeys(str(value) for value in image_ids))
+        annotations = annotations or {}
+        removed = 0
+        with closing(self._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            try:
+                for offset in range(0, len(ids), 500):
+                    chunk = ids[offset:offset + 500]
+                    placeholders = ','.join('?' for _ in chunk)
+                    rows = database.execute(f'SELECT * FROM materials WHERE id IN ({placeholders})', chunk).fetchall()
+                    for row in rows:
+                        database.execute(
+                            'INSERT INTO material_retirements(task_id,image_id,actor_id,storage_source_id,object_key,content_sha256,payload_json,annotation_json,retired_at) VALUES (?,?,?,?,?,?,?,?,?)',
+                            (str(task_id), str(row['id']), str(actor_id), row['storage_source_id'], row['object_key'], row['content_sha256'], row['payload_json'],
+                             json.dumps(annotations.get(str(row['id']), {}), ensure_ascii=False, sort_keys=True), _now()),
+                        )
+                    database.execute(f'DELETE FROM materials WHERE id IN ({placeholders})', chunk)
+                    removed += len(rows)
+                if removed:
+                    self._bump_revision(database)
+                database.execute('COMMIT')
+            except Exception:
+                database.execute('ROLLBACK')
+                raise
+        return removed
+
+    @controlled_material_write_fence
     def remove(self, image_ids: Iterable[str]) -> list[dict[str, Any]]:
         ids = list(dict.fromkeys(str(value) for value in image_ids if str(value)))
         if not ids:
@@ -637,7 +1527,13 @@ class MaterialRepository:
                 db.rollback()
                 raise
 
-    def reconcile_storage_batch(self, task_id, source_id, changes):
+    @controlled_material_write_fence
+    def reconcile_storage_batch(self, task_id, source_id, changes, *, expected_revision=None, expected_payloads=None):
+        with material_annotation_lifecycle_fence(self.project_path):
+            return self._reconcile_storage_batch_locked(task_id, source_id, changes,
+                expected_revision=expected_revision, expected_payloads=expected_payloads)
+
+    def _reconcile_storage_batch_locked(self, task_id, source_id, changes, *, expected_revision=None, expected_payloads=None):
         """Preserve annotation payload and atomically audit idempotent metadata patches."""
         changes = list(changes)
         if len(changes) > 500:
@@ -645,9 +1541,31 @@ class MaterialRepository:
         with closing(self._connect()) as db:
             db.execute('BEGIN IMMEDIATE')
             try:
+                if expected_revision is not None and self._revision(db) != expected_revision:
+                    raise RuntimeError("LEGACY_COMPATIBILITY_STALE")
+                if expected_payloads is not None:
+                    for image_id, expected in expected_payloads.items():
+                        row = db.execute("SELECT payload_json FROM materials WHERE id=?", (image_id,)).fetchone()
+                        if row is None or row[0] != expected:
+                            raise RuntimeError("LEGACY_COMPATIBILITY_STALE")
                 db.execute('CREATE TEMP TABLE changes(object_key TEXT PRIMARY KEY,payload TEXT)')
                 db.executemany('INSERT INTO changes VALUES(?,?)',
                                ((r['object_key'], json.dumps(r)) for r in changes))
+                if expected_payloads is not None:
+                    affected = db.execute(
+                        "SELECT m.id,m.payload_json,m.storage_source_id,m.storage_type,m.object_key,"
+                        "m.content_sha256,m.size_bytes,m.etag FROM materials m JOIN changes c USING(object_key) "
+                        "WHERE m.storage_source_id=?", (source_id,),
+                    ).fetchall()
+                    if {row["id"] for row in affected} != set(expected_payloads):
+                        raise RuntimeError("LEGACY_COMPATIBILITY_STALE")
+                    for row in affected:
+                        normalized = normalize_material(json.loads(expected_payloads[row["id"]]))
+                        if any(row[field] != normalized[field] for field in
+                               ("storage_source_id", "storage_type", "object_key", "content_sha256", "size_bytes", "etag")):
+                            raise RuntimeError("LEGACY_COMPATIBILITY_STALE")
+                    if db.execute("SELECT 1 FROM material_storage_audit WHERE task_id=? LIMIT 1", (task_id,)).fetchone():
+                        raise RuntimeError("LEGACY_COMPATIBILITY_TASK_CONFLICT")
                 cursor = db.execute('SELECT m.id,m.payload_json,c.payload FROM materials m '
                     'JOIN changes c USING(object_key) LEFT JOIN material_storage_audit a '
                     'ON a.task_id=? AND a.image_id=m.id WHERE m.storage_source_id=? AND a.image_id IS NULL',
@@ -711,6 +1629,7 @@ class MaterialRepository:
             ).fetchone()
         return self._row_payload(row) if row else None
 
+    @controlled_material_write_fence
     def mutate(self, fn: Callable[[list[dict[str, Any]]], _Result]) -> _Result:
         """Compatibility transaction for legacy callers without full-table rewrite.
 

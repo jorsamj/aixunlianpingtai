@@ -1,0 +1,37 @@
+{
+  "cases": [
+    {
+      "case": "success",
+      "base_cleaning_passed": true,
+      "source_sha_unchanged": true,
+      "remaining_owned_processes": 0,
+      "elapsed_seconds": 42.95299999997951,
+      "peak_process_tree_rss_bytes": 621371392,
+      "peak_temporary_logical_bytes": 314813093
+    },
+    {
+      "case": "crash",
+      "base_cleaning_passed": true,
+      "source_sha_unchanged": true,
+      "remaining_owned_processes": 0,
+      "elapsed_seconds": 9.921999999962281,
+      "peak_process_tree_rss_bytes": 614563840,
+      "peak_temporary_logical_bytes": 314703567
+    },
+    {
+      "case": "timeout",
+      "base_cleaning_passed": true,
+      "source_sha_unchanged": true,
+      "remaining_owned_processes": 0,
+      "elapsed_seconds": 9.23399999999674,
+      "peak_process_tree_rss_bytes": 615235584,
+      "peak_temporary_logical_bytes": 314703551
+    }
+  ],
+  "original_python_environment_unchanged": true,
+  "original_python": "D:\\python\\python.exe",
+  "optional_python": "C:/tmp/fiftyone-audit-1221/Scripts/python.exe",
+  "scope": "isolated fixtures; base image analysis only, not all platform business routes",
+  "temporary_roots_cleaned": true,
+  "physical_allocation": "NOT VERIFIED; logical file bytes sampled"
+}

@@ -1,11 +1,366 @@
+> **2026-10-31 / 42.24.451 AI 审核 P0（本地验证，CI 待核）**：继续修改唯一 `annotationStageStatistics` 及原审核主区，没有新统计 owner/GT 表/路由、没有重新开启技术债清理。候选框、采用/拒绝和 GT 历史提交展示口径已收敛，短屏审核 24 图实际浏览器合同新增；Node 1427/1427，通过后仍需准确 SHA Chrome、生产 P95/GT 当前态审计和 SQLite v2→v3 迁移演练。详细信息只记于 [AI 专项](superpowers/plans/2026-10-16-ai-annotation-cleaning-scope.md)，不部署。
+
+> **2026-10-30 / 42.24.429 P0 定向闭环**：基线 428／`b13d8705` 精确 Actions 38/38 全绿；原 413/415/416/425/427 性能修复不重建。仅修原 Submit Owner 迟到成功回执的旧弹窗通知泄漏；生产性能/A800 资源与副本仍缺现场证据。完整 RED/边界与待办见 [唯一 P0 台账](performance/2026-10-29-p0-followup.md)，未部署。
+
+> **2026-10-29 / 42.24.416 P0 哈希治理**：只读角色/意图不再对迭代 best.pt 全文件哈希；最终正式训练仍唯一完整 SHA 冻结。原标签合同/API/使用索引未另建，增加阶段计时。准确 SHA CI/生产待核，未部署；唯一台账 `docs/performance/2026-10-29-p0-followup.md`。
+
+> **2026-10-29 / 42.24.415 P0 查询合同回归修复**：CI 证实 414 空 `image_ids` 的 `eligible_total` 变 `null` 违反原精确总数合同，415 已回滚；413 前端免空请求与后端不误触发提交校验仍保留。不扩建 Owner，不迁移；准确 CI/生产待核，未部署。唯一台账：`docs/performance/2026-10-29-p0-followup.md`。
+
+> **2026-10-29 P0 性能接续（42.24.413，本地绿/CI 待验）**：原 `training_options` 每次旧服务器串行检测及 Paddle 目录扫描已改为显式检测快照读取；`selection-summary` 空选材预览不再执行训练提交校验。技术债清理主线仍暂停，没有其他全局 owner 重构。证据、测试及现场开放项以 [P0 续批唯一台账](performance/2026-10-29-p0-followup.md) 为准；未部署。
+
+## 2026-10-29｜训练回收与异常证据定向修复（LOCAL VERIFIED / CI及生产未验证）
+
+[唯一审计报告](docs/TRAINING_WORKSPACE_EVIDENCE_AUDIT_2026_10_29.md)：远端40327743/VERSION399隔离基线；原Lifecycle补异常outcomes/框证据归档、显式ID与SHA保护、自动阻塞/归档失败回执。定向71通过/1系统symlink权限跳过，真实原API清理前后相同字节验证通过。用户已授权提交到开发分支；本次提交CI待核验，未部署；保留其他工作树WIP。Checkpoint恢复、未知历史所有权继续保护，远端最终回收/生产启动与接口性能NOT VERIFIED，不能称全量最终回收已验收。无前端/DB/版本更改。
+
+## 2026-10-24｜高级功能四入口整合（代码及隔离CI已验收）
+
+唯一映射/设计/进度/截图：[前端治理记录顶部](frontend-legacy-audit.md)。实际7项收敛为算力与节点、模型转换环境、AI辅助配置、存储管理；迁移收纳存储Tab，对接与只读浏览保留独立。原state.page/业务Owner/API/轮询不变，无后端/数据库改动；导航取消reason沿原PageRequestScope隔离。VERSION386/cache434；f95e221f准确CI23/23 Actions、60/60 Checks成功，Node1331/1331、Chrome267/267通过，旧失败及关闭证据见记录。文档自身最终HEAD另核Checks。5944与两份模板测试保留；不部署、不改生产数据，真实GPU/NAS/OSS/对接生产环境NOT VERIFIED。
+
+## 2026-10-24｜大模型Chat/Responses协议兼容（代码及隔离CI已验收）
+
+唯一需求/设计/进度：[协议专项](LLM_API_PROTOCOL_COMPATIBILITY_2026_10_24.md)。原provider兼容Chat/Responses，准确端点识别、受控结构化降级、安全错误证据；原M4高级配置/Bootstrap投影同步，连接测试与正式v60同工厂及字段校验。VERSION385/cache433；最终代码982069c8准确CI47/47 Actions、128/128 Checks成功，协议44、API55（含配置11/正式E2E4）、Node1328、Chrome265通过。文档自身最终HEAD另核Checks。5944及两份模板测试保留；真实GLM/收费接口NOT VERIFIED，发布前须授权环境实测，不部署。
+
+## 2026-10-24｜ZIP自动标签确认与重复窗口治理（代码及隔离CI已验收）
+
+唯一记录：[Uppy专项顶部](UPPY_ZIP_ADAPTER_POC_2026_10_22.md)。原Runtime统一自动确认/主动关闭抑制/成功立即关所属内容，旧列表不倒退；Uppy/旧入口同Owner，原选择层交接及复用节点保护，多ZIP独立顺序，完成后整理窗口改手动。VERSION384；代码/测试610878cd准确CI23/23 Actions、60/60 Checks成功，Chrome264/264、Node1328/1328；ZIP相同业务代码52939779的独立Chrome41/41。历史失败和最小Python9/Node/Chrome证据见专项，文档自身最终HEAD交付前另核Checks。5944及两份模板测试保留，无后端/GT合同变更或生产操作。
+
+## 2026-10-24｜创建训练弹窗滚动修复（代码及隔离CI已验收）
+
+唯一记录：[训练创建专项顶部](TRAINING_CREATE_FOUR_MODES_UI_2026_10_10.md)。原CSS收敛高度/单一layout滚动、标签自然展开、footer真实占位；无JS或后端/参数/调度变更，important减少15。五视口真实wheel5/5、原标签提交Chrome1/1及Node27/27通过；VERSION383，CSS cache4226355，代码f5ba6192准确CI 36/36 Actions、99/99 Checks通过，文档最终HEAD自身另核Checks。5944及两份模板测试保留，未部署/未启动训练。
+
+## 2026-10-24｜P1跨标签负样本与首次训练（代码及隔离CI已验收）
+
+唯一需求/进度：[训练质量专项P1](TRAINING_QUALITY_REMEDIATION_TRACKER_2026_10_18.md)。任务标签与原始标签分离，正/已确认负/待审核共享后端合同；人工有限批审保留原框、CAS/源SHA与事务审计；新V3纯负保留像素/空YOLO、混合与历史V2保护不变。VERSION382，必要Python/Node与Chrome四个独立场景通过；代码cd8cde89准确CI 23/23 Actions、60/60 Checks成功，最终文档HEAD自身另核Checks，详见专项回执；不自动确认/丢弃/训练，不生产操作。5944及两份未跟踪模板测试保留。
+
+## 2026-10-23｜普通图片Uppy与本次上传处理（代码及隔离CI已验收）
+
+唯一进度：[Uppy专项普通图片节](UPPY_ZIP_ADAPTER_POC_2026_10_22.md)。原multipart64张/128MB顺序Owner、UploadBatchStore及唯一任务中心复用；本地中文Uppy、48条本批确认页、真实失败/待核验、刷新恢复、原清洗/标注已接通，ready不写GT。Python31、必要Node及Chrome五图/部分失败/65分批/ZIP冒烟通过；VERSION381，修正646aeb0a实际22/22 Actions、58/58 Checks、Chrome250/250与Node1322/1322通过；本次文档自身HEAD另核Checks。每批仅一个原清洗任务限制保留；生产未验证/未部署/未写入，5944及两份模板测试保留。
+
+## 2026-10-23｜旧素材全面检查体验修复
+
+[唯一专项](TRAINING_MATERIAL_LIFECYCLE_GOVERNANCE_2026_10_21.md)顶部为接续依据。一次开始顺序50条、真实汇总及25条明细分页、暂停/刷新/失败恢复已实现；原迁移单独确认，检查不改正式数据。VERSION380，Python15/Chrome3/版本9通过，代码6f663e1c实际38/38 Actions、102/102 Checks通过；本次文档新HEAD另核。原图仅逐条检查时点，库外原位改写/无版本GT不冒充全库原子证明；5944及两份模板测试保留，未生产操作。
+
+## 2026-10-23 P2接续入口
+
+[唯一评测专项](SCENARIO_MODEL_EVALUATION_UI_GOVERNANCE_2026_10_22.md)顶部P2为当前进度；原Owner复用，新增AdvancedEvaluation仅负责展示，不拥有GT/任务/存储/候选；代码9280实际21/21 Actions、55/55 Checks通过；文档新SHA另核，生产未验证。
+
+## 2026-10-20 字典管理UI/UX简化
+
+原字典modal Owner内列表/短表单/搜索/启停，完整草稿及原revision API；同modal原位刷新不叠层。compute_platform_catalog原兼容分支提取单一resolve_chip_capability供GET/PUT检测记录投影和转换准入，无独立探测/判定器。未知技术字段可空且严格阻断任务，历史身份不改挂，外部映射/Weight/转换执行不变。VERSION362、app410/styles408/main409；限定Python33/Node32/Chrome2及七版本入口通过，最终CI附件与完整需求证据见docs/DYNAMIC_CONVERSION_CATALOG_ACCEPTANCE_2026_10_20.md顶部。
+
+## 2026-10-20 部署资源正式入口修复
+
+部署资源正式Owner为main canonicalWindowPageRenderers→已有renderDeployResources；模型配置仍为renderModelConfigPageV35。复用原高级导航/启动恢复/字典弹窗及/api/v39/deploy/catalog，无新页面、Owner、嵌套包装或后端更改。VERSION42.24.361，app408/main409/nav422518；限定验收与接续见docs/DYNAMIC_CONVERSION_CATALOG_ACCEPTANCE_2026_10_20.md顶部，最终CI单独归档。
+
+## 2026-10-20 转换Weight恢复增量
+
+原发布Owner/版本SQL payload/ModelArtifact复用；行内交付意向选择、原/目标分类与Weight/OSS/UNKNOWN审核投影，单一后端合同，无第二队列、弹窗或轮询。详细架构/证据/进度以docs/CONVERSION_WEIGHT_PUBLISH_RECOVERY_2026_10_20.md为准；生产替换未开放，VERSION42.24.360，main408/发布模块64011。
+
+## 2026-10-20｜动态厂商字典与真实SDK目标（本地限定验收通过 / 最终SHA CI待推送 / 生产未部署）
+
+- 完整fetch/pull基线7a2492b24de5d6259bf792ed074f1548e66d6eda，原39/109绿色归档不是本轮CI。复用初始干净长期分支工作树，其他工作树/会话未覆盖。
+- 唯一专项docs/DYNAMIC_CONVERSION_CATALOG_ACCEPTANCE_2026_10_20.md保存完整用户V2/第十八条、产品合同、架构、RED、已完成与剩余计划。原ModelArtifactRepository/compute_platform_catalog/Adapter/Worker/Durable MODEL_CONVERSION/发布Owner复用，无平行模型库/队列/调度/轮询。
+- 动态本地厂商/芯片表初始为空，模板不等于业务记录；SDK/本地/外部ID分开。BM1684按1.30.2官方矩阵+实检开放F32、原X/88 F16保留；未知组合不乐观放行。后端统一resolve和POST，真实目标/参数/命名、结构/hash、资产快照可追溯，硬件验证独立。
+- 正式VERSION本轮已一次42.24.358→42.24.359；必要app/main/styles缓存42.25.407、发布模块64010。正式显示继续读后端版本。最终Python262、Node70、Chrome8通过，另7项发布安全定向用例通过；版本七入口一致、语法/diff/原永久守卫通过。最终完整SHA CI待推送，记录于专项指定独立附件。
+- 未部署/重启/安装SDK/改生产密钥或数据库/操作OSS/历史Weight；本机Windows未找到TPU-MLIR工具，真实BM1684编译、模型质量与板卡NOT VERIFIED。生产17项元数据/7Weight补齐仍未执行，须独立授权。
+
+## 2026-10-20｜Weight tags及本地元数据（本地通过 / 最终SHA CI待提交 / 生产补齐未执行）
+
+- 基线0cf65c48bf6c6d0ec0df852128c2faccf4072f8e已完整fetch/pull；历史48/131绿色归档，不代表本轮。VERSION42.24.358，app405/styles402保持，仅main406/发布模块64009必要更新。
+- 原模型标签/JSON add-edit/UNKNOWN/差异检测已有。RED确认通用资产未持久化模型信息+upsert整体替换、PARTIAL幂等ensure重置重试时钟、edit多候选未消歧、无外部映射本地标签投影遗漏。共享原解析合同、原SQL/ModelArtifact/发布Owner增量修复，无平行队列/数据库/轮询。
+- 版本冻结schema/codes或可信Snapshot为唯一来源；Artifact保存验证快照，未知不清空已知、冲突不覆盖。训练/转换先登记本地，与外部/上传配置独立；已有对象身份保持，不复传。原ID唯一edit，缺可选字段不阻断交付；回执和真实远端读回分开。
+- 主Python335通过，版本兼容25、训练/转换传输18通过；Node26、Chrome3通过，0失败0跳过。7缺失实际ID+10隔离对照通过，7edit/10零edit，重复不新增。最后完整SHA仍须CI。
+- 唯一专项docs/WEIGHT_TAGS_SYNC_ACCEPTANCE_2026_10_20.md顶部含只读预检、显式本地修复及原Owner受控外部补齐步骤/7ID表；scripts/audit_weight_metadata.py默认只读，--apply-local也不上传或调用新畅联。
+- 未连接生产执行补齐/部署/重启/改密钥/操作OSS/S3；生产17项尚未实际修复，远端tags持久化需另行授权读回验收。部署启用自动Owner可能恢复历史重试，也须先审核并批准补齐。
+
+## 2026-10-20｜Sophon资源与页面一致性（本地通过 / 最终SHA CI待提交 / 生产未部署）
+
+- 基线a36b9cdec1cd4aa07c9cde2d9c84bc98bb66b479已fetch/pull，历史22/22 Actions、59/59 Checks归档专项。现场两chip真实FP16编译/远程done与probe可用是用户提供证据，不等于板卡验证。
+- 扫描/plugins复用原v39 detect Owner解析secret_ref、鉴权、持久化及公共投影；资源列表/转换弹窗读取同一事实。健康失败清空Sophon能力，恢复重新可用，不泄露密钥；无第二探测/调度/轮询。
+- 本机工具明细仅展示本机；整体Sophon按有效资源汇总，区分本机未配置/本机失败/远程可用。版本修为完整v1.30.2-20260831，远程资源展示工具版本；独立Python保留原逻辑已有测试保护。
+- RED后端8、Node1、Chrome1→限定Python136/136、Node20/20、Chrome10/10（0失败0跳过）；语法/diff/原永久守卫通过。VERSION42.24.358，app缓存405，main404/styles402不变。
+- 唯一专项docs/SOPHON_BMODEL_CONVERSION_ACCEPTANCE_2026_10_20.md；最终CI附件见本轮E节。不修改生产服务/密钥/依赖，不部署，不调用真实新畅联写接口；部署后真实网页与板卡结果仍需现场复验。
+
+## 2026-10-20｜Sophon BMODEL（A-D测试通过 / 最终SHA CI待提交 / 生产与硬件未验证）
+
+- 起始62647aeea258a26ba423f0a9db23d8f6f8ba3b1a；上轮23/23 Actions、59/59 Checks已归档原tags专项，不代表本轮绿色。VERSION42.24.358不变。
+- 首期BM1684X/BM1688、FP16、Batch1/static；修复显式芯片/矩形导出与ONNX shape、可运行工具探测及真实产物结构/hash合同。Sophon remote并入原ConversionHandler/MODEL_CONVERSION，原Key/Lease/取消/恢复与确定ID幂等；无第二执行器/数据库/轮询。
+- 发布继续原ModelArtifact/Owner与Weight add/edit，同Version下PT和两chip BMODEL共存，tags冻结原生数组，未知可选信息不阻断；Sophon必要chip严格校验。UI增量字段与真实资源/任务/待硬件状态，app/main缓存404、styles402、发布模块64008。
+- 本地Python313/313、Node40/40、Chrome10/10，0失败0跳过；最后BMODEL edit断言聚焦4通过。硬件2 SKIP/NOT VERIFIED，无真实TPU-MLIR编译或板卡加载证据；独立规格P1两项均补RED关闭。
+- 唯一专项docs/SOPHON_BMODEL_CONVERSION_ACCEPTANCE_2026_10_20.md；提交后最终CI依该文档指定独立附件核对，不能提前宣称CI通过。禁止生产部署/API/OSS/GPU/生产转换；下一会话先读本节和专项后接续。
+
+## 2026-10-20｜Weight tags HTTP链路验收（测试补全待最终CI / 生产未验证）
+
+- 唯一业务范围为Weight tags；冻结类别、PT/ONNX/RKNN、原IDedit与UNKNOWN原机制已存在，不改生产业务/上传人/身份/OSS对象标签/VERSION/静态缓存。
+- 新增6项真实requests JSON编码链路回归，最终限定Python200/200、Node16/16、Chrome3/3；单/双/四类别、class_id顺序、多版本、RK3568/3576、未知省略、旧ID补齐与零重复写。初次5项失败为夹具问题，非业务RED。
+- 持续进度总入口 docs/CODEX_CURRENT_STATE.md，唯一专项 docs/WEIGHT_TAGS_SYNC_ACCEPTANCE_2026_10_20.md；最终SHA CI独立验证，无生产操作。
+
+## 2026-10-20｜权重补充元数据发布（最终合同：可选、非阻断）
+
+- 首次SHA 6f83076f的CI发现精简Job缺TestClient依赖、浏览器文本守卫未适配参数化；仅补httpx2及更新守卫匹配，保留核心身份零POST断言与全部实际测试。后续1faa9693的后端200项与Chrome3项已通过，另将唤醒信号守卫同步到既有真实Event.set发出断言及消费后无重复断言；最终SHA重新验收。
+- 基线93c56659，复用ExternalPublicationRepository / ModelArtifact / 原发布与转换通知Owner。六扩展字段可信则传、未知省略，tags未知不发[]；缺失不阻断交付、不改转换成功状态。
+- 原ID edit补齐与确认payload回执、UNKNOWN写入只读恢复、矩形尺寸及冻结标签解析、原版本行内联事实/真实错误展示。无第二队列/数据库/轮询/弹窗Owner；不操作生产。
+- 聚焦Python三文件194 passed、Node三文件41 passed、Chrome单规格3 passed，末次schema/存量19 passed。原始RED/失败及纠偏记录见 docs/WEIGHT_METADATA_ACCEPTANCE_2026_10_20.md。
+- VERSION42.24.358不变；app/styles402不变，仅main403及两个模块缓存更新。最终SHA Actions/Checks需独立验收，附件：C:/Users/jorsam/.codex/visualizations/2026/10/20/01a156ca-1ca0-7b70-8497-bd255da4345e/weight-metadata-acceptance-20261020.md。
+## 2026-10-20｜素材完整性接续审查（本地验证，最终 SHA CI 待验收）
+
+- 完整 fetch/pull 长期分支到 d623a2d6327143571898e778050e5d42cc5e4a4d，六个已知修复全部包含；原工作区保留，复用既有长期分支工作树。
+- 仅修复三项真实复现：标签映射摘要未贯穿普通治理计划/Worker；execute 迟到成功/失败未完整校验弹窗归属；恢复复验把已成功删除项重新记作失败。沿用原计划/Task/DELETE_INDEX/AnnotationRepository/Modal/PollRegistry，无新 Owner。
+- 审计已有 label_schema_digest 贯穿冻结计划、执行清单和逐项删除；标签锁先于 Material 生命周期锁。缺摘要旧计划 fail closed，需要重新审计/预检；已成功项保持历史计数，未完成项仍复验 keeper/GT/hash/Test/引用。
+- 本地新回归 RED：Python 4 failed，Node 2 failed；最小修复及边界补充后聚焦 Python 6 passed，Node 全量 1021 passed。安全扩展最终 116 passed。真实 Chrome 两份规格 19 passed；最后补顶层弹窗按钮归属后聚焦 2 passed。独立复核未发现本次差异的 P0/P1；其 Python 首轮 5 setup error 为 C:/Temp 父目录不存在，换已有短目录后 6 passed，Node 35 passed。首轮新 Chrome 夹具误用 window.state 导致 2 failed，已改为仓库既有 lexical state 并保留所有业务断言。
+- 正式 VERSION=42.24.358 不变；入口 app/main/styles 静态缓存 42.25.402。最终准确 SHA、全部 Actions/Checks、未触发与未验证边界记录在 C:/Users/jorsam/.codex/visualizations/2026/10/20/01a156ca-1ca0-7b70-8497-bd255da4345e/material-integrity-acceptance-20261020.md；不沿用基线 40/40 绿色。
+- 未部署、不重启生产、不连接生产数据库、不执行真实素材删除，不自动发布模型。生产 OSS/S3、历史现场、GPU/A800、大库并发与查询 SLA 仍 NOT VERIFIED。
+## 2026-10-19｜P0 批量 GT 冲突辅助治理
+
+- 本轮唯一进度为 `docs/TRAINING_QUALITY_REMEDIATION_TRACKER_2026_10_18.md` 顶部批量GT节；复用 TrainingCompatibility、原审计/MaterialBatch、ImportCandidateStore、正式 AnnotationRepository 和 DELETE_INDEX，两个入口共用 TrainingMaterialSummaryRuntime。来源证据不代表GT正确，必须人工审核；无第二套存储/队列/Owner/轮询。
+- 正式VERSION42.24.356不变；不连接生产、不覆盖GT、不动历史/Test，不部署。最终SHA及实际Actions/Jobs/Chrome证据以追踪文档指向的独立最终验收附件为准，生产960组进一步根因数量未验证。
+
+## 2026-10-19｜P0 远程清理同步锁误保护精准修复
+
+- 现场只读证据由用户提供；精确豁免 `remote-material/staging-cleanup.json.lock`，不豁免真实台账或其他锁。实际清理调用的 RED→GREEN、API/Worker 和 CI 证据统一见 `docs/TRAINING_QUALITY_REMEDIATION_TRACKER_2026_10_18.md` 顶部专项。
+- 复用原历史引用、MaterialBatch/DELETE_INDEX Owner；Payload/关联任务/执行记录/冻结/Test/Snapshot/模型/未知依赖仍保护，不改任务历史，不操作生产，不改 VERSION=42.24.356。最终 SHA/Actions/Jobs 以独立最终 CI 验收附件为准，不沿用前一 SHA 绿色。
+
+## 2026-10-19｜P0 素材治理与训练冲突删除闭环
+
+- 当前专项唯一进度仍为 `docs/TRAINING_QUALITY_REMEDIATION_TRACKER_2026_10_18.md` 顶部 P0 节；TQ-04 已完成批次不重做。既有素材治理验收文档追加本次证据，最终准确 SHA/Actions/Jobs 以其关联的 CI 附件为准，不继承旧绿色。
+- 仅在可证明 FAILED 输入从未形成现存依赖时释放请求引用；Snapshot/Test/恢复/模型/未知依赖继续保护。同组保留全部保护身份和 keeper。两个入口共用原冻结计划、DELETE_INDEX、MaterialBatchRuntime62 与 PollRegistry；不删除共享源文件，不改历史记录，VERSION仍42.24.356，不部署。
+
+## 2026-10-19｜TQ-04 类别指标真相接续
+
+- 当前任务与实际测试/CI唯一进度入口：`docs/TRAINING_QUALITY_REMEDIATION_TRACKER_2026_10_18.md`。仅维护既有 evaluation/iteration decision/report Owner；禁止生产操作、历史数据重写和 VERSION 变更。最新修复的实际 SHA/CI 需按追踪文档关联的验收证据查询，不沿用旧 SHA 结果。
+
+## 2026-10-18｜安全推送验收阶段（用户已授权 / CI 待最终 SHA 验收）
+
+- 首轮 `edee5fb6fcd32812ee62b0197728dc7ab51d8b0f` CI 发现恢复/素材选择 Chrome build 断言与实际资源不一致，以及新接入 Hardening 守卫锁定退役的注册模块。最小修复只同步精确版本和真实 Production→CheckpointResume→Recovery 继承合同，并增强真实注册对象断言；恢复 Chrome 5/5、素材选择 Chrome 2/2、Node 982/982、两个原始 Bash 永久守卫通过。扩展 Windows 测试的 14 项长路径失败在短 basetemp 消失（19 passed/1 Linux-only skipped）；另 1 项 manual workers=8 与既有 Windows 上限4冲突，不改生产资源保护；相同未变源码的 Ubuntu 124项已实际通过。最终 SHA 仍需重新完整 CI。
+- 用户已授权本轮普通 Fast-forward 推送及必要 CI 修复；禁止强推、main 合并、Release、生产服务/数据操作和正式 VERSION 修改。此前 LOCAL ONLY 记录是上一阶段，不再作为本阶段推送限制。
+- 代码提交基线 `5d3ad65bf7ff287521481a2ac6bfbd1f7caed52e`，远端父提交 `5a28e4539b81c03b4eaa27fa4b6c718138542169`。范围审查确认只涉及图片标注、类别检查、素材治理和训练冲突闭环，复用原 Repository、TrainingCompatibility、Snapshot 与 Task Owner。
+- 推送前独立复核补齐固定 Benchmark 与 duplicate_review 合同：API/Worker 只在真实 Benchmark 解析后正规化；保留原 revision，拒绝客户端 Test 角色及保留素材排除，不暴露私有 Test ID。9 个真实 API→Worker 场景通过，相关 Python 109 passed；Node 全量 981 passed。
+- 发现 Release Regression 与 Training Final Validation Hardening 仅监听旧分支，已接入唯一长期分支，并补源码/测试触发路径及 Node 守卫；不删除测试或放宽断言。正式 VERSION=42.24.356，静态缓存规则不变。
+- 远端验收必须按最终完整 SHA 查询全部 Actions/Jobs，旧 SHA 结果不可继承。最终 SHA、统计及生产只读核验边界将记录于 `C:/Users/jorsam/.codex/visualizations/2026/10/18/training-conflict-p0/CI_FINAL_HANDOFF.md`，该外部验收文件不产生未经 CI 的额外代码提交。
+- 生产 2531 张现场、OSS/S3 历史对象、GPU/A800 和大库并发仍 NOT VERIFIED。历史 Snapshot/Test/模型证据保护保持，不自动解除 FAILED/no-freeze 保护，不删除共享原文件。详见本轮验收文档。
+
+## 2026-10-18｜训练重复冲突与标注/治理闭环（LOCAL ONLY / CI NOT RUN）
+
+- 当前隔离分支 `codex/training-failure-diagnostics`；本轮不得 push、部署、修改正式 VERSION 或操作生产素材。验收与现场边界见 `docs/TRAINING_CONFLICT_GOVERNANCE_ACCEPTANCE_2026_10_18.md`，不能沿用旧 SHA CI。
+- 原始正式 GT 同 SHA 冲突在任务标签投影前检查；预检、准入、Worker 和冻结复验共用原 digest。显式排除仅改变新训练草稿且双 revision/原始角色必须验证；Train/Test 泄漏不可绕过。冻结前后复验、锁内发布，外部平台 HTTP 在标注锁外。
+- 训练差异/失败诊断仍由 TrainingMaterialSummaryRuntime 管理，标注仍由原工作台/AnnotationRepository 保存；未检查类别默认折叠、单一绘制类别、四视口布局。零可删仍能看真实图与保护原因并人工核对 GT，不创建空删除任务；FAILED/no-freeze 不自动解除保护。
+- 移除 MaterialBatch 路由内部重复训练恢复挂载，保留 app 配置完整的唯一 Owner。Snapshot/Test/模型/历史记录不改，共享源文件不删；任务轮询和 DELETE_INDEX 归属不变。
+- VERSION=42.24.356；入口 app/main/styles 缓存=42.25.389。最终 Python 聚焦131、API/素材安全115、Node24完整980、真实Chrome24全部通过（无失败/跳过）；原始日志和截图见验收报告。素材选择沿用原Owner，解析全选期间禁止确认，迟到结果校验项目/选择器归属。GitHub/Linux、生产2531张案例、OSS/A800实机仍 NOT VERIFIED。
+
+## 2026-10-17｜素材治理推送后的 Chrome 跨平台证据路径修复（FINAL SHA CI OPEN）
+
+- 已授权提交9830f1de快进推送；该 SHA 实际44次Actions运行中43成功、1失败。唯一失败为 Frontend browser-navigation：Ubuntu缺USERPROFILE，两条新增治理用例在截图路径处中止（93 passed / 2 failed），并非可计为通过的环境跳过。
+- 本地清除USERPROFILE稳定复现2 failed / 1 passed；现有三条治理Chrome统一使用Playwright testInfo.outputPath，证据按用例隔离，不依赖Windows或仓库内.codex目录。保留全部业务断言，无生产代码、静态缓存或VERSION变更。
+- 修复后相同无USERPROFILE条件下相关Chrome21/21、Node24完整978/978通过；本轮另有Python41/41。9830的Ubuntu Release runtime-contracts实际456 passed，包含test_material_integrity.py；最终修复SHA须重新验收，不能借用旧SHA成功。
+- VERSION42.24.356不变；不部署、不触碰生产素材/数据库。生产原两次删除Task及真实存储仍待只读现场核验。
+
+## 2026-10-17｜重复与异常素材删除 P0（LOCAL VERIFIED / CI OPEN）
+
+- 既有素材治理计划 Owner 增补 FILTERED / SELECTED_IMAGES / 异常组冻结；全筛选不下发全量 ID，重复 keeper、不同 GT 人工确认、Test/历史引用与扫描未核验保护不变。异常筛选不能绕过去重保护，DELETE_INDEX 不删除共享原始文件。
+- 素材治理在同一个弹窗内完成全选、跨页选择、预检与确认，失败保留上下文；MaterialBatchRuntime62 / PollRegistry 仍是唯一任务状态与轮询 Owner。所有索引删除终态刷新分页并失效旧审计；旧分组不再冒充当前素材。图片尺寸/加载失败时藏框，真实宽高比与 Content API 保持一致。
+- 独立代码复核的发布前失败重试、refresh 期间切换项目、Chrome Worker 跨用例领取三项 Important 已关闭并补回归。未发布 manifest 只有完整身份、归属和 pending 状态完全相同才复用；篡改 409。测试 Worker 唯一 capability 仅用于隔离目标临时 Task，生产调度未改变。
+- VERSION42.24.356 不变；入口 app/main/styles 缓存42.25.388，MaterialBatch build/import422406。最终 Node24 978/978、Python41/41、真实 Chrome21/21；详细结果和现场边界以 docs/MATERIAL_INTEGRITY_P0_ACCEPTANCE_2026_10_17.md 为准。现场原两次 Task ID/日志尚未取得，不声称生产删除数量或根因已核验；未 push、部署或操作生产数据。
+
 # v42.25 技术债关闭总账
 
-> **状态：PAUSED / 非阻断技术债清理按用户要求暂停**
-> **分支：`refactor/frontend-runtime-stabilization`**  
+## 2026-10-16 列表行菜单定向产品修复 — LOCAL VERIFIED / CI OPEN
+
+视觉收口：375px状态Tab保留单行与原栏内滚动，不修改桌面列宽；styles42.25.387，最终CI按最后SHA验收。
+
+后续核验：原3be88817远端40/40已成功。确认并最小修复Windows原子文件争用及375px训练Grid溢出，未扩展债务清理；Node24 972/972、Python75/75、Chrome44/44，4000并发写入无错误/残留。styles42.25.386、VERSION不变；修复SHA须独立远端CI验证。
+
+原 entity-more 共用唯一 RowActionMenuRuntime 顶层展示；训练更新保留动作 DOM，清除冗余项目展示，不扩展技术债重构或业务 Owner。Node24 972/972、Chrome 44/44；VERSION 42.24.356 不变，本地提交不推送。证据及未验收边界见 ROW_ACTION_MENU_ACCEPTANCE_2026_10_16.md。
+
+## 2026-10-08 统一分页 phase 2A — IMPLEMENTED / CI PENDING
+
+- 版本：`42.24.305`。数据集、训练任务和 AI 审核迁移到唯一共享分页 presentation。
+- 数据集补真实随机页 API 并保留 cursor；训练任务不复制 Task truth；AI 直接使用既有 CandidateStore offset，保留 stale response fence。
+- focused 前端 44、API 1、Real Chrome 2 均通过；语法/diff 与精确 HEAD CI 尚待提交前/推送后确认。
+- 清洗、导入、模型及 phase 3 未在本批关闭，生产为 `PENDING USER UAT`。
+
+## 2026-10-08 pagination phase 1 CI cache guards — IMPLEMENTED / CI PENDING
+
+- 版本：`42.24.304`。
+- `42.24.303` 的三项已完成 failure 均来自两条 cache key 精确字面量仍锁定旧入口；全量 frontend job 其余 842 项通过，两个 Windows contract 复现同一 main key 失败。
+- 本提交只同步现有永久 guard 到 `main 42.25.303` 与 picker `422603`，不改变产品代码或测试强度。
+
+## 2026-10-08 训练兼容性分页性能 + 统一分页 phase 1 — IMPLEMENTED / CI PENDING
+
+- 版本：`42.24.303`。
+- 重复计算根因：兼容性 API 把页码当展示参数，但每次 POST 都重新解析相同 selection/label contract、读取正式 Material/Annotation 并构造全部 issues。
+- 修复：新增最多 8 项的进程内 disposable read projection，使用 canonical revisions、schema/dataset digest 与完整 request/algorithm 做失效；只供兼容性页面读取，训练最终安全链继续强制重算。
+- 分页：唯一 presentation-only `pagination.js`；训练 picker Repository/API 提供真实 numbered page，保留 cursor；三个训练页面入口已迁移。
+- 证据：Python 125、frontend 39、browser 1、1k/10k/20k lightweight 3，语法与 diff check 均通过。其余分页入口不能在本批写成 CLOSED，详见 inventory。
+- Owner：没有新增 Ground Truth、Repository、业务 Runtime、poller 或全局 Page Manager。
+- 精确 HEAD CI 与真实生产数据/部署为 `PENDING USER UAT`。
+
+## 2026-10-08 AUDIT-178 — IMPLEMENTED / CI PENDING
+
+- 版本：`42.24.302`。
+- Root cause：Storage Source PATCH 无活动 consumer fence，Worker 的 lazy `provider_for()` 在执行期读取 live config/secret；credential 又先写 Keyring、后写 SQLite，失败可形成半提交。
+- 修复：复用现有 Source/Task/Material owners，以无状态短 fence 协调破坏性 PATCH 和最终任务受理；Import/Rescan、CLEAN/AI、TRAINING/PREPARE、RKNN calibration 都从 canonical task artifacts 派生引用。终态释放，恢复/取消中不早释。
+- Secret：replace 写 versioned Secret ref 后发布 SQLite pointer；SQL 失败保留旧 generation。凭据不进入 task payload。外部 I/O 保持锁外，final admission 重验 Source generation。
+- 验证：活动/终态、name-only、SQL rollback、Training Prepare parent freeze、RKNN calibration 与 admission/PATCH barrier 通过。生产 OSS/Keyring/Agent/RKNN 为 `PENDING USER UAT`。
+- `42.24.301` 唯一 CI failure 是过期 source grep，pytest 41 passed；`42.24.302` 同步为当前更强 lifecycle/projection guard，仍待 exact-HEAD CI。
+
+## 2026-10-08 AUDIT-084 / AUDIT-168 — IMPLEMENTED / CI PENDING
+
+- 版本：`42.24.301`。
+- Root cause：MaterialBatch 只有单向 active TRAINING check，任务 admission 与删除 publish/physical delete 无共享协调；MODEL_CONVERSION calibration 完全未进入删除依赖判定。
+- 修复：复用现有 lifecycle fence，把 active Task artifacts 作为派生依赖证据；训练/RKNN admission 与 deletion publication 双向检查。`DELETE_SOURCE` 增加 Material 内部 claim 跨越锁外 storage I/O，并消除 source delete 与 index finalize 之间的 cancellation gap。
+- 生命周期：QUEUED/RUNNING/CANCEL_REQUESTED 保护输入；终态自然释放。模糊物理删除保留 claim + tombstone，由同一任务 retry/recovery 完成，不自动恢复可用状态，不自动替换校准素材。
+- Owner：AnnotationRepository、MaterialRepository、TaskRepository、MaterialBatch、Training Snapshot、MODEL_CONVERSION 均保持唯一；没有新增依赖 registry/runtime/manager。
+- 验证：确定性 admission/delete barrier、queued calibration、terminal release、cancel-after-delete、response-loss retry 均通过；更大现场环境按用户新标准标记 `PENDING USER UAT`。
+- CI：本节写入时尚未提交推送；精确 HEAD 必须全部 terminal success 后才能把 CI 状态改为 CLOSED。
+
+## 2026-09-26 清洗 projection batch-guard 合同缺口 — IMPLEMENTED / CI PENDING
+
+最新产品代码 HEAD：`83d660e073f98f00ae79606391c6e97b7e96d1ad`。正式版本仍为 `42.24.0`。
+
+### 真实故障
+
+`f714e66e...` 的 Remote Cleaning Runtime 中：
+
+- Real Chrome：success
+- Windows contract：success
+- Ubuntu contract：success
+- API：failure
+
+唯一失败测试为：
+
+`test_filtered_clean_confirmation_stays_inside_frozen_selection_and_exposes_provenance`
+
+失败原因：
+
+`MaterialRepository.patch_many()` 的 batch guard 拒绝正式 cleaning confirmation 需要写入的 `clean_task_id`。
+
+### 根因
+
+`platform_core/material_repository_batch.py` 的 `MUTABLE_MATERIAL_FIELDS` 已负责限制 set-based Material projection patch，但白名单没有包含正式 cleaning 流程长期使用的 provenance / decision 字段。
+
+正式业务已存在这些写入：
+
+- `mark_ready()`：`clean_skipped / clean_decision / clean_decision_at`
+- clean confirmation：`clean_task_id`
+- 同时更新 `processing_status / cleaned_at / updated_at`
+
+因此这是 **batch API 合同漏项**，不是应该删除 cleaning provenance，也不是应该绕开 repository guard。
+
+### 关闭方式
+
+`83d660e...` 只把以下既有 cleaning projection 字段纳入 set-based batch patch 白名单：
+
+- `clean_skipped`
+- `clean_decision`
+- `clean_decision_at`
+- `clean_task_id`
+
+未知字段依然 fail-closed，不允许任意 payload 字段通过 `patch_many()`。
+
+永久单测同时验证合法 cleaning projection 可写和未知字段仍拒绝。
+
+状态：**代码已实现；最新 HEAD 20 个 workflows 已重新触发，当前仍 queued，不能标记 CI CLOSED。**
+
+## 2026-09-26 晚间标注 / AI / 训练 / 素材性能债总账（最新）
+
+状态：**IMPLEMENTED / LATEST CI PENDING**。
+
+- 本节写入前远端 HEAD：`704a8cc25c280a3480b146d65b8aef367de08fa0`（docs-only）。
+- 最新产品代码基线：`684c7653f00cb5781015c26bf288dcb4df030e85`。
+- `VERSION.txt = 42.24.0`，禁止改成 42.25.0。
+- 历史强绿基线：`07fef8c2c9f6d8a99e9c4632730e618bdc4947f7` 的 20/20 主要 workflows 已重新核实全部 completed success。
+- 最新 `704a8cc2...` 的 20 个主要 workflows 当前仍 queued；queued/in_progress 不能记 PASS。
+
+本轮已经关闭的核心性能债：
+
+- AI task image resolution：全库 `load_images` → MaterialRepository `get_many <=500`。
+- AI review commit：逐图 Candidate/Annotation I/O → 200/批 formal GT + commit journal，保留 fencing/cancel/idempotency/crash recovery。
+- Training selected annotation：逐图 `AnnotationRepository.get` → `get_many <=500`；1k/10k/20k 结构合同已固定复杂度。
+- Manual annotation GET/SAVE：单图操作不再全库扫描；保存后只 patch 当前素材卡与 preview，不全页刷新。
+- AI label decision：中文名/alias/历史 alias 不再自动转 canonical code；只能由用户明确输入 current canonical code。
+- AI detail/list polling：PollRegistry 单 owner；详情关闭清理，不再双 poll。
+- Label remap / AI / cleaning 高频进度：使用字段级 patch + `transform: scaleX()`，不再整块 modal 重建或 width 高频布局写。
+- Historical annotation summary migration：500/批 read + 500/批 projection patch。
+- Training scoped projection / benchmark reuse / supplement candidate set / quality reads：复用 frozen truth 或批量 indexed lookup，不再二次 N+1 / 全库扫描。
+- Selected batch split / single material edit / upload review / import review：改为 indexed/batched owner；不再为少量选择 full-table mutate / full-library load。
+- Cleaning confirmation：冻结 selection 后 500/批 get_many + 500/批 patch_many；禁止恢复 full-table mutate。
+- Training submit UX：提交期间显示真实 HTTP/create 阶段，durable task 创建后继续显示后端真实 phase/current_item；不伪造 snapshot/Ground Truth 阶段。
+
+永久原则继续保持：
+
+- AnnotationRepository 是唯一 formal Ground Truth owner；AI Candidate 与正式标注分离。
+- canonical label 必须由用户明确决定；alias 只能用于搜索/历史审计。
+- 不新增第二套 Upload / ZIP / Material Batch / Cleaning / Training / Poll runtime。
+- 普通浏览器未上传到服务端的本地 File 字节，页面关闭后不能继续读取；禁止假宣传。
+
+仍未关闭的只有：
+
+1. 最新 HEAD 自身 20 个 workflows 的 terminal 结果；任何 completed failure 必须先读真实 job log。
+2. 真实 20k/50k 图片、真实 OSS/S3 RTT、NVIDIA Linux、SQLite WAL contention、峰值内存与慢网络浏览器验收。现有自动化证明复杂度/owner/contract，不替代真实硬件吞吐验收。
+
+## 2026-09-26 标签治理闭环增量（覆盖下方较早同日 pending 清单）
+
+状态：**IMPLEMENTED / CI PENDING**。当前基线 HEAD：`6d2b8916edaaac35d1f47093d26792032cc7fc7c`，`VERSION.txt = 42.24.0`。
+
+已进一步关闭：
+
+- external-class review 的 search / 50-row pagination / cross-page state / bulk many-to-one mapping / final summary。
+- external-label 真实样例证据：默认 8、最大 12，bbox overlay，短期 presign + class-fenced fallback。
+- 多来源 canonical merge：最多 50 个 source labels 的 indexed union selection，仍复用 `REMAP_ANNOTATION_LABELS` durable owner。
+- merge 仅在全成功时将 source labels 标记 `merged`；partial/failed 不退役，避免半合并 schema。
+- canonical label 删除已改 soft-disable，不再重排其他 project class ids。
+- AI candidate alias 自动解析已退休，只接受本次任务明确 canonical code。
+- imported provenance 在 merge 后保持 source_* 不变，同时更新 canonical_label_id / canonical_project_class_id。
+- 项目元数据保存与 merge finalization 使用一致 FileLock / atomic write 边界，避免并发损坏。
+
+当前仅剩：
+
+- 最新 HEAD 完整 CI 结果仍在等待；queued/in_progress 不能记 PASS。
+- 真实 20k + OSS/S3 + NVIDIA 生产环境性能验收未做，现有 10k 自动化合同不能替代生产验收。
+- 普通浏览器本地字节未上传完时关闭页面不能继续传输，这是浏览器安全模型边界。
+
+
+> **状态：ACTIVE / 标签导入、Ground Truth 与训练 schema 技术债收口中**
+> **当前分支：`feature/external-algorithm-publishing`**  
 > **正式版本：`VERSION.txt` 仍为 `42.24.0`；不得提前发布 `v42.25.0`。**  
-> **最近完整代码验收点：`1c3fa7f2b5cb826c0998f249637241a59134f053`**
-> **最新正式门：Release Regression `34794630826` PASS；Navigation Action Fencing `34794630808` PASS（Real Chrome）；Frontend Runtime Stabilization `34794630837` PASS（unit + full Real Chrome）。Resource Discovery SQLite 永久跨平台 run `34700900542` 仍保持 Ubuntu + Windows 全绿。**
-> **更新日期：2026-09-14**
+> **本轮文档基线 HEAD：`60e31539454300f466b90924f4c15a7a3d3bd218`**
+> **当前 CI：最新 HEAD checks 尚在 queued；不得把排队态表述为通过。下方历史 PASS 只证明对应历史 HEAD。**
+> **更新日期：2026-09-26**
+
+
+## 2026-09-26 — Label import / Ground Truth / training schema closure — IMPLEMENTED, CI PENDING
+
+本批次没有新建第二套导入、清洗、标签统一或训练 runtime，而是在现有 durable owner 上收口。
+
+### 已关闭的技术债
+
+- **自动标签映射决策退休**：ZIP、storage import、rescan、AI annotation 均不再根据同名、中文名、alias、历史映射自动选择 canonical 标签。外部类只暴露事实，映射必须人工确认。
+- **标签统一同步阻塞退休**：已使用标签不再通过同步 HTTP 全库扫描修改。全库统一复用 `MATERIAL_BATCH / REMAP_ANNOTATION_LABELS`，后端按标签索引冻结选择，Worker 分批执行，浏览器只显示任务进度。
+- **confirmed_empty scope 漏写修复**：scope-only remap 会真正写入 AnnotationRepository。新增 `material_annotation_scopes` 索引，只索引 confirmed-empty 范围，避免与 annotated 正样本双计。
+- **Annotation remap N-connection 热点**：同一 Worker batch 改为 `get_many` 预加载，不再对每张图单独打开查询连接。
+- **导入来源不可追溯**：正式 box 现在持久化 external source class/name/import batch/source format/manual mapping provenance。
+- **训练脏 schema 进入 YOLO**：训练 preflight 阻断 unmapped / deleted / inactive / temp / unknown 类别；标签读取按 500 条批量查询。
+- **迭代 schema 变化不显式**：训练合同现在记录 retained/dropped labels、`label_schema_changed`、原因、`base_training_mode`，并明确 `strict_resume=false` / `optimizer_state_resumed=false`。
+
+### 性能与 UI 合同
+
+- 大量标签统一使用 durable task，显示真实 processed/total/succeeded/failed/progress；关闭弹窗不取消任务。
+- ZIP/服务器/对象存储导入继续使用既有 durable background pipeline；确认动作不在 HTTP 请求里同步写万级素材。
+- 普通浏览器上传继续分块提交；只有已经送达服务端的数据才能在页面关闭后继续处理，未上传完的本地文件字节不能由后台接管。
+- 标签管理页只展示聚合统计，不为了统一标签把几万张素材 ID 注入 DOM。
+- 任何新 UI 都必须复用现有 PollRegistry / material batch owner，不得再加递归 timer 或第二个 task state machine。
+
+### 尚未关闭
+
+- 大量 external classes 的映射审查 UI 仍需 search + pagination/virtualization + bulk mapping + final summary。
+- 每个 external label 的 6–12 个真实样本 bbox crop / full-image lazy viewer 尚未补齐。
+- Canonical label 删除仍应单独设计为 soft-disable 或 durable schema mutation；不得恢复同步全库 class-id rewrite。
+- 最新 HEAD CI 尚未完成。只有全部必要 checks completed success 后，才可把本节状态从 CI PENDING 改成 CLOSED。
+
+### 本批次提交
+
+`7c356f2d` → `1aa2f995` → `fbca3349` → `68dd8319` → `27a4806e` → `029d15fe` → `60e31539`
+
 
 ## Product closure — Deployment-test durable queue/progress truth CLOSED
 
@@ -1497,3 +1852,64 @@ Status: **CLOSED** on `refactor/frontend-runtime-stabilization`.
 - Backend v19 processing phase semantics were not changed; this closure fixes the frontend projection boundary only.
 - `VERSION.txt` remains exactly `42.24.0`; no main merge, tag, release, A800 RC, or genuine 10k acceptance was performed.
 
+
+
+<!-- LABEL_GOVERNANCE_BATCH_IMPORT_CLOSURE_20260926 -->
+## 2026-09-26 — Manual label governance + background import performance closure
+
+Status: **PRODUCT CODE CLOSED / LATEST CI STILL VERIFYING** on `feature/external-algorithm-publishing`.
+
+### Product contracts now permanent
+
+- External labels are factual input only. No exact-name, alias, historical mapping, AI/semantic or LLM path may auto-select a canonical label.
+- Historical canonical labels can be merged many-to-one only after explicit user source selection and explicit target selection.
+- The merge runs through the existing durable `MATERIAL_BATCH / REMAP_ANNOTATION_LABELS` owner, including `confirmed_empty` scope, digest fencing, retry/idempotency and source retirement only on complete success.
+- Formal import annotations preserve source taxonomy provenance separately from canonical/project/training class IDs.
+- Training preflight rejects non-current/non-canonical/temp/unmapped labels; schema changes are explicit and use previous weights as initialization, not strict optimizer-state resume.
+- Label usage/remap selection uses normalized SQLite indexes. Legacy full-library scan on label rename/delete has been retired from the hot path.
+- Formal multipart ZIP completion is now background merge/scan with durable `merging/validating` truth and read-triggered recovery after refresh/restart.
+- Label-management refresh rediscovers active schema-unify tasks from durable Material Batch truth and reuses the single `annotation-label-remap` PollRegistry owner.
+
+### Important commits in this closure window
+
+- `7c356f2d...` — manual import label mapping.
+- `1aa2f995...` / `3334385c...` — durable historical label unification foundation / multi-source unification.
+- `429e6dcd...` — multi-label merge review UI.
+- `68dd8319...` — import label provenance.
+- `27a4806e...` — canonical training label preflight / schema-change truth.
+- `029d15fe...` — retired automatic label suggestion paths.
+- `60e31539...` — confirmed-empty scope index correction.
+- `487f5bef...` / `2fd81dcd...` — permanent manual-choice / source guards.
+- `2f6ec3cf...` — background multipart ZIP finalization.
+- `041544f5...` / `7a8d2426...` / `0ab13ae4...` — durable label-unify refresh recovery and persisted/public task-state boundary fix.
+
+### Real failure evidence handled
+
+- A completed contract failure on `041544f5...` showed `TaskStatus.WAITING_RESOURCE` was incorrectly treated as a persisted enum. The durable enum has no such value; `WAITING_RESOURCE` is a public runtime projection. `0ab13ae4...` fixes the list query to use only persisted `QUEUED/RUNNING/CANCEL_REQUESTED` states and leaves public projection ownership unchanged.
+- Earlier completed failures around retired `mapping_suggestions`, stale browser auto-preselection expectations, and provenance assertions were fixed from their actual job logs; tests were updated to the new manual-choice product contract rather than weakening production behavior.
+
+### Verification boundary
+
+- `VERSION.txt` remains exactly `42.24.0`.
+- No main merge, tag or release.
+- At this documentation point, current-head Actions are not all terminal; **do not mark latest CI PASS until every required check is completed successfully**.
+- Genuine 20k production import/unification and real object-storage environment acceptance remain not verified.
+- The legacy direct non-multipart v19 upload endpoint still performs synchronous post-upload scan for compatibility. The formal browser owner does not use it. Treat it as a compatibility migration item, not as a second preferred import runtime.
+# 2026-10-08 product safety override — R0 lifecycle/projection
+
+AUDIT-149 and the concurrent residuals of AUDIT-157/173 are code-level fixed by the shared Material/Annotation lifecycle fence; AUDIT-102 is code-level fixed by MaterialRepository's version-monotonic derived projection primitive. AnnotationRepository remains the sole GT owner. Deferred structured imports preserve explicit empty Ground Truth while plain uploads remain unannotated; batch contracts require Material identity before formal GT and target the versioned projection owner. This is a production data-integrity fix, not a resumed broad technical-debt cleanup. VERSION `42.24.300`; CI/E2E closure remains evidence-gated.
+## 2026-10-13｜VNext 模型质量工作台（LOCAL VERIFIED / PRODUCTION UAT OPEN）
+
+- 基线 `30f83c48`，唯一 owner 不变：`training_evaluation.py` 负责评测事实，`TrainingRecoveryRuntime` 负责训练详情，`trainingReportCore425` 负责训练报告；没有新增评测引擎、训练状态 owner、轮询器、素材库或标注流程。
+- P0 冻结图片读取按 Evaluation → Snapshot Test ID → SHA256 → 已验证 Bundle/Storage 实际字节闭环；拒绝同名替代、Snapshot 漂移、哈希变化与悬空检测框，安全错误码区分恢复/重试。隔离环境已验证，生产历史对象与真实 OSS 尚未验证。
+- 评测工作台包含总览、类别/真实混淆、Top200 错误图片、真实 Confidence 采样、严格同基准版本对比；同图并排还要求相同 Image ID 与实际字节哈希。训练详情沿用原 runtime 四 Tab，训练报告区分执行、停止、独立评测和业务验收。
+- 本地证据：Python 208 passed / 1 Linux-only skipped；Node 24 frontend 947/947；Real Chrome 51/51；1920×1080、1440×900、1366×768、375×812 的评测、图片、训练详情和报告均截图核验。正式 `VERSION.txt=42.24.355` 未改；未 push、未部署、未执行 GPU 训练。
+- P2 明确保留：全量错误索引、完整场景切片、全量尺寸统计、PDF 导出需要新增可靠证据或迁移；旧记录缺证据时只提示重新评测，不回算或虚构。
+- 本轮交付止于本地提交；GitHub CI、生产历史数据与 GPU 训练仍为 `NOT VERIFIED`。
+
+## 2026-10-13 VNext independent-review findings
+
+The eight scoped findings are locally closed without a second owner: frozen-image stem guessing is removed; quality navigation uses the canonical Quality Center detect tab; training history is opt-in and compact polling remains under `TrainingRecoveryRuntime`; comparisons use class IDs; Snapshot parsing uses an eight-entry metadata cache; tabs implement the ARIA keyboard pattern; A/B panes synchronize zoom/scroll and retain independent fullscreen; missing deltas are not coerced to zero.
+
+Measured synthetic evidence: 1000 Epoch + 720 resource rows, 296,333 B full / 428 B compact. With the same 40 total requests, legacy is `40×full=11.3042 MiB`; current is `1×full+39×compact=0.2985 MiB` (-97.36%), including the first history load. SQLite SELECT is 4 → 1 per compact poll. A 20k Snapshot page parses once for 24 reads (23 cache hits average 0.227 ms) and reparses after file change. Final differential audit: focused Python 60/1, Node 24.19 952/952, focused Chrome 7/7; fresh Windows full pytest 2325/12/62 and clean `30f83c48` failure replay 62/62. Baseline full Chrome is 142/148 with six failures; final VNext Node 24 full Chrome is 143/149 with the same six failures. Two test-harness races were synchronized without production changes or weakened assertions. GitHub/Linux CI remains open; see `docs/VNEXT_FINAL_DIFFERENTIAL_AUDIT_2026_10_13.md`.
+> **2026-10-30 / 42.24.430**：429 完整 Actions 38 绿/1 Chrome 红，因成功后原隐藏 DOM 存在，归属保护误消除后台列表刷新失败告知；430 原 Submit Owner 限同根+同 task_id 放行原提示，替换窗继续隔离，不新增状态层。Node 59/59，CI 待精确 SHA，生产未部署。见 [P0 进度](performance/2026-10-29-p0-followup.md)。

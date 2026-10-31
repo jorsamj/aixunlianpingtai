@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 import train_worker_safe
+from platform_core import training_checkpoint_resume_tasks as checkpoint_resume
 from platform_core import training_hardened_tasks as hardened
 from platform_core import training_recovery_tasks as recovery
+from platform_core import training_runtime_tasks as runtime
 from platform_core.task_runtime import TaskKind
 from platform_core.worker_registry import resolve_worker_registration
 
@@ -163,6 +166,68 @@ def test_real_incident_shape_is_recoverable_final_validation_failure(tmp_path):
     assert "completion_handshake=job status is not done" in message
     assert "训练中 · Epoch 300/300" not in message
     assert "OOM" not in message
+
+
+def test_kernel_oom_capture_requires_exact_pid_and_task_time_window():
+    identity = SimpleNamespace(pid=501141, create_time=1791904700.0)
+    journal = SimpleNamespace(
+        returncode=0,
+        stdout=(
+            "1791904782.000 kernel: Out of memory: Killed process 501140 (python)\n"
+            "1791904782.500 kernel: Out of memory: Killed process 501141 (python)\n"
+        ),
+    )
+
+    evidence = hardened._collect_linux_kernel_oom_evidence(
+        identity,
+        finished_at=1791904783.0,
+        command_runner=lambda *_args, **_kwargs: journal,
+        platform_name="posix",
+    )
+
+    assert evidence == {
+        "type": "linux_kernel_oom_kill",
+        "source": "linux_kernel_journal",
+        "process_pid": 501141,
+        "process_create_time": 1791904700.0,
+        "observed_at_epoch": 1791904782.5,
+        "correlated": True,
+    }
+
+
+def test_kernel_oom_capture_marks_concurrent_event_as_uncorrelated():
+    identity = SimpleNamespace(pid=501141, create_time=1791904700.0)
+    journal = SimpleNamespace(
+        returncode=0,
+        stdout=(
+            "1791904690.000 kernel: Out of memory: Killed process 501141 (python)\n"
+            "1791904782.000 kernel: Out of memory: Killed process 999999 (python)\n"
+        ),
+    )
+
+    evidence = hardened._collect_linux_kernel_oom_evidence(
+        identity,
+        finished_at=1791904783.0,
+        command_runner=lambda *_args, **_kwargs: journal,
+        platform_name="posix",
+    )
+
+    assert evidence == {
+        "type": "linux_kernel_oom_concurrent",
+        "source": "linux_kernel_journal",
+        "process_pid": 501141,
+        "process_create_time": 1791904700.0,
+        "observed_at_epoch": 1791904782.0,
+        "correlated": False,
+    }
+
+
+def test_worker_prestart_guard_validates_frozen_resources_before_dataloader():
+    source = Path(__file__).parents[2] / "train_worker.py"
+    text = source.read_text(encoding="utf-8")
+    guard = text.index("validate_frozen_resource_budget(resolved)")
+    dataloader = text.index('publish_startup_stage(job_file, "initializing_trainer"')
+    assert guard < dataloader
 
 
 def test_training_loop_checkpoint_ready_before_final_validation_finishes(tmp_path):
@@ -399,12 +464,13 @@ def test_success_manifest_reconciliation_rejects_checkpoint_mismatch(tmp_path):
     assert hardened.base._json(job_file, {})["status"] == "failed"
 
 
-def test_training_role_uses_checkpoint_recovery_hardened_handler(tmp_path):
+def test_training_role_uses_production_checkpoint_recovery_hardened_handler(tmp_path):
     registration = resolve_worker_registration(tmp_path, {"training"})
     handler = registration.handlers[TaskKind.TRAINING]
 
-    assert handler.__class__.__name__ == "RecoveryHardenedLabelContractTrainingHandler"
-    assert handler.__class__.__module__ == "platform_core.training_recovery_tasks"
+    assert type(handler) is runtime.ProductionTrainingHandler
+    assert isinstance(handler, checkpoint_resume.CheckpointResumeRecoveryHandler)
+    assert isinstance(handler, recovery.RecoveryHardenedLabelContractTrainingHandler)
     assert isinstance(handler, hardened.HardenedLabelContractTrainingHandler)
     assert handler.process_runner is recovery._run_hardened_training_process_with_reconciliation
     assert handler.process_runner is not hardened.base._run_training_process

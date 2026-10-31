@@ -1,0 +1,19 @@
+{
+  "cases": [
+    {
+      "case": "guardian_stall",
+      "base_cleaning_passed": true,
+      "source_sha_unchanged": true,
+      "remaining_owned_processes": 0,
+      "elapsed_seconds": 71.07799999997951,
+      "peak_process_tree_rss_bytes": 623509504,
+      "peak_temporary_logical_bytes": 314813143
+    }
+  ],
+  "original_python_environment_unchanged": true,
+  "original_python": "D:\\python\\python.exe",
+  "optional_python": "C:/tmp/fiftyone-audit-1221/Scripts/python.exe",
+  "scope": "isolated fixtures; base image analysis only, not all platform business routes",
+  "temporary_roots_cleaned": true,
+  "physical_allocation": "NOT VERIFIED; logical file bytes sampled"
+}

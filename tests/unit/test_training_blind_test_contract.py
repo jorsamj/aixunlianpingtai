@@ -67,3 +67,32 @@ def test_independent_test_ground_truth_is_hidden_from_training_runtime(tmp_path:
     assert test_member["label_ref"].startswith("evaluation/ground_truth/test/")
     assert (bundle / test_member["label_ref"]).is_file()
     assert verify_portable_dataset(bundle / "manifest.json")["verified_files"] == 4
+
+
+
+def test_blind_test_workers_pass_explicit_image_size_to_predict():
+    import ast
+
+    project_root = Path(__file__).resolve().parents[2]
+    expected = {
+        "train_worker.py": "args.imgsz",
+        "checkpoint_validation_worker.py": "imgsz",
+    }
+    for file_name, size_expression in expected.items():
+        tree = ast.parse((project_root / file_name).read_text(encoding="utf-8"))
+        blind_functions = [
+            node for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == "blind_predict"
+        ]
+        assert len(blind_functions) == 1, file_name
+        predictions = [
+            node for node in ast.walk(blind_functions[0])
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "predict"
+        ]
+        assert len(predictions) == 1, file_name
+        params = {item.arg: ast.unparse(item.value) for item in predictions[0].keywords}
+        assert params["imgsz"] == f"int({size_expression})", (file_name, params)
+    checkpoint = (project_root / "checkpoint_validation_worker.py").read_text(encoding="utf-8")
+    assert "_blind_test(best_model, data_yaml, runtime_device, args.imgsz)" in checkpoint

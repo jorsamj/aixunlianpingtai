@@ -84,6 +84,7 @@ export function buildTrainingPayload({
   if (mode === 'independent_test_set' && !independent.length) throw new Error('请选择独立试验素材');
   if (independent.some(id => train.includes(id))) throw new Error('训练素材与试验素材不能重复');
   const randomPercent = mode === 'random_test_from_training_pool' ? Number(experimentPercent) : null;
+  if (mode === 'random_test_from_training_pool' && validation + randomPercent >= 100) throw new Error('训练集比例必须大于 0；请调整验证集和试验集比例');
   if (mode === 'random_test_from_training_pool' && !(randomPercent > 0 && randomPercent < 100)) {
     throw new Error('试验集比例必须在 0 到 100 之间');
   }

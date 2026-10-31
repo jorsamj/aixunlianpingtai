@@ -55,6 +55,8 @@ def provider_factory(provider_config: Mapping[str, Any]):
         api_key=str(config.get("_api_key") or ""),
         model=str(config.get("model_name") or ""),
         headers=config.get("headers_json") or {},
+        api_protocol=str(config.get("api_protocol") or "auto"),
+        structured_output=str(config.get("structured_output") or "auto"),
     )
 
 
@@ -104,26 +106,19 @@ def parse_candidate_response(
     try:
         parsed = CandidateResponse.model_validate(payload)
     except ValidationError as error:
-        raise ValueError(f"候选标注字段不符合协议：{error.errors(include_url=False)}") from error
+        raise ValueError(f"候选标注字段不符合协议：{error.errors(include_url=False, include_input=False)}") from None
 
+    # Alias metadata is intentionally ignored here. The model must return one
+    # of the exact canonical codes explicitly allowed by this task.
+    del label_aliases
     result: list[dict[str, Any]] = []
     for index, box in enumerate(parsed.boxes):
         label = box.label.strip()
         values = (box.confidence, box.x1, box.y1, box.x2, box.y2)
         if not all(math.isfinite(value) for value in values):
             raise ValueError(f"第 {index + 1} 个框包含非有限数字")
-        if label not in label_ids and label:
-            matches = []
-            for code, aliases in (label_aliases or {}).items():
-                if code not in label_ids:
-                    continue
-                values = [str(alias or "").strip() for alias in aliases]
-                if any(alias and (label == alias or label in alias or alias in label) for alias in values):
-                    matches.append(code)
-            if len(matches) == 1:
-                label = matches[0]
         if label not in label_ids:
-            raise ValueError(f"第 {index + 1} 个框使用了标签库之外的标签：{label}")
+            raise ValueError(f"第 {index + 1} 个框使用了标签库之外的标签")
         if not 0 <= box.confidence <= 1:
             raise ValueError(f"第 {index + 1} 个框置信度必须在 0 到 1 之间")
         x1, y1, x2, y2 = float(box.x1), float(box.y1), float(box.x2), float(box.y2)

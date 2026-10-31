@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import closing
+from contextvars import ContextVar
 
 from datetime import datetime, timedelta, timezone
 from typing import Iterable
@@ -11,7 +12,10 @@ from .process_control import (
     ProcessIdentity,
     ProcessIdentityMismatchError,
 )
-from .repository import TERMINAL_STATUSES, TaskRepository, _from_row, _iso
+from .repository import TERMINAL_STATUSES, TaskRepository, _from_row, _iso, admission_preparer
+from .sqlite_busy import retry_busy
+
+_PROCESS_OBSERVATIONS = ContextVar("task_expired_process_observations", default={})
 
 
 _RECOVERY_HOLD_STAGES = (
@@ -90,13 +94,12 @@ class FencedTaskRepository(TaskRepository):
                 return True, None
             return caller_admission(database, candidate, owner, token, expires_at, now)
 
-        return super().claim_next(
-            worker_id,
-            kinds,
-            capabilities,
-            lease_seconds,
-            admission=fenced_admission,
-        )
+        fenced_admission.prepare = admission_preparer(caller_admission)
+        token = _PROCESS_OBSERVATIONS.set(self._inspect_expired_processes(_iso()))
+        try:
+            return super().claim_next(worker_id, kinds, capabilities, lease_seconds, admission=fenced_admission)
+        finally:
+            _PROCESS_OBSERVATIONS.reset(token)
 
     def assert_execution(
         self,
@@ -119,6 +122,7 @@ class FencedTaskRepository(TaskRepository):
             raise PermissionError("task execution is fenced")
         return _from_row(row)
 
+    @retry_busy
     def heartbeat(
         self,
         task_id: str,
@@ -312,6 +316,25 @@ class FencedTaskRepository(TaskRepository):
             return "unknown"
         return "alive"
 
+    @staticmethod
+    def _process_observation_key(row):
+        return tuple(row[key] for key in ("task_id", "attempt", "lease_token", "lease_expires_at",
+                     "process_pid", "process_create_time", "process_command_hash"))
+
+    def _inspect_expired_processes(self, now):
+        with closing(self._connect()) as database:
+            rows = database.execute("SELECT * FROM tasks WHERE status IN ('RUNNING','CANCEL_REQUESTED') AND lease_expires_at<=?", (now,)).fetchall()
+        return {self._process_observation_key(row): self._process_recovery_state(row) for row in rows}
+
+    @retry_busy
+    def release_expired(self, now=None):
+        now_text = _iso(now)
+        token = _PROCESS_OBSERVATIONS.set(self._inspect_expired_processes(now_text))
+        try:
+            return super().release_expired(now_text)
+        finally:
+            _PROCESS_OBSERVATIONS.reset(token)
+
     def _release_expired_in(self, database, now: str) -> int:
         rows = database.execute(
             """
@@ -324,7 +347,8 @@ class FencedTaskRepository(TaskRepository):
         ).fetchall()
         released = 0
         for row in rows:
-            process_state = self._process_recovery_state(row)
+            process_state = ("gone" if self._identity_from_row(row) is None else
+                             _PROCESS_OBSERVATIONS.get().get(self._process_observation_key(row), "unknown"))
             if process_state == "alive":
                 database.execute(
                     "UPDATE tasks SET stage='lease_expired_process_alive', updated_at=? WHERE task_id=?",

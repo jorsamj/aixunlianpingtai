@@ -1,5 +1,7 @@
 import {replaceMaterial} from './materials.js';
 
+export const ANNOTATION_PREVIEW_LIMIT = 32;
+
 export function formalAnnotationState(response, boxes) {
   const allBoxes = boxes || [];
   const state = String(
@@ -11,16 +13,27 @@ export function formalAnnotationState(response, boxes) {
   return state;
 }
 
+export function annotationPreviewFromBoxes(boxes, limit = ANNOTATION_PREVIEW_LIMIT) {
+  return (boxes || []).slice(0, limit).map(box => {
+    const preview = {
+      class_id: box.class_id,
+      label: box.label,
+      x1: box.x1,
+      y1: box.y1,
+      x2: box.x2,
+      y2: box.y2
+    };
+    for (const field of ['source', 'source_task_id', 'confidence']) {
+      const value = box?.[field];
+      if (value !== undefined && value !== null && value !== '') preview[field] = value;
+    }
+    return preview;
+  });
+}
+
 export function applyAnnotationResult(materials, response, boxes) {
   const allBoxes = boxes || [];
-  const preview = allBoxes.slice(0, 64).map(box => ({
-    class_id: box.class_id,
-    label: box.label,
-    x1: box.x1,
-    y1: box.y1,
-    x2: box.x2,
-    y2: box.y2
-  }));
+  const preview = annotationPreviewFromBoxes(allBoxes);
   const summary = response?.image || {};
   const state = formalAnnotationState(response, allBoxes);
   const isFormal = state === 'annotated' || state === 'confirmed_empty';

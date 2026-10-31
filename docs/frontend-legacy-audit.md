@@ -1,4 +1,233 @@
+> **2026-10-30 / 42.24.429**：P0 只修原 `training-submit.js` 的迟到成功/核验/列表刷新通知归属，防止旧窗提示污染新算法；创建任务和原 TaskRuntime 不变。413/415/416/425/427 已有加载/选材代码不重复开发，生产 HAR/A800/ZIP/P95 待验。基线 428 Actions 38/38 绿；429 自身 CI 待核，唯一台账 `performance/2026-10-29-p0-followup.md`，未部署。
+
+> **2026-10-29 / 42.24.416**：保留原 Picker/Summary/Hydration/Submit 前端 Owner 与所有请求字段；后端 role-page 只读合同显式跳过重复的 best.pt SHA256，最终训练仍全量校验。角色候选和使用池冷开销待现网诊断，不增前端状态，CI/生产待核，见 `docs/performance/2026-10-29-p0-followup.md`。
+
+> **2026-10-29 / 42.24.415**：414 试行将空摘要 API 全池数置为 `null` 破坏已有合同，CI 红项发现后已回滚；原前端 SummaryRuntime 零选材本地摘要无需 API，保持首屏不被空请求阻塞。无平行状态和新 Owner，新 SHA/生产待核，未部署，见 `docs/performance/2026-10-29-p0-followup.md`。
+
+> **2026-10-29 / 42.24.413 P0 追加**：保留原 TrainingCreateHydration/TrainingDraft/Submit owner，只针对其 `/api/training_options` 后端读取路径移除旧服务器串行健康探测、Paddle 递归 scan、历史模型目录；训练资源卡片复用原 renderer 增加旧服务器显式检测。原 SummaryRuntime 的空选择本地合法预览，无平行状态。完整需求/根因/测试状态见 [P0 单一台账](performance/2026-10-29-p0-followup.md)，准确 CI/生产待验。
+
+## 2026-10-29｜训练回收与异常证据定向修复（LOCAL VERIFIED / CI及生产未验证）
+
+[唯一审计报告](docs/TRAINING_WORKSPACE_EVIDENCE_AUDIT_2026_10_29.md)：远端40327743/VERSION399隔离基线；原Lifecycle补异常outcomes/框证据归档、显式ID与SHA保护、自动阻塞/归档失败回执。定向71通过/1系统symlink权限跳过，真实原API清理前后相同字节验证通过。用户已授权提交到开发分支；本次提交CI待核验，未部署；保留其他工作树WIP。Checkpoint恢复、未知历史所有权继续保护，远端最终回收/生产启动与接口性能NOT VERIFIED，不能称全量最终回收已验收。无前端/DB/版本更改。
+
+## 2026-10-24｜高级功能菜单整合（代码及隔离CI已验收）
+
+本节为本轮唯一设计、进度及验收记录。基线ee96a837013bbe352df622898152286d104d20a8 / VERSION42.24.385，fetch本地远端0/0；两份未跟踪训练模板测试及5944祖先保留。已检查其他工作树及会话，未发现本分支同时编辑；不操作其他工作树。
+
+|现有入口|实际能力/Owner|原API|去向|后端影响|
+|---|---|---|---|---|
+|服务节点|ServiceNodeRuntime，Agent/Worker/能力/资源/任务/凭据|/api/v63/service-nodes|算力与节点：服务节点|无|
+|训练资源|ResourceDiscoveryRuntime + 原renderResources，环境/模型目录/Paddle/服务器|/api/training_options、/api/resource-discovery/tasks、/api/ultralytics_env、/api/local_models、原环境API|算力与节点：训练环境|无|
+|组件检测|renderComponentCheckV40，缓存/最新扫描/有界轮询|/api/v40/system/components/latest、scan|算力与节点：环境诊断|无|
+|部署资源|renderDeployResources + ConversionCatalogRuntime|/api/v39/deploy、原conversion-catalog API|模型转换环境：资源/字典/工具说明|无|
+|模型配置|最终M4与原提示词Owner，上一轮Responses继续复用|/api/v35/model-configs、prompt-templates|AI辅助配置：AI模型/提示词模板|无|
+|存储配置|renderStorageSources61 + ModelArtifact/StorageCacheRuntime|/api/v61/storage-sources、/api/v62/projects/.../storage/lifecycle-summary、原产物配置|存储管理：资源/空间与缓存|无|
+|旧素材兼容迁移|原legacy-material-compatibility模块与可恢复扫描|原compatibility API|存储管理：旧素材兼容迁移|无|
+|平台对接|ExternalAlgorithmPlatformRuntime：连接/同步/发布/诊断|原external-platform API|保留独立入口，统一页面布局|无|
+|畅联云数据|ChangLianDataBrowser：只读分页浏览|/api/v63/external-algorithm-platform/provider（只读）|保留独立入口，统一页面布局|无|
+
+真实重复是高级侧栏平铺相近入口；训练环境快捷检测与全局组件诊断范围不同，必须都保留；服务节点不是转换工具实体。旧部署插件已归一到模型配置，历史render函数不是新增有效页面，不恢复废弃业务。服务节点面包屑原归系统与对接确实错误。
+
+设计取舍：直接将state.page改成四个新名字会破坏组件/服务节点轮询、资源Action fence及旧跳转；复制页面业务会形成双Owner。选择原路由身份不变，只在现有导航层做四项菜单映射/标题/Tab，原业务Renderer直接挂载#view。Tab外框独立于#view，不包装或复制业务Owner，不使用DOM观察器维持导航；同页分区仅为展示状态，保存于原UI偏好，不能拥有业务任务状态。旧入口继续有效，新菜单名只归一到既有路由。平台操作页与只读浏览保留独立，避免双重Tab与写操作混合。
+
+实施清单（按用户授权审计后继续，无重复审批）：
+- [x] A 基线/有效入口/Owner/API/重复与独立边界核验并向用户报告。
+- [x] B 在原navigation-stability和main导航chrome接入菜单元数据/原路由Tab；修正标题、面包屑、active及刷新恢复。
+- [x] C 作用域CSS统一资源、模型、存储及对接页；低频工具说明收纳，旧操作/字典/未知空间语义保留，不改后端。
+- [x] D 原advanced-navigation Node守卫升级合同；少量真实Chrome覆盖四菜单/旧路由/Tab/检测离开恢复/弹窗/缩放。仅运行受影响现有回归，不手动全仓测试。
+- [x] E VERSION/cache及五份交接入口已更新，代码与测试已正常推送，f95e221f准确SHA CI已验收；文档提交自身最终HEAD的Checks在交付前另核。
+
+风险/边界：真实GPU、NAS/OSS、生产连接/同步/发布均不执行；本轮不新增清理/迁移权限或后端能力。旧路由仍是页面身份，Sidebar折叠不改变业务页；同页Tab不重发请求。测试和提交证据在本节持续补齐，不以写文档代替代码交付。
+
+### 实施与必要验收记录
+
+新增advanced-navigation.js仅拥有四菜单元数据和Tab展示，不持有业务数据/任务、不包装任何Renderer。main现有navigation chrome调用一次展示；Tab位于#view外，旧业务进度更新不能替换它。同页Tab不执行render/API，跨页Tab调用原setPage；原UI偏好键记录分区，刷新后恢复。导航状态/异步Owner仍是原state.page，服务节点面包屑已纠正。四个新菜单名只normalize到旧Owner，旧入口全部保留。
+
+最终布局：算力与节点=服务节点/训练环境/环境诊断；模型转换环境=转换资源（含实际SDK/编译器状态及可折叠工具链接入说明）/厂商与芯片字典，不设空的SDK独立页；AI辅助配置=AI模型/提示词模板；存储管理=存储资源/空间与缓存/旧素材兼容迁移。平台对接/畅联云数据保留原两入口及原内部Tab，采用同一作用域列表/标题/按钮规范；不自动连接、同步或发布。
+
+UI改动：统一Tab、panel间距、按钮最小高度、资源网格、表格换行及窄屏布局；存储占用改为四列紧凑指标行，避免八张卡片横排嵌套，未知数据仍显示未获取；原compact-note被全局!important隐藏，工具链说明改专属类并折叠，未增加!important。新增CSS只作用于高级/对接页面。原节点表单/凭据、训练环境与模型目录/上传、组件扫描、资源/SDK检测、字典CRUD、M4协议、提示词CRUD、存储/算法产物配置、缓存状态与迁移原流程全部保留。
+
+本轮未修改任何后端文件、数据库Schema或API合同；没有新依赖、新任务Owner/轮询、物理清理能力或P2评测改动。仅storage-cache-runtime的HTML内联布局改class；conversion-catalog原字典快捷入口选中对应Tab。其他跳转仍调用原路由，并呈现新标题/active/menu。相关既有浏览器测试只更新新标题/菜单定位和必要Tab路径，原请求次数、fencing、安全、CRUD断言保持。
+
+RED→GREEN：新增Node初始缺模块RED；Chrome明确收到原7菜单而期望4菜单RED。菜单/路由纯合同与版本首批12通过；原导航/唯一Owner/模型局部保存守卫33/33通过；存储缓存/未知值/迟到隔离和版本24/24通过。Chrome第一组11/11（22.7s）、第二组9/9（25.1s）、末组4/4（16.0s）；包括新增2场景、节点凭据、导航折叠/恢复、旧路由、扫描轮询离开恢复、字典CRUD、提示词CRUD、存储状态和120条迁移恢复。各组有重复，不相加冒充独立数量。上一轮Responses配置保存/刷新/编辑原Chrome1/1（6.7s）通过；最后布局截图单例1/1（9.2s）通过。JS syntax、diff check及Python build_identity检查VERSION386通过；未改Python业务，不手动跑全仓pytest。
+
+导航取消补充：截图发现page-navigation短暂错误提示。原PageRequestScope只识别AbortError，但controller.abort('page-navigation')可能使原生fetch直接拒绝该reason；新增单例RED（rejected而非原隔离语义pending），在原判断中补error===signal.reason，保留generation/aborted条件，不重写请求系统。6/6 Node GREEN，包含真实当前网络失败仍抛出；新Chrome使用原生fetch/AbortController亦验证取消隔离1/1，最后页面与旧清洗/AI review迟到结果保护3/3（16.7s）。未新增请求/轮询Owner。
+
+视觉证据：[原7项菜单](screenshots/2026-10-24-advanced-menu/before.png)、[转换字典1440](screenshots/2026-10-24-advanced-menu/conversion-1440.png)、[AI配置1920](screenshots/2026-10-24-advanced-menu/ai-models-1920.png)、[存储1920](screenshots/2026-10-24-advanced-menu/storage-cache-1920.png)、[训练环境1920](screenshots/2026-10-24-advanced-menu/training-environment-1920.png)。全为隔离服务真实Chrome截图，无生产或虚构业务数据；1920/1440/1366及125%等效1093宽已检查无横向溢出，截图路径同时保留在测试输出。旧测试自动重写的历史截图已还原其原HEAD内容，不混入本轮提交。
+
+VERSION42.24.386；app/main/styles cache42.25.434，新页面样式/模块20261024，存储布局缓存20261024-layout。原Frontend Runtime仅追加2个本轮Chrome场景，不新建工作流；精简本地测试不改变原CI既有守卫。当时阶段E待提交/CI；最终状态以下方验收回执为准，不以本地绿色替代远端CI。生产Agent/GPU/NAS/OSS/同步发布NOT VERIFIED，不部署、不扫描生产、不改生产数据。
+
+### 提交与CI问题跟踪
+
+代码d281c72120d73a1514125a0412c7d38b2994360f已正常推送。其CI发现Storage Cache Governance仍grep旧缓存422540-lifecycle（该job Python58及Node21通过），Frontend Runtime两个源码守卫仍要求原七菜单列表及label===currentPage。按真实新菜单合同更新原断言/缓存标识，所有安全/唯一Owner/不重建侧栏断言保留；两份受影响Node文件59/59 GREEN。该SHA不能标全绿，守卫修正后须核新SHA，不使用旧结果替代。
+
+守卫修正0ff220419e4da30437ea958119de192762fedec7准确CI为21成功/1失败，55成功/1失败Checks；存储守卫已通过（Python58/Node21），Node1331/1331通过。完整Chrome264通过/3失败：服务节点无闪页用例对象仍期望旧title、版本遍历用例仍期望旧菜单名、提示词缓存用例未选择新Tab。仅同步这三处新UI合同，保留原页面身份/无闪页/版本标记/DOM稳定/GET一次断言；3/3定向Chrome GREEN（11.7s）。业务代码未变，须再核修正新SHA CI，旧失败记录不隐藏。
+
+### 最终代码验收与接续
+
+最终代码/测试提交f95e221f5243b31884737d903a7eac92fe184d8c，VERSION42.24.386；[准确SHA Checks](https://github.com/jorsamj/aixunlianpingtai/commit/f95e221f5243b31884737d903a7eac92fe184d8c/checks)为23/23 Actions、60/60 Checks成功，0失败/取消/跳过/待完成。先前d281/0ff的失败已由上述合同修正关闭，不将其说成绿色。
+
+[最终Frontend Runtime](https://github.com/jorsamj/aixunlianpingtai/actions/runs/40089845478)：Node1331/1331、真实Chrome267/267通过（16.7分钟），包含四菜单/原Owner/Tab/刷新恢复、真实取消隔离、旧业务回归。存储相关Python58/Node21及不可变/节点隔离/签名上传守卫在0ff22041对应Storage Cache Governance通过；本轮没有Python业务改动，未手动重复全仓pytest。所有最终验收区分准确提交，不把不同轮次数字相加。
+
+原始5944e1a558a34f7be008b644a5a3b07b4ed132cd在祖先链中，两份训练模板测试始终未暂存/提交；没有修改其他工作树。仅正常push唯一长期分支，无reset/强推/main合并。代码d281c721、源码守卫0ff22041、浏览器合同f95e221f均已持久化并保留可追溯记录。当前没有已知未完成的本轮代码项。
+
+接续从static/modules/advanced-navigation.js（纯展示映射）、static/main.mjs原navigation chrome、static/app.js最终renderNav/renderTop以及原各业务Owner开始。不要将state.page替换成四个菜单名，不复制业务Renderer、不新建PollRegistry/Modal/任务/存储管理；同页Tab只改展示，异步Owner及API保持原名称。旧素材迁移是原正式已实现工具，迁移/物理删除仍需其原预览确认和授权；菜单整合没有新增这类能力。
+
+文档自身后续提交不改业务代码；最终HEAD由本文件最近修改commit定位，交付前独立核其Checks，避免SHA自引用循环。生产GPU/Agent环境、NAS/OSS、真实平台同步/发布仍NOT VERIFIED；本轮不部署、不修改生产数据库/素材/GT、未进行生产扫描或迁移。必要生产环境验收属于单独授权范围。
+
+## 2026-10-24｜大模型Chat/Responses协议兼容（代码及隔离CI已验收）
+
+唯一需求/设计/进度：[协议专项](LLM_API_PROTOCOL_COMPATIBILITY_2026_10_24.md)。原provider兼容Chat/Responses，准确端点识别、受控结构化降级、安全错误证据；原M4高级配置/Bootstrap投影同步，连接测试与正式v60同工厂及字段校验。VERSION385/cache433；最终代码982069c8准确CI47/47 Actions、128/128 Checks成功，协议44、API55（含配置11/正式E2E4）、Node1328、Chrome265通过。文档自身最终HEAD另核Checks。5944及两份模板测试保留；真实GLM/收费接口NOT VERIFIED，发布前须授权环境实测，不部署。
+
+## 2026-10-24｜ZIP自动标签确认与重复窗口治理（代码及隔离CI已验收）
+
+唯一记录：[Uppy专项顶部](UPPY_ZIP_ADAPTER_POC_2026_10_22.md)。原Runtime统一自动确认/主动关闭抑制/成功立即关所属内容，旧列表不倒退；Uppy/旧入口同Owner，原选择层交接及复用节点保护，多ZIP独立顺序，完成后整理窗口改手动。VERSION384；代码/测试610878cd准确CI23/23 Actions、60/60 Checks成功，Chrome264/264、Node1328/1328；ZIP相同业务代码52939779的独立Chrome41/41。历史失败和最小Python9/Node/Chrome证据见专项，文档自身最终HEAD交付前另核Checks。5944及两份模板测试保留，无后端/GT合同变更或生产操作。
+
+## 2026-10-24｜创建训练弹窗滚动修复（代码及隔离CI已验收）
+
+唯一记录：[训练创建专项顶部](TRAINING_CREATE_FOUR_MODES_UI_2026_10_10.md)。原CSS收敛高度/单一layout滚动、标签自然展开、footer真实占位；无JS或后端/参数/调度变更，important减少15。五视口真实wheel5/5、原标签提交Chrome1/1及Node27/27通过；VERSION383，CSS cache4226355，代码f5ba6192准确CI 36/36 Actions、99/99 Checks通过，文档最终HEAD自身另核Checks。5944及两份模板测试保留，未部署/未启动训练。
+
+## 2026-10-24｜P1跨标签负样本与首次训练（代码及隔离CI已验收）
+
+唯一需求/进度：[训练质量专项P1](TRAINING_QUALITY_REMEDIATION_TRACKER_2026_10_18.md)。任务标签与原始标签分离，正/已确认负/待审核共享后端合同；人工有限批审保留原框、CAS/源SHA与事务审计；新V3纯负保留像素/空YOLO、混合与历史V2保护不变。VERSION382，必要Python/Node与Chrome四个独立场景通过；代码cd8cde89准确CI 23/23 Actions、60/60 Checks成功，最终文档HEAD自身另核Checks，详见专项回执；不自动确认/丢弃/训练，不生产操作。5944及两份未跟踪模板测试保留。
+
+## 2026-10-23｜普通图片Uppy与本次上传处理（代码及隔离CI已验收）
+
+唯一进度：[Uppy专项普通图片节](UPPY_ZIP_ADAPTER_POC_2026_10_22.md)。原multipart64张/128MB顺序Owner、UploadBatchStore及唯一任务中心复用；本地中文Uppy、48条本批确认页、真实失败/待核验、刷新恢复、原清洗/标注已接通，ready不写GT。Python31、必要Node及Chrome五图/部分失败/65分批/ZIP冒烟通过；VERSION381，修正646aeb0a实际22/22 Actions、58/58 Checks、Chrome250/250与Node1322/1322通过；本次文档自身HEAD另核Checks。每批仅一个原清洗任务限制保留；生产未验证/未部署/未写入，5944及两份模板测试保留。
+
+## 2026-10-23｜旧素材全面检查体验修复
+
+[唯一专项](TRAINING_MATERIAL_LIFECYCLE_GOVERNANCE_2026_10_21.md)顶部为接续依据。一次开始顺序50条、真实汇总及25条明细分页、暂停/刷新/失败恢复已实现；原迁移单独确认，检查不改正式数据。VERSION380，Python15/Chrome3/版本9通过，代码6f663e1c实际38/38 Actions、102/102 Checks通过；本次文档新HEAD另核。原图仅逐条检查时点，库外原位改写/无版本GT不冒充全库原子证明；5944及两份模板测试保留，未生产操作。
+
+## 2026-10-23 P2接续入口
+
+[唯一评测专项](SCENARIO_MODEL_EVALUATION_UI_GOVERNANCE_2026_10_22.md)顶部P2为当前进度；原Owner复用，新增AdvancedEvaluation仅负责展示，不拥有GT/任务/存储/候选；代码9280实际21/21 Actions、55/55 Checks通过；文档新SHA另核，生产未验证。
+
+## 2026-10-20 转换Weight恢复增量
+
+原发布Owner/版本SQL payload/ModelArtifact复用；行内交付意向选择、原/目标分类与Weight/OSS/UNKNOWN审核投影，单一后端合同，无第二队列、弹窗或轮询。详细架构/证据/进度以docs/CONVERSION_WEIGHT_PUBLISH_RECOVERY_2026_10_20.md为准；生产替换未开放，VERSION42.24.360，main408/发布模块64011。
+
+## 2026-10-20｜动态厂商字典与真实SDK目标（本地限定验收通过 / 最终SHA CI待推送 / 生产未部署）
+
+- 完整fetch/pull基线7a2492b24de5d6259bf792ed074f1548e66d6eda，原39/109绿色归档不是本轮CI。复用初始干净长期分支工作树，其他工作树/会话未覆盖。
+- 唯一专项docs/DYNAMIC_CONVERSION_CATALOG_ACCEPTANCE_2026_10_20.md保存完整用户V2/第十八条、产品合同、架构、RED、已完成与剩余计划。原ModelArtifactRepository/compute_platform_catalog/Adapter/Worker/Durable MODEL_CONVERSION/发布Owner复用，无平行模型库/队列/调度/轮询。
+- 动态本地厂商/芯片表初始为空，模板不等于业务记录；SDK/本地/外部ID分开。BM1684按1.30.2官方矩阵+实检开放F32、原X/88 F16保留；未知组合不乐观放行。后端统一resolve和POST，真实目标/参数/命名、结构/hash、资产快照可追溯，硬件验证独立。
+- 正式VERSION本轮已一次42.24.358→42.24.359；必要app/main/styles缓存42.25.407、发布模块64010。正式显示继续读后端版本。最终Python262、Node70、Chrome8通过，另7项发布安全定向用例通过；版本七入口一致、语法/diff/原永久守卫通过。最终完整SHA CI待推送，记录于专项指定独立附件。
+- 未部署/重启/安装SDK/改生产密钥或数据库/操作OSS/历史Weight；本机Windows未找到TPU-MLIR工具，真实BM1684编译、模型质量与板卡NOT VERIFIED。生产17项元数据/7Weight补齐仍未执行，须独立授权。
+
+## 2026-10-20｜Weight tags及本地元数据（本地通过 / 最终SHA CI待提交 / 生产补齐未执行）
+
+- 基线0cf65c48bf6c6d0ec0df852128c2faccf4072f8e已完整fetch/pull；历史48/131绿色归档，不代表本轮。VERSION42.24.358，app405/styles402保持，仅main406/发布模块64009必要更新。
+- 原模型标签/JSON add-edit/UNKNOWN/差异检测已有。RED确认通用资产未持久化模型信息+upsert整体替换、PARTIAL幂等ensure重置重试时钟、edit多候选未消歧、无外部映射本地标签投影遗漏。共享原解析合同、原SQL/ModelArtifact/发布Owner增量修复，无平行队列/数据库/轮询。
+- 版本冻结schema/codes或可信Snapshot为唯一来源；Artifact保存验证快照，未知不清空已知、冲突不覆盖。训练/转换先登记本地，与外部/上传配置独立；已有对象身份保持，不复传。原ID唯一edit，缺可选字段不阻断交付；回执和真实远端读回分开。
+- 主Python335通过，版本兼容25、训练/转换传输18通过；Node26、Chrome3通过，0失败0跳过。7缺失实际ID+10隔离对照通过，7edit/10零edit，重复不新增。最后完整SHA仍须CI。
+- 唯一专项docs/WEIGHT_TAGS_SYNC_ACCEPTANCE_2026_10_20.md顶部含只读预检、显式本地修复及原Owner受控外部补齐步骤/7ID表；scripts/audit_weight_metadata.py默认只读，--apply-local也不上传或调用新畅联。
+- 未连接生产执行补齐/部署/重启/改密钥/操作OSS/S3；生产17项尚未实际修复，远端tags持久化需另行授权读回验收。部署启用自动Owner可能恢复历史重试，也须先审核并批准补齐。
+
+## 2026-10-20｜Sophon资源与页面一致性（本地通过 / 最终SHA CI待提交 / 生产未部署）
+
+- 基线a36b9cdec1cd4aa07c9cde2d9c84bc98bb66b479已fetch/pull，历史22/22 Actions、59/59 Checks归档专项。现场两chip真实FP16编译/远程done与probe可用是用户提供证据，不等于板卡验证。
+- 扫描/plugins复用原v39 detect Owner解析secret_ref、鉴权、持久化及公共投影；资源列表/转换弹窗读取同一事实。健康失败清空Sophon能力，恢复重新可用，不泄露密钥；无第二探测/调度/轮询。
+- 本机工具明细仅展示本机；整体Sophon按有效资源汇总，区分本机未配置/本机失败/远程可用。版本修为完整v1.30.2-20260831，远程资源展示工具版本；独立Python保留原逻辑已有测试保护。
+- RED后端8、Node1、Chrome1→限定Python136/136、Node20/20、Chrome10/10（0失败0跳过）；语法/diff/原永久守卫通过。VERSION42.24.358，app缓存405，main404/styles402不变。
+- 唯一专项docs/SOPHON_BMODEL_CONVERSION_ACCEPTANCE_2026_10_20.md；最终CI附件见本轮E节。不修改生产服务/密钥/依赖，不部署，不调用真实新畅联写接口；部署后真实网页与板卡结果仍需现场复验。
+
+## 2026-10-20｜Sophon BMODEL（A-D测试通过 / 最终SHA CI待提交 / 生产与硬件未验证）
+
+- 起始62647aeea258a26ba423f0a9db23d8f6f8ba3b1a；上轮23/23 Actions、59/59 Checks已归档原tags专项，不代表本轮绿色。VERSION42.24.358不变。
+- 首期BM1684X/BM1688、FP16、Batch1/static；修复显式芯片/矩形导出与ONNX shape、可运行工具探测及真实产物结构/hash合同。Sophon remote并入原ConversionHandler/MODEL_CONVERSION，原Key/Lease/取消/恢复与确定ID幂等；无第二执行器/数据库/轮询。
+- 发布继续原ModelArtifact/Owner与Weight add/edit，同Version下PT和两chip BMODEL共存，tags冻结原生数组，未知可选信息不阻断；Sophon必要chip严格校验。UI增量字段与真实资源/任务/待硬件状态，app/main缓存404、styles402、发布模块64008。
+- 本地Python313/313、Node40/40、Chrome10/10，0失败0跳过；最后BMODEL edit断言聚焦4通过。硬件2 SKIP/NOT VERIFIED，无真实TPU-MLIR编译或板卡加载证据；独立规格P1两项均补RED关闭。
+- 唯一专项docs/SOPHON_BMODEL_CONVERSION_ACCEPTANCE_2026_10_20.md；提交后最终CI依该文档指定独立附件核对，不能提前宣称CI通过。禁止生产部署/API/OSS/GPU/生产转换；下一会话先读本节和专项后接续。
+
+## 2026-10-20｜Weight tags HTTP链路验收（测试补全待最终CI / 生产未验证）
+
+- 唯一业务范围为Weight tags；冻结类别、PT/ONNX/RKNN、原IDedit与UNKNOWN原机制已存在，不改生产业务/上传人/身份/OSS对象标签/VERSION/静态缓存。
+- 新增6项真实requests JSON编码链路回归，最终限定Python200/200、Node16/16、Chrome3/3；单/双/四类别、class_id顺序、多版本、RK3568/3576、未知省略、旧ID补齐与零重复写。初次5项失败为夹具问题，非业务RED。
+- 持续进度总入口 docs/CODEX_CURRENT_STATE.md，唯一专项 docs/WEIGHT_TAGS_SYNC_ACCEPTANCE_2026_10_20.md；最终SHA CI独立验证，无生产操作。
+
+## 2026-10-20｜权重补充元数据发布（最终合同：可选、非阻断）
+
+- 首次SHA 6f83076f的CI发现精简Job缺TestClient依赖、浏览器文本守卫未适配参数化；仅补httpx2及更新守卫匹配，保留核心身份零POST断言与全部实际测试。后续1faa9693的后端200项与Chrome3项已通过，另将唤醒信号守卫同步到既有真实Event.set发出断言及消费后无重复断言；最终SHA重新验收。
+- 基线93c56659，复用ExternalPublicationRepository / ModelArtifact / 原发布与转换通知Owner。六扩展字段可信则传、未知省略，tags未知不发[]；缺失不阻断交付、不改转换成功状态。
+- 原ID edit补齐与确认payload回执、UNKNOWN写入只读恢复、矩形尺寸及冻结标签解析、原版本行内联事实/真实错误展示。无第二队列/数据库/轮询/弹窗Owner；不操作生产。
+- 聚焦Python三文件194 passed、Node三文件41 passed、Chrome单规格3 passed，末次schema/存量19 passed。原始RED/失败及纠偏记录见 docs/WEIGHT_METADATA_ACCEPTANCE_2026_10_20.md。
+- VERSION42.24.358不变；app/styles402不变，仅main403及两个模块缓存更新。最终SHA Actions/Checks需独立验收，附件：C:/Users/jorsam/.codex/visualizations/2026/10/20/01a156ca-1ca0-7b70-8497-bd255da4345e/weight-metadata-acceptance-20261020.md。
+## 2026-10-20｜素材完整性接续审查（本地验证，最终 SHA CI 待验收）
+
+- 完整 fetch/pull 长期分支到 d623a2d6327143571898e778050e5d42cc5e4a4d，六个已知修复全部包含；原工作区保留，复用既有长期分支工作树。
+- 仅修复三项真实复现：标签映射摘要未贯穿普通治理计划/Worker；execute 迟到成功/失败未完整校验弹窗归属；恢复复验把已成功删除项重新记作失败。沿用原计划/Task/DELETE_INDEX/AnnotationRepository/Modal/PollRegistry，无新 Owner。
+- 审计已有 label_schema_digest 贯穿冻结计划、执行清单和逐项删除；标签锁先于 Material 生命周期锁。缺摘要旧计划 fail closed，需要重新审计/预检；已成功项保持历史计数，未完成项仍复验 keeper/GT/hash/Test/引用。
+- 本地新回归 RED：Python 4 failed，Node 2 failed；最小修复及边界补充后聚焦 Python 6 passed，Node 全量 1021 passed。安全扩展最终 116 passed。真实 Chrome 两份规格 19 passed；最后补顶层弹窗按钮归属后聚焦 2 passed。独立复核未发现本次差异的 P0/P1；其 Python 首轮 5 setup error 为 C:/Temp 父目录不存在，换已有短目录后 6 passed，Node 35 passed。首轮新 Chrome 夹具误用 window.state 导致 2 failed，已改为仓库既有 lexical state 并保留所有业务断言。
+- 正式 VERSION=42.24.358 不变；入口 app/main/styles 静态缓存 42.25.402。最终准确 SHA、全部 Actions/Checks、未触发与未验证边界记录在 C:/Users/jorsam/.codex/visualizations/2026/10/20/01a156ca-1ca0-7b70-8497-bd255da4345e/material-integrity-acceptance-20261020.md；不沿用基线 40/40 绿色。
+- 未部署、不重启生产、不连接生产数据库、不执行真实素材删除，不自动发布模型。生产 OSS/S3、历史现场、GPU/A800、大库并发与查询 SLA 仍 NOT VERIFIED。
+## 2026-10-19｜P0 批量 GT 冲突辅助治理
+
+- 本轮唯一进度为 `docs/TRAINING_QUALITY_REMEDIATION_TRACKER_2026_10_18.md` 顶部批量GT节；复用 TrainingCompatibility、原审计/MaterialBatch、ImportCandidateStore、正式 AnnotationRepository 和 DELETE_INDEX，两个入口共用 TrainingMaterialSummaryRuntime。来源证据不代表GT正确，必须人工审核；无第二套存储/队列/Owner/轮询。
+- 正式VERSION42.24.356不变；不连接生产、不覆盖GT、不动历史/Test，不部署。最终SHA及实际Actions/Jobs/Chrome证据以追踪文档指向的独立最终验收附件为准，生产960组进一步根因数量未验证。
+
+## 2026-10-19｜P0 远程清理同步锁误保护精准修复
+
+- 现场只读证据由用户提供；精确豁免 `remote-material/staging-cleanup.json.lock`，不豁免真实台账或其他锁。实际清理调用的 RED→GREEN、API/Worker 和 CI 证据统一见 `docs/TRAINING_QUALITY_REMEDIATION_TRACKER_2026_10_18.md` 顶部专项。
+- 复用原历史引用、MaterialBatch/DELETE_INDEX Owner；Payload/关联任务/执行记录/冻结/Test/Snapshot/模型/未知依赖仍保护，不改任务历史，不操作生产，不改 VERSION=42.24.356。最终 SHA/Actions/Jobs 以独立最终 CI 验收附件为准，不沿用前一 SHA 绿色。
+
+## 2026-10-19｜P0 素材治理与训练冲突删除闭环
+
+- 当前专项唯一进度仍为 `docs/TRAINING_QUALITY_REMEDIATION_TRACKER_2026_10_18.md` 顶部 P0 节；TQ-04 已完成批次不重做。既有素材治理验收文档追加本次证据，最终准确 SHA/Actions/Jobs 以其关联的 CI 附件为准，不继承旧绿色。
+- 仅在可证明 FAILED 输入从未形成现存依赖时释放请求引用；Snapshot/Test/恢复/模型/未知依赖继续保护。同组保留全部保护身份和 keeper。两个入口共用原冻结计划、DELETE_INDEX、MaterialBatchRuntime62 与 PollRegistry；不删除共享源文件，不改历史记录，VERSION仍42.24.356，不部署。
+
+## 2026-10-19｜TQ-04 类别指标真相接续
+
+- 当前任务与实际测试/CI唯一进度入口：`docs/TRAINING_QUALITY_REMEDIATION_TRACKER_2026_10_18.md`。仅维护既有 evaluation/iteration decision/report Owner；禁止生产操作、历史数据重写和 VERSION 变更。最新修复的实际 SHA/CI 需按追踪文档关联的验收证据查询，不沿用旧 SHA 结果。
+
+## 2026-10-18｜安全推送验收阶段（用户已授权 / CI 待最终 SHA 验收）
+
+- 首轮 `edee5fb6fcd32812ee62b0197728dc7ab51d8b0f` CI 发现恢复/素材选择 Chrome build 断言与实际资源不一致，以及新接入 Hardening 守卫锁定退役的注册模块。最小修复只同步精确版本和真实 Production→CheckpointResume→Recovery 继承合同，并增强真实注册对象断言；恢复 Chrome 5/5、素材选择 Chrome 2/2、Node 982/982、两个原始 Bash 永久守卫通过。扩展 Windows 测试的 14 项长路径失败在短 basetemp 消失（19 passed/1 Linux-only skipped）；另 1 项 manual workers=8 与既有 Windows 上限4冲突，不改生产资源保护；相同未变源码的 Ubuntu 124项已实际通过。最终 SHA 仍需重新完整 CI。
+- 用户已授权本轮普通 Fast-forward 推送及必要 CI 修复；禁止强推、main 合并、Release、生产服务/数据操作和正式 VERSION 修改。此前 LOCAL ONLY 记录是上一阶段，不再作为本阶段推送限制。
+- 代码提交基线 `5d3ad65bf7ff287521481a2ac6bfbd1f7caed52e`，远端父提交 `5a28e4539b81c03b4eaa27fa4b6c718138542169`。范围审查确认只涉及图片标注、类别检查、素材治理和训练冲突闭环，复用原 Repository、TrainingCompatibility、Snapshot 与 Task Owner。
+- 推送前独立复核补齐固定 Benchmark 与 duplicate_review 合同：API/Worker 只在真实 Benchmark 解析后正规化；保留原 revision，拒绝客户端 Test 角色及保留素材排除，不暴露私有 Test ID。9 个真实 API→Worker 场景通过，相关 Python 109 passed；Node 全量 981 passed。
+- 发现 Release Regression 与 Training Final Validation Hardening 仅监听旧分支，已接入唯一长期分支，并补源码/测试触发路径及 Node 守卫；不删除测试或放宽断言。正式 VERSION=42.24.356，静态缓存规则不变。
+- 远端验收必须按最终完整 SHA 查询全部 Actions/Jobs，旧 SHA 结果不可继承。最终 SHA、统计及生产只读核验边界将记录于 `C:/Users/jorsam/.codex/visualizations/2026/10/18/training-conflict-p0/CI_FINAL_HANDOFF.md`，该外部验收文件不产生未经 CI 的额外代码提交。
+- 生产 2531 张现场、OSS/S3 历史对象、GPU/A800 和大库并发仍 NOT VERIFIED。历史 Snapshot/Test/模型证据保护保持，不自动解除 FAILED/no-freeze 保护，不删除共享原文件。详见本轮验收文档。
+
+## 2026-10-18｜训练重复冲突与标注/治理闭环（LOCAL ONLY / CI NOT RUN）
+
+- 当前隔离分支 `codex/training-failure-diagnostics`；本轮不得 push、部署、修改正式 VERSION 或操作生产素材。验收与现场边界见 `docs/TRAINING_CONFLICT_GOVERNANCE_ACCEPTANCE_2026_10_18.md`，不能沿用旧 SHA CI。
+- 原始正式 GT 同 SHA 冲突在任务标签投影前检查；预检、准入、Worker 和冻结复验共用原 digest。显式排除仅改变新训练草稿且双 revision/原始角色必须验证；Train/Test 泄漏不可绕过。冻结前后复验、锁内发布，外部平台 HTTP 在标注锁外。
+- 训练差异/失败诊断仍由 TrainingMaterialSummaryRuntime 管理，标注仍由原工作台/AnnotationRepository 保存；未检查类别默认折叠、单一绘制类别、四视口布局。零可删仍能看真实图与保护原因并人工核对 GT，不创建空删除任务；FAILED/no-freeze 不自动解除保护。
+- 移除 MaterialBatch 路由内部重复训练恢复挂载，保留 app 配置完整的唯一 Owner。Snapshot/Test/模型/历史记录不改，共享源文件不删；任务轮询和 DELETE_INDEX 归属不变。
+- VERSION=42.24.356；入口 app/main/styles 缓存=42.25.389。最终 Python 聚焦131、API/素材安全115、Node24完整980、真实Chrome24全部通过（无失败/跳过）；原始日志和截图见验收报告。素材选择沿用原Owner，解析全选期间禁止确认，迟到结果校验项目/选择器归属。GitHub/Linux、生产2531张案例、OSS/A800实机仍 NOT VERIFIED。
+
+## 2026-10-17｜素材治理推送后的 Chrome 跨平台证据路径修复（FINAL SHA CI OPEN）
+
+- 已授权提交9830f1de快进推送；该 SHA 实际44次Actions运行中43成功、1失败。唯一失败为 Frontend browser-navigation：Ubuntu缺USERPROFILE，两条新增治理用例在截图路径处中止（93 passed / 2 failed），并非可计为通过的环境跳过。
+- 本地清除USERPROFILE稳定复现2 failed / 1 passed；现有三条治理Chrome统一使用Playwright testInfo.outputPath，证据按用例隔离，不依赖Windows或仓库内.codex目录。保留全部业务断言，无生产代码、静态缓存或VERSION变更。
+- 修复后相同无USERPROFILE条件下相关Chrome21/21、Node24完整978/978通过；本轮另有Python41/41。9830的Ubuntu Release runtime-contracts实际456 passed，包含test_material_integrity.py；最终修复SHA须重新验收，不能借用旧SHA成功。
+- VERSION42.24.356不变；不部署、不触碰生产素材/数据库。生产原两次删除Task及真实存储仍待只读现场核验。
+
+## 2026-10-17｜重复与异常素材删除 P0（LOCAL VERIFIED / CI OPEN）
+
+- 既有素材治理计划 Owner 增补 FILTERED / SELECTED_IMAGES / 异常组冻结；全筛选不下发全量 ID，重复 keeper、不同 GT 人工确认、Test/历史引用与扫描未核验保护不变。异常筛选不能绕过去重保护，DELETE_INDEX 不删除共享原始文件。
+- 素材治理在同一个弹窗内完成全选、跨页选择、预检与确认，失败保留上下文；MaterialBatchRuntime62 / PollRegistry 仍是唯一任务状态与轮询 Owner。所有索引删除终态刷新分页并失效旧审计；旧分组不再冒充当前素材。图片尺寸/加载失败时藏框，真实宽高比与 Content API 保持一致。
+- 独立代码复核的发布前失败重试、refresh 期间切换项目、Chrome Worker 跨用例领取三项 Important 已关闭并补回归。未发布 manifest 只有完整身份、归属和 pending 状态完全相同才复用；篡改 409。测试 Worker 唯一 capability 仅用于隔离目标临时 Task，生产调度未改变。
+- VERSION42.24.356 不变；入口 app/main/styles 缓存42.25.388，MaterialBatch build/import422406。最终 Node24 978/978、Python41/41、真实 Chrome21/21；详细结果和现场边界以 docs/MATERIAL_INTEGRITY_P0_ACCEPTANCE_2026_10_17.md 为准。现场原两次 Task ID/日志尚未取得，不声称生产删除数量或根因已核验；未 push、部署或操作生产数据。
+
 # Frontend Legacy Runtime Audit
+
+## 2026-10-16 Row action menu presentation
+
+Final mobile status tabs keep readable single-line labels within the original scroll strip (<=760px); styles42.25.387, no new owner.
+
+Follow-up closes the verified training Grid overflow without altering desktop columns/owners. Original 3be88817 remote40 workflows/112 jobs passed; shared atomic staging contention was independently reproduced and minimally fixed. Local Node24 972/972, Python75/75, Chrome44/44; next SHA requires fresh CI. See the acceptance report.
+
+Existing algorithm/training entity-more markup now delegates to one RowActionMenuRuntime top-layer popover. It invokes original buttons; no CRUD, task, poll or navigation owner is duplicated. Training epoch patches preserve action markup identity; obsolete nav-project/projectBadge rendering/CSS is removed without changing project state. Node24 972/972, Chrome 44/44; formal VERSION unchanged. See ROW_ACTION_MENU_ACCEPTANCE_2026_10_16.md for evidence and limits.
+
+## 2026-10-13 VNext model-quality owner update
+
+- Canonical owners stay singular: classic `openVersionEvaluation429` presents version-owned evaluation truth; `trainingReportCore425` remains the report entry (aliases only delegate); `TrainingRecoveryRuntime` remains the only detail/log presentation owner.
+- Evaluation identity resets filters across project/version/evaluation changes. Image requests use one abort controller; paired comparison requires the API's strict benchmark result plus identical image ID/content SHA. No new polling or broad refresh owner was added.
+- Current asset keys: `app.js 42.25.373`, `main.mjs 42.25.373`, `styles.css 42.25.373`, reports/training-recovery module imports `4226373`. Formal `VERSION.txt 42.24.355` is unchanged.
+- Node 24 frontend 947/947 and selected Real Chrome 51/51 passed locally. Exact pushed-HEAD CI is not applicable because this batch is intentionally local-only.
 
 > Branch: `refactor/frontend-runtime-stabilization`  
 > Authority: `docs/TECH_DEBT_CLOSURE_V42_25.md`  
@@ -1202,4 +1431,22 @@ Status: **CLOSED** on `refactor/frontend-runtime-stabilization`.
 - Active v19 ZIP UI truth is now one monotonic whole-task scale: browser upload `0..35`, upload/validation baseline `38`, backend processing phase projected to `38..99`, terminal success only `100`. Raw backend phase progress is no longer allowed to overwrite the whole-task percentage and cause `38 -> 8` regressions.
 - Backend v19 processing phase semantics were not changed; this closure fixes the frontend projection boundary only.
 - `VERSION.txt` remains exactly `42.24.0`; no main merge, tag, release, A800 RC, or genuine 10k acceptance was performed.
+
+## 2026-10-13 VNext review-fix audit
+
+- Retired `setPage('模型检测')` calls are absent from the quality workspaces. Both scenario buttons route through the current Quality Center detect tab, and a Real Chrome regression asserts that the destination DOM exists.
+- Training detail tab clicks no longer rebuild the dialog; selection, roving tabindex, focus, ArrowLeft/Right, Home/End, `aria-controls` and `aria-labelledby` stay inside the existing runtime.
+- The existing evaluation image modal owns both A/B panes. Zoom/reset is synchronized, scroll position is ratio-synchronized, and each pane has independent fullscreen; no nested modal or duplicate image state exists.
+- Frontend evidence: Node 24.14 952/952 and focused Real Chrome 7/7. Full Chrome first run was 140/149; after the VNext contract fixes and isolated reruns, 3 original failures pass and 6 legacy-fixture/environment cases remain red. The screenshots are fixture-labelled; production imagery is not implied.
+
+## 2026-10-13 VNext final differential audit
+
+- The clean detached `30f83c48` browser baseline completes 142/148 with six failures. VNext has the same six deterministic failures at the same assertions; login passes 2/2 under its dedicated auth config, while model/conversion and action-fencing failures are stale fixture contracts with preserved traces.
+- A seventh VNext full-suite failure counted two label-schema GETs because the fixture navigated away after request start but before successful cache commit. It now waits for the existing cache timestamp and passes repeat 5/5 plus the 22-test material slice. The baseline-reproducible service-node isolated startup race now sets the existing advanced preference before navigation and passes repeat 3/3. No timeout, retry, cache wrapper, production owner, or weakened business assertion was added.
+- Node 24.19 direct frontend selection is 952/952 and the VNext quality/recovery Chrome slice is 7/7. The equal-request 1000/720 benchmark is `40×full=11.3042 MiB` versus `1×full+39×compact=0.2985 MiB`, including initial history.
+- Final VNext Node 24 full Chrome is 143/149, leaving only the same six baseline failures. `docs/VNEXT_FINAL_DIFFERENTIAL_AUDIT_2026_10_13.md` owns the per-test evidence. Production imagery, OSS, GPU and GitHub Ubuntu remain `NOT VERIFIED`.
+
+> **2026-10-30 / 42.24.430**：429 `a3cee98c` Chrome refresh-error 回归发现原窗隐藏仍需关联列表失败通知；430 只更正 `refreshCreatedLists` 同原 DOM/任务 ID 归属，不恢复旧提示污染新窗，Node 59/59。准确 SHA CI 待验，生产未部署。详见 [P0 台账](performance/2026-10-29-p0-followup.md)。
+
+> **2026-10-31 / 42.24.451 AI 审核前端 Owner 边界**：只更新原 `static/app.js` 任务列表展示、唯一 `annotation-task-view.js` 统计投影、`styles.css` 短屏密度和同一 Playwright 用例；不新增 review renderer、分页或轮询 owner。当前候选结果与真实 GT owner 完全保留，Node 1427/1427，本批真实 Chrome/精确 SHA CI 待核。详见 [AI 专项](superpowers/plans/2026-10-16-ai-annotation-cleaning-scope.md)，不将历史 GT 日志冒充当前态。
 

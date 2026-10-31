@@ -1,5 +1,9 @@
 import threading
+import json
+import errno
 from pathlib import Path
+
+import pytest
 
 
 def _project(client) -> str:
@@ -32,27 +36,23 @@ def test_v19_progress_reader_never_observes_partial_job_json(client, monkeypatch
     )
 
     job_path = app_module.v19_job_file(project_id, job_id)
-    temp_path = job_path.with_suffix(job_path.suffix + ".tmp")
-    original_write_text = Path.write_text
+    original_dump = json.dump
     write_started = threading.Event()
     allow_finish = threading.Event()
 
-    def slow_write_text(self, data, *args, **kwargs):
-        if self not in {job_path, temp_path}:
-            return original_write_text(self, data, *args, **kwargs)
-        encoding = kwargs.get("encoding") or "utf-8"
-        errors = kwargs.get("errors") or None
-        payload = str(data)
+    def slow_dump(data, handle, *args, **kwargs):
+        staging = Path(handle.name)
+        if staging.parent != job_path.parent or not staging.name.startswith(f".{job_path.name}."):
+            return original_dump(data, handle, *args, **kwargs)
+        payload = json.dumps(data, *args, **kwargs)
         midpoint = max(1, len(payload) // 2)
-        with self.open("w", encoding=encoding, errors=errors) as handle:
-            handle.write(payload[:midpoint])
-            handle.flush()
-            write_started.set()
-            assert allow_finish.wait(5), "test writer was not released"
-            handle.write(payload[midpoint:])
-        return len(payload)
+        handle.write(payload[:midpoint])
+        handle.flush()
+        write_started.set()
+        assert allow_finish.wait(5), "test writer was not released"
+        handle.write(payload[midpoint:])
 
-    monkeypatch.setattr(Path, "write_text", slow_write_text)
+    monkeypatch.setattr(json, "dump", slow_dump)
 
     writer = threading.Thread(
         target=app_module.v19_update_job,
@@ -66,11 +66,12 @@ def test_v19_progress_reader_never_observes_partial_job_json(client, monkeypatch
         daemon=True,
     )
     writer.start()
-    assert write_started.wait(5), "job writer did not enter persistence window"
-
-    observed = app_module.v19_read_job(project_id, job_id)
-    allow_finish.set()
-    writer.join(timeout=5)
+    try:
+        assert write_started.wait(5), "job writer did not enter persistence window"
+        observed = app_module.v19_read_job(project_id, job_id)
+    finally:
+        allow_finish.set()
+        writer.join(timeout=5)
     assert not writer.is_alive()
 
     assert observed["status"] == "running"
@@ -82,3 +83,40 @@ def test_v19_progress_reader_never_observes_partial_job_json(client, monkeypatch
     assert final["status"] == "running"
     assert final["progress"] == 13.4
     assert final["processed"] == 4500
+
+
+@pytest.mark.parametrize("fault", ["transient_permission", "transient_errno_access", "persistent_permission", "invalid_json", "wrong_identity"])
+def test_job_read_failure_never_becomes_successful_empty_progress(client, monkeypatch, fault):
+    import app as api
+    project_id = _project(client)
+    job_id = "read-failure-contract"
+    api.v19_write_job(project_id, {"id": job_id, "project_id": project_id, "status": "running", "progress": 77.63})
+    path = api.v19_job_file(project_id, job_id)
+    original = Path.read_text
+    reads = 0
+    def fail_read(self, *args, **kwargs):
+        nonlocal reads
+        if self == path:
+            reads += 1
+            if fault == "invalid_json":
+                return "{"
+            if fault == "wrong_identity":
+                return json.dumps({"id": "other-task", "status": "running", "progress": 90})
+            if fault == "transient_errno_access" and reads == 1:
+                raise PermissionError(errno.EACCES, "isolated CRT sharing conflict")
+            if fault == "persistent_permission" or (fault == "transient_permission" and reads == 1):
+                error = PermissionError("isolated sharing conflict")
+                error.winerror = 32
+                raise error
+        return original(self, *args, **kwargs)
+    monkeypatch.setattr(Path, "read_text", fail_read)
+    response = client.get(f"/api/v19/projects/{project_id}/import/jobs/{job_id}")
+    if fault in {"transient_permission", "transient_errno_access"}:
+        assert response.status_code == 200
+        assert response.json()["id"] == job_id
+        assert response.json()["progress"] == 77.63
+    else:
+        assert response.status_code == 503
+        assert "progress" not in response.json()
+        if fault == "persistent_permission":
+            assert reads == 4

@@ -5,7 +5,10 @@ from enum import Enum
 from typing import Any, Mapping, Sequence
 
 
-MAX_EXPLICIT_MATERIAL_IDS = 1000
+# Absolute safety ceiling. Individual consumers apply narrower operation-specific
+# limits; durable CLEAN / MARK_CLEAN_SKIPPED batches need to freeze large explicit
+# upload selections without relying on giant SQL IN clauses.
+MAX_EXPLICIT_MATERIAL_IDS = 100_000
 MAX_EXPLICIT_SELECTION_IDS = MAX_EXPLICIT_MATERIAL_IDS
 
 

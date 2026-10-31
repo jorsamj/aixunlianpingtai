@@ -1,45 +1,71 @@
+import {installNegativePoolRuntime} from './modules/negative-pool-runtime.js?v=20261031-p1';
+import {ADVANCED_MENUS, advancedPageInfo, installAdvancedNavigation} from './modules/advanced-navigation.js?v=20261024';
+import {installQualityDetectionWorkbench} from './modules/quality-detection-workbench.js?v=20261028-ui';
+import {installAdvancedEvaluation} from './modules/advanced-evaluation.js?v=20261023p2';
+import {renderLegacyMaterialCompatibility} from './modules/legacy-material-compatibility.js?v=20261023fullscan';
+import {createAnnotoriousEditor} from './modules/annotorious-editor.js?v=20261022a';
+import {annotationColor,withLegacyBoxIdentities} from './modules/annotation-geometry-adapter.js?v=20261022a';
+import {installConversionCatalogRuntime} from './modules/conversion-catalog-runtime.js?v=3';
+import {renderPrisonNightInspectionPage} from './modules/prison-night-inspection-entry.mjs?v=20261010g';
 import {actionRegistry, invokeAction, registerAction} from './modules/actions.js?v=421800';
-import {messageFromApiError} from './modules/api.js?v=421800';
-import {createModalStack} from './modules/modal.js?v=421800';
-import {applyAnnotationResult} from './modules/annotation.js?v=422500';
-import {installNegativeSampleRuntime} from './modules/negative-samples.js?v=422500';
-import {installTrainingLabelRuntime} from './modules/training-labels.js?v=422514';
-import {installNavigationStability} from './modules/navigation-stability.js?v=422512';
+import {installRowActionMenu} from './modules/row-action-menu.js?v=4226385';
+import {messageFromApiError, withRequestDeadline, fetchWithUploadProgress} from './modules/api.js?v=20261027-detection';
+import {createModalStack, installModalPresentation, loadingSkeleton} from './modules/modal.js?v=20261021';
+import {annotationPreviewFromBoxes, applyAnnotationResult} from './modules/annotation.js?v=422502';
+import {installNegativeSampleRuntime} from './modules/negative-samples.js?v=20261022a';
+import {installTrainingLabelRuntime} from './modules/training-labels.js?v=4226464';
+import {installNavigationStability} from './modules/navigation-stability.js?v=20261024';
 import {persistUiState} from './modules/ui-state.js?v=422500';
-import {installPageRequestScope} from './modules/page-request-scope.js?v=422501';
-import {installPollRegistry} from './modules/poll-registry.js?v=422518';
-import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=422503';
-import {installTrainingRecoveryRuntime} from './modules/training-recovery-runtime.js?v=422506';
-import {installTrainingMaterialPickerRuntime} from './modules/training-material-picker-runtime.js?v=422500';
-import {installTrainingMaterialSummaryRuntime} from './modules/training-material-summary-runtime.js?v=422500';
-import {installTrainingTaskRuntime} from './modules/training-task-runtime.js?v=422523';
-import {createTrainingDraft, trainingDraftToRequest, trainingInheritanceFromAlgorithm} from './modules/training-draft.js?v=422507';
-import {installTrainingDraftRuntime} from './modules/training-draft-runtime.js?v=422516';
-import {TRAINING_DRAFT_CONTROL_IDS, installTrainingDraftControls} from './modules/training-draft-controls.js?v=422501';
-import {buildTrainingEngineParameters, buildTrainingStartPayload, installTrainingSubmitRuntime, trainingSubmitReadiness, validateTrainingDevice} from './modules/training-submit.js?v=422505';
-import {installAutoLabelPollRuntime} from './modules/auto-label-poll-runtime.js?v=422501';
-import {createAnnotationWorkbench, queueWindow} from './modules/annotation-workbench.js?v=422000';
-import {createTaskPoller, isTaskActive, taskProgress} from './modules/task-poller.js?v=422001';
-import {annotationTaskView, buildCandidateDecisions} from './modules/annotation-task-view.js?v=422001';
-import {applyCleanConfirmation, cleanTaskView, isActiveCleanTask} from './modules/cleaning.js?v=422517';
-import {deploymentTaskView} from './modules/deployment-tests.js?v=422518';
+import {installPageRequestScope, isPageNavigationCancelled} from './modules/page-request-scope.js?v=20261031-p0body';
+import {installPollRegistry} from './modules/poll-registry.js?v=422522';
+import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=4226390';
+import {installExternalAlgorithmPlatformRuntime} from './modules/external-algorithm-platform.js?v=63024';
+import {installChangLianDataBrowserRuntime} from './modules/changlian-data-browser.js?v=63002';
+import {installExternalAlgorithmPublishRuntime} from './modules/external-algorithm-publish.js?v=64015';
+import {installModelArtifactRuntime} from './modules/model-artifact-runtime.js?v=65009';
+import {installTrainingRecoveryRuntime} from './modules/training-recovery-runtime.js?v=20261028-csc';
+import {installTrainingMaterialPickerRuntime} from './modules/training-material-picker-runtime.js?v=422621';
+import {installTrainingMaterialSummaryRuntime} from './modules/training-material-summary-runtime.js?v=4226464';
+import {installTrainingTaskRuntime} from './modules/training-task-runtime.js?v=422609';
+import {installTrainingTaskVisibilityRuntime} from './modules/training-task-visibility-runtime.js?v=4226386-timing';
+import {installTrainingProgressStream} from './modules/training-progress-stream.js?v=422570';
+import {createTrainingDraft, trainingDraftToRequest, trainingBaseVersionFromAlgorithm, trainingInheritedDefaults} from './modules/training-draft.js?v=422514';
+import {installTrainingDraftRuntime} from './modules/training-draft-runtime.js?v=422520';
+import {TRAINING_DRAFT_CONTROL_IDS, installTrainingDraftControls} from './modules/training-draft-controls.js?v=422502';
+import {benchmarkReuseContext, buildTrainingEngineParameters, buildTrainingStartPayload, installTrainingSubmitRuntime, trainingSubmitReadiness, validateTrainingDevice} from './modules/training-submit.js?v=422615';
+import {installTrainingCreateHydrationRuntime} from './modules/training-create-hydration.js?v=422558';
+import {installAutoLabelPollRuntime} from './modules/auto-label-poll-runtime.js?v=422503';
+import {annotationReviewView, annotationSavePayload, createAnnotationWorkbench, queueWindow} from './modules/annotation-workbench.js?v=422595';
+import {createTaskPoller, isTaskActive, taskProgress, waitForTaskTerminal} from './modules/task-poller.js?v=422002';
+import {annotationTaskView, annotationStageStatistics, buildCandidateDecisions} from './modules/annotation-task-view.js?v=422451';
+import {installAiReviewRoute} from './modules/ai-review-route.js?v=422647';
+import {applyCleanConfirmation, cleanExecutionChoices, cleanExecutionMode, cleanSchedulingRequest, cleanScopeChoices, cleanScopeRequest, cleanScopeSupportsAnnotationAudit, cleanTaskView, isActiveCleanTask} from './modules/cleaning.js?v=422570';
+import {deploymentTaskView} from './modules/deployment-tests.js?v=422519';
 import {activeLabelOptions} from './modules/labels.js?v=421800';
 import {filterByAnyLabel, labelDisplay, labelsFromReferences, replaceMaterial} from './modules/materials.js?v=421800';
 import {uploadBatchFromResponse} from './modules/upload.js?v=421800';
 import {unwrapAlgorithmResponse} from './modules/algorithms.js?v=421800';
 import {applyMaterialSelection, buildTrainingPayload, filterTrainingMaterials, iterationBasePresentation, projectedRandomSplit} from './modules/training.js?v=422101';
 import {qualityChartModel} from './modules/quality.js?v=421800';
-import {reportPresentation} from './modules/reports.js?v=421800';
+import {reportPresentation, metricChart, trainingCharts, formatPercentagePointDelta, metricCredibilityHtml, chatGPTAnalysisMaterial, trainingReportHtml, mountTrainingReport, mountReportCharts, evaluationChartGroups, mountEvaluationCharts, disposeReportViews, lineageReportHtml} from './modules/reports.js?v=20261022a';
 import {isActiveVideoTask, normalizeVideoTask, videoTaskFormValues} from './modules/video-tasks.js?v=421900';
 import {buildStorageSourcePayload, defaultStorageSource, enabledStorageSources, sourceMatches, storageSourceLabel} from './modules/storage.js?v=422202';
-import {FULL_MATERIAL_PAGES, buildMaterialQuery, installMaterialPaginationRuntime, requiresFullMaterialPool} from './modules/material-pagination-runtime.js?v=422206';
-import {installStorageImportProgressRuntime, storageImportProgressText} from './modules/storage-import-progress.js?v=422520';
-import {buildServerImportRequest, buildImportConfirmation, serverImportView} from './modules/server-material-import.js?v=422520';
-import {installResourceDiscoveryRuntime} from './modules/resource-discovery.js?v=422400';
-import {installMaterialBatchRuntime} from './modules/material-batches.js?v=422401';
+import {buildMaterialQuery, installMaterialPaginationRuntime, requiresFullMaterialPool} from './modules/material-pagination-runtime.js?v=422616';
+import {installStorageImportProgressRuntime, storageImportProgressText} from './modules/storage-import-progress.js?v=422525';
+import {installUploadTaskCenter} from './modules/upload-task-center.js?v=66014';
+import {buildServerImportRequest, buildImportConfirmation, serverImportView} from './modules/server-material-import.js?v=422526';
+import {applyExactLabelCodeMatches, bulkSetLabelMapping, buildManualLabelMapping, createLabelMappingReview, filterCanonicalLabels, labelMappingReviewPage, labelMappingReviewSummary, labelSampleOverlay, reconcileLabelMappingReview, setLabelMapping, setLabelMappingReviewPage, setLabelMappingReviewSearch, setLabelMappingSelected, setLabelMappingTargetSearch} from './modules/label-mapping-review.js?v=4226353';
+import {installResourceDiscoveryRuntime} from './modules/resource-discovery.js?v=422403';
+import {installServiceNodeRuntime} from './modules/service-node-runtime.js?v=422550';
+import {installOverviewTabsRuntime} from './modules/overview-tabs.js?v=4226362';
+import {installMaterialBatchRuntime} from './modules/material-batches.js?v=422411';
+import {installSmartMaterialAudit} from './modules/smart-material-audit.js?v=20261026';
+import {mountPagination, normalizePagination, paginationPageSizes, paginationTokens, renderPagination, validatePageInput} from './modules/pagination.js?v=422603';
 
 const UI_BUILD_VERSION = '42.25.0-dev';
 const modalStack = createModalStack();
+installRowActionMenu();
+const modalPresentation = installModalPresentation();
 
 function fallbackToast(message) {
   const element = document.getElementById('toast');
@@ -51,10 +77,15 @@ function fallbackToast(message) {
 }
 
 if (typeof window.toast !== 'function') window.toast = fallbackToast;
+// Classic catch blocks are generic: filter only the reserved navigation marker.
+const lifecycleToastOriginal = window.toast;
+window.toast = function lifecycleToast(message, ...args) {
+  if (isPageNavigationCancelled(message)) return;
+  return lifecycleToastOriginal.call(this, message, ...args);
+};
 
-// Training owns its own paged material picker/summary and must never request the whole image pool.
-FULL_MATERIAL_PAGES.delete('训练任务');
-for (const page of ['测试发布', '部署测试', '自动迭代']) FULL_MATERIAL_PAGES.add(page);
+// Navigation never owns the complete material pool. Features that need every
+// material must hydrate it explicitly at the user-action boundary.
 
 registerAction('algorithm.create', () => {
   if (typeof window.openNewAlgorithm423 !== 'function') {
@@ -79,35 +110,42 @@ const pollRegistry = installPollRegistry({getState: () => state});
 const trainingDraftRuntime = installTrainingDraftRuntime({
   getState: () => state,
   createTrainingDraft,
-  trainingInheritanceFromAlgorithm,
+  trainingBaseVersionFromAlgorithm,
   directControlIds: TRAINING_DRAFT_CONTROL_IDS,
 });
 const trainingDraftControlsRuntime = installTrainingDraftControls({trainingDraftRuntime});
 
 window.PlatformCore = {
+  navigation: window.PlatformCore?.navigation || {},
   actions: actionRegistry,
   modalStack,
+  presentation: {...modalPresentation, loadingSkeleton},
   messageFromApiError,
-  annotation: {applyAnnotationResult},
-  annotationWorkbench: {createAnnotationWorkbench, queueWindow},
-  taskPoller: {createTaskPoller, isTaskActive, taskProgress},
-  annotationTasks: {annotationTaskView, buildCandidateDecisions},
-  cleaning: {applyCleanConfirmation, cleanTaskView, isActiveCleanTask},
+  withRequestDeadline,
+  fetchWithUploadProgress,
+  annotation: {annotationPreviewFromBoxes, applyAnnotationResult},
+  createAnnotoriousEditor,
+  annotationWorkbench: {annotationReviewView, annotationSavePayload, createAnnotationWorkbench, queueWindow, annotationColor, withLegacyBoxIdentities},
+  taskPoller: {createTaskPoller, isTaskActive, taskProgress, waitForTaskTerminal},
+  annotationTasks: {annotationTaskView, annotationStageStatistics, buildCandidateDecisions},
+  cleaning: {applyCleanConfirmation, cleanExecutionChoices, cleanExecutionMode, cleanSchedulingRequest, cleanScopeChoices, cleanScopeRequest, cleanScopeSupportsAnnotationAudit, cleanTaskView, isActiveCleanTask},
   deployment: {deploymentTaskView},
   labels: {activeLabelOptions},
   materials: {filterByAnyLabel, labelDisplay, labelsFromReferences, replaceMaterial},
   upload: {uploadBatchFromResponse},
   algorithms: {unwrapAlgorithmResponse},
   training: {applyMaterialSelection, buildTrainingPayload, filterTrainingMaterials, iterationBasePresentation, projectedRandomSplit},
-  trainingDraft: {createTrainingDraft, trainingDraftToRequest, trainingInheritanceFromAlgorithm},
+  trainingDraft: {createTrainingDraft, trainingDraftToRequest, trainingBaseVersionFromAlgorithm, trainingInheritedDefaults},
   trainingSubmit: {buildTrainingEngineParameters, buildTrainingStartPayload, trainingSubmitReadiness, validateTrainingDevice},
   quality: {qualityChartModel},
-  reports: {reportPresentation},
+  reports: {reportPresentation, metricChart, trainingCharts, formatPercentagePointDelta, metricCredibilityHtml, chatGPTAnalysisMaterial, trainingReportHtml, mountTrainingReport, mountReportCharts, evaluationChartGroups, mountEvaluationCharts, disposeReportViews, lineageReportHtml},
   video: {isActiveVideoTask, normalizeVideoTask, videoTaskFormValues},
   storage: {buildStorageSourcePayload, defaultStorageSource, enabledStorageSources, sourceMatches, storageSourceLabel},
   materialPaging: {buildMaterialQuery, requiresFullMaterialPool},
+  pagination: {mountPagination, normalizePagination, paginationPageSizes, paginationTokens, renderPagination, validatePageInput},
   storageImport: {storageImportProgressText},
   serverMaterialImport: {buildServerImportRequest, buildImportConfirmation, serverImportView},
+  labelMappingReview: {applyExactLabelCodeMatches, bulkSetLabelMapping, buildManualLabelMapping, createLabelMappingReview, filterCanonicalLabels, labelMappingReviewPage, labelMappingReviewSummary, labelSampleOverlay, reconcileLabelMappingReview, setLabelMapping, setLabelMappingReviewPage, setLabelMappingReviewSearch, setLabelMappingSelected, setLabelMappingTargetSearch},
   runtime: {pageRequestScope, pollRegistry, trainingDraftRuntime, trainingDraftControlsRuntime},
   uiBuildVersion: UI_BUILD_VERSION,
 };
@@ -119,6 +157,7 @@ const trainingMaterialSummaryRuntime = installTrainingMaterialSummaryRuntime({
   getState: () => state,
   projectId: () => state.project?.id,
   trainingDraftRuntime,
+  resolveBenchmarkContext: benchmarkReuseContext,
   notify,
 });
 window.PlatformCore.runtime.trainingMaterialSummaryRuntime = trainingMaterialSummaryRuntime;
@@ -128,6 +167,8 @@ const trainingLabelRuntime = installTrainingLabelRuntime({
   notify,
   trainingDraftRuntime,
   materialSummaryRuntime: trainingMaterialSummaryRuntime,
+  projectId: () => state.project?.id,
+  request: api,
 });
 window.PlatformCore.runtime.trainingLabelRuntime = trainingLabelRuntime;
 
@@ -137,6 +178,46 @@ const algorithmListRuntime = installAlgorithmListRuntime({
   notify,
 });
 window.PlatformCore.runtime.algorithmListRuntime = algorithmListRuntime;
+
+const externalAlgorithmPlatformRuntime = installExternalAlgorithmPlatformRuntime({
+  modal: (...args) => modal(...args),
+  getState: () => state,
+  projectId: () => state.project?.id,
+  notify,
+  algorithmListRuntime,
+});
+window.PlatformCore.runtime.externalAlgorithmPlatformRuntime = externalAlgorithmPlatformRuntime;
+
+const changLianDataBrowserRuntime = installChangLianDataBrowserRuntime({
+  modal: (...args) => modal(...args),
+  closeModal: () => closeModal(),
+  getState: () => state,
+  request: api,
+  notify,
+});
+window.PlatformCore.runtime.changLianDataBrowserRuntime = changLianDataBrowserRuntime;
+
+const qualityDetectionWorkbench=installQualityDetectionWorkbench({getState:()=>state,api,toast:notify,modal,closeModal,esc});
+window.QualityDetectionWorkbenchRuntime=qualityDetectionWorkbench;
+const advancedEvaluation=installAdvancedEvaluation({getState:()=>state,api});
+window.AdvancedEvaluationRuntime=advancedEvaluation;
+
+const conversionCatalogRuntime = installConversionCatalogRuntime({api,getState:()=>state,modal:(...args)=>modal(...args),closeModal:()=>closeModal()});
+
+const externalAlgorithmPublishRuntime = installExternalAlgorithmPublishRuntime({
+  getState: () => state,
+  projectId: () => state.project?.id,
+  notify,
+  algorithmListRuntime,
+});
+window.PlatformCore.runtime.externalAlgorithmPublishRuntime = externalAlgorithmPublishRuntime;
+
+const modelArtifactRuntime = installModelArtifactRuntime({
+  getState: () => state,
+  notify,
+  pollRegistry,
+});
+window.PlatformCore.runtime.modelArtifactRuntime = modelArtifactRuntime;
 
 const trainingRecoveryRuntime = installTrainingRecoveryRuntime({
   getState: () => state,
@@ -161,18 +242,33 @@ const trainingTaskRuntime = installTrainingTaskRuntime({
 });
 window.PlatformCore.runtime.trainingTaskRuntime = trainingTaskRuntime;
 
+const trainingProgressStreamRuntime = installTrainingProgressStream({
+  getState: () => state,
+  projectId: () => state.project?.id,
+  trainingTaskRuntime,
+  pollRegistry,
+});
+window.PlatformCore.runtime.trainingProgressStreamRuntime = trainingProgressStreamRuntime;
+
 const trainingSubmitRuntime = installTrainingSubmitRuntime({
   getState: () => state,
   projectId: () => state.project?.id,
   trainingDraftRuntime,
   trainingDraftToRequest,
+  trainingTaskRuntime,
+  materialSummaryRuntime: trainingMaterialSummaryRuntime,
   reloadRelated: async () => {
-    if (state.page === '算法列表' && algorithmListRuntime) return algorithmListRuntime.refresh({render: false});
-    if (typeof loadRelated === 'function') return loadRelated();
-    return window.loadRelated?.();
+    if (state.page === '算法列表' && algorithmListRuntime) {
+      return algorithmListRuntime.refresh({render: false});
+    }
+    if (state.page === '训练任务' && trainingTaskRuntime) {
+      return trainingTaskRuntime.refresh({render: true, force: true, source: 'created-task'});
+    }
+    return null;
   },
   renderAlgorithms: () => {
-    if (state.page === '算法列表' && algorithmListRuntime?.renderCards?.()) return true;
+    if (state.page !== '算法列表') return false;
+    if (algorithmListRuntime?.renderCards?.()) return true;
     if (typeof window.renderAlgorithms423 === 'function') return window.renderAlgorithms423();
     if (typeof renderAlgorithms423 === 'function') return renderAlgorithms423();
     return undefined;
@@ -182,33 +278,231 @@ const trainingSubmitRuntime = installTrainingSubmitRuntime({
 });
 window.PlatformCore.runtime.trainingSubmitRuntime = trainingSubmitRuntime;
 
+const trainingCreateHydrationRuntime = installTrainingCreateHydrationRuntime({
+  getState: () => state,
+  projectId: () => state.project?.id,
+  request: api,
+  preflight: (algorithmId, {signal} = {}) => externalAlgorithmPlatformRuntime.preflightTraining(algorithmId, {request: api, signal}),
+  preflightFresh: algorithmId => externalAlgorithmPlatformRuntime.trainingPreflightFresh(algorithmId),
+  openTrainingForm: window.openTrainingCreateCanonical429,
+  notify,
+});
+window.PlatformCore.runtime.trainingCreateHydrationRuntime = trainingCreateHydrationRuntime;
+
+const trainingTaskVisibilityRuntime = installTrainingTaskVisibilityRuntime({
+  getState: () => state,
+  trainingTaskRuntime,
+  pollRegistry,
+  notify,
+});
+if (!trainingTaskVisibilityRuntime) throw new Error('训练任务视图运行时初始化失败');
+window.PlatformCore.runtime.trainingTaskVisibilityRuntime = trainingTaskVisibilityRuntime;
+
 const autoLabelPollRuntime = installAutoLabelPollRuntime({
   getState: () => state,
   pollRegistry,
   annotationTaskView,
+  loadTasks: () => {
+    if (typeof window.refreshAnnotationTasks60 !== 'function') throw new Error('AI标注任务数据加载器尚未就绪');
+    return window.refreshAnnotationTasks60();
+  },
   notify,
 });
 window.PlatformCore.runtime.autoLabelPollRuntime = autoLabelPollRuntime;
 
 installMaterialPaginationRuntime();
+installNegativePoolRuntime({getState:()=>state,api,pid:()=>state.project?.id,esc,toast:notify,
+  modal:(...args)=>window.modal(...args),closeModal:()=>window.closeModal(),
+  addToDraft:async ids=>{
+    const projectId=String(state.project?.id||'');
+    const applySelection=()=>{
+      if(String(state.project?.id||'')!==projectId)throw new Error('项目已变化，请重新选择');
+      const draft=trainingDraftRuntime.current(),blocked=new Set(draft.testMaterialIds||[]),accepted=ids.filter(id=>!blocked.has(id));
+      trainingDraftRuntime.update({materialIds:[...new Set([...(draft.materialIds||[]),...accepted])]});
+      trainingMaterialSummaryRuntime.invalidate();window.refreshTrainingMaterialSelectionUiV3?.();
+      notify(`已加入 ${accepted.length} 张训练素材；最终创建时核验目标与负样本确认。`);
+    };
+    let selected=trainingDraftRuntime.current();
+    if(!state.algorithms?.some(row=>String(row.id)===String(selected?.algorithmId||''))){
+      const choices=state.algorithms||[];
+      if(!choices.length)throw new Error('请先创建训练算法，再选择负样本');
+      {
+        const layer=window.modal('选择训练算法',`<form data-negative-pool-algorithm><label>算法<select class="select" name="algorithm">${choices.map(row=>`<option value="${esc(row.id)}">${esc(row.name||row.id)}</option>`).join('')}</select></label><div class="row end"><button class="btn" type="button" data-cancel>取消</button><button class="btn primary" type="submit">进入训练配置</button></div></form>`);
+        const form=layer.querySelector('[data-negative-pool-algorithm]');
+        form.querySelector('[data-cancel]').onclick=()=>window.closeModalLayer424(layer);
+        form.onsubmit=async event=>{event.preventDefault();const button=form.querySelector('[type=submit]');button.disabled=true;try{
+          if(String(state.project?.id||'')!==projectId)throw new Error('项目已变化，请重新选择');
+          const value=new FormData(form).get('algorithm');window.closeModalLayer424(layer);
+          await window.openTrainingCreateCanonical429(value);applySelection();
+        }catch(error){notify(error.message||String(error))}finally{if(form.isConnected)button.disabled=false}};
+      }
+      return;
+    }
+    applySelection();
+  }
+});
+
 installMaterialBatchRuntime({
   projectId: () => state.project?.id,
+  projectName: () => state.project?.name,
   currentPageIds: () => window.materialCurrentPageIds61?.() || [],
   selectedIds: () => window.materialSelectedIds61?.() || [],
   filteredSpec: () => window.materialBatchFilters61?.() || {},
   notify,
+  pollRegistry,
   refresh: async () => {
     state.data412Selected?.clear?.();
     state.data412DeleteMode = false;
     if (state.page === '数据集') await window.reloadMaterialPage61?.();
   },
 });
+installSmartMaterialAudit({getState:()=>state,api,modal:(...args)=>window.modal(...args),notify});
 window.installServerMaterialImport61?.();
+const uploadTaskCenterRuntime = installUploadTaskCenter({
+  getState: () => state,
+  projectId: () => state.project?.id,
+  notify,
+  pollRegistry,
+  ownerPages: window.PlatformCore?.navigation?.knownPages || [],
+});
+window.PlatformCore.runtime.uploadTaskCenterRuntime = uploadTaskCenterRuntime;
 const storageImportProgressRuntime = installStorageImportProgressRuntime({pollRegistry, getState: () => state});
 window.PlatformCore.runtime.storageImportProgressRuntime = storageImportProgressRuntime;
-installResourceDiscoveryRuntime(window.__resourceDiscoveryDependencies || {});
+const resourceDiscoveryRuntime = installResourceDiscoveryRuntime({...window.__resourceDiscoveryDependencies, pollRegistry});
+window.PlatformCore.runtime.resourceDiscoveryRuntime = resourceDiscoveryRuntime;
 
-installNavigationStability({
+const advancedNavigation = installAdvancedNavigation({getState:()=>state,navigate:page=>window.setPage(page)});
+Object.assign(window.PlatformCore.navigation,{advancedMenus:ADVANCED_MENUS,advancedPageInfo,selectAdvancedSection:advancedNavigation.select});
+
+function renderNavigationChrome() {
+  const nav = document.getElementById('nav');
+  const buttons = nav ? [...nav.querySelectorAll('.nav-btn')] : [];
+  if (!nav || !buttons.length) {
+    window.renderNav?.();
+  } else {
+    const currentPage = String(state.page || '');
+    buttons.forEach(button => {
+      const label = String(button.querySelector('.nav-left b')?.textContent || '').trim();
+      button.classList.toggle('active', label === (advancedPageInfo(currentPage)?.title || currentPage));
+    });
+    const version = nav.querySelector('.nav-footer b');
+    if (version) version.textContent = `v${String(state.versionInfo?.version || '—')}`;
+  }
+  window.renderTop?.();
+  window.renderSummary?.();
+  advancedNavigation.render();
+}
+
+function applyPostRenderNormalization(page) {
+  if (String(state.page || '') !== String(page || '')) return;
+  window.PostRenderNormalizationRuntime?.apply?.(document.getElementById('view'));
+}
+
+function renderCanonicalOwner(page, {source = 'canonical-router'} = {}) {
+  const normalizedPage = String(page || state.page || '');
+  renderNavigationChrome();
+  const result = navigationStabilityRuntime.renderPage(normalizedPage, {source});
+  if (result && typeof result.then === 'function') {
+    return result.finally(() => applyPostRenderNormalization(normalizedPage));
+  }
+  applyPostRenderNormalization(normalizedPage);
+  return result;
+}
+
+function renderUnknownPage(page) {
+  renderNavigationChrome();
+  const summary = document.getElementById('summary');
+  const view = document.getElementById('view');
+  if (summary) summary.innerHTML = '';
+  if (view) view.innerHTML = `<section class="empty" data-unknown-page="${String(page || '').replace(/[&<>"']/g, '')}">当前页面不存在或已下线</section>`;
+}
+
+const PAGE_EXTRAS_CACHE_TTL_MS = 5 * 60 * 1000;
+const pageExtrasLoadedAt = new Map();
+const pageExtrasInflight = new Map();
+const PAGE_EXTRAS_OWNERS = new Set(['训练资源', '模型配置', '质量中心']);
+function pageExtrasEnabled(page) {
+  return PAGE_EXTRAS_OWNERS.has(page) && (page !== '质量中心' || state.qualityCenterTab411 === 'detect');
+}
+function pageExtrasOwner(page) {
+  const projectId=String(state.project?.id || '');
+  const generation=pageRequestScope.stats().generation;
+  const cacheKey=JSON.stringify([projectId,page]);
+  return {page,projectId,generation,cacheKey,inflightKey:JSON.stringify([cacheKey,generation])};
+}
+function pageExtrasOwnerCurrent(o) {
+  return state.page === o.page && String(state.project?.id || '') === o.projectId
+    && pageRequestScope.stats().generation === o.generation && pageExtrasEnabled(o.page);
+}
+function trackPageExtras(o,promise,onSuccess=()=>{}) {
+  const existing=pageExtrasInflight.get(o.inflightKey);
+  if(existing) return existing;
+  let task;
+  task=Promise.resolve(promise).then(result=>{
+    if(!pageExtrasOwnerCurrent(o))return;
+    // allSettled extras can return with partial failures; that is not a fresh
+    // cache hit, even though successful fields should still patch their cards.
+    if(result?.cacheable===false)pageExtrasLoadedAt.delete(o.cacheKey);
+    else pageExtrasLoadedAt.set(o.cacheKey,Date.now());
+    return onSuccess();
+  }).catch(error=>{
+    if(pageExtrasOwnerCurrent(o)&&!isPageNavigationCancelled(error))notify(error?.message||error);
+  }).finally(()=>{
+    if(pageExtrasInflight.get(o.inflightKey)===task)pageExtrasInflight.delete(o.inflightKey);
+  });
+  pageExtrasInflight.set(o.inflightKey,task);
+  return task;
+}
+function adoptPageExtrasInflight(page,promise) {
+  if(!pageExtrasEnabled(page)||!promise||typeof promise.then!=='function')return null;
+  return trackPageExtras(pageExtrasOwner(page),promise);
+}
+function refreshPageExtrasInBackground(page,{force=false}={}) {
+  if(!pageExtrasEnabled(page)||typeof window.loadPageExtras413!=='function')return null;
+  const o=pageExtrasOwner(page);
+  const age=Date.now()-Number(pageExtrasLoadedAt.get(o.cacheKey)||0);
+  if(!force&&pageExtrasLoadedAt.has(o.cacheKey)&&age>=0&&age<PAGE_EXTRAS_CACHE_TTL_MS)return null;
+  const existing=pageExtrasInflight.get(o.inflightKey);
+  if(existing)return existing;
+  const loadTask=page==='训练资源'&&typeof window.refreshTrainingResourceTruthV3==='function'
+    ?window.refreshTrainingResourceTruthV3():window.loadPageExtras413(page);
+  return trackPageExtras(o,loadTask,()=>{
+    if(page==='训练资源'&&window.patchTrainingResourceCardsV3?.())return;
+    if(page==='模型配置'&&window.patchModelPromptTemplatesV35?.())return;
+    if(navigationStabilityRuntime.hasPageOwner(page))return renderCanonicalOwner(page,{source: 'background-data'});
+    return render();
+  });
+}
+window.PlatformCore.runtime.refreshPageExtras = refreshPageExtrasInBackground;
+
+const ALGORITHM_PAGE_ENTRY_REUSE_MS = 30 * 1000;
+
+function refreshCurrentPageOwner(page) {
+  trainingProgressStreamRuntime?.syncPage?.(page);
+  void refreshPageExtrasInBackground(page);
+  if (page === '存储配置') {
+    const task = window.StorageCacheRuntime?.refresh?.({
+      sources: window.getStorageSourcesSnapshot61?.() || [],
+      force: false,
+    });
+    if (task && typeof task.catch === 'function') void task.catch(error => notify(error?.message || error));
+  }
+  if (page === '数据集' || page === '自动标注及清洗') {
+    window.MaterialBatchRuntime62?.resume?.();
+  }
+  if (page === '训练任务') {
+    void trainingTaskRuntime.refresh({render: true, force: false, source: 'page-owner'}).then(result => {
+      if (!result?.stale) pollRegistry?.replaceTrainingJobTimer?.();
+    }).catch(error => notify(error?.message || error));
+    return;
+  }
+  if (page !== '算法列表') return;
+  const snapshotAge = Date.now() - Number(state.__coreSnapshotGeneratedAt || 0);
+  if (snapshotAge >= 0 && snapshotAge < ALGORITHM_PAGE_ENTRY_REUSE_MS) return;
+  void algorithmListRuntime.refresh({render: true, minAgeMs: state.__coreSnapshotGeneratedAt === 0 ? 0 : ALGORITHM_PAGE_ENTRY_REUSE_MS}).catch(error => notify(error?.message || error));
+}
+
+const navigationStabilityRuntime = installNavigationStability({
   getState: () => state,
   notify,
   requestScope: pageRequestScope,
@@ -216,13 +510,158 @@ installNavigationStability({
   persistNavigationState: currentState => persistUiState(currentState),
   waitForNavigationReady: () => {
     if (!state.uiReady && window.__v53InitPromise) return window.__v53InitPromise;
-    return Promise.resolve();
+    return null;
   },
-  beforeInvokeNavigation: () => window.toggleMobileSidebarV37?.(false),
+  canNavigate: page => window.AiReviewRouteRuntime?.beforeNavigate?.(page) !== false,
+  beforeInvokeNavigation: page => {window.toggleMobileSidebarV37?.(false);if(page!=='质量中心')qualityDetectionWorkbench.deactivate();if(page!=='质量中心')advancedEvaluation.deactivate();},
+  knownPages: window.PlatformCore?.navigation?.knownPages || [],
   performNavigation: page => {
+    conversionCatalogRuntime.leave();
+    changLianDataBrowserRuntime.leave();
+    window.NegativePoolRuntime?.beforeNavigate?.(page);
+    algorithmListRuntime?.beforeNavigate?.(page);
+    const materialNavigation = window.MaterialPaginationRuntime61?.beforeNavigate?.(page);
     state.page = page;
-    render();
+    uploadTaskCenterRuntime.switchProject?.();
+    let renderResult;
+    if (navigationStabilityRuntime.hasPageOwner(page)) {
+      renderResult = renderCanonicalOwner(page, {source: 'navigation'});
+    } else if (navigationStabilityRuntime.isKnownPage(page)) {
+      renderResult = render();
+    } else {
+      renderResult = renderUnknownPage(page);
+    }
+    window.MaterialPaginationRuntime61?.afterNavigate?.(page, materialNavigation);
+    refreshCurrentPageOwner(page);
+    return renderResult;
   },
+});
+window.PlatformCore.runtime.navigationStabilityRuntime = navigationStabilityRuntime;
+window.AiReviewRouteRuntime = installAiReviewRoute({
+  getReview: () => state.ai60Review,
+  open: (id, options) => window.reviewAiLabel427?.(id, options),
+  close: options => window.closeAiReview60?.(options),
+  notify,
+});
+
+// Core product pages now have one navigation owner each. Historical app.js
+// renderers remain compatibility entry points, but navigation no longer walks
+// through the chained render() override stack.
+const canonicalWindowPageRenderers = new Map([
+  ['总览', 'renderDashboardCanonical422'],
+  ['质量中心', 'renderQualityCenter424'],
+  ['素材接入', 'renderSources422'],
+  ['标签管理', 'renderLabelManagement414'],
+  ['模型配置', 'renderModelConfigPageV35'],
+  ['部署资源', 'renderDeployResources'],
+  ['训练资源', 'renderResources'],
+  ['存储配置', 'renderStorageSources61'],
+]);
+const canonicalWindowPageOwners = [...canonicalWindowPageRenderers].map(([page, rendererName]) => (
+  navigationStabilityRuntime.registerPageOwner(page, () => {
+    const renderer = window[rendererName];
+    if (typeof renderer !== 'function') throw new Error(`${page} 页面模块尚未就绪`);
+    return renderer();
+  })
+));
+const unregisterLegacyMaterialCompatibility = navigationStabilityRuntime.registerPageOwner('旧素材兼容迁移', () => renderLegacyMaterialCompatibility({projectId:()=>state.project?.id, notify}));
+// Dedicated isolated demo page owner; no Training/Material/Agent/Task owner reuse.
+const unregisterPrisonNightPageOwner = navigationStabilityRuntime.registerPageOwner(
+  'AI算法底座', () => renderPrisonNightInspectionPage()
+);
+const canonicalPageOwnerDisposers = [
+  unregisterLegacyMaterialCompatibility,
+  unregisterPrisonNightPageOwner,
+  ...canonicalWindowPageOwners,
+  navigationStabilityRuntime.registerPageOwner('算法列表', () => algorithmListRuntime?.renderCards?.()),
+  navigationStabilityRuntime.registerPageOwner('训练任务', () => trainingTaskVisibilityRuntime.render()),
+  navigationStabilityRuntime.registerPageOwner('数据集', () => window.renderDatasets424?.()),
+  navigationStabilityRuntime.registerPageOwner('自动标注及清洗', () => {
+    if (typeof window.renderOps427 === 'function') return window.renderOps427();
+    return window.renderAutoLabel422?.();
+  }),
+  navigationStabilityRuntime.registerPageOwner('视频切帧', () => {
+    if (typeof window.renderVideo424 === 'function') return window.renderVideo424();
+    return window.renderVideoFrameTasks?.();
+  }),
+];
+window.PlatformCore.runtime.canonicalPageOwners = {
+  destroy() { canonicalPageOwnerDisposers.splice(0).forEach(dispose => dispose?.()); },
+};
+
+// External platform integration is a canonical business page. Own it directly
+// instead of falling through the historical render override chain.
+const unregisterExternalPlatformPageOwner = navigationStabilityRuntime.registerPageOwner('平台对接', () => (
+  externalAlgorithmPlatformRuntime?.render?.({reload: true})
+));
+window.PlatformCore.runtime.externalPlatformPageOwner = {
+  destroy() { unregisterExternalPlatformPageOwner?.(); },
+};
+
+const unregisterChangLianDataBrowserPageOwner = navigationStabilityRuntime.registerPageOwner('畅联云数据', () => (
+  changLianDataBrowserRuntime?.render?.()
+));
+window.PlatformCore.runtime.changLianDataBrowserPageOwner = {
+  destroy() { unregisterChangLianDataBrowserPageOwner?.(); changLianDataBrowserRuntime?.destroy?.(); },
+};
+
+// Component detection is a canonical business page. Own it directly instead of
+// depending on the historical app.js render override chain racing with navigation.
+const unregisterComponentPageOwner = navigationStabilityRuntime.registerPageOwner('组件检测', () => (
+  window.renderComponentCheckV40?.()
+));
+window.PlatformCore.runtime.componentPageOwner = {
+  destroy() { unregisterComponentPageOwner?.(); },
+};
+
+const overviewTabsRuntime = installOverviewTabsRuntime({
+  getState: () => state,
+  renderProduction: () => window.renderDashboardCanonical422?.(),
+});
+window.PlatformCore.runtime.overviewTabsRuntime = overviewTabsRuntime;
+const unregisterOverviewTabsPageOwner = navigationStabilityRuntime.registerPageOwner(
+  '总览', () => overviewTabsRuntime.render()
+);
+window.PlatformCore.runtime.overviewTabsPageOwner = {
+  destroy() { unregisterOverviewTabsPageOwner?.(); },
+};
+const serviceNodeRuntime = installServiceNodeRuntime({notify});
+window.PlatformCore.runtime.serviceNodeRuntime = serviceNodeRuntime;
+
+// Retire the historical app.js render override chain from active runtime.
+// Legacy render remains only as a fallback for pages that have not migrated yet.
+const legacyRenderFallback = window.render;
+window.render = function canonicalRenderBridge() {
+  const page = String(state.page || '');
+  if (navigationStabilityRuntime.hasPageOwner(page)) {
+    return renderCanonicalOwner(page, {source: 'compat-render'});
+  }
+  return legacyRenderFallback?.();
+};
+window.PlatformCore.runtime.renderRouter = {
+  renderCurrent(source = 'runtime') {
+    const page = String(state.page || '');
+    if (navigationStabilityRuntime.hasPageOwner(page)) return renderCanonicalOwner(page, {source});
+    return legacyRenderFallback?.();
+  },
+};
+
+const algorithmStartupBeganAt = Date.now();
+const canonicalStartupPromise = window.__clInit?.();
+Promise.resolve(canonicalStartupPromise).then(() => {
+  // The task center is installed before bootstrap project truth is available.
+  // Load that project's persisted upload rows once readiness resolves so a
+  // browser-only queued File becomes an explicit re-selection request.
+  uploadTaskCenterRuntime.switchProject?.();
+  const startupPage = String(state.page || '');
+  window.PlatformCore.runtime.startupTiming = {coreBootstrapMs: Date.now() - algorithmStartupBeganAt, page: startupPage};
+  adoptPageExtrasInflight(startupPage, state.__extras412);
+  if (!state.__startupCanonicalPainted && navigationStabilityRuntime.hasPageOwner(startupPage)) {
+    void renderCanonicalOwner(startupPage, {source: 'startup-owner'});
+    state.__startupCanonicalPainted = true;
+  }
+  refreshCurrentPageOwner(startupPage);
+  void window.AiReviewRouteRuntime?.restore?.();
 });
 
 document.documentElement.dataset.uiBuild = UI_BUILD_VERSION;

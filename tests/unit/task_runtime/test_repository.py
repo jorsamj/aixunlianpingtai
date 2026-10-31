@@ -1,11 +1,14 @@
 from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor
+import sqlite3
 from dataclasses import replace
 from threading import Barrier
 
 import pytest
 
+import platform_core.task_runtime.repository as task_repository_module
 from platform_core.task_runtime import TaskKind, TaskRecord, TaskRepository, TaskStatus
+from platform_core.task_runtime import ArtifactStore
 
 
 def add(
@@ -27,6 +30,188 @@ def add(
             required_capabilities=(capability,),
         )
     )
+
+
+def test_annotation_search_across_durable_history_and_cursor_before_page_limit(tmp_path):
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    artifacts = ArtifactStore(tmp_path / "artifacts")
+    for index in range(67):
+        task_id = f"annotation-{index:03d}"
+        artifacts.atomic_write_json(task_id, "request.json", {
+            "task_name": "目标-烟雾" if index in {1, 15, 62} else "普通任务",
+            "model_config_name": "远端视觉模型" if index == 64 else "默认模型",
+            "model_config_id": "m-archive" if index == 66 else "m-default",
+        })
+        repository.create(TaskRecord.new(
+            task_id, "project-a", TaskKind.AI_ANNOTATION, "request.json", "vision:local",
+        ), artifacts=artifacts)
+    assert repository.annotation_search_progress("project-a") == {
+        "total": 67, "pending": 0, "failed": 0,
+    }
+    cursor = None
+    matched = []
+    for _ in range(3):
+        page = repository.list(project_id="project-a", kinds={TaskKind.AI_ANNOTATION},
+                               annotation_query="烟雾", limit=1, cursor=cursor)
+        assert len(page.items) == 1
+        matched.append(page.items[0].task_id)
+        cursor = page.next_cursor
+    assert set(matched) == {"annotation-001", "annotation-015", "annotation-062"}
+    assert cursor is None
+    assert [item.task_id for item in repository.list(
+        project_id="project-a", kinds={TaskKind.AI_ANNOTATION},
+        annotation_query="远端视觉模型",
+    ).items] == ["annotation-064"]
+    assert [item.task_id for item in repository.list(
+        project_id="project-a", kinds={TaskKind.AI_ANNOTATION},
+        annotation_query="m-archive",
+    ).items] == ["annotation-066"]
+    # LIKE wildcards must be literals, never unexpectedly match every task.
+    assert not repository.list(project_id="project-a", kinds={TaskKind.AI_ANNOTATION},
+                               annotation_query="%_\\").items
+
+
+def test_annotation_search_schema_migrates_v1_in_place_without_dropping_tasks(tmp_path):
+    path = tmp_path / "tasks.sqlite3"
+    migration_fields = (
+        "    finished_at TEXT,\n"
+        "    annotation_name TEXT,\n"
+        "    annotation_model_name TEXT,\n"
+        "    annotation_model_id TEXT,\n"
+        "    annotation_search_ready INTEGER NOT NULL DEFAULT 0\n"
+    )
+    assert migration_fields in task_repository_module.SCHEMA
+    with sqlite3.connect(path) as database:
+        database.executescript(task_repository_module.SCHEMA.replace(
+            migration_fields, "    finished_at TEXT\n",
+        ))
+        database.execute("ALTER TABLE tasks ADD COLUMN resource_wait_reason TEXT")
+        legacy = TaskRecord.new("historic", "project-1", TaskKind.AI_ANNOTATION,
+                                "request.json", "vision:legacy")
+        values = task_repository_module._to_values(legacy)
+        database.execute(
+            f"INSERT INTO tasks ({','.join(values)}) VALUES ({','.join('?' for _ in values)})",
+            tuple(values.values()),
+        )
+        database.execute("PRAGMA user_version=1")
+    migrated = TaskRepository(path)
+    assert migrated.get("historic") is not None
+    assert migrated.annotation_search_progress("project-1") == {
+        "total": 1, "pending": 1, "failed": 0,
+    }
+    with sqlite3.connect(path) as database:
+        assert int(database.execute("PRAGMA user_version").fetchone()[0]) == 3
+
+
+def test_annotation_statistics_migrate_from_v2_and_batch_scope_exactly(tmp_path):
+    path = tmp_path / "tasks.sqlite3"
+    repository = TaskRepository(path)
+    ai = TaskRecord.new("ai-real", "p1", TaskKind.AI_ANNOTATION, "request.json", "vision:m")
+    repository.create(ai)
+    repository.create(TaskRecord.new("training", "p1", TaskKind.TRAINING, "request.json", "gpu:m"))
+    # Simulate a previously deployed schema-v2 database with existing task rows.
+    with sqlite3.connect(path) as db:
+        db.execute("DROP TABLE annotation_task_statistics")
+        db.execute("PRAGMA user_version=2")
+    migrated = TaskRepository(path)
+    assert migrated.get("ai-real") is not None
+    assert migrated.annotation_statistics_many("p1", ["ai-real"]) == {}
+    counts = dict(total=3, success=1, empty=1, failed=1, accepted=1,
+                  rejected=0, unreviewed=1, boxes=2, gt_committed=1)
+    migrated.set_annotation_statistics("ai-real", counts)
+    assert migrated.annotation_statistics_many("p1", ["ai-real"])["ai-real"]["counts"] == counts
+    assert migrated.annotation_statistics_many("p2", ["ai-real"]) == {}
+    assert migrated.annotation_statistics_many("p1", ["training"]) == {}
+    with pytest.raises(ValueError):
+        migrated.set_annotation_statistics("training", counts)
+    with pytest.raises(ValueError):
+        migrated.set_annotation_statistics("ai-real", {**counts, "gt_committed": 2})
+    with sqlite3.connect(path) as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 3
+
+
+def test_annotation_search_legacy_batch_backfill_is_bounded_and_reports_corrupt(tmp_path):
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    artifacts = ArtifactStore(tmp_path / "artifacts")
+    for index in range(5):
+        repository.create(TaskRecord.new(
+            f"legacy-{index}", "project-a", TaskKind.AI_ANNOTATION,
+            "request.json", "vision:local",
+        ), artifacts=artifacts)
+    assert repository.annotation_search_progress("project-a")["pending"] == 5
+    for index in range(4):
+        artifacts.atomic_write_json(f"legacy-{index}", "request.json", {
+            "task_name": f"历史任务{index}", "model_config_name": "历史视觉模型",
+        })
+    assert repository.backfill_annotation_search_batch("project-a", artifacts, limit=2) == 2
+    assert repository.annotation_search_progress("project-a")["pending"] == 3
+    assert repository.backfill_annotation_search_batch("project-a", artifacts, limit=10) == 3
+    assert repository.annotation_search_progress("project-a") == {
+        "total": 5, "pending": 0, "failed": 1,
+    }
+    assert len(repository.list(project_id="project-a", kinds={TaskKind.AI_ANNOTATION},
+                               annotation_query="历史视觉模型").items) == 4
+    artifacts.atomic_write_json("legacy-4", "request.json", {
+        "task_name": "已恢复的任务", "model_config_name": "恢复模型",
+    })
+    assert repository.retry_failed_annotation_search("project-a") == 1
+    assert repository.backfill_annotation_search_batch("project-a", artifacts) == 1
+    assert repository.annotation_search_progress("project-a")["failed"] == 0
+    assert [item.task_id for item in repository.list(
+        project_id="project-a", kinds={TaskKind.AI_ANNOTATION},
+        annotation_query="已恢复的任务",
+    ).items] == ["legacy-4"]
+
+
+def test_ready_task_repository_bypasses_init_lock(tmp_path, monkeypatch):
+    path = tmp_path / "tasks.sqlite3"
+    TaskRepository(path)
+
+    class ForbiddenInitLock:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("ready task repository must bypass init FileLock")
+
+    monkeypatch.setattr(task_repository_module, "FileLock", ForbiddenInitLock)
+
+    reopened = TaskRepository(path)
+    assert reopened.journal_mode() == "wal"
+
+
+def test_task_regular_connection_does_not_negotiate_wal(tmp_path, monkeypatch):
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    real_connect = sqlite3.connect
+
+    class GuardedConnection:
+        def __init__(self, connection):
+            self.connection = connection
+
+        @property
+        def row_factory(self):
+            return self.connection.row_factory
+
+        @row_factory.setter
+        def row_factory(self, value):
+            self.connection.row_factory = value
+
+        def execute(self, sql, *args, **kwargs):
+            if "journal_mode" in str(sql).lower():
+                raise AssertionError("ordinary TaskRepository._connect() must not touch journal_mode")
+            return self.connection.execute(sql, *args, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(self.connection, name)
+
+    monkeypatch.setattr(
+        task_repository_module.sqlite3,
+        "connect",
+        lambda *args, **kwargs: GuardedConnection(real_connect(*args, **kwargs)),
+    )
+
+    connection = repository._connect()
+    try:
+        assert int(connection.execute("PRAGMA busy_timeout").fetchone()[0]) == 5000
+    finally:
+        connection.close()
 
 
 def test_wal_claim_is_global_low_number_first_and_fifo(tmp_path):
@@ -75,6 +260,32 @@ def test_capability_cancel_retry_cursor_and_expired_lease(tmp_path):
     assert recovered.status is TaskStatus.QUEUED
     assert recovered.stage == "recovered"
     assert recovered.attempt == 1
+
+
+def test_delete_terminal_refuses_live_task_and_purges_finished_truth(tmp_path):
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    add(repository, "delete-terminal", "project-1", 5)
+
+    with pytest.raises(ValueError, match="only terminal tasks"):
+        repository.delete_terminal(
+            "delete-terminal",
+            project_id="project-1",
+            kind=TaskKind.TRAINING,
+        )
+
+    cancelled = repository.request_cancel("delete-terminal")
+    assert cancelled.status is TaskStatus.CANCELLED
+    assert repository.delete_terminal(
+        "delete-terminal",
+        project_id="project-1",
+        kind=TaskKind.TRAINING,
+    ) is True
+    assert repository.get("delete-terminal") is None
+    assert repository.delete_terminal(
+        "delete-terminal",
+        project_id="project-1",
+        kind=TaskKind.TRAINING,
+    ) is False
 
 
 def test_heartbeat_and_finish_require_the_current_lease(tmp_path):
@@ -217,6 +428,58 @@ def test_resume_after_confirmation_requeues_material_import_and_is_idempotent(tm
     assert resumed.finished_at is None
     assert resumed.result_ref == "candidates/manifest.json"
     assert repository.resume_after_confirmation("import-1") == resumed
+
+
+def test_resume_after_confirmation_can_atomically_switch_remote_scan_to_local_indexer(tmp_path):
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    repository.create(
+        TaskRecord.new(
+            "import-remote-review",
+            "project-1",
+            TaskKind.MATERIAL_IMPORT,
+            "requests/import.json",
+            "material-import:agent",
+            required_capabilities=("agent.remote",),
+        )
+    )
+    lease = repository.claim_next(
+        "agent-owner",
+        [TaskKind.MATERIAL_IMPORT],
+        {"agent.remote"},
+    )
+    assert lease is not None
+    repository.finish(
+        "import-remote-review",
+        lease.lease_token,
+        TaskStatus.AWAITING_CONFIRMATION,
+        result_ref="remote-results/1/result.json",
+    )
+
+    resumed = repository.resume_after_confirmation(
+        "import-remote-review",
+        required_capabilities=("storage.import",),
+    )
+
+    assert resumed.status is TaskStatus.QUEUED
+    assert resumed.stage == "indexing_queued"
+    assert resumed.required_capabilities == ("storage.import",)
+    assert resumed.result_ref == "remote-results/1/result.json"
+
+    # Confirmation is idempotent and must preserve/repair the local-write owner.
+    same = repository.resume_after_confirmation(
+        "import-remote-review",
+        required_capabilities=("storage.import",),
+    )
+    assert same.required_capabilities == ("storage.import",)
+
+    local = repository.claim_next(
+        "storage-import-worker",
+        [TaskKind.MATERIAL_IMPORT],
+        {"storage.import"},
+    )
+    assert local is not None
+    assert local.task.task_id == "import-remote-review"
+    assert local.task.stage == "indexing"
 
 
 def test_resume_after_confirmation_rejects_rejected_material_import(tmp_path):
@@ -362,3 +625,62 @@ def test_promote_can_move_a_task_ahead_even_when_current_priority_is_one(tmp_pat
     lease = repository.claim_next("worker", [TaskKind.TRAINING], {"cuda"})
     assert lease is not None
     assert lease.task.task_id == "promoted"
+
+
+def test_fail_queued_precondition_never_overwrites_running_or_cancelled_task(tmp_path):
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    queued = TaskRecord.new(
+        "queued-precondition",
+        "project",
+        TaskKind.TRAINING,
+        "payload.json",
+        "training:remote",
+    )
+    repository.create(queued)
+    failed = repository.fail_queued_precondition(
+        queued.task_id,
+        "REMOTE_INPUT_FAILED",
+        status=TaskStatus.BLOCKED_BY_ENVIRONMENT,
+        stage="remote_input_preparation_failed",
+    )
+    assert failed.status is TaskStatus.BLOCKED_BY_ENVIRONMENT
+    assert failed.stage == "remote_input_preparation_failed"
+    assert failed.error == "REMOTE_INPUT_FAILED"
+    assert failed.finished_at is not None
+
+    running = repository.create(
+        TaskRecord.new(
+            "running-precondition",
+            "project",
+            TaskKind.TRAINING,
+            "payload.json",
+            "training:remote",
+            required_capabilities=("cuda",),
+        )
+    )
+    lease = repository.claim_next("worker", [TaskKind.TRAINING], {"cuda"})
+    assert lease is not None and lease.task.task_id == running.task_id
+    unchanged = repository.fail_queued_precondition(
+        running.task_id,
+        "must-not-overwrite",
+        status=TaskStatus.FAILED,
+    )
+    assert unchanged.status is TaskStatus.RUNNING
+    assert unchanged.error != "must-not-overwrite"
+
+    cancelled = repository.create(
+        TaskRecord.new(
+            "cancelled-precondition",
+            "project",
+            TaskKind.TRAINING,
+            "payload.json",
+            "training:remote",
+        )
+    )
+    repository.request_cancel(cancelled.task_id)
+    unchanged = repository.fail_queued_precondition(
+        cancelled.task_id,
+        "must-not-revive",
+        status=TaskStatus.FAILED,
+    )
+    assert unchanged.status is TaskStatus.CANCELLED

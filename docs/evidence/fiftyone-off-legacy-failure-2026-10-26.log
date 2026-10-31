@@ -1,0 +1,32 @@
+..........................................F
+================================== FAILURES ===================================
+_____ test_auto_label_candidates_do_not_modify_annotation_until_confirmed _____
+
+client = <starlette.testclient.TestClient object at 0x00000248FE81C230>
+seeded_project = ('ec01a5ec1c41', {'annotated': False, 'annotation_hash': 'c1fb6ff7ffb79dd9485c12f71651944184ae218f54a6c90dd5e7f8c8a48096b9', 'annotation_origin': 'unannotated', 'annotation_preview': [], ...})
+fake_provider = 'fake-provider'
+
+    def test_auto_label_candidates_do_not_modify_annotation_until_confirmed(
+        client, seeded_project, fake_provider
+    ):
+        pid, image = seeded_project
+        before = client.get(f"/api/projects/{pid}/annotations/{image['id']}").json()
+        assert before["boxes"] == []
+    
+        created = client.post(f"/api/v47/projects/{pid}/ai-label-tasks", json={
+            "image_ids": [image["id"]],
+            "labels_text": "fire",
+            "provider_id": fake_provider,
+            "prompt_template_id": "default",
+            "preview_count": 1,
+        })
+>       assert created.status_code == 200, created.text
+E       AssertionError: {"ok":false,"code":"HTTP_410","message":"�ɰ� v47 AI ��ע�ӿ������ۣ���ʹ�� /api/v60/projects/{project_id}/annotation-tasks��AI ��ѡ�������ͨ�� durable review/decisions ����ȷ�Ϻ����д����ʽ��ע��","detail":"�ɰ� v47 AI ��ע�ӿ������ۣ���ʹ�� /api/v60/projects/{project_id}/annotation-tasks��AI ��ѡ�������ͨ�� durable review/decisions ����ȷ�Ϻ����д����ʽ��ע��","solution":"���Ժ����Ի�鿴������־��"}
+E       assert 410 == 200
+E        +  where 410 = <Response [410 Gone]>.status_code
+
+tests\api\test_auto_label_candidates.py:55: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/api/test_auto_label_candidates.py::test_auto_label_candidates_do_not_modify_annotation_until_confirmed
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!
+1 failed, 42 passed, 5 warnings in 64.34s (0:01:04)

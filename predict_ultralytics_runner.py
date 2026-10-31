@@ -5,10 +5,20 @@
 import argparse
 import json
 import time
+import os
 from pathlib import Path
 
 from PIL import Image, ImageDraw
 from ultralytics import YOLO
+
+
+def publish_phase(phase):
+    destination = os.environ.get("CHANGLIAN_DEPLOYMENT_PROGRESS")
+    if destination:
+        path = Path(destination)
+        temporary = path.with_suffix('.tmp')
+        temporary.write_text(json.dumps({"phase": phase}), encoding="utf-8")
+        os.replace(temporary, path)
 
 
 def main():
@@ -17,11 +27,23 @@ def main():
     parser.add_argument("--input", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--conf", type=float, default=0.25)
+    parser.add_argument("--device", default="")
     args = parser.parse_args()
 
     start = time.perf_counter()
+    publish_phase("PREPARING_MODEL")
     model = YOLO(args.model)
-    results = model.predict(source=args.input, conf=args.conf, save=False, verbose=False)
+    predict_args = {
+        "source": args.input,
+        "conf": args.conf,
+        "save": False,
+        "verbose": False,
+    }
+    if str(args.device or "").strip():
+        predict_args["device"] = str(args.device).strip()
+    publish_phase("INFERENCING")
+    results = model.predict(**predict_args)
+    publish_phase("GENERATING_RESULT")
     result = results[0]
     speed = getattr(result, "speed", {}) or {}
     names = result.names

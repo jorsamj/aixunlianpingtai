@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from platform_core.task_runtime.process_start_gate import execution_environment
+
 import os
 import re
 import shutil
@@ -90,12 +92,103 @@ def _best_checkpoint(evidence: Mapping[str, Any]) -> Mapping[str, Any] | None:
 
 
 def _process_signal(returncode: int | None) -> str | None:
-    if returncode is None or returncode >= 0 or os.name == "nt":
+    # subprocess uses negative return codes for POSIX signals.  Decode the
+    # persisted value itself so historical Linux evidence remains readable on
+    # a Windows control plane; this records the signal and does not infer OOM.
+    if returncode is None or returncode >= 0:
         return None
+    if int(returncode) == -9:
+        return "SIGKILL"
     try:
         return signal.Signals(-int(returncode)).name
     except (ValueError, OverflowError):
         return f"SIGNAL_{-int(returncode)}"
+
+
+def _collect_linux_kernel_oom_evidence(
+    identity,
+    *,
+    finished_at: float | None = None,
+    command_runner=subprocess.run,
+    platform_name: str | None = None,
+) -> dict[str, Any] | None:
+    """Read one bounded Kernel journal window after a SIGKILL.
+
+    Only an exact PID hit inside this process lifetime is returned.  The raw
+    journal is deliberately not persisted, and this helper is called by the
+    existing Worker failure path rather than by any detail/read API.
+    """
+
+    if (platform_name or os.name) != "posix" or identity is None:
+        return None
+    try:
+        pid = int(identity.pid)
+        created_at = float(identity.create_time)
+        ended_at = float(finished_at if finished_at is not None else time.time())
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if pid <= 0 or ended_at < created_at:
+        return None
+    since = max(0.0, created_at - 2.0)
+    until = ended_at + 2.0
+    try:
+        completed = command_runner(
+            [
+                "journalctl",
+                "--dmesg",
+                "--since",
+                f"@{since:.3f}",
+                "--until",
+                f"@{until:.3f}",
+                "--no-pager",
+                "--output",
+                "short-unix",
+                "--lines",
+                "200",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=4,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    if int(getattr(completed, "returncode", 1) or 0) != 0:
+        return None
+    pattern = re.compile(
+        r"^\s*(?P<at>\d+(?:\.\d+)?)\s+.*?"
+        r"(?:Out of memory:\s+)?Killed process\s+(?P<pid>\d+)\b",
+        flags=re.IGNORECASE,
+    )
+    concurrent_oom = None
+    for line in str(getattr(completed, "stdout", "") or "").splitlines():
+        match = pattern.search(line)
+        if not match:
+            continue
+        observed_at = float(match.group("at"))
+        killed_pid = int(match.group("pid"))
+        if not since <= observed_at <= until:
+            continue
+        if killed_pid == pid:
+            return {
+                "type": "linux_kernel_oom_kill",
+                "source": "linux_kernel_journal",
+                "process_pid": pid,
+                "process_create_time": created_at,
+                "observed_at_epoch": observed_at,
+                "correlated": True,
+            }
+        concurrent_oom = {
+            "type": "linux_kernel_oom_concurrent",
+            "source": "linux_kernel_journal",
+            "process_pid": pid,
+            "process_create_time": created_at,
+            "observed_at_epoch": observed_at,
+            "correlated": False,
+        }
+    return concurrent_oom
 
 
 def _epoch_evidence(job: Mapping[str, Any], argv: Sequence[str], log_tail: str) -> tuple[int, int]:
@@ -175,6 +268,8 @@ def build_training_failure_evidence(
     returncode: int | None,
     completion_error: str,
     log_path: Path,
+    process_identity=None,
+    system_evidence: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build bounded, evidence-only failure truth for a terminated trainer.
 
@@ -212,6 +307,9 @@ def build_training_failure_evidence(
         "failure_stage": failure_stage,
         "process_returncode": returncode,
         "process_signal": process_signal,
+        "process_pid": int(process_identity.pid) if process_identity is not None else None,
+        "process_create_time": float(process_identity.create_time) if process_identity is not None else None,
+        "system_evidence": [dict(item) for item in (system_evidence or ()) if isinstance(item, Mapping)],
         "completion_error": str(completion_error),
         "last_job_message": str(job.get("message") or "").strip() or None,
         "completed_epochs": completed_epochs,
@@ -434,9 +532,7 @@ def _run_checkpoint_validation(
     result_path = job_file.parent / "final-validation.json"
     controller = base.ProcessController()
 
-    context.repository.heartbeat(
-        context.task.task_id,
-        context.lease.lease_token,
+    context.heartbeat(
         progress=96,
         stage="recovering_checkpoint" if recovery else "final_validation",
         current_item=("恢复 checkpoint，正在独立验证" if recovery else "训练完成，正在独立验证最佳模型"),
@@ -448,23 +544,17 @@ def _run_checkpoint_validation(
             launched = base.launch_process(
                 argv,
                 cwd=root,
-                env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
+                env={**os.environ, **execution_environment(context), "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
                 stdout=log,
                 stderr=subprocess.STDOUT,
                 text=True,
             )
-            context.repository.bind_process(
-                context.task.task_id,
-                context.lease.lease_token,
-                launched.identity,
-            )
+            context.bind_process(launched.identity)
             while launched.process.poll() is None:
                 if context.cancel_requested():
                     controller.terminate_tree(launched.identity)
                     raise InterruptedError("training cancelled during final validation")
-                context.repository.heartbeat(
-                    context.task.task_id,
-                    context.lease.lease_token,
+                context.heartbeat(
                     progress=97,
                     stage="final_validation",
                     current_item="独立验证 best.pt",
@@ -500,6 +590,13 @@ def _run_checkpoint_validation(
         completion_error=completion_error or "final validation process failed",
         validation_result=result if isinstance(result, Mapping) else {},
     )
+    if launched is not None:
+        evidence["process_pid"] = int(launched.identity.pid)
+        evidence["process_create_time"] = float(launched.identity.create_time)
+        if launched.process.returncode == -int(signal.SIGKILL):
+            oom_evidence = _collect_linux_kernel_oom_evidence(launched.identity)
+            if oom_evidence is not None:
+                evidence["system_evidence"] = [oom_evidence]
     _persist_failure(context, job_file, job, evidence)
     raise RuntimeError(_failure_message(evidence))
 
@@ -525,16 +622,12 @@ def run_hardened_training_process(context, argv: Sequence[str], job_file: Path) 
             launched = base.launch_process(
                 launch_argv,
                 cwd=root,
-                env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
+                env={**os.environ, **execution_environment(context), "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
                 stdout=log,
                 stderr=subprocess.STDOUT,
                 text=True,
             )
-            context.repository.bind_process(
-                context.task.task_id,
-                context.lease.lease_token,
-                launched.identity,
-            )
+            context.bind_process(launched.identity)
             next_metrics = 0.0
             completion_seen_at = None
             while launched.process.poll() is None:
@@ -542,9 +635,7 @@ def run_hardened_training_process(context, argv: Sequence[str], job_file: Path) 
                     try:
                         controller.terminate_tree(launched.identity)
                     except PermissionError as error:
-                        context.repository.heartbeat(
-                            context.task.task_id,
-                            context.lease.lease_token,
+                        context.heartbeat(
                             stage="cancelling",
                             current_item=f"waiting for verified process cleanup: {error}",
                         )
@@ -559,9 +650,7 @@ def run_hardened_training_process(context, argv: Sequence[str], job_file: Path) 
                     expected_models_root=expected_models_root,
                 ) is None:
                     completion_seen_at = completion_seen_at or time.monotonic()
-                    context.repository.heartbeat(
-                        context.task.task_id,
-                        context.lease.lease_token,
+                    context.heartbeat(
                         progress=95,
                         stage="finalizing",
                         current_item="verified training complete; finalizing",
@@ -570,9 +659,7 @@ def run_hardened_training_process(context, argv: Sequence[str], job_file: Path) 
                         try:
                             controller.terminate_tree(launched.identity)
                         except PermissionError as error:
-                            context.repository.heartbeat(
-                                context.task.task_id,
-                                context.lease.lease_token,
+                            context.heartbeat(
                                 progress=95,
                                 stage="finalizing",
                                 current_item=f"waiting for verified process cleanup: {error}",
@@ -592,9 +679,7 @@ def run_hardened_training_process(context, argv: Sequence[str], job_file: Path) 
                 )
                 if ready is not None:
                     checkpoint_ready = ready
-                    context.repository.heartbeat(
-                        context.task.task_id,
-                        context.lease.lease_token,
+                    context.heartbeat(
                         progress=95,
                         stage="cleaning_training_process",
                         current_item="训练主循环完成，正在释放训练进程资源",
@@ -603,9 +688,7 @@ def run_hardened_training_process(context, argv: Sequence[str], job_file: Path) 
                         controller.terminate_tree(launched.identity)
                     except PermissionError as error:
                         checkpoint_ready = None
-                        context.repository.heartbeat(
-                            context.task.task_id,
-                            context.lease.lease_token,
+                        context.heartbeat(
                             progress=95,
                             stage="cleaning_training_process",
                             current_item=f"waiting for verified process cleanup: {error}",
@@ -614,11 +697,9 @@ def run_hardened_training_process(context, argv: Sequence[str], job_file: Path) 
                         continue
                     break
 
-                current_task = context.repository.get(context.task.task_id)
+                current_task = context.assert_current_execution()
                 if current_task is not None and current_task.stage == "paused":
-                    context.repository.heartbeat(
-                        context.task.task_id,
-                        context.lease.lease_token,
+                    context.heartbeat(
                         stage="paused",
                     )
                     time.sleep(0.25)
@@ -627,16 +708,14 @@ def run_hardened_training_process(context, argv: Sequence[str], job_file: Path) 
                     metrics = base.read_metrics(
                         context.artifacts.artifact_path(context.task.task_id, "training-metrics.sqlite3")
                     )
-                    update_reservation_evidence(context.repository, context.lease, metrics)
+                    context.run_owned(lambda: update_reservation_evidence(context.repository, context.lease, metrics))
                     next_metrics = time.monotonic() + 5
                 progress = float(job.get("progress_percent") or 20)
                 current = str(job.get("current_item") or job.get("message") or job.get("current_epoch") or "") or None
                 training_started = bool(
                     job.get("training_started") or job.get("current_epoch") or job.get("training_progress")
                 )
-                context.repository.heartbeat(
-                    context.task.task_id,
-                    context.lease.lease_token,
+                context.heartbeat(
                     progress=max(20, min(95, progress)),
                     stage="training" if training_started else "trainer_startup",
                     current_item=current,
@@ -671,6 +750,11 @@ def run_hardened_training_process(context, argv: Sequence[str], job_file: Path) 
         return job
 
     returncode = launched.process.returncode if launched is not None else None
+    system_evidence: list[dict[str, Any]] = []
+    if launched is not None and returncode == -int(signal.SIGKILL):
+        oom_evidence = _collect_linux_kernel_oom_evidence(launched.identity)
+        if oom_evidence is not None:
+            system_evidence.append(oom_evidence)
     evidence = build_training_failure_evidence(
         task_id=context.task.task_id,
         project_id=context.task.project_id,
@@ -680,6 +764,8 @@ def run_hardened_training_process(context, argv: Sequence[str], job_file: Path) 
         returncode=returncode,
         completion_error=completion_error,
         log_path=log_path,
+        process_identity=launched.identity if launched is not None else None,
+        system_evidence=system_evidence,
     )
     if evidence.get("recoverable") and _best_checkpoint(evidence) is not None:
         context.artifacts.atomic_write_json(

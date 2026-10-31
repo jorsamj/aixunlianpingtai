@@ -28,17 +28,23 @@ test('training page stays paged and selected labels come from server summary', a
     const request = route.request();
     const payload = request.postDataJSON();
     const ids = Array.isArray(payload?.image_ids) ? payload.image_ids : [];
+    const positiveCodes = ids.length ? (ids.includes('only-person') ? ['person'] : ['smoke', 'person']) : [];
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({
         requested_count: ids.length,
         matched_count: ids.length,
+        selectable_count: ids.length,
         eligible_count: ids.length,
-        eligible_total: 10_000,
+        pending_annotation_count: 0,
+        selectable_total: 10_000,
+        eligible_total: 8_000,
+        pending_annotation_total: 2_000,
         box_count: ids.length * 2,
         size_bytes: ids.length * 1024,
-        label_codes: ids.length ? ['smoke', 'person'] : [],
+        label_codes: positiveCodes,
+        positive_label_codes: positiveCodes,
         label_counts: ids.length ? {smoke: ids.length, person: ids.length} : {},
         repository_revision: 91,
       }),
@@ -50,9 +56,13 @@ test('training page stays paged and selected labels come from server summary', a
     state.labels = [
       {code: 'smoke', display_name: '烟雾'},
       {code: 'person', display_name: '人员'},
+      {code: 'fire', display_name: '明火'},
+      {code: 'phone', display_name: '电话'},
     ];
     state.algorithms = [{id: 'summary-algorithm', name: '摘要测试算法', versions: []}];
-    document.body.insertAdjacentHTML('beforeend', `
+    // Mount the synthetic host inside the app content column, outside the
+    // fixed sidebar's hit area, so checkbox tests exercise a real user click.
+    document.querySelector('main.main').insertAdjacentHTML('beforeend', `
       <div id="summaryTestHost" class="train429-create">
         <div class="train428-panel">
           <div class="train-v3-summary">
@@ -75,8 +85,20 @@ test('training page stays paged and selected labels come from server summary', a
   await expect(page.locator('#tr429Labels')).toContainText('人员');
   await expect(page.locator('#trainingLabelContractPanel')).toContainText('烟雾');
   await expect(page.locator('#trainingLabelContractPanel')).toContainText('人员');
+  await expect(page.locator('[data-training-label-code="fire"]')).toHaveCount(0);
+  await expect(page.locator('[data-training-label-code="phone"]')).toHaveCount(0);
+  // Server truth exposes available material labels, but the product must
+  // never select new training classes on the user's behalf.
   await expect.poll(async () => page.evaluate(() => window.TrainingDraftRuntime.current().newLabelCodes.slice().sort()))
-    .toEqual(['person', 'smoke']);
+    .toEqual([]);
+  await page.locator('[data-training-label-code="smoke"]').check();
+  await expect.poll(() => page.evaluate(() => window.TrainingDraftRuntime.current().newLabelCodes))
+    .toEqual(['smoke']);
+  await page.evaluate(() => window.TrainingDraftRuntime.setMaterialIds(['only-person']));
+  await expect(page.locator('[data-training-label-code="smoke"]')).toHaveCount(0);
+  await expect(page.locator('[data-training-label-code="person"]')).toHaveCount(1);
+  await expect.poll(() => page.evaluate(() => window.TrainingDraftRuntime.current().newLabelCodes))
+    .toEqual([]);
   await expect.poll(async () => page.evaluate(() => window.TrainingMaterialSummaryRuntime.state().fullPoolHydration))
     .toBe(false);
 });

@@ -1,9 +1,10 @@
 import uuid
+from pathlib import Path
 
 import pytest
 
 import app as app_module
-from platform_core.annotation_candidates import CandidateStore
+from platform_core.annotation_candidates import CandidateDecision, CandidateStore
 from platform_core.task_runtime import ArtifactStore, TaskKind, TaskRecord, TaskRepository, TaskStatus
 
 
@@ -40,10 +41,30 @@ def _awaiting(project_id, count, repository, artifacts):
     return task_id
 
 
-def test_annotation_task_create_is_private_and_worker_queued(client, seeded_project, isolated_task_runtime):
+def test_annotation_task_create_is_private_and_worker_queued(
+    client, seeded_project, isolated_task_runtime, monkeypatch,
+):
     project_id, image = seeded_project
+    config = {
+        "id": "model-1",
+        "name": "视觉模型一",
+        "model_name": "vision-v1",
+        "provider_type": "local_openai",
+        "provider_adapter": "local_openai",
+        "detect_url": "http://vision-v1.local/v1",
+        "secret_ref": "xjalgo:model-config:model-1",
+        "headers_json": {
+            "X-Trace": "keep",
+            "Authorization": "Bearer must-not-freeze",
+        },
+        "updated_at": "2026-09-28T06:20:00Z",
+    }
+    monkeypatch.setattr(app_module, "_v35_model_items", lambda: [dict(config)])
+
     response = client.post(f"/api/v60/projects/{project_id}/annotation-tasks", json={
-        "image_ids": [image["id"]], "labels_text": "fire", "provider_id": "fake-provider",
+        "image_ids": [image["id"]],
+        "labels_text": "fire",
+        "model_config_id": "model-1",
         "business_instruction": "find fire",
     })
     assert response.status_code == 202, response.text
@@ -52,9 +73,100 @@ def test_annotation_task_create_is_private_and_worker_queued(client, seeded_proj
     assert body["total_count"] == 1
     assert body["completed_count"] == 0
     assert body["failed_count"] == 0
+    assert body["model_config_id"] == "model-1"
+    assert body["model_config_name"] == "视觉模型一"
+    assert body["model_provider"] == "local_openai"
+    assert len(body["model_config_revision"]) == 64
     assert "payload_ref" not in body and "business_instruction" not in body
+    assert "model_config_snapshot" not in body
+    assert "secret_ref" not in body
+
     request = isolated_task_runtime[1].read_json(body["id"], "request.json")
     assert request["image_ids"] == [image["id"]]
+    assert request["model_config_snapshot"]["model_name"] == "vision-v1"
+    assert request["model_config_snapshot"]["detect_url"] == "http://vision-v1.local/v1"
+    assert request["model_config_snapshot"]["secret_ref"] == "xjalgo:model-config:model-1"
+    assert request["model_config_snapshot"]["headers_json"] == {"X-Trace": "keep"}
+    assert "api_key" not in request["model_config_snapshot"]
+    assert request["model_config_revision"] == body["model_config_revision"]
+
+
+def test_annotation_create_request_id_recovers_receipt_without_second_task(
+    client, seeded_project, isolated_task_runtime, monkeypatch,
+):
+    project_id, image = seeded_project
+    monkeypatch.setattr(app_module, "_v35_model_items", lambda: [{
+        "id": "model-retry", "name": "初始模型", "model_name": "vision-v1",
+        "provider_type": "local_openai", "detect_url": "http://vision.local/v1",
+    }])
+    payload = {
+        "image_ids": [image["id"]], "labels_text": "fire",
+        "model_config_id": "model-retry", "request_id": "ai-retry-receipt-001",
+    }
+    first = client.post(f"/api/v60/projects/{project_id}/annotation-tasks", json=payload)
+    assert first.status_code == 202, first.text
+    task_id = first.json()["id"]
+    assert task_id.startswith("ai")
+    receipt = client.get(
+        f"/api/v60/projects/{project_id}/annotation-tasks/by-request/{payload['request_id']}"
+    )
+    assert receipt.status_code == 200 and receipt.json()["id"] == task_id
+
+    # A later model edit must not cause a retry to freeze a different version.
+    monkeypatch.setattr(app_module, "_v35_model_items", lambda: [])
+    retry = client.post(f"/api/v60/projects/{project_id}/annotation-tasks", json=payload)
+    assert retry.status_code == 202 and retry.json()["id"] == task_id
+    assert retry.json()["idempotent"] is True
+    repository, artifacts = isolated_task_runtime
+    assert len(repository.list(project_id=project_id, kinds={TaskKind.AI_ANNOTATION}).items) == 1
+    assert len(artifacts.read_json(task_id, "request.json")["create_request_identity"]) == 64
+
+    changed = client.post(f"/api/v60/projects/{project_id}/annotation-tasks", json={
+        **payload, "business_instruction": "different setting",
+    })
+    assert changed.status_code == 409
+    assert len(repository.list(project_id=project_id, kinds={TaskKind.AI_ANNOTATION}).items) == 1
+
+
+def test_annotation_create_request_id_rejects_invalid_and_missing_receipts(
+    client, seeded_project, isolated_task_runtime,
+):
+    project_id, image = seeded_project
+    invalid = client.post(f"/api/v60/projects/{project_id}/annotation-tasks", json={
+        "image_ids": [image["id"]], "labels_text": "fire",
+        "request_id": "../invalid",
+    })
+    assert invalid.status_code == 422
+    missing = client.get(
+        f"/api/v60/projects/{project_id}/annotation-tasks/by-request/ai-missing-task-001"
+    )
+    assert missing.status_code == 404
+
+
+def test_annotation_task_freezes_template_version_and_task_prompt_override(
+    client, seeded_project, isolated_task_runtime, monkeypatch,
+):
+    project_id, image = seeded_project
+    monkeypatch.setattr(app_module, "_v35_model_items", lambda: [{
+        "id": "model-1", "name": "视觉模型", "model_name": "vision-v1",
+        "provider_type": "local_openai", "detect_url": "http://vision.local/v1",
+    }])
+    monkeypatch.setattr(app_module, "_v35_prompt_items", lambda: [{
+        "id": "tpl-1", "name": "火焰模板", "version": 7, "version_id": "tpl-v7",
+        "prompt": "模板 {{labels_json}} {{output_schema}}",
+    }])
+    response = client.post(f"/api/v60/projects/{project_id}/annotation-tasks", json={
+        "image_ids": [image["id"]], "labels_text": "fire",
+        "model_config_id": "model-1", "prompt_template_id": "tpl-1",
+        "prompt_override": "本任务 {{labels_json}} {{output_schema}}",
+    })
+    assert response.status_code == 202, response.text
+    public = response.json()
+    assert "rendered_prompt_preview" not in public
+    request = isolated_task_runtime[1].read_json(public["id"], "request.json")
+    assert request["prompt_template_snapshot"]["version_id"] == "tpl-v7"
+    assert request["effective_prompt_template"].startswith("本任务")
+    assert request["prompt_source"] == "task_override"
 
 
 def test_annotation_task_detail_reads_real_worker_checkpoint_counts(client, seeded_project, isolated_task_runtime):
@@ -83,6 +195,173 @@ def test_annotation_task_list_is_bounded_and_private_fields_are_absent(client, s
     assert all(forbidden.isdisjoint(item) for item in body["items"])
 
 
+def test_annotation_task_status_filters_the_full_durable_history_before_cursor_paging(
+    client, seeded_project, isolated_task_runtime,
+):
+    project_id, _image = seeded_project
+    repository, artifacts = isolated_task_runtime
+    awaiting_id = _awaiting(project_id, 1, repository, artifacts)
+    queued_ids = {_queued(project_id, repository, artifacts) for _ in range(3)}
+    base = f"/api/v60/projects/{project_id}/annotation-tasks"
+    cursor = None
+    actual = []
+    for _ in range(3):
+        response = client.get(base, params={
+            "status": "QUEUED", "limit": 1, **({"cursor": cursor} if cursor else {}),
+        })
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert len(body["items"]) == 1
+        actual.append(body["items"][0]["id"])
+        cursor = body["next_cursor"]
+    assert set(actual) == queued_ids
+    assert cursor is None
+    awaiting = client.get(base, params={"status": "AWAITING_CONFIRMATION", "limit": 1})
+    assert awaiting.status_code == 200
+    assert [item["id"] for item in awaiting.json()["items"]] == [awaiting_id]
+    assert client.get(base, params={"status": "UNKNOWN"}).status_code == 422
+
+
+def test_annotation_search_waits_for_complete_legacy_index_instead_of_false_empty(
+    client, seeded_project, isolated_task_runtime, monkeypatch,
+):
+    project_id, _image = seeded_project
+    repository, artifacts = isolated_task_runtime
+    missing = "unindexed-legacy"
+    repository.create(TaskRecord.new(
+        missing, project_id, TaskKind.AI_ANNOTATION, "request.json", "vision:local",
+    ), artifacts=artifacts)
+    monkeypatch.setattr(app_module, "_start_annotation_search_backfill", lambda _project_id: None)
+    endpoint = f"/api/v60/projects/{project_id}/annotation-tasks"
+    pending = client.get(endpoint, params={"q": "历史关键字", "status": "QUEUED"})
+    assert pending.status_code == 202
+    assert pending.json()["indexing"] is True
+    assert pending.json()["remaining"] == 1
+    artifacts.atomic_write_json(missing, "request.json", {
+        "task_name": "历史关键字", "model_config_name": "模型甲",
+    })
+    repository.backfill_annotation_search_batch(project_id, artifacts)
+    found = client.get(endpoint, params={"q": "历史关键字", "status": "QUEUED"})
+    assert found.status_code == 200
+    assert [item["id"] for item in found.json()["items"]] == [missing]
+    assert client.get(endpoint, params={"q": "x" * 121}).status_code == 422
+
+
+def test_annotation_task_nonqueued_status_does_not_scan_global_pending_queue(
+    client, seeded_project, isolated_task_runtime, monkeypatch,
+):
+    project_id, _image = seeded_project
+    repository, artifacts = isolated_task_runtime
+    task_id = _awaiting(project_id, 1, repository, artifacts)
+    def unexpected_queue_scan():
+        raise AssertionError("nonqueued page must not scan unrelated queued tasks")
+    monkeypatch.setattr(repository, "queued_candidates", unexpected_queue_scan)
+    response = client.get(
+        f"/api/v60/projects/{project_id}/annotation-tasks",
+        params={"status": "AWAITING_CONFIRMATION"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["items"][0]["id"] == task_id
+
+
+def test_annotation_stage_statistics_are_durable_and_batch_read_without_candidate_scan(
+    client, seeded_project, isolated_task_runtime, monkeypatch,
+):
+    project_id, _ = seeded_project
+    repository, artifacts = isolated_task_runtime
+    task_id = _awaiting(project_id, 3, repository, artifacts)
+    endpoint = f"/api/v60/projects/{project_id}/annotation-tasks"
+    # Old tasks have no projection. A list must not invent a plausible zero.
+    old = client.get(endpoint).json()["items"][0]
+    assert old["stage_statistics"] is None
+    # Opening this one task reconciles the authoritative candidate store.
+    detail = client.get(f"{endpoint}/{task_id}")
+    assert detail.status_code == 200
+    assert detail.json()["stage_statistics"]["unreviewed"] == 3
+    def unexpected_candidate_scan(*args, **kwargs):
+        raise AssertionError("list must not scan per-task candidate SQLite")
+    monkeypatch.setattr(CandidateStore, "summary", unexpected_candidate_scan)
+    row = client.get(endpoint).json()["items"][0]
+    assert row["stage_statistics"]["total"] == 3
+    assert row["stage_statistics"]["unreviewed"] == 3
+    assert row["stage_statistics"]["gt_committed"] == 0
+    assert row["statistics_synced_at"]
+
+
+def test_gt_current_state_audit_is_explicit_paginated_and_reads_only_requested_ids(
+    client, seeded_project, isolated_task_runtime, monkeypatch,
+):
+    project_id, image = seeded_project
+    repository, artifacts = isolated_task_runtime
+    task_id = _queued(project_id, repository, artifacts)
+    store = CandidateStore(artifacts, task_id=task_id)
+    image_a, image_b = image["id"], "zz-audit-negative"
+    store.initialize(labels=["fire"], total_images=2)
+    store.append_items([
+        {"image_id": image_a, "status": "success", "boxes": [{"id": "box-a", "label": "fire"}]},
+        {"image_id": image_b, "status": "empty", "boxes": []},
+    ])
+    store.apply_decisions([CandidateDecision(image_a, True), CandidateDecision(image_b, True)])
+    store.record_commit_summaries([
+        {"image_id": image_a, "box_count": 1},
+        {"image_id": image_b, "box_count": 0},
+    ])
+    reads = []
+
+    def bounded_formal_read(_project_id, ids):
+        assert _project_id == project_id and len(ids) == 1
+        reads.append(list(ids))
+        return {image_a: {
+            "image_id": image_a, "version": 3,
+            "boxes": [{"source_task_id": task_id, "candidate_id": "box-a"}],
+        }} if image_a in ids else {image_b: {
+            "image_id": image_b, "version": 3, "annotation_state": "confirmed_empty", "boxes": [],
+        }}
+
+    monkeypatch.setattr(app_module, "read_annotations_many", bounded_formal_read)
+    base = f"/api/v60/projects/{project_id}/annotation-tasks/{task_id}/gt-audit"
+    first = client.get(base, params={"limit": 1})
+    assert first.status_code == 200, first.text
+    assert first.json()["historical_total"] == 2
+    assert first.json()["scope"] == "page_only"
+    assert first.json()["items"][0]["state"] == "retained"
+    assert first.json()["next_cursor"] == image_a
+    second = client.get(base, params={"limit": 1, "cursor": first.json()["next_cursor"]})
+    assert second.status_code == 200, second.text
+    assert second.json()["items"][0]["state"] == "unverifiable"
+    assert second.json()["next_cursor"] is None
+    assert reads == [[image_a], [image_b]]
+    assert client.get(base, params={"limit": 101}).status_code == 422
+    assert client.get(base, params={"cursor": "a" * 201}).status_code == 422
+    assert client.get(base.replace(f"/{project_id}/", "/unknown-project/")).status_code == 404
+
+    # Task list remains a projection-only read: this audit never runs implicitly.
+    monkeypatch.setattr(CandidateStore, "read_commit_page", lambda *args, **kwargs: (_ for _ in ()).throw(
+        AssertionError("list must never audit GT")
+    ))
+    assert client.get(f"/api/v60/projects/{project_id}/annotation-tasks").status_code == 200
+
+
+def test_historical_statistics_backfill_is_bounded_and_never_invents_missing_evidence(
+    seeded_project, isolated_task_runtime,
+):
+    project_id, _ = seeded_project
+    repository, artifacts = isolated_task_runtime
+    valid = _awaiting(project_id, 2, repository, artifacts)
+    missing = _queued(project_id, repository, artifacts)
+    with app_module._annotation_statistics_lock:
+        app_module._annotation_statistics_pending[project_id] = {valid, missing}
+    app_module._backfill_annotation_statistics_page(project_id, repository, artifacts)
+    rows = repository.annotation_statistics_many(project_id, [valid, missing])
+    assert rows[valid]["counts"]["unreviewed"] == 2
+    assert missing not in rows
+    # A later background snapshot may not overwrite a newer human-review result.
+    newer = {**rows[valid]["counts"], "accepted": 1, "unreviewed": 1}
+    repository.set_annotation_statistics(valid, newer)
+    repository.set_annotation_statistics(valid, rows[valid]["counts"], only_if_absent=True)
+    assert repository.annotation_statistics_many(project_id, [valid])[valid]["counts"] == newer
+
+
 def test_candidate_result_is_paged_and_all_rejected_remains_false(client, seeded_project, isolated_task_runtime):
     project_id, _image = seeded_project
     repository, artifacts = isolated_task_runtime
@@ -107,6 +386,183 @@ def test_candidate_result_is_paged_and_all_rejected_remains_false(client, seeded
         f"/api/v60/projects/{project_id}/annotation-tasks/{task_id}/candidates?limit=50"
     ).json()
     assert all(item["accepted"] is False for item in reloaded["items"])
+
+
+def test_annotation_review_operation_receipt_prevents_second_commit(
+    client, seeded_project, isolated_task_runtime,
+):
+    project_id, _image = seeded_project
+    repository, artifacts = isolated_task_runtime
+    task_id = _awaiting(project_id, 3, repository, artifacts)
+    url = f"/api/v60/projects/{project_id}/annotation-tasks/{task_id}/decisions"
+    payload = {
+        "decisions": [], "reject_unmentioned": True, "commit": True,
+        "request_id": "ai-review-stable-001",
+    }
+    first = client.post(url, json=payload)
+    assert first.status_code == 200, first.text
+    assert first.json()["review"]["rejected"] == 3
+    assert first.json()["task"]["accepted"] is False
+
+    lookup = client.get(f"{url}/by-request/{payload['request_id']}")
+    assert lookup.status_code == 200
+    assert lookup.json()["status"] == "completed"
+    assert lookup.json()["result"] == first.json()
+    repeated = client.post(url, json=payload)
+    assert repeated.status_code == 200
+    assert repeated.json()["idempotent"] is True
+    assert repeated.json()["review"]["rejected"] == 3
+    assert artifacts.read_json(task_id, "review/result.json")["applied_images"] == 0
+
+    changed = client.post(url, json={**payload, "accept_unmentioned": True})
+    assert changed.status_code == 409
+
+
+def test_annotation_review_operation_pending_is_not_resubmitted(
+    client, seeded_project, isolated_task_runtime,
+):
+    project_id, _image = seeded_project
+    _repository, artifacts = isolated_task_runtime
+    task_id = _awaiting(project_id, 1, *isolated_task_runtime)
+    payload = app_module.AnnotationDecisionReq(
+        decisions=[], reject_unmentioned=True, request_id="ai-review-pending-001",
+    )
+    path = app_module._annotation_review_operation_path(payload.request_id)
+    artifacts.atomic_write_json(task_id, path, {
+        "request_id": payload.request_id, "project_id": project_id,
+        "identity": app_module._annotation_review_operation_identity(payload),
+        "status": "pending",
+    })
+    url = f"/api/v60/projects/{project_id}/annotation-tasks/{task_id}/decisions"
+    response = client.post(url, json=payload.model_dump())
+    assert response.status_code == 202, response.text
+    assert response.json()["status"] == "pending"
+    assert isolated_task_runtime[0].get(task_id).status == TaskStatus.AWAITING_CONFIRMATION
+    lookup = client.get(f"{url}/by-request/{payload.request_id}")
+    assert lookup.status_code == 202
+    assert lookup.json()["task"]["status"] == "AWAITING_CONFIRMATION"
+
+    # Simulate a process dying after the durable Task transition but before
+    # writing the operation response; GET must recover without replaying edits.
+    result = {"applied_images": 0, "boxes_added": 0, "review": {"accepted": 0, "rejected": 1},
+              "review_request_id": payload.request_id}
+    artifacts.atomic_write_json(task_id, "review/result.json", result)
+    isolated_task_runtime[0].complete_review(
+        task_id, TaskStatus.SUCCEEDED, "review/result.json", accepted=False,
+    )
+    recovered = client.get(f"{url}/by-request/{payload.request_id}")
+    assert recovered.status_code == 200, recovered.text
+    assert recovered.json()["status"] == "completed"
+    assert recovered.json()["result"]["task"]["accepted"] is False
+    assert client.post(url, json=payload.model_dump()).json()["idempotent"] is True
+
+
+def test_annotation_review_pending_receipt_cannot_claim_other_operation_commit(
+    client, seeded_project, isolated_task_runtime,
+):
+    project_id, _image = seeded_project
+    repository, artifacts = isolated_task_runtime
+    task_id = _awaiting(project_id, 1, repository, artifacts)
+    old_request_id = "ai-review-old-failed-001"
+    artifacts.atomic_write_json(task_id, app_module._annotation_review_operation_path(old_request_id), {
+        "request_id": old_request_id, "project_id": project_id, "identity": "old-invalid-payload",
+        "status": "pending",
+    })
+    url = f"/api/v60/projects/{project_id}/annotation-tasks/{task_id}/decisions"
+    newer = client.post(url, json={
+        "decisions": [], "reject_unmentioned": True, "commit": True,
+        "request_id": "ai-review-new-valid-001",
+    })
+    assert newer.status_code == 200
+    assert newer.json()["task"]["status"] == "SUCCEEDED"
+    assert artifacts.read_json(task_id, "review/result.json")["review_request_id"] == "ai-review-new-valid-001"
+    old = client.get(f"{url}/by-request/{old_request_id}")
+    assert old.status_code == 202
+    assert old.json()["status"] == "pending"
+
+
+def test_annotation_review_recovers_accepted_commit_handoff_only_for_matching_request(
+    client, seeded_project, isolated_task_runtime,
+):
+    project_id, _image = seeded_project
+    repository, artifacts = isolated_task_runtime
+    task_id = _awaiting(project_id, 1, repository, artifacts)
+    request_id = "ai-review-accepted-lost-001"
+    artifacts.atomic_write_json(task_id, app_module._annotation_review_operation_path(request_id), {
+        "request_id": request_id, "project_id": project_id,
+        "identity": "same-completed-request", "status": "pending",
+    })
+    artifacts.atomic_write_json(task_id, "review/confirmation.json", {
+        "accepted": True, "review_request_id": request_id,
+    })
+    repository.resume_after_review_confirmation(task_id)
+    url = f"/api/v60/projects/{project_id}/annotation-tasks/{task_id}/decisions"
+    lookup = client.get(f"{url}/by-request/{request_id}")
+    assert lookup.status_code == 200, lookup.text
+    assert lookup.json()["result"]["queued_for_commit"] is True
+    assert lookup.json()["result"]["task"]["status"] == "QUEUED"
+
+
+def test_annotation_review_operation_validates_identity_and_scope(
+    client, seeded_project, isolated_task_runtime,
+):
+    project_id, _image = seeded_project
+    task_id = _awaiting(project_id, 1, *isolated_task_runtime)
+    url = f"/api/v60/projects/{project_id}/annotation-tasks/{task_id}/decisions"
+    assert client.post(url, json={"decisions": [], "request_id": "../invalid"}).status_code == 422
+    assert client.get(f"{url}/by-request/../invalid").status_code != 200
+    assert client.get(f"{url}/by-request/ai-review-unknown-001").status_code == 404
+
+
+def test_reject_all_skips_candidate_label_full_scans(
+    client, seeded_project, isolated_task_runtime, monkeypatch,
+):
+    project_id, _image = seeded_project
+    repository, artifacts = isolated_task_runtime
+    task_id = _awaiting(project_id, 1001, repository, artifacts)
+
+    def forbidden_scan(*_args, **_kwargs):
+        raise AssertionError("reject-all must not scan candidate labels that cannot reach Ground Truth")
+
+    monkeypatch.setattr(CandidateStore, "label_summary", forbidden_scan)
+    monkeypatch.setattr(CandidateStore, "remap_labels", forbidden_scan)
+
+    rejected = client.post(
+        f"/api/v60/projects/{project_id}/annotation-tasks/{task_id}/decisions",
+        json={"decisions": [], "reject_unmentioned": True, "commit": True},
+    )
+    assert rejected.status_code == 200, rejected.text
+    assert rejected.json()["review"]["accepted"] == 0
+    assert rejected.json()["review"]["rejected"] == 1001
+    assert rejected.json()["task"]["accepted"] is False
+
+
+def test_accept_without_mapping_only_reads_label_summary_for_response(
+    client, seeded_project, isolated_task_runtime, monkeypatch,
+):
+    project_id, _image = seeded_project
+    repository, artifacts = isolated_task_runtime
+    task_id = _awaiting(project_id, 55, repository, artifacts)
+    original = CandidateStore.label_summary
+    calls = []
+
+    def counted_summary(self):
+        calls.append(self.task_id)
+        return original(self)
+
+    monkeypatch.setattr(CandidateStore, "label_summary", counted_summary)
+    accepted = client.post(
+        f"/api/v60/projects/{project_id}/annotation-tasks/{task_id}/decisions",
+        json={
+            "decisions": [],
+            "accept_unmentioned": True,
+            "reject_unmentioned": False,
+            "commit": True,
+        },
+    )
+    assert accepted.status_code == 200, accepted.text
+    assert accepted.json()["queued_for_commit"] is True
+    assert calls == [task_id]
 
 
 def test_candidate_result_can_accept_every_page_without_sending_all_ids(client, seeded_project, isolated_task_runtime):
@@ -135,3 +591,512 @@ def test_cancel_and_retry_use_shared_runtime_states(client, seeded_project, isol
     assert retried.json()["id"] != task_id
     assert retried.json()["retry_of"] == task_id
     assert retried.json()["status"] == "QUEUED"
+
+
+def test_material_state_projection_distinguishes_pending_review_from_commit(client, seeded_project, isolated_task_runtime):
+    project_id, _image = seeded_project
+    repository, artifacts = isolated_task_runtime
+    task_id = _awaiting(project_id, 2, repository, artifacts)
+
+    pending = client.get(
+        f"/api/v60/projects/{project_id}/annotation-material-states"
+        "?image_ids=image-0,image-1,missing"
+    )
+    assert pending.status_code == 200, pending.text
+    assert pending.json()["items"] == [
+        {"image_id": "image-0", "state": "awaiting_confirmation", "task_id": task_id},
+        {"image_id": "image-1", "state": "awaiting_confirmation", "task_id": task_id},
+    ]
+
+    accepted = client.post(
+        f"/api/v60/projects/{project_id}/annotation-tasks/{task_id}/decisions",
+        json={
+            "decisions": [{"image_id": "image-0", "accepted": True}],
+            "reject_unmentioned": True,
+            "accept_unmentioned": False,
+            "commit": True,
+        },
+    )
+    assert accepted.status_code == 200, accepted.text
+    committing = client.get(
+        f"/api/v60/projects/{project_id}/annotation-material-states"
+        "?image_ids=image-0,image-1"
+    )
+    assert committing.status_code == 200, committing.text
+    assert committing.json()["items"] == [
+        {"image_id": "image-0", "state": "committing", "task_id": task_id},
+    ]
+
+
+def test_material_state_projection_is_bounded(client, seeded_project):
+    project_id, _image = seeded_project
+    image_ids = ",".join(f"image-{index}" for index in range(101))
+    response = client.get(
+        f"/api/v60/projects/{project_id}/annotation-material-states?image_ids={image_ids}"
+    )
+    assert response.status_code == 422
+
+
+def test_material_state_projection_filters_terminal_task_history(client, seeded_project, isolated_task_runtime):
+    project_id, _image = seeded_project
+    repository, artifacts = isolated_task_runtime
+    pending_id = _awaiting(project_id, 1, repository, artifacts)
+    for index in range(105):
+        task_id = _queued(project_id, repository, artifacts)
+        lease = repository.claim_next(
+            f"terminal-worker-{index}", {TaskKind.AI_ANNOTATION}, {"vision_provider"}
+        )
+        assert lease is not None
+        repository.finish(task_id, lease.lease_token, TaskStatus.FAILED, error="historical failure")
+    response = client.get(
+        f"/api/v60/projects/{project_id}/annotation-material-states?image_ids=image-0"
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["items"] == [
+        {"image_id": "image-0", "state": "awaiting_confirmation", "task_id": pending_id},
+    ]
+
+
+def test_material_state_projection_includes_ai_annotation_material_batches(
+    client, seeded_project, isolated_task_runtime
+):
+    project_id, _image = seeded_project
+    repository, artifacts = isolated_task_runtime
+    task_id = uuid.uuid4().hex[:12]
+    artifacts.atomic_write_json(task_id, "request.json", {
+        "operation": "AI_ANNOTATE",
+        "options": {"image_ids": ["batch-image"], "labels": ["fire"]},
+    })
+    repository.create(TaskRecord.new(
+        task_id, project_id, TaskKind.MATERIAL_BATCH, "request.json",
+        f"material-batch:{task_id}", required_capabilities=("vision_provider",),
+    ))
+    store = CandidateStore(artifacts, task_id=task_id, page_size=50)
+    store.initialize(labels=["fire"], total_images=1)
+    store.append_items([
+        {"image_id": "batch-image", "status": "success", "boxes": [{"label": "fire"}]},
+    ])
+    lease = repository.claim_next(
+        "batch-worker", {TaskKind.MATERIAL_BATCH}, {"vision_provider"}
+    )
+    assert lease and lease.task.task_id == task_id
+    repository.finish(
+        task_id, lease.lease_token, TaskStatus.AWAITING_CONFIRMATION,
+        "candidates/manifest.json",
+    )
+
+    response = client.get(
+        f"/api/v60/projects/{project_id}/annotation-material-states"
+        "?image_ids=batch-image"
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["items"] == [
+        {"image_id": "batch-image", "state": "awaiting_confirmation", "task_id": task_id},
+    ]
+
+
+def test_material_state_projection_ignores_non_ai_material_batches(
+    client, seeded_project, isolated_task_runtime
+):
+    project_id, _image = seeded_project
+    repository, artifacts = isolated_task_runtime
+    task_id = uuid.uuid4().hex[:12]
+    artifacts.atomic_write_json(task_id, "request.json", {
+        "operation": "CLEAN",
+        "options": {"image_ids": ["clean-image"]},
+    })
+    repository.create(TaskRecord.new(
+        task_id, project_id, TaskKind.MATERIAL_BATCH, "request.json",
+        f"material-batch:{task_id}",
+    ))
+    store = CandidateStore(artifacts, task_id=task_id, page_size=50)
+    store.initialize(labels=["fire"], total_images=1)
+    store.append_items([
+        {"image_id": "clean-image", "status": "success", "boxes": [{"label": "fire"}]},
+    ])
+    lease = repository.claim_next("clean-worker", {TaskKind.MATERIAL_BATCH}, set())
+    assert lease and lease.task.task_id == task_id
+    repository.finish(
+        task_id, lease.lease_token, TaskStatus.AWAITING_CONFIRMATION,
+        "candidates/manifest.json",
+    )
+
+    response = client.get(
+        f"/api/v60/projects/{project_id}/annotation-material-states"
+        "?image_ids=clean-image"
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["items"] == []
+
+
+
+def test_retired_v47_annotation_routes_fail_closed(client, seeded_project):
+    project_id, image = seeded_project
+
+    created = client.post(
+        f"/api/v47/projects/{project_id}/ai-label-tasks",
+        json={
+            "image_ids": [image["id"]],
+            "labels_text": "fire",
+            "provider_id": "fake-provider",
+        },
+    )
+    assert created.status_code == 410
+    assert "/api/v60/projects/{project_id}/annotation-tasks" in created.json()["detail"]
+
+    result = client.get(
+        f"/api/v47/projects/{project_id}/ai-label-tasks/legacy-task/result"
+    )
+    assert result.status_code == 410
+
+    confirmed = client.post(
+        f"/api/v47/projects/{project_id}/ai-label-tasks/legacy-task/confirm",
+        json={"image_ids": [image["id"]]},
+    )
+    assert confirmed.status_code == 410
+
+    assert not hasattr(app_module, "_v47_run_ai_label_task")
+
+
+
+
+def test_retired_direct_prelabel_routes_fail_closed_before_provider_resolution(
+    client, seeded_project, monkeypatch,
+):
+    project_id, image = seeded_project
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("retired direct-prelabel routes must fail before provider/model resolution")
+
+    monkeypatch.setattr(app_module, "resolve_prelabel_config", forbidden)
+    direct = client.post(
+        f"/api/projects/{project_id}/prelabel/run",
+        json={"image_ids": [image["id"]], "detect_url": "http://legacy.invalid/detect"},
+    )
+    assert direct.status_code == 409
+    assert "候选区" in direct.json()["detail"]
+    assert "人工二次确认" in direct.json()["detail"]
+
+    v33 = client.post(
+        f"/api/v33/projects/{project_id}/prelabel-tasks",
+        json={"image_ids": [image["id"]], "detect_url": "http://legacy.invalid/detect"},
+    )
+    assert v33.status_code == 409
+    assert "旧版自动标注直写接口已关闭" in v33.json()["detail"]
+
+    monkeypatch.setattr(app_module, "_v35_resolve_model_and_prompt", forbidden)
+    v35 = client.post(
+        f"/api/v35/projects/{project_id}/prelabel-tasks",
+        json={"image_ids": [image["id"]], "model_config_id": "legacy-model"},
+    )
+    assert v35.status_code == 409
+    assert "旧版自动标注直写接口已关闭" in v35.json()["detail"]
+
+
+def test_retired_v42_prelabel_retry_cannot_revive_direct_writer(
+    client, seeded_project, monkeypatch,
+):
+    project_id, image = seeded_project
+    monkeypatch.setattr(
+        app_module,
+        "_v33_get_task",
+        lambda *_args, **_kwargs: {
+            "request_payload": {
+                "image_ids": [image["id"]],
+                "model_config_id": "legacy-model",
+                "target_label": "fire",
+            },
+        },
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_v35_resolve_model_and_prompt",
+        lambda *_args, **_kwargs: pytest.fail(
+            "v42 retry must fail closed before legacy model resolution"
+        ),
+    )
+
+    response = client.post(
+        f"/api/v42/projects/{project_id}/prelabel-tasks/legacy-task/retry"
+    )
+    assert response.status_code == 409
+    assert "旧版自动标注直写接口已关闭" in response.json()["detail"]
+
+
+def test_retired_direct_prelabel_workers_have_no_live_call_sites():
+    source = Path(app_module.__file__).read_text(encoding="utf-8")
+    assert source.count("_v33_run_prelabel_task(") == 1
+    assert source.count("_v35_run_prelabel_task(") == 1
+
+def test_canonical_annotation_helpers_are_not_named_after_retired_v47():
+    assert hasattr(app_module, "_annotation_label_catalog")
+    assert not hasattr(app_module, "_annotation_runtime_provider")
+    assert not hasattr(app_module, "_v47_label_catalog")
+    assert not hasattr(app_module, "_v47_runtime_provider")
+
+
+def test_annotation_create_payload_uses_bounded_material_lookup_and_shared_runtime_owner(monkeypatch):
+    project = {
+        "id": "scale-project",
+        "labels": ["fire"],
+        "label_meta": [{"code": "fire", "display_name": "火焰", "status": "active"}],
+    }
+    image_ids = [f"image-{index:05d}" for index in range(1_200)]
+    reference_ids = [f"reference-{index:04d}" for index in range(1_001)]
+    material_batches = []
+    prepared_calls = []
+
+    class FakeMaterials:
+        def get_many(self, ids):
+            batch = list(ids)
+            material_batches.append(batch)
+            assert len(batch) <= 500
+            return [{"id": image_id} for image_id in batch]
+
+    def fake_prepare(data_dir, project_id, request, **kwargs):
+        prepared_calls.append((data_dir, project_id, dict(request), dict(kwargs)))
+        return {
+            **request,
+            "labels": ["fire"],
+            "model_config_id": "model-1",
+            "model_config_snapshot": {
+                "id": "model-1",
+                "name": "Scale Model",
+                "model_name": "vision",
+            },
+            "model_config_revision": "a" * 64,
+            "schema_version": 2,
+        }
+
+    monkeypatch.setattr(app_module, "get_project", lambda _project_id: project)
+    monkeypatch.setattr(app_module, "material_store", lambda _project_id: FakeMaterials())
+    monkeypatch.setattr(app_module, "prepare_annotation_request", fake_prepare)
+    monkeypatch.setattr(app_module, "_v35_model_items", lambda: [{
+        "id": "model-1",
+        "name": "Scale Model",
+        "model_name": "vision",
+    }])
+    monkeypatch.setattr(app_module, "_v35_prompt_items", lambda: [])
+    monkeypatch.setattr(
+        app_module,
+        "load_images",
+        lambda *_args, **_kwargs: pytest.fail("AI task creation must not scan the whole material library"),
+    )
+
+    request, provider_key = app_module._annotation_create_payload(
+        "scale-project",
+        app_module.AnnotationTaskCreateReq(
+            image_ids=image_ids,
+            reference_image_ids=reference_ids,
+            labels_text="fire",
+            model_config_id="model-1",
+        ),
+    )
+
+    assert [len(batch) for batch in material_batches] == [500, 500, 200]
+    assert len(prepared_calls) == 1
+    _, project_id, submitted, kwargs = prepared_calls[0]
+    assert project_id == "scale-project"
+    assert submitted["reference_image_ids"] == reference_ids
+    assert kwargs["runtime"] is False
+    assert request["image_ids"] == image_ids
+    assert request["labels"] == ["fire"]
+    assert provider_key == "model-1"
+
+
+def test_annotation_task_frontend_cannot_make_alias_valid_for_backend(client, seeded_project, isolated_task_runtime):
+    project_id, image = seeded_project
+    project = app_module.get_project(project_id)
+    project.setdefault("label_meta", [])[0]["aliases"] = ["flame", "火"]
+    app_module.save_project(project)
+
+    for value in ("flame", "火"):
+        response = client.post(f"/api/v60/projects/{project_id}/annotation-tasks", json={
+            "image_ids": [image["id"]],
+            "labels_text": value,
+            "provider_id": "fake-provider",
+        })
+        assert response.status_code == 400
+        assert "不会根据中文名、别名或历史映射自动选择标签" in response.json()["detail"]
+
+def test_candidate_page_enriches_only_current_material_page(
+    client, seeded_project, isolated_task_runtime, monkeypatch,
+):
+    project_id, _image = seeded_project
+    repository, artifacts = isolated_task_runtime
+    task_id = _queued(project_id, repository, artifacts)
+    total = 120
+    store = CandidateStore(artifacts, task_id=task_id, page_size=50)
+    store.initialize(labels=["fire"], total_images=total)
+    store.append_items([
+        {
+            "image_id": f"history-{index:03d}",
+            "status": "empty",
+            "boxes": [],
+        }
+        for index in range(total)
+    ])
+    lease = repository.claim_next(
+        "test-worker", {TaskKind.AI_ANNOTATION}, {"vision_provider"},
+    )
+    assert lease and lease.task.task_id == task_id
+    repository.finish(
+        task_id,
+        lease.lease_token,
+        TaskStatus.AWAITING_CONFIRMATION,
+        "candidates/manifest.json",
+    )
+
+    material_calls = []
+
+    class FakeMaterials:
+        def get_many(self, ids):
+            batch = list(ids)
+            material_calls.append(batch)
+            assert len(batch) <= 100
+            return [
+                {
+                    "id": image_id,
+                    "filename": f"{image_id}.jpg",
+                    "width": 1280,
+                    "height": 720,
+                    "storage_source_id": "default_local",
+                    "storage_type": "local",
+                }
+                for image_id in batch
+            ]
+
+    monkeypatch.setattr(app_module, "material_store", lambda _project_id: FakeMaterials())
+    response = client.get(
+        f"/api/v60/projects/{project_id}/annotation-tasks/{task_id}/candidates?limit=100"
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert [len(batch) for batch in material_calls] == [100]
+    assert len(body["items"]) == 100
+    first = body["items"][0]
+    assert first["status"] == "empty"
+    assert first["boxes"] == []
+    assert first["filename"] == "history-000.jpg"
+    assert first["width"] == 1280
+    assert first["height"] == 720
+    assert first["url"] == (
+        f"/api/v61/projects/{project_id}/materials/history-000/content"
+    )
+
+def test_complete_candidate_page_does_not_reload_material_projection(
+    client, seeded_project, isolated_task_runtime, monkeypatch,
+):
+    project_id, _image = seeded_project
+    repository, artifacts = isolated_task_runtime
+    task_id = _queued(project_id, repository, artifacts)
+    store = CandidateStore(artifacts, task_id=task_id, page_size=50)
+    store.initialize(labels=["fire"], total_images=1)
+    store.append_items([{
+        "image_id": "complete-candidate",
+        "filename": "complete.jpg",
+        "url": "/api/v61/projects/p/materials/complete-candidate/content",
+        "width": 1920,
+        "height": 1080,
+        "status": "success",
+        "boxes": [],
+    }])
+    lease = repository.claim_next(
+        "test-worker", {TaskKind.AI_ANNOTATION}, {"vision_provider"},
+    )
+    assert lease and lease.task.task_id == task_id
+    repository.finish(
+        task_id,
+        lease.lease_token,
+        TaskStatus.AWAITING_CONFIRMATION,
+        "candidates/manifest.json",
+    )
+
+    class ForbiddenMaterials:
+        def get_many(self, _ids):
+            raise AssertionError("complete candidate metadata must not reload MaterialRepository")
+
+    monkeypatch.setattr(app_module, "material_store", lambda _project_id: ForbiddenMaterials())
+    response = client.get(
+        f"/api/v60/projects/{project_id}/annotation-tasks/{task_id}/candidates?limit=24"
+    )
+    assert response.status_code == 200, response.text
+    item = response.json()["items"][0]
+    assert item["filename"] == "complete.jpg"
+    assert item["width"] == 1920
+    assert item["height"] == 1080
+
+
+
+def test_annotation_task_rejects_raw_provider_id_without_model_config(
+    client, seeded_project, isolated_task_runtime, monkeypatch,
+):
+    project_id, image = seeded_project
+    monkeypatch.setattr(app_module, "_v35_model_items", lambda: [{
+        "id": "configured-model",
+        "name": "Configured",
+        "model_name": "vision",
+        "provider_type": "local_openai",
+        "detect_url": "http://configured.local/v1",
+    }])
+
+    response = client.post(f"/api/v60/projects/{project_id}/annotation-tasks", json={
+        "image_ids": [image["id"]],
+        "labels_text": "fire",
+        "provider_id": "raw-temporary-provider",
+    })
+
+    assert response.status_code == 400
+    assert "AI_MODEL_CONFIG_NOT_FOUND" in response.json()["detail"]
+
+
+def test_canonical_annotation_create_uses_shared_model_snapshot_owner():
+    source = Path(app_module.__file__).read_text(encoding="utf-8")
+    start = source.index("def _annotation_create_payload(")
+    end = source.index('@app.post("/api/v60/projects/{project_id}/annotation-tasks")', start)
+    block = source[start:end]
+
+    assert "prepare_annotation_request(" in block
+    assert "_v35_resolve_model_and_prompt" not in block
+    assert "_annotation_runtime_provider" not in source
+
+
+
+def test_canonical_annotation_catalog_excludes_all_inactive_label_shapes():
+    project = {
+        "labels": ["fire", "legacy", "merged", "deleted"],
+        "label_meta": [
+            {
+                "code": "fire",
+                "display_name": "火焰",
+                "status": "active",
+                "active": True,
+                "aliases": ["flame"],
+            },
+            {
+                "code": "legacy",
+                "display_name": "旧标签",
+                "status": "active",
+                "active": False,
+            },
+            {
+                "code": "merged",
+                "display_name": "已合并",
+                "status": "merged",
+                "active": False,
+            },
+            {
+                "code": "deleted",
+                "display_name": "已删除",
+                "status": "deleted",
+                "active": False,
+            },
+        ],
+    }
+
+    assert app_module._annotation_label_catalog(project) == [{
+        "code": "fire",
+        "class_id": 0,
+        "display_name_zh": "火焰",
+        "aliases": ["flame"],
+    }]

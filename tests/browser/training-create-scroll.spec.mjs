@@ -1,0 +1,60 @@
+import {test, expect} from '@playwright/test';
+import {mkdir} from 'node:fs/promises';
+import path from 'node:path';
+
+const visualDir=path.resolve('docs/images/training-workbench-20261028');
+const viewports=[{width:1920,height:1080},{width:1440,height:900},{width:1366,height:768},{width:1093,height:614},{width:375,height:812}];
+async function fixture(page,request,{labels=60,delay=0}={}){
+  // 'class_0' is a reserved temporary/unmapped label under the formal GT
+  // contract. Use real canonical-style codes for this 1000-label UI fixture.
+  const codes=Array.from({length:labels},(_,i)=>`target_${i}`);
+  const project=await(await request.post('/api/projects',{data:{name:`工作台-${Date.now()}`,labels:codes.map((code,i)=>({code,display_name:`训练类别 ${i}`}))}})).json();
+  const result=await(await request.post(`/api/v12/projects/${project.id}/algorithms`,{data:{name:'工作台隔离算法',industry:'测试',algorithm_type:'yolo_ultralytics'}})).json();
+  await page.route('**/api/v53/bootstrap/snapshot**',route=>{const url=new URL(route.request().url());url.searchParams.set('preferred_project_id',project.id);return route.continue({url:String(url)})});
+  let optionsCalls=0,recommendationCalls=0,creates=0;
+  await page.route('**/api/training_options**',async route=>{optionsCalls++;if(delay)await new Promise(resolve=>setTimeout(resolve,delay));return route.fulfill({json:{targets:[{id:'workbench-cpu',name:'隔离CPU',type:'local',framework:'ultralytics',status:'ready',algorithms:[{key:'yolo_detect',name:'Detect',base_model:'yolo11n.pt',default_epochs:150,default_imgsz:640,default_batch:1}],base_models:[{value:'yolo11n.pt',label:'YOLO11n',model_status:'FOUND'}]}]}})});
+  await page.route('**/api/system/recommendation',route=>{recommendationCalls++;return route.fulfill({json:{device:'cpu',batch:1,workers:0}})});
+  await page.route('**/api/v62/training-devices',route=>route.fulfill({json:{recommended:'cpu',options:[{id:'cpu',label:'CPU',available:true}]}}));
+  // Only the selected synthetic image contributes formal positive box labels.
+  // This response is confined to browser fixtures, never a production shortcut.
+  await page.route('**/api/v62/projects/*/training-materials/selection-summary',async route=>{
+    const ids=route.request().postDataJSON()?.image_ids||[];
+    const selected=ids.includes('workbench-selected-positive');
+    await route.fulfill({json:{requested_count:ids.length,matched_count:selected?1:0,
+      selectable_count:selected?1:0,eligible_count:selected?1:0,eligible_total:selected?1:0,
+      box_count:selected?codes.length:0,size_bytes:selected?2048:0,
+      label_codes:selected?codes:[],positive_label_codes:selected?codes:[],
+      label_counts:selected?Object.fromEntries(codes.map(code=>[code,1])):{},repository_revision:1}});
+  });
+  await page.route('**/train/start',route=>{creates++;return route.fulfill({status:409,json:{detail:'隔离测试禁止真实训练'}})});
+  await page.addInitScript(()=>localStorage.setItem('mc_train_ui_state_v34',JSON.stringify({page:'算法列表'})));await page.goto('/');await expect.poll(()=>page.evaluate(()=>Boolean(window.TrainingLabelRuntime&&state.uiReady))).toBe(true);
+  const open=async()=>{await page.locator('.alg428-card',{hasText:'工作台隔离算法'}).getByRole('button',{name:'训练',exact:true}).click();const dialog=page.getByRole('dialog',{name:'创建训练任务'});await expect(dialog.locator('[data-training-step-panel="1"]')).toBeVisible();await page.evaluate(()=>window.TrainingDraftRuntime.setMaterialIds(['workbench-selected-positive']));await expect(dialog.locator('[data-training-label-code]')).toHaveCount(Math.min(24,labels));return dialog};
+  return {open,project,algorithmId:result.algorithm.id,counts:()=>({optionsCalls,recommendationCalls,creates})};
+}
+async function capture(dialog,name){await mkdir(visualDir,{recursive:true});await expect(dialog.page().locator('#toast')).toBeHidden({timeout:5000});await dialog.screenshot({path:path.join(visualDir,name)});}
+async function shellInside(page,dialog){for(const selector of ['.modal-head','.train428-footer']){const box=await dialog.locator(selector).boundingBox();expect(box.y).toBeGreaterThanOrEqual(0);expect(box.y+box.height).toBeLessThanOrEqual(page.viewportSize().height+1)}const box=await dialog.boundingBox();expect(box.x).toBeGreaterThanOrEqual(0);expect(box.x+box.width).toBeLessThanOrEqual(page.viewportSize().width+1)}
+for(const viewport of viewports)test(`training three-step wheel and inline parameters ${viewport.width}x${viewport.height}`,async({page,request})=>{
+  await page.setViewportSize(viewport);const errors=[];page.on('pageerror',error=>errors.push(error.message));const f=await fixture(page,request),dialog=await f.open(),size=`${viewport.width}x${viewport.height}`;
+  await expect(dialog.locator('.train-ui-submit')).toBeHidden();await shellInside(page,dialog);await capture(dialog,`after-${size}-step1.png`);
+  await expect(dialog.locator('#trainUiSummary')).toContainText('640');
+  await dialog.locator('#trainUiLabelSearch').fill('target_59');await dialog.locator('[data-training-label-code="target_59"]').check();await expect(dialog.locator('#trainUiLabelSearch')).toHaveValue('target_59');
+  await dialog.locator('[data-training-step-next]').click();await expect(dialog.locator('[data-training-step-panel="1"]')).toBeHidden();await expect(dialog.locator('[data-training-step-panel="2"]')).toBeVisible();await expect(dialog.locator('.training-parameter-group')).toHaveCount(7);await expect(dialog.locator('#trV3ManualPrecision')).toHaveCount(1);await expect(dialog.locator('#ts428Precision')).toHaveCount(0);await capture(dialog,`after-${size}-step2-basic.png`);
+  for(const mode of ['quick','full','complex','custom']){await dialog.locator(`[data-mode="${mode}"]`).click();await expect(dialog.locator(`[data-mode="${mode}"]`)).toHaveAttribute('aria-pressed','true');await shellInside(page,dialog)}
+  const layout=dialog.locator('.train-create-layout'),bounds=await layout.boundingBox();await layout.evaluate(node=>node.scrollTop=0);await page.mouse.move(bounds.x+bounds.width/3,bounds.y+Math.min(120,bounds.height/2));await page.mouse.wheel(0,400);await expect.poll(()=>layout.evaluate(node=>node.scrollTop)).toBeGreaterThan(0);await page.mouse.wheel(0,-2000);await expect.poll(()=>layout.evaluate(node=>node.scrollTop)).toBe(0);await shellInside(page,dialog);
+  const parameters=dialog.locator('#trainWorkbenchParameters');await parameters.locator('details').filter({has:page.locator('#ts428Epoch')}).locator('summary').click();await dialog.locator('#ts428Epoch').fill('37');await dialog.locator('#trV3ManualPrecision').selectOption('fp32');await dialog.locator('#trainRobustnessMode').selectOption('enabled');await dialog.locator('#trainRobustnessSelection').selectOption('count');await dialog.locator('#trainRobustnessCount').fill('12');await capture(dialog,`after-${size}-step2-custom.png`);await dialog.locator('#trainRobustnessMode').scrollIntoViewIfNeeded();await capture(dialog,`after-${size}-step2-robustness.png`);
+  await dialog.locator('[data-training-step-next]').click();await expect(dialog.locator('.train-ui-submit')).toBeVisible();await expect(dialog.locator('#trainWorkbenchConfirmation')).toContainText('尚未分配');await expect(dialog.locator('#trainWorkbenchConfirmation')).toContainText('37');await dialog.locator('.train-ui-submit').click();
+  const blockers=page.getByRole('dialog',{name:'训练暂不可开始'});if(await blockers.isVisible())await blockers.getByRole('button',{name:'返回训练配置',exact:true}).click();await expect(dialog.locator('[data-training-submit-feedback]')).toBeVisible();await capture(dialog,`after-${size}-step3-feedback.png`);
+  // The workbench root also carries data-training-step; target its actual nav
+  // button to retain a real click without Playwright strict-mode ambiguity.
+  await dialog.locator('.training-workbench-steps button[data-training-step="1"]').click();await expect(dialog.locator('#trainUiLabelSearch')).toHaveValue('target_59');await expect(dialog.locator('[data-training-label-code="target_59"]')).toBeChecked();await shellInside(page,dialog);await dialog.locator('.training-workbench-steps button[data-training-step="2"]').click();await expect(dialog.locator('#ts428Epoch')).toHaveValue('37');await expect(dialog.locator('#trV3ManualPrecision')).toHaveValue('fp32');expect(f.counts().creates).toBe(0);expect(errors).toEqual([]);
+});
+test('1000 labels stay bounded and stable through toggles search hydration and ten opens',async({page,request})=>{
+  test.setTimeout(90_000);const f=await fixture(page,request,{labels:1000,delay:1600});let dialog=await f.open();
+  const first=dialog.locator('[data-training-label-code="target_0"]');await first.evaluate(node=>{window.__trainingLabelNode=node;window.__trainingLabelPanel=node.closest('#trainingLabelContractPanel')});
+  for(let index=0;index<10;index++)await dialog.locator(`[data-training-label-code="target_${index}"]`).check();for(let index=0;index<3;index++)await dialog.locator(`[data-training-label-code="target_${index}"]`).uncheck();
+  await expect.poll(()=>page.evaluate(()=>state.trainingDraft.newLabelCodes.length)).toBe(7);expect(await first.evaluate(node=>node===window.__trainingLabelNode&&node.closest('#trainingLabelContractPanel')===window.__trainingLabelPanel)).toBe(true);await expect(dialog.locator('[data-training-label-code="target_2"]')).toBeFocused();await expect(dialog.locator('[data-training-label-code]')).toHaveCount(24);
+  await dialog.locator('#trainUiLabelSearch').fill('target_999');await expect(dialog.locator('[data-training-label-code]')).toHaveCount(1);await dialog.locator('[data-training-label-code="target_999"]').check();await expect(dialog.locator('#trainUiLabelSearch')).toHaveValue('target_999');
+  await dialog.locator('[data-training-step-next]').click();await dialog.locator('[data-mode="custom"]').click();await dialog.locator('#trainWorkbenchParameters details').first().locator('summary').click();await dialog.locator('#ts428Epoch').fill('77');await dialog.locator('#trV3ManualPrecision').selectOption('fp32');await expect.poll(()=>page.evaluate(()=>state.trainingCreationLoading?.resources?.status)).toBe('ready');await expect(dialog.locator('#ts428Epoch')).toHaveValue('77');await expect(dialog.locator('#trV3ManualPrecision')).toHaveValue('fp32');
+  const counts=f.counts();expect(counts.optionsCalls).toBeLessThanOrEqual(1);expect(counts.recommendationCalls).toBeLessThanOrEqual(1);expect(counts.creates).toBe(0);
+  for(let index=0;index<10;index++){await dialog.locator('.train-ui-cancel').click();dialog=await f.open();await expect.poll(()=>page.evaluate(()=>state.trainingDraft.newLabelCodes.length)).toBe(0);await expect(dialog.locator('[data-training-label-code]')).toHaveCount(24)}expect(f.counts()).toEqual(counts);
+});
