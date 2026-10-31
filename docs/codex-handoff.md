@@ -1,3 +1,9 @@
+## 2026-10-31｜42.24.467 训练素材隔离性能指标采样
+
+- 466 `bacb072a65778bc5e9ab9e3c77042535aad7b7f9` GitHub 本 SHA 实际 21/21 Actions success、Frontend Node 1461/1461、Chrome 110+101+105=316/316；第 1 分片日志 `[74/110]` 明确执行 `external-training-observer.spec.mjs`。
+- 467 在既有 `test_platform_hot_paths.py` 1000 行临时素材库里为 role-page/page/revision/selection-summary/status-counts 收集首次调用和 20 个温缓存 in-process ASGI 分位数、Server-Timing、响应字节；Training Material Picker 工作流独立打印并保存 7 天匿名化 JSON artifact。无生产 API、真实账户或数据写入，性能数值不得称作生产 P50/P95。
+- 新 SHA 完整 CI、临时 CI artifact/指标待核；下一阶段仍需在授权真实服务端获得 HAR/Server-Timing/请求总耗时的冷/热分组。继续禁止生产部署、GT/Task/Worker/SQLite/OSS 写入与主干合并。
+
 ## 2026-10-31｜42.24.466 Chrome 显式清单补测
 
 - 465 准确 SHA `0781b81472d36013ac06535f0453d98206de43e5` GitHub Actions 40/40 success、Frontend Node 1461/1461、Chrome 原清单 315/315；但新 `external-training-observer.spec.mjs` 因显式文件白名单而未执行。本轮将它添加到 `frontend-runtime-stabilization.yml`，不再将 465 的 Chrome 结果误报为该新增场景已验收。

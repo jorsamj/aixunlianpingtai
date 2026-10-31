@@ -4,8 +4,10 @@ MC_PERF_AUDIT_OUTPUT may name an isolated report directory. SQL values/paths are
 never recorded. Timings are instrumented Windows/Linux test data, not production.
 """
 import json
+import math
 import os
 import sqlite3
+import statistics
 import threading
 import time
 from collections import Counter
@@ -81,6 +83,14 @@ def report(name, results):
         root=Path(output);root.mkdir(parents=True,exist_ok=True)
         (root/(name+'.json')).write_text(json.dumps(value,ensure_ascii=False,indent=2),encoding='utf-8')
     print(name,json.dumps(value,ensure_ascii=False))
+
+
+def _isolated_http_latency_summary(samples):
+    """Nearest-rank P95 on twenty warm, in-process calls; never production SLOs."""
+    ordered = sorted(samples)
+    return {'samples': len(ordered), 'p50_ms': round(statistics.median(ordered), 3),
+            'p95_ms': round(ordered[math.ceil(len(ordered)*0.95)-1], 3),
+            'min_ms': round(ordered[0], 3), 'max_ms': round(ordered[-1], 3)}
 
 
 def test_jobs_read_cost_with_unchanged_terminal_history(tmp_path, monkeypatch):
@@ -177,6 +187,10 @@ def test_picker_cost_cold_hot_filters_and_revisions(tmp_path,monkeypatch):
     http_app=FastAPI();http_app.add_middleware(PerformanceDiagnosticsMiddleware)
     http_app.include_router(picker.training_material_picker_router(lambda p:{'id':p},tmp_path,
         algorithm_provider=lambda *args:{'id':'a','versions':[]}))
+    # The production endpoint delegates to this same repository method. Keep
+    # this smoke harness isolated from the global app's auth/project state.
+    http_app.add_api_route('/api/v61/projects/{project_id}/materials/status-counts',
+        lambda project_id: repo.processing_status_counts(), methods=['GET'])
     picker._cached_role_index.cache_clear();picker._cached_usage_pool.cache_clear()
     monkeypatch.setenv('MC_PERFORMANCE_DIAGNOSTICS','1')
     http=[]
@@ -191,7 +205,39 @@ def test_picker_cost_cold_hot_filters_and_revisions(tmp_path,monkeypatch):
             assert body['total']==1000 and len(body['items'])==60
             http.append({'case':label,'total_ms':duration,'response_bytes':len(response.content),
                 'request_id':response.headers['X-Request-ID'],'server_timing':response.headers['Server-Timing']})
+        # Measure the actual ASGI/router/repository stack on the existing
+        # thousand-row synthetic fixture; avoid production network/credentials.
+        # The first call is reported separately from twenty warm samples.
+        scenarios = (
+            ('role-page', 'POST', '/api/v62/projects/audit/training-materials/role-page',
+             {'algorithm_asset_id':'a','train_labels':['fire'],'model':'yolo11n.pt','page_size':60}, 'role_page'),
+            ('page', 'POST', '/api/v62/projects/audit/training-materials/page',
+             {'algorithm_asset_id':'a','page_size':60}, 'training.gt_page'),
+            ('revision', 'GET', '/api/v62/projects/audit/training-materials/revision',
+             None, 'training.picker_revision'),
+            ('selection-summary', 'POST', '/api/v62/projects/audit/training-materials/selection-summary',
+             {'image_ids':[f'i{i:04d}' for i in range(60)]}, 'training.selection_summary'),
+            ('status-counts', 'GET', '/api/v61/projects/audit/materials/status-counts',
+             None, 'material.status_counts'),
+        )
+        isolated=[]
+        for name,method,path,payload,stage_name in scenarios:
+            durations=[]
+            first_timing=''
+            response_bytes=0
+            for index in range(21):
+                began=time.perf_counter()
+                response=client.request(method,path,json=payload)
+                durations.append((time.perf_counter()-began)*1000)
+                assert response.status_code==200,(name,response.text)
+                first_timing=first_timing or response.headers['Server-Timing']
+                response_bytes=len(response.content)
+                assert stage_name in response.headers['Server-Timing'],name
+            isolated.append({'endpoint':name,'scope':'in-process ASGI; 1000 synthetic materials',
+                'first_call_ms':round(durations[0],3),'warm':_isolated_http_latency_summary(durations[1:]),
+                'response_bytes':response_bytes,'server_timing_first':first_timing})
     report('picker_http',http)
+    report('picker_http_percentiles',isolated)
 
 
 def test_legacy_maintenance_dispatches_without_a_get(tmp_path,monkeypatch):
