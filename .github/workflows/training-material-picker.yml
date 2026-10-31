@@ -202,8 +202,18 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
       - name: Real Chrome paged training material truth
+        env:
+          MC_PERF_AUDIT_OUTPUT: ${{ runner.temp }}/picker-browser-perf
         run: >-
           npx playwright test
           tests/browser/training-material-picker-performance.spec.mjs
           tests/browser/training-page-material-summary.spec.mjs
           tests/browser/target-negative-workflow.spec.mjs
+      - name: Preserve isolated Chrome render evidence (not production)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: picker-browser-perf-${{ github.sha }}
+          path: ${{ runner.temp }}/picker-browser-perf/browser-picker-render.json
+          if-no-files-found: warn
+          retention-days: 7

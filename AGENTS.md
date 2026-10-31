@@ -1,3 +1,7 @@
+## 2026-10-31｜42.24.474 Picker 图片解码及 DOM 长任务的真实 Chrome 隔离补测（准确 CI 待核）
+
+473 精确远端 `29855f5439be45f9ff9e6aff9c3455e2fb7e3641` 已核 GitHub Actions **22/22 success**、Node 1461/1461、Chrome 316/316；Picker Backend 87、性能 8、Picker Chrome 5 均通过。473 新增的 60 选材真实兼容性 ASGI 路由首次 19.257ms、20 温 P50 4.398ms/P95 4.699ms、预检缓存 1 miss/20 hits，仅隔离采样。474 发现现有 Picker Chrome 首屏 15 张请求合同原使用 1×1 像素图，无法量化真正 192px 解码/DOM；故只在原显式 CI 已运行的 `training-material-picker-performance.spec.mjs` 增 192×192 确定性无敏感 BMP/60 卡/15 首屏请求，首次加 20 次重复打开，记录点击→15 图 `decode()` 后双 RAF、LongTask 和请求计数，附 7 天匿名 JSON artifact。无硬 P95 性能门槛、无真实网络/图片存储/生产 GT。业务代码及语义未变，准确 474 CI 与浏览器分布**待验**；**ISOLATED TEST — NOT PRODUCTION VERIFIED**。不部署、改生产 DB/GT/Worker/OSS/GPU、merge/tag/release/force push。
+
 ## 2026-10-31｜42.24.473 训练创建按需预检成功路径隔离测量（新 SHA CI 待核）
 
 472 精确远端 `094b9888214a35e538780d9fb9c0ed012ee63345` 已核 **23/23 GitHub Actions success**、Node 1461/1461、Chrome 316/316。代码审计确认：正常首次打开和编辑不会自动 POST 兼容性；提交时由 `TrainingSubmitRuntime.submit` 对原预检 Owner 强制重验，用户明确审核负样本时才执行预览/确认；页面素材选择摘要仅在选择签名变化时读取，空选择本地返回。现有性能基准没有覆盖兼容性成功 HTTP 路由，473 只在原 `test_platform_hot_paths.py` 用 1k 虚构素材、60 已标注选择增加真实 ASGI 预检首次+20 温样本、修订绑定缓存命中/失效口径和 Server-Timing，完全不创建训练任务、不写生产 GT。当前环境缺 pytest/FastAPI，源码编译通过，完整数值与新 SHA CI **待测、不得提前认绿**。无业务/前端重构，无生产 HAR/长任务，**ISOLATED TEST — NOT PRODUCTION VERIFIED**。不部署/合并 main/tag/release/force push。

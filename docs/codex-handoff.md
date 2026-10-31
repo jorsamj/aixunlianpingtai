@@ -1,3 +1,7 @@
+## 2026-10-31｜42.24.474 Picker 图片解码、首屏绘制与 LongTask 补测（新 SHA CI 待核）
+
+473 `29855f5439be45f9ff9e6aff9c3455e2fb7e3641` 已精确验收 22/22 Actions、Node1461/1461、Chrome316/316、Picker 后端87/性能8/Chrome5；真实 ASGI 兼容性 HTTP200 路由首调用19.257ms、20温 P50 4.398ms/P95 4.699ms，非生产。474 只扩充原 Picker Chrome 测试场景和已触发的 Picker 工作流：从以往 1×1 图片仅计首屏15个请求，新增 60 张卡/确定性192×192 BMP、首次+20温复开、15图 decode 后双RAF、PerformanceObserver LongTask、匿名 JSON 7天 artifact；不以模拟浏览器长任务冒充真实生产网络、磁盘、GPU或 SLO，亦不改业务Owner。新 SHA 的实际 Chrome 数字和全部 CI 必须核对；生产 HAR 和真实缩略图/历史规模数据仍待用户提供隔离环境或脱敏材料。**ISOLATED TEST — NOT PRODUCTION VERIFIED**。无部署、正式 GT/Task/Worker/DB/OSS/模型变更，不 merge main/tag/release/force push。
+
 ## 2026-10-31｜42.24.473 训练预检成功路径补测（新 SHA CI 待核）
 
 当前远端 472 `094b9888214a35e538780d9fb9c0ed012ee63345`、VERSION 472、23/23 Actions success、Node 1461/1461、Chrome 316/316；本地工作区起始干净。只读审计确认创建弹窗默认不启动兼容性全量预检，点击提交会强制重新校验；负样本预览/确认属显式准入动作，选材摘要按签名和取消代次保护；选择器默认 `defer_role_counts:true`，缓存页以 revision 验证。这不等于生产浏览器长任务/网络耗时已经测量。473 仅增强原隔离 ASGI 性能测试，覆盖真正成功的 compatibility POST、首次/20 温缓存、预检投影 hit/miss 与 Server-Timing，未修改业务 Owner。新提交必须核新 SHA Actions/原 Picker contracts 日志和匿名 JSON，数值现在待测；本机仅 Python py_compile 通过（无 FastAPI/pytest）。**ISOLATED TEST — NOT PRODUCTION VERIFIED**。禁生产部署、正式任务/GT/OSS/Worker/GPU/DB 修改、main merge、tag/release、force push；真实 HAR/Performance 需用户提供隔离环境或脱敏材料。

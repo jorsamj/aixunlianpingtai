@@ -3,6 +3,38 @@ import {mkdirSync, writeFileSync} from 'node:fs';
 
 const PIXEL = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
 
+function syntheticThumbnailBmp(size = 192) {
+  // A real decodable 24-bit image, rather than the 1x1 network-only fixture.
+  // Its deterministic pixels carry no user identity, GT or external content.
+  const rowSize = Math.ceil(size * 3 / 4) * 4;
+  const image = Buffer.alloc(54 + rowSize * size);
+  image.write('BM', 0);
+  image.writeUInt32LE(image.length, 2);
+  image.writeUInt32LE(54, 10);
+  image.writeUInt32LE(40, 14);
+  image.writeInt32LE(size, 18);
+  image.writeInt32LE(size, 22);
+  image.writeUInt16LE(1, 26);
+  image.writeUInt16LE(24, 28);
+  image.writeUInt32LE(rowSize * size, 34);
+  for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+    const offset = 54 + y * rowSize + x * 3;
+    image[offset] = (x + y) % 256;
+    image[offset + 1] = (x * 3) % 256;
+    image[offset + 2] = (y * 5) % 256;
+  }
+  return image;
+}
+
+function nearestRankSummary(durations) {
+  const values = [...durations].sort((a, b) => a - b);
+  const mid = values.length / 2;
+  return {samples: values.length,
+    p50_ms: Number(((values[Math.floor(mid - 0.5)] + values[Math.ceil(mid - 0.5)]) / 2).toFixed(3)),
+    p95_ms: Number(values[Math.ceil(values.length * 0.95) - 1].toFixed(3)),
+    min_ms: Number(values[0].toFixed(3)),max_ms: Number(values.at(-1).toFixed(3))};
+}
+
 function material(index, page = 1) {
   const id = `picker-${page}-${String(index).padStart(3, '0')}`;
   return {
@@ -186,6 +218,97 @@ test('training material picker opens immediately, renders larger previews, and p
   await page.getByRole('button', {name: '取消'}).click();
 
   expect(pageErrors).toEqual([]);
+});
+
+test('isolated Chrome records picker click-to-decoded-paint and long tasks for 192px previews', async ({page}) => {
+  await page.goto('/');
+  await expect.poll(() => page.evaluate(() => state.uiReady === true)).toBe(true);
+  const projectId = await page.evaluate(() => state.project?.id);
+  expect(projectId).toBeTruthy();
+  const image = syntheticThumbnailBmp();
+  let pageRequests = 0, revisionRequests = 0, thumbnailRequests = 0;
+  await page.route('**/thumb/*.bmp', route => {
+    thumbnailRequests++;
+    return route.fulfill({status: 200, contentType: 'image/bmp', body: image,
+      headers: {'Cache-Control': 'no-store'}});
+  });
+  await page.route(`**/api/v62/projects/${encodeURIComponent(projectId)}/training-materials/revision?*`, route => {
+    revisionRequests++;
+    return route.fulfill({json:{repository_revision:88,annotation_revision:0,usage_revision:'unknown',
+      negative_confirmation_revision:0,negative_pool_revision:0}});
+  });
+  await page.route(`**/api/v62/projects/${encodeURIComponent(projectId)}/training-materials?*`, route => {
+    pageRequests++;
+    return route.fulfill({json:{
+      items:Array.from({length:60},(_,index)=>{
+        const item=material(index);
+        return {...item,thumbnail_url:`/thumb/${item.id}.bmp`};
+      }),total:10000,page:1,page_size:60,total_pages:167,
+      repository_revision:88,annotation_revision:0,usage_revision:'unknown',
+      negative_confirmation_revision:0,negative_pool_revision:0,
+    }});
+  });
+  await page.route(`**/api/v61/projects/${encodeURIComponent(projectId)}/negative-pool/categories`,
+    route => route.fulfill({json:{items:[]}}));
+  await page.evaluate(() => {
+    window.__pickerLongTasks=[];
+    if (PerformanceObserver.supportedEntryTypes.includes('longtask')) {
+      window.__pickerLongTaskObserver=new PerformanceObserver(list => {
+        for(const task of list.getEntries())window.__pickerLongTasks.push({start:task.startTime,duration:task.duration});
+      });
+      window.__pickerLongTaskObserver.observe({type:'longtask'});
+    }
+  });
+  const samples=[];
+  for (let run=0; run<21; run++) {
+    const thumbnailsBefore=thumbnailRequests;
+    // Keep the whole stopwatch in the browser. Playwright polling/IPC must
+    // not be mistaken for synchronous rendering or image decode time.
+    const observed=await page.evaluate(() => new Promise((resolve,reject) => {
+      const start=performance.now();
+      const observer=new MutationObserver(() => {
+        const cards=document.querySelectorAll('#trV3Grid .train-v3-card');
+        const images=[...document.querySelectorAll('#trV3Grid img[src^="/thumb/"]')];
+        if(cards.length!==60 || images.length!==15)return;
+        observer.disconnect();
+        Promise.all(images.map(image=>image.decode())).then(async()=>{
+          await new Promise(done=>requestAnimationFrame(()=>requestAnimationFrame(done)));
+          await new Promise(done=>setTimeout(done,0));
+          const end=performance.now();
+          resolve({click_to_decoded_paint_ms:Number((end-start).toFixed(3)),
+            decoded_images:images.filter(image=>image.naturalWidth===192&&image.naturalHeight===192).length,
+            long_tasks:window.__pickerLongTasks.filter(item=>item.start>=start&&item.start<end)
+              .map(item=>Number(item.duration.toFixed(3)))});
+        }).catch(reject);
+      });
+      observer.observe(document.body,{childList:true,subtree:true});
+      window.openTrainMaterialPickerV3('train');
+    }));
+    expect(observed.decoded_images).toBe(15);
+    await expect(page.locator('#trV3Grid .train-v3-card')).toHaveCount(60);
+    samples.push({...observed,thumbnail_requests:thumbnailRequests-thumbnailsBefore});
+    await page.getByRole('button',{name:'取消'}).click();
+  }
+  await page.evaluate(() => window.__pickerLongTaskObserver?.disconnect());
+  expect(pageRequests).toBe(1);
+  expect(revisionRequests).toBe(20);
+  expect(samples[0].thumbnail_requests).toBe(15);
+  const report={scope:'ISOLATED TEST — NOT PRODUCTION VERIFIED; real Chrome; '
+    +'60 mocked cards; 15 eager deterministic 192x192 BMP images per open; '
+    +'Playwright in-process image/page interception; no WAN, server image I/O or GT',
+    cold_first:samples[0],warm:nearestRankSummary(samples.slice(1).map(row=>row.click_to_decoded_paint_ms)),
+    warm_total_long_tasks:samples.slice(1).reduce((count,row)=>count+row.long_tasks.length,0),
+    warm_max_long_task_ms:Math.max(0,...samples.slice(1).flatMap(row=>row.long_tasks)),
+    browser_longtask_supported:await page.evaluate(()=>PerformanceObserver.supportedEntryTypes.includes('longtask')),
+    requests:{page:pageRequests,revision:revisionRequests,
+      first_thumbnail:samples[0].thumbnail_requests,warm_thumbnail_counts:samples.slice(1).map(row=>row.thumbnail_requests)},
+  };
+  console.log('picker_browser_render',JSON.stringify(report));
+  if(process.env.MC_PERF_AUDIT_OUTPUT){
+    mkdirSync(process.env.MC_PERF_AUDIT_OUTPUT,{recursive:true});
+    writeFileSync(`${process.env.MC_PERF_AUDIT_OUTPUT}/browser-picker-render.json`,
+      JSON.stringify(report,null,2));
+  }
 });
 
 
