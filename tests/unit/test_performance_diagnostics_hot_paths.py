@@ -2,7 +2,7 @@ import asyncio
 import hashlib
 import json
 
-from platform_core.performance_diagnostics import PerformanceDiagnosticsMiddleware, _endpoint, count, connect_sqlite, observe_connection
+from platform_core.performance_diagnostics import PerformanceDiagnosticsMiddleware, _endpoint, count, connect_sqlite, observe_connection, stage
 from platform_core.conversion_resource_detection import detect
 
 
@@ -18,6 +18,53 @@ def test_hot_path_categories_never_include_project_or_material_identity():
     assert _endpoint('/api/v63/external-algorithm-platform/provider/products/private-product') == 'external.provider'
     assert _endpoint('/api/v63/external-algorithm-platform/config') == 'external.config'
     assert _endpoint('/api/not-profiled/private') is None
+
+
+def test_training_picker_and_material_summary_routes_have_only_fixed_diagnostic_names():
+    for suffix in ('', '/page', '/role-page', '/bulk-selection', '/selection-summary',
+                   '/revision', '/compatibility', '/negative-preview'):
+        assert _endpoint('/api/v62/projects/private-project/training-materials' + suffix) == 'training.materials'
+    assert _endpoint('/api/v61/projects/private-project/materials/status-counts') == 'material.status_counts'
+    assert _endpoint('/api/v62/projects/private-project/training-materials/private-image/thumbnail') is None
+
+
+def test_training_picker_stage_emits_only_opt_in_scalar_timing(monkeypatch, caplog):
+    sent = []
+
+    @stage('training.selection_summary')
+    def fake_picker_summary():
+        return {'sensitive_input': 'PRIVATE_MATERIAL_IDENTIFIER'}
+
+    async def app(_scope, _receive, send):
+        fake_picker_summary()
+        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+        await send({'type': 'http.response.body', 'body': b'{}'})
+
+    async def collect(message):
+        sent.append(message)
+
+    scope = {'type': 'http', 'method': 'POST',
+             'path': '/api/v62/projects/private-project/training-materials/selection-summary',
+             'headers': [(b'authorization', b'Bearer PRIVATE_TOKEN')]}
+    middleware = PerformanceDiagnosticsMiddleware(app)
+
+    monkeypatch.delenv('MC_PERFORMANCE_DIAGNOSTICS', raising=False)
+    asyncio.run(middleware(scope, lambda: None, collect))
+    assert sent[0]['headers'] == []
+    assert not caplog.records
+
+    sent.clear()
+    monkeypatch.setenv('MC_PERFORMANCE_DIAGNOSTICS', '1')
+    with caplog.at_level('INFO', logger='platform.performance'):
+        asyncio.run(middleware(scope, lambda: None, collect))
+    headers = dict(sent[0]['headers'])
+    assert b'training.selection_summary;dur=' in headers[b'server-timing']
+    trace = json.loads(caplog.records[-1].message)
+    assert trace['endpoint'] == 'training.materials'
+    assert trace['counts']['training.selection_summary.calls'] == 1
+    assert trace['stages_ms']['training.selection_summary'] >= 0
+    for secret in ('PRIVATE_TOKEN', 'PRIVATE_MATERIAL_IDENTIFIER', 'private-project'):
+        assert secret not in caplog.records[-1].message
 
 
 def test_opt_in_middleware_adds_request_id_timing_and_body_bytes(monkeypatch, caplog):

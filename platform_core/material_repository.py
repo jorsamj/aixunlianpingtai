@@ -1055,6 +1055,7 @@ class MaterialRepository:
                 _FILTERED_COUNTS_CACHE.popitem(last=False)
         return total
 
+    @stage("material.status_counts")
     def processing_status_counts(self, storage_source_ids: Sequence[str] | None = None) -> dict[str, int]:
         """One read-only, revision-keyed projection for material summary counters.
 

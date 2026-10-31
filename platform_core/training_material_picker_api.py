@@ -605,6 +605,7 @@ def _validated_positive_training_label_codes(repository, annotations, image_ids,
     return [code for code in candidate_codes if code in confirmed]
 
 
+@stage("training.selection_summary")
 def _selection_summary(
     repository: MaterialRepository,
     annotations: AnnotationRepository,
@@ -1029,6 +1030,7 @@ def training_material_picker_router(
                            "evidence_scope":"known_indexed_evidence"},"revision":fact["revision"]}
 
     @router.get("/revision")
+    @stage("training.picker_revision")
     def picker_revision(project_id: str, algorithm_asset_id: str = ""):
         from .training_material_usage import TrainingMaterialUsage
         repository = materials(project_id)
@@ -1103,6 +1105,7 @@ def training_material_picker_router(
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
 
+    @stage("training.negative_plan")
     def negative_plan(project_id, payload):
         from .training_label_tasks import (task_negative_confirmable, task_negative_identity,
             task_negative_context, training_material_role, _ORIGINAL_SELECTED_PROJECT_IMAGES)
@@ -1483,6 +1486,7 @@ def training_material_picker_router(
         return {**summary, "repository_revision": repository.current_revision()}
 
     @router.post("/compatibility")
+    @stage("training.compatibility")
     def training_material_compatibility(project_id: str, payload: dict):
         body = payload if isinstance(payload, dict) else {}
         algorithm_id = str(body.get("algorithm_asset_id") or "").strip()

@@ -813,12 +813,29 @@ export function installExternalAlgorithmPlatformRuntime({
 
   function decorateTrainingAnalysisSelector() {
     const form = document.querySelector('.train429-create');
-    if (!form || form.querySelector('[data-external-analysis-selector]')) return;
+    if (!form) return;
     const algorithmId = String(state().trainingDraft?.algorithmId || '');
     const algorithm = (state().algorithms || []).find(row => String(row.id) === algorithmId);
-    if (!isExternalAlgorithm(algorithm)) return;
+    const existingWarning = form.querySelector('[data-external-training-blocked]');
+    const existingSelector = form.querySelector('[data-external-analysis-selector]');
+    if (!isExternalAlgorithm(algorithm)) {
+      if (existingWarning || existingSelector) {
+        existingWarning?.remove();
+        existingSelector?.remove();
+        window.TrainingSubmitRuntime?.updateReadiness?.();
+      }
+      return;
+    }
     const trainingState = externalAlgorithmTrainingReadiness(algorithm, currentMasterDataDigest());
     if (!trainingState.ready) {
+      existingSelector?.remove();
+      if (existingWarning) {
+        if (existingWarning.dataset.externalTrainingBlocked !== trainingState.reason)
+          existingWarning.dataset.externalTrainingBlocked = trainingState.reason || 'external-blocked';
+        if (existingWarning.textContent !== trainingState.message)
+          existingWarning.textContent = trainingState.message;
+        return;
+      }
       const panel = document.createElement('div');
       panel.className = 'alert warn';
       panel.dataset.externalTrainingBlocked = trainingState.reason || 'external-blocked';
@@ -827,6 +844,11 @@ export function installExternalAlgorithmPlatformRuntime({
       window.TrainingSubmitRuntime?.updateReadiness?.();
       return;
     }
+    if (existingWarning) {
+      existingWarning.remove();
+      window.TrainingSubmitRuntime?.updateReadiness?.();
+    }
+    if (existingSelector) return;
     const options = externalAnalysisOptions(algorithm);
     state().externalAnalysisSelection = state().externalAnalysisSelection || {};
     if (options.length <= 1) {
@@ -1563,7 +1585,7 @@ export function installExternalAlgorithmPlatformRuntime({
   }).catch(() => {});
 
   const runtime = {
-    build: 'external-algorithm-platform-63018',
+    build: 'external-algorithm-platform-63019',
     page: PAGE,
     loadConfig,
     loadHistory,

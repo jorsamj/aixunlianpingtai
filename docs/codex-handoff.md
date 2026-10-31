@@ -1,3 +1,10 @@
+## 2026-10-31｜42.24.465 训练弹窗 DOM 反馈循环／性能诊断盲区
+
+- 464 精确远端 `8df6ba1eeea17f598789a08b770c82391d3a132d` 经 GitHub Actions 37/37 success、Frontend Node 1460/1460、Chrome 315/315 通过；这是 464 历史验收，不代表 465。
+- 465 修正外部算法训练弹窗的 `MutationObserver` 自触发 warning 重复插入，阻塞时保持单一警告，转可训练或转本地算法时清理旧节点；新增 Node 原函数连续重入、Chrome 原 DOM 监听回归。
+- 在现有 opt-in `MC_PERFORMANCE_DIAGNOSTICS` 内增加训练素材 selection-summary/revision/compatibility/negative-preview 与素材 status-counts 端点和固定名 `@stage` 计时；无生产采样、无正式数据/提交接口调整。Python/Chrome 需准确新 SHA GitHub CI 验收，生产 HAR、P50/P95 尚缺。
+- 变更详见性能专项台账。下一步核对远端 HEAD，提交开发分支，等待完整 CI；不部署生产、不合并主干、不 tag/release、不写 GT/任务/模型/SQLite/OSS。
+
 ## 2026-10-31｜42.24.464 追修 463 Chrome 千标签面板 DOM 重建
 
 - 463 远端 `0a4e13bfe0ed31a6ac9812ce9abbc18b1818de14` 的 Frontend Runtime Stabilization Chrome (2) 100/101 绿、1 红，原 1000 标签压力场景检查第十次勾选后的 DOM 引用，另两分片绿。463 不能被标为 CI 全绿。
