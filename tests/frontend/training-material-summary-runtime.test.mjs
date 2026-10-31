@@ -257,3 +257,39 @@ test('selected positive codes use formal evidence and ignore late response from 
     assert.deepEqual(runtime.selectedLabelCodes(['page-a']),[]);
   }finally{runtime.destroy();Object.assign(globalThis,previous)}
 });
+
+test('label-only summary refresh retains confirmed positive GT for the same material scope without weakening admission readiness',async()=>{
+  const previous={window:globalThis.window,document:globalThis.document};
+  let activeProject='project-a';
+  const draft={algorithmId:'algorithm',materialIds:['material-a'],newLabelCodes:[]},requests=[];
+  globalThis.window={};
+  globalThis.document={body:{},getElementById:()=>null,querySelector:()=>null,querySelectorAll:()=>[]};
+  const runtime=installTrainingMaterialSummaryRuntime({getState:()=>({trainingDraft:draft}),
+    projectId:()=>activeProject,trainingDraftRuntime:{materialIds:()=>draft.materialIds,current:()=>draft},
+    fetchImpl:(_url,options)=>new Promise(resolve=>requests.push({resolve,body:JSON.parse(options.body)}))});
+  const response=(codes)=>({ok:true,json:async()=>({requested_count:1,positive_label_codes:codes,repository_revision:1})});
+  try{
+    await new Promise(resolve=>setImmediate(resolve));
+    requests[0].resolve(response(['smoke','fire']));
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.deepEqual(runtime.labelCodesFor(['material-a']),['smoke','fire']);
+    assert.equal(runtime.summaryReadyFor(['material-a']),true);
+
+    draft.newLabelCodes=['smoke'];
+    const rechecking=runtime.refresh(['material-a']);
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(runtime.summaryReadyFor(['material-a']),false,'task-role summary must be refreshed for the changed draft');
+    assert.deepEqual(runtime.labelCodesFor(['material-a']),['smoke','fire'],'positive GT remains usable while the task-role read is pending');
+    assert.equal(runtime.labelCodesFor(['material-b']),null,'different selected material must not reuse GT');
+    activeProject='project-b';
+    assert.equal(runtime.labelCodesFor(['material-a']),null,'project switch must not reuse GT');
+    activeProject='project-a';
+
+    requests[1].resolve(response(['smoke','fire','new-label']));
+    await rechecking;
+    assert.deepEqual(runtime.labelCodesFor(['material-a']),['smoke','fire','new-label']);
+    runtime.invalidate();
+    assert.equal(runtime.labelCodesFor(['material-a']),null,'formal GT mutation invalidates the cached positive evidence');
+    await new Promise(resolve=>setImmediate(resolve));
+  }finally{runtime.destroy();Object.assign(globalThis,previous)}
+});

@@ -1,3 +1,9 @@
+## 2026-10-31｜42.24.464 追修 463 Chrome 千标签面板 DOM 重建
+
+- 463 远端 `0a4e13bfe0ed31a6ac9812ce9abbc18b1818de14` 的 Frontend Runtime Stabilization Chrome (2) 100/101 绿、1 红，原 1000 标签压力场景检查第十次勾选后的 DOM 引用，另两分片绿。463 不能被标为 CI 全绿。
+- 根因：训练标签勾选会令完整训练角色摘要签名改变并启动 POST 查询；可提交摘要 `summaryReadyFor` 暂时无效，旧标签 Owner 将已显示复选框整体改为“读取中”。
+- 464：在原 TrainingMaterialSummaryRuntime 保留 project + material IDs 精确作用域下的**最近一次服务器确认的正式正样本标签**供当前标签面板跨草稿刷新使用，失效时清理；完整准入 `summaryReadyFor` 及训练角色重算不变。标签 Owner 使用该独立已确认来源，用户点击焦点 DOM 不丢失。静态缓存/build markers 及断言同步；新增原函数延迟读回归；全前端本地 **1460/1460**。待 464 GitHub CI/Chrome 按新 SHA 全验收；生产性能、身份变更与真实任务不在本轮验收范围。未部署生产。
+
 ## 2026-10-31｜42.24.463 PageRequestScope 响应体、质量中心旧错误覆盖与 462 CI 红灯
 
 以准确远端 `7d705ed68b7a8114258046b64321f8d1d66b4816`／462 起步；完整 Actions 40/41 成功，前端 1445/1447 的两个失败来自场景与普通模型目录旧结果提交合同。本轮在现有 Owner 内修复：普通页面 API GET/HEAD 从请求头延伸到 JSON/Text 最终结算；质量中心旧刷新不得在页面/标签/项目变化后回写 DOM 或缓存；独立模型目录以最新请求身份正确保存且阻止同目录 ABA 覆盖；页面 extras 局部失败不打成功 TTL；素材状态统计被 revision 淘汰的旧 Promise 不回写。所有 POST、调用方信号、bootstrap、正式 GT/Task/Worker 保持原有合同。新增动态 Node 与原 Chrome 回归，锁定依赖下本地完整前端 **1459/1459**；Chrome 本地缺 Python `fastapi/uvicorn` 和浏览器，准确 463 SHA 全部 CI 与生产 P50/P95 待核。唯一详述在 `performance/2026-10-29-p0-followup.md`；未部署、不 merge main/tag/release/force push。

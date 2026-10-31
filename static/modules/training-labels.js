@@ -234,7 +234,11 @@ export function installTrainingLabelRuntime({
     if (!materialSummaryRuntime) return [];
     if (!materialSummaryRuntime.summaryReadyFor?.(ids)) {
       void materialSummaryRuntime.refresh?.(ids);
-      return null;
+      // Rechecking task roles after selecting a label must not tear down the
+      // active checkbox list. A confirmed project/material GT snapshot stays
+      // usable for label choices until those materials or GT are invalidated.
+      const confirmed=materialSummaryRuntime.labelCodesFor?.(ids);
+      return Array.isArray(confirmed)?confirmed:null;
     }
     return materialSummaryRuntime.selectedLabelCodes?.(ids) || [];
   };
@@ -414,7 +418,7 @@ export function installTrainingLabelRuntime({
   queueRefresh();
 
   const runtime = {
-    build: 'module-422574',
+    build: 'module-4226464',
     refresh,
     queueRefresh,
     filter(value){const next=String(value||'').trim().toLowerCase();if(next!==filterQuery){filterQuery=next;labelPage=1;paintPage()}},

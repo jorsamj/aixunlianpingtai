@@ -144,7 +144,7 @@ test('TrainingLabelRuntime remains wrapper-free timer-free and summary-backed', 
   assert.match(source, /queueMicrotask/);
   assert.match(source, /classicWrapperOwner: false/);
   assert.match(source, /timerOwner: false/);
-  assert.match(source, /build: 'module-422574'/);
+  assert.match(source, /build: 'module-4226464'/);
 });
 
 test('final stable renderers keep historical 423/425 training entrypoints unreachable', () => {

@@ -498,6 +498,20 @@ export function installTrainingMaterialSummaryRuntime({
     return JSON.stringify([String(projectId()||''),trainingMaterialSelectionSignature(ids),pickerDraftPayload()]);
   }
 
+  // Formal positive GT codes are tied to the project and material selection,
+  // not the draft label choices. Preserve settled evidence while a label-only
+  // edit refreshes task-role counts. Submission readiness retains the full
+  // request signature above, and explicit GT invalidation clears this cache.
+  let settledLabelScope = '';
+  let settledPositiveCodes = null;
+  function labelScope(ids) {
+    return JSON.stringify([String(projectId()||''),trainingMaterialSelectionSignature(ids)]);
+  }
+  function labelCodesFor(ids = currentIds()) {
+    return settledPositiveCodes !== null && settledLabelScope === labelScope(ids)
+      ? [...settledPositiveCodes] : null;
+  }
+
   function summaryReadyFor(ids = currentIds()) {
     return currentSignature === summaryRequestSignature(ids) && Boolean(summary) && !pendingSignature;
   }
@@ -599,6 +613,8 @@ export function installTrainingMaterialSummaryRuntime({
         eligible_total:null,pending_annotation_total:null,box_count:0,size_bytes:0,
         label_codes:[],positive_label_codes:[],effective_label_codes:[],
         sample_role_counts:null,label_counts:{},repository_revision:null};
+      settledLabelScope = labelScope(normalizedIds);
+      settledPositiveCodes = [];
       queueDecorate();
       window.TrainingLabelRuntime?.queueRefresh?.();
       return summary;
@@ -641,6 +657,8 @@ export function installTrainingMaterialSummaryRuntime({
         label_counts: body.label_counts && typeof body.label_counts === 'object' ? {...body.label_counts} : {},
         repository_revision: body.repository_revision ?? null,
       };
+      settledLabelScope = labelScope(normalizedIds);
+      settledPositiveCodes = [...summary.positive_label_codes];
       queueDecorate();
       window.TrainingLabelRuntime?.queueRefresh?.();
       return summary;
@@ -989,6 +1007,8 @@ return `<article class="training-compatibility-item"><img src="${htmlEscape(item
     currentSignature = null;
     pendingSignature = null;
     summary = null;
+    settledLabelScope = '';
+    settledPositiveCodes = null;
     lastError = '';
     invalidateCompatibility();
     queueDecorate();
@@ -1015,7 +1035,7 @@ return `<article class="training-compatibility-item"><img src="${htmlEscape(item
   observer?.observe(document.body, {childList: true, subtree: true});
 
   const runtime = {
-    build: 'training-material-summary-runtime-422606',
+    build: 'training-material-summary-runtime-4226464',
     refresh,
     refreshCompatibility,
     confirmPendingNegatives,
@@ -1041,6 +1061,7 @@ return `<article class="training-compatibility-item"><img src="${htmlEscape(item
     onMaterialBatchCompleted,
     invalidate,
     summaryReadyFor,
+    labelCodesFor,
     summaryFor,
     selectedLabelCodes,
     decorateTrainingCreateUi,
