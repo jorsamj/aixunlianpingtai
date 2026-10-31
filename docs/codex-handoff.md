@@ -1,3 +1,7 @@
+## 2026-10-31｜42.24.462 Legacy extras412 同项目 ABA 旧结果/Toast 保护
+
+在 461 `59553469491d09aada6a47afd02c875fc51cf633` 基础上，原 `extras412` 旧异步结果仅以项目 ID 防串扰，尚未防页面 A→B→A。此批在原 Owner 内捕获项目、页面及 PageRequestScope 导航代次，只有归属仍有效时允许 state 提交和错误 Toast。保持原 API/正式业务任务及页面加载时机，附真实函数隔离执行与两条 Node 回归。461/462 的 Chrome 与完整 CI 必须各按准确 SHA 核对，真实 HAR/P95、跨身份与 GPU 资源推荐仍未验收。详见原性能台账。
+
 ## 2026-10-31｜42.24.461 页面取消安全结算与高频 ABA 回归
 
 460 `e032445d0332f15cbb8fa1026968c98a93dde5e4` 在准确 GitHub SHA 上完成 37/37 Actions success。461 进一步 RED 复现页面 GET 的底层 transport 忽略 abort 导致永久 pending，GREEN 对已归属页面请求使用 abort retirement Promise 竞速，finally 不遗留 listener，旧结果不污染再入页面。保留调用方 Request 自有 signal、post 持久任务、bootstrap 不受页面导航影响。隔离 10 次 A↔B 0 旧请求遗留，新增 Node 3 条＋Chrome 1 条。必须查询 461 自身 CI，不允许借用 460 全绿。生产 HAR/Server-Timing/P95、真实厂商 SDK 及任务不确定状态的现场验收仍未完成。权威进度见 `docs/performance/2026-10-29-p0-followup.md`。

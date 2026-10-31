@@ -5051,7 +5051,11 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   }
   async function extras412(pageOverride){
     if(!state.project)return;const id=state.project.id,page=String(pageOverride||state.page||''),tasks=[];
-    const load=(key,url,field)=>tasks.push(api(url).then(value=>{if(String(state.project?.id||'')!==String(id))return;const target=key==='testModels'&&page==='质量中心'?'scenarioTestModels':key;state[target]=field?(value?.[field]||[]):value;if(target==='scenarioTestModels')state.scenarioModelsProjectId=String(id)}));
+    const ownerGeneration=window.PageRequestScopeRuntime?.stats?.().generation;
+    const isCurrentOwner=()=>String(state.project?.id||'')===String(id)
+      && String(state.page||'')===page
+      && (ownerGeneration===undefined||window.PageRequestScopeRuntime?.stats?.().generation===ownerGeneration);
+    const load=(key,url,field)=>tasks.push(api(url).then(value=>{if(!isCurrentOwner())return;const target=key==='testModels'&&page==='质量中心'?'scenarioTestModels':key;state[target]=field?(value?.[field]||[]):value;if(target==='scenarioTestModels')state.scenarioModelsProjectId=String(id)}));
     if(['训练任务','训练资源','自动迭代'].includes(page))load('targets',`/api/training_options?project_id=${id}`,'targets');
     if(['测试发布','部署测试'].includes(page))load('pending',`/api/v12/projects/${id}/publish/pending`,'items');
     if(['测试发布','部署测试','检测台','质量中心'].includes(page)){
@@ -5060,7 +5064,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     }
     if(['训练任务','测试发布','部署转换','部署产物'].includes(page))load('models',`/api/projects/${id}/models`);
     if(page==='模型配置')load('promptTemplates','/api/v35/prompt-templates','items');
-    const results=await Promise.allSettled(tasks);for(const result of results)if(result.status==='rejected')toast(result.reason?.message||String(result.reason));
+    const results=await Promise.allSettled(tasks);for(const result of results)if(result.status==='rejected'&&isCurrentOwner())toast(result.reason?.message||String(result.reason));
     // Annotation JSON fallback is per image; ordinary refresh never starts a project scan.
   }
   window.loadPageExtras413=extras412;

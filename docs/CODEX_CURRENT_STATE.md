@@ -1,3 +1,5 @@
+> **2026-10-31 / 42.24.462 旧页面附加数据 A→B→A 归属保护**：461 `59553469491d09aada6a47afd02c875fc51cf633` 修复 transport 忽略 AbortSignal 的取消结算并加 10 次导航 Chrome 回归，本版进一步修复 `app.js::extras412` 只检查项目 ID 而允许同项目旧页面成功响应写入及迟到错误 Toast。现在共享 state 写入/错误提示还需匹配页面、项目及导航代次。新增两条 Node 隔离回归，更新 app.js 缓存版本；准确 462 SHA 的 CI、真实生产 P50/P95 仍待独立验收。不部署、不改正式数据。详见 `docs/performance/2026-10-29-p0-followup.md`。
+
 > **2026-10-31 / 42.24.461 页面取消 transport 不响应的永久 pending 边界**：460 完整 SHA `e032445d0332f15cbb8fa1026968c98a93dde5e4` 已确认准确 **37/37 GitHub Actions 全绿**。本批复现原 transport 忽略 AbortSignal 时 page-scoped GET 永远 pending；在既有 PageRequestScope 增加导航 retirement Promise 竞争，finally 清理 listener；保留 Request 自带 signal、正式 POST、bootstrap 例外。隔离 10 次 A↔B 迭代 10/10 cancel、finally 10/10、监听器 0 遗留，并新增 Node+真实 Chrome 测试，461 本身 CI 待精确 SHA 核验。生产 P50/P95 未实测，无生产数据/部署操作。见 `docs/performance/2026-10-29-p0-followup.md`。
 
 > **2026-10-31 / 42.24.460 原生 Request.signal 归属 P0**：459 `8f9a5f3c` 的资源版本断言已提交，准确 CI 仍核验中。本批更正 `PageRequestScope` 对 `new Request(url,{signal})` 的自动覆盖行为，显式保留调用方 signal；普通 GET 页面 Abort 与 POST 持久任务语义不变，新增两条 Node 测试；更新模块及入口缓存键。准确 460 SHA 的完整 CI/真实生产数据/性能尚待核。详见 `docs/performance/2026-10-29-p0-followup.md`。

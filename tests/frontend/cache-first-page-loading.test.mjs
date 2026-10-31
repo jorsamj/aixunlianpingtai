@@ -303,3 +303,46 @@ test('dataset card renderer patches by material id instead of replacing the full
   assert.match(renderer, /if\(!keep\.has\(key\)\)node\.remove\(\)/);
   assert.doesNotMatch(renderer, /g\.innerHTML=rows\.map\(card412\)/);
 });
+
+test('legacy page extras A→B→A ignores old success and keeps the current page result', async()=>{
+  const script=block('async function extras412(pageOverride){','window.loadPageExtras413=extras412;');
+  let generation=2;
+  const state={page:'模型配置',project:{id:'p1'},promptTemplates:[{id:'initial'}]};
+  const calls=[],notifications=[];
+  const api=url=>new Promise((resolve,reject)=>calls.push({url,resolve,reject}));
+  const win={PageRequestScopeRuntime:{stats:()=>({generation})}};
+  const extras=new Function('state','api','toast','window',script+'\nreturn extras412;')(
+    state,api,error=>notifications.push(error),win);
+  const stale=extras();
+  state.page='数据集';generation++;
+  state.page='模型配置';generation++;
+  const current=extras();
+  calls[0].resolve({items:[{id:'stale'}]});
+  await stale;
+  assert.deepEqual(state.promptTemplates,[{id:'initial'}]);
+  calls[1].resolve({items:[{id:'current'}]});
+  await current;
+  assert.deepEqual(state.promptTemplates,[{id:'current'}]);
+  assert.deepEqual(notifications,[]);
+});
+
+test('legacy page extras suppresses old-page failures and never crosses project ownership',async()=>{
+  const script=block('async function extras412(pageOverride){','window.loadPageExtras413=extras412;');
+  let generation=2;
+  const state={page:'模型配置',project:{id:'p1'},promptTemplates:[{id:'initial'}]};
+  const calls=[],notifications=[];
+  const extras=new Function('state','api','toast','window',script+'\nreturn extras412;')(
+    state,url=>new Promise((resolve,reject)=>calls.push({resolve,reject,url})),
+    error=>notifications.push(error),{PageRequestScopeRuntime:{stats:()=>({generation})}});
+  const old=extras();
+  state.page='数据集';generation++;
+  state.project={id:'p2'};state.page='模型配置';generation++;
+  calls[0].reject(new Error('stale network failure'));
+  await old;
+  assert.deepEqual(notifications,[]);
+  assert.deepEqual(state.promptTemplates,[{id:'initial'}]);
+  const current=extras();
+  calls[1].reject(new Error('current network failure'));
+  await current;
+  assert.deepEqual(notifications,['current network failure']);
+});
