@@ -144,6 +144,103 @@ def test_jobs_read_cost_with_unchanged_terminal_history(tmp_path, monkeypatch):
     report('jobs_http',http)
 
 
+def test_bootstrap_cached_snapshot_history_scaling(tmp_path, monkeypatch):
+    """Real cached-snapshot route and history owners; no startup worker or live data.
+
+    The surrounding project/algorithm lookup is isolated so this measures only
+    the historically suspicious cached Bootstrap overlay, not full startup.
+    """
+    import app as api
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from platform_core.performance_diagnostics import PerformanceDiagnosticsMiddleware
+    from platform_core.training_history_projection import TrainingHistoryProjection
+
+    project=tmp_path/'projects'/'audit';jobs=project/'jobs';jobs.mkdir(parents=True)
+    repository=TaskRepository(tmp_path/'task_runtime'/'tasks.sqlite3')
+    monkeypatch.setattr(api,'get_project',lambda p:{'id':p})
+    monkeypatch.setattr(api,'project_dir',lambda p:project)
+    monkeypatch.setattr(api,'list_projects',lambda:[{'id':'audit'}])
+    monkeypatch.setattr(api,'shared_task_repository',lambda:repository)
+    monkeypatch.setattr(api,'algorithm_store_revision',lambda _:0)
+    monkeypatch.setattr(api,'_V53_BOOTSTRAP_STATUS',{'status':'ready','active_project_id':'audit'})
+    monkeypatch.setattr(api,'_V53_BOOTSTRAP_SNAPSHOT',{
+        'project':{'id':'audit'},'algorithms':[],'jobs':[],'algorithm_revision':0})
+    monkeypatch.setattr(api,'_TRAINING_JOB_PROJECTIONS',{})
+    monkeypatch.setenv('MC_PERFORMANCE_DIAGNOSTICS','1')
+
+    http_app=FastAPI();http_app.add_middleware(PerformanceDiagnosticsMiddleware)
+    http_app.add_api_route('/api/v53/bootstrap/snapshot',api.v53_bootstrap_snapshot,methods=['GET'])
+    samples=[];prepared=0
+    with TestClient(http_app) as client:
+        for history_tasks in (220,1000):
+            for index in range(prepared,history_tasks):
+                identity=f'audit-{index:05d}'
+                repository.create(replace(TaskRecord.new(identity,'audit',TaskKind.TRAINING,'payload.json','test-only'),
+                    status=TaskStatus.FAILED,error='isolated fixture',finished_at='2026-10-28T00:00:00+00:00'))
+                directory=jobs/identity;directory.mkdir()
+                (directory/'job.json').write_text(json.dumps({'id':identity,'task_id':identity,
+                    'status':'failed','asset_algorithm_name':'Isolated audit',
+                    'created_at':'2026-10-28T00:00:00+00:00',
+                    'finished_at':'2026-10-28T00:00:00+00:00'}),encoding='utf-8')
+            prepared=history_tasks
+            # Cold means history/projection caches are reset; Task DB and OS
+            # filesystem cache remain warm. It is not a process cold start.
+            monkeypatch.setattr(api,'_TRAINING_HISTORY_PROJECTION',TrainingHistoryProjection())
+            api._TRAINING_JOB_PROJECTIONS.clear()
+            durations=[];first_timing='';response_bytes=0
+            for index in range(21):
+                began=time.perf_counter()
+                response=client.get('/api/v53/bootstrap/snapshot')
+                durations.append((time.perf_counter()-began)*1000)
+                assert response.status_code==200,response.text
+                payload=response.json()
+                assert len(payload['jobs'])==history_tasks
+                assert all(row['status']=='failed' for row in payload['jobs'])
+                assert response.headers.get('X-Request-ID')
+                timing=response.headers['Server-Timing']
+                assert 'training_history;dur=' in timing and 'training_index;dur=' in timing
+                first_timing=first_timing or timing
+                response_bytes=len(response.content)
+            samples.append({'entry_path':'cached-bootstrap-history',
+                'history_tasks':history_tasks,'scope':'in-process ASGI; synthetic failed training tasks; '
+                    'real TaskRepository and TrainingHistoryProjection; other Bootstrap lookups stubbed; '
+                    'history projection reset only before first request',
+                'first_call_ms':round(durations[0],3),
+                'warm':_isolated_http_latency_summary(durations[1:]),
+                'response_bytes':response_bytes,'server_timing_first':first_timing})
+            assert not (jobs/'index.json').exists(), 'cached GET must not persist a history index'
+    report('bootstrap_history_http',samples)
+
+
+def test_training_history_projection_file_scan_growth(tmp_path):
+    """Bound warm file-signature checking at 1k/10k; no Task DB or HTTP."""
+    from platform_core.training_history_projection import TrainingHistoryProjection
+
+    jobs=tmp_path/'jobs';jobs.mkdir()
+    projection=TrainingHistoryProjection();prepared=0;samples=[]
+    for history_files in (1000,10000):
+        for index in range(prepared,history_files):
+            directory=jobs/f'audit-{index:05d}';directory.mkdir()
+            (directory/'job.json').write_text('{"status":"failed"}',encoding='utf-8')
+        prepared=history_files
+        projection=TrainingHistoryProjection()
+        loader=lambda path:json.loads(path.read_text(encoding='utf-8'))
+        began=time.perf_counter();cold=projection.read(jobs,loader)
+        first_ms=(time.perf_counter()-began)*1000
+        durations=[]
+        for _ in range(20):
+            began=time.perf_counter();rows=projection.read(jobs,loader)
+            durations.append((time.perf_counter()-began)*1000)
+            assert len(rows)==history_files
+        assert len(cold)==history_files
+        samples.append({'history_files':history_files,'scope':'synthetic local job.json files; '
+            'in-process signature-cache cold then warm; filesystem cache not reset',
+            'first_call_ms':round(first_ms,3),
+            'warm':_isolated_http_latency_summary(durations)})
+    report('training_history_file_scan',samples)
+
+
 def test_picker_cost_cold_hot_filters_and_revisions(tmp_path,monkeypatch):
     from platform_core import training_material_picker_api as picker
     from platform_core import training_label_tasks as labels

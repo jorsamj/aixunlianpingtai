@@ -1,3 +1,10 @@
+## 2026-11-01｜42.24.469 P0 Bootstrap 历史投影规模证据补齐（准确 CI 待验）
+
+- 从 468 `bc47c3442775cc7a9c4d66df69e722b0ee406418` 接续，该 SHA 已核 **22/22 Actions success**、Frontend Node 1461/1461、Chrome 316/316。远端开发分支／VERSION 468 一致，本地工作区起始干净。
+- 只读核查：`_v53_snapshot_with_live_jobs` 的 Bootstrap 缓存命中仍聚合训练历史，`_training_history_context` 每页 100 条扫描历史 Task，`TrainingHistoryProjection.read` 温缓存仍逐个目录 `stat` 原 job.json；尚无生产 HAR，不得声称其为生产主因。
+- 本次仅在原 `tests/performance/test_platform_hot_paths.py` 补 220/1000 合成任务真实缓存 Bootstrap ASGI 路由的首调用+20 温请求，另测 1000/10000 个虚构历史 JSON 文件投影扫描，沿用原 Picker 工作流显式执行/匿名 JSON 产物。准确新 SHA 和实测结果必须待 CI 后补录；这不是进程冷启动，不包含真实网络、生产并发、服务端锁等待分离或浏览器长任务。
+- 无生产写入／部署／GT／训练任务／Worker／OSS／模型／SQLite schema 改动；不 merge main、release、tag、force push。**ISOLATED TEST — NOT PRODUCTION VERIFIED**。详情见 `docs/performance/2026-10-29-p0-followup.md`。
+
 ## 2026-11-01｜42.24.468 性能入口取证补盲（待精确 SHA CI）
 
 - 467 当前远端 HEAD `41f99eb99ac8a9be10a6b32e8931ae0e7da17232`、VERSION 467，准确 CI 22/22 success；隔离角色索引冷建 30.247ms 属真实计时，但前端默认打开的 `defer_role_counts:true` 走页内角色计算，不可归为默认弹窗卡顿根因。已核 Bootstrap 热快照仍读取历史任务投影；467 的 220 任务隔离 `/jobs` 冷 59.25ms、温 21ms 左右，不是 Bootstrap 或生产实测。

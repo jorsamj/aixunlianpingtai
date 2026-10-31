@@ -8,6 +8,8 @@ on:
     paths:
       - 'app.py'
       - 'platform_core/performance_diagnostics.py'
+      - 'platform_core/training_history_projection.py'
+      - 'platform_core/task_runtime/repository.py'
       - 'tests/api/test_platform_performance_diagnostics.py'
       - 'tests/performance/test_platform_hot_paths.py'
       - 'tests/performance/test_training_picker_workbench_scale.py'
