@@ -5,8 +5,8 @@ function rawFetch() {
   return scoped?.__pageRequestScopeOriginal || scoped;
 }
 
-async function fetchJson(url, fetchImpl = rawFetch()) {
-  const response = await fetchImpl(url, {headers: {'Accept': 'application/json'}});
+async function fetchJson(url, fetchImpl = rawFetch(), {signal} = {}) {
+  const response = await fetchImpl(url, {headers: {'Accept': 'application/json'}, ...(signal ? {signal} : {})});
   if (!response.ok) {
     const raw = await response.text();
     let body = {};
@@ -123,6 +123,9 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
   const doc = typeof document !== 'undefined' ? document : null;
   let destroyed = false;
   let inflight = null;
+  let inflightController = null;
+  let inflightPageOwned = false;
+  let inflightShared = false;
   let lastRefreshAt = 0;
   let refreshError = '';
   let lastRefreshTiming = null;
@@ -723,7 +726,10 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
       if (render) renderPage();
       return {algorithms: state().algorithms || [], jobs: state().jobs || [], cached: true};
     }
-    if (inflight) return inflight;
+    if (inflight) {
+      if (!render) inflightShared = true;
+      return inflight;
+    }
     const pid = projectId?.();
     if (!pid) throw new Error('当前项目不可用，请刷新页面后重试');
 
@@ -731,17 +737,21 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
     const fetchImpl = rawFetch();
     if (typeof fetchImpl !== 'function') throw new Error('浏览器请求能力不可用');
 
-    inflight = (async () => {
+    const controller = new AbortController();
+    inflightController = controller;
+    inflightPageOwned = Boolean(render && String(state().page || '') === ALGORITHM_PAGE);
+    inflightShared = !inflightPageOwned;
+    const task = (async () => {
       const encoded = encodeURIComponent(pid);
       const startedAt = Date.now();
       // The algorithm catalog is the primary content. Job state is secondary:
       // slow training task history must not block the first algorithm paint.
-      const algorithmPromise = fetchJson(`/api/v12/projects/${encoded}/algorithms`, fetchImpl);
-      const jobsPromise = fetchJson(`/api/projects/${encoded}/jobs`, fetchImpl)
+      const algorithmPromise = fetchJson(`/api/v12/projects/${encoded}/algorithms`, fetchImpl, {signal: controller.signal});
+      const jobsPromise = fetchJson(`/api/projects/${encoded}/jobs`, fetchImpl, {signal: controller.signal})
         .then(body => ({body}), error => ({error}));
       const isStale = () => {
         const latestGeneration = window.PageRequestScopeRuntime?.stats?.().generation ?? null;
-        return destroyed
+        return destroyed || controller.signal.aborted
           || (navigationGeneration != null && latestGeneration != null && latestGeneration !== navigationGeneration)
           || String(projectId?.() || '') !== String(pid);
       };
@@ -763,15 +773,31 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
       if (render && String(s.page || '') === ALGORITHM_PAGE) renderPage();
       return {algorithms: s.algorithms, jobs: s.jobs, cached: false, stale: false};
     })();
-
+    inflight = task;
     try {
-      return await inflight;
+      return await task;
     } catch (error) {
+      if (controller.signal.aborted) return {algorithms: state().algorithms || [], jobs: state().jobs || [], stale: true};
       refreshError = String(error?.message || error || '算法列表刷新失败');
       if (render && String(state().page || '') === ALGORITHM_PAGE) renderPage();
       throw error;
     } finally {
+      if (inflight === task) {
+        inflight = null;
+        inflightController = null;
+        inflightPageOwned = false;
+        inflightShared = false;
+      }
+    }
+  }
+  function beforeNavigate(nextPage) {
+    if (String(nextPage || '') === ALGORITHM_PAGE || String(state().page || '') !== ALGORITHM_PAGE) return;
+    if (inflight && inflightPageOwned && !inflightShared) {
+      // A page-only GET no longer has a consumer; keep server tasks untouched.
+      inflightController?.abort();
       inflight = null;
+      inflightController = null;
+      inflightPageOwned = false;
     }
   }
 
@@ -798,6 +824,7 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
     build: 'algorithm-list-runtime-422565',
     toggle,
     refresh,
+    beforeNavigate,
     render: renderPage,
     renderCards: renderPage,
     renderRows,
@@ -823,6 +850,9 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
     },
     destroy() {
       destroyed = true;
+      inflightController?.abort();
+      inflightController = null;
+      inflight = null;
       cancelTrainingWarmup();
       if (commonTrainingWarmupHandle != null) {
         if (typeof window.cancelIdleCallback === 'function') window.cancelIdleCallback(commonTrainingWarmupHandle);

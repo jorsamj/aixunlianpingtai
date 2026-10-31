@@ -486,3 +486,49 @@ test('suspected deletion remains visible beside an existing running task and pre
   assert.match(html,/data-external-deletion="SUSPECTED_DELETED"/);assert.match(html,/待核实/);assert.match(html,/训练中/);
   assert.doesNotMatch(html,/data-algorithm-train="a"[^>]*disabled/);
 });
+
+test('leaving algorithm list aborts page-owned GETs and releases the inflight owner', async () => {
+  const state = {page:'算法列表',project:{id:'p1'},algorithms:[{id:'existing'}],jobs:[],alg428Expanded:{}};
+  const signals=[];
+  globalThis.window={fetch:(_url,{signal})=>{
+    signals.push(signal);
+    return new Promise((_resolve,reject)=>signal.addEventListener('abort',()=>{
+      const error=new Error('aborted');error.name='AbortError';reject(error);
+    },{once:true}));
+  }};
+  const runtime=installAlgorithmListRuntime({getState:()=>state,projectId:()=>state.project.id});
+  try {
+    const request=runtime.refresh({render:true});
+    assert.equal(signals.length,2);
+    runtime.beforeNavigate('数据集');
+    state.page='数据集';
+    const result=await request;
+    assert.equal(result.stale,true);
+    assert.ok(signals.every(signal=>signal.aborted));
+    assert.deepEqual(state.algorithms.map(x=>x.id),['existing']);
+    assert.equal(runtime.state().inflight,false);
+  } finally {runtime.destroy();cleanup();}
+});
+
+test('shared algorithm GET consumers are not aborted by a page departure', async () => {
+  const state={page:'算法列表',project:{id:'p1'},algorithms:[],jobs:[],alg428Expanded:{}};
+  const waiting=[];const signals=[];
+  globalThis.window={fetch:(_url,{signal})=>new Promise(resolve=>{
+    signals.push(signal);waiting.push(resolve);
+  })};
+  const runtime=installAlgorithmListRuntime({getState:()=>state,projectId:()=>state.project.id});
+  try{
+    const page=runtime.refresh({render:true});
+    const shared=runtime.refresh({render:false});
+    assert.equal(signals.length,2);
+    runtime.beforeNavigate('数据集');
+    state.page='数据集';
+    assert.ok(signals.every(signal=>!signal.aborted));
+    waiting[0](response({items:[{id:'new'}]}));
+    waiting[1](response([{id:'j1'}]));
+    const values=await Promise.all([page,shared]);
+    assert.equal(values[0].stale,false);
+    assert.deepEqual(state.algorithms.map(x=>x.id),['new']);
+    assert.equal(runtime.state().inflight,false);
+  }finally{runtime.destroy();cleanup();}
+});

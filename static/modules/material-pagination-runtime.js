@@ -65,6 +65,16 @@ export function installMaterialPaginationRuntime() {
   let requestSerial = 0;
   let pageLoadFlight = null;
   let pageLoadFlightKey = '';
+  let pageLoadAbort = null;
+  let statusCountsCache = null;
+  let statusCountsRevision = 0;
+  const STATUS_COUNTS_REUSE_MS = 3000;
+  function invalidateStatusCounts61() {
+    statusCountsRevision++;
+    statusCountsCache = null;
+    statusCountsFlight = null;
+    statusCountsFlightKey = '';
+  }
   let statusCountsFlight = null;
   let statusCountsFlightKey = '';
   let searchTimer = null;
@@ -237,7 +247,7 @@ export function installMaterialPaginationRuntime() {
     return true;
   }
 
-  async function fetchMaterialPage61(page = 1) {
+  async function fetchMaterialPage61(page = 1, signal = null) {
     const pid = projectId();
     if (!pid) return {items: [], total: 0, next_cursor: null};
     const f = filters61();
@@ -249,21 +259,29 @@ export function installMaterialPaginationRuntime() {
     return responseJson(await materialFetch(`/api/v61/projects/${encodeURIComponent(pid)}/materials?${params}`, {
       headers: {Accept: 'application/json'},
       credentials: 'same-origin',
+      ...(signal ? {signal} : {}),
     }));
   }
 
-  async function fetchStatusCounts61() {
+  async function fetchStatusCounts61({force = false} = {}) {
     const pid = projectId();
     if (!pid) return {unprocessed: 0, processed: 0};
     const sourceId = String(state.materialSourceFilter61 || 'all');
     const key = JSON.stringify([pid, sourceId]);
+    if (!force && statusCountsCache?.key === key
+        && Date.now() - statusCountsCache.at < STATUS_COUNTS_REUSE_MS) return statusCountsCache.data;
     if (statusCountsFlight && statusCountsFlightKey === key) return statusCountsFlight;
+    const revision = statusCountsRevision;
     const params = new URLSearchParams();
     if (sourceId !== 'all') params.append('storage_source_id', sourceId);
     const task = materialFetch(`/api/v61/projects/${encodeURIComponent(pid)}/materials/status-counts?${params}`, {
       headers: {Accept: 'application/json'},
       credentials: 'same-origin',
-    }).then(responseJson);
+    }).then(responseJson).then(data => {
+      if (revision === statusCountsRevision && projectId() === pid && String(state.materialSourceFilter61 || 'all') === sourceId)
+        statusCountsCache = {key, at: Date.now(), data};
+      return data;
+    });
     statusCountsFlight = task;
     statusCountsFlightKey = key;
     try { return await task; }
@@ -312,6 +330,7 @@ export function installMaterialPaginationRuntime() {
       q.value = state.materialQuery61 || '';
       q.oninput = () => {
         state.materialQuery61 = q.value || '';
+        retireMaterialPage61();
         clearTimeout(searchTimer);
         searchTimer = setTimeout(() => loadMaterialPage61({reset: true}), 220);
       };
@@ -431,6 +450,13 @@ export function installMaterialPaginationRuntime() {
     return 'patch';
   }
 
+  function retireMaterialPage61() {
+    requestSerial++;
+    pageLoadAbort?.abort();
+    pageLoadAbort = null;
+    pageLoadFlight = null;
+    pageLoadFlightKey = '';
+  }
   async function loadMaterialPage61({reset = false, page = undefined} = {}) {
     if (!isPagedDataset()) return {stale: true};
     const info = state.materialPage61;
@@ -440,6 +466,9 @@ export function installMaterialPaginationRuntime() {
     const requestedPage = page === undefined ? Math.max(1, Number(info.page) || 1) : Math.max(1, Number(page) || 1);
     const flightKey = JSON.stringify([projectId(), filterSignature61(), requestedPage, transport.pageSize || 48]);
     if (pageLoadFlight && pageLoadFlightKey === flightKey) return pageLoadFlight;
+    retireMaterialPage61();
+    const controller = new AbortController();
+    pageLoadAbort = controller;
     const countsScope = JSON.stringify([projectId(), String(state.materialSourceFilter61 || 'all')]);
     if (info.statusCountsScope !== countsScope) info.statusCountsAvailable = false;
 
@@ -448,8 +477,8 @@ export function installMaterialPaginationRuntime() {
       const expectedPage = state.page;
       try {
         const totalsPromise = fetchStatusCounts61().catch(error => ({error}));
-        const materialPage = await fetchMaterialPage61(requestedPage);
-        if (serial !== requestSerial || state.page !== expectedPage || !isPagedDataset()) return {stale: true};
+        const materialPage = await fetchMaterialPage61(requestedPage, controller.signal);
+        if (controller.signal.aborted || serial !== requestSerial || state.page !== expectedPage || !isPagedDataset()) return {stale: true};
         state.images = Array.isArray(materialPage.items) ? materialPage.items : [];
         info.nextCursor = materialPage.next_cursor || '';
         info.total = Number(materialPage.total || 0);
@@ -479,8 +508,9 @@ export function installMaterialPaginationRuntime() {
         decorateDataset61();
         return {stale: false, mode, items: state.images, total: info.total};
       } catch (error) {
-        if (serial === requestSerial && isPagedDataset()) window.toast?.(error.message || String(error));
-        return {stale: serial !== requestSerial, error};
+        if (controller.signal.aborted || serial !== requestSerial) return {stale: true};
+        if (isPagedDataset()) window.toast?.(error.message || String(error));
+        return {stale: false, error};
       }
     })();
 
@@ -492,6 +522,7 @@ export function installMaterialPaginationRuntime() {
       if (pageLoadFlight === run) {
         pageLoadFlight = null;
         pageLoadFlightKey = '';
+        if (pageLoadAbort === controller) pageLoadAbort = null;
       }
     }
   }
@@ -600,6 +631,7 @@ export function installMaterialPaginationRuntime() {
   window.batchDelete426 = window.batchDelete429 = () => window.runMaterialBatch62?.('DELETE_INDEX',{scope:'SELECTED',imageIds:[...(state.data424Selected||[])]});
   window.reloadMaterialPage61 = async () => {
     invalidateFullPool61();
+    invalidateStatusCounts61();
     // A mutation needs evidence newer than any same-filter request already in flight.
     // Starting the replacement increments requestSerial and fences the older response.
     pageLoadFlightKey = '';
@@ -612,6 +644,7 @@ export function installMaterialPaginationRuntime() {
   window.markReady412 = async function markReadyAndRefreshPagedMaterials(imageIds) {
     const result = await baseMarkReady?.(imageIds);
     invalidateFullPool61();
+    invalidateStatusCounts61();
     if (isPagedDataset()) await loadMaterialPage61({reset: true});
     return result;
   };
@@ -662,7 +695,11 @@ export function installMaterialPaginationRuntime() {
     const current = String(state.page || '');
     const leavingDataset = current === '数据集' && target !== '数据集' && transport.mode === 'paged';
     const leavingFull = requiresFullMaterialPool(current) && transport.mode === 'full';
-    if (leavingDataset) rememberDatasetPage61();
+    if (leavingDataset) {
+      rememberDatasetPage61();
+      clearTimeout(searchTimer);
+      retireMaterialPage61();
+    }
     if (leavingFull) rememberFullPool61(state.images);
     const full = requiresFullMaterialPool(target);
     transport.mode = full ? 'full' : 'paged';
@@ -719,6 +756,7 @@ export function installMaterialPaginationRuntime() {
     event.stopImmediatePropagation();
     if (button.disabled || refreshBusy) return;
     refreshBusy = true;
+    invalidateStatusCounts61();
     button.disabled = true;
     void focusedRefresh61().then(
       () => window.toast?.('素材已刷新'),
@@ -748,6 +786,8 @@ export function installMaterialPaginationRuntime() {
     refresh: focusedRefresh61,
     invalidate() {
       invalidateFullPool61();
+      invalidateStatusCounts61();
+      retireMaterialPage61();
       // Label remap updates MaterialRepository projection; a navigation cache
       // must never restore a pre-remap label card after this invalidation.
       state.materialPageCache61 = null;
@@ -765,6 +805,8 @@ export function installMaterialPaginationRuntime() {
       return {
         requestSerial,
         refreshBusy,
+        pageReadPending: Boolean(pageLoadFlight),
+        summaryCached: Boolean(statusCountsCache && Date.now() - statusCountsCache.at < STATUS_COUNTS_REUSE_MS),
         filterSignature: state.materialFilterSignature61 || '',
         shellSignature: state.materialShellSignature61 || '',
         cachedItems: Array.isArray(state.materialPageCache61?.items) ? state.materialPageCache61.items.length : 0,

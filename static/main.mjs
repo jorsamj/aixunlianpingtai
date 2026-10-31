@@ -18,7 +18,7 @@ import {installNavigationStability} from './modules/navigation-stability.js?v=20
 import {persistUiState} from './modules/ui-state.js?v=422500';
 import {installPageRequestScope, isPageNavigationCancelled} from './modules/page-request-scope.js?v=20261031-p0';
 import {installPollRegistry} from './modules/poll-registry.js?v=422522';
-import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=4226389';
+import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=4226390';
 import {installExternalAlgorithmPlatformRuntime} from './modules/external-algorithm-platform.js?v=63023';
 import {installChangLianDataBrowserRuntime} from './modules/changlian-data-browser.js?v=63002';
 import {installExternalAlgorithmPublishRuntime} from './modules/external-algorithm-publish.js?v=64015';
@@ -50,7 +50,7 @@ import {qualityChartModel} from './modules/quality.js?v=421800';
 import {reportPresentation, metricChart, trainingCharts, formatPercentagePointDelta, metricCredibilityHtml, chatGPTAnalysisMaterial, trainingReportHtml, mountTrainingReport, mountReportCharts, evaluationChartGroups, mountEvaluationCharts, disposeReportViews, lineageReportHtml} from './modules/reports.js?v=20261022a';
 import {isActiveVideoTask, normalizeVideoTask, videoTaskFormValues} from './modules/video-tasks.js?v=421900';
 import {buildStorageSourcePayload, defaultStorageSource, enabledStorageSources, sourceMatches, storageSourceLabel} from './modules/storage.js?v=422202';
-import {buildMaterialQuery, installMaterialPaginationRuntime, requiresFullMaterialPool} from './modules/material-pagination-runtime.js?v=422614';
+import {buildMaterialQuery, installMaterialPaginationRuntime, requiresFullMaterialPool} from './modules/material-pagination-runtime.js?v=422615';
 import {installStorageImportProgressRuntime, storageImportProgressText} from './modules/storage-import-progress.js?v=422525';
 import {installUploadTaskCenter} from './modules/upload-task-center.js?v=66014';
 import {buildServerImportRequest, buildImportConfirmation, serverImportView} from './modules/server-material-import.js?v=422526';
@@ -466,7 +466,7 @@ function refreshPageExtrasInBackground(page,{force=false}={}) {
   return trackPageExtras(o,loadTask,()=>{
     if(page==='训练资源'&&window.patchTrainingResourceCardsV3?.())return;
     if(page==='模型配置'&&window.patchModelPromptTemplatesV35?.())return;
-    if(navigationStabilityRuntime.hasPageOwner(page))return renderCanonicalOwner(page,{source:'background-data'});
+    if(navigationStabilityRuntime.hasPageOwner(page))return renderCanonicalOwner(page,{source: 'background-data'});
     return render();
   });
 }
@@ -516,6 +516,7 @@ const navigationStabilityRuntime = installNavigationStability({
     conversionCatalogRuntime.leave();
     changLianDataBrowserRuntime.leave();
     window.NegativePoolRuntime?.beforeNavigate?.(page);
+    algorithmListRuntime?.beforeNavigate?.(page);
     const materialNavigation = window.MaterialPaginationRuntime61?.beforeNavigate?.(page);
     state.page = page;
     uploadTaskCenterRuntime.switchProject?.();

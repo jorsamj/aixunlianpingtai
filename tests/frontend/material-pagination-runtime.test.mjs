@@ -214,3 +214,18 @@ test('partial remap shows failed counts, reason, and existing Full Audit recover
   const success=app.slice(app.indexOf('  async function refreshLabelSchemaAfterRemap414('),app.indexOf('  window.pollImportRemap414='));
   assert.equal((success.match(/if\(failed\)showLabelRemapReview414\(task,source,target\)/g)||[]).length,3);
 });
+
+test('paged material reads are cancelled on changed filters and navigation, with summary TTL separation', () => {
+  const source = fs.readFileSync(new URL('../../static/modules/material-pagination-runtime.js', import.meta.url), 'utf8');
+  const main = fs.readFileSync(new URL('../../static/main.mjs', import.meta.url), 'utf8');
+  assert.match(source,/let pageLoadAbort = null/);
+  assert.match(source,/function retireMaterialPage61\(\)/);
+  assert.match(source,/pageLoadAbort\?\.abort\(\)/);
+  assert.match(source,/fetchMaterialPage61\(requestedPage, controller\.signal\)/);
+  assert.match(source,/controller\.signal\.aborted \|\| serial !== requestSerial/);
+  assert.match(source,/if \(leavingDataset\) \{[\s\S]*retireMaterialPage61\(\)/);
+  assert.match(source,/STATUS_COUNTS_REUSE_MS = 3000/);
+  assert.match(source,/statusCountsCache\?\.key === key/);
+  assert.match(source,/statusCountsCache = null/);
+  assert.match(main,/algorithmListRuntime\?\.beforeNavigate\?\.\(page\)/);
+});

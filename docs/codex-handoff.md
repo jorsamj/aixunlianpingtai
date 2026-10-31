@@ -1,3 +1,7 @@
+## 2026-10-31｜42.24.457 全站请求生命周期专项 P1（开发分支提交，准确 CI 待核）
+
+接续 42.24.456，唯一开发分支 `feature/external-algorithm-publishing`。算法列表 GET 采用页面独占可取消/共享消费者继续的策略；素材分页按过滤/项目/页号取消过期页，状态统计 3s 缓存+修订失效，保留服务器分页、页面缓存和跨页选择。修复 456 前端 CI 静态字符串守卫的 `source: 'background-data'` 格式；456 运行结果为 21 工作流 20 成功、1 失败，Chrome 3/3 分片成功，前端 Job 在 Node 阶段前因源码格式匹配失败。新增算法异步回归、素材语义合同断言。未做生产部署与真实 HAR/P95，禁止将单元/隔离测试等同全部验收。详情见 `docs/performance/2026-10-29-p0-followup.md`。
+
 ## 2026-10-29｜P0 ChangLian token 单飞（42.24.410，LOCAL GREEN / CI PENDING）
 
 基线 `1d027803`；v63 原路由保留服务实例但逐请求新客户端每次签名/取 Token。仅正式保存配置使用服务级进程内 SHA256 凭证指纹/过期失效 Token，8 并发签名+Token 由 8+8 降为 1+1；草稿测试隔离、401 不重发写请求、登出/保存失效、HTTP Session 不共享。Python 137/137、Node 1396/1396 通过；真实生产耗时和新 SHA CI 待查，绝不借旧 CI 放行。`LIKE` 4 万行合成对照未稳定获益，未改动。工作继续追踪 [专项](performance/2026-10-29-p0-followup.md)，不生产部署/数据操作、不合并 main/tag/release/force push。
