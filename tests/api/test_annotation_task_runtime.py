@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 import app as app_module
-from platform_core.annotation_candidates import CandidateStore
+from platform_core.annotation_candidates import CandidateDecision, CandidateStore
 from platform_core.task_runtime import ArtifactStore, TaskKind, TaskRecord, TaskRepository, TaskStatus
 
 
@@ -286,6 +286,60 @@ def test_annotation_stage_statistics_are_durable_and_batch_read_without_candidat
     assert row["stage_statistics"]["unreviewed"] == 3
     assert row["stage_statistics"]["gt_committed"] == 0
     assert row["statistics_synced_at"]
+
+
+def test_gt_current_state_audit_is_explicit_paginated_and_reads_only_requested_ids(
+    client, seeded_project, isolated_task_runtime, monkeypatch,
+):
+    project_id, image = seeded_project
+    repository, artifacts = isolated_task_runtime
+    task_id = _queued(project_id, repository, artifacts)
+    store = CandidateStore(artifacts, task_id=task_id)
+    image_a, image_b = image["id"], "zz-audit-negative"
+    store.initialize(labels=["fire"], total_images=2)
+    store.append_items([
+        {"image_id": image_a, "status": "success", "boxes": [{"id": "box-a", "label": "fire"}]},
+        {"image_id": image_b, "status": "empty", "boxes": []},
+    ])
+    store.apply_decisions([CandidateDecision(image_a, True), CandidateDecision(image_b, True)])
+    store.record_commit_summaries([
+        {"image_id": image_a, "box_count": 1},
+        {"image_id": image_b, "box_count": 0},
+    ])
+    reads = []
+
+    def bounded_formal_read(_project_id, ids):
+        assert _project_id == project_id and len(ids) == 1
+        reads.append(list(ids))
+        return {image_a: {
+            "image_id": image_a, "version": 3,
+            "boxes": [{"source_task_id": task_id, "candidate_id": "box-a"}],
+        }} if image_a in ids else {image_b: {
+            "image_id": image_b, "version": 3, "annotation_state": "confirmed_empty", "boxes": [],
+        }}
+
+    monkeypatch.setattr(app_module, "read_annotations_many", bounded_formal_read)
+    base = f"/api/v60/projects/{project_id}/annotation-tasks/{task_id}/gt-audit"
+    first = client.get(base, params={"limit": 1})
+    assert first.status_code == 200, first.text
+    assert first.json()["historical_total"] == 2
+    assert first.json()["scope"] == "page_only"
+    assert first.json()["items"][0]["state"] == "retained"
+    assert first.json()["next_cursor"] == image_a
+    second = client.get(base, params={"limit": 1, "cursor": first.json()["next_cursor"]})
+    assert second.status_code == 200, second.text
+    assert second.json()["items"][0]["state"] == "unverifiable"
+    assert second.json()["next_cursor"] is None
+    assert reads == [[image_a], [image_b]]
+    assert client.get(base, params={"limit": 101}).status_code == 422
+    assert client.get(base, params={"cursor": "a" * 201}).status_code == 422
+    assert client.get(base.replace(f"/{project_id}/", "/unknown-project/")).status_code == 404
+
+    # Task list remains a projection-only read: this audit never runs implicitly.
+    monkeypatch.setattr(CandidateStore, "read_commit_page", lambda *args, **kwargs: (_ for _ in ()).throw(
+        AssertionError("list must never audit GT")
+    ))
+    assert client.get(f"/api/v60/projects/{project_id}/annotation-tasks").status_code == 200
 
 
 def test_historical_statistics_backfill_is_bounded_and_never_invents_missing_evidence(

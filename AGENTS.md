@@ -1025,3 +1025,10 @@ VERSION 42.24.404；`Frontend Runtime Stabilization` 浏览器分片旧夹具的
 ## 2026-10-31｜42.24.450 审核标签工具按需展开与非生产角标点击阻挡（准确 SHA CI 待核）
 
 449 精确 SHA `bc337e01` GitHub **21 Actions 20 绿/1 红**：Frontend Runtime Stabilization 的 Chrome 1/2 通过、3 分片 94/95，仅 `training-evaluation-diagnostics` 中固定右下角的 `#acceptance-fixture-badge` 挡住“返回独立评测”导致 60 秒点击超时。449 已下载并检查真实 1440 Chrome 中文与 640×480 画布，字符和 98% 缩放正确；但默认展开的“标签映射与批量统一”遮占了过多图片区高度。450 保留测试徽标但设置 `pointer-events:none`（评测与训练恢复两处）；AI 审核标签工具默认收起，仅首次发现未映射正式活动标签时展开并提示数量，之后尊重人工手动开关。增强原浏览器两种 canonical/unmapped 场景验证，不改请求/候选/GT/Worker，`VERSION=42.24.450`、静态缓存键同步。生产三视口真实图/OSS/远程模型/P95、SQLite 迁移尚未完成；准确 SHA CI 与截图待核。唯一专项见原 AI 文档。
+## 2026-10-31｜42.24.452 AI 标注历史 GT 与正式当前态逐页核验（待准确 SHA CI）
+
+从 `18bebfd3` / 451 唯一长期开发分支 HEAD 接续，451 精确 SHA 的 GitHub Actions 已核 43/43 全绿（Chrome 3/3 分片）。本批新增 `CandidateStore.read_commit_page` 按 `image_id` 索引游标、一次最多 100 条，不迭代全任务历史；显式 `GET /api/v60/projects/{project_id}/annotation-tasks/{task_id}/gt-audit` 在 `_require_annotation_review_task` 项目/任务校验后，单页批量取 Candidate 与唯一正式 `AnnotationRepository.get_many`，只返回本页归属证据、当前版本、分页游标。任务列表 GET、自动轮询、页面初始展示**绝不触发 GT 审计**。正式 GT 无任何额外写入、第二 GT 存储或统计真相表。
+
+判定证据：对后续提交，在原 Worker 正式 GT 批写返回的同批 `version/content_digest` 附加进既有 CandidateStore journal，`gt_write_performed` 明示是否实际执行写入；旧历史不反填伪证据。相同可信版本+摘要才认定“提交时版本未变化”；否则以 `source_task_id + candidate_id` 同时匹配审后候选，区分仍保留、部分保留、已不存在。历史空框负样本及无可靠修订快照的来源无法证明归属，返回“无法确认/修订已变化”；不能把 `gt_committed` 历史图数、当前保留数、外部同步数混为一谈。原任务详情新增用户主动点击“核验当前 GT”，50 张/页、只显示本页结论和不可证明说明；关闭/切项目废弃异步结果，失败可重试。`VERSION.txt=42.24.452`、app.js 缓存键更新。
+
+本地 JS 全量正常子进程权限 **1428/1428**；受限 sandbox 的 Uppy vendor 子进程因 EPERM 不能执行，正常权限重跑通过。Python 隔离 `/tmp` 依赖和正常进程权限下定向 unit/API **84/84 通过**；`node --check`、Python 语法通过。最终精确 SHA GitHub Actions 尚待验。未部署、无生产读写、无数据库 schema 迁移；P0 仍需真实 OSS/远程模型/海量素材 P50/P95、生产 SQLite v2→v3 备份迁移/回滚及现场确认。不 merge main、不 tag/release、不 force push。

@@ -23,6 +23,22 @@ def test_candidate_statistics_count_only_durable_unique_gt_journal(tmp_path):
     assert store.statistics()["gt_committed"] == 1
 
 
+def test_gt_journal_audit_pages_by_stable_image_id_without_loading_all(tmp_path):
+    store = CandidateStore(ArtifactStore(tmp_path), task_id="audit-pages")
+    store.initialize(labels=["fire"], total_images=0)
+    store.record_commit_summaries([{"image_id": value, "box_count": 0} for value in ("z", "a", "b")])
+    first = store.read_commit_page(limit=2)
+    assert [row["image_id"] for row in first.items] == ["a", "b"]
+    assert first.total == 3 and first.next_cursor == "b"
+    second = store.read_commit_page(cursor=first.next_cursor, limit=2)
+    assert [row["image_id"] for row in second.items] == ["z"]
+    assert second.next_cursor is None
+    with pytest.raises(ValueError, match="page size"):
+        store.read_commit_page(limit=101)
+    with pytest.raises(ValueError, match="cursor"):
+        store.read_commit_page(cursor="x" * 201)
+
+
 def test_shared_runtime_contract_exposes_annotation_dependencies(tmp_path: Path):
     artifacts = ArtifactStore(tmp_path / "artifacts")
     repository = TaskRepository(tmp_path / "tasks.sqlite3")

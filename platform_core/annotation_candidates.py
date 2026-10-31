@@ -327,6 +327,28 @@ class CandidateStore:
             for row in rows
         }
 
+    def read_commit_page(self, *, cursor: str | None = None, limit: int = 50) -> CandidatePage:
+        """Page the task's historical journal by indexed image ID; never load it all."""
+        count = int(limit)
+        if not 1 <= count <= 100:
+            raise ValueError("commit audit page size must be between 1 and 100")
+        if cursor is not None and len(str(cursor)) > 200:
+            raise ValueError("commit audit cursor is too long")
+        self._ready()
+        with closing(self._connect()) as db:
+            total = int(db.execute("SELECT COUNT(*) FROM commits").fetchone()[0])
+            rows = db.execute(
+                "SELECT image_id,summary_json FROM commits WHERE image_id>? "
+                "ORDER BY image_id LIMIT ?",
+                (str(cursor or ""), count + 1),
+            ).fetchall()
+        selected = rows[:count]
+        return CandidatePage(
+            [dict(json.loads(row["summary_json"]), image_id=str(row["image_id"])) for row in selected],
+            str(selected[-1]["image_id"]) if len(rows) > count else None,
+            total,
+        )
+
     def record_commit_summaries(
         self,
         summaries: Iterable[dict[str, Any]],

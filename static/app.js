@@ -7705,6 +7705,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   state.aiMaterialStatesLoadedAt60=Number(state.aiMaterialStatesLoadedAt60||0);
   state.aiMaterialStatesSignature60=String(state.aiMaterialStatesSignature60||'');
   state.aiMaterialStatesRequest60=Number(state.aiMaterialStatesRequest60||0);
+  let gtAuditRequest60=0;
   const taskApi=id=>`/api/v60/projects/${pid()}/annotation-tasks${id?`/${id}`:''}`;
   const taskView=task=>window.PlatformCore?.annotationTasks?.annotationTaskView(task)||{};
   const imageById=id=>(state.images||[]).find(image=>String(image.id)===String(id));
@@ -7744,7 +7745,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   }
 
   function progressShell(task){
-    modal('AI自动标注任务',`<div class="wait427 ai60-progress" data-task-id="${esc(task.id)}"><div class="wait427-anim"><i></i><i></i><i></i><b id="ai60Status"></b></div><div class="wait427-progress"><i id="ai60Bar" style="transform:scaleX(0);transform-origin:left center"></i></div><div class="wait427-stats"><span>真实进度 <b id="ai60Percent">0%</b></span><span>已完成 <b id="ai60Counts">0 / 0</b></span><span>失败 <b id="ai60Failed">0</b></span><span>耗时 <b id="ai60Elapsed">-</b></span></div><div class="alert soft"><b>当前图片</b><span id="ai60Current">等待 Worker 领取任务</span></div><div id="ai60Error"></div><div id="ai60Actions" class="row end"></div></div>`,true);
+    modal('AI自动标注任务',`<div class="wait427 ai60-progress" data-task-id="${esc(task.id)}"><div class="wait427-anim"><i></i><i></i><i></i><b id="ai60Status"></b></div><div class="wait427-progress"><i id="ai60Bar" style="transform:scaleX(0);transform-origin:left center"></i></div><div class="wait427-stats"><span>真实进度 <b id="ai60Percent">0%</b></span><span>已完成 <b id="ai60Counts">0 / 0</b></span><span>失败 <b id="ai60Failed">0</b></span><span>耗时 <b id="ai60Elapsed">-</b></span></div><div class="alert soft"><b>当前图片</b><span id="ai60Current">等待 Worker 领取任务</span></div><div id="ai60Error"></div><div id="ai60GtAudit"></div><div id="ai60Actions" class="row end"></div></div>`,true);
   }
 
   function renderProgress(task){
@@ -7754,11 +7755,13 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     const bar=root.querySelector('#ai60Bar');if(bar)bar.style.transform=`scaleX(${Math.max(0,Math.min(100,Number(view.percent||0)))/100})`;
     const current=imageById(task.current_item);set('ai60Current',current?.filename||task.current_item||view.runtimeText||'等待 Worker 处理');
     const error=root.querySelector('#ai60Error');if(error)error.innerHTML=view.error?`<div class="error-box422"><b>失败原因</b><span>${esc(view.error)}</span></div>`:'';
-    const actions=root.querySelector('#ai60Actions');if(actions)actions.innerHTML=`${view.canCancel?`<button class="btn danger" onclick="cancelAiTask60('${task.id}')">取消任务</button>`:''}${view.canReview?`<button class="btn primary" onclick="reviewAiLabel427('${task.id}')">审核候选结果</button>`:''}${view.canRetry?`<button class="btn" onclick="retryAiTask60('${task.id}')">重试</button>`:''}<button class="btn" onclick="closeModal()">关闭</button>`;
+    const canAudit=Number(task.stage_statistics?.gt_committed||0)>0;
+    const actions=root.querySelector('#ai60Actions');if(actions)actions.innerHTML=`${view.canCancel?`<button class="btn danger" onclick="cancelAiTask60('${task.id}')">取消任务</button>`:''}${view.canReview?`<button class="btn primary" onclick="reviewAiLabel427('${task.id}')">审核候选结果</button>`:''}${canAudit?`<button class="btn" onclick="openAiGtAudit60('${task.id}')">核验当前 GT</button>`:''}${view.canRetry?`<button class="btn" onclick="retryAiTask60('${task.id}')">重试</button>`:''}<button class="btn" onclick="closeModal()">关闭</button>`;
     if(state.page==='自动标注及清洗')renderAiTaskRows60(state.annotationTasks60||[]);
   }
 
   function stopAiTaskDetail60({resumeList=true}={}){
+    gtAuditRequest60++;
     const key=String(state.ai60DetailPollKey||'');
     if(key)window.PollRegistryRuntime?.clear?.(key);
     state.ai60DetailPollKey='';
@@ -7769,6 +7772,23 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   window.beforeCloseAiTask60=function(top){
     if(top?.querySelector?.('.ai60-progress'))stopAiTaskDetail60({resumeList:true});
     if(top?.querySelector?.('.ai66-edit')){destroyAiCandidateEditor60();state.ai60Edit=null}
+  };
+  window.openAiGtAudit60=async function(taskId,cursor=''){
+    const projectId=String(pid()),serial=++gtAuditRequest60;
+    const root=document.querySelector(`.ai60-progress[data-task-id="${CSS.escape(String(taskId))}"]`);
+    const target=root?.querySelector('#ai60GtAudit');if(!target)return;
+    target.innerHTML='<div class="muted-line" role="status">正在按页核对正式 GT…</div>';
+    try{
+      const query=new URLSearchParams({limit:'50'});
+      if(cursor)query.set('cursor',cursor);
+      const page=await api(`${taskApi(taskId)}/gt-audit?${query}`);
+      if(serial!==gtAuditRequest60||String(pid())!==projectId||!target.isConnected)return;
+      const labels={same_revision:'提交时版本未变化',retained:'本任务框仍完整保留',partially_retained:'本任务框部分保留',not_retained:'本任务框已不存在',retained_unquantified:'发现本任务来源框（数量未知）',revision_changed_unverifiable:'版本已变化，空框归属无法确认',unverifiable:'证据不足，无法确认'};
+      const items=page.items||[],verified=items.filter(item=>['same_revision','retained','retained_unquantified'].includes(item.state)).length;
+      target.innerHTML=`<section class="ai60-gt-audit"><div class="row between"><b>正式 GT 当前态 · 本页 ${items.length} 张</b><span class="muted-line">历史日志总计 ${Number(page.historical_total||0)} 张；本页明确保留 ${verified} 张</span></div><p class="muted-line">只读、逐页核验；旧任务及零框负样本无快照时可能无法确认，不把历史提交数当作当前有效数量。</p><div class="table-wrap" style="max-height:260px;overflow:auto"><table class="table mini-table"><thead><tr><th>素材 ID</th><th>核验结果</th><th>本任务框（现存/候选）</th><th>当前 GT 版本</th></tr></thead><tbody>${items.map(item=>`<tr><td>${esc(item.image_id)}</td><td>${esc(labels[item.state]||'无法确认')}</td><td>${Number(item.retained_task_boxes||0)} / ${item.expected_task_boxes===null?'?':Number(item.expected_task_boxes)}</td><td>${Number(item.current_gt_version||0)||'-'}</td></tr>`).join('')||'<tr><td colspan="4">此任务暂无历史 GT 提交记录</td></tr>'}</tbody></table></div><div class="row end" id="ai60GtAuditPager"></div></section>`;
+      const pager=target.querySelector('#ai60GtAuditPager');
+      if(page.next_cursor){const next=document.createElement('button');next.className='btn small';next.textContent='核验下一页';next.addEventListener('click',()=>window.openAiGtAudit60(taskId,String(page.next_cursor)));pager?.appendChild(next)}
+    }catch(error){if(serial===gtAuditRequest60&&target.isConnected)target.innerHTML=`<div class="error-box422" role="alert">核验失败：${esc(error.message||error)} <button class="btn mini" type="button" id="ai60GtAuditRetry">重试</button></div>`;target.querySelector('#ai60GtAuditRetry')?.addEventListener('click',()=>window.openAiGtAudit60(taskId,cursor))}
   };
   window.showAiTask60=async function(id,{initialTask=null}={}){
     const detailId=String(id||'');

@@ -1,5 +1,12 @@
 # AI 预标注、清洗范围与提示词创建体验实施计划
 
+## 2026-10-31｜42.24.452 正式 GT 当前态证据审计（当前提交 CI 待核）
+
+- **实现与入口**：先确认 451 GitHub 精确 SHA `18bebfd3` 的 43/43 Actions success（Chrome 3/3）。候选日志 `commits` 原 SQLite 增只读 `read_commit_page(cursor,limit)`，按主键 ID 游标逐页，最多 100；新增 `GET /api/v60/projects/{project_id}/annotation-tasks/{task_id}/gt-audit` 只在人工主动操作时读取本页 50 条历史、已审候选及唯一 `AnnotationRepository.get_many` 的正式 GT，不在任务列表、轮询及加载首页自动批扫。任务详情原弹窗只加一个按需展开区域和下一页，离开或换项目时废弃旧请求；错误展示可重试。
+- **审计语义**：历史 `gt_committed` 是完成 journal 的 Image ID 数，**并非当前 GT**。从本批起，原 Worker 一次正式 GT 写入结果的 `version/content_digest` 与“是否执行写入”一并记在原 journal（不建新 GT 表、不做迁移）；可信版本和 digest 一致证明该版本仍未变。对于无修订快照的老记录，按已审核候选 `candidate_id` 与当前 GT 框的 `source_task_id` 双重归属证据，只能证明“全部/部分/未保留”；没有本任务候选框且无快照的负样本与历史资料保持“无法确认”，版本变化也不能擅称是哪个操作覆盖。界面只列本页分布，不能汇总冒充全项目有效 GT/外部同步数。
+- **回归**：新增 CandidateStore 分页/游标边界、纯审计判定、API 跨项目/批读/不隐式任务列表核验、Node 显式按钮的合同断言；JS/Python 语法检查已通过。Node 正常权限 **1428/1428 通过**；隔离 `/tmp` Python 依赖并使用正常线程权限后相关 unit/API **84/84 通过**。最终精确 SHA Actions/Chrome 尚待核，没有生产环境读写/迁移/部署。
+- **未完成 P0**：真实 OSS、远程模型、万级素材分页与审核 P50/P95；生产 Task SQLite v2→v3 一致性备份/恢复及迁移演练；生产 GT/负样本现场逐页核验与外部同步真实计数对账。不 merge main、不 tag/release、不 force push。
+
 ## 2026-10-31｜42.24.451 阶段统计真实口径及 1366×768 可操作性（准确 SHA CI 待核）
 
 - **唯一事实来源与展示修正**：原 `CandidateStore.statistics()` 持久投影已经包含 `total/success/empty/failed/accepted/rejected/unreviewed/boxes/gt_committed`，无需重扫正式 GT 或增加统计表。本批在原 `annotationStageStatistics` 统一验证 `boxes` 为非负安全整数，将列表明确分为「候选图/候选框/失败」「采用/拒绝/待审」「GT 历史提交记录」。`gt_committed` 是本任务向正式 `AnnotationRepository` 成功写入的 Image ID journal 计数，**不是当前仍有效的 GT 数量，不是外部同步数**。旧任务缺投影或非法计数保持「统计尚未核算」，不虚构零值。

@@ -24088,6 +24088,41 @@ def get_annotation_task(project_id: str, task_id: str):
     return public_annotation_task(task, summary=summary)
 
 
+@app.get("/api/v60/projects/{project_id}/annotation-tasks/{task_id}/gt-audit")
+def audit_annotation_task_gt(project_id: str, task_id: str,
+                             limit: int = 50, cursor: Optional[str] = None):
+    """Explicit, bounded read-only comparison; never infer a whole-task GT total."""
+    from platform_core.annotation_gt_audit import audit_gt_commit
+
+    task = _require_annotation_review_task(project_id, task_id)
+    store = CandidateStore(shared_task_artifacts(), task_id=task.task_id)
+    try:
+        page = store.read_commit_page(cursor=cursor, limit=limit)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=409, detail="任务尚无可核验的候选提交记录") from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    ids = [str(row["image_id"]) for row in page.items]
+    candidates = store.get_many(ids) if ids else {}
+    formal = read_annotations_many(project_id, ids) if ids else {}
+    items = [
+        audit_gt_commit(task_id, row, candidates.get(row["image_id"]), formal.get(row["image_id"]))
+        for row in page.items
+    ]
+    states = {state: sum(item["state"] == state for item in items) for state in (
+        "same_revision", "retained", "partially_retained", "not_retained",
+        "retained_unquantified", "revision_changed_unverifiable", "unverifiable",
+    )}
+    return {
+        "items": items,
+        "next_cursor": page.next_cursor,
+        "historical_total": page.total,
+        "page_counts": states,
+        "scope": "page_only",
+        "notice": "只核验本页历史提交图；旧记录、空框负样本无版本证据时不能证明当前 GT 归属。",
+    }
+
+
 @app.get("/api/v60/projects/{project_id}/annotation-material-states")
 def annotation_material_states(project_id: str, image_ids: str = ""):
     get_project(project_id)

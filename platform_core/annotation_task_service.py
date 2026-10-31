@@ -579,8 +579,25 @@ def commit_candidate_decisions(
             batch_summaries[image_id] = summary
 
         assert_not_cancelled()
+        written_by_id: dict[str, dict[str, Any]] = {}
         if to_write:
-            write_formal_annotations(project_id, to_write)
+            written_by_id = {
+                str(row.get("image_id") or ""): row
+                for row in (write_formal_annotations(project_id, to_write) or [])
+            }
+        # Future journal rows can prove an unchanged formal GT revision. Older
+        # journals deliberately stay unknown when no durable revision evidence
+        # exists; do not invent it during a later read-only audit.
+        written_ids = {str(row["image_id"]) for row in to_write}
+        for summary in to_journal:
+            image_id = str(summary["image_id"])
+            summary["gt_write_performed"] = image_id in written_ids
+            saved = written_by_id.get(image_id)
+            if saved and int(saved.get("version") or 0) > 0:
+                digest = str(saved.get("content_digest") or "")
+                if len(digest) == 64 and all(c in "0123456789abcdef" for c in digest):
+                    summary["gt_snapshot_version"] = int(saved["version"])
+                    summary["gt_snapshot_digest"] = digest
         # Formal GT and CandidateStore are intentionally separate durable owners.
         # Once a bounded formal batch is durable, its journal is mandatory catch-up:
         # do not observe a newly-arrived user cancellation between these two commits.
@@ -593,7 +610,10 @@ def commit_candidate_decisions(
         for image_id in image_ids:
             summary = batch_summaries.get(image_id)
             if summary is not None and len(image_summaries) < 100:
-                image_summaries.append(summary)
+                image_summaries.append({
+                    key: summary.get(key)
+                    for key in ("image_id", "box_count", "labels", "annotation_state", "annotation_origin")
+                })
         processed += len(image_ids)
         if progress is not None:
             progress(processed, accepted_total, image_ids[-1])

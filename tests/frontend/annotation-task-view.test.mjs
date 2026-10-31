@@ -19,6 +19,18 @@ test('stage statistics show durable journal counts only and distinguish missing 
   assert.match(app, /GT 历史提交记录 \$\{stats\.gtCommitted\}/);
 });
 
+test('GT current-state inspection is opt-in, bounded and visibly labels unknown evidence', () => {
+  const app = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+  assert.match(app, /onclick="openAiGtAudit60\('/);
+  assert.match(app, /window\.openAiGtAudit60=async function\(taskId,cursor=''/);
+  assert.match(app, /new URLSearchParams\(\{limit:'50'\}\)/);
+  assert.match(app, /\/gt-audit\?\$\{query\}/);
+  assert.match(app, /证据不足，无法确认/);
+  const listStart = app.indexOf('function taskRow(task)');
+  assert.ok(listStart > 0);
+  assert.doesNotMatch(app.slice(listStart, listStart + 2000), /gt-audit/);
+});
+
 test('annotation task view exposes truthful progress and review action', () => {
   const running = annotationTaskView({status: 'RUNNING', progress: 31.7, completed_count: 38, total_count: 120, failed_count: 7});
   assert.equal(running.progressText, '38 / 120');

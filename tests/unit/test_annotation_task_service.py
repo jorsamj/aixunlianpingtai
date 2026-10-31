@@ -235,7 +235,7 @@ def test_commit_replay_does_not_duplicate_candidate_boxes(tmp_path, monkeypatch)
         rows = list(rows)
         assert len(rows) == 1
         written[:] = list(rows[0].get("boxes") or [])
-        return rows
+        return [{**rows[0], "version": 7, "content_digest": "a" * 64}]
     monkeypatch.setattr(
         "platform_core.annotation_task_service.write_formal_annotations",
         write_many,
@@ -250,6 +250,10 @@ def test_commit_replay_does_not_duplicate_candidate_boxes(tmp_path, monkeypatch)
     assert second["boxes_added"] == 0
     assert [box["candidate_id"] for box in written] == ["candidate-1"]
     assert written[0]["source_task_id"] == "commit-1"
+    journal = store.get_commit_summaries(["image-1"])["image-1"]
+    assert journal["gt_write_performed"] is True
+    assert journal["gt_snapshot_version"] == 7
+    assert journal["gt_snapshot_digest"] == "a" * 64
 
 
 
