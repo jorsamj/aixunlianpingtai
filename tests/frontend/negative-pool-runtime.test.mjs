@@ -19,3 +19,55 @@ test('pool uses explicit owner hooks and rejects delayed previous-project respon
   assert.equal(host.innerHTML,'new project');assert.equal(runtime.active('materials'),false);assert.equal(calls.length,2);
  }finally{Object.assign(globalThis,previous)}
 });
+
+test('category dictionary is shared across pool page refreshes without hiding list requests',async()=>{
+ const previous={window:globalThis.window,document:globalThis.document};
+ let categories=0,lists=0;
+ const host={isConnected:true,innerHTML:'',querySelectorAll:()=>[]};
+ globalThis.document={getElementById:()=>host,addEventListener:()=>{}};
+ globalThis.window={renderDatasets424:()=>window.NegativePoolRuntime.renderPool('materials')};
+ try{
+   const runtime=installNegativePoolRuntime({
+     getState:()=>({page:'数据集',labels:[]}),pid:()=> 'p1',esc:String,toast:()=>{},
+     api:async(url,options={})=>{
+       if(url.includes('/categories')){categories++;return {items:[{id:'a',name:'分类A'}]}}
+       lists++;assert.ok(options.signal instanceof AbortSignal);
+       return {items:[],total:0};
+     }
+   });
+   await runtime.open();
+   await runtime.refresh();
+   assert.equal(categories,1);
+   assert.equal(lists,2);
+ }finally{Object.assign(globalThis,previous)}
+});
+
+test('identical pool queries share inflight; leaving owner aborts old read without repainting',async()=>{
+ const previous={window:globalThis.window,document:globalThis.document};
+ let resolve,lists=0,signal;
+ const host={isConnected:true,innerHTML:'',querySelectorAll:()=>[]};
+ globalThis.document={getElementById:()=>host,addEventListener:()=>{}};
+ globalThis.window={renderDatasets424:()=>window.NegativePoolRuntime.renderPool('materials')};
+ try{
+   const runtime=installNegativePoolRuntime({
+     getState:()=>({page:'数据集',labels:[]}),pid:()=> 'p1',esc:String,toast:()=>{},
+     api:(url,options={})=>{
+       if(url.includes('/categories'))return Promise.resolve({items:[]});
+       lists++;signal=options.signal;
+       return lists===1?Promise.resolve({items:[],total:0}):new Promise(r=>{resolve=r});
+     }
+   });
+   await runtime.open();
+   const first=runtime.refresh();
+   const second=runtime.refresh();
+   assert.equal(first,second);
+   await new Promise(r=>setImmediate(r));
+   assert.equal(lists,2);
+   runtime.beforeNavigate('算法列表');
+   assert.equal(signal.aborted,true);
+   host.innerHTML='new page';
+   resolve({items:[{id:'old'}],total:1});
+   await first;
+   assert.equal(host.innerHTML,'new page');
+ }finally{Object.assign(globalThis,previous)}
+});

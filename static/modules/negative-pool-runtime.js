@@ -7,26 +7,76 @@ export function negativePoolQuery(filters = {}, page = 1) {
 export function installNegativePoolRuntime({getState,api,pid,esc,toast,modal,closeModal,addToDraft} = {}) {
   if (window.NegativePoolRuntime) return window.NegativePoolRuntime;
   let project='', active='materials', labelTab='positive', page=1, total=0, rows=[], categories=[], filters={}, selected=new Set(), epoch=0;
+  let activeRead=null, categoryRevision=0;
+  const categoryCache=new Map(), categoryFlights=new Map();
+  const CATEGORY_TTL_MS=60*1000;
+  function invalidateCategories(){categoryRevision++;categoryCache.clear();categoryFlights.clear()}
+  function categoriesFor(kind,projectId){
+    const q=kind==='categories'?String(filters.categoryQuery||''):'';
+    const key=JSON.stringify([projectId,q]);
+    const cached=categoryCache.get(key);
+    if(cached&&Date.now()-cached.at<CATEGORY_TTL_MS)return Promise.resolve(cached.data);
+    const flight=categoryFlights.get(key);
+    if(flight)return flight;
+    const revision=categoryRevision;
+    const url=base()+'/categories'+(q?'?query='+encodeURIComponent(q):'');
+    let promise;
+    promise=Promise.resolve().then(()=>api(url)).then(data=>{
+      if(projectId===String(pid())&&revision===categoryRevision)categoryCache.set(key,{data,at:Date.now()});
+      return data;
+    }).finally(()=>{if(categoryFlights.get(key)===promise)categoryFlights.delete(key)});
+    categoryFlights.set(key,promise);
+    return promise;
+  }
   const view=()=>document.getElementById('view');
   const base=()=>`/api/v61/projects/${encodeURIComponent(pid())}/negative-pool`;
   const reviewName=value=>({annotated:'已标注',unannotated:'待标注',confirmed_empty:'已确认空图',stale:'审核已过期',unknown:'未知 / 未核验'}[value]||'未知 / 未核验');
   const usageName=value=>{if(!value||value==='unknown')return '未知';if(typeof value==='string')return value;return [value.current_algorithm_trained?'当前算法已使用':'',value.other_algorithm_trained?'其他算法已使用':'',({used:'已参与训练',possible:'可能已参与训练',selected:'仅被选入任务',eval_only:'仅用于评估',unused:'有据未使用',unknown:'历史未知'})[value.state]||'历史未知'].filter(Boolean).join(' · ')||'未知'};
   const button=(action,text,extra='')=>`<button type="button" class="btn" data-np="${action}" ${extra}>${text}</button>`;
   const err=e=>toast(e.message||String(e));
-  function resetProject(){if(project!==String(pid())){project=String(pid());active='materials';labelTab='positive';filters={};selected.clear();page=1;epoch++}}
+  function resetProject(){if(project!==String(pid())){
+    activeRead?.controller.abort();activeRead=null;invalidateCategories();
+    project=String(pid());active='materials';labelTab='positive';filters={};selected.clear();page=1;epoch++;
+  }}
   function tabs(kind){const pool=kind==='materials';return `<nav class="negative-pool-tabs" aria-label="${pool?'素材管理':'标签管理'}">${button(pool?'materials':'positive',pool?'训练素材':'正样本标签',`aria-pressed="${pool?active==='materials':labelTab==='positive'}"`)}${button(pool?'pool':'categories',pool?'负样本池':'负样本分类',`aria-pressed="${pool?active==='pool':labelTab==='categories'}"`)}</nav>`}
   function current(token,host,projectId,kind){return token===epoch&&host===view()&&host.isConnected&&String(pid())===projectId&&getState().page===(kind==='pool'?'数据集':'标签管理')&&(kind==='pool'?active==='pool':labelTab==='categories')}
   function selectionText(){const el=document.getElementById('negativePoolSelection');if(el)el.textContent=`已选 ${selected.size} 张（跨页保留）`}
-  async function load(kind){
-    const token=++epoch, host=view(), projectId=String(pid());
+  function syncSelection(){
+    view()?.querySelectorAll?.('[data-np-select]').forEach(box=>{
+      box.checked=selected.has(String(box.dataset.npSelect));
+    });
+    selectionText();
+  }
+  function load(kind){
+    resetProject();
+    const host=view();if(!host)return Promise.resolve(null);
+    const projectId=String(pid());
+    const listUrl=kind==='pool'?base()+'?'+negativePoolQuery(filters,page):'';
+    const queryKey=JSON.stringify([projectId,kind,listUrl,kind==='categories'?filters.categoryQuery||'':'']);
+    if(activeRead?.key===queryKey&&activeRead.host===host)return activeRead.promise;
+    activeRead?.controller.abort();
+    const controller=new AbortController(),token=++epoch;
     host.innerHTML=tabs(kind==='pool'?'materials':'labels')+'<section class="panel negative-pool"><div role="status">正在读取…</div></section>';
-    try{
-      const [cats,data]=await Promise.all([api(base()+'/categories'+(kind==='categories'&&filters.categoryQuery?'?query='+encodeURIComponent(filters.categoryQuery):'')),kind==='pool'?api(base()+'?'+negativePoolQuery(filters,page)):Promise.resolve(null)]);
-      if(!current(token,host,projectId,kind))return;
-      categories=cats.items||[];
-      if(data){rows=data.items||[];total=Number(data.total||0)}
-      host.innerHTML=tabs(kind==='pool'?'materials':'labels')+(kind==='pool'?poolHTML():categoryHTML());
-    }catch(e){if(current(token,host,projectId,kind))host.innerHTML=tabs(kind==='pool'?'materials':'labels')+`<section class="panel negative-pool"><div class="alert err" role="alert">${esc(e.message||e)}</div>${button('retry','重试')}</section>`}
+    let promise;
+    promise=(async()=>{
+      try{
+        const [cats,data]=await Promise.all([
+          categoriesFor(kind,projectId),
+          kind==='pool'?api(listUrl,{signal:controller.signal}):Promise.resolve(null)
+        ]);
+        if(controller.signal.aborted||!current(token,host,projectId,kind))return;
+        categories=cats.items||[];
+        if(data){rows=data.items||[];total=Number(data.total||0)}
+        host.innerHTML=tabs(kind==='pool'?'materials':'labels')+(kind==='pool'?poolHTML():categoryHTML());
+      }catch(e){
+        if(!controller.signal.aborted&&current(token,host,projectId,kind)){
+          host.innerHTML=tabs(kind==='pool'?'materials':'labels')
+            +`<section class="panel negative-pool"><div class="alert err" role="alert">${esc(e.message||e)}</div>${button('retry','重试')}</section>`;
+        }
+      }finally{if(activeRead?.promise===promise)activeRead=null}
+    })();
+    activeRead={key:queryKey,host,controller,promise};
+    return promise;
   }
   const options=(values,chosen=[])=>values.map(x=>`<option value="${esc(x.id)}" ${chosen.includes(String(x.id))?'selected':''}>${esc(x.name)}</option>`).join('');
   function poolHTML(){
@@ -35,7 +85,11 @@ export function installNegativePoolRuntime({getState,api,pid,esc,toast,modal,clo
   }
   function categoryHTML(){return `<section class="panel negative-pool"><header class="row between"><div><h2>负样本分类</h2><p>一级管理分类，不参与目标检测类别映射。删除分类只移除关联。</p></div>${button('create-category','新建分类')}</header><form class="row" data-np-form="category-search"><input class="input" name="query" placeholder="搜索分类" value="${esc(filters.categoryQuery||'')}"><button class="btn" type="submit">搜索</button></form><div class="negative-pool-category-list">${categories.map(c=>`<article class="row between"><div><b>${esc(c.name)}</b> · ${Number(c.material_count||0)} 张 · ${c.enabled?'启用':'停用'}</div><div class="row">${button('edit-category','编辑',`data-id="${esc(c.id)}"`)}${button('toggle-category',c.enabled?'停用':'启用',`data-id="${esc(c.id)}"`)}${button('delete-category','删除',`data-id="${esc(c.id)}"`)}</div></article>`).join('')||'<div class="empty">暂无分类</div>'}</div></section>`}
   function dialog(title,body,submit){const projectId=String(pid()),originPage=getState().page;const layer=modal(title,`<form id="negativePoolDialog" class="negative-pool-dialog">${body}<div class="row end"><button type="button" class="btn" data-np-cancel>取消</button><button class="btn primary" type="submit">确认</button></div><div role="alert" data-np-error></div></form>`,true);const form=document.getElementById('negativePoolDialog');form.querySelector('[data-np-cancel]').onclick=()=>window.closeModalLayer424(layer);form.onsubmit=async e=>{e.preventDefault();const btn=form.querySelector('[type=submit]');btn.disabled=true;try{if(String(pid())!==projectId)throw Error('项目已变化，请重新操作');await submit(new FormData(form));if(!form.isConnected||String(pid())!==projectId)return;window.closeModalLayer424(layer);if(getState().page===originPage){if(originPage==='标签管理')await window.renderLabelManagement414();else if(originPage==='数据集')await window.renderDatasets424()}}catch(error){if(form.isConnected)form.querySelector('[data-np-error]').textContent=error.message||String(error)}finally{if(form.isConnected)btn.disabled=false}}}
-  const write=(path,body,method='POST')=>api(base()+path,{method,headers:{'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});
+  const write=async(path,body,method='POST')=>{
+    const result=await api(base()+path,{method,headers:{'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});
+    if(path.startsWith('/categories')||path.startsWith('/members'))invalidateCategories();
+    return result;
+  };
   function requireSelection(){if(!selected.size)throw Error('请先选择素材');return [...selected]}
   async function action(name,id){resetProject();
     if(['materials','pool'].includes(name)){active=name;return window.renderDatasets424()}
@@ -44,9 +98,9 @@ export function installNegativePoolRuntime({getState,api,pid,esc,toast,modal,clo
     if(name==='reset'){filters={};page=1;return load('pool')}
     if(name==='prev'||name==='next'){page+=name==='prev'?-1:1;return load('pool')}
     if(name==='preview')return window.previewData429(id,rows.find(x=>String(x.id)===id));
-    if(name==='clear'){selected.clear();return load('pool')}
-    if(name==='page-select'){rows.forEach(x=>selected.add(String(x.id)));return load('pool')}
-    if(name==='all-select'){const token=epoch,projectId=String(pid()),result=await api(base()+'/ids?'+negativePoolQuery(filters));if(token!==epoch||String(pid())!==projectId||active!=='pool'||getState().page!=='数据集')return;selected=new Set((result.items||[]).map(String));return load('pool')}
+    if(name==='clear'){selected.clear();syncSelection();return}
+    if(name==='page-select'){rows.forEach(x=>selected.add(String(x.id)));syncSelection();return}
+    if(name==='all-select'){const token=epoch,projectId=String(pid()),result=await api(base()+'/ids?'+negativePoolQuery(filters));if(token!==epoch||String(pid())!==projectId||active!=='pool'||getState().page!=='数据集')return;selected=new Set((result.items||[]).map(String));syncSelection();return}
     if(name==='draft'){const ids=requireSelection();if(!addToDraft)throw Error('请先打开原创建训练窗口建立训练草稿');await addToDraft(ids);toast(`已将 ${ids.length} 张素材加入训练草稿`);return}
     if(name==='join'){dialog('加入负样本池','<label>已有素材 ID（逗号或换行分隔）<textarea class="input" name="ids" required></textarea></label><p>复用已有原图与标注；加入池不自动确认无目标。</p>',data=>write('/members',{image_ids:String(data.get('ids')).split(/[\s,，]+/).filter(Boolean),action:'add'}));return}
     if(name==='join-one'){await write('/members',{image_ids:[id],action:'add'});toast('已加入负样本池');return}
@@ -72,6 +126,12 @@ export function installNegativePoolRuntime({getState,api,pid,esc,toast,modal,clo
     renderPool:kind=>load(kind==='materials'?'pool':'categories'),
     decorateOriginal,
     refresh:()=>load(getState().page==='标签管理'?'categories':'pool'),
+    beforeNavigate(nextPage){
+      const owner=active==='pool'?'数据集':labelTab==='categories'?'标签管理':null;
+      if(owner&&nextPage!==owner){
+        activeRead?.controller.abort();activeRead=null;epoch++;
+      }
+    },
     open:()=>action('pool'),getSelected:()=>[...selected]
   };
   return window.NegativePoolRuntime;

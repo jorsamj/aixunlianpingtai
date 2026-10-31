@@ -1,4 +1,4 @@
-import {installNegativePoolRuntime} from './modules/negative-pool-runtime.js?v=20261028';
+import {installNegativePoolRuntime} from './modules/negative-pool-runtime.js?v=20261031-p1';
 import {ADVANCED_MENUS, advancedPageInfo, installAdvancedNavigation} from './modules/advanced-navigation.js?v=20261024';
 import {installQualityDetectionWorkbench} from './modules/quality-detection-workbench.js?v=20261028-ui';
 import {installAdvancedEvaluation} from './modules/advanced-evaluation.js?v=20261023p2';
@@ -515,6 +515,7 @@ const navigationStabilityRuntime = installNavigationStability({
   performNavigation: page => {
     conversionCatalogRuntime.leave();
     changLianDataBrowserRuntime.leave();
+    window.NegativePoolRuntime?.beforeNavigate?.(page);
     const materialNavigation = window.MaterialPaginationRuntime61?.beforeNavigate?.(page);
     state.page = page;
     uploadTaskCenterRuntime.switchProject?.();
