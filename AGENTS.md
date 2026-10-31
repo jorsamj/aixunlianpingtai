@@ -1,3 +1,7 @@
+## 2026-10-31｜42.24.473 训练创建按需预检成功路径隔离测量（新 SHA CI 待核）
+
+472 精确远端 `094b9888214a35e538780d9fb9c0ed012ee63345` 已核 **23/23 GitHub Actions success**、Node 1461/1461、Chrome 316/316。代码审计确认：正常首次打开和编辑不会自动 POST 兼容性；提交时由 `TrainingSubmitRuntime.submit` 对原预检 Owner 强制重验，用户明确审核负样本时才执行预览/确认；页面素材选择摘要仅在选择签名变化时读取，空选择本地返回。现有性能基准没有覆盖兼容性成功 HTTP 路由，473 只在原 `test_platform_hot_paths.py` 用 1k 虚构素材、60 已标注选择增加真实 ASGI 预检首次+20 温样本、修订绑定缓存命中/失效口径和 Server-Timing，完全不创建训练任务、不写生产 GT。当前环境缺 pytest/FastAPI，源码编译通过，完整数值与新 SHA CI **待测、不得提前认绿**。无业务/前端重构，无生产 HAR/长任务，**ISOLATED TEST — NOT PRODUCTION VERIFIED**。不部署/合并 main/tag/release/force push。
+
 ## 2026-11-01｜42.24.472 历史目录扫描最小优化（准确 CI 待核）
 
 471 精确远端 `5e415a5eaf7740c393e9b3b100e12ef2706a8a7b` 已核 22/22 Actions success、Node 1461/1461、Chrome 316/316，新增真实临时 Bootstrap 快照缺失和 4 并发历史投影测试全部执行通过。200 合成素材、220/1000 失败历史快照缺失首次 42.237/149.017ms、20 温 P50 10.490/34.188ms；10k 虚构 job.json 文件投影 4 同时请求×5 批，批墙钟中位 502.676ms。只针对原 `TrainingHistoryProjection.read` 的 O(N) 目录枚举成本，使用跨平台 `os.scandir` 和字符串路径做 file stat，只有失效文件才构造 `Path` 传原 loader；签名三元组、快照副本、外部历史文件变化即时失效、同一读锁及正式 Task Truth 均未改变。另补非 job 条目、新建、删除的 unit 回归；原有历史缓存/Task/GT 测试保留。临时 10k 文件同一机交替 20 对温样本原 P50 162.702ms、新 P50 64.766ms（仅隔离枚举微基准，不能外推生产或整个 Bootstrap）。472 精确 SHA CI 尚待验；**ISOLATED TEST — NOT PRODUCTION VERIFIED**。无生产部署、真实数据、DB schema、Worker/GPU/OSS/模型改动；不 merge main/tag/release/force push。

@@ -482,6 +482,34 @@ def test_picker_cost_cold_hot_filters_and_revisions(tmp_path,monkeypatch):
             'first_call_ms':round(durations[0],3),
             'response_bytes':len(response.content),
             'warm':_isolated_http_latency_summary(durations[1:])})
+        # Admission is intentionally on-demand: benchmark its real successful
+        # read-only route, not the synthetic first-open picker or task creation.
+        # Cache misses must reflect a cold compatibility projection, while
+        # twenty repeated requests should reuse the revision-bound projection.
+        from platform_core import training_compatibility as compatibility
+        compatibility._evaluate_training_compatibility_projection_cached.cache_clear()
+        durations=[];first_timing=''
+        for index in range(21):
+            began=time.perf_counter()
+            response=client.post('/api/v62/projects/audit/training-materials/compatibility',json={
+                'algorithm_asset_id':'a','train_labels':['fire'],'model':'yolo11n.pt',
+                'train_image_ids':[f'i{i:04d}' for i in range(60)]})
+            durations.append((time.perf_counter()-began)*1000)
+            assert response.status_code==200,response.text
+            body=response.json()
+            assert 'compatible' in body and 'issue_count' in body
+            assert 'training.compatibility' in response.headers['Server-Timing']
+            first_timing=first_timing or response.headers['Server-Timing']
+        cache=compatibility._evaluate_training_compatibility_projection_cached.cache_info()
+        assert cache.misses==1 and cache.hits==20,cache
+        entry_paths.append({'entry_path':'compatibility-success',
+            'scope':'in-process ASGI; 60 selected synthetic annotated materials; '
+                'on-demand preflight; revision-complete cache cleared before first call; no task creation',
+            'first_call_ms':round(durations[0],3),
+            'response_bytes':len(response.content),
+            'warm':_isolated_http_latency_summary(durations[1:]),
+            'projection_cache_misses':cache.misses,'projection_cache_hits':cache.hits,
+            'server_timing_first':first_timing})
     report('picker_http',http)
     report('picker_http_percentiles',isolated)
     report('picker_entry_paths',entry_paths)

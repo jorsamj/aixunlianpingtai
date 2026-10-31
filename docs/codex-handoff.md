@@ -1,3 +1,7 @@
+## 2026-10-31｜42.24.473 训练预检成功路径补测（新 SHA CI 待核）
+
+当前远端 472 `094b9888214a35e538780d9fb9c0ed012ee63345`、VERSION 472、23/23 Actions success、Node 1461/1461、Chrome 316/316；本地工作区起始干净。只读审计确认创建弹窗默认不启动兼容性全量预检，点击提交会强制重新校验；负样本预览/确认属显式准入动作，选材摘要按签名和取消代次保护；选择器默认 `defer_role_counts:true`，缓存页以 revision 验证。这不等于生产浏览器长任务/网络耗时已经测量。473 仅增强原隔离 ASGI 性能测试，覆盖真正成功的 compatibility POST、首次/20 温缓存、预检投影 hit/miss 与 Server-Timing，未修改业务 Owner。新提交必须核新 SHA Actions/原 Picker contracts 日志和匿名 JSON，数值现在待测；本机仅 Python py_compile 通过（无 FastAPI/pytest）。**ISOLATED TEST — NOT PRODUCTION VERIFIED**。禁生产部署、正式任务/GT/OSS/Worker/GPU/DB 修改、main merge、tag/release、force push；真实 HAR/Performance 需用户提供隔离环境或脱敏材料。
+
 ## 2026-11-01｜42.24.472 历史投影目录枚举微优化（准确 SHA CI 待核）
 
 471 `5e415a5eaf7740c393e9b3b100e12ef2706a8a7b` 已核 22/22 Actions success、Node 1461/1461、Chrome 316/316；原 P0 性能测试新增临时真实项目完整快照缺失、4 并发历史文件检查均在 CI 真执行。10k 文件原锁序列化的 4 并发批中位 502.676ms。本批在同一 HistoryProjection Owner 仅改目录扫描到 os.scandir 与 os.stat，保持完整文件签名、外部状态失效、load Path、复制隔离与 read lock。临时 10k JSON 单线程交替 A/B，各 20 温样本 P50 162.702→64.766ms、P95 184.978→76.146ms，仅是该段微基准，不代表完整路由或生产。已有历史增删改与复制单测保留，新增非 job/空目录检测单测；无新的缓存/Task Owner/GT/Worker/DB schema/OSS/GPU/生产写入。准确 472 SHA 与完整 CI 待核，ISOLATED TEST — NOT PRODUCTION VERIFIED。不部署、不 merge main/tag/release、不得 force push。详见 `docs/performance/2026-10-29-p0-followup.md`。
