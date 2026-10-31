@@ -1,3 +1,7 @@
+## 2026-11-01｜42.24.470 469 CI 新增测试断言修正（新 SHA 待验）
+
+469 精确 `247527a79b35294d3d43abf9a1a3b76c1cdba818` 的 Picker contracts 失败（1 failed、6 passed），Chrome Picker 成功；新 Bootstrap 测试误断言应返回全部历史任务，实际上已有接口仅展示 50 条，仍会读全部历史。470 只修测试断言，保留新增大历史规模测量，不改 API。469 文件投影在 1000／10000 个虚构 job.json 上 20 温样本中位 17.894／188.759ms、最近秩 P95 19.198／243.762ms；这是 Github runner 的隔离文件微基准，非完整 Bootstrap、生产或真实文件磁盘基线。470 全 CI 与路由测量仍待准确 SHA 验证。无生产访问、业务写入、GT/Worker/OSS/schema 修改，不 merge main、tag/release 或 force push。详见 `docs/performance/2026-10-29-p0-followup.md`。
+
 ## 2026-11-01｜42.24.469 P0 Bootstrap 历史投影规模证据补齐（准确 CI 待验）
 
 - 从 468 `bc47c3442775cc7a9c4d66df69e722b0ee406418` 接续，该 SHA 已核 **22/22 Actions success**、Frontend Node 1461/1461、Chrome 316/316。远端开发分支／VERSION 468 一致，本地工作区起始干净。

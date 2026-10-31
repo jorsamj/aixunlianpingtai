@@ -1,3 +1,7 @@
+## 2026-11-01｜42.24.470 Bootstrap 规模测试返回条数合同修正（新 CI 待核）
+
+469 精确 SHA `247527a79b35294d3d43abf9a1a3b76c1cdba818` 的 Picker 性能步骤 1 failed / 6 passed，唯一红项为新增测试误将全部历史 220 条当作 Bootstrap 响应条数，原服务正确只展示最近 50 条。470 仅修测试断言为 50，仍真实遍历 220/1000 条合成历史。469 1000→10000 个合成 job.json 温缓存 P50 17.894→188.759ms、P95 19.198→243.762ms，属于 GitHub runner 隔离文件投影，不是生产瓶颈证明。完整新 SHA CI 待核；不修改业务/正式数据/Worker/GT/OSS/schema、不部署、不 merge main/tag/release/force-push。详见 `docs/performance/2026-10-29-p0-followup.md`。
+
 ## 2026-11-01｜42.24.469 P0 Bootstrap 缓存历史读取隔离量化（CI 待准确 SHA 验收）
 
 从准确 468 `bc47c344`、22/22 GitHub Actions success 起步。只读代码发现缓存 Bootstrap 每次仍经 `_training_history_context` 分页扫描训练 Task，`TrainingHistoryProjection.read` 对历史 job.json 温缓存仍逐文件 `stat`。沿用原性能测试增加 220/1000 条合成失败任务的真实缓存 Bootstrap ASGI 首请求+20 温请求，以及 1000/10000 个虚构 job.json 的文件投影微基准。其他 Bootstrap 依赖隔离，OS/SQLite 缓存不清零；不代表完整进程冷启动、真实网络/并发或生产 P50/P95。原业务逻辑、任务/GT/Worker/模型/OSS/SQLite schema 不动；严格 **ISOLATED TEST — NOT PRODUCTION VERIFIED**，精确新 CI 待验。完整取证口径见 `docs/performance/2026-10-29-p0-followup.md`；不得重复已完成的 GET 只读改造、页面生命周期及 MutationObserver 修复。

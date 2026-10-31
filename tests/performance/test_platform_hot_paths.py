@@ -195,7 +195,9 @@ def test_bootstrap_cached_snapshot_history_scaling(tmp_path, monkeypatch):
                 durations.append((time.perf_counter()-began)*1000)
                 assert response.status_code==200,response.text
                 payload=response.json()
-                assert len(payload['jobs'])==history_tasks
+                # Bootstrap presents the existing bounded fifty-task index,
+                # even though its live history projection reads all tasks.
+                assert len(payload['jobs'])==min(history_tasks,50)
                 assert all(row['status']=='failed' for row in payload['jobs'])
                 assert response.headers.get('X-Request-ID')
                 timing=response.headers['Server-Timing']
