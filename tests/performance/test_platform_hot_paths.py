@@ -236,8 +236,57 @@ def test_picker_cost_cold_hot_filters_and_revisions(tmp_path,monkeypatch):
             isolated.append({'endpoint':name,'scope':'in-process ASGI; 1000 synthetic materials',
                 'first_call_ms':round(durations[0],3),'warm':_isolated_http_latency_summary(durations[1:]),
                 'response_bytes':response_bytes,'server_timing_first':first_timing})
+        # The regular training picker sends defer_role_counts=true until a
+        # concrete role is selected. The older benchmark above intentionally
+        # exercises the complete-role contract instead; keep both distinct.
+        entry_paths=[]
+        for name,extra,expects_role_build in (
+            ('default-deferred', {'defer_role_counts':True}, False),
+            ('role-filtered', {'sample_role':'positive'}, True),
+        ):
+            picker._cached_role_index.cache_clear()
+            durations=[]
+            first_timing=''
+            for index in range(21):
+                began=time.perf_counter()
+                response=client.post('/api/v62/projects/audit/training-materials/role-page',json={
+                    'algorithm_asset_id':'a','train_labels':['fire'],
+                    'model':'yolo11n.pt','page_size':60,**extra})
+                durations.append((time.perf_counter()-began)*1000)
+                assert response.status_code==200,(name,response.text)
+                body=response.json()
+                assert len(body['items'])==60
+                assert (body['sample_role_counts'] is not None)==expects_role_build
+                first_timing=first_timing or response.headers['Server-Timing']
+            cache=picker._cached_role_index.cache_info()
+            assert cache.misses==(1 if expects_role_build else 0),name
+            entry_paths.append({'entry_path':name,'scope':'in-process ASGI; 1000 synthetic materials; '
+                'role cache cleared before first call; other process caches warm',
+                'first_call_ms':round(durations[0],3),
+                'warm':_isolated_http_latency_summary(durations[1:]),
+                'response_bytes':len(response.content),
+                'role_index_builds':cache.misses,
+                'server_timing_first':first_timing})
+        # Exercise the real read-only negative-plan route with valid frozen GT;
+        # do not confirm negatives or change task/GT evidence.
+        durations=[]
+        for index in range(21):
+            began=time.perf_counter()
+            response=client.post('/api/v62/projects/audit/training-materials/negative-preview',json={
+                'algorithm_asset_id':'a','train_labels':['fire'],'model':'yolo11n.pt',
+                'train_image_ids':[f'i{i:04d}' for i in range(60)]})
+            durations.append((time.perf_counter()-began)*1000)
+            assert response.status_code==200,response.text
+            assert sum(response.json()['counts'].values())==60
+            assert 'training.negative_plan' in response.headers['Server-Timing']
+        entry_paths.append({'entry_path':'negative-preview-success',
+            'scope':'in-process ASGI; 60 selected synthetic materials; no confirmation/write',
+            'first_call_ms':round(durations[0],3),
+            'response_bytes':len(response.content),
+            'warm':_isolated_http_latency_summary(durations[1:])})
     report('picker_http',http)
     report('picker_http_percentiles',isolated)
+    report('picker_entry_paths',entry_paths)
 
 
 def test_legacy_maintenance_dispatches_without_a_get(tmp_path,monkeypatch):

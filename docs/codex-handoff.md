@@ -1,3 +1,8 @@
+## 2026-11-01｜42.24.468 性能入口取证补盲（待精确 SHA CI）
+
+- 467 当前远端 HEAD `41f99eb99ac8a9be10a6b32e8931ae0e7da17232`、VERSION 467，准确 CI 22/22 success；隔离角色索引冷建 30.247ms 属真实计时，但前端默认打开的 `defer_role_counts:true` 走页内角色计算，不可归为默认弹窗卡顿根因。已核 Bootstrap 热快照仍读取历史任务投影；467 的 220 任务隔离 `/jobs` 冷 59.25ms、温 21ms 左右，不是 Bootstrap 或生产实测。
+- 468 仅扩展现有 `test_platform_hot_paths.py` 与显式 Picker CI，补 `default-deferred`／`role-filtered` 的角色缓存清空、首次/20温样本及成功的 `negative-preview`；复用既有 1000/10000 张 role-index 微基准，保留完整现有压力用例。正式 API/GT/Task/Worker/缓存策略、生产环境不动。待准确新 SHA CI 日志和 7 天 JSON artifact 复核后继续决定是否改业务代码。真实 HAR、P50/P95、Browser Performance 和生产授权均未取得；ISOLATED TEST — NOT PRODUCTION VERIFIED。
+
 ## 2026-10-31｜42.24.467 训练素材隔离性能指标采样
 
 - 466 `bacb072a65778bc5e9ab9e3c77042535aad7b7f9` GitHub 本 SHA 实际 21/21 Actions success、Frontend Node 1461/1461、Chrome 110+101+105=316/316；第 1 分片日志 `[74/110]` 明确执行 `external-training-observer.spec.mjs`。

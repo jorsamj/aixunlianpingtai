@@ -10,6 +10,7 @@ on:
       - 'platform_core/performance_diagnostics.py'
       - 'tests/api/test_platform_performance_diagnostics.py'
       - 'tests/performance/test_platform_hot_paths.py'
+      - 'tests/performance/test_training_picker_workbench_scale.py'
       - 'platform_core/training_material_picker_api.py'
       - 'platform_core/training_compatibility.py'
       - 'platform_core/annotation_repository.py'
@@ -77,7 +78,11 @@ jobs:
       - name: Isolated picker timing evidence (not production)
         env:
           MC_PERF_AUDIT_OUTPUT: ${{ runner.temp }}/picker-perf-report
-        run: python -m pytest -q -s tests/performance/test_platform_hot_paths.py
+        run: >-
+          python -m pytest -q -s
+          tests/performance/test_platform_hot_paths.py
+          'tests/performance/test_training_picker_workbench_scale.py::test_picker_role_index_microbenchmark[1000]'
+          'tests/performance/test_training_picker_workbench_scale.py::test_picker_role_index_microbenchmark[10000]'
       - name: Preserve isolated performance evidence (not production)
         if: always()
         uses: actions/upload-artifact@v4
