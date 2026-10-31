@@ -486,6 +486,7 @@ jobs:
           tests/browser/loading-recovery-supplement.spec.mjs
           tests/browser/startup-report-presentation.spec.mjs
           tests/browser/training-submit-lifecycle.spec.mjs
+          tests/browser/external-training-observer.spec.mjs
           tests/browser/training-report-request-lifecycle.spec.mjs
           tests/browser/auto-label-polling.spec.mjs
           tests/browser/model-api-protocol.spec.mjs tests/browser/advanced-menu-integration.spec.mjs

@@ -1,3 +1,8 @@
+## 2026-10-31｜42.24.466 Chrome 显式清单补测
+
+- 465 准确 SHA `0781b81472d36013ac06535f0453d98206de43e5` GitHub Actions 40/40 success、Frontend Node 1461/1461、Chrome 原清单 315/315；但新 `external-training-observer.spec.mjs` 因显式文件白名单而未执行。本轮将它添加到 `frontend-runtime-stabilization.yml`，不再将 465 的 Chrome 结果误报为该新增场景已验收。
+- 466 仅增加这条 Chrome 回归至现有三分片清单和版本/台账，等待新 SHA 316 场景及全部 CI；业务代码、诊断默认关闭、生产数据、训练 POST/GT 不变。
+
 ## 2026-10-31｜42.24.465 训练弹窗 DOM 反馈循环／性能诊断盲区
 
 - 464 精确远端 `8df6ba1eeea17f598789a08b770c82391d3a132d` 经 GitHub Actions 37/37 success、Frontend Node 1460/1460、Chrome 315/315 通过；这是 464 历史验收，不代表 465。
