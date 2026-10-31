@@ -328,6 +328,18 @@ export function installTrainingMaterialPickerRuntime({
     grid.innerHTML = Array.from({length: 15}, () => '<div class="train-v3-skeleton" aria-hidden="true"></div>').join('');
   }
 
+  // Keep the modal's batch and confirm actions disabled until the current read settles.
+  function syncPickerActions(owner = picker) {
+    if (!owner || picker !== owner) return;
+    const disabled = Boolean(owner.loading || owner.bulkPending || owner.reviewPending);
+    const buttons = modalLayer?.querySelectorAll?.('[data-picker-action], [data-picker-confirm]')
+      || document.querySelectorAll('[data-picker-action], [data-picker-confirm]');
+    buttons.forEach(button => {
+      button.disabled = disabled;
+      button.classList.toggle('train-v3-loading', disabled);
+    });
+  }
+
   function updateCounts() {
     if (!picker) return;
     const labelHost = document.getElementById('trV3TrainingLabels');
@@ -428,6 +440,7 @@ export function installTrainingMaterialPickerRuntime({
 
   function renderPage() {
     if (!picker) return;
+    syncPickerActions();
     const grid = document.getElementById('trV3Grid');
     if (!grid) return;
     cancelViewportFrame();
@@ -477,6 +490,7 @@ export function installTrainingMaterialPickerRuntime({
     activePageKey = key;
     const current=()=>picker===owner && projectId()===pid && sequence===requestSequence && signature()===contextKey && Boolean(document.getElementById('trV3Grid'));
     picker.loading = true;
+    syncPickerActions(owner);
     const cached = pageCache.get(key);
     if (cached) {
       try {
@@ -484,7 +498,7 @@ export function installTrainingMaterialPickerRuntime({
         if(!current())return;
         if(revisionKey(revision)!==cached.versionKey){pageCache.clear();activePageKey=null;return loadPage({page:requestedPage});}
       } catch(error) {if(current()){notify(error.code==='REQUEST_TIMEOUT'?'素材读取超时，请重试':error.message); const grid=document.getElementById('trV3Grid');if(grid)grid.innerHTML='<button class="btn" onclick="TrainingMaterialPickerRuntime.loadPage()">读取失败 · 重试</button>';}return;}
-      finally {if(activeController===controller){activePageKey=null;owner.loading=false;}}
+      finally {if(activeController===controller){activePageKey=null;owner.loading=false;syncPickerActions(owner);}}
       picker.effectiveLabels = cached.effective_label_codes || [];
       picker.roleCounts = cached.sample_role_counts || null;
       picker.items = cached.items;
@@ -497,6 +511,7 @@ export function installTrainingMaterialPickerRuntime({
       picker.negativePoolRevision = cached.negative_pool_revision ?? null;
       picker.negativeConfirmationRevision = cached.negative_confirmation_revision ?? null;
       picker.loading = false;
+      syncPickerActions(owner);
       renderPage();
       return;
     }
@@ -557,6 +572,7 @@ export function installTrainingMaterialPickerRuntime({
       if(activeController===controller)activePageKey=null;
       if (current()) {
         picker.loading = false;
+        syncPickerActions(owner);
         renderPager();
       }
     }
@@ -612,8 +628,7 @@ export function installTrainingMaterialPickerRuntime({
     const activePicker = picker, pid = projectId(), contextKey=signature();
     activePicker.bulkController?.abort();activePicker.bulkController=new AbortController();
     activePicker.bulkPending = true;
-    const buttons = document.querySelectorAll('[data-picker-action], [data-picker-confirm]');
-    buttons.forEach(button => {button.disabled = true;button.classList.add('train-v3-loading');});
+    syncPickerActions(activePicker);
     const count = document.getElementById('trV3PickerCount');
     if (count) count.textContent = '正在解析批量选择…';
     try {
@@ -639,7 +654,7 @@ export function installTrainingMaterialPickerRuntime({
       updateCounts();
     } finally {
       activePicker.bulkPending = false;
-      buttons.forEach(button => {button.disabled = false;button.classList.remove('train-v3-loading');});
+      syncPickerActions(activePicker);
     }
   }
 
@@ -745,7 +760,7 @@ export function installTrainingMaterialPickerRuntime({
   window.trainMaterialSelectV3 = bulkAction;
   window.trainMaterialPageV3 = page;
   window.confirmTrainMaterialPickerV3 = function confirmPicker() {
-    if (!picker || picker.bulkPending || picker.reviewPending) return false;
+    if (!picker || picker.loading || picker.bulkPending || picker.reviewPending) return false;
     const current = draft();
     if(picker.role==='robustness'){
       const policy=current.robustness_policy || {};
@@ -872,6 +887,8 @@ export function installTrainingMaterialPickerRuntime({
         items: picker.items.length,
         repositoryRevision: picker.repositoryRevision,
         networkOwner: true,
+        loading: Boolean(picker.loading),
+        bulkPending: Boolean(picker.bulkPending),
         fullPoolHydration: false,
         bulkSelectionOwner: 'server',
         viewportThumbnailLoading: true,

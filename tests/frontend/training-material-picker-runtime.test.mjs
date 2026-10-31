@@ -244,3 +244,28 @@ test('picker query carries shared source time formal annotation and usage filter
   assert.equal(q.get('annotation_state'), 'confirmed_empty');
   assert.equal(q.get('usage_state'), 'unknown');
 });
+
+test('training picker action owner disables confirmation during page and bulk requests', () => {
+  const begin = source.indexOf('  function syncPickerActions(owner = picker) {');
+  const end = source.indexOf('\n  function updateCounts()', begin);
+  assert.ok(begin >= 0 && end > begin);
+  const buttons = [0, 1, 2].map(() => ({
+    disabled: false, classes: new Set(),
+    classList: { toggle() {} },
+  }));
+  const modalLayer = { querySelectorAll: () => buttons };
+  const owner = {loading: true, bulkPending: false, reviewPending: false};
+  const getSync = new Function('picker', 'modalLayer', 'document',
+    source.slice(begin, end) + '\nreturn syncPickerActions;');
+  const sync = getSync(owner, modalLayer, {querySelectorAll: () => {throw new Error('must scope to modal')}});
+  sync();
+  assert.equal(buttons.every(button => button.disabled), true, 'initial page load must lock actions');
+  owner.loading = false;
+  owner.bulkPending = true;
+  sync();
+  assert.equal(buttons.every(button => button.disabled), true, 'server bulk selection must lock actions');
+  owner.bulkPending = false;
+  sync();
+  assert.equal(buttons.every(button => !button.disabled), true, 'actions must unlock on final completion');
+  assert.match(source, /if \(!picker \|\| picker\.loading \|\| picker\.bulkPending \|\| picker\.reviewPending\) return false/);
+});

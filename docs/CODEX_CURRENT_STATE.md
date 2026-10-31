@@ -1,3 +1,5 @@
+> **2026-10-31 / 42.24.458 全站请求生命周期 457 回归修复（CI 待核）**：457 `70abc307` Actions 37/38 成功，Frontend Runtime Stabilization 失败：4 项旧单测合同及 1 项 Chrome 训练素材选择器加载／批量选择按钮态。修复测试对项目和页面代次缓存、状态统计新签名及缓存版本标记的准确断言；原 `TrainingMaterialPickerRuntime` 新增繁忙态按钮同步，并在页面加载中禁止确认。源代码隔离运行检查通过，正式数据与生产服务未触碰，458 准确新 CI 待验收。详情 `docs/performance/2026-10-29-p0-followup.md`。
+
 > **2026-10-31 / 42.24.457 全站页面读取消与性能治理（CI 待精确 SHA 核验）**：从 456 `e946993010876494699b136e09023eb60ed45388` 接续。原 PageRequestScope 取消 Promise 永久挂起、PageExtras Inflight 释放、隐藏轮询、模型转换同签名单飞及负样本池缓存已在 453–456 提交。本批针对算法列表独占 GET 取消且共享读取保留、素材分页旧页 Abort/状态统计 3 秒缓存加变更修订防陈旧，修正 456 前端静态守卫与入口格式不一致；新增回归。隔离运行通过，但新 CI / 真实生产 P95 未验收；无生产数据、后端及部署操作。完整说明见 `docs/performance/2026-10-29-p0-followup.md`。
 
 > **2026-10-31 / 42.24.451 AI 审核统计与短屏操作（本地绿、CI 待核）**：从 450 `ce6eb5d5` 接续，原 `annotationStageStatistics` 校验 `boxes` 并展示候选框/采用/拒绝、明确 GT 仅为历史提交记录，未知仍为待核算；1366×768 桌面短屏收紧头部并保持独立候选滚动与底栏。原 Chrome 用例追加 24 图滚动、拒绝、编辑、按钮可视操作。Node 正常权限 **1427/1427**；本地无真实 Chrome/FastAPI/pytest，需对精确推送 SHA 查 Actions/截图。唯一详情见 [AI 专项](superpowers/plans/2026-10-16-ai-annotation-cleaning-scope.md)；生产当前态 GT/真实 OSS 与大库 P95/SQLite v2→v3 备份迁移回滚仍未验。未部署、不动生产数据。

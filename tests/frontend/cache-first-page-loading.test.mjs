@@ -37,8 +37,8 @@ test('training resource background extras patch only resource cards', () => {
   const end = main.indexOf('\nwindow.PlatformCore.runtime.refreshPageExtras', start);
   assert.ok(start >= 0 && end > start);
   const refresh = main.slice(start, end);
-  assert.match(refresh, /page === '训练资源' && window\.patchTrainingResourceCardsV3\?\.\(\)/);
-  assert.match(refresh, /page === '模型配置' && window\.patchModelPromptTemplatesV35\?\.\(\)/);
+  assert.match(refresh, /page\s*===\s*'训练资源'\s*&&\s*window\.patchTrainingResourceCardsV3\?\.\(\)/);
+  assert.match(refresh, /page\s*===\s*'模型配置'\s*&&\s*window\.patchModelPromptTemplatesV35\?\.\(\)/);
   assert.match(source, /window\.patchTrainingResourceCardsV3=function\(\)/);
   assert.match(source, /window\.patchModelPromptTemplatesV35=function\(\)/);
   const patchStart = source.indexOf('window.patchTrainingResourceCardsV3=function()');
@@ -266,11 +266,15 @@ test('page extras have their own freshness and quality extras only run on the de
   assert.doesNotMatch(refresh, /page === '部署转换'/);
   assert.doesNotMatch(refresh, /PAGE_EXTRAS_OWNERS = new Set\([^\n]*'训练任务'/);
   assert.match(refresh, /page !== '质量中心' \|\| state\.qualityCenterTab411 === 'detect'/);
-  assert.match(refresh, /const loadedAt = Number\(pageExtrasLoadedAt\.get\(cacheKey\) \|\| 0\)/);
-  assert.match(refresh,/const cacheKey=page==='质量中心'/);
-  assert.match(refresh,/state\.project\?\.id/);
+  assert.match(refresh, /const projectId=String\(state\.project\?\.id \|\| ''\)/);
+  assert.match(refresh, /const cacheKey=JSON\.stringify\(\[projectId,page\]\)/);
+  assert.match(refresh, /inflightKey:JSON\.stringify\(\[cacheKey,generation\]\)/);
+  assert.match(refresh, /pageExtrasLoadedAt\.get\(o\.cacheKey\)/);
+  assert.match(refresh, /pageExtrasInflight\.get\(o\.inflightKey\)/);
+  assert.match(refresh, /pageExtrasOwnerCurrent\(o\)/);
   assert.doesNotMatch(refresh, /__coreSnapshotGeneratedAt|snapshotLoadedAt/);
-  assert.match(refresh, /if \(!force && loadedAt > 0 && age >= 0 && age < PAGE_EXTRAS_CACHE_TTL_MS\) return null/);
+  assert.match(refresh, /!force&&pageExtrasLoadedAt\.has\(o\.cacheKey\)&&age>=0&&age<PAGE_EXTRAS_CACHE_TTL_MS/);
+  assert.match(refresh, /pageExtrasInflight\.get\(o\.inflightKey\)===task/);
   assert.match(refresh, /window\.PlatformCore\.runtime\.refreshPageExtras = refreshPageExtrasInBackground/);
 });
 
