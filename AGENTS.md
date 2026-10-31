@@ -1,3 +1,7 @@
+## 2026-11-01｜42.24.472 历史目录扫描最小优化（准确 CI 待核）
+
+471 精确远端 `5e415a5eaf7740c393e9b3b100e12ef2706a8a7b` 已核 22/22 Actions success、Node 1461/1461、Chrome 316/316，新增真实临时 Bootstrap 快照缺失和 4 并发历史投影测试全部执行通过。200 合成素材、220/1000 失败历史快照缺失首次 42.237/149.017ms、20 温 P50 10.490/34.188ms；10k 虚构 job.json 文件投影 4 同时请求×5 批，批墙钟中位 502.676ms。只针对原 `TrainingHistoryProjection.read` 的 O(N) 目录枚举成本，使用跨平台 `os.scandir` 和字符串路径做 file stat，只有失效文件才构造 `Path` 传原 loader；签名三元组、快照副本、外部历史文件变化即时失效、同一读锁及正式 Task Truth 均未改变。另补非 job 条目、新建、删除的 unit 回归；原有历史缓存/Task/GT 测试保留。临时 10k 文件同一机交替 20 对温样本原 P50 162.702ms、新 P50 64.766ms（仅隔离枚举微基准，不能外推生产或整个 Bootstrap）。472 精确 SHA CI 尚待验；**ISOLATED TEST — NOT PRODUCTION VERIFIED**。无生产部署、真实数据、DB schema、Worker/GPU/OSS/模型改动；不 merge main/tag/release/force push。
+
 ## 2026-11-01｜42.24.471 完整 Bootstrap 快照缺失与历史投影并发隔离测量（准确 CI 待验）
 
 准确 470 `47de319e766630e2ede576396f13f7d798ed893a` 已核 22/22 Actions success，Node 1461/1461、Chrome 316/316；其真实缓存 Bootstrap 路由 220/1000 虚构历史 Task 首次投影 73.884/369.402ms、20 温样本 P50 17.064/57.126ms、P95 17.341/62.624ms，最多返回 50 条，非生产。本批只增强现有性能测试：用临时真实项目/素材/标注/算法/任务仓储测 `/api/v53/bootstrap/snapshot` 快照缺失首次构建及随后 20 次命中；在 1000/10000 历史文件场景补 4 线程×5 批次锁竞争实际耗时。无真实图片/GT 写入、Worker/训练/GPU、生产网络、生产 DB 或 OSS 操作；不改任何业务逻辑、原缓存与一致性规则。**ISOLATED TEST — NOT PRODUCTION VERIFIED**，新 SHA 和完整 CI 待验。参见 `docs/performance/2026-10-29-p0-followup.md`，不 merge main/tag/release/force-push/部署。

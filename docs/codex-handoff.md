@@ -1,3 +1,7 @@
+## 2026-11-01｜42.24.472 历史投影目录枚举微优化（准确 SHA CI 待核）
+
+471 `5e415a5eaf7740c393e9b3b100e12ef2706a8a7b` 已核 22/22 Actions success、Node 1461/1461、Chrome 316/316；原 P0 性能测试新增临时真实项目完整快照缺失、4 并发历史文件检查均在 CI 真执行。10k 文件原锁序列化的 4 并发批中位 502.676ms。本批在同一 HistoryProjection Owner 仅改目录扫描到 os.scandir 与 os.stat，保持完整文件签名、外部状态失效、load Path、复制隔离与 read lock。临时 10k JSON 单线程交替 A/B，各 20 温样本 P50 162.702→64.766ms、P95 184.978→76.146ms，仅是该段微基准，不代表完整路由或生产。已有历史增删改与复制单测保留，新增非 job/空目录检测单测；无新的缓存/Task Owner/GT/Worker/DB schema/OSS/GPU/生产写入。准确 472 SHA 与完整 CI 待核，ISOLATED TEST — NOT PRODUCTION VERIFIED。不部署、不 merge main/tag/release、不得 force push。详见 `docs/performance/2026-10-29-p0-followup.md`。
+
 ## 2026-11-01｜42.24.471 Bootstrap 原路由快照缺失与历史锁竞争测量（新 SHA CI 待核）
 
 前序 470 精确 `47de319e766630e2ede576396f13f7d798ed893a`、22/22 GitHub Actions success；Node 1461/1461、Chrome 316/316。470 的真实缓存 Bootstrap 220/1000 虚构历史首次 73.884/369.402ms、20 温 P50 17.064/57.126ms、P95 17.341/62.624ms，API 始终最多 50 条，非生产。471 仅在 `tests/performance/test_platform_hot_paths.py` 增加无快照真实项目/素材/注释仓储与任务历史的原路由首次构建+20 温缓存成功路径；已有 1000/10000 历史文件投影再加 4 同时调用×5 轮的锁竞争测量。空正式 GT 仓储不写入假 GT；无生产网络/Worker/任务/GPU/OSS/SQLite schema 操作。精准新 SHA、全部 CI 与分布数值尚未核验，**ISOLATED TEST — NOT PRODUCTION VERIFIED**。不合并 main/tag/release/force push；后续真实 HAR/Browser 长任务和冷 OS I/O 仍开放。详见原 P0 性能台账。
