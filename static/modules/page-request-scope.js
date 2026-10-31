@@ -81,7 +81,10 @@ export class PageRequestScope {
     const scopeEligible = (method === 'GET' || method === 'HEAD')
       && isApiRequest(input)
       && !isApplicationLifecycleRequest(input)
-      && !init?.signal;
+      // Request objects can already own a signal; do not override it with the
+      // page signal when init.signal is absent.
+      && !init?.signal
+      && !input?.signal;
     if (!scopeEligible) return nativeFetch(input, init);
 
     const generation = this.generation;

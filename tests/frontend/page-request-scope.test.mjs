@@ -125,3 +125,32 @@ test('caller-owned signal still passes through and is not a navigation cancellat
   await assert.rejects(request,e=>e.name==='AbortError'&&!isPageNavigationCancelled(e));
   assert.equal(scope.abortedRequests,0);
 });
+
+test('Request input retains caller-owned signal across navigation', async () => {
+  const fake=deferredFetch();
+  const scope=new PageRequestScope({page:'算法列表',fetchImpl:fake.fetchImpl});
+  const controller=new AbortController();
+  const input=new Request('https://example.test/api/projects/p/algorithms',{signal:controller.signal});
+  const responsePromise=scope.fetch(input);
+  assert.equal(fake.calls.length,1);
+  assert.equal(fake.calls[0].input,input);
+  assert.equal(fake.calls[0].init.signal,undefined);
+  scope.navigate('数据集');
+  assert.equal(input.signal.aborted,false);
+  fake.calls[0].resolve({ok:true});
+  assert.equal((await responsePromise).ok,true);
+  assert.equal(scope.abortedRequests,0);
+});
+
+test('Request caller abort is preserved instead of recast as page navigation', async () => {
+  const controller=new AbortController();
+  const input=new Request('https://example.test/api/projects/p/algorithms',{signal:controller.signal});
+  const scope=new PageRequestScope({page:'算法列表',fetchImpl:(request,init)=>new Promise((_resolve,reject)=>{
+    assert.equal(init.signal,undefined);
+    request.signal.addEventListener('abort',()=>reject(abortError()),{once:true});
+  })});
+  const pending=scope.fetch(input);
+  controller.abort('caller-stop');
+  await assert.rejects(pending,error=>error.name==='AbortError'&&!isPageNavigationCancelled(error));
+  assert.equal(scope.abortedRequests,0);
+});

@@ -1,3 +1,5 @@
+> **2026-10-31 / 42.24.460 原生 Request.signal 归属 P0**：459 `8f9a5f3c` 的资源版本断言已提交，准确 CI 仍核验中。本批更正 `PageRequestScope` 对 `new Request(url,{signal})` 的自动覆盖行为，显式保留调用方 signal；普通 GET 页面 Abort 与 POST 持久任务语义不变，新增两条 Node 测试；更新模块及入口缓存键。准确 460 SHA 的完整 CI/真实生产数据/性能尚待核。详见 `docs/performance/2026-10-29-p0-followup.md`。
+
 > **2026-10-31 / 42.24.459 静态资源版本断言修复**：458 `7831405198eb136366304ee78433b70020026e3a` 的 37 个工作流 36 成功，Frontend Runtime Stabilization 的 Chrome 三分片均绿，Node 1438/1440；两个失败来自旧资源标记 422614/422620，主入口已加载 422615/422621。本轮仅更新相应测试断言和文档，无业务运行时改动、无生产部署；准确 459 SHA CI 待核。详见 `docs/performance/2026-10-29-p0-followup.md`。
 
 > **2026-10-31 / 42.24.458 全站请求生命周期 457 回归修复（CI 待核）**：457 `70abc307` Actions 37/38 成功，Frontend Runtime Stabilization 失败：4 项旧单测合同及 1 项 Chrome 训练素材选择器加载／批量选择按钮态。修复测试对项目和页面代次缓存、状态统计新签名及缓存版本标记的准确断言；原 `TrainingMaterialPickerRuntime` 新增繁忙态按钮同步，并在页面加载中禁止确认。源代码隔离运行检查通过，正式数据与生产服务未触碰，458 准确新 CI 待验收。详情 `docs/performance/2026-10-29-p0-followup.md`。

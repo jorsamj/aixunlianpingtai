@@ -1,3 +1,7 @@
+## 2026-10-31｜42.24.460 Request signal 所有权边界补齐
+
+以唯一开发分支 459 `8f9a5f3cc614924a2e4433b969600651682e1394` 为基线。`PageRequestScope` 的普通 GET/HEAD 仍随页面导航取消，但 `Request` 对象内嵌 AbortSignal 的调用方不再被无条件替换为页面控制器；`init.signal` 既有排除规则不变。新增两个 Node 回归用例，更改原模块 import 和主入口 cache bust，VERSION 随实际提交升级为 460。静态语法检查已完成；460 准确 Node/Chrome CI、A→B→A 真实浏览器压力及生产 HAR/P50/P95 须单独核实。正式 GT、模型、训练、转换、OSS、生产数据库未操作。
+
 ## 2026-10-31｜42.24.459 资源缓存版本合同修复（准确 CI 待核）
 
 从 458 `7831405198eb136366304ee78433b70020026e3a` 接续：全部 37 条 CI 为 36 绿、1 红；红色 Frontend Runtime Stabilization 的真实 Chrome 3/3 分片已绿，Node 1438/1440，唯二红项皆为 version-marker-owner 的旧 `422614`/`422620` 静态缓存标记。459 同步到主入口实际 `422615`/`422621`，不删除测试、不修改运行时。准确新 CI 及真实生产性能仍需验收，见 `docs/performance/2026-10-29-p0-followup.md`。
