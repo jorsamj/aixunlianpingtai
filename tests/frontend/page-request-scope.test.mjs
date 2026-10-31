@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import {PageRequestScope} from '../../static/modules/page-request-scope.js';
+import {PageRequestScope, isPageNavigationCancelled} from '../../static/modules/page-request-scope.js';
 
 function abortError() {
   const error = new Error('aborted');
@@ -45,11 +45,9 @@ test('navigating aborts old page GET and quarantines its continuation', async ()
   scope.navigate('数据集');
   assert.equal(fake.calls[0].init.signal.aborted, true);
 
-  const outcome = await Promise.race([
-    request.then(() => 'settled', () => 'rejected'),
-    new Promise(resolve => setTimeout(() => resolve('pending'), 15)),
-  ]);
-  assert.equal(outcome, 'pending');
+  let finalized = false;
+  await assert.rejects(request.finally(() => {finalized = true;}), isPageNavigationCancelled);
+  assert.equal(finalized, true);
   assert.equal(scope.page, '数据集');
   assert.equal(scope.abortedRequests, 1);
 });
@@ -60,7 +58,8 @@ test('native fetch rejection with the exact navigation reason is quarantined too
   })});
   const request=scope.fetch('/api/local_models');
   scope.navigate('模型配置');
-  assert.equal(await Promise.race([request.then(()=>'settled',()=>'rejected'),new Promise(resolve=>setTimeout(()=>resolve('pending'),15))]),'pending');
+  await assert.rejects(request, error => error.code === 'PAGE_NAVIGATION_CANCELLED');
+  assert.equal(isPageNavigationCancelled('读取失败：__PAGE_NAVIGATION_CANCELLED__'), true);
   assert.equal(scope.abortedRequests,1);
   const error=new Error('real network failure');
   const active=new PageRequestScope({page:'模型配置',fetchImpl:async()=>{throw error;}});
@@ -105,4 +104,24 @@ test('bootstrap lifecycle GETs survive page navigation and are not page-scoped',
   assert.equal(await request, response);
   assert.equal(scope.page, '数据集');
   assert.equal(scope.abortedRequests, 0);
+});
+
+test('a native response arriving after navigation cannot be consumed', async () => {
+  let resolve;
+  const scope = new PageRequestScope({page:'A',fetchImpl:()=>new Promise(r=>{resolve=r;})});
+  const request = scope.fetch('/api/data');
+  scope.navigate('B');
+  resolve({ok:true});
+  await assert.rejects(request, isPageNavigationCancelled);
+  assert.equal(scope.abortedRequests, 1);
+});
+
+test('caller-owned signal still passes through and is not a navigation cancellation', async () => {
+  const fake=deferredFetch();
+  const scope=new PageRequestScope({page:'A',fetchImpl:fake.fetchImpl});
+  const controller=new AbortController();
+  const request=scope.fetch('/api/data',{signal:controller.signal});
+  controller.abort();
+  await assert.rejects(request,e=>e.name==='AbortError'&&!isPageNavigationCancelled(e));
+  assert.equal(scope.abortedRequests,0);
 });

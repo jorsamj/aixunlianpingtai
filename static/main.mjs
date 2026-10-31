@@ -16,8 +16,8 @@ import {installNegativeSampleRuntime} from './modules/negative-samples.js?v=2026
 import {installTrainingLabelRuntime} from './modules/training-labels.js?v=422574';
 import {installNavigationStability} from './modules/navigation-stability.js?v=20261024';
 import {persistUiState} from './modules/ui-state.js?v=422500';
-import {installPageRequestScope} from './modules/page-request-scope.js?v=20261024';
-import {installPollRegistry} from './modules/poll-registry.js?v=422521';
+import {installPageRequestScope, isPageNavigationCancelled} from './modules/page-request-scope.js?v=20261031-p0';
+import {installPollRegistry} from './modules/poll-registry.js?v=422522';
 import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=4226389';
 import {installExternalAlgorithmPlatformRuntime} from './modules/external-algorithm-platform.js?v=63023';
 import {installChangLianDataBrowserRuntime} from './modules/changlian-data-browser.js?v=63002';
@@ -77,6 +77,12 @@ function fallbackToast(message) {
 }
 
 if (typeof window.toast !== 'function') window.toast = fallbackToast;
+// Classic catch blocks are generic: filter only the reserved navigation marker.
+const lifecycleToastOriginal = window.toast;
+window.toast = function lifecycleToast(message, ...args) {
+  if (isPageNavigationCancelled(message)) return;
+  return lifecycleToastOriginal.call(this, message, ...args);
+};
 
 // Navigation never owns the complete material pool. Features that need every
 // material must hydrate it explicitly at the user-action boundary.
@@ -415,47 +421,54 @@ const PAGE_EXTRAS_CACHE_TTL_MS = 5 * 60 * 1000;
 const pageExtrasLoadedAt = new Map();
 const pageExtrasInflight = new Map();
 const PAGE_EXTRAS_OWNERS = new Set(['训练资源', '模型配置', '质量中心']);
-
 function pageExtrasEnabled(page) {
-  return PAGE_EXTRAS_OWNERS.has(page)
-    && (page !== '质量中心' || state.qualityCenterTab411 === 'detect');
+  return PAGE_EXTRAS_OWNERS.has(page) && (page !== '质量中心' || state.qualityCenterTab411 === 'detect');
 }
-
-function adoptPageExtrasInflight(page, promise) {
-  const cacheKey=page==='质量中心'?`${state.project?.id||''}:${page}`:page;
-  if (!pageExtrasEnabled(page) || !promise || typeof promise.then !== 'function') return null;
-  if (pageExtrasInflight.has(cacheKey)) return pageExtrasInflight.get(cacheKey);
-  const task = Promise.resolve(promise)
-    .then(() => { pageExtrasLoadedAt.set(cacheKey, Date.now()); })
-    .catch(error => notify(error?.message || error))
-    .finally(() => pageExtrasInflight.delete(cacheKey));
-  pageExtrasInflight.set(cacheKey, task);
+function pageExtrasOwner(page) {
+  const projectId=String(state.project?.id || '');
+  const generation=pageRequestScope.stats().generation;
+  const cacheKey=JSON.stringify([projectId,page]);
+  return {page,projectId,generation,cacheKey,inflightKey:JSON.stringify([cacheKey,generation])};
+}
+function pageExtrasOwnerCurrent(o) {
+  return state.page === o.page && String(state.project?.id || '') === o.projectId
+    && pageRequestScope.stats().generation === o.generation && pageExtrasEnabled(o.page);
+}
+function trackPageExtras(o,promise,onSuccess=()=>{}) {
+  const existing=pageExtrasInflight.get(o.inflightKey);
+  if(existing) return existing;
+  let task;
+  task=Promise.resolve(promise).then(()=>{
+    if(!pageExtrasOwnerCurrent(o))return;
+    pageExtrasLoadedAt.set(o.cacheKey,Date.now());
+    return onSuccess();
+  }).catch(error=>{
+    if(pageExtrasOwnerCurrent(o)&&!isPageNavigationCancelled(error))notify(error?.message||error);
+  }).finally(()=>{
+    if(pageExtrasInflight.get(o.inflightKey)===task)pageExtrasInflight.delete(o.inflightKey);
+  });
+  pageExtrasInflight.set(o.inflightKey,task);
   return task;
 }
-
-function refreshPageExtrasInBackground(page, {force = false} = {}) {
-  const cacheKey=page==='质量中心'?`${state.project?.id||''}:${page}`:page;
-  if (!pageExtrasEnabled(page) || typeof window.loadPageExtras413 !== 'function') return null;
-  const loadedAt = Number(pageExtrasLoadedAt.get(cacheKey) || 0);
-  const age = Date.now() - loadedAt;
-  if (!force && loadedAt > 0 && age >= 0 && age < PAGE_EXTRAS_CACHE_TTL_MS) return null;
-  if (pageExtrasInflight.has(cacheKey)) return pageExtrasInflight.get(cacheKey);
-  const loadTask = page === '训练资源' && typeof window.refreshTrainingResourceTruthV3 === 'function'
-    ? window.refreshTrainingResourceTruthV3()
-    : window.loadPageExtras413(page);
-  const task = Promise.resolve(loadTask).then(() => {
-    pageExtrasLoadedAt.set(cacheKey, Date.now());
-    if (state.page !== page) return;
-    if (page === '训练资源' && window.patchTrainingResourceCardsV3?.()) return;
-    if (page === '模型配置' && window.patchModelPromptTemplatesV35?.()) return;
-    if (navigationStabilityRuntime.hasPageOwner(page)) {
-      renderCanonicalOwner(page, {source: 'background-data'});
-    } else {
-      render();
-    }
-  }).catch(error => notify(error?.message || error)).finally(() => pageExtrasInflight.delete(cacheKey));
-  pageExtrasInflight.set(cacheKey, task);
-  return task;
+function adoptPageExtrasInflight(page,promise) {
+  if(!pageExtrasEnabled(page)||!promise||typeof promise.then!=='function')return null;
+  return trackPageExtras(pageExtrasOwner(page),promise);
+}
+function refreshPageExtrasInBackground(page,{force=false}={}) {
+  if(!pageExtrasEnabled(page)||typeof window.loadPageExtras413!=='function')return null;
+  const o=pageExtrasOwner(page);
+  const age=Date.now()-Number(pageExtrasLoadedAt.get(o.cacheKey)||0);
+  if(!force&&pageExtrasLoadedAt.has(o.cacheKey)&&age>=0&&age<PAGE_EXTRAS_CACHE_TTL_MS)return null;
+  const existing=pageExtrasInflight.get(o.inflightKey);
+  if(existing)return existing;
+  const loadTask=page==='训练资源'&&typeof window.refreshTrainingResourceTruthV3==='function'
+    ?window.refreshTrainingResourceTruthV3():window.loadPageExtras413(page);
+  return trackPageExtras(o,loadTask,()=>{
+    if(page==='训练资源'&&window.patchTrainingResourceCardsV3?.())return;
+    if(page==='模型配置'&&window.patchModelPromptTemplatesV35?.())return;
+    if(navigationStabilityRuntime.hasPageOwner(page))return renderCanonicalOwner(page,{source:'background-data'});
+    return render();
+  });
 }
 window.PlatformCore.runtime.refreshPageExtras = refreshPageExtrasInBackground;
 

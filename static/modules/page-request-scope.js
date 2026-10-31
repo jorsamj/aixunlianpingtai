@@ -1,4 +1,15 @@
-const NEVER = new Promise(() => {});
+// A retired read must settle so the caller's finally releases its state.
+export const PAGE_NAVIGATION_CANCELLED = '__PAGE_NAVIGATION_CANCELLED__';
+export function isPageNavigationCancelled(value) {
+  return value?.code === 'PAGE_NAVIGATION_CANCELLED'
+    || String(typeof value === 'string' ? value : value?.message || '').includes(PAGE_NAVIGATION_CANCELLED);
+}
+function cancelledNavigation() {
+  const error = new Error(PAGE_NAVIGATION_CANCELLED);
+  error.name = 'AbortError';
+  error.code = 'PAGE_NAVIGATION_CANCELLED';
+  return error;
+}
 
 function requestMethod(input, init = {}) {
   return String(init?.method || input?.method || 'GET').toUpperCase();
@@ -35,10 +46,6 @@ function isApplicationLifecycleRequest(input) {
   return path === '/api/v53/bootstrap/status'
     || path === '/api/v53/bootstrap/snapshot'
     || path === '/api/v53/bootstrap/start';
-}
-
-function isAbortError(error) {
-  return error?.name === 'AbortError' || error?.code === 20;
 }
 
 export class PageRequestScope {
@@ -83,18 +90,12 @@ export class PageRequestScope {
 
     try {
       const response = await nativeFetch(input, {...init, signal: controller.signal});
-      if (controller.signal.aborted || !this.isCurrent(generation, page)) {
-        this.abortedRequests += 1;
-        return NEVER;
-      }
+      if (controller.signal.aborted || !this.isCurrent(generation, page)) throw cancelledNavigation();
       return response;
     } catch (error) {
-      if ((isAbortError(error) || error === controller.signal.reason) && (controller.signal.aborted || !this.isCurrent(generation, page))) {
+      if (controller.signal.aborted || !this.isCurrent(generation, page)) {
         this.abortedRequests += 1;
-        // Legacy app.js callers often catch every error and show a toast. Keep a request
-        // invalidated by navigation suspended instead: its caller can no longer mutate state/DOM,
-        // and no spurious "request failed" message is shown to the user.
-        return NEVER;
+        throw cancelledNavigation();
       }
       throw error;
     }
