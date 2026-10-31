@@ -48,6 +48,16 @@ function isApplicationLifecycleRequest(input) {
     || path === '/api/v53/bootstrap/start';
 }
 
+function isPageScopedRead(input, init = {}) {
+  const method = requestMethod(input, init);
+  return (method === 'GET' || method === 'HEAD')
+    && isApiRequest(input)
+    && !isApplicationLifecycleRequest(input)
+    // A Request or init with its own signal has a different lifecycle owner.
+    && !init?.signal
+    && !input?.signal;
+}
+
 export class PageRequestScope {
   constructor({page = '', fetchImpl} = {}) {
     this.page = String(page || '');
@@ -73,20 +83,7 @@ export class PageRequestScope {
     return generation === this.generation && String(page || '') === this.page;
   }
 
-  async fetch(input, init = {}) {
-    const nativeFetch = this.fetchImpl;
-    if (typeof nativeFetch !== 'function') throw new Error('PageRequestScope requires fetchImpl');
-
-    const method = requestMethod(input, init);
-    const scopeEligible = (method === 'GET' || method === 'HEAD')
-      && isApiRequest(input)
-      && !isApplicationLifecycleRequest(input)
-      // Request objects can already own a signal; do not override it with the
-      // page signal when init.signal is absent.
-      && !init?.signal
-      && !input?.signal;
-    if (!scopeEligible) return nativeFetch(input, init);
-
+  async _runUntilRetired(operation, {countFetchCancellation = false} = {}) {
     const generation = this.generation;
     const page = this.page;
     const controller = this.controller;
@@ -101,21 +98,40 @@ export class PageRequestScope {
       if (controller.signal.aborted) onRetire();
     });
     try {
-      const response = await Promise.race([
-        nativeFetch(input, {...init, signal: controller.signal}),
-        retired,
-      ]);
+      let active;
+      try { active = Promise.resolve(operation(controller.signal)); }
+      catch (error) { active = Promise.reject(error); }
+      const response = await Promise.race([active, retired]);
       if (controller.signal.aborted || !this.isCurrent(generation, page)) throw cancelledNavigation();
       return response;
     } catch (error) {
       if (controller.signal.aborted || !this.isCurrent(generation, page)) {
-        this.abortedRequests += 1;
+        if (countFetchCancellation) this.abortedRequests += 1;
         throw cancelledNavigation();
       }
       throw error;
     } finally {
       controller.signal.removeEventListener('abort', onRetire);
     }
+  }
+
+
+  async fetch(input, init = {}) {
+    const nativeFetch = this.fetchImpl;
+    if (typeof nativeFetch !== 'function') throw new Error('PageRequestScope requires fetchImpl');
+    if (!isPageScopedRead(input, init)) return nativeFetch(input, init);
+    return this._runUntilRetired(
+      signal => nativeFetch(input, {...init, signal}),
+      {countFetchCancellation: true},
+    );
+  }
+
+  // The fetch promise ends at response headers. Keep the same page owner until
+  // callers also finish consuming the response body (json/text/error bodies).
+  // Mutations, bootstrap reads and caller-owned signals still bypass this race.
+  runPageRead(input, init, operation) {
+    if (!isPageScopedRead(input, init)) return operation();
+    return this._runUntilRetired(() => operation());
   }
 
   destroy() {
@@ -139,6 +155,7 @@ export function installPageRequestScope({getPage} = {}) {
     scope,
     navigate(page) { return scope.navigate(page); },
     alignPage(page) { scope.alignPage(page); },
+    runPageRead(input, init, operation) { return scope.runPageRead(input, init, operation); },
     stats() {
       return {
         page: scope.page,

@@ -66,6 +66,14 @@ test('native fetch rejection with the exact navigation reason is quarantined too
   await assert.rejects(active.fetch('/api/model-configs'),error);
 });
 
+test('a synchronous transport failure settles without leaving an orphan retirement promise',async()=>{
+  const error=new Error('transport unavailable');
+  const scope=new PageRequestScope({page:'A',fetchImpl:()=>{throw error;}});
+  await assert.rejects(scope.fetch('/api/data'),error);
+  scope.navigate('B');
+  assert.equal(scope.abortedRequests,0);
+});
+
 test('POST mutations are not automatically cancelled by page navigation', async () => {
   const fake = deferredFetch();
   const scope = new PageRequestScope({page: '训练任务', fetchImpl: fake.fetchImpl});

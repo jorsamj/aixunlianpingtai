@@ -171,3 +171,63 @@ test('retired page-scope GETs settle across repeated A→B→A even when native 
   });
 });
 
+test('response-body retirement settles ten page reads without canceling caller-owned POSTs',async({page})=>{
+  await ready(page);
+  const result=await page.evaluate(async()=>{
+    const {PageRequestScope,isPageNavigationCancelled}=await import('/static/modules/page-request-scope.js?v=20261031-p0body');
+    const bodies=[];
+    const scope=new PageRequestScope({page:'A',fetchImpl:async()=>({json:()=>new Promise(resolve=>bodies.push(resolve))})});
+    const read=(method='GET')=>scope.runPageRead('/api/page-data',{method},async()=>{
+      const response=await scope.fetch('/api/page-data',{method});
+      return response.json();
+    });
+    const outcomes=[];
+    let finalized=0;
+    for(let index=0;index<10;index++){
+      const previous=read().finally(()=>{finalized++});
+      outcomes.push(previous.then(()=> 'accepted',error=>isPageNavigationCancelled(error)?'cancelled':'unexpected'));
+      for(let n=0;n<6;n++)await Promise.resolve();
+      scope.navigate(index%2===0?'B':'A');
+    }
+    const latest=read();
+    for(let n=0;n<6;n++)await Promise.resolve();
+    bodies[10]({current:true});
+    const current=await latest;
+    const previous=await Promise.all(outcomes);
+    bodies.slice(0,10).forEach(resolve=>resolve({retired:true}));
+    const mutation=read('POST');
+    for(let n=0;n<6;n++)await Promise.resolve();
+    scope.navigate('B');
+    bodies[11]({task_id:'existing'});
+    const submitted=await mutation;
+    return {previous,finalized,current,submitted,abortedFetches:scope.abortedRequests};
+  });
+  expect(result).toEqual({
+    previous:Array(10).fill('cancelled'),finalized:10,current:{current:true},
+    submitted:{task_id:'existing'},abortedFetches:0,
+  });
+});
+
+test('quality refresh cancellation cannot repaint the next canonical page',async({page})=>{
+  let signalStarted,releaseResponse;
+  const started=new Promise(resolve=>{signalStarted=resolve});
+  const allowResponse=new Promise(resolve=>{releaseResponse=resolve});
+  await page.route('**/api/v44/projects/*/quality-center',async route=>{
+    signalStarted();
+    await allowResponse;
+    try{await route.fulfill({status:503,json:{detail:'retired quality request'}})}catch(_){/* navigation may close transport */}
+  });
+  await ready(page);
+  await page.evaluate(()=>{
+    window.setPage('质量中心');
+    void window.refreshQuality411();
+  });
+  await started;
+  await page.evaluate(()=>window.setPage('算法列表'));
+  await expect(page.locator('#title')).toContainText('算法列表');
+  await expect(page.locator('#view .quality411-tabs')).toHaveCount(0);
+  releaseResponse();
+  await expect(page.locator('#view .quality411-tabs')).toHaveCount(0);
+  await expect(page.locator('#view')).not.toContainText('retired quality request');
+});
+

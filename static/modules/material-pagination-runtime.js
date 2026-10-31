@@ -278,8 +278,11 @@ export function installMaterialPaginationRuntime() {
       headers: {Accept: 'application/json'},
       credentials: 'same-origin',
     }).then(responseJson).then(data => {
-      if (revision === statusCountsRevision && projectId() === pid && String(state.materialSourceFilter61 || 'all') === sourceId)
-        statusCountsCache = {key, at: Date.now(), data};
+      // Invalidation releases the flight slot, but earlier awaiters may still
+      // be waiting. Never hand them a retired count that could rewrite totals.
+      if (revision !== statusCountsRevision || projectId() !== pid || String(state.materialSourceFilter61 || 'all') !== sourceId)
+        throw Object.assign(new Error('素材状态统计结果已过期'), {code:'MATERIAL_STATUS_COUNTS_RETIRED'});
+      statusCountsCache = {key, at: Date.now(), data};
       return data;
     });
     statusCountsFlight = task;
@@ -490,6 +493,7 @@ export function installMaterialPaginationRuntime() {
     window.NegativePoolRuntime?.decorateOriginal('materials');
         const counts = await totalsPromise;
         if (serial !== requestSerial || state.page !== expectedPage || !isPagedDataset()) return {stale: true};
+        if (counts.error?.code === 'MATERIAL_STATUS_COUNTS_RETIRED') return {stale: true};
         if (counts.error) {
           info.statusCountsAvailable = false;
           window.toast?.(`素材状态数量读取失败，可刷新重试：${counts.error.message || counts.error}`);

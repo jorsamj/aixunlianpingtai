@@ -6,8 +6,11 @@ import vm from 'node:vm';
 const app = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
 
 test('shared API preserves structured governance failure reason and code', async () => {
-  const source=app.split('\n')[1];
-  const context={FormData,fetch:async()=>new Response(JSON.stringify({detail:{code:'MATERIAL_INTEGRITY_PLAN_STALE',message:'标注已变化，请重新预检'}}),{status:409}),result:null};
+  const begin=app.indexOf('const api=(url,opt={})=>{');
+  const end=app.indexOf('// Shared request identity for ordinary image uploads',begin);
+  assert.ok(begin>=0&&end>begin,'exercise the complete current API implementation');
+  const source=app.slice(begin,end);
+  const context={window:{},FormData,fetch:async()=>new Response(JSON.stringify({detail:{code:'MATERIAL_INTEGRITY_PLAN_STALE',message:'标注已变化，请重新预检'}}),{status:409}),result:null};
   vm.createContext(context);
   vm.runInContext(source+';result=api("/api/test").catch(error=>({message:error.message,code:error.code}));',context);
   const error=await context.result;

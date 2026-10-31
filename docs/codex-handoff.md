@@ -1,3 +1,7 @@
+## 2026-10-31｜42.24.463 PageRequestScope 响应体、质量中心旧错误覆盖与 462 CI 红灯
+
+以准确远端 `7d705ed68b7a8114258046b64321f8d1d66b4816`／462 起步；完整 Actions 40/41 成功，前端 1445/1447 的两个失败来自场景与普通模型目录旧结果提交合同。本轮在现有 Owner 内修复：普通页面 API GET/HEAD 从请求头延伸到 JSON/Text 最终结算；质量中心旧刷新不得在页面/标签/项目变化后回写 DOM 或缓存；独立模型目录以最新请求身份正确保存且阻止同目录 ABA 覆盖；页面 extras 局部失败不打成功 TTL；素材状态统计被 revision 淘汰的旧 Promise 不回写。所有 POST、调用方信号、bootstrap、正式 GT/Task/Worker 保持原有合同。新增动态 Node 与原 Chrome 回归，锁定依赖下本地完整前端 **1459/1459**；Chrome 本地缺 Python `fastapi/uvicorn` 和浏览器，准确 463 SHA 全部 CI 与生产 P50/P95 待核。唯一详述在 `performance/2026-10-29-p0-followup.md`；未部署、不 merge main/tag/release/force push。
+
 ## 2026-10-31｜42.24.462 Legacy extras412 同项目 ABA 旧结果/Toast 保护
 
 在 461 `59553469491d09aada6a47afd02c875fc51cf633` 基础上，原 `extras412` 旧异步结果仅以项目 ID 防串扰，尚未防页面 A→B→A。此批在原 Owner 内捕获项目、页面及 PageRequestScope 导航代次，只有归属仍有效时允许 state 提交和错误 Toast。保持原 API/正式业务任务及页面加载时机，附真实函数隔离执行与两条 Node 回归。461/462 的 Chrome 与完整 CI 必须各按准确 SHA 核对，真实 HAR/P95、跨身份与 GPU 资源推荐仍未验收。详见原性能台账。

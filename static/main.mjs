@@ -16,7 +16,7 @@ import {installNegativeSampleRuntime} from './modules/negative-samples.js?v=2026
 import {installTrainingLabelRuntime} from './modules/training-labels.js?v=422574';
 import {installNavigationStability} from './modules/navigation-stability.js?v=20261024';
 import {persistUiState} from './modules/ui-state.js?v=422500';
-import {installPageRequestScope, isPageNavigationCancelled} from './modules/page-request-scope.js?v=20261031-p0race';
+import {installPageRequestScope, isPageNavigationCancelled} from './modules/page-request-scope.js?v=20261031-p0body';
 import {installPollRegistry} from './modules/poll-registry.js?v=422522';
 import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=4226390';
 import {installExternalAlgorithmPlatformRuntime} from './modules/external-algorithm-platform.js?v=63023';
@@ -50,7 +50,7 @@ import {qualityChartModel} from './modules/quality.js?v=421800';
 import {reportPresentation, metricChart, trainingCharts, formatPercentagePointDelta, metricCredibilityHtml, chatGPTAnalysisMaterial, trainingReportHtml, mountTrainingReport, mountReportCharts, evaluationChartGroups, mountEvaluationCharts, disposeReportViews, lineageReportHtml} from './modules/reports.js?v=20261022a';
 import {isActiveVideoTask, normalizeVideoTask, videoTaskFormValues} from './modules/video-tasks.js?v=421900';
 import {buildStorageSourcePayload, defaultStorageSource, enabledStorageSources, sourceMatches, storageSourceLabel} from './modules/storage.js?v=422202';
-import {buildMaterialQuery, installMaterialPaginationRuntime, requiresFullMaterialPool} from './modules/material-pagination-runtime.js?v=422615';
+import {buildMaterialQuery, installMaterialPaginationRuntime, requiresFullMaterialPool} from './modules/material-pagination-runtime.js?v=422616';
 import {installStorageImportProgressRuntime, storageImportProgressText} from './modules/storage-import-progress.js?v=422525';
 import {installUploadTaskCenter} from './modules/upload-task-center.js?v=66014';
 import {buildServerImportRequest, buildImportConfirmation, serverImportView} from './modules/server-material-import.js?v=422526';
@@ -438,9 +438,12 @@ function trackPageExtras(o,promise,onSuccess=()=>{}) {
   const existing=pageExtrasInflight.get(o.inflightKey);
   if(existing) return existing;
   let task;
-  task=Promise.resolve(promise).then(()=>{
+  task=Promise.resolve(promise).then(result=>{
     if(!pageExtrasOwnerCurrent(o))return;
-    pageExtrasLoadedAt.set(o.cacheKey,Date.now());
+    // allSettled extras can return with partial failures; that is not a fresh
+    // cache hit, even though successful fields should still patch their cards.
+    if(result?.cacheable===false)pageExtrasLoadedAt.delete(o.cacheKey);
+    else pageExtrasLoadedAt.set(o.cacheKey,Date.now());
     return onSuccess();
   }).catch(error=>{
     if(pageExtrasOwnerCurrent(o)&&!isPageNavigationCancelled(error))notify(error?.message||error);

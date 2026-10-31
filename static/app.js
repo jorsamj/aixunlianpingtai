@@ -1,5 +1,24 @@
 const $=s=>document.querySelector(s);const $$=s=>Array.from(document.querySelectorAll(s));
-const api=async(url,opt={})=>{const uploadTicket=opt.body instanceof FormData&&String(opt.method||'').toUpperCase()==='POST'&&/^\/api\/projects\/[^/?]+\/images$/.test(url)?preparePlainUpload411(opt.body):null;const r=await (typeof opt.onUploadProgress==='function'&&window.PlatformCore?.fetchWithUploadProgress?window.PlatformCore.fetchWithUploadProgress(url,opt):fetch(url,opt));if(uploadTicket&&r.ok)finishPlainUpload411(uploadTicket);if(!r.ok){const raw=await r.text();let body={};try{body=JSON.parse(raw)}catch{body={detail:raw}}const message=body.message||body.detail?.message||'操作失败',detail=typeof body.detail==='string'&&body.detail!==message?`：${body.detail}`:'',solution=body.solution?`\n建议：${body.solution}`:'';const error=new Error(`${message}${detail}${solution}`||'请求失败');error.code=body.code||body.detail?.code||`HTTP_${r.status}`;error.httpStatus=r.status;if(uploadTicket&&error.code==='UPLOAD_REQUEST_MANIFEST_MISMATCH')finishPlainUpload411(uploadTicket);throw error}const ct=r.headers.get('content-type')||'';return ct.includes('json')?r.json():r.text()};
+const api=(url,opt={})=>{
+  const read=async()=>{
+    const uploadTicket=opt.body instanceof FormData&&String(opt.method||'').toUpperCase()==='POST'&&/^\/api\/projects\/[^/?]+\/images$/.test(url)?preparePlainUpload411(opt.body):null;
+    const r=await (typeof opt.onUploadProgress==='function'&&window.PlatformCore?.fetchWithUploadProgress?window.PlatformCore.fetchWithUploadProgress(url,opt):fetch(url,opt));
+    if(uploadTicket&&r.ok)finishPlainUpload411(uploadTicket);
+    if(!r.ok){
+      const raw=await r.text();let body={};try{body=JSON.parse(raw)}catch{body={detail:raw}}
+      const message=body.message||body.detail?.message||'操作失败',detail=typeof body.detail==='string'&&body.detail!==message?`：${body.detail}`:'',solution=body.solution?`\n建议：${body.solution}`:'';
+      const error=new Error(`${message}${detail}${solution}`||'请求失败');error.code=body.code||body.detail?.code||`HTTP_${r.status}`;error.httpStatus=r.status;
+      if(uploadTicket&&error.code==='UPLOAD_REQUEST_MANIFEST_MISMATCH')finishPlainUpload411(uploadTicket);
+      throw error;
+    }
+    const ct=r.headers.get('content-type')||'';
+    return ct.includes('json')?r.json():r.text();
+  };
+  // The page owns the complete GET through body decoding, not just fetch headers.
+  // Caller-owned signals, bootstrap reads and POSTs stay outside its lifecycle.
+  const scope=window.PageRequestScopeRuntime;
+  return typeof scope?.runPageRead==='function'?scope.runPageRead(url,opt,read):read();
+};
 // Shared request identity for ordinary image uploads (fetch + XHR).
 // Session retry metadata is not a second Material/Annotation source of truth.
 const PLAIN_UPLOAD_PENDING_KEY411='plain-image-upload-request-ids-v1';
@@ -4953,8 +4972,22 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     view.innerHTML=qualityTabs411()+`<section class="panel"><div class="panel-body quality411-empty"><b>质量指标尚未计算</b><span>不再阻塞平台首次启动。需要查看时再计算一次，之后直接读取缓存。</span><button class="btn primary" onclick="refreshQuality411()">开始计算质量指标</button></div></section>`;
   };
   window.refreshQuality411=async function(){
-    const view=document.getElementById('view');if(view)view.innerHTML=qualityTabs411()+'<div class="quality411-loading"><b>正在计算质量指标</b><span>此计算只在您主动刷新时执行，其他页面不会被阻塞。</span></div>';
-    try{const r=await api(`/api/v44/projects/${pid()}/quality-center`);try{localStorage.setItem(qualityKey411(),JSON.stringify({ts:Date.now(),data:r}))}catch(e){};if(state.page==='质量中心'&&view&&state.qualityCenterTab411!=='detect')view.innerHTML=qualityTabs411()+qualityHtml411(r)}catch(e){if(view)view.innerHTML=qualityTabs411()+`<div class="alert err">${esc(e.message||e)}</div>`}
+    const project=String(pid()),tab=state.qualityCenterTab411,action=window.NavigationStability?.action?.('质量中心');
+    const view=document.getElementById('view');
+    const isCurrent=()=>state.page==='质量中心'&&String(pid())===project
+      &&state.qualityCenterTab411===tab&&(!action||action.isCurrent())
+      &&document.getElementById('view')===view;
+    if(!view||!isCurrent())return;
+    view.innerHTML=qualityTabs411()+'<div class="quality411-loading"><b>正在计算质量指标</b><span>此计算只在您主动刷新时执行，其他页面不会被阻塞。</span></div>';
+    try{
+      const r=await api(`/api/v44/projects/${project}/quality-center`);
+      if(!isCurrent())return;
+      try{localStorage.setItem(qualityKey411(),JSON.stringify({ts:Date.now(),data:r}))}catch(e){}
+      if(tab!=='detect')view.innerHTML=qualityTabs411()+qualityHtml411(r);
+    }catch(e){
+      if(!isCurrent()||e?.code==='PAGE_NAVIGATION_CANCELLED')return;
+      view.innerHTML=qualityTabs411()+`<div class="alert err">${esc(e.message||e)}</div>`;
+    }
   };
   // ---------- annotation overlays for cards / preview ----------
   function overlay411(x,limit=24){
@@ -5055,7 +5088,25 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     const isCurrentOwner=()=>String(state.project?.id||'')===String(id)
       && String(state.page||'')===page
       && (ownerGeneration===undefined||window.PageRequestScopeRuntime?.stats?.().generation===ownerGeneration);
-    const load=(key,url,field)=>tasks.push(api(url).then(value=>{if(!isCurrentOwner())return;const target=key==='testModels'&&page==='质量中心'?'scenarioTestModels':key;state[target]=field?(value?.[field]||[]):value;if(target==='scenarioTestModels')state.scenarioModelsProjectId=String(id)}));
+    // Both model catalogues are distinct project data. A response for the other
+    // catalogue may be kept, but no retired page may commit into the catalogue
+    // currently being viewed or supersede a newer read of its own field.
+    const modelReadOwners=state.__extrasModelReadOwners412||(state.__extrasModelReadOwners412=Object.create(null));
+    const load=(key,url,field)=>{
+      const target=key==='testModels'&&page==='质量中心'?'scenarioTestModels':key;
+      const modelRead=target==='testModels'||target==='scenarioTestModels'?Symbol(target):null;
+      if(modelRead)modelReadOwners[target]=modelRead;
+      tasks.push(api(url).then(value=>{
+        if(modelRead&&modelReadOwners[target]!==modelRead)return;
+        if(!isCurrentOwner()){
+          const currentCatalogue=state.page==='质量中心'?'scenarioTestModels'
+            :['测试发布','部署测试','检测台'].includes(state.page)?'testModels':'';
+          if(!modelRead||String(state.project?.id||'')!==String(id)||!currentCatalogue||currentCatalogue===target)return;
+        }
+        state[target]=field?(value?.[field]||[]):value;
+        if(target==='scenarioTestModels')state.scenarioModelsProjectId=String(id);
+      }));
+    };
     if(['训练任务','训练资源','自动迭代'].includes(page))load('targets',`/api/training_options?project_id=${id}`,'targets');
     if(['测试发布','部署测试'].includes(page))load('pending',`/api/v12/projects/${id}/publish/pending`,'items');
     if(['测试发布','部署测试','检测台','质量中心'].includes(page)){
@@ -5066,6 +5117,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     if(page==='模型配置')load('promptTemplates','/api/v35/prompt-templates','items');
     const results=await Promise.allSettled(tasks);for(const result of results)if(result.status==='rejected'&&isCurrentOwner())toast(result.reason?.message||String(result.reason));
     // Annotation JSON fallback is per image; ordinary refresh never starts a project scan.
+    return {cacheable:results.every(result=>result.status==='fulfilled')};
   }
   window.loadPageExtras413=extras412;
   window.refreshTestPageDataV3=async function(){

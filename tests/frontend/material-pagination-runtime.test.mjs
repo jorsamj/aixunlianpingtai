@@ -117,7 +117,8 @@ test('dataset tab and dashboard counters share a nonblocking, single-flight summ
   assert.match(runtime, /async function fetchStatusCounts61\(\{force = false\} = \{\}\)/);
   assert.match(runtime, /STATUS_COUNTS_REUSE_MS = 3000/);
   assert.match(runtime, /statusCountsRevision\+\+/);
-  assert.match(runtime, /revision === statusCountsRevision/);
+  assert.match(runtime, /revision !== statusCountsRevision/);
+  assert.match(runtime, /MATERIAL_STATUS_COUNTS_RETIRED/);
   assert.match(runtime, /\/materials\/status-counts\?/);
   assert.match(runtime, /statusCountsFlight && statusCountsFlightKey === key/);
   assert.match(runtime, /const totalsPromise = fetchStatusCounts61\(\)\.catch\(error => \(\{error\}\)\)/);
