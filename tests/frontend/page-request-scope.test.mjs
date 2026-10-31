@@ -154,3 +154,48 @@ test('Request caller abort is preserved instead of recast as page navigation', a
   await assert.rejects(pending,error=>error.name==='AbortError'&&!isPageNavigationCancelled(error));
   assert.equal(scope.abortedRequests,0);
 });
+
+test('page retirement settles a GET when the transport ignores AbortSignal indefinitely', async () => {
+  let fetchSignal;
+  const scope = new PageRequestScope({page:'算法列表',fetchImpl:(_url,{signal})=>{
+    fetchSignal=signal;
+    return new Promise(()=>{});
+  }});
+  let finalized=0;
+  const request=scope.fetch('/api/projects/algorithms').finally(()=>{finalized++;});
+  scope.navigate('训练任务');
+  await assert.rejects(request,isPageNavigationCancelled);
+  assert.equal(fetchSignal.aborted,true);
+  assert.equal(finalized,1);
+  assert.equal(scope.abortedRequests,1);
+});
+
+test('A→B→C→A retires every ignored old read and permits the new owner to finish',async()=>{
+  const pending=[];
+  const scope=new PageRequestScope({page:'A',fetchImpl:(url,{signal})=>new Promise(resolve=>{
+    pending.push({url,signal,resolve});
+  })});
+  const old=[],finalized=[];
+  for(const next of ['B','C','A']){
+    const index=old.length;
+    old.push(scope.fetch('/api/page-data').finally(()=>{finalized[index]=(finalized[index]||0)+1;}));
+    scope.navigate(next);
+  }
+  const latest=scope.fetch('/api/page-data');
+  await Promise.all(old.map(request=>assert.rejects(request,isPageNavigationCancelled)));
+  assert.deepEqual(finalized,[1,1,1]);
+  assert.equal(scope.abortedRequests,3);
+  pending.slice(0,3).forEach(row=>row.resolve({stale:true}));
+  pending[3].resolve({stale:false,id:'new-A'});
+  assert.deepEqual(await latest,{stale:false,id:'new-A'});
+});
+
+test('a caller-owned POST remains pending across navigation until its own transport resolves',async()=>{
+  let resolve;
+  const scope=new PageRequestScope({page:'A',fetchImpl:()=>new Promise(r=>{resolve=r})});
+  const request=scope.fetch('/api/projects/p/train/start',{method:'POST',body:'{}'});
+  scope.navigate('B');
+  resolve({ok:true,task_id:'existing-task'});
+  assert.deepEqual(await request,{ok:true,task_id:'existing-task'});
+  assert.equal(scope.abortedRequests,0);
+});

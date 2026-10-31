@@ -91,8 +91,20 @@ export class PageRequestScope {
     const page = this.page;
     const controller = this.controller;
 
+    // Some transports and test doubles do not reject when AbortSignal fires.
+    // Race their response against the owner's retirement so a cancelled page
+    // settles even if the underlying fetch ignores cancellation entirely.
+    let onRetire;
+    const retired = new Promise((_resolve, reject) => {
+      onRetire = () => reject(cancelledNavigation());
+      controller.signal.addEventListener('abort', onRetire, {once: true});
+      if (controller.signal.aborted) onRetire();
+    });
     try {
-      const response = await nativeFetch(input, {...init, signal: controller.signal});
+      const response = await Promise.race([
+        nativeFetch(input, {...init, signal: controller.signal}),
+        retired,
+      ]);
       if (controller.signal.aborted || !this.isCurrent(generation, page)) throw cancelledNavigation();
       return response;
     } catch (error) {
@@ -101,6 +113,8 @@ export class PageRequestScope {
         throw cancelledNavigation();
       }
       throw error;
+    } finally {
+      controller.signal.removeEventListener('abort', onRetire);
     }
   }
 

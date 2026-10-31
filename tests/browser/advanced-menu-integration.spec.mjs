@@ -135,3 +135,39 @@ test('advanced tabs use scoped underline styling across four groups and narrow s
     await expect(tabs.locator('[aria-selected="true"]')).toHaveText(label);
   }
 });
+
+test('retired page-scope GETs settle across repeated A→B→A even when native transport ignores abort',async({page})=>{
+  await ready(page);
+  const result=await page.evaluate(async()=>{
+    const {PageRequestScope,isPageNavigationCancelled}=await import('/static/modules/page-request-scope.js?v=20261031-p0race');
+    const pending=[];
+    const scope=new PageRequestScope({page:'A',fetchImpl:(_url,options)=>new Promise(resolve=>{
+      pending.push({resolve,signal:options.signal});
+    })});
+    let finalized=0;
+    const outcomes=[];
+    for(let i=0;i<10;i++){
+      const request=scope.fetch('/api/synthetic-list').finally(()=>{finalized++;});
+      outcomes.push(request.then(()=> 'accepted',error=>isPageNavigationCancelled(error)?'cancelled':'unexpected-error'));
+      scope.navigate(i%2===0?'B':'A');
+    }
+    const latest=scope.fetch('/api/synthetic-list');
+    const before=await Promise.race([
+      Promise.all(outcomes),
+      new Promise(resolve=>setTimeout(()=>resolve('timeout'),250)),
+    ]);
+    pending.slice(0,10).forEach(x=>x.resolve({stale:true}));
+    pending[10].resolve({current:true});
+    const after=await latest;
+    return {before,finalized,cancelled:scope.abortedRequests,latest:after,
+      currentSignalAborted:pending[10].signal.aborted};
+  });
+  expect(result).toEqual({
+    before:Array(10).fill('cancelled'),
+    finalized:10,
+    cancelled:10,
+    latest:{current:true},
+    currentSignalAborted:false,
+  });
+});
+

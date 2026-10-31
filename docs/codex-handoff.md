@@ -1,3 +1,7 @@
+## 2026-10-31｜42.24.461 页面取消安全结算与高频 ABA 回归
+
+460 `e032445d0332f15cbb8fa1026968c98a93dde5e4` 在准确 GitHub SHA 上完成 37/37 Actions success。461 进一步 RED 复现页面 GET 的底层 transport 忽略 abort 导致永久 pending，GREEN 对已归属页面请求使用 abort retirement Promise 竞速，finally 不遗留 listener，旧结果不污染再入页面。保留调用方 Request 自有 signal、post 持久任务、bootstrap 不受页面导航影响。隔离 10 次 A↔B 0 旧请求遗留，新增 Node 3 条＋Chrome 1 条。必须查询 461 自身 CI，不允许借用 460 全绿。生产 HAR/Server-Timing/P95、真实厂商 SDK 及任务不确定状态的现场验收仍未完成。权威进度见 `docs/performance/2026-10-29-p0-followup.md`。
+
 ## 2026-10-31｜42.24.460 Request signal 所有权边界补齐
 
 以唯一开发分支 459 `8f9a5f3cc614924a2e4433b969600651682e1394` 为基线。`PageRequestScope` 的普通 GET/HEAD 仍随页面导航取消，但 `Request` 对象内嵌 AbortSignal 的调用方不再被无条件替换为页面控制器；`init.signal` 既有排除规则不变。新增两个 Node 回归用例，更改原模块 import 和主入口 cache bust，VERSION 随实际提交升级为 460。静态语法检查已完成；460 准确 Node/Chrome CI、A→B→A 真实浏览器压力及生产 HAR/P50/P95 须单独核实。正式 GT、模型、训练、转换、OSS、生产数据库未操作。

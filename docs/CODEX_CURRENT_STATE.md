@@ -1,3 +1,5 @@
+> **2026-10-31 / 42.24.461 页面取消 transport 不响应的永久 pending 边界**：460 完整 SHA `e032445d0332f15cbb8fa1026968c98a93dde5e4` 已确认准确 **37/37 GitHub Actions 全绿**。本批复现原 transport 忽略 AbortSignal 时 page-scoped GET 永远 pending；在既有 PageRequestScope 增加导航 retirement Promise 竞争，finally 清理 listener；保留 Request 自带 signal、正式 POST、bootstrap 例外。隔离 10 次 A↔B 迭代 10/10 cancel、finally 10/10、监听器 0 遗留，并新增 Node+真实 Chrome 测试，461 本身 CI 待精确 SHA 核验。生产 P50/P95 未实测，无生产数据/部署操作。见 `docs/performance/2026-10-29-p0-followup.md`。
+
 > **2026-10-31 / 42.24.460 原生 Request.signal 归属 P0**：459 `8f9a5f3c` 的资源版本断言已提交，准确 CI 仍核验中。本批更正 `PageRequestScope` 对 `new Request(url,{signal})` 的自动覆盖行为，显式保留调用方 signal；普通 GET 页面 Abort 与 POST 持久任务语义不变，新增两条 Node 测试；更新模块及入口缓存键。准确 460 SHA 的完整 CI/真实生产数据/性能尚待核。详见 `docs/performance/2026-10-29-p0-followup.md`。
 
 > **2026-10-31 / 42.24.459 静态资源版本断言修复**：458 `7831405198eb136366304ee78433b70020026e3a` 的 37 个工作流 36 成功，Frontend Runtime Stabilization 的 Chrome 三分片均绿，Node 1438/1440；两个失败来自旧资源标记 422614/422620，主入口已加载 422615/422621。本轮仅更新相应测试断言和文档，无业务运行时改动、无生产部署；准确 459 SHA CI 待核。详见 `docs/performance/2026-10-29-p0-followup.md`。
