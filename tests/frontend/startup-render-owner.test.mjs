@@ -105,9 +105,11 @@ test('startup progress patches one stable boot card instead of rebuilding the wh
 
 
 test('canonical startup adopts the already-running page extras request instead of issuing a duplicate refresh', () => {
-  assert.match(main, /function adoptPageExtrasInflight\(page, promise\)/);
-  assert.match(main, /pageExtrasInflight\.set\(cacheKey, task\)/);
-  assert.match(main, /pageExtrasLoadedAt\.set\(cacheKey, Date\.now\(\)\)/);
+  assert.match(main, /function adoptPageExtrasInflight\(page,promise\)/);
+  assert.match(main, /pageExtrasInflight\.set\(o\.inflightKey,task\)/);
+  assert.match(main, /pageExtrasLoadedAt\.set\(o\.cacheKey,Date\.now\(\)\)/);
+  assert.match(main, /const cacheKey=JSON\.stringify\(\[projectId,page\]\)/);
+  assert.match(main, /inflightKey:JSON\.stringify\(\[cacheKey,generation\]\)/);
   const start = main.indexOf('const canonicalStartupPromise = window.__clInit?.();');
   const end = main.indexOf('document.documentElement.dataset.uiBuild', start);
   assert.ok(start >= 0 && end > start);

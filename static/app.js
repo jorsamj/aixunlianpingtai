@@ -6741,7 +6741,21 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
   };
   function conversionRead428(url,options={}){const deadline=window.PlatformCore?.withRequestDeadline;if(deadline)return deadline(signal=>api(url,{...options,signal}),{label:'转换配置读取',signal:options.signal});return api(url,options)}
   let conversionResolveAbort428=null,conversionResolveTimer428=null;
-  window.scheduleConvertContract428=()=>{clearTimeout(conversionResolveTimer428);conversionResolveAbort428?.abort();if(!document.querySelector('input[name="conv428Target"]:checked')?.dataset?.vendorId){window.refreshConvertResource428();return}++conversionContractTicket428;state.conv428Resolved=null;const submit=document.querySelector('.convert428-create [data-convert-submit]');if(submit)submit.disabled=true;conversionResolveTimer428=setTimeout(()=>window.refreshConvertContract428(),180)};
+  let conversionResolveFlight428=null,conversionResolveLast428=null,conversionResolveFailure428=null;
+  function retireConversionContract428(){
+    conversionResolveAbort428?.abort();conversionResolveAbort428=null;
+    conversionResolveFlight428=null;++conversionContractTicket428;
+  }
+  window.scheduleConvertContract428=()=>{
+    clearTimeout(conversionResolveTimer428);
+    if(!document.querySelector('input[name="conv428Target"]:checked')?.dataset?.vendorId){window.refreshConvertResource428();return}
+    const next=conversionResolveContext428();
+    if(conversionResolveFlight428&&(!next||conversionResolveFlight428.signature!==next.signature))retireConversionContract428();
+    if(conversionResolveLast428?.signature!==next?.signature)state.conv428Resolved=null;
+    const submit=document.querySelector('.convert428-create [data-convert-submit]');
+    if(submit)submit.disabled=true;
+    conversionResolveTimer428=setTimeout(()=>window.refreshConvertContract428(),180);
+  };
   let conversionResourcesLoading416=false;
   let conversionResourcesTicket416=0;
   let conversionOpenTicket416=0;
@@ -6752,30 +6766,38 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
   function applyConversionChipOptions428(target,resource,preferred=''){
     const chip=document.getElementById('conv428Chip');if(!chip)return [];
     const options=conversionChipOptions428(target,resource);
-    chip.innerHTML='<option value="">请选择目标芯片</option>'+options.map(c=>`<option value="${esc(c.value)}" ${c.enabled?'':'disabled'}>${esc(c.label)}${c.enabled?' · 检测中':' · 已停用'}</option>`).join('');
+    chip.innerHTML='<option value="">请选择目标芯片</option>'+options.map(c=>`<option value="${esc(c.value)}" ${c.enabled?'':'disabled'}>${esc(c.label)}${c.enabled?' · 待校验':' · 已停用'}</option>`).join('');
     chip.value=options.some(c=>c.value===preferred&&c.enabled)?preferred:(options.length===1&&options[0].enabled?options[0].value:'');
     chip.onchange=()=>{state.conv428PrecisionUserEdited=false;state.conv428Resolved=null;window.refreshConvertContract428()};
     return options;
   }
   let conversionContractTicket428=0;
-  window.refreshConvertContract428=async function(){
-    conversionResolveAbort428?.abort();conversionResolveAbort428=new AbortController();
-    const form=document.querySelector('.convert428-create'),project=pid(),ticket=++conversionContractTicket428,radio=document.querySelector('input[name="conv428Target"]:checked');
-    const vendorId=radio?.dataset?.vendorId,target=radio?.value,resourceId=document.getElementById('conv428Resource')?.value||'';
-
-    if(!vendorId)return null;
-    const button=document.querySelector('.convert428-create [data-convert-submit]');if(button)button.disabled=true;
+  function conversionResolveContext428(){
+    const form=document.querySelector('.convert428-create'),project=pid(),
+      radio=document.querySelector('input[name="conv428Target"]:checked');
+    const vendorId=radio?.dataset?.vendorId,target=radio?.value,
+      resourceId=document.getElementById('conv428Resource')?.value||'';
+    if(!form||!vendorId)return null;
+    const button=document.querySelector('.convert428-create [data-convert-submit]');
     const chip=document.getElementById('conv428Chip'),precision=document.getElementById('conv428Precision');
-    state.conv428Resolved=null;
-    if(!resourceId){for(const option of [...(chip?.options||[])]){const row=(state.conv428Catalog?.chips||[]).find(c=>c.id===option.value);if(row)option.textContent=row.name+' · 未选择资源'}return null}
     const params={local_vendor_id:vendorId,local_chip_id:chip?.value||'',source_color_order:'rgb',input_color_order:document.getElementById('conv428InputColor')?.value||'rgb'};
     Object.assign(params,state.conv428AdvancedValues||{});params.csc=conversionCscRequest428();
     if(state.conv428PrecisionUserEdited)params.precision=precision?.value;
     if(state.conv428PreprocessEdited)params.preprocessing={owner:'caller',pixel_format:document.getElementById('conv428InputColor')?.value||'rgb',mean:String(document.getElementById('conv428Mean')?.value||'').split(',').map(Number),scale:String(document.getElementById('conv428Scale')?.value||'').split(',').map(Number),letterbox:!!document.getElementById('conv428Letterbox')?.checked};
     if(state.conv428ShapeEdited){if(target==='sophon'){params.input_width=Number(document.getElementById('conv428Width')?.value);params.input_height=Number(document.getElementById('conv428Height')?.value)}else params.input_size=Number(document.getElementById('conv428Input')?.value)}
-    try{
-      const result=await conversionRead428(`/api/v39/projects/${pid()}/deploy/resolve`,{signal:conversionResolveAbort428.signal,method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source_id:state.conv428SourceId,target,resource_id:resourceId,params})});
-      if(project!==pid()||ticket!==conversionContractTicket428||document.querySelector('.convert428-create')!==form)return null;
+
+    const body={source_id:state.conv428SourceId,target,resource_id:resourceId,params};
+    const resource=(state.conv428Resources||[]).find(row=>String(row.id)===String(resourceId));
+    const evidence=resource?{
+      status:resource.status,version:resource.version,targets:resource.targets,
+      supported_chips:resource.supported_chips,supported_precisions:resource.supported_precisions,
+      detection:resource.detection
+    }:null;
+    const signature=JSON.stringify([project,body,evidence,state.conv428Catalog?.revision||null]);
+    return {form,project,body,signature,chip,precision,button,target,resourceId};
+  }
+  function applyConversionContract428(context,result){
+    const {chip,precision,button,target}=context;
       state.conv428CscCapabilities=state.conv428CscCapabilities||{};state.conv428CscCapabilities[state.conv428AdvancedKey]=result.csc_capabilities;paintConversionCsc428(result.csc_capabilities);
       state.conv428Resolved=result;
       const advanced=document.getElementById('conv428TemplateAdvanced');
@@ -6790,10 +6812,70 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
       window.refreshConvertCalibration428();
       if(button)button.disabled=!result.ready||state.conv428ResourcesCurrent!==true||state.conv428SourceReady===false;
       return result;
-    }catch(e){if(project!==pid()||ticket!==conversionContractTicket428||document.querySelector('.convert428-create')!==form)return null;for(const option of [...(chip?.options||[])]){const row=(state.conv428Catalog?.chips||[]).find(c=>c.id===option.value);if(row){option.textContent=row.name+' · 检测失败';option.title=e.message||String(e)}}const warn=document.getElementById('conv428Warn');if(warn)warn.textContent=e.message||String(e);return null}
+  }
+  window.refreshConvertContract428=function(force=false){
+    const ctx=conversionResolveContext428();
+    if(!ctx||!ctx.resourceId||state.conv428SourceReady!==true||
+       state.conv428ResourcesCurrent!==true||!state.conv428Catalog?.chips){
+      if(conversionResolveFlight428)retireConversionContract428();
+      if(ctx?.button)ctx.button.disabled=true;
+      state.conv428Resolved=null;
+      if(ctx&&!ctx.resourceId){
+        for(const option of [...(ctx.chip?.options||[])]){
+          const row=(state.conv428Catalog?.chips||[]).find(c=>c.id===option.value);
+          if(row)option.textContent=row.name+' · 未选择资源';
+        }
+      }
+      return Promise.resolve(null);
+    }
+    const {form,project,signature}=ctx;
+    if(!force&&conversionResolveFlight428?.form===form&&conversionResolveFlight428.signature===signature)
+      return conversionResolveFlight428.promise;
+    if(!force&&conversionResolveLast428?.form===form&&conversionResolveLast428.signature===signature)
+      return Promise.resolve(applyConversionContract428(ctx,conversionResolveLast428.result));
+    if(!force&&conversionResolveFailure428?.form===form&&conversionResolveFailure428.signature===signature){
+      if(ctx.button)ctx.button.disabled=true;
+      const warn=document.getElementById('conv428Warn');
+      if(warn)warn.textContent=conversionResolveFailure428.message;
+      return Promise.resolve(null);
+    }
+    retireConversionContract428();
+    const controller=new AbortController(),ticket=conversionContractTicket428;
+    conversionResolveAbort428=controller;
+    state.conv428Resolved=null;
+    if(ctx.button)ctx.button.disabled=true;
+    const current=()=>project===pid()&&ticket===conversionContractTicket428&&
+      document.querySelector('.convert428-create')===form&&!controller.signal.aborted;
+    let promise;
+    promise=(async()=>{
+      try{
+        const result=await conversionRead428(`/api/v39/projects/${project}/deploy/resolve`,{
+          signal:controller.signal,method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify(ctx.body)
+        });
+        if(!current())return null;
+        conversionResolveLast428={form,signature,result};
+        conversionResolveFailure428=null;
+        return applyConversionContract428(ctx,result);
+      }catch(error){
+        if(!current())return null;
+        const message=error?.code==='REQUEST_TIMEOUT'
+          ?'当前配置校验超时；尚不能判断芯片是否支持，请手动重新校验。'
+          :'当前配置校验失败：'+(error?.message||error)+'；芯片能力状态未改变，请手动重新校验。';
+        conversionResolveFailure428={form,signature,message};
+        const warn=document.getElementById('conv428Warn');
+        if(warn)warn.textContent=message;
+        // HTTP failures are not chip/SDK capability observations.
+        return null;
+      }finally{
+        if(conversionResolveFlight428?.promise===promise)conversionResolveFlight428=null;
+        if(conversionResolveAbort428===controller)conversionResolveAbort428=null;
+      }
+    })();
+    conversionResolveFlight428={form,signature,promise};
+    return promise;
   };
   window.refreshConvertResource428=function(){
-    ++conversionContractTicket428;state.conv428Resolved=null;
     const target=document.querySelector('input[name="conv428Target"]:checked')?.value||'onnx';
     const advancedKey=String(document.querySelector('input[name="conv428Target"]:checked')?.dataset?.vendorId||target);state.conv428TargetAdvanced=state.conv428TargetAdvanced||{};if(state.conv428AdvancedKey)state.conv428TargetAdvanced[state.conv428AdvancedKey]={...(state.conv428AdvancedValues||{})};state.conv428AdvancedKey=advancedKey;state.conv428AdvancedValues={...(state.conv428TargetAdvanced[advancedKey]||{})};
     refreshConvertTargetFields428(target);
@@ -6835,7 +6917,9 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
           : `当前没有已检测通过的${targetLabel416(target)}资源；已配置资源的状态和处理建议见下方。`;
       }
     }
-    paintConversionCsc428(state.conv428Catalog?.csc_capabilities_by_target?.[target]||state.conv428CscCapabilities?.[state.conv428AdvancedKey]);if(document.querySelector('input[name="conv428Target"]:checked')?.dataset?.vendorId)window.refreshConvertContract428();else refreshConvertCalibration428();
+    paintConversionCsc428(state.conv428Catalog?.csc_capabilities_by_target?.[target]||state.conv428CscCapabilities?.[state.conv428AdvancedKey]);
+    if(document.querySelector('input[name="conv428Target"]:checked')?.dataset?.vendorId)window.refreshConvertContract428();
+    else {retireConversionContract428();state.conv428Resolved=null;refreshConvertCalibration428()}
   };
 
   window.refreshVersionConversionResources428=async function(detectSelected=false){
@@ -6860,7 +6944,7 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
       conversionResourcesLoading416=false;
       state.conv428ResourcesCurrent=Boolean(detectSelected&&resourceId);
       state.conv428Resources=detectSelected&&resourceId
-        ? (state.conv428Resources||[]).map(r=>r.id===resourceId?{...r,status:'missing',targets:[],message:'检测请求失败：'+(error.message||error)}:r) : [];
+        ? (state.conv428Resources||[]).map(r=>r.id===resourceId?{...r,detection_request_error:String(error.message||error)}:r) : [];
       window.refreshConvertResource428();
       toast('无法获取最新转换资源：'+(error.message||error));
       return null;
@@ -6872,7 +6956,9 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
   function paintConversionCsc428(capabilities){const select=document.getElementById('conv428CscPreset');if(!select)return;const saved=state.conv428CscValues?.[state.conv428AdvancedKey]||{preset:'none'};const allowed=['none',...(capabilities?.modes||[]),...(capabilities?.presets||[])].filter((x,i,a)=>a.indexOf(x)===i);select.innerHTML=allowed.map(value=>`<option value="${value}">${conversionCscName428(value)}</option>`).join('');if(saved.preset&&!allowed.includes(saved.preset))select.insertAdjacentHTML('beforeend',`<option value="${esc(saved.preset)}" disabled>${esc(conversionCscName428(saved.preset))}（当前不可用）</option>`);select.value=saved.preset||'none';const format=document.getElementById('conv428CscFormat');if(format){format.innerHTML=(capabilities?.input_formats||[]).map(value=>`<option value="${esc(value)}">${esc(value)}</option>`).join('');format.value=saved.input_format||capabilities?.input_formats?.[0]||''}const ack=document.getElementById('conv428CscAck');if(ack)ack.checked=saved.deployment_contract_acknowledged===true;const detail=document.getElementById('conv428CscExternal');if(detail)detail.hidden=['none','device_default'].includes(select.value);const status=document.getElementById('conv428CscStatus');if(status)status.textContent=capabilities?.capability==='contract_only'?'仅生成 CSC 部署约定与参考处理模块，需推理端配合；未嵌入模型、未应用到设备、未板端验证。':capabilities?.capability==='unsupported'?'当前目标不支持 CSC 部署约定。':'CSC 能力尚未读取；不额外适配。'}
   function conversionTargetChoices428(items,selectFirst){return items.map((t,i)=>`<label><input type="radio" name="conv428Target" value="${t.id}" data-vendor-id="${esc(t.vendorId||'')}" ${selectFirst&&i===0?'checked':''} onchange="refreshConvertResource428()"><i></i><b>${esc(t.name)}</b><span>${esc(targetOutput416(t.id))}</span></label>`).join('')}
   window.openNewConvertCore416=async function(aid,vid){
-    const project=pid(),ticket=++conversionOpenTicket416;++conversionResourcesTicket416;++conversionContractTicket428;
+    clearTimeout(conversionResolveTimer428);retireConversionContract428();
+    conversionResolveLast428=null;conversionResolveFailure428=null;
+    const project=pid(),ticket=++conversionOpenTicket416;++conversionResourcesTicket416;
     try{
       conversionResourcesLoading416=true;
       state.conv428ResourcesCurrent=false;
@@ -6885,8 +6971,8 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
       const defaultSize=Number.isInteger(inheritedSize)&&inheritedSize>=32&&inheritedSize<=4096?inheritedSize:640;
       const defaultSizeLabel=state.conv428ModelDefaults.input_height&&state.conv428ModelDefaults.input_width&&state.conv428ModelDefaults.input_height!==state.conv428ModelDefaults.input_width?`${state.conv428ModelDefaults.input_height}×${state.conv428ModelDefaults.input_width}`:defaultSize;
       const targets=[...['onnx','paddle_inference','tensorrt'].map(id=>({id,name:targetLabel416(id)})),...(catalog.vendors||[]).filter(v=>v.enabled!==false).map(v=>({id:(catalog.templates||[]).find(t=>t.id===v.template_id)?.adapter||'unadapted',vendorId:v.id,name:v.name}))];
-      modal('新建版本转换',`<div class="convert428-create"><section><b>源版本</b><div class="convert428-source"><span>${esc(hist.algorithm?.name||'-')}</span><strong>${esc(v.version_name||'-')}</strong><em>${esc(v.model_name||'')}</em></div><div class="convert428-source-note">源模型训练：${esc(String(state.conv428ModelDefaults.training_precision||'未知').toUpperCase())} · ${esc(defaultSizeLabel)} px · ${esc(state.conv428ModelDefaults.input_size_source||'历史未记录来源')} · ${esc(v.model_metadata?.yolo_version||'架构未记录')} · 类别 ${esc(v.model_metadata?.class_count??'未知')}</div></section><section><b>通用模型格式</b><div class="convert428-targets">${conversionTargetChoices428(targets.filter(t=>!t.vendorId),true)}</div></section><section data-conversion-vendors><b>目标厂商（本地字典）</b><div class="convert428-targets">${conversionTargetChoices428(targets.filter(t=>t.vendorId),false)||'<p>暂无已启用厂商，请到部署资源维护本地厂商与芯片字典。</p>'}</div></section><section><div class="form two"><div class="field"><label>转换资源</label><select id="conv428Resource" class="select"></select><button type="button" class="btn mini" onclick="refreshVersionConversionResources428(true)">检测当前资源</button></div><div class="field" id="conv428ColorField"><label>模型输入颜色适配</label><select id="conv428InputColor" class="select" onchange="state.conv428PreprocessEdited=true;refreshConvertContract428()"><option value="rgb">RGB（默认）</option><option value="bgr">BGR（真实适配模型）</option></select><small>来源为训练平台 RGB 模型；选择 BGR 将在转换前适配计算图，并记录产物颜色约定。</small></div><div class="field" id="conv428PrecisionField"><label>精度</label><select id="conv428Precision" class="select" onchange="state.conv428PrecisionUserEdited=true;refreshConvertContract428()"><option value="fp16">FP16</option><option value="fp32">FP32</option><option value="int8">INT8（校准量化）</option></select></div><div class="field" id="conv428InputField"><label>输入尺寸</label><input id="conv428Input" onchange="state.conv428ShapeEdited=true;scheduleConvertContract428()" class="input" type="number" min="32" max="4096" value="${defaultSize}"></div><div class="field" id="conv428ChipField"><label>芯片 / SoC</label><select id="conv428Chip" class="select"></select></div></div><div id="conv428OnnxFields" class="form two" hidden><div class="field"><label>ONNX Opset</label><input id="conv428Opset" class="input" type="number" min="7" value="12"></div><div class="field check"><label><input id="conv428Dynamic" type="checkbox"> 动态 Shape</label><label><input id="conv428Simplify" type="checkbox"> Simplify</label></div></div><div id="conv428SophonFields" hidden><div class="form three"><div class="field"><label>输入宽度</label><input id="conv428Width" onchange="state.conv428ShapeEdited=true;scheduleConvertContract428()" class="input" type="number" min="32" max="8192" step="32" value="${Number(state.conv428ModelDefaults.input_width)||defaultSize}"></div><div class="field"><label>输入高度</label><input id="conv428Height" onchange="state.conv428ShapeEdited=true;scheduleConvertContract428()" class="input" type="number" min="32" max="8192" step="32" value="${Number(state.conv428ModelDefaults.input_height)||defaultSize}"></div><div class="field"><label>Batch</label><input id="conv428SophonBatch" class="input" value="1" readonly></div></div><details id="conv428Preprocess"><summary>预处理配置（推理端执行）</summary><p>输入为 NCHW 张量。ONNX / BMODEL 不重复融合预处理；推理端按以下约定执行，解码与 NMS 在模型外。包含预处理的自定义 ONNX 请先核对合同。</p><div class="form two"><div class="field"><label>输入通道</label><div class="convert428-source-note">按上方「模型输入颜色适配」选择，模型内部进行真实通道变换。</div></div><div class="field"><label>Mean</label><input id="conv428Mean" onchange="state.conv428PreprocessEdited=true;scheduleConvertContract428()" class="input" value="0,0,0"></div><div class="field"><label>Scale</label><input id="conv428Scale" onchange="state.conv428PreprocessEdited=true;scheduleConvertContract428()" class="input" value="0.00392156862745098,0.00392156862745098,0.00392156862745098"></div><label><input id="conv428Letterbox" onchange="state.conv428PreprocessEdited=true;scheduleConvertContract428()" type="checkbox" checked> Letterbox（Pad 114）</label></div></details><p>目标精度由后端按实际芯片和SDK决议，独立于训练精度。INT8 待冻结校准集与质量比较验收后开放；当前不使用独立 Test 集拟合。</p></div><div id="conv428TensorRtFields" class="form two" hidden><div class="field"><label>Workspace(MB)</label><input id="conv428Workspace" class="input" type="number" min="64" value="2048"></div><div class="field"><label>Batch</label><input id="conv428Batch" class="input" type="number" min="1" value="1"></div><div class="field full"><label>目标环境</label><input id="conv428TargetEnvironment" class="input" placeholder="例如 RTX 4090 · CUDA 12.8 · TensorRT 10.9"><small>TensorRT Engine 与 GPU / CUDA / TensorRT 环境绑定，必须明确记录。</small></div></div><div id="conv428Calibration" class="convert428-calibration" hidden><div class="form three"><div class="field"><label>校准数据集</label><select id="conv428CalibrationDataset" class="select"></select></div><div class="field"><label>校准分组</label><select id="conv428CalibrationSplit" class="select"><option value="train">训练集</option><option value="val">验证集</option><option value="test">试验集</option><option value="all">全部</option></select></div><div class="field"><label>校准图片数量</label><input id="conv428CalibrationCount" class="input" type="number" min="1" max="1000" value="100"></div></div><p>任务创建时冻结校准图片清单，远程节点仅通过对象存储短期地址读取这些图片。</p></div><section class="convert428-csc"><b>CSC 设备适配</b><div class="form two"><label>CSC 预设<select id="conv428CscPreset" class="select" onchange="changeConversionCsc428()"><option value="none">不额外适配</option></select></label><div id="conv428CscStatus" class="convert428-source-note">CSC 能力尚未读取</div></div><div id="conv428CscExternal" hidden><label>原始解码输入<select id="conv428CscFormat" class="select" onchange="changeConversionCsc428()"></select></label><label><input id="conv428CscAck" type="checkbox" onchange="changeConversionCsc428()"> 我确认推理端接入外部预处理合同，编译成功不代表已应用 CSC。</label></div></section><details><summary>目标模板高级参数</summary><div id="conv428TemplateAdvanced" class="form two"></div></details><details><summary>输出与后处理合同</summary><pre id="conv428OutputContract" class="log small-log"></pre></details><p id="conv428InheritedHint" class="convert428-source-note"></p></section><div id="conv428Warn" class="alert soft"></div><section><b>已配置资源状态</b><div id="conv428ResourceStatus" class="convert428-resource-status"></div></section><div class="row end"><button class="btn" onclick="refreshVersionConversionResources428()">刷新资源</button><button class="btn" onclick="closeModal()">取消</button><button class="btn primary" data-convert-submit onclick="submitConvert428('${aid}','${vid}')">开始转换</button></div></div>`,true);
-      const form=document.querySelector('.convert428-create');if(form)form.cancelConversionRead428=()=>{if(ticket!==conversionOpenTicket416)return;conversionResolveAbort428?.abort();clearTimeout(conversionResolveTimer428);++conversionContractTicket428};
+      modal('新建版本转换',`<div class="convert428-create"><section><b>源版本</b><div class="convert428-source"><span>${esc(hist.algorithm?.name||'-')}</span><strong>${esc(v.version_name||'-')}</strong><em>${esc(v.model_name||'')}</em></div><div class="convert428-source-note">源模型训练：${esc(String(state.conv428ModelDefaults.training_precision||'未知').toUpperCase())} · ${esc(defaultSizeLabel)} px · ${esc(state.conv428ModelDefaults.input_size_source||'历史未记录来源')} · ${esc(v.model_metadata?.yolo_version||'架构未记录')} · 类别 ${esc(v.model_metadata?.class_count??'未知')}</div></section><section><b>通用模型格式</b><div class="convert428-targets">${conversionTargetChoices428(targets.filter(t=>!t.vendorId),true)}</div></section><section data-conversion-vendors><b>目标厂商（本地字典）</b><div class="convert428-targets">${conversionTargetChoices428(targets.filter(t=>t.vendorId),false)||'<p>暂无已启用厂商，请到部署资源维护本地厂商与芯片字典。</p>'}</div></section><section><div class="form two"><div class="field"><label>转换资源</label><select id="conv428Resource" class="select"></select><button type="button" class="btn mini" onclick="refreshVersionConversionResources428(true)">检测当前资源</button></div><div class="field" id="conv428ColorField"><label>模型输入颜色适配</label><select id="conv428InputColor" class="select" onchange="state.conv428PreprocessEdited=true;refreshConvertContract428()"><option value="rgb">RGB（默认）</option><option value="bgr">BGR（真实适配模型）</option></select><small>来源为训练平台 RGB 模型；选择 BGR 将在转换前适配计算图，并记录产物颜色约定。</small></div><div class="field" id="conv428PrecisionField"><label>精度</label><select id="conv428Precision" class="select" onchange="state.conv428PrecisionUserEdited=true;refreshConvertContract428()"><option value="fp16">FP16</option><option value="fp32">FP32</option><option value="int8">INT8（校准量化）</option></select></div><div class="field" id="conv428InputField"><label>输入尺寸</label><input id="conv428Input" onchange="state.conv428ShapeEdited=true;scheduleConvertContract428()" class="input" type="number" min="32" max="4096" value="${defaultSize}"></div><div class="field" id="conv428ChipField"><label>芯片 / SoC</label><select id="conv428Chip" class="select"></select></div></div><div id="conv428OnnxFields" class="form two" hidden><div class="field"><label>ONNX Opset</label><input id="conv428Opset" class="input" type="number" min="7" value="12"></div><div class="field check"><label><input id="conv428Dynamic" type="checkbox"> 动态 Shape</label><label><input id="conv428Simplify" type="checkbox"> Simplify</label></div></div><div id="conv428SophonFields" hidden><div class="form three"><div class="field"><label>输入宽度</label><input id="conv428Width" onchange="state.conv428ShapeEdited=true;scheduleConvertContract428()" class="input" type="number" min="32" max="8192" step="32" value="${Number(state.conv428ModelDefaults.input_width)||defaultSize}"></div><div class="field"><label>输入高度</label><input id="conv428Height" onchange="state.conv428ShapeEdited=true;scheduleConvertContract428()" class="input" type="number" min="32" max="8192" step="32" value="${Number(state.conv428ModelDefaults.input_height)||defaultSize}"></div><div class="field"><label>Batch</label><input id="conv428SophonBatch" class="input" value="1" readonly></div></div><details id="conv428Preprocess"><summary>预处理配置（推理端执行）</summary><p>输入为 NCHW 张量。ONNX / BMODEL 不重复融合预处理；推理端按以下约定执行，解码与 NMS 在模型外。包含预处理的自定义 ONNX 请先核对合同。</p><div class="form two"><div class="field"><label>输入通道</label><div class="convert428-source-note">按上方「模型输入颜色适配」选择，模型内部进行真实通道变换。</div></div><div class="field"><label>Mean</label><input id="conv428Mean" onchange="state.conv428PreprocessEdited=true;scheduleConvertContract428()" class="input" value="0,0,0"></div><div class="field"><label>Scale</label><input id="conv428Scale" onchange="state.conv428PreprocessEdited=true;scheduleConvertContract428()" class="input" value="0.00392156862745098,0.00392156862745098,0.00392156862745098"></div><label><input id="conv428Letterbox" onchange="state.conv428PreprocessEdited=true;scheduleConvertContract428()" type="checkbox" checked> Letterbox（Pad 114）</label></div></details><p>目标精度由后端按实际芯片和SDK决议，独立于训练精度。INT8 待冻结校准集与质量比较验收后开放；当前不使用独立 Test 集拟合。</p></div><div id="conv428TensorRtFields" class="form two" hidden><div class="field"><label>Workspace(MB)</label><input id="conv428Workspace" class="input" type="number" min="64" value="2048"></div><div class="field"><label>Batch</label><input id="conv428Batch" class="input" type="number" min="1" value="1"></div><div class="field full"><label>目标环境</label><input id="conv428TargetEnvironment" class="input" placeholder="例如 RTX 4090 · CUDA 12.8 · TensorRT 10.9"><small>TensorRT Engine 与 GPU / CUDA / TensorRT 环境绑定，必须明确记录。</small></div></div><div id="conv428Calibration" class="convert428-calibration" hidden><div class="form three"><div class="field"><label>校准数据集</label><select id="conv428CalibrationDataset" class="select"></select></div><div class="field"><label>校准分组</label><select id="conv428CalibrationSplit" class="select"><option value="train">训练集</option><option value="val">验证集</option><option value="test">试验集</option><option value="all">全部</option></select></div><div class="field"><label>校准图片数量</label><input id="conv428CalibrationCount" class="input" type="number" min="1" max="1000" value="100"></div></div><p>任务创建时冻结校准图片清单，远程节点仅通过对象存储短期地址读取这些图片。</p></div><section class="convert428-csc"><b>CSC 设备适配</b><div class="form two"><label>CSC 预设<select id="conv428CscPreset" class="select" onchange="changeConversionCsc428()"><option value="none">不额外适配</option></select></label><div id="conv428CscStatus" class="convert428-source-note">CSC 能力尚未读取</div></div><div id="conv428CscExternal" hidden><label>原始解码输入<select id="conv428CscFormat" class="select" onchange="changeConversionCsc428()"></select></label><label><input id="conv428CscAck" type="checkbox" onchange="changeConversionCsc428()"> 我确认推理端接入外部预处理合同，编译成功不代表已应用 CSC。</label></div></section><details><summary>目标模板高级参数</summary><div id="conv428TemplateAdvanced" class="form two"></div></details><details><summary>输出与后处理合同</summary><pre id="conv428OutputContract" class="log small-log"></pre></details><p id="conv428InheritedHint" class="convert428-source-note"></p></section><div id="conv428Warn" class="alert soft"></div><div class="row end"><button type="button" class="btn mini" onclick="refreshConvertContract428(true)">重新校验当前配置</button></div><section><b>已配置资源状态</b><div id="conv428ResourceStatus" class="convert428-resource-status"></div></section><div class="row end"><button class="btn" onclick="refreshVersionConversionResources428()">刷新资源</button><button class="btn" onclick="closeModal()">取消</button><button class="btn primary" data-convert-submit onclick="submitConvert428('${aid}','${vid}')">开始转换</button></div></div>`,true);
+      const form=document.querySelector('.convert428-create');if(form)form.cancelConversionRead428=()=>{if(ticket!==conversionOpenTicket416)return;clearTimeout(conversionResolveTimer428);retireConversionContract428();conversionResolveLast428=null;conversionResolveFailure428=null};
       const live=()=>project===pid()&&ticket===conversionOpenTicket416&&document.querySelector('.convert428-create')===form;
       form?.insertAdjacentHTML?.('afterbegin','<div id="conv428SourceLoad" role="status">正在读取源版本…</div><div id="conv428CatalogLoad" role="status">正在读取厂商目录…</div>');
       const notice=(id,message,retry)=>{const node=document.getElementById(id);if(node)node.innerHTML=esc(message)+(retry?` <button type="button" class="btn mini" onclick="retryConversionSection428('${retry}')">重试</button>`:'')};

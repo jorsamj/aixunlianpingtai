@@ -350,7 +350,8 @@ test('failed SDK contract shows a terminal diagnostic instead of a stuck detecti
   h.chip.value='rk3568';h.win.api=async()=>{throw new Error('SDK authentication failed')};
   await h.win.refreshConvertContract428();
   assert.equal(h.submit.disabled,true);assert.match(h.warning.textContent,/authentication failed/);
-  assert.match(h.chip.options.find(o=>o.value==='rk3568').textContent,/检测失败/);
+  assert.doesNotMatch(h.chip.options.find(o=>o.value==='rk3568').textContent,/检测失败/);
+  assert.match(h.warning.textContent,/校验失败/);
 });
 
 
@@ -374,3 +375,55 @@ test('failed selected detection cannot erase a different ready resource',async()
 });
 
  test('formal form appears before a stalled resource read; independent catalog/source still hydrate',async()=>{let finish;const h=setup(()=>new Promise(resolve=>finish=resolve));const pending=h.win.openNewConvertCore416('a','v');assert.match(h.modalMarkup,/convert428-create/);await new Promise(resolve=>setImmediate(resolve));assert.equal(h.state.conv428SourceReady,true);assert.ok(h.state.conv428Catalog.vendors.length);assert.equal(h.submit.disabled,true);finish(ready());await pending;assert.equal(h.state.conv428ResourcesCurrent,true)});
+
+test('same conversion configuration shares one in-flight request and reuses its result',async()=>{
+  const h=setup(async()=>ready());
+  await h.win.openNewConvertCore416('a','v');
+  const original=h.win.api;let calls=0,finish;
+  h.win.api=(url,options)=>{
+    if(!url.endsWith('/deploy/resolve'))return original(url,options);
+    calls++;
+    return new Promise(resolve=>{finish=()=>Promise.resolve(original(url,options)).then(resolve)});
+  };
+  h.chip.value='rk3568';
+  const one=h.win.refreshConvertContract428(),two=h.win.refreshConvertContract428();
+  assert.equal(calls,1);
+  finish();await Promise.all([one,two]);
+  assert.equal(h.state.conv428Resolved.ready,true);
+  await h.win.refreshConvertContract428();
+  assert.equal(calls,1);
+  h.chip.value='rk3576';
+  const changed=h.win.refreshConvertContract428();
+  assert.equal(calls,2);
+  finish();await changed;
+  assert.equal(h.state.conv428Resolved.params.chip,'rk3576');
+});
+
+test('network timeout is not an SDK detection failure and never retries automatically',async()=>{
+  const h=setup(async()=>ready());
+  await h.win.openNewConvertCore416('a','v');
+  let calls=0;
+  h.chip.value='rk3568';
+  h.win.api=async()=>{calls++;const error=new Error('gateway timeout');error.code='REQUEST_TIMEOUT';throw error};
+  await h.win.refreshConvertContract428();
+  assert.equal(calls,1);
+  assert.match(h.warning.textContent,/校验超时/);
+  assert.doesNotMatch(h.chip.options.find(x=>x.value==='rk3568').textContent,/检测失败/);
+  await h.win.refreshConvertContract428();
+  assert.equal(calls,1);
+  await h.win.refreshConvertContract428(true);
+  assert.equal(calls,2);
+  assert.equal(h.submit.disabled,true);
+});
+
+test('failed detect HTTP request does not erase last ready chip capability',async()=>{
+  const h=setup(async()=>ready());
+  await h.win.openNewConvertCore416('a','v');
+  const original=h.win.api;
+  h.win.api=(url,options)=>url.endsWith('/detect')?Promise.reject(new Error('gateway unavailable')):original(url,options);
+  await h.win.refreshVersionConversionResources428(true);
+  const resource=h.state.conv428Resources.find(x=>x.id==='a800');
+  assert.equal(resource.status,'ready');
+  assert.deepEqual(resource.supported_chips,['rk3568','rk3576']);
+  assert.match(resource.detection_request_error,/gateway unavailable/);
+});
