@@ -1,3 +1,7 @@
+## 2026-11-01｜42.24.471 Bootstrap 原路由快照缺失与历史锁竞争测量（新 SHA CI 待核）
+
+前序 470 精确 `47de319e766630e2ede576396f13f7d798ed893a`、22/22 GitHub Actions success；Node 1461/1461、Chrome 316/316。470 的真实缓存 Bootstrap 220/1000 虚构历史首次 73.884/369.402ms、20 温 P50 17.064/57.126ms、P95 17.341/62.624ms，API 始终最多 50 条，非生产。471 仅在 `tests/performance/test_platform_hot_paths.py` 增加无快照真实项目/素材/注释仓储与任务历史的原路由首次构建+20 温缓存成功路径；已有 1000/10000 历史文件投影再加 4 同时调用×5 轮的锁竞争测量。空正式 GT 仓储不写入假 GT；无生产网络/Worker/任务/GPU/OSS/SQLite schema 操作。精准新 SHA、全部 CI 与分布数值尚未核验，**ISOLATED TEST — NOT PRODUCTION VERIFIED**。不合并 main/tag/release/force push；后续真实 HAR/Browser 长任务和冷 OS I/O 仍开放。详见原 P0 性能台账。
+
 ## 2026-11-01｜42.24.470 469 CI 新增测试断言修正（新 SHA 待验）
 
 469 精确 `247527a79b35294d3d43abf9a1a3b76c1cdba818` 的 Picker contracts 失败（1 failed、6 passed），Chrome Picker 成功；新 Bootstrap 测试误断言应返回全部历史任务，实际上已有接口仅展示 50 条，仍会读全部历史。470 只修测试断言，保留新增大历史规模测量，不改 API。469 文件投影在 1000／10000 个虚构 job.json 上 20 温样本中位 17.894／188.759ms、最近秩 P95 19.198／243.762ms；这是 Github runner 的隔离文件微基准，非完整 Bootstrap、生产或真实文件磁盘基线。470 全 CI 与路由测量仍待准确 SHA 验证。无生产访问、业务写入、GT/Worker/OSS/schema 修改，不 merge main、tag/release 或 force push。详见 `docs/performance/2026-10-29-p0-followup.md`。

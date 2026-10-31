@@ -217,6 +217,7 @@ def test_bootstrap_cached_snapshot_history_scaling(tmp_path, monkeypatch):
 
 def test_training_history_projection_file_scan_growth(tmp_path):
     """Bound warm file-signature checking at 1k/10k; no Task DB or HTTP."""
+    from concurrent.futures import ThreadPoolExecutor
     from platform_core.training_history_projection import TrainingHistoryProjection
 
     jobs=tmp_path/'jobs';jobs.mkdir()
@@ -236,11 +237,109 @@ def test_training_history_projection_file_scan_growth(tmp_path):
             durations.append((time.perf_counter()-began)*1000)
             assert len(rows)==history_files
         assert len(cold)==history_files
+        # Four genuine overlapping callers, not a synthetic lock-wait value.
+        # Per-caller wall time includes its queueing behind the existing RLock.
+        def concurrent_read(gate):
+            gate.wait()
+            began=time.perf_counter();rows=projection.read(jobs,loader)
+            assert len(rows)==history_files
+            return (time.perf_counter()-began)*1000
+        contended_calls=[];batch_wall=[]
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            for _ in range(5):
+                gate=threading.Barrier(4)
+                began=time.perf_counter()
+                futures=[pool.submit(concurrent_read,gate) for _ in range(4)]
+                contended_calls.extend(item.result() for item in futures)
+                batch_wall.append((time.perf_counter()-began)*1000)
         samples.append({'history_files':history_files,'scope':'synthetic local job.json files; '
             'in-process signature-cache cold then warm; filesystem cache not reset',
             'first_call_ms':round(first_ms,3),
-            'warm':_isolated_http_latency_summary(durations)})
+            'warm':_isolated_http_latency_summary(durations),
+            'concurrent':{'callers_per_batch':4,'batches':5,
+                'wall_ms_per_caller':_isolated_http_latency_summary(contended_calls),
+                'batch_wall_ms_min':round(min(batch_wall),3),
+                'batch_wall_ms_median':round(statistics.median(batch_wall),3),
+                'batch_wall_ms_max':round(max(batch_wall),3)}})
     report('training_history_file_scan',samples)
+
+
+def test_bootstrap_snapshot_miss_builds_real_synthetic_project(tmp_path,monkeypatch):
+    """Snapshot miss exercises real project/material/GT/history read owners.
+
+    No FastAPI app startup worker, network transfer, user accounts or GPU are
+    involved. A fresh snapshot is not a cold OS filesystem/SQLite process.
+    """
+    import app as api
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from platform_core.performance_diagnostics import PerformanceDiagnosticsMiddleware
+    from platform_core.training_history_projection import TrainingHistoryProjection
+
+    project=tmp_path/'projects'/'audit';jobs=project/'jobs';jobs.mkdir(parents=True)
+    meta={'id':'audit','name':'Isolated audit','labels':['fire','person'],'label_meta':[]}
+    (project/'meta.json').write_text(json.dumps(meta),encoding='utf-8')
+    (tmp_path/'projects.json').write_text(json.dumps([meta]),encoding='utf-8')
+    repository=TaskRepository(tmp_path/'task_runtime'/'tasks.sqlite3')
+    material=MaterialRepository(project)
+    material.upsert_many([{'id':f'bootstrap-{i:04d}','filename':f'fixture-{i:04d}.jpg',
+        'processing_status':'processed','content_sha256':f'{i+1:064x}',
+        'width':100,'height':100,'created_at':'2026-10-28T00:00:00+00:00',
+        'storage_source_id':'default_local','object_key':f'{i}.jpg'} for i in range(200)])
+    AnnotationRepository(project)  # Real but empty canonical GT; no fabricated GT.
+    monkeypatch.setattr(api,'DATA_DIR',tmp_path)
+    monkeypatch.setattr(api,'PROJECTS_FILE',tmp_path/'projects.json')
+    monkeypatch.setattr(api,'MODEL_CONFIGS_FILE',tmp_path/'model_configs.json')
+    monkeypatch.setattr(api,'ALLOW_MULTIPLE_PROJECTS_FOR_TESTS',True)
+    monkeypatch.setattr(api,'shared_task_repository',lambda:repository)
+    monkeypatch.setattr(api,'_TRAINING_JOB_PROJECTIONS',{})
+    monkeypatch.setenv('MC_PERFORMANCE_DIAGNOSTICS','1')
+    http_app=FastAPI();http_app.add_middleware(PerformanceDiagnosticsMiddleware)
+    http_app.add_api_route('/api/v53/bootstrap/snapshot',api.v53_bootstrap_snapshot,methods=['GET'])
+    results=[];prepared=0
+    with TestClient(http_app) as client:
+        for history_tasks in (220,1000):
+            for index in range(prepared,history_tasks):
+                identity=f'bootstrap-job-{index:05d}'
+                repository.create(replace(TaskRecord.new(identity,'audit',TaskKind.TRAINING,'payload.json','test-only'),
+                    status=TaskStatus.FAILED,error='isolated fixture',finished_at='2026-10-28T00:00:00+00:00'))
+                directory=jobs/identity;directory.mkdir()
+                (directory/'job.json').write_text(json.dumps({'id':identity,'task_id':identity,
+                    'status':'failed','asset_algorithm_name':'Isolated audit',
+                    'created_at':'2026-10-28T00:00:00+00:00',
+                    'finished_at':'2026-10-28T00:00:00+00:00'}),encoding='utf-8')
+            prepared=history_tasks
+            monkeypatch.setattr(api,'_TRAINING_HISTORY_PROJECTION',TrainingHistoryProjection())
+            api._TRAINING_JOB_PROJECTIONS.clear()
+            monkeypatch.setattr(api,'_V53_BOOTSTRAP_SNAPSHOT',{})
+            monkeypatch.setattr(api,'_V53_BOOTSTRAP_STATUS',{'status':'ready','active_project_id':'audit'})
+            durations=[];first_timing='';response_bytes=0
+            for index in range(21):
+                started=time.perf_counter()
+                response=client.get('/api/v53/bootstrap/snapshot')
+                durations.append((time.perf_counter()-started)*1000)
+                assert response.status_code==200,response.text
+                body=response.json()
+                assert body['project']['id']=='audit'
+                assert body['material_summary']['total']==200
+                assert len(body['jobs'])==50
+                assert len(body['labels'])==2
+                assert body['datasets']
+                assert 'annotation_summary' in body and 'algorithms' in body
+                assert response.headers.get('X-Request-ID')
+                timing=response.headers['Server-Timing']
+                assert 'training_history;dur=' in timing and 'training_index;dur=' in timing
+                first_timing=first_timing or timing
+                response_bytes=len(response.content)
+            results.append({'entry_path':'snapshot-miss-then-cache-hit','history_tasks':history_tasks,
+                'synthetic_materials':200,'scope':'in-process ASGI; genuine temporary project/material/'
+                    'annotation/task repositories; snapshot and history projection reset before first call; '
+                    'no startup worker, network, OS cold cache, GPU or user identity',
+                'first_call_ms':round(durations[0],3),
+                'warm':_isolated_http_latency_summary(durations[1:]),
+                'response_bytes':response_bytes,'server_timing_first':first_timing})
+            assert not (jobs/'index.json').exists(), 'read-only GET cannot persist the history index'
+    report('bootstrap_full_snapshot_http',results)
 
 
 def test_picker_cost_cold_hot_filters_and_revisions(tmp_path,monkeypatch):

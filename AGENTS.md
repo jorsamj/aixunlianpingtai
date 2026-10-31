@@ -1,3 +1,7 @@
+## 2026-11-01｜42.24.471 完整 Bootstrap 快照缺失与历史投影并发隔离测量（准确 CI 待验）
+
+准确 470 `47de319e766630e2ede576396f13f7d798ed893a` 已核 22/22 Actions success，Node 1461/1461、Chrome 316/316；其真实缓存 Bootstrap 路由 220/1000 虚构历史 Task 首次投影 73.884/369.402ms、20 温样本 P50 17.064/57.126ms、P95 17.341/62.624ms，最多返回 50 条，非生产。本批只增强现有性能测试：用临时真实项目/素材/标注/算法/任务仓储测 `/api/v53/bootstrap/snapshot` 快照缺失首次构建及随后 20 次命中；在 1000/10000 历史文件场景补 4 线程×5 批次锁竞争实际耗时。无真实图片/GT 写入、Worker/训练/GPU、生产网络、生产 DB 或 OSS 操作；不改任何业务逻辑、原缓存与一致性规则。**ISOLATED TEST — NOT PRODUCTION VERIFIED**，新 SHA 和完整 CI 待验。参见 `docs/performance/2026-10-29-p0-followup.md`，不 merge main/tag/release/force-push/部署。
+
 ## 2026-11-01｜42.24.470 Bootstrap 规模测试返回条数合同修正（新 CI 待核）
 
 469 精确 SHA `247527a79b35294d3d43abf9a1a3b76c1cdba818` 的 Picker 性能步骤 1 failed / 6 passed，唯一红项为新增测试误将全部历史 220 条当作 Bootstrap 响应条数，原服务正确只展示最近 50 条。470 仅修测试断言为 50，仍真实遍历 220/1000 条合成历史。469 1000→10000 个合成 job.json 温缓存 P50 17.894→188.759ms、P95 19.198→243.762ms，属于 GitHub runner 隔离文件投影，不是生产瓶颈证明。完整新 SHA CI 待核；不修改业务/正式数据/Worker/GT/OSS/schema、不部署、不 merge main/tag/release/force-push。详见 `docs/performance/2026-10-29-p0-followup.md`。
