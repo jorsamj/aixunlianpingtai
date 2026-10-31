@@ -82,14 +82,19 @@ test('diagnostic task resumes through original route and viewing integration nev
   await ready(page);
   await page.route('**/api/advanced-navigation-slow-probe',async route=>{await new Promise(resolve=>setTimeout(resolve,350));await route.fulfill({json:{ok:true}});});
   const cancellation=await page.evaluate(async()=>{
-    const {PageRequestScope}=await import('/static/modules/page-request-scope.js?v=20261024');
+    const {PageRequestScope,isPageNavigationCancelled}=await import('/static/modules/page-request-scope.js?v=20261031-p0');
     const native=window.fetch.__pageRequestScopeOriginal || window.fetch;
     const scope=new PageRequestScope({page:'训练资源',fetchImpl:(url,options)=>native.call(window,url,options)});
-    const request=scope.fetch('/api/advanced-navigation-slow-probe');
+    let finalized=false;
+    const request=scope.fetch('/api/advanced-navigation-slow-probe').finally(()=>{finalized=true});
     await new Promise(resolve=>setTimeout(resolve,30));scope.navigate('模型配置');
-    return Promise.race([request.then(()=>'settled',()=>'rejected'),new Promise(resolve=>setTimeout(()=>resolve('pending'),80))]);
+    const outcome=await Promise.race([
+      request.then(()=>'settled',error=>isPageNavigationCancelled(error)?'navigation-cancelled':'other-error'),
+      new Promise(resolve=>setTimeout(()=>resolve('pending'),80))
+    ]);
+    return {outcome,finalized,abortedRequests:scope.abortedRequests};
   });
-  expect(cancellation).toBe('pending');
+  expect(cancellation).toEqual({outcome:'navigation-cancelled',finalized:true,abortedRequests:1});
   await page.evaluate(()=>setPage('组件检测'));
   await expect(page.locator('#advancedPageTabs [aria-selected="true"]')).toHaveText('环境诊断');
   await expect.poll(()=>polls).toBeGreaterThan(0);
