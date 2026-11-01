@@ -1,3 +1,7 @@
+## 2026-11-01｜42.24.483 历史 GT 批量补审：逐图审核范围第一层持久契约（新 SHA CI 待验）
+
+准确接续 482 `bf1b37cc3bfb7858c69d11c24d079f886c310d04` / 37/37 Actions、Node1465、Chrome317、Picker后端95/性能9/Chrome7，原开发分支与远端一致，工作区干净。483 在 `platform_core/annotation_candidates.py` 同一候选 Indexed SQLite 中持久逐图可选 `review_scope`，在 `app.py::_decide_annotation_candidates` 核对本任务有效 canonical 标签、禁止严格逐图策略隐式操作未审核页面并保护旧回执哈希；在唯一 `annotation_task_service.py::commit_candidate_decisions` 用明确逐图范围决定 formal `annotation_scope`、overwrite 与候选框 GT 准入，记录每图来源审计。保留素材 SHA、GT 版本 CAS、200 张分批、旧任务兼容和正式 Train/Val/Test 真值。先 RED 7，再新增越界候选框 RED1；相关 Python **116/116** 通过，含 **21,163 虚构 ID** 持久存储和首50/末13分页，不包含推理/生产图片/GPU/WAN。新 483 准确 SHA CI 待验。**未完成**：新严格任务创建（需冻结 request 与同请求幂等）、跨页审核队列、UI 逐图明确人工事件/操作者/时间、部分提交与返回原训练草稿；不要借用旧全任务“全部接受”来认证异质 GT，AI 空结果不能代替人工检查。生产 30s Stalled 与 21k 真实情况均未取证。**ISOLATED TEST — NOT PRODUCTION VERIFIED**，无部署/正式数据操作/merge/tag/release/force push。唯一台账 483 节。
+
 ## 2026-11-01｜42.24.482 新 Chrome 用例断言精确匹配 DOM（新 SHA CI 待验）
 
 已核 481 准确 GitHub Picker [run 41299523203](https://github.com/jorsamj/aixunlianpingtai/actions/runs/41299523203)：real Chrome **1 failed, 6 passed**，唯一 fail 原文 `Expected substring "has-fire"`、实际卡片 `fire.jpg … 缺失：smoke`，说明后端按缺失类已过滤正确而浏览器用例索取不存在的 ID 文本。Picker Python **95/95**、隔离性能 **9/9** 通过；本批仅修正错误测试期待，仍以新 SHA 完整 Actions 为验收。

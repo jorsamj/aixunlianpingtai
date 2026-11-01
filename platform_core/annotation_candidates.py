@@ -14,6 +14,9 @@ class CandidateDecision:
     image_id: str
     accepted: bool
     boxes: list[dict[str, Any]] | None = None
+    # Explicit human-reviewed canonical labels for THIS image. None preserves
+    # legacy task-wide review behavior; never infer this field from AI output.
+    review_scope: list[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -439,6 +442,18 @@ class CandidateStore:
                         item["accepted"] = bool(decision.accepted)
                         if decision.boxes is not None:
                             item["boxes"] = decision.boxes
+                        # A new decision replaces, never inherits, previously
+                        # attested scope. Rejection cannot attest any scope.
+                        item.pop("review_scope", None)
+                        if decision.review_scope is not None:
+                            scope = decision.review_scope
+                            if (not decision.accepted or not isinstance(scope, list)
+                                    or not 1 <= len(scope) <= 128
+                                    or any(not isinstance(code, str) or not code.strip()
+                                           or code != code.strip() for code in scope)
+                                    or len(set(scope)) != len(scope)):
+                                raise ValueError("candidate per-image review scope is invalid")
+                            item["review_scope"] = list(scope)
                         self._put(db, item, normalize=False)
                         items[image_id] = item
                 db.commit()

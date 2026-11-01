@@ -1,3 +1,7 @@
+## 2026-11-01｜42.24.483 逐图审核范围持久化与正式 GT 准入闸门（准确 CI 待验）
+
+唯一原分支起点 482 `bf1b37cc3bfb7858c69d11c24d079f886c310d04`、VERSION482、工作区干净、远端无新提交；482 准确 GitHub Actions37/37、Node1465/1465、Chrome317/317、Picker Backend95/95、性能9/9、Picker Chrome7/7。审计原 `CandidateStore` 仅持久化 accepted，原 `commit_candidate_decisions` 用任务统一 review_scope 扩每图正式 GT 和控制 overwrite，异质缺失类别批量审核会互相扩大。483 在原 Candidate/AI Task/API Owner 内加可选每图 `review_scope` 和 `per_image_required` 冻结策略闸门：无范围/越界/重复/空范围不得冒充已审核，禁止未看分页隐式接受或拒绝，撤销和重审会清除原范围；GT 只扩大本图显式审核类别，overwrite 仅影响本图审核类别，候选框越界 fail-closed；日志记录每图范围来源，保留原框/GT CAS/来源哈希/每批 200/旧回执哈希。初始新回归 **7 RED**，新增候选框越界 **1 RED**，修复后原 4 Python 文件 **116/116 GREEN**，含 21,163 虚构图持久索引/有界分页。原明确 CI 文件覆盖测试，483 精确 SHA 全部 Actions 待独立核。**本版不开放批量补审创建 UI、不自动接受 AI 空预测、不动生产 GT**；下一批需冻结跨页选择、创建任务幂等、逐图 UI 人工身份与时间审计、部分提交/恢复/返回训练草稿。生产 21k/30s Stalled 未验；**ISOLATED TEST — NOT PRODUCTION VERIFIED**。不部署/改生产 Task/Worker/DB/OSS/GPU、不 merge main/tag/release/force push。台账 483 节。
+
 ## 2026-11-01｜42.24.482 Chrome 测试纠正 DOM 内容断言（准确 CI 待验）
 
 481 准确 `Training Material Picker` CI [41299523203](https://github.com/jorsamj/aixunlianpingtai/actions/runs/41299523203) 已实证 **Chrome 1 failed / 6 passed**，`Expected has-fire` 而实际 DOM `fire.jpg…缺失：smoke`；Picker contracts **95 passed**、隔离性能 **9 passed**。482 对应原真实 Chrome 用例的可见名称断言修正，绝不删测试或归咎业务失败；482 准确 SHA 全部 Actions 待独立验。

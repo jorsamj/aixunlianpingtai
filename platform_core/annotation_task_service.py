@@ -419,6 +419,7 @@ def commit_candidate_decisions(
     progress: Callable[[int, int, str], Any] | None = None,
     cancelled: Callable[[], bool] | None = None,
     review_scope: Iterable[str] | None = None,
+    require_per_image_scope: bool = False,
 ) -> dict[str, Any]:
     journal_ref = "commit/result.json"
     store._ready()
@@ -493,6 +494,28 @@ def commit_candidate_decisions(
             image_id = str(item["image_id"])
             if image_id in committed:
                 continue
+            explicit_scope = item.get("review_scope")
+            if explicit_scope is None:
+                if require_per_image_scope:
+                    raise ValueError("AI per-image review scope is missing; refuse formal GT write")
+                image_scope = set(review_scope_codes)
+                scope_source = "task_uniform_legacy"
+            else:
+                if (not isinstance(explicit_scope, list) or not explicit_scope
+                        or len(explicit_scope) > 128
+                        or any(not isinstance(code, str) or not code.strip()
+                               or code != code.strip() for code in explicit_scope)
+                        or len(set(explicit_scope)) != len(explicit_scope)
+                        or not set(explicit_scope).issubset(review_scope_codes)):
+                    raise ValueError("AI per-image review scope is outside the task label contract")
+                image_scope = set(explicit_scope)
+                scope_source = "explicit_per_image"
+                candidate_labels = {
+                    str(box.get("label") or box.get("code") or "").strip()
+                    for box in (item.get("boxes") or [])
+                }
+                if not candidate_labels.issubset(image_scope):
+                    raise ValueError("AI candidate boxes are outside the explicit per-image review scope")
             previous_row = previous_by_id.get(image_id) or {}
             previous = list(previous_row.get("boxes") or [])
             expected_version = int(previous_row.get("version") or 0)
@@ -511,7 +534,7 @@ def commit_candidate_decisions(
                 annotation_scope = ["*"]
             else:
                 annotation_scope = sorted(
-                    previous_scope | set(review_scope_codes)
+                    previous_scope | image_scope
                 )
             existing = {
                 (str(box.get("source_task_id") or ""), str(box.get("candidate_id") or ""))
@@ -530,7 +553,7 @@ def commit_candidate_decisions(
                 })
             overwrite_changed = False
             if overwrite:
-                reviewed_labels = set(review_scope_codes)
+                reviewed_labels = image_scope
                 previous_count = len(previous)
                 previous = [
                     box for box in previous
@@ -563,7 +586,7 @@ def commit_candidate_decisions(
             # Do not trigger a write merely because an old box label was
             # synthesized into previous_scope -- only the reviewed codes do.
             scope_reviewed_now = "*" not in recorded_scope and bool(
-                set(review_scope_codes) - recorded_scope
+                image_scope - recorded_scope
             )
             if incoming or not final_boxes or task_boxes_present or overwrite_changed or scope_reviewed_now:
                 to_write.append({
@@ -584,6 +607,8 @@ def commit_candidate_decisions(
                 "labels": sorted({str(box.get("label")) for box in final_boxes if box.get("label")}),
                 "annotation_state": annotation_state,
                 "annotation_origin": annotation_origin,
+                "review_scope": sorted(image_scope),
+                "review_scope_source": scope_source,
             }
             to_journal.append(summary)
             batch_summaries[image_id] = summary
@@ -661,6 +686,9 @@ def commit_confirmed_review(context):
     )
     if context.task.kind is TaskKind.MATERIAL_BATCH:
         request = (request or {}).get("options") or {}
+    scope_policy = str((request or {}).get("review_scope_policy") or "task_uniform_legacy")
+    if scope_policy not in {"task_uniform_legacy", "per_image_required"}:
+        raise RuntimeError("confirmed annotation review scope policy is invalid")
     store = CandidateStore(context.artifacts, task_id=context.task.task_id)
     if (request or {}).get("mode") == "hard_sample_yolo":
         from app import project_dir, material_store
@@ -723,6 +751,7 @@ def commit_confirmed_review(context):
         progress=update_progress,
         cancelled=context.cancel_requested,
         review_scope=review_scope,
+        require_per_image_scope=scope_policy == "per_image_required",
     )
     sync_annotation_statistics(context.repository, context.task, store)
     if mapping:

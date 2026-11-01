@@ -1,3 +1,5 @@
+import hashlib
+import json
 import uuid
 from pathlib import Path
 
@@ -386,6 +388,68 @@ def test_candidate_result_is_paged_and_all_rejected_remains_false(client, seeded
         f"/api/v60/projects/{project_id}/annotation-tasks/{task_id}/candidates?limit=50"
     ).json()
     assert all(item["accepted"] is False for item in reloaded["items"])
+
+
+def test_frozen_per_image_review_rejects_implicit_approval_and_only_commits_after_all_pages(
+    client, seeded_project, isolated_task_runtime,
+):
+    project_id, _image = seeded_project
+    repository, artifacts = isolated_task_runtime
+    task_id = _awaiting(project_id, 2, repository, artifacts)
+    # The future supplemental-review creator must persist this opt-in policy
+    # in its immutable task request. Never infer it from arbitrary browser state.
+    artifacts.atomic_write_json(task_id, "request.json", {
+        "image_ids": ["image-0", "image-1"], "labels": ["fire"],
+        "review_scope_policy": "per_image_required",
+    })
+    url = f"/api/v60/projects/{project_id}/annotation-tasks/{task_id}/decisions"
+    for body in (
+        {"decisions": [{"image_id": "image-0", "accepted": True, "review_scope": ["smoke"]}]},
+        {"decisions": [{"image_id": "image-0", "accepted": True}]},
+        {"decisions": [], "accept_unmentioned": True},
+        {"decisions": [], "reject_unmentioned": True},
+    ):
+        response = client.post(url, json={"reject_unmentioned": False, "commit": False, **body})
+        assert response.status_code == 400, response.text
+        assert CandidateStore(artifacts, task_id=task_id).summary()["unreviewed"] == 2
+
+    first = client.post(url, json={
+        "decisions": [{"image_id": "image-0", "accepted": True, "review_scope": ["fire"]}],
+        "reject_unmentioned": False, "accept_unmentioned": False, "commit": True,
+    })
+    assert first.status_code == 200, first.text
+    assert first.json()["review"]["unreviewed"] == 1
+    assert first.json().get("queued_for_commit") is None
+    page = client.get(f"/api/v60/projects/{project_id}/annotation-tasks/{task_id}/candidates?limit=1")
+    assert page.status_code == 200
+    assert page.json()["items"][0]["review_scope"] == ["fire"]
+
+    second = client.post(url, json={
+        "decisions": [{"image_id": "image-1", "accepted": True, "review_scope": ["fire"]}],
+        "reject_unmentioned": False, "accept_unmentioned": False, "commit": True,
+    })
+    assert second.status_code == 200, second.text
+    assert second.json()["queued_for_commit"] is True
+    assert CandidateStore(artifacts, task_id=task_id).summary()["unreviewed"] == 0
+
+
+def test_review_operation_receipt_identity_keeps_legacy_hash_and_fences_new_scope():
+    legacy = app_module.AnnotationDecisionReq(
+        decisions=[{"image_id": "image-0", "accepted": True}],
+        reject_unmentioned=False, request_id="stable-review-legacy",
+    )
+    old_body = legacy.model_dump(mode="json", exclude={"request_id"})
+    for item in old_body["decisions"]:
+        item.pop("review_scope", None)
+    legacy_hash = hashlib.sha256(json.dumps(
+        old_body, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+    assert app_module._annotation_review_operation_identity(legacy) == legacy_hash
+    scoped = app_module.AnnotationDecisionReq(
+        decisions=[{"image_id": "image-0", "accepted": True, "review_scope": ["fire"]}],
+        reject_unmentioned=False, request_id="stable-review-legacy",
+    )
+    assert app_module._annotation_review_operation_identity(scoped) != legacy_hash
 
 
 def test_annotation_review_operation_receipt_prevents_second_commit(

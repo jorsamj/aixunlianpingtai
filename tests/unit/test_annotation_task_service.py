@@ -360,6 +360,105 @@ def test_ai_review_empty_candidate_updates_existing_positive_gt_scope_only_when_
     assert journal["gt_write_performed"] is bool(expected_writes)
 
 
+def test_per_image_supplemental_review_does_not_certify_other_images_labels(tmp_path, monkeypatch):
+    task_id = "exact-per-image-review"
+    store = CandidateStore(ArtifactStore(tmp_path), task_id=task_id)
+    store.initialize(labels=["fire", "smoke"], total_images=2)
+    _seed_verified_candidates(store, [
+        {"image_id": "needs-fire", "status": "empty", "boxes": []},
+        {"image_id": "needs-smoke", "status": "empty", "boxes": []},
+    ])
+    store.apply_decisions([
+        CandidateDecision("needs-fire", True, review_scope=["fire"]),
+        CandidateDecision("needs-smoke", True, review_scope=["smoke"]),
+    ])
+    original = [{"id": "human", "label": "person", "source": "manual"}]
+    monkeypatch.setattr(
+        "platform_core.annotation_task_service.read_formal_annotations",
+        lambda _project, ids: {image_id: {
+            "version": 4, "boxes": original, "annotation_scope": ["person"],
+        } for image_id in ids},
+    )
+    written = []
+    def capture(_project, rows):
+        written.extend(rows)
+        return [{**row, "version": 5, "content_digest": "d" * 64} for row in rows]
+    monkeypatch.setattr("platform_core.annotation_task_service.write_formal_annotations", capture)
+
+    result = commit_candidate_decisions(
+        "project-1", task_id, store, overwrite=False, review_scope=["fire", "smoke"],
+        require_per_image_scope=True,
+    )
+    assert result["applied_images"] == 2
+    assert {row["image_id"]: row["annotation_scope"] for row in written} == {
+        "needs-fire": ["fire", "person"], "needs-smoke": ["person", "smoke"],
+    }
+    assert all(row["boxes"] == original and row["expected_version"] == 4 for row in written)
+    journal = store.get_commit_summaries(["needs-fire", "needs-smoke"])
+    assert journal["needs-fire"]["review_scope"] == ["fire"]
+    assert journal["needs-smoke"]["review_scope"] == ["smoke"]
+    assert all(row["review_scope_source"] == "explicit_per_image" for row in journal.values())
+
+
+@pytest.mark.parametrize("scope", [None, ["person"], ["fire", "smoke"]])
+def test_strict_per_image_review_requires_explicit_subset_before_gt_write(tmp_path, monkeypatch, scope):
+    store = CandidateStore(ArtifactStore(tmp_path), task_id="scope-refusal")
+    store.initialize(labels=["fire"], total_images=1)
+    _seed_verified_candidates(store, [{"image_id": "image", "status": "empty", "boxes": []}])
+    store.apply_decisions([CandidateDecision("image", True, review_scope=scope)])
+    writes = []
+    monkeypatch.setattr("platform_core.annotation_task_service.read_formal_annotations",
+        lambda _project, _ids: {"image": {"version": 1, "boxes": [], "annotation_scope": []}})
+    monkeypatch.setattr("platform_core.annotation_task_service.write_formal_annotations",
+        lambda _project, rows: writes.extend(rows) or rows)
+    with pytest.raises(ValueError, match="review scope"):
+        commit_candidate_decisions("project-1", "scope-refusal", store, overwrite=False,
+            review_scope=["fire"], require_per_image_scope=True)
+    assert writes == []
+
+
+def test_per_image_overwrite_can_only_replace_the_one_explicitly_reviewed_label(tmp_path, monkeypatch):
+    task_id = "per-image-overwrite"
+    store = CandidateStore(ArtifactStore(tmp_path), task_id=task_id)
+    store.initialize(labels=["fire", "smoke"], total_images=1)
+    _seed_verified_candidates(store, [{"image_id": "sample", "status": "empty", "boxes": []}])
+    store.apply_decisions([CandidateDecision("sample", True, review_scope=["fire"])])
+    other = {"id": "smoke-original", "label": "smoke", "source": "manual"}
+    monkeypatch.setattr("platform_core.annotation_task_service.read_formal_annotations",
+        lambda _project, _ids: {"sample": {"version": 6, "boxes": [
+            {"id": "fire-original", "label": "fire", "source": "manual"}, other,
+        ], "annotation_scope": ["fire", "smoke"]}})
+    written = []
+    monkeypatch.setattr("platform_core.annotation_task_service.write_formal_annotations",
+        lambda _project, rows: written.extend(rows) or rows)
+    commit_candidate_decisions("project-1", task_id, store, overwrite=True,
+        review_scope=["fire", "smoke"], require_per_image_scope=True)
+    assert len(written) == 1
+    assert written[0]["boxes"] == [other]
+    assert written[0]["expected_version"] == 6
+
+
+def test_per_image_review_refuses_candidate_boxes_outside_attested_scope(tmp_path, monkeypatch):
+    task_id = "per-image-unreviewed-box"
+    store = CandidateStore(ArtifactStore(tmp_path), task_id=task_id)
+    store.initialize(labels=["fire", "smoke"], total_images=1)
+    _seed_verified_candidates(store, [{
+        "image_id": "one", "status": "success", "boxes": [
+            {"id": "ai-smoke", "label": "smoke", "class_id": 1},
+        ],
+    }])
+    store.apply_decisions([CandidateDecision("one", True, review_scope=["fire"])])
+    monkeypatch.setattr("platform_core.annotation_task_service.read_formal_annotations",
+        lambda _project, _ids: {"one": {"version": 2, "boxes": [], "annotation_scope": []}})
+    writes = []
+    monkeypatch.setattr("platform_core.annotation_task_service.write_formal_annotations",
+        lambda _project, rows: writes.extend(rows) or rows)
+    with pytest.raises(ValueError, match="outside.*review scope"):
+        commit_candidate_decisions("project-1", task_id, store, overwrite=False,
+            review_scope=["fire", "smoke"], require_per_image_scope=True)
+    assert writes == []
+
+
 def test_ai_review_overwrite_replaces_review_scope_even_when_final_class_is_empty(tmp_path, monkeypatch):
     artifacts = ArtifactStore(tmp_path)
     store = CandidateStore(artifacts, task_id="commit-overwrite-empty", page_size=50)

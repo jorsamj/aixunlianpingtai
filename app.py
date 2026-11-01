@@ -24284,8 +24284,14 @@ def _annotation_review_operation_path(request_id: str) -> str:
 
 
 def _annotation_review_operation_identity(payload: AnnotationDecisionReq) -> str:
+    body = payload.model_dump(mode="json", exclude={"request_id"})
+    # Preserve the exact idempotency hash for receipts created before optional
+    # per-image scope existed. Only an explicitly present scope changes intent.
+    for decision in body.get("decisions") or []:
+        if isinstance(decision, dict) and decision.get("review_scope") is None:
+            decision.pop("review_scope", None)
     canonical = json.dumps(
-        payload.model_dump(mode="json", exclude={"request_id"}),
+        body,
         ensure_ascii=False, sort_keys=True, separators=(",", ":"),
     )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
@@ -24351,8 +24357,14 @@ def _decide_annotation_candidates(project_id: str, task_id: str, payload: Annota
     if task.status is not TaskStatus.AWAITING_CONFIRMATION:
         raise HTTPException(status_code=409, detail="任务尚未生成可审核候选结果")
     store = CandidateStore(shared_task_artifacts(), task_id=task.task_id)
+    frozen = store.artifacts.read_json(task.task_id, task.payload_ref, default={})
+    policy = str((frozen or {}).get("review_scope_policy") or "task_uniform_legacy")
+    if policy not in {"task_uniform_legacy", "per_image_required"}:
+        raise HTTPException(status_code=409, detail="任务审核范围策略无效，请核查冻结任务")
+    if policy == "per_image_required" and (payload.accept_unmentioned or payload.reject_unmentioned):
+        raise HTTPException(status_code=400, detail="逐图补审禁止自动接受或拒绝未查看的其他分页")
     decisions = [
-        CandidateDecision(str(item.image_id), bool(item.accepted), item.boxes)
+        CandidateDecision(str(item.image_id), bool(item.accepted), item.boxes, item.review_scope)
         for item in payload.decisions
     ]
     decided_ids = {item.image_id for item in decisions}
@@ -24379,6 +24391,25 @@ def _decide_annotation_candidates(project_id: str, task_id: str, payload: Annota
         raise HTTPException(status_code=400, detail="标签统一映射包含不存在的候选标签：" + "、".join(unknown_sources))
     if unknown_targets:
         raise HTTPException(status_code=400, detail="标签统一映射目标不在当前有效标签库：" + "、".join(unknown_targets))
+    if policy == "per_image_required" or any(item.review_scope is not None for item in decisions):
+        from platform_core.annotation_task_service import _canonical_review_scope
+        manifest = store.artifacts.read_json(task.task_id, "candidates/manifest.json", default={})
+        requested = list((frozen or {}).get("labels") or (manifest or {}).get("labels") or [])
+        try:
+            available_scope = set(_canonical_review_scope(requested, mapping, label_ids))
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail="任务审核标签已失效，请重新核对") from error
+        for item in decisions:
+            if item.review_scope is None:
+                if policy == "per_image_required" and item.accepted:
+                    raise HTTPException(status_code=400, detail="每张接受的素材必须明确提供已审核类别")
+                continue
+            values = item.review_scope
+            if (not item.accepted or not isinstance(values, list) or not 1 <= len(values) <= 128
+                    or any(not isinstance(code, str) or code != code.strip() for code in values)
+                    or len(set(values)) != len(values)
+                    or not set(values).issubset(available_scope)):
+                raise HTTPException(status_code=400, detail="逐图审核类别不属于本任务有效标签范围")
     for decision in decisions:
         for box in decision.boxes or []:
             source = str(box.get("label") or "").strip()

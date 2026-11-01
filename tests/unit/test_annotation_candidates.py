@@ -23,6 +23,66 @@ def test_candidate_statistics_count_only_durable_unique_gt_journal(tmp_path):
     assert store.statistics()["gt_committed"] == 1
 
 
+def test_explicit_review_scope_is_durable_per_image_and_cleared_on_new_decision(tmp_path):
+    store = CandidateStore(ArtifactStore(tmp_path), task_id="per-image-scope", page_size=1)
+    store.initialize(labels=["fire", "smoke"], total_images=2)
+    store.append_items([
+        {"image_id": "first", "status": "empty", "boxes": []},
+        {"image_id": "second", "status": "empty", "boxes": []},
+    ])
+    store.apply_decisions([
+        CandidateDecision("first", True, review_scope=["fire"]),
+        CandidateDecision("second", True, review_scope=["smoke"]),
+    ], allowed_statuses={"empty"})
+    assert store.read_page(cursor=None, limit=1).items[0]["review_scope"] == ["fire"]
+    assert store.read_page(cursor="1", limit=1).items[0]["review_scope"] == ["smoke"]
+
+    # A later edit must never inherit an unrelated, previously accepted scope.
+    store.apply_decisions([CandidateDecision("first", False)], allowed_statuses={"empty"})
+    assert "review_scope" not in store.get("first")
+    store.apply_decisions([CandidateDecision("second", True)], allowed_statuses={"empty"})
+    assert "review_scope" not in store.get("second")
+
+
+@pytest.mark.parametrize("scope", [[], ["fire", "fire"], ["fire ", "smoke"]])
+def test_invalid_per_image_scope_rolls_back_the_whole_decision_page(tmp_path, scope):
+    store = CandidateStore(ArtifactStore(tmp_path), task_id="invalid-image-scope")
+    store.initialize(labels=["fire", "smoke"], total_images=2)
+    store.append_items([
+        {"image_id": "first", "status": "empty", "boxes": []},
+        {"image_id": "second", "status": "empty", "boxes": []},
+    ])
+    with pytest.raises(ValueError, match="review scope"):
+        store.apply_decisions([
+            CandidateDecision("first", True, review_scope=["fire"]),
+            CandidateDecision("second", True, review_scope=scope),
+        ])
+    assert store.summary()["unreviewed"] == 2
+    assert "review_scope" not in store.get("first")
+
+
+def test_21163_distinct_per_image_attestations_remain_indexed_and_page_bounded(tmp_path):
+    total = 21_163
+    store = CandidateStore(ArtifactStore(tmp_path), task_id="supplemental-review-scale")
+    store.initialize(labels=["fire", "smoke"], total_images=total)
+    store.append_items({
+        "image_id": f"image-{index:05d}", "status": "empty", "boxes": [],
+    } for index in range(total))
+    store.apply_decisions((
+        CandidateDecision(f"image-{index:05d}", True,
+            review_scope=["fire"] if index % 2 else ["smoke"])
+        for index in range(total)
+    ), allowed_statuses={"empty"})
+    first = store.read_page(cursor=None, limit=50)
+    last = store.read_page(cursor=str(total - 13), limit=50)
+    assert first.total == last.total == total
+    assert len(first.items) == 50 and len(last.items) == 13
+    assert first.items[0]["review_scope"] == ["smoke"]
+    assert first.items[1]["review_scope"] == ["fire"]
+    assert last.items[-1]["review_scope"] == ["smoke"]
+    assert store.summary()["accepted"] == total
+
+
 def test_gt_journal_audit_pages_by_stable_image_id_without_loading_all(tmp_path):
     store = CandidateStore(ArtifactStore(tmp_path), task_id="audit-pages")
     store.initialize(labels=["fire"], total_images=0)
