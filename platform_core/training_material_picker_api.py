@@ -1593,7 +1593,7 @@ def training_material_picker_router(
                 if not target.is_file():
                     try:
                         manager = StorageManager(data_dir=data_dir(), project_id=project_id, materials=repository)
-                        materialized = manager.materialize(dict(row))
+                        materialized = manager.materialize(dict(row), read_only=True)
                         _write_thumbnail(Path(materialized.path), target, thumbnail_size)
                     except (OSError, ValueError, UnidentifiedImageError, StorageError):
                         encoded = quote(str(image_id), safe="")

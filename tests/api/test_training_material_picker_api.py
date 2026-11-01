@@ -508,7 +508,8 @@ def test_training_picker_thumbnail_is_lazy_cached(tmp_path, monkeypatch):
     Image.new("RGB", (900, 600), "white").save(source)
     calls = {"count": 0}
 
-    def materialize(_self, _value):
+    def materialize(_self, _value, *, read_only=False):
+        assert read_only is True
         calls["count"] += 1
         return SimpleNamespace(path=source)
 
@@ -529,6 +530,53 @@ def test_training_picker_thumbnail_is_lazy_cached(tmp_path, monkeypatch):
     with Image.open(source) as original:
         assert original.size == (900, 600)
     assert repository.get("m0001") is not None
+
+
+def test_training_picker_thumbnail_legacy_missing_digest_does_not_mutate_material(tmp_path, monkeypatch):
+    """A thumbnail GET must not repair canonical Material metadata as a side effect."""
+    import hashlib
+
+    data_dir = tmp_path / "data"
+    project_dir = data_dir / "projects" / "p1"
+    source = project_dir / "uploads" / "legacy.png"
+    source.parent.mkdir(parents=True)
+    Image.new("RGB", (400, 250), "white").save(source)
+    original_sha = hashlib.sha256(source.read_bytes()).hexdigest()
+    repository = MaterialRepository(project_dir)
+    repository.upsert({
+        "id": "legacy-no-digest", "filename": "legacy.png",
+        "storage_source_id": "default_local", "storage_type": "local",
+        "object_key": "uploads/legacy.png", "content_sha256": "",
+        "size_bytes": 0, "processing_status": "processed",
+    })
+    original_record = repository.get("legacy-no-digest")
+    original_revision = repository.current_revision()
+    materialize_calls = []
+    original_materialize = picker_module.StorageManager.materialize
+
+    def tracked_materialize(manager, value, *, read_only=False):
+        materialize_calls.append(read_only)
+        return original_materialize(manager, value, read_only=read_only)
+
+    monkeypatch.setattr(picker_module.StorageManager, "materialize", tracked_materialize)
+    app = FastAPI()
+    app.include_router(training_material_picker_router(
+        lambda project_id: {"id": project_id} if project_id == "p1" else None,
+        lambda: data_dir,
+    ))
+
+    with TestClient(app) as client:
+        endpoint = "/api/v62/projects/p1/training-materials/legacy-no-digest/thumbnail?size=192"
+        first = client.get(endpoint)
+        second = client.get(endpoint)
+        assert first.status_code == second.status_code == 200
+        assert first.content == second.content
+    thumbnails = list((data_dir / "cache" / "training-thumbnails").rglob("*.jpg"))
+    assert len(thumbnails) == 1, "unchanged source identity should reuse one thumbnail"
+    assert materialize_calls == [True], "warm GET must reuse the first immutable thumbnail"
+    assert repository.current_revision() == original_revision
+    assert repository.get("legacy-no-digest") == original_record
+    assert hashlib.sha256(source.read_bytes()).hexdigest() == original_sha
 
 
 def test_cleaned_unannotated_material_is_selectable_but_not_counted_as_ground_truth(tmp_path):
@@ -938,7 +986,10 @@ def test_robustness_preview_reuses_thumbnail_without_modifying_source(tmp_path, 
     Image.new("RGB", (40, 24), (180, 60, 25)).save(source)
     before = source.read_bytes()
     row = repository.get("m0001")
-    monkeypatch.setattr("platform_core.training_material_picker_api.StorageManager.materialize", lambda *a: SimpleNamespace(path=source))
+    def preview_materialize(*_args, read_only=False):
+        assert read_only is True
+        return SimpleNamespace(path=source)
+    monkeypatch.setattr("platform_core.training_material_picker_api.StorageManager.materialize", preview_materialize)
     for preset in ("bt601_limited", "bt601_full", "bt709_limited", "bt709_full"):
         response = client.get(f"/api/v62/projects/p1/training-materials/m0001/robustness-preview?preset={preset}")
         assert response.status_code == 200, response.text
