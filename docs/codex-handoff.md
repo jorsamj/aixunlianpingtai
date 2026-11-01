@@ -5640,3 +5640,6 @@ GitHub 当前没有 CI status，不能把“测试代码已写”表述成“已
 ## 2026-11-01｜42.24.477 P0 首屏性能只读审计与缩略图 GET 元数据副作用（准确 CI 待核）
 
 基线 `33b41bced172ad7a644e000b9ca931020a989491` / 42.24.476，实际远端 22/22 Actions success。原 Bootstrap 缓存命中仍读 HistoryProjection/TaskRepository，再共用 history_context 统计成功次数和 live jobs；训练任务页独立 `/jobs`、训练创建先渲染后异步资源与 Benchmark、Picker 默认分页加分类 GET。现有历史扫描和生命周期修复不重复。分类 SQL 计划命中已有 `ix_negative_pool_category`，50k 纯内存合成关联温 P50 41.285ms，不代表真实网络/磁盘。新真实合成历史缺 SHA 图片的缩略图 GET RED 连续两次生出两份缓存，原因是 `StorageManager.materialize` 默认补写 Material；原 Picker 缩略图 GET 仅传 `read_only=True`，在原 API 文件补回归。本地 Picker 后端 89/89、隔离性能 9/9、Picker Node 5/5 通过，推送 SHA/准确 Actions 尚待完成。完整 A-F 与边界见 `docs/performance/2026-10-29-p0-followup.md`；**ISOLATED TEST — NOT PRODUCTION VERIFIED**。禁止生产部署/GT/DB/Worker/GPU/OSS 写入、合并 main/tag/release/force push。
+## 2026-11-01｜42.24.478 P0 缩略图诊断取证（CI 待验）
+
+唯一分支从已核 477 `16a1f07a507b9fa91f87df97667e3abc0ee7fb05` / 23/23 Actions 接续，审计 Bootstrap 历史/Task 分页仍为每次真实读取，不重复历史优化。发现实际 v62 训练素材缩略图 GET 无诊断头（临时 PNG HTTP200 RED），和 476 负样本分类问题路径不同。原性能诊断仅增加精确 GET、默认关闭、1/32 抽样；原 Picker 缩略图记录锁等待/素材物化/图片处理与缓存计数，所有阶段仅匿名标量。四并发合成 GET + 人工 250ms 物化延迟只生成一次，证实锁串行可测，但不证明生产 30s Stalled。原诊断测试补真实冷/温及并行回归。完整 CI/Chrome、新 SHA 待核，不部署生产/改正式素材/GT/Worker/OSS/DB，不合并 main/tag/release/force push。**ISOLATED TEST — NOT PRODUCTION VERIFIED**。

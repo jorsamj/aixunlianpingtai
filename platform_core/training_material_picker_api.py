@@ -6,7 +6,7 @@ aggregated inside SQLite, and thumbnails are created lazily on demand.
 """
 from __future__ import annotations
 
-from .performance_diagnostics import connect_sqlite, observe_connection, stage, count
+from .performance_diagnostics import connect_sqlite, observe_connection, observe_duration, measure, stage, count
 
 import hashlib
 import json
@@ -15,6 +15,7 @@ import os
 import sqlite3
 import tempfile
 import threading
+from time import perf_counter
 from collections import OrderedDict
 from contextlib import closing
 from functools import lru_cache
@@ -1589,18 +1590,27 @@ def training_material_picker_router(
         thumbnail_size = min(ALLOWED_THUMBNAIL_SIZES, key=lambda value: abs(value - requested))
         target = _thumbnail_path(data_dir(), project_id, dict(row), thumbnail_size)
         if not target.is_file():
+            lock_started = perf_counter()
             with FileLock(str(target) + ".lock", timeout=30):
+                observe_duration("thumbnail.lock_wait", (perf_counter() - lock_started) * 1000)
                 if not target.is_file():
+                    count("thumbnail.cache_miss")
                     try:
                         manager = StorageManager(data_dir=data_dir(), project_id=project_id, materials=repository)
-                        materialized = manager.materialize(dict(row), read_only=True)
-                        _write_thumbnail(Path(materialized.path), target, thumbnail_size)
+                        with measure("thumbnail.materialize"):
+                            materialized = manager.materialize(dict(row), read_only=True)
+                        with measure("thumbnail.render"):
+                            _write_thumbnail(Path(materialized.path), target, thumbnail_size)
                     except (OSError, ValueError, UnidentifiedImageError, StorageError):
                         encoded = quote(str(image_id), safe="")
                         return RedirectResponse(
                             f"/api/v61/projects/{quote(str(project_id), safe='')}/materials/{encoded}/content",
                             status_code=307,
                         )
+                else:
+                    count("thumbnail.cache_hit")
+        else:
+            count("thumbnail.cache_hit")
         return FileResponse(
             target,
             media_type="image/jpeg",

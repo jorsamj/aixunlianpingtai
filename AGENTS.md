@@ -1067,3 +1067,6 @@ VERSION 42.24.404；`Frontend Runtime Stabilization` 浏览器分片旧夹具的
 ## 2026-11-01｜42.24.477 P0 历史缩略图只读边界与首屏链审计（准确 CI 待核）
 
 从唯一开发分支 476 准确 HEAD `33b41bced172ad7a644e000b9ca931020a989491`、22/22 Actions 成功接续。已只读核对 Bootstrap → TrainingHistoryProjection/TaskRepository → 训练成功次数/live jobs、训练创建 hydration/设备/Benchmark、Picker 分页/分类 GET；旧优化不重复。分类 SQL EXPLAIN 在 1k/10k/50k 合成关系命中原覆盖索引，温 P50 随关联量增长，暂无证据改变 SQL。Picker 历史缺 SHA/大小素材的缩略图 GET 真实临时测试 RED：连续两次 GET 200 产生两个 JPEG 缓存，源于 `StorageManager.materialize` 默认补写素材及缓存身份漂移。本批仅在原 Picker 路由 `materialize` 传 `read_only=True` 并补原 API 文件严格回归，保留完整性与正式 GT/Task 语义；本地 Picker 后端合同 89/89、隔离性能 9/9、Picker Node 5/5 已验，准确新 SHA CI 待验。详见 `docs/performance/2026-10-29-p0-followup.md`。**ISOLATED TEST — NOT PRODUCTION VERIFIED**，无生产环境操作，不 merge main/tag/release/force push。
+## 2026-11-01｜42.24.478 训练素材缩略图锁/源读取/渲染分段取证（准确 CI 待核）
+
+从已核 477 `16a1f07a507b9fa91f87df97667e3abc0ee7fb05` /23/23 Actions 接续。Bootstrap 历史上下文每次快照仍真实读取，暂无生产证据改架构；v62 Picker thumbnail GET 实际漏性能诊断，真实合成 HTTP200 缺 X-Request-ID 的 RED 确认。本批只在现有诊断模块增加精确抽样 GET（默认关闭）及原 thumbnail Owner 的锁等待、materialize、render、缓存计数；不改变30s锁超时、图片与正式 GT/Task。4 并发合成请求/人为250ms下载延迟证实可测锁串行，不能断言生产30s Stalled来自锁。新回归在原 Picker CI 显式文件，完整本地/新SHA CI待核。详见 `docs/performance/2026-10-29-p0-followup.md`。**ISOLATED TEST — NOT PRODUCTION VERIFIED**；不部署生产/改正式数据/OSS/Worker/GPU，不合并 main/tag/release/force push。

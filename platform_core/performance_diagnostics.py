@@ -24,6 +24,7 @@ _ENDPOINTS = (
     (re.compile(r'/api/projects/[^/]+/jobs/[^/]+'), 'training.status'),
     (re.compile(r'/api/v62/projects/[^/]+/tasks/[^/]+'), 'training.durable_status'),
     (re.compile(r'/api/v62/projects/[^/]+/training-materials(?:/(?:page|role-page|bulk-selection|selection-summary|revision|compatibility|negative-preview))?'), 'training.materials'),
+    (re.compile(r'/api/v62/projects/[^/]+/training-materials/[^/]+/thumbnail'), 'training.thumbnail'),
     (re.compile(r'/api/v61/projects/[^/]+/materials'), 'material.list'),
     (re.compile(r'/api/v61/projects/[^/]+/materials/status-counts'), 'material.status_counts'),
     (re.compile(r'/api/v61/projects/[^/]+/materials/[^/]+/content/thumbnail'), 'material.thumbnail'),
@@ -52,6 +53,14 @@ def _endpoint(path):
 def count(name, amount=1):
     trace=_current.get()
     if trace is not None: trace['counts'][name]+=amount
+
+
+def observe_duration(name, elapsed_ms):
+    """Record an already-completed span without changing a lock's lifetime."""
+    trace=_current.get()
+    if trace is not None:
+        trace['counts'][name+'.calls']+=1
+        trace['stages_ms'][name]+=elapsed_ms
 
 
 @contextmanager
@@ -183,7 +192,9 @@ class PerformanceDiagnosticsMiddleware:
         if endpoint=='negative_pool.categories' and scope.get('method')!='GET':
             return await self.app(scope,receive,send)
         # 48 thumbs on a page must not become 48 verbose log entries.
-        if endpoint=='material.thumbnail' and random.randrange(32)!=0:
+        if endpoint in {'material.thumbnail','training.thumbnail'} and scope.get('method')!='GET':
+            return await self.app(scope,receive,send)
+        if endpoint in {'material.thumbnail','training.thumbnail'} and random.randrange(32)!=0:
             return await self.app(scope,receive,send)
         _logger.setLevel(logging.INFO)
         if not _logger.hasHandlers(): _logger.addHandler(logging.StreamHandler())
