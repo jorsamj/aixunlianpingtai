@@ -1,3 +1,7 @@
+## 2026-11-01｜42.24.475 Picker 负样本分类请求增长趋势隔离补测（准确 CI 待核）
+
+474 `34a4c8ad4178b628fe14564316fc2f2b1a8eaf71` 精确 22/22 GitHub Actions success，Node1461/1461、Chrome316/316、Picker 后端87/性能8/Chrome6。新增真实 Chrome 192px BMP/60卡/15图首次打开解码双RAF 228.3ms，20温复开P50 138.35ms/P95 153.4ms，首次15缩略图请求、复开零请求、无LongTask；仅是模拟图片/拦截请求，不证明生产。475 对 Picker `open` 每次发起的 `negative-pool/categories` 和 `NegativePool.categories` 逐分类关联 COUNT 做隔离规模量化，在原 Picker CI 显式性能文件用 0/1000/10000 虚构关联、20分类、真实 ASGI/SQLite 测首次＋20温样本；不修改原 SQL/缓存/业务语义，不记录真实ID/SQL或凭据，不以硬P95门槛放宽回归。源码 Python 编译通过，新 SHA 的准确 CI 与数字待核；**ISOLATED TEST — NOT PRODUCTION VERIFIED**。无生产部署/GT/Task/Worker/GPU/OSS/DB修改、不merge main/tag/release/force push。
+
 ## 2026-10-31｜42.24.474 Picker 图片解码及 DOM 长任务的真实 Chrome 隔离补测（准确 CI 待核）
 
 473 精确远端 `29855f5439be45f9ff9e6aff9c3455e2fb7e3641` 已核 GitHub Actions **22/22 success**、Node 1461/1461、Chrome 316/316；Picker Backend 87、性能 8、Picker Chrome 5 均通过。473 新增的 60 选材真实兼容性 ASGI 路由首次 19.257ms、20 温 P50 4.398ms/P95 4.699ms、预检缓存 1 miss/20 hits，仅隔离采样。474 发现现有 Picker Chrome 首屏 15 张请求合同原使用 1×1 像素图，无法量化真正 192px 解码/DOM；故只在原显式 CI 已运行的 `training-material-picker-performance.spec.mjs` 增 192×192 确定性无敏感 BMP/60 卡/15 首屏请求，首次加 20 次重复打开，记录点击→15 图 `decode()` 后双 RAF、LongTask 和请求计数，附 7 天匿名 JSON artifact。无硬 P95 性能门槛、无真实网络/图片存储/生产 GT。业务代码及语义未变，准确 474 CI 与浏览器分布**待验**；**ISOLATED TEST — NOT PRODUCTION VERIFIED**。不部署、改生产 DB/GT/Worker/OSS/GPU、merge/tag/release/force push。

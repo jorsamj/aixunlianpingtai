@@ -515,6 +515,65 @@ def test_picker_cost_cold_hot_filters_and_revisions(tmp_path,monkeypatch):
     report('picker_entry_paths',entry_paths)
 
 
+def test_negative_pool_categories_first_open_scale(tmp_path, monkeypatch):
+    """Read-only category GET with no pool, 1k and 10k canonical members.
+
+    The picker opens this endpoint alongside its first page.  A tiny or empty
+    Chrome stub cannot measure its correlated category membership counts.
+    """
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from platform_core.negative_pool import NegativePool
+    from platform_core.negative_pool_api import create_negative_pool_router
+    from platform_core.performance_diagnostics import PerformanceDiagnosticsMiddleware
+
+    monkeypatch.setenv('MC_PERFORMANCE_DIAGNOSTICS', '1')
+    results=[]
+    for materials_count in (0, 1000, 10000):
+        project=tmp_path/'projects'/f'audit-{materials_count}'
+        repository=MaterialRepository(project)
+        if materials_count:
+            repository.upsert_many([{
+                'id':f'i{i:05d}','filename':f'synthetic-{i:05d}.jpg',
+                'processing_status':'processed','content_sha256':f'{i+1:064x}',
+                'created_at':'2026-10-28T00:00:00+00:00',
+                'storage_source_id':'default_local','object_key':f'{i}.jpg',
+            } for i in range(materials_count)])
+            pool=NegativePool(repository)
+            categories=[pool.category(name=f'Isolated category {i:02d}')['id'] for i in range(20)]
+            # Twenty categories always: 50 vs 500 members per category.
+            for category_index,category_id in enumerate(categories):
+                ids=[f'i{i:05d}' for i in range(category_index,materials_count,20)]
+                pool.members(ids,category_ids=[category_id])
+        http_app=FastAPI()
+        http_app.add_middleware(PerformanceDiagnosticsMiddleware)
+        http_app.include_router(create_negative_pool_router(
+            lambda _project:repository,lambda project_id:{'id':project_id},
+            lambda _project,row:row))
+        durations=[];first_timing='';response_bytes=0
+        with TestClient(http_app) as client:
+            for index in range(21):
+                began=time.perf_counter()
+                response=client.get(f'/api/v61/projects/audit-{materials_count}/negative-pool/categories')
+                durations.append((time.perf_counter()-began)*1000)
+                assert response.status_code==200,response.text
+                items=response.json()['items']
+                assert len(items)==(20 if materials_count else 0)
+                assert sum(int(row['material_count']) for row in items)==materials_count
+                assert response.headers.get('X-Request-ID')
+                first_timing=first_timing or response.headers['Server-Timing']
+                response_bytes=len(response.content)
+        results.append({'entry_path':'negative-pool/categories',
+            'scope':'in-process ASGI; canonical temp SQLite; single sequential caller; '
+                'zero or 20 categories, 0/1000/10000 synthetic memberships; '
+                'first request is only process-level first, not OS cold; no real network',
+            'synthetic_materials':materials_count,'categories':20 if materials_count else 0,
+            'first_call_ms':round(durations[0],3),
+            'warm':_isolated_http_latency_summary(durations[1:]),
+            'response_bytes':response_bytes,'server_timing_first':first_timing})
+    report('negative_categories_http',results)
+
+
 def test_legacy_maintenance_dispatches_without_a_get(tmp_path,monkeypatch):
     import app as api
     from platform_core.training_history_projection import TrainingHistoryProjection
