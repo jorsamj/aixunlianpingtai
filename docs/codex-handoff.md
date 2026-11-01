@@ -1,3 +1,7 @@
+## 2026-11-01｜42.24.476 Picker 分类诊断覆盖最小修正（新SHA CI待核）
+
+475 GitHub 精确 `06e6e0f1d26d466d522ab7b00b8fd0ac3e2f8407` Picker workflow `41267704715` 的真实日志显示性能阶段 `1 failed, 8 passed`，失败为 `test_negative_pool_categories_first_open_scale` 的空池HTTP200响应缺 `X-Request-ID`，不是数据库超时。根因已追溯 `platform_core/performance_diagnostics.py::_ENDPOINTS` 白名单漏了分类接口；476只增加该 GET 的精确正则并在原诊断测试中验证不会扩展至其它负样本接口。保留原规模取证测试对 Server-Timing/X-Request-ID 的强断言。475其它CI彼时未全部完成，476准确全量CI/规模数字仍待新SHA；**ISOLATED TEST — NOT PRODUCTION VERIFIED**。无生产访问/部署/正式素材或训练任务操作。
+
 ## 2026-11-01｜42.24.475 负样本分类打开时并发读取规模取证（新SHA CI待核）
 
 准确474 `34a4c8ad4178b628fe14564316fc2f2b1a8eaf71`、VERSION474、22/22 GitHub Actions success、Node1461/Chrome316、Picker后端87/性能8/Chrome6。474新增192px合成图片真实Chrome首屏15图解码双RAF约228.3ms，20温复开P50 138.35ms/P95 153.4ms，长任务0、复开图片请求0，纯隔离非生产。475代码审计确认训练选择器每次打开并行取 `/negative-pool/categories`，原 `NegativePool.categories` SQL 子查询统计分类活跃成员；本次仅在原性能测试中新增空池、1k、10k合成关联的真实ASGI/临时SQLite 21次顺序读，并记录Server-Timing/P50/P95/字节和各缓存口径。完整新SHA CI/性能数值尚待验证，不重复生命周期、MutationObserver、角色默认defer修复。缩略图未命中用StorageManager.materialize可能补写缺失hash/size的代码风险需先隔离复现，不得直接改生产元数据。**ISOLATED TEST — NOT PRODUCTION VERIFIED**。无正式GT/Task/Worker/GPU/OSS/DB/生产部署、main merge/tag/release/force push。用户若提供脱敏HAR或预发布环境，优先对30s Stalled做端到端分段。

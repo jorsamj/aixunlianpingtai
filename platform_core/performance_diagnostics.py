@@ -27,6 +27,7 @@ _ENDPOINTS = (
     (re.compile(r'/api/v61/projects/[^/]+/materials'), 'material.list'),
     (re.compile(r'/api/v61/projects/[^/]+/materials/status-counts'), 'material.status_counts'),
     (re.compile(r'/api/v61/projects/[^/]+/materials/[^/]+/content/thumbnail'), 'material.thumbnail'),
+    (re.compile(r'/api/v61/projects/[^/]+/negative-pool/categories'), 'negative_pool.categories'),
     (re.compile(r'/api/v42/projects/[^/]+/algorithms/[^/]+/versions/[^/]+/deployments'), 'conversion.history'),
     (re.compile(r'/api/v39/deploy/resources'), 'conversion.resources'),
     (re.compile(r'/api/v39/deploy/resources/[^/]+/detect'), 'conversion.resource_detect'),
@@ -179,6 +180,8 @@ class PerformanceDiagnosticsMiddleware:
             return await self.app(scope,receive,send)
         endpoint=_endpoint(scope.get('path',''))
         if endpoint is None: return await self.app(scope,receive,send)
+        if endpoint=='negative_pool.categories' and scope.get('method')!='GET':
+            return await self.app(scope,receive,send)
         # 48 thumbs on a page must not become 48 verbose log entries.
         if endpoint=='material.thumbnail' and random.randrange(32)!=0:
             return await self.app(scope,receive,send)

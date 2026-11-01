@@ -1,3 +1,7 @@
+## 2026-11-01｜42.24.476 分类接口诊断白名单精确补齐（准确 CI 待核）
+
+475 准确 SHA `06e6e0f1d26d466d522ab7b00b8fd0ac3e2f8407` 实际触发22个GitHub Actions，Picker contracts性能阶段 **1 failed, 8 passed**：新增 `/negative-pool/categories` 真实 ASGI GET 返回HTTP200但 `X-Request-ID` 缺失。源码根因是现有 `PerformanceDiagnosticsMiddleware._ENDPOINTS` 未包含该合法读接口，请求未被采集；不能将此认作分类SQL性能结论。476在原性能诊断 Owner 仅添加准确 `/api/v61/projects/[^/]+/negative-pool/categories` 路径，并加严格匹配回归；原0/1k/10k、每组首次+20温读取测试保持不变、绝不降级断言。诊断仍由 `MC_PERFORMANCE_DIAGNOSTICS=1` 显式启用、无SQL/请求正文/真实ID记录。475其余工作流截至修复时尚在运行；476新SHA/完整CI待验。**ISOLATED TEST — NOT PRODUCTION VERIFIED**，不部署、不改正式GT/DB/Worker/OSS、不合并main/正式发布。
+
 ## 2026-11-01｜42.24.475 Picker 负样本分类请求增长趋势隔离补测（准确 CI 待核）
 
 474 `34a4c8ad4178b628fe14564316fc2f2b1a8eaf71` 精确 22/22 GitHub Actions success，Node1461/1461、Chrome316/316、Picker 后端87/性能8/Chrome6。新增真实 Chrome 192px BMP/60卡/15图首次打开解码双RAF 228.3ms，20温复开P50 138.35ms/P95 153.4ms，首次15缩略图请求、复开零请求、无LongTask；仅是模拟图片/拦截请求，不证明生产。475 对 Picker `open` 每次发起的 `negative-pool/categories` 和 `NegativePool.categories` 逐分类关联 COUNT 做隔离规模量化，在原 Picker CI 显式性能文件用 0/1000/10000 虚构关联、20分类、真实 ASGI/SQLite 测首次＋20温样本；不修改原 SQL/缓存/业务语义，不记录真实ID/SQL或凭据，不以硬P95门槛放宽回归。源码 Python 编译通过，新 SHA 的准确 CI 与数字待核；**ISOLATED TEST — NOT PRODUCTION VERIFIED**。无生产部署/GT/Task/Worker/GPU/OSS/DB修改、不merge main/tag/release/force push。
