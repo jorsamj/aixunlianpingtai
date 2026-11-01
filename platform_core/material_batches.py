@@ -3771,7 +3771,8 @@ def public_batch(task, artifacts, repository=None):
 
 def create_training_integrity_plan(project_id, audit_task, materials, repository, artifacts, payload, selection_provider=None, *, actor=None):
     """Resolve training issue selection on the server, then use the only deletion plan."""
-    from .training_compatibility import diagnose_training_duplicates, evaluate_training_compatibility_projection
+    from .training_compatibility import (diagnose_training_duplicates,
+        evaluate_training_compatibility_projection, training_compatibility_issue_matches)
     body = payload if isinstance(payload, dict) else {}
     if (body.get('expected_material_revision') != materials.current_revision()
             or body.get('expected_annotation_revision') != AnnotationRepository(materials.project_path).current_revision()):
@@ -3800,14 +3801,14 @@ def create_training_integrity_plan(project_id, audit_task, materials, repository
         result = diagnose_training_duplicates(materials.project_path, selection, current_only=bool(source_task_id))
     query = str(body.get('query') or '').strip().casefold()
     issue_type = str(body.get('issue_type') or '')
+    missing_label_code = str(body.get('missing_label_code') or '').strip()
     if body.get('all_issues') is True:
-        query, issue_type = '', ''
-    if len(query) > 256 or len(issue_type)>128:
+        query, issue_type, missing_label_code = '', '', ''
+    if len(query) > 256 or len(issue_type)>128 or len(missing_label_code)>128:
         raise BatchRequestError('MATERIAL_INTEGRITY_FILTER_INVALID', '训练冲突筛选无效', 422)
     candidates = {str(item['image_id']) for item in result.issues
-        if (not issue_type or item['issue_type'] == issue_type)
-        and (not query or any(query in str(item.get(key) or '').casefold()
-            for key in ('image_id', 'filename', 'content_sha256', 'duplicate_group_id')))}
+        if training_compatibility_issue_matches(item, query=query, issue_type=issue_type,
+            missing_label_code=missing_label_code)}
     selected = body.get('image_ids') or []
     excluded = body.get('excluded_image_ids') or []
     for values in (selected, excluded):
@@ -3849,6 +3850,7 @@ def create_training_integrity_plan(project_id, audit_task, materials, repository
     plan.pop('selection_spec', None)
     plan['training_selection'] = {'filtered_count':filtered_count, 'selected_count':len(chosen),
         'excluded_count':len(excluded), 'query':query, 'issue_type':issue_type,
+        'missing_label_code':missing_label_code,
         'retained_execution_count':retained_count, 'previous_execution_task_id':previous_execution or None,
         'training_task_id':source_task_id or None, 'evidence_basis':'current_canonical_annotations'}
     return plan

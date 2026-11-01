@@ -102,3 +102,45 @@ test('training page stays paged and selected labels come from server summary', a
   await expect.poll(async () => page.evaluate(() => window.TrainingMaterialSummaryRuntime.state().fullPoolHydration))
     .toBe(false);
 });
+
+test('training diagnosis filters by each material actual missing review label', async ({page}) => {
+  await page.goto('/');
+  await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
+  await expect.poll(async () => page.evaluate(() => Boolean(window.TrainingMaterialSummaryRuntime?.refreshCompatibility)))
+    .toBe(true);
+  const requests = [];
+  await page.route('**/api/v62/projects/*/training-materials/compatibility', async route => {
+    const body=route.request().postDataJSON();requests.push(body);
+    const rows=[
+      {image_id:'has-fire',filename:'fire.jpg',issue_type:'partial_review_scope',
+        annotation_scope:['fire'],required_label_codes:['fire','smoke'],missing_label_codes:['smoke']},
+      {image_id:'has-smoke',filename:'smoke.jpg',issue_type:'partial_review_scope',
+        annotation_scope:['smoke'],required_label_codes:['fire','smoke'],missing_label_codes:['fire']},
+    ].filter(item=>!body.missing_label_code||item.missing_label_codes.includes(body.missing_label_code));
+    await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({
+      compatible:false,issue_count:2,affected_image_count:2,issue_counts:{partial_review_scope:2},
+      effective_label_codes:['fire','smoke'],material_revision:5,annotation_revision:7,
+      filtered_affected_image_count:rows.length,filtered_count:rows.length,
+      items:rows,page:1,page_size:50,total_pages:1,has_next:false,
+    })});
+  });
+  await page.evaluate(() => {
+    state.labels=[{code:'fire',display_name:'明火'},{code:'smoke',display_name:'烟雾'}];
+    state.algorithms=[{id:'synthetic-label-review',name:'合成测试算法',versions:[]}];
+    window.TrainingDraftRuntime.update({algorithmId:'synthetic-label-review',
+      materialIds:['has-fire','has-smoke'],newLabelCodes:['fire','smoke']});
+  });
+  await page.evaluate(async () => {
+    await window.TrainingMaterialSummaryRuntime.refreshCompatibility({force:true});
+    window.TrainingMaterialSummaryRuntime.openCompatibilityIssues();
+  });
+  const labelFilter=page.locator('#trainingCompatibilityMissingLabel');
+  await expect(labelFilter).toBeVisible();
+  await labelFilter.selectOption('smoke');
+  await page.locator('[data-training-compatibility-dialog]').getByRole('button',{name:'筛选',exact:true}).click();
+  await expect.poll(() => requests.at(-1)?.missing_label_code).toBe('smoke');
+  await expect(page.locator('.training-compatibility-item')).toHaveCount(1);
+  await expect(page.locator('.training-compatibility-item')).toContainText('has-fire');
+  await expect(page.locator('.training-compatibility-item')).toContainText('缺失：smoke');
+  await expect(page.locator('.training-compatibility-item')).not.toContainText('has-smoke');
+});

@@ -11,6 +11,7 @@ from platform_core.training_compatibility import (
     TrainingCompatibilityResult,
     compatibility_page,
     evaluate_training_compatibility_projection,
+    resolve_training_compatibility_selection,
 )
 
 
@@ -142,3 +143,70 @@ def test_task_negative_receipt_invalidates_cached_compatibility(tmp_path, monkey
     assert after is repeated
     assert before is not after
     assert calls == 2
+
+
+def test_missing_label_filter_pages_and_freezes_exact_cross_page_selection():
+    """Per-label bulk review must never sweep other labels or duplicate conflicts."""
+    issues = (
+        {"image_id": "a", "issue_type": "partial_review_scope", "missing_label_codes": ["fire"]},
+        {"image_id": "b", "issue_type": "partial_review_scope", "missing_label_codes": ["smoke"]},
+        {"image_id": "c", "issue_type": "partial_review_scope", "missing_label_codes": ["fire", "smoke"]},
+        {"image_id": "d", "issue_type": "duplicate_annotation_conflict", "missing_label_codes": []},
+    )
+    truth = TrainingCompatibilityResult(
+        label_contract={"effective_label_codes": ["fire", "smoke"]},
+        issues=issues, material_revision=5, annotation_revision=8,
+        selection_truth={"selected_count": 4},
+    )
+
+    first = compatibility_page(truth, missing_label_code="fire", page=1, page_size=1)
+    second = compatibility_page(truth, missing_label_code="fire", page=2, page_size=1)
+    assert [row["image_id"] for row in first["items"]] == ["a"]
+    assert [row["image_id"] for row in second["items"]] == ["c"]
+    assert first["filtered_affected_image_count"] == 2
+    payload = {
+        "expected_material_revision": 5, "expected_annotation_revision": 8,
+        "selection": {
+            "all_filtered": True, "missing_label_code": "fire", "excluded_image_ids": ["a"],
+        },
+    }
+    chosen = resolve_training_compatibility_selection(truth, payload)
+    assert chosen["matching_image_ids"] == ["c"]
+    assert chosen["selected_count"] == 1
+    assert compatibility_page(truth, missing_label_code="Fire", page=1)["filtered_count"] == 0
+    all_issues = resolve_training_compatibility_selection(truth, {
+        **payload, "selection": {"all_issues": True, "missing_label_code": "fire"},
+    })
+    assert all_issues["matching_image_ids"] == ["a", "b", "c", "d"]
+    with pytest.raises(ValueError, match="TRAINING_SELECTION_CHANGED"):
+        resolve_training_compatibility_selection(truth, {
+            **payload,
+            "selection": {"image_ids": ["b"], "missing_label_code": "fire"},
+        })
+    with pytest.raises(ValueError, match="TRAINING_SELECTION_STALE"):
+        resolve_training_compatibility_selection(truth, {
+            **payload, "expected_annotation_revision": 7,
+        })
+
+
+def test_21163_missing_scope_filter_returns_only_ids_of_selected_label():
+    size = 21_163
+    truth = TrainingCompatibilityResult(
+        label_contract={"effective_label_codes": ["fire", "smoke"]},
+        issues=tuple({
+            "image_id": f"synthetic-{index:05d}",
+            "issue_type": "partial_review_scope",
+            "missing_label_codes": ["fire"] if index % 2 else ["smoke"],
+        } for index in range(size)),
+        material_revision=7, annotation_revision=10,
+        selection_truth={"selected_count": size},
+    )
+    page = compatibility_page(truth, missing_label_code="fire", page=1, page_size=50)
+    assert page["filtered_affected_image_count"] == size // 2
+    assert len(page["items"]) == 50
+    selection = resolve_training_compatibility_selection(truth, {
+        "expected_material_revision": 7, "expected_annotation_revision": 10,
+        "selection": {"all_filtered": True, "missing_label_code": "fire"},
+    })
+    assert selection["selected_count"] == size // 2
+    assert all(int(image_id.rsplit("-", 1)[-1]) % 2 for image_id in selection["matching_image_ids"])

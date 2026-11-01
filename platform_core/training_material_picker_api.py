@@ -1524,6 +1524,7 @@ def training_material_picker_router(
                 result,
                 query=str(body.get("query") or ""),
                 issue_type=str(body.get("issue_type") or ""),
+                missing_label_code=str(body.get("missing_label_code") or ""),
                 cursor=str(body.get("cursor") or ""),
                 limit=int(body.get("limit") or 50),
                 page=body.get("page"),

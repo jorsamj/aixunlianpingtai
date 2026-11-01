@@ -64,6 +64,33 @@ test('pending GT review returns an explicit no-receipt result and never requests
     globalThis.document=previous.document;
   }
 });
+
+test('missing-label filter is sent to canonical compatibility POST with server paging',async()=>{
+  const previous={window:globalThis.window,document:globalThis.document};
+  const draft={algorithmId:'alg',materialIds:['a','b'],newLabelCodes:['fire','smoke'],config:{model:'model.pt'}};
+  const requests=[];
+  globalThis.window={};
+  globalThis.document={body:{},getElementById:()=>null,querySelector:()=>null,querySelectorAll:()=>[]};
+  const runtime=installTrainingMaterialSummaryRuntime({
+    getState:()=>({trainingDraft:draft}),projectId:()=> 'project-1',
+    trainingDraftRuntime:{materialIds:()=>draft.materialIds,current:()=>draft},
+    fetchImpl:async(url,options)=>{
+      requests.push({url,body:JSON.parse(options.body)});
+      return {ok:true,json:async()=>({compatible:false,issue_count:1,
+        material_revision:4,annotation_revision:6,effective_label_codes:['fire','smoke'],
+        page:3,page_size:50,items:[{image_id:'a',missing_label_codes:['smoke']}]})};
+    },
+  });
+  try{
+    const result=await runtime.refreshCompatibility({force:true,missingLabelCode:'smoke',page:3,pageSize:50});
+    assert.equal(result.items[0].missing_label_codes[0],'smoke');
+    const preflight=requests.filter(row=>row.url.includes('/training-materials/compatibility'));
+    assert.equal(preflight.length,1);
+    assert.equal(preflight[0].body.missing_label_code,'smoke');
+    assert.equal(preflight[0].body.page,3);
+    assert.equal(preflight[0].body.page_size,50);
+  }finally{runtime.destroy();Object.assign(globalThis,previous)}
+});
 import {resolveClientTrainingLabels} from '../../static/modules/training-labels.js';
 
 test('shared GT evidence distinguishes unknown cause and null metrics without trusting HTML', () => {

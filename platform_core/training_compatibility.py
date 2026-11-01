@@ -629,6 +629,25 @@ def diagnose_annotation_conflict(rows, label_ids=None, import_confirmations=None
         'requires_human_review': True, 'automatic_gt_write_allowed': False}
 
 
+def training_compatibility_issue_matches(
+    item: Mapping[str, Any], *, query: str = "", issue_type: str = "", missing_label_code: str = "",
+) -> bool:
+    """One read-only issue predicate for paging and revision-fenced selections.
+
+    Label codes are canonical and case sensitive. In particular, an issue for
+    only `person` must never enter a batch supplemental review for `head`.
+    """
+    needle = str(query or "").strip().casefold()
+    kind = str(issue_type or "").strip()
+    code = str(missing_label_code or "").strip()
+    return (
+        (not kind or str(item.get("issue_type") or "") == kind)
+        and (not code or code in (item.get("missing_label_codes") or ()))
+        and (not needle or any(needle in str(item.get(key) or "").casefold()
+            for key in ("image_id", "filename", "content_sha256", "duplicate_group_id")))
+    )
+
+
 def resolve_training_compatibility_selection(result: TrainingCompatibilityResult, payload) -> dict[str, Any]:
     """Resolve exact issue identities for draft exclusion or a deletion preview.
 
@@ -648,13 +667,13 @@ def resolve_training_compatibility_selection(result: TrainingCompatibilityResult
             raise ValueError('TRAINING_SELECTION_INVALID: 素材身份列表无效')
     query = str(selection.get('query') or '').strip().casefold()
     issue_type = str(selection.get('issue_type') or '').strip()
-    if len(query) > 256:
+    missing_label_code = str(selection.get('missing_label_code') or '').strip()
+    if len(query) > 256 or len(issue_type) > 128 or len(missing_label_code) > 128:
         raise ValueError('TRAINING_SELECTION_INVALID: 筛选文本过长')
     all_ids = {str(item['image_id']) for item in result.issues}
     filtered = {str(item['image_id']) for item in result.issues
-        if (not issue_type or item.get('issue_type') == issue_type)
-        and (not query or any(query in str(item.get(key) or '').casefold()
-            for key in ('image_id','filename','content_sha256','duplicate_group_id')))}
+        if training_compatibility_issue_matches(item, query=query, issue_type=issue_type,
+            missing_label_code=missing_label_code)}
     candidates = all_ids if selection.get('all_issues') is True else filtered
     if not set(selected).issubset(candidates) or not set(excluded).issubset(candidates):
         raise ValueError('TRAINING_SELECTION_CHANGED: 所选素材不属于本次真实问题范围')
@@ -671,6 +690,7 @@ def compatibility_page(
     *,
     query: str = "",
     issue_type: str = "",
+    missing_label_code: str = "",
     cursor: str = "",
     limit: int = 50,
     page: int | None = None,
@@ -678,16 +698,13 @@ def compatibility_page(
 ) -> dict[str, Any]:
     normalized_query = str(query or "").strip().casefold()
     normalized_type = str(issue_type or "").strip()
+    normalized_missing = str(missing_label_code or "").strip()
+    if len(normalized_query) > 256 or len(normalized_type) > 128 or len(normalized_missing) > 128:
+        raise ValueError("compatibility filter is too long")
     filtered = [
         item for item in result.issues
-        if (not normalized_type or item["issue_type"] == normalized_type)
-        and (
-            not normalized_query
-            or normalized_query in str(item.get("image_id") or "").casefold()
-            or normalized_query in str(item.get("filename") or "").casefold()
-            or normalized_query in str(item.get("content_sha256") or "").casefold()
-            or normalized_query in str(item.get("duplicate_group_id") or "").casefold()
-        )
+        if training_compatibility_issue_matches(item, query=normalized_query,
+            issue_type=normalized_type, missing_label_code=normalized_missing)
     ]
     bounded = int(page_size if page_size is not None else limit)
     if not 1 <= bounded <= 100:

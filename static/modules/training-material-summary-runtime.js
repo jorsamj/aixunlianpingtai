@@ -212,6 +212,7 @@ export function installTrainingMaterialSummaryRuntime({
   let compatibilityController = null;
   let compatibilityQuery = '';
   let compatibilityIssueType = '';
+  let compatibilityMissingLabelCode = '';
   let compatibilityPage = 1;
   let compatibilityPageSize = 50;
   let comparison = null;
@@ -267,7 +268,8 @@ export function installTrainingMaterialSummaryRuntime({
       const resolved=await withRequestDeadline(async signal=>readJson(await fetchImpl(`/api/v62/projects/${encodeURIComponent(pid)}/training-materials/compatibility`,{
         method:'POST',signal,headers:{'Content-Type':'application/json'},body:JSON.stringify({...compatibilityPayload(draft),selection_action:'RESOLVE_SELECTION',
           expected_material_revision:context.truth.material_revision,expected_annotation_revision:context.truth.annotation_revision,
-          selection:{...selected,query:compatibilityQuery,issue_type:compatibilityIssueType}})}),'训练问题选择解析失败'),{timeoutMs:30000,label:'核验排除范围'});
+          selection:{...selected,query:compatibilityQuery,issue_type:compatibilityIssueType,
+            missing_label_code:compatibilityMissingLabelCode}})}),'训练问题选择解析失败'),{timeoutMs:30000,label:'核验排除范围'});
       if(destroyed||String(projectId()||'')!==pid||trainingCompatibilitySignature(currentDraft())!==signature||!topOwns(anchor))return false;
       const ids=uniqueIds(resolved.matching_image_ids);
       if(!ids.length)return notify('当前选择没有可排除的问题素材，请重新检查');
@@ -283,7 +285,7 @@ export function installTrainingMaterialSummaryRuntime({
   function governanceTools(truth, source='draft') {
     const decisionRevision=JSON.stringify([projectId(),truth.material_revision,truth.annotation_revision]);
     if(governanceDecisionRevision!==decisionRevision){governanceDecisions={};governanceDecisionRevision=decisionRevision;}
-    const key=JSON.stringify([projectId(),source,compatibilityQuery,compatibilityIssueType,
+    const key=JSON.stringify([projectId(),source,compatibilityQuery,compatibilityIssueType,compatibilityMissingLabelCode,
       truth.material_revision,truth.annotation_revision,source==='draft'?trainingCompatibilitySignature(currentDraft()):'']);
     governanceContext={key,total:Number(truth.filtered_affected_image_count??truth.governance_eligible_count??0),allTotal:Number(truth.affected_image_count||0),rows:truth.items||[],truth,source};
     governanceSelection=updateTrainingGovernanceSelection(governanceSelection,governanceContext);
@@ -316,8 +318,9 @@ export function installTrainingMaterialSummaryRuntime({
     const sequence=diagnosticSequence,draftSignature=trainingCompatibilitySignature(currentDraft());
     const deletionContext=captureDeletionContext();
     const dialog=document.querySelector('[data-training-compatibility-dialog]')?.closest('[role="dialog"]');
-    const filters={query:compatibilityQuery,issueType:compatibilityIssueType};
+    const filters={query:compatibilityQuery,issueType:compatibilityIssueType,missingLabelCode:compatibilityMissingLabelCode};
     const body={...selected, query:compatibilityQuery,issue_type:compatibilityIssueType,
+      missing_label_code:compatibilityMissingLabelCode,
       expected_material_revision:context.truth.material_revision,
       expected_annotation_revision:context.truth.annotation_revision,manual_decisions:governanceDecisions,
       delete_mode:document.querySelector('[data-governance-delete-mode]')?.value||'DISCARD',
@@ -674,7 +677,8 @@ export function installTrainingMaterialSummaryRuntime({
     }
   }
 
-  async function refreshCompatibility({force = false, payload = null, signal: externalSignal = null, query = '', issueType = '', page = 1, pageSize = 50} = {}) {
+  async function refreshCompatibility({force = false, payload = null, signal: externalSignal = null,
+    query = '', issueType = '', missingLabelCode = '', page = 1, pageSize = 50} = {}) {
     const draft = currentDraft();
     const signature = trainingCompatibilitySignature(draft || {});
     if (!draft?.algorithmId || !uniqueIds(draft?.materialIds).length) {
@@ -703,6 +707,7 @@ export function installTrainingMaterialSummaryRuntime({
       Object.assign(requestBody, {
         query,
         issue_type: issueType,
+        missing_label_code: missingLabelCode,
         page,
         page_size: pageSize,
       });
@@ -726,6 +731,7 @@ export function installTrainingMaterialSummaryRuntime({
       };
       compatibilityQuery = String(query || '');
       compatibilityIssueType = String(issueType || '');
+      compatibilityMissingLabelCode = String(missingLabelCode || '');
       compatibilityPage = Math.max(1, Number(body.page || page || 1));
       compatibilityPageSize = Math.max(1, Math.min(100, Number(body.page_size || pageSize || 50)));
       queueDecorate();
@@ -766,9 +772,11 @@ return `<article class="training-compatibility-item"><img src="${htmlEscape(item
     if (!truth.ready) return void refreshCompatibility({force: true});
     const rows = truth.items || [];
     const issueTypes = Object.keys(truth.issue_counts || {});
+    const missingLabelOptions = uniqueIds(truth.effective_label_codes || []).map(code =>
+      `<option value="${htmlEscape(code)}" ${code===compatibilityMissingLabelCode?'selected':''}>${htmlEscape(code)}</option>`).join('');
     const offset = Math.max(0, (compatibilityPage - 1) * compatibilityPageSize);
     const tools=governanceTools(truth);
-    const html = `<div class="training-compatibility-list"><div class="alert warn"><b>${Number(truth.affected_image_count||0)} 张素材 · ${truth.issue_count} 条训练问题</b><span>补审只记录你明确检查过的标签；AI 未检出不会自动确认不存在。</span></div><div class="row"><input id="trainingCompatibilityQuery" class="input" value="${htmlEscape(compatibilityQuery)}" placeholder="搜索文件名 / image_id"><select id="trainingCompatibilityType" class="select"><option value="">全部异常</option>${issueTypes.map(type=>`<option value="${htmlEscape(type)}" ${type===compatibilityIssueType?'selected':''}>${htmlEscape(ISSUE_NAMES[type]||type)} · ${Number(truth.issue_counts[type]||0)}</option>`).join('')}</select><button class="btn" type="button" onclick="TrainingMaterialSummaryRuntime.applyIssueFilters()">筛选</button></div>${tools}<div class="item-sub">筛选 ${Number(truth.filtered_affected_image_count||0)} 张 · ${Number(truth.filtered_count||0)} 条问题 · 当前 ${rows.length?offset+1:0}-${offset+rows.length}</div>${rows.map(issueHtml).join('') || '<div class="empty">当前筛选没有问题素材</div>'}<div id="trainingCompatibilityPager"></div></div>`;
+    const html = `<div class="training-compatibility-list"><div class="alert warn"><b>${Number(truth.affected_image_count||0)} 张素材 · ${truth.issue_count} 条训练问题</b><span>补审只记录你明确检查过的标签；AI 未检出不会自动确认不存在。</span></div><div class="row"><input id="trainingCompatibilityQuery" class="input" value="${htmlEscape(compatibilityQuery)}" placeholder="搜索文件名 / image_id"><select id="trainingCompatibilityType" class="select"><option value="">全部异常</option>${issueTypes.map(type=>`<option value="${htmlEscape(type)}" ${type===compatibilityIssueType?'selected':''}>${htmlEscape(ISSUE_NAMES[type]||type)} · ${Number(truth.issue_counts[type]||0)}</option>`).join('')}</select><select id="trainingCompatibilityMissingLabel" class="select" aria-label="按缺失审核类别筛选"><option value="">全部缺失类别</option>${missingLabelOptions}</select><button class="btn" type="button" onclick="TrainingMaterialSummaryRuntime.applyIssueFilters()">筛选</button></div>${tools}<div class="item-sub">筛选 ${Number(truth.filtered_affected_image_count||0)} 张 · ${Number(truth.filtered_count||0)} 条问题 · 当前 ${rows.length?offset+1:0}-${offset+rows.length}</div>${rows.map(issueHtml).join('') || '<div class="empty">当前筛选没有问题素材</div>'}<div id="trainingCompatibilityPager"></div></div>`;
     showDiagnosticDialog(Number(truth.duplicate_conflict_group_count||truth.duplicate_group_count||0)?'训练素材冲突诊断':'训练标签适配问题', `<div data-training-compatibility-dialog>${html}<div class="row end"><button class="btn" data-training-recheck>重新预检</button>${currentDraft()?.duplicateReview?'<button class="btn" data-training-undo-exclusions>撤销本次排除并重新检查</button>':''}<button class="btn" onclick="closeModal()">返回训练配置 · 保留草稿</button></div></div>`);
     bindDiagnosticActions();
     window.PlatformCore?.pagination?.mountPagination?.(
@@ -837,7 +845,8 @@ return `<article class="training-compatibility-item"><img src="${htmlEscape(item
       if(historicalDiagnosis)return openTaskDiagnosis(historicalDiagnosis.task_id);
       const controls=[...root.querySelectorAll('[data-governance-check],[data-governance-mode],[data-governance-preview],[data-conflict-delete],[data-training-recheck]')];
       const disabled=controls.map(control=>control.disabled);controls.forEach(control=>control.disabled=true);root.setAttribute('aria-busy','true');
-      const result=await refreshCompatibility({force:true,query:compatibilityQuery,issueType:compatibilityIssueType});
+      const result=await refreshCompatibility({force:true,query:compatibilityQuery,issueType:compatibilityIssueType,
+        missingLabelCode:compatibilityMissingLabelCode});
       if(result&&topOwns(root))openCompatibilityIssues();
       else if(root.isConnected){controls.forEach((control,index)=>control.disabled=disabled[index]);root.removeAttribute('aria-busy');}
     });
@@ -893,7 +902,8 @@ return `<article class="training-compatibility-item"><img src="${htmlEscape(item
 
   async function openDuplicateComparison(hash, page=1) {
     const pid=String(projectId()||'');
-    const origin=comparison?.origin||{query:compatibilityQuery,issueType:compatibilityIssueType,page:compatibilityPage,pageSize:compatibilityPageSize};
+    const origin=comparison?.origin||{query:compatibilityQuery,issueType:compatibilityIssueType,
+      missingLabelCode:compatibilityMissingLabelCode,page:compatibilityPage,pageSize:compatibilityPageSize};
     const sequence=++diagnosticSequence,sourceTask=historicalDiagnosis?.task_id;
     const draftSignature=trainingCompatibilitySignature(currentDraft());
     const anchor=document.querySelector('[data-training-compatibility-dialog]');
@@ -927,7 +937,7 @@ return `<article class="training-compatibility-item"><img src="${htmlEscape(item
 
   async function openTaskDiagnosis(taskId,page=1) {
     const pid=String(projectId()||'');
-    if(historicalDiagnosis?.task_id!==taskId){compatibilityQuery='';compatibilityIssueType='';}
+    if(historicalDiagnosis?.task_id!==taskId){compatibilityQuery='';compatibilityIssueType='';compatibilityMissingLabelCode='';}
     const sequence=++diagnosticSequence;
     showDiagnosticDialog('训练输入冲突诊断','<div data-training-compatibility-dialog role="status">正在读取持久任务证据和当前正式标注…</div>');
     const anchor=document.querySelector('[data-training-compatibility-dialog]');
@@ -952,6 +962,7 @@ return `<article class="training-compatibility-item"><img src="${htmlEscape(item
       force: true,
       query: compatibilityQuery,
       issueType: compatibilityIssueType,
+      missingLabelCode: compatibilityMissingLabelCode,
       page,
       pageSize: compatibilityPageSize,
     });
@@ -962,6 +973,7 @@ return `<article class="training-compatibility-item"><img src="${htmlEscape(item
   function applyIssueFilters() {
     compatibilityQuery = String(document.getElementById('trainingCompatibilityQuery')?.value || '').trim();
     compatibilityIssueType = String(document.getElementById('trainingCompatibilityType')?.value || '').trim();
+    compatibilityMissingLabelCode = String(document.getElementById('trainingCompatibilityMissingLabel')?.value || '').trim();
     return loadIssuePage(1);
   }
 
@@ -1037,7 +1049,7 @@ return `<article class="training-compatibility-item"><img src="${htmlEscape(item
   observer?.observe(document.body, {childList: true, subtree: true});
 
   const runtime = {
-    build: 'training-material-summary-runtime-4226465',
+    build: 'training-material-summary-runtime-4226481',
     refresh,
     refreshCompatibility,
     confirmPendingNegatives,

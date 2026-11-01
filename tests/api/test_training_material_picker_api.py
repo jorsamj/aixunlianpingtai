@@ -11,6 +11,7 @@ from PIL import Image
 from platform_core.annotation_repository import AnnotationRepository
 from platform_core.material_repository import MaterialRepository
 from platform_core.training_material_picker_api import training_material_picker_router, _public_picker_material, _selection_summary
+from platform_core.training_compatibility import TrainingCompatibilityResult
 import platform_core.training_material_picker_api as picker_module
 
 
@@ -72,6 +73,55 @@ def test_picker_objective_annotation_issue_is_not_target_role_or_generic_review(
     assert _public_picker_material("p1", {**material,"annotation_needs_review":True}, annotation)["annotation_issue_type"] == "annotation_needs_review"
     assert _public_picker_material("p1", {**material,"annotation_source_content_sha256":"f"*64}, annotation)["annotation_issue_type"] == "stale_ground_truth"
     assert _public_picker_material("p1", material, {"annotation_state":"annotated", "boxes":[]})["annotation_issue_type"] == "invalid_annotation"
+
+
+def test_compatibility_missing_label_filter_and_revision_bound_selection(tmp_path, monkeypatch):
+    data_dir = tmp_path / "data"
+    project_path = data_dir / "projects" / "p1"
+    repo = MaterialRepository(project_path)
+    repo.upsert_many([_record(0), _record(1)])
+    annotation_revision = AnnotationRepository(project_path).current_revision()
+    truth = TrainingCompatibilityResult(
+        label_contract={"effective_label_codes": ["fire", "smoke"]},
+        issues=tuple({
+            "image_id": image_id,
+            "issue_type": "partial_review_scope",
+            "missing_label_codes": codes,
+        } for image_id, codes in (("m0000", ["fire"]), ("m0001", ["smoke"]))),
+        material_revision=repo.current_revision(), annotation_revision=annotation_revision,
+        selection_truth={"selected_count": 2},
+    )
+    monkeypatch.setattr(picker_module, "evaluate_training_compatibility_projection", lambda *_args, **_kwargs: truth)
+    app = FastAPI()
+    app.include_router(training_material_picker_router(
+        lambda project_id: {"id": project_id} if project_id == "p1" else None,
+        lambda: data_dir,
+        algorithm_provider=lambda *_args: {"id": "algorithm-1"},
+    ))
+    client = TestClient(app)
+    endpoint = "/api/v62/projects/p1/training-materials/compatibility"
+    payload = {"algorithm_asset_id": "algorithm-1", "image_ids": ["m0000", "m0001"],
+        "missing_label_code": "smoke", "page": 1, "page_size": 50}
+    page = client.post(endpoint, json=payload)
+    assert page.status_code == 200, page.text
+    assert [row["image_id"] for row in page.json()["items"]] == ["m0001"]
+    assert page.json()["filtered_affected_image_count"] == 1
+
+    resolved = client.post(endpoint, json={
+        **payload, "selection_action": "RESOLVE_SELECTION",
+        "expected_material_revision": repo.current_revision(),
+        "expected_annotation_revision": annotation_revision,
+        "selection": {"all_filtered": True, "missing_label_code": "smoke"},
+    })
+    assert resolved.status_code == 200, resolved.text
+    assert resolved.json()["matching_image_ids"] == ["m0001"]
+    wrong = client.post(endpoint, json={
+        **payload, "selection_action": "RESOLVE_SELECTION",
+        "expected_material_revision": repo.current_revision(),
+        "expected_annotation_revision": annotation_revision,
+        "selection": {"image_ids": ["m0000"], "missing_label_code": "smoke"},
+    })
+    assert wrong.status_code == 409
 
 
 def test_new_label_evidence_does_not_accept_unavailable_source_or_invalid_formal_box(tmp_path):
