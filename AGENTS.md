@@ -1,3 +1,9 @@
+## 2026-11-01｜42.24.482 Chrome 测试纠正 DOM 内容断言（准确 CI 待验）
+
+481 准确 `Training Material Picker` CI [41299523203](https://github.com/jorsamj/aixunlianpingtai/actions/runs/41299523203) 已实证 **Chrome 1 failed / 6 passed**，`Expected has-fire` 而实际 DOM `fire.jpg…缺失：smoke`；Picker contracts **95 passed**、隔离性能 **9 passed**。482 对应原真实 Chrome 用例的可见名称断言修正，绝不删测试或归咎业务失败；482 准确 SHA 全部 Actions 待独立验。
+
+唯一开发分支在 481 `dfe8abfaef18d3314aea6a5eb0d13c36753a4313` 提交后，继续纠正 481 新增 Chrome 场景中未渲染的内部 image_id 断言；原 `issueHtml` 实际展示文件名与每图缺失类别，482 改断言为真实可见 `fire.jpg`/`smoke.jpg`，并等待首页 Bootstrap 项目和 Summary Owner 就绪。保留真实浏览器按类别过滤和每卡审核范围强断言，不放宽超时/删测试；版本与原静态入口同步更新。481 准确 Actions 已触发、在本增量开始时尚未全部结束；482 完整 CI 独立核查。无 GT、素材、Task、Worker、GPU、OSS、训练或生产操作；持久逐图补审任务和人工证据仍未开发。**ISOLATED TEST — NOT PRODUCTION VERIFIED**，不 merge/tag/release/force push。台账 482 节。
+
 ## 2026-11-01｜42.24.481 缺失审核类别逐图筛选及修订冻结跨页选择（准确 CI 待验）
 
 唯一原开发分支基线 480 `429d3dd553761403f3008258f8fec30aff541b19` / 42.24.480，远端与本地相同、工作区干净；480 准确 Actions26/26、Node1464/1464、Chrome317/317、Picker Backend92/92、性能9/9、Picker Chrome6/6。原 `training_compatibility.py` 诊断已逐图给出 `missing_label_codes`，481 在原兼容性、Picker API、Summary UI 和删前计划 Owner 中**共用一套按真实缺失 code 筛选的纯读谓词**；服务端分页、跨页选择、修订号与删除预览同范围，按类别切换会失效旧选择。新增 Python 真实 API/21,163 虚构 ID 分页/修订失效、Node 路由参数、原 CI 显式 Chrome 交互回归。关键安全边界：现有 AI task 的 labels_text/review_scope 是全任务统一，不能将跨页选出的异质缺失类别直接一键 AI 接受，尤其不能用 AI 空结果自动伪造已审核 GT；本版不提供批量 AI Task 创建、没有自动提交 GT。下一批再做持久逐图 scope/人工证据/可恢复任务及训练草稿返回；生产实际 21k、30 秒 Stalled 仍未验。完整 481 测试与新 SHA CI 必须独立核查，**ISOLATED TEST — NOT PRODUCTION VERIFIED**；不部署/动生产 GT、素材、Task、DB、Worker、GPU、OSS，不 merge main/tag/release/force push。台账 `docs/performance/2026-10-29-p0-followup.md` 481 节。

@@ -1049,7 +1049,7 @@ return `<article class="training-compatibility-item"><img src="${htmlEscape(item
   observer?.observe(document.body, {childList: true, subtree: true});
 
   const runtime = {
-    build: 'training-material-summary-runtime-4226481',
+    build: 'training-material-summary-runtime-4226482',
     refresh,
     refreshCompatibility,
     confirmPendingNegatives,

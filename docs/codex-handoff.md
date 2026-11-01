@@ -1,3 +1,9 @@
+## 2026-11-01｜42.24.482 新 Chrome 用例断言精确匹配 DOM（新 SHA CI 待验）
+
+已核 481 准确 GitHub Picker [run 41299523203](https://github.com/jorsamj/aixunlianpingtai/actions/runs/41299523203)：real Chrome **1 failed, 6 passed**，唯一 fail 原文 `Expected substring "has-fire"`、实际卡片 `fire.jpg … 缺失：smoke`，说明后端按缺失类已过滤正确而浏览器用例索取不存在的 ID 文本。Picker Python **95/95**、隔离性能 **9/9** 通过；本批仅修正错误测试期待，仍以新 SHA 完整 Actions 为验收。
+
+接续唯一原分支 481 `dfe8abfaef18d3314aea6a5eb0d13c36753a4313`；该 SHA 已触发 GitHub Actions，482 开始时未完成，不能声称全绿。481 原 `training-page-material-summary.spec.mjs` 把测试数据 image_id 当成诊断卡正文，实际 UI 只展示 filename 和缺失审核类别；482 在原显式 Chrome 测试文件改断言为用户看得见的合成 `fire.jpg`/`smoke.jpg`，并在模拟交互前等待 Bootstrap project 与网络 Owner 就绪。版本与资源查询字符串一并增为 482，不删场景、不降低 GT 资格或训练准入，正式代码仅静态版本标记。隔离 Python 42/42 + 56/56、Node 1465/1465 是 481 代码本地结果，新 482 SHA CI 和 Chrome 必须独立验。下一阶段先逐图 scope/持久审查证据，再接历史批量补审任务；生产 21k/30s Stalled 未证实。**ISOLATED TEST — NOT PRODUCTION VERIFIED**，不部署/改生产数据/merge/tag/release/force push。台账 482 节。
+
 ## 2026-11-01｜42.24.481 21,163 历史 GT 补审前置：按逐图缺失标签筛选（新 SHA CI 待验）
 
 起点仅 `feature/external-algorithm-publishing` 480 `429d3dd553761403f3008258f8fec30aff541b19`、版本480、本地干净且远端未变；其准确 CI 26/26 success、Node1464/1464、Chrome317/317、Picker Backend92/92、Picker Perf9/9、Chrome6/6。服务端 `training_compatibility.py::training_compatibility_issue_matches` 纯读单一谓词按**每张图实际缺失的标准 label code**筛选，原 `compatibility_page`、修订绑定 `RESOLVE_SELECTION`、`training_material_picker_api.py` POST、`material_batches.py` 删前计划和 `training-material-summary-runtime.js` 弹窗均沿用；防止按 `smoke` 选中只缺 `fire` 的图片。UI 改条件后不继承旧跨页勾选；旧 API 无字段时行为不变；`all_issues` 明确不受筛选限制。新增真实 ASGI、Python 21,163 虚构问题、Node 与既有 Chrome CI 文件回归，准确 481 CI 待独立验收。**本版不创建 AI 任务或写正式 GT**：原 v60 AI 任务逐任务统一 labels_text/review_scope 和界面全部接受不能证明每张图审核过每种缺失类；接下来先做持久逐图缺失 scope/人员核对证据和分页局部提交，继而返回原训练草稿并重验。真实 21k、真实浏览器 30s Stalled/网络瓶颈仍未验证；**ISOLATED TEST — NOT PRODUCTION VERIFIED**，不部署、不接触生产 GT/Task/Worker/GPU/OSS/DB、不 merge/tag/release/强推。台账 481 节。

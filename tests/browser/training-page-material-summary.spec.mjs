@@ -108,6 +108,8 @@ test('training diagnosis filters by each material actual missing review label', 
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
   await expect.poll(async () => page.evaluate(() => Boolean(window.TrainingMaterialSummaryRuntime?.refreshCompatibility)))
     .toBe(true);
+  await expect.poll(() => page.evaluate(() => Boolean(state.project?.id && window.TrainingMaterialSummaryRuntime?.state().networkOwner)))
+    .toBe(true);
   const requests = [];
   await page.route('**/api/v62/projects/*/training-materials/compatibility', async route => {
     const body=route.request().postDataJSON();requests.push(body);
@@ -140,7 +142,7 @@ test('training diagnosis filters by each material actual missing review label', 
   await page.locator('[data-training-compatibility-dialog]').getByRole('button',{name:'筛选',exact:true}).click();
   await expect.poll(() => requests.at(-1)?.missing_label_code).toBe('smoke');
   await expect(page.locator('.training-compatibility-item')).toHaveCount(1);
-  await expect(page.locator('.training-compatibility-item')).toContainText('has-fire');
+  await expect(page.locator('.training-compatibility-item')).toContainText('fire.jpg');
   await expect(page.locator('.training-compatibility-item')).toContainText('缺失：smoke');
-  await expect(page.locator('.training-compatibility-item')).not.toContainText('has-smoke');
+  await expect(page.locator('.training-compatibility-item')).not.toContainText('smoke.jpg');
 });
