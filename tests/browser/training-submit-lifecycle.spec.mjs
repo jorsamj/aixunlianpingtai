@@ -33,9 +33,16 @@ async function mount(page, mode) {
       document.querySelector('#fixture').innerHTML=`<div id="modal" role="dialog"><div class="train429-create"><input id="tr429TaskId" value="${taskId}"><select id="tr429Target"><option value="local">local</option></select><select id="tr429Alg"><option value="detect">detect</option></select><div class="train-submit-feedback" data-training-submit-feedback hidden><div class="train-submit-visual"><i></i></div><b data-training-submit-title></b><span data-training-submit-detail></span><ol><li data-training-submit-step></li></ol></div><div class="train428-footer"><button class="btn primary">开始训练</button></div></div></div>`;
     };
     window.openFixture();window.releasePost=false;window.closeCalls=0;window.accepted=[];window.notices=[];window.refreshStarted=false;window.refreshFinished=false;
+    window.preflightCalls=0;window.negativePreviewCalls=0;
     const draft=createTrainingDraft({algorithmId:'alg-1',materialIds:['m1','m2'],newLabelCodes:['person'],resource:{strategy:'manual',device:'cpu'},config:{model:'yolo11n.pt'}});
     const state={algorithms:[{id:'alg-1'}],targets:[{id:'local',type:'local',framework:'ultralytics',algorithms:[{key:'detect',base_model:'yolo11n.pt'}]}],trainingDevicesV3:{options:[{id:'cpu',available:true}]}};
     window.fixtureState=state;window.failReadiness=false;window.submitRuntime=installTrainingSubmitRuntime({getState:()=>{if(window.failReadiness)throw new Error('isolated readiness failure');return state;},projectId:()=> 'fixture-project',trainingDraftRuntime:{sync:()=>draft,current:()=>draft,base:()=>({blocked:false})},trainingDraftToRequest,
+      materialSummaryRuntime:mode==='review-no-receipt'?{
+        compatibilityFor:()=>({ready:true,compatible:false,issue_count:2,affected_image_count:2,issue_counts:{partial_review_scope:2}}),
+        refreshCompatibility:async()=>{window.preflightCalls++;return {compatible:false,issue_count:2,affected_image_count:2,issue_counts:{partial_review_scope:2}};},
+        confirmPendingNegatives:async()=>{window.negativePreviewCalls++;return {accepted:true,receiptIssued:false};},
+        updateAdmissionDiagnosis(){},openAdmissionDiagnosis:()=>true,
+      }:undefined,
       closeModal:()=>{window.closeCalls++;document.getElementById('modal').classList.add('hidden');},
       trainingTaskRuntime:{acceptCreatedTask:task=>window.accepted.push(task)},notify:text=>window.notices.push(text),
       reloadRelated:async()=>{window.refreshStarted=true;if(mode==='refresh-error')throw new Error('isolated refresh unavailable');await new Promise(resolve=>{window.finishRefresh=resolve;});window.refreshFinished=true;},
@@ -44,6 +51,18 @@ async function mount(page, mode) {
   },{mode,taskId});
   return {ledger,posts:()=>posts,setMode:value=>{mode=value;}};
 }
+
+test('unreviewed GT keeps the real modal open without an identical second preflight or training POST',async({page})=>{
+  const fixture=await mount(page,'review-no-receipt');
+  await page.getByRole('button',{name:'开始训练'}).click();
+  await page.evaluate(()=>window.submitPromise);
+  expect(await page.evaluate(()=>window.preflightCalls)).toBe(1);
+  expect(await page.evaluate(()=>window.negativePreviewCalls)).toBe(1);
+  expect(fixture.posts()).toBe(0);
+  await expect(page.getByRole('dialog')).toBeVisible();
+  await expect(page.locator('.train428-footer .btn.primary')).toBeEnabled();
+  await page.evaluate(()=>window.submitRuntime.destroy());
+});
 
 for(const mode of ['slow-refresh','refresh-error','reject','manual-close','replacement','recover','unknown','pending-recover','pending-unknown']) {
   test(`training creation modal identity and durable outcome: ${mode}`,async({page})=>{

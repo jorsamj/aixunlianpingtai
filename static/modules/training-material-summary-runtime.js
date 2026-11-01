@@ -432,7 +432,8 @@ export function installTrainingMaterialSummaryRuntime({
   async function confirmPendingNegatives({draft=currentDraft(),root,isCurrent=()=>true}={}) {
     // An insufficient selection cannot start training; the existing admission
     // owner must report its materials/label blockers together.
-    if(uniqueIds(draft?.materialIds).length<2)return true;
+    const noReceipt={accepted:true,receiptIssued:false};
+    if(uniqueIds(draft?.materialIds).length<2)return noReceipt;
     if(negativeCheck)throw new Error('负样本确认正在处理，请勿重复提交');
     const controller=new AbortController(),pid=String(projectId()||''),payload=compatibilityPayload(draft);
     const current=()=>!destroyed&&!controller.signal.aborted&&String(projectId()||'')===pid&&isCurrent();
@@ -445,10 +446,10 @@ export function installTrainingMaterialSummaryRuntime({
       const preview=await post('negative-preview',payload);
       if(!current())return false;
       // Invalid/stale GT must use the existing diagnosis, never an absence assertion.
-      if(Number(preview.counts?.pending_review))return true;
+      if(Number(preview.counts?.pending_review))return noReceipt;
       if(!Number(preview.counts?.positive)&&Object.values(preview.counts||{}).some(Number))throw new Error('本次素材没有所选目标的有效正样本，不能创建全负样本目标检测训练。');
       const requiresConfirmation=Number(preview.pending_count)>0||Number(preview.coverage?.partial_coverage_count)>0;
-      if(!requiresConfirmation)return true;
+      if(!requiresConfirmation)return noReceipt;
       if(typeof window.modal!=='function')throw new Error('负样本确认窗口不可用，请刷新后重试');
       const accepted=await new Promise(resolve=>{
         const layer=window.modal('确认本次训练样本',renderTrainingSampleConfirmation(preview),true);
@@ -466,8 +467,9 @@ export function installTrainingMaterialSummaryRuntime({
       // partial positive coverage alone, but the backend still checks the proof.
       const confirmation=await post('confirm-negatives',{...payload,confirmed:true,proof_digest:preview.proof_digest});
       if(!current())return false;
-      if(Number(confirmation.confirmed_count)>0){invalidate();await refresh(currentIds(),{force:true});}
-      return current();
+      const receiptIssued=Number(confirmation.confirmed_count)>0;
+      if(receiptIssued){invalidate();await refresh(currentIds(),{force:true});}
+      return {accepted:current(),receiptIssued};
     }finally{negativeDialog?.finish(false);negativeCheck=null;}
   }
 
@@ -1035,7 +1037,7 @@ return `<article class="training-compatibility-item"><img src="${htmlEscape(item
   observer?.observe(document.body, {childList: true, subtree: true});
 
   const runtime = {
-    build: 'training-material-summary-runtime-4226464',
+    build: 'training-material-summary-runtime-4226465',
     refresh,
     refreshCompatibility,
     confirmPendingNegatives,

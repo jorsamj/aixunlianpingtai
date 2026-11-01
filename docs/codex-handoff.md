@@ -1,3 +1,7 @@
+## 2026-11-01｜42.24.479 训练创建重复兼容性检查 P0 接续（新 SHA CI 待验）
+
+起始 HEAD `964d5d06b98bc70ec6ae3af3e5bb787a67884c82`、VERSION 478，唯一原开发分支，本地与远端只读核对一致且工作区干净。原提交前检查首次有 `partial_review_scope` 时即使负样本预览没有生成凭证也重复强制 POST `/training-materials/compatibility`；新增原 Node 两测试 RED（60/61、19/20），只在已有 `training-submit` 和 `training-material-summary` Owner 传递明确 `{accepted,receiptIssued}`，新凭证/原 GT/正式创建准入不变。定向 GREEN 61/61、20/20；真实 Chrome 回归加在已显式执行的 `training-submit-lifecycle.spec.mjs`。新增 CI、全量结果和准确推送 SHA 另核，不凭旧绿色宣称验收。下一步优先大规模 GT 持久批量补审流程与真实 HAR/30s Stalled 取证，不能重复建设已有审核/请求/缓存架构。不操作正式素材、GT、Task、Worker、GPU、OSS/生产服务，不合并 main/tag/release/强推。唯一详细台账见 `docs/performance/2026-10-29-p0-followup.md` 479 节。
+
 ## 2026-11-01｜42.24.476 Picker 分类诊断覆盖最小修正（新SHA CI待核）
 
 475 GitHub 精确 `06e6e0f1d26d466d522ab7b00b8fd0ac3e2f8407` Picker workflow `41267704715` 的真实日志显示性能阶段 `1 failed, 8 passed`，失败为 `test_negative_pool_categories_first_open_scale` 的空池HTTP200响应缺 `X-Request-ID`，不是数据库超时。根因已追溯 `platform_core/performance_diagnostics.py::_ENDPOINTS` 白名单漏了分类接口；476只增加该 GET 的精确正则并在原诊断测试中验证不会扩展至其它负样本接口。保留原规模取证测试对 Server-Timing/X-Request-ID 的强断言。475其它CI彼时未全部完成，476准确全量CI/规模数字仍待新SHA；**ISOLATED TEST — NOT PRODUCTION VERIFIED**。无生产访问/部署/正式素材或训练任务操作。

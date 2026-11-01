@@ -25,14 +25,14 @@ import {installExternalAlgorithmPublishRuntime} from './modules/external-algorit
 import {installModelArtifactRuntime} from './modules/model-artifact-runtime.js?v=65009';
 import {installTrainingRecoveryRuntime} from './modules/training-recovery-runtime.js?v=20261028-csc';
 import {installTrainingMaterialPickerRuntime} from './modules/training-material-picker-runtime.js?v=422621';
-import {installTrainingMaterialSummaryRuntime} from './modules/training-material-summary-runtime.js?v=4226464';
+import {installTrainingMaterialSummaryRuntime} from './modules/training-material-summary-runtime.js?v=4226465';
 import {installTrainingTaskRuntime} from './modules/training-task-runtime.js?v=422609';
 import {installTrainingTaskVisibilityRuntime} from './modules/training-task-visibility-runtime.js?v=4226386-timing';
 import {installTrainingProgressStream} from './modules/training-progress-stream.js?v=422570';
 import {createTrainingDraft, trainingDraftToRequest, trainingBaseVersionFromAlgorithm, trainingInheritedDefaults} from './modules/training-draft.js?v=422514';
 import {installTrainingDraftRuntime} from './modules/training-draft-runtime.js?v=422520';
 import {TRAINING_DRAFT_CONTROL_IDS, installTrainingDraftControls} from './modules/training-draft-controls.js?v=422502';
-import {benchmarkReuseContext, buildTrainingEngineParameters, buildTrainingStartPayload, installTrainingSubmitRuntime, trainingSubmitReadiness, validateTrainingDevice} from './modules/training-submit.js?v=422615';
+import {benchmarkReuseContext, buildTrainingEngineParameters, buildTrainingStartPayload, installTrainingSubmitRuntime, trainingSubmitReadiness, validateTrainingDevice} from './modules/training-submit.js?v=422616';
 import {installTrainingCreateHydrationRuntime} from './modules/training-create-hydration.js?v=422558';
 import {installAutoLabelPollRuntime} from './modules/auto-label-poll-runtime.js?v=422503';
 import {annotationReviewView, annotationSavePayload, createAnnotationWorkbench, queueWindow} from './modules/annotation-workbench.js?v=422595';

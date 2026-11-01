@@ -806,19 +806,21 @@ export function installTrainingSubmitRuntime({
         throw new Error('训练素材存在不能通过样本确认解决的问题，请先修复正式 GT');
       }
       setSubmitStage('checking-negatives');
+      let negativeReceiptIssued=false;
       if(materialSummaryRuntime?.confirmPendingNegatives){
         const signature=admissionSignature();
         // No admission operation owns a nested confirmation layer. Capture again after it closes.
         admissionOperation=null;
         const valid=()=>ownsSubmissionModal()&&admissionSignature()===signature;
-        const accepted=await materialSummaryRuntime.confirmPendingNegatives({draft,root:submissionRoot,isCurrent:valid});
-        if(!accepted||!valid())return null;
+        const confirmation=await materialSummaryRuntime.confirmPendingNegatives({draft,root:submissionRoot,isCurrent:valid});
+        if(!(confirmation===true||confirmation?.accepted===true)||!valid())return null;
+        negativeReceiptIssued=confirmation?.receiptIssued===true;
         admissionOperation=operation;
       }
       // A newly issued task-local receipt can resolve a partial-review-scope
-      // blocker. Re-evaluate only when the initial preflight had such issues;
-      // otherwise the original verified result remains authoritative.
-      if(Number(checkedCompatibility?.issue_count||0)>0&&materialSummaryRuntime?.refreshCompatibility){
+      // blocker. A preview with pending GT review does not issue a receipt;
+      // keep the verified blockers rather than repeating an identical request.
+      if(negativeReceiptIssued&&Number(checkedCompatibility?.issue_count||0)>0&&materialSummaryRuntime?.refreshCompatibility){
         setSubmitStage('checking-materials');
         checkedCompatibility=await materialSummaryRuntime.refreshCompatibility({force:true,signal:operation.controller.signal});
         if(!admissionIsCurrent(operation))throw Object.assign(new Error('训练配置或窗口已变化，本次检查已取消'),{name:'AbortError'});

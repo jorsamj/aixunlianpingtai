@@ -1,3 +1,7 @@
+## 2026-11-01｜42.24.479 训练创建无凭证重复预检修复（准确 CI 待验）
+
+原开发分支 `feature/external-algorithm-publishing` 起点远端/本地均为 `964d5d06b98bc70ec6ae3af3e5bb787a67884c82`、VERSION 478、工作区干净。原提交兼容性预检存在 `partial_review_scope` 时，即使负样本预览没有生成任何确认凭证，仍会强制第二次 POST `/training-materials/compatibility`。本批仅在原 Submit/Summary Owner 返回明确 `{accepted,receiptIssued}`，无凭证直接显示首次有效阻塞，仅有真实确认回执且初次有问题才复检。Node 原两文件 RED 60/61、19/20、GREEN 61/61、20/20，已给 CI 原显式 Chrome 训练提交文件补 DOM 回归；正式 GT、Worker、安全准入、Train/Val/Test 不变，21k 批量补审未开发。新 SHA 的完整 Node/Chrome/Actions 和生产实测均不能继承旧版绿色。**ISOLATED TEST — NOT PRODUCTION VERIFIED**。台账见 `docs/performance/2026-10-29-p0-followup.md` 479 节。不部署生产、不动正式素材/GT/Task/Worker/OSS/GPU，不 merge main/tag/release/force push。
+
 ## 2026-11-01｜42.24.476 分类接口诊断白名单精确补齐（准确 CI 待核）
 
 475 准确 SHA `06e6e0f1d26d466d522ab7b00b8fd0ac3e2f8407` 实际触发22个GitHub Actions，Picker contracts性能阶段 **1 failed, 8 passed**：新增 `/negative-pool/categories` 真实 ASGI GET 返回HTTP200但 `X-Request-ID` 缺失。源码根因是现有 `PerformanceDiagnosticsMiddleware._ENDPOINTS` 未包含该合法读接口，请求未被采集；不能将此认作分类SQL性能结论。476在原性能诊断 Owner 仅添加准确 `/api/v61/projects/[^/]+/negative-pool/categories` 路径，并加严格匹配回归；原0/1k/10k、每组首次+20温读取测试保持不变、绝不降级断言。诊断仍由 `MC_PERFORMANCE_DIAGNOSTICS=1` 显式启用、无SQL/请求正文/真实ID记录。475其余工作流截至修复时尚在运行；476新SHA/完整CI待验。**ISOLATED TEST — NOT PRODUCTION VERIFIED**，不部署、不改正式GT/DB/Worker/OSS、不合并main/正式发布。

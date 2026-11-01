@@ -37,6 +37,33 @@ test('multiclass final confirmation reports partial positives separately from ta
   assert.match(html,/确认并创建/);
   assert.ok(!html.includes('每张素材必须有全部类别'));
 });
+
+test('pending GT review returns an explicit no-receipt result and never requests negative confirmation',async()=>{
+  const previous={window:globalThis.window,document:globalThis.document};
+  const current={algorithmId:'alg',materialIds:['a','b'],newLabelCodes:['person'],config:{model:'yolo11n.pt'}};
+  const requests=[];
+  globalThis.window={};
+  globalThis.document={body:{},getElementById:()=>null,querySelector:()=>null,querySelectorAll:()=>[]};
+  const runtime=installTrainingMaterialSummaryRuntime({
+    getState:()=>({trainingDraft:current}),projectId:()=> 'project-1',
+    trainingDraftRuntime:{materialIds:()=>[],current:()=>current},
+    fetchImpl:async url=>{
+      requests.push(url);
+      if(!url.endsWith('/negative-preview'))throw new Error('no confirmation should be written for unreviewed GT');
+      return {ok:true,json:async()=>({pending_count:0,counts:{positive:1,pending_review:1}})};
+    },
+  });
+  try {
+    const result=await runtime.confirmPendingNegatives({draft:current});
+    assert.deepEqual(result,{accepted:true,receiptIssued:false});
+    assert.equal(requests.length,1);
+    assert.match(requests[0],/negative-preview$/);
+  }finally{
+    runtime.destroy();
+    globalThis.window=previous.window;
+    globalThis.document=previous.document;
+  }
+});
 import {resolveClientTrainingLabels} from '../../static/modules/training-labels.js';
 
 test('shared GT evidence distinguishes unknown cause and null metrics without trusting HTML', () => {

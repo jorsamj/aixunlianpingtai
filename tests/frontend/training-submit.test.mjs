@@ -197,6 +197,58 @@ test('a confirmable review-scope gap reaches final confirmation after compatibil
   cleanup(runtime);
 });
 
+test('review-scope blockers do not trigger a second full preflight when no negative receipt was issued', async () => {
+  installDom();
+  globalThis.window={fetch:async()=>{throw new Error('unreviewed GT must not create a training task');}};
+  const actions=[];
+  const incompatible={compatible:false,issue_count:1,affected_image_count:2,issue_counts:{partial_review_scope:1}};
+  const runtime=installTrainingSubmitRuntime({
+    getState:()=>baseState(),projectId:()=> 'project-1',
+    trainingDraftRuntime:{sync:()=>draft(),current:()=>draft(),base:()=>({blocked:false})},
+    trainingDraftToRequest,
+    materialSummaryRuntime:{
+      compatibilityFor:()=>({ready:true,...incompatible}),
+      refreshCompatibility:async()=>{actions.push('formal-gt-check');return incompatible;},
+      updateAdmissionDiagnosis:()=>{},
+      openAdmissionDiagnosis:()=>{actions.push('formal-gt-diagnosis');return true;},
+      confirmPendingNegatives:async()=>{actions.push('negative-preview-no-receipt');return {accepted:true,receiptIssued:false};},
+    },
+  });
+  try {
+    assert.equal(await runtime.submit(),null);
+    assert.deepEqual(actions,['formal-gt-check','negative-preview-no-receipt','formal-gt-diagnosis']);
+  } finally {cleanup(runtime);}
+});
+
+test('a newly issued task-local negative receipt still requires a fresh formal GT preflight', async () => {
+  installDom();
+  let posts=0;
+  globalThis.window={fetch:async (_url,init)=>{if(init?.method==='POST')posts++;return {ok:true,json:async()=>durableTask()};}};
+  const actions=[];
+  const runtime=installTrainingSubmitRuntime({
+    getState:()=>baseState(),projectId:()=> 'project-1',
+    trainingDraftRuntime:{sync:()=>draft(),current:()=>draft(),base:()=>({blocked:false})},
+    trainingDraftToRequest,
+    materialSummaryRuntime:{
+      compatibilityFor:()=>({ready:true,issue_count:1,issue_counts:{partial_review_scope:1}}),
+      refreshCompatibility:async()=>{
+        actions.push('formal-gt-check');
+        return actions.filter(item=>item==='formal-gt-check').length===1
+          ? {compatible:false,issue_count:1,issue_counts:{partial_review_scope:1}}
+          : {compatible:true,issue_count:0};
+      },
+      updateAdmissionDiagnosis:()=>{},
+      openAdmissionDiagnosis:()=>{throw new Error('a verified fresh receipt should permit normal submission');},
+      confirmPendingNegatives:async()=>{actions.push('receipt-issued');return {accepted:true,receiptIssued:true};},
+    },
+  });
+  try {
+    assert.ok(await runtime.submit());
+    assert.deepEqual(actions,['formal-gt-check','receipt-issued','formal-gt-check']);
+    assert.equal(posts,1);
+  } finally {cleanup(runtime);}
+});
+
 test('completed server compatibility stays authoritative while background UI cache is loading', async () => {
   installDom();
   let posts=0;
