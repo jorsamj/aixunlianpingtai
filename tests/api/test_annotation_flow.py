@@ -64,6 +64,41 @@ def test_explicit_review_adds_only_selected_labels(client, seeded_project):
     assert body["reviewed_label_codes_added"] == ["smoke"]
 
 
+def test_confirmed_ai_empty_supplement_updates_historical_positive_gt(client, seeded_project, tmp_path):
+    """Isolated end-to-end formal write: existing boxes survive scope-only review."""
+    import app as app_module
+    from platform_core.annotation_candidates import CandidateDecision, CandidateStore
+    from platform_core.annotation_task_service import commit_candidate_decisions
+    from platform_core.task_runtime import ArtifactStore
+
+    pid, image = seeded_project
+    original_boxes = [_manual_box("fire")]
+    repository = app_module._v50_annotation_repository(pid)
+    before = repository.upsert(
+        image["id"], original_boxes, "annotated", annotation_scope=["fire"],
+    )
+    material = app_module.material_store(pid).get(image["id"])
+    task_id = "isolated-supplement-review"
+    store = CandidateStore(ArtifactStore(tmp_path), task_id=task_id)
+    store.initialize(labels=["smoke"], total_images=1)
+    store.append_items([{
+        "image_id": image["id"], "status": "empty", "boxes": [],
+        "source_content_sha256": material["content_sha256"],
+    }])
+    store.apply_decisions([CandidateDecision(image_id=image["id"], accepted=True)])
+
+    result = commit_candidate_decisions(
+        pid, task_id, store, overwrite=False, review_scope=["smoke"],
+    )
+
+    after = repository.get(image["id"])
+    assert result["boxes_added"] == 0
+    assert after["version"] > before["version"]
+    assert after["boxes"] == before["boxes"]
+    assert after["annotation_scope"] == ["fire", "smoke"]
+    assert store.get_commit_summaries([image["id"]])[image["id"]]["gt_write_performed"] is True
+
+
 @pytest.mark.parametrize("reviewed", [["*"], ["retired-label"]])
 def test_explicit_review_rejects_invalid_scope_without_writing(
     client, seeded_project, reviewed,

@@ -496,11 +496,12 @@ def commit_candidate_decisions(
             previous_row = previous_by_id.get(image_id) or {}
             previous = list(previous_row.get("boxes") or [])
             expected_version = int(previous_row.get("version") or 0)
-            previous_scope = {
+            recorded_scope = {
                 str(value).strip()
                 for value in (previous_row.get("annotation_scope") or [])
                 if str(value).strip()
             }
+            previous_scope = set(recorded_scope)
             previous_scope.update(
                 str(box.get("label") or box.get("code") or "").strip()
                 for box in previous
@@ -555,7 +556,16 @@ def commit_candidate_decisions(
             # formal GT commit and CandidateStore journaling. AnnotationRepository
             # will keep the same content digest, while MaterialRepository projection
             # is repaired in the same batch helper.
-            if incoming or not final_boxes or task_boxes_present or overwrite_changed:
+            # An accepted, human-reviewed empty AI candidate may extend the
+            # review scope of a historical positive GT without adding boxes.
+            # Persist that explicit scope change; otherwise the task is
+            # journaled as committed while the training admission still fails.
+            # Do not trigger a write merely because an old box label was
+            # synthesized into previous_scope -- only the reviewed codes do.
+            scope_reviewed_now = "*" not in recorded_scope and bool(
+                set(review_scope_codes) - recorded_scope
+            )
+            if incoming or not final_boxes or task_boxes_present or overwrite_changed or scope_reviewed_now:
                 to_write.append({
                     "image_id": image_id,
                     "boxes": final_boxes,

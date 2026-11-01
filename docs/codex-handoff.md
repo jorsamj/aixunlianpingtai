@@ -1,3 +1,7 @@
+## 2026-11-01｜42.24.480 AI 补审历史正样本 scope-only 提交修复（新 SHA CI 待验）
+
+唯一原分支起点 `1e4350550348a02621482f2b2bca9a55e4a134fb` / 479；已核 479 39/39 Actions、Node 1464/1464、Chrome 317/317，不可借给新 SHA。审计 21,163 张批量补审链发现 `platform_core/annotation_task_service.py` 对有历史正样本框、人工接受空 AI 候选、新增目标审核范围、保留旧框的 `overwrite=false` 场景未写正式 GT，任务却记已处理。原单元回归 RED，原 Owner 最小补写显式新审核范围；不根据 AI 空结果自动补 `annotation_scope`。隔离 unit/API/perf 合并 53/53，Node1464/1464，含临时正式 GT/版本/原框和 21,163 虚构素材分批及末页。下一批优先实现**缺失标签筛选→服务器冻结跨页选择→持久补审队列→逐图人工确认→回原训练草稿并重验**；v60 任务统一 `labels_text`/全任务 `review_scope` 不足以在不同图片缺失类别不同时自动推断逐图审核，禁止批量接受空结果。新 SHA CI 待独立核，真实生产 21k 数据状态与 30s Stalled 未验。不部署生产、不改正式 GT/Task/Worker/OSS/GPU/DB，不 merge/tag/release/force push。详见性能台账 480 节.
+
 ## 2026-11-01｜42.24.479 训练创建重复兼容性检查 P0 接续（新 SHA CI 待验）
 
 起始 HEAD `964d5d06b98bc70ec6ae3af3e5bb787a67884c82`、VERSION 478，唯一原开发分支，本地与远端只读核对一致且工作区干净。原提交前检查首次有 `partial_review_scope` 时即使负样本预览没有生成凭证也重复强制 POST `/training-materials/compatibility`；新增原 Node 两测试 RED（60/61、19/20），只在已有 `training-submit` 和 `training-material-summary` Owner 传递明确 `{accepted,receiptIssued}`，新凭证/原 GT/正式创建准入不变。定向 GREEN 61/61、20/20；真实 Chrome 回归加在已显式执行的 `training-submit-lifecycle.spec.mjs`。新增 CI、全量结果和准确推送 SHA 另核，不凭旧绿色宣称验收。下一步优先大规模 GT 持久批量补审流程与真实 HAR/30s Stalled 取证，不能重复建设已有审核/请求/缓存架构。不操作正式素材、GT、Task、Worker、GPU、OSS/生产服务，不合并 main/tag/release/强推。唯一详细台账见 `docs/performance/2026-10-29-p0-followup.md` 479 节。

@@ -1,3 +1,7 @@
+## 2026-11-01｜42.24.480 历史正样本 AI 补审 scope-only GT 漏提交（准确 CI 待验）
+
+唯一开发分支接续 479 `1e4350550348a02621482f2b2bca9a55e4a134fb` / VERSION479，479 准确 Actions39/39、Node1464/1464、Chrome317/317，起始工作区干净。`platform_core/annotation_task_service.py::commit_candidate_decisions` 原对历史 GT 有框但人工接受 AI 空候选、只新增复审类别的情况跳过正式 GT 写入，CandidateStore 却记已提交。新隔离回归先 RED 1 fail/1 pass；在唯一原 Owner 以**实际持久化 scope 相对明确人工审核的标签**判断必要的无新框 GT 补写，旧框、版本 CAS、来源哈希和原任务/GT 仓储保持。Python unit/API/规模 53/53 通过，含真实临时 GT、21,163 虚构 ID 边界；完整 Node 1464/1464 通过，Chrome/480 准确新 SHA CI 另核。跨页批量补审完整入口仍未做，v60 全任务统一 review scope 不能直接替代逐图人工证据；21k 生产和浏览器 30s Stalled 未验证。**ISOLATED TEST — NOT PRODUCTION VERIFIED**。无生产部署、GT/素材/DB/任务/Worker/GPU/OSS 操作，不 merge main/tag/release/force push。唯一台账 `docs/performance/2026-10-29-p0-followup.md` 480 节。
+
 ## 2026-11-01｜42.24.479 训练创建无凭证重复预检修复（准确 CI 待验）
 
 原开发分支 `feature/external-algorithm-publishing` 起点远端/本地均为 `964d5d06b98bc70ec6ae3af3e5bb787a67884c82`、VERSION 478、工作区干净。原提交兼容性预检存在 `partial_review_scope` 时，即使负样本预览没有生成任何确认凭证，仍会强制第二次 POST `/training-materials/compatibility`。本批仅在原 Submit/Summary Owner 返回明确 `{accepted,receiptIssued}`，无凭证直接显示首次有效阻塞，仅有真实确认回执且初次有问题才复检。Node 原两文件 RED 60/61、19/20、GREEN 61/61、20/20，已给 CI 原显式 Chrome 训练提交文件补 DOM 回归；正式 GT、Worker、安全准入、Train/Val/Test 不变，21k 批量补审未开发。新 SHA 的完整 Node/Chrome/Actions 和生产实测均不能继承旧版绿色。**ISOLATED TEST — NOT PRODUCTION VERIFIED**。台账见 `docs/performance/2026-10-29-p0-followup.md` 479 节。不部署生产、不动正式素材/GT/Task/Worker/OSS/GPU，不 merge main/tag/release/force push。

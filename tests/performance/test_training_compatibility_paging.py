@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import time
 
 import pytest
@@ -13,7 +14,7 @@ from platform_core.training_compatibility import (
 )
 
 
-@pytest.mark.parametrize("selection_size", (1_000, 10_000, 20_000))
+@pytest.mark.parametrize("selection_size", (1_000, 10_000, 20_000, 21_163))
 def test_compatibility_page_switch_reuses_evaluation_and_bounds_response(
     tmp_path,
     monkeypatch,
@@ -75,7 +76,7 @@ def test_compatibility_page_switch_reuses_evaluation_and_bounds_response(
         {"id": "algorithm-1", "framework": "ultralytics"},
     )
     first_page = compatibility_page(first_result, page=1, page_size=50)
-    last_page_number = max(1, selection_size // 50)
+    last_page_number = max(1, math.ceil(selection_size / 50))
     second_result = evaluate_training_compatibility_projection(
         tmp_path,
         project,
@@ -92,9 +93,9 @@ def test_compatibility_page_switch_reuses_evaluation_and_bounds_response(
     assert calls == 1
     assert first_result is second_result
     assert len(first_page["items"]) == 50
-    assert len(last_page["items"]) == 50
+    assert len(last_page["items"]) == selection_size - 50 * (last_page_number - 1)
     assert first_page["total"] == selection_size
-    assert last_page["total_pages"] == selection_size // 50
+    assert last_page["total_pages"] == last_page_number
     assert len(json.dumps(last_page, ensure_ascii=False)) < 20_000
     record_property(
         f"compatibility_{selection_size}_two_page_seconds",

@@ -307,6 +307,59 @@ def test_ai_review_commit_preserves_bounded_annotation_scope(tmp_path, monkeypat
     assert captured[0]["expected_version"] == 3
 
 
+@pytest.mark.parametrize("old_scope,expected_writes", [
+    (["smoke"], 1),
+    (["fire", "smoke"], 0),
+])
+def test_ai_review_empty_candidate_updates_existing_positive_gt_scope_only_when_needed(
+    tmp_path, monkeypatch, old_scope, expected_writes,
+):
+    """Accepted empty AI review must not silently lose newly reviewed labels.
+
+    A historical positive GT already has boxes; no new AI boxes are needed to
+    certify a *human-reviewed* missing category. Existing boxes stay untouched.
+    """
+    task_id = "positive-scope-" + str(expected_writes)
+    store = CandidateStore(ArtifactStore(tmp_path), task_id=task_id)
+    store.initialize(labels=["fire"], total_images=1)
+    _seed_verified_candidates(store, [{
+        "image_id": "existing-positive", "status": "empty", "boxes": [],
+    }])
+    store.apply_decisions([CandidateDecision(image_id="existing-positive", accepted=True)])
+    original_boxes = [{
+        "id": "old-smoke", "label": "smoke", "class_id": 1,
+        "x1": 1, "y1": 2, "x2": 10, "y2": 12, "source": "manual",
+    }]
+    monkeypatch.setattr(
+        "platform_core.annotation_task_service.read_formal_annotations",
+        lambda _project, _ids: {"existing-positive": {
+            "version": 8, "boxes": original_boxes,
+            "annotation_scope": old_scope, "annotation_state": "annotated",
+        }},
+    )
+    writes = []
+    def capture(_project, rows):
+        writes.extend(rows)
+        return [{**row, "version": 9, "content_digest": "b" * 64} for row in rows]
+    monkeypatch.setattr(
+        "platform_core.annotation_task_service.write_formal_annotations", capture,
+    )
+
+    result = commit_candidate_decisions(
+        "project-1", task_id, store, overwrite=False, review_scope=["fire"],
+    )
+
+    assert result["boxes_added"] == 0
+    assert len(writes) == expected_writes
+    if writes:
+        assert writes[0]["boxes"] == original_boxes
+        assert writes[0]["annotation_state"] == "annotated"
+        assert writes[0]["annotation_scope"] == ["fire", "smoke"]
+        assert writes[0]["expected_version"] == 8
+    journal = store.get_commit_summaries(["existing-positive"])["existing-positive"]
+    assert journal["gt_write_performed"] is bool(expected_writes)
+
+
 def test_ai_review_overwrite_replaces_review_scope_even_when_final_class_is_empty(tmp_path, monkeypatch):
     artifacts = ArtifactStore(tmp_path)
     store = CandidateStore(artifacts, task_id="commit-overwrite-empty", page_size=50)
@@ -514,7 +567,7 @@ def test_public_worker_error_redacts_common_secret_shapes():
     assert "[REDACTED]" in public
 
 
-@pytest.mark.parametrize("image_count", [1_000, 10_000, 20_000])
+@pytest.mark.parametrize("image_count", [1_000, 10_000, 20_000, 21_163])
 def test_load_task_images_uses_bounded_indexed_material_lookup(tmp_path, monkeypatch, image_count):
     image_ids = [f"image-{index:05d}" for index in range(image_count)]
 
@@ -558,7 +611,7 @@ def test_load_task_images_uses_bounded_indexed_material_lookup(tmp_path, monkeyp
     assert all(str(row["path"]).endswith(f"{row['id']}.jpg") for row in rows)
 
 
-@pytest.mark.parametrize("total", [1_000, 10_000, 20_000])
+@pytest.mark.parametrize("total", [1_000, 10_000, 20_000, 21_163])
 def test_commit_candidate_decisions_batches_formal_and_journal_io(tmp_path, monkeypatch, total):
     artifacts = ArtifactStore(tmp_path)
     store = CandidateStore(artifacts, task_id=f"commit-scale-{total}", page_size=50)
