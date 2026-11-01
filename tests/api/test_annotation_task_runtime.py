@@ -1,12 +1,15 @@
 import hashlib
+import io
 import json
 import uuid
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 import app as app_module
 from platform_core.annotation_candidates import CandidateDecision, CandidateStore
+from platform_core.annotation_repository import AnnotationRepository
 from platform_core.task_runtime import ArtifactStore, TaskKind, TaskRecord, TaskRepository, TaskStatus
 
 
@@ -143,6 +146,120 @@ def test_annotation_create_request_id_rejects_invalid_and_missing_receipts(
         f"/api/v60/projects/{project_id}/annotation-tasks/by-request/ai-missing-task-001"
     )
     assert missing.status_code == 404
+
+
+def test_strict_supplement_create_freezes_authoritative_missing_scope_and_revision(
+    client, seeded_project, isolated_task_runtime, monkeypatch,
+):
+    project_id, image = seeded_project
+    monkeypatch.setattr(app_module, "_v35_model_items", lambda: [{
+        "id": "model-supplement", "model_name": "vision", "provider_type": "local_openai",
+        "detect_url": "http://vision.local/v1",
+    }])
+    annotations = AnnotationRepository(app_module.project_dir(project_id))
+    materials = app_module.material_store(project_id)
+    source_hash = materials.get_many([image["id"]])[0]["content_sha256"]
+    saved = annotations.upsert(image["id"], [{
+        "label": "fire", "class_id": 0,
+        "x1": 3, "y1": 4, "x2": 30, "y2": 40,
+    }], "annotated", ["fire"], source_content_sha256=source_hash)
+    image_bytes = io.BytesIO()
+    Image.new("RGB", (128, 128), "navy").save(image_bytes, format="JPEG")
+    second_upload = client.post(
+        f"/api/projects/{project_id}/images",
+        files=[("files", ("second.jpg", image_bytes.getvalue(), "image/jpeg"))],
+        data={"dataset_id": "default"},
+    )
+    assert second_upload.status_code == 200, second_upload.text
+    second_id = second_upload.json()["uploaded"][0]["id"]
+    second_hash = materials.get_many([second_id])[0]["content_sha256"]
+    second_saved = annotations.upsert(second_id, [{
+        "label": "smoke", "class_id": 1, "x1": 4, "y1": 5, "x2": 31, "y2": 42,
+    }], "annotated", ["smoke"], source_content_sha256=second_hash)
+    body = {
+        "request_id": "supplement-scope-001", "image_ids": [image["id"], second_id],
+        "labels_text": "fire,smoke", "model_config_id": "model-supplement",
+        "review_scope_policy": "per_image_required",
+        "per_image_missing_review_scopes": {image["id"]: ["fire"], second_id: ["smoke"]},
+        "expected_material_revision": materials.current_revision(),
+        "expected_annotation_revision": annotations.current_revision(),
+    }
+    url = f"/api/v60/projects/{project_id}/annotation-tasks"
+    first = client.post(url, json=body)
+    assert first.status_code == 202, first.text
+    request = isolated_task_runtime[1].read_json(first.json()["id"], "request.json")
+    assert request["review_scope_policy"] == "per_image_required"
+    assert request["per_image_missing_review_scopes"] == {image["id"]: ["smoke"], second_id: ["fire"]}
+    assert request["per_image_source_hashes"] == {image["id"]: source_hash, second_id: second_hash}
+    assert request["per_image_annotation_versions"] == {image["id"]: saved["version"], second_id: second_saved["version"]}
+    repeated = client.post(url, json=body)
+    assert repeated.status_code == 202 and repeated.json()["idempotent"] is True
+    assert repeated.json()["id"] == first.json()["id"]
+    changed = client.post(url, json={**body, "labels_text": "smoke"})
+    assert changed.status_code == 409
+
+    stale = client.post(url, json={**body, "request_id": "supplement-scope-002",
+                                   "expected_annotation_revision": -1})
+    assert stale.status_code == 422
+    stale_revision = client.post(url, json={**body, "request_id": "supplement-scope-003",
+                                            "expected_annotation_revision": annotations.current_revision() + 1})
+    assert stale_revision.status_code == 409
+
+    task_id = first.json()["id"]
+    store = CandidateStore(isolated_task_runtime[1], task_id=task_id)
+    store.initialize(labels=["fire", "smoke"], total_images=2)
+    store.append_items([{
+        "image_id": image["id"], "source_content_sha256": source_hash,
+        "status": "empty", "boxes": [],
+        "review_scope_policy": "per_image_required", "missing_review_scope": ["smoke"],
+    }, {
+        "image_id": second_id, "source_content_sha256": second_hash,
+        "status": "empty", "boxes": [],
+        "review_scope_policy": "per_image_required", "missing_review_scope": ["fire"],
+    }])
+    repository = isolated_task_runtime[0]
+    lease = repository.claim_next("supplement-test", {TaskKind.AI_ANNOTATION}, {"vision_provider"})
+    assert lease and lease.task.task_id == task_id
+    repository.finish(task_id, lease.lease_token, TaskStatus.AWAITING_CONFIRMATION,
+                      "candidates/manifest.json")
+    candidates = client.get(f"{url}/{task_id}/candidates")
+    assert candidates.status_code == 200
+    assert candidates.json()["items"][0]["missing_review_scope"] == ["smoke"]
+    assert candidates.json()["items"][1]["missing_review_scope"] == ["fire"]
+    decisions_url = f"{url}/{task_id}/decisions"
+    outside = client.post(decisions_url, json={
+        "decisions": [{"image_id": image["id"], "accepted": True, "review_scope": ["fire"]}],
+        "reject_unmentioned": False, "commit": False,
+    })
+    assert outside.status_code == 400
+    assert store.summary()["unreviewed"] == 2
+
+    # A concurrent human GT change after task creation must block the older
+    # inference task before any decision can be recorded or committed.
+    annotations.upsert(image["id"], [{
+        "label": "fire", "class_id": 0, "x1": 3, "y1": 4, "x2": 30, "y2": 40,
+    }], "annotated", ["fire", "smoke"], source_content_sha256=source_hash)
+    changed_gt = client.post(decisions_url, json={
+        "decisions": [{"image_id": image["id"], "accepted": True, "review_scope": ["smoke"]}],
+        "reject_unmentioned": False, "commit": True,
+    })
+    assert changed_gt.status_code == 409
+    assert store.summary()["unreviewed"] == 2
+
+
+def test_strict_supplement_create_requires_explicit_revision_and_idempotency(
+    client, seeded_project, isolated_task_runtime,
+):
+    project_id, image = seeded_project
+    url = f"/api/v60/projects/{project_id}/annotation-tasks"
+    base = {"image_ids": [image["id"]], "labels_text": "fire",
+            "review_scope_policy": "per_image_required"}
+    for invalid in (base, {**base, "request_id": "strict-create-123"},
+                    {**base, "expected_material_revision": 0, "expected_annotation_revision": 0}):
+        response = client.post(url, json=invalid)
+        assert response.status_code in {400, 409, 422}, response.text
+    assert not isolated_task_runtime[0].list(
+        project_id=project_id, kinds={TaskKind.AI_ANNOTATION}).items
 
 
 def test_annotation_task_freezes_template_version_and_task_prompt_override(
@@ -391,7 +508,7 @@ def test_candidate_result_is_paged_and_all_rejected_remains_false(client, seeded
 
 
 def test_frozen_per_image_review_rejects_implicit_approval_and_only_commits_after_all_pages(
-    client, seeded_project, isolated_task_runtime,
+    client, seeded_project, isolated_task_runtime, monkeypatch,
 ):
     project_id, _image = seeded_project
     repository, artifacts = isolated_task_runtime
@@ -401,7 +518,18 @@ def test_frozen_per_image_review_rejects_implicit_approval_and_only_commits_afte
     artifacts.atomic_write_json(task_id, "request.json", {
         "image_ids": ["image-0", "image-1"], "labels": ["fire"],
         "review_scope_policy": "per_image_required",
+        "per_image_missing_review_scopes": {"image-0": ["fire"], "image-1": ["fire"]},
+        "per_image_annotation_versions": {"image-0": 0, "image-1": 0},
+        "per_image_source_hashes": {"image-0": "a" * 64, "image-1": "a" * 64},
     })
+    monkeypatch.setattr(app_module, "read_annotations_many", lambda _project, ids: {
+        image_id: {"version": 0} for image_id in ids
+    })
+    monkeypatch.setattr(app_module, "material_store", lambda _project: type("Materials", (), {
+        "get_many": lambda self, ids: [
+            {"id": image_id, "content_sha256": "a" * 64} for image_id in ids
+        ],
+    })())
     url = f"/api/v60/projects/{project_id}/annotation-tasks/{task_id}/decisions"
     for body in (
         {"decisions": [{"image_id": "image-0", "accepted": True, "review_scope": ["smoke"]}]},
@@ -966,6 +1094,53 @@ def test_annotation_create_payload_uses_bounded_material_lookup_and_shared_runti
     assert request["image_ids"] == image_ids
     assert request["labels"] == ["fire"]
     assert provider_key == "model-1"
+
+
+def test_strict_supplement_creation_freezes_1200_images_in_bounded_gt_pages(monkeypatch):
+    image_ids = [f"synthetic-{index:05d}" for index in range(1_200)]
+    material_batches, annotation_batches = [], []
+
+    class Materials:
+        def current_revision(self):
+            return 12
+
+        def get_many(self, ids):
+            material_batches.append(len(ids))
+            assert len(ids) <= 500
+            return [{"id": image_id, "content_sha256": "a" * 64} for image_id in ids]
+
+    class Annotations:
+        def current_revision(self):
+            return 34
+
+    def read_gt(_project_id, ids):
+        annotation_batches.append(len(ids))
+        assert len(ids) <= 500
+        return {image_id: {
+            "version": 2, "annotation_state": "annotated",
+            "annotation_scope": ["fire"],
+            "boxes": [{"label": "fire", "class_id": 0}],
+        } for image_id in ids}
+
+    monkeypatch.setattr(app_module, "get_project", lambda *_: {"id": "synthetic"})
+    monkeypatch.setattr(app_module, "material_store", lambda *_: Materials())
+    monkeypatch.setattr(app_module, "_v50_annotation_repository", lambda *_: Annotations())
+    monkeypatch.setattr(app_module, "read_annotations_many", read_gt)
+    monkeypatch.setattr(app_module, "_v35_model_items", lambda: [])
+    monkeypatch.setattr(app_module, "_v35_prompt_items", lambda: [])
+    monkeypatch.setattr(app_module, "prepare_annotation_request", lambda *_args, **kwargs: {
+        **_args[2], "labels": ["fire", "smoke"], "model_config_id": "model-1",
+    })
+    frozen, provider = app_module._annotation_create_payload("synthetic", app_module.AnnotationTaskCreateReq(
+        request_id="supplement-paging-001", image_ids=image_ids,
+        labels_text="fire,smoke", review_scope_policy="per_image_required",
+        expected_material_revision=12, expected_annotation_revision=34,
+    ))
+    assert provider == "model-1"
+    assert material_batches == [500, 500, 200]
+    assert annotation_batches == [500, 500, 200]
+    assert len(frozen["per_image_missing_review_scopes"]) == 1_200
+    assert set(tuple(codes) for codes in frozen["per_image_missing_review_scopes"].values()) == {("smoke",)}
 
 
 def test_annotation_task_frontend_cannot_make_alias_valid_for_backend(client, seeded_project, isolated_task_runtime):

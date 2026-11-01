@@ -139,6 +139,43 @@ def test_worker_stops_at_cancel_boundary_without_processing_more_images(tmp_path
     assert outcome.status is TaskStatus.CANCELLED
 
 
+def test_strict_supplement_worker_refuses_changed_source_before_model_inference(tmp_path, monkeypatch):
+    context = FakeContext(tmp_path)
+    context.artifacts.atomic_write_json("ai-1", "request.json", {
+        "image_ids": ["one"], "labels": ["fire"], "threshold": 0.45,
+        "review_scope_policy": "per_image_required",
+        "per_image_missing_review_scopes": {"one": ["fire"]},
+        "per_image_annotation_versions": {"one": 1},
+        "per_image_source_hashes": {"one": "a" * 64},
+    })
+    monkeypatch.setattr("platform_core.annotation_task_service.load_task_images", lambda *_: [{
+        "id": "one", "source_content_sha256": "b" * 64,
+    }])
+    with pytest.raises(ValueError, match="MATERIAL_CHANGED"):
+        run_ai_annotation(context, annotate=lambda *_: pytest.fail("stale source reached model"))
+    assert not context.artifacts.artifact_path("ai-1", "candidates/manifest.json").exists()
+
+
+def test_strict_supplement_worker_persists_only_this_images_frozen_display_scope(tmp_path, monkeypatch):
+    context = FakeContext(tmp_path)
+    context.artifacts.atomic_write_json("ai-1", "request.json", {
+        "image_ids": ["one"], "labels": ["fire", "smoke"], "threshold": 0.45,
+        "review_scope_policy": "per_image_required",
+        "per_image_missing_review_scopes": {"one": ["smoke"]},
+        "per_image_annotation_versions": {"one": 3},
+        "per_image_source_hashes": {"one": "a" * 64},
+    })
+    monkeypatch.setattr("platform_core.annotation_task_service.load_task_images", lambda *_: [{
+        "id": "one", "filename": "one.jpg", "source_content_sha256": "a" * 64,
+    }])
+    result = run_ai_annotation(context, annotate=lambda *_: {"boxes": []})
+    assert result.status is TaskStatus.AWAITING_CONFIRMATION
+    candidate = CandidateStore(context.artifacts, task_id="ai-1").get("one")
+    assert candidate["missing_review_scope"] == ["smoke"]
+    assert candidate["review_scope_policy"] == "per_image_required"
+    assert candidate["accepted"] is None
+
+
 def test_candidate_store_ahead_of_checkpoint_skips_completed_provider_call_on_recovery(tmp_path, monkeypatch):
     context = FakeContext(tmp_path)
     _install_two_images(context, monkeypatch)
@@ -398,6 +435,55 @@ def test_per_image_supplemental_review_does_not_certify_other_images_labels(tmp_
     assert journal["needs-fire"]["review_scope"] == ["fire"]
     assert journal["needs-smoke"]["review_scope"] == ["smoke"]
     assert all(row["review_scope_source"] == "explicit_per_image" for row in journal.values())
+
+
+def test_supplemental_review_commit_rejects_gt_changed_after_creation(tmp_path, monkeypatch):
+    store = CandidateStore(ArtifactStore(tmp_path), task_id="supplement-stale-gt")
+    store.initialize(labels=["fire", "smoke"], total_images=1)
+    _seed_verified_candidates(store, [{"image_id": "one", "status": "empty", "boxes": []}])
+    store.apply_decisions([CandidateDecision("one", True, review_scope=["smoke"])])
+    monkeypatch.setattr("platform_core.annotation_task_service.read_formal_annotations",
+        lambda _project, _ids: {"one": {
+            "version": 5, "annotation_scope": ["fire"],
+            "boxes": [{"label": "fire", "source": "manual"}],
+        }})
+    writes = []
+    monkeypatch.setattr("platform_core.annotation_task_service.write_formal_annotations",
+        lambda _project, rows: writes.extend(rows) or rows)
+    with pytest.raises(ValueError, match="GT_CHANGED"):
+        commit_candidate_decisions(
+            "project-1", "supplement-stale-gt", store, overwrite=False,
+            review_scope=["fire", "smoke"], require_per_image_scope=True,
+            frozen_missing_review_scopes={"one": ["smoke"]},
+            frozen_annotation_versions={"one": 4},
+        )
+    assert writes == []
+    assert store.get_commit_summaries(["one"]) == {}
+
+
+def test_supplemental_commit_refuses_unavailable_source_even_when_hash_unchanged(tmp_path, monkeypatch):
+    store = CandidateStore(ArtifactStore(tmp_path), task_id="supplement-deleted-material")
+    store.initialize(labels=["smoke"], total_images=1)
+    _seed_verified_candidates(store, [{"image_id": "one", "status": "empty", "boxes": []}])
+    store.apply_decisions([CandidateDecision("one", True, review_scope=["smoke"])])
+    monkeypatch.setattr("app.material_store", lambda _project: type("Materials", (), {
+        "get_many": lambda self, ids: [
+            {"id": image_id, "content_sha256": "a" * 64, "source_available": False}
+            for image_id in ids
+        ],
+    })())
+    writes = []
+    monkeypatch.setattr("platform_core.annotation_task_service.write_formal_annotations",
+        lambda _project, rows: writes.extend(rows) or rows)
+    with pytest.raises(ValueError, match="MATERIAL_CHANGED"):
+        commit_candidate_decisions(
+            "project-1", "supplement-deleted-material", store, overwrite=False,
+            review_scope=["smoke"], require_per_image_scope=True,
+            frozen_missing_review_scopes={"one": ["smoke"]},
+            frozen_annotation_versions={"one": 0},
+            frozen_material_hashes={"one": "a" * 64},
+        )
+    assert writes == []
 
 
 @pytest.mark.parametrize("scope", [None, ["person"], ["fire", "smoke"]])

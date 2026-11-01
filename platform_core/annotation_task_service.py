@@ -171,6 +171,19 @@ def run_ai_annotation(
             data_dir=data_dir,
         )
     images = load_task_images(context.task.project_id, runtime_request.get("image_ids") or [])
+    if request.get("review_scope_policy") == "per_image_required":
+        expected_hashes = request.get("per_image_source_hashes")
+        expected_scopes = request.get("per_image_missing_review_scopes")
+        expected_versions = request.get("per_image_annotation_versions")
+        if (not isinstance(expected_hashes, dict) or not isinstance(expected_scopes, dict)
+                or not isinstance(expected_versions, dict)
+                or set(expected_hashes) != set(expected_scopes) or set(expected_hashes) != set(expected_versions)
+                or set(expected_hashes) != {str(image["id"]) for image in images}):
+            raise ValueError("AI_SUPPLEMENT_FROZEN_SELECTION_MISSING")
+        for image in images:
+            image_id = str(image["id"])
+            if str(image.get("source_content_sha256") or "").strip().lower() != expected_hashes[image_id]:
+                raise ValueError("AI_SUPPLEMENT_MATERIAL_CHANGED: refuse inference on changed source")
     preview_count = max(0, int(runtime_request.get("preview_count") or 0))
     if preview_count:
         images = images[:preview_count]
@@ -264,6 +277,10 @@ def run_ai_annotation(
                 }
                 next_succeeded = succeeded
                 next_failed = failed + 1
+
+            if request.get("review_scope_policy") == "per_image_required":
+                item["review_scope_policy"] = "per_image_required"
+                item["missing_review_scope"] = list(expected_scopes[str(image["id"])])
 
             # A provider call can outlive the lease/cancellation decision. Never
             # publish its result without re-checking current execution ownership.
@@ -420,6 +437,9 @@ def commit_candidate_decisions(
     cancelled: Callable[[], bool] | None = None,
     review_scope: Iterable[str] | None = None,
     require_per_image_scope: bool = False,
+    frozen_annotation_versions: dict[str, int] | None = None,
+    frozen_missing_review_scopes: dict[str, list[str]] | None = None,
+    frozen_material_hashes: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     journal_ref = "commit/result.json"
     store._ready()
@@ -467,6 +487,19 @@ def commit_candidate_decisions(
             # Fail closed for pre-fix candidate rows with no trustworthy source
             # hash, deleted materials, and storage rescan H1 -> H2.
             current_hashes = read_candidate_material_hashes(project_id, pending_ids)
+            if frozen_material_hashes is not None:
+                from app import material_store
+                current_materials = {
+                    str(row.get("id") or ""): row
+                    for row in material_store(project_id).get_many(pending_ids)
+                }
+                for image_id in pending_ids:
+                    material = current_materials.get(image_id) or {}
+                    if (current_hashes.get(image_id) != frozen_material_hashes.get(image_id)
+                            or material.get("source_available") is False
+                            or material.get("_dataset_delete_claim")
+                            or material.get("_material_batch_delete_claim")):
+                        raise ValueError("AI_SUPPLEMENT_MATERIAL_CHANGED: source identity or availability changed")
             for item in items:
                 image_id = str(item["image_id"])
                 if image_id in committed:
@@ -516,9 +549,18 @@ def commit_candidate_decisions(
                 }
                 if not candidate_labels.issubset(image_scope):
                     raise ValueError("AI candidate boxes are outside the explicit per-image review scope")
+            if frozen_missing_review_scopes is not None:
+                expected_scope = frozen_missing_review_scopes.get(image_id)
+                if not isinstance(expected_scope, list) or not image_scope.issubset(set(expected_scope)):
+                    raise ValueError("AI candidate review exceeded frozen per-image missing labels")
             previous_row = previous_by_id.get(image_id) or {}
             previous = list(previous_row.get("boxes") or [])
             expected_version = int(previous_row.get("version") or 0)
+            if frozen_annotation_versions is not None:
+                frozen_version = frozen_annotation_versions.get(image_id)
+                if not isinstance(frozen_version, int) or expected_version != frozen_version:
+                    raise ValueError("AI_SUPPLEMENT_GT_CHANGED: formal GT changed after task creation")
+                expected_version = frozen_version
             recorded_scope = {
                 str(value).strip()
                 for value in (previous_row.get("annotation_scope") or [])
@@ -689,6 +731,15 @@ def commit_confirmed_review(context):
     scope_policy = str((request or {}).get("review_scope_policy") or "task_uniform_legacy")
     if scope_policy not in {"task_uniform_legacy", "per_image_required"}:
         raise RuntimeError("confirmed annotation review scope policy is invalid")
+    frozen_versions = (request or {}).get("per_image_annotation_versions") if scope_policy == "per_image_required" else None
+    frozen_missing_scopes = (request or {}).get("per_image_missing_review_scopes") if scope_policy == "per_image_required" else None
+    frozen_material_hashes = (request or {}).get("per_image_source_hashes") if scope_policy == "per_image_required" else None
+    if scope_policy == "per_image_required" and (
+            not isinstance(frozen_versions, dict) or not isinstance(frozen_missing_scopes, dict)
+            or not isinstance(frozen_material_hashes, dict)
+            or set(frozen_versions) != set(frozen_missing_scopes)
+            or set(frozen_versions) != set(frozen_material_hashes)):
+        raise RuntimeError("AI supplemental review frozen GT identity is missing")
     store = CandidateStore(context.artifacts, task_id=context.task.task_id)
     if (request or {}).get("mode") == "hard_sample_yolo":
         from app import project_dir, material_store
@@ -752,6 +803,9 @@ def commit_confirmed_review(context):
         cancelled=context.cancel_requested,
         review_scope=review_scope,
         require_per_image_scope=scope_policy == "per_image_required",
+        frozen_annotation_versions=frozen_versions,
+        frozen_missing_review_scopes=frozen_missing_scopes,
+        frozen_material_hashes=frozen_material_hashes,
     )
     sync_annotation_statistics(context.repository, context.task, store)
     if mapping:

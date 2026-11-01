@@ -23349,6 +23349,11 @@ class AnnotationTaskCreateReq(BaseModel):
     # Browser retries keep this stable until the confirmed configuration changes.
     # Older API callers may omit it and retain their original creation behavior.
     request_id: str = ""
+    # Opt-in supplemental GT review. The server derives missing labels per
+    # image from formal GT; the browser must not supply its own GT scopes.
+    review_scope_policy: Literal["task_uniform_legacy", "per_image_required"] = "task_uniform_legacy"
+    expected_material_revision: Optional[int] = None
+    expected_annotation_revision: Optional[int] = None
 
 
 class AnnotationDecisionReq(BaseModel):
@@ -23559,14 +23564,40 @@ def _annotation_create_payload(project_id: str, payload: AnnotationTaskCreateReq
     if not image_ids:
         raise HTTPException(status_code=400, detail="请选择要自动标注的素材")
 
+    strict_review = payload.review_scope_policy == "per_image_required"
+    if strict_review:
+        if not str(payload.request_id or "").strip():
+            raise HTTPException(status_code=422, detail="逐图补审必须使用可恢复的创建请求 ID")
+        if (payload.expected_material_revision is None or payload.expected_annotation_revision is None
+                or payload.expected_material_revision < 0 or payload.expected_annotation_revision < 0):
+            raise HTTPException(status_code=422, detail="逐图补审必须提供素材与正式 GT 修订号")
+        if payload.preview_count or payload.overwrite:
+            raise HTTPException(status_code=400, detail="逐图补审不允许预览截断或整体覆盖历史标注")
+
     existing = set()
     materials = material_store(project_id)
+    material_revision = materials.current_revision() if strict_review else None
+    annotations = _v50_annotation_repository(project_id) if strict_review else None
+    annotation_revision = annotations.current_revision() if strict_review else None
+    if strict_review and (material_revision != payload.expected_material_revision
+                          or annotation_revision != payload.expected_annotation_revision):
+        raise HTTPException(status_code=409, detail="补审素材或正式 GT 修订已变化，请重新核验选择")
+    scoped_materials = {} if strict_review else None
     for offset in range(0, len(image_ids), 500):
-        existing.update(
-            str(image.get("id"))
-            for image in materials.get_many(image_ids[offset:offset + 500])
-            if str(image.get("id") or "")
-        )
+        for image in materials.get_many(image_ids[offset:offset + 500]):
+            image_id = str(image.get("id") or "")
+            if image_id:
+                existing.add(image_id)
+                if strict_review:
+                    # Freeze only source identity and availability, not full
+                    # per-material metadata/JSON for a 21k-image task.
+                    scoped_materials[image_id] = {
+                        key: image.get(key) for key in (
+                            "content_sha256", "source_available", "_dataset_delete_claim",
+                            "_material_batch_delete_claim", "annotation_needs_review",
+                            "external_annotation_needs_review", "needs_review",
+                        )
+                    }
     missing = sorted(set(image_ids) - existing)
     if missing:
         raise HTTPException(
@@ -23597,6 +23628,45 @@ def _annotation_create_payload(project_id: str, payload: AnnotationTaskCreateReq
     provider_key = str(prepared.get("model_config_id") or "")
     if not provider_key:
         raise HTTPException(status_code=400, detail="AI_MODEL_CONFIG_NOT_FOUND: 请选择可用模型配置")
+    if strict_review:
+        from platform_core.training_label_tasks import training_material_scope_issue
+
+        scopes, versions, hashes = {}, {}, {}
+        required = {"effective_label_codes": list(prepared["labels"])}
+        for offset in range(0, len(image_ids), 500):
+            chunk = image_ids[offset:offset + 500]
+            current = read_annotations_many(project_id, chunk)
+            for image_id in chunk:
+                material = scoped_materials[image_id]
+                annotation = current.get(image_id) or {}
+                source_hash = str(material.get("content_sha256") or "").strip().lower()
+                recorded_source = str(annotation.get("source_content_sha256") or "").strip().lower()
+                if (not re.fullmatch(r"[0-9a-f]{64}", source_hash)
+                        or (recorded_source and recorded_source != source_hash)
+                        or material.get("source_available") is False
+                        or material.get("_dataset_delete_claim")
+                        or material.get("_material_batch_delete_claim")
+                        or material.get("annotation_needs_review")
+                        or material.get("external_annotation_needs_review") or material.get("needs_review")):
+                    raise HTTPException(status_code=409, detail="补审素材缺少可信来源或原标注已失效，请重新核查")
+                issue = training_material_scope_issue({"id": image_id, **annotation}, required)
+                if (not issue or issue["issue_type"] not in {"partial_review_scope", "missing_annotation"}
+                        or not issue.get("missing_label_codes")):
+                    raise HTTPException(status_code=409, detail="所选素材已无对应标签缺口，请刷新补审范围")
+                scopes[image_id] = list(issue["missing_label_codes"])
+                versions[image_id] = int(annotation.get("version") or 0)
+                hashes[image_id] = source_hash
+        if (materials.current_revision() != material_revision
+                or annotations.current_revision() != annotation_revision):
+            raise HTTPException(status_code=409, detail="补审冻结期间素材或正式 GT 已变化，请重新提交")
+        prepared.update({
+            "review_scope_policy": "per_image_required",
+            "per_image_missing_review_scopes": scopes,
+            "per_image_annotation_versions": versions,
+            "per_image_source_hashes": hashes,
+            "selection_material_revision": material_revision,
+            "selection_annotation_revision": annotation_revision,
+        })
     return prepared, provider_key
 
 
@@ -23825,6 +23895,12 @@ def _annotation_create_id(project_id: str, request_id: str) -> str:
 
 def _annotation_create_identity(payload: AnnotationTaskCreateReq) -> str:
     body = payload.model_dump(mode="json", exclude={"request_id"})
+    # New optional create fields must not change old request_id receipts.
+    if body.get("review_scope_policy") == "task_uniform_legacy":
+        body.pop("review_scope_policy", None)
+    for field in ("expected_material_revision", "expected_annotation_revision"):
+        if body.get(field) is None:
+            body.pop(field, None)
     return hashlib.sha256(json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
@@ -24230,7 +24306,11 @@ def get_annotation_candidates(project_id: str, task_id: str, limit: int = 50, cu
         for field in ("url", "filename", "width", "height"):
             if item.get(field) in (None, "") and material.get(field) not in (None, ""):
                 item[field] = material[field]
-    response = {"items": items, "next_cursor": page.next_cursor, "total": page.total}
+    # Worker freezes this display-only scope in CandidateStore item_json.
+    # Do not parse the potentially 21k-image task request on every page GET.
+    response = {"items": items, "next_cursor": page.next_cursor, "total": page.total,
+                **({"review_scope_policy": "per_image_required"}
+                   if any(item.get("review_scope_policy") == "per_image_required" for item in items) else {})}
     if cursor in {None, "", "0"}:
         response["label_summary"] = store.label_summary()
     return response
@@ -24399,6 +24479,14 @@ def _decide_annotation_candidates(project_id: str, task_id: str, payload: Annota
             available_scope = set(_canonical_review_scope(requested, mapping, label_ids))
         except ValueError as error:
             raise HTTPException(status_code=400, detail="任务审核标签已失效，请重新核对") from error
+        frozen_scopes = (frozen or {}).get("per_image_missing_review_scopes")
+        frozen_versions = (frozen or {}).get("per_image_annotation_versions")
+        frozen_hashes = (frozen or {}).get("per_image_source_hashes")
+        if policy == "per_image_required":
+            if (not isinstance(frozen_scopes, dict) or not isinstance(frozen_versions, dict)
+                    or not isinstance(frozen_hashes, dict)
+                    or set(frozen_scopes) != set(frozen_versions) or set(frozen_scopes) != set(frozen_hashes)):
+                raise HTTPException(status_code=409, detail="逐图补审冻结凭据缺失，禁止提交")
         for item in decisions:
             if item.review_scope is None:
                 if policy == "per_image_required" and item.accepted:
@@ -24410,6 +24498,24 @@ def _decide_annotation_candidates(project_id: str, task_id: str, payload: Annota
                     or len(set(values)) != len(values)
                     or not set(values).issubset(available_scope)):
                 raise HTTPException(status_code=400, detail="逐图审核类别不属于本任务有效标签范围")
+            if policy == "per_image_required" and (
+                    item.image_id not in frozen_scopes
+                    or not set(values).issubset(set(frozen_scopes[item.image_id]))):
+                raise HTTPException(status_code=400, detail="逐图确认类别超出了创建时冻结的缺失范围")
+        if policy == "per_image_required" and decisions:
+            ids = list(dict.fromkeys(item.image_id for item in decisions))
+            if len(ids) > 200:
+                raise HTTPException(status_code=400, detail="单次逐图审核最多提交 200 张素材")
+            current_annotations = read_annotations_many(project_id, ids)
+            current_materials = {str(row.get("id") or ""): row for row in material_store(project_id).get_many(ids)}
+            for image_id in ids:
+                current_gt = current_annotations.get(image_id) or {}
+                material = current_materials.get(image_id) or {}
+                if (int(current_gt.get("version") or 0) != frozen_versions.get(image_id)
+                        or str(material.get("content_sha256") or "").strip().lower() != frozen_hashes.get(image_id)
+                        or material.get("source_available") is False
+                        or material.get("_dataset_delete_claim") or material.get("_material_batch_delete_claim")):
+                    raise HTTPException(status_code=409, detail="逐图补审所依据的正式 GT 或素材已变化，请重新创建任务")
     for decision in decisions:
         for box in decision.boxes or []:
             source = str(box.get("label") or "").strip()
