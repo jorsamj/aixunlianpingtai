@@ -64,7 +64,7 @@ function settlePlainUploadResponse411(ticket,status,responseText){
 const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 const toast=t=>{const el=$('#toast');el.textContent=t;el.classList.remove('hidden');clearTimeout(window.__toastTimer);window.__toastTimer=setTimeout(()=>el.classList.add('hidden'),2600)};
 async function safe(p){try{return await p}catch(e){toast(e.message||e);return null}}
-const state={page:'算法列表',projects:[],project:null,datasets:[],datasetId:'default',images:[],labels:[],targets:[],jobs:[],models:[],algorithms:[],pending:[],testModels:[],inferenceEnvs:[],rec:null,localModels:[],activeImage:null,ann:null,activeLabel:0,activeBox:null,draw:null,imageFilter:'all',annHistory:[],annRedo:[],annZoom:1,annDirty:false,annAutoSaveTimer:null,logTimer:null};
+const state={page:'算法列表',uiReady:false,projects:[],project:null,datasets:[],datasetId:'default',images:[],labels:[],targets:[],jobs:[],models:[],algorithms:[],pending:[],testModels:[],inferenceEnvs:[],rec:null,localModels:[],activeImage:null,ann:null,activeLabel:0,activeBox:null,draw:null,imageFilter:'all',annHistory:[],annRedo:[],annZoom:1,annDirty:false,annAutoSaveTimer:null,logTimer:null};
 function closeModalBase(){$('#modal').classList.add('hidden');$('#modalBody').innerHTML='';$('#modal .modal-card').classList.remove('wide');state.activeImage=null} let closeModal=closeModalBase;
 function replaceModalContent(root,html){if(!root)return null;root.innerHTML=html;if(root.id==='modalBody')window.PostRenderNormalizationRuntime?.apply?.(root);return root} window.ModalContentRuntime=Object.freeze({replace:replaceModalContent});
 function modalBase(title,body,wide=false){$('#modalTitle').textContent=title;window.ModalContentRuntime.replace($('#modalBody'),body);const modalBody=$('#modalBody');modalBody.scrollTop=0;$('#modal .modal-card').classList.toggle('wide',!!wide);$('#modal').classList.remove('hidden');requestAnimationFrame(()=>{const first=document.querySelector('#modalBody input:not([disabled]),#modalBody select:not([disabled]),#modalBody textarea:not([disabled])');if(first)first.focus()})} let modal=modalBase;
@@ -2032,7 +2032,15 @@ window.installUsability417=function(){
   window.submitRknnHardwareVerify=async function(id){const file=document.getElementById('rknnVerifyFile')?.files?.[0];if(!file)return toast('请选择测试图片');const btn=document.getElementById('rknnVerifySubmit'),status=document.getElementById('rknnVerifyState');if(btn)btn.disabled=true;try{const form=new FormData();form.append('file',file);let task=await api(`/api/v39/projects/${pid()}/deploy/jobs/${id}/hardware-tests`,{method:'POST',body:form});const taskId=task.id||task.task_id;if(!taskId)throw new Error('板端验证任务创建失败');task=await window.PlatformCore.taskPoller.waitForTaskTerminal({initialTask:task,registry:window.PollRegistryRuntime,key:`rknn-hardware-verify:${taskId}`,ownerPages:String(state.page||'算法列表'),delay:900,maxAttempts:700,load:()=>api(`/api/v62/projects/${pid()}/tasks/${taskId}`),onUpdate:current=>patchRknnHardwareVerifyProgress(status,current,taskId)});if(String(task.status||'').toUpperCase()!=='SUCCEEDED')throw new Error(task.error||`板端验证未通过：${task.status}`);if(!(await window.refreshActiveVersionConvert428?.())){await loadDeployData(true);renderDeployJobsOnly()}closeModal();toast('RKNN 已完成瑞芯微实机 Runtime 验证')}catch(e){if(e?.name==='AbortError')return;if(status){status.className='alert err';status.textContent=e.message||String(e)}toast(e.message||e)}finally{if(btn)btn.disabled=false}};
   window.openRknnAcceptanceReport=async function(id){try{const report=await api(`/api/v39/projects/${pid()}/deploy/jobs/${id}/hardware-tests/report`),v=report.verification||{},board=report.board||{},model=report.model||{},target=report.target||{},input=v.input||{};modal('RKNN 实机验收报告',`<div class="deploy-hw-report"><div class="alert ok"><b>板端 Runtime 验收通过</b> · ${esc(String(target.chip||'').toUpperCase())}</div><div class="report429-kpis"><div><span>验收节点</span><b>${esc(board.node_id||'-')}</b></div><div><span>RKNNLite</span><b>${esc(board.rknn_lite_version||'-')}</b></div><div><span>推理耗时</span><b>${Number(v.inference_ms||0).toFixed(2)} ms</b></div><div><span>输出数量</span><b>${Number(v.output_count||0)}</b></div></div><div class="field"><label>模型 SHA256</label><code>${esc(model.sha256||'-')}</code></div><div class="field"><label>测试图 SHA256</label><code>${esc(input.sha256||'-')}</code></div><div class="field"><label>验证任务 / generation</label><div>${esc(v.task_id||'-')} / ${esc(v.execution_generation??'-')}</div></div><div class="field"><label>验证时间</label><div>${esc(v.verified_at||'-')}</div></div><div class="field"><label>输出 shape</label><pre class="log small-log">${esc(JSON.stringify(v.output_shapes||[]))}</pre></div><div class="alert soft">${esc(report.statement||'')}</div><div class="row end"><a class="btn" href="/api/v39/projects/${pid()}/deploy/jobs/${id}/hardware-tests/report?download=true" target="_blank" rel="noopener">下载 JSON 报告</a><button class="btn primary" onclick="closeModal()">关闭</button></div></div>`,true)}catch(e){toast(e.message||e)}};
   window.deleteDeployJob=async id=>{if(!confirm('确认删除这条转换任务和产物？'))return;const result=await safe(api(`/api/v39/projects/${pid()}/deploy/jobs/${id}`,{method:'DELETE'}));if(!result)return;if(await window.refreshActiveVersionConvert428?.())return;await loadDeployData(true);renderDeployJobsOnly()};
-  window.openDeployLog=async id=>{const job=window.versionConversionJob428?.(id)||(state.deployJobs||[]).find(x=>x.id===id)||{};const txt=await safe(api(`/api/v39/projects/${pid()}/deploy/jobs/${id}/log`))||'';modal(`转换日志 · ${job.source_name||id}`,`<div class="deploy-log-head"><div>${statusPill(job.status)} <span class="item-sub">${esc(job.stage||'')}</span></div><button class="btn mini" onclick="refreshDeployLog('${id}')">刷新</button></div><pre id="deployLogText" class="log deploy-log">${esc(txt)}</pre>`,true);const pre=document.getElementById('deployLogText');if(pre)pre.scrollTop=pre.scrollHeight};
+  window.openDeployLog=async id=>{
+    const owner=window.ModalContentRuntime?.beginAsyncOpen?.();
+    const job=window.versionConversionJob428?.(id)||(state.deployJobs||[]).find(x=>x.id===id)||{};
+    let txt='';
+    try{txt=await api(`/api/v39/projects/${pid()}/deploy/jobs/${id}/log`)}catch(error){if(!owner||owner.isCurrent())toast(error.message||error);return}
+    if(owner&&!owner.isCurrent())return;
+    modal(`转换日志 · ${job.source_name||id}`,`<div class="deploy-log-head"><div>${statusPill(job.status)} <span class="item-sub">${esc(job.stage||'')}</span></div><button class="btn mini" onclick="refreshDeployLog('${id}')">刷新</button></div><pre id="deployLogText" class="log deploy-log">${esc(txt)}</pre>`,true);
+    const pre=document.getElementById('deployLogText');if(pre)pre.scrollTop=pre.scrollHeight;
+  };
   window.refreshDeployLog=async id=>{const txt=await safe(api(`/api/v39/projects/${pid()}/deploy/jobs/${id}/log`))||'';const p=document.getElementById('deployLogText');if(p){p.textContent=txt;p.scrollTop=p.scrollHeight}};
 
   // Add deployment action to algorithm version management.
@@ -2656,7 +2664,23 @@ window.installUsability417=function(){
     if(close)head.insertBefore(button,close);else head.appendChild(button);
     return layer;
   }
+  let modalIntentEpoch424=0;
+  const activeModalLayer424=()=>dynamicModalStack.at(-1)||(baseModal&&!baseModal.classList.contains('hidden')?baseModal:null);
+  // Ownership lives with the canonical modal stack: starting another async
+  // open, opening a different window, or closing a window retires old intents.
+  function modalLease424({begin=false,layer=activeModalLayer424()}={}){
+    const epoch=begin?++modalIntentEpoch424:modalIntentEpoch424;
+    const page=String(state.page||''),project=String(pid()||'');
+    const navigation=window.NavigationStability?.action?.(page);
+    return Object.freeze({layer,isCurrent:()=>modalIntentEpoch424===epoch&&String(state.page||'')===page&&String(pid()||'')===project&&(!navigation||navigation.isCurrent())&&activeModalLayer424()===layer});
+  }
+  window.ModalContentRuntime=Object.freeze({...window.ModalContentRuntime,
+    beginAsyncOpen:()=>modalLease424({begin:true}),
+    captureOwner:()=>modalLease424(),
+    activeLayer:activeModalLayer424,
+  });
   modal=function modalStackCanonical424(title,body,wide=false){
+    ++modalIntentEpoch424;
     if(baseModal && baseModal.classList.contains('hidden') && dynamicModalStack.length===0){
       modalReturnFocus424.set(baseModal,document.activeElement);
       baseModal.classList.remove('import350-modal','import350-minimized');
@@ -2666,6 +2690,7 @@ window.installUsability417=function(){
   };
   window.modal=modal;
   function beforeCloseModal424(layer){
+    window.beforeCloseAiTask60?.(layer);
     window.TrainingMaterialSummaryRuntime?.beforeModalClose?.(layer);
     window.TrainingMaterialPickerRuntime?.beforeModalClose?.(layer);
     try{window.SmartMaterialAuditRuntime?.beforeModalClose?.(layer);}catch(_){}
@@ -2677,6 +2702,7 @@ window.installUsability417=function(){
     layer?.querySelector('.convert428-create')?.cancelConversionRead428?.();
   }
   closeModal=function closeModalStackCore424(){
+    ++modalIntentEpoch424;
     window.PlatformCore?.presentation?.hideTooltip?.();
     if(dynamicModalStack.length){const top=dynamicModalStack.pop();beforeCloseModal424(top);top.remove();restoreModalFocus424(top);return}
     beforeCloseModal424(baseModal);
@@ -2690,11 +2716,11 @@ window.installUsability417=function(){
     const top=dynamicModalStack.at(-1)||baseModal;
     if(layer===top&&!layer.classList.contains('hidden')){closeModal();return true}
     const index=dynamicModalStack.indexOf(layer);
-    if(index>=0){dynamicModalStack.splice(index,1);beforeCloseModal424(layer);layer.remove();modalReturnFocus424.delete(layer);return true}
-    if(layer===baseModal&&!layer.classList.contains('hidden')){beforeCloseModal424(layer);baseModal.classList.remove('import350-modal','import350-minimized');closeModalBase();modalReturnFocus424.delete(layer);return true}
+    if(index>=0){++modalIntentEpoch424;dynamicModalStack.splice(index,1);beforeCloseModal424(layer);layer.remove();modalReturnFocus424.delete(layer);return true}
+    if(layer===baseModal&&!layer.classList.contains('hidden')){++modalIntentEpoch424;beforeCloseModal424(layer);baseModal.classList.remove('import350-modal','import350-minimized');closeModalBase();modalReturnFocus424.delete(layer);return true}
     return false;
   };
-  window.closeAllModals424=function(){window.PlatformCore?.presentation?.hideTooltip?.();for(const layer of [...dynamicModalStack,baseModal]){beforeCloseModal424(layer)}while(dynamicModalStack.length)dynamicModalStack.pop().remove();if(baseModal&&!baseModal.classList.contains('hidden'))closeModalBase()};
+  window.closeAllModals424=function(){++modalIntentEpoch424;window.PlatformCore?.presentation?.hideTooltip?.();for(const layer of [...dynamicModalStack,baseModal]){beforeCloseModal424(layer)}while(dynamicModalStack.length)dynamicModalStack.pop().remove();if(baseModal&&!baseModal.classList.contains('hidden'))closeModalBase()};
 
   // ---------- all images are one logical data pool ----------
 
@@ -4292,7 +4318,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   // ---------- faster cleaning confirmation + full details ----------
   const CLEAN_PROGRESS_POLL_PREFIX429='clean-task-progress:';
   function cleanProgressPollKey429(id){return CLEAN_PROGRESS_POLL_PREFIX429+String(id||'')}
-  function cleanProgressRoot429(id){return document.querySelector(`[data-clean-progress-task="${CSS.escape(String(id||''))}"]`)}
+  function cleanProgressRoot429(id){return window.ModalContentRuntime?.activeLayer?.()?.querySelector?.(`[data-clean-progress-task="${CSS.escape(String(id||''))}"]`)||null}
   function renderCleanProgress429(task,id){
     const view=window.PlatformCore.cleaning.cleanTaskView(task),root=cleanProgressRoot429(id);
     if(!root){
@@ -4314,13 +4340,19 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     const registry=window.PollRegistryRuntime,key=cleanProgressPollKey429(id);
     registry?.clear?.(key);
     if(!registry?.startTimeout)return null;
+    const owner=window.ModalContentRuntime?.captureOwner?.();
     return registry.startTimeout(key,ownerPage,async()=>{
-      if(!cleanProgressRoot429(id)){registry.clear?.(key);return}
-      const task=await safe(fetchTask429('clean',id));
+      if(!owner?.isCurrent()||!cleanProgressRoot429(id)){registry.clear?.(key);return}
+      let task;
+      try{task=await fetchTask429('clean',id)}catch(error){if(owner.isCurrent())toast(error.message||error);registry.clear?.(key);return}
+      // Clearing a timer never cancels a callback already awaiting HTTP.
+      if(!owner.isCurrent()||!cleanProgressRoot429(id))return;
       if(!task){registry.clear?.(key);return}
       const status=String(task.status||'').toLowerCase();
       if(['awaiting_confirmation','done'].includes(status)){
-        registry.clear?.(key);closeModal();return window.cleanDetail429?.(id);
+        registry.clear?.(key);
+        if(window.closeModalLayer424?.(owner.layer))return window.cleanDetail429?.(id);
+        return;
       }
       renderCleanProgress429(task,id);
       if(window.PlatformCore.cleaning.cleanTaskView(task).active)armCleanProgressPoll429(id,ownerPage);
@@ -4328,8 +4360,11 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   }
   window.showCleanTaskProgress429=async function(id){
     const registry=window.PollRegistryRuntime,key=cleanProgressPollKey429(id),ownerPage=String(state.page||'自动标注及清洗');
+    const intent=window.ModalContentRuntime?.beginAsyncOpen?.();
     registry?.clear?.(key);
-    const task=await safe(fetchTask429('clean',id));
+    let task;
+    try{task=await fetchTask429('clean',id)}catch(error){if(intent?.isCurrent())toast(error.message||error);return}
+    if(intent&&!intent.isCurrent())return;
     if(!task)return toast('清洗任务不存在');
     const status=String(task.status||'').toLowerCase();
     if(['awaiting_confirmation','done'].includes(status))return window.cleanDetail429?.(id);
@@ -4342,6 +4377,8 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   window.retryCleanTask429=async function(id){
     const taskId=String(id||'').trim();
     if(!taskId||CLEAN_RETRY_IN_FLIGHT_429.has(taskId))return;
+    const owner=window.ModalContentRuntime?.captureOwner?.();
+    const navigation=window.NavigationStability?.action?.(state.page);
     CLEAN_RETRY_IN_FLIGHT_429.add(taskId);
     try{
       if(typeof window.retryMaterialBatch62!=='function'){
@@ -4350,12 +4387,15 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
       const task=await window.retryMaterialBatch62(taskId);
       const resumedId=String(task?.task_id||task?.id||taskId);
       window.PollRegistryRuntime?.clear?.(cleanProgressPollKey429(taskId));
-      closeModal();
+      if(owner&&!owner.isCurrent())return task;
+      if(owner?.layer)window.closeModalLayer424?.(owner.layer);
       if(state.page==='自动标注及清洗'&&(state.v427OpsTab||'label')==='clean'){
         await window.refreshCleanOps427Delta?.();
       }
+      // Another window may have opened while the list refresh was pending.
+      if((navigation&&!navigation.isCurrent())||(owner?.layer&&window.ModalContentRuntime?.activeLayer?.()))return task;
       await window.showCleanTaskProgress429(resumedId);
-    }catch(error){toast(error.message||error)}
+    }catch(error){if(!owner||owner.isCurrent())toast(error.message||error)}
     finally{CLEAN_RETRY_IN_FLIGHT_429.delete(taskId)}
   };
   async function fetchTask429(type,id){if(type==='clean'){const r=await api(`/api/v47/projects/${pid()}/clean-tasks`);return(r.items||[]).find(x=>x.id===id)}const r=await api(`/api/v33/projects/${pid()}/prelabel-tasks`);return(r.items||[]).find(x=>x.id===id)}
@@ -4458,8 +4498,10 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     }
   };
   window.cleanDetailCore429=async function(id){
+    const owner=window.ModalContentRuntime?.beginAsyncOpen?.();
     try{
       const r=await api(`/api/v47/projects/${pid()}/clean-tasks/${id}/result`),t=r.task||{},res=r.result||{},items=res.items||[],rules=res.rules||t.request_payload||{},stats={},audit=res.annotation_audit||{};
+      if(owner&&!owner.isCurrent())return false;
       const failed=items.filter(x=>String(x.status||'').toLowerCase()==='failed'||x.item_state==='failed');
       const reviewItems=items.filter(x=>failed.includes(x)||(x.issues||[]).length);
       const passed=Math.max(0,items.length-reviewItems.length);
@@ -4477,7 +4519,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
       modal('清洗任务详情',`<div class="clean429" data-clean-task-id="${esc(id)}"><section class="clean429-head"><div><span>任务结果 · ${esc((window.PlatformCore?.cleaning?.cleanScopeChoices?.({})||[]).find(x=>x.value===scope)?.label||scope)}</span><h2>${esc(t.name||'自动清洗')}</h2><p>图片质量与正式标注质量分层展示；所有删除仍须人工确认，标注审计绝不自动修改 Ground Truth。</p></div></section><div class="clean429-quality-tabs"><button class="on" data-clean-quality-tab="image" onclick="setCleanQualityTab429('image')">图片质量 <span>${reviewItems.length}</span></button><button data-clean-quality-tab="annotation" onclick="setCleanQualityTab429('annotation')">标注质量 <span>${Number(audit.review_images||0)}</span></button></div><div data-clean-quality-panel="image"><div class="review427-summary"><div><span>扫描数量</span><b>${total}</b></div><div><span>图片通过</span><b>${passed}</b></div><div><span>图片需复核</span><b>${Math.max(0,reviewItems.length-failed.length)}</b></div><div><span>扫描失败</span><b>${failed.length}</b></div></div><section class="clean429-card"><header><b>本次基础清洗</b></header><div class="clean429-rules">${ruleNames429(rules).map(x=>`<span>${esc(x)}</span>`).join('')||'<span>未记录规则</span>'}</div></section><section class="clean429-card"><header><b>图片质量问题分布</b></header><div class="clean429-stats">${Object.entries(stats).map(([k,v])=>`<div><span>${esc(k)}</span><b>${v} 张</b><em>${total?((v/total)*100).toFixed(1):0}%</em></div>`).join('')||'<div class="empty">没有发现需要复核的图片质量问题</div>'}</div></section><section class="clean429-card"><header><b>图片质量 · 逐图复核</b><span>默认只勾选系统建议剔除项；筛选只影响浏览，不改变人工确认集合。</span></header><div class="clean429-review-toolbar"><div class="clean429-review-filters"><button type="button" class="on" data-clean-image-filter="all" onclick="setCleanImageReviewFilter429('all')">全部 <b>${reviewItems.length}</b></button><button type="button" data-clean-image-filter="suggested" onclick="setCleanImageReviewFilter429('suggested')">建议剔除 <b>${reviewItems.filter(x=>x.suggest_delete).length}</b></button><button type="button" data-clean-image-filter="failed" onclick="setCleanImageReviewFilter429('failed')">扫描失败 <b>${failed.length}</b></button></div><label class="clean429-review-issue"><span>问题类型</span><select id="cleanImageReviewIssue429" class="select" onchange="setCleanImageIssueFilter429(this.value)"><option value="all">全部问题</option>${imageIssueOptions.map(([key,name])=>`<option value="${esc(key)}">${esc(name)}</option>`).join('')}</select></label><span id="cleanImageReviewCount429" class="clean429-review-count">显示 ${Math.min(CLEAN_IMAGE_REVIEW_PAGE_SIZE_429,reviewItems.length)} / ${reviewItems.length} · 全部 ${reviewItems.length}</span></div><div id="cleanImageReviewItems429" class="review427-grid">${reviewItems.slice(0,CLEAN_IMAGE_REVIEW_PAGE_SIZE_429).map(cleanImageReviewCardHtml429).join('')||'<div class="empty">本次图片质量全部通过，无需逐图复核</div>'}</div><div class="clean429-review-more-row" id="cleanImageReviewPager429"></div></section></div><div data-clean-quality-panel="annotation" hidden>${annotationPanel}</div><div class="row end clean429-footer"><button class="btn" onclick="closeModal()">关闭</button>${t.status==='awaiting_confirmation'?`<button class="btn primary" onclick="confirmClean429('${id}')">确认清洗结果</button>`:''}</div></div>`,true)
       renderCleanImageReviewItems429();
       renderCleanAuditItems429();
-    }catch(e){toast(e.message||e)}
+    }catch(e){if(!owner||owner.isCurrent())toast(e.message||e)}
   };
   window.confirmClean429=async function(id){
     const action=window.NavigationStability?.action?.(state.page),project=pid();
@@ -5060,15 +5102,19 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   // Core first paint: do not wait for model scans / quality / publish / inference lists.
   window.loadCore412=async function({authoritative=false}={}){
     if(!state.project)await ensureWorkspace(); if(!state.project)return;
-    const id=state.project.id;
+    const id=state.project.id,ownerPage=state.page,ownerEpoch=state.__navigationEpoch;
+    const serial=state.__coreReadSerial412=(Number(state.__coreReadSerial412||0)+1);
+    const isCurrent=()=>serial===state.__coreReadSerial412&&String(state.project?.id||'')===String(id)&&state.page===ownerPage&&state.__navigationEpoch===ownerEpoch;
     const snapshot=await api(`/api/v53/bootstrap/snapshot${authoritative?'?refresh=true':''}`);
+    if(!isCurrent())return false;
     state.datasets=snapshot.datasets||[];state.labels=snapshot.labels||[];state.algorithms=snapshot.algorithms||[];state.jobs=snapshot.jobs||[];
     state.modelConfigs=snapshot.model_configs||[];state.__coreSnapshotGeneratedAt=Date.parse(snapshot.generated_at||'')||Date.now();
     state.materialSummary61=snapshot.material_summary;state.annotationSummary61=snapshot.annotation_summary;
     if(!state.datasets.find(d=>d.id===state.datasetId))state.datasetId=state.datasets[0]?.id||'default';
     const full=window.PlatformCore?.materialPaging?.requiresFullMaterialPool(state.page)||false;
     if(window.__materialPaging61)window.__materialPaging61.mode=full?'full':'paged';
-    if(full)state.images=await api(`/api/projects/${id}/images`);
+    if(full){const images=await api(`/api/projects/${id}/images`);if(!isCurrent())return false;state.images=images}
+    return true;
   };
   async function pollAnnotationIndex412(){
     if(!state.project||state.__annPoll412)return; state.__annPoll412=true; const id=state.project.id;
@@ -5131,7 +5177,16 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     await extras412('质量中心');
     if(state.page===page&&page==='质量中心'&&state.qualityCenterTab411==='detect')window.renderQualityCenter424?.();
   };
-  window.refreshCurrentPage413=async function({authoritative=false}={}){if(authoritative)await window.loadCore412({authoritative:true});await extras412();if(['部署转换','部署产物','部署资源'].includes(state.page)&&typeof loadDeployData==='function')await loadDeployData(true)};
+  window.refreshCurrentPage413=async function({authoritative=false}={}){
+    const page=state.page,project=String(pid()||''),owner=window.NavigationStability?.action?.(page);
+    const isCurrent=()=>state.page===page&&String(pid()||'')===project&&(!owner||owner.isCurrent());
+    if(authoritative){const updated=await window.loadCore412({authoritative:true});if(updated===false||!isCurrent())return false}
+    if(!isCurrent())return false;
+    await extras412(page);
+    if(!isCurrent())return false;
+    if(['部署转换','部署产物','部署资源'].includes(page)&&typeof loadDeployData==='function')await loadDeployData(true);
+    return isCurrent();
+  };
   loadAll=window.refreshCurrentPage413;
   window.__clInitLegacy412=async function(){const view=document.getElementById('view');if(view)view.innerHTML='<div class="boot412"><i></i><b>正在读取算法与素材</b><span>先加载核心数据，其余资源后台补齐</span></div>';await window.loadCore412();render();state.uiReady=true;if(!state.__extras412)state.__extras412=extras412().finally(()=>state.__extras412=null)};
 
@@ -5292,12 +5347,12 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
  window.PlatformCore.navigation.knownPages=Object.freeze([...RESTORABLE_PAGES413]);
  window.__v53BootstrapOwned=true;
  function boot(st){const p=Math.max(0,Math.min(100,Number(st?.progress||0))),scale=(p/100).toFixed(4);return `<div class="boot413"><div class="boot413-card" data-boot-card="1"><div class="boot413-brand"><i></i><div><b>畅联云算法训练</b><span>正在准备平台数据</span></div></div><div class="boot413-progress"><div><span data-boot-stage>${esc(st?.stage||'正在启动')}</span><b data-boot-percent>${Math.round(p)}%</b></div><i><em data-boot-progress-bar data-progress="${p.toFixed(2)}" style="transform:scaleX(${scale})"></em></i><p data-boot-message>${esc(st?.message||'正在读取历史素材、标注和算法版本')}</p></div><div class="boot413-note">核心数据就绪后即可操作，后台初始化状态以服务端回执为准。</div>${window.PlatformCore?.presentation?.loadingSkeleton?.('正在读取核心页面布局')||''}</div></div>`}
- function paintBoot(view,st){if(!view)return false;const p=Math.max(0,Math.min(100,Number(st?.progress||0))),card=view.querySelector?.('[data-boot-card="1"]');if(!card){view.innerHTML=boot(st);return true}const stage=card.querySelector?.('[data-boot-stage]'),percent=card.querySelector?.('[data-boot-percent]'),bar=card.querySelector?.('[data-boot-progress-bar]'),message=card.querySelector?.('[data-boot-message]');if(stage)stage.textContent=st?.stage||'正在启动';if(percent)percent.textContent=`${Math.round(p)}%`;if(bar){bar.dataset.progress=p.toFixed(2);bar.style.transform=`scaleX(${(p/100).toFixed(4)})`}if(message)message.textContent=st?.message||'正在读取历史素材、标注和算法版本';return true}
+ function paintBoot(view,st,{allowCreate=false}={}){if(!view||state.uiReady||state.__startupCanonicalPainted)return false;const p=Math.max(0,Math.min(100,Number(st?.progress||0))),card=view.querySelector?.('[data-boot-card="1"]');if(!card){if(!allowCreate)return false;view.innerHTML=boot(st);return true}const stage=card.querySelector?.('[data-boot-stage]'),percent=card.querySelector?.('[data-boot-percent]'),bar=card.querySelector?.('[data-boot-progress-bar]'),message=card.querySelector?.('[data-boot-message]');if(stage)stage.textContent=st?.stage||'正在启动';if(percent)percent.textContent=`${Math.round(p)}%`;if(bar){bar.dataset.progress=p.toFixed(2);bar.style.transform=`scaleX(${(p/100).toFixed(4)})`}if(message)message.textContent=st?.message||'正在读取历史素材、标注和算法版本';return true}
  async function waitReady(signal){const view=document.getElementById('view');let st={progress:0,stage:'连接平台服务',message:'正在确认启动状态'};paintBoot(view,st);for(let i=0;i<1800;i++){if(signal?.aborted)throw new Error('启动等待已结束');let r=null;try{r=await api('/api/v53/bootstrap/status',{signal})}catch(e){if(signal?.aborted)throw e}if(r){st=r;paintBoot(view,st);if(r.status==='ready')return r;if(r.status==='failed')throw new Error(r.message||r.error||'平台数据预加载失败')}await sleep(i<30?300:650)}throw new Error('平台数据准备时间过长，请查看 start.bat 启动窗口。')}
  function apply(s){state.projects=s.projects||[];state.project=s.project||null;state.datasets=s.datasets||[];state.datasetId=state.datasets.find(d=>d.id===state.datasetId)?.id||state.datasets[0]?.id||'default';state.images=s.images||[];state.materialSummary61=s.material_summary;state.annotationSummary61=s.annotation_summary;const bootstrapLabels=Array.isArray(s.labels)?s.labels:[];state.labelGovernance414=bootstrapLabels;state.labels=bootstrapLabels.filter(item=>item?.active!==false&&String(item?.status||'active')==='active');state.algorithms=s.algorithms||[];state.jobs=s.jobs||[];state.models=s.models||[];state.targets=s.targets||[];state.inferenceEnvs=s.inference_envs||[];state.rec=s.recommendation||null;state.localModels=s.local_models||[];state.modelConfigs=s.model_configs||[];state.pending=s.pending||[];state.testModels=s.test_models||[];state.__coreSnapshotGeneratedAt=Date.parse(s.generated_at||'')||Date.now();state.versionInfo={version:String(s.platform_version||'').trim()||'—',build_id:String(s.build_id||'').trim(),name:'畅联云算法训练'};try{const x=JSON.parse(localStorage.getItem('mc_train_ui_state_v34')||'{}'),rawPage=String(x.page||'');let restoredPage=rawPage==='工作台'?'总览':rawPage==='自动标注'?'自动标注及清洗':rawPage;if(rawPage==='检测台'){restoredPage='质量中心';state.qualityCenterTab411='detect'}else if(rawPage==='测试发布'){restoredPage='质量中心';state.qualityCenterTab411='overview'}else if(['部署转换','部署产物'].includes(rawPage))restoredPage='算法列表';else if(rawPage==='部署插件')restoredPage='模型配置';delete x.projectId;if(RESTORABLE_PAGES413.has(restoredPage)){state.page=restoredPage;x.page=restoredPage}x.ts=Date.now();localStorage.setItem('mc_train_ui_state_v34',JSON.stringify(x))}catch(e){}}
  window.loadStartupSnapshot413=async function(force=false){
    const view=document.getElementById('view'),controller=new AbortController(),timers=[];
-   paintBoot(view,{stage:'读取核心页面',message:'正在核验项目、算法版本和真实任务状态'});
+   paintBoot(view,{stage:'读取核心页面',message:'正在核验项目、算法版本和真实任务状态'},{allowCreate:true});
    const deadline=new Promise((_,reject)=>timers.push(setTimeout(()=>{const error=new Error('核心页面读取超时，请重试；后台任务状态不会因此改变。');controller.abort();reject(error)},20000)));
    timers.push(setTimeout(()=>paintBoot(view,{stage:'仍在读取核心数据',message:'请求尚未返回，正在等待服务端真实项目与任务索引'}),3000));
    timers.push(setTimeout(()=>paintBoot(view,{stage:'服务端仍未返回',message:'最长等待20秒，超时后可重新加载；不会重复创建训练任务'}),10000));
@@ -5307,7 +5362,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
      apply(s);return s
    }finally{timers.forEach(clearTimeout);controller.abort()}
  };
- window.__clInit=function(){if(window.__v53InitPromise)return window.__v53InitPromise;const view=document.getElementById('view');window.__v53InitPromise=(async()=>{try{await window.loadStartupSnapshot413(false);state.uiReady=true;render();state.__startupCanonicalPainted=true}catch(e){window.__v53InitPromise=null;if(view)view.innerHTML=`<div class="boot413"><div class="boot413-card error"><b>平台数据加载失败</b><p>${esc(e.message||e)}</p><div class="row"><button class="btn primary" onclick="window.__clInit()">重新加载</button><button class="btn" onclick="location.reload()">刷新页面</button></div></div></div>`}})();return window.__v53InitPromise};
+ window.__clInit=function(){if(window.__v53InitPromise)return window.__v53InitPromise;const view=document.getElementById('view');window.__v53InitPromise=(async()=>{try{await window.loadStartupSnapshot413(false);state.uiReady=true;render();state.__startupCanonicalPainted=true}catch(e){state.uiReady=false;window.__v53InitPromise=null;if(view&&!state.__startupCanonicalPainted)view.innerHTML=`<div class="boot413"><div class="boot413-card error"><b>平台数据加载失败</b><p>${esc(e.message||e)}</p><div class="row"><button class="btn primary" onclick="window.__clInit()">重新加载</button><button class="btn" onclick="location.reload()">刷新页面</button></div></div></div>`}})();return window.__v53InitPromise};
  const TOP_CRUMB413=Object.freeze({
   '总览':'总览','质量中心':'总览',
   '算法列表':'算法生成','训练任务':'算法生成','训练资源':'高级功能',
@@ -5329,14 +5384,19 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
    if(logo)logo.textContent='CL';
    const r=document.getElementById('refreshBtn');
    if(r){
-     r.textContent='刷新';
+     const refreshOwnerKey=[state.page,String(pid()||''),String(state.__navigationEpoch||0)].join(':');
+     if(r.dataset.refreshOwner!==refreshOwnerKey){r.dataset.refreshOwner=refreshOwnerKey;r.disabled=false;r.textContent='刷新'}
+     else if(!r.disabled)r.textContent='刷新';
      r.onclick=async()=>{
+       const page=state.page,project=String(pid()||''),action=window.NavigationStability?.action?.(page);
+       const serial=window.__topRefreshSerial413=(Number(window.__topRefreshSerial413||0)+1);
+       const isCurrent=()=>serial===window.__topRefreshSerial413&&state.page===page&&String(pid()||'')===project&&(!action||action.isCurrent());
        r.disabled=true;
        const t=r.textContent;
        r.textContent='刷新中';
-       try{await window.refreshCurrentPage413({authoritative:true});render();toast('当前页面已刷新')}
-       catch(e){toast(e.message||e)}
-       finally{r.disabled=false;r.textContent=t||'刷新'}
+       try{const applied=await window.refreshCurrentPage413({authoritative:true});if(!applied||!isCurrent())return;render();toast('当前页面已刷新')}
+       catch(e){if(isCurrent())toast(e.message||e)}
+       finally{if(isCurrent()&&r.isConnected){r.disabled=false;r.textContent=t||'刷新'}}
      };
    }
  };
@@ -6538,7 +6598,18 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
     const r=state.import412||{},rows=importRows414(),counts=r.label_box_counts||{},sources=Object.entries(counts),library=(state.labels||[]).filter(x=>x?.code);
     return `<div class="import412"><section class="import412-head"><div><span>本次导入整理</span><h2>${esc(r.file_name||'导入素材')}</h2><p>${rows.length} 张图片 · ${rows.filter(x=>x.annotated).length} 张带标注</p></div><div class="row"><button class="btn" onclick="selectImportAll414()">全选</button><button class="btn" onclick="invertImport414()">反选</button></div></section>${sources.length?`<section class="import412-labels"><header><b>标签归一化</b><span>把 ZIP 中的 class_0 等原始标签映射到“配置中心 → 标签管理”的标准英文标签。</span></header>${sources.map(([src,n])=>`<div class="import412-labelrow"><div><b>${esc(src)}</b><span>${n} 个框</span></div><span>→</span><select id="map414_${encodeURIComponent(src)}" class="select"><option value="">选择标准标签</option>${library.map(l=>`<option value="${esc(l.code)}" ${l.code===src?'selected':''}>${esc(l.code)}${l.display_name&&l.display_name!==l.code?' · '+esc(l.display_name):''}</option>`).join('')}</select><button class="btn primary" onclick="remapImport414(decodeURIComponent('${encodeURIComponent(src)}'),'map414_${encodeURIComponent(src)}')">应用</button></div>`).join('')}<div class="row end"><button class="btn mini" onclick="closeModal();setPage('标签管理')">管理标准标签</button></div></section>`:''}<section class="import412-grid">${rows.slice(0,180).map(x=>`<label class="import412-card ${state.import412Selected?.has(String(x.id))?'on':''}"><input type="checkbox" ${state.import412Selected?.has(String(x.id))?'checked':''} onchange="toggleImport414('${x.id}',this.checked)"><img src="${x.url}" loading="lazy"><b>${esc(x.filename)}</b><span>${x.annotated?esc((x.labels||[]).join('、')||'已标注'):'待标注'}</span></label>`).join('')}</section><section class="import412-decision"><div><b>本批素材是否需要清洗？</b><span>可以全选/反选后批量决定；清洗确认删除时图片与对应标注一起处理。</span></div><div class="row"><button class="btn" onclick="importNoClean414()">批量无需清洗</button><button class="btn primary" onclick="importClean414()">批量清洗</button></div></section></div>`;
   }
-  window.showImportReview412=async function(jobId){await refreshLabels414(false);const rr=await api(`/api/v52/projects/${pid()}/import/jobs/${jobId}/review`);state.import412={job_id:jobId,file_name:rr.job?.file_name||'',image_ids:rr.image_ids||[],images:rr.images||[],label_box_counts:rr.label_box_counts||{}};state.import412Selected=new Set((rr.image_ids||[]).map(String));modal('本次导入素材',importReview414Html(),true)};
+  window.showImportReview412=async function(jobId){
+    const owner=window.ModalContentRuntime?.beginAsyncOpen?.(),project=pid();
+    try{
+      await refreshLabels414(false);
+      if(owner&&!owner.isCurrent())return;
+      const rr=await api(`/api/v52/projects/${project}/import/jobs/${jobId}/review`);
+      if(owner&&!owner.isCurrent())return;
+      state.import412={job_id:jobId,file_name:rr.job?.file_name||'',image_ids:rr.image_ids||[],images:rr.images||[],label_box_counts:rr.label_box_counts||{}};
+      state.import412Selected=new Set((rr.image_ids||[]).map(String));
+      modal('本次导入素材',importReview414Html(),true);
+    }catch(error){if(!owner||owner.isCurrent())toast(error.message||error)}
+  };
   window.toggleImport414=(id,on)=>{on?state.import412Selected.add(String(id)):state.import412Selected.delete(String(id));const body=[...document.querySelectorAll('.v424-modal-layer .modal-body')].at(-1);if(body)window.ModalContentRuntime.replace(body,importReview414Html())};
   window.selectImportAll414=()=>{(state.import412?.image_ids||[]).forEach(id=>state.import412Selected.add(String(id)));const body=[...document.querySelectorAll('.v424-modal-layer .modal-body')].at(-1);if(body)window.ModalContentRuntime.replace(body,importReview414Html())};
   window.invertImport414=()=>{(state.import412?.image_ids||[]).forEach(id=>state.import412Selected.has(String(id))?state.import412Selected.delete(String(id)):state.import412Selected.add(String(id)));const body=[...document.querySelectorAll('.v424-modal-layer .modal-body')].at(-1);if(body)window.ModalContentRuntime.replace(body,importReview414Html())};
@@ -7833,7 +7904,6 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     const layers=[...document.querySelectorAll('.v424-modal-layer')];
     const base=document.getElementById('modal');
     const top=layers.at(-1)||((base&&!base.classList.contains('hidden'))?base:null);
-    window.beforeCloseAiTask60?.(top);
     window.beforeCloseEvaluationPreview429?.(top);
     const annotationRoot=top?.querySelector('.ann420-stable');
     if(annotationRoot)state.annotationEditor?.flush?.();
@@ -7873,6 +7943,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   state.aiMaterialStatesSignature60=String(state.aiMaterialStatesSignature60||'');
   state.aiMaterialStatesRequest60=Number(state.aiMaterialStatesRequest60||0);
   let gtAuditRequest60=0;
+  let aiDetailSession60=0;
   const taskApi=id=>`/api/v60/projects/${pid()}/annotation-tasks${id?`/${id}`:''}`;
   const taskView=task=>window.PlatformCore?.annotationTasks?.annotationTaskView(task)||{};
   const imageById=id=>(state.images||[]).find(image=>String(image.id)===String(id));
@@ -7916,7 +7987,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   }
 
   function renderProgress(task){
-    const root=document.querySelector(`.ai60-progress[data-task-id="${CSS.escape(String(task.id))}"]`);if(!root)return;
+    const root=window.ModalContentRuntime?.activeLayer?.()?.querySelector?.(`.ai60-progress[data-task-id="${CSS.escape(String(task.id))}"]`);if(!root)return;
     const view=taskView(task),set=(id,value)=>{const node=root.querySelector(`#${id}`);if(node)node.textContent=value};
     set('ai60Status',view.statusText);set('ai60Percent',`${Number(view.percent||0).toFixed(1)}%`);set('ai60Counts',view.progressText);set('ai60Failed',view.failed);set('ai60Elapsed',elapsed(task));
     const bar=root.querySelector('#ai60Bar');if(bar)bar.style.transform=`scaleX(${Math.max(0,Math.min(100,Number(view.percent||0)))/100})`;
@@ -7929,6 +8000,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
 
   function stopAiTaskDetail60({resumeList=true}={}){
     gtAuditRequest60++;
+    aiDetailSession60++;
     const key=String(state.ai60DetailPollKey||'');
     if(key)window.PollRegistryRuntime?.clear?.(key);
     state.ai60DetailPollKey='';
@@ -7960,9 +8032,19 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   window.showAiTask60=async function(id,{initialTask=null}={}){
     const detailId=String(id||'');
     const key=`ai-task-detail:${detailId}`;
+    const taskPath=taskApi(detailId);
+    const intent=window.ModalContentRuntime?.beginAsyncOpen?.();
+    stopAiTaskDetail60({resumeList:false});
+    const session=++aiDetailSession60;
+    let owner=null;
+    const isCurrent=()=>session===aiDetailSession60&&(owner?owner.isCurrent():!intent||intent.isCurrent());
     try{
-      stopAiTaskDetail60({resumeList:false});
-      const first=initialTask||await api(taskApi(detailId));progressShell(first);renderProgress(first);
+      const first=initialTask||await api(taskPath);
+      if(!isCurrent())return;
+      progressShell(first);
+      owner=window.ModalContentRuntime?.captureOwner?.();
+      if(!isCurrent())return;
+      renderProgress(first);
       window.AutoLabelPollRuntime?.deactivate?.();
       state.ai60DetailPollKey=key;
       const terminal=await window.PlatformCore.taskPoller.waitForTaskTerminal({
@@ -7972,19 +8054,20 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
         ownerPages:[state.page],
         delay:1600,
         maxAttempts:900,
-        load:()=>api(taskApi(detailId)),
-        onUpdate:renderProgress,
-        onError:error=>{const node=document.querySelector(`.ai60-progress[data-task-id="${CSS.escape(detailId)}"] #ai60Error`);if(node)node.innerHTML=`<div class="error-box422">${esc(error.message||error)}</div>`},
+        load:()=>api(taskPath),
+        onUpdate:task=>{if(!isCurrent()){const error=new Error('任务详情窗口已结束');error.name='AbortError';throw error}renderProgress(task)},
+        onError:error=>{if(!isCurrent())return;const node=owner?.layer?.querySelector?.(`.ai60-progress[data-task-id="${CSS.escape(detailId)}"] #ai60Error`);if(node)node.innerHTML=`<div class="error-box422">${esc(error.message||error)}</div>`},
       });
-      if(state.ai60DetailPollKey===key){state.ai60DetailPollKey='';renderProgress(terminal);window.AutoLabelPollRuntime?.activate?.(state.annotationTasks60||[])}
+      if(isCurrent()&&state.ai60DetailPollKey===key){state.ai60DetailPollKey='';renderProgress(terminal);window.AutoLabelPollRuntime?.activate?.(state.annotationTasks60||[])}
     }catch(error){
+      if(!isCurrent())return;
       if(error?.name!=='AbortError')toast(error.message||error);
       if(state.ai60DetailPollKey===key){state.ai60DetailPollKey='';window.AutoLabelPollRuntime?.activate?.(state.annotationTasks60||[])}
     }
   };
   window.showTaskProgress427=function showTaskProgressCanonical60(type,id){if(type==='label')return showAiTask60(id);if(type==='clean')return window.showCleanTaskProgress429?.(id);return window.showTaskProgressCore427?.(type,id)};
-  window.cancelAiTask60=async id=>{try{const task=await api(`${taskApi(id)}/cancel`,{method:'POST'});renderProgress(task)}catch(error){toast(error.message||error)}};
-  window.retryAiTask60=async id=>{try{const task=await api(`${taskApi(id)}/retry`,{method:'POST'});await closeModal();return showAiTask60(task.id)}catch(error){toast(error.message||error)}};
+  window.cancelAiTask60=async id=>{const owner=window.ModalContentRuntime?.captureOwner?.();try{const task=await api(`${taskApi(id)}/cancel`,{method:'POST'});if(!owner||owner.isCurrent())renderProgress(task);return task}catch(error){if(!owner||owner.isCurrent())toast(error.message||error)}};
+  window.retryAiTask60=async id=>{const owner=window.ModalContentRuntime?.captureOwner?.();try{const task=await api(`${taskApi(id)}/retry`,{method:'POST'});if(owner&&!owner.isCurrent())return task;if(owner?.layer)window.closeModalLayer424?.(owner.layer);if(window.ModalContentRuntime?.activeLayer?.())return task;return showAiTask60(task.id)}catch(error){if(!owner||owner.isCurrent())toast(error.message||error)}};
 
   function explicitCanonicalAiLabelText(value){
     const parts=[...new Set(String(value||'').split(/[、,，;；\n\t]+/).map(item=>item.trim()).filter(Boolean))];

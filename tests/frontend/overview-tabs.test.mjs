@@ -136,6 +136,30 @@ test('overview request identity fence rejects stale A → B → A response and f
   }finally{globalThis.document=old}
 });
 
+test('overview same-project A → B → A rejects old navigation generation even while first HTTP is in flight',async()=>{
+  const beforeDocument=globalThis.document,beforeWindow=globalThis.window;
+  const view={innerHTML:'',insertAdjacentHTML(position,html){this.innerHTML=position==='afterbegin'?html+this.innerHTML:this.innerHTML+html},querySelector(){return {addEventListener(){}}},querySelectorAll(){return []}};
+  const state={page:'总览',project:{id:'P'},algorithms:[]},requests=[];
+  let epoch=0;
+  globalThis.document={getElementById(){return view}};
+  globalThis.window={NavigationStability:{action(page){const generation=epoch;return {token:{epoch:generation},isCurrent(){return generation===epoch&&state.page===page}}}}};
+  try{
+    const runtime=installOverviewTabsRuntime({getState:()=>state,renderProduction(){view.innerHTML=''},request(url){return new Promise(resolve=>requests.push({url,resolve}))}});
+    runtime.select('algorithm');
+    const first=requests.splice(0);assert.equal(first.length,2);
+    state.page='训练任务';epoch++;
+    state.page='总览';epoch++;
+    runtime.render();
+    const second=requests.splice(0);assert.equal(second.length,2,'reentry must not adopt old in-flight requests');
+    first.forEach(item=>item.resolve(item.url.includes('quality-overview')?{algorithms:[]}:{items:[{id:'old',name:'旧A响应'}]}));
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.doesNotMatch(view.innerHTML,/旧A响应/);
+    second.forEach(item=>item.resolve(item.url.includes('quality-overview')?{algorithms:[]}:{items:[{id:'new',name:'新A响应'}]}));
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.match(view.innerHTML,/新A响应/);
+  }finally{globalThis.document=beforeDocument;globalThis.window=beforeWindow}
+});
+
 test('failed algorithm fetch cannot present former algorithm totals as live',async()=>{
   const old=globalThis.document;
   const view={innerHTML:'',insertAdjacentHTML(position,html){this.innerHTML=position==='afterbegin'?html+this.innerHTML:this.innerHTML+html},querySelector(){return {addEventListener(){}}},querySelectorAll(){return []}};

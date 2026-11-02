@@ -264,14 +264,14 @@ export function installOverviewTabsRuntime({
   },
 }={}) {
   if(typeof document==='undefined')return null;
-  let active='algorithm',placementFilter='all',demoMode=false,tabClicks=0,lastTabClick=0,lastClickedTab='',cache={project:'',algorithms:null,quality:null,nodes:null,storage:null,gpuRuntime:null,local:null,loadedAt:{},errors:{}},loading={};
+  let active='algorithm',placementFilter='all',demoMode=false,tabClicks=0,lastTabClick=0,lastClickedTab='',cache={project:'',algorithms:null,quality:null,nodes:null,storage:null,gpuRuntime:null,local:null,loadedAt:{},errors:{}},loading={},loadingEpoch={};
   const ttl=60000;
   const state=()=>getState?.()||{};
   const project=()=>String(state().project?.id||'');
   function resetIfProjectChanged() {
     if(cache.project===project())return;
     cache={project:project(),algorithms:null,quality:null,nodes:null,storage:null,gpuRuntime:null,local:null,loadedAt:{},errors:{}};
-    loading={};demoMode=false;tabClicks=0;lastTabClick=0;lastClickedTab='';
+    loading={};loadingEpoch={};demoMode=false;tabClicks=0;lastTabClick=0;lastClickedTab='';
   }
   function render({load=true}={}) {
     const view=document.getElementById('view');
@@ -333,9 +333,12 @@ export function installOverviewTabsRuntime({
   async function loadTab(tab,force=false) {
     resetIfProjectChanged();
     const id=project();if(!id||state().page!=='总览')return;
+    const navigation=typeof window!=='undefined'?window.NavigationStability?.action?.('总览'):null;
+    const targetCache=cache,epoch=navigation?.token?.epoch??null;
+    const current=()=>project()===id&&cache===targetCache&&state().page==='总览'&&(!navigation||navigation.isCurrent());
     const fetchOne=async(key,url)=>{
       if(!force&&cache.loadedAt[key]&&Date.now()-cache.loadedAt[key]<ttl)return;
-      if(loading[key])return loading[key];
+      if(loading[key]&&loadingEpoch[key]===epoch)return loading[key];
       const target=cache; // Identity fence also rejects old A requests after A→B→A.
       const task=(async()=>{
         try{
@@ -344,23 +347,23 @@ export function installOverviewTabsRuntime({
           if(key==='quality'&&!Array.isArray(result?.algorithms))throw new Error('质量接口缺少算法列表');
           if(key==='gpuRuntime'&&!Array.isArray(result?.gpus))throw new Error('GPU 运行态接口无效');
           if(key==='local'&&(!result?.resources||!result?.sampled_at))throw new Error('本机资源采样接口无效');
-          if(project()!==id||cache!==target)return;
+          if(!current()||cache!==target)return;
           cache[key]=result;cache.loadedAt[key]=Date.now();delete cache.errors[key];
         }catch(error){
-          if(project()!==id||cache!==target)return;
+          if(!current()||cache!==target)return;
           cache[key]=null; // Never display a previous successful response as live after a failure.
           cache.errors[key]=String(error?.message||error);
           cache.loadedAt[key]=Date.now(); // Bounded retry; don't hammer failing APIs.
         }
       })().finally(()=>{if(loading[key]===task)delete loading[key]});
-      loading[key]=task;return task;
+      loading[key]=task;loadingEpoch[key]=epoch;return task;
     };
     const mergedQuality=async()=>{
       // Production dashboard already owns this quality GET and its 60s cache.
       // Reuse that completed or pending request instead of double-reading it.
       const owner=state(),target=cache;
       const reuse=()=>{
-        if(project()!==id||cache!==target)return false;
+        if(!current()||cache!==target)return false;
         const quality=state().v42?.quality;
         if(String(state().dashboard422ExtrasProjectId||'')!==id||!Array.isArray(quality?.algorithms))return false;
         cache.quality=quality;cache.loadedAt.quality=Date.now();delete cache.errors.quality;
@@ -370,7 +373,7 @@ export function installOverviewTabsRuntime({
       const inFlight=owner.dashboard422ExtrasRefreshPromise;
       if(inFlight){
         try{await inFlight}catch(_){}
-        if(project()!==id||cache!==target)return;
+        if(!current()||cache!==target)return;
         if(reuse())return;
         // An already failed production owner must not induce a second
         // immediate quality GET. Keep its source unavailable for this view.
@@ -390,7 +393,7 @@ export function installOverviewTabsRuntime({
       fetchOne('gpuRuntime','/api/v62/gpu-runtime'),
       fetchOne('local','/api/v63/service-nodes/controller-snapshot'),
     ]);
-    if(state().page==='总览'&&active===tab&&project()===id)render({load:false});
+    if(current()&&active===tab)render({load:false});
   }
   return Object.freeze({render,select(tab){const target=tab==='production'?'algorithm':tab;if(OVERVIEW_TABS.some(x=>x.id===target)){active=target;demoMode=false;tabClicks=0;lastTabClick=0;lastClickedTab='';return render()}return false},
     get activeTab(){return active},refresh(){return loadTab(active,true)}});

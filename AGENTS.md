@@ -1,4 +1,6 @@
-> **最新开发 42.24.490（SDK 显式检测网络截止）**：已准确推送 489 `516ff3955c075dcbfa682542e78754dcf122df89`（该 SHA CI 尚运行），原 488 `eb84b27f` 已 49/49 Actions 全绿。最后发现原显式资源检测 POST 直接走 `api` 无请求截止，可能无限 Loading。490 复用现有 `withRequestDeadline` 30秒 Abort/取消，不加长超时；超时保留有效资源、释放等待与显式重试，后端 FileLock/CAS 去重和最终任务合同不变。原生资源 UI 31/31 回归，完整 Node/490准确 SHA CI 待核。唯一专项详见 `docs/MODEL_VERSION_CONVERSION_GOVERNANCE_2026_10_28.md`；生产已知485，真实 SDK/板端/生产 P95 未验，不部署、不改正式数据/OSS/任务、merge/tag/release/force push。
+> **最新开发 42.24.491（全站前端异步生命周期 P0）**：起点 490 准确远端/本地 `bbf9505e10f11d391dacaa725f9844bdf7e66247`，工作区原干净。现行启动进度覆盖、核心失败后路由续行、全局刷新旧响应、清洗/AI弹窗开启/关闭与轮询错关、同项目总览 A→B→A 复用旧在途请求已在原有 Owner 中修补。真实 Promise 延迟 Node/新增 Chrome 多视口测试、剩余风险与回滚见 `docs/FRONTEND_STARTUP_REPORT_UX_GOVERNANCE_2026_10_21.md` 顶部。生产已知485不变；本版不部署/修改生产数据库/正式任务/素材/GT/权重/OSS，无迁移，准确新SHA CI 与真实浏览器/生产性能仅以实际执行结果判定；不 merge/tag/release/force push。
+
+> **前版 42.24.490（SDK 显式检测网络截止）**：已准确推送 489 `516ff3955c075dcbfa682542e78754dcf122df89`（该 SHA CI 尚运行），原 488 `eb84b27f` 已 49/49 Actions 全绿。最后发现原显式资源检测 POST 直接走 `api` 无请求截止，可能无限 Loading。490 复用现有 `withRequestDeadline` 30秒 Abort/取消，不加长超时；超时保留有效资源、释放等待与显式重试，后端 FileLock/CAS 去重和最终任务合同不变。原生资源 UI 31/31 回归，完整 Node/490准确 SHA CI 待核。唯一专项详见 `docs/MODEL_VERSION_CONVERSION_GOVERNANCE_2026_10_28.md`；生产已知485，真实 SDK/板端/生产 P95 未验，不部署、不改正式数据/OSS/任务、merge/tag/release/force push。
 
 > **前版 42.24.489（过期资源主动重检）**：488 仅 ready 资源下拉导致过期/待检资源无法由转换弹窗重检；489 改为所有匹配资源可选检测、有效 ready + 服务端合同仍独立阻止提交、旧选择保留。原生 Node1471/1471，准确489 CI 接续时未结束；无 Schema/SDK/Worker 修改。
 

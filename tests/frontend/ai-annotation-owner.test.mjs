@@ -257,7 +257,7 @@ test('AI task detail polling is modal-scoped and PollRegistry-owned', () => {
   assert.match(block, /AutoLabelPollRuntime\?\.activate/);
   assert.doesNotMatch(block, /createTaskPoller/);
   assert.doesNotMatch(source, /state\.ai60Pollers/);
-  assert.match(source, /beforeCloseAiTask60\?\.\(top\)/);
+  assert.match(source, /beforeCloseAiTask60\?\.\(layer\)/);
   assert.match(source, /ai60Bar" style="transform:scaleX\(0\)/);
   assert.doesNotMatch(block, /bar\.style\.width=.*view\.percent/);
   const rowStart = source.indexOf('function taskRow(task)', end);

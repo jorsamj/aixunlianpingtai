@@ -179,7 +179,9 @@ export function installNavigationStability({
 
       if (readiness && typeof readiness.then === 'function') {
         return Promise.resolve(readiness).then(
-          () => invokeNavigationOwner(),
+          // A second click can supersede this navigation while startup is
+          // pending. The first request must not replay after the await.
+          ready => ready === false || destroyed || guard.epoch !== navigationEpoch ? false : invokeNavigationOwner(),
           error => {
             finalizeNavigation(requested, navigationEpoch);
             throw error;

@@ -207,7 +207,7 @@ test('normal navigation is synchronous once startup data is ready', () => {
   const end = main.indexOf('\n  beforeInvokeNavigation:', start);
   assert.ok(start >= 0 && end > start);
   const readiness = main.slice(start, end);
-  assert.match(readiness, /if \(!state\.uiReady && window\.__v53InitPromise\) return window\.__v53InitPromise/);
+  assert.match(readiness, /if \(!state\.uiReady && window\.__v53InitPromise\) return Promise\.resolve\(window\.__v53InitPromise\)\.then\(\(\) => state\.uiReady === true\)/);
   assert.match(readiness, /return null/);
   assert.doesNotMatch(readiness, /async|await/);
 });

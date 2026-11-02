@@ -14,12 +14,12 @@ import {createModalStack, installModalPresentation, loadingSkeleton} from './mod
 import {annotationPreviewFromBoxes, applyAnnotationResult} from './modules/annotation.js?v=422502';
 import {installNegativeSampleRuntime} from './modules/negative-samples.js?v=20261022a';
 import {installTrainingLabelRuntime} from './modules/training-labels.js?v=4226464';
-import {installNavigationStability} from './modules/navigation-stability.js?v=20261024';
+import {installNavigationStability} from './modules/navigation-stability.js?v=20261102-lifecycle491';
 import {persistUiState} from './modules/ui-state.js?v=422500';
 import {installPageRequestScope, isPageNavigationCancelled} from './modules/page-request-scope.js?v=20261031-p0body';
 import {installPollRegistry} from './modules/poll-registry.js?v=422522';
-import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=4226390';
-import {installExternalAlgorithmPlatformRuntime} from './modules/external-algorithm-platform.js?v=63024';
+import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=4226491';
+import {installExternalAlgorithmPlatformRuntime} from './modules/external-algorithm-platform.js?v=63025';
 import {installChangLianDataBrowserRuntime} from './modules/changlian-data-browser.js?v=63002';
 import {installExternalAlgorithmPublishRuntime} from './modules/external-algorithm-publish.js?v=64015';
 import {installModelArtifactRuntime} from './modules/model-artifact-runtime.js?v=65009';
@@ -57,7 +57,7 @@ import {buildServerImportRequest, buildImportConfirmation, serverImportView} fro
 import {applyExactLabelCodeMatches, bulkSetLabelMapping, buildManualLabelMapping, createLabelMappingReview, filterCanonicalLabels, labelMappingReviewPage, labelMappingReviewSummary, labelSampleOverlay, reconcileLabelMappingReview, setLabelMapping, setLabelMappingReviewPage, setLabelMappingReviewSearch, setLabelMappingSelected, setLabelMappingTargetSearch} from './modules/label-mapping-review.js?v=4226353';
 import {installResourceDiscoveryRuntime} from './modules/resource-discovery.js?v=422403';
 import {installServiceNodeRuntime} from './modules/service-node-runtime.js?v=422550';
-import {installOverviewTabsRuntime} from './modules/overview-tabs.js?v=4226362';
+import {installOverviewTabsRuntime} from './modules/overview-tabs.js?v=4226491';
 import {installMaterialBatchRuntime} from './modules/material-batches.js?v=422411';
 import {installSmartMaterialAudit} from './modules/smart-material-audit.js?v=20261026';
 import {mountPagination, normalizePagination, paginationPageSizes, paginationTokens, renderPagination, validatePageInput} from './modules/pagination.js?v=422603';
@@ -509,7 +509,7 @@ const navigationStabilityRuntime = installNavigationStability({
   pollRegistry,
   persistNavigationState: currentState => persistUiState(currentState),
   waitForNavigationReady: () => {
-    if (!state.uiReady && window.__v53InitPromise) return window.__v53InitPromise;
+    if (!state.uiReady && window.__v53InitPromise) return Promise.resolve(window.__v53InitPromise).then(() => state.uiReady === true);
     return null;
   },
   canNavigate: page => window.AiReviewRouteRuntime?.beforeNavigate?.(page) !== false,
@@ -649,6 +649,9 @@ window.PlatformCore.runtime.renderRouter = {
 const algorithmStartupBeganAt = Date.now();
 const canonicalStartupPromise = window.__clInit?.();
 Promise.resolve(canonicalStartupPromise).then(() => {
+  // __clInit handles failure locally so that its retry UI remains actionable.
+  // A resolved promise is not evidence that the core snapshot succeeded.
+  if (state.uiReady !== true || !state.__startupCanonicalPainted) return;
   // The task center is installed before bootstrap project truth is available.
   // Load that project's persisted upload rows once readiness resolves so a
   // browser-only queued File becomes an explicit re-selection request.

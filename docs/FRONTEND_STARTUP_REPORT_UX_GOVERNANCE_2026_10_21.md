@@ -1,3 +1,27 @@
+## 2026-11-02｜42.24.491 前端页面、弹窗与后台异步归属 P0 接续
+
+**代码基线**：仅 `feature/external-algorithm-publishing`，开发前本地及 GitHub 远端 HEAD 均为 `bbf9505e10f11d391dacaa725f9844bdf7e66247`，VERSION `42.24.490`，工作区原本干净。已知生产仍为 `42.24.485`；本批不操作生产数据库、正式素材/GT、任务/权重、外部同步及部署。保留原生 JS、既有 `NavigationStability`、`PageRequestScope`、`PollRegistry`、`ModalContentRuntime`、原路由/ModalStack，无数据库迁移。
+
+### 本批代码审计结果与实施
+
+| 场景及代码入口 | 原状态/证据 | 491 修复与边界 | 验收状态 |
+|---|---|---|---|
+| 首次启动 `app.js::paintBoot`／`main.mjs::canonicalStartupPromise` | **静态确认**：3s/10s 回调在 Boot 卡缺失时能把已存在业务页覆盖；`__clInit` 吞掉失败后 `main.mjs` 仍继续尝试启动业务页。外部平台预取结果可在 `uiReady` 前让算法 Runtime 覆盖 `#view` | `uiReady=false` 显式初始；只有首次 Boot 创建可以写主视图，晚到状态仅补原有卡；失败不启动页面 Owner；算法列表预取仅在核心就绪后渲染；等待启动的导航只允许最后一个执行 | Node 时序已覆盖；隔离 Chrome 三视口 5s 延迟和核心 500 失败已通过；生产现场待证 |
+| 顶部刷新 `app.js::renderTopCanonical413`、`loadCore412`、`refreshCurrentPage413` | **静态确认**：`await` 后无条件 `render()`，核心快照异步写全局状态；A→B→A 相同页面字符串不足辨别旧请求 | 请求时冻结页面/项目/导航代次及最新刷新序号；核心响应过期不提交，旧刷新不读 B 的 extras、不重绘/不 Toast；导航切换释放刷新按钮，晚到的旧 finally 不修改新按钮 | Node 真异步 Promise + Chrome 原全局刷新 Owner 验证通过；生产慢连接待证 |
+| `showCleanTaskProgress429`／`cleanDetailCore429` | **静态确认**：详情 GET 后可直接开窗，用户后来关窗/开 B 不能阻止迟到 A | 扩展原 `ModalContentRuntime` 的 ModalStack 开启意图/实例 Lease；清洗详情 GET 完成再核验项目、页面、代次与模态顶层；进度只读其所属顶层实例 | Node 真异步 GET + Chrome 延迟后换 B 验证通过；其它所有历史弹窗未逐一真实验收 |
+| `armCleanProgressPoll429`、`retryCleanTask429`、`showAiTask60`、`retryAiTask60` | **静态确认**：轮询发前检查但发后不复查；`closeModal()` 关闭当时最上层，任务重试 POST 成功也无条件关窗、开窗 | 发后重新校验 Modal Lease；只通过 `closeModalLayer424(ownedLayer)` 处理原层；AI 详情轮询与同 task_id 重开隔离 session，已废弃等待者终止；POST 仍由服务端决定任务事实，前端过期时只丢弃 UI 副作用 | Node 真异步轮询/POST 已覆盖；硬件/生产异步任务待实测 |
+| `overview-tabs.js::loadTab` | **可触发时序风险**：原仅 cache 引用/项目 ID 栅栏；同项目 A→B→A 可以复用旧 `loading[key]`，由旧返回重绘新页面 | 加原 `NavigationStability.action` 的导航代次、在途请求代次，旧 A 不能重用或重绘新 A；同项目内其它页面仍保留已有缓存 | Node 同项目 A→B→A 真异步已覆盖 |
+| `openDeployLog`、`showImportReview412` | **横向静态确认**：转换日志/素材导入审核的异步 GET 完成后直接开 Modal，可能在用户打开 B 后意外恢复旧对话框 | 对现行入口使用同一 Modal Lease、冻结导入审核项目 ID 并在提交 UI 状态前重检；日志失败仅向当前所有者反馈 | 转换日志真实函数的延迟回执 Node 已覆盖；导入审核 Chrome 既有回归通过 |
+| 全局 MutationObserver、其它训练/转换/部署和导入 Owner | 原代码在对应模块已存在 PageRequestScope／局部 Owner／PollRegistry 防护，外部训练选择器的全局 `MutationObserver` 有 DOM 幂等检测及 `destroy().disconnect()`；**不能仅凭全局观察断言实际高耗时** | 本批不进行无证据重写；留为真实 Chrome Profiler、全站模态矩阵、POST 后续动作和网络耗时补验项 | 尚未完成全站动态浏览器与生产性能验收 |
+
+设计选择：Modal Lease 只扩展原 `ModalContentRuntime`，不引入新 Modal Manager；导航、刷新与总览仍消费原导航代次。关闭 UI 不取消服务器已受理的 POST，清理轮询 Timer 不能代替校验已经发出的响应。旧弹窗内容/focus/草稿在归属变化时不触碰。没有变更服务端 API/数据库/OSS/Worker 业务语义。
+
+**测试与交付**：新增 `tests/frontend/lifecycle-async-races.test.mjs` 11 个运行真实片段/受控 Promise 顺序的用例，扩展导航和总览现有运行时序测试、启动与版本入口契约；完整本地 Node **1486/1486 通过**、零失败；新增 `tests/browser/frontend-lifecycle-races.spec.mjs` 6 个 Chrome 场景（5s Bootstrap/3视口、核心500失败、刷新期间导航、任务详情迟到），与原 NavigationStability 及 OverviewTabs 合计 **35/35 Chrome 通过**、零失败（最终稳定代码，隔离 `127.0.0.1:8011`；约 1.7 分钟）。测试前发现算法列表的全局按钮由已有专属 `onRefreshCapture` 拦截，因此最终选 **模型配置**作为权威全局刷新真实入口；没有为测试删除业务拦截。没有后端修改，因此无需 Python 改动测试。未测量新旧 P95、生产首屏闪烁率、主线程时间、正式任务或连接耗时；没有证据宣告性能达标。
+
+**回滚/上线**：如线上出现导航未就绪、弹窗意外丢失或角色错判，撤回本批静态资源与 `VERSION.txt` 到 490 后重新构建缓存即可；无迁移/清理步骤。上线前必须用隔离环境 Chrome、真实任务详情、跨页面刷新、代理慢连接及不同设备视口完成验收，确认保留已有训练、转换、部署/OSS 与恢复功能。版本、准确 SHA/Actions 与最终测试回执以本节后续验收补录为准，不能借用 490 CI。
+
+---
+
 2026-10-29平台性能第一阶段审计与两链轻量修复以[本轮唯一专项](PLATFORM_PERFORMANCE_AUDIT_2026_10_28.md)为准。原Bootstrap/UI/GPU既有能力保留；其他模块仅审计，下一阶段须用户确认。
 
 > 2026-10-21后续训练准入诊断/草稿恢复/删除复检UI由[生命周期一体治理专项第十节](TRAINING_MATERIAL_LIFECYCLE_GOVERNANCE_2026_10_21.md)维护；本文件保留综合前端原验收，不重复记录GOV进度。

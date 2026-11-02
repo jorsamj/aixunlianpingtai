@@ -1580,7 +1580,7 @@ export function installExternalAlgorithmPlatformRuntime({
   trainingAnalysisObserver = new MutationObserver(() => decorateTrainingAnalysisSelector());
   trainingAnalysisObserver.observe(document.body, {childList: true, subtree: true});
   void Promise.all([loadConfig({silent: true}), loadCache({silent: true})]).then(() => {
-    if (String(state().page || '') === '算法列表') algorithmListRuntime?.render?.();
+    if (state().uiReady === true && String(state().page || '') === '算法列表') algorithmListRuntime?.render?.();
     decorateTrainingAnalysisSelector();
   }).catch(() => {});
 

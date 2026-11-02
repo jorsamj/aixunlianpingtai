@@ -93,7 +93,9 @@ test('startup progress patches one stable boot card instead of rebuilding the wh
   assert.ok(start >= 0 && end > start);
   const block = app.slice(start, end);
 
-  assert.match(block, /function paintBoot\(view,st\)/);
+  assert.match(block, /function paintBoot\(view,st,\{allowCreate=false\}=\{\}\)/);
+  assert.match(block, /if\(!allowCreate\)return false/);
+  assert.match(block, /state\.uiReady\|\|state\.__startupCanonicalPainted/);
   assert.match(block, /data-boot-card="1"/);
   assert.match(block, /data-boot-progress-bar/);
   assert.match(block, /bar\.style\.transform=/);
@@ -128,4 +130,5 @@ test('normal startup does not repaint the canonical page after app bootstrap alr
   const block = main.slice(start, end);
   assert.match(block, /if \(!state\.__startupCanonicalPainted && navigationStabilityRuntime\.hasPageOwner\(startupPage\)\)/);
   assert.match(block, /source: 'startup-owner'/);
+  assert.match(block, /if \(state\.uiReady !== true \|\| !state\.__startupCanonicalPainted\) return;/);
 });

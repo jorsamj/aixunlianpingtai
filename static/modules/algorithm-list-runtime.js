@@ -445,7 +445,9 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
   }
 
   function ensureAlgorithmShell() {
-    if (destroyed || String(state().page || '') !== ALGORITHM_PAGE || !doc) return null;
+    // Bootstrap owns #view until its snapshot has committed and routed the
+    // first real page. External configuration reads may finish beforehand.
+    if (destroyed || state().uiReady === false || String(state().page || '') !== ALGORITHM_PAGE || !doc) return null;
     let root = doc.querySelector?.('[data-algorithm-list-owner="AlgorithmListRuntime"]');
     if (root) return root;
     const host = doc.getElementById?.('view');
