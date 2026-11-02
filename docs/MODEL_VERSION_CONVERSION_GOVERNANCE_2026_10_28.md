@@ -1,5 +1,11 @@
 # 模型版本转换模块专项（2026-10-28）
 
+## 2026-11-02｜42.24.496 精确 SHA CI 红灯闭环（控制平面测试证据更新）
+
+- 495 已通过 GitHub 仓库接口非强制快进推送，准确 SHA `ab12fbf0c137163fdc9ac6ec9d696ed8748311d4`，推送后本地和远端 HEAD/文件树一致。本次基于该 SHA 继续，版本正常递增，不修改生产。
+- 495 `Remote Conversion Runtime` Push 作业 `41406195292` 的 `control-plane` 实测 **377 passed / 3 failed**，三个红项均为原 `tests/api/test_sophon_remote_admission.py` 旧隔离数据把资源声明成 ready 但没有 SDK `last_checked_at`，并期待正式创建再执行完整远程 `_detect_remote_deploy_resource`。新业务规则正确地先以 `not_checked` 409 拒绝，故旧测试无法抵达其原断言。
+- 496 仅修正原测试的真实证据前置条件：显式提供已检测时间、把在线性检查隔离为新的 `_remote_conversion_resource_online`，并强断言正式准入**不得再次调用完整远程 SDK 扫描**。保留未选/不支持芯片返回400的负例与有效 BM1688 创建的既有作业记录、远端密钥引用、精度和参数断言。原服务端与页面检测逻辑无第二轮改写。按照 `.github/workflows/remote-conversion-runtime.yml` 的 `control-plane` 完整 Python 清单在本地隔离环境 **380/380 通过**，准确新 SHA GitHub Actions 仍须单独核验，不可借 495 的 PR/其他作业冒充全部 CI 成功。
+
 ## 2026-11-02｜42.24.495 P0 SDK 能力证据与可恢复检测（本地验收；生产 SDK/板端待核）
 
 **准确基线**：唯一长期分支 `feature/external-algorithm-publishing`，接续远端 `c94cf17c7e9f1a9204141f0f5f23d673d08725a6` / VERSION `42.24.494`，克隆时工作区干净；该 SHA GitHub 可查询的 PR 工作流 20/20 success，不能替代本提交的 CI。生产最后已知版本 485，未登录服务器核验；本轮不部署、不改生产资源/数据库/任务/权重/OSS。正式新 SHA/Actions 与部署建议必须按本次最终交付回执单独核验。
