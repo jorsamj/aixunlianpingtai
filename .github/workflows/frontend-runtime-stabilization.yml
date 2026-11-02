@@ -355,8 +355,9 @@ jobs:
           main = Path('static/main.mjs').read_text(encoding='utf-8')
           readiness = (
               'waitForNavigationReady: () => {' in main
-              and 'if (!state.uiReady && window.__v53InitPromise) return window.__v53InitPromise;' in main
+              and 'if (!state.uiReady && window.__v53InitPromise) return Promise.resolve(window.__v53InitPromise).then(() => state.uiReady === true);' in main
               and 'return null;' in main
+              and 'ready => ready === false || destroyed || guard.epoch !== navigationEpoch ? false : invokeNavigationOwner()' in navigation
           )
           if not readiness:
               raise SystemExit('startup snapshot readiness contract is missing from main runtime wiring')

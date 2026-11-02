@@ -212,6 +212,13 @@ test('normal navigation is synchronous once startup data is ready', () => {
   assert.doesNotMatch(readiness, /async|await/);
 });
 
+test('CI readiness source guard matches the live fail-closed startup and navigation contract', () => {
+  const workflow = fs.readFileSync(new URL('../../.github/workflows/frontend-runtime-stabilization.yml', import.meta.url), 'utf8');
+  assert.match(workflow, /Promise\.resolve\(window\.__v53InitPromise\)\.then\(\(\) => state\.uiReady === true\)/);
+  assert.match(workflow, /ready => ready === false \|\| destroyed \|\| guard\.epoch !== navigationEpoch/);
+  assert.doesNotMatch(workflow, /return window\.__v53InitPromise;/);
+});
+
 
 test('active sidebar navigation is a user-click no-op while programmatic same-page navigation stays available', () => {
   const navStart = source.indexOf('renderNav=function(){');
