@@ -217,6 +217,7 @@ test('CI readiness source guard matches the live fail-closed startup and navigat
   assert.match(workflow, /Promise\.resolve\(window\.__v53InitPromise\)\.then\(\(\) => state\.uiReady === true\)/);
   assert.match(workflow, /ready => ready === false \|\| destroyed \|\| guard\.epoch !== navigationEpoch/);
   assert.doesNotMatch(workflow, /return window\.__v53InitPromise;/);
+  assert.match(workflow, /tests\/browser\/frontend-lifecycle-races\.spec\.mjs/, 'CI must execute real Chrome delayed-core and stale-modal races');
 });
 
 

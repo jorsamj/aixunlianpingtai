@@ -1,5 +1,7 @@
 ## 2026-11-02｜42.24.491 前端页面、弹窗与后台异步归属 P0 接续
 
+> **42.24.493 原有浏览器矩阵回归入列（2026-11-02）**：精确 492 SHA `64012ad9cc26ef4c69816ab0ab9e60a7e6c617d0` 已验证 `Frontend Runtime Stabilization/frontend` 通过；继续审计发现原工作流 3-shard Chrome 文件清单未纳入本批新增 `tests/browser/frontend-lifecycle-races.spec.mjs`，尽管隔离本地 Chrome35/35 包含了全部 6 个新场景。493 把该文件加入原有矩阵，并让 `cache-first-page-loading` 测试约束其存在，保证 5秒启动延迟、多视口、500失败、A→B→A 刷新和迟到弹窗在 CI 真实浏览器持续回归。没有新增 CI 工作流，也没有改业务 JS、后端、生产数据；本轮新 SHA 的完整 Actions 与 3 shard 执行结果需独立核验。
+
 > **42.24.492 CI 守卫合同接续（2026-11-02）**：准确 491 提交 `d0d8457afe7155a84b4bc7f322313d4ed9a93023` 的 `Frontend Runtime Stabilization/frontend` 在本地 Node1486/1486、Chrome35/35 均通过后，由 `.github/workflows/frontend-runtime-stabilization.yml` 的历史硬编码字符串检查报错：只接受已退役的 `return window.__v53InitPromise;`，拒绝新增的 `Promise.resolve(...).then(() => state.uiReady === true)` fail-closed 语义。492 **仅更正原 CI 静态守卫**，同时要求 `NavigationStability` 读到 `ready === false` 不执行路由；补 `cache-first-page-loading` 中的新合同断言，不削弱首次启动失败保护、不修改业务 JS/缓存、数据库、服务端、正式资产或任务。原 `v42.25 Release Regression` 另曾因独立 Linux 进程 STATUS_STOPPED 的异步时序断言 578 过 1 失败，已按原工作流重跑失败作业；这不是本批前端变更。准确 492 Actions 须推送后单独核实，不以 491 结果冒充。
 
 **代码基线**：仅 `feature/external-algorithm-publishing`，开发前本地及 GitHub 远端 HEAD 均为 `bbf9505e10f11d391dacaa725f9844bdf7e66247`，VERSION `42.24.490`，工作区原本干净。已知生产仍为 `42.24.485`；本批不操作生产数据库、正式素材/GT、任务/权重、外部同步及部署。保留原生 JS、既有 `NavigationStability`、`PageRequestScope`、`PollRegistry`、`ModalContentRuntime`、原路由/ModalStack，无数据库迁移。
