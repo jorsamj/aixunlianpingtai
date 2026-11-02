@@ -1,8 +1,8 @@
 """Rebuildable, conservative history-reference index for material impact previews.
 
 The index is a derived read model, never a source of deletion authorization.
-The source signature checks repository SQLite/WAL, artifact file metadata,
-snapshot trees and algorithm history before and after each cold scan.
+The source signature checks task/algorithm logical revisions, artifact file
+metadata, snapshot trees and algorithm history before and after each cold scan.
 """
 from __future__ import annotations
 
@@ -30,18 +30,33 @@ def _source_signature(project_id, project_path, repository, artifacts):
     invalidate the history index on every request.
     """
     digest = hashlib.sha256()
+    task_ids = []
+    # SQLite/WAL inode and mtime are not business revisions: a read or
+    # checkpoint can change them without any task mutation.
     with closing(sqlite3.connect(f"file:{Path(repository.path)}?mode=ro", uri=True)) as db:
-        task_ids = [str(row[0]) for row in db.execute(
-            "SELECT task_id FROM tasks WHERE project_id=? ORDER BY task_id", (str(project_id),)
-        )]
+        for row in db.execute(
+            "SELECT * FROM tasks WHERE project_id=? ORDER BY task_id", (str(project_id),)
+        ):
+            task_ids.append(str(row[0]))
+            digest.update(repr(tuple(row)).encode("utf-8", errors="surrogateescape"))
+            digest.update(b"\n")
     roots = [Path(project_path) / "snapshots"]
     roots.extend(Path(artifacts.root) / task_id for task_id in task_ids)
-    files = [
-        Path(repository.path), Path(str(repository.path) + "-wal"),
-        Path(project_path) / "algorithms.json",
-        Path(project_path) / "algorithms.sqlite3",
-        Path(project_path) / "algorithms.sqlite3-wal",
-    ]
+    files = [Path(project_path) / "algorithms.json"]
+    algo_db = Path(project_path) / "algorithms.sqlite3"
+    if algo_db.is_file():
+        try:
+            with closing(sqlite3.connect(f"file:{algo_db}?mode=ro", uri=True)) as db:
+                row = db.execute(
+                    "SELECT value FROM algorithm_store_meta WHERE key='algorithm_revision'"
+                ).fetchone()
+            digest.update(repr(("algorithm_revision", row[0] if row else None)).encode())
+        except sqlite3.Error:
+            # The first legacy read may initialize/migrate the SQL store;
+            # the before/after signature check will detect that change.
+            digest.update(b"algorithm_sql_not_initialized")
+    else:
+        digest.update(b"algorithm_sql_missing")
 
     def record(path):
         path = Path(path)
@@ -141,20 +156,25 @@ def query_material_history(project_id, project_path, repository, artifacts, scan
     index = Path(project_path) / "material-history-reference-index.sqlite3"
     try:
         with FileLock(str(index) + ".lock", timeout=25):
-            before = _source_signature(project_id, project_path, repository, artifacts)
-            cached = _read_index(index, before, reference_image_ids)
-            if cached is not None:
-                # Mutation between the signature and retrieval invalidates reuse.
-                if before == _source_signature(project_id, project_path, repository, artifacts):
-                    return cached
-            scanned = scanner(project_id, project_path, repository, artifacts, with_reasons=True)
-            after = _source_signature(project_id, project_path, repository, artifacts)
-            if before != after:
-                raise ValueError("historical material evidence changed during scan")
-            _write_index(index, before, scanned)
-            if reference_image_ids is None:
-                return scanned
-            wanted = set(map(str, reference_image_ids))
-            return {image_id: evidence for image_id, evidence in scanned.items() if image_id in wanted}
+            for _ in range(3):
+                before = _source_signature(project_id, project_path, repository, artifacts)
+                cached = _read_index(index, before, reference_image_ids)
+                if cached is not None:
+                    # Mutation between signature and retrieval invalidates reuse.
+                    if before == _source_signature(project_id, project_path, repository, artifacts):
+                        return cached
+                scanned = scanner(project_id, project_path, repository, artifacts, with_reasons=True)
+                after = _source_signature(project_id, project_path, repository, artifacts)
+                if before != after:
+                    # Legitimate first-read SQL migrations can change the
+                    # source once. Retry on a fresh stable generation instead
+                    # of reporting history as unavailable immediately.
+                    continue
+                _write_index(index, before, scanned)
+                if reference_image_ids is None:
+                    return scanned
+                wanted = set(map(str, reference_image_ids))
+                return {image_id: evidence for image_id, evidence in scanned.items() if image_id in wanted}
+            raise ValueError("historical material evidence changed during scan")
     except FileLockTimeout as error:
         raise ValueError("material history scan is busy; please retry") from error
