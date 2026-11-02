@@ -1,3 +1,5 @@
+> **2026-11-02 / 42.24.494 原启动进度 Chrome 测试改为真实启动 Owner**：492 精确 SHA `64012ad9cc26ef4c69816ab0ab9e60a7e6c617d0` 浏览器 CI shard2 为110通过/1失败。失败原因可在日志确认：原 `navigation-readiness` 用例先把业务页置于 `uiReady=true`，再通过人工重进 `loadStartupSnapshot413` 要求 Boot 重建；这正是491已阻止的旧启动抢占页面。494 在不改业务代码下，让原 10→60→100% Boot 同节点断言发生在首次启动，并新增已就绪业务页重进时原草稿输入与页面不受3秒计时器覆盖；独立 Chrome 5/5 通过，原 CI 列表继续覆盖。准确494 GitHub CI 待独立核验，生产/DB不动。
+
 > **2026-11-02 / 42.24.493 生命周期浏览器回归 CI 入列**：精确 492 GitHub `64012ad9cc26ef4c69816ab0ab9e60a7e6c617d0` 的 `Frontend Runtime Stabilization/frontend` 已通过，Node1487/1487；但新增的 `tests/browser/frontend-lifecycle-races.spec.mjs` 6 个真实 Chrome 竞态用例仅本地35/35联合通过，原 workflow 的 3-shard 浏览器矩阵未列出。493 在既有矩阵新增该文件，并在 Node 契约测试要求 CI 收录；无产品 JS、服务器或数据库调整。CI 浏览器及准确 493 SHA 待独立核查。
 
 > **2026-11-02 / 42.24.492 CI 前端启动守卫对齐**：491 精确远端 `d0d8457afe7155a84b4bc7f322313d4ed9a93023` 的 `Frontend Runtime Stabilization/frontend` 仍检查旧 `return window.__v53InitPromise;`，误报新版 fail-closed 等待合同缺失；492 仅调整原 workflow 对新 Promise/`ready === false` 的准确源守卫并补 Node 契约测试，不改变已通过隔离 Chrome35/35 的业务 JS，绝不撤销核心加载失败保护。另曾发生 1 条既存后端 Linux 进程暂停时序测试失败（578过1败），已重跑失败作业，不作为前端回归。准确新 SHA CI 待推送后复核；不部署或变更正式数据。详见原前端综合治理文档 492 段。
