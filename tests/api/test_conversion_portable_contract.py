@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+from datetime import datetime, timezone
+import sys
 
 import pytest
+from fastapi import HTTPException
 
 import app as app_module
 from platform_core.errors import PlatformError
@@ -69,6 +72,7 @@ def _resource():
         "status": "ready",
         "targets": ["onnx"],
         "kind": "onnx",
+        "last_checked_at": datetime.now(timezone.utc).isoformat(),
     }
 
 
@@ -80,6 +84,7 @@ def _agent_resource():
         "status": "ready",
         "targets": ["onnx"],
         "kind": "onnx",
+        "last_checked_at": datetime.now(timezone.utc).isoformat(),
     }
 
 
@@ -93,7 +98,22 @@ def _agent_rknn_resource():
         "kind": "rockchip",
         "supported_chips": ["rk3568", "rk3576"],
         "supported_precisions": ["fp16", "int8"],
+        "last_checked_at": datetime.now(timezone.utc).isoformat(),
     }
+
+
+@pytest.mark.parametrize('kind,target', [
+    ('tensorrt','tensorrt'), ('onnx','onnx'), ('paddle','paddle_inference')
+])
+def test_all_configured_sdk_adapters_require_saved_evidence_at_admission(monkeypatch,kind,target):
+    resource={'id':'unverified','kind':kind,'mode':'local','status':'ready','targets':[target]}
+    monkeypatch.setattr(app_module,'_deploy_resource_by_id',lambda _id:resource)
+    monkeypatch.setattr(app_module,'_resolve_deploy_source',lambda *_:{'kind':'imported','path':'/not-used'})
+    with pytest.raises(HTTPException) as error:
+        app_module._v39_create_deploy_job_under_version_fence('isolated',
+            app_module.DeployJobReq(source_id='model',target=target,resource_id='unverified'))
+    assert error.value.status_code==409
+    assert 'not_checked' in str(error.value.detail)
 
 
 def _contract():
@@ -363,6 +383,7 @@ def test_vendor_conversion_does_not_pretend_portable_agent_support(tmp_path, mon
             "status": "ready",
             "targets": ["tensorrt"],
             "kind": "tensorrt",
+                "last_checked_at": datetime.now(timezone.utc).isoformat(),
         },
     )
 
@@ -806,11 +827,12 @@ def _local_rknn_resource(chips=None, status="ready"):
         "name": "A800 RKNN",
         "mode": "local",
         "kind": "rockchip",
-        "python_path": "/configured/venv/bin/python",
+        "python_path": sys.executable,
         "status": status,
         "targets": ["rockchip"] if status == "ready" else [],
         "supported_chips": chips if chips is not None else ["rk3568", "rk3576"],
         "supported_precisions": ["fp16", "int8"],
+        "last_checked_at": datetime.now(timezone.utc).isoformat(),
     }
 
 
@@ -833,7 +855,7 @@ def test_local_rknn_fp16_creation_uses_exact_resource_chip_and_python(tmp_path, 
     assert job["resource_id"] == "a800-rknn"
     assert job["resource"]["python_path"] == resource["python_path"]
     assert job["params"]["chip"] == "rk3568"
-    assert seen == [resource["python_path"]]
+    assert seen == []  # job admission reuses the earlier explicit SDK evidence
     assert len(repository.created) == 1
     assert jobs[job["id"]]["resource_id"] == "a800-rknn"
 
@@ -844,15 +866,15 @@ def test_local_rknn_fp16_creation_uses_exact_resource_chip_and_python(tmp_path, 
     (["rk3568", "rk3576"], "rk3568", "missing"),
     (["rk3568", "rk3576"], "rk3588", "ready"),
 ])
-def test_local_rknn_live_probe_rejects_unavailable_and_unsupported_before_job(
+def test_local_rknn_saved_evidence_rejects_unavailable_and_unsupported_before_job(
     tmp_path, monkeypatch, chips, request_chip, state,
 ):
     transport = FakeTransport(result=_rknn_contract())
     _model, _jobs, _artifacts, repository = _patch_creation(monkeypatch, tmp_path, transport)
-    saved = _local_rknn_resource()
-    probed = _local_rknn_resource(chips, state)
+    saved = _local_rknn_resource(chips, state)
     monkeypatch.setattr(app_module, "_deploy_resource_by_id", lambda _: dict(saved))
-    monkeypatch.setattr(app_module, "_detect_local_deploy_resource", lambda _: dict(probed))
+    monkeypatch.setattr(app_module, "_detect_local_deploy_resource",
+                        lambda _: pytest.fail('formal admission must not rescan SDK'))
     with pytest.raises(app_module.HTTPException) as failure:
         app_module.v39_create_deploy_job(
             "p1", app_module.DeployJobReq(

@@ -53,6 +53,14 @@ def write_json(p:Path,data):
 def check_key(key=''):
     need=read_json(CONFIG_FILE,{}).get('api_key') or ''
     if not need or not isinstance(key, str) or not hmac.compare_digest(key, need):raise HTTPException(status_code=401,detail='API Key 不正确或服务尚未配置密钥')
+
+def remote_config_revision():
+    """Non-secret, inexpensive configuration change marker; no SDK import."""
+    try:
+        stat = CONFIG_FILE.stat()
+        return f'{stat.st_mtime_ns}:{stat.st_size}'
+    except OSError:
+        return ''
 def which(*items):
     for x in items:
         if not x:continue
@@ -124,7 +132,15 @@ def detect_tools():
 def health(x_api_key:str=Header(default='')):
     check_key(x_api_key);cfg=read_json(CONFIG_FILE,{})
     tools=detect_tools()
-    return {'ok':True,'server':'mc-deploy-server','version':DEPLOY_SERVER_VERSION,'name':cfg.get('name') or '算法部署转换服务器','time':now(),'base_dir':str(BASE_DIR),'tools':tools,'targets':tools['targets']}
+    return {'ok':True,'server':'mc-deploy-server','version':DEPLOY_SERVER_VERSION,'config_revision':remote_config_revision(),'name':cfg.get('name') or '算法部署转换服务器','time':now(),'base_dir':str(BASE_DIR),'tools':tools,'targets':tools['targets']}
+
+
+@app.get('/api/deploy/ping')
+def runtime_ping(x_api_key:str=Header(default='')):
+    """Authenticated online/config verification without expensive tool scans."""
+    check_key(x_api_key)
+    return {'ok':True,'server':'mc-deploy-server','version':DEPLOY_SERVER_VERSION,
+            'config_revision':remote_config_revision()}
 
 class ConfigReq(BaseModel):
     api_key:str='';name:str='算法部署转换服务器';python_path:str='';tool_root:str='';paddledet_dir:str='';trtexec_path:str='';atc_path:str='';env_script:str='';ultralytics_python:str='';paddle2onnx_path:str=''

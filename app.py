@@ -18645,6 +18645,7 @@ def _scan_builtin_deploy_resources() -> List[Dict[str, Any]]:
         "id": "builtin_ultralytics", "name": "Ultralytics 导出环境", "kind": "ultralytics", "mode": "local", "builtin": True,
         "python_path": upy, "status": "ready" if ui.get("ok") else "missing", "version": ui.get("version", ""),
         "targets": ["onnx"] if ui.get("ok") else [], "message": "可将 .pt 真实导出为 ONNX" if ui.get("ok") else "请先在训练资源启用 Ultralytics 环境",
+        "last_checked_at": now_iso(),
     })
     penv = get_active_paddle_env() or {}
     ppy = str(penv.get("python_path") or "")
@@ -18658,6 +18659,7 @@ def _scan_builtin_deploy_resources() -> List[Dict[str, Any]]:
         "status": "ready" if pd_ok else "missing", "version": pi.get("version", ""),
         "targets": (["paddle_inference"] + (["onnx"] if p2o else [])) if pd_ok else [],
         "message": "可将 .pdparams 导出为 Paddle Inference" + ("，并可转 ONNX" if p2o else "") if pd_ok else "请先在训练资源配置 PaddleDetection",
+        "last_checked_at": now_iso(),
     })
     return rows
 
@@ -18767,6 +18769,9 @@ def _deploy_resource_runtime(item: Dict[str, Any]) -> Dict[str, Any]:
 def _deploy_resource_public(item: Dict[str, Any]) -> Dict[str, Any]:
     public = dict(item)
     public.pop("api_key", None)
+    # Internal worker ownership/PID is never part of the public capability
+    # contract. The queryable detection.run_id and state are sufficient.
+    public.pop("detection_run", None)
     reference = str(public.pop("secret_ref", "") or "")
     masked = _v35_secret_store().masked(reference) if reference else ""
     public["has_api_key"] = bool(masked)
@@ -19050,12 +19055,28 @@ def v39_update_deploy_resource(resource_id: str, payload: DeployResourceReq):
         for i, x in enumerate(items):
             if x.get("id") == resource_id:
                 data = payload.model_dump(); api_key = str(data.pop("api_key", "") or "")
-                new = {**x, **data, "updated_at": now_iso(), "config_revision": uuid.uuid4().hex,
-                       "status": "unchecked", "targets": [], "supported_chips": [],
-                       "supported_precisions": [], "last_checked_at": "", "detection_error": ""}
-                for field in ("remote_health", "sophon_probe", "agent_nodes"):
-                    new.pop(field, None)
+                # Display-only edits are not SDK changes and must not erase a
+                # legitimate scan, including a scan another Web worker runs.
+                sdk_fields = set(DeployResourceReq.model_fields)-{'name','remark','api_key'}
+                changed = any(data.get(field) != x.get(field, DeployResourceReq.model_fields[field].default)
+                              for field in sdk_fields)
                 reference = str(x.get("secret_ref") or secret_ref("deploy-resource", resource_id))
+                if api_key:
+                    previous = _v35_secret_store().get(str(x.get('secret_ref') or '')) if x.get('secret_ref') else ''
+                    changed = changed or previous != api_key
+                if not changed and all(x.get(k)==v for k,v in data.items()):
+                    return _deploy_resource_public(x)
+                new = {**x, **data, "updated_at": now_iso()}
+                if changed:
+                    new.update(config_revision=uuid.uuid4().hex, status="unchecked", targets=[],
+                        supported_chips=[], supported_precisions=[], last_checked_at="", detection_error="")
+                    for field in ("remote_health", "sophon_probe", "agent_nodes",
+                                  "detection_run", "detection_config_key",
+                                  "detection_environment_fingerprint", "detection_timings_ms",
+                                  "rknn_python", "rknn_version", "model_transform_path",
+                                  "model_deploy_path", "run_calibration_path", "model_tool_path",
+                                  "detected_soc_versions"):
+                        new.pop(field, None)
                 if api_key:
                     _v35_secret_store().set(reference, api_key); new["secret_ref"] = reference
                 items[i] = new; _save_deploy_resources(items); return _deploy_resource_public(new)
@@ -19082,19 +19103,24 @@ def v39_detect_deploy_resource(resource_id: str, force: bool = True):
     if resource_id.startswith("builtin_"):
         return _deploy_resource_public(_inspect_conversion_resource(resource, force=force))
     identity = resource_configuration_key(resource)
+    run_id = str((resource.get('detection_run') or {}).get('id') or '')
     # Coalesce the same resource across Web workers. Different resource IDs do
     # not hold each other's SDK inspection locks; no global lock during probe.
     probe_lock = DEPLOY_RESOURCES_FILE.with_name(
         ".conversion-probe-" + hashlib.sha256(resource_id.encode()).hexdigest()[:24] + ".lock")
     lock = FileLock(str(probe_lock), timeout=90)
+    waiting_at = time.perf_counter()
     try:
         lock.acquire()
     except Timeout as error:
         raise HTTPException(status_code=409, detail="此转换资源仍在检测中，请稍后读取结果或重试") from error
+    lock_wait_ms = round((time.perf_counter()-waiting_at)*1000, 3)
     try:
         fresh = _deploy_resource_by_id(resource_id)
         if resource_configuration_key(fresh) != identity:
             raise HTTPException(409, detail="资源配置已变化，请重新检测")
+        if str((fresh.get('detection_run') or {}).get('id') or '') != run_id:
+            raise HTTPException(409, detail="检测任务已被新的资源检测取代")
         if str(fresh.get("last_checked_at") or "") != str(resource.get("last_checked_at") or ""):
             # Another worker finished this configuration while we waited.
             return _deploy_resource_public(observe(fresh))
@@ -19112,12 +19138,100 @@ def v39_detect_deploy_resource(resource_id: str, force: bool = True):
             idx = next((i for i,x in enumerate(items) if x.get("id")==resource_id), None)
             if idx is None or resource_configuration_key(items[idx]) != identity:
                 raise HTTPException(409, detail="资源配置已变化，请重新检测")
+            if str((items[idx].get('detection_run') or {}).get('id') or '') != run_id:
+                raise HTTPException(409, detail="检测任务已被新的资源检测取代")
             clean = dict(checked); clean.pop("api_key", None)
-            items[idx] = {k:v for k,v in clean.items() if k!="detection"}
+            clean['detection_timings_ms'] = {**(clean.get('detection_timings_ms') or {}),
+                'lock_wait_ms':lock_wait_ms}
+            # Metadata-only edits may arrive during the SDK scan. Preserve
+            # their newer values; they do not invalidate the SDK config key.
+            items[idx] = {**items[idx], **{k:v for k,v in clean.items()
+                if k not in {'detection','name','remark','updated_at'}}}
             _save_deploy_resources(items)
     finally:
         lock.release()
     return _deploy_resource_public(checked)
+
+
+def _finish_background_conversion_detection(resource_id: str, run_id: str, error=None):
+    """Finalize the resource's own durable observation with a run-ID CAS."""
+    from platform_core.conversion_resource_detection import (
+        resource_configuration_key, environment_fingerprint,
+    )
+    with _DEPLOY_RESOURCES_WRITE_LOCK:
+        items = _load_saved_deploy_resources()
+        current = next((row for row in items if row.get('id') == resource_id), None)
+        if current is None:
+            return
+        running = current.get('detection_run') or {}
+        if running.get('id') != run_id or running.get('config_key') != resource_configuration_key(current):
+            return  # Edited resource, deleted/replaced run, or abandoned worker.
+        current.pop('detection_run', None)
+        if error is not None:
+            current.update(status='error', targets=[], supported_chips=[],
+                supported_precisions=[], detection_error=str(error)[:1200],
+                last_checked_at=now_iso(),
+                detection_config_key=resource_configuration_key(current),
+                detection_environment_fingerprint=environment_fingerprint(current))
+        _save_deploy_resources(items)
+
+
+def _run_background_conversion_detection(resource_id: str, run_id: str):
+    error = None
+    try:
+        v39_detect_deploy_resource(resource_id)
+    except Exception as exc:
+        error = exc
+    finally:
+        _finish_background_conversion_detection(resource_id, run_id, error)
+
+
+@app.post('/api/v39/deploy/resources/{resource_id}/detect/start')
+def v39_start_deploy_resource_detection(resource_id: str):
+    """Bounded start, shared by tabs/Web workers; status uses the existing GET.
+
+    This is not a second SDK cache or task truth. The saved resource row owns
+    its in-flight run ID, and the existing detector/file lock does the work.
+    A crashed worker's lease expires in observe(); an explicit retry can claim
+    the resource again without ever reporting a fabricated success.
+    """
+    import socket
+    import psutil
+    from platform_core.conversion_resource_detection import observe, resource_configuration_key
+    if resource_id.startswith('builtin_'):
+        # Built-ins use the pre-existing, background-refreshed environment cache.
+        return _deploy_resource_public(observe(_deploy_resource_by_id(resource_id)))
+    with _DEPLOY_RESOURCES_WRITE_LOCK:
+        items = _load_saved_deploy_resources()
+        current = next((row for row in items if row.get('id') == resource_id), None)
+        if current is None:
+            raise HTTPException(status_code=404, detail='部署资源不存在')
+        observation = observe(current)
+        if observation['detection']['state'] == 'checking':
+            return _deploy_resource_public(observation)
+        run_id = uuid.uuid4().hex
+        current['detection_run'] = {
+            'id':run_id, 'state':'checking', 'started_at':now_iso(),
+            'config_key':resource_configuration_key(current),
+            'owner_host':socket.gethostname(), 'owner_pid':os.getpid(),
+            'owner_started_at':psutil.Process(os.getpid()).create_time(),
+        }
+        _save_deploy_resources(items)
+        pending = _deploy_resource_public(observe(current))
+    try:
+        thread = threading.Thread(target=_run_background_conversion_detection,
+            args=(resource_id, run_id), name='conversion-sdk-'+resource_id, daemon=True)
+        thread.start()
+    except Exception as error:
+        _finish_background_conversion_detection(resource_id, run_id, error)
+        raise HTTPException(503, detail='无法启动SDK检测，请检查服务状态后重试') from error
+    return pending
+
+
+@app.get('/api/v39/deploy/resources/{resource_id}/detect/status')
+def v39_conversion_resource_detection_status(resource_id: str):
+    from platform_core.conversion_resource_detection import observe
+    return _deploy_resource_public(observe(_deploy_resource_by_id(resource_id)))
 
 
 def _inspect_conversion_resource(resource, *, force=False):
@@ -19695,6 +19809,35 @@ def _v39_create_deploy_job_with_version_fence(project_id: str, payload: DeployJo
             return _v39_create_deploy_job_under_version_fence(project_id, payload)
 
 
+@performance_stage('conversion.remote_online_admission')
+def _remote_conversion_resource_online(resource):
+    """Check service and config identity without re-running the SDK detector.
+
+    An older remote server lacks /ping, so only that compatibility path calls
+    the old costly /health. Once remote server is updated, every conversion
+    admission uses the scan-free authenticated ping.
+    """
+    base = str(resource.get('base_url') or '').rstrip('/')
+    if not base:
+        raise HTTPException(status_code=409, detail='远程转换资源地址缺失')
+    headers = {'X-API-Key':str(resource.get('api_key') or '')}
+    try:
+        response = requests.get(base+'/api/deploy/ping', headers=headers, timeout=(3,5))
+        if response.status_code == 404:
+            response = requests.get(base+'/api/deploy/health', headers=headers, timeout=(3,12))
+        response.raise_for_status()
+        health = response.json()
+        if not isinstance(health,dict) or health.get('ok') is not True or health.get('server')!='mc-deploy-server':
+            raise ValueError('服务身份响应无效')
+    except (requests.RequestException, ValueError) as error:
+        raise HTTPException(status_code=503, detail='远程转换服务在线/鉴权检查失败，请检查服务或网络后重试') from error
+    previous = resource.get('remote_health') or {}
+    if previous.get('config_revision') and health.get('config_revision') and previous['config_revision']!=health['config_revision']:
+        raise HTTPException(status_code=409, detail='远程转换服务配置已变化，需重新检测SDK能力')
+    if previous.get('version') and health.get('version') and previous['version']!=health['version']:
+        raise HTTPException(status_code=409, detail='远程转换服务版本已变化，需重新检测SDK能力')
+
+
 def _v39_create_deploy_job_under_version_fence(
     project_id: str,
     payload: DeployJobReq,
@@ -19711,19 +19854,34 @@ def _v39_create_deploy_job_under_version_fence(
             status_code=409,
             detail="算法版本 INT8 转换暂时停用：校准集尚未与版本冻结 Snapshot 绑定；可选择 FP16 或 ONNX。",
         )
-    resource=_deploy_resource_by_id(payload.resource_id)
+    from platform_core.conversion_resource_detection import observe
+    resource=observe(_deploy_resource_by_id(payload.resource_id))
     resource_mode = str(resource.get("mode") or "local").strip().lower()
-    if str(payload.target or "").strip().lower() in {"rockchip", "sophon", "ascend"}:
+    chip_target = str(payload.target or "").strip().lower() in {"rockchip", "sophon", "ascend"}
+    if chip_target:
         if str(resource.get("kind") or "").strip().lower() != str(payload.target).strip().lower():
             raise HTTPException(status_code=400, detail=f"{payload.target} 转换必须选择对应芯片部署资源")
-        if resource_mode == "agent":
-            resource = _detect_agent_deploy_resource(resource)
-        elif resource_mode == "remote":
-            resource = _detect_remote_deploy_resource(resource)
-        else:
-            resource = _detect_local_deploy_resource(resource)
-    elif resource_mode == "agent":
-        resource = _detect_agent_deploy_resource(resource)
+    # Every configured SDK/remote/Agent resource has the same evidence gate.
+    # Built-in ONNX/Paddle exports are freshly checked by their existing
+    # environment scanner and have no saved config-revision record.
+    if not resource.get('builtin'):
+        evidence = resource.get('detection') or {}
+        if evidence.get('state') != 'available':
+            code = 400 if evidence.get('state') in {'failed', 'unavailable'} else 409
+            raise HTTPException(status_code=code, detail='SDK能力证据不可用于正式转换（'+str(evidence.get('state') or 'unknown')+'）；请在转换资源中检测并等待完成')
+    if resource_mode == "agent":
+        # Agent registry is a lightweight online/authorization observation;
+        # keep the frozen SDK capability from the saved detector result.
+        live_agent = _detect_agent_deploy_resource(resource)
+        if live_agent.get('status') != 'ready':
+            raise HTTPException(status_code=409, detail='当前没有在线且已授权的转换 Agent')
+    elif resource_mode == "remote":
+        _remote_conversion_resource_online(resource)
+    else:
+        for field in ('python_path', 'tool_root', 'env_script'):
+            location = str(resource.get(field) or '').strip()
+            if location and not Path(location).exists():
+                raise HTTPException(status_code=409, detail=f'本机SDK环境路径已不可访问：{field}，请重新检测')
     if resource.get("status") != "ready":
         raise HTTPException(status_code=400, detail="当前部署资源不可用，请先到“部署资源”执行检测")
     if payload.target not in (resource.get("targets") or []):

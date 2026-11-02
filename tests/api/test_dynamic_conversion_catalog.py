@@ -215,12 +215,14 @@ def test_missing_job_record_http_allows_rename_and_toggle_but_never_identity_or_
 @pytest.mark.parametrize("suffix", [".onnx",".pt"])
 def test_onnx_admission_records_requested_options_and_only_marks_actual_reuse(tmp_path,monkeypatch,suffix):
     from contextlib import nullcontext
+    from datetime import datetime, timezone
     from types import SimpleNamespace
     from platform_core.remote_execution_transport import RemoteExecutionTransportService
     monkeypatch.setattr(api,"DATA_DIR",tmp_path)
     source=tmp_path/("model"+suffix);source.write_bytes(b"isolated source")
     monkeypatch.setattr(api,"_resolve_deploy_source",lambda *a:{"kind":"imported","path":str(source)})
-    resource={"id":"agent","kind":"ultralytics","mode":"agent","status":"ready","targets":["onnx"]}
+    resource={"id":"agent","kind":"ultralytics","mode":"agent","status":"ready","targets":["onnx"],
+              "last_checked_at":datetime.now(timezone.utc).isoformat()}
     monkeypatch.setattr(api,"_deploy_resource_by_id",lambda *a:resource)
     monkeypatch.setattr(api,"_detect_agent_deploy_resource",lambda r:r)
     monkeypatch.setattr(api,"_deploy_resource_public",lambda r:dict(r))
@@ -396,6 +398,192 @@ def test_failed_sdk_inspection_is_shared_as_failed_evidence(tmp_path, monkeypatc
     # A second Web process gets durable failed evidence, never the old ready.
     from platform_core.conversion_resource_detection import observe
     assert observe(saved)['detection']['state']=='failed'
+
+
+def test_background_detection_single_flight_cross_request_and_read_only_recovery(tmp_path, monkeypatch):
+    import threading
+    import time
+    from filelock import FileLock
+    filename=tmp_path/'deploy_resources.json'
+    monkeypatch.setattr(api,'DEPLOY_RESOURCES_FILE',filename)
+    monkeypatch.setattr(api,'_DEPLOY_RESOURCES_WRITE_LOCK',FileLock(str(filename)+'.lock'))
+    api._save_deploy_resources([{'id':'async-sdk','name':'isolated SDK','kind':'rockchip',
+        'mode':'local','config_revision':'v1','status':'unchecked','targets':[]}])
+    began=threading.Event();finish=threading.Event();calls=[]
+    def probe(row, *, force=False):
+        calls.append(row['config_revision']);began.set()
+        assert finish.wait(4)
+        return {**row,'status':'ready','targets':['rockchip'],
+                'supported_chips':['rk3568'],'last_checked_at':api.now_iso()}
+    monkeypatch.setattr(api,'_inspect_conversion_resource',probe)
+    first=api.v39_start_deploy_resource_detection('async-sdk')
+    assert first['detection']['state']=='checking'
+    assert began.wait(2)
+    second=api.v39_start_deploy_resource_detection('async-sdk')
+    assert second['detection']['state']=='checking'
+    assert first['detection']['run_id']==second['detection']['run_id']
+    # This reads the JSON record, not a process-local Event or the SDK.
+    assert api.v39_conversion_resource_detection_status('async-sdk')['detection']['state']=='checking'
+    finish.set()
+    for _ in range(100):
+        result=api.v39_conversion_resource_detection_status('async-sdk')
+        if result['detection']['state']!='checking':break
+        time.sleep(.02)
+    assert result['detection']['state']=='available'
+    assert len(calls)==1
+    assert not api._load_saved_deploy_resources()[0].get('detection_run')
+
+
+def _isolated_sdk_worker_process(filename, messages, probe_started, release):
+    import os
+    import time
+    from pathlib import Path
+    from filelock import FileLock
+    import app as worker
+    worker.DEPLOY_RESOURCES_FILE=Path(filename)
+    worker._DEPLOY_RESOURCES_WRITE_LOCK=FileLock(str(filename)+'.lock')
+    def scan(row, *, force=False):
+        messages.put(('probe',os.getpid()))
+        probe_started.set()
+        if not release.wait(30):raise RuntimeError('isolated worker deadline')
+        return {**row,'status':'ready','targets':['rockchip'],
+                'supported_chips':['rk3568'],'last_checked_at':worker.now_iso()}
+    worker._inspect_conversion_resource=scan
+    try:
+        result=worker.v39_start_deploy_resource_detection('multi-worker-sdk')
+        messages.put(('run',result['detection']['run_id']))
+        release.wait(30)
+        # The daemon detector must finish before this Web worker exits.
+        time.sleep(.3)
+    except Exception as error:
+        messages.put(('error',repr(error)))
+
+
+def test_two_web_worker_processes_share_one_durable_sdk_scan(tmp_path,monkeypatch):
+    import multiprocessing
+    import queue
+    import time
+    from filelock import FileLock
+    filename=tmp_path/'deploy_resources.json'
+    monkeypatch.setattr(api,'DEPLOY_RESOURCES_FILE',filename)
+    monkeypatch.setattr(api,'_DEPLOY_RESOURCES_WRITE_LOCK',FileLock(str(filename)+'.lock'))
+    api._save_deploy_resources([{'id':'multi-worker-sdk','name':'isolated','kind':'rockchip',
+        'mode':'local','config_revision':'v1','status':'unchecked','targets':[]}])
+    # Spawn is safe when pytest, model imports or Web telemetry already have
+    # background threads; fork inherits those locks and can deadlock.
+    ctx=multiprocessing.get_context('spawn')
+    messages=ctx.Queue();probe_started=ctx.Event();release=ctx.Event()
+    workers=[];results=[]
+    try:
+        for index in range(2):
+            worker=ctx.Process(target=_isolated_sdk_worker_process,
+                args=(str(filename),messages,probe_started,release))
+            worker.start();workers.append(worker)
+            if index==0:assert probe_started.wait(15)
+        for _ in range(3):
+            try:results.append(messages.get(timeout=15))
+            except queue.Empty:break
+        assert sorted(tag for tag,_ in results)==['probe','run','run']
+        assert len({value for tag,value in results if tag=='run'})==1
+    finally:
+        release.set()
+        for worker in workers:
+            worker.join(timeout=5)
+            if worker.is_alive():worker.terminate();worker.join(timeout=2)
+    assert all(worker.exitcode==0 for worker in workers)
+    for _ in range(100):
+        state=api.v39_conversion_resource_detection_status('multi-worker-sdk')['detection']['state']
+        if state!='checking':break
+        time.sleep(.02)
+    assert state=='available'
+
+
+@pytest.mark.parametrize('outcome',['failed','edited'])
+def test_background_detection_cannot_leave_checking_or_overwrite_new_config(tmp_path,monkeypatch,outcome):
+    import threading
+    import time
+    from filelock import FileLock
+    filename=tmp_path/'deploy_resources.json'
+    monkeypatch.setattr(api,'DEPLOY_RESOURCES_FILE',filename)
+    monkeypatch.setattr(api,'_DEPLOY_RESOURCES_WRITE_LOCK',FileLock(str(filename)+'.lock'))
+    api._save_deploy_resources([{'id':'async-fence','name':'fenced','kind':'sophon',
+        'mode':'local','config_revision':'v1','status':'unchecked','targets':[]}])
+    began=threading.Event();finish=threading.Event()
+    def probe(row, *, force=False):
+        began.set();assert finish.wait(4)
+        if outcome=='failed':raise RuntimeError('isolated SDK subprocess failed')
+        return {**row,'status':'ready','targets':['sophon'],'last_checked_at':api.now_iso()}
+    monkeypatch.setattr(api,'_inspect_conversion_resource',probe)
+    api.v39_start_deploy_resource_detection('async-fence')
+    assert began.wait(2)
+    if outcome=='edited':
+        api.v39_update_deploy_resource('async-fence',api.DeployResourceReq(
+            name='changed SDK',kind='sophon',tool_root='/new-location'))
+    finish.set()
+    expected='failed' if outcome=='failed' else 'not_checked'
+    for _ in range(100):
+        result=api.v39_conversion_resource_detection_status('async-fence')
+        if result['detection']['state']==expected:break
+        time.sleep(.02)
+    assert result['detection']['state']==expected
+    if outcome=='failed':assert 'isolated SDK subprocess failed' in result['detection']['error']
+    else:assert result['config_revision']!='v1' and result['status']=='unchecked'
+
+
+def test_display_only_resource_edit_keeps_sdk_evidence_but_real_path_change_invalidates(tmp_path,monkeypatch):
+    from filelock import FileLock
+    from platform_core.conversion_resource_detection import resource_configuration_key, observe
+    filename=tmp_path/'deploy_resources.json'
+    monkeypatch.setattr(api,'DEPLOY_RESOURCES_FILE',filename)
+    monkeypatch.setattr(api,'_DEPLOY_RESOURCES_WRITE_LOCK',FileLock(str(filename)+'.lock'))
+    base={'id':'sdk-edit','name':'old name','kind':'rockchip',
+        'mode':'local','config_revision':'v1','python_path':'/configured/python',
+        'last_checked_at':api.now_iso(),'status':'ready','targets':['rockchip'],
+        'supported_chips':['rk3568']}
+    api._save_deploy_resources([{**base,'detection_config_key':resource_configuration_key(base)}])
+    renamed=api.v39_update_deploy_resource('sdk-edit',api.DeployResourceReq(
+        name='new name',remark='display only',kind='rockchip',python_path='/configured/python'))
+    assert renamed['config_revision']=='v1'
+    assert renamed['last_checked_at']
+    assert renamed['status']=='ready' and renamed['supported_chips']==['rk3568']
+    assert observe(renamed)['detection']['state']=='available'
+    changed=api.v39_update_deploy_resource('sdk-edit',api.DeployResourceReq(
+        name='new name',remark='display only',kind='rockchip',python_path='/other/python'))
+    assert changed['config_revision']!='v1'
+    assert changed['status']=='unchecked' and changed['last_checked_at']==''
+    assert changed['supported_chips']==[]
+
+
+def test_formal_remote_admission_uses_authenticated_ping_without_sdk_probe(monkeypatch):
+    import requests
+    calls=[]
+    class Response:
+        status_code=200
+        def raise_for_status(self):pass
+        def json(self):return {'ok':True,'server':'mc-deploy-server',
+            'version':'v2','config_revision':'config2'}
+    monkeypatch.setattr(requests,'get',lambda url,**kwargs:(calls.append((url,kwargs)) or Response()))
+    resource={'mode':'remote','base_url':'http://isolated.example',
+        'api_key':'isolated-secret','remote_health':{'version':'v2','config_revision':'config2'}}
+    api._remote_conversion_resource_online(resource)
+    assert [url for url,_ in calls]==['http://isolated.example/api/deploy/ping']
+    assert calls[0][1]['headers']['X-API-Key']=='isolated-secret'
+    with pytest.raises(HTTPException,match='配置已变化'):
+        api._remote_conversion_resource_online({**resource,
+            'remote_health':{'version':'v2','config_revision':'previous'}})
+
+
+def test_remote_ping_never_scans_sdk_or_returns_credentials(tmp_path,monkeypatch):
+    monkeypatch.setenv('MC_REMOTE_DEPLOY_DATA_DIR',str(tmp_path/'remote'))
+    import remote_deploy_server as remote
+    filename=tmp_path/'server_config.json'
+    filename.write_text('{"api_key":"do-not-echo","name":"remote"}',encoding='utf-8')
+    monkeypatch.setattr(remote,'CONFIG_FILE',filename)
+    monkeypatch.setattr(remote,'check_key',lambda _:None)
+    monkeypatch.setattr(remote,'detect_tools',lambda:pytest.fail('ping must not scan SDK'))
+    ping=remote.runtime_ping('isolated-key')
+    assert ping['ok'] and ping['config_revision']
+    assert 'do-not-echo' not in str(ping)
 
 
 def test_local_bulk_probe_does_not_resurrect_concurrently_edited_resource(tmp_path, monkeypatch):

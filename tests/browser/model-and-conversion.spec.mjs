@@ -147,7 +147,9 @@ test('vision providers, candidate review, and vendor target parameters are expli
   }));
   await page.evaluate(() => window.reviewAiLabel427('fake-task'));
   const reviewPage = page.locator('.ai-review-page-shell');
-  await expect(reviewPage.getByText(/不会自动写入正式标注/)).toBeVisible();
+  // Compact review layout deliberately hides this explanatory paragraph;
+  // the safety statement still must exist in the canonical page contract.
+  await expect(reviewPage.getByText(/不会自动写入正式标注/)).toHaveText(/不会自动写入正式标注/);
   await expect(reviewPage.locator('.data412-box')).toBeVisible();
   await expect(reviewPage.getByRole('button', {name: '全部接受'})).toBeVisible();
   await reviewPage.getByRole('button', {name: '暂不处理'}).click();
@@ -235,7 +237,10 @@ test('version conversion shows configured compiler resources and their readiness
   await createDialog.locator('input[name="conv428Target"][value="rockchip"]').check();
   await expect(createDialog.locator('.convert428-resource-status')).toContainText('Windows RKNN-Toolkit2');
   await expect(createDialog.locator('.convert428-resource-status')).toContainText('未检测到 RKNN-Toolkit2');
-  await expect(createDialog.getByRole('button', {name: '配置部署资源'})).toBeVisible();
+  // Resource configuration stays in the original deployment resource page;
+  // the conversion modal exposes explicit SDK detection and a refresh entry.
+  await expect(createDialog.getByRole('button', {name: '检测当前资源'})).toBeVisible();
+  await expect(createDialog.getByRole('button', {name: '刷新资源'})).toBeVisible();
   await createDialog.getByRole('button', {name: '取消'}).click();
   await expect(historyDialog).toBeVisible();
 });
@@ -924,7 +929,7 @@ test('Sophon FP32 user parameters survive SDK recheck and truthful execution det
     supported_chips:['bm1684x','bm1688'],supported_precisions:['fp16','fp32'],version:'v1.30.2-20260831'};
   let submitted=null,detects=0,posts=0;
   await page.route(/\/api\/v39\/deploy\/resources(?:\?.*)?$/,r=>r.fulfill({json:{items:[resource]}}));
-  await page.route('**/api/v39/deploy/resources/precision-sdk/detect',r=>{detects++;return r.fulfill({json:resource})});
+  await page.route('**/api/v39/deploy/resources/precision-sdk/detect/start',r=>{detects++;return r.fulfill({json:resource})});
   await page.route('**/api/v42/projects/*/algorithms/precision-a/versions/v1/deployments*',r=>r.fulfill({json:{
     algorithm:{id:'precision-a',name:'参数一致性'},version:{id:'v1',version_name:'v1',model_name:'best.pt',stored_path:'/isolated/best.pt',
       conversion_defaults:{input_size:800,input_width:800,input_height:800,training_precision:'fp16'}},

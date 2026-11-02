@@ -6886,6 +6886,7 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
   let conversionResourcesLoading416=false;
   let conversionResourcesTicket416=0;
   let conversionOpenTicket416=0;
+  let conversionDetectFlight416=null;
   function conversionChipOptions428(target,resource){
     const vendor=document.querySelector('input[name="conv428Target"]:checked')?.dataset?.vendorId;
     return (state.conv428Catalog?.chips||[]).filter(c=>c.vendor_id===vendor).map(c=>({value:c.id,label:c.name,enabled:c.enabled!==false}));
@@ -6938,7 +6939,12 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
     const evidence=resource?{
       status:resource.status,version:resource.version,targets:resource.targets,
       supported_chips:resource.supported_chips,supported_precisions:resource.supported_precisions,
-      detection:resource.detection
+      // Age is presentation metadata: it changes on every GET, but does not
+      // change SDK capabilities or the compatibility contract.
+      detection:resource.detection?{
+        state:resource.detection.state,checked_at:resource.detection.checked_at,
+        reason:resource.detection.reason,run_id:resource.detection.run_id
+      }:null
     }:null;
     const signature=JSON.stringify([project,body,evidence,state.conv428Catalog?.revision||null]);
     return {form,project,body,signature,chip,precision,button,target,resourceId};
@@ -7074,32 +7080,89 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
     else {retireConversionContract428();state.conv428Resolved=null;refreshConvertCalibration428()}
   };
 
-  window.refreshVersionConversionResources428=async function(detectSelected=false){
+  window.refreshVersionConversionResources428=async function(detectSelected=false,resumeOnly=false){
     if(conversionResourcesLoading416&&detectSelected)return null;
     const project=pid(),resourceId=document.getElementById('conv428Resource')?.value||'',form=document.querySelector('.convert428-create');
     const ticket=++conversionResourcesTicket416;
     conversionResourcesLoading416=true;
-    state.conv428ResourcesCurrent=false;
-    if(detectSelected){const button=document.querySelector('.convert428-create [data-convert-submit]');if(button)button.disabled=true}else window.refreshConvertResource428();
+    if(!detectSelected&&!resumeOnly)state.conv428ResourcesCurrent=false;
+    if(detectSelected){const button=document.querySelector('.convert428-create [data-convert-submit]');if(button)button.disabled=true}
+    else if(!resumeOnly)window.refreshConvertResource428();
+    const live=()=>project===pid()&&ticket===conversionResourcesTicket416&&document.querySelector('.convert428-create')===form;
+    const replace=row=>{
+      if(!live())return;
+      const before=(state.conv428Resources||[]).find(old=>old.id===resourceId);
+      const relevant=item=>JSON.stringify(item&&[item.status,item.targets,item.supported_chips,
+        item.supported_precisions,item.version,item.last_checked_at,item.detection_error,
+        item.detection?.state,item.detection?.checked_at,item.detection?.reason,item.detection?.run_id]);
+      const changed=relevant(before)!==relevant(row);
+      state.conv428Resources=(state.conv428Resources||[]).map(old=>old.id===resourceId?row:old);
+      state.conv428ResourcesCurrent=true;
+      conversionResourcesLoading416=false;
+      if(changed){
+        // Invalidate only when a real SDK admission fact changes, not every
+        // two-second poll of the same in-flight task.
+        retireConversionContract428();conversionResolveLast428=null;conversionResolveFailure428=null;
+        window.refreshConvertResource428();
+      }
+    };
     try{
-      const rr=detectSelected&&resourceId
-        ? {items:(state.conv428Resources||[]).map(r=>({...r}))} : await resources416();
-      if(detectSelected&&resourceId){const checked=await conversionRead428(`/api/v39/deploy/resources/${encodeURIComponent(resourceId)}/detect`,{method:'POST'},'转换资源检测');rr.items=rr.items.map(r=>r.id===resourceId?checked:r)}
-      if(project!==pid()||ticket!==conversionResourcesTicket416||document.querySelector('.convert428-create')!==form)return null;
+      if((detectSelected||resumeOnly)&&resourceId){
+        const prefix=`/api/v39/deploy/resources/${encodeURIComponent(resourceId)}/detect`;
+        let checked;
+        try{
+          checked=resumeOnly
+            ? await conversionRead428(prefix+'/status',{},'检测状态恢复')
+            : await conversionRead428(prefix+'/start',{method:'POST'},'转换资源检测');
+        }catch(error){
+          // A timed-out start has UNKNOWN outcome: the server may already
+          // own the scan. Reconcile before permitting another click.
+          if(error?.code!=='REQUEST_TIMEOUT')throw error;
+          checked=await conversionRead428(prefix+'/status',{},'检测状态恢复');
+        }
+        if(!live())return null;
+        replace(checked);
+        const runId=checked.detection?.run_id||'';
+        if(checked.detection?.state==='checking'){
+          conversionDetectFlight416={form,resourceId,runId,ticket};
+          const until=Date.now()+120000;
+          while(live()&&Date.now()<until){
+            await new Promise(resolve=>setTimeout(resolve,2000));
+            if(!live())return null;
+            const current=await conversionRead428(prefix+'/status',{},'检测状态查询');
+            if(!live())return null;
+            // A new run/configuration must never be replaced by the previous
+            // response. The server also fences writes with config+run ID.
+            if(runId&&current.detection?.state==='checking'&&current.detection?.run_id!==runId)break;
+            replace(current);checked=current;
+            if(current.detection?.state!=='checking')break;
+          }
+          if(live()&&checked.detection?.state==='checking'){
+            const warn=document.getElementById('conv428Warn');
+            if(warn)warn.textContent='SDK 检测仍在服务端运行；可以关闭窗口，稍后重新打开或刷新资源读取结果。不会自动创建转换任务。';
+          }
+        }
+        return checked;
+      }
+      const rr=await resources416();
+      if(!live())return null;
       state.conv428Resources=rr.items||[];
       state.conv428ResourcesCurrent=true;
       conversionResourcesLoading416=false;
       window.refreshConvertResource428();
       return rr;
     }catch(error){
-      if(project!==pid()||ticket!==conversionResourcesTicket416||document.querySelector('.convert428-create')!==form)return null;
+      if(!live())return null;
       conversionResourcesLoading416=false;
-      state.conv428ResourcesCurrent=Boolean(detectSelected&&resourceId);
-      state.conv428Resources=detectSelected&&resourceId
+      state.conv428ResourcesCurrent=Boolean((detectSelected||resumeOnly)&&resourceId);
+      state.conv428Resources=(detectSelected||resumeOnly)&&resourceId
         ? (state.conv428Resources||[]).map(r=>r.id===resourceId?{...r,detection_request_error:String(error.message||error)}:r) : [];
       window.refreshConvertResource428();
       toast('无法获取最新转换资源：'+(error.message||error));
       return null;
+    }finally{
+      if(conversionDetectFlight416?.ticket===ticket)conversionDetectFlight416=null;
+      if(live())conversionResourcesLoading416=false;
     }
   };
   window.conversionCscName428=value=>({none:'不额外适配',device_default:'跟随设备默认值',bt601_limited:'BT.601 Limited',bt601_full:'BT.601 Full',bt709_limited:'BT.709 Limited',bt709_full:'BT.709 Full',legacy_unknown:'历史未记录'}[value]||'历史未记录');
@@ -7124,14 +7187,14 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
       const defaultSizeLabel=state.conv428ModelDefaults.input_height&&state.conv428ModelDefaults.input_width&&state.conv428ModelDefaults.input_height!==state.conv428ModelDefaults.input_width?`${state.conv428ModelDefaults.input_height}×${state.conv428ModelDefaults.input_width}`:defaultSize;
       const targets=[...['onnx','paddle_inference','tensorrt'].map(id=>({id,name:targetLabel416(id)})),...(catalog.vendors||[]).filter(v=>v.enabled!==false).map(v=>({id:(catalog.templates||[]).find(t=>t.id===v.template_id)?.adapter||'unadapted',vendorId:v.id,name:v.name}))];
       modal('新建版本转换',`<div class="convert428-create"><section><b>源版本</b><div class="convert428-source"><span>${esc(hist.algorithm?.name||'-')}</span><strong>${esc(v.version_name||'-')}</strong><em>${esc(v.model_name||'')}</em></div><div class="convert428-source-note">源模型训练：${esc(String(state.conv428ModelDefaults.training_precision||'未知').toUpperCase())} · ${esc(defaultSizeLabel)} px · ${esc(state.conv428ModelDefaults.input_size_source||'历史未记录来源')} · ${esc(v.model_metadata?.yolo_version||'架构未记录')} · 类别 ${esc(v.model_metadata?.class_count??'未知')}</div></section><section><b>通用模型格式</b><div class="convert428-targets">${conversionTargetChoices428(targets.filter(t=>!t.vendorId),true)}</div></section><section data-conversion-vendors><b>目标厂商（本地字典）</b><div class="convert428-targets">${conversionTargetChoices428(targets.filter(t=>t.vendorId),false)||'<p>暂无已启用厂商，请到部署资源维护本地厂商与芯片字典。</p>'}</div></section><section><div class="form two"><div class="field"><label>转换资源</label><select id="conv428Resource" class="select"></select><button type="button" class="btn mini" onclick="refreshVersionConversionResources428(true)">检测当前资源</button></div><div class="field" id="conv428ColorField"><label>模型输入颜色适配</label><select id="conv428InputColor" class="select" onchange="state.conv428PreprocessEdited=true;refreshConvertContract428()"><option value="rgb">RGB（默认）</option><option value="bgr">BGR（真实适配模型）</option></select><small>来源为训练平台 RGB 模型；选择 BGR 将在转换前适配计算图，并记录产物颜色约定。</small></div><div class="field" id="conv428PrecisionField"><label>精度</label><select id="conv428Precision" class="select" onchange="state.conv428PrecisionUserEdited=true;refreshConvertContract428()"><option value="fp16">FP16</option><option value="fp32">FP32</option><option value="int8">INT8（校准量化）</option></select></div><div class="field" id="conv428InputField"><label>输入尺寸</label><input id="conv428Input" onchange="state.conv428ShapeEdited=true;scheduleConvertContract428()" class="input" type="number" min="32" max="4096" value="${defaultSize}"></div><div class="field" id="conv428ChipField"><label>芯片 / SoC</label><select id="conv428Chip" class="select"></select></div></div><div id="conv428OnnxFields" class="form two" hidden><div class="field"><label>ONNX Opset</label><input id="conv428Opset" class="input" type="number" min="7" value="12"></div><div class="field check"><label><input id="conv428Dynamic" type="checkbox"> 动态 Shape</label><label><input id="conv428Simplify" type="checkbox"> Simplify</label></div></div><div id="conv428SophonFields" hidden><div class="form three"><div class="field"><label>输入宽度</label><input id="conv428Width" onchange="state.conv428ShapeEdited=true;scheduleConvertContract428()" class="input" type="number" min="32" max="8192" step="32" value="${Number(state.conv428ModelDefaults.input_width)||defaultSize}"></div><div class="field"><label>输入高度</label><input id="conv428Height" onchange="state.conv428ShapeEdited=true;scheduleConvertContract428()" class="input" type="number" min="32" max="8192" step="32" value="${Number(state.conv428ModelDefaults.input_height)||defaultSize}"></div><div class="field"><label>Batch</label><input id="conv428SophonBatch" class="input" value="1" readonly></div></div><details id="conv428Preprocess"><summary>预处理配置（推理端执行）</summary><p>输入为 NCHW 张量。ONNX / BMODEL 不重复融合预处理；推理端按以下约定执行，解码与 NMS 在模型外。包含预处理的自定义 ONNX 请先核对合同。</p><div class="form two"><div class="field"><label>输入通道</label><div class="convert428-source-note">按上方「模型输入颜色适配」选择，模型内部进行真实通道变换。</div></div><div class="field"><label>Mean</label><input id="conv428Mean" onchange="state.conv428PreprocessEdited=true;scheduleConvertContract428()" class="input" value="0,0,0"></div><div class="field"><label>Scale</label><input id="conv428Scale" onchange="state.conv428PreprocessEdited=true;scheduleConvertContract428()" class="input" value="0.00392156862745098,0.00392156862745098,0.00392156862745098"></div><label><input id="conv428Letterbox" onchange="state.conv428PreprocessEdited=true;scheduleConvertContract428()" type="checkbox" checked> Letterbox（Pad 114）</label></div></details><p>目标精度由后端按实际芯片和SDK决议，独立于训练精度。INT8 待冻结校准集与质量比较验收后开放；当前不使用独立 Test 集拟合。</p></div><div id="conv428TensorRtFields" class="form two" hidden><div class="field"><label>Workspace(MB)</label><input id="conv428Workspace" class="input" type="number" min="64" value="2048"></div><div class="field"><label>Batch</label><input id="conv428Batch" class="input" type="number" min="1" value="1"></div><div class="field full"><label>目标环境</label><input id="conv428TargetEnvironment" class="input" placeholder="例如 RTX 4090 · CUDA 12.8 · TensorRT 10.9"><small>TensorRT Engine 与 GPU / CUDA / TensorRT 环境绑定，必须明确记录。</small></div></div><div id="conv428Calibration" class="convert428-calibration" hidden><div class="form three"><div class="field"><label>校准数据集</label><select id="conv428CalibrationDataset" class="select"></select></div><div class="field"><label>校准分组</label><select id="conv428CalibrationSplit" class="select"><option value="train">训练集</option><option value="val">验证集</option><option value="test">试验集</option><option value="all">全部</option></select></div><div class="field"><label>校准图片数量</label><input id="conv428CalibrationCount" class="input" type="number" min="1" max="1000" value="100"></div></div><p>任务创建时冻结校准图片清单，远程节点仅通过对象存储短期地址读取这些图片。</p></div><section class="convert428-csc"><b>CSC 设备适配</b><div class="form two"><label>CSC 预设<select id="conv428CscPreset" class="select" onchange="changeConversionCsc428()"><option value="none">不额外适配</option></select></label><div id="conv428CscStatus" class="convert428-source-note">CSC 能力尚未读取</div></div><div id="conv428CscExternal" hidden><label>原始解码输入<select id="conv428CscFormat" class="select" onchange="changeConversionCsc428()"></select></label><label><input id="conv428CscAck" type="checkbox" onchange="changeConversionCsc428()"> 我确认推理端接入外部预处理合同，编译成功不代表已应用 CSC。</label></div></section><details><summary>目标模板高级参数</summary><div id="conv428TemplateAdvanced" class="form two"></div></details><details><summary>输出与后处理合同</summary><pre id="conv428OutputContract" class="log small-log"></pre></details><p id="conv428InheritedHint" class="convert428-source-note"></p></section><div id="conv428Warn" class="alert soft"></div><div class="row end"><button type="button" class="btn mini" onclick="refreshConvertContract428(true)">重新校验当前配置</button></div><section><b>已配置资源状态</b><div id="conv428ResourceStatus" class="convert428-resource-status"></div></section><div class="row end"><button class="btn" onclick="refreshVersionConversionResources428()">刷新资源</button><button class="btn" onclick="closeModal()">取消</button><button class="btn primary" data-convert-submit onclick="submitConvert428('${aid}','${vid}')">开始转换</button></div></div>`,true);
-      const form=document.querySelector('.convert428-create');if(form)form.cancelConversionRead428=()=>{if(ticket!==conversionOpenTicket416)return;clearTimeout(conversionResolveTimer428);retireConversionContract428();conversionResolveLast428=null;conversionResolveFailure428=null};
+      const form=document.querySelector('.convert428-create');if(form)form.cancelConversionRead428=()=>{if(ticket!==conversionOpenTicket416)return;++conversionResourcesTicket416;conversionResourcesLoading416=false;clearTimeout(conversionResolveTimer428);retireConversionContract428();conversionResolveLast428=null;conversionResolveFailure428=null};
       const live=()=>project===pid()&&ticket===conversionOpenTicket416&&document.querySelector('.convert428-create')===form;
       form?.insertAdjacentHTML?.('afterbegin','<div id="conv428SourceLoad" role="status">正在读取源版本…</div><div id="conv428CatalogLoad" role="status">正在读取厂商目录…</div>');
       const notice=(id,message,retry)=>{const node=document.getElementById(id);if(node)node.innerHTML=esc(message)+(retry?` <button type="button" class="btn mini" onclick="retryConversionSection428('${retry}')">重试</button>`:'')};
       const loaders={
         source:async()=>{try{const value=await history416(aid,vid);if(!live())return;const version=value.version||{};state.conv428SourceReady=Boolean(String(version.stored_path||'').trim());state.conv428ModelDefaults=version.conversion_defaults||state.conv428ModelDefaults;const source=form?.querySelector?.('.convert428-source');if(source)source.innerHTML=`<span>${esc(value.algorithm?.name||'-')}</span><strong>${esc(version.version_name||'-')}</strong><em>${esc(version.model_name||'')}</em>`;if(!state.conv428ShapeEdited){for(const [id,key] of [['conv428Input','input_size'],['conv428Width','input_width'],['conv428Height','input_height']]){const input=document.getElementById(id);if(input&&state.conv428ModelDefaults[key])input.value=state.conv428ModelDefaults[key]}}const note=form?.querySelector?.('.convert428-source-note');if(note)note.textContent=`源模型训练：${String(state.conv428ModelDefaults.training_precision||'未知').toUpperCase()} · ${state.conv428ModelDefaults.input_width||state.conv428ModelDefaults.input_size||'未知'} × ${state.conv428ModelDefaults.input_height||state.conv428ModelDefaults.input_size||'未知'} px · 类别 ${version.model_metadata?.class_count??'未知'}`;notice('conv428SourceLoad',state.conv428SourceReady?'源版本已核验':'源版本无可用模型产物',state.conv428SourceReady?'':'source');window.refreshConvertResource428()}catch(e){if(live())notice('conv428SourceLoad','源版本读取失败：'+(e.message||e),'source')}},
         catalog:async()=>{try{const value=await conversionRead428('/api/v39/deploy/catalog');if(!live())return;state.conv428Catalog=value;const host=form?.querySelector?.('[data-conversion-vendors] .convert428-targets');const chosenVendor=host?.querySelector?.('input:checked')?.dataset?.vendorId;if(host)host.innerHTML=conversionTargetChoices428((value.vendors||[]).filter(v=>v.enabled!==false).map(v=>({id:(value.templates||[]).find(t=>t.id===v.template_id)?.adapter||'unadapted',vendorId:v.id,name:v.name})),false);if(chosenVendor&&host)for(const radio of host.querySelectorAll('input'))radio.checked=radio.dataset.vendorId===chosenVendor;notice('conv428CatalogLoad','厂商目录已读取');window.refreshConvertResource428()}catch(e){if(live())notice('conv428CatalogLoad','厂商目录读取失败：'+(e.message||e),'catalog')}},
-        resources:async()=>{try{const rr=await resources416();if(!live())return;state.conv428Resources=rr.items||[];state.conv428ResourcesCurrent=true;conversionResourcesLoading416=false;window.refreshConvertResource428()}catch(e){if(!live())return;conversionResourcesLoading416=false;state.conv428ResourcesCurrent=false;window.refreshConvertResource428();const node=document.getElementById('conv428ResourceStatus');if(node)node.innerHTML=`<div class="alert err">资源读取失败：${esc(e.message||e)} <button class="btn mini" onclick="retryConversionSection428('resources')">重试</button></div>`}}
+        resources:async()=>{try{const rr=await resources416();if(!live())return;state.conv428Resources=rr.items||[];state.conv428ResourcesCurrent=true;conversionResourcesLoading416=false;window.refreshConvertResource428();const selected=state.conv428Resources.find(row=>row.id===document.getElementById('conv428Resource')?.value);if(selected?.detection?.state==='checking')Promise.resolve().then(()=>{if(live())return window.refreshVersionConversionResources428(false,true)}).catch(()=>{})}catch(e){if(!live())return;conversionResourcesLoading416=false;state.conv428ResourcesCurrent=false;window.refreshConvertResource428();const node=document.getElementById('conv428ResourceStatus');if(node)node.innerHTML=`<div class="alert err">资源读取失败：${esc(e.message||e)} <button class="btn mini" onclick="retryConversionSection428('resources')">重试</button></div>`}}
       };
       window.retryConversionSection428=key=>{if(live()&&loaders[key])return loaders[key]()};
       window.refreshConvertResource428();

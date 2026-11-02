@@ -190,7 +190,7 @@ test('expired resource stays selectable for explicit SDK re-detection but cannot
   assert.equal(h.submit.disabled,true);
   const previous=h.win.api;
   let calls=0;
-  h.win.api=(url,options)=>url.endsWith('/detect')
+  h.win.api=(url,options)=>url.endsWith('/detect/start')
     ? (calls++,{...expired,last_checked_at:'2026-11-02T01:01:00Z',detection:{state:'available'}})
     : previous(url,options);
   await h.win.refreshVersionConversionResources428(true);
@@ -377,10 +377,10 @@ test('selected resource detection uses one existing detect call and restores the
   const h=setup(async()=>ready());await h.win.openNewConvertCore416('a','v');
   h.chip.value='rk3568';await h.win.refreshConvertContract428();
   const api=h.win.api,posts=[];let finish;
-  h.win.api=(url,options)=>{if(url.endsWith('/detect')){posts.push(url);return new Promise(r=>finish=r)}return api(url,options)};
+  h.win.api=(url,options)=>{if(url.endsWith('/detect/start')){posts.push(url);return new Promise(r=>finish=r)}return api(url,options)};
   const pending=h.win.refreshVersionConversionResources428(true);
   await h.win.refreshVersionConversionResources428(true);
-  assert.equal(posts.length,1);assert.equal(posts[0],'/api/v39/deploy/resources/a800/detect');
+  assert.equal(posts.length,1);assert.equal(posts[0],'/api/v39/deploy/resources/a800/detect/start');
   finish({...resource('a800',['rk3568']),version:'2.3.2'});await pending;
   assert.equal(h.select.value,'a800');assert.equal(h.chip.value,'rk3568');
   assert.equal(h.state.conv428Resources[0].version,'2.3.2');
@@ -391,7 +391,7 @@ test('selected SDK response cannot restore a chip changed while detection is pen
   const h=setup(async()=>ready());await h.win.openNewConvertCore416('a','v');
   h.chip.value='rk3568';await h.win.refreshConvertContract428();
   const api=h.win.api;let finish;
-  h.win.api=(url,options)=>url.endsWith('/detect')?new Promise(r=>finish=r):api(url,options);
+  h.win.api=(url,options)=>url.endsWith('/detect/start')?new Promise(r=>finish=r):api(url,options);
   const pending=h.win.refreshVersionConversionResources428(true);
   h.chip.value='rk3576';
   finish(resource('a800',['rk3568','rk3576']));await pending;
@@ -421,7 +421,7 @@ test('failed older dialog load cannot invalidate a newer ready source',async()=>
 test('failed selected detection cannot erase a different ready resource',async()=>{
   const h=setup(async()=>({items:[resource('a',['rk3568']),resource('b',['rk3576'])]}));
   await h.win.openNewConvertCore416('a','v');let fail;const api=h.win.api;
-  h.win.api=(url,options)=>url.endsWith('/detect')?new Promise((_,reject)=>fail=reject):api(url,options);
+  h.win.api=(url,options)=>url.endsWith('/detect/start')?new Promise((_,reject)=>fail=reject):api(url,options);
   const pending=h.win.refreshVersionConversionResources428(true);h.select.value='b';h.chip.value='rk3576';
   fail(new Error('resource a unauthorized'));await pending;
   assert.equal(h.select.value,'b');assert.equal(h.state.conv428ResourcesCurrent,true);
@@ -487,8 +487,8 @@ test('explicit SDK detection uses a bounded deadline and releases loading after 
   await h.win.openNewConvertCore416('a','v');
   let attempts=0;
   h.win.PlatformCore={withRequestDeadline:async(operation,{label})=>{
-    if(label==='转换资源检测'){
-      attempts++;
+    if(label==='转换资源检测'||label==='检测状态恢复'){
+      if(label==='转换资源检测')attempts++;
       throw Object.assign(new Error('isolated connection deadline'),{code:'REQUEST_TIMEOUT'});
     }
     return operation(new AbortController().signal);
@@ -505,10 +505,85 @@ test('failed detect HTTP request does not erase last ready chip capability',asyn
   const h=setup(async()=>ready());
   await h.win.openNewConvertCore416('a','v');
   const original=h.win.api;
-  h.win.api=(url,options)=>url.endsWith('/detect')?Promise.reject(new Error('gateway unavailable')):original(url,options);
+  h.win.api=(url,options)=>url.endsWith('/detect/start')?Promise.reject(new Error('gateway unavailable')):original(url,options);
   await h.win.refreshVersionConversionResources428(true);
   const resource=h.state.conv428Resources.find(x=>x.id==='a800');
   assert.equal(resource.status,'ready');
   assert.deepEqual(resource.supported_chips,['rk3568','rk3576']);
   assert.match(resource.detection_request_error,/gateway unavailable/);
+});
+
+test('long SDK scan is polled by run ID and re-resolves the selected chip when complete',async()=>{
+  const h=setup(async()=>ready());await h.win.openNewConvertCore416('a','v');
+  h.chip.value='rk3568';
+  const original=h.win.api;let starts=0,polls=0;
+  h.win.api=(url,opts)=>{
+    if(url.endsWith('/detect/start')){starts++;return {...resource('a800',[]),detection:{state:'checking',run_id:'run-one'}}}
+    if(url.endsWith('/detect/status')){polls++;return {...resource('a800',['rk3568']),detection:{state:'available'}}}
+    return original(url,opts);
+  };
+  await h.win.refreshVersionConversionResources428(true);
+  await h.win.refreshConvertContract428();
+  assert.equal(starts,1);assert.equal(polls,1);
+  assert.equal(h.chip.value,'rk3568');
+  assert.equal(h.state.conv428Resources[0].detection.state,'available');
+  assert.equal(h.state.conv428Resolved.ready,true);
+});
+
+test('unchanged SDK state and growing evidence age do not repeat compatibility resolves',async()=>{
+  const h=setup(async()=>ready());await h.win.openNewConvertCore416('a','v');
+  h.chip.value='rk3568';
+  const original=h.win.api;let resolves=0,polls=0;
+  h.win.api=(url,opts)=>{
+    if(url.endsWith('/deploy/resolve')){resolves++;return original(url,opts)}
+    if(url.endsWith('/detect/start'))return {...resource('a800',[]),detection:{state:'checking',run_id:'run-one',age_seconds:0}};
+    if(url.endsWith('/detect/status')){
+      polls++;
+      return polls===3
+        ? {...resource('a800',['rk3568']),detection:{state:'available',checked_at:'2026-11-02T00:00:00Z',age_seconds:0}}
+        : {...resource('a800',[]),detection:{state:'checking',run_id:'run-one',age_seconds:polls*2}};
+    }
+    return original(url,opts);
+  };
+  await h.win.refreshVersionConversionResources428(true);
+  await h.win.refreshConvertContract428();
+  const atFinish=resolves;
+  h.state.conv428Resources[0].detection.age_seconds=99;
+  await h.win.refreshConvertContract428();
+  assert.equal(resolves,atFinish,'elapsed age alone is not a new resolve signature');
+  assert.equal(polls,3);
+  assert.ok(atFinish<=3,'two identical checking status polls must not re-resolve');
+  assert.equal(h.state.conv428Resolved.ready,true);
+});
+
+test('reopened dialog resumes a saved checking run with status GET, never starts another SDK scan',async()=>{
+  const pending={...resource('a800',[]),detection:{state:'checking',run_id:'existing-run'}};
+  const h=setup(async()=>({items:[pending]}));
+  const original=h.win.api;let starts=0,polls=0;
+  h.win.api=(url,opts)=>{
+    if(url.endsWith('/detect/start')){starts++;throw new Error('must not start SDK scan on reopen')}
+    if(url.endsWith('/detect/status')){polls++;return {...resource('a800',['rk3568']),detection:{state:'available'}}}
+    return original(url,opts);
+  };
+  await h.win.openNewConvertCore416('a','v');
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(starts,0);assert.ok(polls>=1);
+  assert.equal(h.state.conv428Resources[0].detection.state,'available');
+});
+
+test('closing conversion dialog during status query abandons rendering, not server scan',async()=>{
+  const h=setup(async()=>ready());await h.win.openNewConvertCore416('a','v');
+  const original=h.win.api;let resolveStatus;
+  h.win.api=(url,opts)=>{
+    if(url.endsWith('/detect/start'))return {...resource('a800',[]),detection:{state:'checking',run_id:'in-service'}};
+    if(url.endsWith('/detect/status'))return new Promise(resolve=>resolveStatus=resolve);
+    return original(url,opts);
+  };
+  const pending=h.win.refreshVersionConversionResources428(true);
+  await new Promise(resolve=>setImmediate(resolve));
+  h.win.document.querySelector('.convert428-create').cancelConversionRead428();
+  resolveStatus({...resource('a800',['rk3568']),detection:{state:'available'}});
+  await pending;
+  assert.equal(h.state.conv428Resources[0].detection.state,'checking');
+  assert.equal(h.submit.disabled,true);
 });

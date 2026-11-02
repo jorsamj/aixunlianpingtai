@@ -1,5 +1,30 @@
 # 模型版本转换模块专项（2026-10-28）
 
+## 2026-11-02｜42.24.495 P0 SDK 能力证据与可恢复检测（本地验收；生产 SDK/板端待核）
+
+**准确基线**：唯一长期分支 `feature/external-algorithm-publishing`，接续远端 `c94cf17c7e9f1a9204141f0f5f23d673d08725a6` / VERSION `42.24.494`，克隆时工作区干净；该 SHA GitHub 可查询的 PR 工作流 20/20 success，不能替代本提交的 CI。生产最后已知版本 485，未登录服务器核验；本轮不部署、不改生产资源/数据库/任务/权重/OSS。正式新 SHA/Actions 与部署建议必须按本次最终交付回执单独核验。
+
+### 源码根因和原有正确机制
+
+1. `conversion_resource_detection.observe` 把 SDK 能力和运行时可达性混为 `TTL_SECONDS=300`，5分钟必返回 `expired`；`compute_platform_catalog.resolve_chip_capability` 因此拒绝，而 `refreshConvertContract428` 的只读 `/deploy/resolve` 不会启动 SDK 检测。用户多次点击校验仍只得到同一过期结果。
+2. 原 `detect` 的 `checking` 是进程局部 `threading.Event`。虽已有资源级 `FileLock`、资源 JSON 原子写、配置 CAS 和 30 秒前端截止，但跨 Web Worker 读取、重启遗留、HTTP超时后恢复没有同一持久进行态。
+3. 正式 `/deploy/jobs` 又执行 `_detect_local/_detect_remote/_detect_agent`，与预览依据不一致，远程 `/api/deploy/health` 还会执行完整 SDK 工具探测。SDK 可用状态和在线状态需分开核验。
+4. 原资源 `PUT` 仅改名称/备注也刷新 `config_revision`、清空 SDK 证据；自动探测写入的若干衍生工具字段还可能被配置哈希误当用户配置。原厂商动态字典、未适配 Adapter 拒绝、正式任务 request_id 幂等、版本源 fence、Sophon/RKNN 真实芯片/精度约束均予保留。
+
+### 修改后的单一状态与时序
+
+- **能力快照**：仍由原 `deploy_resources.json` 资源行持久化，`detection_config_key` 与 `config_revision` 锚定 SDK 关键配置，已配置本地 Python/工具根目录/环境脚本以轻量 `stat` 指纹识别路径变化；`detection_environment_fingerprint` 与 `last_checked_at` 同步保存。**5分钟后仍可用**，七天为保守的定期复核边界（`604800s`），不是心跳 TTL，也绝不单靠放大 TTL 当作证据。SDK 原地安装包变更未触及上述配置路径时可能在复核前不可见，真实编译 Worker 仍独立验证，作为已知剩余风险。
+- **资源检测**：原同步 `POST /deploy/resources/{id}/detect` 保持兼容；新增有界 `POST /deploy/resources/{id}/detect/start` 和只读 `GET /deploy/resources/{id}/detect/status`。启动把 `detection_run:{id,state,started_at,config_key,owner_pid/started_at/host}` 原子记录于**同一资源行**，后台复用原 detector 和跨进程资源 FileLock，完成后 CAS 按配置与 run ID 回写并清掉 checking。进程消失/PID 复用时尽快标记 `expired`，跨主机或未能核验所有权时最迟在10分钟运行租约后可再检测；旧 run 永不覆盖新配置。没有第二份 SDK 结果库。Web 进程中断后可能需要用户手动重新启动检测，不能宣称已实现跨重启任务继续执行。
+- **前端**：仅用户显式点「检测当前资源」才 POST start；已在检测的资源无需再 POST，打开弹窗从既有资源 GET 恢复并只读轮询 status。每次查询用原30秒 deadline；最多等待120秒，之后提示后台仍可能执行，可关闭/刷新，不将 HTTP 超时判成芯片不支持。每次状态变更废弃旧 resolve 响应和签名缓存，当前 form/project/ticket 的结果才渲染；关闭只废弃 UI 请求，不杀服务端共享扫描。检测完成自动对当前厂商/资源/芯片重新 resolve；真正不可用、失败、过期、未适配仍禁止提交。
+- **正式提交**：所有非内置转换资源（Sophon/RKNN/Atlas/TensorRT/自定义 ONNX、Paddle/Agent/远程）统一先检查 `observe` 的有效能力证据；芯片型资源再用后端 `resolve_conversion_contract` 进行与预览一致的芯片/精度权威准入，内置 ONNX/Paddle 仍依其原环境实检。正式 POST 不再重复执行本地/远程完整 SDK 探测；本地轻量检查配置路径、Agent 实时确认授权节点、远程执行带鉴权的无 SDK 扫描 `/api/deploy/ping` 检查在线及配置/服务版本。新的远程服务 `/api/deploy/health` 也回传 `config_revision`；旧远程版本返回404时一次性回退既有 `/health`（有真实扫描开销，后续升级远程服务可消除）。远程链接失败为503、配置变化409，不伪装为 SDK 不兼容。运行时实际编译及硬件验收仍由既有 Worker/任务机制执行，正式 request_id 幂等不变。
+- **诊断**：原 `resolve.timings_ms` 保留 source/resource/contract/total；资源的 `detection_timings_ms` 记录 SDK/远程/Agent 探测和跨进程锁等待真实耗时（绝不记录命令、凭据、模型或正式图片）。异步时服务器连接耗时与 SDK 计算时间不能相加或混称。存储持久化的单独耗时尚未形成端到端完整 P95 仪表盘。
+
+### 本地验证及部署边界
+
+- Python 原 SDK 状态、动态目录、正式创建、异步单飞/失败/配置变更 CAS/死亡进程及**两个独立 Web Worker 子进程**、远程 ping/密钥脱敏、Sophon/RKNN/TensorRT/ONNX/Paddle 准入与转换任务集成，完整相关集合 **182 通过、1 deselected**。仅排除先前在本地隔离版 TestClient 中无法结束的既有 `test_missing_job_record_http`，并未宣称全库 Python 通过；上一个扩大回归子集已独立 **142/142**。跨进程子测试须在允许创建 Worker 的权限下运行；容器受限模式不能据此判断业务失败。完整前端 Node **1491/1491**（包含 SDK 轮询不重复 resolve、动态 age 不重发）。
+- Chrome `model-and-conversion.spec.mjs` 初轮 **15/18**；将旧 `/detect` 夹具接至 `/detect/start` 后通过，将审核页故意被紧凑 CSS 隐藏的说明改为内容验证、旧版不存在的“配置部署资源”按钮改为实际“检测当前资源/刷新资源”入口，真实 Chrome 整份 **18/18 全绿**。这是隔离 UI/HTTP 证据，不等于真实 SDK、编译或板端通过。准确新 SHA GitHub Actions 仍须推送后核验。无真实 A800 算能工具链、RKNN、Atlas、TensorRT、Agent/远程、实际目标板或生产浏览器代理测量，不能说现场故障已闭环。
+- **暂不直接建议生产部署**：先验证远程服务 ping 升级/旧版回退、至少一种本地及远程芯片检测的实际失败/超时/恢复、并行多 Web Worker 与进程重启、正式任务创建的 SDK/设备真实准入；最后核对准确提交的 CI 再逐步灰度。绝不修改现有正式资源、任务与模型权重以做上述验证。
+
 ## 2026-11-02｜42.24.490 显式 SDK 检测网络截止，禁止弹窗无限等待
 
 接 489 `516ff3955c075dcbfa682542e78754dcf122df89`（该 SHA 完整 CI 在本次接续时尚未全部完成）；生产保持 485。不改变 488 SDK 后端/资源持久身份/5分钟证据有效期或 489 过期资源可选重检语义。
