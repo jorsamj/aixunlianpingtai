@@ -7,7 +7,7 @@ export function negativePoolQuery(filters = {}, page = 1) {
 export function installNegativePoolRuntime({getState,api,pid,esc,toast,modal,closeModal,addToDraft} = {}) {
   if (window.NegativePoolRuntime) return window.NegativePoolRuntime;
   let project='', active='materials', labelTab='positive', page=1, total=0, rows=[], categories=[], filters={}, selected=new Set(), epoch=0;
-  let activeRead=null, categoryRevision=0;
+  let activeRead=null, categoryRevision=0, materialActionsObserver=null, materialActionsHost=null, materialActionsQueued=false;
   const categoryCache=new Map(), categoryFlights=new Map();
   const CATEGORY_TTL_MS=60*1000;
   function invalidateCategories(){categoryRevision++;categoryCache.clear();categoryFlights.clear()}
@@ -114,11 +114,45 @@ export function installNegativePoolRuntime({getState,api,pid,esc,toast,modal,clo
   document.addEventListener('click',e=>{const target=e.target.closest?.('[data-np]');if(!target)return;e.preventDefault();e.stopPropagation();if(target.disabled)return;target.disabled=true;Promise.resolve(action(target.dataset.np,target.dataset.id)).catch(err).finally(()=>{if(target.isConnected)target.disabled=false})});
   document.addEventListener('change',e=>{if(e.target.matches?.('[data-np-select]')){const id=e.target.dataset.npSelect;e.target.checked?selected.add(id):selected.delete(id);selectionText()}});
   document.addEventListener('submit',e=>{const kind=e.target.dataset?.npForm;if(!kind)return;e.preventDefault();const data=new FormData(e.target);if(kind==='category-search'){filters.categoryQuery=String(data.get('query')||'');void load('categories');return}filters=Object.fromEntries(['query','joined_days','joined_from','joined_to','review_status'].map(key=>[key,String(data.get(key)||'')]));filters.category_id=data.getAll('category_id');filters.label=data.getAll('label');page=1;void load('pool')});
+  // Card owners can replace .data426-actions after async annotation refresh.
+  // Keep one observer on the current view, rather than competing HTML owners.
+  function repairMaterialActions(host){
+    if(!host||host!==view()||getState().page!=='数据集'||active!=='materials')return;
+    host.querySelectorAll?.('[data-material-id]').forEach(card=>{
+      const actions=card.querySelector('.data426-actions');
+      if(actions&&!actions.querySelector('[data-np="join-one"]'))
+        actions.insertAdjacentHTML('beforeend',button('join-one','加入负样本池',`data-id="${esc(card.dataset.materialId)}"`));
+    });
+  }
+  function disconnectMaterialActions(){
+    materialActionsObserver?.disconnect();materialActionsObserver=null;materialActionsHost=null;materialActionsQueued=false;
+  }
+  function watchMaterialActions(host){
+    if(typeof MutationObserver!=='function'||!host?.isConnected)return;
+    if(materialActionsHost===host)return;
+    disconnectMaterialActions();
+    materialActionsHost=host;
+    materialActionsObserver=new MutationObserver(()=>{
+      if(materialActionsQueued)return;
+      materialActionsQueued=true;
+      queueMicrotask(()=>{
+        materialActionsQueued=false;
+        if(host!==view()||getState().page!=='数据集'||active!=='materials'){
+          disconnectMaterialActions();return;
+        }
+        repairMaterialActions(host);
+      });
+    });
+    materialActionsObserver.observe(host,{subtree:true,childList:true});
+  }
   function decorateOriginal(kind){
     resetProject();epoch++;
     const host=view();if(!host)return;
     if(!host.querySelector('.negative-pool-tabs'))host.insertAdjacentHTML('afterbegin',tabs(kind));
-    if(kind==='materials')host.querySelectorAll('[data-material-id]').forEach(card=>{const actions=card.querySelector('.data426-actions');if(actions&&!actions.querySelector('[data-np]'))actions.insertAdjacentHTML('beforeend',button('join-one','加入负样本池',`data-id="${esc(card.dataset.materialId)}"`))});
+    if(kind==='materials'){
+      repairMaterialActions(host);
+      watchMaterialActions(host);
+    }else disconnectMaterialActions();
   }
   window.NegativePoolRuntime={
     renderTabs:tabs,
@@ -127,6 +161,7 @@ export function installNegativePoolRuntime({getState,api,pid,esc,toast,modal,clo
     decorateOriginal,
     refresh:()=>load(getState().page==='标签管理'?'categories':'pool'),
     beforeNavigate(nextPage){
+      if(nextPage!=='数据集')disconnectMaterialActions();
       const owner=active==='pool'?'数据集':labelTab==='categories'?'标签管理':null;
       if(owner&&nextPage!==owner){
         activeRead?.controller.abort();activeRead=null;epoch++;

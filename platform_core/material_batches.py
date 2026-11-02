@@ -263,6 +263,14 @@ def _general_delete_preview(project_id, materials, selection, options, repositor
     if options.get('clear_project') and (selection.scope is not SelectionScope.FILTERED or any(selection.filters.as_dict().values())):
         raise BatchRequestError('MATERIAL_CLEAR_SCOPE_INVALID', '清空项目必须选择未筛选的全部当前素材', 422)
     annotations = AnnotationRepository(materials.project_path)
+    # Historical evidence is read-only and can involve old task trees. Never
+    # hold a GT/material mutation fence while walking unrelated history.
+    try:
+        references = _historical_material_references(
+            project_id, materials.project_path, repository, artifacts, with_reasons=True,
+            reference_image_ids=(selection.image_ids if selection.scope is SelectionScope.SELECTED else None))
+    except (ValueError, OSError, sqlite3.Error, BatchRequestError):
+        references = None
     with label_governance_fence(materials.project_path), material_annotation_lifecycle_fence(materials.project_path):
         if materials.current_revision() != selection.repository_revision:
             raise BatchRequestError('BATCH_SELECTION_STALE', '素材范围已变化，请重新预览', 409)
@@ -297,15 +305,21 @@ def _general_delete_preview(project_id, materials, selection, options, repositor
             'physical_retained_count':len(rows),'reclaimed_bytes':0,'reclamation_state':'DEFERRED_SAFETY_UNVERIFIED',
             'created_at':utc_now(),'execution_task_id':None,
             'credential_sha256':hashlib.sha256(credential.encode()).hexdigest()}
-        # Reference evidence informs impact; it never authorizes physical deletion.
-        try:
-            references = _historical_material_references(project_id, materials.project_path, repository, artifacts, with_reasons=True)
+        # Unknown history must remain visibly unknown; never report zero.
+        if references is None:
+            summary.update(historical_reference_count=None, active_reference_count=None,
+                           reference_diagnostics_state='UNAVAILABLE')
+        else:
             selected_ids = {row['id'] for row in rows}
             summary['historical_reference_count'] = len({key for key, values in references.items() if key in selected_ids and any(value.get('reason') not in {'ACTIVE_TASK_INPUT', 'CURRENT_TEST_ROLE'} for value in values)})
             summary['active_reference_count'] = len({key for key, values in references.items() if key in selected_ids and any(value.get('reason')=='ACTIVE_TASK_INPUT' and value.get('task_status') in {'RUNNING','CANCEL_REQUESTED'} for value in values)})
             summary['reference_diagnostics_state'] = 'COMPLETED'
-        except (ValueError, OSError, sqlite3.Error, BatchRequestError):
-            summary.update(historical_reference_count=None, active_reference_count=None, reference_diagnostics_state='UNAVAILABLE')
+        # The read-only work above may overlap another material/GT writer.
+        # Do not publish a plan with a stale selected revision or GT evidence.
+        if (materials.current_revision() != selection.repository_revision
+                or annotations.current_revision() != summary['annotation_revision']
+                or _file_digest(materials.project_path/'meta.json') != summary['label_schema_digest']):
+            raise BatchRequestError('BATCH_SELECTION_STALE', '素材、GT或标签已变化，请重新预览', 409)
         path = artifacts.artifact_path(owner_task_id, _material_integrity_plan_ref(plan_id))
         path.parent.mkdir(parents=True, exist_ok=True)
         with closing(sqlite3.connect(path)) as plan:
@@ -644,7 +658,7 @@ def _collect_known_image_ids(value, output=None):
     return output
 
 
-def _historical_material_references(
+def _scan_historical_material_references(
     project_id, project_path, repository, artifacts, *, exclude_task_id=None,
     with_reasons=False, reference_image_ids=None,
 ):
@@ -892,6 +906,30 @@ def _historical_material_references(
             **{**evidence, 'evidence_status': 'dependent_history' if referenced else 'request_only_provenance_retained'},
         )
     return references if with_reasons else protected
+
+
+def _historical_material_references(
+    project_id, project_path, repository, artifacts, *, exclude_task_id=None,
+    with_reasons=False, reference_image_ids=None,
+):
+    """Query durable per-image evidence, conservatively rebuilding when stale."""
+    if exclude_task_id is not None:
+        return _scan_historical_material_references(
+            project_id, project_path, repository, artifacts,
+            exclude_task_id=exclude_task_id,
+            with_reasons=with_reasons,
+            reference_image_ids=reference_image_ids,
+        )
+    from .material_history_index import query_material_history
+    rows = query_material_history(
+        project_id, project_path, repository, artifacts,
+        _scan_historical_material_references,
+        reference_image_ids=reference_image_ids,
+    )
+    return rows if with_reasons else {
+        image_id for image_id, reasons in rows.items()
+        if any(reason.get('protected') for reason in reasons)
+    }
 
 
 def _material_integrity_keeper(items, protected_ids, manual_keeper=None):

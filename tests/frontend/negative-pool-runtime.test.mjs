@@ -71,3 +71,31 @@ test('identical pool queries share inflight; leaving owner aborts old read witho
    assert.equal(host.innerHTML,'new page');
  }finally{Object.assign(globalThis,previous)}
 });
+
+
+test('material card action returns after async replacement and observer is scoped to page', async()=>{
+ const previous={window:globalThis.window,document:globalThis.document,MutationObserver:globalThis.MutationObserver};
+ let observer;
+ const actions={contains:false, querySelector(){return this.contains?{}:null},
+   insertAdjacentHTML(_side,html){this.contains=html.includes('data-np="join-one"')}};
+ const card={dataset:{materialId:'one'},querySelector:()=>actions};
+ const host={isConnected:true,querySelector:()=>({}),querySelectorAll:()=>[card]};
+ globalThis.window={};
+ globalThis.document={getElementById:()=>host,addEventListener:()=>{}};
+ globalThis.MutationObserver=class{
+   constructor(callback){this.callback=callback;observer=this}
+   observe(){this.watching=true}
+   disconnect(){this.watching=false}
+ };
+ try{
+   const runtime=installNegativePoolRuntime({getState:()=>({page:'数据集'}),pid:()=> 'p',
+     esc:String,toast:()=>{},api:async()=>({items:[]})});
+   runtime.decorateOriginal('materials');
+   assert.equal(actions.contains,true);
+   actions.contains=false;observer.callback();
+   await new Promise(resolve=>queueMicrotask(resolve));
+   assert.equal(actions.contains,true,'async card replacement must not remove pool action');
+   runtime.beforeNavigate('算法列表');
+   assert.equal(observer.watching,false);
+ }finally{Object.assign(globalThis,previous)}
+});

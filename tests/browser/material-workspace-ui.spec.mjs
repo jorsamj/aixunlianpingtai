@@ -24,3 +24,22 @@ for(const [width,height] of [[1920,1080],[1440,900],[1366,768],[375,812]])test(`
  const failed=page.locator('[data-material-id="mat-ui-2"]');await expect(failed.locator('.material-image-issue')).toBeVisible();expect(await failed.locator('.material-media-plane').evaluate(node=>getComputedStyle(node).visibility)).toBe('hidden');for(const box of await failed.locator('.data412-box').all())expect(await box.evaluate(node=>getComputedStyle(node).visibility)).toBe('hidden');page.__matRetry=true;await failed.getByRole('button',{name:'重新加载'}).click();await expect(failed.locator('.material-media412')).toHaveAttribute('data-image-state','ready');
  await first.getByRole('button',{name:'详情',exact:true}).click();const detail=page.locator('.material-detail412');await expect(detail).toBeVisible();await expect(detail.getByRole('button',{name:'编辑标注'})).toBeVisible();expect(await detail.evaluate(node=>node.scrollWidth<=node.clientWidth+1)).toBe(true);await page.screenshot({path:testInfo.outputPath(`material-after-${width}x${height}-detail.png`),fullPage:true});
 });
+
+
+test('negative-pool action survives asynchronous material card actions replacement', async({page})=>{
+  await page.setViewportSize({width:1366,height:768});
+  await openFixture(page);
+  const card=page.locator('[data-material-id="mat-ui-0"]');
+  const join=card.locator('[data-np="join-one"]');
+  await expect(join).toHaveCount(1);
+  await card.locator('.data426-actions').evaluate(actions=>{
+    actions.innerHTML='<button type="button" class="btn">详情</button>';
+  });
+  await expect(join).toHaveCount(1);
+  expect(await join.getAttribute('data-id')).toBe('mat-ui-0');
+  await page.evaluate(()=>window.NegativePoolRuntime.beforeNavigate('算法列表'));
+  await card.locator('.data426-actions').evaluate(actions=>{
+    actions.innerHTML='<button type="button" class="btn">详情</button>';
+  });
+  await expect(join).toHaveCount(0);
+});
