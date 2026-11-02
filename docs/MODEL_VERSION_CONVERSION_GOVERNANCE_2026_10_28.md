@@ -1,5 +1,13 @@
 # 模型版本转换模块专项（2026-10-28）
 
+## 2026-11-02｜42.24.490 显式 SDK 检测网络截止，禁止弹窗无限等待
+
+接 489 `516ff3955c075dcbfa682542e78754dcf122df89`（该 SHA 完整 CI 在本次接续时尚未全部完成）；生产保持 485。不改变 488 SDK 后端/资源持久身份/5分钟证据有效期或 489 过期资源可选重检语义。
+
+- 最后入口复核：`refreshVersionConversionResources428(true)` 原主动检测 POST 直接调用 `api`，没有 `withRequestDeadline`，网络/TCP/TLS/Agent 挂起可能让 `conversionResourcesLoading416` 不结束。旧 `/deploy/resolve` 已有 30秒截止，两条请求生命周期不一致，不能简单宣称已完全防无限 Loading。
+- 在原 `conversionRead428` 增可选操作名，原读/resolve 默认语义不变；显式 `/deploy/resources/{id}/detect` 使用**同一个已存在的 30秒 AbortController 截止**与准确的“转换资源检测”标签。超时进入原 `catch/finally`，释放 Loading、明确反馈、保留尚有效的其他资源；可按原“刷新资源”查看 SDK 检测是否已在服务端完成，或明确再次检测。前端 timeout 不是 SDK 不支持证据，后端同资源 FileLock/CAS 去重仍生效；不增加30秒期限。
+- 原资源前端自动化新增“检测 POST 截止→可再次检测，不无限等待”；专项 31/31、完整 Node **1472/1472 passed**。准确490 GitHub Actions/真实 SDK 与生产网络 P95 待独立验收。无数据库结构变更、不触碰 Worker/正式任务、权重、OSS。
+
 ## 2026-11-02｜42.24.489 过期/待检资源可主动检测（488 后续交互闭环）
 
 准确远端 488 `eb84b27fd2dc550821800f066219bcd7947b2804`，原 **Remote Conversion Runtime Push 4/4 jobs success**（Ubuntu/Windows Agent、Control Plane、真实 Chrome）；完整同 SHA Actions 49 条仍在进行时，不能借用其结果认定 489。继续唯一开发分支，生产仍 485 未部署。

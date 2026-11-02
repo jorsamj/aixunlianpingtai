@@ -482,6 +482,25 @@ test('connection failure is separate from SDK compatibility and offers manual re
   assert.equal(h.submit.disabled,true);
 });
 
+test('explicit SDK detection uses a bounded deadline and releases loading after timeout',async()=>{
+  const h=setup(async()=>ready());
+  await h.win.openNewConvertCore416('a','v');
+  let attempts=0;
+  h.win.PlatformCore={withRequestDeadline:async(operation,{label})=>{
+    if(label==='转换资源检测'){
+      attempts++;
+      throw Object.assign(new Error('isolated connection deadline'),{code:'REQUEST_TIMEOUT'});
+    }
+    return operation(new AbortController().signal);
+  }};
+  await h.win.refreshVersionConversionResources428(true);
+  assert.equal(attempts,1);
+  assert.equal(h.state.conv428ResourcesCurrent,true);
+  assert.match(h.warning.textContent,/isolated connection deadline/);
+  await h.win.refreshVersionConversionResources428(true);
+  assert.equal(attempts,2);
+});
+
 test('failed detect HTTP request does not erase last ready chip capability',async()=>{
   const h=setup(async()=>ready());
   await h.win.openNewConvertCore416('a','v');

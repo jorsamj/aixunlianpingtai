@@ -6795,7 +6795,7 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
     const dataset=document.getElementById('conv428CalibrationDataset');
     if(dataset&&!dataset.options.length){const rows=state.datasets||[];dataset.innerHTML=rows.length?rows.map(x=>`<option value="${esc(x.id||'default')}">${esc(x.name||x.id||'默认数据集')}</option>`).join(''):'<option value="default">默认数据集</option>';const wanted=state.datasetId||'default';dataset.value=[...dataset.options].some(option=>option.value===wanted)?wanted:(dataset.options[0]?.value||'default')}
   };
-  function conversionRead428(url,options={}){const deadline=window.PlatformCore?.withRequestDeadline;if(deadline)return deadline(signal=>api(url,{...options,signal}),{label:'转换配置读取',signal:options.signal});return api(url,options)}
+  function conversionRead428(url,options={},label='转换配置读取'){const deadline=window.PlatformCore?.withRequestDeadline;if(deadline)return deadline(signal=>api(url,{...options,signal}),{label,signal:options.signal});return api(url,options)}
   let conversionResolveAbort428=null,conversionResolveTimer428=null;
   let conversionResolveFlight428=null,conversionResolveLast428=null,conversionResolveFailure428=null;
   function retireConversionContract428(){
@@ -7013,7 +7013,7 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
     try{
       const rr=detectSelected&&resourceId
         ? {items:(state.conv428Resources||[]).map(r=>({...r}))} : await resources416();
-      if(detectSelected&&resourceId){const checked=await api(`/api/v39/deploy/resources/${encodeURIComponent(resourceId)}/detect`,{method:'POST'});rr.items=rr.items.map(r=>r.id===resourceId?checked:r)}
+      if(detectSelected&&resourceId){const checked=await conversionRead428(`/api/v39/deploy/resources/${encodeURIComponent(resourceId)}/detect`,{method:'POST'},'转换资源检测');rr.items=rr.items.map(r=>r.id===resourceId?checked:r)}
       if(project!==pid()||ticket!==conversionResourcesTicket416||document.querySelector('.convert428-create')!==form)return null;
       state.conv428Resources=rr.items||[];
       state.conv428ResourcesCurrent=true;

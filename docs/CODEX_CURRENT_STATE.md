@@ -1,4 +1,6 @@
-> **2026-11-02 / 42.24.489 开发中：过期转换资源的原弹窗重检**。唯一开发分支准确 488 `eb84b27fd2dc550821800f066219bcd7947b2804`；其 Remote Conversion Runtime Push **4/4 jobs success**（Ubuntu/Windows/控制面/真实 Chrome），生产已知 485 不动。审计发现过期/未检资源不在唯一转换资源下拉框里，无法点击“检测当前资源”恢复。489 原生 JS 将当前目标的全部已配置资源列出供检测，仍只允许真实 `ready` 资源创建任务，切换不丢有效参数；新增过期→显式检测→可转换和离线只可检测的合同测试，30/30 通过。488 后端定向 SQL/多 Web 检测 CAS/证据 TTL、30s 截止、真实 SDK 未验证界限均保留。准确 489 SHA/完整 CI 待验，细节见 `docs/MODEL_VERSION_CONVERSION_GOVERNANCE_2026_10_28.md` 顶部，禁直接发布。
+> **2026-11-02 / 42.24.490 开发中：转换显式资源检测 POST 截止**。唯一开发分支前版 489 `516ff3955c075dcbfa682542e78754dcf122df89`，488 已准确 GitHub Actions 49/49 success；生产 485 不动。原 `refreshVersionConversionResources428(true)` 显式 SDK 检测未经过 30秒请求截止，网络挂起会持续 Loading；490 仅让这一原入口复用 `conversionRead428`／`withRequestDeadline` 的现有超时及取消，保持真实 SDK/Agent 探测由服务器处理、原 Config CAS/检测复用与最终提交验证不变。专项 Node31/31，完整 Node/新SHA Actions待验。489 过期资源可重新选择检测、488 单版本SQL定向与多厂商状态仍有效；未部署，不能将 CI 视为生产 SDK/设备/P95 证据。唯一详情见 `docs/MODEL_VERSION_CONVERSION_GOVERNANCE_2026_10_28.md` 顶部。
+
+> **前版 2026-11-02 / 42.24.489 过期转换资源的原弹窗重检**。488 `eb84b27f` 专项 Remote Conversion Runtime 4/4 包含真实 Chrome；489 修正过期/待检/失败资源不可选，允许显式检测，只有有效 ready 可以正式提交，旧选择保留，完整Node1471/1471；准确 489 SHA CI 接续时尚在进行，生产未动。
 
 > **前版 2026-11-02 / 42.24.488 多厂商转换能力与性能**。487 `377e95b3319eca0f350f8d014843a084f98f1a00` 39/39 Actions success；488 完成单版本 SQL、逐资源真实状态/过期 fail-closed、跨 Web 资源检测去重及 JSON CAS/原子保存、resolve/catalog opt-in 计时，Python271/1隔离挂起、完整Node1470。准确488专项CI 4/4成功，完整其余 Actions 待核。无真实 SDK/Agent/生产数据操作，生产 P95 仍待现场证据。
 

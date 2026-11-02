@@ -1,4 +1,6 @@
-> **最新开发 42.24.489（转换过期资源主动重检闭环）**：准确远端 488 `eb84b27fd2dc550821800f066219bcd7947b2804`，专项 Remote Conversion Runtime Push **4/4 jobs success** 含真实 Chrome。489 修正 488 仅让 ready 资源进入下拉框导致过期/待检资源无法通过原弹窗主动重检：所有当前目标的已配置资源可选，但无有效证据绝不准提交，保留原选择和芯片；原生 JS 回归 30/30。其余多厂商 SDK 证据、定向 SQL、跨 Web 检测 CAS、原 30s 截止均沿用 488。唯一专项见 `docs/MODEL_VERSION_CONVERSION_GOVERNANCE_2026_10_28.md`。489 最终 SHA CI 待验；生产已知 485，真实 SDK/板端和生产 P95 未验，严禁部署、修改正式任务/权重/OSS/DB、合并 main、tag/release/force push。
+> **最新开发 42.24.490（SDK 显式检测网络截止）**：已准确推送 489 `516ff3955c075dcbfa682542e78754dcf122df89`（该 SHA CI 尚运行），原 488 `eb84b27f` 已 49/49 Actions 全绿。最后发现原显式资源检测 POST 直接走 `api` 无请求截止，可能无限 Loading。490 复用现有 `withRequestDeadline` 30秒 Abort/取消，不加长超时；超时保留有效资源、释放等待与显式重试，后端 FileLock/CAS 去重和最终任务合同不变。原生资源 UI 31/31 回归，完整 Node/490准确 SHA CI 待核。唯一专项详见 `docs/MODEL_VERSION_CONVERSION_GOVERNANCE_2026_10_28.md`；生产已知485，真实 SDK/板端/生产 P95 未验，不部署、不改正式数据/OSS/任务、merge/tag/release/force push。
+
+> **前版 42.24.489（过期资源主动重检）**：488 仅 ready 资源下拉导致过期/待检资源无法由转换弹窗重检；489 改为所有匹配资源可选检测、有效 ready + 服务端合同仍独立阻止提交、旧选择保留。原生 Node1471/1471，准确489 CI 接续时未结束；无 Schema/SDK/Worker 修改。
 
 > **前版 42.24.488（专项推送 CI 已验）**：原 487 `377e95b3` 39/39 Actions success。488 在原转换 Owner 完成版本源定向 SQL、逐资源 SDK/芯片真实检测状态、跨 Web 锁/CAS、原子资源保存与 opt-in Server-Timing，Node1470/1470、Python271通过/1个旧HTTP TestClient隔离环境挂起；准确 SHA `eb84b27fd2dc550821800f066219bcd7947b2804` Remote Conversion Runtime Push 4/4 成功，其它 Actions 在 489 接续时尚运行。生产未部署，硬件与生产 P95 不可冒充已验证。
 
