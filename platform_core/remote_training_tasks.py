@@ -574,11 +574,6 @@ class TrainingPrepareHandler:
                     "expected_material_revision": MaterialRepository(project).current_revision(),
                     "expected_annotation_revision": AnnotationRepository(project).current_revision(),
                     "duplicate_review": None}
-            from .training_material_usage import admit_history_selection
-            # history_policy controls Train reuse only. Omitting the optional
-            # field must never bypass mandatory Train/Val/Test isolation.
-            split, history_admission = admit_history_selection(context, target, project, algorithm, payload, split,
-                verified_benchmark_reuse=bool(benchmark_reuse))
             duplicate_review = (
                 normalize_benchmark_duplicate_review(project, payload, split)
                 if benchmark_reuse else validate_duplicate_review(project, payload, split)
@@ -588,6 +583,20 @@ class TrainingPrepareHandler:
                 "test_image_ids": list(split.test_image_ids), "experiment_percent": split.experiment_percent,
                 "validation_percent": split.validation_percent,
             })
+            if not compatibility.issues:
+                from .training_material_usage import admit_history_selection
+                # First preserve duplicate/GT conflict evidence and reject stale
+                # human review. A valid selection then always enters mandatory
+                # history admission before any random split is frozen.
+                split, history_admission = admit_history_selection(
+                    context, target, project, algorithm, payload, split,
+                    verified_benchmark_reuse=bool(benchmark_reuse),
+                )
+                compatibility = diagnose_training_duplicates(project, {
+                    "split_mode": split.mode.value, "train_image_ids": list(split.train_image_ids),
+                    "test_image_ids": list(split.test_image_ids), "experiment_percent": split.experiment_percent,
+                    "validation_percent": split.validation_percent,
+                })
             if not compatibility.issues:
                 # Project only target roles here; the final label_contract
                 # below is the single authoritative checkpoint hash freeze.

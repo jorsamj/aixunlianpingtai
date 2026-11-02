@@ -98,6 +98,39 @@ def _freeze_admitted_training(app_module, task_id: str):
     return frozen_payload
 
 
+def _seed_verified_parent_training_evidence(client, app_module, project_id, algorithm_id,
+                                           version_id, snapshot_id):
+    """Create a real parent Task/Snapshot so a continuation has provable lineage.
+
+    An invented version with no Task-origin evidence must not be allowed to
+    certify new random Test images under the permanent isolation policy.
+    """
+    from dataclasses import replace
+    from platform_core.task_runtime import TaskKind, TaskRecord, TaskStatus
+    from platform_core.training_material_usage import TrainingMaterialUsage
+
+    parent_image = _upload_training_ready(
+        client, project_id, f'parent-{version_id}.jpg', (13, 89, 173),
+    )
+    parent_id = f'verified-parent-{version_id}'
+    parent = replace(TaskRecord.new(parent_id, project_id, TaskKind.TRAINING,
+                                    'payload.json', 'cpu'), status=TaskStatus.SUCCEEDED)
+    app_module.shared_task_repository().create(parent, artifacts=app_module.shared_task_artifacts())
+    original = app_module.material_store(project_id).get(parent_image['id'])
+    app_module.shared_task_artifacts().atomic_write_json(parent_id, 'snapshot.json', {
+        'snapshot_id': snapshot_id, 'images': [{
+            'image_id': parent_image['id'], 'role': 'train',
+            'content_sha256': original['content_sha256'],
+        }],
+    })
+    # This isolated test database has exactly the seeded lineage, so the
+    # maintenance coverage certificate can be complete without guessing.
+    TrainingMaterialUsage(app_module.shared_task_repository()).mark_coverage(
+        project_id, algorithm_id, complete=True,
+    )
+    return parent_id
+
+
 def test_training_target_contract_rejects_invalid_metric_threshold_and_interval():
     import app as app_module
     from fastapi import HTTPException
@@ -1100,14 +1133,17 @@ def test_confirmed_continue_training_reuses_same_durable_task(client, seeded_pro
     ).json()["algorithm"]
     base_model = app_module.project_dir(project_id) / "v-current-base.pt"
     base_model.write_bytes(b"verified-iteration-base")
+    parent_task_id = _seed_verified_parent_training_evidence(
+        client, app_module, project_id, algorithm['id'], 'v-current', 'snapshot-v-current',
+    )
+    parent_version = _iteration_version(
+        "v-current", decision_id="a" * 64, evaluation_id="b" * 64,
+        stored_path=base_model,
+    )
+    parent_version['training_job_id'] = parent_task_id
     attach_version(
         app_module.algorithms_file(project_id), algorithm["id"],
-        _iteration_version(
-            "v-current",
-            decision_id="a" * 64,
-            evaluation_id="b" * 64,
-            stored_path=base_model,
-        ),
+        parent_version,
     )
     confirm = client.post(
         f"/api/v12/projects/{project_id}/algorithms/{algorithm['id']}/versions/v-current/iteration-actions/confirm",
@@ -1212,12 +1248,18 @@ def test_durable_training_requires_matching_supplement_candidate_set_identity(
     target = next(row for row in algorithms if row["id"] == algorithm["id"])
     base_model = app_module.project_dir(project_id) / "feedback-base.pt"
     base_model.write_bytes(b"verified-feedback-base")
+    parent_snapshot_id = 'd' * 64
+    parent_task_id = _seed_verified_parent_training_evidence(
+        client, app_module, project_id, algorithm['id'], version_id, parent_snapshot_id,
+    )
     target["current_version_id"] = version_id
     target["versions"] = [{
         "id": version_id,
         "version_name": "20260919000100",
         "training_status": "SUCCEEDED",
         "artifact_verified": True,
+        "training_job_id": parent_task_id,
+        "snapshot_id": parent_snapshot_id,
         "trainable": True,
         "framework": "ultralytics",
         "stored_path": str(base_model),

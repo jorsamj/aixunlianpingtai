@@ -1226,6 +1226,40 @@ def test_picker_history_filters_original_and_derived_source_consistently(tmp_pat
     assert page['total']==258 and len(bulk['items'])==258
 
 
+def test_picker_fast_sql_excludes_pending_and_permanent_test_even_with_history_reuse(tmp_path):
+    import json
+    import sqlite3
+    from platform_core.training_material_usage import TrainingMaterialUsage
+    from platform_core.training_material_picker_api import _picker_filter_sql, _attach_usage_exclusion
+
+    path = tmp_path / 'tasks.sqlite3'
+    with sqlite3.connect(path) as db:
+        db.execute('CREATE TABLE tasks(task_id TEXT PRIMARY KEY,status TEXT)')
+        db.execute("INSERT INTO tasks VALUES('test-owner','RUNNING')")
+    index = TrainingMaterialUsage(path)
+    index.record_selected('p', 'a', 'test-owner', {'snapshot_id': 's', 'images': [
+        {'image_id': 'benchmark', 'role': 'test', 'content_sha256': 'a' * 64},
+    ]}, enforce_isolation=True)
+
+    def eligible_count():
+        filters = {'__usage_sql_exclusion': {'path': str(path), 'project_id': 'p',
+            'algorithm_id': 'a', 'role': 'train', 'revision': index.read_revision(),
+            'include_train_history': False, 'has_task_statuses': True}}
+        clauses, params = _picker_filter_sql(filters)
+        with sqlite3.connect(':memory:', uri=True) as db:
+            db.execute('CREATE TABLE materials(id TEXT,content_sha256 TEXT,payload_json TEXT)')
+            db.execute('INSERT INTO materials VALUES(?,?,?)', ('new-upload', 'a' * 64, json.dumps({})))
+            _attach_usage_exclusion(db, filters)
+            return db.execute('SELECT COUNT(*) FROM materials m WHERE ' + ' AND '.join(clauses), params).fetchone()[0]
+
+    assert eligible_count() == 0
+    with sqlite3.connect(path) as db:
+        db.execute("UPDATE tasks SET status='FAILED' WHERE task_id='test-owner'")
+    assert eligible_count() == 1
+    index.record_execution('test-owner', test_observed=True)
+    assert eligible_count() == 0
+
+
 def test_robustness_preview_reuses_thumbnail_without_modifying_source(tmp_path, monkeypatch):
     import base64
     from io import BytesIO

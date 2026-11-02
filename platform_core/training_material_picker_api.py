@@ -190,10 +190,15 @@ def _usage_filters(repository, filters):
         if usage_index.has_exposed_records(repository.project_path.name, algorithm_id,
                                            role=str(body.get('role') or 'train'),
                                            include_train_history=policy == 'new_for_algorithm'):
+            with closing(usage_index._connect()) as task_db:
+                has_task_statuses = task_db.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='tasks'"
+                ).fetchone() is not None
             body['__usage_sql_exclusion'] = {
                 'path': str(task_path), 'project_id': repository.project_path.name,
                 'algorithm_id': algorithm_id, 'role': str(body.get('role') or 'train'),
                 'revision': usage_revision, 'include_train_history': policy == 'new_for_algorithm',
+                'has_task_statuses': has_task_statuses,
             }
         return body, {"revision":usage_revision,"coverage":"unknown","by_image_id":{},"excluded_image_ids":[],"unknown_image_ids":[]}
     count("usage_pool_requests")
@@ -271,6 +276,12 @@ def _picker_filter_sql(filters=None):
     if sql_exclusion:
         roles = (("train", "validation") if sql_exclusion['role'] == 'test' else
                  ("train", "test") if sql_exclusion.get('include_train_history', True) else ("test",))
+        active_reservation = (
+            " OR EXISTS (SELECT 1 FROM usage_index.tasks active "
+            "WHERE active.task_id=u.task_id AND active.status IN "
+            "('QUEUED','RUNNING','CANCEL_REQUESTED','AWAITING_CONFIRMATION'))"
+            if sql_exclusion.get('has_task_statuses') else ''
+        )
         clauses.append(
             "NOT EXISTS (SELECT 1 FROM "
             "json_each(picker_relation_tokens(m.id,m.content_sha256,m.payload_json)) rel "
@@ -280,9 +291,7 @@ def _picker_filter_sql(filters=None):
             "AND t.token_kind=json_extract(rel.value,'$[0]') "
             "AND t.token_value=json_extract(rel.value,'$[1]') "
             "AND u.task_id=t.task_id AND u.image_id=t.image_id AND u.role=t.role "
-            "AND u.algorithm_id=? AND (u.evidence>0 OR EXISTS (SELECT 1 FROM usage_index.tasks active "
-            "WHERE active.task_id=u.task_id AND active.status IN "
-            "('QUEUED','RUNNING','CANCEL_REQUESTED','AWAITING_CONFIRMATION'))) "
+            "AND u.algorithm_id=? AND (u.evidence>0" + active_reservation + ") "
             "AND u.role IN (" + ",".join("?" for _ in roles) + "))"
         )
         params.extend((sql_exclusion['project_id'], sql_exclusion['algorithm_id'], *roles))

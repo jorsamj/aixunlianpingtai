@@ -250,26 +250,4 @@ def test_read_only_historical_evaluation_trust_flags_exposure_and_unknown(tmp_pa
     third = append_historical_test_independence({'checks': []}, clean, index, 'p', 'a')
     assert third['checks'][0]['status'] == 'insufficient_evidence'
 
-
-def test_picker_fast_sql_excludes_pending_and_permanent_test_even_with_history_reuse(tmp_path):
-    import json
-    from platform_core.training_material_picker_api import _picker_filter_sql, _attach_usage_exclusion
-    index = _active_usage_index(tmp_path, 'test-owner')
-    index.record_selected('p', 'a', 'test-owner', _usage_snapshot('s', 'benchmark', 'test'),
-                          enforce_isolation=True)
-    def eligible_count():
-        filters = {'__usage_sql_exclusion': {'path': str(index.path), 'project_id': 'p',
-            'algorithm_id': 'a', 'role': 'train', 'revision': index.read_revision(),
-            'include_train_history': False}}
-        clauses, params = _picker_filter_sql(filters)
-        with sqlite3.connect(':memory:', uri=True) as db:
-            db.execute('CREATE TABLE materials(id TEXT,content_sha256 TEXT,payload_json TEXT)')
-            db.execute('INSERT INTO materials VALUES(?,?,?)', ('new-upload', 'a' * 64, json.dumps({})))
-            _attach_usage_exclusion(db, filters)
-            return db.execute('SELECT COUNT(*) FROM materials m WHERE ' + ' AND '.join(clauses), params).fetchone()[0]
-    assert eligible_count() == 0
-    with sqlite3.connect(index.path) as db:
-        db.execute("UPDATE tasks SET status='FAILED' WHERE task_id='test-owner'")
-    assert eligible_count() == 1
-    index.record_execution('test-owner', test_observed=True)
-    assert eligible_count() == 0
+# Picker SQL tests stay in the API suite, which includes the FastAPI dependency.
