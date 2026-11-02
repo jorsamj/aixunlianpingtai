@@ -44,3 +44,15 @@ def test_history_signature_ignores_progress_and_log_writes_but_tracks_evidence(t
     assert changed_status != initial
     artifacts.atomic_write_json(task.task_id, 'input-freeze.json', {'train_image_ids': ['image-b']})
     assert signature() != changed_status
+
+    batch = TaskRecord.new('material-batch', 'p', TaskKind.MATERIAL_BATCH,
+                           'batch-request.json', 'cpu')
+    repository.create(batch, artifacts=artifacts)
+    artifacts.atomic_write_json(batch.task_id, batch.payload_ref, {'image_ids': ['image-c']})
+    stable = signature()
+    # Material governance writes execution progress while another request
+    # reads its history. That output is not part of the scan's dependencies.
+    artifacts.atomic_write_json(batch.task_id, 'progress.json', {'processed': 10})
+    assert signature() == stable
+    artifacts.atomic_write_json(batch.task_id, batch.payload_ref, {'image_ids': ['image-d']})
+    assert signature() != stable

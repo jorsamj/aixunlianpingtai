@@ -30,8 +30,9 @@ def _source_signature(project_id, project_path, repository, artifacts):
     invalidate the history index on every request.
     """
     digest = hashlib.sha256()
-    task_ids = []
     task_log_paths = set()
+    full_task_roots = []
+    narrow_task_files = []
     # SQLite/WAL inode and mtime are not business revisions: a read or
     # checkpoint can change them without any task mutation.
     with closing(sqlite3.connect(f"file:{Path(repository.path)}?mode=ro", uri=True)) as db:
@@ -43,13 +44,25 @@ def _source_signature(project_id, project_path, repository, artifacts):
             "retry_of,attempt,process_pid,process_create_time,process_command_hash "
             "FROM tasks WHERE project_id=? ORDER BY task_id", (str(project_id),)
         ):
-            task_ids.append(str(row[0]))
-            task_log_paths.add(Path(artifacts.root) / str(row[0]) / str(row[6]))
+            task_id, _project, kind, status, payload_ref, _result, log_ref = row[:7]
+            task_root = Path(artifacts.root) / str(task_id)
+            # Only TRAINING/CONVERSION and failed PREPARE can inspect arbitrary
+            # archived files as evidence of materialized input or recovery.
+            # Material batches and annotation workers use their request and
+            # active frozen selection, not their mutable progress/outputs.
+            if kind in ('TRAINING', 'MODEL_CONVERSION') or (kind == 'TRAINING_PREPARE' and status == 'FAILED'):
+                full_task_roots.append(task_root)
+                task_log_paths.add(task_root / str(log_ref))
+            else:
+                narrow_task_files.append(task_root / str(payload_ref))
+                if (status in ('QUEUED', 'RUNNING', 'CANCEL_REQUESTED') and
+                    kind in ('TRAINING_PREPARE', 'AI_ANNOTATION', 'MATERIAL_IMPORT', 'CLEANING', 'MATERIAL_BATCH')):
+                    narrow_task_files.append(task_root / 'selection.sqlite3')
             digest.update(repr(tuple(row)).encode("utf-8", errors="surrogateescape"))
             digest.update(b"\n")
     roots = [Path(project_path) / "snapshots"]
-    roots.extend(Path(artifacts.root) / task_id for task_id in task_ids)
-    files = [Path(project_path) / "algorithms.json"]
+    roots.extend(full_task_roots)
+    files = [Path(project_path) / "algorithms.json", *narrow_task_files]
     algo_db = Path(project_path) / "algorithms.sqlite3"
     if algo_db.is_file():
         try:
