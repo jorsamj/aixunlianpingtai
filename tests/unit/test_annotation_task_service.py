@@ -466,12 +466,16 @@ def test_supplemental_commit_refuses_unavailable_source_even_when_hash_unchanged
     store.initialize(labels=["smoke"], total_images=1)
     _seed_verified_candidates(store, [{"image_id": "one", "status": "empty", "boxes": []}])
     store.apply_decisions([CandidateDecision("one", True, review_scope=["smoke"])])
-    monkeypatch.setattr("app.material_store", lambda _project: type("Materials", (), {
+    # The recovery CI intentionally omits FastAPI. This unit only needs the
+    # late-bound material repository, not the application HTTP module.
+    fake_app = ModuleType("app")
+    fake_app.material_store = lambda _project: type("Materials", (), {
         "get_many": lambda self, ids: [
             {"id": image_id, "content_sha256": "a" * 64, "source_available": False}
             for image_id in ids
         ],
-    })())
+    })()
+    monkeypatch.setitem(sys.modules, "app", fake_app)
     writes = []
     monkeypatch.setattr("platform_core.annotation_task_service.write_formal_annotations",
         lambda _project, rows: writes.extend(rows) or rows)
