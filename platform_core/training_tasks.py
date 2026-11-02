@@ -2359,12 +2359,15 @@ def _run_training_process(context, argv: Sequence[str], job_file: Path) -> dict[
                     job.get("training_started") or job.get("current_epoch") or job.get("training_progress")
                 )
                 from .training_material_usage import TrainingMaterialUsage, usage_owner
-                observed_usage_level = (2 if job.get('usage_completed_epoch') is True else (1 if job.get('training_started') else 0)) + (4 if job.get('usage_validation_observed') is True else 0)
+                observed_usage_level = ((2 if job.get('usage_completed_epoch') is True else (1 if job.get('training_started') else 0))
+                    + (4 if job.get('usage_validation_observed') is True else 0)
+                    + (8 if job.get('usage_test_observed') is True else 0))
                 if observed_usage_level > usage_evidence_level:
                     context.run_owned(lambda: TrainingMaterialUsage(context.repository).record_execution(
                         context.task.task_id, first_batch=True,
                         completed_epoch=job.get('usage_completed_epoch') is True,
                         validation_observed=job.get('usage_validation_observed') is True,
+                        test_observed=job.get('usage_test_observed') is True,
                         generation=int(getattr(context, 'execution_generation', 0)), owner=usage_owner(context)))
                     usage_evidence_level = observed_usage_level
                 context.heartbeat(
@@ -2609,6 +2612,7 @@ class TrainingHandler:
             first_batch=job.get('training_started') is True,
             completed_epoch=job.get('usage_completed_epoch') is True,
             validation_observed=job.get('usage_validation_observed') is True,
+            test_observed=job.get('usage_test_observed') is True,
             generation=int(getattr(context, 'execution_generation', 0)), owner=usage_owner(context)))
         if not dataset_revision_id:
             raise RuntimeError("completed training is missing its durable dataset revision")
@@ -2633,6 +2637,14 @@ class TrainingHandler:
         benchmark_scope = build_evaluation_benchmark_scope(
             snapshot, _json(manifest_path, {}),
         )
+        # Only a verified completed blind Test constitutes a permanent Test
+        # reserve. Selected-only failed/cancelled tasks release their pending
+        # reservation when their original Task becomes terminal.
+        blind_result = ((job.get('training_report') or {}).get('test_result') or {})
+        if benchmark_scope and str(blind_result.get('status') or '').lower() in {'succeeded', 'passed'}:
+            context.run_owned(lambda: usage_index.record_execution(
+                context.task.task_id, test_observed=True,
+                generation=int(getattr(context, 'execution_generation', 0)), owner=usage_owner(context)))
 
         cache_runtime = context.artifacts.read_json(
             context.task.task_id,

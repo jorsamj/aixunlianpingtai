@@ -54,8 +54,20 @@ def _owner_evidence(data_dir, project_id, row, artifacts):
         or str(job.get('snapshot_id') or '') != snapshot_id
         or (job.get('project_id') is not None and str(job['project_id']) != project_id)):
         job = {}
+    # The work/job directory may already have been safely collected. A Task's
+    # archived result is durable, but only the exact frozen snapshot may attest
+    # a successful blind Test. Never infer execution from SUCCEEDED alone.
+    archived = artifacts.read_json(task_id, row['result_ref'], default={}) if row.get('result_ref') else {}
+    if (not isinstance(archived, dict) or str(archived.get('snapshot_id') or '') != snapshot_id
+            or str(archived.get('dataset_revision_id') or '') != str(snapshot.get('dataset_revision_id') or '')):
+        archived = {}
+    def observed_test(result):
+        report = result.get('training_report') if isinstance(result, dict) else None
+        blind = report.get('test_result') if isinstance(report, dict) else None
+        return isinstance(blind, dict) and str(blind.get('status') or '').lower() in {'succeeded', 'passed'}
     return {'algorithm_id': str(payload.get('algorithm_asset_id') or payload.get('asset_algorithm_id') or ''),
-        'snapshot': snapshot, 'source_images': sources, 'job': job, 'generation': 0}
+        'snapshot': snapshot, 'source_images': sources, 'job': job, 'generation': 0,
+        'test_observed': job.get('usage_test_observed') is True or observed_test(job) or observed_test(archived)}
 
 
 def rebuild_owner_batch(data_dir, project_id, *, batch_size=100, apply=False):
@@ -113,7 +125,8 @@ def _batch(data_dir, identity, database, artifacts_root, cursor_path, batch_size
                 job = evidence['job']
                 index.record_execution(row['task_id'], first_batch=job.get('training_started') is True,
                     completed_epoch=job.get('usage_completed_epoch') is True,
-                    validation_observed=job.get('usage_validation_observed') is True)
+                    validation_observed=job.get('usage_validation_observed') is True,
+                    test_observed=evidence['test_observed'])
         after = [row['created_at'], row['task_id']]
     result = {'identity': identity, 'bound': bound, 'after': after,
         'unresolved_task_ids': sorted(set(unresolved)), 'eligible_task_ids': eligible,

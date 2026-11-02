@@ -11447,15 +11447,19 @@ def _advanced_evaluation_context(project_id: str, algorithm_id: str, version_id:
     return version, model
 
 
-def _advanced_trust_evidence(project_id, version, model, *, offset=0, limit=20):
-    from platform_core.evaluation_analysis import analyze_evaluation_trust
+def _advanced_trust_evidence(project_id, algorithm_id, version, model, *, offset=0, limit=20):
+    from platform_core.evaluation_analysis import analyze_evaluation_trust, append_historical_test_independence
+    from platform_core.training_material_usage import TrainingMaterialUsage
     evaluation = version.get('evaluation') or {}
     snapshot_id = str(evaluation.get('snapshot_id') or '')
     snapshot = {}
     if re.fullmatch(r'[a-f0-9]{64}', snapshot_id):
         snapshot = read_json(project_dir(project_id) / 'snapshots' / f'{snapshot_id}.json', {})
-    return analyze_evaluation_trust(evaluation, snapshot, version, verified_model=model,
-                                    detail_offset=offset, detail_limit=limit)
+    analysis = analyze_evaluation_trust(evaluation, snapshot, version, verified_model=model,
+                                        detail_offset=offset, detail_limit=limit)
+    return append_historical_test_independence(
+        analysis, snapshot, TrainingMaterialUsage(shared_task_repository()), project_id, algorithm_id,
+        offset=offset, limit=limit)
 
 
 @app.get('/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/evaluation/trust')
@@ -11464,7 +11468,7 @@ def evaluation_trust_analysis(project_id: str, algorithm_id: str, version_id: st
     if offset < 0 or not 1 <= limit <= 50:
         raise HTTPException(status_code=422, detail="可信度明细分页范围无效")
     version, model = _advanced_evaluation_context(project_id, algorithm_id, version_id)
-    result = _advanced_trust_evidence(project_id, version, model, offset=offset, limit=limit)
+    result = _advanced_trust_evidence(project_id, algorithm_id, version, model, offset=offset, limit=limit)
     return {'ok': True, 'analysis': result, 'project_id': project_id,
             'algorithm_id': algorithm_id, 'version_id': version_id}
 
@@ -11529,7 +11533,7 @@ def deep_compare_evaluation(project_id: str, algorithm_id: str, version_id: str,
                 or evidence.get('task_id') != model.get('training_task_id')):
             raise HTTPException(status_code=409, detail='评测与正式模型任务身份不一致')
     trust_checks = [check for version, model in ((current, current_model), (previous, previous_model))
-                    for check in _advanced_trust_evidence(project_id, version, model)['checks']]
+                    for check in _advanced_trust_evidence(project_id, algorithm_id, version, model)['checks']]
     blocking = [check['code'] for check in trust_checks if check['status'] == 'risk'
                 or check['code'] == 'identity' and check['status'] != 'passed']
     if blocking:

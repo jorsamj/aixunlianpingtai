@@ -1442,7 +1442,16 @@ def main():
                     message="训练完成，正在对无标注试验图片执行盲测",
                 )
 
+                test_inference_started=False
+
                 def blind_predict(image_path):
+                    nonlocal test_inference_started
+                    if not test_inference_started:
+                        # Persist before first blind inference. A failed or
+                        # cancelled partial Test must not lose its exposure
+                        # merely because final metrics were never produced.
+                        update_job(job_file, usage_test_observed=True)
+                        test_inference_started=True
                     results=best_model.predict(
                         source=str(image_path),
                         imgsz=int(args.imgsz),

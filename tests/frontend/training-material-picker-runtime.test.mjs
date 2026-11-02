@@ -13,6 +13,16 @@ test('ordinary material selection does not project an undefined training-target 
   assert.doesNotMatch(source,/审核待确认素材/);
 });
 
+test('independent Test reservation is a visible server-backed lock, including history reuse',()=>{
+  assert.match(source, /const historyBlocked = Boolean\(row\.training_usage\?\.excluded\)/);
+  assert.match(source, /row\.training_usage\?\.benchmark_protected/);
+  assert.match(source, /本算法历史训练或验证已接触该素材，不能用于独立 Test/);
+  assert.match(source, /已保留为本算法独立 Test，不能用于训练/);
+  assert.match(source, /test_reserved:'独立 Test 已保留'/);
+  assert.match(source, /historyUnknown = picker\.role === 'test' && row\.training_usage\?\.state === 'unknown'/);
+  assert.match(source, /historyBlocked \? `<small class="train-v3-history-blocked"/);
+});
+
 test('training material picker query is cursor paged and server filtered', () => {
   const query = new URLSearchParams(buildTrainingMaterialQuery({
     cursor: 'cursor-2',

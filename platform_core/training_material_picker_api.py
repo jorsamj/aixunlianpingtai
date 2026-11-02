@@ -172,7 +172,7 @@ def _usage_filters(repository, filters):
     body = dict(filters or {})
     body.pop('__usage_sql_exclusion', None)
     state = str(body.get("usage_state") or "")
-    if state and state not in {"used", "possible", "selected", "unused", "unknown", "eval_only"}:
+    if state and state not in {"used", "possible", "selected", "unused", "unknown", "eval_only", "test_reserved"}:
         raise ValueError("invalid usage_state")
     scope = str(body.get("history_scope") or "")
     if scope not in {"", "current_only", "other_only"}: raise ValueError("invalid history_scope")
@@ -181,20 +181,19 @@ def _usage_filters(repository, filters):
     policy = str(body.get("history_policy") or "new_for_algorithm")
     if policy not in {"new_for_algorithm", "include_history"}: raise ValueError("invalid history_policy")
     usage_revision = TrainingMaterialUsage(task_path).read_revision()
-    if policy == "include_history" and not state and not scope:
-        return body, {"revision":usage_revision,"coverage":"unknown","by_image_id":{},"excluded_image_ids":[],"unknown_image_ids":[]}
-    if policy == "new_for_algorithm" and not state and not scope:
+    if not state and not scope:
         # Default first-page/count/bulk operations must not hydrate every
         # material and query the Task usage index in 500-row Python batches.
         # Preserve exact derivative/hash/group matching in the indexed SQL
         # anti-join; explicit history-state/scope filters retain the full path.
         usage_index = TrainingMaterialUsage(task_path)
         if usage_index.has_exposed_records(repository.project_path.name, algorithm_id,
-                                           role=str(body.get('role') or 'train')):
+                                           role=str(body.get('role') or 'train'),
+                                           include_train_history=policy == 'new_for_algorithm'):
             body['__usage_sql_exclusion'] = {
                 'path': str(task_path), 'project_id': repository.project_path.name,
                 'algorithm_id': algorithm_id, 'role': str(body.get('role') or 'train'),
-                'revision': usage_revision,
+                'revision': usage_revision, 'include_train_history': policy == 'new_for_algorithm',
             }
         return body, {"revision":usage_revision,"coverage":"unknown","by_image_id":{},"excluded_image_ids":[],"unknown_image_ids":[]}
     count("usage_pool_requests")
@@ -270,7 +269,8 @@ def _picker_filter_sql(filters=None):
         params.append(json.dumps(f["usage_excluded_image_ids"]))
     sql_exclusion = f.get('__usage_sql_exclusion')
     if sql_exclusion:
-        roles = ("train", "validation") if sql_exclusion['role'] == 'test' else ("train",)
+        roles = (("train", "validation") if sql_exclusion['role'] == 'test' else
+                 ("train", "test") if sql_exclusion.get('include_train_history', True) else ("test",))
         clauses.append(
             "NOT EXISTS (SELECT 1 FROM "
             "json_each(picker_relation_tokens(m.id,m.content_sha256,m.payload_json)) rel "
@@ -280,7 +280,10 @@ def _picker_filter_sql(filters=None):
             "AND t.token_kind=json_extract(rel.value,'$[0]') "
             "AND t.token_value=json_extract(rel.value,'$[1]') "
             "AND u.task_id=t.task_id AND u.image_id=t.image_id AND u.role=t.role "
-            "AND u.algorithm_id=? AND u.evidence>0 AND u.role IN (" + ",".join("?" for _ in roles) + "))"
+            "AND u.algorithm_id=? AND (u.evidence>0 OR EXISTS (SELECT 1 FROM usage_index.tasks active "
+            "WHERE active.task_id=u.task_id AND active.status IN "
+            "('QUEUED','RUNNING','CANCEL_REQUESTED','AWAITING_CONFIRMATION'))) "
+            "AND u.role IN (" + ",".join("?" for _ in roles) + "))"
         )
         params.extend((sql_exclusion['project_id'], sql_exclusion['algorithm_id'], *roles))
         # The existing exact-count cache must also expire on Task usage writes.

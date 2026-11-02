@@ -242,3 +242,38 @@ def analyze_evaluation_trust(evaluation: Mapping, snapshot: Mapping, version: Ma
     return {"schema_version": 1, "evaluation_id": evaluation.get("evaluation_id", ""),
             "snapshot_id": snapshot_id or "", "checks": checks, "coverage": coverage,
             "read_only": True, "production_verification": "NOT VERIFIED"}
+
+
+def append_historical_test_independence(analysis: dict, snapshot: Mapping, usage_index,
+                                        project_id: str, algorithm_id: str, *, offset=0, limit=20,
+                                        parent_task_ids=()):
+    """Annotate an existing report without changing its original metrics.
+
+    A positive exposure is a risk; incomplete historical coverage is not a
+    passing independent-Test certificate. Quick inference never calls this.
+    """
+    test_ids = set(str(value) for value in (snapshot.get('ids') or {}).get('test',
+                   snapshot.get('test_image_ids') or []))
+    rows = [dict(row, id=str(row.get('image_id') or '')) for row in snapshot.get('images') or []
+            if isinstance(row, Mapping) and (row.get('role') == 'test' or str(row.get('image_id')) in test_ids)]
+    facts = (usage_index.query_filter(project_id, algorithm_id, rows, parent_task_ids=parent_task_ids,
+                                     role='test') if rows else {'coverage': 'unknown', 'by_image_id': {}})
+    conflicts = [
+        {'image_id': image_id, 'reason': 'historical_train_or_validation_exposure'}
+        for image_id, value in facts['by_image_id'].items() if value.get('excluded')
+    ]
+    unresolved = [
+        {'image_id': image_id, 'reason': 'historical_coverage_unknown'}
+        for image_id, value in facts['by_image_id'].items() if value.get('state') == 'unknown'
+    ]
+    status = ('risk' if conflicts else 'insufficient_evidence' if
+              not rows or unresolved or facts['coverage'] != 'complete' else 'passed')
+    issues = conflicts or unresolved
+    analysis['checks'].append({
+        'code': 'historical_test_independence', 'title': '跨训练任务独立 Test 隔离',
+        'status': status, 'count': len(issues), 'details': issues[max(0, offset):max(0, offset) + max(1, limit)],
+        'offset': offset, 'limit': limit,
+        'coverage': facts['coverage'],
+        'explanation': '按冻结图片身份和历史 Train/Val 证据检查；旧历史未完整核实不代表已通过。原始评测指标不改写。',
+    })
+    return analysis

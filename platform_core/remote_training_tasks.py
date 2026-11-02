@@ -575,10 +575,10 @@ class TrainingPrepareHandler:
                     "expected_annotation_revision": AnnotationRepository(project).current_revision(),
                     "duplicate_review": None}
             from .training_material_usage import admit_history_selection
-            history_admission = None
-            if payload.get('history_policy') is not None:
-                split, history_admission = admit_history_selection(context, target, project, algorithm, payload, split,
-                    verified_benchmark_reuse=bool(benchmark_reuse))
+            # history_policy controls Train reuse only. Omitting the optional
+            # field must never bypass mandatory Train/Val/Test isolation.
+            split, history_admission = admit_history_selection(context, target, project, algorithm, payload, split,
+                verified_benchmark_reuse=bool(benchmark_reuse))
             duplicate_review = (
                 normalize_benchmark_duplicate_review(project, payload, split)
                 if benchmark_reuse else validate_duplicate_review(project, payload, split)
@@ -651,11 +651,10 @@ class TrainingPrepareHandler:
                 history_admission=history_admission,
             )
             context.artifacts.atomic_write_json(target.task_id, "input-freeze.json", frozen)
-            if payload.get('history_policy') is not None:
-                from .training_material_usage import record_context_snapshot
-                _rows, _schema, _manifest, usage_snapshot = resolve_training_input_freeze(
-                    frozen, split, seed=int(payload.get('seed') or 0), supplement_candidate_set=supplement)
-                record_context_snapshot(context, target, payload, usage_snapshot)
+            from .training_material_usage import record_context_snapshot
+            _rows, _schema, _manifest, usage_snapshot = resolve_training_input_freeze(
+                frozen, split, seed=int(payload.get('seed') or 0), supplement_candidate_set=supplement)
+            record_context_snapshot(context, target, {**payload, 'history_admission': history_admission}, usage_snapshot)
             truth = selection.truth()
             updated = {
                 **payload,

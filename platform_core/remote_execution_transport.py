@@ -3331,11 +3331,13 @@ class RemoteExecutionTransportService:
         report = dict(report) if isinstance(report, Mapping) else {}
         from .training_material_usage import TrainingMaterialUsage
         usage_runtime = confirmed.get('runtime_result') or {}
+        usage_index = TrainingMaterialUsage(self.task_repository) if self.task_repository is not None else None
         if self.task_repository is not None:
-            TrainingMaterialUsage(self.task_repository).record_execution(task.task_id,
+            usage_index.record_execution(task.task_id,
                 first_batch=usage_runtime.get('training_started') is True,
                 completed_epoch=usage_runtime.get('usage_completed_epoch') is True,
                 validation_observed=usage_runtime.get('usage_validation_observed') is True,
+                test_observed=usage_runtime.get('usage_test_observed') is True,
                 generation=generation, owner=(task.task_id, None, generation))
         completion = result.get("completion")
         completion = dict(completion) if isinstance(completion, Mapping) else {}
@@ -3388,6 +3390,11 @@ class RemoteExecutionTransportService:
             snapshot_truth or None,
             dataset_manifest=dataset_manifest or None,
         )
+        blind_result = report.get('test_result') or {}
+        if (usage_index is not None and benchmark_scope and isinstance(blind_result, Mapping)
+                and str(blind_result.get('status') or '').lower() in {'succeeded', 'passed'}):
+            usage_index.record_execution(task.task_id, test_observed=True,
+                generation=generation, owner=(task.task_id, None, generation))
         frozen_label_schema = [
             dict(item)
             for item in (training.get("label_schema") or [])

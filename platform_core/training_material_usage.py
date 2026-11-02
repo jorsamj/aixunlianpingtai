@@ -17,6 +17,10 @@ from .training_splits import _relation_tokens
 
 
 class TrainingMaterialUsage:
+    # A frozen role is a temporary reservation only while its original Task
+    # remains live. Terminal failures without execution do not become locks.
+    _ACTIVE_STATUSES = ('QUEUED', 'RUNNING', 'CANCEL_REQUESTED', 'AWAITING_CONFIRMATION')
+
     def __init__(self, repository):
         self.path = Path(getattr(repository, 'path', repository))
 
@@ -74,7 +78,8 @@ class TrainingMaterialUsage:
             or datetime.fromisoformat(row['lease_expires_at']) <= datetime.now(timezone.utc)):
             raise PermissionError('training usage evidence execution is fenced')
 
-    def record_selected(self, project_id, algorithm_id, task_id, snapshot, *, source_images=(), owner=None):
+    def record_selected(self, project_id, algorithm_id, task_id, snapshot, *, source_images=(), owner=None,
+                        enforce_isolation=False, parent_task_ids=()):
         records = []
         sources = {str(row.get('id') or ''): row for row in source_images}
         for row in snapshot.get('images') or []:
@@ -104,6 +109,8 @@ class TrainingMaterialUsage:
                     'SELECT image_id,role,tokens_json FROM training_material_usage WHERE task_id=?', (str(task_id),))}
                 records = [(*record[:6], json.dumps(sorted({tuple(token) for token in
                     [*json.loads(record[6]), *prior.get((record[4],record[5]), [])]})), record[7]) for record in records]
+                if enforce_isolation:
+                    self._assert_role_reservations(db, records, parent_task_ids=parent_task_ids)
                 db.executemany('INSERT OR IGNORE INTO training_material_usage(project_id,algorithm_id,task_id,snapshot_id,image_id,role,tokens_json,annotation_hash) VALUES(?,?,?,?,?,?,?,?)', records)
                 for record in records:
                     db.execute('UPDATE training_material_usage SET tokens_json=? WHERE task_id=? AND image_id=? AND role=? AND tokens_json<>?',
@@ -112,9 +119,65 @@ class TrainingMaterialUsage:
                         [(record[0], key, value, record[2], record[4], record[5])
                          for key, value in json.loads(record[6])])
 
-    def record_execution(self, task_id, *, first_batch=False, completed_epoch=False, validation_observed=False, generation=0, owner=None):
+    def _assert_role_reservations(self, db, records, *, parent_task_ids=()):
+        """Serialize role claims with the existing usage index under BEGIN IMMEDIATE.
+
+        Read-then-write admission alone is unsafe across concurrent workers.
+        Historical maintenance intentionally uses record_selected without this
+        guard so genuine old conflicting evidence is preserved for audit.
+        """
+        inherited = set(map(str, parent_task_ids))
+        wanted = sorted({tuple(token) for row in records for token in json.loads(row[6])})
+        matched = {}
+        for start in range(0, len(wanted), 200):
+            batch = wanted[start:start + 200]
+            params = [part for token in batch for part in token]
+            params.append(str(records[0][0]))
+            for row in db.execute(self._token_lookup_sql(len(batch)), params):
+                matched[(row['task_id'], row['image_id'], row['role'])] = dict(row)
+        statuses = self._task_statuses(db, matched)
+        # Index only opposite, live/observed claims by token. Do not compare
+        # every selected image with every historical row (quadratic on 10k+).
+        conflicts_by_token = {}
+        algorithm_id, task_id = (records[0][1], records[0][2]) if records else ('', '')
+        for old in matched.values():
+            if old['task_id'] == task_id or (old['algorithm_id'] != algorithm_id and old['task_id'] not in inherited):
+                continue
+            if int(old['evidence']) <= 0 and statuses.get(old['task_id']) not in self._ACTIVE_STATUSES:
+                continue
+            category = 'test' if old['role'] == 'test' else 'development' if old['role'] in {'train', 'validation'} else ''
+            if not category:
+                continue
+            for token in json.loads(old['tokens_json']):
+                conflicts_by_token.setdefault(tuple(token), {}).setdefault(category, old)
+        for record in records:
+            _project_id, _algorithm_id, _task_id, _snapshot_id, _image_id, role, raw_tokens, _hash = record
+            if role not in {'train', 'validation', 'test'}:
+                continue
+            opposite = 'development' if role == 'test' else 'test'
+            for token in json.loads(raw_tokens):
+                old = conflicts_by_token.get(tuple(token), {}).get(opposite)
+                if old:
+                    code = 'TRAINING_TEST_HISTORY_EXPOSURE' if role == 'test' else 'TRAINING_TEST_RESERVED'
+                    raise ValueError(f'{code}: historical {old["role"]} role conflicts with {role}')
+
+    @staticmethod
+    def _task_statuses(db, rows):
+        if not rows or not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='tasks'").fetchone():
+            return {}
+        statuses = {}
+        ids = sorted({str(row[0]) for row in rows})
+        for start in range(0, len(ids), 200):
+            batch = ids[start:start + 200]
+            for task_id, status in db.execute('SELECT task_id,status FROM tasks WHERE task_id IN (' +
+                                             ','.join('?' for _ in batch) + ')', batch):
+                statuses[task_id] = status
+        return statuses
+
+    def record_execution(self, task_id, *, first_batch=False, completed_epoch=False, validation_observed=False,
+                         test_observed=False, generation=0, owner=None):
         level = 2 if completed_epoch else (1 if first_batch else 0)
-        if not level and not validation_observed:
+        if not level and not validation_observed and not test_observed:
             return
         with closing(self._connect(True)) as db:
             self._schema(db)
@@ -130,6 +193,9 @@ class TrainingMaterialUsage:
                     (level, generation, str(task_id), generation, level))
                 if validation_observed:
                     db.execute("UPDATE training_material_usage SET evidence=2,generation=MAX(generation,?) WHERE task_id=? AND role='validation' AND evidence<2 AND generation<=?",
+                               (generation, str(task_id), generation))
+                if test_observed:
+                    db.execute("UPDATE training_material_usage SET evidence=2,generation=MAX(generation,?) WHERE task_id=? AND role='test' AND evidence<2 AND generation<=?",
                                (generation, str(task_id), generation))
 
     def mark_coverage(self, project_id, algorithm_id, *, complete):
@@ -183,7 +249,7 @@ class TrainingMaterialUsage:
         with closing(self._connect()) as db:
             return self._read_revision(db)
 
-    def has_exposed_records(self, project_id, algorithm_id, *, role='train'):
+    def has_exposed_records(self, project_id, algorithm_id, *, role='train', include_train_history=True):
         """Indexed presence probe for the picker default history policy.
 
         Only evidence that the existing query_filter excludes is relevant;
@@ -191,15 +257,20 @@ class TrainingMaterialUsage:
         """
         if not self.path.is_file():
             return False
-        roles = ('train', 'validation') if role == 'test' else ('train',)
+        roles = (('train', 'validation') if role == 'test' else
+                 ('train', 'test') if include_train_history else ('test',))
         with closing(self._connect()) as db:
             if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='training_usage_tokens'").fetchone():
                 return False
             if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='training_material_usage'").fetchone():
                 return False
+            task_status_clause = (" OR EXISTS (SELECT 1 FROM tasks t WHERE t.task_id=u.task_id AND t.status "
+                "IN ('QUEUED','RUNNING','CANCEL_REQUESTED','AWAITING_CONFIRMATION'))"
+                if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='tasks'").fetchone() else '')
             return db.execute(
-                'SELECT 1 FROM training_material_usage WHERE project_id=? AND algorithm_id=? '
-                'AND evidence>0 AND role IN (' + ','.join('?' for _ in roles) + ') LIMIT 1',
+                'SELECT 1 FROM training_material_usage u WHERE u.project_id=? AND u.algorithm_id=? '
+                'AND (u.evidence>0' + task_status_clause + ') AND u.role IN (' +
+                ','.join('?' for _ in roles) + ') LIMIT 1',
                 (str(project_id), str(algorithm_id), *roles),
             ).fetchone() is not None
 
@@ -232,6 +303,7 @@ class TrainingMaterialUsage:
             job = evidence.get('job') or {}
             self.record_execution(task_id, first_batch=job.get('training_started') is True,
                 completed_epoch=job.get('usage_completed_epoch') is True,
+                test_observed=evidence.get('test_observed') is True,
                 generation=int(evidence.get('generation', 0)))
         return {'processed': len(ids)-len(unresolved), 'unresolved_task_ids': unresolved,
                 'revision': self.read_revision()}
@@ -263,15 +335,22 @@ class TrainingMaterialUsage:
                 # as unseen merely because old batch telemetry is unavailable.
                 exposed += [dict(row, evidence=max(1, row['evidence'])) for row in rows
                             if row['task_id'] in parent_ids and row['role'] in {'train', 'validation'}]
-            # Historical test membership is not itself a benchmark lock. The
-            # original benchmark owner applies its explicit frozen scope.
-            protected = False
+            # Selected-only terminal tasks do not reserve anything. Observed
+            # Test always does; an active Test holds a temporary reservation.
+            protected = role != 'test' and any(row['role'] == 'test' and
+                (row['evidence'] > 0 or row.get('task_status') in self._ACTIVE_STATUSES) for row in rows)
+            if role == 'test':
+                exposed.extend(dict(row, evidence=max(1, row['evidence'])) for row in rows
+                               if row['role'] in {'train', 'validation'}
+                               and row.get('task_status') in self._ACTIVE_STATUSES and row not in exposed)
             level = max((row['evidence'] for row in exposed), default=0)
             state = ('used' if level >= 2 else 'possible' if level else 'selected' if rows else
                      'unused' if index['coverage'] == 'complete' else 'unknown')
-            if not level and any(row['role'] in {'validation', 'test'} and row['evidence'] >= 2 for row in rows):
+            if protected:
+                state = 'test_reserved'
+            elif not level and any(row['role'] in {'validation', 'test'} and row['evidence'] >= 2 for row in rows):
                 state = 'eval_only'
-            by_id[image_id] = {'state': state, 'excluded': bool((exclude_used and level) or protected),
+            by_id[image_id] = {'state': state, 'excluded': bool(((exclude_used or role == 'test') and level) or protected),
                                'benchmark_protected': bool(protected),
                                'current_algorithm_trained': any(row['algorithm_id'] == str(algorithm_id) and row['role'] == 'train' and row['evidence'] > 0 for row in all_matches.values()),
                                'other_algorithm_trained': any(row['algorithm_id'] != str(algorithm_id) and row['role'] == 'train' and row['evidence'] > 0 for row in all_matches.values()),
@@ -335,7 +414,8 @@ class TrainingMaterialUsage:
                 for row in db.execute(self._token_lookup_sql(len(batch)), params):
                     value = dict(row)
                     matched[(value['task_id'],value['image_id'],value['role'])] = value
-            result['records'] = list(matched.values())
+            statuses = self._task_statuses(db, matched)
+            result['records'] = [dict(row, task_status=statuses.get(row['task_id'], '')) for row in matched.values()]
         return result
 
 
@@ -343,9 +423,10 @@ def record_context_snapshot(context, task, payload, snapshot):
     index = TrainingMaterialUsage(context.repository)
     frozen = context.artifacts.read_json(task.task_id, payload.get('input_freeze_ref') or 'input-freeze.json', default={})
     sources = frozen.get('images') or [] if frozen.get('snapshot_id') == snapshot.get('snapshot_id') else []
+    parents = (payload.get('history_admission') or {}).get('parent_task_ids') or ()
     context.run_owned(lambda: index.record_selected(task.project_id,
         payload.get('algorithm_asset_id') or payload.get('asset_algorithm_id') or '', task.task_id, snapshot,
-        source_images=sources, owner=usage_owner(context)))
+        source_images=sources, owner=usage_owner(context), enforce_isolation=True, parent_task_ids=parents))
     return index
 
 
@@ -412,14 +493,22 @@ def admit_history_selection(context, task, project, algorithm, payload, split, *
             context.run_owned(lambda: index.mark_coverage(task.project_id, algorithm['id'], complete=True))
     rows = MaterialRepository(project).get_many((*split.train_image_ids, *split.test_image_ids))
     train = index.query_filter(task.project_id, algorithm['id'], rows,
-                               exclude_used=policy == 'new_for_algorithm')
+                               parent_task_ids=parent_ids, exclude_used=policy == 'new_for_algorithm')
     test = index.query_filter(task.project_id, algorithm['id'], rows, parent_task_ids=parent_ids, role='test')
     train_ids = tuple(item for item in split.train_image_ids if item not in train['excluded_image_ids'])
     if not train_ids:
         raise ValueError('TRAINING_HISTORY_EMPTY: no training materials remain after history exclusion')
-    forbidden = sorted(set(test['excluded_image_ids']))
+    # Incomplete legacy coverage is not proof of independent Test eligibility.
+    # A previously observed and locked Test is allowed for a verified benchmark
+    # comparison; an unknown candidate must not be silently made a new Test.
+    uncertain = set() if verified_benchmark_reuse else {
+        image_id for image_id, fact in test['by_image_id'].items()
+        if fact['state'] == 'unknown' or (test['coverage'] != 'complete' and
+           fact['state'] == 'selected')
+    }
+    forbidden = sorted(set(test['excluded_image_ids']) | uncertain)
     if split.mode == SplitMode.INDEPENDENT_TEST_SET and set(split.test_image_ids) & set(forbidden):
-        raise ValueError('TRAINING_TEST_HISTORY_EXPOSURE: selected Test has prior model exposure')
+        raise ValueError('TRAINING_TEST_HISTORY_EXPOSURE: selected Test has prior exposure or unverified history')
     effective = SplitRequest(mode=split.mode, train_image_ids=train_ids, test_image_ids=split.test_image_ids,
                              experiment_percent=split.experiment_percent, validation_percent=split.validation_percent)
     return effective, {'policy': policy, 'revision': train['revision'], 'coverage': train['coverage'],

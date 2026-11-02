@@ -37,7 +37,8 @@ class FakeCredentials:
         return {}
 
 
-def test_explicit_history_policy_rechecks_usage_and_freezes_robustness(tmp_path):
+@pytest.mark.parametrize('include_policy', [True, False])
+def test_explicit_history_policy_rechecks_usage_and_freezes_robustness(tmp_path, include_policy):
     from types import SimpleNamespace
     from platform_core.training_material_usage import TrainingMaterialUsage
     data_dir = tmp_path / 'data'
@@ -45,8 +46,10 @@ def test_explicit_history_policy_rechecks_usage_and_freezes_robustness(tmp_path)
     project = data_dir / 'projects' / project_id
     repository, artifacts, target_id, _prep_id = _runtime(data_dir, project_id)
     payload = artifacts.read_json(target_id, 'payload.json')
-    payload.update(schema_version=4, train_labels=['fire'], history_policy='new_for_algorithm',
+    payload.update(schema_version=4, train_labels=['fire'],
         robustness_policy={'mode': 'enabled', 'selection': {'mode': 'ratio', 'ratio': 100}})
+    if include_policy:
+        payload['history_policy'] = 'new_for_algorithm'
     index = TrainingMaterialUsage(repository)
     material = MaterialRepository(project).get('image-0')
     index.record_selected(project_id, 'algorithm-fire', 'prior', {'snapshot_id': 'prior-snapshot',
@@ -73,7 +76,9 @@ def test_usage_maintenance_dry_run_interrupt_and_resume_preserves_owners(tmp_pat
     repository, artifacts, target_id, _prep_id = _runtime(data_dir, project_id)
     payload = artifacts.read_json(target_id, 'payload.json')
     payload.update(schema_version=4, train_labels=['fire'])
-    updated = RemoteTrainingPrepareHandler(data_dir)._freeze_request_contract(SimpleNamespace(artifacts=artifacts), repository.get(target_id), payload)
+    updated = RemoteTrainingPrepareHandler(data_dir)._freeze_request_contract(
+        SimpleNamespace(artifacts=artifacts, repository=repository, run_owned=lambda fn: fn()),
+        repository.get(target_id), payload)
     frozen = artifacts.read_json(target_id, 'input-freeze.json')
     split = frozen['split']
     _rows, _schema, _manifest, snapshot = resolve_training_input_freeze(frozen, SplitRequest(
@@ -108,6 +113,43 @@ def test_usage_maintenance_dry_run_interrupt_and_resume_preserves_owners(tmp_pat
     assert (data_dir/'projects'/project_id/'uploads'/'image-0.jpg').read_bytes() == material_bytes
     assert TrainingMaterialUsage(repository).query_filter(project_id, 'algorithm-fire',
         [MaterialRepository(data_dir/'projects'/project_id).get('image-0')])['by_image_id']['image-0']['state'] in {'possible','selected'}
+
+
+def test_historical_test_observation_survives_removed_training_work_directory(tmp_path):
+    from types import SimpleNamespace
+    from platform_core.training_usage_maintenance import rebuild_owner_batch
+    from platform_core.training_material_usage import TrainingMaterialUsage
+    from platform_core.training_tasks import resolve_training_input_freeze
+    from platform_core.training_splits import SplitMode, SplitRequest
+    data_dir = tmp_path / 'data'
+    project_id = _build_project(data_dir)
+    repository, artifacts, task_id, _prep_id = _runtime(data_dir, project_id)
+    payload = artifacts.read_json(task_id, 'payload.json')
+    payload.update(schema_version=4, train_labels=['fire'])
+    updated = RemoteTrainingPrepareHandler(data_dir)._freeze_request_contract(
+        SimpleNamespace(artifacts=artifacts, repository=repository, run_owned=lambda fn: fn()),
+        repository.get(task_id), payload)
+    frozen = artifacts.read_json(task_id, 'input-freeze.json')
+    split = frozen['split']
+    _, _, _, snapshot = resolve_training_input_freeze(frozen, SplitRequest(
+        mode=SplitMode(split['mode']), train_image_ids=tuple(split['train_image_ids']),
+        test_image_ids=tuple(split['test_image_ids']), validation_percent=split['validation_percent'],
+        experiment_percent=split['experiment_percent']), seed=split['seed'])
+    artifacts.atomic_write_json(task_id, 'payload.json', updated)
+    artifacts.atomic_write_json(task_id, 'snapshot.json', snapshot)
+    artifacts.atomic_write_json(task_id, 'result.json', {
+        'snapshot_id': snapshot['snapshot_id'],
+        'dataset_revision_id': snapshot['dataset_revision_id'],
+        'training_report': {'test_result': {'status': 'succeeded', 'image_count': 1}},
+    })
+    # The original training directory/job.json is intentionally absent.
+    with sqlite3.connect(repository.path) as db:
+        db.execute("UPDATE tasks SET status='SUCCEEDED',result_ref='result.json' WHERE task_id=?", (task_id,))
+    rebuild_owner_batch(data_dir, project_id, apply=True)
+    index = TrainingMaterialUsage(repository)
+    image = MaterialRepository(data_dir / 'projects' / project_id).get('image-4')
+    fact = index.query_filter(project_id, 'algorithm-fire', [image], exclude_used=False)
+    assert fact['by_image_id']['image-4']['benchmark_protected'] is True
 
 
 def closing_connection(path):
@@ -624,7 +666,9 @@ def test_queued_prepare_refreezes_remaining_original_scope_and_archives_request(
     # An unrelated new image must never replace the removed requested identity.
     materials.upsert_many([{**materials.get("image-0"), "id": "outside"}])
     handler = RemoteTrainingPrepareHandler(data_dir)
-    updated = handler._freeze_request_contract(SimpleNamespace(artifacts=artifacts), repository.get(target_id), payload)
+    updated = handler._freeze_request_contract(
+        SimpleNamespace(artifacts=artifacts, repository=repository, run_owned=lambda fn: fn()),
+        repository.get(target_id), payload)
     assert updated["train_image_ids"] == ["image-0", "image-2", "image-3"]
     assert updated["input_selection_recheck"]["removed_image_ids"] == ["image-1"]
     assert updated["input_selection_recheck"]["requested_train_count"] == 4
@@ -662,7 +706,7 @@ def test_prepare_never_overwrites_freeze_published_before_payload_crash(tmp_path
     payload = artifacts.read_json(target_id, "payload.json")
     payload.update(schema_version=4, train_labels=["fire"])
     handler = RemoteTrainingPrepareHandler(data_dir)
-    context = SimpleNamespace(artifacts=artifacts)
+    context = SimpleNamespace(artifacts=artifacts, repository=repository, run_owned=lambda fn: fn())
     handler._freeze_request_contract(context, repository.get(target_id), payload)
     path = artifacts.artifact_path(target_id, "input-freeze.json")
     original = path.read_bytes()
