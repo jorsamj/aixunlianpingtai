@@ -3391,6 +3391,22 @@ class RemoteExecutionTransportService:
             dataset_manifest=dataset_manifest or None,
         )
         blind_result = report.get('test_result') or {}
+        if isinstance(blind_result, Mapping) and str(blind_result.get('status') or '').lower() in {'succeeded', 'passed'}:
+            if not benchmark_scope or benchmark_scope.get('binding_level') != 'bundle_verified':
+                raise RemoteExecutionTransportError('TRAINING_TEST_HISTORY_UNKNOWN',
+                    'formal Test scoring requires verified frozen dataset bundle', 409)
+            if usage_index is None:
+                raise RemoteExecutionTransportError('TRAINING_TEST_HISTORY_UNKNOWN',
+                    'formal Test requires authoritative Task usage history', 409)
+            from .training_material_usage import assert_formal_test_independence, require_formal_history_admission
+            try:
+                history = require_formal_history_admission(training.get('history_admission'))
+                assert_formal_test_independence(usage_index, snapshot_truth, task.project_id,
+                    str(payload.get('algorithm_asset_id') or payload.get('asset_algorithm_id') or ''),
+                    parent_task_ids=history.get('parent_task_ids') or (),
+                    benchmark_reuse=bool(payload.get('benchmark_reuse')))
+            except ValueError as error:
+                raise RemoteExecutionTransportError('TRAINING_TEST_HISTORY_EXPOSURE', str(error), 409) from error
         if (usage_index is not None and benchmark_scope and isinstance(blind_result, Mapping)
                 and str(blind_result.get('status') or '').lower() in {'succeeded', 'passed'}):
             usage_index.record_execution(task.task_id, test_observed=True,
@@ -3459,6 +3475,7 @@ class RemoteExecutionTransportService:
             base_version_name=model_contract.get("base_version_name"),
             base_model=base_model_name,
             base_selection_reason=model_contract.get("base_selection_reason"),
+            model_ancestry=(training.get('history_admission') or {}).get('model_ancestry'),
             execution={
                 "mode": "agent",
                 "worker_id": worker_id,

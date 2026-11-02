@@ -1434,7 +1434,10 @@ def main():
                     dataset_root=dataset_root.resolve()
                 test_images_dir=dataset_root/"images"/"test"
                 hidden_ground_truth_dir=dataset_root.parent/"evaluation"/"ground_truth"/"test"
+                from platform_core.training_material_usage import assert_frozen_formal_test
                 current_job=read_json(job_file,{})
+                assert_frozen_formal_test(project_dir, args.job_id,
+                    str(current_job.get('snapshot_id') or ''))
                 update_job(
                     job_file,
                     progress_percent=max(96.0,float(current_job.get("progress_percent") or 0.0)),

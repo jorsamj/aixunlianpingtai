@@ -140,6 +140,7 @@ def build_training_lineage(
     base_version_name: Any = "",
     base_model: Any = "",
     base_selection_reason: Any = "",
+    model_ancestry: Iterable[Mapping[str, Any]] | None = None,
     execution: Mapping[str, Any] | None = None,
     requested_params: Mapping[str, Any] | None = None,
     actual_params: Mapping[str, Any] | None = None,
@@ -175,6 +176,24 @@ def build_training_lineage(
         base["selection_reason"] = value
     if base:
         lineage["base"] = base
+
+    if model_ancestry is not None:
+        parents = []
+        seen = set()
+        for raw in model_ancestry:
+            if not isinstance(raw, Mapping):
+                raise ValueError('model ancestry entry must be a mapping')
+            entry = {key: _text(raw.get(key)) for key in ('algorithm_id', 'version_id', 'task_id', 'snapshot_id')}
+            if not all(entry.values()):
+                raise ValueError('model ancestry entry is incomplete')
+            key = (entry['algorithm_id'], entry['version_id'])
+            if key not in seen:
+                parents.append(entry)
+                seen.add(key)
+            if len(parents) > 100:
+                raise ValueError('model ancestry exceeds safety bound')
+        if parents:
+            lineage['model_ancestry'] = parents
 
     execution_value = _primitive_mapping(execution, _EXECUTION_KEYS)
     worker_id = _text(execution_value.get("worker_id"))

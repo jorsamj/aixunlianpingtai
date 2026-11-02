@@ -258,6 +258,8 @@ def main() -> int:
             progress_percent=97.0,
         )
         try:
+            from platform_core.training_material_usage import assert_frozen_formal_test
+            assert_frozen_formal_test(project_dir, args.task_id, args.snapshot_id)
             blind_result = _blind_test(best_model, data_yaml, runtime_device, args.imgsz)
             training_report["test_result"] = blind_result
             training_report["test_metrics"] = blind_result.get("metrics") or {}

@@ -1311,6 +1311,17 @@ def test_remote_training_result_is_generation_scoped_verified_and_committed_afte
         task_artifacts=artifacts,
     )
     task, payload, bundle_bytes, bundle_sha = _remote_training_fixture()
+    # The artifact-commit test uses a synthetic Task. Supply a deterministic
+    # authoritative usage index so a formally scored result cannot bypass the
+    # new mandatory history gate just because this fixture has no Task DB.
+    payload['remote_execution']['training']['history_admission'] = {
+        'revision': '1', 'parent_task_ids': [], 'model_ancestry': []}
+    transport.task_repository = object()
+    monkeypatch.setattr('platform_core.training_material_usage.TrainingMaterialUsage',
+        lambda _repo: SimpleNamespace(
+            record_execution=lambda *args, **kwargs: None,
+            query_filter=lambda *args, **kwargs: {'coverage': 'complete', 'revision': '1',
+                'excluded_image_ids': [], 'by_image_id': {'test-1': {'state': 'unused'}}}))
     payload["remote_execution"]["training"]["params"].update({
         "resource_strategy": "auto",
         "resource_profile": "performance",

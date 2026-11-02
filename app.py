@@ -11457,9 +11457,11 @@ def _advanced_trust_evidence(project_id, algorithm_id, version, model, *, offset
         snapshot = read_json(project_dir(project_id) / 'snapshots' / f'{snapshot_id}.json', {})
     analysis = analyze_evaluation_trust(evaluation, snapshot, version, verified_model=model,
                                         detail_offset=offset, detail_limit=limit)
+    ancestry = (version.get('training_lineage') or {}).get('model_ancestry') or []
     return append_historical_test_independence(
         analysis, snapshot, TrainingMaterialUsage(shared_task_repository()), project_id, algorithm_id,
-        offset=offset, limit=limit)
+        offset=offset, limit=limit,
+        parent_task_ids=[str(item.get('task_id') or '') for item in ancestry if isinstance(item, dict) and item.get('task_id')])
 
 
 @app.get('/api/v12/projects/{project_id}/algorithms/{algorithm_id}/versions/{version_id}/evaluation/trust')
@@ -12912,6 +12914,7 @@ def _v48_archive_training_version_locked(project_id: str, job: Dict[str, Any]) -
         base_version_name=job.get("base_version_name"),
         base_model=job.get("base_model_path") or job.get("model"),
         base_selection_reason=job.get("base_selection_reason"),
+        model_ancestry=(job.get('history_admission') or {}).get('model_ancestry'),
         execution={
             "mode": execution_resource.get("type") or job.get("target") or "local",
             "worker_id": job.get("worker_id"),
@@ -12965,6 +12968,15 @@ def _v48_archive_training_version_locked(project_id: str, job: Dict[str, Any]) -
         snapshot_truth if isinstance(snapshot_truth, dict) else None,
         dataset_manifest=dataset_manifest or None,
     )
+    legacy_blind = training_report.get('test_result') or {}
+    if isinstance(legacy_blind, dict) and str(legacy_blind.get('status') or '').lower() in {'succeeded', 'passed'}:
+        if not benchmark_scope or benchmark_scope.get('binding_level') != 'bundle_verified':
+            raise ValueError('TRAINING_TEST_HISTORY_UNKNOWN: formal scoring requires verified frozen Test bundle')
+        from platform_core.training_material_usage import TrainingMaterialUsage, assert_formal_test_independence, require_formal_history_admission
+        history = require_formal_history_admission(job.get('history_admission'))
+        assert_formal_test_independence(TrainingMaterialUsage(shared_task_repository()), snapshot_truth,
+            project_id, algorithm_id, parent_task_ids=history.get('parent_task_ids') or (),
+            benchmark_reuse=bool(job.get('benchmark_reuse')))
     evaluation = build_evaluation_truth(
         training_report.get("test_result"),
         task_id=str(job.get("task_id") or job.get("id") or ""),

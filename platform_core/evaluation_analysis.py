@@ -268,12 +268,14 @@ def append_historical_test_independence(analysis: dict, snapshot: Mapping, usage
     ]
     status = ('risk' if conflicts else 'insufficient_evidence' if
               not rows or unresolved or facts['coverage'] != 'complete' else 'passed')
-    issues = conflicts or unresolved
+    issues = conflicts + unresolved
     analysis['checks'].append({
         'code': 'historical_test_independence', 'title': '跨训练任务独立 Test 隔离',
         'status': status, 'count': len(issues), 'details': issues[max(0, offset):max(0, offset) + max(1, limit)],
         'offset': offset, 'limit': limit,
         'coverage': facts['coverage'],
+        'reason_counts': {'historical_train_or_validation_exposure': len(conflicts),
+                          'historical_coverage_unknown': len(unresolved)},
         'explanation': '按冻结图片身份和历史 Train/Val 证据检查；旧历史未完整核实不代表已通过。原始评测指标不改写。',
     })
     return analysis

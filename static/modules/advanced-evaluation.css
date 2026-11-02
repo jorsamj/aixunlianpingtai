@@ -8,6 +8,10 @@
 .advanced-tabs{display:flex;gap:8px;flex-wrap:wrap}
 .advanced-trust-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
 .advanced-trust-check,.advanced-coverage{padding:18px;min-width:0}
+.advanced-test-trust{padding:18px;margin-bottom:14px}
+.advanced-test-trust header{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.advanced-test-trust h3{font-size:15px;margin:0}
+.advanced-test-trust p{color:var(--muted,#61758a);font-size:13px;line-height:1.6;margin:8px 0 0}
 .advanced-trust-check h3{font-size:15px}
 .advanced-trust-check li{overflow-wrap:anywhere;margin:10px 0;font-size:12px}
 .advanced-trust-check li span{display:block;margin-top:6px}

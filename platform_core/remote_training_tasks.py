@@ -616,6 +616,11 @@ class TrainingPrepareHandler:
                 label_contract = resolve_training_label_contract(
                     self.data_dir, project, label_request, algorithm,
                 )
+                admitted_sha = str(history_admission.get('base_model_sha256') or '')
+                frozen_sha = str(label_contract.get('base_model_sha256') or '')
+                if admitted_sha and admitted_sha != frozen_sha:
+                    raise RemoteTrainingPreparationError('TRAINING_BASE_ANCESTRY_CHANGED',
+                        '训练母模型在历史隔离核验后发生变化，请重新提交任务', target_status=TaskStatus.FAILED)
                 compatibility = evaluate_selection_compatibility(
                     project,
                     selection,
@@ -731,6 +736,7 @@ class TrainingPrepareHandler:
             "input_freeze_id": payload.get("input_freeze_id"),
             "snapshot_id": payload.get("snapshot_id"),
             "dataset_revision_id": payload.get("dataset_revision_id"),
+            "history_admission": payload.get("history_admission"),
             "input_quality": payload.get("input_quality"),
             "base_version_id": payload.get("base_version_id"),
             "base_version_name": payload.get("base_version_name") or "",
@@ -1795,6 +1801,7 @@ class TrainingPrepareHandler:
                     "snapshot_id": str(snapshot.get("snapshot_id") or ""),
                     "dataset_revision_id": str(snapshot.get("dataset_revision_id") or ""),
                     "supplement_provenance": snapshot.get("supplement_provenance"),
+                    "history_admission": payload.get('history_admission'),
                     "label_schema": frozen_label_schema,
                     "label_codes": frozen_label_codes,
                     "label_contract": frozen_label_contract,

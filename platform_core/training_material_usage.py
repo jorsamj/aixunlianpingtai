@@ -8,6 +8,7 @@ from __future__ import annotations
 from .performance_diagnostics import connect_sqlite, observe_connection, stage, count
 
 import json
+import hashlib
 import sqlite3
 from contextlib import closing
 from pathlib import Path
@@ -437,6 +438,115 @@ def usage_owner(context):
     return (context.task.task_id, lease.lease_token, int(getattr(context, 'execution_generation', getattr(context.task, 'attempt', 0))))
 
 
+def _verified_weight_parents(project, base_selection, *, catalog=None):
+    """A local, content-identical verified checkpoint links algorithms; names do not.
+
+    Only inspect the *chosen* training weight. A remote URL, model family,
+    advertised version ID, or filename similarity cannot establish ancestry.
+    """
+    from .algorithms import list_algorithms
+
+    selected = str(base_selection.get('base_model_path') or '').strip()
+    path = Path(selected).expanduser() if selected else None
+    if path is None or not path.is_file() or path.suffix.lower() not in {'.pt', '.pdparams', '.pdmodel', '.pdiparams'}:
+        return [], ''
+    digest = hashlib.sha256()
+    with path.open('rb') as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b''):
+            digest.update(block)
+    selected_sha = digest.hexdigest()
+    matches = []
+    for candidate in (catalog if catalog is not None else list_algorithms(Path(project) / 'algorithms.json')):
+        for version in candidate.get('versions') or []:
+            if version.get('artifact_verified') is not True:
+                continue
+            verified = {str(item.get('sha256') or '').lower() for item in version.get('verified_models') or []
+                        if isinstance(item, dict) and item.get('verified') is not False}
+            # Older verified local archives predate verified_models. Their
+            # original on-disk checkpoint can still prove an exact match.
+            if not verified:
+                for field in ('best_path', 'last_path', 'stored_path'):
+                    archived = str(version.get(field) or '').strip()
+                    if not archived:
+                        continue
+                    other_path = Path(archived).expanduser()
+                    if other_path.is_file() and other_path.resolve() == path.resolve():
+                        verified.add(selected_sha)
+            if selected_sha in verified:
+                matches.append((str(candidate.get('id') or ''), str(version.get('id') or '')))
+    return sorted(set(matches)), selected_sha
+
+
+def assert_formal_test_independence(index, snapshot, project_id, algorithm_id, *,
+                                    parent_task_ids=(), benchmark_reuse=False):
+    """Mandatory late fence before publishing any independent-Test scores.
+
+    Works on original frozen pixel identities, not mutable material-list rows.
+    A historical query's absence of matches is not proof while coverage is
+    incomplete. Inference without ground-truth metrics does not call this.
+    """
+    rows = [dict(row, id=str(row.get('image_id') or '')) for row in snapshot.get('images') or []
+            if isinstance(row, dict) and row.get('role') == 'test']
+    declared_test = snapshot.get('test_image_ids')
+    if declared_test is None and isinstance(snapshot.get('ids'), dict):
+        declared_test = snapshot['ids'].get('test')
+    if declared_test is not None and set(map(str, declared_test)) != {row['id'] for row in rows}:
+        raise ValueError('TRAINING_TEST_HISTORY_UNKNOWN: frozen Test identities and role rows differ')
+    if not rows:
+        raise ValueError('TRAINING_TEST_HISTORY_UNKNOWN: formal Test has no frozen image evidence')
+    if not str(snapshot.get('snapshot_id') or '') or any(not row['id'] or not row.get('content_sha256') for row in rows):
+        raise ValueError('TRAINING_TEST_HISTORY_UNKNOWN: formal Test snapshot identity missing')
+    result = index.query_filter(project_id, algorithm_id, rows,
+                                parent_task_ids=parent_task_ids, role='test')
+    excluded = sorted(result['excluded_image_ids'])
+    if excluded:
+        raise ValueError('TRAINING_TEST_HISTORY_EXPOSURE: formal Test contains exposed Train/Val identities: '
+                         + ', '.join(excluded[:5]))
+    if result['coverage'] != 'complete' and not benchmark_reuse:
+        raise ValueError('TRAINING_TEST_HISTORY_UNKNOWN: historical coverage not verified before formal scoring')
+    if any(result['by_image_id'][row['id']]['state'] == 'unknown' for row in rows) and not benchmark_reuse:
+        raise ValueError('TRAINING_TEST_HISTORY_UNKNOWN: Test image exposure is unknown')
+    return {'status': 'passed', 'test_count': len(rows), 'revision': result['revision'],
+            'coverage': result['coverage']}
+
+
+def require_formal_history_admission(admission):
+    """Prevents pre-enforcement or unbound requests certifying fresh Test scores."""
+    if (not isinstance(admission, dict) or not str(admission.get('revision') or '')
+            or not isinstance(admission.get('parent_task_ids'), list)
+            or not isinstance(admission.get('model_ancestry'), list)):
+        raise ValueError('TRAINING_TEST_HISTORY_UNKNOWN: formal scoring requires frozen history admission')
+    return admission
+
+
+def assert_frozen_formal_test(project_dir, task_id, snapshot_id):
+    """Local checkpoint/scoring worker late gate; original Task controls scope."""
+    from .task_runtime.artifacts import ArtifactStore
+    project = Path(project_dir).resolve()
+    data_dir = project.parent.parent
+    artifacts = ArtifactStore(data_dir / 'task_runtime' / 'artifacts')
+    snapshot = artifacts.read_json(task_id, 'snapshot.json', default={})
+    if not isinstance(snapshot, dict) or snapshot.get('snapshot_id') != snapshot_id:
+        raise ValueError('TRAINING_TEST_HISTORY_UNKNOWN: original frozen Test snapshot missing or changed')
+    payload = artifacts.read_json(task_id, 'payload.json', default={})
+    if not isinstance(payload, dict) or str(payload.get('snapshot_id') or '') != snapshot_id:
+        raise ValueError('TRAINING_TEST_HISTORY_UNKNOWN: original Task payload does not bind Test snapshot')
+    algorithm_id = str(payload.get('algorithm_asset_id') or payload.get('asset_algorithm_id') or '')
+    if not algorithm_id:
+        raise ValueError('TRAINING_TEST_HISTORY_UNKNOWN: formal Test algorithm identity missing')
+    admission = require_formal_history_admission(payload.get('history_admission'))
+    frozen = artifacts.read_json(task_id, payload.get('input_freeze_ref') or 'input-freeze.json', default={})
+    if (not isinstance(frozen, dict) or frozen.get('snapshot_id') != snapshot_id
+            or frozen.get('history_admission') != admission):
+        raise ValueError('TRAINING_TEST_HISTORY_UNKNOWN: frozen input history identity does not match Task')
+    if not snapshot.get('test_image_ids') and not (snapshot.get('ids') or {}).get('test'):
+        return {'status': 'not_requested', 'test_count': 0}
+    return assert_formal_test_independence(
+        TrainingMaterialUsage(data_dir / 'task_runtime' / 'tasks.sqlite3'), snapshot,
+        project.name, algorithm_id, parent_task_ids=admission.get('parent_task_ids') or (),
+        benchmark_reuse=bool(payload.get('benchmark_reuse')))
+
+
 def admit_history_selection(context, task, project, algorithm, payload, split, *, base_version_id=None, verified_benchmark_reuse=False):
     """Recheck original indexed facts before freeze, using the original GT fence."""
     from .material_repository import MaterialRepository
@@ -445,44 +555,76 @@ def admit_history_selection(context, task, project, algorithm, payload, split, *
     if policy not in {'new_for_algorithm', 'include_history'}:
         raise ValueError('invalid training history_policy')
     index = TrainingMaterialUsage(context.repository)
+    from .algorithms import list_algorithms
+    catalog = {str(item.get('id') or ''): item for item in list_algorithms(Path(project) / 'algorithms.json')}
+    # The caller may already hold a freshly updated algorithm not yet visible
+    # in a read-cache; it is the authoritative current-algorithm selection.
+    catalog[str(algorithm['id'])] = algorithm
     versions = {str(row.get('id') or ''): row for row in algorithm.get('versions') or []}
-    parent_ids, unknown_parents, visited = [], [], set()
+    parent_ids, unknown_parents, visited, ancestry = [], [], set(), []
     from .training_label_tasks import _iteration_base
-    previous, _base_selection = _iteration_base(algorithm, str(payload.get('model') or ''), str(payload.get('framework') or 'ultralytics'))
-    current_id = str(base_version_id or payload.get('base_version_id') or (previous or {}).get('id') or '')
-    while current_id:
-        if current_id in visited or len(visited) >= 100:
+    previous, base_selection = _iteration_base(algorithm, str(payload.get('model') or ''), str(payload.get('framework') or 'ultralytics'))
+    selected_id = str((previous or {}).get('id') or '')
+    requested_id = str(base_version_id or payload.get('base_version_id') or '')
+    if requested_id and requested_id != selected_id:
+        raise ValueError('TRAINING_TEST_ANCESTRY_UNKNOWN: requested base version does not match selected checkpoint')
+    matched, base_sha = _verified_weight_parents(project, base_selection, catalog=catalog.values())
+    pending = [(str(algorithm['id']), selected_id)] if selected_id else []
+    pending.extend(pair for pair in matched if pair not in pending)
+    while pending:
+        algorithm_id, current_id = pending.pop(0)
+        key = (algorithm_id, current_id)
+        if key in visited:
+            continue
+        if len(visited) >= 100:
             raise ValueError('training parent lineage is cyclic or exceeds safety bound')
-        visited.add(current_id)
-        version = versions.get(current_id)
+        visited.add(key)
+        origin = catalog.get(algorithm_id) or {}
+        version = next((row for row in origin.get('versions') or [] if str(row.get('id') or '') == current_id), None)
         if not version:
-            unknown_parents.append(current_id)
-            break
+            unknown_parents.append(f'{algorithm_id}:{current_id}')
+            continue
         lineage = version.get('training_lineage') or {}
-        parent_task = str(version.get('training_job_id') or lineage.get('task_id') or '')
+        parent_task = str(version.get('training_job_id') or version.get('task_id') or lineage.get('task_id') or '')
         snapshot_id = str(version.get('snapshot_id') or lineage.get('snapshot_id') or '')
+        ancestry.append({'algorithm_id': algorithm_id, 'version_id': current_id,
+                         'task_id': parent_task, 'snapshot_id': snapshot_id})
         if parent_task:
-            parent_ids.append(parent_task)
             parent_record = context.repository.get(parent_task)
             if parent_record is None or parent_record.project_id != task.project_id:
-                unknown_parents.append(current_id)
-                current_id = str((lineage.get('base') or {}).get('version_id') or '')
-                continue
-            snapshot = context.artifacts.read_json(parent_task, 'snapshot.json', default={})
-            if snapshot_id and snapshot.get('snapshot_id') == snapshot_id:
-                parent_freeze = context.artifacts.read_json(parent_task, 'input-freeze.json', default={})
-                sources = parent_freeze.get('images') or [] if parent_freeze.get('snapshot_id') == snapshot_id else []
-                context.run_owned(lambda: index.record_selected(task.project_id, algorithm['id'], parent_task, snapshot,
-                    source_images=sources, owner=usage_owner(context)))
-                # A verified committed model attests exposure, without inventing
-                # which epoch or exact batch touched any individual source.
-                if version.get('artifact_verified') is True:
-                    context.run_owned(lambda: index.record_execution(parent_task, first_batch=True, owner=usage_owner(context)))
+                unknown_parents.append(f'{algorithm_id}:{current_id}')
             else:
-                unknown_parents.append(current_id)
+                snapshot = context.artifacts.read_json(parent_task, 'snapshot.json', default={})
+                if snapshot_id and snapshot.get('snapshot_id') == snapshot_id and version.get('artifact_verified') is True:
+                    parent_ids.append(parent_task)
+                    parent_freeze = context.artifacts.read_json(parent_task, 'input-freeze.json', default={})
+                    sources = parent_freeze.get('images') or [] if parent_freeze.get('snapshot_id') == snapshot_id else []
+                    context.run_owned(lambda: index.record_selected(task.project_id, algorithm_id, parent_task, snapshot,
+                        source_images=sources, owner=usage_owner(context)))
+                    # A verified committed model attests Train/Val exposure;
+                    # only a separately bound successful blind evaluation can
+                    # attest Test observation if the old job telemetry is gone.
+                    evaluation = version.get('evaluation') or {}
+                    scope = evaluation.get('benchmark_scope') or {}
+                    tested = (evaluation.get('status') == 'succeeded'
+                              and evaluation.get('snapshot_id') == snapshot_id
+                              and scope.get('binding_level') == 'bundle_verified')
+                    context.run_owned(lambda: index.record_execution(parent_task, first_batch=True,
+                        test_observed=tested, owner=usage_owner(context)))
+                else:
+                    unknown_parents.append(f'{algorithm_id}:{current_id}')
         else:
-            unknown_parents.append(current_id)
-        current_id = str((lineage.get('base') or {}).get('version_id') or '')
+            unknown_parents.append(f'{algorithm_id}:{current_id}')
+        base_id = str((lineage.get('base') or {}).get('version_id') or '')
+        if base_id:
+            pending.append((algorithm_id, base_id))
+        for inherited in lineage.get('model_ancestry') or []:
+            if not isinstance(inherited, dict):
+                raise ValueError('TRAINING_TEST_ANCESTRY_UNKNOWN: invalid inherited model lineage')
+            inherited_algo, inherited_version = str(inherited.get('algorithm_id') or ''), str(inherited.get('version_id') or '')
+            if not inherited_algo or not inherited_version:
+                raise ValueError('TRAINING_TEST_ANCESTRY_UNKNOWN: incomplete inherited model lineage')
+            pending.append((inherited_algo, inherited_version))
     if unknown_parents and not verified_benchmark_reuse:
         raise ValueError('TRAINING_TEST_ANCESTRY_UNKNOWN: 父模型训练来源证据缺失，不能证明新试验集独立；请恢复血缘证据或使用已核验的冻结基准')
     if not versions:
@@ -512,6 +654,7 @@ def admit_history_selection(context, task, project, algorithm, payload, split, *
     effective = SplitRequest(mode=split.mode, train_image_ids=train_ids, test_image_ids=split.test_image_ids,
                              experiment_percent=split.experiment_percent, validation_percent=split.validation_percent)
     return effective, {'policy': policy, 'revision': train['revision'], 'coverage': train['coverage'],
+        'base_model_sha256': base_sha, 'model_ancestry': ancestry,
         'excluded_train_image_ids': sorted(set(split.train_image_ids)-set(train_ids)),
-        'forbidden_test_image_ids': forbidden, 'parent_task_ids': parent_ids,
+        'forbidden_test_image_ids': forbidden, 'parent_task_ids': sorted(set(parent_ids)),
         'unknown_parent_version_ids': unknown_parents}

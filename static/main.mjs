@@ -1,7 +1,7 @@
 import {installNegativePoolRuntime} from './modules/negative-pool-runtime.js?v=20261102-material-action';
 import {ADVANCED_MENUS, advancedPageInfo, installAdvancedNavigation} from './modules/advanced-navigation.js?v=20261024';
 import {installQualityDetectionWorkbench} from './modules/quality-detection-workbench.js?v=20261028-ui';
-import {installAdvancedEvaluation} from './modules/advanced-evaluation.js?v=20261023p2';
+import {installAdvancedEvaluation} from './modules/advanced-evaluation.js?v=20261102-history';
 import {renderLegacyMaterialCompatibility} from './modules/legacy-material-compatibility.js?v=20261023fullscan';
 import {createAnnotoriousEditor} from './modules/annotorious-editor.js?v=20261022a';
 import {annotationColor,withLegacyBoxIdentities} from './modules/annotation-geometry-adapter.js?v=20261022a';

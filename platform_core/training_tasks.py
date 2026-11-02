@@ -2641,6 +2641,15 @@ class TrainingHandler:
         # reserve. Selected-only failed/cancelled tasks release their pending
         # reservation when their original Task becomes terminal.
         blind_result = ((job.get('training_report') or {}).get('test_result') or {})
+        if str(blind_result.get('status') or '').lower() in {'succeeded', 'passed'}:
+            if not benchmark_scope or benchmark_scope.get('binding_level') != 'bundle_verified':
+                raise ValueError('TRAINING_TEST_HISTORY_UNKNOWN: formal scoring requires verified frozen Test bundle')
+            from .training_material_usage import assert_formal_test_independence, require_formal_history_admission
+            admission = require_formal_history_admission(payload.get('history_admission'))
+            assert_formal_test_independence(usage_index, snapshot, context.task.project_id,
+                str(payload.get('algorithm_asset_id') or payload.get('asset_algorithm_id') or ''),
+                parent_task_ids=admission.get('parent_task_ids') or (),
+                benchmark_reuse=bool(payload.get('benchmark_reuse')))
         if benchmark_scope and str(blind_result.get('status') or '').lower() in {'succeeded', 'passed'}:
             context.run_owned(lambda: usage_index.record_execution(
                 context.task.task_id, test_observed=True,
@@ -2849,6 +2858,7 @@ class TrainingHandler:
             base_version_name=job.get("base_version_name"),
             base_model=job.get("model") or payload.get("model"),
             base_selection_reason=job.get("base_selection_reason"),
+            model_ancestry=(payload.get('history_admission') or {}).get('model_ancestry'),
             execution={
                 "mode": str(payload.get("target") or "local"),
                 "worker_id": context.lease.worker_id,
