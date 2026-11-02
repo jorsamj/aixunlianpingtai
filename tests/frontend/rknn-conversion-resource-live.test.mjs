@@ -63,7 +63,7 @@ function setup(getResource) {
       if(!url.endsWith('/deploy/resolve'))throw new Error('unexpected legacy resource API');
       const body=JSON.parse(options.body),params=body.params,r=(state.conv428Resources||[]).find(r=>r.id===body.resource_id);
       const chips=catalog.chips.filter(c=>c.vendor_id===params.local_vendor_id);
-      const found=chips.find(c=>c.id===params.local_chip_id),supported=(r?.supported_chips||[]).includes(found?.id);
+      const found=chips.find(c=>c.id===params.local_chip_id),supported=(!r?.detection||r.detection.state==='available')&&(r?.supported_chips||[]).includes(found?.id);
       const allowed=body.target==='sophon'?['fp16']:['fp16'];
       return {ready:!!supported,status:supported?'convertible':'not_convertible',errors:supported?[]:['SDK未支持所选芯片'],
         allowed_precisions:allowed,parameter_sources:{precision:'SDK/芯片约束'},params:{...params,chip:found?.id,precision:'fp16',input_width:640,input_height:640},
@@ -179,6 +179,28 @@ test('unadapted vendor never fabricates SDK capability or shows pending detectio
   assert.equal(h.submit.disabled,true);
 });
 
+test('expired resource stays selectable for explicit SDK re-detection but cannot submit before fresh evidence',async()=>{
+  const expired={...resource('old-sdk',['rk3568']),last_checked_at:'2026-11-02T01:00:00Z',
+    detection:{state:'expired'}};
+  const h=setup(async()=>({items:[expired]}));
+  await h.win.openNewConvertCore416('a','v');
+  assert.equal(h.select.value,'old-sdk');
+  assert.match(h.select.innerHTML,/检测已过期/);
+  assert.match(h.chip.innerHTML,/检测已过期/);
+  assert.equal(h.submit.disabled,true);
+  const previous=h.win.api;
+  let calls=0;
+  h.win.api=(url,options)=>url.endsWith('/detect')
+    ? (calls++,{...expired,last_checked_at:'2026-11-02T01:01:00Z',detection:{state:'available'}})
+    : previous(url,options);
+  await h.win.refreshVersionConversionResources428(true);
+  assert.equal(calls,1);
+  assert.equal(h.select.value,'old-sdk');
+  h.chip.value='rk3568';
+  await h.win.refreshConvertContract428();
+  assert.equal(h.submit.disabled,false);
+});
+
 
 test('T01-T03: opening fetches authoritative RKNN chips despite an old cached snapshot', async () => {
   const h=setup(async () => ready());
@@ -210,7 +232,9 @@ test('T04-T05 and T08: switching local and Agent resources never reuses unsuppor
   h.chip.value='rk3576';await h.win.refreshConvertContract428();assert.equal(h.submit.disabled,false);
   h.select.value='local'; h.select.onchange();
   assert.deepEqual(h.chip.options.map(o=>o.value),['','rk3568','rk3576']);
-  assert.ok(h.select.options.every(o=>o.value!=='offline'));
+  assert.ok(h.select.options.some(o=>o.value==='offline'));
+  h.select.value='offline';h.select.onchange();
+  assert.equal(h.submit.disabled,true);
 });
 
 test('T06-T07: SDK failure and resource offline disable conversion without stale chips', async () => {

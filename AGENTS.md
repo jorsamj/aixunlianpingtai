@@ -1,4 +1,6 @@
-> **最新开发 42.24.488（模型转换多厂商 P0，准确新 SHA CI 待验）**：远端开发分支 487 `377e95b3319eca0f350f8d014843a084f98f1a00` 已按准确 SHA 核 39/39 Actions success；生产已知 485。488 只在原转换 Owner 实施：版本源定向 SQL 读取（免扫全项目 job.json/算法列表）、逐资源真实能力/过期/未适配芯片状态、多 Web Worker 检测同资源锁和配置 CAS、部署资源 JSON 原子写、原性能诊断 resolve/catalog 定时，原 30 秒截止未增大。详见 `docs/MODEL_VERSION_CONVERSION_GOVERNANCE_2026_10_28.md` 顶部。隔离 Python/Node 已有局部通过，完整 CI/Chrome/生产真实 P95 待验，严禁以隔离测试代表 SDK 真正可用；不部署、不改生产正式数据、模型/OSS/任务，不 merge/tag/release/force push。
+> **最新开发 42.24.489（转换过期资源主动重检闭环）**：准确远端 488 `eb84b27fd2dc550821800f066219bcd7947b2804`，专项 Remote Conversion Runtime Push **4/4 jobs success** 含真实 Chrome。489 修正 488 仅让 ready 资源进入下拉框导致过期/待检资源无法通过原弹窗主动重检：所有当前目标的已配置资源可选，但无有效证据绝不准提交，保留原选择和芯片；原生 JS 回归 30/30。其余多厂商 SDK 证据、定向 SQL、跨 Web 检测 CAS、原 30s 截止均沿用 488。唯一专项见 `docs/MODEL_VERSION_CONVERSION_GOVERNANCE_2026_10_28.md`。489 最终 SHA CI 待验；生产已知 485，真实 SDK/板端和生产 P95 未验，严禁部署、修改正式任务/权重/OSS/DB、合并 main、tag/release/force push。
+
+> **前版 42.24.488（专项推送 CI 已验）**：原 487 `377e95b3` 39/39 Actions success。488 在原转换 Owner 完成版本源定向 SQL、逐资源 SDK/芯片真实检测状态、跨 Web 锁/CAS、原子资源保存与 opt-in Server-Timing，Node1470/1470、Python271通过/1个旧HTTP TestClient隔离环境挂起；准确 SHA `eb84b27fd2dc550821800f066219bcd7947b2804` Remote Conversion Runtime Push 4/4 成功，其它 Actions 在 489 接续时尚运行。生产未部署，硬件与生产 P95 不可冒充已验证。
 
 > **前版 42.24.487（已按准确远端 SHA 验收）**：在 486 `feb5f825` 38/38 Actions 全绿基础上新增跨页/全筛选/全部问题人工审核冻结计划、每批20张持久补审、暂停恢复、逐图GT CAS/可信审核人审计和失败分页；原训练草稿保留。487 精确 39/39 Actions、真实 Picker Chrome 9/9，生产21k/30s Stalled/A800未验证、未部署生产。
 

@@ -6962,8 +6962,10 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
     const oldResource=state.conv428ResourceTarget&&state.conv428ResourceTarget!==target?'':sel?.value||'',oldChip=document.getElementById('conv428Chip')?.value||'';
     state.conv428ResourceTarget=target;
     if(sel){
-      sel.innerHTML=ready.map(x=>`<option value="${esc(x.id)}">${esc(x.name||x.id)} · ${esc(x.mode==='agent'?'Agent':x.mode==='remote'?'远程':'本机')}</option>`).join('')||'<option value="">暂无已检测可用资源</option>';
-      const chosen=ready.find(x=>String(x.id)===String(oldResource))||(!oldResource?ready[0]:null);
+      // Keep unverified/expired resources selectable for the explicit Detect
+      // action. They are not in `ready` and can never enable Submit.
+      sel.innerHTML=configured.map(x=>`<option value="${esc(x.id)}">${esc(x.name||x.id)} · ${esc(x.mode==='agent'?'Agent':x.mode==='remote'?'远程':'本机')} · ${esc(x.detection?.state==='expired'?'检测已过期':x.detection?.state==='not_checked'?'待检测':x.detection?.state==='checking'?'检测中':x.detection?.state==='failed'?'检测失败':statusLabel416(x.status))}</option>`).join('')||'<option value="">暂无已配置转换资源</option>';
+      const chosen=configured.find(x=>String(x.id)===String(oldResource))||(!oldResource?(ready[0]||configured[0]):null);
       if(oldResource&&!chosen){sel.insertAdjacentHTML?.('beforeend',`<option value="${esc(oldResource)}">${esc(oldResource)} · 当前不可用</option>`);sel.value=oldResource;}
       sel.value=chosen?.id||oldResource||'';
       sel.onchange=()=>window.refreshConvertResource428();

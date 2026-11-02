@@ -1,4 +1,6 @@
-> **2026-11-02 / 42.24.488 开发中：多厂商转换能力与性能**。唯一长期开发分支远端 487 `377e95b3319eca0f350f8d014843a084f98f1a00` 精确 GitHub Actions **39/39 success**，原 Picker 真实 Chrome **9/9**；生产已知 42.24.485，未部署。本批在原 `app.py` / `compute_platform_catalog` / `conversion_resource_detection` / `algorithm_sql_store` / 原生 JS Owner 定向修复：单版本只读 SQL、逐资源 SDK/芯片真实状态、过期 fail-closed、跨 Web 资源检测去重和 JSON CAS/原子保存、resolve/catalog opt-in 计时。无真实 SDK/Agent/生产数据操作；当前代码/隔离测试结果及未验证证据见 `docs/MODEL_VERSION_CONVERSION_GOVERNANCE_2026_10_28.md` 顶部。最终 488 SHA CI/Chrome 和生产 P95 待独立验收，禁止直接发布。
+> **2026-11-02 / 42.24.489 开发中：过期转换资源的原弹窗重检**。唯一开发分支准确 488 `eb84b27fd2dc550821800f066219bcd7947b2804`；其 Remote Conversion Runtime Push **4/4 jobs success**（Ubuntu/Windows/控制面/真实 Chrome），生产已知 485 不动。审计发现过期/未检资源不在唯一转换资源下拉框里，无法点击“检测当前资源”恢复。489 原生 JS 将当前目标的全部已配置资源列出供检测，仍只允许真实 `ready` 资源创建任务，切换不丢有效参数；新增过期→显式检测→可转换和离线只可检测的合同测试，30/30 通过。488 后端定向 SQL/多 Web 检测 CAS/证据 TTL、30s 截止、真实 SDK 未验证界限均保留。准确 489 SHA/完整 CI 待验，细节见 `docs/MODEL_VERSION_CONVERSION_GOVERNANCE_2026_10_28.md` 顶部，禁直接发布。
+
+> **前版 2026-11-02 / 42.24.488 多厂商转换能力与性能**。487 `377e95b3319eca0f350f8d014843a084f98f1a00` 39/39 Actions success；488 完成单版本 SQL、逐资源真实状态/过期 fail-closed、跨 Web 资源检测去重及 JSON CAS/原子保存、resolve/catalog opt-in 计时，Python271/1隔离挂起、完整Node1470。准确488专项CI 4/4成功，完整其余 Actions 待核。无真实 SDK/Agent/生产数据操作，生产 P95 仍待现场证据。
 
 > **2026-11-02 / 42.24.487 前版已验收**：486 `feb5f825` 精确 CI 38/38。487 新增跨页冻结人工补审、持久进度和恢复、逐图正式GT安全校验、失败分页与原训练草稿返回。487 准确 SHA CI 39/39 success、真实 Chrome 9/9；生产21k与P0性能未验。
 
