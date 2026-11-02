@@ -31,13 +31,20 @@ def _source_signature(project_id, project_path, repository, artifacts):
     """
     digest = hashlib.sha256()
     task_ids = []
+    task_log_paths = set()
     # SQLite/WAL inode and mtime are not business revisions: a read or
     # checkpoint can change them without any task mutation.
     with closing(sqlite3.connect(f"file:{Path(repository.path)}?mode=ro", uri=True)) as db:
+        # Only fields actually consumed by the reference scanner determine
+        # the history generation. Worker heartbeat, stage, progress, lease and
+        # updated_at writes do not change protected material dependencies.
         for row in db.execute(
-            "SELECT * FROM tasks WHERE project_id=? ORDER BY task_id", (str(project_id),)
+            "SELECT task_id,project_id,kind,status,payload_ref,result_ref,log_ref,"
+            "retry_of,attempt,process_pid,process_create_time,process_command_hash "
+            "FROM tasks WHERE project_id=? ORDER BY task_id", (str(project_id),)
         ):
             task_ids.append(str(row[0]))
+            task_log_paths.add(Path(artifacts.root) / str(row[0]) / str(row[6]))
             digest.update(repr(tuple(row)).encode("utf-8", errors="surrogateescape"))
             digest.update(b"\n")
     roots = [Path(project_path) / "snapshots"]
@@ -85,7 +92,12 @@ def _source_signature(project_id, project_path, repository, artifacts):
             for name in dirs:
                 record(Path(directory) / name)
             for name in names:
-                record(Path(directory) / name)
+                path = Path(directory) / name
+                # Logs are never used as a deletion authorization signal.
+                # Their size/mtime changes during every Worker progress write,
+                # which otherwise causes endless cold-scan invalidations.
+                if path not in task_log_paths:
+                    record(path)
     return digest.hexdigest()
 
 
