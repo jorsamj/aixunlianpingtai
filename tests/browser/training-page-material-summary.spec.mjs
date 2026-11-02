@@ -147,7 +147,7 @@ test('training diagnosis filters by each material actual missing review label', 
   await expect(page.locator('.training-compatibility-item')).not.toContainText('smoke.jpg');
 });
 
-test('training partial-positive batch review preserves the draft and sends per-image missing scope',async({page})=>{
+test('training partial-positive human review freezes a plan and preserves the draft',async({page})=>{
   await page.goto('/');
   await expect(page.locator('#title')).toBeVisible({timeout:15_000});
   await expect.poll(()=>page.evaluate(()=>Boolean(window.TrainingMaterialSummaryRuntime?.refreshCompatibility&&state.project?.id))).toBe(true);
@@ -168,9 +168,16 @@ test('training partial-positive batch review preserves the draft and sends per-i
       filtered_affected_image_count:rows.length,filtered_count:rows.length,
       items:rows,page:1,page_size:50,total_pages:1,has_next:false}});
   });
-  await page.route('**/api/v62/projects/*/training-materials/review-scopes',async route=>{
+  const taskId='a'.repeat(32);
+  await page.route('**/api/v62/projects/*/training-materials/review-scope-plans',async route=>{
+    submitted.push(route.request().postDataJSON());
+    await route.fulfill({json:{task_id:taskId,selected_count:1,pending:1,succeeded:0,failed:0,
+      blocked:0,effective_label_codes:['fire','smoke'],problems:[]}});
+  });
+  await page.route('**/api/v62/projects/*/training-materials/review-scope-plans/*/execute',async route=>{
     submitted.push(route.request().postDataJSON());saved=true;
-    await route.fulfill({json:{succeeded:['has-fire'],failures:[],effective_label_codes:['fire','smoke']}});
+    await route.fulfill({json:{task_id:taskId,selected_count:1,pending:0,succeeded:1,failed:0,
+      blocked:0,effective_label_codes:['fire','smoke'],problems:[],done:true,step_processed:1}});
   });
   await page.evaluate(()=>{
     state.labels=[{code:'fire',display_name:'明火'},{code:'smoke',display_name:'烟雾'}];
@@ -184,14 +191,83 @@ test('training partial-positive batch review preserves the draft and sends per-i
   });
   const dialog=page.locator('[data-training-compatibility-dialog]');
   await dialog.locator('[data-governance-check="has-fire"]').check();
-  page.once('dialog',modal=>modal.accept());
-  await dialog.locator('[data-governance-review]').click();
+  await dialog.locator('[data-governance-plan]').click();
   await expect.poll(()=>submitted.length).toBe(1);
-  expect(submitted[0].items).toEqual([{image_id:'has-fire',reviewed_label_codes:['smoke'],
-    expected_version:4,source_content_sha256:sha}]);
+  expect(submitted[0].selection.image_ids).toEqual(['has-fire']);
+  expect(submitted[0].selection.all_filtered).toBe(false);
   expect(submitted[0].expected_material_revision).toBe(5);
   expect(submitted[0].expected_annotation_revision).toBe(7);
-  await expect(dialog.locator('[data-scope-review-result]')).toContainText('成功 1 张');
+  await expect(dialog.locator('[data-scope-plan]')).toContainText('待补审');
+  await dialog.locator('[data-scope-consent]').check();
+  await dialog.locator('[data-scope-run]').click();
+  await expect.poll(()=>submitted.length).toBe(2);
+  expect(submitted[1]).toEqual({confirmed:true,max_items:20});
+  await expect(dialog.locator('[data-scope-plan]')).toContainText('已成功 1');
   await expect(page.locator('.training-compatibility-item')).toHaveCount(1);
   expect(await page.evaluate(()=>window.TrainingDraftRuntime.current().materialIds)).toEqual(['has-fire','has-smoke']);
+});
+
+test('cross-page human review pauses at batch boundary and resumes after reload',async({page})=>{
+  await page.goto('/');
+  await expect.poll(()=>page.evaluate(()=>Boolean(window.TrainingMaterialSummaryRuntime?.refreshCompatibility&&state.project?.id))).toBe(true);
+  const ids=Array.from({length:75},(_,i)=>`scope-${i}`);
+  const taskId='b'.repeat(32);
+  let processed=0,created=null,executions=0;
+  await page.route('**/api/v62/projects/*/training-materials/compatibility',async route=>{
+    await route.fulfill({json:{compatible:false,issue_count:75,affected_image_count:75,
+      issue_counts:{partial_review_scope:75},effective_label_codes:['person','head'],
+      material_revision:12,annotation_revision:9,filtered_affected_image_count:75,filtered_count:75,
+      items:ids.slice(0,2).map(image_id=>({image_id,filename:`${image_id}.jpg`,
+        issue_type:'partial_review_scope',annotation_scope:['person'],missing_label_codes:['head']})),
+      page:1,page_size:50,total_pages:2,has_next:true}});
+  });
+  const progress=()=>({task_id:taskId,selected_count:75,pending:75-processed,
+    succeeded:processed,failed:0,blocked:0,effective_label_codes:['person','head'],
+    problems:[],done:processed===75});
+  await page.route('**/api/v62/projects/*/training-materials/review-scope-plans',async route=>{
+    created=route.request().postDataJSON();await route.fulfill({json:progress()});
+  });
+  await page.route('**/api/v62/projects/*/training-materials/review-scope-plans/*/execute',async route=>{
+    executions+=1;
+    await new Promise(resolve=>setTimeout(resolve,350));
+    const count=Math.min(20,75-processed);processed+=count;
+    await route.fulfill({json:{...progress(),step_processed:count}});
+  });
+  await page.route(new RegExp('/review-scope-plans/[0-9a-f]{32}$'),async route=>{
+    await route.fulfill({json:progress()});
+  });
+  const setup=()=>page.evaluate(async ids=>{
+    state.labels=[{code:'person',display_name:'人员'},{code:'head',display_name:'头部'}];
+    state.algorithms=[{id:'resume-review',name:'批量补审算法',versions:[]}];
+    window.TrainingDraftRuntime.update({algorithmId:'resume-review',materialIds:ids,
+      newLabelCodes:['person','head'],config:{model:'yolo11n.pt'}});
+    await window.TrainingMaterialSummaryRuntime.refreshCompatibility({force:true});
+    window.TrainingMaterialSummaryRuntime.openCompatibilityIssues();
+  },ids);
+  await setup();
+  let dialog=page.locator('[data-training-compatibility-dialog]');
+  await dialog.locator('[data-governance-mode="issues"]').click();
+  await dialog.locator('[data-governance-plan]').click();
+  await expect.poll(()=>Boolean(created)).toBe(true);
+  expect(created.selection.all_issues).toBe(true);
+  expect(created.selection.image_ids).toEqual([]);
+  await dialog.locator('[data-scope-consent]').check();
+  await dialog.locator('[data-scope-run]').click();
+  await dialog.locator('[data-scope-stop]').click();
+  await expect.poll(()=>processed).toBe(20);
+  await expect(dialog.locator('[data-scope-plan]')).toContainText('待补审 55');
+  expect(executions).toBe(1);
+
+  await page.reload();
+  await expect.poll(()=>page.evaluate(()=>Boolean(window.TrainingMaterialSummaryRuntime?.refreshCompatibility&&state.project?.id))).toBe(true);
+  await setup();
+  dialog=page.locator('[data-training-compatibility-dialog]');
+  await expect(dialog.locator('[data-scope-restore]')).toBeVisible();
+  await dialog.locator('[data-scope-restore]').click();
+  await expect(dialog.locator('[data-scope-plan]')).toContainText('待补审 55');
+  await dialog.locator('[data-scope-consent]').check();
+  await dialog.locator('[data-scope-run]').click();
+  await expect.poll(()=>processed,{timeout:15000}).toBe(75);
+  await expect(dialog.locator('[data-scope-plan]')).toContainText('已成功 75');
+  expect(await page.evaluate(()=>window.TrainingDraftRuntime.current().materialIds)).toEqual(ids);
 });

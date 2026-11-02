@@ -9,6 +9,7 @@ import {
   trainingMaterialSelectionSignature,
   updateTrainingGovernanceSelection,
   planTrainingScopeReviewPage,
+  planTrainingScopeReviewSelection,
   renderGtConflictEvidence,
   renderTrainingSampleConfirmation,
   renderTrainingSampleRoles,
@@ -144,6 +145,21 @@ test('human GT scope batch is per-image, bounded and never silently accepts othe
   assert.deepEqual(planTrainingScopeReviewPage({image_ids:['person-only']},[
     {...rows[0],annotation_version:4,content_sha256:'forged'},
   ]).blocked,[{image_id:'person-only',issue_type:'partial_review_scope'}]);
+});
+
+test('durable formal review selects cross-page, filtered or all issues without client-side hydration',()=>{
+  const filters={query:'camera',issueType:'partial_review_scope',missingLabelCode:'head'};
+  const selection=planTrainingScopeReviewSelection({all_filtered:true,excluded_image_ids:['bad','bad']},filters);
+  assert.deepEqual(selection,{all_filtered:true,all_issues:false,image_ids:[],excluded_image_ids:['bad'],
+    query:'camera',issue_type:'partial_review_scope',missing_label_code:'head'});
+  assert.deepEqual(planTrainingScopeReviewSelection({image_ids:['page1','page7','page1']} ).image_ids,
+    ['page1','page7']);
+  assert.equal(planTrainingScopeReviewSelection({all_issues:true}).all_issues,true);
+  assert.throws(()=>planTrainingScopeReviewSelection({image_ids:[]}),/请先勾选/);
+  assert.throws(()=>planTrainingScopeReviewSelection({previous_execution_task_id:'deleted',image_ids:['a']}),/删除任务/);
+  assert.throws(()=>planTrainingScopeReviewSelection({all_filtered:true,all_issues:true}),/不能同时/);
+  assert.throws(()=>planTrainingScopeReviewSelection({image_ids:['a'],excluded_image_ids:['b']}),/排除项/);
+  assert.throws(()=>planTrainingScopeReviewSelection({image_ids:Array.from({length:50001},(_,i)=>String(i))}),/50000 张/);
 });
 
 test('selection signature is stable and duplicate independent', () => {

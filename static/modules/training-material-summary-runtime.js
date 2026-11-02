@@ -43,6 +43,20 @@ export function planTrainingScopeReviewPage(selection, rows) {
   return {items,blocked,total:ids.length};
 }
 
+export function planTrainingScopeReviewSelection(selection, filters={}) {
+  if(selection?.previous_execution_task_id)
+    throw new Error('删除任务遗留选择不能用于正式 GT 人工补审，请重新勾选');
+  const ids=uniqueIds(selection?.image_ids),excluded=uniqueIds(selection?.excluded_image_ids);
+  const all=selection?.all_filtered===true,issues=selection?.all_issues===true;
+  if(all&&issues)throw new Error('人工补审选择不能同时是全部问题和全部筛选结果');
+  if(!all&&!issues&&!ids.length)throw new Error('请先勾选要人工补审的素材');
+  if(!all&&!issues&&excluded.length)throw new Error('逐张勾选不能携带全部选择的排除项');
+  if(ids.length>50000||excluded.length>50000)throw new Error('单次冻结审核清单不能超过 50000 张');
+  return {all_filtered:all,all_issues:issues,image_ids:ids,excluded_image_ids:excluded,
+    query:String(filters.query||''),issue_type:String(filters.issueType||''),
+    missing_label_code:String(filters.missingLabelCode||'')};
+}
+
 export function removeResolvedTrainingMaterials(runtime,draft,imageIds,diagnosis=null){
   const removed=new Set(uniqueIds(imageIds));
   const duplicateReview=diagnosis?{
@@ -247,7 +261,11 @@ export function installTrainingMaterialSummaryRuntime({
   let governanceDecisions = {};
   let governanceDecisionRevision = '';
   let governanceRetainedTask = null;
-  let scopeReviewFeedback = null;
+  let scopeReviewPlan = null;
+  let scopeReviewSaved = null;
+  let scopeReviewResults = null;
+  let scopeReviewRunning = false;
+  let scopeReviewStop = false;
   const deletionSessions=new Map();
   const topOwns=anchor=>!!anchor?.isConnected&&!anchor.closest('.hidden')&&[...document.querySelectorAll('.modal:not(.hidden)')].at(-1)?.contains(anchor);
 
@@ -307,41 +325,138 @@ export function installTrainingMaterialSummaryRuntime({
     finally{controls.forEach(button=>{if(button.isConnected)button.disabled=false})}
   }
 
-  async function reviewSelectedScopes(){
-    if(historicalDiagnosis||!governanceContext)return false;
-    let plan;
-    try{plan=planTrainingScopeReviewPage(governanceSelection,governanceContext.rows)}
-    catch(error){notify(error.message);return false}
-    if(!plan.items.length){notify(`所选 ${plan.total} 张均不能批量补审，请逐张打开原标注工作台`);return false}
-    const pid=String(projectId()||''),context=governanceContext,draft=currentDraft(),signature=trainingCompatibilitySignature(draft);
-    const labels=uniqueIds(plan.items.flatMap(item=>item.reviewed_label_codes));
-    const message=`本批 ${plan.items.length} 张，补审类别：${labels.join('、')}。\n`
-      +`本人已核对本页所选图片与现有标注框，确认各图对应缺失类别均无漏标。\n`
-      +`系统将保留已有标注框，补写正式 GT 审核范围及本人审核证据；${plan.blocked.length} 张其他问题素材不会处理。确认提交？`;
-    if(!window.confirm(message))return false;
-    const anchor=document.querySelector('[data-training-compatibility-dialog]');
-    const buttons=[...(anchor?.querySelectorAll('button')||[])];buttons.forEach(button=>button.disabled=true);
-    if(anchor)anchor.setAttribute('aria-busy','true');
+  const reviewPlanStorageKey = pid=>`training-scope-review-plan:${pid}`;
+  function readSavedScopePlan(pid,signature){
     try{
-      const result=await withRequestDeadline(async signal=>readJson(await fetchImpl(
-        `/api/v62/projects/${encodeURIComponent(pid)}/training-materials/review-scopes`,{
-          signal,method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
-            ...compatibilityPayload(draft),confirmed:true,items:plan.items,
+      const value=JSON.parse(window.localStorage.getItem(reviewPlanStorageKey(pid))||'null');
+      return value?.projectId===pid&&value?.signature===signature&&/^[0-9a-f]{32}$/.test(value.taskId)
+        ? value : null;
+    }catch(_error){return null}
+  }
+  function saveScopePlan(pid,signature,taskId){
+    scopeReviewSaved={projectId:pid,signature,taskId};
+    try{window.localStorage.setItem(reviewPlanStorageKey(pid),JSON.stringify(scopeReviewSaved))}catch(_error){
+      notify('本浏览器无法保存审核任务入口；请记录任务编号，以免关闭页面后无法继续');
+    }
+  }
+  function clearSavedScopePlan(pid){
+    scopeReviewSaved=null;scopeReviewPlan=null;scopeReviewResults=null;
+    try{window.localStorage.removeItem(reviewPlanStorageKey(pid))}catch(_error){}
+  }
+  function scopePlanMarkup(){
+    const saved=scopeReviewSaved;
+    if(!saved)return '';
+    const plan=scopeReviewPlan?.task_id===saved.taskId?scopeReviewPlan:null;
+    if(!plan)return `<section class="training-scope-plan" data-scope-plan><b>发现此前冻结的人工补审任务</b><p>任务 ${htmlEscape(saved.taskId.slice(0,12))} · 可查询进度并继续未处理部分，原训练草稿保持不变。</p><button class="btn primary" data-scope-restore>查看并恢复任务</button><div data-scope-progress role="status"></div></section>`;
+    const pending=Number(plan.pending||0),blocked=Number(plan.blocked||0),failed=Number(plan.failed||0),succeeded=Number(plan.succeeded||0);
+    const problems=(plan.problems||[]).map(item=>`<li>${htmlEscape(item.image_id)} · ${htmlEscape(item.message||item.status)}</li>`).join('');
+    const results=scopeReviewResults?.taskId===plan.task_id?scopeReviewResults:null;
+    const resultList=results?`<div class="training-scope-results"><ul>${results.items.map(item=>`<li><b>${htmlEscape(item.image_id)}</b> · ${htmlEscape(item.message||item.status)}</li>`).join('')}</ul>${results.next_cursor!==null?'<button class="btn" data-scope-results>加载更多问题</button>':'<small>已显示全部问题记录</small>'}</div>`:'';
+    return `<section class="training-scope-plan" data-scope-plan><div class="row between"><b>已冻结人工审核清单 · ${Number(plan.selected_count||0)} 张</b><code>${htmlEscape(plan.task_id.slice(0,12))}</code></div><p>待补审 <strong>${pending}</strong> · 已成功 ${succeeded} · 失败 ${failed} · 需单张处理 ${blocked}。审核类别：${htmlEscape((plan.effective_label_codes||[]).join('、'))}</p>${(blocked||failed)?`${!results&&problems?`<details><summary>查看问题示例（最多15项）</summary><ul>${problems}</ul></details>`:''}${resultList||'<button class="btn" data-scope-results>查看全部失败及需逐张处理项</button>'}`:''}${pending?`<label class="training-scope-consent"><input type="checkbox" data-scope-consent>本人已实际核对本清单待补审图片，确认对应类别无漏标，并承担本次人工审核责任。此操作会写入正式 GT 审核证据，不能用 AI 未检出代替人工核对。</label><div class="row"><button class="btn primary" data-scope-run ${scopeReviewRunning?'disabled':''}>确认并${succeeded?'继续':'开始'}分批补审</button><button class="btn" data-scope-stop ${scopeReviewRunning?'':'disabled'}>当前批次后暂停</button></div>`:'<p class="training-scope-complete">冻结清单已处理完毕。失败和其他类型问题不会放行，创建训练前仍须重新预检。</p>'}<div data-scope-progress role="status">${scopeReviewRunning?'正在逐批核验正式 GT…':''}</div></section>`;
+  }
+  function updateScopePlanView(){
+    const root=document.querySelector('[data-training-compatibility-dialog]');
+    const host=root?.querySelector('[data-scope-plan-host]');
+    if(!host)return;
+    host.innerHTML=scopePlanMarkup();
+    host.querySelector('[data-scope-restore]')?.addEventListener('click',()=>restoreScopePlan());
+    host.querySelector('[data-scope-run]')?.addEventListener('click',()=>runScopePlan());
+    host.querySelector('[data-scope-results]')?.addEventListener('click',()=>loadScopePlanResults());
+    host.querySelector('[data-scope-stop]')?.addEventListener('click',()=>{
+      scopeReviewStop=true;
+      const progress=host.querySelector('[data-scope-progress]');
+      if(progress)progress.textContent='已请求暂停，当前最多 20 张处理结束后停止';
+    });
+  }
+  async function loadScopePlanResults(){
+    const saved=scopeReviewSaved,plan=scopeReviewPlan;if(!saved||!plan)return;
+    const current=scopeReviewResults?.taskId===saved.taskId?scopeReviewResults:null;
+    if(current&&current.next_cursor===null)return;
+    const anchor=document.querySelector('[data-training-compatibility-dialog]');
+    try{
+      const cursor=current?.next_cursor||'0';
+      const page=await withRequestDeadline(async signal=>readJson(await fetchImpl(
+        `/api/v62/projects/${encodeURIComponent(saved.projectId)}/training-materials/review-scope-plans/${encodeURIComponent(saved.taskId)}/results?state=problems&cursor=${encodeURIComponent(cursor)}&limit=50`,
+        {signal}),'审核问题明细读取失败'),{timeoutMs:requestTimeoutMs,label:'读取人工补审问题'});
+      if(destroyed||!topOwns(anchor)||String(projectId()||'')!==saved.projectId
+          ||trainingCompatibilitySignature(currentDraft())!==saved.signature)return;
+      scopeReviewResults={taskId:saved.taskId,items:[...(current?.items||[]),...(page.items||[])],
+        next_cursor:page.next_cursor??null};updateScopePlanView();
+    }catch(error){notify(error.message||String(error))}
+  }
+  async function restoreScopePlan(){
+    const saved=scopeReviewSaved;if(!saved)return;
+    const anchor=document.querySelector('[data-training-compatibility-dialog]');
+    try{
+      const plan=await withRequestDeadline(async signal=>readJson(await fetchImpl(
+        `/api/v62/projects/${encodeURIComponent(saved.projectId)}/training-materials/review-scope-plans/${encodeURIComponent(saved.taskId)}`,
+        {signal}),'审核任务进度读取失败'),{timeoutMs:requestTimeoutMs,label:'恢复人工补审'});
+      if(destroyed||!topOwns(anchor)||String(projectId()||'')!==saved.projectId
+          ||trainingCompatibilitySignature(currentDraft())!==saved.signature)return;
+      if(scopeReviewPlan?.task_id!==plan.task_id)scopeReviewResults=null;
+      scopeReviewPlan=plan;updateScopePlanView();
+    }catch(error){
+      if(String(error.message||'').includes('not found'))clearSavedScopePlan(saved.projectId);
+      notify(error.message||String(error));updateScopePlanView();
+    }
+  }
+  async function createScopePlan(){
+    if(historicalDiagnosis||!governanceContext||scopeReviewRunning)return false;
+    const context=governanceContext;
+    if(!governanceSelection?.count){notify('请先选择需要人工确认的训练问题素材');return false}
+    let selection;
+    try{selection=planTrainingScopeReviewSelection(governanceSelection,{query:compatibilityQuery,
+      issueType:compatibilityIssueType,missingLabelCode:compatibilityMissingLabelCode})}
+    catch(error){notify(error.message);return false}
+    const pid=String(projectId()||''),draft=currentDraft(),signature=trainingCompatibilitySignature(draft);
+    const anchor=document.querySelector('[data-training-compatibility-dialog]');
+    const button=anchor?.querySelector('[data-governance-plan]');if(button)button.disabled=true;
+    try{
+      const plan=await withRequestDeadline(async signal=>readJson(await fetchImpl(
+        `/api/v62/projects/${encodeURIComponent(pid)}/training-materials/review-scope-plans`,{
+          method:'POST',signal,headers:{'Content-Type':'application/json'},body:JSON.stringify({
+            ...compatibilityPayload(draft),selection,
             expected_material_revision:context.truth.material_revision,
             expected_annotation_revision:context.truth.annotation_revision,
           }),
-        }),'正式 GT 补审失败'),{timeoutMs:30000,label:'人工审核范围保存'});
-      if(destroyed||String(projectId()||'')!==pid||trainingCompatibilitySignature(currentDraft())!==signature||!topOwns(anchor))return false;
-      const succeeded=uniqueIds(result.succeeded),failures=result.failures||[];
-      scopeReviewFeedback={projectId:pid,signature,succeeded:succeeded.length,failed:failures.length,
-        blocked:plan.blocked.length,details:failures.slice(0,10).map(row=>`${row.image_id}：${row.message}`)};
-      if(succeeded.length){invalidate();await refresh(currentIds(),{force:true})}
-      const next=await refreshCompatibility({force:true});
-      if(next&&anchor.isConnected&&topOwns(anchor))openCompatibilityIssues();
-      notify(`人工补审：成功 ${succeeded.length} 张，失败 ${failures.length} 张，未处理 ${plan.blocked.length} 张；请重新预检`);
-      return succeeded.length>0;
+        }),'冻结人工审核范围失败'),{timeoutMs:requestTimeoutMs,label:'冻结人工补审清单'});
+      if(destroyed||!topOwns(anchor)||String(projectId()||'')!==pid
+          ||trainingCompatibilitySignature(currentDraft())!==signature)return false;
+      scopeReviewPlan=plan;scopeReviewResults=null;saveScopePlan(pid,signature,plan.task_id);updateScopePlanView();
+      notify(`已冻结 ${plan.selected_count} 张训练问题素材：可补审 ${plan.pending} 张，其他问题 ${plan.blocked} 张；请核对后确认执行`);
+      return true;
     }catch(error){notify(error.message||String(error));return false}
-    finally{buttons.forEach(button=>{if(button.isConnected)button.disabled=false});anchor?.removeAttribute('aria-busy')}
+    finally{if(button?.isConnected)button.disabled=false}
+  }
+  async function runScopePlan(){
+    const saved=scopeReviewSaved,plan=scopeReviewPlan;
+    if(!saved||!plan?.pending||scopeReviewRunning)return;
+    const anchor=document.querySelector('[data-training-compatibility-dialog]');
+    if(!anchor?.querySelector('[data-scope-consent]')?.checked){notify('请先勾选本人已实际核对本清单的确认声明');return}
+    scopeReviewRunning=true;scopeReviewStop=false;updateScopePlanView();
+    const pid=saved.projectId,signature=saved.signature;
+    try{
+      while(!scopeReviewStop&&scopeReviewPlan?.pending&&String(projectId()||'')===pid
+          &&trainingCompatibilitySignature(currentDraft())===signature&&topOwns(anchor)){
+        const next=await withRequestDeadline(async signal=>readJson(await fetchImpl(
+          `/api/v62/projects/${encodeURIComponent(pid)}/training-materials/review-scope-plans/${encodeURIComponent(saved.taskId)}/execute`,{
+            method:'POST',signal,headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({confirmed:true,max_items:20}),
+          }),'人工补审批次执行失败'),{timeoutMs:requestTimeoutMs,label:'人工补审批次'});
+        if(next.pending>=scopeReviewPlan.pending&&next.step_processed)throw new Error('补审任务进度未前进，请重新查询任务状态');
+        scopeReviewPlan=next;scopeReviewResults=null;
+        if(!next.step_processed)break;
+        updateScopePlanView();
+      }
+      if(!scopeReviewPlan?.pending&&String(projectId()||'')===pid&&trainingCompatibilitySignature(currentDraft())===signature){
+        invalidate();await refresh(currentIds(),{force:true});
+        const next=await refreshCompatibility({force:true,query:compatibilityQuery,
+          issueType:compatibilityIssueType,missingLabelCode:compatibilityMissingLabelCode});
+        if(next&&anchor.isConnected&&topOwns(anchor))openCompatibilityIssues();
+        notify(`人工补审完成：成功 ${scopeReviewPlan.succeeded} 张，失败 ${scopeReviewPlan.failed} 张，其他问题 ${scopeReviewPlan.blocked} 张。训练准入仍须重新检查。`);
+      }else if(scopeReviewStop)notify('人工补审已暂停，进度已保存，可以稍后继续');
+    }catch(error){notify(`${error.message||String(error)}；已保存的任务可以重新查询和继续`)}
+    finally{scopeReviewRunning=false;scopeReviewStop=false;updateScopePlanView()}
   }
 
   function governanceTools(truth, source='draft') {
@@ -356,9 +471,13 @@ export function installTrainingMaterialSummaryRuntime({
         count:governanceRetainedTask.count,previous_execution_task_id:governanceRetainedTask.task_id};
       governanceRetainedTask=null;
     }
-    const feedback=scopeReviewFeedback?.projectId===String(projectId()||'')&&scopeReviewFeedback?.signature===trainingCompatibilitySignature(currentDraft())?scopeReviewFeedback:null;
-    const reviewFeedback=feedback?`<div class="alert ${feedback.failed?'warn':'success'}" data-scope-review-result role="status">人工补审：成功 ${feedback.succeeded} 张 · 失败 ${feedback.failed} 张 · 未处理 ${feedback.blocked} 张${feedback.details.length?`<details><summary>查看失败原因</summary><ul>${feedback.details.map(row=>`<li>${htmlEscape(row)}</li>`).join('')}</ul></details>`:''}</div>`:'';
-    return `<section class="training-governance-tools"><div class="row"><button class="btn" data-governance-mode="page">全选当前页</button><button class="btn" data-governance-mode="all">全选当前筛选结果</button><button class="btn" data-governance-mode="issues">全选全部训练问题</button><button class="btn" data-governance-mode="clear">取消全选</button><span data-governance-selected aria-live="polite">已选 ${governanceSelection.count} 张 · 排除 ${governanceSelection.excluded_image_ids.length} 张</span>${source==='draft'?'<button class="btn primary" data-governance-review>人工补审本页 · 最多50张</button><button class="btn" data-governance-exclude>批量排除本次训练</button>':''}<select class="select" data-governance-delete-mode aria-label="删除模式"><option value="DISCARD">丢弃所选 · 可整组删除</option><option value="KEEP_ONE">保留一份 · 人工指定保留项</option></select><button class="btn danger" data-governance-preview>删除已选 · 安全预览</button></div><p>人工补审仅对已经核验、具有正式 GT 的当前页缺失类别记录审核证据；其他异常需逐张处理。排除只调整当前训练草稿；删除会移除当前素材及 GT，须另行安全预览。</p>${reviewFeedback}<div data-governance-error role="alert" hidden></div></section>`;
+    if(source==='draft'){
+      const pid=String(projectId()||''),signature=trainingCompatibilitySignature(currentDraft());
+      if(scopeReviewSaved?.projectId!==pid||scopeReviewSaved?.signature!==signature)
+        scopeReviewSaved=readSavedScopePlan(pid,signature);
+      if(scopeReviewPlan?.task_id!==scopeReviewSaved?.taskId)scopeReviewPlan=null;
+    }
+    return `<section class="training-governance-tools"><div class="row"><button class="btn" data-governance-mode="page">全选当前页</button><button class="btn" data-governance-mode="all">全选当前筛选结果</button><button class="btn" data-governance-mode="issues">全选全部训练问题</button><button class="btn" data-governance-mode="clear">取消全选</button><span data-governance-selected aria-live="polite">已选 ${governanceSelection.count} 张 · 排除 ${governanceSelection.excluded_image_ids.length} 张</span>${source==='draft'?'<button class="btn primary" data-governance-plan>人工补审 · 单张/批量/全部</button><button class="btn" data-governance-exclude>批量排除本次训练</button>':''}<select class="select" data-governance-delete-mode aria-label="删除模式"><option value="DISCARD">丢弃所选 · 可整组删除</option><option value="KEEP_ONE">保留一份 · 人工指定保留项</option></select><button class="btn danger" data-governance-preview>删除已选 · 安全预览</button></div><p>先选择一张、多张（可跨页）或全部待处理素材，再生成冻结审核清单。只有明确核对、具有合法正式 GT 且仅缺少审核类别的图片才能补审；其他问题需单张处理。补审结果会逐批保存，随时可暂停或恢复。本操作不排除素材，也不跳过训练最终准入检查。</p>${source==='draft'?`<div data-scope-plan-host>${scopePlanMarkup()}</div>`:''}<div data-governance-error role="alert" hidden></div></section>`;
   }
 
   function refreshGovernanceChecks() {
@@ -939,7 +1058,8 @@ return `<article class="training-compatibility-item"><img src="${htmlEscape(item
       refreshGovernanceChecks();
     });
     root.querySelector('[data-governance-preview]')?.addEventListener('click',()=>previewGovernance());
-    root.querySelector('[data-governance-review]')?.addEventListener('click',()=>reviewSelectedScopes());
+    root.querySelector('[data-governance-plan]')?.addEventListener('click',()=>createScopePlan());
+    updateScopePlanView();
     root.querySelector('[data-governance-exclude]')?.addEventListener('click',()=>excludeSelectedFromDraft());
     root.querySelectorAll('[data-conflict-review]').forEach(button=>{
       if(!comparison)return;

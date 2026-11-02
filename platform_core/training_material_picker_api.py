@@ -30,12 +30,15 @@ from .annotation_repository import AnnotationRepository
 from .negative_pool import NegativePool
 from .material_repository import (
     MaterialRepository,
+    DATASET_DELETE_CLAIM_FIELD,
+    MATERIAL_BATCH_DELETE_CLAIM_FIELD,
     _deferred_material_page_sql,
     decode_material_cursor,
     encode_material_cursor,
 )
 from .storage.errors import StorageError
 from .storage.manager import StorageManager
+from .training_scope_review_plans import TrainingScopeReviewPlans
 from .training_compatibility import (
     compatibility_page,
     evaluate_training_compatibility_projection,
@@ -1315,6 +1318,198 @@ def training_material_picker_router(
                                  "message": str(getattr(error, "detail", str(error)))})
         return {"succeeded": succeeded, "failures": failures,
                 "effective_label_codes": contract["effective_label_codes"]}
+
+    def scope_review_owner(project_id, request):
+        if actor_provider is None or review_negative_provider is None:
+            raise HTTPException(status_code=503, detail="authenticated formal review unavailable")
+        actor = actor_provider(request, project_id)
+        reviewer_id = str((actor or {}).get("actor_id") or "").strip()
+        if not reviewer_id:
+            raise HTTPException(status_code=401, detail="authenticated reviewer required")
+        return actor, reviewer_id
+
+    @router.post("/review-scope-plans")
+    def plan_scope_review(project_id: str, payload: dict, request: Request):
+        """Freeze all selected training issues before any human GT attestation.
+
+        Full-filter/cross-page selection is resolved against the *server's*
+        compatibility projection. Non-scope issues remain blocked and visible;
+        they can never be converted into formal absence evidence by bulk action.
+        """
+        from .training_label_tasks import training_material_role
+        _, reviewer_id = scope_review_owner(project_id, request)
+        repository = materials(project_id)
+        annotations = annotation_repository_for_path(str(repository.project_path))
+        expected = (payload.get('expected_material_revision'), payload.get('expected_annotation_revision'))
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in expected):
+            raise HTTPException(422, detail="material and GT revisions are required")
+        algorithm = algorithm_provider(project_id, str(payload.get('algorithm_asset_id') or '')) if algorithm_provider else None
+        if algorithm is None:
+            raise HTTPException(404, detail="training algorithm unavailable")
+        if not isinstance(payload.get('selection'), dict):
+            raise HTTPException(422, detail="selection must be a review scope object")
+        if payload['selection'].get('previous_execution_task_id'):
+            raise HTTPException(422, detail="prior deletion selections cannot be used for formal GT review")
+        try:
+            ids = _normalize_selection_ids(payload.get('train_image_ids') or [])
+            request_payload = {**payload, 'train_image_ids':ids,
+                               'test_image_ids':_normalize_selection_ids(payload.get('test_image_ids') or [])}
+            if compatibility_payload_provider:
+                request_payload = compatibility_payload_provider(project_id, algorithm, request_payload)
+            projection = evaluate_training_compatibility_projection(
+                data_dir(), repository.project_path, request_payload, algorithm)
+            chosen = resolve_training_compatibility_selection(projection, payload)['matching_image_ids']
+            if not chosen:
+                raise ValueError('请先勾选需要人工补审的训练问题素材')
+            if len(chosen) > MAX_SELECTION_SUMMARY_IDS:
+                raise ValueError('人工补审范围超过单次冻结上限')
+            contract = task_contract(project_id, payload, repository)
+            codes = set(contract['effective_label_codes'])
+            if codes != set(projection.label_contract.get('effective_label_codes') or codes):
+                raise ValueError('训练类别契约已变化，请重新预检')
+            issues_by_id = {}
+            for issue in projection.issues:
+                issues_by_id.setdefault(str(issue['image_id']), []).append(issue)
+            items = []
+            for offset in range(0, len(chosen), 500):
+                chunk = chosen[offset:offset + 500]
+                by_material = {row['id']:row for row in repository.get_many(chunk)}
+                by_annotation = annotations.get_many(chunk)
+                for image_id in chunk:
+                    issues = issues_by_id.get(image_id, [])
+                    row = by_material.get(image_id)
+                    gt = by_annotation.get(image_id)
+                    problem = ''
+                    missing = sorted({str(code) for issue in issues for code in issue.get('missing_label_codes') or []})
+                    if not issues or any(issue.get('issue_type') != 'partial_review_scope' for issue in issues):
+                        problem = '存在非审核范围类问题，请逐张修复或排除'
+                    elif not row or not gt:
+                        problem = '素材或正式 GT 不存在，不能批量确认'
+                    elif not missing or not set(missing) <= codes:
+                        problem = '待审类别与本次训练类别不一致'
+                    else:
+                        candidate = {**row, 'annotation_state':gt.get('annotation_state'),
+                            'boxes':gt.get('boxes') or [], 'annotation_scope':gt.get('annotation_scope') or [],
+                            'annotation_version':gt.get('version')}
+                        scope = training_material_role(candidate, contract).get('scope_issue')
+                        if (not scope or scope.get('issue_type') != 'partial_review_scope'
+                                or set(scope.get('missing_label_codes') or []) != set(missing)
+                                or any(str(box.get('label') or box.get('code') or '') in set(missing)
+                                       for box in gt.get('boxes') or [])):
+                            problem = '正式 GT 与待补审范围不一致，请单张核验'
+                    source_sha = str((row or {}).get('content_sha256') or '').strip().lower()
+                    if not problem and (len(source_sha) != 64 or any(c not in '0123456789abcdef' for c in source_sha)):
+                        problem = '原图摘要无效，请修复来源'
+                    items.append({'image_id':image_id, 'status':'blocked' if problem else 'pending',
+                        'reviewed_label_codes':missing if not problem else [],
+                        'expected_version':int(gt.get('version') or 0) if gt else None,
+                        'source_content_sha256':source_sha, 'message':problem})
+            if expected != (repository.current_revision(), annotations.current_revision()):
+                raise HTTPException(409, detail="material or GT changed while freezing review; repeat preflight")
+            return TrainingScopeReviewPlans(repository.project_path).create(
+                project_id=project_id, actor_id=reviewer_id, request=payload,
+                contract_codes=codes, material_revision=expected[0],
+                annotation_revision=expected[1], items=items)
+        except ValueError as error:
+            status = 409 if 'STALE' in str(error) or 'CHANGED' in str(error) else 422
+            raise HTTPException(status_code=status, detail=str(error)) from error
+
+    @router.get("/review-scope-plans/{task_id}")
+    def read_scope_review_plan(project_id: str, task_id: str, request: Request):
+        _, reviewer_id = scope_review_owner(project_id, request)
+        repository = materials(project_id)
+        try:
+            return TrainingScopeReviewPlans(repository.project_path).read(
+                task_id, project_id=project_id, actor_id=reviewer_id)
+        except LookupError as error:
+            raise HTTPException(404, detail=str(error)) from error
+
+    @router.get("/review-scope-plans/{task_id}/results")
+    def list_scope_review_results(project_id: str, task_id: str, request: Request,
+                                  state: str = 'problems', cursor: int = 0, limit: int = 50):
+        _, reviewer_id = scope_review_owner(project_id, request)
+        repository = materials(project_id)
+        try:
+            return TrainingScopeReviewPlans(repository.project_path).results(
+                task_id, project_id=project_id, actor_id=reviewer_id,
+                state=state, cursor=cursor, limit=limit)
+        except LookupError as error:
+            raise HTTPException(404, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(422, detail=str(error)) from error
+
+    @router.post("/review-scope-plans/{task_id}/execute")
+    def execute_scope_review_plan(project_id: str, task_id: str, payload: dict, request: Request):
+        if payload.get('confirmed') is not True:
+            raise HTTPException(422, detail="explicit human review confirmation required")
+        try:
+            limit = int(payload.get('max_items', 20))
+            if isinstance(payload.get('max_items'), bool) or not 1 <= limit <= 50:
+                raise ValueError('review step must contain 1 to 50 images')
+        except (ValueError, TypeError) as error:
+            raise HTTPException(422, detail='review step must contain 1 to 50 images') from error
+        actor, reviewer_id = scope_review_owner(project_id, request)
+        repository = materials(project_id)
+        annotations = annotation_repository_for_path(str(repository.project_path))
+        plans = TrainingScopeReviewPlans(repository.project_path)
+        try:
+            metadata = plans.metadata(task_id, project_id=project_id, actor_id=reviewer_id)
+        except LookupError as error:
+            raise HTTPException(404, detail=str(error)) from error
+        frozen_request = json.loads(metadata['request_json'])
+        try:
+            contract = task_contract(project_id, frozen_request, repository)
+        except ValueError as error:
+            raise HTTPException(409, detail=str(error)) from error
+        if set(contract['effective_label_codes']) != set(json.loads(metadata['contract_codes_json'])):
+            raise HTTPException(409, detail="training label contract changed; create a new review plan")
+
+        from .training_label_tasks import training_material_role
+        def review_one(plan, item):
+            # Saving formal GT also updates the material's derived annotation
+            # projection and bumps the pool revision. Never compare subsequent
+            # steps with the *initial global* revision: each frozen source hash,
+            # original GT version and current per-image validity is the CAS.
+            image_id = item['image_id']
+            row, gt = repository.get(image_id), annotations.get(image_id)
+            if not row or not gt:
+                raise ValueError('material or formal GT no longer exists')
+            sha = item['source_content_sha256']
+            previous_gt_source = str(row.get('annotation_source_content_sha256') or '').strip().lower()
+            if (len(sha) != 64 or sha != str(row.get('content_sha256') or '').strip().lower()
+                    or (previous_gt_source and previous_gt_source != sha)
+                    or row.get('processing_status') != 'processed'
+                    or row.get(DATASET_DELETE_CLAIM_FIELD) or row.get(MATERIAL_BATCH_DELETE_CLAIM_FIELD)
+                    or row.get('source_available') is False or any(row.get(flag) for flag in
+                        ('annotation_needs_review','external_annotation_needs_review','needs_review'))):
+                raise ValueError('material source changed or requires individual review')
+            codes = set(item['reviewed_label_codes'])
+            if not codes or not codes <= set(contract['effective_label_codes']):
+                raise ValueError('frozen review labels are invalid')
+            if int(gt.get('version') or 0) != item['expected_version']:
+                # A crash after formal-GT commit but before plan progress commit
+                # is retried by reconciling that *same actor's* durable evidence.
+                evidence = annotations.negative_review_evidence(
+                    image_id, item['expected_version'], reviewer_id, sorted(codes), sha)
+                if (evidence and int(gt.get('version') or 0) == evidence['annotation_version']
+                        and gt.get('content_digest') == evidence['annotation_digest']):
+                    return
+                raise ValueError('formal GT version changed; reopen this image')
+            candidate = {**row, 'annotation_state':gt.get('annotation_state'),
+                         'annotation_scope':gt.get('annotation_scope') or [], 'boxes':gt.get('boxes') or [],
+                         'annotation_version':gt.get('version')}
+            issue = training_material_role(candidate, contract).get('scope_issue')
+            if (not issue or issue.get('issue_type') != 'partial_review_scope'
+                    or set(issue.get('missing_label_codes') or []) != codes
+                    or any(str(box.get('label') or box.get('code') or '') in codes for box in gt.get('boxes') or [])):
+                raise ValueError('GT no longer has the exact missing review scope')
+            review_negative_provider(project_id, item, sorted(codes), actor)
+
+        try:
+            return plans.execute(task_id, project_id=project_id, actor_id=reviewer_id,
+                                 limit=limit, reviewer=review_one)
+        except LookupError as error:
+            raise HTTPException(404, detail=str(error)) from error
 
     @router.get("")
     def list_training_materials(

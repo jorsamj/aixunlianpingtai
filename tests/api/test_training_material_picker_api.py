@@ -915,6 +915,153 @@ def test_partial_positive_scope_review_uses_per_image_truth_and_fails_closed(tmp
     assert wrong.json()["failures"]
 
 
+def _scope_plan_fixture(tmp_path, monkeypatch, *, count=64, blocked=False, crash_after_save=False):
+    import platform_core.training_label_tasks as labels
+    monkeypatch.setattr(labels, "resolve_training_label_contract", lambda *_args, **_kwargs: {
+        "effective_label_codes": ["person", "head"]})
+    data_dir = tmp_path / "data"
+    repository = MaterialRepository(data_dir / "projects" / "p1")
+    ids = [f"m{i:04d}" for i in range(count)]
+    repository.upsert_many([_record(i) for i in range(count)])
+    annotations = AnnotationRepository(repository.project_path)
+    annotations.upsert_many([{"image_id":image_id, "annotation_state":"annotated",
+        "annotation_scope":["person"], "boxes":[{"label":"person", "x1":10,"y1":10,"x2":80,"y2":90}]}
+        for image_id in ids])
+    issues = tuple({"image_id":image_id,
+        "issue_type":"stale_ground_truth" if blocked and index==count-1 else "partial_review_scope",
+        "missing_label_codes":["head"]} for index,image_id in enumerate(ids))
+    truth = TrainingCompatibilityResult({"effective_label_codes":["person","head"]},
+        issues, repository.current_revision(), annotations.current_revision(), {"selected_train_count":count})
+    monkeypatch.setattr(picker_module, "evaluate_training_compatibility_projection", lambda *_a, **_kw: truth)
+    calls = []
+    def review(_project, item, codes, actor):
+        calls.append(item["image_id"])
+        image_id = item["image_id"]
+        original = annotations.get(image_id)
+        annotations.upsert(image_id, original["boxes"], annotation_state="annotated",
+            annotation_scope=sorted(set(original["annotation_scope"])|set(codes)),
+            expected_version=item["expected_version"],
+            source_content_sha256=item["source_content_sha256"],
+            reviewed_label_codes=codes,
+            review_evidence={"actor_id":actor["actor_id"],"reviewed_label_codes":codes,
+                "source_content_sha256":item["source_content_sha256"]})
+        if crash_after_save and len(calls)==1:
+            raise RuntimeError("simulated worker crash after formal GT commit")
+    actor = {"id":"reviewer-one"}
+    app = FastAPI()
+    app.include_router(training_material_picker_router(
+        lambda project_id: {"id":project_id} if project_id == "p1" else None,
+        lambda: data_dir, algorithm_provider=lambda *_: {"id":"algorithm"},
+        review_negative_provider=review,
+        actor_provider=lambda _request, _project: {"actor_id":actor["id"]}))
+    return TestClient(app), repository, annotations, ids, calls, actor
+
+
+def _scope_plan_request(repository, annotations, ids, selection):
+    return {"algorithm_asset_id":"algorithm", "train_labels":["person","head"],
+        "train_image_ids":ids, "expected_material_revision":repository.current_revision(),
+        "expected_annotation_revision":annotations.current_revision(), "selection":selection}
+
+
+def test_cross_page_formal_scope_plan_is_bounded_durable_and_preserves_boxes(tmp_path, monkeypatch):
+    client, repository, annotations, ids, calls, actor = _scope_plan_fixture(
+        tmp_path, monkeypatch, count=64, blocked=True)
+    path = "/api/v62/projects/p1/training-materials/review-scope-plans"
+    payload = _scope_plan_request(repository, annotations, ids,
+        {"all_filtered":True, "excluded_image_ids":["m0001"]})
+    planned = client.post(path, json=payload)
+    assert planned.status_code == 200, planned.text
+    plan = planned.json()
+    assert (plan["selected_count"],plan["pending"],plan["blocked"]) == (63,62,1)
+    assert plan["problems"][0]["image_id"] == "m0063"
+    task = plan["task_id"]
+    assert client.post(f"{path}/{task}/execute",json={"max_items":20}).status_code == 422
+    assert client.post(f"{path}/{task}/execute",json={"confirmed":True,"max_items":51}).status_code == 422
+    results = []
+    while True:
+        result = client.post(f"{path}/{task}/execute",json={"confirmed":True,"max_items":20})
+        assert result.status_code == 200, result.text
+        results.append(result.json()["step_processed"])
+        if result.json()["done"]:
+            break
+    assert results == [20,20,20,2]
+    assert len(calls) == 62 and len(set(calls)) == 62
+    assert client.get(f"{path}/{task}").json()["succeeded"] == 62
+    assert client.post(f"{path}/{task}/execute",json={"confirmed":True}).json()["step_processed"] == 0
+    problems = client.get(f"{path}/{task}/results",params={"state":"problems","limit":20})
+    assert problems.status_code == 200 and problems.json()["total"] == 1
+    assert problems.json()["items"][0]["image_id"] == "m0063"
+    all_results = client.get(f"{path}/{task}/results",params={"state":"all","limit":20}).json()
+    assert all_results["total"] == 63 and all_results["next_cursor"] == "20"
+    assert len(client.get(f"{path}/{task}/results",params={"state":"all","cursor":60,"limit":20}).json()["items"]) == 3
+    assert client.get(f"{path}/{task}/results",params={"state":"unexpected"}).status_code == 422
+    assert repository.current_revision() > payload["expected_material_revision"]
+    original = annotations.get("m0000")
+    assert len(original["boxes"]) == 1 and original["boxes"][0]["label"] == "person"
+    assert set(original["annotation_scope"]) == {"person","head"}
+    evidence = annotations.negative_review_evidence("m0000", 1, actor["id"], ["head"],
+        repository.get("m0000")["content_sha256"])
+    assert evidence and evidence["annotation_version"] == original["version"]
+    assert "head" not in annotations.get("m0063")["annotation_scope"]
+    assert "head" not in annotations.get("m0001")["annotation_scope"]
+
+
+def test_scope_plan_fails_closed_on_stale_snapshot_wrong_owner_and_changed_gt(tmp_path, monkeypatch):
+    client, repository, annotations, ids, calls, actor = _scope_plan_fixture(tmp_path, monkeypatch, count=3)
+    path = "/api/v62/projects/p1/training-materials/review-scope-plans"
+    payload = _scope_plan_request(repository, annotations, ids, {"image_ids":[ids[0],ids[1]]})
+    wrong = client.post(path, json={**payload,"expected_annotation_revision":12345})
+    assert wrong.status_code == 409
+    wrong = client.post(path, json={**payload,"selection":{"image_ids":["non-member"]}})
+    assert wrong.status_code == 409
+    assert client.post(path, json={**payload,"selection":[]}).status_code == 422
+    plan = client.post(path,json=payload).json()
+    actor["id"] = "different-reviewer"
+    assert client.get(f"{path}/{plan['task_id']}").status_code == 404
+    assert client.get(f"{path}/{plan['task_id']}/results").status_code == 404
+    assert client.post(f"{path}/{plan['task_id']}/execute",json={"confirmed":True}).status_code == 404
+    actor["id"] = "reviewer-one"
+    # Another user changes GT after planning: no old-version absence assertion.
+    annotations.upsert(ids[0],annotations.get(ids[0])["boxes"],"annotated",annotation_scope=["person","helmet"])
+    response = client.post(f"{path}/{plan['task_id']}/execute",json={"confirmed":True,"max_items":2})
+    assert response.status_code == 200, response.text
+    assert response.json()["failed"] == 1 and response.json()["succeeded"] == 1
+    assert response.json()["done"]
+    assert calls == [ids[1]]
+    assert "head" not in annotations.get(ids[0])["annotation_scope"]
+
+
+def test_scope_plan_reconciles_crash_after_gt_commit_without_second_review(tmp_path, monkeypatch):
+    client, repository, annotations, ids, calls, _actor = _scope_plan_fixture(
+        tmp_path, monkeypatch, count=1, crash_after_save=True)
+    path = "/api/v62/projects/p1/training-materials/review-scope-plans"
+    plan = client.post(path,json=_scope_plan_request(repository,annotations,ids,{"all_filtered":True})).json()
+    task = plan['task_id']
+    with pytest.raises(RuntimeError,match="simulated worker crash"):
+        client.post(f"{path}/{task}/execute",json={"confirmed":True})
+    assert client.get(f"{path}/{task}").json()["pending"] == 1
+    recovered = client.post(f"{path}/{task}/execute",json={"confirmed":True})
+    assert recovered.status_code == 200, recovered.text
+    assert recovered.json()["succeeded"] == 1 and recovered.json()["done"]
+    assert calls == ids
+
+
+def test_scope_plan_rechecks_each_material_source_after_other_gt_writes(tmp_path, monkeypatch):
+    client, repository, annotations, ids, calls, _actor = _scope_plan_fixture(tmp_path, monkeypatch, count=3)
+    path = "/api/v62/projects/p1/training-materials/review-scope-plans"
+    plan = client.post(path,json=_scope_plan_request(repository,annotations,ids,{"all_filtered":True})).json()
+    first = client.post(f"{path}/{plan['task_id']}/execute",json={"confirmed":True,"max_items":1})
+    assert first.status_code == 200 and first.json()["succeeded"] == 1
+    # Both formal annotation projection and an unrelated material edit bump
+    # the global material revision. They must not invalidate a distinct image
+    # whose frozen SHA and GT CAS still match; a lost source must fail closed.
+    repository.patch({ids[1]:{"source_available":False}})
+    rest = client.post(f"{path}/{plan['task_id']}/execute",json={"confirmed":True,"max_items":2})
+    assert rest.status_code == 200, rest.text
+    assert (rest.json()["succeeded"],rest.json()["failed"]) == (2,1)
+    assert calls == [ids[0],ids[2]]
+
+
 def test_ten_thousand_candidates_role_page_returns_only_requested_page(tmp_path):
     from platform_core.training_material_picker_api import _role_material_page
     repository = MaterialRepository(tmp_path / "large")

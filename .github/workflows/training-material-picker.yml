@@ -14,6 +14,7 @@ on:
       - 'tests/performance/test_platform_hot_paths.py'
       - 'tests/performance/test_training_picker_workbench_scale.py'
       - 'platform_core/training_material_picker_api.py'
+      - 'platform_core/training_scope_review_plans.py'
       - 'platform_core/training_compatibility.py'
       - 'platform_core/annotation_repository.py'
       - 'platform_core/training_recovery_api.py'
@@ -64,7 +65,7 @@ jobs:
           fastapi httpx uvicorn python-multipart pillow pyyaml requests
           opencv-python-headless onnx onnxruntime onnxslim psutil keyring filelock boto3 oss2 pytest
       - name: Compile picker backend
-        run: python -m py_compile platform_core/annotation_repository.py platform_core/training_material_picker_api.py platform_core/training_compatibility.py platform_core/training_recovery_api.py
+        run: python -m py_compile platform_core/annotation_repository.py platform_core/training_material_picker_api.py platform_core/training_scope_review_plans.py platform_core/training_compatibility.py platform_core/training_recovery_api.py
       - name: Backend paging thumbnail and summary contracts
         run: >-
           python -m pytest -q

@@ -938,6 +938,19 @@ body.sidebar-collapsed{--side-w:76px}.sidebar-collapsed .brand-text,.sidebar-col
 .training-compatibility-item{display:grid;grid-template-columns:120px minmax(0,1fr);gap:12px;padding:12px;border:1px solid #e4e7ec;border-radius:12px}
 .training-compatibility-item img{width:120px;height:90px;object-fit:cover;border-radius:8px;background:#f2f4f7}
 .training-governance-check{grid-column:1/-1;display:flex;align-items:center;gap:8px;min-height:36px;font-weight:600;cursor:pointer}.training-governance-check input{width:20px;height:20px;accent-color:#2563eb}.training-governance-tools{padding:12px;border:1px solid #dbe3ee;border-radius:10px;background:#f8fafc}.training-governance-tools .row{flex-wrap:wrap;gap:8px}.training-governance-tools p,.material-integrity47-classification p,.material-integrity47-reference-summary p{font-size:13px;line-height:1.6;color:#475569;margin:8px 0}.training-governance-tools [role=alert]:not([hidden]){padding:10px;background:#fff1f2;color:#991b1b;border-radius:8px}.material-integrity47-classification{border-bottom:1px solid #dbe3ee;padding:8px 0 16px}.material-integrity47-classification h3{margin:6px 0 12px;font-size:16px}.material-integrity47-reference-summary{margin:12px 0}.material-integrity47-classification summary,.material-integrity47-reference-summary summary{cursor:pointer;min-height:36px;font-weight:600}.training-compatibility-item>div{min-width:0}.training-compatibility-item .row{flex-wrap:wrap;gap:8px}@media(max-width:640px){.training-governance-tools .btn,.training-compatibility-item .btn{min-height:44px}.training-governance-check{min-height:44px}.training-compatibility-item{grid-template-columns:88px minmax(0,1fr)}.training-compatibility-item img{width:88px;height:70px}.training-governance-tools .row>span{flex-basis:100%}}
+.training-scope-plan{margin-top:12px;padding:15px 16px;border:1px solid #cbd5e1;border-radius:12px;background:#fff;box-shadow:0 2px 12px rgba(15,23,42,.035)}
+.training-scope-plan>b,.training-scope-plan .row>b{font-size:14px;color:#0f172a}
+.training-scope-plan .row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.training-scope-plan .row.between{justify-content:space-between}
+.training-scope-plan strong{font-variant-numeric:tabular-nums;color:#1d4ed8}
+.training-scope-plan code{font-size:12px;color:#64748b}
+.training-scope-plan details{margin:9px 0;color:#475569;font-size:13px}
+.training-scope-plan details summary{cursor:pointer;min-height:32px;font-weight:600}
+.training-scope-plan details ul{max-height:130px;overflow:auto;padding-left:22px}
+.training-scope-plan .training-scope-consent{display:flex;align-items:flex-start;gap:10px;margin:12px 0 14px;padding:11px 13px;background:#eff6ff;border-radius:9px;font-size:13px;line-height:1.65;color:#1e3a8a;cursor:pointer}
+.training-scope-consent input{flex:0 0 auto;width:18px;height:18px;margin-top:2px;accent-color:#2563eb}
+.training-scope-plan [data-scope-progress]{min-height:18px;margin-top:8px;font-size:12px;color:#475569}
+.training-scope-plan .training-scope-complete{color:#166534}
 .training-compatibility-item p{margin:4px 0;font-size:12px}.training-compatibility-item .warn{color:#b54708}
 .data426-meta .annotation-status-v66{min-height:20px;padding:2px 7px;gap:5px;font-size:10px;line-height:1.2;transition:background-color var(--motion-base,.16s) var(--motion-ease,ease),border-color var(--motion-base,.16s) var(--motion-ease,ease),color var(--motion-base,.16s) var(--motion-ease,ease),box-shadow var(--motion-base,.16s) var(--motion-ease,ease)}
 .ann420-origin-badge{margin-left:6px;padding:2px 6px;gap:4px;font-size:9px;vertical-align:1px}.ann420-queue-status{margin-top:3px!important;padding:2px 6px;gap:4px;font-size:9px!important;line-height:1.2}

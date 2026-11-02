@@ -94,6 +94,53 @@ def test_partial_positive_human_scope_review_keeps_original_boxes_and_actor_evid
  assert not wrong.json()['succeeded'] and wrong.json()['failures']
 
 
+def test_durable_cross_page_review_plan_uses_real_formal_gt_save_and_actor_evidence(client, monkeypatch):
+ project=client.post('/api/projects',json={'name':'plan-gt-'+uuid.uuid4().hex[:8],
+     'labels':[{'code':'person'},{'code':'head'}]}).json()
+ pid=project['id'];selected=[];versions={}
+ for index in range(3):
+     buffer=io.BytesIO();Image.new('RGB',(100,80),(20+index*50,50,110)).save(buffer,format='PNG')
+     uploaded=client.post(f'/api/projects/{pid}/images',files=[('files',(f'plan-{index}.png',buffer.getvalue(),'image/png'))]).json()['uploaded'][0]
+     image_id=uploaded['id'];selected.append(image_id)
+     before=client.get(f'/api/projects/{pid}/annotations/{image_id}').json()['annotation']
+     boxes=[{'id':f'p-{index}','label':'person','class_id':0,'x1':10,'y1':10,'x2':80,'y2':70}]
+     if index==0:
+         boxes.append({'id':'head-present','label':'head','class_id':1,'x1':20,'y1':15,'x2':40,'y2':40})
+     saved=client.post(f'/api/projects/{pid}/annotations/{image_id}',json={
+         'boxes':boxes,'annotation_state':'annotated','expected_version':before['version'],
+         'source_content_sha256':uploaded['content_sha256'],
+         'reviewed_label_codes':['person','head'] if index==0 else ['person']})
+     assert saved.status_code==200,saved.text
+     versions[image_id]=saved.json()['annotation']['version']
+ monkeypatch.setattr(platform_app,'list_algorithms_internal',lambda _pid:[{'id':'a','versions':[]}])
+ endpoint=f'/api/v62/projects/{pid}/training-materials'
+ body={'algorithm_asset_id':'a','train_labels':['person','head'],'model':'yolo11n.pt',
+     'train_image_ids':selected,'split_mode':'random_test_from_training_pool'}
+ compatibility=client.post(endpoint+'/compatibility',json=body)
+ assert compatibility.status_code==200,compatibility.text
+ truth=compatibility.json()
+ assert {issue['image_id'] for issue in truth['items'] if issue['issue_type']=='partial_review_scope'}==set(selected[1:])
+ payload={**body,'expected_material_revision':truth['material_revision'],
+          'expected_annotation_revision':truth['annotation_revision'],
+          'selection':{'all_filtered':True}}
+ preview=client.post(endpoint+'/review-scope-plans',json=payload)
+ assert preview.status_code==200,preview.text
+ plan=preview.json();assert plan['pending']==2 and plan['blocked']==0
+ executed=client.post(endpoint+'/review-scope-plans/'+plan['task_id']+'/execute',json={'confirmed':True,'max_items':1})
+ assert executed.status_code==200,executed.text
+ assert executed.json()['pending']==1
+ finished=client.post(endpoint+'/review-scope-plans/'+plan['task_id']+'/execute',json={'confirmed':True,'max_items':1})
+ assert finished.status_code==200,finished.text
+ assert finished.json()['succeeded']==2 and finished.json()['done']
+ for image_id in selected[1:]:
+     actual=client.get(f'/api/projects/{pid}/annotations/{image_id}').json()['annotation']
+     assert len(actual['boxes'])==1 and actual['boxes'][0]['label']=='person'
+     assert set(actual['annotation_scope'])=={'person','head'}
+     evidence=platform_app._v50_annotation_repository(pid).negative_review_evidence(
+         image_id,versions[image_id],'isolated-test',['head'],platform_app.material_store(pid).get(image_id)['content_sha256'])
+     assert evidence and evidence['annotation_version']==actual['version']
+
+
 def test_negative_review_keeps_previously_reviewed_empty_scopes(client,monkeypatch):
  project=client.post('/api/projects',json={'name':'empty-'+uuid.uuid4().hex[:8],'labels':[{'code':'vest'},{'code':'person'}]}).json();pid=project['id']
  buffer=io.BytesIO();Image.new('RGB',(20,20),'red').save(buffer,format='PNG')
