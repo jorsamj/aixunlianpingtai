@@ -18566,6 +18566,7 @@ import threading
 DEPLOY_RESOURCES_FILE = DATA_DIR / "deploy_resources.json"
 if not DEPLOY_RESOURCES_FILE.exists():
     DEPLOY_RESOURCES_FILE.write_text("[]", encoding="utf-8")
+_DEPLOY_RESOURCES_WRITE_LOCK = FileLock(str(DEPLOY_RESOURCES_FILE) + ".lock", timeout=30)
 DEPLOY_PROCESS_REGISTRY: Dict[str, subprocess.Popen] = {}
 DEPLOY_REMOTE_THREADS: Dict[str, threading.Thread] = {}
 
@@ -18727,21 +18728,33 @@ def _builtin_deploy_resource_cache_meta() -> Dict[str, Any]:
 def _load_saved_deploy_resources() -> List[Dict[str, Any]]:
     data = read_json(DEPLOY_RESOURCES_FILE, [])
     items = data if isinstance(data, list) else []
-    changed = False
+    if any(item.get("api_key") for item in items):
+        # Legacy inline-secret migration is also a write operation. Serialize
+        # it with resource edits and re-read under the lock so it cannot
+        # overwrite a newer SDK result or configuration from another worker.
+        with _DEPLOY_RESOURCES_WRITE_LOCK:
+            data = read_json(DEPLOY_RESOURCES_FILE, [])
+            items = data if isinstance(data, list) else []
+            changed = False
+            for item in items:
+                legacy = str(item.pop("api_key", "") or "")
+                if legacy:
+                    reference = str(item.get("secret_ref") or secret_ref("deploy-resource", str(item.get("id") or uuid.uuid4().hex[:12])))
+                    _v35_secret_store().set(reference, legacy)
+                    item["secret_ref"] = reference
+                    changed = True
+            if changed:
+                _save_deploy_resources(items)
     for item in items:
-        legacy = str(item.pop("api_key", "") or "")
-        if legacy:
-            reference = str(item.get("secret_ref") or secret_ref("deploy-resource", str(item.get("id") or uuid.uuid4().hex[:12])))
-            _v35_secret_store().set(reference, legacy)
-            item["secret_ref"] = reference
-            changed = True
-    if changed:
-        _save_deploy_resources(items)
+        item.pop("api_key", None)
     return items
 
 
 def _save_deploy_resources(items: List[Dict[str, Any]]):
-    write_json(DEPLOY_RESOURCES_FILE, items)
+    # Readers may run in another Web worker while a detector writes. Keep the
+    # existing JSON owner, but replace its bytes atomically instead of exposing
+    # a partially truncated file.
+    atomic_write_json(DEPLOY_RESOURCES_FILE, items)
 
 
 def _deploy_resource_runtime(item: Dict[str, Any]) -> Dict[str, Any]:
@@ -19023,32 +19036,40 @@ def v39_create_deploy_resource(payload: DeployResourceReq):
         reference = secret_ref("deploy-resource", resource_id)
         _v35_secret_store().set(reference, api_key)
         item["secret_ref"] = reference
-    item.update({"id": resource_id, "created_at": now_iso(), "updated_at": now_iso(), "status": "unchecked", "targets": []})
-    items = _load_saved_deploy_resources(); items.insert(0, item); _save_deploy_resources(items)
+    item.update({"id": resource_id, "created_at": now_iso(), "updated_at": now_iso(),
+                 "config_revision": uuid.uuid4().hex, "status": "unchecked", "targets": []})
+    with _DEPLOY_RESOURCES_WRITE_LOCK:
+        items = _load_saved_deploy_resources(); items.insert(0, item); _save_deploy_resources(items)
     return _deploy_resource_public(item)
 
 
 @app.put("/api/v39/deploy/resources/{resource_id}")
 def v39_update_deploy_resource(resource_id: str, payload: DeployResourceReq):
-    items = _load_saved_deploy_resources()
-    for i, x in enumerate(items):
-        if x.get("id") == resource_id:
-            data = payload.model_dump(); api_key = str(data.pop("api_key", "") or "")
-            new = {**x, **data, "updated_at": now_iso(), "status": "unchecked", "targets": [], "supported_chips": []}
-            reference = str(x.get("secret_ref") or secret_ref("deploy-resource", resource_id))
-            if api_key:
-                _v35_secret_store().set(reference, api_key); new["secret_ref"] = reference
-            items[i] = new; _save_deploy_resources(items); return _deploy_resource_public(new)
+    with _DEPLOY_RESOURCES_WRITE_LOCK:
+        items = _load_saved_deploy_resources()
+        for i, x in enumerate(items):
+            if x.get("id") == resource_id:
+                data = payload.model_dump(); api_key = str(data.pop("api_key", "") or "")
+                new = {**x, **data, "updated_at": now_iso(), "config_revision": uuid.uuid4().hex,
+                       "status": "unchecked", "targets": [], "supported_chips": [],
+                       "supported_precisions": [], "last_checked_at": "", "detection_error": ""}
+                for field in ("remote_health", "sophon_probe", "agent_nodes"):
+                    new.pop(field, None)
+                reference = str(x.get("secret_ref") or secret_ref("deploy-resource", resource_id))
+                if api_key:
+                    _v35_secret_store().set(reference, api_key); new["secret_ref"] = reference
+                items[i] = new; _save_deploy_resources(items); return _deploy_resource_public(new)
     raise HTTPException(status_code=404, detail="部署资源不存在")
 
 
 @app.delete("/api/v39/deploy/resources/{resource_id}")
 def v39_delete_deploy_resource(resource_id: str):
-    items = _load_saved_deploy_resources()
-    removed = next((x for x in items if x.get("id") == resource_id), None)
-    if not removed:
-        raise HTTPException(status_code=404, detail="部署资源不存在")
-    _save_deploy_resources([x for x in items if x.get("id") != resource_id])
+    with _DEPLOY_RESOURCES_WRITE_LOCK:
+        items = _load_saved_deploy_resources()
+        removed = next((x for x in items if x.get("id") == resource_id), None)
+        if not removed:
+            raise HTTPException(status_code=404, detail="部署资源不存在")
+        _save_deploy_resources([x for x in items if x.get("id") != resource_id])
     if removed.get("secret_ref"):
         _v35_secret_store().delete(str(removed.get("secret_ref")))
     return {"ok": True}
@@ -19056,16 +19077,46 @@ def v39_delete_deploy_resource(resource_id: str):
 
 @app.post("/api/v39/deploy/resources/{resource_id}/detect")
 def v39_detect_deploy_resource(resource_id: str, force: bool = True):
+    from platform_core.conversion_resource_detection import observe, resource_configuration_key
     resource = _deploy_resource_by_id(resource_id)
-    checked = _inspect_conversion_resource(resource, force=force)
-    if not resource_id.startswith("builtin_"):
-        # A late inspection must never overwrite newly edited resource configuration.
-        items = _load_saved_deploy_resources()
-        idx = next((i for i,x in enumerate(items) if x.get("id")==resource_id), None)
-        if idx is None or str(items[idx].get("updated_at") or "") != str(resource.get("updated_at") or ""):
+    if resource_id.startswith("builtin_"):
+        return _deploy_resource_public(_inspect_conversion_resource(resource, force=force))
+    identity = resource_configuration_key(resource)
+    # Coalesce the same resource across Web workers. Different resource IDs do
+    # not hold each other's SDK inspection locks; no global lock during probe.
+    probe_lock = DEPLOY_RESOURCES_FILE.with_name(
+        ".conversion-probe-" + hashlib.sha256(resource_id.encode()).hexdigest()[:24] + ".lock")
+    lock = FileLock(str(probe_lock), timeout=90)
+    try:
+        lock.acquire()
+    except Timeout as error:
+        raise HTTPException(status_code=409, detail="此转换资源仍在检测中，请稍后读取结果或重试") from error
+    try:
+        fresh = _deploy_resource_by_id(resource_id)
+        if resource_configuration_key(fresh) != identity:
             raise HTTPException(409, detail="资源配置已变化，请重新检测")
-        clean = dict(checked); clean.pop("api_key", None)
-        items[idx] = clean; _save_deploy_resources(items)
+        if str(fresh.get("last_checked_at") or "") != str(resource.get("last_checked_at") or ""):
+            # Another worker finished this configuration while we waited.
+            return _deploy_resource_public(observe(fresh))
+        try:
+            checked = _inspect_conversion_resource(fresh, force=force)
+        except Exception:
+            # detect() already records a timestamped failure observation in
+            # its resource cache. Preserve that evidence across Web workers
+            # instead of returning an error while leaving an old ready row.
+            checked = observe(fresh)
+            if (checked.get("detection") or {}).get("state") != "failed":
+                raise
+        with _DEPLOY_RESOURCES_WRITE_LOCK:
+            items = _load_saved_deploy_resources()
+            idx = next((i for i,x in enumerate(items) if x.get("id")==resource_id), None)
+            if idx is None or resource_configuration_key(items[idx]) != identity:
+                raise HTTPException(409, detail="资源配置已变化，请重新检测")
+            clean = dict(checked); clean.pop("api_key", None)
+            items[idx] = {k:v for k,v in clean.items() if k!="detection"}
+            _save_deploy_resources(items)
+    finally:
+        lock.release()
     return _deploy_resource_public(checked)
 
 
@@ -19080,7 +19131,9 @@ def _inspect_conversion_resource(resource, *, force=False):
 @app.post("/api/v39/deploy/local/auto-detect")
 def v39_detect_local_deploy_resources():
     """只检测当前机器真正存在的部署编译器；不存在的不会伪造为 ready。"""
+    from platform_core.conversion_resource_detection import resource_configuration_key
     items = _load_saved_deploy_resources()
+    original_items = [dict(row) for row in items]
     found = []
     candidates = [
         {"name":"本机瑞芯微 RKNN-Toolkit2", "kind":"rockchip", "mode":"local", "python_path":sys.executable, "tool_root":""},
@@ -19107,8 +19160,33 @@ def v39_detect_local_deploy_resources():
         if chk.get("status") == "ready":
             items.insert(0, chk)
             found.append(_deploy_resource_public(chk))
-    _save_deploy_resources(items)
-    return {"ok": True, "found": found, "items": _builtin_deploy_resources() + items}
+    with _DEPLOY_RESOURCES_WRITE_LOCK:
+        # Explicit auto-detect is a bulk operation. Preserve configurations
+        # edited during its slow SDK probes rather than restoring stale rows.
+        latest = _load_saved_deploy_resources()
+        for detected in items:
+            before = next((x for x in original_items if x.get("id")==detected.get("id")), None)
+            current = next((x for x in latest if x.get("id")==detected.get("id")), None)
+            if before is None:
+                if current is None and detected.get("status")=="ready" and not any(
+                    str(row.get("kind") or "")==str(detected.get("kind") or "")
+                    and str(row.get("mode") or "local")=="local" for row in latest
+                ):
+                    latest.insert(0, detected)
+            elif (current is not None and detected != before and
+                  resource_configuration_key(current)==resource_configuration_key(before) and
+                  str(current.get("last_checked_at") or "")==str(before.get("last_checked_at") or "")):
+                latest[latest.index(current)] = detected
+        _save_deploy_resources(latest)
+    # A configuration changed while probing must not be reported as one of
+    # this request's successful registrations/detections.
+    found_ids = {str(row.get("id") or "") for row in found}
+    accepted_found = [_deploy_resource_public(row) for row in latest
+                      if str(row.get("id") or "") in found_ids
+                      and row.get("status") == "ready"
+                      and any(str(row.get("last_checked_at") or "") == str(candidate.get("last_checked_at") or "")
+                              for candidate in found if candidate.get("id") == row.get("id"))]
+    return {"ok": True, "found": accepted_found, "items": _builtin_deploy_resources() + latest}
 
 
 def _deploy_source_models(project_id: str) -> List[Dict[str, Any]]:
@@ -19130,13 +19208,62 @@ def _deploy_source_models(project_id: str) -> List[Dict[str, Any]]:
     return items
 
 
+def _deploy_selected_algorithm_version(project_id: str, algorithm_id: str, version_id: str):
+    """Read one conversion source through the existing indexed algorithm store.
+
+    The source-model list is a separate browse API. Resolving an explicit
+    version must not enumerate every model, job.json or algorithm in a project.
+    """
+    from platform_core.algorithm_sql_store import AlgorithmSqlStore
+    get_project(project_id)
+    algorithm = AlgorithmSqlStore(algorithms_file(project_id)).read_one(str(algorithm_id))
+    if not algorithm:
+        return None, None
+    version = next((v for v in algorithm.get("versions", [])
+                    if str(v.get("id") or "") == str(version_id)), None)
+    if version and not version.get("report") and (version.get("job_id") or version.get("stored_path")):
+        # Preserve legacy lazy report projection, but only for this version.
+        version = dict(version)
+        try:
+            path = Path(str(version.get("stored_path"))) if version.get("stored_path") else None
+            report = job_report(project_id, version.get("job_id") or "", path)
+            if report:
+                version["report"] = report
+        except Exception:
+            pass
+    return project_current_version(algorithm), version
+
+
 @app.get("/api/v39/projects/{project_id}/deploy/source-models")
 def v39_deploy_source_models(project_id: str):
     return {"ok": True, "items": _deploy_source_models(project_id)}
 
 
+@performance_stage("conversion.source_lookup")
 def _resolve_deploy_source(project_id: str, source_id: str) -> Dict[str, Any]:
-    row = next((x for x in _deploy_source_models(project_id) if x.get("id") == source_id), None)
+    row = None
+    if source_id.startswith("version::"):
+        identity = source_id.split("::")
+        if len(identity) == 3 and identity[1] and identity[2]:
+            algorithm, version = _deploy_selected_algorithm_version(project_id, identity[1], identity[2])
+            if algorithm and version:
+                path = Path(str(version.get("stored_path") or ""))
+                current = str(version.get("id") or "") == str(algorithm.get("current_version_id") or "")
+                row = {"id": source_id, "kind": "algorithm_version",
+                       "name": version.get("model_name") or path.name, "path": str(path),
+                       "type": path.suffix.lower().lstrip("."),
+                       "framework": (version.get("report") or {}).get("framework", ""),
+                       "job_id": version.get("job_id", ""), "config_path": "",
+                       "size_mb": version.get("size_mb", 0), "algorithm_id": algorithm.get("id"),
+                       "algorithm_name": algorithm.get("name"), "version_id": version.get("id"),
+                       "version_name": version.get("version_name"), "is_current_version": current,
+                       "label": f"{algorithm.get('name')} / {version.get('version_name')}{'（当前）' if current else ''} / {path.name}",
+                       # Request-local only; do not persist in job source_meta.
+                       "_resolved_version": version}
+    else:
+        # Legacy free-model identities still use their original provenance
+        # projection; a version identity never takes this expensive path.
+        row = next((x for x in _deploy_source_models(project_id) if x.get("id") == source_id), None)
     if not row: raise HTTPException(status_code=404, detail="源模型不存在")
     p=Path(str(row.get("path") or ""))
     if not p.exists(): raise HTTPException(status_code=404, detail=f"源模型文件不存在：{p}")
@@ -19147,6 +19274,7 @@ def _resolve_deploy_source(project_id: str, source_id: str) -> Dict[str, Any]:
     return row
 
 
+@performance_stage("conversion.resource_read")
 def _deploy_resource_by_id(resource_id: str) -> Dict[str, Any]:
     for r in (_DEPLOY_BUILTIN_RESOURCE_CACHE.snapshot()["items"] or _builtin_deploy_resource_summary()):
         if r.get("id") == resource_id: return r
@@ -19286,8 +19414,10 @@ def _conversion_onnx_shape_preview(path, file_signature):
         for item in model.graph.input if item.name not in initializers)
 
 
+@performance_stage("conversion.contract_resolution")
 def _conversion_contract_for_source(project_id, source, resource, params, target, *, preview=False):
-    from platform_core.compute_platform_catalog import resolve_conversion_contract, resolve_chip_capability, conversion_templates
+    from platform_core.compute_platform_catalog import (resolve_conversion_contract,
+        resolve_chip_capability, conversion_templates, conversion_chip_status_label)
     catalog=_conversion_catalog_repository(DATA_DIR).conversion_catalog()
     vendor_id=str(params.get("local_vendor_id") or "")
     chip_id=str(params.get("local_chip_id") or "")
@@ -19298,10 +19428,15 @@ def _conversion_contract_for_source(project_id, source, resource, params, target
         candidates=[c for c in catalog["chips"] if c["vendor_id"] in vendors and c.get("enabled",True)
                     and c["sdk_code"].lower()==str(params.get("chip") or params.get("soc_version") or "").lower()]
         if len(candidates)==1: vendor_id,chip_id=candidates[0]["vendor_id"],candidates[0]["id"]
-    version={}
-    if source.get("algorithm_id") and source.get("version_id"):
-        algorithm=next((a for a in list_algorithms_internal(project_id) if str(a.get("id"))==str(source["algorithm_id"])),{})
-        version=next((v for v in algorithm.get("versions",[]) if str(v.get("id"))==str(source["version_id"])),{})
+    version=source.get("_resolved_version") or {}
+    if not version and source.get("algorithm_id") and source.get("version_id"):
+        # Legacy in-process callers can supply an unfrozen source projection.
+        # The real resolve endpoint uses _resolved_version from the indexed
+        # lookup above and does not enter this compatibility path.
+        algorithm=next((a for a in list_algorithms_internal(project_id)
+                        if str(a.get("id"))==str(source["algorithm_id"])),{})
+        version=next((v for v in algorithm.get("versions",[])
+                      if str(v.get("id"))==str(source["version_id"])),{})
     onnx_shapes=None
     shape_from_onnx=False
     path=Path(str(source.get("path") or ""))
@@ -19323,14 +19458,14 @@ def _conversion_contract_for_source(project_id, source, resource, params, target
             return {"ready":False,"status":"not_convertible","errors":["无法核验ONNX输入合同："+str(error)],"params":{},"allowed_precisions":[],"chip_options":[]}
     training_job=_version_deploy_training_job(project_id,version)
     result=resolve_conversion_contract(catalog,vendor_id=vendor_id,chip_id=chip_id,resource=resource,version=version,params=params,training_job=training_job)
-    status_labels={"convertible":"可转换","not_convertible":"不可转换","pending_configuration":"待配置","pending_detection":"待检测","not_adapted":"暂未适配","service_unavailable":"转换服务不可用"}
     result["chip_options"]=[]
     for entry in catalog["chips"]:
         if entry["vendor_id"]!=vendor_id:
             continue
         capability=resolve_chip_capability(catalog,vendor_id=vendor_id,chip_id=entry["id"],resource=resource)
         result["chip_options"].append({"id":entry["id"],"name":entry["name"],"enabled":entry.get("enabled",True),
-            "status":capability["status"],"status_label":status_labels[capability["status"]],"reason":"；".join(capability["errors"])})
+            "status":capability["status"],"status_label":conversion_chip_status_label(capability["status"]),
+            "reason":"；".join(capability["errors"])})
     if result["ready"] and result["template"].get("adapter")!=target:
         result.update(ready=False,status="not_convertible",errors=["厂商模板与请求target不一致"])
     if result["ready"]:
@@ -19605,16 +19740,13 @@ def _v39_create_deploy_job_under_version_fence(
             raise HTTPException(status_code=400,detail="；".join(contract["errors"])+"（请求芯片："+str(params.get("chip") or params.get("local_chip_id") or "未选择")+"）")
         params=contract["params"]
         params["parameter_sources"]=contract["parameter_sources"]
-    version = None
+    version = source.get("_resolved_version")
     if str(source.get("kind") or "") == "algorithm_version":
-        algorithm = next(
-            (a for a in list_algorithms_internal(project_id) if str(a.get("id") or "") == str(source.get("algorithm_id") or "")),
-            None,
-        )
-        version = next(
-            (v for v in (algorithm.get("versions") or []) if str(v.get("id") or "") == str(source.get("version_id") or "")),
-            None,
-        ) if algorithm else None
+        if version is None:
+            algorithm = next((a for a in list_algorithms_internal(project_id)
+                              if str(a.get("id") or "") == str(source.get("algorithm_id") or "")), None)
+            version = next((v for v in (algorithm.get("versions") or [])
+                            if str(v.get("id") or "") == str(source.get("version_id") or "")), None) if algorithm else None
         if version:
             defaults = _version_deploy_conversion_defaults(project_id, version)
             if payload.target == "sophon" and not any(params.get(k) for k in ("input_size", "input_height", "input_width")):
@@ -19737,7 +19869,7 @@ def _v39_create_deploy_job_under_version_fence(
         for field in ("label_schema", "label_codes", "yolo", "training_lineage", "snapshot_id", "snapshot"):
             if field in version:
                 source_trace[field] = json.loads(json.dumps(version[field], ensure_ascii=False))
-    job={"id":job_id,"project_id":project_id,"source_id":payload.source_id,"source_name":src.name,"source_path":str(local_src),"source_meta":source,"source_trace":source_trace,"target":payload.target,"resource_id":payload.resource_id,"resource":resource_for_job,"params":params,"requested_params":dict(payload.params or {}),"dataset_id":payload.dataset_id,"calibration_split":payload.calibration_split,"calibration_dir":str(cal_dir) if cal_dir else "","status":"queued","stage":"等待启动","progress":0,"message":"等待启动","created_at":now_iso(),"updated_at":now_iso(),"outputs":[],"request_id":str(payload.request_id or ""),"request_identity":_deploy_request_identity(payload) if payload.request_id else ""}
+    job={"id":job_id,"project_id":project_id,"source_id":payload.source_id,"source_name":src.name,"source_path":str(local_src),"source_meta":{k:v for k,v in source.items() if k!="_resolved_version"},"source_trace":source_trace,"target":payload.target,"resource_id":payload.resource_id,"resource":resource_for_job,"params":params,"requested_params":dict(payload.params or {}),"dataset_id":payload.dataset_id,"calibration_split":payload.calibration_split,"calibration_dir":str(cal_dir) if cal_dir else "","status":"queued","stage":"等待启动","progress":0,"message":"等待启动","created_at":now_iso(),"updated_at":now_iso(),"outputs":[],"request_id":str(payload.request_id or ""),"request_identity":_deploy_request_identity(payload) if payload.request_id else ""}
     portable_conversion = None
     conversion_target = str(payload.target or "").strip().lower()
     should_stage_portable = (

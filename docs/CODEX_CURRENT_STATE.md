@@ -1,4 +1,6 @@
-> **2026-11-02 / 42.24.487 最新接续**：486 `feb5f825` 精确 CI **38/38 success**。487 已开发服务端跨页冻结人工补审、持久进度和恢复、逐图正式GT安全校验、失败分页与原训练草稿返回。隔离后端/前端已绿，新增Chrome及准确SHA CI待验，生产21k与P0性能未验。
+> **2026-11-02 / 42.24.488 开发中：多厂商转换能力与性能**。唯一长期开发分支远端 487 `377e95b3319eca0f350f8d014843a084f98f1a00` 精确 GitHub Actions **39/39 success**，原 Picker 真实 Chrome **9/9**；生产已知 42.24.485，未部署。本批在原 `app.py` / `compute_platform_catalog` / `conversion_resource_detection` / `algorithm_sql_store` / 原生 JS Owner 定向修复：单版本只读 SQL、逐资源 SDK/芯片真实状态、过期 fail-closed、跨 Web 资源检测去重和 JSON CAS/原子保存、resolve/catalog opt-in 计时。无真实 SDK/Agent/生产数据操作；当前代码/隔离测试结果及未验证证据见 `docs/MODEL_VERSION_CONVERSION_GOVERNANCE_2026_10_28.md` 顶部。最终 488 SHA CI/Chrome 和生产 P95 待独立验收，禁止直接发布。
+
+> **2026-11-02 / 42.24.487 前版已验收**：486 `feb5f825` 精确 CI 38/38。487 新增跨页冻结人工补审、持久进度和恢复、逐图正式GT安全校验、失败分页与原训练草稿返回。487 准确 SHA CI 39/39 success、真实 Chrome 9/9；生产21k与P0性能未验。
 
 > **2026-11-02 / 42.24.486 人工缺失类别本页批量补审（本地 GREEN，准确新 SHA CI 待验）**：485 `fda473dd` 已核精确 GitHub Actions **23/23 success**、其中 AI Annotation Recovery Push/PR 双绿。486 新 `POST /training-materials/review-scopes` 每批 1–50，必须来自已有正式 GT 的 `partial_review_scope`，后端逐图计算实际缺失类别、双 revision、GT 版本和素材 SHA，复用原可信 actor、`_review_training_negative`→`save_annotation` CAS/正式 GT 审计，已有框不动，异质缺失类别不会相互污染。原 Summary 训练兼容性问题页新增「人工补审本页 · 最多50张」，当前页明确勾选、二次本人声明、部分成功与失败明细、草稿保留和重新预检；全选筛选/全部问题不会被假装已支持。增 Python API/正式 GT 集成及 Node/Chrome 合同；Picker Python 36、集成5、完整 Node1466 通过。本机 Playwright 新用例已收集但 Chromium 下载损坏，Chrome/486 精确 SHA CI **NOT VERIFIED**。跨页、全量/持久批次续审与恢复、混合 AI 工作流、生产性能仍待后续。**ISOLATED TEST — NOT PRODUCTION VERIFIED**，无生产操作。
 

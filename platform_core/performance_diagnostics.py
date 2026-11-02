@@ -30,6 +30,8 @@ _ENDPOINTS = (
     (re.compile(r'/api/v61/projects/[^/]+/materials/[^/]+/content/thumbnail'), 'material.thumbnail'),
     (re.compile(r'/api/v61/projects/[^/]+/negative-pool/categories'), 'negative_pool.categories'),
     (re.compile(r'/api/v42/projects/[^/]+/algorithms/[^/]+/versions/[^/]+/deployments'), 'conversion.history'),
+    (re.compile(r'/api/v39/projects/[^/]+/deploy/resolve'), 'conversion.resolve'),
+    (re.compile(r'/api/v39/deploy/catalog'), 'conversion.catalog'),
     (re.compile(r'/api/v39/deploy/resources'), 'conversion.resources'),
     (re.compile(r'/api/v39/deploy/resources/[^/]+/detect'), 'conversion.resource_detect'),
     (re.compile(r'/api/v39/deploy/local/auto-detect'), 'conversion.local_detect'),
@@ -190,6 +192,9 @@ class PerformanceDiagnosticsMiddleware:
         endpoint=_endpoint(scope.get('path',''))
         if endpoint is None: return await self.app(scope,receive,send)
         if endpoint=='negative_pool.categories' and scope.get('method')!='GET':
+            return await self.app(scope,receive,send)
+        if ((endpoint=='conversion.resolve' and scope.get('method')!='POST') or
+            (endpoint=='conversion.catalog' and scope.get('method')!='GET')):
             return await self.app(scope,receive,send)
         # 48 thumbs on a page must not become 48 verbose log entries.
         if endpoint in {'material.thumbnail','training.thumbnail'} and scope.get('method')!='GET':

@@ -11,6 +11,7 @@ from typing import Any, Mapping, Sequence
 from filelock import FileLock
 
 from .errors import PlatformError
+from .performance_diagnostics import connect_sqlite
 
 
 SCHEMA_VERSION = 4
@@ -41,7 +42,7 @@ class AlgorithmSqlStore:
         self.project_dir.mkdir(parents=True, exist_ok=True)
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path, timeout=30.0)
+        conn = connect_sqlite(self.db_path, timeout=30.0)
         conn.row_factory = sqlite3.Row
         # Ordinary connections never negotiate persistent journal state. Set
         # the wait policy first so concurrent writers rely on SQLite's own

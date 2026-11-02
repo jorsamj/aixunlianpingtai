@@ -36,7 +36,7 @@ function setup(getResource) {
   };
   const radio = {value: 'rockchip',get dataset(){return {vendorId:['rockchip','sophon','ascend'].includes(this.value)?this.value:''}}};
   const catalog={vendors:[{id:'rockchip',name:'瑞芯微',template_id:'rknn'},{id:'sophon',name:'算能',template_id:'tpu-mlir'}],
-    templates:[{id:'rknn',adapter:'rockchip'},{id:'tpu-mlir',adapter:'sophon'}],
+    templates:[{id:'rknn',adapter:'rockchip',implemented:true},{id:'tpu-mlir',adapter:'sophon',implemented:true}],
     chips:['rk3568','rk3576'].map(id=>({id,vendor_id:'rockchip',name:id.toUpperCase()})).concat(['bm1684x','bm1688'].map(id=>({id,vendor_id:'sophon',name:id.toUpperCase()})))};
   const calls = [];
   let opened = false;
@@ -147,6 +147,36 @@ test('unsupported chip remains visible and cannot submit even though another chi
   h.chip.value='rk3568';await h.win.refreshConvertContract428();
   assert.equal(h.submit.disabled,true);
   assert.match(h.warning.textContent,/SDK/);
+});
+
+test('initial chip labels use matching server SDK evidence, never blanket pending or stale facts',async()=>{
+  const observed=resource('a800',['rk3568']);
+  observed.last_checked_at='2026-11-02T01:00:00+00:00';
+  observed.detection={state:'available'};
+  const h=setup(async()=>({items:[observed]}));
+  h.catalog.chip_capabilities={
+    rk3568:{resources:[{resource_id:'a800',last_checked_at:observed.last_checked_at,
+      detection_state:'available',status_label:'可转换',errors:[]}]},
+    rk3576:{resources:[{resource_id:'a800',last_checked_at:observed.last_checked_at,
+      detection_state:'available',status_label:'不兼容',errors:['SDK未声明支持该SoC']}]},
+  };
+  await h.win.openNewConvertCore416('a','v');
+  assert.match(h.chip.innerHTML,/RK3568 · 可转换/);
+  assert.match(h.chip.innerHTML,/RK3576 · 不兼容/);
+  assert.doesNotMatch(h.chip.innerHTML,/待校验/);
+  observed.last_checked_at='2026-11-02T01:02:00+00:00';
+  h.win.refreshConvertResource428();
+  assert.match(h.chip.innerHTML,/等待兼容性解析/);
+  assert.doesNotMatch(h.chip.innerHTML,/RK3568 · 可转换/);
+});
+
+test('unadapted vendor never fabricates SDK capability or shows pending detection',async()=>{
+  const h=setup(async()=>ready());
+  h.catalog.templates[0].implemented=false;
+  await h.win.openNewConvertCore416('a','v');
+  assert.match(h.chip.innerHTML,/暂未适配/);
+  assert.doesNotMatch(h.chip.innerHTML,/待校验/);
+  assert.equal(h.submit.disabled,true);
 });
 
 
@@ -413,6 +443,18 @@ test('network timeout is not an SDK detection failure and never retries automati
   assert.equal(calls,1);
   await h.win.refreshConvertContract428(true);
   assert.equal(calls,2);
+  assert.equal(h.submit.disabled,true);
+});
+
+test('connection failure is separate from SDK compatibility and offers manual retry',async()=>{
+  const h=setup(async()=>ready());
+  await h.win.openNewConvertCore416('a','v');
+  h.chip.value='rk3568';
+  h.win.api=async()=>{throw new TypeError('Failed to fetch')};
+  await h.win.refreshConvertContract428();
+  assert.match(h.warning.textContent,/连接失败/);
+  assert.match(h.warning.textContent,/无法据此判断/);
+  assert.doesNotMatch(h.chip.options.find(x=>x.value==='rk3568').textContent,/检测失败/);
   assert.equal(h.submit.disabled,true);
 });
 

@@ -6757,7 +6757,7 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
   }
   function resourceStatusHtml416(rows,target){
     if(!rows.length)return `<div class="convert428-resource-status-empty"><b>尚未配置 ${esc(targetLabel416(target))} 转换资源</b><span>请到“高级功能 → 模型转换环境”新增本机工具链或远程转换服务器，再执行检测。</span></div>`;
-    return rows.map(r=>{const ready=r.status==='ready'&&(r.targets||[]).includes(target),detail=r.message||(!ready?'请执行资源检测并确认目标能力':'可以创建真实转换任务'),chips=['rockchip','sophon'].includes(target)?(r.supported_chips||[]).map(x=>String(x||'').toUpperCase()).filter(Boolean):[],capability=chips.length?`支持芯片：${chips.join(' / ')}`:'';return `<div class="convert428-resource-status-row ${ready?'ready':'not-ready'}"><div><b>${esc(r.name||r.id||'未命名资源')}</b><span>${esc(r.mode==='agent'?'服务节点 Agent':r.mode==='remote'?'远程服务器':'本机')} · ${esc(r.detection?({available:'可用',checking:'检测中',not_checked:'未检测',expired:'状态已过期',unavailable:'不可用',failed:'检测失败'}[r.detection.state]||statusLabel416(r.status)):statusLabel416(r.status))}${r.detection?.checked_at?` · 检测时间 ${esc(r.detection.checked_at)}`:''}${r.version?` · ${esc(r.version)}`:''}</span></div><p>${esc(detail)}${capability?` · ${esc(capability)}`:''}</p></div>`}).join('');
+    return rows.map(r=>{const ready=r.status==='ready'&&(r.targets||[]).includes(target)&&(!r.detection||r.detection.state==='available'),detail=r.message||(!ready?'请执行资源检测并确认目标能力':'可以创建真实转换任务'),chips=['rockchip','sophon'].includes(target)?(r.supported_chips||[]).map(x=>String(x||'').toUpperCase()).filter(Boolean):[],capability=chips.length?`支持芯片：${chips.join(' / ')}`:'';return `<div class="convert428-resource-status-row ${ready?'ready':'not-ready'}"><div><b>${esc(r.name||r.id||'未命名资源')}</b><span>${esc(r.mode==='agent'?'服务节点 Agent':r.mode==='remote'?'远程服务器':'本机')} · ${esc(r.detection?({available:'可用',checking:'检测中',not_checked:'未检测',expired:'状态已过期',unavailable:'不可用',failed:'检测失败'}[r.detection.state]||statusLabel416(r.status)):statusLabel416(r.status))}${r.detection?.checked_at?` · 检测时间 ${esc(r.detection.checked_at)}`:''}${r.version?` · ${esc(r.version)}`:''}</span></div><p>${esc(detail)}${capability?` · ${esc(capability)}`:''}</p></div>`}).join('');
   }
   function refreshConvertTargetFields428(target){
     const show=(id,visible)=>{const node=document.getElementById(id);if(node)node.hidden=!visible};
@@ -6819,10 +6819,30 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
     const vendor=document.querySelector('input[name="conv428Target"]:checked')?.dataset?.vendorId;
     return (state.conv428Catalog?.chips||[]).filter(c=>c.vendor_id===vendor).map(c=>({value:c.id,label:c.name,enabled:c.enabled!==false}));
   }
+  function conversionChipEvidence428(option,resource){
+    if(!option.enabled)return {label:'已停用',reason:'本地芯片字典已停用'};
+    const vendor=document.querySelector('input[name="conv428Target"]:checked')?.dataset?.vendorId;
+    const vendorRow=(state.conv428Catalog?.vendors||[]).find(v=>v.id===vendor);
+    const template=(state.conv428Catalog?.templates||[]).find(t=>t.id===vendorRow?.template_id);
+    if(!template?.implemented)return {label:'暂未适配',reason:'厂商模板尚无可执行 Adapter'};
+    if(!resource)return {label:'未选择资源',reason:'请先选择该 SDK 的转换资源'};
+    // The catalog and resources are loaded independently. A resource ID alone
+    // is not sufficient: a later probe/configuration change invalidates facts.
+    const fact=(state.conv428Catalog?.chip_capabilities?.[option.value]?.resources||[]).find(f=>
+      f.resource_id===resource.id&&String(f.last_checked_at||'')===String(resource.last_checked_at||'')&&
+      String(f.detection_state||'')===String(resource.detection?.state||''));
+    if(fact)return {label:fact.status_label||'状态未知',reason:(fact.errors||[]).join('；')||fact.message||''};
+    const observed=resource.detection?.state;
+    if(observed==='expired')return {label:'检测已过期',reason:'请重新检测此资源'};
+    if(observed==='not_checked')return {label:'待检测',reason:'该资源尚未完成检测'};
+    if(observed==='checking')return {label:'检测中',reason:'请等待当前资源检测完成'};
+    if(observed==='failed')return {label:'检测失败',reason:resource.detection?.error||'请检查资源检测回执'};
+    return {label:'等待兼容性解析',reason:'当前资源的逐芯片能力尚无匹配证据，不代表不支持'};
+  }
   function applyConversionChipOptions428(target,resource,preferred=''){
     const chip=document.getElementById('conv428Chip');if(!chip)return [];
     const options=conversionChipOptions428(target,resource);
-    chip.innerHTML='<option value="">请选择目标芯片</option>'+options.map(c=>`<option value="${esc(c.value)}" ${c.enabled?'':'disabled'}>${esc(c.label)}${c.enabled?' · 待校验':' · 已停用'}</option>`).join('');
+    chip.innerHTML='<option value="">请选择目标芯片</option>'+options.map(c=>{const evidence=conversionChipEvidence428(c,resource);return `<option value="${esc(c.value)}" ${c.enabled?'':'disabled'} title="${esc(evidence.reason)}">${esc(c.label)} · ${esc(evidence.label)}</option>`}).join('');
     chip.value=options.some(c=>c.value===preferred&&c.enabled)?preferred:(options.length===1&&options[0].enabled?options[0].value:'');
     chip.onchange=()=>{state.conv428PrecisionUserEdited=false;state.conv428Resolved=null;window.refreshConvertContract428()};
     return options;
@@ -6916,8 +6936,10 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
       }catch(error){
         if(!current())return null;
         const message=error?.code==='REQUEST_TIMEOUT'
-          ?'当前配置校验超时；尚不能判断芯片是否支持，请手动重新校验。'
-          :'当前配置校验失败：'+(error?.message||error)+'；芯片能力状态未改变，请手动重新校验。';
+          ?'当前配置校验超时（可能在连接、网关或服务端阶段）；尚不能判断芯片是否支持，请手动重新校验。'
+          :(error?.name==='TypeError'||error instanceof TypeError)
+            ?'连接失败：未收到有效的兼容性响应，无法据此判断 SDK 或芯片不支持；请检查网络并手动重试。'
+            :'当前配置校验失败：'+(error?.message||error)+'；芯片能力状态未改变，请手动重新校验。';
         conversionResolveFailure428={form,signature,message};
         const warn=document.getElementById('conv428Warn');
         if(warn)warn.textContent=message;
@@ -6935,7 +6957,7 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
     const target=document.querySelector('input[name="conv428Target"]:checked')?.value||'onnx';
     const advancedKey=String(document.querySelector('input[name="conv428Target"]:checked')?.dataset?.vendorId||target);state.conv428TargetAdvanced=state.conv428TargetAdvanced||{};if(state.conv428AdvancedKey)state.conv428TargetAdvanced[state.conv428AdvancedKey]={...(state.conv428AdvancedValues||{})};state.conv428AdvancedKey=advancedKey;state.conv428AdvancedValues={...(state.conv428TargetAdvanced[advancedKey]||{})};
     refreshConvertTargetFields428(target);
-    const all=state.conv428ResourcesCurrent===true?(state.conv428Resources||[]):[],configured=matching416(all,target),ready=configured.filter(x=>x.status==='ready'&&(x.targets||[]).includes(target)),sel=document.getElementById('conv428Resource'),warn=document.getElementById('conv428Warn'),status=document.getElementById('conv428ResourceStatus');
+    const all=state.conv428ResourcesCurrent===true?(state.conv428Resources||[]):[],configured=matching416(all,target),ready=configured.filter(x=>x.status==='ready'&&(x.targets||[]).includes(target)&&(!x.detection||x.detection.state==='available')),sel=document.getElementById('conv428Resource'),warn=document.getElementById('conv428Warn'),status=document.getElementById('conv428ResourceStatus');
     state.conv428PreviousResourceTarget=state.conv428ResourceTarget;
     const oldResource=state.conv428ResourceTarget&&state.conv428ResourceTarget!==target?'':sel?.value||'',oldChip=document.getElementById('conv428Chip')?.value||'';
     state.conv428ResourceTarget=target;
@@ -6947,11 +6969,12 @@ window.editModelConfigV35 = window.editModelConfigV35 || ((id)=>window.openModel
       sel.onchange=()=>window.refreshConvertResource428();
     }
     const selected=ready.find(x=>String(x.id)===String(sel?.value));
-    const options=applyConversionChipOptions428(target,selected,selected?.id===oldResource?oldChip:'');
+    const evidenceResource=selected||configured.find(x=>String(x.id)===String(sel?.value));
+    const options=applyConversionChipOptions428(target,evidenceResource,evidenceResource?.id===oldResource?oldChip:'');
     refreshConvertCalibration428();
     const chosenPrecision=document.getElementById('conv428Precision');
     const submit=document.querySelector('.convert428-create [data-convert-submit]');
-    if(submit)submit.disabled=state.conv428SourceReady===false||conversionResourcesLoading416||state.conv428ResourcesCurrent!==true||!selected||(['rockchip','sophon'].includes(target)&&!options.length)||!chosenPrecision?.value||Boolean(chosenPrecision.selectedOptions?.[0]?.disabled);
+    if(submit)submit.disabled=!!document.querySelector('input[name="conv428Target"]:checked')?.dataset?.vendorId||state.conv428SourceReady===false||conversionResourcesLoading416||state.conv428ResourcesCurrent!==true||!selected||(['rockchip','sophon'].includes(target)&&!options.length)||!chosenPrecision?.value||Boolean(chosenPrecision.selectedOptions?.[0]?.disabled);
     if(status)status.innerHTML=conversionResourcesLoading416?'<div class="loading">正在读取最新部署资源与芯片能力…</div>':state.conv428ResourcesCurrent!==true?'<div class="alert err">无法获取最新资源信息，请点击“刷新资源”。</div>':resourceStatusHtml416(configured,target);
     if(warn){
       if(conversionResourcesLoading416)warn.textContent='正在从服务器核验部署资源及可用芯片…';

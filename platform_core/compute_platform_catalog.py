@@ -39,6 +39,20 @@ def conversion_templates():
     return [{**item,"advanced_fields":[dict(f) for f in fields.get(item["id"],[])]} for item in CONVERSION_TEMPLATES]
 
 
+_CHIP_STATUS_LABELS = {
+    "convertible": "可转换", "not_convertible": "不兼容",
+    "pending_configuration": "待配置", "pending_detection": "待检测",
+    "detection_in_progress": "检测中", "detection_expired": "检测已过期",
+    "detection_failed": "检测失败", "not_adapted": "暂未适配",
+    "service_unavailable": "转换资源不可用",
+}
+
+
+def conversion_chip_status_label(status):
+    """A single backend vocabulary for catalog and selected-resource facts."""
+    return _CHIP_STATUS_LABELS.get(str(status or ""), "状态未知")
+
+
 def validate_conversion_catalog(payload):
     """One local identity catalog; external provider classifications are not part of it."""
     import json
@@ -97,6 +111,13 @@ def resolve_chip_capability(catalog, *, vendor_id, chip_id, resource):
         return reject("not_adapted","厂商模板尚无可执行Adapter")
     if not chip.get("sdk_code"):
         return reject("pending_configuration","尚未配置可信SDK目标编码；请核对高级配置与实际SDK检测")
+    observation = resource.get("detection") or {}
+    observed_state = str(observation.get("state") or "")
+    if observed_state in {"not_checked", "checking", "expired", "failed"}:
+        status = {"not_checked":"pending_detection", "checking":"detection_in_progress",
+                  "expired":"detection_expired", "failed":"detection_failed"}[observed_state]
+        return reject(status, {"not_checked":"该资源尚未完成SDK检测", "checking":"SDK检测仍在进行中",
+                               "expired":"资源SDK检测证据已过期，请重新检测", "failed":"资源SDK检测失败，请查看检测回执"}[observed_state])
     if resource.get("kind")!=target or resource.get("status")!="ready" or target not in resource.get("targets",[]):
         return reject("service_unavailable","对应转换资源未就绪或服务不可用")
     sdk=chip["sdk_code"].lower() if target!="ascend" else chip["sdk_code"]
@@ -207,13 +228,18 @@ def conversion_catalog_metadata(catalog, *, resources):
         facts=[]
         for resource in matching:
             fact=resolve_chip_capability(catalog,vendor_id=chip["vendor_id"],chip_id=chip["id"],resource=resource)
-            facts.append({**fact,"resource_id":resource.get("id",""),"resource_name":resource.get("name") or resource.get("id",""),
+            facts.append({**fact,"status_label":conversion_chip_status_label(fact["status"]),
+                          "resource_id":resource.get("id",""),"resource_name":resource.get("name") or resource.get("id",""),
                           "mode":resource.get("mode","local"),"sdk_version":(resource.get("sophon_probe") or {}).get("version") or fact.get("sdk_version",resource.get("version") or ""),
                           "supported_chips":resource.get("supported_chips") or resource.get("detected_soc_versions") or [],
-                          "last_checked_at":resource.get("last_checked_at"),"message":resource.get("message", ""),"solution":resource.get("solution") or "请在部署资源中检测对应SDK、解释器及目标芯片支持。"})
+                          "last_checked_at":resource.get("last_checked_at"),
+                          "detection_state":(resource.get("detection") or {}).get("state"),
+                          "message":resource.get("message", ""),"solution":resource.get("solution") or "请在部署资源中检测对应SDK、解释器及目标芯片支持。"})
         fallback=resolve_chip_capability(catalog,vendor_id=chip["vendor_id"],chip_id=chip["id"],resource={})
         fact=next((f for f in facts if f["ready"]),None) or next((f for f in facts if f["status"]!="service_unavailable"),facts[0] if facts else fallback)
-        capabilities[chip["id"]]={"sdk_ready":fact["ready"],"status":fact["status"],"allowed_precisions":fact["allowed_precisions"],
+        capabilities[chip["id"]]={"sdk_ready":fact["ready"],"status":fact["status"],
+                                  "status_label":conversion_chip_status_label(fact["status"]),
+                                  "allowed_precisions":fact["allowed_precisions"],
                                   "errors":fact["errors"],"resources":facts,"constraint_id":fact.get("constraint_id","")}
     return {"chip_suggestions":suggestions,"chip_capabilities":capabilities}
 

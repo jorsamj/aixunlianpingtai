@@ -271,6 +271,171 @@ def test_resolve_reads_observations_without_running_any_detector(tmp_path,monkey
     assert any(r['id']==resource['id'] for r in api.v39_list_deploy_resources(detect_missing=False)['items'])
 
 
+def test_version_resolve_reads_only_selected_sql_algorithm_not_project_history(tmp_path, monkeypatch):
+    from platform_core.algorithm_sql_store import AlgorithmSqlStore
+    from platform_core.model_artifacts import ModelArtifactRepository
+    from platform_core.compute_platform_catalog import conversion_chip_status_label
+    monkeypatch.setattr(api, 'DATA_DIR', tmp_path)
+    ModelArtifactRepository(tmp_path).save_conversion_catalog(catalog(), expected_revision=0)
+    source = tmp_path / 'model.pt'; source.write_bytes(b'isolated model')
+    version = {'id':'v2','version_name':'second','stored_path':str(source),
+               'model_name':'model.pt','report':{'framework':'ultralytics'}}
+    calls = []
+    def one(self, algorithm_id):
+        calls.append(algorithm_id)
+        return {'id':'a1','name':'only selected','current_version_id':'v2',
+                'versions':[{'id':'v1','stored_path':str(source)},version]}
+    monkeypatch.setattr(AlgorithmSqlStore, 'read_one', one)
+    monkeypatch.setattr(api, 'get_project', lambda *_:{'id':'p'})
+    monkeypatch.setattr(api, '_deploy_source_models', lambda *_:pytest.fail('version lookup must not browse entire project'))
+    monkeypatch.setattr(api, 'list_algorithms_internal', lambda *_:pytest.fail('no second full algorithm list'))
+    monkeypatch.setattr(api, 'list_models_internal', lambda *_:pytest.fail('no training job.json scan'))
+    monkeypatch.setattr(api, '_deploy_resource_by_id', lambda *_:live())
+    result = api.v39_resolve_conversion('p', api.DeployJobReq(source_id='version::a1::v2',
+        target='sophon', resource_id='s', params={'local_vendor_id':'local-s','local_chip_id':'chip-84'}))
+    assert result['ready'] and result['params']['local_chip_id']=='chip-84'
+    assert calls == ['a1']
+    assert conversion_chip_status_label('not_adapted') == '暂未适配'
+    with pytest.raises(HTTPException) as missing:
+        api._resolve_deploy_source('p', 'version::a1::missing')
+    assert missing.value.status_code == 404
+
+
+def test_conversion_opt_in_diagnostics_scope_covers_resolve_but_not_job_creation():
+    from platform_core.performance_diagnostics import _endpoint
+    assert _endpoint('/api/v39/projects/synthetic/deploy/resolve')=='conversion.resolve'
+    assert _endpoint('/api/v39/deploy/catalog')=='conversion.catalog'
+    assert _endpoint('/api/v39/projects/synthetic/deploy/jobs') is None
+    assert _endpoint('/api/v39/projects/synthetic/deploy/resolve/extra') is None
+
+
+@pytest.mark.parametrize('state, expected', [
+    ('not_checked','pending_detection'),('checking','detection_in_progress'),
+    ('expired','detection_expired'),('failed','detection_failed'),
+])
+def test_catalog_per_chip_status_uses_actual_selected_resource_freshness(state, expected):
+    from platform_core.compute_platform_catalog import resolve_chip_capability, conversion_chip_status_label
+    resource={**live(),'detection':{'state':state},'last_checked_at':'2026-11-02T12:00:00+00:00'}
+    fact=resolve_chip_capability(catalog(),vendor_id='local-s',chip_id='chip-84',resource=resource)
+    assert not fact['ready'] and fact['status']==expected
+    assert conversion_chip_status_label(expected)!='状态未知'
+
+
+def test_concurrent_saved_resource_detection_coalesces_and_cannot_overwrite_edit(tmp_path, monkeypatch):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    from datetime import datetime, timezone
+    from filelock import FileLock
+    file = tmp_path / 'deploy_resources.json'
+    monkeypatch.setattr(api, 'DEPLOY_RESOURCES_FILE', file)
+    monkeypatch.setattr(api, '_DEPLOY_RESOURCES_WRITE_LOCK', FileLock(str(file)+'.lock'))
+    original={'id':'probe','name':'registered','kind':'sophon','mode':'local',
+              'config_revision':'v1','status':'unchecked','targets':[],
+              'updated_at':'2026-11-02 01:00:00'}
+    api._save_deploy_resources([original])
+    begin=threading.Event();release=threading.Event();second_read=threading.Event();calls=[]
+    original_lookup=api._deploy_resource_by_id
+    reads=[0];reads_lock=threading.Lock()
+    def traced_lookup(identity):
+        value=original_lookup(identity)
+        with reads_lock:
+            reads[0]+=1
+            if reads[0]>=3:second_read.set()
+        return value
+    monkeypatch.setattr(api,'_deploy_resource_by_id',traced_lookup)
+    def inspect(resource, *, force=False):
+        calls.append(resource['config_revision'])
+        begin.set();assert release.wait(3)
+        return {**resource,'status':'ready','targets':['sophon'],
+                'last_checked_at':datetime.now(timezone.utc).isoformat()}
+    monkeypatch.setattr(api,'_inspect_conversion_resource', inspect)
+    with ThreadPoolExecutor(2) as pool:
+        first=pool.submit(api.v39_detect_deploy_resource, 'probe')
+        assert begin.wait(3)
+        second=pool.submit(api.v39_detect_deploy_resource, 'probe')
+        assert second_read.wait(3)
+        release.set()
+        a=first.result(timeout=6);b=second.result(timeout=6)
+    assert len(calls)==1 and a['status']==b['status']=='ready'
+    assert len(api._load_saved_deploy_resources())==1
+
+    begin.clear();release.clear()
+    with ThreadPoolExecutor(1) as pool:
+        running=pool.submit(api.v39_detect_deploy_resource, 'probe')
+        assert begin.wait(3)
+        api.v39_update_deploy_resource('probe', api.DeployResourceReq(name='edited',kind='sophon',tool_root='/new-sdk'))
+        release.set()
+        with pytest.raises(HTTPException) as changed:
+            running.result(timeout=6)
+    assert changed.value.status_code==409
+    saved=api._load_saved_deploy_resources()[0]
+    assert saved['name']=='edited' and saved['tool_root']=='/new-sdk'
+    assert saved['status']=='unchecked' and saved['last_checked_at']==''
+
+
+def test_failed_sdk_inspection_is_shared_as_failed_evidence(tmp_path, monkeypatch):
+    from filelock import FileLock
+    file = tmp_path / 'deploy_resources.json'
+    monkeypatch.setattr(api, 'DEPLOY_RESOURCES_FILE', file)
+    monkeypatch.setattr(api, '_DEPLOY_RESOURCES_WRITE_LOCK', FileLock(str(file)+'.lock'))
+    original = {'id':'broken-sdk', 'name':'SDK failure','kind':'rockchip',
+                'mode':'local', 'config_revision':'v1', 'status':'ready',
+                'targets':['rockchip'], 'last_checked_at':''}
+    api._save_deploy_resources([original])
+
+    def unavailable(_resource):
+        raise RuntimeError('isolated probe failure')
+
+    monkeypatch.setattr(api, '_detect_local_deploy_resource', unavailable)
+    result = api.v39_detect_deploy_resource('broken-sdk')
+    saved = api._load_saved_deploy_resources()[0]
+    assert result['detection']['state']=='failed'
+    assert result['status']==saved['status']=='error'
+    assert saved['detection_error']=='isolated probe failure'
+    assert saved['last_checked_at']
+    # A second Web process gets durable failed evidence, never the old ready.
+    from platform_core.conversion_resource_detection import observe
+    assert observe(saved)['detection']['state']=='failed'
+
+
+def test_local_bulk_probe_does_not_resurrect_concurrently_edited_resource(tmp_path, monkeypatch):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    from filelock import FileLock
+    file = tmp_path / 'deploy_resources.json'
+    monkeypatch.setattr(api, 'DEPLOY_RESOURCES_FILE', file)
+    monkeypatch.setattr(api, '_DEPLOY_RESOURCES_WRITE_LOCK', FileLock(str(file)+'.lock'))
+    original = {'id':'local-rk','name':'Original', 'kind':'rockchip',
+                'mode':'local', 'config_revision':'v1', 'tool_root':'/before',
+                'status':'unchecked', 'targets':[]}
+    api._save_deploy_resources([original])
+    began = threading.Event()
+    release = threading.Event()
+
+    def inspect(row):
+        if row['kind']=='rockchip':
+            began.set()
+            assert release.wait(3)
+        return {**row, 'status':'ready', 'targets':[row['kind']],
+                'last_checked_at':'2026-11-02T12:00:00Z'}
+
+    monkeypatch.setattr(api, '_detect_local_deploy_resource', inspect)
+    monkeypatch.setattr(api, '_builtin_deploy_resources', lambda:[])
+    with ThreadPoolExecutor(1) as pool:
+        pending = pool.submit(api.v39_detect_local_deploy_resources)
+        assert began.wait(3)
+        api.v39_update_deploy_resource('local-rk', api.DeployResourceReq(
+            name='Updated', kind='rockchip', tool_root='/after'))
+        release.set()
+        response = pending.result(timeout=6)
+    saved = api._load_saved_deploy_resources()
+    current = next(row for row in saved if row['id']=='local-rk')
+    assert current['name']=='Updated' and current['tool_root']=='/after'
+    assert current['status']=='unchecked'
+    assert all(row['id']!='local-rk' for row in response['found'])
+    assert next(row for row in response['items'] if row['id']=='local-rk')['name']=='Updated'
+
+
 def test_version_history_paginates_its_full_legacy_scope_without_global_truncation(tmp_path,monkeypatch):
     import json
     monkeypatch.setattr(api,'get_project',lambda p:{'id':p})

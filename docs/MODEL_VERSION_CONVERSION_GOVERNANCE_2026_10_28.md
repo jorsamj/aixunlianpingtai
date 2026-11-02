@@ -1,5 +1,32 @@
 # 模型版本转换模块专项（2026-10-28）
 
+## 2026-11-02｜42.24.488 多厂商转换状态、定向解析与多进程检测（开发中，CI/生产待独立验收）
+
+本轮承接 42.24.487（远端开发分支 SHA `377e95b3319eca0f350f8d014843a084f98f1a00`，上一轮已确认 39/39 Actions 绿色）；生产已知 42.24.485，不涉及部署。唯一允许开发分支 `feature/external-algorithm-publishing`，不 merge/tag/release/force push，不修改正式数据库、权重、Task、OSS、硬件或畅联云发布记录。下述测试/提交回执在本批完成后按准确 488 SHA 更新，不能借用 487 的 CI。
+
+### 已确认的源码缺陷与非缺陷
+
+- **真实重复扫描**：旧 `app.py::_resolve_deploy_source` 不辨源身份，一律 `_deploy_source_models`，先 `list_models_internal` 扫所有 `jobs/*/job.json`、模型目录，再 `list_algorithms_internal` 读所有算法和版本；旧 `_conversion_contract_for_source` 为明确版本再读一次全算法列表，创建路径又读取。当前 `AlgorithmSqlStore.read_one(algorithm_id)` 已有可信单算法 SQL API，复用而不新建仓储。
+- **初始芯片状态不实**：旧 `static/app.js::applyConversionChipOptions428` 对全部 enabled 芯片写死“待校验”；其余 `applyConversionContract428` 已从后端 `chip_options` 覆盖，但网络失败时旧文本容易误导。目录已有 `conversion_catalog_metadata` 的每资源证据；需要对资源 ID、SDK 检测时间/状态一致性做精确绑定，不能让另一个资源的能力代表当前选择。
+- **多进程竞争**：原 `conversion_resource_detection.detect` 只在单 Web 进程内用线程锁/缓存合并显式检测，资源 JSON 由普通写入覆盖，原更新 `updated_at` 仅秒级，且检测的配置检查和写回不在同一持久临界区。多个 Web Worker 可重复检测或晚写覆盖新的资源配置。
+- **已有机制不重复建设**：原动态厂商/芯片目录及 implemented Adapter、通用 ONNX/Paddle/TensorRT 与 Sophon/RKNN/Atlas、300 秒 TTL、选中资源主动检测、同配置浏览器 resolve 去重/取消/失败手动重试、POST 正式创建的重检/幂等、编译和板端验证分离已经存在。寒武纪等无 Adapter 保留 `not_adapted`，不构造假 SDK 成功。
+- **网络事实**：用户某次 Chrome `/deploy/resolve` 在 `Initial connection` 约 30.02 秒，未见对应 Web 日志；服务端健康/无鉴权请求较快不证明带真实参数 resolve 的执行时间。浏览器代理/TCP/TLS/NAT/反向代理与应用 SQL 等待须分段归因，不能把 30 秒连接阶段当作 Python 计算缺陷；保留有界超时，不抬高到 60/120 秒。
+
+### 本批原 Owner 内的变化
+
+1. 明确 `version::<algorithm_id>::<version_id>` 源只读 `AlgorithmSqlStore.read_one`，保留原当前版本投影与缺失历史报告的**单版本**按需读取，输出仍为既有 source/meta/trace 格式；请求内部临时版本快照供合同和任务创建复用，持久 `source_meta` 不包含私有快照。旧 `model::` 自由模型来源保留原血缘扫描以免丢失历史 job 关联；这是尚未进一步优化的兼容路径。
+2. `compute_platform_catalog` 使用唯一后端芯片状态文案，识别当前资源检测中/过期/失败；目录投影返回逐资源 status_label/检测时间/state，前端只在 resource_id、检测时间、检测状态同时匹配时显示该能力。匹配不到显示“等待兼容性解析”，不假称可用/不可用；未适配、停用、未选资源与显式 SDK 状态有独立说明。正式创建按钮仍以最新服务端 ready 合同为准，过期资源不得作为 ready 资源提交。
+3. 复用现有 `conversion_resource_detection` 与持久部署资源文件；同 resource_id 的主动检测增加跨进程 FileLock，进锁后重新核对配置/已落盘检测时间，跨进程重复请求复用真实持久观察；写入前以文件锁读回核对配置身份。SDK 探测抛错会把已存在的失败观察持久化，不能让旧 ready 继续冒充有效 SDK；配置更新生成 `config_revision`（旧行兼容），清除过期探测回执，变更期间晚检测 fail-closed 409；资源 JSON 原子替换，配置/删除和旧版内联密钥迁移串行化；不同资源检测不互锁。单个显式批量本机自动检测保留原 Owner，回写仅覆盖未被编辑/重新检测的行，响应亦只反馈实际接受的最新记录。
+4. 既有 opt-in 性能诊断白名单增加精确 `/api/v39/projects/{id}/deploy/resolve` POST 和 `/api/v39/deploy/catalog` GET；原 `_resolve_deploy_source`/资源读取/合同解析记录有限固定阶段标量，算法 SQL 仓储在显式诊断时复用原计时连接，不记录 SQL、ID、参数、Token 或密钥。仍区分浏览器 TCP/TLS 与服务端请求，`sqlite_lock_wait_ms` 无直接测量时保持 null。
+
+### 验收与未完成项（按实际回执更新）
+
+- 新增和扩展原动态目录 API、资源检测单测、原生 JS 资源/芯片回归；保留现有多厂商合同及资源资格。真实 SDK/Agent/板端检测不在隔离开发环境执行，不能用 synthetic fixture 冒充能力。
+- 隔离 Python 转换合同/资源/幂等/模型/多厂商等 **271 passed、1 deselected**；完整前端原生 JS **1470/1470 passed**（包含在正常子进程权限下运行的 Uppy）。部分旧 `TestClient` 复合 HTTP/性能诊断用例在当前隔离环境挂起，须核对准确 SHA GitHub CI，不得把中断测试算作通过；独立硬件及真实 Chrome/所有 Actions 待提交后验收。SDK 异常持久化、批量检测并发编辑和同资源重复检测、网络连接与 SDK 失败区分均有新回归。
+- 隔离性能对照（Python 3.12、临时 SQLite `AlgorithmSqlStore` 的真实定向 `read_one`、本地版本合同、相同资源证据；每组40次温调用）：同一版本、项目下 **0 个**无关 `job.json` 时总延迟近似 P95 **3.827ms**、P50 **1.590ms**；增加 **2,000 个**无关文件后 P95 **2.871ms**、P50 **1.877ms**。该对照仅证明本机定向解析不随着这些历史文件明显增长；不是旧版本全扫描的完整对照、真实21k数据/冷启动、WAN 或生产指标，也不能证明通用 `model::` 入口已经优化。
+- P0 **仍需要授权的只读现场验收**：浏览器 HAR（连接/代理/TTFB）、同 request_id 的 Server-Timing、真实 21k/历史任务规模 SQL/P95、两 Web Worker 连续检测/资源编辑、多目标 SDK/Agent 与芯片真实工具链。性能方向目标：温能力 P95≤200ms、单模型 resolve P95≤500ms、必要弹窗 P95≤2s；这些均非已达标结论。
+- **安全/部署**：无数据库 schema 迁移，现有资源 JSON 仅在用户显式新增/编辑/检测时写入可选 `config_revision` 和新版状态字段；旧检测读取和项目数据不用回填。生产 485→488 必须另外核部署差异、无活动任务、备份、明确授权和回滚，不能自动升级生产。
+
 本文件为附件b7318d04本轮唯一需求/实现/验收依据；不替代既有RGB/BGR颜色适配与SDK真实性专项。基线2c5311c6 / VERSION42.24.397已fetch一致，原负样本任务最终CI收尾独立提交92203c8c，原未提交训练模板/5944与其他工作树保留。不开生产、不删模型/缓存，不扩到训练配置或素材管理。
 
 ## 需求与审计

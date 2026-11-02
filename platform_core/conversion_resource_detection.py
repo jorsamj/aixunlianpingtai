@@ -30,6 +30,17 @@ def configuration_identity(resource):
     return hashlib.sha256(json.dumps(config, sort_keys=True, default=str).encode()).hexdigest()
 
 
+def resource_configuration_key(resource):
+    """Stable SDK configuration key, excluding volatile detector observations.
+
+    Resources edited through the current API carry a config_revision. Legacy
+    resources are still compared by their actual configuration fields.
+    """
+    config = {k:v for k,v in resource.items()
+              if k not in _OBSERVATIONS and k not in {'created_at', 'updated_at'}}
+    return hashlib.sha256(json.dumps(config, sort_keys=True, default=str).encode()).hexdigest()
+
+
 def _entry(resource):
     identity = configuration_identity(resource)
     key = str(resource.get('id') or identity)
