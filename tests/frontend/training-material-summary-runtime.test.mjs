@@ -8,6 +8,7 @@ import {
   trainingCompatibilitySignature,
   trainingMaterialSelectionSignature,
   updateTrainingGovernanceSelection,
+  planTrainingScopeReviewPage,
   renderGtConflictEvidence,
   renderTrainingSampleConfirmation,
   renderTrainingSampleRoles,
@@ -117,6 +118,32 @@ test('governance selection retains cross-page choices and all-filtered exclusion
   assert.equal(JSON.stringify(selected).length < 250, true);
   assert.equal(updateTrainingGovernanceSelection(selected, {mode:'read', key:'other-project/filter/rev', total:1}).count, 0);
   assert.equal(updateTrainingGovernanceSelection(selected, {mode:'read', key:'project/filter/new-rev', total:2376}).count, 0);
+});
+
+test('human GT scope batch is per-image, bounded and never silently accepts other problems',()=>{
+  const sha='a'.repeat(64);
+  const selection={image_ids:['person-only','head-only','unannotated']};
+  const rows=[
+    {image_id:'person-only',issue_type:'partial_review_scope',annotation_version:4,
+      content_sha256:sha,missing_label_codes:['head']},
+    {image_id:'head-only',issue_type:'partial_review_scope',annotation_version:7,
+      content_sha256:sha,missing_label_codes:['person','helmet']},
+    {image_id:'unannotated',issue_type:'missing_annotation',annotation_version:0,
+      content_sha256:sha,missing_label_codes:['person','head']},
+  ];
+  const plan=planTrainingScopeReviewPage(selection,rows);
+  assert.equal(plan.total,3);
+  assert.deepEqual(plan.items,[
+    {image_id:'person-only',reviewed_label_codes:['head'],expected_version:4,source_content_sha256:sha},
+    {image_id:'head-only',reviewed_label_codes:['person','helmet'],expected_version:7,source_content_sha256:sha},
+  ]);
+  assert.deepEqual(plan.blocked,[{image_id:'unannotated',issue_type:'missing_annotation'}]);
+  assert.throws(()=>planTrainingScopeReviewPage({all_filtered:true,image_ids:[]},rows),/冻结服务端审核范围/);
+  assert.throws(()=>planTrainingScopeReviewPage({image_ids:['person-only','not-on-page']},rows),/其他页面/);
+  assert.throws(()=>planTrainingScopeReviewPage({image_ids:Array.from({length:51},(_,i)=>String(i))},rows),/50 张/);
+  assert.deepEqual(planTrainingScopeReviewPage({image_ids:['person-only']},[
+    {...rows[0],annotation_version:4,content_sha256:'forged'},
+  ]).blocked,[{image_id:'person-only',issue_type:'partial_review_scope'}]);
 });
 
 test('selection signature is stable and duplicate independent', () => {

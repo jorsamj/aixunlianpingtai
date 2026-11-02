@@ -1,4 +1,6 @@
-> **当前 42.24.485 接续**：484 精确 Actions 45/47，通过最小单测依赖修复恢复 `AI Annotation Recovery` 精简环境的 105/105；新 SHA CI 待核。用户要求人工补审可全部、勾选批量和单张，仍需原 Owner 的安全闭环；详情见本文末尾 485 节。
+> **当前 42.24.486 本地续批（准确新 SHA CI 待验）**：已通过 GitHub 连接器核对 485 `fda473dd88e6b8fc02747ed0dd49cb4ebdc32e65` 精确 Actions **23/23 success**（20 PR、3 Push，AI Annotation Recovery 两种触发均成功），克隆原开发分支 HEAD 一致、工作区起初干净。486 只在原 Picker API、Summary Runtime、正式 GT 回调内新增 **人工本页最多 50 张逐图缺失 scope 补审**：仅正式 GT `partial_review_scope`，按每图当前真值验证缺失类别、素材 SHA、GT 版本、双修订、可信 actor；复用原 `save_annotation` CAS、已有框及人员时间审计，拒无正式 GT、来源异常、重复 ID、越界/伪造类别；页面仅经明确本人核验声明后提交，展示成功/失败/未处理并返回原草稿重新预检。隔离 Picker API **36/36**、正式 GT 集成 **5/5**、完整 Node **1466/1466** 已通过。新增真实 Chrome 测试已被 Playwright 收集，但本机 Chromium 下载返回损坏 ZIP，**真实浏览器和新 SHA CI 尚未验证**。本版只是一段可验证的页面批量闭环；跨页全部确认、>50 批次续审/恢复、AI 与人工混合 UI 均未完成，不得宣称全量 P0 结束。无生产 GT/DB/任务/Worker/GPU/OSS/部署操作；绝不 merge main/tag/release/force push。
+
+> **原 42.24.485 交接**：484 精确 Actions 45/47，通过最小单测依赖修复恢复 `AI Annotation Recovery` 精简环境的 105/105；485 当前已核精确 Actions 23/23。用户要求人工补审可全部、勾选批量和单张，仍需原 Owner 的安全闭环。
 
 ## 2026-11-01｜42.24.484 历史 GT 严格补审任务服务端冻结（准确 CI 待验）
 

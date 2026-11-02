@@ -19,6 +19,30 @@ export function updateTrainingGovernanceSelection(previous, {mode='read', key, t
     count:mode==='read'&&value.previous_execution_task_id ? value.count : all||issues ? Math.max(0,(issues?allTotal:total)-excluded.size) : selected.size};
 }
 
+export function planTrainingScopeReviewPage(selection, rows) {
+  if(selection?.all_filtered || selection?.all_issues || selection?.previous_execution_task_id)
+    throw new Error('跨页全部确认需要先冻结服务端审核范围；当前请勾选本页素材');
+  const ids=uniqueIds(selection?.image_ids);
+  if(!ids.length)throw new Error('请先勾选本页需要人工补审的素材');
+  if(ids.length>50)throw new Error('每批最多审核 50 张，请减少本次勾选数量');
+  const byId=new Map((rows||[]).map(row=>[String(row.image_id),row]));
+  if(ids.some(id=>!byId.has(id)))throw new Error('选择中包含其他页面的素材，请先返回该页审核');
+  const items=[],blocked=[];
+  for(const imageId of ids){
+    const row=byId.get(imageId);
+    const codes=uniqueIds(row.missing_label_codes);
+    if(row.issue_type!=='partial_review_scope'||!codes.length||
+       !Number.isInteger(row.annotation_version)||row.annotation_version<0||
+       !/^[0-9a-f]{64}$/i.test(String(row.content_sha256||''))){
+      blocked.push({image_id:imageId,issue_type:row.issue_type});continue;
+    }
+    items.push({image_id:imageId,reviewed_label_codes:codes,
+      expected_version:row.annotation_version,
+      source_content_sha256:String(row.content_sha256).toLowerCase()});
+  }
+  return {items,blocked,total:ids.length};
+}
+
 export function removeResolvedTrainingMaterials(runtime,draft,imageIds,diagnosis=null){
   const removed=new Set(uniqueIds(imageIds));
   const duplicateReview=diagnosis?{
@@ -223,6 +247,7 @@ export function installTrainingMaterialSummaryRuntime({
   let governanceDecisions = {};
   let governanceDecisionRevision = '';
   let governanceRetainedTask = null;
+  let scopeReviewFeedback = null;
   const deletionSessions=new Map();
   const topOwns=anchor=>!!anchor?.isConnected&&!anchor.closest('.hidden')&&[...document.querySelectorAll('.modal:not(.hidden)')].at(-1)?.contains(anchor);
 
@@ -282,6 +307,43 @@ export function installTrainingMaterialSummaryRuntime({
     finally{controls.forEach(button=>{if(button.isConnected)button.disabled=false})}
   }
 
+  async function reviewSelectedScopes(){
+    if(historicalDiagnosis||!governanceContext)return false;
+    let plan;
+    try{plan=planTrainingScopeReviewPage(governanceSelection,governanceContext.rows)}
+    catch(error){notify(error.message);return false}
+    if(!plan.items.length){notify(`所选 ${plan.total} 张均不能批量补审，请逐张打开原标注工作台`);return false}
+    const pid=String(projectId()||''),context=governanceContext,draft=currentDraft(),signature=trainingCompatibilitySignature(draft);
+    const labels=uniqueIds(plan.items.flatMap(item=>item.reviewed_label_codes));
+    const message=`本批 ${plan.items.length} 张，补审类别：${labels.join('、')}。\n`
+      +`本人已核对本页所选图片与现有标注框，确认各图对应缺失类别均无漏标。\n`
+      +`系统将保留已有标注框，补写正式 GT 审核范围及本人审核证据；${plan.blocked.length} 张其他问题素材不会处理。确认提交？`;
+    if(!window.confirm(message))return false;
+    const anchor=document.querySelector('[data-training-compatibility-dialog]');
+    const buttons=[...(anchor?.querySelectorAll('button')||[])];buttons.forEach(button=>button.disabled=true);
+    if(anchor)anchor.setAttribute('aria-busy','true');
+    try{
+      const result=await withRequestDeadline(async signal=>readJson(await fetchImpl(
+        `/api/v62/projects/${encodeURIComponent(pid)}/training-materials/review-scopes`,{
+          signal,method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+            ...compatibilityPayload(draft),confirmed:true,items:plan.items,
+            expected_material_revision:context.truth.material_revision,
+            expected_annotation_revision:context.truth.annotation_revision,
+          }),
+        }),'正式 GT 补审失败'),{timeoutMs:30000,label:'人工审核范围保存'});
+      if(destroyed||String(projectId()||'')!==pid||trainingCompatibilitySignature(currentDraft())!==signature||!topOwns(anchor))return false;
+      const succeeded=uniqueIds(result.succeeded),failures=result.failures||[];
+      scopeReviewFeedback={projectId:pid,signature,succeeded:succeeded.length,failed:failures.length,
+        blocked:plan.blocked.length,details:failures.slice(0,10).map(row=>`${row.image_id}：${row.message}`)};
+      if(succeeded.length){invalidate();await refresh(currentIds(),{force:true})}
+      const next=await refreshCompatibility({force:true});
+      if(next&&anchor.isConnected&&topOwns(anchor))openCompatibilityIssues();
+      notify(`人工补审：成功 ${succeeded.length} 张，失败 ${failures.length} 张，未处理 ${plan.blocked.length} 张；请重新预检`);
+      return succeeded.length>0;
+    }catch(error){notify(error.message||String(error));return false}
+    finally{buttons.forEach(button=>{if(button.isConnected)button.disabled=false});anchor?.removeAttribute('aria-busy')}
+  }
+
   function governanceTools(truth, source='draft') {
     const decisionRevision=JSON.stringify([projectId(),truth.material_revision,truth.annotation_revision]);
     if(governanceDecisionRevision!==decisionRevision){governanceDecisions={};governanceDecisionRevision=decisionRevision;}
@@ -294,7 +356,9 @@ export function installTrainingMaterialSummaryRuntime({
         count:governanceRetainedTask.count,previous_execution_task_id:governanceRetainedTask.task_id};
       governanceRetainedTask=null;
     }
-    return `<section class="training-governance-tools"><div class="row"><button class="btn" data-governance-mode="page">全选当前页</button><button class="btn" data-governance-mode="all">全选当前筛选结果</button><button class="btn" data-governance-mode="issues">全选全部训练问题</button><button class="btn" data-governance-mode="clear">取消全选</button><span data-governance-selected aria-live="polite">已选 ${governanceSelection.count} 张 · 排除 ${governanceSelection.excluded_image_ids.length} 张</span>${source==='draft'?'<button class="btn" data-governance-exclude>批量排除本次训练</button>':''}<select class="select" data-governance-delete-mode aria-label="删除模式"><option value="DISCARD">丢弃所选 · 可整组删除</option><option value="KEEP_ONE">保留一份 · 人工指定保留项</option></select><button class="btn danger" data-governance-preview>删除已选 · 安全预览</button></div><p>排除只调整当前训练草稿；删除会移除当前素材及 GT。整组删除无需保留项；历史证据保留，活动或共享图片物理字节延后保留。范围由服务端冻结并复验。</p><div data-governance-error role="alert" hidden></div></section>`;
+    const feedback=scopeReviewFeedback?.projectId===String(projectId()||'')&&scopeReviewFeedback?.signature===trainingCompatibilitySignature(currentDraft())?scopeReviewFeedback:null;
+    const reviewFeedback=feedback?`<div class="alert ${feedback.failed?'warn':'success'}" data-scope-review-result role="status">人工补审：成功 ${feedback.succeeded} 张 · 失败 ${feedback.failed} 张 · 未处理 ${feedback.blocked} 张${feedback.details.length?`<details><summary>查看失败原因</summary><ul>${feedback.details.map(row=>`<li>${htmlEscape(row)}</li>`).join('')}</ul></details>`:''}</div>`:'';
+    return `<section class="training-governance-tools"><div class="row"><button class="btn" data-governance-mode="page">全选当前页</button><button class="btn" data-governance-mode="all">全选当前筛选结果</button><button class="btn" data-governance-mode="issues">全选全部训练问题</button><button class="btn" data-governance-mode="clear">取消全选</button><span data-governance-selected aria-live="polite">已选 ${governanceSelection.count} 张 · 排除 ${governanceSelection.excluded_image_ids.length} 张</span>${source==='draft'?'<button class="btn primary" data-governance-review>人工补审本页 · 最多50张</button><button class="btn" data-governance-exclude>批量排除本次训练</button>':''}<select class="select" data-governance-delete-mode aria-label="删除模式"><option value="DISCARD">丢弃所选 · 可整组删除</option><option value="KEEP_ONE">保留一份 · 人工指定保留项</option></select><button class="btn danger" data-governance-preview>删除已选 · 安全预览</button></div><p>人工补审仅对已经核验、具有正式 GT 的当前页缺失类别记录审核证据；其他异常需逐张处理。排除只调整当前训练草稿；删除会移除当前素材及 GT，须另行安全预览。</p>${reviewFeedback}<div data-governance-error role="alert" hidden></div></section>`;
   }
 
   function refreshGovernanceChecks() {
@@ -875,6 +939,7 @@ return `<article class="training-compatibility-item"><img src="${htmlEscape(item
       refreshGovernanceChecks();
     });
     root.querySelector('[data-governance-preview]')?.addEventListener('click',()=>previewGovernance());
+    root.querySelector('[data-governance-review]')?.addEventListener('click',()=>reviewSelectedScopes());
     root.querySelector('[data-governance-exclude]')?.addEventListener('click',()=>excludeSelectedFromDraft());
     root.querySelectorAll('[data-conflict-review]').forEach(button=>{
       if(!comparison)return;

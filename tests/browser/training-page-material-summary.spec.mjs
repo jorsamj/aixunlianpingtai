@@ -146,3 +146,52 @@ test('training diagnosis filters by each material actual missing review label', 
   await expect(page.locator('.training-compatibility-item')).toContainText('缺失：smoke');
   await expect(page.locator('.training-compatibility-item')).not.toContainText('smoke.jpg');
 });
+
+test('training partial-positive batch review preserves the draft and sends per-image missing scope',async({page})=>{
+  await page.goto('/');
+  await expect(page.locator('#title')).toBeVisible({timeout:15_000});
+  await expect.poll(()=>page.evaluate(()=>Boolean(window.TrainingMaterialSummaryRuntime?.refreshCompatibility&&state.project?.id))).toBe(true);
+  const submitted=[];const sha='a'.repeat(64);
+  let saved=false;
+  await page.route('**/api/v62/projects/*/training-materials/compatibility',async route=>{
+    const rows=[
+      {image_id:'has-fire',filename:'fire.jpg',issue_type:'partial_review_scope',
+        annotation_scope:['fire'],required_label_codes:['fire','smoke'],missing_label_codes:['smoke'],
+        annotation_version:4,content_sha256:sha},
+      {image_id:'has-smoke',filename:'smoke.jpg',issue_type:'partial_review_scope',
+        annotation_scope:['smoke'],required_label_codes:['fire','smoke'],missing_label_codes:['fire'],
+        annotation_version:8,content_sha256:sha},
+    ].filter(item=>!saved||item.image_id==='has-smoke');
+    await route.fulfill({json:{compatible:false,issue_count:rows.length,affected_image_count:rows.length,
+      issue_counts:{partial_review_scope:rows.length},effective_label_codes:['fire','smoke'],
+      material_revision:saved?6:5,annotation_revision:saved?8:7,
+      filtered_affected_image_count:rows.length,filtered_count:rows.length,
+      items:rows,page:1,page_size:50,total_pages:1,has_next:false}});
+  });
+  await page.route('**/api/v62/projects/*/training-materials/review-scopes',async route=>{
+    submitted.push(route.request().postDataJSON());saved=true;
+    await route.fulfill({json:{succeeded:['has-fire'],failures:[],effective_label_codes:['fire','smoke']}});
+  });
+  await page.evaluate(()=>{
+    state.labels=[{code:'fire',display_name:'明火'},{code:'smoke',display_name:'烟雾'}];
+    state.algorithms=[{id:'synthetic-scope-review',name:'合成测试算法',versions:[]}];
+    window.TrainingDraftRuntime.update({algorithmId:'synthetic-scope-review',
+      materialIds:['has-fire','has-smoke'],newLabelCodes:['fire','smoke'],config:{model:'yolo11n.pt'}});
+  });
+  await page.evaluate(async()=>{
+    await window.TrainingMaterialSummaryRuntime.refreshCompatibility({force:true});
+    window.TrainingMaterialSummaryRuntime.openCompatibilityIssues();
+  });
+  const dialog=page.locator('[data-training-compatibility-dialog]');
+  await dialog.locator('[data-governance-check="has-fire"]').check();
+  page.once('dialog',modal=>modal.accept());
+  await dialog.locator('[data-governance-review]').click();
+  await expect.poll(()=>submitted.length).toBe(1);
+  expect(submitted[0].items).toEqual([{image_id:'has-fire',reviewed_label_codes:['smoke'],
+    expected_version:4,source_content_sha256:sha}]);
+  expect(submitted[0].expected_material_revision).toBe(5);
+  expect(submitted[0].expected_annotation_revision).toBe(7);
+  await expect(dialog.locator('[data-scope-review-result]')).toContainText('成功 1 张');
+  await expect(page.locator('.training-compatibility-item')).toHaveCount(1);
+  expect(await page.evaluate(()=>window.TrainingDraftRuntime.current().materialIds)).toEqual(['has-fire','has-smoke']);
+});

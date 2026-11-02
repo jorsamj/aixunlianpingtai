@@ -1,5 +1,11 @@
 # AI 预标注、清洗范围与提示词创建体验实施计划
 
+## 2026-11-02｜42.24.486 训练素材人工 scope 补审与 AI 可选性的边界
+
+- 本批不调用 AI：训练兼容性问题页先提供真实人工本页最多 50 张、逐图不同缺失类别的明确人工声明及正式 GT CAS/操作人/时间证据，复用原标注工作台和已有 `review-negative` 保存回调，原有合法框保留。FastAPI Picker36/36、GT集成5/5、Node1466/1466 本地通过；Chrome 新用例已收集，浏览器下载损坏而未实际执行。准确新 SHA CI 待验。
+- 严格 AI 补审的原每图冻结 scope 仍是独立可选能力；AI 空预测或未经人工确认的候选不能代替正式 GT。旧正式 GT/AI Task/Worker 不改，不创建训练任务。下一段必须设计服务端有界、可恢复的全筛选批量快照和训练草稿回跳；不准用浏览器一次拉取 21k 图或将未看图片记为 AI/人工已核。
+- 生产真实模型、OSS、GT 规模与 30s Stalled 仍未取证；**ISOLATED TEST — NOT PRODUCTION VERIFIED**。不部署或改正式数据。
+
 ## 2026-10-31｜42.24.452 正式 GT 当前态证据审计（当前提交 CI 待核）
 
 - **实现与入口**：先确认 451 GitHub 精确 SHA `18bebfd3` 的 43/43 Actions success（Chrome 3/3）。候选日志 `commits` 原 SQLite 增只读 `read_commit_page(cursor,limit)`，按主键 ID 游标逐页，最多 100；新增 `GET /api/v60/projects/{project_id}/annotation-tasks/{task_id}/gt-audit` 只在人工主动操作时读取本页 50 条历史、已审候选及唯一 `AnnotationRepository.get_many` 的正式 GT，不在任务列表、轮询及加载首页自动批扫。任务详情原弹窗只加一个按需展开区域和下一页，离开或换项目时废弃旧请求；错误展示可重试。

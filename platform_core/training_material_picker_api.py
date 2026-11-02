@@ -1233,6 +1233,89 @@ def training_material_picker_router(
                                  "message": str(getattr(error, "detail", str(error)))})
         return {"succeeded": succeeded, "failures": failures, "effective_label_codes": contract["effective_label_codes"]}
 
+    @router.post("/review-scopes")
+    def review_missing_scopes(project_id: str, payload: dict, request: Request):
+        """Human-attested, per-image review of missing labels on existing formal GT.
+
+        Never infer that an unlabelled image is empty. Every image must already
+        have valid formal GT, and the exact missing codes are recomputed from
+        authoritative GT rather than accepted from the browser.
+        """
+        if payload.get("confirmed") is not True:
+            raise HTTPException(status_code=422, detail="explicit human review confirmation required")
+        items = payload.get("items")
+        if not isinstance(items, list) or not 1 <= len(items) <= 50 or not all(isinstance(item, dict) for item in items):
+            raise HTTPException(status_code=422, detail="review items must contain 1 to 50 images")
+        ids = [str(item.get("image_id") or "").strip() for item in items]
+        if any(not image_id for image_id in ids) or len(set(ids)) != len(ids):
+            raise HTTPException(status_code=422, detail="review image ids must be unique and nonempty")
+        if actor_provider is None or review_negative_provider is None:
+            raise HTTPException(status_code=503, detail="authenticated formal review unavailable")
+        material_revision = payload.get("expected_material_revision")
+        annotation_revision = payload.get("expected_annotation_revision")
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0
+               for value in (material_revision, annotation_revision)):
+            raise HTTPException(status_code=422, detail="material and GT revisions are required")
+        repository = materials(project_id)
+        annotations = annotation_repository_for_path(str(repository.project_path))
+        try:
+            contract = task_contract(project_id, payload, repository)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        actor = actor_provider(request, project_id)
+        if not str((actor or {}).get("actor_id") or "").strip():
+            raise HTTPException(status_code=401, detail="authenticated reviewer required")
+        revisions = (material_revision, annotation_revision)
+        if revisions != (repository.current_revision(), annotations.current_revision()):
+            raise HTTPException(status_code=409, detail="material or GT revision changed; refresh the review")
+        materials_by_id = {row["id"]: row for row in repository.get_many(ids)}
+        annotations_by_id = annotations.get_many(ids)
+        if revisions != (repository.current_revision(), annotations.current_revision()):
+            raise HTTPException(status_code=409, detail="material or GT revision changed during review")
+
+        from .training_label_tasks import training_material_role
+        allowed = set(contract["effective_label_codes"])
+        succeeded, failures = [], []
+        for item, image_id in zip(items, ids):
+            try:
+                codes = item.get("reviewed_label_codes")
+                if (not isinstance(codes, list) or not codes or
+                        any(not isinstance(code, str) or not code.strip() for code in codes) or
+                        len(set(codes)) != len(codes) or not set(codes) <= allowed):
+                    raise ValueError("reviewed labels must be explicit active task labels")
+                material = materials_by_id.get(image_id)
+                annotation = annotations_by_id.get(image_id)
+                if material is None or annotation is None:
+                    raise ValueError("formal material and GT must exist before batch review")
+                source_hash = str(item.get("source_content_sha256") or "").strip().lower()
+                expected = item.get("expected_version")
+                if (not isinstance(expected, int) or isinstance(expected, bool) or
+                        expected < 0 or len(source_hash) != 64 or
+                        any(char not in "0123456789abcdef" for char in source_hash) or
+                        source_hash != str(material.get("content_sha256") or "").strip().lower() or
+                        expected != int(annotation.get("version") or 0)):
+                    raise ValueError("material or GT version changed; reopen the image")
+                row = {**material, "annotation_state": annotation.get("annotation_state"),
+                       "annotation_scope": annotation.get("annotation_scope") or [],
+                       "boxes": annotation.get("boxes") or [],
+                       "annotation_version": annotation.get("version")}
+                issue = training_material_role(row, contract).get("scope_issue")
+                if (not issue or issue.get("issue_type") != "partial_review_scope" or
+                        set(issue.get("missing_label_codes") or []) != set(codes)):
+                    raise ValueError("only the current, exact missing formal GT scope can be batch reviewed")
+                if any(str(box.get("label") or box.get("code") or "") in set(codes)
+                       for box in annotation.get("boxes") or []):
+                    raise ValueError("existing target boxes require individual annotation review")
+                review_negative_provider(project_id, item, sorted(codes), actor)
+                succeeded.append(image_id)
+            except Exception as error:
+                if not hasattr(error, "status_code") and not isinstance(error, ValueError):
+                    raise
+                failures.append({"image_id": image_id, "status_code": getattr(error, "status_code", 422),
+                                 "message": str(getattr(error, "detail", str(error)))})
+        return {"succeeded": succeeded, "failures": failures,
+                "effective_label_codes": contract["effective_label_codes"]}
+
     @router.get("")
     def list_training_materials(
         project_id: str,

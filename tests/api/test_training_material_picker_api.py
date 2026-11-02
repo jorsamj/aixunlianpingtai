@@ -864,6 +864,57 @@ def test_role_page_and_review_keep_existing_formal_callback(tmp_path, monkeypatc
     assert "negative_confirmation_revision" in bulk.json()
 
 
+def test_partial_positive_scope_review_uses_per_image_truth_and_fails_closed(tmp_path, monkeypatch):
+    import platform_core.training_label_tasks as labels
+    monkeypatch.setattr(labels, "resolve_training_label_contract", lambda *_args, **_kwargs: {
+        "effective_label_codes": ["person", "smoke"]})
+    _, repository = _client(tmp_path)
+    annotations = AnnotationRepository(repository.project_path)
+    for image_id, scope in (("m0000", ["smoke"]), ("m0001", ["person"]), ("m0002", ["smoke"])):
+        original = annotations.get(image_id)
+        annotations.upsert(image_id, original["boxes"], "annotated", annotation_scope=scope)
+    repository.patch({"m0002": {"source_available": False}})
+    calls = []
+    def review(project, item, codes, actor):
+        calls.append((project, item["image_id"], codes, actor["actor_id"]))
+    app = FastAPI()
+    app.include_router(training_material_picker_router(lambda project: {"id": project},
+        repository.project_path.parents[1], algorithm_provider=lambda *_: {"id": "a"},
+        review_negative_provider=review,
+        actor_provider=lambda request, project: {"actor_id": "trusted-reviewer"}))
+    client = TestClient(app)
+    endpoint = "/api/v62/projects/p1/training-materials/review-scopes"
+    revision = {"expected_material_revision": repository.current_revision(),
+                "expected_annotation_revision": annotations.current_revision()}
+    def item(image_id, codes):
+        material = repository.get(image_id)
+        annotation = annotations.get(image_id)
+        return {"image_id": image_id, "reviewed_label_codes": codes,
+                "expected_version": annotation["version"],
+                "source_content_sha256": material["content_sha256"]}
+    payload = {"algorithm_asset_id": "a", "train_labels": ["person", "smoke"],
+               **revision, "items": [item("m0000", ["person"]), item("m0001", ["smoke"])]}
+    assert client.post(endpoint, json=payload).status_code == 422
+    assert client.post(endpoint, json={**payload, "confirmed": True,
+        "expected_annotation_revision": revision["expected_annotation_revision"] + 1}).status_code == 409
+    result = client.post(endpoint, json={**payload, "confirmed": True,
+        "items": [*payload["items"], item("m0002", ["person"]),
+                  item("m0001", ["person"])]})
+    assert result.status_code == 422  # Repeated image IDs cannot bypass per-image audit.
+    result = client.post(endpoint, json={**payload, "confirmed": True,
+        "items": [*payload["items"], item("m0002", ["person"]),
+                  item("m0259", ["person"])]})
+    assert result.status_code == 200, result.text
+    assert result.json()["succeeded"] == ["m0000", "m0001"]
+    assert {row["image_id"] for row in result.json()["failures"]} == {"m0002", "m0259"}
+    assert calls == [("p1", "m0000", ["person"], "trusted-reviewer"),
+                     ("p1", "m0001", ["smoke"], "trusted-reviewer")]
+    wrong = client.post(endpoint, json={**payload, "confirmed": True,
+        "items": [item("m0001", ["person"])]})
+    assert wrong.json()["succeeded"] == []
+    assert wrong.json()["failures"]
+
+
 def test_ten_thousand_candidates_role_page_returns_only_requested_page(tmp_path):
     from platform_core.training_material_picker_api import _role_material_page
     repository = MaterialRepository(tmp_path / "large")

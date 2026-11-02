@@ -58,6 +58,42 @@ def test_formal_negative_review_preserves_person_and_cas_evidence(client,monkeyp
  assert platform_app.material_store(pid).get(iid)['content_sha256']==image['content_sha256']
 
 
+def test_partial_positive_human_scope_review_keeps_original_boxes_and_actor_evidence(client, monkeypatch):
+ project=client.post('/api/projects',json={'name':'partial-review-'+uuid.uuid4().hex[:8],
+     'labels':[{'code':'person'},{'code':'head'}]}).json()
+ pid=project['id'];buffer=io.BytesIO();Image.new('RGB',(100,80),'blue').save(buffer,format='PNG')
+ image=client.post(f'/api/projects/{pid}/images',files=[('files',('partial.png',buffer.getvalue(),'image/png'))]).json()['uploaded'][0]
+ iid=image['id'];endpoint=f'/api/projects/{pid}/annotations/{iid}'
+ previous=client.get(endpoint).json()['annotation']
+ box={'id':'person-1','label':'person','class_id':0,'x1':10,'y1':10,'x2':80,'y2':70}
+ saved=client.post(endpoint,json={'boxes':[box],'annotation_state':'annotated',
+     'expected_version':previous['version'],'source_content_sha256':image['content_sha256'],
+     'reviewed_label_codes':['person']}).json()['annotation']
+ monkeypatch.setattr(platform_app,'list_algorithms_internal',lambda _pid:[{'id':'a','versions':[]}])
+ revisions=client.get(f'/api/v62/projects/{pid}/training-materials/revision').json()
+ payload={'algorithm_asset_id':'a','train_labels':['person','head'], 'confirmed':True,
+     'expected_material_revision':revisions['repository_revision'],
+     'expected_annotation_revision':revisions['annotation_revision'],
+     'items':[{'image_id':iid,'expected_version':saved['version'],
+         'source_content_sha256':image['content_sha256'],'reviewed_label_codes':['head']}]}
+ result=client.post(f'/api/v62/projects/{pid}/training-materials/review-scopes',json=payload)
+ assert result.status_code==200,result.text
+ assert result.json()['succeeded']==[iid] and not result.json()['failures']
+ current=client.get(endpoint).json()['annotation']
+ assert current['boxes']==saved['boxes']
+ assert current['annotation_scope']==['head','person']
+ evidence=platform_app._v50_annotation_repository(pid).negative_review_evidence(
+     iid,saved['version'],'isolated-test',['head'],image['content_sha256'])
+ assert evidence and evidence['annotation_version']==current['version'] and evidence['reviewed_at']
+ refreshed_revisions=client.get(f'/api/v62/projects/{pid}/training-materials/revision').json()
+ wrong=client.post(f'/api/v62/projects/{pid}/training-materials/review-scopes',json={**payload,
+     'expected_material_revision':refreshed_revisions['repository_revision'],
+     'expected_annotation_revision':refreshed_revisions['annotation_revision'],
+     'items':[{**payload['items'][0],'expected_version':current['version']}]})
+ assert wrong.status_code==200
+ assert not wrong.json()['succeeded'] and wrong.json()['failures']
+
+
 def test_negative_review_keeps_previously_reviewed_empty_scopes(client,monkeypatch):
  project=client.post('/api/projects',json={'name':'empty-'+uuid.uuid4().hex[:8],'labels':[{'code':'vest'},{'code':'person'}]}).json();pid=project['id']
  buffer=io.BytesIO();Image.new('RGB',(20,20),'red').save(buffer,format='PNG')
