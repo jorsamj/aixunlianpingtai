@@ -807,8 +807,9 @@ def test_task_role_sql_page_uses_formal_scope_and_bounds_payload(tmp_path, monke
     annotations.upsert("m0001", old["boxes"], "annotated", annotation_scope=["person", "smoke"])
     # The material's denormalized labels must not determine the task role.
     result = _role_material_page(repository, annotations, {"effective_label_codes": ["smoke"]}, limit=2)
-    # Uncommitted GT (30 items) is not a task-confirmable background sample.
-    assert result["sample_role_counts"] == {"positive": 115, "confirmed_negative": 1, "pending_negative": 114, "pending_review": 30}
+    # Unannotated candidates require explicit task confirmation; they do not
+    # automatically become formal GT or confirmed negatives.
+    assert result["sample_role_counts"] == {"positive": 115, "confirmed_negative": 1, "pending_negative": 144, "pending_review": 0}
     assert len(result["items"]) == 2
     pending = _role_material_page(repository, annotations, {"effective_label_codes": ["smoke"]},
                                   labels=["person"], sample_role="pending_negative", limit=3)
@@ -817,7 +818,7 @@ def test_task_role_sql_page_uses_formal_scope_and_bounds_payload(tmp_path, monke
     assert all(row["sample_role"] == "pending_negative" for row in pending["items"])
     selected = _role_material_page(repository, annotations, {"effective_label_codes": ["smoke"]},
                                    image_ids=["m0000", "m0001", "m0259"], limit=1)
-    assert selected["sample_role_counts"] == {"positive": 1, "confirmed_negative": 1, "pending_negative": 0, "pending_review": 1}
+    assert selected["sample_role_counts"] == {"positive": 1, "confirmed_negative": 1, "pending_negative": 1, "pending_review": 0}
 
 
 def test_role_page_and_review_keep_existing_formal_callback(tmp_path, monkeypatch):
@@ -843,7 +844,7 @@ def test_role_page_and_review_keep_existing_formal_callback(tmp_path, monkeypatc
     page = client.post(endpoint + "/role-page", json={"algorithm_asset_id": "a", "train_labels": ["smoke"],
                                                        "sample_role": "pending_negative", "page_size": 2})
     assert page.status_code == 200, page.text
-    assert page.json()["total"] == 115
+    assert page.json()["total"] == 145
     row = page.json()["items"][0]
     assert row["annotation_version"] == 1
     assert row["boxes"] and row["source_content_sha256"] and row["content_url"]
@@ -1077,8 +1078,8 @@ def test_ten_thousand_candidates_role_page_returns_only_requested_page(tmp_path)
     result = _role_material_page(repository, annotations,
                                  {"effective_label_codes": ["vest"]}, page=100, limit=50)
     assert result["total"] == 10000
-    assert result["sample_role_counts"]["pending_negative"] == 3000
-    assert result["sample_role_counts"]["pending_review"] == 6500
+    assert result["sample_role_counts"]["pending_negative"] == 9500
+    assert result["sample_role_counts"]["pending_review"] == 0
     assert len(result["items"]) == 50
     assert result["page"] == 100
 

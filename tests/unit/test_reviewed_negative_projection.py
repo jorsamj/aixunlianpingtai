@@ -100,6 +100,25 @@ def test_first_vest_training_requires_real_vest_and_freezes_v3(tmp_path):
     assert contract["training_projection_policy"] == CONTRACT["training_projection_policy"]
 
 
+def test_first_training_rejects_negative_only_even_after_explicit_task_receipt(tmp_path):
+    import json
+    from platform_core.annotation_repository import AnnotationRepository
+    from platform_core.training_label_tasks import resolve_training_label_contract, task_negative_identity
+    project=tmp_path/'projects/p';project.mkdir(parents=True)
+    (project/'meta.json').write_text(json.dumps({'labels':['fire']}))
+    annotations=AnnotationRepository(project)
+    annotated=annotations.upsert('bg',[],annotation_state='confirmed_empty',annotation_scope=['fire'])
+    body={'model':'yolo11n.pt','train_image_ids':['bg'],'train_labels':['fire']}
+    algorithm={'id':'a','versions':[]}
+    preview=resolve_training_label_contract(tmp_path,project,body,algorithm,require_positive_evidence=False)
+    source={'id':'bg','content_sha256':'a'*64,'annotation_version':annotated['version'],
+            'annotation_hash':annotated['content_digest']}
+    evidence=task_negative_identity(source,preview)
+    annotations.confirm_task_negatives(evidence['context_key'],[evidence],{'actor_id':'tester'})
+    with pytest.raises(ValueError,match='缺少 fire 正样本'):
+        resolve_training_label_contract(tmp_path,project,body,algorithm)
+
+
 def test_picker_preview_resolves_explicit_target_without_positive_selection(tmp_path):
     import json
     from platform_core.training_label_tasks import resolve_training_label_contract
@@ -185,6 +204,51 @@ def test_actual_train_split_all_negative_rejected():
     manifest = SimpleNamespace(ids={"train":["n"],"validation":["p"],"test":[]})
     with pytest.raises(ValueError, match="训练集没有任何正样本"):
         base._training_split_quality([{"id":"n","boxes":[]},{"id":"p","boxes":row()["boxes"]}], manifest, [{"code":"person"}])
+
+
+def test_existing_model_can_freeze_negative_only_without_fabricating_metrics():
+    from types import SimpleNamespace
+    manifest=SimpleNamespace(ids={"train":["n"],"validation":["p"],"test":[]})
+    contract={"base_training_mode":"previous_weights_init", "base_version_id":"verified-version",
+              "effective_label_codes":["fire"], "requested_new_label_codes":[]}
+    quality=base._training_split_quality([{"id":"n","boxes":[]},{"id":"p","boxes":[]}],
+        manifest,[{"code":"fire"}],label_contract=contract)
+    assert quality["role_box_counts"]["train"]==0
+    assert any("纯负样本" in text for text in quality["warnings"])
+    with pytest.raises(ValueError,match="训练集没有任何正样本"):
+        base._training_split_quality([{"id":"n","boxes":[]},{"id":"p","boxes":[]}],
+            manifest,[{"code":"fire"}],label_contract={"base_training_mode":"mother_model_init"})
+
+
+def test_confirmed_partial_positive_retains_fire_and_original_gt():
+    from platform_core.training_label_tasks import task_partial_scope_confirmable, task_negative_identity
+    original={"id":"fire-only","annotation_state":"annotated","annotation_scope":["fire"],
+        "boxes":[{"label":"fire","x1":1,"y1":1,"x2":12,"y2":12}],
+        "content_sha256":"a"*64,"annotation_version":3,"annotation_hash":"gt"}
+    contract={"algorithm_id":"alg", "effective_label_codes":["fire","smoke"],
+        "training_projection_policy":base.TRAINING_PROJECTION_POLICY_V4}
+    assert training_material_role(original,contract)["role"]=="pending_review"
+    assert task_partial_scope_confirmable(original,contract)
+    contract["task_negative_confirmations"]=[task_negative_identity(original,contract)]
+    frozen=project_training_rows([original],contract)[0]
+    assert training_material_role(original,contract)["role"]=="positive"
+    assert frozen["boxes"]==original["boxes"]
+    assert frozen["annotation_scope"]==["fire"] or set(frozen["annotation_scope"])=={"fire","smoke"}
+    assert original["annotation_scope"]==["fire"]
+
+
+def test_unannotated_background_may_be_confirmed_without_original_gt_edit():
+    from platform_core.training_label_tasks import task_negative_confirmable, task_negative_identity
+    original={"id":"bg","annotation_state":"unannotated","annotation_scope":[],"boxes":[],
+              "content_sha256":"a"*64,"annotation_version":0,"annotation_hash":"", "processing_status":"processed"}
+    contract={"algorithm_id":"alg","effective_label_codes":["fire"],
+              "training_projection_policy":base.TRAINING_PROJECTION_POLICY_V4}
+    assert task_negative_confirmable(original,contract)
+    assert training_material_role(original,contract)["role"]=="pending_review"
+    contract["task_negative_confirmations"]=[task_negative_identity(original,contract)]
+    assert training_material_role(original,contract)["role"]=="confirmed_negative"
+    assert project_training_rows([original],contract)[0]["annotation_state"]=="confirmed_empty"
+    assert original["annotation_state"]=="unannotated"
 
 
 def test_new_target_scope_rejects_legacy_wildcard_but_preserves_frozen_replay():

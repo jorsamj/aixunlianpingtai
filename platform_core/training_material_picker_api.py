@@ -1123,7 +1123,7 @@ def training_material_picker_router(
 
     @stage("training.negative_plan")
     def negative_plan(project_id, payload):
-        from .training_label_tasks import (task_negative_confirmable, task_negative_identity,
+        from .training_label_tasks import (task_negative_confirmable, task_partial_scope_confirmable, task_negative_identity,
             task_negative_context, training_material_role, _ORIGINAL_SELECTED_PROJECT_IMAGES)
         repository = materials(project_id)
         annotations = AnnotationRepository(repository.project_path)
@@ -1134,7 +1134,9 @@ def training_material_picker_router(
         ])
         rows = _ORIGINAL_SELECTED_PROJECT_IMAGES(repository, repository.project_path, ids)
         counts = dict(positive=0, confirmed_negative=0, pending_negative=0, pending_review=0)
-        pending, problems = [], []
+        pending, pending_negatives, pending_partials, problems = [], [], [], []
+        confirmed_receipts = {item.get("receipt_id") for item in contract.get("task_negative_confirmations") or []}
+        pending_receipt_ids = set()
         labels = list(contract["effective_label_codes"])
         label_set = set(labels)
         class_images = {code: 0 for code in labels}
@@ -1146,7 +1148,18 @@ def training_material_picker_router(
             role = result["role"]
             if role == "pending_review" and task_negative_confirmable(row, contract):
                 role = "pending_negative"
-                pending.append(task_negative_identity(row, contract))
+                evidence = task_negative_identity(row, contract)
+                pending.append(evidence)
+                pending_negatives.append(evidence)
+                pending_receipt_ids.add(evidence["receipt_id"])
+            elif role == "pending_review" and task_partial_scope_confirmable(row, contract):
+                # A missing target is not grounds to erase the already valid
+                # positive boxes. The receipt only covers this task's scope.
+                role = "positive"
+                evidence = task_negative_identity(row, contract)
+                pending.append(evidence)
+                pending_partials.append(evidence)
+                pending_receipt_ids.add(evidence["receipt_id"])
             counts[role] += 1
             if role == "positive":
                 per_image = {}
@@ -1161,11 +1174,21 @@ def training_material_picker_router(
                     full += 1
                 elif per_image:
                     partial += 1
+                    # Even when persisted GT already covers the missing
+                    # classes, this partial-positive batch receives explicit
+                    # task approval; this never widens formal GT.
+                    evidence = task_negative_identity(row, contract)
+                    if (evidence["receipt_id"] not in confirmed_receipts
+                            and evidence["receipt_id"] not in pending_receipt_ids):
+                        pending.append(evidence)
+                        pending_partials.append(evidence)
+                        pending_receipt_ids.add(evidence["receipt_id"])
                     if len(partial_preview) < 8:
                         image_id = str(row.get("id") or row.get("image_id") or "")
                         partial_preview.append({"image_id": image_id,
                             "image_url": f"/api/v62/projects/{project_id}/training-materials/{image_id}/thumbnail",
-                            "label_box_counts": per_image})
+                            "label_box_counts": per_image,
+                            "missing_label_codes": sorted(label_set - set(per_image))})
             elif role == "pending_review" and len(problems) < 10:
                 issue = result.get("scope_issue") or {}
                 problems.append({"image_id": str(row.get("id") or row.get("image_id") or ""),
@@ -1178,6 +1201,9 @@ def training_material_picker_router(
             "zero_target_count": counts["confirmed_negative"] + counts["pending_negative"],
             "classes": [{"code": code, "image_count": class_images[code], "box_count": class_boxes[code]} for code in labels],
             "partial_preview": partial_preview, "problems": problems,
+            "pending_negative_count": len(pending_negatives),
+            "pending_partial_count": len(pending_partials),
+            "pending_negative_preview": pending_negatives,
             "material_revision": revisions[0], "annotation_revision": revisions[1]}
         digest = hashlib.sha256(json.dumps({"context":task_negative_context(contract),
             "base_version_id":str(payload.get("base_version_id") or ""),
@@ -1190,7 +1216,15 @@ def training_material_picker_router(
     def negative_preview(project_id: str, payload: dict):
         try:
             _, contract, counts, pending, digest, coverage = negative_plan(project_id, payload)
-            return {"counts":counts, "pending_count":len(pending), "pending_preview":[{**e,"image_url":f"/api/v62/projects/{project_id}/training-materials/{e['image_id']}/thumbnail"} for e in pending[:20]],
+            offset = int(payload.get("preview_offset") or 0)
+            if offset < 0:
+                raise ValueError("invalid negative preview offset")
+            previews = coverage.pop("pending_negative_preview")
+            return {"counts":counts, "pending_count":coverage["pending_negative_count"],
+                    "pending_scope_count":coverage["pending_partial_count"],
+                    "preview_offset":offset, "preview_size":20,
+                    "pending_preview":[{**e,"image_url":f"/api/v62/projects/{project_id}/training-materials/{e['image_id']}/thumbnail"} for e in previews[offset:offset+20]],
+                    "base_training_mode":contract.get("base_training_mode", "mother_model_init"),
                     "proof_digest":digest, "effective_label_codes":contract["effective_label_codes"], "coverage":coverage}
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error

@@ -97,12 +97,18 @@ const SAMPLE_ISSUE_NAMES=Object.freeze({
   invalid_ground_truth:'正式 GT 不可用',
 });
 
+function negativePreviewFigures(rows=[]) {
+  return rows.map(row=>`<figure><img src="${htmlEscape(row.image_url||'')}" alt="候选背景素材 ${htmlEscape(row.image_id)}" loading="lazy"><figcaption>${htmlEscape(row.image_id)}</figcaption></figure>`).join('');
+}
+
 export function renderTrainingSampleConfirmation(preview={}) {
   const coverage=preview.coverage||{},c=preview.counts||{},labels=uniqueIds(preview.effective_label_codes);
   const number=value=>Math.max(0,Number(value)||0);
   const classes=(coverage.classes||[]).map(item=>`<li><b>${htmlEscape(item.code)}</b><strong>${number(item.image_count)} 张</strong><span>${number(item.box_count)} 个正式框</span></li>`).join('');
   const problems=(coverage.problems||[]).map(row=>`<li><b>${htmlEscape(row.image_id)}</b><span>${htmlEscape(SAMPLE_ISSUE_NAMES[row.issue_type]||row.issue_type)}${(row.missing_label_codes||[]).length?` · 待审核 ${htmlEscape(row.missing_label_codes.join('、'))}`:''}</span></li>`).join('');
-  const samples=(preview.pending_preview||[]).map(row=>`<figure><img src="${htmlEscape(row.image_url||'')}" alt="候选背景素材 ${htmlEscape(row.image_id)}" loading="lazy"><figcaption>${htmlEscape(row.image_id)}</figcaption></figure>`).join('');
+  const samples=negativePreviewFigures(preview.pending_preview);
+  const previewOffset=number(preview.preview_offset),previewSize=number(preview.preview_size)||20;
+  const nextPreview=previewOffset+previewSize<number(preview.pending_count);
   const partialSamples=(coverage.partial_preview||[]).map(row=>{
     const counts=Object.entries(row.label_box_counts||{}).filter(([code,count])=>labels.includes(code)&&number(count)>0)
       .map(([code,count])=>`${htmlEscape(code)} ${number(count)} 框`).join(' · ');
@@ -114,7 +120,9 @@ export function renderTrainingSampleConfirmation(preview={}) {
     <h3>各类别的正式标注</h3><ul class="training-sample-classes">${classes}</ul>
     ${number(coverage.partial_coverage_count)?'<p class="training-sample-note">部分覆盖的图片保留其已有的合法目标框，不会被改成整图负样本。</p>':''}
     ${partialSamples?`<details class="training-sample-partials"><summary>查看部分覆盖正样本（最多 8 张）</summary><div class="training-negative-previews">${partialSamples}</div></details>`:''}
-    ${number(preview.pending_count)?`<section class="training-sample-alert"><b>${number(preview.pending_count)} 张候选背景图需要人工确认</b><p>只有在逐一确认画面确实不含本次所选目标、正式 GT 已提交且有效的情况下，才能纳入本次训练。这里的确认只形成任务级证据，不改原始图片或正式标注。</p><details><summary>查看部分待确认素材（最多 20 张）</summary><div class="training-negative-previews">${samples}</div></details>${number(preview.pending_count)>20?'<small>以上仅是示例，不能替代对其余候选素材的检查。不确定时请返回调整或审核。</small>':''}</section>`:''}
+    ${number(preview.pending_count)?`<section class="training-sample-alert"><b>${number(preview.pending_count)} 张候选负样本需要人工确认</b><p>请确认画面没有本次训练目标；仅记录当前训练任务的确认，不修改原始图片或任何标签。已标注的其他类别仍归原标签所有。</p><details open><summary>逐页预览全部负样本</summary><div class="training-negative-previews" data-negative-preview-list>${samples}</div><div class="row between"><span data-negative-preview-page>第 ${Math.floor(previewOffset/previewSize)+1} / ${Math.ceil(number(preview.pending_count)/previewSize)} 页</span><div class="row"><button type="button" class="btn mini" data-negative-preview-prev ${previewOffset===0?'disabled':''}>上一页</button><button type="button" class="btn mini" data-negative-preview-next ${nextPreview?'':'disabled'}>下一页</button></div></div></details></section>`:''}
+    ${number(preview.pending_scope_count)?`<section class="training-sample-alert"><b>${number(preview.pending_scope_count)} 张部分标签正样本需要确认</b><p>已有有效目标框会保留为正样本；请确认画面内不存在本次其他未标出的目标。该确认仅对当前任务生效。</p></section>`:''}
+    ${!number(c.positive)&&preview.base_training_mode==='previous_weights_init'?'<section class="training-sample-alert"><b>已有模型 · 纯负样本继续训练</b><p>本轮不含正样本，只适合抑制误报；本批验证集无法有效评估召回率与 mAP，请使用独立正样本试验集核对模型效果。</p></section>':''}
     ${number(c.pending_review)?`<section class="training-sample-blockers"><b>${number(c.pending_review)} 张存在正式 GT 或素材问题，不能靠普通确认放行</b><ul>${problems}</ul></section>`:''}
     <div class="row end training-sample-actions"><button type="button" class="btn" data-negative-return>返回调整</button><button type="button" class="btn primary" data-negative-confirm>确认并创建</button></div>
   </section>`;
@@ -633,14 +641,34 @@ export function installTrainingMaterialSummaryRuntime({
       if(!current())return false;
       // Invalid/stale GT must use the existing diagnosis, never an absence assertion.
       if(Number(preview.counts?.pending_review))return noReceipt;
-      if(!Number(preview.counts?.positive)&&Object.values(preview.counts||{}).some(Number))throw new Error('本次素材没有所选目标的有效正样本，不能创建全负样本目标检测训练。');
-      const requiresConfirmation=Number(preview.pending_count)>0||Number(preview.coverage?.partial_coverage_count)>0;
+      if(!Number(preview.counts?.positive)&&Object.values(preview.counts||{}).some(Number)
+        &&preview.base_training_mode!=='previous_weights_init')throw new Error('首次训练必须包含所选目标的有效正样本；纯负样本仅支持已有模型继续训练。');
+      const requiresConfirmation=Number(preview.pending_count)>0||Number(preview.pending_scope_count)>0||Number(preview.coverage?.partial_coverage_count)>0;
       if(!requiresConfirmation)return noReceipt;
       if(typeof window.modal!=='function')throw new Error('负样本确认窗口不可用，请刷新后重试');
       const accepted=await new Promise(resolve=>{
         const layer=window.modal('确认本次训练样本',renderTrainingSampleConfirmation(preview),true);
         const node=layer?.querySelector?.('[data-training-negative-confirmation]')||document.querySelector('[data-training-negative-confirmation]');
         if(!node){resolve(false);return;}
+        const previousPage=node.querySelector('[data-negative-preview-prev]');
+        const nextPage=node.querySelector('[data-negative-preview-next]');
+        let previewOffset=Number(preview.preview_offset)||0,previewBusy=false;
+        const browse=async direction=>{
+          if(previewBusy||!current())return;
+          const target=Math.max(0,previewOffset+direction*20);
+          if(target>=Number(preview.pending_count)||target===previewOffset)return;
+          previewBusy=true;previousPage.disabled=true;nextPage.disabled=true;
+          try{
+            const next=await post('negative-preview',{...payload,preview_offset:target});
+            if(!current()||!node.isConnected)return;
+            if(next.proof_digest!==preview.proof_digest)throw new Error('素材或标注已变化，请返回重新确认');
+            previewOffset=target;
+            node.querySelector('[data-negative-preview-list]').innerHTML=negativePreviewFigures(next.pending_preview);
+            node.querySelector('[data-negative-preview-page]').textContent=`第 ${Math.floor(target/20)+1} / ${Math.ceil(Number(preview.pending_count)/20)} 页`;
+          }catch(error){if(node.isConnected)notify(error.message||String(error))}
+          finally{previewBusy=false;if(node.isConnected){previousPage.disabled=previewOffset===0;nextPage.disabled=previewOffset+20>=Number(preview.pending_count)}}
+        };
+        if(previousPage&&nextPage){previousPage.onclick=()=>void browse(-1);nextPage.onclick=()=>void browse(1)}
         let settled=false;
         const finish=(value,close=true)=>{if(settled)return;settled=true;negativeDialog=null;controller.signal.removeEventListener('abort',abort);if(close)window.closeModalLayer424?.(layer);resolve(value)};
         const abort=()=>finish(false);negativeDialog={node,finish};controller.signal.addEventListener('abort',abort,{once:true});

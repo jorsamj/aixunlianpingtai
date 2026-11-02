@@ -68,6 +68,7 @@ export function installNegativePoolRuntime({getState,api,pid,esc,toast,modal,clo
         categories=cats.items||[];
         if(data){rows=data.items||[];total=Number(data.total||0)}
         host.innerHTML=tabs(kind==='pool'?'materials':'labels')+(kind==='pool'?poolHTML():categoryHTML());
+        if(kind==='pool')host.querySelector('[data-np="join"]')?.insertAdjacentHTML('afterend',button('upload','上传到负样本池'));
       }catch(e){
         if(!controller.signal.aborted&&current(token,host,projectId,kind)){
           host.innerHTML=tabs(kind==='pool'?'materials':'labels')
@@ -90,6 +91,42 @@ export function installNegativePoolRuntime({getState,api,pid,esc,toast,modal,clo
     if(path.startsWith('/categories')||path.startsWith('/members'))invalidateCategories();
     return result;
   };
+  function browseMaterials(){
+    const projectId=String(pid());let pageNo=1,requestId=0;const chosen=new Set();
+    const layer=modal('从素材库加入负样本池',`<form id="negativePoolBrowse" class="negative-pool-dialog"><div class="row"><input class="input" name="query" placeholder="搜索文件名 / 素材 ID"><button type="button" class="btn" data-np-search>搜索</button></div><div data-np-browse-list role="status">正在读取素材…</div><div class="row between"><span data-np-browse-count>已选 0 张</span><div class="row"><button type="button" class="btn" data-np-prev>上一页</button><span data-np-page></span><button type="button" class="btn" data-np-next>下一页</button></div></div><div class="row end"><button type="button" class="btn" data-np-cancel>取消</button><button type="submit" class="btn primary">加入所选素材</button></div><div role="alert" data-np-error></div></form>`,true);
+    const form=layer?.querySelector?.('#negativePoolBrowse')||document.getElementById('negativePoolBrowse');
+    if(!form)return;
+    const list=form.querySelector('[data-np-browse-list]'),count=form.querySelector('[data-np-browse-count]');
+    let pages=1;
+    const sync=()=>{count.textContent=`已选 ${chosen.size} 张（跨页保留）`;list.querySelectorAll('[data-np-image]').forEach(box=>{box.checked=chosen.has(box.dataset.npImage)})};
+    async function loadPage(){
+      const own=++requestId,query=String(new FormData(form).get('query')||'').trim();
+      list.textContent='正在读取素材…';
+      try{
+        const queryString=new URLSearchParams({page:String(pageNo),page_size:'24',query});
+        const data=await api(`/api/v61/projects/${encodeURIComponent(projectId)}/materials?${queryString}`);
+        if(own!==requestId||!form.isConnected||String(pid())!==projectId)return;
+        pages=Math.max(1,Number(data.total_pages)||1);
+        list.innerHTML=`<div class="negative-pool-browse-grid">${(data.items||[]).map(row=>`<label class="negative-pool-browse-card"><input type="checkbox" data-np-image="${esc(row.id)}" ${chosen.has(String(row.id))?'checked':''}><img src="${esc(row.thumbnail_url||row.url||'')}" loading="lazy" alt=""><b title="${esc(row.filename||'')}">${esc(row.filename||row.id)}</b><small>原标签：${esc((row.labels||[]).join('、')||'无')}</small></label>`).join('')||'<p>没有符合条件的素材</p>'}</div>`;
+        form.querySelector('[data-np-page]').textContent=`${pageNo} / ${pages}`;
+        form.querySelector('[data-np-prev]').disabled=pageNo<=1;
+        form.querySelector('[data-np-next]').disabled=pageNo>=pages;
+        sync();
+      }catch(error){if(own===requestId&&form.isConnected)list.textContent=error.message||String(error)}
+    }
+    form.querySelector('[data-np-cancel]').onclick=()=>window.closeModalLayer424(layer);
+    form.querySelector('[data-np-search]').onclick=()=>{pageNo=1;void loadPage()};
+    form.querySelector('[data-np-prev]').onclick=()=>{pageNo=Math.max(1,pageNo-1);void loadPage()};
+    form.querySelector('[data-np-next]').onclick=()=>{pageNo=Math.min(pages,pageNo+1);void loadPage()};
+    form.querySelector('[name="query"]').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();pageNo=1;void loadPage()}};
+    form.addEventListener('change',e=>{if(e.target.matches?.('[data-np-image]')){e.target.checked?chosen.add(e.target.dataset.npImage):chosen.delete(e.target.dataset.npImage);sync()}});
+    form.onsubmit=async e=>{e.preventDefault();const submit=form.querySelector('[type=submit]');submit.disabled=true;
+      try{if(!chosen.size)throw Error('请先选择素材');if(String(pid())!==projectId)throw Error('项目已变化，请重新操作');
+        await write('/members',{image_ids:[...chosen],action:'add'});
+        if(!form.isConnected)return;window.closeModalLayer424(layer);toast(`已将 ${chosen.size} 张素材加入负样本池`);if(getState().page==='数据集')await window.renderDatasets424();
+      }catch(error){if(form.isConnected)form.querySelector('[data-np-error]').textContent=error.message||String(error)}finally{if(form.isConnected)submit.disabled=false}};
+    void loadPage();
+  }
   function requireSelection(){if(!selected.size)throw Error('请先选择素材');return [...selected]}
   async function action(name,id){resetProject();
     if(['materials','pool'].includes(name)){active=name;return window.renderDatasets424()}
@@ -102,7 +139,27 @@ export function installNegativePoolRuntime({getState,api,pid,esc,toast,modal,clo
     if(name==='page-select'){rows.forEach(x=>selected.add(String(x.id)));syncSelection();return}
     if(name==='all-select'){const token=epoch,projectId=String(pid()),result=await api(base()+'/ids?'+negativePoolQuery(filters));if(token!==epoch||String(pid())!==projectId||active!=='pool'||getState().page!=='数据集')return;selected=new Set((result.items||[]).map(String));syncSelection();return}
     if(name==='draft'){const ids=requireSelection();if(!addToDraft)throw Error('请先打开原创建训练窗口建立训练草稿');await addToDraft(ids);toast(`已将 ${ids.length} 张素材加入训练草稿`);return}
-    if(name==='join'){dialog('加入负样本池','<label>已有素材 ID（逗号或换行分隔）<textarea class="input" name="ids" required></textarea></label><p>复用已有原图与标注；加入池不自动确认无目标。</p>',data=>write('/members',{image_ids:String(data.get('ids')).split(/[\s,，]+/).filter(Boolean),action:'add'}));return}
+    if(name==='join'){browseMaterials();return}
+    if(name==='upload'){
+      const uploadProject=String(pid());
+      let stagedIds=[];
+      dialog('上传到负样本池','<label>选择图片（支持批量）<input class="input" name="files" type="file" accept="image/*" multiple required></label><p>原图先进入统一素材库，再加入负样本池；不修改任何已有标签。上传失败的图片不会加入池。</p><div data-np-upload-progress role="status"></div>',async data=>{
+        if(!stagedIds.length){
+          const files=data.getAll('files').filter(file=>file?.size>0);
+          if(!files.length)throw Error('请先选择图片');
+          const body=new FormData();files.forEach(file=>body.append('files',file));body.append('dataset_id','default');
+          const status=document.querySelector('#negativePoolDialog [data-np-upload-progress]');
+          const upload=await api(`/api/projects/${encodeURIComponent(uploadProject)}/images`,{method:'POST',body,
+            onUploadProgress:progress=>{if(status&&status.isConnected&&progress.total)status.textContent=`已上传 ${Math.round(progress.loaded/progress.total*100)}%`}});
+          stagedIds=(upload.uploaded_image_ids||upload.uploaded||[]).map(item=>String(item?.id||item)).filter(Boolean);
+          if(!stagedIds.length)throw Error('没有成功导入的新图片，请检查重复图片或上传失败记录');
+          if(status?.isConnected)status.textContent=`已上传 ${stagedIds.length} 张，正在加入负样本池…`;
+        }
+        if(String(pid())!==uploadProject)throw Error('项目在上传期间已切换；图片已保存在原项目素材库，请返回原项目加入负样本池');
+        await write('/members',{image_ids:stagedIds,action:'add'});
+        toast(`已上传并加入负样本池 ${stagedIds.length} 张`);
+      });return;
+    }
     if(name==='join-one'){await write('/members',{image_ids:[id],action:'add'});toast('已加入负样本池');return}
     if(name==='remove'){const ids=requireSelection();dialog('移出负样本池',`<p>移出所选 ${ids.length} 张素材，原图与标注保留。</p>`,async()=>{await write('/members',{image_ids:ids,action:'remove'});ids.forEach(x=>selected.delete(x))});return}
     if(name==='assign'||name==='unassign'){const ids=requireSelection();dialog(name==='assign'?'设置分类':'移除分类',`<label>分类（多选）<select class="select" multiple name="category_ids" required>${options(categories.filter(c=>name==='unassign'||c.enabled))}</select></label><p>仅更新分类关联，保留正式标注。</p>`,data=>write('/categories/assign',{image_ids:ids,category_ids:data.getAll('category_ids'),action:name==='assign'?'set':'remove'}));return}

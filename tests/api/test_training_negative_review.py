@@ -203,7 +203,7 @@ def test_task_negative_confirmation_does_not_write_gt_and_invalidates(client, mo
  assert client.get(path).json()['annotation']==before
 
 
-def test_multiclass_training_preview_keeps_partial_positives_and_rejects_uncommitted_gt(client,monkeypatch):
+def test_multiclass_training_preview_confirms_partial_positives_and_unannotated_background_without_gt_edit(client,monkeypatch):
  project=client.post('/api/projects',json={'name':'coverage-'+uuid.uuid4().hex[:8],
      'labels':[{'code':'person'},{'code':'head'}]}).json()
  pid=project['id']
@@ -234,20 +234,28 @@ def test_multiclass_training_preview_keeps_partial_positives_and_rejects_uncommi
  assert coverage['selected_count']==5
  assert coverage['full_coverage_count']==1
  assert coverage['partial_coverage_count']==2
- assert coverage['zero_target_count']==1
- assert coverage['eligible_count']==4
- assert preview['counts']=={'positive':3,'confirmed_negative':0,'pending_negative':1,'pending_review':1}
+ assert coverage['zero_target_count']==2
+ assert coverage['eligible_count']==5
+ assert preview['counts']=={'positive':3,'confirmed_negative':0,'pending_negative':2,'pending_review':0}
+ assert preview['pending_scope_count']==2
+ second_page=client.post(endpoint+'/negative-preview',json={**payload,'preview_offset':1})
+ assert second_page.status_code==200,second_page.text
+ assert second_page.json()['proof_digest']==preview['proof_digest']
+ assert [row['image_id'] for row in second_page.json()['pending_preview']]==[selected[4]]
  assert {item['code']:(item['image_count'],item['box_count']) for item in coverage['classes']}=={
      'person':(2,2),'head':(2,2)}
  assert [item['image_id'] for item in coverage['partial_preview']]==selected[1:3]
  assert [item['label_box_counts'] for item in coverage['partial_preview']]==[{'person':1},{'head':1}]
  assert all('/thumbnail' in item['image_url'] for item in coverage['partial_preview'])
- assert coverage['problems'][0]['image_id']==selected[4]
- # A task-level acknowledgment cannot launder the uncommitted image into a background sample.
- denied=client.post(endpoint+'/confirm-negatives',json={**payload,'confirmed':True,'proof_digest':preview['proof_digest']})
- assert denied.status_code==422
- # Partial positive coverage alone is enough to trigger an informational review;
- # formally reviewed class absence never removes the other positive GT boxes.
+ assert not coverage['problems']
+ unannotated_before=client.get(f'/api/projects/{pid}/annotations/{selected[4]}').json()['annotation']
+ # Task-local confirmation does not write formal GT even for an unannotated background.
+ acknowledged_all=client.post(endpoint+'/confirm-negatives',json={**payload,'confirmed':True,'proof_digest':preview['proof_digest']})
+ assert acknowledged_all.status_code==200,acknowledged_all.text
+ assert acknowledged_all.json()['confirmed_count']==4
+ assert client.get(f'/api/projects/{pid}/annotations/{selected[4]}').json()['annotation']==unannotated_before
+ # Formal GT remains untouched, and a subsequent review of a partial positive
+ # cannot silently reuse stale evidence after its GT changes.
  allowed=client.post(endpoint+'/negative-preview',json={**payload,'train_image_ids':selected[:3]})
  assert allowed.status_code==200,allowed.text
  assert allowed.json()['coverage']['partial_coverage_count']==2

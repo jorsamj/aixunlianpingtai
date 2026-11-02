@@ -26,7 +26,8 @@ test('multiclass final confirmation reports partial positives separately from ta
       problems:[{image_id:'bad<id>',issue_type:'missing_annotation',missing_label_codes:['head']}]},
     pending_preview:[{image_id:'bg1',image_url:'/private/background.png'}]});
   assert.match(html,/部分类别覆盖 · 仍是正样本/);
-  assert.match(html,/只有在逐一确认画面确实不含本次所选目标/);
+  assert.match(html,/请确认画面没有本次训练目标/);
+  assert.match(html,/逐页预览全部负样本/);
   assert.match(html,/正式 GT 或素材问题，不能靠普通确认放行/);
   assert.match(html,/head.*2 张/);
   assert.match(html,/查看部分覆盖正样本/);
@@ -38,6 +39,21 @@ test('multiclass final confirmation reports partial positives separately from ta
   assert.match(html,/返回调整/);
   assert.match(html,/确认并创建/);
   assert.ok(!html.includes('每张素材必须有全部类别'));
+});
+
+test('task scope confirmation preserves partial positives and exposes paged negative previews',()=>{
+  const html=renderTrainingSampleConfirmation({effective_label_codes:['fire','smoke'],
+    pending_count:45,pending_scope_count:3,preview_offset:20,preview_size:20,
+    counts:{positive:3,pending_negative:45,confirmed_negative:0,pending_review:0},
+    coverage:{selected_count:48,eligible_count:48,partial_coverage_count:3,zero_target_count:45,
+      partial_preview:[{image_id:'fire-only',image_url:'/fire.png',label_box_counts:{fire:1}}]},
+    pending_preview:[{image_id:'blue-only',image_url:'/blue.png'}]});
+  assert.match(html,/3 张部分标签正样本需要确认/);
+  assert.match(html,/已有有效目标框会保留为正样本/);
+  assert.match(html,/第 2 \/ 3 页/);
+  assert.match(html,/data-negative-preview-prev/);
+  assert.match(html,/data-negative-preview-next/);
+  assert.match(html,/blue-only/);
 });
 
 test('pending GT review returns an explicit no-receipt result and never requests negative confirmation',async()=>{

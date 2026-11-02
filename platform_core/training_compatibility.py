@@ -185,7 +185,7 @@ def evaluate_training_compatibility(
         data_dir, project_path, payload, algorithm,
         require_positive_evidence=False, include_base_weight_digest=False,
     )
-    selection = resolve_training_selection(project_path, split, label_contract=intent_contract)
+    selection = resolve_training_selection(project_path, split, label_contract=intent_contract, preview_only=True)
     effective = selection.effective_split
     contract_payload = {
         **dict(payload),
@@ -193,8 +193,13 @@ def evaluate_training_compatibility(
         "test_image_ids": list(effective.test_image_ids),
         "selected_image_ids": list(effective.train_image_ids),
     }
+    # A preflight must report the target-scope gaps so the user can enter the
+    # final task-local confirmation. Requiring per-class positive evidence here
+    # would fail *before* that dialog can issue immutable receipts. The final
+    # train/start owner still resolves a strict, hashed contract before freeze.
     contract = resolve_training_label_contract(
         data_dir, project_path, contract_payload, algorithm,
+        require_positive_evidence=False, include_base_weight_digest=False,
     )
     return replace(evaluate_selection_compatibility(project_path, selection, contract), duplicate_review=review)
 

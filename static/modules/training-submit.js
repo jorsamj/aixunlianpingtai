@@ -800,7 +800,7 @@ export function installTrainingSubmitRuntime({
       const issueCounts=checkedCompatibility?.issue_counts||{};
       const hardIssue=Number(checkedCompatibility?.issue_count||0)>0&&(
         !Object.keys(issueCounts).length||Object.entries(issueCounts).some(
-          ([code,count])=>Number(count)>0&&code!=='partial_review_scope'));
+          ([code,count])=>Number(count)>0&&!['partial_review_scope','missing_annotation'].includes(code)));
       if(hardIssue){
         if(showBlockers(updateReadiness({compatibilityOverride:{...checkedCompatibility,ready:true}})))return null;
         throw new Error('训练素材存在不能通过样本确认解决的问题，请先修复正式 GT');

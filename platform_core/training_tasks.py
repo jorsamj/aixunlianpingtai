@@ -1153,6 +1153,7 @@ def resolve_training_selection(
     project: Path,
     split_request: SplitRequest,
     *, label_contract: Mapping[str, Any] | None = None,
+    preview_only: bool = False,
 ) -> TrainingSelectionResolution:
     """Separate user-selectable cleaned material from formal supervised truth.
 
@@ -1175,10 +1176,11 @@ def resolve_training_selection(
         row = by_id[str(image_id)]
         boxes = list(row.get("boxes") or [])
         state = str(row.get("annotation_state") or "unannotated")
-        from .training_label_tasks import training_material_role
+        from .training_label_tasks import training_material_role, task_negative_confirmable
         task_confirmed = bool(label_contract and label_contract.get("training_projection_policy") == TRAINING_PROJECTION_POLICY_V4
             and training_material_role(row, label_contract)["role"] == "confirmed_negative")
-        if is_training_ground_truth(state, boxes) or task_confirmed:
+        task_confirmable_preview = bool(preview_only and label_contract and task_negative_confirmable(row, label_contract))
+        if is_training_ground_truth(state, boxes) or task_confirmed or task_confirmable_preview:
             effective_train.append(str(image_id))
         elif state == "unannotated" and not boxes and _processed_training_candidate(row):
             pending_annotation.append(str(image_id))
@@ -1332,6 +1334,16 @@ def _requested_new_training_labels(
     ))
 
 
+def _required_positive_training_labels(label_contract, images):
+    """Explicitly acknowledged absent classes do not force an impossible split."""
+    requested = _requested_new_training_labels(label_contract)
+    if not (label_contract or {}).get("task_negative_confirmations"):
+        return requested
+    present = {str(box.get("label") or box.get("code") or "").strip()
+        for row in images for box in row.get("boxes") or []}
+    return tuple(code for code in requested if code in present)
+
+
 def _training_split_quality(
     images: Sequence[Mapping[str, Any]],
     manifest: Any,
@@ -1356,9 +1368,17 @@ def _training_split_quality(
                 box_total += 1
         role_box_counts[role] = box_total
         role_label_counts[role] = dict(sorted(counts.items()))
-    if role_box_counts["train"] <= 0:
+    negative_only_iteration = bool(
+        label_contract and label_contract.get("base_training_mode") == "previous_weights_init"
+        and label_contract.get("base_version_id")
+        and role_box_counts["train"] <= 0
+    )
+    if negative_only_iteration and _requested_new_training_labels(label_contract):
+        raise ValueError("纯负样本继续训练只能使用已有模型继承的标签，不允许在没有正样本时新增目标类别")
+    if role_box_counts["train"] <= 0 and not negative_only_iteration:
         raise ValueError("训练集没有任何正样本标注框；confirmed_empty 可作为负样本，但不能单独训练检测模型")
-    if role_box_counts["validation"] <= 0:
+    acknowledged_scope = bool((label_contract or {}).get("task_negative_confirmations"))
+    if role_box_counts["validation"] <= 0 and not (negative_only_iteration or acknowledged_scope):
         raise ValueError("验证集没有任何正样本标注框，无法得到有意义的检测指标；请增加正样本或调整划分")
     active_codes = [
         str(item.get("code") or "").strip()
@@ -1382,7 +1402,7 @@ def _training_split_quality(
         code for code in requested_new
         if role_label_counts["train"].get(code, 0) <= 0
     ]
-    if missing_requested_new:
+    if missing_requested_new and not acknowledged_scope:
         raise ValueError(
             "本次新增训练标签在训练集没有正样本: "
             + ", ".join(missing_requested_new[:20])
@@ -1397,6 +1417,12 @@ def _training_split_quality(
         if role_label_counts["validation"].get(code, 0) <= 0
     ]
     warnings = []
+    if missing_requested_new:
+        warnings.append("本次部分新增训练标签在训练集中没有正样本，模型无法从本批素材学习这些目标: " + ", ".join(missing_requested_new[:20]))
+    if role_box_counts["validation"] <= 0:
+        warnings.append("本次验证集没有正样本，无法计算有意义的检测召回率或 mAP；请使用独立正样本试验集验收")
+    if negative_only_iteration:
+        warnings.append("已有模型纯负样本继续训练：本轮没有正样本，检测召回率与各类别 mAP 不具备有效评估依据；请使用独立正样本试验集评估模型退化风险")
     if missing_train:
         warnings.append(
             "启用标签在训练集缺少正样本: " + ", ".join(missing_train[:20])
@@ -1844,7 +1870,7 @@ def freeze_training_inputs(
         images,
         effective_split,
         seed=int(seed),
-        required_train_labels=_requested_new_training_labels(label_contract),
+        required_train_labels=_required_positive_training_labels(label_contract, images),
         split_strategy="multilabel_grouped_v2",
         forbidden_test_image_ids=(history_admission or {}).get('forbidden_test_image_ids', ()),
     )
@@ -1969,8 +1995,8 @@ def resolve_training_input_freeze(
         images,
         split_request,
         seed=int(seed),
-        required_train_labels=_requested_new_training_labels(
-            frozen_contract if isinstance(frozen_contract, Mapping) else None
+        required_train_labels=_required_positive_training_labels(
+            frozen_contract if isinstance(frozen_contract, Mapping) else None, images
         ),
         # Pre-v2 freezes carry no marker: replay the historical split exactly.
         split_strategy=str(value.get("split_strategy") or "legacy_v1"),

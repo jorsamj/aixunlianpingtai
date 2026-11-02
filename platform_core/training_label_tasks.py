@@ -538,10 +538,6 @@ def resolve_training_label_contract(
         code for code in requested
         if code not in available_set and code not in retained_inherited_set
     ]
-    if invalid_requested and require_positive_evidence:
-        raise ValueError(
-            "本次训练缺少 " + ", ".join(invalid_requested[:10]) + " 正样本，请先选择或标注包含这些标签的图片（标签不在已选素材的有效正样本中）。"
-        )
     if previous is None and not requested:
         raise ValueError(
             "首次训练必须从已选素材实际携带的标签中至少选择一个；母算法自带类别不会自动继承。"
@@ -606,6 +602,18 @@ def resolve_training_label_contract(
     if receipts:
         contract["task_negative_confirmations"] = receipts
         contract["training_projection_policy"] = base.TRAINING_PROJECTION_POLICY_V4
+    if invalid_requested and require_positive_evidence:
+        # Missing class evidence requires an explicit task-level confirmation.
+        # For a first model at least one requested class must still have real
+        # positive evidence; the user cannot create a negative-only detector.
+        acknowledged = bool(receipts) and (
+            previous is not None or bool(set(available) & set(requested))
+        )
+        if not acknowledged:
+            raise ValueError(
+                "本次训练缺少 " + ", ".join(invalid_requested[:10])
+                + " 正样本（标签不在已选素材的有效正样本中）；请先选择正样本，或在最终创建时确认本次目标范围。"
+            )
     return contract
 
 
@@ -666,19 +674,49 @@ def task_negative_identity(row, contract):
     return value
 
 
+def _task_negative_processed(row):
+    return (str(row.get("processing_status") or "").strip().lower() == "processed"
+            or bool(row.get("cleaned_at")) or bool(row.get("clean_skipped")))
+
+
 def task_negative_confirmable(row, contract):
     # Validate geometry/source flags using the existing role classifier, with
     # only task-local scope supplied. This never writes the formal annotation.
-    # An uncommitted AI candidate or an unannotated image has no formal GT:
-    # task-level confirmation cannot turn it into an approved empty sample.
-    if str(row.get("annotation_state") or "unannotated") not in {"annotated", "confirmed_empty"}:
+    state = str(row.get("annotation_state") or "unannotated")
+    if state not in {"annotated", "confirmed_empty", "unannotated"}:
+        return False
+    if state == "unannotated" and (row.get("boxes") or not _task_negative_processed(row)):
         return False
     if row.get("_dataset_delete_claim") or row.get("_material_batch_delete_claim"):
         return False
     if len(str(row.get("content_sha256") or "")) != 64:
         return False
     candidate = dict(row, annotation_scope=list(contract.get("effective_label_codes") or []))
+    if state == "unannotated":
+        candidate["annotation_state"] = "confirmed_empty"
     return training_material_role(candidate, {"effective_label_codes": contract.get("effective_label_codes")})["role"] == "confirmed_negative"
+
+
+def task_partial_scope_confirmable(row, contract):
+    """A task-scoped human attestation can cover a missing *target* scope.
+
+    Existing target boxes remain positive; original GT and its scope never
+    change. Invalid/stale annotations and missing source identity stay blocked.
+    """
+    if str(row.get("annotation_state") or "") != "annotated":
+        return False
+    if row.get("_dataset_delete_claim") or row.get("_material_batch_delete_claim"):
+        return False
+    if len(str(row.get("content_sha256") or "")) != 64:
+        return False
+    issue = training_material_role(row, contract).get("scope_issue") or {}
+    if issue.get("issue_type") != "partial_review_scope":
+        return False
+    required = set(contract.get("effective_label_codes") or [])
+    if not any(str(box.get("label") or box.get("code") or "") in required for box in row.get("boxes") or []):
+        return False
+    candidate = dict(row, annotation_scope=list(contract.get("effective_label_codes") or []))
+    return training_material_role(candidate, {"effective_label_codes": contract.get("effective_label_codes")})["role"] == "positive"
 
 
 def training_material_scope_issue(
@@ -757,8 +795,7 @@ def training_material_role(row: Mapping[str, Any], contract: Mapping[str, Any]) 
     except (KeyError, TypeError, ValueError):
         issue = {"image_id": str(row.get("id") or row.get("image_id") or ""),
                  "issue_type": "invalid_annotation", "missing_label_codes": sorted(required)}
-    positive = any(str(box.get("label") or box.get("code") or "").strip() in required for box in boxes)
-    if not positive and issue and issue.get("issue_type") in {"missing_annotation", "partial_review_scope"}:
+    if issue and issue.get("issue_type") in {"missing_annotation", "partial_review_scope"}:
         identity = task_negative_identity(row, contract)
         if any(e.get("receipt_id") == identity["receipt_id"] for e in contract.get("task_negative_confirmations") or []):
             issue = None
