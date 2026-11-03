@@ -65,7 +65,10 @@ def test_remote_training_falls_back_to_verified_object_when_cache_invalid(tmp_pa
     if cache_state == "corrupt":
         candidate.write_bytes(b"!" * len(content))
     elif cache_state == "symlink":
-        candidate.symlink_to(tmp_path / "elsewhere.pt")
+        try:
+            candidate.symlink_to(tmp_path / "elsewhere.pt")
+        except OSError as error:
+            pytest.skip(f"symlink creation is unavailable on this runner: {error}")
     runner = object.__new__(AgentTrainingRunner)
     runner.mother_model_install_dir = installed
     runner._assert_active = lambda monitor: None
@@ -79,7 +82,7 @@ def test_remote_training_falls_back_to_verified_object_when_cache_invalid(tmp_pa
     contract = {"file_name": "best.pt", "sha256": digest, "size_bytes": len(content)}
     result = runner._model_argument({"model": {"type": "object", "download": contract}},
                                     tmp_path / "work", object())
-    assert result.endswith("/input/model/best.pt")
+    assert Path(result) == tmp_path / "work" / "input" / "model" / "best.pt"
     assert downloads == [contract]
 
 

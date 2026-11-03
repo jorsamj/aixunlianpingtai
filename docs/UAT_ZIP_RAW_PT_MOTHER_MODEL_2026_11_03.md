@@ -85,3 +85,5 @@ npm test
 命令：`python3 -m pytest tests/unit/test_node_agent_training_runtime.py -q`。本机 `py_compile` 与相关 Node 回归 `103/103` 通过不等于 Pytest 或真实 GPU 通过。
 
 > 注：节点安装提交 `0da5379e` 实际 20 条 CI 为 16 绿/4 红，4 红均来自同一个路由挂载参数 AST 静态断言。节点执行器 CI 的原配置也遗漏 `tests/unit/test_agent_model_install_runtime.py`；当前修订已把它纳入 Ubuntu/Windows 执行范围。待下一次准确 SHA 工作流实际运行后才更新 PT-INSTALL-01～06 为通过。
+
+> `c461f7a` 已真正运行新增安装测试：节点执行器 Ubuntu 合同绿、Windows 合同中安装模块测试通过；其整体验收为 **18/20 GitHub Actions 成功、2 失败**，失败集中在同一新增训练缓存测试的 `result.endswith("/input/model/best.pt")`，Windows 分隔符不兼容。该断言已改为 `Path` 比较，尚待下一 SHA 的 Windows 回归；绝不能凭此宣称真实目标节点安装/首训完成。

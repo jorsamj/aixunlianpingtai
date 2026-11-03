@@ -69,6 +69,7 @@
 - **不会省略远程训练原有对象存储准备阶段**：输入图片和结果传输仍依赖原始合同；这项是 Agent 下载优化与真正加载指定 PT 的衔接，不应解释为“无 OSS 全远程训练已打通”。
 - 已实际快进推送基础安装协议与相关文档至长期开发分支 `0da5379e5f2b40c4f72437d8ffffb373282c77b4`；精确 SHA 的 20 条 Actions **16 成功、4 失败**。4 个失败工作流均为新路由参数漏列的同一过时 AST 测试断言，其余对应工作流 Job 已通过；本段增量尚待下一次提交与 CI。
 - 首轮安装提交的多个 API 分片暴露同一个过时静态断言：`tests/api/test_runtime_router_app_mount.py` 未列出新增 `agent_model_install_asset_provider`；已补精确允许集合，并断言仅调用既有已验证资产登记。单独通过 AST 守卫运行。原安装测试虽已提交，但原 `node-agent-executor.yml` 并未执行新测试文件；本批已将 `test_agent_model_install_runtime.py` 以及安装 Runner 加入 Linux/Windows 的路径触发、语法和 Pytest 实际清单，不能把旧分片绿灯计为已验证安装。
+- `c461f7a31505e13ae7e6a707321816d05259dc15` 的准确 GitHub Actions 结果是 **18/20 成功、2 失败**。两项红灯 `Remote Training Runtime` 与 `Node Agent Executor` 的 Windows 测试均为新增缓存回退单测使用 Linux 分隔符的路径断言；Linux 对应测试和安装 Runner 双平台合同均通过。当前已用 `Path(result)` 比较消除 Windows 路径假失败，并在缺失 symlink 创建权限时明确标记跳过；待下一次提交复验。
 
 ### 上一提交 GitHub Actions 红灯治理
 

@@ -101,7 +101,10 @@ def test_model_install_rejects_symlink_and_unconfigured_directory(tmp_path):
     client = Client(body, payload["sha256"])
     assert not AgentModelInstallRunner(client, install_dir="").ready
     destination = tmp_path / f"managed-{payload['sha256']}.pt"
-    destination.symlink_to(tmp_path / "elsewhere")
+    try:
+        destination.symlink_to(tmp_path / "elsewhere")
+    except OSError as error:
+        pytest.skip(f"symlink creation is unavailable on this runner: {error}")
     outcome = AgentModelInstallRunner(client, install_dir=tmp_path).run(lease(payload))
     assert outcome.status == "FAILED"
     assert "SYMLINK_FORBIDDEN" in outcome.error
