@@ -167,6 +167,80 @@ def test_multilabel_never_breaks_one_indivisible_source_to_force_holdout():
                              required_train_labels=('fire',))
 
 
+def test_multilabel_recovers_when_only_test_eligible_group_is_a_multilabel_train_candidate():
+    """Regression: previous six retries rejected a feasible fire/smoke split."""
+    labels = ('fire', 'smoke', 'negative', 'fire smoke', 'negative')
+    rows = []
+    for index, labels_for_group in enumerate(labels):
+        row = image(str(index), 'source', f'sha-{index}', f'video-{index}')
+        row['boxes'] = ([] if labels_for_group == 'negative' else
+                        [{'label': label} for label in labels_for_group.split()])
+        if labels_for_group == 'negative':
+            row['annotation_state'] = 'confirmed_empty'
+        rows.append(row)
+    request = SplitRequest(SplitMode.RANDOM_TEST_FROM_TRAINING_POOL,
+                           tuple(row['id'] for row in rows), experiment_percent=20,
+                           validation_percent=20)
+
+    def split():
+        return build_split_manifest(
+            rows, request, seed=1, split_strategy='multilabel_grouped_v2',
+            required_train_labels=('fire', 'smoke'),
+            forbidden_test_image_ids=('0', '1', '2', '4'),
+        )
+
+    manifest = split()
+    assert manifest.ids['test'] == ('3',)
+    assert manifest.requested['split_recovery_strategy'] == 'source_pair_anchor_v1'
+    assert manifest.counts == {'train': 3, 'validation': 1, 'test': 1, 'total': 5}
+    assert any(row['id'] in manifest.ids['train'] and
+               any(box['label'] == 'fire' for box in row['boxes']) for row in rows)
+    assert any(row['id'] in manifest.ids['train'] and
+               any(box['label'] == 'smoke' for box in row['boxes']) for row in rows)
+    assert any(row['id'] in manifest.ids['train'] and row['annotation_state'] == 'confirmed_empty'
+               for row in rows)
+    assert manifest.requested['reserved_train_component_count'] >= 1
+    assert split().ids == manifest.ids
+
+
+def test_multilabel_recovery_still_blocks_when_history_exposes_every_test_source():
+    rows = [image(str(index), 'source', f'sha-{index}', f'video-{index}')
+            for index in range(5)]
+    request = SplitRequest(SplitMode.RANDOM_TEST_FROM_TRAINING_POOL,
+                           tuple(row['id'] for row in rows), experiment_percent=20,
+                           validation_percent=20)
+    with pytest.raises(ValueError, match='TRAINING_SPLIT_SEARCH_EXHAUSTED'):
+        build_split_manifest(rows, request, seed=1,
+                             split_strategy='multilabel_grouped_v2',
+                             required_train_labels=('fire',),
+                             forbidden_test_image_ids=tuple(row['id'] for row in rows))
+
+
+def test_multilabel_recovery_keeps_multi_image_video_component_in_one_test_role():
+    rows = [image(str(index), 'source', f'sha-{index}', f'video-{index}')
+            for index in range(5)]
+    rows[1]['boxes'] = [{'label': 'smoke'}]
+    rows[3]['boxes'] = [{'label': 'fire'}, {'label': 'smoke'}]
+    for index in (2, 4):
+        rows[index]['annotation_state'] = 'confirmed_empty'
+        rows[index]['boxes'] = []
+    sibling = image('3-child', 'source', 'sha-3-child', 'video-3')
+    sibling['boxes'] = [{'label': 'fire'}, {'label': 'smoke'}]
+    rows.append(sibling)
+    request = SplitRequest(SplitMode.RANDOM_TEST_FROM_TRAINING_POOL,
+                           tuple(row['id'] for row in rows), experiment_percent=20,
+                           validation_percent=20)
+    manifest = build_split_manifest(
+        rows, request, seed=1, split_strategy='multilabel_grouped_v2',
+        required_train_labels=('fire', 'smoke'),
+        forbidden_test_image_ids=('0', '1', '2', '4'),
+    )
+    assert set(manifest.ids['test']) == {'3', '3-child'}
+    assert manifest.groups['3'] == manifest.groups['3-child']
+    assert not set(manifest.ids['test']) & {'0', '1', '2', '4'}
+    assert len(manifest.ids['train']) > 0 and len(manifest.ids['validation']) > 0
+
+
 def test_large_random_split_keeps_exact_component_counts_at_20k_scale():
     rows = [
         image(str(index), "source", f"h{index}", f"g{index}")

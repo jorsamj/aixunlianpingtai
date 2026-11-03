@@ -752,6 +752,111 @@ def _select_grouped_stratified(
     )
 
 
+def _recover_feasible_grouped_holdouts(
+    rows: Sequence[Mapping[str, Any]],
+    component_keys: Mapping[str, str],
+    *,
+    test_percent: float,
+    validation_percent: float,
+    seed: int,
+    forbidden_test_components: set[str],
+) -> tuple[list[Mapping[str, Any]], list[Mapping[str, Any]], list[Mapping[str, Any]]]:
+    """Find legal holdout anchors before attempting to fill requested quotas.
+
+    The stratified two-pass heuristic can reserve the only Test-eligible group
+    for Train even though a different Train cover exists. A feasible partition
+    always contains *some* Test and Val groups whose removal leaves a positive
+    group for every selected label. Find that pair without exponential search:
+    groups containing a unique label must stay Train, and groups sharing a label
+    supported by exactly two sources cannot both become holdouts.
+
+    Preserve one confirmed-empty group in Train when negatives exist. Never
+    relax known historical exposure, linked-source isolation or positive GT.
+    """
+    negative_label = "\x00confirmed_empty"
+    grouped: dict[str, list[Mapping[str, Any]]] = {}
+    group_labels: dict[str, set[str]] = {}
+    for row in rows:
+        key = component_keys[str(row.get("id") or "")]
+        grouped.setdefault(key, []).append(row)
+        labels = _row_label_codes(row)
+        if not labels and str(row.get("annotation_state") or "").strip().lower() == "confirmed_empty":
+            labels = {negative_label}
+        group_labels.setdefault(key, set()).update(labels)
+
+    if len(grouped) < 3:
+        raise ValueError("不足三个独立来源组，无法形成互相隔离的训练、验证和试验集")
+    label_groups: dict[str, list[str]] = {}
+    for key, labels in group_labels.items():
+        for label in labels:
+            label_groups.setdefault(label, []).append(key)
+    keep_train: set[str] = set()
+    pair_conflicts: dict[str, set[str]] = {}
+    for owners in label_groups.values():
+        if len(owners) == 1:
+            keep_train.add(owners[0])
+        elif len(owners) == 2:
+            left, right = owners
+            pair_conflicts.setdefault(left, set()).add(right)
+            pair_conflicts.setdefault(right, set()).add(left)
+
+    keys = sorted(grouped)
+    random.Random(int(seed)).shuffle(keys)
+    rank = {key: index for index, key in enumerate(keys)}
+    sizes = {key: len(grouped[key]) for key in keys}
+    candidate_val = [key for key in keys if key not in keep_train]
+    candidate_test = [key for key in candidate_val if key not in forbidden_test_components]
+    desired_test = max(1, round(len(rows) * float(test_percent) / 100))
+    desired_val = max(1, round(len(rows) * float(validation_percent) / 100))
+    candidate_test.sort(key=lambda key: (abs(sizes[key] - desired_test), sizes[key], rank[key]))
+    candidate_val.sort(key=lambda key: (abs(sizes[key] - desired_val), sizes[key], rank[key]))
+
+    anchors: tuple[str, str] | None = None
+    for test_key in candidate_test:
+        forbidden_val = pair_conflicts.get(test_key, set()) | {test_key}
+        val_key = next((key for key in candidate_val if key not in forbidden_val), None)
+        if val_key is not None:
+            anchors = (test_key, val_key)
+            break
+    if anchors is None:
+        raise ValueError("已知历史保护及训练正/负样本来源约束下，无可同时成立的 Test、Val 来源组")
+
+    test_key, val_key = anchors
+    role_keys: dict[str, set[str]] = {"test": {test_key}, "validation": {val_key}}
+    remaining = set(keys) - {test_key, val_key}
+    remaining_support = {
+        label: sum(key in remaining for key in owners)
+        for label, owners in label_groups.items()
+    }
+    targets = {"test": desired_test, "validation": desired_val}
+    counts = {"test": sizes[test_key], "validation": sizes[val_key]}
+    # Filling is best-effort; retaining valid Train coverage is more important
+    # than achieving an exact percentage with indivisible camera/video groups.
+    for role in ("test", "validation"):
+        options = [key for key in keys if key in remaining and
+                   (role != "test" or key not in forbidden_test_components)]
+        options.sort(key=lambda key: (sizes[key], rank[key]))
+        for key in options:
+            if counts[role] >= targets[role] or len(remaining) <= 1:
+                break
+            if counts[role] + sizes[key] > targets[role]:
+                continue
+            if any(remaining_support[label] <= 1 for label in group_labels.get(key, ())):
+                continue
+            role_keys[role].add(key)
+            remaining.remove(key)
+            counts[role] += sizes[key]
+            for label in group_labels.get(key, ()):
+                remaining_support[label] -= 1
+
+    if not remaining or any(not count for count in remaining_support.values()):
+        raise RuntimeError("grouped holdout recovery violated Train coverage")
+    train_rows = [row for row in rows if component_keys[str(row.get("id") or "")] in remaining]
+    validation_rows = [row for row in rows if component_keys[str(row.get("id") or "")] in role_keys["validation"]]
+    test_rows = [row for row in rows if component_keys[str(row.get("id") or "")] in role_keys["test"]]
+    return train_rows, validation_rows, test_rows
+
+
 def _assert_no_leakage(role_rows: Mapping[str, Sequence[Mapping[str, Any]]]) -> None:
     owners: dict[tuple[str, str], str] = {}
     for role, rows in role_rows.items():
@@ -840,6 +945,7 @@ def build_split_manifest(
     validation_seed = int.from_bytes(digest[:8], "big")
 
     selector = _select_grouped_stratified if split_strategy == "multilabel_grouped_v2" else _select_grouped
+    split_recovery_applied = False
 
     if request.mode == SplitMode.INDEPENDENT_TEST_SET:
         test_rows = independent_test_rows
@@ -892,13 +998,32 @@ def build_split_manifest(
             except ValueError as error:
                 last_split_error = error
         else:
-            raise ValueError(
-                'TRAINING_SPLIT_SEARCH_EXHAUSTED: 来源隔离和训练正样本约束下，'
-                '有限次确定性划分未找到可用 Train/Val/Test；'
-                '不能据此断言所有划分绝对无解。'
-                + f' {_split_failure_summary(train_pool, component_keys, required_labels, history_test_components)}'
-                + f' 最近原因：{last_split_error}'
-            ) from last_split_error
+            if split_strategy == "multilabel_grouped_v2":
+                try:
+                    train_rows, validation_rows, test_rows = _recover_feasible_grouped_holdouts(
+                        train_pool,
+                        component_keys,
+                        test_percent=float(request.experiment_percent or 0),
+                        validation_percent=float(request.validation_percent),
+                        seed=test_seed,
+                        forbidden_test_components=history_test_components,
+                    )
+                    # The initial greedy training reservation may have chosen
+                    # the only Test-eligible group; recompute it from the final
+                    # Train members so the manifest reports true reservations.
+                    reserved_train_components = _reserve_required_train_components(
+                        train_rows, component_keys, required_labels, int(seed),
+                    )
+                    split_recovery_applied = True
+                except ValueError as fallback_error:
+                    raise ValueError(
+                        'TRAINING_SPLIT_SEARCH_EXHAUSTED: 来源隔离和训练正样本约束下，'
+                        '确定性划分及来源组兜底均未找到可用 Train/Val/Test。'
+                        + f' {_split_failure_summary(train_pool, component_keys, required_labels, history_test_components)}'
+                        + f' 原因：{fallback_error}；原划分：{last_split_error}'
+                    ) from fallback_error
+            else:
+                raise ValueError(str(last_split_error)) from last_split_error
         test_source = "random_from_training_pool"
 
     roles = {"train": train_rows, "validation": validation_rows, "test": test_rows}
@@ -926,6 +1051,7 @@ def build_split_manifest(
         "excluded_duplicate_ids": list(excluded_duplicate_ids),
         "duplicate_group_count": len(duplicate_groups),
         **({"split_strategy": split_strategy} if split_strategy == "multilabel_grouped_v2" else {}),
+        **({"split_recovery_strategy": "source_pair_anchor_v1"} if split_recovery_applied else {}),
         **({'forbidden_test_image_ids': sorted(set(forbidden_test_image_ids))} if forbidden_test_image_ids else {}),
         **(
             {
