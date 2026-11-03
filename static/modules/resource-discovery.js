@@ -127,6 +127,7 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
     environmentMeta: {},
     officialModels: [],
     preparedModels: [],
+    assetModels: [],
     models: [],
     modelMeta: {},
     modelCursor: null,
@@ -169,12 +170,29 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
   function preparedMotherModels() {
     const rows = runtime.preparedModels;
     const summary = rows.length
-      ? rows.map(model => `<article class="item"><div><b>${escapeHtml(model.name || model.label || '')}</b><div class="item-sub">${bytes(model.size_bytes)} · 已预置 · 可供首次训练及 GPU Agent 分发</div></div><span class="pill ok">已就绪</span></article>`).join('')
+      ? rows.map(model => `<article class="item"><div><b>${escapeHtml(model.name || model.label || '')}</b><div class="item-sub">${bytes(model.size_bytes)} · ${model.trainable===false?'等待安全校验':'本机权重'}</div></div><span class="pill ${model.trainable===false?'warn':'ok'}">${model.trainable===false?'待校验':'已预置'}</span></article>`).join('')
       : '<div class="empty">尚未预置母模型。先将官方 YOLO11n/s/m 或可信自定义 .pt 权重下载到电脑，再从这里上传；训练任务不会自动从 GitHub 下载。</div>';
     return `<div class="rd-cache-head"><div><b>训练母模型库</b><span>持久存储 · 只选择本机真实存在的 .pt · 上传后可用于 GPU 集群</span></div>
         <div class="row"><input id="rdMotherModelFile" data-file426="1" type="file" accept=".pt" style="display:none" onchange="uploadResourceMotherModel(this)">
         <button class="btn primary small" onclick="document.getElementById('rdMotherModelFile')?.click()">上传母模型 .pt</button></div></div>
-        <div class="item-sub">仅上传可信来源权重。已同名的不同文件不会覆盖，上传结束前不会加入训练列表。</div><div class="card-list">${summary}</div>`;
+        <div class="item-sub">仅上传可信来源权重。首次训练须经过独立隔离验证；上传完成不代表模型可以运行。</div><div class="card-list">${summary}</div>`;
+  }
+
+  function motherModelManagement() {
+    const rows=runtime.assetModels||[];
+    const items=rows.map(row=>{
+      const ready=status(row.validation_status)==='VERIFIED'&&row.trainable===true;
+      const names=Array.isArray(row.names)?row.names:[];
+      const preview=names.slice(0,8).map((name,index)=>`<span><b>${index}</b> ${escapeHtml(name)}</span>`).join('');
+      const state=ready?'已验证 · 可训练':status(row.validation_status)==='CHECKING'?'正在隔离校验':status(row.validation_status)==='SANDBOX_UNAVAILABLE'?'校验环境不可用':status(row.validation_status)==='INVALID'?'模型校验失败':'等待校验';
+      return `<article class="mother-model-row"><div class="mother-model-row-head"><div><strong>${escapeHtml(row.name)}</strong><small>${bytes(row.size_bytes)} · SHA256 ${escapeHtml(String(row.sha256||'').slice(0,16))}… · 管理端</small></div><span class="pill ${ready?'ok':'warn'}">${escapeHtml(state)}</span></div>
+        <div class="mother-model-categories">${preview||'<span>原始类别尚未验证</span>'}${names.length>8?`<small>等 ${names.length} 类</small>`:''}</div>
+        <div class="mother-model-row-foot"><span>${escapeHtml(row.validation_error||`${row.framework||'未验证框架'} · ${row.task||'未验证任务类型'}`)}</span><button class="btn mini" ${status(row.validation_status)==='CHECKING'?'disabled':''} onclick="verifyResourceMotherModel('${escapeHtml(row.asset_id)}')">${ready?'重新验证':'安全校验'}</button></div></article>`;
+    }).join('');
+    return `<section class="mother-model-management" aria-label="母模型管理"><header class="mother-model-management-head"><div><span class="mother-model-kicker">模型资产</span><h2>母模型管理</h2><p>统一登记基础权重，核验原始类别后用于首次训练。模型文件与 Worker 节点副本分别管理。</p></div><div class="mother-model-actions"><input id="rdMotherManageFile" data-file426="1" type="file" accept=".pt" style="display:none" onchange="uploadResourceMotherModel(this)"><button class="btn primary" onclick="document.getElementById('rdMotherManageFile')?.click()">上传 .pt 模型</button><button class="btn" onclick="refreshResourceDiscoveryCache()">刷新状态</button></div></header>
+      <div class="mother-model-summary"><strong>${rows.length} <small>个已登记模型</small></strong><span>隔离检验不会在 Web 进程执行不可信 PyTorch 反序列化；不同哈希不会覆盖同名权重。</span></div>
+      <div class="mother-model-list">${items||'<div class="empty">尚无已登记的母模型。点击右上角上传已有 YOLO .pt；上传后先安全校验，再在算法首次训练选择。</div>'}</div>
+      <div class="mother-model-discovery"><b>模型发现</b><span>管理端可在“训练环境”使用已有目录检测；远程 Worker 只以服务节点的实际回执为准，未登记副本不会宣称已安装。</span></div></section>`;
   }
 
   function modelRows() {
@@ -185,17 +203,19 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
   function renderCachePanel() {
     const root = document.getElementById('resourceDiscoveryCache');
     if (!root) return;
-    root.innerHTML = `<div class="rd-cache-head"><div><b>本机资源发现</b><span>读取上次成功缓存；刷新页面不会重新扫描全机。</span></div><button class="btn small" onclick="refreshResourceDiscoveryCache()">刷新缓存</button></div>
+    root.innerHTML = `${motherModelManagement()}<div class="rd-cache-head"><div><b>本机资源发现</b><span>读取上次成功缓存；刷新页面不会重新扫描全机。</span></div><button class="btn small" onclick="refreshResourceDiscoveryCache()">刷新缓存</button></div>
       <section class="rd-cache-section" data-rd-prepared-models>${preparedMotherModels()}</section>
       <section class="rd-cache-section"><header><div><b>Ultralytics 环境</b><span>上次检测：${escapeHtml(dateText(runtime.environmentMeta.updated_at))} · 来源 ${escapeHtml(runtime.environmentMeta.scan_id || '历史配置')}</span></div><button class="btn small" onclick="deepDetectResourceEnvironment()">全机深度检测</button></header>${environmentCards()}${officialModelRows()}</section>
       <section class="rd-cache-section"><header><div><b>本机模型</b><span>共 ${Number(runtime.modelMeta.total) || 0} 个 · 上次检测：${escapeHtml(dateText(runtime.modelMeta.updated_at))} · 来源 ${escapeHtml(runtime.modelMeta.scan_id || '历史缓存')}</span></div></header>${modelRows()}<footer class="rd-pager"><button class="btn mini" ${runtime.modelCursorStack.length ? '' : 'disabled'} onclick="resourceModelsPage(-1)">上一页</button><span>本页 ${runtime.models.length} 个</span><button class="btn mini" ${runtime.modelNextCursor ? '' : 'disabled'} onclick="resourceModelsPage(1)">下一页</button></footer></section>`;
   }
 
   async function loadEnvironmentCache() {
-    const [environment, baseModels] = await Promise.all([
+    const [environment, baseModels, assets] = await Promise.all([
       request('/api/ultralytics_env'),
-      request('/api/base_models')
+      request('/api/base_models'),
+      request('/api/v63/base-models/assets')
     ]);
+    runtime.assetModels=assets?.items||[];
     runtime.environments = [...(environment?.candidates || environment?.items || [])];
     runtime.activeEnvironment = environment?.active || {};
     const activePath = String(runtime.activeEnvironment.python_path || runtime.activeEnvironment.python_executable || '').toLocaleLowerCase();
@@ -359,7 +379,7 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
       runtime.cacheLoadedAt = 0;
       await refreshCache(true, {force:true});
       await refreshApplication();
-      notify(`母模型 ${result.name} 已预置，可在创建训练任务时选择`);
+      notify(`母模型 ${result.name} 已入库；请点击“安全校验”，通过后才能用于首次训练`);
       return result;
     } catch (error) {
       notify(error?.message || '上传母模型失败');
@@ -370,6 +390,24 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
     }
   };
   window.uploadResourceMotherModel = input => runtime.uploadMotherModel(input);
+  window.verifyResourceMotherModel = async assetId => {
+    const key=String(assetId||'');
+    if(!/^pt_[0-9a-f]{24}$/.test(key))return notify('母模型资产身份无效');
+    try{
+      const started=await request(`/api/v63/base-models/assets/${encodeURIComponent(key)}/verify`,{method:'POST'});
+      if(!started?.accepted)throw new Error('服务端未接受校验');
+      notify('已提交隔离安全校验，可继续操作其他页面');
+      runtime.cacheLoadedAt=0;
+      await refreshCache(false,{force:true});
+      let count=0;
+      const poll=async()=>{
+        if(getPage()!=='训练资源'||++count>40)return;
+        try{const response=await request('/api/v63/base-models/assets');runtime.assetModels=response?.items||[];renderCachePanel();const row=runtime.assetModels.find(item=>item.asset_id===key);if(row&&status(row.validation_status)!=='CHECKING')return notify(status(row.validation_status)==='VERIFIED'?'母模型校验通过，首次训练时可选':`校验未通过：${row.validation_error||row.validation_status}`)}catch(_){return}
+        registry.startTimeout(`mother-model-${key}`,['训练资源'],poll,1100);
+      };
+      registry.startTimeout(`mother-model-${key}`,['训练资源'],poll,1100);
+    }catch(error){notify(error.message||'母模型校验提交失败')}
+  };
 
   window.quickUltraDetect = () => runtime.detectEnvironment({scope: 'auto'});
   window.deepDetectResourceEnvironment = () => runtime.detectEnvironment({scope: 'full'});

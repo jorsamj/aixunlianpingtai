@@ -606,6 +606,38 @@ def resolve_training_label_contract(
     if [int(item.get("class_id", -1)) for item in effective] != list(range(len(effective))):
         raise ValueError("训练标签 class_id 必须连续为 0..N-1")
 
+    mother_evidence: dict[str, Any] = {}
+    if previous is None and include_weight_digest and base_contract.get("base_model_sha256"):
+        # Preserve the source checkpoint's real, ordered class IDs separately
+        # from the dataset GT. Never interpret class 0 from an uploaded weight
+        # as class 0 in the new algorithm merely because nc happens to match.
+        from .mother_model_assets import list_assets
+
+        source = next((item for item in list_assets(data_root)
+                       if item.get("sha256") == base_contract["base_model_sha256"]
+                       and item.get("validation_status") == "VERIFIED"
+                       and item.get("trainable") is True), None)
+        if source:
+            original = list(source.get("names") or [])
+            target_names = [str(item.get("code") or "") for item in effective]
+            mapping = (
+                "same_order" if original == target_names
+                else "different_class_count" if len(original) != len(target_names)
+                else "different_class_meaning_or_order"
+            )
+            mother_evidence = {
+                "base_model_asset_id": source["asset_id"],
+                "base_model_original_names": original,
+                "base_model_original_task": source.get("task"),
+                "base_model_class_relation": mapping,
+                "base_model_label_evidence": "sandbox_verified",
+            }
+            if mapping == "different_class_meaning_or_order":
+                raise ValueError(
+                    "所选母模型类别数量一致，但原始标签顺序或含义不同；当前训练器未验证检测头重排/重置，"
+                    "已阻止静默错配。请选用原始标签一致的模型，或改用不同类别数的官方预训练权重。"
+                )
+
     contract = {
         "schema_version": 1,
         "strict_target_negative_scope": True,
@@ -623,6 +655,7 @@ def resolve_training_label_contract(
         "label_schema_changed": label_schema_changed,
         "label_schema_change_reasons": schema_change_reasons,
         **base_contract,
+        **mother_evidence,
         "base_training_mode": "previous_weights_init" if previous is not None else "mother_model_init",
         "strict_resume": False,
         "optimizer_state_resumed": False,

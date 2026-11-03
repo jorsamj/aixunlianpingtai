@@ -33,9 +33,11 @@ def test_preinstall_is_durable_and_the_same_file_is_idempotent(tmp_path, monkeyp
     repeated = _upload(platform, "yolo11n.pt", payload)
     assert repeated["reused"] is True
     assert path.read_bytes() == payload
-    assert platform._ready_ultralytics_mother_model("project-test", "yolo11n.pt") == str(path.resolve())
+    with pytest.raises(HTTPException) as blocked:
+        platform._ready_ultralytics_mother_model("project-test", "yolo11n.pt")
+    assert blocked.value.status_code == 409  # bytes != a verified YOLO checkpoint
     rows = platform.list_base_models().get("items", [])
-    assert any(row.get("source") == "preinstalled" and row.get("value") == str(path.resolve()) for row in rows)
+    assert any(row.get("source") == "preinstalled" and row.get("asset_id") == uploaded["asset_id"] and row.get("trainable") is False for row in rows)
 
 
 def test_preinstalled_weight_never_overwrites_another_digest(tmp_path, monkeypatch):

@@ -380,7 +380,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
     }catch(error){if(pid()===project)notify?.('负样本分类读取失败：'+String(error.message||error))}
     finally{zipCategoriesLoading=false}
   }
-  function setSampleKind(jobId,kind){const item=sampleChoice(jobId);item.kind=kind==='positive'||kind==='negative'?kind:'';rerenderLabelMapping(jobId)}
+  function setSampleKind(jobId,kind){const item=sampleChoice(jobId);item.kind=['positive','negative','unclassified'].includes(kind)?kind:'';rerenderLabelMapping(jobId)}
   function toggleSampleChoice(jobId,kind,code,checked){
     const item=sampleChoice(jobId),values=kind==='positive'?item.labels:item.categories;
     if(checked)values.add(String(code));else values.delete(String(code));rerenderLabelMapping(jobId);
@@ -513,12 +513,13 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
     if(!zipNeedsLabelConfirmation(job)||acceptedReview(String(job.id||'')))return '';
     const id=String(job.id||''),review=mappingReview(job),page=labelMappingReviewPage(review),summary=labelMappingReviewSummary(review),labels=labelItems();
     const requireKind=Boolean(job.sample_classification_required),choice=sampleChoice(id);
+    const isRaw=job.scan_kind==='RAW_UNANNOTATED',selectedKind=choice.kind||(isRaw?'unclassified':'');
     if(requireKind&&zipCategoryProject!==pid()&&!zipCategoriesLoading)void loadZipCategories();
-    const kindValid=!requireKind||(choice.kind==='positive'&&choice.labels.size>0)||(choice.kind==='negative'&&choice.categories.size>0);
-    const kindMarkup=!requireKind?'':`<section class="zip-upload-sample-kind" role="group" aria-label="上传后素材类型"><h3>先确认素材类型</h3><div class="row"><label><input type="radio" name="zip-sample-${esc(id)}" ${choice.kind==='positive'?'checked':''} onchange="window.ZipImportRuntime?.setSampleKind(${jsArg(id)},'positive')"> 正样本 · 选择待标注目标</label><label><input type="radio" name="zip-sample-${esc(id)}" ${choice.kind==='negative'?'checked':''} onchange="window.ZipImportRuntime?.setSampleKind(${jsArg(id)},'negative')"> 负样本 · 选择负样本池分类</label></div>
-      ${choice.kind==='positive'?`<div class="zip-sample-categories">${labels.map(row=>`<label><input type="checkbox" ${choice.labels.has(String(row.code))?'checked':''} onchange="window.ZipImportRuntime?.toggleSampleChoice(${jsArg(id)},'positive',${jsArg(String(row.code))},this.checked)"> ${esc(row.display_name||row.code)} · ${esc(row.code)}</label>`).join('')||'<span>当前没有可用目标标签，请先在标签管理中建立标签。</span>'}</div><small>仅记录待标注标签，不凭选择自动生成正式 GT 框。</small>`:''}
-      ${choice.kind==='negative'?`<div class="zip-sample-categories">${zipCategories.filter(row=>row.enabled).map(row=>`<label><input type="checkbox" ${choice.categories.has(String(row.id))?'checked':''} onchange="window.ZipImportRuntime?.toggleSampleChoice(${jsArg(id)},'negative',${jsArg(String(row.id))},this.checked)"> ${esc(row.name)}</label>`).join('')||'<span>暂无分类，可先新建。</span>'}<button type="button" class="btn mini" onclick="window.ZipImportRuntime?.createNegativeCategory(${jsArg(id)})">新建负样本分类</button></div><small>只关联负样本池；ZIP 原始标注与标签不会被删除，训练时仍按目标范围二次确认。</small>`:''}</section>`;
-    if(requireKind&&summary.total===0)return `<div class="storage61-import-mapping zip-label-confirm label-mapping-review" data-zip-label-mapping data-review-key="${esc(id)}"><header class="zip-label-heading"><div><h2>确认上传素材类型</h2><p>${esc(job.file_name||'ZIP 素材')} · ${Number(job.image_count||0)} 张图片（无外部标签映射）</p></div></header>${kindMarkup}<div class="zip-label-footer"><small data-zip-confirm-status>${kindValid?'可正式导入':'请选择正样本待标注标签或负样本分类'}</small><div class="zip-label-footer-actions"><button class="btn danger zip-label-cancel" data-zip-cancel-button onclick="window.ZipImportRuntime?.cancelJob(${jsArg(id)})">取消此 ZIP 任务</button><button class="btn primary" data-zip-confirm-button ${kindValid?'':'disabled'} onclick="window.ZipImportRuntime?.confirmLabels(${jsArg(id)})">确认类型并导入</button></div></div></div>`;
+    const kindValid=!requireKind||(isRaw&&selectedKind==='unclassified')||(selectedKind==='positive'&&choice.labels.size>0)||(selectedKind==='negative'&&choice.categories.size>0);
+    const kindMarkup=!requireKind?'':`<section class="zip-upload-sample-kind" role="group" aria-label="上传后素材类型"><h3>${isRaw?'检测到未标注原图':'先确认素材类型'}</h3>${isRaw?'<p class="muted-line">未检测到有效外部标注。默认仅存入素材库，后续可以直接 AI 或人工标注；空 txt 不等于负样本。</p>':''}<div class="row">${isRaw?`<label><input type="radio" name="zip-sample-${esc(id)}" ${selectedKind==='unclassified'?'checked':''} onchange="window.ZipImportRuntime?.setSampleKind(${jsArg(id)},'unclassified')"> 原图入库 · 暂不分类（推荐）</label>`:''}<label><input type="radio" name="zip-sample-${esc(id)}" ${selectedKind==='positive'?'checked':''} onchange="window.ZipImportRuntime?.setSampleKind(${jsArg(id)},'positive')"> 正样本 · 选择待标注目标</label><label><input type="radio" name="zip-sample-${esc(id)}" ${selectedKind==='negative'?'checked':''} onchange="window.ZipImportRuntime?.setSampleKind(${jsArg(id)},'negative')"> 负样本 · 选择负样本池分类</label></div>
+      ${selectedKind==='positive'?`<div class="zip-sample-categories">${labels.map(row=>`<label><input type="checkbox" ${choice.labels.has(String(row.code))?'checked':''} onchange="window.ZipImportRuntime?.toggleSampleChoice(${jsArg(id)},'positive',${jsArg(String(row.code))},this.checked)"> ${esc(row.display_name||row.code)} · ${esc(row.code)}</label>`).join('')||'<span>当前没有可用目标标签，请先在标签管理中建立标签。</span>'}</div><small>仅记录待标注标签，不凭选择自动生成正式 GT 框。</small>`:''}
+      ${selectedKind==='negative'?`<div class="zip-sample-categories">${zipCategories.filter(row=>row.enabled).map(row=>`<label><input type="checkbox" ${choice.categories.has(String(row.id))?'checked':''} onchange="window.ZipImportRuntime?.toggleSampleChoice(${jsArg(id)},'negative',${jsArg(String(row.id))},this.checked)"> ${esc(row.name)}</label>`).join('')||'<span>暂无分类，可先新建。</span>'}<button type="button" class="btn mini" onclick="window.ZipImportRuntime?.createNegativeCategory(${jsArg(id)})">新建负样本分类</button></div><small>只关联负样本池；ZIP 原始标注与标签不会被删除，训练时仍按目标范围二次确认。</small>`:''}</section>`;
+    if(requireKind&&summary.total===0)return `<div class="storage61-import-mapping zip-label-confirm label-mapping-review" data-zip-label-mapping data-review-key="${esc(id)}"><header class="zip-label-heading"><div><h2>${isRaw?'导入未标注原图':'确认上传素材类型'}</h2><p>${esc(job.file_name||'ZIP 素材')} · ${Number(job.image_count||0)} 张图片（无有效外部标注）</p></div></header>${kindMarkup}<div class="zip-label-footer"><small data-zip-confirm-status>${kindValid?'可正式导入':'请选择有效素材分类'}</small><div class="zip-label-footer-actions"><button class="btn danger zip-label-cancel" data-zip-cancel-button onclick="window.ZipImportRuntime?.cancelJob(${jsArg(id)})">取消此 ZIP 任务</button><button class="btn primary" data-zip-confirm-button ${kindValid?'':'disabled'} onclick="window.ZipImportRuntime?.confirmLabels(${jsArg(id)})">${isRaw?'原图入库':'确认类型并导入'}</button></div></div></div>`;
     const keepCodes=page.rows.map(row=>row.code).filter(Boolean);
     const visibleLabels=filterCanonicalLabels(labels,review.targetQuery,keepCodes);
     const options=(selected,classId)=>['<option value="">选择平台标签</option>',...(
@@ -560,7 +561,33 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
   }
 
   function dock(){let n=document.getElementById('zipImportDurableDock');if(!n){n=document.createElement('button');n.id='zipImportDurableDock';n.type='button';n.className='import411-dock hidden';n.onclick=()=>open();document.body.appendChild(n)}return n}
-  function resultMarkup(job){const s=status(job),r=job?.report||{};if(s==='unknown')return `<div class="alert warn">${esc(zipView(job,jobs).message)}<br>任务 ID：${esc(job.id)} · 最后服务器记录：${esc(job.updated_at||'未记录')}<button class="btn" onclick="window.ZipImportRuntime?.openTask('${esc(job.id)}')">重新核验状态</button></div>`;if(s==='done'){const warns=(r.warnings||[]).map(x=>`<li>${esc(x)}</li>`).join('');return `<div class="alert ok"><b>导入完成</b>：${Number(r.imported_images||0)} 张图片，其中 ${Number(r.annotated_images||0)} 张带标注，${Number(r.boxes||0)} 个框。</div>${warns?`<ul class="zip410-warn">${warns}</ul>`:''}`}if(s==='failed'&&job?.cleanup_status==='failed')return `<div class="alert err"><b>取消清理失败，可重试</b>：${esc(job?.cleanup_error||job?.error||'临时缓存尚未清理完成')}</div>`;if(s==='failed')return `<div class="alert err"><b>导入失败</b>：${esc(job?.error||job?.message||'未知错误')}</div>`;if(s==='cancelled'||s==='canceled')return '<div class="alert warn">本次 ZIP 导入已中断；未提交的缓存已由后台按安全边界清理。</div>';return''}
+  function resultMarkup(job){const s=status(job),r=job?.report||{};if(s==='unknown')return `<div class="alert warn">${esc(zipView(job,jobs).message)}<br>任务 ID：${esc(job.id)} · 最后服务器记录：${esc(job.updated_at||'未记录')}<button class="btn" onclick="window.ZipImportRuntime?.openTask('${esc(job.id)}')">重新核验状态</button></div>`;if(s==='done'){
+    const warns=(r.warnings||[]).map(x=>`<li>${esc(x)}</li>`).join('');
+    const raw=Math.max(0,Number(r.imported_images||0)-Number(r.annotated_images||0));
+    const next=raw?`<section class="zip-next-actions" aria-label="本次 ZIP 的下一步"><div class="zip-next-heading"><b>${raw} 张原图等待标注</b><span>清洗是可选步骤，AI 候选标注需审核后才能参与训练。</span></div><div class="zip-next-grid">
+      <button type="button" class="zip-next-action recommended" onclick="window.ZipImportRuntime?.startBatchAction(${jsArg(job.id)},'ai')"><strong>直接 AI 预标注</strong><span>跳过清洗 · 本批次自动带入</span></button>
+      <button type="button" class="zip-next-action" onclick="window.ZipImportRuntime?.startBatchAction(${jsArg(job.id)},'clean')"><strong>先清洗，再标注</strong><span>筛除问题图片后进入标注</span></button>
+      <button type="button" class="zip-next-action" onclick="window.ZipImportRuntime?.startBatchAction(${jsArg(job.id)},'manual')"><strong>人工标注</strong><span>进入已有素材审核工作台</span></button>
+      <button type="button" class="zip-next-action" onclick="window.ZipImportRuntime?.startBatchAction(${jsArg(job.id)},'later')"><strong>暂存素材库</strong><span>已入库，可随时回来处理</span></button>
+    </div></section>`:'';
+    return `<div class="alert ok"><b>导入完成</b>：${Number(r.imported_images||0)} 张图片，其中 ${Number(r.annotated_images||0)} 张带标注，${raw} 张待标注，${Number(r.boxes||0)} 个框。</div>${next}${warns?`<ul class="zip410-warn">${warns}</ul>`:''}`;
+  }if(s==='failed'&&job?.cleanup_status==='failed')return `<div class="alert err"><b>取消清理失败，可重试</b>：${esc(job?.cleanup_error||job?.error||'临时缓存尚未清理完成')}</div>`;if(s==='failed')return `<div class="alert err"><b>导入失败</b>：${esc(job?.error||job?.message||'未知错误')}</div>`;if(s==='cancelled'||s==='canceled')return '<div class="alert warn">本次 ZIP 导入已中断；未提交的缓存已由后台按安全边界清理。</div>';return''}
+  function startBatchAction(jobId,action){
+    const job=jobs.find(row=>String(row.id)===String(jobId))||knownJobs.get(String(jobId));
+    if(!job||status(job)!=='done'){notify?.('请等待本次 ZIP 导入完成');return false}
+    const layer=presentation?.layer;
+    if(layer&&topModal()===layer)closeOwnedLayer(layer,'handoff');
+    if(action==='ai'){
+      if(typeof window.createAiLabel429!=='function'){notify?.('AI 标注工作台未就绪，请从素材库进入');return false}
+      window.createAiLabel429({source_batch_id:String(jobId)});return true;
+    }
+    if(action==='later'){notify?.('图片已保存在素材库，可随时创建清洗或标注任务');return true}
+    if(action==='manual'&&typeof window.openImportManualAnnotation429==='function'){
+      void window.openImportManualAnnotation429(String(jobId));return true;
+    }
+    if(typeof window.showImportReview412==='function'){window.showImportReview412(String(jobId));return true}
+    notify?.('素材处理入口暂不可用，请从素材库进入');return false;
+  }
   function setZipProgressBar(node,value){
     if(!node)return;
     const progress=clamp(value);
@@ -860,9 +887,11 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
     try{
       await assertLabelConfirmationOpen(project,id);
       const sample=sampleChoice(id);
+      const selectedKind=sample.kind||(job.scan_kind==='RAW_UNANNOTATED'?'unclassified':'');
       if(job.sample_classification_required && !(
-        sample.kind==='positive'&&sample.labels.size>0 || sample.kind==='negative'&&sample.categories.size>0
-      ))throw new Error('请先选择正样本标签或负样本分类');
+        (selectedKind==='unclassified'&&job.scan_kind==='RAW_UNANNOTATED') ||
+        (selectedKind==='positive'&&sample.labels.size>0) || (selectedKind==='negative'&&sample.categories.size>0)
+      ))throw new Error('请选择原图暂存、正样本标签或负样本分类');
       const label_mapping=buildManualLabelMapping(review);
       const toCreate=new Map();
       for(const row of review.rows){
@@ -888,9 +917,9 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
       if(statusNode)statusNode.textContent='标签已确认，正在启动后台导入…';
       foregroundImports.add(id);started.add(id);writeIntent(project,id,'submitting');
       const confirmation={label_mapping,...(job.sample_classification_required?{
-        sample_type:sample.kind,
-        intended_label_codes:sample.kind==='positive'?[...sample.labels]:[],
-        negative_category_ids:sample.kind==='negative'?[...sample.categories]:[],
+        sample_type:selectedKind,
+        intended_label_codes:selectedKind==='positive'?[...sample.labels]:[],
+        negative_category_ids:selectedKind==='negative'?[...sample.categories]:[],
       }:{})};
       const response=await startZipJob(project,id,{fetchImpl,confirmation});
       accepted=true;writeIntent(project,id,'submitted');
@@ -1307,7 +1336,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
   }
 
   const reportUploadBatchError=error=>{notify?.(`ZIP 批次处理失败：${error?.message||error}`);return null};
-  const runtime={registerUploadView,beforeModalClose,upload,uploadBatch,subscribeTransfers,resumeTransfer,getProjectId:pid,previewOriginalLabels,confirmOriginalLabels,cancelOriginalLabels,matchExistingLabels,toggleManualLabels,setAdvancedExpanded,setSampleKind,toggleSampleChoice,createNegativeCategory,pauseUpload,cancelUpload,cancelQueuedUpload,stopImport,cancelJob,cancelAllActive,promptResume,resumeFromFile,reconcile,open,openTask,confirmLabels,forgetTerminal,forgetInvalid,showLabelSamples,useSourceLabel,setReviewSearch,setTargetSearch,setReviewPage,toggleLabelRow,setLabelMapping:setReviewLabelMapping,bulkMapLabels,snapshot:()=>({jobs:[...jobs],current,labelReviews,busy}),destroy(){destroyed=true;presentation=null;activeUploadView=null;uploadViews.clear();autoReviewCandidates.clear();shownReviews.clear();transferObservers.clear();clearPoll();document.getElementById('zipImportDurableDock')?.remove()}};
+  const runtime={registerUploadView,beforeModalClose,upload,uploadBatch,subscribeTransfers,resumeTransfer,getProjectId:pid,previewOriginalLabels,confirmOriginalLabels,cancelOriginalLabels,matchExistingLabels,toggleManualLabels,setAdvancedExpanded,setSampleKind,toggleSampleChoice,createNegativeCategory,pauseUpload,cancelUpload,cancelQueuedUpload,stopImport,cancelJob,cancelAllActive,promptResume,resumeFromFile,reconcile,open,openTask,confirmLabels,startBatchAction,forgetTerminal,forgetInvalid,showLabelSamples,useSourceLabel,setReviewSearch,setTargetSearch,setReviewPage,toggleLabelRow,setLabelMapping:setReviewLabelMapping,bulkMapLabels,snapshot:()=>({jobs:[...jobs],current,labelReviews,busy}),destroy(){destroyed=true;presentation=null;activeUploadView=null;uploadViews.clear();autoReviewCandidates.clear();shownReviews.clear();transferObservers.clear();clearPoll();document.getElementById('zipImportDurableDock')?.remove()}};
   window.ZipImportRuntime=runtime;
   window.doUploadZip426=input=>uploadBatch(input).catch(reportUploadBatchError);
   window.doImportData=()=>{const input=document.getElementById('importFile');if(!input?.files?.length){notify?.('请选择 ZIP 压缩包');return null}return uploadBatch(input).catch(reportUploadBatchError)};

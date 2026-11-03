@@ -4742,9 +4742,10 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     disposeAiCreateRequests429(aiCreateCurrent429());
     const epoch=Number(state.ai429CreateEpoch||0)+1;state.ai429CreateEpoch=epoch;
     const explicit=[...new Set((opts.image_ids||[]).map(String).filter(Boolean))];
+    const sourceBatchId=String(opts.source_batch_id||'').trim();
     const initial=explicit;
     state.ai429RefLabels=new Set();state.ai429RefSelected=new Set();
-    state.ai429Create={epoch,images:new Set(initial),labels:new Set(),modelId:'',templateId:'',taskName:`AI自动标注-${new Date().toLocaleString()}`,confirmationSnapshot:'',submitting:false,page:1,pageSize:12,query:'',materialItems:[],materialTotal:0,materialLoading:false,materialError:'',materialRequestEpoch:0,materialRequestKey:'',materialPending:null,bulkEpoch:0,bulkLoading:false,bulkCount:0,bulkError:'',selectionTouched:explicit.length>0,locked:explicit.length>0,referencePage:1,referencePageSize:8,referenceRequestEpoch:0,referenceQuery:'',referenceItems:[],referenceTotal:0,referenceLoading:false,referenceLoaded:false,referenceError:'',hydrationEpoch:0,previewEpoch:0};
+    state.ai429Create={epoch,images:new Set(initial),sourceBatchId,labels:new Set(),modelId:'',templateId:'',taskName:`AI自动标注-${new Date().toLocaleString()}`,confirmationSnapshot:'',submitting:false,page:1,pageSize:12,query:'',materialItems:[],materialTotal:0,materialLoading:false,materialError:'',materialRequestEpoch:0,materialRequestKey:'',materialPending:null,bulkEpoch:0,bulkLoading:false,bulkCount:0,bulkError:'',selectionTouched:explicit.length>0,locked:explicit.length>0||!!sourceBatchId,referencePage:1,referencePageSize:8,referenceRequestEpoch:0,referenceQuery:'',referenceItems:[],referenceTotal:0,referenceLoading:false,referenceLoaded:false,referenceError:'',hydrationEpoch:0,previewEpoch:0};
     modal('创建AI自动标注任务',`<div class="ailabel427 ai429 ai-create-workbench" data-ai-create-epoch="${epoch}"><div id="ai429Hydration" class="ai-create-hydration"><span class="loading-line">正在同步模型、模板与标签；可先选择素材…</span></div><section class="ai-create-section"><header><div><b>1. 选择待标注素材</b><span>只分页读取未标注素材，不会加载完整素材池；跨页选择会持续保留。</span></div><strong id="ai429MaterialCount">已选 ${initial.length} 张</strong></header><div class="ai-create-toolbar"><input id="ai429MaterialQ" class="input" placeholder="搜索素材名称" oninput="searchAiCreateMaterials429()"></div><div id="ai429MaterialGrid" class="ai-create-material-grid"><div class="ai-create-loading"><i></i><span>准备素材分页…</span></div></div><div id="ai429MaterialPager" class="ai-create-pager"></div></section><section class="ai-create-section"><header><div><b>2. 选择视觉模型</b><span>只展示已配置模型；任务创建时冻结模型版本与安全凭据引用。</span></div></header><input id="ai429Model" type="hidden"><div id="ai429Models" class="ai-create-models"><div class="skeleton-line"></div></div></section><section class="ai-create-section"><header><div><b>3. 选择有效标签</b><span>必须显式选择当前标签库英文 code；中文名、别名、历史 alias 不会自动转换。</span></div><strong id="ai429LabelCount">已选 0 个</strong></header><input id="ai429Labels" type="hidden"><input id="ai429LabelQ" class="input" placeholder="搜索标签中文名或 code" oninput="aiCreateRenderLabels429()"><div id="ai429LabelGrid" class="ai-create-label-grid"><div class="skeleton-line"></div></div></section><section class="ai-create-section"><header><div><b>4. 提示词</b><span>模板是起点；当前任务可独立编辑，提交后冻结，不受模板后续修改影响。</span></div></header><div class="form two"><div class="field"><label>提示词模板</label><select id="ai429Template" class="select" onchange="aiCreateTemplateChanged429()"><option>正在读取…</option></select></div><div class="field"><label>业务补充说明</label><input id="ai429Instruction" class="input" maxlength="2000" placeholder="例如：只标注清晰可见且面积大于 20px 的目标" oninput="scheduleAiPromptPreview429()"></div></div><div class="field"><div class="row between"><label>本任务完整提示词</label><button type="button" class="btn mini" onclick="restoreAiPrompt429()">恢复模板原文</button></div><textarea id="ai429Prompt" class="input ai-create-prompt" rows="7" maxlength="12000" placeholder="正在读取提示词…" oninput="this.dataset.userEdited='1';scheduleAiPromptPreview429()"></textarea><small>允许变量：labels_json、image_width、image_height、business_instruction、output_schema。</small></div><details class="ai-create-preview"><summary>预览最终提示词</summary><div id="ai429PromptPreview"><span>选择标签后生成预览</span></div></details></section><details class="advanced427-box ai-create-advanced"><summary>高级设置</summary><div class="form two"><div class="field"><label>置信度阈值</label><input id="ai429Threshold" class="input" type="number" min="0" max="1" step="0.01" value="0.45"></div><div class="field check"><label><input id="ai429Overwrite" type="checkbox"> 覆盖相同标签旧标注</label></div></div></details><div class="ai-create-footer"><span>候选结果仍须人工审核后才写入正式标注。</span><div class="row"><button class="btn" onclick="closeModal()">取消</button><button id="ai429Submit" class="btn primary" onclick="submitAiLabel429()">创建AI标注任务</button></div></div></div>`,true);
     const advanced=document.querySelector(`.ai-create-workbench[data-ai-create-epoch="${epoch}"] .ai-create-advanced`);
     if(advanced){advanced.insertAdjacentHTML('beforeend','<section class="ai429-ref"><header><div><b>参考图片（可选）</b><span>仅作为视觉示例，不会自动添加或改变本次标签。</span></div><input id="ai429RefQ" class="input" placeholder="搜索已标注参考素材" oninput="searchAiCreateReferences429()"></header><div id="ai429ReferenceCount" class="muted-line">已选 0 张 · 仅作视觉示例，不改变任务标签</div><div id="ai429RefGrid" class="ai-create-material-grid"><div class="empty compact">展开高级设置后按需读取</div></div><div id="ai429RefPager" class="ai-create-pager"></div></section>');advanced.addEventListener('toggle',()=>window.aiCreateReferenceOpened429?.(advanced),{passive:true})}
@@ -4757,7 +4758,18 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     createRoot?.addEventListener('change',event=>{if(event.target?.matches?.('#ai429Overwrite,#ai429Threshold,#ai429Instruction,#ai429Prompt,#ai429Template'))aiCreateInvalidateConfirmation429()});
     createRoot?.addEventListener('click',event=>{if(event.target?.closest?.('#ai429RefGrid [data-image-id]'))aiCreateInvalidateConfirmation429()});
     document.getElementById('ai429Threshold')?.addEventListener('input',aiCreatePreviewInvalidate429);
-    aiCreateRenderMaterials429();loadAiCreateMaterials429();return epoch;
+    if(sourceBatchId){
+      // A ZIP can contain tens of thousands of images. The durable create POST
+      // resolves and freezes the unannotated subset server-side; no huge ID
+      // list or full material gallery needs to travel through the browser.
+      const section=createRoot?.querySelector('.ai-create-section');
+      const toolbar=section?.querySelector('.ai-create-toolbar');if(toolbar)toolbar.hidden=true;
+      const grid=document.getElementById('ai429MaterialGrid');
+      if(grid)grid.innerHTML='<div class="ai-create-batch-source"><b>已关联本次 ZIP 素材批次</b><span>提交时由服务器核验并冻结其中所有待标注原图，已正式标注的图片不会重复加入。</span></div>';
+      const pager=document.getElementById('ai429MaterialPager');if(pager)pager.replaceChildren();
+      const count=document.getElementById('ai429MaterialCount');if(count)count.textContent='批次选择 · 服务端冻结';
+    }else{aiCreateRenderMaterials429();loadAiCreateMaterials429()}
+    return epoch;
   };
 
 
@@ -4847,7 +4859,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
   window.openTrainingCreateDialog423=window.openTrainingCreateDialog429;
   window.trainTarget429=function(){const t=selectedTarget429(),sel=document.getElementById('tr429Alg');if(!sel)return;sel.innerHTML=(t?.algorithms||[]).map(x=>`<option value="${esc(x.key)}">${esc(x.name||x.short_name||x.key)}</option>`).join('')||'<option value="">当前资源没有可执行训练算法</option>';const c=cfg429();c.device='auto';window.TrainingDraftRuntime?.update?.({config:c,resource:{device:'auto'}});trainAlg429()};
   function preparedModels429(target){
-    return (target?.base_models||[]).filter(m=>String(m?.model_status||'').toUpperCase()==='FOUND'&&/\.pt$/i.test(String(m.value||'')));
+    return (target?.base_models||[]).filter(m=>String(m?.model_status||'').toUpperCase()==='FOUND'&&m?.trainable!==false&&(/\.pt$/i.test(String(m.value||''))||/^asset:pt_[0-9a-f]{24}$/.test(String(m.value||''))));
   }
   function syncMotherModel429(){
     const select=document.getElementById('tr429MotherModel');
@@ -7400,7 +7412,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     const target=targets.find(row=>String(row.id)===targetSelect.value),algorithms=target?.algorithms||[];
     algorithmSelect.innerHTML=algorithms.map(row=>`<option value="${esc(row.key)}">${esc(row.name||row.key)}</option>`).join('')||'<option value="">等待训练算法</option>';
     algorithmSelect.value=algorithms.some(row=>String(row.key)===oldAlgorithm)?oldAlgorithm:String(algorithms[0]?.key||'');
-    const modelSelect=root.querySelector('#tr429MotherModel'),models=(target?.base_models||[]).filter(row=>String(row.model_status||'').toUpperCase()==='FOUND'&&/\.pt$/i.test(String(row.value||''))),draft=state.trainingDraft||{},wanted=String(draft.config?.model||'');
+    const modelSelect=root.querySelector('#tr429MotherModel'),models=preparedModels429(target),draft=state.trainingDraft||{},wanted=String(draft.config?.model||'');
     if(modelSelect){modelSelect.disabled=Boolean(state.trainingDraftBase?.hasPrevious)||!models.length;modelSelect.innerHTML=state.trainingDraftBase?.hasPrevious?'<option value="">继承当前有效版本 best.pt</option>':models.map(row=>`<option value="${esc(row.value)}">${esc(row.label||row.value)}</option>`).join('')||'<option value="">等待可用基础模型</option>';if(models.some(row=>String(row.value)===wanted))modelSelect.value=wanted;else if(!wanted&&models.length&&!state.trainingDraftBase?.hasPrevious)window.TrainingDraftRuntime?.update?.({config:{model:String(models[0].value)}})}
     const engine=algorithms.find(row=>String(row.key)===algorithmSelect.value),currentConfig=state.trainingDraft?.config||{};
     if(currentConfig.imgsz==null&&Number(engine?.default_imgsz)>0){const size=Number(engine.default_imgsz);window.TrainingDraftRuntime?.update?.({config:{imgsz:size}});const input=root.querySelector('#ts428Size');if(input)input.value=String(size)}
@@ -7762,6 +7774,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     modal('图片标注工作台',`<div class="ann-layout pro ann414 ann417 ann420-stable">
       <aside class="ann417-queue ann420-queue">
         <header><div><b>图片队列</b><small>连续标注</small></div><span id="ann420Position">1 / 1</span></header>
+        <button type="button" id="ann420MoreBatch" class="btn mini" hidden onclick="nextImportManualBatch429()">加载本批次下一组原图</button>
         <div id="ann420Queue"></div>
       </aside>
       <div class="ann-work">
@@ -7932,6 +7945,29 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
       state.annotationHydrating420=false;state.annotationLoadError420=String(error?.message||error||'标注读取失败');updateShell();
       toast(`打开标注失败：${error.message||error}`);return false
     }
+  };
+  window.openImportManualAnnotation429=async function(batchId,cursor=0){
+    const sourceProject=String(pid());
+    try{
+      const page=await api(`/api/v19/projects/${encodeURIComponent(sourceProject)}/import/jobs/${encodeURIComponent(batchId)}/unannotated?limit=150&cursor=${Math.max(0,Number(cursor)||0)}`);
+      if(sourceProject!==String(pid()))return false;
+      const ids=(page.image_ids||[]).map(String);
+      if(!ids.length)return toast('本批次没有待人工标注的原图，可在素材库查看已处理结果');
+      state.annotationQueue414=ids;
+      // Existing full-page annotation editor owns the content and keyboard
+      // workflow. Do not open a second popup on top of ZIP results.
+      const opened=await window.openAnnotation(ids[0]);
+      state.importManualBatch429=opened&&page.next_cursor!==null&&page.next_cursor!==undefined
+        ?{sourceBatchId:batchId,nextCursor:page.next_cursor,projectId:sourceProject}:null;
+      const next=document.getElementById('ann420MoreBatch');if(next)next.hidden=!state.importManualBatch429;
+      return opened;
+    }catch(error){toast(`打开本批次人工标注失败：${error.message||error}`);return false}
+  };
+  window.nextImportManualBatch429=()=>{
+    const batch=state.importManualBatch429;
+    if(!batch||batch.projectId!==String(pid()))return false;
+    if(state.annDirty)return toast('请先保存当前图片标注，再加载下一组');
+    return window.openImportManualAnnotation429(batch.sourceBatchId,batch.nextCursor);
   };
   window.goAnnotation417=id=>window.openAnnotation(id);
   window.updateAnnotationShell420=updateShell;window.renderAnnotator=updateShell;
@@ -8151,10 +8187,11 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     const template=(state.promptTemplates||[]).find(row=>String(row.id)===body.prompt_template_id)||{};
     const labelNames=body.labels_text.split('、').map(code=>window.PlatformCore.materials.labelDisplay(code,state.labels));
     const field=(title,value)=>`<div><span>${esc(title)}</span><strong>${esc(value)}</strong></div>`;
-    root.innerHTML=`<header><div><span class="ai-create-confirm-kicker">创建前最后核对</span><h3>本次 AI 标注任务概览</h3><p>以下为即将提交的实际选项，确认后才创建任务；正式标注仍须人工审核。</p></div><span class="ai-create-confirm-count">${body.image_ids.length}<small>张素材</small></span></header>
+    const batchSelection=Boolean(body.source_batch_id);
+    root.innerHTML=`<header><div><span class="ai-create-confirm-kicker">创建前最后核对</span><h3>本次 AI 标注任务概览</h3><p>以下为即将提交的实际选项，确认后才创建任务；正式标注仍须人工审核。</p></div><span class="ai-create-confirm-count">${batchSelection?'ZIP':body.image_ids.length}<small>${batchSelection?'整批原图':'张素材'}</small></span></header>
       <div class="ai-create-confirm-grid">${field('任务名称',body.task_name)}${field('视觉模型',`${model.name||model.model_name||body.model_config_id} · ${model.provider_adapter||model.provider_type||'已配置'}`)}${field('目标标签',labelNames.join('、'))}${field('置信度阈值',`${Math.round(body.threshold*100)}%`)}${field('已有标注处理',body.overwrite?'审核后按现有覆盖合同处理相同标签':'保留已有标注，不主动覆盖')}${field('参考素材',`${body.reference_image_ids.length} 张（可选）`)}${field('提示词模板',body.prompt_template_id?`${template.name||body.prompt_template_id} · v${Number(template.version||1)}`:'模型默认模板')}${field('业务补充说明',body.business_instruction||'无')}</div>
       <details class="ai-create-confirm-prompt"><summary>查看本次完整提示词配置</summary><pre>${esc(body.prompt_override||'未单独覆盖；使用所选模型及模板的冻结提示词')}</pre></details>
-      <p class="ai-create-confirm-note">预计处理 ${body.image_ids.length} 张素材；真实模型调用次数可能因重试不同。创建后以任务回执及后端冻结配置为准。</p>`;
+      <p class="ai-create-confirm-note">${batchSelection?'后台将按 ZIP 批次实际未标注图片冻结清单':'预计处理 '+body.image_ids.length+' 张素材'}；真实模型调用次数可能因重试不同。创建后以任务回执及后端冻结配置为准。</p>`;
     root.hidden=false;
     root.scrollIntoView?.({block:'nearest'});
   }
@@ -8171,7 +8208,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     const draft=state.ai429Create||{};if(draft.submitting)return false;
     if(draft.bulkLoading)return toast('请等待当前筛选结果解析完成后再创建任务');
     if(!ids.length)ids=[...(draft.images||new Set())];
-    if(!ids.length)return toast('没有需要标注的图片');
+    if(!ids.length&&!draft.sourceBatchId)return toast('没有需要标注的图片');
     const parsed=explicitCanonicalAiLabelText(document.getElementById('ai429Labels')?.value||'');
     if(!parsed.text)return toast('请显式输入至少一个当前有效的平台标签 code');
     if(parsed.unknown.length)return toast(`AI标注只接受当前有效的平台标签 code：${parsed.unknown.slice(0,8).join('、')}`);
@@ -8179,6 +8216,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     if(!modelConfigId)return toast('请选择已配置的AI视觉模型');
     const body={
       image_ids:ids.map(String),
+      ...(draft.sourceBatchId?{source_batch_id:draft.sourceBatchId}:{}),
       labels_text:parsed.text,
       reference_image_ids:[...(state.ai429RefSelected||new Set())].map(String),
       threshold:Number(document.getElementById('ai429Threshold')?.value??.45),

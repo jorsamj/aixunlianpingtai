@@ -58,7 +58,8 @@ export function validatePreparedMotherModel({draft, target} = {}) {
   const available = target.base_models.some(model =>
     String(model?.value || '') === selected
     && String(model?.model_status || '').toUpperCase() === 'FOUND'
-    && /\.pt$/i.test(selected)
+    && model?.trainable !== false
+    && (/\.pt$/i.test(selected) || /^asset:pt_[0-9a-f]{24}$/.test(selected))
   );
   if (!available) throw new Error('首次训练母模型尚未预置；请先到训练资源上传并选择已就绪的 .pt 权重');
   return true;

@@ -3,6 +3,7 @@ export const ADVANCED_MENUS = Object.freeze([
   {title:'算力与节点',page:'服务节点',description:'节点运行状态、训练环境与组件诊断',tabs:[
     {id:'nodes',page:'服务节点',label:'服务节点'},
     {id:'training',page:'训练资源',label:'训练环境'},
+    {id:'models',page:'训练资源',label:'母模型管理'},
     {id:'diagnostics',page:'组件检测',label:'环境诊断'},
   ]},
   {title:'模型转换环境',page:'部署资源',description:'管理转换资源、工具链与厂商芯片字典',tabs:[

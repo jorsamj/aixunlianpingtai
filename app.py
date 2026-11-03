@@ -101,6 +101,14 @@ from platform_core.model_artifacts import (
     SUCCESSFUL_CONVERSION_STATUSES,
     model_delivery_version_fence,
 )
+from platform_core.mother_model_assets import (
+    asset_selection as _verified_mother_model_asset,
+    get_asset as _get_mother_model_asset,
+    initial_asset as _register_mother_model_asset,
+    list_assets as _list_mother_model_assets,
+    put_asset as _update_mother_model_asset,
+    verify_checkpoint_in_sandbox as _verify_mother_model_checkpoint,
+)
 from platform_core.material_repository import (
     AnnotationMaterialLifecycleError,
     DATASET_DELETE_CLAIM_FIELD,
@@ -3815,6 +3823,7 @@ def add_image_record(
     content_sha256: Optional[str] = None,
     defer_unannotated_annotation: bool = False,
     annotation_scope=None,
+    empty_annotation_state: str = "confirmed_empty",
 ) -> Optional[Dict[str, Any]]:
     p = project_dir(project_id)
     path_source = isinstance(src, (str, Path))
@@ -3914,11 +3923,14 @@ def add_image_record(
             if prepared_annotation_boxes is not None:
                 # Structured import paths already know the final GT. Persist it once
                 # before returning instead of durable unannotated -> final double writes.
-                write_annotation(
-                    project_id, img_id, prepared_annotation_boxes,
-                    annotation_origin="imported" if structured_import else None,
-                    annotation_scope=annotation_scope,
-                )
+                if not prepared_annotation_boxes and empty_annotation_state == "unannotated":
+                    write_annotation(project_id, img_id, [], "unannotated")
+                else:
+                    write_annotation(
+                        project_id, img_id, prepared_annotation_boxes,
+                        annotation_origin="imported" if structured_import else None,
+                        annotation_scope=annotation_scope,
+                    )
             elif batch and defer_unannotated_annotation:
                 batch["deferred_annotations"][str(img_id)] = {
                     "image_id": str(img_id),
@@ -6693,6 +6705,12 @@ def _ready_ultralytics_mother_model(project_id: str, requested: str) -> str:
     reference = str(requested or "").strip()
     if not reference:
         raise HTTPException(status_code=409, detail={"code":"TRAINING_MOTHER_MODEL_UNAVAILABLE","message":"尚未选择母模型，请先到训练资源上传 .pt 权重"})
+    if reference.startswith("asset:"):
+        asset_id = reference[6:]
+        verified = _verified_mother_model_asset(DATA_DIR, asset_id)
+        if not verified:
+            raise HTTPException(status_code=409, detail={"code":"TRAINING_MOTHER_MODEL_NOT_VERIFIED","message":"此母模型尚未通过隔离验证，或权重 SHA256 已变化；请到母模型管理执行校验"})
+        return str(Path(verified["path"]).resolve())
     resolution = resolve_ultralytics_model(reference, project_id)
     candidate = resolution.path
     if not resolution.found or candidate is None:
@@ -6700,6 +6718,10 @@ def _ready_ultralytics_mother_model(project_id: str, requested: str) -> str:
     candidate = candidate.resolve()
     if candidate.suffix.lower() != ".pt" or not candidate.is_file() or candidate.stat().st_size < 1024:
         raise HTTPException(status_code=409, detail={"code":"TRAINING_MOTHER_MODEL_UNAVAILABLE","message":"母模型不是可用的本地 .pt 权重文件"})
+    tracked = next((item for item in _list_mother_model_assets(DATA_DIR)
+                    if Path(str(item.get("path") or "")).resolve() == candidate), None)
+    if tracked and not _verified_mother_model_asset(DATA_DIR, tracked["asset_id"]):
+        raise HTTPException(status_code=409, detail={"code":"TRAINING_MOTHER_MODEL_NOT_VERIFIED","message":"已上传的母模型须先完成安全兼容性校验才能训练"})
     return str(candidate)
 
 
@@ -6709,15 +6731,25 @@ def _prepared_mother_model_rows() -> List[Dict[str, Any]]:
     if not root.is_dir():
         return []
     result: List[Dict[str, Any]] = []
+    indexed = {str(Path(str(row.get("path") or "")).resolve()): row for row in _list_mother_model_assets(DATA_DIR)}
     for path in sorted(root.iterdir(), key=lambda item: item.name.lower()):
         if not path.is_file() or path.suffix.lower() != ".pt" or path.stat().st_size < 1024:
             continue
+        model = indexed.get(str(path.resolve()))
+        status = str(model.get("validation_status") or "UNVERIFIED") if model else "LEGACY_UNVERIFIED"
         result.append({
             "label": f"{path.name}（已预置）", "name": path.name,
-            "value": str(path.resolve()), "framework": "ultralytics",
+            "value": f"asset:{model['asset_id']}" if model else str(path.resolve()),
+            "asset_id": model.get("asset_id") if model else None,
+            "validation_status": status,
+            "names": model.get("names") if model else [],
+            "nc": model.get("nc") if model else None,
+            "task": model.get("task") if model else "unknown",
+            "framework": model.get("framework") if model else "ultralytics",
             "train_framework": "ultralytics", "source": "preinstalled",
             "model_status": "FOUND", "found": True, "downloadable": False,
-            "size_bytes": path.stat().st_size, "trainable": True,
+            "size_bytes": path.stat().st_size, "trainable": bool(model.get("trainable")) if model else True,
+            "note": "已完成隔离验证" if status == "VERIFIED" else "待隔离验证，暂不可用于首次训练" if model else "历史预置权重；尚无结构化验证记录",
         })
     return result
 
@@ -7199,13 +7231,60 @@ async def upload_preinstalled_base_model(file: UploadFile = File(...)):
             else:
                 os.replace(temp, path)
                 reused = False
+        asset = _register_mother_model_asset(DATA_DIR, path, digest.hexdigest())
         return {"ok": True, "reused": reused, "name": filename, "path": str(path.resolve()),
+                "asset_id": asset["asset_id"], "validation_status": asset["validation_status"],
                 "size_bytes": size, "sha256": digest.hexdigest(), "model_status": "FOUND"}
     except Timeout as error:
         raise HTTPException(status_code=409, detail="相同母模型正在上传，请稍后重试") from error
     finally:
         temp.unlink(missing_ok=True)
         await file.close()
+
+
+@app.get("/api/v63/base-models/assets")
+def list_mother_model_assets():
+    """Cached evidence only. GET must never import torch or scan Agent disks."""
+    return {"items": _list_mother_model_assets(DATA_DIR)}
+
+
+@app.post("/api/v63/base-models/assets/{asset_id}/verify", status_code=202)
+def verify_mother_model_asset(asset_id: str):
+    """Trigger a fenced, local sandbox probe; never deserialize in Web."""
+    if not re.fullmatch(r"pt_[0-9a-f]{24}", asset_id):
+        raise HTTPException(status_code=422, detail="母模型资产编号格式不正确")
+    asset = _get_mother_model_asset(DATA_DIR, asset_id)
+    if not asset:
+        raise HTTPException(status_code=404, detail="母模型资产不存在")
+    path = Path(str(asset.get("path") or ""))
+    if not path.is_file() or path.stat().st_size != asset.get("size_bytes"):
+        raise HTTPException(status_code=409, detail="母模型文件已丢失或大小变化，请重新上传")
+    task_key = (str(DATA_DIR.resolve()), asset_id)
+    if not hasattr(verify_mother_model_asset, "_active"):
+        verify_mother_model_asset._active = set()
+        verify_mother_model_asset._guard = threading.Lock()
+    with verify_mother_model_asset._guard:
+        if task_key in verify_mother_model_asset._active:
+            return {"accepted": True, "asset_id": asset_id, "validation_status": "CHECKING", "deduplicated": True}
+        verify_mother_model_asset._active.add(task_key)
+    _update_mother_model_asset(DATA_DIR, {"asset_id": asset_id, "validation_status": "CHECKING", "trainable": False, "validation_started_at": time.time()})
+
+    def run_probe():
+        try:
+            result = _verify_mother_model_checkpoint(path)
+            if path.is_file() and sha256_file(path) == asset["sha256"]:
+                _update_mother_model_asset(DATA_DIR, {"asset_id": asset_id, **result, "verified_at": time.time()})
+            else:
+                _update_mother_model_asset(DATA_DIR, {"asset_id": asset_id, "validation_status": "INVALID", "trainable": False, "validation_error": "PT_SHA256_CHANGED"})
+        except Exception:
+            logger.exception("Mother model sandbox probe failed for asset %s", asset_id)
+            _update_mother_model_asset(DATA_DIR, {"asset_id": asset_id, "validation_status": "FAILED", "trainable": False, "validation_error": "PT_PROBE_FAILED"})
+        finally:
+            with verify_mother_model_asset._guard:
+                verify_mother_model_asset._active.discard(task_key)
+
+    threading.Thread(target=run_probe, name=f"mother-model-verify-{asset_id}", daemon=True).start()
+    return {"accepted": True, "asset_id": asset_id, "validation_status": "CHECKING"}
 
 
 @app.get("/api/base_models")
@@ -7434,7 +7513,7 @@ def training_options(project_id: Optional[str] = None):
             "name": ultra.get("name") or "本机 Ultralytics",
             "type":"local",
             "framework":"ultralytics",
-            "status":"ready" if models or has_iteration_base else "warning",
+            "status":"ready" if any(model.get("trainable") is not False for model in models) or has_iteration_base else "warning",
             "python_path": ultra.get("python_path"),
             "root": ultra.get("root"),
             "version": ultra.get("version"),
@@ -7516,7 +7595,7 @@ def training_options(project_id: Optional[str] = None):
             "name": f"GPU 集群自动调度（推荐） · {len(training_agents)} 节点在线",
             "type": "server",
             "framework": "ultralytics",
-            "status": "ready" if scheduler_models or has_iteration_base else "warning",
+            "status": "ready" if any(model.get("trainable") is not False for model in scheduler_models) or has_iteration_base else "warning",
             "scheduler_owned": True,
             "online_training_nodes": len(training_agents),
             "algorithms": scheduler_algs,
@@ -14336,10 +14415,11 @@ def _v18_import_coco(
     image_files, by_name, by_stem, by_rel = _v18_image_lookup(root)
     total_expected=sum(len(coco.get('images',[])) for _,coco in json_files) or 1
     progress_done=0
+    seen_sources: set[str] = set()
     for ann_json, coco in json_files:
         split = _v18_split_from_path(ann_json)
         cats = sorted(coco.get('categories', []), key=lambda c: int(c.get('id', 0)))
-        if import_context is not None and not import_scope and cats:
+        if import_context is not None and not import_scope and coco.get('annotations'):
             raise ValueError("structured annotation has no confirmed platform label scope")
         cat_to_class = {}
         cat_source_names = {}
@@ -14347,9 +14427,10 @@ def _v18_import_coco(
             label = normalize_label(c.get('name') or f'class_{c.get("id")}')
             cid = int(c.get('id'))
             cat_source_names[cid] = label
-            cat_to_class[cid] = _v18_resolve_import_label_id(
-                project, str(cid), label, label_mapping,
-            )
+            if import_scope or import_context is None:
+                cat_to_class[cid] = _v18_resolve_import_label_id(
+                    project, str(cid), label, label_mapping,
+                )
         anns_by_img: Dict[int, List[Dict[str, Any]]] = {}
         for a in coco.get('annotations', []):
             try:
@@ -14363,6 +14444,9 @@ def _v18_import_coco(
                 src = by_stem[Path(file_name).stem][0]
             if not src or not src.exists():
                 report['missing_images'] += 1
+                continue
+            source_ref = str(src.relative_to(root))
+            if source_ref in seen_sources:
                 continue
             boxes=[]
             image_annotations = anns_by_img.get(int(im.get('id')), [])
@@ -14400,7 +14484,7 @@ def _v18_import_coco(
                     })
                 return boxes
 
-            if import_context is not None and not import_scope:
+            if import_context is not None and (not import_scope or not image_annotations):
                 if image_annotations:
                     raise ValueError("structured annotation has no confirmed platform label scope")
                 rec = add_image_record(
@@ -14411,12 +14495,15 @@ def _v18_import_coco(
                     project_id, src, Path(file_name).name or src.name, 'imported_coco', dataset_id,
                     annotation_builder=build_final_annotation,
                     annotation_scope=import_scope,
+                    empty_annotation_state="unannotated" if import_context else "confirmed_empty",
                 )
             if not rec:
                 report['skipped_images'] += 1
                 continue
+            seen_sources.add(source_ref)
             _v18_set_image_split(project_id, rec['id'], split)
             report.setdefault('imported_image_ids', []).append(rec['id'])
+            report.setdefault('_imported_source_paths', []).append(str(src.relative_to(root)))
             for _b in boxes:
                 _lab = str(_b.get('label') or '').strip()
                 if _lab: report.setdefault('label_box_counts', {})[_lab] = report.setdefault('label_box_counts', {}).get(_lab, 0) + 1
@@ -14451,6 +14538,7 @@ def _v18_import_voc(
     import_scope = _v18_confirmed_import_scope(label_mapping)
     any_imported = False
     total_expected=max(1,len(xml_files)); progress_done=0
+    seen_sources: set[str] = set()
     for xp in xml_files:
         try:
             r = ET.parse(xp).getroot()
@@ -14460,6 +14548,9 @@ def _v18_import_voc(
         src = by_name.get(filename) or by_stem.get(Path(filename).stem if filename else xp.stem, [None])[0]
         if not src:
             report['missing_images'] += 1
+            continue
+        source_ref = str(src.relative_to(root))
+        if source_ref in seen_sources:
             continue
         split = _v18_split_from_path(xp)
         boxes=[]
@@ -14504,7 +14595,7 @@ def _v18_import_voc(
                 })
             return boxes
 
-        if import_context is not None and not import_scope:
+        if import_context is not None and (not import_scope or not objects):
             rec = add_image_record(
                 project_id, src, src.name, 'imported_voc', dataset_id,
             )
@@ -14513,12 +14604,15 @@ def _v18_import_voc(
                 project_id, src, src.name, 'imported_voc', dataset_id,
                 annotation_builder=build_final_annotation,
                 annotation_scope=import_scope,
+                empty_annotation_state="unannotated" if import_context else "confirmed_empty",
             )
         if not rec:
             report['skipped_images'] += 1
             continue
+        seen_sources.add(source_ref)
         _v18_set_image_split(project_id, rec['id'], split)
         report.setdefault('imported_image_ids', []).append(rec['id'])
+        report.setdefault('_imported_source_paths', []).append(str(src.relative_to(root)))
         for _b in boxes:
             _lab = str(_b.get('label') or '').strip()
             if _lab: report.setdefault('label_box_counts', {})[_lab] = report.setdefault('label_box_counts', {}).get(_lab, 0) + 1
@@ -14552,7 +14646,10 @@ def _v18_import_yolo(
     names = _v18_collect_class_names(root, label_files)
     project = get_project(project_id)
     import_scope = _v18_confirmed_import_scope(label_mapping)
-    if import_context is not None and not import_scope and names:
+    invalid_only = import_context is not None and import_context.get("scan_kind") == "ANNOTATION_INVALID"
+    if import_context is not None and not import_scope and names and not invalid_only and any(
+        lf.read_text(encoding='utf-8', errors='ignore').strip() for lf in label_files
+    ):
         raise ValueError("structured annotation has no confirmed platform label scope")
     if label_mapping is None and import_context is None:
         if names:
@@ -14582,6 +14679,18 @@ def _v18_import_yolo(
             label_file.read_text(encoding='utf-8', errors='ignore')
             if has_label_truth else ""
         )
+        if import_context is not None and not label_text.strip():
+            # An empty sidecar is not an affirmative manual review of no
+            # target. A mixed ZIP still imports this image as unannotated.
+            has_label_truth = False
+        if invalid_only and has_label_truth:
+            # Nonempty, malformed sidecars are not positive evidence and are
+            # not authoritative negatives. Preserve the image for manual
+            # correction with an explicit warning rather than fail the ZIP.
+            has_label_truth = False
+            report['invalid_annotation_files'] = report.get('invalid_annotation_files', 0) + 1
+            if len(report.get('warnings') or []) < 20:
+                report.setdefault('warnings', []).append(f'{img.name} 的标注异常，已作为未标注原图导入，须修复后再训练')
         if import_context is not None and has_label_truth and not import_scope:
             if label_text.strip():
                 raise ValueError("structured annotation has no confirmed platform label scope")
@@ -14638,6 +14747,7 @@ def _v18_import_yolo(
                 project_id, img, img.name, 'imported_yolo', dataset_id,
                 annotation_builder=build_final_annotation,
                 annotation_scope=import_scope,
+                empty_annotation_state="unannotated" if import_context else "confirmed_empty",
             )
         else:
             report['unmatched_labels'] += 1
@@ -14649,6 +14759,7 @@ def _v18_import_yolo(
             continue
         _v18_set_image_split(project_id, rec['id'], split)
         report.setdefault('imported_image_ids', []).append(rec['id'])
+        report.setdefault('_imported_source_paths', []).append(str(img.relative_to(root)))
         for _b in boxes:
             _lab = str(_b.get('label') or '').strip()
             if _lab: report.setdefault('label_box_counts', {})[_lab] = report.setdefault('label_box_counts', {}).get(_lab, 0) + 1
@@ -14664,6 +14775,30 @@ def _v18_import_yolo(
     if any_imported:
         report['detected_format'] = 'YOLO'
     return any_imported
+
+
+def _v19_import_unreferenced_images(
+    project_id: str, root: Path, dataset_id: str, report: Dict[str, Any],
+) -> None:
+    """Import raw images omitted by a partial COCO/VOC annotation manifest.
+
+    A structured annotation manifest defines labels, not the complete list of
+    images that the user uploaded. Never discard unreferenced photos.
+    """
+    imported = set(report.pop('_imported_source_paths', []) or [])
+    image_files, _, _, _ = _v18_image_lookup(root)
+    for src in image_files:
+        key = str(src.relative_to(root))
+        if key in imported:
+            continue
+        rec = add_image_record(project_id, src, src.name, 'imported_raw', dataset_id)
+        if rec is None:
+            report['skipped_images'] += 1
+            continue
+        _v18_set_image_split(project_id, rec['id'], _v18_split_from_path(src))
+        report.setdefault('imported_image_ids', []).append(rec['id'])
+        report['imported_images'] += 1
+        report['unreferenced_raw_images'] = int(report.get('unreferenced_raw_images') or 0) + 1
 
 
 @app.post('/api/v18/projects/{project_id}/datasets/{dataset_id}/import')
@@ -14782,6 +14917,30 @@ def _v19_read_import_report_locked(project_id: str, job_id: str, job: Optional[D
             return value
     value = current.get("report")
     return dict(value) if isinstance(value, dict) else {}
+
+
+@app.get("/api/v19/projects/{project_id}/import/jobs/{job_id}/unannotated")
+def v19_unannotated_import_page(project_id: str, job_id: str, cursor: int = 0, limit: int = 150):
+    """Materialized ZIP subset, bounded pages; never send all 10k IDs to UI."""
+    if not 1 <= limit <= 200 or cursor < 0:
+        raise HTTPException(status_code=422, detail="素材分页范围不正确")
+    job = v19_read_job(project_id, job_id)
+    if job.get("status") != "done":
+        raise HTTPException(status_code=409, detail="ZIP 尚未完成导入，不能开始人工标注")
+    ids = list(dict.fromkeys(str(item) for item in v19_read_import_report(project_id, job_id, job).get("imported_image_ids") or [] if str(item)))
+    selected: list[str] = []
+    index = cursor
+    while index < len(ids) and len(selected) < limit:
+        chunk = ids[index:index + min(200, len(ids) - index)]
+        current = read_annotations_many(project_id, chunk)
+        for image_id in chunk:
+            if str((current.get(image_id) or {}).get("annotation_state") or "unannotated") == "unannotated":
+                selected.append(image_id)
+            index += 1
+            if len(selected) >= limit:
+                break
+    return {"image_ids": selected, "next_cursor": index if index < len(ids) else None,
+            "source_batch_id": job_id, "total_imported": len(ids)}
 
 
 def v19_write_scan_images(project_id: str, job_id: str, images: List[Dict[str, Any]]):
@@ -15133,6 +15292,7 @@ def v19_scan_zip(zip_path: Path, progress_cb=None) -> Dict[str, Any]:
     external_classes: List[Dict[str, Any]] = []
     detected_format = "images"
     annotation_box_count = 0
+    annotated_image_stems: set[str] = set()
     with zipfile.ZipFile(zip_path, "r") as zf:
         members = []
         infos = [
@@ -15205,6 +15365,10 @@ def v19_scan_zip(zip_path: Path, progress_cb=None) -> Dict[str, Any]:
                 key = str(ann.get("category_id"))
                 counts[key] = counts.get(key, 0) + 1
                 image_sets.setdefault(key, set()).add(str(ann.get("image_id")))
+            coco_files = {str(row.get("id")): Path(str(row.get("file_name") or "")).stem
+                          for row in data.get("images") or [] if isinstance(row, dict)}
+            annotated_image_stems.update(coco_files.get(str(row.get("image_id")), "")
+                                         for row in data.get("annotations") or [] if isinstance(row, dict))
             rows = []
             for category in sorted(data.get("categories") or [], key=lambda row: int(row.get("id", 0))):
                 key = str(int(category.get("id", 0)))
@@ -15238,6 +15402,7 @@ def v19_scan_zip(zip_path: Path, progress_cb=None) -> Dict[str, Any]:
                         continue
                     row = stats.setdefault(label, {"class_id": label, "name": label, "box_count": 0, "image_count": 0})
                     row["box_count"] += 1
+                    annotated_image_stems.add(Path(name).stem)
                     if label not in seen:
                         row["image_count"] += 1
                         seen.add(label)
@@ -15305,6 +15470,7 @@ def v19_scan_zip(zip_path: Path, progress_cb=None) -> Dict[str, Any]:
                         continue
                     counts[class_id] = counts.get(class_id, 0) + 1
                     image_sets.setdefault(class_id, set()).add(Path(name).stem)
+                    annotated_image_stems.add(Path(name).stem)
             if names or counts:
                 max_class = max([len(names) - 1, *counts.keys()], default=-1)
                 external_classes = [{
@@ -15315,6 +15481,59 @@ def v19_scan_zip(zip_path: Path, progress_cb=None) -> Dict[str, Any]:
                 } for index in range(max_class + 1)]
                 annotation_box_count = sum(int(row["box_count"]) for row in external_classes)
                 detected_format = "YOLO"
+
+        # A class dictionary is not annotation evidence. In particular, ZIPs
+        # exported for future labeling often include data.yaml and one empty
+        # .txt per image. Do not mistake these for verified background GT.
+        nonempty_annotations = 0
+        unreadable_annotations = 0
+        annotation_sidecars = 0
+        for name, info in members:
+            suffix = Path(name).suffix.lower()
+            base = Path(name).name.lower()
+            if suffix == ".txt":
+                if base in {"classes.txt", "obj.names", "_darknet.labels", "train.txt", "val.txt", "test.txt"}:
+                    continue
+                annotation_sidecars += 1
+                try:
+                    if info.file_size > 32 * 1024 * 1024:
+                        unreadable_annotations += 1
+                        continue
+                    if zf.read(info).strip():
+                        nonempty_annotations += 1
+                except Exception:
+                    unreadable_annotations += 1
+            elif suffix == ".xml":
+                annotation_sidecars += 1
+                try:
+                    if info.file_size > 32 * 1024 * 1024:
+                        unreadable_annotations += 1
+                        continue
+                    if ET.fromstring(zf.read(info)).find("object") is not None:
+                        nonempty_annotations += 1
+                except Exception:
+                    unreadable_annotations += 1
+            elif suffix == ".json" and ("coco" in name.lower() or "annotation" in name.lower()):
+                try:
+                    if info.file_size > 64 * 1024 * 1024:
+                        unreadable_annotations += 1
+                        continue
+                    raw = json.loads(zf.read(info).decode("utf-8"))
+                    if isinstance(raw, dict) and isinstance(raw.get("annotations"), list):
+                        annotation_sidecars += 1
+                        if raw["annotations"]:
+                            nonempty_annotations += 1
+                except Exception:
+                    unreadable_annotations += 1
+
+        associated_stems = {Path(row["path"]).stem for row in images}
+        annotated_count = len(associated_stems.intersection(annotated_image_stems))
+        scan_kind = (
+            "ANNOTATION_INVALID" if unreadable_annotations and not nonempty_annotations
+            else "RAW_UNANNOTATED" if not nonempty_annotations
+            else "MIXED" if annotation_box_count and annotated_count < len(associated_stems)
+            else "ANNOTATED_VALID" if annotation_box_count else "ANNOTATION_INVALID"
+        )
 
         # Only bounded per-class source refs are stored, never preview image
         # bytes or guessed target labels. The API serves images from source.zip
@@ -15340,6 +15559,12 @@ def v19_scan_zip(zip_path: Path, progress_cb=None) -> Dict[str, Any]:
         "detected_format": detected_format,
         "external_classes": external_classes,
         "annotation_box_count": annotation_box_count,
+        "annotated_source_images": annotated_count,
+        "unannotated_source_images": max(0, len(images) - annotated_count),
+        "scan_kind": scan_kind,
+        "annotation_sidecars": annotation_sidecars,
+        "nonempty_annotation_files": nonempty_annotations,
+        "unreadable_annotation_files": unreadable_annotations,
         "uncompressed_size_mb": round(total_size / 1024 / 1024, 2),
     }
 
@@ -15347,7 +15572,13 @@ def v19_scan_zip(zip_path: Path, progress_cb=None) -> Dict[str, Any]:
 def _v19_prepare_scan(project_id: str, scan: Dict[str, Any]) -> Dict[str, Any]:
     prepared = dict(scan or {})
     classes = list(prepared.get("external_classes") or [])
-    if classes:
+    if prepared.get("scan_kind") == "RAW_UNANNOTATED":
+        # A data.yaml/classes.txt describes possible *classes*, not proof that
+        # any image was annotated. Keep it as a hint for the following AI task.
+        prepared["external_class_hints"] = external_label_facts(classes) if classes else []
+        prepared["external_classes"] = []
+        prepared["label_confirmation_required"] = False
+    elif classes:
         prepared["external_classes"] = external_label_facts(classes)
         prepared["label_confirmation_required"] = True
     else:
@@ -15640,6 +15871,7 @@ def _v19_import_worker_impl(project_id: str, dataset_id: str, job_id: str, selec
                     "import_batch_id": job_id,
                     "source_task_id": job_id,
                     "confirmed_at": str(job.get("label_confirmed_at") or ""),
+                    "scan_kind": str(job.get("scan_kind") or ""),
                 }
                 annotation_started = time.time()
                 last_import_emit = 0.0
@@ -15694,6 +15926,8 @@ def _v19_import_worker_impl(project_id: str, dataset_id: str, job_id: str, selec
                         label_mapping=frozen_mapping,
                         import_context=import_context,
                     )
+                if imported:
+                    _v19_import_unreferenced_images(project_id, parse_root, dataset_id, report)
                 if not imported or report.get("imported_images", 0) == 0:
                     raise RuntimeError("没有识别到可导入的数据。请确认 ZIP 内包含图片，并检查目录结构是否正确。")
                 if report.get("boxes", 0) == 0:
@@ -16114,7 +16348,7 @@ def _v19_finalize_multipart_upload_impl(project_id: str, upload_id: str):
             "upload_progress": 100,
             "scan_seconds": scan_seconds,
             "status": "selecting",
-            "sample_classification_required": True,
+            "sample_classification_required": scan.get("scan_kind") != "RAW_UNANNOTATED",
             "stage": "上传与校验完成",
             "progress": 48,
             "phase": "WAITING_CONFIRMATION",
@@ -16127,6 +16361,7 @@ def _v19_finalize_multipart_upload_impl(project_id: str, upload_id: str):
             "message": (
                 "后台扫描完成，等待确认标签并开始正式导入"
                 if scan.get("label_confirmation_required")
+                else "后台扫描完成，未检测到标注，可按原图直接入库" if scan.get("scan_kind") == "RAW_UNANNOTATED"
                 else "后台扫描完成，请选择正样本标签或负样本分类后导入"
             ),
             "scan_images_ref": "scan-images.json",
@@ -16295,13 +16530,14 @@ async def v19_create_import_job(project_id: str, dataset_id: str, file: UploadFi
         "file_name": filename, "file_size_mb": round(uploaded_bytes / 1024 / 1024, 2),
         "uploaded_bytes": uploaded_bytes, "upload_seconds": upload_seconds, "scan_seconds": scan_seconds,
         "status": "selecting", "stage": "上传与校验完成", "progress": 48,
-        "sample_classification_required": True,
+        "sample_classification_required": scan.get("scan_kind") != "RAW_UNANNOTATED",
         "phase": "WAITING_CONFIRMATION",
         "phase_completed": 1, "phase_total": 1, "phase_unit": "step",
         "phase_progress": 100, "eta_seconds": None,
         "message": (
             "上传与ZIP校验完成，等待确认标签并开始后台导入"
             if scan.get("label_confirmation_required")
+            else "ZIP 扫描完成，未检测到标注，可按原图直接入库" if scan.get("scan_kind") == "RAW_UNANNOTATED"
             else "上传与ZIP校验完成，请选择正样本标签或负样本分类后导入"
         ),
         "scan_images_ref": "scan-images.json",
@@ -16496,15 +16732,24 @@ def _v19_start_import_job_locked(project_id: str, job_id: str, payload: V19Impor
     # legacy start semantics. This is an upload intent, never formal GT.
     if job.get("sample_classification_required"):
         from platform_core.negative_pool import NegativePool
-        chosen_type = str(payload.sample_type or job.get("upload_sample_type") or "").strip()
+        chosen_type = str(
+            payload.sample_type
+            or job.get("upload_sample_type")
+            or ("unclassified" if job.get("scan_kind") == "RAW_UNANNOTATED" else "")
+        ).strip()
         frozen_type = str(job.get("upload_sample_type") or "")
-        if chosen_type not in {"positive", "negative"}:
-            raise HTTPException(status_code=422, detail="请选择正样本标签或负样本分类")
+        if chosen_type not in {"positive", "negative", "unclassified"}:
+            raise HTTPException(status_code=422, detail="请选择原图暂存、正样本标签或负样本分类")
+        if chosen_type == "unclassified" and job.get("scan_kind") != "RAW_UNANNOTATED":
+            raise HTTPException(status_code=422, detail="仅未标注原图可跳过正负样本分类")
         if frozen_type and chosen_type != frozen_type:
             raise HTTPException(status_code=409, detail="本次 ZIP 的正负样本选择已冻结，不能在失败重试时改变")
         codes = sorted(set(str(v).strip() for v in (payload.intended_label_codes or job.get("upload_intended_label_codes") or []) if str(v).strip()))
         categories = sorted(set(str(v).strip() for v in (payload.negative_category_ids or job.get("upload_negative_category_ids") or []) if str(v).strip()))
-        if chosen_type == "positive":
+        if chosen_type == "unclassified":
+            if codes or categories:
+                raise HTTPException(status_code=422, detail="原图暂存不得隐式指定正负样本或正式标签")
+        elif chosen_type == "positive":
             active = {str(item.get("code") or "") for item in active_label_options(project_label_items(get_project(project_id)))}
             if not codes or any(code not in active for code in codes) or categories:
                 raise HTTPException(status_code=422, detail="正样本须选择至少一个有效目标标签，不能选择负样本分类")
@@ -23777,6 +24022,9 @@ class V47AutoLabelConfirmReq(BaseModel):
 
 class AnnotationTaskCreateReq(BaseModel):
     image_ids: List[str]
+    # Opt-in ZIP origin; the server freezes the actual unannotated image list
+    # without making the browser round-trip thousands of IDs.
+    source_batch_id: Optional[str] = None
     labels_text: str = ""
     reference_image_ids: Optional[List[str]] = None
     threshold: float = 0.45
@@ -24003,8 +24251,31 @@ def _annotation_create_payload(project_id: str, payload: AnnotationTaskCreateReq
     image_ids = list(dict.fromkeys(
         str(value) for value in payload.image_ids if str(value)
     ))
+    batch_id = str(payload.source_batch_id or "").strip()
+    if batch_id:
+        if image_ids:
+            raise HTTPException(status_code=422, detail="来源 ZIP 批次与逐张图片选择不可同时提交")
+        if not re.fullmatch(r"[0-9a-f]{10}", batch_id):
+            raise HTTPException(status_code=422, detail="ZIP 批次编号格式不正确")
+        batch = v19_read_job(project_id, batch_id)
+        if batch.get("status") != "done" or str(batch.get("batch_id") or batch_id) != batch_id:
+            raise HTTPException(status_code=409, detail="来源 ZIP 批次尚未完成或已发生变化，请重新打开导入结果")
+        source_ids = list(dict.fromkeys(
+            str(value) for value in v19_read_import_report(project_id, batch_id, batch).get("imported_image_ids") or []
+            if str(value)
+        ))
+        if not source_ids:
+            raise HTTPException(status_code=409, detail="来源 ZIP 批次没有可信的已入库图片")
+        image_ids = []
+        for offset in range(0, len(source_ids), 500):
+            chunk = source_ids[offset:offset + 500]
+            current = read_annotations_many(project_id, chunk)
+            image_ids.extend(
+                image_id for image_id in chunk
+                if str((current.get(image_id) or {}).get("annotation_state") or "unannotated") == "unannotated"
+            )
     if not image_ids:
-        raise HTTPException(status_code=400, detail="请选择要自动标注的素材")
+        raise HTTPException(status_code=400, detail="本批次没有待标注原图，或尚未选择素材")
 
     strict_review = payload.review_scope_policy == "per_image_required"
     if strict_review:
@@ -24343,6 +24614,8 @@ def _annotation_create_identity(payload: AnnotationTaskCreateReq) -> str:
     for field in ("expected_material_revision", "expected_annotation_revision"):
         if body.get(field) is None:
             body.pop(field, None)
+    if body.get("source_batch_id") is None:
+        body.pop("source_batch_id", None)
     return hashlib.sha256(json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
