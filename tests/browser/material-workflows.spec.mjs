@@ -587,6 +587,8 @@ test('single and multi-image uploads always end with cleaning decisions', async 
   ]);
   await expect(workspace.locator('.uc-summary')).toContainText('成功入库 2 张');
   await expect(workspace.locator('.uc-grid article')).toHaveCount(2);
+  await workspace.locator('input[name="uc-kind"][value="positive"]').check();
+  await workspace.locator('[data-uc-label="person"]').check();
   await workspace.locator('[data-upload-action=all]').check();
   const cleanResponse=page.waitForResponse(res=>res.request().method()==='POST'&&/\/upload-batches\/[^/]+\/decisions$/.test(new URL(res.url()).pathname));
   await workspace.getByRole('button',{name:'开始清洗',exact:true}).click();
