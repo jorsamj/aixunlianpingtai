@@ -234,6 +234,19 @@ def test_archive_space_invalid_config_fails_closed(tmp_path, monkeypatch):
     assert artifacts.artifact_path("t", "work/bundle").is_dir()
 
 
+def test_archive_space_uses_cross_platform_disk_usage(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from platform_core import training_workspace_lifecycle as module
+    checked = []
+    monkeypatch.setenv("CHANG_LIAN_ARCHIVE_MIN_FREE_BYTES", "100")
+    monkeypatch.setattr(module.shutil, "disk_usage", lambda path:
+                        (checked.append(Path(path)), SimpleNamespace(free=150))[1])
+    module.TrainingWorkspaceLifecycle._require_archive_space(tmp_path, 50)
+    with pytest.raises(RuntimeError, match="DISK_SPACE_INSUFFICIENT"):
+        module.TrainingWorkspaceLifecycle._require_archive_space(tmp_path, 51)
+    assert checked == [tmp_path, tmp_path]
+
+
 def test_two_maintenance_workers_archive_once_and_report_reader_lock_stays_free(tmp_path, monkeypatch):
     service, repo, artifacts, _ = workspace(tmp_path)
     second = TrainingWorkspaceLifecycle(service.data_dir, repo, artifacts)

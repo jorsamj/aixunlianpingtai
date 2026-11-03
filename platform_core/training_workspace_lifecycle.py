@@ -335,8 +335,9 @@ class TrainingWorkspaceLifecycle:
             raise RuntimeError("DISK_SPACE_INSUFFICIENT") from error
         if reserve < 0:
             raise RuntimeError("DISK_SPACE_INSUFFICIENT")
-        usage = os.statvfs(path)
-        if usage.f_bavail * usage.f_frsize < reserve + int(required_bytes):
+        # shutil.disk_usage works on Windows and POSIX. os.statvfs is POSIX
+        # only and would turn every Windows archive into an unexpected 503.
+        if shutil.disk_usage(path).free < reserve + int(required_bytes):
             raise RuntimeError("DISK_SPACE_INSUFFICIENT")
 
     def _archive_evidence(self, task, bundle):
