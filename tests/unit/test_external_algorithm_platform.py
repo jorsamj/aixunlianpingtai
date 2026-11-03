@@ -1454,16 +1454,19 @@ def test_readiness_does_not_treat_inactive_external_algorithm_as_trainable(tmp_p
 
 def test_v12_training_entry_defers_external_preflight_to_durable_prepare():
     source = (Path(__file__).resolve().parents[2] / "app.py").read_text(encoding="utf-8")
-    start = source.index('@app.post("/api/v12/projects/{project_id}/train/start")')
+    start = source.index('@app.post("/api/v12/projects/{project_id}/train/start"')
     end = source.index("def _v48_resource_key", start)
     block = source[start:end]
 
     split_gate = "if not payload.split_mode:"
-    enqueue = "return _enqueue_explicit_training(project_id, payload)"
+    enqueue = "return _enqueue_explicit_training("
 
     for marker in (split_gate, enqueue):
         assert marker in block
     assert block.index(split_gate) < block.index(enqueue)
+    assert "return v12_start_train(project_id, payload, request=request)" in block
+    assert "review_actor_id = _material_governance_actor(request, project_id)[\"actor_id\"]" in block
+    assert "project_id, payload, review_actor_id=review_actor_id" in block
     assert "_refresh_external_training_algorithm(" not in block
     assert "assert_external_algorithm_master_data_current(" not in block
     assert "resolve_external_training_analysis(" not in block
@@ -1478,15 +1481,16 @@ def test_training_create_has_one_external_truth_owner_plus_compatibility_delegat
     assert '"training_input_state": "PREPARING"' in enqueue_block
     assert "TaskKind.TRAINING_PREPARE" in enqueue_block
     assert "with FileLock(str(locks_dir / f\"{task_id}.lock\"), timeout=30)" in enqueue_block
-    assert "_enqueue_explicit_training_locked(project_id, payload, task_id)" in enqueue_block
+    assert "_enqueue_explicit_training_locked(" in enqueue_block
+    assert "project_id, payload, task_id, review_actor_id=review_actor_id" in enqueue_block
     assert "_refresh_external_training_algorithm(" not in enqueue_block
     assert "assert_external_algorithm_master_data_current(" not in enqueue_block
     assert "resolve_external_training_analysis(" not in enqueue_block
 
-    v12_start = source.index('@app.post("/api/v12/projects/{project_id}/train/start")')
+    v12_start = source.index('@app.post("/api/v12/projects/{project_id}/train/start"')
     v12_end = source.index("def _v48_resource_key", v12_start)
     v12_block = source[v12_start:v12_end]
-    assert "return _enqueue_explicit_training(project_id, payload)" in v12_block
+    assert "return _enqueue_explicit_training(" in v12_block
     assert "_refresh_external_training_algorithm(" not in v12_block
     assert "assert_external_algorithm_master_data_current(" not in v12_block
     assert "resolve_external_training_analysis(" not in v12_block
