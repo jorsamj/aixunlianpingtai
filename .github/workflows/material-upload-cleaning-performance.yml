@@ -114,7 +114,10 @@ jobs:
           grep -Fq 'class _NonClosingImageStream:' app.py
           grep -Fq 'path_source = isinstance(src, (str, Path))' app.py
           grep -Fq 'Image.open(_NonClosingImageStream(src))' app.py
-          grep -Fq 'await file.seek(0)' app.py
+          # Multipart hashing and the canonical batch commit now run off-loop.
+          grep -Fq 'return await asyncio.to_thread(_plain_upload_manifest_sync, files)' app.py
+          grep -Fq 'def _plain_upload_commit_sync(' app.py
+          grep -Fq 'assert_no_running_event_loop()' tests/api/test_upload_batch_performance_truth.py
           grep -Fq 'stream = file.file' app.py
           if grep -Fq 'p / "imports" / f"upload_' app.py; then
             echo 'plain upload still writes a second app-level temp copy'
