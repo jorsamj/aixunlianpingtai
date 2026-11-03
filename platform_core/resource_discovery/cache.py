@@ -649,6 +649,16 @@ class DiscoveryCache:
                     found[str(row["normalized_path"])] = row
         return [self._model_payload(found[key]) for key in sorted(found)]
 
+    def find_model_by_path(self, path: object) -> dict[str, Any] | None:
+        """Exact registered scan result only; never resolve arbitrary request paths."""
+        normalized_path, _display = _path_parts(path)
+        with closing(self._connect()) as database:
+            row = database.execute(
+                "SELECT * FROM model_files WHERE normalized_path = ?",
+                (normalized_path,),
+            ).fetchone()
+        return self._model_payload(row) if row is not None else None
+
     def model_count(self) -> int:
         with closing(self._connect()) as database:
             return int(database.execute("SELECT COUNT(*) FROM model_files").fetchone()[0])

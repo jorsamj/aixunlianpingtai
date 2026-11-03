@@ -1479,7 +1479,11 @@ def test_training_create_has_one_external_truth_owner_plus_compatibility_delegat
     enqueue_end = source.index("def check_ultralytics_train_runtime", enqueue_start)
     enqueue_block = source[enqueue_start:enqueue_end]
     assert '"training_input_state": "PREPARING"' in enqueue_block
-    assert "TaskKind.TRAINING_PREPARE" in enqueue_block
+    # Deterministic child creation is owned by the isolated prepare helper;
+    # the HTTP entrypoint intentionally delegates and must not duplicate it.
+    prepare_child = (Path(__file__).resolve().parents[2] / "platform_core" / "training_prepare_child.py").read_text(encoding="utf-8")
+    assert "ensure_training_prepare_child(" in enqueue_block
+    assert "TaskKind.TRAINING_PREPARE" in prepare_child
     assert "with FileLock(str(locks_dir / f\"{task_id}.lock\"), timeout=30)" in enqueue_block
     assert "_enqueue_explicit_training_locked(" in enqueue_block
     assert "project_id, payload, task_id, review_actor_id=review_actor_id" in enqueue_block

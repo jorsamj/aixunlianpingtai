@@ -607,7 +607,7 @@ def resolve_training_label_contract(
         raise ValueError("训练标签 class_id 必须连续为 0..N-1")
 
     mother_evidence: dict[str, Any] = {}
-    if previous is None and include_weight_digest and base_contract.get("base_model_sha256"):
+    if previous is None and include_base_weight_digest and base_contract.get("base_model_sha256"):
         # Preserve the source checkpoint's real, ordered class IDs separately
         # from the dataset GT. Never interpret class 0 from an uploaded weight
         # as class 0 in the new algorithm merely because nc happens to match.

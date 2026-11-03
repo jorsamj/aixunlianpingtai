@@ -37,3 +37,13 @@ test('advanced model management is a tab of existing training-resource owner',()
   assert.match(discovery,/motherModelManagement\(\)/);
   assert.match(discovery,/\/api\/v63\/base-models\/assets/);
 });
+
+test('remote PT discoveries are shown as unverified without introducing nested modals',()=>{
+  const discovery=read('../../static/modules/resource-discovery.js');
+  assert.match(discovery,/\/api\/v63\/base-models\/node-inventory/);
+  assert.match(discovery,/节点模型发现/);
+  assert.match(discovery,/待验证/);
+  assert.match(discovery,/data-model-path/);
+  assert.match(discovery,/registerDiscoveredResourceModel/);
+  assert.match(discovery,/\/api\/v63\/base-models\/discovered\/register/);
+});

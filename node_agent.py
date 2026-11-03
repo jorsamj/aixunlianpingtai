@@ -28,6 +28,7 @@ from platform_core.node_agent_runtime import (
     normalize_agent_capabilities,
     send_heartbeat,
 )
+from platform_core.mother_model_inventory import AgentMotherModelInventory
 from platform_core.node_identity import default_node_state_dir, resolve_node_identity
 from platform_core.rknn_runtime import probe_rknn_toolkit
 from platform_core.rknn_board_runtime import probe_rknn_board_runtime
@@ -46,6 +47,12 @@ def _env_float(name: str, fallback: float) -> float:
         return float(raw)
     except ValueError:
         return float(fallback)
+
+
+def _env_model_roots() -> list[str]:
+    """Opt-in Agent paths; the data/models directory is added separately."""
+    raw = str(os.environ.get("MC_AGENT_MODEL_SCAN_ROOTS") or "")
+    return [value.strip() for value in raw.split(os.pathsep) if value.strip()]
 
 
 def _state_dir(value: object) -> Path:
@@ -70,6 +77,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--node-id", default=os.environ.get("MC_NODE_ID", ""))
     parser.add_argument("--token", default=os.environ.get("MC_NODE_AGENT_TOKEN", ""))
     parser.add_argument("--data-dir", default=os.environ.get("MC_TRAIN_DATA_DIR", ""))
+    parser.add_argument("--mother-model-roots", nargs="*", default=_env_model_roots())
+    parser.add_argument("--mother-model-scan-interval", type=float, default=300.0)
     parser.add_argument("--state-dir", default=os.environ.get("MC_NODE_STATE_DIR", ""))
     parser.add_argument("--capabilities", nargs="*", default=_env_capabilities())
     parser.add_argument("--interval", type=float, default=10.0)
@@ -219,6 +228,10 @@ def _build_executor(
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     data_dir = Path(args.data_dir).expanduser().resolve() if str(args.data_dir).strip() else None
+    model_roots = list(args.mother_model_roots or [])
+    if data_dir is not None and (data_dir / "models").is_dir():
+        model_roots.append(str(data_dir / "models"))
+    model_inventory = AgentMotherModelInventory(model_roots, interval_seconds=args.mother_model_scan_interval)
     state_dir = _state_dir(args.state_dir)
     identity = (
         resolve_node_identity(state_dir=state_dir)
@@ -250,6 +263,7 @@ def main(argv=None) -> int:
 
     if args.check or args.doctor:
         snapshot = collect_local_snapshot(data_dir=data_dir, runtime_probe=runtime_probe)
+        snapshot.setdefault("runtime", {})["mother_model_inventory"] = model_inventory.scan_now()
         ready = not unsupported_remote_capabilities
         doctor_issues = [
             {
@@ -340,6 +354,9 @@ def main(argv=None) -> int:
     try:
         while not stop_event.is_set():
             snapshot = collect_local_snapshot(data_dir=data_dir, runtime_probe=runtime_probe)
+            snapshot.setdefault("runtime", {})["mother_model_inventory"] = (
+                model_inventory.scan_now() if args.once else model_inventory.snapshot()
+            )
             effective_capabilities = reported_capabilities
             if executor is not None:
                 resolver = getattr(executor, "effective_capabilities", None)

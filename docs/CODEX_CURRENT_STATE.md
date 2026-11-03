@@ -1,4 +1,4 @@
-> **2026-11-03｜原图 ZIP 与母模型资产专项（进行中）**：长期分支起点 `5e708bc4`。已增加空/混合 ZIP 原图保护与批次 AI/人工入口、母模型 SHA 资产登记及首次训练验证挡板；跨 Agent 永久安装、GPU 首训、完整 Python/Chrome/性能尚未验收。详见 `docs/PROGRESS_ZIP_RAW_PT_MOTHER_MODEL_2026_11_03.md`、`docs/UAT_ZIP_RAW_PT_MOTHER_MODEL_2026_11_03.md`；生产不动。
+> **2026-11-04｜原图 ZIP 与母模型专项仍在进行中**：已推送增量基线 `653a33cd`；接续开发增加 Agent 授权目录后台只读发现、节点心跳库存与管理端从已有本机扫描缓存登记 PT。**发现/上传≠验证/安装/可训练**；跨节点安装、GPU 首训、完整 Python/Chrome/性能仍待验收。详见 `docs/PROGRESS_ZIP_RAW_PT_MOTHER_MODEL_2026_11_03.md`、`docs/UAT_ZIP_RAW_PT_MOTHER_MODEL_2026_11_03.md`；生产不动。
 
 > **最新 2026-11-03｜42.24.509 训练选材 P0 修复候选**：当前分支从 508 `8bf1e009` 接续；详情、隔离测试与未验证边界见本文末尾509记录及性能专项台账，尚未部署。
 

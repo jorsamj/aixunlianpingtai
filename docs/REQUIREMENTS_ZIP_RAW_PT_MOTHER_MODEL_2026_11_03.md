@@ -29,6 +29,7 @@
 - 人工工作台采用按 `cursor/limit` 读取 ZIP 未标注子集；不拼全量 URL/页面列表。
 - `POST /api/v63/base-models/upload` 继续实现流式存储、同名异哈希冲突；返回 `asset_id` 与准确验证状态。`GET /api/v63/base-models/assets` 只读登记证据，不运行重量级扫描；`POST /api/v63/base-models/assets/{asset_id}/verify` 触发隔离校验。
 - 完整目标还包括按节点受控扫描、拉取/安装任务、`node_id+sha256` 副本合同、明确传输渠道、断网恢复与部署审计；未实现不能通过虚拟状态/按钮掩盖。
+- 节点发现的初步合同：Agent 可以通过 `MC_AGENT_MODEL_SCAN_ROOTS` 显式授权目录（若数据目录存在也含 `MC_TRAIN_DATA_DIR/models`），后台最多扫描 8 根/1500 目录/20000 项、5 层、64 个 PT；心跳仅提供发现证据。管理端可从**已有本机扫描缓存**显式登记模型资产，任何发现结果均不可越过独立验证和真实节点安装直接进入训练。
 - 训练提交应使用不可变 `asset_id+sha256`，Worker 开始前复核、回填实际权重和类别/检测头策略，不允许仅按 `nc` 相同默认兼容。
 
 ## UX 与质量门槛

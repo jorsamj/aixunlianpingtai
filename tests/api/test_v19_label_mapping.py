@@ -380,7 +380,11 @@ def test_v19_all_empty_yolo_with_schema_defaults_to_raw_no_gt(client):
     assert final["report"]["imported_images"] == 2
     assert final["report"]["boxes"] == 0
     assert final["report"].get("upload_classification_status") != "applied"
-    image_ids = final["report"]["imported_image_ids"]
+    # Browser progress omits large image-id arrays; the paged review owner is
+    # the stable contract for post-import image lookup.
+    review = client.get(f"/api/v52/projects/{project['id']}/import/jobs/{job['id']}/review")
+    assert review.status_code == 200, review.text
+    image_ids = review.json()["image_ids"]
     for image_id in image_ids:
         annotation = client.get(f"/api/projects/{project['id']}/annotations/{image_id}").json()
         assert annotation["annotation_state"] == "unannotated"
@@ -442,9 +446,11 @@ def test_v19_partial_coco_manifest_keeps_unreferenced_raw_image(client):
     assert done["status"] == "done", json.dumps(done, ensure_ascii=False)
     assert done["report"]["imported_images"] == 2
     assert done["report"]["boxes"] == 1
+    review = client.get(f"/api/v52/projects/{project['id']}/import/jobs/{job['id']}/review")
+    assert review.status_code == 200, review.text
     states = {
         client.get(f"/api/projects/{project['id']}/annotations/{image_id}").json()["annotation_state"]
-        for image_id in done["report"]["imported_image_ids"]
+        for image_id in review.json()["image_ids"]
     }
     assert states == {"annotated", "unannotated"}
 

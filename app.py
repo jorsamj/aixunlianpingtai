@@ -109,6 +109,7 @@ from platform_core.mother_model_assets import (
     put_asset as _update_mother_model_asset,
     verify_checkpoint_in_sandbox as _verify_mother_model_checkpoint,
 )
+from platform_core.mother_model_inventory import project_node_inventory as _project_node_mother_models
 from platform_core.material_repository import (
     AnnotationMaterialLifecycleError,
     DATASET_DELETE_CLAIM_FIELD,
@@ -7246,6 +7247,71 @@ async def upload_preinstalled_base_model(file: UploadFile = File(...)):
 def list_mother_model_assets():
     """Cached evidence only. GET must never import torch or scan Agent disks."""
     return {"items": _list_mother_model_assets(DATA_DIR)}
+
+
+@app.get("/api/v63/base-models/node-inventory")
+def list_mother_model_node_inventory():
+    """Show bounded Agent-discovered paths; never infer verified/installed PT."""
+    nodes = ServiceNodeRepository(shared_task_repository()).list_public()
+    return {"items": _project_node_mother_models(nodes)}
+
+
+@app.post("/api/v63/base-models/discovered/register")
+def register_discovered_mother_model(payload: Dict[str, Any]):
+    """Import an *exact cached controller discovery result* into managed assets.
+
+    This is an explicit user action. It cannot copy an arbitrary local path or
+    treat an unverified remote heartbeat path as a training-ready checkpoint.
+    """
+    reference = str(payload.get("path") or "").strip()
+    if not reference or len(reference) > 1000:
+        raise HTTPException(status_code=422, detail="请指定已发现的模型路径")
+    cache = _discovery_cache()
+    if cache.metadata()["models"]["completed_generation"] < 1:
+        raise HTTPException(status_code=409, detail="尚未完成本机模型扫描，请先检测目录")
+    discovered = cache.find_model_by_path(reference)
+    if not discovered or str(discovered.get("format") or "").lower() != "pt":
+        raise HTTPException(status_code=404, detail="此文件不在上次成功的本机 .pt 扫描结果中")
+    source = Path(str(discovered["path"]))
+    if source.is_symlink() or not source.is_file():
+        raise HTTPException(status_code=409, detail="发现的母模型已移动或不是普通文件，请重新扫描")
+    size = source.stat().st_size
+    if size < 1024 or size > 1024 * 1024 * 1024 or size != discovered.get("size_bytes"):
+        raise HTTPException(status_code=409, detail="模型大小已变化或超出 1GiB 限制，请重新扫描")
+    root = DATA_DIR / "models"
+    root.mkdir(parents=True, exist_ok=True)
+    temp = root / f".{uuid.uuid4().hex}.discovered-model"
+    digest = hashlib.sha256()
+    copied = 0
+    try:
+        with source.open("rb") as origin, temp.open("xb") as target:
+            while chunk := origin.read(4 * 1024 * 1024):
+                copied += len(chunk)
+                if copied > 1024 * 1024 * 1024:
+                    raise HTTPException(status_code=413, detail="发现的母模型超过 1GiB")
+                digest.update(chunk)
+                target.write(chunk)
+            target.flush()
+            os.fsync(target.fileno())
+        if copied != size:
+            raise HTTPException(status_code=409, detail="扫描后模型内容已变化，请重新扫描")
+        suffix = digest.hexdigest()[:16]
+        destination = root / f"discovered-{suffix}.pt"
+        with FileLock(str(root / f".discovered-{suffix}.lock"), timeout=30):
+            if destination.exists():
+                if destination.stat().st_size != copied or sha256_file(destination) != digest.hexdigest():
+                    raise HTTPException(status_code=409, detail="已存在同名但内容不同的母模型")
+                reused = True
+            else:
+                os.replace(temp, destination)
+                reused = False
+        asset = _register_mother_model_asset(DATA_DIR, destination, digest.hexdigest(), source="controller_discovery")
+        return {"ok": True, "reused": reused, "asset_id": asset["asset_id"],
+                "validation_status": asset["validation_status"], "sha256": digest.hexdigest()}
+    except Timeout as error:
+        raise HTTPException(status_code=409, detail="模型正在登记，请稍后重试") from error
+    finally:
+        temp.unlink(missing_ok=True)
 
 
 @app.post("/api/v63/base-models/assets/{asset_id}/verify", status_code=202)
@@ -16727,10 +16793,11 @@ def _v19_start_import_job_locked(project_id: str, job_id: str, payload: V19Impor
     elif payload.label_mapping:
         raise HTTPException(status_code=422, detail="当前 ZIP 没有可确认的外部标注类别")
 
-    # New ZIPs stop after scan for an explicit sample-kind choice, including
-    # archives with no external annotations. Old selecting jobs keep their
-    # legacy start semantics. This is an upload intent, never formal GT.
-    if job.get("sample_classification_required"):
+    # Raw ZIPs default to unclassified import, but an explicit positive/negative
+    # upload intent remains optional and must retain its existing association.
+    # The classification is never formal GT, even for empty sidecar files.
+    if (job.get("sample_classification_required") or str(payload.sample_type or "").strip()
+            or payload.intended_label_codes or payload.negative_category_ids):
         from platform_core.negative_pool import NegativePool
         chosen_type = str(
             payload.sample_type

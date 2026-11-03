@@ -128,6 +128,7 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
     officialModels: [],
     preparedModels: [],
     assetModels: [],
+    nodeInventories: [],
     models: [],
     modelMeta: {},
     modelCursor: null,
@@ -189,15 +190,28 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
         <div class="mother-model-categories">${preview||'<span>原始类别尚未验证</span>'}${names.length>8?`<small>等 ${names.length} 类</small>`:''}</div>
         <div class="mother-model-row-foot"><span>${escapeHtml(row.validation_error||`${row.framework||'未验证框架'} · ${row.task||'未验证任务类型'}`)}</span><button class="btn mini" ${status(row.validation_status)==='CHECKING'?'disabled':''} onclick="verifyResourceMotherModel('${escapeHtml(row.asset_id)}')">${ready?'重新验证':'安全校验'}</button></div></article>`;
     }).join('');
+    const remoteNodes=(runtime.nodeInventories||[]).map(node=>{
+      const online=node.online===true;
+      const pending=String(node.status||'')==='SCANNING';
+      const discovered=Array.isArray(node.items)?node.items:[];
+      const models=discovered.map(model=>`<div class="mother-model-node-file"><div><b>${escapeHtml(model.name||'')}</b><small title="${escapeHtml(model.path||'')}">${escapeHtml(model.path||'')}</small></div><span>${bytes(model.size_bytes)}</span><span class="pill warn">待验证</span></div>`).join('');
+      const message=!online?'节点离线，显示最近一次发现结果':pending?'正在后台扫描授权目录':node.status==='NOT_CONFIGURED'?'节点尚未配置模型扫描目录':node.status==='NOT_REPORTED'?'节点 Agent 尚未上报模型清单':discovered.length?'扫描完成 · 当前发现结果仅供登记参考':'扫描完成 · 授权目录中暂无 .pt';
+      return `<article class="mother-model-node"><header><div><strong>${escapeHtml(node.display_name||node.node_id)}</strong><small>${escapeHtml(node.node_id||'')} · ${escapeHtml(node.scanned_at||'未扫描')}</small></div><span class="pill ${online?'ok':'warn'}">${online?'在线':'离线'}</span></header><p>${escapeHtml(message)}${node.truncated?' · 结果达到安全扫描上限':''}</p>${models?`<div class="mother-model-node-files">${models}</div>`:''}</article>`;
+    }).join('');
+    const localDiscovered=(runtime.models||[]).filter(row=>String(row.format||'').toLowerCase()==='pt').slice(0,12);
+    const controllerDiscovery=localDiscovered.map(row=>`<div class="mother-model-node-file"><div><b>${escapeHtml(row.name||'')}</b><small title="${escapeHtml(row.path||'')}">${escapeHtml(row.path||'')}</small></div><span>${bytes(row.size_bytes)}</span><button class="btn mini" data-model-path="${escapeHtml(row.path||'')}" onclick="registerDiscoveredResourceModel(this)">登记</button></div>`).join('');
     return `<section class="mother-model-management" aria-label="母模型管理"><header class="mother-model-management-head"><div><span class="mother-model-kicker">模型资产</span><h2>母模型管理</h2><p>统一登记基础权重，核验原始类别后用于首次训练。模型文件与 Worker 节点副本分别管理。</p></div><div class="mother-model-actions"><input id="rdMotherManageFile" data-file426="1" type="file" accept=".pt" style="display:none" onchange="uploadResourceMotherModel(this)"><button class="btn primary" onclick="document.getElementById('rdMotherManageFile')?.click()">上传 .pt 模型</button><button class="btn" onclick="refreshResourceDiscoveryCache()">刷新状态</button></div></header>
       <div class="mother-model-summary"><strong>${rows.length} <small>个已登记模型</small></strong><span>隔离检验不会在 Web 进程执行不可信 PyTorch 反序列化；不同哈希不会覆盖同名权重。</span></div>
       <div class="mother-model-list">${items||'<div class="empty">尚无已登记的母模型。点击右上角上传已有 YOLO .pt；上传后先安全校验，再在算法首次训练选择。</div>'}</div>
-      <div class="mother-model-discovery"><b>模型发现</b><span>管理端可在“训练环境”使用已有目录检测；远程 Worker 只以服务节点的实际回执为准，未登记副本不会宣称已安装。</span></div></section>`;
+      <div class="mother-model-discovery"><b>管理端已发现</b><span>仅展示上次目录扫描缓存中的 .pt，手动登记后进入上述资产列表；检测不会自动上传。</span></div>
+      <div class="mother-model-node-files">${controllerDiscovery||'<div class="empty">当前页暂无发现的 .pt。可在训练资源的本机模型区域扫描指定目录。</div>'}</div>
+      <div class="mother-model-discovery"><b>节点模型发现</b><span>管理端可在“训练环境”使用已有目录检测。远程 Agent 仅后台扫描它被授权的模型目录，发现不代表安装或可训练。</span></div>
+      <div class="mother-model-node-list">${remoteNodes||'<div class="empty">还没有已登记的远程 Agent 节点。请先在“算力与节点”配置服务器。</div>'}</div></section>`;
   }
 
   function modelRows() {
     if (!runtime.models.length) return '<div class="empty">缓存中尚未发现模型文件。可指定目录扫描，或启动全机扫描。</div>';
-    return `<div class="table-wrap"><table class="table rd-model-table"><thead><tr><th>模型</th><th>格式</th><th>大小</th><th>来源</th><th>修改时间</th></tr></thead><tbody>${runtime.models.map(model => `<tr><td><b>${escapeHtml(model.name || '')}</b><code title="${escapeHtml(model.path || '')}">${escapeHtml(model.path || '')}</code></td><td>${escapeHtml(model.format || '')}</td><td>${bytes(model.size_bytes)}</td><td>${escapeHtml(model.volume || '-')}</td><td>${escapeHtml(model.modified_at || model.updated_at || '-')}</td></tr>`).join('')}</tbody></table></div>`;
+    return `<div class="table-wrap"><table class="table rd-model-table"><thead><tr><th>模型</th><th>格式</th><th>大小</th><th>来源</th><th>修改时间</th><th>操作</th></tr></thead><tbody>${runtime.models.map(model => `<tr><td><b>${escapeHtml(model.name || '')}</b><code title="${escapeHtml(model.path || '')}">${escapeHtml(model.path || '')}</code></td><td>${escapeHtml(model.format || '')}</td><td>${bytes(model.size_bytes)}</td><td>${escapeHtml(model.volume || '-')}</td><td>${escapeHtml(model.modified_at || model.updated_at || '-')}</td><td>${String(model.format || '').toLowerCase()==='pt'?`<button class="btn mini" data-model-path="${escapeHtml(model.path||'')}" onclick="registerDiscoveredResourceModel(this)">登记母模型</button>`:'—'}</td></tr>`).join('')}</tbody></table></div>`;
   }
 
   function renderCachePanel() {
@@ -210,12 +224,14 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
   }
 
   async function loadEnvironmentCache() {
-    const [environment, baseModels, assets] = await Promise.all([
+    const [environment, baseModels, assets, inventory] = await Promise.all([
       request('/api/ultralytics_env'),
       request('/api/base_models'),
-      request('/api/v63/base-models/assets')
+      request('/api/v63/base-models/assets'),
+      request('/api/v63/base-models/node-inventory').catch(() => ({items:[]}))
     ]);
     runtime.assetModels=assets?.items||[];
+    runtime.nodeInventories=inventory?.items||[];
     runtime.environments = [...(environment?.candidates || environment?.items || [])];
     runtime.activeEnvironment = environment?.active || {};
     const activePath = String(runtime.activeEnvironment.python_path || runtime.activeEnvironment.python_executable || '').toLocaleLowerCase();
@@ -407,6 +423,19 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
       };
       registry.startTimeout(`mother-model-${key}`,['训练资源'],poll,1100);
     }catch(error){notify(error.message||'母模型校验提交失败')}
+  };
+
+  window.registerDiscoveredResourceModel = async button => {
+    const path=String(button?.dataset?.modelPath||'');
+    if(!path)return notify('未提供有效的本机模型路径');
+    button.disabled=true;
+    try{
+      const result=await request('/api/v63/base-models/discovered/register',{method:'POST',body:JSON.stringify({path}),headers:{'Content-Type':'application/json'}});
+      if(!result?.ok||!result?.asset_id)throw new Error('管理端未确认登记结果');
+      notify('发现的模型已登记；完成安全校验后才能用于首次训练');
+      await refreshCache(true,{force:true});
+    }catch(error){notify(error?.message||'登记模型失败')}
+    finally{button.disabled=false}
   };
 
   window.quickUltraDetect = () => runtime.detectEnvironment({scope: 'auto'});
