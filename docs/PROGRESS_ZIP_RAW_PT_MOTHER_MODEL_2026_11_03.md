@@ -1,7 +1,7 @@
 # 2026-11-03 开发进度｜原图 ZIP、母模型资产与首次训练
 
 工作基线：`feature/external-algorithm-publishing`、开始时本地/远端 `5e708bc4fce5c0a0facaa02f1d6d426871fb40d6`。
-本轮仅修改代码/文档；不触碰生产服务器、真实素材/模型、数据库或训练任务。此为**进行中交接记录，未达到整项 P0 完成标准**。
+本轮仅修改代码/文档；不触碰生产服务器、真实素材/模型、数据库或训练任务。此为**进行中交接记录，未达到整项 P0 完成标准**。**2026-11-04 最后代码提交 `f1f7e75f4158a7b92d806aa2b489e387b4272486` 的 20/20 GitHub Actions 已成功，含节点安装和远程训练 Windows/Linux 测试；这不等于真实 GPU/浏览器/大数据现场验收。**
 
 | 里程碑 | 当前状态 | 已写入代码的内容 | 尚未完成的阻断项 |
 | --- | --- | --- | --- |
@@ -70,6 +70,12 @@
 - 已实际快进推送基础安装协议与相关文档至长期开发分支 `0da5379e5f2b40c4f72437d8ffffb373282c77b4`；精确 SHA 的 20 条 Actions **16 成功、4 失败**。4 个失败工作流均为新路由参数漏列的同一过时 AST 测试断言，其余对应工作流 Job 已通过；本段增量尚待下一次提交与 CI。
 - 首轮安装提交的多个 API 分片暴露同一个过时静态断言：`tests/api/test_runtime_router_app_mount.py` 未列出新增 `agent_model_install_asset_provider`；已补精确允许集合，并断言仅调用既有已验证资产登记。单独通过 AST 守卫运行。原安装测试虽已提交，但原 `node-agent-executor.yml` 并未执行新测试文件；本批已将 `test_agent_model_install_runtime.py` 以及安装 Runner 加入 Linux/Windows 的路径触发、语法和 Pytest 实际清单，不能把旧分片绿灯计为已验证安装。
 - `c461f7a31505e13ae7e6a707321816d05259dc15` 的准确 GitHub Actions 结果是 **18/20 成功、2 失败**。两项红灯 `Remote Training Runtime` 与 `Node Agent Executor` 的 Windows 测试均为新增缓存回退单测使用 Linux 分隔符的路径断言；Linux 对应测试和安装 Runner 双平台合同均通过。当前已用 `Path(result)` 比较消除 Windows 路径假失败，并在缺失 symlink 创建权限时明确标记跳过；待下一次提交复验。
+
+### 2026-11-04 精确代码基线与最终 CI
+
+- 最后代码提交：`f1f7e75f4158a7b92d806aa2b489e387b4272486`，长期分支 `feature/external-algorithm-publishing`，**20 个独立 GitHub Actions 全部 `completed: success`**。之前失败的 `Portable Deployment`、`Central Node Assignment`、`Remote Cleaning Runtime`、`Node Agent Executor` 路由合同，以及 `Remote Training Runtime` Windows 缓存测试均通过最终回归。
+- 节点执行器工作流已纳入新增 `test_agent_model_install_runtime.py` 和安装 Runner 的语法/双平台执行清单；`Remote Training Runtime` 的 Ubuntu/Windows 分片成功。此前原地本地专项 Node **103/103**、Python `py_compile`、路由 AST 独立合同均通过。
+- **仍未完成实际交付验收**：A800/4070 上隔离解码并跑首个 Epoch、自定义 PT 与标签头的版本级兼容、不同网络/盘满/断连回归、无 OSS 全远程训练、ZIP 1k/10k 规模与浏览器三视口真实 P95。未经现场证据不得声称“完全可训练、无堵点”或已部署生产。
 
 ### 上一提交 GitHub Actions 红灯治理
 

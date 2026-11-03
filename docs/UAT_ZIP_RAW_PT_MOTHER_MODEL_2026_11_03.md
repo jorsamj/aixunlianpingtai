@@ -87,3 +87,7 @@ npm test
 > 注：节点安装提交 `0da5379e` 实际 20 条 CI 为 16 绿/4 红，4 红均来自同一个路由挂载参数 AST 静态断言。节点执行器 CI 的原配置也遗漏 `tests/unit/test_agent_model_install_runtime.py`；当前修订已把它纳入 Ubuntu/Windows 执行范围。待下一次准确 SHA 工作流实际运行后才更新 PT-INSTALL-01～06 为通过。
 
 > `c461f7a` 已真正运行新增安装测试：节点执行器 Ubuntu 合同绿、Windows 合同中安装模块测试通过；其整体验收为 **18/20 GitHub Actions 成功、2 失败**，失败集中在同一新增训练缓存测试的 `result.endswith("/input/model/best.pt")`，Windows 分隔符不兼容。该断言已改为 `Path` 比较，尚待下一 SHA 的 Windows 回归；绝不能凭此宣称真实目标节点安装/首训完成。
+
+## 2026-11-04 最后代码提交 CI 复验结论
+
+**精确提交：`f1f7e75f4158a7b92d806aa2b489e387b4272486`；20/20 GitHub Actions 全部成功。**`Node Agent Executor` 的新增母模型安装测试在 Ubuntu、Windows 双平台运行通过；`Remote Training Runtime` 的 Windows 路径断言修复后整条工作流通过。此为代码合同与模拟 Worker 的自动化验收，不涉及用户生产 GT/模型；PT-INSTALL-01～06 的**自动化合同**可以视为通过，PT-INSTALL-07/08 的真实断网/浏览器，以及 TR-01 的 GPU 首训仍为**未执行**。
