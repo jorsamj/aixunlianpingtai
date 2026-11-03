@@ -116,6 +116,21 @@ def test_reopening_cache_does_not_reassert_wal_or_schema(tmp_path, monkeypatch):
     assert counters["closed"] == counters["opened"]
 
 
+def test_exact_discovered_model_lookup_never_matches_name_only(tmp_path):
+    cache = DiscoveryCache(tmp_path / "model-cache.sqlite3")
+    model = tmp_path / "yolo-custom.pt"
+    model.write_bytes(b"model" * 500)
+    assert cache.replace_models("scan-first", [{
+        "name": model.name,
+        "path": str(model),
+        "format": "pt",
+        "size_bytes": model.stat().st_size,
+    }], 1)
+    assert cache.find_model_by_path(str(model))["path"] == str(model)
+    assert cache.find_model_by_path(str(tmp_path / "different" / model.name)) is None
+    assert cache.find_model_by_path(str(tmp_path / "not-found.pt")) is None
+
+
 def test_model_manifest_explicitly_closes_every_sqlite_connection(tmp_path, monkeypatch):
     import platform_core.resource_discovery.tasks as tasks_module
     from platform_core.resource_discovery.tasks import _ModelManifest

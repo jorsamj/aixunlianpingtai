@@ -20,6 +20,7 @@ MAX_SCAN_DIRECTORIES = 1500
 MAX_SCAN_ENTRIES = 20000
 MAX_SCAN_DEPTH = 5
 MAX_MODEL_BYTES = 1024 * 1024 * 1024
+MAX_REPORTED_PATH_LENGTH = 600
 
 
 def _bounded_roots(roots: Iterable[str | Path]) -> list[Path]:
@@ -34,6 +35,8 @@ def _bounded_roots(roots: Iterable[str | Path]) -> list[Path]:
         try:
             resolved = candidate.resolve(strict=True)
         except (OSError, RuntimeError):
+            continue
+        if len(str(resolved)) > MAX_REPORTED_PATH_LENGTH:
             continue
         key = os.path.normcase(str(resolved))
         if key not in seen:
@@ -71,6 +74,11 @@ def scan_mother_models(
     depth_limit = max(0, min(int(max_depth), MAX_SCAN_DEPTH))
     visited: set[tuple[int, int]] = set()
     for root in selected:
+        try:
+            root_device = root.stat(follow_symlinks=False).st_dev
+        except (PermissionError, OSError):
+            result["permission_errors"] += 1
+            continue
         pending: list[tuple[Path, int]] = [(root, 0)]
         while pending:
             if result["scanned_dirs"] >= dir_limit or len(result["items"]) >= model_limit:
@@ -79,6 +87,8 @@ def scan_mother_models(
             current, depth = pending.pop()
             try:
                 info = current.stat(follow_symlinks=False)
+                if info.st_dev != root_device:
+                    continue
                 identity = (int(info.st_dev), int(info.st_ino))
                 if identity in visited:
                     continue
@@ -94,13 +104,15 @@ def scan_mother_models(
                             if entry.is_symlink():
                                 continue
                             if entry.is_dir(follow_symlinks=False):
-                                if depth < depth_limit:
+                                if depth < depth_limit and entry.stat(follow_symlinks=False).st_dev == root_device:
                                     pending.append((Path(entry.path), depth + 1))
                                 continue
                             if not entry.name.lower().endswith(".pt") or not entry.is_file(follow_symlinks=False):
                                 continue
                             stat = entry.stat(follow_symlinks=False)
                             if stat.st_size < 1024 or stat.st_size > MAX_MODEL_BYTES:
+                                continue
+                            if len(entry.path) > MAX_REPORTED_PATH_LENGTH:
                                 continue
                             result["items"].append({
                                 "name": entry.name[:160],
