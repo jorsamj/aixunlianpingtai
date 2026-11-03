@@ -564,9 +564,13 @@ def training_recovery_router(
         except RuntimeError as error:
             code = getattr(error, "workspace_code", "TRAINING_WORKSPACE_PROTECTED")
             retryable = bool(getattr(error, "workspace_retryable", False))
+            # Retryable is a *recovery hint*, not automatically HTTP 503.
+            # A stale attempt/snapshot is a client conflict (409); low disk
+            # space is transient service unavailability (503).
+            status = 503 if code == "DISK_SPACE_INSUFFICIENT" else 409
             blockers = [item for item in str(error).split(",")
                         if re.fullmatch(r"[A-Z][A-Z0-9_]*", item)]
-            raise HTTPException(status_code=503 if retryable else 409, detail={
+            raise HTTPException(status_code=status, detail={
                 "code": code, "blockers": blockers or [code],
                 "retryable": retryable,
                 "stage": getattr(error, "workspace_stage", None),

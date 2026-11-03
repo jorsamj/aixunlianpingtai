@@ -515,6 +515,32 @@ def test_workspace_api_reports_archive_oserror_stage_without_private_paths(tmp_p
         assert artifacts.artifact_path("t", "work/bundle").exists()
 
 
+def test_workspace_api_distinguishes_retryable_stale_conflict_from_disk_503(tmp_path, monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from platform_core.training_recovery_api import training_recovery_router
+    service, repo, artifacts, _ = workspace(tmp_path)
+    app = FastAPI()
+    app.include_router(training_recovery_router(
+        lambda project_id: {"id": project_id}, lambda: repo, lambda: artifacts,
+        project_path_provider=lambda project_id: service.data_dir / "projects" / project_id,
+        workspace_actor_provider=lambda _request, _project: {"actor_id": "tester"},
+    ))
+    with TestClient(app) as client:
+        url = "/api/v62/projects/p/training-tasks/t/workspace"
+        preview = client.get(url).json()["workspace"]
+        payload = {"confirm": "release_training_workspace", "attempt": preview["attempt"],
+                   "snapshot_id": preview["snapshot_id"]}
+        stale = client.post(url + "/cleanup", json={**payload, "attempt": payload["attempt"] + 1})
+        assert stale.status_code == 409
+        assert stale.json()["detail"]["code"] == "WORKSPACE_PREVIEW_STALE"
+        monkeypatch.setenv("CHANG_LIAN_ARCHIVE_MIN_FREE_BYTES", "not-an-integer")
+        pressure = client.post(url + "/cleanup", json=payload)
+        assert pressure.status_code == 503
+        assert pressure.json()["detail"]["code"] == "DISK_SPACE_INSUFFICIENT"
+        assert artifacts.artifact_path("t", "work/bundle").exists()
+
+
 def test_independent_active_training_does_not_pin_task_bundle(tmp_path):
     service, repo, artifacts, original = workspace(tmp_path)
     repo.create(replace(TaskRecord.new("other", "p", TaskKind.TRAINING,
