@@ -665,7 +665,11 @@ def test_product_training_submit_freezes_server_authoritative_label_contract(
         json={**base_request, "train_labels": ["smoke"]},
     )
     assert bypass.status_code == 409
-    assert "不在已选素材" in bypass.text
+    # The task-local confirmation flow reports an unresolved scope *before*
+    # strict class-evidence validation. An unconfirmed direct submit must
+    # remain blocked, not silently create a smoke-only first training task.
+    assert bypass.json()["code"] == "TRAINING_MATERIAL_SCOPE_INCOMPATIBLE"
+    assert "审核范围" in bypass.json()["message"]
 
     accepted = client.post(
         f"/api/v12/projects/{project_id}/train/start",

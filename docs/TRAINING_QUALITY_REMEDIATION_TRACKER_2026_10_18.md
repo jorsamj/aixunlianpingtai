@@ -1,3 +1,7 @@
+## 2026-11-03｜42.24.505 Remote Training Runtime CI 旧断言修正（新 SHA 待验）
+
+504 准确远端提交 `52263a5ae6bf3624eb55df8b8be9aa6f1309ce9c` 的 `Training Material Picker` 合同和真实 Chrome、`Training Create First Open` Chrome/双平台合同已成功。`Remote Training Runtime` 的 push/PR API 各有同一失败：`test_product_training_submit_freezes_server_authoritative_label_contract` 仍要求“标签不在已选素材”的旧文案，而新任务局部确认流程对未确认的 `smoke` 训练明确返回 `409 TRAINING_MATERIAL_SCOPE_INCOMPATIBLE`；没有创建任务，也没有绕过首次正样本门槛。本批只将原 API 测试改为断言精确阻断码和审核范围提示；不放宽正式提交、GT 或 Worker。按原 workflow 的六个 API/调度文件在隔离依赖及正常 TestClient 权限下 **125/125 通过**。准确 505 新 SHA Actions 待核；生产/GPU/真实 OSS 未验，不部署或合并 main/tag/release/force push。
+
 ## 2026-11-02｜42.24.504 本次训练确认范围、纯负样本迭代与负样本池可用性（代码完成，Chrome / 推送后 CI 待验）
 
 本节是 42.24.503 后的增量需求，覆盖下方 2026-10-28 对“全部负样本训练一律拒绝”以及“待补审范围必须写入正式 GT”的旧描述。**首次训练依然必须有有效目标正样本；仅已验证存在上一模型版本的迭代训练允许纯负样本批次，不允许在纯负样本批次新增目标类别。**
