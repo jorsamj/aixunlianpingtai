@@ -828,7 +828,6 @@ class TrainingPrepareHandler:
             requested_device == "auto"
             and strategy == "auto"
             and gpu_policy in {"auto", "exclusive"}
-            and sampled
         ):
             model = YOLO(model_path)
             admission = auto_admission_evidence(payload, model)
@@ -884,7 +883,14 @@ class TrainingPrepareHandler:
                 target_status=TaskStatus.BLOCKED_BY_HARDWARE,
             )
         if requested_device == "auto" and not sampled:
-            resolution_device = "cpu"
+            # The GPU scheduler will not claim an AUTO training for CPU. A
+            # temporary telemetry gap must not silently freeze CPU resources
+            # into an otherwise GPU-bound task payload.
+            raise RemoteTrainingPreparationError(
+                "RESOURCE_GPU_TELEMETRY_UNAVAILABLE",
+                "自动设备缺少可验证的 GPU 资源遥测；请等待 GPU 恢复或明确选择 CPU",
+                target_status=TaskStatus.BLOCKED_BY_HARDWARE,
+            )
 
         with context.repository._connect() as database:
             reservations = database.execute("SELECT * FROM gpu_reservations").fetchall()

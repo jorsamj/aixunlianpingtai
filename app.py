@@ -161,6 +161,7 @@ from platform_core.training_label_tasks import (
     inherited_training_label_preview,
     project_training_rows,
     resolve_training_label_contract,
+    training_background_selection_fingerprint,
 )
 from platform_core.training_precision import TrainingPrecisionError, normalize_training_precision
 from platform_core.training_compatibility import (
@@ -717,6 +718,8 @@ def cancel_unified_runtime_task(project_id: str, task_id: str):
     repository = shared_task_repository()
     try:
         task = repository.request_cancel(task_id)
+        if current.kind is TaskKind.TRAINING:
+            _cancel_training_prepare_child(repository, current)
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     if (
@@ -738,6 +741,14 @@ def cancel_unified_runtime_task(project_id: str, task_id: str):
                 detail=f"取消请求已记录，但任务进程无法安全终止：{error}",
             ) from error
     return task_to_public(task, repository)
+
+
+def _cancel_training_prepare_child(repository, parent: TaskRecord) -> None:
+    """Cancel the deterministic prepare child after the user stops its parent."""
+    child = repository.get(f"trainprep_{parent.task_id}")
+    if (child is not None and child.kind is TaskKind.TRAINING_PREPARE
+            and child.project_id == parent.project_id):
+        repository.request_cancel(child.task_id)
 
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
@@ -8453,36 +8464,14 @@ def _ensure_training_prepare_child(
     project_id: str, task_id: str, prepare_task_id: str, priority: int,
 ) -> TaskRecord:
     """Recreate only a missing deterministic child; never overwrite a live payload."""
-    if prepare_task_id != f"trainprep_{task_id}":
-        raise HTTPException(status_code=409, detail="训练准备任务身份不匹配")
-    repository = shared_task_repository()
-    artifacts = shared_task_artifacts()
-    expected = {
-        "schema_version": 2,
-        "training_task_id": task_id,
-        "project_id": project_id,
-    }
-    existing = repository.get(prepare_task_id)
-    if existing is not None:
-        if (
-            existing.project_id != project_id
-            or existing.kind is not TaskKind.TRAINING_PREPARE
-            or artifacts.read_json(prepare_task_id, existing.payload_ref, default={}) != expected
-        ):
-            raise HTTPException(status_code=409, detail="训练准备任务已由其他请求占用")
-        return existing
-    orphan = artifacts.read_json(prepare_task_id, "payload.json", default=None)
-    if orphan is not None and orphan != expected:
-        raise HTTPException(status_code=409, detail="训练准备任务残留载荷与当前父任务冲突")
-    if orphan is None:
-        artifacts.atomic_write_json(prepare_task_id, "payload.json", expected)
-    return repository.create(
-        TaskRecord.new(
-            prepare_task_id, project_id, TaskKind.TRAINING_PREPARE,
-            "payload.json", f"training-prepare:{project_id}",
-            priority=int(priority), required_capabilities=("training.prepare",),
+    from platform_core.training_prepare_child import ensure_training_prepare_child
+    try:
+        return ensure_training_prepare_child(
+            shared_task_repository(), shared_task_artifacts(),
+            project_id, task_id, prepare_task_id, priority,
         )
-    )
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 def _reconcile_training_create_replay(
@@ -8691,12 +8680,11 @@ def _enqueue_explicit_training_locked(
     ), material_annotation_lifecycle_fence(project_dir(project_id)):
         try:
             if payload.review_all_training_backgrounds:
-                # Freeze server-observed versions, not client-supplied values.
-                # The queued worker will recheck both and the exact request
-                # before granting task-scoped absence/scope receipts.
+                # Bind consent to the exact selected source/GT rows. Unrelated
+                # uploads or reviews must not invalidate this queued task.
                 project_path = project_dir(project_id)
                 request_payload["training_background_confirmation"] = {
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "task_id": task_id,
                     "project_id": project_id,
                     "algorithm_asset_id": str(asset_algorithm.get("id") or ""),
@@ -8704,8 +8692,9 @@ def _enqueue_explicit_training_locked(
                     "request_identity": request_identity,
                     "train_image_ids": list(requested_split.train_image_ids),
                     "test_image_ids": list(requested_split.test_image_ids),
-                    "material_revision": MaterialRepository(project_path).current_revision(),
-                    "annotation_revision": AnnotationRepository(project_path).current_revision(),
+                    "selected_input_fingerprint": training_background_selection_fingerprint(
+                        project_path, [*requested_split.train_image_ids, *requested_split.test_image_ids],
+                    ),
                 }
             with performance_measure("training.create.source_admission"):
                 assert_material_input_admission(
@@ -12414,7 +12403,9 @@ def v48_stop_job(project_id: str, job_id: str):
             raise HTTPException(status_code=409, detail="训练任务已经结束，不能再次停止")
         was_queued = durable.status is TaskStatus.QUEUED
         try:
-            updated = shared_task_repository().request_cancel(job_id)
+            repository = shared_task_repository()
+            updated = repository.request_cancel(job_id)
+            _cancel_training_prepare_child(repository, durable)
         except ValueError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
         if not was_queued and updated.process_pid is not None:

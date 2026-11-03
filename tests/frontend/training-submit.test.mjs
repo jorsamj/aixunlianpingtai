@@ -161,6 +161,26 @@ function cleanup(runtime) {
   delete globalThis.document;
 }
 
+test('a cached usable target remains submittable during background resource revalidation', () => {
+  const {submitButton}=installDom({backgroundConsent:true});
+  document.querySelector('.train429-create').dataset.workbenchMounted='true';
+  globalThis.window={};
+  const state={...baseState(),trainingCreationLoading:{projectId:'project-1',resources:{status:'loading'}}};
+  const runtime=installTrainingSubmitRuntime({
+    getState:()=>state,projectId:()=> 'project-1',
+    trainingDraftRuntime:{sync:()=>draft(),current:()=>draft(),base:()=>({blocked:false})},
+    trainingDraftToRequest,
+    materialSummaryRuntime:{compatibilityFor:()=>null,updateAdmissionDiagnosis:()=>{}},
+  });
+  try {
+    assert.equal(runtime.state().readiness.blockers.some(row=>row.code==='resource-loading'),false);
+    assert.equal(submitButton.disabled,false);
+    state.trainingCreationLoading.resources={status:'error',error:'background refresh failed'};
+    assert.equal(runtime.state().readiness.blockers.some(row=>row.code==='resource-error'),false);
+    assert.equal(submitButton.disabled,false);
+  } finally {cleanup(runtime);}
+});
+
 test('formal GT conflict diagnosis runs before final task-level background confirmation', async () => {
   installDom();
   globalThis.window={fetch:async()=>{throw new Error('a blocked task must not be posted');}};

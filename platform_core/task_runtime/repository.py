@@ -1134,6 +1134,61 @@ class TaskRepository:
             raise KeyError(task_id)
         return result
 
+    def settle_stranded_training_preparations(self, *, limit: int = 20) -> int:
+        """Settle unclaimable parents whose preparation child has finished.
+
+        This runs in the original Worker maintenance loop. The joined state is
+        rechecked under a write transaction, so an in-flight activation or
+        cancellation cannot be overwritten by a stale read.
+        """
+        now = utc_now()
+        with closing(self._connect()) as database:
+            rows = database.execute(
+                """
+                SELECT parent.task_id, child.status AS child_status, child.error AS child_error
+                  FROM tasks AS parent
+                  JOIN tasks AS child ON child.task_id='trainprep_' || parent.task_id
+                   AND child.kind='TRAINING_PREPARE' AND child.project_id=parent.project_id
+                 WHERE parent.kind='TRAINING' AND parent.status='QUEUED'
+                   AND parent.required_capabilities='["training.input.ready"]'
+                   AND child.status IN ('SUCCEEDED','FAILED','CANCELLED',
+                       'BLOCKED_BY_ENVIRONMENT','BLOCKED_BY_HARDWARE')
+                 ORDER BY parent.created_at ASC LIMIT ?
+                """,
+                (max(1, min(50, int(limit))),),
+            ).fetchall()
+            if not rows:
+                return 0
+            database.execute("BEGIN IMMEDIATE")
+            settled = 0
+            for row in rows:
+                cancelled = row["child_status"] == "CANCELLED"
+                status = (
+                    "CANCELLED" if cancelled else
+                    row["child_status"] if row["child_status"] in {
+                        "BLOCKED_BY_ENVIRONMENT", "BLOCKED_BY_HARDWARE",
+                    } else "FAILED"
+                )
+                reason = (
+                    "TRAINING_PREPARATION_CANCELLED: 训练输入准备已取消"
+                    if cancelled else
+                    "TRAINING_PREPARATION_INCOMPLETE: 准备子任务已结束但训练未就绪；"
+                    + str(row["child_error"] or row["child_status"] or "")[:400]
+                )
+                settled += database.execute(
+                    """UPDATE tasks SET status=?,stage=?,error=?,finished_at=?,updated_at=?
+                       WHERE task_id=? AND status='QUEUED'
+                         AND required_capabilities='["training.input.ready"]'
+                         AND EXISTS (SELECT 1 FROM tasks AS child
+                            WHERE child.task_id='trainprep_' || tasks.task_id
+                              AND child.project_id=tasks.project_id
+                              AND child.kind='TRAINING_PREPARE' AND child.status=?)""",
+                    (status, "cancelled" if cancelled else "training_input_preparation_failed",
+                     reason, now, now, row["task_id"], row["child_status"]),
+                ).rowcount
+            database.commit()
+        return settled
+
     def fail_queued_precondition(
         self,
         task_id: str,

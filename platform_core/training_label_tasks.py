@@ -27,6 +27,40 @@ _ORIGINAL_LABEL_SCHEMA = base._label_schema
 _ORIGINAL_SELECTED_PROJECT_IMAGES = base._selected_project_images
 
 
+def training_background_selection_fingerprint(project: Path, image_ids: Sequence[str]) -> str:
+    """Bind user consent to selected source/GT truth, not project-wide revisions.
+
+    Both callers hold the existing material/annotation lifecycle fence. A
+    change to an unrelated row must not invalidate an otherwise safe task.
+    """
+    from .material_repository import MaterialRepository
+
+    selected = sorted({str(value).strip() for value in image_ids if str(value).strip()})
+    materials = MaterialRepository(project)
+    annotations = AnnotationRepository(project)
+    fingerprint = hashlib.sha256(b"training-background-selection-v2\n")
+    for offset in range(0, len(selected), 500):
+        chunk = selected[offset:offset + 500]
+        by_id = {str(row.get("id") or ""): row for row in materials.get_many(chunk)}
+        gt_by_id = annotations.get_many(chunk)
+        for image_id in chunk:
+            row = by_id.get(image_id) or {}
+            gt = gt_by_id.get(image_id) or {}
+            # This canonical digest includes boxes, state and review scope;
+            # legacy annotation JSON does not always store a digest itself.
+            identity = (
+                image_id,
+                bool(row),
+                row,
+                gt.get("version"),
+                annotations.record_digest(gt),
+            )
+            fingerprint.update(json.dumps(identity, ensure_ascii=False, sort_keys=True,
+                separators=(",", ":"), default=str).encode("utf-8"))
+            fingerprint.update(b"\n")
+    return fingerprint.hexdigest()
+
+
 def _unique_codes(values: Sequence[Any] | None) -> list[str]:
     result: list[str] = []
     seen: set[str] = set()
@@ -744,7 +778,7 @@ def apply_background_training_scope_confirmation(
     original_test_ids = [str(item) for item in payload.get("test_image_ids") or ()]
     selected_ids = [str(item) for item in selected_image_ids]
     if (
-        attestation.get("schema_version") != 1
+        attestation.get("schema_version") not in {1, 2}
         or not payload.get("review_all_training_backgrounds")
         or payload.get("admission_mode") != "background"
         or not str(attestation.get("actor_id") or "").strip()
@@ -762,10 +796,19 @@ def apply_background_training_scope_confirmation(
 
     materials = MaterialRepository(project)
     annotations = AnnotationRepository(project)
-    if (
+    if attestation.get("schema_version") == 2:
+        original_ids = [*original_train_ids, *original_test_ids]
+        expected = str(attestation.get("selected_input_fingerprint") or "")
+        if not re.fullmatch(r"[0-9a-f]{64}", expected) or (
+            training_background_selection_fingerprint(project, original_ids) != expected
+        ):
+            raise ValueError("TRAINING_BACKGROUND_CONFIRMATION_STALE: 本次所选素材或正式标注已变化，请重新核对并提交")
+    elif (
         materials.current_revision() != attestation.get("material_revision")
         or annotations.current_revision() != attestation.get("annotation_revision")
     ):
+        # v1 in-flight requests do not contain a selected-row snapshot. Keep
+        # their original strict contract instead of retroactively weakening it.
         raise ValueError("TRAINING_BACKGROUND_CONFIRMATION_STALE: 训练素材或正式标注已变化，请重新核对并提交")
 
     rows = _ORIGINAL_SELECTED_PROJECT_IMAGES(materials, project, selected_ids)

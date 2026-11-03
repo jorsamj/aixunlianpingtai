@@ -17,6 +17,7 @@ import stat
 import time
 import uuid
 from contextlib import closing, nullcontext
+from datetime import datetime, timezone
 from pathlib import Path
 
 import psutil
@@ -27,6 +28,7 @@ from .task_runtime.models import TaskKind, TaskStatus, utc_now
 from .task_runtime.repository import TERMINAL_STATUSES
 from .task_runtime.process_control import ProcessController
 from .training_bundle_cache import _is_link_like, _resolve_relative
+from .training_prepare_child import ensure_training_prepare_child
 
 
 MARKER = "workspace-lifecycle.json"
@@ -183,6 +185,11 @@ class TrainingWorkspaceLifecycle:
 
     def maintain(self, *, limit=4):
         """One bounded sweep over original terminal task truth; cursor is disposable."""
+        # Repair the same Web-created deterministic child after an interrupted
+        # parent/child commit; settle impossible parents with terminal children.
+        # Both operations are bounded and leave live worker leases untouched.
+        self._repair_missing_training_prepare_children(limit=8)
+        self.repository.settle_stranded_training_preparations(limit=8)
         limit = max(1, min(16, int(limit)))
         with closing(self.repository._connect()) as database:
             rows = database.execute(
@@ -214,6 +221,58 @@ class TrainingWorkspaceLifecycle:
                 if not isinstance(error, (RuntimeError, OSError, Timeout)):
                     self._record_maintenance_wait(task_id, "retryable", [type(error).__name__])
         return {"examined": len(rows), "deleted": deleted}
+
+    def _repair_missing_training_prepare_children(self, *, limit=8):
+        with closing(self.repository._connect()) as database:
+            rows = database.execute(
+                """SELECT parent.task_id, parent.project_id, parent.created_at,
+                          parent.priority, parent.payload_ref
+                     FROM tasks AS parent
+                     LEFT JOIN tasks AS child ON child.task_id='trainprep_' || parent.task_id
+                    WHERE parent.kind='TRAINING' AND parent.status='QUEUED'
+                      AND parent.required_capabilities='["training.input.ready"]'
+                      AND parent.stage='training_input_pending' AND child.task_id IS NULL
+                    ORDER BY parent.created_at LIMIT ?""",
+                (max(1, min(20, int(limit))),),
+            ).fetchall()
+        if not rows:
+            return
+        locks_dir = self.data_dir / "task_runtime" / "training_create_locks"
+        locks_dir.mkdir(parents=True, exist_ok=True)
+        for row in rows:
+            task_id = str(row["task_id"])
+            try:
+                # Give the HTTP creator time to finish its normal two inserts.
+                if datetime.now(timezone.utc).timestamp() - datetime.fromisoformat(
+                    str(row["created_at"]),
+                ).timestamp() < 45:
+                    continue
+                self.artifacts._validate_task_id(task_id)
+                with FileLock(str(locks_dir / f"{task_id}.lock"), timeout=0):
+                    parent = self.repository.get(task_id)
+                    if (parent is None or parent.status is not TaskStatus.QUEUED
+                            or parent.stage != "training_input_pending"
+                            or parent.required_capabilities != ("training.input.ready",)
+                            or self.repository.get(f"trainprep_{task_id}") is not None):
+                        continue
+                    payload = self.artifacts.read_json(task_id, parent.payload_ref, default={})
+                    if (not isinstance(payload, dict)
+                            or payload.get("training_prepare_task_id") != f"trainprep_{task_id}"
+                            or payload.get("training_input_state") != "PREPARING"
+                            or payload.get("project_id", parent.project_id) != parent.project_id):
+                        self.repository.fail_queued_precondition(
+                            task_id, "TRAINING_PREPARATION_PAYLOAD_INVALID: 无法恢复训练准备任务",
+                            stage="training_input_preparation_failed",
+                        )
+                        continue
+                    ensure_training_prepare_child(
+                        self.repository, self.artifacts, parent.project_id, task_id,
+                        f"trainprep_{task_id}", parent.priority,
+                    )
+            except (Timeout, OSError, ValueError, KeyError, sqlite3.OperationalError) as error:
+                # Existing scheduler retry and original task are authoritative;
+                # the next maintenance iteration can retry the same recovery.
+                logging.getLogger(__name__).debug("training preparation repair deferred: %s", error)
 
     def _record_maintenance_wait(self, task_id, status, blockers):
         """Diagnostics never replace an in-flight detach receipt or authorize deletion."""

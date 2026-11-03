@@ -4,12 +4,56 @@ import json
 import sqlite3
 import threading
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
 from platform_core.task_runtime import ArtifactStore, TaskKind, TaskRecord, TaskRepository, TaskStatus
 from platform_core.training_workspace_lifecycle import TrainingWorkspaceLifecycle, mark_training_workspace
+
+
+def test_maintenance_repairs_missing_deterministic_training_prepare_child(tmp_path):
+    data_dir = tmp_path / "data"
+    repo = TaskRepository(data_dir / "task_runtime" / "tasks.sqlite3")
+    artifacts = ArtifactStore(data_dir / "task_runtime" / "artifacts")
+    old = (datetime.now(timezone.utc) - timedelta(minutes=3)).isoformat()
+    parent = replace(TaskRecord.new(
+        "train_aaaaaaaaaaaaaaaa", "project-p", TaskKind.TRAINING,
+        "payload.json", "training:auto", required_capabilities=("training.input.ready",),
+    ), stage="training_input_pending", created_at=old)
+    repo.create(parent)
+    artifacts.atomic_write_json(parent.task_id, "payload.json", {
+        "training_prepare_task_id": f"trainprep_{parent.task_id}",
+        "training_input_state": "PREPARING", "project_id": parent.project_id,
+    })
+    TrainingWorkspaceLifecycle(data_dir, repo, artifacts).maintain()
+    child = repo.get(f"trainprep_{parent.task_id}")
+    assert child is not None
+    assert child.kind is TaskKind.TRAINING_PREPARE
+    assert child.required_capabilities == ("training.prepare",)
+    assert repo.get(parent.task_id).status is TaskStatus.QUEUED
+
+
+def test_maintenance_settles_terminal_prepare_child_without_reopening_parent(tmp_path):
+    data_dir = tmp_path / "data"
+    repo = TaskRepository(data_dir / "task_runtime" / "tasks.sqlite3")
+    artifacts = ArtifactStore(data_dir / "task_runtime" / "artifacts")
+    parent = replace(TaskRecord.new(
+        "train_bbbbbbbbbbbbbbbb", "project-p", TaskKind.TRAINING,
+        "payload.json", "training:auto", required_capabilities=("training.input.ready",),
+    ), stage="training_input_pending")
+    repo.create(parent)
+    child = TaskRecord.new(
+        f"trainprep_{parent.task_id}", parent.project_id,
+        TaskKind.TRAINING_PREPARE, "payload.json", "training-prepare:project-p",
+    )
+    repo.create(child)
+    repo.request_cancel(child.task_id)
+    service = TrainingWorkspaceLifecycle(data_dir, repo, artifacts)
+    service.maintain()
+    assert repo.get(parent.task_id).status is TaskStatus.CANCELLED
+    assert repo.settle_stranded_training_preparations() == 0
 
 
 @pytest.mark.parametrize("source", ["sample_outcomes", "sample_evidence"])

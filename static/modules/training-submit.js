@@ -618,7 +618,12 @@ export function installTrainingSubmitRuntime({
     const additional=[];
     const add=(code,error,transient=false)=>additional.push({code,message:String(error?.message||error),transient});
     const resourceLoad=currentRoot?.dataset?.workbenchMounted==='true'&&String(state.trainingCreationLoading?.projectId||'')===String(projectId?.()||'')?state.trainingCreationLoading?.resources:null;
-    if(resourceLoad&&resourceLoad.status!=='ready')add('resource-'+resourceLoad.status,resourceLoad.status==='loading'?'训练资源正在读取，请稍候':resourceLoad.error||'训练资源未就绪，请重新读取资源',resourceLoad.status==='loading');
+    // A background revalidation may be loading/failed while the previously
+    // loaded target is still usable. Only the absence of a usable selected
+    // target should stop a training creation.
+    const selectedTargetUsable=Boolean(selectedTarget&&!['unavailable','offline','disabled','error'].includes(String(selectedTarget.status||'').toLowerCase())&&
+      Array.isArray(selectedTarget.algorithms)&&selectedTarget.algorithms.length);
+    if(resourceLoad&&resourceLoad.status!=='ready'&&!selectedTargetUsable)add('resource-'+resourceLoad.status,resourceLoad.status==='loading'?'训练资源正在读取，请稍候':resourceLoad.error||'训练资源未就绪，请重新读取资源',resourceLoad.status==='loading');
     if(draft?.algorithmId&&!asset)add('algorithm-unavailable','当前算法身份不存在，请刷新算法列表');
     if(!projectId?.())add('project-unavailable','当前项目不可用，请重新选择项目');
     if(!selectedTarget)add('resource-unavailable','训练资源尚未就绪，请等待或重新读取配置',!selectedTargetId);
@@ -656,7 +661,7 @@ export function installTrainingSubmitRuntime({
     renderSupplementCandidateSummary(supplementContext);
     const button = submitButton();
     if (button) {
-      button.disabled = submitting || Boolean(pendingOutcome()) || Boolean(resourceLoad&&resourceLoad.status!=='ready');
+      button.disabled = submitting || Boolean(pendingOutcome()) || Boolean(resourceLoad&&resourceLoad.status!=='ready'&&!selectedTargetUsable);
       button.setAttribute?.('aria-busy',submitting?'true':'false');
       button.dataset.trainingSubmitOwner = 'TrainingSubmitRuntime';
       button.dataset.trainingSubmitReason = readiness.reason;
@@ -764,7 +769,10 @@ export function installTrainingSubmitRuntime({
     let creationAccepted = false;
     try {
       const resources=(getState?.()||{}).trainingCreationLoading;
-      if(submissionRoot?.dataset?.workbenchMounted==='true'&&resources&&String(resources.projectId||'')===String(projectId?.()||'')&&resources.resources?.status!=='ready'){
+      const selectedTargetId=String(document.getElementById?.('tr429Target')?.value||'');
+      const cachedTarget=(getState?.()?.targets||[]).find(row=>String(row?.id||'')===selectedTargetId);
+      const usableTarget=Boolean(cachedTarget&&!['unavailable','offline','disabled','error'].includes(String(cachedTarget.status||'').toLowerCase())&&Array.isArray(cachedTarget.algorithms)&&cachedTarget.algorithms.length);
+      if(submissionRoot?.dataset?.workbenchMounted==='true'&&resources&&String(resources.projectId||'')===String(projectId?.()||'')&&resources.resources?.status!=='ready'&&!usableTarget){
         notifyUser(resources.resources?.error||'训练资源尚未准备完成，请等待或重试');window.focusTrainingWorkbenchField?.('resource');return null;
       }
       setSubmitStage('sync-draft');

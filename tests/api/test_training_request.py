@@ -325,8 +325,8 @@ def test_background_bulk_scope_confirmation_is_authenticated_frozen_and_worker_v
     assert consent["task_id"] == request["task_id"]
     assert consent["actor_id"]
     assert consent["train_image_ids"] == request["train_image_ids"]
-    assert consent["material_revision"] == app_module.material_store(project_id).current_revision()
-    assert consent["annotation_revision"] == AnnotationRepository(app_module.project_dir(project_id)).current_revision()
+    assert consent["schema_version"] == 2
+    assert re.fullmatch(r"[0-9a-f]{64}", consent["selected_input_fingerprint"])
     replay = client.post(f"/api/v12/projects/{project_id}/train/start", json=request)
     assert replay.status_code == 202 and replay.json()["idempotent"] is True
     assert app_module.shared_task_artifacts().read_json(request["task_id"], "payload.json") == saved
@@ -342,10 +342,9 @@ def test_background_bulk_scope_confirmation_is_authenticated_frozen_and_worker_v
     assert after == before, "scope confirmations may not rewrite formal GT"
 
 
-def test_background_scope_confirmation_refuses_revision_drift_without_receipts(client, seeded_project):
+def test_background_scope_confirmation_ignores_unrelated_project_revisions(client, seeded_project):
     import app as app_module
     from platform_core.annotation_repository import AnnotationRepository
-    from platform_core.remote_training_tasks import RemoteTrainingPreparationError
 
     project_id, first = seeded_project
     _mark_training_ready(client, project_id, first)
@@ -368,9 +367,59 @@ def test_background_scope_confirmation_refuses_revision_drift_without_receipts(c
     }
     response = client.post(f"/api/v12/projects/{project_id}/train/start", json=request)
     assert response.status_code == 202, response.text
-    # A material update between the user's click and the worker must invalidate
-    # the assertion, even if the changed record is not one of the selected IDs.
+    # An unrelated material upload must not invalidate the selected-row consent.
     _upload_training_ready(client, project_id, "background-new-material.jpg", (19, 203, 108))
+    frozen = _freeze_admitted_training(app_module, request["task_id"])
+    assert frozen["label_contract"].get("task_negative_confirmations")
+    cancelled = client.post(
+        f"/api/v62/projects/{project_id}/tasks/{request['task_id']}/cancel",
+    )
+    assert cancelled.status_code == 200, cancelled.text
+    assert app_module.shared_task_repository().get(request["task_id"]).status.value == "CANCELLED"
+    assert app_module.shared_task_repository().get(
+        f"trainprep_{request['task_id']}",
+    ).status.value == "CANCELLED"
+
+
+@pytest.mark.parametrize("changed_truth", ["material", "annotation"])
+def test_background_scope_confirmation_rejects_changed_selected_truth_without_receipts(
+    client, seeded_project, changed_truth,
+):
+    import app as app_module
+    from platform_core.annotation_repository import AnnotationRepository
+    from platform_core.remote_training_tasks import RemoteTrainingPreparationError
+
+    project_id, first = seeded_project
+    _mark_training_ready(client, project_id, first)
+    others = [
+        _upload_training_ready(client, project_id, f"selected-stale-{i}.jpg", color)
+        for i, color in enumerate([(36, 57, 76), (87, 104, 121), (131, 157, 177), (181, 199, 214)])
+    ]
+    algorithm = client.post(f"/api/v12/projects/{project_id}/algorithms", json={
+        "name": "所选素材变化阻断", "algorithm_type": "yolo_ultralytics",
+    }).json()["algorithm"]
+    request = {
+        "task_id": app_module._new_training_task_id(),
+        "admission_mode": "background", "review_all_training_backgrounds": True,
+        "algorithm_asset_id": algorithm["id"], "model": "yolo11n.pt",
+        "split_mode": "random_test_from_training_pool",
+        "train_image_ids": [first["id"], *(row["id"] for row in others)],
+        "train_labels": ["fire", "smoke"], "history_policy": "new_for_algorithm",
+        "device": "cpu", "experiment_percent": 20, "validation_percent": 20,
+    }
+    response = client.post(f"/api/v12/projects/{project_id}/train/start", json=request)
+    assert response.status_code == 202, response.text
+    if changed_truth == "material":
+        app_module.material_store(project_id).patch({first["id"]: {"processing_status": "pending"}})
+    else:
+        current = client.get(f"/api/projects/{project_id}/annotations/{first['id']}").json()
+        changed = client.post(f"/api/projects/{project_id}/annotations/{first['id']}", json={
+            "boxes": [{"class_id": 0, "label": "fire", "x1": 11, "y1": 11, "x2": 81, "y2": 81}],
+            "expected_version": current["annotation"]["version"],
+            "source_content_sha256": current["image"]["content_sha256"],
+            "reviewed_label_codes": ["fire"],
+        })
+        assert changed.status_code == 200, changed.text
     with pytest.raises(RemoteTrainingPreparationError, match="TRAINING_BACKGROUND_CONFIRMATION_STALE"):
         _freeze_admitted_training(app_module, request["task_id"])
     repository = AnnotationRepository(app_module.project_dir(project_id))
