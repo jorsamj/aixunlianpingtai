@@ -1,5 +1,7 @@
 import hashlib
 import io
+import asyncio
+import threading
 from pathlib import Path
 
 from PIL import Image
@@ -9,6 +11,55 @@ def _png_bytes(index: int) -> bytes:
     output = io.BytesIO()
     Image.new("RGB", (96, 72), (index % 255, 80, 160)).save(output, format="PNG")
     return output.getvalue()
+
+
+def test_plain_upload_image_decode_and_batch_commit_never_run_on_event_loop(client, monkeypatch):
+    import app as app_module
+
+    project_id = client.post(
+        "/api/projects", json={"name": "plain-upload-offloop", "labels": []}
+    ).json()["id"]
+    original_add = app_module.add_image_record
+    original_end = app_module._v50_end_image_batch
+    original_manifest = app_module._plain_upload_manifest_sync
+    worker_threads = []
+    manifest_threads = []
+
+    def assert_no_running_event_loop():
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        raise AssertionError("synchronous image upload is blocking the ASGI event loop")
+
+    def checked_add(*args, **kwargs):
+        assert_no_running_event_loop()
+        worker_threads.append(threading.get_ident())
+        return original_add(*args, **kwargs)
+
+    def checked_commit(*args, **kwargs):
+        assert_no_running_event_loop()
+        worker_threads.append(threading.get_ident())
+        return original_end(*args, **kwargs)
+
+    def checked_manifest(*args, **kwargs):
+        assert_no_running_event_loop()
+        manifest_threads.append(threading.get_ident())
+        return original_manifest(*args, **kwargs)
+
+    monkeypatch.setattr(app_module, "add_image_record", checked_add)
+    monkeypatch.setattr(app_module, "_v50_end_image_batch", checked_commit)
+    monkeypatch.setattr(app_module, "_plain_upload_manifest_sync", checked_manifest)
+    response = client.post(
+        f"/api/projects/{project_id}/images",
+        files=[("files", (f"image-{i}.png", _png_bytes(i), "image/png")) for i in range(3)],
+        data={"upload_request_id": "offloop-manifest-and-commit"},
+    )
+    response.raise_for_status()
+    assert response.json()["uploaded_count"] == 3
+    assert len(worker_threads) == 4
+    assert len(set(worker_threads)) == 1
+    assert len(manifest_threads) == 1
 
 
 def test_plain_multi_image_upload_uses_batched_sqlite_truth(client, monkeypatch):

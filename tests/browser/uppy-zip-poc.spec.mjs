@@ -1,7 +1,7 @@
 import {test,expect} from '@playwright/test';
 import os from 'node:os';
 import path from 'node:path';
-import {archive,setup,open,add,upload,watch,successes,jobs,gateParts,cleanupInputs} from './helpers/uppy-zip.mjs';
+import {archive,setup,open,add,upload,watch,successes,jobs,gateParts,cleanupInputs,selectZipPositiveSample} from './helpers/uppy-zip.mjs';
 test.afterEach(()=>cleanupInputs());
 
 test('UP-01 UP-05 Chinese local lazy Dashboard DOM selection reaches original mapping and real imported JPEG GT',async({page,request})=>{
@@ -14,7 +14,8 @@ test('UP-01 UP-05 Chinese local lazy Dashboard DOM selection reaches original ma
  await expect.poll(async()=>(await jobs(request,project.id)).find(j=>j.file_name==='real-gt.zip')?.status,{timeout:30000}).toBe('selecting');const rows=await jobs(request,project.id);const job=rows.find(j=>j.file_name==='real-gt.zip');expect(job.status).toBe('selecting');
  await page.evaluate(id=>window.ZipImportRuntime.openTask(id),job.id);
  const dialog=page.getByRole('dialog',{name:'ZIP 数据导入'});await expect(dialog.locator('[data-zip-target]')).toHaveValue('object');
- await dialog.getByRole('button',{name:'确认标签并导入'}).click();
+ await selectZipPositiveSample(dialog);
+ await dialog.locator('[data-zip-confirm-button]').click();
  await expect.poll(async()=>(await jobs(request,project.id)).find(j=>j.id===job.id)?.status,{timeout:60000}).toBe('done');
  const material=await (await request.get(`/api/v61/projects/${project.id}/materials`)).json();expect(material.items[0].annotation_origin).toBe('imported');
  expect(material.items).toHaveLength(1);const gt=await (await request.get(`/api/projects/${project.id}/annotations/${material.items[0].id}`)).json();expect(gt.boxes).toHaveLength(1);
@@ -112,7 +113,7 @@ test('UP-07 Chinese Dashboard remains operable in four real Chrome viewports',as
 test('UP-05 external label is manually mapped by original review into canonical GT',async({page,request})=>{
  const project=await setup(page,request);await open(page);await watch(page);await add(page,[{name:'manual-label.zip',buffer:archive('manual',0,'helmet')}]);await upload(page);await successes(page,1);
  await expect.poll(async()=>(await jobs(request,project.id)).find(j=>j.file_name==='manual-label.zip')?.status,{timeout:30000}).toBe('selecting');const job=(await jobs(request,project.id)).find(j=>j.file_name==='manual-label.zip');await page.evaluate(id=>window.ZipImportRuntime.openTask(id),job.id);
- const dialog=page.getByRole('dialog',{name:'ZIP 数据导入'});await expect(dialog.locator('[data-zip-target]')).toHaveValue('');await dialog.locator('[data-zip-target]').selectOption('object');await dialog.getByRole('button',{name:'确认标签并导入'}).click();await expect.poll(async()=>(await jobs(request,project.id)).find(j=>j.id===job.id)?.status,{timeout:30000}).toBe('done');const material=await (await request.get(`/api/v61/projects/${project.id}/materials`)).json();expect(material.items[0].annotation_preview[0].label).toBe('object');
+ const dialog=page.getByRole('dialog',{name:'ZIP 数据导入'});await expect(dialog.locator('[data-zip-target]')).toHaveValue('');await dialog.locator('[data-zip-target]').selectOption('object');await selectZipPositiveSample(dialog);await dialog.locator('[data-zip-confirm-button]').click();await expect.poll(async()=>(await jobs(request,project.id)).find(j=>j.id===job.id)?.status,{timeout:30000}).toBe('done');const material=await (await request.get(`/api/v61/projects/${project.id}/materials`)).json();expect(material.items[0].annotation_preview[0].label).toBe('object');
 });
 
 test('UP-04 unknown completion and unavailable query preserves single durable task without repost',async({page,request})=>{

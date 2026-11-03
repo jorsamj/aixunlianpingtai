@@ -72,6 +72,12 @@ const inputDirectories=[];
 export function cleanupInputs(){for(const dir of inputDirectories.splice(0))fs.rmSync(dir,{recursive:true,force:true});}
 export async function add(page,files){const dir=fs.mkdtempSync(path.join(os.tmpdir(),'uppy-browser-input-'));inputDirectories.push(dir);const paths=files.map(f=>{const p=path.join(dir,f.name);fs.writeFileSync(p,f.buffer);return p;});await page.locator('.uppy-Dashboard-input').first().setInputFiles(paths);}
 export async function upload(page){await page.locator('.uppy-StatusBar-actionBtn--upload').click();}
+export async function selectZipPositiveSample(scope){
+  const kind=scope.locator('.zip-upload-sample-kind');
+  if(!await kind.count())return;
+  await kind.locator('input[type="radio"]').first().check();
+  await kind.locator('.zip-sample-categories input[type="checkbox"]').first().check();
+}
 export async function watch(page){await page.evaluate(()=>{window.__zipEvents=[];window.__zipOff?.();window.__zipOff=window.ZipImportRuntime.subscribeTransfers(e=>window.__zipEvents.push({type:e.type,uploadId:e.uploadId,jobId:e.jobId,name:e.file?.name,loaded:e.loaded,total:e.total}));});}
 export async function successes(page,n){await expect.poll(()=>page.evaluate(()=>window.__zipEvents.filter(e=>e.type==='success').length),{timeout:60000}).toBe(n);return page.evaluate(()=>window.__zipEvents.filter(e=>e.type==='success'));}
 export async function jobs(request,id){return (await (await request.get(`/api/v19/projects/${id}/import/jobs`)).json()).items||[];}

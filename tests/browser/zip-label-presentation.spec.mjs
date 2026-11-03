@@ -1,5 +1,5 @@
 import {test,expect} from '@playwright/test';
-import {archive,setup,open,add,upload,watch,successes,jobs,cleanupInputs} from './helpers/uppy-zip.mjs';
+import {archive,setup,open,add,upload,watch,successes,jobs,cleanupInputs,selectZipPositiveSample} from './helpers/uppy-zip.mjs';
 
 test.afterEach(()=>cleanupInputs());
 async function uploadOne(page,request,name='automatic.zip'){
@@ -9,7 +9,12 @@ async function uploadOne(page,request,name='automatic.zip'){
  return {project,id:event.jobId};
 }
 const review=page=>page.locator('.zip-label-confirm[data-review-key]');
-async function confirm(page){await review(page).locator('[data-zip-target]').selectOption('object');await review(page).locator('[data-zip-confirm-button]').click();}
+async function confirm(page){
+  await selectZipPositiveSample(review(page));
+  const target=review(page).locator('[data-zip-target]');
+  if(await target.count())await target.selectOption('object');
+  await review(page).locator('[data-zip-confirm-button]').click();
+}
 
 test('ZIP foreground scan automatically opens the original review without a task-center click',async({page,request})=>{
  const {id}=await uploadOne(page,request);

@@ -186,6 +186,8 @@ def test_unified_cancel_rejects_commit_fence_and_completed_imports(client):
 
 def test_start_and_cancel_are_serialized_by_the_same_job_fence(client, monkeypatch):
     project_id = _project(client)
+    label = client.post(f'/api/projects/{project_id}/labels', json={'label': 'object'})
+    assert label.status_code == 200
     response = _selecting_job(client, project_id, 'start-cancel-fence')
     response.raise_for_status()
     job_id = response.json()['id']
@@ -211,7 +213,8 @@ def test_start_and_cancel_are_serialized_by_the_same_job_fence(client, monkeypat
     cancel_result = {}
     start_thread = threading.Thread(target=lambda: start_result.setdefault(
         'response', client.post(
-            f'/api/v19/projects/{project_id}/import/jobs/{job_id}/start', json={},
+            f'/api/v19/projects/{project_id}/import/jobs/{job_id}/start',
+            json={'sample_type': 'positive', 'intended_label_codes': ['object']},
         ),
     ))
     cancel_thread = threading.Thread(target=lambda: cancel_result.setdefault(

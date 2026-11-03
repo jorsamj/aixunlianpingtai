@@ -4934,21 +4934,26 @@ async def _plain_upload_manifest(files: Sequence[UploadFile]) -> List[Dict[str, 
     Hash in bounded chunks and restore each input stream before the existing
     image upload path. This runs only for uploads that supply a request ID.
     """
+    return await asyncio.to_thread(_plain_upload_manifest_sync, files)
+
+
+def _plain_upload_manifest_sync(files: Sequence[UploadFile]) -> List[Dict[str, Any]]:
     manifest = []
     for file in files:
         filename = safe_filename(file.filename or "image.jpg")
         digest = hashlib.sha256()
         byte_count = 0
-        await file.seek(0)
+        stream = file.file
+        stream.seek(0)
         try:
             while True:
-                chunk = await file.read(1024 * 1024)
+                chunk = stream.read(1024 * 1024)
                 if not chunk:
                     break
                 digest.update(chunk)
                 byte_count += len(chunk)
         finally:
-            await file.seek(0)
+            stream.seek(0)
         manifest.append({
             "name": filename,
             "size": byte_count,
@@ -5141,7 +5146,6 @@ async def _plain_upload_images_claimed(
     get_project(project_id)
     if bool(mining_algorithm_id) != bool(mining_version_id):
         raise HTTPException(status_code=422, detail="上传困难样本挖掘必须同时指定算法与版本")
-    uploaded, failed = [], []
     store = upload_batch_store(project_id)
     request_id = str(upload_request_id or "").strip()
     batch_id = request_id or uuid.uuid4().hex[:12]
@@ -5162,12 +5166,16 @@ async def _plain_upload_images_claimed(
         if not receipt_created:
             request_status = str(receipt.get("upload_request_status") or "").upper()
             if request_status == "SUCCEEDED":
-                replay = _plain_upload_replay_response(project_id, receipt)
-                return _plain_upload_mining_outcome(
-                    replay, project_id, mining_algorithm_id, mining_version_id,
+                return await asyncio.to_thread(
+                    lambda: _plain_upload_mining_outcome(
+                        _plain_upload_replay_response(project_id, receipt),
+                        project_id, mining_algorithm_id, mining_version_id,
+                    ),
                 )
             if request_status == "PROCESSING":
-                return _plain_upload_recover_receipt(project_id, store, receipt)
+                return await asyncio.to_thread(
+                    _plain_upload_recover_receipt, project_id, store, receipt,
+                )
             raise PlatformError(
                 "UPLOAD_REQUEST_FAILED", "该上传批次此前失败",
                 str(receipt.get("upload_request_error") or "该上传批次此前失败，请重新选择失败素材"),
@@ -5182,6 +5190,24 @@ async def _plain_upload_images_claimed(
         if receipt_created:
             store.fail_upload_request(batch_id, error=str(error.message), failed_at=now_iso())
         raise
+    # UploadFile async methods wrap synchronous file I/O; image decoding,
+    # remote storage and SQLite commits must not run on the ASGI event loop.
+    # The complete batch stays on one worker thread for thread-local fencing.
+    return await asyncio.to_thread(
+        _plain_upload_commit_sync,
+        project_id, files, dataset_id, storage_source_id, batch_id,
+        receipt_created, store, source_generation,
+        mining_algorithm_id, mining_version_id,
+    )
+
+
+def _plain_upload_commit_sync(
+    project_id: str, files: List[UploadFile], dataset_id: str,
+    storage_source_id: str, batch_id: str, receipt_created: bool,
+    store: UploadBatchStore, source_generation: tuple[Any, ...],
+    mining_algorithm_id: str, mining_version_id: str,
+) -> Dict[str, Any]:
+    uploaded, failed = [], []
     started = time.time()
     material_commit_started = False
     _v50_begin_image_batch(project_id)
@@ -5193,8 +5219,8 @@ async def _plain_upload_images_claimed(
                 failed.append({"name": filename, "reason": "不支持的图片格式"})
                 continue
             try:
-                await file.seek(0)
                 stream = file.file
+                stream.seek(0)
                 stream.seek(0, os.SEEK_END)
                 size_bytes = stream.tell()
                 stream.seek(0)
@@ -23413,10 +23439,14 @@ def v55_apply_upload_batch_decisions(
             raise HTTPException(status_code=400, detail='上传批次清洗任务关联不完整')
         associated_clean_set = set(associated_clean_ids)
         if clean_ids:
-            indexed = {
-                str(row.get('id')): row
-                for row in material_store(project_id).get_many(sorted(clean_ids))
-            }
+            materials = material_store(project_id)
+            indexed = {}
+            sorted_clean_ids = sorted(clean_ids)
+            for offset in range(0, len(sorted_clean_ids), 500):
+                indexed.update({
+                    str(row.get('id')): row
+                    for row in materials.get_many(sorted_clean_ids[offset:offset + 500])
+                })
             not_unannotated = []
             for image_id in sorted(clean_ids):
                 row = indexed.get(image_id) or {}
@@ -23543,7 +23573,7 @@ def v55_apply_upload_batch_decisions(
 
         try:
             store._write_unlocked(batch_id, updated)
-            material_store(project_id).mutate(apply_material_decisions)
+            material_store(project_id).mutate_ids(affected_ids, apply_material_decisions)
             if clean_task_id:
                 _v62_publish_clean_compat(project_id, clean_task_id)
         except Exception as error:
@@ -23566,7 +23596,7 @@ def v55_apply_upload_batch_decisions(
                                 row[field] = value
                             else:
                                 row.pop(field, None)
-                material_store(project_id).mutate(restore_material_decisions)
+                material_store(project_id).mutate_ids(backups, restore_material_decisions)
             if prepared_created and clean_task_id:
                 _v47_remove_prepared_clean_task_record(project_id, clean_task_id)
             elif failed_task_snapshot and clean_task_id:

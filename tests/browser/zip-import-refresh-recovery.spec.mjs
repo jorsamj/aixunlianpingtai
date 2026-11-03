@@ -1,4 +1,5 @@
 import {test, expect} from '@playwright/test';
+import {selectZipPositiveSample} from './helpers/uppy-zip.mjs';
 
 async function selectIsolatedTestProject(page, projectId) {
   await page.route('**/api/v53/bootstrap/snapshot**', async route => {
@@ -83,6 +84,30 @@ async function createSelectingZipJob(request, projectId, {className = 'object', 
   return body;
 }
 
+test('ZIP without external classes can choose a sample kind without a page exception', async ({page, request}) => {
+  const project = await createProject(request, [{code:'object',display_name:'对象'}]);
+  const response = await request.post(`/api/v19/projects/${project.id}/datasets/default/import/jobs`, {
+    multipart: {file: {name:'no-class.zip',mimeType:'application/zip',buffer:storedZip([
+      ['images/train/no-class.jpg', Buffer.from('scan-only-image')],
+    ])}},
+  });
+  expect(response.ok()).toBeTruthy();
+  const job = await response.json();
+  expect(job.sample_classification_required).toBe(true);
+  await selectIsolatedTestProject(page,project.id);
+  const errors=[];
+  page.on('pageerror',error=>errors.push(error.message));
+  await page.goto('/');
+  await expect.poll(()=>page.evaluate(()=>Boolean(state.uiReady&&window.ZipImportRuntime))).toBe(true);
+  await page.evaluate(id=>window.ZipImportRuntime.openTask(id),job.id);
+  const review=page.locator(`.zip-label-confirm[data-review-key="${job.id}"]`);
+  await expect(review).toBeVisible();
+  await expect(review.locator('.label-mapping-review-rows')).toHaveCount(0);
+  await selectZipPositiveSample(review);
+  await expect(review.locator('[data-zip-confirm-button]')).toBeEnabled();
+  expect(errors).toEqual([]);
+});
+
 test('exact English source label reuses existing canonical code without recreating it', async ({page, request}) => {
   await page.setViewportSize({width: 1366, height: 768});
   const project = await createProject(request, [
@@ -121,8 +146,10 @@ test('exact English source label reuses existing canonical code without recreati
   const target = importDialog.locator('[data-zip-target]');
   await expect(target).toHaveValue('object');
   await expect(target.locator('option[value="__create__"]')).toHaveCount(0);
-  const confirmButton = importDialog.getByRole('button',{name:'确认标签并导入'});
+  await selectZipPositiveSample(importDialog);
+  const confirmButton = importDialog.locator('[data-zip-confirm-button]');
   await expect(confirmButton).toBeEnabled();
+  await confirmButton.scrollIntoViewIfNeeded();
   await expect(confirmButton).toBeInViewport();
   const confirmBox = await confirmButton.boundingBox();
   expect(confirmBox).not.toBeNull();
@@ -137,7 +164,7 @@ test('exact English source label reuses existing canonical code without recreati
     res.request().method() === 'POST' &&
     new URL(res.url()).pathname === `/api/v19/projects/${project.id}/import/jobs/${job.id}/start`
   );
-  await importDialog.getByRole('button', {name: '确认标签并导入'}).click();
+  await confirmButton.click();
   const startRequest = await startRequestPromise;
   const startResponse = await startResponsePromise;
   expect(startResponse.ok()).toBeTruthy();
@@ -147,7 +174,7 @@ test('exact English source label reuses existing canonical code without recreati
 });
 
 test('single-step original label mapping creates formal labels only at final import confirmation', async ({page, request}) => {
-  const project = await createProject(request);
+  const project = await createProject(request,[{code:'object',display_name:'对象'}]);
   const job = await createSelectingZipJob(request, project.id, {className: 'helmet', fileName: 'one-step-helmet.zip'});
   expect(job.label_confirmation_required).toBeTruthy();
   await selectIsolatedTestProject(page, project.id);
@@ -174,6 +201,7 @@ test('single-step original label mapping creates formal labels only at final imp
   await importDialog.getByRole('button',{name:'一键使用原始标签'}).click();
   await expect(target).toHaveValue('helmet');
   await expect(importDialog.locator('.zip-label-pending')).toContainText('helmet');
+  await selectZipPositiveSample(importDialog);
   await expect(importDialog.getByRole('button',{name:'创建标签并导入'})).toBeEnabled();
   await expect(taskCenter).toHaveCSS('z-index','900');
   expect(labelPosts).toHaveLength(0);

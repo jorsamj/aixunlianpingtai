@@ -4,6 +4,7 @@ import json
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
+import pytest
 
 import platform_core.material_repository as material_repository_module
 from platform_core.material_repository import MaterialRepository
@@ -345,6 +346,36 @@ def test_compatibility_mutate_only_rewrites_changed_rows(tmp_path, monkeypatch):
     assert repository.mutate(change_one) == "image-1"
     assert written == ["image-1"]
     assert repository.get("image-2")["processing_status"] == "processed"
+
+
+def test_mutate_ids_reads_only_requested_materials_and_preserves_identity(tmp_path, monkeypatch):
+    repository = MaterialRepository(tmp_path)
+    repository.upsert_many([material(f"image-{index:04x}") for index in range(1200)])
+    original_payload = MaterialRepository._row_payload
+    decoded = []
+
+    def tracked_payload(row):
+        decoded.append(str(row["id"]))
+        return original_payload(row)
+
+    monkeypatch.setattr(MaterialRepository, "_row_payload", staticmethod(tracked_payload))
+    revision = repository.current_revision()
+    target = "image-02af"
+    assert repository.mutate_ids([target, target], lambda rows: rows[0].update(
+        processing_status="cleaning") or len(rows)) == 1
+    assert decoded == [target]
+    monkeypatch.setattr(MaterialRepository, "_row_payload", staticmethod(original_payload))
+    assert repository.current_revision() == revision + 1
+    assert repository.get(target)["processing_status"] == "cleaning"
+    assert repository.get("image-0001")["processing_status"] == "processed"
+
+    revision = repository.current_revision()
+    assert repository.mutate_ids([], lambda rows: len(rows)) == 0
+    assert repository.current_revision() == revision
+    with pytest.raises(ValueError, match="身份"):
+        repository.mutate_ids([target], lambda rows: rows[0].update(id="elsewhere"))
+    assert repository.get(target)["id"] == target
+    assert repository.current_revision() == revision
 
 
 def test_find_existing_content_hashes_streams_normalized_single_pass_batches(tmp_path, monkeypatch):

@@ -25,7 +25,7 @@ function bmp(width = 40, height = 30, rgb = [42, 120, 210]) {
 }
 
 async function createProject(request) {
-  const response = await request.post('/api/projects', {data: {name: `分批上传-${Date.now()}`, labels: []}});
+  const response = await request.post('/api/projects', {data: {name: `分批上传-${Date.now()}`, labels: [{code:'object',display_name:'对象'}]}});
   expect(response.ok()).toBeTruthy();
   return response.json();
 }
@@ -100,10 +100,14 @@ for(const corrupt of [false,true])test(`Uppy five image receipt workspace ${corr
  await workspace.locator('[data-preview]').first().click();await expect(page.getByRole('dialog',{name:'图片详情',exact:true})).toBeVisible();await page.evaluate(()=>window.closeModal());
  if(corrupt){
   await expect(workspace).toContainText('上传失败 1 张');await page.reload();await expect(page.locator('[data-upload-confirmation] .uc-grid article')).toHaveCount(4);
+  await page.locator('[data-upload-confirmation] input[name="uc-kind"][value="positive"]').check();
+  await page.locator('[data-upload-confirmation] [data-uc-label="object"]').check();
   await page.locator('[data-upload-confirmation] [data-id]').first().check();await page.getByRole('button',{name:'开始清洗',exact:true}).click();await expect(page.locator('[data-upload-confirmation]')).toContainText('已提交清洗');
   const mixed=await(await request.get(`/api/v55/projects/${project.id}/upload-batches/${stored.batchIds[0]}`)).json();expect(mixed.clean_task_id).toBeTruthy();expect(mixed.items.filter(row=>row.decision==='clean')).toHaveLength(1);expect(mixed.items.filter(row=>row.decision==='pending')).toHaveLength(3);
   await page.getByRole('button',{name:'稍后处理',exact:true}).click();await page.reload();await expect.poll(()=>page.evaluate(()=>state.uiReady)).toBe(true);await expect(page.locator('[data-upload-confirmation] .uc-workspace')).toHaveCount(0);await expect(page.locator('[data-upload-confirmation]')).toContainText('3 张待处理');expect(errors).toEqual([]);return;
  }
+ await workspace.locator('input[name="uc-kind"][value="positive"]').check();
+ await workspace.locator('[data-uc-label="object"]').check();
  await workspace.locator('[data-upload-action=all]').check();await workspace.getByRole('button',{name:'无需清洗，进入标注',exact:true}).click();await expect(page.locator('.ann420-stable')).toBeVisible();
  const after=await(await request.get(`/api/v55/projects/${project.id}/upload-batches/${stored.batchIds[0]}`)).json();expect(after.items.every(row=>row.decision==='ready'&&row.image.annotation_state==='unannotated')).toBe(true);
  await page.reload();await expect.poll(()=>page.evaluate(()=>state.uiReady)).toBe(true);await expect(page.locator('.ann420-stable')).toHaveCount(0);await expect(page.locator('[data-upload-confirmation] .uc-workspace')).toHaveCount(0);expect(errors).toEqual([]);

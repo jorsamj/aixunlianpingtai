@@ -864,15 +864,15 @@ def test_clean_task_creation_failure_rolls_back_batch_and_material(client, monke
         def __getattr__(self, name):
             return getattr(persisted_store, name)
 
-        def mutate(self, fn):
+        def mutate_ids(self, image_ids, fn):
             if not self.failed:
                 self.failed = True
-                persisted_store.mutate(fn)
+                persisted_store.mutate_ids(image_ids, fn)
                 persisted_store.patch(
                     {image_id: {"concurrent_review_note": "preserve-me"}}
                 )
                 raise RuntimeError("injected material publication failure")
-            return persisted_store.mutate(fn)
+            return persisted_store.mutate_ids(image_ids, fn)
 
     failing_store = FailingMaterialStore()
     monkeypatch.setattr(

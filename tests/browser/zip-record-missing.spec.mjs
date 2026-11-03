@@ -62,7 +62,7 @@ test('another tab can clear completed history without stranding a stale RUNNING 
     multipart:{file:{name:'real-evidence.zip',mimeType:'application/zip',buffer:archive('real-evidence')}}});
   expect(created.ok()).toBeTruthy();const job=await created.json();
   await page.evaluate(()=>window.ZipImportRuntime.reconcile('manual'));
-  const started=await request.post(`/api/v19/projects/${p.id}/import/jobs/${job.id}/start`,{data:{selected_paths:[],label_mapping:{'0':'object'}}});
+  const started=await request.post(`/api/v19/projects/${p.id}/import/jobs/${job.id}/start`,{data:{selected_paths:[],label_mapping:{'0':'object'},sample_type:'positive',intended_label_codes:['object']}});
   expect(started.ok()).toBeTruthy();
   await expect.poll(async()=> (await (await request.get(`/api/v19/projects/${p.id}/import/jobs/${job.id}`)).json()).status).toBe('done');
   const reviewUrl=`/api/v52/projects/${p.id}/import/jobs/${job.id}/review`;

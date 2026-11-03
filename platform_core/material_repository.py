@@ -1630,6 +1630,59 @@ class MaterialRepository:
         return self._row_payload(row) if row else None
 
     @controlled_material_write_fence
+    def mutate_ids(
+        self, image_ids: Iterable[str],
+        fn: Callable[[list[dict[str, Any]]], _Result],
+    ) -> _Result:
+        """Atomically mutate existing rows by primary key without a full scan.
+
+        Callbacks cannot insert, delete or rename rows; a failed transaction
+        leaves the canonical material and annotation indexes unchanged.
+        """
+        ids = list(dict.fromkeys(str(value).strip() for value in image_ids if str(value).strip()))
+        with closing(self._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            try:
+                stored = []
+                for offset in range(0, len(ids), 500):
+                    chunk = ids[offset:offset + 500]
+                    placeholders = ",".join("?" for _ in chunk)
+                    stored.extend(database.execute(
+                        f"SELECT id, payload_json FROM materials WHERE id IN ({placeholders})",
+                        chunk,
+                    ).fetchall())
+                before = {str(row["id"]): str(row["payload_json"]) for row in stored}
+                by_id = {str(row["id"]): self._row_payload(row) for row in stored}
+                rows = [by_id[image_id] for image_id in ids if image_id in by_id]
+                result = fn(rows)
+                if len(rows) != len(before):
+                    raise ValueError("定点素材修改不能添加或删除记录")
+                after = {}
+                for value in rows:
+                    normalized = normalize_material(value)
+                    image_id = normalized["id"]
+                    if image_id not in before or image_id in after:
+                        raise ValueError("定点素材修改不能更改素材身份或产生重复 ID")
+                    after[image_id] = normalized
+                if set(after) != set(before):
+                    raise ValueError("定点素材修改不能添加或删除记录")
+                changed = False
+                for image_id in ids:
+                    if image_id not in after:
+                        continue
+                    payload = json.dumps(after[image_id], ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+                    if before[image_id] != payload:
+                        self._write_row(database, after[image_id])
+                        changed = True
+                if changed:
+                    self._bump_revision(database)
+                database.execute("COMMIT")
+            except Exception:
+                database.execute("ROLLBACK")
+                raise
+        return result
+
+    @controlled_material_write_fence
     def mutate(self, fn: Callable[[list[dict[str, Any]]], _Result]) -> _Result:
         """Compatibility transaction for legacy callers without full-table rewrite.
 

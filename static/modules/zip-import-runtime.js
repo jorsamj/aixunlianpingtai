@@ -740,7 +740,9 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
     if(oldPanel&&next&&String(next.getAttribute('data-review-key')||'')===id){
       next.querySelector('[data-zip-class-samples]')?.replaceWith(oldPanel);
     }
-    if(next)next.querySelector('.label-mapping-review-rows').scrollTop=listScroll;
+    // Classless ZIPs display a sample-kind choice without external mapping rows.
+    const nextRows=next?.querySelector('.label-mapping-review-rows');
+    if(nextRows)nextRows.scrollTop=listScroll;
     mountLabelReviewPagination(id);
     return true;
   }
