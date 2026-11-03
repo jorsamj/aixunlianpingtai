@@ -103,6 +103,8 @@ test('training create canonical owner uses deterministic repaint points instead 
   assert.match(app.slice(benchmarkStart, benchmarkEnd), /if\(paint\)renderSplit\(\)/);
 
   assert.match(openOwner, /applyDevices\(cachedDevices,\{persist:false,paint:false\}\)/);
-  assert.match(openOwner, /loadTrainingBenchmarkReuseV1\(algorithmId,\{paint:false\}\)/);
+  assert.doesNotMatch(openOwner, /loadTrainingBenchmarkReuseV1\(algorithmId,\{paint:false\}\)/);
+  assert.match(openOwner, /state\.trainingBenchmarkReuse=\{algorithm_id:algorithmId,available:false,idle:true,loading:false/);
+  assert.match(app, /window\.checkTrainingBenchmarkReuseV1=\(\)=>/);
   assert.equal((openOwner.match(/renderSplit\(\);/g) || []).length, 1);
 });

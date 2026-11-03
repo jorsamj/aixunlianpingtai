@@ -1,3 +1,5 @@
+import {withRequestDeadline} from './api.js?v=20261021s';
+
 function unique(values) {
   return [...new Set((values || []).map(value => String(value || '').trim()).filter(Boolean))];
 }
@@ -150,6 +152,7 @@ export function installTrainingLabelRuntime({
   let destroyed = false;
   let refreshQueued = false;
   let basePreviewSequence = 0;
+  let basePreviewController = null;
   let basePreview = {key: '', status: 'idle', labels: [], versionName: '', error: ''};
   let panelSignature='';
   let filterQuery='';
@@ -184,6 +187,8 @@ export function installTrainingLabelRuntime({
 
   const resetBasePreview = () => {
     basePreviewSequence += 1;
+    basePreviewController?.abort?.();
+    basePreviewController = null;
     basePreview = {key: '', status: 'idle', labels: [], versionName: '', error: ''};
   };
 
@@ -194,12 +199,20 @@ export function installTrainingLabelRuntime({
       return;
     }
     if (basePreview.key === key && ['loading', 'ready', 'error'].includes(basePreview.status)) return;
-    if (typeof request !== 'function') return;
+    if (typeof request !== 'function') {
+      basePreview = {key, status: 'error', labels: [], versionName: '', error: '继承标签接口不可用'};
+      return;
+    }
+    basePreviewController?.abort?.();
+    basePreviewController = new AbortController();
+    const controller = basePreviewController;
     const [pid, algorithmId, baseVersionId] = key.split(':');
     const sequence = ++basePreviewSequence;
     basePreview = {key, status: 'loading', labels: [], versionName: '', error: ''};
     const url = `/api/v62/projects/${encodeURIComponent(pid)}/training-labels/inherited?algorithm_id=${encodeURIComponent(algorithmId)}&base_version_id=${encodeURIComponent(baseVersionId)}`;
-    Promise.resolve(request(url))
+    withRequestDeadline(signal => request(url, {signal}), {
+      timeoutMs: 20000, signal: controller.signal, label: '继承标签读取',
+    })
       .then(result => {
         if (destroyed || sequence !== basePreviewSequence || basePreview.key !== key) return;
         const rows = Array.isArray(result?.labels) ? result.labels : [];
@@ -219,7 +232,7 @@ export function installTrainingLabelRuntime({
         if (destroyed || sequence !== basePreviewSequence || basePreview.key !== key) return;
         basePreview = {key, status: 'error', labels: [], versionName: '', error: String(error?.message || error || '读取失败')};
         queueRefresh();
-      });
+      }).finally(() => {if (basePreviewController === controller) basePreviewController = null;});
   };
 
   const syncDraftLabels = (state, codes) => {
@@ -233,7 +246,8 @@ export function installTrainingLabelRuntime({
     // Never use local Material projection/visible-page labels as formal GT.
     if (!materialSummaryRuntime) return [];
     if (!materialSummaryRuntime.summaryReadyFor?.(ids)) {
-      void materialSummaryRuntime.refresh?.(ids);
+      const status = materialSummaryRuntime.state?.() || {};
+      if (!status.loading && !status.lastError) void materialSummaryRuntime.refresh?.(ids);
       // Rechecking task roles after selecting a label must not tear down the
       // active checkbox list. A confirmed project/material GT snapshot stays
       // usable for label choices until those materials or GT are invalidated.
@@ -297,20 +311,24 @@ export function installTrainingLabelRuntime({
       panelSignature='';labelRows=[];labelPage=1;filterQuery=String(document.getElementById('trainUiLabelSearch')?.value||'').trim().toLowerCase();
     }
 
+    const summaryError = ids.length && !materialSummaryRuntime?.summaryReadyFor?.(ids)
+      ? String(materialSummaryRuntime?.state?.()?.lastError || '') : '';
+    if (summaryError) {
+      panelSignature='';labelRows=[];
+      panel.innerHTML = `<div class="training-label-contract-head"><div><b>训练标签</b><small>所选素材的正式标签摘要读取失败。</small></div><span class="training-label-contract-count">需重试</span></div><div class="training-label-warning">${esc(summaryError)} <button class="btn mini" type="button" onclick="TrainingLabelRuntime.retrySelectedSummary()">重新读取训练标签</button></div>`;
+      return true;
+    }
+    if (hasBaseVersion && previewCurrent && basePreview.status === 'error') {
+      panelSignature='';labelRows=[];
+      panel.innerHTML = `<div class="training-label-contract-head"><div><b>训练标签</b><small>上一版本标签暂未读取成功。</small></div><span class="training-label-contract-count">需重试</span></div><div class="training-label-warning">${esc(basePreview.error)} <button class="btn mini" type="button" onclick="TrainingLabelRuntime.retryInheritance()">重新读取继承标签</button></div>`;
+      return true;
+    }
     if (availableCodes === null || (hasBaseVersion && (!previewCurrent || basePreview.status === 'loading' || basePreview.status === 'idle'))) {
       panelSignature='';labelRows=[];
       panel.innerHTML = `
         <div class="training-label-contract-head"><div><b>训练标签</b><small>正在准备本次训练的标签范围。</small></div><span class="training-label-contract-count">读取中</span></div>
         ${hasBaseVersion ? '<div class="training-label-base"><div class="training-label-base-title"><b>上一版本继承</b><small>自动继承</small></div><div class="training-label-base-loading">正在读取继承标签</div></div>' : ''}
         <div class="training-label-material"><div class="training-label-material-head"><b>本次训练标签</b><small>默认不选</small></div><div class="training-label-contract-list"><span class="training-label-empty">正在读取训练标签…</span></div></div>`;
-      return true;
-    }
-
-    if (hasBaseVersion && previewCurrent && basePreview.status === 'error') {
-      panelSignature='';labelRows=[];
-      panel.innerHTML = `
-        <div class="training-label-contract-head"><div><b>训练标签</b><small>上一版本标签暂未读取成功。</small></div><span class="training-label-contract-count">需重试</span></div>
-        <div class="training-label-warning">继承标签读取失败，请关闭后重新打开训练窗口。</div>`;
       return true;
     }
 
@@ -421,6 +439,8 @@ export function installTrainingLabelRuntime({
     build: 'module-4226464',
     refresh,
     queueRefresh,
+    retryInheritance(){resetBasePreview();queueRefresh();},
+    retrySelectedSummary(){void Promise.resolve(materialSummaryRuntime?.refresh?.(selectedIds(getState?.()),{force:true})).finally(queueRefresh);},
     filter(value){const next=String(value||'').trim().toLowerCase();if(next!==filterQuery){filterQuery=next;labelPage=1;paintPage()}},
     selectedIds: () => selectedIds(getState?.()),
     state() {
@@ -436,6 +456,7 @@ export function installTrainingLabelRuntime({
     },
     destroy() {
       destroyed = true;
+      resetBasePreview();
       unsubscribeDraft();
       modalObserver?.disconnect();
       if (window.TrainingLabelRuntime === runtime) window.TrainingLabelRuntime = null;

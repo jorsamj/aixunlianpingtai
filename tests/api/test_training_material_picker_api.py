@@ -382,6 +382,49 @@ def test_gt_page_reuses_attached_snapshot_for_negative_revisions(tmp_path, monke
     assert page["negative_pool_revision"] == expected_pool_revision
 
 
+def test_picker_deferred_count_serves_first_page_without_full_scan(tmp_path, monkeypatch):
+    client, repository = _client(tmp_path)
+    annotations = AnnotationRepository(repository.project_path)
+
+    def forbidden_count(*_args, **_kwargs):
+        raise AssertionError("deferred picker must not calculate the entire filtered pool")
+
+    monkeypatch.setattr(picker_module, "_gt_filtered_count_snapshot", forbidden_count)
+    first = picker_module._gt_material_filter_page(
+        repository, annotations, limit=20, page=1, count_mode="deferred",
+    )
+    assert len(first["items"]) == 20
+    assert first["total"] is None
+    assert first["has_next"] is True
+
+    endpoint = "/api/v62/projects/p1/training-materials"
+    public_first = client.get(endpoint, params={"page": 1, "page_size": 20, "count_mode": "deferred"})
+    assert public_first.status_code == 200
+    assert public_first.json()["total"] is None
+    assert public_first.json()["has_next"] is True
+    public_last = client.get(endpoint, params={"page": 14, "page_size": 20, "count_mode": "deferred"})
+    assert public_last.status_code == 200
+    assert public_last.json()["items"] == []
+    assert public_last.json()["has_next"] is False
+
+
+def test_selected_summary_preview_does_not_scan_unselected_pool(tmp_path, monkeypatch):
+    client, _repository = _client(tmp_path)
+
+    def forbidden_totals(*_args, **_kwargs):
+        raise AssertionError("selected-only label preview must not scan entire project")
+
+    monkeypatch.setattr(picker_module, "_cached_pool_training_totals", forbidden_totals)
+    result = client.post(
+        "/api/v62/projects/p1/training-materials/selection-summary",
+        json={"image_ids": ["m0000", "m0001"], "summary_only": True},
+    )
+    assert result.status_code == 200
+    assert result.json()["positive_label_codes"] == ["person", "smoke"]
+    assert result.json()["selectable_total"] is None
+    assert result.json()["eligible_total"] is None
+
+
 def test_gt_page_rejects_stale_negative_pool_filter_snapshot(tmp_path, monkeypatch):
     """Membership changed after prefiltering must never masquerade as a fresh GT page."""
     from platform_core.negative_pool import NegativePool

@@ -65,3 +65,39 @@ test('modal close only cancels the owning picker layer',async()=>{
     assert.equal(h.runtime.state(),null);
   }finally{delete globalThis.window;delete globalThis.document;}
 });
+
+test('200k-pool iteration picker reads only deferred page and does not eagerly load categories or role index',async()=>{
+  const calls=[];
+  const h=setup({algorithmId:'alg',baseVersionId:'base',materialIds:[],newLabelCodes:[]},async(url,options={})=>{
+    calls.push({url,body:options.body?JSON.parse(options.body):null});
+    const pageNumber=Number(new URL(url,'http://test').searchParams.get('page')||1);
+    return response({items:[{id:`i${pageNumber}`}],total:null,page:pageNumber,page_size:60,
+      has_next:pageNumber===1,repository_revision:1,annotation_revision:1,usage_revision:'u'});
+  });
+  try{
+    await h.runtime.open('train');await tick();
+    assert.equal(calls.length,1);
+    assert.match(calls[0].url,/count_mode=deferred/);
+    assert.doesNotMatch(calls[0].url,/role-page|negative-pool\/categories/);
+    assert.equal(h.runtime.state().total,null);
+    assert.equal(h.runtime.state().totalPages,2);
+    await h.runtime.loadPage({page:2});
+    assert.equal(h.runtime.state().page,2);
+    assert.equal(h.runtime.state().totalPages,2);
+  }finally{delete globalThis.window;delete globalThis.document;}
+});
+
+test('negative categories are loaded only after a user selects the pool filter',async()=>{
+  const calls=[];
+  const h=setup({materialIds:[],newLabelCodes:[]},async(url,options={})=>{
+    calls.push(url);
+    if(url.includes('/negative-pool/categories'))return response({items:[]});
+    return response({items:[],total:null,page:1,has_next:false,repository_revision:1,annotation_revision:1,usage_revision:'u'});
+  });
+  try{
+    await h.runtime.open('train');await tick();
+    assert.equal(calls.some(url=>url.includes('/negative-pool/categories')),false);
+    h.runtime.setFilter('negativePoolOnly','pool');await tick();
+    assert.equal(calls.filter(url=>url.includes('/negative-pool/categories')).length,1);
+  }finally{delete globalThis.window;delete globalThis.document;}
+});

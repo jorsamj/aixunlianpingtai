@@ -750,7 +750,7 @@ export function installTrainingMaterialSummaryRuntime({
       const baseLabels = labels.map(labelDisplay).filter(Boolean).join('、') || '无标签';
       const labelText = !ids.length ? '—' : ready
         ? `${baseLabels} · 正式标注 ${summary.eligible_count} / 待标注 ${summary.pending_annotation_count}`
-        : '读取中…';
+        : lastError ? '标签读取失败 · 请重试' : '读取中…';
       setTextIfChanged(labelElement, labelText);
     }
 
@@ -864,9 +864,9 @@ export function installTrainingMaterialSummaryRuntime({
         selectable_count: Math.max(0, Number(body.selectable_count || 0)),
         eligible_count: Math.max(0, Number(body.eligible_count || 0)),
         pending_annotation_count: Math.max(0, Number(body.pending_annotation_count || 0)),
-        selectable_total: Math.max(0, Number(body.selectable_total || 0)),
-        eligible_total: Math.max(0, Number(body.eligible_total || 0)),
-        pending_annotation_total: Math.max(0, Number(body.pending_annotation_total || 0)),
+        selectable_total: body.selectable_total == null ? null : Math.max(0, Number(body.selectable_total)),
+        eligible_total: body.eligible_total == null ? null : Math.max(0, Number(body.eligible_total)),
+        pending_annotation_total: body.pending_annotation_total == null ? null : Math.max(0, Number(body.pending_annotation_total)),
         box_count: Math.max(0, Number(body.box_count || 0)),
         size_bytes: Math.max(0, Number(body.size_bytes || 0)),
         label_codes: uniqueIds(body.label_codes),
@@ -886,6 +886,7 @@ export function installTrainingMaterialSummaryRuntime({
       pendingSignature = null;
       lastError = String(error?.message || error || '训练素材摘要读取失败');
       queueDecorate();
+      window.TrainingLabelRuntime?.queueRefresh?.();
       notify(lastError);
       return null;
     }

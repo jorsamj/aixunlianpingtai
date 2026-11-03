@@ -390,6 +390,7 @@ def _gt_material_filter_page(
     include_payload: bool = False,
     sort_order: str = "oldest",
     filters: dict | None = None,
+    count_mode: str = "exact",
 ) -> dict:
     """Page processed materials while label/GT predicates come from formal GT.
 
@@ -398,6 +399,8 @@ def _gt_material_filter_page(
     transaction without hydrating annotation JSON or trusting material labels.
     """
     bounded = max(1, min(MAX_SELECTION_SUMMARY_IDS, int(limit)))
+    if count_mode not in {"exact", "deferred"}:
+        raise ValueError("count_mode must be exact or deferred")
     if sort_order not in ("oldest", "newest"):
         raise ValueError("sort_order must be oldest or newest")
     descending = sort_order == "newest"
@@ -483,19 +486,21 @@ def _gt_material_filter_page(
             if ("negative_pool_revision" in pool_filters
                     and str(pool_filters["negative_pool_revision"]) != negative_pool_revision):
                 raise ValueError("负样本池已更新，请重试")
-            total = _gt_filtered_count_snapshot(
+            # The picker only needs a bounded first page and whether another
+            # page exists. Exact COUNT(*) with a history/GT filter can scan the
+            # entire 200k-material pool before LIMIT ever gets a chance to run.
+            total = (_gt_filtered_count_snapshot(
                 database, repository, annotations, base_where, base_params,
                 material_revision, annotation_revision,
-            )
+            ) if count_mode == "exact" else None)
             offset = None
             if page is not None:
                 page_number = int(page)
-                total_pages = max(1, math.ceil(total / bounded))
                 if page_number < 1:
                     raise ValueError("page must be a positive integer")
-                if page_number > total_pages:
+                if total is not None and page_number > max(1, math.ceil(total / bounded)):
                     raise ValueError(
-                        f"page {page_number} exceeds total_pages {total_pages}"
+                        f"page {page_number} exceeds total_pages {max(1, math.ceil(total / bounded))}"
                     )
                 offset = (page_number - 1) * bounded
             clauses = list(base_clauses)
@@ -535,6 +540,7 @@ def _gt_material_filter_page(
         "items": items,
         "next_cursor": next_cursor,
         "total": total,
+        "has_next": len(rows) > bounded,
         "material_revision": material_revision,
         "annotation_revision": annotation_revision,
         "negative_confirmation_revision": negative_confirmation_revision,
@@ -626,6 +632,8 @@ def _selection_summary(
     repository: MaterialRepository,
     annotations: AnnotationRepository,
     image_ids: list[str],
+    *,
+    include_pool_totals: bool = True,
 ) -> dict:
     """Aggregate selected-material facts while formal GT stays Annotation-owned."""
     start_material_revision = repository.current_revision()
@@ -679,14 +687,17 @@ def _selection_summary(
             repository, annotations, processed_ids, list(label_counts))
 
     material_revision = repository.current_revision()
-    with measure("training.summary.pool_totals"):
-        selectable_total, eligible_total, pool_annotation_revision = (
-            _cached_pool_training_totals(
-                str(repository.project_path),
-                int(material_revision),
-                int(annotations.current_revision()),
+    selectable_total = eligible_total = None
+    pool_annotation_revision = start_annotation_revision
+    if include_pool_totals:
+        with measure("training.summary.pool_totals"):
+            selectable_total, eligible_total, pool_annotation_revision = (
+                _cached_pool_training_totals(
+                    str(repository.project_path),
+                    int(material_revision),
+                    int(annotations.current_revision()),
+                )
             )
-        )
     if (repository.current_revision(), annotations.current_revision()) != (
             start_material_revision, start_annotation_revision) or int(truth["revision"]) != start_annotation_revision:
         raise ValueError("素材或正式标注在汇总期间已变化，请重新读取")
@@ -705,7 +716,10 @@ def _selection_summary(
         "label_counts": label_counts,
         "selectable_total": selectable_total,
         "eligible_total": eligible_total,
-        "pending_annotation_total": max(0, selectable_total - eligible_total),
+        "pending_annotation_total": (
+            max(0, selectable_total - eligible_total)
+            if selectable_total is not None and eligible_total is not None else None
+        ),
         "annotation_revision": max(
             int(truth["revision"]),
             int(pool_annotation_revision),
@@ -826,7 +840,7 @@ def _cached_role_index(material_path, annotation_path, material_revision, annota
 @stage("role_page")
 def _role_material_page(repository, annotations, contract, *, image_ids=None,
                         query="", labels=(), sample_role="", page=1, limit=60, sort_order="oldest", filters=None, include_payload=True,
-                        defer_role_counts=False):
+                        defer_role_counts=False, count_mode="exact"):
     if sample_role not in {"", "positive", "confirmed_negative", "pending_negative", "pending_review"}:
         raise ValueError("invalid sample_role")
     if not 1 <= int(limit) <= MAX_SELECTION_SUMMARY_IDS or int(page) < 1:
@@ -842,7 +856,8 @@ def _role_material_page(repository, annotations, contract, *, image_ids=None,
     if defer_role_counts and not sample_role:
         page_data = _gt_material_filter_page(repository, annotations,
             limit=limit, page=int(page), query=query, labels=labels,
-            sort_order=sort_order, filters=selected, include_payload=include_payload)
+            sort_order=sort_order, filters=selected, include_payload=include_payload,
+            count_mode=count_mode)
         rows = page_data["items"]
         truth = annotations.get_many([row["id"] for row in rows]) if include_payload else {}
         from .training_label_tasks import training_material_role, task_negative_confirmable
@@ -867,7 +882,9 @@ def _role_material_page(repository, annotations, contract, *, image_ids=None,
         return {"items":visible, "total":page_data["total"], "sample_role_counts":None,
                 "role_counts_complete":False, "effective_label_codes":list(contract["effective_label_codes"]),
                 "page":int(page), "page_size":int(limit), "limit":int(limit), "next_cursor":None,
-                "total_pages":max(1, math.ceil(page_data["total"]/int(limit))),
+                "has_next":page_data["has_next"],
+                "total_pages":(max(1, math.ceil(page_data["total"]/int(limit)))
+                               if page_data["total"] is not None else None),
                 "repository_revision":revisions[0], "annotation_revision":revisions[1],
                 "negative_confirmation_revision":page_data["negative_confirmation_revision"],
                 "negative_pool_revision":page_data["negative_pool_revision"]}
@@ -1069,14 +1086,17 @@ def training_material_picker_router(
             page_number = int(body.get("page") or 1)
             result = _gt_material_filter_page(repository, annotations, limit=size, page=page_number,
                 query=str(body.get("query") or ""), labels=_normalize_labels(body.get("labels")),
-                include_payload=True, sort_order=str(body.get("sort_order") or "newest"),filters=body)
+                include_payload=True, sort_order=str(body.get("sort_order") or "newest"),filters=body,
+                count_mode=str(body.get("count_mode") or "exact"))
             usage = _page_usage_facts(repository,body,result["items"])
             if usage['revision'] != usage_revision:
                 raise ValueError('训练历史已更新，请重试素材查询')
             truth = annotations.get_many([r["id"] for r in result["items"]])
             return {"items":[{**_public_picker_material(project_id,r,truth.get(r["id"],{})),
                     "training_usage":_public_usage_fact(usage["by_image_id"].get(r["id"],{"state":"unknown"}))} for r in result["items"]],
-                    "total":result["total"],"page":page_number,"page_size":size,"total_pages":max(1,math.ceil(result["total"]/size)),
+                    "total":result["total"],"page":page_number,"page_size":size,
+                    "has_next":result["has_next"],
+                    "total_pages":(max(1,math.ceil(result["total"]/size)) if result["total"] is not None else None),
                     "repository_revision":result["material_revision"],"annotation_revision":result["annotation_revision"],"usage_revision":usage["revision"]}
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
@@ -1096,7 +1116,8 @@ def training_material_picker_router(
                 query=str(payload.get("query") or ""), labels=_normalize_labels(payload.get("labels")),
                 sample_role=str(payload.get("sample_role") or ""), page=int(payload.get("page") or 1), limit=limit,
                 sort_order=str(payload.get("sort_order") or "oldest"), filters=payload,
-                defer_role_counts=payload.get("defer_role_counts") is True)
+                defer_role_counts=payload.get("defer_role_counts") is True,
+                count_mode=str(payload.get("count_mode") or "exact"))
             usage = _page_usage_facts(repository,payload,result["items"])
             if usage['revision'] != usage_revision:
                 raise ValueError('训练历史已更新，请重试素材查询')
@@ -1575,12 +1596,15 @@ def training_material_picker_router(
         negative_category_id: list[str] | None = Query(default=None),
         annotation_state: str = "", created_from: str = "", created_to: str = "",
         usage_state: str = "", algorithm_asset_id: str = "", history_policy: str = "new_for_algorithm", role: str = "train", history_scope: str = "",
+        count_mode: str = "exact",
     ):
         numbered = page is not None or page_size is not None
         requested_page = int(page or 1) if numbered else None
         requested_size = int(page_size if page_size is not None else limit)
         if not 1 <= requested_size <= MAX_PAGE_SIZE:
             raise HTTPException(status_code=422, detail=f"limit must be between 1 and {MAX_PAGE_SIZE}")
+        if count_mode not in {"exact", "deferred"}:
+            raise HTTPException(status_code=422, detail="count_mode must be exact or deferred")
         repository = materials(project_id)
         annotation_repository = annotation_repository_for_path(
             str(repository.project_path)
@@ -1591,7 +1615,7 @@ def training_material_picker_router(
         try:
             shared_filters, usage = _usage_filters(repository, {**shared_filters, "usage_state":usage_state,"algorithm_asset_id":algorithm_asset_id,"history_policy":history_policy,"role":role,"history_scope":history_scope})
             usage_revision = usage['revision']
-            if selected_labels or shared_filters:
+            if selected_labels or shared_filters or count_mode == "deferred":
                 page = _gt_material_filter_page(
                     repository,
                     annotation_repository,
@@ -1603,10 +1627,12 @@ def training_material_picker_router(
                     include_payload=True,
                     sort_order=sort_order,
                     filters=shared_filters,
+                    count_mode=count_mode,
                 )
                 rows = [dict(row) for row in page["items"]]
                 next_cursor = page["next_cursor"]
-                total = int(page["total"])
+                total = page["total"]
+                has_next = page["has_next"]
                 repository_revision = int(page["material_revision"])
                 annotation_revision = int(page["annotation_revision"])
             else:
@@ -1621,6 +1647,7 @@ def training_material_picker_router(
                 rows = [dict(row) for row in material_page.items]
                 next_cursor = material_page.next_cursor
                 total = material_page.total
+                has_next = bool(next_cursor)
                 repository_revision = repository.current_revision()
                 annotation_revision = annotation_repository.current_revision()
         except ValueError as error:
@@ -1653,13 +1680,13 @@ def training_material_picker_router(
             "usage_revision": usage["revision"],
         }
         if numbered:
-            total_pages = max(1, math.ceil(total / requested_size))
+            total_pages = max(1, math.ceil(total / requested_size)) if total is not None else None
             response.update({
                 "page": requested_page,
                 "page_size": requested_size,
                 "total_pages": total_pages,
                 "has_previous": requested_page > 1,
-                "has_next": requested_page < total_pages,
+                "has_next": has_next if total_pages is None else requested_page < total_pages,
             })
         return response
 
@@ -1797,7 +1824,10 @@ def training_material_picker_router(
         repository = materials(project_id)
         annotations = annotation_repository_for_path(str(repository.project_path))
         try:
-            summary = _selection_summary(repository, annotations, image_ids)
+            summary = _selection_summary(
+                repository, annotations, image_ids,
+                include_pool_totals=payload.get("summary_only") is not True,
+            )
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
         # Previewing an empty selection is not a training submission. In

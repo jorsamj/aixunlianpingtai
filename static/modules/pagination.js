@@ -17,11 +17,16 @@ function escapeHtml(value) {
 
 export function normalizePagination(input = {}) {
   const pageSize = positiveInteger(input.pageSize ?? input.page_size, DEFAULT_PAGE_SIZE);
-  const total = Math.max(0, Number.isFinite(Number(input.total)) ? Math.trunc(Number(input.total)) : 0);
-  const computedPages = Math.max(1, Math.ceil(total / pageSize));
+  const totalKnown = input.totalKnown !== false && input.total !== null && input.total !== undefined;
+  const total = totalKnown
+    ? Math.max(0, Number.isFinite(Number(input.total)) ? Math.trunc(Number(input.total)) : 0)
+    : null;
+  const requestedPage = positiveInteger(input.page, 1);
+  const computedPages = totalKnown
+    ? Math.max(1, Math.ceil(total / pageSize))
+    : requestedPage + (input.hasNext === true || input.has_next === true ? 1 : 0);
   const authoritativePages = positiveInteger(input.totalPages ?? input.total_pages, computedPages);
   const totalPages = Math.max(1, authoritativePages);
-  const requestedPage = positiveInteger(input.page, 1);
   const page = Math.min(requestedPage, totalPages);
   return {
     page,
@@ -103,7 +108,7 @@ export function renderPagination(input = {}, options = {}) {
       <button type="button" class="platform-pagination__submit" data-pagination-jump${disabled}>跳转</button>
       ${sizeControl}
     </div>
-    <div class="platform-pagination__footer"><span>共 ${state.total} 条 · ${state.totalPages} 页 · 当前第 ${state.page} 页</span><span class="platform-pagination__loading"${state.loading ? '' : ' hidden'}>加载中…</span></div>
+    <div class="platform-pagination__footer"><span>${state.total !== null ? `共 ${state.total} 条 · ${state.totalPages} 页` : '总数按需统计 · 可逐页浏览'} · 当前第 ${state.page} 页</span><span class="platform-pagination__loading"${state.loading ? '' : ' hidden'}>加载中…</span></div>
     <div class="platform-pagination__error" data-pagination-error role="alert">${escapeHtml(state.error)}</div>
   </nav>`;
 }

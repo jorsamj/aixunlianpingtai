@@ -43,7 +43,7 @@ export function trainingMaterialSelectionPatch({role = 'train', selectedIds = []
     };
 }
 
-export function buildTrainingMaterialQuery({cursor = null, page = null, pageSize = DEFAULT_PAGE_SIZE, query = '', labels = [], sortOrder = 'newest', effectiveLabelCodes = [], sampleRole = '', sourceIds = [], createdFrom = '', createdTo = '', annotationState = '', usageState = '', historyScope = '', algorithmId = '', historyPolicy = 'new_for_algorithm', role = 'train', negativePoolOnly = false, negativeCategoryIds = []} = {}) {
+export function buildTrainingMaterialQuery({cursor = null, page = null, pageSize = DEFAULT_PAGE_SIZE, query = '', labels = [], sortOrder = 'newest', effectiveLabelCodes = [], sampleRole = '', sourceIds = [], createdFrom = '', createdTo = '', annotationState = '', usageState = '', historyScope = '', algorithmId = '', historyPolicy = 'new_for_algorithm', role = 'train', negativePoolOnly = false, negativeCategoryIds = [], countMode = ''} = {}) {
   const params = new URLSearchParams();
   if (page != null) {
     params.set('page', String(page));
@@ -52,6 +52,7 @@ export function buildTrainingMaterialQuery({cursor = null, page = null, pageSize
     params.set('limit', String(pageSize));
     if (cursor) params.set('cursor', String(cursor));
   }
+  if (countMode) params.set('count_mode', countMode);
   if (String(query || '').trim()) params.set('query', String(query).trim());
   uniqueIds(labels).forEach(label => params.append('label', label));
   uniqueIds(effectiveLabelCodes).forEach(code => params.append('effective_label_code', code));
@@ -253,7 +254,7 @@ export function installTrainingMaterialPickerRuntime({
       <header><div><b>${title}</b><span>${rule}</span></div><strong id="trV3PickerCount">正在读取素材…</strong></header>
       <div class="train-v3-workspace"><aside class="train-v3-filters">${role === 'train' && hasTaskLabels ? `<section class="train-v3-role-tools"><b id="trV3TrainingLabels">本次训练目标：读取中…</b><p id="trV3RoleCounts" aria-live="polite"></p><select id="trV3RoleFilter" class="select" aria-label="按本次训练目标筛选" onchange="TrainingMaterialPickerRuntime.setSampleRole(this.value)"><option value="">全部素材</option><option value="positive">含本次目标</option><option value="confirmed_negative">已确认不含本次目标</option><option value="pending_negative">最终创建时确认候选背景</option><option value="pending_review">标注或目标范围需核验</option></select><p>选择素材不需要逐张确认；最终创建时统一检查类别覆盖、GT 问题和候选背景。</p></section>` : ''}
       <div class="train-v3-filter"><input id="trV3Q" class="input" placeholder="搜索图片名称" oninput="trainMaterialSearchV3(this.value)"><select id="trV3Sort" class="select" aria-label="按加入时间排序" onchange="trainMaterialSortV3(this.value)"><option value="newest">最新加入优先</option><option value="oldest">最早加入优先</option></select><div id="trV3Chips" class="data426-chips"><button class="data426-chip clear on" data-label="" onclick="clearTrainMaterialLabelsV3()">全部标签</button>${chips}</div></div>
-      ${role==='train'?`<label>素材范围<select class="select" data-filter-key="negativePoolOnly" aria-label="素材范围" onchange="TrainingMaterialPickerRuntime.setFilter('negativePoolOnly',this.value)"><option value="">普通素材（含负样本池）</option><option value="pool">负样本池</option></select></label><label>负样本分类<select class="select" multiple data-filter-key="negativeCategoryIds" aria-label="负样本分类筛选" id="trV3NegativeCategories" onchange="TrainingMaterialPickerRuntime.setFilter('negativeCategoryIds',[...this.selectedOptions].map(o=>o.value).join(','))"><option disabled>正在读取分类…</option></select></label>`:''}
+      ${role==='train'?`<label>素材范围<select class="select" data-filter-key="negativePoolOnly" aria-label="素材范围" onchange="TrainingMaterialPickerRuntime.setFilter('negativePoolOnly',this.value)"><option value="">普通素材（含负样本池）</option><option value="pool">负样本池</option></select></label><label>负样本分类<select class="select" multiple data-filter-key="negativeCategoryIds" aria-label="负样本分类筛选" id="trV3NegativeCategories" onfocus="TrainingMaterialPickerRuntime.loadNegativeCategories()" onchange="TrainingMaterialPickerRuntime.setFilter('negativeCategoryIds',[...this.selectedOptions].map(o=>o.value).join(','))"><option disabled>点击后读取分类…</option></select></label>`:''}
       <label>存储来源<input class="input" data-filter-key="sourceIds" placeholder="来源ID，多个用逗号分隔" onchange="TrainingMaterialPickerRuntime.setFilter('sourceIds',this.value)"></label>
       <label>加入时间从<input type="date" class="input" data-filter-key="createdFrom" onchange="TrainingMaterialPickerRuntime.setFilter('createdFrom',this.value)"></label><label>至<input type="date" class="input" data-filter-key="createdTo" onchange="TrainingMaterialPickerRuntime.setFilter('createdTo',this.value)"></label>
       <label>正式标注<select class="select" data-filter-key="annotationState" onchange="TrainingMaterialPickerRuntime.setFilter('annotationState',this.value)"><option value="">全部状态</option><option value="annotated">已标注</option><option value="confirmed_empty">已确认无目标</option><option value="unannotated">未标注</option></select></label>
@@ -351,7 +352,9 @@ export function installTrainingMaterialPickerRuntime({
         : '优先展示本页素材；完整类别覆盖在最终创建时核验';
     }
     const count = document.getElementById('trV3PickerCount');
-    if (count) count.textContent = `筛选结果 ${picker.total} 张 · 已选 ${picker.selected.size} 张`;
+    if (count) count.textContent = picker.total === null
+      ? `本页 ${picker.items.length} 张 · 总数按需统计 · 已选 ${picker.selected.size} 张`
+      : `筛选结果 ${picker.total} 张 · 已选 ${picker.selected.size} 张`;
     const meta = document.getElementById('trV3PageMeta');
     if (meta) meta.textContent = `当前页 ${picker.items.length} 张 · 每页最多 ${picker.pageSize} 张`;
     const active = document.getElementById('trV3ActiveFilters');
@@ -420,9 +423,9 @@ export function installTrainingMaterialPickerRuntime({
       page: picker.page,
       pageSize: picker.pageSize,
       total: picker.total,
-      totalPages: picker.totalPages,
+      totalPages: picker.total === null ? null : picker.totalPages,
       hasPrevious: picker.page > 1,
-      hasNext: picker.page < picker.totalPages,
+      hasNext: picker.hasNext,
       loading: picker.loading,
     }, {
       label: '训练素材分页',
@@ -507,9 +510,10 @@ export function installTrainingMaterialPickerRuntime({
       picker.effectiveLabels = cached.effective_label_codes || [];
       picker.roleCounts = cached.sample_role_counts || null;
       picker.items = cached.items;
-      picker.total = cached.total;
+      picker.total = cached.total == null ? null : Math.max(0, Number(cached.total));
       picker.page = Math.max(1, Number(cached.page || requestedPage));
-      picker.totalPages = Math.max(1, Number(cached.total_pages || 1));
+      picker.hasNext = cached.has_next === true || (cached.total != null && picker.page < Number(cached.total_pages || 1));
+      picker.totalPages = picker.total === null ? picker.page + Number(picker.hasNext) : Math.max(1, Number(cached.total_pages || 1));
       picker.repositoryRevision = cached.repository_revision ?? null;
       picker.annotationRevision = cached.annotation_revision ?? null;
       picker.usageRevision = cached.usage_revision ?? null;
@@ -530,6 +534,7 @@ export function installTrainingMaterialPickerRuntime({
       const query = buildTrainingMaterialQuery({
         page: requestedPage,
         pageSize: picker.pageSize,
+        countMode: 'deferred',
         query: picker.query,
         labels: [...picker.labels],
         sortOrder: picker.sortOrder,
@@ -537,7 +542,10 @@ export function installTrainingMaterialPickerRuntime({
       });
       const context=taskPayload();
       const hasTaskLabels=uniqueIds(context.train_labels).length > 0 || Boolean(context.base_version_id);
-      const withRoles=(picker.role === 'train' || picker.role === 'robustness') && hasTaskLabels;
+      // Opening the picker only needs the page. Building a task-role index
+      // across 200k materials is only justified after a role filter is chosen.
+      const withRoles=(picker.role === 'train' || picker.role === 'robustness') && hasTaskLabels
+        && Boolean(picker.sampleRole || picker.reviewing);
       const scoped=picker.role==='robustness';
       const body = await withRequestDeadline(async signal=>{
       const response = await fetchImpl(withRoles
@@ -546,7 +554,7 @@ export function installTrainingMaterialPickerRuntime({
         signal,
         ...((withRoles || scoped) ? {method:'POST', body:JSON.stringify({...taskPayload(), ...filterPayload(), page:requestedPage,
           page_size:picker.pageSize, query:picker.query, labels:[...picker.labels], sort_order:picker.sortOrder, sample_role:picker.sampleRole,
-          defer_role_counts:!picker.sampleRole})} : {}),
+          defer_role_counts:!picker.sampleRole, count_mode:'deferred'})} : {}),
         headers: {'Accept': 'application/json', 'Content-Type':'application/json'},
       });
       return readJson(response, '训练素材读取失败，请重试');
@@ -555,10 +563,11 @@ export function installTrainingMaterialPickerRuntime({
       picker.effectiveLabels = body.effective_label_codes || [];
       picker.roleCounts = body.sample_role_counts || null;
       picker.items = Array.isArray(body.items) ? body.items : [];
-      picker.total = Math.max(0, Number(body.total || 0));
+      picker.total = body.total == null ? null : Math.max(0, Number(body.total));
       picker.page = Math.max(1, Number(body.page || requestedPage));
       picker.pageSize = Math.max(1, Number(body.page_size || picker.pageSize));
-      picker.totalPages = Math.max(1, Number(body.total_pages || 1));
+      picker.hasNext = body.has_next === true || (body.total != null && picker.page < Number(body.total_pages || 1));
+      picker.totalPages = picker.total === null ? picker.page + Number(picker.hasNext) : Math.max(1, Number(body.total_pages || 1));
       picker.repositoryRevision = body.repository_revision ?? null;
       picker.annotationRevision = body.annotation_revision ?? null;
       picker.usageRevision = body.usage_revision ?? null;
@@ -676,7 +685,7 @@ export function installTrainingMaterialPickerRuntime({
       filters:{}, view:'grid', historyControllers:new Set(), scopeIds:uniqueIds(draft().materialIds),
       query: '', labels: new Set(), sortOrder: 'newest', selected: new Set(uniqueIds(role==='robustness'?draft().robustness_policy?.selection?.image_ids:role==='test'?draft().testMaterialIds:draft().materialIds).filter(id=>!blockedIds(role).has(id) && (role!=='robustness' || uniqueIds(draft().materialIds).includes(id)))),
       pageSize: DEFAULT_PAGE_SIZE, page: 1, totalPages: 1,
-      items: [], total: 0, loading: false, repositoryRevision: null,
+      items: [], total: null, hasNext: false, loading: false, repositoryRevision: null,
       annotationRevision: null, usageRevision: null,
       negativePoolRevision: null, negativeConfirmationRevision: null,
     };
@@ -685,12 +694,31 @@ export function installTrainingMaterialPickerRuntime({
     modalLayer=window.modal?.(title, modalHtml(picker.role), true);
     renderSkeleton();
     void loadPage({reset: true});
-    if(picker.role==='train'){
-      const owner=picker,controller=new AbortController();owner.historyControllers.add(controller);
-      void withRequestDeadline(async signal=>readJson(await fetchImpl(`/api/v61/projects/${encodeURIComponent(pid)}/negative-pool/categories`,{signal}),'负样本分类读取失败'),{signal:controller.signal,label:'负样本分类'}).then(data=>{
-        if(picker!==owner||projectId()!==pid)return;
-        const select=document.getElementById('trV3NegativeCategories');if(select)select.innerHTML=(data.items||[]).filter(row=>row.enabled!==false).map(row=>`<option value="${esc(row.id)}" ${(owner.filters.negativeCategoryIds||[]).includes(row.id)?'selected':''}>${esc(row.name)}</option>`).join('')||'<option disabled>暂无负样本分类</option>';
-      }).catch(error=>{if(picker===owner&&error.name!=='AbortError'){const select=document.getElementById('trV3NegativeCategories');if(select)select.innerHTML='<option disabled>读取失败，重新打开可重试</option>';}}).finally(()=>owner.historyControllers.delete(controller));
+  }
+
+  async function loadNegativeCategories() {
+    if (!picker || picker.role !== 'train' || picker.negativeCategoriesLoading || picker.negativeCategoriesLoaded) return;
+    const owner = picker, pid = projectId(), controller = new AbortController();
+    owner.negativeCategoriesLoading = true;
+    owner.historyControllers.add(controller);
+    const select = document.getElementById('trV3NegativeCategories');
+    if (select) select.innerHTML = '<option disabled>正在读取分类…</option>';
+    try {
+      const data = await withRequestDeadline(async signal => readJson(await fetchImpl(
+        `/api/v61/projects/${encodeURIComponent(pid)}/negative-pool/categories`, {signal},
+      ), '负样本分类读取失败'), {signal: controller.signal, label: '负样本分类'});
+      if (picker !== owner || projectId() !== pid) return;
+      owner.negativeCategoriesLoaded = true;
+      const current = document.getElementById('trV3NegativeCategories');
+      if (current) current.innerHTML = (data.items || []).filter(row => row.enabled !== false)
+        .map(row => `<option value="${esc(row.id)}" ${(owner.filters.negativeCategoryIds || []).includes(row.id) ? 'selected' : ''}>${esc(row.name)}</option>`).join('') || '<option disabled>暂无负样本分类</option>';
+    } catch (error) {
+      if (picker !== owner || error?.name === 'AbortError') return;
+      const current = document.getElementById('trV3NegativeCategories');
+      if (current) current.innerHTML = '<option disabled>读取失败，重新点击重试</option>';
+    } finally {
+      owner.negativeCategoriesLoading = false;
+      owner.historyControllers.delete(controller);
     }
   }
 
@@ -752,7 +780,7 @@ export function installTrainingMaterialPickerRuntime({
     if (!picker || picker.loading || picker.reviewPending) return;
     const direction = Number(delta || 0);
     const targetPage = picker.page + Math.sign(direction);
-    if (targetPage < 1 || targetPage > picker.totalPages) return;
+    if (targetPage < 1 || (direction > 0 && !picker.hasNext) || targetPage > picker.totalPages) return;
     return loadPage({page: targetPage});
   }
 
@@ -869,8 +897,10 @@ export function installTrainingMaterialPickerRuntime({
       if(!picker || picker.reviewPending || picker.bulkPending)return;
       picker.filters[key]=['sourceIds','negativeCategoryIds'].includes(key)?uniqueIds(String(value).split(',')):key==='negativePoolOnly'?value==='pool':value;
       if(key==='negativeCategoryIds'&&picker.filters[key].length)picker.filters.negativePoolOnly=true;
+      if(key==='negativePoolOnly' && picker.filters[key]) void loadNegativeCategories();
       return resetFiltersAndLoad();
     },
+    loadNegativeCategories,
     removeFilter,
     clearFilters,
     setView(value) {if(picker){picker.view=value==='list'?'list':'grid';renderPage();}},

@@ -50,8 +50,8 @@ test('entry bundles use cache-bust markers independently from formal release tru
   assert.match(index, /\/static\/main\.mjs\?v=\d+(?:\.\d+)*/);
   assert.match(index, /\/static\/styles\.css\?v=\d+(?:\.\d+)*/);
   assert.equal(index.includes('/static/styles.css?v=42.25.506'), true);
-  assert.equal(index.includes('/static/app.js?v=42.25.508'), true);
-  assert.equal(index.includes('/static/main.mjs?v=42.25.508'), true);
+  assert.equal(index.includes('/static/app.js?v=42.25.509'), true);
+  assert.equal(index.includes('/static/main.mjs?v=42.25.509'), true);
   assert.equal(index.includes('/static/modules/storage-cache-runtime.js?v=20261024-layout'), true);
   assert.match(main, /\.\/modules\/model-artifact-runtime\.js\?v=\d+/);
   assert.match(main, /\.\/modules\/training-task-runtime\.js\?v=\d+/);
@@ -84,7 +84,7 @@ test('negative sample runtime is cache-busted with canonical owner retirement', 
 });
 
 test('training material picker canonical confirm asset is current', () => {
-  assert.equal(main.includes("./modules/training-material-picker-runtime.js?v=422625"), true);
+  assert.equal(main.includes("./modules/training-material-picker-runtime.js?v=4226509"), true);
   const runtime = fs.readFileSync(new URL('../../static/modules/training-material-picker-runtime.js', import.meta.url), 'utf8');
   const browser = fs.readFileSync(new URL('../browser/training-material-picker-performance.spec.mjs', import.meta.url), 'utf8');
   assert.ok(runtime.includes("build: 'training-material-picker-runtime-422615'"));
@@ -106,7 +106,7 @@ test('training label contract source and browser guard match loaded cache build'
  const main=fs.readFileSync(new URL('../../static/main.mjs',import.meta.url),'utf8');
  const source=fs.readFileSync(new URL('../../static/modules/training-labels.js',import.meta.url),'utf8');
  const browser=fs.readFileSync(new URL('../browser/training-label-selector.spec.mjs',import.meta.url),'utf8');
- assert.ok(main.includes('training-labels.js?v=4226464'));
+ assert.ok(main.includes('training-labels.js?v=4226509'));
  assert.ok(source.includes("build: 'module-4226464'"));
  assert.ok(browser.includes(".toBe('module-4226464')"));
 });

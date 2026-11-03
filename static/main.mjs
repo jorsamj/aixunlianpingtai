@@ -13,7 +13,7 @@ import {messageFromApiError, withRequestDeadline, fetchWithUploadProgress} from 
 import {createModalStack, installModalPresentation, loadingSkeleton} from './modules/modal.js?v=20261021';
 import {annotationPreviewFromBoxes, applyAnnotationResult} from './modules/annotation.js?v=422502';
 import {installNegativeSampleRuntime} from './modules/negative-samples.js?v=20261022a';
-import {installTrainingLabelRuntime} from './modules/training-labels.js?v=4226464';
+import {installTrainingLabelRuntime} from './modules/training-labels.js?v=4226509';
 import {installNavigationStability} from './modules/navigation-stability.js?v=20261102-lifecycle491';
 import {persistUiState} from './modules/ui-state.js?v=422500';
 import {installPageRequestScope, isPageNavigationCancelled} from './modules/page-request-scope.js?v=20261031-p0body';
@@ -24,8 +24,8 @@ import {installChangLianDataBrowserRuntime} from './modules/changlian-data-brows
 import {installExternalAlgorithmPublishRuntime} from './modules/external-algorithm-publish.js?v=64015';
 import {installModelArtifactRuntime} from './modules/model-artifact-runtime.js?v=65009';
 import {installTrainingRecoveryRuntime} from './modules/training-recovery-runtime.js?v=20261028-csc';
-import {installTrainingMaterialPickerRuntime} from './modules/training-material-picker-runtime.js?v=422625';
-import {installTrainingMaterialSummaryRuntime} from './modules/training-material-summary-runtime.js?v=20261103-fast-admission';
+import {installTrainingMaterialPickerRuntime} from './modules/training-material-picker-runtime.js?v=4226509';
+import {installTrainingMaterialSummaryRuntime} from './modules/training-material-summary-runtime.js?v=4226509';
 import {installTrainingTaskRuntime} from './modules/training-task-runtime.js?v=422609';
 import {installTrainingTaskVisibilityRuntime} from './modules/training-task-visibility-runtime.js?v=4226386-timing';
 import {installTrainingProgressStream} from './modules/training-progress-stream.js?v=422570';
@@ -60,7 +60,7 @@ import {installServiceNodeRuntime} from './modules/service-node-runtime.js?v=422
 import {installOverviewTabsRuntime} from './modules/overview-tabs.js?v=4226491';
 import {installMaterialBatchRuntime} from './modules/material-batches.js?v=422411';
 import {installSmartMaterialAudit} from './modules/smart-material-audit.js?v=20261026';
-import {mountPagination, normalizePagination, paginationPageSizes, paginationTokens, renderPagination, validatePageInput} from './modules/pagination.js?v=422603';
+import {mountPagination, normalizePagination, paginationPageSizes, paginationTokens, renderPagination, validatePageInput} from './modules/pagination.js?v=4226509';
 
 const UI_BUILD_VERSION = '42.25.0-dev';
 const modalStack = createModalStack();

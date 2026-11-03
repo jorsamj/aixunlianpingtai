@@ -145,6 +145,10 @@ test('TrainingLabelRuntime remains wrapper-free timer-free and summary-backed', 
   assert.match(source, /classicWrapperOwner: false/);
   assert.match(source, /timerOwner: false/);
   assert.match(source, /build: 'module-4226464'/);
+  assert.match(source, /timeoutMs: 20000, signal: controller.signal, label: '继承标签读取'/);
+  assert.match(source, /TrainingLabelRuntime\.retryInheritance\(\)/);
+  assert.match(source, /TrainingLabelRuntime\.retrySelectedSummary\(\)/);
+  assert.match(source, /!materialSummaryRuntime\?\.summaryReadyFor\?\.\(ids\)/);
 });
 
 test('final stable renderers keep historical 423/425 training entrypoints unreachable', () => {
