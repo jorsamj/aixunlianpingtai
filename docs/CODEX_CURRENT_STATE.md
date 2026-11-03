@@ -1,4 +1,4 @@
-> **2026-11-04｜原图 ZIP 与母模型专项仍在进行中**：上一稳定远端 `4de9090` 的 GitHub Actions 20/20 通过，已新增 Agent 授权目录后台只读发现、节点心跳库存与本机模型登记。本批新增 `MODEL_INSTALL` 指定 Agent 节点、租约授权流传输、SHA 校验/原子安装、回执及取消，并接到高级母模型单层页面；**本批新 Python CI/真实节点尚未验收，安装文件≠已证明该节点可训练**。GPU 首训、完整 Chrome/性能仍待验收。详见 `docs/PROGRESS_ZIP_RAW_PT_MOTHER_MODEL_2026_11_03.md`、`docs/UAT_ZIP_RAW_PT_MOTHER_MODEL_2026_11_03.md`；生产不动。
+> **2026-11-04｜母模型专项准确最新状态**：`MODEL_INSTALL` 指定节点、租约下载、SHA/原子落盘、回执及单层 UI 已真实推送唯一长期分支，远端 SHA `0da5379e5f2b40c4f72437d8ffffb373282c77b4`。该次 CI 首跑暴露原运行时路由挂载测试未包含新 `agent_model_install_asset_provider` 参数；当前修复已加测试，并为远程 Worker 增加同 SHA 的已安装母模型优先使用、缓存无效自动回退对象存储与 Python 单测。此后新 CI/真机尚待核实，不能宣称 A800/4070 已运行 GPU 首训。详见 `docs/PROGRESS_ZIP_RAW_PT_MOTHER_MODEL_2026_11_03.md` 与 UAT；生产不动。
 
 > **最新 2026-11-03｜42.24.509 训练选材 P0 修复候选**：当前分支从 508 `8bf1e009` 接续；详情、隔离测试与未验证边界见本文末尾509记录及性能专项台账，尚未部署。
 

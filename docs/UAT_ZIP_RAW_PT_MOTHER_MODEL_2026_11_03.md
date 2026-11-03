@@ -72,3 +72,16 @@ npm test
 | PT-INSTALL-08 页面 | 模型/节点选择、状态进度、失败/取消，页面无嵌套 | 新增静态测试，真实 Chrome 待验 |
 
 命令：`python3 -m pytest tests/unit/test_agent_model_install_runtime.py tests/unit/test_agent_execution.py tests/unit/test_node_agent_entrypoint.py -q`，以及文档前述 Node 回归。先核对 `4de9090` 的 20/20 GitHub Actions 已通过，**新模型安装提交的 CI 与 GPU 现场仍待验**。
+
+## 2026-11-04 远程首训优先使用已安装母模型
+
+| 用例 | 预期 | 当前状态 |
+| --- | --- | --- |
+| PT-CACHE-01 选中模型 SHA 对应安装副本 | 按服务器签名来源校验字节，任务内独立 `.pt` 拷贝启动 | 新增 Python 单测，待 CI 与 GPU |
+| PT-CACHE-02 已安装副本损坏 | 不读坏文件，自动回退已验证对象存储下载 | 新增 Python 单测，待 CI |
+| PT-CACHE-03 模型缺失/软链接 | 无信任提升、不使用远程任意路径，自动回退下载 | 新增 Python 单测，待 CI |
+| PT-CACHE-04 跨节点/无 OSS | 无副本时可下载；无对象存储全流程训练仍拒绝虚假成功 | 需远程 A800/4070 + 存储环境实测 |
+
+命令：`python3 -m pytest tests/unit/test_node_agent_training_runtime.py -q`。本机 `py_compile` 与相关 Node 回归 `103/103` 通过不等于 Pytest 或真实 GPU 通过。
+
+> 注：节点安装提交 `0da5379e` 实际 20 条 CI 为 16 绿/4 红，4 红均来自同一个路由挂载参数 AST 静态断言。节点执行器 CI 的原配置也遗漏 `tests/unit/test_agent_model_install_runtime.py`；当前修订已把它纳入 Ubuntu/Windows 执行范围。待下一次准确 SHA 工作流实际运行后才更新 PT-INSTALL-01～06 为通过。

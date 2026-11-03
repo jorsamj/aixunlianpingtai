@@ -33,6 +33,56 @@ from platform_core.task_runtime.process_control import (
 )
 
 
+def test_remote_training_reuses_verified_agent_installed_mother_model(tmp_path):
+    content = b"trusted-mother-model" * 100
+    digest = hashlib.sha256(content).hexdigest()
+    installed = tmp_path / "installed"
+    installed.mkdir()
+    (installed / f"managed-{digest}.pt").write_bytes(content)
+    runner = object.__new__(AgentTrainingRunner)
+    runner.mother_model_install_dir = installed
+    runner._assert_active = lambda monitor: None
+    runner._heartbeat = lambda *args, **kwargs: None
+    runner._download = lambda *args, **kwargs: pytest.fail("matching cached model downloaded again")
+    model = {"type": "object", "download": {
+        "file_name": "uploaded-best.pt", "sha256": digest, "size_bytes": len(content),
+    }}
+    result = Path(runner._model_argument({"model": model}, tmp_path / "work", object()))
+    assert result.read_bytes() == content
+    assert result.parent == tmp_path / "work" / "input" / "model"
+    # The training input is independent of the managed cache after materialization.
+    (installed / f"managed-{digest}.pt").unlink()
+    assert result.read_bytes() == content
+
+
+@pytest.mark.parametrize("cache_state", ["corrupt", "missing", "symlink"])
+def test_remote_training_falls_back_to_verified_object_when_cache_invalid(tmp_path, cache_state):
+    content = b"valid-weight-contents" * 100
+    digest = hashlib.sha256(content).hexdigest()
+    installed = tmp_path / "installed"
+    installed.mkdir()
+    candidate = installed / f"managed-{digest}.pt"
+    if cache_state == "corrupt":
+        candidate.write_bytes(b"!" * len(content))
+    elif cache_state == "symlink":
+        candidate.symlink_to(tmp_path / "elsewhere.pt")
+    runner = object.__new__(AgentTrainingRunner)
+    runner.mother_model_install_dir = installed
+    runner._assert_active = lambda monitor: None
+    downloads = []
+
+    def fallback(contract, destination, monitor):
+        downloads.append(contract)
+        return destination
+
+    runner._download = fallback
+    contract = {"file_name": "best.pt", "sha256": digest, "size_bytes": len(content)}
+    result = runner._model_argument({"model": {"type": "object", "download": contract}},
+                                    tmp_path / "work", object())
+    assert result.endswith("/input/model/best.pt")
+    assert downloads == [contract]
+
+
 class FakeResponse:
     def __init__(self, status_code=200, data=b""):
         self.status_code = int(status_code)

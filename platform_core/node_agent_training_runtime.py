@@ -210,6 +210,7 @@ class AgentTrainingRunner:
         transfer_timeout: float = 600.0,
         process_poll_interval: float = 0.2,
         resource_resolver=None,
+        mother_model_install_dir: str | Path | None = None,
     ) -> None:
         self.client = client
         self.workdirs = workdirs
@@ -222,6 +223,11 @@ class AgentTrainingRunner:
         self.transfer_timeout = max(30.0, float(transfer_timeout))
         self.process_poll_interval = max(0.05, float(process_poll_interval))
         self.resource_resolver = resource_resolver or self._resolve_resource_contract_subprocess
+        self.mother_model_install_dir = (
+            Path(mother_model_install_dir).expanduser()
+            if mother_model_install_dir and str(mother_model_install_dir).strip()
+            else None
+        )
         self.controller = ProcessController()
         self._identity_lock = threading.Lock()
         self._active_identity: ProcessIdentity | None = None
@@ -636,6 +642,15 @@ class AgentTrainingRunner:
             raise AgentTrainingRuntimeError(
                 "portable Ultralytics base model must be a .pt file"
             )
+        cached = self._copy_verified_installed_model(download, workdir, monitor)
+        if cached is not None:
+            self._heartbeat(
+                monitor,
+                progress=12,
+                stage="REMOTE_TRAINING_MODEL_CACHE_VERIFIED",
+                current_item="已校验本节点母模型 SHA256，复用已安装权重",
+            )
+            return str(cached)
         return str(
             self._download(
                 download,
@@ -643,6 +658,55 @@ class AgentTrainingRunner:
                 monitor,
             )
         )
+
+    def _copy_verified_installed_model(
+        self,
+        download: Mapping[str, Any],
+        workdir: Path,
+        monitor: ExecutionLeaseMonitor,
+    ) -> Path | None:
+        """Reuse only the Agent's own content-addressed install, never a user path.
+
+        Keep a task-local copy so another installation/process cannot mutate the
+        model during a long training run. Invalid or missing cache is a miss;
+        the existing verified object-store download remains authoritative.
+        """
+        root = self.mother_model_install_dir
+        if root is None or root.is_symlink() or not root.is_dir():
+            return None
+        expected_size, sha = _expected_evidence(download)
+        source = root / f"managed-{sha}.pt"
+        if source.is_symlink() or not source.is_file():
+            return None
+        destination = workdir / "input" / "model" / f"managed-{sha}.pt"
+        temporary = destination.with_name(f".{destination.name}.copy")
+        try:
+            if source.stat().st_size != expected_size:
+                return None
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            # Task workspace is exclusively owned by this lease/generation.
+            temporary.unlink(missing_ok=True)
+            digest = hashlib.sha256()
+            copied = 0
+            with source.open("rb") as reader, temporary.open("xb") as writer:
+                for chunk in iter(lambda: reader.read(_TRANSFER_CHUNK_BYTES), b""):
+                    self._assert_active(monitor)
+                    copied += len(chunk)
+                    if copied > expected_size:
+                        return None
+                    digest.update(chunk)
+                    writer.write(chunk)
+                writer.flush()
+                os.fsync(writer.fileno())
+            if copied != expected_size or digest.hexdigest() != sha:
+                return None
+            self._assert_active(monitor)
+            os.replace(temporary, destination)
+            return destination
+        except (OSError, ValueError):
+            return None
+        finally:
+            temporary.unlink(missing_ok=True)
 
     @staticmethod
     def _parameter(payload: Mapping[str, Any], key: str, default: Any) -> Any:

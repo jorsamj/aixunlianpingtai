@@ -199,6 +199,7 @@ def _build_executor(
             workdirs,
             runtime_root=Path(__file__).resolve().parent,
             ultralytics_python=ultralytics_python,
+            mother_model_install_dir=str(args.mother_model_install_dir or ""),
             heartbeat_interval=max(1.0, float(args.execution_heartbeat_interval)),
         )
     if "material-import" in reported_capabilities:

@@ -5678,6 +5678,8 @@ GitHub 当前没有 CI status，不能把“测试代码已写”表述成“已
 > **2026-11-02｜42.24.490 SDK 探测网络异常可恢复**：准确开发分支 489 `516ff3955c075dcbfa682542e78754dcf122df89`，488 49/49 GitHub Actions success。490 对原 `refreshVersionConversionResources428(true)` 主动 SDK 检测 POST 增原有30秒 Abort/取消，避免 TCP/TLS/网关挂起让弹窗无尽 Loading；检测执行仍由服务端，结果待确认可刷新或手动重试，SDK/芯片状态不因网络错误虚构为不兼容。专项 Node31/31；完整新 SHA CI 待验，生产485未部署，真实SDK/板端/P95未验。
 ## 2026-11-04｜ZIP 原图与母模型专项接续（进行中）
 
+> **2026-11-04 最新状态**：指定节点母模型安装协议已推送长期分支 `0da5379e5f2b40c4f72437d8ffffb373282c77b4`（该提交 CI 发现旧路由 kwargs 静态测试不认识 `agent_model_install_asset_provider`，已在后续工作树修正）。新增 Agent 远程首训按对象模型冻结 SHA 优先核验复制已安装副本，坏缓存自动回退对象存储；不绕过已有素材/结果可移植合同。真实 GPU、隔离 PT 环境、跨节点网络与浏览器性能仍待验收。完整进度以同专题 PROGRESS/UAT 为准。
+
 > 2026-11-04 最新：上一稳定远端 `4de9090` 的 Actions 已核对 20/20 success；当前增量新增真正的 `MODEL_INSTALL` Agent 任务路径、管理端单层安装/取消、哈希流传输/本地原子落盘/回执挡板。103 项定点 Node 测试与 Python 语法通过；新 Python API/节点测试与 CI 尚待运行；不得误报已在 A800/4070 成功安装或首训。详见完整专项进度文档。
 
 上一批增量已推送远端 `653a33cd`；新一批代码增加 Agent 授权目录的非阻塞/有界 `.pt` 发现、管理端原有扫描缓存模型的显式登记、节点清单单层 UI 与独立 5 项扫描测试。严禁将 Agent 心跳的 `DISCOVERED_UNVERIFIED` 解释成训练可用性；跨节点安装、Worker 首训、全量 CI/浏览器和真实性能未完成。详见 `PROGRESS_ZIP_RAW_PT_MOTHER_MODEL_2026_11_03.md`。

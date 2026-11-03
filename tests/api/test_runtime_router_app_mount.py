@@ -61,6 +61,7 @@ def test_production_app_mounts_runtime_router_exactly_once():
         "agent_material_scan_read_provider",
         "agent_clean_selection_page_provider",
         "agent_clean_selection_read_provider",
+        "agent_model_install_asset_provider",
     }
     assert isinstance(keywords["project_path_provider"], ast.Name)
     assert keywords["project_path_provider"].id == "project_dir"
@@ -97,6 +98,13 @@ def test_production_app_mounts_runtime_router_exactly_once():
     assert keywords["agent_clean_selection_page_provider"].id == "_agent_clean_selection_page"
     assert isinstance(keywords["agent_clean_selection_read_provider"], ast.Name)
     assert keywords["agent_clean_selection_read_provider"].id == "_agent_clean_selection_read"
+    # The installer must obtain an already verified asset through the
+    # controller's canonical registry, not a second path-based upload handler.
+    provider = keywords["agent_model_install_asset_provider"]
+    assert isinstance(provider, ast.Lambda)
+    assert isinstance(provider.body, ast.Call)
+    assert isinstance(provider.body.func, ast.Name)
+    assert provider.body.func.id == "_verified_mother_model_asset"
 
 
 def test_v63_subrouters_keep_single_composition_owner():
