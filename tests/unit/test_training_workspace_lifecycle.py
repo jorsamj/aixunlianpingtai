@@ -1,5 +1,8 @@
 import hashlib
+import errno
 import json
+import sqlite3
+import threading
 from dataclasses import replace
 from pathlib import Path
 
@@ -51,13 +54,15 @@ def test_automatic_archival_failure_is_visible_and_retries(tmp_path, monkeypatch
     service, _, artifacts, _ = workspace(tmp_path)
     archive = service._archive_evidence
     monkeypatch.setattr(service, '_archive_evidence', lambda *args: (_ for _ in ()).throw(
-        RuntimeError('REPORT_IMAGE_HASH_MISMATCH')))
+        OSError(errno.EIO, 'simulated transient disk error')))
     assert service.maintain()['deleted'] == 0
     receipt = artifacts.read_json('t', 'workspace-cleanup.json')
     assert receipt['status'] == 'retryable'
-    assert receipt['blockers'] == ['REPORT_IMAGE_HASH_MISMATCH']
+    assert receipt['blockers'] == ['ARCHIVE_IO_FAILURE']
     assert artifacts.artifact_path('t', 'work/bundle').exists()
     monkeypatch.setattr(service, '_archive_evidence', archive)
+    receipt['next_retry_epoch'] = 0  # Simulate expiry of the bounded cooldown.
+    artifacts.atomic_write_json('t', 'workspace-cleanup.json', receipt)
     service.maintain()  # reset bounded cursor
     assert service.maintain()['deleted'] == 1
 
@@ -92,6 +97,167 @@ def workspace(tmp_path, status=TaskStatus.FAILED):
     artifacts.atomic_write_json("t", "work/bundle/manifest.json", {**snapshot, "splits": {}})
     artifacts.atomic_write_json("t", "failure.json", {"task_id": "t", "project_id": "p", "recoverable": False})
     return TrainingWorkspaceLifecycle(data, repository, artifacts), repository, artifacts, original
+
+
+def successful_workspace(tmp_path):
+    service, repo, artifacts, original = workspace(tmp_path, TaskStatus.SUCCEEDED)
+    snapshot = artifacts.read_json("t", "snapshot.json")
+    model = artifacts.artifact_path("t", "outputs/best.pt")
+    model.parent.mkdir()
+    model.write_bytes(b"verified-model")
+    models = [{"ref": "outputs/best.pt", "sha256": hashlib.sha256(model.read_bytes()).hexdigest(),
+               "size_bytes": model.stat().st_size}]
+    artifacts.atomic_write_json("t", "result.json", {**snapshot, "verified_models": models,
+        "training_report": {"test_result": {"error_samples": []}}})
+    artifacts.atomic_write_json("t", "checkpoints/worker.json",
+                                {"stage": "committed", "result_ref": "result.json"})
+    catalog = service.data_dir / "projects/p/algorithms.json"
+    catalog.write_text(json.dumps([{"id": "a", "name": "a", "versions": [{
+        "id": "v", "task_id": "t", "training_status": "SUCCEEDED",
+        "artifact_verified": True, "snapshot_id": snapshot["snapshot_id"],
+        "verified_models": models}]}]), encoding="utf-8")
+    from platform_core.algorithms import list_algorithms
+    list_algorithms(catalog)
+    return service, repo, artifacts, original, model
+
+
+def test_unrelated_project_wal_write_during_archive_does_not_reject_cleanup(tmp_path, monkeypatch):
+    service, _, artifacts, _, model = successful_workspace(tmp_path)
+    archive = service._archive_evidence
+    def with_unrelated_write(task, bundle):
+        archive(task, bundle)
+        db = service.data_dir / "projects/p/algorithms.sqlite3"
+        with sqlite3.connect(db) as connection:
+            connection.execute("CREATE TABLE IF NOT EXISTS unrelated_probe (id INTEGER)")
+            connection.execute("INSERT INTO unrelated_probe VALUES (1)")
+    monkeypatch.setattr(service, "_archive_evidence", with_unrelated_write)
+    assert service.cleanup("p", "t", actor="manual-test")["status"] == "deleted"
+    assert model.read_bytes() == b"verified-model"
+    assert artifacts.artifact_path("t", "evidence/archive-proof.json").is_file()
+
+
+def test_current_training_version_changed_during_archive_remains_protected(tmp_path, monkeypatch):
+    service, _, artifacts, _, _ = successful_workspace(tmp_path)
+    archive = service._archive_evidence
+    def revoke_version(task, bundle):
+        archive(task, bundle)
+        db = service.data_dir / "projects/p/algorithms.sqlite3"
+        with sqlite3.connect(db) as connection:
+            connection.execute("UPDATE algorithm_versions SET artifact_verified=0 WHERE training_job_id='t'")
+    monkeypatch.setattr(service, "_archive_evidence", revoke_version)
+    with pytest.raises(RuntimeError, match="MODEL_VERSION_CHANGED"):
+        service.cleanup("p", "t", actor="manual-test")
+    assert artifacts.artifact_path("t", "work/bundle").is_dir()
+
+
+def test_stale_final_gate_reuses_previously_verified_archive(tmp_path, monkeypatch):
+    service, _, artifacts, _, _ = workspace(tmp_path)
+    old_failure = artifacts.read_json("t", "failure.json")
+    archive = service._archive_evidence
+    def stale_once(task, bundle):
+        archive(task, bundle)
+        artifacts.atomic_write_json("t", "failure.json", {"recoverable": True})
+    monkeypatch.setattr(service, "_archive_evidence", stale_once)
+    with pytest.raises(RuntimeError, match="WORKSPACE_PREVIEW_STALE"):
+        service.cleanup("p", "t", actor="manual-test")
+    artifacts.atomic_write_json("t", "failure.json", old_failure)
+    monkeypatch.setattr(service, "_archive_evidence", archive)
+    copies = []
+    from platform_core import training_workspace_lifecycle as module
+    original_copy = module.shutil.copyfile
+    def counted_copy(*args, **kwargs):
+        copies.append(args)
+        return original_copy(*args, **kwargs)
+    monkeypatch.setattr(module.shutil, "copyfile", counted_copy)
+    assert service.cleanup("p", "t", actor="manual-test")["status"] == "deleted"
+    assert copies == []
+
+
+def test_interrupted_partial_archive_reuses_verified_files_on_retry(tmp_path, monkeypatch):
+    service, _, artifacts, _, _ = workspace(tmp_path)
+    yaml = artifacts.artifact_path("t", "work/bundle/dataset/data.yaml")
+    yaml.parent.mkdir(parents=True, exist_ok=True)
+    yaml.write_text("names: []\n", encoding="utf-8")
+    from platform_core import training_workspace_lifecycle as module
+    original_copy = module.shutil.copyfile
+    count = 0
+    def interrupted_copy(*args, **kwargs):
+        nonlocal count
+        count += 1
+        if count == 2:
+            raise OSError(errno.EIO, "simulated interruption")
+        return original_copy(*args, **kwargs)
+    monkeypatch.setattr(module.shutil, "copyfile", interrupted_copy)
+    with pytest.raises(OSError):
+        service.cleanup("p", "t", actor="manual-test")
+    assert artifacts.artifact_path("t", "work/bundle").exists()
+    assert not artifacts.artifact_path("t", "evidence/archive-proof.json").exists()
+    monkeypatch.setattr(module.shutil, "copyfile", original_copy)
+    replay = []
+    def count_retry(*args, **kwargs):
+        replay.append(args)
+        return original_copy(*args, **kwargs)
+    monkeypatch.setattr(module.shutil, "copyfile", count_retry)
+    assert service.cleanup("p", "t", actor="manual-test")["status"] == "deleted"
+    assert len(replay) == count - 1  # The first proven target was reused.
+
+
+def test_existing_complete_archive_detects_source_change(tmp_path, monkeypatch):
+    service, _, artifacts, _, _ = workspace(tmp_path)
+    archive = service._archive_evidence
+    def mutate_after_archive(task, bundle):
+        archive(task, bundle)
+        (bundle / "manifest.json").write_text('{"tampered":true}', encoding="utf-8")
+    monkeypatch.setattr(service, "_archive_evidence", mutate_after_archive)
+    with pytest.raises(RuntimeError, match="WORKSPACE_PREVIEW_STALE"):
+        service.cleanup("p", "t", actor="manual-test")
+    assert artifacts.artifact_path("t", "work/bundle").exists()
+
+
+def test_archive_disk_pressure_is_safe_and_diagnostic(tmp_path, monkeypatch):
+    service, _, artifacts, _, _ = workspace(tmp_path)
+    monkeypatch.setattr(service, "_require_archive_space", lambda *_: (_ for _ in ()).throw(
+        RuntimeError("DISK_SPACE_INSUFFICIENT")))
+    with pytest.raises(RuntimeError, match="DISK_SPACE_INSUFFICIENT"):
+        service.cleanup("p", "t", actor="manual-test")
+    assert artifacts.artifact_path("t", "work/bundle").exists()
+    receipt = artifacts.read_json("t", "workspace-cleanup.json")
+    assert receipt["blockers"] == ["DISK_SPACE_INSUFFICIENT"]
+    assert receipt["stage"] == "archive" and receipt["diagnostic_id"]
+
+
+def test_archive_space_invalid_config_fails_closed(tmp_path, monkeypatch):
+    service, _, artifacts, _ = workspace(tmp_path)
+    monkeypatch.setenv("CHANG_LIAN_ARCHIVE_MIN_FREE_BYTES", "bad-value")
+    with pytest.raises(RuntimeError, match="DISK_SPACE_INSUFFICIENT"):
+        service.cleanup("p", "t", actor="manual-test")
+    assert artifacts.artifact_path("t", "work/bundle").is_dir()
+
+
+def test_two_maintenance_workers_archive_once_and_report_reader_lock_stays_free(tmp_path, monkeypatch):
+    service, repo, artifacts, _, _ = workspace(tmp_path)
+    second = TrainingWorkspaceLifecycle(service.data_dir, repo, artifacts)
+    entered, release = threading.Event(), threading.Event()
+    original = service._archive_evidence
+    def slow_archive(task, bundle):
+        from filelock import FileLock
+        # A report image reader is not blocked by the long archive phase.
+        with FileLock(str(artifacts.root / "t/workspace-access.lock"), timeout=0):
+            pass
+        entered.set()
+        assert release.wait(5)
+        original(task, bundle)
+    monkeypatch.setattr(service, "_archive_evidence", slow_archive)
+    results = []
+    thread = threading.Thread(target=lambda: results.append(service.maintain()))
+    thread.start()
+    assert entered.wait(5)
+    assert second.maintain()["deleted"] == 0
+    release.set()
+    thread.join(5)
+    assert not thread.is_alive()
+    assert results[0]["deleted"] == 1
+    assert not artifacts.artifact_path("t", "work/bundle").exists()
 
 
 def test_failed_cleanup_is_scoped_idempotent_and_preserves_formal_evidence(tmp_path):
@@ -319,6 +485,34 @@ def test_workspace_api_requires_actor_explicit_confirmation_and_current_preview(
     assert original.read_bytes() == b"original"
     assert repo.get("t").status is TaskStatus.FAILED
     assert artifacts.read_json("t", "workspace-cleanup.json")["actor"] == "logged-in-user"
+
+
+def test_workspace_api_reports_archive_oserror_stage_without_private_paths(tmp_path, monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from platform_core.training_recovery_api import training_recovery_router
+    service, repo, artifacts, _ = workspace(tmp_path)
+    def disk_error(*_):
+        raise OSError(errno.ENOSPC, "private-path-must-not-leak")
+    monkeypatch.setattr(TrainingWorkspaceLifecycle, "_archive_evidence", disk_error)
+    app = FastAPI()
+    app.include_router(training_recovery_router(
+        lambda project_id: {"id": project_id}, lambda: repo, lambda: artifacts,
+        project_path_provider=lambda project_id: service.data_dir / "projects" / project_id,
+        workspace_actor_provider=lambda _request, _project: {"actor_id": "tester"},
+    ))
+    with TestClient(app) as client:
+        url = "/api/v62/projects/p/training-tasks/t/workspace"
+        preview = client.get(url).json()["workspace"]
+        payload = {"confirm": "release_training_workspace", "attempt": preview["attempt"],
+                   "snapshot_id": preview["snapshot_id"]}
+        response = client.post(url + "/cleanup", json=payload)
+        assert response.status_code == 503
+        detail = response.json()["detail"]
+        assert detail["code"] == "DISK_SPACE_INSUFFICIENT"
+        assert detail["stage"] == "archive" and detail["diagnostic_id"]
+        assert "private-path" not in response.text
+        assert artifacts.artifact_path("t", "work/bundle").exists()
 
 
 def test_independent_active_training_does_not_pin_task_bundle(tmp_path):

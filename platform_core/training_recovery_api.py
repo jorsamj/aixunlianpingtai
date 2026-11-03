@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import hashlib
 import re
+import sqlite3
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import quote
+from filelock import Timeout
 from starlette.requests import Request
 
 from .task_runtime import TaskKind, TaskStatus
@@ -560,11 +562,35 @@ def training_recovery_router(
                 expected_snapshot_id=str(payload["snapshot_id"]),
             )
         except RuntimeError as error:
-            raise HTTPException(status_code=409, detail={"code": "TRAINING_WORKSPACE_PROTECTED",
-                "blockers": str(error).split(","), "retryable": False}) from error
+            code = getattr(error, "workspace_code", "TRAINING_WORKSPACE_PROTECTED")
+            retryable = bool(getattr(error, "workspace_retryable", False))
+            blockers = [item for item in str(error).split(",")
+                        if re.fullmatch(r"[A-Z][A-Z0-9_]*", item)]
+            raise HTTPException(status_code=503 if retryable else 409, detail={
+                "code": code, "blockers": blockers or [code],
+                "retryable": retryable,
+                "stage": getattr(error, "workspace_stage", None),
+                "diagnostic_id": getattr(error, "workspace_diagnostic_id", None),
+            }) from error
+        except Timeout as error:
+            raise HTTPException(status_code=503, detail={
+                "code": "WORKSPACE_BUSY", "retryable": True,
+                "stage": getattr(error, "workspace_stage", "owner_lock"),
+                "diagnostic_id": getattr(error, "workspace_diagnostic_id", None),
+            }) from error
+        except sqlite3.Error as error:
+            raise HTTPException(status_code=503, detail={
+                "code": "WORKSPACE_DATABASE_BUSY", "retryable": True,
+                "stage": getattr(error, "workspace_stage", None),
+                "diagnostic_id": getattr(error, "workspace_diagnostic_id", None),
+            }) from error
         except OSError as error:
-            raise HTTPException(status_code=503, detail={"code": "TRAINING_WORKSPACE_RETRYABLE",
-                "message": "临时空间释放未完成，可安全重试", "retryable": True}) from error
+            raise HTTPException(status_code=503, detail={
+                "code": getattr(error, "workspace_code", "TRAINING_WORKSPACE_RETRYABLE"),
+                "message": "临时空间释放结果未确认，请重新核验",
+                "retryable": True, "stage": getattr(error, "workspace_stage", None),
+                "diagnostic_id": getattr(error, "workspace_diagnostic_id", None),
+            }) from error
         return {"ok": True, "workspace": result}
 
     @recovery_router.get("/{task_id}/input-diagnosis")

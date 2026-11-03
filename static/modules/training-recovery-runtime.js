@@ -6,7 +6,7 @@ import {withRequestDeadline} from './api.js?v=20261021s';
 const RECOVERY_ACTION_REVALIDATE = 'revalidate_checkpoint';
 const SUCCESS_TASK_STATUSES = new Set(['SUCCEEDED', 'PARTIAL_SUCCESS']);
 const FAILED_TASK_STATUSES = new Set(['FAILED', 'BLOCKED_BY_ENVIRONMENT', 'BLOCKED_BY_HARDWARE']);
-const WORKSPACE_BLOCKERS = {TASK_ACTIVE:'任务仍在执行', EXECUTION_LEASE_PRESENT:'执行租约尚未释放', PROCESS_PRESENT:'训练进程仍存在', ACTIVE_CONSUMER:'其他任务正在使用', OWNERSHIP_UNVERIFIED:'临时空间归属尚未验证', UNSAFE_PATH:'临时空间路径未通过安全校验', MODEL_EVIDENCE_UNVERIFIED:'模型归档尚未验证', RECOVERY_DEPENDENCY:'恢复训练仍依赖此临时空间'};
+const WORKSPACE_BLOCKERS = {TASK_ACTIVE:'任务仍在执行', EXECUTION_LEASE_PRESENT:'执行租约尚未释放', PROCESS_PRESENT:'训练进程仍存在', ACTIVE_CONSUMER:'其他任务正在使用', OWNERSHIP_UNVERIFIED:'临时空间归属尚未验证', UNSAFE_PATH:'临时空间路径未通过安全校验', MODEL_EVIDENCE_UNVERIFIED:'模型归档尚未验证', MODEL_VERSION_CHANGED:'模型版本归属发生变化', RECOVERY_DEPENDENCY:'恢复训练仍依赖此临时空间', WORKSPACE_PREVIEW_STALE:'核验期间任务证据发生变化', WORKSPACE_BUSY:'其他维护操作正在处理', ARCHIVE_INCOMPLETE:'报告证据归档尚未完成', ARCHIVE_IO_FAILURE:'归档文件写入失败', ARCHIVE_SOURCE_MISSING:'归档原始证据缺失', DISK_SPACE_INSUFFICIENT:'磁盘剩余空间不足以安全归档', DETACH_IO_FAILURE:'临时目录分离失败', DELETE_IO_FAILURE:'临时目录清理失败', WORKSPACE_DATABASE_BUSY:'数据库暂时不可用'};
 
 function taskStatusFlags(job = {}) {
   const canonical = canonicalTaskStatus(job);
@@ -459,14 +459,14 @@ export function trainingWorkspaceView(value = {}, project = '', task = '') {
   const reasons = WORKSPACE_BLOCKERS;
   const identity = truth?.project_id === project && truth?.task_id === task && Number.isInteger(truth?.attempt) && truth.attempt >= 0 && Boolean(truth?.snapshot_id);
   const released = ['deleted','already_clean'].includes(truth?.status);
-  const canRelease = identity && truth.eligible === true && Array.isArray(truth.blockers) && blockers.length === 0 && !value.busy && !value.loading && !released;
-  const message = value.busy ? '正在释放临时空间…' : value.loading ? '正在核验临时空间…' : released ? '临时训练空间已释放' : !truth || !identity ? `临时空间资格未知${value.error ? '：' + value.error : '，请重新核验'}` : canRelease ? '可安全清理本任务临时训练空间' : blockers.length ? `暂不能清理：${blockers.map(code=>reasons[code] || `未知阻塞原因（${code}）`).join('；')}` : '临时空间资格未知，请重新核验';
+  const canRelease = identity && truth.eligible === true && Array.isArray(truth.blockers) && blockers.length === 0 && !value.busy && !value.loading && !value.needsRefresh && !released;
+  const message = value.busy ? '正在释放临时空间…' : value.loading ? '正在核验临时空间…' : released ? '临时训练空间已释放' : value.needsRefresh ? `本次释放结果尚未确认，必须重新核验${blockers.length ? '：' + blockers.map(code=>reasons[code] || `未知阻塞原因（${code}）`).join('；') : value.error ? '：' + value.error : ''}` : !truth || !identity ? `临时空间资格未知${value.error ? '：' + value.error : '，请重新核验'}` : canRelease ? '可安全清理本任务临时训练空间' : blockers.length ? `暂不能清理：${blockers.map(code=>reasons[code] || `未知阻塞原因（${code}）`).join('；')}` : '临时空间资格未知，请重新核验';
   return {canRelease, message, released};
 }
 
 function workspaceHtml(value, project, task) {
   const model = trainingWorkspaceView(value, project, task);
-  return `<section class="training-recovery-callout" data-training-workspace aria-live="polite" aria-busy="${Boolean(value?.loading || value?.busy)}"><b>临时训练空间</b><p>${value?.loading || value?.busy ? '<i class="loading-spinner" aria-hidden="true"></i> ' : ''}${esc(model.message)}</p><p>临时文件逻辑大小：${value?.truth?.temporary_logical_bytes == null ? '未知' : esc(bytesText(value.truth.temporary_logical_bytes))} · 实际释放磁盘空间：未知</p><button class="btn" data-training-workspace-refresh ${value?.busy || value?.loading ? 'disabled' : ''}>重新核验</button> <button class="btn" data-training-workspace-cleanup ${model.canRelease ? '' : 'disabled'}>${value?.busy ? '正在释放…' : '释放临时空间'}</button></section>`;
+  return `<section class="training-recovery-callout" data-training-workspace aria-live="polite" aria-busy="${Boolean(value?.loading || value?.busy)}"><b>临时训练空间</b><p>${value?.loading || value?.busy ? '<i class="loading-spinner" aria-hidden="true"></i> ' : ''}${esc(model.message)}</p><p>${value?.needsRefresh ? '上次核验临时文件逻辑大小（可能已过期）' : '临时文件逻辑大小'}：${value?.truth?.temporary_logical_bytes == null ? '未知' : esc(bytesText(value.truth.temporary_logical_bytes))} · 实际释放磁盘空间：暂不可测</p><button class="btn" data-training-workspace-refresh ${value?.busy || value?.loading ? 'disabled' : ''}>重新核验</button> <button class="btn" data-training-workspace-cleanup ${model.canRelease ? '' : 'disabled'}>${value?.busy ? '正在释放…' : '释放临时空间'}</button></section>`;
 }
 
 function detailHtml(job, recovery, log = '', inputIssues = null, activeTab = 'curves', workspace = null, project = '') {
@@ -1008,11 +1008,11 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
     if (!workspace || !openTaskId) return false;
     if (workspace.busy) return false;
     if (locks.has(`workspace:${openProjectId}:${openTaskId}`)) {
-      workspace = {error:'释放请求仍在处理，请稍后重新核验'}; renderWorkspace(); return false;
+      workspace = {...workspace, needsRefresh:true, error:'释放请求仍在处理，请稍后重新核验'}; renderWorkspace(); return false;
     }
     if (workspaceReadPromise) return workspaceReadPromise;
     const context = workspaceContext();
-    workspace = {...workspace, loading:true, error:''}; renderWorkspace();
+    workspace = {...workspace, loading:true, needsRefresh:true, error:''}; renderWorkspace();
     const promise = (async()=>{
       try {
         const body = await withRequestDeadline(async signal=>json(await nativeFetch(`/api/v62/projects/${encodeURIComponent(context.project)}/training-tasks/${encodeURIComponent(context.task)}/workspace`, {signal,headers:{Accept:'application/json'}}), '读取临时空间资格失败'), {label:'临时空间核验'});
@@ -1020,7 +1020,7 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
         workspace = {truth:body.workspace};
         return true;
       } catch (error) {
-        if (context.current()) workspace = {error:String(error.message || error)};
+        if (context.current()) workspace = {...workspace, loading:false, needsRefresh:true, error:String(error.message || error)};
         return false;
       } finally {
         if (context.current()) {workspaceReadPromise = null; renderWorkspace();}
@@ -1048,8 +1048,9 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
     } catch (error) {
       if (context.current()) {
         workspace = Array.isArray(error?.detail?.blockers)
-          ? {truth:{...preview,eligible:false,blockers:error.detail.blockers}}
-          : {error:`释放结果尚未确认，请重新核验：${error.message || error}`};
+          ? {truth:{...preview,eligible:false,blockers:error.detail.blockers},needsRefresh:true,
+             error:`${error.detail.code || '释放被拒绝'}，请重新核验`}
+          : {truth:preview,needsRefresh:true,error:`释放结果尚未确认，请重新核验：${error.message || error}`};
         notify?.(trainingWorkspaceView(workspace, context.project, context.task).message);
       }
       return false;
@@ -1243,7 +1244,7 @@ export function installTrainingRecoveryRuntime({getState, projectId, notify, fet
   };
 
   const runtime = {
-    build: 'training-recovery-runtime-4226391',
+    build: 'training-recovery-runtime-4226510',
     hydrateJobs,
     openDetail,
     refreshOpenDetail,

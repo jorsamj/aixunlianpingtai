@@ -7,16 +7,20 @@ this allowlist. No production scan or cleanup runs merely by importing this modu
 from __future__ import annotations
 
 import hashlib
+import errno
 import json
 import logging
 import os
+import sqlite3
 import shutil
 import stat
-from contextlib import closing
+import time
+import uuid
+from contextlib import closing, nullcontext
 from pathlib import Path
 
 import psutil
-from filelock import FileLock
+from filelock import FileLock, Timeout
 
 from .algorithm_sql_store import AlgorithmSqlStore
 from .task_runtime.models import TaskKind, TaskStatus, utc_now
@@ -28,6 +32,11 @@ from .training_bundle_cache import _is_link_like, _resolve_relative
 MARKER = "workspace-lifecycle.json"
 RECEIPT = "workspace-cleanup.json"
 EVIDENCE = "evidence/bundle"
+ARCHIVE_PROOF = "evidence/archive-proof.json"
+MAINTENANCE_LOCK = "workspace-maintenance.lock"
+MAX_RETRY_DELAY_SECONDS = 3600
+MAX_AUTOMATIC_IO_RETRIES = 8
+DEFAULT_ARCHIVE_RESERVE_BYTES = 2 * 1024 ** 3
 
 
 def _sha(path):
@@ -192,20 +201,18 @@ class TrainingWorkspaceLifecycle:
                 bundle, detached = self._paths(task_id)
                 if not bundle.exists() and not detached.exists():
                     continue
-                truth = self.inspect(project_id, task_id)
-                if not truth["eligible"]:
-                    self._record_maintenance_wait(task_id, "blocked", truth["blockers"])
+                receipt = self.artifacts.read_json(task_id, RECEIPT, default={})
+                if receipt.get("automatic_paused") or float(receipt.get("next_retry_epoch") or 0) > time.time():
                     continue
-                result = self.cleanup(project_id, task_id, actor="automatic-workspace-maintenance",
-                    expected_attempt=truth["attempt"], expected_snapshot_id=truth["snapshot_id"])
+                # Avoid a second full tree walk/model hash and let cleanup's
+                # task-scoped owner lock serialize the expensive preflight.
+                result = self.cleanup(project_id, task_id, actor="automatic-workspace-maintenance")
                 deleted += result.get("status") == "deleted"
             except Exception as error:
-                # Original cleanup records deletion failures. Never let maintenance
-                # break lease renewal/claiming or authorize deletion after an error.
-                code = str(error)
-                if not code or any(char not in "ABCDEFGHIJKLMNOPQRSTUVWXYZ_" for char in code):
-                    code = type(error).__name__
-                self._record_maintenance_wait(task_id, "retryable", [code])
+                # cleanup already persists a classified diagnostic. Never let
+                # maintenance failure interfere with task claiming or renewal.
+                if not isinstance(error, (RuntimeError, OSError, Timeout)):
+                    self._record_maintenance_wait(task_id, "retryable", [type(error).__name__])
         return {"examined": len(rows), "deleted": deleted}
 
     def _record_maintenance_wait(self, task_id, status, blockers):
@@ -217,17 +224,22 @@ class TrainingWorkspaceLifecycle:
                 if (previous.get("status") in {"pending", "deleted"}
                         or previous.get("status") == "retryable" and "candidate_logical_bytes" in previous):
                     return
-                if previous.get("status") == status and previous.get("blockers") == blockers:
-                    return
+                count = int(previous.get("attempt_count") or 0) + 1
+                delay = min(MAX_RETRY_DELAY_SECONDS, 30 * 2 ** min(count - 1, 7))
                 self.artifacts.atomic_write_json(task_id, RECEIPT, {
                     "schema_version": 1, "task_id": task_id, "status": status,
-                    "blockers": blockers, "updated_at": utc_now(),
+                    "blockers": blockers, "updated_at": utc_now(), "last_attempt_at": utc_now(),
+                    "attempt_count": count, "next_retry_epoch": time.time() + delay,
                     "scope": "task_work_bundle_only", "deleted_logical_bytes": 0,
                     "physical_space_released": None,
                 })
+        except Timeout:
+            # Another process holds the short reader/detach lock. This is a
+            # normal skip, not an unavailable diagnostic worth warning on.
+            return
         except Exception:
             # A busy workspace or unavailable artifact store cannot grant cleanup.
-            logging.getLogger(__name__).warning("Workspace maintenance diagnostic unavailable for %s", task_id)
+            logging.getLogger(__name__).warning("Workspace maintenance diagnostic unavailable task_id=%s", task_id)
 
     def _inspect(self, task, active, *, verify_evidence=True):
         blockers = []
@@ -303,9 +315,40 @@ class TrainingWorkspaceLifecycle:
         return {"items": items, "next_cursor": rows[limit-1][0] if len(rows) > limit else None,
                 "dry_run": True, "scope": "indexed_task_work_bundles", "physical_space_released": None}
 
+    @staticmethod
+    def _file_identity(path):
+        if _is_link_like(path):
+            raise RuntimeError("UNSAFE_EVIDENCE_PATH")
+        info = path.stat()
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise RuntimeError("UNSAFE_EVIDENCE_PATH")
+        return [info.st_ino, info.st_size, info.st_mtime_ns]
+
+    @staticmethod
+    def _require_archive_space(path, required_bytes):
+        # A reserve is a safety threshold, not a prediction of physical bytes
+        # ultimately released. The OS may still report ENOSPC concurrently.
+        try:
+            reserve = int(os.environ.get("CHANG_LIAN_ARCHIVE_MIN_FREE_BYTES",
+                                         str(DEFAULT_ARCHIVE_RESERVE_BYTES)))
+        except (TypeError, ValueError) as error:
+            raise RuntimeError("DISK_SPACE_INSUFFICIENT") from error
+        if reserve < 0:
+            raise RuntimeError("DISK_SPACE_INSUFFICIENT")
+        usage = os.statvfs(path)
+        if usage.f_bavail * usage.f_frsize < reserve + int(required_bytes):
+            raise RuntimeError("DISK_SPACE_INSUFFICIENT")
+
     def _archive_evidence(self, task, bundle):
         """Retain metadata and actual report error images, never the entire cohort."""
-        manifest = self.artifacts.read_json(task.task_id, "work/bundle/manifest.json", default=None)
+        # `bundle` can be either the original work/bundle or the task-owned
+        # work/.bundle-reclaim after an interrupted atomic detach. Resolve the
+        # manifest from the validated source directory in both cases.
+        manifest_path = _resolve_relative(bundle, "manifest.json")
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.is_file() else None
+        except (OSError, UnicodeError, json.JSONDecodeError) as error:
+            raise RuntimeError("BUNDLE_MANIFEST_UNVERIFIED") from error
         if not isinstance(manifest, dict):
             raise RuntimeError("BUNDLE_MANIFEST_UNVERIFIED")
         snapshot = self.artifacts.read_json(task.task_id, "snapshot.json", default={})
@@ -344,6 +387,17 @@ class TrainingWorkspaceLifecycle:
             if _sha(image) != row.get("content_sha256"):
                 raise RuntimeError("REPORT_IMAGE_HASH_MISMATCH")
             refs.add(row["image_ref"])
+        identity = {
+            "task_id": task.task_id, "project_id": task.project_id,
+            "attempt": task.attempt, "snapshot_id": snapshot.get("snapshot_id"),
+            "manifest_sha256": _sha(_resolve_relative(bundle, "manifest.json")),
+            "result_sha256": _sha(self.artifacts.artifact_path(task.task_id, task.result_ref or "result.json"))
+                if self.artifacts.artifact_path(task.task_id, task.result_ref or "result.json").is_file() else None,
+            "refs_sha256": hashlib.sha256(json.dumps(sorted(refs), ensure_ascii=False).encode()).hexdigest(),
+        }
+        previous = self.artifacts.read_json(task.task_id, ARCHIVE_PROOF, default={})
+        verified_before = (previous.get("files") or {}) if previous.get("identity") == identity else {}
+        verified = {}
         for ref in sorted(refs):
             source = _resolve_relative(bundle, ref)
             if not source.is_file():
@@ -352,22 +406,58 @@ class TrainingWorkspaceLifecycle:
                 continue
             target = _resolve_relative(self.artifacts.root / task.task_id, EVIDENCE + "/" + ref)
             target.parent.mkdir(parents=True, exist_ok=True)
-            temporary = target.with_name("." + target.name + ".tmp")
-            if _is_link_like(temporary):
-                raise RuntimeError("UNSAFE_EVIDENCE_PATH")
-            shutil.copyfile(source, temporary)
-            if _sha(source) != _sha(temporary):
+            source_identity = self._file_identity(source)
+            known = verified_before.get(ref)
+            if (isinstance(known, dict) and known.get("source_identity") == source_identity
+                    and target.is_file() and known.get("target_identity") == self._file_identity(target)):
+                verified[ref] = known
+                continue
+            if known and known.get("source_identity") != source_identity:
+                raise RuntimeError("REPORT_EVIDENCE_CHANGED")
+            source_sha = _sha(source)
+            if target.is_file() and _sha(target) == source_sha:
+                # A previous interrupted archive copied this file correctly.
+                # Reuse it without another copy/fsync/replace cycle.
+                verified[ref] = {"sha256": source_sha, "source_identity": source_identity,
+                                 "target_identity": self._file_identity(target)}
+                continue
+            temporary = target.with_name("." + target.name + "." + uuid.uuid4().hex + ".tmp")
+            try:
+                self._require_archive_space(target.parent, source_identity[1])
+                shutil.copyfile(source, temporary)
+                if self._file_identity(source) != source_identity or _sha(temporary) != source_sha:
+                    raise RuntimeError("REPORT_EVIDENCE_COPY_CHANGED")
+                with temporary.open("r+b") as stream:
+                    os.fsync(stream.fileno())
+                # A report reader holds this lock through hash verification
+                # and streaming. Swap one verified file at a time, never hold
+                # the reader lock during copying or hashing the whole set.
+                with FileLock(str(self.artifacts.root / task.task_id / "workspace-access.lock"), timeout=5):
+                    os.replace(temporary, target)
+                    if os.name != "nt":
+                        descriptor = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY)
+                        try:
+                            os.fsync(descriptor)
+                        finally:
+                            os.close(descriptor)
+            finally:
+                # Only this invocation's uniquely named temporary may be
+                # removed. Other owners' orphans are never guessed at.
                 temporary.unlink(missing_ok=True)
-                raise RuntimeError("REPORT_EVIDENCE_COPY_CHANGED")
-            with temporary.open("r+b") as stream:
-                os.fsync(stream.fileno())
-            os.replace(temporary, target)
-            if os.name != "nt":
-                descriptor = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY)
-                try:
-                    os.fsync(descriptor)
-                finally:
-                    os.close(descriptor)
+            verified[ref] = {"sha256": source_sha, "source_identity": source_identity,
+                             "target_identity": self._file_identity(target)}
+        for ref, evidence in verified.items():
+            if (self._file_identity(_resolve_relative(bundle, ref)) != evidence["source_identity"]
+                    or self._file_identity(_resolve_relative(self.artifacts.root / task.task_id,
+                                                            EVIDENCE + "/" + ref)) != evidence["target_identity"]):
+                raise RuntimeError("REPORT_EVIDENCE_CHANGED")
+        # This is a task-scoped attestation of already verified bytes, not a
+        # second task truth source. A crash before the atomic proof write simply
+        # causes the next attempt to verify/reuse existing target files.
+        self.artifacts.atomic_write_json(task.task_id, ARCHIVE_PROOF, {
+            "schema_version": 1, "status": "complete", "identity": identity,
+            "files": verified, "completed_at": utc_now(),
+        })
 
     def _delete_detached(self, path):
         self._tree_bytes(path)  # Recheck lexical tree before recursive deletion.
@@ -375,7 +465,8 @@ class TrainingWorkspaceLifecycle:
             shutil.rmtree(path)
 
     def _evidence_stamp(self, task):
-        # Stat only under the final DB gate; expensive hashing stays outside.
+        # Task-owned files only: unrelated project SQL/WAL writes are not a
+        # change of this training task's version or model evidence.
         refs = {MARKER, "snapshot.json", task.payload_ref, task.result_ref or "result.json",
                 "failure.json", "checkpoints/worker.json", "work/bundle/manifest.json"}
         result = self.artifacts.read_json(task.task_id, task.result_ref or "result.json", default={})
@@ -383,8 +474,6 @@ class TrainingWorkspaceLifecycle:
             refs.update(str(model.get("ref")) for model in result.get("verified_models") or []
                         if isinstance(model, dict) and model.get("ref"))
         paths = [self.artifacts.artifact_path(task.task_id, ref) for ref in sorted(refs)]
-        project = self.data_dir / "projects" / task.project_id
-        paths.extend(project / name for name in ("algorithms.json", "algorithms.sqlite3", "algorithms.sqlite3-wal"))
         stamp = []
         for path in paths:
             if _is_link_like(path):
@@ -397,13 +486,109 @@ class TrainingWorkspaceLifecycle:
         return tuple(stamp)
 
     def cleanup(self, project_id, task_id, *, actor, expected_attempt=None, expected_snapshot_id=None):
-        # Lock lives outside the task-owned work tree and holds no business state.
+        phase = {"value": "owner_lock"}
+        started = time.monotonic()
+        try:
+            return self._cleanup_owned(project_id, task_id, actor=actor,
+                expected_attempt=expected_attempt, expected_snapshot_id=expected_snapshot_id,
+                phase=phase)
+        except Timeout as error:
+            if phase["value"] == "owner_lock" and str(actor).startswith("automatic"):
+                # The other Worker owns this expensive archive. Ordinary
+                # contention is neither a failure nor a loggable warning.
+                return {"task_id": task_id, "status": "skipped_busy"}
+            self._record_cleanup_failure(task_id, actor, phase["value"], error,
+                (time.monotonic() - started) * 1000)
+            raise
+        except (RuntimeError, OSError, sqlite3.Error) as error:
+            self._record_cleanup_failure(task_id, actor, phase["value"], error,
+                (time.monotonic() - started) * 1000)
+            raise
+
+    @staticmethod
+    def _failure_classification(phase, error):
+        if isinstance(error, Timeout):
+            return "WORKSPACE_BUSY", True
+        if isinstance(error, OSError):
+            if error.errno == errno.ENOSPC:
+                return "DISK_SPACE_INSUFFICIENT", True
+            if isinstance(error, FileNotFoundError):
+                return "ARCHIVE_SOURCE_MISSING" if phase == "archive" else "WORKSPACE_IO_FAILURE", True
+            return ({"archive": "ARCHIVE_IO_FAILURE", "detach": "DETACH_IO_FAILURE",
+                     "delete": "DELETE_IO_FAILURE"}.get(phase, "WORKSPACE_IO_FAILURE"), True)
+        if isinstance(error, sqlite3.Error):
+            return "WORKSPACE_DATABASE_BUSY", True
+        message = str(error)
+        if message == "WORKSPACE_PREVIEW_STALE":
+            return message, True
+        if message == "DISK_SPACE_INSUFFICIENT":
+            return message, True
+        if message in {"ARCHIVE_INCOMPLETE", "PREVIOUS_CLEANUP_PENDING"}:
+            return message, True
+        return (message if message and all(c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ_" for c in message)
+                else "WORKSPACE_PROTECTED"), False
+
+    def _record_cleanup_failure(self, task_id, actor, phase, error, duration_ms):
+        code, retryable = self._failure_classification(phase, error)
+        diagnostic_id = uuid.uuid4().hex
+        for key, value in (("workspace_code", code), ("workspace_retryable", retryable),
+                           ("workspace_stage", phase), ("workspace_diagnostic_id", diagnostic_id)):
+            try:
+                setattr(error, key, value)
+            except (AttributeError, TypeError):
+                pass
+        detail = {"task_id": task_id, "diagnostic_id": diagnostic_id,
+                  "actor_kind": "automatic" if str(actor).startswith("automatic") else "manual",
+                  "stage": phase, "code": code, "exception_type": type(error).__name__,
+                  "errno": getattr(error, "errno", None),
+                  "duration_ms": round(duration_ms, 2), "at": utc_now()}
+        logging.getLogger(__name__).warning("Workspace cleanup failure %s", json.dumps(detail))
+        try:
+            self.artifacts.append_log(task_id, "logs/workspace-cleanup.jsonl",
+                                      json.dumps(detail, ensure_ascii=False) + "\n")
+            with FileLock(str(self.artifacts.root / task_id / "workspace-access.lock"), timeout=0):
+                previous = self.artifacts.read_json(task_id, RECEIPT, default={})
+                if previous.get("status") == "deleted":
+                    return
+                count = int(previous.get("attempt_count") or 0) + 1
+                delay = min(MAX_RETRY_DELAY_SECONDS, 30 * 2 ** min(count - 1, 7))
+                actor_kind = detail["actor_kind"]
+                paused = (actor_kind == "automatic" and retryable and count >= MAX_AUTOMATIC_IO_RETRIES
+                          and code in {"ARCHIVE_IO_FAILURE", "ARCHIVE_SOURCE_MISSING",
+                                       "DISK_SPACE_INSUFFICIENT", "DETACH_IO_FAILURE",
+                                       "DELETE_IO_FAILURE", "WORKSPACE_IO_FAILURE"})
+                self.artifacts.atomic_write_json(task_id, RECEIPT, {
+                    **previous, "schema_version": 1, "task_id": task_id,
+                    "status": "retryable" if retryable else "blocked",
+                    "blockers": [code], "last_attempt_at": utc_now(),
+                    "updated_at": utc_now(), "attempt_count": count,
+                    "next_retry_epoch": time.time() + delay,
+                    "automatic_paused": paused,
+                    "stage": phase, "diagnostic_id": diagnostic_id,
+                    "deleted_logical_bytes": 0, "physical_space_released": None,
+                    "scope": "task_work_bundle_only",
+                })
+        except (OSError, RuntimeError, Timeout, ValueError):
+            # A failed diagnostic write never changes the cleanup decision.
+            pass
+
+    def _cleanup_owned(self, project_id, task_id, *, actor, expected_attempt, expected_snapshot_id, phase):
+        # This extra *lock*, not a second task owner, prevents two Workers from
+        # doing the same expensive archive; released by the OS after a crash.
         self.artifacts._validate_task_id(task_id)
-        self._paths(task_id)  # Validate lexical task/work ownership before locking.
-        with FileLock(str(self.artifacts.root / task_id / "workspace-access.lock"), timeout=5):
+        self._paths(task_id)
+        with FileLock(str(self.artifacts.root / task_id / MAINTENANCE_LOCK),
+                      timeout=0 if str(actor).startswith("automatic") else 5):
+            phase["value"] = "preflight"
             qualified = self.repository.get(task_id)
             if qualified is None or qualified.project_id != project_id or qualified.kind is not TaskKind.TRAINING:
                 raise KeyError(task_id)
+            if expected_attempt is not None and qualified.attempt != expected_attempt:
+                raise RuntimeError("WORKSPACE_PREVIEW_STALE")
+            if expected_snapshot_id is not None:
+                current_snapshot = self.artifacts.read_json(task_id, "snapshot.json", default={})
+                if current_snapshot.get("snapshot_id") != expected_snapshot_id:
+                    raise RuntimeError("WORKSPACE_PREVIEW_STALE")
             evidence_stamp = self._evidence_stamp(qualified)
             truth = self._inspect(qualified, self._consumers(qualified))
             if not truth["eligible"]:
@@ -412,52 +597,77 @@ class TrainingWorkspaceLifecycle:
                     "blockers": truth["blockers"], "task_id": task_id,
                 }, ensure_ascii=False) + "\n")
                 raise RuntimeError(",".join(truth["blockers"]))
+            version_guard = nullcontext()
+            if qualified.status in {TaskStatus.SUCCEEDED, TaskStatus.PARTIAL_SUCCESS}:
+                snapshot = self.artifacts.read_json(task_id, "snapshot.json", default={})
+                result = self.artifacts.read_json(task_id, qualified.result_ref or "result.json", default={})
+                models = result.get("verified_models") or []
+                catalog = AlgorithmSqlStore(self.data_dir / "projects" / project_id / "algorithms.json")
+                version_ids = catalog.verified_training_version_identity_readonly(
+                    task_id, snapshot.get("snapshot_id"), models)
+                if not version_ids:
+                    raise RuntimeError("MODEL_VERSION_CHANGED")
+                version_guard = catalog.verified_training_version_guard(
+                    task_id, snapshot.get("snapshot_id"), models, version_ids)
             bundle, detached = self._paths(task_id)
             if bundle.exists():
                 if detached.exists():
                     raise RuntimeError("PREVIOUS_CLEANUP_PENDING")
+                phase["value"] = "archive"
                 self._archive_evidence(qualified, bundle)
-            with self.repository.training_workspace_guard(task_id) as (task, active):
-                if task.project_id != project_id or task.kind is not TaskKind.TRAINING:
-                    raise KeyError(task_id)
-                if expected_attempt is not None and task.attempt != expected_attempt:
-                    raise RuntimeError("WORKSPACE_PREVIEW_STALE")
-                if expected_snapshot_id is not None:
-                    snapshot = self.artifacts.read_json(task_id, "snapshot.json", default={})
-                    if snapshot.get("snapshot_id") != expected_snapshot_id:
-                        raise RuntimeError("WORKSPACE_PREVIEW_STALE")
-                if task != qualified or self._evidence_stamp(task) != evidence_stamp:
-                    raise RuntimeError("WORKSPACE_PREVIEW_STALE")
-                latest = self._inspect(task, active, verify_evidence=False)
-                latest["temporary_logical_bytes"] = truth["temporary_logical_bytes"]
-                truth = latest
-                if not truth["eligible"]:
-                    self.artifacts.append_log(task_id, "logs/workspace-cleanup.jsonl", json.dumps({
-                        "status": "refused", "actor": str(actor), "at": utc_now(),
-                        "blockers": truth["blockers"], "task_id": task_id,
-                    }, ensure_ascii=False) + "\n")
-                    raise RuntimeError(",".join(truth["blockers"]))
-                bundle, detached = self._paths(task_id)
-                receipt = self.artifacts.read_json(task_id, RECEIPT, default={})
-                if not bundle.exists() and not detached.exists():
-                    if (receipt.get("status") in {"pending", "retryable"}
-                            and "candidate_logical_bytes" in receipt):
-                        receipt = {**receipt, "status": "deleted", "finished_at": utc_now(),
-                            "deleted_logical_bytes": receipt["candidate_logical_bytes"],
-                            "physical_space_released": None}
-                        self.artifacts.atomic_write_json(task_id, RECEIPT, receipt)
-                    return {**truth, "status": "already_clean", "deleted_logical_bytes": 0}
-                if bundle.exists():
-                    if detached.exists():
-                        raise RuntimeError("PREVIOUS_CLEANUP_PENDING")
-                    receipt = {"schema_version": 1, "task_id": task_id, "attempt": task.attempt,
-                        "actor": str(actor), "started_at": utc_now(), "status": "pending",
-                        "deleted_logical_bytes": 0, "candidate_logical_bytes": truth["temporary_logical_bytes"]}
-                    self.artifacts.atomic_write_json(task_id, RECEIPT, receipt)
-                    os.replace(bundle, detached)
-                elif receipt.get("task_id") != task_id or receipt.get("attempt") != task.attempt:
-                    raise RuntimeError("CLEANUP_RECEIPT_UNVERIFIED")
+            elif detached.exists():
+                # Recovery after a crash of an older Worker: prove the
+                # evidence before completing deletion, never trust receipt only.
+                phase["value"] = "archive"
+                self._archive_evidence(qualified, detached)
+            phase["value"] = "final_gate"
+            with FileLock(str(self.artifacts.root / task_id / "workspace-access.lock"), timeout=5):
+                with self.repository.training_workspace_guard(task_id) as (task, active):
+                    with version_guard:
+                        if task.project_id != project_id or task.kind is not TaskKind.TRAINING:
+                            raise KeyError(task_id)
+                        if expected_attempt is not None and task.attempt != expected_attempt:
+                            raise RuntimeError("WORKSPACE_PREVIEW_STALE")
+                        if expected_snapshot_id is not None:
+                            snapshot = self.artifacts.read_json(task_id, "snapshot.json", default={})
+                            if snapshot.get("snapshot_id") != expected_snapshot_id:
+                                raise RuntimeError("WORKSPACE_PREVIEW_STALE")
+                        if task != qualified or self._evidence_stamp(task) != evidence_stamp:
+                            raise RuntimeError("WORKSPACE_PREVIEW_STALE")
+                        latest = self._inspect(task, active, verify_evidence=False)
+                        latest["temporary_logical_bytes"] = truth["temporary_logical_bytes"]
+                        truth = latest
+                        if not truth["eligible"]:
+                            raise RuntimeError(",".join(truth["blockers"]))
+                        bundle, detached = self._paths(task_id)
+                        receipt = self.artifacts.read_json(task_id, RECEIPT, default={})
+                        if not bundle.exists() and not detached.exists():
+                            if (receipt.get("status") in {"pending", "retryable"}
+                                    and "candidate_logical_bytes" in receipt):
+                                receipt = {**receipt, "status": "deleted", "finished_at": utc_now(),
+                                    "deleted_logical_bytes": receipt["candidate_logical_bytes"],
+                                    "physical_space_released": None}
+                                self.artifacts.atomic_write_json(task_id, RECEIPT, receipt)
+                            return {**truth, "status": "already_clean", "deleted_logical_bytes": 0}
+                        proof = self.artifacts.read_json(task_id, ARCHIVE_PROOF, default={})
+                        if (proof.get("status") != "complete"
+                                or proof.get("identity", {}).get("task_id") != task_id
+                                or proof.get("identity", {}).get("attempt") != task.attempt):
+                            raise RuntimeError("ARCHIVE_INCOMPLETE")
+                        if bundle.exists():
+                            if detached.exists():
+                                raise RuntimeError("PREVIOUS_CLEANUP_PENDING")
+                            receipt = {"schema_version": 1, "task_id": task_id, "attempt": task.attempt,
+                                "actor": str(actor), "started_at": utc_now(), "status": "pending",
+                                "deleted_logical_bytes": 0,
+                                "candidate_logical_bytes": truth["temporary_logical_bytes"]}
+                            self.artifacts.atomic_write_json(task_id, RECEIPT, receipt)
+                            phase["value"] = "detach"
+                            os.replace(bundle, detached)
+                        elif receipt.get("task_id") != task_id or receipt.get("attempt") != task.attempt:
+                            raise RuntimeError("CLEANUP_RECEIPT_UNVERIFIED")
             # The DB lock covers only the final identity/eligibility check and detach.
+            phase["value"] = "delete"
             try:
                 self._delete_detached(detached)
             except OSError as error:
@@ -465,6 +675,7 @@ class TrainingWorkspaceLifecycle:
                     **receipt, "status": "retryable", "error": type(error).__name__, "updated_at": utc_now(),
                 })
                 raise
+            phase["value"] = "confirm"
             receipt = {**receipt, "status": "deleted", "finished_at": utc_now(),
                 "deleted_logical_bytes": receipt["candidate_logical_bytes"], "physical_space_released": None}
             self.artifacts.atomic_write_json(task_id, RECEIPT, receipt)

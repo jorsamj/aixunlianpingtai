@@ -29,6 +29,37 @@ test('workspace release requires server eligibility and exact task preview ident
   assert.equal(trainingWorkspaceView({truth:{...truth, project_id:'other'}}, 'p1', 't1').canRelease, false);
   assert.match(trainingWorkspaceView({truth:{...truth, eligible:false, blockers:['RECOVERY_DEPENDENCY']}}, 'p1', 't1').message, /恢复/);
   assert.match(trainingWorkspaceView({error:'offline'}, 'p1', 't1').message, /未知/);
+  assert.equal(trainingWorkspaceView({truth,needsRefresh:true,error:'503'}, 'p1', 't1').canRelease,false);
+  assert.match(trainingWorkspaceView({truth,needsRefresh:true,error:'503'}, 'p1', 't1').message,/必须重新核验/);
+});
+
+test('workspace 503 preserves last trusted size but requires a fresh GET before another POST',async()=>{
+  const job={id:'t1',task_status:'FAILED',status:'failed'};
+  let writes=0, reads=0;
+  globalThis.window={confirm:()=>true,PollRegistryRuntime:{clear(){},startTimeout(){}}};
+  const runtime=installTrainingRecoveryRuntime({getState:()=>({jobs:[job]}),projectId:()=>'p1',
+    fetchImpl:async(url)=>{
+      if(url.endsWith('/workspace/cleanup')) {
+        writes++;
+        if(writes===1)return response({detail:{code:'ARCHIVE_IO_FAILURE',stage:'archive',retryable:true,diagnostic_id:'incident-1'}},503);
+        return response({workspace:{status:'deleted'}});
+      }
+      if(url.endsWith('/workspace')) {
+        reads++;
+        return response({workspace:{project_id:'p1',task_id:'t1',attempt:1,snapshot_id:'s1',eligible:true,blockers:[],temporary_logical_bytes:1782579200}});
+      }
+      return response(job);
+    }});
+  await runtime.openDetail('t1');
+  assert.equal(reads,1);
+  assert.equal(await runtime.cleanupWorkspace(),false);
+  assert.equal(await runtime.cleanupWorkspace(),false);
+  assert.equal(writes,1);
+  assert.equal(await runtime.refreshWorkspace(),true);
+  assert.equal(reads,2);
+  assert.equal(await runtime.cleanupWorkspace(),true);
+  assert.equal(writes,2);
+  runtime.destroy();cleanup();
 });
 
 test('workspace cleanup uses preview attempt and snapshot and suppresses duplicate and late result', async () => {

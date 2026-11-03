@@ -4,7 +4,7 @@ import hashlib
 import json
 import shutil
 import sqlite3
-from contextlib import closing
+from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -146,31 +146,65 @@ class AlgorithmSqlStore:
 
     def has_verified_training_version_readonly(self, task_id: str, snapshot_id: str, models) -> bool:
         """Attest an already initialized version without migrating legacy data."""
+        return bool(self.verified_training_version_identity_readonly(task_id, snapshot_id, models))
+
+    @staticmethod
+    def _model_contract(models):
+        return {(str(item.get("ref") or ""), str(item.get("sha256") or ""),
+                 item.get("size_bytes")) for item in models if isinstance(item, Mapping)}
+
+    def _verified_training_version_ids(self, conn, task_id, snapshot_id, models):
+        if not self._initialization_complete(conn):
+            return ()
+        rows = conn.execute(
+            """SELECT versions.* FROM algorithm_versions AS versions
+               JOIN algorithms ON algorithms.id=versions.algorithm_id
+               WHERE algorithms.project_id=? AND versions.training_job_id=?
+               AND versions.artifact_verified=1
+               AND versions.training_status IN ('SUCCEEDED','PARTIAL_SUCCESS')""",
+            (self.project_id, str(task_id)),
+        ).fetchall()
+        expected = self._model_contract(models)
+        matched = []
+        for row in rows:
+            version = self._version_from_row(row)
+            committed = self._model_contract(version.get("verified_models", []))
+            if expected and version.get("snapshot_id") == snapshot_id and committed == expected:
+                matched.append(str(row["id"]))
+        return tuple(sorted(matched))
+
+    def verified_training_version_identity_readonly(self, task_id: str, snapshot_id: str, models):
+        """Return only this task's verified version IDs, never project WAL metadata."""
         if not self.db_path.is_file():
-            return False
+            return ()
         try:
             with closing(sqlite3.connect(self.db_path.resolve().as_uri() + "?mode=ro", uri=True)) as conn:
                 conn.row_factory = sqlite3.Row
-                if not self._initialization_complete(conn):
-                    return False
-                rows = conn.execute(
-                    """SELECT versions.* FROM algorithm_versions AS versions
-                       JOIN algorithms ON algorithms.id=versions.algorithm_id
-                       WHERE algorithms.project_id=? AND versions.training_job_id=?
-                       AND versions.artifact_verified=1
-                       AND versions.training_status IN ('SUCCEEDED','PARTIAL_SUCCESS')""",
-                    (self.project_id, str(task_id)),
-                ).fetchall()
-                expected = {(item.get("sha256"), item.get("size_bytes")) for item in models}
-                for row in rows:
-                    version = self._version_from_row(row)
-                    committed = {(item.get("sha256"), item.get("size_bytes"))
-                        for item in version.get("verified_models", []) if isinstance(item, Mapping)}
-                    if expected and version.get("snapshot_id") == snapshot_id and committed == expected:
-                        return True
-                return False
+                return self._verified_training_version_ids(conn, task_id, snapshot_id, models)
         except sqlite3.Error:
-            return False
+            return ()
+
+    @contextmanager
+    def verified_training_version_guard(self, task_id, snapshot_id, models, expected_ids):
+        """Fence a short final detach against concurrent version writes.
+
+        The task DB guard must be acquired first. This second DB write gate is
+        intentionally held only across the final check and atomic rename; the
+        long archive and model hashing happen before either write gate.
+        """
+        if not self.db_path.is_file() or not expected_ids:
+            raise RuntimeError("MODEL_VERSION_CHANGED")
+        with closing(self._connect()) as conn:
+            conn.execute("PRAGMA busy_timeout=500")
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                if self._verified_training_version_ids(conn, task_id, snapshot_id, models) != tuple(expected_ids):
+                    raise RuntimeError("MODEL_VERSION_CHANGED")
+                yield
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
 
     def read_all(self) -> list[dict]:
         self.ensure_ready()
