@@ -1608,3 +1608,11 @@ button[aria-busy="true"]:has(.tiny-spinner)::before{display:none}
   .ai66-review-grid{padding:8px 14px}
   .ai66-review-footer{gap:10px;margin:0 14px 8px!important;padding:7px 9px!important}
 }
+
+/* Post-upload ZIP sample classification; never represents a GT annotation. */
+.zip-upload-sample-kind{padding:16px 18px;margin:16px 0;border:1px solid var(--line,#dce3ec);border-radius:12px;background:var(--panel,#fff)}
+.zip-upload-sample-kind h3{font-size:16px;margin:0 0 12px}
+.zip-upload-sample-kind>.row{gap:20px;flex-wrap:wrap}
+.zip-upload-sample-kind label{display:inline-flex;align-items:center;gap:7px;cursor:pointer}
+.zip-sample-categories{display:flex;flex-wrap:wrap;align-items:center;gap:12px 20px;padding:14px 0}
+.zip-upload-sample-kind small{color:var(--muted,#64748b);display:block;margin-top:8px}

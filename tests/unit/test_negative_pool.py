@@ -34,6 +34,52 @@ def test_membership_idempotence_multiple_categories_and_no_material_changes(tmp_
     assert repo.get_many(['0','1'])==original
 
 
+def test_positive_upload_intent_does_not_create_training_gt_or_erase_labels(tmp_path):
+    repo,pool=setup(tmp_path)
+    before=repo.get('1')
+    pool_revision=pool.revision()
+    result=pool.set_positive_upload_intent(['1'],['fire','smoke'])
+    after=repo.get('1')
+    assert result['affected']==1
+    assert after['upload_intended_label_codes']==['fire','smoke']
+    assert after['labels']==before['labels']==['person']
+    assert after.get('annotation_state')==before.get('annotation_state')
+    assert after.get('annotation_scope')==before.get('annotation_scope')
+    assert pool.query()['total']==0
+    assert pool.revision()==pool_revision,'positive upload must not invalidate pool-only training selections'
+    with pytest.raises(ValueError):
+        pool.set_positive_upload_intent(['1','missing'],['fire'])
+    assert repo.get('1')['upload_intended_label_codes']==['fire','smoke']
+
+
+def test_upload_intent_endpoint_validates_active_project_labels_and_categories(tmp_path):
+    from fastapi import FastAPI, HTTPException
+    from platform_core.negative_pool_api import create_negative_pool_router
+    repo, pool = setup(tmp_path)
+    project = {'labels': ['fire', 'smoke', 'retired'], 'label_meta': [{}, {}, {'status': 'disabled'}]}
+    def get_project(project_id):
+        if project_id != 'allowed':
+            raise HTTPException(403, 'forbidden')
+        return project
+    router = create_negative_pool_router(lambda _: repo, get_project, lambda _, row: row)
+    app = FastAPI()
+    app.include_router(router)
+    endpoint = next(route.endpoint for route in router.routes if route.path.endswith('/upload-intent'))
+    assert endpoint('allowed', {'sample_type': 'positive', 'image_ids': ['1'], 'label_codes': ['fire', 'smoke']})['affected'] == 1
+    assert repo.get('1')['upload_intended_label_codes'] == ['fire', 'smoke']
+    with pytest.raises(HTTPException) as disabled:
+        endpoint('allowed', {'sample_type': 'positive', 'image_ids': ['1'], 'label_codes': ['retired']})
+    assert disabled.value.status_code == 422
+    category = pool.category(name='反光')
+    assert endpoint('allowed', {'sample_type': 'negative', 'image_ids': ['1'], 'category_ids': [category['id']]})['affected'] == 1
+    assert pool.query(category_ids=[category['id']])['total'] == 1
+    assert repo.get('1')['upload_intended_label_codes'] == ['fire', 'smoke']
+    assert repo.get('1')['labels'] == ['person'], 'negative classification never mutates formal labels'
+    with pytest.raises(HTTPException) as forbidden:
+        endpoint('forbidden', {'sample_type': 'negative', 'image_ids': ['1'], 'category_ids': [category['id']]})
+    assert forbidden.value.status_code == 403
+
+
 def test_filters_full_selection_and_atomic_rejection(tmp_path):
     repo,pool=setup(tmp_path)
     category=pool.category(name='干扰')['id']

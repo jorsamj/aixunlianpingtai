@@ -56,6 +56,35 @@ def create_negative_pool_router(material_store, get_project, public_material, us
     def members(project_id: str, body: dict = Body(...)):
         return invoke(lambda: pool(project_id).members(body.get('image_ids',[]),action=body.get('action','add'),category_ids=body.get('category_ids',[])))
 
+    @router.post('/upload-intent')
+    def upload_intent(project_id: str, body: dict = Body(...)):
+        """Post-upload positive intent or negative category association, not GT."""
+        project = get_project(project_id)
+        kind = str(body.get('sample_type') or '').strip()
+        ids = body.get('image_ids', [])
+        codes = body.get('label_codes', [])
+        categories = body.get('category_ids', [])
+        if kind == 'positive':
+            if categories:
+                raise HTTPException(422, 'positive samples use target labels, not negative categories')
+            labels = project.get('labels') or []
+            metadata = project.get('label_meta') or []
+            allowed = {str(label.get('code') if isinstance(label, dict) else label)
+                for index, label in enumerate(labels)
+                if (index >= len(metadata) or not isinstance(metadata[index], dict)
+                    or (str(metadata[index].get('status') or 'active').lower() == 'active'
+                        and metadata[index].get('active') is not False))}
+            if not isinstance(codes, list) or not codes or any(str(code) not in allowed for code in codes):
+                raise HTTPException(422, 'unknown or inactive project label')
+            return invoke(lambda: pool(project_id).set_positive_upload_intent(ids, codes))
+        if kind == 'negative':
+            if codes:
+                raise HTTPException(422, 'negative samples use pool categories, not target labels')
+            if not categories:
+                raise HTTPException(422, 'negative samples require a category')
+            return invoke(lambda: pool(project_id).members(ids, action='add', category_ids=categories))
+        raise HTTPException(422, 'select positive or negative sample type')
+
     @router.post('/categories/assign')
     def assign(project_id: str, body: dict = Body(...)):
         return invoke(lambda: pool(project_id).members(body.get('image_ids',[]),action=body.get('action','add'),category_ids=body.get('category_ids',[]),categories_only=True))

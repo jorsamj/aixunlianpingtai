@@ -91,6 +91,8 @@ test('fetch and XHR ordinary image upload paths reuse one request envelope', () 
   assert.ok(source.includes("const uploadTicket=preparePlainUpload411(fd);const xhr=new XMLHttpRequest()"));
   const xhrSuccess = "xhr.addEventListener('load',()=>settlePlainUploadResponse411(uploadTicket,xhr.status,xhr.responseText));";
   assert.equal(source.split(xhrSuccess).length - 1, 2);
+  assert.match(source,/await window\.UploadConfirmationRuntime\.open\(\{projectId:pid\(\),batchIds:\[String\(response\.batch_id\)\]/,
+    'legacy image upload must enter the same post-upload classification view as Uppy');
 });
 
 

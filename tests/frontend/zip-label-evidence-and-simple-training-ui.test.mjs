@@ -79,7 +79,7 @@ test('ZIP labels have one batch source plan with explicit durable creation and r
   assert.match(confirmation,/buildManualLabelMapping\(review\)/);
   const create=confirmation.indexOf('await createPlatformLabel(project,code,name)');
   const verify=confirmation.indexOf('verified.has(String(code))');
-  const submit=confirmation.indexOf('await startZipJob(project,id,{fetchImpl,confirmation:{label_mapping}})');
+  const submit=confirmation.indexOf('await startZipJob(project,id,{fetchImpl,confirmation})');
   assert.ok(create>=0&&create<verify&&verify<submit,
     'final confirmation creates and verifies canonical labels before admitting the ZIP import');
   assert.match(zip,/zip-label-workspace/);

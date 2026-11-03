@@ -14651,6 +14651,9 @@ class V19ImportStartReq(BaseModel):
     selected_paths: Optional[List[str]] = None
     label_mapping: Dict[str, str] = Field(default_factory=dict)
     create_labels: List[str] = Field(default_factory=list)
+    sample_type: str = ""
+    intended_label_codes: List[str] = Field(default_factory=list)
+    negative_category_ids: List[str] = Field(default_factory=list)
 
 
 def v19_import_jobs_dir(project_id: str) -> Path:
@@ -15671,6 +15674,27 @@ def _v19_import_worker_impl(project_id: str, dataset_id: str, job_id: str, selec
                         message="素材索引与标注投影已提交",
                         **metrics,
                     )
+        if committed and job.get('upload_sample_type') in {'positive', 'negative'}:
+            # Original ZIP bytes and formal annotations have already committed.
+            # Classification is a separate idempotent association: a failure
+            # must never roll back, re-import, or duplicate those materials.
+            try:
+                from platform_core.negative_pool import NegativePool
+                pool = NegativePool(material_store(project_id))
+                imported_ids = list(dict.fromkeys(str(v) for v in report.get('imported_image_ids') or [] if str(v)))
+                for offset in range(0, len(imported_ids), 500):
+                    chunk = imported_ids[offset:offset + 500]
+                    if job['upload_sample_type'] == 'negative':
+                        pool.members(chunk, action='add', category_ids=job.get('upload_negative_category_ids') or [])
+                    else:
+                        pool.set_positive_upload_intent(chunk, job.get('upload_intended_label_codes') or [])
+                report['upload_classification_status'] = 'applied'
+            except Exception as classify_error:
+                report['upload_classification_status'] = 'pending'
+                report.setdefault('warnings', []).append(
+                    '图片与原始标注已安全入库，但正负样本归类尚未完成：'
+                    + str(classify_error)[:180] + '。可在素材库或负样本池重新归类。'
+                )
         processing_seconds = round(max(0.0, time.time() - processing_started), 2)
         v19_update_job(
             project_id, job_id, status="done", stage="导入完成", progress=100,
@@ -16011,9 +16035,10 @@ def _v19_finalize_multipart_upload_impl(project_id: str, upload_id: str):
             "upload_progress": 100,
             "scan_seconds": scan_seconds,
             "status": "selecting",
+            "sample_classification_required": True,
             "stage": "上传与校验完成",
             "progress": 48,
-            "phase": "WAITING_CONFIRMATION" if scan.get("label_confirmation_required") else "READY",
+            "phase": "WAITING_CONFIRMATION",
             "phase_completed": 1,
             "phase_total": 1,
             "phase_unit": "step",
@@ -16023,7 +16048,7 @@ def _v19_finalize_multipart_upload_impl(project_id: str, upload_id: str):
             "message": (
                 "后台扫描完成，等待确认标签并开始正式导入"
                 if scan.get("label_confirmation_required")
-                else "后台扫描完成，等待开始正式导入"
+                else "后台扫描完成，请选择正样本标签或负样本分类后导入"
             ),
             "scan_images_ref": "scan-images.json",
             "class_samples_ref": "scan-class-samples.json",
@@ -16191,13 +16216,14 @@ async def v19_create_import_job(project_id: str, dataset_id: str, file: UploadFi
         "file_name": filename, "file_size_mb": round(uploaded_bytes / 1024 / 1024, 2),
         "uploaded_bytes": uploaded_bytes, "upload_seconds": upload_seconds, "scan_seconds": scan_seconds,
         "status": "selecting", "stage": "上传与校验完成", "progress": 48,
-        "phase": "WAITING_CONFIRMATION" if scan.get("label_confirmation_required") else "READY",
+        "sample_classification_required": True,
+        "phase": "WAITING_CONFIRMATION",
         "phase_completed": 1, "phase_total": 1, "phase_unit": "step",
         "phase_progress": 100, "eta_seconds": None,
         "message": (
             "上传与ZIP校验完成，等待确认标签并开始后台导入"
             if scan.get("label_confirmation_required")
-            else "上传与ZIP校验完成，等待开始后台导入"
+            else "上传与ZIP校验完成，请选择正样本标签或负样本分类后导入"
         ),
         "scan_images_ref": "scan-images.json",
         "class_samples_ref": "scan-class-samples.json",
@@ -16385,6 +16411,33 @@ def _v19_start_import_job_locked(project_id: str, job_id: str, payload: V19Impor
         remember_project_label_aliases(project_id, classes, resolved)
     elif payload.label_mapping:
         raise HTTPException(status_code=422, detail="当前 ZIP 没有可确认的外部标注类别")
+
+    # New ZIPs stop after scan for an explicit sample-kind choice, including
+    # archives with no external annotations. Old selecting jobs keep their
+    # legacy start semantics. This is an upload intent, never formal GT.
+    if job.get("sample_classification_required"):
+        from platform_core.negative_pool import NegativePool
+        chosen_type = str(payload.sample_type or job.get("upload_sample_type") or "").strip()
+        frozen_type = str(job.get("upload_sample_type") or "")
+        if chosen_type not in {"positive", "negative"}:
+            raise HTTPException(status_code=422, detail="请选择正样本标签或负样本分类")
+        if frozen_type and chosen_type != frozen_type:
+            raise HTTPException(status_code=409, detail="本次 ZIP 的正负样本选择已冻结，不能在失败重试时改变")
+        codes = sorted(set(str(v).strip() for v in (payload.intended_label_codes or job.get("upload_intended_label_codes") or []) if str(v).strip()))
+        categories = sorted(set(str(v).strip() for v in (payload.negative_category_ids or job.get("upload_negative_category_ids") or []) if str(v).strip()))
+        if chosen_type == "positive":
+            active = {str(item.get("code") or "") for item in active_label_options(project_label_items(get_project(project_id)))}
+            if not codes or any(code not in active for code in codes) or categories:
+                raise HTTPException(status_code=422, detail="正样本须选择至少一个有效目标标签，不能选择负样本分类")
+        else:
+            valid = {str(row['id']) for row in NegativePool(material_store(project_id)).categories() if row.get('enabled')}
+            if not categories or any(code not in valid for code in categories) or codes:
+                raise HTTPException(status_code=422, detail="负样本须选择至少一个有效分类，不能选择目标标签")
+        if frozen_type and (codes != sorted(job.get("upload_intended_label_codes") or [])
+                            or categories != sorted(job.get("upload_negative_category_ids") or [])):
+            raise HTTPException(status_code=409, detail="本次 ZIP 样本选择已冻结，失败重试不能更改")
+        job.update(upload_sample_type=chosen_type, upload_intended_label_codes=codes,
+                   upload_negative_category_ids=categories)
 
     selected_paths = payload.selected_paths or []
     if selected_paths:

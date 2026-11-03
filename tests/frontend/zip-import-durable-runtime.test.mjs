@@ -71,6 +71,15 @@ test('annotated ZIP blocks auto-start until label mapping is explicitly confirme
   assert.equal(view.stage,'等待确认标注');
   assert.match(view.message,/2 个外部标签/);
 });
+test('new ZIP without external labels still waits for positive or negative sample classification',()=>{
+  const job={...selecting,phase:'WAITING_CONFIRMATION',sample_classification_required:true,
+    label_confirmation_required:false,external_classes:[]};
+  assert.equal(zipNeedsLabelConfirmation(job),true);
+  assert.equal(zipStartDisposition(job,[job],{intent:'deferred',eligibleForMs:999999}),'confirm-labels');
+  assert.equal(zipView(job,[job]).stage,'等待选择素材类型');
+  assert.match(zipView(job,[job]).message,/正样本标签或负样本分类/);
+  assert.equal(zipNeedsLabelConfirmation(selecting),false,'legacy ZIP continues to use old start semantics');
+});
 
 test('all browser ZIP entry points are owned by the durable v19 runtime',()=>{
   const source=readFileSync(new URL('../../static/modules/zip-import-runtime.js',import.meta.url),'utf8');
@@ -238,13 +247,13 @@ test('ZIP source label selection only stages an explicit mapping until final con
   assert.match(confirmation,/buildManualLabelMapping\(review\)/);
   const create=confirmation.indexOf('await createPlatformLabel(project,code,name)');
   const verify=confirmation.indexOf('verified.has(String(code))');
-  const submit=confirmation.indexOf('await startZipJob(project,id,{fetchImpl,confirmation:{label_mapping}})');
+  const submit=confirmation.indexOf('await startZipJob(project,id,{fetchImpl,confirmation})');
   assert.ok(create>=0 && create<verify && verify<submit,'new labels must be created and verified before import admission');
 });
 
 test('ZIP browser bootstrap loads the refreshed exact-code and side-evidence module',()=>{
  const boot=readFileSync(new URL('../../static/zip-import-bootstrap.mjs',import.meta.url),'utf8');
- assert.match(boot,/zip-import-runtime\.js\?v=4226371/);
+ assert.match(boot,/zip-import-runtime\.js\?v=4224506/);
 });
 
 
@@ -356,7 +365,8 @@ test('ZIP label mapping is editable immediately and creates labels only upon fin
   assert.match(source,/review\.pendingCreate=Object\.fromEntries/);
   assert.match(source,/for\(const item of \[\.\.\.plan\.reuse,\.\.\.plan\.create\]\)setLabelMapping/);
   assert.match(source,/for\(const \[code,name\] of toCreate\)\{[\s\S]*?await createPlatformLabel\(project,code,name\)/);
-  assert.match(source,/await startZipJob\(project,id,\{fetchImpl,confirmation:\{label_mapping\}\}\)/);
+  assert.match(source,/const confirmation=\{label_mapping,/);
+  assert.match(source,/await startZipJob\(project,id,\{fetchImpl,confirmation\}\)/);
   assert.match(source,/submittingLabelJobs\.has\(id\)/);
   assert.doesNotMatch(source,/if\(codes\.length&&!window\.confirm/);
   assert.match(css,/\.zip-label-confirm \.zip-label-target-select\{display:block/);

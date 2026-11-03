@@ -39,14 +39,16 @@ class NegativePool:
             raise ValueError('invalid identity')
         return result
 
-    def _mutate(self, operation):
+    def _mutate(self, operation, *, initialize_pool=True):
         with material_annotation_lifecycle_fence(self.materials.project_path), closing(self.materials._connect()) as db:
             db.execute('BEGIN IMMEDIATE')
             try:
-                for sql in _DDL:
-                    db.execute(sql)
+                if initialize_pool:
+                    for sql in _DDL:
+                        db.execute(sql)
                 result = operation(db)
-                db.execute('UPDATE negative_pool_meta SET revision=revision+1 WHERE id=1')
+                if initialize_pool:
+                    db.execute('UPDATE negative_pool_meta SET revision=revision+1 WHERE id=1')
                 db.commit()
                 return result
             except Exception:
@@ -130,6 +132,35 @@ class NegativePool:
             db.executemany(sql, ((v,c) for v in ids for c in categories))
             return {'affected':len(ids)}
         return self._mutate(write)
+
+    def set_positive_upload_intent(self, image_ids, label_codes):
+        """Record labels the uploader plans to annotate, never formal GT.
+
+        This is intentionally separate from material.labels, label_counts and
+        AnnotationRepository. A detector needs real boxes before these images
+        can count as positive training evidence.
+        """
+        ids, codes = self._ids(image_ids), self._ids(label_codes)
+        if not ids or not codes:
+            raise ValueError('positive upload requires images and target labels')
+
+        def write(db):
+            records = []
+            for image_id in ids:
+                row = db.execute('SELECT m.* FROM materials m WHERE m.id=? AND '+_LIVE, (image_id,)).fetchone()
+                if row is None:
+                    raise ValueError('material missing or being deleted; no upload intent changed')
+                record = self.materials._row_payload(row)
+                record['upload_intended_label_codes'] = list(codes)
+                records.append(record)
+            for record in records:
+                self.materials._write_row(db, record)
+            self.materials._bump_revision(db)
+            return {'affected': len(records), 'sample_type': 'positive', 'label_codes': codes}
+
+        # Positive intent changes material metadata, not pool membership or its
+        # revision. Existing training pool selections must not be invalidated.
+        return self._mutate(write, initialize_pool=False)
 
     def query(self, *, query='', category_ids=(), labels=(), joined_days=None, joined_from=None, joined_to=None, review_status=None, page=1, page_size=50, ids_only=False):
         if page < 1 or not 1 <= page_size <= 1000:

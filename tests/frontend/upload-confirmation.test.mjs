@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {confirmationRows, decisionGroups, installUploadConfirmationRuntime} from '../../static/modules/upload-confirmation.js';
+import {confirmationRows, decisionGroups, installUploadConfirmationRuntime, uploadSampleSelectionValid} from '../../static/modules/upload-confirmation.js';
 const receipt=(id, ids)=>({id,items:ids.map(image_id=>({image_id,decision:'pending',image:{id:image_id,filename:`${image_id}.jpg`}})),upload_request_status:'SUCCEEDED'});
 test('optional smart audit receives only selected admitted image IDs and never changes upload decisions',async()=>{
  const state={project:{id:'p'}},opened=[];let posts=0;
@@ -22,11 +22,18 @@ test('mixed selection routes to actual batches and never resubmits decided rows'
  assert.deepEqual([...decisionGroups(rows,new Set(['1','2','3']),'ready')],[['a',['1']],['b',['3']]]);
  a.clean_task_id='task';assert.throws(()=>decisionGroups(confirmationRows([a]),new Set(['1']),'clean'),/已有清洗任务/);
 });
+test('post-upload classification requires one kind and matching target labels or pool categories',()=>{
+ assert.equal(uploadSampleSelectionValid('',new Set(['fire']),new Set()),false);
+ assert.equal(uploadSampleSelectionValid('positive',new Set(['fire']),new Set()),true);
+ assert.equal(uploadSampleSelectionValid('negative',new Set(),new Set(['night'])),true);
+ assert.equal(uploadSampleSelectionValid('negative',new Set(['fire']),new Set()),false);
+});
 test('submission refreshes receipts, blocks concurrent duplicate clicks and opens original annotation queue',async()=>{
  const values=new Map();const storage={getItem:k=>values.get(k),setItem:(k,v)=>values.set(k,v)};
- const s={project:{id:'p'}};let posts=0,openId;let release;const gate=new Promise(resolve=>release=resolve);let block=false;
+ const s={project:{id:'p',labels:['fire']}};let posts=0,intents=0,openId;let release;const gate=new Promise(resolve=>release=resolve);let block=false;
  let server=receipt('a',['1','2']);
  const runtime=installUploadConfirmationRuntime({getState:()=>s,storage,window:{openAnnotation:async id=>openId=id},api:async(url,opt)=>{
+   if(opt?.method === 'POST' && url.endsWith('/upload-intent')) {intents++;assert.deepEqual(JSON.parse(opt.body),{image_ids:['1','2'],sample_type:'positive',label_codes:['fire'],category_ids:[]});return {affected:2};}
    if(opt?.method === 'POST'){posts++;assert.deepEqual(JSON.parse(opt.body),{clean_image_ids:[],ready_image_ids:['1','2']});server={...server,items:server.items.map(r=>({...r,decision:'ready'}))};return server;}
    if(block)await gate;return server;
  }});
@@ -34,9 +41,33 @@ test('submission refreshes receipts, blocks concurrent duplicate clicks and open
  // Select through the same rendered checkbox handler without a browser.
  const root={dataset:{},querySelector:()=>null,prepend(){},set innerHTML(v){this.html=v;}};
  const container={querySelector:()=>root,firstElementChild:root,children:[root],replaceChildren(){}};runtime.mount(container);root.onchange({target:{dataset:{uploadAction:'all'},checked:true}});
+ root.onchange({target:{dataset:{},name:'uc-kind',value:'positive'}});
+ root.onchange({target:{dataset:{ucLabel:'fire'},checked:true}});
  block=true;const first=runtime.submit('ready');assert.equal(await runtime.submit('ready'),false);release();assert.equal(await first,true);
- assert.equal(posts,1);assert.deepEqual(s.annotationQueue414,['1','2']);assert.equal(openId,'1');
+ assert.equal(posts,1);assert.equal(intents,1);assert.deepEqual(s.annotationQueue414,['1','2']);assert.equal(openId,'1');
  await runtime.restoreForProject('p');assert.equal(runtime.renderIfActive(),false);
+});
+
+test('negative uploaded images join the pool by category without opening the GT annotation editor',async()=>{
+ const s={project:{id:'p',labels:['fire']}},requests=[],root={dataset:{},set innerHTML(v){this.html=v;},querySelector:()=>null};
+ const container={querySelector:()=>root,firstElementChild:root,children:[root],replaceChildren(){}};
+ let server=receipt('negative-batch',['neg-1']);let annotated=false;
+ const runtime=installUploadConfirmationRuntime({getState:()=>s,getContainer:()=>container,window:{openAnnotation:()=>annotated=true},storage:{getItem:()=>null,setItem(){}},api:async(url,opt={})=>{
+   if(url.endsWith('/categories'))return {items:[{id:'glare',name:'反光',enabled:true}]};
+   if(url.endsWith('/upload-intent')){requests.push(JSON.parse(opt.body));return {affected:1};}
+   if(url.endsWith('/decisions')){server={...server,items:server.items.map(row=>({...row,decision:'ready'}))};return server;}
+   return server;
+ }});
+ assert.equal(await runtime.open({projectId:'p',batchIds:['negative-batch']}),true);
+ root.onchange({target:{dataset:{uploadAction:'all'},checked:true}});
+ root.onchange({target:{name:'uc-kind',dataset:{},value:'negative'}});
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.match(root.html,/反光/);
+ root.onchange({target:{dataset:{ucCategory:'glare'},checked:true}});
+ assert.equal(await runtime.submit('ready'),true);
+ assert.deepEqual(requests,[{image_ids:['neg-1'],sample_type:'negative',label_codes:[],category_ids:['glare']}]);
+ assert.equal(annotated,false);
+ assert.equal(s.annotationQueue414,undefined);
 });
 
 test('project switch during receipt refresh cannot submit decisions to old project',async()=>{
@@ -72,5 +103,5 @@ test('navigation restore cannot invalidate an opening receipt request or leave l
  runtime=installUploadConfirmationRuntime({getState:()=>({project:{id:'p'}}),window:win,storage:{getItem:k=>values.get(k),setItem:(k,v)=>values.set(k,v)},api:async()=>receipt('a',['1'])});
  assert.equal(await runtime.open({projectId:'p',batchIds:['a']}),true);
  assert.equal(restored,false);
- assert.equal(await runtime.submit('ready'),true);
+ assert.equal(await runtime.submit('ready'),false,'a restored view must select images and classification before submitting');
 });
