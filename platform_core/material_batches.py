@@ -625,6 +625,233 @@ def _audit_metadata(path):
         }
 
 
+def _reuse_material_integrity_after_retirement(
+    context, project, project_path, materials, annotations, artifact_path,
+):
+    """Project proven DELETE_INDEX retirements onto a new, immutable audit copy.
+
+    A matching count is not enough by itself: both independent repository
+    revision deltas, task ownership, frozen selection receipts, GT backups and
+    the label schema must agree. Any unaccounted mutation returns to the full
+    scan; it must never silently inherit the old audit's clean verdict.
+    """
+    from .training_compatibility import _file_digest, diagnose_annotation_conflict
+    from .training_splits import training_annotation_digest
+
+    current_material = materials.current_revision()
+    current_annotation = annotations.current_revision()
+    schema_digest = _file_digest(project_path / 'meta.json')
+    cursor = None
+    previous = None
+    while True:
+        page = context.repository.list(
+            project_id=project, kinds=[TaskKind.MATERIAL_BATCH],
+            limit=100, cursor=cursor,
+        )
+        for task in page.items:
+            if task.task_id == context.task.task_id or task.status is not TaskStatus.SUCCEEDED:
+                continue
+            request = context.artifacts.read_json(task.task_id, task.payload_ref, default={})
+            if not isinstance(request, dict) or request.get('operation') != BatchOperation.AUDIT_MATERIAL_INTEGRITY.value:
+                continue
+            path = context.artifacts.artifact_path(task.task_id, MATERIAL_INTEGRITY_REF)
+            if path.is_file():
+                previous = (task, path)
+                break
+        if previous or not page.next_cursor:
+            break
+        cursor = page.next_cursor
+    if previous is None:
+        return None
+
+    previous_task, previous_path = previous
+    base = _audit_metadata(previous_path)
+    base_material = base.get('material_revision')
+    base_annotation = base.get('annotation_revision')
+    if (type(base_material) is not int or type(base_annotation) is not int
+            or current_material < base_material or current_annotation < base_annotation
+            or base.get('label_schema_digest') != schema_digest
+            or not isinstance(base.get('created_at'), str)):
+        return None
+    delta = current_material - base_material
+    # Reject unbounded replay work. The normal full audit remains available.
+    if not 0 <= delta <= 100000:
+        return None
+
+    with closing(materials._connect()) as database:
+        database.row_factory = sqlite3.Row
+        retirements = database.execute(
+            'SELECT task_id,image_id,content_sha256,annotation_json,retired_at '
+            'FROM material_retirements WHERE retired_at>? ORDER BY retired_at,image_id LIMIT ?',
+            (base['created_at'], delta + 1),
+        ).fetchall()
+    if len(retirements) != delta or len({row['image_id'] for row in retirements}) != delta:
+        return None
+
+    # A retire_many call from the canonical DELETE_INDEX worker changes the
+    # Material revision once per successfully retired image. Formal SQLite GT
+    # deletion changes Annotation revision once; legacy-only GT does not.
+    gt_deletes = 0
+    task_ids = {str(row['task_id']) for row in retirements}
+    for task_id in task_ids:
+        task = context.repository.get(task_id)
+        if (task is None or task.project_id != project or task.kind is not TaskKind.MATERIAL_BATCH
+                or task.status not in {TaskStatus.SUCCEEDED, TaskStatus.PARTIAL_SUCCESS}):
+            return None
+        request = context.artifacts.read_json(task_id, task.payload_ref, default={})
+        options = (request.get('options') or {}) if isinstance(request, dict) else {}
+        if (request.get('operation') != BatchOperation.DELETE_INDEX.value
+                or not options.get('material_integrity_plan_id')
+                or not options.get('material_integrity_audit_id')):
+            return None
+        frozen_path = context.artifacts.artifact_path(task_id, SELECTION_REF)
+        if not frozen_path.is_file():
+            return None
+        with closing(sqlite3.connect(frozen_path.as_uri() + '?mode=ro', uri=True)) as frozen:
+            succeeded = {str(row[0]) for row in frozen.execute(
+                "SELECT image_id FROM selection WHERE state='succeeded'"
+            )}
+        retired_here = {str(row['image_id']) for row in retirements if row['task_id'] == task_id}
+        if not retired_here.issubset(succeeded):
+            return None
+    for row in retirements:
+        try:
+            formal = json.loads(row['annotation_json'])
+        except (ValueError, TypeError):
+            return None
+        if not isinstance(formal, dict):
+            return None
+        gt_deletes += int(int(formal.get('version') or 0) > 0)
+    if current_annotation - base_annotation != gt_deletes:
+        return None
+
+    # The original audit stays immutable. A new task owns its projected copy.
+    # SQLite backup safely handles a WAL-backed source without copying a live
+    # journal file or depending on its on-disk layout.
+    with closing(sqlite3.connect(previous_path.as_uri() + '?mode=ro', uri=True)) as source, \
+            closing(sqlite3.connect(artifact_path)) as projected:
+        source.backup(projected)
+        projected.row_factory = sqlite3.Row
+        projected.execute('BEGIN IMMEDIATE')
+        projected.execute('CREATE TEMP TABLE retired_ids(image_id TEXT PRIMARY KEY) WITHOUT ROWID')
+        projected.executemany('INSERT INTO retired_ids VALUES (?)',
+            ((str(row['image_id']),) for row in retirements))
+        known = projected.execute(
+            'SELECT COUNT(DISTINCT image_id) FROM issue_items '
+            'WHERE image_id IN (SELECT image_id FROM retired_ids)'
+        ).fetchone()[0]
+        if known != delta:
+            projected.rollback()
+            return None
+        # Bind every removed identity to the original audited content hash.
+        for row in retirements:
+            matched = projected.execute(
+                'SELECT 1 FROM issue_items WHERE image_id=? AND content_sha256=? LIMIT 1',
+                (row['image_id'], str(row['content_sha256']).lower()),
+            ).fetchone()
+            if not matched:
+                projected.rollback()
+                return None
+            if materials.get(str(row['image_id'])) is not None:
+                projected.rollback()
+                return None
+        affected = [str(row[0]) for row in projected.execute(
+            'SELECT DISTINCT group_key FROM issue_items '
+            'WHERE image_id IN (SELECT image_id FROM retired_ids)'
+        )]
+        projected.execute('DELETE FROM issue_items WHERE image_id IN (SELECT image_id FROM retired_ids)')
+        label_ids = active_project_label_ids(project_path)
+        import_evidence = {}
+        for key in affected:
+            items = projected.execute(
+                'SELECT image_id,content_sha256,details_json FROM issue_items WHERE group_key=? ORDER BY image_id',
+                (key,),
+            ).fetchall()
+            projected.execute('DELETE FROM issue_groups WHERE group_key=?', (key,))
+            if key.startswith('DUPLICATE_') and len(items) < 2:
+                projected.execute('DELETE FROM issue_items WHERE group_key=?', (key,))
+                continue
+            if not items:
+                continue
+            new_key, new_type, details = key, key.split(':', 1)[0], {}
+            if key.startswith('DUPLICATE_'):
+                ids = [str(item['image_id']) for item in items]
+                formal = {}
+                for offset in range(0, len(ids), BATCH_SIZE):
+                    formal.update(annotations.get_many(ids[offset:offset + BATCH_SIZE]))
+                if len({training_annotation_digest(formal[image_id]) for image_id in ids}) == 1:
+                    new_type = 'DUPLICATE_IDENTICAL'
+                else:
+                    new_type = 'DUPLICATE_ANNOTATION_CONFLICT'
+                    indexed = {str(row['id']): row for row in materials.get_many(ids)}
+                    comparisons = [
+                        {**indexed.get(image_id, {}), **formal[image_id], 'id': image_id,
+                         'content_sha256': str(items[0]['content_sha256'])}
+                        for image_id in ids
+                    ]
+                    _material_integrity_import_evidence(
+                        project, comparisons, context.repository, context.artifacts, import_evidence,
+                    )
+                    diagnosis = diagnose_annotation_conflict(comparisons, label_ids, import_evidence)
+                    diagnosis.pop('pairs', None)
+                    details = {'gt_diagnosis': diagnosis}
+                new_key = f"{new_type}:{items[0]['content_sha256']}"
+                if new_key != key:
+                    projected.execute(
+                        'UPDATE issue_items SET group_key=?,issue_type=? WHERE group_key=?',
+                        (new_key, new_type, key),
+                    )
+            projected.execute(
+                'INSERT INTO issue_groups(group_key,issue_type,content_sha256,image_count,details_json) '
+                'VALUES (?,?,?,?,?)',
+                (new_key, new_type, items[0]['content_sha256'], len(items),
+                 json.dumps(details, ensure_ascii=False, sort_keys=True)),
+            )
+        mode = 'VERIFIED_RETIREMENT_DELTA' if delta else 'VERIFIED_UNCHANGED'
+        metadata = {
+            **base,
+            'created_at': utc_now(),
+            'material_revision': current_material,
+            'annotation_revision': current_annotation,
+            'label_schema_digest': schema_digest,
+            'reused_audit_task_id': previous_task.task_id,
+            'verified_retirement_count': delta,
+            'scan_mode': mode,
+        }
+        projected.execute('DELETE FROM audit_metadata')
+        projected.executemany('INSERT INTO audit_metadata(key,value_json) VALUES (?,?)',
+            ((key, json.dumps(value, ensure_ascii=False, sort_keys=True))
+             for key, value in metadata.items()))
+        counts = {
+            str(row[0]): int(row[1]) for row in projected.execute(
+                'SELECT issue_type,COUNT(*) FROM issue_items GROUP BY issue_type'
+            )
+        }
+        current_total = materials.summary()['total']
+        result = {
+            'scanned_images': current_total,
+            'reused_images': current_total,
+            'revalidated_groups': len(affected),
+            'verified_retirement_count': delta,
+            'affected_images': projected.execute('SELECT COUNT(DISTINCT image_id) FROM issue_items').fetchone()[0],
+            'issue_groups': projected.execute('SELECT COUNT(*) FROM issue_groups').fetchone()[0],
+            'issue_counts': counts,
+            'scan_failures': counts.get('MATERIAL_SCAN_UNVERIFIED', 0),
+            'audit_ref': MATERIAL_INTEGRITY_REF,
+            'metadata': metadata,
+        }
+        # No one may edit the source/GT while producing an apparently current
+        # projection. Revision drift after this check invalidates reuse.
+        _check_active(context, 'AUDITING_MATERIAL_INTEGRITY', 'verifying retirement receipts')
+        if (current_material != materials.current_revision()
+                or current_annotation != annotations.current_revision()
+                or schema_digest != _file_digest(project_path / 'meta.json')):
+            projected.rollback()
+            return None
+        projected.commit()
+    return result
+
+
 def _collect_known_image_ids(value, output=None):
     """Read only explicit image-id fields; arbitrary JSON strings are never paths."""
     output = output if output is not None else set()
@@ -2779,6 +3006,36 @@ class MaterialBatchHandler:
         project, project_path = _safe_project_path(self.data_dir, context.task.project_id)
         materials = MaterialRepository(project_path)
         annotations = AnnotationRepository(project_path)
+        artifact_path = context.artifacts.artifact_path(
+            context.task.task_id, MATERIAL_INTEGRITY_REF,
+        )
+        artifact_path.parent.mkdir(parents=True, exist_ok=True)
+        _check_active(context, 'AUDITING_MATERIAL_INTEGRITY', 'checking reusable audit evidence')
+        try:
+            replay = _reuse_material_integrity_after_retirement(
+                context, project, project_path, materials, annotations, artifact_path,
+            )
+        except (OSError, ValueError, TypeError, KeyError, sqlite3.Error, BatchRequestError) as error:
+            # A missing or malformed historical proof is not an audit result.
+            # Run the original full verifier; cancellation remains uncaught.
+            append_task_log(context, 'audit_reuse_unavailable', redact_storage_error(error))
+            replay = None
+        if replay is not None:
+            total = int(replay['scanned_images'])
+            context.save_checkpoint({
+                'total': total, 'processed': total,
+                'succeeded': total - int(replay['scan_failures']),
+                'failed': int(replay['scan_failures']),
+                'selection_frozen': False, 'audit_ref': MATERIAL_INTEGRITY_REF,
+                'scan_mode': replay['metadata']['scan_mode'],
+                'verified_retirement_count': replay['verified_retirement_count'],
+            })
+            context.artifacts.atomic_write_json(context.task.task_id, RESULT_REF, replay)
+            append_task_log(context, 'finished',
+                f"verified_retirement_delta={replay['verified_retirement_count']} "
+                f"revalidated_groups={replay['revalidated_groups']} "
+                f"reused_images={replay['reused_images']}")
+            return TaskStatus.SUCCEEDED, RESULT_REF
         manager = StorageManager(
             data_dir=self.data_dir,
             project_id=project,
@@ -2787,10 +3044,6 @@ class MaterialBatchHandler:
                 self.data_dir, project, source
             ),
         )
-        artifact_path = context.artifacts.artifact_path(
-            context.task.task_id, MATERIAL_INTEGRITY_REF
-        )
-        artifact_path.parent.mkdir(parents=True, exist_ok=True)
         material_revision = materials.current_revision()
         annotation_revision = annotations.current_revision()
         total = materials.summary()["total"]

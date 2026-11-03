@@ -14633,7 +14633,10 @@ def _v18_import_coco(
                     })
                 return boxes
 
-            if import_context is not None and (not import_scope or not image_annotations):
+            # An image explicitly listed in a structured COCO manifest with a
+            # confirmed class mapping is a verified empty example when it has
+            # no boxes for those classes. An unmapped/raw ZIP remains unknown.
+            if import_context is not None and not import_scope:
                 if image_annotations:
                     raise ValueError("structured annotation has no confirmed platform label scope")
                 rec = add_image_record(
@@ -14644,7 +14647,7 @@ def _v18_import_coco(
                     project_id, src, Path(file_name).name or src.name, 'imported_coco', dataset_id,
                     annotation_builder=build_final_annotation,
                     annotation_scope=import_scope,
-                    empty_annotation_state="unannotated" if import_context else "confirmed_empty",
+                    empty_annotation_state="confirmed_empty",
                 )
             if not rec:
                 report['skipped_images'] += 1
@@ -14744,7 +14747,10 @@ def _v18_import_voc(
                 })
             return boxes
 
-        if import_context is not None and (not import_scope or not objects):
+        # A present, parsed VOC sidecar with no <object> is a confirmed
+        # negative for explicitly mapped source classes, not an unknown raw
+        # image. Without a confirmed mapping, preserve unannotated status.
+        if import_context is not None and not import_scope:
             rec = add_image_record(
                 project_id, src, src.name, 'imported_voc', dataset_id,
             )
@@ -14753,7 +14759,7 @@ def _v18_import_voc(
                 project_id, src, src.name, 'imported_voc', dataset_id,
                 annotation_builder=build_final_annotation,
                 annotation_scope=import_scope,
-                empty_annotation_state="unannotated" if import_context else "confirmed_empty",
+                empty_annotation_state="confirmed_empty",
             )
         if not rec:
             report['skipped_images'] += 1

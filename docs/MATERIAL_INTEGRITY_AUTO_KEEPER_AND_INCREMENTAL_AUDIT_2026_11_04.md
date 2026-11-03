@@ -1,5 +1,31 @@
 # 素材完整性审计｜重复 GT 默认保留一份与审计复用专项（2026-11-04）
 
+## 2026-11-04 第二批｜42.24.516 · DELETE_INDEX 后可信快速复核（隔离验证）
+
+### 本批解决的真实堵点
+
+- 在**现有** `AUDIT_MATERIAL_INTEGRITY` Worker 内优先寻找同项目最近的成功审计，识别两种无需逐图重新解码的路径：Material/GT/标签没有任何修订（`VERIFIED_UNCHANGED`）；或唯一的修订来自已结束、正式冻结并确认成功的 `DELETE_INDEX` 逻辑退休（`VERIFIED_RETIREMENT_DELTA`）。没有新审计 Owner、第二套缓存或同步扫描前端请求。
+- 退休证据必须同时满足：原审计不可变 SQLite/元数据完整、素材 revision 增量与 `material_retirements` 逐张回执数量一致、GT revision 增量与正式持久 GT 删除数量一致、删除 Task 的项目/类型/计划/原审计身份/冻结成功条目一致、退休前 SHA 对应旧问题项、当前索引确实不存在、标签 Schema 摘要不变。任一不成立走原 Full Audit；不以旧快照冒充当前数据。
+- 使用 SQLite backup 从原审计生成**新任务持有的审计副本**，旧快照不改写。仅剔除已退休 Image ID，更新关联问题组的规模、同 SHA 正式 GT 类型与诊断，单成员不再冒充重复组。计数和分页继续读取新的正式审计 SQLite。新结果暴露 `scan_mode/reused_images/verified_retirement_count/revalidated_groups/reused_audit_task_id` 供前端明确解释，不伪造实际解码次数。
+- 原审计仍会显示 stale，不能继续生成删除计划；用户点击「继续治理 · 复核变更」后，后台新审计任务自动判断能否秒级复用，成功后继续在同一治理工作台批量/分页处理，删除前仍必须冻结预览+二次确认。
+- `COCO`/`VOC` 导入补齐同源回归：带已确认映射的结构化清单，明确列出但无框的图片为该映射范围的 `confirmed_empty`，正式 GT 仅一次写入；无可靠映射的原图仍为 `unannotated`，不得擅自判负样本。
+
+### 已核隔离结果与上线界限
+
+- `test_conflicting_gt_auto_keeper_is_stable_and_keeps_one_formal_gt`：纠正对 `AnnotationRepository.get()` 虚拟未标注回退的错误断言，并直接验证 SQLite GT 行真正移除。
+- 2531 历史引用的回归：按照新需求自动保留 1 个索引、计划退休 2530 个（原字节和旧 Snapshot 不变），不再期待人工决定。
+- 新增“有正式删除回执时绝不重复 materialize、仍保留未处理冲突组、无变化可复用、无关 GT 修改强制回到完整核验”隔离 API 测试；另补“冻结成功回执被破坏强制全扫”和“异常 GT 身份删掉后冲突组正确转为同标注组”回归。
+- 当前代码版本 `42.24.516`、前端缓存键 `42.25.513`。本机精确测试和 GitHub 新 SHA 的 Actions 结果应在提交后单独登记；**尚未进行真实 20 万张/OSS/A800/生产浏览器的计时，未部署，不修改正式数据**。
+- 本地实际验证：Node 完整前端回归 **1514/1514**；专项目标 API/ZIP/历史回归 **72/72**；新增四个复核场景 **4/4**；Material Annotation Atomicity 首组测试 **200/202**，仅剩两个 `psutil.Process(os.getpid())` 在本工作容器抛 `NoSuchProcess`（运行环境 `/proc` 进程可见性，非产品断言，需以 GitHub Ubuntu 跑测为准）；版本身份、JS/Python 语法和 `git diff --check` 均通过。新 SHA 的 Actions 尚待核验，不把本地结果等同生产验收。
+- 这一批专门解决连续安全删除的重复全量解码；**外部上传、直接修改 GT、存储对象变更与标签调整仍回退 Full Audit**。更一般的逐项增量变化日志与来源远程有效性核验、20 万真实 P95、跨 Worker 崩溃恢复属于下一阶段，不能冒称已全面增量化。
+
+### 可验收的操作顺序
+
+1. 初次执行一次 Full Audit，审核冲突组并创建冻结删除计划，手动确认。
+2. `DELETE_INDEX` 完成后点击「继续治理 · 复核变更」，新的 Durable Audit 应报告 `VERIFIED_RETIREMENT_DELTA`，只刷新受影响哈希组，所有未变化图片不得重新解码。真实耗时以大数据验收为准。
+3. 如有未提交/失败的删除、无关上传或正式 GT 变化，应以现存 revision 和回执为准，不能悄悄认定已经清理；有不可解释变化的任务执行完整审计。
+4. 复核新审计的当前计数、分页组明细和新一轮冻结计划，确认旧审计原始字节和历史任务不被改动。
+
 ## 用户确认的业务规则
 
 - 同一内容哈希的图片出现不同正式 GT 时，批量去重默认由系统选择一份当前素材及其 GT 保留；用户不必逐组作人工选择。

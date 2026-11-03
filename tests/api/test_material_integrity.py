@@ -389,11 +389,166 @@ def test_conflicting_gt_auto_keeper_is_stable_and_keeps_one_formal_gt(
     assert materials.get(keeper) is not None
     assert annotations.get(keeper) == before_gt
     assert materials.get(removed) is None
-    assert annotations.get(removed) is None
+    # AnnotationRepository.get() intentionally returns a synthetic unannotated
+    # legacy-compatible record when no formal GT row exists.
+    assert annotations.get(removed)['annotation_state'] == 'unannotated'
+    with closing(annotations._connect()) as database:
+        assert database.execute(
+            'SELECT 1 FROM annotations WHERE image_id=?', (removed,),
+        ).fetchone() is None
     assert (materials.project_path / source['object_key']).is_file()
     with closing(materials._connect()) as db:
         row = db.execute('SELECT annotation_json FROM material_retirements WHERE image_id=?', (removed,)).fetchone()
         assert row and json.loads(row[0])
+
+
+def test_integrity_reaudit_reuses_only_verified_retirements_without_decoding_all_images(
+    client, seeded_project, tmp_path, monkeypatch,
+):
+    project_id, original = seeded_project
+    materials = app_module.material_store(project_id)
+    source = materials.get(original['id'])
+    materials.upsert_many([
+        _duplicate_material(source, f'replay-copy-{number}', f'copy-{number}.jpg')
+        for number in range(3)
+    ])
+    annotations = AnnotationRepository(materials.project_path)
+    for number in range(3):
+        annotations.upsert(f'replay-copy-{number}',
+            [{'label': 'fire', 'x1': 2 + number, 'y1': 2, 'x2': 16, 'y2': 16}],
+            'annotated', annotation_scope=['fire'])
+    repository, artifacts, scheduler = _runtime(tmp_path, monkeypatch)
+    baseline = _run_integrity_audit(client, scheduler, project_id)
+    base = f'/api/v62/projects/{project_id}/material-integrity/audits/{baseline}'
+    # Retire just one member; the remaining GT conflict must be recomputed,
+    # not blindly inherited or hidden as an identical group.
+    plan = client.post(base + '/dedup-plans', json={
+        'scope': 'SELECTED_IMAGES', 'image_ids': ['replay-copy-0'],
+    })
+    assert plan.status_code == 201, plan.text
+    assert plan.json()['delete_count'] == 1
+    queued = client.post(base + f"/dedup-plans/{plan.json()['plan_id']}/execute",
+        json={'confirmation_credential': plan.json()['confirmation_credential']})
+    assert queued.status_code == 202, queued.text
+    assert scheduler.run_once()
+    assert repository.get(queued.json()['task_id']).status is TaskStatus.SUCCEEDED
+    assert materials.get('replay-copy-0') is None
+
+    def forbidden_decode(*_args, **_kwargs):
+        raise AssertionError('unchanged source should not be materialized again')
+    monkeypatch.setattr(material_batches_module.StorageManager, 'materialize', forbidden_decode)
+    replay = _run_integrity_audit(client, scheduler, project_id)
+    result = artifacts.read_json(replay, 'result.json')
+    assert result['metadata']['scan_mode'] == 'VERIFIED_RETIREMENT_DELTA'
+    assert result['metadata']['reused_audit_task_id'] == baseline
+    assert result['verified_retirement_count'] == 1
+    assert result['reused_images'] == materials.summary()['total']
+    current_base = f'/api/v62/projects/{project_id}/material-integrity/audits/{replay}'
+    conflicts = client.get(current_base + '/groups?issue_type=DUPLICATE_ANNOTATION_CONFLICT')
+    assert conflicts.status_code == 200, conflicts.text
+    assert conflicts.json()['stale'] is False
+    assert conflicts.json()['total_images'] == 3
+    assert client.get(base + '/groups').json()['stale'] is True
+    assert client.post(current_base + '/dedup-plans', json={'scope':'SAFE_ALL'}).status_code == 201
+
+    # A second audit without any new mutation should also reuse the current
+    # snapshot instead of triggering the expensive initial full scan.
+    unchanged = _run_integrity_audit(client, scheduler, project_id)
+    assert artifacts.read_json(unchanged, 'result.json')['metadata']['scan_mode'] == 'VERIFIED_UNCHANGED'
+
+
+def test_integrity_reaudit_falls_back_on_unrelated_formal_gt_edit(
+    client, seeded_project, tmp_path, monkeypatch,
+):
+    project_id, original = seeded_project
+    _repository, artifacts, scheduler = _runtime(tmp_path, monkeypatch)
+    baseline = _run_integrity_audit(client, scheduler, project_id)
+    annotations = AnnotationRepository(app_module.project_dir(project_id))
+    annotations.upsert(original['id'], [], 'confirmed_empty', annotation_scope=['fire'])
+    calls = []
+    original_materialize = material_batches_module.StorageManager.materialize
+    def counted_decode(manager, row):
+        calls.append(row['id'])
+        return original_materialize(manager, row)
+    monkeypatch.setattr(material_batches_module.StorageManager, 'materialize', counted_decode)
+    reaudited = _run_integrity_audit(client, scheduler, project_id)
+    result = artifacts.read_json(reaudited, 'result.json')
+    assert 'scan_mode' not in result['metadata']
+    assert original['id'] in calls
+    assert artifacts.read_json(baseline, 'result.json')['metadata']['annotation_revision'] < result['metadata']['annotation_revision']
+
+
+def test_integrity_reaudit_rejects_incomplete_frozen_deletion_receipt(
+    client, seeded_project, tmp_path, monkeypatch,
+):
+    project_id, original = seeded_project
+    materials = app_module.material_store(project_id)
+    materials.upsert(_duplicate_material(materials.get(original['id']), 'receipt-copy', 'receipt.jpg'))
+    _repository, artifacts, scheduler = _runtime(tmp_path, monkeypatch)
+    baseline = _run_integrity_audit(client, scheduler, project_id)
+    base = f'/api/v62/projects/{project_id}/material-integrity/audits/{baseline}'
+    plan = client.post(base + '/dedup-plans', json={'scope': 'SAFE_ALL'})
+    assert plan.status_code == 201, plan.text
+    queued = client.post(base + f"/dedup-plans/{plan.json()['plan_id']}/execute",
+        json={'confirmation_credential': plan.json()['confirmation_credential']})
+    assert queued.status_code == 202, queued.text
+    assert scheduler.run_once()
+    # The index was genuinely retired, but its frozen completion proof was
+    # corrupted. Revision counts alone must never justify fast-path reuse.
+    receipt = artifacts.artifact_path(queued.json()['task_id'], material_batches_module.SELECTION_REF)
+    with closing(sqlite3.connect(receipt)) as database:
+        database.execute("UPDATE selection SET state='pending' WHERE state='succeeded'")
+        database.commit()
+    scans = []
+    original_materialize = material_batches_module.StorageManager.materialize
+    def materialize(manager, row):
+        scans.append(row['id'])
+        return original_materialize(manager, row)
+    monkeypatch.setattr(material_batches_module.StorageManager, 'materialize', materialize)
+    reaudited = _run_integrity_audit(client, scheduler, project_id)
+    result = artifacts.read_json(reaudited, 'result.json')
+    assert 'scan_mode' not in result['metadata']
+    assert scans
+
+
+def test_integrity_reaudit_reclassifies_conflict_as_identical_when_outlier_retired(
+    client, seeded_project, tmp_path, monkeypatch,
+):
+    project_id, original = seeded_project
+    materials = app_module.material_store(project_id)
+    source = materials.get(original['id'])
+    materials.upsert_many([
+        _duplicate_material(source, 'same-gt-copy', 'same-gt.jpg'),
+        _duplicate_material(source, 'different-gt-copy', 'different-gt.jpg'),
+    ])
+    annotations = AnnotationRepository(materials.project_path)
+    for image_id in (original['id'], 'same-gt-copy'):
+        annotations.upsert(image_id, [], 'confirmed_empty', annotation_scope=['fire'])
+    annotations.upsert('different-gt-copy',
+        [{'label': 'fire', 'x1': 2, 'y1': 2, 'x2': 16, 'y2': 16}],
+        'annotated', annotation_scope=['fire'])
+    _repository, artifacts, scheduler = _runtime(tmp_path, monkeypatch)
+    baseline = _run_integrity_audit(client, scheduler, project_id)
+    base = f'/api/v62/projects/{project_id}/material-integrity/audits/{baseline}'
+    plan = client.post(base + '/dedup-plans', json={
+        'scope': 'SELECTED_IMAGES', 'image_ids': ['different-gt-copy'],
+    })
+    assert plan.status_code == 201, plan.text
+    assert plan.json()['delete_count'] == 1
+    queued = client.post(base + f"/dedup-plans/{plan.json()['plan_id']}/execute",
+        json={'confirmation_credential': plan.json()['confirmation_credential']})
+    assert queued.status_code == 202, queued.text
+    assert scheduler.run_once()
+    def forbidden_decode(*_args, **_kwargs):
+        raise AssertionError('unchanged source should not be decoded again')
+    monkeypatch.setattr(material_batches_module.StorageManager, 'materialize', forbidden_decode)
+    replay = _run_integrity_audit(client, scheduler, project_id)
+    assert artifacts.read_json(replay, 'result.json')['metadata']['scan_mode'] == 'VERIFIED_RETIREMENT_DELTA'
+    groups = client.get(f'/api/v62/projects/{project_id}/material-integrity/audits/{replay}/groups')
+    assert groups.status_code == 200, groups.text
+    assert not any(group['issue_type'] == 'DUPLICATE_ANNOTATION_CONFLICT' for group in groups.json()['items'])
+    assert any(group['issue_type'] == 'DUPLICATE_IDENTICAL' and group['image_count'] == 2
+        for group in groups.json()['items'])
 
 
 def test_logical_delete_preserves_bytes_referenced_by_active_training(
