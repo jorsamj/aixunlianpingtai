@@ -1200,6 +1200,7 @@ def create_material_integrity_plan(
         skip_reasons = {}
         included_groups = kept_count = delete_count = 0
         manual_required_groups = protected_groups = anomaly_groups = 0
+        auto_conflict_keeper_groups = 0
         skipped_item_count = protected_item_count = anomaly_item_count = 0
         selected_ids, counted_protected, unverifiable_ids, manual_ids = set(), set(), set(), set()
         planned_ids = set()
@@ -1311,13 +1312,6 @@ def create_material_integrity_plan(
                 reason = "ANOMALOUS_MATERIAL"
                 anomaly_groups += 1
                 anomaly_item_count += len(ids)
-            elif (
-                str(group["issue_type"]) == "DUPLICATE_ANNOTATION_CONFLICT"
-                and not decisions.get(group_key)
-            ):
-                reason = "MANUAL_DECISION_REQUIRED"
-                manual_required_groups += 1
-                manual_ids.update(chosen_ids)
             elif group_protected == ids and len(group_protected) > 1:
                 reason = "MULTIPLE_PROTECTED_REFERENCES"
                 protected_groups += 1
@@ -1340,8 +1334,13 @@ def create_material_integrity_plan(
             keeper_reason = (
                 "MANUAL_DECISION" if decisions.get(group_key)
                 else "HISTORICAL_REFERENCE" if keeper in group_protected
+                else "AUTO_DETERMINISTIC_CONFLICT" if str(group["issue_type"]) == "DUPLICATE_ANNOTATION_CONFLICT"
                 else "VERIFIED_SOURCE_AND_ANNOTATION"
             )
+            if keeper_reason == "AUTO_DETERMINISTIC_CONFLICT":
+                # Choosing one GT is a deterministic retention policy, not a
+                # claim that this annotation is more correct than the others.
+                auto_conflict_keeper_groups += 1
             kept_ids = {str(keeper)} | group_protected
             group_delete_count = len(chosen_ids - kept_ids - planned_ids)
             planned_groups.append((group_key, keeper, keeper_reason, group_delete_count))
@@ -1397,6 +1396,7 @@ def create_material_integrity_plan(
         "delete_count": delete_count,
         "skipped_groups": sum(skip_reasons.values()),
         "manual_required_groups": manual_required_groups,
+        "auto_conflict_keeper_groups": auto_conflict_keeper_groups,
         "protected_groups": protected_groups,
         "anomaly_groups": anomaly_groups,
         "skipped_item_count": skipped_item_count,

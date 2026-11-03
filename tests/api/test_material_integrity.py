@@ -330,8 +330,11 @@ def test_material_integrity_audit_groups_duplicate_annotation_conflicts(
         json={"scope": "SAFE_ALL"},
     )
     assert automatic.status_code == 201, automatic.text
-    assert automatic.json()["delete_count"] == 0
-    assert automatic.json()["manual_required_groups"] == 1
+    assert automatic.json()["delete_count"] == 1
+    assert automatic.json()["manual_required_groups"] == 0
+    assert automatic.json()["auto_conflict_keeper_groups"] == 1
+    assert automatic.json()["preview_groups"][0]["keeper_reason"] == "AUTO_DETERMINISTIC_CONFLICT"
+    assert automatic.json()["preview_groups"][0]["keeper_image_id"] in {first["id"], second["id"]}
 
     manual = client.post(
         f"/api/v62/projects/{project_id}/material-integrity/audits/{task_id}/dedup-plans",
@@ -350,6 +353,47 @@ def test_material_integrity_audit_groups_duplicate_annotation_conflicts(
     )
     assert execute.status_code == 202, execute.text
     assert execute.json()["operation"] == "DELETE_INDEX"
+
+
+def test_conflicting_gt_auto_keeper_is_stable_and_keeps_one_formal_gt(
+    client, seeded_project, tmp_path, monkeypatch,
+):
+    project_id, original = seeded_project
+    materials = app_module.material_store(project_id)
+    source = materials.get(original['id'])
+    materials.upsert(_duplicate_material(source, 'auto-conflict-copy', 'copy.jpg'))
+    annotations = AnnotationRepository(materials.project_path)
+    annotations.upsert(original['id'], [], 'confirmed_empty', annotation_scope=['fire'])
+    annotations.upsert('auto-conflict-copy',
+        [{'label': 'fire', 'x1': 2, 'y1': 2, 'x2': 16, 'y2': 16}],
+        'annotated', annotation_scope=['fire'])
+    _repository, _artifacts, scheduler = _runtime(tmp_path, monkeypatch)
+    audit_id = _run_integrity_audit(client, scheduler, project_id)
+    base = f'/api/v62/projects/{project_id}/material-integrity/audits/{audit_id}'
+    first = client.post(base + '/dedup-plans', json={'scope': 'SAFE_ALL'})
+    second = client.post(base + '/dedup-plans', json={'scope': 'SAFE_ALL'})
+    assert first.status_code == second.status_code == 201
+    plan, replay = first.json(), second.json()
+    assert plan['auto_conflict_keeper_groups'] == 1
+    assert plan['manual_required_groups'] == 0
+    assert plan['delete_count'] == 1
+    keeper = plan['preview_groups'][0]['keeper_image_id']
+    assert keeper == replay['preview_groups'][0]['keeper_image_id']
+    assert plan['preview_groups'][0]['keeper_reason'] == 'AUTO_DETERMINISTIC_CONFLICT'
+    before_gt = annotations.get(keeper)
+    removed = ({original['id'], 'auto-conflict-copy'} - {keeper}).pop()
+    queued = client.post(base + f"/dedup-plans/{plan['plan_id']}/execute",
+        json={'confirmation_credential': plan['confirmation_credential']})
+    assert queued.status_code == 202, queued.text
+    assert scheduler.run_once()
+    assert materials.get(keeper) is not None
+    assert annotations.get(keeper) == before_gt
+    assert materials.get(removed) is None
+    assert annotations.get(removed) is None
+    assert (materials.project_path / source['object_key']).is_file()
+    with closing(materials._connect()) as db:
+        row = db.execute('SELECT annotation_json FROM material_retirements WHERE image_id=?', (removed,)).fetchone()
+        assert row and json.loads(row[0])
 
 
 def test_logical_delete_preserves_bytes_referenced_by_active_training(
@@ -834,9 +878,11 @@ def test_conflicting_gt_manual_keeper_retires_others_even_with_history(
     audit_id = _run_integrity_audit(client, scheduler, project_id)
     base = f'/api/v62/projects/{project_id}/material-integrity/audits/{audit_id}'
     automatic = client.post(base + '/dedup-plans', json={'scope': 'SAFE_ALL'}).json()
-    assert automatic['delete_count'] == 0
-    assert automatic['manual_required_groups'] == 1
-    group_key = automatic['review_groups'][0]['group_key']
+    assert automatic['delete_count'] == 3
+    assert automatic['manual_required_groups'] == 0
+    assert automatic['auto_conflict_keeper_groups'] == 1
+    assert automatic['preview_groups'][0]['keeper_reason'] == 'AUTO_DETERMINISTIC_CONFLICT'
+    group_key = automatic['preview_groups'][0]['group_key']
     manual = client.post(base + '/dedup-plans', json={
         'scope': 'MANUAL_GROUPS', 'group_keys': [group_key],
         'manual_decisions': {group_key: 'manual-keeper'},

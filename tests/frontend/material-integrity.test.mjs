@@ -93,7 +93,8 @@ test('material integrity stays inside material management and uses durable batch
   assert.match(app, /AUDIT_MATERIAL_INTEGRITY/);
   assert.match(app, /DUPLICATE_ANNOTATION_CONFLICT:'同图不同标注'/);
   assert.match(app, /同一图片存在不同 Ground Truth/);
-  assert.match(app, /系统不会自动保留第一条/);
+  assert.match(app, /系统会按稳定规则默认保留一份/);
+  assert.match(app, /AUTO_DETERMINISTIC_CONFLICT:'系统按固定规则保留一份/);
   // Integrity deletions now require the same frozen plan for anomalies and duplicates.
   assert.match(app, /previewMaterialIntegrityGovernance47\('SELECTED_IMAGES'/);
   assert.match(app, /dedup-plans\/\$\{encodeURIComponent\(planId\)\}\/execute/);
@@ -138,7 +139,7 @@ test('global duplicate governance previews a server-frozen plan before durable e
   assert.doesNotMatch(app, /dedup-plans[\s\S]{0,300}image_ids/);
 });
 
-test('annotation conflicts use an explicit keeper decision instead of direct bulk deletion', () => {
+test('manual keeper override remains available alongside the automatic conflict default', () => {
   const start = app.indexOf('window.keepMaterialIntegrity47=');
   const end = app.indexOf('const BATCH414_PAGE_SIZE', start);
   assert.ok(start >= 0 && end > start);
@@ -330,6 +331,19 @@ test('audit stale flag follows project and Task ID rather than leaking across wo
   assert.match(owner,/groups.stale\|\|\(same&&state.materialIntegrityAuditStale47\)/);
   assert.match(owner,/governanceTask&&Number\(governanceTask.succeeded\|\|0\)>0/);
   assert.doesNotMatch(owner,/groups.stale\|\|state.materialIntegrityAuditStale47/);
+});
+
+test('failed deletion with zero removals leaves reusable audit visible', async () => {
+  const start=app.indexOf('window.invalidateMaterialIntegrityGovernance47=');
+  const end=app.indexOf('function materialIntegrityOverlay47(',start);
+  const state={materialIntegrityAuditStale47:false,labelIntegrityAuditResult414:{ready:true}};
+  const context={window:{},state,pid:()=> 'p',document:{getElementById:()=>null},toast:()=>{}};
+  vm.runInNewContext(app.slice(start,end),context);
+  await context.window.invalidateMaterialIntegrityGovernance47({operation:'DELETE_INDEX',project_id:'p',status:'FAILED',succeeded:0});
+  assert.equal(state.materialIntegrityAuditStale47,false);
+  assert.ok(state.labelIntegrityAuditResult414);
+  await context.window.invalidateMaterialIntegrityGovernance47({operation:'DELETE_INDEX',project_id:'p',status:'PARTIAL_SUCCESS',succeeded:1});
+  assert.equal(state.materialIntegrityAuditStale47,true);
 });
 
 test('GT conflict detail and every image page render and bind evidence from the same page', () => {

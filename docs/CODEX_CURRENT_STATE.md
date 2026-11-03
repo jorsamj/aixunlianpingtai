@@ -1,3 +1,5 @@
+> **2026-11-04｜素材审计默认保留与重复扫描（定向修复，增量待办）**：用户明确决定同 SHA 不同正式 GT 默认由系统确定性保留一份，无需逐组人工选择；原冻结预览+确认、人工覆盖、保留 GT 的证据和不删除原始字节不变。新增 `AUTO_DETERMINISTIC_CONFLICT`、自动保留组数及 UI 提示；0 条实际删除的失败/取消任务不会误使前端审计过期。Node 定向 36/36、JS/Python 语法通过，Python API/Worker CI 与生产未验。**成功删除后仍需重新扫描全项目、20 万张逐图解码的问题尚未修复**；差量修订证据和安全增量投影作为 P0 独立推进。详见 `docs/MATERIAL_INTEGRITY_AUTO_KEEPER_AND_INCREMENTAL_AUDIT_2026_11_04.md`。不部署、不碰生产数据。
+
 > **2026-11-04｜旧算法基础模型空白专项（开发中，准确新 SHA CI 待验）**：现有 `applyTrainingCreationResources` 曾在有效版本只读选项 value 为空时恢复旧训练草稿 `.pt` 值，引发浏览器 `selectedIndex=-1`、显示空白。已统一调用旧有 `syncMotherModel429` 唯一渲染 Owner，并补老版本/残留 `.pt`/异步刷新 Chrome 回归与 Node 契约。定向 Node 78/78、JS 语法通过；本机浏览器与最新提交 CI 尚未验，生产服务/数据不动。细节及验收状态见 `docs/PROGRESS_ZIP_RAW_PT_MOTHER_MODEL_2026_11_03.md`。
 
 > **2026-11-04｜母模型专项准确最新状态**：原图 ZIP、跨节点 `MODEL_INSTALL`、SHA 安装回执、单层 UI、远程 Worker 优先复用同哈希母模型及缓存回退已推送长期分支。最后代码提交 `f1f7e75f4158a7b92d806aa2b489e387b4272486` 的 **20/20 GitHub Actions 全部 success**，含新增安装 Runner Windows/Linux 合同、远程训练与路由测试。尚无真实 A800/4070 Ultralytics GPU 首训、有效 PT 沙箱解码、浏览器多视口与 10k 素材/P95 性能数据；不能称整个 P0 或生产验收完成。完整台账见 `docs/PROGRESS_ZIP_RAW_PT_MOTHER_MODEL_2026_11_03.md` 与 UAT；生产不动。
