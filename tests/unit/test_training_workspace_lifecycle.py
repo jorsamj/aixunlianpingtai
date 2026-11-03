@@ -151,7 +151,7 @@ def test_current_training_version_changed_during_archive_remains_protected(tmp_p
 
 
 def test_stale_final_gate_reuses_previously_verified_archive(tmp_path, monkeypatch):
-    service, _, artifacts, _, _ = workspace(tmp_path)
+    service, _, artifacts, _ = workspace(tmp_path)
     old_failure = artifacts.read_json("t", "failure.json")
     archive = service._archive_evidence
     def stale_once(task, bundle):
@@ -174,7 +174,7 @@ def test_stale_final_gate_reuses_previously_verified_archive(tmp_path, monkeypat
 
 
 def test_interrupted_partial_archive_reuses_verified_files_on_retry(tmp_path, monkeypatch):
-    service, _, artifacts, _, _ = workspace(tmp_path)
+    service, _, artifacts, _ = workspace(tmp_path)
     yaml = artifacts.artifact_path("t", "work/bundle/dataset/data.yaml")
     yaml.parent.mkdir(parents=True, exist_ok=True)
     yaml.write_text("names: []\n", encoding="utf-8")
@@ -203,7 +203,7 @@ def test_interrupted_partial_archive_reuses_verified_files_on_retry(tmp_path, mo
 
 
 def test_existing_complete_archive_detects_source_change(tmp_path, monkeypatch):
-    service, _, artifacts, _, _ = workspace(tmp_path)
+    service, _, artifacts, _ = workspace(tmp_path)
     archive = service._archive_evidence
     def mutate_after_archive(task, bundle):
         archive(task, bundle)
@@ -215,7 +215,7 @@ def test_existing_complete_archive_detects_source_change(tmp_path, monkeypatch):
 
 
 def test_archive_disk_pressure_is_safe_and_diagnostic(tmp_path, monkeypatch):
-    service, _, artifacts, _, _ = workspace(tmp_path)
+    service, _, artifacts, _ = workspace(tmp_path)
     monkeypatch.setattr(service, "_require_archive_space", lambda *_: (_ for _ in ()).throw(
         RuntimeError("DISK_SPACE_INSUFFICIENT")))
     with pytest.raises(RuntimeError, match="DISK_SPACE_INSUFFICIENT"):
@@ -235,7 +235,7 @@ def test_archive_space_invalid_config_fails_closed(tmp_path, monkeypatch):
 
 
 def test_two_maintenance_workers_archive_once_and_report_reader_lock_stays_free(tmp_path, monkeypatch):
-    service, repo, artifacts, _, _ = workspace(tmp_path)
+    service, repo, artifacts, _ = workspace(tmp_path)
     second = TrainingWorkspaceLifecycle(service.data_dir, repo, artifacts)
     entered, release = threading.Event(), threading.Event()
     original = service._archive_evidence

@@ -958,7 +958,8 @@ def project_training_rows(
 
         policy = str(contract.get("training_projection_policy") or base.TRAINING_PROJECTION_POLICY)
         # Never accept task-local projection claims from incoming material metadata.
-        for key in ("training_excluded_boxes", "training_projection_policy", "training_projection_digest"):
+        for key in ("training_excluded_boxes", "training_projection_policy", "training_projection_digest",
+                    "task_negative_confirmation"):
             row.pop(key, None)
         if excluded_boxes or policy in {base.TRAINING_PROJECTION_POLICY_V3, base.TRAINING_PROJECTION_POLICY_V4}:
             row["training_excluded_boxes"] = excluded_boxes
@@ -971,12 +972,22 @@ def project_training_rows(
                 policy=policy,
             )
 
-        if policy == base.TRAINING_PROJECTION_POLICY_V4 and not selected_boxes:
+        scope_receipt = None
+        if policy == base.TRAINING_PROJECTION_POLICY_V4:
+            # A user-authorized receipt may cover missing target labels while
+            # retaining existing positive boxes. It is bound to the original
+            # annotation identity; no change is made to canonical project GT.
             evidence = task_negative_identity(original, contract)
-            row["task_negative_confirmation"] = next((e for e in contract.get("task_negative_confirmations") or [] if e.get("receipt_id") == evidence["receipt_id"]), None)
+            scope_receipt = next((item for item in contract.get("task_negative_confirmations") or []
+                                  if item.get("receipt_id") == evidence["receipt_id"]), None)
+            if scope_receipt:
+                row["task_negative_confirmation"] = dict(scope_receipt)
+                row["training_projection_digest"] = hashlib.sha256(
+                    (row["training_projection_digest"] + evidence["receipt_id"]).encode()
+                ).hexdigest()
+
+        if policy == base.TRAINING_PROJECTION_POLICY_V4 and not selected_boxes:
             row.update(annotation_state="confirmed_empty", annotated=True, boxes=[], annotation_scope=sorted(allowed), negative_origin="reviewed_task_negative")
-            if row["task_negative_confirmation"]:
-                row["training_projection_digest"] = hashlib.sha256((row["training_projection_digest"] + evidence["receipt_id"]).encode()).hexdigest()
             state = "confirmed_empty"
             raw_scope = sorted(allowed)
 
@@ -989,7 +1000,7 @@ def project_training_rows(
                 row["boxes"] = selected_boxes
                 explicit = {value for value in raw_scope if value and value != "*"}
                 row["annotation_scope"] = (
-                    sorted(allowed) if "*" in reviewed
+                    sorted(allowed) if "*" in reviewed or scope_receipt
                     else sorted((explicit & allowed) | {
                         str(box.get("label") or box.get("code") or "").strip()
                         for box in selected_boxes

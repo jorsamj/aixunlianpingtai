@@ -233,7 +233,12 @@ def test_confirmed_partial_positive_retains_fire_and_original_gt():
     frozen=project_training_rows([original],contract)[0]
     assert training_material_role(original,contract)["role"]=="positive"
     assert frozen["boxes"]==original["boxes"]
-    assert frozen["annotation_scope"]==["fire"] or set(frozen["annotation_scope"])=={"fire","smoke"}
+    assert frozen["annotation_scope"]==["fire","smoke"]
+    assert frozen["task_negative_confirmation"]["receipt_id"]==contract["task_negative_confirmations"][0]["receipt_id"]
+    from platform_core.snapshots import build_snapshot
+    snapshot = build_snapshot([frozen], ["fire-only"], [],
+                              [{"code":"fire","class_id":0},{"code":"smoke","class_id":1}],seed=11)
+    assert snapshot["images"][0]["annotation_scope"]==["fire","smoke"]
     assert original["annotation_scope"]==["fire"]
 
 

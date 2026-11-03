@@ -1,6 +1,6 @@
 # 训练任务临时 Bundle 回收 P0｜需求、方案、进度与验收（2026-11-03）
 
-> 状态：**42.24.510 本地代码候选，生产未部署、正式数据未清理**。本文件描述可核验的开发结果，不代表 11-03 生产 503 已完成根因定位，也不代表磁盘已经释放。
+> 状态：**42.24.510 已推送；42.24.511 为 CI 红灯修正候选。生产未部署、正式数据未清理**。本文件描述可核验的开发结果，不代表 11-03 生产 503 已完成根因定位，也不代表磁盘已经释放。
 
 ## 1. 事故与可信度
 
@@ -77,3 +77,11 @@
 
 - 开发起点：本地原 `5406872`，GitHub 同树等价 HEAD `eaef1e2106e5f555d21012c4cfba6941d483a593` / `42.24.509`。只有长期分支 `feature/external-algorithm-publishing` 被允许更新。
 - 当前目标：`42.24.510`，具体 GitHub 新 SHA、CI 结果、实际性能数值以推送与复核结果为准；不得引用旧 SHA 的绿灯。
+
+## 8. 42.24.511 CI 红灯修正（2026-11-03）
+
+- `42.24.510` 已在长期分支完成两次非强推更新，最终经核验的 GitHub SHA 为 `820f63d7b93a15a95cfaa7f8c1ebe7db7cc33f39`。
+- 对该 SHA 查询到的首 20 个 GitHub Actions 流程为 **19 成功、Remote Training Runtime 失败**；该流程 Linux 和 Windows 的准备合约均报新增五个回收测试把 `workspace()` 四元组错误解包为五元组，**实际业务代码尚未因这些失败得到验证**。
+- 同一流程 API 失败 `test_background_bulk_scope_confirmation_is_authenticated_frozen_and_worker_verified`，错误为 `fire` 正样本只有 `fire` 审核范围，虽通过原任务级人工确认，却在冻结双类 `fire,smoke` Snapshot 时再遭 `smoke` 范围门禁拒绝。核验上一版 `42.24.509` 远端 CI 同一 API 测试也失败，属于继承缺口，非 510 新引入。
+- 511 修正：五个夹具解包错误；保留 `_lock_scope_to_schema` 拒绝未经审核扩大范围的严格门禁，只在 `training_projection_policy V4` 且原有可信 `task_negative_identity` 与 `task_negative_confirmations` 匹配时，任务级投影的正样本审核范围扩展到所有本次目标标签，记录回执及更新投影摘要；正式原始 GT、标签、图片永不改写。新增/收紧正样本冻结快照单测。
+- 511 推送及其 CI 结果仍需另行核对；生产未部署、正式数据未改动。整个回收专项是否能够在生产释放空间仍待独立验收。

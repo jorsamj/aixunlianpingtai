@@ -1,4 +1,6 @@
-> **最新 2026-11-03｜42.24.510 训练 Bundle 回收 P0（本地开发候选）**：从已推送 GitHub 等价 509 树继续修复 `training_workspace_lifecycle.py`、AlgorithmSqlStore、原训练恢复 API/JS；任务专属版本栅栏替代项目级 WAL 指纹，持久归档复用、任务级单归档 Owner、短读图锁、可分类的 409/503 诊断与有界重试、前端最后可信大小保留、磁盘预留门禁均已编码。新增隔离 Python 单测（本机缺依赖待 CI），Node 定向通过，未访问生产或删除 1.7GiB Bundle，不能宣称生产 503 根因已证实或磁盘已释放。完整需求、进度、风险、验收矩阵见 `docs/TRAINING_WORKSPACE_RECLAMATION_P0_2026_11_03.md`。不部署、不 merge/tag/release/force push。
+> **最新 2026-11-03｜42.24.511 CI 失败治理（待远端 CI 验收）**：510 已推送 GitHub（等价 HEAD `820f63d7...`），CI 初轮可见 19 成功、Remote Training Runtime 失败。失败包含五个本轮新增 workspace 回收测试的 4→5 项解包错误（测试夹具缺陷），以及 **509 已存在的** `test_background_bulk_scope_confirmation_is_authenticated_frozen_and_worker_verified` 的正样本 fire 经任务级凭据确认后，快照仍拒 smoke 的投影契约缺口。511 调整 `project_training_rows`：仅当原有 `task_negative_identity` 严格匹配可信任务回执，才把部分审核正样本的任务级范围扩大到本次 effective labels，并将凭据纳入投影摘要；原项目正式 GT 不改，严禁伪造传入凭据。补严原单测、修复新增五处夹具解包错误，下一轮需要准确 CI 验证，不可宣称生产稳定或上线。原 510 整理见下及 `docs/TRAINING_WORKSPACE_RECLAMATION_P0_2026_11_03.md`。
+
+> **前版 2026-11-03｜42.24.510 训练 Bundle 回收 P0**：从已推送 GitHub 等价 509 树继续修复 `training_workspace_lifecycle.py`、AlgorithmSqlStore、原训练恢复 API/JS；任务专属版本栅栏替代项目级 WAL 指纹，持久归档复用、任务级单归档 Owner、短读图锁、可分类的 409/503 诊断与有界重试、前端最后可信大小保留、磁盘预留门禁均已编码。新增隔离 Python 单测（本机缺依赖待 CI），Node 定向通过，未访问生产或删除 1.7GiB Bundle，不能宣称生产 503 根因已证实或磁盘已释放。完整需求、进度、风险、验收矩阵见 `docs/TRAINING_WORKSPACE_RECLAMATION_P0_2026_11_03.md`。不部署、不 merge/tag/release/force push。
 
 > **前版 2026-11-03｜42.24.509 20万素材 P0**：最新本地修复记录在本文件末尾及 `docs/performance/2026-10-29-p0-followup.md` 的 509 专项；Node 限定通过，后端/CI/生产未验，尚未部署。
 
