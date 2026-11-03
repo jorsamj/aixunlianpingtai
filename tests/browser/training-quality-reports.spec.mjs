@@ -378,7 +378,20 @@ test('versioned training locks the latest version and projects the current rando
   await expect(dialog.locator('.train-v3-summary')).toContainText('本次训练素材0 张');
   await expandTrainingAdvanced(dialog);
   await expect(dialog.locator('#trainBaseModeLabelV3')).toContainText('继承当前有效模型版本');
-  await expect(dialog.locator('#tr429MotherModel')).toBeDisabled();
+  const motherModel = dialog.locator('#tr429MotherModel');
+  await expect(motherModel).toBeDisabled();
+  await expect(motherModel).toHaveText('从当前有效算法版本的 best.pt 继续训练');
+  await expect(motherModel).toHaveValue('');
+  expect(await motherModel.evaluate(select => select.selectedIndex)).toBe(0);
+  // The historical draft can still carry its original pretrained name. A
+  // late resource refresh must not use it to deselect the inherited best.pt.
+  await page.evaluate(() => {
+    window.TrainingDraftRuntime.update({config: {model: 'yolo11n.pt'}});
+    window.applyTrainingCreationResources();
+  });
+  await expect(motherModel).toHaveText('从当前有效算法版本的 best.pt 继续训练');
+  await expect(motherModel).toHaveValue('');
+  expect(await motherModel.evaluate(select => select.selectedIndex)).toBe(0);
   await dialog.locator('button[data-training-step="2"]').click();
   await expect(dialog.locator('#trainModeBriefV3')).toContainText('80 Epoch');
   await expect(dialog.locator('.train-v3-summary')).toContainText('随机抽取');

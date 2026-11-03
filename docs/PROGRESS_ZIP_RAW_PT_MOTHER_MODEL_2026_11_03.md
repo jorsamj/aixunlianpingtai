@@ -1,5 +1,7 @@
 # 2026-11-03 开发进度｜原图 ZIP、母模型资产与首次训练
 
+> **2026-11-04 旧算法“基础模型”空白修复（本地验证，准确提交 CI 待验）**：代码审计确认 `static/app.js::applyTrainingCreationResources()` 在已有有效版本时生成值为 `""` 的只读继承选项，却又按旧草稿 `.pt` 值重设 `select.value`，可使 `selectedIndex=-1`、显示空白。现已让资源刷新通过 `window.syncTrainingMotherModel429()` 调用原唯一基础模型渲染函数，避免两套选项/旧草稿覆盖；不更改首次训练 `FOUND` / 校验要求、算法当前有效版本或服务端训练配置。补 `tests/browser/training-quality-reports.spec.mjs` 旧版 + 草稿残留 + 再次刷新回归，补 `tests/frontend/mother-model-preinstall.test.mjs` 源码契约。本地 `node --check`、Node 定向 78/78 通过；本执行环境无 `node_modules`/可用 Playwright 测试运行依赖，**新 Chrome 用例仅已写、未执行**。不得宣称现网已修复；不部署生产。准确新 SHA CI 待推送后核验。
+
 工作基线：`feature/external-algorithm-publishing`、开始时本地/远端 `5e708bc4fce5c0a0facaa02f1d6d426871fb40d6`。
 本轮仅修改代码/文档；不触碰生产服务器、真实素材/模型、数据库或训练任务。此为**进行中交接记录，未达到整项 P0 完成标准**。**2026-11-04 最后代码提交 `f1f7e75f4158a7b92d806aa2b489e387b4272486` 的 20/20 GitHub Actions 已成功，含节点安装和远程训练 Windows/Linux 测试；这不等于真实 GPU/浏览器/大数据现场验收。**
 

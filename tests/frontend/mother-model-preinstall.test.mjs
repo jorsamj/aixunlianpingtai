@@ -31,3 +31,14 @@ test('remote scheduler offers local preinstalled weights not downloadable offici
   assert.match(controlPlane,/REMOTE_TRAINING_BASE_MODEL_NOT_PREPARED/);
   assert.match(controlPlane,/self\._stage_direct_model\(/);
 });
+
+test('training resource rehydration delegates inherited base-model display to the single renderer', () => {
+  const start = app.indexOf('window.applyTrainingCreationResources=function()');
+  const end = app.indexOf('function eligibleFor(role)', start);
+  assert.ok(start !== -1 && end > start);
+  const resourceRefresh = app.slice(start, end);
+  assert.match(resourceRefresh, /window\.syncTrainingMotherModel429\(\)/);
+  assert.doesNotMatch(resourceRefresh, /modelSelect\.value\s*=/);
+  assert.match(app, /window\.syncTrainingMotherModel429=syncMotherModel429/);
+  assert.match(app, /select\.innerHTML='<option value="">从当前有效算法版本的 best\.pt 继续训练<\/option>'/);
+});

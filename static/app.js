@@ -4877,6 +4877,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
       window.TrainingDraftRuntime?.update?.({config:{...config,model:first}});
     }
   }
+  window.syncTrainingMotherModel429=syncMotherModel429;
   window.setQuickEpoch429=function(value){
     const epochs=Number(value);
     if(!Number.isSafeInteger(epochs)||epochs<1||epochs>10000){toast('训练轮次必须为 1~10000');return}
@@ -7412,8 +7413,10 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     const target=targets.find(row=>String(row.id)===targetSelect.value),algorithms=target?.algorithms||[];
     algorithmSelect.innerHTML=algorithms.map(row=>`<option value="${esc(row.key)}">${esc(row.name||row.key)}</option>`).join('')||'<option value="">等待训练算法</option>';
     algorithmSelect.value=algorithms.some(row=>String(row.key)===oldAlgorithm)?oldAlgorithm:String(algorithms[0]?.key||'');
-    const modelSelect=root.querySelector('#tr429MotherModel'),models=preparedModels429(target),draft=state.trainingDraft||{},wanted=String(draft.config?.model||'');
-    if(modelSelect){modelSelect.disabled=Boolean(state.trainingDraftBase?.hasPrevious)||!models.length;modelSelect.innerHTML=state.trainingDraftBase?.hasPrevious?'<option value="">继承当前有效版本 best.pt</option>':models.map(row=>`<option value="${esc(row.value)}">${esc(row.label||row.value)}</option>`).join('')||'<option value="">等待可用基础模型</option>';if(models.some(row=>String(row.value)===wanted))modelSelect.value=wanted;else if(!wanted&&models.length&&!state.trainingDraftBase?.hasPrevious)window.TrainingDraftRuntime?.update?.({config:{model:String(models[0].value)}})}
+    // Reuse the canonical mother-model renderer. An iteration has exactly one
+    // read-only option (value=""); restoring the draft's old .pt reference
+    // against that option clears selectedIndex and paints a blank dropdown.
+    window.syncTrainingMotherModel429();
     const engine=algorithms.find(row=>String(row.key)===algorithmSelect.value),currentConfig=state.trainingDraft?.config||{};
     if(currentConfig.imgsz==null&&Number(engine?.default_imgsz)>0){const size=Number(engine.default_imgsz);window.TrainingDraftRuntime?.update?.({config:{imgsz:size}});const input=root.querySelector('#ts428Size');if(input)input.value=String(size)}
     window.refreshTrainingMaterialSelectionUiV3?.();window.refreshTrainingCreateUi?.();window.TrainingSubmitRuntime?.updateReadiness?.();return true;
