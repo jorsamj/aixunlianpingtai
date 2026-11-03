@@ -129,6 +129,7 @@ def task_node_capability(task, artifacts) -> str | None:
         TaskKind.AI_ANNOTATION: "annotation",
         TaskKind.VIDEO_FRAMES: "video",
         TaskKind.TRAINING: "training",
+        TaskKind.MODEL_INSTALL: "model-upload",
     }
     if task.kind in fixed:
         return fixed[task.kind]
@@ -219,6 +220,7 @@ def task_node_connection_mode(task, artifacts) -> str | None:
         TaskKind.MATERIAL_IMPORT,
         TaskKind.MATERIAL_BATCH,
         TaskKind.DEPLOYMENT_TEST,
+        TaskKind.MODEL_INSTALL,
     }:
         return None
     try:

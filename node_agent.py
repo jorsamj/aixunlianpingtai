@@ -79,6 +79,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--data-dir", default=os.environ.get("MC_TRAIN_DATA_DIR", ""))
     parser.add_argument("--mother-model-roots", nargs="*", default=_env_model_roots())
     parser.add_argument("--mother-model-scan-interval", type=float, default=300.0)
+    parser.add_argument("--mother-model-install-dir", default=os.environ.get("MC_AGENT_MODEL_INSTALL_DIR", ""))
     parser.add_argument("--state-dir", default=os.environ.get("MC_NODE_STATE_DIR", ""))
     parser.add_argument("--capabilities", nargs="*", default=_env_capabilities())
     parser.add_argument("--interval", type=float, default=10.0)
@@ -216,6 +217,14 @@ def _build_executor(
             workdirs,
             heartbeat_interval=max(1.0, float(args.execution_heartbeat_interval)),
         )
+    if "model-upload" in reported_capabilities:
+        from platform_core.node_agent_model_install_runtime import AgentModelInstallRunner
+
+        runners["MODEL_INSTALL"] = AgentModelInstallRunner(
+            client,
+            install_dir=str(args.mother_model_install_dir or ""),
+            heartbeat_interval=max(1.0, float(args.execution_heartbeat_interval)),
+        )
     return NodeAgentExecutorLoop(
         client,
         deployment_runner,
@@ -245,7 +254,24 @@ def main(argv=None) -> int:
         print(str(error), file=sys.stderr)
         return 2
     reported_capabilities = executable_agent_capabilities(requested_capabilities)
+    if "model-upload" in reported_capabilities:
+        from platform_core.node_agent_model_install_runtime import AgentModelInstallRunner
+        install_dir = str(args.mother_model_install_dir or "").strip()
+        if not install_dir and data_dir is not None and (data_dir / "models").is_dir():
+            install_dir = str(data_dir / "models")
+        args.mother_model_install_dir = install_dir
+        probe = AgentModelInstallRunner(object(), install_dir=install_dir)
+        runtime_probe_install = {"available": probe.ready, "error": probe.recovery_error,
+                                 "install_dir": str(probe.install_dir or "")}
+        if not probe.ready:
+            reported_capabilities = [c for c in reported_capabilities if c != "model-upload"]
+        if probe.ready and install_dir not in model_roots:
+            model_roots.append(install_dir)
+            model_inventory = AgentMotherModelInventory(model_roots, interval_seconds=args.mother_model_scan_interval)
+    else:
+        runtime_probe_install = {"available": False, "error": "MODEL_INSTALL_NOT_REQUESTED"}
     runtime_probe = collect_runtime_probe(data_dir)
+    runtime_probe["mother_model_install"] = runtime_probe_install
     if "conversion.rknn" in reported_capabilities:
         rknn_python = str(args.rknn_python or "").strip() or sys.executable
         rknn_probe = probe_rknn_toolkit(rknn_python)
@@ -273,6 +299,8 @@ def main(argv=None) -> int:
                     if capability == "deployment-test.rknn"
                     else str((runtime_probe.get("rknn_toolkit2") or {}).get("error") or "")
                     if capability == "conversion.rknn"
+                    else str((runtime_probe.get("mother_model_install") or {}).get("error") or "")
+                    if capability == "model-upload"
                     else "当前 Agent build/runtime 无法真实上报该能力"
                 ),
             }
@@ -299,11 +327,13 @@ def main(argv=None) -> int:
                         (kind == "DEPLOYMENT_TEST" and bool({"deployment-test", "deployment-test.rknn"} & set(reported_capabilities)))
                         or (kind == "MODEL_CONVERSION" and bool({"conversion", "conversion.rknn"} & set(reported_capabilities)))
                         or (kind == "TRAINING" and "training" in reported_capabilities)
+                        or (kind == "MODEL_INSTALL" and "model-upload" in reported_capabilities)
                         or (kind == "MATERIAL_IMPORT" and "material-import" in reported_capabilities)
                         or (kind == "MATERIAL_BATCH" and "cleaning" in reported_capabilities)
                     )
                 ),
                 "state_dir": str(state_dir / "executor"),
+                "mother_model_install_dir": str(args.mother_model_install_dir or ""),
                 "ultralytics_python": str(args.ultralytics_python or "").strip()
                 or str(runtime_probe.get("python_executable") or sys.executable),
                 "paddle_python": str(args.paddle_python or "").strip() or sys.executable,

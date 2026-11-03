@@ -1649,6 +1649,10 @@ button[aria-busy="true"]:has(.tiny-spinner)::before{display:none}
 .mother-model-categories{display:flex;flex-wrap:wrap;gap:6px;margin:12px 0;color:#718399}
 .mother-model-categories span{padding:5px 9px;background:#f3f6fb;border-radius:7px;font-size:12px}.mother-model-categories b{color:#4477b2}
 .mother-model-row-foot{font-size:12px;color:#8493a4}.mother-model-discovery{display:flex;gap:12px;align-items:baseline;margin-top:18px;border-top:1px solid #edf0f6;padding-top:15px;font-size:12px;color:#8090a7}
+.mother-model-install{display:flex;gap:12px;justify-content:space-between;align-items:center;margin-top:13px;padding-top:12px;border-top:1px solid #eff3f8;font-size:12px;color:#4f7194}
+.mother-model-install>div{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.mother-model-install select{min-width:175px;max-width:240px;padding:7px 10px;border:1px solid #d5e2f3;border-radius:9px;background:#f8fbff;color:#325371;font-size:12px}
+.mother-model-install select:focus-visible{outline:2px solid #93bfee;outline-offset:2px}
 .mother-model-discovery b{white-space:nowrap;color:#3e5572}
 .mother-model-node-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,360px),1fr));gap:12px;margin-top:13px}
 .mother-model-node{padding:14px 16px;border:1px solid #e0e9f4;border-radius:13px;background:#fbfdff;min-width:0}
@@ -1659,4 +1663,4 @@ button[aria-busy="true"]:has(.tiny-spinner)::before{display:none}
 .mother-model-node-files{display:grid;gap:6px;max-height:310px;overflow:auto;overscroll-behavior:contain}
 .mother-model-node-file{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;background:#fff;border:1px solid #edf1f8;font-size:12px;color:#4b6482}
 .mother-model-node-file>div{min-width:0;flex:1}.mother-model-node-file b{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#304d70}.mother-model-node-file small{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
-@media(max-width:620px){.mother-model-summary,.mother-model-row-head,.mother-model-row-foot,.mother-model-discovery{align-items:flex-start;flex-direction:column}.mother-model-management-head h2{font-size:22px}}
+@media(max-width:620px){.mother-model-summary,.mother-model-row-head,.mother-model-row-foot,.mother-model-discovery,.mother-model-install{align-items:flex-start;flex-direction:column}.mother-model-management-head h2{font-size:22px}.mother-model-install select{max-width:min(240px,65vw)}}

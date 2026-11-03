@@ -7256,6 +7256,89 @@ def list_mother_model_node_inventory():
     return {"items": _project_node_mother_models(nodes)}
 
 
+@app.post("/api/v63/base-models/assets/{asset_id}/install", status_code=202)
+def install_mother_model_to_node(asset_id: str, payload: Dict[str, Any]):
+    """Queue an Agent-owned installation; never write to a remote path in Web."""
+    if not re.fullmatch(r"pt_[0-9a-f]{24}", asset_id):
+        raise HTTPException(422, detail="母模型资产编号无效")
+    node_id = str(payload.get("node_id") or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", node_id):
+        raise HTTPException(422, detail="请从现有服务节点中选择目标服务器")
+    asset = _verified_mother_model_asset(DATA_DIR, asset_id)
+    if asset is None:
+        raise HTTPException(409, detail="母模型尚未通过安全校验，或文件已变化；请先重新校验")
+    try:
+        node = ServiceNodeRepository(shared_task_repository()).get_public(node_id)
+    except Exception as error:
+        if getattr(error, "status_code", 0) == 404:
+            raise HTTPException(404, detail="目标服务节点不存在") from error
+        raise
+    if (not node.get("online") or node.get("connection_mode") != "agent"
+            or "model-upload" not in (node.get("effective_capabilities") or [])):
+        raise HTTPException(409, detail="目标节点离线或未启用模型安装能力；请在节点配置和 Agent 中启用 model-upload")
+    repository = shared_task_repository()
+    for candidate in repository.list(project_id="__system__", kinds=(TaskKind.MODEL_INSTALL,), limit=100).items:
+        if candidate.status not in {TaskStatus.QUEUED, TaskStatus.RUNNING, TaskStatus.CANCEL_REQUESTED}:
+            continue
+        previous = shared_task_artifacts().read_json(candidate.task_id, candidate.payload_ref, default={})
+        if (isinstance(previous, dict) and previous.get("asset_id") == asset_id
+                and previous.get("node_id") == node_id):
+            return {"ok": True, "deduplicated": True, "task_id": candidate.task_id,
+                    "status": candidate.status.value}
+    task_id = "minstall_" + uuid.uuid4().hex
+    request = {"asset_id": asset_id, "node_id": node_id, "sha256": asset["sha256"],
+               "size_bytes": int(asset["size_bytes"]), "execution_mode": "agent",
+               "scheduling": {"mode": "node", "node_id": node_id},
+               "remote_execution": {"version": 1, "task_kind": "MODEL_INSTALL",
+                                    "transport": "agent-artifact-v1"}}
+    shared_task_artifacts().atomic_write_json(task_id, "request.json", request)
+    task = repository.create(TaskRecord.new(
+        task_id, "__system__", TaskKind.MODEL_INSTALL, "request.json",
+        f"model-install:{node_id}", required_capabilities=("agent.model.install",),
+    ))
+    return {"ok": True, "deduplicated": False, "task_id": task.task_id, "status": task.status.value}
+
+
+@app.get("/api/v63/base-models/installations")
+def list_mother_model_installations(cursor: Optional[str] = None):
+    """Project only authoritative task status and same-generation Agent receipt."""
+    page = shared_task_repository().list(project_id="__system__", kinds=(TaskKind.MODEL_INSTALL,),
+                                         limit=100, cursor=cursor)
+    artifacts = shared_task_artifacts()
+    rows = []
+    for task in page.items:
+        payload = artifacts.read_json(task.task_id, task.payload_ref, default={})
+        if not isinstance(payload, dict):
+            continue
+        receipt = artifacts.read_json(task.task_id, task.result_ref, default={}) if task.result_ref else {}
+        valid_receipt = (task.status is TaskStatus.SUCCEEDED and isinstance(receipt, dict)
+                         and receipt.get("sha256") == payload.get("sha256")
+                         and receipt.get("asset_id") == payload.get("asset_id")
+                         and receipt.get("node_id") == payload.get("node_id")
+                         and receipt.get("execution_generation") == task.attempt)
+        rows.append({"task_id": task.task_id, "asset_id": payload.get("asset_id"),
+                     "node_id": payload.get("node_id"), "status": task.status.value,
+                     "progress": task.progress, "stage": task.stage, "error": task.error,
+                     "created_at": task.created_at, "finished_at": task.finished_at,
+                     "installed": bool(valid_receipt),
+                     "verified_sha256": receipt.get("sha256") if valid_receipt else None})
+    return {"items": rows, "next_cursor": page.next_cursor}
+
+
+@app.post("/api/v63/base-models/installations/{task_id}/cancel")
+def cancel_mother_model_installation(task_id: str):
+    task = shared_task_repository().get(task_id)
+    if task is None or task.kind is not TaskKind.MODEL_INSTALL or task.project_id != "__system__":
+        raise HTTPException(404, detail="母模型安装任务不存在")
+    if task.status not in {TaskStatus.QUEUED, TaskStatus.RUNNING, TaskStatus.CANCEL_REQUESTED}:
+        return {"ok": True, "task_id": task_id, "status": task.status.value}
+    try:
+        result = shared_task_repository().request_cancel(task_id)
+    except ValueError as error:
+        raise HTTPException(409, detail=str(error)) from error
+    return {"ok": True, "task_id": task_id, "status": result.status.value}
+
+
 @app.post("/api/v63/base-models/discovered/register")
 def register_discovered_mother_model(payload: Dict[str, Any]):
     """Import an *exact cached controller discovery result* into managed assets.
@@ -26754,6 +26837,20 @@ def _remote_execution_transport_service():
 
 
 def _resolve_agent_execution_payload(task, payload, assignment):
+    if task.kind is TaskKind.MODEL_INSTALL:
+        remote = payload.get("remote_execution") if isinstance(payload, dict) else None
+        selected = _verified_mother_model_asset(DATA_DIR, str(payload.get("asset_id") or ""))
+        if (not isinstance(remote, dict) or remote.get("version") != 1
+                or remote.get("task_kind") != "MODEL_INSTALL"
+                or remote.get("transport") != "agent-artifact-v1"
+                or str(payload.get("node_id") or "") != str(assignment.get("node_id") or "")
+                or selected is None
+                or selected.get("sha256") != payload.get("sha256")
+                or selected.get("size_bytes") != payload.get("size_bytes")):
+            raise ValueError("MODEL_INSTALL_ASSET_OR_NODE_CHANGED")
+        return {"schema_version": 1, "task_kind": "MODEL_INSTALL",
+                "transport": "agent-artifact-v1", "asset_id": payload["asset_id"],
+                "sha256": payload["sha256"], "size_bytes": payload["size_bytes"]}
     return _remote_execution_transport_service().resolve_execution_payload(
         task,
         payload,
@@ -26948,4 +27045,5 @@ app.include_router(training_recovery_router(
     agent_clean_selection_page_provider=_agent_clean_selection_page,
     agent_clean_selection_read_provider=_agent_clean_selection_read,
     agent_training_inputs_provider=_agent_training_inputs,
+    agent_model_install_asset_provider=lambda asset_id: _verified_mother_model_asset(DATA_DIR, asset_id),
 ))

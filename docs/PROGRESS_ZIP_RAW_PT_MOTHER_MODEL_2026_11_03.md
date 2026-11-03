@@ -8,7 +8,7 @@
 | P0-1 ZIP 扫描/原图 | 部分实现，待 Python 集成 | 全空 sidecar 与 schema hints 脱钩；原图无需正负样本确认；混合 `scan_kind`、空 GT 不转 `confirmed_empty`；COCO/VOC 漏清单原图补入 | 精确逐图异常分类/孤立 sidecar/冲突计数、1k/10k 真实性能、数据库集成验证 |
 | P0-2 ZIP→AI/人工 | 部分实现 | ZIP 结果四路径操作；AI `source_batch_id` 后端解析并冻结待标注 ID；人工批次 150 张翻页；既有清洗整理入口 | 清洗结束自动衔接 AI、AI/人工全链路真机验收、AI 离线引导、批次修订与性能负载 |
 | P0-3 母模型验证 | 部分实现 | 上传后登记内容地址资产；`asset_id`/SHA 状态；基于 bubblewrap 的可选隔离探测；原始 `names`/task；未通过校验禁止训练 | 真实官方/自定义 PT 与 Ultralytics 8.4.127 环境验证、沙箱目录兼容、跨进程持久校验队列及人机交互完善 |
-| P0-4 跨节点发现/安装 | **发现链路部分实现；安装未实现** | Agent 授权目录后台有界发现；现有心跳携带未验证 PT 清单；管理端单层展示节点/离线状态；管理端本机已扫描 PT 可明确登记为资产 | Agent 到节点的安装/持久任务、模型校验及副本 SHA、调度节点匹配、无 OSS 回退、真实现场验证 |
+| P0-4 跨节点发现/安装 | **已实现安装协议，待 CI/现场验收** | Agent 授权目录发现；管理端登记；新增 `MODEL_INSTALL` 中心任务、严格节点绑定、租约鉴权流传输、内容哈希校验、原子文件落盘、任务代次回执、取消与同内容重用 | 本批 Python CI、真实 Agent 网络断连/磁盘不足、远程模型环境检验、实际训练使用已安装副本 |
 | P0-5 首训/视觉/性能 | 部分实现 | 高级“母模型管理”单层 Tab；训练下拉仅提供已验证资产；训练标签合同保留原始 names 并阻止同 nc 语义错位 | 远程 Worker 指定节点、重建检测头的真实版本适配、GPU 首训日志、真实 Chrome 三视口、冷热性能测量、最终 CI |
 
 ## 本轮具体变更
@@ -50,6 +50,17 @@
 - `tests/unit/test_mother_model_inventory.py`：5 个独立可运行的隔离测试通过。相关 68 项 Node 试验通过；Python 语法检查通过；**真实 FastAPI、Agent→管理端 HTTP、A800/4070 安装及训练仍未执行**。
 - **关键限制**：Agent 模型发现 ≠ 模型已安装、通过兼容性检验或可训练。指定节点上传/安装任务仍缺；不得因扫描成功将 PT 暴露给训练选择器。生产环境和数据不动。
 - 后续审计补强：Agent 扫描还限制单条路径上报长度，拒绝跟随符号链接及跨设备目录，以控制心跳载荷并防止目录扫描意外进入子挂载盘；仍需真实 4070/A800 节点验证这些边界。
+
+## 2026-11-04 接续增量：指定节点安装与受控流式传输（待新版本 CI）
+
+- `platform_core/task_runtime/models.py`、`task_node_assignments.py`：新增 `MODEL_INSTALL`，仍使用**原中心调度/节点分配/租约/取消**，仅允许严格 node affinity + Agent `model-upload` 能力的在线节点。没有 OSS 时也可由现有 Agent 带令牌从管理端流式领取 PT，不开放任意远程路径或通用文件写接口。
+- `app.py`：新增 `POST .../assets/{asset_id}/install` 创建精确模型/节点任务、在活动任务上去重；`GET .../installations`、`POST .../installations/{task_id}/cancel` 提供真实状态；新的控制端 payload resolver 只传 `asset_id/sha256/size_bytes`，节点 ID 与指定分配节点校验，不传管理端路径。
+- `platform_core/agent_execution.py`、`node_agent_executor_runtime.py`：`/mother-model/read` 与 `/mother-model/receipt` 均要求本次有效 Agent 身份+执行代次+租约所有权。流读取每块复核所有权，完成回执需与持久任务冻结的 asset/node/size/sha 一致；没有当前代次回执不得宣称 `SUCCEEDED`。
+- 新建 `platform_core/node_agent_model_install_runtime.py`：只允许写节点管理员配置的本地目录，按完整 SHA256 命名，边下载边验大小/hash，临时文件 fsync+原子 rename；重复内容先核验并重用，不同字节拒绝覆盖。Agent 遇取消/撤销租约将停止，失败不动管理端源资产。`node_agent.py` 只有目录真实可写才上报 `model-upload`，目录参数为 `MC_AGENT_MODEL_INSTALL_DIR`/`--mother-model-install-dir`，可回退已有数据目录的 `models`。
+- `static/modules/resource-discovery.js`、`static/styles.css`：高级母模型单层页面展示各副本的任务/节点与 SHA 完成状态、真实异步进度、安装/取消按钮；不套新弹窗、远程发现仍显示“待验证”。
+- 新增 `tests/unit/test_agent_model_install_runtime.py` 的成功/幂等、坏字节 hash、目标软链拒绝、指定节点调度、回执/代次/成功挡板回归；前端专项本地 `103/103` 通过，`py_compile` 与 `node --check` 通过。本地未安装 `pytest` / FastAPI，故**Python 用例尚未运行**，必须等 GitHub Actions 正确运行后才能更新状态。
+- 上一稳定远端 `4de909010f180ba3e593bfb182d425f707d0929c` 的 GitHub Actions **20/20 success**（2026-11-04 核查）。本次新协议尚无远端提交或 CI 结果；不可援引上一版本绿色测试保证本次功能。
+- **剩余 P0**：按固定生产 Ultralytics 8.4.127 在隔离 Worker 上验证本机自定义 PT、真实 GPU 首训和标签头迁移；校验已安装副本能否由远程训练直接优先复用（现有远程训练多通过 OSS 对象合同准备权重）、无 OSS 环境部署/断点续传/多 GB 行为，视觉 Chrome 三视口及 P95 性能；部署生产仍需另行授权。
 
 ### 上一提交 GitHub Actions 红灯治理
 

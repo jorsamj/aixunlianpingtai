@@ -511,6 +511,7 @@ def training_recovery_router(
     agent_clean_selection_page_provider=None,
     agent_clean_selection_read_provider=None,
     agent_training_inputs_provider=None,
+    agent_model_install_asset_provider=None,
     project_path_provider=None,
     workspace_actor_provider=None,
 ):
@@ -792,5 +793,6 @@ def training_recovery_router(
         clean_selection_page_provider=agent_clean_selection_page_provider,
         clean_selection_read_provider=agent_clean_selection_read_provider,
         training_inputs_provider=agent_training_inputs_provider,
+        model_install_asset_provider=agent_model_install_asset_provider,
     ))
     return root

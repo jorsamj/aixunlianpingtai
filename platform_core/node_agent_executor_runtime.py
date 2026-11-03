@@ -231,6 +231,37 @@ class NodeExecutorClient:
                 response.close()
         return response
 
+    def open_model_install_source(self, lease: RemoteExecutionLease) -> requests.Response:
+        """Lease-authenticated streaming PT source; no signed/object-storage URL."""
+        try:
+            response = self.session.post(
+                f"{self._prefix}/executions/{quote(lease.task_id, safe='')}/mother-model/read",
+                headers={"Authorization": f"Bearer {self.token}"},
+                json={"execution_lease_token": lease.lease_token,
+                      "execution_generation": lease.generation},
+                stream=True, allow_redirects=False, timeout=self.timeout,
+            )
+        except requests.RequestException as error:
+            raise NodeExecutorHTTPError("NODE_EXECUTOR_TRANSPORT_FAILED", str(error), retryable=True) from error
+        if response.status_code != 200:
+            try:
+                try:
+                    body = response.json()
+                except ValueError:
+                    body = {}
+                code, message = _json_error(body, f"model transfer returned HTTP {response.status_code}")
+                raise NodeExecutorHTTPError(code, message, status_code=int(response.status_code))
+            finally:
+                response.close()
+        return response
+
+    def confirm_model_install(self, lease: RemoteExecutionLease, receipt: Mapping[str, Any]) -> dict[str, Any]:
+        return self._post(
+            f"/executions/{quote(lease.task_id, safe='')}/mother-model/receipt",
+            {"execution_lease_token": lease.lease_token,
+             "execution_generation": lease.generation, "receipt": dict(receipt)},
+        )
+
     def claim_assignment(self) -> dict[str, Any] | None:
         body = self._post("/assignments/claim")
         if not bool(body.get("claimed")):

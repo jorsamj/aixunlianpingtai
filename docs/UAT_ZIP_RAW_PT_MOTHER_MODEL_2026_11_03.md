@@ -17,7 +17,7 @@
 | PT-02 同 nc 不同顺序 | 阻断静默错位 | 合同判别与拒绝分支；待隔离训练 |
 | PT-03 类别数变化 | 兼容迁移并正确建头 | 尚未版本级实测 |
 | PT-04 伪 PT/损坏 | 不能进入训练 | 登记后默认不允许；安全结构测试已写、依赖缺失 |
-| PT-05 节点发现/安装 | 实际跨节点扫描、安装 | 新增授权目录只读 Agent 发现与同页展示，5 项独立扫描用例通过；**节点安装未实现，真实 Agent 心跳未验** |
+| PT-05 节点发现/安装 | 实际跨节点扫描、安装 | 新增授权目录只读发现与指定节点 MODEL_INSTALL 安装代码；静态与前端通过，新增 Python 合同测试待 CI，**真实 Agent HTTP 未验** |
 | PT-06 自动调度仅选择可获得权重节点 | Agent 有真实 PT | 既有可移植存储链路存在，新增资产/指定节点证据尚未接通 |
 | PT-07 离线/磁盘不足/Hash 变化 | 可恢复且不误报 | SHA 漂移选择拒绝已写；Agent 异常未测 |
 | TR-01 首训自定义 PT | Worker 实际开始训练 | **未执行**，不得声称已完成 |
@@ -57,3 +57,18 @@ npm test
 单独运行：`python3 tests/unit/test_mother_model_inventory.py`（无需 Torch、FastAPI、GPU）。
 
 > CI 最新说明：上一远端提交 `653a33cd` 20 个工作流中 4 个失败，主要是母模型标签合同变量名错误、原图自愿分类及测试断言的导出协议变更。本轮已改代码/断言，但**新提交 CI 尚未执行**；验收状态不得升级为通过。
+
+## 2026-11-04 新增指定节点安装用例（新代码，待 Python CI）
+
+| 用例 | 代码/预期 | 当前状态 |
+| --- | --- | --- |
+| PT-INSTALL-01 选择节点 | `model-upload` 在线且双方授权，中心调度严格分配指定节点 | 新增 Python 合同测试，待 CI |
+| PT-INSTALL-02 跨节点传输 | Agent 本租约从控制端鉴权流式读取，大小/哈希符合冻结 | Agent runner 与服务端端点已连接，真实网络待验 |
+| PT-INSTALL-03 同 SHA 重试 | 已安装且重新核验 SHA，跳过重复传输 | 新增 Python 单测，待 CI |
+| PT-INSTALL-04 字节变更 | Hash 错误不落地、不能生成回执/成功状态 | 新增 Python 单测，待 CI |
+| PT-INSTALL-05 不安全路径 | 只安装到管理员目录、拒绝目标软链 | 新增 Python 单测，待 CI |
+| PT-INSTALL-06 无回执成功 | 拒绝无有效当前执行代次回执的 `SUCCEEDED` | 新增执行服务单测，待 CI |
+| PT-INSTALL-07 取消/重启 | 取消清理临时文件，服务端任务准确显示不成功 | 控制端取消/Agent 监听已实现，断线/重启实机待验 |
+| PT-INSTALL-08 页面 | 模型/节点选择、状态进度、失败/取消，页面无嵌套 | 新增静态测试，真实 Chrome 待验 |
+
+命令：`python3 -m pytest tests/unit/test_agent_model_install_runtime.py tests/unit/test_agent_execution.py tests/unit/test_node_agent_entrypoint.py -q`，以及文档前述 Node 回归。先核对 `4de9090` 的 20/20 GitHub Actions 已通过，**新模型安装提交的 CI 与 GPU 现场仍待验**。

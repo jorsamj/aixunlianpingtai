@@ -47,3 +47,14 @@ test('remote PT discoveries are shown as unverified without introducing nested m
   assert.match(discovery,/registerDiscoveredResourceModel/);
   assert.match(discovery,/\/api\/v63\/base-models\/discovered\/register/);
 });
+
+test('verified mother models can install to eligible Agent with inline progress and no extra modal',()=>{
+  const discovery=read('../../static/modules/resource-discovery.js');
+  assert.ok(discovery.includes('/api/v63/base-models/installations'));
+  assert.match(discovery,/install_available/);
+  assert.match(discovery,/window\.installResourceMotherModel/);
+  assert.ok(discovery.includes('/install`,{method:\'POST\''));
+  assert.match(discovery,/model-install-\$\{taskId\}/);
+  const operation=discovery.split('window.installResourceMotherModel = async button =>')[1].split('window.registerDiscoveredResourceModel')[0];
+  assert.ok(!operation.includes('showModal('));
+});

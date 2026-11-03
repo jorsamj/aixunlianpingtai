@@ -567,6 +567,7 @@ class AgentExecutionService:
         clean_selection_page_provider=None,
         clean_selection_read_provider=None,
         training_inputs_provider=None,
+        model_install_asset_provider=None,
     ):
         self.repository = repository
         self.artifacts = artifacts
@@ -583,6 +584,7 @@ class AgentExecutionService:
         self.clean_selection_page_provider = clean_selection_page_provider
         self.clean_selection_read_provider = clean_selection_read_provider
         self.training_inputs_provider = training_inputs_provider
+        self.model_install_asset_provider = model_install_asset_provider
         self.nodes = ServiceNodeRepository(
             repository,
             heartbeat_ttl_seconds=self.heartbeat_ttl_seconds,
@@ -1195,6 +1197,85 @@ class AgentExecutionService:
             if callable(getattr(reader, "close", None)):
                 reader.close()
             raise
+
+    def model_install_source(self, node_id, node_token, task_id,
+                             execution_lease_token, execution_generation):
+        """Lease-fenced transfer of one verified asset, never an arbitrary path."""
+        from fastapi.responses import StreamingResponse
+        from starlette.background import BackgroundTask
+        task = self._owned_execution(node_id, node_token, task_id,
+                                     execution_lease_token, execution_generation)
+        payload = self._read_task_payload(task)
+        asset_id = str(payload.get("asset_id") or "")
+        if (task.kind is not TaskKind.MODEL_INSTALL
+                or str(payload.get("node_id") or "") != node_id
+                or not callable(self.model_install_asset_provider)):
+            raise AgentExecutionError("MODEL_INSTALL_UNAVAILABLE", "model install is not authorized", 409)
+        asset = self.model_install_asset_provider(asset_id)
+        if (not isinstance(asset, dict)
+                or str(asset.get("sha256") or "") != str(payload.get("sha256") or "")
+                or asset.get("size_bytes") != payload.get("size_bytes")):
+            raise AgentExecutionError("MODEL_INSTALL_ASSET_CHANGED", "verified model asset changed", 409)
+        from pathlib import Path
+        path = Path(str(asset.get("path") or ""))
+        if not path.is_file() or path.is_symlink() or path.stat().st_size != asset["size_bytes"]:
+            raise AgentExecutionError("MODEL_INSTALL_ASSET_MISSING", "model asset is unavailable", 409)
+        stream = path.open("rb")
+        size = int(asset["size_bytes"])
+        try:
+            def chunks():
+                remaining = size
+                try:
+                    while remaining:
+                        self._owned_execution(node_id, node_token, task_id,
+                                              execution_lease_token, execution_generation)
+                        chunk = stream.read(min(4 * 1024 * 1024, remaining))
+                        if not chunk:
+                            raise AgentExecutionError("MODEL_INSTALL_SOURCE_TRUNCATED", "model changed during transfer", 409)
+                        remaining -= len(chunk)
+                        yield chunk
+                    if stream.read(1):
+                        raise AgentExecutionError("MODEL_INSTALL_SOURCE_CHANGED", "model grew during transfer", 409)
+                finally:
+                    stream.close()
+            return StreamingResponse(chunks(), media_type="application/octet-stream",
+                                     headers={"Content-Length": str(size),
+                                              "X-Content-SHA256": str(asset["sha256"]),
+                                              "Cache-Control": "private, no-store",
+                                              "X-Content-Type-Options": "nosniff"},
+                                     background=BackgroundTask(stream.close))
+        except BaseException:
+            stream.close()
+            raise
+
+    def model_install_receipt(self, node_id, node_token, task_id,
+                              execution_lease_token, execution_generation, receipt):
+        task = self._owned_execution(node_id, node_token, task_id,
+                                     execution_lease_token, execution_generation)
+        payload = self._read_task_payload(task)
+        if task.kind is not TaskKind.MODEL_INSTALL or str(payload.get("node_id")) != node_id:
+            raise AgentExecutionError("MODEL_INSTALL_UNAVAILABLE", "model install is not authorized", 409)
+        if not isinstance(receipt, dict) or (
+            str(receipt.get("asset_id") or "") != str(payload.get("asset_id") or "")
+            or str(receipt.get("sha256") or "") != str(payload.get("sha256") or "")
+            or type(receipt.get("size_bytes")) is not int
+            or receipt["size_bytes"] != payload.get("size_bytes")
+        ):
+            raise AgentExecutionError("MODEL_INSTALL_RECEIPT_INVALID", "installed asset evidence mismatch", 422)
+        path = str(receipt.get("path") or "")
+        if (not path or len(path) > 600 or "\x00" in path or ".." in path.split("/")
+                or not path.startswith("/")):
+            raise AgentExecutionError("MODEL_INSTALL_RECEIPT_INVALID", "installed path evidence invalid", 422)
+        self._owned_execution(node_id, node_token, task_id,
+                              execution_lease_token, execution_generation)
+        ref = f"model-install/{int(execution_generation)}/receipt.json"
+        self.artifacts.atomic_write_json(task.task_id, ref, {
+            "asset_id": payload["asset_id"], "sha256": payload["sha256"],
+            "size_bytes": payload["size_bytes"], "node_id": node_id,
+            "path": path, "execution_generation": int(execution_generation),
+            "verified_by": "agent-sha256",
+        })
+        return {"accepted": True, "result_ref": ref}
 
     def material_scan_page(
         self,
@@ -2181,6 +2262,19 @@ class AgentExecutionService:
                 "cancel-requested execution may only finish as CANCELLED",
                 409,
             )
+        if current.kind is TaskKind.MODEL_INSTALL and target is TaskStatus.SUCCEEDED:
+            receipt_ref = f"model-install/{int(execution_generation)}/receipt.json"
+            receipt = self.artifacts.read_json(current.task_id, receipt_ref, default={})
+            payload = self._read_task_payload(current)
+            if (not isinstance(receipt, dict)
+                    or receipt.get("asset_id") != payload.get("asset_id")
+                    or receipt.get("sha256") != payload.get("sha256")
+                    or receipt.get("size_bytes") != payload.get("size_bytes")
+                    or receipt.get("node_id") != node_id
+                    or receipt.get("execution_generation") != int(execution_generation)):
+                raise AgentExecutionError("MODEL_INSTALL_RECEIPT_MISSING",
+                                          "verified node installation receipt is required", 409)
+            result_ref = receipt_ref
         if target in {
             TaskStatus.SUCCEEDED,
             TaskStatus.PARTIAL_SUCCESS,
@@ -2260,6 +2354,7 @@ def agent_executor_router(
     clean_selection_page_provider=None,
     clean_selection_read_provider=None,
     training_inputs_provider=None,
+    model_install_asset_provider=None,
 ):
     from fastapi import APIRouter, Body, Header, HTTPException
 
@@ -2280,6 +2375,7 @@ def agent_executor_router(
             clean_selection_page_provider=clean_selection_page_provider,
             clean_selection_read_provider=clean_selection_read_provider,
             training_inputs_provider=training_inputs_provider,
+            model_install_asset_provider=model_install_asset_provider,
         )
 
     def token(authorization: str | None) -> str:
@@ -2375,6 +2471,20 @@ def agent_executor_router(
                       str(payload.get("execution_lease_token") or ""),
                       invoke(_execution_generation, payload.get("execution_generation")),
                       image_id=payload.get("image_id"))
+
+    @router.post("/executions/{task_id}/mother-model/read")
+    def read_mother_model(node_id: str, task_id: str, payload: dict = Body(...),
+                          authorization: str | None = Header(default=None)):
+        return invoke(service().model_install_source, node_id, token(authorization), task_id,
+                      str(payload.get("execution_lease_token") or ""),
+                      invoke(_execution_generation, payload.get("execution_generation")))
+
+    @router.post("/executions/{task_id}/mother-model/receipt")
+    def confirm_mother_model(node_id: str, task_id: str, payload: dict = Body(...),
+                             authorization: str | None = Header(default=None)):
+        return invoke(service().model_install_receipt, node_id, token(authorization), task_id,
+                      str(payload.get("execution_lease_token") or ""),
+                      invoke(_execution_generation, payload.get("execution_generation")), payload.get("receipt"))
 
     @router.post("/executions/{task_id}/material-scan/page")
     def material_scan_page(

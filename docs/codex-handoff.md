@@ -5678,6 +5678,8 @@ GitHub 当前没有 CI status，不能把“测试代码已写”表述成“已
 > **2026-11-02｜42.24.490 SDK 探测网络异常可恢复**：准确开发分支 489 `516ff3955c075dcbfa682542e78754dcf122df89`，488 49/49 GitHub Actions success。490 对原 `refreshVersionConversionResources428(true)` 主动 SDK 检测 POST 增原有30秒 Abort/取消，避免 TCP/TLS/网关挂起让弹窗无尽 Loading；检测执行仍由服务端，结果待确认可刷新或手动重试，SDK/芯片状态不因网络错误虚构为不兼容。专项 Node31/31；完整新 SHA CI 待验，生产485未部署，真实SDK/板端/P95未验。
 ## 2026-11-04｜ZIP 原图与母模型专项接续（进行中）
 
+> 2026-11-04 最新：上一稳定远端 `4de9090` 的 Actions 已核对 20/20 success；当前增量新增真正的 `MODEL_INSTALL` Agent 任务路径、管理端单层安装/取消、哈希流传输/本地原子落盘/回执挡板。103 项定点 Node 测试与 Python 语法通过；新 Python API/节点测试与 CI 尚待运行；不得误报已在 A800/4070 成功安装或首训。详见完整专项进度文档。
+
 上一批增量已推送远端 `653a33cd`；新一批代码增加 Agent 授权目录的非阻塞/有界 `.pt` 发现、管理端原有扫描缓存模型的显式登记、节点清单单层 UI 与独立 5 项扫描测试。严禁将 Agent 心跳的 `DISCOVERED_UNVERIFIED` 解释成训练可用性；跨节点安装、Worker 首训、全量 CI/浏览器和真实性能未完成。详见 `PROGRESS_ZIP_RAW_PT_MOTHER_MODEL_2026_11_03.md`。
 
 唯一分支 `feature/external-algorithm-publishing`，起点 `5e708bc4`。本轮实现内容、缺口、回归命令见 `docs/PROGRESS_ZIP_RAW_PT_MOTHER_MODEL_2026_11_03.md`，需求和 UAT 见相邻文件。禁止误称已完成跨节点安装或 GPU 首训：本轮新增了控制端资产登记/可选 bubblewrap 校验和首次训练安全挡板，Agent `model-upload` 实际执行器仍缺；当前验证容器 `bwrap` 无 namespace 权限，Python API 依赖不齐，完整 Node 受 `@uppy/core` 缺失影响。先恢复环境依赖执行现有与新增测试，再补 Agent 受控模型发现/安装、持久任务恢复、真实 Ultralytics 8.4.127 兼容实测、浏览器/性能；仅长期分支提交，不部署生产。

@@ -129,6 +129,7 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
     preparedModels: [],
     assetModels: [],
     nodeInventories: [],
+    installations: [],
     models: [],
     modelMeta: {},
     modelCursor: null,
@@ -181,14 +182,22 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
 
   function motherModelManagement() {
     const rows=runtime.assetModels||[];
+    const nodes=(runtime.nodeInventories||[]).filter(node=>node.install_available===true);
+    const installRows=runtime.installations||[];
     const items=rows.map(row=>{
       const ready=status(row.validation_status)==='VERIFIED'&&row.trainable===true;
       const names=Array.isArray(row.names)?row.names:[];
       const preview=names.slice(0,8).map((name,index)=>`<span><b>${index}</b> ${escapeHtml(name)}</span>`).join('');
       const state=ready?'已验证 · 可训练':status(row.validation_status)==='CHECKING'?'正在隔离校验':status(row.validation_status)==='SANDBOX_UNAVAILABLE'?'校验环境不可用':status(row.validation_status)==='INVALID'?'模型校验失败':'等待校验';
+      const installs=installRows.filter(item=>item.asset_id===row.asset_id);
+      const installed=installs.filter(item=>item.installed);
+      const pending=installs.find(item=>['QUEUED','RUNNING','CANCEL_REQUESTED'].includes(status(item.status)));
+      const installText=pending?`节点 ${escapeHtml(pending.node_id)} · ${escapeHtml(status(pending.status))} · ${Math.round(Number(pending.progress)||0)}%`:installed.length?`已安装到 ${installed.length} 个节点（Agent SHA256 已核对）`:'尚未安装到远程节点';
+      const select=nodes.map(node=>`<option value="${escapeHtml(node.node_id)}">${escapeHtml(node.display_name||node.node_id)}</option>`).join('');
       return `<article class="mother-model-row"><div class="mother-model-row-head"><div><strong>${escapeHtml(row.name)}</strong><small>${bytes(row.size_bytes)} · SHA256 ${escapeHtml(String(row.sha256||'').slice(0,16))}… · 管理端</small></div><span class="pill ${ready?'ok':'warn'}">${escapeHtml(state)}</span></div>
         <div class="mother-model-categories">${preview||'<span>原始类别尚未验证</span>'}${names.length>8?`<small>等 ${names.length} 类</small>`:''}</div>
-        <div class="mother-model-row-foot"><span>${escapeHtml(row.validation_error||`${row.framework||'未验证框架'} · ${row.task||'未验证任务类型'}`)}</span><button class="btn mini" ${status(row.validation_status)==='CHECKING'?'disabled':''} onclick="verifyResourceMotherModel('${escapeHtml(row.asset_id)}')">${ready?'重新验证':'安全校验'}</button></div></article>`;
+        <div class="mother-model-row-foot"><span>${escapeHtml(row.validation_error||`${row.framework||'未验证框架'} · ${row.task||'未验证任务类型'}`)}</span><button class="btn mini" ${status(row.validation_status)==='CHECKING'?'disabled':''} onclick="verifyResourceMotherModel('${escapeHtml(row.asset_id)}')">${ready?'重新验证':'安全校验'}</button></div>
+        <div class="mother-model-install"><span>${installText}</span><div><select aria-label="安装目标服务器" ${!ready||!nodes.length?'disabled':''}>${select||'<option value="">无可安装的在线节点</option>'}</select><button class="btn mini primary" data-asset-id="${escapeHtml(row.asset_id)}" onclick="installResourceMotherModel(this)" ${!ready||!nodes.length?'disabled':''}>安装至节点</button>${pending?`<button class="btn mini" data-task-id="${escapeHtml(pending.task_id)}" onclick="cancelResourceMotherInstall(this)">取消当前安装</button>`:''}</div></div></article>`;
     }).join('');
     const remoteNodes=(runtime.nodeInventories||[]).map(node=>{
       const online=node.online===true;
@@ -224,14 +233,16 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
   }
 
   async function loadEnvironmentCache() {
-    const [environment, baseModels, assets, inventory] = await Promise.all([
+    const [environment, baseModels, assets, inventory, installs] = await Promise.all([
       request('/api/ultralytics_env'),
       request('/api/base_models'),
       request('/api/v63/base-models/assets'),
-      request('/api/v63/base-models/node-inventory').catch(() => ({items:[]}))
+      request('/api/v63/base-models/node-inventory').catch(() => ({items:[]})),
+      request('/api/v63/base-models/installations').catch(() => ({items:[]}))
     ]);
     runtime.assetModels=assets?.items||[];
     runtime.nodeInventories=inventory?.items||[];
+    runtime.installations=installs?.items||[];
     runtime.environments = [...(environment?.candidates || environment?.items || [])];
     runtime.activeEnvironment = environment?.active || {};
     const activePath = String(runtime.activeEnvironment.python_path || runtime.activeEnvironment.python_executable || '').toLocaleLowerCase();
@@ -423,6 +434,50 @@ export function installResourceDiscoveryRuntime(dependencies = {}) {
       };
       registry.startTimeout(`mother-model-${key}`,['训练资源'],poll,1100);
     }catch(error){notify(error.message||'母模型校验提交失败')}
+  };
+
+  window.installResourceMotherModel = async button => {
+    const assetId=String(button?.dataset?.assetId||'');
+    const nodeId=String(button?.closest('.mother-model-install')?.querySelector('select')?.value||'');
+    if(!/^pt_[0-9a-f]{24}$/.test(assetId)||!nodeId)return notify('请选择已验证母模型和在线 Worker 节点');
+    button.disabled=true;
+    try{
+      const result=await request(`/api/v63/base-models/assets/${encodeURIComponent(assetId)}/install`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({node_id:nodeId})});
+      if(!result?.ok||!result?.task_id)throw new Error('节点安装任务没有成功创建');
+      notify(result.deduplicated?'该模型正在安装，无需重复提交':'已提交节点安装任务；传输和校验在后台进行');
+      runtime.cacheLoadedAt=0;
+      await refreshCache(false,{force:true});
+      const taskId=String(result.task_id);
+      let attempts=0;
+      const poll=async()=>{
+        if(getPage()!=='训练资源'||++attempts>180)return;
+        try{
+          const response=await request('/api/v63/base-models/installations');
+          runtime.installations=response?.items||[];
+          renderCachePanel();
+          const task=runtime.installations.find(item=>item.task_id===taskId);
+          if(task&&!['QUEUED','RUNNING','CANCEL_REQUESTED'].includes(status(task.status))){
+            return notify(task.installed?'节点文件安装成功，SHA256 校验一致':`安装未完成：${task.error||task.status}`);
+          }
+        }catch(_){return}
+        registry.startTimeout(`model-install-${taskId}`,['训练资源'],poll,2500);
+      };
+      registry.startTimeout(`model-install-${taskId}`,['训练资源'],poll,2500);
+    }catch(error){notify(error?.message||'无法提交模型安装任务')}
+    finally{button.disabled=false}
+  };
+
+  window.cancelResourceMotherInstall = async button => {
+    const taskId=String(button?.dataset?.taskId||'');
+    if(!/^minstall_[0-9a-f]{32}$/.test(taskId))return notify('安装任务编号无效');
+    button.disabled=true;
+    try{
+      await request(`/api/v63/base-models/installations/${encodeURIComponent(taskId)}/cancel`,{method:'POST'});
+      notify('已提交取消安装请求；传输中的 Agent 将停止并清理临时文件');
+      runtime.cacheLoadedAt=0;
+      await refreshCache(false,{force:true});
+    }catch(error){notify(error?.message||'取消安装失败')}
+    finally{button.disabled=false}
   };
 
   window.registerDiscoveredResourceModel = async button => {
