@@ -7349,7 +7349,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
   window.refreshTrainingWorkbenchConfirmation=function(){
     const root=document.querySelector('.train429-create'),slot=root?.querySelector('#trainWorkbenchConfirmation');if(!slot)return;
     const draft=state.trainingDraft||{},config=draft.config||{},resource=draft.resource||{},preview=trainingRequestPreview(),effective=preview.parameters;
-    const rows=[['配置来源',draft.trainingMode==='custom'?'自定义参数':'原训练方案 '+(draft.trainingMode||'full')],['草稿轮次',config.epochs??'未填写'],['提交请求轮次',effective?.epochs??'待解析'],['提交请求尺寸',effective?.imgsz??'待解析'],['提交请求精度',effective?.precision??'待解析'],['实际执行精度','待 Worker 校验'],['Batch',effective?.resource_strategy==='manual'?effective.batch:'自动 · 待 Worker 解析'],['Workers',effective?.resource_strategy==='manual'?effective.workers:'自动 · 待 Worker 解析'],['最终 Worker / GPU','尚未分配'],['冻结训练/验证/试验数量','任务创建后按正式划分结果确认'],...(preview.error?[['配置待核验',preview.error]]:[])];
+    const rows=[['本次训练选中素材',`${(draft.materialIds||[]).length} 张`],['本次选定标签',((draft.newLabelCodes||[]).join('、')||'按已有版本/服务端训练合同')],['配置来源',draft.trainingMode==='custom'?'自定义参数':'原训练方案 '+(draft.trainingMode||'full')],['草稿轮次',config.epochs??'未填写'],['提交请求轮次',effective?.epochs??'待解析'],['提交请求尺寸',effective?.imgsz??'待解析'],['提交请求精度',effective?.precision??'待解析'],['实际执行精度','待 Worker 校验'],['Batch',effective?.resource_strategy==='manual'?effective.batch:'自动 · 待 Worker 解析'],['Workers',effective?.resource_strategy==='manual'?effective.workers:'自动 · 待 Worker 解析'],['最终 Worker / GPU','尚未分配'],['冻结训练/验证/试验数量','任务创建后按正式划分结果确认'],...(preview.error?[['配置待核验',preview.error]]:[])];
     const html='<h3>确认本次训练</h3><p>以下为当前草稿与方案预览。任务启动后以服务端参数快照和实际 Worker 回执为准。</p>'+rows.map(([label,value])=>'<div class="train-ui-summary-row"><span>'+esc(label)+'</span><b>'+esc(value??'未知')+'</b></div>').join('');
     if(slot.innerHTML!==html)slot.innerHTML=html;
   };
@@ -7377,6 +7377,11 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     robustness.querySelector('[data-robustness-global-state]').insertAdjacentHTML('afterend','<p data-robustness-global-preview></p>');
 
     const confirmation=document.createElement('section');confirmation.id='trainWorkbenchConfirmation';confirmation.className='train-ui-card';panels[2].appendChild(confirmation);
+    if(window.MC_TRAIN_ADMISSION_MODE!=='synchronous'){
+      const scopeConsent=document.createElement('label');scopeConsent.className='train-ui-card check';scopeConsent.setAttribute('data-background-training-consent','');
+      scopeConsent.innerHTML='<input type="checkbox" id="tr429BackgroundScopeConfirm"> <span><b>全部确认本次训练素材均可用于本算法训练</b><small style="display:block;line-height:1.6;margin-top:6px">我已核对本次选定素材和训练标签范围，同意系统在后台为可人工确认的缺失标注、部分审核范围出具仅限本次任务的人工回执。不会修改正式 GT；无效标注、同图不同标注冲突、训练/测试泄漏仍必须拦截。任务创建后会先进行后台准入检查，检查失败不会启动训练。</small></span>';
+      panels[2].appendChild(scopeConsent);
+    }
     left.replaceChildren(...panels);window.mountTrainingSettings428?.();window.setTrainingWorkbenchStep(1);window.refreshTrainingCreateUi?.();window.TrainingLabelRuntime?.queueRefresh?.();
     root.addEventListener('input',()=>{if(root.dataset.trainingStep==='3')window.refreshTrainingWorkbenchConfirmation?.()});
     const policyState={revision:null,policy:null},current=()=>document.querySelector('.train429-create')===root&&String(pid())===root.dataset.trainingProjectId;

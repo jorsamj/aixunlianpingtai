@@ -668,22 +668,25 @@ def _selection_summary(
         str(item["id"]): max(0, int(item["size_bytes"] or 0))
         for item in processed_rows
     }
-    truth = annotations.training_ground_truth_summary(processed_ids)
+    with measure("training.summary.selected_gt"):
+        truth = annotations.training_ground_truth_summary(processed_ids)
     eligible_ids = set(str(value) for value in truth["eligible_ids"])
     eligible_count = len(eligible_ids)
     selectable_count = int(row["selectable_count"] or 0)
     label_counts = dict(truth["label_counts"])
-    positive_label_codes = _validated_positive_training_label_codes(
-        repository, annotations, processed_ids, list(label_counts))
+    with measure("training.summary.positive_codes"):
+        positive_label_codes = _validated_positive_training_label_codes(
+            repository, annotations, processed_ids, list(label_counts))
 
     material_revision = repository.current_revision()
-    selectable_total, eligible_total, pool_annotation_revision = (
-        _cached_pool_training_totals(
-            str(repository.project_path),
-            int(material_revision),
-            int(annotations.current_revision()),
+    with measure("training.summary.pool_totals"):
+        selectable_total, eligible_total, pool_annotation_revision = (
+            _cached_pool_training_totals(
+                str(repository.project_path),
+                int(material_revision),
+                int(annotations.current_revision()),
+            )
         )
-    )
     if (repository.current_revision(), annotations.current_revision()) != (
             start_material_revision, start_annotation_revision) or int(truth["revision"]) != start_annotation_revision:
         raise ValueError("素材或正式标注在汇总期间已变化，请重新读取")
@@ -1800,7 +1803,8 @@ def training_material_picker_router(
         # Previewing an empty selection is not a training submission. In
         # particular, an iteration's base_version_id must not invoke the
         # submission-only nonempty train_image_ids contract before picking.
-        if image_ids and payload.get("algorithm_asset_id") and (payload.get("train_labels") or payload.get("base_version_id")):
+        if (not payload.get("summary_only") and image_ids and payload.get("algorithm_asset_id")
+                and (payload.get("train_labels") or payload.get("base_version_id"))):
             try:
                 contract = task_contract(project_id, payload, repository)
                 roles = _role_material_page(repository, annotations, contract, image_ids=image_ids, limit=1)

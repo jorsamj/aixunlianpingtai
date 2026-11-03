@@ -18,6 +18,7 @@ _logger = logging.getLogger('platform.performance')
 
 _ENDPOINTS = (
     (re.compile(r'/api/v53/bootstrap/(?:snapshot|status)'), 'bootstrap'),
+    (re.compile(r'/api/v12/projects/[^/]+/train/start'), 'training.create'),
     (re.compile(r'/api/v12/projects/[^/]+/algorithms'), 'algorithm.list'),
     (re.compile(r'/api/training_options'), 'training.options'),
     (re.compile(r'/api/projects/[^/]+/jobs'), 'training.jobs'),

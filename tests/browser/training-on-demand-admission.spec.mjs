@@ -23,7 +23,7 @@ function bmp(index){const b=Buffer.alloc(54+16*16*3,40+index*30);b.fill(0,0,54);
 // isolated project/GT records. Resource discovery is controlled (no GPU work).
 // Lifecycle scenarios explicitly substitute compatibility / creation replies;
 // the real-GT case below never substitutes the compatibility endpoint.
-async function fixture(page,request,{realCompatibility=false,empty=false,conflict=false}={}){
+async function fixture(page,request,{realCompatibility=false,empty=false,conflict=false,admissionMode='synchronous'}={}){
   const project=await(await request.post('/api/projects',{data:{name:`按需准入-${Date.now()}-${Math.random()}`,labels:[{code:'smoke',display_name:'烟雾'}]}})).json();
   const created=await(await request.post(`/api/v12/projects/${project.id}/algorithms`,{data:{name:'按需准入隔离算法',algorithm_type:'yolo_ultralytics',industry:'测试'}})).json();
   const images=[];
@@ -49,7 +49,10 @@ async function fixture(page,request,{realCompatibility=false,empty=false,conflic
   await page.route(`**/api/v62/projects/${project.id}/training-materials/compatibility`,async route=>{calls.checks.push(route.request().postDataJSON());if(realCompatibility)return route.continue();return check(route);});
   await page.route(`**/api/v12/projects/${project.id}/train/start`,async route=>{calls.posts.push(route.request().postDataJSON());return create(route);});
   await page.route(`**/api/v62/projects/${project.id}/tasks/*`,route=>{calls.lookups.push(route.request().url());return route.fulfill({status:404,json:{detail:'isolated unknown outcome'}});});
-  await page.addInitScript(()=>localStorage.setItem('mc_train_ui_state_v34',JSON.stringify({page:'算法列表'})));
+  await page.addInitScript(mode=>{
+    window.MC_TRAIN_ADMISSION_MODE=mode;
+    localStorage.setItem('mc_train_ui_state_v34',JSON.stringify({page:'算法列表'}));
+  },admissionMode);
   await page.goto('/');await expect.poll(()=>page.evaluate(()=>state.uiReady===true)).toBe(true);
   await page.locator('[data-algorithm-card]',{hasText:'按需准入隔离算法'}).getByRole('button',{name:'训练',exact:true}).click();
   await expect(training(page)).toBeVisible();
@@ -102,6 +105,32 @@ test('one click checks real GT, shows busy stages and creates exactly one durabl
   const durable=JSON.parse(isolatedPython(f.project.id,`import json,app\nfrom contextlib import closing\nr=app.shared_task_repository();task=r.get(${JSON.stringify(f.calls.posts[0].task_id)})\nwith closing(r._connect()) as db:\n count=db.execute('SELECT count(*) FROM tasks WHERE project_id=? AND kind=?',(${JSON.stringify(f.project.id)},'TRAINING')).fetchone()[0]\nprint(json.dumps({'task_id':task.task_id,'status':task.status.value,'count':count,'project_id':task.project_id}))`));
   expect(durable).toEqual({task_id:f.calls.posts[0].task_id,status:'QUEUED',count:1,project_id:f.project.id});
   await testInfo.attach('real-durable-creation.json',{body:Buffer.from(JSON.stringify({durable,compatibilityRequests:f.calls.checks,creationRequests:f.calls.posts},null,2)),contentType:'application/json'});
+});
+
+test('default background mode creates a durable pending task without waiting for a GT preflight response',async({page,request})=>{
+  const f=await fixture(page,request,{admissionMode:'background'});
+  const stalled=gate();
+  f.setCheck(async route=>{await stalled.promise;await route.fulfill({json:compatible}).catch(()=>{});});
+  let accepted=null;
+  f.setCreate(async route=>{
+    const payload=route.request().postDataJSON();
+    accepted=payload;
+    return route.fulfill({status:202,json:{ok:true,task:{task_id:payload.task_id,
+      project_id:f.project.id,algorithm_asset_id:f.algorithmId,kind:'TRAINING',
+      task_type:'TRAINING',status:'QUEUED'}}});
+  });
+  await training(page).locator('button[data-training-step="3"]').click();
+  await start(page).click();
+  expect(f.calls.posts).toHaveLength(0);
+  await expect(training(page)).toContainText('全部确认本次训练素材');
+  await training(page).locator('#tr429BackgroundScopeConfirm').check();
+  await start(page).click();
+  await expect.poll(()=>f.calls.posts.length).toBe(1);
+  expect(accepted.admission_mode).toBe('background');
+  expect(accepted.review_all_training_backgrounds).toBe(true);
+  expect(f.calls.checks).toHaveLength(0);
+  await expect(training(page)).toHaveCount(0);
+  stalled.release();
 });
 
 test('real differing GT is fully diagnosed only after start and closing details preserves the draft',async({page,request},testInfo)=>{

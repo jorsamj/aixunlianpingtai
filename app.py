@@ -382,7 +382,7 @@ def _auth_test_bypass_enabled() -> bool:
     return ALLOW_MULTIPLE_PROJECTS_FOR_TESTS and isolated_test_access_enabled(DATA_DIR)
 
 
-from platform_core.performance_diagnostics import PerformanceDiagnosticsMiddleware, stage as performance_stage, count as performance_count
+from platform_core.performance_diagnostics import PerformanceDiagnosticsMiddleware, stage as performance_stage, count as performance_count, measure as performance_measure
 app.add_middleware(PerformanceDiagnosticsMiddleware)
 
 
@@ -7771,6 +7771,13 @@ def gpu_resources():
 
 class TrainReq(BaseModel):
     task_id: Optional[str] = None
+    # Existing callers retain synchronous preflight. The training workbench
+    # opts into durable creation followed by the already mandatory
+    # TRAINING_PREPARE admission and snapshot freeze.
+    admission_mode: Literal["synchronous", "background"] = "synchronous"
+    # An explicit, task-local human assertion. The worker verifies the selected
+    # images and formal GT under the lifecycle fence before issuing receipts.
+    review_all_training_backgrounds: bool = False
     expected_material_revision: Optional[int] = Field(default=None, ge=0)
     expected_annotation_revision: Optional[int] = Field(default=None, ge=0)
     duplicate_review: Optional[Dict[str, Any]] = None
@@ -8517,7 +8524,9 @@ def _reconcile_training_create_replay(
     return repository.get(task_id) or parent
 
 
-def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONResponse:
+def _enqueue_explicit_training(
+    project_id: str, payload: TrainReq, *, review_actor_id: str = "",
+) -> JSONResponse:
     """Task-ID create/repair is serialized across Web workers before any write."""
     requested = str(payload.task_id or "").strip()
     if requested and not _TRAINING_TASK_ID_PATTERN.fullmatch(requested):
@@ -8527,7 +8536,9 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
     locks_dir.mkdir(parents=True, exist_ok=True)
     try:
         with FileLock(str(locks_dir / f"{task_id}.lock"), timeout=30):
-            return _enqueue_explicit_training_locked(project_id, payload, task_id)
+            return _enqueue_explicit_training_locked(
+                project_id, payload, task_id, review_actor_id=review_actor_id,
+            )
     except Timeout as error:
         raise PlatformError(
             code="TRAINING_CREATE_IN_PROGRESS", status_code=409,
@@ -8536,7 +8547,16 @@ def _enqueue_explicit_training(project_id: str, payload: TrainReq) -> JSONRespon
         ) from error
 
 
-def _enqueue_explicit_training_locked(project_id: str, payload: TrainReq, task_id: str) -> JSONResponse:
+def _enqueue_explicit_training_locked(
+    project_id: str, payload: TrainReq, task_id: str, *, review_actor_id: str = "",
+) -> JSONResponse:
+    if payload.review_all_training_backgrounds and (
+        payload.admission_mode != "background" or not review_actor_id.strip()
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="后台训练样本批量确认必须由已登录用户在快速创建时明确发起",
+        )
     asset_algorithm = next(
         (
             row for row in list_algorithms_internal(project_id)
@@ -8665,27 +8685,52 @@ def _enqueue_explicit_training_locked(project_id: str, payload: TrainReq, task_i
         require_current=True,
     ), material_annotation_lifecycle_fence(project_dir(project_id)):
         try:
-            assert_material_input_admission(
-                project_id,
-                [
-                    *requested_split.train_image_ids,
-                    *requested_split.test_image_ids,
-                ],
-                material_store(project_id),
-                shared_task_repository(),
-                shared_task_artifacts(),
-            )
-            compatibility_request = _training_compatibility_request(
-                project_id,
-                asset_algorithm,
-                raw_request,
-            )
-            compatibility = evaluate_training_compatibility(
-                DATA_DIR,
-                project_dir(project_id),
-                compatibility_request,
-                asset_algorithm,
-            )
+            if payload.review_all_training_backgrounds:
+                # Freeze server-observed versions, not client-supplied values.
+                # The queued worker will recheck both and the exact request
+                # before granting task-scoped absence/scope receipts.
+                project_path = project_dir(project_id)
+                request_payload["training_background_confirmation"] = {
+                    "schema_version": 1,
+                    "task_id": task_id,
+                    "project_id": project_id,
+                    "algorithm_asset_id": str(asset_algorithm.get("id") or ""),
+                    "actor_id": review_actor_id.strip(),
+                    "request_identity": request_identity,
+                    "train_image_ids": list(requested_split.train_image_ids),
+                    "test_image_ids": list(requested_split.test_image_ids),
+                    "material_revision": MaterialRepository(project_path).current_revision(),
+                    "annotation_revision": AnnotationRepository(project_path).current_revision(),
+                }
+            with performance_measure("training.create.source_admission"):
+                assert_material_input_admission(
+                    project_id,
+                    [
+                        *requested_split.train_image_ids,
+                        *requested_split.test_image_ids,
+                    ],
+                    material_store(project_id),
+                    shared_task_repository(),
+                    shared_task_artifacts(),
+                )
+            # The prepare child independently performs the authoritative GT,
+            # duplicate, history, benchmark and label checks before the parent
+            # becomes runnable. Repeating that full scan on the HTTP thread
+            # defeats durable asynchronous creation for large selections.
+            compatibility = None
+            if payload.admission_mode == "synchronous":
+                compatibility_request = _training_compatibility_request(
+                    project_id,
+                    asset_algorithm,
+                    raw_request,
+                )
+                with performance_measure("training.create.full_preflight"):
+                    compatibility = evaluate_training_compatibility(
+                        DATA_DIR,
+                        project_dir(project_id),
+                        compatibility_request,
+                        asset_algorithm,
+                    )
         except MaterialBatchRequestError as error:
             raise HTTPException(
                 status_code=error.status_code,
@@ -8693,7 +8738,7 @@ def _enqueue_explicit_training_locked(project_id: str, payload: TrainReq, task_i
             ) from error
         except ValueError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
-        if compatibility.issues:
+        if compatibility is not None and compatibility.issues:
             page = compatibility_page(compatibility, limit=100)
             duplicate_types = {item["issue_type"] for item in compatibility.issues}
             error_code = (
@@ -11908,8 +11953,13 @@ def freeze_supplement_feedback_candidates(
     }
 
 
-@app.post("/api/v12/projects/{project_id}/train/start")
-def v12_start_train(project_id: str, payload: TrainReq):
+@app.post("/api/v12/projects/{project_id}/train/start", name="v12_start_train")
+def v12_start_train_api(project_id: str, payload: TrainReq, request: Request):
+    """Authenticate task-scope consent on the actual HTTP request only."""
+    return v12_start_train(project_id, payload, request=request)
+
+
+def v12_start_train(project_id: str, payload: TrainReq, request: Optional[Request] = None):
     get_project(project_id)
     validate_train_request(payload)
     p = project_dir(project_id)
@@ -11934,7 +11984,14 @@ def v12_start_train(project_id: str, payload: TrainReq):
             detail="v12 训练创建必须提交 split_mode 并走 Durable Training 主路径；旧训练路径已禁止绕过冻结标签与 Snapshot 合同",
         )
     try:
-        return _enqueue_explicit_training(project_id, payload)
+        review_actor_id = ""
+        if payload.review_all_training_backgrounds:
+            if request is None:
+                raise HTTPException(status_code=401, detail="批量人工确认需要已登录的用户请求")
+            review_actor_id = _material_governance_actor(request, project_id)["actor_id"]
+        return _enqueue_explicit_training(
+            project_id, payload, review_actor_id=review_actor_id,
+        )
     except HTTPException as error:
         # Keep the existing detailed admission contract and expose its machine
         # code at the same top level as validation/provider errors.

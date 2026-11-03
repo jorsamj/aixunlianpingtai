@@ -719,6 +719,91 @@ def task_partial_scope_confirmable(row, contract):
     return training_material_role(candidate, {"effective_label_codes": contract.get("effective_label_codes")})["role"] == "positive"
 
 
+def apply_background_training_scope_confirmation(
+    project: Path,
+    *,
+    task_id: str,
+    project_id: str,
+    payload: Mapping[str, Any],
+    selected_image_ids: Sequence[str],
+    contract: Mapping[str, Any],
+) -> int:
+    """Issue the *user-authorized* task-scope receipts after queued GT checks.
+
+    The HTTP request only saves authenticated intent + revisions; it never
+    declares images safe. This function runs within the material/GT fence,
+    validates original truth, and fails all-or-nothing on unsafe images.
+    Formal Ground Truth is never updated.
+    """
+    from .material_repository import MaterialRepository
+
+    attestation = payload.get("training_background_confirmation")
+    if not isinstance(attestation, Mapping):
+        return 0
+    original_train_ids = [str(item) for item in payload.get("train_image_ids") or ()]
+    original_test_ids = [str(item) for item in payload.get("test_image_ids") or ()]
+    selected_ids = [str(item) for item in selected_image_ids]
+    if (
+        attestation.get("schema_version") != 1
+        or not payload.get("review_all_training_backgrounds")
+        or payload.get("admission_mode") != "background"
+        or not str(attestation.get("actor_id") or "").strip()
+        or str(attestation.get("task_id") or "") != task_id
+        or str(attestation.get("project_id") or "") != project_id
+        or str(attestation.get("algorithm_asset_id") or "") != str(payload.get("algorithm_asset_id") or "")
+        or str(attestation.get("request_identity") or "") != str(payload.get("request_identity") or "")
+        or sorted(attestation.get("train_image_ids") or ()) != sorted(original_train_ids)
+        or sorted(attestation.get("test_image_ids") or ()) != sorted(original_test_ids)
+        or len(selected_ids) != len(set(selected_ids))
+        or not set(selected_ids).issubset(original_train_ids)
+        or set(selected_ids).intersection(original_test_ids)
+    ):
+        raise ValueError("TRAINING_BACKGROUND_CONFIRMATION_INVALID: 本次训练人工确认凭据不匹配")
+
+    materials = MaterialRepository(project)
+    annotations = AnnotationRepository(project)
+    if (
+        materials.current_revision() != attestation.get("material_revision")
+        or annotations.current_revision() != attestation.get("annotation_revision")
+    ):
+        raise ValueError("TRAINING_BACKGROUND_CONFIRMATION_STALE: 训练素材或正式标注已变化，请重新核对并提交")
+
+    rows = _ORIGINAL_SELECTED_PROJECT_IMAGES(materials, project, selected_ids)
+    if len(rows) != len(selected_ids) or {str(row.get("id") or "") for row in rows} != set(selected_ids):
+        raise ValueError("TRAINING_BACKGROUND_CONFIRMATION_STALE: 训练素材已变化，请重新选择")
+
+    confirmed = {str(receipt.get("receipt_id") or "") for receipt in contract.get("task_negative_confirmations") or ()}
+    required = set(contract.get("effective_label_codes") or ())
+    pending = []
+    seen = set()
+    for row in rows:
+        role = training_material_role(row, contract)["role"]
+        if role == "pending_review":
+            if not (task_negative_confirmable(row, contract) or task_partial_scope_confirmable(row, contract)):
+                raise ValueError("TRAINING_BACKGROUND_CONFIRMATION_UNSAFE: 存在不可批量确认的正式标注问题")
+        elif role == "positive":
+            present = {
+                str(box.get("label") or box.get("code") or "").strip()
+                for box in row.get("boxes") or ()
+                if str(box.get("label") or box.get("code") or "").strip() in required
+            }
+            if not present or len(present) == len(required):
+                continue
+        else:
+            continue
+        evidence = task_negative_identity(row, contract)
+        receipt_id = evidence["receipt_id"]
+        if receipt_id not in confirmed and receipt_id not in seen:
+            pending.append(evidence)
+            seen.add(receipt_id)
+    if pending:
+        annotations.confirm_task_negatives(
+            task_negative_context(contract), pending,
+            {"actor_id": str(attestation["actor_id"]), "action": "explicit_background_training_scope_confirmation", "task_id": task_id},
+        )
+    return len(pending)
+
+
 def training_material_scope_issue(
     row: Mapping[str, Any],
     contract: Mapping[str, Any],

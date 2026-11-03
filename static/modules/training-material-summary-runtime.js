@@ -780,7 +780,7 @@ export function installTrainingMaterialSummaryRuntime({
       const nextHtml = sampleHtml + (truth.error
         ? '<span>训练输入检查</span><b class="err">检查失败 · 可重试</b><button class="btn mini" type="button" data-training-compatibility-open>查看原因并重试</button>'
         : truth.loading || !truth.ready
-        ? `<span>训练输入检查</span><b>${truth.loading?'检查中…':'点击开始训练后检查'}</b>`
+        ? `<span>训练输入检查</span><b>${truth.loading?'检查中…':window.TrainingSubmitRuntime?.admissionMode==='background'?'提交后后台核验；不通过则停止':'点击开始训练后检查'}</b>`
         : count
           ? `<span>训练输入检查</span><b class="warn">${count} 张需处理</b><button class="btn mini" type="button" data-training-compatibility-open>查看并处理冲突</button>`
           : '<span>标签适配</span><b>已通过</b>');
@@ -849,7 +849,10 @@ export function installTrainingMaterialSummaryRuntime({
           method: 'POST',
           signal,
           headers: {'Accept': 'application/json', 'Content-Type': 'application/json'},
-          body: JSON.stringify({...pickerDraftPayload(),image_ids: normalizedIds}),
+          // The summary powers selected counts and label suggestions. Expensive
+          // task-role/negative scans belong to the on-demand role page or
+          // final worker admission, never this high-frequency picker summary.
+          body: JSON.stringify({...pickerDraftPayload(),image_ids: normalizedIds,summary_only:true}),
         },
       ),'训练素材摘要读取失败'),{timeoutMs:requestTimeoutMs,label:'训练素材摘要',signal:activeController.signal});
       if (destroyed || sequence !== requestSequence || String(projectId()||'')!==pid) return null;

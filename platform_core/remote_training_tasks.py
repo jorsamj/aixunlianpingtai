@@ -30,7 +30,11 @@ from .storage import StorageManager, StorageProviderFactory, StorageType
 from .storage.source_repository import StorageSourceRepository
 from .task_runtime import ExecutionFencedError, TaskKind, TaskStatus
 from .training_bundle_cache import TrainingBundleCache
-from .training_label_tasks import project_training_rows, resolve_training_label_contract
+from .training_label_tasks import (
+    apply_background_training_scope_confirmation,
+    project_training_rows,
+    resolve_training_label_contract,
+)
 from .training_compatibility import (
     evaluate_selection_compatibility,
     persist_compatibility_issues,
@@ -604,6 +608,28 @@ class TrainingPrepareHandler:
                     self.data_dir, project, payload, algorithm,
                     require_positive_evidence=False, include_base_weight_digest=False,
                 )
+                if payload.get("training_background_confirmation"):
+                    try:
+                        confirmed_count = apply_background_training_scope_confirmation(
+                            project,
+                            task_id=target.task_id,
+                            project_id=target.project_id,
+                            payload=payload,
+                            selected_image_ids=split.train_image_ids,
+                            contract=intent_contract,
+                        )
+                    except ValueError as error:
+                        error_code = str(error).split(":", 1)[0]
+                        raise RemoteTrainingPreparationError(
+                            error_code, str(error), target_status=TaskStatus.FAILED,
+                        ) from error
+                    if confirmed_count:
+                        # The authoritative resolver reads the newly persisted
+                        # task receipts; no in-memory synthetic GT is accepted.
+                        intent_contract = resolve_training_label_contract(
+                            self.data_dir, project, payload, algorithm,
+                            require_positive_evidence=False, include_base_weight_digest=False,
+                        )
                 selection = resolve_training_selection(project, split, label_contract=intent_contract)
                 effective_split = selection.effective_split
                 supplement = self._resolve_supplement_candidate_set(project, algorithm, payload, effective_split)

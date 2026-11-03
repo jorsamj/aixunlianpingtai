@@ -362,6 +362,8 @@ test('selected positive codes use formal evidence and ignore late response from 
     const fresh=runtime.refresh(['page-b']);
     await new Promise(resolve=>setImmediate(resolve));
     assert.equal(requests.length,2);
+    assert.equal(requests[0].body.summary_only,true);
+    assert.equal(requests[1].body.summary_only,true);
     requests[1].resolve(response(['smoke'],['smoke','scope-only']));
     await fresh;
     requests[0].resolve(response(['fire']));

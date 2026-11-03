@@ -106,16 +106,22 @@ test('iteration retains latest checkpoint contract without requiring mother-mode
   assert.equal(validatePreparedMotherModel({draft:d,target:{base_models:[]}}),true);
 });
 
-function installDom() {
+function installDom({backgroundConsent=null}={}) {
   const controls = {
     tr429Target: {value: 'gpu-local'},
     tr429Alg: {value: 'yolo_detect'},
     tr429TaskId: {value: 'train_aaaaaaaaaaaaaaaaaaaa'},
   };
   const submitButton = {disabled: true, dataset: {}, textContent: '开始训练'};
+  const trainingRoot=backgroundConsent===null?null:{
+    dataset:{},classList:{add(){},remove(){},toggle(){}},
+    querySelector:selector=>selector==='#tr429BackgroundScopeConfirm'?{checked:backgroundConsent}:null,
+    querySelectorAll:()=>[],
+  };
   globalThis.document = {
     getElementById: id => controls[id] || null,
     querySelector(selector) {
+      if(selector==='.train429-create')return trainingRoot;
       return selector === '.train429-create .train428-footer .btn.primary' ? submitButton : null;
     },
     querySelectorAll() { return [submitButton]; },
@@ -270,6 +276,56 @@ test('completed server compatibility stays authoritative while background UI cac
   assert.ok(await runtime.submit(), 'a verified response should not be blocked by stale loading presentation');
   assert.equal(posts,1);
   cleanup(runtime);
+});
+
+test('background submission persists immediately without client GT/negative scans or stale compatibility blockers', async () => {
+  installDom({backgroundConsent:true});
+  let requestBody=null;
+  let refreshes=0,previews=0;
+  const notices=[];
+  globalThis.window={fetch:async (url,init)=>{
+    assert.match(url,/\/api\/v12\/projects\/project-1\/train\/start$/);
+    requestBody=JSON.parse(init.body);
+    return {ok:true,status:202,json:async()=>durableTask()};
+  }};
+  const runtime=installTrainingSubmitRuntime({
+    admissionMode:'background',getState:()=>baseState(),projectId:()=> 'project-1',
+    notify:message=>notices.push(message),
+    trainingDraftRuntime:{sync:()=>draft(),current:()=>draft(),base:()=>({blocked:false})},
+    trainingDraftToRequest,
+    materialSummaryRuntime:{
+      compatibilityFor:()=>({ready:true,issue_count:206,issue_counts:{duplicate_annotation_conflict:206}}),
+      refreshCompatibility:async()=>{refreshes++;throw new Error('no sync scan');},
+      confirmPendingNegatives:async()=>{previews++;throw new Error('no preview');},
+      updateAdmissionDiagnosis:()=>{},
+    },
+  });
+  try{
+    assert.ok(await runtime.submit(),JSON.stringify(notices));
+    assert.equal(requestBody.admission_mode,'background');
+    assert.equal(requestBody.review_all_training_backgrounds,true);
+    assert.deepEqual(requestBody.train_image_ids,['img-1','img-2']);
+    assert.equal(refreshes,0);
+    assert.equal(previews,0);
+  }finally{cleanup(runtime)}
+});
+
+test('background submission requires an explicit training-scope assertion before any POST', async () => {
+  installDom({backgroundConsent:false});
+  let posted=false;
+  const notices=[];
+  globalThis.window={fetch:async()=>{posted=true;throw new Error('unexpected POST')}};
+  const runtime=installTrainingSubmitRuntime({
+    admissionMode:'background',getState:()=>baseState(),projectId:()=> 'project-1',
+    notify:message=>notices.push(message),
+    trainingDraftRuntime:{sync:()=>draft(),current:()=>draft(),base:()=>({blocked:false})},
+    trainingDraftToRequest,
+  });
+  try{
+    assert.equal(await runtime.submit(),null);
+    assert.equal(posted,false);
+    assert.match(notices.join(' '),/全部确认本次训练素材/);
+  }finally{cleanup(runtime)}
 });
 
 test('engine parameters preserve explicit false/zero resource and YOLO settings', () => {

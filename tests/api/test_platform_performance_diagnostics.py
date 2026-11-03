@@ -3,6 +3,38 @@ import logging
 import re
 
 
+def test_training_create_diagnostics_is_opt_in_and_never_logs_request_body(monkeypatch, caplog):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from platform_core.performance_diagnostics import (
+        _endpoint, measure, PerformanceDiagnosticsMiddleware,
+    )
+
+    assert _endpoint('/api/v12/projects/synthetic/train/start') == 'training.create'
+    assert _endpoint('/api/v12/projects/synthetic/train/start/extra') is None
+    monkeypatch.setenv('MC_PERFORMANCE_DIAGNOSTICS', '1')
+    app = FastAPI()
+    app.add_middleware(PerformanceDiagnosticsMiddleware)
+
+    @app.post('/api/v12/projects/{project_id}/train/start')
+    def create(project_id: str, payload: dict):
+        with measure('training.create.source_admission'):
+            assert payload['task_id'] == 'train_' + 'c' * 24
+        return {'ok': True}
+
+    with caplog.at_level(logging.INFO, logger='platform.performance'):
+        with TestClient(app) as client:
+            response = client.post('/api/v12/projects/synthetic/train/start', json={
+                'task_id': 'train_' + 'c' * 24, 'api_key': 'secret-not-for-logs',
+            })
+    assert response.status_code == 200
+    assert 'training.create.source_admission;dur=' in response.headers['Server-Timing']
+    record = next(json.loads(row.message) for row in caplog.records
+                  if row.name == 'platform.performance')
+    assert record['endpoint'] == 'training.create'
+    assert 'secret-not-for-logs' not in json.dumps(record)
+
+
 def test_negative_pool_categories_diagnostics_route_is_strictly_scoped(monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient

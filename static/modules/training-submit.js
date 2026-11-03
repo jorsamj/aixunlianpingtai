@@ -188,7 +188,7 @@ export function collectTrainingAdmissionBlockers({draft,base,target,benchmarkSta
   if(!base?.hasPrevious&&Array.isArray(target?.base_models)){
     try{validatePreparedMotherModel({draft,target})}catch(error){add('mother-model-not-ready',error.message||'母模型未就绪')}
   }
-  if(compatibility!==undefined&&compatibility?.ready!==true){
+  if(compatibility!=null&&compatibility?.ready!==true){
     if(compatibility?.error)add('material-compatibility-error',`训练素材检查失败：${compatibility.error}，可重新检查`);
     else add('material-compatibility-loading','正在检查训练素材，请稍候',{transient:true});
   }
@@ -393,6 +393,7 @@ export function installTrainingSubmitRuntime({
   materialSummaryRuntime,
   closeModal,
   notify,
+  admissionMode = 'synchronous',
 } = {}) {
   if (typeof window === 'undefined') return null;
   if (window.__trainingSubmitRuntimeInstalled) return window.TrainingSubmitRuntime;
@@ -772,12 +773,17 @@ export function installTrainingSubmitRuntime({
       const state = getState?.() || {};
       const draft = trainingDraftRuntime.sync();
       if (!draft) throw new Error('训练草稿尚未就绪，请关闭训练窗口后重新打开。');
+      if(admissionMode==='background'&&!submissionRoot?.querySelector?.('#tr429BackgroundScopeConfirm')?.checked){
+        setSubmitStage('blocked');
+        notifyUser('请先核对本次训练素材及标签范围，并勾选“全部确认本次训练素材均可用于本算法训练”。');
+        return null;
+      }
       const operation={root:submissionRoot,taskId:plannedId,projectId:String(projectId?.()||''),signature:admissionSignature(),controller:new AbortController()};
       admissionOperation=operation;
-      const showBlockers=readiness=>{
+      const showBlockers=(readiness,{compatibilityOverride=undefined}={})=>{
         const blockers=readiness.blockers.filter(row=>!row.transient);
         if(!blockers.length)return false;
-        setSubmitStage('blocked');updateReadiness({checked:true});
+        setSubmitStage('blocked');updateReadiness({checked:true,compatibilityOverride});
         if(!materialSummaryRuntime?.openAdmissionDiagnosis?.())notifyUser(blockers.map(row=>row.message).join('；'));
         return true;
       };
@@ -788,6 +794,15 @@ export function installTrainingSubmitRuntime({
       if(draft.benchmarkReuseEnabled&&localAdmission.blockers.some(row=>row.code==='benchmark-loading'))throw new Error('固定Test基准仍在读取，检查尚未完成，请稍后重新检查');
       setSubmitStage('checking-materials');
       let checkedCompatibility;
+      if(admissionMode==='background'){
+        // The TRAINING_PREPARE child is the sole authoritative admission
+        // checkpoint. Do not block the POST on large GT scans or a negative
+        // preview; any missing review/GT fails the queued parent closed.
+        const immediate=updateReadiness({compatibilityOverride:null});
+        if(showBlockers(immediate,{compatibilityOverride:null}))return null;
+        const pending=immediate.blockers.filter(row=>row.transient&&row.code!=='submitting');
+        if(pending.length)throw new Error(pending.map(row=>row.message).join('；'));
+      }else{
       if(materialSummaryRuntime?.refreshCompatibility){
         checkedCompatibility=await materialSummaryRuntime.refreshCompatibility({force:true,signal:operation.controller.signal});
         if(!admissionIsCurrent(operation))throw Object.assign(new Error('训练配置或窗口已变化，本次检查已取消'),{name:'AbortError'});
@@ -833,6 +848,7 @@ export function installTrainingSubmitRuntime({
         ? {...checkedCompatibility,ready:true} : undefined});
       if(showBlockers(admission))return null;
       if(admission.blockers.some(row=>row.transient&&row.code!=='submitting'))throw new Error('训练条件检查尚未完成，请等待基础配置就绪后重新检查');
+      }
 
 
       setSubmitStage('validate-version');
@@ -865,6 +881,10 @@ export function installTrainingSubmitRuntime({
       validateTrainingDevice(draft, state.trainingDevicesV3?.options || [], target);
       setSubmitStage('build-payload');
       const payload = buildTrainingStartPayload({draft, target, algorithm, trainingDraftToRequest});
+      if(admissionMode==='background'){
+        payload.admission_mode='background';
+        payload.review_all_training_backgrounds=true;
+      }
       if (benchmarkContext) {
         if ((draft.testMaterialIds || []).length) throw new Error('复用固定评测基准时不能同时选择前端独立试验素材');
         delete payload.test_image_ids;
@@ -984,6 +1004,7 @@ export function installTrainingSubmitRuntime({
       }
       const selection = body?.selection && typeof body.selection === 'object' ? body.selection : null;
       let createdMessage = `训练任务已进入后台队列 · ${createdTask.task_id}`;
+      if(admissionMode==='background')createdMessage += ' · 正在后台核验素材，未通过时不会启动训练';
       if (selection && Number.isFinite(Number(selection.effective_train_count))) {
         createdMessage += ` · 本轮有效 ${Math.max(0, Number(selection.effective_train_count))} 张`;
       }
@@ -1084,6 +1105,7 @@ export function installTrainingSubmitRuntime({
 
   const runtime = {
     build: 'training-submit-422596',
+    admissionMode,
     submit,
     createTaskId: createCanonicalTrainingTaskId,
     modePreset: trainingModePreset,
