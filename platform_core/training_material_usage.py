@@ -359,7 +359,8 @@ class TrainingMaterialUsage:
                                'task_ids': sorted({row['task_id'] for row in rows}),
                                'history_details': [{'task_id': row['task_id'], 'snapshot_id': row['snapshot_id'], 'algorithm_id': row['algorithm_id'],
                                    'role': row['role'], 'evidence': row['evidence']} for row in all_matches.values()]}
-        return {'revision': index['revision'], 'coverage': index['coverage'], 'by_image_id': by_id,
+        return {'revision': index['revision'], 'coverage': index['coverage'],
+                'index_health': index['index_health'], 'by_image_id': by_id,
                 'excluded_image_ids': [key for key, value in by_id.items() if value['excluded']],
                 'unknown_image_ids': [key for key, value in by_id.items() if value['state'] == 'unknown']}
 
@@ -387,27 +388,37 @@ class TrainingMaterialUsage:
 
     @stage("usage_lookup")
     def _query_candidates(self, project_id, algorithm_id, images):
-        result = {'records': [], 'revision': 'unknown', 'coverage': 'unknown'}
+        result = {'records': [], 'revision': 'unknown', 'coverage': 'unknown', 'index_health': 'unavailable'}
         if not self.path.is_file():
             return result
         tokens = sorted({token for image in images for token in
             [('image_id', str(image.get('id') or image.get('image_id') or '')), *_relation_tokens(image)]})
         with closing(self._connect()) as db:
             db.execute('BEGIN')
-            if not db.execute("SELECT 1 FROM sqlite_master WHERE name='training_usage_tokens'").fetchone():
+            tables = {str(row[0]) for row in db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'training_%'")}
+            if 'training_usage_tokens' not in tables:
+                result['index_health'] = ('incompatible' if 'training_material_usage' in tables else 'uninitialized')
                 result['revision'] = self._read_revision(db)
                 if self._empty_project_history(db, project_id):
                     result['coverage'] = 'complete'
                 return result
+            required = {'training_material_usage', 'training_usage_coverage', 'training_usage_meta', 'training_usage_token_schema'}
+            if not required.issubset(tables):
+                result['index_health'] = 'incompatible'
+                return result
             coverage = db.execute('SELECT complete FROM training_usage_coverage WHERE project_id=? AND algorithm_id=?', (str(project_id),str(algorithm_id))).fetchone()
             result['coverage'] = 'complete' if coverage and coverage[0] else 'unknown'
-            ready_table = db.execute("SELECT 1 FROM sqlite_master WHERE name='training_usage_token_schema'").fetchone()
-            if not ready_table or not db.execute('SELECT 1 FROM training_usage_token_schema WHERE version=1').fetchone():
-                result['coverage'] = 'unknown'
+            if not db.execute('SELECT 1 FROM training_usage_token_schema WHERE version=1').fetchone():
+                result['index_health'] = 'incompatible'
+                return result
             # Preserve the original malformed-schema error instead of silently
             # accepting a token index whose mandatory revision table vanished.
             revision = db.execute('SELECT revision FROM training_usage_meta WHERE id=1').fetchone()
             result['revision'] = str(revision[0]) if revision else 'unknown'
+            if revision is None:
+                result['index_health'] = 'corrupt'
+                return result
+            result['index_health'] = 'healthy'
             matched = {}
             for start in range(0, len(tokens), 200):
                 batch = tokens[start:start+200]
@@ -418,6 +429,22 @@ class TrainingMaterialUsage:
             statuses = self._task_statuses(db, matched)
             result['records'] = [dict(row, task_status=statuses.get(row['task_id'], '')) for row in matched.values()]
         return result
+
+    def ensure_admission_index(self, project_id, algorithm_id):
+        """Initialize only a genuinely absent projection, never conceal damaged history.
+
+        Missing historical Task evidence leaves coverage unknown; it is not
+        rebuilt on the training request path and no 'complete' claim is made.
+        """
+        probe = self._query_candidates(project_id, algorithm_id, ())
+        if probe['index_health'] == 'uninitialized':
+            with closing(self._connect(True)) as db:
+                self._schema(db)
+            probe = self._query_candidates(project_id, algorithm_id, ())
+        if probe['index_health'] != 'healthy':
+            raise ValueError('TRAINING_HISTORY_INDEX_UNAVAILABLE: usage index is '
+                             + probe['index_health'] + '; repair its schema before training')
+        return probe
 
 
 def record_context_snapshot(context, task, payload, snapshot):
@@ -478,7 +505,7 @@ def _verified_weight_parents(project, base_selection, *, catalog=None):
 
 
 def assert_formal_test_independence(index, snapshot, project_id, algorithm_id, *,
-                                    parent_task_ids=(), benchmark_reuse=False):
+                                    parent_task_ids=(), benchmark_reuse=False, admission=None):
     """Mandatory late fence before publishing any independent-Test scores.
 
     Works on original frozen pixel identities, not mutable material-list rows.
@@ -496,18 +523,29 @@ def assert_formal_test_independence(index, snapshot, project_id, algorithm_id, *
         raise ValueError('TRAINING_TEST_HISTORY_UNKNOWN: formal Test has no frozen image evidence')
     if not str(snapshot.get('snapshot_id') or '') or any(not row['id'] or not row.get('content_sha256') for row in rows):
         raise ValueError('TRAINING_TEST_HISTORY_UNKNOWN: formal Test snapshot identity missing')
-    result = index.query_filter(project_id, algorithm_id, rows,
-                                parent_task_ids=parent_task_ids, role='test')
+    try:
+        result = index.query_filter(project_id, algorithm_id, rows,
+                                    parent_task_ids=parent_task_ids, role='test')
+    except (sqlite3.DatabaseError, OSError, json.JSONDecodeError) as error:
+        raise ValueError('TRAINING_HISTORY_INDEX_UNAVAILABLE: formal Test history query failed') from error
+    frozen_policy = (isinstance(admission, dict)
+                     and admission.get('schema_version') == 2
+                     and admission.get('history_policy_version') == 'assumed_unseen_v1')
+    if frozen_policy and result['index_health'] != 'healthy':
+        raise ValueError('TRAINING_HISTORY_INDEX_UNAVAILABLE: formal Test usage index is not healthy')
     excluded = sorted(result['excluded_image_ids'])
     if excluded:
         raise ValueError('TRAINING_TEST_HISTORY_EXPOSURE: formal Test contains exposed Train/Val identities: '
                          + ', '.join(excluded[:5]))
-    if result['coverage'] != 'complete' and not benchmark_reuse:
+    if result['coverage'] != 'complete' and not benchmark_reuse and not frozen_policy:
         raise ValueError('TRAINING_TEST_HISTORY_UNKNOWN: historical coverage not verified before formal scoring')
-    if any(result['by_image_id'][row['id']]['state'] == 'unknown' for row in rows) and not benchmark_reuse:
+    if any(result['by_image_id'][row['id']]['state'] == 'unknown' for row in rows) and not benchmark_reuse and not frozen_policy:
         raise ValueError('TRAINING_TEST_HISTORY_UNKNOWN: Test image exposure is unknown')
+    independence = ('assumed_unseen' if frozen_policy and not benchmark_reuse and
+                    (admission.get('historical_independence') == 'assumed_unseen'
+                     or result['coverage'] != 'complete') else 'verified_independent')
     return {'status': 'passed', 'test_count': len(rows), 'revision': result['revision'],
-            'coverage': result['coverage']}
+            'coverage': result['coverage'], 'historical_independence': independence}
 
 
 def require_formal_history_admission(admission):
@@ -516,6 +554,15 @@ def require_formal_history_admission(admission):
             or not isinstance(admission.get('parent_task_ids'), list)
             or not isinstance(admission.get('model_ancestry'), list)):
         raise ValueError('TRAINING_TEST_HISTORY_UNKNOWN: formal scoring requires frozen history admission')
+    if admission.get('schema_version') == 2 and (
+            admission.get('history_policy_version') != 'assumed_unseen_v1'
+            or admission.get('index_health') != 'healthy'
+            or admission.get('historical_independence') not in {'assumed_unseen', 'verified_independent'}
+            or not isinstance(admission.get('unknown_parent_version_ids'), list)
+            or (admission.get('unknown_parent_version_ids')
+                and admission.get('historical_independence') != 'assumed_unseen'
+                and not admission.get('benchmark_reuse_verified'))):
+        raise ValueError('TRAINING_TEST_HISTORY_UNKNOWN: invalid frozen history policy contract')
     return admission
 
 
@@ -544,7 +591,7 @@ def assert_frozen_formal_test(project_dir, task_id, snapshot_id):
     return assert_formal_test_independence(
         TrainingMaterialUsage(data_dir / 'task_runtime' / 'tasks.sqlite3'), snapshot,
         project.name, algorithm_id, parent_task_ids=admission.get('parent_task_ids') or (),
-        benchmark_reuse=bool(payload.get('benchmark_reuse')))
+        benchmark_reuse=bool(payload.get('benchmark_reuse')), admission=admission)
 
 
 def admit_history_selection(context, task, project, algorithm, payload, split, *, base_version_id=None, verified_benchmark_reuse=False):
@@ -555,6 +602,12 @@ def admit_history_selection(context, task, project, algorithm, payload, split, *
     if policy not in {'new_for_algorithm', 'include_history'}:
         raise ValueError('invalid training history_policy')
     index = TrainingMaterialUsage(context.repository)
+    # No global historical scan or invented 'complete' coverage. Missing
+    # projection tables may be initialized; broken existing indexes fail closed.
+    try:
+        context.run_owned(lambda: index.ensure_admission_index(task.project_id, algorithm['id']))
+    except (sqlite3.DatabaseError, OSError) as error:
+        raise ValueError('TRAINING_HISTORY_INDEX_UNAVAILABLE: indexed usage evidence cannot be read') from error
     from .algorithms import list_algorithms
     catalog = {str(item.get('id') or ''): item for item in list_algorithms(Path(project) / 'algorithms.json')}
     # The caller may already hold a freshly updated algorithm not yet visible
@@ -569,6 +622,16 @@ def admit_history_selection(context, task, project, algorithm, payload, split, *
     if requested_id and requested_id != selected_id:
         raise ValueError('TRAINING_TEST_ANCESTRY_UNKNOWN: requested base version does not match selected checkpoint')
     matched, base_sha = _verified_weight_parents(project, base_selection, catalog=catalog.values())
+    # A valid checkpoint may have incomplete old Task/Snapshot history; a
+    # mismatching or unverified weight identity is a different, fatal defect.
+    if selected_id and base_sha:
+        selected_version = versions.get(selected_id) or {}
+        verified_shas = {str(row.get('sha256') or '').lower()
+                         for row in selected_version.get('verified_models') or []
+                         if isinstance(row, dict) and row.get('verified') is not False}
+        if (selected_version.get('artifact_verified') is not True
+                or (verified_shas and base_sha not in verified_shas)):
+            raise ValueError('TRAINING_BASE_ANCESTRY_CHANGED: selected checkpoint does not match its verified version')
     pending = [(str(algorithm['id']), selected_id)] if selected_id else []
     pending.extend(pair for pair in matched if pair not in pending)
     while pending:
@@ -626,7 +689,8 @@ def admit_history_selection(context, task, project, algorithm, payload, split, *
                 raise ValueError('TRAINING_TEST_ANCESTRY_UNKNOWN: incomplete inherited model lineage')
             pending.append((inherited_algo, inherited_version))
     if unknown_parents and not verified_benchmark_reuse:
-        raise ValueError('TRAINING_TEST_ANCESTRY_UNKNOWN: 父模型训练来源证据缺失，不能证明新试验集独立；请恢复血缘证据或使用已核验的冻结基准')
+        if not base_sha or not matched and not (selected_id and versions.get(selected_id, {}).get('artifact_verified') is True):
+            raise ValueError('TRAINING_TEST_ANCESTRY_UNKNOWN: 父模型身份未核实，无法安全放宽缺失的历史血缘证据')
     if not versions:
         with closing(index._connect()) as db:
             has_tasks = db.execute("SELECT 1 FROM tasks WHERE project_id=? AND kind='TRAINING' AND task_id<>? LIMIT 1",
@@ -634,26 +698,34 @@ def admit_history_selection(context, task, project, algorithm, payload, split, *
         if not has_tasks:
             context.run_owned(lambda: index.mark_coverage(task.project_id, algorithm['id'], complete=True))
     rows = MaterialRepository(project).get_many((*split.train_image_ids, *split.test_image_ids))
-    train = index.query_filter(task.project_id, algorithm['id'], rows,
-                               parent_task_ids=parent_ids, exclude_used=policy == 'new_for_algorithm')
-    test = index.query_filter(task.project_id, algorithm['id'], rows, parent_task_ids=parent_ids, role='test')
+    try:
+        train = index.query_filter(task.project_id, algorithm['id'], rows,
+                                   parent_task_ids=parent_ids, exclude_used=policy == 'new_for_algorithm')
+        test = index.query_filter(task.project_id, algorithm['id'], rows, parent_task_ids=parent_ids, role='test')
+    except (sqlite3.DatabaseError, OSError, json.JSONDecodeError) as error:
+        raise ValueError('TRAINING_HISTORY_INDEX_UNAVAILABLE: indexed usage query failed') from error
+    if train['index_health'] != 'healthy' or test['index_health'] != 'healthy':
+        raise ValueError('TRAINING_HISTORY_INDEX_UNAVAILABLE: usage index changed during admission')
     train_ids = tuple(item for item in split.train_image_ids if item not in train['excluded_image_ids'])
     if not train_ids:
         raise ValueError('TRAINING_HISTORY_EMPTY: no training materials remain after history exclusion')
-    # Incomplete legacy coverage is not proof of independent Test eligibility.
-    # A previously observed and locked Test is allowed for a verified benchmark
-    # comparison; an unknown candidate must not be silently made a new Test.
-    uncertain = set() if verified_benchmark_reuse else {
-        image_id for image_id, fact in test['by_image_id'].items()
-        if fact['state'] == 'unknown' or (test['coverage'] != 'complete' and
-           fact['state'] == 'selected')
-    }
-    forbidden = sorted(set(test['excluded_image_ids']) | uncertain)
+    # The new contract permits unknown history only when the existing indexed
+    # evidence is healthy. Known exposure and active-role reservations remain
+    # forbidden, including duplicate SHA/source tokens and verified ancestors.
+    forbidden = sorted(set(test['excluded_image_ids']))
     if split.mode == SplitMode.INDEPENDENT_TEST_SET and set(split.test_image_ids) & set(forbidden):
         raise ValueError('TRAINING_TEST_HISTORY_EXPOSURE: selected Test has prior exposure or unverified history')
     effective = SplitRequest(mode=split.mode, train_image_ids=train_ids, test_image_ids=split.test_image_ids,
                              experiment_percent=split.experiment_percent, validation_percent=split.validation_percent)
-    return effective, {'policy': policy, 'revision': train['revision'], 'coverage': train['coverage'],
+    assumed_count = sum(fact['state'] == 'unknown' for fact in test['by_image_id'].values())
+    independence = ('assumed_unseen' if not verified_benchmark_reuse and
+                    (unknown_parents or test['coverage'] != 'complete')
+                    else 'verified_independent')
+    return effective, {'schema_version': 2, 'history_policy_version': 'assumed_unseen_v1',
+        'policy': policy, 'revision': train['revision'], 'coverage': train['coverage'],
+        'index_health': train['index_health'], 'historical_independence': independence,
+        'benchmark_reuse_verified': bool(verified_benchmark_reuse),
+        'assumed_unseen_candidate_count': assumed_count,
         'base_model_sha256': base_sha, 'model_ancestry': ancestry,
         'excluded_train_image_ids': sorted(set(split.train_image_ids)-set(train_ids)),
         'forbidden_test_image_ids': forbidden, 'parent_task_ids': sorted(set(parent_ids)),

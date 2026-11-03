@@ -111,6 +111,60 @@ def test_missing_ancestor_blocks_new_test_but_original_verified_benchmark_remain
     assert evidence['unknown_parent_version_ids']==['a:v']
 
 
+def test_verified_parent_with_missing_old_snapshot_allows_assumed_unseen(tmp_path, monkeypatch):
+    import hashlib
+    from types import SimpleNamespace
+    from platform_core.task_runtime.repository import TaskRepository
+    from platform_core.material_repository import MaterialRepository
+    from platform_core.training_material_usage import admit_history_selection, assert_formal_test_independence
+    from platform_core.training_splits import SplitRequest, SplitMode
+    import platform_core.training_label_tasks as labels
+
+    repository = TaskRepository(tmp_path / 'task_runtime' / 'tasks.sqlite3')
+    project = tmp_path / 'projects' / 'p'
+    project.mkdir(parents=True)
+    weight = project / 'parent.pt'
+    weight.write_bytes(b'content verified old checkpoint without historical snapshot')
+    digest = hashlib.sha256(weight.read_bytes()).hexdigest()
+    version = {'id': 'v', 'training_job_id': 'missing-task', 'artifact_verified': True,
+               'verified_models': [{'sha256': digest, 'verified': True}]}
+    monkeypatch.setattr(labels, '_iteration_base',
+                        lambda *args: (version, {'base_model_path': str(weight)}))
+    MaterialRepository(project).upsert_many([
+        {'id': f'i-{i}', 'filename': f'{i}.jpg', 'content_sha256': f'{i+1:064x}'}
+        for i in range(3)
+    ])
+    context = SimpleNamespace(repository=repository, run_owned=lambda fn: fn())
+    split = SplitRequest(SplitMode.RANDOM_TEST_FROM_TRAINING_POOL,
+                         ('i-0', 'i-1', 'i-2'), experiment_percent=20, validation_percent=20)
+    admitted, history = admit_history_selection(context, SimpleNamespace(project_id='p', task_id='new'),
+                                                project, {'id': 'a', 'versions': [version]},
+                                                {'history_policy': 'new_for_algorithm'}, split)
+    assert admitted.train_image_ids == split.train_image_ids
+    assert history['index_health'] == 'healthy'
+    assert history['historical_independence'] == 'assumed_unseen'
+    assert history['unknown_parent_version_ids'] == ['a:v']
+    index = TrainingMaterialUsage(repository)
+    frozen = {'snapshot_id': 's', 'images': [
+        {'image_id': 'i-0', 'role': 'test', 'content_sha256': f'{1:064x}'}]}
+    verified = assert_formal_test_independence(index, frozen, 'p', 'a', admission=history)
+    assert verified['historical_independence'] == 'assumed_unseen'
+    index.record_selected('p', 'a', 'older', {'snapshot_id': 'old', 'images': [
+        {'image_id': 'old-id', 'role': 'train', 'content_sha256': f'{1:064x}'}]})
+    index.record_execution('older', first_batch=True)
+    with pytest.raises(ValueError, match='TRAINING_TEST_HISTORY_EXPOSURE'):
+        assert_formal_test_independence(index, frozen, 'p', 'a', admission=history)
+
+
+def test_admission_health_rejects_partial_index_schema_not_as_unknown(tmp_path):
+    path = tmp_path / 'tasks.sqlite3'
+    with sqlite3.connect(path) as db:
+        db.execute('CREATE TABLE training_material_usage (task_id TEXT)')
+    index = TrainingMaterialUsage(path)
+    with pytest.raises(ValueError, match='TRAINING_HISTORY_INDEX_UNAVAILABLE'):
+        index.ensure_admission_index('p', 'a')
+
+
 def test_exact_verified_cross_algorithm_weight_inherits_transitive_exposure_not_model_family(tmp_path):
     from types import SimpleNamespace
     from platform_core.algorithms import save_algorithms

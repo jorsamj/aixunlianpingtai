@@ -359,6 +359,12 @@ class TrainingPrepareHandler:
         )
         evaluation = version.get("evaluation") if isinstance(version, Mapping) else {}
         evaluation = evaluation if isinstance(evaluation, Mapping) else {}
+        if evaluation.get('historical_independence') in {'assumed_unseen', 'known_exposed', 'unavailable'}:
+            raise RemoteTrainingPreparationError(
+                'TRAINING_BENCHMARK_HISTORY_UNVERIFIED',
+                '来源版本的 Test 历史独立性未经严格核验，不能认证为可复用固定 Benchmark',
+                target_status=TaskStatus.FAILED,
+            )
         scope = evaluation.get("benchmark_scope")
         scope = scope if isinstance(scope, Mapping) else {}
         if (

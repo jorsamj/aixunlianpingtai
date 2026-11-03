@@ -94,3 +94,13 @@ test('the report displays persisted Test binding level without guessing from hig
   assert.match(legacy, /未记录/);
   assert.doesNotMatch(legacy, /已绑定校验的数据包/);
 });
+
+test('assumed-unseen historical isolation is visible at any mAP without strict certification', () => {
+  const html=metricCredibilityHtml({schema_version:1,status:'review_required',
+    validation_map50:.60,independent_test_map50:.50,independent_test_binding_level:'bundle_verified',
+    historical_independence:'assumed_unseen',reason_codes:['test_historical_independence_assumed']});
+  assert.match(html,/历史未知，按未训练准入/);
+  assert.match(html,/非严格认证/);
+  assert.match(html,/不能认证为严格独立 Benchmark/);
+  assert.match(html,/50\.0%/);
+});

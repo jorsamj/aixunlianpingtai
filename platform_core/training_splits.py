@@ -415,6 +415,25 @@ def _row_label_codes(row: Mapping[str, Any]) -> set[str]:
     }
 
 
+def _split_failure_summary(rows: Sequence[Mapping[str, Any]],
+                           component_keys: Mapping[str, str],
+                           required_labels: Sequence[str],
+                           forbidden_keys: Sequence[str]) -> str:
+    """Only summarize the frozen selection on failure, never the global pool."""
+    components: dict[str, set[str]] = {}
+    negative_groups: set[str] = set()
+    for row in rows:
+        component = component_keys[str(row.get('id') or '')]
+        components.setdefault(component, set()).update(_row_label_codes(row))
+        if str(row.get('annotation_state') or '') == 'confirmed_empty':
+            negative_groups.add(component)
+    counts = ', '.join(f'{label}={sum(label in values for values in components.values())}组'
+                       for label in required_labels)
+    return (f'已选{len(rows)}张；不可拆来源{len(components)}组；'
+            f'负样本来源{len(negative_groups)}组；已知历史保护{len(set(forbidden_keys))}组；'
+            f'训练类别正样本来源：{counts or "未指定"}')
+
+
 def _reserve_required_train_components(
     rows: Sequence[Mapping[str, Any]],
     component_keys: Mapping[str, str],
@@ -611,11 +630,13 @@ def _select_grouped_stratified(
             support[label] = support.get(label, 0) + 1
             total_label_images[label] = total_label_images.get(label, 0) + count
 
-    # A rare class observed in only one independent group stays in training.
-    # Test can take a class only when >= 3 independent groups exist; validation
-    # can take it when >= 2 remain. Fixed independent Test is handled outside.
+    # A confirmed-empty image is a negative example, NOT a detection class.
+    # Keep one negative source group for training when one exists; requiring
+    # two just because Test precedes Val can reserve every negative component
+    # and incorrectly declare otherwise feasible holdouts impossible.
+    # True positive labels retain their stronger Train/Val reservation.
     keep = {
-        label: min(count, int(min_future_positive_groups))
+        label: min(count, 1 if label == negative_label else int(min_future_positive_groups))
         for label, count in support.items()
     }
     selected_keys: set[str] = set()
@@ -831,26 +852,53 @@ def build_split_manifest(
         )
         test_source = "independent_materials"
     else:
-        after_test, test_rows = selector(
-            train_pool,
-            component_keys,
-            float(request.experiment_percent or 0),
-            test_seed,
-            min_remaining_groups=2,
-            **({"min_future_positive_groups": 2} if split_strategy == "multilabel_grouped_v2" else {}),
-            reserved_component_keys=set(reserved_train_components) | history_test_components,
-        )
-        # Percentages are measured against the complete frozen pool.
-        # The test holdout is frozen first, so rebase the validation target
-        # onto the remaining pool without weakening the leakage guard.
         validation_of_remaining = float(request.validation_percent) * 100.0 / (100.0 - float(request.experiment_percent))
-        train_rows, validation_rows = selector(
-            after_test,
-            component_keys,
-            validation_of_remaining,
-            validation_seed,
-            reserved_component_keys=reserved_train_components,
-        )
+        # The greedy two-stage selector can reach a dead end even when another
+        # order of whole source components is feasible. Retry only failures,
+        # with deterministic bounded seeds and a final relaxed preference for
+        # Val class coverage. Never relax identity/source leakage or Train labels.
+        attempts = [(test_seed, validation_seed, 2)]
+        if split_strategy == "multilabel_grouped_v2":
+            attempts += [
+                (test_seed + offset * 104729, validation_seed + offset * 65537, future)
+                for future in (2, 1) for offset in (1, 2)
+            ]
+            attempts.append((test_seed, validation_seed, 1))
+        last_split_error = None
+        for try_test_seed, try_validation_seed, future_groups in attempts:
+            try:
+                after_test, test_rows = selector(
+                    train_pool,
+                    component_keys,
+                    float(request.experiment_percent or 0),
+                    try_test_seed,
+                    min_remaining_groups=2,
+                    **({"min_future_positive_groups": future_groups}
+                       if split_strategy == "multilabel_grouped_v2" else {}),
+                    reserved_component_keys=set(reserved_train_components) | history_test_components,
+                )
+                # Percentages use the complete pool; Val's target is rebased
+                # to the actual remaining pool after Test is chosen.
+                train_rows, validation_rows = selector(
+                    after_test,
+                    component_keys,
+                    validation_of_remaining,
+                    try_validation_seed,
+                    reserved_component_keys=reserved_train_components,
+                )
+                if not train_rows or not test_rows or not validation_rows:
+                    raise ValueError('训练、验证或试验集为空')
+                break
+            except ValueError as error:
+                last_split_error = error
+        else:
+            raise ValueError(
+                'TRAINING_SPLIT_SEARCH_EXHAUSTED: 来源隔离和训练正样本约束下，'
+                '有限次确定性划分未找到可用 Train/Val/Test；'
+                '不能据此断言所有划分绝对无解。'
+                + f' {_split_failure_summary(train_pool, component_keys, required_labels, history_test_components)}'
+                + f' 最近原因：{last_split_error}'
+            ) from last_split_error
         test_source = "random_from_training_pool"
 
     roles = {"train": train_rows, "validation": validation_rows, "test": test_rows}

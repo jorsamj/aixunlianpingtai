@@ -35,6 +35,7 @@ export function trainingCharts(history = [], samples = []) {
 }
 
 const metricCredibilityReasons = Object.freeze({
+  test_historical_independence_assumed: 'Test 历史使用记录不完整，按业务规则准入；不能认证为严格独立 Benchmark',
   independent_test_unavailable: '独立 Test 未完成，只有验证集结果',
   independent_test_metric_or_samples_missing: '独立 Test 缺少有效指标或实际样本数',
   validation_test_map50_gap_at_least_10pp: '验证集与独立 Test 的 mAP50 差距达到 10 个百分点',
@@ -90,13 +91,19 @@ export function metricCredibilityHtml(value) {
     snapshot_truth: '仅冻结 Test 来源',
     unavailable: '缺少绑定证明'
   })[value.independent_test_binding_level] || '未记录';
+  const historicalIndependence = ({
+    verified_independent: '历史独立性已核验',
+    assumed_unseen: '历史未知，按未训练准入（非严格认证）',
+    known_exposed: '已发现训练暴露，不可视为独立 Test',
+    unavailable: '历史独立性证据未记录'
+  })[value.historical_independence] || '历史独立性证据未记录';
   const reasons = Array.isArray(value.reason_codes) ? value.reason_codes : [];
   const issues = reasons.slice(0, 25).map(code => `<li>${escapeText(metricCredibilityReasons[String(code)] || String(code))}</li>`).join('');
   const val = percent(value.validation_map50);
   const tst = percent(value.independent_test_map50);
   return `<section class="report429-card" data-metric-credibility="${escapeText(value.status || 'unknown')}">
-    <header><b>模型高分可信度</b><span>${escapeText(status)}</span></header>
-    <div class="quality-metrics"><div><span>验证集 Val mAP50</span><b>${val}</b></div><div><span>独立 Test mAP50</span><b>${tst}</b></div><div><span>Val − Test</span><b>${gap(value.val_minus_test_map50)}</b></div><div><span>独立 Test 实际图片</span><b>${imageCount}</b></div><div><span>独立 Test 输入绑定</span><b>${escapeText(bindingLevel)}</b></div></div>
+    <header><b>训练与评测可信度</b><span>${escapeText(status)}</span></header>
+    <div class="quality-metrics"><div><span>验证集 Val mAP50</span><b>${val}</b></div><div><span>独立 Test mAP50</span><b>${tst}</b></div><div><span>Val − Test</span><b>${gap(value.val_minus_test_map50)}</b></div><div><span>独立 Test 实际图片</span><b>${imageCount}</b></div><div><span>独立 Test 输入绑定</span><b>${escapeText(bindingLevel)}</b></div><div><span>Test 历史独立性</span><b>${escapeText(historicalIndependence)}</b></div></div>
     ${issues ? `<p>待核实的证据（并非数据泄漏已被证实）：</p><ul>${issues}</ul>` : '<p>当前未触发已定义的高分复核项，但仍不代表生产场景已经验收。</p>'}
     <p class="item-sub">mAP 是目标检测指标，不是事件告警准确率；本诊断不判断造假，也不替代现场业务验收。</p>
   </section>`;

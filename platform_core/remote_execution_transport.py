@@ -3391,6 +3391,7 @@ class RemoteExecutionTransportService:
             dataset_manifest=dataset_manifest or None,
         )
         blind_result = report.get('test_result') or {}
+        historical_independence = None
         if isinstance(blind_result, Mapping) and str(blind_result.get('status') or '').lower() in {'succeeded', 'passed'}:
             if not benchmark_scope or benchmark_scope.get('binding_level') != 'bundle_verified':
                 raise RemoteExecutionTransportError('TRAINING_TEST_HISTORY_UNKNOWN',
@@ -3401,12 +3402,16 @@ class RemoteExecutionTransportService:
             from .training_material_usage import assert_formal_test_independence, require_formal_history_admission
             try:
                 history = require_formal_history_admission(training.get('history_admission'))
-                assert_formal_test_independence(usage_index, snapshot_truth, task.project_id,
+                independence_evidence = assert_formal_test_independence(usage_index, snapshot_truth, task.project_id,
                     str(payload.get('algorithm_asset_id') or payload.get('asset_algorithm_id') or ''),
                     parent_task_ids=history.get('parent_task_ids') or (),
-                    benchmark_reuse=bool(payload.get('benchmark_reuse')))
+                    benchmark_reuse=bool(payload.get('benchmark_reuse')), admission=history)
+                historical_independence = independence_evidence['historical_independence']
             except ValueError as error:
-                raise RemoteExecutionTransportError('TRAINING_TEST_HISTORY_EXPOSURE', str(error), 409) from error
+                code = ('TRAINING_TEST_HISTORY_EXPOSURE' if str(error).startswith('TRAINING_TEST_HISTORY_EXPOSURE')
+                        else 'TRAINING_HISTORY_INDEX_UNAVAILABLE' if str(error).startswith('TRAINING_HISTORY_INDEX_UNAVAILABLE')
+                        else 'TRAINING_TEST_HISTORY_UNKNOWN')
+                raise RemoteExecutionTransportError(code, str(error), 409) from error
         if (usage_index is not None and benchmark_scope and isinstance(blind_result, Mapping)
                 and str(blind_result.get('status') or '').lower() in {'succeeded', 'passed'}):
             usage_index.record_execution(task.task_id, test_observed=True,
@@ -3464,6 +3469,7 @@ class RemoteExecutionTransportService:
             model_sha256=str(primary_model.get("sha256") or ""),
             finished_at=finished_at,
             benchmark_scope=benchmark_scope,
+            historical_independence=historical_independence,
         )
         training_lineage = build_training_lineage(
             robustness_policy=(schema3_snapshot or {}).get('robustness_policy'),

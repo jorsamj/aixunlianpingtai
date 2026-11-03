@@ -2667,15 +2667,17 @@ class TrainingHandler:
         # reserve. Selected-only failed/cancelled tasks release their pending
         # reservation when their original Task becomes terminal.
         blind_result = ((job.get('training_report') or {}).get('test_result') or {})
+        historical_independence = None
         if str(blind_result.get('status') or '').lower() in {'succeeded', 'passed'}:
             if not benchmark_scope or benchmark_scope.get('binding_level') != 'bundle_verified':
                 raise ValueError('TRAINING_TEST_HISTORY_UNKNOWN: formal scoring requires verified frozen Test bundle')
             from .training_material_usage import assert_formal_test_independence, require_formal_history_admission
             admission = require_formal_history_admission(payload.get('history_admission'))
-            assert_formal_test_independence(usage_index, snapshot, context.task.project_id,
+            independence_evidence = assert_formal_test_independence(usage_index, snapshot, context.task.project_id,
                 str(payload.get('algorithm_asset_id') or payload.get('asset_algorithm_id') or ''),
                 parent_task_ids=admission.get('parent_task_ids') or (),
-                benchmark_reuse=bool(payload.get('benchmark_reuse')))
+                benchmark_reuse=bool(payload.get('benchmark_reuse')), admission=admission)
+            historical_independence = independence_evidence['historical_independence']
         if benchmark_scope and str(blind_result.get('status') or '').lower() in {'succeeded', 'passed'}:
             context.run_owned(lambda: usage_index.record_execution(
                 context.task.task_id, test_observed=True,
@@ -2916,6 +2918,7 @@ class TrainingHandler:
             model_sha256=model_sha256,
             finished_at=finished_at,
             benchmark_scope=benchmark_scope,
+            historical_independence=historical_independence,
         )
         metric_credibility = build_training_metric_credibility(
             training_report,

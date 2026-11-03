@@ -778,6 +778,7 @@ def build_evaluation_truth(
     model_sha256: Any = "",
     finished_at: Any = "",
     benchmark_scope: Mapping[str, Any] | None = None,
+    historical_independence: str | None = None,
 ) -> dict[str, Any]:
     """Normalize one post-training blind-test result into version-owned truth."""
     raw = dict(result) if isinstance(result, Mapping) else {}
@@ -985,6 +986,10 @@ def build_evaluation_truth(
         "evaluation_protocol_id": evaluation_protocol_id,
         **({"benchmark_scope": scope} if scope else {}),
     }
+    if historical_independence is not None:
+        if historical_independence not in {'verified_independent', 'assumed_unseen', 'known_exposed', 'unavailable'}:
+            raise ValueError('evaluation historical independence is invalid')
+        identity['historical_independence'] = historical_independence
     identity.update(_normalize_sample_evidence(raw))
     # Optional vNext evidence. Old reports remain honest missing-data states.
     matrix = raw.get('confusion_matrix')
@@ -1072,6 +1077,7 @@ def build_training_metric_credibility(
         and benchmark.get("binding_level") in {"snapshot_truth", "bundle_verified"}
         else "unavailable"
     )
+    historical_independence = str(test.get('historical_independence') or 'unavailable')
     is_high_val = val_map is not None and val_map >= 0.95
     gap = (
         round(val_map - test_map, 6)
@@ -1086,6 +1092,9 @@ def build_training_metric_credibility(
             reasons.append(reason)
         if action not in actions:
             actions.append(action)
+
+    if test_status == 'succeeded' and historical_independence == 'assumed_unseen':
+        flag('test_historical_independence_assumed', 'review_training_history_coverage')
 
     if is_high_val:
         if test_status != "succeeded":
@@ -1166,7 +1175,7 @@ def build_training_metric_credibility(
     # leakage or model accuracy. Even complete held-out evidence does not
     # verify business event precision or out-of-distribution generalization.
     status = (
-        "review_required" if is_high_val and reasons
+        "review_required" if reasons and (is_high_val or historical_independence == 'assumed_unseen')
         else "held_out_evidence_present" if is_high_val
         else "val_metric_unavailable" if val_map is None
         else "not_high_val_trigger"
@@ -1184,6 +1193,7 @@ def build_training_metric_credibility(
         # One server-owned, persisted evidence level for every report UI.
         # The browser never infers a binding from a high Test mAP score.
         "independent_test_binding_level": binding_level,
+        "historical_independence": historical_independence,
         "test_image_count": count(test.get("image_count")),
         "high_val_threshold": 0.95,
         "val_test_gap_review_threshold": 0.10,
@@ -1403,6 +1413,9 @@ def compare_evaluations(source: Mapping[str, Any], new: Mapping[str, Any]) -> di
             reasons.append('benchmark_scope_mismatch')
     if source_scope.get('binding_level') != 'bundle_verified' or new_scope.get('binding_level') != 'bundle_verified':
         reasons.append('benchmark_input_binding_missing')
+    if any(value.get('historical_independence') in {'assumed_unseen', 'known_exposed', 'unavailable'}
+           for value in (source, new)):
+        reasons.append('benchmark_historical_independence_unverified')
     if not source.get('evaluation_protocol_id') or source.get('evaluation_protocol_id') != new.get('evaluation_protocol_id'):
         reasons.append('evaluation_protocol_mismatch')
     if reasons:
@@ -1530,6 +1543,9 @@ def build_feedback_adoption_outcome(
             )
         ):
             comparison_reasons.append("benchmark_input_binding_missing")
+        if any(value.get('historical_independence') in {'assumed_unseen', 'known_exposed', 'unavailable'}
+               for value in (source, new)):
+            comparison_reasons.append('benchmark_historical_independence_unverified')
         if not source_protocol_id or not new_protocol_id:
             comparison_reasons.append("evaluation_protocol_missing")
         elif source_protocol_id != new_protocol_id:

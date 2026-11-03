@@ -8051,6 +8051,11 @@ def _training_reusable_benchmark(
     )
     evaluation = version.get("evaluation") if isinstance(version, dict) else None
     evaluation = evaluation if isinstance(evaluation, dict) else {}
+    if evaluation.get('historical_independence') in {'assumed_unseen', 'known_exposed', 'unavailable'}:
+        raise HTTPException(
+            status_code=409,
+            detail='来源版本 Test 历史独立性尚未严格核验，不能复用为固定 Benchmark',
+        )
     if str(evaluation.get("status") or "").strip().lower() != "succeeded":
         raise HTTPException(status_code=409, detail="当前算法版本没有成功的独立评测，无法复用评测基准")
     scope = evaluation.get("benchmark_scope")
