@@ -88,6 +88,7 @@ from platform_core.changlian_login_auth import (
     SignedSessionManager,
     auth_guard_decision,
 )
+from platform_core.local_login_auth import LocalLoginVerifier
 from platform_core.labels import (
     active_label_options,
     confirmed_alias_updates,
@@ -293,7 +294,7 @@ if not MODEL_CONFIGS_FILE.exists():
 if not PROMPT_LIBRARY_FILE.exists():
     PROMPT_LIBRARY_FILE.write_text("[]", encoding="utf-8")
 
-app = FastAPI(title="畅联云算法训练", version=APP_VERSION)
+app = FastAPI(title="算法训练", version=APP_VERSION)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -308,6 +309,7 @@ _CHANGLIAN_LOGIN_BASE_URL = os.environ.get(
     DEFAULT_CHANGLIAN_LOGIN_BASE_URL,
 ).strip() or DEFAULT_CHANGLIAN_LOGIN_BASE_URL
 _CHANGLIAN_LOGIN_CLIENT = ChangLianLoginClient(base_url=_CHANGLIAN_LOGIN_BASE_URL)
+_LOCAL_LOGIN_VERIFIER = LocalLoginVerifier()
 
 
 def _auth_env_seconds(name: str, default: int, *, minimum: int) -> int:
@@ -374,6 +376,7 @@ def _public_auth_session(claims: Mapping[str, Any]) -> Dict[str, Any]:
     upstream_exp = claims.get("upstream_exp")
     return {
         "authenticated": True,
+        "provider": str(claims.get("provider") or "changlian"),
         "user": {"username": str(claims.get("username") or "")},
         "expires_at": expires_at,
         "remaining_seconds": max(0, expires_at - now),
@@ -418,7 +421,7 @@ async def changlian_login_guard(request: Request, call_next):
     if request.url.path.startswith("/api/"):
         error = PlatformError(
             code="AUTH_REQUIRED",
-            message="请先登录畅联云账号",
+            message="请先登录算法训练平台",
             detail="当前浏览器会话未登录或登录已过期。",
             solution="请重新登录后继续操作。",
             status_code=401,
@@ -495,6 +498,7 @@ async def validation_error_handler(_request: Request, exc: RequestValidationErro
     return JSONResponse(status_code=422, content=error_body(error))
 
 class ChangLianLoginReq(BaseModel):
+    provider: Literal["local", "changlian"] = "local"
     username: str = Field(min_length=1, max_length=128)
     password: str = Field(min_length=1, max_length=512)
     code: Optional[str] = Field(default=None, max_length=128)
@@ -523,6 +527,7 @@ def changlian_auth_session(request: Request):
         now = int(time.time())
         return {
             "authenticated": True,
+            "provider": "test",
             "user": {"username": "isolated-test-runtime"},
             "expires_at": now + 60 * 60,
             "remaining_seconds": 60 * 60,
@@ -560,11 +565,30 @@ def changlian_auth_login(payload: ChangLianLoginReq, request: Request):
     if not username:
         raise PlatformError(
             code="LOGIN_USERNAME_REQUIRED",
-            message="请输入畅联云用户名",
+            message="请输入用户名",
             detail="username 不能为空。",
-            solution="请输入畅联云账号后重试。",
+            solution="请输入账号后重试。",
             status_code=422,
         )
+    if payload.provider == "local":
+        client_ip = request.client.host if request.client else "unknown"
+        status = _LOCAL_LOGIN_VERIFIER.authenticate(username, payload.password, client_key=client_ip)
+        if status != "ok":
+            raise PlatformError(
+                code="LOCAL_LOGIN_THROTTLED" if status == "throttled" else "LOCAL_LOGIN_REJECTED",
+                message="登录尝试过于频繁，请稍后重试" if status == "throttled" else "本地用户名或密码错误",
+                detail="本地凭据校验未通过。",
+                solution="请检查本地账号密码，或联系管理员检查 MC_LOCAL_USERNAME / MC_LOCAL_PASSWORD 配置。",
+                status_code=429 if status == "throttled" else 401,
+            )
+        token = _CHANGLIAN_AUTH_SESSIONS.issue(username, provider="local", upstream_expiry_source="local")
+        claims = _CHANGLIAN_AUTH_SESSIONS.verify(token)
+        if claims is None:
+            raise PlatformError("AUTH_SESSION_CREATE_FAILED", "本地会话创建失败", "无法验证新签发的会话。", "请检查服务器时间和认证存储。", 500)
+        response = JSONResponse({"ok": True, **_public_auth_session(claims)})
+        response.headers["Cache-Control"] = "no-store"
+        _set_auth_cookie(response, request, token, claims)
+        return response
     try:
         result = _CHANGLIAN_LOGIN_CLIENT.login(
             username=username,
@@ -583,6 +607,7 @@ def changlian_auth_login(payload: ChangLianLoginReq, request: Request):
 
     token = _CHANGLIAN_AUTH_SESSIONS.issue(
         username,
+        provider="changlian",
         upstream_expires_at=result.get("upstream_expires_at"),
         upstream_expiry_source=str(
             result.get("upstream_expiry_source") or "undocumented"
@@ -645,7 +670,7 @@ def system_version():
     return {
         "version": APP_VERSION,
         "build_id": BUILD_ID,
-        "name": "畅联云算法训练",
+        "name": "算法训练",
         "data_dir": str(DATA_DIR),
         "base_dir": str(BASE_DIR),
         "persistent": True,
@@ -9717,7 +9742,7 @@ def export_onnx(project_id: str, model_name: str = Form(...)):
 # v12 产品化接口：数据集分组、训练任务删除、算法版本、模型测试耗时
 # ============================================================
 
-APP_DISPLAY_NAME = "畅联云算法训练"
+APP_DISPLAY_NAME = "算法训练"
 
 class ImagePatchReq(BaseModel):
     split: Optional[str] = None  # train / val / test
@@ -12828,7 +12853,8 @@ def v12_list_algorithms(project_id: str):
 @app.post("/api/v12/projects/{project_id}/algorithms")
 def v12_create_algorithm(project_id: str, payload: AlgorithmReq):
     get_project(project_id)
-    assert_local_algorithm_create_allowed(DATA_DIR)
+    # External products remain read-only, but users can always create a new
+    # independent local algorithm in the same project and canonical SQL store.
     item = create_algorithm_asset(algorithms_file(project_id), payload.model_dump(), now_iso())
     return {"ok": True, "algorithm": item}
 
@@ -27018,7 +27044,6 @@ def v54_iteration_base_info(project_id: str, algorithm_id: str, framework: str =
 from platform_core.external_algorithm_platform import (
     ExternalAlgorithmPlatformService,
     assert_algorithm_mutable,
-    assert_local_algorithm_create_allowed,
     external_algorithm_platform_router,
 )
 from platform_core.external_algorithm_publish import (

@@ -72,7 +72,7 @@ def test_windows_server_reaches_ready_and_serves_home(tmp_path: Path):
         assert status.get("active_project_id")
         with urllib.request.urlopen(f"{base_url}/", timeout=3) as response:
             assert response.status == 200
-            assert "畅联云算法训练" in response.read().decode("utf-8")
+            assert "算法训练" in response.read().decode("utf-8")
     finally:
         process.terminate()
         try:

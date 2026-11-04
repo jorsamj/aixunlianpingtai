@@ -402,6 +402,7 @@ class SignedSessionManager:
         self,
         username: str,
         *,
+        provider: str = "changlian",
         now: Optional[int] = None,
         created_at: Optional[int] = None,
         hard_expires_at: Optional[int] = None,
@@ -420,6 +421,7 @@ class SignedSessionManager:
         body = {
             "v": 2,
             "username": str(username or "").strip(),
+            "provider": str(provider or "changlian"),
             "iat": issued_at,
             "created_at": origin,
             "exp": expires_at,
@@ -500,6 +502,7 @@ class SignedSessionManager:
             return None
         return self.issue(
             str(claims.get("username") or ""),
+            provider=str(claims.get("provider") or "changlian"),
             now=current,
             created_at=created_at,
             hard_expires_at=hard_exp,

@@ -1557,15 +1557,12 @@ def assert_external_algorithm_master_data_current(data_dir: Path, algorithm: Map
 
 
 def assert_local_algorithm_create_allowed(data_dir: Path) -> None:
-    config = ExternalPlatformRepository(Path(data_dir)).config()
-    if str(config.get("mode") or "local") == "external":
-        raise PlatformError(
-            "EXTERNAL_MASTER_DATA_ACTIVE",
-            "当前算法主数据由外部平台管理",
-            "已启用新畅联算法主数据，当前平台不再创建独立算法产品。",
-            "请先在新畅联创建算法产品，然后执行“立即同步”。",
-            409,
-        )
+    """Compatibility hook: independent local algorithms may always be created.
+
+    External *existing* algorithms remain read-only under
+    ``assert_algorithm_mutable``; local creation never queries a provider.
+    """
+    return None
 
 
 class ExternalAlgorithmPlatformService:

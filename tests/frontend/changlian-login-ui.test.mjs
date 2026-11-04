@@ -16,6 +16,9 @@ test('login page uses the canonical local auth owner and never calls ChangLian f
   assert.match(loginHtml, /name="code"/);
   assert.match(loginHtml, /name="uuid"/);
   assert.match(loginJs, /fetch\('\/api\/auth\/login'/);
+  assert.match(loginHtml, /data-login-provider="local"/);
+  assert.match(loginHtml, /data-login-provider="changlian"/);
+  assert.match(loginJs, /provider: activeProvider/);
   assert.doesNotMatch(loginJs, /vip\.24hlink\.cn/);
   assert.doesNotMatch(loginJs, /localStorage|sessionStorage/);
 });
@@ -59,19 +62,18 @@ test('backend exposes rolling and absolute session lifetime without exposing ups
 });
 
 
-test('company branding shares one real logo between login, mobile, and sidebar', () => {
-  const brand = readFileSync('static/company-logo.png');
-  assert.equal(brand.subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
-  const brandUrl = '/static/company-logo.png?v=4226348';
+test('intranet login and sidebar use neutral text branding without company logo', () => {
   assert.match(loginHtml, /class="login-brand-lockup company-brand-login"/);
   assert.match(loginHtml, /class="login-mobile-company-brand"/);
   assert.match(indexHtml, /class="brand brand-company"/);
   assert.match(indexHtml, /class="brand-company-symbol"/);
-  assert.equal(loginHtml.split(brandUrl).length - 1, 2);
-  assert.equal(indexHtml.split(brandUrl).length - 1, 1);
+  assert.match(loginHtml, /class="login-local-brand">算法训练/);
+  assert.match(indexHtml, /class="brand-company-title">算法训练/);
+  assert.doesNotMatch(loginHtml + indexHtml, /中南|company-logo\.png|贵州高速/);
   assert.doesNotMatch(loginHtml, /class="login-brand-mark">CL|class="login-mobile-mark">CL/);
   assert.doesNotMatch(indexHtml, /class="brand-logo">CL/);
   const css = readFileSync('static/auth.css', 'utf8');
-  assert.match(css, /sidebar-collapsed \.side \.brand-company-symbol/);
+  assert.match(css, /sidebar-collapsed \.side \.brand-company-title/);
   assert.match(css, /login-brand-lockup\.company-brand-login/);
+  assert.doesNotMatch(css, /company-logo\.png/);
 });

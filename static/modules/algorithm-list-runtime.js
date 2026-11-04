@@ -421,7 +421,7 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
     return `<section class="entity-page algorithm-list-page alg428-shell algorithm-card-page" data-algorithm-list-owner="AlgorithmListRuntime">
       <header class="algorithm-list-hero">
         <div><span class="algorithm-list-eyebrow">ALGORITHM REGISTRY</span><h2>算法列表</h2><p>以算法为单位查看训练状态、当前版本和核心指标；点击卡片空白区域即可展开版本。</p></div>
-        <div class="entity-page-actions"><button class="btn" data-algorithm-sync hidden>同步畅联云</button><button class="btn primary" data-action="algorithm.create">＋ 新建算法</button></div>
+        <div class="entity-page-actions"><button class="btn" data-algorithm-sync hidden>同步畅联云</button><button class="btn primary" data-action="algorithm.create">＋ 新建本地算法</button></div>
       </header>
       <section class="entity-query-surface algorithm-filter-surface">
         <div class="algorithm-filter-primary">

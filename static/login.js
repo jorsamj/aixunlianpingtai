@@ -9,6 +9,34 @@
   const submit = document.getElementById('loginSubmit');
   const errorBox = document.getElementById('loginError');
   const togglePassword = document.getElementById('togglePassword');
+  const providers = [...document.querySelectorAll('[data-login-provider]')];
+  const advanced = document.getElementById('loginRemoteAdvanced');
+  const description = document.getElementById('loginModeDescription');
+  const securityNote = document.getElementById('loginSecurityNote');
+  let activeProvider = 'local';
+
+  function selectProvider(provider) {
+    if (!['local', 'changlian'].includes(provider)) return;
+    const wasLocal = activeProvider === 'local';
+    activeProvider = provider;
+    const local = provider === 'local';
+    providers.forEach(button => {
+      const selected = button.dataset.loginProvider === provider;
+      button.classList.toggle('active', selected);
+      button.setAttribute('aria-pressed', String(selected));
+    });
+    advanced.classList.toggle('hidden', local);
+    if (local) advanced.open = false;
+    description.textContent = local ? '使用本地账号登录，无需连接畅联云' : '通过畅联云验证身份（需要可访问外部平台）';
+    securityNote.textContent = local ? '本地认证，无需外部网络连接' : '畅联云账号由远端校验，本平台不保存密码';
+    username.placeholder = local ? '请输入本地用户名' : '请输入畅联云用户名';
+    if (wasLocal && !local && username.value.trim() === 'jiangjs') username.value = '';
+    if (local && !username.value.trim()) username.value = 'jiangjs';
+    password.value = '';
+    clearError();
+  }
+
+  providers.forEach(button => button.addEventListener('click', () => selectProvider(button.dataset.loginProvider)));
 
   function safeNext() {
     const value = new URLSearchParams(window.location.search).get('next') || '/';
@@ -54,14 +82,14 @@
     const user = username.value.trim();
     const secret = password.value;
     if (!user || !secret) {
-      showError('请输入畅联云用户名和密码。');
+      showError('请输入用户名和密码。');
       (user ? password : username).focus();
       return;
     }
 
-    const payload = {username: user, password: secret};
-    if (code.value.trim()) payload.code = code.value.trim();
-    if (uuid.value.trim()) payload.uuid = uuid.value.trim();
+    const payload = {provider: activeProvider, username: user, password: secret};
+    if (activeProvider === 'changlian' && code.value.trim()) payload.code = code.value.trim();
+    if (activeProvider === 'changlian' && uuid.value.trim()) payload.uuid = uuid.value.trim();
 
     setBusy(true);
     try {
@@ -73,7 +101,7 @@
       });
       const body = await responseBody(response);
       if (!response.ok || !body.authenticated) {
-        throw new Error(body.message || body.detail || '畅联云账号登录失败');
+        throw new Error(body.message || body.detail || '账号登录失败');
       }
       password.value = '';
       window.location.replace(safeNext());

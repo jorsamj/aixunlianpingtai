@@ -281,6 +281,8 @@ def create_algorithm(
     item = {
         "id": algorithm_id or uuid.uuid4().hex[:12],
         "name": name,
+        "source_type": "LOCAL",
+        "master_data_readonly": False,
         "remark": str(payload.get("remark") or ""),
         "industry": str(payload.get("industry") or "").strip(),
         "algorithm_type": str(payload.get("algorithm_type") or "").strip(),

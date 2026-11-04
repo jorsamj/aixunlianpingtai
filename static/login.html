@@ -4,8 +4,8 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <meta name="theme-color" content="#070a12" />
-  <title>登录 · 畅联云算法训练</title>
-  <link rel="stylesheet" href="/static/auth.css?v=4226348" />
+  <title>登录 · 算法训练</title>
+  <link rel="stylesheet" href="/static/auth.css?v=4226530" />
 </head>
 <body class="auth-page">
   <main class="login-shell">
@@ -16,13 +16,14 @@
       <div class="login-orb login-orb-b"></div>
 
       <div class="login-brand-lockup company-brand-login">
-        <img class="company-brand-image" src="/static/company-logo.png?v=4226348" width="825" height="96" alt="" />
+        <span class="login-local-logo" aria-hidden="true">AI</span>
+        <strong class="login-local-brand">算法训练</strong>
       </div>
 
       <div class="login-visual-copy">
         <span class="login-eyebrow"><i></i> AI MODEL LIFECYCLE</span>
         <h1>从素材到模型，<br/><em>从模型到发布。</em></h1>
-        <p>统一管理视觉算法的数据、训练、模型转换与畅联云发布链路。</p>
+        <p>统一管理视觉算法的数据、训练、模型转换与交付，支持独立内网运行。</p>
       </div>
 
       <div class="login-pipeline-card">
@@ -42,7 +43,7 @@
       </div>
 
       <div class="login-signal">
-        <i></i><span>畅联云统一身份认证</span><b>SECURE ACCESS</b>
+        <i></i><span>本地身份认证 · 可选平台对接</span><b>SECURE ACCESS</b>
       </div>
     </section>
 
@@ -50,17 +51,23 @@
       <form class="login-card" id="changlianLoginForm" novalidate>
         <header>
           <div class="login-mobile-company-brand">
-            <img class="company-brand-image" src="/static/company-logo.png?v=4226348" width="825" height="96" alt="贵州高速 · 贵州中南交通科技有限公司" />
+            <span class="login-local-logo" aria-hidden="true">AI</span>
+            <strong class="login-local-brand">算法训练</strong>
           </div>
-          <div class="login-card-badge"><i></i><span>CHANG LIAN CLOUD IDENTITY</span></div>
+          <div class="login-card-badge"><i></i><span>ALGORITHM TRAINING</span></div>
           <span class="login-kicker">账号登录</span>
           <h2>欢迎回来</h2>
-          <p>使用畅联云账号验证身份并进入算法工作台</p>
+          <p id="loginModeDescription">使用本地账号登录，无需连接畅联云</p>
         </header>
+
+        <div class="login-provider-switch" role="group" aria-label="登录方式">
+          <button type="button" class="active" data-login-provider="local" aria-pressed="true">本地登录</button>
+          <button type="button" data-login-provider="changlian" aria-pressed="false">畅联云登录</button>
+        </div>
 
         <label class="login-field">
           <span>用户名</span>
-          <input id="loginUsername" name="username" type="text" autocomplete="username" maxlength="128" placeholder="请输入畅联云用户名" required autofocus />
+          <input id="loginUsername" name="username" type="text" autocomplete="username" maxlength="128" placeholder="请输入本地用户名" value="jiangjs" required autofocus />
         </label>
 
         <label class="login-field">
@@ -71,7 +78,7 @@
           </div>
         </label>
 
-        <details class="login-advanced">
+        <details class="login-advanced hidden" id="loginRemoteAdvanced">
           <summary>验证码信息（如畅联云要求）</summary>
           <div class="login-advanced-grid">
             <label class="login-field">
@@ -93,11 +100,11 @@
 
         <footer>
           <span class="login-lock">✓</span>
-          <span>账号由畅联云直接校验，本平台不保存您的密码</span>
+          <span id="loginSecurityNote">本地认证，无需外部网络连接</span>
         </footer>
       </form>
     </section>
   </main>
-  <script src="/static/login.js?v=422601"></script>
+  <script src="/static/login.js?v=4226530"></script>
 </body>
 </html>
