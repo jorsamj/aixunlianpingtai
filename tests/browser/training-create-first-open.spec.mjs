@@ -663,6 +663,7 @@ test('frozen feedback candidates stay aligned with training submit provenance', 
   await dialog.locator('[data-training-step="3"]').click();
   const submitButton = dialog.getByRole('button', {name: '开始训练'});
   await expect(submitButton).toBeEnabled();
+  await dialog.locator('#tr429BackgroundScopeConfirm').check();
   const jobListReadsBeforeSubmit = jobListReads;
   await submitButton.click();
   await expect.poll(() => submitted).not.toBeNull();
@@ -713,12 +714,13 @@ test('verified fixed benchmark stays aligned from backend availability to traini
   const dialog=page.getByRole('dialog',{name:'创建训练任务'});
   await expect(dialog).toBeVisible({timeout:10000});
   await returnToTrainingConfiguration(page);
+  const splitDetails = dialog.locator('.train-create-split-details');
+  if (!(await splitDetails.getAttribute('open'))) await splitDetails.locator(':scope > summary').click();
+  await dialog.getByRole('button',{name:'检查是否可复用上一版本独立 Test（可选）'}).click();
   await expect(dialog.locator('[data-benchmark-reuse="available"]')).toContainText('11 张');
   // Availability alone must NOT silently replace the default 60/20/20 split.
   await expect(dialog.locator('#trV3BenchmarkReuse')).not.toBeChecked();
   // Data partition is its own disclosure in the new creation form.
-  const splitDetails = dialog.locator('.train-create-split-details');
-  if (!(await splitDetails.getAttribute('open'))) await splitDetails.locator(':scope > summary').click();
   await expect(dialog.locator('#trV3Experiment')).toHaveValue('20');
   await expect(dialog.locator('#trV3Validation')).toHaveValue('20');
   await dialog.locator('#trV3BenchmarkReuse').check();
@@ -730,6 +732,7 @@ test('verified fixed benchmark stays aligned from backend availability to traini
   await dialog.locator('[data-training-step="3"]').click();
   const submitButton=dialog.getByRole('button',{name:'开始训练'});
   await expect(submitButton).toBeEnabled();
+  await dialog.locator('#tr429BackgroundScopeConfirm').check();
   await submitButton.click();
   await expect.poll(()=>submitted).not.toBeNull();
   expect(submitted.benchmark_source_version_id).toBe('benchmark-version');

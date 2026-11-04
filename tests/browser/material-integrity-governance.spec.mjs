@@ -493,7 +493,9 @@ test('global duplicate governance previews, confirms, reports progress, and inva
   await expect(page.locator('#toast')).toContainText('批量去重：处理中');
   await expect(page.locator('#toast')).toContainText('完成组 0/1');
   await expect.poll(() => polls, {timeout: 5_000}).toBeGreaterThan(1);
-  await expect(page.locator('#toast')).toContainText('旧审计已失效');
+  // The final success toast may supersede the earlier invalidation toast.
+  // The durable audit-stale marker must remain visible after task completion.
+  await expect(page.locator('.integrity-stale-note')).toContainText('旧审计已失效');
 });
 
 test('latest Full Audit remains discoverable after 60 later batch tasks', async ({page,request}) => {

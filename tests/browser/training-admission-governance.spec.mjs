@@ -30,6 +30,9 @@ function bmp(index){
   const w=16,h=16,b=Buffer.alloc(54+w*h*3,index+30);b.fill(0,0,54);b.write('BM');b.writeUInt32LE(b.length,2);b.writeUInt32LE(54,10);b.writeUInt32LE(40,14);b.writeInt32LE(w,18);b.writeInt32LE(h,22);b.writeUInt16LE(1,26);b.writeUInt16LE(24,28);return b;
 }
 async function fixture(page,request,{hold=false}={}){
+  // These tests explicitly cover synchronous foreground GT diagnostics;
+  // production's default is the separate background-admission route.
+  await page.addInitScript(()=>{window.MC_TRAIN_ADMISSION_MODE='synchronous'});
   const project=await(await request.post('/api/projects',{data:{name:`准入治理-${Date.now()}-${Math.random()}`,labels:[{code:'smoke',display_name:'香烟'}]}})).json();
   const asset=await(await request.post(`/api/v12/projects/${project.id}/algorithms`,{data:{name:'香烟准入治理隔离算法',industry:'测试',algorithm_type:'yolo_ultralytics'}})).json();
   const images=[];
@@ -50,13 +53,13 @@ app.material_store(${JSON.stringify(project.id)}).patch({image_id:{'annotation_n
   await page.route('**/api/v53/bootstrap/snapshot**',async route=>{const url=new URL(route.request().url());url.searchParams.set('preferred_project_id',project.id);await route.fallback({url:String(url)});});
   let release;const gate=new Promise(resolve=>{release=resolve});
   await page.route(`**/api/v62/projects/${project.id}/training-materials/compatibility`,async route=>{await gate;await route.continue();});
-  await page.route('**/api/training_options**',route=>route.fulfill({json:{targets:[{id:'gov-cpu',scheduler_owned:true,framework:'ultralytics',algorithms:[{key:'yolo_detect'}],base_models:[{value:'yolo11n.pt',model_status:'FOUND'}]}]}}));
+  await page.route('**/api/training_options**',route=>route.fulfill({json:{targets:[{id:'gov-cpu',status:'ready',scheduler_owned:true,framework:'ultralytics',algorithms:[{key:'yolo_detect'}],base_models:[{value:'yolo11n.pt',model_status:'FOUND'}]}]}}));
   await page.goto('/');await expect.poll(()=>page.evaluate(()=>state.uiReady)).toBe(true);
   await page.evaluate(({id,ids})=>window.TrainingDraftRuntime.update({algorithmId:id,materialIds:ids,testMaterialIds:[],newLabelCodes:[],config:{model:'yolo11n.pt'}}),{id:asset.algorithm.id,ids:images.map(x=>x.id)});
   await expect.poll(()=>page.evaluate(()=>window.TrainingMaterialSummaryRuntime.summaryReadyFor())).toBe(true);
   await page.evaluate(({id,ids})=>{
     window.TrainingDraftRuntime.update({algorithmId:id,materialIds:ids,testMaterialIds:[],newLabelCodes:[],config:{model:'yolo11n.pt'}});
-    state.targets=[{id:'gov-cpu',scheduler_owned:true,framework:'ultralytics',algorithms:[{key:'yolo_detect'}],base_models:[{value:'yolo11n.pt',model_status:'FOUND'}]}];
+    state.targets=[{id:'gov-cpu',status:'ready',scheduler_owned:true,framework:'ultralytics',algorithms:[{key:'yolo_detect'}],base_models:[{value:'yolo11n.pt',model_status:'FOUND'}]}];
     window.modal('创建训练任务',`<div class="train429-create"><input id="tr429TaskId" value="train_aaaaaaaaaaaaaaaaaaaa"><select id="tr429Target"><option value="gov-cpu">隔离调度资源</option></select><select id="tr429Alg"><option value="yolo_detect">测试引擎</option></select><div class="train429-data-summary"></div><div class="train428-footer"><button class="btn primary" onclick="void window.submitTrain429()">开始训练</button></div></div>`,true);
     window.TrainingSubmitRuntime.updateReadiness();
   },{id:asset.algorithm.id,ids:images.map(x=>x.id)});

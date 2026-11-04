@@ -187,6 +187,9 @@ test('training dialog exposes iteration base, stacked quality charts, and report
 });
 
 test('training submit sends the selected candidate pool and configured experiment percentage', async ({page, request}) => {
+  // Exercise the explicitly supported legacy synchronous confirmation contract;
+  // the default creation UI now uses a single-stage background-admission consent.
+  await page.addInitScript(() => {window.MC_TRAIN_ADMISSION_MODE='synchronous'});
   const {project} = await seedTrainingProject(request);
   await routeReadyTrainingRuntime(page);
   let submitted;
@@ -302,7 +305,7 @@ test('training material selection does not depend on dataset groups and supports
   const selectFiltered = picker.locator('.train-v3-batch button[onclick*="select-filtered"]');
   await expect(selectFiltered).toBeVisible();
   await selectFiltered.click();
-  await expect(picker.locator('#trV3PickerCount')).toContainText('筛选结果 1 张 · 已选 1 张');
+  await expect(picker.locator('#trV3PickerCount')).toContainText('本页 1 张 · 总数按需统计 · 已选 1 张');
   await picker.getByRole('button', {name: '全选全部可用素材'}).click();
   await expect(picker.locator('#trV3PickerCount')).toContainText('已选 3 张');
   await picker.getByRole('button', {name: '全部不选'}).click();
