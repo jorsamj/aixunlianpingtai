@@ -7259,6 +7259,9 @@ window.createAiLabel429=function createAiLabelCanonical429(opts={}){
 window.createAiLabel427=window.createAiLabel429;
 
 window.openNewConvert428=async function openNewConvertCanonical428(...args){
+  // The version history owns the current modal. Release that layer before
+  // entering the conversion editor; opening over it creates nested dialogs.
+  if(document.querySelector('.convert428-v2'))await closeModal();
   const result=await window.openNewConvertCore416?.(...args);
   setTimeout(()=>window.decorateConvertResourceButton417?.(),20);
   return result;

@@ -21073,6 +21073,162 @@ def v39_get_deploy_job(project_id: str, job_id: str):
     return _read_deploy_job(project_id,job_id)
 
 
+def _numeric_conversion_dir(project_id: str, verification_id: str) -> Path:
+    if not re.fullmatch(r"nv_[a-f0-9]{24}", str(verification_id or "")):
+        raise HTTPException(status_code=422, detail="数值验证 ID 不合法")
+    return deploy_root(project_id) / "numeric-validations" / verification_id
+
+
+def _numeric_conversion_public(project_id: str, verification_id: str) -> dict:
+    directory = _numeric_conversion_dir(project_id, verification_id)
+    created_directory = False
+    receipt = read_json(directory / "request.json", {})
+    if receipt.get("project_id") != project_id:
+        raise HTTPException(status_code=404, detail="数值验证记录不存在")
+    task = shared_task_repository().get(verification_id)
+    if task is None or task.kind is not TaskKind.MODEL_CONVERSION or task.project_id != project_id:
+        raise HTTPException(status_code=404, detail="数值验证任务不存在")
+    result = read_json(directory / "result.json", {})
+    return {"id": verification_id, "conversion_job_id": receipt["conversion_job_id"],
+            "created_at": receipt.get("created_at"), "task": task_to_public(task, shared_task_repository()),
+            "result": result if result else None}
+
+
+@app.get("/api/v39/projects/{project_id}/deploy/jobs/{job_id}/numeric-validations")
+def v39_list_numeric_validations(project_id: str, job_id: str):
+    _read_deploy_job(project_id, job_id)
+    root = deploy_root(project_id) / "numeric-validations"
+    rows = []
+    for directory in sorted(root.glob("nv_*/request.json"), key=lambda p: p.stat().st_mtime, reverse=True)[:300] if root.exists() else []:
+        receipt = read_json(directory, {})
+        if receipt.get("project_id") == project_id and receipt.get("conversion_job_id") == job_id:
+            try:
+                rows.append(_numeric_conversion_public(project_id, directory.parent.name))
+            except HTTPException:
+                continue
+        if len(rows) >= 20:
+            break
+    return {"ok": True, "items": rows}
+
+
+@app.get("/api/v39/projects/{project_id}/deploy/jobs/{job_id}/numeric-validations/{verification_id}")
+def v39_get_numeric_validation(project_id: str, job_id: str, verification_id: str):
+    _read_deploy_job(project_id, job_id)
+    result = _numeric_conversion_public(project_id, verification_id)
+    if result["conversion_job_id"] != job_id:
+        raise HTTPException(status_code=404, detail="数值验证任务不属于当前转换")
+    return {"ok": True, **result}
+
+
+@app.post("/api/v39/projects/{project_id}/deploy/jobs/{job_id}/numeric-validations")
+def v39_create_numeric_validation(
+    project_id: str, job_id: str, files: List[UploadFile] = File(...),
+    request_id: str = Form(""),
+):
+    """Freeze real samples and enqueue PT-vs-ONNX only; never assert BMODEL pass."""
+    job = _read_deploy_job(project_id, job_id)
+    if str(job.get("status") or "").lower() not in {"done", "blocked_by_hardware"}:
+        raise HTTPException(status_code=409, detail="转换产物尚未完成，无法进行数值比较")
+    if not 1 <= len(files) <= 12:
+        raise HTTPException(status_code=422, detail="每批请选择 1～12 张真实图片")
+    job_dir = _deploy_job_dir(project_id, job_id).resolve()
+    source_path = Path(str(job.get("source_path") or "")).resolve()
+    onnx_paths = sorted((job_dir / "artifacts").glob("*.onnx"))
+    if not source_path.is_file() or source_path.suffix.lower() not in {".pt", ".pth"}:
+        raise HTTPException(status_code=422, detail="源版本不是可用 PT，暂无法进行 PT／ONNX 比较")
+    if not onnx_paths:
+        raise HTTPException(status_code=422, detail="转换记录没有本地 ONNX 中间产物，请先核查源产物与转换日志")
+    if not source_path.is_relative_to(job_dir):
+        raise HTTPException(status_code=409, detail="源模型不在本次转换的冻结目录中")
+    if not onnx_paths[0].resolve().is_relative_to((job_dir / "artifacts").resolve()):
+        raise HTTPException(status_code=409, detail="ONNX 产物路径越过当前转换目录")
+    if request_id and not re.fullmatch(r"[A-Za-z0-9_-]{12,80}", request_id):
+        raise HTTPException(status_code=422, detail="数值验证请求 ID 不合法")
+    verification_id = "nv_" + (hashlib.sha256(f"{project_id}:{job_id}:{request_id}".encode()).hexdigest()[:24] if request_id else uuid.uuid4().hex[:24])
+    directory = _numeric_conversion_dir(project_id, verification_id)
+    (deploy_root(project_id) / "numeric-validations").mkdir(parents=True, exist_ok=True)
+    lock_root = DATA_DIR / "task_runtime" / "conversion_create_locks"
+    lock_root.mkdir(parents=True, exist_ok=True)
+    try:
+        with FileLock(str(lock_root / f"{verification_id}.lock"), timeout=30):
+            if (directory / "request.json").is_file():
+                receipt = read_json(directory / "request.json", {})
+                if receipt.get("project_id") != project_id or receipt.get("conversion_job_id") != job_id or receipt.get("request_id") != request_id:
+                    raise HTTPException(status_code=409, detail="相同验证请求标识已有不同任务")
+                return {"ok": True, "idempotent": True, **_numeric_conversion_public(project_id, verification_id)}
+            if directory.exists():
+                raise HTTPException(status_code=409, detail="验证任务准备状态未知，请核对原请求")
+            images_dir = directory / "images"
+            images_dir.mkdir(parents=True, exist_ok=False)
+            created_directory = True
+            names = []
+            total = 0
+            for index, file in enumerate(files):
+                suffix = Path(file.filename or "").suffix.lower()
+                if suffix not in {".jpg", ".jpeg", ".png", ".webp", ".bmp"}:
+                    raise HTTPException(status_code=422, detail=f"第 {index+1} 张不是允许的图片格式")
+                name = f"image_{index+1:02d}{suffix}"
+                size = 0
+                with (images_dir / name).open("wb") as output:
+                    while True:
+                        chunk = file.file.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        size += len(chunk)
+                        total += len(chunk)
+                        if size > 10 * 1024 * 1024 or total > 60 * 1024 * 1024:
+                            raise HTTPException(status_code=413, detail="单图不能超过 10 MB，整批不能超过 60 MB")
+                        output.write(chunk)
+                from PIL import Image
+                try:
+                    with Image.open(images_dir / name) as picture:
+                        if picture.width * picture.height > 24_000_000:
+                            raise ValueError("图片像素超过 2400 万")
+                        picture.verify()
+                except Exception as error:
+                    raise HTTPException(status_code=422, detail=f"第 {index+1} 张图片无法解码：{error}") from error
+                names.append(name)
+            manifest = read_json(job_dir / "artifacts" / "manifest.json", {})
+            onnx_evidence = manifest.get("onnx") if isinstance(manifest.get("onnx"), dict) else {}
+            bmodels = sorted((job_dir / "artifacts").glob("*.bmodel"))
+            if bmodels and not bmodels[0].resolve().is_relative_to((job_dir / "artifacts").resolve()):
+                raise HTTPException(status_code=409, detail="BMODEL 产物路径越过当前转换目录")
+            artifact_records = manifest.get("outputs") if isinstance(manifest.get("outputs"), list) else []
+            bmodel_evidence = next((row for row in artifact_records if isinstance(row, dict) and row.get("name") == bmodels[0].name), {}) if bmodels else {}
+            receipt = {
+                "id": verification_id, "project_id": project_id, "conversion_job_id": job_id,
+                "created_at": now_iso(), "request_id": request_id,
+                "source_path": str(source_path), "onnx_path": str(onnx_paths[0].resolve()),
+                "source_sha256": str((job.get("source_trace") or {}).get("sha256") or ""),
+                "onnx_sha256": str(onnx_evidence.get("sha256") or ""),
+                "bmodel_path": str(bmodels[0].resolve()) if bmodels else "",
+                "bmodel_sha256": str(bmodel_evidence.get("sha256") or ""),
+                "sophon_python": str((manifest.get("tool") or {}).get("python_path") or (job.get("resource") or {}).get("python_path") or ""),
+                "precision": str((job.get("params") or {}).get("precision") or "fp32"),
+                "input_color_order": str((job.get("params") or {}).get("input_color_order") or "rgb"),
+                "image_names": names, "source_type": "PT", "compared_type": "ONNX",
+            }
+            write_json(directory / "request.json", receipt)
+            shared_task_artifacts().atomic_write_json(verification_id, "request.json", {
+                "execution_mode": "numeric_verification", "conversion_job_id": job_id,
+                "verification_dir": str(directory), "worker_path": str(BASE_DIR / "conversion_numeric_verification_worker.py"),
+                "python_path": sys.executable,
+            })
+            shared_task_repository().create(TaskRecord.new(
+                verification_id, project_id, TaskKind.MODEL_CONVERSION, "request.json",
+                "conversion:numeric-verification", required_capabilities=("conversion.runtime",),
+            ))
+            return {"ok": True, **_numeric_conversion_public(project_id, verification_id)}
+    except Timeout as error:
+        raise HTTPException(status_code=409, detail="相同验证请求尚在受理中，请按原请求 ID 查询") from error
+    except Exception:
+        # A rejected upload has no durable task and must not leave dozens of
+        # partially written images or poison same-request retry semantics.
+        if created_directory and shared_task_repository().get(verification_id) is None:
+            shutil.rmtree(directory, ignore_errors=True)
+        raise
+
+
 @app.get("/api/v39/projects/{project_id}/deploy/jobs/{job_id}/log", response_class=PlainTextResponse)
 def v39_deploy_job_log(project_id: str, job_id: str):
     jd=_deploy_job_dir(project_id,job_id)

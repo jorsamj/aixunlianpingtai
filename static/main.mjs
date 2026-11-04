@@ -1,6 +1,6 @@
 import {installNegativePoolRuntime} from './modules/negative-pool-runtime.js?v=20261102-scope-confirm';
 import {ADVANCED_MENUS, advancedPageInfo, installAdvancedNavigation} from './modules/advanced-navigation.js?v=20261024';
-import {installQualityDetectionWorkbench} from './modules/quality-detection-workbench.js?v=20261028-ui';
+import {installQualityDetectionWorkbench} from './modules/quality-detection-workbench.js?v=42.24.518';
 import {installAdvancedEvaluation} from './modules/advanced-evaluation.js?v=20261102-history';
 import {renderLegacyMaterialCompatibility} from './modules/legacy-material-compatibility.js?v=20261023fullscan';
 import {createAnnotoriousEditor} from './modules/annotorious-editor.js?v=20261022a';

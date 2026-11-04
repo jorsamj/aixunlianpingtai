@@ -142,12 +142,13 @@ export function installQualityDetectionWorkbench({getState,api,toast,modal,close
   }
   window.retryScenarioComparison64=()=>loadScenarioComparison64();
   window.setScenarioMode64=function(mode){
-    displayMode=mode==='quick'?'quick':'accuracy';
+    displayMode=['quick','conversion'].includes(mode)?mode:'accuracy';
     document.querySelectorAll('[data-scenario-mode]').forEach(button=>button.setAttribute('aria-selected',String(button.dataset.scenarioMode===displayMode)));
-    for(const [id,visible] of [['scenarioAccuracy64',displayMode==='accuracy'],['scenarioQuick64',displayMode==='quick']]){const node=document.getElementById(id);if(node)node.hidden=!visible;}
+    for(const [id,visible] of [['scenarioAccuracy64',displayMode==='accuracy'],['scenarioQuick64',displayMode==='quick'],['scenarioConversion64',displayMode==='conversion']]){const node=document.getElementById(id);if(node)node.hidden=!visible;}
     if(displayMode==='accuracy'&&!reportLoading&&!reportVersion&&!reportError)void loadScenarioReport64();
     if(displayMode==='accuracy'&&reportVersion)renderEvidenceWorkspace64(document.getElementById('scenarioEvidence64'),evidenceRows64('evaluation'),'evaluation');
     if(displayMode==='quick'&&batch64())renderEvidenceWorkspace64(document.getElementById('scenarioQuickEvidence64'),evidenceRows64('quick'),'quick');
+    if(displayMode==='conversion')void loadConversionRecords560();
   };
   let evidenceController=null,evidenceObserver=null;
   const evidenceUrls=new Set();
@@ -551,6 +552,148 @@ export function installQualityDetectionWorkbench({getState,api,toast,modal,close
     }catch(error){if(String(pid())===project&&sequence===batchOpenSequence&&state.benchBatch64===pending&&error.name!=='AbortError')toast(error.message||error);}
   };
 
+  // Numerical conversion review is a third view of the existing quality
+  // workbench. It owns no GT, accuracy numbers, inference service or task queue.
+  let conversionRecords560=[],conversionRecordsProject560='',conversionLoading560=null;
+  let conversionSelected560='',conversionPinned560='',conversionRun560=null,conversionHistory560=[],conversionPolling560=0;
+  let conversionFiles560=[],conversionError560='',conversionRequest560=null;
+  function eligibleConversion560(job){
+    const status=String(job?.status||'').toLowerCase();
+    return ['done','blocked_by_hardware'].includes(status)&&/\.pt(?:h)?$/i.test(job?.source_name||'')&&
+      (job?.outputs||[]).some(row=>/\.onnx$/i.test(row.name||''));
+  }
+  function conversionSourceMatches560(job,model){
+    const trace=job?.source_trace||{},meta=job?.source_meta||{};
+    return String(trace.algorithm_id||meta.algorithm_id||'')===String(model?.algorithm_id||'')&&
+      String(trace.version_id||meta.version_id||'')===String(model?.version_id||'');
+  }
+  function conversionOption560(job){
+    const chip=String(job.params?.chip||job.params?.soc_version||'').toUpperCase();
+    const name=job.target_name||({sophon:'算能 BMODEL',onnx:'ONNX',rockchip:'RKNN',ascend:'昇腾 OM',tensorrt:'TensorRT'}[job.target])||job.target;
+    return `<option value="${esc(job.id)}" ${job.id===conversionSelected560?'selected':''}>${esc(name)}${chip?' · '+esc(chip):''} · ${esc(job.created_at||'')}</option>`;
+  }
+  function renderConversionRecords560(){
+    const select=document.getElementById('conversionJob560'),hint=document.getElementById('conversionJobHint560');
+    if(!select)return;
+    const model=selectedModel64('A'),pending=window.pendingConversionNumerical560;
+    const available=conversionRecords560.filter(job=>eligibleConversion560(job)&&(conversionSourceMatches560(job,model)||String(job.id)===String(pending?.jobId)||String(job.id)===conversionPinned560));
+    if(!available.some(job=>job.id===conversionSelected560))conversionSelected560=available[0]?.id||'';
+    select.innerHTML=available.length?available.map(conversionOption560).join(''):'<option value="">当前版本暂无可比较的 PT／ONNX 转换</option>';
+    select.value=conversionSelected560;
+    if(hint)hint.textContent=available.length?`已找到 ${available.length} 个可比较的转换记录；以下仅验证其 PT／ONNX 阶段。`:'请先在“版本转换”生成包含 ONNX 中间产物的任务，或选择其他算法版本。';
+    const button=document.getElementById('conversionRun560');if(button)button.disabled=!conversionSelected560||!conversionFiles560.length||Boolean(conversionRun560?.loading);
+  }
+  async function loadConversionRecords560(force=false){
+    if(!document.getElementById('scenarioConversion64'))return;
+    const project=String(pid());
+    if(conversionLoading560)return conversionLoading560;
+    if(!force&&project===conversionRecordsProject560&&conversionRecords560.length){renderConversionRecords560();return;}
+    conversionLoading560=(async()=>{
+      try{
+        const response=await api(`/api/v39/projects/${project}/deploy/jobs`);
+        if(project!==String(pid()))return;
+        conversionRecords560=(response.items||[]).filter(eligibleConversion560);
+        const pending=window.pendingConversionNumerical560;
+        if(pending?.jobId&&!conversionRecords560.some(job=>job.id===pending.jobId)){
+          try{const job=await api(`/api/v39/projects/${project}/deploy/jobs/${encodeURIComponent(pending.jobId)}`);if(eligibleConversion560(job))conversionRecords560.unshift(job);}catch(_){/* Preserve the user's chosen project boundary. */}
+        }
+        conversionRecordsProject560=project;
+        if(pending?.jobId&&conversionRecords560.some(job=>job.id===pending.jobId)){
+          conversionSelected560=pending.jobId;conversionPinned560=pending.jobId;
+          delete window.pendingConversionNumerical560;
+        }
+        renderConversionRecords560();
+        if(conversionSelected560)void loadConversionHistory560(conversionSelected560);
+      }catch(error){conversionError560=String(error.message||error);showConversionResult560();}
+      finally{conversionLoading560=null;}
+    })();
+    return conversionLoading560;
+  }
+  function showConversionResult560(){
+    const box=document.getElementById('conversionResult560');if(!box)return;
+    if(conversionError560){box.innerHTML=`<div class="alert err" role="alert">${esc(conversionError560)}</div>`;return;}
+    const run=conversionRun560;if(!run){box.innerHTML='<div class="conversion560-empty">选择图片与转换记录后开始验证，或打开历史验证报告。</div>';return;}
+    const task=run.task||{},result=run.result||{},status=String(task.status||'');
+    const active=['QUEUED','WAITING_RESOURCE','RUNNING','CANCEL_REQUESTED'].includes(status);
+    const verdict=result.verdict||'',label={consistent:'PT／ONNX 数值达标',difference_detected:'PT／ONNX 发现差异',not_comparable:'输出不可直接比较',unavailable:'未能完成验证'}[verdict]||'验证中';
+    const tone=verdict==='consistent'?'ok':verdict==='difference_detected'?'warn':verdict?'err':'soft';
+    const metric=value=>Number.isFinite(Number(value))?Number(value).toExponential(3):'—';
+    box.innerHTML=`<div class="conversion560-report-head"><div><b>${esc(active?'正在执行数值验证':label)}</b><span>${esc(task.phase||result.stage||'')} · ${esc(run.created_at||'')}</span></div>${active?`<span role="status">${Math.round(Number(task.progress_percent||0))}%</span>`:`<button class="btn small" onclick="refreshConversionReport560()">刷新报告</button>`}</div>
+      ${result.error?`<div class="alert err">${esc(result.error)}</div>`:''}
+      ${result.images?.length?`<div class="conversion560-report-stats"><span><b>${result.sample_count}</b>张实测图片</span><span><b>${result.images.filter(row=>row.within_tolerance).length}</b>张 PT／ONNX 误差在阈值内</span><span><b>PT → ONNX</b>原始输出张量</span></div><div class="table-wrap"><table class="table"><thead><tr><th>输入图片</th><th>输出张量</th><th>均值绝对误差</th><th>P95 误差</th><th>余弦相似度</th><th>判断</th>${result.bmodel_numeric_status&&!['not_applicable','unavailable'].includes(result.bmodel_numeric_status)?'<th>ONNX／BMODEL 离线数值</th>':''}</tr></thead><tbody>${result.images.map(row=>`<tr><td>${esc(row.image)}</td><td>${esc(row.shape?.join('×')||row.reason||'—')}</td><td>${metric(row.mean_abs_error)}</td><td>${metric(row.p95_abs_error)}</td><td>${Number.isFinite(Number(row.cosine_similarity))?Number(row.cosine_similarity).toFixed(6):'—'}</td><td>${row.comparable?(row.within_tolerance?'达标':'需复核'):'不可比较'}</td>${result.bmodel_numeric_status&&!['not_applicable','unavailable'].includes(result.bmodel_numeric_status)?`<td>${row.onnx_bmodel?.comparable?(row.onnx_bmodel.within_tolerance?'达标':'需复核'):'不可比较'}</td>`:''}</tr>`).join('')}</tbody></table></div>`:''}
+      ${result.bmodel_numeric_status&&!['not_applicable'].includes(result.bmodel_numeric_status)?`<div class="alert ${result.bmodel_numeric_status==='consistent'?'ok':result.bmodel_numeric_status==='difference_detected'?'warn':'soft'}"><b>Sophon BMODEL 离线数值</b><span>${esc(({consistent:'官方模拟器对比达标',difference_detected:'模拟器对比发现差异',unavailable:'本次无法调用官方模拟器，尚未取得 BMODEL 数值证据'}[result.bmodel_numeric_status])||'未验证')}${result.bmodel_numeric_error?' · '+esc(result.bmodel_numeric_error):''}</span></div>`:''}
+      <div class="alert ${tone}"><b>边界说明</b><span>PT／ONNX 是同图同预处理的原始张量对照。BMODEL 仅在官方 SDK 模拟器可用时另行数值比较，均不包含实机运行或场景准确率评价。</span></div>`;
+  }
+  window.selectConversionJob560=()=>{conversionSelected560=document.getElementById('conversionJob560')?.value||'';conversionRun560=null;conversionHistory560=[];conversionRequest560=null;conversionError560='';renderConversionRecords560();renderConversionHistory560();showConversionResult560();if(conversionSelected560)void loadConversionHistory560(conversionSelected560);};
+  window.addConversionFiles560=input=>{const files=[...(input?.files||[])];if(files.length>12)return toast('一次最多上传 12 张图片进行数值验证');if(files.some(f=>f.size>10*1024*1024))return toast('单张验证图片不能超过 10 MB');conversionFiles560=files;conversionRequest560=null;input.value='';const summary=document.getElementById('conversionFilesHint560');if(summary)summary.textContent=files.length?`已选择 ${files.length} 张：${files.slice(0,3).map(f=>f.name).join('、')}${files.length>3?'等':''}`:'尚未选择真实图片';renderConversionRecords560();};
+  window.reuseConversionQuickFiles560=()=>{conversionFiles560=[...(state.benchFiles64||[])].slice(0,12);conversionRequest560=null;const summary=document.getElementById('conversionFilesHint560');if(summary)summary.textContent=conversionFiles560.length?`已复用快速图片检测中 ${conversionFiles560.length} 张真实图片`:'快速检测还没有选中图片';renderConversionRecords560();};
+  function renderConversionHistory560(){
+    const select=document.getElementById('conversionReportHistory560');if(!select)return;
+    const current=conversionRun560?.id||'';
+    select.innerHTML='<option value="">选择历史报告</option>'+conversionHistory560.map(row=>`<option value="${esc(row.id)}" ${row.id===current?'selected':''}>${esc(row.created_at||'未记录时间')} · ${esc(row.task?.status||'未知')}</option>`).join('');
+    select.value=conversionHistory560.some(row=>row.id===current)?current:'';
+  }
+  window.selectConversionReport560=()=>{
+    const id=document.getElementById('conversionReportHistory560')?.value;
+    conversionRun560=conversionHistory560.find(row=>row.id===id)||null;
+    conversionError560='';showConversionResult560();
+    if(conversionRun560?.id&&['QUEUED','WAITING_RESOURCE','RUNNING'].includes(conversionRun560.task?.status))void pollConversionRun560(conversionRun560.id,conversionSelected560);
+  };
+  async function loadConversionHistory560(jobId){
+    const project=String(pid());
+    try{
+      const data=await api(`/api/v39/projects/${project}/deploy/jobs/${encodeURIComponent(jobId)}/numeric-validations`);
+      if(project!==String(pid())||conversionSelected560!==jobId)return;
+      conversionHistory560=data.items||[];
+      if(conversionHistory560.length&&!conversionRun560){conversionRun560=conversionHistory560[0];showConversionResult560();if(['QUEUED','WAITING_RESOURCE','RUNNING'].includes(conversionRun560.task?.status))void pollConversionRun560(conversionRun560.id,jobId);}
+      renderConversionHistory560();
+    }catch(_){/* History failure does not block fresh verification. */}
+  }
+  async function pollConversionRun560(id,jobId){
+    const epoch=++conversionPolling560,project=String(pid());
+    for(let attempt=0;attempt<180;attempt++){
+      if(epoch!==conversionPolling560||project!==String(pid())||!document.getElementById('scenarioConversion64'))return;
+      try{
+        const next=await api(`/api/v39/projects/${project}/deploy/jobs/${encodeURIComponent(jobId)}/numeric-validations/${encodeURIComponent(id)}`);
+        if(epoch!==conversionPolling560||conversionSelected560!==jobId)return;
+        conversionRun560=next;conversionHistory560=conversionHistory560.map(row=>row.id===next.id?next:row);conversionError560='';showConversionResult560();renderConversionHistory560();
+        if(['SUCCEEDED','FAILED','CANCELLED','BLOCKED_BY_ENVIRONMENT','BLOCKED_BY_HARDWARE'].includes(next.task?.status))return;
+      }catch(error){conversionError560=String(error.message||error);showConversionResult560();return;}
+      await new Promise(resolve=>setTimeout(resolve,1800));
+    }
+    conversionError560='任务仍在运行，请点击“刷新报告”查看最新状态。';showConversionResult560();
+  }
+  window.refreshConversionReport560=()=>{if(conversionRun560?.id&&conversionSelected560)void pollConversionRun560(conversionRun560.id,conversionSelected560);};
+  window.runConversionNumeric560=async()=>{
+    const project=String(pid()),jobId=conversionSelected560;
+    if(!jobId||!conversionFiles560.length)return toast('请先选择转换记录和真实图片');
+    if(conversionRun560?.loading)return;
+    const form=new FormData();for(const file of conversionFiles560)form.append('files',file,file.name);
+    const requestId=conversionRequest560?.jobId===jobId?conversionRequest560.requestId:(globalThis.crypto?.randomUUID?.().replaceAll('-','')||`${Date.now()}${Math.random().toString(36).slice(2)}`);
+    conversionRequest560={jobId,requestId};
+    form.append('request_id',requestId);
+    conversionRun560={loading:true,task:{status:'QUEUED',phase:'正在提交样本快照'}};conversionError560='';renderConversionRecords560();showConversionResult560();
+    try{
+      const result=await api(`/api/v39/projects/${project}/deploy/jobs/${encodeURIComponent(jobId)}/numeric-validations`,{method:'POST',body:form});
+      if(project!==String(pid())||jobId!==conversionSelected560)return;
+      conversionRun560=result;conversionRequest560=null;conversionHistory560=[result,...conversionHistory560.filter(row=>row.id!==result.id)];renderConversionHistory560();showConversionResult560();void pollConversionRun560(result.id,jobId);
+    }catch(error){if(project===String(pid())){conversionRun560=null;conversionError560=String(error.message||error);showConversionResult560();}}
+    finally{renderConversionRecords560();}
+  };
+  function decorateConversionBench560(shell){
+    if(shell.querySelector('#scenarioConversion64'))return;
+    const nav=shell.querySelector('.scn-tabs');if(!nav)return;
+    nav.insertAdjacentHTML('beforeend','<button class="btn" role="tab" data-scenario-mode="conversion" aria-selected="false" onclick="setScenarioMode64(\'conversion\')">转换一致性</button>');
+    const section=document.createElement('section');section.id='scenarioConversion64';section.className='conversion560-bench';section.hidden=true;
+    section.innerHTML=`<header><div><b>转换数值一致性</b><p>同一批真实图片 · 原始 PT 与转换产物 ONNX 原始输出对照</p></div><span class="conversion560-scope">不包含实机验证</span></header>
+      <div class="conversion560-bench-step"><label>01 · 选择转换记录<select id="conversionJob560" class="select" onchange="selectConversionJob560()"><option>正在读取…</option></select></label><small id="conversionJobHint560">只列出拥有源 PT 和 ONNX 中间产物的转换。</small><button class="btn small" onclick="loadConversionRecords560(true)">刷新转换记录</button></div>
+      <div class="conversion560-bench-step"><b>02 · 选择真实图片</b><div class="row"><button class="btn" onclick="document.getElementById('conversionFilesInput560').click()">选择图片（最多 12 张）</button><button class="btn soft" onclick="reuseConversionQuickFiles560()">复用快速检测图片</button><input id="conversionFilesInput560" type="file" multiple accept=".png,.jpg,.jpeg,.webp,.bmp" hidden onchange="addConversionFiles560(this)"></div><small id="conversionFilesHint560">尚未选择真实图片</small></div>
+      <div class="conversion560-bench-run"><div><b>03 · 运行原始张量数值比较</b><span>计算均值误差、P95 误差及余弦相似度；差异保留逐图证据。</span></div><button class="btn primary" id="conversionRun560" onclick="runConversionNumeric560()" disabled>开始数值验证</button></div><label class="conversion560-history-picker">历史验证报告<select class="select" id="conversionReportHistory560" onchange="selectConversionReport560()"><option value="">尚无报告</option></select></label><div id="conversionResult560" role="status"></div>`;
+    const history=shell.querySelector('.bench64-history');if(history)history.before(section);else shell.append(section);
+    window.loadConversionRecords560=loadConversionRecords560;
+    showConversionResult560();
+  }
+
   function benchNotices64(models,ready){
     return `${models.length?'':'<div class="alert">暂无符合资格的成功训练版本。母模型、未验证PT和失败Checkpoint不可进入场景实测。</div>'}${ready?'':'<div class="alert warn">暂无可用推理 Runtime；仍可查看可信独立评测，准备资源后才能检测图片。</div>'}`;
   }
@@ -582,7 +725,7 @@ export function installQualityDetectionWorkbench({getState,api,toast,modal,close
   window.renderQualityDetectionBench64=function renderQualityDetectionBench64(){
     const view=document.getElementById('view');if(!view)return;
     const project=String(pid());
-    if(mountedProject&&mountedProject!==project){deactivate64();state.benchBatch64=null;state.benchFiles64=[];if(state.scenarioModelsProjectId!==project)state.scenarioTestModels=[];displayMode='accuracy';}
+    if(mountedProject&&mountedProject!==project){deactivate64();state.benchBatch64=null;state.benchFiles64=[];conversionFiles560=[];conversionRequest560=null;conversionRecords560=[];conversionRecordsProject560='';conversionRun560=null;conversionHistory560=[];conversionSelected560='';conversionPinned560='';if(state.scenarioModelsProjectId!==project)state.scenarioTestModels=[];displayMode='accuracy';}
     mountedProject=project;
     const models=detectionModels64(),ready=(state.inferenceEnvs||[]).some(env=>env?.status==='ready');
     let shell=view.querySelector('[data-quality-detection-shell="1"]'),mounted=false;
@@ -595,19 +738,21 @@ export function installQualityDetectionWorkbench({getState,api,toast,modal,close
       if(notices&&notices.innerHTML!==nextNotices)notices.innerHTML=nextNotices;
       patchBenchModelBrowser64('A');patchBenchModelBrowser64('B');
     }
+    decorateConversionBench560(shell);
     if(mounted&&!state.benchBatch64)state.benchBatch64=restoreCreationMetadata64(project);
     if(mounted){
       window.renderBenchFileQueue64();window.renderBenchBatch64();window.renderDetectionBatchHistory64();
-      patchBenchModelBrowser64('A');patchBenchModelBrowser64('B');window.setScenarioMode64(state.benchBatch64?.outcomeUncertain?'quick':'accuracy');
+      patchBenchModelBrowser64('A');patchBenchModelBrowser64('B');window.setScenarioMode64(window.pendingConversionNumerical560?'conversion':state.benchBatch64?.outcomeUncertain?'quick':'accuracy');
       if(state.benchBatch64?.outcomeUncertain){const button=document.getElementById('benchRun64');if(button)button.textContent='核验并恢复本次检测';}
     }else{
       summary64();window.renderDetectionBatchHistory64();
+      if(window.pendingConversionNumerical560)window.setScenarioMode64('conversion');
     }
     if(state.benchBatch64?.outcomeUncertain)scheduleCreationVerification64(state.benchBatch64,project);
     void window.loadDetectionBatches64();window.renderOnlineFeedbackPanel63?.(view);
   };
 
-  function deactivate64(){releaseSelectionPreview64();for(const row of batch64()?.results||[]){if(row.previewUrl){URL.revokeObjectURL(row.previewUrl);row.previewUrl='';}}clearCreationVerification64();if(batch64())batch64().autoVerifyStopped=true;comparisonController?.abort();comparisonSequence++;comparison={};reportViews()?.disposeReportViews?.(document.querySelector('.scenario-workbench'));reportController?.abort();reportSequence++;reportLoading=false;reportError='';reportVersion=null;reportModel=null;batchOpenSequence++;revokeEvidenceUrls64();}
+  function deactivate64(){conversionPolling560++;releaseSelectionPreview64();for(const row of batch64()?.results||[]){if(row.previewUrl){URL.revokeObjectURL(row.previewUrl);row.previewUrl='';}}clearCreationVerification64();if(batch64())batch64().autoVerifyStopped=true;comparisonController?.abort();comparisonSequence++;comparison={};reportViews()?.disposeReportViews?.(document.querySelector('.scenario-workbench'));reportController?.abort();reportSequence++;reportLoading=false;reportError='';reportVersion=null;reportModel=null;batchOpenSequence++;revokeEvidenceUrls64();}
   function mountEvaluationEvidence(root,{model,version,rows,comparison:other}={}){
     deactivate64();displayMode='accuracy';selectedIndex=0;zoom=1;classFilter='';issueFilter='';matrixCell=null;confidence=0;showGT=true;showPred=true;
     reportModel=model;reportVersion={...version,evaluation:{...version.evaluation,error_samples:rows||[]}};

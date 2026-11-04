@@ -50,8 +50,12 @@ test('entry bundles use cache-bust markers independently from formal release tru
   assert.match(index, /\/static\/main\.mjs\?v=\d+(?:\.\d+)*/);
   assert.match(index, /\/static\/styles\.css\?v=\d+(?:\.\d+)*/);
   assert.equal(index.includes('/static/styles.css?v=42.25.506'), true);
-  assert.equal(index.includes('/static/app.js?v=42.25.514'), true);
-  assert.equal(index.includes('/static/main.mjs?v=42.25.514'), true);
+  const appCache=index.match(/\/static\/app\.js\?v=(\d+(?:\.\d+)*)/);
+  const mainCache=index.match(/\/static\/main\.mjs\?v=(\d+(?:\.\d+)*)/);
+  assert.ok(appCache&&mainCache);
+  assert.equal(appCache[1],mainCache[1]);
+  assert.ok(appCache[1].localeCompare('42.25.514',undefined,{numeric:true})>=0,
+    '入口 bundle 缓存版本不能回退；前端功能变更时允许单调前进');
   assert.equal(index.includes('/static/modules/storage-cache-runtime.js?v=20261024-layout'), true);
   assert.match(main, /\.\/modules\/model-artifact-runtime\.js\?v=\d+/);
   assert.match(main, /\.\/modules\/training-task-runtime\.js\?v=\d+/);

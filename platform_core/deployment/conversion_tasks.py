@@ -123,6 +123,8 @@ def _finalize_conversion_job(
 
 def run_conversion(context, *, data_dir: Path | None = None) -> tuple[TaskStatus, str]:
     request = context.artifacts.read_json(context.task.task_id, context.task.payload_ref, default={})
+    if request.get("execution_mode") == "numeric_verification":
+        return run_numeric_verification(context, request)
     if request.get("execution_mode") == "remote" and request.get("target") == "sophon":
         return run_remote_conversion(context, data_dir=data_dir, recovering=False)
     job_dir = Path(str(request.get("job_dir") or "")).resolve()
@@ -196,6 +198,8 @@ class ConversionHandler:
 
     def recover(self, context):
         request = context.artifacts.read_json(context.task.task_id, context.task.payload_ref, default={})
+        if request.get("execution_mode") == "numeric_verification":
+            return run_numeric_verification(context, request)
         if request.get("execution_mode") == "remote" and request.get("target") == "sophon":
             return run_remote_conversion(context, data_dir=self.data_dir, recovering=True)
         job_dir = Path(str(request.get("job_dir") or "")).resolve()
@@ -210,6 +214,57 @@ class ConversionHandler:
                 data_dir=self.data_dir,
             )
         return run_conversion(context, data_dir=self.data_dir)
+
+
+def run_numeric_verification(context, request: dict) -> tuple[TaskStatus, str]:
+    """Reuse MODEL_CONVERSION leases/cancellation for a verification-only run.
+
+    The conversion record remains immutable. Verification evidence lives in a
+    distinct, project-scoped directory and the same durable artifact repository.
+    """
+    directory = Path(str(request.get("verification_dir") or "")).resolve()
+    worker = Path(str(request.get("worker_path") or "")).resolve()
+    receipt = directory / "request.json"
+    result_path = directory / "result.json"
+    if not receipt.is_file() or not worker.is_file():
+        raise FileNotFoundError("数值验证请求或执行器不存在")
+    previous = _read(result_path)
+    if previous.get("status") == "completed":
+        context.assert_current_execution()
+        ref = "conversion/numeric-verification-result.json"
+        context.artifacts.atomic_write_json(context.task.task_id, ref, previous)
+        context.heartbeat(progress=100, stage="数值比较已完成", current_item=str(request.get("conversion_job_id") or ""))
+        return TaskStatus.SUCCEEDED, ref
+    command = [str(request.get("python_path") or sys.executable), str(worker), "--verification-dir", str(directory)]
+    controller = ProcessController()
+    with (directory / "worker.stdout.log").open("ab") as stdout:
+        launched = launch_process(command, cwd=worker.parent, stdout=stdout, stderr=subprocess.STDOUT)
+        try:
+            context.bind_process(launched.identity)
+            while launched.process.poll() is None:
+                result = _read(result_path)
+                context.heartbeat(
+                    progress=float(result.get("progress") or 0),
+                    stage=str(result.get("stage") or "数值比较准备中"),
+                    current_item=str(request.get("conversion_job_id") or ""),
+                )
+                if context.cancel_requested():
+                    controller.terminate_tree(launched.identity)
+                    raise InterruptedError("numeric verification cancelled")
+                time.sleep(0.25)
+        except ExecutionFencedError:
+            controller.terminate_tree(launched.identity)
+            raise
+        except Exception:
+            if context.lease_lost:
+                controller.terminate_tree(launched.identity)
+            raise
+    context.assert_current_execution()
+    result = _read(result_path)
+    result_ref = "conversion/numeric-verification-result.json"
+    context.artifacts.atomic_write_json(context.task.task_id, result_ref, result)
+    context.heartbeat(progress=100, stage=str(result.get("stage") or "数值比较结束"), current_item=str(request.get("conversion_job_id") or ""))
+    return (TaskStatus.SUCCEEDED if result.get("status") == "completed" else TaskStatus.FAILED), result_ref
 
 
 def run_remote_conversion(context, *, data_dir=None, recovering=False):
