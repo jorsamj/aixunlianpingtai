@@ -1,4 +1,12 @@
-# 模型转换数值与检测结果一致性治理（42.24.524）
+# 模型转换数值与检测结果一致性治理（42.24.525）
+
+## 42.24.525 远端转换 CI 回归修复（2026-11-04）
+
+准确 524 提交 `786dd821a3a19fac5d7842dd2d3aab690b8725f0` 的 `Remote Conversion Runtime` control-plane 出现 7 个失败：5 个旧任务远端恢复因新插值参数对旧 manifest 直接严格比较而失败、1 个旧 CSC 转换合同无法通过结构检查、1 个旧 `model_validation_status=incomplete` 兼容断言被错误改为 `unavailable`。旧分支此前的该工作流通过，属于本轮引入的回归，不能当成旧失败掩盖。
+
+本版修复：对于**冻结于 524 前**且尚未显式含插值/LetterBox 模式字段的任务，采用现有 `validate_target` 校验历史字段并只补齐唯一且无歧义的默认值；对于**已经显式冻结新字段**的任务，远端 target/parameters/structure 任一缺少证据或值不一致仍失败关闭，不能降级绕过。`model_validation_status` 保持旧的 `incomplete`（没有现场/硬件闭环），新增独立 `compiler_numeric_status` 承载 `passed_synthetic_reference` 或 `unavailable`，兼容旧代码、避免误称模型整体已验证。新增旧任务恢复、显式冻结拒绝及精确匹配通过三项回归，SDK 数值测试断言也分离这两层状态。
+
+524 基线的 `Training Create First Open` Chrome 四个失败在父提交 523 上已逐一出现，非本期转换回归，仍须单独训练页面专项处理。525 全套 CI 以准确新 SHA 重新核验，不在本地冒称已通过。生产仍未改动。
 
 ## 42.24.524 接续修复（2026-11-04）
 

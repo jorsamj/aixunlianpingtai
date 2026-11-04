@@ -198,7 +198,8 @@ def test_sophon_compiler_passes_official_reference_flags_when_sdk_supports_them(
     assert "--test_input" in commands[0] and "--test_result" in commands[0]
     assert "--test_input" in commands[1] and "--test_reference" in commands[1] and "--compare_all" in commands[1]
     receipt = json.loads((tmp_path / "sophon_validation.json").read_text(encoding="utf-8"))
-    assert receipt["model_validation_status"] == "passed_synthetic_reference"
+    assert receipt["model_validation_status"] == "incomplete"
+    assert receipt["compiler_numeric_status"] == "passed_synthetic_reference"
     assert len(receipt["offline_reference"]["input"]["sha256"]) == 64
 
 

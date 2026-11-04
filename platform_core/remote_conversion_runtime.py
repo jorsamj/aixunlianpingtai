@@ -57,10 +57,27 @@ def validate_remote_artifacts(directory, job):
     expected = validate_target("sophon", job["params"])
     target = manifest.get("target") or {}
     parameters = manifest.get("parameters") or {}
-    for field in ("kind", "chip", "precision", "batch", "num_core", "dynamic", "input_height", "input_width", "preprocessing"):
+    for field in ("kind", "chip", "precision", "batch", "num_core", "dynamic", "input_height", "input_width"):
         for actual in (target, parameters):
             if type(actual.get(field)) is not type(expected[field]) or actual[field] != expected[field]:
                 raise ValueError(f"远程 manifest 转换参数不匹配：{field}")
+    # Pre-42.24.524 jobs did not serialize interpolation/letterbox-mode fields.
+    # Accept only their unambiguous canonical defaults; a NEW explicitly frozen
+    # preprocessing field must always be evidenced by the remote manifest.
+    frozen_preprocess = (job.get("params") or {}).get("preprocessing") or {}
+    for actual in (target, parameters):
+        submitted = actual.get("preprocessing")
+        if not isinstance(submitted, dict):
+            raise ValueError("远程 manifest 缺少预处理合同")
+        if any(key in frozen_preprocess and key not in submitted
+               for key in ("resize_interpolation", "letterbox_mode")):
+            raise ValueError("远程 manifest 缺少已冻结的插值或 LetterBox 模式证据")
+        try:
+            normalized = validate_target("sophon", {**job["params"], "preprocessing": submitted})["preprocessing"]
+        except (TypeError, ValueError) as error:
+            raise ValueError("远程 manifest 预处理合同非法") from error
+        if normalized != expected["preprocessing"]:
+            raise ValueError("远程 manifest 预处理合同不匹配")
     # Remote artifacts must prove the requested channel contract, not only chip/shape.
     if "input_color_order" in expected:
         for field in ("source_color_order", "input_color_order"):
@@ -108,8 +125,18 @@ def validate_remote_artifacts(directory, job):
         raise ValueError("远程 ONNX 实际输入形状或验证证据不匹配")
     structure = manifest.get("sophon_validation") or {}
     observed_chips = set(re.findall(r"\b(?:bm|cv)\d+[a-z]*\b", str(structure.get("inspection") or "").lower()))
+    structure_preprocess = structure.get("preprocessing")
+    try:
+        normalized_structure = validate_target(
+            "sophon", {**job["params"], "preprocessing": structure_preprocess}
+        )["preprocessing"] if isinstance(structure_preprocess, dict) else None
+    except (TypeError, ValueError):
+        normalized_structure = None
+    if any(key in frozen_preprocess and key not in (structure_preprocess or {})
+           for key in ("resize_interpolation", "letterbox_mode")):
+        normalized_structure = None
     if (structure.get("structure") != "passed" or structure.get("chip") != expected["chip"]
-            or observed_chips != {expected["chip"]} or structure.get("preprocessing") != expected["preprocessing"]):
+            or observed_chips != {expected["chip"]} or normalized_structure != expected["preprocessing"]):
         raise ValueError("远程 BMODEL 缺少匹配本次转换的结构检查证据")
     records = manifest.get("outputs") or []
     if not records:

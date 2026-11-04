@@ -118,6 +118,7 @@ def test_bm1684_command_uses_real_target_precision_and_file_identity(tmp_path, m
     facts=json.loads((tmp_path/"sophon_validation.json").read_text(encoding="utf-8"))
     assert facts["chip"]=="bm1684" and facts["precision"]=="fp32"
     assert facts["model_validation_status"]=="incomplete" and facts["hardware_verified"] is False
+    assert facts["compiler_numeric_status"]=="unavailable"
 
 def test_rknn_config_probe_accepts_only_explicit_catalog_candidates(tmp_path,monkeypatch):
     import sys

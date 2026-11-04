@@ -89,6 +89,45 @@ def test_recovery_before_upload_receipt_performs_first_post_with_same_id(unsubmi
     assert job['status']=='blocked_by_hardware'
 
 
+def test_legacy_remote_preprocessing_defaults_keep_old_inflight_task_recoverable(task):
+    context, request, jd = task
+    http = SimpleNamespace(get=lambda url, **kwargs:
+        Response(content=bundle()) if url.endswith('.zip') else Response({'status': 'done'}))
+    result = runtime.synchronize_remote_conversion(context, request, recovering=True, http=http)
+    assert result['status'] == 'blocked_by_hardware'
+    assert (jd / 'artifacts' / 'model.bmodel').is_file()
+
+
+def test_explicit_new_preprocessing_contract_requires_remote_evidence(task):
+    context, request, jd = task
+    job = json.loads((jd / 'job.json').read_text())
+    job['params']['preprocessing'].update(resize_interpolation='opencv_linear',
+                                          letterbox_mode='fixed_shape_center')
+    (jd / 'job.json').write_text(json.dumps(job))
+    legacy_http = SimpleNamespace(get=lambda url, **kwargs:
+        Response(content=bundle()) if url.endswith('.zip') else Response({'status': 'done'}))
+    rejected = runtime.synchronize_remote_conversion(context, request, recovering=True, http=legacy_http)
+    assert rejected['status'] == 'failed'
+    assert '已冻结' in rejected['error']
+    assert not (jd / 'artifacts').exists()
+
+
+def test_explicit_new_preprocessing_contract_accepts_exact_remote_evidence(task):
+    context, request, jd = task
+    job = json.loads((jd / 'job.json').read_text())
+    job['params']['preprocessing'].update(resize_interpolation='opencv_linear',
+                                          letterbox_mode='fixed_shape_center')
+    (jd / 'job.json').write_text(json.dumps(job))
+    def evidence(manifest):
+        for section in ('target', 'parameters', 'sophon_validation'):
+            manifest[section]['preprocessing'].update(resize_interpolation='opencv_linear',
+                                                      letterbox_mode='fixed_shape_center')
+    http = SimpleNamespace(get=lambda url, **kwargs:
+        Response(content=bundle(mutate=evidence)) if url.endswith('.zip') else Response({'status': 'done'}))
+    result = runtime.synchronize_remote_conversion(context, request, recovering=True, http=http)
+    assert result['status'] == 'blocked_by_hardware'
+
+
 def test_recovery_cancel_before_upload_receipt_never_posts(unsubmitted_task):
     context, request, jd = unsubmitted_task
     context.cancel_requested=lambda:True

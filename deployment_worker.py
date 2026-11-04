@@ -502,7 +502,11 @@ def build_sophon(onnx: Path, out_dir: Path, resource: Dict[str, Any], params: Di
         "toolchain": environment, "inspection": info[-8000:], "artifact": file_record(model),
         "preprocessing": params["preprocessing"],
         "precision": params["precision"], "input_shape": [1,3,height,width],
-        "model_validation_status": "passed_synthetic_reference" if reference_available else "unavailable",
+        # Preserve the historical structural/hardware status contract. Compiler
+        # numerical verification is independent and must never be inferred from
+        # model_tool --info or ordinary successful compilation.
+        "model_validation_status": "incomplete",
+        "compiler_numeric_status": "passed_synthetic_reference" if reference_available else "unavailable",
         "model_validation_reason": "官方 TPU-MLIR 用确定性合成张量完成编译数值对照；真实图片和中台部署前后处理仍须另验"
             if reference_available else "该 SDK 未同时提供 model_transform 和 model_deploy 参考数值对照参数；未执行官方数值比较",
         "offline_reference": {"protocol": "sophon_compiler_synthetic_v1", "input": file_record(reference_input),
@@ -742,7 +746,7 @@ def main():
             'onnx_opset_imports': onnx_validation.get('opset_imports') or {},
         }
         if target == 'sophon':
-            evidence['compiler_numeric_status'] = (manifest.get('sophon_validation') or {}).get('model_validation_status', 'unavailable')
+            evidence['compiler_numeric_status'] = (manifest.get('sophon_validation') or {}).get('compiler_numeric_status', 'unavailable')
             evidence['compiler_numeric_scope'] = 'synthetic_only' if evidence['compiler_numeric_status'] == 'passed_synthetic_reference' else 'unverified'
             source_binding = (manifest.get('source') or {}).get('label_binding') or {}
             labels = (manifest.get('source') or {}).get('label_codes') or []
