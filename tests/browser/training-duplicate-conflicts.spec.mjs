@@ -52,6 +52,10 @@ print(json.dumps({'ids':ids,'sha':first['content_sha256'],'oldTask':task,'histor
 }
 
 async function openDraft(page,f) {
+  // These tests intentionally diagnose hard GT conflicts before creation.
+  // Keep that explicit synchronous admission contract; the production
+  // background mode defers diagnosis to TRAINING_PREPARE.
+  await page.addInitScript(()=>{window.MC_TRAIN_ADMISSION_MODE='synchronous'});
   await page.route('**/api/v53/bootstrap/snapshot**',async route=>{const url=new URL(route.request().url());url.searchParams.set('preferred_project_id',f.project.id);await route.fallback({url:url.toString()})});
   // Only resource discovery is substituted; compatibility, GT, content and admission stay real.
   await page.route('**/api/training_options**',route=>route.fulfill({json:{targets:[{id:'duplicate-cpu',name:'隔离 CPU',type:'local',framework:'ultralytics',status:'ready',algorithms:[{key:'yolo_detect',name:'Detect',base_model:'yolo11n.pt',default_epochs:1,default_imgsz:640,default_batch:1}],base_models:[{value:'yolo11n.pt',label:'YOLO11n',model_status:'FOUND'}]}]}}));

@@ -1,4 +1,10 @@
-# 模型转换数值与检测结果一致性治理（42.24.527）
+# 模型转换数值与检测结果一致性治理（42.24.528）
+
+## 42.24.528 前端稳定性第三分片的遗留用例合同（2026-11-04）
+
+527 `56ea5c40fbbb7de32113921b2abb9490e2476cab` 的 Training Material Picker 已由 contracts 与 real-chrome-picker 两个 Job 全部验收成功。继续排查 525 Frontend Runtime Stabilization `browser-navigation (3)` 的已归档日志：107 项中曾有 10 项训练重复 GT 冲突诊断在 `compatibilityFor().issue_count` 期待 2、实际 null；1 项标签选择提交期待同步负样本确认对话框；14 项训练 Submit DOM 夹具由于伪造资源没有 `status:ready`，按钮按真实业务可用性合同保持 disabled、每项等待约 60s，导致整体 20 分钟 CI 超时。相关日志属于旧分支已有红灯；并非转换专项 523～525 新增失效。
+
+528 仅纠正原有浏览器测试：`training-duplicate-conflicts.spec.mjs` 和 `training-label-selector.spec.mjs` 显式运行这些测试本来要求的同步诊断模式；`training-submit-lifecycle.spec.mjs` 的独立模拟目标填补真实资源身份必需的 `status:'ready'`，不降低按钮的业务禁用条件。实际前端仍默认后台准入，只有明确授权后入队，正式 GT 由 Worker 复核；没有新增嵌套弹窗或改动产品前后端代码。Node 定向训练提交/准入/素材摘要 103/103 通过、JS 语法与 diff 检查通过。**第三 Chrome 分片及新 SHA 全部 CI 还须实测，不能据此冒称完整通过。**
 
 ## 42.24.527 首屏按需角色统计与最终准入分离（2026-11-04）
 

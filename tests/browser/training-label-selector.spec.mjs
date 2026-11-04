@@ -117,6 +117,8 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
 
   await selectIsolatedTestProject(page, project.id);
   await page.addInitScript(() => {
+    // This suite exercises the legacy synchronous negative-confirmation path.
+    window.MC_TRAIN_ADMISSION_MODE = 'synchronous';
     localStorage.setItem('mc_train_ui_state_v34', JSON.stringify({page: '算法列表'}));
   });
 
