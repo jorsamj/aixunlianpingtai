@@ -1,4 +1,10 @@
-# 模型转换数值与检测结果一致性治理（42.24.526）
+# 模型转换数值与检测结果一致性治理（42.24.527）
+
+## 42.24.527 首屏按需角色统计与最终准入分离（2026-11-04）
+
+准确 526 远端提交 `7e3725403360b5274298ac8406594381caad821e` 的定向 CI：Training Create First Open 与 ZIP Import Durable Runtime 均 success；Training Material Picker 中 8 个 Chrome 通过，唯一失败为 `target-negative-workflow.spec.mjs` 在 `summaryReadyFor()` 就绪后，要求首屏必须存在 `[data-training-sample-roles]` 且精确显示“待确认负样本 2”。原 `renderTrainingSampleRoles()` 在 `sample_role_counts` 未按需加载时正确返回空；强制首次全量查询会重新引入大量素材的首屏延迟。
+
+本次只修正这条历史浏览器预期：保留首屏选中摘要就绪、提交前不得请求 `negative-preview`/`confirm-negatives`；继续由最终提交的真实负样本预览、人工确认、重试去重、原正式 GT 字节级不变作为负样本安全验收。没有跳过真实确认检查，也没有修改前端产品、后端和默认训练语义。Frontend Runtime Stabilization 的 browser-navigation 分片仍在执行，本次 527 CI 必须独立精确核验；不能因两组已绿宣称全部通过。生产未部署。
 
 ## 42.24.526 四个历史红灯的浏览器回归合同接续（2026-11-04）
 

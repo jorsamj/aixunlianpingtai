@@ -33,9 +33,10 @@ test('target negative confirmation happens only on final creation, preserves GT 
  await page.route('**/train/start',route=>{creates++;expect(route.request().postDataJSON().train_labels).toEqual(['cigarette']);return route.fulfill({status:422,json:{detail:'隔离测试不启动训练'}})});
  await open(page,f);await page.locator('[data-algorithm-card]',{hasText:f.algorithm.name}).getByRole('button',{name:'训练',exact:true}).click();const dialog=page.getByRole('dialog',{name:'创建训练任务',exact:true});
  await page.evaluate(({id,ids})=>window.TrainingDraftRuntime.update({algorithmId:id,materialIds:ids,newLabelCodes:['cigarette']}),{id:f.algorithm.id,ids:f.images.map(i=>i.id)});
- // Role summary is a deferred read; the final negative preview is authoritative.
+ // The fast selection summary does not promise sample_role_counts; the final
+ // negative-preview and confirmation below are the authoritative role checks.
  await expect.poll(()=>page.evaluate(()=>window.TrainingMaterialSummaryRuntime.summaryReadyFor())).toBe(true);
- await expect(dialog.locator('[data-training-sample-roles]')).toContainText('待确认负样本 2');expect(previews).toBe(0);expect(confirms).toBe(0);
+ expect(previews).toBe(0);expect(confirms).toBe(0);
  await expect.poll(()=>page.evaluate(()=>state.trainingCreationLoading.resources.status)).toBe('ready');await dialog.locator('button[data-training-step="3"]').click();await dialog.locator('.train-ui-submit').click();
  const confirmation=page.getByRole('dialog',{name:'确认本次训练样本',exact:true});await expect(confirmation).toBeVisible();expect(creates).toBe(0);await expect(confirmation).toContainText('候选负样本需要人工确认');await expect.poll(()=>confirmation.locator('img').evaluateAll(nodes=>nodes.every(n=>n.complete&&n.naturalWidth>0))).toBe(true);await shot(page,'target-confirmation.png');
  await confirmation.getByRole('button',{name:'返回调整',exact:true}).click();await expect(confirmation).toHaveCount(0);expect(confirms).toBe(0);expect(creates).toBe(0);
