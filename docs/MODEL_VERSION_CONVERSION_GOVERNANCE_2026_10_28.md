@@ -185,3 +185,7 @@ a4bec87e16a5cbacaac8ceb5340352c36e7968b0后续CI仍检出deployment-runtime-sour
 软件范围A–E已验收。后续不得重复建设Owner或将“contract_only”改报为板端应用成功；真实外部SDK/设备BMCV集成、生产大模型/OSS/NAS性能、用户原始帧与张量对比均NOT VERIFIED。没有生产部署、生产数据修改或真实GPU训练。
 
 本次仅补写验收文档/索引和代码SHA回执，不改变f2af4af3业务。文档所在实际提交的CI须从其GitHub Checks独立核对，最终交付提供该提交HEAD及结果；不能拿上述代码CI替代文档提交自身检查。下轮接续先fetch并保护当前工作树、5944及训练模板WIP，只在授权的真实环境补验或处理真实反馈；旧任务CSC缺失保持未知，原母模型及其他版本产物继续保护。
+
+## 2026-11-04 接续：42.24.519 配置显隐真实 Chrome 修正
+
+数值一致性验证及转换工作台重构见 `CONVERSION_NUMERIC_VERIFICATION_AND_UI_2026_11_04.md`。`42.24.518` 远端 20 个 Actions 中 19 绿，`Remote Conversion Runtime/real-chrome` 因 RKNN INT8 校准区被新增的高级折叠容器遮挡而失败；同一审查发现 ONNX、TensorRT、算能配置控件的折叠可见性风险。`42.24.519` 只修正原控件 DOM 展示层级和回归断言，不重写转换 Owner 或降低校准约束。Node 1522/1522 通过；真实 Chrome 与后续 CI 需以此轮提交单独核实。生产数据、模型产物、原始 GT 均未修改。

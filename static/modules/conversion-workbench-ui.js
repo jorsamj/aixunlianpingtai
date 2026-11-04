@@ -89,16 +89,17 @@
       if (formRows) formRows.classList.add('conversion560-primary-fields');
       const advance = document.createElement('details');
       advance.className = 'conversion560-advanced';
-      advance.innerHTML = '<summary>高级设置 <span>输入适配、CSC 与编译参数</span></summary>';
+      advance.innerHTML = '<summary>高级设置 <span>CSC 设备适配</span></summary>';
       if(formRows)formRows.after(advance);else sections[3].prepend(advance);
-      const candidateSelectors=['#conv428OnnxFields','#conv428SophonFields','#conv428TensorRtFields','#conv428Calibration','.convert428-csc','#conv428Preprocess'];
-      for(const selector of candidateSelectors) {
+      // Target-specific controls are primary configuration, not optional disclosure.
+      // In particular INT8 calibration, TensorRT environment, ONNX opset and Sophon
+      // preprocessing must remain reachable whenever the existing owner reveals them.
+      for(const selector of ['#conv428OnnxFields','#conv428SophonFields','#conv428TensorRtFields','#conv428Calibration']) {
         const node=sections[3].querySelector(selector);
-        if(node)advance.append(node);
+        if(node)sections[3].insertBefore(node,advance);
       }
-      // Sophon height/width are essential, not an advanced-only choice.
-      const sophon=advance.querySelector('#conv428SophonFields');
-      if(sophon)sections[3].insertBefore(sophon,advance);
+      const csc=sections[3].querySelector('.convert428-csc');
+      if(csc)advance.append(csc);
     }
     const buttons=main.querySelector('[data-convert-submit]')?.closest('.row.end');
     if(buttons)buttons.classList.add('conversion560-submit-bar');

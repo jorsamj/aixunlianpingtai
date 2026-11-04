@@ -15,6 +15,18 @@ test('conversion editor is not nested over conversion history',()=>{
   assert.match(ui,/conversion560-aside/);
 });
 
+test('required target-specific conversion fields remain outside collapsed advanced settings',()=>{
+  // Presentation must not hide an INT8 calibration dataset, ONNX opset,
+  // TensorRT target environment or Sophon preprocessing behind a closed details.
+  const primary=ui.match(/for\(const selector of (\[[^\]]+\])\) \{\s*const node=sections\[3\]\.querySelector\(selector\);\s*if\(node\)sections\[3\]\.insertBefore\(node,advance\);/);
+  assert.ok(primary,'required fields must be moved before the advanced disclosure');
+  for(const id of ['conv428OnnxFields','conv428SophonFields','conv428TensorRtFields','conv428Calibration'])
+    assert.ok(primary[1].includes(`'#${id}'`),`${id} should remain in the main editor`);
+  assert.match(ui,/if\(csc\)advance\.append\(csc\)/);
+  assert.doesNotMatch(ui,/advance\.append\(node\)/);
+  assert.doesNotMatch(ui,/advance\.append\([^)]*conv428Preprocess/);
+});
+
 test('conversion list and quality center share one numerical verification entry',()=>{
   assert.match(ui,/conversion560-numeric-action/);
   assert.match(ui,/window\.openConversionNumeric560/);

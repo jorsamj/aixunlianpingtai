@@ -57,3 +57,11 @@
 2. 对 BGR 图适配、INT8、动态输入、多输出模型实现逐项正式协议与名称/shape/scale 映射，不能放宽当前 fail-closed。
 3. 针对算能误报根因，在 SDK 环境具备时对相同真实图片额外检查输出布局、类别索引、decode/NMS/置信度/事件聚合等生产端解释逻辑；这些不是当前数值验证的已完成内容。
 4. 浏览器三视口和实际部署全链路验收；独立收集测试模型、真实转化时间和差异报告。不得把模拟器可用误称板端精度达标。
+
+## 42.24.519｜转换配置主次层级修正（2026-11-04）
+
+首次推送 `42.24.518`（远端提交 `f291250520e686185f26df613941c5ca5cbdb903`）后，20 个 Actions 中 19 个成功，`Remote Conversion Runtime` 的 `real-chrome` 失败。准确故障为 RKNN INT8 用户选择精度后，`#conv428Calibration` 虽由原业务控制解除 `hidden`，却位于默认关闭的 `.conversion560-advanced` `<details>` 内，浏览器真实不可见。进一步源码复核确认 ONNX Opset、TensorRT 目标环境与算能预处理入口同受影响；不能把失败判作纯测试夹具问题。
+
+本轮将 `#conv428OnnxFields`、`#conv428SophonFields`、`#conv428TensorRtFields`、`#conv428Calibration` 恢复在主配置区，由原业务逻辑决定显示与否；算能 `#conv428Preprocess` 仍位于原厂商区内部可单层展开；仅非必填 CSC 设备适配置于「高级设置」。保持现有精度、Chip、资源检测、INT8 校准冻结与转换任务提交 Owner 不变。Chrome 原有 ONNX/TensorRT/Sophon 检查增加“主区不在高级折叠中”断言，RKNN INT8 断言同理；Node 增加对应防退化契约。
+
+隔离验收：前端 `npm test` **1522/1522** 通过、JS `node --check`、`git diff --check` 通过。当前执行环境无已安装 Playwright Chromium 浏览器，**不能声明本地真实 Chrome 通过**；以本轮新提交触发的 `Remote Conversion Runtime` 等 GitHub Actions 为最终证据。PT/ONNX/BMODEL 真实模型推理、算能 SDK 及生产部署仍未做。

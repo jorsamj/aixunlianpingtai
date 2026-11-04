@@ -165,6 +165,7 @@ test('vision providers, candidate review, and vendor target parameters are expli
 
   await conversionDialog.locator('input[name="conv428Target"][value="onnx"]').check();
   await expect(conversionDialog.locator('#conv428Opset')).toBeVisible();
+  await expect(conversionDialog.locator('.conversion560-advanced #conv428OnnxFields')).toHaveCount(0);
   await expect(conversionDialog.locator('#conv428Resource')).toContainText('Ultralytics ONNX');
 
   await conversionDialog.locator('input[name="conv428Target"][value="paddle_inference"]').check();
@@ -181,6 +182,7 @@ test('vision providers, candidate review, and vendor target parameters are expli
 
   await conversionDialog.locator('input[name="conv428Target"][value="tensorrt"]').check();
   await expect(conversionDialog.locator('#conv428TargetEnvironment')).toBeVisible();
+  await expect(conversionDialog.locator('.conversion560-advanced #conv428TensorRtFields')).toHaveCount(0);
   await expect.poll(()=>conversionDialog.locator('#conv428Precision option[value="bf16"]:enabled').count()).toBe(0);
 
   await conversionDialog.locator('input[name="conv428Target"][value="sophon"]').check();
@@ -194,6 +196,7 @@ test('vision providers, candidate review, and vendor target parameters are expli
   await expect(conversionDialog.locator('#conv428Height')).toBeVisible();
   await expect(conversionDialog.locator('#conv428SophonBatch')).toHaveValue('1');
   await expect(conversionDialog.locator('#conv428Preprocess')).toBeVisible();
+  await expect(conversionDialog.locator('.conversion560-advanced #conv428Preprocess')).toHaveCount(0);
 });
 
 test('version conversion shows configured compiler resources and their readiness', async ({page, request}) => {
@@ -617,6 +620,7 @@ test('RKNN Agent INT8 conversion submits frozen calibration selection from the U
 
   await dialog.locator('#conv428Precision').selectOption('int8');
   await expect(dialog.locator('#conv428Calibration')).toBeVisible();
+  await expect(dialog.locator('.conversion560-advanced #conv428Calibration')).toHaveCount(0);
   await expect(dialog.locator('#conv428CalibrationDataset')).toHaveValue('calibration-dataset');
   await dialog.locator('#conv428CalibrationSplit').selectOption('val');
   await dialog.locator('#conv428CalibrationCount').fill('64');
