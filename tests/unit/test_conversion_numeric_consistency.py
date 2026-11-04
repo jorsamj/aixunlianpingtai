@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 
 from platform_core.deployment.numeric_consistency import (
-    compare_tensors, make_input, validate_paths,
+    compare_tensors, compare_yolo_detections, is_canonical_rgb_preprocessing, make_input, validate_paths,
 )
 
 
@@ -19,6 +19,55 @@ def test_large_mismatch_is_detected_without_fabricated_accuracy():
     assert value["comparable"]
     assert not value["within_tolerance"]
     assert value["normalized_mae"] > .1
+
+
+def test_yolo_detection_comparison_catches_threshold_crossing_hidden_by_tensor_mean():
+    # One threshold crossing in many anchors is diluted in MAE and cosine.
+    original = np.zeros((1, 5, 1000), dtype=np.float32)
+    original[0, :4, :] = np.array([[200], [200], [30], [30]])
+    original[0, 4, :] = 0.24
+    converted = original.copy()
+    converted[0, 4, 1] = 0.26
+    assert compare_tensors(original, converted, precision="fp16")["within_tolerance"] is True
+    result = compare_yolo_detections(original, converted, class_count=1)
+    assert result["comparable"]
+    assert result["threshold_crossings"] == 1
+    assert result["after_nms_reference"] == 0
+    assert result["after_nms_converted"] == 1
+    assert result["within_tolerance"] is False
+
+
+def test_yolo_detection_comparison_checks_class_mapping_and_shape_before_pass():
+    original = np.zeros((1, 6, 20), dtype=np.float32)
+    original[0, :4, :] = np.array([[100], [100], [20], [20]])
+    original[0, 4, 1] = 0.9
+    converted = original.copy()
+    converted[0, 4, 1], converted[0, 5, 1] = 0.0, 0.9
+    result = compare_yolo_detections(original, converted, class_count=2)
+    assert result["comparable"] and not result["within_tolerance"]
+    assert result["unmatched_reference"] == result["unmatched_converted"] == 1
+    assert not compare_yolo_detections(original, converted, class_count=1)["comparable"]
+
+
+def test_yolo_detection_comparison_does_not_fail_on_suppressed_duplicate_anchor():
+    original = np.zeros((1, 5, 20), dtype=np.float32)
+    original[0, :4, :] = np.array([[100], [100], [20], [20]])
+    original[0, 4, 0] = 0.9
+    original[0, 4, 1] = 0.24
+    converted = original.copy()
+    converted[0, 4, 1] = 0.26
+    result = compare_yolo_detections(original, converted, class_count=1)
+    assert result["threshold_crossings"] == 1
+    assert result["after_nms_reference"] == result["after_nms_converted"] == 1
+    assert result["within_tolerance"] is True
+
+
+def test_numeric_verification_refuses_to_call_noncanonical_deployment_preprocessing_verified():
+    assert is_canonical_rgb_preprocessing({"pixel_format": "rgb", "scale": [1 / 255] * 3})
+    assert not is_canonical_rgb_preprocessing({"letterbox": False})
+    assert not is_canonical_rgb_preprocessing({"pixel_format": "bgr"})
+    assert not is_canonical_rgb_preprocessing({"scale": [1.0, 1.0, 1.0]})
+    assert not is_canonical_rgb_preprocessing({"mean": "bad"})
 
 
 @pytest.mark.parametrize("unknown_precision", ["int8", "auto", "fp8", "unknown", ""])
@@ -144,6 +193,51 @@ def test_missing_expected_bmodel_is_unavailable_without_hiding_pt_onnx_result(tm
     assert "BMODEL 文件不存在" in result["bmodel_numeric_error"]
     assert result["bmodel_verified"] is False
     assert result["hardware_verified"] is False
+
+
+def test_verification_verdict_does_not_claim_consistency_when_nms_detection_changes(tmp_path, monkeypatch):
+    import contextlib
+    import sys
+    from types import SimpleNamespace
+    from PIL import Image
+    from platform_core.deployment.numeric_consistency import verify_images
+
+    pt, onnx, image = (tmp_path / name for name in ("best.pt", "best.onnx", "frame.png"))
+    pt.write_bytes(b"isolated-source")
+    onnx.write_bytes(b"isolated-onnx")
+    Image.new("RGB", (32, 32), (123, 92, 30)).save(image)
+    original = np.zeros((1, 5, 1000), dtype=np.float32)
+    original[0, :4, :] = np.array([[200], [200], [30], [30]])
+    original[0, 4, :] = 0.24
+    converted = original.copy()
+    converted[0, 4, 0] = 0.26
+
+    class Tensor:
+        def __init__(self, value): self.value = value
+        def detach(self): return self
+        def cpu(self): return self
+        def numpy(self): return self.value
+
+    class Model:
+        names = {0: "fight"}
+        def cpu(self): return self
+        def eval(self): return self
+        def float(self): return self
+        def __call__(self, value): return Tensor(original)
+
+    class Session:
+        def get_inputs(self): return [SimpleNamespace(name="images", shape=[1, 3, 32, 32], type="tensor(float)")]
+        def get_outputs(self): return [SimpleNamespace(name="output")]
+        def run(self, outputs, inputs): return [converted]
+
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(inference_mode=contextlib.nullcontext, from_numpy=Tensor))
+    monkeypatch.setitem(sys.modules, "onnxruntime", SimpleNamespace(InferenceSession=lambda *args, **kwargs: Session()))
+    monkeypatch.setitem(sys.modules, "ultralytics", SimpleNamespace(YOLO=lambda path: SimpleNamespace(model=Model(), names={0: "fight"})))
+    result = verify_images(pt, onnx, [image], precision="fp16", label_codes=["fight"])
+    assert result["raw_verdict"] == "consistent"
+    assert result["verdict"] == "difference_detected"
+    assert result["detection_status"] == "difference_detected"
+    assert result["images"][0]["detection"]["threshold_crossings"] == 1
 
 
 def test_sophon_adapter_reads_only_actual_offline_runner_output(monkeypatch):

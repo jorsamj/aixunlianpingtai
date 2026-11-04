@@ -43,6 +43,32 @@ def test_pt_export_uses_explicit_rectangle_without_interpolating_source(tmp_path
     assert str(source) in commands[0][3:]
 
 
+def test_pt_export_does_not_silently_reuse_old_onnx(tmp_path, monkeypatch):
+    source = tmp_path / "model.pt"
+    source.write_bytes(b"source")
+    source.with_suffix(".onnx").write_bytes(b"stale")
+    output = tmp_path / "out"
+    output.mkdir()
+    monkeypatch.setattr(worker, "run_cmd", lambda *args, **kwargs: "no new artifact")
+    with pytest.raises(RuntimeError, match="拒绝复用旧产物"):
+        worker.export_pt_to_onnx(source, output, {}, {}, tmp_path / "log")
+
+
+def test_pt_export_uses_reported_artifact_instead_of_stale_name(tmp_path, monkeypatch):
+    source = tmp_path / "model.pt"
+    source.write_bytes(b"source")
+    source.with_suffix(".onnx").write_bytes(b"stale")
+    fresh = tmp_path / "model_alternative.onnx"
+    output = tmp_path / "out"
+    output.mkdir()
+    def reported_export(*args, **kwargs):
+        fresh.write_bytes(b"new-export")
+        return f"__CONVERSION_ONNX_PATH__={fresh}\n"
+    monkeypatch.setattr(worker, "run_cmd", reported_export)
+    result = worker.export_pt_to_onnx(source, output, {}, {}, tmp_path / "log")
+    assert result.read_bytes() == b"new-export"
+
+
 def _onnx_identity(path, shape):
     import onnx
     from onnx import helper, TensorProto

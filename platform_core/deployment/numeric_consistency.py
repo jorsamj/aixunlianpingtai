@@ -44,6 +44,120 @@ def compare_tensors(reference, converted, *, precision: str = "fp32") -> dict:
     }
 
 
+def compare_yolo_detections(reference, converted, *, class_count: int, confidence: float = 0.25,
+                            nms_iou: float = 0.7, match_iou: float = 0.95) -> dict:
+    """Compare detections after external class-aware NMS, not only diluted tensor means.
+
+    Only the explicit YOLO11-style single-output XYWH + class-score contract is
+    supported. Ambiguous/fused output formats remain unverified, never passed.
+    """
+    import numpy as np
+
+    a, b = np.asarray(reference), np.asarray(converted)
+    unsupported = lambda reason: {"comparable": False, "reason": reason, "within_tolerance": False}
+    if not isinstance(class_count, int) or isinstance(class_count, bool) or not 1 <= class_count <= 1000:
+        return unsupported("缺少可信且有界的 YOLO 类别数量")
+    if a.shape != b.shape or a.ndim != 3 or a.shape[0] != 1:
+        return unsupported("不是相同形状的单输出 YOLO 检测张量")
+    fields = 4 + class_count
+    if (a.shape[1] == fields) == (a.shape[2] == fields):
+        return unsupported("输出不是唯一可识别的 XYWH + 类别分数布局")
+    if not np.issubdtype(a.dtype, np.number) or not np.issubdtype(b.dtype, np.number):
+        return unsupported("输出不是数值张量")
+    if not np.all(np.isfinite(a)) or not np.all(np.isfinite(b)):
+        return unsupported("检测输出含非有限数值")
+    lhs = a[0].T if a.shape[1] == fields else a[0]
+    rhs = b[0].T if b.shape[1] == fields else b[0]
+
+    def decode(rows):
+        score = rows[:, 4:].max(axis=1)
+        category = rows[:, 4:].argmax(axis=1)
+        active = np.flatnonzero(score >= confidence)
+        if active.size > 512:
+            raise ValueError("超过单图 512 个候选框的安全比较上限")
+        boxes = rows[active, :4].astype(np.float64)
+        # YOLO11 detection export emits center XYWH, not XYXY or embedded NMS.
+        xyxy = np.column_stack((boxes[:, 0] - boxes[:, 2] / 2, boxes[:, 1] - boxes[:, 3] / 2,
+                                boxes[:, 0] + boxes[:, 2] / 2, boxes[:, 1] + boxes[:, 3] / 2))
+        order = np.argsort(-score[active], kind="stable")
+        kept = []
+        while order.size and len(kept) < 300:
+            current = int(order[0]); kept.append(current)
+            rest = order[1:]
+            if not rest.size:
+                break
+            box = xyxy[current]
+            others = xyxy[rest]
+            top_left = np.maximum(box[:2], others[:, :2]); bottom_right = np.minimum(box[2:], others[:, 2:])
+            intersection = np.prod(np.maximum(0.0, bottom_right - top_left), axis=1)
+            area = np.prod(np.maximum(0.0, box[2:] - box[:2]))
+            other_area = np.prod(np.maximum(0.0, others[:, 2:] - others[:, :2]), axis=1)
+            iou = intersection / np.maximum(area + other_area - intersection, 1e-12)
+            order = rest[(category[active][rest] != category[active][current]) | (iou <= nms_iou)]
+        return int(active.size), [(int(category[active][i]), float(score[active][i]), xyxy[i]) for i in kept]
+
+    try:
+        count_a, boxes_a = decode(lhs)
+        count_b, boxes_b = decode(rhs)
+    except ValueError as error:
+        return unsupported(str(error))
+    before_a = lhs[:, 4:].max(axis=1)
+    before_b = rhs[:, 4:].max(axis=1)
+    threshold_crossings = int(np.count_nonzero((before_a >= confidence) != (before_b >= confidence)))
+    used = set()
+    unmatched_a = 0
+    confidence_drifts = 0
+    for category, score, box in boxes_a:
+        winner = None; winner_iou = -1.0
+        for index, (other_category, other_score, other_box) in enumerate(boxes_b):
+            if index in used or category != other_category:
+                continue
+            top_left = np.maximum(box[:2], other_box[:2]); bottom_right = np.minimum(box[2:], other_box[2:])
+            intersection = float(np.prod(np.maximum(0.0, bottom_right - top_left)))
+            area_a = float(np.prod(np.maximum(0.0, box[2:] - box[:2])))
+            area_b = float(np.prod(np.maximum(0.0, other_box[2:] - other_box[:2])))
+            iou = intersection / max(area_a + area_b - intersection, 1e-12)
+            if iou >= match_iou and iou > winner_iou:
+                winner = index; winner_iou = iou
+        if winner is None:
+            unmatched_a += 1
+        else:
+            used.add(winner)
+            confidence_drifts += int(abs(score - boxes_b[winner][1]) > 0.02)
+    unmatched_b = len(boxes_b) - len(used)
+    return {
+        "comparable": True, "confidence_threshold": confidence, "nms_iou": nms_iou,
+        "before_nms_reference": count_a, "before_nms_converted": count_b,
+        "after_nms_reference": len(boxes_a), "after_nms_converted": len(boxes_b),
+        "threshold_crossings": threshold_crossings,
+        "unmatched_reference": unmatched_a, "unmatched_converted": unmatched_b,
+        "matched_confidence_drifts": confidence_drifts,
+        "within_tolerance": unmatched_a == 0 and unmatched_b == 0 and confidence_drifts == 0,
+    }
+
+
+def is_canonical_rgb_preprocessing(preprocessing: dict | None) -> bool:
+    """Raw-tensor evidence is not deployment evidence for noncanonical inputs."""
+    contract = preprocessing or {}
+
+    def triple(field, defaults):
+        value = contract.get(field, defaults)
+        try:
+            values = value.split(",") if isinstance(value, str) else list(value)
+            return [float(v) for v in values] if len(values) == 3 else None
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+    mean, scale = triple("mean", [0, 0, 0]), triple("scale", [1 / 255] * 3)
+    return (
+        contract.get("letterbox", True) is True
+        and contract.get("pixel_format", "rgb") == "rgb"
+        and contract.get("pad_value", 114) == 114
+        and mean == [0.0, 0.0, 0.0]
+        and scale is not None and all(abs(v - 1 / 255) <= 1e-9 for v in scale)
+    )
+
+
 def make_input(image_path: Path, height: int, width: int):
     """YOLO-style rectangular letterbox, RGB, 0..1, NCHW. No augmentation."""
     import numpy as np
@@ -115,7 +229,7 @@ def validate_paths(source_path: Path, onnx_path: Path, images: list[Path], *, ex
                 raise ValueError(f"{label} SHA256 不一致，拒绝对错误的模型出具报告")
 
 
-def verify_images(source_path: Path, onnx_path: Path, images: list[Path], *, precision: str, expected_source_sha: str = "", expected_onnx_sha: str = "", input_color_order: str = "rgb", bmodel_path: Path | None = None, bmodel_sha256: str = "", bmodel_expected: bool = False, sophon_python: str = "", progress=None) -> dict:
+def verify_images(source_path: Path, onnx_path: Path, images: list[Path], *, precision: str, expected_source_sha: str = "", expected_onnx_sha: str = "", input_color_order: str = "rgb", preprocessing: dict | None = None, label_codes: list[str] | None = None, bmodel_path: Path | None = None, bmodel_sha256: str = "", bmodel_expected: bool = False, sophon_python: str = "", progress=None) -> dict:
     validate_paths(source_path, onnx_path, images, expected_source_sha=expected_source_sha, expected_onnx_sha=expected_onnx_sha)
     if str(input_color_order).lower() != "rgb":
         raise ValueError("该产物使用非 RGB 输入颜色适配；当前原始张量核验仅支持 RGB 同输入，不能冒充通过")
@@ -144,7 +258,22 @@ def verify_images(source_path: Path, onnx_path: Path, images: list[Path], *, pre
     width = shape[3] if isinstance(shape[3], int) else 640
     if not (32 <= height <= 4096 and 32 <= width <= 4096):
         raise ValueError("ONNX 输入尺寸不在可安全验证范围内")
-    pt = YOLO(str(source_path)).model.cpu().eval().float()
+    detector = YOLO(str(source_path))
+    pt = detector.model.cpu().eval().float()
+    names = getattr(detector, "names", None) or getattr(pt, "names", None)
+    class_count = len(names) if isinstance(names, (dict, list, tuple)) else 0
+    if isinstance(names, dict) and set(names) != set(range(class_count)):
+        class_count = 0
+    expected_codes = list(label_codes or [])
+    label_count_matched = None if not expected_codes else (
+        all(isinstance(code, str) and code.strip() for code in expected_codes)
+        and class_count == len(expected_codes) and len(set(expected_codes)) == len(expected_codes)
+    )
+    if label_count_matched is False:
+        class_count = 0
+    # Legacy jobs without a frozen preprocessing contract remain unknown, not
+    # implicitly verified as matching today's canonical RGB defaults.
+    canonical_preprocessing = is_canonical_rgb_preprocessing(preprocessing) if preprocessing else None
     results = []
     simulator_error = "BMODEL 文件不存在或未在当前转换产物目录中" if (bmodel_expected or bmodel_path) and (not bmodel_path or not bmodel_path.is_file()) else ""
     for i, image in enumerate(images):
@@ -154,10 +283,12 @@ def verify_images(source_path: Path, onnx_path: Path, images: list[Path], *, pre
         dtype = np.float16 if input_meta.type == "tensor(float16)" else np.float32
         converted = session.run(None, {input_meta.name: tensor.astype(dtype)})[0]
         metrics = compare_tensors(reference, converted, precision=precision)
+        metrics["detection"] = compare_yolo_detections(reference, converted, class_count=class_count)
         if bmodel_path and bmodel_path.is_file() and not simulator_error:
             try:
                 bmodel_output = _simulate_bmodel(tensor, input_meta.name, bmodel_path, sophon_python)
                 metrics["onnx_bmodel"] = compare_tensors(converted, bmodel_output, precision=precision)
+                metrics["onnx_bmodel_detection"] = compare_yolo_detections(converted, bmodel_output, class_count=class_count)
             except Exception as error:
                 simulator_error = str(error)
         results.append({"image": image.name, **metrics})
@@ -165,18 +296,27 @@ def verify_images(source_path: Path, onnx_path: Path, images: list[Path], *, pre
             progress(i + 1, len(images))
     compatible = all(row.get("comparable") for row in results)
     matching = compatible and all(row.get("within_tolerance") for row in results)
+    detection_comparable = all(row["detection"].get("comparable") for row in results)
+    detection_matching = detection_comparable and all(row["detection"].get("within_tolerance") for row in results)
     bmodel_requested = bool(bmodel_expected or bmodel_path)
     bmodel_compared = bool(bmodel_path and bmodel_path.is_file()) and all(row.get("onnx_bmodel", {}).get("comparable") for row in results)
     bmodel_matching = bmodel_compared and all(row["onnx_bmodel"].get("within_tolerance") for row in results)
+    bmodel_detection_comparable = bmodel_compared and all(row.get("onnx_bmodel_detection", {}).get("comparable") for row in results)
+    bmodel_detection_matching = bmodel_detection_comparable and all(row["onnx_bmodel_detection"].get("within_tolerance") for row in results)
     return {
-        "protocol": "pt-onnx-raw-tensor-v1",
-        "verdict": "consistent" if matching else ("difference_detected" if compatible else "not_comparable"),
+        "protocol": "pt-onnx-raw-and-detection-v2",
+        "raw_verdict": "consistent" if matching else ("difference_detected" if compatible else "not_comparable"),
+        "verdict": "difference_detected" if (detection_comparable and not detection_matching) else ("consistent" if matching else ("difference_detected" if compatible else "not_comparable")),
+        "detection_status": "consistent" if detection_matching else ("difference_detected" if detection_comparable else "unavailable"),
         "status": "completed", "sample_count": len(results), "precision": precision,
         "source": "PT", "compared": "ONNX", "bmodel_verified": False,
         "hardware_verified": False, "ground_truth_used": False,
         "bmodel_numeric_status": "consistent" if bmodel_matching else ("difference_detected" if bmodel_compared else "unavailable" if bmodel_requested else "not_applicable"),
+        "bmodel_detection_status": "consistent" if bmodel_detection_matching else ("difference_detected" if bmodel_detection_comparable else "unavailable" if bmodel_requested else "not_applicable"),
         "bmodel_numeric_error": simulator_error,
-        "scope_note": "同图 RGB Letterbox 输入下比较 PT／ONNX 原始张量；若本机存在 Sophon 官方模拟器则另行比较 ONNX／BMODEL，模拟器不代表板端实机或场景准确率。",
+        "deployment_preprocessing_aligned": canonical_preprocessing,
+        "label_count_matched": label_count_matched,
+        "scope_note": "同图规范化 RGB Letterbox 输入下对照原始张量，并在可识别的 YOLO 检测输出上比较阈值/NMS 后检测框。非规范化部署前处理未在本次执行；模拟器不代表板端实机或场景准确率。",
         "images": results,
     }
 
@@ -199,6 +339,8 @@ def run_verification_directory(directory: Path) -> None:
             precision=request["precision"], expected_source_sha=request.get("source_sha256", ""),
             expected_onnx_sha=request.get("onnx_sha256", ""),
             input_color_order=request.get("input_color_order", "rgb"),
+            preprocessing=request.get("preprocessing"),
+            label_codes=request.get("label_codes"),
             bmodel_path=Path(request["bmodel_path"]) if request.get("bmodel_path") else None,
             bmodel_sha256=request.get("bmodel_sha256", ""), bmodel_expected=bool(request.get("bmodel_expected")),
             sophon_python=request.get("sophon_python", ""),

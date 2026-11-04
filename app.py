@@ -21206,7 +21206,9 @@ def v39_create_numeric_validation(
                 "bmodel_expected": str(job.get("target") or "").lower() == "sophon",
                 "sophon_python": str((manifest.get("tool") or {}).get("python_path") or (job.get("resource") or {}).get("python_path") or ""),
                 "precision": str((job.get("params") or {}).get("precision") or "fp32"),
-                "input_color_order": str((job.get("params") or {}).get("input_color_order") or "rgb"),
+                "input_color_order": str((job.get("params") or {}).get("input_color_order") or ((job.get("params") or {}).get("preprocessing") or {}).get("pixel_format") or "rgb"),
+                "preprocessing": dict((job.get("params") or {}).get("preprocessing") or {}),
+                "label_codes": (manifest.get("source") or {}).get("label_codes") if isinstance((manifest.get("source") or {}).get("label_codes"), list) else [],
                 "image_names": names, "source_type": "PT", "compared_type": "ONNX",
             }
             write_json(directory / "request.json", receipt)

@@ -131,20 +131,37 @@ def export_pt_to_onnx(source: Path, out_dir: Path, resource: Dict[str, Any], par
     simplify = bool(params.get('simplify', False))
     batch = max(1, int(params.get('batch') or 1))
     half = params.get('kind') == 'onnx' and params.get('precision') == 'fp16'
+    candidates_before = {
+        candidate.resolve(): (candidate.stat().st_mtime_ns, candidate.stat().st_size)
+        for candidate in source.parent.glob(source.stem + '*.onnx') if candidate.is_file()
+    }
     script = (
         "import sys; from pathlib import Path; from ultralytics import YOLO; "
         "p=Path(sys.argv[1]).resolve(strict=True); m=YOLO(str(p)); "
-        f"print(m.export(format='onnx', imgsz={imgsz}, batch={batch}, opset={opset}, dynamic={dynamic}, simplify={simplify}, half={half}))"
+        f"print('__CONVERSION_ONNX_PATH__='+str(Path(m.export(format='onnx', imgsz={imgsz}, batch={batch}, opset={opset}, dynamic={dynamic}, simplify={simplify}, half={half})).resolve()))"
     )
-    run_cmd([py, '-c', script, str(source.resolve())], source.parent, log_file)
-    candidates = [source.with_suffix('.onnx')]
-    candidates += sorted(source.parent.glob(source.stem + '*.onnx'), key=lambda x: x.stat().st_mtime, reverse=True)
-    exported = next((p for p in candidates if p.exists()), None)
-    if not exported:
-        raise RuntimeError('Ultralytics 命令执行结束，但没有找到导出的 .onnx 文件。')
+    stdout = run_cmd([py, '-c', script, str(source.resolve())], source.parent, log_file)
+    markers = [line.split('__CONVERSION_ONNX_PATH__=', 1)[1].strip()
+               for line in (stdout or '').splitlines() if '__CONVERSION_ONNX_PATH__=' in line]
+    if markers:
+        exported = Path(markers[-1]).resolve()
+        if (exported.suffix.lower() != '.onnx' or exported.parent != source.parent.resolve()
+                or not exported.name.startswith(source.stem) or not exported.is_file()):
+            raise RuntimeError('Ultralytics 返回的本次 ONNX 产物路径与冻结源模型不匹配')
+        if (exported.stat().st_mtime_ns, exported.stat().st_size) == candidates_before.get(exported):
+            raise RuntimeError('本次 ONNX 导出未更新已有同名产物，拒绝冒用旧文件')
+    else:
+        # Some isolated/mocked exporters cannot return a path. Their fallback
+        # must still prove a fresh artifact; never silently reuse a stale file.
+        changed = [path.resolve() for path in source.parent.glob(source.stem + '*.onnx')
+                   if path.is_file() and (path.stat().st_mtime_ns, path.stat().st_size)
+                   != candidates_before.get(path.resolve())]
+        if len(changed) != 1:
+            raise RuntimeError('无法唯一确认本次导出的 ONNX；拒绝复用旧产物')
+        exported = changed[0]
     dst = out_dir / f'{safe_name(source.stem)}.onnx'
     shutil.copy2(exported, dst)
-    append_log(log_file, f'ONNX 已生成：{dst}')
+    append_log(log_file, f'ONNX 已生成：{dst}；SHA256={sha256_file(dst)}')
     return dst
 
 
