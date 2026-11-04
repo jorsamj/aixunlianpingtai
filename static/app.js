@@ -5157,6 +5157,11 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
       if(modelRead)modelReadOwners[target]=modelRead;
       tasks.push(api(url).then(value=>{
         if(modelRead&&modelReadOwners[target]!==modelRead)return;
+        // A training dialog has a dedicated resource hydration owner. A page
+        // extras response started earlier must not overwrite its newer target
+        // list and empty the hidden resource selector during submission.
+        if(target==='targets'&&document.querySelector('.train429-create')
+            &&window.TrainingCreateHydrationRuntime)return;
         if(!isCurrentOwner()){
           const currentCatalogue=state.page==='质量中心'?'scenarioTestModels'
             :['测试发布','部署测试','检测台'].includes(state.page)?'testModels':'';
@@ -6384,7 +6389,7 @@ materialIntegrityDialog47(Number(plan.included_groups||0)?'重复素材治理预
   };
   function showMaterialIntegrityTask47(task){
     state.materialIntegrityTask47=task;
-    materialIntegrityDialog47('素材删除任务',`<div class="material-integrity47-plan" data-integrity-delete-progress data-integrity-delete-task-id="${esc(task.task_id)}"><div id="materialIntegrityTask47" aria-live="polite"></div><div class="alert soft">任务受理不等于删除完成。只删除素材索引及对应标注；共享原始物理文件不直接删除。</div><div class="row end"><button class="btn" onclick="openMaterialIntegrityAudit47()">返回审计与选择</button><button class="btn" onclick="closeModal()">关闭 · 后台继续</button></div></div>`,true);
+    materialIntegrityDialog47('素材删除任务',`<div class="material-integrity47-plan" data-integrity-delete-progress data-integrity-delete-task-id="${esc(task.task_id)}"><div id="materialIntegrityTask47" aria-live="polite"></div><div class="alert soft"><b>索引与正式 GT 先安全删除，原图单独安全回收</b><span>原图不会被无条件清空：保留项仍引用的共享文件、在用图片及无法确认归属的存储均受保护。已退休的本地独立原图可按此 Task ID 在停服维护窗口批量物理回收；在线删除完成不等于磁盘空间已释放。</span></div><div class="row end"><button class="btn" onclick="openMaterialIntegrityAudit47()">返回审计与选择</button><button class="btn" onclick="closeModal()">关闭 · 后台继续</button></div></div>`,true);
     window.updateMaterialIntegrityTask47(task);
     if(state.materialIntegrityTrainingContext47){
       const button=document.querySelector('.material-integrity47-plan button');
@@ -6406,7 +6411,7 @@ materialIntegrityDialog47(Number(plan.included_groups||0)?'重复素材治理预
     const shownProcessed=Math.min(processed,total);
     const progressDiscrepancy=task.status==='SUCCEEDED'&&processed<total;
     const workerLabel=task.worker_id?'Worker: '+esc(task.worker_id):terminal?'执行节点未记录（可查看任务日志）':'等待 Worker';
-    box.innerHTML=`<b>${esc(names[task.status]||task.status)} · ${terminal?'删除索引 '+Number(task.succeeded||0)+' 条':'删除任务处理中'}</b><code>Task ID: ${esc(task.task_id)}</code><span>${workerLabel} · ${esc(task.phase||task.stage||'')}</span><progress max="${Math.max(1,total)}" value="${shownProcessed}" aria-label="实际已处理数量"></progress><span>范围 ${total} · 已处理 ${shownProcessed} · 实际删除索引 ${Number(task.succeeded||0)} · 失败 ${Number(task.failed||0)} · 未处理 ${Math.max(0,total-shownProcessed)}</span>${progressDiscrepancy?'<span class="error">任务成功状态与已处理数量不一致，请查看任务日志核验</span>':''}${(task.error_examples||[]).map(item=>`<span class="error">${esc(item.image_id||'')} ${esc(errors[item.error]||item.error||item.message||'')}</span>`).join('')}${task.log_available?`<a target="_blank" rel="noopener" href="/api/v62/projects/${encodeURIComponent(pid())}/material-batches/${encodeURIComponent(task.task_id)}/log">查看完整任务日志（上方最多展示 10 条失败样例）</a>`:''}`;
+    box.innerHTML=`<b>${esc(names[task.status]||task.status)} · ${terminal?'删除索引 '+Number(task.succeeded||0)+' 条':'删除任务处理中'}</b><code>Task ID: ${esc(task.task_id)}</code><span>${workerLabel} · ${esc(task.phase||task.stage||'')}</span><progress max="${Math.max(1,total)}" value="${shownProcessed}" aria-label="实际已处理数量"></progress><span>范围 ${total} · 已处理 ${shownProcessed} · 实际删除索引 ${Number(task.succeeded||0)} · 失败 ${Number(task.failed||0)} · 未处理 ${Math.max(0,total-shownProcessed)}</span>${terminal&&Number(task.succeeded||0)>0?'<span>原图物理回收：待独立安全核验；当前任务释放磁盘空间 0 字节，需在维护窗口按 Task ID 批量执行。</span>':''}${progressDiscrepancy?'<span class="error">任务成功状态与已处理数量不一致，请查看任务日志核验</span>':''}${(task.error_examples||[]).map(item=>`<span class="error">${esc(item.image_id||'')} ${esc(errors[item.error]||item.error||item.message||'')}</span>`).join('')}${task.log_available?`<a target="_blank" rel="noopener" href="/api/v62/projects/${encodeURIComponent(pid())}/material-batches/${encodeURIComponent(task.task_id)}/log">查看完整任务日志（上方最多展示 10 条失败样例）</a>`:''}`;
   };
   window.selectMaterialIntegrityGroups47=function(mode){
     const audit=state.materialIntegrityAudit47;if(!audit)return;

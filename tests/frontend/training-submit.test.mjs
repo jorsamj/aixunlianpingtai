@@ -80,7 +80,7 @@ function draft(overrides = {}) {
 }
 
 const target = {
-  id: 'gpu-local', type: 'local', framework: 'ultralytics',
+  id: 'gpu-local', type: 'local', framework: 'ultralytics', status: 'ready',
   algorithms: [{key: 'yolo_detect', base_model: 'yolo11n.pt'}],
 };
 const algorithm = target.algorithms[0];
@@ -179,6 +179,58 @@ test('a cached usable target remains submittable during background resource reva
     assert.equal(runtime.state().readiness.blockers.some(row=>row.code==='resource-error'),false);
     assert.equal(submitButton.disabled,false);
   } finally {cleanup(runtime);}
+});
+
+test('a warning target cannot be treated as ready just because a previous load said ready', () => {
+  const {submitButton}=installDom({backgroundConsent:true});
+  document.querySelector('.train429-create').dataset.workbenchMounted='true';
+  globalThis.window={};
+  const state={...baseState(),targets:[{...target,status:'warning',base_models:[]}],
+    trainingCreationLoading:{projectId:'project-1',resources:{status:'ready'}}};
+  const runtime=installTrainingSubmitRuntime({
+    getState:()=>state,projectId:()=> 'project-1',
+    trainingDraftRuntime:{sync:()=>draft(),current:()=>draft(),base:()=>({blocked:false})},
+    trainingDraftToRequest,
+    materialSummaryRuntime:{compatibilityFor:()=>null,updateAdmissionDiagnosis:()=>{}},
+  });
+  try{
+    assert.equal(runtime.state().readiness.blockers.some(row=>row.code==='resource-unavailable'),true);
+    assert.equal(submitButton.disabled,true);
+  }finally{cleanup(runtime);}
+});
+
+test('submission with an empty hidden resource selector retries canonical hydration once before other admission checks', async () => {
+  const {controls}=installDom({backgroundConsent:false});
+  const root=document.querySelector('.train429-create');
+  root.dataset.workbenchMounted='true';
+  root.dataset.trainingStep='3';
+  controls.tr429Target.value='';
+  const state={...baseState(),targets:[],trainingCreationLoading:{projectId:'project-1',resources:{status:'unavailable'}}};
+  let refreshed=0,posted=0;
+  const notifications=[];
+  globalThis.window={
+    TrainingCreateHydrationRuntime:{async hydrateOptions({force,requireTrainable}){
+      assert.equal(force,true);
+      assert.equal(requireTrainable,true);
+      refreshed++;
+      state.targets=[target];
+    }},
+    applyTrainingCreationResources(){controls.tr429Target.value='gpu-local';},
+    fetch(){posted++;throw new Error('the user has not confirmed the training scope');},
+  };
+  const runtime=installTrainingSubmitRuntime({
+    getState:()=>state,projectId:()=> 'project-1',notify:message=>notifications.push(message),admissionMode:'background',
+    trainingDraftRuntime:{sync:()=>draft(),current:()=>draft(),base:()=>({blocked:false})},
+    trainingDraftToRequest,
+    materialSummaryRuntime:{compatibilityFor:()=>null,updateAdmissionDiagnosis:()=>{}},
+  });
+  try{
+    assert.equal(await runtime.submit(),null);
+    assert.equal(refreshed,1);
+    assert.equal(controls.tr429Target.value,'gpu-local');
+    assert.equal(posted,0);
+    assert.ok(notifications.some(message=>message.includes('全部确认本次训练素材')));
+  }finally{cleanup(runtime);}
 });
 
 test('formal GT conflict diagnosis runs before final task-level background confirmation', async () => {

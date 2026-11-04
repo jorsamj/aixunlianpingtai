@@ -197,14 +197,14 @@ export function installMaterialBatchRuntime({projectId, projectName, currentPage
     if (!Number(estimate.count || 0)) throw new Error('当前范围没有可处理素材');
     const cleanNote = operation === 'CLEAN' ? '清洗将检查并记录问题，不自动删除或确认素材。\n' : '';
     let deleteNote = operation === 'DELETE_INDEX'
-      ? '将删除素材索引及对应全部标注（Ground Truth 与标注文件）；共享原图及平台标签字典不会被删除。\n'
+      ? '将删除素材索引及对应全部标注（Ground Truth 与标注文件）；删除回执可用于后续批量物理回收安全的独立原图。保留项共享的原图及平台标签字典不会被删除。\n'
       : operation === 'DELETE_SOURCE'
         ? '将尝试删除原始图片对象及对应标注，操作不可撤销。\n' : '';
     const preview=estimate.deletion_preview;
     if(operation==='DELETE_INDEX'&&preview){
       if(!preview.plan_id||!preview.confirmation_credential)throw new Error('删除预览身份不完整，请重新预览');
       const count=value=>value==null?'未核验':Number(value);
-      deleteNote+=`正式 GT ${count(preview.gt_count)} · 当前 Test ${count(preview.current_test_count)}\n历史引用 ${count(preview.historical_reference_count)} · 活动引用 ${count(preview.active_reference_count)}\n保留物理图片 ${count(preview.physical_retained_count)} · 释放空间 0 字节\n历史证据保留；已删除原图不保证完整复评。\n`;
+      deleteNote+=`正式 GT ${count(preview.gt_count)} · 当前 Test ${count(preview.current_test_count)}\n历史引用 ${count(preview.historical_reference_count)} · 活动引用 ${count(preview.active_reference_count)}\n计划退休索引 ${count(preview.physical_retained_count)} 条 · 本次释放空间 0 字节\n这不等于对应数量的独立图片文件。在线执行只退休索引；可在停服维护窗口按删除任务批量回收不共享的本地原图。历史证据保留；原图回收后不保证完整复评。\n`;
       payload.options={...options,deletion_plan_id:preview.plan_id,confirmation_credential:preview.confirmation_credential};
     }
     if ((!skipConfirm || preview) && !window.confirm(`${deleteNote}${cleanNote}本次将${deleteNote ? '删除' : '处理'} ${estimate.count} 张素材（${chosen==='PROJECT'?'整个项目':chosen === 'CURRENT_PAGE' ? '当前页' : chosen === 'SELECTED' ? '当前已选' : '全部筛选结果'}），确认继续？`)) return null;

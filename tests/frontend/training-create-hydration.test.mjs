@@ -4,6 +4,7 @@ import {
   installTrainingCreateHydrationRuntime,
   trainingCreationInputsReady,
   trainingOptionsHydrated,
+  trainingResourceUnavailableReason,
 } from '../../static/modules/training-create-hydration.js';
 
 test('training resources require a complete target while recommendation is optional', () => {
@@ -14,6 +15,42 @@ test('training resources require a complete target while recommendation is optio
     targets: [{status: 'ready', algorithms: [{key: 'yolo11n'}], base_models: []}],
     rec: null,
   }), true);
+});
+
+test('warning-only training options are diagnosed as missing model evidence, not a generic GPU outage', () => {
+  assert.match(trainingResourceUnavailableReason([{status:'warning',algorithms:[{key:'detect'}],base_models:[]}]), /基础模型或训练配置/);
+  assert.match(trainingResourceUnavailableReason([{status:'offline'}]), /离线/);
+  assert.match(trainingResourceUnavailableReason([]), /未发现训练资源/);
+});
+
+test('an unavailable response or a replaced shared target list never poisons the five-minute training cache', async () => {
+  const previousWindow=globalThis.window;
+  const state={targets:[],rec:null};
+  let calls=0;
+  globalThis.window={};
+  try{
+    const runtime=installTrainingCreateHydrationRuntime({
+      getState:()=>state,projectId:()=> 'p',openTrainingForm:()=> 'opened',
+      request:async url=>{
+        assert.match(url,/^\/api\/training_options/);
+        calls++;
+        return calls===1
+          ? {targets:[{id:'unready',status:'warning',algorithms:[{key:'detect'}],base_models:[]}]}
+          : {targets:[{id:'gpu-a800',status:'ready',algorithms:[{key:'detect'}],base_models:[]}]};
+      },
+    });
+    await runtime.hydrateOptions({requireTrainable:false});
+    assert.equal(state.trainingCreationLoading.resources.status,'unavailable');
+    assert.match(state.trainingCreationLoading.resources.error,/基础模型/);
+    await runtime.hydrateOptions({requireTrainable:false});
+    assert.equal(calls,2,'a warning response must not remain cached');
+    assert.equal(state.trainingCreationLoading.resources.status,'ready');
+    state.targets=[]; // Another page may update shared state after the GET.
+    await runtime.hydrateOptions({requireTrainable:false});
+    assert.equal(calls,3,'a timestamp cannot authorize an empty target list');
+    assert.equal(state.targets[0].id,'gpu-a800');
+    runtime.destroy();
+  }finally{globalThis.window=previousWindow;}
 });
 
 test('first training open mounts the real form immediately and publishes independent hydration', async () => {

@@ -1,4 +1,5 @@
 import {withRequestDeadline} from './api.js?v=20261021s';
+import {trainingResourceUnavailableReason} from './training-create-hydration.js?v=4226517';
 
 function required(value, message) {
   if (value === null || value === undefined || String(value).trim() === '') throw new Error(message);
@@ -622,12 +623,17 @@ export function installTrainingSubmitRuntime({
     // A background revalidation may be loading/failed while the previously
     // loaded target is still usable. Only the absence of a usable selected
     // target should stop a training creation.
-    const selectedTargetUsable=Boolean(selectedTarget&&!['unavailable','offline','disabled','error'].includes(String(selectedTarget.status||'').toLowerCase())&&
+    const selectedTargetUsable=Boolean(selectedTarget&&String(selectedTarget.status||'').toLowerCase()==='ready'&&
       Array.isArray(selectedTarget.algorithms)&&selectedTarget.algorithms.length);
-    if(resourceLoad&&resourceLoad.status!=='ready'&&!selectedTargetUsable)add('resource-'+resourceLoad.status,resourceLoad.status==='loading'?'训练资源正在读取，请稍候':resourceLoad.error||'训练资源未就绪，请重新读取资源',resourceLoad.status==='loading');
     if(draft?.algorithmId&&!asset)add('algorithm-unavailable','当前算法身份不存在，请刷新算法列表');
     if(!projectId?.())add('project-unavailable','当前项目不可用，请重新选择项目');
-    if(!selectedTarget)add('resource-unavailable','训练资源尚未就绪，请等待或重新读取配置',!selectedTargetId);
+    if(!selectedTargetUsable){
+      const loading=resourceLoad?.status==='loading';
+      add(loading?'resource-loading':'resource-unavailable',
+        loading?'训练资源正在读取，完成后自动恢复':
+          (resourceLoad?.status==='error'&&resourceLoad?.error)||trainingResourceUnavailableReason(state.targets||[]),
+        loading);
+    }
     if(selectedTarget){
       const engineKey=document.getElementById?.('tr429Alg')?.value||'';
       const engine=(selectedTarget.algorithms||[]).find(row=>String(row.key)===String(engineKey))||(selectedTarget.algorithms||[])[0];
@@ -662,7 +668,7 @@ export function installTrainingSubmitRuntime({
     renderSupplementCandidateSummary(supplementContext);
     const button = submitButton();
     if (button) {
-      button.disabled = submitting || Boolean(pendingOutcome()) || Boolean(resourceLoad&&resourceLoad.status!=='ready'&&!selectedTargetUsable);
+      button.disabled = submitting || Boolean(pendingOutcome()) || !selectedTargetUsable;
       button.setAttribute?.('aria-busy',submitting?'true':'false');
       button.dataset.trainingSubmitOwner = 'TrainingSubmitRuntime';
       button.dataset.trainingSubmitReason = readiness.reason;
@@ -675,12 +681,13 @@ export function installTrainingSubmitRuntime({
   }
 
   function restoreSubmissionUI() {
-    try { updateReadiness(); }
+    let readinessRestored=false;
+    try { updateReadiness(); readinessRestored=true; }
     catch (error) { console.error('training readiness recovery failed', error); }
     if (!ownsSubmissionModal()) return;
     const button=submissionButton;
     if(button){
-      button.disabled=Boolean(pendingOutcome()?.taskId);
+      if(!readinessRestored)button.disabled=Boolean(pendingOutcome()?.taskId);
       button.setAttribute?.('aria-busy','false');
       button.classList?.remove?.('loading');
       button.textContent=pendingOutcome()?.taskId?'结果待确认':lastStage==='created'?(button.dataset.trainingSubmitIdleText||'开始训练'):lastStage==='failed'?'重新检查':button.dataset.trainingSubmitIdleText||'开始训练';
@@ -769,12 +776,37 @@ export function installTrainingSubmitRuntime({
     let rejectionBodyDecoded = false;
     let creationAccepted = false;
     try {
-      const resources=(getState?.()||{}).trainingCreationLoading;
-      const selectedTargetId=String(document.getElementById?.('tr429Target')?.value||'');
-      const cachedTarget=(getState?.()?.targets||[]).find(row=>String(row?.id||'')===selectedTargetId);
-      const usableTarget=Boolean(cachedTarget&&!['unavailable','offline','disabled','error'].includes(String(cachedTarget.status||'').toLowerCase())&&Array.isArray(cachedTarget.algorithms)&&cachedTarget.algorithms.length);
-      if(submissionRoot?.dataset?.workbenchMounted==='true'&&resources&&String(resources.projectId||'')===String(projectId?.()||'')&&resources.resources?.status!=='ready'&&!usableTarget){
-        notifyUser(resources.resources?.error||'训练资源尚未准备完成，请等待或重试');window.focusTrainingWorkbenchField?.('resource');return null;
+      const currentTarget=()=>{
+        const state=getState?.()||{},id=String(document.getElementById?.('tr429Target')?.value||'');
+        return (state.targets||[]).find(row=>String(row?.id||'')===id&&String(row?.status||'').toLowerCase()==='ready'
+          &&Array.isArray(row.algorithms)&&row.algorithms.length);
+      };
+      if(submissionRoot?.dataset?.workbenchMounted==='true'&&!currentTarget()){
+        // An initially empty hidden selector is not proof that the GPU/Agent
+        // disappeared. Join the canonical resource GET (or retry one failed
+        // read) before determining whether the real environment is unusable.
+        setSubmitStage('sync-draft');
+        const ownerRoot=submissionRoot,ownerTask=plannedId;
+        const hydrator=window.TrainingCreateHydrationRuntime;
+        try{
+          if(hydrator?.hydrateOptions)await hydrator.hydrateOptions({force:true,requireTrainable:true});
+        }catch(error){
+          if(ownsSubmissionModal()){
+            notifyUser(`训练资源读取失败：${String(error?.message||error)}；请检查资源连接后重试`);
+            window.focusTrainingWorkbenchField?.('resource');
+          }
+          return null;
+        }
+        if(!ownsSubmissionModal()||submissionRoot!==ownerRoot
+          ||String(document.getElementById?.('tr429TaskId')?.value||'')!==ownerTask)return null;
+        window.applyTrainingCreationResources?.();
+        if(!currentTarget()){
+          const state=getState?.()||{},reason=state.trainingCreationLoading?.resources?.error
+            ||trainingResourceUnavailableReason(state.targets);
+          notifyUser(reason);
+          window.focusTrainingWorkbenchField?.('resource');
+          return null;
+        }
       }
       setSubmitStage('sync-draft');
       updateReadiness({reset:true});

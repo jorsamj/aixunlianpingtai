@@ -9,6 +9,23 @@ export function trainingOptionsHydrated(targets = []) {
   ));
 }
 
+export function trainingResourceUnavailableReason(targets = []) {
+  if (!Array.isArray(targets) || !targets.length) {
+    return '未发现训练资源；请检查训练环境或在线训练节点，并重新读取资源';
+  }
+  const ready = targets.filter(row => String(row?.status || '').toLowerCase() === 'ready');
+  if (ready.length && ready.every(row => !Array.isArray(row.algorithms) || !row.algorithms.length)) {
+    return '训练资源已连接，但未提供可执行的训练算法；请检查训练引擎配置';
+  }
+  if (targets.some(row => String(row?.status || '').toLowerCase() === 'warning')) {
+    return '已发现训练环境，但基础模型或训练配置尚未就绪；请检查 .pt 权重、当前有效版本及训练环境';
+  }
+  if (targets.every(row => ['offline', 'unavailable', 'disabled', 'error'].includes(String(row?.status || '').toLowerCase()))) {
+    return '训练节点当前离线或不可用；请检查 Web/Worker、节点状态和训练环境';
+  }
+  return '训练资源暂不可用于本次训练；请重新读取资源并检查训练引擎';
+}
+
 export function trainingCreationInputsReady(state = {}) {
   return trainingOptionsHydrated(state.targets);
 }
@@ -113,7 +130,15 @@ export function installTrainingCreateHydrationRuntime({
     const usable = requireTrainable
       ? trainingOptionsHydrated(state.targets)
       : Array.isArray(state.targets) && state.targets.length > 0;
-    if (!force && (fresh || (!revalidate && usable && !commonLoadedAt))) {if(!commonLoadedAt)commonLoadedAt=Date.now();stage('resources',{status:trainingOptionsHydrated(state.targets)?'ready':'unavailable',cacheHit:true});return state.targets || [];}
+    // A timestamp does not prove a target is still present: page refreshes may
+    // replace state.targets, and a previous response may contain only warning
+    // / offline targets. Never cache that lack of training capability for 5m.
+    if (!force && usable && trainingOptionsHydrated(state.targets)
+        && (fresh || (!revalidate && !commonLoadedAt))) {
+      if(!commonLoadedAt)commonLoadedAt=Date.now();
+      stage('resources',{status:'ready',cacheHit:true,error:''});
+      return state.targets || [];
+    }
     if (optionsInflight?.projectKey === projectKey) return optionsInflight.promise;
 
     const started=clockNow();stage('resources',{status:'loading',error:'',cacheHit:false,url:'/api/training_options',requestCount:Number(state.trainingCreationLoading?.resources?.requestCount||0)+1});
@@ -123,11 +148,12 @@ export function installTrainingCreateHydrationRuntime({
       .then(optionsResult => {
         if (destroyed || controller.signal.aborted || String(projectId?.() || '') !== projectKey) return getState?.()?.targets || [];
         const liveState = getState?.() || state;
-        liveState.targets = optionsResult?.targets || [];
-        commonLoadedAt = Date.now();
+        liveState.targets = Array.isArray(optionsResult?.targets) ? optionsResult.targets : [];
+        const hydrated = trainingOptionsHydrated(liveState.targets);
+        commonLoadedAt = hydrated ? Date.now() : 0;
         commonProjectId = projectKey;
-        stage('resources',{status:trainingOptionsHydrated(liveState.targets)?'ready':'unavailable',durationMs:Math.round(clockNow()-started),jsonBytes:jsonSize(optionsResult),error:''});
         if(liveOpening())window.applyTrainingCreationResources?.();
+        stage('resources',{status:hydrated?'ready':'unavailable',durationMs:Math.round(clockNow()-started),jsonBytes:jsonSize(optionsResult),error:hydrated?'':trainingResourceUnavailableReason(liveState.targets)});
         return liveState.targets;
       })
       .catch(error=>{if(!destroyed&&String(projectId?.()||'')===projectKey&&!controller.signal.aborted)stage('resources',{status:'error',durationMs:Math.round(clockNow()-started),error:String(error.message||error)});throw error;})
@@ -186,7 +212,9 @@ export function installTrainingCreateHydrationRuntime({
   const hydrateCommon = async ({force = false, maxAgeMs = COMMON_INPUT_TTL_MS} = {}) => {
     const {state, projectKey} = projectContext();
     const age = Date.now() - Number(commonLoadedAt || 0);
-    if (!force && commonLoadedAt > 0 && commonProjectId === projectKey && age >= 0 && age < Math.max(0, Number(maxAgeMs) || 0)) {
+    if (!force && commonLoadedAt > 0 && commonProjectId === projectKey
+        && trainingOptionsHydrated(state.targets)
+        && age >= 0 && age < Math.max(0, Number(maxAgeMs) || 0)) {
       return state;
     }
     await hydrateOptions({force, requireTrainable: false, revalidate: !force, maxAgeMs});
