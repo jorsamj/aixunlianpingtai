@@ -95,6 +95,10 @@ class ExternalAlgorithmAutoSyncReporter:
 
     def report(self) -> bool:
         """Fast Worker-heartbeat hook; returns True only when a run was started."""
+        # Local/air-gapped mode must also pause pending provider cleanup
+        # outboxes. Keep the durable intents intact for a future re-enable.
+        if not getattr(self.service, "external_integration_enabled", lambda: True)():
+            return False
         # Deliver only already-committed local cleanup intents on the existing
         # heartbeat. Actual I/O and cleanup are owned by the Durable Scheduler.
         from .external_algorithm_cleanup import dispatch_cleanup_outboxes

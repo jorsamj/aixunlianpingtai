@@ -1,3 +1,5 @@
+> **2026-11-04 / 42.24.531 平台对接总开关及内网安全接续**：保留既有 `mode=local/external` 单一权威配置，在平台对接页增加可直达切换的开关；关闭时新畅联 provider HTTP、连接测试/诊断、Worker 自动同步/发布和待派发外部清理均受服务端模式保护。保留旧 URL 与安全存储凭据。同步收敛 CORS wildcard+Cookie、本地换密旧 session 与失败记录上限，并纠正 530 两项 Chrome 回归。前端定向30/30、源码编译通过，完整 Python/Chrome/新 SHA CI 和目标断网仍未验，生产不动。详见 [总开关专项](INTRANET_MODE_MASTER_SWITCH_2026_11_04.md)。
+
 > **2026-11-04 / 42.24.530 内网本地化开发接续**：基于远端 529 `ad63fd3666c0f78c2d80abb6f191c731f5560320`，新增默认本地登录 `jiangjs/123456`（可用环境变量改密）、畅联云登录显式可选、首页/登录“算法训练”中性品牌、同一算法 SQL/API 的独立本地创建（external 模式也允许 LOCAL 新建，外部同步算法保留只读）。前端本地已执行 **1498/1498**（排除 4 个缺 Uppy/Annotorious 包的测试文件），Python 编译/纯离线凭据验证通过；本机缺 FastAPI、pytest、filelock，Python 和真实浏览器须 GitHub CI/目标机验。完整需求、改动、风险和内网验收清单见 [内网本地化专项](INTRANET_LOCAL_AUTH_AND_ALGORITHM_CREATION_2026_11_04.md)。不部署、不改正式数据、不 merge/release/force push。
 
 > **2026-10-30 / 42.24.429 P0 接续**：当前基线 428／`b13d8705`（精确 Actions 38/38 绿色），既有训练资源 GET/空选材/迭代 SHA/默认第一页/ZIP 管理均不重建。TrainingSubmit 迟到成功提示归属已最小修复并加 RED→GREEN；生产版本、磁盘、A800 资源拒绝及真实 P50/P95 均未验，禁止以本机毫秒数据替代。唯一进度 [P0 续批台账](performance/2026-10-29-p0-followup.md)，不部署/清理，429 最终 CI 待核。

@@ -48,7 +48,7 @@ test('refresh keeps optional ChangLian login session and logout closes it', asyn
   await expect(page.getByRole('heading', {name: '欢迎回来'})).toBeVisible();
   await expect(page.locator('.company-brand-login .login-local-brand')).toHaveText('算法训练');
   await page.locator('[data-login-provider="changlian"]').click();
-  await expect(page.locator('#loginRemoteAdvanced')).toBeHidden();
+  await expect(page.locator('#loginRemoteAdvanced')).toBeVisible();
 
   await page.locator('#loginUsername').fill('demo');
   await page.locator('#loginPassword').fill('wrong');

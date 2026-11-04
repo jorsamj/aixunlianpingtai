@@ -165,6 +165,8 @@ class ChangLianEndpoints:
 DEFAULT_CONFIG: Dict[str, Any] = {
     "schema_version": CONFIG_SCHEMA_VERSION,
     "mode": "local",
+    # No network is authorized merely because an old copied config says external.
+    "mode_confirmed_at": None,
     "provider": "changlian",
     "base_url": "",
     "auto_sync_enabled": False,
@@ -244,6 +246,12 @@ class ExternalPlatformConfigPayload(BaseModel):
     endpoints: EndpointPayload = Field(default_factory=EndpointPayload)
 
 
+class ExternalPlatformModePayload(BaseModel):
+    """The master switch is independent of saved provider credentials."""
+
+    mode: Literal["local", "external"]
+
+
 class ExternalPlatformRepository:
     def __init__(self, data_dir: Path):
         self.root = Path(data_dir) / "external_algorithm_platform"
@@ -256,57 +264,76 @@ class ExternalPlatformRepository:
 
     def config(self) -> Dict[str, Any]:
         with self.lock:
-            if not self.config_path.exists():
-                return json.loads(json.dumps(DEFAULT_CONFIG))
-            try:
-                body = json.loads(self.config_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError) as error:
-                raise PlatformError(
-                    "EXTERNAL_PLATFORM_CONFIG_INVALID",
-                    "外部平台配置无法读取",
-                    str(error),
-                    "请恢复 external_algorithm_platform/config.json，或重新保存平台对接配置。",
-                    500,
-                ) from error
-            if not isinstance(body, dict):
-                raise PlatformError(
-                    "EXTERNAL_PLATFORM_CONFIG_INVALID",
-                    "外部平台配置格式不正确",
-                    "配置根节点必须为对象。",
-                    "请重新保存平台对接配置。",
-                    500,
-                )
-            result = json.loads(json.dumps(DEFAULT_CONFIG))
-            result.update(body)
-            result["endpoints"] = asdict(ChangLianEndpoints.from_mapping(body.get("endpoints")))
-            if str(result.get("mode") or "local") == "external":
-                # Provider has no webhook/subscription contract. Automatic master
-                # data reconciliation is fixed to the canonical China-time slots;
-                # completed training/conversion results remain auto-published.
-                result["auto_sync_enabled"] = True
-                result["auto_publish_enabled"] = True
-            return result
+            return self._config_unlocked()
 
-    def save_config(self, value: Mapping[str, Any]) -> Dict[str, Any]:
-        current = self.config()
-        result = dict(current)
-        mode = str(value.get("mode") or "local")
-        result.update({
-            "schema_version": CONFIG_SCHEMA_VERSION,
-            "mode": mode,
-            "provider": str(value.get("provider") or "changlian"),
-            "base_url": normalize_base_url(value.get("base_url")),
-            "auto_sync_enabled": mode == "external",
-            # Legacy compatibility field only; scheduling no longer reads it.
-            "auto_sync_interval_seconds": int(value.get("auto_sync_interval_seconds") or DEFAULT_AUTO_SYNC_INTERVAL_SECONDS),
-            "auto_publish_enabled": mode == "external",
-            "credential_ref": current.get("credential_ref") or DEFAULT_CONFIG["credential_ref"],
-            "endpoints": asdict(ChangLianEndpoints.from_mapping(value.get("endpoints"))),
-            "updated_at": utc_now(),
-        })
+    def _config_unlocked(self) -> Dict[str, Any]:
+        if not self.config_path.exists():
+            return json.loads(json.dumps(DEFAULT_CONFIG))
+        try:
+            body = json.loads(self.config_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise PlatformError(
+                "EXTERNAL_PLATFORM_CONFIG_INVALID", "外部平台配置无法读取", str(error),
+                "请恢复 external_algorithm_platform/config.json，或重新保存平台对接配置。", 500,
+            ) from error
+        if not isinstance(body, dict):
+            raise PlatformError(
+                "EXTERNAL_PLATFORM_CONFIG_INVALID", "外部平台配置格式不正确", "配置根节点必须为对象。",
+                "请重新保存平台对接配置。", 500,
+            )
+        result = json.loads(json.dumps(DEFAULT_CONFIG))
+        result.update(body)
+        result["endpoints"] = asdict(ChangLianEndpoints.from_mapping(body.get("endpoints")))
+        if str(result.get("mode") or "local") == "external" and not body.get("mode_confirmed_at"):
+            # A pre-switch external config may have been copied to a new LAN
+            # deployment. Require an explicit 531+ opt-in before any outbound I/O.
+            result["mode"] = "local"
+            result["auto_sync_enabled"] = False
+            result["auto_publish_enabled"] = False
+        if str(result.get("mode") or "local") == "external":
+            result["auto_sync_enabled"] = True
+            result["auto_publish_enabled"] = True
+        return result
+
+    def save_config(self, value: Mapping[str, Any], *, preserve_mode: bool = False) -> Dict[str, Any]:
+        # Saved connection drafts must not resurrect external mode after the
+        # operator turned the master switch off in another tab/process.
         with self.lock:
+            current = self._config_unlocked()
+            result = dict(current)
+            mode = str((current.get("mode") if preserve_mode else value.get("mode")) or "local")
+            result.update({
+                "schema_version": CONFIG_SCHEMA_VERSION,
+                "mode": mode,
+                "mode_confirmed_at": utc_now(),
+                "provider": str(value.get("provider") or "changlian"),
+                "base_url": normalize_base_url(value.get("base_url")),
+                "auto_sync_enabled": mode == "external",
+                # Legacy compatibility field only; scheduling no longer reads it.
+                "auto_sync_interval_seconds": int(value.get("auto_sync_interval_seconds") or DEFAULT_AUTO_SYNC_INTERVAL_SECONDS),
+                "auto_publish_enabled": mode == "external",
+                "credential_ref": current.get("credential_ref") or DEFAULT_CONFIG["credential_ref"],
+                "endpoints": asdict(ChangLianEndpoints.from_mapping(value.get("endpoints"))),
+                "updated_at": utc_now(),
+            })
             atomic_write_json(self.config_path, result)
         return result
+
+    def set_mode(self, mode: Literal["local", "external"]) -> Dict[str, Any]:
+        """Update only the integration switch; retain all saved connection settings."""
+        if mode not in {"local", "external"}:
+            raise ValueError("Invalid external platform mode")
+        with self.lock:
+            current = self._config_unlocked()
+            current.update({
+                "mode": mode,
+                "mode_confirmed_at": utc_now(),
+                "auto_sync_enabled": mode == "external",
+                "auto_publish_enabled": mode == "external",
+                "updated_at": utc_now(),
+            })
+            atomic_write_json(self.config_path, current)
+            return current
 
     def cache(self) -> Dict[str, Any]:
         with self.lock:
@@ -664,6 +691,10 @@ class ChangLianClient:
         self._token_expires_at = 0.0
         self._token_lock = threading.Lock()
         self._shared_bearer_cache: _SharedChangLianBearer | None = None
+        # Provider clients created by an integration service re-check the
+        # persisted master switch before EVERY HTTP call, including auth calls.
+        # This also fences clients created before the operator switched off.
+        self._external_enabled_check: Callable[[], None] | None = None
         self.audit_callback = audit_callback
         self.audit_context: Dict[str, Any] = {}
         if not self.access_key or not self.access_secret:
@@ -742,6 +773,8 @@ class ChangLianClient:
         auth: bool = False,
         **kwargs: Any,
     ) -> Any:
+        if self._external_enabled_check is not None:
+            self._external_enabled_check()
         headers = dict(kwargs.pop("headers", {}) or {})
         headers.setdefault("Accept", "application/json")
         if auth:
@@ -763,6 +796,8 @@ class ChangLianClient:
             kind = ('external.http.auth' if path in {self.endpoints.test_sign, self.endpoints.token}
                     else 'external.http.business')
             with measure(kind):
+                if self._external_enabled_check is not None:
+                    self._external_enabled_check()
                 response = self.session.request(
                     method.upper(),
                     self._url(path),
@@ -1689,6 +1724,9 @@ class ExternalAlgorithmPlatformService:
                 409,
             )
 
+    def external_integration_enabled(self) -> bool:
+        return str(self.repository.config().get("mode") or "local") == "external"
+
     def start_sync(
         self,
         *,
@@ -1937,7 +1975,7 @@ class ExternalAlgorithmPlatformService:
             "blocking_keys": [str(row.get("key") or "") for row in blocking],
         }
 
-    def save(self, payload: ExternalPlatformConfigPayload) -> Dict[str, Any]:
+    def save(self, payload: ExternalPlatformConfigPayload, *, preserve_mode: bool = False) -> Dict[str, Any]:
         current = self.repository.config()
         ref = str(current.get("credential_ref") or DEFAULT_CONFIG["credential_ref"])
         credential_store = self._credential_store()
@@ -1959,11 +1997,20 @@ class ExternalAlgorithmPlatformService:
                     422,
                 )
             credential_store.set(ref, merged)
-        self.repository.save_config(payload.model_dump(exclude={"access_key", "access_secret"}))
+        self.repository.save_config(
+            payload.model_dump(exclude={"access_key", "access_secret"}),
+            preserve_mode=preserve_mode,
+        )
+        self._shared_bearer_cache.invalidate()
+        return self.public_config()
+
+    def set_mode(self, payload: ExternalPlatformModePayload) -> Dict[str, Any]:
+        self.repository.set_mode(payload.mode)
         self._shared_bearer_cache.invalidate()
         return self.public_config()
 
     def _client_for_payload(self, payload: Optional[ExternalPlatformConfigPayload] = None) -> ChangLianClient:
+        self._assert_sync_active()
         config = self.repository.config()
         provider = str(payload.provider if payload is not None else config.get("provider") or "changlian")
         if provider != "changlian":
@@ -1999,6 +2046,8 @@ class ExternalAlgorithmPlatformService:
         # connection tests stay isolated; each client owns its HTTP session.
         if payload is None and isinstance(client, ChangLianClient):
             client._shared_bearer_cache = self._shared_bearer_cache
+        if isinstance(client, ChangLianClient):
+            client._external_enabled_check = self._assert_sync_active
         return client
 
     def _client(self) -> ChangLianClient:
@@ -2733,7 +2782,13 @@ def external_algorithm_platform_router(
 
     @router.put("/config")
     def save_config(payload: ExternalPlatformConfigPayload):
-        return {"ok": True, "config": service.save(payload)}
+        # Only /mode may change the authoritative master switch. Older tabs
+        # can still edit connection fields without re-enabling background I/O.
+        return {"ok": True, "config": service.save(payload, preserve_mode=True)}
+
+    @router.put("/mode")
+    def set_integration_mode(payload: ExternalPlatformModePayload):
+        return {"ok": True, "config": service.set_mode(payload)}
 
     @router.post("/test")
     def test_connection(payload: Optional[ExternalPlatformConfigPayload] = None):

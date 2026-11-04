@@ -409,6 +409,7 @@ class SignedSessionManager:
         upstream_expires_at: Optional[int] = None,
         upstream_expiry_source: str = "undocumented",
         session_id: Optional[str] = None,
+        credential_revision: Optional[str] = None,
     ) -> str:
         issued_at = int(time.time() if now is None else now)
         origin = issued_at if created_at is None else int(created_at)
@@ -431,6 +432,8 @@ class SignedSessionManager:
             "upstream_exp": int(upstream_expires_at) if upstream_expires_at else None,
             "upstream_expiry_source": str(upstream_expiry_source or "undocumented"),
         }
+        if credential_revision is not None:
+            body["credential_revision"] = str(credential_revision)
         payload = _b64encode(
             json.dumps(
                 body,
@@ -477,6 +480,11 @@ class SignedSessionManager:
             return None
         return body
 
+    def local_credential_revision(self, username: str, password: str) -> str:
+        """Opaque version bound to the signing key; does not reveal weak passwords."""
+        raw = f"local-login\0{username}\0{password}".encode("utf-8")
+        return hmac.new(self._key, raw, hashlib.sha256).hexdigest()
+
     def needs_renewal(self, claims: Mapping[str, Any], *, now: Optional[int] = None) -> bool:
         current = int(time.time() if now is None else now)
         try:
@@ -510,6 +518,10 @@ class SignedSessionManager:
             upstream_expires_at=upstream_expires_at,
             upstream_expiry_source=str(
                 claims.get("upstream_expiry_source") or "undocumented"
+            ),
+            credential_revision=(
+                str(claims["credential_revision"])
+                if "credential_revision" in claims else None
             ),
         )
 

@@ -5,6 +5,7 @@ import hashlib
 import math
 import re
 import os
+import secrets
 import errno
 import shutil
 import subprocess
@@ -88,7 +89,7 @@ from platform_core.changlian_login_auth import (
     SignedSessionManager,
     auth_guard_decision,
 )
-from platform_core.local_login_auth import LocalLoginVerifier
+from platform_core.local_login_auth import DEFAULT_LOCAL_PASSWORD, LocalLoginVerifier
 from platform_core.labels import (
     active_label_options,
     confirmed_alias_updates,
@@ -295,12 +296,20 @@ if not PROMPT_LIBRARY_FILE.exists():
     PROMPT_LIBRARY_FILE.write_text("[]", encoding="utf-8")
 
 app = FastAPI(title="算法训练", version=APP_VERSION)
+# Same-origin is the safe default for independent LAN deployments. Different
+# front-end origins must be explicitly enumerated; wildcard + credentials is
+# forbidden by the browser CORS contract.
+_CORS_ALLOWED_ORIGINS = [
+    origin.strip().rstrip("/")
+    for origin in os.environ.get("MC_CORS_ALLOWED_ORIGINS", "").split(",")
+    if origin.strip() and origin.strip() != "*"
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_CORS_ALLOWED_ORIGINS,
+    allow_credentials=bool(_CORS_ALLOWED_ORIGINS),
+    allow_methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Requested-With", "X-Request-ID"],
 )
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
@@ -340,6 +349,20 @@ _CHANGLIAN_AUTH_SESSIONS = SignedSessionManager(
         minimum=60,
     ),
 )
+
+
+def _verify_browser_session(token: str) -> Optional[Dict[str, Any]]:
+    claims = _CHANGLIAN_AUTH_SESSIONS.verify(token)
+    if claims is None:
+        return None
+    if str(claims.get("provider") or "") == "local":
+        revision = _CHANGLIAN_AUTH_SESSIONS.local_credential_revision(
+            _LOCAL_LOGIN_VERIFIER.username,
+            os.environ.get("MC_LOCAL_PASSWORD", DEFAULT_LOCAL_PASSWORD),
+        )
+        if not secrets.compare_digest(str(claims.get("credential_revision") or ""), revision):
+            return None
+    return claims
 
 
 def _auth_request_is_secure(request: Request) -> bool:
@@ -411,7 +434,7 @@ async def changlian_login_guard(request: Request, call_next):
     if decision in {"public", "machine"}:
         return await call_next(request)
 
-    claims = _CHANGLIAN_AUTH_SESSIONS.verify(
+    claims = _verify_browser_session(
         request.cookies.get(SESSION_COOKIE_NAME, "")
     )
     if claims is not None:
@@ -507,7 +530,7 @@ class ChangLianLoginReq(BaseModel):
 
 @app.get("/login", response_class=HTMLResponse)
 def changlian_login_page(request: Request):
-    claims = _CHANGLIAN_AUTH_SESSIONS.verify(
+    claims = _verify_browser_session(
         request.cookies.get(SESSION_COOKIE_NAME, "")
     )
     if claims is not None:
@@ -540,7 +563,7 @@ def changlian_auth_session(request: Request):
             "test_bypass": True,
         }
 
-    claims = _CHANGLIAN_AUTH_SESSIONS.verify(
+    claims = _verify_browser_session(
         request.cookies.get(SESSION_COOKIE_NAME, "")
     )
     if claims is None:
@@ -548,7 +571,7 @@ def changlian_auth_session(request: Request):
 
     renewed_token = _CHANGLIAN_AUTH_SESSIONS.renew(claims)
     if renewed_token:
-        renewed_claims = _CHANGLIAN_AUTH_SESSIONS.verify(renewed_token)
+        renewed_claims = _verify_browser_session(renewed_token)
         if renewed_claims is not None:
             claims = renewed_claims
 
@@ -581,8 +604,14 @@ def changlian_auth_login(payload: ChangLianLoginReq, request: Request):
                 solution="请检查本地账号密码，或联系管理员检查 MC_LOCAL_USERNAME / MC_LOCAL_PASSWORD 配置。",
                 status_code=429 if status == "throttled" else 401,
             )
-        token = _CHANGLIAN_AUTH_SESSIONS.issue(username, provider="local", upstream_expiry_source="local")
-        claims = _CHANGLIAN_AUTH_SESSIONS.verify(token)
+        revision = _CHANGLIAN_AUTH_SESSIONS.local_credential_revision(
+            _LOCAL_LOGIN_VERIFIER.username, payload.password,
+        )
+        token = _CHANGLIAN_AUTH_SESSIONS.issue(
+            username, provider="local", upstream_expiry_source="local",
+            credential_revision=revision,
+        )
+        claims = _verify_browser_session(token)
         if claims is None:
             raise PlatformError("AUTH_SESSION_CREATE_FAILED", "本地会话创建失败", "无法验证新签发的会话。", "请检查服务器时间和认证存储。", 500)
         response = JSONResponse({"ok": True, **_public_auth_session(claims)})
@@ -1726,7 +1755,7 @@ def _material_governance_actor(request: Request, project_id: str) -> Dict[str, A
     """Use the existing verified login; all project users have equal material rights."""
     claims = getattr(request.state, 'changlian_user', None)
     if claims is None:
-        claims = _CHANGLIAN_AUTH_SESSIONS.verify(request.cookies.get(SESSION_COOKIE_NAME, ''))
+        claims = _verify_browser_session(request.cookies.get(SESSION_COOKIE_NAME, ''))
     actor_id = str((claims or {}).get('username') or '').strip()
     if not actor_id:
         if not _auth_test_bypass_enabled():

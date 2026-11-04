@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
+import json
 from pathlib import Path
 import threading
 import time
@@ -11,6 +12,7 @@ from platform_core.external_algorithm_platform import (
     ChangLianEndpoints,
     ExternalAlgorithmPlatformService,
     ExternalPlatformConfigPayload,
+    ExternalPlatformModePayload,
     EndpointPayload,
     PROVIDER_CHANGLIAN,
     SOURCE_EXTERNAL,
@@ -75,6 +77,91 @@ def test_changlian_auth_chain_uses_test_sign_then_token_then_bearer():
         "/internal/auth/token",
         "/internal/base/category/tree",
     ]
+
+
+def test_master_switch_stops_saved_and_inflight_provider_clients_without_erasing_credentials(tmp_path: Path):
+    session = FakeSession()
+    secrets = MemorySecretStore()
+    service = ExternalAlgorithmPlatformService(
+        data_dir=tmp_path,
+        secret_store_factory=lambda: secrets,
+        client_factory=lambda **kwargs: ChangLianClient(session=session, **kwargs),
+    )
+    service.save(ExternalPlatformConfigPayload(
+        mode="external", base_url="https://changlian.example",
+        access_key="ak", access_secret="secret", endpoints=EndpointPayload(),
+    ))
+    existing_client = service._client()
+    assert existing_client.category_tree()["data"][0]["categoryId"] == "c1"
+    total_calls = len(session.calls)
+
+    switched = service.set_mode(ExternalPlatformModePayload(mode="local"))
+    assert switched["mode"] == "local"
+    assert switched["auto_sync_enabled"] is False
+    assert switched["auto_publish_enabled"] is False
+    assert switched["base_url"] == "https://changlian.example"
+    assert switched["credentials"]["configured"] is True
+    assert service.repository.config()["credential_ref"]
+    # A stale open connection tab still submits mode=external on Save.
+    # Only the dedicated master-switch endpoint is authorized to switch it.
+    saved_stale_draft = service.save(ExternalPlatformConfigPayload(
+        mode="external", base_url="https://updated.example", endpoints=EndpointPayload(),
+    ), preserve_mode=True)
+    assert saved_stale_draft["mode"] == "local"
+    assert saved_stale_draft["base_url"] == "https://updated.example"
+    with pytest.raises(PlatformError) as stale_client:
+        existing_client.category_tree()
+    assert stale_client.value.code == "EXTERNAL_PLATFORM_NOT_ACTIVE"
+    with pytest.raises(PlatformError):
+        service._client()
+    with pytest.raises(PlatformError):
+        service.test_connection(ExternalPlatformConfigPayload(
+            mode="external", base_url="https://draft.example", access_key="ak", access_secret="secret",
+        ))
+    with pytest.raises(PlatformError):
+        service.diagnose()
+    assert len(session.calls) == total_calls, "no saved, draft or preexisting client may call out while off"
+
+    restored = service.set_mode(ExternalPlatformModePayload(mode="external"))
+    assert restored["base_url"] == "https://updated.example"
+    assert restored["credentials"]["configured"] is True
+    assert restored["auto_sync_enabled"] is True
+    assert service._client().category_tree()["data"][0]["categoryId"] == "c1"
+
+
+def test_master_switch_corrupt_config_is_not_overwritten(tmp_path: Path):
+    service = ExternalAlgorithmPlatformService(data_dir=tmp_path, secret_store_factory=MemorySecretStore)
+    path = service.repository.config_path
+    path.write_text("{not json", encoding="utf-8")
+    with pytest.raises(PlatformError) as error:
+        service.set_mode(ExternalPlatformModePayload(mode="local"))
+    assert error.value.code == "EXTERNAL_PLATFORM_CONFIG_INVALID"
+    assert path.read_text(encoding="utf-8") == "{not json"
+
+
+def test_old_copied_external_config_is_automatically_off_until_explicit_switch(tmp_path: Path):
+    service = ExternalAlgorithmPlatformService(data_dir=tmp_path, secret_store_factory=MemorySecretStore)
+    path = service.repository.config_path
+    legacy = {
+        "mode": "external", "base_url": "https://old-cloud.example",
+        "auto_sync_enabled": True, "auto_publish_enabled": True,
+    }
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+    effective = service.repository.config()
+    assert effective["mode"] == "local"
+    assert effective["auto_sync_enabled"] is False
+    assert effective["auto_publish_enabled"] is False
+    assert effective["base_url"] == "https://old-cloud.example"
+    assert json.loads(path.read_text(encoding="utf-8")) == legacy
+
+    # Even saving a connection form still cannot turn on legacy networking.
+    service.repository.save_config({
+        **legacy, "provider": "changlian", "endpoints": {},
+    }, preserve_mode=True)
+    assert service.repository.config()["mode"] == "local"
+    service.set_mode(ExternalPlatformModePayload(mode="external"))
+    assert service.repository.config()["mode"] == "external"
+    assert service.repository.config()["mode_confirmed_at"]
 
 
 def test_saved_changlian_credentials_share_one_auth_exchange_across_request_clients(tmp_path: Path):

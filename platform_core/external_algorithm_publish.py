@@ -1773,13 +1773,23 @@ class ExternalAlgorithmPublishService:
             )
         ref = str(config.get("credential_ref") or EXTERNAL_PLATFORM_DEFAULT_CONFIG["credential_ref"])
         credentials = SecretCredentialStore(self.external_secret_store_factory()).get(ref) or {}
-        return self.client_factory(
+        client = self.client_factory(
             base_url=str(config.get("base_url") or ""),
             access_key=str(credentials.get("access_key_id") or ""),
             access_secret=str(credentials.get("access_secret") or ""),
             endpoints=ChangLianEndpoints.from_mapping(config.get("endpoints")),
             audit_callback=self.audit.record,
         )
+        if isinstance(client, ChangLianClient):
+            client._external_enabled_check = self._assert_external_enabled
+        return client
+
+    def _assert_external_enabled(self) -> None:
+        if str(self.external_repository.config().get("mode") or "local") != "external":
+            raise PlatformError(
+                "EXTERNAL_PLATFORM_NOT_ACTIVE", "已切换独立部署模式", "外部平台总开关处于关闭状态。",
+                "如需恢复远端发布，请先在“平台对接”开启总开关。", 409,
+            )
 
     def _provider(self, project_id: str, source_id: str):
         source = self.storage_sources_factory().get(source_id)
@@ -3164,6 +3174,7 @@ class ExternalAlgorithmPublishService:
             )
 
     def _publish_under_version_fence(self, *, project_id: str, algorithm_id: str, version_id: str, automatic: bool = False) -> Dict[str, Any]:
+        self._assert_external_enabled()
         algorithm, version = self._algorithm_version(project_id, algorithm_id, version_id)
         self._assert_current_external_identity(algorithm, version)
         if (
@@ -3280,6 +3291,7 @@ class ExternalAlgorithmPublishService:
             *,
             config_blocking: bool,
         ) -> Dict[str, Any]:
+            self._assert_external_enabled()
             try:
                 stored = self._upload_artifact(item, algorithm, version)
                 provider_mapping = self.repository.ensure_artifact_publication(

@@ -14,6 +14,8 @@ test('changlian platform page tests draft credentials before manual sync', async
   let syncWrites = 0;
   let analysisStatus = 'success';
   let configSaved = false;
+  let integrationMode = 'external';
+  const modeWrites = [];
   let saveWrites = 0;
   let savedBaseUrl = '';
   let configGets = 0;
@@ -38,7 +40,7 @@ test('changlian platform page tests draft credentials before manual sync', async
       body: JSON.stringify({
         ok: true,
         config: {
-          mode: 'external',
+          mode: integrationMode,
           provider: 'changlian',
           provider_name: '新畅联',
           base_url: configSaved ? savedBaseUrl : '',
@@ -94,6 +96,20 @@ test('changlian platform page tests draft credentials before manual sync', async
           },
         },
       }),
+    });
+  });
+
+  await page.route('**/api/v63/external-algorithm-platform/mode', async route => {
+    const payload = route.request().postDataJSON();
+    integrationMode = payload.mode;
+    modeWrites.push(integrationMode);
+    await route.fulfill({
+      status: 200, contentType: 'application/json',
+      body: JSON.stringify({ok: true, config: {
+        mode: integrationMode, provider: 'changlian', base_url: savedBaseUrl,
+        credentials: {configured: configSaved, available: true, masked: 'AK-****1234'},
+        updated_at: '2026-11-04T00:00:00Z',
+      }}),
     });
   });
 
@@ -318,6 +334,21 @@ test('changlian platform page tests draft credentials before manual sync', async
   await expect(analysisRow.getByText('跳过', {exact: true})).toBeVisible();
   await expect(analysisRow).toContainText('当前没有可用于连接测试的算法产品');
   expect(await page.evaluate(() => window.__externalPlatformStableRoot === document.querySelector('[data-external-platform-page="1"]'))).toBe(true);
+
+  // Switching off is an independent atomic write: no unsaved credential draft
+  // is sent, provider requests are disabled, and the connection is retained.
+  const masterSwitch = page.getByRole('switch', {name: '外部平台对接总开关'});
+  await expect(masterSwitch).toHaveAttribute('aria-checked', 'true');
+  await masterSwitch.click();
+  await expect(masterSwitch).toHaveAttribute('aria-checked', 'false');
+  await expect(page.getByText('独立部署模式', {exact: true})).toBeVisible();
+  await expect(page.getByRole('button', {name: '测试连接'})).toBeDisabled();
+  await expect(syncButton).toBeDisabled();
+  await expect(page.locator('#externalBaseUrl')).toHaveValue('https://edited.example.test');
+  await masterSwitch.click();
+  await expect(masterSwitch).toHaveAttribute('aria-checked', 'true');
+  expect(modeWrites).toEqual(['local', 'external']);
+  expect(saveWrites).toBe(2);
 });
 
 
@@ -421,7 +452,7 @@ test('stale changlian algorithm is visibly blocked before training submit', asyn
   await categoryToggle.click();
   await expect(categoryPopover.getByPlaceholder('搜索品目名称或路径')).toBeVisible();
   await expect(categoryPopover.getByText('行为分析', {exact: true})).toBeVisible();
-  await expect(page.getByRole('button', {name: /新建算法/})).toBeVisible();
+  await expect(page.getByRole('button', {name: /新建(?:本地)?算法/})).toBeVisible();
   const syncButton = listOwner.locator('[data-algorithm-sync]');
   await expect(syncButton).toBeVisible();
   await expect(syncButton).toHaveText('同步畅联云');

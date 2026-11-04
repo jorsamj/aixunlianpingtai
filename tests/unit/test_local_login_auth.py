@@ -1,6 +1,7 @@
 """Intranet login must not depend on the ChangLian provider or disk credentials."""
 
 import importlib.util
+from collections import deque
 from pathlib import Path
 
 
@@ -58,3 +59,31 @@ def test_local_provider_survives_signed_cookie_renewal_and_revocation(tmp_path: 
     assert renewed_claims and renewed_claims["provider"] == "local"
     assert manager.revoke(renewal, now=1500)
     assert manager.verify(token, now=1501) is None
+
+
+def test_local_cookie_fingerprint_tracks_password_rotation_and_survives_restart(tmp_path: Path):
+    manager = SignedSessionManager(tmp_path / "auth", idle_ttl_seconds=600,
+                                   absolute_ttl_seconds=1800, renew_window_seconds=120)
+    original = manager.local_credential_revision("jiangjs", "123456")
+    token = manager.issue("jiangjs", provider="local", credential_revision=original, now=1000)
+    claims = manager.verify(token, now=1490)
+    assert claims and claims["credential_revision"] == original
+    assert "123456" not in str(claims)
+    renewal = manager.renew(claims, now=1490)
+    assert manager.verify(renewal, now=1491)["credential_revision"] == original
+
+    restarted = SignedSessionManager(tmp_path / "auth", idle_ttl_seconds=600,
+                                     absolute_ttl_seconds=1800, renew_window_seconds=120)
+    assert restarted.local_credential_revision("jiangjs", "123456") == original
+    rotated = restarted.local_credential_revision("jiangjs", "new-secret")
+    assert rotated != original
+    assert restarted.verify(token, now=1490)["credential_revision"] != rotated
+
+
+def test_local_brute_force_tracker_has_a_hard_memory_bound():
+    verifier = LocalLoginVerifier(username="owner", password="correct")
+    for i in range(4096):
+        verifier._failures[f"client-{i}"] = deque([0.0])
+    assert verifier.authenticate("owner", "wrong", client_key="extra", now=1.0) == "rejected"
+    assert len(verifier._failures) == 4096
+    assert "client-0" not in verifier._failures

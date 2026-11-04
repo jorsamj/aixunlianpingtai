@@ -911,7 +911,7 @@ export function installExternalAlgorithmPlatformRuntime({
     const syncSucceeded = last?.status === 'success';
     const operationActive = externalSyncOperationActive(syncOperation);
     const configSaved = Boolean(c.updatedAt);
-    const sourceStatus = external ? '新畅联管理' : '本平台管理';
+    const sourceStatus = external ? '外部平台对接' : '独立部署';
     const connectionStatus = connectionTest?.ok === true
       ? '连接正常'
       : connectionTest ? '连接异常' : savedConnectionReady ? '待测试' : '待配置';
@@ -928,14 +928,25 @@ export function installExternalAlgorithmPlatformRuntime({
             <div>
               <div class="external-platform-eyebrow">EXTERNAL PLATFORM INTEGRATION</div>
               <h2>平台对接</h2>
-              <p>连接、同步、厂商映射和版本权重发布统一在这里管理。配置保存成功后会自动锁定并持续使用；常用操作前置，接口细节与诊断信息收进独立切页。</p>
+              <p>统一管理外部平台的连接、算法同步和成果发布。独立部署时无需连接外部平台。</p>
             </div>
           </div>
           <div class="external-platform-actions">
-            <button class="btn" id="externalPlatformTest">测试连接</button>
+            <button class="btn" id="externalPlatformTest" ${external ? '' : 'disabled'}>测试连接</button>
             ${configActionsHtml}
             <button class="btn green" id="externalPlatformSync" ${savedConnectionReady && !operationActive ? '' : 'disabled'} title="${operationActive ? '当前已有同步任务正在执行' : savedConnectionReady ? '使用已保存配置同步新畅联主数据' : '请先保存 API 地址与应用凭据'}">${operationActive ? '正在同步…' : '↻ 立即同步'}</button>
           </div>
+        </div>
+        <div class="external-platform-master-mode ${external ? 'is-external' : 'is-local'}">
+          <div class="external-platform-master-copy">
+            <span class="external-platform-master-caption">运行模式 · 总开关</span>
+            <strong>${external ? '外部平台对接模式' : '独立部署模式'}</strong>
+            <p>${external ? '已允许后台与外部平台通信：按计划同步主数据，并自动发布训练和转换成果。' : '已关闭外部平台通信：停止自动同步、自动发布及对接接口请求。原有地址和凭据安全保留，重新开启即可继续使用。'}</p>
+          </div>
+          <button type="button" class="external-platform-master-toggle" id="externalPlatformMasterSwitch" role="switch" aria-label="外部平台对接总开关" aria-checked="${external}" title="${external ? '关闭外部对接，切换为独立部署' : '开启外部平台对接'}">
+            <span class="external-platform-master-track"><span class="external-platform-master-thumb"></span></span>
+            <span>${external ? '已开启' : '已关闭'}</span>
+          </button>
         </div>
         <div class="external-platform-status external-platform-status-v2">
           <span><i class="external-status-dot ${configSaved ? 'ok' : 'warn'}"></i><b>配置</b><em>${escapeHtml(savedStatus)}</em></span>
@@ -957,7 +968,7 @@ export function installExternalAlgorithmPlatformRuntime({
       <section class="external-platform-overview" data-platform-tab-panel="overview">
         <div class="external-overview-grid">
           <article class="external-overview-card external-overview-card-primary">
-            <div class="external-overview-card-head"><span class="external-overview-icon">↔</span><span class="pill ${savedConnectionReady ? 'ok' : 'warn'}">${savedConnectionReady ? '已连接' : '待配置'}</span></div>
+            <div class="external-overview-card-head"><span class="external-overview-icon">↔</span><span class="pill ${external ? savedConnectionReady ? 'ok' : 'warn' : 'ok'}">${external ? savedConnectionReady ? '已配置' : '待配置' : '本地运行'}</span></div>
             <b>平台连接</b>
             <strong>${escapeHtml(sourceStatus)}</strong>
             <small>${escapeHtml(c.baseUrl || '尚未配置 API 服务地址')}</small>
@@ -995,13 +1006,6 @@ export function installExternalAlgorithmPlatformRuntime({
         <div class="panel-body">
           <div class="external-config-layout">
             <div class="form two external-config-form">
-              <div class="field full">
-                <label>算法数据来源</label>
-                <div class="external-source-choice">
-                  <label class="field check"><input type="radio" name="externalMode" value="local" ${external ? '' : 'checked'} ${formDisabled}> 本平台管理</label>
-                  <label class="field check"><input type="radio" name="externalMode" value="external" ${external ? 'checked' : ''} ${formDisabled}> 外部平台</label>
-                </div>
-              </div>
               <div class="field"><label>外部平台</label><select id="externalProvider" class="select" ${formDisabled}><option value="changlian">新畅联</option></select></div>
               <div class="field"><label>API 服务地址</label><input id="externalBaseUrl" class="input" value="${escapeHtml(c.baseUrl)}" placeholder="https://api.example.com" ${formDisabled}></div>
               <div class="field"><label>AccessKey</label><input id="externalAccessKey" class="input" autocomplete="off" spellcheck="false" ${credentialDisabled} placeholder="${escapeHtml(credentialManaged ? '由环境变量管理' : (credential.masked || '请输入 AccessKey'))}"></div>
@@ -1011,14 +1015,14 @@ export function installExternalAlgorithmPlatformRuntime({
             <aside class="external-config-aside">
               <div><span>连接方式</span><b>${escapeHtml(sourceStatus)}</b></div>
               <div><span>凭据状态</span><b>${escapeHtml(credential.configured ? '已安全保存' : '未配置')}</b></div>
-              <div><span>自动同步</span><b>08:00 / 12:00 / 15:00</b></div>
-              <div><span>训练成果发布</span><b>后台自动执行</b></div>
+              <div><span>自动同步</span><b>${external ? '08:00 / 12:00 / 15:00' : '已停用'}</b></div>
+              <div><span>训练成果发布</span><b>${external ? '后台自动执行' : '已停用'}</b></div>
             </aside>
           </div>
           <details data-external-sync-settings="1" class="external-sync-details">
             <summary>同步策略说明</summary>
             <div class="external-sync-policy">
-              <div class="alert soft"><b>自动同步已启用</b><span>新畅联当前 OpenAPI 没有 Webhook、订阅或推送接口，平台每天 08:00、12:00、15:00（北京时间）各主动拉取一次主数据。</span></div>
+              <div class="alert soft"><b>${external ? '自动同步已启用' : '自动同步已暂停'}</b><span>${external ? '新畅联当前 OpenAPI 没有 Webhook、订阅或推送接口，平台每天 08:00、12:00、15:00（北京时间）各主动拉取一次主数据。' : '独立部署模式不主动连接外部平台；开启顶部总开关后恢复对接。'}</span></div>
               <div class="subline" style="margin-top:8px">训练成功、转换完成后的版本与权重同步由后台自动执行，不需要人工重复点击。</div>
             </div>
           </details>
@@ -1028,7 +1032,7 @@ export function installExternalAlgorithmPlatformRuntime({
       <section class="panel" data-platform-tab-panel="connection">
         <div class="panel-head">
           <div><div class="panel-title">连接测试</div><div class="subline">${connectionHelpText}</div></div>
-          <details class="external-platform-tools"><summary>高级联调</summary><button class="btn small" id="externalPlatformDiagnostics">运行联调诊断</button></details>
+          <details class="external-platform-tools"><summary>高级联调</summary><button class="btn small" id="externalPlatformDiagnostics" ${external ? '' : 'disabled'}>运行联调诊断</button></details>
         </div>
         <div class="panel-body" id="externalConnectionResult">${connectionTestHtml()}</div>
       </section>
@@ -1165,7 +1169,7 @@ export function installExternalAlgorithmPlatformRuntime({
   }
 
   function collectForm() {
-    const mode = document.querySelector('input[name="externalMode"]:checked')?.value || 'local';
+    const mode = externalMode() ? 'external' : 'local';
     return {
       mode,
       provider: document.getElementById('externalProvider')?.value || 'changlian',
@@ -1196,6 +1200,34 @@ export function installExternalAlgorithmPlatformRuntime({
     return config;
   }
 
+  async function setIntegrationMode() {
+    const button = document.getElementById('externalPlatformMasterSwitch');
+    if (!button || button.disabled) return false;
+    button.disabled = true;
+    button.setAttribute('aria-busy', 'true');
+    const nextMode = externalMode() ? 'local' : 'external';
+    try {
+      const body = await requestJson(`${API_ROOT}/mode`, {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({mode: nextMode}),
+      });
+      config = normalizeExternalPlatformConfig(body);
+      state().externalAlgorithmPlatformConfig = config;
+      persistConfigSnapshot();
+      connectionTest = null;
+      configEditing = false;
+      notify?.(nextMode === 'local' ? '已切换为独立部署，外部平台同步与发布已暂停' : '外部平台对接已开启，请检查连接配置');
+      await render({reload: false, refreshConfigPanel: true});
+      return true;
+    } catch (error) {
+      notify?.(error?.message || '切换运行模式失败，请重试');
+      button.disabled = false;
+      button.removeAttribute('aria-busy');
+      return false;
+    }
+  }
+
   async function beginConfigEdit() {
     if (!(externalMode() && config?.baseUrl && config?.credentials?.configured === true)) return false;
     configEditing = true;
@@ -1212,6 +1244,7 @@ export function installExternalAlgorithmPlatformRuntime({
   }
 
   async function testConnection() {
+    if (!externalMode()) throw new Error('独立部署模式下已禁止外部连接测试，请先开启平台对接总开关');
     const payload = collectForm();
     const button = document.getElementById('externalPlatformTest');
     if (button) { button.disabled = true; button.textContent = '正在测试…'; }
@@ -1242,6 +1275,7 @@ export function installExternalAlgorithmPlatformRuntime({
   }
 
   async function runDiagnostics() {
+    if (!externalMode()) throw new Error('独立部署模式下已禁止外部联调，请先开启平台对接总开关');
     const payload = String(state().page || '') === PAGE ? collectForm() : null;
     const button = document.getElementById('externalPlatformDiagnostics');
     if (button) { button.disabled = true; button.textContent = '正在诊断…'; }
@@ -1269,7 +1303,7 @@ export function installExternalAlgorithmPlatformRuntime({
       document.querySelector('#externalPlatformSync'),
       ...document.querySelectorAll('[data-algorithm-sync]'),
     ].filter(Boolean)) {
-      button.disabled = active;
+      button.disabled = active || !externalMode();
       button.setAttribute('aria-busy',String(syncSubmitting));
       button.textContent = active
         ? '正在同步…'
@@ -1431,6 +1465,7 @@ export function installExternalAlgorithmPlatformRuntime({
       };
     }
     const saveButton = document.getElementById('externalPlatformSave');
+    const modeButton = document.getElementById('externalPlatformMasterSwitch');
     const editButton = document.getElementById('externalPlatformEdit');
     const cancelEditButton = document.getElementById('externalPlatformCancelEdit');
     const testButton = document.getElementById('externalPlatformTest');
@@ -1439,6 +1474,7 @@ export function installExternalAlgorithmPlatformRuntime({
     const secretToggle = document.getElementById('externalSecretToggle');
     const secretInput = document.getElementById('externalAccessSecret');
     if (saveButton) saveButton.onclick = () => void save().then(() => render({reload: false})).catch(error => notify?.(error?.message || error));
+    if (modeButton) modeButton.onclick = () => void setIntegrationMode();
     if (editButton) editButton.onclick = () => void beginConfigEdit().catch(error => notify?.(error?.message || error));
     if (cancelEditButton) cancelEditButton.onclick = () => void cancelConfigEdit().catch(error => notify?.(error?.message || error));
     if (testButton) testButton.onclick = () => void testConnection().catch(error => notify?.(error?.message || error));
@@ -1459,7 +1495,7 @@ export function installExternalAlgorithmPlatformRuntime({
       if (saveButton) saveButton.dataset.dirty = '1';
     };
     for (const input of document.querySelectorAll(
-      'input[name="externalMode"], #externalProvider, #externalBaseUrl, #externalAccessKey, #externalAccessSecret, [data-external-endpoint]'
+      '#externalProvider, #externalBaseUrl, #externalAccessKey, #externalAccessSecret, [data-external-endpoint]'
     )) {
       if (input.dataset.externalDirtyBound === '1') continue;
       input.dataset.externalDirtyBound = '1';

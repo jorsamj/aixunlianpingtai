@@ -1,6 +1,8 @@
 from pathlib import Path
 
 from platform_core.external_algorithm_auto_sync import ExternalAlgorithmAutoSyncReporter
+from platform_core.external_algorithm_platform import ExternalAlgorithmPlatformService, ExternalPlatformModePayload
+from platform_core.secrets import MemorySecretStore
 
 
 class _Repository:
@@ -131,6 +133,27 @@ def test_auto_sync_reporter_reserves_starting_slot_before_thread_is_alive(tmp_pa
     created[0].target()
     assert service.calls[0][0] == "project-1"
     assert reporter._thread is None
+
+
+def test_offline_master_switch_suppresses_pending_external_cleanup_dispatch(tmp_path: Path, monkeypatch):
+    from platform_core import external_algorithm_cleanup
+
+    dispatched = []
+    monkeypatch.setattr(external_algorithm_cleanup, "dispatch_cleanup_outboxes", lambda path: dispatched.append(path))
+    service = ExternalAlgorithmPlatformService(data_dir=tmp_path, secret_store_factory=MemorySecretStore)
+    reporter = ExternalAlgorithmAutoSyncReporter(tmp_path, MemorySecretStore, service=service)
+
+    # Even old outbox intents stay intact and no background dispatch is started.
+    assert reporter.report() is False
+    assert dispatched == []
+
+    service.set_mode(ExternalPlatformModePayload(mode="external"))
+    reporter.report()
+    assert dispatched == [tmp_path.resolve()]
+
+    service.set_mode(ExternalPlatformModePayload(mode="local"))
+    assert reporter.report() is False
+    assert dispatched == [tmp_path.resolve()]
 
 
 def test_task_worker_owns_auto_sync_hook_only_on_background_storage_role():

@@ -11,7 +11,7 @@ import os
 import secrets
 import threading
 import time
-from collections import deque
+from collections import OrderedDict, deque
 
 
 DEFAULT_LOCAL_USERNAME = "jiangjs"
@@ -27,7 +27,7 @@ class LocalLoginVerifier:
         self._salt = secrets.token_bytes(32)
         self._digest = self._derive(secret)
         self._lock = threading.Lock()
-        self._failures: dict[str, deque[float]] = {}
+        self._failures: OrderedDict[str, deque[float]] = OrderedDict()
 
     def _derive(self, secret: str) -> bytes:
         return hashlib.pbkdf2_hmac("sha256", secret.encode("utf-8"), self._salt, 150_000)
@@ -39,11 +39,12 @@ class LocalLoginVerifier:
         with self._lock:
             # Bounded memory and a per-client window; account identity is not
             # leaked via different errors for unknown usernames.
-            if len(self._failures) > 4096:
-                self._failures = {
-                    ip: attempts for ip, attempts in self._failures.items()
-                    if attempts and attempts[-1] > moment - 60
-                }
+            if key not in self._failures and len(self._failures) >= 4096:
+                # Cap live as well as expired IP entries. A flood of unique
+                # clients must never grow the in-memory limiter indefinitely.
+                self._failures.popitem(last=False)
+            if key in self._failures:
+                self._failures.move_to_end(key)
             attempts = self._failures.setdefault(key, deque())
             while attempts and attempts[0] <= moment - 60:
                 attempts.popleft()

@@ -277,7 +277,7 @@ test('connection test uses draft form without saving credentials first', () => {
   assert.doesNotMatch(source, /data-external-endpoint=/);
   assert.doesNotMatch(source, /高级接口路径/);
   assert.match(source, /已保存并锁定，后续将持续使用此配置/);
-  assert.match(source, /配置保存成功后会自动锁定并持续使用/);
+  assert.match(source, /独立部署时无需连接外部平台/);
   assert.match(source, /id="externalPlatformEdit"/);
   assert.match(source, /id="externalPlatformCancelEdit"/);
   assert.match(source, /const configLocked = savedConnectionReady && !configEditing/);
