@@ -125,3 +125,6 @@
 .train-v3-picker.server-paged .train-v3-advanced{margin-top:12px}.train-v3-picker.server-paged .train-v3-advanced>summary{padding:8px 0;cursor:pointer;font-weight:600}
 @media(min-width:761px) and (max-width:1180px){.train-v3-picker.server-paged .train-v3-workspace{grid-template-columns:170px minmax(0,1fr) 170px!important}}
 @media(max-width:760px){.train-v3-picker.server-paged .train-v3-selected{flex:none;border:0;padding:0;max-height:100px}.train-v3-picker.server-paged .train-v3-selected>div{max-height:65px;overflow:auto}.train-v3-picker.server-paged .train-v3-selected>summary{padding:4px 0}}
+
+/* Narrow workbench keeps a useful picture viewport; optional controls scroll locally. */
+@media(max-width:760px){.train-v3-picker.server-paged .train-v3-filters{max-height:86px}.train-v3-picker.server-paged #trV3Pager{max-height:80px;overflow:auto;flex:none}.train-v3-picker.server-paged #trV3Pager .platform-pagination{padding:6px;margin:0;box-shadow:none}.train-v3-picker.server-paged #trV3Pager .platform-pagination__controls{gap:4px}.train-v3-picker.server-paged .train-v3-selected{max-height:90px}}
