@@ -32,7 +32,11 @@ test('failed detail previews workspace blockers and releases only confirmed prev
   await expect(panel.locator('[data-training-workspace-cleanup]')).toBeDisabled();
   mode = 'unknown';
   await panel.locator('[data-training-workspace-refresh]').click();
-  await expect(panel).toContainText('资格未知');
+  // A failed refresh must revoke the previous preview and require another
+  // read before any deletion; the last verified size is explicitly stale.
+  await expect(panel).toContainText('本次释放结果尚未确认，必须重新核验');
+  await expect(panel).toContainText('上次核验临时文件逻辑大小（可能已过期）');
+  await expect(panel.locator('[data-training-workspace-cleanup]')).toBeDisabled();
   mode = 'eligible';
   await panel.locator('[data-training-workspace-refresh]').click();
   await expect(panel.locator('[data-training-workspace-cleanup]')).toBeEnabled();

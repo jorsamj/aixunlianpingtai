@@ -1,4 +1,13 @@
-# 模型转换数值与检测结果一致性治理（42.24.528）
+# 模型转换数值与检测结果一致性治理（42.24.529）
+
+## 42.24.529 Chrome 第三分片剩余两项合同校正（2026-11-04）
+
+准确 528 远端 `0660052d571d55bf73d4f903c2b6b56bce39aab4` 的 Frontend Runtime Stabilization 前端 Node、browser-navigation(1)/(2) success，(3) 实际 107 项中 **105 passed / 2 failed**，运行约 5.4 分钟；此前因旧资源假数据导致的 20 分钟 timeout 已消失。两条仍未通过的旧断言：
+
+1. `training-duplicate-conflicts.spec.mjs` 的“修改 GT 后旧人工 keeper 失效”路径，在新的确定性 `KEEP_ONE` 策略中，服务器合法规划 **删除 1 张、自动保留 1 张**，并保持可审计 `AUTO_DETERMINISTIC_CONFLICT`。旧测试要求 `delete_count=0/manual_required_count=1`，与用户明确指定的“系统默认决定保留任意一份”需求相反。现在要求服务器回执 `delete_count=1/manual_required_count=0/auto_conflict_keeper_groups≥1`，并继续验证实际删除前可见且需人工确认的**冻结预览**，不自动执行删除。
+2. `training-workspace.spec.mjs` 模拟临时空间 GET 503 时，恢复模块现在使用 `needsRefresh` 阻断删除，显示“本次释放结果尚未确认，必须重新核验”，并标明旧大小已过期；旧断言查找“资格未知”。新断言验证具体失效提示、旧大小非当前证据、删除按钮禁用，之后仍须再次 GET 成功才允许释放；不放宽删除安全条件。
+
+本轮仍是对既有浏览器回归合同的修复，没有正式 GT 变更、删除生产素材、自动执行恢复/清理，也没有改变前后端业务代码、页面结构和请求 Owner。须等待 529 精确 SHA 的 CI 和后续测试执行，不能提前宣称全绿。
 
 ## 42.24.528 前端稳定性第三分片的遗留用例合同（2026-11-04）
 

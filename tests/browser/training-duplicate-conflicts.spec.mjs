@@ -204,8 +204,12 @@ a=AnnotationRepository(app.project_dir(${JSON.stringify(f.project.id)}));a.upser
   const audit=await request.post(`/api/v62/projects/${f.project.id}/material-integrity/audits`);runIsolatedBatch(f.project.id,(await audit.json()).task_id);
   const preview=page.waitForResponse(r=>r.url().endsWith('/training-plans'));
   await page.getByRole('button',{name:'删除已选 · 安全预览',exact:true}).click();
-  const result=await(await preview).json();expect(result.delete_count).toBe(0);expect(result.manual_required_count).toBe(1);
-  await expect(page.locator('.material-integrity47-zero-delete')).toContainText('没有可安全删除的素材');
+  // An outdated manual keeper is invalidated after GT changes. The current
+  // deterministic KEEP_ONE policy retains a copy without claiming its GT is
+  // more correct; the frozen preview still requires explicit confirmation.
+  const result=await(await preview).json();expect(result.delete_count).toBe(1);expect(result.manual_required_count).toBe(0);
+  expect(result.auto_conflict_keeper_groups).toBeGreaterThanOrEqual(1);
+  await expect(page.getByRole('button',{name:'确认删除 1 条索引',exact:true})).toBeVisible();
   await page.getByRole('button',{name:'返回选择 · 保留勾选',exact:true}).click();
   await page.evaluate(f=>{window.TrainingDraftRuntime.update({materialIds:f.ids.filter(id=>id!=='duplicate-copy'),testMaterialIds:['duplicate-copy'],splitMode:'independent_test_set',experimentPercent:null});},f);
   await page.evaluate(async()=>{await window.TrainingMaterialSummaryRuntime.refreshCompatibility({force:true});window.TrainingMaterialSummaryRuntime.openCompatibilityIssues()});
