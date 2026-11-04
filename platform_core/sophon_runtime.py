@@ -108,8 +108,13 @@ def probe_sophon_toolchain(resource: Mapping[str, Any], *, timeout: float = 10) 
         quant = re.search(r"--quantize\s+\{([^}]+)\}",help_texts["model_deploy"],re.I)
         choices={p.strip().upper() for p in quant.group(1).split(",")} if quant else set()
         declared_precisions=[p for sdk,p in (("F16","fp16"),("F32","fp32"),("INT8","int8")) if sdk in choices]
+        reference_flags = ("--test_input", "--test_result")
+        deploy_flags = ("--test_input", "--test_reference")
         result.update(version=version.group(0),declared_chips=sorted(reported),
                       declared_precisions=declared_precisions,
+                      offline_reference_available=(all(flag in help_texts["model_transform"] for flag in reference_flags)
+                          and all(flag in help_texts["model_deploy"] for flag in deploy_flags)),
+                      offline_compare_all_available="--compare_all" in help_texts["model_deploy"],
                       chip_option="--processor" if choice and choice.group(0).lower().startswith("--processor") else "--chip")
         capabilities=sophon_chip_capabilities(result)
         chips=sorted(capabilities)

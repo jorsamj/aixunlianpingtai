@@ -57,6 +57,13 @@
         const summary = details.querySelector('summary');
         if (summary) summary.textContent = '查看完整配置、证据与产物';
       }
+      if(record?.target==='sophon'&&record.execution_evidence&&details){
+        const status=record.execution_evidence.compiler_numeric_status;
+        const line=document.createElement('div');line.className='conversion560-compiler-evidence';
+        line.textContent=status==='passed_synthetic_reference'?'官方 SDK 编译数值对照：合成输入通过（真实图片仍需验证）':
+          '官方 SDK 编译数值对照：未验证（请查看 SDK 能力及转换日志）';
+        details.append(line);
+      }
     }
   }
 

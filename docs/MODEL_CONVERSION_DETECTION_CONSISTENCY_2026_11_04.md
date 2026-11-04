@@ -1,4 +1,32 @@
-# 模型转换数值与检测结果一致性治理（42.24.523）
+# 模型转换数值与检测结果一致性治理（42.24.524）
+
+## 42.24.524 接续修复（2026-11-04）
+
+起点：长期分支 `dd6533f0d2e42aeff0bd9715eeebddbf28ddb097`（42.24.523）。保留 523 的阈值跨越、NMS、ONNX 旧产物保护，不重建任何任务中心、转换 Owner、质量中心或业务弹窗。本次继续落实 P0 及有限 P1：
+
+1. **可复现的场景阈值对照**：原质量中心「转换一致性」同页增加用户指定的置信度与 NMS IoU（均严格处于 0～1），随真实图片冻结到 Durable 任务回执；同请求 ID 修改阈值拒绝隐式复用。`compare_yolo_detections` 输出逐图 class_id、confidence、XYXY 检测框（UI 单图内联展开，最多展示前 20 个）；比较使用全部未截断的有效 NMS 框，超过安全上限不得判通过。检测结构不支持时总体 `not_comparable`，保留单独 `raw_verdict`，避免张量通过误称检测一致。不使用无 GT 图片冒充 FP/FN。
+2. **模型与标签身份**：从现有 `model_metadata` 的冻结版本/可信 Snapshot 获取标签；相互冲突/缺少历史证据不自动造标签。导出器同时记录真实 PT `names`，在 Sophon 编译前与可信版本的 code/class_id 逐项比对，不一致拒绝编译（旧导出器无名称证据则保持 unknown，不能标为配置完整）；转换后真实图片数值任务也复核此顺序，错误时 `contract_mismatch`。转换 manifest 扩展同一份 `inference_contract`，记录 BMODEL SHA、输入参数、类别映射哈希及外部输出解码/NMS/阈值的待确认状态。`caller_acknowledged` 明确为 false，**不冒称中台已按合同部署**。
+3. **冻结真实产物身份**：数值任务优先按原 manifest `outputs` 的唯一 ONNX/BMODEL 相对路径、SHA256 与 size 锁定；不再从 glob 取字母序第一个。旧 manifest 没有完整哈希时，只允许唯一文件并明确标记 unverified。源 PT SHA 不一致直接拒绝。
+4. **官方 TPU-MLIR 编译对照**：检测 SDK `model_transform --test_input/--test_result` 和 `model_deploy --test_input/--test_reference` 全套能力；仅能力齐备时使用可复现的合成归一化输入生成 Top-MLIR 参考，再启用官方编译数值比较，失败不交付 BMODEL；支持 `--compare_all` 的 SDK 同时启用详细对照。精确记录输入/reference SHA 及 `passed_synthetic_reference`。旧 SDK 不提供完整能力则保持 `unavailable`，不把普通编译成功称作数值通过。**合成输入只能证明有限编译自检，不代表真实图片或设备实机质量。**
+5. **明确的插值前处理**：新增 `opencv_linear` + 固定尺寸居中 LetterBox/拉伸模式合同。数值任务使用 OpenCV `INTER_LINEAR`，缺 OpenCV 报错而不是默默以 PIL 近似代替。旧合同缺少插值证据时 `deployment_preprocessing_aligned=false`。
+6. **Val 错误抽样**：训练后自动错误分析不再取文件名前 200 张；改为稳定 SHA256 次序、按冻结 Val 标注类别和空标注分层，轮流覆盖稀有类，写入本次 `error_analysis_sampling` 样本总体和方法证据，默认分析上限仍 200/可配置最高 500。没有可靠摄像头、时间、光照元数据，不推断对应分层。冻结独立 Test、真实场景实测与正式 GT 均未更改。
+
+### 本轮执行证据与边界
+
+- `node --test tests/frontend/conversion-numeric-workbench.test.mjs`：**5/5 通过**；排除未安装的 Uppy/Annotorious 供应商依赖用例后，相关全体 Node **1466/1466 通过**；完整 Node 受缺依赖阻断，不能计为全绿。
+- Python `py_compile`、`git diff --check`、原始张量阈值跨越/标签顺序纯函数、模拟 SDK 官方参数/参考 NPZ 路径以及 Val 分层抽样隔离检查均已通过。当前容器缺 pytest、filelock、FastAPI、OpenCV、ONNX Runtime 与 Ultralytics，故所有新增 Python pytest、真实 SDK、真实 PT/ONNX、Chrome、生产性能与中台现场 **NOT VERIFIED**，必须等准确提交 SHA 的 CI 再判断。
+- 中台视觉智能分析源码与真实 BM1688 运行数据仍未提供，无法在本仓库修复事件触发、轨迹过期、现场 BGR、NMS 和输出解码实现。要求中台对接者按照同一 manifest 给出原始检测/跟踪/规则证据；没有这份证据就不能声称四类误报已经解决。
+- 未运行训练、未触碰生产数据库、素材、正式 GT、模型权重、OSS、GPU 或 Web/Worker；不部署，不 merge main，不 release，不 force push。
+
+### 后续验收（未完成）
+
+- 用 A800/独立 SDK 对 1～12 张真实、同源、含硬负样本图片核对 PT→ONNX→BMODEL 数值、类别/NMS 框差异，分别确认 SDK 的 reference 脚本/`compare_all` 与 BMODEL simulator 的可用性，并保存输入与产物 SHA。
+- 从中台取得同图前处理、BMODEL 输出张量、解码、标签、区域、持续帧数、跟踪 ID 与事件状态流，落实 `caller_acknowledged` 的外部可信回执；无人徘徊必须检查轨迹/旧事件清除。此步骤依赖中台仓库或可核验回放证据，**不在本仓库凭空实现**。
+- 针对正式冻结独立 Test/现场回放样本做各类别阈值曲线与推荐策略、误报回流；保留现有线上反馈与难样本 Owner，不自动将 Test 样本投训练。
+
+---
+
+## 42.24.523 历史记录
 
 日期：2026-11-04。分支：`feature/external-algorithm-publishing`。仅开发候选；生产尚未部署、现场 BM1688/中台推理链路尚未核验。
 

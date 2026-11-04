@@ -44,3 +44,15 @@ test('verification uses persistent tasks, uploads actual images, and never promo
   assert.match(quality,/BMODEL 仅在官方 SDK 模拟器可用时另行数值比较/);
   assert.doesNotMatch(quality.slice(quality.indexOf('function decorateConversionBench560'),quality.indexOf('function benchNotices64')),/TP\s*\/\s*FP\s*\/\s*FN/);
 });
+
+test('comparison threshold and per-image box evidence reuse the same inline panel',()=>{
+  for(const id of ['conversionConfidence560','conversionNmsIou560'])assert.ok(quality.includes(id));
+  assert.match(quality,/form\.append\('confidence',String\(confidence\)\)/);
+  assert.match(quality,/form\.append\('nms_iou',String\(nmsIou\)\)/);
+  assert.match(quality,/comparison_confidence/);
+  assert.match(quality,/reference_detections/);
+  assert.match(quality,/converted_detections/);
+  assert.match(quality,/conversion560-evidence-grid/);
+  assert.match(quality,/contract_mismatch/);
+  assert.doesNotMatch(quality.slice(quality.indexOf('function showConversionResult560'),quality.indexOf('window.selectConversionJob560')),/openModal\(/);
+});

@@ -51,12 +51,17 @@ def compare_yolo_detections(reference, converted, *, class_count: int, confidenc
     Only the explicit YOLO11-style single-output XYWH + class-score contract is
     supported. Ambiguous/fused output formats remain unverified, never passed.
     """
+    import math
     import numpy as np
 
     a, b = np.asarray(reference), np.asarray(converted)
     unsupported = lambda reason: {"comparable": False, "reason": reason, "within_tolerance": False}
     if not isinstance(class_count, int) or isinstance(class_count, bool) or not 1 <= class_count <= 1000:
         return unsupported("缺少可信且有界的 YOLO 类别数量")
+    if (not all(isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+                for value in (confidence, nms_iou, match_iou))
+            or not 0 < confidence < 1 or not 0 < nms_iou < 1 or not 0 < match_iou <= 1):
+        return unsupported("置信度、NMS 或匹配 IoU 不在有效范围内")
     if a.shape != b.shape or a.ndim != 3 or a.shape[0] != 1:
         return unsupported("不是相同形状的单输出 YOLO 检测张量")
     fields = 4 + class_count
@@ -76,6 +81,8 @@ def compare_yolo_detections(reference, converted, *, class_count: int, confidenc
         if active.size > 512:
             raise ValueError("超过单图 512 个候选框的安全比较上限")
         boxes = rows[active, :4].astype(np.float64)
+        if np.any(boxes[:, 2:] <= 0):
+            raise ValueError("检测框尺寸不是正数，无法按 XYWH 合同解码")
         # YOLO11 detection export emits center XYWH, not XYXY or embedded NMS.
         xyxy = np.column_stack((boxes[:, 0] - boxes[:, 2] / 2, boxes[:, 1] - boxes[:, 3] / 2,
                                 boxes[:, 0] + boxes[:, 2] / 2, boxes[:, 1] + boxes[:, 3] / 2))
@@ -85,6 +92,7 @@ def compare_yolo_detections(reference, converted, *, class_count: int, confidenc
             current = int(order[0]); kept.append(current)
             rest = order[1:]
             if not rest.size:
+                order = rest
                 break
             box = xyxy[current]
             others = xyxy[rest]
@@ -94,6 +102,8 @@ def compare_yolo_detections(reference, converted, *, class_count: int, confidenc
             other_area = np.prod(np.maximum(0.0, others[:, 2:] - others[:, :2]), axis=1)
             iou = intersection / np.maximum(area + other_area - intersection, 1e-12)
             order = rest[(category[active][rest] != category[active][current]) | (iou <= nms_iou)]
+        if order.size:
+            raise ValueError("NMS 后超过 300 个框，禁止截断结果后冒称一致")
         return int(active.size), [(int(category[active][i]), float(score[active][i]), xyxy[i]) for i in kept]
 
     try:
@@ -132,8 +142,40 @@ def compare_yolo_detections(reference, converted, *, class_count: int, confidenc
         "threshold_crossings": threshold_crossings,
         "unmatched_reference": unmatched_a, "unmatched_converted": unmatched_b,
         "matched_confidence_drifts": confidence_drifts,
+        "reference_detections": [
+            {"class_id": category, "confidence": round(score, 6), "box_xyxy": [round(float(v), 3) for v in box]}
+            for category, score, box in boxes_a[:50]
+        ],
+        "converted_detections": [
+            {"class_id": category, "confidence": round(score, 6), "box_xyxy": [round(float(v), 3) for v in box]}
+            for category, score, box in boxes_b[:50]
+        ],
+        "detections_truncated_for_display": len(boxes_a) > 50 or len(boxes_b) > 50,
         "within_tolerance": unmatched_a == 0 and unmatched_b == 0 and confidence_drifts == 0,
     }
+
+
+def verify_label_identity(names, *, label_codes=None, label_schema=None) -> dict:
+    """A matching class count alone cannot establish the deployed class order."""
+    from platform_core.model_metadata import frozen_weight_labels
+
+    frozen = {"label_codes": label_codes, "label_schema": label_schema}
+    expected = frozen_weight_labels(frozen)
+    if not expected:
+        has_claim = bool(label_codes or label_schema)
+        return {"status": "conflict" if has_claim else "unknown", "codes": [],
+                "reason": "冻结类别顺序存在冲突" if has_claim else "版本缺少可信的冻结类别顺序"}
+    if isinstance(names, dict) and set(names) == set(range(len(names))):
+        actual = [names[i] for i in range(len(names))]
+    elif isinstance(names, (list, tuple)):
+        actual = list(names)
+    else:
+        actual = []
+    actual = [str(value).strip() for value in actual]
+    matched = actual == expected
+    return {"status": "verified" if matched else "mismatch", "codes": expected,
+            "model_names": actual, "reason": "" if matched else "源 PT 类别名称或顺序与冻结版本标签不一致",
+            "mapping_sha256": hashlib.sha256(json.dumps(expected, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()}
 
 
 def is_canonical_rgb_preprocessing(preprocessing: dict | None) -> bool:
@@ -153,15 +195,22 @@ def is_canonical_rgb_preprocessing(preprocessing: dict | None) -> bool:
         contract.get("letterbox", True) is True
         and contract.get("pixel_format", "rgb") == "rgb"
         and contract.get("pad_value", 114) == 114
+        and contract.get("channel_format") == "nchw"
+        and contract.get("resize_interpolation") == "opencv_linear"
+        and contract.get("letterbox_mode") == "fixed_shape_center"
         and mean == [0.0, 0.0, 0.0]
         and scale is not None and all(abs(v - 1 / 255) <= 1e-9 for v in scale)
     )
 
 
 def make_input(image_path: Path, height: int, width: int):
-    """YOLO-style rectangular letterbox, RGB, 0..1, NCHW. No augmentation."""
+    """Fixed-shape YOLO LetterBox with OpenCV INTER_LINEAR, RGB, 0..1, NCHW."""
     import numpy as np
     from PIL import Image
+    try:
+        import cv2
+    except ImportError as error:
+        raise RuntimeError("缺少 OpenCV，无法按冻结的 opencv_linear 推理合同生成验证输入") from error
 
     with Image.open(image_path) as im:
         image = im.convert("RGB")
@@ -169,11 +218,11 @@ def make_input(image_path: Path, height: int, width: int):
         ratio = min(width / original_w, height / original_h)
         new_w = max(1, round(original_w * ratio))
         new_h = max(1, round(original_h * ratio))
-        image = image.resize((new_w, new_h), Image.Resampling.BILINEAR)
+        image = cv2.resize(np.asarray(image), (new_w, new_h), interpolation=cv2.INTER_LINEAR)
         pixels = np.full((height, width, 3), 114, dtype=np.uint8)
         x = round((width - new_w) / 2 - 0.1)
         y = round((height - new_h) / 2 - 0.1)
-        pixels[y:y + new_h, x:x + new_w] = np.asarray(image)
+        pixels[y:y + new_h, x:x + new_w] = image
     return np.ascontiguousarray(pixels.transpose(2, 0, 1)[None].astype(np.float32) / 255.0)
 
 
@@ -229,7 +278,7 @@ def validate_paths(source_path: Path, onnx_path: Path, images: list[Path], *, ex
                 raise ValueError(f"{label} SHA256 不一致，拒绝对错误的模型出具报告")
 
 
-def verify_images(source_path: Path, onnx_path: Path, images: list[Path], *, precision: str, expected_source_sha: str = "", expected_onnx_sha: str = "", input_color_order: str = "rgb", preprocessing: dict | None = None, label_codes: list[str] | None = None, bmodel_path: Path | None = None, bmodel_sha256: str = "", bmodel_expected: bool = False, sophon_python: str = "", progress=None) -> dict:
+def verify_images(source_path: Path, onnx_path: Path, images: list[Path], *, precision: str, expected_source_sha: str = "", expected_onnx_sha: str = "", input_color_order: str = "rgb", preprocessing: dict | None = None, label_codes: list[str] | None = None, label_schema: list[dict] | None = None, confidence: float = 0.25, nms_iou: float = 0.7, bmodel_path: Path | None = None, bmodel_sha256: str = "", bmodel_expected: bool = False, sophon_python: str = "", progress=None) -> dict:
     validate_paths(source_path, onnx_path, images, expected_source_sha=expected_source_sha, expected_onnx_sha=expected_onnx_sha)
     if str(input_color_order).lower() != "rgb":
         raise ValueError("该产物使用非 RGB 输入颜色适配；当前原始张量核验仅支持 RGB 同输入，不能冒充通过")
@@ -264,12 +313,9 @@ def verify_images(source_path: Path, onnx_path: Path, images: list[Path], *, pre
     class_count = len(names) if isinstance(names, (dict, list, tuple)) else 0
     if isinstance(names, dict) and set(names) != set(range(class_count)):
         class_count = 0
-    expected_codes = list(label_codes or [])
-    label_count_matched = None if not expected_codes else (
-        all(isinstance(code, str) and code.strip() for code in expected_codes)
-        and class_count == len(expected_codes) and len(set(expected_codes)) == len(expected_codes)
-    )
-    if label_count_matched is False:
+    label_identity = verify_label_identity(names, label_codes=label_codes, label_schema=label_schema)
+    label_count_matched = None if label_identity["status"] == "unknown" else label_identity["status"] == "verified"
+    if label_identity["status"] in {"mismatch", "conflict"}:
         class_count = 0
     # Legacy jobs without a frozen preprocessing contract remain unknown, not
     # implicitly verified as matching today's canonical RGB defaults.
@@ -283,12 +329,14 @@ def verify_images(source_path: Path, onnx_path: Path, images: list[Path], *, pre
         dtype = np.float16 if input_meta.type == "tensor(float16)" else np.float32
         converted = session.run(None, {input_meta.name: tensor.astype(dtype)})[0]
         metrics = compare_tensors(reference, converted, precision=precision)
-        metrics["detection"] = compare_yolo_detections(reference, converted, class_count=class_count)
+        metrics["detection"] = compare_yolo_detections(reference, converted, class_count=class_count,
+                                                         confidence=confidence, nms_iou=nms_iou)
         if bmodel_path and bmodel_path.is_file() and not simulator_error:
             try:
                 bmodel_output = _simulate_bmodel(tensor, input_meta.name, bmodel_path, sophon_python)
                 metrics["onnx_bmodel"] = compare_tensors(converted, bmodel_output, precision=precision)
-                metrics["onnx_bmodel_detection"] = compare_yolo_detections(converted, bmodel_output, class_count=class_count)
+                metrics["onnx_bmodel_detection"] = compare_yolo_detections(converted, bmodel_output, class_count=class_count,
+                                                                             confidence=confidence, nms_iou=nms_iou)
             except Exception as error:
                 simulator_error = str(error)
         results.append({"image": image.name, **metrics})
@@ -303,11 +351,21 @@ def verify_images(source_path: Path, onnx_path: Path, images: list[Path], *, pre
     bmodel_matching = bmodel_compared and all(row["onnx_bmodel"].get("within_tolerance") for row in results)
     bmodel_detection_comparable = bmodel_compared and all(row.get("onnx_bmodel_detection", {}).get("comparable") for row in results)
     bmodel_detection_matching = bmodel_detection_comparable and all(row["onnx_bmodel_detection"].get("within_tolerance") for row in results)
+    # A raw-tensor pass alone cannot be labelled a detection-consistency pass.
+    if label_identity["status"] in {"conflict", "mismatch"}:
+        verdict = "contract_mismatch"
+    elif (compatible and not matching) or (detection_comparable and not detection_matching):
+        verdict = "difference_detected"
+    elif not compatible or not detection_comparable:
+        verdict = "not_comparable"
+    else:
+        verdict = "consistent"
     return {
-        "protocol": "pt-onnx-raw-and-detection-v2",
+        "protocol": "pt-onnx-raw-and-detection-v3",
         "raw_verdict": "consistent" if matching else ("difference_detected" if compatible else "not_comparable"),
-        "verdict": "difference_detected" if (detection_comparable and not detection_matching) else ("consistent" if matching else ("difference_detected" if compatible else "not_comparable")),
+        "verdict": verdict,
         "detection_status": "consistent" if detection_matching else ("difference_detected" if detection_comparable else "unavailable"),
+        "comparison_confidence": confidence, "comparison_nms_iou": nms_iou,
         "status": "completed", "sample_count": len(results), "precision": precision,
         "source": "PT", "compared": "ONNX", "bmodel_verified": False,
         "hardware_verified": False, "ground_truth_used": False,
@@ -316,6 +374,7 @@ def verify_images(source_path: Path, onnx_path: Path, images: list[Path], *, pre
         "bmodel_numeric_error": simulator_error,
         "deployment_preprocessing_aligned": canonical_preprocessing,
         "label_count_matched": label_count_matched,
+        "label_identity": label_identity,
         "scope_note": "同图规范化 RGB Letterbox 输入下对照原始张量，并在可识别的 YOLO 检测输出上比较阈值/NMS 后检测框。非规范化部署前处理未在本次执行；模拟器不代表板端实机或场景准确率。",
         "images": results,
     }
@@ -341,6 +400,9 @@ def run_verification_directory(directory: Path) -> None:
             input_color_order=request.get("input_color_order", "rgb"),
             preprocessing=request.get("preprocessing"),
             label_codes=request.get("label_codes"),
+            label_schema=request.get("label_schema"),
+            confidence=float(request.get("confidence", 0.25)),
+            nms_iou=float(request.get("nms_iou", 0.7)),
             bmodel_path=Path(request["bmodel_path"]) if request.get("bmodel_path") else None,
             bmodel_sha256=request.get("bmodel_sha256", ""), bmodel_expected=bool(request.get("bmodel_expected")),
             sophon_python=request.get("sophon_python", ""),

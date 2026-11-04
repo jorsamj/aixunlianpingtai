@@ -137,3 +137,43 @@ def test_numeric_report_cannot_be_reused_across_project(monkeypatch, tmp_path):
         assert False, "different project should not receive the report"
     except HTTPException as error:
         assert error.status_code == 404
+
+
+def test_numeric_validation_resolves_manifest_artifact_not_alphabetical_stale_file(monkeypatch, tmp_path):
+    root, tasks, _ = _setup(monkeypatch, tmp_path)
+    artifact_dir = root / "jobs" / "j1" / "artifacts"
+    trusted = artifact_dir / "model.onnx"
+    (artifact_dir / "a_old.onnx").write_bytes(b"stale")
+    (artifact_dir / "manifest.json").write_text(json.dumps({"outputs": [{
+        "name": "model.onnx", "sha256": api.sha256_file(trusted), "size_bytes": trusted.stat().st_size,
+    }]}), encoding="utf-8")
+    created = api.v39_create_numeric_validation("p1", "j1", [_image()], request_id="unique-artifact-0001")
+    receipt = api.read_json(root / "numeric-validations" / created["id"] / "request.json", {})
+    assert receipt["onnx_path"] == str(trusted.resolve())
+    assert receipt["artifact_identity"]["onnx"] == "verified"
+    assert tasks.created == 1
+
+
+def test_numeric_validation_rejects_tampered_manifest_artifact(monkeypatch, tmp_path):
+    root, tasks, _ = _setup(monkeypatch, tmp_path)
+    artifact_dir = root / "jobs" / "j1" / "artifacts"
+    (artifact_dir / "manifest.json").write_text(json.dumps({"outputs": [{
+        "name": "model.onnx", "sha256": "a" * 64, "size_bytes": 11,
+    }]}), encoding="utf-8")
+    with pytest.raises(HTTPException, match="SHA256"):
+        api.v39_create_numeric_validation("p1", "j1", [_image()], request_id="tampered-artifact-01")
+    assert tasks.created == 0
+
+
+def test_numeric_validation_freezes_thresholds_and_rejects_changed_idempotency(monkeypatch, tmp_path):
+    root, tasks, _ = _setup(monkeypatch, tmp_path)
+    created = api.v39_create_numeric_validation("p1", "j1", [_image()], request_id="threshold-identity-1",
+                                                confidence=0.42, nms_iou=0.62)
+    receipt = api.read_json(root / "numeric-validations" / created["id"] / "request.json", {})
+    assert receipt["confidence"] == 0.42 and receipt["nms_iou"] == 0.62
+    with pytest.raises(HTTPException, match="阈值不同"):
+        api.v39_create_numeric_validation("p1", "j1", [_image()], request_id="threshold-identity-1",
+                                         confidence=0.25, nms_iou=0.62)
+    with pytest.raises(HTTPException, match="0 与 1"):
+        api.v39_create_numeric_validation("p1", "j1", [_image()], confidence=float('nan'))
+    assert tasks.created == 1

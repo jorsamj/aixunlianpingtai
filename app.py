@@ -20576,6 +20576,19 @@ def _v39_create_deploy_job_under_version_fence(
         for field in ("label_schema", "label_codes", "yolo", "training_lineage", "snapshot_id", "snapshot"):
             if field in version:
                 source_trace[field] = json.loads(json.dumps(version[field], ensure_ascii=False))
+        # Keep the original historical version untouched. An absent or
+        # contradictory label contract must remain visible as incomplete.
+        from platform_core.model_metadata import model_metadata
+        frozen_labels = model_metadata(DATA_DIR, version)
+        if frozen_labels.get("label_validation_status") == "VERIFIED":
+            source_trace["label_codes"] = list(frozen_labels["tags"])
+        source_trace["label_binding"] = {
+            "status": str(frozen_labels.get("label_validation_status") or "UNKNOWN").lower(),
+            "source": frozen_labels.get("label_source") or "unknown",
+            "mapping_sha256": hashlib.sha256(json.dumps(source_trace.get("label_codes") or [],
+                ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+                if frozen_labels.get("label_validation_status") == "VERIFIED" else "",
+        }
     job={"id":job_id,"project_id":project_id,"source_id":payload.source_id,"source_name":src.name,"source_path":str(local_src),"source_meta":{k:v for k,v in source.items() if k!="_resolved_version"},"source_trace":source_trace,"target":payload.target,"resource_id":payload.resource_id,"resource":resource_for_job,"params":params,"requested_params":dict(payload.params or {}),"dataset_id":payload.dataset_id,"calibration_split":payload.calibration_split,"calibration_dir":str(cal_dir) if cal_dir else "","status":"queued","stage":"等待启动","progress":0,"message":"等待启动","created_at":now_iso(),"updated_at":now_iso(),"outputs":[],"request_id":str(payload.request_id or ""),"request_identity":_deploy_request_identity(payload) if payload.request_id else ""}
     portable_conversion = None
     conversion_target = str(payload.target or "").strip().lower()
@@ -21079,6 +21092,41 @@ def _numeric_conversion_dir(project_id: str, verification_id: str) -> Path:
     return deploy_root(project_id) / "numeric-validations" / verification_id
 
 
+def _numeric_conversion_artifact(job_dir: Path, manifest: dict, suffix: str, *, required: bool) -> tuple[Path | None, str]:
+    """Resolve a unique frozen output, never the alphabetically first artifact."""
+    root = (job_dir / "artifacts").resolve()
+    records = manifest.get("outputs") if isinstance(manifest.get("outputs"), list) else []
+    recorded = [row for row in records if isinstance(row, dict)
+                and str(row.get("name") or "").lower().endswith(suffix)]
+    if records:
+        if len(recorded) != 1:
+            if not required and not recorded:
+                return None, "not_applicable"
+            raise HTTPException(status_code=409, detail=f"转换 manifest 中 {suffix} 产物身份不唯一或缺失")
+        row = recorded[0]
+        relative = Path(str(row["name"]))
+        if relative.is_absolute() or ".." in relative.parts:
+            raise HTTPException(status_code=409, detail="转换 manifest 包含越界产物路径")
+        path = (root / relative).resolve()
+    else:
+        candidates = sorted(root.glob(f"*{suffix}"))
+        if not candidates and not required:
+            return None, "not_applicable"
+        if len(candidates) != 1:
+            raise HTTPException(status_code=409, detail=f"无法唯一确认历史 {suffix} 转换产物")
+        path = candidates[0].resolve()
+        row = {}
+    if not path.is_relative_to(root) or not path.is_file() or path.stat().st_size <= 0:
+        raise HTTPException(status_code=409, detail=f"{suffix} 产物缺失、为空或越过冻结目录")
+    expected_sha = str(row.get("sha256") or "")
+    if expected_sha and expected_sha != sha256_file(path):
+        raise HTTPException(status_code=409, detail=f"{suffix} 产物 SHA256 与转换 manifest 不一致")
+    expected_size = row.get("size_bytes")
+    if expected_size is not None and (type(expected_size) is not int or expected_size != path.stat().st_size):
+        raise HTTPException(status_code=409, detail=f"{suffix} 产物大小与转换 manifest 不一致")
+    return path, "verified" if expected_sha else "unverified"
+
+
 def _numeric_conversion_public(project_id: str, verification_id: str) -> dict:
     directory = _numeric_conversion_dir(project_id, verification_id)
     receipt = read_json(directory / "request.json", {})
@@ -21123,24 +21171,33 @@ def v39_get_numeric_validation(project_id: str, job_id: str, verification_id: st
 def v39_create_numeric_validation(
     project_id: str, job_id: str, files: List[UploadFile] = File(...),
     request_id: str = Form(""),
+    confidence: float = Form(0.25), nms_iou: float = Form(0.7),
 ):
     """Freeze real samples and enqueue PT-vs-ONNX only; never assert BMODEL pass."""
+    # Direct in-process callers (including legacy tests) receive the FastAPI
+    # Form parameter descriptor rather than an HTTP-decoded default value.
+    confidence = float(confidence) if isinstance(confidence, (int, float)) else 0.25
+    nms_iou = float(nms_iou) if isinstance(nms_iou, (int, float)) else 0.7
     job = _read_deploy_job(project_id, job_id)
     if str(job.get("status") or "").lower() not in {"done", "blocked_by_hardware"}:
         raise HTTPException(status_code=409, detail="转换产物尚未完成，无法进行数值比较")
     if not 1 <= len(files) <= 12:
         raise HTTPException(status_code=422, detail="每批请选择 1～12 张真实图片")
+    if (not math.isfinite(confidence) or not 0 < confidence < 1
+            or not math.isfinite(nms_iou) or not 0 < nms_iou < 1):
+        raise HTTPException(status_code=422, detail="验证置信度和 NMS IoU 必须在 0 与 1 之间")
     job_dir = _deploy_job_dir(project_id, job_id).resolve()
     source_path = Path(str(job.get("source_path") or "")).resolve()
-    onnx_paths = sorted((job_dir / "artifacts").glob("*.onnx"))
+    manifest = read_json(job_dir / "artifacts" / "manifest.json", {})
+    onnx_path, onnx_identity = _numeric_conversion_artifact(job_dir, manifest, ".onnx", required=True)
+    bmodel_path, bmodel_identity = _numeric_conversion_artifact(job_dir, manifest, ".bmodel", required=False)
     if not source_path.is_file() or source_path.suffix.lower() not in {".pt", ".pth"}:
         raise HTTPException(status_code=422, detail="源版本不是可用 PT，暂无法进行 PT／ONNX 比较")
-    if not onnx_paths:
-        raise HTTPException(status_code=422, detail="转换记录没有本地 ONNX 中间产物，请先核查源产物与转换日志")
     if not source_path.is_relative_to(job_dir):
         raise HTTPException(status_code=409, detail="源模型不在本次转换的冻结目录中")
-    if not onnx_paths[0].resolve().is_relative_to((job_dir / "artifacts").resolve()):
-        raise HTTPException(status_code=409, detail="ONNX 产物路径越过当前转换目录")
+    source_sha = str((job.get("source_trace") or {}).get("sha256") or "")
+    if source_sha and source_sha != sha256_file(source_path):
+        raise HTTPException(status_code=409, detail="冻结 PT 源权重 SHA256 不一致")
     if request_id and not re.fullmatch(r"[A-Za-z0-9_-]{12,80}", request_id):
         raise HTTPException(status_code=422, detail="数值验证请求 ID 不合法")
     verification_id = "nv_" + (hashlib.sha256(f"{project_id}:{job_id}:{request_id}".encode()).hexdigest()[:24] if request_id else uuid.uuid4().hex[:24])
@@ -21155,6 +21212,8 @@ def v39_create_numeric_validation(
                 receipt = read_json(directory / "request.json", {})
                 if receipt.get("project_id") != project_id or receipt.get("conversion_job_id") != job_id or receipt.get("request_id") != request_id:
                     raise HTTPException(status_code=409, detail="相同验证请求标识已有不同任务")
+                if float(receipt.get("confidence", 0.25)) != confidence or float(receipt.get("nms_iou", 0.7)) != nms_iou:
+                    raise HTTPException(status_code=409, detail="相同请求 ID 的验证阈值不同，请发起新验证")
                 return {"ok": True, "idempotent": True, **_numeric_conversion_public(project_id, verification_id)}
             if directory.exists():
                 raise HTTPException(status_code=409, detail="验证任务准备状态未知，请核对原请求")
@@ -21188,27 +21247,25 @@ def v39_create_numeric_validation(
                 except Exception as error:
                     raise HTTPException(status_code=422, detail=f"第 {index+1} 张图片无法解码：{error}") from error
                 names.append(name)
-            manifest = read_json(job_dir / "artifacts" / "manifest.json", {})
             onnx_evidence = manifest.get("onnx") if isinstance(manifest.get("onnx"), dict) else {}
-            bmodels = sorted((job_dir / "artifacts").glob("*.bmodel"))
-            if bmodels and not bmodels[0].resolve().is_relative_to((job_dir / "artifacts").resolve()):
-                raise HTTPException(status_code=409, detail="BMODEL 产物路径越过当前转换目录")
-            artifact_records = manifest.get("outputs") if isinstance(manifest.get("outputs"), list) else []
-            bmodel_evidence = next((row for row in artifact_records if isinstance(row, dict) and row.get("name") == bmodels[0].name), {}) if bmodels else {}
+            source_evidence = manifest.get("source") if isinstance(manifest.get("source"), dict) else {}
             receipt = {
                 "id": verification_id, "project_id": project_id, "conversion_job_id": job_id,
                 "created_at": now_iso(), "request_id": request_id,
-                "source_path": str(source_path), "onnx_path": str(onnx_paths[0].resolve()),
-                "source_sha256": str((job.get("source_trace") or {}).get("sha256") or sha256_file(source_path)),
-                "onnx_sha256": str(onnx_evidence.get("sha256") or sha256_file(onnx_paths[0])),
-                "bmodel_path": str(bmodels[0].resolve()) if bmodels else "",
-                "bmodel_sha256": str(bmodel_evidence.get("sha256") or (sha256_file(bmodels[0]) if bmodels else "")),
+                "source_path": str(source_path), "onnx_path": str(onnx_path),
+                "source_sha256": source_sha or sha256_file(source_path),
+                "onnx_sha256": str(onnx_evidence.get("sha256") or sha256_file(onnx_path)),
+                "bmodel_path": str(bmodel_path) if bmodel_path else "",
+                "bmodel_sha256": sha256_file(bmodel_path) if bmodel_path else "",
                 "bmodel_expected": str(job.get("target") or "").lower() == "sophon",
+                "artifact_identity": {"onnx": onnx_identity, "bmodel": bmodel_identity},
                 "sophon_python": str((manifest.get("tool") or {}).get("python_path") or (job.get("resource") or {}).get("python_path") or ""),
                 "precision": str((job.get("params") or {}).get("precision") or "fp32"),
+                "confidence": confidence, "nms_iou": nms_iou,
                 "input_color_order": str((job.get("params") or {}).get("input_color_order") or ((job.get("params") or {}).get("preprocessing") or {}).get("pixel_format") or "rgb"),
                 "preprocessing": dict((job.get("params") or {}).get("preprocessing") or {}),
-                "label_codes": (manifest.get("source") or {}).get("label_codes") if isinstance((manifest.get("source") or {}).get("label_codes"), list) else [],
+                "label_codes": source_evidence.get("label_codes") if isinstance(source_evidence.get("label_codes"), list) else [],
+                "label_schema": source_evidence.get("label_schema") if isinstance(source_evidence.get("label_schema"), list) else [],
                 "image_names": names, "source_type": "PT", "compared_type": "ONNX",
             }
             write_json(directory / "request.json", receipt)

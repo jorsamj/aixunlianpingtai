@@ -259,7 +259,64 @@ def _iou_xyxy(a, b):
     aa=max(0.0,a[2]-a[0])*max(0.0,a[3]-a[1]); bb=max(0.0,b[2]-b[0])*max(0.0,b[3]-b[1])
     return inter/max(1e-9,aa+bb-inter)
 
-def analyze_detection_errors(model, data_yaml, device='cpu', max_images=200, iou_threshold=0.5, conf=0.25):
+def _select_validation_error_images(img_dir, lab_dir, max_images=200):
+    """Stable label-stratified sample; never use lexicographic first-N Val files.
+
+    Label presence and empty annotations are the only known strata here. Camera,
+    lighting and time provenance cannot be inferred from arbitrary filenames.
+    """
+    import hashlib
+    files = [path for path in img_dir.iterdir() if path.is_file() and path.suffix.lower()
+             in {'.jpg', '.jpeg', '.png', '.bmp', '.webp'}]
+    limit = min(len(files), max(0, int(max_images or 200)))
+    strata = {}
+    for path in files:
+        label_path = lab_dir / (path.stem + '.txt')
+        labels = set()
+        try:
+            if label_path.is_file():
+                for line in label_path.read_text(encoding='utf-8').splitlines():
+                    parts = line.split()
+                    if len(parts) >= 5:
+                        labels.add(str(int(float(parts[0]))))
+        except (OSError, ValueError, OverflowError):
+            labels.add('__invalid_label__')
+        if not labels:
+            labels.add('__empty_label__')
+        for label in labels:
+            strata.setdefault(label, []).append(path)
+    def priority(path):
+        return hashlib.sha256(path.name.encode('utf-8')).digest()
+    for members in strata.values():
+        members.sort(key=priority)
+    # Rare class/empty-label buckets go first, followed by balanced sampling.
+    order = sorted(strata, key=lambda label: (len(strata[label]), label))
+    selected, seen = [], set()
+    offsets = {label: 0 for label in order}
+    while len(selected) < limit:
+        progressed = False
+        for label in order:
+            members = strata[label]
+            while offsets[label] < len(members) and members[offsets[label]] in seen:
+                offsets[label] += 1
+            if offsets[label] >= len(members):
+                continue
+            member = members[offsets[label]]
+            offsets[label] += 1
+            seen.add(member)
+            selected.append(member)
+            progressed = True
+            if len(selected) == limit:
+                break
+        if not progressed:
+            break
+    return selected, {"split": "val", "method": "label_stratified_sha256_v1",
+                      "population_images": len(files), "sampled_images": len(selected),
+                      "strata_population": {label: len(rows) for label, rows in sorted(strata.items())},
+                      "note": "仅用于训练完成后的 Val 抽样误差诊断，不能替代冻结独立 Test；未对摄像头/时段/光照做无证据分层"}
+
+
+def analyze_detection_errors(model, data_yaml, device='cpu', max_images=200, iou_threshold=0.5, conf=0.25, sampling_info=None):
     """Compare predictions against YOLO ground truth on validation images.
     Returns sample-level FP/FN details; no VLM/LLM judgement is used.
     """
@@ -267,7 +324,9 @@ def analyze_detection_errors(model, data_yaml, device='cpu', max_images=200, iou
     img_dir=root/'images'/'val'; lab_dir=root/'labels'/'val'
     if not img_dir.exists(): return []
     names=getattr(model,'names',{}) or {}
-    files=[x for x in sorted(img_dir.iterdir()) if x.suffix.lower() in {'.jpg','.jpeg','.png','.bmp','.webp'}][:max(0,int(max_images or 200))]
+    files, sample_evidence = _select_validation_error_images(img_dir, lab_dir, max_images)
+    if isinstance(sampling_info, dict):
+        sampling_info.update(sample_evidence)
     errors=[]
     for image_path in files:
         try:
@@ -1509,7 +1568,9 @@ def main():
             training_report["test_result"]={"status":"failed","metrics":{},"error":"验证阶段失败，未执行最终试验集评估："+str(ve)}
         try:
             analysis_limit=int(args.val_max_samples) if int(args.val_max_samples or 0)>0 else 200
-            training_report["error_samples"]=analyze_detection_errors(best_model,args.data,args.device,max_images=min(500,analysis_limit))
+            sampling_info = {}
+            training_report["error_samples"]=analyze_detection_errors(best_model,args.data,args.device,max_images=min(500,analysis_limit),sampling_info=sampling_info)
+            training_report["error_analysis_sampling"] = sampling_info
             training_report["error_sample_count"]=len([x for x in training_report["error_samples"] if not x.get("analysis_error")])
         except Exception as ae:
             training_report["error_analysis_error"]=str(ae)

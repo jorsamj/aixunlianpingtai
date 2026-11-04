@@ -159,7 +159,8 @@ def validate_target(kind: str, params: Mapping[str, Any], *, require_calibration
             raise ValueError("Sophon export requires opset=12 and simplify=false")
         height, width = conversion_input_shape(values)
         preprocessing = dict(values.get("preprocessing") or {})
-        for field,expected in (("pad_value",114),("channel_format","nchw"),("nms","external"),("fuse_preprocess",False)):
+        for field,expected in (("pad_value",114),("channel_format","nchw"),("nms","external"),("fuse_preprocess",False),
+                               ("resize_interpolation","opencv_linear")):
             if field in preprocessing and (type(preprocessing[field]) is not type(expected) or preprocessing[field]!=expected):
                 raise ValueError(f"Sophon {field}与当前Adapter支持的预处理/后处理合同不一致")
         if preprocessing.get("owner", "caller") != "caller":
@@ -184,8 +185,12 @@ def validate_target(kind: str, params: Mapping[str, Any], *, require_calibration
         letterbox = preprocessing.get("letterbox", values.get("keep_aspect_ratio", True))
         if type(letterbox) is not bool:
             raise ValueError("Sophon letterbox必须为布尔值")
+        letterbox_mode = "fixed_shape_center" if letterbox else "stretch"
+        if preprocessing.get("letterbox_mode", letterbox_mode) != letterbox_mode:
+            raise ValueError("Sophon LetterBox 模式与缩放策略不一致")
         preprocessing.update(owner="caller", pixel_format=pixel, letterbox=letterbox,
-                             pad_value=114, channel_format="nchw", nms="external", fuse_preprocess=False)
+                             pad_value=114, channel_format="nchw", nms="external", fuse_preprocess=False,
+                             resize_interpolation="opencv_linear", letterbox_mode=letterbox_mode)
         values.update(kind="sophon", chip=chip, precision=precision, batch=1, num_core=1,
                       dynamic=False, input_height=height, input_width=width, preprocessing=preprocessing,
                       opset=12, simplify=False)

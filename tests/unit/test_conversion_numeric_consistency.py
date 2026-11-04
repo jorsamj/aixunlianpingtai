@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 
 from platform_core.deployment.numeric_consistency import (
-    compare_tensors, compare_yolo_detections, is_canonical_rgb_preprocessing, make_input, validate_paths,
+    compare_tensors, compare_yolo_detections, is_canonical_rgb_preprocessing, make_input, validate_paths, verify_label_identity,
 )
 
 
@@ -63,11 +63,35 @@ def test_yolo_detection_comparison_does_not_fail_on_suppressed_duplicate_anchor(
 
 
 def test_numeric_verification_refuses_to_call_noncanonical_deployment_preprocessing_verified():
-    assert is_canonical_rgb_preprocessing({"pixel_format": "rgb", "scale": [1 / 255] * 3})
+    canonical = {"pixel_format": "rgb", "channel_format": "nchw", "resize_interpolation": "opencv_linear",
+                 "letterbox_mode": "fixed_shape_center", "scale": [1 / 255] * 3}
+    assert is_canonical_rgb_preprocessing(canonical)
+    assert not is_canonical_rgb_preprocessing({"pixel_format": "rgb", "scale": [1 / 255] * 3})
+    assert not is_canonical_rgb_preprocessing({**canonical, "resize_interpolation": "pillow_bilinear"})
     assert not is_canonical_rgb_preprocessing({"letterbox": False})
     assert not is_canonical_rgb_preprocessing({"pixel_format": "bgr"})
     assert not is_canonical_rgb_preprocessing({"scale": [1.0, 1.0, 1.0]})
     assert not is_canonical_rgb_preprocessing({"mean": "bad"})
+
+
+def test_label_identity_requires_exact_frozen_order_even_when_count_matches():
+    schema = [{"class_id": 1, "code": "fire"}, {"class_id": 0, "code": "smoke"}]
+    checked = verify_label_identity({0: "smoke", 1: "fire"}, label_codes=["smoke", "fire"], label_schema=schema)
+    assert checked["status"] == "verified" and len(checked["mapping_sha256"]) == 64
+    assert verify_label_identity({0: "fire", 1: "smoke"}, label_codes=["smoke", "fire"], label_schema=schema)["status"] == "mismatch"
+    assert verify_label_identity({0: "smoke", 1: "fire"}, label_codes=["fire", "smoke"], label_schema=schema)["status"] == "conflict"
+    assert verify_label_identity({0: "smoke", 1: "fire"})["status"] == "unknown"
+
+
+def test_different_deployment_thresholds_change_detection_outcome_and_invalid_values_fail_closed():
+    original = np.zeros((1, 5, 12), dtype=np.float32)
+    original[0, :4, :] = np.array([[100], [100], [15], [15]])
+    original[0, 4, 1] = 0.24
+    converted = original.copy()
+    converted[0, 4, 1] = 0.26
+    assert not compare_yolo_detections(original, converted, class_count=1, confidence=0.25)["within_tolerance"]
+    assert compare_yolo_detections(original, converted, class_count=1, confidence=0.30)["within_tolerance"]
+    assert not compare_yolo_detections(original, converted, class_count=1, confidence=float('nan'))["comparable"]
 
 
 @pytest.mark.parametrize("unknown_precision", ["int8", "auto", "fp8", "unknown", ""])
@@ -188,7 +212,7 @@ def test_missing_expected_bmodel_is_unavailable_without_hiding_pt_onnx_result(tm
     monkeypatch.setitem(sys.modules, "ultralytics", SimpleNamespace(YOLO=lambda _path: SimpleNamespace(model=Model())))
 
     result = verify_images(pt, onnx, [picture], precision="fp32", bmodel_expected=True)
-    assert result["verdict"] == "consistent"
+    assert result["verdict"] == "not_comparable"  # Raw 2-D tensor has no supported detection output.
     assert result["bmodel_numeric_status"] == "unavailable"
     assert "BMODEL 文件不存在" in result["bmodel_numeric_error"]
     assert result["bmodel_verified"] is False
