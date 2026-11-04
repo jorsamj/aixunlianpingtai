@@ -21081,7 +21081,6 @@ def _numeric_conversion_dir(project_id: str, verification_id: str) -> Path:
 
 def _numeric_conversion_public(project_id: str, verification_id: str) -> dict:
     directory = _numeric_conversion_dir(project_id, verification_id)
-    created_directory = False
     receipt = read_json(directory / "request.json", {})
     if receipt.get("project_id") != project_id:
         raise HTTPException(status_code=404, detail="数值验证记录不存在")
@@ -21146,6 +21145,7 @@ def v39_create_numeric_validation(
         raise HTTPException(status_code=422, detail="数值验证请求 ID 不合法")
     verification_id = "nv_" + (hashlib.sha256(f"{project_id}:{job_id}:{request_id}".encode()).hexdigest()[:24] if request_id else uuid.uuid4().hex[:24])
     directory = _numeric_conversion_dir(project_id, verification_id)
+    created_directory = False
     (deploy_root(project_id) / "numeric-validations").mkdir(parents=True, exist_ok=True)
     lock_root = DATA_DIR / "task_runtime" / "conversion_create_locks"
     lock_root.mkdir(parents=True, exist_ok=True)
@@ -21199,10 +21199,11 @@ def v39_create_numeric_validation(
                 "id": verification_id, "project_id": project_id, "conversion_job_id": job_id,
                 "created_at": now_iso(), "request_id": request_id,
                 "source_path": str(source_path), "onnx_path": str(onnx_paths[0].resolve()),
-                "source_sha256": str((job.get("source_trace") or {}).get("sha256") or ""),
-                "onnx_sha256": str(onnx_evidence.get("sha256") or ""),
+                "source_sha256": str((job.get("source_trace") or {}).get("sha256") or sha256_file(source_path)),
+                "onnx_sha256": str(onnx_evidence.get("sha256") or sha256_file(onnx_paths[0])),
                 "bmodel_path": str(bmodels[0].resolve()) if bmodels else "",
-                "bmodel_sha256": str(bmodel_evidence.get("sha256") or ""),
+                "bmodel_sha256": str(bmodel_evidence.get("sha256") or (sha256_file(bmodels[0]) if bmodels else "")),
+                "bmodel_expected": str(job.get("target") or "").lower() == "sophon",
                 "sophon_python": str((manifest.get("tool") or {}).get("python_path") or (job.get("resource") or {}).get("python_path") or ""),
                 "precision": str((job.get("params") or {}).get("precision") or "fp32"),
                 "input_color_order": str((job.get("params") or {}).get("input_color_order") or "rgb"),

@@ -1,8 +1,11 @@
+import hashlib
 import io
+import json
 from pathlib import Path
 
 from fastapi import HTTPException, UploadFile
 from PIL import Image
+import pytest
 
 import app as api
 
@@ -69,10 +72,41 @@ def test_numeric_verification_has_one_durable_task_and_idempotent_retry(monkeypa
     assert tasks.created == 1
     receipt = api.read_json(root / "numeric-validations" / first["id"] / "request.json", {})
     assert receipt["source_sha256"]
+    assert receipt["onnx_sha256"] == api.sha256_file(root / "jobs" / "j1" / "artifacts" / "model.onnx")
+    assert receipt["bmodel_expected"] is True
+    assert receipt["bmodel_path"] == ""
     assert receipt["image_names"] == ["image_01.png"]
     assert artifacts.writes[(first["id"], "request.json")]["execution_mode"] == "numeric_verification"
     assert api.v39_get_numeric_validation("p1", "j1", first["id"])["id"] == first["id"]
     assert len(api.v39_list_numeric_validations("p1", "j1")["items"]) == 1
+
+
+def test_conflicting_idempotency_receipt_returns_409_and_preserves_existing_task(monkeypatch, tmp_path):
+    root, tasks, _ = _setup(monkeypatch, tmp_path)
+    first = api.v39_create_numeric_validation("p1", "j1", [_image()], request_id="conflict-verification-01")
+    path = root / "numeric-validations" / first["id"] / "request.json"
+    receipt = api.read_json(path, {})
+    receipt["request_id"] = "another-request-identity"
+    path.write_text(json.dumps(receipt, ensure_ascii=False), encoding="utf-8")
+    with pytest.raises(HTTPException) as raised:
+        api.v39_create_numeric_validation("p1", "j1", [_image()], request_id="conflict-verification-01")
+    assert raised.value.status_code == 409
+    assert path.is_file()
+    assert tasks.created == 1
+
+
+def test_orphaned_numeric_directory_fails_closed_without_deleting_evidence(monkeypatch, tmp_path):
+    root, tasks, _ = _setup(monkeypatch, tmp_path)
+    request_id = "orphan-verification-01"
+    verification_id = "nv_" + hashlib.sha256(f"p1:j1:{request_id}".encode()).hexdigest()[:24]
+    existing = root / "numeric-validations" / verification_id
+    existing.mkdir(parents=True)
+    (existing / "forensics.txt").write_text("keep", encoding="utf-8")
+    with pytest.raises(HTTPException) as raised:
+        api.v39_create_numeric_validation("p1", "j1", [_image()], request_id=request_id)
+    assert raised.value.status_code == 409
+    assert (existing / "forensics.txt").read_text(encoding="utf-8") == "keep"
+    assert tasks.created == 0
 
 
 def test_corrupt_image_is_rejected_without_leaking_partial_files(monkeypatch, tmp_path):

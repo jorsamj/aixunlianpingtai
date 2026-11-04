@@ -1,5 +1,15 @@
 # 42.24.518｜算法版本转换工作台、历史记录与数值一致性验证
 
+## 2026-11-04｜42.24.521 数值报告防误判与创建请求异常边界
+
+- 以已推送的 `42.24.520`（`d801ffd00f8f39c0631b0143de7b42bb6c20b0d5`，其 GitHub Actions 可查询 **20/20 成功**）为干净基线继续，不改训练、转换核心编译、正式 GT、生产数据或目标设备；此次改动自身必须以新的准确 SHA 独立核验 CI。
+- 发现数值验证创建 API 在同 `request_id` 回执冲突、已有孤儿目录的早期 `409` 分支中，异常收尾读取尚未初始化的 `created_directory`，可能把预期错误覆盖成服务端 `UnboundLocalError`。现在在加锁前初始化清理标记，拒绝场景绝不删除既有目录证据；新增冲突/孤儿目录回归。
+- 存在 BMODEL 预期但本机转换目录未保留 BMODEL 时，原报告会说 `not_applicable`，误导用户；现在创建回执冻结 `bmodel_expected`，缺少文件明确返回 `bmodel_numeric_status=unavailable` 与原因，保留 PT/ONNX 的独立比较结果。`bmodel_verified=false`、`hardware_verified=false` 不变，绝不以离线模拟冒充实机通过。
+- 源 PT、ONNX 及存在的 BMODEL 在 manifest 缺摘要时由当前冻结文件计算 SHA256，Worker 使用既有校验拒绝跨时替换；只有 manifest 本来有合法摘要时直接复用该证据。
+- FP32/FP16/BF16 保留明确阈值；之前未知 `precision`（如 INT8、auto）隐式按 FP16 阈值判定通过，现改为 `not_comparable` 并写明未建立可信容差协议。**不能用原始输出数值对齐判断现场误报已修好**，仍须排查解码/NMS/颜色通道/业务事件逻辑。
+- 新增后端 API 与纯数值单测；本次执行的前端/CI 结果应以下文最终回执为准。本机无 torch/onnxruntime/ultralytics/Sophon SDK 及真实模型原图，本批仍**没有执行**真实 PT→ONNX→BMODEL 样本数值对比，不得宣称实测通过。
+- 本地验证：`npm test` **1522/1522 通过**，Python `py_compile`、Node `--check`、纯数值 FP16/auto/INT8 门禁、`git diff --check` 通过；本机无 `pytest`/FastAPI/filelock 等后端依赖，**后端新增测试需等待对应 GitHub Actions 执行**。不能把本地前端绿灯当作后端通过。
+
 日期：2026-11-04；开发分支：`feature/external-algorithm-publishing`。
 
 ## 需求与边界（已冻结）

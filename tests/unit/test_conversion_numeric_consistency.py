@@ -21,6 +21,14 @@ def test_large_mismatch_is_detected_without_fabricated_accuracy():
     assert value["normalized_mae"] > .1
 
 
+@pytest.mark.parametrize("unknown_precision", ["int8", "auto", "fp8", "unknown", ""])
+def test_unsupported_precision_never_uses_an_implicit_fp16_tolerance(unknown_precision):
+    value = compare_tensors(np.ones((1, 3)), np.ones((1, 3)), precision=unknown_precision)
+    assert value["comparable"] is False
+    assert "容差协议" in value["reason"]
+    assert "within_tolerance" not in value
+
+
 @pytest.mark.parametrize("converted", [np.zeros((1, 4)), np.array([[np.nan, 1.]])])
 def test_incomparable_or_invalid_tensors_never_pass(converted):
     value = compare_tensors(np.ones((1, 2)), converted)
@@ -76,6 +84,66 @@ def test_sophon_simulation_without_configured_vendor_sdk_is_unavailable():
 
     with pytest.raises(RuntimeError, match="Sophon SDK"):
         _simulate_bmodel(np.ones((1, 3, 32, 32), dtype=np.float32), "images", __import__("pathlib").Path("fake.bmodel"), "")
+
+
+def test_missing_expected_bmodel_is_unavailable_without_hiding_pt_onnx_result(tmp_path, monkeypatch):
+    import contextlib
+    import sys
+    from types import SimpleNamespace
+    from PIL import Image
+    from platform_core.deployment.numeric_consistency import verify_images
+
+    pt, onnx, picture = (tmp_path / name for name in ("model.pt", "model.onnx", "test.png"))
+    pt.write_bytes(b"original")
+    onnx.write_bytes(b"converted")
+    Image.new("RGB", (32, 32), (10, 20, 30)).save(picture)
+
+    class Tensor:
+        def __init__(self, value):
+            self.value = value
+
+        def detach(self):
+            return self
+
+        def cpu(self):
+            return self
+
+        def numpy(self):
+            return self.value
+
+    class Model:
+        def cpu(self):
+            return self
+
+        def eval(self):
+            return self
+
+        def float(self):
+            return self
+
+        def __call__(self, value):
+            return Tensor(np.ones((1, 5), dtype=np.float32))
+
+    class Session:
+        def get_inputs(self):
+            return [SimpleNamespace(name="images", shape=[1, 3, 32, 32], type="tensor(float)")]
+
+        def get_outputs(self):
+            return [SimpleNamespace(name="output")]
+
+        def run(self, _outputs, _inputs):
+            return [np.ones((1, 5), dtype=np.float32)]
+
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(inference_mode=contextlib.nullcontext, from_numpy=Tensor))
+    monkeypatch.setitem(sys.modules, "onnxruntime", SimpleNamespace(InferenceSession=lambda *args, **kwargs: Session()))
+    monkeypatch.setitem(sys.modules, "ultralytics", SimpleNamespace(YOLO=lambda _path: SimpleNamespace(model=Model())))
+
+    result = verify_images(pt, onnx, [picture], precision="fp32", bmodel_expected=True)
+    assert result["verdict"] == "consistent"
+    assert result["bmodel_numeric_status"] == "unavailable"
+    assert "BMODEL 文件不存在" in result["bmodel_numeric_error"]
+    assert result["bmodel_verified"] is False
+    assert result["hardware_verified"] is False
 
 
 def test_sophon_adapter_reads_only_actual_offline_runner_output(monkeypatch):

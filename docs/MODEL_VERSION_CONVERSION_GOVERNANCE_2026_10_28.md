@@ -2,6 +2,8 @@
 
 ## 2026-11-04｜42.24.518 转换体验及真实样本数值比较接续
 
+> `42.24.521` 后续防误判补丁：数值验证 API 同请求冲突/孤儿目录维持 409，冻结源 PT/ONNX/BMODEL 摘要；算能目标缺 BMODEL 时报告 unavailable，不再当作 not_applicable；未知 INT8/auto 容差不能冒充 FP16 一致。参见 `CONVERSION_NUMERIC_VERIFICATION_AND_UI_2026_11_04.md`。仅后端安全边界、测试和进度文档，真实 SDK/模型仍待实测，不部署。
+
 新增历史列表单行化、创建配置摘要、单层弹窗转换流，以及「场景算法实测 → 转换一致性」入口。数值任务复用 `MODEL_CONVERSION` 现有持久 Worker，逐张核验 PT/ONNX 原始张量。若本地具备算能官方 TPU-MLIR 运行环境可选做 BMODEL 离线模拟数值比较，缺 SDK/不兼容会保留未核验状态；**没有新增实机验证，也没有证明正式 BM1688 误报已消除**。实现和验收边界见 [42.24.518 专项任务与进度](CONVERSION_NUMERIC_VERIFICATION_AND_UI_2026_11_04.md)。
 
 ## 2026-11-02｜42.24.496 精确 SHA CI 红灯闭环（控制平面测试证据更新）

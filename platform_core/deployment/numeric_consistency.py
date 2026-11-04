@@ -27,7 +27,10 @@ def compare_tensors(reference, converted, *, precision: str = "fp32") -> dict:
     denominator = np.linalg.norm(x) * np.linalg.norm(y)
     cosine = float(np.dot(x, y) / denominator) if denominator > 0 else (1.0 if np.array_equal(x, y) else 0.0)
     normalized_mae = float(delta.mean() / max(float(np.mean(np.abs(x))), 1e-6))
-    limit = {"fp32": 0.005, "fp16": 0.05, "bf16": 0.07}.get(str(precision).lower(), 0.05)
+    limit = {"fp32": 0.005, "fp16": 0.05, "bf16": 0.07}.get(str(precision).lower())
+    if limit is None:
+        return {"comparable": False, "reason": f"目标精度 {precision} 尚无可信数值容差协议，不得判定一致",
+                "shape": list(a.shape), "element_count": int(a.size)}
     return {
         "comparable": True,
         "shape": list(a.shape), "element_count": int(a.size),
@@ -112,12 +115,11 @@ def validate_paths(source_path: Path, onnx_path: Path, images: list[Path], *, ex
                 raise ValueError(f"{label} SHA256 不一致，拒绝对错误的模型出具报告")
 
 
-def verify_images(source_path: Path, onnx_path: Path, images: list[Path], *, precision: str, expected_source_sha: str = "", expected_onnx_sha: str = "", input_color_order: str = "rgb", bmodel_path: Path | None = None, bmodel_sha256: str = "", sophon_python: str = "", progress=None) -> dict:
+def verify_images(source_path: Path, onnx_path: Path, images: list[Path], *, precision: str, expected_source_sha: str = "", expected_onnx_sha: str = "", input_color_order: str = "rgb", bmodel_path: Path | None = None, bmodel_sha256: str = "", bmodel_expected: bool = False, sophon_python: str = "", progress=None) -> dict:
     validate_paths(source_path, onnx_path, images, expected_source_sha=expected_source_sha, expected_onnx_sha=expected_onnx_sha)
     if str(input_color_order).lower() != "rgb":
         raise ValueError("该产物使用非 RGB 输入颜色适配；当前原始张量核验仅支持 RGB 同输入，不能冒充通过")
     if bmodel_path and bmodel_path.is_file():
-        validate_paths(source_path, onnx_path, images, expected_onnx_sha=expected_onnx_sha, expected_source_sha=expected_source_sha)
         if bmodel_sha256:
             digest = hashlib.sha256()
             with bmodel_path.open("rb") as handle:
@@ -144,7 +146,7 @@ def verify_images(source_path: Path, onnx_path: Path, images: list[Path], *, pre
         raise ValueError("ONNX 输入尺寸不在可安全验证范围内")
     pt = YOLO(str(source_path)).model.cpu().eval().float()
     results = []
-    simulator_error = ""
+    simulator_error = "BMODEL 文件不存在或未在当前转换产物目录中" if (bmodel_expected or bmodel_path) and (not bmodel_path or not bmodel_path.is_file()) else ""
     for i, image in enumerate(images):
         tensor = make_input(image, height, width)
         with torch.inference_mode():
@@ -163,8 +165,8 @@ def verify_images(source_path: Path, onnx_path: Path, images: list[Path], *, pre
             progress(i + 1, len(images))
     compatible = all(row.get("comparable") for row in results)
     matching = compatible and all(row.get("within_tolerance") for row in results)
-    simulated = bool(bmodel_path and bmodel_path.is_file())
-    bmodel_compared = simulated and all(row.get("onnx_bmodel", {}).get("comparable") for row in results)
+    bmodel_requested = bool(bmodel_expected or bmodel_path)
+    bmodel_compared = bool(bmodel_path and bmodel_path.is_file()) and all(row.get("onnx_bmodel", {}).get("comparable") for row in results)
     bmodel_matching = bmodel_compared and all(row["onnx_bmodel"].get("within_tolerance") for row in results)
     return {
         "protocol": "pt-onnx-raw-tensor-v1",
@@ -172,7 +174,7 @@ def verify_images(source_path: Path, onnx_path: Path, images: list[Path], *, pre
         "status": "completed", "sample_count": len(results), "precision": precision,
         "source": "PT", "compared": "ONNX", "bmodel_verified": False,
         "hardware_verified": False, "ground_truth_used": False,
-        "bmodel_numeric_status": "consistent" if bmodel_matching else ("difference_detected" if bmodel_compared else "unavailable" if simulated else "not_applicable"),
+        "bmodel_numeric_status": "consistent" if bmodel_matching else ("difference_detected" if bmodel_compared else "unavailable" if bmodel_requested else "not_applicable"),
         "bmodel_numeric_error": simulator_error,
         "scope_note": "同图 RGB Letterbox 输入下比较 PT／ONNX 原始张量；若本机存在 Sophon 官方模拟器则另行比较 ONNX／BMODEL，模拟器不代表板端实机或场景准确率。",
         "images": results,
@@ -198,7 +200,8 @@ def run_verification_directory(directory: Path) -> None:
             expected_onnx_sha=request.get("onnx_sha256", ""),
             input_color_order=request.get("input_color_order", "rgb"),
             bmodel_path=Path(request["bmodel_path"]) if request.get("bmodel_path") else None,
-            bmodel_sha256=request.get("bmodel_sha256", ""), sophon_python=request.get("sophon_python", ""),
+            bmodel_sha256=request.get("bmodel_sha256", ""), bmodel_expected=bool(request.get("bmodel_expected")),
+            sophon_python=request.get("sophon_python", ""),
             progress=progress,
         )
         record({**result, "progress": 100, "stage": "数值比较已完成"})
