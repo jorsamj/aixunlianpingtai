@@ -2,6 +2,8 @@
 
 ## 2026-11-04｜42.24.521 数值报告防误判与创建请求异常边界
 
+> **42.24.522 CI 续批**：521 已通过 GitHub 长期分支提交 `d094684fc50e299c1e1b1a0dbbec3909823e9d8d`；后续检查发现原 `Remote Conversion Runtime/control-plane` 的 pytest 明确文件白名单尚不包含本次 `test_conversion_numeric_validation.py`、`test_conversion_numeric_consistency.py`。522 将两者加入原控制面编译和 pytest 步骤，并把数值实现及两个测试路径加入原 push/PR paths；沿用原 CI、原依赖、原权限，不新建测试工作流。522 准确新 SHA 和 GitHub Actions 结果应独立核对，不能以 521 绿灯代替。无生产部署或正式数据操作。
+
 - 以已推送的 `42.24.520`（`d801ffd00f8f39c0631b0143de7b42bb6c20b0d5`，其 GitHub Actions 可查询 **20/20 成功**）为干净基线继续，不改训练、转换核心编译、正式 GT、生产数据或目标设备；此次改动自身必须以新的准确 SHA 独立核验 CI。
 - 发现数值验证创建 API 在同 `request_id` 回执冲突、已有孤儿目录的早期 `409` 分支中，异常收尾读取尚未初始化的 `created_directory`，可能把预期错误覆盖成服务端 `UnboundLocalError`。现在在加锁前初始化清理标记，拒绝场景绝不删除既有目录证据；新增冲突/孤儿目录回归。
 - 存在 BMODEL 预期但本机转换目录未保留 BMODEL 时，原报告会说 `not_applicable`，误导用户；现在创建回执冻结 `bmodel_expected`，缺少文件明确返回 `bmodel_numeric_status=unavailable` 与原因，保留 PT/ONNX 的独立比较结果。`bmodel_verified=false`、`hardware_verified=false` 不变，绝不以离线模拟冒充实机通过。

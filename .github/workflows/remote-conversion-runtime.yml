@@ -43,12 +43,15 @@ on:
       - 'platform_core/remote_execution_transport.py'
       - 'platform_core/external_publish_request.py'
       - 'platform_core/deployment/conversion_tasks.py'
+      - 'platform_core/deployment/numeric_consistency.py'
       - 'platform_core/task_node_assignments.py'
       - 'tests/unit/test_node_agent_conversion_runtime.py'
       - 'tests/unit/test_node_agent_executor_loop.py'
       - 'tests/unit/test_node_agent_entrypoint.py'
       - 'tests/unit/test_remote_execution_transport.py'
       - 'tests/unit/test_conversion_tasks.py'
+      - 'tests/unit/test_conversion_numeric_consistency.py'
+      - 'tests/api/test_conversion_numeric_validation.py'
       - 'tests/unit/test_task_node_assignments.py'
       - 'tests/api/test_conversion_portable_contract.py'
       - 'tests/browser/model-and-conversion.spec.mjs'
@@ -103,12 +106,15 @@ on:
       - 'platform_core/remote_execution_transport.py'
       - 'platform_core/external_publish_request.py'
       - 'platform_core/deployment/conversion_tasks.py'
+      - 'platform_core/deployment/numeric_consistency.py'
       - 'platform_core/task_node_assignments.py'
       - 'tests/unit/test_node_agent_conversion_runtime.py'
       - 'tests/unit/test_node_agent_executor_loop.py'
       - 'tests/unit/test_node_agent_entrypoint.py'
       - 'tests/unit/test_remote_execution_transport.py'
       - 'tests/unit/test_conversion_tasks.py'
+      - 'tests/unit/test_conversion_numeric_consistency.py'
+      - 'tests/api/test_conversion_numeric_validation.py'
       - 'tests/unit/test_task_node_assignments.py'
       - 'tests/api/test_conversion_portable_contract.py'
       - 'tests/browser/model-and-conversion.spec.mjs'
@@ -203,12 +209,15 @@ jobs:
           platform_core/remote_execution_transport.py
           platform_core/external_publish_request.py
           platform_core/deployment/conversion_tasks.py
+          platform_core/deployment/numeric_consistency.py
           platform_core/node_agent_conversion_runtime.py
           tests/api/test_conversion_portable_contract.py
           tests/api/test_rknn_board_validation.py
           tests/api/test_deployment_artifact_visibility.py
           tests/unit/test_remote_execution_transport.py
           tests/unit/test_conversion_tasks.py
+          tests/unit/test_conversion_numeric_consistency.py
+          tests/api/test_conversion_numeric_validation.py
           tests/unit/test_model_artifacts.py
           tests/unit/test_sophon_conversion.py
           tests/unit/test_sophon_remote_durable.py
@@ -224,6 +233,8 @@ jobs:
           tests/api/test_deployment_artifact_visibility.py
           tests/unit/test_remote_execution_transport.py
           tests/unit/test_conversion_tasks.py
+          tests/unit/test_conversion_numeric_consistency.py
+          tests/api/test_conversion_numeric_validation.py
           tests/unit/test_model_artifacts.py
           tests/unit/test_sophon_conversion.py
           tests/unit/test_sophon_remote_durable.py
