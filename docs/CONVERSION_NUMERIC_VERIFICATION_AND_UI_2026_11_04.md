@@ -65,3 +65,9 @@
 本轮将 `#conv428OnnxFields`、`#conv428SophonFields`、`#conv428TensorRtFields`、`#conv428Calibration` 恢复在主配置区，由原业务逻辑决定显示与否；算能 `#conv428Preprocess` 仍位于原厂商区内部可单层展开；仅非必填 CSC 设备适配置于「高级设置」。保持现有精度、Chip、资源检测、INT8 校准冻结与转换任务提交 Owner 不变。Chrome 原有 ONNX/TensorRT/Sophon 检查增加“主区不在高级折叠中”断言，RKNN INT8 断言同理；Node 增加对应防退化契约。
 
 隔离验收：前端 `npm test` **1522/1522** 通过、JS `node --check`、`git diff --check` 通过。当前执行环境无已安装 Playwright Chromium 浏览器，**不能声明本地真实 Chrome 通过**；以本轮新提交触发的 `Remote Conversion Runtime` 等 GitHub Actions 为最终证据。PT/ONNX/BMODEL 真实模型推理、算能 SDK 及生产部署仍未做。
+
+## 42.24.520｜返回历史与旧 Chrome 契约修正（2026-11-04）
+
+`42.24.519`（远端 `52148e8a6d3f27c9f9504da4bbf177873c52d358`）Remote Conversion 的原三条真实 Chrome「资源 / RKNN INT8 / 算能矩形」**3/3 通过**，证明配置显隐问题已消除；其随后 `deployment-progress-performance.spec.mjs` 发生 60 秒超时，原因是旧用例假设「取消新建转换」后，旧历史弹窗仍在下层。此假设与已确定的“关闭历史再打开独立配置编辑器”交互契约冲突，不能以增加套娃弹窗通过测试。
+
+新验收改走实际 `返回转换记录` 操作，先等待创建弹窗关闭，再恢复历史弹窗；历史缓存 / 每次资源读取的请求次数现在准确断言为首次历史两次、返回历史第三次、两次资源读取，保留 `forcedHistoryGets=0` 及无额外请求的验证。`取消` 单独验证关闭当前弹窗且不残留历史层。为避免异步竞态，返回按钮处理顺序使用 `await closeModal()` 后才执行已有 `openVersionConvert428()`。此轮只影响展示与测试，不触碰模型、GT、转换任务真实状态和 API。真实 Chrome 新一轮 CI 待跑，未通过前禁止声明全绿。

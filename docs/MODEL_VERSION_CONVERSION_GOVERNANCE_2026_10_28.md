@@ -189,3 +189,5 @@ a4bec87e16a5cbacaac8ceb5340352c36e7968b0后续CI仍检出deployment-runtime-sour
 ## 2026-11-04 接续：42.24.519 配置显隐真实 Chrome 修正
 
 数值一致性验证及转换工作台重构见 `CONVERSION_NUMERIC_VERIFICATION_AND_UI_2026_11_04.md`。`42.24.518` 远端 20 个 Actions 中 19 绿，`Remote Conversion Runtime/real-chrome` 因 RKNN INT8 校准区被新增的高级折叠容器遮挡而失败；同一审查发现 ONNX、TensorRT、算能配置控件的折叠可见性风险。`42.24.519` 只修正原控件 DOM 展示层级和回归断言，不重写转换 Owner 或降低校准约束。Node 1522/1522 通过；真实 Chrome 与后续 CI 需以此轮提交单独核实。生产数据、模型产物、原始 GT 均未修改。
+
+后续 `42.24.519` 真实 Chrome 首组三测试通过，后续原性能测试仍假设历史与新建是嵌套弹窗，导致按旧 dialog 寻找「选择转换目标」超时。`42.24.520` 统一为用户显式「返回转换记录」交互，等待关闭之后再重新打开历史；保留历史/资源 GET 次数、取消关闭及全站无套娃验收。详见当日专项文档，准确新 SHA CI 仍待核对。

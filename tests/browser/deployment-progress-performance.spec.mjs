@@ -182,11 +182,17 @@ test('canonical version conversion caches history but fetches resources on each 
   expect(historyGets).toBe(2);
   expect(forcedHistoryGets).toBe(0);
 
-  await createDialog.getByRole('button', {name: '取消'}).click();
+  await createDialog.getByRole('button', {name: '返回转换记录'}).click();
+  await expect(historyDialog).toBeVisible();
+  await expect(createDialog).toHaveCount(0);
+  await expect.poll(() => historyGets).toBe(3); // returning is an authoritative history read
   await historyDialog.getByRole('button', {name: '选择转换目标'}).click();
   const reopened = page.getByRole('dialog', {name: '新建版本转换'});
   await expect(reopened.locator('#conv428Resource')).toContainText('ONNX 导出环境');
   await page.waitForTimeout(100);
-  expect({historyGets, resourceGets}).toEqual({historyGets:2, resourceGets:2});
+  expect({historyGets, resourceGets}).toEqual({historyGets:3, resourceGets:2});
   expect(forcedHistoryGets).toBe(0);
+  await reopened.getByRole('button', {name: '取消'}).click();
+  await expect(reopened).toHaveCount(0);
+  await expect(historyDialog).toHaveCount(0);
 });

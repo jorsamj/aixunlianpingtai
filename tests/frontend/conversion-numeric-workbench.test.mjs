@@ -13,6 +13,7 @@ test('conversion editor is not nested over conversion history',()=>{
   assert.match(ui,/conversion560-create/);
   assert.match(ui,/返回转换记录/);
   assert.match(ui,/conversion560-aside/);
+  assert.match(ui,/await window\.closeModal\?\.\(\);\s*await window\.openVersionConvert428\?\.\(args\[1\],args\[2\]\)/);
 });
 
 test('required target-specific conversion fields remain outside collapsed advanced settings',()=>{

@@ -108,7 +108,11 @@
     if(args) {
       const back=document.createElement('button');
       back.className='btn';back.type='button';back.textContent='返回转换记录';
-      back.addEventListener('click',()=>{window.closeModal?.();window.openVersionConvert428?.(args[1],args[2]);});
+      back.addEventListener('click',async()=>{
+        // A history modal must not be opened until the editor has fully closed.
+        await window.closeModal?.();
+        await window.openVersionConvert428?.(args[1],args[2]);
+      });
       main.querySelector('.conversion560-submit-bar')?.prepend(back);
     }
     const update=()=>{
