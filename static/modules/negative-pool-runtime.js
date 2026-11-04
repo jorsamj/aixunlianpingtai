@@ -1,7 +1,15 @@
+export function negativePoolReviewItems(records) {
+  return records.map(record=>{
+    const annotation=record.annotation||{}, image=record.image||{};
+    const hash=String(image.content_sha256||'');
+    if(!image.id||!Number.isInteger(annotation.version)||!/^[a-f0-9]{64}$/.test(hash))throw Error('图片摘要或标注版本缺失，请刷新后重试');
+    return {image_id:String(image.id),expected_version:annotation.version,source_content_sha256:hash};
+  });
+}
 export function negativePoolQuery(filters = {}, page = 1) {
   const q = new URLSearchParams({page: String(page), page_size: '48'});
-  for (const key of ['query','joined_days','joined_from','joined_to','review_status']) if (filters[key]) q.set(key, filters[key]);
-  for (const key of ['category_id','label']) for (const value of filters[key] || []) q.append(key,value);
+  for (const key of ['algorithm_id','query','joined_days','joined_from','joined_to','review_status']) if (filters[key]) q.set(key, filters[key]);
+  for (const key of ['category_id','label','target_label']) for (const value of filters[key] || []) q.append(key,value);
   return q;
 }
 export function installNegativePoolRuntime({getState,api,pid,esc,toast,modal,closeModal,addToDraft} = {}) {
@@ -66,7 +74,7 @@ export function installNegativePoolRuntime({getState,api,pid,esc,toast,modal,clo
         ]);
         if(controller.signal.aborted||!current(token,host,projectId,kind))return;
         categories=cats.items||[];
-        if(data){rows=data.items||[];total=Number(data.total||0)}
+        if(data){rows=data.items||[];total=Number(data.total||0);if(data.scope_kind==='algorithm_contract')filters.target_label=data.effective_label_codes||[];}
         host.innerHTML=tabs(kind==='pool'?'materials':'labels')+(kind==='pool'?poolHTML():categoryHTML());
         if(kind==='pool')host.querySelector('[data-np="join"]')?.insertAdjacentHTML('afterend',button('upload','上传到负样本池'));
       }catch(e){
@@ -82,17 +90,18 @@ export function installNegativePoolRuntime({getState,api,pid,esc,toast,modal,clo
   const options=(values,chosen=[])=>values.map(x=>`<option value="${esc(x.id)}" ${chosen.includes(String(x.id))?'selected':''}>${esc(x.name)}</option>`).join('');
   function poolHTML(){
     const labels=(getState().labels||[]).map(x=>typeof x==='string'?{id:x,name:x}:{id:x.code||x.name,name:x.display_name||x.code||x.name});
-    return `<section class="panel negative-pool"><header class="row between"><div><h2>负样本池</h2><p>池成员不等于已审核负样本；训练角色按本次目标与审核证据判断。</p></div>${button('join','加入已有素材')}</header><form data-np-form="filters" class="negative-pool-filters"><label>名称 / 文件名 / ID<input class="input" name="query" value="${esc(filters.query||'')}" placeholder="搜索素材"></label><label>负样本分类（多选）<select class="select" name="category_id" multiple>${options(categories,filters.category_id)}</select></label><label>原有目标标签（多选）<select class="select" name="label" multiple>${options(labels,filters.label)}</select></label><label>加入时间<select class="select" name="joined_days"><option value="">全部时间</option><option value="7" ${filters.joined_days==='7'?'selected':''}>最近 7 天</option><option value="30" ${filters.joined_days==='30'?'selected':''}>最近 30 天</option></select></label><label>起始日期<input class="input" name="joined_from" type="date" value="${esc(filters.joined_from||'')}"></label><label>截止日期<input class="input" name="joined_to" type="date" value="${esc(filters.joined_to||'')}"></label><label>审核状态<select class="select" name="review_status"><option value="">全部状态</option>${['unannotated','annotated','confirmed_empty','stale','unknown'].map(status=>`<option value="${status}" ${filters.review_status===status?'selected':''}>${reviewName(status)}</option>`).join('')}</select></label><button class="btn primary" type="submit">筛选</button>${button('reset','重置')}</form><div class="row negative-pool-tools">${button('page-select','选中本页')}${button('all-select','全选当前筛选结果')}${button('clear','取消全选')}<span id="negativePoolSelection">已选 ${selected.size} 张（跨页保留）</span>${button('assign','批量设置分类')}${button('unassign','批量移除分类')}${button('remove','移出负样本池')}${button('draft','加入训练草稿')}</div><div class="negative-pool-grid">${rows.map(row=>{const id=String(row.id),pool=row.negative_pool||{};return `<article class="negative-pool-card"><label class="row"><input type="checkbox" data-np-select="${esc(id)}" ${selected.has(id)?'checked':''}><b>${esc(row.filename||row.name||id)}</b></label><div class="negative-pool-preview" data-np="preview" data-id="${esc(id)}">${window.materialMedia412?.(row,true)||`<img src="${esc(row.thumbnail_url||row.url||'')}" loading="lazy" alt="${esc(row.filename||id)}">`}<button type="button" class="btn mini" data-np="preview" data-id="${esc(id)}" aria-label="查看 ${esc(row.filename||id)}">查看详情</button></div><div class="negative-pool-meta"><span>${esc((pool.categories||[]).map(c=>c.name+(c.enabled===false?'（已停用）':'')).join('、')||'未分类')}</span><span>原标签：${esc((row.labels||[]).join('、')||'无')}</span><span>加入：${esc(pool.joined_at||'未知')}</span><span>审核：${esc(reviewName(pool.review_status))}（不代表本次目标已确认无目标）</span><span>训练使用：${esc(usageName(pool.training_usage))}</span><small>${esc(id)}</small></div></article>`}).join('')||'<div class="empty">当前筛选没有素材</div>'}</div><footer class="row end">共 ${total} 张 · 第 ${page} / ${Math.max(1,Math.ceil(total/48))} 页 ${button('prev','上一页',page<=1?'disabled':'')}${button('next','下一页',page*48>=total?'disabled':'')}</footer></section>`;
+    return `<section class="panel negative-pool"><header class="row between"><div><h2>负样本池</h2><p>按算法管理，审核后用于训练。</p></div>${button('join','加入已有素材')}</header><form data-np-form="filters" class="negative-pool-filters"><label>目标算法<select class="select" name="algorithm_id"><option value="">项目历史池（未指定算法）</option>${options(getState().algorithms||[],filters.algorithm_id?[filters.algorithm_id]:[])}</select></label><label>目标范围<select class="select" name="target_label" multiple ${rows.some(row=>row.negative_pool?.scope_kind==='algorithm_contract')?'disabled':''}>${options(labels,filters.target_label)}</select></label><label>名称 / 文件名 / ID<input class="input" name="query" value="${esc(filters.query||'')}" placeholder="搜索素材"></label><details class="negative-pool-advanced"><summary>高级筛选</summary><div class="negative-pool-advanced-fields"><label>负样本分类（多选）<select class="select" name="category_id" multiple>${options(categories,filters.category_id)}</select></label><label>原有目标标签（多选）<select class="select" name="label" multiple>${options(labels,filters.label)}</select></label><label>加入时间<select class="select" name="joined_days"><option value="">全部时间</option><option value="7" ${filters.joined_days==='7'?'selected':''}>最近 7 天</option><option value="30" ${filters.joined_days==='30'?'selected':''}>最近 30 天</option></select></label><label>起始日期<input class="input" name="joined_from" type="date" value="${esc(filters.joined_from||'')}"></label><label>截止日期<input class="input" name="joined_to" type="date" value="${esc(filters.joined_to||'')}"></label><label>审核状态<select class="select" name="review_status"><option value="">全部状态</option>${['unannotated','annotated','confirmed_empty','stale','unknown'].map(status=>`<option value="${status}" ${filters.review_status===status?'selected':''}>${reviewName(status)}</option>`).join('')}</select></label></div></details><button class="btn primary" type="submit">筛选</button>${button('reset','重置')}</form><div class="row negative-pool-tools"><span id="negativePoolSelection">已选 ${selected.size} 张（跨页保留）</span>${button('page-select','选中本页')}${button('all-select','全选当前筛选结果')}<details class="negative-pool-more"><summary>更多操作</summary><div>${button('clear','取消全选')}${button('assign','批量设置分类')}${button('unassign','批量移除分类')}${button('remove','移出负样本池')}</div></details><div class="negative-pool-primary-actions">${button('review','确认无本算法目标')}${button('draft','加入训练草稿')}</div></div><div class="negative-pool-grid">${rows.map(row=>{const id=String(row.id),pool=row.negative_pool||{};return `<article class="negative-pool-card"><label class="row"><input type="checkbox" data-np-select="${esc(id)}" ${selected.has(id)?'checked':''}><b>${esc(row.filename||row.name||id)}</b></label><div class="negative-pool-preview" data-np="preview" data-id="${esc(id)}">${window.materialMedia412?.(row,true)||`<img src="${esc(row.thumbnail_url||row.url||'')}" loading="lazy" alt="${esc(row.filename||id)}">`}<button type="button" class="btn mini" data-np="preview" data-id="${esc(id)}" aria-label="查看 ${esc(row.filename||id)}">查看详情</button></div><div class="negative-pool-meta"><strong class="negative-pool-qualification">${esc(({confirmed_for_requested_scope:'已确认所选范围',pending_confirmation:'待确认',target_present:'含目标',needs_review:'需复核'})[pool.qualification]||'待确认')}</strong><details><summary>来源与审核详情</summary><div class="negative-pool-detail"><span>${esc((pool.categories||[]).map(c=>c.name+(c.enabled===false?'（已停用）':'')).join('、')||'未分类')}</span><span>原标签：${esc((row.labels||[]).join('、')||'无')}</span><span>加入：${esc(pool.joined_at||'未知')}</span><span>资格：${esc(({confirmed_for_requested_scope:'已确认所选范围',pending_confirmation:'待确认',target_present:'含目标',needs_review:'需复核'})[pool.qualification]||'待确认')}</span><span>审核：${esc(reviewName(pool.review_status))}（不代表本次目标已确认无目标）</span><span>训练使用：${esc(usageName(pool.training_usage))}</span><small>${esc(id)}</small></div></details></div></article>`}).join('')||'<div class="empty">当前筛选没有素材</div>'}</div><footer class="row end">共 ${total} 张 · 第 ${page} / ${Math.max(1,Math.ceil(total/48))} 页 ${button('prev','上一页',page<=1?'disabled':'')}${button('next','下一页',page*48>=total?'disabled':'')}</footer></section>`;
   }
   function categoryHTML(){return `<section class="panel negative-pool"><header class="row between"><div><h2>负样本分类</h2><p>一级管理分类，不参与目标检测类别映射。删除分类只移除关联。</p></div>${button('create-category','新建分类')}</header><form class="row" data-np-form="category-search"><input class="input" name="query" placeholder="搜索分类" value="${esc(filters.categoryQuery||'')}"><button class="btn" type="submit">搜索</button></form><div class="negative-pool-category-list">${categories.map(c=>`<article class="row between"><div><b>${esc(c.name)}</b> · ${Number(c.material_count||0)} 张 · ${c.enabled?'启用':'停用'}</div><div class="row">${button('edit-category','编辑',`data-id="${esc(c.id)}"`)}${button('toggle-category',c.enabled?'停用':'启用',`data-id="${esc(c.id)}"`)}${button('delete-category','删除',`data-id="${esc(c.id)}"`)}</div></article>`).join('')||'<div class="empty">暂无分类</div>'}</div></section>`}
   function dialog(title,body,submit){const projectId=String(pid()),originPage=getState().page;const layer=modal(title,`<form id="negativePoolDialog" class="negative-pool-dialog">${body}<div class="row end"><button type="button" class="btn" data-np-cancel>取消</button><button class="btn primary" type="submit">确认</button></div><div role="alert" data-np-error></div></form>`,true);const form=document.getElementById('negativePoolDialog');form.querySelector('[data-np-cancel]').onclick=()=>window.closeModalLayer424(layer);form.onsubmit=async e=>{e.preventDefault();const btn=form.querySelector('[type=submit]');btn.disabled=true;try{if(String(pid())!==projectId)throw Error('项目已变化，请重新操作');await submit(new FormData(form));if(!form.isConnected||String(pid())!==projectId)return;window.closeModalLayer424(layer);if(getState().page===originPage){if(originPage==='标签管理')await window.renderLabelManagement414();else if(originPage==='数据集')await window.renderDatasets424()}}catch(error){if(form.isConnected)form.querySelector('[data-np-error]').textContent=error.message||String(error)}finally{if(form.isConnected)btn.disabled=false}}}
   const write=async(path,body,method='POST')=>{
+    if(path==='/members'&&body&&filters.algorithm_id&&!Object.hasOwn(body,'algorithm_id'))body={...body,algorithm_id:filters.algorithm_id};
     const result=await api(base()+path,{method,headers:{'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});
     if(path.startsWith('/categories')||path.startsWith('/members'))invalidateCategories();
     return result;
   };
   function browseMaterials(){
-    const projectId=String(pid());let pageNo=1,requestId=0;const chosen=new Set();
+    const projectId=String(pid()),algorithmId=String(filters.algorithm_id||'');let pageNo=1,requestId=0;const chosen=new Set();
     const layer=modal('从素材库加入负样本池',`<form id="negativePoolBrowse" class="negative-pool-dialog"><div class="row"><input class="input" name="query" placeholder="搜索文件名 / 素材 ID"><button type="button" class="btn" data-np-search>搜索</button></div><div data-np-browse-list role="status">正在读取素材…</div><div class="row between"><span data-np-browse-count>已选 0 张</span><div class="row"><button type="button" class="btn" data-np-prev>上一页</button><span data-np-page></span><button type="button" class="btn" data-np-next>下一页</button></div></div><div class="row end"><button type="button" class="btn" data-np-cancel>取消</button><button type="submit" class="btn primary">加入所选素材</button></div><div role="alert" data-np-error></div></form>`,true);
     const form=layer?.querySelector?.('#negativePoolBrowse')||document.getElementById('negativePoolBrowse');
     if(!form)return;
@@ -122,7 +131,7 @@ export function installNegativePoolRuntime({getState,api,pid,esc,toast,modal,clo
     form.addEventListener('change',e=>{if(e.target.matches?.('[data-np-image]')){e.target.checked?chosen.add(e.target.dataset.npImage):chosen.delete(e.target.dataset.npImage);sync()}});
     form.onsubmit=async e=>{e.preventDefault();const submit=form.querySelector('[type=submit]');submit.disabled=true;
       try{if(!chosen.size)throw Error('请先选择素材');if(String(pid())!==projectId)throw Error('项目已变化，请重新操作');
-        await write('/members',{image_ids:[...chosen],action:'add'});
+        await write('/members',{image_ids:[...chosen],action:'add',algorithm_id:algorithmId});
         if(!form.isConnected)return;window.closeModalLayer424(layer);toast(`已将 ${chosen.size} 张素材加入负样本池`);if(getState().page==='数据集')await window.renderDatasets424();
       }catch(error){if(form.isConnected)form.querySelector('[data-np-error]').textContent=error.message||String(error)}finally{if(form.isConnected)submit.disabled=false}};
     void loadPage();
@@ -138,15 +147,38 @@ export function installNegativePoolRuntime({getState,api,pid,esc,toast,modal,clo
     if(name==='clear'){selected.clear();syncSelection();return}
     if(name==='page-select'){rows.forEach(x=>selected.add(String(x.id)));syncSelection();return}
     if(name==='all-select'){const token=epoch,projectId=String(pid()),result=await api(base()+'/ids?'+negativePoolQuery(filters));if(token!==epoch||String(pid())!==projectId||active!=='pool'||getState().page!=='数据集')return;selected=new Set((result.items||[]).map(String));syncSelection();return}
+    if(name==='review'){
+      const ids=requireSelection(),algorithmId=String(filters.algorithm_id||''),projectId=String(pid());
+      if(!algorithmId)throw Error('请先选择目标算法并筛选');
+      if(ids.length>50)throw Error('每批最多审核 50 张，请缩小所选范围');
+      const labels=(getState().labels||[]).map(x=>typeof x==='string'?{id:x,name:x}:{id:x.code||x.name,name:x.display_name||x.code||x.name});
+      dialog('确认无本算法目标',`<label>本算法目标范围<select class="select" name="target_labels" multiple required ${rows.some(row=>row.negative_pool?.scope_kind==='algorithm_contract')?'disabled':''}>${options(labels,filters.target_label)}</select></label><p>请先逐图查看所选 ${ids.length} 张图片。确认后保存原正式审核证据，保留其他类别标注。</p><label><input type="checkbox" name="reviewed" required>我已逐图核实，不含上述目标</label>`,async data=>{
+        const codes=rows.some(row=>row.negative_pool?.scope_kind==='algorithm_contract')?[...(filters.target_label||[])]:data.getAll('target_labels');if(!codes.length||!data.get('reviewed'))throw Error('请选择目标并明确确认');
+        const records=[];for(const id of ids)records.push(await api(`/api/projects/${encodeURIComponent(projectId)}/annotations/${encodeURIComponent(id)}`));
+        if(String(pid())!==projectId||filters.algorithm_id!==algorithmId)throw Error('算法或项目已变化，请重新审核');
+        const result=await api(`/api/v62/projects/${encodeURIComponent(projectId)}/training-materials/review-negative`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({algorithm_asset_id:algorithmId,train_labels:codes,confirmed:true,items:negativePoolReviewItems(records)})});
+        if(result.failures?.length)throw Error(`已确认 ${result.succeeded?.length||0} 张，失败 ${result.failures.length} 张：${result.failures[0].message}`);
+        toast(`已确认 ${result.succeeded?.length||0} 张；训练时按冻结目标再次核验`);
+      });return;
+    }
     if(name==='draft'){const ids=requireSelection();if(!addToDraft)throw Error('请先打开原创建训练窗口建立训练草稿');await addToDraft(ids);toast(`已将 ${ids.length} 张素材加入训练草稿`);return}
     if(name==='join'){browseMaterials();return}
     if(name==='upload'){
-      const uploadProject=String(pid());
+      const uploadProject=String(pid()),uploadAlgorithm=String(filters.algorithm_id||'');
       let stagedIds=[];
-      dialog('上传到负样本池','<label>选择图片（支持批量）<input class="input" name="files" type="file" accept="image/*" multiple required></label><p>原图先进入统一素材库，再加入负样本池；不修改任何已有标签。上传失败的图片不会加入池。</p><div data-np-upload-progress role="status"></div>',async data=>{
+      dialog('上传到负样本池','<label>选择图片（支持批量）<input class="input" name="files" type="file" accept="image/*,.zip" multiple required></label><p>原图先进入统一素材库，再加入负样本池；不修改任何已有标签。上传失败的图片不会加入池。</p><div data-np-upload-progress role="status"></div>',async data=>{
         if(!stagedIds.length){
           const files=data.getAll('files').filter(file=>file?.size>0);
           if(!files.length)throw Error('请先选择图片');
+          const archives=files.filter(file=>/\.zip$/i.test(file.name));
+          if(archives.length){
+            if(!uploadAlgorithm)throw Error('上传 ZIP 到池前请先选择目标算法');
+            if(archives.length!==files.length)throw Error('ZIP 与图片请分批上传');
+            if(!window.ZipImportRuntime?.uploadBatch)throw Error('ZIP 导入尚未就绪，请稍后重试');
+            closeModal?.();
+            await window.ZipImportRuntime.uploadBatch({files:archives,value:'',externalView:true,negativePoolAlgorithmId:uploadAlgorithm});
+            toast('ZIP 已交由原导入任务处理，请确认负样本分类后入池');return;
+          }
           const body=new FormData();files.forEach(file=>body.append('files',file));body.append('dataset_id','default');
           const status=document.querySelector('#negativePoolDialog [data-np-upload-progress]');
           const upload=await api(`/api/projects/${encodeURIComponent(uploadProject)}/images`,{method:'POST',body,
@@ -156,7 +188,7 @@ export function installNegativePoolRuntime({getState,api,pid,esc,toast,modal,clo
           if(status?.isConnected)status.textContent=`已上传 ${stagedIds.length} 张，正在加入负样本池…`;
         }
         if(String(pid())!==uploadProject)throw Error('项目在上传期间已切换；图片已保存在原项目素材库，请返回原项目加入负样本池');
-        await write('/members',{image_ids:stagedIds,action:'add'});
+        await write('/members',{image_ids:stagedIds,action:'add',algorithm_id:uploadAlgorithm});
         toast(`已上传并加入负样本池 ${stagedIds.length} 张`);
       });return;
     }
@@ -170,7 +202,7 @@ export function installNegativePoolRuntime({getState,api,pid,esc,toast,modal,clo
   }
   document.addEventListener('click',e=>{const target=e.target.closest?.('[data-np]');if(!target)return;e.preventDefault();e.stopPropagation();if(target.disabled)return;target.disabled=true;Promise.resolve(action(target.dataset.np,target.dataset.id)).catch(err).finally(()=>{if(target.isConnected)target.disabled=false})});
   document.addEventListener('change',e=>{if(e.target.matches?.('[data-np-select]')){const id=e.target.dataset.npSelect;e.target.checked?selected.add(id):selected.delete(id);selectionText()}});
-  document.addEventListener('submit',e=>{const kind=e.target.dataset?.npForm;if(!kind)return;e.preventDefault();const data=new FormData(e.target);if(kind==='category-search'){filters.categoryQuery=String(data.get('query')||'');void load('categories');return}filters=Object.fromEntries(['query','joined_days','joined_from','joined_to','review_status'].map(key=>[key,String(data.get(key)||'')]));filters.category_id=data.getAll('category_id');filters.label=data.getAll('label');page=1;void load('pool')});
+  document.addEventListener('submit',e=>{const kind=e.target.dataset?.npForm;if(!kind)return;e.preventDefault();const data=new FormData(e.target);if(kind==='category-search'){filters.categoryQuery=String(data.get('query')||'');void load('categories');return}filters=Object.fromEntries(['algorithm_id','query','joined_days','joined_from','joined_to','review_status'].map(key=>[key,String(data.get(key)||'')]));filters.category_id=data.getAll('category_id');filters.label=data.getAll('label');filters.target_label=data.getAll('target_label');selected.clear();page=1;void load('pool')});
   // Card owners can replace .data426-actions after async annotation refresh.
   // Keep one observer on the current view, rather than competing HTML owners.
   function repairMaterialActions(host){
@@ -203,7 +235,9 @@ export function installNegativePoolRuntime({getState,api,pid,esc,toast,modal,clo
     materialActionsObserver.observe(host,{subtree:true,childList:true});
   }
   function decorateOriginal(kind){
-    resetProject();epoch++;
+    resetProject();
+    if((kind==='materials'&&active==='pool')||(kind==='labels'&&labelTab==='categories'))return;
+    epoch++;
     const host=view();if(!host)return;
     if(!host.querySelector('.negative-pool-tabs'))host.insertAdjacentHTML('afterbegin',tabs(kind));
     if(kind==='materials'){

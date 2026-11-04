@@ -12,7 +12,7 @@ function crc32(buffer) {
   return (crc ^ 0xffffffff) >>> 0;
 }
 
-function storedZip(entries) {
+export function storedZip(entries) {
   const locals = [];
   const centrals = [];
   let offset = 0;

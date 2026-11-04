@@ -26,7 +26,10 @@ def test_public_status_and_kind_values_are_locked():
         "TRAINING_PREPARE",
         "TRAINING",
         "MODEL_CONVERSION",
+        "MODEL_INSTALL",
         "DEPLOYMENT_TEST",
+        "DEPLOYMENT_PREPARE",
+        "EXTERNAL_ALGORITHM_CLEANUP",
     ]
 
 

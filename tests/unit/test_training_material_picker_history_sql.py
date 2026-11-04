@@ -141,3 +141,102 @@ def test_combined_filters_bulk_all_pages_and_union_preserve_selection(tmp_path: 
     assert len(selected)==180
     selected.symmetric_difference_update(smoke[:20])
     assert len(selected)==160 and set(batch[:100])<=selected
+
+
+def test_browsing_history_keeps_excluded_rows_and_current_scope_is_inclusive(tmp_path):
+    repo = MaterialRepository(tmp_path / 'data' / 'projects' / 'browse')
+    repo.upsert_many([{'id':'shared','filename':'shared.jpg','object_key':'shared.jpg',
+                      'processing_status':'processed','content_sha256':'a'*64}])
+    usage = TrainingMaterialUsage(repo.project_path.parent.parent / 'task_runtime' / 'tasks.sqlite3')
+    usage.path.parent.mkdir(parents=True, exist_ok=True)
+    import sqlite3
+    sqlite3.connect(usage.path).close()
+    source = repo.get('shared')
+    for algorithm in ('a','b'):
+        usage.record_selected('browse', algorithm, 'task-'+algorithm,
+            {'snapshot_id':algorithm,'images':[{'image_id':'shared','role':'train','content_sha256':'a'*64}]},
+            source_images=[source])
+        usage.record_execution('task-'+algorithm, completed_epoch=True)
+    filters, facts = _usage_filters(repo, {'algorithm_asset_id':'a', 'usage_state':'used',
+        'history_scope':'current_only', 'browse_only':True})
+    assert _gt_material_filter_page(repo,AnnotationRepository(repo.project_path),filters=filters,limit=60)['items'] == ['shared']
+    assert usage.query_filter('browse','a',[source])['by_image_id']['shared']['excluded'] is True
+    selected, _ = _usage_filters(repo, {'algorithm_asset_id':'a','history_scope':'current_only',
+                                       'history_policy':'include_history'})
+    assert selected['usage_image_ids'] == ['shared']
+
+
+def test_public_training_count_is_current_algorithm_only():
+    from platform_core.training_material_picker_api import _public_usage_fact
+    fact = {'history_details':[
+        {'task_id':'a','role':'train','evidence':2,'algorithm_id':'current'},
+        {'task_id':'b','role':'train','evidence':2,'algorithm_id':'other'},
+        {'task_id':'c','role':'train','evidence':0,'algorithm_id':'current'}]}
+    assert _public_usage_fact(fact, 'current')['training_task_count'] == 1
+
+
+def test_scope_browsing_uses_indexed_sql_without_hydrating_material_pool(tmp_path, monkeypatch):
+    from platform_core.task_runtime.repository import TaskRepository
+    repo=MaterialRepository(tmp_path/'data'/'projects'/'scope')
+    repo.upsert_many([{'id':'x','filename':'x.jpg','processing_status':'processed'}])
+    TaskRepository(repo.project_path.parent.parent/'task_runtime'/'tasks.sqlite3')
+    usage=TrainingMaterialUsage(repo.project_path.parent.parent/'task_runtime'/'tasks.sqlite3')
+    usage.record_selected('scope','a','task',{'snapshot_id':'s','images':[{'image_id':'x','role':'train'}]})
+    usage.record_execution('task', completed_epoch=True)
+    import platform_core.training_material_picker_api as api
+    monkeypatch.setattr(api,'_cached_usage_pool',lambda *args: (_ for _ in ()).throw(AssertionError('whole pool')))
+    filters,_=api._usage_filters(repo,{'algorithm_asset_id':'a','history_scope':'current_only','browse_only':True})
+    result=api._gt_material_filter_page(repo,AnnotationRepository(repo.project_path),filters=filters,limit=60,count_mode='deferred')
+    assert result['items']==['x']
+
+
+def test_label_all_requires_each_formal_label(tmp_path):
+    repo=MaterialRepository(tmp_path/'data'/'projects'/'labels')
+    repo.upsert_many([{'id':i,'filename':i+'.jpg','processing_status':'processed'} for i in ('one','two')])
+    gt=AnnotationRepository(repo.project_path)
+    for identity,labels in [('one',['a']),('two',['a','b'])]:
+        gt.upsert_many([{'image_id':identity,'annotation_state':'annotated','boxes':[{'label':code,'x1':1,'y1':1,'x2':2,'y2':2} for code in labels]}])
+    page=_gt_material_filter_page(repo,gt,labels=['a','b'],filters={'label_mode':'all'},limit=60)
+    assert page['items']==['two']
+
+
+def test_deferred_role_first_page_does_not_build_full_role_index(tmp_path, monkeypatch):
+    repo=MaterialRepository(tmp_path/'data'/'projects'/'roles')
+    repo.upsert_many([{'id':str(i),'filename':str(i)+'.jpg','processing_status':'processed'} for i in range(100)])
+    gt=AnnotationRepository(repo.project_path)
+    import platform_core.training_material_picker_api as api
+    monkeypatch.setattr(api,'_cached_role_index',lambda *args: (_ for _ in ()).throw(AssertionError('whole role index')))
+    result=api._role_material_page(repo,gt,{'effective_label_codes':['a']},sample_role='pending_review',limit=10,count_mode='deferred')
+    assert len(result['items'])==10
+    assert result['total'] is None
+    assert result['has_next'] is True
+
+
+def test_used_browse_sql_matches_authoritative_projection_without_full_pool(tmp_path, monkeypatch):
+    from platform_core.task_runtime.repository import TaskRepository
+    repo=MaterialRepository(tmp_path/'data'/'projects'/'used')
+    repo.upsert_many([{'id':str(i),'filename':str(i)+'.jpg','processing_status':'processed','content_sha256':f'{i+1:064x}'} for i in range(8)])
+    path=repo.project_path.parent.parent/'task_runtime'/'tasks.sqlite3'
+    TaskRepository(path)
+    usage=TrainingMaterialUsage(path)
+    for i,role,evidence,algorithm in [(0,'train',2,'a'),(1,'train',1,'a'),(2,'test',2,'a'),(2,'train',2,'a'),(3,'train',2,'b'),(4,'validation',2,'a')]:
+        task=f't-{i}-{role}'
+        row=repo.get(str(i))
+        usage.record_selected('used',algorithm,task,{'snapshot_id':task,'images':[{'image_id':str(i),'role':role,'content_sha256':row['content_sha256']}]},source_images=[row])
+        usage.record_execution(task,completed_epoch=evidence==2,first_batch=True,test_observed=role=='test',validation_observed=role=='validation')
+    import platform_core.training_material_picker_api as api
+    monkeypatch.setattr(api,'_cached_usage_pool',lambda *a: (_ for _ in ()).throw(AssertionError('whole pool')))
+    for state, expected in [('used',['0']),('possible',['1'])]:
+        filters,_=api._usage_filters(repo,{'algorithm_asset_id':'a','usage_state':state,'browse_only':True})
+        assert api._gt_material_filter_page(repo,AnnotationRepository(repo.project_path),filters=filters,limit=60)['items']==expected
+
+
+
+def test_no_match_positive_role_skips_python_projection(tmp_path, monkeypatch):
+    repo=MaterialRepository(tmp_path/'data'/'projects'/'no-positive')
+    repo.upsert_many([{'id':str(i),'filename':str(i)+'.jpg','processing_status':'processed'} for i in range(200)])
+    gt=AnnotationRepository(repo.project_path)
+    import platform_core.training_label_tasks as tasks
+    monkeypatch.setattr(tasks,'training_material_role',lambda *a: (_ for _ in ()).throw(AssertionError('no target must not classify entire pool')))
+    result=_role_material_page(repo,gt,{'effective_label_codes':['person']},sample_role='positive',limit=10,count_mode='deferred')
+    assert result['items']==[] and result['has_next'] is False

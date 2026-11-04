@@ -1303,6 +1303,7 @@ def create_material_integrity_plan(
         raise BatchRequestError(
             "MATERIAL_INTEGRITY_AUDIT_UNAVAILABLE", "素材完整性审计结果不可用", 409,
         )
+    operator_review_revision = integrity_review_revision(audit_path)
     metadata = _audit_metadata(audit_path)
     annotations = AnnotationRepository(materials.project_path)
     material_revision = materials.current_revision()
@@ -1431,8 +1432,12 @@ def create_material_integrity_plan(
         skipped_item_count = protected_item_count = anomaly_item_count = 0
         selected_ids, counted_protected, unverifiable_ids, manual_ids = set(), set(), set(), set()
         planned_ids = set()
+        has_reviews = audit.execute("SELECT 1 FROM sqlite_master WHERE name='group_review'").fetchone() is not None
         for group in groups:
             group_key = str(group["group_key"])
+            if has_reviews and audit.execute("SELECT 1 FROM group_review WHERE group_key=? AND status='skipped'",(group_key,)).fetchone():
+                skip_reasons['USER_DEFERRED'] = skip_reasons.get('USER_DEFERRED',0)+1
+                continue
             if group_key in excluded_groups:
                 continue
             rows = audit.execute(
@@ -1609,6 +1614,7 @@ def create_material_integrity_plan(
         "operation": BatchOperation.DELETE_INDEX.value,
         "audit_task_id": audit_task.task_id,
         "scope": scope,
+        "operator_review_revision": operator_review_revision,
         "review_basis": review_basis,
         "discard_mode": scope == "DISCARD_CONFLICTS",
         "selected_count": len(selected_ids),
@@ -1754,7 +1760,8 @@ def _execute_material_integrity_plan_locked(
                 raise BatchRequestError('MATERIAL_INTEGRITY_EXECUTION_UNAVAILABLE', '治理任务归属不一致，已阻止执行', 409)
             return existing
         if (
-            materials.current_revision() != int(metadata["material_revision"])
+            integrity_review_revision(artifacts.artifact_path(audit_task.task_id, MATERIAL_INTEGRITY_REF)) != int(metadata.get("operator_review_revision",0))
+            or materials.current_revision() != int(metadata["material_revision"])
             or annotations.current_revision() != int(metadata["annotation_revision"])
             or metadata.get('label_schema_digest') != _file_digest(materials.project_path / 'meta.json')
         ):
@@ -1911,6 +1918,8 @@ def _execute_material_integrity_plan_locked(
             f"materials:{project_id}", required_capabilities=("materials.batch",),
         )
         with material_annotation_lifecycle_fence(materials.project_path):
+            if integrity_review_revision(artifacts.artifact_path(audit_task.task_id, MATERIAL_INTEGRITY_REF)) != int(metadata.get('operator_review_revision',0)):
+                raise BatchRequestError('MATERIAL_INTEGRITY_PLAN_STALE','问题处理状态已变化，请重新生成治理预览',409)
             published = publish_prepared_batch(task, repository, artifacts)
         plan.execute(
             "UPDATE plan_metadata SET value_json=? WHERE key='execution_task_id'",
@@ -4318,6 +4327,40 @@ def material_integrity_governance_summary(project_id, audit_task, materials, rep
         'material_revision':plan['material_revision'], 'annotation_revision':plan['annotation_revision']}
 
 
+def integrity_review_revision(path):
+    with closing(sqlite3.connect(path)) as db:
+        if not db.execute("SELECT 1 FROM sqlite_master WHERE name='group_review'").fetchone():
+            return 0
+        return int(db.execute('SELECT COALESCE(SUM(revision),0) FROM group_review').fetchone()[0])
+
+
+def set_integrity_group_review(path, group_keys, *, status, reason, actor_id, expected_revision):
+    """Store operator workflow beside immutable audit issues; never change GT."""
+    if status not in {'pending', 'skipped'} or (status == 'skipped' and reason not in {
+        'USER_DEFERRED', 'SOURCE_UNAVAILABLE', 'REFERENCE_PROTECTED', 'UNSUPPORTED_RULE'}):
+        raise ValueError('invalid review status or reason')
+    if not actor_id or not isinstance(group_keys, list) or not 1 <= len(group_keys) <= 100:
+        raise ValueError('review requires actor and 1..100 groups')
+    keys = list(dict.fromkeys(str(key) for key in group_keys))
+    with closing(sqlite3.connect(path)) as db:
+        db.execute('BEGIN IMMEDIATE')
+        db.execute('CREATE TABLE IF NOT EXISTS group_review(group_key TEXT PRIMARY KEY REFERENCES issue_groups(group_key), status TEXT NOT NULL, reason TEXT NOT NULL, actor_id TEXT NOT NULL, updated_at TEXT NOT NULL, revision INTEGER NOT NULL)')
+        for key in keys:
+            if not db.execute('SELECT 1 FROM issue_groups WHERE group_key=?', (key,)).fetchone():
+                raise ValueError('group missing')
+            old = db.execute('SELECT revision FROM group_review WHERE group_key=?', (key,)).fetchone()
+            if (old[0] if old else 0) != int(expected_revision):
+                raise ValueError('review changed; refresh before retry')
+        revision = int(expected_revision) + 1
+        db.executemany('INSERT OR REPLACE INTO group_review VALUES (?,?,?,?,?,?)',
+            ((key,status,reason if status == 'skipped' else '',actor_id,utc_now(),revision) for key in keys))
+        db.execute('CREATE TABLE IF NOT EXISTS group_review_events(event_id INTEGER PRIMARY KEY, group_key TEXT NOT NULL,status TEXT NOT NULL,reason TEXT NOT NULL,actor_id TEXT NOT NULL,updated_at TEXT NOT NULL,revision INTEGER NOT NULL)')
+        db.executemany('INSERT INTO group_review_events(group_key,status,reason,actor_id,updated_at,revision) VALUES (?,?,?,?,?,?)',
+            ((key,status,reason if status == 'skipped' else '',actor_id,utc_now(),revision) for key in keys))
+        db.commit()
+    return {'group_keys':keys,'status':status,'reason':reason,'revision':revision}
+
+
 def material_batch_router(
     get_project,
     material_store,
@@ -4511,15 +4554,41 @@ def material_batch_router(
     @integrity.post("/audits", status_code=202)
     def create_integrity_audit(project_id: str):
         get_project(project_id)
-        task = create_material_integrity_audit(
-            project_id, task_repository(), task_artifacts()
-        )
+        with material_annotation_lifecycle_fence(material_store(project_id).project_path):
+            task = create_material_integrity_audit(
+                project_id, task_repository(), task_artifacts()
+            )
         return public_batch(task, task_artifacts(), task_repository())
+
+    @integrity.post("/audits/{task_id}/reviews")
+    def review_integrity_groups(project_id: str, task_id: str, request: Request, body: dict = Body(...)):
+        from .training_compatibility import _file_digest
+        require_integrity_audit(project_id, task_id)
+        path = task_artifacts().artifact_path(task_id, MATERIAL_INTEGRITY_REF)
+        if not path.is_file():
+            raise HTTPException(409, 'audit not ready')
+        materials = material_store(project_id)
+        with material_annotation_lifecycle_fence(materials.project_path):
+            latest = latest_integrity_audit(project_id).get('task')
+            if latest and str(latest.get('task_id')) != str(task_id):
+                raise HTTPException(409, 'a newer audit exists; reopen latest results')
+            metadata = _audit_metadata(path)
+            if (metadata.get('material_revision') != materials.current_revision()
+                    or metadata.get('annotation_revision') != AnnotationRepository(materials.project_path).current_revision()
+                    or metadata.get('label_schema_digest') != _file_digest(materials.project_path / 'meta.json')):
+                raise HTTPException(409, 'audit changed; revalidate first')
+            actor = actor_provider(request, project_id) if actor_provider else {}
+            try:
+                return set_integrity_group_review(path, body.get('group_keys'),status=body.get('status'),
+                    reason=body.get('reason',''),actor_id=str(actor.get('actor_id') or ''),
+                    expected_revision=body.get('expected_revision',0))
+            except ValueError as error:
+                raise HTTPException(409 if 'changed' in str(error) else 422, str(error)) from error
 
     @integrity.get("/audits/{task_id}/groups")
     def integrity_groups(
         project_id: str, task_id: str, cursor: str = "", limit: int = 50,
-        issue_type: str = "",
+        issue_type: str = "", review_status: str = "",
     ):
         from .training_compatibility import _file_digest
         require_integrity_audit(project_id, task_id)
@@ -4534,10 +4603,30 @@ def material_batch_router(
             params.append(str(issue_type).upper())
         with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as database:
             database.row_factory = sqlite3.Row
+            has_review = database.execute("SELECT 1 FROM sqlite_master WHERE name='group_review'").fetchone() is not None
+            if review_status not in {'', 'pending', 'skipped'}:
+                raise HTTPException(422, 'invalid review status')
+            if review_status:
+                if has_review:
+                    clauses.append("COALESCE((SELECT status FROM group_review r WHERE r.group_key=issue_groups.group_key),'pending')=?")
+                    params.append(review_status)
+                elif review_status == 'skipped':
+                    clauses.append('0')
+            review_rows = {}
             count_where = ' WHERE issue_type=?' if issue_type else ''
             count_params = (str(issue_type).upper(),) if issue_type else ()
-            total_images = database.execute('SELECT COUNT(DISTINCT image_id) FROM issue_items' + count_where, count_params).fetchone()[0]
-            total_groups = database.execute('SELECT COUNT(*) FROM issue_groups' + count_where, count_params).fetchone()[0]
+            item_where, group_where = count_where, count_where
+            if review_status:
+                conjunction = ' AND ' if count_where else ' WHERE '
+                if has_review:
+                    item_where += conjunction + "COALESCE((SELECT status FROM group_review r WHERE r.group_key=issue_items.group_key),'pending')=?"
+                    group_where += conjunction + "COALESCE((SELECT status FROM group_review r WHERE r.group_key=issue_groups.group_key),'pending')=?"
+                    count_params = (*count_params, review_status)
+                elif review_status == 'skipped':
+                    item_where += conjunction + '0'
+                    group_where += conjunction + '0'
+            total_images = database.execute('SELECT COUNT(DISTINCT image_id) FROM issue_items' + item_where, count_params).fetchone()[0]
+            total_groups = database.execute('SELECT COUNT(*) FROM issue_groups' + group_where, count_params).fetchone()[0]
             metadata = _audit_metadata(path)
             materials = material_store(project_id)
             stale = (metadata.get('material_revision') != materials.current_revision()
@@ -4548,6 +4637,10 @@ def material_batch_router(
                 + " ORDER BY group_key LIMIT ?",
                 (*params, int(limit) + 1),
             ).fetchall()
+            if has_review and rows:
+                keys = [row['group_key'] for row in rows]
+                for review in database.execute('SELECT * FROM group_review WHERE group_key IN ('+','.join('?' for _ in keys)+')', keys):
+                    review_rows[review['group_key']] = dict(review)
         visible = rows[:int(limit)]
         return {
             "total_images": total_images,
@@ -4560,6 +4653,7 @@ def material_batch_router(
                     "content_sha256": str(row["content_sha256"]),
                     "image_count": int(row["image_count"]),
                     "details": json.loads(row["details_json"] or "{}"),
+                    "review": review_rows.get(row["group_key"], {"status":"pending", "reason":"", "revision":0}),
                 }
                 for row in visible
             ],

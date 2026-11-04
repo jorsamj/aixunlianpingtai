@@ -1,6 +1,7 @@
 import io
 from pathlib import Path
 import uuid
+import pytest
 from PIL import Image
 import app as platform_app
 
@@ -274,3 +275,79 @@ def test_multiclass_training_preview_confirms_partial_positives_and_unannotated_
  stale=client.post(endpoint+'/confirm-negatives',json={**payload,'train_image_ids':selected[:3],
      'confirmed':True,'proof_digest':allowed.json()['proof_digest']})
  assert stale.status_code==409,'a pre-confirmation GT revision must invalidate the old proof'
+
+@pytest.mark.parametrize("join_mode", ["existing", "upload_intent"])
+def test_algorithm_pool_review_to_real_yolo_background(client, tmp_path, join_mode):
+ import hashlib
+ from platform_core.training_label_tasks import project_training_rows, training_material_role
+ from platform_core.training_tasks import materialize_portable_dataset
+ pytest.importorskip('ultralytics', reason='real loader proof runs in ultralytics-loader-contract CI job')
+ from ultralytics.data.dataset import YOLODataset
+ project=client.post('/api/projects',json={'name':'pool-chain-'+uuid.uuid4().hex[:8],'labels':[{'code':'fire'},{'code':'person'}]}).json()
+ pid=project['id']
+ algorithm=client.post(f'/api/v12/projects/{pid}/algorithms',json={'name':'fire-scope','algorithm_type':'yolo_ultralytics'}).json()['algorithm']
+ stream=io.BytesIO();Image.new('RGB',(40,40),'blue').save(stream,format='PNG')
+ uploaded=client.post(f'/api/projects/{pid}/images',files=[('files',('background.png',stream.getvalue(),'image/png'))]).json()['uploaded'][0]
+ iid=uploaded['id'];pool=f'/api/v61/projects/{pid}/negative-pool'
+ if join_mode=='upload_intent':
+  category=client.post(pool+'/categories',json={'name':'background'}).json()['id']
+  added=client.post(pool+'/upload-intent',json={'sample_type':'negative','algorithm_id':algorithm['id'],'image_ids':[iid],'category_ids':[category]})
+ else:
+  added=client.post(pool+'/members',json={'algorithm_id':algorithm['id'],'image_ids':[iid]})
+ assert added.status_code==200,added.text
+ before=platform_app.read_annotation(pid,iid)
+ review=client.post(f'/api/v62/projects/{pid}/training-materials/review-negative',json={'algorithm_asset_id':algorithm['id'],'train_labels':['fire'],'confirmed':True,'items':[{'image_id':iid,'expected_version':before['version'],'source_content_sha256':uploaded['content_sha256']}]})
+ assert review.status_code==200,review.text
+ assert review.json()['succeeded']==[iid]
+ listing=client.get(pool,params={'algorithm_id':algorithm['id'],'target_label':'fire'}).json()
+ assert listing['items'][0]['negative_pool']['qualification']=='confirmed_for_requested_scope'
+ formal=platform_app.read_annotation(pid,iid)
+ material=platform_app.material_store(pid).get(iid)
+ row={**material,**formal,'id':iid,'annotation_source_content_sha256':formal.get('source_content_sha256','')}
+ contract={'effective_label_codes':['fire'],'training_projection_policy':'reviewed_negative_original_v3_preserve_selected'}
+ assert training_material_role(row,contract)['role']=='confirmed_negative'
+ projected=project_training_rows([row],contract)[0]
+ source=tmp_path/'source.png';source.write_bytes(stream.getvalue())
+ assert hashlib.sha256(source.read_bytes()).hexdigest()==uploaded['content_sha256']
+ snapshot={'schema_version':3,'snapshot_id':'pool-chain','ids':{'train':[iid],'validation':[],'test':[]},'label_schema':[{'code':'fire','class_id':0}], 'images':[{'image_id':iid,'role':'train','content_sha256':uploaded['content_sha256'],'annotation_state':'confirmed_empty','annotation_scope':['fire']}]}
+ bundle=materialize_portable_dataset(tmp_path/'task',snapshot,[projected],lambda _:source,safety_reserve_bytes=0)
+ import json
+ assert json.loads((bundle/'snapshot.json').read_text())['ids']['train']==[iid]
+ dataset=YOLODataset(img_path=str(bundle/'dataset/images/train'),data={'names':{0:'fire'},'nc':1},imgsz=64,augment=False,cache=False)
+ assert len(dataset.labels)==1 and len(dataset.labels[0]['cls'])==0
+ assert dataset.labels[0]['im_file'].endswith(iid+'.png')
+ assert platform_app.read_annotation(pid,iid)==formal
+
+def test_pool_zip_session_freezes_algorithm_ownership(client):
+ project=client.post('/api/projects',json={'name':'pool-zip-'+uuid.uuid4().hex[:8],'labels':[{'code':'fire'}]}).json()
+ pid=project['id'];algorithm=client.post(f'/api/v12/projects/{pid}/algorithms',json={'name':'Fire'}).json()['algorithm']
+ endpoint=f'/api/v19/projects/{pid}/datasets/default/import/uploads'
+ invalid=client.post(endpoint,json={'file_name':'negative.zip','file_size':100,'fingerprint':'invalid-scope','algorithm_id':'missing'})
+ assert invalid.status_code==422
+ created=client.post(endpoint,json={'file_name':'negative.zip','file_size':100,'fingerprint':'pool-scope','algorithm_id':algorithm['id']})
+ assert created.status_code==200,created.text
+ job=platform_app.read_json(platform_app.v19_job_file(pid,created.json()['upload_id']),{})
+ assert job['upload_algorithm_id']==algorithm['id']
+
+def test_raw_zip_import_applies_only_frozen_algorithm_pool(client):
+ import zipfile,time
+ project=client.post('/api/projects',json={'name':'zip-pool-chain-'+uuid.uuid4().hex[:8],'labels':[{'code':'fire'}]}).json();pid=project['id']
+ algorithm=client.post(f'/api/v12/projects/{pid}/algorithms',json={'name':'Fire'}).json()['algorithm']
+ image=io.BytesIO();Image.new('RGB',(32,32),'green').save(image,format='PNG')
+ archive=io.BytesIO()
+ with zipfile.ZipFile(archive,'w') as z: z.writestr('raw.png',image.getvalue())
+ job=client.post(f'/api/v19/projects/{pid}/datasets/default/import/jobs',files={'file':('raw.zip',archive.getvalue(),'application/zip')}).json()
+ pool=f'/api/v61/projects/{pid}/negative-pool';category=client.post(pool+'/categories',json={'name':'background'}).json()['id']
+ started=client.post(f'/api/v19/projects/{pid}/import/jobs/{job["id"]}/start',json={'algorithm_id':algorithm['id'],'sample_type':'negative','negative_category_ids':[category]})
+ assert started.status_code==200,started.text
+ deadline=time.monotonic()+10
+ while time.monotonic()<deadline:
+  final=client.get(f'/api/v19/projects/{pid}/import/jobs/{job["id"]}').json()
+  if final.get('status') in ('done','failed'):break
+  time.sleep(.05)
+ assert final['status']=='done',final
+ assert final['report']['upload_classification_status']=='applied'
+ rows=client.get(pool,params={'algorithm_id':algorithm['id']}).json()['items']
+ assert len(rows)==1
+ assert rows[0]['negative_pool']['qualification']=='pending_confirmation'
+ assert platform_app.read_annotation(pid,rows[0]['id'])['annotation_state']=='unannotated'

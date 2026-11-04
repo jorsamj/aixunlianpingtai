@@ -22,3 +22,29 @@
 .smart-material-audit .sma-world{position:absolute;left:0;top:0}.smart-material-audit .sma-world img{max-width:none;max-height:none;display:block}
 @media(max-width:1000px){.smart-material-audit .sma-columns{grid-template-columns:180px minmax(260px,1fr)}.smart-material-audit [data-review]{grid-column:1/-1}}
 @media(max-width:650px){.smart-material-audit .sma-columns{display:flex;flex-direction:column}.smart-material-audit [data-issues]{max-height:240px;overflow:auto}.smart-material-audit .sma-toolbar>button{flex:1 1 auto}}
+
+/* Integrity workbench shares the platform tokens and one modal content owner. */
+.material-integrity47-list{display:grid;gap:8px}
+.material-integrity47-list>article{border:1px solid var(--border,#e5e6eb);border-radius:8px;background:var(--panel,#fff);transition:border-color 140ms,background 140ms}
+.material-integrity47-list>article:hover,.material-integrity47-list>article:focus-within{border-color:var(--primary,#165dff);background:var(--soft,#f7f8fa)}
+.material-integrity47-tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:12px 0}
+.material-integrity47-tools .btn,.material-integrity47-tools .select{min-height:36px}
+.material-integrity47 .alert.soft:not([role=status]){font-size:13px;line-height:1.6}
+.material-integrity47-skips{display:grid;gap:8px;padding:12px;background:var(--soft,#f7f8fa);border-radius:8px}
+@media(max-width:768px){.material-integrity47-tools .select{max-width:100%;width:100%}.material-integrity47-tools .btn{min-height:42px}.material-integrity47-list>article{min-width:0}.material-integrity47-summary{flex-wrap:wrap}}
+@media(prefers-reduced-motion:reduce){.material-integrity47-list>article{transition:none}}
+
+.material-integrity47 .material-integrity47-summary{grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.material-integrity47 .material-integrity47-summary>div{padding:8px;border:0;border-radius:4px}
+.material-integrity47 .material-integrity47-summary span{font-size:12px}
+.material-integrity47 .material-integrity47-summary b{font-size:18px}
+.material-integrity47-diagnostics>summary,.material-integrity47-review-tools>summary{cursor:pointer;font-size:13px;min-height:36px;display:flex;align-items:center;color:var(--muted,#4e5969)}
+.material-integrity47-review-tools[open]{flex-basis:100%;display:flex;flex-wrap:wrap;gap:8px}
+
+.material-integrity47 .material-integrity47-tools{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;position:static;border:0;padding:0;backdrop-filter:none}
+.material-integrity47 .material-integrity47-tools>.select{min-width:0;width:100%;height:36px}
+.material-integrity47-primary{grid-column:1/-1;display:flex;align-items:center;flex-wrap:wrap;gap:8px}
+.material-integrity47-more{position:relative}.material-integrity47-more>summary{cursor:pointer;padding:10px;font-size:13px;color:var(--muted)}
+.material-integrity47-secondary{display:flex;flex-wrap:wrap;gap:8px;padding:10px;background:var(--soft);border:1px solid var(--line);border-radius:6px}
+.material-integrity47-more[open]{flex-basis:100%}.material-integrity47-review-tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+@media(max-width:680px){.material-integrity47 .material-integrity47-tools{grid-template-columns:1fr 1fr}.material-integrity47-tools>span{grid-column:1/-1}.material-integrity47-primary>.btn{flex:1;min-width:100px}}

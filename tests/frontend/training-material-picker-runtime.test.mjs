@@ -108,11 +108,11 @@ test('canonical picker confirmation preserves train and independent-test mutual 
 });
 
 test('picker UI uses larger bounded preview cards rather than a dense thumbnail strip', () => {
-  assert.match(source, /repeat\(5,minmax\(0,1fr\)\)/);
+  assert.match(source, /repeat\(4,minmax\(0,1fr\)\)/);
   assert.match(source, /grid-auto-rows:minmax\(210px,max-content\)/);
   assert.match(source, /min-height:210px/);
   assert.match(source, /aspect-ratio:4\/3!important/);
-  assert.match(source, /height:clamp\(420px,60vh,620px\)/);
+  assert.match(fs.readFileSync(new URL('../../static/training-create-modal.css', import.meta.url),'utf8'), /height:94dvh!important/);
   assert.match(source, /overflow-y:auto!important/);
   assert.match(source, /Array\.from\(\{length: 15\}/);
   assert.match(source, /pageCache\.size > CACHE_LIMIT/);
@@ -129,7 +129,7 @@ test('picker delegates all numbered navigation and jump input to shared paginati
 });
 
 test('picker caps first-paint thumbnails and only expands loading after scroll', () => {
-  assert.match(source, /THUMBNAIL_EAGER_COUNT = 15/);
+  assert.match(source, /THUMBNAIL_EAGER_COUNT = 10/);
   assert.match(source, /THUMBNAIL_PRELOAD_MARGIN = 120/);
   assert.match(source, /data-src="\$\{esc\(thumbnail\)\}"/);
   assert.match(source, /images\.slice\(0, THUMBNAIL_EAGER_COUNT\)\.forEach\(loadThumbnail\)/);
@@ -236,7 +236,7 @@ test('picker exposes a time ordering control with server paging and filter persi
 test('training candidate labels are fully readable and filter chips wrap', () => {
   assert.match(source, /train-v3-label-list/);
   assert.match(source, /\.train-v3-label-list\{white-space:normal;overflow:visible/);
-  assert.match(source, /#trV3Chips\{grid-column:1 \/ -1;max-height:none/);
+  assert.match(source, /#trV3Chips\{grid-column:1 \/ -1;max-height:220px/);
 });
 
 test('task roles stay separate from original label filters', () => {

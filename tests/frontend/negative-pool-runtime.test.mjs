@@ -99,3 +99,14 @@ test('material card action returns after async replacement and observer is scope
    assert.equal(observer.watching,false);
  }finally{Object.assign(globalThis,previous)}
 });
+
+test('algorithm scope is carried in negative pool queries',()=>{
+ assert.equal(negativePoolQuery({algorithm_id:'fire'}).get('algorithm_id'),'fire');
+});
+
+test('pool review freezes current annotation version and source hash',async()=>{
+ const {negativePoolReviewItems}=await import('../../static/modules/negative-pool-runtime.js');
+ const rows=negativePoolReviewItems([{annotation:{image_id:'x',version:7},image:{id:'x',content_sha256:'a'.repeat(64)}}]);
+ assert.deepEqual(rows,[{image_id:'x',expected_version:7,source_content_sha256:'a'.repeat(64)}]);
+ assert.throws(()=>negativePoolReviewItems([{annotation:{version:0},image:{id:'x'}}]),/摘要/);
+});

@@ -174,6 +174,7 @@ export async function completeZipUpload(projectId,uploadId,{fetchImpl=globalThis
 export async function startZipJob(projectId,jobId,{fetchImpl=globalThis.fetch,confirmation={}}={}) {
   const body={
     selected_paths:[],
+    ...(confirmation?.algorithm_id?{algorithm_id:String(confirmation.algorithm_id)}:{}),
     label_mapping:{...(confirmation?.label_mapping||{})},
     ...(confirmation?.sample_type?{
       sample_type:confirmation.sample_type,
@@ -228,11 +229,11 @@ export function zipBatchDuplicateKey(fingerprint) {
   return `${version}:${parts.join(':')}:${size}:${digest}`;
 }
 
-export async function createZipUploadSession(projectId,file,{fetchImpl=globalThis.fetch,expectedUploadId=''}={}) {
+export async function createZipUploadSession(projectId,file,{fetchImpl=globalThis.fetch,expectedUploadId='',algorithmId=''}={}) {
   const fingerprint=await zipFingerprint(file);
   return json(await fetchImpl(`/api/v19/projects/${encodeURIComponent(String(projectId))}/datasets/default/import/uploads`,{
     method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({file_name:file.name,file_size:file.size,fingerprint,part_size:8*1024*1024,resume_upload_id:expectedUploadId||''}),
+    body:JSON.stringify({file_name:file.name,file_size:file.size,fingerprint,part_size:8*1024*1024,resume_upload_id:expectedUploadId||'',...(algorithmId?{algorithm_id:algorithmId}:{})}),
   }));
 }
 
@@ -916,7 +917,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
       }
       if(statusNode)statusNode.textContent='标签已确认，正在启动后台导入…';
       foregroundImports.add(id);started.add(id);writeIntent(project,id,'submitting');
-      const confirmation={label_mapping,...(job.sample_classification_required?{
+      const confirmation={label_mapping,algorithm_id:String(job.upload_algorithm_id||''),...(job.sample_classification_required?{
         sample_type:selectedKind,
         intended_label_codes:selectedKind==='positive'?[...sample.labels]:[],
         negative_category_ids:selectedKind==='negative'?[...sample.categories]:[],
@@ -1180,7 +1181,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
         if(fingerprintRow?.duplicateOf){failLocalUpload(entry,'本批次已选择内容相同的 ZIP 文件');return null}
         let item=null;
         try{
-            const session=await createZipUploadSession(project,file,{fetchImpl,expectedUploadId:String(input.resumeUploadId||'')});
+            const session=await createZipUploadSession(project,file,{fetchImpl,expectedUploadId:String(input.resumeUploadId||''),algorithmId:String(input.negativePoolAlgorithmId||'')});
             const id=String(session.upload_id||'');
             if(!id)throw new Error('服务器未返回 ZIP 上传会话 ID');
             if(input.resumeUploadId&&id!==String(input.resumeUploadId))throw new Error('原ZIP身份未匹配历史会话，未发送任何分片');

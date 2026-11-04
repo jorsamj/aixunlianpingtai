@@ -4,7 +4,7 @@ function material(id, filename, labels = ['smoke']) {
   return {
     id,
     filename,
-    url: 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==',
+    url: 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="640" height="480" viewBox="0 0 640 480"><rect width="640" height="480" fill="#e5ebef"/><path d="M0 300H640V480H0Z" fill="#b9c7d1"/><rect x="75" y="90" width="230" height="225" fill="#8ba1b3"/><path d="M95 115H280V280H95Z" fill="#f5f7f9"/><text x="24" y="450" font-family="sans-serif" font-size="18" fill="#344b5a">ISOLATED GALLERY FIXTURE 640 × 480</text></svg>'),
     size_bytes: 1024,
     width: 640,
     height: 480,
@@ -124,7 +124,7 @@ test('dataset paging, search and refresh patch cards without rebuilding the shel
     } else if (requestedPage === 2) {
       body = {items: [material('m-2', 'page-two.jpg')], total: 4800, page: 2, page_size: limit, total_pages: 100, has_previous: true, has_next: true, next_cursor: null};
     } else {
-      body = {items: [material('m-1', 'page-one.jpg')], total: 4800, page: 1, page_size: limit, total_pages: 100, has_previous: false, has_next: true, next_cursor: null};
+      body = {items: [material('m-1', 'page-one.jpg', ['smoke', ...Array.from({length:19},(_,i)=>`label-${i}`)])], total: 4800, page: 1, page_size: limit, total_pages: 100, has_previous: false, has_next: true, next_cursor: null};
     }
 
     await route.fulfill({
@@ -149,6 +149,22 @@ test('dataset paging, search and refresh patch cards without rebuilding the shel
 
   await expect(page.locator('.data426-shell')).toBeVisible({timeout: 10_000});
   await expect(page.locator('#data412Grid')).toContainText('page-one.jpg', {timeout: 10_000});
+  await expect(page.locator('[data-material-id="m-1"] .data426-tags span')).toHaveCount(4);
+  await expect(page.locator('[data-material-id="m-1"] .data426-tags')).toContainText('+17');
+  for (const [width,height] of [[1440,900],[1280,800],[768,1024],[390,844]]) {
+    await page.setViewportSize({width,height});
+    const card=page.locator('[data-material-id="m-1"]');
+    await card.locator('img').evaluate(image=>image.decode());
+    await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+    await page.evaluate(()=>Promise.all(document.getAnimations().filter(animation=>Number.isFinite(animation.effect?.getTiming().iterations)).map(animation=>animation.finished.catch(()=>{}))));
+    const before=await card.boundingBox();
+    await card.hover();
+    const after=await card.boundingBox();
+    expect(Math.abs(after.height-before.height)).toBeLessThan(1);
+    expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+    await page.screenshot({path:`artifacts/test-runs/gallery-${width}.png`,fullPage:true});
+  }
+  await page.setViewportSize({width:1440,height:900});
   await expect(page.locator('#data412Pager')).toContainText('当前第 1 页');
 
   await page.evaluate(() => {

@@ -2243,3 +2243,20 @@ def test_training_task_freezes_global_robustness_before_queue_and_replay(client,
     finally:
         now=read_global_policy(platform.DATA_DIR)
         save_global_policy(platform.DATA_DIR,original['policy'],now['revision'])
+
+
+def test_frozen_selection_replay_survives_revision_change(client,seeded_project):
+    import app as platform
+    from platform_core.training_selection_reference import freeze_selection,selection_context
+    project_id,payload=_training_create_replay_fixture(client,seeded_project)
+    parsed=platform.TrainReq(**payload)
+    context=selection_context(platform.DATA_DIR,project_id,parsed.model_dump())
+    reference=freeze_selection(platform.DATA_DIR,context,payload['train_image_ids'])
+    request={**payload,'train_image_ids':[],'train_selection_ref':reference['selection_ref']}
+    first=client.post(f'/api/v12/projects/{project_id}/train/start',json=request)
+    assert first.status_code==202,first.text
+    platform.material_store(project_id).patch({payload['train_image_ids'][0]:{'filename':'changed-after-create.jpg'}})
+    replay=client.post(f'/api/v12/projects/{project_id}/train/start',json=request)
+    assert replay.status_code==202 and replay.json()['idempotent'] is True,replay.text
+    changed=client.post(f'/api/v12/projects/{project_id}/train/start',json={**request,'epochs':3})
+    assert changed.status_code==409,changed.text

@@ -8158,6 +8158,8 @@ class TrainReq(BaseModel):
     # v42.4 数据选择与阶段质量门禁
     train_labels: Optional[List[str]] = None
     val_labels: Optional[List[str]] = None
+    train_selection_ref: Optional[str] = None
+    test_selection_ref: Optional[str] = None
     train_image_ids: Optional[List[str]] = None
     val_image_ids: Optional[List[str]] = None
     test_image_ids: Optional[List[str]] = None
@@ -8292,7 +8294,19 @@ def validate_train_request(payload: TrainReq):
         raise HTTPException(status_code=400, detail="cache 只支持：关闭 / 内存缓存 / 磁盘缓存")
 
 
-def _explicit_training_split(payload: TrainReq) -> SplitRequest:
+def _explicit_training_split(payload: TrainReq, project_id: str = "") -> SplitRequest:
+    from platform_core.training_selection_reference import read_selection,selection_context
+    for role in ('train','test'):
+        reference=getattr(payload,role+'_selection_ref',None)
+        if reference:
+            if not project_id:raise ValueError('selection reference requires project identity')
+            if getattr(payload,role+'_image_ids',None):raise ValueError('不能混用冻结选择与显式图片ID')
+            context=selection_context(DATA_DIR,project_id,payload.model_dump(),role)
+            ids=read_selection(DATA_DIR,reference,context)
+            setattr(payload,role+'_image_ids',ids)
+        elif len(getattr(payload,role+'_image_ids',None) or [])>50000:
+            raise ValueError('显式素材ID最多50000张，请使用服务器冻结选择')
+
     if not payload.split_mode:
         raise ValueError("split_mode 不能为空")
     if payload.selected_image_ids or payload.val_image_ids:
@@ -8833,6 +8847,20 @@ def _enqueue_explicit_training_locked(
             status_code=422,
             detail="后台训练样本批量确认必须由已登录用户在快速创建时明确发起",
         )
+    reference_request_identity = ""
+    if payload.train_selection_ref or payload.test_selection_ref:
+        # Durable request identity is bound before live-ref revision checks.
+        reference_request_identity=hashlib.sha256(json.dumps(payload.model_dump(mode='json',exclude_none=True),
+            ensure_ascii=False,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+        if payload.task_id:
+            existing=shared_task_repository().get(task_id)
+            if existing is not None:
+                stored=shared_task_artifacts().read_json(task_id,existing.payload_ref,default={})
+                if (existing.project_id!=project_id or existing.kind is not TaskKind.TRAINING
+                    or stored.get('reference_request_identity')!=reference_request_identity):
+                    raise HTTPException(409,'训练任务 ID 已绑定其他请求，不能静默复用')
+                existing=_reconcile_training_create_replay(project_id,existing,stored)
+                return JSONResponse(status_code=202,content={'ok':True,'task':_public_task(existing),'idempotent':True})
     asset_algorithm = next(
         (
             row for row in list_algorithms_internal(project_id)
@@ -8844,7 +8872,7 @@ def _enqueue_explicit_training_locked(
         raise HTTPException(status_code=404, detail="训练算法不存在")
     reference_version_id = str(resolve_current_version_id(asset_algorithm) or "").strip()
     try:
-        requested_split = _explicit_training_split(payload)
+        requested_split = _explicit_training_split(payload, project_id)
     except (TypeError, ValueError) as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     confirmed_iteration_action = (
@@ -8911,6 +8939,7 @@ def _enqueue_explicit_training_locked(
         **frozen_robustness,
         "schema_version": 4,
         "request_identity": request_identity,
+        "reference_request_identity": reference_request_identity,
         "admission_request": raw_request,
         "training_input_state": "PREPARING",
         "training_prepare_task_id": prepare_task_id,
@@ -9033,22 +9062,32 @@ def _enqueue_explicit_training_locked(
                     **page,
                 },
             )
-        shared_task_artifacts().atomic_write_json(task_id, "payload.json", request_payload)
-        record = shared_task_repository().create(
-            replace(
-                TaskRecord.new(
-                    task_id,
-                    project_id,
-                    TaskKind.TRAINING,
-                    "payload.json",
-                    resource_key,
-                    priority=int(payload.queue_priority),
-                    required_capabilities=("training.input.ready",),
-                ),
-                stage="training_input_pending",
-                current_item="正在后台准备训练输入",
+        try:
+            from platform_core.training_selection_reference import mark_selection_submitted
+            for reference in (payload.train_selection_ref,payload.test_selection_ref):
+                if reference:mark_selection_submitted(DATA_DIR,reference,task_id)
+            shared_task_artifacts().atomic_write_json(task_id, "payload.json", request_payload)
+            record = shared_task_repository().create(
+                replace(
+                    TaskRecord.new(
+                        task_id,
+                        project_id,
+                        TaskKind.TRAINING,
+                        "payload.json",
+                        resource_key,
+                        priority=int(payload.queue_priority),
+                        required_capabilities=("training.input.ready",),
+                    ),
+                    stage="training_input_pending",
+                    current_item="正在后台准备训练输入",
+                )
             )
-        )
+        except BaseException:
+            if shared_task_repository().get(task_id) is None:
+                from platform_core.training_selection_reference import release_unpersisted_selection_claim
+                for reference in (payload.train_selection_ref,payload.test_selection_ref):
+                    if reference:release_unpersisted_selection_claim(DATA_DIR,reference,task_id)
+            raise
     try:
         # A queued training parent remains unclaimable until its prepare child
         # completes; publish the original job projection before that child.
@@ -15078,6 +15117,7 @@ class V19ImportStartReq(BaseModel):
     sample_type: str = ""
     intended_label_codes: List[str] = Field(default_factory=list)
     negative_category_ids: List[str] = Field(default_factory=list)
+    algorithm_id: str = ""
 
 
 def v19_import_jobs_dir(project_id: str) -> Path:
@@ -16204,11 +16244,13 @@ def _v19_import_worker_impl(project_id: str, dataset_id: str, job_id: str, selec
             try:
                 from platform_core.negative_pool import NegativePool
                 pool = NegativePool(material_store(project_id))
+                if job.get('upload_algorithm_id') and not any(str(row.get('id')) == str(job['upload_algorithm_id']) for row in list_algorithms_internal(project_id)):
+                    raise ValueError('目标算法已不存在，保留导入素材并等待修复池关联')
                 imported_ids = list(dict.fromkeys(str(v) for v in report.get('imported_image_ids') or [] if str(v)))
                 for offset in range(0, len(imported_ids), 500):
                     chunk = imported_ids[offset:offset + 500]
                     if job['upload_sample_type'] == 'negative':
-                        pool.members(chunk, action='add', category_ids=job.get('upload_negative_category_ids') or [])
+                        pool.members(chunk, action='add', category_ids=job.get('upload_negative_category_ids') or [], algorithm_id=job.get('upload_algorithm_id') or '')
                     else:
                         pool.set_positive_upload_intent(chunk, job.get('upload_intended_label_codes') or [])
                 report['upload_classification_status'] = 'applied'
@@ -16281,6 +16323,7 @@ class V19MultipartUploadReq(BaseModel):
     fingerprint: str = ""
     part_size: int = 8 * 1024 * 1024
     resume_upload_id: str = ""
+    algorithm_id: str = ""
 
 
 def _v19_multipart_repository(project_id: str) -> ZipMultipartRepository:
@@ -16290,6 +16333,8 @@ def _v19_multipart_repository(project_id: str) -> ZipMultipartRepository:
 @app.post("/api/v19/projects/{project_id}/datasets/{dataset_id}/import/uploads")
 def v19_create_multipart_upload(project_id: str, dataset_id: str, payload: V19MultipartUploadReq):
     get_project(project_id)
+    if payload.algorithm_id and not any(str(row.get('id')) == payload.algorithm_id for row in list_algorithms_internal(project_id)):
+        raise HTTPException(422, detail='目标算法不存在，请刷新负样本池')
     filename = safe_filename(payload.file_name or "dataset.zip")
     if Path(filename).suffix.lower() != ".zip":
         raise HTTPException(status_code=400, detail="文件类型不支持：请上传 .zip 压缩包。")
@@ -16341,6 +16386,11 @@ def v19_create_multipart_upload(project_id: str, dataset_id: str, payload: V19Mu
             "message": f"继续上传：已完成 {len(session.get('completed_parts') or [])}/{int(session.get('total_parts') or 0)} 个分片",
             "updated_at": now_iso(),
         })
+    frozen_algorithm = str(current.get('upload_algorithm_id') or '')
+    if payload.algorithm_id and frozen_algorithm and frozen_algorithm != payload.algorithm_id:
+        raise HTTPException(409, detail='ZIP 目标算法已冻结，不能切换算法续传')
+    if payload.algorithm_id:
+        current['upload_algorithm_id'] = payload.algorithm_id
     v19_write_job(project_id, current)
     return {"ok": True, **session, "job": v19_public_job(project_id, current, image_limit=0)}
 
@@ -16558,7 +16608,7 @@ def _v19_finalize_multipart_upload_impl(project_id: str, upload_id: str):
             "upload_progress": 100,
             "scan_seconds": scan_seconds,
             "status": "selecting",
-            "sample_classification_required": scan.get("scan_kind") != "RAW_UNANNOTATED",
+            "sample_classification_required": scan.get("scan_kind") != "RAW_UNANNOTATED" or bool(latest.get("upload_algorithm_id")),
             "stage": "上传与校验完成",
             "progress": 48,
             "phase": "WAITING_CONFIRMATION",
@@ -16973,6 +17023,16 @@ def _v19_start_import_job_locked(project_id: str, job_id: str, payload: V19Impor
             raise HTTPException(status_code=409, detail="本次 ZIP 样本选择已冻结，失败重试不能更改")
         job.update(upload_sample_type=chosen_type, upload_intended_label_codes=codes,
                    upload_negative_category_ids=categories)
+
+    target_algorithm = str(job.get('upload_algorithm_id') or payload.algorithm_id or '')
+    if target_algorithm:
+        if payload.algorithm_id and payload.algorithm_id != target_algorithm:
+            raise HTTPException(409, detail='ZIP 目标算法已冻结，不能在重试时切换')
+        if not any(str(row.get('id')) == target_algorithm for row in list_algorithms_internal(project_id)):
+            raise HTTPException(422, detail='目标算法已不存在')
+        if job.get('upload_sample_type') != 'negative':
+            raise HTTPException(422, detail='负样本池上传必须确认负样本类型及分类')
+        job['upload_algorithm_id'] = target_algorithm
 
     selected_paths = payload.selected_paths or []
     if selected_paths:

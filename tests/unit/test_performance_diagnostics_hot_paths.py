@@ -25,7 +25,11 @@ def test_training_picker_and_material_summary_routes_have_only_fixed_diagnostic_
                    '/revision', '/compatibility', '/negative-preview'):
         assert _endpoint('/api/v62/projects/private-project/training-materials' + suffix) == 'training.materials'
     assert _endpoint('/api/v61/projects/private-project/materials/status-counts') == 'material.status_counts'
-    assert _endpoint('/api/v62/projects/private-project/training-materials/private-image/thumbnail') is None
+    # Thumbnail timing was added by the existing 42.24.478 diagnostic contract.
+    # The public endpoint name remains scalar and excludes both identities.
+    assert _endpoint('/api/v62/projects/private-project/training-materials/private-image/thumbnail') == 'training.thumbnail'
+    assert _endpoint('/api/v62/projects/other-project/training-materials/other-image/thumbnail') == 'training.thumbnail'
+    assert _endpoint('/api/v62/projects/private-project/training-materials/private-image/thumbnail/unknown') is None
 
 
 def test_training_picker_stage_emits_only_opt_in_scalar_timing(monkeypatch, caplog):

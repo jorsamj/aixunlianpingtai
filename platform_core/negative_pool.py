@@ -15,6 +15,7 @@ _DDL = (
     "CREATE TABLE IF NOT EXISTS negative_pool_categories (id TEXT PRIMARY KEY, name TEXT NOT NULL COLLATE NOCASE UNIQUE, enabled INTEGER NOT NULL DEFAULT 1)",
     "CREATE TABLE IF NOT EXISTS negative_pool_links (material_id TEXT NOT NULL REFERENCES negative_pool_members(material_id) ON DELETE CASCADE, category_id TEXT NOT NULL REFERENCES negative_pool_categories(id) ON DELETE CASCADE, PRIMARY KEY(material_id,category_id))",
     "CREATE INDEX IF NOT EXISTS ix_negative_pool_category ON negative_pool_links(category_id,material_id)",
+    "CREATE TABLE IF NOT EXISTS negative_pool_algorithm_members (algorithm_id TEXT NOT NULL, material_id TEXT NOT NULL REFERENCES negative_pool_members(material_id) ON DELETE CASCADE, joined_at TEXT NOT NULL, PRIMARY KEY(algorithm_id,material_id))",
     "CREATE TABLE IF NOT EXISTS negative_pool_meta (id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL)",
     "INSERT OR IGNORE INTO negative_pool_meta VALUES (1,0)",
 )
@@ -61,7 +62,7 @@ class NegativePool:
                 return '0'
             return str(db.execute('SELECT revision FROM negative_pool_meta WHERE id=1').fetchone()[0])
 
-    def candidate_ids(self, category_ids=()):
+    def candidate_ids(self, category_ids=(), *, algorithm_id=""):
         """Internal identity-only intersection; the public selection cap is separate."""
         categories=self._ids(category_ids)
         with closing(self.materials._connect()) as db:
@@ -70,7 +71,12 @@ class NegativePool:
             clause=''
             if categories:
                 clause=' AND EXISTS (SELECT 1 FROM negative_pool_links l WHERE l.material_id=m.id AND l.category_id IN ('+','.join('?' for _ in categories)+'))'
-            return [r[0] for r in db.execute('SELECT m.id FROM negative_pool_members n JOIN materials m ON m.id=n.material_id WHERE '+_LIVE+clause+' ORDER BY m.id',categories)]
+            values=list(categories)
+            if algorithm_id:
+                if not db.execute("SELECT 1 FROM sqlite_master WHERE name='negative_pool_algorithm_members'").fetchone(): return []
+                clause += ' AND EXISTS (SELECT 1 FROM negative_pool_algorithm_members am WHERE am.material_id=m.id AND am.algorithm_id=?)'
+                values.append(str(algorithm_id))
+            return [r[0] for r in db.execute('SELECT m.id FROM negative_pool_members n JOIN materials m ON m.id=n.material_id WHERE '+_LIVE+clause+' ORDER BY m.id',values)]
 
     def categories(self, query=''):
         with closing(self.materials._connect()) as db:
@@ -104,7 +110,7 @@ class NegativePool:
             return dict(db.execute('SELECT * FROM negative_pool_categories WHERE id=?', (identity,)).fetchone())
         return self._mutate(write)
 
-    def members(self, image_ids, *, action='add', category_ids=(), categories_only=False):
+    def members(self, image_ids, *, action='add', category_ids=(), categories_only=False, algorithm_id=''):
         ids, categories = self._ids(image_ids), self._ids(category_ids)
         if action not in ('add','remove','set') or (action == 'set' and not categories_only):
             raise ValueError('invalid action')
@@ -121,11 +127,18 @@ class NegativePool:
             if categories_only and db.execute('SELECT COUNT(*) FROM negative_pool_members n JOIN pool_requested r ON r.id=n.material_id').fetchone()[0] != len(ids):
                 raise ValueError('material is not in negative pool')
             if not categories_only:
+                if action == 'remove' and algorithm_id:
+                    removed = db.execute('DELETE FROM negative_pool_algorithm_members WHERE algorithm_id=? AND material_id IN (SELECT id FROM pool_requested)', (str(algorithm_id),)).rowcount
+                    return {'affected':removed, 'already_absent':len(ids)-removed, 'algorithm_id':str(algorithm_id)}
                 if action == 'remove':
+                    if db.execute('SELECT 1 FROM negative_pool_algorithm_members am JOIN pool_requested r ON r.id=am.material_id LIMIT 1').fetchone():
+                        raise ValueError('algorithm memberships exist; remove within the target algorithm')
                     db.execute('DELETE FROM negative_pool_members WHERE material_id IN (SELECT id FROM pool_requested)')
                     return {'affected':len(ids)}
                 now = datetime.now(timezone.utc).isoformat()
                 db.executemany('INSERT OR IGNORE INTO negative_pool_members VALUES (?,?)', ((v,now) for v in ids))
+                if algorithm_id:
+                    db.executemany('INSERT OR IGNORE INTO negative_pool_algorithm_members VALUES (?,?,?)', ((str(algorithm_id),v,now) for v in ids))
             if action == 'set':
                 db.execute('DELETE FROM negative_pool_links WHERE material_id IN (SELECT id FROM pool_requested)')
             sql = 'DELETE FROM negative_pool_links WHERE material_id=? AND category_id=?' if action == 'remove' else 'INSERT OR IGNORE INTO negative_pool_links VALUES (?,?)'
@@ -162,7 +175,7 @@ class NegativePool:
         # revision. Existing training pool selections must not be invalidated.
         return self._mutate(write, initialize_pool=False)
 
-    def query(self, *, query='', category_ids=(), labels=(), joined_days=None, joined_from=None, joined_to=None, review_status=None, page=1, page_size=50, ids_only=False):
+    def query(self, *, algorithm_id='', query='', category_ids=(), labels=(), joined_days=None, joined_from=None, joined_to=None, review_status=None, page=1, page_size=50, ids_only=False):
         if page < 1 or not 1 <= page_size <= 1000:
             raise ValueError('invalid pagination')
         clauses, params = [_LIVE], []
@@ -197,6 +210,11 @@ class NegativePool:
         with closing(self.materials._connect()) as db:
             if not self._exists(db):
                 return {'items':[], 'total':0, 'page':page,'page_size':page_size}
+            if algorithm_id:
+                if not db.execute("SELECT 1 FROM sqlite_master WHERE name='negative_pool_algorithm_members'").fetchone():
+                    return {'items':[], 'total':0, 'page':page,'page_size':page_size}
+                base += ' AND EXISTS (SELECT 1 FROM negative_pool_algorithm_members am WHERE am.material_id=m.id AND am.algorithm_id=?)'
+                params.append(str(algorithm_id))
             db.execute('BEGIN')
             total = db.execute('SELECT COUNT(*)'+base,params).fetchone()[0]
             if ids_only:
@@ -212,6 +230,39 @@ class NegativePool:
             items=[]
             for row in rows:
                 item=self.materials._row_payload(row)
-                item['negative_pool']={'joined_at':row['joined_at'],'categories':links.get(row['id'],[]),'review_status':row['pool_review_status'],'training_usage':'unknown'}
+                item['negative_pool']={'joined_at':row['joined_at'],'categories':links.get(row['id'],[]),'review_status':row['pool_review_status'],'training_usage':'unknown','algorithm_id':str(algorithm_id),'qualification':'pending_confirmation'}
                 items.append(item)
             return {'items':items,'total':total,'page':page,'page_size':page_size,'total_pages':max(1,(total+page_size-1)//page_size)}
+
+def negative_pool_qualification(materials, rows, effective_label_codes):
+    """Page-only DTO from the existing formal GT owner, never pool membership."""
+    from .annotation_repository import AnnotationRepository
+    from .training_label_tasks import training_material_role, task_negative_confirmable
+    codes = sorted(set(str(code) for code in effective_label_codes if str(code)))
+    annotations = AnnotationRepository(materials.project_path)
+    ids = [row['id'] for row in rows]
+    formal = {}
+    revision = annotations.current_revision()
+    for offset in range(0, len(ids), 500):
+        formal.update(annotations.get_many(ids[offset:offset+500]))
+    result = {}
+    for material in rows:
+        identity = str(material['id'])
+        annotation = formal[identity]
+        current = {**material, **annotation, 'id': identity,
+                   'annotation_source_content_sha256': annotation.get('source_content_sha256', ''),
+                   'annotation_hash': annotation.get('content_digest', '')}
+        contract = {'effective_label_codes': codes}
+        role = training_material_role(current, contract)['role']
+        qualification = ('confirmed_for_requested_scope' if role == 'confirmed_negative' else
+                         'target_present' if role == 'positive' else
+                         'pending_confirmation' if task_negative_confirmable(current, contract) else 'needs_review')
+        result[identity] = {'qualification': qualification, 'role': role,
+            'scope_kind': 'requested_labels', 'algorithm_qualification': 'not_evaluated',
+            'effective_label_codes': codes, 'expected_version': int(annotation.get('version') or 0),
+            'annotation_digest': str(annotation.get('content_digest') or ''),
+            'source_content_sha256': str(material.get('content_sha256') or ''),
+            'annotation_revision': revision}
+    if annotations.current_revision() != revision:
+        raise ValueError('formal annotations changed; refresh the pool')
+    return result

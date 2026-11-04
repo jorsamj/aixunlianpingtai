@@ -126,3 +126,98 @@ def test_router_filters_and_authorizes_all_operations(tmp_path):
         assert client.get(base+'/ids',params={'category_id':category,'label':'person'}).json()['items']==['1']
         assert client.get('/api/v61/projects/forbidden/negative-pool').status_code==403
         assert client.post('/api/v61/projects/forbidden/negative-pool/members',json={'image_ids':['2']}).status_code==403
+
+def test_algorithm_membership_isolated_and_legacy_not_inherited(tmp_path):
+    repo, pool = setup(tmp_path)
+    pool.members(['0'])
+    pool.members(['1'], algorithm_id='fire')
+    pool.members(['1','2'], algorithm_id='person')
+    assert pool.candidate_ids(algorithm_id='fire') == ['1']
+    assert pool.candidate_ids(algorithm_id='person') == ['1','2']
+    assert pool.query(algorithm_id='fire')['total'] == 1
+    assert pool.query(algorithm_id='fire')['items'][0]['negative_pool']['algorithm_id'] == 'fire'
+    pool.members(['1'], action='remove', algorithm_id='fire')
+    assert pool.candidate_ids(algorithm_id='fire') == []
+    assert pool.candidate_ids(algorithm_id='person') == ['1','2']
+    assert repo.get('1') is not None
+
+
+def test_algorithm_pool_read_does_not_initialize_or_certify_gt(tmp_path):
+    repo, pool = setup(tmp_path)
+    assert pool.query(algorithm_id='fire')['items'] == []
+    assert pool.candidate_ids(algorithm_id='fire') == []
+    original = repo.get('0')
+    pool.members(['0'], algorithm_id='fire')
+    row = pool.query(algorithm_id='fire')['items'][0]
+    assert row['negative_pool']['qualification'] == 'pending_confirmation'
+    assert repo.get('0') == original
+
+def test_algorithm_scoped_api_validates_identity_and_keeps_legacy_separate(tmp_path):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from platform_core.negative_pool_api import create_negative_pool_router
+    from platform_core.algorithms import create_algorithm
+    repo,pool=setup(tmp_path)
+    algorithm=create_algorithm(repo.project_path/'algorithms.json', {'name':'Fire'}, '2026-11-04T00:00:00Z')
+    app=FastAPI();app.include_router(create_negative_pool_router(lambda _:repo,lambda _: {},lambda _,row:row))
+    with TestClient(app) as client:
+        base='/api/v61/projects/p/negative-pool'
+        assert client.post(base+'/members',json={'image_ids':['0'],'algorithm_id':'missing'}).status_code==400
+        assert client.post(base+'/members',json={'image_ids':['0'],'algorithm_id':algorithm['id']}).status_code==200
+        assert client.get(base,params={'algorithm_id':algorithm['id']}).json()['total']==1
+        assert client.get(base,params={'algorithm_id':'missing'}).status_code==400
+
+def test_qualification_uses_formal_gt_and_scope_not_membership(tmp_path):
+    from platform_core.annotation_repository import AnnotationRepository
+    from platform_core.negative_pool import negative_pool_qualification
+    repo,pool=setup(tmp_path)
+    ann=AnnotationRepository(repo.project_path)
+    # Unannotated original remains pending; a forged material flag cannot certify it.
+    row=repo.get('0');row['annotation_state']='confirmed_empty'
+    result=negative_pool_qualification(repo,[row],['fire'])
+    assert result['0']['qualification']=='needs_review'  # Missing source SHA is not confirmable
+    assert result['0']['effective_label_codes']==['fire']
+    assert result['0']['expected_version']==0
+
+def test_existing_algorithm_scope_cannot_be_narrowed_by_pool_caller(tmp_path, monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from platform_core.algorithms import create_algorithm,save_algorithms
+    from platform_core.negative_pool_api import create_negative_pool_router
+    import platform_core.training_label_tasks as tasks
+    repo,pool=setup(tmp_path)
+    path=repo.project_path/'algorithms.json'
+    algorithm=create_algorithm(path,{'name':'Person'},'now')
+    algorithm['current_version_id']='v1';algorithm['versions']=[{'id':'v1'}]
+    save_algorithms(path,[algorithm])
+    seen=[]
+    def resolve(data_dir,project,payload,current,**kwargs):
+        seen.append(current['id'])
+        return {'effective_label_codes':['person']}
+    monkeypatch.setattr(tasks,'resolve_training_label_contract',resolve)
+    app=FastAPI();app.include_router(create_negative_pool_router(lambda _:repo,lambda _:{'labels':['person','fire']},lambda _,row:row))
+    with TestClient(app) as client:
+        endpoint='/api/v61/projects/p/negative-pool'
+        assert client.get(endpoint,params={'algorithm_id':algorithm['id'],'target_label':'fire'}).status_code==422
+        correct=client.get(endpoint,params={'algorithm_id':algorithm['id']})
+        assert correct.json()['effective_label_codes']==['person']
+        assert correct.json()['scope_kind']=='algorithm_contract'
+        assert seen==[algorithm['id'],algorithm['id']]
+
+
+def test_pool_listing_rejects_material_revision_drift(tmp_path, monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from platform_core.negative_pool_api import create_negative_pool_router
+    repo,pool=setup(tmp_path)
+    pool.members(['0'])
+    query=NegativePool.query
+    def changed(self, **kwargs):
+        result=query(self, **kwargs)
+        repo.upsert({**repo.get('0'), 'needs_review':True, 'content_sha256':'f'*64})
+        return result
+    monkeypatch.setattr(NegativePool,'query',changed)
+    app=FastAPI();app.include_router(create_negative_pool_router(lambda _:repo,lambda _:{},lambda _,row:row))
+    with TestClient(app) as client:
+        response=client.get('/api/v61/projects/p/negative-pool')
+        assert response.status_code==409

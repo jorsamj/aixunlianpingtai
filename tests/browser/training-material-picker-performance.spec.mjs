@@ -90,8 +90,8 @@ test('training material picker opens immediately, renders larger previews, and p
   const firstPageGate = new Promise(resolve => { releaseFirstPage = resolve; });
   let firstPageHeld = true;
 
-  await page.route('**/thumb/*.png', route => route.fulfill({status: 200, contentType: 'image/png', body: PIXEL}));
-  await page.route('**/full/*.png', route => route.fulfill({status: 200, contentType: 'image/png', body: PIXEL}));
+  await page.route('**/thumb/*.png', route => route.fulfill({status: 200, contentType: 'image/svg+xml', body: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="400" height="200"><rect width="400" height="200" fill="#e4eef3"/><rect x="0" y="140" width="400" height="60" fill="#71818b"/><rect x="230" y="40" width="130" height="100" fill="#c2d2da"/><circle cx="120" cy="90" r="16" fill="#637d91"/><path d="M100 115h40v50h-40z" fill="#637d91"/><text x="12" y="24" font-size="14" fill="#405567">ISOLATED SCENE FIXTURE</text></svg>')}));
+  await page.route('**/full/*.png', route => route.fulfill({status: 200, contentType: 'image/svg+xml', body: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="400" height="200"><rect width="400" height="200" fill="#e4eef3"/><rect x="0" y="140" width="400" height="60" fill="#71818b"/><rect x="230" y="40" width="130" height="100" fill="#c2d2da"/><circle cx="120" cy="90" r="16" fill="#637d91"/><path d="M100 115h40v50h-40z" fill="#637d91"/><text x="12" y="24" font-size="14" fill="#405567">ISOLATED SCENE FIXTURE</text></svg>')}));
   await page.route(`**/api/v62/projects/${encoded}/training-materials?*`, async route => {
     const url = new URL(route.request().url());
     const requestedPage = Number(url.searchParams.get('page') || 1);
@@ -147,7 +147,7 @@ test('training material picker opens immediately, renders larger previews, and p
   await expect(page.locator('#trV3PageMeta')).toContainText('当前页 60 张');
   expect(requests.some(value => /\/api\/projects\/[^/]+\/images(?:\?|$)/.test(value))).toBe(false);
   expect(requests.filter(value => value.includes(`/api/v62/projects/${projectId}/training-materials?`))).toHaveLength(1);
-  await expect.poll(() => thumbnailRequests.length).toBe(15);
+  await expect.poll(() => thumbnailRequests.length).toBe(10);
   const firstViewportThumbnailCount = thumbnailRequests.length;
 
   const gridMetrics = await page.locator('#trV3Grid').evaluate(element => ({
@@ -198,12 +198,32 @@ test('training material picker opens immediately, renders larger previews, and p
   await expect.poll(async () => page.evaluate(() => window.TrainingMaterialPickerRuntime?.state?.().selected)).toBe(8);
   expect(requests.filter(value => value.includes('/training-materials/bulk-selection'))).toHaveLength(1);
 
+  for (const [width,height] of [[1440,900],[1024,768],[390,844]]) {
+    await page.setViewportSize({width,height});
+    await expect(page.getByRole('button',{name:'确认选择',exact:true})).toBeVisible();
+    const layout=await page.evaluate(()=>{
+      const grid=document.getElementById('trV3Grid');
+      const footer=document.querySelector('.train-v3-footer').getBoundingClientRect();
+      const cards=[...grid.querySelectorAll('.train-v3-card')].map(c=>c.getBoundingClientRect());
+      return {columns:getComputedStyle(grid).gridTemplateColumns.split(' ').length,
+        footerBottom:footer.bottom,overlap:cards.some((r,i)=>i>0 && r.top>cards[0].top && r.top<cards[0].bottom)};
+    });
+    expect(layout.columns).toBe(width>1180?4:width>760?3:2);
+    expect(layout.footerBottom).toBeLessThanOrEqual(height);
+    expect(layout.overlap).toBe(false);
+    mkdirSync('docs/evidence/material-workbench-20261104',{recursive:true});
+    await page.screenshot({path:`docs/evidence/material-workbench-20261104/picker-${width}.png`});
+  }
+  await page.setViewportSize({width:1440,height:900});
+  await page.locator('.train-v3-policy select').selectOption('include_history');
+  await expect.poll(()=>page.evaluate(()=>window.TrainingDraftRuntime.current().history_policy)).toBe('include_history');
+  await expect.poll(()=>page.evaluate(()=>window.TrainingMaterialPickerRuntime.state().selected)).toBe(8);
   const runtimeState = await page.evaluate(() => window.TrainingMaterialPickerRuntime?.state?.());
   expect(runtimeState.pageSize).toBe(60);
   expect(runtimeState.fullPoolHydration).toBe(false);
   expect(runtimeState.bulkSelectionOwner).toBe('server');
   expect(runtimeState.viewportThumbnailLoading).toBe(true);
-  expect(runtimeState.eagerThumbnailCount).toBe(15);
+  expect(runtimeState.eagerThumbnailCount).toBe(10);
 
   await page.getByRole('button', {name: '确认选择'}).click();
   await expect(page.locator('.train-v3-picker.server-paged')).not.toBeVisible();
@@ -269,7 +289,7 @@ test('isolated Chrome records picker click-to-decoded-paint and long tasks for 1
       const observer=new MutationObserver(() => {
         const cards=document.querySelectorAll('#trV3Grid .train-v3-card');
         const images=[...document.querySelectorAll('#trV3Grid img[src^="/thumb/"]')];
-        if(cards.length!==60 || images.length!==15)return;
+        if(cards.length!==60 || images.length!==10)return;
         observer.disconnect();
         Promise.all(images.map(image=>image.decode())).then(async()=>{
           await new Promise(done=>requestAnimationFrame(()=>requestAnimationFrame(done)));
@@ -284,7 +304,7 @@ test('isolated Chrome records picker click-to-decoded-paint and long tasks for 1
       observer.observe(document.body,{childList:true,subtree:true});
       window.openTrainMaterialPickerV3('train');
     }));
-    expect(observed.decoded_images).toBe(15);
+    expect(observed.decoded_images).toBe(10);
     await expect(page.locator('#trV3Grid .train-v3-card')).toHaveCount(60);
     samples.push({...observed,thumbnail_requests:thumbnailRequests-thumbnailsBefore});
     await page.getByRole('button',{name:'取消'}).click();
@@ -292,9 +312,9 @@ test('isolated Chrome records picker click-to-decoded-paint and long tasks for 1
   await page.evaluate(() => window.__pickerLongTaskObserver?.disconnect());
   expect(pageRequests).toBe(1);
   expect(revisionRequests).toBe(20);
-  expect(samples[0].thumbnail_requests).toBe(15);
+  expect(samples[0].thumbnail_requests).toBe(10);
   const report={scope:'ISOLATED TEST — NOT PRODUCTION VERIFIED; real Chrome; '
-    +'60 mocked cards; 15 eager deterministic 192x192 BMP images per open; '
+    +'60 mocked cards; 10 eager deterministic 192x192 BMP images per open; '
     +'Playwright in-process image/page interception; no WAN, server image I/O or GT',
     cold_first:samples[0],warm:nearestRankSummary(samples.slice(1).map(row=>row.click_to_decoded_paint_ms)),
     warm_total_long_tasks:samples.slice(1).reduce((count,row)=>count+row.long_tasks.length,0),
@@ -337,7 +357,8 @@ test('vest first training selects person as candidate without picker confirmatio
  await page.getByRole('combobox',{name:'按本次训练目标筛选'}).selectOption('pending_negative');
  await expect(page.locator('#trV3TrainingLabels')).toContainText('vest');
  await expect(page.locator('.train-v3-card')).toHaveCount(1);
- await expect(page.locator('#trV3RoleCounts')).toContainText('待确认无目标 1');
+ await expect(page.locator('#trV3RoleCounts')).toContainText('完整类别覆盖在最终创建时核验');
+ await expect(page.locator('[data-sample-role="pending_negative"]')).toBeVisible();
  await expect(page.locator('svg.train-v3-box-layer rect[data-label="person"]')).toBeVisible();
  await expect(page.locator('.train-v3-card input')).toBeChecked();
  await page.getByRole('button',{name:'确认选择',exact:true}).click();
@@ -345,4 +366,32 @@ test('vest first training selects person as candidate without picker confirmatio
  const after=await(await request.get(`/api/projects/${project.id}/annotations/${ids[1]}`)).json();
  expect(after.annotation).toEqual(personBefore);
  expect(errors).toEqual([]);
+});
+
+
+test('large frozen selection keeps browser POST compact without downloading all IDs',async({page})=>{
+ await page.goto('/');await expect.poll(()=>page.evaluate(()=>state.uiReady)).toBe(true);
+ const pid=await page.evaluate(()=>state.project.id);
+ const base=`**/api/v62/projects/${pid}/training-materials`;
+ const ref='trainselection_0123456789ab4def89abcdef01234567';
+ let freezeBody,posted;
+ await page.route(base+'?**',r=>r.fulfill({json:{items:Array.from({length:60},(_,i)=>material(i)),total:200000,page:1,page_size:60,has_next:true,repository_revision:88}}));
+ await page.route(base+'/bulk-selection',r=>r.fulfill({status:422,json:{detail:'筛选结果共200000张，超过单次选择上限50000张'}}));
+ await page.route(base+'/selection-reference',r=>{freezeBody=r.request().postDataJSON();return r.fulfill({json:{selection_ref:ref,count:200000,role:'train'}})});
+ await page.route(base+'/selection-membership',r=>r.fulfill({json:{items:r.request().postDataJSON().image_ids}}));
+ await page.route('**/api/projects/'+pid+'/train/start',r=>{posted=r.request().postDataJSON();return r.fulfill({json:{ok:true,task:{task_id:'isolated-reference'}}})});
+ await page.evaluate(()=>{window.TrainingDraftRuntime.update({algorithmId:'isolated-algorithm',newLabelCodes:['smoke']});window.openTrainMaterialPickerV3('train')});
+ await expect(page.locator('.train-v3-card')).toHaveCount(60);
+ await page.getByRole('button',{name:'全选当前筛选',exact:true}).click();
+ await expect(page.locator('#trV3SelectedTotal')).toHaveText('200000');
+ await expect(page.locator('.train-v3-card input').first()).toBeChecked();
+ await page.getByRole('button',{name:'确认选择',exact:true}).click();
+ await expect.poll(()=>page.evaluate(()=>window.TrainingDraftRuntime.current().trainSelectionRef)).toBe(ref);
+ await page.evaluate(async pid=>{const module=await import('/static/modules/training-draft.js');
+  const payload=module.trainingDraftToRequest(window.TrainingDraftRuntime.current());
+  await fetch(`/api/projects/${pid}/train/start`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+ },pid);
+ expect(posted.train_selection_ref).toBe(ref);expect(posted.train_image_ids).toEqual([]);
+ expect(JSON.stringify(posted).length).toBeLessThan(5000);
+ expect(JSON.stringify(freezeBody).length).toBeLessThan(5000);
 });

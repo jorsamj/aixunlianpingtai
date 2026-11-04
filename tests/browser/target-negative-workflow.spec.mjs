@@ -1,6 +1,7 @@
 import {test,expect} from '@playwright/test';
 import {mkdir} from 'node:fs/promises';
 import path from 'node:path';
+import {storedZip} from './helpers/uppy-zip.mjs';
 function bitmap(index){const w=16,h=16,b=Buffer.alloc(54+w*h*3,index+30);b.fill(0,0,54);b.write('BM');b.writeUInt32LE(b.length,2);b.writeUInt32LE(54,10);b.writeUInt32LE(40,14);b.writeInt32LE(w,18);b.writeInt32LE(h,22);b.writeUInt16LE(1,26);b.writeUInt16LE(24,28);return b;}
 async function seed(request,count=4){
  const project=await(await request.post('/api/projects',{data:{name:`负样本-${Date.now()}-${Math.random()}`,labels:[{code:'cigarette'},{code:'person'}]}})).json();
@@ -63,4 +64,54 @@ test('pool and category tabs reuse images, filter across pages and add to origin
  await page.getByRole('button',{name:'新建分类',exact:true}).click();const create=page.getByRole('dialog',{name:'新建负样本分类',exact:true});await create.locator('[name=name]').fill('逆光');await create.getByRole('button',{name:'确认',exact:true}).click();await expect(page.locator('.negative-pool-category-list')).toContainText('逆光');
  const project=await(await request.get(`/api/v12/projects/${f.project.id}/labels`)).json();expect(project.items.map(v=>typeof v==='string'?v:v.code)).toEqual(['cigarette','person']);
  expect((await(await request.get(base+'/ids')).json()).items).toHaveLength(50);
+});
+
+test('algorithm-scoped pool shows pending and confirmed target review in the original owner',async({page,request})=>{
+ const f=await seed(request,1),base=`/api/v61/projects/${f.project.id}/negative-pool`;
+ expect((await request.post(base+'/members',{data:{algorithm_id:f.algorithm.id,image_ids:[f.images[0].id]}})).ok()).toBeTruthy();
+ await open(page,f,'数据集');await page.locator('.negative-pool-tabs').getByRole('button',{name:'负样本池',exact:true}).click();
+ await expect(page.locator('.negative-pool-advanced')).not.toHaveAttribute('open');
+ const filters=page.locator('[data-np-form="filters"]');
+ await filters.locator('[name=algorithm_id]').selectOption(f.algorithm.id);
+ await filters.locator('[name=target_label]').selectOption('cigarette');
+ await filters.getByRole('button',{name:'筛选',exact:true}).click();
+ await expect(page.locator('.negative-pool-card')).toHaveCount(1);
+ await expect(page.locator('.negative-pool-card')).toContainText('待确认');
+ await shot(page,'algorithm-pool-pending.png');
+ await page.locator('.negative-pool-card [data-np-select]').check();
+ await page.getByRole('button',{name:'确认无本算法目标',exact:true}).click();
+ const review=page.locator('#negativePoolDialog');
+ await review.locator('[name=target_labels]').selectOption('cigarette');
+ await review.locator('[name=reviewed]').check();await review.getByRole('button',{name:'确认',exact:true}).click();
+ await expect(review).toHaveCount(0);
+ await expect(page.locator('.negative-pool-card')).toContainText('已确认所选范围');
+ for(const viewport of [{width:1440,height:900},{width:1280,height:800},{width:768,height:1024},{width:390,height:844}]){
+ await page.setViewportSize(viewport);await expect(page.getByRole('button',{name:'确认无本算法目标',exact:true})).toBeVisible();
+ expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1)).toBe(true);
+ await shot(page,`algorithm-pool-confirmed-${viewport.width}.png`);
+ }
+ await shot(page,'algorithm-pool-confirmed.png');
+ const annotation=(await(await request.get(`/api/projects/${f.project.id}/annotations/${f.images[0].id}`)).json()).annotation;
+ expect(annotation.annotation_scope).toContain('cigarette');
+});
+
+
+test('scoped ZIP upload restores frozen algorithm and imports through original task owner',async({page,request})=>{
+ const f=await seed(request,1),base=`/api/v61/projects/${f.project.id}/negative-pool`;
+ const category=(await(await request.post(base+'/categories',{data:{name:'ZIP背景'}})).json()).id;
+ await open(page,f,'数据集');await page.locator('.negative-pool-tabs').getByRole('button',{name:'负样本池',exact:true}).click();
+ const filters=page.locator('[data-np-form="filters"]');await filters.locator('[name=algorithm_id]').selectOption(f.algorithm.id);await filters.getByRole('button',{name:'筛选',exact:true}).click();
+ await page.getByRole('button',{name:'上传到负样本池',exact:true}).click();
+ const upload=page.locator('#negativePoolDialog');await upload.locator('[name=files]').setInputFiles({name:'pool-background.zip',mimeType:'application/zip',buffer:storedZip([['raw.bmp',bitmap(9)]])});
+ await upload.getByRole('button',{name:'确认',exact:true}).click();await expect(upload).toHaveCount(0);
+ let jobs;
+ await expect.poll(async()=>{jobs=(await(await request.get(`/api/v19/projects/${f.project.id}/import/jobs`)).json()).items||[];return jobs.some(j=>j.upload_algorithm_id===f.algorithm.id&&j.status==='selecting')}).toBe(true);
+ const job=jobs.find(j=>j.upload_algorithm_id===f.algorithm.id);
+ await page.reload();await expect.poll(()=>page.evaluate(()=>Boolean(state.uiReady&&window.ZipImportRuntime))).toBe(true);
+ await page.evaluate(id=>window.ZipImportRuntime.openTask(id),job.id);
+ await page.getByLabel('负样本 · 选择负样本池分类',{exact:false}).check();
+ await page.getByLabel('ZIP背景',{exact:false}).check();
+ await page.locator('[data-zip-confirm-button]').click();
+ await expect.poll(async()=>{const result=await(await request.get(base+`?algorithm_id=${f.algorithm.id}`)).json();return result.total}).toBe(1);
+ const detail=await(await request.get(`/api/v19/projects/${f.project.id}/import/jobs/${job.id}`)).json();expect(detail.upload_algorithm_id).toBe(f.algorithm.id);
 });

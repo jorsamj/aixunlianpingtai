@@ -33,8 +33,13 @@ class MotherModelInventoryTests(unittest.TestCase):
             (root / "ok.PT").write_bytes(b"0" * 2048)
             (root / "empty.pt").touch()
             (root / "other.onnx").write_bytes(b"0" * 2048)
-            (root / "link").symlink_to(outside, target_is_directory=True)
-            (root / "bad.pt").symlink_to(outside / "secret.pt")
+            try:
+                (root / "link").symlink_to(outside, target_is_directory=True)
+                (root / "bad.pt").symlink_to(outside / "secret.pt")
+            except OSError as error:
+                if getattr(error, 'winerror', None) == 1314:
+                    self.skipTest('Windows account lacks symbolic-link privilege (WinError 1314); run this safety contract on Linux or a symlink-enabled Windows account')
+                raise
 
             report = scan_mother_models([root])
             self.assertEqual(report["status"], "COMPLETED")

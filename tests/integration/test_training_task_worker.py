@@ -14,7 +14,8 @@ import platform_core.training_tasks as training_tasks_module
 from platform_core.training_tasks import TrainingHandler
 
 
-def test_training_prepare_then_handler_runs_and_commits_verified_result(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize('selection_reference',[False,True])
+def test_training_prepare_then_handler_runs_and_commits_verified_result(tmp_path: Path, monkeypatch, selection_reference):
     data_dir = tmp_path / "data"
     project_id = "project-one"
     project = data_dir / "projects" / project_id
@@ -113,6 +114,11 @@ def test_training_prepare_then_handler_runs_and_commits_verified_result(tmp_path
             "optimizer_state_resumed": False,
         },
     }
+    if selection_reference:
+        from platform_core.training_selection_reference import freeze_selection,selection_context
+        context=selection_context(data_dir,project_id,payload)
+        receipt=freeze_selection(data_dir,context,payload['train_image_ids'])
+        payload['train_selection_ref']=receipt['selection_ref']
     artifacts.atomic_write_json("task-one", "payload.json", payload)
     repository.create(
         TaskRecord.new(

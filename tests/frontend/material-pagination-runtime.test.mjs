@@ -5,7 +5,26 @@ import fs from 'node:fs';
 import {
   buildMaterialQuery,
   requiresFullMaterialPool,
+  materialRowsByCardIdentity,
+  materialLabelCandidates,
 } from '../../static/modules/material-pagination-runtime.js';
+
+test('material decorations bind stable IDs across reordered cards and never guess by position', () => {
+  const rows = [{id:'a',storage_source_id:'oss-a'}, {id:'b',storage_source_id:'local-b'}];
+  const cards = [{dataset:{materialId:'b'}}, {dataset:{materialId:'a'}}, {dataset:{materialId:'retired'}}];
+  assert.deepEqual(materialRowsByCardIdentity(cards,rows).map(row=>row?.storage_source_id), ['local-b','oss-a',undefined]);
+});
+
+test('gallery label search bounds DOM candidates and searches names and codes without changing selection', () => {
+  const labels=Array.from({length:1000},(_,i)=>({code:`label-${i}`,display_name:`标签 ${i}`}));
+  const selected=new Set(['label-999']);
+  assert.equal(materialLabelCandidates(labels,selected,'').length,40);
+  assert.equal(materialLabelCandidates(labels,selected,'')[0].code,'label-999');
+  assert.equal(materialLabelCandidates(labels,selected,'标签 999')[0].code,'label-999');
+  assert.equal(materialLabelCandidates(labels,selected,'label-999')[0].code,'label-999');
+  assert.equal(materialLabelCandidates([...labels,'label-999'],selected,'标签 999')[0].name,'标签 999');
+  assert.deepEqual([...selected],['label-999']);
+});
 
 
 test('material paging query keeps filters on the server', () => {

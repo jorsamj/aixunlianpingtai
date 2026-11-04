@@ -1686,6 +1686,9 @@ class TrainingPrepareHandler:
                     "target training payload is invalid",
                     target_status=TaskStatus.FAILED,
                 )
+            if str(payload.get('training_input_state') or '').upper()!='READY' and not payload.get('input_freeze_ref'):
+                from .training_selection_reference import validate_payload_references
+                validate_payload_references(self.data_dir,target.project_id,payload)
             target_mode = str(payload.get("target") or "local").strip().lower()
             if target_mode not in {"local", "remote"}:
                 raise RemoteTrainingPreparationError(

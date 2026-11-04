@@ -50,6 +50,22 @@ function escHtml(value) {
   })[char]);
 }
 
+export function materialLabelCandidates(labels, selected, query, limit = 40) {
+  const term = String(query || '').trim().toLocaleLowerCase();
+  const rows = new Map();
+  for (const label of (labels || []).filter(Boolean)) {
+    const code = String(typeof label === 'string' ? label : label.code || label.name || '');
+    if (!rows.has(code)) rows.set(code, {code, name: String(label.display_name || label.name || code)});
+  }
+  return [...rows.values()].filter(row => row.code && (!term || `${row.code} ${row.name}`.toLocaleLowerCase().includes(term)))
+    .sort((a,b) => Number(selected?.has(b.code)) - Number(selected?.has(a.code))).slice(0, limit);
+}
+
+export function materialRowsByCardIdentity(cards, rows) {
+  const byId = new Map((rows || []).map(row => [String(row.id), row]));
+  return [...cards].map(card => byId.get(String(card.dataset?.materialId || '')));
+}
+
 export function installMaterialPaginationRuntime() {
   if (typeof window === 'undefined' || typeof document === 'undefined') return false;
   if (window.__materialPaginationRuntime61Installed) return true;
@@ -368,8 +384,9 @@ export function installMaterialPaginationRuntime() {
     if (sourceSelect) sourceSelect.value = String(state.materialSourceFilter61 || 'all');
 
     const cards = [...document.querySelectorAll('.data426-card')];
+    const cardRows = materialRowsByCardIdentity(cards, state.images);
     cards.forEach((card, index) => {
-      const row = (state.images || [])[index];
+      const row = cardRows[index];
       const meta = card.querySelector('.data426-meta');
       if (!row || !meta || meta.querySelector('.storage61-badge')) return;
       const source = (state.storageSources61 || []).find(item => item.id === (row.storage_source_id || 'default_local'));
@@ -382,6 +399,30 @@ export function installMaterialPaginationRuntime() {
     const selected = state.data412Labels || new Set();
     const clear = document.querySelector('.data426-chip.clear');
     if (clear) clear.classList.toggle('on', selected.size === 0);
+  }
+
+  function decorateLabelSearch61() {
+    const host = document.querySelector('.data426-filtertop');
+    const chips = host?.querySelector('.data426-chips');
+    if (!chips) return;
+    let search = host.querySelector('[data-material-label-search]');
+    if (!search) {
+      search = document.createElement('input'); search.className = 'input';
+      search.placeholder = '搜索标签名称或编码'; search.setAttribute('aria-label', '搜索素材标签');
+      search.dataset.materialLabelSearch = ''; search.value = state.materialLabelQuery61 || '';
+      chips.before(search);
+    }
+    const render = () => {
+      const labels = [...(state.labels || []), ...(state.images || []).flatMap(row => row.labels || [])];
+      const candidates = materialLabelCandidates(labels, state.data412Labels, search.value);
+      chips.innerHTML = '<button class="data426-chip clear">全部</button>' + candidates.map(row =>
+        `<button class="data426-chip ${state.data412Labels?.has(row.code) ? 'on' : ''}" data-label-code="${escHtml(row.code)}" title="${escHtml(row.code)}">${escHtml(row.name)}</button>`).join('');
+      chips.querySelector('.clear').onclick = () => { window.clearLabels412(); render(); };
+      chips.querySelectorAll('[data-label-code]').forEach(button => { button.onclick = () => window.toggleLabel412(button.dataset.labelCode); });
+      syncLabelChipState61();
+    };
+    search.oninput = () => { state.materialLabelQuery61 = search.value; render(); };
+    render();
   }
 
   function decorateDataset61() {
@@ -415,6 +456,7 @@ export function installMaterialPaginationRuntime() {
       });
     }
     decorateStorage61();
+    decorateLabelSearch61();
     restoreControls61();
     syncLabelChipState61();
     decorateSummary61();

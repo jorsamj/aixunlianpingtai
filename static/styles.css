@@ -1462,7 +1462,7 @@ body.sidebar-collapsed{--side-w:76px}.sidebar-collapsed .brand-text,.sidebar-col
 
 /* Keep creation feedback centered in the visible viewport even when the long form is scrolled. */
 .train429-create .train-submit-feedback{position:fixed;z-index:1101;width:min(520px,calc(100vw - 32px))}
-.train429-create.training-submit-failed .train-submit-feedback{position:fixed;left:50%;top:50%;width:min(520px,calc(100vw - 32px));margin:0;transform:translate(-50%,-50%);pointer-events:none;animation:none}
+.train429-create.training-submit-failed .train-submit-feedback{position:relative;left:auto;top:auto;width:100%;margin:12px 0;transform:none;pointer-events:auto;animation:none;box-shadow:none}
 /* AI task creation workbench: one responsive modal, paged material selection. */
 .ai-create-workbench{display:flex;flex-direction:column;gap:14px;max-width:1040px;margin:0 auto;padding-bottom:76px}
 .ai-create-hydration{min-height:30px;display:flex;align-items:center;color:#64748b;font-size:12px}
@@ -1680,3 +1680,15 @@ button[aria-busy="true"]:has(.tiny-spinner)::before{display:none}
 .mother-model-node-file{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;background:#fff;border:1px solid #edf1f8;font-size:12px;color:#4b6482}
 .mother-model-node-file>div{min-width:0;flex:1}.mother-model-node-file b{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#304d70}.mother-model-node-file small{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 @media(max-width:620px){.mother-model-summary,.mother-model-row-head,.mother-model-row-foot,.mother-model-discovery,.mother-model-install{align-items:flex-start;flex-direction:column}.mother-model-management-head h2{font-size:22px}.mother-model-install select{max-width:min(240px,65vw)}}
+
+/* Shared material workspaces: platform tokens, flat surfaces and equal keyboard/touch access. */
+:is(.data426-shell,.train-v3-picker,.material-integrity47,.negative-pool){--workbench-border:var(--border,#e5e6eb);--workbench-accent:var(--primary,#165dff);--workbench-muted:var(--muted,#4e5969);font-size:14px}
+:is(.data426-shell,.train-v3-picker,.material-integrity47,.negative-pool) :is(button,input,select):focus-visible{outline:2px solid var(--workbench-accent);outline-offset:3px}
+.data426-shell .data412-card{border:1px solid var(--workbench-border);border-radius:8px;box-shadow:none;transition:border-color 150ms,background-color 150ms}
+.data426-shell .data412-card:hover,.data426-shell .data412-card:focus-within{border-color:var(--workbench-accent);box-shadow:none;transform:none}
+.data426-shell .data412-card.selected{border-color:var(--workbench-accent);background:#f2f6ff}
+.data426-shell .data426-actions{display:flex;flex-wrap:wrap;gap:8px;min-height:36px}
+.data426-shell .data426-tags{display:flex;flex-wrap:wrap;gap:4px;min-width:0}
+.data426-shell .data426-tags span{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@media(pointer:coarse){:is(.data426-shell,.train-v3-picker,.material-integrity47,.negative-pool) .btn{min-height:44px}}
+@media(prefers-reduced-motion:reduce){.data426-shell .data412-card{transition:none}}

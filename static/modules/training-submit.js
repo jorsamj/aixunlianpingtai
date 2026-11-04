@@ -185,7 +185,7 @@ export function collectTrainingAdmissionBlockers({draft,base,target,benchmarkSta
   if(!String(draft?.algorithmId||'').trim())add('algorithm','请选择有效算法');
   if(draft?.benchmarkReuseEnabled&&benchmarkStatus?.loading)add('benchmark-loading','正在读取固定Test基准',{transient:true});
   if(draft?.benchmarkReuseEnabled&&benchmarkStatus?.load_error)add('benchmark-error',String(benchmarkStatus.load_error));
-  if((draft?.materialIds||[]).length<2)add('materials','至少需要2张有效训练素材',{count:(draft?.materialIds||[]).length});
+  if((draft?.trainSelectionRef?Number(draft.trainSelectionCount||0):(draft?.materialIds||[]).length)<2)add('materials','至少需要2张有效训练素材',{count:(draft?.materialIds||[]).length});
   if(base?.blocked)add('iteration','历史算法没有成功且成果有效的可迭代版本，请核对模型版本');
   if(!base?.hasPrevious&&Array.isArray(target?.base_models)){
     try{validatePreparedMotherModel({draft,target})}catch(error){add('mother-model-not-ready',error.message||'母模型未就绪')}

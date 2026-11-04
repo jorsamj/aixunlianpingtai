@@ -2,7 +2,7 @@ import {withRequestDeadline} from './api.js?v=20261021s';
 
 const DEFAULT_PAGE_SIZE = 60;
 const CACHE_LIMIT = 12;
-const THUMBNAIL_EAGER_COUNT = 15;
+const THUMBNAIL_EAGER_COUNT = 10;
 const THUMBNAIL_PRELOAD_MARGIN = 120;
 const IMAGE_PLACEHOLDER = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
 
@@ -29,6 +29,11 @@ async function readJson(response, fallback) {
   return body || {};
 }
 
+export function trainingMaterialSelectable(row, role = 'train', blocked = new Set()) {
+  return !blocked.has(String(row?.id || '')) && !row?.training_usage?.excluded
+    && (role !== 'test' || (row?.annotation_state !== 'unannotated' && row?.training_usage?.state !== 'unknown'));
+}
+
 export function trainingMaterialSelectionPatch({role = 'train', selectedIds = [], materialIds = [], testMaterialIds = []} = {}) {
   const selected = uniqueIds(selectedIds);
   const selectedSet = new Set(selected);
@@ -43,7 +48,7 @@ export function trainingMaterialSelectionPatch({role = 'train', selectedIds = []
     };
 }
 
-export function buildTrainingMaterialQuery({cursor = null, page = null, pageSize = DEFAULT_PAGE_SIZE, query = '', labels = [], sortOrder = 'newest', effectiveLabelCodes = [], sampleRole = '', sourceIds = [], createdFrom = '', createdTo = '', annotationState = '', usageState = '', historyScope = '', algorithmId = '', historyPolicy = 'new_for_algorithm', role = 'train', negativePoolOnly = false, negativeCategoryIds = [], countMode = ''} = {}) {
+export function buildTrainingMaterialQuery({cursor = null, page = null, pageSize = DEFAULT_PAGE_SIZE, query = '', labels = [], sortOrder = 'newest', effectiveLabelCodes = [], sampleRole = '', sourceIds = [], createdFrom = '', createdTo = '', annotationState = '', usageState = '', historyScope = '', algorithmId = '', historyPolicy = 'new_for_algorithm', role = 'train', negativePoolOnly = false, negativeCategoryIds = [], countMode = '', labelMode = 'any'} = {}) {
   const params = new URLSearchParams();
   if (page != null) {
     params.set('page', String(page));
@@ -53,6 +58,7 @@ export function buildTrainingMaterialQuery({cursor = null, page = null, pageSize
     if (cursor) params.set('cursor', String(cursor));
   }
   if (countMode) params.set('count_mode', countMode);
+  params.set('label_mode',labelMode);
   if (String(query || '').trim()) params.set('query', String(query).trim());
   uniqueIds(labels).forEach(label => params.append('label', label));
   uniqueIds(effectiveLabelCodes).forEach(code => params.append('effective_label_code', code));
@@ -156,9 +162,9 @@ export function installTrainingMaterialPickerRuntime({
       .train-v3-picker.server-paged .train-v3-role-tools p{font-size:12px;color:#475569;margin:6px 0}
       .train-v3-picker.server-paged .train-v3-sample-role{white-space:normal;color:#315fc2;font-weight:600}
       .train-v3-picker.server-paged #trV3ReviewProgress{display:block;margin:8px 0;color:#334155}
-      .train-v3-picker.server-paged .train-v3-grid{display:grid!important;grid-template-columns:repeat(5,minmax(0,1fr))!important;grid-auto-rows:minmax(210px,max-content);align-items:start;gap:12px;height:clamp(420px,60vh,620px);max-height:none!important;min-height:0;align-content:start;padding:4px 2px 10px;overflow-y:auto!important;overflow-x:hidden!important;overscroll-behavior:contain}
+      .train-v3-picker.server-paged .train-v3-grid{display:grid!important;grid-template-columns:repeat(4,minmax(0,1fr))!important;grid-auto-rows:minmax(210px,max-content);align-items:start;gap:12px;height:auto;max-height:none!important;min-height:0;align-content:start;padding:4px 2px 10px;overflow-y:auto!important;overflow-x:hidden!important;overscroll-behavior:contain}
       .train-v3-picker.server-paged .train-v3-card{position:relative;display:flex!important;flex-direction:column;align-self:start;min-width:0;min-height:210px;height:auto!important;padding:8px;border:1px solid #e3e8f0;border-radius:14px;background:#fff;box-shadow:0 2px 8px rgba(15,23,42,.04);overflow:hidden;transition:border-color .16s ease,box-shadow .16s ease,transform .16s ease}
-      .train-v3-picker.server-paged .train-v3-card:hover{border-color:#bcc9da;box-shadow:0 8px 20px rgba(15,23,42,.08);transform:translateY(-1px)}
+      .train-v3-picker.server-paged .train-v3-card:hover{border-color:#bcc9da;box-shadow:0 8px 20px rgba(15,23,42,.08);transform:none}
       .train-v3-picker.server-paged .train-v3-card.on{border-color:#4f7cff;box-shadow:0 0 0 2px rgba(79,124,255,.12),0 8px 20px rgba(15,23,42,.08)}
       .train-v3-picker.server-paged .train-v3-card>input[type="checkbox"]{position:absolute;top:14px;right:14px;z-index:3;width:18px;height:18px;margin:0;accent-color:#2563eb;box-shadow:0 1px 4px rgba(15,23,42,.22)}
       .train-v3-picker.server-paged .train-v3-preview{position:relative;width:100%;aspect-ratio:4/3;flex:none;background:#eef2f7;border-radius:9px;overflow:hidden}
@@ -171,17 +177,17 @@ export function installTrainingMaterialPickerRuntime({
       .train-v3-picker.server-paged .train-v3-card b{display:block;margin-top:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;line-height:20px;color:#172033}
       .train-v3-picker.server-paged .train-v3-card span{display:block;min-height:18px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;line-height:18px;color:#64748b}
       .train-v3-picker.server-paged .train-v3-card .train-v3-label-list{white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere;font-size:12px;line-height:1.5;min-height:20px;color:#334155;padding-bottom:5px}
-      .train-v3-picker.server-paged #trV3Chips{grid-column:1 / -1;max-height:none;overflow:visible;align-content:start}
+      .train-v3-picker.server-paged #trV3Chips{grid-column:1 / -1;max-height:220px;overflow:auto;align-content:start}
       .train-v3-picker.server-paged #trV3Chips .data426-chip{max-width:100%;white-space:normal;overflow-wrap:anywhere;line-height:1.4;text-align:left}
-      .train-v3-picker.server-paged .train-v3-card.blocked{opacity:.5;cursor:not-allowed}
+      .train-v3-picker.server-paged .train-v3-card.blocked{opacity:1;cursor:not-allowed}
       .train-v3-picker.server-paged .train-v3-card.blocked:after{content:attr(data-block-reason);position:absolute;left:14px;top:14px;padding:3px 7px;border-radius:7px;background:rgba(15,23,42,.82);color:#fff;font-size:10px;z-index:2}
       .train-v3-picker.server-paged .train-v3-skeleton{height:210px;border:1px solid #e5eaf2;border-radius:14px;background:linear-gradient(100deg,#f1f5f9 20%,#f8fafc 45%,#f1f5f9 70%);background-size:220% 100%;animation:trainPickerShimmer 1.1s linear infinite}
       .train-v3-picker.server-paged .train-v3-page-meta{color:#64748b;font-size:11px}
       .train-v3-picker.server-paged .train-v3-loading{pointer-events:none;opacity:.65}
       @keyframes trainPickerShimmer{to{background-position:-220% 0}}
-      @media(max-width:1180px){.train-v3-picker.server-paged .train-v3-grid{grid-template-columns:repeat(4,minmax(0,1fr))!important}}
+      @media(max-width:1180px){.train-v3-picker.server-paged .train-v3-grid{grid-template-columns:repeat(3,minmax(0,1fr))!important}}
       @media(max-width:900px){.train-v3-picker.server-paged .train-v3-grid{grid-template-columns:repeat(3,minmax(0,1fr))!important}}
-      @media(max-width:620px){.train-v3-picker.server-paged .train-v3-grid{grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:9px;height:clamp(360px,56vh,520px)}.train-v3-picker.server-paged .train-v3-card{padding:6px;min-height:190px}}
+      @media(max-width:620px){.train-v3-picker.server-paged .train-v3-grid{grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:9px;height:auto}.train-v3-picker.server-paged .train-v3-card{padding:6px;min-height:190px}}
     `;
     document.head.appendChild(style);
   }
@@ -221,6 +227,7 @@ export function installTrainingMaterialPickerRuntime({
       task: {algorithm_asset_id:context.algorithm_asset_id || '',history_policy:context.history_policy || 'new_for_algorithm',
         ...(requiresRoles?{train_labels:uniqueIds(context.train_labels).sort(),base_version_id:context.base_version_id || '',
           model:context.model || '',framework:context.framework || ''}:{})},
+      selectionRef:picker?.reference?.selection_ref || '',
       sampleRole: picker?.sampleRole || '',
       query: picker?.query || '',
       labels: picker ? [...picker.labels].sort() : [],
@@ -244,7 +251,7 @@ export function installTrainingMaterialPickerRuntime({
     const title = role === 'robustness' ? '增强训练素材' : role === 'train' ? '训练候选素材' : '独立试验素材';
     const context = taskPayload();
     const hasTaskLabels = uniqueIds(context.train_labels).length > 0 || Boolean(context.base_version_id);
-    const chips = (state().labels || []).map(row => (
+    const chips = (state().labels || []).slice(0,40).map(row => (
       `<button class="data426-chip" data-label="${esc(row.code)}" onclick="toggleTrainMaterialLabelV3('${esc(row.code)}')">${esc(row.display_name || row.code)}</button>`
     )).join('');
     const rule = role === 'robustness' ? '仅从当前训练素材中选择增强候选；实际训练角色将在提交时核验' : role === 'train'
@@ -253,18 +260,19 @@ export function installTrainingMaterialPickerRuntime({
     return `<div class="train-v3-picker server-paged">
       <header><div><b>${title}</b><span>${rule}</span></div><strong id="trV3PickerCount">正在读取素材…</strong></header>
       <div class="train-v3-workspace"><aside class="train-v3-filters">${role === 'train' && hasTaskLabels ? `<section class="train-v3-role-tools"><b id="trV3TrainingLabels">本次训练目标：读取中…</b><p id="trV3RoleCounts" aria-live="polite"></p><select id="trV3RoleFilter" class="select" aria-label="按本次训练目标筛选" onchange="TrainingMaterialPickerRuntime.setSampleRole(this.value)"><option value="">全部素材</option><option value="positive">含本次目标</option><option value="confirmed_negative">已确认不含本次目标</option><option value="pending_negative">最终创建时确认候选背景</option><option value="pending_review">标注或目标范围需核验</option></select><p>选择素材不需要逐张确认；最终创建时统一检查类别覆盖、GT 问题和候选背景。</p></section>` : ''}
-      <div class="train-v3-filter"><input id="trV3Q" class="input" placeholder="搜索图片名称" oninput="trainMaterialSearchV3(this.value)"><select id="trV3Sort" class="select" aria-label="按加入时间排序" onchange="trainMaterialSortV3(this.value)"><option value="newest">最新加入优先</option><option value="oldest">最早加入优先</option></select><div id="trV3Chips" class="data426-chips"><button class="data426-chip clear on" data-label="" onclick="clearTrainMaterialLabelsV3()">全部标签</button>${chips}</div></div>
+      <div class="train-v3-filter"><input id="trV3Q" class="input" placeholder="搜索图片名称" oninput="trainMaterialSearchV3(this.value)"><select id="trV3Sort" class="select" aria-label="按加入时间排序" onchange="trainMaterialSortV3(this.value)"><option value="newest">最新加入优先</option><option value="oldest">最早加入优先</option></select><input class="input" placeholder="检索标签名称或编码" aria-label="检索标签" oninput="TrainingMaterialPickerRuntime.searchLabels(this.value)"><select class="select" aria-label="标签组合" onchange="TrainingMaterialPickerRuntime.setLabelMode(this.value)"><option value="any">包含任意标签</option><option value="all">同时包含全部标签</option></select><div id="trV3Chips" class="data426-chips"><button class="data426-chip clear on" data-label="" onclick="clearTrainMaterialLabelsV3()">全部标签</button>${chips}</div></div>
       ${role==='train'?`<label>素材范围<select class="select" data-filter-key="negativePoolOnly" aria-label="素材范围" onchange="TrainingMaterialPickerRuntime.setFilter('negativePoolOnly',this.value)"><option value="">普通素材（含负样本池）</option><option value="pool">负样本池</option></select></label><label>负样本分类<select class="select" multiple data-filter-key="negativeCategoryIds" aria-label="负样本分类筛选" id="trV3NegativeCategories" onfocus="TrainingMaterialPickerRuntime.loadNegativeCategories()" onchange="TrainingMaterialPickerRuntime.setFilter('negativeCategoryIds',[...this.selectedOptions].map(o=>o.value).join(','))"><option disabled>点击后读取分类…</option></select></label>`:''}
-      <label>存储来源<input class="input" data-filter-key="sourceIds" placeholder="来源ID，多个用逗号分隔" onchange="TrainingMaterialPickerRuntime.setFilter('sourceIds',this.value)"></label>
+      <details class="train-v3-advanced"><summary>更多筛选</summary><label>存储来源<select class="select" multiple id="trV3StorageSources" aria-label="存储来源" onfocus="TrainingMaterialPickerRuntime.loadStorageSources()" onchange="TrainingMaterialPickerRuntime.setFilter('sourceIds',[...this.selectedOptions].map(o=>o.value).join(','))"><option disabled>点击读取存储来源…</option></select></label>
       <label>加入时间从<input type="date" class="input" data-filter-key="createdFrom" onchange="TrainingMaterialPickerRuntime.setFilter('createdFrom',this.value)"></label><label>至<input type="date" class="input" data-filter-key="createdTo" onchange="TrainingMaterialPickerRuntime.setFilter('createdTo',this.value)"></label>
       <label>正式标注<select class="select" data-filter-key="annotationState" onchange="TrainingMaterialPickerRuntime.setFilter('annotationState',this.value)"><option value="">全部状态</option><option value="annotated">已标注</option><option value="confirmed_empty">已确认无目标</option><option value="unannotated">未标注</option></select></label>
       <label>真实训练历史<select class="select" data-filter-key="usageState" onchange="TrainingMaterialPickerRuntime.setFilter('usageState',this.value)"><option value="">全部历史</option><option value="used">已使用</option><option value="possible">可能使用</option><option value="selected">仅选入</option><option value="eval_only">仅参与评测</option><option value="test_reserved">独立 Test 已保留</option><option value="unused">有据未使用</option><option value="unknown">未知</option></select></label>
-      <label>算法训练范围<select class="select" data-filter-key="historyScope" onchange="TrainingMaterialPickerRuntime.setFilter('historyScope',this.value)"><option value="">所有算法范围</option><option value="current_only">仅当前算法训练（已知证据）</option><option value="other_only">仅其他算法训练（已知证据）</option></select></label><p class="train-v3-history-note">历史未完整回填时，“仅”表示当前已知证据；未知素材不能据此证明独立。</p><div id="trV3ActiveFilters" class="data426-chips" aria-live="polite"></div><button class="btn mini" onclick="TrainingMaterialPickerRuntime.clearFilters()">清空筛选条件</button>
-      </aside><main class="train-v3-results"><div class="train-v3-view"><button class="btn mini" onclick="TrainingMaterialPickerRuntime.setView('grid')">网格</button><button class="btn mini" onclick="TrainingMaterialPickerRuntime.setView('list')">紧凑列表</button></div>
-      <div class="picker412-actions train-v3-batch"><button class="btn mini" data-picker-action="select-filtered" onclick="trainMaterialSelectV3('select-filtered')">全选当前筛选</button><button class="btn mini" data-picker-action="invert-filtered" onclick="trainMaterialSelectV3('invert-filtered')">反选当前筛选</button><button class="btn mini" data-picker-action="select-all" onclick="trainMaterialSelectV3('select-all')">全选全部可用素材</button><button class="btn mini" onclick="trainMaterialSelectV3('clear-all')">全部不选</button><button class="btn mini" data-picker-action="select-page" onclick="trainMaterialSelectV3('select-page')">全选本页</button><button class="btn mini" data-picker-action="invert-all" onclick="trainMaterialSelectV3('invert-all')">反选全部</button><span id="trV3PageMeta" class="train-v3-page-meta"></span></div>
+      <label>算法训练范围<select class="select" data-filter-key="historyScope" onchange="TrainingMaterialPickerRuntime.setFilter('historyScope',this.value)"><option value="">所有算法范围</option><option value="current_only">当前算法训练（含共同使用）</option><option value="other_only">仅其他算法训练（已知证据）</option></select></label><p class="train-v3-history-note">历史未完整回填时，“仅”表示当前已知证据；未知素材不能据此证明独立。</p><div id="trV3ActiveFilters" class="data426-chips" aria-live="polite"></div><button class="btn mini" onclick="TrainingMaterialPickerRuntime.clearFilters()">清空筛选条件</button>
+      </details></aside><main class="train-v3-results"><div class="train-v3-view"><button class="btn mini" onclick="TrainingMaterialPickerRuntime.setView('grid')">网格</button><button class="btn mini" onclick="TrainingMaterialPickerRuntime.setView('list')">紧凑列表</button></div>
+      <div class="picker412-actions train-v3-batch"><button class="btn mini" data-picker-action="select-filtered" onclick="trainMaterialSelectV3('select-filtered')">全选当前筛选</button><details class="train-v3-more"><summary class="btn mini">更多</summary><button class="btn mini" data-picker-action="invert-filtered" onclick="trainMaterialSelectV3('invert-filtered')">反选当前筛选</button><button class="btn mini" data-picker-action="select-all" onclick="trainMaterialSelectV3('select-all')">全选全部可用素材</button><button class="btn mini" onclick="trainMaterialSelectV3('clear-all')">全部不选</button><button class="btn mini" data-picker-action="invert-all" onclick="trainMaterialSelectV3('invert-all')">反选全部</button></details><button class="btn mini" data-picker-action="select-page" onclick="trainMaterialSelectV3('select-page')">全选本页</button><span id="trV3PageMeta" class="train-v3-page-meta"></span></div>
+      <label class="train-v3-policy">训练素材使用策略 <select class="select" onchange="TrainingMaterialPickerRuntime.setHistoryPolicy(this.value)"><option value="new_for_algorithm" ${taskPayload().history_policy==='new_for_algorithm'?'selected':''}>仅使用未训练素材</option><option value="include_history" ${taskPayload().history_policy==='include_history'?'selected':''}>允许复用历史训练素材</option></select></label>
       <div id="trV3Grid" class="train-v3-grid"></div>
       <div id="trV3Pager" class="data426-pager"></div>
-      </main></div><footer class="row end train-v3-footer"><button class="btn" onclick="TrainingMaterialPickerRuntime.close()">取消</button><button class="btn primary" data-picker-confirm onclick="confirmTrainMaterialPickerV3()">确认选择</button></footer>
+      </main><details class="train-v3-selected" open><summary>本次已选 <span id="trV3SelectedTotal">0</span></summary><div><input class="input" aria-label="搜索已选素材" placeholder="搜索已选名称或ID" oninput="TrainingMaterialPickerRuntime.searchSelected(this.value)"><p id="trV3SelectedSummary"></p><div id="trV3SelectedList"></div></div></details></div><footer class="row end train-v3-footer"><button class="btn" onclick="TrainingMaterialPickerRuntime.close()">取消</button><button class="btn primary" data-picker-confirm onclick="confirmTrainMaterialPickerV3()">确认选择</button></footer>
     </div>`;
   }
 
@@ -341,7 +349,33 @@ export function installTrainingMaterialPickerRuntime({
     });
   }
 
+  function renderSelectedList() {
+    if (!picker) return;
+    const records=new Map();
+    for (const cached of pageCache.values()) for(const row of cached.items || []) records.set(String(row.id),row);
+    for(const row of picker.items || [])records.set(String(row.id),row);
+    const query=String(picker.selectedQuery || '').toLowerCase();
+    if(picker.reference){
+      const total=document.getElementById('trV3SelectedTotal');if(total)total.textContent=String(picker.reference.count);
+      const list=document.getElementById('trV3SelectedList');if(list)list.textContent='已冻结筛选结果；正式GT与历史资格在准备任务中逐项复核。修改选择将解除冻结范围。';
+      return;
+    }
+    const visible=[];let history=0, unknown=0, negative=0;
+    for(const id of picker.selected){
+      const row=records.get(id);
+      if(!row?.training_usage?.state || row.training_usage.state==='unknown')unknown++;
+      if(Number(row?.training_usage?.training_task_count || 0)>0)history++;
+      if(row?.sample_role==='confirmed_negative')negative++;
+      if(visible.length<100 && `${row?.filename || ''} ${id}`.toLowerCase().includes(query))visible.push({id,name:row?.filename || id});
+    }
+    const total=document.getElementById('trV3SelectedTotal');if(total)total.textContent=String(picker.selected.size);
+    const summary=document.getElementById('trV3SelectedSummary');if(summary)summary.textContent=`历史复用 ${history} · 已知负样本 ${negative} · 待核验 ${unknown}（基于已加载证据）`;
+    const list=document.getElementById('trV3SelectedList');
+    if(list)list.innerHTML=visible.map(row=>`<div class="train-v3-selected-row"><span title="${esc(row.name)}">${esc(row.name)}</span><button type="button" class="btn mini" aria-label="移除 ${esc(row.name)}" onclick="TrainingMaterialPickerRuntime.removeSelected('${esc(row.id)}')">移除</button></div>`).join('')+(picker.selected.size>100?'<small>最多展示100项，可搜索定位</small>':'');
+  }
+
   function updateCounts() {
+    renderSelectedList();
     if (!picker) return;
     const labelHost = document.getElementById('trV3TrainingLabels');
     if (labelHost) labelHost.textContent = `本次训练标签：${(picker.effectiveLabels || []).join('、') || '请先选择训练标签'}`;
@@ -352,6 +386,7 @@ export function installTrainingMaterialPickerRuntime({
         : '优先展示本页素材；完整类别覆盖在最终创建时核验';
     }
     const count = document.getElementById('trV3PickerCount');
+    if(picker.reference){if(count)count.textContent=`服务器已冻结 ${picker.reference.count} 张`;return;}
     if (count) count.textContent = picker.total === null
       ? `本页 ${picker.items.length} 张 · 总数按需统计 · 已选 ${picker.selected.size} 张`
       : `筛选结果 ${picker.total} 张 · 已选 ${picker.selected.size} 张`;
@@ -406,11 +441,17 @@ export function installTrainingMaterialPickerRuntime({
   function attachImageFallbacks() {
     document.querySelectorAll('#trV3Grid img[data-fallback]').forEach(image => {
       image.addEventListener('error', () => {
-        const fallback = image.dataset.fallback;
-        if (!fallback || image.dataset.fallbackUsed === '1') return;
-        image.dataset.fallbackUsed = '1';
-        image.dataset.thumbnailLoaded = '1';
-        image.src = fallback;
+        image.src = IMAGE_PLACEHOLDER;
+        const host=image.parentElement;
+        if(!host || host.querySelector?.('[data-thumbnail-retry]'))return;
+        const retry=document.createElement('button');
+        retry.type='button';retry.className='btn mini';retry.dataset.thumbnailRetry='1';
+        retry.textContent='缩略图失败 · 重试';
+        retry.onclick=event=>{
+          event.preventDefault();event.stopPropagation();retry.remove();
+          image.dataset.thumbnailLoaded='0';attachImageFallbacks();loadThumbnail(image);
+        };
+        host.append(retry);
       }, {once: true});
     });
     attachViewportImages();
@@ -451,7 +492,7 @@ export function installTrainingMaterialPickerRuntime({
     const blocked = blockedIds(picker.role);
     grid.innerHTML = picker.items.map((row, index) => {
       const id = String(row.id || '');
-      const selected = picker.reviewing ? picker.reviewSelected.has(id) : picker.selected.has(id);
+      const selected = picker.reviewing ? picker.reviewSelected.has(id) : picker.reference ? Boolean(row.selection_member) : picker.selected.has(id);
       const crossRoleBlocked = blocked.has(id);
       const missingTestTruth = picker.role === 'test' && String(row.annotation_state || '') === 'unannotated';
       const historyBlocked = Boolean(row.training_usage?.excluded);
@@ -466,12 +507,12 @@ export function installTrainingMaterialPickerRuntime({
       const loading = index < THUMBNAIL_EAGER_COUNT ? 'eager' : 'lazy';
       const priority = index < THUMBNAIL_EAGER_COUNT ? 'high' : 'low';
       return `<label class="train-v3-card ${selected ? 'on' : ''} ${unavailable ? 'blocked' : ''}" data-material-id="${esc(id)}" data-block-reason="${esc(blockReason)}">
-        <input type="checkbox" ${selected ? 'checked' : ''} ${unavailable ? 'disabled' : ''} onchange="toggleTrainMaterialV3('${esc(id)}',this.checked,this)">
+        <input type="checkbox" ${selected ? 'checked' : ''} ${unavailable && !selected ? 'disabled' : ''} onchange="toggleTrainMaterialV3('${esc(id)}',this.checked,this)">
         ${renderTrainingMaterialPreview(row, {loading, priority})}
-        <b title="${esc(row.filename || '')}">${esc(row.filename || id)}</b><span class="train-v3-label-list" title="${esc(labelText)}">${esc(labelText)}</span>${historyBlocked ? `<small class="train-v3-history-blocked" title="${esc(blockReason)}">${esc(blockReason)}</small>` : ''}
+        <b title="${esc(row.filename || '')}">${esc(row.filename || id)}</b><span class="train-v3-label-list" title="${esc(labelText)}">${esc((row.labels || []).slice(0,3).map(labelDisplay).join('、') || labelText)}${(row.labels || []).length>3?` +${row.labels.length-3}`:''}</span>${historyBlocked ? `<small class="train-v3-history-blocked" title="${esc(blockReason)}">${esc(blockReason)}</small>` : ''}
         ${picker.role === 'train' && (picker.sampleRole || picker.reviewing) && picker.effectiveLabels?.length ? `<span class="train-v3-sample-role" data-sample-role="${esc(row.sample_role || '')}">${esc(({positive:'含本次目标',confirmed_negative:`已确认不含 ${(picker.effectiveLabels || []).join('、')}`,pending_negative:`尚需确认不含 ${(picker.effectiveLabels || []).join('、')}`,pending_review:({missing_annotation:'未标注',partial_review_scope:'所需目标范围尚未确认',invalid_annotation:'标注数据无效',annotation_needs_review:'标注或来源一致性需核验',material_unavailable:'素材来源不可用',stale_ground_truth:'标注内容与素材不一致'})[row.annotation_issue_type || row.sample_role_issue_type] || '标注异常，请核验原因'})[row.sample_role] || '')}</span>` : ''}
         <span>${esc(row.storage_source_id || '')} · ${esc((row.created_at || '').slice(0,10))}</span>
-        <details onclick="event.stopPropagation()" ontoggle="if(this.open)TrainingMaterialPickerRuntime.loadHistory('${esc(id)}',this)"><summary>训练历史 · 已知训练 ${Number(row.training_usage?.training_task_count || 0)} 次 · ${esc(({used:'已使用',possible:'可能使用',selected:'仅已选入',eval_only:'仅参与评测',test_reserved:'独立 Test 已保留',unused:'有据未使用',unknown:'未知'})[row.training_usage?.state] || '未知')}</summary><p>${esc((row.training_usage?.task_ids || []).join('、') || '缺少完整执行证据，不能判定从未使用')}</p></details>
+        <details onclick="event.stopPropagation()" ontoggle="if(this.open)TrainingMaterialPickerRuntime.loadHistory('${esc(id)}',this)"><summary>训练历史 · ${(!row.training_usage?.state || row.training_usage?.state==='unknown')?'历史未知':`当前算法已训练 ${Number(row.training_usage?.training_task_count || 0)} 次`} · ${esc(({used:'已使用',possible:'可能使用',selected:'仅已选入',eval_only:'仅参与评测',test_reserved:'独立 Test 已保留',unused:'有据未使用',unknown:'未知'})[row.training_usage?.state] || '未知')}</summary><p>${esc((row.training_usage?.task_ids || []).join('、') || '缺少完整执行证据，不能判定从未使用')}</p></details>
         <a class="btn mini" href="${esc(row.content_url || '#')}" target="_blank" rel="noopener" onclick="event.stopPropagation()">查看原图</a>
         ${picker.reviewing ? `<button type="button" class="btn mini" onclick="event.preventDefault();event.stopPropagation();TrainingMaterialPickerRuntime.editAnnotation('${esc(id)}')">发现目标 · 去标注</button>` : ''}
       </label>`;
@@ -535,6 +576,7 @@ export function installTrainingMaterialPickerRuntime({
         page: requestedPage,
         pageSize: picker.pageSize,
         countMode: 'deferred',
+        labelMode:picker.labelMode || 'any',
         query: picker.query,
         labels: [...picker.labels],
         sortOrder: picker.sortOrder,
@@ -557,7 +599,14 @@ export function installTrainingMaterialPickerRuntime({
           defer_role_counts:!picker.sampleRole, count_mode:'deferred'})} : {}),
         headers: {'Accept': 'application/json', 'Content-Type':'application/json'},
       });
-      return readJson(response, '训练素材读取失败，请重试');
+      const data=await readJson(response, '训练素材读取失败，请重试');
+      if(owner.reference){
+        const selected=await readJson(await fetchImpl(`/api/v62/projects/${encodeURIComponent(pid)}/training-materials/selection-membership`,{
+          signal,method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({...taskPayload(),role:picker.role,selection_ref:owner.reference.selection_ref,image_ids:data.items.map(r=>r.id)})}),'冻结选择核验失败');
+        const members=new Set(selected.items);for(const row of data.items)row.selection_member=members.has(row.id);
+      }
+      return data;
       }, {signal:controller.signal,label:'训练素材读取'});
       if (!current()) return;
       picker.effectiveLabels = body.effective_label_codes || [];
@@ -599,7 +648,7 @@ export function installTrainingMaterialPickerRuntime({
 
   function filterPayload() {
     const f=picker?.filters || {};
-    return {role:picker?.role==='test'?'test':'train',storage_source_ids:uniqueIds(f.sourceIds),annotation_state:f.annotationState || '',created_from:f.createdFrom || '',created_to:f.createdTo || '',usage_state:f.usageState || '',history_scope:f.historyScope || '',negative_pool_only:Boolean(f.negativePoolOnly),negative_category_ids:uniqueIds(f.negativeCategoryIds),
+    return {label_mode:picker?.labelMode || 'any',role:picker?.role==='test'?'test':'train',storage_source_ids:uniqueIds(f.sourceIds),annotation_state:f.annotationState || '',created_from:f.createdFrom || '',created_to:f.createdTo || '',usage_state:f.usageState || '',history_scope:f.historyScope || '',negative_pool_only:Boolean(f.negativePoolOnly),negative_category_ids:uniqueIds(f.negativeCategoryIds),
       ...(picker?.role==='robustness'?{image_ids:picker.scopeIds}:{} )};
   }
 
@@ -619,6 +668,18 @@ export function installTrainingMaterialPickerRuntime({
         role: picker?.role === 'robustness' ? 'train' : (picker?.role || 'train'),
       }),
     });
+    if(!response.ok && picker?.role==='train'){
+      const error=await response.clone().json().catch(()=>({}));
+      if(String(error.detail || '').includes('超过单次选择上限')){
+        const requestKey=JSON.stringify({...taskPayload(),...filterPayload(),query:picker.query,labels:[...picker.labels],allAvailable});
+        if(picker.referenceRequest?.key!==requestKey)picker.referenceRequest={key:requestKey,id:window.crypto.randomUUID()};
+        const plan=await fetchImpl(`/api/v62/projects/${encodeURIComponent(pid)}/training-materials/selection-reference`,{
+          signal,method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({...taskPayload(),...filterPayload(),request_id:picker.referenceRequest.id,query:allAvailable?'':picker.query,
+            labels:allAvailable?[]:[...picker.labels],sort_order:picker.sortOrder,sample_role:picker.sampleRole})});
+        return {reference:await readJson(plan,'大范围素材选择冻结失败')};
+      }
+    }
     const body = await readJson(response, '训练素材批量选择读取失败');
     return {ids:uniqueIds(body.items),revision:body.repository_revision,
       usageRevision:body.usage_revision,annotationRevision:body.annotation_revision,
@@ -631,11 +692,12 @@ export function installTrainingMaterialPickerRuntime({
   async function bulkAction(action) {
     if (!picker || picker.bulkPending || picker.reviewing) return;
     if (picker.loading) return notify('当前筛选结果尚未加载完成，请稍后重试选择');
+    if(picker.reference && !['select-filtered','select-all','clear-all'].includes(action)){picker.reference=null;picker.selected.clear();notify('已解除服务器冻结范围，改为显式选择');}
     if (action === 'select-page') {
-      picker.items.forEach(row=>{if(!blockedIds(picker.role).has(String(row.id)) && (picker.role!=='test' || row.annotation_state!=='unannotated'))picker.selected.add(String(row.id));});renderPage();return;
+      picker.items.forEach(row=>{if(trainingMaterialSelectable(row,picker.role,blockedIds(picker.role)))picker.selected.add(String(row.id));});renderPage();return;
     }
     if (action === 'clear-all') {
-      picker.selected.clear();
+      picker.reference=null;picker.selected.clear();
       renderPage();
       return;
     }
@@ -648,6 +710,12 @@ export function installTrainingMaterialPickerRuntime({
     try {
       const result = await resolveBulkSelection({allAvailable: action === 'select-all' || action === 'invert-all'});
       if (picker !== activePicker || projectId() !== pid || signature()!==contextKey) return;
+      if(result.reference){
+        if(!['select-filtered','select-all'].includes(action))return notify('大范围冻结选择不支持反选，请使用全选当前筛选');
+        picker.reference=result.reference;picker.selected.clear();pageCache.clear();
+        notify(`已在服务器冻结 ${result.reference.count} 张素材；调整已选内容将解除冻结选择`);
+        updateCounts();return loadPage();
+      }
       if(result.total!==result.ids.length ||
          (picker.repositoryRevision!==null && result.revision!==picker.repositoryRevision) ||
          (picker.annotationRevision!==null && result.annotationRevision!==picker.annotationRevision) ||
@@ -680,6 +748,7 @@ export function installTrainingMaterialPickerRuntime({
     injectStyles();
     if (typeof role === 'object') role=role.role;
     picker = {
+      reference:role!=='test' && draft().trainSelectionRef?{selection_ref:draft().trainSelectionRef,count:draft().trainSelectionCount}:null,
       sampleRole:'', effectiveLabels:[], roleCounts:null, reviewing:false, reviewSelected:new Set(),
       role: ['test','robustness'].includes(role) ? role : 'train',
       filters:{}, view:'grid', historyControllers:new Set(), scopeIds:uniqueIds(draft().materialIds),
@@ -765,12 +834,12 @@ export function installTrainingMaterialPickerRuntime({
     }
     const row = (picker.items || []).find(item => String(item?.id || '') === value);
     if (
-      blockedIds(picker.role).has(value)
-      || (picker.role === 'test' && String(row?.annotation_state || '') === 'unannotated')
+      on && !trainingMaterialSelectable(row,picker.role,blockedIds(picker.role))
     ) {
       if (checkbox) checkbox.checked = false;
       return;
     }
+    if(picker.reference){picker.reference=null;picker.selected.clear();notify('已解除服务器冻结选择，改为逐张选择');}
     on ? picker.selected.add(value) : picker.selected.delete(value);
     checkbox?.closest('.train-v3-card')?.classList.toggle('on', Boolean(on));
     updateCounts();
@@ -794,7 +863,11 @@ export function installTrainingMaterialPickerRuntime({
   window.trainMaterialPageV3 = page;
   window.confirmTrainMaterialPickerV3 = function confirmPicker() {
     if (!picker || picker.loading || picker.bulkPending || picker.reviewPending) return false;
+    if (picker.items.some(row=>picker.selected.has(String(row.id)) && !trainingMaterialSelectable(row,picker.role,blockedIds(picker.role)))) {
+      notify('已选素材中包含当前策略不可用项，请取消这些选择或调整使用策略');return false;
+    }
     const current = draft();
+    if(picker.reference){trainingDraftRuntime.update({materialIds:[],trainSelectionRef:picker.reference.selection_ref,trainSelectionCount:picker.reference.count});window.closeModal?.();window.refreshTrainingMaterialSelectionUiV3?.();return true;}
     if(picker.role==='robustness'){
       const policy=current.robustness_policy || {};
       trainingDraftRuntime.update({robustness_policy:{...policy,selection:{...(policy.selection || {}),mode:'manual',image_ids:[...picker.selected].filter(id=>picker.scopeIds.includes(id))}}});
@@ -806,7 +879,7 @@ export function installTrainingMaterialPickerRuntime({
       materialIds: current.materialIds || [],
       testMaterialIds: current.testMaterialIds || [],
     });
-    trainingDraftRuntime.update(patch);
+    trainingDraftRuntime.update({...patch,trainSelectionRef:'',trainSelectionCount:0});
     window.closeModal?.();
     window.refreshTrainingMaterialSelectionUiV3?.();
     return true;
@@ -815,6 +888,42 @@ export function installTrainingMaterialPickerRuntime({
   const runtime = {
     build: 'training-material-picker-runtime-422615',
     open,
+    searchSelected(value) {if(picker){picker.selectedQuery=String(value || '');renderSelectedList();}},
+    removeSelected(id) {
+      if(!picker || picker.bulkPending || picker.reviewPending)return;
+      picker.selected.delete(String(id));
+      const card=[...document.querySelectorAll('#trV3Grid [data-material-id]')].find(row=>row.dataset.materialId===String(id));
+      if(card){card.classList.remove('on');const checkbox=card.querySelector('input');if(checkbox)checkbox.checked=false;}
+      updateCounts();
+    },
+    async loadStorageSources() {
+      const owner=picker;if(!owner)return;
+      try{
+        const rows=await window.loadStorageSources61?.() || window.getStorageSourcesSnapshot61?.() || [];
+        if(picker!==owner)return;
+        const control=document.getElementById('trV3StorageSources');
+        if(control)control.innerHTML=rows.map(row=>`<option value="${esc(row.id)}" ${picker.filters.sourceIds?.includes(String(row.id))?'selected':''}>${esc(row.name || row.id)}</option>`).join('');
+      }catch(error){if(picker===owner)notify('存储来源读取失败，请重试');}
+    },
+    setLabelMode(value) {
+      if (!picker || picker.loading || picker.bulkPending) return;
+      picker.labelMode=value==='all'?'all':'any';return resetFiltersAndLoad();
+    },
+    searchLabels(value) {
+      if (!picker) return;
+      const query=String(value || '').trim().toLowerCase();
+      const matches=(state().labels || []).filter(row=>`${row.code} ${row.display_name || row.name || ''}`.toLowerCase().includes(query)).slice(0,40);
+      const box=document.getElementById('trV3Chips');
+      if(box) box.innerHTML=matches.map(row=>`<button class="data426-chip ${picker.labels.has(String(row.code))?'on':''}" data-label="${esc(row.code)}" onclick="toggleTrainMaterialLabelV3('${esc(row.code)}')">${esc(row.display_name || row.code)}</button>`).join('');
+    },
+    setHistoryPolicy(value) {
+      if (!picker || picker.loading || picker.bulkPending || picker.reviewPending) return;
+      if (!['new_for_algorithm','include_history'].includes(value)) return;
+      if(picker.reference){picker.reference=null;picker.selected.clear();notify('使用策略变化，已解除旧的服务器冻结选择，请重新选择');}
+      trainingDraftRuntime.update({history_policy:value});
+      notify('使用策略已更新；已选素材保留，确认时将校验资格');
+      return resetFiltersAndLoad();
+    },
     setSampleRole(value) {
       if (!picker || picker.reviewPending) return;
       if(value && !uniqueIds(taskPayload().train_labels).length && !taskPayload().base_version_id){

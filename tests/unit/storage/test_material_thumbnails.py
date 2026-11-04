@@ -1,11 +1,26 @@
 import hashlib
 import json
+import os
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from PIL import Image
 
 from platform_core.storage.cache import MaterialCache, file_sha256
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows extended path identity')
+def test_thumbnail_path_guard_accepts_same_extended_drive_identity(tmp_path, monkeypatch):
+    cache=MaterialCache(tmp_path / 'cache')
+    target=cache.path_for('a'*64,'.jpg')
+    original=type(target).resolve
+    def resolved(path, *args, **kwargs):
+        result=original(path,*args,**kwargs)
+        if path == target:
+            return type(path)('\\\\?\\' + str(result))
+        return result
+    monkeypatch.setattr(type(target),'resolve',resolved)
+    cache._thumbnail_path_safe(target)
 
 
 def source(tmp_path):

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 
-const source = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+const source = readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 
 function between(start, end) {
   const a = source.indexOf(start);

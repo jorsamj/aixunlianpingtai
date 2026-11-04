@@ -448,7 +448,18 @@ class MaterialCache:
                     raise ValueError("unsafe thumbnail cache link")
             except FileNotFoundError:
                 pass
-        if path.resolve().parent != path.parent.resolve() or not path.resolve().is_relative_to(self.root):
+        def identity(value: Path) -> Path:
+            # Windows can expose extended spelling while another thread atomically
+            # creates the file. Normalize only DOS/UNC aliases, never device paths.
+            raw = str(value)
+            if os.name == 'nt':
+                if raw.startswith('\\\\?\\UNC\\'):
+                    raw = '\\\\' + raw[8:]
+                elif raw.startswith('\\\\?\\') and re.match(r'^[A-Za-z]:\\', raw[4:]):
+                    raw = raw[4:]
+            return Path(raw)
+        resolved = identity(path.resolve())
+        if resolved.parent != identity(path.parent.resolve()) or not resolved.is_relative_to(identity(self.root)):
             raise ValueError("thumbnail cache escaped root")
 
     def thumbnail(self, source_sha256: str, source_factory, *, max_edge=384,

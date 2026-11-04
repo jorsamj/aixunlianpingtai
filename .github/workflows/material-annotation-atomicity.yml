@@ -30,6 +30,7 @@ on:
       - platform_core/material_repository_batch.py
       - platform_core/material_batches.py
       - tests/api/test_material_integrity.py
+      - tests/unit/test_integrity_group_review.py
       - tests/api/test_training_conflict_governance.py
       - platform_core/storage/source_repository.py
       - tests/api/test_annotation_sqlite_dataset_delete_atomicity.py
@@ -75,6 +76,7 @@ jobs:
             platform_core/annotations.py \
             platform_core/material_repository.py \
             platform_core/material_repository_batch.py \
+            platform_core/material_batches.py \
             platform_core/storage/source_repository.py
           python -m platform_core.build_identity --check-version-file VERSION.txt
           git diff --check
@@ -89,6 +91,7 @@ jobs:
           tests/api/test_material_batching.py
           tests/api/test_material_content.py
           tests/api/test_material_integrity.py
+          tests/unit/test_integrity_group_review.py
           tests/api/test_training_conflict_governance.py
           tests/api/test_material_governance_actor.py
           tests/api/test_governance_legacy_guards.py
@@ -106,6 +109,10 @@ jobs:
           tests/api/test_zip_processing_p2a_annotation_connections.py
           tests/api/test_zip_processing_p2b_single_final_annotation.py
           tests/api/test_zip_processing_p2c_structured_single_final_annotation.py
+      - name: Isolated audit issue paging at 10k 100k and 200k
+        env:
+          MC_AUDIT_SCALE_TEST: '1'
+        run: python -m pytest -q tests/api/test_material_integrity.py -k issue_paging_scale
       - name: Explicit legacy metadata safety contracts
         run: python -m pytest --confcutdir=tests/unit -q tests/unit/test_legacy_material_compatibility.py tests/unit/test_legacy_material_compatibility_api.py tests/unit/test_local_material_reclamation.py
       - name: Canonical GT governance guard

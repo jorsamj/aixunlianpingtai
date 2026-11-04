@@ -3,6 +3,18 @@ import {test, expect} from '@playwright/test';
 // Exercise the production submit owner against real DOM nodes and an isolated API
 // ledger. The full-app training-label-selector suite covers the canonical Modal stack.
 const taskId='train_aaaaaaaaaaaaaaaaaaaa';
+test('terminal rejection returns feedback to form flow without covering configuration', async ({page}) => {
+  await mount(page,'reject');
+  await page.getByRole('button',{name:'开始训练'}).click();
+  await page.evaluate(()=>window.submitPromise);
+  const feedback=page.locator('[data-training-submit-feedback]');
+  await expect(feedback).toHaveAttribute('data-tone','error');
+  await expect(feedback).toHaveCSS('position','relative');
+  await expect(page.locator('#tr429Target')).toBeEnabled();
+  await expect(page.locator('.train429-create')).not.toHaveClass(/training-submit-active/);
+  await page.screenshot({path:'test-results/training-terminal-rejection.png',fullPage:true});
+  await page.evaluate(()=>window.submitRuntime.destroy());
+});
 async function mount(page, mode) {
   const ledger=new Map();
   let posts=0;

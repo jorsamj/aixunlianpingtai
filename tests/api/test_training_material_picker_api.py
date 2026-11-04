@@ -35,6 +35,17 @@ def _record(index: int, *, annotated: bool = True) -> dict:
     }
 
 
+def test_picker_public_box_projection_is_bounded_without_changing_gt_count():
+    boxes=[{'id':str(i),'label':f'label-{i%3}','x1':1,'y1':1,'x2':2,'y2':2} for i in range(1000)]
+    formal={'annotation_state':'annotated','boxes':boxes}
+    public=_public_picker_material('p1',_record(1),formal)
+    assert public['box_count']==1000
+    assert len(public['boxes'])==12
+    assert public['boxes_truncated'] is True
+    assert public['boxes_preview_only'] is True
+    assert len(formal['boxes'])==1000
+
+
 def _client(tmp_path):
     data_dir = tmp_path / "data"
     project_path = data_dir / "projects" / "p1"
@@ -237,6 +248,9 @@ def test_negative_pool_filter_parity_and_role_cache_revision(tmp_path, monkeypat
     pool.members(['m0000','m0001'],category_ids=[a])
     pool.members(['m0002'],category_ids=[b])
     assert pool.candidate_ids([a])==['m0000','m0001']
+    monkeypatch.setattr(NegativePool, 'candidate_ids', lambda *a, **k: (_ for _ in ()).throw(AssertionError('page must not expand the entire pool')))
+    pool.members(['m0000','m0001'],category_ids=[a],algorithm_id='a')
+    pool.members(['m0002'],category_ids=[b],algorithm_id='a')
     revision=pool.revision()
     app=FastAPI()
     app.include_router(training_material_picker_router(lambda p:{'id':p},repository.project_path.parents[1],algorithm_provider=lambda *a:{'id':'a'}))
@@ -254,7 +268,7 @@ def test_negative_pool_filter_parity_and_role_cache_revision(tmp_path, monkeypat
         bulk=client.post(endpoint+'/bulk-selection',json=body)
         assert bulk.status_code==200,bulk.text
         assert set(bulk.json()['items'])=={'m0000','m0001'}
-        pool.members(['m0001'],action='remove')
+        pool.members(['m0001'],action='remove',algorithm_id='a')
         assert pool.revision()!=revision
         updated=client.post(endpoint+'/role-page',json=body)
         assert updated.status_code==200,updated.text
@@ -1180,11 +1194,14 @@ def test_picker_default_history_policy_and_all_bulk_are_consistent(tmp_path):
     endpoint='/api/v62/projects/p1/training-materials'
     page=client.get(endpoint,params={'algorithm_asset_id':'algo','page':1})
     assert page.status_code==200
-    assert page.json()['total']==259
+    assert page.json()['total']==260
+    assert next(r for r in page.json()['items'] if r['id']=='m0001')['training_usage']['excluded'] is True
     bulk=client.post(endpoint+'/bulk-selection',json={'algorithm_asset_id':'algo','all_available':True})
     assert bulk.status_code==200
     assert len(bulk.json()['items'])==259
     assert 'm0001' not in bulk.json()['items']
+    forged=client.post(endpoint+'/bulk-selection',json={'algorithm_asset_id':'algo','browse_only':True})
+    assert forged.status_code==200 and 'm0001' not in forged.json()['items']
     included=client.get(endpoint,params={'algorithm_asset_id':'algo','usage_state':'used','history_policy':'include_history','page':1})
     assert included.status_code==200
     assert included.json()['total']==1
@@ -1205,7 +1222,7 @@ def test_picker_current_other_history_scopes_bulk_and_bounded_details(tmp_path):
         usage.record_selected('p1',algorithm,task,{'snapshot_id':task,'images':[{'image_id':image_id,'role':'train'}]})
         usage.record_execution(task,completed_epoch=True)
     endpoint='/api/v62/projects/p1/training-materials'
-    for scope,expected in [('current_only',['m0001']),('other_only',['m0002'])]:
+    for scope,expected in [('current_only',['m0001','m0003']),('other_only',['m0002'])]:
         body={'algorithm_asset_id':'a','history_policy':'include_history','history_scope':scope}
         page=client.get(endpoint,params={**body,'page':1})
         assert page.status_code==200,page.text
@@ -1264,10 +1281,11 @@ def test_picker_history_filters_original_and_derived_source_consistently(tmp_pat
     repository.patch({'m0001':{'source_root_id':'m0000'}})
     page=client.get('/api/v62/projects/p1/training-materials',params={'algorithm_asset_id':'a','limit':120}).json()
     ids={row['id'] for row in page['items']}
-    assert 'm0000' not in ids and 'm0001' not in ids
+    assert {'m0000','m0001'} <= ids
+    assert all(r['training_usage']['excluded'] for r in page['items'] if r['id'] in {'m0000','m0001'})
     bulk=client.post('/api/v62/projects/p1/training-materials/bulk-selection',json={'algorithm_asset_id':'a'}).json()
     assert 'm0000' not in bulk['items'] and 'm0001' not in bulk['items']
-    assert page['total']==258 and len(bulk['items'])==258
+    assert page['total']==260 and len(bulk['items'])==258
 
 
 def test_picker_fast_sql_excludes_pending_and_permanent_test_even_with_history_reuse(tmp_path):
@@ -1327,3 +1345,39 @@ def test_robustness_preview_reuses_thumbnail_without_modifying_source(tmp_path, 
     assert source.read_bytes() == before
     assert repository.get("m0001") == row
     assert client.get("/api/v62/projects/p1/training-materials/m0001/robustness-preview?preset=invalid").status_code == 422
+
+
+def test_thumbnail_failure_is_retryable_without_original_redirect(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path)
+    def unavailable(*args, **kwargs):
+        raise OSError('isolated unavailable source')
+    monkeypatch.setattr(picker_module.StorageManager,'materialize',unavailable)
+    response=client.get('/api/v62/projects/p1/training-materials/m0001/thumbnail',follow_redirects=False)
+    assert response.status_code==503
+    assert 'location' not in response.headers
+    assert response.json()['detail']['code']=='THUMBNAIL_UNAVAILABLE'
+
+
+def test_large_filter_freezes_reference_without_returning_all_ids(tmp_path):
+    from platform_core.training_selection_reference import selection_context,read_selection,validate_payload_references
+    client,repository=_client(tmp_path)
+    repository.upsert_many([{'id':f'large{i:06d}','filename':f'large{i:06d}.jpg',
+        'object_key':f'{i}.jpg','processing_status':'processed','content_sha256':f'{i+1000:064x}'} for i in range(50001)])
+    payload={'algorithm_asset_id':'a','role':'train','history_policy':'include_history',
+        'query':'large','train_labels':['smoke'],'framework':'ultralytics','base_version_id':''}
+    endpoint='/api/v62/projects/p1/training-materials'
+    receipt=client.post(endpoint+'/selection-reference',json=payload)
+    assert receipt.status_code==200,receipt.text
+    assert receipt.json()['count']==50001
+    assert len(receipt.content)<500 and 'items' not in receipt.json()
+    reference=receipt.json()['selection_ref']
+    data=repository.project_path.parent.parent
+    ids=read_selection(data,reference,selection_context(data,'p1',payload))
+    assert len(ids)==50001
+    validate_payload_references(data,'p1',{**payload,'train_selection_ref':reference,'train_image_ids':ids})
+    subset=client.post(endpoint+'/selection-membership',json={**payload,'selection_ref':reference,'image_ids':ids[:60]})
+    assert subset.status_code==200 and len(subset.json()['items'])==60
+    forged=client.post(endpoint+'/selection-membership',json={**payload,'algorithm_asset_id':'other','selection_ref':reference,'image_ids':ids[:1]})
+    assert forged.status_code==422
+    repository.patch({ids[0]:{'filename':'changed.jpg'}})
+    with pytest.raises(ValueError):validate_payload_references(data,'p1',{**payload,'train_selection_ref':reference,'train_image_ids':ids})

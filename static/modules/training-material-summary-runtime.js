@@ -708,7 +708,7 @@ export function installTrainingMaterialSummaryRuntime({
     const draft=currentDraft();
     return {algorithm_asset_id:String(draft?.algorithmId||''),train_labels:uniqueIds(draft?.newLabelCodes),
       model:String(draft?.config?.model||'yolo11n.pt'),framework:String(draft?.config?.framework||'ultralytics'),
-      base_version_id:String(draft?.baseVersionId||'')};
+      base_version_id:String(draft?.baseVersionId||''),train_selection_ref:String(draft?.trainSelectionRef || '')};
   }
   function summaryRequestSignature(ids) {
     return JSON.stringify([String(projectId()||''),trainingMaterialSelectionSignature(ids),pickerDraftPayload()]);
@@ -748,7 +748,7 @@ export function installTrainingMaterialSummaryRuntime({
     const labelElement = document.getElementById('tr429Labels');
     if (labelElement) {
       const baseLabels = labels.map(labelDisplay).filter(Boolean).join('、') || '无标签';
-      const labelText = !ids.length ? '—' : ready
+      const labelText = currentDraft()?.trainSelectionRef?'服务器冻结选择 · 提交后后台核验':!ids.length ? '—' : ready
         ? `${baseLabels} · 正式标注 ${summary.eligible_count} / 待标注 ${summary.pending_annotation_count}`
         : lastError ? '标签读取失败 · 请重试' : '读取中…';
       setTextIfChanged(labelElement, labelText);
@@ -815,6 +815,14 @@ export function installTrainingMaterialSummaryRuntime({
       return null;
     }
 
+    if(currentDraft()?.trainSelectionRef){
+      ++requestSequence;activeController?.abort?.();activeController=null;pendingSignature=null;
+      currentSignature=signature;lastError='';
+      summary={requested_count:Number(currentDraft().trainSelectionCount||0),matched_count:null,
+        selectable_count:null,eligible_count:null,pending_annotation_count:null,selectable_total:null,
+        positive_label_codes:[],label_codes:[],sample_role_counts:null,selection_reference:true};
+      queueDecorate();return summary;
+    }
     if (!normalizedIds.length) {
       // No selected GT exists yet. Keep a real zero-selection preview without
       // starting a global material count or the iteration submission contract.
