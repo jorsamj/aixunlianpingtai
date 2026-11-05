@@ -127,12 +127,22 @@ for(const reason of ['identity','optional','review']) test(`changlian publish re
   await expect(versionRow).toBeVisible();
   const publishButton = versionRow.locator('[data-external-publish-action]');
   await expect(publishButton).toBeVisible();
-  await expect(publishButton).toHaveText('发布');
+  await expect(publishButton).toHaveText('新畅联交付');
 
   await publishButton.click();
+  const dialog=page.locator('[data-external-delivery-dialog="1"]');
+  await expect(dialog).toBeVisible();
+  await expect(versionRow.locator('[data-weight-publication-details]')).toHaveCount(0);
+  await expect.poll(() => statusReads).toBe(1);
+  // Opening the delivery dialog must be strictly read-only, even when publishable.
+  expect(publishWrites).toBe(0);
 
   if(reason==='review'){
-    const details=versionRow.locator('[data-weight-publication-details]');
+    await expect(dialog).toContainText('需人工核对');
+    const technical=dialog.locator('.external-delivery-technical');
+    await expect(technical).not.toHaveAttribute('open');
+    await technical.locator('summary').click();
+    const details=technical.locator('[data-weight-publication-details]');
     await expect(details).toContainText('Version PARTIAL / Weight PARTIAL');
     for(const text of ['old-weight','UNKNOWN','UPLOADED','child','同一芯片存在多个Weight ID','远端身份未读回验证','管理员'])await expect(details).toContainText(text);
     await expect(details.locator('[data-weight-select]')).toHaveCount(0);
@@ -141,9 +151,13 @@ for(const reason of ['identity','optional','review']) test(`changlian publish re
   }
 
   if(reason==='optional'){
-    await expect.poll(()=>publishWrites).toBe(1);
-    const details=versionRow.locator('[data-weight-publication-details]');
+    await expect(dialog.getByRole('button',{name:'确认同步到新畅联'})).toBeEnabled();
+    const technical=dialog.locator('.external-delivery-technical');
+    await technical.locator('summary').click();
+    const details=technical.locator('[data-weight-publication-details]');
     await expect(details).toBeVisible();
+    await dialog.getByRole('button',{name:'确认同步到新畅联'}).click();
+    await expect.poll(()=>publishWrites).toBe(1);
     for(const text of ['部分扩展信息未提供：yoloVersion、tags','RK3576','rk-child','640','384','YOLOv11s','123','a'.repeat(64),'smoke, fire','同步成功','自动当前交付','远端读回已确认','current-rk-weight'])
       await expect(details).toContainText(text);
     for(const text of ['冻结类别','本地类别','准备提交','已确认提交','远端未返回 tags','标签补齐待处理'])await expect(details).toContainText(text);
@@ -155,7 +169,8 @@ for(const reason of ['identity','optional','review']) test(`changlian publish re
   await expect.poll(() => publishWrites).toBe(reason==='identity'?0:1);
   if(reason==='identity'){
     await expect.poll(() => publishWrites).toBe(0);
-    await expect(page.getByText(/分析方式已失效/)).toBeVisible();
+    await expect(dialog.getByRole('button',{name:'确认同步到新畅联'})).toBeDisabled();
+    await expect(dialog.getByText(/分析方式已失效/)).toBeVisible();
   }
   else{
     await expect(page.locator('#toast')).toContainText('模型版本和转换产物已同步到新畅联');
@@ -257,9 +272,14 @@ test('changlian manual publish succeeds through the canonical algorithm version 
   const versionRow = card.locator('.alg428-version-row', {hasText: '20260924073000'});
   const publishButton = versionRow.locator('[data-external-publish-action]');
   await expect(publishButton).toBeVisible();
-  await expect(publishButton).toHaveText('发布');
+  await expect(publishButton).toHaveText('新畅联交付');
 
   await publishButton.click();
+  const dialog=page.locator('[data-external-delivery-dialog="1"]');
+  await expect(dialog).toBeVisible();
+  await expect.poll(() => statusReads).toBe(1);
+  expect(publishWrites).toBe(0);
+  await dialog.getByRole('button',{name:'确认同步到新畅联'}).click();
 
   await expect.poll(() => statusReads).toBe(2);
   await expect.poll(() => publishWrites).toBe(1);
