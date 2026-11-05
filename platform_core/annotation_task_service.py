@@ -58,6 +58,31 @@ def load_task_images(project_id: str, image_ids: Iterable[str]) -> list[dict[str
     return rows
 
 
+def prepare_annotation_image(path):
+    """Read actual raster dimensions; submit EXIF-corrected pixels without disk writes."""
+    import io
+    from PIL import Image, ImageOps
+    content = Path(path).read_bytes()
+    with Image.open(io.BytesIO(content)) as source:
+        width, height = source.size
+        orientation = int(source.getexif().get(274, 1))
+        if orientation not in range(1, 9):
+            raise ValueError("DISPLAY_TRANSFORM_ERROR: invalid EXIF orientation")
+        canonical = ImageOps.exif_transpose(source)
+        submitted_width, submitted_height = canonical.size
+        if orientation != 1:
+            buffer = io.BytesIO()
+            canonical.convert("RGB").save(buffer, format="PNG")
+            content = buffer.getvalue()
+    return content, {"original_width": submitted_width, "original_height": submitted_height,
+        "encoded_width": width, "encoded_height": height, "exif_orientation": orientation,
+        "submitted_width": submitted_width, "submitted_height": submitted_height,
+        "inference_width": submitted_width, "inference_height": submitted_height,
+        "submitted_sha256": hashlib.sha256(content).hexdigest(),
+        "model_internal_geometry": "unknown_provider_managed",
+        "mapping": "exif_transposed_original_pixels" if orientation != 1 else "identity_original_bytes"}
+
+
 def annotate_one(request: dict[str, Any], image: dict[str, Any]) -> dict[str, Any]:
     from .annotation_runtime import build_annotation_prompt
 
@@ -66,33 +91,20 @@ def annotate_one(request: dict[str, Any], image: dict[str, Any]) -> dict[str, An
     path = Path(str(image.get("path") or ""))
     if not path.is_file():
         raise FileNotFoundError(f"annotation image file does not exist: {image.get('filename') or image.get('id')}")
-    from PIL import Image
-    with Image.open(path) as source:
-        width, height = source.size
-        orientation = int(source.getexif().get(274, 1))
+    image_bytes, geometry = prepare_annotation_image(path)
+    width, height = geometry["submitted_width"], geometry["submitted_height"]
+    geometry["stored_width"] = image.get("width")
+    geometry["stored_height"] = image.get("height")
+    geometry["stored_size_matches"] = (width, height) == (image.get("width"), image.get("height"))
+    # The decoded image is authoritative; never infer pixels from DPI or stale metadata.
+    image["width"], image["height"] = width, height
     contract = auto_label_core.coordinate_contract(config, legacy=True)
     diagnostics = {
-        "contract": contract,
-        "created_at_epoch": time.time(),
+        "contract": contract, "created_at_epoch": time.time(),
         "status": "UNVERIFIED_CONTRACT" if (config.get("coordinate_validation") or {}).get("status") not in {"verified", "sample_validated"} else "configured",
-        "geometry": {"original_width": width, "original_height": height,
-                     "inference_width": width, "inference_height": height, "exif_orientation": orientation,
-                     "submitted_width": width, "submitted_height": height,
-                     "model_internal_geometry": "unknown_provider_managed", "mapping": "identity_original_bytes"},
-        "model_config_revision": request.get("model_config_revision", ""),
+        "geometry": geometry, "model_config_revision": request.get("model_config_revision", ""),
         "prompt_version": request.get("effective_prompt_revision", ""),
     }
-    geometry_error = (
-        "EXIF orientation is unsupported for original-byte inference; normalize the image before annotation"
-        if orientation != 1 else
-        "stored dimensions differ from original input bytes"
-        if (width, height) != (int(image["width"]), int(image["height"])) else ""
-    )
-    if geometry_error:
-        diagnostics["status"] = "DISPLAY_TRANSFORM_ERROR"
-        error = ValueError("DISPLAY_TRANSFORM_ERROR: " + geometry_error)
-        error.diagnostics = diagnostics
-        raise error
     prompt = build_annotation_prompt(
         config,
         request["label_catalog"],
@@ -102,10 +114,16 @@ def annotate_one(request: dict[str, Any], image: dict[str, Any]) -> dict[str, An
         template=str(request.get("prompt_template") or ""),
     )
     response = provider.annotate(
-        image_bytes=path.read_bytes(),
+        image_bytes=image_bytes,
         prompt=prompt,
         output_schema=auto_label_core.CANDIDATE_OUTPUT_SCHEMA,
     )
+    mapping = None
+    if contract.get("coordinate_image_space") == "processed_image":
+        mapping = response.get("geometry")
+        if not isinstance(mapping, dict):
+            raise ValueError("UNVERIFIED_CONTRACT: provider preprocessing geometry is unknown")
+        diagnostics["geometry"]["provider_preprocessing"] = mapping
     text = str(response.get("text") or "")
     diagnostics.update({"model": str(config.get("model_name") or ""),
                         "provider": str(config.get("provider_adapter") or config.get("provider_type") or ""),
@@ -120,6 +138,8 @@ def annotate_one(request: dict[str, Any], image: dict[str, Any]) -> dict[str, An
             coordinate_space=contract["coordinate_space"],
             coordinate_order=contract["coordinate_order"],
             diagnostics=diagnostics,
+            coordinate_origin=contract.get("coordinate_origin", "top_left"),
+            geometry=mapping,
         )
     except ValueError as error:
         diagnostics["status"] = "COORDINATE_CONVERSION_ERROR" if "COORDINATE_CONVERSION_ERROR:" in str(error) else "STRUCTURED_OUTPUT_ERROR"

@@ -95,3 +95,46 @@ def test_preview_redacts_provider_exceptions(client, seeded_project, monkeypatch
     })
     assert result.status_code == 502
     assert "sk-test-secret" not in result.text
+
+def test_trial_comparison_is_bounded_read_only_and_requires_complete_baseline(client, seeded_project, monkeypatch):
+    project_id, _ = seeded_project
+    monkeypatch.setattr(app_module, 'write_annotation', lambda *args, **kwargs: 1 / 0)
+    endpoint=f'/api/v60/projects/{project_id}/annotation-preview/compare'
+    b=dict(label='fire',x1=0,y1=0,x2=10,y2=10)
+    result=client.post(endpoint,json=dict(baseline=[b],predictions=[b,b]))
+    assert result.status_code==200 and result.json()['metrics'] is None
+    assert result.json()['tp']==1 and result.json()['fp']==1
+    assert client.post(endpoint,json=dict(baseline=[b],predictions=[b],complete=True)).json()['metrics']['f1']==1
+    assert client.post(endpoint,json=dict(baseline=[b]*501)).status_code==422
+    assert client.post(endpoint,json=dict(baseline=[dict(b,x2=-1)])).status_code==422
+
+def test_annotation_selection_freezes_ids_and_membership_without_browser_id_dump(client,seeded_project):
+    project_id,image=seeded_project
+    endpoint=f'/api/v60/projects/{project_id}/annotation-selections'
+    result=client.post(endpoint,json={'query':image['filename']})
+    assert result.status_code==200,result.text
+    frozen=result.json()
+    assert frozen['count']==1 and 'image_ids' not in frozen
+    summary=client.post(endpoint+'/summary',json={'previous_ref':frozen['selection_ref']}).json()
+    assert summary['count']==sum(summary['state_counts'].values())==1
+    assert client.post(endpoint+'/summary',json={'previous_ref':frozen['selection_ref'],'excluded_image_ids':[image['id']]}).status_code==409
+    membership=client.post(endpoint+'/membership',json={'selection_ref':frozen['selection_ref'],'image_ids':[image['id'],'missing']})
+    assert membership.json()['items']==[image['id']]
+    from platform_core.training_selection_reference import read_selection
+    assert read_selection(app_module.DATA_DIR,frozen['selection_ref'],{'project_id':project_id,'purpose':'ai_annotation'})==[image['id']]
+
+def test_frozen_annotation_selection_resolves_at_creation_and_honors_exclusions(client,seeded_project,monkeypatch):
+    from fastapi import HTTPException
+    import pytest
+    project_id,image=seeded_project
+    frozen=client.post(f'/api/v60/projects/{project_id}/annotation-selections',json={}).json()
+    monkeypatch.setattr(app_module,'_v35_model_items',lambda:[])
+    monkeypatch.setattr(app_module,'_v35_prompt_items',lambda:[])
+    monkeypatch.setattr(app_module,'prepare_annotation_request',lambda root,project,request,**kwargs:{**request,'model_config_id':'mock'})
+    payload=app_module.AnnotationTaskCreateReq(image_ids=[],selection_ref=frozen['selection_ref'],labels_text='fire')
+    request,_=app_module._annotation_create_payload(project_id,payload)
+    assert request['image_ids']==[image['id']]
+    payload.excluded_image_ids=[image['id']]
+    with pytest.raises(HTTPException) as error:
+        app_module._annotation_create_payload(project_id,payload)
+    assert error.value.status_code==400

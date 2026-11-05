@@ -994,7 +994,17 @@ class MaterialRepository:
         if selected.annotated is not None:
             clauses.append("m.annotated = ?")
             params.append(int(selected.annotated))
-        if selected.annotation_state:
+        if selected.annotation_state == "partial":
+            # A virtual view of positive GT whose review scope does not cover all
+            # requested labels, never a new persisted annotation state.
+            clauses.append("m.annotated <> 0")
+            clauses.append("NOT EXISTS (SELECT 1 FROM material_annotation_scopes s WHERE s.material_id=m.id AND s.label_code='*')")
+            if selected.partial_labels:
+                clauses.append("EXISTS (SELECT 1 FROM json_each(?) needed WHERE NOT EXISTS (SELECT 1 FROM material_annotation_scopes s WHERE s.material_id=m.id AND s.label_code=needed.value))")
+                params.append(json.dumps(list(selected.partial_labels)))
+            else:
+                clauses.append("0")
+        elif selected.annotation_state:
             clauses.append(
                 "COALESCE(json_extract(m.payload_json, '$.annotation_state'), "
                 "json_extract(m.payload_json, '$.annotation_status'), "
@@ -1112,7 +1122,7 @@ class MaterialRepository:
         limit: int = 100, query: str = "",
         storage_source_ids: Sequence[str] | None = None, processing_status: str | None = None,
         labels: Sequence[str] | None = None, annotated: bool | None = None,
-        split: str | None = None, annotation_state: str | None = None,
+        split: str | None = None, annotation_state: str | None = None, partial_labels: Sequence[str] = (),
         sort_order: str = "oldest",
     ) -> MaterialPage:
         if sort_order not in ("oldest", "newest"):
@@ -1124,7 +1134,7 @@ class MaterialRepository:
         filter_values = MaterialFilters(
             query=query, storage_source_ids=tuple(storage_source_ids or ()),
             processing_status=processing_status, split=split, labels=tuple(labels or ()),
-            annotated=annotated, annotation_state=annotation_state,
+            annotated=annotated, annotation_state=annotation_state, partial_labels=partial_labels,
         )
         with closing(self._connect()) as database:
             database.execute("BEGIN")
@@ -1201,6 +1211,21 @@ class MaterialRepository:
             items=[str(row["id"]) for row in visible], next_cursor=next_cursor,
             total=self.count_filtered(selected) if include_total else -1,
         )
+
+    def selected_annotation_counts(self, image_ids, partial_labels=()):
+        """Aggregate one frozen selection without hydrating metadata or formal GT."""
+        result = {key: 0 for key in ("unannotated", "annotated", "partial", "confirmed_empty")}
+        partial, values = self._filters(MaterialFilters(annotation_state="partial", partial_labels=partial_labels))
+        condition = " AND ".join(partial)
+        with closing(self._connect()) as database:
+            for offset in range(0, len(image_ids), 1000):
+                rows = database.execute(
+                    "SELECT CASE WHEN COALESCE(json_extract(m.payload_json,'$.annotation_state'),'')='confirmed_empty' THEN 'confirmed_empty' WHEN " + condition + " THEN 'partial' WHEN m.annotated<>0 THEN 'annotated' ELSE 'unannotated' END state, COUNT(*) n FROM materials m WHERE m.id IN (SELECT value FROM json_each(?)) GROUP BY state",
+                    [*values, json.dumps(image_ids[offset:offset+1000])],
+                )
+                for row in rows:
+                    result[row['state']] += row['n']
+        return result
 
     def list_ids(self, **kwargs: Any) -> MaterialIdPage:
         page = self.list_page(**kwargs)

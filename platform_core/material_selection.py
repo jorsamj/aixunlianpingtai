@@ -36,6 +36,7 @@ class MaterialFilters:
     labels: tuple[str, ...] = ()
     annotated: bool | None = None
     annotation_state: str | None = None
+    partial_labels: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         query = str(self.query or "").strip()
@@ -48,6 +49,7 @@ class MaterialFilters:
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "storage_source_ids", _normalized_values(self.storage_source_ids))
         object.__setattr__(self, "labels", _normalized_values(self.labels))
+        object.__setattr__(self, "partial_labels", _normalized_values(self.partial_labels))
         for field_name in ("processing_status", "split", "annotation_state"):
             value = getattr(self, field_name)
             object.__setattr__(self, field_name, str(value).strip().lower() if value is not None and str(value).strip() else None)
@@ -75,6 +77,7 @@ class MaterialFilters:
             "labels": list(self.labels),
             "annotated": self.annotated,
             "annotation_state": self.annotation_state,
+            **({"partial_labels": list(self.partial_labels)} if self.partial_labels else {}),
         }
 
 

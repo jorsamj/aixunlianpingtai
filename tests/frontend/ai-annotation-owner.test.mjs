@@ -156,7 +156,7 @@ test('AI create requires an effective-configuration review before its only durab
   assert.match(submit, /renderAiCreateConfirmation429\(body\)/);
   assert.ok(submit.indexOf('renderAiCreateConfirmation429(body)') < submit.indexOf('const task=await api(taskApi(),'));
   assert.match(submit, /catch\(error\)\{draft\.confirmationSnapshot='';return toast\('本次配置概览渲染失败/);
-  assert.match(submit, /if\(draft\.submitting\)return false/);
+  assert.match(submit, /if\(draft\.submitting\|\|draft\.summaryLoading\)return false/);
   assert.match(submit, /draft\.submitting=true/);
   assert.match(submit, /if\(!current\(\)\)return true/);
   assert.match(submit, /ownerRoot=document\.querySelector/);

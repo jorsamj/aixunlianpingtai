@@ -1703,3 +1703,13 @@ button[aria-busy="true"]:has(.tiny-spinner)::before{display:none}
   .ai66-review:has([data-ai-diagnostics]) .ai66-review-filters button{flex:0 0 auto}
   .ai66-review:has([data-ai-diagnostics]) .ai66-review-grid{flex:none;min-height:280px;overflow:visible!important}
 }
+
+/* AI creation uses the existing dialog owner and bounded material page. */
+.ai-create-configuration{display:grid;gap:14px}
+.ai-create-selection-layout{display:grid;grid-template-columns:minmax(0,1fr) 220px;gap:18px}
+.ai-create-library{min-width:0;display:grid;gap:12px}
+.ai-create-selected-summary{padding:16px;background:var(--bg,#f8fafc);border-radius:8px;font-size:13px;color:var(--text-secondary,#64748b);overflow-wrap:anywhere}
+.ai-create-selected-summary b{color:var(--text,#0f172a)}
+.ai-create-inference [data-viewport]{margin-top:12px}
+.ai-create-inference>.row{flex-wrap:wrap;gap:6px}
+@media(max-width:800px){.ai-create-selection-layout{grid-template-columns:1fr}.ai-create-selected-summary{padding:10px}.ai-create-inference [data-viewport]{height:360px!important}}

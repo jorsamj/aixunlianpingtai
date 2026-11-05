@@ -94,13 +94,27 @@ def coordinate_contract(config, *, legacy=False):
     result = {"coordinate_space": config.get("coordinate_space", "pixel"),
               "coordinate_order": config.get("coordinate_order", "xyxy"),
               "output_protocol": config.get("output_protocol", "json_boxes"),
-              "coordinate_contract_version": 1}
+              "coordinate_contract_version": 1,
+              "coordinate_origin": config.get("coordinate_origin", "top_left"),
+              "coordinate_image_space": config.get("coordinate_image_space", "original_input")}
     if result["coordinate_space"] not in {"pixel", "normalized_01", "normalized_1000"} or result["coordinate_order"] not in {"xyxy", "yxyx"} or result["output_protocol"] != "json_boxes":
         raise ValueError("UNVERIFIED_CONTRACT: unsupported coordinate contract")
+    if result["coordinate_origin"] not in {"top_left", "bottom_left"} or result["coordinate_image_space"] not in {"original_input", "processed_image"}:
+        raise ValueError("UNVERIFIED_CONTRACT: unknown origin or image space")
     return result
 
 
-def adapt_coordinates(coordinates, *, width, height, coordinate_space, coordinate_order):
+def adapt_coordinates(coordinates, *, width, height, coordinate_space, coordinate_order, coordinate_origin="top_left", geometry=None):
+    original_width, original_height = width, height
+    if geometry is not None:
+        required = ("width", "height", "scale_x", "scale_y", "pad_x", "pad_y", "crop_x", "crop_y")
+        if any(key not in geometry or not isinstance(geometry[key], (int, float)) or not math.isfinite(geometry[key]) for key in required):
+            raise ValueError("UNVERIFIED_CONTRACT: incomplete preprocessing geometry")
+        if any(geometry[k] <= 0 for k in ("width", "height", "scale_x", "scale_y")):
+            raise ValueError("UNVERIFIED_CONTRACT: invalid preprocessing geometry")
+        width, height = geometry["width"], geometry["height"]
+    if coordinate_origin not in {"top_left", "bottom_left"}:
+        raise ValueError("UNVERIFIED_CONTRACT: unsupported coordinate origin")
     if coordinate_order not in {"xyxy", "yxyx"}:
         raise ValueError("UNVERIFIED_CONTRACT: unsupported coordinate order")
     x1, y1, x2, y2 = map(float, coordinates)
@@ -122,6 +136,13 @@ def adapt_coordinates(coordinates, *, width, height, coordinate_space, coordinat
         y1, y2 = y1 * height / divisor, y2 * height / divisor
     if not (0 <= x1 < x2 <= width and 0 <= y1 < y2 <= height):
         raise ValueError("COORDINATE_CONVERSION_ERROR: reversed or out-of-bounds box")
+    if coordinate_origin == "bottom_left":
+        y1, y2 = height - y2, height - y1
+    if geometry is not None:
+        x1, x2 = ((v - geometry["pad_x"]) / geometry["scale_x"] + geometry["crop_x"] for v in (x1,x2))
+        y1, y2 = ((v - geometry["pad_y"]) / geometry["scale_y"] + geometry["crop_y"] for v in (y1,y2))
+        if not (0 <= x1 < x2 <= original_width and 0 <= y1 < y2 <= original_height):
+            raise ValueError("COORDINATE_CONVERSION_ERROR: inverse mapping outside original pixels")
     return x1, y1, x2, y2
 
 
@@ -135,6 +156,8 @@ def parse_candidate_response(
     coordinate_space: str = "legacy_auto",
     coordinate_order: str = "xyxy",
     diagnostics: dict | None = None,
+    coordinate_origin: str = "top_left",
+    geometry: dict | None = None,
 ) -> list[dict[str, Any]]:
     if width <= 0 or height <= 0:
         raise ValueError("图片尺寸无效")
@@ -173,7 +196,7 @@ def parse_candidate_response(
             raise ValueError(f"第 {index + 1} 个框置信度必须在 0 到 1 之间")
         x1, y1, x2, y2 = adapt_coordinates(
             (box.x1, box.y1, box.x2, box.y2), width=width, height=height,
-            coordinate_space=coordinate_space, coordinate_order=coordinate_order,
+            coordinate_space=coordinate_space, coordinate_order=coordinate_order, coordinate_origin=coordinate_origin, geometry=geometry,
         )
         result.append({
             "class_id": int(label_ids[label]),

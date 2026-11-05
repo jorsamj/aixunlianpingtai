@@ -4,6 +4,7 @@ export function diagnosticBoxes(diagnostics = {}, stage = 'final', finalBoxes = 
   const geometry = diagnostics.geometry || {}, contract = diagnostics.contract || {};
   let width = Number(geometry.original_width), height = Number(geometry.original_height);
   let boxes = list(stage === 'raw' ? diagnostics.raw_candidates : stage === 'converted' ? diagnostics.converted_boxes : finalBoxes);
+  if(stage === 'raw' && contract.coordinate_image_space === 'processed_image') return []; // Raw processed pixels cannot overlay the original raster.
   if(stage === 'raw') {
     if(contract.coordinate_space === 'normalized_1000') width = height = 1000;
     else if(contract.coordinate_space === 'normalized_01') width = height = 1;
@@ -15,6 +16,7 @@ export function diagnosticBoxes(diagnostics = {}, stage = 'final', finalBoxes = 
     if(['x1','y1','x2','y2'].some(key => box[key] == null || box[key] === '')) return [];
     let [x1,y1,x2,y2] = ['x1','y1','x2','y2'].map(key => Number(box[key]));
     if(stage === 'raw' && contract.coordinate_order === 'yxyx') [x1,y1,x2,y2] = [y1,x1,y2,x2];
+    if(stage === 'raw' && contract.coordinate_origin === 'bottom_left') [y1,y2]=[height-y2,height-y1];
     if(![x1,y1,x2,y2].every(Number.isFinite) || x1 < 0 || y1 < 0 || x2 > width || y2 > height || x2 <= x1 || y2 <= y1) return [];
     return [{label:box.label, left:x1/width*100, top:y1/height*100, width:(x2-x1)/width*100, height:(y2-y1)/height*100}];
   });

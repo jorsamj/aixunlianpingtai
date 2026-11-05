@@ -3141,6 +3141,7 @@ def list_materials_v61(
     query: str = "", storage_source_id: Optional[List[str]] = Query(default=None),
     processing_status: Optional[str] = None,
     label: Optional[List[str]] = Query(default=None), annotated: Optional[bool] = None,
+    annotation_state: Optional[Literal["unannotated", "annotated", "confirmed_empty", "partial"]] = None,
 ):
     get_project(project_id)
     numbered = page is not None or page_size is not None
@@ -3157,7 +3158,8 @@ def list_materials_v61(
         material_page = material_store(project_id).list_page(
             cursor=cursor, page=requested_page, limit=requested_size, query=query,
             storage_source_ids=storage_source_id, processing_status=processing_status,
-            labels=label, annotated=annotated,
+            labels=label, annotated=annotated, annotation_state=annotation_state,
+            partial_labels=[row["code"] for row in _annotation_label_catalog(get_project(project_id))] if annotation_state=="partial" else (),
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
@@ -3189,6 +3191,7 @@ def list_material_ids_v61(
     query: str = "", storage_source_id: Optional[List[str]] = Query(default=None),
     processing_status: Optional[str] = None,
     label: Optional[List[str]] = Query(default=None), annotated: Optional[bool] = None,
+    annotation_state: Optional[Literal["unannotated", "annotated", "confirmed_empty", "partial"]] = None,
     narrow: bool = False, expected_revision: Optional[int] = None,
 ):
     get_project(project_id)
@@ -3197,7 +3200,7 @@ def list_material_ids_v61(
     if expected_revision is not None and revision != expected_revision:
         raise HTTPException(status_code=409, detail="素材库已更新，请重新解析当前筛选结果")
     filters = dict(query=query, storage_source_ids=storage_source_id or (),
-                   processing_status=processing_status, labels=label or (), annotated=annotated)
+                   processing_status=processing_status, labels=label or (), annotated=annotated, annotation_state=annotation_state, partial_labels=[row["code"] for row in _annotation_label_catalog(get_project(project_id))] if annotation_state=="partial" else ())
     if narrow:
         # Bulk selection needs only IDs. Reuse the canonical material predicate,
         # avoiding list_page() JSON/detail hydration for every selected image.
@@ -18159,6 +18162,8 @@ class V35ModelConfigReq(BaseModel):
     coordinate_space: Literal["pixel", "normalized_01", "normalized_1000"] = "pixel"
     coordinate_order: Literal["xyxy", "yxyx"] = "xyxy"
     output_protocol: Literal["json_boxes"] = "json_boxes"
+    coordinate_origin: Literal["top_left", "bottom_left"] = "top_left"
+    coordinate_image_space: Literal["original_input", "processed_image"] = "original_input"
     coordinate_contract_version: Literal[1] = 1
     model_kind: str = "vision_detect"  # vision_detect / vlm / custom_http
     base_url: Optional[str] = ""
@@ -18375,7 +18380,7 @@ def v35_update_model_config(config_id: str, payload: V35ModelConfigReq):
                 for field in ("api_protocol", "structured_output"):
                     if field not in payload.model_fields_set:
                         data[field] = item.get(field) or "auto"
-                for field in ("coordinate_space", "coordinate_order", "output_protocol", "coordinate_contract_version"):
+                for field in ("coordinate_space", "coordinate_order", "coordinate_origin", "coordinate_image_space", "output_protocol", "coordinate_contract_version"):
                     if field not in payload.model_fields_set:
                         if field in item:
                             data[field] = item[field]
@@ -18565,7 +18570,10 @@ def _v35_test_annotation(runtime_cfg, *, image_bytes=None, sample_prompt=None, s
         text = str(response.get("text") or "")
         try:
             contract = auto_label_core.coordinate_contract(runtime_cfg, legacy=True)
-            boxes = auto_label_core.parse_candidate_response(text, width=sample_size[0], height=sample_size[1], label_ids={label: i for i, label in enumerate(sample_labels or ["fire"])}, coordinate_space=contract["coordinate_space"], coordinate_order=contract["coordinate_order"])
+            mapping = response.get("geometry") if contract.get("coordinate_image_space") == "processed_image" else None
+            if contract.get("coordinate_image_space") == "processed_image" and not isinstance(mapping, dict):
+                raise ValueError("unknown provider preprocessing geometry")
+            boxes = auto_label_core.parse_candidate_response(text, width=sample_size[0], height=sample_size[1], label_ids={label: i for i, label in enumerate(sample_labels or ["fire"])}, coordinate_space=contract["coordinate_space"], coordinate_order=contract["coordinate_order"], coordinate_origin=contract.get("coordinate_origin", "top_left"), geometry=mapping)
         except ValueError:
             raise ProviderRequestError(
                 "模型标注输出未通过平台字段、类别或坐标校验", code="MODEL_OUTPUT_PARSE_ERROR",
@@ -24622,6 +24630,8 @@ class AnnotationTaskCreateReq(BaseModel):
     image_ids: List[str]
     # Opt-in ZIP origin; the server freezes the actual unannotated image list
     # without making the browser round-trip thousands of IDs.
+    selection_ref: Optional[str] = None
+    excluded_image_ids: List[str] = Field(default_factory=list, max_length=10000)
     source_batch_id: Optional[str] = None
     labels_text: str = ""
     reference_image_ids: Optional[List[str]] = None
@@ -24847,8 +24857,21 @@ def _annotation_create_payload(project_id: str, payload: AnnotationTaskCreateReq
     # worker-safe annotation_runtime owner used by both v60 and Material Batch.
     get_project(project_id)
     image_ids = list(dict.fromkeys(
+
         str(value) for value in payload.image_ids if str(value)
     ))
+    if payload.selection_ref:
+        from platform_core.training_selection_reference import read_selection
+        if payload.source_batch_id:
+            raise HTTPException(status_code=422, detail="批次与冻结选择不能混用")
+        try:
+            frozen_ids = read_selection(DATA_DIR, payload.selection_ref, {"project_id": project_id,"purpose":"ai_annotation"})
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        image_ids = sorted((set(frozen_ids) - set(payload.excluded_image_ids)) | set(image_ids))
+        if len(image_ids) > 200000:
+            raise HTTPException(status_code=422, detail="选择超过单任务200000张容量")
+
     batch_id = str(payload.source_batch_id or "").strip()
     if batch_id:
         if image_ids:
@@ -25227,6 +25250,98 @@ def get_annotation_task_by_create_request(project_id: str, request_id: str):
     return public_annotation_task(task)
 
 
+class AnnotationSelectionReq(BaseModel):
+    labels: List[str] = Field(default_factory=list, max_length=100)
+    query: str = Field(default="", max_length=1000)
+    annotation_state: Optional[Literal["unannotated", "annotated", "confirmed_empty", "partial"]] = None
+    previous_ref: Optional[str] = None
+    image_ids: List[str] = Field(default_factory=list, max_length=50000)
+    excluded_image_ids: List[str] = Field(default_factory=list, max_length=10000)
+
+
+@app.post("/api/v60/projects/{project_id}/annotation-selections")
+def freeze_annotation_selection(project_id: str, payload: AnnotationSelectionReq):
+    get_project(project_id)
+    from platform_core.training_selection_reference import freeze_selection, read_selection
+    repository = material_store(project_id)
+    revision = repository.current_revision()
+    context = {"project_id": project_id, "purpose": "ai_annotation"}
+    try:
+        ids = set(read_selection(DATA_DIR, payload.previous_ref, context)) if payload.previous_ref else set()
+        ids.difference_update(payload.excluded_image_ids)
+        ids.update(payload.image_ids)
+        cursor = None
+        while True:
+            page = repository.iter_filtered_ids({"query": payload.query,"labels":payload.labels, "annotation_state": payload.annotation_state,"partial_labels":[row["code"] for row in _annotation_label_catalog(get_project(project_id))] if payload.annotation_state=="partial" else ()}, cursor=cursor, limit=1000, include_total=cursor is None)
+            if page.total > 200000:
+                raise ValueError("单任务最多200000张，请缩小筛选范围；未截断选择")
+            ids.update(page.items)
+            if len(ids) > 200000:
+                raise ValueError("合并选择超过200000张；未截断选择")
+            cursor = page.next_cursor
+            if not cursor:
+                break
+        if repository.current_revision() != revision:
+            raise ValueError("素材库发生更新，请重新冻结选择")
+        result = freeze_selection(DATA_DIR, context, sorted(ids), request_scope="ai_annotation")
+        return {**result, "repository_revision": revision,"state_counts":repository.selected_annotation_counts(sorted(ids), [row["code"] for row in _annotation_label_catalog(get_project(project_id))])}
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@app.post("/api/v60/projects/{project_id}/annotation-selections/summary")
+def annotation_selection_summary(project_id: str, payload: AnnotationSelectionReq):
+    get_project(project_id)
+    from platform_core.training_selection_reference import read_selection
+    try:
+        ids = set(read_selection(DATA_DIR, payload.previous_ref, {"project_id":project_id,"purpose":"ai_annotation"})) if payload.previous_ref else set()
+        ids.difference_update(payload.excluded_image_ids)
+        ids.update(payload.image_ids)
+        if not ids or len(ids)>200000:
+            raise ValueError("选择为空或超过200000张")
+        repository=material_store(project_id)
+        revision=repository.current_revision()
+        counts=repository.selected_annotation_counts(sorted(ids),[row["code"] for row in _annotation_label_catalog(get_project(project_id))])
+        if sum(counts.values())!=len(ids) or revision!=repository.current_revision():
+            raise ValueError("选择素材已变化，请刷新核验")
+        return {"count":len(ids),"state_counts":counts,"repository_revision":revision}
+    except ValueError as error:
+        raise HTTPException(status_code=409,detail=str(error)) from error
+
+
+class AnnotationSelectionMembershipReq(BaseModel):
+    selection_ref: str
+    image_ids: List[str] = Field(default_factory=list, max_length=100)
+
+
+@app.post("/api/v60/projects/{project_id}/annotation-selections/membership")
+def annotation_selection_membership(project_id: str, payload: AnnotationSelectionMembershipReq):
+    get_project(project_id)
+    from platform_core.training_selection_reference import selection_membership
+    try:
+        return {"items": selection_membership(DATA_DIR, payload.selection_ref, {"project_id":project_id,"purpose":"ai_annotation"}, payload.image_ids)}
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+class AnnotationComparisonReq(BaseModel):
+    baseline: List[dict] = Field(default_factory=list, max_length=500)
+    predictions: List[dict] = Field(default_factory=list, max_length=500)
+    complete: bool = False
+    image_width: Optional[int] = Field(default=None, gt=0)
+    threshold: float = Field(default=0.5, gt=0, le=1)
+
+
+@app.post("/api/v60/projects/{project_id}/annotation-preview/compare")
+def compare_annotation_preview(project_id: str, payload: AnnotationComparisonReq):
+    get_project(project_id)
+    from platform_core.annotation_comparison import compare_boxes
+    try:
+        return compare_boxes(payload.baseline, payload.predictions, complete=payload.complete, threshold=payload.threshold,image_width=payload.image_width)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
 @app.post("/api/v60/projects/{project_id}/annotation-preview")
 def preview_annotation_image(project_id: str, payload: AnnotationTaskCreateReq):
     """Explicit one-image model dry run; never create a task, candidate or GT.
@@ -25281,6 +25396,8 @@ def preview_annotation_image(project_id: str, payload: AnnotationTaskCreateReq):
         "model": result["model"],
         "provider": result["provider"],
         "preview_only": True,
+        "diagnostics": result.get("diagnostics", {}),
+        "baseline": read_annotation(project_id, image_id),
     }
 
 

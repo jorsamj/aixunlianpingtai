@@ -125,7 +125,7 @@ def build_annotation_prompt(cfg, labels, *, width, height, business_instruction,
     contract = coordinate_contract(cfg, legacy=True)
     if contract["coordinate_space"] == "legacy_auto":
         return rendered
-    return rendered + "\n平台受控坐标合同（优先于上述自定义要求）：仅返回 JSON object boxes；字段 x1,y1,x2,y2 的依次含义为 " + contract["coordinate_order"] + "; coordinate_space=" + contract["coordinate_space"] + f"；图像坐标基准为原始输入 {width}x{height}。不得自行缩放或改换坐标顺序；无目标返回 boxes:[]。"
+    return rendered + "\n平台受控坐标合同（优先于上述自定义要求）：仅返回 JSON object boxes；字段 x1,y1,x2,y2 的依次含义为 " + contract["coordinate_order"] + "; coordinate_origin=" + contract.get("coordinate_origin", "top_left") + "; coordinate_image_space=" + contract.get("coordinate_image_space", "original_input") + "; coordinate_space=" + contract["coordinate_space"] + f"；图像坐标基准为原始输入 {width}x{height}。不得自行缩放或改换坐标顺序；无目标返回 boxes:[]。"
 
 
 

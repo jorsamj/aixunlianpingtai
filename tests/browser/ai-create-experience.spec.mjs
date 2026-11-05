@@ -40,6 +40,7 @@ const labels = {items: [
 ]};
 
 async function installDelayedCreationApis(page, {materialDelayMs = 1200} = {}) {
+  await page.route('**/api/v60/projects/*/annotation-selections/summary',route=>{const body=route.request().postDataJSON();return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({count:body.image_ids.length,state_counts:{unannotated:body.image_ids.length}})})});
   const requests = [];
   page.on('request', request => requests.push(new URL(request.url()).pathname));
   const delayed = async (route, body, delayMs = 1200) => {
@@ -133,6 +134,7 @@ test('closing and reopening fences stale AI create hydration and remains usable 
 });
 
 test('AI create keeps the form on configuration or submit failure and fences duplicate submit', async ({page}, testInfo) => {
+  await page.route('**/api/v60/projects/*/annotation-selections/summary',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({count:1,state_counts:{unannotated:1}})}));
   let modelReads = 0;
   let submitCount = 0;
   const submitRequestIds = [];
@@ -209,19 +211,12 @@ test('AI create keeps the form on configuration or submit failure and fences dup
 test('AI create resolves all filtered pages atomically, preserves earlier choices, and rejects stale revisions', async ({page}, testInfo) => {
   await installDelayedCreationApis(page, {materialDelayMs: 30});
   const calls=[];
-  await page.route('**/api/v61/projects/*/materials/ids**', route => {
-    const url=new URL(route.request().url()),query=url.searchParams.get('query')||'';
-    calls.push({query,revision:url.searchParams.get('expected_revision'),narrow:url.searchParams.get('narrow')});
-    if(query==='conflict')return route.fulfill({status:409,contentType:'application/json',body:JSON.stringify({detail:'素材库已更新，请重试'})});
-    const rows=query==='alpha'?Array.from({length:100},(_,i)=>`a-${i}`):
-      Array.from({length:50},(_,i)=>i<20?`a-${i}`:`b-${i}`);
-    const pageNumber=Number(url.searchParams.get('cursor')||'0'),size=Math.ceil(rows.length/5);
-    return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({
-      repository_revision:7,total:pageNumber===0?rows.length:-1,
-      items:rows.slice(pageNumber*size,(pageNumber+1)*size),
-      next_cursor:pageNumber<4?String(pageNumber+1):null,
-    })});
+  await page.route('**/api/v60/projects/*/annotation-selections',route=>{
+    const body=route.request().postDataJSON();calls.push(body);
+    if(body.query==='conflict')return route.fulfill({status:409,contentType:'application/json',body:JSON.stringify({detail:'素材库已更新，请重试'})});
+    return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({selection_ref:'frozen-'+body.query,count:body.query==='alpha'?100:130})});
   });
+  await page.route('**/api/v60/projects/*/annotation-selections/membership',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({items:[]})}));
   await ready(page);
   await page.evaluate(()=>window.createAiLabel429());
   const search=page.locator('#ai429MaterialQ');
@@ -233,10 +228,10 @@ test('AI create resolves all filtered pages atomically, preserves earlier choice
   await expect.poll(()=>page.evaluate(()=>state.ai429Create?.query==='beta'&&!state.ai429Create.materialLoading)).toBe(true);
   await page.getByRole('button',{name:'全选当前筛选结果'}).click();
   await expect(page.locator('#ai429MaterialCount')).toContainText('已选 130 张');
-  expect(calls.filter(call=>call.query==='alpha')).toHaveLength(5);
-  expect(calls.filter(call=>call.query==='beta')).toHaveLength(5);
-  expect(calls.every(call=>call.narrow==='true')).toBe(true);
-  expect(calls.filter(call=>call.revision!==null).every(call=>call.revision==='7')).toBe(true);
+  expect(calls.filter(call=>call.query==='alpha')).toHaveLength(1);
+  expect(calls.filter(call=>call.query==='beta')).toHaveLength(1);
+  expect(calls[1].previous_ref).toBe('frozen-alpha');
+  expect(await page.evaluate(()=>state.ai429Create.images.size)).toBe(0);
   await search.fill('conflict');
   await expect.poll(()=>page.evaluate(()=>state.ai429Create?.query==='conflict'&&!state.ai429Create.materialLoading)).toBe(true);
   await page.getByRole('button',{name:'全选当前筛选结果'}).click();
@@ -256,7 +251,7 @@ test('AI creation preview calls the real single-image endpoint without creating 
     payloads.push(route.request().postDataJSON());
     previewCount++;
     return route.fulfill({status:previewCount===2?503:200,contentType:'application/json',body:JSON.stringify(previewCount===2?
-      {detail:'暂时无法联系模型'}:{preview_only:true,image:{id:'ai-image-1',filename:'scene-1.jpg',url:PIXEL,width:640,height:480},
+      {detail:'暂时无法联系模型'}:{preview_only:true,image:{id:'ai-image-1',filename:'scene-1.jpg',url:reviewVisualScene(),width:640,height:480},
         boxes:[{label:'fire',confidence:0.93,x1:80,y1:60,x2:200,y2:220}],latency_ms:145,model:'vision-v1',provider:'local_openai'})});
   });
   await page.route('**/api/v60/projects/*/annotation-tasks', route=>{created++;return route.abort()});
@@ -268,7 +263,13 @@ test('AI creation preview calls the real single-image endpoint without creating 
   await expect(page.locator('#ai429PreviewImage')).toHaveValue('ai-image-1');
   await page.locator('#ai429InferenceStart').click();
   await expect(page.locator('#ai429InferenceResult')).toContainText('1 个候选框');
-  await expect(page.locator('#ai429InferenceResult .data412-box')).toHaveCount(1);
+  await expect(page.locator('#ai429InferenceResult [data-world] .a9s-annotationlayer')).toHaveCount(1);
+  await page.locator('[data-view=prediction]').click();
+  await expect(page.locator('#ai429InferenceResult [data-detail]')).toContainText('只读视图');
+  await page.locator('[data-view=baseline]').click();
+  await page.locator('[data-action=empty]').click();
+  await page.locator('[data-action=compare]').click();
+  await expect(page.locator('[data-report]')).toContainText('precision');
   expect(payloads[0].image_ids).toEqual(['ai-image-1']);
   expect(payloads[0].labels_text).toBe('fire');
   expect(created).toBe(0);

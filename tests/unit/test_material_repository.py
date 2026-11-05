@@ -716,3 +716,16 @@ def test_content_sha256_lookup_queries_use_their_partial_indexes(tmp_path):
         for row in exact_plan
     )
     assert any("ix_materials_content_sha256_normalized" in row["detail"] for row in normalized_plan)
+
+def test_partial_is_a_virtual_scope_filter_and_uses_same_id_predicate(tmp_path):
+    repository=MaterialRepository(tmp_path)
+    repository.upsert_many([
+        {**material('m-1',labels=['person']),'annotated':True,'annotation_state':'annotated','annotation_scope':['person']},
+        {**material('m-2',labels=['person']),'annotated':True,'annotation_state':'annotated','annotation_scope':['person','tangzhe']},
+        {**material('m-3',labels=['person']),'annotated':True,'annotation_state':'annotated','annotation_scope':['*']},
+        {**material('m-4'),'annotation_state':'confirmed_empty','annotation_scope':['person']},
+    ])
+    filters={'annotation_state':'partial','partial_labels':['person','tangzhe']}
+    assert [row['id'] for row in repository.list_page(**filters).items]==['m-1']
+    assert repository.iter_filtered_ids(filters).items==['m-1']
+    assert repository.get_many(['m-1'])[0]['annotation_state']=='annotated'

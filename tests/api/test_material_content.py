@@ -121,3 +121,12 @@ def test_material_id_only_cursor_keeps_full_filter_and_revision_contract(client,
         "expected_revision": body["repository_revision"] + 1,
     })
     assert outdated.status_code == 409
+
+def test_material_states_are_shared_by_page_and_id_selection(client,seeded_project):
+    project_id,image=seeded_project
+    for state, expected in [('unannotated',True),('annotated',False),('confirmed_empty',False)]:
+        page=client.get(f'/api/v61/projects/{project_id}/materials',params={'annotation_state':state})
+        ids=client.get(f'/api/v61/projects/{project_id}/materials/ids',params={'annotation_state':state,'narrow':True})
+        assert page.status_code==ids.status_code==200
+        assert (image['id'] in [r['id'] for r in page.json()['items']]) is expected
+        assert (image['id'] in ids.json()['items']) is expected
