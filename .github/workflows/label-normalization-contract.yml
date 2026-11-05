@@ -347,14 +347,14 @@ jobs:
               missing.setdefault('static/index.html', []).append('cache-busted main.mjs entrypoint')
           # Cache revisions advance on deploy; protect a minimum rather than
           # pinning the source contract to an obsolete exact revision.
-          for name, body, marker in (
-              ('static/index.html', index_html, r'/static/zip-import-bootstrap\.mjs\?v=(\d+)'),
-              ('static/zip-import-bootstrap.mjs', zip_bootstrap, r'zip-import-runtime\.js\?v=(\d+)'),
+          for name, body, marker, minimum in (
+              ('static/index.html', index_html, r'/static/zip-import-bootstrap\.mjs\?v=(\d+)', (4226359,)),
+              ('static/zip-import-bootstrap.mjs', zip_bootstrap, r'zip-import-runtime\.js\?v=(\d+(?:\.\d+)*)', (42, 25, 532)),
           ):
               match = re.search(marker, body)
-              if not match or int(match.group(1)) < 4226359:
+              if not match or tuple(map(int, match.group(1).split("."))) < minimum:
                   missing.setdefault(name, []).append(
-                      'ZIP import cache revision missing or below 4226359'
+                      'ZIP import cache revision missing or below the asset minimum'
                   )
           if app.count('_reject_legacy_annotated_import(project_id)') != 5:
               missing.setdefault('app.py', []).append(

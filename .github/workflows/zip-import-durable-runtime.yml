@@ -137,12 +137,12 @@ jobs:
           import re
 
           for filename, pattern, minimum in (
-              ('static/index.html', r'/static/zip-import-bootstrap\.mjs\?v=(\d+)', 4226359),
-              ('static/zip-import-bootstrap.mjs', r'zip-import-runtime\.js\?v=(\d+)', 4226359),
-              ('static/main.mjs', r'upload-task-center\.js\?v=(\d+)', 66009),
+              ('static/index.html', r'/static/zip-import-bootstrap\.mjs\?v=(\d+)', (4226359,)),
+              ('static/zip-import-bootstrap.mjs', r'zip-import-runtime\.js\?v=(\d+(?:\.\d+)*)', (42,25,532)),
+              ('static/main.mjs', r'upload-task-center\.js\?v=(\d+)', (66009,)),
           ):
               match = re.search(pattern, Path(filename).read_text(encoding='utf-8'))
-              if not match or int(match.group(1)) < minimum:
+              if not match or tuple(map(int, match.group(1).split("."))) < minimum:
                   raise SystemExit(f'{filename}: missing or outdated cache revision (minimum {minimum})')
           PY
           grep -Eq 'main\.mjs\?v=42\.25\.[0-9]+' static/index.html

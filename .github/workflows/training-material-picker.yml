@@ -138,7 +138,7 @@ jobs:
           grep -Fq '/training-materials/bulk-selection' static/modules/training-material-picker-runtime.js
           grep -Fq "bulkSelectionOwner: 'server'" static/modules/training-material-picker-runtime.js
           grep -Fq 'trainingMaterialSelectionPatch' static/modules/training-material-picker-runtime.js
-          grep -Fq 'trainingDraftRuntime.update(patch)' static/modules/training-material-picker-runtime.js
+          grep -Fq "trainingDraftRuntime.update({...patch,trainSelectionRef:'',trainSelectionCount:0})" static/modules/training-material-picker-runtime.js
           grep -Fq 'window.refreshTrainingMaterialSelectionUiV3?.()' static/modules/training-material-picker-runtime.js
           grep -Fq 'window.refreshTrainingMaterialSelectionUiV3=renderSplit' static/app.js
           if grep -Fq 'legacyConfirm' static/modules/training-material-picker-runtime.js; then
