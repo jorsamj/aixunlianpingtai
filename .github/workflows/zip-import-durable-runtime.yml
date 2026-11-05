@@ -213,6 +213,10 @@ jobs:
           tests/api/test_v19_multipart_background_finalize.py
           tests/api/test_zip_class_samples_v19.py
           tests/api/test_v19_import_failure_rollback.py
+      - name: ZIP compression capability preflight
+        run: >-
+          python -m pytest -q tests/unit/storage/test_zip_import.py
+          -k "compression or existing_zip_codecs or declared_archive or unsafe or corrupt"
       - name: Backend syntax and wiring guards
         shell: bash
         run: |

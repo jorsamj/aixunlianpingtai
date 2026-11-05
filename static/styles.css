@@ -1713,3 +1713,7 @@ button[aria-busy="true"]:has(.tiny-spinner)::before{display:none}
 .ai-create-inference [data-viewport]{margin-top:12px}
 .ai-create-inference>.row{flex-wrap:wrap;gap:6px}
 @media(max-width:800px){.ai-create-selection-layout{grid-template-columns:1fr}.ai-create-selected-summary{padding:10px}.ai-create-inference [data-viewport]{height:360px!important}}
+
+.ai-create-inference #ai429InferenceResult>.row{flex-wrap:wrap;align-items:center;gap:6px}
+.ai-create-inference #ai429InferenceResult label{display:inline-flex;align-items:center;gap:4px;white-space:nowrap}
+.ai-create-inference [data-label]{min-width:140px;max-width:240px}

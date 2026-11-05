@@ -106,3 +106,20 @@ app.py原v19辅助函数/API/Worker、static/app.js旧列表、static/modules/up
 - 当前文档/Chrome接线补提：不改变业务代码，新增2项本地Chrome加入原CI命令；自身最终HEAD的Actions/Checks仍须完成核验，最终报告提供准确SHA和实际结果。GitHub提交Checks为该文档自身的持久证据，禁止沿用其他SHA替代。
 
 建议作为P0修复候选进入用户授权的发布流程；自动部署仍禁止。上线前确认可写导入任务目录、原文件锁/原子替换及备份恢复策略。上线不等于旧缺失任务已恢复，旧Hat/Fall任务仍仅按安全定向只读计划另核，不扫描整库或重复导入。
+
+
+## 2026-11-05 / 42.24.535：压缩方法兼容性 P0 补充
+
+需求：修复素材ZIP导入出现“That compression method is not supported”的不透明报错；正式导入前检查全部文件方法，保留原图片/标签/目录/未标注规则及安全限制，失败不留下部分正式素材或GT。本批从AI标注534续接，复用原导入流程，不建设新解压或导入Owner。
+
+实际组件：v19_scan_zip扫描和_v18_safe_extract解压均使用Python标准库zipfile；服务器ZIP使用platform_core/storage/zip_import.py的同一zipfile。服务器原_inspect_archive已有方法白名单但仅报“Encrypted or unsupported ZIP member”，素材链路未预检，可能直到open/read时抛出英文NotImplementedError。本次未取得故障原始ZIP，所以尚不知道其实际方法号，不能把它断言为Deflate64。
+
+已修复：在原storage/zip_import.py增加inspect_zip_compression，扫描中央目录所有文件，归集不支持的方法名/编号及受影响数量；新增ZIP_UNSUPPORTED_COMPRESSION明确中文原因与重新压缩建议。v19扫描在读取任何内容前调用，_v18_safe_extract在写入任何暂存文件前复检；服务器_inspect_archive复用同一检查。即使混合包先有合法图片、后有不支持标签，也在正式写入前整体拒绝。
+
+当前支持Store(0)、Deflate(8)、BZIP2(12)、LZMA(14)，后3种仍以运行时模块可用为前提。Python3.14+若自身提供ZIP_ZSTANDARD和compression.zstd，则沿其原生成熟解码器允许20/93；当前本机及已有CI3.12环境不宣称支持Zstandard。依据：[Python官方zipfile文档](https://docs.python.org/3/library/zipfile.html)。Deflate64(9)不等于ZIP64大文件扩展；当前仍不支持Deflate64解码，提示重新压缩为普通Deflate或Store。没有真实故障包及兼容需求规模证据，不为此引入新进程/全局zipfile补丁或升级整个平台Python；如需保留原压缩格式，后续应以真实方法9文件验证成熟组件与原流式/CRC/炸弹/回滚合同后扩展原适配层，不自行实现算法。
+
+安全与事务边界：没有改路径穿越/链接/重复路径/压缩比/数量/总量/单文件/磁盘限制，CRC校验与暂存发布及原失败回滚保持。解码预检失败发生在原正式素材和标注写入前，部分解压临时缓存不会成为正式素材；既有后续正式写入失败仍走原回滚/安全延迟清理。预检不改变被选图片过滤、标签解析和目录结构。
+
+定向验证：ZIP压缩诊断/已有4种实际标准库解码/相关原安全限制14项通过；v19失败回滚5项通过（含新增混合包方法9预检，断言未读取任何成员内容、无解压目标、素材revision未变、未调用GT写入）。方法9/93是中央目录元数据构造，验证拒绝路径及数量提示，不是真实Deflate64/Zstandard解码验收。原4种方法有真实压缩→解压字节相等校验。未执行无关全量回归。CI在既有ZIP工作流追加定向压缩组，并保留原失败回滚测试。
+
+进度：代码/定向测试完成；用户故障ZIP实际方法及现场提示待验证。版本42.24.535；前序已发布AI代码39512a326b76be6035c5644782a6415864bd8735，当时48/49 Actions success、1运行中；本批准确提交CI需另核，不借前序绿灯。未操作生产数据、未部署。

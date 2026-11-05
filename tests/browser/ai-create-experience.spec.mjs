@@ -267,9 +267,10 @@ test('AI creation preview calls the real single-image endpoint without creating 
   await page.locator('[data-view=prediction]').click();
   await expect(page.locator('#ai429InferenceResult [data-detail]')).toContainText('只读视图');
   await page.locator('[data-view=baseline]').click();
-  await page.locator('[data-action=empty]').click();
-  await page.locator('[data-action=compare]').click();
+  await page.locator('[data-trial-action=empty]').click();
+  await page.locator('[data-trial-action=compare]').click();
   await expect(page.locator('[data-report]')).toContainText('precision');
+  await expect(page.locator('body')).not.toContainText('动作未注册');
   expect(payloads[0].image_ids).toEqual(['ai-image-1']);
   expect(payloads[0].labels_text).toBe('fire');
   expect(created).toBe(0);

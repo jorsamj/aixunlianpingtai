@@ -14,6 +14,9 @@ on:
       - platform_core/providers/**
       - platform_core/auto_label.py
       - tests/unit/test_annotation_coordinate_contract.py
+      - tests/unit/test_annotation_comparison.py
+      - platform_core/annotation_comparison.py
+      - static/modules/annotation-trial.js
       - static/modules/annotation-diagnostics.js
       - tests/frontend/annotation-diagnostics.test.mjs
       - platform_core/errors.py
@@ -46,6 +49,9 @@ on:
       - platform_core/providers/**
       - platform_core/auto_label.py
       - tests/unit/test_annotation_coordinate_contract.py
+      - tests/unit/test_annotation_comparison.py
+      - platform_core/annotation_comparison.py
+      - static/modules/annotation-trial.js
       - static/modules/annotation-diagnostics.js
       - tests/frontend/annotation-diagnostics.test.mjs
       - platform_core/errors.py
@@ -104,6 +110,7 @@ jobs:
           tests/unit/test_annotation_task_service.py
           tests/unit/test_openai_vision_protocol.py
           tests/unit/test_annotation_coordinate_contract.py
+          tests/unit/test_annotation_comparison.py
       - name: Annotation recovery frontend truth
         run: >-
           node --test

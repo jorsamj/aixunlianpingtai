@@ -229,3 +229,33 @@ def assert_deferred_bytes(app_module, project_id, record):
     with app_module.material_store(project_id)._connect() as database:
         rows = database.execute('SELECT payload_json,reclamation_state FROM material_cleanup_deferred').fetchall()
     assert any(json.loads(row[0])['id'] == record['id'] and row[1] == 'DEFERRED_SAFETY_UNVERIFIED' for row in rows)
+
+def test_zip_unsupported_method_is_reported_before_any_member_read_or_formal_write(client,seeded_project,tmp_path,monkeypatch):
+    import struct
+    import zipfile
+    from fastapi import HTTPException
+    import pytest
+    import app as app_module
+    project_id,_=seeded_project
+    path=tmp_path/'mixed.zip'
+    with zipfile.ZipFile(path,'w') as archive:
+        archive.writestr('images/ok.png',b'image')
+        archive.writestr('labels/unsupported.txt',b'0 0.5 0.5 1 1')
+    content=bytearray(path.read_bytes())
+    cursor=0;index=0
+    while True:
+        cursor=content.find(b'PK\x01\x02',cursor)
+        if cursor<0:break
+        if index==1:struct.pack_into('<H',content,cursor+10,9)
+        cursor+=4;index+=1
+    path.write_bytes(content)
+    monkeypatch.setattr(zipfile.ZipFile,'open',lambda *args,**kwargs:pytest.fail('preflight must not read any payload'))
+    monkeypatch.setattr(app_module,'write_annotation',lambda *args,**kwargs:pytest.fail('no formal GT writes'))
+    revision=app_module.material_store(project_id).current_revision()
+    with pytest.raises(HTTPException) as scan_error:app_module.v19_scan_zip(path)
+    assert scan_error.value.status_code==400
+    assert 'Deflate64' in scan_error.value.detail and '1 个文件' in scan_error.value.detail
+    dest=tmp_path/'extracted'
+    with pytest.raises(HTTPException):app_module._v18_safe_extract(path,dest)
+    assert not dest.exists()
+    assert app_module.material_store(project_id).current_revision()==revision

@@ -14461,6 +14461,14 @@ def v12_test_models(project_id: str, probe_optional: bool = True, model_scope: s
 # v18 robust annotated dataset import
 # -----------------------------
 
+def _v19_check_zip_compression(archive):
+    from platform_core.storage.zip_import import inspect_zip_compression, UnsupportedZipCompression
+    try:
+        inspect_zip_compression(archive)
+    except UnsupportedZipCompression as error:
+        raise HTTPException(status_code=400, detail=error.message + " " + error.solution) from error
+
+
 def _v18_safe_extract(
     zip_path: Path,
     dest: Path,
@@ -14484,6 +14492,7 @@ def _v18_safe_extract(
             if v19_normalize_zip_path(value)
         }
     with zipfile.ZipFile(zip_path, 'r') as zf:
+        _v19_check_zip_compression(zf)
         planned = []
         for member in zf.infolist():
             if not member.filename or member.filename.endswith('/'):
@@ -15547,6 +15556,7 @@ def v19_scan_zip(zip_path: Path, progress_cb=None) -> Dict[str, Any]:
     annotation_box_count = 0
     annotated_image_stems: set[str] = set()
     with zipfile.ZipFile(zip_path, "r") as zf:
+        _v19_check_zip_compression(zf)
         members = []
         infos = [
             (v19_normalize_zip_path(info.filename), info)

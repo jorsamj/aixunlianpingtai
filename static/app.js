@@ -4653,9 +4653,9 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
       }),{timeoutMs:30000,label:'AI标注图片试跑',signal:controller.signal});
       if(!current())return;
       const image=response.image||{},boxes=Array.isArray(response.boxes)?response.boxes:[];
-      const {mountTrial}=await import('/static/modules/annotation-trial.js?v=20261105a');
+      const {mountTrial}=await import('/static/modules/annotation-trial.js?v=20261105b');
       if(!current())return;
-      draft.previewDispose=await mountTrial(root,response,{labels:(state.labels||[]).filter(label=>draft.labels.has(label.code)),compareUrl:`/api/v60/projects/${project}/annotation-preview/compare`,active:current,signal:controller.signal});
+      draft.previewDispose=await mountTrial(root,response,{request:api,labels:(state.labels||[]).filter(label=>draft.labels.has(label.code)),compareUrl:`/api/v60/projects/${project}/annotation-preview/compare`,active:current,signal:controller.signal});
     }catch(error){if(current())root.innerHTML=`<div class="inline-error"><span>${esc(error.message||error)}</span><button class="btn mini" onclick="runAiCreatePreview429()">重试</button></div>`}
     finally{if(current()){draft.previewLoading=false;draft.previewController=null;if(button?.isConnected){button.disabled=false;button.textContent='单图试跑'}}}
   };
@@ -8785,7 +8785,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     const ownerPage=String(state.page||''),project=String(pid());
     const current=()=>state.ai60Review===review&&!review.closed&&String(state.page||'')===ownerPage&&String(pid())===project&&root.isConnected;
     try{
-      const [response,module]=await Promise.all([api(`${taskApi(review.id)}/candidates/${encodeURIComponent(id)}/diagnostics`),import('/static/modules/annotation-diagnostics.js?v=20261105')]);
+      const [response,module]=await Promise.all([api(`${taskApi(review.id)}/candidates/${encodeURIComponent(id)}/diagnostics`),import('/static/modules/annotation-diagnostics.js?v=20261105b')]);
       if(!current())return;
       const image=imageById(id)||item;
       module.mountAnnotationDiagnostics(root,response.diagnostics||{status:response.status||'UNVERIFIED_CONTRACT'},{imageUrl:item.url||image.url||'',finalBoxes:response.diagnostics?.final_boxes||item.boxes||[]});
