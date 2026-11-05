@@ -91,7 +91,7 @@ test('final classic picker split and settings actions own their canonical writes
   const saveAt = app.lastIndexOf('window.saveTrainSettings428=function saveTrainingSettingsCanonical428(){');
   assert.equal(app.includes('window.confirmTrainMaterialPickerV3=function(){'), false);
   assert.match(picker, /window\.confirmTrainMaterialPickerV3 = function confirmPicker\(\)/);
-  assert.match(picker, /trainingDraftRuntime\.update\(patch\)/);
+  assert.match(picker, /trainingDraftRuntime\.update\(\{\.\.\.patch,trainSelectionRef:'',trainSelectionCount:0\}\)/);
   assert.ok(splitAt >= 0 && app.slice(splitAt, splitAt + 800).includes('TrainingDraftRuntime.update({splitMode'));
   assert.ok(saveAt >= 0 && app.slice(saveAt, saveAt + 1800).includes('TrainingDraftRuntime?.update?.({config:c})'));
 });

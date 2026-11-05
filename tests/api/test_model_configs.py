@@ -4,6 +4,15 @@ import json
 from platform_core.secrets import MemorySecretStore
 
 
+@pytest.fixture(autouse=True)
+def isolated_model_credentials(monkeypatch):
+    import app as app_module
+    monkeypatch.setattr(app_module, "MODEL_SECRET_STORE", MemorySecretStore())
+    def forbidden_system_store(*args, **kwargs):
+        pytest.fail("model configuration tests must not access system credentials")
+    monkeypatch.setattr(app_module, "KeyringSecretStore", forbidden_system_store)
+
+
 def test_model_api_key_is_kept_out_of_json_and_responses(client, monkeypatch):
     import app as app_module
 

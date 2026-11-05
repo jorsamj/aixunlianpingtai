@@ -1,3 +1,5 @@
+> **2026-11-05 CI纠偏**：f053e1f5准确Actions日志中的凭据隔离、资源缓存键及旧界面测试合同正在收口；仅测试夹具/入口缓存一致性，不改正式GT/模型能力。新SHA全部CI完成前不称交付通过。详见 docs/AI_ANNOTATION_MULTIMODEL_P0_2026_11_05.md。
+
 > **2026-11-05｜多视觉模型标注 P0**：原共享解析器增加显式坐标合同与冻结版本，原模型管理增加同页样本验证/人工确认，原审核页增加按需单图诊断；不修改正式 GT。确定性平台证据与真实模型识别验收分开记录，正式 VERSION 保持42.24.532。详见 docs/AI_ANNOTATION_MULTIMODEL_P0_2026_11_05.md；真实 Gemma/Qwen、Ollama/vLLM、A800/4070 现场验收尚未执行。
 
 > **2026-10-30 / 42.24.429**：保留唯一 TrainingSubmit/Draft/Hydration/Picker Owner；修复旧 POST 成功或恢复回执对已替换表单的通知泄漏，真实任务仍通过原 TaskRuntime/幂等核验。版本缓存键随唯一模块增量更新，无并行 renderer/状态；基线 428 CI 38/38 绿，生产未验证。详见 [P0 唯一台账](performance/2026-10-29-p0-followup.md)。

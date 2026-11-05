@@ -49,7 +49,7 @@ test('entry bundles use cache-bust markers independently from formal release tru
   assert.match(index, /\/static\/app\.js\?v=\d+(?:\.\d+)*/);
   assert.match(index, /\/static\/main\.mjs\?v=\d+(?:\.\d+)*/);
   assert.match(index, /\/static\/styles\.css\?v=\d+(?:\.\d+)*/);
-  assert.equal(index.includes('/static/styles.css?v=42.25.532'), true);
+  assert.equal(index.includes('/static/styles.css?v=42.25.533'), true);
   const appCache=index.match(/\/static\/app\.js\?v=(\d+(?:\.\d+)*)/);
   const mainCache=index.match(/\/static\/main\.mjs\?v=(\d+(?:\.\d+)*)/);
   assert.ok(appCache&&mainCache);

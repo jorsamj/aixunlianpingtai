@@ -1,3 +1,5 @@
+> **2026-11-05 CI纠偏**：f053e1f5准确Actions日志中的凭据隔离、资源缓存键及旧界面测试合同正在收口；仅测试夹具/入口缓存一致性，不改正式GT/模型能力。新SHA全部CI完成前不称交付通过。详见 docs/AI_ANNOTATION_MULTIMODEL_P0_2026_11_05.md。
+
 > **2026-11-05｜多视觉模型标注 P0**：原共享解析器增加显式坐标合同与冻结版本，原模型管理增加同页样本验证/人工确认，原审核页增加按需单图诊断；不修改正式 GT。确定性平台证据与真实模型识别验收分开记录，正式 VERSION 保持42.24.532。详见 docs/AI_ANNOTATION_MULTIMODEL_P0_2026_11_05.md；真实 Gemma/Qwen、Ollama/vLLM、A800/4070 现场验收尚未执行。
 
 > **2026-10-31 / 42.24.451 AI 审核 P0（本地验证，CI 待核）**：继续修改唯一 `annotationStageStatistics` 及原审核主区，没有新统计 owner/GT 表/路由、没有重新开启技术债清理。候选框、采用/拒绝和 GT 历史提交展示口径已收敛，短屏审核 24 图实际浏览器合同新增；Node 1427/1427，通过后仍需准确 SHA Chrome、生产 P95/GT 当前态审计和 SQLite v2→v3 迁移演练。详细信息只记于 [AI 专项](superpowers/plans/2026-10-16-ai-annotation-cleaning-scope.md)，不部署。

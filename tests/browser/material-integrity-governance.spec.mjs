@@ -373,7 +373,13 @@ test('global duplicate governance previews, confirms, reports progress, and inva
       result: {scanned_images: 15, affected_images: 8, issue_groups: 3, scan_failures: 0},
     }, governance_task: null, deletion_task: null}),
   }));
-  await page.route(`**/api/v62/projects/${project.id}/material-integrity/audits/${auditId}/groups?limit=25`, route => route.fulfill({
+  await page.route(`**/api/v62/projects/${project.id}/material-integrity/audits/${auditId}/groups?**`, route => {
+    // The initial list now asks for pending issues; match query ordering without
+    // allowing the fixture to intercept a different page or silently hit the API.
+    const query=new URL(route.request().url()).searchParams;
+    expect(query.get('limit')).toBe('25');
+    expect(query.get('review_status')).toBe('pending');
+    return route.fulfill({
     status: 200,
     contentType: 'application/json',
     body: JSON.stringify({
@@ -385,7 +391,8 @@ test('global duplicate governance previews, confirms, reports progress, and inva
       }],
       next_cursor: null,
     }),
-  }));
+    });
+  });
   await page.route(`**/api/v62/projects/${project.id}/material-integrity/audits/${auditId}/dedup-plans`, async route => {
     planPayload = route.request().postDataJSON();
     await route.fulfill({

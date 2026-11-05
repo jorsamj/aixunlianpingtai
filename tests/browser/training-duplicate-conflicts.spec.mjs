@@ -10,6 +10,15 @@ function isolatedPython(projectId, source) {
   return execFileSync('python',['-c',source],{encoding:'utf8',env:{...process.env,MC_TRAIN_DATA_DIR:roots[0],MC_PLATFORM_VERSION:'browser-test',YOLO_CONFIG_DIR:path.join(roots[0],'ultralytics'),INTEGRITY_TEST_PROJECT:projectId}}).trim();
 }
 
+async function revealGtBulkReview(page) {
+  const root=page.locator('.modal:not(.hidden) .material-integrity47');
+  const disclosure=root.locator('.material-integrity47-more');
+  await expect(disclosure.locator(':scope > summary')).toBeVisible();
+  if(!await disclosure.evaluate(node=>node.open))await disclosure.locator(':scope > summary').click();
+  const action=root.locator('[data-gt-bulk-review]');
+  await expect(action).toBeVisible();return action;
+}
+
 async function fixture(request) {
   const response=await request.post('/api/projects',{data:{name:`训练重复闭环-${Date.now()}`,labels:[{code:'person',display_name:'人员'},{code:'vehicle',display_name:'车辆'}]}});
   expect(response.ok()).toBeTruthy();const project=await response.json();
@@ -397,7 +406,7 @@ test('GT review can explicitly discard all unprotected conflict identities throu
   await openDraft(page,f);
   await page.evaluate(()=>closeModal());
   await page.evaluate(async()=>await window.openMaterialIntegrityAudit47());
-  await page.locator('[data-gt-bulk-review]').click();
+  await (await revealGtBulkReview(page)).click();
   const review=page.locator('.modal:not(.hidden) .gt-review-workbench');
   await expect(review.locator('[data-gt-review-discard]')).toHaveCount(1);
   await review.locator('[data-gt-review-discard]').check();
@@ -429,7 +438,7 @@ test('late GT group response cannot replace the review after returning',async({p
   await openDraft(page,f);
   await page.evaluate(()=>closeModal());
   await page.evaluate(()=>{void window.openMaterialIntegrityAudit47()});
-  const reviewButton=page.locator('.modal:not(.hidden) [data-gt-bulk-review]');
+  const reviewButton=await revealGtBulkReview(page);
   await expect(reviewButton).toBeVisible();
   await reviewButton.click();
   const review=page.locator('.modal:not(.hidden) .gt-review-workbench');

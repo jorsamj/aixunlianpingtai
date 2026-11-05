@@ -1,6 +1,15 @@
 import {returnToTrainingConfiguration} from './helpers/training-admission.mjs';
 import {test, expect} from '@playwright/test';
 
+async function revealPickerAction(picker,name) {
+  const button=picker.getByRole('button',{name,exact:true,includeHidden:true});
+  const disclosure=button.locator('xpath=ancestor::details[1]');
+  if(await disclosure.count() && !await disclosure.first().evaluate(node=>node.open)) {
+    await disclosure.first().locator(':scope > summary').click();
+  }
+  return button;
+}
+
 async function waitForCanonicalApp(page) {
   await expect.poll(
     () => page.evaluate(() => typeof window.setPage === 'function' && typeof state !== 'undefined' && state.uiReady === true),
@@ -129,7 +138,7 @@ async function selectAllTrainingMaterials(page, trainingDialog) {
   await trainingDialog.locator('button[data-training-step="1"]').click();
   await trainingDialog.getByRole('button', {name: '选择训练素材'}).click();
   const picker = page.getByRole('dialog', {name: '选择本次训练素材'});
-  const selectAll = picker.getByRole('button', {name: '全选全部可用素材'});
+  const selectAll = await revealPickerAction(picker,'全选全部可用素材');
   await expect(selectAll).toBeEnabled();
   await selectAll.click();
   await expect(picker.locator('#trV3PickerCount')).toContainText(/已选 [1-9]\d* 张/);
@@ -299,16 +308,16 @@ test('training material selection does not depend on dataset groups and supports
     card.querySelector('img') === window.__trainingPickerFirstImage
   ))).toBe(true);
   await expect(picker.locator('#trV3PickerCount')).toContainText('已选 1 张');
-  await picker.getByRole('button', {name: '全部不选'}).click();
+  await (await revealPickerAction(picker,'全部不选')).click();
   await expect(picker.locator('#trV3PickerCount')).toContainText('已选 0 张');
   await picker.getByRole('button', {name: '明火'}).click();
   const selectFiltered = picker.locator('.train-v3-batch button[onclick*="select-filtered"]');
   await expect(selectFiltered).toBeVisible();
   await selectFiltered.click();
   await expect(picker.locator('#trV3PickerCount')).toContainText('本页 1 张 · 总数按需统计 · 已选 1 张');
-  await picker.getByRole('button', {name: '全选全部可用素材'}).click();
+  await (await revealPickerAction(picker,'全选全部可用素材')).click();
   await expect(picker.locator('#trV3PickerCount')).toContainText('已选 3 张');
-  await picker.getByRole('button', {name: '全部不选'}).click();
+  await (await revealPickerAction(picker,'全部不选')).click();
   await picker.getByRole('button', {name: '确认选择'}).click();
 
   await expect(dialog.locator('.train-v3-summary')).toContainText('本次训练素材0 张');

@@ -4,6 +4,15 @@ import {test, expect} from '@playwright/test';
 const visualOutput = process.env.CODEX_VISUAL_OUTPUT_DIR || '';
 const visualPath = name => visualOutput ? `${visualOutput}/${name}` : test.info().outputPath(name);
 
+async function revealPickerAction(picker,name) {
+  const button=picker.getByRole('button',{name,exact:true,includeHidden:true});
+  const disclosure=button.locator('xpath=ancestor::details[1]');
+  if(await disclosure.count() && !await disclosure.first().evaluate(node=>node.open)) {
+    await disclosure.first().locator(':scope > summary').click();
+  }
+  return button;
+}
+
 async function selectIsolatedTestProject(page, projectId) {
   await page.route('**/api/v53/bootstrap/snapshot**', async route => {
     const url = new URL(route.request().url());
@@ -161,7 +170,7 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
 
   await dialog.getByRole('button', {name: '选择训练素材'}).click();
   const picker = page.getByRole('dialog', {name: '选择本次训练素材'});
-  await picker.getByRole('button', {name: '全选全部可用素材'}).click();
+  await (await revealPickerAction(picker,'全选全部可用素材')).click();
   await expect(picker.locator('#trV3PickerCount')).toContainText(`已选 ${imageIds.length} 张`);
   await picker.getByRole('button', {name: '确认选择'}).click();
   await expect(dialog).toBeVisible();
@@ -328,7 +337,7 @@ test('training dialog uses canonical wrapper-free label lifecycle and sole submi
   let releaseBulk;
   const bulkGate = new Promise(resolve => {releaseBulk = resolve;});
   await page.route('**/training-materials/bulk-selection', async route => {await bulkGate;await route.fallback();});
-  await secondPicker.getByRole('button', {name: '全选全部可用素材'}).click();
+  await (await revealPickerAction(secondPicker,'全选全部可用素材')).click();
   await expect(secondPicker.getByRole('button', {name: '确认选择'})).toBeDisabled();
   releaseBulk();
   await expect(secondPicker.locator('#trV3PickerCount')).toContainText(`已选 ${imageIds.length} 张`);

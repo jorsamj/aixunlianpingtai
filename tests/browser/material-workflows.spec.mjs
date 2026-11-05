@@ -541,10 +541,13 @@ test('material filters come from the label library and unprocessed data exposes 
   await expect(page.getByRole('button', {name: '批量清洗'})).toBeVisible();
   await expect(page.getByRole('button', {name: '批量无需清洗'})).toBeVisible();
   await page.getByRole('button', {name: /已处理/}).click();
-  await expect(page.locator('.data426-chips').getByText('person')).toBeVisible();
-  await expect(page.locator('.data426-chips').getByText('vehicle')).toBeVisible();
-  await page.locator('.data426-chips').getByRole('button', {name: /person/}).click();
-  await page.locator('.data426-chips').getByRole('button', {name: /vehicle/}).click();
+  const labelSearch=page.getByRole('textbox',{name:'搜索素材标签'});
+  await labelSearch.fill('person');
+  await expect(page.locator('.data426-chips [data-label-code="person"]')).toBeVisible();
+  await page.locator('.data426-chips [data-label-code="person"]').click();
+  await page.getByRole('textbox',{name:'搜索素材标签'}).fill('vehicle');
+  await expect(page.locator('.data426-chips [data-label-code="vehicle"]')).toBeVisible();
+  await page.locator('.data426-chips [data-label-code="vehicle"]').click();
   await expect(page.locator('.data412-card')).toHaveCount(2);
 });
 
