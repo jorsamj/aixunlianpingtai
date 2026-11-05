@@ -125,11 +125,11 @@ jobs:
       - name: Permanent picker guards
         run: |
           grep -Fq 'DEFAULT_PAGE_SIZE = 60' static/modules/training-material-picker-runtime.js
-          grep -Fq 'THUMBNAIL_EAGER_COUNT = 15' static/modules/training-material-picker-runtime.js
+          grep -Fq 'THUMBNAIL_EAGER_COUNT = 10' static/modules/training-material-picker-runtime.js
           grep -Fq 'THUMBNAIL_PRELOAD_MARGIN = 120' static/modules/training-material-picker-runtime.js
-          grep -Fq 'repeat(5,minmax(0,1fr))' static/modules/training-material-picker-runtime.js
+          grep -Fq 'repeat(4,minmax(0,1fr))' static/modules/training-material-picker-runtime.js
           grep -Fq 'aspect-ratio:4/3' static/modules/training-material-picker-runtime.js
-          grep -Fq 'height:clamp(420px,60vh,620px)' static/modules/training-material-picker-runtime.js
+          grep -Fq 'grid-auto-rows:minmax(210px,max-content)' static/modules/training-material-picker-runtime.js
           grep -Fq 'overflow-y:auto!important' static/modules/training-material-picker-runtime.js
           grep -Fq 'getBoundingClientRect()' static/modules/training-material-picker-runtime.js
           grep -Fq 'requestAnimationFrame' static/modules/training-material-picker-runtime.js
