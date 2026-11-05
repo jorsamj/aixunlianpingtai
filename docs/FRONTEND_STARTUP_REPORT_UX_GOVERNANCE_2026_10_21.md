@@ -329,3 +329,8 @@ RED→GREEN：混合成功/失败/运行/未知耗时、重复别名、异项目
 独立代码审查覆盖核心快照/失效/Worker/恢复、取消/重试/按需模型配置及发布逻辑保留，未发现阻断正确性问题；审查没有独立重跑测试，不能当额外测试数量。
 
 补充实际子进程启动：在同一合成217130/110/1100版本/1000历史目录，启动完整uvicorn进程并经HTTP读取status，1次从启动到观察core ready **2069.40ms**，当时maintenance也ready；首次ready snapshot HTTP **24.51ms / 27337 bytes**（启用原性能middleware，含total/SQL阶段）。磁盘缓存未强制冷却，test build仅对临时目录启用测试访问，不是真实鉴权/生产启动P95。首次正常鉴权尝试为401，未测到ready，不计成功；修正隔离测试build配置后才取得本结果。原始[完整进程单次记录](evidence/bootstrap-2026-11-05-process-cold.json)。子进程只指向本轮临时夹具且已停止，不曾启动或终止生产Web/Worker/训练。
+
+
+后续交接合同纠偏：原主体Chrome shard1为110通过/2失败，均在 `loading-recovery-supplement` 的旧发布流程用例（pending/rejected）：仍期待点击版本动作即POST，而另一AI已改为独立交付弹窗GET预检+确认提交。本轮仅适配这两条测试，打开后明确断言POST=0，确认才POST；4xx允许再次确认，超时禁用重复提交并经刷新查询结果，重复打开不增POST。真实Chrome两例2/2通过，不改交付产品代码、不重复实施发布专项。主体其余Chrome分片通过；最终仍以包含fixture补正的准确SHA为准。先前Linux暂停进程时序失败仅定向重跑该失败job，原Release Regression最新attempt已success，不改进程控制实现/测试。
+
+Git传输两次连接失败后，以GitHub连接器创建与本地**完全相同tree**的补正commit `bf67db3a0e0def4cb16535d06e1a302400aa4823`，expected_sha=a51f733f、force=false快进原分支；随后核验远端commit对象与tree并同步本地隔离HEAD，未丢弃未提交文件。该SHA前端Node/守卫已通过；Chrome完整工作流仍在运行，不提前认定全绿。下一个仅测试/记录提交继续核验自身Checks。

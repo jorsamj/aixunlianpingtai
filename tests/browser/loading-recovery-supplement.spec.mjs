@@ -41,6 +41,29 @@ for(const flow of ['clean','convert','publish','annotation'])for(const outcome o
    window.invokeSupplementLoading=invoke;host.querySelector('button').onclick=()=>{window.supplementLoadingPromise=invoke()};
  },{flow});
  const button=page.locator('#supplement-loading-fixture button').first();await button.click();
+ if(flow==='publish'){
+   const dialog=page.locator('[data-external-delivery-dialog]');
+   await expect(dialog).toBeVisible();
+   const sync=dialog.locator('[data-delivery-action="sync"]');
+   await expect(sync).toBeEnabled();
+   expect(posts).toBe(0); // Opening the current delivery dialog is read-only.
+   await sync.click();await expect.poll(()=>posts).toBe(1);
+   if(outcome==='rejected'){
+     await expect(dialog).toContainText('验收夹具参数错误');
+     await expect(sync).toBeEnabled();await sync.click();
+     await expect.poll(()=>posts).toBe(2);return;
+   }
+   await expect(sync).toBeDisabled();
+   await page.evaluate(()=>window.invokeSupplementLoading());
+   expect(posts).toBe(1);
+   await page.clock.fastForward(30001);
+   await expect(dialog).toContainText('发布结果待确认');
+   await expect(sync).toBeDisabled();
+   const beforeReads=reads;
+   await dialog.locator('[data-delivery-action="refresh"]').click();
+   await expect.poll(()=>reads).toBeGreaterThan(beforeReads);
+   expect(posts).toBe(1);return;
+ }
  await expect.poll(()=>posts).toBe(1);
  if(outcome==='rejected'){
    await expect(button).not.toHaveAttribute('aria-busy','true');
