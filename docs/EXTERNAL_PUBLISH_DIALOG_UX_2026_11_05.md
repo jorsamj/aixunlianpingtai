@@ -41,3 +41,10 @@
 ## 验收声明
 
 静态语法检查和浏览器测试用例更新不等于生产现场验收。真实新畅联接口、OSS 与设备侧仍须在可控环境逐一验证，不进行生产发布试验。
+
+## 2026-11-05｜首轮 CI 回执与后续交接
+
+- 首次提交：`e8e4bee39099cd97c71e0cc3b2402d09c15e8960`；功能代码已在唯一长期分支，未部署。
+- 该 SHA 的 External Algorithm Publish 工作流失败：Node contract 25/26（旧测试仍按旧的单函数同步调用布局查找状态 GET），Real Chrome 3/5（两条测试通过未限定 `summary` 选择器而误匹配嵌套的技术详情）。此前后端 contract 已通过。
+- 后续仅修正 `tests/frontend/external-algorithm-publish.test.mjs`、`tests/browser/external-algorithm-publish.spec.mjs`：验证 GET 与显式 POST 分离，将技术详情 `summary` 测试限定首个摘要节点；不修改业务后端或已交付前端流程。
+- 后续精确 SHA 的完整 CI、真实新畅联/OSS、部分权重管理员处理、生产设备使用仍待验证；不可凭旧绿灯宣称交付成功。

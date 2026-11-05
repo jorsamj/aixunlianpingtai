@@ -219,16 +219,22 @@ test('manual publish fetches read-only status before write request', () => {
     new URL('../../static/modules/external-algorithm-publish.js', import.meta.url),
     'utf8',
   );
-  const start = source.indexOf('async function publishVersion(');
-  const end = source.indexOf('function schedulePlatformPage()', start);
-  assert.ok(start >= 0 && end > start);
-  const block = source.slice(start, end);
-  const statusRead = block.indexOf('const status = await requestJson(');
-  const preflight = block.indexOf('publicationPreflight(status)');
-  const publishWrite = block.indexOf("/publish\`, {method: 'POST'}");
-  assert.ok(statusRead >= 0);
-  assert.ok(preflight > statusRead);
-  assert.ok(publishWrite > preflight);
+  const statusStart = source.indexOf('async function readDeliveryStatus(');
+  const syncStart = source.indexOf('async function executeDeliverySync(');
+  const dialogStart = source.indexOf('async function publishVersion(');
+  const end = source.indexOf('function schedulePlatformPage()', dialogStart);
+  assert.ok(statusStart >= 0 && syncStart > statusStart && dialogStart > syncStart && end > dialogStart);
+  const readBlock = source.slice(statusStart, syncStart);
+  const syncBlock = source.slice(syncStart, dialogStart);
+  const dialogBlock = source.slice(dialogStart, end);
+  assert.ok(readBlock.includes('await requestJson(deliveryEndpoint(context))'));
+  assert.ok(!readBlock.includes("method:'POST'"));
+  assert.ok(syncBlock.includes('publicationPreflight(context.status)'));
+  assert.ok(syncBlock.includes("deliveryEndpoint(context) + '/publish'"));
+  assert.ok(syncBlock.includes("method:'POST'"));
+  assert.ok(dialogBlock.includes('void readDeliveryStatus(context)'));
+  assert.ok(dialogBlock.includes("if (action === 'sync') void executeDeliverySync(context)"));
+  assert.ok(!dialogBlock.includes("method:'POST'"));
   assert.doesNotMatch(source, /function decorateVersionRows\(/);
   assert.doesNotMatch(source, /registerDecorator/);
 });

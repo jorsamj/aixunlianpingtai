@@ -141,7 +141,7 @@ for(const reason of ['identity','optional','review']) test(`changlian publish re
     await expect(dialog).toContainText('需人工核对');
     const technical=dialog.locator('.external-delivery-technical');
     await expect(technical).not.toHaveAttribute('open');
-    await technical.locator('summary').click();
+    await technical.locator('summary').first().click();
     const details=technical.locator('[data-weight-publication-details]');
     await expect(details).toContainText('Version PARTIAL / Weight PARTIAL');
     for(const text of ['old-weight','UNKNOWN','UPLOADED','child','同一芯片存在多个Weight ID','远端身份未读回验证','管理员'])await expect(details).toContainText(text);
@@ -153,7 +153,7 @@ for(const reason of ['identity','optional','review']) test(`changlian publish re
   if(reason==='optional'){
     await expect(dialog.getByRole('button',{name:'确认同步到新畅联'})).toBeEnabled();
     const technical=dialog.locator('.external-delivery-technical');
-    await technical.locator('summary').click();
+    await technical.locator('summary').first().click();
     const details=technical.locator('[data-weight-publication-details]');
     await expect(details).toBeVisible();
     await dialog.getByRole('button',{name:'确认同步到新畅联'}).click();
