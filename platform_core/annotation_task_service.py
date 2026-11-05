@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import time
 import uuid
 from contextlib import closing
 from dataclasses import dataclass
@@ -65,6 +66,33 @@ def annotate_one(request: dict[str, Any], image: dict[str, Any]) -> dict[str, An
     path = Path(str(image.get("path") or ""))
     if not path.is_file():
         raise FileNotFoundError(f"annotation image file does not exist: {image.get('filename') or image.get('id')}")
+    from PIL import Image
+    with Image.open(path) as source:
+        width, height = source.size
+        orientation = int(source.getexif().get(274, 1))
+    contract = auto_label_core.coordinate_contract(config, legacy=True)
+    diagnostics = {
+        "contract": contract,
+        "created_at_epoch": time.time(),
+        "status": "UNVERIFIED_CONTRACT" if (config.get("coordinate_validation") or {}).get("status") not in {"verified", "sample_validated"} else "configured",
+        "geometry": {"original_width": width, "original_height": height,
+                     "inference_width": width, "inference_height": height, "exif_orientation": orientation,
+                     "submitted_width": width, "submitted_height": height,
+                     "model_internal_geometry": "unknown_provider_managed", "mapping": "identity_original_bytes"},
+        "model_config_revision": request.get("model_config_revision", ""),
+        "prompt_version": request.get("effective_prompt_revision", ""),
+    }
+    geometry_error = (
+        "EXIF orientation is unsupported for original-byte inference; normalize the image before annotation"
+        if orientation != 1 else
+        "stored dimensions differ from original input bytes"
+        if (width, height) != (int(image["width"]), int(image["height"])) else ""
+    )
+    if geometry_error:
+        diagnostics["status"] = "DISPLAY_TRANSFORM_ERROR"
+        error = ValueError("DISPLAY_TRANSFORM_ERROR: " + geometry_error)
+        error.diagnostics = diagnostics
+        raise error
     prompt = build_annotation_prompt(
         config,
         request["label_catalog"],
@@ -79,18 +107,37 @@ def annotate_one(request: dict[str, Any], image: dict[str, Any]) -> dict[str, An
         output_schema=auto_label_core.CANDIDATE_OUTPUT_SCHEMA,
     )
     text = str(response.get("text") or "")
-    parsed = auto_label_core.parse_candidate_response(
-        text,
-        width=int(image["width"]),
-        height=int(image["height"]),
-        label_ids=request["label_ids"],
-        label_aliases=request["label_aliases"],
-    )
+    diagnostics.update({"model": str(config.get("model_name") or ""),
+                        "provider": str(config.get("provider_adapter") or config.get("provider_type") or ""),
+                        "latency_ms": int(response.get("latency_ms") or 0)})
+    try:
+        parsed = auto_label_core.parse_candidate_response(
+            text,
+            width=int(image["width"]),
+            height=int(image["height"]),
+            label_ids=request["label_ids"],
+            label_aliases=request["label_aliases"],
+            coordinate_space=contract["coordinate_space"],
+            coordinate_order=contract["coordinate_order"],
+            diagnostics=diagnostics,
+        )
+    except ValueError as error:
+        diagnostics["status"] = "COORDINATE_CONVERSION_ERROR" if "COORDINATE_CONVERSION_ERROR:" in str(error) else "STRUCTURED_OUTPUT_ERROR"
+        diagnostics["first_failure_only"] = True
+        diagnostics["counts"] = {"raw": diagnostics.get("raw_candidate_count", 0), "invalid": None,
+                                 "threshold_filtered": 0, "nms_filtered": 0, "final": 0}
+        error.diagnostics = diagnostics
+        raise
     threshold = float(request.get("threshold") if request.get("threshold") is not None else 0.45)
     boxes = auto_label_core.nms_candidates(
         [box for box in parsed if float(box.get("confidence") or 0) >= threshold],
         iou_threshold=0.5,
     )
+    retained = sum(float(b["confidence"]) >= threshold for b in parsed)
+    diagnostics["converted_boxes"] = parsed[:100]
+    diagnostics["final_boxes"] = [dict(box) for box in boxes[:100]]
+    diagnostics["counts"] = {"raw": len(parsed), "invalid": 0, "threshold_filtered": len(parsed) - retained,
+                             "nms_filtered": retained - len(boxes), "final": len(boxes)}
     for box in boxes:
         box.update({
             "id": str(box.get("id") or uuid.uuid4().hex[:12]),
@@ -101,6 +148,7 @@ def annotate_one(request: dict[str, Any], image: dict[str, Any]) -> dict[str, An
         })
     return {
         "boxes": boxes,
+        "diagnostics": diagnostics,
         "raw_response_hash": auto_label_core.raw_response_hash(text),
         "request_id": str(response.get("request_id") or ""),
         "latency_ms": int(response.get("latency_ms") or 0),
@@ -257,7 +305,7 @@ def run_ai_annotation(
                     "status": "success" if boxes else "empty",
                     "boxes": boxes,
                     **{key: generated.get(key) for key in (
-                        "raw_response_hash", "request_id", "latency_ms", "provider", "model",
+                        "raw_response_hash", "request_id", "latency_ms", "provider", "model", "diagnostics",
                         "hard_sample_signals", "hard_sample_priority",
                         "ground_truth_compared", "gt_comparison", "root_cause_confirmed",
                     ) if generated.get(key) is not None and generated.get(key) != ""},
@@ -275,6 +323,8 @@ def run_ai_annotation(
                     "boxes": [],
                     "error": _public_error(error),
                 }
+                if isinstance(getattr(error, "diagnostics", None), dict):
+                    item["diagnostics"] = error.diagnostics
                 next_succeeded = succeeded
                 next_failed = failed + 1
 

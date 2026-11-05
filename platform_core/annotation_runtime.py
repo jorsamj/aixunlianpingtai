@@ -9,7 +9,7 @@ import re
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from .auto_label import provider_factory
+from .auto_label import provider_factory, coordinate_contract
 from .prompts import render_prompt, template_version_id, version_template
 from .secrets import KeyringSecretStore
 
@@ -64,6 +64,7 @@ def freeze_model_config(config: Mapping[str, Any]) -> tuple[dict[str, Any], str]
     request.json. Workers resolve that reference only when the task executes.
     """
     snapshot = _json_clone(dict(config))
+    snapshot.update(coordinate_contract(snapshot))
     for key in _SECRET_FIELDS:
         snapshot.pop(key, None)
     snapshot["headers_json"] = _clean_headers(snapshot.get("headers_json"))
@@ -112,14 +113,20 @@ def build_annotation_prompt(cfg, labels, *, width, height, business_instruction,
     if not template:
         template = DEFAULT_ANNOTATION_PROMPT
     if "{{" in template:
-        return render_prompt(
+        rendered = render_prompt(
             template,
             labels=labels,
             width=width,
             height=height,
             business_instruction=business_instruction,
         )
-    return template.replace("{labels}", "、".join(str(item.get("code")) for item in labels))
+    else:
+        rendered = template.replace("{labels}", "、".join(str(item.get("code")) for item in labels))
+    contract = coordinate_contract(cfg, legacy=True)
+    if contract["coordinate_space"] == "legacy_auto":
+        return rendered
+    return rendered + "\n平台受控坐标合同（优先于上述自定义要求）：仅返回 JSON object boxes；字段 x1,y1,x2,y2 的依次含义为 " + contract["coordinate_order"] + "; coordinate_space=" + contract["coordinate_space"] + f"；图像坐标基准为原始输入 {width}x{height}。不得自行缩放或改换坐标顺序；无目标返回 boxes:[]。"
+
 
 
 def prepare_request(

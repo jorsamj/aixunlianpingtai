@@ -1,3 +1,5 @@
+> **2026-11-05｜多视觉模型标注 P0**：原共享解析器增加显式坐标合同与冻结版本，原模型管理增加同页样本验证/人工确认，原审核页增加按需单图诊断；不修改正式 GT。确定性平台证据与真实模型识别验收分开记录，正式 VERSION 保持42.24.532。详见 docs/AI_ANNOTATION_MULTIMODEL_P0_2026_11_05.md；真实 Gemma/Qwen、Ollama/vLLM、A800/4070 现场验收尚未执行。
+
 > **2026-10-30 / 42.24.429**：保留唯一 TrainingSubmit/Draft/Hydration/Picker Owner；修复旧 POST 成功或恢复回执对已替换表单的通知泄漏，真实任务仍通过原 TaskRuntime/幂等核验。版本缓存键随唯一模块增量更新，无并行 renderer/状态；基线 428 CI 38/38 绿，生产未验证。详见 [P0 唯一台账](performance/2026-10-29-p0-followup.md)。
 
 > **2026-10-29 / 42.24.416**：训练素材 Picker、Draft、Summary 前端 Owner 与 API 形状均不变；后端旧 `task_contract` 只读角色预览跳过模型完整 SHA，正式冻结依然 SHA256。新增原诊断阶段；冷使用/角色索引待现场计时，不增平行状态。参见 `docs/performance/2026-10-29-p0-followup.md`，CI/生产待验。

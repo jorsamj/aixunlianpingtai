@@ -1,3 +1,5 @@
+> **2026-11-05｜多视觉模型标注 P0**：原共享解析器增加显式坐标合同与冻结版本，原模型管理增加同页样本验证/人工确认，原审核页增加按需单图诊断；不修改正式 GT。确定性平台证据与真实模型识别验收分开记录，正式 VERSION 保持42.24.532。详见 docs/AI_ANNOTATION_MULTIMODEL_P0_2026_11_05.md；真实 Gemma/Qwen、Ollama/vLLM、A800/4070 现场验收尚未执行。
+
 > **2026-10-30 / 42.24.429**：P0 只修原 `training-submit.js` 的迟到成功/核验/列表刷新通知归属，防止旧窗提示污染新算法；创建任务和原 TaskRuntime 不变。413/415/416/425/427 已有加载/选材代码不重复开发，生产 HAR/A800/ZIP/P95 待验。基线 428 Actions 38/38 绿；429 自身 CI 待核，唯一台账 `performance/2026-10-29-p0-followup.md`，未部署。
 
 > **2026-10-29 / 42.24.416**：保留原 Picker/Summary/Hydration/Submit 前端 Owner 与所有请求字段；后端 role-page 只读合同显式跳过重复的 best.pt SHA256，最终训练仍全量校验。角色候选和使用池冷开销待现网诊断，不增前端状态，CI/生产待核，见 `docs/performance/2026-10-29-p0-followup.md`。

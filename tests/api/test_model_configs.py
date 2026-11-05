@@ -175,3 +175,93 @@ def test_legacy_saved_vision_probe_uses_original_secret_reference(client, monkey
     assert response.json()["ok"] is True and response.json()["status_code"] == 200
     assert calls == [payload["base_url"]]
     assert payload["api_key"] not in response.text
+
+
+def test_real_sample_coordinate_contract_and_evidence(client, monkeypatch):
+    import app as app_module
+    import base64
+    from io import BytesIO
+    from PIL import Image
+    class Provider:
+        def annotate(self, **kwargs):
+            assert "normalized_1000" in kwargs["prompt"]
+            return {"text": '{"boxes":[{"label":"person","confidence":0.9,"x1":100,"y1":200,"x2":500,"y2":800}]}'}
+    monkeypatch.setattr(app_module.auto_label_core, "provider_factory", lambda cfg: Provider())
+    payload = {"name":"fixture", "base_url":"http://fixture.invalid", "model_name":"fixture", "coordinate_space":"normalized_1000", "coordinate_order":"yxyx"}
+    saved = client.post("/api/v35/model-configs", json=payload).json()
+    b = BytesIO(); Image.new("RGB", (1920,1080)).save(b, format="PNG")
+    response = client.post(f"/api/v35/model-configs/{saved['id']}/verify-coordinates", json={"image_base64":base64.b64encode(b.getvalue()).decode(), "labels":["person"]})
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["parsed_boxes"][0]["x1"] == 384
+    assert result["parsed_boxes"][0]["y1"] == 108
+    assert result["coordinate_validation"]["status"] == "unverified"
+    assert result["coordinate_validation"]["sample_sha256"]
+    evidence = result["coordinate_validation"]
+    confirmation = {key:evidence[key] for key in ("receipt", "config_revision", "sample_sha256")}
+    confirmation["positions_confirmed"] = True
+    assert client.post(f"/api/v35/model-configs/{saved['id']}/confirm-coordinates", json={**confirmation, "receipt":"forged"}).status_code == 409
+    confirmed = client.post(f"/api/v35/model-configs/{saved['id']}/confirm-coordinates", json=confirmation)
+    assert confirmed.status_code == 200, confirmed.text
+    assert confirmed.json()["coordinate_validation"]["status"] == "verified"
+    assert client.post(f"/api/v35/model-configs/{saved['id']}/confirm-coordinates", json=confirmation).status_code == 409
+    payload["annotation_prompt_template"] = "new instruction"
+    edited = client.put(f"/api/v35/model-configs/{saved['id']}", json=payload).json()
+    assert "sample_sha256" not in edited["coordinate_validation"]
+    assert edited["coordinate_validation"]["status"] == "unverified"
+
+
+def test_coordinate_contract_rejects_unknown_protocol(client):
+    result = client.post("/api/v35/model-configs", json={"name":"bad", "base_url":"http://fixture.invalid", "output_protocol":"native_array"})
+    assert result.status_code == 422
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_coordinate_evidence_cannot_overwrite_concurrent_config_edit(client, monkeypatch, fail):
+    import app as app_module
+    from platform_core.providers.base import ProviderRequestError
+    import base64
+    from io import BytesIO
+    from PIL import Image
+    payload = {"name":"before", "base_url":"http://fixture.invalid", "model_name":"fixture"}
+    saved = client.post("/api/v35/model-configs", json=payload).json()
+    class Provider:
+        def annotate(self, **kwargs):
+            changed = client.put(f"/api/v35/model-configs/{saved['id']}", json={**payload, "name":"after"})
+            assert changed.status_code == 200
+            if fail:
+                raise ProviderRequestError("fixture failed", code="MODEL_OUTPUT_PARSE_ERROR")
+            return {"text": '{"boxes":[]}'}
+    monkeypatch.setattr(app_module.auto_label_core, "provider_factory", lambda cfg:Provider())
+    b=BytesIO();Image.new("RGB",(16,16)).save(b,format="PNG")
+    response=client.post(f"/api/v35/model-configs/{saved['id']}/verify-coordinates",json={"image_base64":base64.b64encode(b.getvalue()).decode(),"labels":["person"]})
+    assert response.status_code == (400 if fail else 409)
+    current=next(x for x in client.get("/api/v35/model-configs").json()["items"] if x["id"]==saved["id"])
+    assert current["name"]=="after"
+    assert current["coordinate_config_revision"] != saved["coordinate_config_revision"]
+    assert "sample_sha256" not in current["coordinate_validation"]
+    assert current["coordinate_validation"]["status"] == "unverified"
+
+
+def test_slow_sample_cannot_overwrite_confirmation_for_same_revision(client, monkeypatch):
+    import app as app_module
+    import base64
+    from io import BytesIO
+    from PIL import Image
+    saved=client.post("/api/v35/model-configs",json={"name":"fixture","base_url":"http://fixture.invalid"}).json()
+    class Provider:
+        def annotate(self, **kwargs):
+            # Another request has completed and been explicitly confirmed while this provider was pending.
+            with app_module.FileLock(str(app_module.MODEL_CONFIGS_FILE)+".lock",timeout=10):
+                items=app_module._v35_model_items()
+                row=next(x for x in items if x["id"]==saved["id"])
+                row["coordinate_validation"]={"status":"verified","reason":"newer human confirmation"}
+                app_module._v35_save_items(app_module.MODEL_CONFIGS_FILE,items)
+            return {"text":'{"boxes":[]}'}
+    monkeypatch.setattr(app_module.auto_label_core,"provider_factory",lambda cfg:Provider())
+    b=BytesIO();Image.new("RGB",(16,16)).save(b,format="PNG")
+    response=client.post(f"/api/v35/model-configs/{saved['id']}/verify-coordinates",json={"image_base64":base64.b64encode(b.getvalue()).decode(),"labels":["person"]})
+    assert response.status_code==409
+    current=next(x for x in client.get("/api/v35/model-configs").json()["items"] if x["id"]==saved["id"])
+    assert current["coordinate_validation"]["status"]=="verified"
+    assert current["coordinate_validation"]["reason"]=="newer human confirmation"

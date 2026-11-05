@@ -1,0 +1,21 @@
+import {test,expect} from '@playwright/test';
+test('existing styled model dialog exposes coordinate contract and inline sample confirmation',async({page,request})=>{
+ await page.setViewportSize({width:1440,height:1200});
+ const project=await(await request.post('/api/projects',{data:{name:'坐标样本隔离-'+Date.now(),labels:[]}})).json();
+ const payload={name:'坐标适配隔离夹具',provider_type:'local_openai',provider_adapter:'local_openai',model_kind:'vlm',base_url:'http://fixture.invalid',model_name:'fixture',annotation_prompt_template:'仅标注 person。',coordinate_space:'normalized_1000',coordinate_order:'yxyx'};
+ const response=await request.post('/api/v35/model-configs',{data:payload});expect(response.ok()).toBeTruthy();const saved=await response.json();
+ await page.route('**/api/v53/bootstrap/snapshot**',route=>{const url=new URL(route.request().url());url.searchParams.set('preferred_project_id',project.id);return route.continue({url:url.toString()})});
+ const evidence={status:'unverified',reason:'隔离夹具：样本解析通过，需人工检查',receipt:'test-only',config_revision:saved.coordinate_config_revision,sample_sha256:'fixture',checked_at:'ISOLATED TEST'};
+ await page.route(`**/api/v35/model-configs/${saved.id}/verify-coordinates`,route=>route.fulfill({json:{coordinate_validation:evidence,geometry:'EXIF 已校正；仅隔离夹具用于 UI 验证',parsed_boxes:[{label:'person',x1:80,y1:40,x2:220,y2:250}],image_width:320,image_height:280,input_image_url:'data:image/svg+xml,'+encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="320" height="280"><rect width="320" height="280" fill="#e5e7eb"/><text x="30" y="140">ISOLATED UI TEST</text></svg>'),raw_preview:'{"boxes":[{"label":"person","x1":143,"y1":250,"x2":893,"y2":688}]}'}}));
+ await page.route(`**/api/v35/model-configs/${saved.id}/confirm-coordinates`,route=>route.fulfill({json:{...saved,coordinate_validation:{status:'verified',reason:'隔离样本已人工确认；非真实模型验收'}}}));
+ await page.goto('/');await expect.poll(()=>page.evaluate(()=>Boolean(state.uiReady))).toBe(true);
+ await page.evaluate(()=>window.setPage('模型配置'));await page.evaluate(id=>window.openModelConfigModalV35(id),saved.id);
+ const dialog=page.getByRole('dialog',{name:'编辑视觉模型配置'});await expect(dialog).toBeVisible();
+ await dialog.locator('summary').filter({hasText:'高级设置'}).click();await expect(dialog.locator('#mcCoordinateSpace')).toHaveValue('normalized_1000');await expect(dialog.locator('#mcCoordinateOrder')).toHaveValue('yxyx');
+ await dialog.locator('#mcCoordinateStatus').scrollIntoViewIfNeeded();await page.screenshot({path:'docs/evidence/ai-annotation-2026-11-05/model-coordinate-real-ui.png',fullPage:true});
+ await dialog.locator('#mcCoordinateImage').setInputFiles({name:'sample.png',mimeType:'image/png',buffer:Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jNuoAAAAASUVORK5CYII=','base64')});await dialog.locator('#mcCoordinateLabels').fill('person');await dialog.getByRole('button',{name:'验证坐标',exact:true}).click();
+ await expect(dialog.locator('#mcCoordinateResult rect')).toHaveAttribute('x','80');await expect(dialog.locator('#mcCoordinateStatus')).toContainText('需人工检查');
+ await dialog.locator('#mcCoordinateResult').scrollIntoViewIfNeeded();await page.screenshot({path:'docs/evidence/ai-annotation-2026-11-05/model-coordinate-real-sample.png',fullPage:true});
+ await dialog.getByRole('button',{name:'框位置正确，确认此配置'}).click();await expect(dialog.locator('#mcCoordinateStatus')).toContainText('已人工确认');
+ await request.delete('/api/v35/model-configs/'+saved.id);
+});

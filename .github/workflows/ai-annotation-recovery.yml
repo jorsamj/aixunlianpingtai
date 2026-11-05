@@ -13,6 +13,9 @@ on:
       - platform_core/annotation_runtime.py
       - platform_core/providers/**
       - platform_core/auto_label.py
+      - tests/unit/test_annotation_coordinate_contract.py
+      - static/modules/annotation-diagnostics.js
+      - tests/frontend/annotation-diagnostics.test.mjs
       - platform_core/errors.py
       - tests/unit/test_openai_vision_protocol.py
       - tests/api/test_model_configs.py
@@ -42,6 +45,9 @@ on:
       - platform_core/annotation_runtime.py
       - platform_core/providers/**
       - platform_core/auto_label.py
+      - tests/unit/test_annotation_coordinate_contract.py
+      - static/modules/annotation-diagnostics.js
+      - tests/frontend/annotation-diagnostics.test.mjs
       - platform_core/errors.py
       - tests/unit/test_openai_vision_protocol.py
       - tests/api/test_model_configs.py
@@ -97,10 +103,12 @@ jobs:
           tests/unit/test_annotation_candidates.py
           tests/unit/test_annotation_task_service.py
           tests/unit/test_openai_vision_protocol.py
+          tests/unit/test_annotation_coordinate_contract.py
       - name: Annotation recovery frontend truth
         run: >-
           node --test
           tests/frontend/annotation-task-view.test.mjs
+          tests/frontend/annotation-diagnostics.test.mjs
           tests/frontend/annotation-runtime-source.test.mjs
           tests/frontend/ai-review-label-usability.test.mjs
       - name: Permanent recovery source guard

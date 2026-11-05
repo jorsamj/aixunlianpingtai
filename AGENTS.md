@@ -1,3 +1,5 @@
+> **2026-11-05｜多视觉模型标注 P0**：原共享解析器增加显式坐标合同与冻结版本，原模型管理增加同页样本验证/人工确认，原审核页增加按需单图诊断；不修改正式 GT。确定性平台证据与真实模型识别验收分开记录，正式 VERSION 保持42.24.532。详见 docs/AI_ANNOTATION_MULTIMODEL_P0_2026_11_05.md；真实 Gemma/Qwen、Ollama/vLLM、A800/4070 现场验收尚未执行。
+
 > **2026-11-04｜42.24.532 素材工作台 P0**：在唯一长期分支531上复用原素材/正式GT/历史/任务Owner，实现算法级负样本池、原图片/ZIP导入归属冻结和原审核确认、YOLODataset背景输入证据；历史浏览与资格分离及SQL过滤、缩略图失败重试/Windows并发路径修复、连续审计的状态恢复/持久跳过/原增量复核/计划并发围栏。三页使用原生组件与统一Token，真实Chrome多视口证据留档。训练大范围选择使用原BatchSelection/ArtifactStore，不另建权威素材库；草稿及Worker合同保持Test隔离。详见 docs/MATERIAL_WORKBENCH_P0_2026_11_04.md 及关联专项。精确SHA的远端CI以GitHub记录为准，不以旧版本绿灯代替。生产未部署、无正式数据操作。
 
 > **最新 2026-11-04｜42.24.531 平台对接总开关与独立模式后台出站防护（候选，CI 待验）**：在 530 基础上，原 `mode=local/external` 成为「平台对接」顶部唯一总开关，模式切换单独持久写入并保留所有旧地址和凭据。独立模式阻断旧客户端的下一次新畅联 HTTP、连接测试、诊断、provider API、发布及 Worker 外部清理 outbox 派发；不阻断独立 OSS/远程训练/自选远端登录等独立网络能力，不冒称操作系统级离线。顺带修复通配 CORS+凭据、本地密码换密旧 Cookie、限流记录硬边界，以及 530 两项 Chrome 断言。`docs/INTRANET_MODE_MASTER_SWITCH_2026_11_04.md` 为详细需求与验收台账。Node 定向30/30，Python 编译通过；准确 Python/Chrome/CI 和目标断网验收待执行。生产不动，不 merge main/tag/release/force push。

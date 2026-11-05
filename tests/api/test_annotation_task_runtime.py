@@ -46,6 +46,29 @@ def _awaiting(project_id, count, repository, artifacts):
     return task_id
 
 
+def test_diagnostics_are_single_image_and_not_bulk_payload(client, seeded_project, isolated_task_runtime, monkeypatch):
+    project_id, _ = seeded_project
+    repository, artifacts = isolated_task_runtime
+    task_id = _awaiting(project_id, 1, repository, artifacts)
+    store = CandidateStore(artifacts, task_id=task_id)
+    item = store.get("image-0")
+    item.update({"url": "/isolated.png", "filename": "isolated.png", "width": 1920, "height": 1080,
+                 "diagnostics": {"protocol": "normalized_1000", "final_count": 0, "created_at_epoch": __import__('time').time()}})
+    store.append_items([item])
+    base = f"/api/v60/projects/{project_id}/annotation-tasks/{task_id}/candidates"
+    page = client.get(base).json()
+    assert "diagnostics" not in page["items"][0]
+    monkeypatch.setattr(CandidateStore, "read_page", lambda *args, **kwargs: pytest.fail("single-image diagnostics must not scan page"))
+    response = client.get(base + "/image-0/diagnostics")
+    assert response.status_code == 200
+    assert response.json()["diagnostics"]["protocol"] == "normalized_1000"
+    assert client.get(base + "/missing/diagnostics").status_code == 404
+    item["diagnostics"]["created_at_epoch"] = 1
+    store.append_items([item])
+    assert client.get(base + "/image-0/diagnostics").json()["status"] == "DIAGNOSTICS_EXPIRED"
+    assert client.get(base.replace(project_id, "other-project") + "/image-0/diagnostics").status_code == 404
+
+
 def test_annotation_task_create_is_private_and_worker_queued(
     client, seeded_project, isolated_task_runtime, monkeypatch,
 ):

@@ -1692,3 +1692,14 @@ button[aria-busy="true"]:has(.tiny-spinner)::before{display:none}
 .data426-shell .data426-tags span{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 @media(pointer:coarse){:is(.data426-shell,.train-v3-picker,.material-integrity47,.negative-pool) .btn{min-height:44px}}
 @media(prefers-reduced-motion:reduce){.data426-shell .data412-card{transition:none}}
+/* Keep an opened single-image diagnostic reachable on narrow review screens. */
+@media(max-width:600px){
+  .view:has([data-ai-diagnostics]){overflow:auto}
+  .ai-review-page-shell:has([data-ai-diagnostics]){height:auto;min-height:100%;overflow:visible}
+  .ai-review-page-shell:has([data-ai-diagnostics])>.ai66-review{flex:none;height:auto;overflow:visible}
+  .ai66-review:has([data-ai-diagnostics]) .ai66-review-kpis{display:flex;overflow-x:auto;flex-shrink:0}
+  .ai66-review:has([data-ai-diagnostics]) .ai66-review-kpis>div{flex:0 0 100px}
+  .ai66-review:has([data-ai-diagnostics]) .ai66-review-filters{flex-wrap:nowrap;width:100%}
+  .ai66-review:has([data-ai-diagnostics]) .ai66-review-filters button{flex:0 0 auto}
+  .ai66-review:has([data-ai-diagnostics]) .ai66-review-grid{flex:none;min-height:280px;overflow:visible!important}
+}

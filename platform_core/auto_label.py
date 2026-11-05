@@ -87,6 +87,44 @@ def _json_text(text: str) -> str:
     return fenced.group(1).strip() if fenced else clean
 
 
+def coordinate_contract(config, *, legacy=False):
+    """An explicit contract; names and coordinate magnitudes never select a new protocol."""
+    if legacy and "coordinate_space" not in config:
+        return {"coordinate_space": "legacy_auto", "coordinate_order": "xyxy", "output_protocol": "json_boxes", "coordinate_contract_version": 0}
+    result = {"coordinate_space": config.get("coordinate_space", "pixel"),
+              "coordinate_order": config.get("coordinate_order", "xyxy"),
+              "output_protocol": config.get("output_protocol", "json_boxes"),
+              "coordinate_contract_version": 1}
+    if result["coordinate_space"] not in {"pixel", "normalized_01", "normalized_1000"} or result["coordinate_order"] not in {"xyxy", "yxyx"} or result["output_protocol"] != "json_boxes":
+        raise ValueError("UNVERIFIED_CONTRACT: unsupported coordinate contract")
+    return result
+
+
+def adapt_coordinates(coordinates, *, width, height, coordinate_space, coordinate_order):
+    if coordinate_order not in {"xyxy", "yxyx"}:
+        raise ValueError("UNVERIFIED_CONTRACT: unsupported coordinate order")
+    x1, y1, x2, y2 = map(float, coordinates)
+    if coordinate_order == "yxyx":
+        x1, y1, x2, y2 = y1, x1, y2, x2
+    values = (x1, y1, x2, y2)
+    if not all(math.isfinite(v) for v in values):
+        raise ValueError("COORDINATE_CONVERSION_ERROR: non-finite coordinate")
+    if coordinate_space == "legacy_auto":
+        coordinate_space = ("normalized_01" if all(0 <= v <= 1 for v in values) else
+                            "normalized_1000" if (x2 > width or y2 > height) and all(0 <= v <= 1000 for v in values) else "pixel")
+    divisor = {"pixel": None, "normalized_01": 1, "normalized_1000": 1000}.get(coordinate_space, -1)
+    if divisor == -1:
+        raise ValueError("UNVERIFIED_CONTRACT: unsupported coordinate space")
+    if divisor is not None:
+        if not all(0 <= v <= divisor for v in values):
+            raise ValueError("COORDINATE_CONVERSION_ERROR: coordinate outside declared range")
+        x1, x2 = x1 * width / divisor, x2 * width / divisor
+        y1, y2 = y1 * height / divisor, y2 * height / divisor
+    if not (0 <= x1 < x2 <= width and 0 <= y1 < y2 <= height):
+        raise ValueError("COORDINATE_CONVERSION_ERROR: reversed or out-of-bounds box")
+    return x1, y1, x2, y2
+
+
 def parse_candidate_response(
     text: str,
     *,
@@ -94,6 +132,9 @@ def parse_candidate_response(
     height: int,
     label_ids: Mapping[str, int],
     label_aliases: Mapping[str, Sequence[str]] | None = None,
+    coordinate_space: str = "legacy_auto",
+    coordinate_order: str = "xyxy",
+    diagnostics: dict | None = None,
 ) -> list[dict[str, Any]]:
     if width <= 0 or height <= 0:
         raise ValueError("图片尺寸无效")
@@ -111,6 +152,15 @@ def parse_candidate_response(
     # Alias metadata is intentionally ignored here. The model must return one
     # of the exact canonical codes explicitly allowed by this task.
     del label_aliases
+    if diagnostics is not None:
+        diagnostics["raw_candidate_count"] = len(parsed.boxes)
+        diagnostics["raw_candidates"] = [
+            {"confidence": b.confidence, "x1": b.x1, "y1": b.y1, "x2": b.x2, "y2": b.y2,
+             "label": b.label if b.label in label_ids else "[unknown label]"}
+            for b in parsed.boxes[:100]
+            if all(math.isfinite(v) for v in (b.confidence, b.x1, b.y1, b.x2, b.y2))
+        ]
+        diagnostics["raw_candidates_truncated"] = len(parsed.boxes) > 100
     result: list[dict[str, Any]] = []
     for index, box in enumerate(parsed.boxes):
         label = box.label.strip()
@@ -121,16 +171,10 @@ def parse_candidate_response(
             raise ValueError(f"第 {index + 1} 个框使用了标签库之外的标签")
         if not 0 <= box.confidence <= 1:
             raise ValueError(f"第 {index + 1} 个框置信度必须在 0 到 1 之间")
-        x1, y1, x2, y2 = float(box.x1), float(box.y1), float(box.x2), float(box.y2)
-        coordinates = (x1, y1, x2, y2)
-        if all(0 <= value <= 1 for value in coordinates):
-            x1, x2 = x1 * width, x2 * width
-            y1, y2 = y1 * height, y2 * height
-        elif (x2 > width or y2 > height) and all(0 <= value <= 1000 for value in coordinates):
-            x1, x2 = x1 * width / 1000, x2 * width / 1000
-            y1, y2 = y1 * height / 1000, y2 * height / 1000
-        if not (0 <= x1 < x2 <= width and 0 <= y1 < y2 <= height):
-            raise ValueError(f"第 {index + 1} 个框坐标越界或宽高无效")
+        x1, y1, x2, y2 = adapt_coordinates(
+            (box.x1, box.y1, box.x2, box.y2), width=width, height=height,
+            coordinate_space=coordinate_space, coordinate_order=coordinate_order,
+        )
         result.append({
             "class_id": int(label_ids[label]),
             "label": label,

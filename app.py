@@ -18156,6 +18156,10 @@ class V35ModelConfigReq(BaseModel):
     provider_adapter: Optional[str] = ""
     api_protocol: Literal["auto", "chat_completions", "responses"] = "auto"
     structured_output: Literal["auto", "json_schema", "json_object", "prompt"] = "auto"
+    coordinate_space: Literal["pixel", "normalized_01", "normalized_1000"] = "pixel"
+    coordinate_order: Literal["xyxy", "yxyx"] = "xyxy"
+    output_protocol: Literal["json_boxes"] = "json_boxes"
+    coordinate_contract_version: Literal[1] = 1
     model_kind: str = "vision_detect"  # vision_detect / vlm / custom_http
     base_url: Optional[str] = ""
     detect_url: Optional[str] = ""
@@ -18300,6 +18304,10 @@ def _v35_sanitize_secret(item: Dict[str, Any]) -> Dict[str, Any]:
     out["api_key_masked"] = masked
     out.setdefault("api_protocol", "auto")
     out.setdefault("structured_output", "auto")
+    out.setdefault("coordinate_validation", {"status": "unverified", "reason": "尚未用真实样本核验坐标"})
+    out.setdefault("coordinate_space", "legacy_auto")
+    out.setdefault("coordinate_order", "xyxy")
+    out.setdefault("output_protocol", "json_boxes")
     if (out.get("provider_adapter") or out.get("provider_type")) in {"volcengine_ark", "aliyun_qwen", "local_openai"}:
         from platform_core.providers.openai_vision import resolve_api_endpoint, PRESETS, ProviderRequestError
         kind = out.get("provider_adapter") or out.get("provider_type")
@@ -18334,67 +18342,77 @@ def v35_list_model_configs():
 
 @app.post("/api/v35/model-configs")
 def v35_save_model_config(payload: V35ModelConfigReq):
-    name = (payload.name or "").strip()
-    if not name:
-        raise HTTPException(status_code=400, detail="模型名称不能为空")
-    detect_url = (payload.detect_url or payload.base_url or "").strip()
-    if not detect_url:
-        raise HTTPException(status_code=400, detail="检测接口地址不能为空")
-    config_id = uuid.uuid4().hex[:12]
-    item = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
-    api_key = str(item.pop("api_key", "") or "")
-    item["headers_json"] = _v35_clean_headers(item.get("headers_json"))
-    if api_key:
-        reference = secret_ref("model-config", config_id)
-        _v35_secret_store().set(reference, api_key)
-        item["secret_ref"] = reference
-    item.update({"id": config_id, "name": name, "detect_url": detect_url, "created_at": now_iso(), "updated_at": now_iso()})
-    items = _v35_model_items()
-    items.insert(0, item)
-    _v35_save_items(MODEL_CONFIGS_FILE, items[:100])
-    return _v35_publish_model_config(item)
+    with FileLock(str(MODEL_CONFIGS_FILE) + ".lock", timeout=10):
+        name = (payload.name or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="模型名称不能为空")
+        detect_url = (payload.detect_url or payload.base_url or "").strip()
+        if not detect_url:
+            raise HTTPException(status_code=400, detail="检测接口地址不能为空")
+        config_id = uuid.uuid4().hex[:12]
+        item = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
+        api_key = str(item.pop("api_key", "") or "")
+        item["headers_json"] = _v35_clean_headers(item.get("headers_json"))
+        if api_key:
+            reference = secret_ref("model-config", config_id)
+            _v35_secret_store().set(reference, api_key)
+            item["secret_ref"] = reference
+        item.update({"coordinate_config_revision": uuid.uuid4().hex, "id": config_id, "name": name, "detect_url": detect_url, "created_at": now_iso(), "updated_at": now_iso()})
+        items = _v35_model_items()
+        items.insert(0, item)
+        _v35_save_items(MODEL_CONFIGS_FILE, items[:100])
+        return _v35_publish_model_config(item)
 
 
 @app.put("/api/v35/model-configs/{config_id}")
 def v35_update_model_config(config_id: str, payload: V35ModelConfigReq):
-    items = _v35_model_items()
-    found = False
-    for i, item in enumerate(items):
-        if item.get("id") == config_id:
-            data = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
-            for field in ("api_protocol", "structured_output"):
-                if field not in payload.model_fields_set:
-                    data[field] = item.get(field) or "auto"
-            api_key = str(data.pop("api_key", "") or "")
-            reference = str(item.get("secret_ref") or secret_ref("model-config", config_id))
-            if api_key:
-                _v35_secret_store().set(reference, api_key)
-                data["secret_ref"] = reference
-            elif item.get("secret_ref"):
-                data["secret_ref"] = item.get("secret_ref")
-            data["headers_json"] = _v35_clean_headers(data.get("headers_json"))
-            data.update({"id": config_id, "created_at": item.get("created_at") or now_iso(), "updated_at": now_iso()})
-            if not data.get("detect_url"):
-                data["detect_url"] = data.get("base_url") or item.get("detect_url") or ""
-            items[i] = data
-            found = True
-            break
-    if not found:
-        raise HTTPException(status_code=404, detail="模型配置不存在")
-    _v35_save_items(MODEL_CONFIGS_FILE, items)
-    return _v35_publish_model_config(items[i])
+    with FileLock(str(MODEL_CONFIGS_FILE) + ".lock", timeout=10):
+        items = _v35_model_items()
+        found = False
+        for i, item in enumerate(items):
+            if item.get("id") == config_id:
+                data = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
+                for field in ("api_protocol", "structured_output"):
+                    if field not in payload.model_fields_set:
+                        data[field] = item.get(field) or "auto"
+                for field in ("coordinate_space", "coordinate_order", "output_protocol", "coordinate_contract_version"):
+                    if field not in payload.model_fields_set:
+                        if field in item:
+                            data[field] = item[field]
+                        else:
+                            data.pop(field, None)
+                api_key = str(data.pop("api_key", "") or "")
+                reference = str(item.get("secret_ref") or secret_ref("model-config", config_id))
+                if api_key:
+                    _v35_secret_store().set(reference, api_key)
+                    data["secret_ref"] = reference
+                elif item.get("secret_ref"):
+                    data["secret_ref"] = item.get("secret_ref")
+                data["headers_json"] = _v35_clean_headers(data.get("headers_json"))
+                data.update({"coordinate_config_revision": uuid.uuid4().hex, "id": config_id, "created_at": item.get("created_at") or now_iso(), "updated_at": now_iso()})
+                if not data.get("detect_url"):
+                    data["detect_url"] = data.get("base_url") or item.get("detect_url") or ""
+                data["coordinate_validation"] = {"status": "unverified", "reason": "配置已保存，请重新验证真实样本"}
+                items[i] = data
+                found = True
+                break
+        if not found:
+            raise HTTPException(status_code=404, detail="模型配置不存在")
+        _v35_save_items(MODEL_CONFIGS_FILE, items)
+        return _v35_publish_model_config(items[i])
 
 
 @app.delete("/api/v35/model-configs/{config_id}")
 def v35_delete_model_config(config_id: str):
-    current = _v35_model_items()
-    removed = next((x for x in current if x.get("id") == config_id), None)
-    items = [x for x in current if x.get("id") != config_id]
-    _v35_save_items(MODEL_CONFIGS_FILE, items)
-    if removed and removed.get("secret_ref"):
-        _v35_secret_store().delete(str(removed.get("secret_ref")))
-    _v35_publish_model_config(removed_id=config_id)
-    return {"ok": True}
+    with FileLock(str(MODEL_CONFIGS_FILE) + ".lock", timeout=10):
+        current = _v35_model_items()
+        removed = next((x for x in current if x.get("id") == config_id), None)
+        items = [x for x in current if x.get("id") != config_id]
+        _v35_save_items(MODEL_CONFIGS_FILE, items)
+        if removed and removed.get("secret_ref"):
+            _v35_secret_store().delete(str(removed.get("secret_ref")))
+        _v35_publish_model_config(removed_id=config_id)
+        return {"ok": True}
 
 
 def _v35_is_vision_provider(config):
@@ -18438,15 +18456,107 @@ def v35_test_saved_model_annotation(config_id: str):
     return _v35_test_annotation(runtime_cfg)
 
 
-def _v35_test_annotation(runtime_cfg):
+class V35CoordinateSampleReq(BaseModel):
+    image_base64: str
+    labels: List[str]
+
+
+@app.post("/api/v35/model-configs/{config_id}/verify-coordinates")
+def v35_verify_model_coordinates(config_id: str, payload: V35CoordinateSampleReq):
+    from PIL import ImageOps
+    from platform_core.annotation_runtime import build_annotation_prompt
+    cfg = next((x for x in _v35_model_items() if x.get("id") == config_id), None)
+    if not cfg:
+        raise HTTPException(status_code=404, detail="模型配置不存在")
+    if len(payload.image_base64) > 14_000_000 or not payload.labels or len(payload.labels) > 100:
+        raise HTTPException(status_code=400, detail="样本最大 10MB，需提供 1～100 个目标标签")
+    try:
+        raw = base64.b64decode(payload.image_base64, validate=True)
+        if len(raw) > 10_000_000:
+            raise ValueError("图片超过 10MB")
+        with Image.open(BytesIO(raw)) as source:
+            if source.width * source.height > 25_000_000:
+                raise ValueError("图片超过 2500 万像素")
+            image = ImageOps.exif_transpose(source).convert("RGB")
+            width, height = image.size
+            buffer = BytesIO()
+            image.save(buffer, format="JPEG", quality=95)
+    except Exception as error:
+        raise HTTPException(status_code=400, detail="无效或过大的真实样本图片") from error
+    runtime_cfg = dict(cfg)
+    reference = str(cfg.get("secret_ref") or "")
+    runtime_cfg["_api_key"] = os.environ.get(reference[4:], "") if reference.startswith("env:") else (_v35_secret_store().get(reference) if reference else "")
+    labels = list(dict.fromkeys(x.strip() for x in payload.labels if x.strip()))
+    if not labels:
+        raise HTTPException(status_code=400, detail="目标标签不能为空")
+    contract = auto_label_core.coordinate_contract(cfg, legacy=True)
+    if contract["coordinate_space"] == "legacy_auto":
+        raise HTTPException(status_code=400, detail="请先明确并保存坐标范围，再验证样本")
+    prompt = build_annotation_prompt(cfg, [{"code": x, "class_id": i} for i, x in enumerate(labels)], width=width, height=height, business_instruction="")
+    try:
+        result = _v35_test_annotation(runtime_cfg, image_bytes=buffer.getvalue(), sample_prompt=prompt, sample_labels=labels, sample_size=(width, height))
+    except PlatformError:
+        with FileLock(str(MODEL_CONFIGS_FILE) + ".lock", timeout=10):
+            items = _v35_model_items()
+            current = next((x for x in items if x.get("id") == config_id), None)
+            if current is not None and (current.get("coordinate_config_revision") or current.get("updated_at")) == (cfg.get("coordinate_config_revision") or cfg.get("updated_at")) and current.get("coordinate_validation") == cfg.get("coordinate_validation"):
+                current["coordinate_validation"] = {"status": "failed", "checked_at": now_iso(), "reason": "样本调用或坐标解析不通过，请检查连接、原始输出和坐标合同"}
+                _v35_save_items(MODEL_CONFIGS_FILE, items)
+                _v35_publish_model_config(current)
+        raise
+    # Evidence belongs to this exact saved revision, and is never accepted from clients.
+    with FileLock(str(MODEL_CONFIGS_FILE) + ".lock", timeout=10):
+        revision = cfg.get("coordinate_config_revision") or cfg.get("updated_at")
+        items = _v35_model_items()
+        current = next((x for x in items if x.get("id") == config_id), None)
+        if current is None or (current.get("coordinate_config_revision") or current.get("updated_at")) != revision or current.get("coordinate_validation") != cfg.get("coordinate_validation"):
+            raise HTTPException(status_code=409, detail="验证期间配置已改变，请重试")
+        evidence = {"status": "unverified", "reason": "样本解析通过，需人工检查原始输出与最终框；不代表识别准确率通过", "checked_at": now_iso(), "config_revision": revision, "sample_sha256": hashlib.sha256(raw).hexdigest(), "box_count": len(result["parsed_boxes"]), "receipt": uuid.uuid4().hex, "expires_at_epoch": time.time() + 900, "parsed_boxes_sha256": hashlib.sha256(json.dumps(result["parsed_boxes"], sort_keys=True).encode()).hexdigest()}
+        current["coordinate_validation"] = evidence
+        _v35_save_items(MODEL_CONFIGS_FILE, items)
+        _v35_publish_model_config(current)
+    return {**result, "coordinate_validation": evidence, "coordinate_contract": contract, "image_width": width, "image_height": height, "input_image_url": "data:image/jpeg;base64," + base64.b64encode(buffer.getvalue()).decode("ascii"), "geometry": "EXIF 已校正；发送的 JPEG 与展示图片尺寸一致；无平台裁剪或填充。模型内部变换须由服务按该输入坐标返回。"}
+
+
+class V35CoordinateConfirmationReq(BaseModel):
+    receipt: str
+    config_revision: str
+    sample_sha256: str
+    positions_confirmed: Literal[True]
+
+
+@app.post("/api/v35/model-configs/{config_id}/confirm-coordinates")
+def v35_confirm_model_coordinates(config_id: str, payload: V35CoordinateConfirmationReq):
+    with FileLock(str(MODEL_CONFIGS_FILE) + ".lock", timeout=10):
+        items = _v35_model_items()
+        cfg = next((x for x in items if x.get("id") == config_id), None)
+        if not cfg:
+            raise HTTPException(status_code=404, detail="模型配置不存在")
+        evidence = cfg.get("coordinate_validation") or {}
+        if (evidence.get("status") != "unverified" or not evidence.get("receipt")
+            or evidence.get("receipt") != payload.receipt
+            or evidence.get("config_revision") != payload.config_revision
+            or (cfg.get("coordinate_config_revision") or cfg.get("updated_at")) != payload.config_revision
+            or evidence.get("sample_sha256") != payload.sample_sha256
+            or evidence.get("expires_at_epoch", 0) < time.time()
+            or not evidence.get("box_count")):
+            raise HTTPException(status_code=409, detail="样本验证已失效或无有效框，请重新验证含目标的真实样本")
+        evidence.update({"status": "verified", "confirmed_at": now_iso(), "reason": "已人工确认此真实样本的框位置；仅验证当前配置和样本，不代表模型整体准确率"})
+        evidence.pop("receipt", None)
+        cfg["coordinate_contract_version"] = 1
+        _v35_save_items(MODEL_CONFIGS_FILE, items)
+        return _v35_publish_model_config(cfg)
+
+
+def _v35_test_annotation(runtime_cfg, *, image_bytes=None, sample_prompt=None, sample_labels=None, sample_size=(128, 128)):
     from platform_core.providers.base import ProviderRequestError
     try:
         provider = auto_label_core.provider_factory(runtime_cfg)
         buffer = BytesIO()
         Image.new("RGB", (128, 128), "white").save(buffer, format="JPEG")
         response = provider.annotate(
-            image_bytes=buffer.getvalue(),
-            prompt=(
+            image_bytes=image_bytes or buffer.getvalue(),
+            prompt=sample_prompt or (
                 "请仅返回 JSON，检测图片中的 fire。"
                 "输出格式必须为 boxes 数组，每个框包含 label、confidence、x1、y1、x2、y2。"
             ),
@@ -18454,7 +18564,8 @@ def _v35_test_annotation(runtime_cfg):
         )
         text = str(response.get("text") or "")
         try:
-            boxes = auto_label_core.parse_candidate_response(text, width=128, height=128, label_ids={"fire": 0})
+            contract = auto_label_core.coordinate_contract(runtime_cfg, legacy=True)
+            boxes = auto_label_core.parse_candidate_response(text, width=sample_size[0], height=sample_size[1], label_ids={label: i for i, label in enumerate(sample_labels or ["fire"])}, coordinate_space=contract["coordinate_space"], coordinate_order=contract["coordinate_order"])
         except ValueError:
             raise ProviderRequestError(
                 "模型标注输出未通过平台字段、类别或坐标校验", code="MODEL_OUTPUT_PARSE_ERROR",
@@ -18469,7 +18580,7 @@ def _v35_test_annotation(runtime_cfg):
             "model": response.get("model") or runtime_cfg.get("model_name"),
             "request_id": response.get("request_id") or "",
             "api_protocol": response.get("api_protocol") or "auto",
-            "raw_preview": text[:500],
+            "raw_preview": text[:20000] if sample_prompt else text[:500],
             "parsed_boxes": boxes,
         }
     except Exception as error:
@@ -25490,7 +25601,7 @@ def get_annotation_candidates(project_id: str, task_id: str, limit: int = 50, cu
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
-    items = [dict(item) for item in page.items]
+    items = [{key: value for key, value in item.items() if key != "diagnostics"} for item in page.items]
     missing_ids = list(dict.fromkeys(
         str(item.get("image_id") or "")
         for item in items
@@ -25516,6 +25627,21 @@ def get_annotation_candidates(project_id: str, task_id: str, limit: int = 50, cu
     if cursor in {None, "", "0"}:
         response["label_summary"] = store.label_summary()
     return response
+
+
+@app.get("/api/v60/projects/{project_id}/annotation-tasks/{task_id}/candidates/{image_id}/diagnostics")
+def get_annotation_candidate_diagnostics(project_id: str, task_id: str, image_id: str):
+    task = _require_annotation_review_task(project_id, task_id)
+    if not task.result_ref:
+        raise HTTPException(status_code=409, detail="任务尚未生成候选结果")
+    item = CandidateStore(shared_task_artifacts(), task_id=task.task_id).get(image_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="候选图片不存在")
+    diagnostics = item.get("diagnostics")
+    if diagnostics and time.time() - float(diagnostics.get("created_at_epoch") or 0) > 30 * 86400:
+        return {"image_id": image_id, "diagnostics": None, "status": "DIAGNOSTICS_EXPIRED"}
+    return {"image_id": image_id, "diagnostics": diagnostics,
+            "status": "available" if diagnostics else "UNVERIFIED_CONTRACT"}
 
 
 @app.post("/api/v60/projects/{project_id}/annotation-tasks/{task_id}/decisions")
