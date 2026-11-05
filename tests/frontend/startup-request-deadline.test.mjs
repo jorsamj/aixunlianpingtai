@@ -16,3 +16,19 @@ test('startup snapshot has a deadline even if the network never settles, with cl
  await assert.rejects(pending,/核心页面读取超时/);
  assert.equal(applied,false);assert.equal(timers.size,0);
 });
+
+test('superseded bootstrap settles even when fetch ignores abort and cannot apply late data',async()=>{
+ const source=readFileSync(new URL('../../static/app.js',import.meta.url),'utf8');
+ const start=source.indexOf(' window.loadStartupSnapshot413=async function');
+ const end=source.indexOf('\n window.__clInit=',start);
+ const pending=[],applied=[];
+ const context={window:{},document:{getElementById:()=>null},paintBoot(){},apply:value=>applied.push(value),api:()=>new Promise(resolve=>pending.push(resolve)),waitReady(){},AbortController,Promise,Error,setTimeout,clearTimeout};
+ vm.runInNewContext(source.slice(start,end),context);
+ const first=context.window.loadStartupSnapshot413();
+ const observed=assert.rejects(first,/superseded|替换|取消/i);
+ const second=context.window.loadStartupSnapshot413();
+ await observed;
+ pending[1]({project:{id:'new'}});await second;
+ pending[0]({project:{id:'old'}});await new Promise(resolve=>setTimeout(resolve,0));
+ assert.deepEqual(applied.map(v=>v.project.id),['new']);
+});

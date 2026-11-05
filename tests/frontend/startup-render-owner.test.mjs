@@ -123,7 +123,7 @@ test('canonical startup adopts the already-running page extras request instead o
 
 
 test('normal startup does not repaint the canonical page after app bootstrap already painted it', () => {
-  assert.match(app, /state\.uiReady=true;render\(\);state\.__startupCanonicalPainted=true/);
+  assert.match(app, /state\.uiReady=true;[\s\S]*?try\{render\(\)\}[\s\S]*?state\.__startupCanonicalPainted=true/);
   const start = main.indexOf('const canonicalStartupPromise = window.__clInit?.();');
   const end = main.indexOf('document.documentElement.dataset.uiBuild', start);
   assert.ok(start >= 0 && end > start);

@@ -1,8 +1,10 @@
 const $=s=>document.querySelector(s);const $$=s=>Array.from(document.querySelectorAll(s));
 const api=(url,opt={})=>{
   const read=async()=>{
+    const bootstrapRequest=String(url).startsWith('/api/v53/bootstrap/snapshot')&&!String(url).includes('core=false');const bootstrapBegan=bootstrapRequest?performance.now():0;if(bootstrapRequest)window.__startupDiagnostics413={operationId:opt.headers?.['X-Client-Operation-ID']||'',phase:'waiting_headers'};
     const uploadTicket=opt.body instanceof FormData&&String(opt.method||'').toUpperCase()==='POST'&&/^\/api\/projects\/[^/?]+\/images$/.test(url)?preparePlainUpload411(opt.body):null;
-    const r=await (typeof opt.onUploadProgress==='function'&&window.PlatformCore?.fetchWithUploadProgress?window.PlatformCore.fetchWithUploadProgress(url,opt):fetch(url,opt));
+    let r;try{r=await (typeof opt.onUploadProgress==='function'&&window.PlatformCore?.fetchWithUploadProgress?window.PlatformCore.fetchWithUploadProgress(url,opt):fetch(url,opt));}catch(cause){if(bootstrapRequest&&cause?.name!=='AbortError')throw Object.assign(new Error('核心请求未取得 HTTP 响应，请检查网络或服务连接后重试。'),{code:'BOOTSTRAP_TRANSPORT_ERROR',cause});throw cause}
+    if(bootstrapRequest&&opt.signal?.aborted)throw opt.signal.reason||Object.assign(new Error('启动请求已取消'),{code:'BOOTSTRAP_CANCELLED'});
     if(uploadTicket&&r.ok)finishPlainUpload411(uploadTicket);
     if(!r.ok){
       const raw=await r.text();let body={};try{body=JSON.parse(raw)}catch{body={detail:raw}}
@@ -12,6 +14,13 @@ const api=(url,opt={})=>{
       throw error;
     }
     const ct=r.headers.get('content-type')||'';
+    if(ct.includes('json')&&bootstrapRequest){
+      const headerMs=performance.now()-bootstrapBegan;window.__startupDiagnostics413.phase='reading_body';const readBegan=performance.now();const text=await r.text();if(opt.signal?.aborted)throw opt.signal.reason||Object.assign(new Error('启动请求已取消'),{code:'BOOTSTRAP_CANCELLED'});const readMs=performance.now()-readBegan;
+      const parseBegan=performance.now();window.__startupDiagnostics413.phase='parsing_json';let result;
+      try{result=JSON.parse(text)}catch(cause){throw Object.assign(new Error('核心快照格式无效，请重试并检查服务端响应。'),{code:'BOOTSTRAP_JSON_INVALID',cause})}
+      window.__startupDiagnostics413={phase:'decoded',operationId:opt.headers?.['X-Client-Operation-ID']||'',requestId:r.headers.get('X-Request-ID')||'',responseHeadersMs:headerMs,responseReadMs:readMs,jsonParseMs:performance.now()-parseBegan,decodedBytes:new TextEncoder().encode(text).length,serverTiming:r.headers.get('Server-Timing')||'',responseBytes:r.headers.get('X-Response-Bytes')||'',httpStatus:r.status};
+      return result;
+    }
     return ct.includes('json')?r.json():r.text();
   };
   // The page owns the complete GET through body decoding, not just fetch headers.
@@ -2468,7 +2477,7 @@ window.installUsability417=function(){
     const successStatuses422=new Set(['done','finished','completed','succeeded','success']),endedStatuses422=new Set([...successStatuses422,'failed','stopped','cancelled','canceled']);
     const running=jobs.filter(j=>j.status==='running').length,queued=jobs.filter(j=>j.status==='queued').length,doneJobs=jobs.filter(j=>successStatuses422.has(String(j.status||'').toLowerCase())),endedJobs=jobs.filter(j=>endedStatuses422.has(String(j.status||'').toLowerCase())),failed=jobs.filter(j=>String(j.status||'').toLowerCase()==='failed').length;
     const totalSeconds=jobs.reduce((n,j)=>n+jobDuration422(j),0),avgSeconds=doneJobs.length?doneJobs.reduce((n,j)=>n+jobDuration422(j),0)/doneJobs.length:0,successRate=endedJobs.length?doneJobs.length/endedJobs.length:null;
-    const totalImages=dss.reduce((n,d)=>n+Number(d.images||0),0),annotated=dss.reduce((n,d)=>n+Number(d.annotated_images||0),0),boxes=dss.reduce((n,d)=>n+Number(d.boxes||0),0);
+    const totalImages=Number(state.materialSummary61?.total??dss.reduce((n,d)=>n+Number(d.images||0),0)),annotated=Number(state.materialSummary61?.annotated??dss.reduce((n,d)=>n+Number(d.annotated_images||0),0)),boxes=Number(state.materialSummary61?.boxes??dss.reduce((n,d)=>n+Number(d.boxes||0),0));
     const dsKinds={全标注:0,混合:0,未标注:0,空数据集:0};dss.forEach(d=>{const im=Number(d.images||0),an=Number(d.annotated_images||0);if(!im)dsKinds['空数据集']++;else if(an===im)dsKinds['全标注']++;else if(an>0)dsKinds['混合']++;else dsKinds['未标注']++});
     const measured=(state.v42?.quality?.algorithms||[]).map(a=>a.metrics||{}).filter(m=>m.map50!=null||m.precision!=null||m.recall!=null);const mean=k=>{const vals=measured.map(m=>Number(m[k])).filter(Number.isFinite);return vals.length?vals.reduce((a,b)=>a+b,0)/vals.length:null};const maps=measured.map(m=>Number(m.map50)).filter(Number.isFinite);
     const ready=(state.targets||[]).filter(x=>x.status==='ready').length;const days=[];for(let i=6;i>=0;i--){const d=new Date();d.setHours(0,0,0,0);d.setDate(d.getDate()-i);const key=d.toISOString().slice(0,10);const rows=jobs.filter(j=>String(j.created_at||'').slice(0,10)===key);days.push({label:(d.getMonth()+1)+'/'+d.getDate(),count:rows.length})}
@@ -2477,26 +2486,26 @@ window.installUsability417=function(){
 
   // -------- Dashboard --------
   function renderDashboard422(){
-    const d=dashboardData422(); const max=Math.max(1,...d.days.map(x=>x.count));
+    const jobsDeferred=!!state.jobsDeferred;const d=dashboardData422(); const max=Math.max(1,...d.days.map(x=>x.count));
     const sourceCount=(state.v42?.sources||[]).length, autoSource=(state.v42?.sources||[]).filter(x=>x.collect_mode==='auto').length;
     const pre=state.prelabelTasks||[], preRun=pre.filter(x=>['queued','running'].includes(x.status)).length;
-    const latest=d.jobs.slice(0,5).map(j=>`<tr><td><b>${esc(j.run_name||j.algorithm_name||j.name||j.id)}</b></td><td>${status423(j.status)}</td><td>${esc(j.dataset_name||j.dataset_id||'-')}</td><td>${fmtHours422(jobDuration422(j))}</td><td>${j.progress_percent!=null?Math.round(j.progress_percent)+'%':'-'}</td></tr>`).join('')||'<tr><td colspan="5" class="empty-row">暂无训练记录</td></tr>';
+    const latest=d.jobs.slice(0,5).map(j=>`<tr><td><b>${esc(j.run_name||j.algorithm_name||j.name||j.id)}</b></td><td>${status423(j.status)}</td><td>${esc(j.dataset_name||j.dataset_id||'-')}</td><td>${fmtHours422(jobDuration422(j))}</td><td>${j.progress_percent!=null?Math.round(j.progress_percent)+'%':'-'}</td></tr>`).join('')||(jobsDeferred?'<tr><td colspan="5" class="empty-row">训练状态按需读取，请点击“全部”查看最新任务。</td></tr>':'<tr><td colspan="5" class="empty-row">暂无训练记录</td></tr>');
     const dsTotal=Math.max(1,d.dss.length); const dsBars=Object.entries(d.dsKinds).map(([k,v])=>`<div class="ops422-seg-row"><span>${k}</span><i><b style="width:${v/dsTotal*100}%"></b></i><strong>${v}</strong></div>`).join('');
     document.getElementById('view').innerHTML=`<div class="ops422">
       <section class="ops422-head"><div><span class="ops422-eyebrow">ALGORITHM OPERATIONS</span><h2>算法生产总览</h2></div><div class="row"><button class="btn" onclick="setPage('素材接入')">素材接入</button><button class="btn primary" onclick="openNewAlgorithm422()">新建算法</button></div></section>
       <section class="ops422-kpi-grid">
-        <div class="ops422-kpi accent"><span>算法总数</span><b>${fmt422(d.algs.length)}</b><small>${d.trained} 个已训练 · ${d.versions} 个版本</small></div>
-        <div class="ops422-kpi"><span>正在训练</span><b>${d.running}</b><small>${d.queued} 个排队任务</small></div>
+        <div class="ops422-kpi accent"><span>算法总数</span><b>${fmt422(state.algorithmsTotal??d.algs.length)}</b><small>${state.algorithmsDeferred?'版本和训练详情按需读取':d.trained+' 个已训练 · '+d.versions+' 个版本'}</small></div>
+        <div class="ops422-kpi"><span>正在训练</span><b>${jobsDeferred?'—':d.running}</b><small>${jobsDeferred?'任务状态按需读取':d.queued+' 个排队任务'}</small></div>
         <div class="ops422-kpi"><span>数据集</span><b>${fmt422(d.dss.length)}</b><small>${fmt422(d.totalImages)} 张素材</small></div>
-        <div class="ops422-kpi"><span>训练总时长</span><b>${fmtHours422(d.totalSeconds)}</b><small>平均 ${fmtHours422(d.avgSeconds)}</small></div>
-        <div class="ops422-kpi"><span>训练任务成功率</span><b>${d.successRate==null?'—':(d.successRate*100).toFixed(1)+'%'}</b><small>${d.ended?d.done+' 成功 · '+(d.ended-d.done)+' 其他已结束':'暂无已结束训练可统计'}</small></div>
+        <div class="ops422-kpi"><span>训练总时长</span><b>${jobsDeferred?'—':fmtHours422(d.totalSeconds)}</b><small>${jobsDeferred?'任务历史按需读取':'平均 '+fmtHours422(d.avgSeconds)}</small></div>
+        <div class="ops422-kpi"><span>训练任务成功率</span><b>${jobsDeferred||d.successRate==null?'—':(d.successRate*100).toFixed(1)+'%'}</b><small>${jobsDeferred?'任务历史按需读取':d.ended?d.done+' 成功 · '+(d.ended-d.done)+' 其他已结束':'暂无已结束训练可统计'}</small></div>
         <div class="ops422-kpi"><span>自动标注中</span><b>${preRun}</b><small data-dashboard-source-summary>${sourceCount} 个素材源 · ${autoSource} 个自动</small></div>
       </section>
       <section class="ops422-main-grid">
-        <div class="ops422-card ops422-trend"><div class="ops422-card-head"><b>近 7 天训练任务</b><span>${d.jobs.length} 条训练记录</span></div><div class="ops422-bars">${d.days.map(x=>`<div><b>${x.count}</b><i><span style="height:${Math.max(5,x.count/max*100)}%"></span></i><em>${x.label}</em></div>`).join('')}</div></div>
+        <div class="ops422-card ops422-trend"><div class="ops422-card-head"><b>近 7 天训练任务</b><span>${jobsDeferred?'尚未读取训练历史':d.jobs.length+' 条训练记录'}</span></div><div class="ops422-bars">${jobsDeferred?'训练历史按需读取，请进入训练任务查看。':d.days.map(x=>`<div><b>${x.count}</b><i><span style="height:${Math.max(5,x.count/max*100)}%"></span></i><em>${x.label}</em></div>`).join('')}</div></div>
         <div class="ops422-card"><div class="ops422-card-head"><b>算法质量</b><span data-dashboard-quality-count>${d.measured} 个算法有指标</span></div><div class="ops422-quality"><div><span>Precision</span><b data-dashboard-quality-p>${pct423(d.meanP)}</b></div><div><span>Recall</span><b data-dashboard-quality-r>${pct423(d.meanR)}</b></div><div><span>mAP50</span><b data-dashboard-quality-map>${pct423(d.meanM)}</b></div><div><span>最高 mAP50</span><b data-dashboard-quality-best>${pct423(d.bestMap)}</b></div></div></div>
-        <div class="ops422-card"><div class="ops422-card-head"><b>数据集构成</b><span>标注率 ${d.totalImages?((d.annotated/d.totalImages)*100).toFixed(1):'0.0'}%</span></div><div class="ops422-segments">${dsBars}</div><div class="ops422-mini"><span>图片 <b>${fmt422(d.totalImages)}</b></span><span>已标注 <b>${fmt422(d.annotated)}</b></span><span>标注框 <b>${fmt422(d.boxes)}</b></span></div></div>
-        <div class="ops422-card"><div class="ops422-card-head"><b>运行资源</b><span>${d.ready} 个可用训练资源</span></div><div class="ops422-resource"><div><span>可用训练资源</span><b>${d.ready}</b></div><div><span>训练中任务</span><b>${d.running}</b></div><div><span>素材源</span><b data-dashboard-source-count>${sourceCount}</b></div><div><span>自动标注中</span><b>${preRun}</b></div></div></div>
+        <div class="ops422-card"><div class="ops422-card-head"><b>数据集构成</b><span>标注率 ${d.totalImages?((d.annotated/d.totalImages)*100).toFixed(1):'0.0'}%</span></div><div class="ops422-segments">${d.dss.every(item=>Number.isFinite(item.images))?dsBars:'分数据集统计请进入数据集查看。'}</div><div class="ops422-mini"><span>图片 <b>${fmt422(d.totalImages)}</b></span><span>已标注 <b>${fmt422(d.annotated)}</b></span><span>标注框 <b>${fmt422(d.boxes)}</b></span></div></div>
+        <div class="ops422-card"><div class="ops422-card-head"><b>运行资源</b><span>${d.ready} 个可用训练资源</span></div><div class="ops422-resource"><div><span>可用训练资源</span><b>${d.ready}</b></div><div><span>训练中任务</span><b>${jobsDeferred?'—':d.running}</b></div><div><span>素材源</span><b data-dashboard-source-count>${sourceCount}</b></div><div><span>自动标注中</span><b>${preRun}</b></div></div></div>
       </section>
       <section class="ops422-card ops422-recent"><div class="ops422-card-head"><b>最近训练</b><button class="btn mini" onclick="setPage('训练任务')">全部</button></div><div class="table-wrap"><table class="table"><thead><tr><th>任务</th><th>状态</th><th>数据集</th><th>耗时</th><th>进度</th></tr></thead><tbody>${latest}</tbody></table></div></section>
     </div>`;
@@ -3161,8 +3170,10 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
 
   // ---------------- Local / cloud model config ----------------
   function promptTable426(){const list=state.promptTemplates||[];return`<table class="table"><thead><tr><th>名称</th><th>框架</th><th>标签</th><th>保存格式</th><th>操作</th></tr></thead><tbody>${list.map(t=>`<tr><td><b>${esc(t.name)}</b></td><td>${esc(t.framework||'common')}</td><td>${esc((t.labels||[]).join('、'))}</td><td>${esc(t.save_format||'internal')}</td><td><button class="btn mini" onclick="openPromptTemplateModalV35('${t.id}')">编辑</button><button class="btn mini danger" onclick="deletePromptTemplateV35('${t.id}')">删除</button></td></tr>`).join('')||'<tr><td colspan="5">暂无提示词模板</td></tr>'}</tbody></table>`}
-  window.patchModelPromptTemplatesV35=function(){const body=document.querySelector('[data-model-prompt-body]');if(!body)return false;body.innerHTML=promptTable426();return true};
-  window.renderModelConfigPageV35=function(){const cs=state.modelConfigs||[],rows=cs.map(c=>`<tr><td><b>${esc(c.name)}</b><div class="muted-line">${esc(c.model_name||'')}</div></td><td><span class="pill ${c.provider_type==='cloud'?'blue':'ok'}">${c.provider_type==='cloud'?'云端模型':'本机模型'}</span></td><td>${esc(c.detect_url||'-')}</td><td><button class="btn mini" onclick="testModelConfigV35('${c.id}')">测试</button><button class="btn mini" onclick="openModelConfigModalV35('${c.id}')">编辑</button><button class="btn mini danger" onclick="deleteModelConfigV35('${c.id}')">删除</button></td></tr>`).join('');document.getElementById('view').innerHTML=`<section class="panel" data-model-config-panel><div class="panel-head"><div class="panel-title">模型配置</div><button class="btn primary" onclick="openModelConfigModalV35()">新增模型</button></div><div class="panel-body"><table class="table"><thead><tr><th>模型</th><th>位置</th><th>接口</th><th>操作</th></tr></thead><tbody>${rows||'<tr><td colspan="4">暂无模型配置</td></tr>'}</tbody></table></div></section><section class="panel" data-model-prompt-panel><div class="panel-head"><div class="panel-title">提示词模板</div><button class="btn primary" onclick="openPromptTemplateModalV35()">新增提示词</button></div><div class="panel-body" data-model-prompt-body>${promptTable426()}</div></section>`};
+  window.patchModelPromptTemplatesV35=function(){const models=document.querySelector('[data-model-config-panel] tbody');if(models)models.innerHTML=modelConfigRowsV35()||modelConfigEmptyV35();const body=document.querySelector('[data-model-prompt-body]');if(!body)return false;body.innerHTML=promptTable426();return true};
+  function modelConfigEmptyV35(){return state.modelConfigsLoadError?`<tr><td colspan="4">模型配置读取失败：${esc(state.modelConfigsLoadError)} <button class="btn mini" onclick="window.PlatformCore.runtime.refreshPageExtras('模型配置',{force:true})">重试</button></td></tr>`:state.modelConfigsDeferred?'<tr><td colspan="4">正在按需读取模型配置…</td></tr>':'<tr><td colspan="4">暂无模型配置</td></tr>'}
+  function modelConfigRowsV35(){const cs=state.modelConfigs||[];return cs.map(c=>`<tr><td><b>${esc(c.name)}</b><div class="muted-line">${esc(c.model_name||'')}</div></td><td><span class="pill ${c.provider_type==='cloud'?'blue':'ok'}">${c.provider_type==='cloud'?'云端模型':'本机模型'}</span></td><td>${esc(c.detect_url||'-')}</td><td><button class="btn mini" onclick="testModelConfigV35('${c.id}')">测试</button><button class="btn mini" onclick="openModelConfigModalV35('${c.id}')">编辑</button><button class="btn mini danger" onclick="deleteModelConfigV35('${c.id}')">删除</button></td></tr>`).join('')}
+  window.renderModelConfigPageV35=function(){const rows=modelConfigRowsV35();document.getElementById('view').innerHTML=`<section class="panel" data-model-config-panel><div class="panel-head"><div class="panel-title">模型配置</div><button class="btn primary" onclick="openModelConfigModalV35()">新增模型</button></div><div class="panel-body"><table class="table"><thead><tr><th>模型</th><th>位置</th><th>接口</th><th>操作</th></tr></thead><tbody>${rows||modelConfigEmptyV35()}</tbody></table></div></section><section class="panel" data-model-prompt-panel><div class="panel-head"><div class="panel-title">提示词模板</div><button class="btn primary" onclick="openPromptTemplateModalV35()">新增提示词</button></div><div class="panel-body" data-model-prompt-body>${promptTable426()}</div></section>`};
   window.switchModelProvider426=function(p){document.getElementById('mcProvider').value=p;document.getElementById('mc426Local')?.classList.toggle('on',p==='local');document.getElementById('mc426Cloud')?.classList.toggle('on',p==='cloud');document.getElementById('mc426ApiWrap')?.classList.toggle('hidden',p!=='cloud');const lab=document.getElementById('mc426UrlLabel'),url=document.getElementById('mcUrl'),model=document.getElementById('mcModel');if(lab)lab.textContent=p==='cloud'?'云端模型接口':'本机模型服务地址';if(p==='local'){if(url&&!url.value)url.value='http://127.0.0.1:9000/detect';if(model&&!model.value){const m=(state.localModels||[])[0];model.value=m?.name||m?.filename||m?.path||''}}else{if(url&&url.value.startsWith('http://127.0.0.1'))url.value='';if(model)model.value=''}};
 
   // Version deployment result cache also persists until user explicitly refreshes.
@@ -5150,9 +5161,9 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     const id=state.project.id,ownerPage=state.page,ownerEpoch=state.__navigationEpoch;
     const serial=state.__coreReadSerial412=(Number(state.__coreReadSerial412||0)+1);
     const isCurrent=()=>serial===state.__coreReadSerial412&&String(state.project?.id||'')===String(id)&&state.page===ownerPage&&state.__navigationEpoch===ownerEpoch;
-    const snapshot=await api(`/api/v53/bootstrap/snapshot${authoritative?'?refresh=true':''}`);
+    const snapshot=await api(`/api/v53/bootstrap/snapshot?core=false${authoritative?'&refresh=true':''}`);
     if(!isCurrent())return false;
-    state.datasets=snapshot.datasets||[];state.labels=snapshot.labels||[];state.algorithms=snapshot.algorithms||[];state.jobs=snapshot.jobs||[];
+    state.datasets=snapshot.datasets||[];state.labels=snapshot.labels||[];state.algorithms=snapshot.algorithms||[];state.jobs=snapshot.jobs||[];state.jobsDeferred=false;state.algorithmsDeferred=false;state.algorithmsTotal=state.algorithms.length;
     state.modelConfigs=snapshot.model_configs||[];state.__coreSnapshotGeneratedAt=Date.parse(snapshot.generated_at||'')||Date.now();
     state.materialSummary61=snapshot.material_summary;state.annotationSummary61=snapshot.annotation_summary;
     if(!state.datasets.find(d=>d.id===state.datasetId))state.datasetId=state.datasets[0]?.id||'default';
@@ -5185,10 +5196,16 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
     const modelReadOwners=state.__extrasModelReadOwners412||(state.__extrasModelReadOwners412=Object.create(null));
     const load=(key,url,field)=>{
       const target=key==='testModels'&&page==='质量中心'?'scenarioTestModels':key;
+      const modelConfigSnapshot=target==='modelConfigs'?JSON.stringify(state.modelConfigs||[]):null;
+      if(target==='modelConfigs')state.modelConfigsLoadError='';
       const modelRead=target==='testModels'||target==='scenarioTestModels'?Symbol(target):null;
       if(modelRead)modelReadOwners[target]=modelRead;
-      tasks.push(api(url).then(value=>{
+      const request=target==='modelConfigs'&&typeof window.PlatformCore?.withRequestDeadline==='function'
+        ?window.PlatformCore.withRequestDeadline(signal=>api(url,{signal}),{timeoutMs:12000,label:'模型配置读取',signal:window.PageRequestScopeRuntime?.scope?.controller?.signal})
+        :api(url);
+      tasks.push(request.then(value=>{
         if(modelRead&&modelReadOwners[target]!==modelRead)return;
+        if(target==='modelConfigs'&&JSON.stringify(state.modelConfigs||[])!==modelConfigSnapshot){if(isCurrentOwner())state.modelConfigsDeferred=false;return}
         // A training dialog has a dedicated resource hydration owner. A page
         // extras response started earlier must not overwrite its newer target
         // list and empty the hidden resource selector during submission.
@@ -5201,7 +5218,8 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
         }
         state[target]=field?(value?.[field]||[]):value;
         if(target==='scenarioTestModels')state.scenarioModelsProjectId=String(id);
-      }));
+        if(target==='modelConfigs')state.modelConfigsDeferred=false;
+      }).catch(error=>{if(target==='modelConfigs'&&isCurrentOwner()){state.modelConfigsDeferred=false;state.modelConfigsLoadError=String(error.message||error);window.patchModelPromptTemplatesV35?.()}throw error}));
     };
     if(['训练任务','训练资源','自动迭代'].includes(page))load('targets',`/api/training_options?project_id=${id}`,'targets');
     if(['测试发布','部署测试'].includes(page))load('pending',`/api/v12/projects/${id}/publish/pending`,'items');
@@ -5210,7 +5228,7 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
       load('inferenceEnvs','/api/v16/inference_envs','items');
     }
     if(['训练任务','测试发布','部署转换','部署产物'].includes(page))load('models',`/api/projects/${id}/models`);
-    if(page==='模型配置')load('promptTemplates','/api/v35/prompt-templates','items');
+    if(page==='模型配置'){load('modelConfigs','/api/v35/model-configs','items');load('promptTemplates','/api/v35/prompt-templates','items')}
     const results=await Promise.allSettled(tasks);for(const result of results)if(result.status==='rejected'&&isCurrentOwner())toast(result.reason?.message||String(result.reason));
     // Annotation JSON fallback is per image; ordinary refresh never starts a project scan.
     return {cacheable:results.every(result=>result.status==='fulfilled')};
@@ -5398,21 +5416,64 @@ var radar424 = window.radar424 = window.radar424 || function(scores,cls=''){cons
  window.__v53BootstrapOwned=true;
  function boot(st){const p=Math.max(0,Math.min(100,Number(st?.progress||0))),scale=(p/100).toFixed(4);return `<div class="boot413"><div class="boot413-card" data-boot-card="1"><div class="boot413-brand"><i></i><div><b>算法训练</b><span>正在准备平台数据</span></div></div><div class="boot413-progress"><div><span data-boot-stage>${esc(st?.stage||'正在启动')}</span><b data-boot-percent>${Math.round(p)}%</b></div><i><em data-boot-progress-bar data-progress="${p.toFixed(2)}" style="transform:scaleX(${scale})"></em></i><p data-boot-message>${esc(st?.message||'正在读取历史素材、标注和算法版本')}</p></div><div class="boot413-note">核心数据就绪后即可操作，后台初始化状态以服务端回执为准。</div>${window.PlatformCore?.presentation?.loadingSkeleton?.('正在读取核心页面布局')||''}</div></div>`}
  function paintBoot(view,st,{allowCreate=false}={}){if(!view||state.uiReady||state.__startupCanonicalPainted)return false;const p=Math.max(0,Math.min(100,Number(st?.progress||0))),card=view.querySelector?.('[data-boot-card="1"]');if(!card){if(!allowCreate)return false;view.innerHTML=boot(st);return true}const stage=card.querySelector?.('[data-boot-stage]'),percent=card.querySelector?.('[data-boot-percent]'),bar=card.querySelector?.('[data-boot-progress-bar]'),message=card.querySelector?.('[data-boot-message]');if(stage)stage.textContent=st?.stage||'正在启动';if(percent)percent.textContent=`${Math.round(p)}%`;if(bar){bar.dataset.progress=p.toFixed(2);bar.style.transform=`scaleX(${(p/100).toFixed(4)})`}if(message)message.textContent=st?.message||'正在读取历史素材、标注和算法版本';return true}
- async function waitReady(signal){const view=document.getElementById('view');let st={progress:0,stage:'连接平台服务',message:'正在确认启动状态'};paintBoot(view,st);for(let i=0;i<1800;i++){if(signal?.aborted)throw new Error('启动等待已结束');let r=null;try{r=await api('/api/v53/bootstrap/status',{signal})}catch(e){if(signal?.aborted)throw e}if(r){st=r;paintBoot(view,st);if(r.status==='ready')return r;if(r.status==='failed')throw new Error(r.message||r.error||'平台数据预加载失败')}await sleep(i<30?300:650)}throw new Error('平台数据准备时间过长，请查看 start.bat 启动窗口。')}
- function apply(s){state.projects=s.projects||[];state.project=s.project||null;state.datasets=s.datasets||[];state.datasetId=state.datasets.find(d=>d.id===state.datasetId)?.id||state.datasets[0]?.id||'default';state.images=s.images||[];state.materialSummary61=s.material_summary;state.annotationSummary61=s.annotation_summary;const bootstrapLabels=Array.isArray(s.labels)?s.labels:[];state.labelGovernance414=bootstrapLabels;state.labels=bootstrapLabels.filter(item=>item?.active!==false&&String(item?.status||'active')==='active');state.algorithms=s.algorithms||[];state.jobs=s.jobs||[];state.models=s.models||[];state.targets=s.targets||[];state.inferenceEnvs=s.inference_envs||[];state.rec=s.recommendation||null;state.localModels=s.local_models||[];state.modelConfigs=s.model_configs||[];state.pending=s.pending||[];state.testModels=s.test_models||[];state.__coreSnapshotGeneratedAt=Date.parse(s.generated_at||'')||Date.now();state.versionInfo={version:String(s.platform_version||'').trim()||'—',build_id:String(s.build_id||'').trim(),name:'算法训练'};try{const x=JSON.parse(localStorage.getItem('mc_train_ui_state_v34')||'{}'),rawPage=String(x.page||'');let restoredPage=rawPage==='工作台'?'总览':rawPage==='自动标注'?'自动标注及清洗':rawPage;if(rawPage==='检测台'){restoredPage='质量中心';state.qualityCenterTab411='detect'}else if(rawPage==='测试发布'){restoredPage='质量中心';state.qualityCenterTab411='overview'}else if(['部署转换','部署产物'].includes(rawPage))restoredPage='算法列表';else if(rawPage==='部署插件')restoredPage='模型配置';delete x.projectId;if(RESTORABLE_PAGES413.has(restoredPage)){state.page=restoredPage;x.page=restoredPage}x.ts=Date.now();localStorage.setItem('mc_train_ui_state_v34',JSON.stringify(x))}catch(e){}}
+ async function waitReady(signal){const view=document.getElementById('view');let st={progress:0,stage:'连接平台服务',message:'正在确认启动状态'};paintBoot(view,st);for(let i=0;i<1800;i++){if(signal?.aborted)throw new Error('启动等待已结束');let r=null;try{r=await api('/api/v53/bootstrap/status',{signal})}catch(e){if(signal?.aborted||e?.httpStatus&&e.httpStatus!==503)throw e}if(r){st=r;paintBoot(view,st);if(r.status==='ready')return r;if(r.status==='failed')throw Object.assign(new Error(r.message||'核心数据准备失败'),{code:r.error||'BOOTSTRAP_BUILD_FAILED'})}await sleep(i<30?300:650)}throw new Error('平台数据准备时间过长，请查看 start.bat 启动窗口。')}
+ function apply(s){state.projects=s.projects||[];state.project=s.project||null;state.datasets=s.datasets||[];state.datasetId=state.datasets.find(d=>d.id===state.datasetId)?.id||state.datasets[0]?.id||'default';state.images=s.images||[];state.materialSummary61=s.material_summary;state.annotationSummary61=s.annotation_summary;const bootstrapLabels=Array.isArray(s.labels)?s.labels:[];state.labelGovernance414=bootstrapLabels;state.labels=bootstrapLabels.filter(item=>item?.active!==false&&String(item?.status||'active')==='active');state.algorithms=s.algorithms||[];state.algorithmsDeferred=!!s.algorithms_deferred;state.algorithmsTotal=Number(s.algorithms_total??state.algorithms.length);state.jobs=s.jobs||[];state.jobsDeferred=!!s.jobs_deferred;state.models=s.models||[];state.targets=s.targets||[];state.inferenceEnvs=s.inference_envs||[];state.rec=s.recommendation||null;state.localModels=s.local_models||[];state.modelConfigs=s.model_configs||[];state.modelConfigsDeferred=!!s.model_configs_deferred;state.modelConfigsLoadError='';state.pending=s.pending||[];state.testModels=s.test_models||[];state.__coreSnapshotGeneratedAt=s.algorithms_deferred?0:(Date.parse(s.generated_at||'')||Date.now());state.versionInfo={version:String(s.platform_version||'').trim()||'—',build_id:String(s.build_id||'').trim(),name:'算法训练'};try{const x=JSON.parse(localStorage.getItem('mc_train_ui_state_v34')||'{}'),rawPage=String(x.page||'');let restoredPage=rawPage==='工作台'?'总览':rawPage==='自动标注'?'自动标注及清洗':rawPage;if(rawPage==='检测台'){restoredPage='质量中心';state.qualityCenterTab411='detect'}else if(rawPage==='测试发布'){restoredPage='质量中心';state.qualityCenterTab411='overview'}else if(['部署转换','部署产物'].includes(rawPage))restoredPage='算法列表';else if(rawPage==='部署插件')restoredPage='模型配置';delete x.projectId;if(RESTORABLE_PAGES413.has(restoredPage)){state.page=restoredPage;x.page=restoredPage}x.ts=Date.now();localStorage.setItem('mc_train_ui_state_v34',JSON.stringify(x))}catch(e){}}
  window.loadStartupSnapshot413=async function(force=false){
+   window.__startupAttemptBeganAt413=Date.now();
+   const sequence=(window.__v53SnapshotSequence||0)+1;window.__v53SnapshotSequence=sequence;
+   const replaced=new Error('启动请求已被替换（superseded）');replaced.code='STARTUP_SUPERSEDED';
+   window.__v53SnapshotController?.abort(replaced);
    const view=document.getElementById('view'),controller=new AbortController(),timers=[];
-   paintBoot(view,{stage:'读取核心页面',message:'正在核验项目、算法版本和真实任务状态'},{allowCreate:true});
-   const deadline=new Promise((_,reject)=>timers.push(setTimeout(()=>{const error=new Error('核心页面读取超时，请重试；后台任务状态不会因此改变。');controller.abort();reject(error)},20000)));
-   timers.push(setTimeout(()=>paintBoot(view,{stage:'仍在读取核心数据',message:'请求尚未返回，正在等待服务端真实项目与任务索引'}),3000));
-   timers.push(setTimeout(()=>paintBoot(view,{stage:'服务端仍未返回',message:'最长等待20秒，超时后可重新加载；不会重复创建训练任务'}),10000));
+   window.__v53SnapshotController=controller;
+   const current=()=>window.__v53SnapshotSequence===sequence&&!controller.signal.aborted;
+   const navigationGeneration=window.PageRequestScopeRuntime?.stats?.().generation;
+   paintBoot(view,{stage:'读取核心页面',message:'只读取项目、基础算法和统计摘要；训练历史按需加载'},{allowCreate:true});
+   const deadline=new Promise((_,reject)=>timers.push(setTimeout(()=>{const error=new Error('核心页面读取超时，请重试；后台任务状态不会因此改变。');error.code='BOOTSTRAP_REQUEST_TIMEOUT';error.phase=window.__startupDiagnostics413?.phase||'unknown';reject(error);controller.abort(error)},20000)));
+   let onAbort;
+   const cancelled=new Promise((_,reject)=>{onAbort=()=>reject(controller.signal.reason instanceof Error?controller.signal.reason:Object.assign(new Error('启动请求已取消'),{code:'BOOTSTRAP_CANCELLED'}));controller.signal.addEventListener('abort',onAbort,{once:true})});
+   const bounded=operation=>Promise.race([operation,deadline,cancelled]);
+   const phaseText=()=>({waiting_headers:'等待 HTTP 响应',waiting_core:'准备核心缓存',reading_body:'下载核心快照',parsing_json:'解析核心数据'}[window.__startupDiagnostics413?.phase]||'读取核心页面');
+   const operationId='bootstrap_'+(window.crypto?.randomUUID?.()||`${Date.now()}_${sequence}`);
+   const snapshotOptions={signal:controller.signal,headers:{'X-Client-Operation-ID':operationId}};
+   timers.push(setTimeout(()=>{if(current())paintBoot(view,{stage:phaseText(),message:'核心页面尚未就绪；诊断记录将区分服务端准备、传输和解码阶段'})},3000));
+   timers.push(setTimeout(()=>{if(current())paintBoot(view,{stage:phaseText(),message:'20 秒内未完成将提供重试，不会创建或取消训练任务'})},10000));
    try{
-     if(force)await Promise.race([api('/api/v53/bootstrap/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({force:true}),signal:controller.signal}),deadline]);
-     let s;try{s=await Promise.race([api('/api/v53/bootstrap/snapshot',{signal:controller.signal}),deadline])}catch(error){if(error?.code!=='HTTP_503')throw error;await Promise.race([waitReady(controller.signal),deadline]);s=await Promise.race([api('/api/v53/bootstrap/snapshot',{signal:controller.signal}),deadline])}
-     apply(s);return s
-   }finally{timers.forEach(clearTimeout);controller.abort()}
+     if(force)await bounded(api('/api/v53/bootstrap/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({force:true}),signal:controller.signal}));
+     let snapshot;
+     for(let attempt=0;attempt<10;attempt++){
+       try{snapshot=await bounded(api('/api/v53/bootstrap/snapshot',snapshotOptions));break}
+       catch(error){
+         if(error.code!=='BOOTSTRAP_PENDING'&&error.code!=='HTTP_503')throw error;
+         if(attempt===9)throw Object.assign(new Error('核心快照尚未就绪，请稍后重试；后台任务不受影响。'),{code:'BOOTSTRAP_PENDING'});
+         window.__startupDiagnostics413={...(window.__startupDiagnostics413||{}),phase:'waiting_core',httpStatus:503};
+         await bounded(waitReady(controller.signal));
+         // Different Web workers may finish at different times. Keep retries
+         // bounded by both count and the same 20s deadline, without a tight loop.
+         if(attempt>0)await bounded(new Promise(resolve=>timers.push(setTimeout(resolve,500))));
+       }
+     }
+     if(!current())throw replaced;
+     const navigated=navigationGeneration!==undefined&&window.PageRequestScopeRuntime?.stats?.().generation!==navigationGeneration;
+     const currentPage=typeof state==='object'?state.page:null;
+     apply(snapshot);
+     if(navigated&&currentPage&&typeof state==='object')state.page=currentPage;
+     return snapshot;
+   }finally{timers.forEach(clearTimeout);controller.signal.removeEventListener('abort',onAbort);controller.abort();if(window.__v53SnapshotController===controller)window.__v53SnapshotController=null}
  };
- window.__clInit=function(){if(window.__v53InitPromise)return window.__v53InitPromise;const view=document.getElementById('view');window.__v53InitPromise=(async()=>{try{await window.loadStartupSnapshot413(false);state.uiReady=true;render();state.__startupCanonicalPainted=true}catch(e){state.uiReady=false;window.__v53InitPromise=null;if(view&&!state.__startupCanonicalPainted)view.innerHTML=`<div class="boot413"><div class="boot413-card error"><b>平台数据加载失败</b><p>${esc(e.message||e)}</p><div class="row"><button class="btn primary" onclick="window.__clInit()">重新加载</button><button class="btn" onclick="location.reload()">刷新页面</button></div></div></div>`}})();return window.__v53InitPromise};
+ window.__clInit=function(){if(window.__v53InitPromise)return window.__v53InitPromise;const view=document.getElementById('view');window.__v53InitPromise=(async()=>{
+   try{
+     await window.loadStartupSnapshot413(false);
+     const renderBegan=performance.now();state.uiReady=true;window.__startupDiagnostics413={...(window.__startupDiagnostics413||{}),phase:'rendering'};try{render()}catch(cause){throw Object.assign(new Error('核心数据已读取，但页面渲染失败，请重试。'),{code:'BOOTSTRAP_RENDER_FAILED',cause})}state.__startupCanonicalPainted=true;
+     window.__startupDiagnostics413={...(window.__startupDiagnostics413||{}),phase:'interactive',renderMs:performance.now()-renderBegan};
+     if(typeof CustomEvent==='function')window.dispatchEvent(new CustomEvent('platform-core-ready'));
+   }catch(error){
+     if(error.code==='STARTUP_SUPERSEDED')return;
+     window.__v53InitPromise=null;window.__startupDiagnostics413={...(window.__startupDiagnostics413||{}),failureCode:error.code||'BOOTSTRAP_REQUEST_FAILED'};
+     if(state.__startupCanonicalPainted){toast(error.message||error);return}
+     state.uiReady=false;
+     if(view)view.innerHTML=`<div class="boot413"><div class="boot413-card error"><b>平台核心页面暂不可用</b><p>${esc(error.message||error)}</p><small>${esc(error.code||'BOOTSTRAP_REQUEST_FAILED')}</small><div class="row"><button class="btn primary" onclick="window.__clInit()">重新加载</button><button class="btn" onclick="location.reload()">刷新页面</button></div></div></div>`;
+   }
+ })();return window.__v53InitPromise};
  const TOP_CRUMB413=Object.freeze({
   '总览':'总览','质量中心':'总览',
   '算法列表':'算法生成','训练任务':'算法生成','训练资源':'高级功能',

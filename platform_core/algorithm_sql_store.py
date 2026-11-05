@@ -206,6 +206,17 @@ class AlgorithmSqlStore:
                 conn.rollback()
                 raise
 
+    def bootstrap_summary(self, limit=500):
+        """Bounded basic columns, never hydrate version/report payloads at boot."""
+        self.ensure_ready()
+        with closing(self._connect()) as conn:
+            conn.execute("BEGIN")
+            revision = int(self._meta(conn, "algorithm_revision") or 0)
+            total = conn.execute("SELECT COUNT(*) FROM algorithms WHERE project_id=?", (self.project_id,)).fetchone()[0]
+            rows = conn.execute("SELECT id,name,remark,industry,algorithm_type,current_version_id,created_at,updated_at,source_type,master_data_readonly FROM algorithms WHERE project_id=? ORDER BY sort_index,created_at DESC,id LIMIT ?", (self.project_id,max(1,min(500,int(limit))))).fetchall()
+            conn.commit()
+        return [dict(row, versions=[], versions_deferred=True) for row in rows], total, revision
+
     def read_all(self) -> list[dict]:
         self.ensure_ready()
         with self._connect() as conn:

@@ -99,7 +99,7 @@ def test_bootstrap_snapshot_is_pre_serialized_without_changing_json(monkeypatch)
     )
     monkeypatch.setattr(app_module, "_v53_choose_project", lambda projects, _preferred: projects[0])
 
-    response = app_module.v53_bootstrap_snapshot("")
+    response = app_module.v53_bootstrap_snapshot("",core=False)
 
     assert isinstance(response, Response)
     payload = json.loads(response.body)
@@ -128,7 +128,7 @@ def test_refreshed_bootstrap_counts_each_project_once_and_replaces_cache(monkeyp
         lambda project_id: {"project": {"id": project_id}, "generated_at": "fresh"},
     )
 
-    response = app_module.v53_bootstrap_snapshot("p2", refresh=True)
+    response = app_module.v53_bootstrap_snapshot("p2", refresh=True,core=False)
     payload = json.loads(response.body)
 
     assert calls == ["p1", "p2", "p3"]

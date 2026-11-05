@@ -18,7 +18,7 @@ import {installNavigationStability} from './modules/navigation-stability.js?v=20
 import {persistUiState} from './modules/ui-state.js?v=422500';
 import {installPageRequestScope, isPageNavigationCancelled} from './modules/page-request-scope.js?v=20261031-p0body';
 import {installPollRegistry} from './modules/poll-registry.js?v=422522';
-import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=42.24.536';
+import {installAlgorithmListRuntime} from './modules/algorithm-list-runtime.js?v=42.24.537';
 import {installExternalAlgorithmPlatformRuntime} from './modules/external-algorithm-platform.js?v=63025';
 import {installChangLianDataBrowserRuntime} from './modules/changlian-data-browser.js?v=63002';
 import {installExternalAlgorithmPublishRuntime} from './modules/external-algorithm-publish.js?v=42.24.536';
@@ -466,7 +466,11 @@ function refreshPageExtrasInBackground(page,{force=false}={}) {
   const age=Date.now()-Number(pageExtrasLoadedAt.get(o.cacheKey)||0);
   if(!force&&pageExtrasLoadedAt.has(o.cacheKey)&&age>=0&&age<PAGE_EXTRAS_CACHE_TTL_MS)return null;
   const existing=pageExtrasInflight.get(o.inflightKey);
-  if(existing)return existing;
+  if(existing){
+    if(!force)return existing;
+    if(!existing.forcedFollowup)existing.forcedFollowup=existing.then(()=>pageExtrasOwnerCurrent(o)?refreshPageExtrasInBackground(page,{force:true}):null);
+    return existing.forcedFollowup;
+  }
   const loadTask=page==='训练资源'&&typeof window.refreshTrainingResourceTruthV3==='function'
     ?window.refreshTrainingResourceTruthV3():window.loadPageExtras413(page);
   return trackPageExtras(o,loadTask,()=>{
@@ -495,7 +499,7 @@ function refreshCurrentPageOwner(page) {
   }
   if (page === '训练任务') {
     void trainingTaskRuntime.refresh({render: true, force: false, source: 'page-owner'}).then(result => {
-      if (!result?.stale) pollRegistry?.replaceTrainingJobTimer?.();
+      if (!result?.stale){state.jobsDeferred=false;pollRegistry?.replaceTrainingJobTimer?.();}
     }).catch(error => notify(error?.message || error));
     return;
   }
@@ -651,16 +655,18 @@ window.PlatformCore.runtime.renderRouter = {
 
 const algorithmStartupBeganAt = Date.now();
 const canonicalStartupPromise = window.__clInit?.();
-Promise.resolve(canonicalStartupPromise).then(() => {
+function finishCanonicalStartup() {
   // __clInit handles failure locally so that its retry UI remains actionable.
   // A resolved promise is not evidence that the core snapshot succeeded.
   if (state.uiReady !== true || !state.__startupCanonicalPainted) return;
+  const owner=window.__v53SnapshotSequence||1;
+  if(state.__startupExtrasOwner===owner)return;state.__startupExtrasOwner=owner;
   // The task center is installed before bootstrap project truth is available.
   // Load that project's persisted upload rows once readiness resolves so a
   // browser-only queued File becomes an explicit re-selection request.
   uploadTaskCenterRuntime.switchProject?.();
   const startupPage = String(state.page || '');
-  window.PlatformCore.runtime.startupTiming = {coreBootstrapMs: Date.now() - algorithmStartupBeganAt, page: startupPage};
+  window.PlatformCore.runtime.startupTiming = {coreBootstrapMs: Date.now() - Number(window.__startupAttemptBeganAt413||algorithmStartupBeganAt), page: startupPage};
   adoptPageExtrasInflight(startupPage, state.__extras412);
   if (!state.__startupCanonicalPainted && navigationStabilityRuntime.hasPageOwner(startupPage)) {
     void renderCanonicalOwner(startupPage, {source: 'startup-owner'});
@@ -668,6 +674,8 @@ Promise.resolve(canonicalStartupPromise).then(() => {
   }
   refreshCurrentPageOwner(startupPage);
   void window.AiReviewRouteRuntime?.restore?.();
-});
+}
+window.addEventListener('platform-core-ready',finishCanonicalStartup);
+Promise.resolve(canonicalStartupPromise).then(finishCanonicalStartup);
 
 document.documentElement.dataset.uiBuild = UI_BUILD_VERSION;

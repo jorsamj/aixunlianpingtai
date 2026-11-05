@@ -62,6 +62,7 @@ test('caller signal, bootstrap and mutation response bodies retain their own own
   const scope=new PageRequestScope({page:'A',fetchImpl:async(_url,init={})=>({
     ok:true,headers:{get:()=> 'application/json'},
     json:()=>new Promise(resolve=>bodies.push({resolve,signal:init.signal})),
+    text:()=>new Promise(resolve=>bodies.push({resolve:value=>resolve(JSON.stringify(value)),signal:init.signal})),
   })});
   const api=makeApi(scope);
   const caller=new AbortController();
@@ -77,4 +78,10 @@ test('caller signal, bootstrap and mutation response bodies retain their own own
   bodies.forEach((body,index)=>body.resolve({index}));
   assert.deepEqual(await Promise.all(requests),[{index:0},{index:1},{index:2}]);
   assert.equal(scope.abortedRequests,0);
+});
+
+
+test('malformed core snapshot JSON has a specific recoverable error',async()=>{
+ const scope=new PageRequestScope({page:'A',fetchImpl:async()=>new Response('{broken',{headers:{'Content-Type':'application/json'}})});
+ await assert.rejects(makeApi(scope)('/api/v53/bootstrap/snapshot'),error=>error.code==='BOOTSTRAP_JSON_INVALID');
 });

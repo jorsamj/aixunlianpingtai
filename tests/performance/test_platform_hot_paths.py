@@ -191,7 +191,7 @@ def test_bootstrap_cached_snapshot_history_scaling(tmp_path, monkeypatch):
             durations=[];first_timing='';response_bytes=0
             for index in range(21):
                 began=time.perf_counter()
-                response=client.get('/api/v53/bootstrap/snapshot')
+                response=client.get('/api/v53/bootstrap/snapshot',params={'core':False})
                 durations.append((time.perf_counter()-began)*1000)
                 assert response.status_code==200,response.text
                 payload=response.json()
@@ -316,7 +316,7 @@ def test_bootstrap_snapshot_miss_builds_real_synthetic_project(tmp_path,monkeypa
             durations=[];first_timing='';response_bytes=0
             for index in range(21):
                 started=time.perf_counter()
-                response=client.get('/api/v53/bootstrap/snapshot')
+                response=client.get('/api/v53/bootstrap/snapshot',params={'core':False})
                 durations.append((time.perf_counter()-started)*1000)
                 assert response.status_code==200,response.text
                 body=response.json()

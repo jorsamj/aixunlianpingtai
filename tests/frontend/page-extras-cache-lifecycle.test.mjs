@@ -58,3 +58,14 @@ test('partial allSettled failure reports non-cacheable and preserves successful 
   assert.equal(state.scenarioTestModels[0].id,'scenario');
   assert.deepEqual(toasts,['envs failed']);
 });
+
+
+test('explicit retry during partial extras failure queues only one followup',async()=>{
+ const ctx=owner();const first=ctx.refresh('模型配置');
+ const retry=ctx.refresh('模型配置',{force:true});
+ assert.equal(ctx.refresh('模型配置',{force:true}),retry);
+ assert.equal(ctx.calls.length,1);
+ ctx.calls[0]({cacheable:false});await first;await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(ctx.calls.length,2);ctx.calls[1]({cacheable:true});await retry;
+ assert.equal(ctx.inflight.size,0);
+});

@@ -1,0 +1,21 @@
+{
+  "environment": "local Windows synthetic SQLite metadata, process bootstrap caches cold, disk cache not forced cold; no real images/GT or production I/O",
+  "materials": 217130,
+  "algorithms": 110,
+  "basic_rows_returned": 110,
+  "cold_core_worker_ms": 190.5248999973992,
+  "warm_http_samples": 25,
+  "warm_http_p50_ms": 14.658899992355146,
+  "warm_http_p95_ms": 18.361300011747517,
+  "response_bytes": 27115,
+  "server_timing": "bootstrap;dur=11.86, serialize;dur=0.05, revision;dur=11.81",
+  "cold_build_stages_ms": {
+    "revision": 22.438,
+    "project": 0.26,
+    "datasets": 12.246,
+    "algorithms": 3.333,
+    "materials": 131.234,
+    "annotations": 5.176
+  },
+  "python": "3.12.7"
+}

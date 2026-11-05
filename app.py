@@ -18340,7 +18340,7 @@ def _v35_publish_model_config(item=None, *, removed_id=""):
     # or second cache: refresh/re-edit must see the same saved configuration.
     public = _v35_sanitize_secret(item) if item is not None else None
     snapshot = globals().get("_V53_BOOTSTRAP_SNAPSHOT")
-    if isinstance(snapshot, dict) and snapshot:
+    if isinstance(snapshot, dict) and snapshot and not snapshot.get("core_only"):
         identity = str(item.get("id") if item is not None else removed_id)
         rows = snapshot.get("model_configs") or []
         found = any(str(row.get("id")) == identity for row in rows)
@@ -27036,7 +27036,7 @@ def v49_mark_processed(project_id: str, payload: V46BatchDeleteImagesReq):
 # ============================================================
 _V53_BOOTSTRAP_LOCK = threading.Lock()
 _V53_BOOTSTRAP_THREAD: Optional[threading.Thread] = None
-_V53_BOOTSTRAP_STATUS: Dict[str, Any] = {"status":"idle","progress":0,"stage":"尚未开始","message":"","started_at":"","finished_at":"","active_project_id":"","error":""}
+_V53_BOOTSTRAP_STATUS: Dict[str, Any] = {"status":"idle","progress":0,"stage":"尚未开始","message":"","started_at":"","finished_at":"","active_project_id":"","error":"","readiness_scope":"core","maintenance_status":"not_started"}
 _V53_BOOTSTRAP_SNAPSHOT: Dict[str, Any] = {}
 
 def _v53_set_bootstrap(progress:int, stage:str, message:str="", **extra):
@@ -27141,6 +27141,8 @@ def _v53_algorithms_with_revision(project_id: str) -> tuple[List[Dict[str, Any]]
 def _v53_snapshot_with_live_jobs(snapshot: Mapping[str, Any], project_id: str) -> Dict[str, Any]:
     global _V53_BOOTSTRAP_SNAPSHOT
     payload = dict(snapshot or {})
+    if payload.get("core_only"):
+        return _v53_build_snapshot(project_id)  # explicit non-core compatibility read
     cached_revision = int(payload.get("algorithm_revision") or 0)
     current_revision = algorithm_store_revision(algorithms_file(project_id))
     if cached_revision != current_revision:
@@ -27175,7 +27177,41 @@ def _v53_snapshot_with_live_jobs(snapshot: Mapping[str, Any], project_id: str) -
     return payload
 
 
-def _v53_build_snapshot(project_id:str, prepared_targets:Optional[List[Dict[str,Any]]]=None):
+@performance_stage("bootstrap.revision")
+def _v53_core_revisions(project_id):
+    project=get_project(project_id)
+    return {"algorithm": algorithm_store_revision(algorithms_file(project_id)),
+            "material": material_store(project_id).current_revision(),
+            "annotation": AnnotationRepository(project_dir(project_id)).current_revision(),
+            "project": hashlib.sha256(json.dumps(project, sort_keys=True, ensure_ascii=False).encode()).hexdigest()}
+
+
+def _v53_build_core_snapshot(project_id):
+    from platform_core.algorithm_sql_store import AlgorithmSqlStore
+    timings = {}
+    def measure(name, operation):
+        began=time.perf_counter()
+        try:return operation()
+        finally:timings[name]=round((time.perf_counter()-began)*1000,3)
+    revisions=measure("revision",lambda:_v53_core_revisions(project_id))
+    project=measure("project",lambda:get_project(project_id))
+    datasets=measure("datasets",lambda:ensure_default_datasets(project_id))
+    algorithms,total,revision=measure("algorithms",lambda:AlgorithmSqlStore(algorithms_file(project_id)).bootstrap_summary())
+    materials=measure("materials",lambda:material_store(project_id).summary())
+    annotations=measure("annotations",lambda:AnnotationRepository(project_dir(project_id)).summary())
+    if revisions != _v53_core_revisions(project_id) or revision != revisions["algorithm"]:
+        raise ValueError("BOOTSTRAP_REVISION_CHANGED")
+    now=now_iso()
+    return {"core_only":True,"core_revisions":revisions,"project":project,"datasets":datasets,
+        "labels":project_label_items(project),"algorithms":algorithms,"algorithm_revision":revision,
+        "algorithms_total":total,"algorithms_deferred":True,"material_summary":materials,"annotation_summary":annotations,
+        "jobs":[],"jobs_deferred":True,"training_counts_deferred":True,"model_configs_deferred":True,
+        "platform_version":APP_VERSION,"build_id":BUILD_ID,"generated_at":now,"algorithms_generated_at":now,
+        "bootstrap_timings_ms":timings}
+
+
+def _v53_build_snapshot(project_id:str, prepared_targets:Optional[List[Dict[str,Any]]]=None, *, core_only:bool=False):
+    if core_only:return _v53_build_core_snapshot(project_id)
     # First paint reads repository counters and small metadata indexes only.
     # Materials use v61 pagination; legacy annotation JSON is resolved per image.
     project=get_project(project_id); datasets=ensure_default_datasets(project_id); labels=project_label_items(project)
@@ -27197,39 +27233,63 @@ def _v53_bootstrap_worker(preferred_project_id:str=""):
         projects=list_projects()
         if not projects:projects=[create_project(ProjectCreate(name="默认空间",description="系统自动创建",labels=[]))]
         _v53_set_bootstrap(8,"读取平台数据",f"发现 {len(projects)} 个项目")
-        active=_v53_choose_project(projects,preferred_project_id)
+        active=next((p for p in projects if str(p.get("id"))==preferred_project_id),None) if preferred_project_id and ALLOW_MULTIPLE_PROJECTS_FOR_TESTS else _v53_choose_project(projects,preferred_project_id)
         if not active:raise RuntimeError("没有可用项目")
-        active_id=str(active.get("id")); _V53_BOOTSTRAP_STATUS["active_project_id"]=active_id; c=_v53_project_counts(active)
-        _v53_set_bootstrap(14,"选择数据项目",f"{active.get('name') or active_id} · {c['images']} 张素材 · {c['algorithms']} 个算法")
-        total=max(1,len(projects))
-        for idx,p in enumerate(projects):
-            pid0=str(p.get("id") or "")
-            if not pid0:continue
-            ensure_project_dirs(pid0); _v50_recover_dataset_deletions(pid0)
-            _v53_set_bootstrap(16+int(44*idx/total),"读取素材索引",f"{p.get('name') or pid0} · {material_store(pid0).count()} 张")
-            # Worker threads are process-local. Requeue persisted upload
-            # cleaning tasks after a restart so they cannot remain stuck in a
-            # non-terminal state merely because the previous process exited.
+        active_id=str(active.get("id"))
+        _V53_BOOTSTRAP_STATUS["active_project_id"]=active_id
+        _v53_set_bootstrap(20,"读取核心页面","训练历史与维护任务将在首屏之后按需读取")
+        # One existing worker per process; persistent lock prevents simultaneous
+        # builds in different Web workers. No second cache or background task system.
+        with FileLock(str(Path(DATA_DIR)/".v53-bootstrap-build.lock"), timeout=10):
+            snap=_v53_build_snapshot(active_id,core_only=True)
+        snap["projects"]=projects
+        _V53_BOOTSTRAP_SNAPSHOT=snap
+        _V53_BOOTSTRAP_STATUS.update({"status":"ready","progress":100,"stage":"核心页面已就绪","message":"后台数据按页面读取","finished_at":now_iso(),"updated_at":now_iso(),"active_project_id":active_id,"error":""})
+    except Exception as error:
+        code="BOOTSTRAP_DATABASE_BUSY" if isinstance(error,sqlite3.OperationalError) and any(v in str(error).lower() for v in ("locked","busy")) else "BOOTSTRAP_BUILD_FAILED"
+        if type(error).__name__=="Timeout":code="BOOTSTRAP_BUILD_BUSY"
+        logging.exception("Core bootstrap failed: %s",code)
+        _V53_BOOTSTRAP_STATUS.update({"status":"failed","stage":"核心页面准备失败","message":"核心数据准备失败，请重试；后台训练不受影响。","error":code,"finished_at":now_iso(),"updated_at":now_iso()})
+
+def _v53_post_bootstrap_recovery():
+    # Existing recovery operations are startup-only, never run by snapshot retry.
+    # Let the core worker finish without making its thread represent maintenance.
+    worker=_V53_BOOTSTRAP_THREAD
+    if worker:worker.join()
+    _V53_BOOTSTRAP_STATUS.update(maintenance_status="running",maintenance_started_at=now_iso())
+    failed=False
+    try:
+        for project in list_projects():
+            project_id=str(project.get("id") or "")
+            if not project_id:continue
             try:
-                _v47_recover_clean_tasks(pid0)
+                ensure_project_dirs(project_id)
+                _v50_recover_dataset_deletions(project_id)
+                _v47_recover_clean_tasks(project_id)
             except Exception:
-                pass
-        _v53_set_bootstrap(91,"生成首屏快照","正在读取算法、素材计数和任务索引")
-        snap=_v53_build_snapshot(active_id); snap["projects"]=[{**p,"bootstrap_counts":_v53_project_counts(p)} for p in projects]; _V53_BOOTSTRAP_SNAPSHOT=snap
-        _V53_BOOTSTRAP_STATUS.update({"status":"ready","progress":100,"stage":"平台数据已就绪","message":f"{snap['material_summary']['total']} 张素材 · {len(snap.get('algorithms') or [])} 个算法","finished_at":now_iso(),"updated_at":now_iso(),"active_project_id":active_id,"error":""})
-    except Exception as e:_V53_BOOTSTRAP_STATUS.update({"status":"failed","stage":"启动预加载失败","message":str(e),"error":repr(e),"finished_at":now_iso(),"updated_at":now_iso()})
+                failed=True
+                logging.exception("Post-bootstrap recovery failed for project %s",project_id)
+    except Exception:
+        failed=True
+        logging.exception("Post-bootstrap recovery project lookup failed")
+    finally:
+        _V53_BOOTSTRAP_STATUS.update(maintenance_status="failed" if failed else "ready",maintenance_finished_at=now_iso())
+
+
 
 def _v53_start_bootstrap(preferred_project_id:str="", force:bool=False):
     global _V53_BOOTSTRAP_THREAD
     with _V53_BOOTSTRAP_LOCK:
-        if _V53_BOOTSTRAP_THREAD and _V53_BOOTSTRAP_THREAD.is_alive() and not force:return
+        if _V53_BOOTSTRAP_THREAD and _V53_BOOTSTRAP_THREAD.is_alive():return
         if _V53_BOOTSTRAP_STATUS.get("status")=="ready" and not force:return
+        _V53_BOOTSTRAP_STATUS.update(status="running",progress=0,stage="准备核心页面",error="")
         _V53_BOOTSTRAP_THREAD=threading.Thread(target=_v53_bootstrap_worker,args=(preferred_project_id,),daemon=True,name="v53-bootstrap"); _V53_BOOTSTRAP_THREAD.start()
 
 @app.on_event("startup")
 def _v53_startup_bootstrap():
     # Resource discovery is requested by the resource/deployment page.
     _v53_start_bootstrap()
+    threading.Thread(target=_v53_post_bootstrap_recovery,daemon=True,name="v53-existing-recovery").start()
 
 class V53BootstrapReq(BaseModel):
     preferred_project_id: Optional[str]=""; force: bool=False
@@ -27238,16 +27298,46 @@ class V53BootstrapReq(BaseModel):
 def v53_bootstrap_start(payload:V53BootstrapReq):_v53_start_bootstrap(payload.preferred_project_id or "",bool(payload.force)); return {"ok":True,**_V53_BOOTSTRAP_STATUS}
 
 @app.get("/api/v53/bootstrap/status")
-def v53_bootstrap_status():return {"ok":True,**_V53_BOOTSTRAP_STATUS}
+def v53_bootstrap_status(response:Response):
+    response.headers["Cache-Control"]="no-store"
+    return {"ok":True,**_V53_BOOTSTRAP_STATUS}
 
 @app.get("/api/v53/bootstrap/snapshot")
-def v53_bootstrap_snapshot(preferred_project_id:Optional[str]="", refresh:bool=False):
+def v53_bootstrap_snapshot(preferred_project_id:Optional[str]="", refresh:bool=False, core:bool=True):
     global _V53_BOOTSTRAP_SNAPSHOT
     started_at = time.perf_counter()
     def respond(payload):
-        response = fast_json_response(payload)
-        response.headers["Server-Timing"] = f"bootstrap;dur={(time.perf_counter() - started_at) * 1000:.2f}"
+        serialize_started=time.perf_counter()
+        with performance_measure("bootstrap.serialize"):
+            response = fast_json_response(payload)
+        serialize_ms=(time.perf_counter()-serialize_started)*1000
+        response.headers["Server-Timing"] = f"bootstrap;dur={(time.perf_counter() - started_at) * 1000:.2f}, serialize;dur={serialize_ms:.2f}"
+        response.headers["X-Response-Bytes"]=str(len(response.body))
+        response.headers["Cache-Control"]="no-store"
         return response
+    if core:
+        snapshot=dict(_V53_BOOTSTRAP_SNAPSHOT)
+        project_id=str((snapshot.get("project") or {}).get("id") or "")
+        requested=str(preferred_project_id or "") if ALLOW_MULTIPLE_PROJECTS_FOR_TESTS else ""
+        if not refresh and snapshot.get("core_only") and project_id and (not requested or requested==project_id):
+            revision_started=time.perf_counter()
+            try:fresh=snapshot.get("core_revisions")==_v53_core_revisions(project_id)
+            except HTTPException as error:
+                if error.status_code!=404:raise
+                fresh=False
+            except (OSError,sqlite3.Error) as error:
+                logging.exception("Core bootstrap revision probe failed")
+                code="BOOTSTRAP_DATABASE_BUSY" if isinstance(error,sqlite3.OperationalError) and any(v in str(error).lower() for v in ("busy","locked")) else "BOOTSTRAP_DATABASE_UNAVAILABLE"
+                return JSONResponse(status_code=503,headers={"Cache-Control":"no-store"},content={"code":code,"message":"核心数据版本暂不可读取，请重试；后台任务不受影响。"})
+            revision_ms=(time.perf_counter()-revision_started)*1000
+            if fresh:
+                snapshot["cache_state"]="fresh"
+                response=respond({"ok":True,"bootstrap":dict(_V53_BOOTSTRAP_STATUS),**snapshot})
+                response.headers["Server-Timing"]+=f", revision;dur={revision_ms:.2f}"
+                response.headers["X-Bootstrap-Cache"]="fresh"
+                return response
+        _v53_start_bootstrap(requested,force=True)
+        return JSONResponse(status_code=503,headers={"Retry-After":"1","Cache-Control":"no-store"},content={"code":"BOOTSTRAP_PENDING","message":"核心页面正在准备，请稍候。","bootstrap":dict(_V53_BOOTSTRAP_STATUS)})
     projects=list_projects(); requested=str(preferred_project_id or "") if ALLOW_MULTIPLE_PROJECTS_FOR_TESTS else ""; cached_id=str(_V53_BOOTSTRAP_SNAPSHOT.get("project",{}).get("id") or ""); project_ids={str(project.get("id") or "") for project in projects}
     if not refresh and _V53_BOOTSTRAP_STATUS.get("status")=="ready" and cached_id in project_ids and (not requested or requested==cached_id):
         live_snapshot=_v53_snapshot_with_live_jobs(_V53_BOOTSTRAP_SNAPSHOT,cached_id)

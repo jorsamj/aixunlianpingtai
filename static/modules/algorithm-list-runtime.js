@@ -371,7 +371,7 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
     if (filters.industry !== 'all' && String(algorithm?.industry || '') !== filters.industry) return false;
     if (filters.type !== 'all' && String(algorithm?.algorithm_type || '') !== filters.type) return false;
     const meta = providerMeta(algorithm);
-    const trainability = algorithmTrainability(algorithm);
+    const trainability = algorithm.versions_deferred ? {ready:false,message:'算法详情正在读取，请稍候或刷新'} : algorithmTrainability(algorithm);
     if (externalProvider?.matches) {
       const providerMatch = externalProvider.matches(algorithm, {
         source: filters.source,
@@ -439,7 +439,7 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
         <div class="entity-applied-filters" data-algorithm-applied hidden></div>
       </section>
       <div class="algorithm-list-meta"><div class="entity-sortbar"><button data-algorithm-sort="comprehensive" class="on">综合排序</button><button data-algorithm-sort="updated">最近更新</button><button data-algorithm-sort="training">训练次数</button><button data-algorithm-sort="metric">mAP50</button></div><span data-algorithm-result-count></span></div>
-      <div class="entity-region-error" data-algorithm-error hidden></div>
+      <div data-algorithm-core-deferred role="status" hidden></div><div class="entity-region-error" data-algorithm-error hidden></div>
       <section class="algorithm-card-surface"><div id="alg412List" class="algorithm-card-grid"></div><footer class="entity-pagination algorithm-card-pagination" data-algorithm-pagination></footer></section>
     </section>`;
   }
@@ -518,6 +518,7 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
   }
 
   function versionRowsHtml(algorithm) {
+    if(algorithm.versions_deferred)return '<div class="entity-empty compact">版本详情尚未读取，请等待当前刷新或重试。</div>';
     const versions = Array.isArray(algorithm?.versions) ? algorithm.versions : [];
     if (!versions.length) return '<div class="entity-empty compact">暂无版本，点击“训练”开始第一次迭代</div>';
     return versions.map(version => {
@@ -535,12 +536,12 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
     const metric = algorithmVersionMap50(version);
     const count = trainingCount(algorithm.id) ?? '—';
     const meta = providerMeta(algorithm);
-    const trainability = algorithmTrainability(algorithm);
+    const trainability = algorithm.versions_deferred ? {ready:false,message:'算法详情正在读取，请稍候或刷新'} : algorithmTrainability(algorithm);
     const run = activeJob(algorithm.id, state().jobs || []);
     const deletion = meta.deletion || {state:algorithm.external_deletion_status || 'NORMAL',label:'状态待核实'};
     const status = run
       ? String(run.status_text || trainingStatusText(run.status))
-      : algorithm.external_active === false ? '已下架'
+      : algorithm.versions_deferred ? '详情读取中' : algorithm.external_active === false ? '已下架'
         : !trainability.ready ? '不可训练'
           : version ? '已训练' : '可训练';
     const statusClass = run ? 'running' : !trainability.ready ? 'warning' : version ? 'success' : 'neutral';
@@ -630,6 +631,7 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
     const root = ensureAlgorithmShell();
     if (!root) return false;
     renderControls(root);
+    const deferred=root.querySelector('[data-algorithm-core-deferred]');if(deferred){deferred.hidden=!state().algorithmsDeferred;deferred.textContent=refreshError?'算法详情暂未读取，请点击刷新重试。':`基础列表已就绪，共 ${Number(state().algorithmsTotal||0)} 个算法；完整版本和训练统计正在读取。`}
     const error = root.querySelector('[data-algorithm-error]');
     if (error) { error.hidden = !refreshError; error.textContent = refreshError; }
     renderRows();
@@ -760,7 +762,7 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
       const algorithmMs = Date.now() - startedAt;
       let s = state();
       if (isStale()) return {algorithms: s.algorithms || [], jobs: s.jobs || [], cached: false, stale: true};
-      s.algorithms = listFrom(algorithmBody);
+      s.algorithms = listFrom(algorithmBody);s.algorithmsDeferred=false;s.algorithmsTotal=s.algorithms.length;s.__coreSnapshotGeneratedAt=Date.now();
       refreshError = '';
       if (render && String(s.page || '') === ALGORITHM_PAGE) renderPage();
       const firstPaintMs = Date.now() - startedAt;
@@ -769,7 +771,7 @@ export function installAlgorithmListRuntime({getState, projectId, notify} = {}) 
       if (isStale()) return {algorithms: s.algorithms || [], jobs: s.jobs || [], cached: false, stale: true};
       lastRefreshTiming = {algorithmMs, firstPaintMs, totalMs: Date.now() - startedAt, projectId: String(pid)};
       if (result.error) throw result.error;
-      s.jobs = listFrom(result.body);
+      s.jobs = listFrom(result.body);s.jobsDeferred=false;
       lastRefreshAt = Date.now();
       if (render && String(s.page || '') === ALGORITHM_PAGE) renderPage();
       return {algorithms: s.algorithms, jobs: s.jobs, cached: false, stale: false};
