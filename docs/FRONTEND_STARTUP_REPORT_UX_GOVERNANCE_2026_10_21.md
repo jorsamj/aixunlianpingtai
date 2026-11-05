@@ -334,3 +334,8 @@ RED→GREEN：混合成功/失败/运行/未知耗时、重复别名、异项目
 后续交接合同纠偏：原主体Chrome shard1为110通过/2失败，均在 `loading-recovery-supplement` 的旧发布流程用例（pending/rejected）：仍期待点击版本动作即POST，而另一AI已改为独立交付弹窗GET预检+确认提交。本轮仅适配这两条测试，打开后明确断言POST=0，确认才POST；4xx允许再次确认，超时禁用重复提交并经刷新查询结果，重复打开不增POST。真实Chrome两例2/2通过，不改交付产品代码、不重复实施发布专项。主体其余Chrome分片通过；最终仍以包含fixture补正的准确SHA为准。先前Linux暂停进程时序失败仅定向重跑该失败job，原Release Regression最新attempt已success，不改进程控制实现/测试。
 
 Git传输两次连接失败后，以GitHub连接器创建与本地**完全相同tree**的补正commit `bf67db3a0e0def4cb16535d06e1a302400aa4823`，expected_sha=a51f733f、force=false快进原分支；随后核验远端commit对象与tree并同步本地隔离HEAD，未丢弃未提交文件。该SHA前端Node/守卫已通过；Chrome完整工作流仍在运行，不提前认定全绿。下一个仅测试/记录提交继续核验自身Checks。
+
+
+模型协议懒加载夹具纠偏：`0c33f1b89ac480e7b67815bcaea1ce2c8edc5f32` 的Frontend Node/守卫与Chrome shard1/3通过；shard2为113通过/1失败，仅 `model-api-protocol` 刷新后直接调用编辑函数，未等原模型页面按需读取，误将默认URL当成保存丢失。改为点击包含已保存配置名称的真实表格行“编辑”按钮（等待真实行出现）；保留实际POST/PUT、刷新、协议auto/responses、structured_output、endpoint及空凭据全部业务断言。本地真实Chrome原用例1/1通过，不修改模型产品逻辑，不延长业务截止。至此本地相关Chrome独立用例并集19（16+发布2+协议1），不把复测次数相加。其余model专用用例已检查：真实坐标页原已等模型读取，隔离坐标页显式提供模型state。
+
+交付状态按本节Git History对应的**最终准确SHA Checks**与最终交付回执确认；上面所有“待验/失败”均是当时准确检查的历史记录，不能删除留痕，也不能据此冒称最终全绿。生产现场独立验收始终待执行。

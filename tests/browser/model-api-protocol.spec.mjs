@@ -19,7 +19,7 @@ test('vision API protocol and output capability persist across save refresh and 
  expect(savedResponse.ok()).toBeTruthy();const saved=await savedResponse.json();
  expect(savedResponse.request().postDataJSON().api_protocol).toBe('responses');expect(saved.api_protocol).toBe('responses');expect(saved.base_url).toBe(endpoint);
  await page.reload();await expect.poll(()=>page.evaluate(()=>Boolean(state.uiReady))).toBe(true);
- await page.evaluate(id=>window.openModelConfigModalV35(id),saved.id);
+ await page.locator('[data-model-config-panel] tbody tr').filter({hasText:'Responses隔离配置'}).getByRole('button',{name:'编辑',exact:true}).click();
  const edit=page.getByRole('dialog',{name:'编辑视觉模型配置'});await edit.locator('summary').filter({hasText:'高级设置'}).click();
  await expect(edit.locator('#mcUrl')).toHaveValue(endpoint);await expect(edit.locator('#mcApiProtocol')).toHaveValue('responses');await expect(edit.locator('#mcStructuredOutput')).toHaveValue('prompt');await expect(edit.locator('#mcApiKey')).toHaveValue('');
  await edit.locator('#mcApiProtocol').selectOption('auto');
