@@ -27183,7 +27183,8 @@ def _v53_core_revisions(project_id):
     return {"algorithm": algorithm_store_revision(algorithms_file(project_id)),
             "material": material_store(project_id).current_revision(),
             "annotation": AnnotationRepository(project_dir(project_id)).current_revision(),
-            "project": hashlib.sha256(json.dumps(project, sort_keys=True, ensure_ascii=False).encode()).hexdigest()}
+            "project": hashlib.sha256(json.dumps(project, sort_keys=True, ensure_ascii=False).encode()).hexdigest(),
+            "datasets": hashlib.sha256(json.dumps(read_json(datasets_file(project_id), []), sort_keys=True, ensure_ascii=False).encode()).hexdigest()}
 
 
 def _v53_build_core_snapshot(project_id):
@@ -27193,9 +27194,9 @@ def _v53_build_core_snapshot(project_id):
         began=time.perf_counter()
         try:return operation()
         finally:timings[name]=round((time.perf_counter()-began)*1000,3)
+    datasets=measure("datasets",lambda:ensure_default_datasets(project_id))
     revisions=measure("revision",lambda:_v53_core_revisions(project_id))
     project=measure("project",lambda:get_project(project_id))
-    datasets=measure("datasets",lambda:ensure_default_datasets(project_id))
     algorithms,total,revision=measure("algorithms",lambda:AlgorithmSqlStore(algorithms_file(project_id)).bootstrap_summary())
     materials=measure("materials",lambda:material_store(project_id).summary())
     annotations=measure("annotations",lambda:AnnotationRepository(project_dir(project_id)).summary())

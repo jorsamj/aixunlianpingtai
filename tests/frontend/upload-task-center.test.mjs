@@ -174,7 +174,8 @@ test('project switching is navigation-owned and has no permanent interval', () =
   assert.doesNotMatch(runtime, /setInterval\(switchProject,\s*1500\)/);
   assert.doesNotMatch(runtime, /__uploadTaskCenterProjectTimer/);
   assert.match(main, /uploadTaskCenterRuntime\.switchProject\?\.\(\)/);
-  assert.match(main, /Promise\.resolve\(canonicalStartupPromise\)\.then\(\(\) => \{[\s\S]*?uploadTaskCenterRuntime\.switchProject\?\.\(\)/);
+  assert.match(main, /Promise\.resolve\(canonicalStartupPromise\)\.then\(finishCanonicalStartup\)/);
+  assert.match(main, /function finishCanonicalStartup\(\)[\s\S]*?uploadTaskCenterRuntime\.switchProject\?\.\(\)/);
 });
 
 

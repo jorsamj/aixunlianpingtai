@@ -113,3 +113,14 @@ def test_failed_core_build_can_be_retried_without_publishing_partial_snapshot(cl
     api._v53_bootstrap_worker(project)
     assert api._V53_BOOTSTRAP_STATUS['status']=='ready'
     assert api._V53_BOOTSTRAP_SNAPSHOT['core_only']
+
+
+def test_dataset_metadata_change_invalidates_core_snapshot(client,seeded_project,monkeypatch):
+    project,_=seeded_project
+    cached=api._v53_build_snapshot(project,core_only=True)
+    monkeypatch.setattr(api,'_V53_BOOTSTRAP_SNAPSHOT',cached)
+    monkeypatch.setattr(api,'_v53_start_bootstrap',lambda *a,**kw:None)
+    datasets=api.read_json(api.datasets_file(project),[])
+    datasets[0]['name']='renamed-after-cache'
+    api.write_json(api.datasets_file(project),datasets)
+    assert client.get('/api/v53/bootstrap/snapshot').status_code==503

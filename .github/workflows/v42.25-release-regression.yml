@@ -45,6 +45,7 @@ on:
       - tests/unit/test_material_reference_reasons.py
       - tests/api/test_material_integrity.py
       - tests/api/test_training_conflict_governance.py
+      - tests/api/test_bootstrap_core_lifecycle.py
       - tests/api/test_runtime_router_app_mount.py
       - platform_core/upgrade_guard.py
       - platform_core/video_tasks.py
@@ -159,6 +160,7 @@ jobs:
           tests/api/test_material_integrity.py
           tests/api/test_training_conflict_governance.py
           tests/unit/test_material_reference_reasons.py
+          tests/api/test_bootstrap_core_lifecycle.py
           tests/api/test_runtime_router_app_mount.py
           tests/api/test_deployment_test_runtime.py
           tests/api/test_training_terminal_runtime.py

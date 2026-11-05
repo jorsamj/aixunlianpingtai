@@ -16,7 +16,7 @@ function block(start, end) {
 test('ordinary core loading uses cached snapshot and explicit refresh owns refresh=true', () => {
   const core = block('window.loadCore412=async function', 'async function pollAnnotationIndex412');
   assert.match(core, /window\.loadCore412=async function\(\{authoritative=false\}=\{\}\)/);
-  assert.match(core, /snapshot\$\{authoritative\?'\?refresh=true':''\}/);
+  assert.match(core, /snapshot\?core=false\$\{authoritative\?'&refresh=true':''\}/);
   assert.doesNotMatch(core, /preferred_project_id/);
   assert.doesNotMatch(core, /snapshot\?refresh=true/);
   assert.match(source, /loadCore412\(\{authoritative:true\}\)/);
@@ -27,7 +27,7 @@ test('startup paints one cached snapshot and leaves focused revalidation to the 
   const startup = block('window.__clInit=function()', 'const TOP_CRUMB413=Object.freeze');
   assert.doesNotMatch(startup, /await window\.refreshCurrentPage413/);
   assert.doesNotMatch(startup, /loadPageExtras413|__extras412/);
-  assert.match(startup, /state\.uiReady=true;render\(\);state\.__startupCanonicalPainted=true/);
+  assert.match(startup, /state\.uiReady=true;[\s\S]*?try\{render\(\)\}[\s\S]*?state\.__startupCanonicalPainted=true/);
   const html = fs.readFileSync(new URL('../../static/index.html', import.meta.url), 'utf8');
   assert.match(html, /\/static\/app\.js\?v=\d+(?:\.\d+)*/);
 });
@@ -48,11 +48,11 @@ test('training resource background extras patch only resource cards', () => {
   assert.doesNotMatch(patch, /#view|renderResources\(/);
 });
 
-test('extras do not duplicate jobs or model configs already carried by snapshot', () => {
+test('extras keep jobs focused and load model configs only on their own page', () => {
   const extras = block('async function extras412', 'window.loadPageExtras413=extras412');
   assert.doesNotMatch(extras, /\/jobs/);
-  assert.doesNotMatch(extras, /modelConfigs|model-configs/);
-  assert.match(extras, /if\(page==='模型配置'\)load\('promptTemplates','\/api\/v35\/prompt-templates','items'\)/);
+  assert.match(extras, /if\(page==='模型配置'\)\{load\('modelConfigs','\/api\/v35\/model-configs','items'\);/);
+  assert.match(extras, /load\('promptTemplates','\/api\/v35\/prompt-templates','items'\)/);
 });
 
 
@@ -317,7 +317,7 @@ test('legacy page extras A→B→A ignores old success and keeps the current pag
   let generation=2;
   const state={page:'模型配置',project:{id:'p1'},promptTemplates:[{id:'initial'}]};
   const calls=[],notifications=[];
-  const api=url=>new Promise((resolve,reject)=>calls.push({url,resolve,reject}));
+  const api=url=>url.endsWith('/model-configs')?Promise.resolve({items:[]}):new Promise((resolve,reject)=>calls.push({url,resolve,reject}));
   const win={PageRequestScopeRuntime:{stats:()=>({generation})}};
   const extras=new Function('state','api','toast','window',script+'\nreturn extras412;')(
     state,api,error=>notifications.push(error),win);
@@ -340,7 +340,7 @@ test('legacy page extras suppresses old-page failures and never crosses project 
   const state={page:'模型配置',project:{id:'p1'},promptTemplates:[{id:'initial'}]};
   const calls=[],notifications=[];
   const extras=new Function('state','api','toast','window',script+'\nreturn extras412;')(
-    state,url=>new Promise((resolve,reject)=>calls.push({resolve,reject,url})),
+    state,url=>url.endsWith('/model-configs')?Promise.resolve({items:[]}):new Promise((resolve,reject)=>calls.push({resolve,reject,url})),
     error=>notifications.push(error),{PageRequestScopeRuntime:{stats:()=>({generation})}});
   const old=extras();
   state.page='数据集';generation++;

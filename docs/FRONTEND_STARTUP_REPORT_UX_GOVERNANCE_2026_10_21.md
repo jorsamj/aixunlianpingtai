@@ -272,7 +272,7 @@ RED→GREEN：混合成功/失败/运行/未知耗时、重复别名、异项目
 正文五项补充任务的限定验收已完成：矩阵包含明确未覆盖/未知恢复限制，成功口径证据与报告名称一致，生产只读方案仅整理未执行。生产12.08秒未实测关闭，生产未访问/部署/修改。下一步按用户确认单独实施Annotorious v3，须创建其唯一专项、先隔离PoC，再正式切入口；本专项的标注保存安全修正应继承，不得被新内核覆盖。GT清空/待标注的新业务合同归Annotorious专项审计与验收，不提前写为此处已支持。
 
 
-## 2026-11-05｜启动快照P0续批（实施中）
+## 2026-11-05｜42.24.537 启动快照 P0（本地验证完成，准确 SHA CI 待核）
 
 基线远端ade2ff2966532cef2ec065a5c1aa89bef54309c0 / 42.24.535，本地隔离工作区树6190c290与远端一致、无未提交修改。现场补充：ready/100%，217130素材、110算法，后台预加载26秒；仅此项现场事实已取得，ready后的TTFB/响应大小/解析与服务端调用栈尚无现场证据，Formatting不是后端故障证据。
 
@@ -281,3 +281,42 @@ RED→GREEN：混合成功/失败/运行/未知耗时、重复别名、异项目
 前端继续20秒截止，补应用级请求代次/取消结算、重试成功后原页面Owner恢复、下载/解析/渲染诊断，不用扩超时掩盖性能。冷启动核心可用时间与ready热快照P50/P95分别记录；合成217130投影+110算法仅作本地规模验证，现场真实业务数据另验，不能混写。
 
 当前RED证据：新增3项Python初版全部失败，验证上述3处源码缺口；必要改动后3项通过。旧请求忽略abort的Node反例已加入，修复后取消能结算且迟到响应不写state。完整定向/Chrome/性能与精确SHA CI待执行。禁止生产数据操作、部署、main merge、release及force push。
+
+
+### 已确认根因与本轮修复
+
+现场 26 秒说明旧启动工作量超过固定 20 秒截止，但现场各阶段耗时未取得，不能将全部 26 秒归于某个 SQL 或浏览器 Formatting。代码审计与定向反例确认：旧热 snapshot 仍调用训练历史/成功数/live jobs（含索引同步），算法 hydration 可能读取版本报告/评测投影，冷请求与启动线程可重复同步构建，force 可启动重复线程；前端失败 Promise 与首次 `.then` 使重试成功后 extras owner 缺失，忽略 abort 的旧 fetch 未保证结算。以上属于已修复平台问题。
+
+- 复用原 bootstrap 缓存与 Worker。默认 `core=true` 仅基础算法列、项目/数据集/标签、素材/标注摘要；AlgorithmSqlStore 同事务返回 revision/总数/至多500基础行，110算法完整返回。版本、成功数、历史任务、模型配置在原页面 Owner 按需读取。显式 `core=false` 保留完整兼容读取。
+- 每次热请求核对原项目、数据集摘要及算法/素材/标注 revision；不新建统计真相。缓存失效快速503 `BOOTSTRAP_PENDING`，后台构建，ready才发布完整快照。原进程锁防重，原目录 FileLock 串行不同Web进程构建；各进程仍有原本独立内存缓存，不声称跨进程只构建一次。
+- 删除恢复/清洗恢复保持原操作，仅移出核心首屏前置，在核心线程结束后执行；原状态新增 `readiness_scope=core` 和独立 maintenance_status。核心ready不等于所有维护任务完成，也不声称缩短了每项恢复工作本身。
+- 保持20秒截止；应用级 sequence、主动 abort、无法响应abort的Promise结算、旧响应禁止apply、导航代次保护；失败有中文恢复操作与错误码。原初始化Promise/event复用唯一extras后续入口，重试成功恢复页面数据读取，重复重试合并。
+- 模型配置由原模型页extras读取 `items`，12秒局部截止、局部错误与重试、保存结果指纹保护；总览/算法页明确“按需读取”，不把尚未读的任务/训练成功数/版本冒充0。
+- 原api增加等待响应头/读体/解析/渲染阶段；Server-Timing分列bootstrap/revision/serialize，X-Response-Bytes记录字节，沿原诊断middleware关联X-Request-ID及X-Client-Operation-ID。网络错误与固定截止可分类，但浏览器fetch不能仅凭异常证明TCP连接耗时；用ResourceTiming DNS/connect/TTFB/download及服务端日志定位。未知锁等待不伪装成已量化证据。
+
+### 分项性能验收与定向回归
+
+| 范围 | 样本与结果 | 边界 |
+| --- | --- | --- |
+| 冷核心构建 | 217130合成SQLite素材元数据、110算法、1100版本、1000任务JSON；1次280.29ms | 本地Windows/Python3.12.7，应用内bootstrap缓存冷；磁盘缓存未强制清空，不含import/完整启动/后台恢复；不是冷启动P95 |
+| ready热snapshot | 同一规模，25次最小FastAPI TestClient HTTP，P50 24.80ms，P95 40.06ms；27253 bytes | 不含生产代理/鉴权/网络；1000任务文件哈希前后不变；1条running仅状态夹具，无真实训练进程 |
+| Chrome连续10次刷新 | 真实Chrome/隔离小后端，snapshot实际HTTP未Mock，每次1次snapshot；首屏可交互P95 1388ms，snapshot TTFB P95 126.7ms；约2033 bytes，JSON解析0.1–0.2ms | status路由返回后台running夹具，核心snapshot不受其阻塞；不能与20万规模处理器数据拼接成生产首屏结果 |
+| 并发/恢复/视口 | Chrome 1920×1080、1024×768、390×844三独立上下文并发；5秒慢响应、真实20秒截止及迟到响应、坏JSON后重试、模型接口503局部重试、A→B→A | 同机浏览器上下文，不等同于多物理设备、多Web进程或生产网络 |
+
+原始数据：[合成规模分项](evidence/bootstrap-2026-11-05-synthetic.json)、[Chrome十次读取](evidence/bootstrap-2026-11-05-chrome.json)。定向Python原四文件41/41通过，随后新增数据集改名失效反例先RED（200旧缓存）、修后core文件9/9通过；去重总覆盖42项，非累计50项。前端Node最终1540/1540通过（Windows需PowerShell展开glob，`npm test`原通配命令在Windows未展开，不算通过）；真实Chrome三文件16/16通过。已有相关full-mode测试显式core=false；更新按需加载后的旧fixture，保持其A→B→A和缓存断言。新增core测试已加入原v42.25 Release Regression工作流；未新增第二启动流程/ZIP流程。
+
+本轮无schema迁移、无GT/Task/训练协议修改；running状态文件及1000历史文件字节保持仅证明读取边界。真实训练并发/GPU、现场OSS、生产Web多进程锁等待、代理网络、217130现场首次完整进程启动及ready热P95：**未执行，待现场验证**。现场26秒的真实分项与数据库锁证据也待采集，不将本地280ms替换现场值。
+
+### 并行提交整合、版本与交付
+
+远端先快进取得另一AI的 `e8e4bee39099cd97c71e0cc3b2402d09c15e8960` 与 `19b0659dfd2b691db5ecea721364cdde224af643`。仅将本轮启动提交重放在19b之上，main.mjs模块导入冲突保留双方有效修改，algorithm-list中的“新畅联交付”及显式确认弹窗逻辑完整保留。该功能属于另一AI，非本轮重复实现。VERSION由536递增至537；入口缓存统一42.25.537，算法列表模块42.24.537，交付模块保持42.24.536。没有reset --hard、强推或覆盖其他工作区未提交工作。
+
+本次代码SHA由本节Git History定位；普通推送唯一长期分支 `feature/external-algorithm-publishing`，准确HEAD及其Actions完成后再记录结论，不借用19b或旧535绿色结果。
+
+### 生产安全部署与现场验收建议（仅建议，未部署）
+
+1. 先备份当前程序、配置及数据库并核对运行中训练由独立Worker/Agent持有的实例/lease/成果目录；确认Web重启不会终止训练后，才安排仅Web服务更新。不得全杀Python、重启训练Worker、清任务或恢复旧DB覆盖现场新结果。
+2. 保留当前data-dir/OSS配置，不清缓存目录或素材/标注/成果来制造“冷启动”；本轮无schema迁移。若Web与训练共进程，先安排可控窗口，不能声称重启天然安全。
+3. 暂时启用既有 `MC_PERFORMANCE_DIAGNOSTICS=1`，采集同一X-Request-ID/客户端operationId的Server-Timing与SQL阶段；浏览器保存 `window.__startupDiagnostics413`、ResourceTiming及响应字节。排查连接/DNS/TTFB、数据库busy、服务端构建、下载/JSON/渲染分别计时，不收集凭据或全量业务响应。
+4. 在真实217130/110环境分别测一次Web完整冷启动到core ready及maintenance结束，再测ready后至少25次热snapshot P50/P95与10次首屏；目标热P95≤2秒、正常首屏P95≤3秒。另测训练正在执行、桌面/平板/窄屏并发刷新、失败重试、页面切换；比较训练进度与成果持续增长，不能只看状态running。
+5. 若回退，仅回退程序版本与对应静态入口并按现有升级守卫处理；不得回滚现场数据库或终止训练。记录本轮SHA、机器资源、Web进程数、存储延迟、各阶段结果及未满足目标，完成现场独立签收。
