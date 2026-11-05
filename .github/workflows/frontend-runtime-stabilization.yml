@@ -303,7 +303,7 @@ jobs:
             exit 1
           fi
           grep -Fq 'pollRegistry?.replaceTrainingJobTimer?.();' static/modules/training-task-visibility-runtime.js
-          grep -Fq 'if (!result?.stale) pollRegistry?.replaceTrainingJobTimer?.();' static/main.mjs
+          grep -Fq 'if (!result?.stale){state.jobsDeferred=false;pollRegistry?.replaceTrainingJobTimer?.();}' static/main.mjs
           grep -Fq 'window.refreshJobsOnly = focusedRefresh;' static/modules/training-task-runtime.js
       - name: Retired navigation setPage guard
         run: |

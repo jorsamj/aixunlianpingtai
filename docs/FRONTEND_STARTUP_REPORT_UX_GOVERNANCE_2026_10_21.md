@@ -320,3 +320,12 @@ RED→GREEN：混合成功/失败/运行/未知耗时、重复别名、异项目
 3. 暂时启用既有 `MC_PERFORMANCE_DIAGNOSTICS=1`，采集同一X-Request-ID/客户端operationId的Server-Timing与SQL阶段；浏览器保存 `window.__startupDiagnostics413`、ResourceTiming及响应字节。排查连接/DNS/TTFB、数据库busy、服务端构建、下载/JSON/渲染分别计时，不收集凭据或全量业务响应。
 4. 在真实217130/110环境分别测一次Web完整冷启动到core ready及maintenance结束，再测ready后至少25次热snapshot P50/P95与10次首屏；目标热P95≤2秒、正常首屏P95≤3秒。另测训练正在执行、桌面/平板/窄屏并发刷新、失败重试、页面切换；比较训练进度与成果持续增长，不能只看状态running。
 5. 若回退，仅回退程序版本与对应静态入口并按现有升级守卫处理；不得回滚现场数据库或终止训练。记录本轮SHA、机器资源、Web进程数、存储延迟、各阶段结果及未满足目标，完成现场独立签收。
+
+
+### 推送后准确日志纠偏与完整进程冷启动补验
+
+主体推送SHA `a51f733f75458fb6dfdbf21dcadf78618042865e` 的SQL工作流准确日志127273123140确认旧源码守卫误把“精简缓存显式转换为完整core=false读取”当作已有完整缓存每次全量重建；仅收紧原测试定位范围并保留完整缓存禁止重建的断言，SQL store/应用合同30/30通过。Frontend job127273127881在Node执行前被原grep守卫挡住：它固定要求旧单行 `if (!result?.stale) pollRegistry...`，当前同一条件块新增jobsDeferred=false；按新完整条件块更新grep，旧响应仍不得更新任务状态或轮询。两项不是生产运行失败，但必须在后续准确SHA重验，不能把主体已完成的其他工作流借作最终绿色。
+
+独立代码审查覆盖核心快照/失效/Worker/恢复、取消/重试/按需模型配置及发布逻辑保留，未发现阻断正确性问题；审查没有独立重跑测试，不能当额外测试数量。
+
+补充实际子进程启动：在同一合成217130/110/1100版本/1000历史目录，启动完整uvicorn进程并经HTTP读取status，1次从启动到观察core ready **2069.40ms**，当时maintenance也ready；首次ready snapshot HTTP **24.51ms / 27337 bytes**（启用原性能middleware，含total/SQL阶段）。磁盘缓存未强制冷却，test build仅对临时目录启用测试访问，不是真实鉴权/生产启动P95。首次正常鉴权尝试为401，未测到ready，不计成功；修正隔离测试build配置后才取得本结果。原始[完整进程单次记录](evidence/bootstrap-2026-11-05-process-cold.json)。子进程只指向本轮临时夹具且已停止，不曾启动或终止生产Web/Worker/训练。
