@@ -53,6 +53,41 @@ def test_empty_is_not_fabricated_and_generic_schema_remains_strict():
         parse_candidate_response(text, width=128, height=128, label_ids={"person": 0}, coordinate_space="pixel")
 
 
+def test_live_4070_empty_detection_ref_box_none_is_not_a_broken_box():
+    # Captured from the user's live 4070 diagnostic on 2026-11-06.  In
+    # particular, "<box>none</box>" is a native no-target declaration, NOT
+    # a malformed set of four coordinates.
+    payload = {
+        "model": "wevisone-vl-2b", "width": 128, "height": 128,
+        "response": "<ref>fire</ref><box>none</box>",
+        "latency_s": 1.0, "coordinate_system": "xyxy_pixel", "boxes": [],
+    }
+    assert normalize_detection(payload, width=128, height=128, labels=["fire"]) == []
+    assert normalize_detection({"response": payload["response"]}, width=128, height=128, labels=["fire"]) == []
+
+
+@pytest.mark.parametrize("response,code", [
+    ("<ref>fire</ref><box>maybe</box>", "MODEL_OUTPUT_PARSE_ERROR"),
+    ("<ref>fire</ref><box>none</box> malformed", "MODEL_OUTPUT_PARSE_ERROR"),
+    ("<ref>smoke</ref><box>none</box>", "MODEL_LABEL_NOT_ALLOWED"),
+    ("<ref>fire</ref><box><100><200><500><800></box>", "MODEL_OUTPUT_PARSE_ERROR"),
+])
+def test_empty_structured_boxes_still_reject_invalid_or_mismatched_native_response(response, code):
+    with pytest.raises(ProviderRequestError) as error:
+        normalize_detection({"coordinate_system": "xyxy_pixel", "boxes": [], "response": response},
+                            width=1280, height=960, labels=["fire"])
+    assert error.value.code == code
+
+
+def test_structured_positive_boxes_reject_raw_no_target_for_same_label():
+    with pytest.raises(ProviderRequestError) as error:
+        normalize_detection({"coordinate_system": "xyxy_pixel", "boxes": [
+            {"label": "fire", "bbox_xyxy": [10, 20, 30, 40]},
+        ], "response": "<ref>fire</ref><box>none</box>"},
+                            width=1280, height=960, labels=["fire"])
+    assert error.value.code == "MODEL_OUTPUT_PARSE_ERROR"
+
+
 @pytest.mark.parametrize("payload,code", [
     ({"response": "I cannot see anything"}, "MODEL_OUTPUT_FAILED"),
     ({"boxes": [{"label": "pedestrian", "bbox": [1, 2, 4, 5]}], "coordinate_space": "pixel"}, "MODEL_LABEL_NOT_ALLOWED"),

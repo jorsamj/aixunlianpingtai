@@ -8,6 +8,8 @@
 
 **本次合同修复版本**：`42.24.539`（准确远端 SHA、CI 见推送后证据；4070 现场仍待验证）
 
+**4070 现场空目标回包勘误版本**：`42.24.541`（准确 SHA、CI 应以新提交为准）
+
 **唯一分支**：`feature/external-algorithm-publishing`
 **生产/4070 运行环境**：未修改、未重启、未写入数据
 
@@ -85,7 +87,28 @@
 
 原 `ref/box`、显式 `coordinate_space=pixel|normalized_1000` 仍保留受约束的兼容分支，但对于上述实际服务形态专门优先读取 `bbox_xyxy`。
 
-无目标必须由 `{"coordinate_system":"xyxy_pixel","boxes":[],"response":"None"}`（或先前明示的空目标结构）表达；未知结构、拒识和模型失败直接报错，不得折叠为合法空结果。
+无目标可以由 `{"coordinate_system":"xyxy_pixel","boxes":[],"response":"None"}` 表达；**4070 实际回包也会使用 `"<ref>fire</ref><box>none</box>"` 表示当前 `fire` 标签无目标**。在标签允许且原生文本结构完整时，这也是合法的空目标；未知标签、非法坐标、拒识、模型失败，以及 `boxes=[]` 但原始文本含有效检测框的矛盾结果仍直接报错，不得静默折叠为合法空结果。
+
+### 2026-11-06 现场 HTTP 核验与 42.24.541 修复
+
+用户在 4070 `inspur` 机器上执行只读和一次合成图片检测，提供了实际终端输出（**真实 HTTP，非本地自造 mock**）：
+
+- 服务监听 `127.0.0.1:18000`；`GET /openapi.json` 为 HTTP 200，含 `/v1/models`、`/v1/vision/detect`、`/v1/vision/segment`、`/v1/vision/matting`。
+- `GET /v1/models` 为 HTTP 200，模型 ID `wevisone-vl-2b`。
+- 使用 128×128 白色 JPEG，`POST /v1/vision/detect`，请求 `image` Data URI、`query=["fire"]`，HTTP 200；返回字段含 `model,width,height,response,latency_s,coordinate_system,boxes`。
+- **现场原始空目标字段**如下（其余服务元信息省略）：
+
+```json
+{"coordinate_system":"xyxy_pixel","boxes":[],"response":"<ref>fire</ref><box>none</box>"}
+```
+
+42.24.540 的 `_native_boxes` 将 `<box>none</box>` 视为「目标框格式错误」；即使结构化 `boxes=[]`，外层 `normalize_detection` 也错误地无条件要求 raw 必须有框然后抛矛盾错误。42.24.541 收敛修正为：
+
+1. 仅接受已知原生 `ref/box` 结构内的显式无目标词，标签须在当前冻结允许集合（含非歧义别名）中；普通乱写的坐标文本仍拒绝。
+2. 当 `boxes=[]` 时，解析 raw 仅作矛盾检测：确实存在有效框才拒绝；合法 `<box>none</box>` 返回空列表。若结构化 `boxes` 有目标却只声明原生无目标，也明确拒绝。
+3. 同标签原始文本同时声明「有目标/无目标」时拒绝，拒识/非 JSON/超时/无效坐标/未知标签仍沿用原错误路径。无目标只代表协议可解析，**不等于模型准确率通过**，更不自动入库 GT。
+
+增加了现场真实空目标 JSON 形状的单测及 `/api/v35/model-configs/{id}/test-annotation` API 回归，先复现 RED，再修复 GREEN。**这个核验只覆盖空目标检测**；4070 服务源码、含目标/多目标实图、分割与抠图真实返回、Chrome 1920/1366/768 及任务到正式 GT 的现场完整链路仍待独立验收。平台和 WeVisOne 的现场服务/模型/业务数据均未由本轮改动。
 
 按用户报告，分割/抠图响应的权威字段是实例数组：
 

@@ -120,7 +120,13 @@ def test_wevisone_probe_empty_does_not_claim_accuracy_and_persists_safe_receipt(
         assert set(kwargs["json"]) == {"image", "query"}
         assert kwargs["json"]["query"] == ["fire"]
         assert kwargs["json"]["image"].startswith("data:image/jpeg;base64,")
-        return SimpleNamespace(ok=True, json=lambda: {"coordinate_system": "xyxy_pixel", "boxes": [], "response": "None"})
+        # Exact no-target shape recorded from the deployed 4070 FastAPI on
+        # 2026-11-06 (sample white 128x128 JPEG, query=["fire"]).
+        return SimpleNamespace(ok=True, json=lambda: {
+            "model": "wevisone-vl-2b", "width": 128, "height": 128,
+            "response": "<ref>fire</ref><box>none</box>", "latency_s": 1.0,
+            "coordinate_system": "xyxy_pixel", "boxes": [],
+        })
     monkeypatch.setattr(vision.requests, "get", get)
     monkeypatch.setattr(vision.requests, "post", post)
     saved = client.post("/api/v35/model-configs", json={"name": "WeVisOne", "provider_adapter": "wevisone_vl", "base_url": "http://127.0.0.1:18000", "model_name": "wevisone-vl-2b"}).json()

@@ -49,7 +49,7 @@ def _endpoint(base_url: str, operation: str) -> str:
     return urlunsplit(parts._replace(path=root + ("/models" if operation == "models" else "/vision/" + operation)))
 
 
-def _native_boxes(raw: str) -> list[dict[str, Any]]:
+def _native_boxes(raw: str, *, allowed_labels: Mapping[str, str] | None = None) -> list[dict[str, Any]]:
     value = str(raw or "").strip().split("<|im_end|>", 1)[0].strip()
     if value.lower() in _EMPTY:
         return []
@@ -60,15 +60,30 @@ def _native_boxes(raw: str) -> list[dict[str, Any]]:
     if remaining:
         raise ProviderRequestError("WeVisOne 检测响应包含无法解析的内容", code="MODEL_OUTPUT_PARSE_ERROR")
     boxes = []
+    empty_labels: set[str] = set()
+    detected_labels: set[str] = set()
     for match in matches:
         label = match.group(1).strip()
         body = match.group(2).strip()
+        if not label:
+            raise ProviderRequestError("WeVisOne 原生目标框缺少标签", code="MODEL_OUTPUT_PARSE_ERROR")
+        if allowed_labels is not None and label not in allowed_labels:
+            raise ProviderRequestError("WeVisOne 返回了本次任务范围外的标签", code="MODEL_LABEL_NOT_ALLOWED")
+        # The live 4070 FastAPI returns boxes=[] with the raw model text
+        # <ref>fire</ref><box>none</box> on an empty 128x128 sample.  This is
+        # an explicit absence marker, not a four-coordinate detection.
+        if body.lower() in _EMPTY:
+            empty_labels.add(label)
+            continue
         groups = [part.strip() for part in body.split(",")]
         for part in groups:
             coords = _COORD.findall(part)
-            if not label or len(coords) != 4 or _COORD.sub("", part).strip():
+            if len(coords) != 4 or _COORD.sub("", part).strip():
                 raise ProviderRequestError("WeVisOne 原生目标框格式错误", code="MODEL_OUTPUT_PARSE_ERROR")
             boxes.append({"label": label, "coordinates": [int(c) for c in coords], "space": "normalized_1000"})
+            detected_labels.add(label)
+    if empty_labels & detected_labels:
+        raise ProviderRequestError("WeVisOne 同一标签同时声明有目标和无目标", code="MODEL_OUTPUT_PARSE_ERROR")
     return boxes
 
 
@@ -117,29 +132,39 @@ def normalize_detection(payload: Any, *, width: int, height: int, labels: list[s
         raise ProviderRequestError("WeVisOne 原始响应类型错误", code="MODEL_OUTPUT_PARSE_ERROR")
     if isinstance(response_text, str) and re.search(r"\b(cannot|unable|refus(?:e|ed)|sorry|error)\b|无法识别|拒绝", response_text, re.I):
         raise ProviderRequestError("WeVisOne 模型拒识或返回错误说明", code="MODEL_OUTPUT_FAILED")
+    allowed = _label_mapping(labels, label_aliases)
     if "boxes" in payload:
         if not isinstance(payload["boxes"], list):
             raise ProviderRequestError("WeVisOne boxes 不是列表", code="MODEL_OUTPUT_PARSE_ERROR")
         rows = payload["boxes"]
-        if rows and isinstance(response_text, str) and response_text.strip().lower() in _EMPTY:
-            raise ProviderRequestError("WeVisOne 原始空目标响应与目标框矛盾", code="MODEL_OUTPUT_PARSE_ERROR")
+        if rows and isinstance(response_text, str):
+            raw = response_text.strip()
+            if raw.lower() in _EMPTY:
+                raise ProviderRequestError("WeVisOne 原始空目标响应与目标框矛盾", code="MODEL_OUTPUT_PARSE_ERROR")
+            # Only inspect an explicitly empty native declaration here.  For
+            # positive structured boxes, bbox_xyxy stays authoritative even
+            # when a model's free-form raw text is not parseable.
+            matches = list(_REF_BOX.finditer(raw))
+            if matches and not _REF_BOX.sub("", raw).strip(" \r\n\t,;。") and all(
+                match.group(2).strip().lower() in _EMPTY for match in matches
+            ):
+                raise ProviderRequestError("WeVisOne 原始空目标响应与目标框矛盾", code="MODEL_OUTPUT_PARSE_ERROR")
         if not rows and response_text and response_text.strip().lower() not in _EMPTY:
             # Empty structured boxes must not hide raw detections or a parse failure.
-            _native_boxes(response_text)
-            raise ProviderRequestError("WeVisOne 原始响应与空框列表矛盾", code="MODEL_OUTPUT_PARSE_ERROR")
+            if _native_boxes(response_text, allowed_labels=allowed):
+                raise ProviderRequestError("WeVisOne 原始响应与空框列表矛盾", code="MODEL_OUTPUT_PARSE_ERROR")
     elif "detections" in payload and isinstance(payload["detections"], list):
         rows = payload["detections"]
     elif isinstance(response_text, str):
-        rows = _native_boxes(response_text)
+        rows = _native_boxes(response_text, allowed_labels=allowed)
     elif isinstance(payload.get("text"), str):
-        rows = _native_boxes(payload["text"])
+        rows = _native_boxes(payload["text"], allowed_labels=allowed)
     elif payload.get("no_target") is True:
         rows = []
     else:
         raise ProviderRequestError("WeVisOne 没有返回可识别的检测结果", code="MODEL_OUTPUT_PARSE_ERROR")
     if len(rows) > _MAX_DETECTIONS:
         raise ProviderRequestError("WeVisOne 单图目标数量超过 300", code="MODEL_OUTPUT_TOO_MANY_BOXES")
-    allowed = _label_mapping(labels, label_aliases)
     converted = []
     for row in rows:
         if not isinstance(row, dict):
