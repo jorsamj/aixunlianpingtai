@@ -1,12 +1,12 @@
 {
   "scope": "ISOLATED_200000_METADATA_48_RENDERED_NOT_PRODUCTION",
   "reads": [
-    "http://127.0.0.1:8027/api/v61/projects/c8eac7818938/materials?page=1&page_size=48",
-    "http://127.0.0.1:8027/api/v61/projects/c8eac7818938/materials?page=2&page_size=48",
-    "http://127.0.0.1:8027/api/v61/projects/c8eac7818938/materials?page=1&page_size=48"
+    "http://127.0.0.1:8039/api/v61/projects/71da2b616c06/materials?page=1&page_size=48",
+    "http://127.0.0.1:8039/api/v61/projects/71da2b616c06/materials?page=2&page_size=48",
+    "http://127.0.0.1:8039/api/v61/projects/71da2b616c06/materials?page=1&page_size=48"
   ],
-  "p50_ms": 16.699999999254942,
-  "p95_ms": 16.800000000745058,
+  "p50_ms": 16.600000001490116,
+  "p95_ms": 17.099999997764826,
   "dom_preserved": true,
   "rendered": 48
 }

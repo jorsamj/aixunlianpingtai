@@ -177,8 +177,10 @@ test('the normal dataset bulk toolbar exposes project clear without any administ
   await page.getByRole('dialog',{name:'训练暂不可开始',exact:true}).getByRole('button',{name:'返回训练配置',exact:true}).click();
   await page.getByRole('dialog',{name:'创建训练任务',exact:true}).getByRole('button',{name:'关闭',exact:true}).click();
   await page.getByRole('button',{name:/数据集/}).click();
-  await page.getByRole('button',{name:'批量操作',exact:true}).click();
-  await expect(page.getByRole('button',{name:'清空项目素材库',exact:true})).toBeVisible();
+  await page.getByRole('button',{name:'更多操作',exact:true}).click();
+  const action=page.getByRole('menuitem',{name:'清空项目素材库',exact:true});await expect(action).toBeVisible();
+  await page.evaluate(()=>{window.__projectClearCall=null;window.runMaterialBatch62=(operation,options)=>{window.__projectClearCall={operation,options}}});
+  await action.click();expect(await page.evaluate(()=>window.__projectClearCall)).toEqual({operation:'DELETE_INDEX',options:{scope:'PROJECT'}});
 });
 
 test('a late accepted deletion never attaches its result to a replacement training draft',async({page,request})=>{
