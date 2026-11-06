@@ -230,3 +230,73 @@ def test_completed_transfer_replay_does_not_rebase_undo_revision(client, review_
     undo=client.post(base+'/negative-transfer/completed-receipt-rebase/undo')
     assert undo.status_code==409,undo.text
     assert later['id'] in pool.member_snapshot(image['id'])['categories']
+
+
+def test_transfer_manifest_writes_are_bounded_and_mid_batch_pool_changes_survive(client, review_task, monkeypatch):
+    from platform_core.negative_pool import NegativePool
+    project,image,task,store,_=review_task
+    materials=host.material_store(project);original=materials.get(image['id'])
+    ids=[f'bounded-{i:03}' for i in range(240)]
+    materials.upsert_many([{**original,'id':value,'filename':value+'.jpg'} for value in ids])
+    store.initialize(labels=['fire'],total_images=240)
+    store.append_items({'image_id':value,'status':'empty','boxes':[]} for value in ids)
+    pool=NegativePool(materials);category=pool.category(name='bounded-'+uuid.uuid4().hex)
+    base=f'/api/v60/projects/{project}/annotation-tasks/{task}'
+    selection=client.post(base+'/review-selection',json={'filter':'empty'}).json()
+    writes=[];original_write=ArtifactStore.atomic_write_json
+    def observe(self,task_id,ref,payload):
+        if str(ref).startswith('review/transfers/') and isinstance(payload,dict) and 'image_ids' in payload:writes.append(len(payload.get('items') or {}))
+        return original_write(self,task_id,ref,payload)
+    monkeypatch.setattr(ArtifactStore,'atomic_write_json',observe)
+    body={'request_id':'transfer-bounded-240','selection_id':selection['selection_id'],'category_ids':[category['id']]}
+    assert client.post(base+'/negative-transfer',json=body).json()['status']=='pending'
+    assert len(writes)<=4,'the whole task manifest must not be rewritten per image'
+    later=pool.category(name='intervening-'+uuid.uuid4().hex)
+    pool.members([ids[0]],category_ids=[later['id']])
+    assert client.post(base+'/negative-transfer',json=body).json()['status']=='completed'
+    undo=client.post(base+'/negative-transfer/transfer-bounded-240/undo')
+    assert undo.status_code==409,undo.text
+    assert later['id'] in pool.member_snapshot(ids[0])['categories']
+
+
+def test_transfer_receipt_pages_and_undo_crash_recover_from_original_pool_receipt(client, review_task, monkeypatch):
+    from platform_core.negative_pool import NegativePool
+    project,image,task,store,_=review_task
+    pool=NegativePool(host.material_store(project));category=pool.category(name='crash-'+uuid.uuid4().hex)
+    base=f'/api/v60/projects/{project}/annotation-tasks/{task}'
+    body={'request_id':'undo-crash-safe-001','image_ids':[image['id']],'category_ids':[category['id']]}
+    assert client.post(base+'/negative-transfer',json=body).json()['status']=='completed'
+    page=client.get(base+'/negative-transfer/undo-crash-safe-001').json()
+    assert len(page['items'])==1 and page['processed']==1 and 'image_ids' not in page
+    original=CandidateStore.set_review_exclusion
+    def crash(self,image_id,state,**kwargs):
+        if state=='active':raise ValueError('isolated crash after pool restore')
+        return original(self,image_id,state,**kwargs)
+    monkeypatch.setattr(CandidateStore,'set_review_exclusion',crash)
+    assert client.post(base+'/negative-transfer/undo-crash-safe-001/undo').status_code==409
+    assert not pool.member_snapshot(image['id'])['member']
+    monkeypatch.setattr(CandidateStore,'set_review_exclusion',original)
+    resumed=client.post(base+'/negative-transfer/undo-crash-safe-001/undo')
+    assert resumed.status_code==200,resumed.text
+    assert resumed.json()['status']=='undone' and store.get(image['id'])['review_state']=='active'
+
+
+def test_legacy_json_transfer_receipt_is_archived_and_migrated_without_gt_changes(client, review_task):
+    from platform_core.negative_pool import NegativePool
+    project,image,task,store,_=review_task
+    category=NegativePool(host.material_store(project)).category(name='legacy-'+uuid.uuid4().hex)
+    base=f'/api/v60/projects/{project}/annotation-tasks/{task}'
+    body={'request_id':'legacy-transfer-safe','image_ids':[image['id']],'category_ids':[category['id']]}
+    assert client.post(base+'/negative-transfer',json=body).json()['status']=='completed'
+    ref=host._annotation_review_operation_path(body['request_id']).replace('review/operations/','review/transfers/')
+    receipt=store.artifacts.read_json(task,ref);receipt['items']=store.read_transfer_receipts(body['request_id'])
+    receipt.pop('receipt_storage',None);receipt.pop('pool_revision_base',None)
+    store.artifacts.atomic_write_json(task,ref,receipt)
+    import sqlite3
+    with sqlite3.connect(store.path) as db:db.execute('DELETE FROM review_transfer_receipts WHERE operation_id=?',(body['request_id'],))
+    replay=client.post(base+'/negative-transfer',json=body)
+    assert replay.status_code==200 and replay.json()['idempotent']
+    migrated=store.artifacts.read_json(task,ref)
+    assert migrated['receipt_storage']=='candidate_sqlite_v1' and 'items' not in migrated
+    assert store.artifacts.read_json(task,migrated['legacy_audit_ref'])['items']
+    assert not host.read_annotation(project,image['id'])['boxes']

@@ -1,4 +1,4 @@
-# AI 标注审核工作台与负样本流转 42.24.544
+# AI 标注审核工作台与负样本流转 42.24.548
 
 日期：2026-11-06。基线：9656ded4fd04f013ca60fc619d1a5bb713a9eb30 / 42.24.543。
 用户授权范围：Word全部任务及六张插图。独立干净克隆开发，原 WIP / 其他worktree未改动。未访问或修改生产机器、数据库、素材和模型。
@@ -28,7 +28,7 @@
 - POST `/review-selection`：filter、review_revision；返回selection_id/count/total/filter/review_revision；最大50000，ID清单在原ArtifactStore冻结。
 - POST `/negative-transfer-preview`：与转移相同的范围和目标；返回总数、有框/0框、弃用框数、冲突及可用数。
 - POST `/negative-transfer`：request_id，image_ids（最多200）或selection_id及excluded_image_ids，category_ids、algorithm_id、confirm_absent、review_revision。每次最多处理200；pending重复原请求继续，partial保留失败可补跑。服务端跨库步骤不冒充单一SQLite事务。
-- GET `/negative-transfer/{request_id}`：原操作回执。POST其`/undo`：分批、幂等、下游/修订防护。显式确认已产生正式GT的操作不自动回滚GT，返回冲突指向正式流程。
+- GET `/negative-transfer/{request_id}?offset=0&limit=100`：原操作回执分页，最多200条，返回processed/total/next_cursor与目标摘要。POST其`/undo`：分批、幂等、下游/修订防护。显式确认已产生正式GT的操作不自动回滚GT，返回冲突指向正式流程。
 - POST `/decisions`：旧合同兼容，新增可选review_revision/expected_remaining；单图采用/拒绝以commit=false持久化；最终提交仍走原Worker和per_image_required限制。
 - POST `/retry`：旧空请求仍差量补跑；可选image_ids（1–200）限定失败/未处理项。冻结原始任务列表不改，成功及草稿不重复覆盖。
 
@@ -84,3 +84,13 @@ cc672d4a 首轮可查询49次运行中46成功、2次Remote Training Runtime失�
 另一个RED复现发现完成回执重复请求会刷新pool_revision，从而让之后发生的池修改绕过撤销冲突；现完成重放立即返回原回执，不更新任何操作修订，外部池变化后撤销严格409，新增分类仍保留。两项仅改原转移API，不改变GT/训练/模型合同，生产未动。
 
 547聚焦后端212/212（保留原断言），真实API浏览器草稿/转池/撤销/失败CSV复验1/1；前端代码同546，已验1550/1550。版本真值回归11/11，Python编译与diff检查通过；准确547 SHA CI待推送核对。
+
+## 42.24.548 大批回执与安全撤销
+
+547 / 0104d2bb8259836c778a5c276f75d1c196fe06d5准确CI **47/47 success**。补测发现逐图重写整单JSON造成二次方写放大；逐图状态改写现有CandidateStore同库review_transfer_receipts，操作metadata只在批次边界写入。每次最多200条，不解码全量候选框；GET回执分页，并从已转出图片检查栏重新查看和撤销。旧JSON回执首次恢复时原样归档后导入同库，不删除审计证据。
+
+撤销仅允许起始池修订加本操作成功数等于结束修订，跨批其他修改或不确定的恢复写入均409，避免覆盖其他人的池关联；旧回执没有起始修订也明确阻断自动撤销。池恢复与池幂等回执仍在原素材库同事务；候选active恢复与其undone回执在CandidateStore同事务，使用原操作ID/固定200图撤销批次恢复。对SQL中断、池提交后候选恢复前中断均有回归。负样本算法关联新增material_id索引，EXPLAIN验证SEARCH，兼容没有算法关联表的旧项目池。
+
+新增240张跨批外部修改、每批整单JSON写入次数有界、旧回执归档迁移、分页及崩溃重入、事务回滚测试。真实4070三路推理因内网不可达继续NOT VERIFIED。最终本地数值及准确548 SHA CI见交付记录，不借用547绿灯。
+
+548提交前实测：Python聚焦218/218，Node 24前端全量1550/1550，Chrome关键流9/9（含真实API、三视口、768触屏勾选、键盘、reduced-motion、20k元数据局部交互、诊断及轮询）。Python编译、JS语法、git diff检查通过；Annotorious 16项、Uppy 87项本地依赖及声明校验通过。npm原静态架构没有独立构建脚本。准确548提交CI需推送后单独核验。

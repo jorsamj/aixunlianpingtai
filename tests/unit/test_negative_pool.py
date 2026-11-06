@@ -245,3 +245,12 @@ def test_restore_without_matching_receipt_cannot_infer_success_from_revision(tmp
     with pytest.raises(ValueError,match='revision'):
         pool.restore_members({'0':before},expected_revision=revision,operation_id='not-executed')
     assert pool.member_snapshot('0')['member']
+
+def test_member_snapshot_uses_material_index_and_reads_legacy_project_pool(tmp_path):
+    from contextlib import closing
+    repo,pool=setup(tmp_path);pool.members(['0'],algorithm_id='algorithm')
+    with closing(repo._connect()) as db:
+        plan=' '.join(str(row[3]) for row in db.execute('EXPLAIN QUERY PLAN SELECT algorithm_id,joined_at FROM negative_pool_algorithm_members WHERE material_id=?',('0',)))
+        assert 'SEARCH' in plan and 'ix_negative_pool_material_algorithm' in plan
+        db.execute('DROP TABLE negative_pool_algorithm_members');db.commit()
+    assert pool.member_snapshot('0')['algorithms']==[]

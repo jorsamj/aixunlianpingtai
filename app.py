@@ -25979,6 +25979,22 @@ class AnnotationTransferReq(BaseModel):
     review_revision: Optional[int] = None
 
 
+def _load_annotation_transfer(artifacts, task_id, path, store):
+    """Migrate old JSON progress once; keep its original bytes as audit evidence."""
+    receipt=artifacts.read_json(task_id,path,default=None)
+    if isinstance(receipt,dict) and isinstance(receipt.get('items'),dict):
+        entries=list(receipt['items'].items())
+        for offset in range(0,len(entries),200):
+            store.write_transfer_receipts(receipt['request_id'],dict(entries[offset:offset+200]),preserve_existing=True)
+        archive=path.replace('review/transfers/','review/transfers-legacy/')
+        if not artifacts.artifact_path(task_id,archive).is_file():
+            artifacts.atomic_write_json(task_id,archive,receipt)
+        receipt={key:value for key,value in receipt.items() if key!='items'}
+        receipt['receipt_storage']='candidate_sqlite_v1';receipt['legacy_audit_ref']=archive
+        artifacts.atomic_write_json(task_id,path,receipt)
+    return receipt
+
+
 @app.post("/api/v60/projects/{project_id}/annotation-tasks/{task_id}/negative-transfer")
 def transfer_annotation_candidates(project_id: str, task_id: str, payload: AnnotationTransferReq, request: Request):
     from platform_core.negative_pool import NegativePool
@@ -25990,7 +26006,7 @@ def transfer_annotation_candidates(project_id: str, task_id: str, payload: Annot
     identity = hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
     with FileLock(str(artifacts.artifact_path(task_id, 'review.lock')), timeout=30):
         store = CandidateStore(artifacts, task_id=task_id)
-        receipt = artifacts.read_json(task_id, path, default=None)
+        receipt = _load_annotation_transfer(artifacts, task_id, path, store)
         if receipt:
             if task.status is not TaskStatus.AWAITING_CONFIRMATION and receipt.get('status') != 'completed':
                 raise HTTPException(409,detail='任务已离开审核阶段，不能继续转移')
@@ -25999,7 +26015,7 @@ def transfer_annotation_candidates(project_id: str, task_id: str, payload: Annot
             if receipt.get('status') == 'completed':
                 return {'request_id':payload.request_id,'status':'completed','succeeded':len(receipt['image_ids']),
                         'failed':0,'conflicts':0,'total':len(receipt['image_ids']),
-                        'items':list(receipt['items'].values())[-200:],'idempotent':True,
+                        'items':list(store.read_transfer_receipts(payload.request_id).values()),'idempotent':True,
                         'summary':{**store.summary(),**store.review_counts()},'review_revision':store.review_revision(),
                         'label_summary':store.label_summary()}
             if receipt.get('status') in {'undone','undo_pending'}:
@@ -26026,15 +26042,18 @@ def transfer_annotation_candidates(project_id: str, task_id: str, payload: Annot
             if payload.confirm_absent and not payload.algorithm_id:
                 raise HTTPException(422, detail='确认无目标必须指定算法范围')
             receipt = {'identity':identity,'actor':actor,'request_id':payload.request_id,'image_ids':ids,
-                       'items':{},'body':body,'status':'pending','created_at':now_iso()}
+                       'receipt_storage':'candidate_sqlite_v1','pool_revision_base':NegativePool(material_store(project_id)).revision(),
+                       'body':body,'status':'pending','created_at':now_iso()}
             artifacts.atomic_write_json(task_id, path, receipt)
         # At most 200 images per call. Reposting the same identity continues the
         # original durable receipt; a lost reply never creates a second transfer.
         # Complete one bounded pass over the frozen set before any failed item
         # is retried. Otherwise a fully failed first page starves later pages.
-        pending = [value for value in receipt['image_ids'] if value not in receipt['items']][:200]
+        statuses=store.transfer_receipt_statuses(payload.request_id)
+        pending = [value for value in receipt['image_ids'] if value not in statuses][:200]
         if not pending:
-            pending = [value for value in receipt['image_ids'] if receipt['items'].get(value,{}).get('status') != 'transferred'][:200]
+            pending = [value for value in receipt['image_ids'] if statuses.get(value) != 'transferred'][:200]
+        batch_receipts=store.read_transfer_receipts(payload.request_id,image_ids=pending)
         pool = NegativePool(material_store(project_id))
         for image_id in pending:
             try:
@@ -26056,13 +26075,13 @@ def transfer_annotation_candidates(project_id: str, task_id: str, payload: Annot
                     categories = {row['id']:row for row in pool.categories()}
                     if any(value not in categories or not categories[value]['enabled'] for value in payload.category_ids):
                         raise ValueError('目标分类不存在或已停用')
-                    existing = receipt['items'].get(image_id) or {}
+                    existing = batch_receipts.get(image_id) or {}
                     if 'pool_before' not in existing:
-                        existing = {**existing,'status':'pending', 'pool_before':pool.member_snapshot(image_id),
+                        existing = {**existing,'status':'pending','filename':material.get('filename') or item.get('filename') or image_id, 'pool_before':pool.member_snapshot(image_id),
                                     'annotation_version':int(formal.get('version') or 0)}
-                    receipt['items'][image_id] = existing
+                    batch_receipts[image_id] = existing
                     # Write-ahead evidence plus exclusion precede pool mutation.
-                    artifacts.atomic_write_json(task_id, path, receipt)
+                    store.write_transfer_receipts(payload.request_id,{image_id:existing})
                     store.set_review_exclusion(image_id, 'pending_transfer', operation_id=payload.request_id, actor=actor,
                                                details={'algorithm_id':payload.algorithm_id,'category_ids':payload.category_ids,'confirm_absent':payload.confirm_absent})
                     if payload.confirm_absent:
@@ -26080,84 +26099,92 @@ def transfer_annotation_candidates(project_id: str, task_id: str, payload: Annot
                     pool.members([image_id], category_ids=payload.category_ids, algorithm_id=payload.algorithm_id)
                     store.set_review_exclusion(image_id, 'transferred', operation_id=payload.request_id, actor=actor,
                                                details={'algorithm_id':payload.algorithm_id,'category_ids':payload.category_ids,'confirm_absent':payload.confirm_absent})
-                    receipt['items'][image_id] = {**existing,'image_id':image_id,'status':'transferred','at':now_iso()}
+                    batch_receipts[image_id] = {**existing,'image_id':image_id,'status':'transferred','at':now_iso()}
             except (ValueError, HTTPException, PlatformError, OSError, sqlite3.Error) as error:
                 message = str(error.detail if isinstance(error, HTTPException) else error)
-                receipt['items'][image_id] = {**receipt['items'].get(image_id,{}),'image_id':image_id,'status':'failed','error':message}
+                batch_receipts[image_id] = {**batch_receipts.get(image_id,{}),'image_id':image_id,'status':'failed','error':message}
                 failed_item = store.get(image_id)
                 if failed_item and failed_item.get('status') in {'success','empty'} and failed_item.get('review_operation_id') in {None, '', payload.request_id}:
                     store.set_review_exclusion(image_id, 'blocked', operation_id=payload.request_id, actor=actor, details={'error':message})
-            artifacts.atomic_write_json(task_id, path, receipt)
-        succeeded = sum(row.get('status') == 'transferred' for row in receipt['items'].values())
-        failed = sum(row.get('status') == 'failed' for row in receipt['items'].values())
+            store.write_transfer_receipts(payload.request_id,{image_id:batch_receipts[image_id]})
+        counts=store.transfer_receipt_counts(payload.request_id)
+        succeeded = counts.get('transferred',0)
+        failed = counts.get('failed',0)
         receipt['pool_revision'] = pool.revision()
-        receipt['status'] = 'completed' if succeeded == len(receipt['image_ids']) else 'partial' if len(receipt['items']) == len(receipt['image_ids']) else 'pending'
+        receipt['status'] = 'completed' if succeeded == len(receipt['image_ids']) else 'partial' if counts['total'] == len(receipt['image_ids']) else 'pending'
         artifacts.atomic_write_json(task_id, path, receipt)
         return {'request_id':payload.request_id,'status':receipt['status'],'succeeded':succeeded,'failed':failed,
-                'conflicts':failed,'total':len(receipt['image_ids']), 'items':list(receipt['items'].values())[-200:],
+                'conflicts':failed,'total':len(receipt['image_ids']), 'items':list(batch_receipts.values())[-200:],
                 'summary':{**store.summary(), **store.review_counts()},'review_revision':store.review_revision(),'label_summary':store.label_summary()}
 
 
 @app.get("/api/v60/projects/{project_id}/annotation-tasks/{task_id}/negative-transfer/{request_id}")
-def get_annotation_transfer(project_id: str, task_id: str, request_id: str):
-    _require_annotation_review_task(project_id, task_id)
-    path = _annotation_review_operation_path(request_id).replace('review/operations/', 'review/transfers/')
-    receipt = shared_task_artifacts().read_json(task_id, path, default=None)
-    if not receipt:
-        raise HTTPException(404, detail='转移记录不存在')
-    return {key:value for key,value in receipt.items() if key not in {'identity','body'}}
+def get_annotation_transfer(project_id: str, task_id: str, request_id: str, offset: int = Query(default=0, ge=0, le=50000), limit: int = Query(default=100, ge=1, le=200)):
+    _require_annotation_review_task(project_id,task_id)
+    path=_annotation_review_operation_path(request_id).replace('review/operations/','review/transfers/')
+    artifacts=shared_task_artifacts();receipt=artifacts.read_json(task_id,path,default=None)
+    if not receipt:raise HTTPException(404,detail='转移记录不存在')
+    offset=max(0,offset);limit=max(1,min(200,limit))
+    if isinstance(receipt.get('items'),dict):
+        all_items=list(receipt['items'].values());items=all_items[offset:offset+limit];total=len(all_items)
+    else:
+        store=CandidateStore(artifacts,task_id=task_id)
+        items=list(store.read_transfer_receipts(request_id,offset=offset,limit=limit).values());total=store.transfer_receipt_counts(request_id)['total']
+    return {**{key:value for key,value in receipt.items() if key not in {'identity','body','items','image_ids'}},
+            'items':items,'total':len(receipt['image_ids']),'processed':total,
+            'target':{key:receipt.get('body',{}).get(key) for key in ('algorithm_id','category_ids','confirm_absent')},
+            'next_cursor':str(offset+len(items)) if offset+len(items)<total else None}
 
 
 @app.post("/api/v60/projects/{project_id}/annotation-tasks/{task_id}/negative-transfer/{request_id}/undo")
 def undo_annotation_transfer(project_id: str, task_id: str, request_id: str, request: Request):
     from platform_core.negative_pool import NegativePool
-    actor = _material_governance_actor(request, project_id)['actor_id']
-    task = _require_annotation_review_task(project_id, task_id)
-    artifacts = shared_task_artifacts()
-    path = _annotation_review_operation_path(request_id).replace('review/operations/', 'review/transfers/')
-    with FileLock(str(artifacts.artifact_path(task_id,'review.lock')), timeout=30), material_annotation_lifecycle_fence(project_dir(project_id)):
-        receipt = artifacts.read_json(task_id,path,default=None)
-        if not receipt:
-            raise HTTPException(404, detail='转移记录不存在')
-        if receipt.get('status') == 'undone':
-            return {'ok':True,'status':'undone','idempotent':True}
+    actor=_material_governance_actor(request,project_id)['actor_id']
+    task=_require_annotation_review_task(project_id,task_id);artifacts=shared_task_artifacts()
+    path=_annotation_review_operation_path(request_id).replace('review/operations/','review/transfers/')
+    with FileLock(str(artifacts.artifact_path(task_id,'review.lock')),timeout=30), material_annotation_lifecycle_fence(project_dir(project_id)):
+        store=CandidateStore(artifacts,task_id=task_id)
+        receipt=_load_annotation_transfer(artifacts,task_id,path,store)
+        if not receipt:raise HTTPException(404,detail='转移记录不存在')
+        if receipt.get('status')=='undone':return {'ok':True,'status':'undone','idempotent':True}
         if task.status is not TaskStatus.AWAITING_CONFIRMATION or receipt.get('body',{}).get('confirm_absent'):
-            raise HTTPException(409, detail='任务已提交或已产生正式人工负样本证据，请走正式冲突处理流程')
-        rows = {key:value for key,value in receipt['items'].items() if value.get('status') == 'transferred'}
-        undone=set((receipt.get('undo') or {}).get('done') or [])
-        rows={key:value for key,value in rows.items() if key not in undone}
-        rows=dict(list(rows.items())[:200])
-        materials = material_store(project_id).get_many(list(rows))
-        current_formal=read_annotations_many(project_id,list(rows))
-        if any(int((current_formal.get(key) or {}).get('version') or 0)!=value['annotation_version'] for key,value in rows.items()):
-            raise HTTPException(409,detail='正式GT已发生变化，请显式处理冲突后再撤销')
-        usage = _negative_pool_training_usage(project_id, materials)
-        if any(value.get('state') not in {'unused','unknown',None} for value in usage.values()):
-            raise HTTPException(409, detail='已有下游训练使用，请显式处理冲突')
-        pool = NegativePool(material_store(project_id))
-        # Intent survives process death after pool restore. The exact predicted
-        # revision fences recovery; unrelated pool writes fail closed.
-        undo = receipt.get('undo')
+            raise HTTPException(409,detail='任务已提交或已产生正式人工负样本证据，请走正式冲突处理流程')
+        pool=NegativePool(material_store(project_id));undo=receipt.get('undo')
+        counts=store.transfer_receipt_counts(request_id)
         if not undo:
-            undo = {'status':'pending','before':pool.revision(),'actor':actor,'done':[]}
-            if undo['before'] != receipt.get('pool_revision'):
-                raise HTTPException(409, detail='负样本池已变化，请重新核查冲突')
-            receipt['undo'] = undo
-            artifacts.atomic_write_json(task_id,path,receipt)
-        try:
-            pool.restore_members({key:value['pool_before'] for key,value in rows.items()},
-                                 expected_revision=undo['before'], operation_id=task_id+':undo:'+request_id+':'+hashlib.sha256(','.join(sorted(rows)).encode()).hexdigest())
-            store = CandidateStore(artifacts,task_id=task_id)
-            for image_id in rows:
-                store.set_review_exclusion(image_id,'active',operation_id=request_id,actor=receipt['actor'],details={'undone_by':undo['actor']})
-        except ValueError as error:
-            raise HTTPException(409, detail=str(error)) from error
-        undo['done']=list(dict.fromkeys([*(undo.get('done') or []),*rows]))
-        undo['before']=pool.revision()
-        completed=len(undo['done'])==sum(value.get('status')=='transferred' for value in receipt['items'].values())
-        receipt['status']='undone' if completed else 'undo_pending';receipt['undo']['status']='completed' if completed else 'pending'
+            base=receipt.get('pool_revision_base')
+            # One successful members transaction increments the canonical pool
+            # revision once. Any other mutation during transfer is a conflict,
+            # including changes between batches, not just after completion.
+            if base is None or int(receipt.get('pool_revision') or -1)-int(base)!=counts.get('transferred',0):
+                raise HTTPException(409,detail='转移期间负样本池存在其他变更或恢复歧义，请显式核查冲突')
+            if pool.revision()!=receipt.get('pool_revision'):
+                raise HTTPException(409,detail='负样本池已变化，请重新核查冲突')
+            undo={'status':'pending','before':pool.revision(),'actor':actor}
+            receipt['undo']=undo
+        pending_ids=undo.get('pending_image_ids')
+        rows=store.read_transfer_receipts(request_id,image_ids=pending_ids) if pending_ids else store.read_transfer_receipts(request_id,status='transferred',limit=200)
+        materials=material_store(project_id).get_many(list(rows));formal=read_annotations_many(project_id,list(rows))
+        if any(int((formal.get(key) or {}).get('version') or 0)!=value['annotation_version'] for key,value in rows.items()):
+            raise HTTPException(409,detail='正式GT已发生变化，请显式处理冲突后再撤销')
+        usage=_negative_pool_training_usage(project_id,materials)
+        if any(value.get('state') not in {'unused','unknown',None} for value in usage.values()):
+            raise HTTPException(409,detail='已有下游训练使用，请显式处理冲突')
+        undo['pending_image_ids']=list(rows)
         artifacts.atomic_write_json(task_id,path,receipt)
-        return {'ok':True,'status':'undone' if completed else 'pending','summary':{**store.summary(),**store.review_counts()},'review_revision':store.review_revision(),'label_summary':store.label_summary()}
+        try:
+            if rows:
+                pool.restore_members({key:value['pool_before'] for key,value in rows.items()},expected_revision=undo['before'],
+                    operation_id=task_id+':undo:'+request_id+':'+hashlib.sha256(','.join(sorted(rows)).encode()).hexdigest())
+                for image_id in rows:
+                    store.set_review_exclusion(image_id,'active',operation_id=request_id,actor=receipt['actor'],details={'undone_by':undo['actor']},transfer_receipt={**rows[image_id],'status':'undone'})
+        except ValueError as error:raise HTTPException(409,detail=str(error)) from error
+        undo.pop('pending_image_ids',None);undo['before']=pool.revision()
+        completed=store.transfer_receipt_counts(request_id).get('transferred',0)==0
+        receipt['status']='undone' if completed else 'undo_pending';undo['status']='completed' if completed else 'pending'
+        artifacts.atomic_write_json(task_id,path,receipt)
+        return {'ok':True,'status':'undone' if completed else 'pending','summary':{**store.summary(),**store.review_counts()},
+                'review_revision':store.review_revision(),'label_summary':store.label_summary()}
 
 
 @app.post("/api/v60/projects/{project_id}/annotation-tasks/{task_id}/negative-transfer-preview")

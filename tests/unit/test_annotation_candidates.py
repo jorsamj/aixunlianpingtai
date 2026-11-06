@@ -582,3 +582,29 @@ def test_final_decision_uses_updated_draft_and_retains_original_evidence(tmp_pat
     store.apply_decisions([CandidateDecision('a',True,[{'label':'smoke','x1':5,'y1':6,'x2':8,'y2':9}])])
     assert next(store.iter_accepted_items())['boxes'][0]['label']=='smoke'
     assert store.get('a')['original_boxes'][0]['label']=='fire'
+
+
+def test_transfer_outbox_reads_are_bounded_and_never_decode_candidate_boxes(tmp_path, monkeypatch):
+    store=CandidateStore(ArtifactStore(tmp_path),task_id='outbox-paging')
+    store.initialize(labels=['fire'],total_images=500)
+    for start in range(0,500,200):
+        store.write_transfer_receipts('operation',{str(i):{'image_id':str(i),'status':'transferred'} for i in range(start,min(500,start+200))})
+    monkeypatch.setattr(store,'_decode',lambda *_:pytest.fail('receipt query decoded candidate boxes'))
+    assert len(store.read_transfer_receipts('operation'))==200
+    assert len(store.read_transfer_receipts('operation',offset=400))==100
+    assert store.transfer_receipt_counts('operation')=={'transferred':500,'total':500}
+    assert len(store.transfer_receipt_statuses('operation'))==500
+
+def test_undo_state_and_outbox_receipt_rollback_together(tmp_path):
+    import sqlite3
+    store=CandidateStore(ArtifactStore(tmp_path),task_id='atomic-undo')
+    store.initialize(labels=['fire'],total_images=1)
+    store.append_items([{'image_id':'a','status':'empty','boxes':[]}])
+    store.set_review_exclusion('a','transferred',operation_id='operation',actor='reviewer')
+    store.write_transfer_receipts('operation',{'a':{'image_id':'a','status':'transferred'}})
+    with sqlite3.connect(store.path) as db:
+        db.execute("CREATE TRIGGER fail_undo_receipt BEFORE UPDATE ON review_transfer_receipts WHEN NEW.status='undone' BEGIN SELECT RAISE(ABORT,'isolated outbox commit failure');END")
+    with pytest.raises(sqlite3.IntegrityError,match='isolated outbox'):
+        store.set_review_exclusion('a','active',operation_id='operation',actor='reviewer',transfer_receipt={'image_id':'a','status':'undone'})
+    assert store.get('a')['review_state']=='transferred'
+    assert store.read_transfer_receipts('operation')['a']['status']=='transferred'

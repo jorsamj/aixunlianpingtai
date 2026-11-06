@@ -16,6 +16,7 @@ _DDL = (
     "CREATE TABLE IF NOT EXISTS negative_pool_links (material_id TEXT NOT NULL REFERENCES negative_pool_members(material_id) ON DELETE CASCADE, category_id TEXT NOT NULL REFERENCES negative_pool_categories(id) ON DELETE CASCADE, PRIMARY KEY(material_id,category_id))",
     "CREATE INDEX IF NOT EXISTS ix_negative_pool_category ON negative_pool_links(category_id,material_id)",
     "CREATE TABLE IF NOT EXISTS negative_pool_algorithm_members (algorithm_id TEXT NOT NULL, material_id TEXT NOT NULL REFERENCES negative_pool_members(material_id) ON DELETE CASCADE, joined_at TEXT NOT NULL, PRIMARY KEY(algorithm_id,material_id))",
+    "CREATE INDEX IF NOT EXISTS ix_negative_pool_material_algorithm ON negative_pool_algorithm_members(material_id,algorithm_id)",
     "CREATE TABLE IF NOT EXISTS negative_pool_meta (id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL)",
     "INSERT OR IGNORE INTO negative_pool_meta VALUES (1,0)",
 )
@@ -68,9 +69,10 @@ class NegativePool:
             if not self._exists(db):
                 return {'member': None, 'categories': [], 'algorithms': []}
             row = db.execute('SELECT joined_at FROM negative_pool_members WHERE material_id=?', (str(image_id),)).fetchone()
+            has_algorithms = db.execute("SELECT 1 FROM sqlite_master WHERE name='negative_pool_algorithm_members'").fetchone()
             return {'member': row[0] if row else None,
                     'categories': [r[0] for r in db.execute('SELECT category_id FROM negative_pool_links WHERE material_id=?', (str(image_id),))],
-                    'algorithms': [list(r) for r in db.execute('SELECT algorithm_id,joined_at FROM negative_pool_algorithm_members WHERE material_id=?', (str(image_id),))]}
+                    'algorithms': [list(r) for r in db.execute('SELECT algorithm_id,joined_at FROM negative_pool_algorithm_members WHERE material_id=?', (str(image_id),))] if has_algorithms else []}
 
     def restore_members(self, snapshots, *, expected_revision, operation_id):
         """Rollback evidence and receipt commit in the SAME pool transaction."""

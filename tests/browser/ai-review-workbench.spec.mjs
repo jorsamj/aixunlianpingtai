@@ -1,5 +1,6 @@
 import {test,expect} from '@playwright/test';
 import {writeFileSync} from 'node:fs';
+test.use({hasTouch:true});
 for(const width of [1920,1366,768])test(`审核工作台三栏与批选 ${width}`,async({page},info)=>{
  await page.setViewportSize({width,height:1000});await page.goto('/');await expect.poll(()=>page.evaluate(()=>typeof state!=='undefined'&&state.uiReady)).toBe(true);
  const url='data:image/svg+xml,'+encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="960"><rect width="1280" height="960" fill="#dce5ed"/><rect x="100" y="200" width="200" height="500" fill="#6e8299"/><text x="420" y="480" font-size="48">ISOLATED TEST</text></svg>');
@@ -8,7 +9,7 @@ for(const width of [1920,1366,768])test(`审核工作台三栏与批选 ${width}
  await page.getByRole('button',{name:'切换列表'}).click();await expect(page.locator('#ai60ReviewGrid')).toHaveClass(/ai-review-list/);await page.getByRole('button',{name:'切换网格'}).click();const first=page.locator('.ai66-candidate-card').first();const identity=await first.evaluate(node=>{node.dataset.identity='stable';return node.dataset.identity});await first.locator('input[type=checkbox]').check();await expect(page.locator('#ai60SelectionCount')).toContainText('选中 1 张');expect(await first.getAttribute('data-identity')).toBe(identity);
  await first.locator('.ai-candidate-stage').click();if(width>768)await expect(page.locator('#ai60ReviewInspector')).toContainText('测试图片-0');
  await expect(page.locator('#ai60ApproveRemaining')).toHaveText('审核剩余 6 张');expect(await page.locator('.ai-review-page-shell').evaluate(node=>node.scrollWidth<=node.clientWidth+2)).toBe(true);
- await first.locator('input[type=checkbox]').focus();await page.keyboard.press('Space');await expect(first.locator('input[type=checkbox]')).not.toBeChecked();await page.keyboard.press('Space');await expect(first.locator('input[type=checkbox]')).toBeChecked();await page.emulateMedia({reducedMotion:'reduce'});await expect(first).toHaveCSS('transition-duration','0s');await page.screenshot({path:info.outputPath(`review-${width}.png`),fullPage:true});
+ await first.locator('input[type=checkbox]').focus();await page.keyboard.press('Space');await expect(first.locator('input[type=checkbox]')).not.toBeChecked();await page.keyboard.press('Space');await expect(first.locator('input[type=checkbox]')).toBeChecked();if(width===768){await first.locator('input[type=checkbox]').tap();await expect(first.locator('input[type=checkbox]')).not.toBeChecked();await first.locator('input[type=checkbox]').tap();await expect(first.locator('input[type=checkbox]')).toBeChecked()}await page.emulateMedia({reducedMotion:'reduce'});await expect(first).toHaveCSS('transition-duration','0s');await page.screenshot({path:info.outputPath(`review-${width}.png`),fullPage:true});
 });
 test('两万候选任务只渲染当前页并记录交互基线',async({page},info)=>{
  await page.setViewportSize({width:1366,height:1000});await page.goto('/');await expect.poll(()=>page.evaluate(()=>typeof state!=='undefined'&&state.uiReady)).toBe(true);

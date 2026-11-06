@@ -60,6 +60,11 @@ class CandidateStore:
                 db.execute(f"ALTER TABLE candidates ADD COLUMN {name} {definition}")
         db.executescript("""
             CREATE INDEX IF NOT EXISTS ix_candidates_state ON candidates(review_state,status,boxes_count);
+            CREATE TABLE IF NOT EXISTS review_transfer_receipts (
+                operation_id TEXT NOT NULL,image_id TEXT NOT NULL,status TEXT NOT NULL,
+                receipt_json TEXT NOT NULL,PRIMARY KEY(operation_id,image_id)
+            );
+            CREATE INDEX IF NOT EXISTS ix_review_transfer_status ON review_transfer_receipts(operation_id,status,image_id);
             CREATE TABLE IF NOT EXISTS review_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, image_id TEXT NOT NULL,
                 operation_id TEXT NOT NULL, kind TEXT NOT NULL, event_json TEXT NOT NULL,
@@ -711,12 +716,13 @@ class CandidateStore:
             self._bump_revision(db)
             return result
 
-    def set_review_exclusion(self, image_id, state, *, operation_id, actor, expected_revision=None, details=None):
+    def set_review_exclusion(self, image_id, state, *, operation_id, actor, expected_revision=None, details=None, transfer_receipt=None):
         """Journal cross-store transfer state under the existing task lock.
 
         pending_transfer blocks acceptance BEFORE pool write, transferred follows
         its durable receipt; active is explicit pre-finalization undo.
         """
+        receipt_rows=[] if transfer_receipt is None else [self._transfer_receipt_row(operation_id,image_id,transfer_receipt)]
         if state not in {'active','pending_transfer','transferred','blocked'}:
             raise ValueError('invalid candidate review state')
         if not operation_id or not actor:
@@ -737,6 +743,7 @@ class CandidateStore:
                 if event['actor'] != actor or event['details'] != (details or {}):
                     raise ValueError('operation reused with different transfer')
                 if row['review_state'] == state:
+                    self._write_transfer_receipt_rows(db,receipt_rows)
                     return event
             if db.execute('SELECT 1 FROM commits WHERE image_id=?',(str(image_id),)).fetchone():
                 raise ValueError('candidate already finalized')
@@ -747,4 +754,52 @@ class CandidateStore:
             kind = state if prior is None else f"{state}:retry:{db.execute('SELECT COALESCE(MAX(id),0)+1 FROM review_events').fetchone()[0]}"
             db.execute('INSERT INTO review_events(image_id,operation_id,kind,event_json) VALUES (?,?,?,?)',(str(image_id),str(operation_id),kind,json.dumps(event,ensure_ascii=False)))
             self._bump_revision(db)
+            self._write_transfer_receipt_rows(db,receipt_rows)
             return event
+
+    @staticmethod
+    def _transfer_receipt_row(operation_id,image_id,receipt):
+        status=receipt.get('status')
+        if status not in {'pending','failed','transferred','undone'}:
+            raise ValueError('invalid transfer receipt status')
+        return (str(operation_id),str(image_id),status,json.dumps(receipt,ensure_ascii=False,allow_nan=False))
+
+    @staticmethod
+    def _write_transfer_receipt_rows(db,rows,*,preserve_existing=False):
+        conflict='DO NOTHING' if preserve_existing else 'DO UPDATE SET status=excluded.status,receipt_json=excluded.receipt_json'
+        db.executemany('INSERT INTO review_transfer_receipts VALUES (?,?,?,?) ON CONFLICT(operation_id,image_id) '+conflict,rows)
+
+    def write_transfer_receipts(self, operation_id, receipts, *, preserve_existing=False):
+        """Bounded outbox progress in the existing candidate database, never GT."""
+        if not operation_id or not isinstance(receipts,dict) or len(receipts)>200:
+            raise ValueError('transfer receipt batch must contain at most 200 images')
+        rows=[self._transfer_receipt_row(operation_id,image_id,receipt) for image_id,receipt in receipts.items()]
+        self._ready()
+        with closing(self._connect()) as db,db:
+            db.execute('BEGIN IMMEDIATE')
+            self._write_transfer_receipt_rows(db,rows,preserve_existing=preserve_existing)
+
+    def read_transfer_receipts(self, operation_id, *, image_ids=None, status=None, offset=0, limit=200):
+        self._ready()
+        where=['operation_id=?'];values=[str(operation_id)]
+        if image_ids is not None:
+            ids=list(dict.fromkeys(map(str,image_ids)))
+            if len(ids)>200:raise ValueError('transfer receipt lookup is limited to 200 ids')
+            if not ids:return {}
+            where.append('image_id IN ('+','.join('?' for _ in ids)+')');values.extend(ids)
+        if status is not None:
+            where.append('status=?');values.append(str(status))
+        with closing(self._connect()) as db:
+            rows=db.execute('SELECT image_id,receipt_json FROM review_transfer_receipts WHERE '+' AND '.join(where)+' ORDER BY image_id LIMIT ? OFFSET ?',(*values,max(1,min(200,int(limit))),max(0,int(offset)))).fetchall()
+            return {str(row['image_id']):{**json.loads(row['receipt_json']), 'image_id':str(row['image_id'])} for row in rows}
+
+    def transfer_receipt_statuses(self, operation_id):
+        self._ready()
+        with closing(self._connect()) as db:
+            return {str(row['image_id']):str(row['status']) for row in db.execute('SELECT image_id,status FROM review_transfer_receipts WHERE operation_id=?',(str(operation_id),))}
+
+    def transfer_receipt_counts(self, operation_id):
+        self._ready()
+        with closing(self._connect()) as db:
+            counts={str(row['status']):int(row['n']) for row in db.execute('SELECT status,COUNT(*) n FROM review_transfer_receipts WHERE operation_id=? GROUP BY status',(str(operation_id),))}
+            return {**counts,'total':sum(counts.values())}
