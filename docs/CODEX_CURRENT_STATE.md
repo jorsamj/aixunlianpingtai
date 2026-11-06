@@ -1,3 +1,5 @@
+> **2026-11-06 / 42.24.538 WeVisOne 可选专用视觉适配器 P0（代码实现，实机/Chrome UAT 未验）**：从干净远端 `42.24.537 / 611e35d05ade6f93d9eb82e1b19f01f336d0358d` 开发，原 Provider Factory 新增显式 `wevisone_vl`，原模型配置/Keyring/标注 Worker/Candidate/人工审核/正式 GT 链路保留。专用检测 ref/box、显式单位坐标转换、空目标、缺失置信度、只读分割抠图、同窗模型配置与状态显示已编码；通用 Provider 严格 Schema 未放宽。开发约束及 UAT 阻断详见 [专项记录](WEVISONE_VISION_ADAPTER_P0_2026_11_06.md)。4070 专用服务实际 app.py 未取得、Chrome 浏览器下载失败、新 SHA CI 未验，不得称现场完成或部署。未修改生产数据，不 merge main/tag/release/force push。
+
 > **2026-11-05 / 42.24.537 启动快照 P0**：在另一AI交付弹窗19b0659d之上整合；默认核心snapshot移除历史/版本报告/模型凭据阻塞，冷构建后台单飞，热缓存按revision失效；20秒截止不变，重试/取消/旧响应及模型页按需加载修复。Node1540、Chrome16、API去重42项通过；合成217130素材/110算法/1100版本/1000任务，冷核心280ms、热25次P95 40ms，非生产。准确新SHA Actions待核，未部署，现场26秒分项/真实训练并发待现场验证。详见[启动专项本日记录](FRONTEND_STARTUP_REPORT_UX_GOVERNANCE_2026_10_21.md)。
 
 > **2026-11-05 / 42.24.535 ZIP压缩补充**：原zipfile导入增加统一方法预检、中文方法/数量/重压缩提示，保留安全限制及原回滚。定向ZIP14、回滚5、试跑/几何Chrome2通过；故障原包方法与535准确CI待验。见 [ZIP安全专项](ZIP_IMPORT_RECORD_SAFETY_2026_10_26.md) 本日章节；AI534代码39512a3已快进发布。

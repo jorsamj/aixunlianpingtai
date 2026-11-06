@@ -18192,6 +18192,7 @@ class V35ModelConfigReq(BaseModel):
     training_intervention_prompt: Optional[str] = ""
     default_for_annotation: bool = False
     default_for_training_ai: bool = False
+    enabled: bool = True
 
 
 class V35PromptTemplateReq(BaseModel):
@@ -18323,6 +18324,9 @@ def _v35_sanitize_secret(item: Dict[str, Any]) -> Dict[str, Any]:
     out.setdefault("coordinate_space", "legacy_auto")
     out.setdefault("coordinate_order", "xyxy")
     out.setdefault("output_protocol", "json_boxes")
+    out.setdefault("enabled", True)
+    if (out.get("provider_adapter") or out.get("provider_type")) == "wevisone_vl":
+        out["capabilities"] = ["detect", "segment", "matting"]
     if (out.get("provider_adapter") or out.get("provider_type")) in {"volcengine_ark", "aliyun_qwen", "local_openai"}:
         from platform_core.providers.openai_vision import resolve_api_endpoint, PRESETS, ProviderRequestError
         kind = out.get("provider_adapter") or out.get("provider_type")
@@ -18333,6 +18337,33 @@ def _v35_sanitize_secret(item: Dict[str, Any]) -> Dict[str, Any]:
         except (ValueError, ProviderRequestError):
             out["protocol_warning"] = "请确认高级设置中的 API 协议及接口地址。"
     return out
+
+
+def _v35_normalize_adapter(item: Dict[str, Any]) -> None:
+    kind = str(item.get("provider_adapter") or item.get("provider_type") or "")
+    if kind not in {"", "cloud", "local", "volcengine_ark", "aliyun_qwen", "local_openai", "ollama", "wevisone_vl"}:
+        raise HTTPException(status_code=400, detail="不支持的模型适配方式")
+    if kind == "wevisone_vl":
+        from platform_core.providers.wevisone_vision import _endpoint
+        try:
+            _endpoint(item.get("base_url") or item.get("detect_url") or "", "detect")
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        if not str(item.get("model_name") or "").strip():
+            raise HTTPException(status_code=400, detail="WeVisOne 模型 ID 不能为空")
+        item.update({"provider_adapter": kind, "provider_type": kind,
+                     "coordinate_space": "pixel", "coordinate_order": "xyxy",
+                     "coordinate_origin": "top_left", "coordinate_image_space": "original_input",
+                     "output_protocol": "json_boxes", "api_protocol": "auto", "structured_output": "auto"})
+    if item.get("enabled") is False and item.get("default_for_annotation"):
+        raise HTTPException(status_code=400, detail="停用的模型不能设为默认自动标注模型")
+
+
+def _v35_unique_default(items: List[Dict[str, Any]], chosen: Dict[str, Any]) -> None:
+    if chosen.get("default_for_annotation"):
+        for other in items:
+            if other.get("id") != chosen.get("id"):
+                other["default_for_annotation"] = False
 
 
 def _v35_publish_model_config(item=None, *, removed_id=""):
@@ -18347,6 +18378,10 @@ def _v35_publish_model_config(item=None, *, removed_id=""):
         snapshot["model_configs"] = [public if str(row.get("id")) == identity else row for row in rows if public is not None or str(row.get("id")) != identity]
         if public is not None and not found:
             snapshot["model_configs"] = [public, *snapshot["model_configs"]]
+        if public is not None and public.get("default_for_annotation"):
+            for row in snapshot["model_configs"]:
+                if str(row.get("id")) != identity:
+                    row["default_for_annotation"] = False
     return public
 
 
@@ -18366,6 +18401,7 @@ def v35_save_model_config(payload: V35ModelConfigReq):
             raise HTTPException(status_code=400, detail="检测接口地址不能为空")
         config_id = uuid.uuid4().hex[:12]
         item = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
+        _v35_normalize_adapter(item)
         api_key = str(item.pop("api_key", "") or "")
         item["headers_json"] = _v35_clean_headers(item.get("headers_json"))
         if api_key:
@@ -18374,6 +18410,7 @@ def v35_save_model_config(payload: V35ModelConfigReq):
             item["secret_ref"] = reference
         item.update({"coordinate_config_revision": uuid.uuid4().hex, "id": config_id, "name": name, "detect_url": detect_url, "created_at": now_iso(), "updated_at": now_iso()})
         items = _v35_model_items()
+        _v35_unique_default(items, item)
         items.insert(0, item)
         _v35_save_items(MODEL_CONFIGS_FILE, items[:100])
         return _v35_publish_model_config(item)
@@ -18390,12 +18427,15 @@ def v35_update_model_config(config_id: str, payload: V35ModelConfigReq):
                 for field in ("api_protocol", "structured_output"):
                     if field not in payload.model_fields_set:
                         data[field] = item.get(field) or "auto"
+                if "enabled" not in payload.model_fields_set:
+                    data["enabled"] = item.get("enabled", True)
                 for field in ("coordinate_space", "coordinate_order", "coordinate_origin", "coordinate_image_space", "output_protocol", "coordinate_contract_version"):
                     if field not in payload.model_fields_set:
                         if field in item:
                             data[field] = item[field]
                         else:
                             data.pop(field, None)
+                _v35_normalize_adapter(data)
                 api_key = str(data.pop("api_key", "") or "")
                 reference = str(item.get("secret_ref") or secret_ref("model-config", config_id))
                 if api_key:
@@ -18409,6 +18449,7 @@ def v35_update_model_config(config_id: str, payload: V35ModelConfigReq):
                     data["detect_url"] = data.get("base_url") or item.get("detect_url") or ""
                 data["coordinate_validation"] = {"status": "unverified", "reason": "配置已保存，请重新验证真实样本"}
                 items[i] = data
+                _v35_unique_default(items, data)
                 found = True
                 break
         if not found:
@@ -18430,14 +18471,34 @@ def v35_delete_model_config(config_id: str):
         return {"ok": True}
 
 
+class V35ModelAvailabilityReq(BaseModel):
+    enabled: bool
+
+
+@app.patch("/api/v35/model-configs/{config_id}/availability")
+def v35_set_model_availability(config_id: str, payload: V35ModelAvailabilityReq):
+    """Change availability without invalidating a saved coordinate proof."""
+    with FileLock(str(MODEL_CONFIGS_FILE) + ".lock", timeout=10):
+        items = _v35_model_items()
+        current = next((row for row in items if row.get("id") == config_id), None)
+        if not current:
+            raise HTTPException(status_code=404, detail="模型配置不存在")
+        current["enabled"] = payload.enabled
+        if not payload.enabled:
+            current["default_for_annotation"] = False
+        _v35_save_items(MODEL_CONFIGS_FILE, items)
+        return _v35_publish_model_config(current)
+
+
 def _v35_is_vision_provider(config):
-    return config.get("model_kind") == "vlm" or config.get("request_mode") == "openai_vision" or (config.get("provider_adapter") or config.get("provider_type")) in {"volcengine_ark", "aliyun_qwen", "local_openai", "ollama"}
+    return config.get("model_kind") == "vlm" or config.get("request_mode") == "openai_vision" or (config.get("provider_adapter") or config.get("provider_type")) in {"volcengine_ark", "aliyun_qwen", "local_openai", "ollama", "wevisone_vl"}
 
 
 @app.post("/api/v35/model-configs/test")
 def v35_test_model_config(payload: V35ModelConfigReq):
     config = payload.model_dump()
     if _v35_is_vision_provider(config):
+        _v35_normalize_adapter(config)
         config["_api_key"] = config.pop("api_key", "") or ""
         return _v35_test_annotation(config)
     url = (payload.health_url or payload.detect_url or payload.base_url or "").strip()
@@ -18465,15 +18526,40 @@ def v35_test_saved_model_annotation(config_id: str):
     cfg = next((item for item in _v35_model_items() if item.get("id") == config_id), None)
     if not cfg:
         raise HTTPException(status_code=404, detail="模型配置不存在")
+    if cfg.get("enabled") is False:
+        raise HTTPException(status_code=409, detail="模型配置已停用，请先启用后再测试")
     runtime_cfg = dict(cfg)
     reference = str(cfg.get("secret_ref") or "")
     runtime_cfg["_api_key"] = _v35_secret_store().get(reference) if reference else ""
-    return _v35_test_annotation(runtime_cfg)
+    try:
+        result = _v35_test_annotation(runtime_cfg)
+        record = {"status": "protocol_passed", "checked_at": now_iso(),
+                  "no_target": result["no_target"], "model_loaded": result.get("model_loaded"),
+                  "latency_ms": result.get("latency_ms")}
+    except PlatformError as error:
+        record = {"status": "failed", "checked_at": now_iso(),
+                  "code": str(getattr(error, "code", "MODEL_CONNECTION_TEST_FAILED"))}
+        result = None
+        failure = error
+    # Legacy probe used to be read-only; do not silently rewrite pre-revision
+    # configurations merely because someone checks their existing service.
+    if cfg.get("coordinate_config_revision"):
+        with FileLock(str(MODEL_CONFIGS_FILE) + ".lock", timeout=10):
+            items = _v35_model_items()
+            current = next((item for item in items if item.get("id") == config_id), None)
+            if current and current.get("coordinate_config_revision") == cfg.get("coordinate_config_revision"):
+                current["last_test"] = record
+                _v35_save_items(MODEL_CONFIGS_FILE, items)
+                _v35_publish_model_config(current)
+    if result is None:
+        raise failure
+    return result
 
 
 class V35CoordinateSampleReq(BaseModel):
     image_base64: str
     labels: List[str]
+    operation: Literal["detect", "segment", "matting"] = "detect"
 
 
 @app.post("/api/v35/model-configs/{config_id}/verify-coordinates")
@@ -18483,6 +18569,8 @@ def v35_verify_model_coordinates(config_id: str, payload: V35CoordinateSampleReq
     cfg = next((x for x in _v35_model_items() if x.get("id") == config_id), None)
     if not cfg:
         raise HTTPException(status_code=404, detail="模型配置不存在")
+    if cfg.get("enabled") is False:
+        raise HTTPException(status_code=409, detail="模型配置已停用，请先启用再验证")
     if len(payload.image_base64) > 14_000_000 or not payload.labels or len(payload.labels) > 100:
         raise HTTPException(status_code=400, detail="样本最大 10MB，需提供 1～100 个目标标签")
     try:
@@ -18504,6 +18592,16 @@ def v35_verify_model_coordinates(config_id: str, payload: V35CoordinateSampleReq
     labels = list(dict.fromkeys(x.strip() for x in payload.labels if x.strip()))
     if not labels:
         raise HTTPException(status_code=400, detail="目标标签不能为空")
+    if payload.operation != "detect":
+        if (cfg.get("provider_adapter") or cfg.get("provider_type")) != "wevisone_vl":
+            raise HTTPException(status_code=400, detail="当前模型适配器不支持分割或抠图预览")
+        from platform_core.providers.base import ProviderRequestError
+        try:
+            provider = auto_label_core.provider_factory(runtime_cfg)
+            provider.inspect_model()
+            return provider.preview(payload.operation, image_bytes=buffer.getvalue(), labels=labels)
+        except ProviderRequestError as error:
+            raise PlatformError(code=error.code, message="专用视觉预览失败", detail=str(error), solution=error.solution, status_code=400) from error
     contract = auto_label_core.coordinate_contract(cfg, legacy=True)
     if contract["coordinate_space"] == "legacy_auto":
         raise HTTPException(status_code=400, detail="请先明确并保存坐标范围，再验证样本")
@@ -18567,9 +18665,11 @@ def _v35_test_annotation(runtime_cfg, *, image_bytes=None, sample_prompt=None, s
     from platform_core.providers.base import ProviderRequestError
     try:
         provider = auto_label_core.provider_factory(runtime_cfg)
+        dedicated = (runtime_cfg.get("provider_adapter") or runtime_cfg.get("provider_type")) == "wevisone_vl"
+        identity = provider.inspect_model() if dedicated and callable(getattr(provider, "inspect_model", None)) else {}
         buffer = BytesIO()
         Image.new("RGB", (128, 128), "white").save(buffer, format="JPEG")
-        response = provider.annotate(
+        provider_args = dict(
             image_bytes=image_bytes or buffer.getvalue(),
             prompt=sample_prompt or (
                 "请仅返回 JSON，检测图片中的 fire。"
@@ -18577,13 +18677,16 @@ def _v35_test_annotation(runtime_cfg, *, image_bytes=None, sample_prompt=None, s
             ),
             output_schema=auto_label_core.CANDIDATE_OUTPUT_SCHEMA,
         )
+        if dedicated:
+            provider_args["labels"] = sample_labels or ["fire"]
+        response = provider.annotate(**provider_args)
         text = str(response.get("text") or "")
         try:
             contract = auto_label_core.coordinate_contract(runtime_cfg, legacy=True)
             mapping = response.get("geometry") if contract.get("coordinate_image_space") == "processed_image" else None
             if contract.get("coordinate_image_space") == "processed_image" and not isinstance(mapping, dict):
                 raise ValueError("unknown provider preprocessing geometry")
-            boxes = auto_label_core.parse_candidate_response(text, width=sample_size[0], height=sample_size[1], label_ids={label: i for i, label in enumerate(sample_labels or ["fire"])}, coordinate_space=contract["coordinate_space"], coordinate_order=contract["coordinate_order"], coordinate_origin=contract.get("coordinate_origin", "top_left"), geometry=mapping)
+            boxes = auto_label_core.parse_candidate_response(text, width=sample_size[0], height=sample_size[1], label_ids={label: i for i, label in enumerate(sample_labels or ["fire"])}, coordinate_space=contract["coordinate_space"], coordinate_order=contract["coordinate_order"], coordinate_origin=contract.get("coordinate_origin", "top_left"), geometry=mapping, allow_missing_confidence=dedicated)
         except ValueError:
             raise ProviderRequestError(
                 "模型标注输出未通过平台字段、类别或坐标校验", code="MODEL_OUTPUT_PARSE_ERROR",
@@ -18593,6 +18696,10 @@ def _v35_test_annotation(runtime_cfg, *, image_bytes=None, sample_prompt=None, s
             "ok": True,
             "status_code": 200,
             "reachable": True,
+            "model_loaded": identity.get("model_loaded") if dedicated else None,
+            "protocol_valid": True,
+            "coordinate_confirmed": runtime_cfg.get("coordinate_validation", {}).get("status") == "verified",
+            "no_target": not bool(boxes),
             "latency_ms": int(response.get("latency_ms") or 0),
             "provider": response.get("provider") or runtime_cfg.get("provider_type"),
             "model": response.get("model") or runtime_cfg.get("model_name"),

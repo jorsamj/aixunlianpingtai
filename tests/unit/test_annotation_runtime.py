@@ -66,6 +66,16 @@ def test_submit_freezes_safe_model_snapshot_and_revision(tmp_path):
     assert "_api_key" not in frozen["model_config_snapshot"]
 
 
+def test_disabled_model_is_not_selected_for_new_task_but_does_not_change_existing_snapshot(tmp_path):
+    _write_project(tmp_path)
+    disabled = {**_model(), "enabled": False, "default_for_annotation": True}
+    available = {**_model("vision-v2"), "id": "model-2", "enabled": True}
+    with pytest.raises(ValueError, match="AI_MODEL_DISABLED"):
+        annotation_runtime.prepare_request(tmp_path, "p1", {"image_ids": ["one"], "labels": ["fire"], "model_config_id": "model-1"}, runtime=False, model_configs=[disabled, available])
+    selected = annotation_runtime.prepare_request(tmp_path, "p1", {"image_ids": ["one"], "labels": ["fire"]}, runtime=False, model_configs=[disabled, available])
+    assert selected["model_config_id"] == "model-2"
+
+
 def test_runtime_uses_frozen_model_snapshot_even_after_live_config_changes(tmp_path, monkeypatch):
     _write_project(tmp_path)
     frozen = annotation_runtime.prepare_request(

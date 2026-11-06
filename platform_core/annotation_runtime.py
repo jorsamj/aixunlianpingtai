@@ -245,14 +245,16 @@ def prepare_request(
             next((item for item in configs if str(item.get("id")) == selected_id), None)
             if selected_id
             else next(
-                (item for item in configs if item.get("default_for_annotation")),
-                configs[0] if configs else None,
+                (item for item in configs if item.get("default_for_annotation") and item.get("enabled") is not False),
+                next((item for item in configs if item.get("enabled") is not False), None),
             )
         )
         if not config:
             raise ValueError(
                 "AI_MODEL_CONFIG_NOT_FOUND: configure and select an available annotation model"
             )
+        if config.get("enabled") is False:
+            raise ValueError("AI_MODEL_DISABLED: selected annotation model is disabled")
         snapshot, revision = freeze_model_config(config)
         prepared.update({
             "model_config_id": snapshot["id"],

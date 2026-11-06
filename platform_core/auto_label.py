@@ -5,6 +5,7 @@ import re
 from typing import Any, Iterable, Mapping, Sequence
 
 from pydantic import BaseModel, ConfigDict, ValidationError
+from typing import Literal
 
 
 MARKDOWN_FENCE = re.compile(r"^```(?:json)?\s*\n?(.*?)\n?```$", re.IGNORECASE | re.DOTALL)
@@ -42,6 +43,13 @@ def provider_factory(provider_config: Mapping[str, Any]):
     provider = str(config.get("provider_adapter") or config.get("provider_type") or "local_openai")
     if provider in {"cloud", "local"}:
         provider = "local_openai"
+    if provider == "wevisone_vl":
+        from .providers.wevisone_vision import WeVisOneVisionProvider
+        return WeVisOneVisionProvider(
+            base_url=str(config.get("base_url") or config.get("detect_url") or ""),
+            api_key=str(config.get("_api_key") or ""),
+            model=str(config.get("model_name") or ""),
+        )
     if provider == "ollama":
         return OllamaVisionProvider(
             base_url=str(config.get("base_url") or config.get("detect_url") or "http://127.0.0.1:11434"),
@@ -75,6 +83,25 @@ class CandidateResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     boxes: list[CandidateAnnotation]
+
+
+class WeVisOneCandidateAnnotation(BaseModel):
+    """Only the dedicated adapter may omit a model-supplied confidence."""
+    model_config = ConfigDict(extra="forbid")
+
+    label: str
+    confidence: float | None = None
+    confidence_status: Literal["provided", "unavailable"]
+    x1: float
+    y1: float
+    x2: float
+    y2: float
+
+
+class WeVisOneCandidateResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    boxes: list[WeVisOneCandidateAnnotation]
 
 
 def raw_response_hash(text: str) -> str:
@@ -158,6 +185,7 @@ def parse_candidate_response(
     diagnostics: dict | None = None,
     coordinate_origin: str = "top_left",
     geometry: dict | None = None,
+    allow_missing_confidence: bool = False,
 ) -> list[dict[str, Any]]:
     if width <= 0 or height <= 0:
         raise ValueError("图片尺寸无效")
@@ -168,7 +196,7 @@ def parse_candidate_response(
     if not isinstance(payload, dict):
         raise ValueError("模型返回必须是一个包含 boxes 的 JSON object")
     try:
-        parsed = CandidateResponse.model_validate(payload)
+        parsed = (WeVisOneCandidateResponse if allow_missing_confidence else CandidateResponse).model_validate(payload)
     except ValidationError as error:
         raise ValueError(f"候选标注字段不符合协议：{error.errors(include_url=False, include_input=False)}") from None
 
@@ -181,32 +209,37 @@ def parse_candidate_response(
             {"confidence": b.confidence, "x1": b.x1, "y1": b.y1, "x2": b.x2, "y2": b.y2,
              "label": b.label if b.label in label_ids else "[unknown label]"}
             for b in parsed.boxes[:100]
-            if all(math.isfinite(v) for v in (b.confidence, b.x1, b.y1, b.x2, b.y2))
+            if all(math.isfinite(v) for v in (b.x1, b.y1, b.x2, b.y2)) and (b.confidence is None or math.isfinite(b.confidence))
         ]
         diagnostics["raw_candidates_truncated"] = len(parsed.boxes) > 100
     result: list[dict[str, Any]] = []
     for index, box in enumerate(parsed.boxes):
         label = box.label.strip()
-        values = (box.confidence, box.x1, box.y1, box.x2, box.y2)
-        if not all(math.isfinite(value) for value in values):
+        values = (box.x1, box.y1, box.x2, box.y2)
+        if not all(math.isfinite(value) for value in values) or (box.confidence is not None and not math.isfinite(box.confidence)):
             raise ValueError(f"第 {index + 1} 个框包含非有限数字")
         if label not in label_ids:
             raise ValueError(f"第 {index + 1} 个框使用了标签库之外的标签")
-        if not 0 <= box.confidence <= 1:
+        if box.confidence is not None and not 0 <= box.confidence <= 1:
             raise ValueError(f"第 {index + 1} 个框置信度必须在 0 到 1 之间")
+        if allow_missing_confidence and box.confidence_status != ("unavailable" if box.confidence is None else "provided"):
+            raise ValueError(f"第 {index + 1} 个框置信度状态与数值不一致")
         x1, y1, x2, y2 = adapt_coordinates(
             (box.x1, box.y1, box.x2, box.y2), width=width, height=height,
             coordinate_space=coordinate_space, coordinate_order=coordinate_order, coordinate_origin=coordinate_origin, geometry=geometry,
         )
-        result.append({
+        candidate = {
             "class_id": int(label_ids[label]),
             "label": label,
-            "confidence": float(box.confidence),
+            "confidence": float(box.confidence) if box.confidence is not None else None,
             "x1": x1,
             "y1": y1,
             "x2": x2,
             "y2": y2,
-        })
+        }
+        if allow_missing_confidence:
+            candidate["confidence_status"] = box.confidence_status
+        result.append(candidate)
     return result
 
 
@@ -228,7 +261,7 @@ def nms_candidates(boxes: Sequence[Mapping[str, Any]], *, iou_threshold: float =
     ordered = sorted(
         (dict(box) for box in boxes),
         key=lambda box: (
-            -float(box.get("confidence", 0)),
+            -float(box["confidence"] if box.get("confidence") is not None else -1),
             str(box.get("label", "")),
             float(box.get("x1", 0)),
             float(box.get("y1", 0)),

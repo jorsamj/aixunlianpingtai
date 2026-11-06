@@ -91,6 +91,78 @@ def test_protocol_and_output_capability_roundtrip_preserves_secret(client, monke
     assert "sk-unit-test-only" not in json.dumps(listed)
 
 
+def test_wevisone_is_optional_and_technical_fields_are_server_owned(client):
+    general = client.post("/api/v35/model-configs", json={"name": "Qwen", "provider_adapter": "local_openai", "base_url": "http://127.0.0.1:8000/v1", "model_name": "qwen35", "default_for_annotation": True}).json()
+    special = client.post("/api/v35/model-configs", json={"name": "WeVisOne", "provider_adapter": "wevisone_vl", "base_url": "http://127.0.0.1:18000", "model_name": "wevisone-vl-2b", "coordinate_space": "normalized_1000", "coordinate_order": "yxyx", "structured_output": "prompt", "default_for_annotation": True}).json()
+    assert special["coordinate_space"] == "pixel" and special["coordinate_order"] == "xyxy"
+    assert special["capabilities"] == ["detect", "segment", "matting"]
+    listed = client.get("/api/v35/model-configs").json()["items"]
+    assert {"local_openai", "wevisone_vl"}.issubset({row.get("provider_adapter") for row in listed})
+    assert sum(bool(row["default_for_annotation"]) for row in listed) == 1
+    assert next(row for row in listed if row["id"] == general["id"])["default_for_annotation"] is False
+    changed = client.patch(f"/api/v35/model-configs/{special['id']}/availability", json={"enabled": False})
+    assert changed.status_code == 200
+    assert changed.json()["default_for_annotation"] is False
+    assert changed.json()["enabled"] is False
+    assert client.post(f"/api/v35/model-configs/{special['id']}/test-annotation").status_code == 409
+    assert client.post("/api/v35/model-configs", json={"name": "invalid", "provider_adapter": "wevisone_vl", "base_url": "http://localhost:18000/v1/chat/completions", "model_name": "wevisone-vl-2b"}).status_code == 400
+
+
+def test_wevisone_probe_empty_does_not_claim_accuracy_and_persists_safe_receipt(client, monkeypatch):
+    from types import SimpleNamespace
+    import platform_core.providers.wevisone_vision as vision
+    seen = []
+    def get(url, **kwargs):
+        seen.append(url)
+        return SimpleNamespace(ok=True, json=lambda: {"data": [{"id": "wevisone-vl-2b"}]})
+    def post(url, **kwargs):
+        seen.append(url)
+        return SimpleNamespace(ok=True, json=lambda: {"response": "None"})
+    monkeypatch.setattr(vision.requests, "get", get)
+    monkeypatch.setattr(vision.requests, "post", post)
+    saved = client.post("/api/v35/model-configs", json={"name": "WeVisOne", "provider_adapter": "wevisone_vl", "base_url": "http://127.0.0.1:18000", "model_name": "wevisone-vl-2b"}).json()
+    result = client.post(f"/api/v35/model-configs/{saved['id']}/test-annotation")
+    assert result.status_code == 200, result.text
+    assert result.json()["parsed_boxes"] == []
+    assert result.json()["no_target"] is True
+    assert result.json()["coordinate_confirmed"] is False
+    assert seen == ["http://127.0.0.1:18000/v1/models", "http://127.0.0.1:18000/v1/vision/detect"]
+    refreshed = client.get("/api/v35/model-configs").json()["items"][0]
+    assert refreshed["last_test"]["status"] == "protocol_passed"
+    assert refreshed["coordinate_validation"]["status"] == "unverified"
+
+
+def test_wevisone_model_not_loaded_is_not_reported_as_connected(client, monkeypatch):
+    from types import SimpleNamespace
+    import platform_core.providers.wevisone_vision as vision
+    monkeypatch.setattr(vision.requests, "get", lambda *a, **k: SimpleNamespace(ok=True, json=lambda: {"data": [{"id": "qwen35"}]}))
+    monkeypatch.setattr(vision.requests, "post", lambda *a, **k: pytest.fail("unloaded model should not be inferred"))
+    saved = client.post("/api/v35/model-configs", json={"name": "WeVisOne", "provider_adapter": "wevisone_vl", "base_url": "http://127.0.0.1:18000", "model_name": "wevisone-vl-2b"}).json()
+    r = client.post(f"/api/v35/model-configs/{saved['id']}/test-annotation")
+    assert r.status_code == 400 and r.json()["code"] == "MODEL_NOT_LOADED"
+    assert client.get("/api/v35/model-configs").json()["items"][0]["last_test"]["code"] == "MODEL_NOT_LOADED"
+
+
+def test_wevisone_segmentation_preview_is_read_only(client, monkeypatch):
+    from types import SimpleNamespace
+    from io import BytesIO
+    from PIL import Image
+    import base64
+    import platform_core.providers.wevisone_vision as vision
+    bitmap = BytesIO(); Image.new("RGBA", (16, 16), (255, 0, 0, 100)).save(bitmap, "PNG")
+    png64 = base64.b64encode(bitmap.getvalue()).decode()
+    monkeypatch.setattr(vision.requests, "get", lambda *a, **k: SimpleNamespace(ok=True, json=lambda: {"data": [{"id": "wevisone-vl-2b"}]}))
+    monkeypatch.setattr(vision.requests, "post", lambda *a, **k: SimpleNamespace(ok=True, json=lambda: {"mask_image_base64": png64, "alpha_matte_base64": png64}))
+    saved = client.post("/api/v35/model-configs", json={"name": "WeVisOne", "provider_adapter": "wevisone_vl", "base_url": "http://127.0.0.1:18000", "model_name": "wevisone-vl-2b"}).json()
+    response = client.post(f"/api/v35/model-configs/{saved['id']}/verify-coordinates", json={"image_base64": png64, "labels": ["person"], "operation": "segment"})
+    assert response.status_code == 200, response.text
+    assert "mask" in response.json()["images"]
+    assert "foreground" not in response.json()["images"]
+    assert response.json()["notice"].startswith("仅用于预览")
+    refreshed = client.get("/api/v35/model-configs").json()["items"][0]
+    assert refreshed["coordinate_validation"]["status"] == "unverified"
+
+
 def test_custom_auto_url_is_preserved_with_protocol_warning(client):
     url = "https://proxy.example/custom/infer?route=responses"
     saved = client.post("/api/v35/model-configs", json={"name":"custom", "provider_type":"local_openai", "model_kind":"vlm", "base_url":url, "model_name":"custom"}).json()

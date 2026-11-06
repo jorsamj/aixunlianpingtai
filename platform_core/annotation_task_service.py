@@ -113,11 +113,12 @@ def annotate_one(request: dict[str, Any], image: dict[str, Any]) -> dict[str, An
         business_instruction=str(request.get("business_instruction") or ""),
         template=str(request.get("prompt_template") or ""),
     )
-    response = provider.annotate(
-        image_bytes=image_bytes,
-        prompt=prompt,
-        output_schema=auto_label_core.CANDIDATE_OUTPUT_SCHEMA,
-    )
+    dedicated = str(config.get("provider_adapter") or config.get("provider_type") or "") == "wevisone_vl"
+    provider_args = {"image_bytes": image_bytes, "prompt": prompt,
+                     "output_schema": auto_label_core.CANDIDATE_OUTPUT_SCHEMA}
+    if dedicated:
+        provider_args["labels"] = list(request["label_ids"])
+    response = provider.annotate(**provider_args)
     mapping = None
     if contract.get("coordinate_image_space") == "processed_image":
         mapping = response.get("geometry")
@@ -140,6 +141,7 @@ def annotate_one(request: dict[str, Any], image: dict[str, Any]) -> dict[str, An
             diagnostics=diagnostics,
             coordinate_origin=contract.get("coordinate_origin", "top_left"),
             geometry=mapping,
+            allow_missing_confidence=dedicated,
         )
     except ValueError as error:
         diagnostics["status"] = "COORDINATE_CONVERSION_ERROR" if "COORDINATE_CONVERSION_ERROR:" in str(error) else "STRUCTURED_OUTPUT_ERROR"
@@ -149,11 +151,12 @@ def annotate_one(request: dict[str, Any], image: dict[str, Any]) -> dict[str, An
         error.diagnostics = diagnostics
         raise
     threshold = float(request.get("threshold") if request.get("threshold") is not None else 0.45)
-    boxes = auto_label_core.nms_candidates(
-        [box for box in parsed if float(box.get("confidence") or 0) >= threshold],
-        iou_threshold=0.5,
-    )
-    retained = sum(float(b["confidence"]) >= threshold for b in parsed)
+    # Dedicated providers without a calibrated score are reviewable candidates,
+    # not synthetic 0% predictions. Human confirmation remains mandatory.
+    eligible = [b for b in parsed if b.get("confidence") is None or float(b["confidence"]) >= threshold]
+    boxes = auto_label_core.nms_candidates(eligible, iou_threshold=0.5)
+    retained = len(eligible)
+    diagnostics["confidence_unavailable_count"] = sum(box.get("confidence") is None for box in boxes)
     diagnostics["converted_boxes"] = parsed[:100]
     diagnostics["final_boxes"] = [dict(box) for box in boxes[:100]]
     diagnostics["counts"] = {"raw": len(parsed), "invalid": 0, "threshold_filtered": len(parsed) - retained,

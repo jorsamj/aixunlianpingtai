@@ -25,7 +25,9 @@ test('final M4 model save and connection test fence stale modal effects', () => 
   assert.ok(save.indexOf('closeModal()') > save.indexOf('action&&!action.isCurrent()'), 'saveVisionModelM4 must not close a new-page modal after navigation');
 
   const probe = liveOwner('window.testModelConfigM4=async function(id)', 3500);
-  assertFenceBefore(probe, "modal('模型连接与标注解析测试'", 'testModelConfigV35');
+  assertFenceBefore(probe, 'const count=', 'testModelConfigV35');
+  assert.match(probe, /inline\.modelTestGeneration===generation/, 'the active model dialog must own test results');
+  assert.doesNotMatch(probe, /modal\('模型连接与标注解析测试'/, 'connection tests should remain inline in the configuration window');
 });
 
 test('final clean confirmation alias owner fences stale completion and stays local-state only', () => {
