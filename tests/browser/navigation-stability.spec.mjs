@@ -550,7 +550,7 @@ test('modal table wrapping and first-field focus survive normalization ownership
   expect(pageErrors).toEqual([]);
 });
 
-test('ZIP import completion preserves manual review without reopening a window', async ({page}) => {
+test('ZIP import completion preserves optional manual annotation without reopening a window', async ({page}) => {
   const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(error));
 
@@ -563,7 +563,7 @@ test('ZIP import completion preserves manual review without reopening a window',
   await expect(page.locator('#title')).toBeVisible({timeout: 15_000});
   await page.evaluate(() => {
     window.__zipReviewOpened = null;
-    window.showImportReview412 = jobId => { window.__zipReviewOpened = jobId; };
+    window.openImportManualAnnotation429 = jobId => { window.__zipReviewOpened = jobId; };
   });
 
   await page.evaluate(async () => { await window.openDataUpload426(); });
@@ -580,16 +580,18 @@ test('ZIP import completion preserves manual review without reopening a window',
     bound: Boolean(state.import411?.__reviewBound),
     opened: window.__zipReviewOpened,
     hasButton: Boolean(document.querySelector('.review412-btn')),
-    persistedButton: String(state.import411?.resultHtml || '').includes('review412-btn'),
+    persistedButton: String(state.import411?.resultHtml || '').includes('zip-next-actions'),
   })), {timeout: 10_000}).toEqual({
     bound: true,
     opened: null,
-    hasButton: true,
+    hasButton: false,
     persistedButton: true,
   });
   await page.waitForTimeout(350); // Detect the retired 280ms automatic review callback.
   expect(await page.evaluate(()=>window.__zipReviewOpened)).toBeNull();
-  await page.locator('.review412-btn').click();
+  await page.evaluate(()=>window.ZipImportRuntime.openTask('zip-browser-1'));
+  await expect(page.locator('.zip-next-action')).toHaveCount(4);
+  await page.getByRole('button',{name:'人工标注',exact:false}).click();
   expect(await page.evaluate(()=>window.__zipReviewOpened)).toBe('zip-browser-1');
 
   expect(pageErrors).toEqual([]);
@@ -662,7 +664,9 @@ test('ZIP import completion uses scoped label and material refresh', async ({pag
   expect(await page.evaluate(()=>window.__zipReviewOpenedR20g)).toBeNull();
   await expect(page.locator('#data412Grid')).toContainText('zip-r20g.jpg', {timeout: 10_000});
   page.off('request', onRequest);
-  await page.locator('.review412-btn').click();
+  await page.evaluate(()=>window.ZipImportRuntime.openTask('zip-r20g-scoped'));
+  await expect(page.locator('.review412-btn')).toHaveCount(0);
+  await page.getByRole('button',{name:'质量检查（可选）',exact:false}).click();
   expect(await page.evaluate(()=>window.__zipReviewOpenedR20g)).toBe('zip-r20g-scoped');
 
   const owned = requests.filter(row => !row.includes('/api/v19/projects/') || !row.endsWith('/import/jobs'));

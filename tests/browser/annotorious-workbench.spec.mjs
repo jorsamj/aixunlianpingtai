@@ -45,9 +45,8 @@ async function open(page,fx,{batch=false}={}) {
   await page.getByRole('button',{name:/数据集/}).click();
   await page.getByRole('button',{name:/已处理/}).click();
   if(batch) {
-    await page.getByRole('button',{name:'批量操作',exact:true}).click();
     for(const image of fx.images)await page.locator('.data412-card',{hasText:image.filename}).getByRole('checkbox').check();
-    await page.getByRole('button',{name:'批量标注',exact:true}).click();
+    await page.locator('#materialBulk549').getByRole('button',{name:'人工标注',exact:true}).click();
   } else await page.locator('.data412-card',{hasText:fx.images[0].filename}).getByRole('button',{name:/^(标注|编辑标注)$/}).click();
   const dialog=page.getByRole('dialog',{name:'图片标注工作台',exact:true});
   await expect(dialog).toBeVisible();

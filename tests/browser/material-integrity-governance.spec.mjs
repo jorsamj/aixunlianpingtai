@@ -311,7 +311,7 @@ test('filtered anomaly selection, protected preview, aspect ratios and mobile re
   await expect(page.locator('#materialIntegrityGroupSelected47')).toContainText('已选 1 组');
   await page.locator('.material-integrity47-more > summary').click();
   await page.getByRole('button',{name:'取消全选'}).click();
-  await expect(page.getByRole('checkbox')).not.toBeChecked();
+  await expect(page.locator('#materialIntegrityGroupList47').getByRole('checkbox')).not.toBeChecked();
   await page.locator('#materialIntegrityFilter47').selectOption('INVALID_IMAGE');
   await page.getByRole('button',{name:'全选当前筛选结果'}).click();
   await expect(page.locator('#materialIntegrityGroupSelected47')).toContainText('10000 张');
