@@ -73,6 +73,24 @@ class _ConnectionWithoutJournalMode:
         return getattr(self._connection, name)
 
 
+def test_exists_uses_project_identity_only_and_full_read_contract_is_unchanged(tmp_path, monkeypatch):
+    path = tmp_path / 'project' / 'algorithms.json'
+    store = AlgorithmSqlStore(path)
+    rows = _legacy_rows()
+    rows[0]['versions'][0].update(evaluation={'unknown_report':[1,2,3]}, label_contract={'opaque':'keep'})
+    store.replace_all(rows)
+    original = store.read_all()[0]
+    assert store.read_one('legacy-local') == original
+    with monkeypatch.context() as scope:
+        scope.setattr(AlgorithmSqlStore, '_json_object', staticmethod(lambda _value: pytest.fail('identity must not parse JSON')))
+        assert store.exists('legacy-local') is True
+        assert store.exists('missing') is False
+        with store._connect() as db:
+            db.execute("UPDATE algorithms SET project_id='another-project' WHERE id='legacy-local'")
+            db.commit()
+        assert store.exists('legacy-local') is False
+
+
 def test_ordinary_connection_does_not_negotiate_journal_mode(tmp_path: Path, monkeypatch):
     project = tmp_path / "projects" / "p-connect"
     project.mkdir(parents=True)

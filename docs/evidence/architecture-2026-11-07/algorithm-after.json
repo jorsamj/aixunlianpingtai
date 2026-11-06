@@ -1,0 +1,72 @@
+{
+  "kind": "ISOLATED_SYNTHETIC_NOT_PRODUCTION",
+  "measurements": [
+    {
+      "json_bytes": 31,
+      "json_calls": 1,
+      "json_parse_ms": 0.025800000003073364,
+      "request_ms": 91.86290000070585,
+      "response_sha256": "8a9d32694126c98cd0d926107ed16cabb57e1d024782d983396b5ca721b553aa",
+      "sql_calls": 38,
+      "sql_ms": 14.173100025800522
+    },
+    {
+      "json_bytes": 31,
+      "json_calls": 1,
+      "json_parse_ms": 0.014800003555137664,
+      "request_ms": 29.02219999668887,
+      "response_sha256": "8a9d32694126c98cd0d926107ed16cabb57e1d024782d983396b5ca721b553aa",
+      "sql_calls": 38,
+      "sql_ms": 13.393299996096175
+    },
+    {
+      "json_bytes": 31,
+      "json_calls": 1,
+      "json_parse_ms": 0.014899997040629387,
+      "request_ms": 30.220900000131223,
+      "response_sha256": "8a9d32694126c98cd0d926107ed16cabb57e1d024782d983396b5ca721b553aa",
+      "sql_calls": 38,
+      "sql_ms": 13.905400002840906
+    },
+    {
+      "json_bytes": 31,
+      "json_calls": 1,
+      "json_parse_ms": 0.015199999324977398,
+      "request_ms": 33.51710000424646,
+      "response_sha256": "8a9d32694126c98cd0d926107ed16cabb57e1d024782d983396b5ca721b553aa",
+      "sql_calls": 38,
+      "sql_ms": 15.65299998037517
+    },
+    {
+      "json_bytes": 31,
+      "json_calls": 1,
+      "json_parse_ms": 0.012399999832268804,
+      "request_ms": 53.91030000464525,
+      "response_sha256": "8a9d32694126c98cd0d926107ed16cabb57e1d024782d983396b5ca721b553aa",
+      "sql_calls": 38,
+      "sql_ms": 28.064000005542766
+    },
+    {
+      "json_bytes": 31,
+      "json_calls": 1,
+      "json_parse_ms": 0.007300004654098302,
+      "request_ms": 34.48750000097789,
+      "response_sha256": "8a9d32694126c98cd0d926107ed16cabb57e1d024782d983396b5ca721b553aa",
+      "sql_calls": 38,
+      "sql_ms": 16.158699989318848
+    },
+    {
+      "json_bytes": 31,
+      "json_calls": 1,
+      "json_parse_ms": 0.007499998901039362,
+      "request_ms": 21.33529999991879,
+      "response_sha256": "8a9d32694126c98cd0d926107ed16cabb57e1d024782d983396b5ca721b553aa",
+      "sql_calls": 38,
+      "sql_ms": 8.632299977762159
+    }
+  ],
+  "p50_ms": 33.51710000424646,
+  "p95_ms": 91.86290000070585,
+  "samples": 7,
+  "version_payload_mib": 48
+}

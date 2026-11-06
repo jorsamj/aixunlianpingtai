@@ -15,12 +15,12 @@ def create_negative_pool_router(material_store, get_project, public_material, us
         if not algorithm_id:
             return ''  # Legacy project-wide associations remain unconfirmed.
         store = material_store(project_id)
-        from .algorithms import list_algorithms
+        from .algorithm_sql_store import AlgorithmSqlStore
         path = store.project_path / 'algorithms.json'
         if not (path.exists() or (path.parent / 'algorithms.sqlite3').exists()):
             raise ValueError('algorithm not found')
         identity = str(algorithm_id).strip()
-        if not any(str(row.get('id')) == identity for row in list_algorithms(path)):
+        if not AlgorithmSqlStore(path).exists(identity):
             raise ValueError('algorithm not found')
         return identity
 
@@ -46,9 +46,11 @@ def create_negative_pool_router(material_store, get_project, public_material, us
         result = invoke(lambda: pool(project_id).query(page=page,page_size=page_size,**selected))
         scope_kind = 'requested_labels'
         if selected.get('algorithm_id'):
-            from .algorithms import list_algorithms
+            from .algorithm_sql_store import AlgorithmSqlStore
             store = material_store(project_id)
-            algorithm = next(row for row in list_algorithms(store.project_path/'algorithms.json') if str(row.get('id')) == selected['algorithm_id'])
+            algorithm = AlgorithmSqlStore(store.project_path/'algorithms.json').read_one(selected['algorithm_id'])
+            if algorithm is None:
+                raise HTTPException(400, 'algorithm not found')
             if algorithm.get('current_version_id') or algorithm.get('versions'):
                 from .training_label_tasks import resolve_training_label_contract
                 contract = invoke(lambda: resolve_training_label_contract(store.project_path.parent.parent, store.project_path,

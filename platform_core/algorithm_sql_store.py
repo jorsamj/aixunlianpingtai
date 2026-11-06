@@ -334,6 +334,15 @@ class AlgorithmSqlStore:
         with self._connect() as conn:
             return self._read_one_conn(conn, str(algorithm_id))
 
+    def exists(self, algorithm_id: str) -> bool:
+        """Project-scoped identity check; no version/report payload hydration."""
+        self.ensure_ready()
+        with closing(self._connect()) as conn:
+            return conn.execute(
+                "SELECT 1 FROM algorithms WHERE project_id=? AND id=? LIMIT 1",
+                (self.project_id, str(algorithm_id)),
+            ).fetchone() is not None
+
     def create_algorithm(self, item: Mapping[str, Any]) -> dict:
         self.ensure_ready()
         value = dict(item)
