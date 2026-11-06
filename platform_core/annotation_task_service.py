@@ -333,6 +333,13 @@ def run_ai_annotation(
     frozen_policy = snapshot.get("inference_execution_policy") if isinstance(snapshot, dict) else None
     if isinstance(frozen_policy, dict) and frozen_policy.get("version") == 1:
         policy = dict(frozen_policy)
+        if snapshot.get("secret_ref") and not snapshot.get("inference_account_identity"):
+            # A headless preparation may freeze a reference before its key is
+            # available. Once executable, share its real account's base quota
+            # without upgrading this historical/unknown-capacity task.
+            runtime_identity = runtime_request.get("_provider_config") or snapshot
+            policy.update(concurrency=1, max_attempts=1,
+                          domain=resolve_inference_policy(runtime_identity)["domain"])
         if policy.get("evidence_expires_at") and float(policy["evidence_expires_at"]) <= time.time():
             policy.update(concurrency=1, evidence_status="expired")
     else:

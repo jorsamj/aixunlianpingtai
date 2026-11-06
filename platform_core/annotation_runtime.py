@@ -11,7 +11,7 @@ from typing import Any, Iterable, Mapping
 
 from .auto_label import provider_factory, coordinate_contract
 from .prompts import render_prompt, template_version_id, version_template
-from .secrets import KeyringSecretStore
+from .secrets import KeyringSecretStore, SecretStoreUnavailable
 
 
 _SECRET_FIELDS = frozenset({
@@ -76,11 +76,19 @@ def freeze_model_config(config: Mapping[str, Any]) -> tuple[dict[str, Any], str]
     from .inference_policy import resolve_inference_policy
     if not snapshot.get("inference_account_identity") and snapshot.get("secret_ref"):
         reference = str(snapshot["secret_ref"])
-        credential = (os.environ.get(reference[4:]) if reference.startswith("env:")
-                      else KeyringSecretStore().get(reference))
+        try:
+            credential = (os.environ.get(reference[4:]) if reference.startswith("env:")
+                          else KeyringSecretStore().get(reference))
+        except SecretStoreUnavailable:
+            # Identity enrichment must not turn freezing a historical reference
+            # into a headless Keyring precondition. Without credential evidence
+            # capacity remains conservative; execution still requires the key.
+            credential = None
         if credential:
             snapshot["inference_account_identity"] = hashlib.sha256(credential.encode()).hexdigest()
     snapshot["inference_execution_policy"] = resolve_inference_policy(snapshot)
+    if snapshot.get("secret_ref") and not snapshot.get("inference_account_identity"):
+        snapshot["inference_execution_policy"].update(concurrency=1, max_attempts=1, evidence_status="credential_unavailable")
     body = json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     revision = hashlib.sha256(body.encode("utf-8")).hexdigest()
     return snapshot, revision

@@ -1,4 +1,4 @@
-# WeVisOne 双实例与跨 Provider 安全推理｜42.24.554
+# WeVisOne 双实例与跨 Provider 安全推理｜42.24.555
 
 状态：平台侧开发与隔离验收；4070 内网、生产部署与 GPU 吞吐 **NOT VERIFIED**。
 起点：长期分支 `feature/external-algorithm-publishing`，42.24.552，
@@ -150,3 +150,7 @@ npx -y node@24 node_modules/@playwright/test/cli.js test tests/browser/inference
 ## 42.24.554 HTTP200 解析失败证据收口
 
 553已通过正常Git快进推送，提交 c1d9b866ca12dcf0134117c8f545e45c2aa10837，其49项CI在后续收口时尚未全部完成。最终检查补齐 WeVisOne/Ollama HTTP200 但JSON/内容结构非法时的HTTP状态、实际请求及实例标识；错误归入解析阶段，不转换为空检出，不自动重试，不回显原始正文。新增两类畸形响应断言，Provider聚合最终129/129通过。此改动不改变成功请求体、并发/租约/GT路径；新SHA CI仍独立核对。
+
+## 42.24.555 准确 CI 引入项修正
+
+553 Linux AI Annotation API 因新增可选身份探测提前依赖无 Keyring 的安全后端，8失败/127通过；Release Regression 运行合同因两条旧Schema3断言，2失败/617通过/1跳过。这些是本轮引入，不能当作既有红灯。冻结引用的身份探测现在捕获明确 SecretStoreUnavailable，未知账户保持串行，运行时获取密钥仍严格校验；可执行后按实际账户基础域协调限额，不凭新证明升级旧任务。更新旧迁移断言为4并新增v3→v4任务与统计精确保留测试，原任务/统计/作用域断言不降低。定向回归52通过，最终准确新SHA CI待独立核对；未变更生产环境或为测试放松鉴权。

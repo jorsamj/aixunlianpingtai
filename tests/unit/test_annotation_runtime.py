@@ -5,6 +5,18 @@ import pytest
 import platform_core.annotation_runtime as annotation_runtime
 
 
+def test_headless_optional_account_probe_does_not_block_freezing_legacy_reference(monkeypatch):
+    class UnavailableStore:
+        def get(self, _reference):
+            raise annotation_runtime.SecretStoreUnavailable('isolated unavailable keyring')
+    monkeypatch.setattr(annotation_runtime, 'KeyringSecretStore', UnavailableStore)
+    frozen, revision = annotation_runtime.freeze_model_config(_model())
+    assert frozen['secret_ref'] == _model()['secret_ref']
+    assert frozen['inference_execution_policy']['concurrency'] == 1
+    assert 'inference_account_identity' not in frozen
+    assert revision
+
+
 def _write_project(tmp_path):
     project_dir = tmp_path / "projects" / "p1"
     project_dir.mkdir(parents=True)
