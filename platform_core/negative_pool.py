@@ -62,6 +62,46 @@ class NegativePool:
                 return '0'
             return str(db.execute('SELECT revision FROM negative_pool_meta WHERE id=1').fetchone()[0])
 
+    def member_snapshot(self, image_id):
+        """Bounded rollback evidence; no full-pool identity scan per image."""
+        with closing(self.materials._connect()) as db:
+            if not self._exists(db):
+                return {'member': None, 'categories': [], 'algorithms': []}
+            row = db.execute('SELECT joined_at FROM negative_pool_members WHERE material_id=?', (str(image_id),)).fetchone()
+            return {'member': row[0] if row else None,
+                    'categories': [r[0] for r in db.execute('SELECT category_id FROM negative_pool_links WHERE material_id=?', (str(image_id),))],
+                    'algorithms': [list(r) for r in db.execute('SELECT algorithm_id,joined_at FROM negative_pool_algorithm_members WHERE material_id=?', (str(image_id),))]}
+
+    def restore_members(self, snapshots, *, expected_revision, operation_id):
+        """Rollback evidence and receipt commit in the SAME pool transaction."""
+        import hashlib
+        import json
+        if not operation_id or not isinstance(snapshots, dict) or len(snapshots)>200:
+            raise ValueError('rollback operation must contain at most 200 images')
+        identity=hashlib.sha256(json.dumps(snapshots,sort_keys=True).encode()).hexdigest()
+        with material_annotation_lifecycle_fence(self.materials.project_path):
+            with closing(self.materials._connect()) as db:
+                exists=db.execute("SELECT 1 FROM sqlite_master WHERE name='negative_pool_operations'").fetchone()
+                prior=db.execute('SELECT identity,result_json FROM negative_pool_operations WHERE operation_id=?',(str(operation_id),)).fetchone() if exists else None
+                if prior:
+                    if prior[0]!=identity: raise ValueError('rollback operation identity mismatch')
+                    return json.loads(prior[1])
+            def write(db):
+                revision=str(db.execute('SELECT revision FROM negative_pool_meta WHERE id=1').fetchone()[0])
+                if revision != str(expected_revision):
+                    raise ValueError('negative pool revision changed; review conflicts before undo')
+                for image_id,snapshot in snapshots.items():
+                    db.execute('DELETE FROM negative_pool_members WHERE material_id=?',(str(image_id),))
+                    if snapshot.get('member'):
+                        db.execute('INSERT INTO negative_pool_members VALUES (?,?)',(str(image_id),snapshot['member']))
+                        db.executemany('INSERT INTO negative_pool_links VALUES (?,?)',((str(image_id),c) for c in snapshot['categories']))
+                        db.executemany('INSERT INTO negative_pool_algorithm_members VALUES (?,?,?)',((a,str(image_id),t) for a,t in snapshot['algorithms']))
+                result={'restored':len(snapshots)}
+                db.execute('CREATE TABLE IF NOT EXISTS negative_pool_operations(operation_id TEXT PRIMARY KEY,identity TEXT NOT NULL,result_json TEXT NOT NULL)')
+                db.execute('INSERT INTO negative_pool_operations VALUES (?,?,?)',(str(operation_id),identity,json.dumps(result)))
+                return result
+            return self._mutate(write)
+
     def candidate_ids(self, category_ids=(), *, algorithm_id=""):
         """Internal identity-only intersection; the public selection cap is separate."""
         categories=self._ids(category_ids)

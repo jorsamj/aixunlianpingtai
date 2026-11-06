@@ -304,7 +304,7 @@ test('AI candidate editor stays inside the review workspace without opening a ne
   await expect(page.locator('.ai66-candidate-card img').first()).toHaveJSProperty('naturalWidth',640);
   expect(await page.locator('.ai66-label-tools').evaluate(node=>node.open)).toBe(false);
   const before=await page.locator('.v424-modal-layer').count();
-  await page.getByRole('button',{name:'编辑候选框'}).first().click();
+  await page.locator('.ai66-candidate-card .ai-candidate-stage').first().click();await page.locator('#ai60ReviewInspector').getByRole('button',{name:'编辑候选框'}).click();
   await expect(page.locator('.ai66-review.ai66-editing .ai66-edit')).toBeVisible();
   expect(await page.locator('.v424-modal-layer').count()).toBe(before);
   await expect(page.locator('#ai66EditQueue')).toContainText('scene-two.png');
@@ -367,11 +367,11 @@ test('1366x768 AI review keeps the scrollable candidates, editor, and real foote
   expect(position.footerBottom).toBeLessThanOrEqual(position.windowHeight+1);
   await cards.last().scrollIntoViewIfNeeded();
   expect(await page.locator('.ai66-review-grid').evaluate(node=>node.scrollTop)).toBeGreaterThan(0);
-  await cards.last().getByRole('button',{name:'拒绝'}).click();
+  await cards.last().locator('.ai-candidate-stage').click();await page.locator('#ai60ReviewInspector').getByRole('button',{name:'拒绝此图'}).click();
   await expect(cards.last()).toHaveClass(/rejected/);
-  await expect(page.getByRole('button',{name:'采用已选择'})).toBeInViewport();
+  await expect(page.locator('#ai60ApproveRemaining')).toBeInViewport();
   await page.screenshot({path:testInfo.outputPath('ai-review-1366x768-scrolled.png'),fullPage:false});
-  await cards.first().getByRole('button',{name:'编辑候选框'}).click();
+  await cards.first().locator('.ai-candidate-stage').click();await page.locator('#ai60ReviewInspector').getByRole('button',{name:'编辑候选框'}).click();
   await expect(page.locator('.ai66-review.ai66-editing .ai66-edit')).toBeVisible();
   await expect(page.locator('#ai60EditImg')).toHaveJSProperty('naturalWidth',640);
   await expect(page.locator('.ai66-edit-footer').getByRole('button',{name:'保存候选修改'})).toBeInViewport();
@@ -408,7 +408,7 @@ test('AI review timeout resolves the original operation receipt without a second
     return route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({detail:'审核提交回执暂时不可用'})});
   });
   await page.evaluate(id=>window.reviewAiLabel427(id),taskId);
-  await page.getByRole('button',{name:'全部拒绝'}).click();
+  await page.locator('.ai-review-more summary').click();await page.getByRole('button',{name:'全部拒绝'}).click();
   await expect(page.locator('#ai60ReviewReceiptLookup')).toBeVisible();
   expect(posts).toBe(1);
   await page.locator('#ai60ReviewReceiptLookup').click();
@@ -507,3 +507,8 @@ test('AI candidate page opens immediately and offers retry instead of indefinite
   await expect(page.locator('.ai66-review-grid .ai-create-loading')).toHaveCount(0);
   expect(reads).toBe(2);
 });
+
+// Isolated candidate fixtures adopt the server-draft contract; real API roundtrip is separate.
+test.beforeEach(async({page})=>{await page.route('**/annotation-tasks/*/candidates/*/draft',route=>{const payload=route.request().postDataJSON();return route.fulfill({json:{revision:Number(payload.revision||0)+1,saved_at:Date.now()/1000,boxes:payload.boxes}})})});
+
+test.beforeEach(async({page})=>{await page.route('**/annotation-tasks/*/decisions',route=>{const body=route.request().postDataJSON();if(body.commit===false)return route.fulfill({json:{ok:true,review_revision:2,summary:{remaining_reviewable:23},review:{rejected:1,accepted:0}}});return route.fallback()})});

@@ -302,6 +302,9 @@ def run_ai_annotation(
             current_item=str(images[start - 1].get("id") or ""),
         )
 
+    retry_selection = context.artifacts.read_json(context.task.task_id, 'generation/retry-selection.json', default={})
+    retry_ids = retry_selection.get('image_ids') if isinstance(retry_selection,dict) else None
+    retry_ids = set(map(str,retry_ids)) if isinstance(retry_ids,list) else None
     image_by_id = {str(image["id"]): image for image in images}
     if context.task.attempt > 1:
         # The original task is the candidate owner across retries and lease
@@ -313,7 +316,8 @@ def run_ai_annotation(
             if previous_hash and current_hash and previous_hash != current_hash:
                 raise ValueError("AI_ANNOTATION_SOURCE_CHANGED: 原图片内容已改变，不能沿用旧候选结果")
 
-    def produce_candidate(image):
+    def produce_candidate(image, previous=None):
+        next_attempt=int((previous or {}).get("attempt_count") or 0)+1
         try:
             if mining_mode and annotate is annotate_one:
                 from .hard_sample_mining import infer_with_frozen_yolo
@@ -325,7 +329,7 @@ def run_ai_annotation(
                 "image_id": str(image["id"]), "filename": image.get("filename"),
                 "url": image.get("url"), "width": image.get("width"), "height": image.get("height"),
                 "source_content_sha256": str(image.get("source_content_sha256") or image.get("content_sha256") or "").strip().lower(),
-                "status": "success" if boxes else "empty", "boxes": boxes,
+                "status": "success" if boxes else "empty", "boxes": boxes, "attempt_count":next_attempt,
                 **{key: generated.get(key) for key in (
                     "raw_response_hash", "request_id", "latency_ms", "provider", "model", "diagnostics",
                     "hard_sample_signals", "hard_sample_priority", "ground_truth_compared",
@@ -339,6 +343,7 @@ def run_ai_annotation(
                 "url": image.get("url"), "width": image.get("width"), "height": image.get("height"),
                 "source_content_sha256": str(image.get("source_content_sha256") or image.get("content_sha256") or "").strip().lower(),
                 "status": "failed", "boxes": [], "error": _public_error(error),
+                **_failure_evidence(error, attempt=next_attempt),
             }
             if isinstance(getattr(error, "diagnostics", None), dict):
                 item["diagnostics"] = error.diagnostics
@@ -364,13 +369,13 @@ def run_ai_annotation(
         # prefix rows. Successful and legitimate empty results are immutable.
         if context.task.attempt > 1:
             for previous in store.iter_items():
-                if previous.get("status") != "failed":
+                if previous.get("status") != "failed" or (retry_ids is not None and str(previous.get("image_id")) not in retry_ids):
                     continue
                 if context.cancel_requested():
                     sync_annotation_statistics(context.repository, context.task, store)
                     return WorkerOutcome(TaskStatus.CANCELLED, "candidates/manifest.json")
                 image = image_by_id[str(previous["image_id"])]
-                item, code = produce_candidate(image)
+                item, code = produce_candidate(image, previous)
                 if context.cancel_requested():
                     return WorkerOutcome(TaskStatus.CANCELLED, "candidates/manifest.json")
                 append_candidate([item])
@@ -389,6 +394,8 @@ def run_ai_annotation(
                     sync_annotation_statistics(context.repository, context.task, store)
                     return WorkerOutcome(TaskStatus.CANCELLED, "candidates/manifest.json")
                 image = images[index]
+                if retry_ids is not None and str(image.get("id")) not in retry_ids:
+                    continue
                 item, code = produce_candidate(image)
                 # A provider call can outlive its lease or cancellation.
                 if context.cancel_requested():
@@ -455,6 +462,24 @@ def _public_error(error: Exception) -> str:
     for pattern in patterns:
         text = re.sub(pattern, lambda match: match.group(1) + "[REDACTED]" if match.lastindex else "[REDACTED]", text)
     return text[:1000] or type(error).__name__
+
+
+def _failure_evidence(error: Exception, *, attempt: int) -> dict[str, Any]:
+    """Bounded, sanitized per-image recovery evidence, never a raw response."""
+    code = str(getattr(error, "code", "") or type(error).__name__)[:100]
+    stage = getattr(error, "stage", "")
+    if not stage:
+        stage = ("coordinate_validation" if "COORDINATE" in code else
+                 "response_parse" if "OUTPUT" in code or "PARSE" in code else
+                 "source_read" if isinstance(error, (FileNotFoundError, OSError)) else "model_request")
+    def safe(value):
+        return _public_error(RuntimeError(str(value))) if value else ""
+    status = getattr(error, "status_code", 0)
+    return {"error_code": code, "error_stage": safe(stage),
+            "http_status": int(status) if isinstance(status, int) and 100 <= status <= 599 else None,
+            "request_id": safe(getattr(error, "request_id", ""))[:128],
+            "retry_suggestion": safe(getattr(error, "solution", "检查图片来源和模型配置后重试失败图片。")),
+            "attempt_count": max(1, int(attempt))}
 
 
 def read_formal_annotation(project_id: str, image_id: str) -> dict[str, Any]:
@@ -807,7 +832,7 @@ def commit_candidate_decisions(
             progress(processed, accepted_total, image_ids[-1])
 
     batch: list[dict[str, Any]] = []
-    for item in store.iter_accepted_items():
+    for item in store.iter_accepted_items(include_committed=True):
         batch.append(item)
         if len(batch) == 200:
             apply_batch(batch)

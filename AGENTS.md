@@ -1,3 +1,5 @@
+> **2026-11-06 / 42.24.544 AI审核工作台**：服务器草稿CAS、原候选证据、批量转池/恢复/撤销及后端剩余范围、失败逐图详情、三栏中文界面和原编辑器。独立克隆保护原WIP；本地测试和准确SHA CI记录见 `docs/AI_REVIEW_WORKBENCH_2026_11_06.md`（docs内去掉docs/前缀）。真实4070/生产性能及部署未验证，生产未动；不merge main/release/force push。
+
 > **2026-11-06｜42.24.541 WeVisOne 4070 真实空目标回包 P0 收尾**：用户现场 4070 `127.0.0.1:18000` 检查确认 `/v1/models`、`/v1/vision/detect` HTTP 200；纯白 128×128 的检测回包为 `coordinate_system=xyxy_pixel`、`boxes=[]`、`response="<ref>fire</ref><box>none</box>"`。540 将这个原生空目标标记误认成非法四坐标；只在原 `wevisone_vision.py` 解析器修复，保留原严格标签/坐标/矛盾结果校验，原通用模型与 GT/任务权威链条不变。增加真回包形状 API/单测，更新 WeVisOne 专项台账。尚未现场验证含目标图片、分割/抠图、Chrome 三视口；生产 4070 仍运行 540，**未升级/未修改现场服务**。详情见 `docs/WEVISONE_VISION_ADAPTER_P0_2026_11_06.md`。
 
 > **2026-11-06｜42.24.540 AI 自动标注任务差量恢复 P0**：接续 42.24.539，不改 WeVisOne/通用模型接口。原 CandidateStore 每图事务保持，原 AI 任务失败/取消后按同任务 ID 仅补跑失败和未处理图片，成功及无目标结果保持；新增原任务已完成部分恢复审核入口，人工确认前绝不写正式 GT；连续模型服务故障熔断，审核/GT 防重锁及共享取消标记差异治理。原任务页同层操作，不增第二套任务、缓存/GT；生产不动，远端 CI 与真实大批量故障、Chrome 三视口仍须单独验收。详见 `docs/AI_ANNOTATION_TASK_RECOVERY_P0_2026_11_06.md`。

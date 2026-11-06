@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
+import hashlib
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable
@@ -49,6 +51,23 @@ class CandidateStore:
             CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY, value TEXT);
             CREATE TABLE IF NOT EXISTS commits(image_id TEXT PRIMARY KEY, summary_json TEXT NOT NULL);
         """)
+        db.execute("BEGIN IMMEDIATE")
+        columns = {row[1] for row in db.execute("PRAGMA table_info(candidates)")}
+        for name, definition in (("review_state", "TEXT NOT NULL DEFAULT 'active'"),
+                                 ("draft_revision", "INTEGER NOT NULL DEFAULT 0"),
+                                 ("draft_json", "TEXT"), ("review_operation_id", "TEXT")):
+            if name not in columns:
+                db.execute(f"ALTER TABLE candidates ADD COLUMN {name} {definition}")
+        db.executescript("""
+            CREATE INDEX IF NOT EXISTS ix_candidates_state ON candidates(review_state,status,boxes_count);
+            CREATE TABLE IF NOT EXISTS review_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, image_id TEXT NOT NULL,
+                operation_id TEXT NOT NULL, kind TEXT NOT NULL, event_json TEXT NOT NULL,
+                UNIQUE(image_id,operation_id,kind)
+            );
+        """)
+        db.execute("INSERT OR IGNORE INTO metadata(key,value) VALUES ('review_revision','0')")
+        db.commit()
         return db
 
     def initialize(
@@ -64,6 +83,7 @@ class CandidateStore:
             try:
                 db.execute("DELETE FROM candidates")
                 db.execute("DELETE FROM commits")
+                db.execute("DELETE FROM review_events")
                 db.execute("INSERT OR REPLACE INTO metadata VALUES ('initialized','1')")
                 if commit_guard is not None:
                     commit_guard()
@@ -98,11 +118,19 @@ class CandidateStore:
                 raise
 
     @staticmethod
+    def _bump_revision(db):
+        db.execute("UPDATE metadata SET value=CAST(value AS INTEGER)+1 WHERE key='review_revision'")
+
+    @staticmethod
     def _put(db, item, *, normalize=True):
         item = dict(item)
         image_id = str(item.get("image_id") or "")
         if not image_id:
             raise ValueError("candidate image_id is required")
+        if normalize:
+            existing = db.execute("SELECT draft_revision,review_state FROM candidates WHERE image_id=?", (image_id,)).fetchone()
+            if existing and (existing['draft_revision'] or existing['review_state'] != 'active'):
+                return  # A generation retry must never erase human work or transfer evidence.
         item["image_id"] = image_id
         item["boxes"] = [dict(box) for box in item.get("boxes") or []]
         accepted = None if normalize else item.get("accepted")
@@ -111,6 +139,12 @@ class CandidateStore:
             ON CONFLICT(image_id) DO UPDATE SET status=excluded.status,accepted=excluded.accepted,
                 boxes_count=excluded.boxes_count,item_json=excluded.item_json""",
             (image_id, str(item.get("status") or "failed"), accepted, len(item["boxes"]), json.dumps(item, ensure_ascii=False)))
+        if not normalize:
+            existing_draft=db.execute('SELECT draft_json FROM candidates WHERE image_id=?',(image_id,)).fetchone()
+            if existing_draft and existing_draft[0]:
+                draft=json.loads(existing_draft[0]);draft['boxes']=item['boxes']
+                db.execute('UPDATE candidates SET draft_json=? WHERE image_id=?',(json.dumps(draft,ensure_ascii=False),image_id))
+        CandidateStore._bump_revision(db)
 
     def _append_items_transaction(
         self,
@@ -240,6 +274,15 @@ class CandidateStore:
     def _decode(row):
         item = json.loads(row["item_json"])
         item["accepted"] = None if row["accepted"] is None else bool(row["accepted"])
+        item.setdefault("original_boxes", item.get("boxes") or [])
+        if "draft_revision" in row.keys():
+            item["draft_revision"] = int(row["draft_revision"])
+            item["review_state"] = row["review_state"]
+            item["review_operation_id"] = row["review_operation_id"]
+            if row["draft_json"]:
+                draft = json.loads(row["draft_json"])
+                item["boxes"] = draft["boxes"]
+                item["draft"] = draft
         return item
 
     def get(self, image_id):
@@ -263,15 +306,16 @@ class CandidateStore:
             ).fetchall()
         return {str(row["image_id"]): self._decode(row) for row in rows}
 
-    def read_page(self, *, cursor: str | None, limit: int = 50) -> CandidatePage:
+    def read_page(self, *, cursor: str | None, limit: int = 50, filter: str = 'all') -> CandidatePage:
         self._ready()
         try:
             offset = max(0, int(cursor or 0))
         except ValueError as error:
             raise ValueError("candidate cursor must be numeric") from error
         with closing(self._connect()) as db:
-            total = db.execute("SELECT COUNT(*) FROM candidates").fetchone()[0]
-            rows = db.execute("SELECT * FROM candidates ORDER BY ordinal LIMIT ? OFFSET ?",
+            where = self._filter_sql(filter)
+            total = db.execute(f"SELECT COUNT(*) FROM candidates WHERE {where}").fetchone()[0]
+            rows = db.execute(f"SELECT * FROM candidates WHERE {where} ORDER BY ordinal LIMIT ? OFFSET ?",
                               (max(1, min(200, int(limit))), offset)).fetchall()
         following = offset + len(rows)
         return CandidatePage([self._decode(row) for row in rows], str(following) if following < total else None, total)
@@ -293,7 +337,7 @@ class CandidateStore:
                 if len(rows) < 200:
                     return
 
-    def iter_accepted_items(self):
+    def iter_accepted_items(self, *, include_committed=False):
         """Stream only accepted review rows in bounded ordinal pages."""
         self._ready()
         ordinal = 0
@@ -301,7 +345,8 @@ class CandidateStore:
             while True:
                 rows = db.execute(
                     "SELECT * FROM candidates WHERE ordinal>? AND accepted=1 "
-                    "AND status IN ('success','empty') ORDER BY ordinal LIMIT 200",
+                    "AND status IN ('success','empty') AND review_state='active' "
+                    + ("" if include_committed else "AND image_id NOT IN (SELECT image_id FROM commits) ") + "ORDER BY ordinal LIMIT 200",
                     (ordinal,),
                 ).fetchall()
                 if not rows:
@@ -379,6 +424,7 @@ class CandidateStore:
                 )
                 if commit_guard is not None:
                     commit_guard()
+                self._bump_revision(db)
                 db.commit()
             except Exception:
                 db.rollback()
@@ -438,6 +484,9 @@ class CandidateStore:
                         item = items.get(image_id)
                         if item is None:
                             continue
+                        if (item.get("review_state", "active") != "active"
+                                or db.execute("SELECT 1 FROM commits WHERE image_id=?", (image_id,)).fetchone()):
+                            raise ValueError("candidate is unavailable for review")
                         item = dict(item)
                         item["accepted"] = bool(decision.accepted)
                         if decision.boxes is not None:
@@ -467,7 +516,10 @@ class CandidateStore:
             db.execute("CREATE TEMP TABLE excluded(image_id TEXT PRIMARY KEY)")
             db.executemany("INSERT OR IGNORE INTO excluded VALUES (?)", ((str(value),) for value in exclude))
             db.execute("UPDATE candidates SET accepted=? WHERE status IN ('success','empty') "
+                       "AND accepted IS NULL AND review_state='active' "
+                       "AND image_id NOT IN (SELECT image_id FROM commits) "
                        "AND image_id NOT IN (SELECT image_id FROM excluded)", (bool(accepted),))
+            self._bump_revision(db)
 
     def remap_labels(self, mapping: dict[str, str], label_ids: dict[str, int]) -> None:
         normalized = {
@@ -490,7 +542,7 @@ class CandidateStore:
                 while True:
                     rows = db.execute(
                         "SELECT * FROM candidates "
-                        "WHERE status IN ('success','empty') AND ordinal>? "
+                        "WHERE status IN ('success','empty') AND ordinal>? AND review_state='active' AND (accepted IS NULL OR accepted=1) "
                         "ORDER BY ordinal LIMIT 200",
                         (after_ordinal,),
                     ).fetchall()
@@ -532,21 +584,17 @@ class CandidateStore:
                 raise
 
     def label_summary(self) -> list[dict[str, Any]]:
-        summary: dict[str, dict[str, Any]] = {}
-        for item in self.iter_items():
-            if item.get("status") not in {"success", "empty"}:
-                continue
-            seen = set()
-            for box in item.get("boxes") or []:
-                label = str(box.get("label") or "").strip()
-                if not label:
-                    continue
-                row = summary.setdefault(label, {"label": label, "boxes": 0, "images": 0})
-                row["boxes"] += 1
-                if label not in seen:
-                    row["images"] += 1
-                    seen.add(label)
-        return sorted(summary.values(), key=lambda row: (-int(row["boxes"]), str(row["label"])))
+        """SQL aggregation avoids decoding every image on first-page entry."""
+        self._ready()
+        with closing(self._connect()) as db:
+            rows=db.execute("""SELECT json_extract(b.value,'$.label') AS label,
+                COUNT(*) AS boxes,COUNT(DISTINCT c.image_id) AS images
+                FROM candidates c JOIN json_each(COALESCE(c.draft_json,c.item_json),'$.boxes') b
+                WHERE c.status IN ('success','empty') AND c.review_state='active'
+                AND (c.accepted IS NULL OR c.accepted=1)
+                AND COALESCE(json_extract(b.value,'$.label'),'')<>''
+                GROUP BY label ORDER BY boxes DESC,label""").fetchall()
+            return [dict(row) for row in rows]
 
     def summary(self) -> dict[str, int]:
         self._ready()
@@ -584,3 +632,119 @@ class CandidateStore:
     @staticmethod
     def _page_ref(page_number: int) -> str:
         return f"candidates/page-{page_number:06d}.json"
+    @staticmethod
+    def _filter_sql(filter):
+        active = "review_state='active'"
+        options = {
+            'all': '1=1', 'with_boxes': f"{active} AND status='success' AND boxes_count>0",
+            'empty': f"{active} AND status IN ('success','empty') AND boxes_count=0",
+            'zero': f"{active} AND status IN ('success','empty') AND boxes_count=0",
+            'rejected': f"{active} AND accepted=0",
+            'low': f"{active} AND EXISTS (SELECT 1 FROM json_each(candidates.item_json,'$.boxes') b WHERE json_extract(b.value,'$.confidence')<0.6)",
+            'hard': f"{active} AND COALESCE(json_array_length(json_extract(item_json,'$.hard_sample_signals')),0)>0",
+            'failed': "status='failed'", 'edited': 'draft_revision>0',
+            'transferred': "review_state='transferred'", 'blocked': "review_state='blocked'",
+            'unreviewed': f"{active} AND status IN ('success','empty') AND accepted IS NULL AND image_id NOT IN (SELECT image_id FROM commits)",
+            'remaining': f"{active} AND status IN ('success','empty') AND (accepted IS NULL OR accepted=1) AND image_id NOT IN (SELECT image_id FROM commits)",
+        }
+        if filter not in options:
+            raise ValueError('unknown candidate filter')
+        return options[filter]
+
+    def review_revision(self):
+        self._ready()
+        with closing(self._connect()) as db:
+            return int(db.execute("SELECT value FROM metadata WHERE key='review_revision'").fetchone()[0])
+
+    def iter_selected_ids(self, filter='all'):
+        self._ready()
+        where = self._filter_sql(filter)
+        with closing(self._connect()) as db:
+            ordinal = 0
+            while True:
+                rows = db.execute(f'SELECT ordinal,image_id FROM candidates WHERE ordinal>? AND ({where}) ORDER BY ordinal LIMIT 200', (ordinal,)).fetchall()
+                if not rows:
+                    break
+                for row in rows:
+                    yield str(row['image_id'])
+                ordinal = rows[-1]['ordinal']
+
+    def review_counts(self):
+        self._ready()
+        with closing(self._connect()) as db:
+            result = {key: int(db.execute(f'SELECT COUNT(*) FROM candidates WHERE {self._filter_sql(value)}').fetchone()[0])
+                      for key, value in [('total','all'),('with_boxes','with_boxes'),('zero','zero'),('failed','failed'),('edited','edited'),('transferred','transferred'),('blocked','blocked'),('remaining_reviewable','remaining'),('unreviewed_reviewable','unreviewed')]}
+            result['revision'] = int(db.execute("SELECT value FROM metadata WHERE key='review_revision'").fetchone()[0])
+            return result
+
+    def save_draft(self, image_id, boxes, *, expected_revision, actor, request_id):
+        """Persist a task-local review revision, never write formal annotations.
+
+        Geometry, source hash and permission checks belong to the API holding
+        the existing task review lock. This layer enforces atomic CAS and replay.
+        """
+        if not isinstance(boxes, list) or len(boxes)>300 or any(not isinstance(box, dict) for box in boxes):
+            raise ValueError('invalid candidate draft boxes')
+        if not actor or not request_id or len(str(request_id))>200:
+            raise ValueError('draft actor and request_id required')
+        encoded = json.dumps(boxes, ensure_ascii=False, allow_nan=False, sort_keys=True)
+        digest = hashlib.sha256(encoded.encode()).hexdigest()
+        self._ready()
+        with closing(self._connect()) as db, db:
+            db.execute('BEGIN IMMEDIATE')
+            prior = db.execute("SELECT event_json FROM review_events WHERE image_id=? AND operation_id=? AND kind='draft'",(str(image_id),str(request_id))).fetchone()
+            if prior:
+                event = json.loads(prior[0])
+                if event['digest'] != digest or event['actor'] != actor:
+                    raise ValueError('request_id reused with different draft')
+                return event['result']
+            row = db.execute('SELECT * FROM candidates WHERE image_id=?',(str(image_id),)).fetchone()
+            if (not row or row['status'] not in {'success','empty'} or row['review_state'] != 'active'
+                    or db.execute('SELECT 1 FROM commits WHERE image_id=?',(str(image_id),)).fetchone()):
+                raise ValueError('candidate unavailable for draft')
+            if row['draft_revision'] != expected_revision:
+                raise ValueError('candidate draft revision conflict')
+            result = dict(image_id=str(image_id),revision=int(expected_revision)+1,boxes=json.loads(encoded),saved_at=time.time(),actor=str(actor))
+            db.execute('UPDATE candidates SET draft_revision=?,draft_json=?,boxes_count=? WHERE image_id=?',
+                       (result['revision'],json.dumps(result,ensure_ascii=False),len(boxes),str(image_id)))
+            db.execute("INSERT INTO review_events(image_id,operation_id,kind,event_json) VALUES (?,?,'draft',?)",(str(image_id),str(request_id),json.dumps(dict(digest=digest,actor=actor,result=result),ensure_ascii=False)))
+            self._bump_revision(db)
+            return result
+
+    def set_review_exclusion(self, image_id, state, *, operation_id, actor, expected_revision=None, details=None):
+        """Journal cross-store transfer state under the existing task lock.
+
+        pending_transfer blocks acceptance BEFORE pool write, transferred follows
+        its durable receipt; active is explicit pre-finalization undo.
+        """
+        if state not in {'active','pending_transfer','transferred','blocked'}:
+            raise ValueError('invalid candidate review state')
+        if not operation_id or not actor:
+            raise ValueError('operation and actor required')
+        self._ready()
+        with closing(self._connect()) as db, db:
+            db.execute('BEGIN IMMEDIATE')
+            row=db.execute('SELECT * FROM candidates WHERE image_id=?',(str(image_id),)).fetchone()
+            if not row or row['status'] not in {'success','empty'}:
+                raise ValueError('candidate unavailable for transfer')
+            if row['review_state'] != 'active' and row['review_operation_id'] != str(operation_id):
+                raise ValueError('candidate belongs to another transfer operation')
+            if state != 'active' and db.execute("SELECT 1 FROM review_events WHERE image_id=? AND operation_id=? AND kind='active'", (str(image_id),str(operation_id))).fetchone():
+                raise ValueError('transfer operation already undone')
+            prior=db.execute('SELECT event_json FROM review_events WHERE image_id=? AND operation_id=? AND kind=?',(str(image_id),str(operation_id),state)).fetchone()
+            if prior:
+                event=json.loads(prior[0])
+                if event['actor'] != actor or event['details'] != (details or {}):
+                    raise ValueError('operation reused with different transfer')
+                if row['review_state'] == state:
+                    return event
+            if db.execute('SELECT 1 FROM commits WHERE image_id=?',(str(image_id),)).fetchone():
+                raise ValueError('candidate already finalized')
+            if expected_revision is not None and row['draft_revision'] != expected_revision:
+                raise ValueError('candidate draft revision conflict')
+            event=dict(image_id=str(image_id),state=state,operation_id=str(operation_id),actor=str(actor),created_at=time.time(),details=details or {})
+            db.execute('UPDATE candidates SET review_state=?,review_operation_id=? WHERE image_id=?',(state,str(operation_id),str(image_id)))
+            kind = state if prior is None else f"{state}:retry:{db.execute('SELECT COALESCE(MAX(id),0)+1 FROM review_events').fetchone()[0]}"
+            db.execute('INSERT INTO review_events(image_id,operation_id,kind,event_json) VALUES (?,?,?,?)',(str(image_id),str(operation_id),kind,json.dumps(event,ensure_ascii=False)))
+            self._bump_revision(db)
+            return event

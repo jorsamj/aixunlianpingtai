@@ -18,4 +18,4 @@ os.environ["MC_ALLOW_MULTIPLE_PROJECTS_FOR_TESTS"] = "1"
 test_ultralytics_dir = test_data_dir / "ultralytics"
 test_ultralytics_dir.mkdir()
 os.environ["YOLO_CONFIG_DIR"] = str(test_ultralytics_dir)
-uvicorn.run("app:app", host="127.0.0.1", port=8011, log_level="warning")
+uvicorn.run("app:app", host="127.0.0.1", port=int(os.environ.get("MC_BROWSER_TEST_PORT", "8011")), log_level="warning")

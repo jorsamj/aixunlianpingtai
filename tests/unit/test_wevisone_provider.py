@@ -240,7 +240,7 @@ def test_reported_fastapi_validation_failure_is_not_treated_as_empty():
     with pytest.raises(ProviderRequestError) as error:
         provider.annotate(image_bytes=b.getvalue(), prompt="", output_schema={}, labels=["person"])
     assert error.value.status_code == 422
-    assert error.value.code == "MODEL_SERVICE_ERROR"
+    assert error.value.code == "MODEL_REQUEST_CONTRACT_INVALID"
 
 
 def test_preview_keeps_png_only_and_never_writes_gt():
@@ -304,3 +304,43 @@ def test_annotation_worker_keeps_unscored_boxes_for_human_review(tmp_path):
     assert result["boxes"][0]["confidence_status"] == "unavailable"
     assert result["diagnostics"]["confidence_unavailable_count"] == 1
     assert result["diagnostics"]["counts"]["threshold_filtered"] == 0
+
+@pytest.mark.parametrize('base', ['http://inference:18002/wevis2/v1', 'http://inference:18002/wevis2/v1/vision/detect'])
+def test_gateway_prefix_preserved_for_models_and_detection(base):
+    assert _endpoint(base, 'detect') == 'http://inference:18002/wevis2/v1/vision/detect'
+    assert _endpoint(base, 'models') == 'http://inference:18002/wevis2/v1/models'
+
+@pytest.mark.parametrize('path', ['/../v1', '/%2e%2e/v1', '//wevis2/v1', '/wevis2//v1'])
+def test_gateway_prefix_rejects_ambiguous_paths(path):
+    with pytest.raises(ValueError):
+        _endpoint('http://inference:18002'+path, 'detect')
+
+def test_native_422_reports_safe_request_contract_without_echoing_image():
+    response = SimpleNamespace(ok=False, status_code=422, headers={'x-request-id':'native-422'})
+    session = SimpleNamespace(post=lambda *a, **kw: response)
+    provider = WeVisOneVisionProvider(base_url='http://inference:18000/v1', model='wevisone-vl-2b', session=session)
+    binary=BytesIO();Image.new('RGB',(12,12)).save(binary,format='PNG')
+    with pytest.raises(ProviderRequestError) as caught:
+        provider.annotate(image_bytes=binary.getvalue(), prompt='', output_schema={}, labels=['person'])
+    error=caught.value
+    assert error.code == 'MODEL_REQUEST_CONTRACT_INVALID'
+    assert error.status_code == 422
+    assert error.request_id == 'native-422'
+    assert error.stage == 'model_request'
+    assert error.diagnostics['request_contract'] == {'image':'data_uri','query':'list[str]','query_count':1,'operation':'detect'}
+    assert 'base64' not in str(error.diagnostics)
+
+def test_failed_image_evidence_keeps_http_stage_and_scrubs_secrets():
+    from platform_core.annotation_task_service import _failure_evidence
+    error = ProviderRequestError('bad api_key=secret-value', code='MODEL_REQUEST_CONTRACT_INVALID', status_code=422, request_id='trace-1', solution='Check query')
+    result = _failure_evidence(error, attempt=3)
+    assert result['error_stage'] == 'model_request'
+    assert result['http_status'] == 422
+    assert result['attempt_count'] == 3
+    assert result['request_id'] == 'trace-1'
+    assert 'secret-value' not in str(result)
+
+@pytest.mark.parametrize('code,stage', [('MODEL_COORDINATE_INVALID','coordinate_validation'),('MODEL_OUTPUT_PARSE_ERROR','response_parse'),('MODEL_REQUEST_TIMEOUT','model_request')])
+def test_failed_image_evidence_distinguishes_stages(code,stage):
+    from platform_core.annotation_task_service import _failure_evidence
+    assert _failure_evidence(ProviderRequestError('failed',code=code),attempt=1)['error_stage']==stage

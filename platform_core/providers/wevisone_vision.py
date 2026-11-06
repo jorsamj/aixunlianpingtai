@@ -66,6 +66,8 @@ def _endpoint(base_url: str, operation: str) -> str:
             parts.username or parts.password or parts.query or parts.fragment):
         raise ValueError("WeVisOne 服务地址须为不含账号、查询参数的 HTTP(S) 地址")
     path = parts.path.rstrip("/")
+    if "%" in path or "//" in path or any(part in {".", ".."} for part in path.split("/")):
+        raise ValueError("WeVisOne 地址路径含歧义编码或目录跳转")
     path = re.sub(r"/vision/(detect|segment|matting)$", "", path)
     path = re.sub(r"/models$", "", path)
     if path.endswith("/v1"):
@@ -273,14 +275,21 @@ class WeVisOneVisionProvider:
         except requests.RequestException:
             raise ProviderRequestError("WeVisOne 服务不可达", code="MODEL_SERVICE_UNREACHABLE", solution="检查地址、内网连通性与 model-switch 当前模型。") from None
         if not response.ok:
-            code = "MODEL_RESOURCE_NOT_FOUND" if response.status_code == 404 else "MODEL_AUTHENTICATION_FAILED" if response.status_code in (401, 403) else "MODEL_SERVICE_ERROR"
-            raise ProviderRequestError(f"WeVisOne 接口返回 HTTP {response.status_code}", code=code, status_code=response.status_code, solution="核对专用接口地址、当前加载模型以及服务请求合同。")
+            code = "MODEL_REQUEST_CONTRACT_INVALID" if response.status_code == 422 else "MODEL_RESOURCE_NOT_FOUND" if response.status_code == 404 else "MODEL_AUTHENTICATION_FAILED" if response.status_code in (401, 403) else "MODEL_SERVICE_ERROR"
+            error = ProviderRequestError(f"WeVisOne 接口返回 HTTP {response.status_code}", code=code, status_code=response.status_code,
+                request_id=(lambda value: value if re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", value) else "")(str(getattr(response, "headers", {}).get("x-request-id", ""))),
+                solution="422 请核对 image 为 Data URI、query 为冻结描述字符串数组；404 请核对 /v1 或 /wevis2/v1 网关前缀。" if response.status_code in (422, 404) else "核对专用接口地址、当前加载模型以及服务请求合同。")
+            error.stage = "model_request"
+            # Shape-only evidence: never echo a response body that may contain
+            # submitted image data, credentials or user-controlled query text.
+            error.diagnostics = {"request_contract": {"image": "data_uri", "query": "list[str]", "query_count": len(queries), "operation": operation}}
+            raise error
         try:
             payload = response.json()
         except ValueError:
-            raise ProviderRequestError("WeVisOne 接口未返回 JSON", code="MODEL_OUTPUT_PARSE_ERROR") from None
+            raise ProviderRequestError("WeVisOne 接口未返回 JSON", code="MODEL_OUTPUT_PARSE_ERROR", status_code=200) from None
         if not isinstance(payload, dict):
-            raise ProviderRequestError("WeVisOne 接口响应格式错误", code="MODEL_OUTPUT_PARSE_ERROR")
+            raise ProviderRequestError("WeVisOne 接口响应格式错误", code="MODEL_OUTPUT_PARSE_ERROR", status_code=200)
         return payload, round((time.perf_counter() - start) * 1000)
 
     def inspect_model(self) -> dict[str, Any]:
@@ -313,7 +322,12 @@ class WeVisOneVisionProvider:
             description = self.label_queries.get(code)
             if description:
                 aliases.setdefault(code, []).append(description)
-        boxes = normalize_detection(payload, width=width, height=height, labels=labels, label_aliases=aliases)
+        try:
+            boxes = normalize_detection(payload, width=width, height=height, labels=labels, label_aliases=aliases)
+        except ProviderRequestError as error:
+            error.status_code = 200
+            error.stage = "coordinate_validation" if "COORDINATE" in error.code else "response_parse"
+            raise
         return {"text": json.dumps({"boxes": boxes}, ensure_ascii=False), "latency_ms": elapsed,
                 "provider": "wevisone_vl", "model": self.model, "api_protocol": "wevisone_native_v1",
                 "native_descriptions_applied": bool(self.label_queries and any(code in self.label_queries for code in labels)),

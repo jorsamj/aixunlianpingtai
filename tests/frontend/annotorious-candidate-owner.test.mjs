@@ -18,15 +18,15 @@ function harness(extra={}){
   const item={image_id:'i',filename:'i.png',width:100,height:100,url:'i.png',boxes:[original]};
   const state={ai60Review:{id:'review',seen:new Map([['i',item]]),edits:new Map(),decisions:new Map(),ownerPage:'ops'},page:'ops',labels:[{code:'person',class_id:1}]};
   let ids=0,closed=0;const errors=[];
-  const context={state,document:{querySelector:()=>({}),getElementById:()=>null,querySelectorAll:()=>[]},window:{BrowserCapabilityRuntime:{createClientId:()=>`new-${++ids}`}},imageById:()=>item,aiReviewLabels60:()=>state.labels,esc:String,toast:error=>errors.push(error),modal:()=>{},closeModal:()=>closed++,renderReviewPage:()=>{},AbortController,Set,Map,JSON,Number,String,Promise};
+  const context={state,document:{querySelector:()=>({}),getElementById:()=>null,querySelectorAll:()=>[]},window:{BrowserCapabilityRuntime:{createClientId:()=>`new-${++ids}`}},imageById:()=>item,aiReviewLabels60:()=>state.labels,esc:String,toast:error=>errors.push(error),modal:()=>{},closeModal:()=>closed++,api:async()=>({revision:1,saved_at:'now'}),taskApi:()=>'/task',renderAiSelection60:()=>{},renderReviewPage:()=>{},AbortController,Set,Map,JSON,Number,String,Promise};
   Object.assign(context,extra);context.window.window=context.window;vm.runInNewContext(block,context);
   return {state,window:context.window,item,original,errors,get closed(){return closed;}};
 }
-test('candidate opening assigns missing IDs once, preserves metadata and never changes review until explicit save',()=>{
+test('candidate opening assigns missing IDs once, preserves metadata and never changes review until explicit server save',async()=>{
   const h=harness();h.window.editAiCandidate60('i');const edit=h.state.ai60Edit;
   assert.equal(edit.boxes[0].id,'new-1');assert.equal(h.original.id,undefined);assert.equal(h.state.ai60Review.edits.size,0);
   h.window.updateAiCandidateBox60(0,'x1','12');assert.equal(edit.boxes[0].x1,12);assert.equal(h.item.boxes[0].x1,10);
-  h.window.saveAiCandidateEdit60();assert.equal(h.state.ai60Review.edits.get('i')[0].source_task_id,'ai-task');assert.equal(h.state.ai60Review.edits.get('i')[0].id,'new-1');assert.equal(h.state.ai60Review.edits.get('i')[0].source,'ai_candidate_reviewed');assert.equal(h.closed,0,'saving candidate changes must not close the review workspace');assert.equal(h.state.ai60Edit,null);
+  await h.window.saveAiCandidateEdit60();assert.equal(h.state.ai60Review.edits.get('i')[0].source_task_id,'ai-task');assert.equal(h.state.ai60Review.edits.get('i')[0].id,'new-1');assert.equal(h.state.ai60Review.edits.get('i')[0].source,'ai_candidate_reviewed');assert.equal(h.closed,0,'saving candidate changes must not close the review workspace');assert.equal(h.state.ai60Edit.dirty,false);assert.equal(h.item.draft_revision,1);
 });
 test('candidate coordinates reject out of image and invalid rectangles without mutating draft',()=>{
   const h=harness();h.window.editAiCandidate60('i');const edit=h.state.ai60Edit;

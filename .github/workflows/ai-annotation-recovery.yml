@@ -29,6 +29,9 @@ on:
       - static/modules/material-pagination-runtime.js
       - static/modules/annotation-task-view.js
       - tests/api/test_annotation_task_runtime.py
+      - tests/api/test_ai_review_workbench.py
+      - platform_core/negative_pool.py
+      - tests/unit/test_negative_pool.py
       - tests/integration/test_persistent_ai_annotation_e2e.py
       - tests/browser/material-workflows.spec.mjs
       - tests/browser/auto-label-polling.spec.mjs
@@ -64,6 +67,9 @@ on:
       - static/modules/material-pagination-runtime.js
       - static/modules/annotation-task-view.js
       - tests/api/test_annotation_task_runtime.py
+      - tests/api/test_ai_review_workbench.py
+      - platform_core/negative_pool.py
+      - tests/unit/test_negative_pool.py
       - tests/integration/test_persistent_ai_annotation_e2e.py
       - tests/unit/test_annotation_candidates.py
       - tests/unit/test_annotation_task_service.py
@@ -131,7 +137,7 @@ jobs:
               'store.generation_prefix',
               'commit_guard=lambda: _assert_generation_commit(context)',
               'context.heartbeat(',
-              'store.iter_accepted_items()',
+              'store.iter_accepted_items(include_committed=True)',
               'store.get_commit_summaries(image_ids)',
               'store.record_commit_summaries(to_journal)',
               'read_formal_annotations(project_id, pending_ids)',
@@ -168,6 +174,8 @@ jobs:
           python -m py_compile
           app.py
           tests/api/test_annotation_task_runtime.py
+          tests/api/test_ai_review_workbench.py
+          tests/unit/test_negative_pool.py
           tests/api/test_annotation_preview.py
           tests/integration/test_persistent_ai_annotation_e2e.py
       - name: Durable annotation API truth
@@ -175,6 +183,8 @@ jobs:
           python -m pytest -q
           tests/unit/test_annotation_runtime.py
           tests/api/test_annotation_task_runtime.py
+          tests/api/test_ai_review_workbench.py
+          tests/unit/test_negative_pool.py
           tests/api/test_annotation_preview.py
           tests/integration/test_persistent_ai_annotation_e2e.py
           tests/api/test_model_configs.py

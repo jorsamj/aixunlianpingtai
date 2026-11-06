@@ -1105,3 +1105,32 @@ def test_generated_candidate_freezes_verified_source_hash(tmp_path, monkeypatch)
     assert CandidateStore(context.artifacts, task_id="ai-1").get("one")[
         "source_content_sha256"
     ] == "f" * 64
+
+
+def test_selected_retry_only_processes_requested_failed_image(tmp_path, monkeypatch):
+    context=FakeContext(tmp_path)
+    _install_two_images(context,monkeypatch)
+    def fail(_request,image): raise RuntimeError('isolated failure')
+    assert run_ai_annotation(context,annotate=fail).status is TaskStatus.FAILED
+    context.artifacts.atomic_write_json('ai-1','generation/retry-selection.json',{'image_ids':['two']})
+    context.task=replace(context.task,attempt=2);context.repository.task=context.task
+    calls=[]
+    run_ai_annotation(context,annotate=lambda req,image: calls.append(image['id']) or {'boxes':[]})
+    assert calls==['two']
+    store=CandidateStore(context.artifacts,task_id='ai-1')
+    assert store.get('one')['status']=='failed'
+    assert store.get('two')['status']=='empty'
+
+
+def test_failed_retry_preserves_saved_human_decision_and_draft(tmp_path, monkeypatch):
+    context=FakeContext(tmp_path);_install_two_images(context,monkeypatch)
+    def first(req,image):
+        if image['id']=='two':raise RuntimeError('isolated failure')
+        return {'boxes':[]}
+    run_ai_annotation(context,annotate=first)
+    store=CandidateStore(context.artifacts,task_id='ai-1')
+    store.save_draft('one',[],expected_revision=0,actor='reviewer',request_id='draft')
+    store.apply_decisions([CandidateDecision('one',True)])
+    before=store.get('one');context.task=replace(context.task,attempt=2);context.repository.task=context.task
+    calls=[];run_ai_annotation(context,annotate=lambda req,image:calls.append(image['id']) or {'boxes':[]})
+    assert calls==['two'];assert store.get('one')==before

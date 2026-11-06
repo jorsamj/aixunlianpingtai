@@ -54,15 +54,15 @@ test('AI official candidate editing saves a review draft without GT writes and s
   const review=page.locator('.ai-review-page-shell');await expect(review).toBeVisible();
   await expect(review.getByRole('button',{name:'返回任务列表'})).toBeVisible();
   await expect(page.locator('.ai-review-workbench-modal')).toHaveCount(0);
-  await review.getByRole('button',{name:'编辑候选框',exact:true}).click();
+  await review.locator('.ai66-candidate-card .ai-candidate-stage').first().click();await page.locator('#ai60ReviewInspector').getByRole('button',{name:'编辑候选框',exact:true}).click();
   // Candidate editing is part of the review workbench, not a nested dialog.
   const edit=review.locator('.ai66-edit');await expect(edit.locator('svg.a9s-annotationlayer')).toHaveCount(1);
   await edit.locator('[data-ai60-mode="draw"]').click();await drag(page,'#ai60EditImg',[300,200],[400,300]);
   await expect.poll(()=>page.evaluate(()=>state.ai60Edit.boxes.length)).toBe(2);
-  await edit.getByRole('button',{name:'保存候选修改',exact:true}).click();await expect(edit).toHaveCount(0);
+  await edit.getByRole('button',{name:'保存候选修改',exact:true}).click();await expect(edit.locator('#ai60EditStatus')).toContainText('已保存');await edit.getByRole('button',{name:'返回列表'}).click();await expect(edit).toHaveCount(0);
   expect(gtPosts).toBe(0);expect((await (await request.get(fx.url)).json()).boxes).toEqual([]);
   await expect(review.getByText('已人工修改',{exact:true})).toBeVisible();
-  await review.getByRole('button',{name:'采用已选择',exact:true}).click();await expect.poll(()=>!!decisionBody).toBe(true);
+  await review.locator('.ai-review-more summary').click();await review.getByRole('button',{name:'采用已选择',exact:true}).click();await expect.poll(()=>!!decisionBody).toBe(true);
   expect(decisionBody.commit).toBe(true);expect(decisionBody.reject_unmentioned).toBe(true);
   expect(decisionBody.decisions[0].image_id).toBe(fx.image.id);expect(decisionBody.decisions[0].accepted).toBe(true);
   expect(decisionBody.decisions[0].boxes).toHaveLength(2);expect(decisionBody.decisions[0].boxes[0].id).toBe('candidate-old');
@@ -173,3 +173,6 @@ test('twenty actual open close cycles report garbage-collected DOM and listener 
   await writeFile(artifact,JSON.stringify({scope:'whole page after 4 warmup cycles and CDP garbage collection; bounded DOM/listener growth in this fixture, not proof of absolute leak freedom',samples},null,2));
   await testInfo.attach('actual-CDP-lifecycle-samples',{path:artifact,contentType:'application/json'});
 });
+
+// Isolated candidate fixtures adopt the server-draft contract; real API roundtrip is separate.
+test.beforeEach(async({page})=>{await page.route('**/annotation-tasks/*/candidates/*/draft',route=>{const payload=route.request().postDataJSON();return route.fulfill({json:{revision:Number(payload.revision||0)+1,saved_at:Date.now()/1000,boxes:payload.boxes}})})});

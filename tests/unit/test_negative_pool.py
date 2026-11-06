@@ -221,3 +221,27 @@ def test_pool_listing_rejects_material_revision_drift(tmp_path, monkeypatch):
     with TestClient(app) as client:
         response=client.get('/api/v61/projects/p/negative-pool')
         assert response.status_code==409
+
+def test_restore_receipt_survives_retry_and_unrelated_writes(tmp_path):
+    repo,pool=setup(tmp_path)
+    before=pool.member_snapshot('0')
+    pool.members(['0'])
+    revision=pool.revision()
+    first=pool.restore_members({'0':before},expected_revision=revision,operation_id='undo-task-1')
+    assert not pool.member_snapshot('0')['member']
+    after=pool.revision()
+    pool.members(['1'])
+    second=pool.restore_members({'0':before},expected_revision=revision,operation_id='undo-task-1')
+    assert second==first
+    assert pool.member_snapshot('1')['member']
+    assert pool.revision()==str(int(after)+1)
+    with pytest.raises(ValueError,match='operation'):
+        pool.restore_members({'1':before},expected_revision=revision,operation_id='undo-task-1')
+
+def test_restore_without_matching_receipt_cannot_infer_success_from_revision(tmp_path):
+    repo,pool=setup(tmp_path)
+    before=pool.member_snapshot('0');pool.members(['0']);revision=pool.revision()
+    pool.members(['1'])
+    with pytest.raises(ValueError,match='revision'):
+        pool.restore_members({'0':before},expected_revision=revision,operation_id='not-executed')
+    assert pool.member_snapshot('0')['member']

@@ -1,3 +1,5 @@
+> **2026-11-06 / 42.24.544 AI审核工作台**：服务器草稿CAS、原候选证据、批量转池/恢复/撤销及后端剩余范围、失败逐图详情、三栏中文界面和原编辑器。独立克隆保护原WIP；本地测试和准确SHA CI记录见 `docs/AI_REVIEW_WORKBENCH_2026_11_06.md`（docs内去掉docs/前缀）。真实4070/生产性能及部署未验证，生产未动；不merge main/release/force push。
+
 > **2026-11-06 / 42.24.540 AI 自动标注故障恢复（候选）**：在 539 上保留原 WeVisOne 与通用适配，按原 Task ID 差量补跑失败/未处理项，已有成功/empty 候选不重复推理；取消、失败、服务阻塞任务可以把已完成候选恢复至原人工审核页面，未确认不得写正式 GT；连续服务异常熔断、审核锁与历史 GT 保护、独立回归测试。**CI/真实 Chrome/4070 大批量故障验收未取得证据之前不称已验收**。详见 `AI_ANNOTATION_TASK_RECOVERY_P0_2026_11_06.md`；生产未操作、不 merge/release/force-push。
 
 > **2026-11-06 / 42.24.539 4070 WeVisOne 专用 FastAPI 合同勘误（准确远端 CI 待验）**：在已推送的 538 `1ee43b80676bafe3d9edc74711e87a8f58673b96` 上收敛专用请求 `image=data:image/...;base64,...` + 冻结 `query`；检测读取 `coordinate_system=xyxy_pixel` 和 `bbox_xyxy`、只转换原图坐标一次；原冻结标签别名可控映射，拒绝无效/越界/异常/过多框；缺失置信度维持 null，分割/抠图适配多实例 PNG 只读预览，原候选审核后才入正式 GT。代码/据用户描述复刻协议回归通过，但**没有**取得真实 4070 FastAPI `app.py` 或实机返回；Chrome 扩展无法连接、云端 Chrome 无法打开本地服务，1920/1366/768 未做真实视觉验收，禁止宣称完整 P0。原通用模型、任务 Owner、正式 GT、生产不变。详见 `WEVISONE_VISION_ADAPTER_P0_2026_11_06.md`。

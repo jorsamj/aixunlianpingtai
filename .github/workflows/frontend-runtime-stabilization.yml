@@ -479,6 +479,8 @@ jobs:
           tests/browser/material-thumbnail.spec.mjs
           tests/browser/storage-lifecycle-summary.spec.mjs
           tests/browser/annotation-ui-governance.spec.mjs
+          tests/browser/ai-review-workbench.spec.mjs
+          tests/browser/ai-review-api-roundtrip.spec.mjs
           tests/browser/training-evaluation-diagnostics.spec.mjs
           tests/browser/navigation-readiness.spec.mjs
           tests/browser/frontend-lifecycle-races.spec.mjs

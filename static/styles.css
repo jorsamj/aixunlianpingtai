@@ -1792,3 +1792,59 @@ button[aria-busy="true"]:has(.tiny-spinner)::before{display:none}
   .model-m4-query-row{grid-template-columns:1fr auto}
   .model-m4-query-row [data-query-code]{grid-column:1/-1}
 }
+/* Review workspace: one shell, persistent filters, bounded candidate grid and inspector. */
+.ai-review-page-shell .ai66-review{display:grid!important;grid-template-columns:176px minmax(280px,1fr) minmax(260px,340px);grid-template-rows:auto auto minmax(0,1fr) auto;background:#fff;overflow:hidden}
+.ai-review-page-shell .ai66-review-head{grid-column:1/-1;padding:12px 20px}
+.ai-review-page-shell .ai66-review-head p{display:none}
+.ai-review-page-shell .ai66-review-kpis{display:none}
+.ai-review-page-shell .ai66-review-tools{grid-column:1;grid-row:2/4;display:flex;flex-direction:column;align-items:stretch;justify-content:flex-start;padding:16px 12px;border-right:1px solid #e2e8f0;border-bottom:0;background:#f8fafc;overflow:auto}
+.ai-review-page-shell .ai66-review-filters{display:flex;flex-direction:column;align-items:stretch;border:0;background:none;gap:8px}
+.ai-review-page-shell .ai66-review-filters button{text-align:left;min-height:44px;padding:0 14px;font-size:13px}
+.ai-review-page-shell .ai66-shortcuts{display:none}
+.ai-review-page-shell .ai66-label-tools{grid-column:2/4;grid-row:2;margin:8px 16px;max-height:180px}
+.ai-review-page-shell .ai66-review-grid{grid-column:2;grid-row:3;padding:12px 16px;grid-template-columns:repeat(auto-fill,minmax(190px,1fr))!important;gap:12px!important}
+.ai-review-page-shell .ai66-candidate-card{position:relative;transition:border-color 120ms ease,box-shadow 120ms ease}
+.ai-review-page-shell .ai66-candidate-card:hover{box-shadow:0 3px 12px #17345916}
+.ai-review-select{position:absolute;right:8px;top:8px;z-index:3;width:24px;height:24px;accent-color:#2468ce;cursor:pointer}
+.ai-review-select:focus-visible{outline:3px solid #2468ce;outline-offset:3px}
+.ai-review-page-shell .ai-candidate-stage{cursor:pointer}
+.ai-review-inspector{grid-column:3;grid-row:3;overflow:auto;padding:16px;border-left:1px solid #e2e8f0;background:#f8fafc;min-width:0}
+.ai-review-inspector h3{overflow-wrap:anywhere;font-size:16px}
+.ai-review-inspector .ai-candidate-stage{position:relative;width:100%;min-height:0}
+.ai-review-inspector img{width:100%;height:auto;display:block}
+.ai-review-inspector .btn{margin:6px 4px 0 0;min-height:44px}
+.ai-review-page-shell .ai66-review-footer{grid-column:1/-1;grid-row:4;display:flex;flex-wrap:wrap;gap:8px;margin:8px 12px!important;backdrop-filter:none;max-height:170px;overflow:auto;z-index:5}
+.ai-review-page-shell .ai66-review-footer .btn{min-height:44px}
+.ai-review-transfer{position:absolute;inset:0 0 0 auto;width:min(480px,100%);box-sizing:border-box;padding:28px;background:white;z-index:15;box-shadow:-12px 0 32px #142c4b22;overflow:auto;border-left:1px solid #dfe6ef;animation:ai-review-panel-in 180ms ease}
+.ai-review-transfer[hidden]{display:none}
+.ai-review-transfer label{display:block;margin:20px 0;line-height:1.8}
+.ai-review-transfer label .input{display:block;width:100%;box-sizing:border-box}
+.ai-review-transfer .btn{min-height:44px;margin:8px}
+@keyframes ai-review-panel-in{from{opacity:0;transform:translateX(12px)}to{opacity:1;transform:none}}
+@media(max-width:1366px){.ai-review-page-shell .ai66-review{grid-template-columns:136px minmax(240px,1fr) 264px}.ai-review-page-shell .ai66-review-grid{grid-template-columns:repeat(auto-fill,minmax(160px,1fr))!important}.ai-review-page-shell .ai66-review-filters button{padding:0 8px}}
+@media(max-width:768px){.view:has(.ai-review-page-shell){padding:4px}.ai-review-page-shell{min-height:480px;border-radius:8px}.ai-review-page-nav{padding:8px;gap:8px}.ai-review-page-nav>div span,.ai-review-page-task{display:none}.ai-review-page-shell .ai66-review{grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto auto minmax(0,1fr) auto}.ai-review-page-shell .ai66-review-head{grid-column:1;grid-row:1;padding:8px}.ai-review-page-shell .ai66-review-tools{grid-column:1;grid-row:2;padding:4px;max-height:110px}.ai-review-page-shell .ai66-review-filters{flex-direction:row;overflow:auto;gap:2px}.ai-review-page-shell .ai66-review-filters button{white-space:nowrap;min-width:64px}.ai-review-page-shell .ai66-label-tools{grid-column:1;grid-row:3;margin:4px}.ai-review-page-shell .ai66-review-grid{grid-column:1;grid-row:4;padding:8px;grid-template-columns:repeat(2,minmax(0,1fr))!important}.ai-review-inspector{display:none}.ai-review-page-shell .ai66-review-footer{grid-column:1;grid-row:5;margin:4px!important;max-height:184px;padding:6px!important}.ai-review-page-shell .ai66-review-footer #ai60ReviewPager{width:100%;overflow:auto}.ai66-review-summary{font-size:10px;padding:4px}.ai66-candidate-card>footer{flex-wrap:wrap}.ai66-candidate-card>footer .btn{min-height:44px}}
+@media(prefers-reduced-motion:reduce){.ai-review-transfer{animation:none}.ai-review-page-shell .ai66-candidate-card{transition:none}}
+
+/* Focus the card on selection; actions live once in the current-image inspector. */
+.ai-review-page-shell .ai66-candidate-card>footer,.ai-review-page-shell .ai66-candidate-card>.row{display:none}
+.ai-review-page-shell .ai66-review-grid{grid-template-columns:repeat(3,minmax(0,1fr))!important;align-content:start}
+.ai-review-page-shell .ai66-review-head h3,.ai-review-page-shell .ai66-eyebrow{display:none}
+.ai-review-page-shell .ai66-review-head{padding:8px 20px;min-height:32px}
+.ai-review-filter-toggle,.ai-review-inspector-close{display:none}
+.ai-review-page-shell .ai66-review-footer button[onclick="completeAiReview60('partial')"],.ai-review-page-shell .ai66-review-footer button[onclick="completeAiReview60('reject')"]{display:none}
+.ai-review-page-shell .ai66-review-tools>.row{flex-wrap:wrap}
+.ai-review-page-shell .ai66-review-filters button{display:flex;justify-content:space-between;gap:8px}
+@media(max-width:1366px){.ai-review-page-shell .ai66-review-grid{grid-template-columns:repeat(2,minmax(0,1fr))!important}}
+@media(max-width:768px){.ai-review-page-shell .ai66-review-head{display:flex;align-items:center;justify-content:space-between}.ai-review-filter-toggle,.ai-review-inspector-close{display:inline-flex;min-height:44px}.ai-review-page-shell .ai66-review-tools{display:none}.ai-review-page-shell .ai66-review-tools.mobile-open{display:flex;max-height:180px}.ai-review-inspector.open{display:block;position:absolute;inset:100px 4px 160px 4px;z-index:10;box-shadow:0 4px 24px #18284833;border:1px solid #dfe6ef;border-radius:12px}.ai-review-select{width:28px;height:28px;outline-offset:6px}}
+
+.ai-review-page-shell .ai66-review-footer .ai-review-more button{display:inline-flex!important}.ai-review-more{position:relative}.ai-review-more summary{padding:12px;cursor:pointer;min-height:44px;box-sizing:border-box}.ai-review-more[open]{display:flex;position:absolute;right:12px;bottom:64px;background:white;border:1px solid #dfe6ef;border-radius:10px;padding:8px;box-shadow:0 2px 16px #18284822;z-index:12}
+
+.ai-review-page-shell .ai66-review.ai66-editing{display:flex!important;flex-direction:column;grid-template-columns:none;grid-template-rows:none}
+
+.ai-review-page-shell #ai60ReviewReceiptLookup:not([hidden]){display:inline-flex!important}.ai-review-page-shell #ai60ReviewReceiptLookup[hidden]{display:none!important}
+
+.ai-review-select{width:44px;height:44px}.ai-review-page-shell .ai-candidate-stage:focus-visible{outline:3px solid #2468ce;outline-offset:-3px}
+
+.ai-review-page-shell .ai66-review-grid.ai-review-list{grid-template-columns:minmax(0,1fr)!important}.ai-review-list .ai66-candidate-card{display:grid;grid-template-columns:160px minmax(0,1fr);align-items:center}.ai-review-list .ai66-candidate-card .ai-candidate-stage{height:120px;min-height:0}.ai-review-list .ai66-candidate-body{grid-column:2}.ai-review-page-shell .ai66-review-head>div:first-child{display:flex;align-items:center;gap:8px}@media(max-width:768px){.ai-review-list .ai66-candidate-card{grid-template-columns:112px minmax(0,1fr)}.ai-review-list .ai66-candidate-card .ai-candidate-stage{height:84px}}
+
+.ai-filter-count{font-size:11px;opacity:.7}.ai-review-filter-more summary{padding:12px 8px;cursor:pointer;min-height:44px;box-sizing:border-box}.ai-review-filter-more button{width:100%}.ai-review-page-shell .ai66-review-head #ai60LayoutToggle{min-height:44px}

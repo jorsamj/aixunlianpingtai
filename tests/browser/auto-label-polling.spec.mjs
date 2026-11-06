@@ -174,6 +174,7 @@ test('AI candidate review keeps searchable mapping edits and inline labels throu
   });
   await page.route(`**/api/v60/projects/${encoded}/annotation-tasks/review-browser-1/candidates**`, async route => {
     const url=new URL(route.request().url());
+    if(route.request().method()==='PUT'&&url.pathname.endsWith('/draft')){const body=route.request().postDataJSON(),imageId=decodeURIComponent(url.pathname.split('/').at(-2)),item=items.find(row=>row.image_id===imageId);item.boxes=body.boxes;item.draft_revision=Number(body.revision||0)+1;return route.fulfill({json:{revision:item.draft_revision,saved_at:Date.now()/1000,item}})}
     const cursor=Number(url.searchParams.get('cursor')||0);
     const limit=Number(url.searchParams.get('limit')||24);
     if(candidateRace&&cursor===0)await new Promise(resolve=>setTimeout(resolve,260));
@@ -274,14 +275,14 @@ test('AI candidate review keeps searchable mapping edits and inline labels throu
   await expect(review.locator('#ai66Edited')).toHaveText('24');
 
   const firstCard=review.locator('#ai60ReviewGrid .review427-card').first();
-  await firstCard.getByRole('button',{name:'编辑候选框'}).click();
+  await firstCard.locator('.ai-candidate-stage').click();await page.locator('#ai60ReviewInspector').getByRole('button',{name:'编辑候选框'}).click();
   // Candidate editing stays inline within the independent review page.
   const editor=review.locator('.ai66-edit');
   await expect(editor).toBeVisible();
   await editor.locator('.ai66-edit-object select').first().selectOption('helmet');
   await editor.locator('.ai66-edit-advanced').evaluate(node=>{node.open=true});
   await editor.locator('.ai66-edit-coord input[type="number"]').first().fill('12');
-  await editor.getByRole('button',{name:'保存候选修改'}).click();
+  await editor.getByRole('button',{name:'保存候选修改'}).click();await expect(editor.locator('#ai60EditStatus')).toContainText('已保存');await editor.getByRole('button',{name:'返回列表'}).click();
   await expect(editor).toBeHidden();
   await expect(review).toBeVisible();
 
@@ -294,7 +295,7 @@ test('AI candidate review keeps searchable mapping edits and inline labels throu
   await expect(review.locator('#ai60ReviewSummary')).toContainText('第 1–24 / 54 张');
   const firstAfterPaging=review.locator('#ai60ReviewGrid .review427-card').first();
   await expect(firstAfterPaging).toContainText('安全帽');
-  await firstAfterPaging.getByRole('button',{name:'编辑候选框'}).click();
+  await firstAfterPaging.locator('.ai-candidate-stage').click();await page.locator('#ai60ReviewInspector').getByRole('button',{name:'编辑候选框'}).click();
   const editorAfterPaging=review.locator('.ai66-edit');
   await expect(editorAfterPaging).toBeVisible();
   await expect(editorAfterPaging.locator('.ai66-edit-object select').first()).toHaveValue('helmet');
@@ -321,7 +322,7 @@ test('AI candidate review keeps searchable mapping edits and inline labels throu
 
   candidateRace=true;
   await page.evaluate(() => { void window.aiReviewPage60(-1); });
-  await review.getByRole('button',{name:'全部接受'}).click();
+  await review.getByRole('button',{name:/审核剩余/}).click();
   await expect.poll(()=>decisionsBody,{timeout:5000}).not.toBeNull();
   await expect(review).toBeHidden();
   await page.waitForTimeout(320);
@@ -350,3 +351,6 @@ test('AI candidate review keeps searchable mapping edits and inline labels throu
   const labels=(await labelsResponse.json()).items||[];
   expect(labels.some(label=>label.code==='smoke'&&label.display_name==='烟雾')).toBe(true);
 });
+
+// Isolated candidate fixtures adopt the server-draft contract; real API roundtrip is separate.
+test.beforeEach(async({page})=>{await page.route('**/annotation-tasks/*/candidates/*/draft',route=>{const payload=route.request().postDataJSON();return route.fulfill({json:{revision:Number(payload.revision||0)+1,saved_at:Date.now()/1000,boxes:payload.boxes}})})});

@@ -471,3 +471,114 @@ def test_large_candidate_iterators_reuse_one_read_connection(
     assert connection_count == 2
     assert accepted_reads == 51
 
+
+def test_draft_cas_and_original_evidence(tmp_path):
+    store = CandidateStore(ArtifactStore(tmp_path), task_id='draft')
+    store.initialize(labels=['fire'], total_images=1)
+    store.append_items([{'image_id':'a','status':'success','boxes':[{'label':'fire','x':1}]}])
+    result=store.save_draft('a',[{'label':'fire','x':2}],expected_revision=0,actor='reviewer',request_id='r1')
+    assert result['revision']==1
+    assert store.get('a')['boxes'][0]['x']==2
+    assert store.get('a')['original_boxes'][0]['x']==1
+    assert store.save_draft('a',[{'label':'fire','x':2}],expected_revision=0,actor='reviewer',request_id='r1')==result
+    with pytest.raises(ValueError,match='revision'):
+        store.save_draft('a',[],expected_revision=0,actor='other',request_id='r2')
+    assert CandidateStore(ArtifactStore(tmp_path),task_id='draft').get('a')['draft_revision']==1
+
+
+def test_transfer_cannot_be_accepted_by_explicit_or_implicit_decision(tmp_path):
+    store=CandidateStore(ArtifactStore(tmp_path),task_id='transfer')
+    store.initialize(labels=['fire'],total_images=3)
+    store.append_items([{'image_id':i,'status':'empty','boxes':[]} for i in ['a','b','c']])
+    store.set_review_exclusion('a','transferred',operation_id='op',actor='reviewer')
+    store.apply_decisions([CandidateDecision('b',False)])
+    store.decide_unmentioned(True)
+    assert [i['image_id'] for i in store.iter_accepted_items()]==['c']
+    with pytest.raises(ValueError,match='unavailable'):
+        store.apply_decisions([CandidateDecision('a',True)])
+    assert store.review_counts()['remaining_reviewable']==1
+    assert store.read_page(cursor=None,filter='transferred').items[0]['image_id']=='a'
+    assert list(store.iter_selected_ids(filter='zero'))==['b','c']
+
+def test_draft_retry_and_pending_transfer_preserve_human_work(tmp_path):
+    store=CandidateStore(ArtifactStore(tmp_path),task_id='retry-safe')
+    store.initialize(labels=['fire'],total_images=2)
+    store.append_items([{'image_id':i,'status':'success','boxes':[{'label':'fire'}]} for i in ['a','b']])
+    store.save_draft('a',[],expected_revision=0,actor='reviewer',request_id='save')
+    store.set_review_exclusion('b','pending_transfer',operation_id='op',actor='reviewer')
+    revision=store.review_revision()
+    store.append_items([{'image_id':i,'status':'failed','boxes':[]} for i in ['a','b']])
+    assert store.review_revision()==revision
+    assert store.get('a')['status']=='success'
+    assert store.get('a')['boxes']==[]
+    assert store.get('a')['original_boxes']==[{'label':'fire'}]
+    store.decide_unmentioned(True)
+    assert [i['image_id'] for i in store.iter_accepted_items()]==['a']
+    assert store.get('b')['review_operation_id']=='op'
+    store.set_review_exclusion('b','transferred',operation_id='op',actor='reviewer')
+    revision=store.review_revision()
+    store.set_review_exclusion('b','transferred',operation_id='op',actor='reviewer')
+    assert store.review_revision()==revision
+
+
+def test_finalized_rows_are_unavailable_but_worker_can_replay_journal(tmp_path):
+    store=CandidateStore(ArtifactStore(tmp_path),task_id='finalized')
+    store.initialize(labels=['fire'],total_images=1)
+    store.append_items([{'image_id':'a','status':'empty','boxes':[]}])
+    store.decide_unmentioned(True)
+    store.record_commit_summaries([{'image_id':'a','box_count':0}])
+    assert list(store.iter_accepted_items())==[]
+    assert len(list(store.iter_accepted_items(include_committed=True)))==1
+    assert store.review_counts()['remaining_reviewable']==0
+    with pytest.raises(ValueError,match='finalized'):
+        store.set_review_exclusion('a','transferred',operation_id='op',actor='reviewer')
+    with pytest.raises(ValueError,match='unavailable'):
+        store.save_draft('a',[],expected_revision=0,actor='reviewer',request_id='save')
+
+
+def test_draft_cas_has_one_winner_for_concurrent_reviewers(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    store=CandidateStore(ArtifactStore(tmp_path),task_id='concurrent')
+    store.initialize(labels=['fire'],total_images=1)
+    store.append_items([{'image_id':'a','status':'empty','boxes':[]}])
+    def save(actor):
+        try:
+            return store.save_draft('a',[],expected_revision=0,actor=actor,request_id=actor)['revision']
+        except ValueError:
+            return 'conflict'
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        assert sorted(map(str,executor.map(save,['first','second'])))==['1','conflict']
+
+
+def test_review_counts_and_ids_never_materialize_large_box_payloads(tmp_path, monkeypatch):
+    store=CandidateStore(ArtifactStore(tmp_path),task_id='large-review')
+    store.initialize(labels=['fire'],total_images=20000)
+    store.append_items({'image_id':str(i),'status':'empty','boxes':[]} for i in range(20000))
+    monkeypatch.setattr(store,'_decode',lambda *_:pytest.fail('count/id scan decoded boxes'))
+    assert store.review_counts()['unreviewed_reviewable']==20000
+    assert len(list(store.iter_selected_ids('empty')))==20000
+
+def test_transfer_retry_restores_pending_and_cannot_steal_another_operation(tmp_path):
+    store=CandidateStore(ArtifactStore(tmp_path),task_id='transfer-recovery')
+    store.initialize(labels=['fire'],total_images=1)
+    store.append_items([{'image_id':'a','status':'empty','boxes':[]}])
+    store.set_review_exclusion('a','pending_transfer',operation_id='op',actor='reviewer')
+    store.set_review_exclusion('a','blocked',operation_id='op',actor='reviewer')
+    with pytest.raises(ValueError,match='operation'):
+        store.set_review_exclusion('a','pending_transfer',operation_id='other',actor='reviewer')
+    store.set_review_exclusion('a','pending_transfer',operation_id='op',actor='reviewer')
+    assert store.get('a')['review_state']=='pending_transfer'
+    store.set_review_exclusion('a','transferred',operation_id='op',actor='reviewer')
+    store.set_review_exclusion('a','active',operation_id='op',actor='reviewer')
+    with pytest.raises(ValueError,match='undone'):
+        store.set_review_exclusion('a','transferred',operation_id='op',actor='reviewer')
+
+
+def test_final_decision_uses_updated_draft_and_retains_original_evidence(tmp_path):
+    store=CandidateStore(ArtifactStore(tmp_path),task_id='mapped-draft')
+    store.initialize(labels=['fire','smoke'],total_images=1)
+    store.append_items([{'image_id':'a','status':'success','boxes':[{'label':'fire','x1':1,'y1':2,'x2':3,'y2':4}]}])
+    store.save_draft('a',[{'label':'fire','x1':5,'y1':6,'x2':8,'y2':9}],expected_revision=0,actor='r',request_id='save')
+    store.apply_decisions([CandidateDecision('a',True,[{'label':'smoke','x1':5,'y1':6,'x2':8,'y2':9}])])
+    assert next(store.iter_accepted_items())['boxes'][0]['label']=='smoke'
+    assert store.get('a')['original_boxes'][0]['label']=='fire'

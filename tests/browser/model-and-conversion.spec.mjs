@@ -151,7 +151,7 @@ test('vision providers, candidate review, and vendor target parameters are expli
   // the safety statement still must exist in the canonical page contract.
   await expect(reviewPage.getByText(/不会自动写入正式标注/)).toHaveText(/不会自动写入正式标注/);
   await expect(reviewPage.locator('.data412-box')).toBeVisible();
-  await expect(reviewPage.getByRole('button', {name: '全部接受'})).toBeVisible();
+  await expect(reviewPage.getByRole('button', {name:/审核剩余/})).toBeVisible();
   await reviewPage.getByRole('button', {name: '暂不处理'}).click();
   await expect(reviewPage).toHaveCount(0);
 

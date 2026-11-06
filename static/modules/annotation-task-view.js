@@ -22,7 +22,7 @@ export function annotationTaskView(task = {}) {
   // The shared cancel endpoint stores accepted=false as a cancellation marker
   // for a queued task. This is not a human review decision.
   const unreviewed = (task.accepted == null || (status === 'CANCELLED' && task.accepted === false))
-    && !reviewed && !Number(summary.gt_committed || 0);
+    && !Number(summary.gt_committed || 0);
   const interruption = String(task.generation_interruption_code || '').trim();
   const interruptionText = interruption ? {
     MODEL_SERVICE_UNREACHABLE:'模型服务连接中断',

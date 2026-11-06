@@ -53,7 +53,9 @@ test('accept-all still sends explicitly edited candidate boxes to the authoritat
   const end = source.indexOf('window.confirmAiLabel427=', start);
   const complete = source.slice(start, end);
   assert.match(complete, /mode==='accept'/);
-  assert.match(complete, /\[\.\.\.review\.edits\]\.map\(\(\[image_id,boxes\]\)=>\(\{image_id,accepted:true,boxes\}\)\)/);
+  assert.match(complete, /review\.edits\.get\(image_id\)/);
+  assert.match(complete, /review\.decisions/);
+  assert.match(complete, /review_revision:review\.reviewRevision/);
   assert.match(complete, /commit:true,label_mapping/);
   assert.match(complete, /\/decisions/);
 });
@@ -83,7 +85,7 @@ test('AI review is a dedicated human-review workbench with explicit per-image ac
   assert.match(source, /window\.setAiDecision60/);
   assert.match(source, />采用<\/button>/);
   assert.match(source, />拒绝<\/button>/);
-  assert.match(source, /AI判断无目标/);
+  assert.match(source, /模型未检出 · 待人工确认/);
   assert.match(source, /已人工修改/);
 });
 
@@ -153,11 +155,12 @@ test('single AI review decisions patch one card instead of rebuilding the page',
   assert.match(source, /data-ai66-decision="accept"/);
   assert.doesNotMatch(source, /window\.toggleAiDecision60=/);
 
-  const start = source.indexOf('window.setAiDecision60=(id,accepted)=>');
+  const start = source.indexOf('window.setAiDecision60=async(id,accepted)=>');
   const end = source.indexOf('function renderReviewPage()', start);
   const decision = source.slice(start, end);
-  assert.match(decision, /if\(String\(review\.filter\|\|'all'\)==='rejected'\)return renderReviewPage\(\)/);
-  assert.match(decision, /renderReviewMetrics60\(review\);patchAiDecisionCard60\(key\)/);
+  assert.match(decision, /commit:false/);
+  assert.match(decision, /await api/);
+  assert.match(decision, /renderReviewMetrics60\(review\);renderAiSelection60\(\);patchAiDecisionCard60\(key\)/);
   assert.doesNotMatch(decision, /grid\.innerHTML/);
 });
 

@@ -32,7 +32,7 @@ test('real review page loads one diagnostic on demand and drops stale responses'
  });
  await page.evaluate(()=>window.reviewAiLabel427('diagnostic-review'));
  await expect(page.locator('.ai66-candidate-card')).toHaveCount(1);expect(reads).toBe(0);
- await page.getByRole('button',{name:'标注诊断',exact:true}).click();
+ await page.locator('.ai-candidate-stage').first().click();await page.getByRole('button',{name:'查看诊断',exact:true}).click();
  const details=page.locator('[data-ai-diagnostics]');await expect(details).toContainText('unknown_provider_managed');expect(reads).toBe(1);
  await details.getByRole('button',{name:'原始位置',exact:true}).click();await expect(details.getByRole('button',{name:'原始位置',exact:true})).toHaveAttribute('aria-pressed','true');
  await details.getByRole('button',{name:'还原位置',exact:true}).click();
@@ -47,7 +47,7 @@ test('real review page loads one diagnostic on demand and drops stale responses'
   await page.screenshot({path:testInfo.outputPath(`annotation-review-diagnostics-${viewport.width}.png`),fullPage:true});
  }
  expect(reads).toBe(1);await details.getByRole('button',{name:'收起',exact:true}).click();
- hold=true;await page.getByRole('button',{name:'标注诊断',exact:true}).click();await expect.poll(()=>reads).toBe(2);
+ hold=true;await page.locator('.ai-candidate-stage').first().click();await page.getByRole('button',{name:'查看诊断',exact:true}).click();await expect.poll(()=>reads).toBe(2);
  await page.evaluate(()=>window.setAiReviewFilter60('failed'));await expect(page.locator('.ai66-candidate-card')).toHaveCount(0);
  release();await page.waitForTimeout(150);await expect(page.locator('[data-ai-diagnostics]')).toHaveCount(0);
 });

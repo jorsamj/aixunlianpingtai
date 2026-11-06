@@ -137,3 +137,5 @@ test('hard-sample signals reuse the canonical review owner rather than a second 
   assert.match(app, /原因待确认/);
   assert.match(app, /setAiReviewFilter60\('hard'\)/);
 });
+
+test('failed generation remains retryable with saved human decisions before formal finalization',()=>{const task={status:'FAILED',accepted:null,total_count:2,completed_count:2,failed_count:1,summary:{success:1,failed:1,accepted:1}};assert.equal(annotationTaskView(task).canRetry,true);assert.equal(annotationTaskView({...task,accepted:true}).canRetry,false)});
