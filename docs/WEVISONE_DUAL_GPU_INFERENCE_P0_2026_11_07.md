@@ -1,4 +1,4 @@
-# WeVisOne 双实例与跨 Provider 安全推理｜42.24.553
+# WeVisOne 双实例与跨 Provider 安全推理｜42.24.554
 
 状态：平台侧开发与隔离验收；4070 内网、生产部署与 GPU 吞吐 **NOT VERIFIED**。
 起点：长期分支 `feature/external-algorithm-publishing`，42.24.552，
@@ -146,3 +146,7 @@ npx -y node@24 node_modules/@playwright/test/cli.js test tests/browser/inference
 ```
 
 阿里同名 `insufficient_quota` 可能表示 TPM 限流，不能套用其他 OpenAI 服务的计费语义；按显式 Provider 区分，免费额度耗尽/欠费仍停止。依据 [阿里 Model Studio 官方错误码](https://help.aliyun.com/en/model-studio/error-code-start) 与 [免费额度说明](https://help.aliyun.com/en/model-studio/new-free-quota)。新增定向回归覆盖该差异。
+
+## 42.24.554 HTTP200 解析失败证据收口
+
+553已通过正常Git快进推送，提交 c1d9b866ca12dcf0134117c8f545e45c2aa10837，其49项CI在后续收口时尚未全部完成。最终检查补齐 WeVisOne/Ollama HTTP200 但JSON/内容结构非法时的HTTP状态、实际请求及实例标识；错误归入解析阶段，不转换为空检出，不自动重试，不回显原始正文。新增两类畸形响应断言，Provider聚合最终129/129通过。此改动不改变成功请求体、并发/租约/GT路径；新SHA CI仍独立核对。

@@ -286,12 +286,13 @@ class WeVisOneVisionProvider:
             # submitted image data, credentials or user-controlled query text.
             error.diagnostics = {"request_contract": {"image": "data_uri", "query": "list[str]", "query_count": len(queries), "operation": operation}}
             raise error
+        metadata = response_metadata(response, sensitive=(self.api_key, data["image"], data["image"].partition(",")[2]))
         try:
             payload = response.json()
         except ValueError:
-            raise ProviderRequestError("WeVisOne 接口未返回 JSON", code="MODEL_OUTPUT_PARSE_ERROR", status_code=200) from None
+            raise ProviderRequestError("WeVisOne 接口未返回 JSON", code="MODEL_OUTPUT_PARSE_ERROR", **metadata) from None
         if not isinstance(payload, dict):
-            raise ProviderRequestError("WeVisOne 接口响应格式错误", code="MODEL_OUTPUT_PARSE_ERROR", status_code=200)
+            raise ProviderRequestError("WeVisOne 接口响应格式错误", code="MODEL_OUTPUT_PARSE_ERROR", **metadata)
         payload = dict(payload)
         payload["_platform_response_metadata"] = response_metadata(response, payload, sensitive=(self.api_key, data["image"], data["image"].partition(",")[2]))
         return payload, round((time.perf_counter() - start) * 1000)

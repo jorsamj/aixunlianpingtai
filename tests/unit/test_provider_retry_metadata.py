@@ -23,6 +23,27 @@ def test_provider_specific_quota_codes_do_not_confuse_tpm_with_billing():
     assert billing['code'] == 'MODEL_QUOTA_EXCEEDED' and billing['retryable'] is False
 
 
+@pytest.mark.parametrize('payload', [ValueError('untrusted body'), ['not-an-object']])
+def test_malformed_200_keeps_http_and_request_evidence_for_native_adapters(payload):
+    image = BytesIO()
+    Image.new('RGB', (8,8)).save(image, 'PNG')
+    reply = Reply(200, payload, {'X-Request-ID':'parse-trace','X-Backend-Instance-ID':'actual-instance'})
+    clients = [OllamaVisionProvider(model='vision', session=HTTP(reply)),
+               WeVisOneVisionProvider(base_url='http://loopback.invalid/v1', model='vision', session=HTTP(reply))]
+    for client in clients:
+        kwargs = {'image_bytes':image.getvalue(), 'prompt':'', 'output_schema':{}}
+        if isinstance(client, WeVisOneVisionProvider):
+            kwargs['labels'] = ['fire']
+        with pytest.raises(ProviderRequestError) as caught:
+            client.annotate(**kwargs)
+        assert caught.value.code == 'MODEL_OUTPUT_PARSE_ERROR'
+        assert caught.value.status_code == 200
+        assert caught.value.request_id == 'parse-trace'
+        assert caught.value.backend_instance_id == 'actual-instance'
+        assert caught.value.retryable is False
+        assert 'untrusted body' not in str(caught.value)
+
+
 @pytest.mark.parametrize("status,code,retryable", [(400,"MODEL_REQUEST_CONTRACT_INVALID",False),(422,"MODEL_REQUEST_CONTRACT_INVALID",False),(401,"MODEL_AUTHENTICATION_FAILED",False),(403,"MODEL_PERMISSION_DENIED",False),(429,"MODEL_RATE_LIMITED",True),(500,"MODEL_SERVICE_ERROR",True),(502,"MODEL_SERVICE_ERROR",True),(503,"MODEL_SERVICE_ERROR",True)])
 def test_policy_is_identical_for_all_adapters(status, code, retryable):
     image = BytesIO()
