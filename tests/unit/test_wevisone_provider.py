@@ -1,6 +1,7 @@
 """WeVisOne protocol isolation and deterministic geometry tests."""
 
 import json
+import base64
 from types import SimpleNamespace
 
 import pytest
@@ -53,7 +54,7 @@ def test_empty_is_not_fabricated_and_generic_schema_remains_strict():
 
 
 @pytest.mark.parametrize("payload,code", [
-    ({"response": "I cannot see anything"}, "MODEL_OUTPUT_PARSE_ERROR"),
+    ({"response": "I cannot see anything"}, "MODEL_OUTPUT_FAILED"),
     ({"boxes": [{"label": "pedestrian", "bbox": [1, 2, 4, 5]}], "coordinate_space": "pixel"}, "MODEL_LABEL_NOT_ALLOWED"),
     ({"boxes": [{"label": "person", "bbox": [100, 200, 500, 800]}]}, "MODEL_COORDINATE_SPACE_UNKNOWN"),
     ({"boxes": [{"label": "person", "bbox": [0, 0, 1100, 900]}], "coordinate_space": "normalized_1000"}, "MODEL_COORDINATE_INVALID"),
@@ -71,6 +72,45 @@ def test_json_pixel_boxes_do_not_get_scaled_twice():
     assert (rows[0]["x1"], rows[0]["y1"], rows[0]["x2"], rows[0]["y2"]) == (128, 96, 640, 480)
 
 
+def test_reported_4070_detect_contract_pixel_xyxy_and_frozen_label_aliases():
+    # This reproduces the HTTP field names reported from the deployed FastAPI;
+    # the service source file /data/ai-runtime/.../app.py is NOT available here.
+    payload = {"coordinate_system": "xyxy_pixel", "boxes": [
+        {"label": "人员", "bbox_xyxy": [128, 192, 640, 768], "bbox_normalized": [100, 200, 500, 800]},
+        {"label": "person", "bbox_xyxy": [700, 100, 900, 400], "bbox_normalized": [547, 104, 703, 417], "confidence": 0.9},
+    ], "response": "<ref>person</ref><box><100><200><500><800></box>"}
+    boxes = normalize_detection(payload, width=1280, height=960, labels=["person"], label_aliases={"person": ["人员"]})
+    assert [(b["x1"], b["y1"], b["x2"], b["y2"]) for b in boxes] == [(128, 192, 640, 768), (700, 100, 900, 400)]
+    assert [b["label"] for b in boxes] == ["person", "person"]
+    assert [b["confidence_status"] for b in boxes] == ["unavailable", "provided"]
+
+
+@pytest.mark.parametrize("payload,code", [
+    ({"coordinate_system": "xyxy_pixel", "boxes": [{"label": "person", "bbox_xyxy": [0, 0, 1300, 500]}]}, "MODEL_COORDINATE_INVALID"),
+    ({"coordinate_system": "xyxy_pixel", "boxes": [{"label": "person", "bbox_xyxy": [20, 30, 10, 50]}]}, "MODEL_COORDINATE_INVALID"),
+    ({"coordinate_system": "xyxy_pixel", "boxes": [{"label": "dog", "bbox_xyxy": [20, 30, 40, 50]}]}, "MODEL_LABEL_NOT_ALLOWED"),
+    ({"coordinate_system": "normalized_1000", "boxes": [{"label": "person", "bbox_xyxy": [20, 30, 40, 50]}]}, "MODEL_COORDINATE_SPACE_UNKNOWN"),
+    ({"boxes": [{"label": "person", "bbox_xyxy": [20, 30, 40, 50]}]}, "MODEL_COORDINATE_SPACE_UNKNOWN"),
+    ({"coordinate_system": "xyxy_pixel", "boxes": [{"label": "person", "bbox_xyxy": [20, 30, 40, 50], "confidence_status": "provided"}]}, "MODEL_OUTPUT_PARSE_ERROR"),
+    ({"coordinate_system": "xyxy_pixel", "boxes": [{"label": "person", "bbox_xyxy": [20, 30, 40, 50], "confidence": 1.2}]}, "MODEL_OUTPUT_PARSE_ERROR"),
+    ({"coordinate_system": "xyxy_pixel", "boxes": [] , "response": "<ref>person</ref><box><100><200><500><800></box>"}, "MODEL_OUTPUT_PARSE_ERROR"),
+    ({"coordinate_system": "xyxy_pixel", "boxes": [], "response": "I cannot identify objects"}, "MODEL_OUTPUT_FAILED"),
+    ({"coordinate_system": "xyxy_pixel", "boxes": "[]"}, "MODEL_OUTPUT_PARSE_ERROR"),
+    ({"coordinate_system": "xyxy_pixel", "boxes": [{"label": "person", "bbox_xyxy": [1, 2, 3, 4]}] * 301}, "MODEL_OUTPUT_TOO_MANY_BOXES"),
+])
+def test_reported_4070_invalid_shapes_are_not_silent_no_targets(payload, code):
+    with pytest.raises(ProviderRequestError) as error:
+        normalize_detection(payload, width=1280, height=960, labels=["person"])
+    assert error.value.code == code
+
+
+def test_frozen_alias_collision_is_rejected():
+    payload = {"coordinate_system": "xyxy_pixel", "boxes": [{"label": "同名", "bbox_xyxy": [1, 2, 3, 4]}]}
+    with pytest.raises(ProviderRequestError, match="冲突"):
+        normalize_detection(payload, width=80, height=60, labels=["fire", "smoke"],
+                            label_aliases={"fire": ["同名"], "smoke": ["同名"]})
+
+
 def test_provider_sends_explicit_labels_and_rejects_wrong_loaded_model():
     calls = []
     def fake_post(url, **kwargs):
@@ -84,8 +124,11 @@ def test_provider_sends_explicit_labels_and_rejects_wrong_loaded_model():
     result = provider.annotate(image_bytes=b.getvalue(), prompt="detect fire", output_schema={}, labels=["fire"])
     assert json.loads(result["text"]) == {"boxes": []}
     assert calls[0][0].endswith("/v1/vision/detect")
-    assert calls[0][1]["json"]["labels"] == ["fire"]
-    assert calls[0][1]["json"]["model"] == "wevisone-vl-2b"
+    body = calls[0][1]["json"]
+    assert set(body) == {"image", "query"}
+    assert body["query"] == ["fire"]
+    assert body["image"].startswith("data:image/jpeg;base64,")
+    assert base64.b64decode(body["image"].partition(",")[2]) == b.getvalue()
 
 
 def test_timeout_is_not_misreported_as_empty_detection():
@@ -98,6 +141,16 @@ def test_timeout_is_not_misreported_as_empty_detection():
     assert "secret" not in str(error.value)
 
 
+def test_reported_fastapi_validation_failure_is_not_treated_as_empty():
+    b = BytesIO(); Image.new("RGB", (40, 40)).save(b, "JPEG")
+    provider = WeVisOneVisionProvider(base_url="http://127.0.0.1:18000", model="wevisone-vl-2b",
+                                       session=SimpleNamespace(post=lambda *_a, **_k: SimpleNamespace(ok=False, status_code=422)))
+    with pytest.raises(ProviderRequestError) as error:
+        provider.annotate(image_bytes=b.getvalue(), prompt="", output_schema={}, labels=["person"])
+    assert error.value.status_code == 422
+    assert error.value.code == "MODEL_SERVICE_ERROR"
+
+
 def test_preview_keeps_png_only_and_never_writes_gt():
     b = BytesIO(); Image.new("RGBA", (16, 16), (0, 0, 0, 0)).save(b, "PNG")
     png = __import__("base64").b64encode(b.getvalue()).decode()
@@ -105,6 +158,36 @@ def test_preview_keeps_png_only_and_never_writes_gt():
     result = provider.preview("segment", image_bytes=b.getvalue(), labels=["person"])
     assert result["images"]["mask"].startswith("data:image/png;base64,")
     assert result["notice"] == "仅用于预览，不写入正式 GT。"
+
+
+def test_reported_4070_multi_instance_segment_and_matting_previews():
+    b = BytesIO(); Image.new("RGBA", (16, 16), (120, 30, 20, 150)).save(b, "PNG")
+    png = base64.b64encode(b.getvalue()).decode()
+    payload = {"instances": [
+        {"label": "person", "mask_png": png, "cutout_png": png},
+        {"label": "person", "mask_png": "data:image/png;base64," + png, "cutout_png": png},
+    ]}
+    provider = WeVisOneVisionProvider(base_url="http://127.0.0.1:18000", model="wevisone-vl-2b",
+                                       session=SimpleNamespace(post=lambda *_a, **_k: SimpleNamespace(ok=True, json=lambda: payload)))
+    for operation in ("segment", "matting"):
+        result = provider.preview(operation, image_bytes=b.getvalue(), labels=["person"])
+        assert result["no_target"] is False
+        assert len(result["instances"]) == 2
+        assert all(set(row["images"]) == {"mask", "foreground"} for row in result["instances"])
+        assert result["images"] == result["instances"][0]["images"]
+    payload["instances"] = []
+    assert provider.preview("segment", image_bytes=b.getvalue(), labels=["person"])["no_target"] is True
+    payload["instances"] = [{"label": "person", "mask_png": "not-base64"}]
+    with pytest.raises(ProviderRequestError, match="有效 PNG"):
+        provider.preview("segment", image_bytes=b.getvalue(), labels=["person"])
+
+
+def test_image_payload_is_bounded_before_any_http_call():
+    provider = WeVisOneVisionProvider(base_url="http://127.0.0.1:18000", model="wevisone-vl-2b",
+                                       session=SimpleNamespace(post=lambda *_a, **_k: pytest.fail("must reject before HTTP")))
+    with pytest.raises(ProviderRequestError) as error:
+        provider.annotate(image_bytes=b"x" * 10_000_001, prompt="", output_schema={}, labels=["person"])
+    assert error.value.code == "MODEL_IMAGE_TOO_LARGE"
 
 
 def test_annotation_worker_keeps_unscored_boxes_for_human_review(tmp_path):

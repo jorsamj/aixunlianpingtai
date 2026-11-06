@@ -1055,8 +1055,9 @@ window.installUsability417=function(){
       const r=await api(`/api/v35/model-configs/${id}/verify-coordinates`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({image_base64:data,labels,operation})});
       if(!out?.isConnected||out.coordinateGeneration!==generation)return;
       if(operation!=='detect'){
-        const images=Object.entries(r.images||{}).map(([name,url])=>`<figure><img src="${esc(url)}" alt="${esc(name)} 预览"><figcaption>${esc(({mask:'Mask 分割结果',alpha:'Alpha Matte',foreground:'透明前景'})[name]||name)}</figcaption></figure>`).join('');
-        out.innerHTML=`<div class="model-m4-feedback"><b>${operation==='segment'?'分割':'抠图'}预览成功 · ${Number(r.latency_ms||0)} ms</b><p>仅供人工检查，不写入正式训练标注。</p></div><div class="model-m4-previews">${images}</div>`;
+        const instances=Array.isArray(r.instances)?r.instances:[{index:1,label:'',images:r.images||{}}];
+        const images=instances.map((instance,index)=>`<section class="model-m4-instance"><div class="model-m4-instance-title"><strong>目标 ${index+1}</strong><span>${esc(instance.label||'未提供类别')}</span></div><div class="model-m4-previews">${Object.entries(instance.images||{}).map(([name,url])=>`<figure><img src="${esc(url)}" alt="${esc(name)} · 目标 ${index+1} 预览"><figcaption>${esc(({mask:'实例 Mask',alpha:'Alpha Matte',foreground:'透明前景'})[name]||name)}</figcaption></figure>`).join('')}</div></section>`).join('');
+        out.innerHTML=`<div class="model-m4-feedback" role="status"><b>${operation==='segment'?'分割':'抠图'}预览完成 · ${instances.length} 个实例 · ${Number(r.latency_ms||0)} ms</b><p>${instances.length?'可逐个检查不同目标。':'本图没有可预览的实例。'} 仅供人工核实，不写入正式 GT。</p></div>${images}`;
         return;
       }
       const boxes=r.parsed_boxes||[],marks=boxes.map(b=>`<rect x="${Number(b.x1)}" y="${Number(b.y1)}" width="${Number(b.x2)-Number(b.x1)}" height="${Number(b.y2)-Number(b.y1)}" fill="none" stroke="#22c55e" stroke-width="${Math.max(1,r.image_width/400)}"/>`).join('');

@@ -120,6 +120,54 @@ def test_persistent_ai_task_generates_review_then_commits_formal_annotation(
     assert not source_path.exists()
 
 
+def test_wevisone_reported_fastapi_contract_reaches_review_before_gt(client, seeded_project, tmp_path, monkeypatch):
+    """Wire-format regression; does not claim a live HTTP call to the 4070 server."""
+    from types import SimpleNamespace
+    import platform_core.providers.wevisone_vision as vision
+
+    pid, image = seeded_project
+    repository = TaskRepository(tmp_path / "wevisone-tasks.sqlite3")
+    artifacts = ArtifactStore(tmp_path / "wevisone-artifacts")
+    monkeypatch.setattr(app_module, "_SHARED_TASK_REPOSITORY", repository)
+    monkeypatch.setattr(app_module, "_SHARED_TASK_ARTIFACTS", artifacts)
+    monkeypatch.setattr(vision.requests, "get", lambda *_a, **_k: SimpleNamespace(ok=True, json=lambda: {"data": [{"id": "wevisone-vl-2b"}]}))
+    calls = []
+
+    def post(_url, **kwargs):
+        body = kwargs["json"]
+        calls.append(body)
+        assert set(body) == {"image", "query"}
+        assert body["query"] == ["fire"]
+        assert body["image"].startswith("data:image/")
+        return SimpleNamespace(ok=True, json=lambda: {"coordinate_system": "xyxy_pixel", "boxes": [
+            {"label": "fire", "bbox_xyxy": [10, 10, 40, 40], "bbox_normalized": [100, 100, 400, 400]},
+        ], "response": "<ref>fire</ref><box><100><100><400><400></box>"})
+
+    monkeypatch.setattr(vision.requests, "post", post)
+    saved = client.post("/api/v35/model-configs", json={"name": "WeVisOne reported HTTP", "provider_adapter": "wevisone_vl", "base_url": "http://127.0.0.1:18000", "model_name": "wevisone-vl-2b"}).json()
+    before = client.get(f"/api/projects/{pid}/annotations/{image['id']}").json()["boxes"]
+    assert before == []
+    created = client.post(f"/api/v60/projects/{pid}/annotation-tasks", json={"image_ids": [image["id"]], "labels_text": "fire", "model_config_id": saved["id"]})
+    assert created.status_code == 202, created.text
+    task_id = created.json()["id"]
+    frozen = artifacts.read_json(task_id, "request.json")
+    assert frozen["model_config_snapshot"]["provider_adapter"] == "wevisone_vl"
+    scheduler = Scheduler(repository, artifacts, "wevisone-worker", {TaskKind.AI_ANNOTATION: AnnotationHandler()}, {"vision_provider"}, lease_seconds=10)
+    assert scheduler.run_once()
+    task = client.get(f"/api/v60/projects/{pid}/annotation-tasks/{task_id}").json()
+    assert task["status"] == "AWAITING_CONFIRMATION", task
+    rows = client.get(f"/api/v60/projects/{pid}/annotation-tasks/{task_id}/candidates").json()["items"]
+    assert rows[0]["boxes"][0]["confidence"] is None
+    assert rows[0]["boxes"][0]["confidence_status"] == "unavailable"
+    assert client.get(f"/api/projects/{pid}/annotations/{image['id']}").json()["boxes"] == []
+    decision = client.post(f"/api/v60/projects/{pid}/annotation-tasks/{task_id}/decisions", json={"decisions": [{"image_id": image["id"], "accepted": True}], "reject_unmentioned": True, "commit": True})
+    assert decision.status_code == 200, decision.text
+    assert scheduler.run_once()
+    final = client.get(f"/api/projects/{pid}/annotations/{image['id']}").json()["boxes"]
+    assert len(final) == 1 and final[0]["source"] == "ai_candidate_confirmed"
+    assert calls and calls[0]["query"] == ["fire"]
+
+
 @pytest.mark.parametrize("mode", ["valid", "invalid_label", "incomplete"])
 def test_responses_connection_and_formal_task_share_real_adapter_and_gt_gate(client, seeded_project, tmp_path, monkeypatch, mode):
     from types import SimpleNamespace

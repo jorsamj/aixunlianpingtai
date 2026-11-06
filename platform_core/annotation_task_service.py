@@ -118,6 +118,7 @@ def annotate_one(request: dict[str, Any], image: dict[str, Any]) -> dict[str, An
                      "output_schema": auto_label_core.CANDIDATE_OUTPUT_SCHEMA}
     if dedicated:
         provider_args["labels"] = list(request["label_ids"])
+        provider_args["label_aliases"] = request["label_aliases"]
     response = provider.annotate(**provider_args)
     mapping = None
     if contract.get("coordinate_image_space") == "processed_image":

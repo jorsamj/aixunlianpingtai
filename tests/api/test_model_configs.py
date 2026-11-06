@@ -117,7 +117,10 @@ def test_wevisone_probe_empty_does_not_claim_accuracy_and_persists_safe_receipt(
         return SimpleNamespace(ok=True, json=lambda: {"data": [{"id": "wevisone-vl-2b"}]})
     def post(url, **kwargs):
         seen.append(url)
-        return SimpleNamespace(ok=True, json=lambda: {"response": "None"})
+        assert set(kwargs["json"]) == {"image", "query"}
+        assert kwargs["json"]["query"] == ["fire"]
+        assert kwargs["json"]["image"].startswith("data:image/jpeg;base64,")
+        return SimpleNamespace(ok=True, json=lambda: {"coordinate_system": "xyxy_pixel", "boxes": [], "response": "None"})
     monkeypatch.setattr(vision.requests, "get", get)
     monkeypatch.setattr(vision.requests, "post", post)
     saved = client.post("/api/v35/model-configs", json={"name": "WeVisOne", "provider_adapter": "wevisone_vl", "base_url": "http://127.0.0.1:18000", "model_name": "wevisone-vl-2b"}).json()
@@ -152,15 +155,46 @@ def test_wevisone_segmentation_preview_is_read_only(client, monkeypatch):
     bitmap = BytesIO(); Image.new("RGBA", (16, 16), (255, 0, 0, 100)).save(bitmap, "PNG")
     png64 = base64.b64encode(bitmap.getvalue()).decode()
     monkeypatch.setattr(vision.requests, "get", lambda *a, **k: SimpleNamespace(ok=True, json=lambda: {"data": [{"id": "wevisone-vl-2b"}]}))
-    monkeypatch.setattr(vision.requests, "post", lambda *a, **k: SimpleNamespace(ok=True, json=lambda: {"mask_image_base64": png64, "alpha_matte_base64": png64}))
+    monkeypatch.setattr(vision.requests, "post", lambda *a, **k: SimpleNamespace(ok=True, json=lambda: {"instances": [{"label": "person", "mask_png": png64, "cutout_png": png64}, {"label": "person", "mask_png": png64, "cutout_png": png64}]}))
     saved = client.post("/api/v35/model-configs", json={"name": "WeVisOne", "provider_adapter": "wevisone_vl", "base_url": "http://127.0.0.1:18000", "model_name": "wevisone-vl-2b"}).json()
     response = client.post(f"/api/v35/model-configs/{saved['id']}/verify-coordinates", json={"image_base64": png64, "labels": ["person"], "operation": "segment"})
     assert response.status_code == 200, response.text
     assert "mask" in response.json()["images"]
-    assert "foreground" not in response.json()["images"]
+    assert "foreground" in response.json()["images"]
+    assert len(response.json()["instances"]) == 2
     assert response.json()["notice"].startswith("仅用于预览")
     refreshed = client.get("/api/v35/model-configs").json()["items"][0]
     assert refreshed["coordinate_validation"]["status"] == "unverified"
+
+
+def test_wevisone_real_image_pixel_contract_manual_confirmation(client, monkeypatch):
+    from types import SimpleNamespace
+    from io import BytesIO
+    from PIL import Image
+    import base64
+    import platform_core.providers.wevisone_vision as vision
+    b = BytesIO(); Image.new("RGB", (1280, 960), "white").save(b, "JPEG")
+    png64 = base64.b64encode(b.getvalue()).decode()
+    seen = []
+    monkeypatch.setattr(vision.requests, "get", lambda *_a, **_k: SimpleNamespace(ok=True, json=lambda: {"data": [{"id": "wevisone-vl-2b"}]}))
+    def post(url, **kwargs):
+        seen.append(kwargs["json"])
+        assert kwargs["json"]["query"] == ["person"]
+        return SimpleNamespace(ok=True, json=lambda: {"coordinate_system": "xyxy_pixel", "boxes": [{"label": "person", "bbox_xyxy": [128, 192, 640, 768], "bbox_normalized": [100, 200, 500, 800]}], "response": "<ref>person</ref><box><100><200><500><800></box>"})
+    monkeypatch.setattr(vision.requests, "post", post)
+    saved = client.post("/api/v35/model-configs", json={"name": "WeVisOne", "provider_adapter": "wevisone_vl", "base_url": "http://127.0.0.1:18000", "model_name": "wevisone-vl-2b"}).json()
+    response = client.post(f"/api/v35/model-configs/{saved['id']}/verify-coordinates", json={"image_base64": png64, "labels": ["person"]})
+    assert response.status_code == 200, response.text
+    sample = response.json()
+    assert sample["parsed_boxes"][0]["x1"] == 128
+    assert sample["parsed_boxes"][0]["y2"] == 768
+    assert sample["parsed_boxes"][0]["confidence"] is None
+    assert sample["coordinate_validation"]["status"] == "unverified"
+    receipt = sample["coordinate_validation"]
+    confirmed = client.post(f"/api/v35/model-configs/{saved['id']}/confirm-coordinates", json={"receipt": receipt["receipt"], "config_revision": receipt["config_revision"], "sample_sha256": receipt["sample_sha256"], "positions_confirmed": True})
+    assert confirmed.status_code == 200, confirmed.text
+    assert confirmed.json()["coordinate_validation"]["status"] == "verified"
+    assert seen and seen[0]["image"].startswith("data:image/jpeg;base64,")
 
 
 def test_custom_auto_url_is_preserved_with_protocol_warning(client):
