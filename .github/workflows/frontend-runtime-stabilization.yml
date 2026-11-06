@@ -18,6 +18,8 @@ jobs:
           node-version: '24'
       - name: Install frontend dependencies
         run: npm ci
+      - name: Verify local material presentation artifacts and notices
+        run: node tools/vendor_material_presentation.mjs --check
       - name: Syntax check
         run: >-
           node --check static/app.js &&
@@ -462,6 +464,8 @@ jobs:
           python -m pip install --disable-pip-version-check "ultralytics==8.4.127"
       - name: Install frontend dependencies
         run: npm ci
+      - name: Verify local material presentation artifacts and notices
+        run: node tools/vendor_material_presentation.mjs --check
       - name: Real Chrome runtime regressions
         # This admission test creates real random .pt weights locally (no GPU or download).
         # Keep heavyweight ML dependencies isolated to the browser job.

@@ -89,7 +89,7 @@ test('65 browser-selected images upload as two sequential server-confirmed chunk
 for(const corrupt of [false,true])test(`Uppy five image receipt workspace ${corrupt?'keeps one failed file out':'opens original annotation without creating GT'}`,async({page,request})=>{
  const errors=[];page.on('pageerror',error=>errors.push(error.message));const project=await createProject(request);await selectIsolatedTestProject(page,project.id);const uploads=[];
  page.on('request',r=>{if(r.method()==='POST'&&new URL(r.url()).pathname===`/api/projects/${project.id}/images`)uploads.push(r)});
- await page.goto('/');await page.getByRole('button',{name:'上传',exact:true}).click();await page.getByRole('button',{name:/上传图片/}).click();
+ await page.goto('/');await page.getByRole('button',{name:'上传素材',exact:true}).click();await page.getByRole('button',{name:/上传图片/}).click();
  const root=page.locator('[data-image-uppy-view]');await expect(root.locator('.uppy-Dashboard')).toBeVisible();
  const files=Array.from({length:5},(_,i)=>({name:`actual-${i}.bmp`,mimeType:'image/bmp',buffer:corrupt&&i===4?Buffer.from('corrupt'):bmp(40,30,[40+i*10,90,120])}));
  await root.locator('input[type=file]').first().setInputFiles(files);await expect.poll(()=>page.evaluate(()=>window.ImageUppyView.uppy.getFiles().length)).toBe(5);
