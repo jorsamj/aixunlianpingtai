@@ -8979,7 +8979,7 @@ window.openTrainSettings429=function openTrainingSettingsCanonical429(){
     const empty=review.items.filter(item=>item.status!=='failed'&&!(item.boxes||[]).length).length;
     const failed=review.items.filter(item=>item.status==='failed').length;
     const summary=document.getElementById('ai60ReviewSummary');
-    if(summary)summary.textContent=`第 ${review.offset+1}–${Math.min(review.total,review.offset+review.items.length)} / ${review.total} 张 · 本页已选择 ${selected}/${selectable}`;
+    if(summary)summary.textContent=`第 ${review.offset+1}–${Math.min(review.total,review.offset+review.items.length)} / ${review.total} 张`;
     const set=(id,value)=>{const node=document.getElementById(id);if(node)node.textContent=String(value)};
     set('ai66Total',review.total);set('ai66Accepted',selected);set('ai66Rejected',rejected);set('ai66Boxes',boxes);set('ai66Empty',empty);set('ai66Failed',failed);set('ai66Edited',review.edits.size);
     document.querySelectorAll('[data-ai66-filter]').forEach(button=>{button.classList.toggle('on',button.dataset.ai66Filter===String(review.filter||'all'));const key=({all:'total',target:'with_boxes',empty:'zero',failed:'failed',edited:'edited',transferred:'transferred'})[button.dataset.ai66Filter],value=review.summary?.[key];if(value!=null){let count=button.querySelector('.ai-filter-count');if(!count){count=document.createElement('span');count.className='ai-filter-count';count.setAttribute('aria-hidden','true');button.append(count)}count.textContent=String(value)}});

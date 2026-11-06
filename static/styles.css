@@ -1848,3 +1848,7 @@ button[aria-busy="true"]:has(.tiny-spinner)::before{display:none}
 .ai-review-page-shell .ai66-review-grid.ai-review-list{grid-template-columns:minmax(0,1fr)!important}.ai-review-list .ai66-candidate-card{display:grid;grid-template-columns:160px minmax(0,1fr);align-items:center}.ai-review-list .ai66-candidate-card .ai-candidate-stage{height:120px;min-height:0}.ai-review-list .ai66-candidate-body{grid-column:2}.ai-review-page-shell .ai66-review-head>div:first-child{display:flex;align-items:center;gap:8px}@media(max-width:768px){.ai-review-list .ai66-candidate-card{grid-template-columns:112px minmax(0,1fr)}.ai-review-list .ai66-candidate-card .ai-candidate-stage{height:84px}}
 
 .ai-filter-count{font-size:11px;opacity:.7}.ai-review-filter-more summary{padding:12px 8px;cursor:pointer;min-height:44px;box-sizing:border-box}.ai-review-filter-more button{width:100%}.ai-review-page-shell .ai66-review-head #ai60LayoutToggle{min-height:44px}
+
+/* Checkbox selection is distinct from an adoption decision. */
+.ai-review-page-shell .ai66-candidate-card{border:1px solid #dce4ee;box-shadow:none}
+.ai-review-page-shell .ai66-candidate-card:has(>.ai-review-select:checked){border-color:#2468ce;box-shadow:0 0 0 1px #2468ce}
