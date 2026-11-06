@@ -64,6 +64,21 @@ async function selectProject(page, projectId) {
   });
 }
 
+// Annotorious may replace the SVG rect during its post-gesture projection.
+// A visible assertion can pass on the previous node immediately before that
+// replacement. Keep the real non-zero geometry and drag/resize assertions,
+// but retry the read across this short, bounded render transition.
+async function annotationBounds(locator) {
+  let bounds = null;
+  await expect(async () => {
+    bounds = await locator.boundingBox();
+    expect(bounds).not.toBeNull();
+    expect(bounds.width).toBeGreaterThan(0);
+    expect(bounds.height).toBeGreaterThan(0);
+  }).toPass({timeout: 5000});
+  return bounds;
+}
+
 test('manual annotation saves, survives reload, and updates the thumbnail', async ({page, request}) => {
   const project = await createMaterialProject(request, `标注回归-${Date.now()}`);
   const image = await uploadImage(request, project.id, 'annotation-flow.bmp', [42, 120, 210]);
@@ -106,8 +121,7 @@ test('manual annotation saves, survives reload, and updates the thumbnail', asyn
 
   const box = dialog.locator('#annStage .a9s-annotation:is([data-id],.selected) .a9s-inner').first();
   await expect(box).toBeVisible();
-  const beforeMove = await box.boundingBox();
-  expect(beforeMove).not.toBeNull();
+  const beforeMove = await annotationBounds(box);
   await dialog.locator('[data-ann-mode="select"]').click();
   await page.mouse.click(beforeMove.x+beforeMove.width/2,beforeMove.y+beforeMove.height/2);
   await expect.poll(()=>page.evaluate(()=>state.activeBox)).toBe(0);
@@ -121,12 +135,12 @@ test('manual annotation saves, survives reload, and updates the thumbnail', asyn
     {steps: 4}
   );
   await page.mouse.up();
-  const afterMove = await box.boundingBox();
+  const afterMove = await annotationBounds(box);
   expect(afterMove.x).toBeGreaterThan(beforeMove.x + 2);
   expect(afterMove.y).toBeGreaterThan(beforeMove.y + 2);
 
   await expect(dialog.locator('.a9s-annotation.selected [role=button]:visible').first()).toBeVisible();
-  const beforeResize = await box.boundingBox();
+  const beforeResize = await annotationBounds(box);
   const gtBeforeResize=await page.evaluate(()=>({...state.ann.boxes[0]}));
   // At high zoom, painted SVG bounds include the interaction stroke and do
   // not identify a corner handle. Use the actual public SVG circle center;
@@ -146,7 +160,7 @@ test('manual annotation saves, survives reload, and updates the thumbnail', asyn
   await page.mouse.up();
   await expect.poll(()=>page.evaluate(()=>state.ann.boxes[0].x2-state.ann.boxes[0].x1)).toBeGreaterThan(gtBeforeResize.x2-gtBeforeResize.x1);
   await expect.poll(()=>page.evaluate(()=>state.ann.boxes[0].y2-state.ann.boxes[0].y1)).toBeGreaterThan(gtBeforeResize.y2-gtBeforeResize.y1);
-  const afterResize = await box.boundingBox();
+  const afterResize = await annotationBounds(box);
   expect(afterResize.width).toBeGreaterThan(beforeResize.width + 2);
   expect(afterResize.height).toBeGreaterThan(beforeResize.height + 2);
 

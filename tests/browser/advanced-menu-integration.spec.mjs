@@ -42,7 +42,7 @@ test('four advanced menus retain existing owners, sections, forms and refresh st
   await expect(page.locator('[data-model-config-panel]')).toBeHidden();
   await page.reload();
   await expect(page.locator('[data-model-prompt-panel]')).toBeVisible();
-  await page.getByRole('button',{name:'新增提示词',exact:true}).click();
+  await page.locator('[data-model-prompt-panel]').getByRole('button',{name:'新增模板',exact:true}).click();
   await expect(page.locator('#modal')).toBeVisible();
   await page.evaluate(()=>closeModal());
   await group.getByRole('button',{name:/存储管理/}).click();

@@ -7,7 +7,9 @@ test('vision API protocol and output capability persist across save refresh and 
  await page.route('https://ark.cn-beijing.volces.com/**',route=>route.abort());
  await page.goto('/');await expect.poll(()=>page.evaluate(()=>Boolean(state.uiReady))).toBe(true);
  await page.evaluate(()=>window.setPage('模型配置'));
- await page.getByRole('button',{name:/新增模型/}).click();
+ const modelPanel=page.locator('[data-model-config-panel]');
+ await expect(modelPanel).toBeVisible();
+ await modelPanel.getByRole('button',{name:'新增视觉模型',exact:true}).click();
  const dialog=page.getByRole('dialog',{name:'新增视觉模型配置'});
  await dialog.locator('#mcName').fill('Responses隔离配置');await dialog.locator('#mcProviderAdapter').selectOption('volcengine_ark');
  await dialog.locator('#mcModel').fill('glm-5-3-flash-260828');
@@ -19,7 +21,8 @@ test('vision API protocol and output capability persist across save refresh and 
  expect(savedResponse.ok()).toBeTruthy();const saved=await savedResponse.json();
  expect(savedResponse.request().postDataJSON().api_protocol).toBe('responses');expect(saved.api_protocol).toBe('responses');expect(saved.base_url).toBe(endpoint);
  await page.reload();await expect.poll(()=>page.evaluate(()=>Boolean(state.uiReady))).toBe(true);
- await page.locator('[data-model-config-panel] tbody tr').filter({hasText:'Responses隔离配置'}).getByRole('button',{name:'编辑',exact:true}).click();
+ await expect(modelPanel).toBeVisible();
+ await modelPanel.locator('tbody tr').filter({hasText:'Responses隔离配置'}).getByRole('button',{name:'配置',exact:true}).click();
  const edit=page.getByRole('dialog',{name:'编辑视觉模型配置'});await edit.locator('summary').filter({hasText:'高级设置'}).click();
  await expect(edit.locator('#mcUrl')).toHaveValue(endpoint);await expect(edit.locator('#mcApiProtocol')).toHaveValue('responses');await expect(edit.locator('#mcStructuredOutput')).toHaveValue('prompt');await expect(edit.locator('#mcApiKey')).toHaveValue('');
  await edit.locator('#mcApiProtocol').selectOption('auto');

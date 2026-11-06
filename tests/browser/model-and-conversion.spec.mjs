@@ -106,11 +106,11 @@ test('vision providers, candidate review, and vendor target parameters are expli
   await expect.poll(() => page.evaluate(() => state.uiReady === true)).toBe(true);
 
   await page.evaluate(() => window.setPage('模型配置'));
-  await page.getByRole('button', {name: /新增模型/}).click();
+  await page.locator('[data-model-config-panel]').getByRole('button', {name: '新增视觉模型', exact: true}).click();
   const modelDialog = page.getByRole('dialog');
   await expect(modelDialog.locator('#mcProviderAdapter')).toBeVisible();
   await expect(modelDialog.locator('#mcProviderAdapter option')).toHaveText([
-    /火山方舟/, /阿里云千问/, /本地 OpenAI/, /Ollama/
+    /火山方舟/, /阿里云千问/, /OpenAI 兼容/, /Ollama/, /WeVisOne/
   ]);
   await expect(modelDialog.locator('#mcApiKey')).toHaveValue('');
   await expect(modelDialog.locator('#mcAnnPrompt')).toBeVisible();

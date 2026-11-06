@@ -10,6 +10,8 @@
 
 **4070 现场空目标回包勘误版本**：`42.24.541`（准确 SHA、CI 应以新提交为准）
 
+**Chrome 回归合同收口候选**：`42.24.542`（起点 `42.24.541 / 1a497012a64eab10c57b1a3006ea1cef517d9a6f`；提交后的 SHA、CI 以 GitHub 为准）
+
 **唯一分支**：`feature/external-algorithm-publishing`
 **生产/4070 运行环境**：未修改、未重启、未写入数据
 
@@ -138,6 +140,13 @@
 | `POST /api/v35/model-configs/{id}/confirm-coordinates` | 保持原先 Revision/收据/真实框/人工确认围栏，不因协议测试通过自动确认 |
 
 ## 五、测试记录
+
+**42.24.542 Chrome CI 红灯诊断／修复记录**（不改变 WeVisOne 接口与产品运行时代码）：
+
+- 42.24.541 的 [Frontend Runtime Stabilization run 42173016886](https://github.com/jorsamj/aixunlianpingtai/actions/runs/42173016886) 首轮及一次失败作业重跑，均有 Chrome 浏览器分片红灯；其他 21 个工作流查询时成功。`exit code 1` 是测试进程最终退出码，不是独立的 WeVisOne HTTP 故障。
+- `advanced-menu-integration.spec.mjs` 仍查找精确 `新增提示词`，实际原 UI 的提示词标签页按钮叫 `新增模板`；`model-api-protocol.spec.mjs` 查找 `新增模型`，实际模型列表按钮叫 `新增视觉模型`，保存后行操作叫 `配置` 而不是 `编辑`。同步核对 `model-and-conversion.spec.mjs` 的旧四项 Provider 预期（当前多一个可选 WeVisOne）。改为基于原面板作用域的明确可见按钮，而非修改业务 UI 适应旧测试。
+- 重跑中的 `material-workflows.spec.mjs` 在 Annotorious 绘制后 `.a9s-inner` 首次位置读取得到 `null`；使用对 **非 null、正宽、正高** 的 5s 有界重试跨越 SVG 投影的 DOM 替换窗口，保留真实鼠标选框、拖拽、缩放、保存、刷新和缩略图验证，失败超过 5s 仍红灯，绝不跳过。
+- 本地 `node --check` 四份浏览器用例通过，Node 全量 **1544/1544** 成功。当前环境无 Chrome 可执行文件且缺少 `uvicorn`，尚不能把本地语法和单测当作完整浏览器实测；准确新版 Chrome 和全部 CI 待精确 SHA 推送后核验。
 
 本地已执行（本次工作区）：
 
