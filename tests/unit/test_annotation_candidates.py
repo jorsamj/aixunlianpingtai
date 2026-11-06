@@ -6,6 +6,92 @@ from platform_core.annotation_candidates import CandidateDecision, CandidateStor
 from platform_core.task_runtime import ArtifactStore, TaskKind, TaskRecord, TaskRepository, TaskStatus
 
 
+def test_generation_state_recovers_unordered_gaps_and_failed_selection(tmp_path):
+    store = CandidateStore(ArtifactStore(tmp_path), task_id="unordered")
+    store.initialize(labels=[], total_images=5)
+    store.append_items([
+        {"image_id": "d", "status": "empty", "boxes": []},
+        {"image_id": "b", "status": "failed", "boxes": []},
+        {"image_id": "a", "status": "success", "boxes": []},
+    ])
+    store.set_review_exclusion("d", "transferred", operation_id="op", actor="tester")
+    state = store.generation_state(list("abcde"))
+    assert state == dict(done_ids={"a", "d"}, failed_ids={"b"}, succeeded=2,
+                         failed=1, total=3, next_index=2)
+    assert [i for i in "abcde" if i not in state["done_ids"]] == list("bce")
+    assert store.statistics()["gt_committed"] == 0
+    assert store.get("d")["review_state"] == "transferred"
+    store.append_items([{"image_id": "c", "status": "empty", "boxes": []}])
+    assert store.generation_state(list("abcde"))["next_index"] == 4
+    with pytest.raises(ValueError, match="scope"):
+        store.generation_state(list("abced"))
+
+
+@pytest.mark.parametrize("ids,status,match", [
+    (["a", "a"], "empty", "duplicate"),
+    (["b"], "empty", "immutable"),
+    (["a"], "unexpected", "invalid generation status"),
+])
+def test_generation_state_fails_closed(tmp_path, ids, status, match):
+    store = CandidateStore(ArtifactStore(tmp_path), task_id="invalid-state")
+    store.initialize(labels=[], total_images=1)
+    store.append_items([{"image_id": "a", "status": "empty", "boxes": []}])
+    with store._connect() as db:
+        db.execute("UPDATE candidates SET status=?", (status,))
+    with pytest.raises(ValueError, match=match):
+        store.generation_state(ids)
+
+
+def test_generation_state_scope_commit_is_fenced_and_resettable(tmp_path):
+    store = CandidateStore(ArtifactStore(tmp_path), task_id="scope-guard")
+    store.initialize(labels=[], total_images=2)
+    def stale():
+        raise RuntimeError("stale lease")
+    with pytest.raises(RuntimeError, match="stale lease"):
+        store.generation_state(["a", "b"], commit_guard=stale)
+    # Rejected scope write must roll back entirely.
+    assert store.generation_state(["b", "a"])["total"] == 0
+    with pytest.raises(ValueError, match="scope"):
+        store.generation_state(["a", "b"])
+    store.initialize(labels=[], total_images=2)
+    assert store.generation_state(["a", "b"])["total"] == 0
+
+
+def test_generation_state_200k_reads_only_bounded_scalar_pages(tmp_path, monkeypatch):
+    store = CandidateStore(ArtifactStore(tmp_path), task_id="unordered-200k")
+    total = 200_000
+    ids = [f"image-{index}" for index in range(total)]
+    store.initialize(labels=[], total_images=total)
+    # Populate scalar recovery evidence without inflating the test with JSON
+    # encoding/provider work. Reverse persistence order exercises unordered reads.
+    with store._connect() as db:
+        db.executemany(
+            "INSERT INTO candidates(ordinal,image_id,status,boxes_count,item_json) VALUES (?,?,?,0,'{}')",
+            ((index + 1, image_id, "failed" if index % 11 == 0 else "empty")
+             for index, image_id in enumerate(reversed(ids))),
+        )
+    original_connect = store._connect
+    reads = []
+    class Connection:
+        def __init__(self, inner):
+            self.inner = inner
+        def execute(self, sql, *args):
+            if "FROM candidates" in sql:
+                assert "SELECT ordinal,image_id,status" in sql
+                assert "LIMIT 500" in sql
+                reads.append(sql)
+            return self.inner.execute(sql, *args)
+        def __getattr__(self, name):
+            return getattr(self.inner, name)
+    monkeypatch.setattr(store, "_connect", lambda: Connection(original_connect()))
+    monkeypatch.setattr(store, "get", lambda *_: pytest.fail("per-image recovery read"))
+    state = store.generation_state(ids)
+    assert state["total"] == state["next_index"] == total
+    assert state["succeeded"] + state["failed"] == total
+    assert state["done_ids"].isdisjoint(state["failed_ids"])
+    assert len(reads) == 401  # Exact full pages plus one empty terminator.
+
+
 def test_candidate_statistics_count_only_durable_unique_gt_journal(tmp_path):
     store = CandidateStore(ArtifactStore(tmp_path), task_id="statistics")
     store.initialize(labels=["fire"], total_images=3)

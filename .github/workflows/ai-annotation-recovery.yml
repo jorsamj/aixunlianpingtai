@@ -11,6 +11,16 @@ on:
       - platform_core/annotation_candidates.py
       - platform_core/annotation_task_service.py
       - platform_core/annotation_runtime.py
+      - platform_core/annotation_inference.py
+      - platform_core/inference_policy.py
+      - tools/probe_inference_capacity.py
+      - platform_core/task_runtime/inference_resources.py
+      - platform_core/task_runtime/repository.py
+      - tests/unit/test_inference_policy.py
+      - tests/unit/test_inference_resource_leases.py
+      - tests/unit/test_annotation_inference_execution.py
+      - tests/unit/test_provider_retry_metadata.py
+      - tests/integration/test_dual_instance_inference.py
       - platform_core/providers/**
       - platform_core/auto_label.py
       - tests/unit/test_annotation_coordinate_contract.py
@@ -49,6 +59,16 @@ on:
       - platform_core/annotation_candidates.py
       - platform_core/annotation_task_service.py
       - platform_core/annotation_runtime.py
+      - platform_core/annotation_inference.py
+      - platform_core/inference_policy.py
+      - tools/probe_inference_capacity.py
+      - platform_core/task_runtime/inference_resources.py
+      - platform_core/task_runtime/repository.py
+      - tests/unit/test_inference_policy.py
+      - tests/unit/test_inference_resource_leases.py
+      - tests/unit/test_annotation_inference_execution.py
+      - tests/unit/test_provider_retry_metadata.py
+      - tests/integration/test_dual_instance_inference.py
       - platform_core/providers/**
       - platform_core/auto_label.py
       - tests/unit/test_annotation_coordinate_contract.py
@@ -109,11 +129,19 @@ jobs:
           platform_core/annotation_task_service.py
           tests/unit/test_annotation_candidates.py
           tests/unit/test_annotation_task_service.py
+          tests/unit/test_annotation_inference_execution.py
+          tests/unit/test_inference_policy.py
+          tests/unit/test_inference_resource_leases.py
+          tests/unit/test_provider_retry_metadata.py
       - name: Candidate recovery and fencing guards
         run: >-
           python -m pytest --confcutdir=tests/unit -q
           tests/unit/test_annotation_candidates.py
           tests/unit/test_annotation_task_service.py
+          tests/unit/test_annotation_inference_execution.py
+          tests/unit/test_inference_policy.py
+          tests/unit/test_inference_resource_leases.py
+          tests/unit/test_provider_retry_metadata.py
           tests/unit/test_openai_vision_protocol.py
           tests/unit/test_annotation_coordinate_contract.py
           tests/unit/test_annotation_comparison.py
@@ -134,7 +162,8 @@ jobs:
           frontend = Path('static/modules/annotation-task-view.js').read_text(encoding='utf-8')
 
           required_service = (
-              'store.generation_prefix',
+              'store.generation_state',
+              'ThreadPoolExecutor(max_workers=concurrency',
               'commit_guard=lambda: _assert_generation_commit(context)',
               'context.heartbeat(',
               'store.iter_accepted_items(include_committed=True)',
@@ -152,6 +181,8 @@ jobs:
               raise SystemExit('annotation task service must not bypass WorkerContext.heartbeat')
           if 'def generation_prefix(' not in candidates or 'commit_guard' not in candidates:
               raise SystemExit('CandidateStore durable recovery/fencing contract is missing')
+          if 'def generation_state(' not in candidates or 'generation_scope_sha256' not in candidates:
+              raise SystemExit('CandidateStore unordered recovery/frozen scope contract is missing')
           if '恢复执行 · 第 ${attempt} 次执行' not in frontend:
               raise SystemExit('annotation recovery frontend truth is missing')
 
@@ -178,6 +209,7 @@ jobs:
           tests/unit/test_negative_pool.py
           tests/api/test_annotation_preview.py
           tests/integration/test_persistent_ai_annotation_e2e.py
+          tests/integration/test_dual_instance_inference.py
       - name: Durable annotation API truth
         run: >-
           python -m pytest -q
@@ -187,6 +219,7 @@ jobs:
           tests/unit/test_negative_pool.py
           tests/api/test_annotation_preview.py
           tests/integration/test_persistent_ai_annotation_e2e.py
+          tests/integration/test_dual_instance_inference.py
           tests/api/test_model_configs.py
           tests/integration/test_fake_vision_provider.py
       - name: Version and diff guard

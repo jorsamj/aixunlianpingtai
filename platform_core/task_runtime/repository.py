@@ -19,9 +19,10 @@ from .models import TaskKind, TaskLease, TaskPage, TaskRecord, TaskStatus, utc_n
 from .process_control import ProcessIdentity
 from .sqlite_busy import busy_timeout_ms, retry_busy
 from ..gpu_resources import ensure_gpu_runtime_schema
+from .inference_resources import InferenceResourceMethods, ensure_inference_runtime_schema
 
 
-_SCHEMA_VERSION = 3
+_SCHEMA_VERSION = 4
 _INIT_LOCK_TIMEOUT = 30
 
 
@@ -207,7 +208,7 @@ def _add_column_if_missing(
     columns.add(name)
 
 
-class TaskRepository:
+class TaskRepository(InferenceResourceMethods):
     def __init__(self, path: str | Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -296,6 +297,7 @@ class TaskRepository:
                         database, "worker_instances", worker_columns, name, definition
                     )
                 ensure_gpu_runtime_schema(database)
+                ensure_inference_runtime_schema(database)
                 database.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
 
     def journal_mode(self) -> str:

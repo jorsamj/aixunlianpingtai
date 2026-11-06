@@ -89,6 +89,7 @@ class CandidateStore:
                 db.execute("DELETE FROM candidates")
                 db.execute("DELETE FROM commits")
                 db.execute("DELETE FROM review_events")
+                db.execute("DELETE FROM metadata WHERE key='generation_scope_sha256'")
                 db.execute("INSERT OR REPLACE INTO metadata VALUES ('initialized','1')")
                 if commit_guard is not None:
                     commit_guard()
@@ -213,6 +214,81 @@ class CandidateStore:
                 )
 
             yield append
+
+    def generation_state(
+        self,
+        image_ids: Iterable[str],
+        *,
+        commit_guard: Callable[[], Any] | None = None,
+    ) -> dict[str, Any]:
+        """Recover unordered generation commits from the existing candidate store.
+
+        done_ids contains success/empty, including reviewed or transferred rows;
+        failed_ids alone may be retried. next_index is the contiguous *persisted*
+        prefix (including failures), never the number of completed futures.
+        Read only indexed scalar columns in bounded pages under one snapshot.
+        Freeze ordered input on first validation; legacy stores are validated
+        against the caller's immutable task input before recording its digest.
+        No candidate or formal annotation is modified by recovery.
+        """
+        expected = [str(value) for value in image_ids]
+        scope = set(expected)
+        if any(not value.strip() for value in expected):
+            raise ValueError("annotation generation input contains invalid image id")
+        if len(scope) != len(expected):
+            raise ValueError("annotation generation input contains duplicate image ids")
+        digest = hashlib.sha256()
+        for image_id in expected:
+            encoded = image_id.encode("utf-8")
+            digest.update(len(encoded).to_bytes(8, "big"))
+            digest.update(encoded)
+        scope_hash = digest.hexdigest()
+        self._ready(commit_guard=commit_guard)
+        done, failed = set(), set()
+        with closing(self._connect()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                frozen = db.execute(
+                    "SELECT value FROM metadata WHERE key='generation_scope_sha256'"
+                ).fetchone()
+                if frozen is not None and frozen[0] != scope_hash:
+                    raise ValueError("annotation generation scope differs from immutable task input")
+                after_ordinal = 0
+                while True:
+                    rows = db.execute(
+                        "SELECT ordinal,image_id,status FROM candidates "
+                        "WHERE ordinal>? ORDER BY ordinal LIMIT 500", (after_ordinal,),
+                    ).fetchall()
+                    if not rows:
+                        break
+                    for row in rows:
+                        image_id, status = str(row["image_id"]), str(row["status"])
+                        if image_id not in scope:
+                            raise ValueError("annotation candidate is outside immutable task input")
+                        if image_id in done or image_id in failed:
+                            raise ValueError("annotation candidate recovery contains duplicate image ids")
+                        if status in {"success", "empty"}:
+                            done.add(image_id)
+                        elif status == "failed":
+                            failed.add(image_id)
+                        else:
+                            raise ValueError(f"annotation candidate has invalid generation status: {status}")
+                    after_ordinal = int(rows[-1]["ordinal"])
+                    if len(rows) < 500:
+                        break
+                if frozen is None:
+                    db.execute("INSERT INTO metadata VALUES ('generation_scope_sha256',?)", (scope_hash,))
+                    if commit_guard is not None:
+                        commit_guard()
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+        next_index = 0
+        while next_index < len(expected) and (expected[next_index] in done or expected[next_index] in failed):
+            next_index += 1
+        return dict(done_ids=done, failed_ids=failed, succeeded=len(done),
+                    failed=len(failed), total=len(done) + len(failed), next_index=next_index)
 
     def generation_prefix(
         self,

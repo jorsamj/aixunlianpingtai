@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {diagnosticBoxes,renderAnnotationDiagnostics} from '../../static/modules/annotation-diagnostics.js';
+test('execution evidence displays actual traces and never invents backend GPU identity',()=>{
+  const html=renderAnnotationDiagnostics({request_id:'upstream-42',backend_instance_id:'instance-a',actual_model:'model-r1',execution:{platform_request_id:'platform-42',attempts:2,queue_ms:125,elapsed_ms:500}});
+  for(const value of ['upstream-42','instance-a','model-r1','platform-42','125','500'])assert.ok(html.includes(value));
+  assert.ok(!html.includes('GPU0'));
+});
 const box={label:'person',x1:100,y1:200,x2:300,y2:600};
 const d={contract:{coordinate_space:'normalized_1000'},geometry:{original_width:1920,original_height:1080},raw_candidates:[box],converted_boxes:[{...box,x1:192,y1:216,x2:576,y2:648}]};
 test('diagnostic comparison respects declared ranges and original dimensions',()=>{

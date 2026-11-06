@@ -3,6 +3,11 @@ import {readFileSync} from 'node:fs';
 import assert from 'node:assert/strict';
 
 import {annotationTaskView, annotationStageStatistics, buildCandidateDecisions} from '../../static/modules/annotation-task-view.js';
+test('execution metrics distinguish absent historical evidence from current measured values',()=>{
+  assert.equal(annotationTaskView({}).executionText,'');
+  const view=annotationTaskView({generation_execution:{concurrency:2,images_per_second:3,p50_ms:50,p95_ms:90,retries:1}});
+  assert.match(view.executionText,/并发上限 2.*3 图\/秒.*P50 50 ms.*P95 90 ms.*重试 1/);
+});
 
 test('stage statistics show durable journal counts only and distinguish missing projections', () => {
   assert.equal(annotationStageStatistics({}), null);

@@ -18347,6 +18347,15 @@ def _v35_model_items() -> List[Dict[str, Any]]:
             _v35_secret_store().set(reference, legacy)
             item["secret_ref"] = reference
             changed = True
+        # Resolve account identity from the actual credential, including legacy
+        # references and environment overrides. This is an in-memory projection;
+        # no read-side identity migration rewrites the configuration file.
+        reference = str(item.get("secret_ref") or "")
+        credential = _v35_secret_store().get(reference) if reference else ""
+        if credential:
+            item["inference_account_identity"] = hashlib.sha256(credential.encode()).hexdigest()
+        elif reference:
+            item.pop("inference_account_identity", None)
         cleaned = _v35_clean_headers(item.get("headers_json"))
         if cleaned != (item.get("headers_json") or {}):
             item["headers_json"] = cleaned
@@ -18362,6 +18371,9 @@ def _v35_sanitize_secret(item: Dict[str, Any]) -> Dict[str, Any]:
     reference = str(out.get("secret_ref") or "")
     masked = _v35_secret_store().masked(reference) if reference else ""
     out.pop("secret_ref", None)
+    out.pop("inference_account_identity", None)
+    from platform_core.inference_policy import resolve_inference_policy
+    out["inference_capacity"] = resolve_inference_policy(item)
     out["has_api_key"] = bool(masked)
     out["api_key_masked"] = masked
     out.setdefault("api_protocol", "auto")
@@ -18452,6 +18464,8 @@ def v35_save_model_config(payload: V35ModelConfigReq):
         item = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
         _v35_normalize_adapter(item)
         api_key = str(item.pop("api_key", "") or "")
+        if api_key:
+            item["inference_account_identity"] = hashlib.sha256(api_key.encode()).hexdigest()
         item["headers_json"] = _v35_clean_headers(item.get("headers_json"))
         if api_key:
             reference = secret_ref("model-config", config_id)
@@ -18488,6 +18502,10 @@ def v35_update_model_config(config_id: str, payload: V35ModelConfigReq):
                             data.pop(field, None)
                 _v35_normalize_adapter(data)
                 api_key = str(data.pop("api_key", "") or "")
+                if api_key:
+                    data["inference_account_identity"] = hashlib.sha256(api_key.encode()).hexdigest()
+                elif item.get("inference_account_identity"):
+                    data["inference_account_identity"] = item["inference_account_identity"]
                 reference = str(item.get("secret_ref") or secret_ref("model-config", config_id))
                 if api_key:
                     _v35_secret_store().set(reference, api_key)
@@ -18507,6 +18525,17 @@ def v35_update_model_config(config_id: str, payload: V35ModelConfigReq):
             raise HTTPException(status_code=404, detail="模型配置不存在")
         _v35_save_items(MODEL_CONFIGS_FILE, items)
         return _v35_publish_model_config(items[i])
+
+
+@app.post("/api/v35/model-configs/{config_id}/capacity-check")
+def v35_check_model_capacity(config_id: str):
+    """Read server evidence only; connection/image checks remain separate."""
+    from platform_core.inference_policy import resolve_inference_policy, config_fingerprint
+    cfg = next((row for row in _v35_model_items() if row.get("id") == config_id), None)
+    if cfg is None:
+        raise HTTPException(status_code=404, detail="模型配置不存在")
+    return {"policy": resolve_inference_policy(cfg), "config_fingerprint": config_fingerprint(cfg),
+            "message": "容量依据运维证据；连接成功或图片解析通过不能证明双实例。未证明时串行。"}
 
 
 @app.delete("/api/v35/model-configs/{config_id}")
@@ -25767,10 +25796,13 @@ def get_annotation_task(project_id: str, task_id: str):
             CandidateStore(shared_task_artifacts(), task_id=task.task_id),
         )
     result = public_annotation_task(task, summary=summary)
-    if task.status in {TaskStatus.AWAITING_CONFIRMATION, TaskStatus.FAILED, TaskStatus.BLOCKED_BY_ENVIRONMENT}:
+    if task.status not in {TaskStatus.QUEUED, TaskStatus.RUNNING, TaskStatus.CANCEL_REQUESTED}:
         generation = shared_task_artifacts().read_json(task_id, "generation.json", default={})
-        if isinstance(generation, dict) and generation.get("stopped_reason"):
-            result["generation_interruption_code"] = str(generation["stopped_reason"])[:100]
+        if isinstance(generation, dict):
+            if generation.get("stopped_reason"):
+                result["generation_interruption_code"] = str(generation["stopped_reason"])[:100]
+            if isinstance(generation.get("execution"), dict):
+                result["generation_execution"] = generation["execution"]
     return result
 
 

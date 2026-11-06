@@ -20,6 +20,20 @@ def _write_project(tmp_path):
     return project_dir
 
 
+def test_changed_credential_cannot_reuse_frozen_account_capacity(tmp_path, monkeypatch):
+    _write_project(tmp_path)
+    monkeypatch.setenv('INFERENCE_TEST_CREDENTIAL', 'isolated-credential-one')
+    model = {**_model(), 'secret_ref': 'env:INFERENCE_TEST_CREDENTIAL'}
+    frozen = annotation_runtime.prepare_request(
+        tmp_path, 'p1', {'image_ids': ['one'], 'labels': ['fire'], 'model_config_id': 'model-1'},
+        runtime=False, model_configs=[model])
+    assert 'isolated-credential-one' not in json.dumps(frozen)
+    monkeypatch.setenv('INFERENCE_TEST_CREDENTIAL', 'isolated-credential-two')
+    monkeypatch.setattr(annotation_runtime, 'provider_factory', lambda _cfg: pytest.fail('changed account must not dispatch'))
+    with pytest.raises(ValueError, match='AI_MODEL_CREDENTIAL_CHANGED'):
+        annotation_runtime.prepare_request(tmp_path, 'p1', frozen, runtime=True)
+
+
 def _model(model_name="vision-v1", detect_url="http://vision-v1.local/v1"):
     return {
         "id": "model-1",

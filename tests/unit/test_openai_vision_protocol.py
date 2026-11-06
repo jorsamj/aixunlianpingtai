@@ -119,7 +119,7 @@ def test_chat_old_configuration_keeps_messages_and_schema_contract():
     assert "input" not in body and result["text"] == TEXT
 
 
-@pytest.mark.parametrize("status,code", [(400,"MODEL_BAD_REQUEST"),(401,"MODEL_AUTHENTICATION_FAILED"),(403,"MODEL_PERMISSION_DENIED"),(404,"MODEL_RESOURCE_NOT_FOUND"),(429,"MODEL_RATE_LIMITED"),(500,"MODEL_SERVICE_ERROR")])
+@pytest.mark.parametrize("status,code", [(400,"MODEL_REQUEST_CONTRACT_INVALID"),(401,"MODEL_AUTHENTICATION_FAILED"),(403,"MODEL_PERMISSION_DENIED"),(404,"MODEL_RESOURCE_NOT_FOUND"),(429,"MODEL_RATE_LIMITED"),(500,"MODEL_SERVICE_ERROR")])
 def test_http_errors_are_classified_without_blind_retry(status, code):
     http = HTTP(Reply(status, {"error": {"code": "upstream.resource", "message": "do not echo sensitive body"}}))
     with pytest.raises(ProviderRequestError) as caught:

@@ -29,6 +29,10 @@ export function annotationTaskView(task = {}) {
     MODEL_REQUEST_TIMEOUT:'模型请求连续超时',
     MODEL_NOT_LOADED:'模型服务尚未加载模型',
     MODEL_PROTOCOL_REQUIRED:'模型服务协议配置不匹配',
+    MODEL_REQUEST_CONTRACT_INVALID:'图片推理请求协议不匹配',
+    MODEL_PERMISSION_DENIED:'模型访问权限不足',
+    MODEL_QUOTA_EXCEEDED:'模型账户额度不足',
+    MODEL_RATE_LIMITED:'模型服务临时限流',
   }[interruption] || `模型连续异常（${interruption}）` : '';
   const queuePosition = exactTaskQueuePosition(task) || 0;
   const waitReason = String(task.resource_wait_reason || '').trim();
@@ -53,6 +57,9 @@ export function annotationTaskView(task = {}) {
     : phase === 'APPLYING_REVIEW'
       ? '统一标签并入库'
       : (LABELS[status] || status || '未知');
+  const execution=task.generation_execution,metric=value=>value!=null&&Number.isFinite(Number(value))?Number(value):'未记录';
+  const executionText=execution&&typeof execution==='object'
+    ? `本次执行 · 并发上限 ${metric(execution.concurrency)} · ${metric(execution.images_per_second)} 图/秒 · P50 ${metric(execution.p50_ms)} ms · P95 ${metric(execution.p95_ms)} ms · 重试 ${metric(execution.retries)}`:'';
   return {
     status,
     statusText,
@@ -69,6 +76,7 @@ export function annotationTaskView(task = {}) {
     workerId,
     attempt,
     runtimeText,
+    executionText,
     active: isTaskActive(status),
     canCancel: isTaskActive(status),
     canReview: status === 'AWAITING_CONFIRMATION',

@@ -7,7 +7,7 @@ from urllib.parse import unquote, urlsplit, urlunsplit
 
 import requests
 
-from .base import ProviderRequestError, VisionProviderResult
+from .base import ProviderRequestError, VisionProviderResult, http_error
 
 
 PRESETS = {
@@ -176,6 +176,8 @@ class OpenAICompatibleVisionProvider:
         return {
             "request_id": safe(headers.get("x-request-id") or headers.get("x-tt-logid") or error.get("request_id") or (payload.get("request_id") or payload.get("id") if isinstance(payload, dict) else "")),
             "server_error_code": safe(error.get("code")), "status_code": response.status_code,
+            "backend_instance_id": safe(headers.get("x-backend-instance-id") or root.get("backend_instance_id")),
+            "actual_model": safe(root.get("model") or root.get("actual_model")),
         }
 
     def _output_text(self, payload):
@@ -231,14 +233,14 @@ class OpenAICompatibleVisionProvider:
                 if index + 1 < len(formats) and _unsupported_format(response, payload):
                     continue
                 code, message, solution = HTTP_ERRORS.get(response.status_code, ("MODEL_SERVICE_ERROR" if response.status_code >= 500 else "MODEL_REQUEST_FAILED", "模型服务端异常" if response.status_code >= 500 else "模型服务请求失败", "请联系模型服务方核查请求记录。"))
-                raise ProviderRequestError(f"{message}（HTTP {response.status_code}）", code=code, solution=solution, **metadata)
+                raise ProviderRequestError(f"{message}（HTTP {response.status_code}）", solution=solution, **http_error(response, metadata, provider=self.provider), **metadata)
             try:
                 text = self._output_text(payload)
             except ProviderRequestError as error:
                 raise ProviderRequestError(str(error), code=error.code, **metadata) from None
             except (KeyError, IndexError, TypeError, AttributeError, ValueError):
                 raise ProviderRequestError("模型服务返回格式不符合配置的 API 协议", code="MODEL_OUTPUT_PARSE_ERROR", **metadata) from None
-            return {"text": text, "request_id": metadata["request_id"], "latency_ms": round((time.perf_counter() - started) * 1000), "provider": self.provider, "model": self.model, "api_protocol": self.api_protocol}
+            return {"text": text, **{k: v for k, v in metadata.items() if k != "server_error_code"}, "latency_ms": round((time.perf_counter() - started) * 1000), "provider": self.provider, "model": self.model, "api_protocol": self.api_protocol}
 
 
 __all__ = ["OpenAICompatibleVisionProvider", "PRESETS", "ProviderRequestError", "resolve_api_endpoint"]

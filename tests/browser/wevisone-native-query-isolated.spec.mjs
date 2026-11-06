@@ -2,7 +2,7 @@ import {test,expect} from '@playwright/test';
 import {readFileSync} from 'node:fs';
 
 test('WeVisOne native editor sends separate person and tangzhe descriptions without altering the generic editor',async({page})=>{
-  const source=readFileSync(new URL('../../static/app.js',import.meta.url),'utf8');
+  const source=readFileSync(new URL('../../static/app.js',import.meta.url),'utf8').replace(/\r\n/g,'\n');
   const start=source.indexOf('(()=>{\n  const providerNames={volcengine_ark:');
   const end=source.indexOf('  window.testModelConfigM4=async function',start);
   expect(start).toBeGreaterThan(0);

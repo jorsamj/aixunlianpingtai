@@ -5,6 +5,8 @@ import json
 import re
 import time
 import uuid
+import threading
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
@@ -130,6 +132,9 @@ def annotate_one(request: dict[str, Any], image: dict[str, Any]) -> dict[str, An
     diagnostics.update({"model": str(config.get("model_name") or ""),
                         "provider": str(config.get("provider_adapter") or config.get("provider_type") or ""),
                         "latency_ms": int(response.get("latency_ms") or 0)})
+    diagnostics.update({key: response[key] for key in (
+        "request_id", "backend_instance_id", "actual_model", "status_code",
+    ) if response.get(key) not in (None, "")})
     try:
         parsed = auto_label_core.parse_candidate_response(
             text,
@@ -278,7 +283,12 @@ def run_ai_annotation(
         if "labels" in manifest and [str(value) for value in manifest.get("labels") or []] != labels:
             raise ValueError("annotation candidate manifest does not match immutable task labels")
 
-    durable = store.generation_prefix(str(image["id"]) for image in images)
+    if context.cancel_requested():
+        return WorkerOutcome(TaskStatus.CANCELLED, "candidates/manifest.json")
+    durable = store.generation_state(
+        (str(image["id"]) for image in images),
+        commit_guard=lambda: _assert_generation_commit(context),
+    )
     checkpoint = dict(context.load_checkpoint() or {})
     start = int(durable["next_index"])
     succeeded = int(durable["succeeded"])
@@ -316,14 +326,34 @@ def run_ai_annotation(
             if previous_hash and current_hash and previous_hash != current_hash:
                 raise ValueError("AI_ANNOTATION_SOURCE_CHANGED: 原图片内容已改变，不能沿用旧候选结果")
 
+    from .annotation_inference import call_with_policy
+    from .inference_policy import resolve_inference_policy
+    from .task_runtime import ExecutionFencedError
+    snapshot = runtime_request.get("model_config_snapshot") or {}
+    frozen_policy = snapshot.get("inference_execution_policy") if isinstance(snapshot, dict) else None
+    if isinstance(frozen_policy, dict) and frozen_policy.get("version") == 1:
+        policy = dict(frozen_policy)
+        if policy.get("evidence_expires_at") and float(policy["evidence_expires_at"]) <= time.time():
+            policy.update(concurrency=1, evidence_status="expired")
+    else:
+        policy = resolve_inference_policy(runtime_request.get("_provider_config") or snapshot or {})
+        policy.update(concurrency=1, max_attempts=1, evidence_status="legacy")
+    if mining_mode or not callable(getattr(context.repository, "acquire_inference_permit", None)):
+        policy.update(concurrency=1, max_attempts=1)
+    concurrency = max(1, min(8, int(policy.get("concurrency") or 1)))
+    halt = threading.Event()
+    generation_started = time.monotonic()
+    latencies, execution_retries, gateway_errors = [], 0, 0
+
     def produce_candidate(image, previous=None):
+        image_started = time.monotonic()
         next_attempt=int((previous or {}).get("attempt_count") or 0)+1
         try:
             if mining_mode and annotate is annotate_one:
                 from .hard_sample_mining import infer_with_frozen_yolo
                 generated = infer_with_frozen_yolo(runtime_request, image)
             else:
-                generated = annotate(runtime_request, image)
+                generated = call_with_policy(context, runtime_request, image, annotate, policy, stop=halt)
             boxes = list(generated.get("boxes") or [])
             item = {
                 "image_id": str(image["id"]), "filename": image.get("filename"),
@@ -337,6 +367,11 @@ def run_ai_annotation(
                 ) if generated.get(key) is not None and generated.get(key) != ""},
             }
             failure_code = ""
+        except (InterruptedError, ExecutionFencedError):
+            raise
+        except PermissionError as error:
+            # Capacity acquisition checks the same persisted execution fence.
+            raise ExecutionFencedError("inference dispatch is fenced") from error
         except Exception as error:
             item = {
                 "image_id": str(image.get("id") or ""), "filename": image.get("filename"),
@@ -348,6 +383,10 @@ def run_ai_annotation(
             if isinstance(getattr(error, "diagnostics", None), dict):
                 item["diagnostics"] = error.diagnostics
             failure_code = str(getattr(error, "code", "") or type(error).__name__)
+        diagnostics = item.setdefault("diagnostics", {})
+        execution = diagnostics.setdefault("execution", {})
+        execution.setdefault("elapsed_ms", round((time.monotonic() - image_started) * 1000))
+        execution.setdefault("attempts", 1)
         if request.get("review_scope_policy") == "per_image_required":
             item["review_scope_policy"] = "per_image_required"
             item["missing_review_scope"] = list(expected_scopes[str(image["id"])])
@@ -357,72 +396,127 @@ def run_ai_annotation(
         "MODEL_SERVICE_UNREACHABLE", "MODEL_REQUEST_TIMEOUT", "MODEL_NOT_LOADED",
         "MODEL_AUTHENTICATION_FAILED", "MODEL_RESOURCE_NOT_FOUND", "MODEL_SERVICE_ERROR",
         "MODEL_OUTPUT_PARSE_ERROR", "MODEL_OUTPUT_FAILED", "MODEL_PROTOCOL_REQUIRED",
-        "ConnectionError", "TimeoutError",
+        "MODEL_RATE_LIMITED", "MODEL_QUOTA_EXCEEDED", "MODEL_PERMISSION_DENIED",
+        "MODEL_REQUEST_CONTRACT_INVALID", "ConnectionError", "TimeoutError",
     }
-    hard_faults = {"MODEL_NOT_LOADED", "MODEL_AUTHENTICATION_FAILED", "MODEL_RESOURCE_NOT_FOUND", "MODEL_PROTOCOL_REQUIRED"}
+    hard_faults = {"MODEL_NOT_LOADED", "MODEL_AUTHENTICATION_FAILED", "MODEL_RESOURCE_NOT_FOUND", "MODEL_PROTOCOL_REQUIRED",
+                   "MODEL_PERMISSION_DENIED", "MODEL_QUOTA_EXCEEDED", "MODEL_REQUEST_CONTRACT_INVALID"}
     consecutive_faults = 0
     stop_reason = ""
-    with store.write_session(
-        commit_guard=lambda: _assert_generation_commit(context),
-    ) as append_candidate:
-        # On an explicit retry (or reclaimed execution), retry only failed
-        # prefix rows. Successful and legitimate empty results are immutable.
-        if context.task.attempt > 1:
-            for previous in store.iter_items():
-                if previous.get("status") != "failed" or (retry_ids is not None and str(previous.get("image_id")) not in retry_ids):
-                    continue
+    # Candidate SQLite owns recovery truth even when responses complete out of order.
+    # Only this coordinator writes candidates/checkpoints; pool threads do I/O only.
+    retry_work = []
+    if context.task.attempt > 1:
+        retry_work = ((image_by_id[str(row["image_id"])], row) for row in store.iter_items()
+                      if row.get("status") == "failed" and
+                      (retry_ids is None or str(row["image_id"]) in retry_ids))
+    present = durable["done_ids"] | durable["failed_ids"]
+    new_work = ((image, None) for image in images if str(image["id"]) not in present
+                and (retry_ids is None or str(image["id"]) in retry_ids))
+    from itertools import chain
+    work = iter(chain(retry_work, new_work))
+    pending = {}
+    pool = ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="annotation-inference")
+    persisted = set(present)
+    completed = len(persisted)
+    checkpoint_index = start
+    try:
+        with store.write_session(commit_guard=lambda: _assert_generation_commit(context)) as append_candidate:
+            while True:
                 if context.cancel_requested():
+                    halt.set()
                     sync_annotation_statistics(context.repository, context.task, store)
                     return WorkerOutcome(TaskStatus.CANCELLED, "candidates/manifest.json")
-                image = image_by_id[str(previous["image_id"])]
-                item, code = produce_candidate(image, previous)
-                if context.cancel_requested():
-                    return WorkerOutcome(TaskStatus.CANCELLED, "candidates/manifest.json")
-                append_candidate([item])
-                if item["status"] != "failed":
-                    succeeded += 1
-                    failed -= 1
-                context.save_checkpoint({"next_index": start, "succeeded": succeeded,
-                                         "failed": failed, "source": "candidate_store"})
-                consecutive_faults = consecutive_faults + 1 if code in service_faults else 0
-                if code in hard_faults or consecutive_faults >= 3:
-                    stop_reason = code or "MODEL_SERVICE_ERROR"
+                while not stop_reason and len(pending) < concurrency:
+                    try:
+                        image, previous = next(work)
+                    except StopIteration:
+                        break
+                    context.assert_current_execution()
+                    pending[pool.submit(produce_candidate, image, previous)] = (image, previous)
+                if not pending:
                     break
-        if not stop_reason:
-            for index in range(start, len(images)):
-                if context.cancel_requested():
-                    sync_annotation_statistics(context.repository, context.task, store)
-                    return WorkerOutcome(TaskStatus.CANCELLED, "candidates/manifest.json")
-                image = images[index]
-                if retry_ids is not None and str(image.get("id")) not in retry_ids:
-                    continue
-                item, code = produce_candidate(image)
-                # A provider call can outlive its lease or cancellation.
-                if context.cancel_requested():
-                    return WorkerOutcome(TaskStatus.CANCELLED, "candidates/manifest.json")
-                append_candidate([item])
-                if item["status"] == "failed":
-                    failed += 1
-                else:
-                    succeeded += 1
-                context.save_checkpoint({"next_index": index + 1, "succeeded": succeeded,
-                                         "failed": failed, "source": "candidate_store"})
-                context.heartbeat(progress=int((index + 1) / max(1, len(images)) * 70),
-                                  stage="AI_ANNOTATION", current_item=str(image.get("id") or ""))
-                if (index + 1) % 100 == 0:
-                    sync_annotation_statistics(context.repository, context.task, store)
-                consecutive_faults = consecutive_faults + 1 if code in service_faults else 0
-                if code in hard_faults or consecutive_faults >= 3:
-                    stop_reason = code or "MODEL_SERVICE_ERROR"
-                    break
+                done, _ = wait(pending, timeout=.1, return_when=FIRST_COMPLETED)
+                for future in done:
+                    image, previous = pending.pop(future)
+                    try:
+                        item, code = future.result()
+                    except InterruptedError:
+                        if context.cancel_requested():
+                            return WorkerOutcome(TaskStatus.CANCELLED, "candidates/manifest.json")
+                        if stop_reason:
+                            continue
+                        raise
+                    if context.cancel_requested():
+                        halt.set()
+                        return WorkerOutcome(TaskStatus.CANCELLED, "candidates/manifest.json")
+                    append_candidate([item])
+                    was_failed = previous is not None
+                    if item["status"] == "failed":
+                        failed += int(not was_failed)
+                    else:
+                        succeeded += 1
+                        failed -= int(was_failed)
+                    persisted.add(str(image["id"]))
+                    completed = len(persisted)
+                    while checkpoint_index < len(images) and str(images[checkpoint_index]["id"]) in persisted:
+                        checkpoint_index += 1
+                    context.save_checkpoint({"next_index": checkpoint_index, "succeeded": succeeded,
+                                             "failed": failed, "source": "candidate_store"})
+                    context.heartbeat(progress=int(completed / max(1, len(images)) * 70),
+                                      stage="AI_ANNOTATION", current_item=str(image["id"]))
+                    execution = (item.get("diagnostics") or {}).get("execution") or {}
+                    if execution.get("elapsed_ms") is not None:
+                        latencies.append(float(execution["elapsed_ms"]))
+                    execution_retries += max(0, int(execution.get("attempts") or 1) - 1)
+                    gateway_errors += int(item.get("http_status") in {500,502,503,504})
+                    if completed % 100 == 0:
+                        sync_annotation_statistics(context.repository, context.task, store)
+                    consecutive_faults = consecutive_faults + 1 if code in service_faults else 0
+                    if code in hard_faults or consecutive_faults >= 3:
+                        stop_reason = code or "MODEL_SERVICE_ERROR"
+                        # Stop new dispatch/retries; already running valid responses
+                        # are still drained through the same fenced writer.
+                        halt.set()
+    finally:
+        halt.set()
+        pool.shutdown(wait=False, cancel_futures=True)
+        try:
+            if context.cancel_requested():
+                cancelled_summary = sync_annotation_statistics(context.repository, context.task, store)
+                context.artifacts.atomic_write_json(context.task.task_id, "generation.json", {
+                    "summary": cancelled_summary, "generation_partial": True,
+                    "stopped_reason": "CANCEL_REQUESTED",
+                    "remaining": max(0, len(images) - cancelled_summary["total"]),
+                    "execution": {"concurrency": concurrency,
+                        "wall_seconds": round(time.monotonic() - generation_started, 3),
+                        "processed_this_execution": len(latencies), "in_flight_at_stop": len(pending),
+                        "retries": execution_retries, "gateway_errors": gateway_errors,
+                        "capacity_evidence": policy.get("evidence_status", "unknown")},
+                })
+        except ExecutionFencedError:
+            # Lease recovery owns all subsequent publication, including metrics.
+            pass
 
 
     summary = sync_annotation_statistics(context.repository, context.task, store)
+    elapsed = max(.001, time.monotonic() - generation_started)
+    ordered_latencies = sorted(latencies)
+    def percentile(fraction):
+        return ordered_latencies[min(len(ordered_latencies)-1, int((len(ordered_latencies)-1)*fraction))] if ordered_latencies else None
     context.artifacts.atomic_write_json(context.task.task_id, "generation.json", {
         "summary": summary,
         "generation_partial": bool(failed),
         "stopped_reason": stop_reason,
         "remaining": max(0, len(images) - summary["total"]),
+        "execution": {"concurrency": concurrency, "capacity_evidence": policy.get("evidence_status", "unknown"),
+            "wall_seconds": round(elapsed, 3), "processed_this_execution": len(latencies),
+            "mean_ms": round(sum(latencies)/len(latencies), 2) if latencies else None,
+            "p50_ms": percentile(.5), "p95_ms": percentile(.95),
+            "images_per_second": round(len(latencies)/elapsed, 3),
+            "retries": execution_retries, "gateway_errors": gateway_errors,
+            "persisted_succeeded": summary.get("success", 0) + summary.get("empty", 0),
+            "persisted_failed": summary.get("failed", 0), "persisted_empty": summary.get("empty", 0)},
     })
     if stop_reason:
         return WorkerOutcome(TaskStatus.AWAITING_CONFIRMATION if succeeded else TaskStatus.BLOCKED_BY_ENVIRONMENT,

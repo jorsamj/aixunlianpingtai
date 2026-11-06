@@ -416,3 +416,44 @@ def test_slow_sample_cannot_overwrite_confirmation_for_same_revision(client, mon
     current=next(x for x in client.get("/api/v35/model-configs").json()["items"] if x["id"]==saved["id"])
     assert current["coordinate_validation"]["status"]=="verified"
     assert current["coordinate_validation"]["reason"]=="newer human confirmation"
+
+
+def test_capacity_api_rejects_browser_evidence_and_coordinates_account_domains(client, monkeypatch):
+    monkeypatch.delenv("INFERENCE_CAPACITY_MANIFEST", raising=False)
+    payload = {"name": "capacity-test", "provider_type": "local_openai", "model_kind": "vlm",
+               "base_url": "http://capacity-test.invalid/v1", "model_name": "test-model",
+               "api_key": "test-only-shared-account-key", "inference_policy": {"concurrency": 8},
+               "capacity_evidence": {"verified": True}}
+    first = client.post("/api/v35/model-configs", json=payload)
+    assert first.status_code == 200, first.text
+    second = client.post("/api/v35/model-configs", json=dict(payload, name="another-config"))
+    assert second.status_code == 200, second.text
+    assert first.json()["inference_capacity"]["domain"] == second.json()["inference_capacity"]["domain"]
+    checked = client.post(f'/api/v35/model-configs/{first.json()["id"]}/capacity-check')
+    assert checked.status_code == 200
+    assert checked.json()["policy"]["concurrency"] == 1
+    assert checked.json()["policy"]["evidence_status"] == "unknown"
+    assert "inference_account_identity" not in first.json()
+    assert "test-only-shared-account-key" not in checked.text
+
+
+def test_legacy_secret_reference_and_new_configs_share_real_account_domain(client, monkeypatch):
+    import app as app_module
+    monkeypatch.delenv("INFERENCE_CAPACITY_MANIFEST", raising=False)
+    store = MemorySecretStore()
+    monkeypatch.setattr(app_module, "MODEL_SECRET_STORE", store)
+    store.set("legacy-reference", "same-account-key")
+    app_module._v35_save_items(app_module.MODEL_CONFIGS_FILE, [{"id": "legacy-account", "name": "legacy",
+        "base_url": "http://account-test.invalid/v1", "model_name": "old", "secret_ref": "legacy-reference"}])
+    payload = {"name": "new-account-config", "provider_type": "local_openai", "model_kind": "vlm",
+               "base_url": "http://account-test.invalid/v1", "model_name": "new", "api_key": "same-account-key"}
+    same = client.post("/api/v35/model-configs", json=payload)
+    assert same.status_code == 200, same.text
+    different = client.post("/api/v35/model-configs", json=dict(payload, api_key="different-account-key"))
+    assert different.status_code == 200, different.text
+    listed = client.get("/api/v35/model-configs")
+    legacy = next(row for row in listed.json()["items"] if row["id"] == "legacy-account")
+    assert legacy["inference_capacity"]["domain"] == same.json()["inference_capacity"]["domain"]
+    assert legacy["inference_capacity"]["domain"] != different.json()["inference_capacity"]["domain"]
+    assert "same-account-key" not in listed.text
+    assert "inference_account_identity" not in listed.text

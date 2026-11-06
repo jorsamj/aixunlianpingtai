@@ -73,6 +73,14 @@ def freeze_model_config(config: Mapping[str, Any]) -> tuple[dict[str, Any], str]
         raise ValueError("AI_MODEL_CONFIG_ID_MISSING: annotation model configuration has no id")
     if not str(snapshot.get("model_name") or "").strip():
         raise ValueError("AI_MODEL_NAME_MISSING: annotation model name is empty")
+    from .inference_policy import resolve_inference_policy
+    if not snapshot.get("inference_account_identity") and snapshot.get("secret_ref"):
+        reference = str(snapshot["secret_ref"])
+        credential = (os.environ.get(reference[4:]) if reference.startswith("env:")
+                      else KeyringSecretStore().get(reference))
+        if credential:
+            snapshot["inference_account_identity"] = hashlib.sha256(credential.encode()).hexdigest()
+    snapshot["inference_execution_policy"] = resolve_inference_policy(snapshot)
     body = json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     revision = hashlib.sha256(body.encode("utf-8")).hexdigest()
     return snapshot, revision
@@ -378,6 +386,12 @@ def prepare_request(
         raise ValueError(
             "AI_MODEL_SECRET_UNAVAILABLE: frozen model credential reference is unavailable to this Worker"
         )
+    if secret:
+        identity = hashlib.sha256(secret.encode()).hexdigest()
+        frozen_identity = runtime_config.get("inference_account_identity")
+        if frozen_identity and frozen_identity != identity:
+            raise ValueError("AI_MODEL_CREDENTIAL_CHANGED: frozen model credential changed; create a new task")
+        runtime_config["inference_account_identity"] = identity
     runtime_config["_api_key"] = secret or ""
     runtime_config["headers_json"] = _clean_headers(runtime_config.get("headers_json"))
     public_config = {
