@@ -55,11 +55,13 @@ def test_task_detail_preserves_execution_metrics_across_terminal_states(client, 
     lease = repository.claim_next('worker', {TaskKind.AI_ANNOTATION}, {'vision_provider'})
     repository.finish(task_id, lease.lease_token, status, 'candidates/manifest.json')
     metrics = {'concurrency': 2, 'p50_ms': 25, 'p95_ms': 50, 'retries': 1, 'images_per_second': 2}
-    artifacts.atomic_write_json(task_id, 'generation.json', {'execution': metrics})
+    artifacts.atomic_write_json(task_id, 'generation.json', {
+        'execution': metrics, 'stopped_reason': 'CANCEL_REQUESTED' if status is TaskStatus.CANCELLED else ''})
     response = client.get(f'/api/v60/projects/{project_id}/annotation-tasks/{task_id}')
     assert response.status_code == 200
     assert response.json()['generation_execution'] == metrics
     assert 'diagnostics' not in response.json()
+    assert 'generation_interruption_code' not in response.json()
 
 
 def test_diagnostics_are_single_image_and_not_bulk_payload(client, seeded_project, isolated_task_runtime, monkeypatch):

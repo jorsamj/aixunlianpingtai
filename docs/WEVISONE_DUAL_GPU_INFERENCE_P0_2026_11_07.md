@@ -1,4 +1,4 @@
-# WeVisOne 双实例与跨 Provider 安全推理｜42.24.555
+# WeVisOne 双实例与跨 Provider 安全推理｜42.24.556
 
 状态：平台侧开发与隔离验收；4070 内网、生产部署与 GPU 吞吐 **NOT VERIFIED**。
 起点：长期分支 `feature/external-algorithm-publishing`，42.24.552，
@@ -154,3 +154,7 @@ npx -y node@24 node_modules/@playwright/test/cli.js test tests/browser/inference
 ## 42.24.555 准确 CI 引入项修正
 
 553 Linux AI Annotation API 因新增可选身份探测提前依赖无 Keyring 的安全后端，8失败/127通过；Release Regression 运行合同因两条旧Schema3断言，2失败/617通过/1跳过。这些是本轮引入，不能当作既有红灯。冻结引用的身份探测现在捕获明确 SecretStoreUnavailable，未知账户保持串行，运行时获取密钥仍严格校验；可执行后按实际账户基础域协调限额，不凭新证明升级旧任务。更新旧迁移断言为4并新增v3→v4任务与统计精确保留测试，原任务/统计/作用域断言不降低。定向回归52通过，最终准确新SHA CI待独立核对；未变更生产环境或为测试放松鉴权。
+
+## 42.24.556 取消显示语义
+
+555准确提交cc8361c9的AI Annotation Recovery和Release Regression已成功，修复的Linux身份探测及Schema迁移红项已恢复。最后核对取消指标后，API保留取消任务的执行指标，但不把主动取消投影为模型连续故障；新增/强化终态接口断言与原取消/并发执行回归12/12通过。未改变租约、候选写入或GT。最终提交CI仍按准确SHA核对。

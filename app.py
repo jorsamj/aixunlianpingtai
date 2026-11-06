@@ -25799,7 +25799,7 @@ def get_annotation_task(project_id: str, task_id: str):
     if task.status not in {TaskStatus.QUEUED, TaskStatus.RUNNING, TaskStatus.CANCEL_REQUESTED}:
         generation = shared_task_artifacts().read_json(task_id, "generation.json", default={})
         if isinstance(generation, dict):
-            if generation.get("stopped_reason"):
+            if generation.get("stopped_reason") and generation["stopped_reason"] != "CANCEL_REQUESTED":
                 result["generation_interruption_code"] = str(generation["stopped_reason"])[:100]
             if isinstance(generation.get("execution"), dict):
                 result["generation_execution"] = generation["execution"]
