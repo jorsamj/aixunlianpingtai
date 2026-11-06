@@ -25996,6 +25996,12 @@ def transfer_annotation_candidates(project_id: str, task_id: str, payload: Annot
                 raise HTTPException(409,detail='任务已离开审核阶段，不能继续转移')
             if receipt['identity'] != identity or receipt['actor'] != actor:
                 raise HTTPException(409, detail='同一操作编号的范围或操作者不一致')
+            if receipt.get('status') == 'completed':
+                return {'request_id':payload.request_id,'status':'completed','succeeded':len(receipt['image_ids']),
+                        'failed':0,'conflicts':0,'total':len(receipt['image_ids']),
+                        'items':list(receipt['items'].values())[-200:],'idempotent':True,
+                        'summary':{**store.summary(),**store.review_counts()},'review_revision':store.review_revision(),
+                        'label_summary':store.label_summary()}
             if receipt.get('status') in {'undone','undo_pending'}:
                 raise HTTPException(409, detail='该转移已撤销或正在撤销，请核验原操作')
         else:
@@ -26024,7 +26030,11 @@ def transfer_annotation_candidates(project_id: str, task_id: str, payload: Annot
             artifacts.atomic_write_json(task_id, path, receipt)
         # At most 200 images per call. Reposting the same identity continues the
         # original durable receipt; a lost reply never creates a second transfer.
-        pending = [value for value in receipt['image_ids'] if receipt['items'].get(value,{}).get('status') != 'transferred'][:200]
+        # Complete one bounded pass over the frozen set before any failed item
+        # is retried. Otherwise a fully failed first page starves later pages.
+        pending = [value for value in receipt['image_ids'] if value not in receipt['items']][:200]
+        if not pending:
+            pending = [value for value in receipt['image_ids'] if receipt['items'].get(value,{}).get('status') != 'transferred'][:200]
         pool = NegativePool(material_store(project_id))
         for image_id in pending:
             try:

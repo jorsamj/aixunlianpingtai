@@ -187,3 +187,46 @@ def test_explicit_absence_confirmation_records_formal_scope_only_after_opt_in(cl
     assert formal['annotation_state']=='confirmed_empty'
     assert 'fire' in formal['annotation_scope']
     assert not formal['boxes']
+
+
+def test_transfer_attempts_later_pages_before_retrying_failed_first_batch(client, review_task, monkeypatch):
+    from platform_core.negative_pool import NegativePool
+    project,image,task,store,_=review_task
+    materials=host.material_store(project);original=materials.get(image['id'])
+    ids=[f'failed-batch-{i:03}' for i in range(240)]
+    materials.upsert_many([{**original,'id':value,'filename':value+'.jpg'} for value in ids])
+    store.initialize(labels=['fire'],total_images=240)
+    store.append_items({'image_id':value,'status':'empty','boxes':[]} for value in ids)
+    pool=NegativePool(materials);category=pool.category(name='failed-page-'+uuid.uuid4().hex)
+    base=f'/api/v60/projects/{project}/annotation-tasks/{task}'
+    selection=client.post(base+'/review-selection',json={'filter':'empty'}).json()
+    calls=[];real=NegativePool.members
+    def fail(self,image_ids,**kwargs):
+        calls.extend(image_ids);raise ValueError('isolated unavailable pool')
+    monkeypatch.setattr(NegativePool,'members',fail)
+    body={'request_id':'transfer-progress-240','selection_id':selection['selection_id'],'category_ids':[category['id']]}
+    first=client.post(base+'/negative-transfer',json=body).json()
+    assert first['status']=='pending' and first['failed']==200
+    second=client.post(base+'/negative-transfer',json=body).json()
+    assert second['status']=='partial' and second['failed']==240
+    assert len(calls)==240 and len(set(calls))==240
+    monkeypatch.setattr(NegativePool,'members',real)
+    resumed=client.post(base+'/negative-transfer',json=body).json()
+    assert resumed['succeeded']==200
+    completed=client.post(base+'/negative-transfer',json=body).json()
+    assert completed['status']=='completed' and completed['succeeded']==240
+
+
+def test_completed_transfer_replay_does_not_rebase_undo_revision(client, review_task):
+    from platform_core.negative_pool import NegativePool
+    project,image,task,store,_=review_task
+    pool=NegativePool(host.material_store(project));category=pool.category(name='before-'+uuid.uuid4().hex)
+    base=f'/api/v60/projects/{project}/annotation-tasks/{task}'
+    body={'request_id':'completed-receipt-rebase','image_ids':[image['id']],'category_ids':[category['id']]}
+    assert client.post(base+'/negative-transfer',json=body).json()['status']=='completed'
+    later=pool.category(name='after-'+uuid.uuid4().hex)
+    pool.members([image['id']],category_ids=[later['id']])
+    assert client.post(base+'/negative-transfer',json=body).json()['status']=='completed'
+    undo=client.post(base+'/negative-transfer/completed-receipt-rebase/undo')
+    assert undo.status_code==409,undo.text
+    assert later['id'] in pool.member_snapshot(image['id'])['categories']
