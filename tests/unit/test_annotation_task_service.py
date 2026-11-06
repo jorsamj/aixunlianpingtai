@@ -208,6 +208,114 @@ def test_candidate_store_ahead_of_checkpoint_skips_completed_provider_call_on_re
     assert store.summary()["total"] == 2
 
 
+def test_explicit_retry_reprocesses_only_failed_rows_and_preserves_successful_candidates(tmp_path, monkeypatch):
+    context = FakeContext(tmp_path)
+    _install_two_images(context, monkeypatch)
+    calls = []
+
+    def first(_request, image):
+        calls.append(image["id"])
+        if image["id"] == "two":
+            raise RuntimeError("single image failed")
+        return {"boxes": [{"label": "fire", "id": "kept-box"}]}
+
+    assert run_ai_annotation(context, annotate=first).status is TaskStatus.AWAITING_CONFIRMATION
+    store = CandidateStore(context.artifacts, task_id="ai-1")
+    original = store.get("one")
+    assert [store.get(id)["status"] for id in ("one", "two")] == ["success", "failed"]
+
+    context.task = replace(context.task, attempt=2)
+    context.repository.task = context.task
+    assert run_ai_annotation(context, annotate=lambda _req, image: (
+        calls.append(image["id"]) or {"boxes": []}
+    )).status is TaskStatus.AWAITING_CONFIRMATION
+    assert calls == ["one", "two", "two"]
+    assert store.get("one") == original
+    assert store.get("two")["status"] == "empty"
+    assert store.statistics()["failed"] == 0
+    assert store.statistics()["gt_committed"] == 0
+
+
+def test_service_outage_stops_batch_without_discarding_completed_candidate(tmp_path, monkeypatch):
+    from platform_core.providers.base import ProviderRequestError
+
+    context = FakeContext(tmp_path)
+    ids = [f"image-{index}" for index in range(100)]
+    context.artifacts.atomic_write_json("ai-1", "request.json", {"image_ids": ids, "labels": ["fire"]})
+    monkeypatch.setattr("platform_core.annotation_task_service.load_task_images", lambda *_: [
+        {"id": image_id, "source_content_sha256": "a" * 64} for image_id in ids
+    ])
+    calls = []
+
+    def failing(_request, image):
+        calls.append(image["id"])
+        if image["id"] != ids[0]:
+            raise ProviderRequestError("connection refused", code="MODEL_SERVICE_UNREACHABLE")
+        return {"boxes": [{"label": "fire"}]}
+
+    outcome = run_ai_annotation(context, annotate=failing)
+    assert outcome.status is TaskStatus.AWAITING_CONFIRMATION
+    assert len(calls) == 4  # one saved success, three consecutive service errors
+    store = CandidateStore(context.artifacts, task_id="ai-1")
+    assert store.summary()["total"] == 4
+    assert store.get(ids[0])["status"] == "success"
+    assert context.artifacts.read_json("ai-1", "generation.json")["remaining"] == 96
+    assert context.artifacts.read_json("ai-1", "generation.json")["stopped_reason"] == "MODEL_SERVICE_UNREACHABLE"
+
+
+def test_model_not_loaded_pauses_after_one_failed_image_with_no_reviewable_results(tmp_path, monkeypatch):
+    from platform_core.providers.base import ProviderRequestError
+
+    context = FakeContext(tmp_path)
+    _install_two_images(context, monkeypatch)
+    calls = []
+
+    def unavailable(_request, image):
+        calls.append(image["id"])
+        raise ProviderRequestError("model loading", code="MODEL_NOT_LOADED")
+
+    result = run_ai_annotation(context, annotate=unavailable)
+    assert result.status is TaskStatus.BLOCKED_BY_ENVIRONMENT
+    assert calls == ["one"]
+    store = CandidateStore(context.artifacts, task_id="ai-1")
+    assert store.summary()["failed"] == 1
+    assert store.summary()["total"] == 1
+    assert store.get("two") is None
+
+
+def test_cancellation_mid_task_preserves_first_completed_image_without_saving_late_result(tmp_path, monkeypatch):
+    context = FakeContext(tmp_path)
+    _install_two_images(context, monkeypatch)
+
+    def annotate(_request, image):
+        if image["id"] == "two":
+            context._cancelled = True
+        return {"boxes": [{"label": "fire", "id": image["id"]}]}
+
+    outcome = run_ai_annotation(context, annotate=annotate)
+    assert outcome.status is TaskStatus.CANCELLED
+    store = CandidateStore(context.artifacts, task_id="ai-1")
+    assert store.get("one")["status"] == "success"
+    assert store.get("two") is None
+    assert store.statistics()["total"] == 1
+    assert store.statistics()["gt_committed"] == 0
+
+
+def test_retry_refuses_changed_source_instead_of_reusing_previous_geometry(tmp_path, monkeypatch):
+    context = FakeContext(tmp_path)
+    _install_two_images(context, monkeypatch)
+    monkeypatch.setattr("platform_core.annotation_task_service.load_task_images", lambda *_: [
+        {"id": id, "source_content_sha256": "a" * 64} for id in ("one", "two")
+    ])
+    run_ai_annotation(context, annotate=lambda *_: {"boxes": []})
+    context.task = replace(context.task, attempt=2)
+    monkeypatch.setattr("platform_core.annotation_task_service.load_task_images", lambda *_: [
+        {"id": id, "source_content_sha256": "b" * 64} for id in ("one", "two")
+    ])
+    with pytest.raises(ValueError, match="AI_ANNOTATION_SOURCE_CHANGED"):
+        run_ai_annotation(context, annotate=lambda *_: pytest.fail("changed material reached inference"))
+
+
 def test_provider_result_cannot_commit_after_execution_is_fenced(tmp_path, monkeypatch):
     context = FakeContext(tmp_path)
     context.artifacts.atomic_write_json("ai-1", "request.json", {

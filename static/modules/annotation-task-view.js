@@ -14,6 +14,22 @@ export function annotationTaskView(task = {}) {
   const summary = task.summary || {};
   const total = progress.total || Number(summary.total) || 0;
   const completed = progress.completed || Math.max(0, Number(summary.total) || 0);
+  const failed = progress.failed || Number(summary.failed) || 0;
+  const remaining = Math.max(0, Number(task.remaining_count ?? (total - completed)) || 0);
+  const generated = Math.max(0, Number(summary.success || 0) + Number(summary.empty || 0));
+  const reviewed = Math.max(0, Number(summary.accepted || 0) + Number(summary.rejected || 0));
+  const stopped = new Set(['CANCELLED', 'FAILED', 'BLOCKED_BY_ENVIRONMENT', 'BLOCKED_BY_HARDWARE']).has(status);
+  // The shared cancel endpoint stores accepted=false as a cancellation marker
+  // for a queued task. This is not a human review decision.
+  const unreviewed = (task.accepted == null || (status === 'CANCELLED' && task.accepted === false))
+    && !reviewed && !Number(summary.gt_committed || 0);
+  const interruption = String(task.generation_interruption_code || '').trim();
+  const interruptionText = interruption ? {
+    MODEL_SERVICE_UNREACHABLE:'模型服务连接中断',
+    MODEL_REQUEST_TIMEOUT:'模型请求连续超时',
+    MODEL_NOT_LOADED:'模型服务尚未加载模型',
+    MODEL_PROTOCOL_REQUIRED:'模型服务协议配置不匹配',
+  }[interruption] || `模型连续异常（${interruption}）` : '';
   const queuePosition = exactTaskQueuePosition(task) || 0;
   const waitReason = String(task.resource_wait_reason || '').trim();
   const workerId = String(task.worker_id || '').trim();
@@ -43,7 +59,9 @@ export function annotationTaskView(task = {}) {
     percent: progress.percent,
     completed,
     total,
-    failed: progress.failed || Number(summary.failed) || 0,
+    failed,
+    remaining,
+    generated,
     boxes: Number(summary.boxes) || 0,
     progressText: `${completed} / ${total}`,
     queuePosition,
@@ -54,9 +72,11 @@ export function annotationTaskView(task = {}) {
     active: isTaskActive(status),
     canCancel: isTaskActive(status),
     canReview: status === 'AWAITING_CONFIRMATION',
-    canRetry: new Set(['PARTIAL_SUCCESS', 'SUCCEEDED', 'CANCELLED', 'FAILED', 'BLOCKED_BY_ENVIRONMENT', 'BLOCKED_BY_HARDWARE']).has(status),
+    canRetry: unreviewed && (stopped || status === 'AWAITING_CONFIRMATION')
+      && (failed > 0 || remaining > 0 || (stopped && !completed)),
+    canRecoverReview: stopped && unreviewed && generated > 0,
     accepted: task.accepted,
-    error: String(task.error || '')
+    error: String(task.error || (interruptionText ? `${interruptionText}。已完成候选框已保存，可在检查服务后补跑剩余图片，或先审核已完成部分。` : ''))
   };
 }
 

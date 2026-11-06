@@ -1528,3 +1528,73 @@ class TaskRepository:
         if result is None:
             raise KeyError(task_id)
         return result
+
+    def resume_annotation_generation(self, task_id: str, *, generation_progress: float = 0) -> TaskRecord:
+        """Requeue an unfinished AI generation without changing its candidate owner.
+
+        This is intentionally not the generic retry() path: the original task ID,
+        frozen request, per-image SQLite candidates and review history survive.
+        """
+        now = utc_now()
+        eligible = (
+            TaskStatus.AWAITING_CONFIRMATION.value,
+            TaskStatus.CANCELLED.value,
+            TaskStatus.FAILED.value,
+            TaskStatus.BLOCKED_BY_ENVIRONMENT.value,
+            TaskStatus.BLOCKED_BY_HARDWARE.value,
+        )
+        with closing(self._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            row = database.execute("SELECT * FROM tasks WHERE task_id=?", (str(task_id),)).fetchone()
+            if row is None:
+                database.rollback()
+                raise KeyError(task_id)
+            current = _from_row(row)
+            cancellation_marker = current.status is TaskStatus.CANCELLED and current.accepted is False
+            if current.kind is not TaskKind.AI_ANNOTATION or current.status.value not in eligible or (current.accepted is not None and not cancellation_marker):
+                database.rollback()
+                raise ValueError("only unfinished, unreviewed AI generation can resume")
+            database.execute(
+                """UPDATE tasks SET status='QUEUED', stage='annotation_retry_queued',
+                    current_item=NULL, error=NULL, result_ref=NULL, accepted=NULL, finished_at=NULL,
+                    progress=?,
+                    worker_id=NULL, lease_token=NULL, lease_expires_at=NULL,
+                    process_pid=NULL, process_create_time=NULL, process_command_hash=NULL,
+                    updated_at=? WHERE task_id=?""",
+                (max(0.0, min(70.0, float(generation_progress))), now, str(task_id)),
+            )
+            database.commit()
+        result = self.get(task_id)
+        if result is None:
+            raise KeyError(task_id)
+        return result
+
+    def recover_annotation_candidates_for_review(self, task_id: str) -> TaskRecord:
+        """Expose existing durable candidates from a cancelled/failed AI task."""
+        now = utc_now()
+        allowed = (
+            TaskStatus.CANCELLED.value, TaskStatus.FAILED.value,
+            TaskStatus.BLOCKED_BY_ENVIRONMENT.value, TaskStatus.BLOCKED_BY_HARDWARE.value,
+        )
+        with closing(self._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            row = database.execute("SELECT * FROM tasks WHERE task_id=?", (str(task_id),)).fetchone()
+            if row is None:
+                database.rollback()
+                raise KeyError(task_id)
+            current = _from_row(row)
+            cancellation_marker = current.status is TaskStatus.CANCELLED and current.accepted is False
+            if current.kind is not TaskKind.AI_ANNOTATION or current.status.value not in allowed or (current.accepted is not None and not cancellation_marker):
+                database.rollback()
+                raise ValueError("task has no recoverable AI generation review")
+            database.execute(
+                """UPDATE tasks SET status='AWAITING_CONFIRMATION', stage='awaiting_confirmation',
+                    result_ref='candidates/manifest.json', accepted=NULL, progress=MAX(progress,70),
+                    error=NULL, finished_at=NULL, updated_at=? WHERE task_id=?""",
+                (now, str(task_id)),
+            )
+            database.commit()
+        result = self.get(task_id)
+        if result is None:
+            raise KeyError(task_id)
+        return result

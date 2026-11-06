@@ -42,6 +42,31 @@ test('annotation task view exposes truthful progress and review action', () => {
   assert.equal(waiting.failed, 7);
 });
 
+test('failed or cancelled generation keeps saved candidates and exposes mutually safe recovery actions', () => {
+  const interrupted = annotationTaskView({status:'CANCELLED',accepted:false,
+    total_count:100,completed_count:7,failed_count:2,
+    summary:{total:7,success:4,empty:1,failed:2}});
+  assert.equal(interrupted.generated,5);
+  assert.equal(interrupted.remaining,93);
+  assert.equal(interrupted.canRecoverReview,true);
+  assert.equal(interrupted.canRetry,true);
+  assert.equal(interrupted.canReview,false);
+  const partial = annotationTaskView({status:'AWAITING_CONFIRMATION',accepted:null,
+    total_count:100,completed_count:7,failed_count:2,summary:{total:7,success:5,failed:2}});
+  assert.equal(partial.canRetry,true);
+  assert.equal(partial.canReview,true);
+  const alreadyReviewed = annotationTaskView({status:'CANCELLED',accepted:true,
+    total_count:100,completed_count:7,summary:{success:5,accepted:5}});
+  assert.equal(alreadyReviewed.canRetry,false);
+  assert.equal(alreadyReviewed.canRecoverReview,false);
+  const finished = annotationTaskView({status:'SUCCEEDED',accepted:false,completed_count:7,total_count:7});
+  assert.equal(finished.canRetry,false);
+  const app=readFileSync(new URL('../../static/app.js',import.meta.url),'utf8');
+  assert.match(app,/review-completed/);
+  assert.match(app,/审核已完成部分/);
+  assert.match(app,/补跑失败\/未处理/);
+});
+
 test('candidate decisions explicitly retain both accepts and rejects', () => {
   const payload = buildCandidateDecisions([
     {image_id: 'a', accepted: true},

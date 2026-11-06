@@ -803,9 +803,79 @@ def test_cancel_and_retry_use_shared_runtime_states(client, seeded_project, isol
     assert cancelled.json()["status"] == "CANCELLED"
     retried = client.post(f"/api/v60/projects/{project_id}/annotation-tasks/{task_id}/retry")
     assert retried.status_code == 200, retried.text
-    assert retried.json()["id"] != task_id
-    assert retried.json()["retry_of"] == task_id
+    assert retried.json()["id"] == task_id
+    assert retried.json()["retry_of"] is None
     assert retried.json()["status"] == "QUEUED"
+
+
+def test_retry_reuses_original_candidates_and_only_queues_unfinished_work(client, seeded_project, isolated_task_runtime):
+    project_id, _ = seeded_project
+    repository, artifacts = isolated_task_runtime
+    task_id = uuid.uuid4().hex[:12]
+    artifacts.atomic_write_json(task_id, "request.json", {"image_ids": ["x", "y"], "labels": ["fire"]})
+    repository.create(TaskRecord.new(task_id, project_id, TaskKind.AI_ANNOTATION,
+                                     "request.json", f"vision:{task_id}", required_capabilities=("vision_provider",)))
+    store = CandidateStore(artifacts, task_id=task_id)
+    store.initialize(labels=["fire"], total_images=2)
+    store.append_items([
+        {"image_id": "x", "status": "success", "boxes": [{"label": "fire"}]},
+        {"image_id": "y", "status": "failed", "boxes": [], "error": "timeout"},
+    ])
+    lease = repository.claim_next("test-worker", {TaskKind.AI_ANNOTATION}, {"vision_provider"})
+    repository.finish(task_id, lease.lease_token, TaskStatus.AWAITING_CONFIRMATION, "candidates/manifest.json")
+
+    response = client.post(f"/api/v60/projects/{project_id}/annotation-tasks/{task_id}/retry")
+    assert response.status_code == 200, response.text
+    assert response.json()["id"] == task_id
+    assert response.json()["status"] == "QUEUED"
+    assert store.get("x")["status"] == "success"
+    assert store.get("y")["status"] == "failed"
+    assert store.statistics()["gt_committed"] == 0
+    assert client.post(f"/api/v60/projects/{project_id}/annotation-tasks/{task_id}/retry").status_code == 409
+
+
+def test_cancelled_task_can_review_durable_successes_without_rerunning_or_committing_gt(client, seeded_project, isolated_task_runtime):
+    project_id, _ = seeded_project
+    repository, artifacts = isolated_task_runtime
+    task_id = _queued(project_id, repository, artifacts)
+    store = CandidateStore(artifacts, task_id=task_id)
+    store.initialize(labels=["fire"], total_images=1)
+    store.append_items([{"image_id": "x", "status": "success", "boxes": [{"label": "fire"}]}])
+    lease = repository.claim_next("test-worker", {TaskKind.AI_ANNOTATION}, {"vision_provider"})
+    repository.finish(task_id, lease.lease_token, TaskStatus.AWAITING_CONFIRMATION, "candidates/manifest.json")
+    cancelled = client.post(f"/api/v60/projects/{project_id}/annotation-tasks/{task_id}/cancel")
+    assert cancelled.status_code == 200
+    assert cancelled.json()["accepted"] is False  # shared runtime cancellation marker
+
+    recovered = client.post(f"/api/v60/projects/{project_id}/annotation-tasks/{task_id}/review-completed")
+    assert recovered.status_code == 200, recovered.text
+    assert recovered.json()["id"] == task_id
+    assert recovered.json()["status"] == "AWAITING_CONFIRMATION"
+    assert recovered.json()["summary"]["success"] == 1
+    assert recovered.json()["accepted"] is None
+    assert store.statistics()["gt_committed"] == 0
+    assert client.get(f"/api/v60/projects/{project_id}/annotation-tasks/{task_id}/candidates").status_code == 200
+    assert client.post(f"/api/v60/projects/{project_id}/annotation-tasks/{task_id}/retry").status_code == 409
+    assert client.post(f"/api/v60/projects/{project_id}/annotation-tasks/{task_id}/review-completed").status_code == 409
+
+
+def test_cancelled_queued_task_recovers_candidate_even_without_worker_result_ref(client, seeded_project, isolated_task_runtime):
+    project_id, _ = seeded_project
+    repository, artifacts = isolated_task_runtime
+    task_id = _queued(project_id, repository, artifacts)
+    store = CandidateStore(artifacts, task_id=task_id)
+    store.initialize(labels=["fire"], total_images=1)
+    store.append_items([{"image_id": "x", "status": "empty", "boxes": []}])
+    assert client.post(f"/api/v60/projects/{project_id}/annotation-tasks/{task_id}/cancel").status_code == 200
+    detail = client.get(f"/api/v60/projects/{project_id}/annotation-tasks/{task_id}")
+    assert detail.status_code == 200
+    assert detail.json()["summary"]["empty"] == 1
+    assert detail.json()["completed_count"] == 1
+    assert detail.json()["remaining_count"] == 0
+    review = client.post(f"/api/v60/projects/{project_id}/annotation-tasks/{task_id}/review-completed")
+    assert review.status_code == 200, review.text
+    assert review.json()["status"] == "AWAITING_CONFIRMATION"
+    assert store.statistics()["gt_committed"] == 0
 
 
 def test_material_state_projection_distinguishes_pending_review_from_commit(client, seeded_project, isolated_task_runtime):

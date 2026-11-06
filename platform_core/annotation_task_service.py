@@ -302,87 +302,124 @@ def run_ai_annotation(
             current_item=str(images[start - 1].get("id") or ""),
         )
 
+    image_by_id = {str(image["id"]): image for image in images}
+    if context.task.attempt > 1:
+        # The original task is the candidate owner across retries and lease
+        # recovery. A changed material is not allowed to reuse saved geometry.
+        for saved in store.iter_items():
+            previous_hash = str(saved.get("source_content_sha256") or "").lower()
+            current = image_by_id[str(saved["image_id"])]
+            current_hash = str(current.get("source_content_sha256") or current.get("content_sha256") or "").lower()
+            if previous_hash and current_hash and previous_hash != current_hash:
+                raise ValueError("AI_ANNOTATION_SOURCE_CHANGED: 原图片内容已改变，不能沿用旧候选结果")
+
+    def produce_candidate(image):
+        try:
+            if mining_mode and annotate is annotate_one:
+                from .hard_sample_mining import infer_with_frozen_yolo
+                generated = infer_with_frozen_yolo(runtime_request, image)
+            else:
+                generated = annotate(runtime_request, image)
+            boxes = list(generated.get("boxes") or [])
+            item = {
+                "image_id": str(image["id"]), "filename": image.get("filename"),
+                "url": image.get("url"), "width": image.get("width"), "height": image.get("height"),
+                "source_content_sha256": str(image.get("source_content_sha256") or image.get("content_sha256") or "").strip().lower(),
+                "status": "success" if boxes else "empty", "boxes": boxes,
+                **{key: generated.get(key) for key in (
+                    "raw_response_hash", "request_id", "latency_ms", "provider", "model", "diagnostics",
+                    "hard_sample_signals", "hard_sample_priority", "ground_truth_compared",
+                    "gt_comparison", "root_cause_confirmed",
+                ) if generated.get(key) is not None and generated.get(key) != ""},
+            }
+            failure_code = ""
+        except Exception as error:
+            item = {
+                "image_id": str(image.get("id") or ""), "filename": image.get("filename"),
+                "url": image.get("url"), "width": image.get("width"), "height": image.get("height"),
+                "source_content_sha256": str(image.get("source_content_sha256") or image.get("content_sha256") or "").strip().lower(),
+                "status": "failed", "boxes": [], "error": _public_error(error),
+            }
+            if isinstance(getattr(error, "diagnostics", None), dict):
+                item["diagnostics"] = error.diagnostics
+            failure_code = str(getattr(error, "code", "") or type(error).__name__)
+        if request.get("review_scope_policy") == "per_image_required":
+            item["review_scope_policy"] = "per_image_required"
+            item["missing_review_scope"] = list(expected_scopes[str(image["id"])])
+        return item, failure_code
+
+    service_faults = {
+        "MODEL_SERVICE_UNREACHABLE", "MODEL_REQUEST_TIMEOUT", "MODEL_NOT_LOADED",
+        "MODEL_AUTHENTICATION_FAILED", "MODEL_RESOURCE_NOT_FOUND", "MODEL_SERVICE_ERROR",
+        "MODEL_OUTPUT_PARSE_ERROR", "MODEL_OUTPUT_FAILED", "MODEL_PROTOCOL_REQUIRED",
+        "ConnectionError", "TimeoutError",
+    }
+    hard_faults = {"MODEL_NOT_LOADED", "MODEL_AUTHENTICATION_FAILED", "MODEL_RESOURCE_NOT_FOUND", "MODEL_PROTOCOL_REQUIRED"}
+    consecutive_faults = 0
+    stop_reason = ""
     with store.write_session(
         commit_guard=lambda: _assert_generation_commit(context),
     ) as append_candidate:
-        for index in range(start, len(images)):
-            if context.cancel_requested():
-                sync_annotation_statistics(context.repository, context.task, store)
-                return WorkerOutcome(TaskStatus.CANCELLED, "candidates/manifest.json")
-            image = images[index]
-            try:
-                if mining_mode and annotate is annotate_one:
-                    from .hard_sample_mining import infer_with_frozen_yolo
-                    generated = infer_with_frozen_yolo(runtime_request, image)
+        # On an explicit retry (or reclaimed execution), retry only failed
+        # prefix rows. Successful and legitimate empty results are immutable.
+        if context.task.attempt > 1:
+            for previous in store.iter_items():
+                if previous.get("status") != "failed":
+                    continue
+                if context.cancel_requested():
+                    sync_annotation_statistics(context.repository, context.task, store)
+                    return WorkerOutcome(TaskStatus.CANCELLED, "candidates/manifest.json")
+                image = image_by_id[str(previous["image_id"])]
+                item, code = produce_candidate(image)
+                if context.cancel_requested():
+                    return WorkerOutcome(TaskStatus.CANCELLED, "candidates/manifest.json")
+                append_candidate([item])
+                if item["status"] != "failed":
+                    succeeded += 1
+                    failed -= 1
+                context.save_checkpoint({"next_index": start, "succeeded": succeeded,
+                                         "failed": failed, "source": "candidate_store"})
+                consecutive_faults = consecutive_faults + 1 if code in service_faults else 0
+                if code in hard_faults or consecutive_faults >= 3:
+                    stop_reason = code or "MODEL_SERVICE_ERROR"
+                    break
+        if not stop_reason:
+            for index in range(start, len(images)):
+                if context.cancel_requested():
+                    sync_annotation_statistics(context.repository, context.task, store)
+                    return WorkerOutcome(TaskStatus.CANCELLED, "candidates/manifest.json")
+                image = images[index]
+                item, code = produce_candidate(image)
+                # A provider call can outlive its lease or cancellation.
+                if context.cancel_requested():
+                    return WorkerOutcome(TaskStatus.CANCELLED, "candidates/manifest.json")
+                append_candidate([item])
+                if item["status"] == "failed":
+                    failed += 1
                 else:
-                    generated = annotate(runtime_request, image)
-                boxes = list(generated.get("boxes") or [])
-                item = {
-                    "image_id": str(image["id"]),
-                    "filename": image.get("filename"),
-                    "url": image.get("url"),
-                    "width": image.get("width"),
-                    "height": image.get("height"),
-                    "source_content_sha256": str(
-                        image.get("source_content_sha256") or image.get("content_sha256") or ""
-                    ).strip().lower(),
-                    "status": "success" if boxes else "empty",
-                    "boxes": boxes,
-                    **{key: generated.get(key) for key in (
-                        "raw_response_hash", "request_id", "latency_ms", "provider", "model", "diagnostics",
-                        "hard_sample_signals", "hard_sample_priority",
-                        "ground_truth_compared", "gt_comparison", "root_cause_confirmed",
-                    ) if generated.get(key) is not None and generated.get(key) != ""},
-                }
-                next_succeeded = succeeded + 1
-                next_failed = failed
-            except Exception as error:
-                item = {
-                    "image_id": str(image.get("id") or ""),
-                    "filename": image.get("filename"),
-                    "url": image.get("url"),
-                    "width": image.get("width"),
-                    "height": image.get("height"),
-                    "status": "failed",
-                    "boxes": [],
-                    "error": _public_error(error),
-                }
-                if isinstance(getattr(error, "diagnostics", None), dict):
-                    item["diagnostics"] = error.diagnostics
-                next_succeeded = succeeded
-                next_failed = failed + 1
-
-            if request.get("review_scope_policy") == "per_image_required":
-                item["review_scope_policy"] = "per_image_required"
-                item["missing_review_scope"] = list(expected_scopes[str(image["id"])])
-
-            # A provider call can outlive the lease/cancellation decision. Never
-            # publish its result without re-checking current execution ownership.
-            if context.cancel_requested():
-                return WorkerOutcome(TaskStatus.CANCELLED, "candidates/manifest.json")
-            append_candidate([item])
-            succeeded = next_succeeded
-            failed = next_failed
-            context.save_checkpoint({
-                "next_index": index + 1,
-                "succeeded": succeeded,
-                "failed": failed,
-                "source": "candidate_store",
-            })
-            context.heartbeat(
-                progress=int((index + 1) / max(1, len(images)) * 70),
-                stage="AI_ANNOTATION",
-                current_item=str(image.get("id") or ""),
-            )
-            if (index + 1) % 100 == 0:
-                sync_annotation_statistics(context.repository, context.task, store)
+                    succeeded += 1
+                context.save_checkpoint({"next_index": index + 1, "succeeded": succeeded,
+                                         "failed": failed, "source": "candidate_store"})
+                context.heartbeat(progress=int((index + 1) / max(1, len(images)) * 70),
+                                  stage="AI_ANNOTATION", current_item=str(image.get("id") or ""))
+                if (index + 1) % 100 == 0:
+                    sync_annotation_statistics(context.repository, context.task, store)
+                consecutive_faults = consecutive_faults + 1 if code in service_faults else 0
+                if code in hard_faults or consecutive_faults >= 3:
+                    stop_reason = code or "MODEL_SERVICE_ERROR"
+                    break
 
 
     summary = sync_annotation_statistics(context.repository, context.task, store)
     context.artifacts.atomic_write_json(context.task.task_id, "generation.json", {
         "summary": summary,
         "generation_partial": bool(failed),
+        "stopped_reason": stop_reason,
+        "remaining": max(0, len(images) - summary["total"]),
     })
+    if stop_reason:
+        return WorkerOutcome(TaskStatus.AWAITING_CONFIRMATION if succeeded else TaskStatus.BLOCKED_BY_ENVIRONMENT,
+                             "candidates/manifest.json", stop_reason, True)
     if failed and not succeeded:
         return WorkerOutcome(TaskStatus.FAILED, "candidates/manifest.json", "all images failed", True)
     return WorkerOutcome(

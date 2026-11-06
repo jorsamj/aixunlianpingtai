@@ -24952,6 +24952,7 @@ def public_annotation_task(
         "model_config_revision": str((request or {}).get("model_config_revision") or "") if isinstance(request, dict) else "",
         "total_count": total_count,
         "completed_count": min(total_count, completed_count) if total_count else completed_count,
+        "remaining_count": max(0, total_count - completed_count),
         "failed_count": failed_count,
         "summary": progress_summary,
         "stage_statistics": progress_summary if "gt_committed" in progress_summary else None,
@@ -24960,10 +24961,11 @@ def public_annotation_task(
 
 
 def _annotation_summary(task: TaskRecord) -> dict:
-    if not task.result_ref:
+    artifacts = shared_task_artifacts()
+    if not task.result_ref and not artifacts.artifact_path(task.task_id, "candidates/manifest.json").is_file():
         return {}
     try:
-        return CandidateStore(shared_task_artifacts(), task_id=task.task_id).summary()
+        return CandidateStore(artifacts, task_id=task.task_id).summary()
     except (FileNotFoundError, ValueError):
         return {}
 
@@ -25708,7 +25710,12 @@ def get_annotation_task(project_id: str, task_id: str):
             shared_task_repository(), task,
             CandidateStore(shared_task_artifacts(), task_id=task.task_id),
         )
-    return public_annotation_task(task, summary=summary)
+    result = public_annotation_task(task, summary=summary)
+    if task.status in {TaskStatus.AWAITING_CONFIRMATION, TaskStatus.FAILED, TaskStatus.BLOCKED_BY_ENVIRONMENT}:
+        generation = shared_task_artifacts().read_json(task_id, "generation.json", default={})
+        if isinstance(generation, dict) and generation.get("stopped_reason"):
+            result["generation_interruption_code"] = str(generation["stopped_reason"])[:100]
+    return result
 
 
 @app.get("/api/v60/projects/{project_id}/annotation-tasks/{task_id}/gt-audit")
@@ -26175,7 +26182,7 @@ def cancel_annotation_task(project_id: str, task_id: str):
 
 @app.post("/api/v60/projects/{project_id}/annotation-tasks/{task_id}/retry")
 def retry_annotation_task(project_id: str, task_id: str):
-    from dataclasses import replace
+    from filelock import FileLock, Timeout
 
     task = _require_annotation_review_task(project_id, task_id)
     if task.kind is TaskKind.MATERIAL_BATCH:
@@ -26184,23 +26191,71 @@ def retry_annotation_task(project_id: str, task_id: str):
             raise HTTPException(status_code=409, detail="只有未完成的批处理任务可以重试")
         with _storage_source_fence():
             return public_annotation_task(shared_task_repository().retry(task_id))
-    if task.status not in {
-        TaskStatus.CANCELLED, TaskStatus.FAILED, TaskStatus.BLOCKED_BY_ENVIRONMENT,
-        TaskStatus.BLOCKED_BY_HARDWARE, TaskStatus.PARTIAL_SUCCESS, TaskStatus.SUCCEEDED,
-    }:
-        raise HTTPException(status_code=409, detail="只有已结束的任务可以重试")
-    request = shared_task_artifacts().read_json(task.task_id, task.payload_ref, default=None)
-    if not isinstance(request, dict):
-        raise HTTPException(status_code=409, detail="任务创建参数已损坏，无法重试")
-    new_id = uuid.uuid4().hex[:12]
-    with _storage_source_fence():
-        shared_task_artifacts().atomic_write_json(new_id, "request.json", request)
-        cloned = replace(TaskRecord.new(
-            new_id, project_id, TaskKind.AI_ANNOTATION, "request.json",
-            task.resource_key, priority=task.priority,
-            required_capabilities=task.required_capabilities,
-        ), retry_of=task.task_id)
-        return public_annotation_task(shared_task_repository().create(cloned))
+    try:
+        with FileLock(str(shared_task_artifacts().artifact_path(task_id, "review.lock")), timeout=5):
+            # An earlier decision and a resumed generation cannot share ownership.
+            task = _require_annotation_review_task(project_id, task_id)
+            if task.kind is not TaskKind.AI_ANNOTATION or task.status not in {
+                TaskStatus.AWAITING_CONFIRMATION, TaskStatus.CANCELLED, TaskStatus.FAILED,
+                TaskStatus.BLOCKED_BY_ENVIRONMENT, TaskStatus.BLOCKED_BY_HARDWARE,
+            } or (task.accepted is not None and not (task.status is TaskStatus.CANCELLED and task.accepted is False)):
+                raise HTTPException(status_code=409, detail="仅未审核、尚未完成的 AI 标注任务可以继续生成")
+            artifacts = shared_task_artifacts()
+            request = artifacts.read_json(task.task_id, task.payload_ref, default=None)
+            if not isinstance(request, dict) or not request.get("image_ids"):
+                raise HTTPException(status_code=409, detail="冻结图片列表已损坏，无法继续执行")
+            if artifacts.artifact_path(task_id, "review/confirmation.json").is_file() or artifacts.artifact_path(task_id, "review/result.json").is_file():
+                raise HTTPException(status_code=409, detail="该任务已有正式审核确认，不能重新生成候选框")
+            summary = {}
+            if artifacts.artifact_path(task_id, "candidates/manifest.json").is_file():
+                summary = CandidateStore(artifacts, task_id=task_id).statistics()
+            if summary.get("accepted") or summary.get("rejected") or summary.get("gt_committed"):
+                raise HTTPException(status_code=409, detail="任务已有人工审核记录，请先处理审核结果，不可覆盖候选框")
+            total = len(request["image_ids"])
+            if request.get("preview_count"):
+                total = min(total, max(0, int(request["preview_count"])))
+            if summary.get("total", 0) >= total and not summary.get("failed"):
+                raise HTTPException(status_code=409, detail="图片已全部识别完成，请直接审核已有候选框")
+            with _storage_source_fence():
+                try:
+                    resumed = shared_task_repository().resume_annotation_generation(
+                        task_id, generation_progress=70 * summary.get("total", 0) / max(1, total),
+                    )
+                except ValueError as error:
+                    raise HTTPException(status_code=409, detail=str(error)) from error
+            return public_annotation_task(resumed, summary=summary)
+    except Timeout as error:
+        raise HTTPException(status_code=409, detail="审核操作正在进行，请稍后重试") from error
+
+
+@app.post("/api/v60/projects/{project_id}/annotation-tasks/{task_id}/review-completed")
+def review_completed_annotation_task(project_id: str, task_id: str):
+    """Recover already-persisted successes for human review, never formal GT."""
+    from filelock import FileLock, Timeout
+
+    _require_annotation_review_task(project_id, task_id)
+    try:
+        with FileLock(str(shared_task_artifacts().artifact_path(task_id, "review.lock")), timeout=5):
+            task = _require_annotation_review_task(project_id, task_id)
+            artifacts = shared_task_artifacts()
+            if not artifacts.artifact_path(task_id, "candidates/manifest.json").is_file():
+                raise HTTPException(status_code=409, detail="尚无已保存的候选结果，可尝试继续任务")
+            store = CandidateStore(artifacts, task_id=task_id)
+            summary = store.statistics()
+            if not summary.get("success", 0) + summary.get("empty", 0):
+                raise HTTPException(status_code=409, detail="尚无识别完成的图片，可尝试继续任务")
+            if ((task.accepted is not None and not (task.status is TaskStatus.CANCELLED and task.accepted is False))
+                    or summary.get("gt_committed")
+                    or artifacts.artifact_path(task_id, "review/confirmation.json").is_file()
+                    or artifacts.artifact_path(task_id, "review/result.json").is_file()):
+                raise HTTPException(status_code=409, detail="任务已有正式审核确认，不允许恢复重复审核")
+            try:
+                recovered = shared_task_repository().recover_annotation_candidates_for_review(task_id)
+            except ValueError as error:
+                raise HTTPException(status_code=409, detail=str(error)) from error
+            return public_annotation_task(recovered, summary=summary)
+    except Timeout as error:
+        raise HTTPException(status_code=409, detail="审核操作正在进行，请稍后重试") from error
 
 
 def _resolve_v61_test_model(project_id: str, *, model_name: str, model_source: str, local_path: str, algorithm_id: str, version_id: str) -> ModelResolution:
