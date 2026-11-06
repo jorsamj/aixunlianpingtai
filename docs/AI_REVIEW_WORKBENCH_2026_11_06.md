@@ -62,3 +62,11 @@ CandidateStore只做同库增量列和索引迁移；旧记录默认active、dra
 - 版本文件、Python/JS语法和git diff检查；npm无单独生产构建脚本，使用原静态入口及vendor校验。
 - 原工作区独有模型配额/图片同意及旧工作流改动只读审计，未覆盖、未cherry-pick；本轮只依远端9656ded4实际架构接续。
 - 准确提交和远端CI在推送后核对；当前文档中的本地绿灯不代表准确SHA CI或现场验收。
+
+## 42.24.545 准确CI回归修复
+
+cc672d4a 首轮可查询49次运行中46成功、2次Remote Training Runtime失败、1次前端运行中。两个失败均为同一 `test_p2_reviewed_mining_preview_adoption_reuses_original_candidate_set_and_protects_test`：历史已审核难样本只读预览被新剩余候选规则过滤为空。已在本地复现RED，仅 `_reviewed_mining_candidates` 历史读取显式 `include_committed=True`，保留默认剩余过滤和正式GT隔离；不修改或放宽原回归断言。该SHA前端完整CI与三个Chrome分片随后全部success，最终47成功/2失败；新SHA需重新核对CI。
+
+同时补充一次RED/GREEN范围回归：转池或编辑后返回当前可审核标签汇总，最终请求移除只属于已排除候选的旧映射，避免剩余集合被过期映射误阻断；服务端未知映射校验继续严格保留。用户确认4070在无法访问的内网，本轮不再请求现场访问，真实三路推理保留NOT VERIFIED。Remote Training Runtime原精确CI命令本地132/132通过。
+
+545提交前复验：聚焦Python含难样本历史210/210，Remote Training Runtime原命令132/132，前端全量1549/1549，真实API/原审核轮询Chrome3/3。两万任务元数据、24张当前页的浏览器采样：输入至下一帧P50 16.6ms/P95 16.9ms，采样窗口JS堆观察峰值7539990字节，0个>50ms长任务，DOM身份保留；详见 `images/ai-review-workbench-20261106/browser-interaction-baseline.json`。这是隔离合成夹具的观测，非真实模型/生产端到端或整机内存峰值。

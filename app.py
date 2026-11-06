@@ -11970,7 +11970,7 @@ def _reviewed_mining_candidates(project_id, algorithm_id, version_id, task_id, *
     store = CandidateStore(artifacts, task_id=task_id)
     if not store.path.is_file():
         raise HTTPException(status_code=409, detail='已审核候选索引不可用，不自动重建历史审核事实')
-    items = list(store.get_many(image_ids).values()) if image_ids is not None else list(islice(store.iter_accepted_items(), offset, offset + limit))
+    items = list(store.get_many(image_ids).values()) if image_ids is not None else list(islice(store.iter_accepted_items(include_committed=True), offset, offset + limit))
     ids = [str(row.get('image_id') or '') for row in items]
     if image_ids is not None and set(ids) != set(image_ids):
         raise HTTPException(status_code=409, detail='部分候选已不存在')
@@ -25938,7 +25938,7 @@ def save_annotation_review_draft(project_id: str, task_id: str, image_id: str, p
                                      actor=actor, request_id=payload.request_id)
         except (ValueError, KeyError) as error:
             raise HTTPException(409 if 'revision' in str(error).lower() else 422, detail=str(error)) from error
-        return {**saved, 'item':store.get(image_id), 'review_revision':store.review_revision(), 'summary':{**store.summary(), **store.review_counts()}}
+        return {**saved, 'item':store.get(image_id), 'review_revision':store.review_revision(), 'summary':{**store.summary(), **store.review_counts()}, 'label_summary':store.label_summary()}
 
 
 class AnnotationSelectionReq(BaseModel):
@@ -26085,7 +26085,7 @@ def transfer_annotation_candidates(project_id: str, task_id: str, payload: Annot
         artifacts.atomic_write_json(task_id, path, receipt)
         return {'request_id':payload.request_id,'status':receipt['status'],'succeeded':succeeded,'failed':failed,
                 'conflicts':failed,'total':len(receipt['image_ids']), 'items':list(receipt['items'].values())[-200:],
-                'summary':{**store.summary(), **store.review_counts()},'review_revision':store.review_revision()}
+                'summary':{**store.summary(), **store.review_counts()},'review_revision':store.review_revision(),'label_summary':store.label_summary()}
 
 
 @app.get("/api/v60/projects/{project_id}/annotation-tasks/{task_id}/negative-transfer/{request_id}")
@@ -26147,7 +26147,7 @@ def undo_annotation_transfer(project_id: str, task_id: str, request_id: str, req
         completed=len(undo['done'])==sum(value.get('status')=='transferred' for value in receipt['items'].values())
         receipt['status']='undone' if completed else 'undo_pending';receipt['undo']['status']='completed' if completed else 'pending'
         artifacts.atomic_write_json(task_id,path,receipt)
-        return {'ok':True,'status':'undone' if completed else 'pending','summary':{**store.summary(),**store.review_counts()},'review_revision':store.review_revision()}
+        return {'ok':True,'status':'undone' if completed else 'pending','summary':{**store.summary(),**store.review_counts()},'review_revision':store.review_revision(),'label_summary':store.label_summary()}
 
 
 @app.post("/api/v60/projects/{project_id}/annotation-tasks/{task_id}/negative-transfer-preview")

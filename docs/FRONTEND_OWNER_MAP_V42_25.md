@@ -1,3 +1,5 @@
+> **2026-11-06 / 42.24.545 难样本历史预览回归修复**：cc672d4a 的 Remote Training Runtime API 暴露原已审核难样本预览需要读取已提交候选，而人工剩余集合已排除这些项。仅该只读历史入口显式 include_committed=True，审核/转池排除不放宽；详见审核专项。精确新SHA CI待核，生产未动。
+
 > **2026-11-06 / 42.24.544 AI审核工作台**：服务器草稿CAS、原候选证据、批量转池/恢复/撤销及后端剩余范围、失败逐图详情、三栏中文界面和原编辑器。独立克隆保护原WIP；本地测试和准确SHA CI记录见 `docs/AI_REVIEW_WORKBENCH_2026_11_06.md`（docs内去掉docs/前缀）。真实4070/生产性能及部署未验证，生产未动；不merge main/release/force push。
 
 > **2026-11-05 CI纠偏**：f053e1f5准确Actions日志中的凭据隔离、资源缓存键及旧界面测试合同正在收口；仅测试夹具/入口缓存一致性，不改正式GT/模型能力。新SHA全部CI完成前不称交付通过。详见 docs/AI_ANNOTATION_MULTIMODEL_P0_2026_11_05.md。
