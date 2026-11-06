@@ -2,6 +2,13 @@ import {withRequestDeadline} from './api.js?v=20261021s';
 import {unverifiedUploadTask} from './upload-task-center.js?v=66014';
 import {applyExactLabelCodeMatches, bulkSetLabelMapping, buildManualLabelMapping, createLabelMappingReview, filterCanonicalLabels, labelMappingReviewPage, labelMappingReviewSummary, labelSampleOverlay, reconcileLabelMappingReview, setLabelMapping, setLabelMappingReviewPage, setLabelMappingReviewSearch, setLabelMappingSelected, setLabelMappingTargetSearch, planOriginalLabelMappings} from './label-mapping-review.js?v=4226356';
 
+export function zipCompletionSummary(job) {
+  const report=job?.report||{},total=Number(report.imported_images||0),annotated=Number(report.annotated_images||0);
+  return String(report.scan_kind||job?.scan_kind||'')==='RAW_UNANNOTATED'&&annotated===0
+    ?`已成功入库 ${total} 张原图，等待标注`
+    :`导入完成：${total} 张图片，其中 ${annotated} 张带标注，${Math.max(0,total-annotated)} 张待标注，${Number(report.boxes||0)} 个框。`;
+}
+
 export const ACTIVE_ZIP_STATUSES = new Set(['uploading','paused','merging','validating','selecting','queued','waiting','running']);
 export const IMPORT_QUEUE_ZIP_STATUSES = new Set(['selecting','queued','waiting','running']);
 export const TERMINAL_ZIP_STATUSES = new Set(['done','failed','cancelled','canceled']);
@@ -567,11 +574,11 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
     const raw=Math.max(0,Number(r.imported_images||0)-Number(r.annotated_images||0));
     const next=raw?`<section class="zip-next-actions" aria-label="本次 ZIP 的下一步"><div class="zip-next-heading"><b>${raw} 张原图等待标注</b><span>清洗是可选步骤，AI 候选标注需审核后才能参与训练。</span></div><div class="zip-next-grid">
       <button type="button" class="zip-next-action recommended" onclick="window.ZipImportRuntime?.startBatchAction(${jsArg(job.id)},'ai')"><strong>直接 AI 预标注</strong><span>跳过清洗 · 本批次自动带入</span></button>
-      <button type="button" class="zip-next-action" onclick="window.ZipImportRuntime?.startBatchAction(${jsArg(job.id)},'clean')"><strong>先清洗，再标注</strong><span>筛除问题图片后进入标注</span></button>
+      <button type="button" class="zip-next-action" onclick="window.ZipImportRuntime?.startBatchAction(${jsArg(job.id)},'clean')"><strong>质量检查（可选）</strong><span>按需筛查，不影响直接标注</span></button>
       <button type="button" class="zip-next-action" onclick="window.ZipImportRuntime?.startBatchAction(${jsArg(job.id)},'manual')"><strong>人工标注</strong><span>进入已有素材审核工作台</span></button>
       <button type="button" class="zip-next-action" onclick="window.ZipImportRuntime?.startBatchAction(${jsArg(job.id)},'later')"><strong>暂存素材库</strong><span>已入库，可随时回来处理</span></button>
     </div></section>`:'';
-    return `<div class="alert ok"><b>导入完成</b>：${Number(r.imported_images||0)} 张图片，其中 ${Number(r.annotated_images||0)} 张带标注，${raw} 张待标注，${Number(r.boxes||0)} 个框。</div>${next}${warns?`<ul class="zip410-warn">${warns}</ul>`:''}`;
+    return `<div class="alert ok">${esc(zipCompletionSummary(job))}</div>${next}${warns?`<ul class="zip410-warn">${warns}</ul>`:''}`;
   }if(s==='failed'&&job?.cleanup_status==='failed')return `<div class="alert err"><b>取消清理失败，可重试</b>：${esc(job?.cleanup_error||job?.error||'临时缓存尚未清理完成')}</div>`;if(s==='failed')return `<div class="alert err"><b>导入失败</b>：${esc(job?.error||job?.message||'未知错误')}</div>`;if(s==='cancelled'||s==='canceled')return '<div class="alert warn">本次 ZIP 导入已中断；未提交的缓存已由后台按安全边界清理。</div>';return''}
   function startBatchAction(jobId,action){
     const job=jobs.find(row=>String(row.id)===String(jobId))||knownJobs.get(String(jobId));
@@ -582,7 +589,7 @@ export function installZipImportRuntime({getState=()=>({}),projectId=()=>getStat
       if(typeof window.createAiLabel429!=='function'){notify?.('AI 标注工作台未就绪，请从素材库进入');return false}
       window.createAiLabel429({source_batch_id:String(jobId)});return true;
     }
-    if(action==='later'){notify?.('图片已保存在素材库，可随时创建清洗或标注任务');return true}
+    if(action==='later'){const state=getState()||{};state.materialBatchFilter61=String(jobId);state.data412Tab='all';state.data412Page=1;window.setPage?.('数据集');notify?.('已入库，可随时继续标注或质量检查');return true}
     if(action==='manual'&&typeof window.openImportManualAnnotation429==='function'){
       void window.openImportManualAnnotation429(String(jobId));return true;
     }

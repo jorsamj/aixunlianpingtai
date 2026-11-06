@@ -27,24 +27,13 @@ for(const [width,height] of [[1920,1080],[1440,900],[1366,768],[375,812]])test(`
  await page.getByRole('button',{name:'列表',exact:true}).click();await expect(page.locator('#data412Grid')).toHaveAttribute('data-material-view','list');expect(await page.evaluate(()=>window.__matNode===document.querySelector('.data412-card')&&state.data412Selected.has('mat-ui-0'))).toBe(true);expect(await page.evaluate(()=>window.MaterialPaginationRuntime61.state().requestSerial)).toBe(serial);
  await page.screenshot({path:testInfo.outputPath(`material-after-${width}x${height}-list.png`),fullPage:true});
  const failed=page.locator('[data-material-id="mat-ui-2"]');await expect(failed.locator('.material-image-issue')).toBeVisible();expect(await failed.locator('.material-media-plane').evaluate(node=>getComputedStyle(node).visibility)).toBe('hidden');for(const box of await failed.locator('.data412-box').all())expect(await box.evaluate(node=>getComputedStyle(node).visibility)).toBe('hidden');page.__matRetry=true;await failed.getByRole('button',{name:'重新加载'}).click();await expect(failed.locator('.material-media412')).toHaveAttribute('data-image-state','ready');
- await first.getByRole('button',{name:'详情',exact:true}).click();const detail=page.locator('.material-detail412');await expect(detail).toBeVisible();await expect(detail.getByRole('button',{name:'编辑标注'})).toBeVisible();expect(await detail.evaluate(node=>node.scrollWidth<=node.clientWidth+1)).toBe(true);await page.screenshot({path:testInfo.outputPath(`material-after-${width}x${height}-detail.png`),fullPage:true});
+ await first.locator('.data426-title').click();const detail=page.locator('.material-preview');await expect(detail).toBeVisible();await expect(detail.getByRole('button',{name:'编辑标注'})).toBeVisible();expect(await detail.evaluate(node=>node.scrollWidth<=node.clientWidth+1)).toBe(true);await page.screenshot({path:testInfo.outputPath(`material-after-${width}x${height}-detail.png`),fullPage:true});
 });
 
 
-test('negative-pool action survives asynchronous material card actions replacement', async({page})=>{
-  await page.setViewportSize({width:1366,height:768});
-  await openFixture(page);
-  const card=page.locator('[data-material-id="mat-ui-0"]');
-  const join=card.locator('[data-np="join-one"]');
-  await expect(join).toHaveCount(1);
-  await card.locator('.data426-actions').evaluate(actions=>{
-    actions.innerHTML='<button type="button" class="btn">详情</button>';
-  });
-  await expect(join).toHaveCount(1);
-  expect(await join.getAttribute('data-id')).toBe('mat-ui-0');
-  await page.evaluate(()=>window.NegativePoolRuntime.beforeNavigate('算法列表'));
-  await card.locator('.data426-actions').evaluate(actions=>{
-    actions.innerHTML='<button type="button" class="btn">详情</button>';
-  });
-  await expect(join).toHaveCount(0);
+test('negative-pool action stays in compact more menu and retires on navigation', async({page})=>{
+ await page.setViewportSize({width:1366,height:768});await openFixture(page);
+ const card=page.locator('[data-material-id="mat-ui-0"]');await expect(card.locator('[data-np="join-one"]')).not.toBeVisible();
+ await card.getByRole('button',{name:/更多操作/}).click();await expect(page.getByRole('menuitem',{name:'加入负样本池',exact:true})).toBeVisible();await page.getByRole('menuitem',{name:'加入负样本池',exact:true}).click();await expect(page.getByText('所选素材转入负样本池',{exact:true})).toBeVisible();
+ await page.keyboard.press('Escape');await expect(page.getByRole('menu')).toHaveCount(0);await page.evaluate(()=>window.setPage('算法列表'));await expect(page.getByRole('menu')).toHaveCount(0);
 });

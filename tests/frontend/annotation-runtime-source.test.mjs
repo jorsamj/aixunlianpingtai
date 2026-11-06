@@ -136,7 +136,9 @@ test('material card patching prefers stable material id over filename', () => {
 
 
 test('material card incremental patch uses the same v66 annotation status owner', () => {
-  assert.match(source, /meta\[1\]\.textContent=window\.materialAnnotationStatusV66\?\.\(image\)\|\|materialAnnotationStatus420\(image\)/);
+  assert.match(source,/status=meta\[compact\?0:1\]/);
+  assert.match(source,/class="annotation-status-v66 \$\{esc\(window\.materialAnnotationStatusClassV66/);
+  assert.match(source, /status\.textContent=window\.materialAnnotationStatusV66\?\.\(image\)\|\|materialAnnotationStatus420\(image\)/);
 });
 
 
@@ -185,7 +187,7 @@ test('one annotation truth view owns text color and provenance with formal truth
   assert.match(truth, /window\.materialAnnotationStatusClassV66=row=>window\.annotationTruthViewV66\(row\)\.className/);
   assert.match(truth, /window\.annotationOriginLabelV66=row=>window\.annotationTruthViewV66\(row\)\.originText/);
   assert.match(source, /annotation-status-v66/);
-  assert.match(source, /meta\[1\]\.className=`annotation-status-v66/);
+  assert.match(source, /status\.className=`annotation-status-v66/);
   assert.match(styles, /\.annotation-status-v66\.ai-pending/);
   assert.match(styles, /\.annotation-status-v66\.mixed/);
 });

@@ -4369,6 +4369,7 @@ def material_batch_router(
     storage_source_fence=None,
     training_selection_provider=None,
     actor_provider=None,
+    legacy_batch_resolver=None,
 ):
     # FastAPI resolves postponed endpoint annotations in this module's globals.
     # Bind Request only when mounting HTTP routes; workers do not require ASGI.
@@ -4407,9 +4408,20 @@ def material_batch_router(
         return invoke(material_integrity_gt_comparison, project_id, material_store(project_id),
             task_repository(), task_artifacts(), payload)
 
+    def require_indexed_filtered_batch(project_id, payload):
+        selection=payload.get('selection_spec') or {}
+        if not isinstance(selection,dict):return
+        filters=selection.get('filters') or {}
+        if not isinstance(filters,dict):return
+        batch=filters.get('source_batch_id')
+        if str(selection.get('scope') or '').upper()=='FILTERED' and batch and legacy_batch_resolver and legacy_batch_resolver(project_id,str(batch)):
+            from platform_core.errors import PlatformError
+            raise PlatformError(code='LEGACY_BATCH_SCOPE_REQUIRES_SELECTION',message='历史批次需要明确勾选图片',detail='此历史ZIP批次范围保存在原导入回执中；未创建或修改任务。',solution='请返回素材库勾选具体图片后执行。',status_code=409)
+
     @router.post("/estimate")
     def estimate(project_id: str, request: Request, payload: dict = Body(...)):
         project = get_project(project_id)
+        require_indexed_filtered_batch(project_id,payload)
         actor = actor_provider(request, project_id) if actor_provider else {}
         return invoke(lambda: estimate_batch(project_id, material_store(project_id), payload,
             repository=task_repository(),artifacts=task_artifacts(),actor=actor,project=project))
@@ -4417,6 +4429,7 @@ def material_batch_router(
     @router.post("", status_code=202)
     def create(project_id: str, request: Request, payload: dict = Body(...)):
         project = get_project(project_id)
+        require_indexed_filtered_batch(project_id,payload)
         actor = actor_provider(request, project_id) if actor_provider else {}
         fence = storage_source_fence() if storage_source_fence else nullcontext()
         with fence:

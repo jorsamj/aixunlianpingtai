@@ -2,3 +2,5 @@
 static/vendor/annotorious/** -text
 tools/third_party_notices/** -text
 static/vendor/uppy/** -text -whitespace
+
+static/vendor/material-presentation/** -text -whitespace

@@ -258,6 +258,16 @@ export function installNegativePoolRuntime({getState,api,pid,esc,toast,modal,clo
         activeRead?.controller.abort();activeRead=null;epoch++;
       }
     },
+    joinSelected(ids){
+      const frozen=[...new Set(ids.map(String))],project=String(pid());
+      if(!frozen.length||frozen.length>200)return toast('每批请选择1至200张图片');
+      dialog('所选素材转入负样本池',`<p>本次 ${frozen.length} 张。仅建立管理关联，不修改正式标注或确认训练资格。含正式目标框的图片会被阻断，请先走正式审核。</p><label>目标算法<select class="select" name="algorithm_id" required><option value="">请选择</option>${options(getState().algorithms||[],[])}</select></label><label><input type="checkbox" name="confirmed" required>已核对本次选择范围</label>`,async data=>{
+        if(!data.get('algorithm_id')||!data.get('confirmed'))throw Error('请选择目标算法并确认范围');
+        for(const id of frozen){const annotation=await api(`/api/projects/${encodeURIComponent(project)}/annotations/${encodeURIComponent(id)}`);if(annotation.boxes?.length)throw Error(`素材 ${id} 存在正式GT目标框，请先处理冲突`)}
+        if(String(pid())!==project)throw Error('项目已变化');
+        await write('/members',{image_ids:frozen,algorithm_id:String(data.get('algorithm_id')),action:'add'});
+      });
+    },
     open:()=>action('pool'),getSelected:()=>[...selected]
   };
   return window.NegativePoolRuntime;

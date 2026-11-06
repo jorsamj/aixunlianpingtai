@@ -149,8 +149,8 @@ test('dataset paging, search and refresh patch cards without rebuilding the shel
 
   await expect(page.locator('.data426-shell')).toBeVisible({timeout: 10_000});
   await expect(page.locator('#data412Grid')).toContainText('page-one.jpg', {timeout: 10_000});
-  await expect(page.locator('[data-material-id="m-1"] .data426-tags span')).toHaveCount(4);
-  await expect(page.locator('[data-material-id="m-1"] .data426-tags')).toContainText('+17');
+  await expect(page.locator('[data-material-id="m-1"] .data426-tags')).toHaveCount(0);
+  await expect(page.locator('[data-material-id="m-1"] .annotation-status-v66')).toContainText('1框');
   for (const [width,height] of [[1440,900],[1280,800],[768,1024],[390,844]]) {
     await page.setViewportSize({width,height});
     const card=page.locator('[data-material-id="m-1"]');

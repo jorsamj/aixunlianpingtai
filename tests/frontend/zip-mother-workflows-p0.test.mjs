@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {zipNeedsLabelConfirmation, zipStartDisposition} from '../../static/modules/zip-import-runtime.js';
+import {zipNeedsLabelConfirmation, zipStartDisposition, zipCompletionSummary} from '../../static/modules/zip-import-runtime.js';
 import {validatePreparedMotherModel} from '../../static/modules/training-submit.js';
 
 const read=path=>readFileSync(new URL(path, import.meta.url),'utf8');
@@ -57,4 +57,17 @@ test('verified mother models can install to eligible Agent with inline progress 
   assert.match(discovery,/model-install-\$\{taskId\}/);
   const operation=discovery.split('window.installResourceMotherModel = async button =>')[1].split('window.registerDiscoveredResourceModel')[0];
   assert.ok(!operation.includes('showModal('));
+});
+
+test('ZIP raw completion separates success from optional quality decision',()=>{
+  const source=read('../../static/modules/zip-import-runtime.js');
+  assert.match(source,/已成功入库/);
+  assert.match(source,/质量检查（可选）/);
+  assert.match(source,/materialBatchFilter61=String\(jobId\)/);
+  assert.match(source,/data412Tab='all'/);
+});
+
+test('ZIP completion treats explicit raw zero boxes as normal without hiding annotated counts',()=>{
+ assert.equal(zipCompletionSummary({scan_kind:'RAW_UNANNOTATED',report:{imported_images:2,annotated_images:0,boxes:0}}),'已成功入库 2 张原图，等待标注');
+ assert.match(zipCompletionSummary({scan_kind:'ANNOTATED',report:{imported_images:3,annotated_images:2,boxes:4}}),/2 张带标注，1 张待标注，4 个框/);
 });

@@ -6,7 +6,9 @@
     "vendor:annotorious": "node tools/vendor_annotorious.mjs",
     "verify:annotorious": "node tools/vendor_annotorious.mjs --check",
     "vendor:uppy": "node tools/vendor_uppy.mjs",
-    "verify:uppy": "node tools/vendor_uppy.mjs --check"
+    "verify:uppy": "node tools/vendor_uppy.mjs --check",
+    "vendor:material-presentation": "node tools/vendor_material_presentation.mjs",
+    "verify:material-presentation": "node tools/vendor_material_presentation.mjs --check"
   },
   "devDependencies": {
     "@playwright/test": "^1.55.0",
@@ -14,9 +16,12 @@
   },
   "dependencies": {
     "@annotorious/annotorious": "3.9.5",
+    "@floating-ui/dom": "1.8.0",
+    "@panzoom/panzoom": "4.6.2",
     "@uppy/core": "6.3.0",
     "@uppy/dashboard": "6.0.2",
-    "@uppy/locales": "5.3.1"
+    "@uppy/locales": "5.3.1",
+    "lucide": "1.70.0"
   },
   "engines": {
     "node": "^22.0.0 || ^24.0.0 || >=26.0.0"

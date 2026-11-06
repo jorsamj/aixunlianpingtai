@@ -1,4 +1,5 @@
-import {installNegativePoolRuntime} from './modules/negative-pool-runtime.js?v=42.25.532';
+import {installMaterialPresentation} from './modules/material-presentation.js?v=42.24.549';
+import {installNegativePoolRuntime} from './modules/negative-pool-runtime.js?v=42.25.549';
 import {ADVANCED_MENUS, advancedPageInfo, installAdvancedNavigation} from './modules/advanced-navigation.js?v=20261024';
 import {installQualityDetectionWorkbench} from './modules/quality-detection-workbench.js?v=42.24.525';
 import {installAdvancedEvaluation} from './modules/advanced-evaluation.js?v=20261102-history';
@@ -50,7 +51,7 @@ import {qualityChartModel} from './modules/quality.js?v=421800';
 import {reportPresentation, metricChart, trainingCharts, formatPercentagePointDelta, metricCredibilityHtml, chatGPTAnalysisMaterial, trainingReportHtml, mountTrainingReport, mountReportCharts, evaluationChartGroups, mountEvaluationCharts, disposeReportViews, lineageReportHtml} from './modules/reports.js?v=20261022a';
 import {isActiveVideoTask, normalizeVideoTask, videoTaskFormValues} from './modules/video-tasks.js?v=421900';
 import {buildStorageSourcePayload, defaultStorageSource, enabledStorageSources, sourceMatches, storageSourceLabel} from './modules/storage.js?v=422202';
-import {buildMaterialQuery, installMaterialPaginationRuntime, requiresFullMaterialPool} from './modules/material-pagination-runtime.js?v=42.25.532';
+import {buildMaterialQuery, installMaterialPaginationRuntime, requiresFullMaterialPool} from './modules/material-pagination-runtime.js?v=42.25.549';
 import {installStorageImportProgressRuntime, storageImportProgressText} from './modules/storage-import-progress.js?v=422525';
 import {installUploadTaskCenter} from './modules/upload-task-center.js?v=66014';
 import {buildServerImportRequest, buildImportConfirmation, serverImportView} from './modules/server-material-import.js?v=422526';
@@ -313,6 +314,7 @@ const autoLabelPollRuntime = installAutoLabelPollRuntime({
 });
 window.PlatformCore.runtime.autoLabelPollRuntime = autoLabelPollRuntime;
 
+installMaterialPresentation();
 installMaterialPaginationRuntime();
 installNegativePoolRuntime({getState:()=>state,api,pid:()=>state.project?.id,esc,toast:notify,
   modal:(...args)=>window.modal(...args),closeModal:()=>window.closeModal(),

@@ -17,7 +17,7 @@ export function buildMaterialQuery({
   sourceId = 'all',
   processingStatus = '',
   labels = [],
-  annotated = 'all',
+  annotated = 'all', sourceBatchId='', annotationState='', qualityStatus='', createdFrom='', createdTo='',
 } = {}) {
   const params = new URLSearchParams();
   if (page !== null && page !== undefined) {
@@ -29,6 +29,7 @@ export function buildMaterialQuery({
   }
   if (query) params.set('query', String(query));
   if (sourceId && sourceId !== 'all') params.append('storage_source_id', String(sourceId));
+  for(const [key,value] of Object.entries({source_batch_id:sourceBatchId,annotation_state:annotationState,quality_status:qualityStatus,created_from:createdFrom,created_to:createdTo}))if(value)params.set(key,String(value));
   if (processingStatus) params.set('processing_status', String(processingStatus));
   for (const label of labels || []) if (label) params.append('label', String(label));
   if (annotated === 'marked' || annotated === true) params.set('annotated', 'true');
@@ -186,12 +187,13 @@ export function installMaterialPaginationRuntime() {
   }
 
   function filters61() {
-    const tab = state.data412Tab || 'unprocessed';
+    const tab = state.data412Tab || 'all';
     return {
       query: String(state.materialQuery61 || '').trim(),
       sourceId: String(state.materialSourceFilter61 || 'all'),
-      processingStatus: tab === 'processed' ? 'processed' : 'unprocessed',
-      labels: tab === 'processed' ? [...(state.data412Labels || new Set())] : [],
+      processingStatus: tab === 'processed' ? 'processed' : tab === 'unprocessed' ? 'unprocessed' : '',
+      annotationState: ['unannotated','annotated','needs_review'].includes(tab)?tab:'',sourceBatchId:state.materialBatchFilter61||'',qualityStatus:state.materialQualityFilter61||'',createdFrom:state.materialCreatedFrom61||'',createdTo:state.materialCreatedTo61||'',
+      labels: [...(state.data412Labels || new Set())],
       annotated: tab === 'processed' ? (state.materialAnnotated61 || 'all') : 'all',
     };
   }
@@ -200,7 +202,7 @@ export function installMaterialPaginationRuntime() {
     const f = filters61();
     return JSON.stringify([
       projectId(), state.data412Tab || 'unprocessed', f.query, f.sourceId,
-      f.processingStatus, [...f.labels].sort(), f.annotated,
+      f.processingStatus, [...f.labels].sort(), f.annotated,f.sourceBatchId,f.annotationState,f.qualityStatus,f.createdFrom,f.createdTo,
     ]);
   }
 
@@ -504,6 +506,7 @@ export function installMaterialPaginationRuntime() {
   }
   async function loadMaterialPage61({reset = false, page = undefined} = {}) {
     if (!isPagedDataset()) return {stale: true};
+    const selectionScope=filterSignature61();if(state.materialSelectionScope549!==selectionScope){state.data412Selected?.clear?.();state.materialSelectionScope549=selectionScope}
     const info = state.materialPage61;
     if (reset) {
       info.page = 1;
@@ -646,12 +649,14 @@ export function installMaterialPaginationRuntime() {
     void loadMaterialPage61({reset: true});
   };
 
+  window.setMaterialFilter549=(key,value)=>{state[key]=String(value||'');state.data412Selected.clear();void loadMaterialPage61({reset:true})};
   window.materialBatchFilters61 = () => {
     const value = filters61();
     return {
       query: value.query,
       storage_source_ids: value.sourceId && value.sourceId !== 'all' ? [value.sourceId] : [],
       processing_status: value.processingStatus,
+      source_batch_id:value.sourceBatchId,annotation_state:value.annotationState,quality_status:value.qualityStatus,created_from:value.createdFrom,created_to:value.createdTo,
       labels: [...value.labels],
       // Raw-batch bulk actions must not include already annotated or index-pending rows.
       annotated: value.processingStatus === 'unprocessed' ? false : value.annotated === 'marked' ? true : value.annotated === 'unmarked' ? false : null,
@@ -665,7 +670,7 @@ export function installMaterialPaginationRuntime() {
     if (!isPagedDataset() || !state.data412DeleteMode) return window.toast?.('请先进入数据集批量操作');
     const filters = window.materialBatchFilters61?.() || {};
     const narrowed = Boolean(
-      String(filters.query || '').trim() || (filters.labels || []).length
+      filters.source_batch_id||filters.annotation_state||filters.quality_status||filters.created_from||filters.created_to||String(filters.query || '').trim() || (filters.labels || []).length
       || (filters.storage_source_ids || []).length
       || (state.data412Tab === 'processed' && String(state.materialAnnotated61 || 'all') !== 'all')
     );

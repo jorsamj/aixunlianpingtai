@@ -3134,6 +3134,25 @@ def label_review_sample_content_v61(
     )
 
 
+def _material_legacy_zip_batch_ids(project_id, source_batch_id):
+    """Old membership stays in its canonical report; no history/GT backfill."""
+    if not source_batch_id:
+        return ()
+    repository=material_store(project_id)
+    with closing(repository._connect()) as db:
+        if db.execute("SELECT 1 FROM materials WHERE json_extract(payload_json,'$.import_batch_id')=? LIMIT 1",(source_batch_id,)).fetchone():
+            return ()
+    if not re.fullmatch(r'[0-9a-f]{10}',source_batch_id):
+        return ()
+    try:
+        job=v19_read_job(project_id,source_batch_id)
+    except HTTPException as error:
+        if error.status_code==404:return ()
+        raise
+    if job.get('status')!='done':return ()
+    return tuple(dict.fromkeys(str(value) for value in v19_read_import_report(project_id,source_batch_id,job).get('imported_image_ids') or [] if value))
+
+
 @app.get("/api/v61/projects/{project_id}/materials")
 def list_materials_v61(
     project_id: str, cursor: Optional[str] = None, limit: int = 100,
@@ -3141,7 +3160,9 @@ def list_materials_v61(
     query: str = "", storage_source_id: Optional[List[str]] = Query(default=None),
     processing_status: Optional[str] = None,
     label: Optional[List[str]] = Query(default=None), annotated: Optional[bool] = None,
-    annotation_state: Optional[Literal["unannotated", "annotated", "confirmed_empty", "partial"]] = None,
+    annotation_state: Optional[Literal["unannotated", "annotated", "confirmed_empty", "partial", "needs_review"]] = None,
+    source_batch_id: Optional[str] = None, quality_status: Optional[Literal["pending_decision", "processed", "issue"]] = None,
+    created_from: Optional[str] = None, created_to: Optional[str] = None,
 ):
     get_project(project_id)
     numbered = page is not None or page_size is not None
@@ -3159,6 +3180,7 @@ def list_materials_v61(
             cursor=cursor, page=requested_page, limit=requested_size, query=query,
             storage_source_ids=storage_source_id, processing_status=processing_status,
             labels=label, annotated=annotated, annotation_state=annotation_state,
+            source_batch_id=source_batch_id, source_batch_image_ids=_material_legacy_zip_batch_ids(project_id,source_batch_id), quality_status=quality_status, created_from=created_from, created_to=created_to,
             partial_labels=[row["code"] for row in _annotation_label_catalog(get_project(project_id))] if annotation_state=="partial" else (),
         )
     except ValueError as error:
@@ -3191,7 +3213,9 @@ def list_material_ids_v61(
     query: str = "", storage_source_id: Optional[List[str]] = Query(default=None),
     processing_status: Optional[str] = None,
     label: Optional[List[str]] = Query(default=None), annotated: Optional[bool] = None,
-    annotation_state: Optional[Literal["unannotated", "annotated", "confirmed_empty", "partial"]] = None,
+    annotation_state: Optional[Literal["unannotated", "annotated", "confirmed_empty", "partial", "needs_review"]] = None,
+    source_batch_id: Optional[str] = None, quality_status: Optional[Literal["pending_decision", "processed", "issue"]] = None,
+    created_from: Optional[str] = None, created_to: Optional[str] = None,
     narrow: bool = False, expected_revision: Optional[int] = None,
 ):
     get_project(project_id)
@@ -3200,7 +3224,13 @@ def list_material_ids_v61(
     if expected_revision is not None and revision != expected_revision:
         raise HTTPException(status_code=409, detail="素材库已更新，请重新解析当前筛选结果")
     filters = dict(query=query, storage_source_ids=storage_source_id or (),
+                   source_batch_id=source_batch_id, source_batch_image_ids=_material_legacy_zip_batch_ids(project_id,source_batch_id), quality_status=quality_status, created_from=created_from, created_to=created_to,
                    processing_status=processing_status, labels=label or (), annotated=annotated, annotation_state=annotation_state, partial_labels=[row["code"] for row in _annotation_label_catalog(get_project(project_id))] if annotation_state=="partial" else ())
+    from platform_core.material_selection import MaterialFilters
+    try:
+        filters=MaterialFilters.from_mapping(filters).as_dict() | {"source_batch_image_ids":filters.get("source_batch_image_ids",())}
+    except (ValueError, TypeError) as error:
+        raise HTTPException(400,detail=str(error)) from error
     if narrow:
         # Bulk selection needs only IDs. Reuse the canonical material predicate,
         # avoiding list_page() JSON/detail hydration for every selected image.
@@ -16042,6 +16072,23 @@ def _v19_wait_fifo_turn(project_id: str, job_id: str) -> None:
         time.sleep(0.2)
 
 
+def _v19_finalize_report_messages(report, *, scan_kind):
+    """Classify expected raw absence independently of integrity/import failures."""
+    raw = str(scan_kind or "") == "RAW_UNANNOTATED"
+    report["scan_kind"] = str(scan_kind or "")
+    report["result_kind"] = "raw_unannotated" if raw else "annotation_import"
+    if not raw and report.get("boxes", 0) == 0:
+        report.setdefault("warnings", []).append("图片已入库，但未识别到有效标注；如预期带标注，请检查 YOLO txt / COCO json / VOC xml 结构。")
+    if report.get("missing_images", 0):
+        report.setdefault("warnings", []).append(f"有 {report.get('missing_images')} 条标注找不到对应图片。")
+    if not raw and report.get("unmatched_labels", 0):
+        report.setdefault("warnings", []).append(f"有 {report.get('unmatched_labels')} 张图片未匹配到对应标注文件。")
+    if report.get("invalid_boxes", 0):
+        report.setdefault("warnings", []).append(f"忽略了 {report.get('invalid_boxes')} 个无效标注框。")
+    if report.get("skipped_images", 0):
+        report.setdefault("warnings", []).append(f"有 {report.get('skipped_images')} 张图片导入失败或被跳过。")
+
+
 def v19_import_worker(project_id: str, dataset_id: str, job_id: str, selected_paths: List[str]):
     try:
         _v19_import_worker_impl(project_id, dataset_id, job_id, selected_paths)
@@ -16193,18 +16240,15 @@ def _v19_import_worker_impl(project_id: str, dataset_id: str, job_id: str, selec
                     _v19_import_unreferenced_images(project_id, parse_root, dataset_id, report)
                 if not imported or report.get("imported_images", 0) == 0:
                     raise RuntimeError("没有识别到可导入的数据。请确认 ZIP 内包含图片，并检查目录结构是否正确。")
-                if report.get("boxes", 0) == 0:
-                    report.setdefault("warnings", []).append(
-                        "图片已导入，但未识别到有效标注。素材将进入未处理；如本来应带标注，请检查 YOLO txt / COCO json / VOC xml 结构。"
-                    )
-                if report.get("missing_images", 0):
-                    report.setdefault("warnings", []).append(f"有 {report.get('missing_images')} 条标注找不到对应图片。")
-                if report.get("unmatched_labels", 0):
-                    report.setdefault("warnings", []).append(f"有 {report.get('unmatched_labels')} 张图片未匹配到对应标注文件。")
-                if report.get("invalid_boxes", 0):
-                    report.setdefault("warnings", []).append(f"忽略了 {report.get('invalid_boxes')} 个无效标注框。")
-                if report.get("skipped_images", 0):
-                    report.setdefault("warnings", []).append(f"有 {report.get('skipped_images')} 张图片导入失败或被跳过。")
+                # Material provenance is independent of annotation provenance:
+                # raw images have no boxes to carry the trusted batch identity.
+                # Queue into the original image batch so commit/rollback stays atomic.
+                for imported_id in report.get("imported_image_ids", []):
+                    if not _v50_queue_image_patch(project_id, imported_id, {
+                        "import_batch_id": job_id, "source_task_id": job_id,
+                    }):
+                        raise RuntimeError("ZIP material batch closed before provenance commit")
+                _v19_finalize_report_messages(report, scan_kind=job.get("scan_kind"))
                 report["labels"] = get_project(project_id).get("labels", [])
                 report["label_mapping"] = dict(job.get("label_mapping") or {})
                 report["label_confirmed_at"] = str(job.get("label_confirmed_at") or "")
@@ -28174,6 +28218,7 @@ app.include_router(material_batch_router(
     _storage_source_fence,
     training_selection_provider=_training_compatibility_request,
     actor_provider=_material_governance_actor,
+    legacy_batch_resolver=_material_legacy_zip_batch_ids,
 ))
 from platform_core.smart_material_audit.api import smart_material_audit_router
 app.include_router(smart_material_audit_router(

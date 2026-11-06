@@ -61,6 +61,7 @@ CREATE INDEX IF NOT EXISTS ix_materials_reference ON materials(storage_source_id
 CREATE INDEX IF NOT EXISTS ix_materials_status ON materials(processing_status, created_at, id);
 CREATE INDEX IF NOT EXISTS ix_materials_filename ON materials(filename COLLATE NOCASE);
 CREATE INDEX IF NOT EXISTS ix_materials_created ON materials(created_at, id);
+CREATE INDEX IF NOT EXISTS ix_materials_import_batch ON materials(json_extract(payload_json,'$.import_batch_id'),created_at,id);
 CREATE INDEX IF NOT EXISTS ix_materials_content_sha256 ON materials(content_sha256) WHERE content_sha256 <> '';
 CREATE INDEX IF NOT EXISTS ix_materials_content_sha256_normalized ON materials(lower(trim(content_sha256))) WHERE content_sha256 <> '';
 CREATE INDEX IF NOT EXISTS ix_materials_dataset_delete_claim
@@ -380,7 +381,10 @@ class MaterialRepository:
                 sqlite3.connect(self.path, timeout=0.25, isolation_level=None)
             ) as database:
                 database.execute("PRAGMA busy_timeout=250")
-                return int(database.execute("PRAGMA user_version").fetchone()[0])
+                version = int(database.execute("PRAGMA user_version").fetchone()[0])
+                if version == _SCHEMA_VERSION and not database.execute("SELECT 1 FROM sqlite_master WHERE name='ix_materials_import_batch'").fetchone():
+                    return None
+                return version
         except sqlite3.Error:
             return None
 
@@ -395,7 +399,7 @@ class MaterialRepository:
         with lock:
             with closing(self._connect()) as database:
                 version = int(database.execute("PRAGMA user_version").fetchone()[0])
-                if version == _SCHEMA_VERSION:
+                if version == _SCHEMA_VERSION and database.execute("SELECT 1 FROM sqlite_master WHERE name='ix_materials_import_batch'").fetchone():
                     return
                 if version > _SCHEMA_VERSION:
                     raise RuntimeError(
@@ -994,7 +998,27 @@ class MaterialRepository:
         if selected.annotated is not None:
             clauses.append("m.annotated = ?")
             params.append(int(selected.annotated))
-        if selected.annotation_state == "partial":
+        if selected.source_batch_id:
+            if selected.source_batch_image_ids:
+                clauses.append("(json_extract(m.payload_json,'$.import_batch_id') = ? OR m.id IN (SELECT value FROM json_each(?)))")
+                params.extend([selected.source_batch_id,json.dumps(selected.source_batch_image_ids)])
+            else:
+                clauses.append("json_extract(m.payload_json,'$.import_batch_id') = ?")
+                params.append(selected.source_batch_id)
+        if selected.created_from:
+            clauses.append('m.created_at >= ?'); params.append(selected.created_from)
+        if selected.created_to:
+            from datetime import date, timedelta
+            clauses.append('m.created_at < ?'); params.append((date.fromisoformat(selected.created_to)+timedelta(days=1)).isoformat())
+        if selected.quality_status == 'pending_decision':
+            clauses.append("m.processing_status IN ('unprocessed','pending_decision')")
+        elif selected.quality_status == 'processed':
+            clauses.append("m.processing_status='processed'")
+        elif selected.quality_status == 'issue':
+            clauses.append("json_extract(m.payload_json,'$.quality_status')='issue'")
+        if selected.annotation_state == 'needs_review':
+            clauses.append("(COALESCE(json_extract(m.payload_json,'$.annotation_needs_review'),0)<>0 OR COALESCE(json_extract(m.payload_json,'$.external_annotation_needs_review'),0)<>0 OR COALESCE(json_extract(m.payload_json,'$.needs_review'),0)<>0)")
+        elif selected.annotation_state == "partial":
             # A virtual view of positive GT whose review scope does not cover all
             # requested labels, never a new persisted annotation state.
             clauses.append("m.annotated <> 0")
@@ -1124,6 +1148,8 @@ class MaterialRepository:
         labels: Sequence[str] | None = None, annotated: bool | None = None,
         split: str | None = None, annotation_state: str | None = None, partial_labels: Sequence[str] = (),
         sort_order: str = "oldest",
+        source_batch_id: str | None = None, source_batch_image_ids: Sequence[str] = (), quality_status: str | None = None,
+        created_from: str | None = None, created_to: str | None = None,
     ) -> MaterialPage:
         if sort_order not in ("oldest", "newest"):
             raise ValueError("sort_order must be oldest or newest")
@@ -1135,6 +1161,7 @@ class MaterialRepository:
             query=query, storage_source_ids=tuple(storage_source_ids or ()),
             processing_status=processing_status, split=split, labels=tuple(labels or ()),
             annotated=annotated, annotation_state=annotation_state, partial_labels=partial_labels,
+            source_batch_id=source_batch_id,source_batch_image_ids=tuple(source_batch_image_ids),quality_status=quality_status,created_from=created_from,created_to=created_to,
         )
         with closing(self._connect()) as database:
             database.execute("BEGIN")

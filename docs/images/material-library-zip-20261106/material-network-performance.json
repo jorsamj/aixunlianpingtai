@@ -1,0 +1,12 @@
+{
+  "scope": "ISOLATED_200000_METADATA_48_RENDERED_NOT_PRODUCTION",
+  "reads": [
+    "http://127.0.0.1:8027/api/v61/projects/8ab65d80907b/materials?page=1&page_size=48",
+    "http://127.0.0.1:8027/api/v61/projects/8ab65d80907b/materials?page=2&page_size=48",
+    "http://127.0.0.1:8027/api/v61/projects/8ab65d80907b/materials?page=1&page_size=48"
+  ],
+  "p50_ms": 16.699999999254942,
+  "p95_ms": 16.800000000745058,
+  "dom_preserved": true,
+  "rendered": 48
+}

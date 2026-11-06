@@ -195,6 +195,8 @@ jobs:
           python -m pip install --disable-pip-version-check
           pytest fastapi httpx python-multipart pillow pyyaml requests
           opencv-python-headless onnx onnxruntime onnxslim psutil keyring cryptography filelock boto3 oss2
+      - name: Material library filters and raw ZIP report contracts
+        run: python -m pytest -q tests/unit/test_zip_report_semantics.py tests/unit/test_material_library_filters.py tests/api/test_material_library_filters_api.py
       - name: Secret store and multipart storage contracts
         run: >-
           PYTHONPATH=. pytest -q --confcutdir=tests/unit
@@ -250,4 +252,4 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
       - name: Real Chrome refresh recovery
-        run: npx playwright test tests/browser/zip-import-refresh-recovery.spec.mjs tests/browser/zip-label-presentation.spec.mjs tests/browser/uppy-zip-poc.spec.mjs tests/browser/material-upload-chunking.spec.mjs
+        run: npx playwright test tests/browser/zip-import-material-flow.spec.mjs tests/browser/zip-import-refresh-recovery.spec.mjs tests/browser/zip-label-presentation.spec.mjs tests/browser/uppy-zip-poc.spec.mjs tests/browser/material-upload-chunking.spec.mjs

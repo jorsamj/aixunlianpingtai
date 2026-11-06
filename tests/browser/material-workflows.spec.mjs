@@ -194,6 +194,8 @@ test('manual annotation saves, survives reload, and updates the thumbnail', asyn
   await page.getByRole('button', {name: /数据集/}).click();
   await page.getByRole('button', {name: /已处理/}).click();
   const reloadedCard = page.locator('.data412-card', {hasText: 'annotation-flow.bmp'});
+  await expect(reloadedCard.locator('.data412-box')).toHaveCount(0);
+  await page.getByText('显示标注框',{exact:true}).click();
   await expect(reloadedCard.locator('.data412-box')).toHaveCount(1);
   await expect(reloadedCard.getByText(/人工标注 · 1框/)).toBeVisible();
 });
@@ -438,11 +440,10 @@ test('batch annotation requires explicit label review before confirming consecut
   await page.goto('/');
   await page.getByRole('button', {name: /数据集/}).click();
   await page.getByRole('button', {name: /已处理/}).click();
-  await page.getByRole('button', {name: '批量操作'}).click();
   const cards = page.locator('.data412-card');
   await cards.filter({hasText: 'queue-one.bmp'}).getByRole('checkbox').check();
   await cards.filter({hasText: 'queue-two.bmp'}).getByRole('checkbox').check();
-  await page.getByRole('button', {name: '批量标注'}).click();
+  await page.locator('#materialBulk549').getByRole('button', {name: '人工标注',exact:true}).click();
 
   const dialog = page.getByRole('dialog', {name: '图片标注工作台', exact: true});
   await expect(dialog.getByText('1 / 2', {exact: true})).toBeVisible();
@@ -512,11 +513,10 @@ test('late annotation response cannot replace the newer image in the stable work
   await page.goto('/');
   await page.getByRole('button', {name: /数据集/}).click();
   await page.getByRole('button', {name: /已处理/}).click();
-  await page.getByRole('button', {name: '批量操作'}).click();
   const cards = page.locator('.data412-card');
   await cards.filter({hasText: 'stale-one.bmp'}).getByRole('checkbox').check();
   await cards.filter({hasText: 'stale-two.bmp'}).getByRole('checkbox').check();
-  await page.getByRole('button', {name: '批量标注'}).click();
+  await page.locator('#materialBulk549').getByRole('button', {name: '人工标注',exact:true}).click();
 
   await firstSeen;
   const dialog = page.getByRole('dialog', {name: '图片标注工作台', exact: true});
@@ -535,7 +535,7 @@ test('late annotation response cannot replace the newer image in the stable work
   await expect(dialog.getByText('2 / 2', {exact: true})).toBeVisible();
 });
 
-test('material filters come from the label library and unprocessed data exposes batch decisions', async ({page, request}) => {
+test('material filters come from the label library and unchecked data exposes independent annotation actions', async ({page, request}) => {
   const project = await createMaterialProject(request, `素材筛选-${Date.now()}`);
   const person = await uploadImage(request, project.id, 'person.bmp', [180, 70, 70]);
   const vehicle = await uploadImage(request, project.id, 'vehicle.bmp', [70, 90, 180]);
@@ -551,9 +551,11 @@ test('material filters come from the label library and unprocessed data exposes 
 
   await page.goto('/');
   await page.getByRole('button', {name: /数据集/}).click();
-  await page.getByRole('button', {name: /未处理/}).click();
-  await expect(page.getByRole('button', {name: '批量清洗'})).toBeVisible();
-  await expect(page.getByRole('button', {name: '批量无需清洗'})).toBeVisible();
+  await page.getByRole('button', {name: '未检查',exact:true}).click();
+  await page.locator('.data412-card').filter({hasText:'unprocessed.bmp'}).getByRole('checkbox').check();
+  await expect(page.locator('#materialBulk549').getByRole('button',{name:'人工标注',exact:true})).toBeVisible();
+  await expect(page.locator('#materialBulk549').getByRole('button',{name:'AI预标注',exact:true})).toBeVisible();
+  await expect(page.locator('#materialBulk549').getByRole('button',{name:'质量检查',exact:true})).toBeVisible();
   await page.getByRole('button', {name: /已处理/}).click();
   const labelSearch=page.getByRole('textbox',{name:'搜索素材标签'});
   await labelSearch.fill('person');
@@ -744,11 +746,10 @@ test('previous and next navigation auto-save the current annotation', async ({pa
   await page.goto('/');
   await page.getByRole('button', {name: /数据集/}).click();
   await page.getByRole('button', {name: /已处理/}).click();
-  await page.getByRole('button', {name: '批量操作'}).click();
   const cards = page.locator('.data412-card');
   await cards.filter({hasText: 'nav-one.bmp'}).getByRole('checkbox').check();
   await cards.filter({hasText: 'nav-two.bmp'}).getByRole('checkbox').check();
-  await page.getByRole('button', {name: '批量标注'}).click();
+  await page.locator('#materialBulk549').getByRole('button', {name: '人工标注',exact:true}).click();
 
   const dialog = page.getByRole('dialog', {name: '图片标注工作台', exact: true});
   await expect(dialog.locator('#ann420Filename')).toHaveText('nav-one.bmp');
